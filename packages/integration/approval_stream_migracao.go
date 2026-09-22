@@ -60,10 +60,47 @@ package integration
 // topologia replicada, **todas as réplicas têm de estar no binário novo** antes de a garantia
 // valer. Não se resolve isto aqui: declara-se.
 //
-// O stream ANTIGO não é apagado — um log append-only não apaga. Fica lá, inerte, e o índice
-// titular→partição passa a ligar os titulares aos DOIS nomes depois do restauro
-// (`restoreSubjectIndex` varre os streams que existem). Isso é sobre-cobertura de legal hold,
-// que é a direcção segura.
+// O stream ANTIGO não é apagado — um log append-only não apaga. Fica lá, inerte.
+//
+// # O ÍNDICE TITULAR→PARTIÇÃO, E UMA AFIRMAÇÃO QUE EU FIZ E ERA FALSA
+//
+// A primeira versão deste ficheiro dizia que o `restoreSubjectIndex` religa os titulares aos
+// DOIS nomes no arranque, e que isso era «sobre-cobertura de legal hold, a direcção segura».
+// **Não é verdade, e a direcção é a contrária.** O `restoreSubjectIndex` filtra por
+// `subjectOf`, que reconhece apenas `replay.captured` e `step.ledger.applied` — nenhum facto
+// deste stream é de uma dessas famílias. O índice não religa ao nome novo NEM ao antigo.
+//
+// A única ligação titular→partição para este stream é feita AO VIVO pelo `contentSealer`, em
+// memória, no momento de cada escrita — e depois do rename passa a apontar para o nome novo.
+// **Consequência, declarada:** um legal hold DURÁVEL posto sobre a partição `gov.approvals`
+// (restaurado pelo nome literal) deixa de intersectar as partições de qualquer titular, e
+// portanto deixa de se estender às OUTRAS partições desse titular. É SUB-cobertura, que é o
+// fail-open que o AOS-352 documenta como o pior dos quatro.
+//
+// O gatilho é condicional (exige um hold posto sobre essa partição exacta) e esta migração
+// **não o re-chaveia**. Quem tiver holds sobre `gov.approvals` tem de os repor sobre o nome
+// novo. Fica escrito aqui em vez de descoberto por quem contar com o hold.
+//
+// O que CONTINUA verdadeiro, e foi verificado: a DECIFRAÇÃO atravessa o rename. O
+// `audit.SealContent` não recebe sequer o `streamID` — cifra por titular — e o `OpenContent`
+// resolve pelo mesmo titular. Um registo de retoma selado antes continua decifrável depois.
+//
+// # ROLLBACK — O QUE ACONTECE SE SE VOLTAR AO BINÁRIO ANTERIOR
+//
+// **Reabre o duplo-consumo.** Um grant migrado e consumido pelo binário NOVO tem o seu
+// `used-<id>` apenas no stream novo; o binário antigo lê `gov.approvals`, onde esse marcador
+// não existe, e o grant volta a ser consumível. É a propriedade que o four-eyes existe para
+// dar, perdida na direcção que a primeira versão deste ficheiro não cobria.
+//
+// **E pode perder factos em silêncio.** Um facto escrito pelo binário antigo durante a janela
+// de rollback, cuja `(RunID, StepID)` já exista no stream novo, vem `StatusDuplicate` no
+// roll-forward: não atravessa, `copiados` não o conta, e o log de arranque não diz nada. A
+// ordem relativa também deixa de valer para os factos legados tardios.
+//
+// **Postura:** o rollback DEPOIS desta migração não é seguro para a cerimónia four-eyes, e
+// não há aqui código que o torne seguro — um log append-only não desfaz. Quem precisar de
+// reverter tem de o fazer sabendo isto, e verificar os grants pendentes à mão antes de voltar
+// a aceitar aprovações.
 
 import (
 	"context"
@@ -106,6 +143,29 @@ func MigrarAprovacoes(ctx context.Context, store approvalAppendReader) (int, err
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
 			// Nó fresco, ou migração já feita num nó cujo stream antigo nunca existiu. Não é
 			// erro: é a maioria dos casos depois da primeira passagem.
+			return 0, nil
+		}
+		if errors.Is(err, eventstore.ErrConfig) {
+			// O BACKEND NÃO CONSEGUE SEQUER NOMEAR O STREAM LEGADO — e isso significa que ele
+			// NÃO PODE TER NADA.
+			//
+			// Sobre JetStream o `subjectDe` recusa o ponto LEXICALMENTE, antes de tocar na rede,
+			// e o `Read` propaga `ErrConfig`. A primeira versão desta função tolerava apenas o
+			// `ErrStreamNotFound` e propagava isto — o `Bootstrap` abortava, e **um nó JetStream
+			// com four-eyes deixava de arrancar, sempre**, tivesse ou não factos legados. Era o
+			// inverso exacto do propósito deste ficheiro: a migração que existe para destrancar o
+			// four-eyes sobre JetStream era a única coisa que o impedia de correr lá. Uma revisão
+			// adversarial provou-o; o smoke não o via porque corre sobre WAL de ficheiro.
+			//
+			// **ISTO NÃO É TOLERÂNCIA A ERRO, É A VERDADE DAQUELE BACKEND.** O `Append`
+			// (`jetstream/store.go`) e o `IngestStream` do restauro passam pelo MESMO `subjectDe`:
+			// um stream com ponto nunca pôde receber uma escrita nesse substrato, nem por
+			// restauro de backup. Logo «não consigo ler o nome legado» e «o nome legado não tem
+			// factos» são, ali, a MESMA afirmação.
+			//
+			// O âmbito é estreito de propósito: só o `Read` do nome LEGADO, e só este sentinela.
+			// Um `ErrConfig` na ESCRITA do nome novo continua a abortar — esse seria um nome em
+			// uso que o backend recusa, que é um defeito e não um facto.
 			return 0, nil
 		}
 		return 0, fmt.Errorf("integration: ler o stream legado de aprovacoes: %w", err)

@@ -2049,9 +2049,16 @@ o início e o `geracaoDe` conta ocorrências.
 - o `resume_records.go` passa o nome do stream para dentro da cifra. **Não é usado como dados
   autenticados**: o `SealContent` cifra só por titular e o `streamID` serve para ligar
   `subject→partição` no índice. A decifração sobrevive ao rename;
-- esse índice é reconstruído a cada arranque a partir dos streams que existem
-  (`restoreSubjectIndex`). Depois da migração os titulares ficam ligados aos DOIS nomes —
-  **sobre-cobertura** de legal hold, que é a direcção segura.
+- ~~esse índice é reconstruído a cada arranque~~ **— ESTA AFIRMAÇÃO ERA FALSA, e a direcção
+  é a contrária.** O `restoreSubjectIndex` filtra por `subjectOf`, que reconhece apenas
+  `replay.captured` e `step.ledger.applied`; nenhum facto de aprovação é de uma dessas
+  famílias, pelo que o índice não religa ao nome novo NEM ao antigo. A única ligação é feita
+  ao vivo pelo `contentSealer`, em memória, e passa a apontar para o nome novo.
+  **Consequência:** um legal hold DURÁVEL sobre a partição `gov.approvals` deixa de
+  intersectar as partições de qualquer titular — **SUB-cobertura**, o fail-open que o AOS-352
+  documenta como o pior dos quatro. A migração **não re-chaveia holds**: quem os tiver sobre
+  `gov.approvals` tem de os repor sobre o nome novo. Encontrado por revisão adversarial, que
+  o provou correndo o `restoreSubjectIndex` contra os dois streams (`ligou n=0`).
 
 **Evidência, e não é só de teste unitário.** No smoke do `run-aos`, sobre um WAL persistido de
 corridas anteriores: **53 factos copiados na primeira passagem, ZERO na segunda**, com o nó
@@ -2061,6 +2068,49 @@ no produto, não em fixture.
 Sete testes em `approval_stream_migracao_test.go`, com o controlo de não-vacuidade que importa:
 um grant **por consumir** continua consumível depois da migração — sem ele, uma migração que
 copiasse um `used-` para todos os grants passaria no teste central e partiria o produto.
+
+#### O que a revisão adversarial encontrou, e que os gates não viam
+
+**CRÍTICO — a migração impedia o nó de arrancar sobre JetStream. Para sempre.** O
+`MigrarAprovacoes` só tolerava `ErrStreamNotFound`. Sobre JetStream o `Read` do nome legado
+devolve **`ErrConfig`** — o `subjectDe` recusa o ponto LEXICALMENTE, antes de tocar na rede — e
+o `Bootstrap` abortava. **Um nó JetStream com four-eyes não arrancava, tivesse ou não factos
+legados**, porque a recusa é do NOME e não do stream: até um nó fresco falhava.
+
+Era o **inverso exacto do propósito do ticket** — a migração que existe para destrancar o
+four-eyes sobre JetStream era a única coisa que o impedia de correr lá. E o smoke não o via
+porque corre sobre WAL de ficheiro: **o único substrato onde isto importa era o único onde não
+foi medido.**
+
+Fechado tratando o `ErrConfig` do nome LEGADO como «nada para migrar», com âmbito estreito. Não
+é tolerância a erro: o `Append` e o `IngestStream` passam pelo MESMO `subjectDe`, logo um stream
+com ponto **nunca pôde receber uma escrita** nesse backend, nem por restauro de backup — «não
+consigo ler o nome legado» e «o nome legado não tem factos» são, ali, a mesma afirmação. Um
+`ErrConfig` na ESCRITA do nome novo continua a abortar.
+
+**ALTO — nenhum dos sete testes olhava para o CORPO dos factos.** A revisão mutou a cópia para
+`Payload: nil` e a suite INTEIRA do pacote passou. É o sobrevivente mais perigoso possível: a
+propriedade de SEGURANÇA continua a valer (os `used-` bloqueiam) e os DADOS desaparecem todos —
+e como o `Consume` reclama ANTES de ler, cada grant seria QUEIMADO e só depois se descobriria
+ilegível. Fechado com um teste que usa o caminho REAL nas duas pontas (o wire do `Put`, o
+`Consume` da store em vigor) e verifica a preview, os aprovadores, o dual-control e a validade.
+
+**ALTO — a cablagem não tinha sensor.** Substituir a chamada por `copiados, merr := 0, nil`
+deixava a suite do `cmd/aos` verde. Fechado com `aos424_migracao_cablagem_test.go`, que exige
+que a chamada exista, que PRECEDA os três consumidores do stream, e que seja fail-closed. Duas
+mutações verificadas: remover a chamada e movê-la para depois da store.
+
+**ALTO — o rollback reabre o duplo-consumo, e não estava declarado.** Um grant migrado e
+consumido pelo binário novo tem o `used-` só no stream novo; o binário antigo lê o legado, não
+o encontra, e o grant volta a ser consumível. Além disso um facto escrito pelo binário antigo
+durante a janela pode vir `StatusDuplicate` no roll-forward e não atravessar — em silêncio.
+**Declarado** no cabeçalho da migração: o rollback depois desta migração não é seguro para a
+cerimónia, e não há código que o torne seguro — um log append-only não desfaz.
+
+**E um teste meu que passava pela razão errada**, apanhado pela minha própria mutação ao
+verificar as correcções: o sensor do `SchemaVersion` usava `"1.0"`, que é **o default que o
+store preenche quando o campo vem vazio** — apagar a cópia era indistinguível de a preservar.
+Corrigido para uma versão não-default, e o mutante passa a morrer.
 
 **O que esta migração NÃO garante, declarado:** assume **um único escritor** durante a cópia. O
 substrato de ficheiro impõe-o (`LockWAL`) e é o que corre em produção. Sobre `--nats` com várias

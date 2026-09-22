@@ -9,6 +9,9 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,6 +253,179 @@ func TestAOS424NomeNovoDoStreamDeAprovacoes(t *testing.T) {
 	}
 }
 
-// Sanidade do relógio dos testes: nenhum destes depende de tempo, e é deliberado — uma
-// migração que dependesse do relógio seria não-determinista no arranque.
-var _ = time.Now
+// O GRANT MIGRADO CONTINUA UTILIZÁVEL — pelo caminho REAL, e não só pela chave.
+//
+// # PORQUE É QUE ESTE TESTE FALTAVA, E PORQUE É O PIOR DOS BURACOS
+//
+// Os outros testes verificam a chave de idempotência, a ordem, o tipo e o produtor. **Nenhum
+// olhava para o `Payload`.** Uma revisão adversarial mutou a cópia para `Payload: nil` e a
+// suite INTEIRA do pacote passou.
+//
+// É o sobrevivente mais perigoso possível, porque a propriedade de SEGURANÇA continua a valer
+// — os marcadores `used-` continuam a bloquear — e os DADOS desaparecem todos: grants
+// irresolvíveis, pendentes ilegíveis, registos de retoma sem o `Goal`. E pior: o `Consume`
+// reclama ANTES de ler (ordem deliberada), pelo que cada grant seria QUEIMADO e só depois se
+// descobriria que é ilegível — a cerimónia de quatro olhos teria de ser repetida, grant a
+// grant.
+//
+// O teste usa o caminho de produção nas duas pontas: escreve com `Put` e lê com `Consume`.
+func TestAOS424GrantMigradoContinuaUtilizavelPeloCaminhoReal(t *testing.T) {
+	st := migTestStore(t)
+	ctx := context.Background()
+
+	// (1) O mundo ANTES: um grant escrito no LEGADO pelo mesmo código que o escreveria em
+	// produção. Escreve-se via uma store apontada ao nome antigo — aqui, à mão, com o MESMO
+	// payload que o `Put` produz, porque a store em vigor já escreve no nome novo.
+	const grantID = "grant-utilizavel"
+	original := ApprovalGrant{
+		ID:          grantID,
+		Preview:     []byte("preview-canonica"),
+		Approvers:   []string{"humano:ana", "humano:bruno"},
+		DualControl: true,
+		ExpiresAt:   time.Unix(1_800_000_000, 0).UTC(),
+	}
+	// O MESMO wire que o `Put` produz — e não a struct crua. Escrever aqui um formato
+	// inventado faria o teste medir a minha serialização em vez da do produto.
+	corpo, err := json.Marshal(grantPayload{
+		ID:          original.ID,
+		Preview:     original.Preview,
+		Approvers:   original.Approvers,
+		DualControl: original.DualControl,
+		ExpiresAt:   original.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatalf("marshal do grant: %v", err)
+	}
+	escreverNoLegado(t, st, approvalGrantedEventType, "grant-"+grantID, corpo)
+
+	// (2) A migração.
+	if _, merr := MigrarAprovacoes(ctx, st); merr != nil {
+		t.Fatalf("MigrarAprovacoes: %v", merr)
+	}
+
+	// (3) O mundo DEPOIS: a store EM VIGOR consome o grant migrado e tem de o devolver
+	// INTEIRO. É aqui que um `Payload` perdido aparece.
+	store, err := NewEventStoreApprovalStore(st)
+	if err != nil {
+		t.Fatalf("NewEventStoreApprovalStore: %v", err)
+	}
+	g, ok, err := store.Consume(ctx, grantID)
+	if err != nil {
+		t.Fatalf("Consume depois da migracao devolveu erro (%v):\n"+
+			"o grant foi QUEIMADO pela reclamacao e o conteudo nao se le \u2014 a cerimonia "+
+			"four-eyes tem de ser repetida para este grant.", err)
+	}
+	if !ok {
+		t.Fatal("o grant migrado nao foi encontrado pela store em vigor")
+	}
+	if g.ID != original.ID {
+		t.Errorf("o ID nao atravessou: %q != %q", g.ID, original.ID)
+	}
+	if string(g.Preview) != string(original.Preview) {
+		t.Errorf("a PREVIEW nao atravessou (%q != %q): e a amarra do grant \u00e0 accao aprovada, "+
+			"e sem ela o grant deixa de servir a call que foi aprovada",
+			g.Preview, original.Preview)
+	}
+	if len(g.Approvers) != len(original.Approvers) {
+		t.Errorf("os aprovadores nao atravessaram: %v != %v", g.Approvers, original.Approvers)
+	}
+	if !g.DualControl {
+		t.Error("o DualControl nao atravessou: uma accao irreversivel passaria a parecer ter " +
+			"tido uma so aprovacao")
+	}
+	if !g.ExpiresAt.Equal(original.ExpiresAt) {
+		t.Errorf("a validade nao atravessou: %v != %v", g.ExpiresAt, original.ExpiresAt)
+	}
+}
+
+// A FIDELIDADE DA CÓPIA, campo a campo. Os mutantes `SchemaVersion` e `ParentStepID`
+// sobreviviam — o comentário da migração promete preservá-los, e uma promessa sem sensor é
+// uma promessa até alguem a partir.
+func TestAOS424MigracaoPreservaOEnvelopeInteiro(t *testing.T) {
+	st := migTestStore(t)
+	ctx := context.Background()
+
+	if _, err := st.Append(ctx, approvalStreamLegado, eventstore.EventInput{
+		Type:    approvalGrantedEventType,
+		Payload: []byte(`{"campo":"valor"}`),
+		// UMA VERSÃO QUE NÃO É O DEFAULT. Com "1.0" este teste passava pela razão errada: o
+		// store preenche a versão CORRENTE quando o campo vem vazio, pelo que apagar a cópia
+		// era indistinguível de a preservar. Medido por mutação — o mutante sobreviveu.
+		SchemaVersion: "1.1",
+		RunID:         approvalRunID,
+		StepID:        "grant-envelope",
+		ParentStepID:  "pai-do-passo",
+		Producer:      eventstore.Producer{NHIID: "nhi:emissor", Scope: []string{"approve"}},
+	}); err != nil {
+		t.Fatalf("Append no legado: %v", err)
+	}
+	if _, err := MigrarAprovacoes(ctx, st); err != nil {
+		t.Fatalf("MigrarAprovacoes: %v", err)
+	}
+
+	evs, err := st.Read(ctx, approvalStream, 0)
+	if err != nil || len(evs) != 1 {
+		t.Fatalf("Read: err=%v n=%d", err, len(evs))
+	}
+	ev := evs[0]
+	if string(ev.Payload) != `{"campo":"valor"}` {
+		t.Errorf("o PAYLOAD nao atravessou: %q", ev.Payload)
+	}
+	if ev.SchemaVersion != "1.1" {
+		t.Errorf("o SchemaVersion nao atravessou: %q \u2014 o facto copiado deixa de dizer sob que "+
+			"schema foi escrito", ev.SchemaVersion)
+	}
+	if ev.ParentStepID != "pai-do-passo" {
+		t.Errorf("o ParentStepID nao atravessou: %q \u2014 a cadeia de causalidade parte-se",
+			ev.ParentStepID)
+	}
+	if len(ev.Producer.Scope) != 1 || ev.Producer.Scope[0] != "approve" {
+		t.Errorf("o Scope do produtor nao atravessou: %v", ev.Producer.Scope)
+	}
+}
+
+// UM BACKEND QUE NÃO CONSEGUE NOMEAR O STREAM LEGADO NÃO TEM NADA PARA MIGRAR.
+//
+// Este é o teste do defeito CRÍTICO que uma revisão adversarial encontrou: sobre JetStream o
+// `Read` do nome legado devolve `ErrConfig` — o `subjectDe` recusa o ponto LEXICALMENTE, antes
+// de tocar na rede — e a primeira versão propagava-o. O `Bootstrap` abortava, e **um nó
+// JetStream com four-eyes deixava de arrancar, sempre**, tivesse ou não factos legados.
+//
+// Era o inverso exacto do propósito da migração. E o smoke não o via porque corre sobre WAL.
+func TestAOS424BackendQueRecusaONomeLegadoNaoTemNadaParaMigrar(t *testing.T) {
+	falso := &storeQueRecusaONomeLegado{}
+	copiados, err := MigrarAprovacoes(context.Background(), falso)
+	if err != nil {
+		t.Fatalf("um backend que recusa o NOME legado nao pode impedir a migracao (%v):\n"+
+			"sobre JetStream o Append passa pelo MESMO subjectDe, logo um stream com ponto nunca "+
+			"pode ter recebido uma escrita la \u2014 nao ha nada para migrar, e abortar o arranque "+
+			"impede o four-eyes de correr no unico substrato que arbitra entre processos.", err)
+	}
+	if copiados != 0 {
+		t.Fatalf("nao havia nada para copiar, copiou %d", copiados)
+	}
+	// CONTROLO: um `ErrConfig` na ESCRITA continua a abortar — esse e um nome EM USO que o
+	// backend recusa, que e um defeito e nao um facto.
+	if !falso.leuOLegado {
+		t.Error("o teste nao exercitou a leitura do nome legado: nao esta a medir nada")
+	}
+}
+
+// storeQueRecusaONomeLegado imita a semantica do `jetstream.Store`: recusa LEXICALMENTE
+// qualquer stream_id com um ponto, no Read e no Append.
+type storeQueRecusaONomeLegado struct{ leuOLegado bool }
+
+func (s *storeQueRecusaONomeLegado) Read(_ context.Context, streamID string, _ uint64) ([]eventstore.Event, error) {
+	if strings.Contains(streamID, ".") {
+		s.leuOLegado = true
+		return nil, fmt.Errorf("%w: stream_id %q contem um caracter nao representavel", eventstore.ErrConfig, streamID)
+	}
+	return nil, eventstore.ErrStreamNotFound
+}
+
+func (s *storeQueRecusaONomeLegado) Append(_ context.Context, streamID string, _ eventstore.EventInput, _ ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	if strings.Contains(streamID, ".") {
+		return eventstore.AppendResult{}, fmt.Errorf("%w: stream_id %q", eventstore.ErrConfig, streamID)
+	}
+	return eventstore.AppendResult{Status: eventstore.StatusCommitted}, nil
+}
