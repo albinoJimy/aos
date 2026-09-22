@@ -1852,6 +1852,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	var pendingApprovals *integration.PendingApprovals
 	var resumeRecords *integration.ResumeRecords
 	if foureyes != nil {
+		// AOS-424 — MIGRAÇÃO DO STREAM DE APROVAÇÕES, ANTES DE COMPOR SEJA O QUE FOR.
+		//
+		// O stream mudou de `gov.approvals` para um nome representável num subject NATS. A
+		// ordem aqui é a correcção: a cópia TEM de estar completa antes de a cerimónia poder
+		// consumir um grant, porque um `used-` por copiar é um grant que se consome DUAS vezes
+		// — e o uso-único é a propriedade que o four-eyes existe para dar.
+		//
+		// FAIL-CLOSED, e é deliberado que aborte o arranque: compor a cerimónia sobre uma
+		// migração parcial seria servir governação com uma garantia que já não vale. Em
+		// produção o `AOS_MODE` exige substrato durável para o four-eyes, pelo que não compor
+		// também impediria o arranque — abortar com a razão certa é melhor do que abortar com
+		// outra.
+		//
+		// A migração é IDEMPOTENTE: corre a cada arranque e, depois da primeira passagem,
+		// não copia nada. Ver integration/approval_stream_migracao.go.
+		copiados, merr := integration.MigrarAprovacoes(ctx, es)
+		if merr != nil {
+			return nil, fmt.Errorf("aos: migracao do stream de aprovacoes (AOS-424): %w", merr)
+		}
+		if copiados > 0 {
+			// NÃO é ruído: uma migração SILENCIOSA de material de governação é pior do que
+			// nenhuma. Quem opera tem de poder ver, no log de arranque, quantos factos de
+			// aprovação mudaram de stream e quando.
+			log("migracao de aprovacoes (AOS-424): %d facto(s) copiado(s) do stream legado "+
+				"`gov.approvals` para o actual. A copia preserva (run_id, step_id), pelo que o "+
+				"uso-unico dos grants atravessa a migracao. Idempotente: os arranques seguintes "+
+				"copiam zero.", copiados)
+		}
+
 		grantStore, gerr := integration.NewEventStoreApprovalStore(es)
 		if gerr != nil {
 			return nil, fmt.Errorf("aos: store de grants de aprovacao (AOS-021): %w", gerr)

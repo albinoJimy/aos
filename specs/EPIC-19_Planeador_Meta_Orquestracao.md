@@ -2029,6 +2029,50 @@ o declarou.
 - A rotação do segredo do cliente `aos-reader` no IdP, recomendada por ter existido uma cópia
   legível: é operação, não código.
 
+### A migração do `gov.approvals`, e como se sabe que funcionou
+
+**Desenho: copiar e cortar, numa só vez.** Os factos do nome antigo são copiados para
+`aos-internal/gov/approvals` preservando `(RunID, StepID)`. A idempotency-key é
+`run_id + ":" + step_id`; copiada verbatim, um `used-<id>` que existia no antigo bloqueia, no
+novo, qualquer tentativa de reclamar o mesmo grant. **O uso-único atravessa a migração**, e é
+essa a propriedade inteira.
+
+Pela mesma razão a cópia é **idempotente**: re-corrê-la devolve `StatusDuplicate` em cada facto
+e não duplica nada — o que a torna segura de pôr no arranque e retomável se falhar a meio.
+
+**A ordem relativa preserva-se** (lê-se por `seq` ascendente, apende-se nessa ordem). Os `seq`
+do stream novo são outros; o que os consumidores usam é a ordem — o `lookup` varre do fim para
+o início e o `geracaoDe` conta ocorrências.
+
+**Duas coisas que se verificaram antes de escrever o código, e que podiam ter invalidado tudo:**
+
+- o `resume_records.go` passa o nome do stream para dentro da cifra. **Não é usado como dados
+  autenticados**: o `SealContent` cifra só por titular e o `streamID` serve para ligar
+  `subject→partição` no índice. A decifração sobrevive ao rename;
+- esse índice é reconstruído a cada arranque a partir dos streams que existem
+  (`restoreSubjectIndex`). Depois da migração os titulares ficam ligados aos DOIS nomes —
+  **sobre-cobertura** de legal hold, que é a direcção segura.
+
+**Evidência, e não é só de teste unitário.** No smoke do `run-aos`, sobre um WAL persistido de
+corridas anteriores: **53 factos copiados na primeira passagem, ZERO na segunda**, com o nó
+composto a arrancar e os dez passos verdes nas duas. É a migração e a idempotência observadas
+no produto, não em fixture.
+
+Sete testes em `approval_stream_migracao_test.go`, com o controlo de não-vacuidade que importa:
+um grant **por consumir** continua consumível depois da migração — sem ele, uma migração que
+copiasse um `used-` para todos os grants passaria no teste central e partiria o produto.
+
+**O que esta migração NÃO garante, declarado:** assume **um único escritor** durante a cópia. O
+substrato de ficheiro impõe-o (`LockWAL`) e é o que corre em produção. Sobre `--nats` com várias
+réplicas, um binário ANTIGO ainda a escrever no nome antigo depois da cópia deixa um facto por
+copiar — e se for um `used-`, abre-se a janela de duplo-consumo. **Todas as réplicas têm de
+estar no binário novo** antes de a garantia valer.
+
+O stream antigo **não é apagado** (um log append-only não apaga): fica inerte. A constante
+`approvalStreamLegado` continua na baseline do gate, com natureza diferente — não é um stream
+em uso, é o nome que a migração precisa de LER. Sai quando nenhuma implantação tiver factos por
+migrar.
+
 ### Riscos
 
 | Risco | Mitigação |
@@ -2697,7 +2741,10 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
    precedente (`aos-internal/`) e uma propriedade adicional: mantém o stream **fora do alcance de
    `GET /runs/{id}/...`**, porque o padrão da stdlib casa `{id}` com um só segmento. Para o
    `gov.approvals` — que guarda grants de aprovação — essa propriedade parece desejável.
-3. **A migração do `gov.approvals`, que NÃO admite leitura dupla ingénua.** O uso-único atómico do
+3. **A migração do `gov.approvals` — DECIDIDA e FEITA (copiar e cortar).** O que se segue
+   continua válido como registo do porquê.
+
+   **A migração NÃO admite leitura dupla ingénua.** O uso-único atómico do
    `Consume` assenta na dedup do Event Store, que é **por stream**. Com dois streams vivos, um
    grant consumido no antigo não deduplica no novo, e a garantia «uma aprovação destrava no
    máximo UMA execução» quebra-se durante a janela — é o primitivo de SEGURANÇA do four-eyes.
@@ -2779,9 +2826,15 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
       **porque** existe, a armadilha da assimetria entre backends, a convenção de namespacing
       (`-` em vez de `.`, `/` para níveis, `aos-internal/` para streams do nó), o enforcement e
       o que o gate NÃO cobre.)*
-- [ ] A migração do `gov.approvals` tem plano escrito que **preserva o uso-único** do `Consume`.
-      *(**POR DECIDIR** — é a decisão (3). Sem ela os dois nomes com histórico ficam na
-      baseline.)*
+- [x] A migração do `gov.approvals` tem plano escrito que **preserva o uso-único** do `Consume`.
+      *(**FEITA**, não só planeada. `integration/approval_stream_migracao.go`: copia os factos do
+      nome antigo para `aos-internal/gov/approvals` **preservando `(RunID, StepID)`** — e é daí
+      que vem a correcção inteira, porque a idempotency-key é `run_id + ":" + step_id`: um
+      `used-<id>` copiado verbatim passa a bloquear, no stream NOVO, a reclamação de um grant
+      que já tinha sido reclamado no antigo. Corre no arranque, ANTES de a cerimónia ser
+      composta, e é fail-closed: um `used-` por copiar é um grant consumível duas vezes.
+      **Não se fez leitura dupla**, pela razão que este ticket já registava: a dedup é por
+      stream.)*
 - [ ] O comportamento SILENCIOSO do `Subscribe` é fechado ou declarado.
       *(**NÃO FEITO.** O `Subscribe` não chama o `subjectDe` — usa `FilterSubject: prefixo + ".>"`
       e filtra em processo —, pelo que um filtro por um nome impossível **não dá erro: nunca casa
@@ -2835,13 +2888,15 @@ módulo, afecta o que o planeador pode produzir, e o prompt de decomposição te
 
 ### Estado
 
-**PARCIAL.** Entregue: o gate de alcance de repositório (registado no Makefile, no `ci.yml` e na
-lista REQUIRED-CHECKS), quatro dos seis renames, a validação do `run_id` no `POST /plans`, e a
-regra de nomenclatura em `tecnica/13` §3.1.1.
+**PARCIAL.** Entregue: o gate de alcance de repositório (registado nos quatro sítios da lista
+de checks), **cinco** dos seis renames — os quatro de memória sem compositor e o
+`gov.approvals`, este ÚLTIMO **com migração dos factos** —, a validação do `run_id` no
+`POST /plans`, e a regra de nomenclatura em `tecnica/13` §3.1.1.
 
-**Por fechar, e cada uma com a sua razão escrita:** os dois renames com histórico (decisão do
-dono), o aperto do contrato (depende deles), a guarda no `POST /runs` (depende do `ValidNodeID`),
-o teste sobre JetStream (depende de NATS no CI) e o `Subscribe` silencioso.
+**Por fechar, e cada uma com a sua razão escrita:** o rename do prefixo `memory.` — o único
+que resta com histórico, e que precisa da mesma decisão de migração que o `gov.approvals` já
+teve —, o aperto do contrato do `eventstore` (depende dele), a guarda no `POST /runs` (depende
+do `ValidNodeID`), o teste sobre JetStream (depende de NATS no CI) e o `Subscribe` silencioso.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 

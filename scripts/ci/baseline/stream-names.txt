@@ -5,7 +5,14 @@
 # foi «encontrada e varrida»: as duas estão medidas e reportadas no bloco do AOS-424
 # em `specs/EPIC-19`, com o custo de as corrigir.
 #
-# PORQUE É QUE ESTAS DUAS NÃO FORAM CORRIGIDAS COM AS OUTRAS QUATRO
+# O QUE ESTA BASELINE TEM HOJE (mudou em AOS-424, decisão 3)
+# -----------------------------------------------------------------
+# Uma das duas entradas originais SAIU: o `gov.approvals` foi **migrado**. A que ficou no seu
+# lugar é de outra natureza — a constante do nome ANTIGO, que existe só para a migração o
+# conseguir ler, e em que nada escreve. Resta uma entrada com histórico REAL: o prefixo
+# `memory.`.
+#
+# PORQUE É QUE O `memory.` NÃO FOI CORRIGIDO COM OS OUTROS
 # -----------------------------------------------------------------
 # Renomear um stream COM HISTÓRICO não é trocar uma constante: os factos já escritos
 # ficam no nome antigo e deixam de ser encontrados. As quatro que este ticket
@@ -44,6 +51,7 @@
 # aprovação destrava no máximo UMA execução» — o primitivo de segurança do four-eyes
 # — quebra-se durante a janela.
 
-const|packages/integration/approval_store_durable.go|approvalStream|gov.approvals  # owner=AOS-424; COM HISTÓRICO EM PRODUÇÃO (composto quando o four-eyes está ligado, bootstrap.go:1855/1865). Guarda grants four-eyes, pendentes por decidir, expirações, decisões humanas E os registos de retoma (resume_records.go:132, que carregam o Goal). Renomear sem migração deixa runs suspensos sem a aprovação que os destrava. Sobre JetStream a cerimónia four-eyes está HOJE inoperante por inteiro — e o pior dos modos é o `PendingApprovals.Put` a falhar: o operador nunca vê o que tem para aprovar (fail-closed E invisível).
 
 const|packages/platform/memory/adapters/eventstore_adapter.go|streamPrefix|memory.  # owner=AOS-424; COM HISTÓRICO EM PRODUÇÃO (composto no nó, bootstrap.go:2496). Este prefixo forma as QUATRO classes — `memory.episodic`, `memory.semantic`, `memory.procedural`, `memory.working` — que são a fonte de verdade da MemoryPort (ADR-007): o adaptador reconstrói toda a leitura por replay do log e não mantém estado autoritativo em RAM. Sobre JetStream o `ErrStreamNotFound` é tratado como «vazio» nesta camada, pelo que a memória desaparece SEM erro — degradação silenciosa da qualidade do agente, não crash.
+
+const|packages/integration/approval_stream_migracao.go|approvalStreamLegado|gov.approvals  # owner=AOS-424; **NÃO É UM STREAM EM USO** — é o nome ANTIGO, e a constante existe só para a migração o conseguir LER. Nada escreve nele: o `approvalStream` em vigor é `aos-internal/gov/approvals`, representável num subject NATS. A entrada anterior desta baseline (o `approvalStream` com histórico) SAIU porque foi MIGRADA — ver `packages/integration/approval_stream_migracao.go`, que copia os factos preservando (run_id, step_id) para que o uso-único dos grants atravesse. SAI daqui quando a constante puder desaparecer, isto é, quando nenhuma implantação tiver factos por migrar — o que exige saber que todas arrancaram pelo menos uma vez com o binário da migração.

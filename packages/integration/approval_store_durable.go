@@ -45,7 +45,15 @@ func readApprovalStream(ctx context.Context, store approvalAppendReader) ([]even
 
 // Tipos de evento e partição da governança de aprovações.
 const (
-	approvalStream            = "gov.approvals"
+	// approvalStream — o nome EM VIGOR. Era `gov.approvals`; o ponto tornava a cerimónia
+	// four-eyes inoperante sobre JetStream (ver approval_stream_migracao.go, que também
+	// explica porque é que renomear isto não foi trocar uma constante).
+	//
+	// A BARRA não é estética: um nome sem barra é UM segmento de caminho e casa com o
+	// `{id}` de `GET /runs/{id}/...`. O AOS-426 mediu este stream a ser servido, com os
+	// seus grants, a um leitor autenticado de OUTRA região. O prefixo põe-no fora desse
+	// alcance por CONSTRUÇÃO, e não só pela trava que o AOS-426 compôs.
+	approvalStream            = "aos-internal/gov/approvals"
 	approvalGrantedEventType  = "approval.granted"
 	approvalConsumedEventType = "approval.consumed"
 	// approvalRunID é o "run" sintético que, com o StepID, forma a idempotency_key
