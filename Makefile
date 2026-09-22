@@ -74,6 +74,9 @@ ci-layer-lint: ## Gate: lint de fronteiras de camadas (AOS-178)
 ci-rtm: ## Gate: RTM sincronizada com o corpus (AOS-186)
 	python3 scripts/ci/rtm-regenerate.py --check
 
+ci-stream-names: ## Gate: todo o stream_id é representável num subject NATS (AOS-424)
+	bash scripts/ci/stream-names.sh
+
 ci-ref-lint: ## Gate 2b: referências cruzadas AOS/ADR válidas (AOS-186)
 	python3 scripts/ci/ref-lint.py
 

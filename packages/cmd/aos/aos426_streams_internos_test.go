@@ -18,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aos-ref/platform/memory/compression"
+	"github.com/aos-ref/platform/memory/episodic"
+	"github.com/aos-ref/platform/memory/semantic"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -38,9 +41,11 @@ func pedirTrajectoria(t *testing.T, h http.Handler, id string, headers map[strin
 
 // OS STREAMS INTERNOS DO NÓ NÃO SÃO SERVIDOS PELO READ-PATH DOS RUNS.
 //
-// A lista é a dos nomes REAIS, copiados das constantes de cada componente, e inclui os oito que
-// já estavam seguros — porque um teste que só enumerasse os expostos deixaria de detectar o dia
-// em que um dos seguros deixasse de o ser.
+// A lista traz os nomes REAIS — e, onde a constante é exportada, **a própria constante** em vez
+// de uma cópia do seu valor. A diferença não é estilística: com cópias, o AOS-424 renomeou três
+// streams e esta lista passou a testar nomes MORTOS sem que nada avisasse. Inclui também os oito
+// que já estavam seguros — porque um teste que só enumerasse os expostos deixaria de detectar o
+// dia em que um dos seguros deixasse de o ser.
 func TestAOS426ReadPathNaoServeStreamsInternos(t *testing.T) {
 	internos := []struct{ nome, stream, dono string }{
 		{"aprovacoes four-eyes", "gov.approvals", "integration/approval_store_durable.go"},
@@ -48,9 +53,19 @@ func TestAOS426ReadPathNaoServeStreamsInternos(t *testing.T) {
 		{"memoria semantica", "memory.semantic", "platform/memory/adapters"},
 		{"memoria procedural", "memory.procedural", "platform/memory/adapters"},
 		{"memoria working", "memory.working", "platform/memory/adapters"},
-		{"conhecimento", "memory.semantic.knowledge", "platform/memory/semantic"},
-		{"trajectorias de memoria", "memory.episodic.trajectories", "platform/memory/episodic"},
-		{"migracoes de memoria", "memory.migrations", "platform/memory/migrations"},
+		// AS CONSTANTES VIVAS, e não cópias do valor.
+		//
+		// A primeira versão desta lista trazia os valores literais (`memory.semantic.knowledge`,
+		// …). O AOS-424 renomeou-os, esta lista NÃO foi actualizada, e os três subtestes
+		// passaram a correr contra nomes MORTOS — verdes, a medir streams que nenhum componente
+		// escreve, enquanto as constantes vivas ficaram sem cobertura. Uma revisão adversarial
+		// mediu-o. Referenciar a constante torna a deriva impossível.
+		{"conhecimento", semantic.KnowledgeStreamID, "platform/memory/semantic"},
+		{"trajectorias de memoria", episodic.EpisodicStreamID, "platform/memory/episodic"},
+		{"sumarios de compactacao", compression.CompressionStreamID, "platform/memory/compression"},
+		// `migrationStream` não é exportada, pelo que aqui não há constante para referenciar. O
+		// valor fica em literal e o gate `stream-names` é que vigia o original.
+		{"migracoes de memoria", "aos-internal/memory/migrations", "platform/memory/migrations"},
 		{"identidade", "identity", "platform/identity/events.go"},
 		{"registo de artefactos", "registry", "platform/registry/events.go"},
 		{"posse de run", "lease:run-alheio", "agent-runtime/durable/lease.go"},

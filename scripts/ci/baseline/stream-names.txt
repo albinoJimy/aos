@@ -1,0 +1,49 @@
+# Baseline do gate `stream-names` (AOS-424).
+#
+# Cada linha é um `stream_id` REAL da árvore que NÃO é representável num subject
+# NATS, e que por isso torna o seu componente inutilizável sobre JetStream. Nenhuma
+# foi «encontrada e varrida»: as duas estão medidas e reportadas no bloco do AOS-424
+# em `specs/EPIC-19`, com o custo de as corrigir.
+#
+# PORQUE É QUE ESTAS DUAS NÃO FORAM CORRIGIDAS COM AS OUTRAS QUATRO
+# -----------------------------------------------------------------
+# Renomear um stream COM HISTÓRICO não é trocar uma constante: os factos já escritos
+# ficam no nome antigo e deixam de ser encontrados. As quatro que este ticket
+# corrigiu — os streams de `memory/{semantic,episodic,compression,migrations}` — não
+# são compostas pelo nó (medido: nada em `cmd/aos` nem em `integration` as importa),
+# logo não têm factos em produção e renomear custou uma constante.
+#
+# Estas duas têm. E o caminho de migração óbvio está fechado: o `platform/backup`
+# não serve de veículo, porque o `IngestStream` (`jetstream/backup.go:129`) passa
+# pelo MESMO `subjectDe` — um backup tirado de um nó WAL aborta ao restaurar para
+# JetStream, e `gov.approvals` é alfabeticamente anterior a `memory.*` e a `run-*`,
+# pelo que nem os streams de run chegam a ser tentados.
+#
+# Regras desta baseline (iguais às de baseline/event-catalog.txt):
+#   1. Toda a entrada TEM de trazer `owner=` — o gate falha se faltar.
+#   2. Toda a entrada diz o que o código faz e por que razão a correcção não coube
+#      neste ticket.
+#   3. Uma entrada NÃO é um atalho para calar um achado novo. Um nome de stream novo
+#      NUNCA entra aqui: nasce representável, porque nascer representável não custa
+#      nada. Esta baseline existe só para dívida ANTERIOR ao gate.
+#   4. Um FALSO POSITIVO não se baselina — corrige-se o gate. Uma baseline afirma
+#      «isto é dívida real»; usá-la para silenciar ruído destrói o significado das
+#      outras entradas. (Mediu-se um caso na primeira execução: os atributos OTel
+#      `AtributoStream`/`AttrLogStream`. Foram filtrados no gate, não aqui.)
+#
+# O QUE TEM DE ACONTECER PARA ESTAS DUAS SAÍREM
+# ----------------------------------------------
+# Uma decisão do dono sobre a migração, registada no AOS-424:
+#   - copiar os factos do nome antigo para o novo e cortar de uma vez, preservando
+#     (RunID, StepID) para que a deduplicação continue a valer; ou
+#   - aceitar que os factos antigos ficam órfãos, declarando o que se perde.
+#
+# NÃO se faz leitura dupla ingénua no `gov.approvals`: o uso-único atómico do
+# `Consume` assenta na dedup do Event Store, que é POR STREAM. Com dois streams
+# vivos, um grant consumido no antigo não deduplica no novo, e a garantia «uma
+# aprovação destrava no máximo UMA execução» — o primitivo de segurança do four-eyes
+# — quebra-se durante a janela.
+
+const|packages/integration/approval_store_durable.go|approvalStream|gov.approvals  # owner=AOS-424; COM HISTÓRICO EM PRODUÇÃO (composto quando o four-eyes está ligado, bootstrap.go:1855/1865). Guarda grants four-eyes, pendentes por decidir, expirações, decisões humanas E os registos de retoma (resume_records.go:132, que carregam o Goal). Renomear sem migração deixa runs suspensos sem a aprovação que os destrava. Sobre JetStream a cerimónia four-eyes está HOJE inoperante por inteiro — e o pior dos modos é o `PendingApprovals.Put` a falhar: o operador nunca vê o que tem para aprovar (fail-closed E invisível).
+
+const|packages/platform/memory/adapters/eventstore_adapter.go|streamPrefix|memory.  # owner=AOS-424; COM HISTÓRICO EM PRODUÇÃO (composto no nó, bootstrap.go:2496). Este prefixo forma as QUATRO classes — `memory.episodic`, `memory.semantic`, `memory.procedural`, `memory.working` — que são a fonte de verdade da MemoryPort (ADR-007): o adaptador reconstrói toda a leitura por replay do log e não mantém estado autoritativo em RAM. Sobre JetStream o `ErrStreamNotFound` é tratado como «vazio» nesta camada, pelo que a memória desaparece SEM erro — degradação silenciosa da qualidade do agente, não crash.

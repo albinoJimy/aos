@@ -68,7 +68,25 @@ import (
 // CompressionStreamID é o stream do Event Store onde os sumários de compactação são
 // escritos (append-only). Um stream dedicado dá um log ordenado e auditável das
 // compactações, distinto dos streams por-run das trajectórias vivas.
-const CompressionStreamID = "memory.compression.summaries"
+//
+// O NOME MUDOU (AOS-424): era `memory.compression.summaries`, com pontos. Um `stream_id` do AOS é livre,
+// mas um subject NATS não é — o ponto separa tokens, e o `jetstream.Store.subjectDe`
+// RECUSA qualquer `stream_id` que o contenha, em vez de escapar em silêncio para um
+// subject vizinho onde outro stream leria os nossos eventos. Sobre JetStream este
+// stream era inutilizável, e o JetStream é o único substrato que arbitra entre
+// processos (DEF-282).
+//
+// A BARRA é deliberada e vale mais do que evitar o ponto: um nome sem barra é UM
+// segmento de caminho e casa com o `{id}` de `GET /runs/{id}/...`. Foi assim que o
+// AOS-426 mediu treze streams internos a serem servidos pelo read-path dos runs. O
+// prefixo `aos-internal/` mantém este fora desse alcance por CONSTRUÇÃO, e não só
+// pela trava que o AOS-426 compôs — duas defesas independentes para a mesma coisa.
+//
+// RENOMEAR AQUI NÃO PERDE HISTÓRICO: este subpacote não é composto pelo nó (nada em
+// `cmd/aos` nem em `integration` o importa — medido), logo não há factos escritos no
+// nome antigo em produção. É por isso que este é barato HOJE e caro no dia em que
+// for ligado.
+const CompressionStreamID = "aos-internal/memory/compression-summaries"
 
 // EventTypeContextCompacted é o tipo canónico do evento de compactação no Event Store.
 const EventTypeContextCompacted = "memory.context.compacted"

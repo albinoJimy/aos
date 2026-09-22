@@ -116,6 +116,74 @@ func runIDReservado(runID string) bool {
 	return strings.HasPrefix(strings.TrimSpace(runID), streamsReservados)
 }
 
+// caracteresNaoRepresentaveis são os que um subject NATS não representa.
+//
+// O nome NÃO contém «stream» de propósito: o gate `stream-names` varre a árvore à procura de
+// constantes cujo identificador o contenha, e esta guarda um CONJUNTO DE CARACTERES, não um
+// nome de stream — acusava-se a si mesma. Chamar-lhe outra coisa é mais honesto do que
+// ensinar o gate a ignorá-la.
+//
+// A regra é a do `jetstream.Store.subjectDe`, e está aqui DUPLICADA de propósito — o nó não
+// pode importar o backend JetStream para lhe perguntar, e um `import` só para isto arrastaria
+// o cliente NATS para o caminho de ingresso. O que impede a duplicação de derivar é o gate
+// `scripts/ci/stream-names`, que lê a regra da FONTE e verifica a árvore inteira, mais o
+// [TestAOS417NomeDoStreamERepresentavelNoNATS], que faz o mesmo para as constantes deste
+// ficheiro. Duplicar com detector é diferente de duplicar e esperar.
+const caracteresNaoRepresentaveis = ". *>\t\r\n"
+
+// runIDInvalido indica se um `run_id` não pode ser o nome de um stream.
+//
+// # PORQUE É QUE ISTO É VALIDADO NA FRONTEIRA, E NÃO ONDE É USADO
+//
+// O `run_id` de um run **é** o seu stream — o comentário do `handleSubmit` di-lo por escrito.
+// Até aqui o ingresso só recusava o vazio e o prefixo reservado, pelo que um cliente escolhia
+// livremente o nome de um stream do Event Store. Consequências medidas:
+//
+//   - um `run_id` com ponto (`cliente.pedido-1`) é aceite sobre WAL e recusado com `E_CONFIG`
+//     sobre JetStream — funciona em desenvolvimento e parte na única topologia que arbitra
+//     entre processos (DEF-282);
+//   - propaga-se a tudo o que deriva do run: `lease:<run>`, step-ledger, checkpoint, steer,
+//     eventsink do RM, sandbox, broker.
+//
+// Validar no `Append` — onde o valor é USADO — converteria isto de defeito silencioso em
+// avaria visível, mas no sítio errado: o run já teria sido aceite, e o erro apareceria a meio
+// da execução. É a mesma disciplina que o nó já aplica às env vars, onde uma `AOS_*_INTERVAL`
+// mal formada **aborta o arranque** em vez de degradar em silêncio.
+//
+// # SÓ O `POST /plans` A CHAMA, E A ASSIMETRIA É MEDIDA — NÃO É ESQUECIMENTO
+//
+// O AOS-424 pedia esta validação nas DUAS rotas de submissão. Ficou só numa, porque ligá-la ao
+// `POST /runs` **partiria o caminho do plano em produção, hoje**:
+//
+//   - `plan.ValidNodeID` — a grammar ÚNICA do `node_id`, declarada em `plandocument.go` — admite
+//     EXPLICITAMENTE `.` e `:` no charset fechado que aceita;
+//   - `childRunID(runID, nodeID)` compõe `<run>~<node_id>` e esse id vai, tal e qual, no
+//     `POST /runs` que o executor de nós faz ao nó (`node_executor.go:224` →
+//     `node_client.go:331`);
+//   - logo um nó de plano chamado `analise.dados` produz o run filho `run-x~analise.dados`, que
+//     esta guarda recusaria com `400` — e o nó do plano nunca executaria.
+//
+// São DOIS INVARIANTES DECLARADOS EM CONFLITO, e a escolha não é de quem escreve esta função:
+// o `ValidNodeID` permite o ponto por decisão registada (AOS-231), e o `subjectDe` recusa-o por
+// decisão registada. Resolver o conflito em silêncio aqui converteria «funciona sobre WAL,
+// parte sobre JetStream» em «parte em todo o lado» — uma REGRESSÃO para quem corre sobre WAL,
+// que é o que corre em produção.
+//
+// O `POST /plans` não tem esse problema: é superfície nova, o `run_id` é escolhido por um
+// utilizador final e não há composição de ids a jusante desta rota. Apertar o que se pode
+// apertar sem partir nada é melhor do que não apertar nada.
+//
+// **O que falta para fechar o eixo**, e está registado no AOS-424: tornar o `node_id`
+// stream-safe por construção — apertar o `ValidNodeID` para excluir `.` e `:` —, e só então
+// ligar esta guarda ao `POST /runs`. É a tese do AOS-425 aplicada: validar onde o valor ENTRA
+// (o documento de plano), não onde é usado.
+//
+// Runs JÁ CRIADOS com nomes assim não são afectados por esta guarda (ela só actua na
+// submissão); o que os afecta é a trava de leitura do AOS-426, e isso está declarado lá.
+func runIDInvalido(runID string) bool {
+	return strings.ContainsAny(runID, caracteresNaoRepresentaveis)
+}
+
 // planRequest é o corpo aceite. Deliberadamente MÍNIMO: o que o orquestrador precisa para
 // decompor é o objectivo; tudo o resto — tools, snapshot, aprovadores — é decisão do plano, não
 // do pedido.
@@ -206,6 +274,13 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// nomear o stream da própria fila.
 	if runIDReservado(req.RunID) {
 		writeError(w, http.StatusBadRequest, "run_id reservado")
+		return
+	}
+	// AOS-424: o `run_id` É o nome de um stream, e nem todo o texto o pode ser.
+	// Ver [runIDInvalido] em plan_ingress.go, que diz porque é que isto se valida na
+	// FRONTEIRA e não no ponto de uso.
+	if runIDInvalido(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id invalido")
 		return
 	}
 	if req.Objective == "" {

@@ -443,10 +443,21 @@ LAYER_TMP=""
 # ============================================================================
 # M) Coerência das listas de required checks (AOS-190)
 #
-# A lista de checks obrigatórios existe em três sítios e TEM de ser a mesma:
+# A lista de checks obrigatórios existe em QUATRO sítios e TEM de ser a mesma:
 #   1. `needs:` do job agregador `gates` em .github/workflows/ci.yml (a real);
 #   2. o comentário `REQUIRED-CHECKS:` do cabeçalho do mesmo ficheiro;
-#   3. a linha `REQUIRED-CHECKS:` de CONTRIBUTING.md.
+#   3. a linha `REQUIRED-CHECKS:` de CONTRIBUTING.md;
+#   4. o `ALL_GATES` de scripts/ci/run.sh — o que o `make ci` corre LOCALMENTE.
+#
+# O (4) entrou em AOS-424, e entrou porque faltava: o gate `stream-names` foi registado nos
+# três primeiros e não no quarto, pelo que `make ci` ficava verde sem o correr. Uma revisão
+# adversarial mediu a consequência — revertendo um dos renames do AOS-424, TODAS as suites
+# locais ficavam verdes, porque o único sensor daqueles renames é este gate. Um gate que só
+# corre no CI é um gate que não protege quem desenvolve.
+#
+# `selftest` está no `needs` e NÃO no `ALL_GATES`, de propósito: corre por `ci-all`, que é
+# `ci ci-selftest`. É a única excepção, e está declarada aqui em vez de descoberta.
+#
 # Se divergirem, um mantenedor configura menos checks do que os que existem e
 # gates que falham deixam de bloquear. Comparação por sequência exacta (a ordem
 # também importa: é ela que torna a revisão humana viável).
@@ -470,6 +481,13 @@ extract_required() {
 }
 yml_list="$(extract_required "$CI_YML")"
 doc_list="$(extract_required "$CONTRIB")"
+# 4. ALL_GATES de run.sh — o que o `make ci` corre LOCALMENTE. `selftest` é a única
+# excepção legitima (corre por `ci-all`), e é removido da comparação em vez de ser ignorado
+# em silêncio.
+RUNSH="$REPO_ROOT/scripts/ci/run.sh"
+runsh_list="$(grep -m1 -E '^ALL_GATES=\(' "$RUNSH" \
+  | sed -E 's/^ALL_GATES=\(//; s/\).*$//' | tr -s ' ' | sed -E 's/^ +| +$//g')"
+needs_sem_selftest="$(printf '%s' "$needs_list" | tr ' ' '\n' | grep -v '^selftest$' | tr '\n' ' ' | sed -E 's/ +$//')"
 
 if [ -z "$needs_list" ]; then
   bad "M: não encontrei o \`needs:\` do agregador \`gates\` em .github/workflows/ci.yml"
@@ -485,9 +503,17 @@ elif [ "$needs_list" != "$doc_list" ]; then
   bad "M: REQUIRED-CHECKS de CONTRIBUTING.md diverge do needs: do agregador
        needs:        $needs_list
        CONTRIBUTING: $doc_list"
+elif [ -z "$runsh_list" ]; then
+  bad "M: nao encontrei o \`ALL_GATES=(\` em scripts/ci/run.sh"
+elif [ "$needs_sem_selftest" != "$runsh_list" ]; then
+  bad "M: ALL_GATES de scripts/ci/run.sh diverge do needs: do agregador
+       needs (sem selftest): $needs_sem_selftest
+       run.sh ALL_GATES:     $runsh_list
+       Um gate que esta no CI e NAO no ALL_GATES nao corre no \`make ci\`: quem
+       desenvolve fica sem o sensor, e a divergencia so aparece no PR."
 else
   n_checks="$(printf '%s' "$needs_list" | wc -w | tr -d ' ')"
-  pass "M: as 3 listas de required checks coincidem ($n_checks checks, mesma ordem)"
+  pass "M: as 4 listas de required checks coincidem ($n_checks checks, mesma ordem)"
 fi
 
 # O agregador só é substituto legítimo da lista completa se for fail-closed:

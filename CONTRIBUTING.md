@@ -159,7 +159,7 @@ em vez de *knob* numérico. `gate_path <VAR> <default>` (`lib.sh`) é o simétri
 sempre `AOS_GATE_ROOT <VAR>=<valor> origem=default|env(override)`.
 
 > **PENDÊNCIA (fora do âmbito do AOS-199).** O mecanismo existe; os consumidores
-> (`layer-lint.sh`, `ref-lint.py`, `deferrals.py`, `event-catalog.py`, `integration.py`)
+> (`layer-lint.sh`, `ref-lint.py`, `deferrals.py`, `event-catalog.py`, `stream-names.py`, `integration.py`)
 > pertencem a outras pistas de escrita e **ainda não o adoptaram**. Enquanto não adoptarem,
 > `LAYER_LINT_ROOT`, `AOS_REFLINT_ROOT`, `AOS_DEFERRALS_ROOT`, `AOS_EVENT_BASELINE`,
 > `AOS_CONTRACT_BASELINE` e `AOS_CONTRACTS_DOC` continuam desviáveis. Reprodução:
@@ -232,7 +232,7 @@ Configurar em *branch protection* de `main` os checks (lista completa, na mesma 
 do `needs:` do agregador — o self-test §M compara-a com `.github/workflows/ci.yml` e
 fica vermelho se divergir):
 
-REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · policy-taint · selftest
+REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · stream-names · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · policy-taint · selftest
 
 …ou, em alternativa, o agregador único **`gates`**. O **scan de segredos** (regra
 transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.

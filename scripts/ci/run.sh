@@ -36,7 +36,7 @@ source "$CI_DIR/lib.sh"
 # dormência de virar apodrecimento — um gate que nunca corre não impede nada, que foi o
 # achado da revisão adversarial de AOS-358. O segundo precisa de Linux com docker
 # privilegiado, salta ruidosamente onde não o há, e invoca-se por `make ci-isolation-live`.
-ALL_GATES=(secrets build lint ref-lint deferrals estado-citado rtm layer-lint test integration event-catalog replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx dormencia sast sca policy-test policy-taint)
+ALL_GATES=(secrets build lint ref-lint deferrals estado-citado rtm layer-lint test integration event-catalog stream-names replay memory supplychain routing apex security evalgate scale dr-e2e ux-dx dormencia sast sca policy-test policy-taint)
 GATES=("$@")
 [ "${#GATES[@]}" -eq 0 ] && GATES=("${ALL_GATES[@]}")
 
