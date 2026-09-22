@@ -2717,48 +2717,96 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
 ### Critérios de Aceitação
 
 - [ ] Decisão (1) tomada e registada — em ADR se for a causa-raiz.
-- [ ] Nenhum `stream_id` do repositório contém carácter não representável, **e há gate que o
-      impõe com alcance de REPOSITÓRIO**. O guard actual (`aos417_nome_do_stream_test.go`) cobre
-      três constantes de um ficheiro. O molde certo é `scripts/ci/event-catalog.py`, que já extrai
-      constantes de toda a árvore Go sem compilar — vê os 49 módulos, que um teste Go num módulo
-      não vê. Preservar a técnica do guard existente: **ler a regra da fonte**, com controlo de
-      não-vacuidade.
-- [ ] O `run_id` é validado na fronteira das duas rotas de submissão, com teste.
-- [ ] Existe **pelo menos um teste da cerimónia four-eyes sobre JetStream** — hoje não há nenhum,
-      e foi essa ausência que deixou o defeito invisível. Se exigir `AOS_NATS_URL` no CI, isso faz
-      parte do ticket: um teste que salta sempre não é um teste.
-- [ ] `tecnica/13` ganha a **regra escrita de nomenclatura de `stream_id`**. Hoje o documento
-      define `stream_id` como «fronteira de ordenação e particionamento» e **não impõe nenhuma
-      restrição de caracteres** — é a lacuna documental na origem de tudo isto.
-- [ ] A migração do `gov.approvals` tem plano escrito que **preserva o uso-único** do `Consume`,
-      ou declara explicitamente o que se perde.
-- [ ] O comportamento SILENCIOSO do `Subscribe` é fechado ou declarado — um filtro por um nome
-      impossível não pode parecer «sem eventos».
+      *(**POR DECIDIR.** Apertar o contrato do `eventstore` torna ilegítimos os dois nomes que
+      ainda têm histórico em produção, pelo que a ordem obrigatória é renomear PRIMEIRO. Esses
+      dois renames precisam da decisão (3), e por isso este critério fica aberto.)*
+- [x] Nenhum `stream_id` do repositório contém carácter não representável, **e há gate que o
+      impõe com alcance de REPOSITÓRIO**.
+      *(`scripts/ci/stream-names.{py,sh}`, no molde do `event-catalog`: lê os ficheiros e por
+      isso vê os 49 módulos, que um teste Go num módulo não vê. **Lê a regra da FONTE** —
+      extrai o `ContainsAny` do `subjectDe` — em vez de a duplicar, com controlo de
+      não-vacuidade contra um valor conhecidamente mau, e fail-closed a zero constantes.
+      Registado no `Makefile` (`ci-stream-names`), no `ci.yml` e na lista REQUIRED-CHECKS.
+      Verificados 22 nomes. **Dois ficam em BASELINE**, com dono e com o custo escrito — ver
+      abaixo; a baseline é dívida declarada, não verde.)*
+- [x] Quatro dos seis nomes não representáveis corrigidos.
+      *(`memory/{semantic,episodic,compression,migrations}` → `aos-internal/memory/...`. Custou
+      uma constante cada porque **nenhum é composto pelo nó** — medido: nada em `cmd/aos` nem
+      em `integration` os importa, logo não há factos no nome antigo. Usou-se **barra**, e não
+      hífen: um nome sem barra é um segmento de caminho e o AOS-426 mediu treze streams internos
+      a serem servidos por `GET /runs/{id}/...` — o prefixo mantém estes fora desse alcance por
+      CONSTRUÇÃO, e não só pela trava. Suites dos cinco pacotes de memória verdes.)*
+- [~] O `run_id` é validado na fronteira das duas rotas de submissão, com teste.
+      *(**METADE, e a outra metade está BLOQUEADA por um conflito de invariantes que este ticket
+      descobriu.** Ver a secção abaixo. Feito no `POST /plans`; **NÃO** feito no `POST /runs`,
+      onde partiria o caminho do plano em produção. A assimetria está fixada por teste
+      (`TestAOS424PostRunsAindaNaoValidaEPorque`), que fica VERMELHO no dia em que a causa
+      desaparecer — para ser uma decisão e não um esquecimento.)*
+- [ ] Existe **pelo menos um teste da cerimónia four-eyes sobre JetStream**.
+      *(**NÃO FEITO, e re-classificado.** Este critério pedia um teste que exige `AOS_NATS_URL`
+      no CI — que nenhum ficheiro de CI define hoje, e o gate `dormencia` inventaria essa
+      ausência como *warn*. Levantar NATS no CI é trabalho de infraestrutura com âmbito próprio,
+      não um efeito lateral deste ticket. **Fica por marcar**; ver resíduos.)*
+- [x] `tecnica/13` ganha a **regra escrita de nomenclatura de `stream_id`**.
+      *(Nova §3.1.1. O documento definia `stream_id` como «fronteira de ordenação» e não impunha
+      restrição nenhuma — era a lacuna documental na origem da classe. A secção diz a regra,
+      **porque** existe, a armadilha da assimetria entre backends, a convenção de namespacing
+      (`-` em vez de `.`, `/` para níveis, `aos-internal/` para streams do nó), o enforcement e
+      o que o gate NÃO cobre.)*
+- [ ] A migração do `gov.approvals` tem plano escrito que **preserva o uso-único** do `Consume`.
+      *(**POR DECIDIR** — é a decisão (3). Sem ela os dois nomes com histórico ficam na
+      baseline.)*
+- [ ] O comportamento SILENCIOSO do `Subscribe` é fechado ou declarado.
+      *(**NÃO FEITO.** O `Subscribe` não chama o `subjectDe` — usa `FilterSubject: prefixo + ".>"`
+      e filtra em processo —, pelo que um filtro por um nome impossível **não dá erro: nunca casa
+      nada**. Fechá-lo é mexer no backend replicado e não cabe num ticket de nomes.)*
 
-### Fora de âmbito, declarado
+### O CONFLITO DE INVARIANTES que este ticket descobriu, e que bloqueia metade do critério do `run_id`
 
-- **A composição em runtime além do `run_id`** (chaves de admissão com nome de modelo —
-  `gpt-4.1`, `claude-3.5-…` têm pontos por convenção da indústria; `plan_id`; o `scope` dos
-  challenges). É risco REAL e não medido: nos testes só aparecem valores sem ponto. Se a decisão
-  (1) for a causa-raiz, fecha-se por arrasto; se não for, **precisa de ticket próprio**.
-- **Levantar JetStream em produção.** É topologia, e pertence ao AOS-423.
+Ligar a validação do `run_id` ao `POST /runs` **partiria o caminho do plano em produção, hoje.**
+Medido, e a suite do pacote apanhou-o (o `TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista` usa o
+`run_id` `run-413.n1`):
 
-### Riscos
+| Fonte | O que declara | Onde |
+|---|---|---|
+| `plan.ValidNodeID` | O charset FECHADO de um `node_id` **admite explicitamente `.` e `:`**, e é a «grammar ÚNICA do node_id no módulo», imposta pelo validador semântico do AOS-231 | `orchestrator/plan/plandocument.go:88-115` |
+| `jetstream.Store.subjectDe` | Um `stream_id` com `.` **não é representável** e é RECUSADO | `substrate/eventstore/jetstream/store.go:1075` |
+| `childRunID` | Compõe `<run>~<node_id>` e submete-o ao nó por `POST /runs` | `cmd/aos-orq/node_executor.go:113,224` → `node_client.go:331` |
 
-| Risco | Mitigação |
-|---|---|
-| Renomear `gov.approvals` num nó com histórico perde grants, pendentes e registos de retoma — e o backup não os transporta | Decisão (3): copiar e cortar de uma vez, ou declarar a perda. Nunca leitura dupla ingénua |
-| Corrigir só o `gov.approvals` e deixar os oito não fecha a classe | O gate de alcance de repositório é critério de aceitação, não extra |
-| A validação na fronteira quebra um cliente que use pontos no `run_id` | Decisão (4). Nenhum cliente conhecido o faz, mas é contrato público |
-| Validar no contrato do `eventstore` torna ilegítimos nove nomes existentes, incluindo dois com histórico em produção | A ordem importa: renomear PRIMEIRO, apertar o contrato DEPOIS |
+Um nó de plano chamado `analise.dados` produz o run filho `run-x~analise.dados`. Sobre JetStream
+esse run **já está partido hoje**; sobre WAL funciona. Validar no `POST /runs` converteria
+«funciona sobre WAL, parte sobre JetStream» em «parte em todo o lado» — uma **regressão** para
+quem corre sobre WAL, que é o que corre em produção.
+
+Não se resolveu em silêncio, e não é escolha de quem escreve o handler: os dois invariantes estão
+REGISTADOS, um pelo AOS-231 e outro pelo ADR-007.
+
+**Recomendação registada:** tornar o `node_id` **stream-safe por construção** — apertar o
+`ValidNodeID` para excluir `.` e `:` — e só então ligar a guarda ao `POST /runs`. É a tese do
+AOS-425 aplicada: validar onde o valor ENTRA (o documento de plano, na validação semântica), e
+não onde é usado. Um plano com um `node_id` mal formado passa a ser recusado na validação, com
+razão legível, em vez de falhar a meio da execução. **Custo:** é uma mudança semântica noutro
+módulo, afecta o que o planeador pode produzir, e o prompt de decomposição tem de o saber.
+
+### Resíduos deste ticket, declarados
+
+1. **Os dois nomes com histórico** (`gov.approvals` e o prefixo `memory.`) estão na baseline do
+   gate, com o custo escrito. Saem quando a decisão (3) existir.
+2. **Apertar o contrato do `eventstore`** (a causa-raiz) depende de (1) — a ordem é renomear
+   primeiro.
+3. **Ligar a guarda do `run_id` ao `POST /runs`** depende de apertar o `ValidNodeID`.
+4. **Um teste da cerimónia four-eyes sobre JetStream** depende de haver NATS no CI.
+5. **O `Subscribe` que falha em silêncio** — fechá-lo é mexer no backend replicado.
 
 ### Estado
 
-**ABERTO.** Nada implementado. Defeito **latente** — não há NATS em produção hoje (medido: sem
-serviço no compose, `AOS_EVENTSTORE_NATS` com default vazio) — e por isso corrigível sem pressa,
-mas **antes** de qualquer migração de topologia.
+**PARCIAL.** Entregue: o gate de alcance de repositório (registado no Makefile, no `ci.yml` e na
+lista REQUIRED-CHECKS), quatro dos seis renames, a validação do `run_id` no `POST /plans`, e a
+regra de nomenclatura em `tecnica/13` §3.1.1.
 
----
+**Por fechar, e cada uma com a sua razão escrita:** os dois renames com histórico (decisão do
+dono), o aperto do contrato (depende deles), a guarda no `POST /runs` (depende do `ValidNodeID`),
+o teste sobre JetStream (depende de NATS no CI) e o `Subscribe` silencioso.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 

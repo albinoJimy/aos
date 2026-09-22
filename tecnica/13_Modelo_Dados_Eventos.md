@@ -101,7 +101,7 @@ Campos e o seu papel:
 | Campo | Tipo | Papel |
 |---|---|---|
 | `event_id` | string (ULID, 26 chars) | Identificador globalmente único. **Não é fonte de ordem.** |
-| `stream_id` | string | Fronteira de ordenação e de particionamento (na prática, o `run_id`). A **ordem total é por `(stream_id, seq)`** — não por `seq` global. |
+| `stream_id` | string | Fronteira de ordenação e de particionamento (na prática, o `run_id`). A **ordem total é por `(stream_id, seq)`** — não por `seq` global. **O valor NÃO é texto livre**: ver §3.1.1. |
 | `seq` | integer ≥ 1 | Contador monotónico **gapless por stream**, atribuído pelo store (nunca pelo chamador). Base da ordem total (ADR-001). |
 | `type` | string | Nome canónico do facto. Catálogo em §3.3. |
 | `ts` | string RFC3339 | Relógio de parede, **observacional**, nunca fonte de ordenação. |
@@ -114,6 +114,41 @@ Campos e o seu papel:
 | `idempotency_key` | string | `run_id + ":" + step_id`, atribuída pelo store. Garante *zero efeitos duplicados no retry* (ADR-001). |
 
 Um segundo append com a mesma `idempotency_key` devolve `status: "duplicate"` e o `seq` committed original, sem duplicar o efeito (contrato C2, `tecnica/12` §5). Os domínios de deduplicação por passo são namespaceados no `step_id` — turno (`run_id:step_id`), ledger (`run_id:ledger-…`), checkpoint (`run_id:ckpt-…`) e captura de replay (`run_id:cap-…`) — precisamente para não colidirem entre si na dedup global por chave.
+
+### 3.1.1 Nomenclatura de `stream_id` — o que o valor PODE ser
+
+Este documento definia `stream_id` como «fronteira de ordenação e de particionamento» e **não
+impunha restrição nenhuma de caracteres**. Essa lacuna está na origem de uma classe inteira de
+defeitos, medida em 2026-09-21 (AOS-424): **nove** `stream_id` da árvore não eram representáveis
+no substrato replicado, dois grupos deles compostos em produção.
+
+**REGRA.** Um `stream_id` NÃO pode conter `.`, `*`, `>`, espaço, tabulação, CR ou LF.
+
+**Porquê.** O backend JetStream (ADR-007) mapeia cada stream num *subject* NATS, onde o ponto
+separa tokens e `*`/`>` são curingas. Um `stream_id` com qualquer um deles **não é
+representável**, e a implementação **recusa** (`E_CONFIG`) em vez de escapar em silêncio para um
+subject vizinho onde outro stream leria os nossos eventos — que é a escolha certa. A regra
+normativa é a do código (`jetstream.Store.subjectDe`); esta secção **descreve-a**, e quem a
+quiser verificar corre o gate, que a lê da fonte.
+
+**A armadilha, e é ela que justifica escrever isto aqui.** O store de FICHEIRO não valida
+`stream_id` nenhum. Um nome inválido funciona em desenvolvimento, em CI e em
+produção-sobre-ficheiro, e só falha na topologia replicada — que é a única que arbitra entre
+processos (DEF-282). **A assimetria entre os dois backends é a causa-raiz**, não o rigor do NATS.
+
+**Convenção de namespacing.** Use `-` onde a tentação seria um `.`, e `/` para separar
+níveis. A barra não é só representável: um nome **sem** barra é UM segmento de caminho e casa
+com o `{id}` de `GET /runs/{id}/...`. Foi assim que o AOS-426 mediu treze streams internos a
+serem servidos pelo read-path dos runs. Streams internos do nó vivem sob `aos-internal/`.
+
+**Enforcement.** `scripts/ci/stream-names.sh` verifica a árvore inteira e lê a regra da FONTE em
+vez de a duplicar. **NÃO cobre composição em runtime** — um `stream_id` formado a partir do
+`run_id` de um cliente, do nome de um modelo ou de um token externo é invisível a um gate
+estático; essa metade é o AOS-425, e a correcção lá é validar onde o valor ENTRA.
+
+**Dívida reconhecida.** Dois nomes continuam não representáveis por terem histórico em
+produção — `gov.approvals` e o prefixo `memory.` das quatro classes de memória. Estão na
+baseline do gate, com dono e com o custo de os corrigir escrito.
 
 ### 3.2 Onde vivem os metadados que **não** estão no envelope `[WIRE]`
 
