@@ -342,6 +342,39 @@ def main() -> int:
                     achados.append((f"uso|{rel}|{valor}", rel, n,
                                     f"stream literal {valor!r} no ponto de uso contem {mau!r}"))
 
+    # S6 — A COSTURA DE SEMENTE NAO TEM CHAMADORES DE PRODUCAO.
+    #
+    # `eventstore.SemearStreamLegado` escreve num `stream_id` que a regra RECUSA, para que um
+    # teste possa construir o mundo «antes» de uma migracao. Em runtime ela recusa fora de um
+    # binario de teste (`testing.Testing()`), que e a barreira que conta; esta e barata e
+    # apanha a intencao antes do CI, onde o erro ainda custa um minuto.
+    #
+    # Sem isto, a forma obvia de «resolver» uma recusa de nome seria chamar a costura — e a
+    # regra voltaria a ter um buraco, desta vez com a forma de uma API suportada.
+    fora_de_teste = []
+    for caminho in ficheiros_go():
+        if caminho.name.endswith("_test.go"):
+            continue
+        rel = caminho.relative_to(RAIZ).as_posix()
+        if rel.startswith("packages/substrate/eventstore/"):
+            continue  # o pacote que a define
+        try:
+            texto = sem_comentarios(caminho.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        for n, linha in enumerate(texto.splitlines(), 1):
+            if "SemearStreamLegado" in linha:
+                fora_de_teste.append((rel, n))
+
+    if fora_de_teste:
+        print("\nFALHA — `SemearStreamLegado` chamada de codigo que NAO e de teste:", file=sys.stderr)
+        for rel, n in fora_de_teste:
+            print(f"  x {rel}:{n}", file=sys.stderr)
+        print("\n  Essa costura existe para um teste poder semear um nome LEGADO e provar que a", file=sys.stderr)
+        print("  migracao o transporta. Em producao um `stream_id` tem de ser representavel nos", file=sys.stderr)
+        print("  dois backends: renomeie o stream e migre os factos com `eventstore.CopiarStream`.", file=sys.stderr)
+        return 1
+
     # S1 — fail-closed: zero constantes ⇒ o parser partiu.
     if declaradas == 0:
         print("ERRO: zero constantes de nome de stream encontradas na arvore.", file=sys.stderr)
@@ -374,7 +407,11 @@ def main() -> int:
     print(f"\nNomes de stream OK: {declaradas} constante(s) e {usados} literal(is) no ponto de uso "
           f"verificados contra a regra lida de {FONTE_DA_REGRA.relative_to(RAIZ).as_posix()} "
           f"({len(reconhecidos)} em divida reconhecida).")
-    print("  Ambito: NAO cobre composicao em runtime (run_id, nome de modelo, scope) — ver AOS-425.")
+    print("  Ambito: NAO cobre composicao em runtime — ver AOS-425. Isto NAO e teorico: o aperto")
+    print("  do Append (AOS-424) revelou tres nomes COMPOSTOS irrepresentaveis e vivos no caminho")
+    print("  de autorizacao (`ratify-nonce:` e `4eyes-challenge:`, alimentados por constantes de")
+    print("  dominio com ponto, por um request_id de cliente, e por um separador \\x00), que este")
+    print("  gate nunca poderia ter visto porque nenhum deles e um literal.")
     return 0
 
 

@@ -33,7 +33,12 @@ func migStore(t *testing.T) *eventstore.Store {
 // escreverNoLegado apende ao stream ANTIGO de uma classe, como o binário anterior o faria.
 func escreverNoLegado(t *testing.T, st *eventstore.Store, class domain.MemoryClass, tipo, stepID, runID string, payload []byte) {
 	t.Helper()
-	if _, err := st.Append(context.Background(), streamLegadoDe(class), eventstore.EventInput{
+	// PELA COSTURA, e não pelo `Append`: desde o aperto do AOS-424 o prefixo legado `memory.`
+	// é recusado na escrita — que é o que se quer em produção —, mas um teste que prova que a
+	// migração transporta as quatro classes tem primeiro de as PÔR nos nomes antigos. O que se
+	// perderia sem isto é a prova de que os TOMBSTONES continuam a apagar o que apagavam.
+	// Ver [eventstore.SemearStreamLegado].
+	if _, err := eventstore.SemearStreamLegado(context.Background(), st, streamLegadoDe(class), eventstore.EventInput{
 		Type:     tipo,
 		Payload:  payload,
 		RunID:    runID,
@@ -273,7 +278,7 @@ func TestAOS424MigracaoDeMemoriaPreservaOEnvelope(t *testing.T) {
 	ctx := context.Background()
 	const class = domain.ClassProcedural
 
-	if _, err := st.Append(ctx, streamLegadoDe(class), eventstore.EventInput{
+	if _, err := eventstore.SemearStreamLegado(ctx, st, streamLegadoDe(class), eventstore.EventInput{
 		Type:          EventTypeWritten,
 		Payload:       []byte(`{"corpo":"x"}`),
 		SchemaVersion: "1.1",

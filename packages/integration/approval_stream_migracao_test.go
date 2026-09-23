@@ -30,9 +30,19 @@ func migTestStore(t *testing.T) *eventstore.Store {
 }
 
 // escreverNoLegado apende um facto ao stream ANTIGO, como o binário anterior o faria.
+//
+// PELA COSTURA, e não pelo `Append`. Desde o aperto do AOS-424 o `Append` RECUSA
+// `gov.approvals` — é essa recusa que fecha a assimetria entre backends e é ela que se quer em
+// produção. Mas um teste que prova que a migração transporta os factos tem primeiro de os PÔR
+// no stream antigo, e o nome antigo é, por definição, um que a regra nova recusa.
+//
+// Sem esta costura a prova desapareceria — e a prova que desapareceria é a que interessa: a de
+// que um grant CONSUMIDO antes da migração não volta a ser consumível depois. Ver
+// [eventstore.SemearStreamLegado], que semeia pelo mesmo caminho do `Append` (idempotência, CAS,
+// quórum, WAL) menos a validação do nome, para que o mundo «antes» seja fiel e não aproximado.
 func escreverNoLegado(t *testing.T, st *eventstore.Store, tipo, stepID string, payload []byte) {
 	t.Helper()
-	if _, err := st.Append(context.Background(), approvalStreamLegado, eventstore.EventInput{
+	if _, err := eventstore.SemearStreamLegado(context.Background(), st, approvalStreamLegado, eventstore.EventInput{
 		Type:     tipo,
 		Payload:  payload,
 		RunID:    approvalRunID,
@@ -345,7 +355,7 @@ func TestAOS424MigracaoPreservaOEnvelopeInteiro(t *testing.T) {
 	st := migTestStore(t)
 	ctx := context.Background()
 
-	if _, err := st.Append(ctx, approvalStreamLegado, eventstore.EventInput{
+	if _, err := eventstore.SemearStreamLegado(ctx, st, approvalStreamLegado, eventstore.EventInput{
 		Type:    approvalGrantedEventType,
 		Payload: []byte(`{"campo":"valor"}`),
 		// UMA VERSÃO QUE NÃO É O DEFAULT. Com "1.0" este teste passava pela razão errada: o

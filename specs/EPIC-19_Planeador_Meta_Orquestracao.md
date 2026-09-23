@@ -2630,9 +2630,9 @@ não-vacuidade e sensor verificado por mutação. Suite do pacote verde com `-ra
 | Fase | Prontidão para utilizadores reais |
 | Milestone | v1.1 |
 | Tipo | correcção de classe (fronteiras de entrada) |
-| Prioridade | P2 |
+| Prioridade | **P1** (subiu de P2 quando o AOS-424 apertou o `Append`: a recusa passou a ser real, e a linha da admissão converte uma mudança de política em runs não admitidos) |
 | Estimativa | M |
-| Dependências | **AOS-424** — a decisão (1) de lá determina se este ticket encolhe ou muda de natureza; AOS-100/101 (Event Store replicado) |
+| Dependências | **AOS-424 — FECHADO.** Apertou o `Append`, fechou duas linhas desta tabela na origem, e converteu o resto de «defeito silencioso» em «avaria visível no ponto de uso»; AOS-100/101 (Event Store replicado) |
 | Bloqueia | a migração para JetStream, em conjunto com o AOS-424 |
 | Responsável sugerido | Arquitecto de Plataforma |
 | Documentos de referência | `packages/control-plane/scheduler/{admission,quota}.go`, `packages/platform/model-gateway/policy/allowlist/allowlist_policy.json`, `packages/control-plane/governance/hitl/{challenge_issuer,nonce_store}.go`, `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`) |
@@ -2681,8 +2681,8 @@ directa**; as restantes vêm da varredura e estão marcadas como tal.
 |---|---|---|---|
 | **ALTO** | `admission/bucket/<provider>:<model>:<region>` e `admission/audit/…` | `scheduler/admission.go:463,679,956`; `quota.go:27-29` | **Allowlist assinada.** Hoje sem pontos (medido); um modelo novo pode trazer um |
 | MÉDIO | `plan_id` | `orchestrator/plannerevents/recorder.go:98`; `runlifecycle/emitters.go:108` *(varredura)* | `planner.go:410` usa `req.RunID` quando vazio — herda o que o AOS-424 fechar para o `run_id` |
-| MÉDIO | `4eyes-challenge:<scope>:<hex>` | `hitl/challenge_issuer.go:175-176` *(varredura)* | `scope` é o `RatificationID`, token OPACO de fonte externa |
-| MÉDIO | `ratify-nonce:<scope>:<hex>` | `hitl/nonce_store.go:62` *(varredura)* | idem |
+| ~~MÉDIO~~ **FECHADO** | `4eyes-challenge:<scope>:<hex>` | `hitl/challenge_issuer.go` | Era pior do que a varredura indicava: o `scope` traz o `request_id` do CORPO de um pedido. **Fechado pelo AOS-424** — o escopo entra RESUMIDO (`hitl.nomeDeEscopo`) |
+| ~~MÉDIO~~ **FECHADO** | `ratify-nonce:<scope>:<hex>` | `hitl/nonce_store.go` | Idem, e com dois defeitos VIVOS que a varredura não viu: três constantes de domínio com ponto (`foureyes.challenge`, `governance.dsar`, `nhi.revoke`) e um separador `\x00` no `nonceScope`. **Fechado pelo AOS-424** |
 | BAIXO | `backpressure/queue/<name>`, `degradation/<name>`, `routing/<name>`, `scheduling/dispatch/<name>`, `backpressure/policy-audit/<name>` | `scheduler/{queue,degradation,routing,priority,policy}.go` *(varredura)* | nome de instância, dado por quem compõe (interno) |
 | BAIXO | `budget-breaker/<treeID>`, `<treeID>` | `scheduler/breaker.go:882`; `budget/events.go:91` *(varredura)* | id de árvore de orçamento |
 
@@ -2980,6 +2980,8 @@ O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
       composta, e é fail-closed: um `used-` por copiar é um grant consumível duas vezes.
       **Não se fez leitura dupla**, pela razão que este ticket já registava: a dedup é por
       stream.)*
+- [x] **O `Append` do backend de ficheiro impõe a regra** (ADR-029 §2.4), com a assimetria
+      escrita/leitura fixada por teste e a costura de semente protegida por duas barreiras.
 - [ ] O comportamento SILENCIOSO do `Subscribe` é fechado ou declarado.
       *(**NÃO FEITO.** O `Subscribe` não chama o `subjectDe` — usa `FilterSubject: prefixo + ".>"`
       e filtra em processo —, pelo que um filtro por um nome impossível **não dá erro: nunca casa
@@ -2997,47 +2999,45 @@ a regra» — falharam fechados, que é exactamente o que se lhes pedia, e é a 
 âncoras não eram decorativas. O guard passou a **CHAMAR** a regra em vez de a extrair por regex:
 não há cópia para derivar nem parser para partir.
 
-**NÃO FEITO — o aperto do `Append` no backend de ficheiro**, que é a correcção da causa-raiz. A
-cadeia termina fora do código:
+**FEITO — o aperto do `Append` no backend de ficheiro**, que é a correcção da causa-raiz. O
+`Store.Append` chama `ValidarStreamID` antes de tocar em stripe, líder ou quórum; a recusa é
+lexical e não deixa rasto. Leitura, `StreamHead`, `SnapshotStream` e `IngestStream` **não**
+validam — um nome que já existe tem de poder ser lido para ser migrado, e um backup anterior à
+regra tem de poder ser restaurado. A assimetria está fixada por teste, para que ninguém a
+«arrume» e leve a recuperação de desastre à frente.
 
-```text
-apertar o Append  →  exige um `node_id` stream-safe
-                  →  exige apertar o `plan.ValidNodeID`
-                  →  exige uma versão nova do prompt de decomposição
-                  →  exige revalidar a decomposição com o MODELO VIVO, em produção
-```
+A cadeia que bloqueava isto — `node_id` stream-safe → `ValidNodeID` → prompt novo → revalidar com
+o modelo vivo — **foi fechada pelo escape do `childRunID`** (ADR-029 §3, saída 2).
 
-**Medido:** o prompt em vigor (1.2.0) diz ao modelo, por escrito, que o `node_id` aceita
-`[A-Za-z0-9_.:-]` — ponto e dois-pontos **convidados**, não só tolerados. E verificou-se que um
-`run_id` com ponto escreve sem erro hoje no backend de ficheiro
-(`Append("run-x~analise.dados") → committed`). Apertar agora **mataria esse run a meio**, em
-produção.
+#### O QUE O APERTO REVELOU, e que muda a leitura deste ticket
 
-**Duas saídas, e a escolha é do dono:**
+Este ticket dizia, antes desta revisão, que o aperto custava «39 testes, na maioria andaime das
+migrações». **A medição estava errada**, e estava errada por uma razão que vale mais do que o
+número: foi feita a olhar para uma LISTA DE NOMES DE TESTE, e não para as suas causas.
 
-1. **Apertar o `ValidNodeID`** e emitir prompt novo, com revalidação da decomposição contra o
-   modelo vivo. Mantém os ids de run legíveis; muda o que o planeador pode emitir, e um plano com
-   `node_id` mal formado passa a ser recusado na validação — cedo e com razão legível.
-2. **Escapar o `node_id` no `childRunID`** de forma reversível (`.` → `_2e`). Não mexe no prompt
-   nem no que o planeador emite; torna os ids de run filho menos legíveis em logs e métricas.
+Medido agora, com as causas: **catorze das quinze falhas do `cmd/aos` eram um DEFEITO VIVO.**
 
-**ESCOLHIDA a segunda** (escape no `childRunID`), e implementada. O `node_id` continua a poder
-ter pontos: o prompt não muda, o planeador não muda, e nada precisa de ser revalidado contra o
-modelo vivo. Com isso ligou-se também a validação do `run_id` ao `POST /runs`, que estava
-desligada pela mesma razão — fechando o critério que este ticket tinha em `[~]`.
+| Stream composto | O escopo vinha de | O carácter | Estado |
+|---|---|---|---|
+| `ratify-nonce:<escopo>:<hex>` | constantes de domínio do autenticador | `.` em `foureyes.challenge`, `governance.dsar`, `nhi.revoke` | **corrigido** |
+| `ratify-nonce:<escopo>:<hex>` | o tuplo `<domínio>\x00<emissor>` do `nonceScope` | `\x00` (nem estava na regra) | **corrigido** |
+| `4eyes-challenge:<escopo>:<hex>` | o `request_id` do CORPO de um pedido | o que o cliente lá puser | **corrigido** |
+| `plan-schemaline-<semver>` | um `plan_id` construído num teste | `.` | fixture corrigida |
 
-**A marca do escape é `+`, e a primeira tentativa (`_`) estava ERRADA.** O `_` pertence à
-gramática do `node_id`, e o teste de injectividade apanhou a consequência: `a.b` escapava para
-`a_2eb` e o `node_id` `a_2eb` atravessava intacto — **colidiam no mesmo run filho**, dois nós do
-plano no mesmo stream. Pior do que o problema original. O `+` não pertence à gramática, logo um
-id válido nunca é tocado.
+Sobre ficheiro nada disto falha, e foi assim que sobreviveu a dez gates, a uma revisão
+adversarial e ao smoke — que correm todos sobre ficheiro. **Sobre JetStream negaria toda a
+emissão de challenges e toda a ratificação**, com um `403 aprovador nao autorizado` que nomeia a
+causa errada.
 
-**O aperto do `Append` continua por fazer, mas o bloqueio mudou de natureza.** Mediu-se:
-ligando a validação ao `Append`, falham **39 testes** — e a causa dominante é que **os testes
-das próprias migrações escrevem nos nomes LEGADOS** para construir o mundo «antes». Com o
-`Append` a validar, um teste deixa de conseguir montar estado legado, e sem ele não se prova que
-a migração o transporta. Precisa de uma costura de teste própria. O resto são ~20 correcções
-mecânicas e o AOS-425, que continua a ser o risco real.
+A correcção foi na ORIGEM (`hitl.nomeDeEscopo`, que resume o escopo), e não no ponto de uso. O
+custo — nonces consumidos e challenges emitidos antes do deploy são esquecidos — está declarado
+no ADR-029 §2.4.
+
+**Os restantes dezasseis testes eram, esses sim, andaime**, e passaram a semear o mundo «antes»
+por `eventstore.SemearStreamLegado`: uma costura com duas barreiras (`testing.Testing()` em
+runtime, e o gate `stream-names` a recusar chamadores fora de `_test.go`). Sem ela, os testes das
+migrações teriam de ser apagados — e o que se perderia é justamente a prova de que um grant
+consumido antes da migração não volta a ser consumível depois.
 
 ### O CONFLITO DE INVARIANTES que este ticket descobriu, e que bloqueia metade do critério do `run_id`
 
@@ -3079,27 +3079,33 @@ módulo, afecta o que o planeador pode produzir, e o prompt de decomposição te
 
 1. **Os dois nomes com histórico** (`gov.approvals` e o prefixo `memory.`) estão na baseline do
    gate, com o custo escrito. Saem quando a decisão (3) existir.
-2. **Apertar o contrato do `eventstore`** (a causa-raiz) depende de (1) — a ordem é renomear
-   primeiro.
-3. **Ligar a guarda do `run_id` ao `POST /runs`** depende de apertar o `ValidNodeID`.
-4. **Um teste da cerimónia four-eyes sobre JetStream** depende de haver NATS no CI.
-5. **O `Subscribe` que falha em silêncio** — fechá-lo é mexer no backend replicado.
+2. **Um teste da cerimónia four-eyes sobre JetStream** depende de haver NATS no CI. Este
+   resíduo SUBIU de importância: a correcção dos nomes compostos do `hitl` é exactamente o tipo
+   de coisa que só um teste sobre JetStream prova de verdade. O que se tem hoje é a regra
+   aplicada ao nome — não o NATS a aceitá-lo.
+3. **O `Subscribe` que falha em silêncio** — fechá-lo é mexer no backend replicado.
+4. **As duas barreiras da costura de semente** são independentes, mas nenhuma cobre um teste que
+   passe a semear por um caminho novo. Se aparecer um terceiro sítio a precisar de estado
+   legado, passa por `SemearStreamLegado` ou o gate acusa.
 
 ### Estado
 
-**PARCIAL.** Entregue: o gate de alcance de repositório (registado nos quatro sítios da lista
-de checks), **os SEIS renames** — quatro por troca de constante e dois **com migração dos
-factos** (`gov.approvals` e as quatro classes de memória) —, a validação do `run_id` no
-`POST /plans`, e a regra de nomenclatura em `tecnica/13` §3.1.1.
+**FECHADO.** Entregue: o gate de alcance de repositório (registado nos quatro sítios da lista de
+checks), **os SEIS renames** — quatro por troca de constante e dois **com migração dos factos**
+(`gov.approvals` e as quatro classes de memória) —, a validação do `run_id` nas DUAS rotas
+(`POST /plans` e `POST /runs`, esta última destrancada pelo escape do `childRunID`), a regra de
+nomenclatura em `tecnica/13` §3.1.1, e **o aperto do `Append`** — a correcção da causa-raiz.
 
-**Não resta nenhum `stream_id` da árvore com carácter não representável em uso.** As duas
-entradas que ficam na baseline do gate são constantes do nome ANTIGO, que existem só para as
-migrações conseguirem LER — nada escreve nelas, e saem quando puderem desaparecer.
+**Não resta nenhum `stream_id` da árvore com carácter não representável em uso**, nem literal nem
+composto pelos caminhos que os testes exercitam. As duas entradas que ficam na baseline do gate
+são constantes do nome ANTIGO, que existem só para as migrações conseguirem LER.
 
-**Por fechar, e cada uma com a sua razão escrita:** o aperto do contrato do `eventstore` — que
-já **não está bloqueado por renames** e passa a depender só da decisão (1) —, a guarda no
-`POST /runs` (depende do `ValidNodeID`), o teste sobre JetStream (depende de NATS no CI) e o
-`Subscribe` silencioso.
+**O que este ticket NÃO permite concluir.** Que a classe está fechada. O aperto encontrou os
+defeitos que existem na ÁRVORE DE TESTES; um caminho de composição que nenhum teste exercita com
+um valor «sujo» continua invisível — e a admissão de quota, que é a linha mais perigosa da tabela
+do AOS-425, é exactamente uma dessas. Com o `Append` apertado, acrescentar um `gpt-4.1` à
+allowlist assinada deixa de ser uma mudança de política e passa a ser runs a deixarem de ser
+admitidos. **O AOS-425 sobe para P1 por causa deste ticket.**
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 
