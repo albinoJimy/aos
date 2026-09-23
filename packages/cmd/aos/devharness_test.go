@@ -410,7 +410,7 @@ func TestDevHarness_SovereignSubmit_TitularAndResidency(t *testing.T) {
 
 	// (1) FAIL-CLOSED: sem credencial resolvível não há titular sob o qual cifrar ⇒ 403, nada persiste.
 	const runIDDeny = "dev-sov-deny"
-	rec := postReq(h, "/runs", submitRequest{RunID: runIDDeny, PrincipalNHI: "nhi:auto-declarado"}, nil)
+	rec := postReq(h, "/runs", submitRequest{RunID: runIDDeny, PrincipalNHI: "nhi:auto-declarado", Credential: credencialDeTeste(t, node)}, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("submit soberano SEM credencial devia dar 403, veio %d (%s)", rec.Code, rec.Body.String())
 	}

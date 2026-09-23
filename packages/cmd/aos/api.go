@@ -713,6 +713,49 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "nao autorizado")
 			return
 		}
+		// AOS-428 — A CREDENCIAL DO RUN VERIFICA-SE AQUI, DEPOIS DE AUTENTICAR QUEM CHAMA E
+		// ANTES DE QUALQUER ESCRITA DURÁVEL.
+		//
+		// # O DEFEITO QUE ISTO FECHA
+		//
+		// Esta rota copiava `req.Credential` para o `Goal` e mais nada. A verificação acontecia no
+		// hook `identity` do Reference Monitor — na PRIMEIRA CHAMADA MEDIADA. Uma credencial
+		// malformada, expirada, de emissor desconhecido ou revogada dava `201`: o run era criado,
+		// selava residência no WORM, tomava lease, consumia estado durável — e morria com
+		// `denied_by=identity` por uma razão conhecível no primeiro milissegundo.
+		//
+		// # A POSIÇÃO É O DESENHO, E A PRIMEIRA VERSÃO TINHA-A ERRADA
+		//
+		// A primeira tentativa pôs esta guarda ANTES do [readGovernance.authorize], com o
+		// argumento de que era o ponto mais cedo sem rasto durável. Uma revisão adversarial
+		// mediu o que isso criava: um ORÁCULO DE VALIDADE DE CREDENCIAL ACESSÍVEL SEM
+		// AUTENTICAÇÃO. Um chamador anónimo distinguia, num só pedido, «este token ainda vive
+		// neste nó» (recusa da governação) de «este token morreu» (recusa da credencial) — que
+		// é exactamente o que quem apanha um token roubado quer saber.
+		//
+		// Aqui, quem não se autentica nunca chega a esta linha: para ele a resposta é sempre a
+		// mesma 403 do `authorize`. E continua ANTES da selagem de residência, que é a primeira
+		// escrita durável — uma recusa não deixa selo de um run que nunca vai existir.
+		//
+		// # PORQUÊ ACRESCENTAR E NÃO MOVER
+		//
+		// O `Verify` cobre oito dos nove predicados de recusa do hook. O nono — a fronteira de
+		// ESCOPO por capability — só é decidível na chamada, porque a capability ainda não
+		// existe aqui. Esta guarda é ADICIONAL; o `rmadapter` continua a decidir o escopo.
+		//
+		// E não queima o token: o `Verify` CONSULTA a revogação, não marca uso. Se consumisse o
+		// `jti`, verificar na porta faria da primeira tool call um falso replay.
+		if motivo := h.credencialDoRunRecusada(r.Context(), req.Credential); motivo != "" {
+			// A MESMA 403 do `authorize`, e não um código próprio. Um status diferente é, ele
+			// próprio, o bit que vaza: distinguiria «credencial morta» de «não autorizado» para
+			// quem sonda. As sentinelas ficam no log, com o submissor nomeado — o que só é
+			// possível porque esta guarda corre DEPOIS do `authorize`.
+			h.logf("submit RECUSADO (AOS-428): credencial do run nao verifica submissor=%q run=%q: %s",
+				submitter.principal, req.RunID, motivo)
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
+
 		if err := h.readGov.sealResidency(r.Context(), submitter, req.RunID); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "indisponivel")
 			return

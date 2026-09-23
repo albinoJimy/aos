@@ -143,7 +143,7 @@ func TestAOS426RunLegitimoContinuaAServirTrajectoria(t *testing.T) {
 	svc, h := newAPI(t, node)
 
 	const runID = "run-426-legitimo"
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID}, euReaderHeaders()); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID, Credential: credencialDeTeste(t, node)}, euReaderHeaders()); rec.Code != http.StatusCreated {
 		t.Fatalf("POST /runs devia dar 201, veio %d (%s)", rec.Code, rec.Body.String())
 	}
 	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

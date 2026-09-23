@@ -105,6 +105,7 @@ func TestAPISubmitValidHostsRun(t *testing.T) {
 
 	rec := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id":        "run-api-1",
+		"credential":    credencialDeTeste(t, node),
 		"objective":     "trabalho de referencia",
 		"principal_nhi": "nhi:run-api-1",
 	})
@@ -365,6 +366,7 @@ func TestAPIBodyTooLarge(t *testing.T) {
 	huge := strings.Repeat("A", 8192)
 	rec := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id":        "run-huge",
+		"credential":    credencialDeTeste(t, node),
 		"principal_nhi": "nhi:run-huge",
 		"objective":     huge,
 	})
@@ -389,6 +391,7 @@ func TestAPIAdmissionRateLimited(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		rec := postJSON(h, "POST", "/runs", map[string]any{
 			"run_id":        "run-adm-" + string(rune('a'+i)),
+			"credential":    credencialDeTeste(t, node),
 			"principal_nhi": "nhi:adm",
 		})
 		switch rec.Code {
@@ -455,6 +458,7 @@ func TestAPISubmitIdempotentNonEnumerable(t *testing.T) {
 	submit := func() *httptest.ResponseRecorder {
 		return postJSON(h, "POST", "/runs", map[string]any{
 			"run_id":        "run-idem",
+			"credential":    credencialDeTeste(t, node),
 			"principal_nhi": "nhi:run-idem",
 		})
 	}

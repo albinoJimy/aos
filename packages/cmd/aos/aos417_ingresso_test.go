@@ -266,6 +266,7 @@ func TestAOS417PedidoParaRunComPosse(t *testing.T) {
 	const runID = "run-417-com-posse"
 	if rec := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id":        runID,
+		"credential":    credencialDeTeste(t, node),
 		"objective":     "trabalho bloqueado",
 		"principal_nhi": "nhi:" + runID,
 	}); rec.Code != http.StatusCreated {

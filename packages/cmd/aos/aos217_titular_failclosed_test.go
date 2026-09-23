@@ -82,6 +82,15 @@ func newDurableGovNode(t *testing.T, model agentruntime.ModelClient) (*Node, str
 // espera que termine, exigindo 201.
 func submitSovereignAndWait(t *testing.T, svc *NodeService, h http.Handler, req submitRequest, headers map[string]string) {
 	t.Helper()
+	// AOS-428: o `POST /runs` VERIFICA a credencial do run. Cunha-se uma real, pela autoridade
+	// do próprio nó de teste — em vez de um seam que desligasse a guarda, que deixaria este
+	// teste a exercitar um caminho que a produção não tem.
+	//
+	// SÓ SE O CHAMADOR NÃO TROUXER UMA: há testes que passam uma credencial de propósito, e
+	// sobrepor-lhes a nossa apagaria o que eles estão a provar.
+	if req.Credential == "" {
+		req.Credential = credencialDeTeste(t, svc.node)
+	}
 	rec := postReq(h, "/runs", req, headers)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /runs (%s) devia dar 201, veio %d (%s)", req.RunID, rec.Code, rec.Body.String())
@@ -256,7 +265,7 @@ func TestNode_AOS217_FailClosedNoResolvableTitular(t *testing.T) {
 	const runID = "run-217-notitular"
 
 	// Anónimo (sem headers de leitura) ⇒ sem principal resolvível ⇒ 403.
-	rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:auto-declarado"}, nil)
+	rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:auto-declarado", Credential: credencialDeTeste(t, node)}, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("submit soberano sem credencial devia dar 403, veio %d (%s)", rec.Code, rec.Body.String())
 	}

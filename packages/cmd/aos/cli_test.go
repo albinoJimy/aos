@@ -82,7 +82,9 @@ func TestLoadOperatorKey(t *testing.T) {
 // newCLIServer compõe um nó de referência com um operador registado e RELÓGIO REAL de steer
 // (a CLI assina com time.Now — a frescura tem de o aceitar), e serve a API num httptest.Server.
 // Devolve o URL base, o ficheiro da chave do operador e o ID do operador.
-func newCLIServer(t *testing.T) (url, keyFile, operatorID string) {
+// AOS-428: devolve TAMBÉM uma credencial de run válida. O `POST /runs` passou a verificá-la, e
+// a CLI já tem `--credential` para a transportar — o que faltava era o teste passá-la.
+func newCLIServer(t *testing.T) (url, keyFile, operatorID, credencial string) {
 	t.Helper()
 	cfg := tnBaseConfig()
 	cfg.SteerClock = nil // relógio REAL (não o tnClock fixo) — casa com o time.Now da CLI
@@ -113,18 +115,19 @@ func newCLIServer(t *testing.T) (url, keyFile, operatorID string) {
 	if err := os.WriteFile(kf, []byte(hex.EncodeToString(priv.Seed())), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return srv.URL, kf, opID
+	return srv.URL, kf, opID, credencialDeTeste(t, node)
 }
 
 // TestCLI_RunSteerObserve_E2E é a prova NÃO-VACUOSA da CLI: contra o handler REAL do nó,
 // `run` submete um run, `steer` produz um emitter ed25519 que o nó ACEITA (prova que a
 // assinatura da CLI casa com o Ed25519Authenticator, AOS-160), e `observe` relê o estado.
 func TestCLI_RunSteerObserve_E2E(t *testing.T) {
-	url, keyFile, opID := newCLIServer(t)
+	url, keyFile, opID, cred := newCLIServer(t)
 	const runID = "run-cli-1"
 
 	var b strings.Builder
-	if err := cmdRun([]string{"--addr", url, "--run-id", runID, "--objective", "faz algo", "--nhi", "nhi:x"}, &b); err != nil {
+	if err := cmdRun([]string{"--addr", url, "--run-id", runID, "--objective", "faz algo", "--nhi", "nhi:x",
+		"--credential", cred}, &b); err != nil {
 		t.Fatalf("cmdRun: %v", err)
 	}
 	if !strings.Contains(b.String(), runID) {
@@ -153,7 +156,7 @@ func TestCLI_RunSteerObserve_E2E(t *testing.T) {
 // TestCLI_SteerWrongKeyRejected: uma chave de operador que NÃO corresponde à pubkey registada
 // produz uma assinatura que o nó RECUSA (403) — a CLI não contorna a autenticação.
 func TestCLI_SteerWrongKeyRejected(t *testing.T) {
-	url, _, opID := newCLIServer(t)
+	url, _, opID, _ := newCLIServer(t)
 	// Chave ERRADA (não a registada no nó).
 	_, wrong, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

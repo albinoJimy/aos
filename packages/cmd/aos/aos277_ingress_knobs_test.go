@@ -176,6 +176,7 @@ func TestAOS277BurstExceededYields429(t *testing.T) {
 			"run_id":        id,
 			"objective":     "trabalho de referencia",
 			"principal_nhi": "nhi:" + id,
+			"credential":    credencialDeTeste(t, node),
 		})
 		codes = append(codes, rec.Code)
 	}
@@ -217,6 +218,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 		"run_id":        "run-277-inflight-1",
 		"objective":     "trabalho bloqueado",
 		"principal_nhi": "nhi:run-277-inflight-1",
+		"credential":    credencialDeTeste(t, node),
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("1o submit devia dar 201, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -250,6 +252,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 		"run_id":        "run-277-inflight-3",
 		"objective":     "trabalho readmitido",
 		"principal_nhi": "nhi:run-277-inflight-3",
+		"credential":    credencialDeTeste(t, node),
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("com o tecto livre o submit devia voltar a dar 201, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -387,9 +390,11 @@ func esperarPorta(t *testing.T, addr string) {
 }
 
 // submeterRun faz um `POST /runs` REAL (pela rede, não por httptest) e devolve o status.
-func submeterRun(t *testing.T, base, runID string) int {
+func submeterRun(t *testing.T, base, runID, cred string) int {
 	t.Helper()
-	corpo := `{"run_id":"` + runID + `","objective":"trabalho de referencia","principal_nhi":"nhi:` + runID + `"}`
+	// AOS-428: o `POST /runs` verifica a credencial do run. Vai uma real — este teste mede
+	// tectos de ingresso, e um 401 antes do tecto mediria outra coisa.
+	corpo := `{"run_id":"` + runID + `","objective":"trabalho de referencia","principal_nhi":"nhi:` + runID + `","credential":"` + cred + `"}`
 	req, err := http.NewRequest(http.MethodPost, base+"/runs", strings.NewReader(corpo))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -442,7 +447,7 @@ func TestAOS277ServeAPIEnforcaOsLimitesLidos(t *testing.T) {
 	esperarPorta(t, addr)
 
 	base := "http://" + addr
-	if code := submeterRun(t, base, "run-277-serve-1"); code != http.StatusCreated {
+	if code := submeterRun(t, base, "run-277-serve-1", credencialDeTeste(t, node)); code != http.StatusCreated {
 		t.Fatalf("o 1o submit (dentro do tecto) devia ser ADMITIDO com 201, veio %d", code)
 	}
 	// Espera o run ENTRAR mesmo no modelo: só então está registado no loop de serviço e a
@@ -453,7 +458,7 @@ func TestAOS277ServeAPIEnforcaOsLimitesLidos(t *testing.T) {
 		t.Fatal("o 1o run nao chegou a correr — sem ele a contagem de in-flight nao sobe e a prova fica vacuosa")
 	}
 
-	if code := submeterRun(t, base, "run-277-serve-2"); code != http.StatusTooManyRequests {
+	if code := submeterRun(t, base, "run-277-serve-2", credencialDeTeste(t, node)); code != http.StatusTooManyRequests {
 		t.Fatalf("o 2o submit devia levar 429 do servidor que serveAPI construiu (AOS_INGRESS_MAX_INFLIGHT=1), veio %d.\n"+
 			"Um 201 aqui significa que os limites lidos por ingressLimitsFromEnv NAO chegam ao NewAPIServer — o defeito que este teste existe para apanhar.", code)
 	}

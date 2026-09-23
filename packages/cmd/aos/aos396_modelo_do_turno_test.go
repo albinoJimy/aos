@@ -42,8 +42,12 @@ const aos396Objectivo = "resumir o relatorio"
 func correrPelaAPI(t *testing.T, node *Node, runID string) []agentruntime.ModelManifest {
 	t.Helper()
 	svc, h := newAPI(t, node)
+	// AOS-428: o `POST /runs` VERIFICA a credencial do run. Cunha-se uma real, pela autoridade
+	// do próprio nó de teste — em vez de um seam que desligasse a guarda, que deixaria este
+	// teste a exercitar um caminho que a produção não tem.
 	rec := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id": runID, "objective": aos396Objectivo, "principal_nhi": "nhi:" + runID,
+		"credential": credencialDeTeste(t, node),
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /runs devia dar 201, veio %d (%s)", rec.Code, rec.Body.String())

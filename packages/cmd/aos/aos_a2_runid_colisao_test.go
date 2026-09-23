@@ -91,13 +91,13 @@ func a2Headers(board string) map[string]string {
 // TestA2_ColisaoNaMesmaRegiao_DevolveConflito: o achado. Um segundo submissor da MESMA região
 // deixa de receber "accepted" para uma submissão que foi descartada.
 func TestA2_ColisaoNaMesmaRegiao_DevolveConflito(t *testing.T) {
-	_, h := newA2Handler(t, credDeHeaders{})
+	svcA2, h := newA2Handler(t, credDeHeaders{})
 	const runID = "run-a2-colisao"
 
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "primeiro"}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "primeiro", Credential: credencialDeTeste(t, svcA2.node)}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
 		t.Fatalf("a 1a submissao devia dar 201, veio %d (%s)", rec.Code, rec.Body.String())
 	}
-	rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "SEGUNDO, diferente"}, a2Headers(a2BoardEU))
+	rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "SEGUNDO, diferente", Credential: credencialDeTeste(t, svcA2.node)}, a2Headers(a2BoardEU))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("colisao de run_id com chamador que PODE LER o run devia dar 409, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -111,13 +111,13 @@ func TestA2_ColisaoNaMesmaRegiao_DevolveConflito(t *testing.T) {
 // buraco. Um submissor de OUTRA região não pode ler este run — o GET devolve-lhe `404` uniforme
 // — logo o POST também não lhe pode revelar que ele existe.
 func TestA2_ColisaoDeOutraRegiao_ContinuaUniforme(t *testing.T) {
-	_, h := newA2Handler(t, credDeHeaders{})
+	svcA2, h := newA2Handler(t, credDeHeaders{})
 	const runID = "run-a2-cross"
 
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "residente em eu-west"}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "residente em eu-west", Credential: credencialDeTeste(t, svcA2.node)}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
 		t.Fatalf("a 1a submissao devia dar 201, veio %d", rec.Code)
 	}
-	rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "de outra regiao"}, a2Headers(a2BoardUS))
+	rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "de outra regiao", Credential: credencialDeTeste(t, svcA2.node)}, a2Headers(a2BoardUS))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("um 409 a quem NAO pode ler o run abriria por POST o que o GET esconde; devia dar 201, veio %d (%s)",
 			rec.Code, rec.Body.String())
@@ -137,13 +137,13 @@ func TestA2_ColisaoDeOutraRegiao_ContinuaUniforme(t *testing.T) {
 // de dados volta a poder ter chamadores não autenticados, e a premissa do oráculo de ADR-016
 // continua verdadeira — o `201` uniforme mantém-se.
 func TestA2_SemCredencialForte_MantemUniforme(t *testing.T) {
-	_, h := newA2Handler(t, nil) // cred nil ⇒ via legada por headers
+	svcA2, h := newA2Handler(t, nil) // cred nil ⇒ via legada por headers
 	const runID = "run-a2-legado"
 
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "primeiro"}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "primeiro", Credential: credencialDeTeste(t, svcA2.node)}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
 		t.Fatalf("a 1a submissao devia dar 201, veio %d", rec.Code)
 	}
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "segundo"}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, Objective: "segundo", Credential: credencialDeTeste(t, svcA2.node)}, a2Headers(a2BoardEU)); rec.Code != http.StatusCreated {
 		t.Fatalf("sem credencial forte o 201 uniforme TEM de se manter (o oraculo ainda tem a quem revelar), veio %d", rec.Code)
 	}
 }

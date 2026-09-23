@@ -60,7 +60,13 @@ func usReaderHeaders() map[string]string {
 // do submissor dados e espera que termine (para GET devolver o desfecho).
 func submitHTTPAndWait(t *testing.T, svc *NodeService, h http.Handler, runID string, headers map[string]string) {
 	t.Helper()
-	rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID}, headers)
+	// AOS-428: o `POST /runs` VERIFICA a credencial do run. Cunha-se uma real, pela autoridade
+	// do próprio nó de teste — em vez de um seam que desligasse a guarda, que deixaria este
+	// teste a exercitar um caminho que a produção não tem.
+	rec := postReq(h, "/runs", submitRequest{
+		RunID: runID, PrincipalNHI: "nhi:" + runID,
+		Credential: credencialDeTeste(t, svc.node),
+	}, headers)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /runs (%s) devia dar 201, veio %d (%s)", runID, rec.Code, rec.Body.String())
 	}
@@ -195,11 +201,11 @@ func TestAOS182_SubmitFailClosedWithoutCredential(t *testing.T) {
 	node := newTwoRegionGovNode(t, &countingModel{})
 	_, h := newAPI(t, node)
 
-	anon := postReq(h, "/runs", submitRequest{RunID: "run-182-anon", PrincipalNHI: "nhi:x"}, nil)
+	anon := postReq(h, "/runs", submitRequest{RunID: "run-182-anon", PrincipalNHI: "nhi:x", Credential: credencialDeTeste(t, node)}, nil)
 	if anon.Code != http.StatusForbidden {
 		t.Fatalf("submit sem credencial devia dar 403, veio %d (%s)", anon.Code, anon.Body.String())
 	}
-	bad := postReq(h, "/runs", submitRequest{RunID: "run-182-badboard", PrincipalNHI: "nhi:x"},
+	bad := postReq(h, "/runs", submitRequest{RunID: "run-182-badboard", PrincipalNHI: "nhi:x", Credential: credencialDeTeste(t, node)},
 		map[string]string{HeaderReaderPrincipal: govReader, HeaderReaderBoard: govBadBoard})
 	if bad.Code != http.StatusForbidden {
 		t.Fatalf("submit com board desconhecido devia dar 403, veio %d", bad.Code)
@@ -228,7 +234,7 @@ func TestAOS182_SubmitDeniedWhenResidencySealFails(t *testing.T) {
 		t.Fatalf("NewAPIHandler: %v", err)
 	}
 
-	rec := postReq(h, "/runs", submitRequest{RunID: "run-182-sealfail", PrincipalNHI: "nhi:x"}, euReaderHeaders())
+	rec := postReq(h, "/runs", submitRequest{RunID: "run-182-sealfail", PrincipalNHI: "nhi:x", Credential: credencialDeTeste(t, node)}, euReaderHeaders())
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("submit com WORM em falha devia dar 503, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -259,11 +265,11 @@ func TestAOS182_ResidencySealIdempotent(t *testing.T) {
 	submitHTTPAndWait(t, svc, h, runID, euReaderHeaders())
 
 	// Re-submissão idempotente EU (mesmo run) ⇒ 201, sem novo registo de residência.
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID}, euReaderHeaders()); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID, Credential: credencialDeTeste(t, node)}, euReaderHeaders()); rec.Code != http.StatusCreated {
 		t.Fatalf("re-submissão EU devia dar 201 idempotente, veio %d", rec.Code)
 	}
 	// Re-submissão de OUTRA região (US, board válido) ⇒ 201 idempotente, mas NÃO re-residencia.
-	if rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID}, usReaderHeaders()); rec.Code != http.StatusCreated {
+	if rec := postReq(h, "/runs", submitRequest{RunID: runID, PrincipalNHI: "nhi:" + runID, Credential: credencialDeTeste(t, node)}, usReaderHeaders()); rec.Code != http.StatusCreated {
 		t.Fatalf("re-submissão US devia dar 201 idempotente, veio %d", rec.Code)
 	}
 
