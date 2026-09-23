@@ -13,6 +13,7 @@ package agentruntime
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -67,7 +68,10 @@ func TestAOS336_TurnRecordedMarcaOTurnoNaoMedido(t *testing.T) {
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			es := aos336Store(t)
-			got := aos336Payload(t, NewTurnRecorder(es), es, "run-336-"+c.nome, c.usage, 0)
+			// O `run_id` É o nome do stream, e o nome do subteste tem ESPAÇOS — que desde o
+			// aperto do AOS-424 o `Append` recusa. O id passa a ser um slug do nome.
+			got := aos336Payload(t, NewTurnRecorder(es), es,
+				"run-336-"+strings.ReplaceAll(c.nome, " ", "-"), c.usage, 0)
 			if got["usage_ausente"] != true {
 				t.Fatalf("usage_ausente = %v, quer true — %s; payload: %v", got["usage_ausente"], c.porque, got)
 			}

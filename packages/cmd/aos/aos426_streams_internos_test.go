@@ -104,7 +104,14 @@ func TestAOS426ReadPathNaoServeStreamsInternos(t *testing.T) {
 			// O facto é gravado como o componente REAL o grava: o `RunID` do evento é o do run
 			// que o produziu (ou um id sintético), NUNCA o nome do stream. É essa a diferença
 			// que a trava lê — ver streams_internos.go.
-			if _, err := node.EventStore.Append(context.Background(), c.stream, eventstore.EventInput{
+			//
+			// PELA COSTURA DE SEMENTE, e não pelo `Append`: esta tabela inclui de propósito os
+			// nomes LEGADOS (`gov.approvals` e companhia), porque a trava do read-path tem de os
+			// esconder tanto quanto esconde os novos — um nó a meio de uma migração serve os dois
+			// ao mesmo tempo. Desde o aperto do AOS-424 o `Append` recusa-os, que é exactamente o
+			// que se quer em produção; aqui precisamos de os CONSEGUIR criar para provar que o
+			// read-path não os serve. Ver [eventstore.SemearStreamLegado].
+			if _, err := eventstore.SemearStreamLegado(context.Background(), node.EventStore, c.stream, eventstore.EventInput{
 				Type:     "teste.facto.interno",
 				Payload:  []byte(`{"conteudo":"` + marca + `"}`),
 				RunID:    "run-que-produziu-o-facto",

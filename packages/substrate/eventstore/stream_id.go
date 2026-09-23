@@ -14,36 +14,37 @@ package eventstore
 //
 // Agora há uma função, e os outros dois lêem-na ou chamam-na.
 //
-// # O QUE ESTA REGRA NÃO FAZ (ainda), E PORQUE NÃO
+// # ONDE É IMPOSTA
 //
-// **Não é imposta na escrita do backend de ficheiro.** Esse é o «aperto do contrato» que o
-// AOS-424 propõe como correcção da CAUSA-RAIZ — a assimetria entre backends —, e está
-// BLOQUEADO por uma cadeia que termina fora do código:
+// **Na ESCRITA, nos dois backends** — [Store.Append] no de ficheiro e o `subjectDe` no de
+// JetStream. É o «aperto do contrato» do AOS-424, e fecha a assimetria que deixava um nome
+// funcionar sobre WAL e falhar sobre NATS.
 //
-//	apertar o Append  →  exige um `node_id` stream-safe
-//	                  →  exige apertar o `plan.ValidNodeID`
-//	                  →  exige uma versão nova do prompt de decomposição
-//	                  →  exige revalidar a decomposição com o modelo vivo
+// **Na LEITURA, não.** [Store.Read], [Store.StreamHead], [Store.SnapshotStream] e
+// [Store.IngestStream] do backend de ficheiro continuam a aceitar nomes legados, e isso é
+// deliberado: um nome que já existe tem de poder ser LIDO para ser migrado para fora, e um
+// backup anterior a esta regra tem de poder ser RESTAURADO. A regra proíbe CRIAR nomes
+// irrepresentáveis; não proíbe recuperar os que existem. Está fixado por teste — sem ele,
+// alguém «arruma» a assimetria e leva o restauro de desastre à frente.
 //
-// O prompt em vigor (1.2.0) diz ao modelo, por escrito, que o `node_id` aceita
-// `[A-Za-z0-9_.:-]`. O `childRunID` compõe `<run>~<node_id>` e submete-o ao nó, pelo que um nó
-// de plano chamado `analise.dados` produz um `run_id` com ponto — que é o `stream_id` do run.
-// Apertar o `Append` hoje **mataria esse run a meio**, e sobre o substrato de ficheiro, que é o
-// que corre em produção.
+// # O QUE A REGRA NÃO ALCANÇA
 //
-// Esta função é o pré-requisito comum a qualquer das saídas: quando a decisão for tomada, o
-// `Append` chama-a e a assimetria fecha-se num sítio.
+// Nomes COMPOSTOS em runtime a partir de valores que entram por política, por token externo ou
+// por corpo de pedido. A regra recusa-os no ponto de USO, que para alguns caminhos é tarde
+// demais — é o AOS-425. Dois desses caminhos foram corrigidos na origem quando este aperto os
+// revelou (ver `hitl/nome_de_escopo.go`); o resto da tabela do AOS-425 continua aberto.
 
 import (
 	"fmt"
 	"strings"
 )
 
-// CaracteresNaoRepresentaveis são os que um subject NATS não representa: o ponto separa tokens,
-// `*` e `>` são curingas, e o espaço em branco não é transportável.
+// CaracteresNaoRepresentaveis são os que um subject NATS não representa e que se NOMEIAM: o
+// ponto separa tokens, `*` e `>` são curingas, e o espaço em branco não é transportável.
 //
-// É a FONTE desta regra. Quem precisar dela chama [ValidarStreamID] ou lê esta constante — não
-// escreve a lista outra vez.
+// É a FONTE desta regra para quem a lê de fora — o gate `scripts/ci/stream-names` extrai esta
+// constante para varrer os literais da árvore. Quem precisar dela em Go chama [ValidarStreamID],
+// que impõe ESTA lista MAIS os restantes caracteres de controlo (ver abaixo porquê).
 const CaracteresNaoRepresentaveis = ". *>\t\r\n"
 
 // ValidarStreamID devolve erro se o `stream_id` não for representável em todos os backends.
@@ -64,6 +65,23 @@ func ValidarStreamID(streamID string) error {
 			"e `/` para separar níveis — a barra é representável e mantém o stream fora do alcance "+
 			"de `GET /runs/{id}/...`",
 			ErrConfig, streamID, streamID[i])
+	}
+	// OS RESTANTES CARACTERES DE CONTROLO, e porque não estão na constante acima.
+	//
+	// A constante nomeia os que alguém escreve à mão num literal, e é isso que o gate de
+	// repositório varre. Um NUL não se escreve à mão — CHEGA AQUI POR COMPOSIÇÃO, e foi assim
+	// que apareceu: o `nonceScope` do autenticador juntava domínio e emissor com um `\x00`, e
+	// esse byte ia inteiro para o nome do stream. A versão anterior desta função deixava-o
+	// passar, porque a lista nomeada não o continha.
+	//
+	// Uma lista de proibidos escrita à mão só cobre o que quem a escreveu se lembrou. Para uma
+	// CLASSE inteira — caracteres de controlo — a pertença decide-se por propriedade.
+	if i := strings.IndexFunc(streamID, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+		return fmt.Errorf("%w: stream_id %q contém o carácter de controlo %#x na posição %d, "+
+			"que não é transportável num subject NATS. Nomes de stream compostos a partir de "+
+			"vários campos não devem usar um byte de controlo como separador — use um resumo "+
+			"do tuplo (ver `hitl.nomeDeEscopo`)",
+			ErrConfig, streamID, streamID[i], i)
 	}
 	return nil
 }

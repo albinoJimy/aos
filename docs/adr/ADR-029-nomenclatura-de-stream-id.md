@@ -42,7 +42,17 @@ chama-a, o nó chama-a (deixou de ter cópia), e o gate lê essa constante.
 
 ### 2.2 Os caracteres recusados
 
-`.`, `*`, `>`, espaço, tabulação, CR e LF.
+`.`, `*`, `>`, espaço, tabulação, CR e LF — **e todos os restantes caracteres de controlo**
+(`< 0x20` e `0x7f`).
+
+**A segunda metade foi acrescentada depois, e a razão importa.** A primeira lista era uma lista
+NOMEADA: os caracteres que alguém escreve à mão num literal, que é o que o gate de repositório
+varre. Quando o `Append` apertou, apareceu um nome que nenhum humano escreveu — o autenticador
+compunha o escopo do nonce como `<domínio>\x00<emissor>`, e esse **NUL ia inteiro para o nome do
+stream**. A regra deixava-o passar, porque a lista só continha o que quem a escreveu se lembrou.
+
+Uma lista nomeada cobre o que se enumerou. Para uma CLASSE inteira, a pertença decide-se por
+propriedade — e é assim que está escrito em `ValidarStreamID`.
 
 **Convenção:** `-` onde a tentação for um `.`, e `/` para separar níveis. A barra é representável
 **e** mantém o stream fora do alcance de `GET /runs/{id}/…`, porque o padrão da stdlib casa
@@ -54,7 +64,7 @@ rota. Streams internos do nó vivem sob `aos-internal/`.
 Escapar `a.b` para `a-b` faria dois `stream_id` distintos colidirem no mesmo subject, e um
 stream leria os eventos do outro. **Um nome que não se representa recusa-se; não se aproxima.**
 
-### 2.4 O aperto do `Append` no backend de ficheiro fica DECIDIDO mas BLOQUEADO
+### 2.4 O aperto do `Append` no backend de ficheiro — FEITO
 
 É a correcção da causa-raiz, e está decidido que é para fazer. **Continua por fazer**, mas o
 que o bloqueia MUDOU — e a mudança é o essencial desta revisão do ADR.
@@ -70,35 +80,56 @@ apertar o Append  →  exige um `node_id` stream-safe
                   →  exige revalidar a decomposição com o MODELO VIVO, em produção
 ```
 
-Escolheu-se a **saída 2 da §3**: o `childRunID` passou a ESCAPAR o `node_id` de forma
-injectiva. O `node_id` continua a poder ter pontos — o prompt não muda, o planeador não muda,
-e nada precisa de ser revalidado contra o modelo vivo. O id do run filho é agora sempre um
-`stream_id` válido.
+Escolheu-se a **saída 2 da §3**: o `childRunID` passou a ESCAPAR o `node_id` de forma injectiva.
+O prompt não mudou, o planeador não mudou, e a cadeia fechou-se.
 
-Com isso, ligou-se também a validação do `run_id` ao `POST /runs`, que estava desligada pela
-mesma razão. **A cadeia acima está fechada.**
+#### O aperto, e onde está
 
-#### O que bloqueia AGORA, medido
+`Store.Append` chama `ValidarStreamID` **antes** de tocar em stripe, líder ou quórum. A recusa é
+lexical: não depende de topologia, não deixa rasto, e um nome irrepresentável nunca chega a ter
+um seq atribuído. A costura `SemearStreamLegado` é a única excepção, e tem duas barreiras —
+`testing.Testing()` em runtime e uma verificação no gate `stream-names`.
 
-Experimentou-se ligar a validação ao `Append` do backend de ficheiro e correr as suites.
-Resultado: **39 testes falham**, em quatro módulos — e a causa dominante é inesperada e
-legítima:
+Leitura, `StreamHead`, `SnapshotStream` e `IngestStream` **não** validam, pelas razões da §3, e a
+assimetria está fixada por teste (`TestAOS424LeituraERestauroAceitamNomeLegado`) precisamente
+para que ninguém a «arrume».
 
-- **Os testes das próprias MIGRAÇÕES** (`integration`, `platform/memory`) escrevem nos nomes
-  LEGADOS para construir o mundo «antes». Com o `Append` a validar, **um teste deixa de
-  conseguir montar estado legado** — e sem esse estado não se pode provar que a migração o
-  transporta. Precisa de uma costura de teste (semear o stream sem passar pela validação), que
-  é desenho próprio e não um efeito lateral deste ADR.
-- **Cerca de vinte testes** em `cmd/aos` e `cmd/aos-orq` usam `stream_id` ou `run_id` com ponto
-  escritos à mão. São correcções mecânicas.
-- **A composição em runtime (AOS-425)** continua descoberta, e é o risco REAL que sobra: o
-  `stream_id` de admissão contém o nome do modelo, que vem da allowlist ASSINADA. Hoje nenhum
-  modelo dessa lista tem ponto (medido), mas apertar o `Append` converteria essa dívida latente
-  em avaria viva no dia em que alguém acrescentasse um `gpt-4.1` — e a falha seria na
-  ADMISSÃO, isto é, runs a deixarem de ser admitidos.
+#### O QUE O APERTO REVELOU, e que é o essencial desta revisão
 
-O bloqueio deixou de ser «isto parte produção hoje» e passou a ser «isto exige uma costura de
-teste e o AOS-425». É uma dívida mais pequena e mais nomeada, mas continua a ser dívida.
+A medição anterior deste ADR dizia que o aperto custava «39 testes, na maioria andaime das
+migrações». **Estava errada**, e estava errada de uma maneira que vale a pena registar: foi feita
+a olhar para uma lista de nomes de teste, não para as suas causas.
+
+As causas verdadeiras, medidas: **catorze das quinze falhas do `cmd/aos` eram um DEFEITO VIVO**,
+não andaime. Dois streams do caminho de autorização compunham o nome a partir de valores que
+ninguém validava:
+
+| Stream | O escopo vinha de | O carácter |
+|---|---|---|
+| `ratify-nonce:<escopo>:<hex>` | constantes de domínio do autenticador | `.` em `foureyes.challenge`, `governance.dsar`, `nhi.revoke` |
+| `ratify-nonce:<escopo>:<hex>` | o tuplo `<domínio>\x00<emissor>` do `nonceScope` | `\x00` |
+| `4eyes-challenge:<escopo>:<hex>` | o `request_id` do CORPO de um pedido | o que o cliente lá puser |
+
+Sobre o substrato de ficheiro nada disto falha — e é por isso que sobreviveu a dez gates, a uma
+revisão adversarial e ao smoke, que correm todos sobre ficheiro. **Sobre JetStream o
+`ConsumeNonce` devolveria erro de backend, o gate de ratificação trataria isso como bloqueio, e
+toda a emissão de challenges e toda a ratificação seriam negadas** — com um `403 aprovador nao
+autorizado`, que nomeia a causa errada.
+
+A correcção é na ORIGEM e não no ponto de uso: o escopo entra RESUMIDO no nome
+(`hitl.nomeDeEscopo`). Resumir, e não escapar nem recusar — o alfabeto de entrada aqui é
+arbitrário (um `RatificationID` é um token opaco de fonte externa), e uma marca de escape que
+pertença ao alfabeto de entrada colide, que foi exactamente o erro cometido no escape do
+`node_id` e apanhado pelo seu teste de injectividade.
+
+**Custo declarado da renomeação**, porque muda nomes de streams em uso:
+
+- **Nonces consumidos** antes do deploy são esquecidos: o CAS num stream novo e vazio vence, e o
+  nonce conta como FRESCO. A janela de replay é a da frescura de ratificação — fora dela o
+  sinal já é recusado por idade, antes de se chegar ao nonce.
+- **Challenges emitidos** antes do deploy deixam de ser encontrados. É **fail-closed** e está
+  contratado: `IsChallengeIssued` devolve `(false, nil)` em stream inexistente. O aprovador pede
+  outro challenge; o `ChallengeTTL` em vigor é de 5 minutos.
 
 ## 3. Alternativas consideradas
 
@@ -133,17 +164,23 @@ composição em runtime (AOS-425) continua descoberta.
 (`TestAOS424RegraDoStreamIDNaoEDuplicadaNoNo`), e o gate lê a declaração canónica com âncora e
 piso — verificado por mutação que renomear a constante ou relaxá-la faz o gate falhar fechado.
 
-**O que fica pior, e é preciso dizê-lo.** A decisão da §2.4 está tomada e não executada, e isso é
-uma forma de dívida: quem ler este ADR pode concluir que a assimetria está fechada. **Não está.**
-Fecha-se no dia em que o `node_id` for stream-safe — ou por aperto do `ValidNodeID` com prompt
-novo e validação com o modelo vivo, ou por escape reversível no `childRunID`.
+**O que fica pior, e é preciso dizê-lo.** Os nomes dos streams de nonce e de challenge MUDARAM,
+com o custo declarado na §2.4. E o aperto trocou um defeito silencioso por uma avaria visível:
+onde antes um nome irrepresentável passava e só partia na migração para JetStream, agora a
+escrita recusa. Para os caminhos corrigidos isso é o que se quer; para os que a §2.4 não alcança,
+é o argumento central do AOS-425 — a recusa dá-se no ponto de USO, longe de onde o valor entrou.
+
+**O que este ADR NÃO permite concluir.** Que a classe está fechada. O aperto encontrou os
+defeitos que EXISTEM NA ÁRVORE DE TESTES; um caminho de composição que nenhum teste exercita com
+um valor «sujo» continua invisível. A tabela do AOS-425 tem seis linhas e este trabalho fechou
+duas.
 
 **Resíduos declarados:**
 
-- **A §2.4**, acima. É o único eixo da causa-raiz que continua aberto.
-- **A composição em runtime** (AOS-425): o `stream_id` de admissão contém o nome do modelo, que
-  vem da allowlist assinada. Um gate estático não a vê, e a correcção lá é validar onde o valor
-  ENTRA.
+- **A composição em runtime** (AOS-425): quatro linhas por fechar, a mais importante a admissão
+  de quota — o `stream_id` contém o nome do modelo, que vem da allowlist ASSINADA. Hoje nenhum
+  modelo dessa lista tem ponto (medido), mas com o `Append` apertado acrescentar um `gpt-4.1`
+  deixa de ser uma mudança de política: passa a ser runs a deixarem de ser admitidos.
 - **O `Subscribe` falha em silêncio**: não valida o filtro — um filtro por um nome impossível
   não dá erro, nunca casa nada.
 - **Duas constantes de nome LEGADO** continuam na baseline do gate. Não são streams em uso: são

@@ -53,7 +53,11 @@ func NewEventStoreNonceStore(store NonceAppender) *EventStoreNonceStore {
 // tratados como BLOQUEIO pelo gate (fail-closed). scope é o
 // [SelfModArtifact.RatificationID] (uso-único por identidade de artefacto+eval).
 func (n *EventStoreNonceStore) ConsumeNonce(ctx context.Context, scope string, nonce []byte) (bool, error) {
-	stream := nonceStreamPrefix + scope + ":" + hex.EncodeToString(nonce)
+	// O SCOPE vai RESUMIDO, e não inteiro — ver [nomeDeEscopo]. O que chegava aqui inteiro era,
+	// consoante o chamador, uma constante de domínio com ponto (`governance.dsar`), um
+	// `request_id` de cliente, ou o tuplo `<domínio>\x00<emissor>` do `nonceScope`, com um byte
+	// de CONTROLO lá dentro. Nenhum dos três é representável num subject NATS.
+	stream := nonceStreamPrefix + nomeDeEscopo(scope) + ":" + hex.EncodeToString(nonce)
 	// Sem RunID/StepID: a idempotência do Event Store (chave = run_id+step_id)
 	// deduplicaria o 2º append como "sucesso" (StatusDuplicate) ANTES do CAS,
 	// mascarando o replay. Deixando-a DESLIGADA, o CAS (WithExpectedSeq(0)) é o único
