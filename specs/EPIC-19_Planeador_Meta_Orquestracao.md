@@ -2488,6 +2488,455 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ---
 
+## AOS-427 — A cunhagem do NHI do run é manual, e é o que separa «funciona» de «funciona sem ninguém no terminal»
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum ainda. As citações ao ADR-003, ADR-006, ADR-016 e
+     ADR-027 são RESTRIÇÕES sob as quais a solução tem de caber. A decisão (1) abaixo é de
+     ARQUITECTURA e vai exigir ADR próprio — quando existir, este marcador sai. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade ao caminho do plano; o eixo REAL é o EPIC-16 / D4, autoridade de identidade) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura + implementação |
+| Prioridade | **P1** — é a última peça do «sem operador», e o AOS-417 e o AOS-423 deixaram ambos o critério por marcar por causa dela |
+| Estimativa | L |
+| Dependências | AOS-423 (o consumidor, FECHADO); EPIC-16 Frente 2 (custódia por `crypto.Signer`, contrato entregue) |
+| Bloqueia | O critério «uma corrida desencadeada por rede, sem ninguém no terminal» do AOS-417 e do AOS-423 |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/cmd/aos-issuer/main.go` (`mint`), `packages/cmd/aos-orq/node_client.go` (o consumo), `packages/platform/identity/issuer.go`, `deploy/server/README.md` §custódia, `docs/adr/ADR-006-credential-broker-jit.md`, `docs/adr/ADR-027`, `docs/adr/ADR-028` §resíduos |
+
+### Contexto
+
+O caminho do plano está completo desde o AOS-423: um objectivo entra por `POST /plans`, o
+`aos-orq consume` reclama-o e corre-o. **Falta a credencial.**
+
+Medido:
+
+| O que | Onde | Valor |
+|---|---|---|
+| A credencial é um token NHI compact (JWS ed25519), cru | `node_client.go:282-292` | ficheiro apontado por `AOS_ORQ_NODE_CREDENTIAL_FILE` |
+| Relida do disco a CADA submissão | `node_client.go:316` | substituir o ficheiro renova sem reiniciar o `serve` |
+| TTL decidido na cunhagem, sem tecto na biblioteca | `identity/issuer.go:255`, `aos-issuer/main.go:138` | default 15m; a receita de produção usa **45m** (`get-id-token.ps1:55`) |
+| Um ficheiro serve TODOS os runs filhos de um plano | `node_executor.go:113,224` | o mesmo token em cada `POST /runs` |
+| Quem a cunha | `aos-issuer mint`, com a `issuer.key` **na máquina do operador** | dois logins no browser (audiências `aos-issuer` e `aos-node`) |
+
+**E ninguém a escreve.** Não há script, `cron` nem `systemd timer` no repositório que produza ou
+renove esse ficheiro — o `docker-compose.prod.yml:541` só propaga a variável, sem montagem
+declarada (ao contrário do `./secrets/reader-client-secret`, `:555`, que é montado). É
+procedimento manual não versionado.
+
+A consequência é a que o ADR-028 §resíduos já nomeia: **«a cunhagem do NHI continua manual (dois
+logins no browser, tecto de 45 min). É a barreira seguinte ao uso sem operador […] e continua sem
+ticket próprio.»** Este ticket é esse ticket.
+
+### O que NÃO se pode fazer, e está decidido
+
+Estas quatro portas estão fechadas por decisão registada. Quem executar este ticket **não as
+reabre sem ADR de supersessão**:
+
+- ❌ **Pôr a `issuer.key` no servidor.** `deploy/server/docker-compose.prod.yml:303-306` é
+  explícito: «`AOS_ISSUER_KEY_PATH` daria ao nó um caminho para uma CHAVE DE ASSINATURA […]
+  **tornar isto definível é oferecer a porta que a postura fecha.**» E `deploy/server/README.md:93`:
+  «se a privada vivesse no servidor, quem o comprometesse mintaria a sua própria identidade».
+- ❌ **Fazer o nó confiar em `iss:aos-orq`.** O `aos-orq` **já cunha** identidades em runtime, com
+  um emissor ed25519 efémero por processo (`planner_wiring.go:254-294`) — mas essa confiança é
+  auto-referencial e confinada ao seu Model Gateway interno. O ADR-027 §2.2 rejeita explicitamente
+  estendê-la ao nó: «daria ao orquestrador o poder de cunhar qualquer autoridade para o nó e
+  desfazia a separação de domínios de confiança (ADR-006)».
+- ❌ **Assinar em nome do humano sem hardware do humano** (ADR-006 invariante 6, ADR-016 §1).
+- ❌ **Compor o `integration.IssuerAuthority` no nó.** Tem `MintForAssertion`, mas só é composto no
+  ramo NÃO-endurecido (`bootstrap.go:1690-1698`), e a produção proíbe esse ramo
+  (`main.go:672-674`).
+
+### O que o ADR-006 AUTORIZA, e que é a porta aberta
+
+O ADR-006 §2 invariante 2 pede exactamente isto para NHIs de agente: **«JIT com TTL curto. A
+credencial é obtida no momento em que é precisa (não pré-provisionada), guardada num cache de vida
+curta, renovada antes de expirar.»** O que ele proíbe é assinar pelo humano e o agente ver segredo
+downstream — não colide com renovar o NHI de um run.
+
+E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
+(`vaulttransitsigner.go` + flags `--vault-*`), o EPIC-16 Frente 2 já fixou a custódia por
+`crypto.Signer` fora do processo do nó, e o consumo por substituição de ficheiro já funciona
+(`node_client.go:316` relê a cada submissão).
+
+### Decisões a tomar primeiro (do dono)
+
+1. **ONDE vive a autoridade de emissão.** Um emissor externo ao nó E ao `aos-orq`, com
+   `crypto.Signer` sobre Vault/HSM, é o desenho que o ADR-006 pede e de que o `aos-issuer
+   --vault-addr` já é meia implementação. Mas é um processo novo em produção, com o seu ciclo de
+   vida, a sua rede e o seu próprio problema de arranque. **Exige ADR.**
+2. **Qual é a PROVA que autoriza uma cunhagem sem humano presente.** Hoje a raiz é um ID-token
+   OIDC verificado (`--assertion`), e o humano sai do `sub` da prova. Sem browser, de onde vem a
+   prova? Um `client_credentials` do próprio serviço não tem `sub` humano — e a cadeia
+   `on-behalf-of` do ADR-003 exige raiz humana. **Ou se relaxa isso (e é decisão de segurança), ou
+   a raiz passa a ser uma delegação de longa duração assinada uma vez por um humano.**
+3. **A renovação a meio de um plano.** O ADR-027 fixa que «a validade do NHI é o tecto de duração
+   de um plano» e deixa a renovação como resíduo. Com renovação, esse tecto cai — o que é bom para
+   planos longos e mau para o raio de acção de uma credencial comprometida.
+4. **Tecto máximo de TTL.** Não existe nenhum na biblioteca (`identity/issuer.go`): o valor é o que
+   o operador escrever. Se a cunhagem passar a ser automática, um TTL generoso deixa de ter o
+   atrito humano que hoje o limita.
+
+### Critérios de Aceitação
+
+- [ ] Decisão (1) registada em **ADR próprio**, com as quatro portas fechadas acima citadas como
+      restrições e a alternativa rejeitada com o custo escrito.
+- [ ] Um objectivo submetido por `POST /plans` corre até ao fim **sem ninguém no terminal** — o
+      critério que o AOS-417 e o AOS-423 deixaram por marcar. Verificado em PRODUÇÃO, não só em
+      teste.
+- [ ] A `issuer.key` continua fora do servidor, e há teste ou gate que o prove — não basta não a
+      pôr lá.
+- [ ] O caminho de renovação tem **sensor**: uma credencial que caduca sem ser renovada é visível
+      antes de o run falhar, não depois.
+- [ ] O TTL em vigor é declarado no banner de arranque de quem quer que passe a cunhar.
+
+### Fora de âmbito, declarado
+
+- **A verificação da credencial no ingresso** — é o AOS-428, e é independente desta.
+- **A rotação da `issuer.key`** — runbook existente (`docs/runbooks/swaps-producao-identidade.md`).
+- **A UI** (EPIC-13).
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Automatizar a cunhagem remove o atrito humano que hoje limita o raio de acção de uma credencial | Decisão (4): tecto máximo de TTL imposto na biblioteca, não na receita |
+| Um emissor externo novo torna-se um ponto único de falha do caminho do plano | O consumo é por ficheiro relido (`node_client.go:316`): uma credencial válida em disco sobrevive à indisponibilidade do emissor até expirar |
+| A prova sem humano relaxa a cadeia `on-behalf-of` do ADR-003 sem que ninguém o note | Decisão (2) tem de ser escrita como decisão de SEGURANÇA, com o que se perde |
+
+### Estado
+
+**ABERTO.** Nada implementado. É a única coisa entre o estado de hoje — caminho do plano completo
+e verificado em produção — e «usável sem operador».
+
+---
+
+## AOS-428 — O `POST /runs` aceita uma credencial que não verifica, e o run só falha no primeiro turno de modelo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma assimetria entre duas rotas do mesmo
+     ficheiro. As citações ao ADR-003 (proibição de anónimo) e ao ADR-016 (não-oracularidade) são
+     RESTRIÇÕES, não entregas. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade; o eixo é o EPIC-01/AOS-003, mediação) |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | P1 — é defeito VIVO em todos os runs, hoje |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | — |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/cmd/aos/api.go:610-739` (`handleSubmit`), `:2727` (o `resume`, que verifica), `packages/platform/identity/rmadapter.go:39-89` (onde a verificação REALMENTE acontece) |
+
+### Contexto
+
+O `handleSubmit` **não verifica a credencial do run**. Medido: `api.go:739` copia
+`req.Credential` para o `Goal` e mais nada — não há verificação em `cmd/aos` no momento da
+submissão.
+
+A verificação acontece, mas **muito depois**: no hook `identity` do Reference Monitor
+(`identity/rmadapter.go:44-53`), que corre na PRIMEIRA CHAMADA MEDIADA — o turno de modelo.
+
+O que isso produz:
+
+```text
+POST /runs  com credencial ausente, malformada ou expirada
+  -> 201 Created
+  -> o run é criado, sela residência, consome estado durável
+  -> primeira chamada mediada -> denied_by=identity
+  -> o run morre por uma razão que era conhecível no primeiro milissegundo
+```
+
+**A assimetria que torna isto claramente um defeito e não uma escolha:** o `resume` do MESMO
+ficheiro exige credencial não-vazia e recusa com 400 (`api.go:2727`). Duas rotas, o mesmo campo,
+posturas opostas — e a que aceita é a que CRIA o run.
+
+### Objectivo
+
+Um `POST /runs` cuja credencial não passe a verificação é recusado **na porta**, antes de o run
+existir.
+
+### O que torna isto não-trivial, e é preciso decidir
+
+- **A verificação completa é cara e contextual.** O `rmadapter` verifica assinatura, emissor,
+  janela temporal, revogação **e** o escopo POR CAPABILITY — e a capability só se conhece na
+  chamada. No ingresso só se pode verificar a parte que não depende do contexto: assinatura,
+  emissor conhecido, `exp` no futuro, não revogado.
+- **A recusa não pode virar oráculo.** Distinguir «credencial inválida» de «credencial de outro
+  board» na resposta daria a um chamador uma sonda sobre o trust store. A postura do ADR-030 §2.1
+  aplica-se: recusa uniforme.
+- **Fail-closed sem verificador composto?** Num nó sem identidade endurecida (fora de produção) o
+  verificador pode não existir. Recusar tudo aí partiria o dev; aceitar tudo repõe o defeito. A
+  decisão tem de ser escrita.
+
+### Critérios de Aceitação
+
+- [ ] Um `POST /runs` com credencial vazia, malformada, expirada, de emissor desconhecido ou
+      revogada é recusado **sem criar o run**, e sem selar residência.
+- [ ] Teste que prova que **nenhum estado durável** fica para trás numa recusa — é o que distingue
+      esta correcção de a mover para mais cedo e na mesma sujar o log.
+- [ ] A recusa é **uniforme**: um teste verifica que as cinco causas acima dão a mesma resposta.
+- [ ] O caminho de sucesso não regride: a verificação do `rmadapter` continua a correr na chamada
+      (esta é uma guarda ADICIONAL, não um substituto — o escopo por-capability só lá é
+      verificável).
+- [ ] A postura sem verificador composto está declarada no banner de arranque.
+
+### Fora de âmbito, declarado
+
+- **A cunhagem** (AOS-427). Este ticket faz o nó recusar cedo; não resolve quem produz a
+  credencial.
+- **O escopo por-capability**, que continua a ser do `rmadapter` por construção.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Verificar no ingresso duplica a regra e as duas cópias divergem | Chamar o MESMO `identity.Verifier` que o `rmadapter` usa, nunca reimplementar a verificação |
+| Um nó de dev sem verificador passa a recusar tudo e o smoke parte | Decisão escrita + banner; o smoke é a evidência |
+
+### Estado
+
+**ABERTO.** Descoberto na discovery do AOS-427, ao seguir o que o `serve` precisa. Não estava em
+ticket nenhum.
+
+---
+
+## AOS-429 — A fila de pedidos de plano nunca expira, e o objectivo do utilizador fica em claro no WAL e nos backups
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: materializa a metade «retenção» que o ADR-028 §4
+     atribuiu ao ticket de implementação e que o AOS-423 entregou só como tecto. As citações ao
+     ADR-013 (retenção) e ao ADR-028 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção + decisão |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-423 (a fila e o tecto, FECHADO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/retention.go:77-94` (`subjectOf`), `:101-141` (a fonte), `packages/cmd/aos/plan_ingress.go:100-107`, `docs/adr/ADR-028` §4 |
+
+### Contexto
+
+O AOS-423 entregou o TECTO de pendentes e declarou a retenção por fazer. Medido agora, a lacuna é
+estrutural e tem duas metades.
+
+**(i) O varredor de retenção não conhece a fila, e não é esquecimento — é o desenho.** O
+`eventStoreRecordSource.List` varre todos os streams (`retention.go:110-121`), mas só produz um
+registo expirável quando `subjectOf(e)` devolve um titular. E o `subjectOf` (`:77-94`) reconhece
+exactamente dois tipos de evento — `replay.captured` (`:79`) e `step.ledger.applied` (`:85`) —,
+tudo o resto cai no `default: return ""` (`:91-93`). O `planrequest.submitted` cai aí. **Nunca
+entra na lista, nunca expira.**
+
+Agravante: o sink é crypto-shred da KEK por-titular (`:200-209`). **Sem titular, `Expire` é um
+no-op explícito.**
+
+**(ii) O objectivo é texto livre de utilizador final, em claro.** O payload do pedido é inline e
+sem cifra (`plan_ingress.go:220-227`), e o ficheiro já o declara em `:100-107`. Vai para o WAL e
+para os backups, fora do alcance do crypto-shredding por-titular — que é o mecanismo que o resto
+do sistema usa para o Art. 17.
+
+O custo composto: a fila cresce com o HISTÓRICO e não só com os pendentes, e a projecção do
+AOS-423 é linear nos eventos — o tecto limita os pendentes, não o trabalho de os contar.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **O pedido tem titular?** Se o `principal` da credencial verificada contar como titular, o
+   pedido entra no mecanismo que já existe e o crypto-shredding aplica-se. Se não, é preciso outro
+   mecanismo — e a pergunta «de quem é um objectivo submetido por uma máquina» é de governação,
+   não de código.
+2. **Expirar por idade ou por desfecho?** Um pedido terminal (desfecho `terminal` ou
+   `aguarda_humano`) já não serve para nada; um pendente há três semanas provavelmente também não.
+   São políticas diferentes e podem coexistir.
+3. **O objectivo em claro fica, ou passa a `PayloadRef`?** Cifrá-lo por-titular alinha-o com o
+   resto, mas o consumidor tem de o poder ler — e ele corre noutro processo.
+
+### Critérios de Aceitação
+
+- [ ] Um pedido com desfecho terminal deixa de contar para o tecto **e** sai do stream por
+      retenção, ou a razão de não sair está escrita.
+- [ ] A projecção do AOS-423 deixa de ser linear no HISTÓRICO, ou o custo está medido e declarado
+      com um tecto conhecido.
+- [ ] O objectivo em claro tem decisão escrita (3), e se ficar em claro isso aparece onde um DPO o
+      veja — não só num comentário de código.
+- [ ] Teste que prova a expiração, com relógio injectado (fixtures do `testkit`, nunca
+      `time.Now()`).
+
+### Fora de âmbito, declarado
+
+- **O tecto de pendentes**, entregue pelo AOS-423.
+- **A retenção dos streams de run**, que já funciona pelo mecanismo por-titular.
+
+### Estado
+
+**ABERTO.** A lacuna foi confirmada por leitura do `subjectOf`, não inferida.
+
+---
+
+## AOS-430 — Quem submete um plano não tem por onde ver o desfecho: o run de topo vive noutro Event Store
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum. A decisão (1) é de fronteira entre dois processos e
+     vai exigir ADR. As citações ao ADR-016 (read-path soberano), ADR-018, ADR-027 e ADR-030 são
+     RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-423 (FECHADO) |
+| Bloqueia | A UI (EPIC-13), que precisa de mostrar o estado de um plano submetido |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/runlifecycle/tenure.go:150-158`, `packages/control-plane/orchestrator/graph.go:639-645`, `deploy/server/docker-compose.prod.yml:416,547,824-828` (os volumes), `packages/cmd/aos-orq/node_executor.go:113` |
+
+### Contexto
+
+O AOS-423 deixou a pergunta (5) por confirmar: **se o `run_id` de topo chega a ser um run
+legível.** A hipótese registada era que o id de topo «pode nunca existir como run», por o ADR-027
+materializar nós como `<run>~<nó>`.
+
+**A hipótese estava errada na causa, e a causa real é mais funda.**
+
+Medido: os eventos do run de topo EXISTEM e declaram-no. O `Tenure.Append` escreve em `t.runID`
+(`tenure.go:150-158`), o `fencedStore` recusa qualquer outro stream (`graph.go:46-47`), e o `emit`
+do construtor do grafo põe o campo explicitamente — `RunID: b.dag.runID` coincidente com o stream
+(`orchestrator/graph.go:639-645`). A trava do AOS-426 devolveria `true`.
+
+**O problema é que esses eventos estão no Event Store do `aos-orq`, não no do nó.** Os dois
+processos têm volumes separados por desenho: `aos-data:/var/lib/aos` (`:416`) e
+`aos-orq-data:/var/lib/aos-orq` (`:547`), declarados distintos em `:824-828`. E o `aos-orq` só
+submete ao nó os runs FILHOS — `childRunID(runID, nodeID)` (`node_executor.go:113`). **O id de
+topo nunca é submetido.**
+
+Logo `GET /runs/<topo>` e `GET /runs/<topo>/trajectory` no nó dão **404**, porque o stream não
+existe naquele substrato. Quem submeteu por `POST /plans` recebe `201` e não tem por onde seguir.
+Os filhos são legíveis; o plano que os gerou não.
+
+**NÃO VERIFICADO EM EXECUÇÃO.** A conclusão vem de leitura de código e dos volumes do compose. Um
+deployment que aponte os dois processos ao mesmo `--nats` mudaria a resposta, e essa configuração
+não é a de produção hoje.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **De quem é a superfície de leitura de um PLANO?** Três formas, e nenhuma é gratuita:
+   (a) o nó expõe o estado do plano, lendo-o de onde? não o tem;
+   (b) o `aos-orq` ganha superfície de rede — o que o AOS-417 evitou de propósito, e que o ADR-028
+   rejeitou («uma segunda superfície com postura diferente da do nó é exactamente o modo de falha
+   que o ADR-016 vem fechar»);
+   (c) o `aos-orq` reporta o estado ao nó pela rota que já usa, e o nó serve-o — simétrico ao
+   `POST /plans/outcome` que o AOS-423 criou.
+2. **Substrato partilhado resolve isto por acidente?** Se os dois processos passarem a partilhar
+   JetStream (a saída que o ADR-030 §3 deixou como destino), o topo fica legível sem superfície
+   nova. Mas isso é o AOS-431/infra e uma migração de produção.
+
+### Critérios de Aceitação
+
+- [ ] A conclusão acima é **verificada em execução**, não só por leitura: submeter um plano e
+      medir o que `GET /runs/<topo>` devolve.
+- [ ] Decisão (1) registada, com as alternativas rejeitadas e o custo de cada uma.
+- [ ] Quem submete por `POST /plans` tem uma forma de saber o desfecho que **não** reabre a
+      não-oracularidade do ADR-030 §2.1.
+
+### Fora de âmbito, declarado
+
+- **A UI** (EPIC-13), que consome isto e não o desenha.
+- **A migração para JetStream**, que é decisão de infraestrutura.
+
+### Estado
+
+**ABERTO.** Substitui a pergunta (5) do AOS-423, que estava certa na conclusão e errada na causa.
+
+---
+
+## AOS-431 — Não há NATS no CI, e por isso a cerimónia four-eyes nunca foi provada sobre JetStream
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. As citações ao ADR-007
+     (Event Store replicado) e ao ADR-013 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade; o eixo é o EPIC-10 / infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | infraestrutura |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | — |
+| Bloqueia | O critério por marcar do AOS-424 («pelo menos um teste da cerimónia four-eyes sobre JetStream»); a confiança em tudo o que o AOS-424 e o AOS-425 afirmam sobre representabilidade |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `.github/workflows/ci.yml`, `scripts/ci/dormencia.sh:40,52-56`, `packages/integration/approval_store_durable_test.go`, `packages/substrate/eventstore/jetstream/` |
+
+### Contexto
+
+**Nenhum ficheiro de CI define `AOS_NATS_URL`.** Confirmado: a variável aparece no
+`dormencia.sh:40,52-56` e no `Makefile:119` apenas como INVENTÁRIO, e o gate emite **warn**, não
+fail — «razão declarada: nenhum ficheiro de CI define AOS_NATS_URL». Não há `services:` de NATS no
+`ci.yml`.
+
+O efeito acumulou-se, e este eixo mediu-o três vezes:
+
+- o **AOS-424** encontrou nove nomes de stream irrepresentáveis que passaram dez gates, uma
+  revisão adversarial e o smoke — porque **todos correm sobre ficheiro**;
+- o aperto do `Append` revelou **três streams vivos** no caminho de autorização que, sobre
+  JetStream, teriam negado toda a emissão de challenges e toda a ratificação;
+- o **AOS-425** fechou a composição em runtime e deixou declarado que «este nome é representável»
+  continua a ser uma afirmação sobre a NOSSA regra, não sobre o NATS.
+
+E o modo de falha que isto esconde está escrito: sob `AOS_MODE=production` o four-eyes **exige**
+substrato durável (`ErrProductionNeedsDurableApproval`, `bootstrap.go:1843`), e o JetStream é uma
+das duas opções sancionadas. Se o `PendingApprovals.Put` falhar ali, «o operador nunca vê o que
+tem para aprovar — fail-closed **e invisível**, a pior combinação».
+
+O código já existe e já foi migrado (`approval_store_durable.go:56`,
+`approval_stream_migracao.go`). **O que falta é cobertura, não implementação.**
+
+### Critérios de Aceitação
+
+- [ ] O CI levanta NATS JetStream e define `AOS_NATS_URL`, e o gate `dormencia` deixa de o
+      inventariar como ausente.
+- [ ] **Pelo menos um teste da cerimónia four-eyes sobre JetStream** — emitir, consumir uma vez, e
+      provar que o segundo consumo é recusado. Fecha o critério por marcar do AOS-424.
+- [ ] Os testes que hoje SALTAM sem `AOS_NATS_URL` passam a correr, e o número deles é reportado —
+      um teste que salta em silêncio é indistinguível de um que não existe.
+- [ ] O `subjectDe` é exercitado contra um NATS real com um nome legado, provando que a recusa é
+      a que se assume.
+
+### Fora de âmbito, declarado
+
+- **Levantar JetStream em PRODUÇÃO**, que é outra decisão (e é o destino que o ADR-030 §3 nomeia).
+- **Migrar o nó para NATS.**
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Um serviço de NATS no CI torna os gates mais lentos e mais frágeis | Isolar num job próprio, não em todos: o que precisa de NATS é uma minoria conhecida |
+| Os testes que hoje saltam podem estar podres há muito, e ligá-los abre uma frente grande | Medir primeiro quantos são e o que falham, antes de os tornar obrigatórios |
+
+### Estado
+
+**ABERTO.** O critério existia dentro do AOS-424, marcado como «trabalho de infraestrutura com
+âmbito próprio». Este é esse âmbito.
+
+---
+
 ## AOS-426 — O read-path dos runs servia treze streams internos do nó, incluindo aprovações, memória e nonces de ratificação
 
 <!-- rtm: adrs-mencionados -->
