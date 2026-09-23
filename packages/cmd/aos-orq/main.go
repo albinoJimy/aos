@@ -239,12 +239,17 @@ func cmdServe(args []string) error {
 	if *planTimeout <= 0 || *pollInterval <= 0 {
 		return errors.New("--plan-timeout e --poll-interval têm de ser positivos")
 	}
-	// AOS-413: o executor de nós resolve-se ANTES da posse — uma configuração incompleta aborta
-	// sem reclamar o lease, como o audit do gateway.
-	cliDoNo, err := nodeClientDoAmbiente()
-	if err != nil {
-		return err
-	}
+	// AOS-425 — OS IDs VALIDAM-SE PRIMEIRO, ANTES DE SE LER O AMBIENTE.
+	//
+	// Esta verificação é puramente LEXICAL: não abre ficheiros, não lê env vars, não toca na
+	// rede. Vem antes da resolução do executor de nós para que, com o `--run` mal escrito E o
+	// ambiente incompleto, o operador ouça falar do FLAG que escreveu e não de uma env var que
+	// não mencionou. Está fixado por `TestAOS425OFlagEeJulgadoAntesDoAmbiente`.
+	//
+	// Não é a verificação mais barata da função — o `substrato.validar()` também é lexical e
+	// continua depois. A ordem aqui é sobre QUAL MENSAGEM GANHA, não sobre custo.
+	//
+	// Continua a cumprir a ordem que o AOS-413 fixou: tudo isto acontece ANTES da posse.
 	if *runID == "" {
 		return errors.New("--run é obrigatório")
 	}
@@ -253,9 +258,33 @@ func cmdServe(args []string) error {
 	if strings.Contains(*runID, separadorDoRunFilho) {
 		return fmt.Errorf("--run não pode conter %q (separa o run do nó no id dos runs filhos)", separadorDoRunFilho)
 	}
+	// AOS-425 — VALIDAR ONDE O VALOR ENTRA.
+	//
+	// O `--run` torna-se QUATRO nomes de stream: o stream do run, o `lease:<run>` da posse
+	// (AOS-286), o `<run>-plan` dos eventos do planeador, e o id da árvore de orçamento. Nenhum
+	// deles é um literal, e por isso nenhum gate estático os vê.
+	//
+	// O nó de referência já validava o mesmo valor nas DUAS portas HTTP (`POST /runs` e
+	// `POST /plans`). Este binário não validava nada além do `~`: o mesmo valor, duas portas,
+	// uma guardada. Sem isto a recusa dá-se no `Append`, DEPOIS de o lease estar reclamado — e a
+	// mensagem fala de um `stream_id`, não do flag que o operador escreveu.
+	if err := eventstore.ValidarStreamID(*runID); err != nil {
+		return fmt.Errorf("--run invalido: %w", err)
+	}
 	planoID := *planID
 	if planoID == "" {
 		planoID = *runID + "-plan"
+	}
+	// O `--plan` EXPLÍCITO precisa da sua própria verificação: o derivado herda a validade do
+	// `--run` (o sufixo `-plan` é representável), mas um valor dado à mão não herda nada.
+	if err := eventstore.ValidarStreamID(planoID); err != nil {
+		return fmt.Errorf("--plan invalido: %w", err)
+	}
+	// AOS-413: o executor de nós resolve-se ANTES da posse — uma configuração incompleta aborta
+	// sem reclamar o lease, como o audit do gateway.
+	cliDoNo, err := nodeClientDoAmbiente()
+	if err != nil {
+		return err
 	}
 
 	ctx := context.Background()

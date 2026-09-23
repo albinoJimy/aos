@@ -19,6 +19,7 @@ import (
 	"github.com/aos-ref/platform/model-gateway/routing/scoring"
 	"github.com/aos-ref/platform/model-gateway/routing/sovereignty"
 	"github.com/aos-ref/platform/model-gateway/routing/tiering"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // production_routing.go COMPÕE O ESTÁGIO DE ROTEAMENTO do gateway de produção
@@ -110,6 +111,16 @@ var (
 	// smoke tests. Uma recusa única e diagnosticável em vez de dinheiro gasto sem
 	// resposta.
 	ErrRoutingPriceCoverage = errors.New("modelgateway: modelo da escada sem preco na tabela de custo para uma regiao alcancavel (fail-closed)")
+	// ErrRoutingModelNaoRepresentavel — a escada declara um modelo (ou o gateway uma
+	// região) cujo nome não pode aparecer num `stream_id`. Fail-closed no ARRANQUE,
+	// pela MESMA razão que [ErrRoutingPriceCoverage]: com o refino armado, o nome do
+	// modelo entra na chave de quota de admissão
+	// (`admission/bucket/<provider>:<model>:<region>`), que é um `stream_id` — e um
+	// `stream_id` não pode ter `.`, que é a forma NORMAL de um id de modelo
+	// (`gpt-4.1`, `claude-3.5-sonnet`). Sem esta guarda a lacuna só apareceria quando
+	// aquele tier GANHASSE uma decisão de roteamento, e o sintoma seria um run não
+	// admitido. AOS-425.
+	ErrRoutingModelNaoRepresentavel = errors.New("modelgateway: nome de modelo/regiao da escada entra num stream_id e nao e representavel num subject NATS (fail-closed)")
 	// ErrModelSwapNotSealed — o refino trocou o modelo despachado e essa decisão NÃO
 	// foi selável no audit WORM. Fail-closed (ADR-010, audit-before-effect): uma
 	// decisão de governação não-auditável aborta a chamada ANTES de o provider ser
@@ -329,6 +340,32 @@ func newRefineStage(
 				ErrRoutingProfileUnknown, p, tab.Version(), strings.Join(tab.Names(), ", "))
 		}
 	}
+	// NOMES QUE VIRAM `stream_id` (AOS-425) — a escada cruzada com o substrato, no
+	// arranque.
+	//
+	// É AQUI que o valor entra. O `Reserve` da admissão compõe
+	// `admission/bucket/<provider>:<model>:<region>` a partir de `tier.Model` (desta
+	// escada) e da região; esse nome é um `stream_id`, e o `Append` recusa-o se não
+	// for representável num subject NATS.
+	//
+	// A verificação esteve, por engano, na carga da ALLOWLIST. A allowlist AUTORIZA
+	// um modelo; quem o FORNECE é esta escada — e validar lá partia o bundle externo,
+	// cuja razão de ser documentada é «pedir nomes de modelo reais». Ver o cabeçalho
+	// de `policy/allowlist/allowlist.go`.
+	//
+	// O `provider` da chave vem do PEDIDO e não da composição: não é alcançável aqui,
+	// e fica declarado como tal no AOS-425.
+	for _, t := range ladder.Tiers() {
+		if err := eventstore.ValidarStreamID(t.Model); err != nil {
+			return nil, fmt.Errorf("%w: modelo %q da escada: %v", ErrRoutingModelNaoRepresentavel, t.Model, err)
+		}
+	}
+	if r := strings.TrimSpace(cfg.DefaultRegion); r != "" {
+		if err := eventstore.ValidarStreamID(r); err != nil {
+			return nil, fmt.Errorf("%w: regiao %q do gateway: %v", ErrRoutingModelNaoRepresentavel, r, err)
+		}
+	}
+
 	// COBERTURA DE PREÇO — a escada cruzada com a contabilidade, no arranque. Ver o
 	// cabeçalho: o custo é fail-closed DEPOIS de o provider ser invocado, pelo que a
 	// lacuna tem de ser apanhada AQUI.

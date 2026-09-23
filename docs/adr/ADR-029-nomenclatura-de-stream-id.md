@@ -177,10 +177,29 @@ duas.
 
 **Resíduos declarados:**
 
-- **A composição em runtime** (AOS-425): quatro linhas por fechar, a mais importante a admissão
-  de quota — o `stream_id` contém o nome do modelo, que vem da allowlist ASSINADA. Hoje nenhum
-  modelo dessa lista tem ponto (medido), mas com o `Append` apertado acrescentar um `gpt-4.1`
-  deixa de ser uma mudança de política: passa a ser runs a deixarem de ser admitidos.
+- **A composição em runtime** (AOS-425): os sítios VIVOS estão fechados; a classe **não**.
+  Ver a correcção abaixo e os resíduos declarados no ticket — uma policy com `models: ["*"]`, os
+  bytes não-ASCII no escape do `node_id`, e o facto de não haver teste sobre JetStream.
+
+#### CORRECÇÃO (AOS-425) — a gravidade que este ADR atribuiu à admissão estava errada
+
+A revisão anterior afirmava que, com o `Append` apertado, acrescentar um `gpt-4.1` à allowlist
+«passa a ser runs a deixarem de ser admitidos». **Isso exigiria que o caminho de admissão
+corresse, e ele não corre.**
+
+Medido ao executar o AOS-425: nada na árvore constrói `[]tiering.Tier` fora de testes, o pacote
+`control-plane/scheduler` não tem importador de produção a não ser o `tieradapter` (que também
+não tem chamador), e o wiring do nó declara-o explicitamente — `DEFERIDO (DEF-280-NO)`. O
+`budget.WithEmitter`, que armaria o emissor durável, também não tem chamador.
+
+A afirmação veio de ler a tabela do AOS-425 em vez de verificar se o caminho estava ligado. É a
+mesma falha de método que este ADR já regista uma vez (medir por nomes em vez de causas), e é a
+segunda vez no mesmo eixo.
+
+**O que era REALMENTE o risco vivo**, e que a tabela não tinha: o flag `--run` do `aos-orq`, que
+corre em produção desde a v0.1.20. O valor torna-se quatro nomes de stream e não era validado —
+o nó guardava o mesmo valor nas duas portas HTTP e o binário não guardava nenhuma. Fechado pelo
+AOS-425.
 - **O `Subscribe` falha em silêncio**: não valida o filtro — um filtro por um nome impossível
   não dá erro, nunca casa nada.
 - **Duas constantes de nome LEGADO** continuam na baseline do gate. Não são streams em uso: são
