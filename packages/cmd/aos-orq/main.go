@@ -120,6 +120,10 @@ func main() {
 		err = cmdPlans(os.Args[2:])
 	case "decide":
 		err = cmdDecide(os.Args[2:])
+	// AOS-423: drena a fila de pedidos de plano do nó. Reclama, corre pelo mesmo caminho do
+	// `serve`, reporta o desfecho, repete — e TERMINA. Ver consumir.go.
+	case "consume":
+		err = cmdConsume(os.Args[2:])
 	default:
 		usage()
 		os.Exit(exitErro)

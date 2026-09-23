@@ -3192,12 +3192,14 @@ um valor «sujo» continua invisível.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum: materializa a metade do ADR-028 §2.2 que o AOS-417
-     deixou por fazer (o CONSUMO do facto), e as citações ao ADR-018, ADR-023 e ADR-028 são
-     RESTRIÇÕES sob as quais o consumidor tem de caber, não entregas deste ticket. Se vier a
-     exigir decisão nova — e a pergunta (1) abaixo pode exigi-la — abre-se ADR próprio e este
-     marcador sai. -->
+<!-- O MARCADOR `rtm: adrs-mencionados` SAIU, e o comentario anterior previa que saisse: dizia
+     que «se vier a exigir decisao nova — e a pergunta (1) abaixo pode exigi-la — abre-se ADR
+     proprio e este marcador sai». A decisao (1) exigiu, e o ADR-030 e dele.
+
+     O preco de tirar o marcador e que o ADR-018, o ADR-023 e o ADR-028, que aqui sao RESTRICOES
+     e nao entregas, passam a contar como implementados por este ticket na RTM. Fica dito porque
+     o parser e textual e o marcador e tudo-ou-nada: nao ha forma de separar os dois papeis no
+     mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. -->
 
 | Campo | Valor |
 |---|---|
@@ -3303,24 +3305,39 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
 
 ### Critérios de Aceitação
 
-- [ ] Um pedido gravado na fila desencadeia a corrida **uma só vez**, e há teste que o prova com
-      DOIS consumidores em simultâneo — não só com um, que não exercita a arbitragem.
-- [ ] O consumo usa o molde do `approval_store_durable` (claim-before-read, `StatusDuplicate`) e
-      **não** um estado paralelo; a arbitragem final continua a ser o LEASE (ADR-023).
-- [ ] O `layer-lint` continua verde e o guard-test de fronteira do ADR-018 **não muda**.
-- [ ] Um pedido cujo `serve` falhe tem o desfecho decidido em (4), com teste que distingue falha
-      TRANSITÓRIA de PERMANENTE — não é comportamento acidental do código de saída.
-- [ ] O banner de arranque do nó **deixa de dizer que ninguém consome a fila**, e o
-      `TestAOS417BannerDoConsumidorNaoApodrece` — que existe precisamente para ficar vermelho
-      neste momento — volta ao verde pela razão certa (o literal `false` foi corrigido), e não
-      por se ter relaxado o teste.
-- [ ] A profundidade da fila é observável no `/metrics`. Sem isto não há como saber se o
-      consumidor está a acompanhar o ingresso, e o AOS-422 já mostrou o que custa uma guarda sem
-      sensor.
-- [ ] Tecto de pendentes e retenção implementados segundo (3), ou **declarados** com a razão —
-      nunca omitidos em silêncio.
-- [ ] Verificado em produção: um objectivo submetido por rede corre até ao fim **sem ninguém no
-      terminal**. É este o critério que o AOS-417 deixou por marcar, e é aqui que fecha.
+- [x] Um pedido gravado na fila desencadeia a corrida **uma só vez**, provado com DOIS
+      consumidores — e o teste custou uma lição: a primeira versão reclamava duas vezes EM SÉRIE e
+      **a mutação sobreviveu**, porque a segunda projecção já vê a reclamação da primeira e nunca
+      chega ao `StatusDuplicate`. O sensor só passou a existir quando a corrida se tornou
+      DETERMINISTA (`storeQueEsconde`, uma leitura cega à reclamação do outro).
+- [x] O consumo usa o molde do `approval_store_durable` (`StatusDuplicate` como árbitro) e não um
+      estado paralelo. **Com uma diferença deliberada:** o molde reclama ANTES de ler e queima o
+      item se o processo morrer — lado seguro para um grant humano, lado ERRADO para um pedido de
+      plano. Daí a GERAÇÃO, que é o padrão de re-encarnação do mesmo ficheiro.
+- [x] O `layer-lint` continua verde e o guard-test de fronteira do ADR-018 não mudou: o nó não
+      importa o orquestrador, e o consumidor fala HTTP.
+- [x] Um pedido cujo `serve` falhe tem o desfecho decidido, com teste que distingue TRANSITÓRIA
+      (3/4/5/8 — volta à fila já), PERMANENTE (7/9 — não volta) e AGUARDA-HUMANO (6 — nem uma
+      coisa nem outra). O genérico (1) é TRANSITÓRIO, e é a escolha menos óbvia: perder um pedido
+      em silêncio é o defeito que este eixo fecha.
+- [x] O banner deixou de dizer que ninguém consome a fila, e o guard ficou vermelho como devia.
+      **Mas não bastou corrigir o literal** — o guard detectava o consumidor por PROXY («quem
+      nomeia o stream dentro do `aos-orq`»), e o consumidor que se escreveu fala HTTP e nunca
+      nomeia o stream. A heurística teria ficado CEGA em silêncio. O guard mudou de pergunta:
+      agora exige que o argumento seja DERIVADO e amarra o predicado ao do `readGov`.
+- [x] A profundidade da fila é observável: `aos_plan_queue_pending`, `aos_plan_queue_ceiling` e
+      `aos_plan_queue_claimable`. São TRÊS séries porque lêem-se de maneira diferente — «ninguém
+      PODE drenar» (gate ausente) e «ninguém ESTÁ a drenar» exigem acções distintas. Um erro a ler
+      não publica zero: publicar zero por não saber é a mentira que faz o painel ficar verde sobre
+      uma fila cheia.
+- [x] Tecto de pendentes implementado (1000, recusa pedidos novos com 503, nunca descarta
+      antigos). **A RETENÇÃO fica por fazer e declarada:** o stream da fila cresce com o
+      HISTÓRICO, não só com os pendentes, e nada o poda — o `retention_sweeper` não o conhece. A
+      projecção é linear nos eventos, pelo que o custo cresce com o histórico mesmo com a fila
+      vazia.
+- [ ] **Verificado em produção: POR FAZER.** É o critério que o AOS-417 deixou por marcar e que
+      este ticket também deixa. O que existe é prova em teste; falta um objectivo submetido por
+      rede a correr até ao fim sem ninguém no terminal, no servidor.
 
 ### Fora de âmbito, declarado
 
@@ -3343,10 +3360,69 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
 
 ### Estado
 
-**ABERTO.** Nada implementado. O ingresso (AOS-417) está em `main` desde o PR #353; a fila existe,
-está vazia em produção e não tem leitor.
+**PARCIAL — o código está feito e provado em teste; falta a verificação em produção.**
 
----
+### O que se entregou
+
+| Frente | O que ficou |
+|---|---|
+| **ADR-030** | A decisão da rota, e a não-oracularidade a ganhar casa (ver abaixo) |
+| **`POST /plans/claim`** | Reclama UM pedido. Nada enumera a fila; nada devolve um pedido sem o consumir |
+| **`POST /plans/outcome`** | Decide se o pedido volta à fila. Sem ela, uma falha transitória custava o TTL inteiro |
+| **`aos-orq consume`** | Reclama, corre pelo MESMO caminho do `serve`, reporta, repete — e termina |
+| **`/metrics`** | `aos_plan_queue_pending`, `_ceiling`, `_claimable` |
+| **Banner** | Deriva, e o guard que o vigiava mudou de pergunta |
+
+### O achado que este ticket não ia buscar
+
+A tese da **não-oracularidade** — que o `plan_ingress.go` e o ADR-028 §2.3 citavam ambos como
+sendo «do ADR-016» — **não está no ADR-016**. Medido: 322 linhas, zero ocorrências de «oráculo»,
+`201`, `409` ou `404`. O que o ADR-016 decide é o read-path SOBERANO (§5) e a separação
+canal-controlo/canal-dados (§6), que é adjacente e, para o que aqui interessava, mais forte.
+
+A prática era real e imposta com teste. O que não existia era a **fonte**: dois sítios a
+citarem-se um ao outro e a apontar para onde a tese não está. Descobriu-se ao ir reargumentá-la
+para um consumidor autenticado — que era exactamente o que a decisão (1)(c) exigia. O ADR-030 §2.1
+dá-lhe casa e os dois sítios passam a apontar para ela.
+
+É a quarta vez nesta série que uma afirmação sedimentada não sobrevive a ser verificada.
+
+### A decisão (1), e o que a postura custou
+
+Escolheu-se **(c)**: rota de reclamação no nó, consumida pelo `aos-orq` por HTTP. Preserva o
+ADR-018 (o nó não corre o plano) e o ADR-023 (a posse é o lease) sem pedir uma migração de
+substrato.
+
+A postura é `planoDados` + Bearer OIDC + gate soberano, pelo **precedente medido** do `POST /runs`
+— que cria um run, é chamado pelo mesmo `aos-orq` com a mesma credencial, e é dados. A alternativa
+`planoControlo` exigiria assinatura ed25519 sobre payload canónico, e o `aos-orq` gera hoje uma
+chave **efémera por execução**: seria material criptográfico novo em produção, com rotação e
+pinagem. Está registado no ADR-030 §2.3 com o custo escrito.
+
+### As decisões (2) a (5)
+
+- **(2) Forma do trabalhador — NÃO DECIDIDA, e de propósito.** O `consume` drena uma vez e
+  termina; quem o invoca (timer do host, como o `aos-tls-sync.timer`, ou um serviço) é decisão de
+  implantação e o código é o mesmo. Não obriga este binário a ser o primeiro serviço de longa
+  duração do AOS além do nó.
+- **(3) Tecto:** 1000, recusa pedidos novos, nunca descarta antigos.
+- **(4) Desfecho:** transitório (3/4/5/8) volta já; permanente (7/9) não volta; aguarda-humano (6)
+  nem uma coisa nem outra. O genérico é transitório.
+- **(5) Como o submissor sabe o desfecho — CONTINUA POR CONFIRMAR.** Os factos de desfecho
+  existem no log, mas se o `run_id` de topo nunca existir como run legível (o ADR-027 materializa
+  nós como `<run>~<nó>`), a leitura pelo read-path não o alcança. Medi que o `Tenure.Append`
+  escreve no stream do run de topo, logo o stream EXISTE; o que não fixei foi o campo `RunID` dos
+  seus eventos, que é o que a trava do AOS-426 lê. Fica por confirmar, e é honesto dizê-lo: o
+  `201` já não mente sobre a corrida, mas continua a não dar ao submissor uma forma directa de ver
+  o desfecho.
+
+### Por fechar, declarado
+
+- **A verificação em produção**, que é o critério que o AOS-417 deixou por marcar e este também.
+- **A retenção do stream da fila.** Cresce com o histórico, não só com os pendentes, e nada o
+  poda — a projecção é linear nos eventos, pelo que o custo cresce mesmo com a fila vazia.
+- **A pergunta (5)**, acima.
+- **Nenhum teste sobre JetStream**, que continua a depender de haver NATS no CI.
 
 ## AOS-418 — Os payloads de um plano reconstroem-se do log: um `serve` que morra deixa de os levar consigo
 

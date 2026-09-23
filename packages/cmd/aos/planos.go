@@ -215,6 +215,18 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// quem o corre é o `aos-orq`, e por isso esta rota não faz o nó importar o orquestrador
 		// (ADR-018 intacto).
 		{"POST /plans", h.handlePlanRequest, planoDados},
+		// Plano de DADOS — RECLAMAÇÃO da fila de pedidos (AOS-423 / ADR-030). Mutante, chamada por
+		// MÁQUINA, e `planoDados` pelo precedente medido do `POST /runs`, que também cria estado e
+		// também é chamado pelo `aos-orq` com Bearer OIDC. Devolve no máximo UM pedido e só depois
+		// de o reclamar — a fila não é enumerável por construção.
+		//
+		// ATENÇÃO: o caminho tem DOIS segmentos, pelo que NÃO herda a protecção da barra que
+		// mantém `aos-internal/…` fora do alcance de `GET /runs/{id}`. A autorização é explícita
+		// dentro do handler, e a rota recusa (501) sem gate soberano composto. Ver plan_claim.go.
+		{"POST /plans/claim", h.handlePlanClaim, planoDados},
+		// Plano de DADOS — DESFECHO de uma tentativa (AOS-423). Sem ela, um pedido cujo `serve`
+		// falhou por razão transitória só voltaria à fila ao fim do TTL da reclamação.
+		{"POST /plans/outcome", h.handlePlanOutcome, planoDados},
 		// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
 		{"GET /runs/{id}/trajectory", h.handleTrajectory, planoDados},
 		// Plano de DADOS — RECONSTRUÇÃO SOBERANA de conteúdo selado (AOS-214): decifra o conteúdo

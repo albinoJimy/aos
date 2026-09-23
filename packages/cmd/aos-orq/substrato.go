@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"strconv"
 
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/eventstore/jetstream"
@@ -43,6 +44,33 @@ func (s *substrato) registarFlags(fs *flag.FlagSet) {
 	fs.StringVar(&s.stream, "nats-stream", "", "nome do stream JetStream (só com --nats; vazio usa o padrão)")
 	fs.IntVar(&s.replicas, "nats-replicas", 0, "factor de replicação do stream (só com --nats; vazio usa 3)")
 	fs.StringVar(&s.regiao, "nats-region", "", "região da fronteira de soberania do board (só com --nats; vazio deixa a fronteira dormente — ADR-011)")
+}
+
+// comoFlags devolve as flags que reproduzem ESTE substrato noutra invocação.
+//
+// Existe para o `consume` poder passar ao `serve` o substrato que recebeu, sem o reconstruir a
+// partir de strings soltas — reconstruir à mão é onde uma opção se perde em silêncio, e uma
+// opção de substrato perdida é a diferença entre escrever no store certo e no errado.
+//
+// É o INVERSO de [substrato.registarFlags], e a lista tem de as cobrir todas.
+func (s substrato) comoFlags() []string {
+	var out []string
+	if s.wal != "" {
+		out = append(out, "--wal", s.wal)
+	}
+	if s.nats != "" {
+		out = append(out, "--nats", s.nats)
+	}
+	if s.stream != "" {
+		out = append(out, "--nats-stream", s.stream)
+	}
+	if s.replicas != 0 {
+		out = append(out, "--nats-replicas", strconv.Itoa(s.replicas))
+	}
+	if s.regiao != "" {
+		out = append(out, "--nats-region", s.regiao)
+	}
+	return out
 }
 
 var errSubstratoAmbiguo = errors.New("--wal e --nats são EXCLUSIVOS: um é o store de referência sobre ficheiro (posse sequencial), o outro é o replicado que arbitra entre processos. Aceitar ambos daria um processo a anunciar coordenação distribuída enquanto trancava um ficheiro local")

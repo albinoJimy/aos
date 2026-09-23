@@ -231,7 +231,13 @@ type planRequestPayload struct {
 // # PORQUE É QUE A COLISÃO RESPONDE 201 E NUNCA 409
 //
 // Um pedido para um run que já foi pedido devolve `201 accepted`, exactamente como um pedido
-// novo. Não é conveniência: é a garantia de NÃO-ORACULARIDADE do ADR-016. O `POST /runs` já
+// novo. Não é conveniência: é a garantia de NÃO-ORACULARIDADE, fixada no **ADR-030 §2.1**.
+//
+// A ATRIBUIÇÃO MUDOU, e vale a pena saber porquê. Esta linha dizia «do ADR-016» — e o ADR-016 não
+// contém a tese: tem 322 linhas e zero ocorrências de «oráculo», `201` ou `409`. O que ele decide
+// é o read-path SOBERANO (§5) e a separação canal-controlo/canal-dados (§6). A prática era real e
+// estava imposta com teste; o que não existia era a fonte. Descobriu-se no AOS-423, ao ir
+// reargumentá-la para um consumidor autenticado, e o ADR-030 deu-lhe casa. O `POST /runs` já
 // responde assim de propósito, e só dá `409` a quem traz credencial forte E residência selada
 // coincidente — uma excepção que existe por retro-compatibilidade e que aqui NÃO se repete,
 // porque não há comportamento antigo a preservar. Uma superfície nova começa na postura mais
@@ -311,6 +317,32 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 		p.Principal = submitter.principal
 		p.Board = submitter.board
 		p.Region = submitter.region
+	}
+
+	// TECTO DE PENDENTES (AOS-423 / ADR-030 §2.7) — recusa-se o pedido NOVO, nunca se descarta
+	// o antigo.
+	//
+	// A ordem importa: o tecto é verificado DEPOIS da autorização e ANTES da escrita. Antes da
+	// autorização, um chamador não autenticado saberia pela resposta que a fila está cheia — que
+	// é informação sobre o estado interno do nó, exactamente o que a §2.1 do ADR-030 fecha.
+	//
+	// O `503` e não o `429`: não é o chamador que está a pedir depressa de mais, é o nó que não
+	// tem quem drene. Um `429` mandaria o cliente tentar outra vez daqui a pouco, e a espera
+	// certa aqui é a de um operador a olhar para o consumidor.
+	//
+	// **Isto custa uma varredura do stream por submissão**, e fica declarado: a projecção é
+	// linear no número de eventos da fila, como o molde das aprovações. Com o tecto em
+	// [tectoDePendentes] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
+	// os pendentes — a retenção do stream é resíduo declarado do AOS-423.
+	if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore); err != nil {
+		h.logf("plan-ingress: tecto nao verificavel: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "fila indisponivel")
+		return
+	} else if pendentes >= tectoDePendentes {
+		h.logf("plan-ingress: RECUSADO por tecto — %d pedidos por drenar (tecto %d); o consumidor "+
+			"nao esta a drenar a fila", pendentes, tectoDePendentes)
+		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
+		return
 	}
 
 	bruto, err := json.Marshal(p)
