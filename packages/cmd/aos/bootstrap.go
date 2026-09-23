@@ -2739,12 +2739,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// AOS-417: postura do INGRESSO DO CAMINHO DO PLANO. Os dois primeiros argumentos derivam do
 	// MESMO predicado que a linha acima usa — o store REALMENTE composto e a sua durabilidade —,
 	// porque é literalmente o mesmo substrato: a fila de pedidos é o Event Store (ADR-028 §2.2).
-	// O terceiro é `false` LITERAL e fica assim até existir o trabalhador que consome a fila.
-	// Escrever `false` à mão em vez de derivar de algo é deliberado: quando o consumidor for
-	// escrito, o compilador não avisa, mas este literal é impossível de não ver ao ligar o
-	// consumidor — e uma linha de arranque que continuasse a dizer «ninguém lê esta fila» depois
-	// de alguém a ler seria pior do que não a ter.
-	for _, line := range planIngressPostureBanner(es != nil, esMediationDurable, false) {
+	// O TERCEIRO DERIVA, desde o AOS-423. Era `false` literal, e o comentario de entao dizia que
+	// o literal seria impossivel de nao ver ao ligar o consumidor. Foi meia verdade: o literal
+	// via-se, mas o GUARD que o vigiava procurava o consumidor pelo NOME DO STREAM dentro do
+	// `aos-orq`, e o consumidor que se escreveu fala HTTP e nunca nomeia o stream. A heuristica
+	// teria ficado cega em silencio, que e pior do que um literal.
+	//
+	// A regra e a de [filaReclamavel]; aqui escreve-se sobre os LOCAIS porque o `*Node` so e
+	// construido bem mais abaixo. As duas copias ficam amarradas por
+	// `TestAOS423PredicadoDoBannerCasaComOReadGov`, que le esta linha da fonte.
+	reclamavelNoArranque := wormForChain != nil && (readAuthority != nil || readRegions != nil)
+	for _, line := range planIngressPostureBanner(es != nil, esMediationDurable, reclamavelNoArranque) {
 		log("%s", line)
 	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto

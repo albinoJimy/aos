@@ -76,8 +76,14 @@ Recebe o mesmo `201 accepted` idempotente que o `POST /runs` já devolve hoje pa
 **Esta é a parte deste ADR que mudou durante a sua própria redacção, e a razão fica escrita.** A
 formulação inicial era «devolve o estado do run em curso», com o argumento de que recusar com o
 código 3 é um conceito de *operador* a vazar para uma API de *utilizador*. O argumento está certo
-— mas a solução proposta colidia com o **ADR-016**: o nó responde `201 accepted` de propósito para
-**não ser oráculo de existência**, e só dá `409` a quem traz credencial forte e residência selada
+— mas a solução proposta colidia com a não-oracularidade: o nó responde `201 accepted` de propósito
+para **não ser oráculo de existência**
+
+> **CORRECÇÃO DE ATRIBUIÇÃO (AOS-423).** Este parágrafo dizia «colidia com o **ADR-016**». A tese
+> **não está no ADR-016** — medido: 322 linhas, zero ocorrências de «oráculo», `201` ou `409`. O
+> que o ADR-016 decide é o read-path soberano (§5) e a separação canal-controlo/canal-dados (§6).
+> A prática era real e imposta com teste; a fonte é que não existia, e este ADR e o
+> `plan_ingress.go` citavam-se um ao outro. O **ADR-030 §2.1** deu-lhe casa, e só dá `409` a quem traz credencial forte e residência selada
 coincidente. Devolver o estado reabriria esse oráculo a qualquer chamador. O ADR-027 fixa a
 leitura simétrica do outro lado: para o executor, um `409` na submissão significa run alheio e
 **recusa-se**.

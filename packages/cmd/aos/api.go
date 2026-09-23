@@ -1370,6 +1370,35 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// fica no log estruturado do serviço, junto do runbook.
 	h.writeSLOMetrics(&b)
 
+	// FILA DE PEDIDOS DE PLANO (AOS-423) — «alguém está a drenar?»
+	//
+	// O tecto de pendentes recusa submissões a partir de [tectoDePendentes], e uma guarda sem
+	// sensor é o defeito que o AOS-422 mediu: o operador descobre o problema quando o ingresso
+	// começa a devolver 503, e não antes. Estas duas séries dão-lhe a curva.
+	//
+	// São DUAS e não uma, porque leem-se de maneira diferente e exigem acções diferentes:
+	//
+	//   reclamavel=0                    ⇒ a rota de reclamação RECUSA (501, sem gate soberano):
+	//                                     ninguém PODE drenar, e compor o gate é a acção
+	//   reclamavel=1, pendentes a subir ⇒ a rota serve mas ninguém a chama, ou o consumidor não
+	//                                     acompanha: procurar o `aos-orq consume`
+	//   reclamavel=1, pendentes estável ⇒ o regime normal
+	//
+	// A profundidade custa uma projecção do stream. É o mesmo custo que o tecto já paga por
+	// submissão, e paga-se aqui só quando alguém raspa — o `/metrics` não é um caminho quente.
+	// Um erro a ler NÃO publica um zero: publicar zero por não saber é a mentira que faz o
+	// painel ficar verde sobre uma fila cheia.
+	g("aos_plan_queue_claimable", "Rota de reclamacao da fila de pedidos de plano a servir (1) ou a recusar 501 (0).",
+		"gauge", b01(h.readGov != nil), "")
+	if h.node != nil && h.node.EventStore != nil {
+		if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore); err == nil {
+			g("aos_plan_queue_pending", "Pedidos de plano por drenar (submetidos, sem desfecho terminal e sem reclamacao viva).",
+				"gauge", float64(pendentes), "")
+			g("aos_plan_queue_ceiling", "Tecto a partir do qual o ingresso recusa pedidos novos.",
+				"gauge", float64(tectoDePendentes), "")
+		}
+	}
+
 	// Runtime Go (USE): saturação de recursos do processo.
 	g("aos_goroutines", "Goroutines em execucao.", "gauge", float64(runtime.NumGoroutine()), "")
 	var ms runtime.MemStats

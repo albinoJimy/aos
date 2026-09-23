@@ -186,7 +186,19 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		// daria-lhe barreiras que a submissão irmã (`POST /runs`) não tem, sem que o risco o
 		// justifique: o que ela escreve é um pedido na fila, e o gate humano do plano continua
 		// a ser o do `aos-orq`.
-		"POST /plans":                planoDados,
+		"POST /plans": planoDados,
+		// AOS-423 / ADR-030 — A RECLAMACAO E MUTANTE E MESMO ASSIM E `planoDados`, e o juizo e este:
+		// o precedente e o `POST /runs`, que CRIA um run, e chamado pelo mesmo `aos-orq` com Bearer
+		// OIDC, e esta classificado dados. Classificar a reclamacao como CONTROLO exigiria assinatura
+		// ed25519 sobre payload canonico com nonce duravel — e o `aos-orq` gera hoje uma chave
+		// EFEMERA por execucao, pelo que seria material criptografico novo em producao, com rotacao e
+		// pinagem. O risco que a classe de controlo fecha e conteudo untrusted virar sinal; uma
+		// reclamacao nao transporta payload do chamador e o que devolve ja estava no log.
+		//
+		// O que ela NAO herda, e por isso e explicito no handler: a proteccao da barra que mantem
+		// `aos-internal/...` fora do alcance de `GET /runs/{id}`. O caminho tem dois segmentos.
+		"POST /plans/claim":          planoDados,
+		"POST /plans/outcome":        planoDados,
 		"GET /runs/{id}/trajectory":  planoDados,
 		"GET /runs/{id}/reconstruct": planoDados,
 

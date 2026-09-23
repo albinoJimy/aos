@@ -380,3 +380,93 @@ func (c *nodeClient) Status(ctx context.Context, runID string) (estadoDoRun, boo
 		return estadoDoRun{}, false, fmt.Errorf("estado de %s no nó: HTTP %d", runID, resp.StatusCode)
 	}
 }
+
+// pedidoReclamado é um pedido de plano que este consumidor tomou para si.
+//
+// A `Geracao` viaja porque é ela que amarra o DESFECHO à tentativa: sem ela, um desfecho
+// reportado tarde podia fechar uma tentativa que já não é a corrente, e um pedido que voltou à
+// fila por expiração ficaria terminado por um relatório de uma corrida anterior.
+type pedidoReclamado struct {
+	RunID     string `json:"run_id"`
+	Objective string `json:"objective"`
+	Board     string `json:"board"`
+	Region    string `json:"region"`
+	Geracao   int    `json:"generation"`
+}
+
+// ReclamarPedido pede ao nó UM pedido de plano pendente, reclamando-o.
+//
+// `(_, false, nil)` ⇒ não há nada para este consumidor (204). O 204 é o mesmo quer a fila esteja
+// vazia, quer tudo o que lá está pertença a outra região — é a postura de não-oracularidade do
+// ADR-030 §2.1, e este cliente não tenta distinguir os dois casos porque o nó não lhos diz.
+//
+// NÃO RETENTA, como o resto deste cliente. Um erro aqui aborta a drenagem, e a invocação seguinte
+// (timer ou laço) recomeça — a fila é durável e nada se perde por desistir cedo.
+func (c *nodeClient) ReclamarPedido(ctx context.Context) (pedidoReclamado, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/plans/claim", nil)
+	if err != nil {
+		return pedidoReclamado{}, false, err
+	}
+	if err := c.autenticar(ctx, req); err != nil {
+		return pedidoReclamado{}, false, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return pedidoReclamado{}, false, fmt.Errorf("reclamar pedido no nó: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var p pedidoReclamado
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&p); err != nil {
+			return pedidoReclamado{}, false, fmt.Errorf("reclamar pedido no nó: resposta ilegível: %w", err)
+		}
+		if p.RunID == "" || p.Geracao < 1 {
+			// Um pedido sem id ou sem geração não é reclamável: reportar o desfecho seria
+			// impossível e o pedido ficaria preso até ao TTL. Melhor falhar alto.
+			return pedidoReclamado{}, false, fmt.Errorf("reclamar pedido no nó: resposta sem run_id/generation")
+		}
+		return p, true, nil
+	case http.StatusNoContent:
+		return pedidoReclamado{}, false, nil
+	default:
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return pedidoReclamado{}, false, fmt.Errorf("reclamar pedido no nó: HTTP %d %s",
+			resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+}
+
+// ReportarDesfecho diz ao nó como correu UMA tentativa.
+//
+// É o que distingue «volta à fila já» de «não volta nunca». Sem isto o pedido fica preso até a
+// reclamação expirar — meia hora de silêncio por uma falha conhecida no primeiro segundo.
+func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string) error {
+	corpo, err := json.Marshal(map[string]any{
+		"run_id":       runID,
+		"generation":   geracao,
+		"classe":       classe,
+		"codigo_saida": codigo,
+		"detalhe":      detalhe,
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+"/plans/outcome", bytes.NewReader(corpo))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := c.autenticar(ctx, req); err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("reportar desfecho de %s: %w", runID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("reportar desfecho de %s: HTTP %d %s", runID, resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	return nil
+}
