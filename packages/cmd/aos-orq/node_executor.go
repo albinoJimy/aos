@@ -162,8 +162,13 @@ const marcaDeEscape = '+'
 // a reversibilidade é o que **prova** que não há colisões, e deixa um humano descodificar um id
 // num log.
 //
-// A lista dos caracteres a escapar vem de [eventstore.CaracteresNaoRepresentaveis], a fonte
-// canónica: se a regra apertar, isto aperta com ela sem ninguém se lembrar.
+// A decisão do que escapar vem de [eventstore.CaractereNaoRepresentavel], o PREDICADO da regra:
+// se a regra apertar, isto aperta com ela sem ninguém se lembrar.
+//
+// Dizia «vem de [eventstore.CaracteresNaoRepresentaveis]» — a CONSTANTE —, e isso deixou de ser
+// verdade quando a regra passou a apanhar a classe dos caracteres de controlo: a constante virou
+// um subconjunto próprio dela. A afirmação sobreviveu à mudança e teria enganado o próximo
+// leitor. Ver [deveEscapar].
 func escaparParaStream(nodeID string) string {
 	precisa := false
 	for i := 0; i < len(nodeID); i++ {
@@ -204,9 +209,18 @@ func escaparParaStream(nodeID string) string {
 // plano não impõe (a gramática é invariante semântica, verificada pelo AOS-231). Se um
 // `node_id` com `~` chegasse aqui, a decomposição `<run>~<nó>` deixaria de ser única; escapá-lo
 // custa nada e fecha-o.
+//
+// DECIDE PELO PREDICADO DA REGRA, e não pela constante. Lia
+// [eventstore.CaracteresNaoRepresentaveis], que é um SUBCONJUNTO PRÓPRIO do que a regra recusa
+// desde que ela passou a apanhar a classe dos caracteres de controlo: um `node_id` com um
+// `\x01` atravessava intacto e produzia um `stream_id` que o `Append` recusa — o run do nó
+// nunca arrancaria, e a mensagem falaria do id do run filho e não do `node_id`.
+//
+// Estava tapado pela gramática do `node_id` ter charset fechado, isto é, POR ACASO. É assim que
+// a classe inteira do AOS-424 sobreviveu dez gates; as duas pontas decidem agora pela mesma
+// função.
 func deveEscapar(c byte) bool {
-	return strings.IndexByte(eventstore.CaracteresNaoRepresentaveis, c) >= 0 ||
-		c == separadorDoRunFilho[0]
+	return eventstore.CaractereNaoRepresentavel(rune(c)) || c == separadorDoRunFilho[0]
 }
 
 // childRunID é o id do run do nó `aos` que faz o trabalho de um nó do plano.

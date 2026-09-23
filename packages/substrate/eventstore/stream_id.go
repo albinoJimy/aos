@@ -47,6 +47,22 @@ import (
 // que impõe ESTA lista MAIS os restantes caracteres de controlo (ver abaixo porquê).
 const CaracteresNaoRepresentaveis = ". *>\t\r\n"
 
+// CaractereNaoRepresentavel diz se UM carácter não pode aparecer num `stream_id`.
+//
+// # PORQUE É QUE ISTO EXISTE SEPARADO DE [ValidarStreamID]
+//
+// Há um consumidor que não valida um nome inteiro: o escape do `node_id` no `childRunID`
+// (AOS-424), que decide carácter a carácter o que escapar. Ele derivava a decisão da constante
+// [CaracteresNaoRepresentaveis] — e essa é um SUBCONJUNTO PRÓPRIO do que a regra recusa, desde
+// que a regra passou a apanhar a classe dos caracteres de controlo.
+//
+// Estava tapado por acaso (a gramática do `node_id` tem charset fechado) e não por construção.
+// «Tapado por acaso» é como a classe inteira do AOS-424 sobreviveu; agora as duas pontas
+// decidem pela MESMA função.
+func CaractereNaoRepresentavel(r rune) bool {
+	return strings.ContainsRune(CaracteresNaoRepresentaveis, r) || r < 0x20 || r == 0x7f
+}
+
 // ValidarStreamID devolve erro se o `stream_id` não for representável em todos os backends.
 //
 // O erro embrulha [ErrConfig], que é o que o backend replicado já devolve para o mesmo caso: um
@@ -76,7 +92,7 @@ func ValidarStreamID(streamID string) error {
 	//
 	// Uma lista de proibidos escrita à mão só cobre o que quem a escreveu se lembrou. Para uma
 	// CLASSE inteira — caracteres de controlo — a pertença decide-se por propriedade.
-	if i := strings.IndexFunc(streamID, func(r rune) bool { return r < 0x20 || r == 0x7f }); i >= 0 {
+	if i := strings.IndexFunc(streamID, CaractereNaoRepresentavel); i >= 0 {
 		return fmt.Errorf("%w: stream_id %q contém o carácter de controlo %#x na posição %d, "+
 			"que não é transportável num subject NATS. Nomes de stream compostos a partir de "+
 			"vários campos não devem usar um byte de controlo como separador — use um resumo "+

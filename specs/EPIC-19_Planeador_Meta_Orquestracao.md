@@ -2630,7 +2630,7 @@ não-vacuidade e sensor verificado por mutação. Suite do pacote verde com `-ra
 | Fase | Prontidão para utilizadores reais |
 | Milestone | v1.1 |
 | Tipo | correcção de classe (fronteiras de entrada) |
-| Prioridade | **P1** (subiu de P2 quando o AOS-424 apertou o `Append`: a recusa passou a ser real, e a linha da admissão converte uma mudança de política em runs não admitidos) |
+| Prioridade | **P1** (subiu de P2 com o aperto do `Append` no AOS-424 — a justificação dada nessa altura estava errada e está corrigida na secção «Estado»; a prioridade manteve-se por outra razão, o `--run` do `aos-orq`) |
 | Estimativa | M |
 | Dependências | **AOS-424 — FECHADO.** Apertou o `Append`, fechou duas linhas desta tabela na origem, e converteu o resto de «defeito silencioso» em «avaria visível no ponto de uso»; AOS-100/101 (Event Store replicado) |
 | Bloqueia | a migração para JetStream, em conjunto com o AOS-424 |
@@ -2679,8 +2679,9 @@ directa**; as restantes vêm da varredura e estão marcadas como tal.
 
 | Risco | Composição | Onde | De onde vem o valor |
 |---|---|---|---|
-| **ALTO** | `admission/bucket/<provider>:<model>:<region>` e `admission/audit/…` | `scheduler/admission.go:463,679,956`; `quota.go:27-29` | **Allowlist assinada.** Hoje sem pontos (medido); um modelo novo pode trazer um |
-| MÉDIO | `plan_id` | `orchestrator/plannerevents/recorder.go:98`; `runlifecycle/emitters.go:108` *(varredura)* | `planner.go:410` usa `req.RunID` quando vazio — herda o que o AOS-424 fechar para o `run_id` |
+| ~~ALTO~~ **DORMENTE, defendido na COMPOSIÇÃO** | `admission/bucket/<provider>:<model>:<region>` e `admission/audit/…` | `scheduler/admission.go:463,679,956`; `quota.go:27-29` | **`tier.Model`, da escada de `RoutingConfig.Tiers`** — NÃO da allowlist, que apenas autoriza. A composição da escada recusa o ARRANQUE (`ErrRoutingModelNaoRepresentavel`). **E o caminho não está ligado**: `DEF-280-NO`, nada constrói `[]tiering.Tier` fora de testes — a gravidade ALTO atribuída antes estava errada |
+| **VIVO → FECHADO** | `<run>`, `lease:<run>`, `<run>-plan`, id da árvore de orçamento | `cmd/aos-orq/main.go` (flag `--run`) | **O operador, por CLI.** Era o único sítio VIVO desta classe sem validação, e a tabela original não o tinha. O nó validava o mesmo valor nas duas portas HTTP; o binário não validava nenhuma. Fechado |
+| ~~MÉDIO~~ **FECHADO** | `plan_id` | `orchestrator/plannerevents/recorder.go:98` | Vem do `--plan` ou deriva de `<run>-plan`; ambos validados na fronteira de entrada |
 | ~~MÉDIO~~ **FECHADO** | `4eyes-challenge:<scope>:<hex>` | `hitl/challenge_issuer.go` | Era pior do que a varredura indicava: o `scope` traz o `request_id` do CORPO de um pedido. **Fechado pelo AOS-424** — o escopo entra RESUMIDO (`hitl.nomeDeEscopo`) |
 | ~~MÉDIO~~ **FECHADO** | `ratify-nonce:<scope>:<hex>` | `hitl/nonce_store.go` | Idem, e com dois defeitos VIVOS que a varredura não viu: três constantes de domínio com ponto (`foureyes.challenge`, `governance.dsar`, `nhi.revoke`) e um separador `\x00` no `nonceScope`. **Fechado pelo AOS-424** |
 | BAIXO | `backpressure/queue/<name>`, `degradation/<name>`, `routing/<name>`, `scheduling/dispatch/<name>`, `backpressure/policy-audit/<name>` | `scheduler/{queue,degradation,routing,priority,policy}.go` *(varredura)* | nome de instância, dado por quem compõe (interno) |
@@ -2731,19 +2732,35 @@ degradar em silêncio.
 
 ### Critérios de Aceitação
 
-- [ ] Cada sítio da tabela tem a sua decisão tomada — validar na entrada, normalizar, ou declarar
-      que se aceita a recusa tardia — e **nenhum fica sem decisão escrita**.
-- [ ] A allowlist de modelos é validada **na carga**, com teste que prova que um modelo com ponto
-      é recusado e nomeia a razão (o nome entra num `stream_id`).
-- [ ] O acoplamento **política ↔ espaço de nomes** fica escrito no sítio onde alguém que revê
-      política o veja — no próprio `allowlist_policy.json` ou ao lado dele. Hoje nada liga os dois,
-      e essa é a falha de fundo deste ticket.
-- [ ] Os casos de risco MÉDIO têm teste com um valor que contém ponto — hoje **os testes só usam
-      valores sem ponto** (`Model: "claude"`, `"gpt"`, `"m"`), que é a razão pela qual isto nunca
-      foi exercitado.
-- [ ] O gate de alcance de repositório do AOS-424 **declara explicitamente** que não apanha
-      composição em runtime, e aponta para este ticket. Um gate que parece cobrir a classe inteira
-      e não cobre é pior do que um gate que declara o seu alcance.
+- [x] Cada sítio da tabela tem a sua decisão tomada e **escrita** — em
+      `scheduler/aos425_chave_de_quota_test.go` (admissão, spawn, nomes de instância),
+      em `allowlist.go` (`validarNomesQueViramStream`) e em `cmd/aos-orq/main.go` (`--run`/`--plan`).
+- [x] **O nome do modelo é validado onde ENTRA**, com teste que prova a recusa e nomeia a razão —
+      `TestAOS425EscadaComModeloNaoRepresentavelRecusaOArranque`. A região do gateway também,
+      porque entra na mesma chave.
+
+      **O critério dizia «a allowlist é validada na carga», e isso estava errado.** Foi tentado e
+      revertido: a allowlist AUTORIZA um modelo, quem o FORNECE é a escada de tiers. Validar lá
+      não tocava no valor que compõe a chave **e** partia a razão de ser documentada do bundle
+      externo — `deploy/node/README.md` diz que ele existe para o nó «pedir nomes de modelo
+      REAIS». Um bundle bem assinado com `gpt-4.1` ficava incarregável, o nó recusava arrancar com
+      a mensagem errada («bundle adulterado»), e como o `parse` também serve o `Digest` nem
+      re-assinar salvava. A única saída seria `models: ["*"]` — trocar curadoria por wildcard num
+      estágio cujo propósito é default-deny. `TestAOS425BundleComNomeDeModeloRealCarrega` fixa a
+      correcção.
+- [x] O acoplamento **política ↔ espaço de nomes** está escrito **dentro** do
+      `allowlist_policy.json`, no campo `_aviso_nomes_de_stream`, com o exemplo concreto
+      (`gpt-4.1`). **Medido:** o campo não entra no digest assinado (o digest é sobre uma struct
+      canónica, não sobre os bytes), pelo que pôde ser acrescentado sem re-assinar — e por isso
+      mesmo NÃO é um controlo, só documentação. Quem protege é a verificação na carga.
+      `TestAOS425AvisoNaoEntraNoDigest` fixa as duas metades.
+- [x] Os casos de risco MÉDIO/ALTO têm teste com um valor que contém ponto — e o valor escolhido é
+      um nome de modelo REAL (`gpt-4.1`, `claude-3.5-sonnet`), não um `"a.b"` sintético.
+- [x] O gate de alcance de repositório declara que não apanha composição em runtime e aponta para
+      aqui. Feito no AOS-424, e já com os exemplos medidos.
+- [ ] **Um teste sobre JetStream.** Continua por fazer e depende de haver NATS no CI. É o único
+      sítio onde «este nome é representável» deixa de ser uma afirmação sobre a nossa regra e passa
+      a ser uma afirmação sobre o NATS.
 
 ### Fora de âmbito, declarado
 
@@ -2762,13 +2779,76 @@ degradar em silêncio.
 
 ### Estado
 
-**ABERTO.** Nada implementado. **Não é defeito vivo hoje** — a allowlist em vigor não tem modelos
-com ponto (medido) e não há NATS em produção. É uma dívida que só se manifesta quando alguém
-mudar uma política, e por isso vale mais escrever o acoplamento do que confiar em que ninguém o
-faça.
+**FECHADO**, e com uma correcção à sua própria tese.
+
+### O que se entregou
+
+| Frente | O que ficou |
+|---|---|
+| **`aos-orq --run` / `--plan`** | Validados com `eventstore.ValidarStreamID`, **antes** de se ler o ambiente — a verificação mais barata dá a mensagem mais específica, e nomeia o flag que o operador escreveu |
+| **Escada de tiers** | `ErrRoutingModelNaoRepresentavel` recusa o ARRANQUE do gateway se um modelo da escada — ou a região declarada — não puder aparecer num `stream_id`. Ao lado da cobertura de preço, que é o precedente exacto |
+| **Allowlist: NÃO recusa** | Tentou-se, e foi revertido por revisão adversarial — ver o critério de aceitação. A allowlist autoriza; não fornece |
+| **Acoplamento visível** | `_aviso_nomes_de_stream` dentro do `allowlist_policy.json`, com o exemplo `gpt-4.1` |
+| **Escape do `node_id`** | Passou a decidir pelo predicado da regra (`eventstore.CaractereNaoRepresentavel`) em vez de um subconjunto próprio dela — um buraco que o AOS-424 deixou e que estava tapado por acaso |
+| **Casos dormentes** | Decisão escrita e teste com valor com ponto, em vez de código novo num caminho que não corre |
+
+### A CORRECÇÃO — a tese deste ticket estava certa, a sua tabela não
+
+O ticket nomeava a admissão de quota como **ALTO** e o `--run` do `aos-orq` **não aparecia de
+todo**. Medido ao executar:
+
+- **A admissão de quota não está ligada a binário nenhum.** Nada na árvore constrói
+  `[]tiering.Tier` fora de testes; o único importador do `scheduler` é o `tieradapter`, que
+  também não tem chamador; e o wiring do nó declara-o — `DEFERIDO (DEF-280-NO)`. O
+  `budget.WithEmitter` também não tem chamador. A linha continua a valer como dívida, mas a
+  gravidade era outra.
+- **O `--run` do `aos-orq` era o único sítio VIVO desta classe sem validação.** Torna-se quatro
+  nomes de stream (`<run>`, `lease:<run>`, `<run>-plan`, id da árvore de orçamento), e o binário
+  corre em produção desde a v0.1.20. O nó validava o mesmo valor nas duas portas HTTP.
+
+A gravidade errada veio da varredura de 2026-09-21, cujas linhas estavam marcadas como
+*(varredura)* e não confirmadas por leitura — e de eu ter repetido a tabela sem verificar se o
+caminho estava ligado. **A lição é a do AOS-424 outra vez: uma tabela não é uma medição.** As
+duas linhas que a varredura tinha confirmado por leitura directa estavam certas; as outras não.
+
+### A SEGUNDA CORRECÇÃO — o primeiro desenho pôs a guarda no sítio errado
+
+A primeira implementação deste ticket validava os nomes na **carga da allowlist**. Uma revisão
+adversarial mediu duas coisas que a derrubaram:
+
+1. **A allowlist não é a fonte do valor.** `router.go` compõe a chave com `tier.Model`, da escada
+   de `RoutingConfig.Tiers`. Validar a allowlist cumpria a letra de «validar onde o valor entra» e
+   falhava o sentido — e o ticket chegou a afirmar «defendido a montante» sobre uma defesa que não
+   tocava no valor.
+2. **Partia uma capacidade documentada.** O bundle externo existe para o nó «pedir nomes de modelo
+   REAIS»; com a guarda na carga, um bundle assinado com `gpt-4.1` ficava incarregável e o nó
+   recusava arrancar — com `ErrBadModelAllowlist`, que diz «bundle adulterado». E o `parse` serve
+   também o `Digest`, pelo que o catálogo deixava de poder ser assinado: não havia saída, a não ser
+   `models: ["*"]`.
+
+É a **terceira vez** nesta série que a mesma disciplina falha: afirmar uma propriedade sobre um
+caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria andaime»; da segunda,
+«acrescentar um gpt-4.1 passa a ser runs não admitidos»; desta, «defendido a montante».
+
+### Por fechar, declarado
+
+- **Uma policy com `models: ["*"]`** derrota a verificação na carga: o wildcard é uma escolha
+  legítima de produto e não é, ele próprio, um nome de stream. A defesa cai para a recusa tardia
+  do `Append`. Está fixado por teste (`TestAOS425WildcardAtravessaEEstaDeclarado`) para ser uma
+  decisão e não uma surpresa.
+- **O teste sobre JetStream.** Hoje prova-se que os nomes passam na NOSSA regra; que o NATS os
+  aceita é inferência. Depende de haver NATS no CI (AOS-423).
+- **O `provider` da chave de admissão** vem do PEDIDO (`req.Provider`), não da composição, e não
+  é alcançável por nenhuma guarda de arranque. Fica sem defesa na entrada; a recusa do `Append` é
+  o que resta.
+- **Bytes não-ASCII no `node_id`.** O escape decide byte a byte e a regra decide por runes: um
+  byte cru `>= 0x80` não é escapado nem recusado (a regra descodifica-o como U+FFFD). A gramática
+  do `node_id` não os admite, mas o `Decode` não a impõe — é a mesma porta pela qual o `~` entra.
+- **As partições do WORM** (`sbx-egress:<nhi>`, `ingestion:<run>`, `procedural:<name>`) têm a
+  mesma FORMA — um valor externo concatenado num identificador — mas o WORM é um store separado e
+  as partições não são subjects. Não foi investigado, e fica dito que não foi.
 
 ---
-
 ## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
 
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o próprio comentário anterior previa que saísse:
@@ -3102,10 +3182,13 @@ são constantes do nome ANTIGO, que existem só para as migrações conseguirem 
 
 **O que este ticket NÃO permite concluir.** Que a classe está fechada. O aperto encontrou os
 defeitos que existem na ÁRVORE DE TESTES; um caminho de composição que nenhum teste exercita com
-um valor «sujo» continua invisível — e a admissão de quota, que é a linha mais perigosa da tabela
-do AOS-425, é exactamente uma dessas. Com o `Append` apertado, acrescentar um `gpt-4.1` à
-allowlist assinada deixa de ser uma mudança de política e passa a ser runs a deixarem de ser
-admitidos. **O AOS-425 sobe para P1 por causa deste ticket.**
+um valor «sujo» continua invisível.
+
+> **CORRECÇÃO (AOS-425).** Este parágrafo dizia que a admissão de quota era «a linha mais
+> perigosa» e que acrescentar um `gpt-4.1` passaria a significar runs não admitidos. **Errado**:
+> o caminho de admissão não está ligado a binário nenhum (`DEF-280-NO`; nada constrói
+> `[]tiering.Tier` fora de testes). O risco vivo era outro e a tabela não o tinha — o `--run` do
+> `aos-orq`, sem validação, a virar quatro nomes de stream. Fechado pelo AOS-425.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 
