@@ -75,13 +75,22 @@ func TestAOS424NomeDeEscopoEeEstavel(t *testing.T) {
 		}
 	}
 	// E o helper partilhado tem de dar o mesmo nome às duas chamadas de challengeStream — é o
-	// que faz o IssueChallenge e o verificador olharem para o mesmo stream.
+	// que faz o IssueChallenge e o verificador olharem para o mesmo stream. Guarda contra
+	// alguém lhe acrescentar um carimbo ou um sal: nesse dia o challenge emitido deixaria de
+	// ser encontrado e TODA a perna seria negada, em silêncio e com o 403 correcto à superfície.
+	//
+	// Pelas VARIÁVEIS e não em linha: o `staticcheck` lê `f(x) != f(x)` como tautologia
+	// (SA4000) e tem razão a olhar só para a forma — o que se está a afirmar é sobre a FUNÇÃO,
+	// não sobre as expressões.
 	c := []byte{1, 2, 3}
-	if challengeStream("4eyes:req-1", c) != challengeStream("4eyes:req-1", c) {
-		t.Error("challengeStream nao e determinista: emitir e verificar deixariam de concordar")
+	primeira := challengeStream("4eyes:req-1", c)
+	segunda := challengeStream("4eyes:req-1", c)
+	if primeira != segunda {
+		t.Errorf("challengeStream nao e determinista (%q != %q): emitir e verificar deixariam "+
+			"de concordar no nome do stream", primeira, segunda)
 	}
-	if challengeStream("4eyes:req-1", c) == challengeStream("4eyes:req-2", c) {
-		t.Error("challengeStream colapsou dois request_id distintos no mesmo stream")
+	if outroPedido := challengeStream("4eyes:req-2", c); primeira == outroPedido {
+		t.Errorf("challengeStream colapsou dois request_id distintos no mesmo stream (%q)", primeira)
 	}
 }
 
