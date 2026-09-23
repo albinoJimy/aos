@@ -429,6 +429,9 @@ func TestEnvConfiguredOperatorSteerAcceptedEndToEnd(t *testing.T) {
 	// (iii) configuração do NÓ exclusivamente por ambiente.
 	t.Setenv("AOS_OPERATORS", entry)
 	t.Setenv("AOS_BOARD_REGIONS", "") // read-path legado: este teste é sobre o plano de CONTROLO
+	// AOS-428: o `POST /runs` verifica a credencial do run, e este nó vem de env — a allowlist
+	// de humanos por omissão não conhece o humano de teste, logo não havia por quem cunhar.
+	t.Setenv("AOS_HUMANS", tnHuman)
 	cfg, err := nodeConfigFromEnv()
 	if err != nil {
 		t.Fatalf("nodeConfigFromEnv: %v", err)
@@ -449,7 +452,8 @@ func TestEnvConfiguredOperatorSteerAcceptedEndToEnd(t *testing.T) {
 
 	// (v) submete um run e conduz-no com a CLI REAL (assinatura ed25519 no lado do operador).
 	if err := dispatch([]string{"run", "--addr", srv.URL, "--run-id", runID,
-		"--objective", "prova positiva AOS-193", "--nhi", "nhi:" + runID}, io.Discard); err != nil {
+		"--objective", "prova positiva AOS-193", "--nhi", "nhi:" + runID,
+		"--credential", credencialDeTeste(t, node)}, io.Discard); err != nil {
 		t.Fatalf("aos run: %v", err)
 	}
 	const correction = "aperta o ambito ao ticket"

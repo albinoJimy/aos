@@ -39,7 +39,13 @@ func TestCliente_SubmeteANoSoberano(t *testing.T) {
 
 	// (1) SEM as flags: tem de ser RECUSADO. E a reproducao do defeito.
 	var semFlags strings.Builder
-	err := cmdRun([]string{"--addr", srv.URL, "--run-id", "sem-flags", "--objective", "x", "--nhi", "nhi:a"}, &semFlags)
+	// AOS-428: a credencial VAI porque um cliente REAL a leva — o `POST /runs` passou a
+	// verificá-la. O 403 que se assere continua a vir do gate soberano: a guarda da credencial
+	// corre DEPOIS do `authorize`, de propósito, para não ser um oráculo acessível sem
+	// autenticação. (Uma versão anterior deste comentário dizia o contrário, porque a guarda
+	// corria antes — foi esse o defeito que a revisão adversarial encontrou.)
+	cred := credencialDeTeste(t, node)
+	err := cmdRun([]string{"--addr", srv.URL, "--run-id", "sem-flags", "--objective", "x", "--nhi", "nhi:a", "--credential", cred}, &semFlags)
 	if err == nil {
 		t.Fatal("sem --reader/--board o submit devia ser RECUSADO por um no soberano")
 	}
@@ -51,7 +57,7 @@ func TestCliente_SubmeteANoSoberano(t *testing.T) {
 	var comFlags strings.Builder
 	if err := cmdRun([]string{
 		"--addr", srv.URL, "--run-id", "com-flags", "--objective", "x", "--nhi", "nhi:a",
-		"--reader", "human:auditor", "--board", "board:demo",
+		"--reader", "human:auditor", "--board", "board:demo", "--credential", cred,
 	}, &comFlags); err != nil {
 		t.Fatalf("com --reader/--board o submit devia PASSAR: %v", err)
 	}
@@ -77,6 +83,8 @@ func TestCliente_BoardDesconhecidoContinuaRecusado(t *testing.T) {
 	err := cmdRun([]string{
 		"--addr", srv.URL, "--run-id", "board-mau", "--objective", "x", "--nhi", "nhi:a",
 		"--reader", "human:auditor", "--board", "board:QUE-NAO-EXISTE",
+		// AOS-428: credencial válida, para que o 403 continue a vir do board desconhecido.
+		"--credential", credencialDeTeste(t, node),
 	}, &b)
 	if err == nil {
 		t.Fatal("CONTROLO: um board DESCONHECIDO devia continuar a ser recusado — a correccao nao pode ser 'aceitar tudo'")
@@ -98,7 +106,8 @@ func TestCliente_NoLegadoContinuaAAceitarSemFlags(t *testing.T) {
 	defer srv.Close()
 
 	var b strings.Builder
-	if err := cmdRun([]string{"--addr", srv.URL, "--run-id", "legado", "--objective", "x", "--nhi", "nhi:a"}, &b); err != nil {
+	if err := cmdRun([]string{"--addr", srv.URL, "--run-id", "legado", "--objective", "x", "--nhi", "nhi:a",
+		"--credential", credencialDeTeste(t, node)}, &b); err != nil {
 		t.Fatalf("CONTROLO: um no LEGADO devia continuar a aceitar sem flags: %v", err)
 	}
 }

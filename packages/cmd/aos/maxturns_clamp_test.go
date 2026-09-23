@@ -81,10 +81,14 @@ func newClampNode(t *testing.T, model agentruntime.ModelClient) *Node {
 // (= invocações do modelo).
 func runEffectiveTurns(t *testing.T, h http.Handler, model *loopingToolModel, svc *NodeService, runID string, requestMaxTurns *int) int64 {
 	t.Helper()
+	// AOS-428: o `POST /runs` VERIFICA a credencial do run. Cunha-se uma real, pela autoridade
+	// do próprio nó de teste — em vez de um seam que desligasse a guarda, que deixaria este
+	// teste a exercitar um caminho que a produção não tem.
 	body := map[string]any{
 		"run_id":        runID,
 		"objective":     "prova do tecto de turnos",
 		"principal_nhi": "nhi:" + runID,
+		"credential":    credencialDeTeste(t, svc.node),
 	}
 	if requestMaxTurns != nil {
 		body["max_turns"] = *requestMaxTurns

@@ -2678,15 +2678,21 @@ existir.
 
 ### Critérios de Aceitação
 
-- [ ] Um `POST /runs` com credencial vazia, malformada, expirada, de emissor desconhecido ou
-      revogada é recusado **sem criar o run**, e sem selar residência.
-- [ ] Teste que prova que **nenhum estado durável** fica para trás numa recusa — é o que distingue
-      esta correcção de a mover para mais cedo e na mesma sujar o log.
-- [ ] A recusa é **uniforme**: um teste verifica que as cinco causas acima dão a mesma resposta.
-- [ ] O caminho de sucesso não regride: a verificação do `rmadapter` continua a correr na chamada
-      (esta é uma guarda ADICIONAL, não um substituto — o escopo por-capability só lá é
-      verificável).
-- [ ] A postura sem verificador composto está declarada no banner de arranque.
+- [x] Um `POST /runs` com credencial malformada, expirada, de emissor desconhecido ou revogada é
+      recusado **sem criar o run** e sem selar residência. **A credencial VAZIA só é recusada em
+      modo ENDURECIDO** — ver a decisão no Estado, que o smoke obrigou a tomar.
+- [x] Teste que prova que nenhum estado durável fica para trás. A primeira versão desse teste era
+      **tautológica** (repetia a submissão com outra credencial inválida, que é recusada na mesma
+      guarda quer o primeiro pedido tenha criado algo quer não); agora prova-o submetendo com uma
+      credencial VÁLIDA e exigindo 201 fresco.
+- [x] A recusa é uniforme **em duas dimensões**: entre as causas, e face à recusa da governação. A
+      primeira versão devolvia `401` — um status que mais nenhuma rota do nó usa —, e isso fazia
+      da guarda um oráculo por si só. É a mesma `403`.
+- [x] O caminho de sucesso não regride, e há guard a fixar que o escopo por-capability **não**
+      migrou para a porta (é um guard de FONTE, e o ficheiro di-lo).
+- [ ] **A postura no banner de arranque fica por fazer**, e é dívida: o nó não declara que
+      verifica a credencial na porta, nem em que modo exige a presença. Um operador que veja um
+      403 não tem por onde saber qual das duas guardas o produziu.
 
 ### Fora de âmbito, declarado
 
@@ -2703,10 +2709,60 @@ existir.
 
 ### Estado
 
-**ABERTO.** Descoberto na discovery do AOS-427, ao seguir o que o `serve` precisa. Não estava em
-ticket nenhum.
+**FECHADO**, com cinco resíduos declarados e uma correcção ao próprio desenho a meio.
 
----
+A guarda chama o **mesmo** `identity.Verifier` do hook do RM — não reimplementa —, corre **depois**
+de autenticar o chamador e **antes** da selagem de residência, e recusa com a mesma `403` da
+governação. Cobre oito dos nove predicados do hook; o nono (escopo por capability) só é decidível
+na chamada e continua no `rmadapter`.
+
+### O que a revisão adversarial encontrou, e que estava errado
+
+**A primeira versão criava um oráculo de validade de credencial ACESSÍVEL SEM AUTENTICAÇÃO.** A
+guarda corria antes do `readGov.authorize`, pelo que um chamador anónimo distinguia, num só pedido,
+«este token ainda vive neste nó» (403 da governação) de «este token morreu» (401 da guarda). É
+exactamente o que quem apanha um token roubado quer saber, e passou de trás do gate soberano para a
+borda anónima.
+
+**E a inversão de ordem era conhecida — foi tratada só nas fixtures.** Os testes levavam credencial
+injectada com o comentário «para que o 403 continue a vir do gate soberano e não do 401 da guarda,
+que corre antes dele». O sintoma foi remendado nos testes em vez da causa.
+
+**Uma afirmação falsa num ficheiro novo:** o `credencial_do_run.go` dizia que fechava o residual do
+`resume.go`. Não fecha — o `resume` faz `if verr == nil && …`, pelo que quando a verificação FALHA
+o ramo é saltado e a retoma prossegue.
+
+### O que só o SMOKE apanhou
+
+Com a guarda a exigir presença sempre, **o nó de referência deixou de conseguir submeter**. Não por
+descuido da fixture: em modo não-endurecido **não existe forma de um cliente externo obter uma
+credencial** — a autoridade de emissão é co-localizada e não tem rota de emissão. Nenhum dos testes
+unitários o apanhou.
+
+Decisão: a **presença** só se exige em modo ENDURECIDO (`AOS_ISSUER_PUBKEY`, obrigatório sob
+`AOS_MODE=production`). O que é APRESENTADO verifica-se sempre.
+
+### Resíduos declarados
+
+1. **O `POST /runs/{id}/resume` continua com o defeito** — re-hospeda com credencial não
+   verificada. Eixo próprio: lá os dois lados são agentes e comparam-se, o que na submissão não
+   acontece.
+2. **A recusa deixou de produzir registo de auditoria durável.** Antes o deny era um
+   `MediationRecord` tamper-evidente no WORM, com métrica; agora é uma linha de log. Não selar
+   RESIDÊNCIA é correcto; não deixar rasto de AUDITORIA é outra coisa.
+3. **Falha de CONSULTA do registo de revogação é indistinguível de revogação genuína** — o
+   verificador embrulha as duas na mesma sentinela, com `%v` e não `%w`. A mensagem foi mudada para
+   não mentir; a distinção exige sentinela própria noutro módulo.
+4. **Em modo de referência um run sem credencial continua a ser criado** e a morrer no RM.
+5. **O banner não declara esta postura.**
+
+### Custo em testes, medido
+
+38 funções vermelhas, reduzidas a zero **sem nenhum seam que desligasse a guarda**. O achado que
+mudou a leitura do custo: **nenhum teste apresentava uma credencial inválida** — as 38 falhas vinham
+todas do ramo «ausente». Verificar o que é apresentado custou zero, e revelou que esse caminho não
+tinha cobertura nenhuma.
+
 
 ## AOS-429 — A fila de pedidos de plano nunca expira, e o objectivo do utilizador fica em claro no WAL e nos backups
 

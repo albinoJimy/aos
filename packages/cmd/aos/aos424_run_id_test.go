@@ -69,6 +69,7 @@ func TestAOS424RunIDLegitimoContinuaAceite(t *testing.T) {
 	_, h := newAPI(t, node)
 	rec := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id": "run-424-simples", "principal_nhi": "nhi:run-424-simples",
+		"credential": credencialDeTeste(t, node),
 	})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("um run_id legitimo devia dar 201, veio %d (%s)", rec.Code, rec.Body.String())
@@ -162,6 +163,7 @@ func TestAOS424PostRunsValidaEOPlanoContinuaAPassar(t *testing.T) {
 	// (a) O que a guarda passa a recusar: um `run_id` de cliente que não pode ser um stream.
 	mau := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id": "cliente.pedido-1", "principal_nhi": "nhi:x",
+		"credential": credencialDeTeste(t, no),
 	})
 	if mau.Code != http.StatusBadRequest {
 		t.Errorf("o `POST /runs` devia recusar um run_id com ponto (veio %d): o run_id E o nome "+
@@ -180,6 +182,7 @@ func TestAOS424PostRunsValidaEOPlanoContinuaAPassar(t *testing.T) {
 	const filhoEscapado = "run-424~analise+2edados"
 	bom := postJSON(h, "POST", "/runs", map[string]any{
 		"run_id": filhoEscapado, "principal_nhi": "nhi:x",
+		"credential": credencialDeTeste(t, no),
 	})
 	if bom.Code != http.StatusCreated {
 		t.Fatalf("o `POST /runs` tem de aceitar %q (veio %d): e o id que o childRunID produz para "+

@@ -22,10 +22,11 @@ func aos414Digest(s string) string {
 	return "sha256:" + hex.EncodeToString(soma[:])
 }
 
-func aos414Submeter(t *testing.T, h http.Handler, runID string, inputs []map[string]any) *httptest.ResponseRecorder {
+func aos414Submeter(t *testing.T, node *Node, h http.Handler, runID string, inputs []map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	return postJSON(h, "POST", "/runs", map[string]any{
 		"run_id":        runID,
+		"credential":    credencialDeTeste(t, node),
 		"objective":     "verifica",
 		"principal_nhi": "nhi:" + runID,
 		"inputs":        inputs,
@@ -57,7 +58,7 @@ func TestAOS414_InputsNaFronteiraDoNo(t *testing.T) {
 	}
 	for i, k := range casos {
 		t.Run(k.nome, func(t *testing.T) {
-			rec := aos414Submeter(t, h, "run-414-"+strconv.Itoa(i), k.inputs)
+			rec := aos414Submeter(t, node, h, "run-414-"+strconv.Itoa(i), k.inputs)
 			if rec.Code != k.quer {
 				t.Fatalf("veio %d, quero %d (%s)", rec.Code, k.quer, rec.Body.String())
 			}
@@ -84,7 +85,7 @@ func TestAOS414_PayloadSubmetidoChegaAoPromptDoRun(t *testing.T) {
 	svc, h := newAPI(t, node)
 
 	const conteudo = "o documento lido pelo no anterior"
-	rec := aos414Submeter(t, h, "run-414-prompt", []map[string]any{
+	rec := aos414Submeter(t, node, h, "run-414-prompt", []map[string]any{
 		{"from": "read_notes", "output": "notes_document", "digest": aos414Digest(conteudo), "content": conteudo},
 	})
 	if rec.Code != http.StatusCreated {
