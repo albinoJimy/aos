@@ -232,10 +232,22 @@ Configurar em *branch protection* de `main` os checks (lista completa, na mesma 
 do `needs:` do agregador — o self-test §M compara-a com `.github/workflows/ci.yml` e
 fica vermelho se divergir):
 
-REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · stream-names · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · policy-taint · selftest
+REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · stream-names · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · nats · dormencia · sast · sca · policy-test · policy-taint · selftest
 
 …ou, em alternativa, o agregador único **`gates`**. O **scan de segredos** (regra
 transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.
+
+> **O gate `nats` levanta Docker e demora.** Entrou em AOS-431 e corre um cluster JetStream de
+> quatro nós para exercitar as suites que, sem ele, SALTAM — eram 45, em 13 ficheiros. Sem
+> Docker ele **salta e declara-o** (`AOS_SKIPPED_STEP`), como os outros gates que dependem de
+> contentores; o que não faz é ficar verde em silêncio. Para o correr sozinho: `make ci-nats`.
+> Para levantar só o cluster e trabalhar contra ele:
+> `eval "$(bash scripts/ci/nats-cluster.sh up)"`, e `bash scripts/ci/nats-cluster.sh down` no
+> fim.
+>
+> Ele tolera **duas falhas declaradas** (AOS-432): sobre substrato replicado, quem perde a
+> corrida ao lease sai com um erro de transporte em vez do código da posse. A lista
+> auto-reforma-se — se esses testes passarem, o gate avermelha para obrigar a fechar o ticket.
 
 Os três gates **anti-recorrência** (`ref-lint`, `rtm`, `layer-lint`, AOS-190) constam
 do `needs:` do agregador `gates` — é isso, e só isso, que os torna bloqueantes. Um
