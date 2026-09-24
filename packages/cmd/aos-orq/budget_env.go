@@ -80,25 +80,44 @@ var ErrTectoDePlanoInvalido = errors.New(
 		"usar o default; 0 nao desliga o tecto, negaria todos os planos")
 
 // tectoDoPlanoDoAmbiente resolve o tecto da raiz da árvore. Nunca devolve zero.
+//
+// # OS `os.Getenv` SÃO LITERAIS, E ISSO É EXIGIDO POR UM GATE
+//
+// A primeira versão tinha um helper `inteiroPositivoDoAmbiente(nome string, …)` que fazia
+// `os.Getenv(nome)`. O CI recusou-a, e com razão: o `env_surface_test.go` do nó varre a árvore
+// — incluindo este módulo — para construir a superfície de variáveis DOCUMENTADA, e um nome
+// não-literal cega-o. Uma variável que existe e que nenhuma documentação consegue enumerar é
+// exactamente a classe de defeito que este repositório persegue.
+//
+// O gate oferecia duas saídas: literal, ou declarar a função em `envNameWrappers`. A segunda é
+// para quando a leitura REAL está no chamador do wrapper, o que aqui não acontece — usá-la seria
+// contornar o gate em vez de o satisfazer.
+//
+// Lição de processo, registada: o gate vive em `packages/cmd/aos` e varre `../aos-orq/`. Correr
+// a suite do módulo que se tocou não chega quando o gate que o julga vive noutro.
 func tectoDoPlanoDoAmbiente() (budget.Amount, error) {
-	tokens, err := inteiroPositivoDoAmbiente("AOS_ORQ_PLAN_BUDGET_MAX_TOKENS", planBudgetTokensPorOmissao)
+	tokens, err := inteiroPositivo(
+		"AOS_ORQ_PLAN_BUDGET_MAX_TOKENS",
+		strings.TrimSpace(os.Getenv("AOS_ORQ_PLAN_BUDGET_MAX_TOKENS")),
+		planBudgetTokensPorOmissao,
+	)
 	if err != nil {
 		return budget.Amount{}, err
 	}
-	custo, err := inteiroPositivoDoAmbiente("AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD", planBudgetCustoPorOmissao)
+	custo, err := inteiroPositivo(
+		"AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD",
+		strings.TrimSpace(os.Getenv("AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD")),
+		planBudgetCustoPorOmissao,
+	)
 	if err != nil {
 		return budget.Amount{}, err
 	}
 	return budget.Amount{Tokens: tokens, CostMicroUSD: custo}, nil
 }
 
-// inteiroPositivoDoAmbiente lê uma variável inteira > 0, ou devolve o default.
-//
-// Existe aqui, e não num helper partilhado, porque o `aos-orq` não tem nenhum: cada bloco de
-// configuração deste binário tem a sua função de parse. Acrescentar um helper genérico seria
-// alargar o âmbito para lá do que este ticket precisa.
-func inteiroPositivoDoAmbiente(nome string, omissao int64) (int64, error) {
-	bruto := strings.TrimSpace(os.Getenv(nome))
+// inteiroPositivo valida um valor JÁ LIDO. Recebe o nome só para a mensagem de erro — nunca
+// para ler o ambiente, que é o que mantém os `os.Getenv` acima literais e enumeráveis.
+func inteiroPositivo(nome, bruto string, omissao int64) (int64, error) {
 	if bruto == "" {
 		return omissao, nil
 	}
