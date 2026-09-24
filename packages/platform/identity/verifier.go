@@ -36,6 +36,10 @@ type Principal struct {
 	// DelegationChain é a cadeia on-behalf-of verificada (raiz humana → agente
 	// actual), extraída dos claims e validada por [Verifier.Verify] (AOS-006).
 	DelegationChain delegation.Chain
+	// MandateID é o mandato sob o qual o token foi cunhado (AOS-427). Só é preenchido quando o
+	// emissor é MANDATADO e o mandato VERIFICOU; vazio em todos os outros casos — nunca se
+	// devolve o ID de um mandato que ninguém verificou.
+	MandateID string
 }
 
 // HumanPrincipal resolve o humano responsável único na raiz da cadeia de
@@ -61,7 +65,11 @@ func (p Principal) Allows(capability string) bool {
 type Verifier struct {
 	trust       map[string]ed25519.PublicKey
 	revocations RevocationChecker
-	now         func() time.Time
+	// mandated são os emissores que só se aceitam DENTRO de um mandato (AOS-427), e
+	// mandateSigners as chaves PÚBLICAS dos humanos cujos mandatos se aceitam, por user_id.
+	mandated       map[string]bool
+	mandateSigners map[string]ed25519.PublicKey
+	now            func() time.Time
 	// leeway é a tolerância de relógio aplicada a nbf/exp (AOS-278). Espelha o
 	// verificador OIDC ([integration/oidc], 60s por omissão): o issuer e o nó são
 	// máquinas SEPARADAS (D4 Opção A — mint externo, verificação no nó), pelo que um
@@ -84,6 +92,35 @@ func WithTrustedIssuer(iss string, pub ed25519.PublicKey) VerifierOption {
 		if iss != "" && len(pub) == ed25519.PublicKeySize {
 			v.trust[iss] = pub
 		}
+	}
+}
+
+// WithMandatedIssuer regista um emissor AUTOMÁTICO (AOS-427, ADR-033): um trust anchor cujos
+// tokens SÓ verificam com um mandato embebido, assinado por um dos humanos de `signers`
+// (user_id → chave pública ed25519) e que cubra o token. É a forma de confiar num emissor que
+// corre sem humano presente sem lhe dar mais poder do que o humano assinou.
+//
+// Fail-closed na composição: iss vazio, pubkey de tamanho errado ou `signers` sem nenhuma chave
+// válida deixam o emissor SEM anchor — os seus tokens são recusados com [ErrUnknownIssuer], em
+// vez de verificarem sem mandato. Se o mesmo iss for também registado com [WithTrustedIssuer],
+// a exigência de mandato prevalece: um emissor não deixa de ser mandatado por ter dois registos.
+func WithMandatedIssuer(iss string, pub ed25519.PublicKey, signers map[string]ed25519.PublicKey) VerifierOption {
+	return func(v *Verifier) {
+		if iss == "" || len(pub) != ed25519.PublicKeySize {
+			return
+		}
+		validos := 0
+		for human, k := range signers {
+			if human != "" && len(k) == ed25519.PublicKeySize {
+				v.mandateSigners[human] = append(ed25519.PublicKey(nil), k...)
+				validos++
+			}
+		}
+		if validos == 0 {
+			return
+		}
+		v.trust[iss] = append(ed25519.PublicKey(nil), pub...)
+		v.mandated[iss] = true
 	}
 }
 
@@ -120,9 +157,11 @@ func WithVerifierLeeway(d time.Duration) VerifierOption {
 // ajuste com [WithVerifierLeeway].
 func NewVerifier(opts ...VerifierOption) *Verifier {
 	v := &Verifier{
-		trust:  make(map[string]ed25519.PublicKey),
-		now:    time.Now,
-		leeway: 60 * time.Second,
+		trust:          make(map[string]ed25519.PublicKey),
+		mandated:       make(map[string]bool),
+		mandateSigners: make(map[string]ed25519.PublicKey),
+		now:            time.Now,
+		leeway:         60 * time.Second,
 	}
 	for _, o := range opts {
 		o(v)
@@ -243,6 +282,19 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 		return Principal{}, fmt.Errorf("%w: escopo do token excede a autoridade selada na folha da cadeia", ErrDelegationInvalid)
 	}
 
+	// 7) Mandato (AOS-427). Só para emissores MANDATADOS, e por último: um mandato só se lê num
+	// token cuja assinatura, janela, revogação e cadeia já passaram. Num token de um emissor NÃO
+	// mandatado um mandato embebido é ignorado e o MandateID fica vazio — o emissor manual é
+	// confiado por inteiro, e um mandato que ninguém verificou não se devolve a ninguém.
+	var mandateID string
+	if v.mandated[c.Issuer] {
+		id, merr := v.verifyMandate(ctx, c)
+		if merr != nil {
+			return Principal{}, merr
+		}
+		mandateID = id
+	}
+
 	return Principal{
 		UserID:          c.UserID,
 		AgentID:         c.AgentID,
@@ -256,5 +308,6 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 		NotBefore:       time.Unix(c.NotBefore, 0),
 		Expiry:          time.Unix(c.Expiry, 0),
 		DelegationChain: c.DelegationChain.Clone(),
+		MandateID:       mandateID,
 	}, nil
 }

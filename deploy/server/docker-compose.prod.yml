@@ -66,6 +66,12 @@ services:
       # neste processo. Nenhuma chave de assinatura vive no servidor.
       AOS_ISSUER_ID: "${AOS_ISSUER_ID:?}"
       AOS_ISSUER_PUBKEY: "${AOS_ISSUER_PUBKEY:?}"
+      # AOS-427 / ADR-033: o emissor AUTOMÁTICO, só aceite DENTRO de um mandato assinado por um humano
+      # pinado. As três vêm juntas ou nenhuma (vazias ⇒ o nó declara NAO COMPOSTO e só o emissor manual
+      # é confiado). Material público: um nome e pubkeys.
+      AOS_MANDATED_ISSUER_ID: "${AOS_MANDATED_ISSUER_ID:-}"
+      AOS_MANDATED_ISSUER_PUBKEY: "${AOS_MANDATED_ISSUER_PUBKEY:-}"
+      AOS_MANDATE_SIGNERS: "${AOS_MANDATE_SIGNERS:-}"
 
       # Plano de controlo: operadores (steer/pause), ratificadores (promoção), four-eyes.
       # AOS_OPERATORS vazio ⇒ o bind não-loopback acima é RECUSADO (bind-guardrail).

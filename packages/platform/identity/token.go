@@ -70,6 +70,11 @@ type Claims struct {
 	// tag omitempty é apenas o encoding on-the-wire, não indica tolerância a
 	// tokens legados sem cadeia.
 	DelegationChain delegation.Chain `json:"delegation_chain,omitempty"`
+	// Mandate é o mandato assinado pelo humano sob o qual um emissor AUTOMÁTICO cunhou este
+	// token (AOS-427, ver mandate.go). Vai selado pela assinatura do emissor, mas quem lhe dá
+	// valor é a assinatura do HUMANO, que o nó verifica contra a chave pinada. Ausente nos
+	// tokens do emissor manual; obrigatório nos de um emissor mandatado.
+	Mandate *SignedMandate `json:"mandate,omitempty"`
 }
 
 func b64enc(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

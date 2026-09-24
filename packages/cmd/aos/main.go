@@ -670,6 +670,18 @@ func nodeConfigFromEnv() (Config, error) {
 		issuerPub = pub
 	}
 
+	// EMISSOR MANDATADO (AOS-427, ADR-033): o segundo trust anchor, que só verifica DENTRO de um
+	// mandato assinado por um humano pinado aqui. As três vêm juntas ou nenhuma — ver
+	// emissor_mandatado.go.
+	mandatedID, mandatedPub, mandateSigners, err := parseMandatedIssuer(
+		os.Getenv("AOS_MANDATED_ISSUER_ID"),
+		os.Getenv("AOS_MANDATED_ISSUER_PUBKEY"),
+		os.Getenv("AOS_MANDATE_SIGNERS"),
+	)
+	if err != nil {
+		return Config{}, err
+	}
+
 	// FAIL-CLOSED de produção: AOS_MODE=production recusa o modo de referência (autoridade
 	// co-localizada). Um operador não pode confundir o arranque de referência com uma
 	// fronteira de produção endurecida — exige-se o trust-anchor-only.
@@ -704,6 +716,10 @@ func nodeConfigFromEnv() (Config, error) {
 		Humans:         humans,
 		HumanDirectory: humanDir,
 		IssuerPubKey:   issuerPub, // nil ⇒ referência; presente ⇒ trust-anchor-only endurecido
+		// AOS-427: o emissor automático, só aceite dentro de um mandato (vazio ⇒ não composto).
+		MandatedIssuerID:     mandatedID,
+		MandatedIssuerPubKey: mandatedPub,
+		MandateSigners:       mandateSigners,
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},

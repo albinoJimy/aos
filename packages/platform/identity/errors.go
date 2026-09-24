@@ -101,4 +101,20 @@ var (
 	// delegation (comparável com errors.Is em ambos os níveis). Fail-closed:
 	// AOS-006 exige que toda a NHI resolva até um humano responsável.
 	ErrDelegationInvalid = &IdentityError{Code: "E_DELEGATION_INVALID", msg: "cadeia de delegacao invalida (nao resolve ate humano ou escala autoridade)"}
+
+	// ErrMandateRequired — o token vem de um emissor MANDATADO (AOS-427) e não traz mandato.
+	// Um emissor automático só é confiado DENTRO de um mandato; sem ele, o nó recusa.
+	ErrMandateRequired = &IdentityError{Code: "E_MANDATE_REQUIRED", msg: "emissor mandatado exige mandato embebido no token"}
+
+	// ErrMandateInvalid — o mandato embebido não tem forma válida, ou a sua assinatura não
+	// verifica com a chave PINADA do humano que ele nomeia (ou não há chave pinada para ele).
+	ErrMandateInvalid = &IdentityError{Code: "E_MANDATE_INVALID", msg: "mandato invalido ou nao assinado pelo humano que nomeia"}
+
+	// ErrMandateViolated — o mandato é válido, mas o token está FORA dele (emissor, identidade,
+	// escopo, TTL ou janela). É o sinal de um emissor a cunhar o que não lhe foi autorizado.
+	ErrMandateViolated = &IdentityError{Code: "E_MANDATE_VIOLATED", msg: "token fora dos limites do mandato"}
+
+	// ErrMandateRevoked — o mandato sob o qual o token foi cunhado foi revogado. Todos os tokens
+	// cunhados sob ele deixam de verificar, incluindo os que ainda não expiraram.
+	ErrMandateRevoked = &IdentityError{Code: "E_MANDATE_REVOKED", msg: "mandato revogado"}
 )

@@ -87,6 +87,12 @@ type IssueRequest struct {
 	// (evento identity.nhi.issued) — ver ADR-003 e [BindingAudit]. É um RÓTULO de
 	// método: NUNCA o token/asserção cru nem PII. Vazio ⇒ [AuthMethodUnspecified].
 	AuthMethod string
+	// Mandate, quando presente, é o mandato assinado pelo humano sob o qual se cunha (AOS-427).
+	// Vai EMBEBIDO no token, e o [Issuer] RECUSA cunhar um token que ele não cubra
+	// ([ErrMandateViolated]). Essa recusa é cortesia de um emissor honesto — quem decide é o nó,
+	// que verifica o mandato contra a chave pinada do humano. A assinatura do mandato NÃO é
+	// verificada aqui: o Issuer não conhece as chaves dos humanos (ver [SignedMandate.VerifySignature]).
+	Mandate *SignedMandate
 }
 
 // Issuer emite tokens NHI assinados. NÃO detém os bytes crus da chave privada: assina
@@ -309,6 +315,14 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		Expiry:          now.Add(cp.TTL).Unix(),
 		JTI:             jti,
 		DelegationChain: chain,
+	}
+	if req.Mandate != nil {
+		if err := req.Mandate.Mandate.Covers(claims); err != nil {
+			return Token{}, err
+		}
+		m := *req.Mandate
+		m.Mandate.Scope = append([]string(nil), m.Mandate.Scope...)
+		claims.Mandate = &m
 	}
 
 	compact, err := signToken(i.signer, i.kid, claims)
