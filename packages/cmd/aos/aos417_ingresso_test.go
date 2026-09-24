@@ -334,20 +334,70 @@ func TestAOS417FormaDoFactoEEstavel(t *testing.T) {
 		t.Fatalf("payload nao descodifica: %v", err)
 	}
 
-	// As chaves que o consumidor PODE contar que existem. Acrescentar uma e compativel; tirar
-	// ou renomear uma quebra quem la esta do outro lado sem que nada avise.
-	for _, chave := range []string{"v", "run_id", "objective", "principal", "board", "region"} {
+	// ESTE GUARD MUDOU DE PERGUNTA EM AOS-429, E A PREMISSA ANTIGA ERA FALSA.
+	//
+	// Ele dizia que tirar uma chave daqui «quebra quem la esta do outro lado». Foi verificado:
+	// NINGUEM fora de `packages/cmd/aos` le este payload. Um grep por `plan-requests` e por
+	// `planrequest.` em `packages/` fora deste directorio nao devolve nada.
+	//
+	// O contrato ENTRE MODULOS e a resposta HTTP `respostaDeReclamo`, que o `aos-orq` espelha em
+	// `node_client.go:386-394` — e essa nao mudou. O payload em repouso e INTERNO ao no.
+	//
+	// E a mesma classe de erro que o AOS-423 ja apanhou neste eixo: um guard que detecta o
+	// consumidor por PROXY. O proxy era razoavel quando foi escrito e deixou de o ser sem que
+	// nada o ligasse a mudanca. Agora fixa-se o que e mesmo contrato, nas duas pontas.
+	for _, chave := range []string{"v", "run_id", "principal", "board", "region"} {
 		if _, ok := bruto[chave]; !ok {
-			t.Errorf("o facto perdeu a chave %q: um consumidor noutro modulo deixa de a ler, e "+
-				"nenhum gate liga as duas copias da struct", chave)
+			t.Errorf("o facto perdeu a chave %q", chave)
 		}
 	}
-	if bruto["v"] != planRequestVersao {
-		t.Errorf("a versao do payload devia ser %q, veio %v", planRequestVersao, bruto["v"])
+
+	// O OBJECTIVO ESTA NUMA DAS DUAS CHAVES, NUNCA NAS DUAS (AOS-429).
+	//
+	// Com titular ha `objective_sealed` e `objective` esta ausente; sem titular e o inverso. Ter
+	// as duas significaria o texto em claro ao lado do ciphertext — a cifra tornada decorativa,
+	// que e a forma mais cara de parecer seguro.
+	_, temClaro := bruto["objective"]
+	_, temSelado := bruto["objective_sealed"]
+	switch {
+	case temClaro && temSelado:
+		t.Error("o facto traz `objective` E `objective_sealed`: o texto em claro ao lado do " +
+			"ciphertext torna a cifra decorativa")
+	case !temClaro && !temSelado:
+		t.Error("o facto nao traz objectivo nenhum — nem em claro nem selado")
+	}
+	// Este no TEM gate soberano (`newTwoRegionGovNode`), logo tem titular, logo tem de selar.
+	if !temSelado {
+		t.Error("num no com gate soberano o objectivo tinha de ir SELADO: e texto livre de uma " +
+			"pessoa, e em claro vai para o WAL e para os backups fora do alcance do crypto-shredding")
+	}
+
+	if bruto["v"] != planRequestSubmittedVersao {
+		t.Errorf("a versao do payload devia ser %q, veio %v", planRequestSubmittedVersao, bruto["v"])
+	}
+
+	// A PONTA QUE E MESMO CONTRATO: o consumidor recebe o objectivo EM CLARO, como sempre. Se
+	// isto quebrar, quebra o `aos-orq` — e e isso que o guard antigo julgava estar a proteger.
+	claro, err := abrirObjetivo(node, planRequestPayloadDeTeste(t, evs[0].Payload))
+	if err != nil {
+		t.Fatalf("o no tem de conseguir abrir o objectivo que selou: %v", err)
+	}
+	if claro != "objectivo" {
+		t.Errorf("o objectivo entregue ao consumidor = %q, quer %q", claro, "objectivo")
 	}
 	// O ENVELOPE tem a sua propria versao, e NAO e a mesma coisa: versiona a forma do envelope,
 	// nao a do corpo. Fica asserido para que a distincao nao se perca.
 	if evs[0].SchemaVersion == "" {
 		t.Error("o envelope devia trazer schema_version preenchido pelo store")
 	}
+}
+
+// planRequestPayloadDeTeste descodifica o payload do facto tal como o no o le.
+func planRequestPayloadDeTeste(t *testing.T, bruto []byte) planRequestPayload {
+	t.Helper()
+	var p planRequestPayload
+	if err := json.Unmarshal(bruto, &p); err != nil {
+		t.Fatalf("payload nao descodifica para planRequestPayload: %v", err)
+	}
+	return p
 }

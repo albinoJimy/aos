@@ -107,7 +107,22 @@ type pedidoNaFila struct {
 //
 // Um pedido está ELEGÍVEL quando: foi submetido, não tem desfecho terminal nem à-espera-de-humano,
 // e não tem reclamação VIVA (uma reclamação sem desfecho e dentro do [ttlDaReclamacao]).
+//
+// Delega em [projectarComTerminados] e deita fora a segunda metade. Existe porque é esta a
+// pergunta que quase todos os chamadores fazem, e porque é a assinatura que os testes do AOS-423
+// amarram.
 func projectarFila(eventos []eventstore.Event, agora time.Time) []pedidoNaFila {
+	fila, _ := projectarComTerminados(eventos, agora)
+	return fila
+}
+
+// projectarComTerminados é a projecção, mais o estado terminal de CADA pedido por ordem de
+// chegada — que é o que a marca de água do AOS-429 precisa de saber e a fila sozinha não diz.
+//
+// As duas saídas vêm da MESMA passagem de propósito: a definição de «terminado» tem de existir
+// uma só vez. Duas cópias derivam, e uma marca de água derivada de uma regra desactualizada
+// saltaria pedidos vivos — a falha mais cara que este ficheiro pode ter.
+func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedidoNaFila, []estadoTerminal) {
 	type estado struct {
 		p            pedidoNaFila
 		submetido    bool
@@ -175,16 +190,20 @@ func projectarFila(eventos []eventstore.Event, agora time.Time) []pedidoNaFila {
 	}
 
 	var fora []pedidoNaFila
+	var terminais []estadoTerminal
 	for _, runID := range ordem {
 		e := porRun[runID]
 		if !e.submetido {
-			continue // reclamação órfã: não se serve o que nunca foi pedido
+			// RECLAMAÇÃO ÓRFÃ: não se serve o que nunca foi pedido. Não entra nos terminais
+			// tão-pouco — não tem `seq` de submissão, logo não há nada que autorize cortar.
+			continue
 		}
 		for _, classe := range e.desfechoDe {
 			if classe == DesfechoTerminal || classe == DesfechoAguardaHumano {
 				e.p.Terminado = true
 			}
 		}
+		terminais = append(terminais, estadoTerminal{seq: e.p.Seq, terminado: e.p.Terminado})
 		if e.p.Terminado {
 			continue
 		}
@@ -208,7 +227,11 @@ func projectarFila(eventos []eventstore.Event, agora time.Time) []pedidoNaFila {
 	}
 	// Ordem de CHEGADA. Sem isto, um pedido azarado podia ficar para trás indefinidamente.
 	sort.Slice(fora, func(i, j int) bool { return fora[i].Seq < fora[j].Seq })
-	return fora
+	// Os terminais TAMBÉM por `seq`, porque a marca de água é um prefixo contíguo e um prefixo
+	// só faz sentido sobre uma ordem. O `ordem` é de primeira aparição no log, que coincide com
+	// o `seq` para os submetidos — ordenar aqui torna-o independente disso.
+	sort.Slice(terminais, func(i, j int) bool { return terminais[i].seq < terminais[j].seq })
+	return fora, terminais
 }
 
 // partirChaveComGeracao lê `<prefixo><geração>-<run_id>`.
@@ -277,9 +300,33 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// O OBJECTIVO ABRE-SE AQUI, e não na projecção (AOS-429).
+	//
+	// A projecção corre a cada submissão, sobre a fila toda, só para contar pendentes; decifrar
+	// ali seria pagar cripto por cada pedido de cada varredura para deitar fora tudo menos um.
+	// Aqui abre-se exactamente o pedido que vai ser entregue, uma vez.
+	//
+	// A forma do wire não muda: o consumidor recebe `objective` em claro, como sempre, pelo
+	// canal que o gate soberano já autenticou. É por isto que ele nunca precisa da chave.
+	objetivo, errAbrir := abrirObjetivo(h.node, pedido.Payload)
+	if errAbrir != nil {
+		// A CAUSA MAIS PROVÁVEL É LEGÍTIMA, e é o Art. 17 a funcionar: a KEK do titular foi
+		// destruída por um `/dsar/erase` e o pedido deixou de ser executável.
+		//
+		// O pedido JÁ FOI RECLAMADO quando se chega aqui — a reclamação é o que arbitra entre
+		// consumidores e tem de acontecer antes. Devolver 503 deixa-o reclamado, e a reclamação
+		// expira pelo TTL, que é o caminho normal de um consumidor que morre a meio. NÃO se
+		// escreve desfecho: quem reporta desfechos é o consumidor, e inventar um aqui poria o
+		// nó a afirmar sobre uma tentativa que nunca correu.
+		h.logf("plan-claim: pedido reclamado mas ILEGIVEL run=%q principal=%q: %v — "+
+			"tipicamente a chave do titular foi destruida por /dsar/erase",
+			pedido.RunID, reclamante.principal, errAbrir)
+		writeError(w, http.StatusServiceUnavailable, "pedido indisponivel")
+		return
+	}
 	writeJSON(w, http.StatusOK, respostaDeReclamo{
 		RunID:     pedido.RunID,
-		Objective: pedido.Payload.Objective,
+		Objective: objetivo,
 		Board:     pedido.Payload.Board,
 		Region:    pedido.Payload.Region,
 		Geracao:   pedido.Geracao,
@@ -292,14 +339,16 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 // O `StatusDuplicate` é o árbitro: dois consumidores que projectem o mesmo estado tentam a mesma
 // geração, e só um vence. O perdedor tenta o seguinte — não falha.
 func (h *apiHandler) reclamarUm(ctx context.Context, reclamante readerIdentity) (*pedidoNaFila, error) {
-	eventos, err := h.node.EventStore.Read(ctx, planRequestStream, 0)
+	eventos, err := h.node.EventStore.Read(ctx, planRequestStream, h.marcaDaFila.desde())
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
 			return nil, nil // fila nunca usada: não é erro
 		}
 		return nil, err
 	}
-	for _, p := range projectarFila(eventos, time.Now().UTC()) {
+	fila, nova := projectarFilaComMarca(eventos, time.Now().UTC())
+	h.marcaDaFila.avancar(nova)
+	for _, p := range fila {
 		// SOBERANIA (ADR-016 §5): um pedido submetido noutra região não é entregue aqui. A
 		// comparação é por valor exacto, como o `regionMatches` do gateway — «qualquer região»
 		// não é uma fronteira de soberania.
@@ -421,15 +470,27 @@ func truncar(s string, n int) string {
 }
 
 // pendentesNaFila conta os pedidos por drenar. É o que o [tectoDePendentes] mede.
-func pendentesNaFila(ctx context.Context, store EventStorePort) (int, error) {
-	eventos, err := store.Read(ctx, planRequestStream, 0)
+//
+// A `marca` é opcional (nil ⇒ lê tudo) porque há um chamador — a métrica em `api.go` — que não
+// tem estado onde a guardar e para quem uma leitura completa ocasional não custa nada. Os dois
+// caminhos QUENTES (`POST /plans` e a reclamação) passam-na.
+func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua) (int, error) {
+	var desde uint64
+	if marca != nil {
+		desde = marca.desde()
+	}
+	eventos, err := store.Read(ctx, planRequestStream, desde)
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	return len(projectarFila(eventos, time.Now().UTC())), nil
+	fila, nova := projectarFilaComMarca(eventos, time.Now().UTC())
+	if marca != nil {
+		marca.avancar(nova)
+	}
+	return len(fila), nil
 }
 
 // filaReclamavel diz se a rota de reclamacao vai SERVIR, e existe para o banner de arranque o

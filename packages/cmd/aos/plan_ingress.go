@@ -210,6 +210,20 @@ type planRequestResponse struct {
 // que se consegue hoje sem inventar maquinaria que ninguém pediu.
 const planRequestVersao = "1.0"
 
+// planRequestSubmittedVersao é a versão do payload do PEDIDO, e existe separada desde AOS-429.
+//
+// O `planRequestVersao` acima é partilhado por TRÊS payloads — submetido, reclamado e desfecho.
+// Subi-lo para marcar a cifra do objectivo afirmaria uma mudança de forma em dois payloads que
+// não mudaram nada, e um leitor que confiasse nisso procuraria uma diferença que não existe.
+//
+// 1.1: o payload pode trazer `objective_sealed` em vez de `objective`. A versão sobe porque a
+// forma EM REPOUSO mudou e o log é append-only — factos 1.0 continuam a ser lidos tal como
+// foram escritos, e quem vir 1.1 sabe que o texto pode não estar onde estava.
+//
+// A forma do WIRE não mudou: o consumidor continua a receber o objectivo em claro em
+// `respostaDeReclamo` e não sabe nada disto.
+const planRequestSubmittedVersao = "1.1"
+
 // planRequestPayload é o facto gravado — e é um CONTRATO, porque alguém noutro módulo o vai ler.
 //
 // O `principal`, o `board` e a `region` vêm da credencial VERIFICADA pelo mesmo gate que
@@ -218,12 +232,22 @@ const planRequestVersao = "1.0"
 // residência, não fica gravado em mais lado nenhum: sem ele o consumidor não consegue
 // reconstituir sob que autoridade o pedido entrou.
 type planRequestPayload struct {
-	Versao    string `json:"v"`
-	RunID     string `json:"run_id"`
-	Objective string `json:"objective"`
-	Principal string `json:"principal,omitempty"`
-	Board     string `json:"board,omitempty"`
-	Region    string `json:"region,omitempty"`
+	Versao string `json:"v"`
+	RunID  string `json:"run_id"`
+	// Objective é o objectivo EM CLARO, e desde o AOS-429 só é preenchido quando NÃO há titular
+	// sob o qual selar — um nó sem gate soberano composto. Com titular, fica vazio e o texto
+	// vive em [planRequestPayload.ObjetivoSelado].
+	//
+	// Os dois são MUTUAMENTE EXCLUSIVOS por construção (ver `selarObjetivo`), e há teste a
+	// amarrá-lo: o texto em claro ao lado do ciphertext tornaria a cifra decorativa.
+	Objective string `json:"objective,omitempty"`
+	// ObjetivoSelado é o objectivo cifrado sob a KEK do TITULAR (o `principal` do submissor),
+	// pelo mesmo `audit.SealContent` que sela o conteúdo dos runs. É o que põe o texto livre do
+	// utilizador dentro do alcance do crypto-shredding — ver `plan_objetivo_selado.go`.
+	ObjetivoSelado []byte `json:"objective_sealed,omitempty"`
+	Principal      string `json:"principal,omitempty"`
+	Board          string `json:"board,omitempty"`
+	Region         string `json:"region,omitempty"`
 }
 
 // handlePlanRequest recebe um objectivo, grava o facto e devolve.
@@ -292,7 +316,7 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := planRequestPayload{Versao: planRequestVersao, RunID: req.RunID, Objective: req.Objective}
+	p := planRequestPayload{Versao: planRequestSubmittedVersao, RunID: req.RunID, Objective: req.Objective}
 
 	// (2) SOBERANIA — a MESMA autoridade que o `POST /runs` usa, e SÓ a autoridade.
 	//
@@ -334,7 +358,7 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// linear no número de eventos da fila, como o molde das aprovações. Com o tecto em
 	// [tectoDePendentes] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
 	// os pendentes — a retenção do stream é resíduo declarado do AOS-423.
-	if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore); err != nil {
+	if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila); err != nil {
 		h.logf("plan-ingress: tecto nao verificavel: %v", err)
 		writeError(w, http.StatusServiceUnavailable, "fila indisponivel")
 		return
@@ -342,6 +366,18 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 		h.logf("plan-ingress: RECUSADO por tecto — %d pedidos por drenar (tecto %d); o consumidor "+
 			"nao esta a drenar a fila", pendentes, tectoDePendentes)
 		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
+		return
+	}
+
+	// (2-bis) CIFRA POR TITULAR (AOS-429). O objectivo é texto livre de uma pessoa; a partir
+	// daqui não volta a ser gravado em claro quando há titular sob o qual o selar. A decisão, o
+	// que ela fecha e o que NÃO fecha estão em `plan_objetivo_selado.go`.
+	p, errSelo := selarObjetivo(h.node, p)
+	if errSelo != nil {
+		// FAIL-CLOSED: com custódia composta, não se degrada para «grava em claro». Seria a
+		// rota a baixar sozinha, e em silêncio, a postura de protecção de dados do nó.
+		h.logf("plan-ingress: RECUSADO — nao foi possivel selar o objectivo run=%q: %v", req.RunID, errSelo)
+		writeError(w, http.StatusServiceUnavailable, "indisponivel")
 		return
 	}
 

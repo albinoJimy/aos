@@ -60,6 +60,15 @@ type capturedSubjectWire struct {
 	SealedSubject string `json:"sealed_subject"`
 }
 
+// planRequestSubjectWire é a projecção mínima do payload de `planrequest.submitted`: o titular e
+// a PRESENÇA do ciphertext. Deliberadamente NÃO traz o objectivo — nem em claro nem selado. O
+// varredor não tem nada que fazer com o texto, e um campo a mais aqui seria texto livre de uma
+// pessoa a passar por um caminho que não precisa dele.
+type planRequestSubjectWire struct {
+	Principal      string `json:"principal"`
+	ObjetivoSelado []byte `json:"objective_sealed"`
+}
+
 // ledgerSubjectWire é a projecção MÍNIMA do payload de "step.ledger.applied" (AOS-245): o TITULAR
 // sob cuja KEK o Result.Payload — o OUTPUT da tool call — foi cifrado. Nunca desserializa o
 // resultado (opaco/cifrado). O campo é [durable.ledgerRecord].Subject.
@@ -68,12 +77,27 @@ type ledgerSubjectWire struct {
 }
 
 // subjectOf devolve o TITULAR de um evento CLASSIFICADO do Event Store, ou "" se o evento não for
-// conteúdo cifrado por-titular. Cobre as DUAS famílias que selam sob a KEK por-titular de AOS-093:
+// conteúdo cifrado por-titular. Cobre as TRÊS famílias que selam sob a KEK por-titular de AOS-093:
 // a captura de não-determinismo ("replay.captured": resposta do modelo + resultados de tools) e o
 // step-ledger ("step.ledger.applied": o Result.Payload memorizado de cada passo, selado desde
 // AOS-245). Enumerar só a primeira deixaria um titular cujo conteúdo vive apenas no ledger
 // invisível à expiração por TTL — não porque o crypto-shred lhe não chegasse (a KEK é a MESMA e o
 // /dsar/erase alcança ambos), mas porque o job nunca veria o registo que faz o relógio correr.
+//
+// # A TERCEIRA FAMÍLIA, E PORQUE É QUE ELA NÃO TEM TTL PRÓPRIO (AOS-429)
+//
+// `planrequest.submitted` — o objectivo que uma pessoa escreveu, selado sob a KEK dela desde o
+// AOS-429. Antes disso caía no `default` e a fila NUNCA expirava: nem o registo entrava na lista,
+// nem havia o que crypto-shredar, porque o texto estava em claro.
+//
+// **Partilha a classe e o TTL do resto do titular, de propósito, e isso é o oposto de descuido.**
+// A granularidade do mecanismo é POR-TITULAR (ver o cabeçalho deste ficheiro): uma KEK embrulha
+// as DEKs de tudo o que é daquele titular. Dar à fila um TTL mais curto não expiraria só a fila —
+// destruiria a MESMA chave, e com ela todo o `replay.captured` e `step.ledger.applied` desse
+// titular. Um pedido de plano de dez minutos apagaria os runs de dez meses.
+//
+// O corolário honesto é que a fila expira quando os dados daquele titular expiram, não antes. É
+// mais tarde do que um TTL próprio daria, e é a única leitura que não destrói o que não devia.
 func subjectOf(e eventstore.Event) string {
 	switch e.Type {
 	case replay.EventTypeCaptured:
@@ -88,6 +112,19 @@ func subjectOf(e eventstore.Event) string {
 			return ""
 		}
 		return p.Subject
+	case EventTypePlanRequestSubmitted:
+		var p planRequestSubjectWire
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return ""
+		}
+		// SÓ COM OBJECTIVO SELADO. Um pedido sem `objective_sealed` é de um nó sem titular (sem
+		// gate soberano composto) ou anterior ao AOS-429: o texto está em claro e não há KEK que
+		// o torne ilegível. Devolver o principal nesse caso faria o job CONTAR uma expiração que
+		// não expira nada — um verde que mede o vazio, que é pior do que não medir.
+		if len(p.ObjetivoSelado) == 0 {
+			return ""
+		}
+		return p.Principal
 	default:
 		return ""
 	}
