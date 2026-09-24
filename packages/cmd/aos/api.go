@@ -766,6 +766,13 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			h.credRecusadas.Add(1)
 			h.logf("submit RECUSADO (AOS-428): credencial do run nao verifica submissor=%q run=%q: %s",
 				submitter.principal, req.RunID, motivo)
+			// A PROVA, e não só a contagem (AOS-435). A recusa mantém-se aconteça o que acontecer
+			// ao selo — ver `recusa_de_credencial_selo.go` para o porquê de ser best-effort, e de
+			// ser atribuída ao SUBMISSOR e não ao principal do token que não verificou.
+			if serr := h.readGov.selarRecusaDeCredencial(r.Context(), submitter, req.RunID, motivo); serr != nil {
+				h.logf("submit RECUSADO (AOS-435): o SELO da recusa nao foi gravado run=%q: %v — "+
+					"a recusa mantem-se e a metrica conta-a; falta a prova tamper-evidente", req.RunID, serr)
+			}
 			writeError(w, http.StatusForbidden, "nao autorizado")
 			return
 		}

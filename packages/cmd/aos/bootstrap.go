@@ -2752,6 +2752,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range planIngressPostureBanner(es != nil, esMediationDurable, reclamavelNoArranque) {
 		log("%s", line)
 	}
+	// AOS-435: a postura da credencial na porta. `hardened` é o MESMO predicado que decide a
+	// presença obrigatória; `reclamavelNoArranque` é o do gate soberano, que é o que dá o WORM
+	// onde a recusa se encadeia — reutilizá-lo, em vez de escrever um terceiro, é o que mantém as
+	// três linhas a descrever o mesmo nó.
+	for _, line := range credencialNaPortaPostureBanner(hardened, reclamavelNoArranque) {
+		log("%s", line)
+	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
 	// (`progress`, o mesmo valor entregue a agentruntime.WithProgressObserver), nunca a
 	// intenção da config. Vem LOGO A SEGUIR ao orçamento porque é a leitura desse tecto.
