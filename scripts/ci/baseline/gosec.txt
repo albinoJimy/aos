@@ -26,6 +26,15 @@
 #     governance/{hitl/ratification,progress-surface/span}). Nenhum material sensivel.
 #     Ficam baselinados por serem ruido estrutural da regra, nao divida.
 #
+#     +2 em 2026-09-24 (AOS-435), mesma classe e verificados um a um:
+#     `packages/cmd/aos/recusa_de_credencial_selo.go` — as constantes `credencialRecusadaPartition`
+#     ("governance.credential") e `credencialRecusadaToolID` ("gov.credential"). O G101 casa `cred`
+#     no IDENTIFICADOR Go; os VALORES sao o nome de uma particao do WORM e o ToolID do selo — o
+#     vocabulario de governacao do trilho de auditoria, no molde de "governance.dsar" e
+#     "gov.legalhold". Nenhum material sensivel.
+#     Rejeitado: renomear para fugir a regra. Poria o linter a decidir o vocabulario do WORM, e o
+#     nome "credential" e precisamente o que torna a particao legivel a quem audita.
+#
 #   - G115 (49x, overflow de conversao) — **TRIADOS 2026-08-12: TODOS FALSOS-POSITIVOS.**
 #     Quatro categorias, verificadas no codigo (nao presumidas):
 #
@@ -110,6 +119,8 @@ packages/cmd/aos/modelgatewaywiring.go|G703
 packages/cmd/aos/modeltools.go|G703
 packages/cmd/aos/observability.go|G115
 packages/cmd/aos/sandboxwiring.go|G703
+packages/cmd/aos/recusa_de_credencial_selo.go|G101
+packages/cmd/aos/recusa_de_credencial_selo.go|G101
 packages/control-plane/governance/autonomy/controller.go|G115
 packages/control-plane/governance/compliance/report.go|G115
 packages/control-plane/governance/compliance/report.go|G115

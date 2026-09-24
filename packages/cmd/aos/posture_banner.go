@@ -156,6 +156,48 @@ func budgetPostureBanner(composed bool) []string {
 	}
 }
 
+// credencialNaPortaPostureBanner declara que a credencial do run é verificada à PORTA, em que modo
+// se exige a sua presença, e se a recusa deixa prova (AOS-435).
+//
+// # PORQUE É QUE ISTO FALTAVA, E O QUE CUSTAVA
+//
+// Desde o AOS-428 há DUAS guardas no `POST /runs` que respondem `403 nao autorizado`: a da
+// governação (o chamador não está autorizado) e a da credencial do run (o token que ele traz não
+// verifica). A uniformidade é deliberada — distinguir as duas no wire seria um oráculo. Mas o
+// operador também não as distinguia, porque nada no arranque dizia que a segunda existia.
+//
+// Recebe o estado COMPOSTO, não a intenção: `endurecido` é o mesmo predicado que decide a
+// presença obrigatória (`Authority == nil`, derivado de `AOS_ISSUER_PUBKEY`), e `selada` é o
+// predicado do gate soberano — que é o que dá o WORM onde a recusa se encadeia.
+func credencialNaPortaPostureBanner(endurecido, selada bool) []string {
+	presenca := "a AUSENCIA e ACEITE (modo de REFERENCIA: a autoridade de emissao e co-localizada e " +
+		"nao tem rota de emissao, logo um cliente externo nao tem como obter uma credencial) — um run " +
+		"sem credencial e criado e morre no Reference Monitor com denied_by=identity"
+	if endurecido {
+		presenca = "a AUSENCIA e RECUSADA (modo ENDURECIDO: a credencial vem sempre de fora, e " +
+			"AOS_MODE=production exige esta postura)"
+	}
+	prova := "a recusa NAO e selada: sem gate soberano composto nao ha WORM de governacao nem submissor " +
+		"verificado a quem a atribuir — fica a metrica aos_ingress_credential_denials_total e uma linha de log"
+	if selada {
+		prova = "cada recusa em POST /runs e SELADA no WORM, na particao unica governance.credential, " +
+			"atribuida ao SUBMISSOR verificado pelo gate soberano e NAO ao principal do token (que foi " +
+			"precisamente o que nao verificou); e contada em aos_ingress_credential_denials_total. " +
+			"A retoma (POST /runs/{id}/resume) e contada mas NAO selada — o plano de controlo nao " +
+			"entrega ao handler uma identidade verificada a quem atribuir"
+	}
+	return []string{
+		"credencial do run a PORTA (AOS-428/433/435): POST /runs e POST /runs/{id}/resume verificam a " +
+			"credencial do run pelo MESMO identity.Verifier do hook do Reference Monitor, ANTES de " +
+			"qualquer escrita duravel — uma credencial malformada, expirada, revogada ou de emissor " +
+			"desconhecido e recusada com 403. O ESCOPO por capability continua a decidir-se na " +
+			"chamada, no rmadapter: a capability nao existe na submissao. Quanto a presenca, " + presenca +
+			". Quanto a prova, " + prova + ". UM 403 NESTAS ROTAS PODE VIR DE DUAS GUARDAS " +
+			"(governacao ou credencial) e a resposta e deliberadamente a mesma — distinguir no wire " +
+			"seria um oraculo; distingue-se no log do operador e, quando selado, no WORM",
+	}
+}
+
 // credentialBrokerPostureBanner declara a AUSÊNCIA do Credential Broker (AOS-070, ADR-006).
 //
 // CORRECÇÃO (AOS-325): esta linha dizia «`platform/broker` não é importado pelo nó». Deixou de

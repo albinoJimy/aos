@@ -3610,6 +3610,81 @@ a variável existe, e o banner diz qual está em vigor.
 4. **O travão real depende de uma variável do NÓ que está por definir em produção.** É decisão do
    operador, o nó declara-a, e não é código.
 
+## AOS-435 — A recusa de credencial volta a deixar prova, e a postura passa a ser declarada
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma regressão de auditabilidade. As citações
+     ao ADR-016 (read-path soberano) e ao ADR-030 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção |
+| Prioridade | P1 — é uma regressão, e foi introduzida por outra correcção |
+| Estimativa | S |
+| Dependências | AOS-428, AOS-433 (FECHADOS) |
+| Responsável sugerido | Responsável de Segurança |
+
+### Contexto
+
+Dois itens da triagem de resíduos do AOS-433, ficados por fazer e do mesmo eixo.
+
+**(1) A recusa não deixava prova.** Antes do AOS-428, uma credencial do run que não verificava
+era negada pelo hook do RM — tarde, mas AUDITADA: um `MediationRecord` selado no WORM. O AOS-428
+passou a verificação para a porta, que era o que estava certo, e ao fazê-lo trocou uma negação
+tardia-mas-auditada por uma precoce-e-não-auditada. O AOS-433 acrescentou a métrica, que fecha a
+DETECÇÃO; faltava a PROVA.
+
+**(2) O banner não declarava a postura.** Desde o AOS-428 há duas guardas no `POST /runs` que
+respondem `403`, e a uniformidade é deliberada. Mas nada no arranque dizia ao operador que a
+segunda existia — um 403 não tinha por onde ser atribuído.
+
+### As três decisões de desenho, e porquê
+
+**A quem se atribui: ao SUBMISSOR, não ao principal do token.** Foi exactamente esse token que não
+verificou — o seu principal é uma afirmação por provar, e selá-lo seria gravar numa cadeia
+tamper-evidente uma identidade que ninguém confirmou. O submissor foi verificado pelo gate
+soberano antes de esta guarda correr, e é a pessoa que um auditor quer encontrar numa campanha.
+
+**Uma partição ÚNICA, e isto é uma defesa.** As leituras sensíveis selam em `gov.read/<run>`, uma
+partição por run. Copiar esse molde aqui seria um defeito: o `run_id` de uma submissão recusada
+vem do PEDIDO, e o run nunca existe. Um chamador autenticado com `run_id`s aleatórios criaria
+**partições WORM sem limite**. Vai em `governance.credential`, no molde de `governance.dsar`; o
+`run_id` fica no registo, onde é dado, e não no nome, onde seria estrutura.
+
+**Best-effort, e porque isso não é o mesmo que a leitura.** O selo de uma leitura é
+pré-condição — se falha, a leitura é negada. Aqui não há nada a negar: a recusa já aconteceu.
+Tornar o selo obrigatório só podia transformar um 403 num 503, que diria ao chamador algo sobre o
+WORM sem ganho nenhum. A métrica conta a recusa na mesma.
+
+### Critérios de Aceitação
+
+- [x] Uma recusa em `POST /runs` produz um selo `deny` no WORM, com o motivo.
+- [x] O selo é atribuído ao submissor verificado, e não ao principal do token.
+- [x] Todas as recusas vão para a MESMA partição, e nenhuma cria partição com o nome do run —
+      sensor verificado por mutação: tornar a partição por-run avermelha **três** testes.
+- [x] O banner declara a postura nos quatro estados (endurecido/referência × selado/não selado)
+      e explica que um 403 pode vir de duas guardas.
+
+### Resíduos declarados
+
+1. **A retoma não é selada.** O `POST /runs/{id}/resume` é rota de `planoControlo`, e nem o
+   `admitControl` nem o `admitControlMTLS` entregam ao handler uma identidade verificada. Sem ela
+   não há a quem atribuir — e um registo sem principal numa cadeia cujo valor é a atribuição seria
+   pior do que nenhum, porque pareceria prova sem o ser. A métrica conta-a.
+2. **A partição usa a forma `governance.*`, com ponto** — a convenção do WORM em vigor
+   (`governance.dsar`, `governance.retention`). Herda o resíduo do AOS-425 sobre a forma das
+   partições do WORM, que nunca foi investigado.
+3. **Selo best-effort.** Com o WORM em baixo, a recusa fica sem prova tamper-evidente — declarado,
+   e a métrica continua a contá-la.
+
+### Estado
+
+**FECHADO.**
+
+---
+
 ## AOS-432 — Sobre substrato replicado, quem PERDE o lease não sabe que o perdeu: sai com um erro de NATS
 
 <!-- rtm: adrs-mencionados -->
