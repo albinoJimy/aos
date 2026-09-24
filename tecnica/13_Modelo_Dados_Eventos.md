@@ -233,6 +233,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 |---|---|---|
 | `autonomy.level_changed` | 1 | `packages/control-plane/governance/autonomy/events.go` (`BuildLevelChangedRecord` → `audit.AuditRecord`) |
 | `dsar.*` (`received`, `key_destroyed`, `blocked`) | 3 | `packages/control-plane/governance/dsar/flow.go` (selados por `Flow.seal`) |
+| `dsar.key_reshredded` (AOS-436) | 1 | `packages/cmd/aos/reconciliacao_apagamentos.go` — selado pelo nó em nome próprio quando uma KEK dada por destruída reaparece na custódia (restauro de backup) e é destruída de novo |
 | `policy.changed` | 1 | `packages/control-plane/pdp/audit_sink.go` (`BuildPolicyChangedRecord`) |
 | `retention.*` (`expired`, `config.changed`) | 2 | `packages/platform/audit/retentionevents.go` |
 

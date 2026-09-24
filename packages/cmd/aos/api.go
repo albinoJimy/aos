@@ -1401,6 +1401,14 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if pend, ok := shredPendingOf(h.node.DSARVault); ok {
 		g("aos_dsar_vault_shred_unconfirmed", "Destruicoes de KEK (crypto-shred) por CONFIRMAR na custodia; >0 mantem o no unready e o conteudo pode continuar recuperavel.", "gauge", float64(pend), "")
 	}
+	// AOS-436: a QUARTA causa do `aos_dsar_vault_ready` a 0 — os apagamentos por reconciliar com
+	// a custódia depois de um restauro (ou o registo de apagamentos por escrever). Mesmo
+	// raciocínio do contador acima: o corpo do /readyz é uniforme, e sem esta série um nó
+	// restaurado vermelho por uma KEK ressuscitada que não se deixou destruir era
+	// indistinguível de um token a expirar. Só sai quando a custódia é reconciliável.
+	if a, ok := h.node.DSARVault.(interface{ apagamentosFault() error }); ok {
+		g("aos_dsar_erasure_reconciled", "Apagamentos DSAR reconciliados com a custodia da KEK e registo de apagamentos escrito (1) ou por provar (0); 0 mantem o no unready - uma KEK destruida pode ter voltado com um restauro de backup.", "gauge", b01(a.apagamentosFault() == nil), "")
+	}
 
 	// aos_ready espelha o veredito do /readyz — AS QUATRO condições: drain, Event Store,
 	// custódia da KEK e a hash-chain do WORM a ACEITAR ESCRITAS. É o SLI de disponibilidade a

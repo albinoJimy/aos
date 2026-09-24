@@ -121,6 +121,8 @@ de índice e o detalhe lá.
 | `AOS_DSAR_VAULT_TRANSIT_MOUNT` | `transit` | Caminho de mount do motor **Transit** no Vault (só usado quando `AOS_DSAR_VAULT_ADDR` está definido). Permite um mount não-default (ex.: `transit-aos`). Material **público**. |
 | `AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL` | *(vazio ⇒ **não declarado**)* | **Declara** que a custódia de KEK injectada por `Config.DSARVault` **destrói incondicionalmente** — que o seu `Delete` não pode falhar — e por isso não precisa de implementar a porta de confirmação de crypto-shred (**AOS-328**). Sob `AOS_MODE=production`, uma custódia **injectada** que não implemente essa porta **ABORTA** o arranque (`ErrProductionNeedsShredConfirmation`): sem confirmador o fluxo DSAR sela `dsar.key_destroyed` **sem verificar**, afirmando uma irrecuperabilidade que ninguém confirmou. O vault de **referência** in-memory continua a compor **sem** esta declaração — a guarda não transforma o modo de desenvolvimento numa configuração cerimoniosa. Parser **estrito** (`1/true/t/yes/y/on` · `0/false/f/no/n/off`): um valor não reconhecido **ABORTA** em vez de degradar para não-declarado. Material **público** (um booleano). |
 | `AOS_DSAR_VAULT_TOKEN_MIN_TTL` | `5m` | **Margem de prontidão** do token do Vault (AOS-249, achado F6). Quando o TTL restante do token desce abaixo desta duração, `/readyz` responde **503** e `aos_dsar_vault_ready` vai a **0** — ou seja, o nó fica **UNREADY ANTES da expiração**, não depois. ⚠️ **Segurança/conformidade:** a sonda antiga só usava `/v1/sys/seal-status`, que é **não-autenticado** — um token expirado deixava o `/readyz` **verde** enquanto cada `WrapDEK` e cada crypto-shred levava `403`, matando a via GDPR Art.17 **em silêncio**. A sonda passou a exigir também `auth/token/lookup-self` (**autenticado**) e a manutenção em background renova o token a partir de **2×** esta margem. Duração Go **> 0**; malformada ⇒ **ABORTA** (`ErrBadVaultTokenMinTTL`) em vez de degradar para o default. Material **público**. |
+| `AOS_DSAR_ERASURE_REGISTER` | *(vazio ⇒ **sem registo de apagamentos** — a reconciliação do arranque usa só a cadeia DSAR)* | Caminho do **registo de apagamentos** próprio do nó (**AOS-436**), no volume de dados (produção: `/var/lib/aos/apagamentos-dsar.txt`). Cada destruição de KEK **confirmada** pela custódia (erase **e** expiração por TTL) acrescenta-lhe uma linha `aos-kek-<sha256 do keyRef> <instante RFC3339 UTC>` — o nome **não-reversível** que a chave Transit já tem no Vault, **nunca o titular**. É append-only e monotónico (o mais recente é superconjunto de qualquer anterior). Serve para um apagamento **sobreviver ao restauro**: o `backup.sh` copia-o **em claro** para fora do bundle cifrado e, num restauro, o registo mais recente é importado por `AOS_DSAR_ERASURE_REGISTER_IMPORT`. No arranque, o nó une a cadeia DSAR, este registo e o importado, pergunta ao Vault pela **idade** de cada chave dada por destruída e **destrói de novo** as que nasceram **antes** (ou no mesmo segundo) da destruição — a KEK que um restauro ressuscitou —, selando `dsar.key_reshredded`; uma KEK nascida **depois** é uma geração nova de um titular que voltou e fica **intacta**. Os apagamentos anteriores a AOS-436 entram no registo a partir da cadeia, no primeiro arranque. ⚠️ **Fail-closed de prontidão:** um registo ilegível/malformado, uma escrita falhada, um Vault que não responde ou uma re-destruição por confirmar põem o `/readyz` a **503** e `aos_dsar_erasure_reconciled` a **0** (o nó **arranca**; a manutenção da custódia re-tenta a cada tick). Só tem efeito com a custódia **Vault** (`AOS_DSAR_VAULT_ADDR`): com o vault in-memory de referência as KEKs morrem com o processo e não há nada a reconciliar (o banner declara-o). Vazio ⇒ um restauro de **tudo antigo** (Vault **e** WORM anteriores ao apagamento) **não** é coberto. Material **público** (nomes não-reversíveis e instantes). |
+| `AOS_DSAR_ERASURE_REGISTER_IMPORT` | *(vazio ⇒ **nada importado**)* | Caminho de um registo de apagamentos **importado num restauro** (**AOS-436**) — o `apagamentos-<stamp>.txt` **mais recente** que o `pull-backups.ps1` recolheu, copiado para dentro do volume **antes** de o nó arrancar (ver `deploy/server/README.md` §«Restaurar»). É lido no arranque, **unido** à cadeia DSAR e ao registo próprio, e **fundido** neste (que passa a ser superconjunto — o próximo backup já o leva). Uma entrada importada **sem** facto na cadeia também é re-destruída e selada, com o `Resource` a nomear a **chave** (`dsar.kek`), porque o registo nunca teve o titular. ⚠️ **Definida e ausente/ilegível ⇒ `/readyz` 503**: um restauro que pediu uma importação não se dá por reconciliado sem ela. A leitura é **estrita** — cada linha é `aos-kek-<64 hex> <RFC3339>`, e uma linha fora dessa forma (inclusive uma tentativa de *path traversal* no nome, que iria parar ao caminho HTTP do Vault) é recusada com o número da linha. Pode ficar definida depois do restauro (a importação é idempotente); se o ficheiro for apagado, a variável também tem de sair. Material **público**. |
 | `AOS_BROKER_VAULT_ADDR` | *(vazio ⇒ **broker Vault DORMENTE**)* | URL do **HashiCorp Vault** da custódia de **CREDENCIAIS DOWNSTREAM** do Credential Broker (AOS-070/AOS-264) — **SEPARADO** do `AOS_DSAR_VAULT_*` (decisão do dono **D7**: cliente/token próprios; o Vault da KEK é **Transit** key-never-leaves e recusa devolver material, o oposto do que o broker precisa — **ler** segredo). Presente ⇒ o nó **PREPARA** o cliente Vault REAL (motor **KV v2**, stdlib net/http, **zero-dep** ADR-017) e valida fail-closed. **Exige** `AOS_BROKER_VAULT_TOKEN_PATH` (senão `ErrBadBrokerVault`, **ABORTA** — não degrada). ⚠️ **Segurança (AOS-333):** o URL **não pode trazer credenciais embutidas** (`user-info`, `https://user:pass@host`) — o boot **ABORTA**. É uma **QUEBRA DELIBERADA**: o `net/http` converte `user-info` em `Authorization: Basic`, pelo que esta forma funcionava; a recusa mantém-se porque uma credencial num URL de ambiente aparece na tabela de processos, no `inspect` do contentor e em qualquer erro que ecoe o endereço. **Migração:** use o ficheiro de token — o Vault autentica por `X-Vault-Token` e nunca usou a basic-auth do URL, pelo que nenhum deployment de Vault perde nada com esta recusa. ⚠️ **ÂMBITO AOS-264 (preparação):** o cliente é preparado e declarado no **banner**, mas a **TROCA MEDIADA ainda NÃO está ligada** ao gateway — é **CONSUMIDA em AOS-265** (porta de aquisição in-process, **D8**). Até lá **nenhuma** credencial downstream é trocada nem injectada. **DECISÃO REGISTADA:** KV v2 (segredo estático) — a lease do broker corta a **injecção in-process** no TTL/revogação; só *dynamic secrets* dariam corte da credencial **no provedor** (deferido, D8-B). Material **público** (uma URL). |
 | `AOS_BROKER_VAULT_TOKEN_PATH` | *(vazio ⇒ **sem broker Vault**)* | Caminho do **ficheiro montado** com o token do Vault do broker. ⚠️ **Material PRIVADO por FICHEIRO montado** (nunca por variável de ambiente), no padrão de `AOS_DSAR_VAULT_TOKEN_PATH`; monte-o read-only e fora da imagem. **Token PRÓPRIO** (D7), com autoridade só de **leitura de credenciais downstream** — nunca o token de destruição de chaves da KEK. Ilegível/vazio quando `AOS_BROKER_VAULT_ADDR` está definido ⇒ **ABORTA** (`ErrBadBrokerVault`). Em produção prefira um token de curta duração (AppRole/Kubernetes-auth). |
 | `AOS_BROKER_VAULT_KV_MOUNT` | `secret` | Caminho de mount do motor **KV v2** no Vault do broker (só usado quando `AOS_BROKER_VAULT_ADDR` está definido). Permite um mount não-default (ex.: `kv-aos`). Material **público**. |
@@ -419,6 +421,41 @@ análoga à custódia da chave do issuer (AOS-175/`CUSTODIA-CHAVE-RELEASE.md`) e
 > o **contrato** e o **seam**; o **HSM concreto** (PKCS#11, AWS KMS `Encrypt`/`Decrypt`, HashiCorp Vault
 > Transit) é **infra-org**, vive **fora** do binário zero-dep — análogo à custódia da chave do issuer
 > (AOS-175) e ao tenant de soberania (DEF-201/212).
+
+#### O apagamento sobrevive ao restauro (AOS-436)
+
+**O defeito.** O crypto-shred destrói a KEK **no Vault**, e o `deploy/server/backup.sh` copia o volume
+do Vault — com as KEKs vivas nesse instante — para um bundle que fica em rotação (14 cópias no
+servidor, 30 na máquina do operador). Restaurar um bundle **anterior** a um apagamento repunha a KEK,
+e o conteúdo do titular voltava a decifrar. Nada o via: o arranque tratava `dsar.key_destroyed` como
+confirmado e não voltava a perguntar ao Vault. Havia dois sabores — Vault antigo com o WORM actual
+(a cadeia sabe do apagamento) e **tudo antigo** (a cadeia restaurada é anterior a ele e não sabe).
+
+**O que passa a valer.** No arranque, **antes de servir**, o nó reúne tudo o que sabe estar destruído
+— a cadeia DSAR (`dsar.key_destroyed` e `dsar.key_reshredded`), o registo próprio
+(`AOS_DSAR_ERASURE_REGISTER`) e um registo importado (`AOS_DSAR_ERASURE_REGISTER_IMPORT`) — e pergunta
+ao Vault, chave a chave, **quando** cada uma nasceu (`GET transit/keys/<nome>`, criação da versão 1):
+
+| A chave no Vault | Leitura | O que o nó faz |
+|---|---|---|
+| não existe | continua destruída | nada |
+| nasceu **antes** (ou no mesmo segundo) da destruição registada | é a destruída, **ressuscitada** por um restauro | destrói de novo, **verifica** (404) e sela `dsar.key_reshredded` em nome próprio (`nhi:aos-node/erasure-reconciler`) |
+| nasceu **depois** | geração **nova** de um titular que voltou a gerar dados | **nada** — destruí-la apagaria dados legítimos sem pedido |
+
+A pergunta é pela **idade** e não pela existência de propósito: «a cadeia diz destruída e a chave
+existe» também é verdade para o titular que voltou, e o `EnsureKey` re-provisiona legitimamente o mesmo
+nome. Fail-closed no molde de AOS-322: Vault sem resposta, registo ilegível, re-destruição por
+confirmar ou selo que falha ⇒ `/readyz` **503**, `aos_dsar_vault_ready` e `aos_dsar_erasure_reconciled`
+a **0** — o nó arranca mas não se diz pronto, e a manutenção da custódia re-tenta a cada tick.
+
+**Resíduos, declarados.** (1) Os apagamentos feitos **depois** do último registo recolhido e **antes**
+do desastre não estão em nenhum registo fora do servidor perdido — com o WORM e o Vault também
+perdidos, voltam. A janela é a da recolha (diária). (2) O Vault data a criação ao **segundo**: uma KEK
+re-provisionada no mesmo segundo da destruição é tratada como a destruída (a ambiguidade resolve-se
+pelo lado do apagamento). (3) Só a custódia Vault implementa a porta; uma custódia injectada sem ela
+fica sem reconciliação (declarado no banner). (4) As expirações por TTL anteriores a AOS-436 não estão
+em registo nenhum (a cadeia de retenção não nomeia a chave); as de agora estão, porque o registo é
+escrito pela custódia a cada destruição confirmada, seja qual for a via.
 
 ### Estado durável — variáveis de ambiente (AOS-170 / AOS-180)
 
@@ -766,8 +803,11 @@ ao dia em que alguem ligasse o mTLS e descobrisse que uma das portas nunca estev
 > **Decisao em aberto — o DSAR nao exige certificado de cliente.** As quatro rotas de
 > `planoGovernacao` autenticam-se pela assercao OIDC verificada (claim de *board*), que identifica o
 > principal de forma pelo menos tao forte quanto um certificado, mas **nao** tem a barreira de
-> transporte — e e ai que esta o `/dsar/erase`, o crypto-shred, a unica operacao que nenhum restore
-> drill desfaz. Promove-las e acrescentar `admitControlMTLS` ao ramo `planoGovernacao` em
+> transporte — e e ai que esta o `/dsar/erase`, o crypto-shred, a operacao do no que se quer
+> irreversivel. (Esta nota dizia que nenhum restore drill a desfaz; era falso — um restauro de um
+> backup anterior ao apagamento trazia a KEK de volta. Desde AOS-436 o no destroi-a de novo no
+> arranque, desde que o registo de apagamentos mais recente seja importado; ver
+> [O apagamento sobrevive ao restauro](#o-apagamento-sobrevive-ao-restauro-aos-436).) Promove-las e acrescentar `admitControlMTLS` ao ramo `planoGovernacao` em
 > `planos.go`; **nao se fez** porque no dia em que o mTLS for ligado um operador DSAR com assercao
 > valida passaria a receber `403` ate ter certificado — o que compromete a organizacao a emitir PKI
 > de cliente a esses operadores, exactamente a provisao que o DEF-012 defere para fora do no.

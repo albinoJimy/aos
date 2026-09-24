@@ -625,6 +625,18 @@ type Config struct {
 	// AOS-328). É o escape da guarda de produção, no molde de AOS_TLS_EXTERNAL_TERMINATION:
 	// aceita-se o estado, mas só depois de alguém o ter DECLARADO.
 	ShredDestroyUnconditional bool
+	// DSARErasureRegister é o caminho do REGISTO DE APAGAMENTOS próprio do nó
+	// (AOS_DSAR_ERASURE_REGISTER, AOS-436): cada destruição de KEK CONFIRMADA pela custódia
+	// acrescenta-lhe (nome não-reversível, instante). Vive no volume de dados e o backup.sh
+	// copia-o EM CLARO para fora do bundle — é a memória de um apagamento que sobrevive a
+	// restaurar TUDO antigo. Vazio ⇒ sem registo (a reconciliação usa só a cadeia; declarado).
+	DSARErasureRegister string
+	// DSARErasureRegisterImport é um registo de apagamentos IMPORTADO no restauro
+	// (AOS_DSAR_ERASURE_REGISTER_IMPORT, AOS-436): lido no arranque, unido à cadeia e ao registo
+	// próprio, e fundido neste. Vazio ⇒ nada importado. Definido e ilegível ⇒ a reconciliação
+	// fica por provar e o nó UNREADY — um restauro que pediu uma importação não se dá por
+	// reconciliado sem ela.
+	DSARErasureRegisterImport string
 	// BrokerVault é o cliente Vault REAL (KV v2) da custódia de CREDENCIAIS DOWNSTREAM
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
@@ -920,6 +932,11 @@ type Node struct {
 	DSARVault audit.KeyVault
 	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
 	DSARIndex *audit.InMemorySubjectPartitionIndex
+	// apagamentos é a reconciliação dos apagamentos DSAR com a custódia (AOS-436), corrida no
+	// arranque e re-tentada pelo laço de manutenção da custódia enquanto não ficar provada. nil
+	// quando a custódia não é reconciliável (o vault in-memory de referência). Imutável depois
+	// do bootstrap (tem o seu próprio mutex).
+	apagamentos *reconciliadorDeApagamentos
 	// ExpirationJob é o job de expiração por TTL (AOS-092) COMPOSTO no nó (AOS-213): varre os
 	// registos classificados do Event Store ([eventStoreRecordSource]) e expira os que cruzaram o
 	// TTL e não estão sob legal hold por crypto-shred da KEK por-titular ([cryptoShredSink],
@@ -2448,6 +2465,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("DSAR/crypto-shred (achado 1.6): %d destruicao(oes) de KEK POR CONFIRMAR repostas da cadeia governance.dsar — o /readyz fica VERMELHO ate uma destruicao confirmada das mesmas chaves; o desmentido deixou de morrer no restart", nPend)
 	}
 
+	// (7c-ter) AOS-436 — O APAGAMENTO SOBREVIVE AO RESTAURO. Um backup anterior a um apagamento
+	// traz a KEK de volta; o que se restaura é o bundle inteiro, e nenhuma guarda dentro dele o
+	// pode impedir. Aqui, ANTES de o nó servir, a custódia é interrogada sobre cada chave que a
+	// cadeia, o registo próprio e o registo importado dão por destruída, e as que voltaram são
+	// destruídas de novo. Fail-closed sem abortar: por provar ⇒ /readyz VERMELHO, re-tentado
+	// pelo laço de manutenção da custódia. Ver reconciliacao_apagamentos.go.
+	apagamentos := comporReconciliacaoDeApagamentos(ctx, cfg, worm, "governance.dsar", dsarVault, log)
+
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
 	dsarFlow := dsar.NewFlow(
@@ -3051,6 +3076,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		holdsRestored:           holdsRestored, // prova de re-hidratação (antecedente do varredor automático)
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
+		apagamentos:             apagamentos, // AOS-436: re-tentado pelo laço de manutenção da custódia
 		ExpirationJob:           expirationJob,
 		Retention:               cfg.Retention,     // AOS-267: o loop de serviço decide o scheduler por ela
 		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio

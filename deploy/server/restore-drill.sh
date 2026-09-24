@@ -10,8 +10,15 @@
 # partir do conteúdo de um backup, numa rede isolada, e faz uma leitura autenticada de ponta a
 # ponta. Não toca no que está a correr.
 #
-#   USO (no servidor, com o bundle JÁ DECIFRADO):
-#     bash /opt/aos/restore-drill.sh /tmp/bundle.tar.gz
+#   USO (no servidor, com o bundle JÁ DECIFRADO e o registo de apagamentos MAIS RECENTE):
+#     bash /opt/aos/restore-drill.sh /tmp/bundle.tar.gz /tmp/apagamentos-<stamp>.txt
+#
+#   O REGISTO DE APAGAMENTOS (AOS-436) é o passo que um restauro real não pode saltar. O bundle
+#   traz o Vault de ANTES dos apagamentos que se seguiram a ele — e com o Vault, as KEKs que esses
+#   apagamentos destruíram. O registo mais recente (recolhido pelo pull-backups.ps1, em claro: só
+#   nomes aos-kek-<sha256>) é importado ANTES de o nó arrancar, e o nó destrói de novo o que ele diz
+#   destruído. Sem registo o ensaio RECUSA; RESTORE_DRILL_SEM_REGISTO=1 aceita-o, declarado, e
+#   prova menos do que um restauro real tem de fazer.
 #
 #   O bundle decifra-se na MÁQUINA DO OPERADOR, onde vive a chave privada:
 #     openssl smime -decrypt -binary -inform DER -in aos-<stamp>.tar.gz.enc \
@@ -42,6 +49,7 @@
 set -Eeuo pipefail
 
 BUNDLE="${1:-}"
+REGISTO="${2:-}"
 NET=drill-net
 PREFIX=drill
 RID_PADRAO="${RESTORE_DRILL_RUN_ID:-}"
@@ -55,7 +63,20 @@ fail() { printf '[ensaio] ERRO: %s\n' "$*" >&2; exit 1; }
 # que escrevi para o corrigir.
 contem() { grep -qE "$1" <<<"$2"; }
 
-[[ -n "${BUNDLE}" && -f "${BUNDLE}" ]] || fail "uso: $0 <bundle.tar.gz decifrado>"
+[[ -n "${BUNDLE}" && -f "${BUNDLE}" ]] || fail "uso: $0 <bundle.tar.gz decifrado> <apagamentos-<stamp>.txt>"
+if [[ -z "${REGISTO}" ]]; then
+  [[ "${RESTORE_DRILL_SEM_REGISTO:-}" = "1" ]] || fail "falta o registo de apagamentos MAIS RECENTE (2.º argumento).
+  Um restauro sem ele ressuscita as KEKs que os apagamentos DSAR posteriores a este bundle
+  destruíram (AOS-436). Recolhe-o o pull-backups.ps1 (%USERPROFILE%\aos-backups\apagamentos-*.txt);
+  está em claro e não é segredo. Para ensaiar SEM ele, declare-o: RESTORE_DRILL_SEM_REGISTO=1"
+else
+  [[ -f "${REGISTO}" ]] || fail "o registo de apagamentos ${REGISTO} não existe"
+  # A MESMA forma estrita que o nó impõe: uma linha que ele recusaria faz o nó ficar UNREADY, e é
+  # melhor saber aqui do que no passo 5.
+  MAUS="$(grep -nvE '^(#.*|[[:space:]]*|aos-kek-[0-9a-f]{64} [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$' "${REGISTO}" || true)"
+  [[ -z "${MAUS}" ]] || fail "o registo de apagamentos tem linhas malformadas (o nó recusá-lo-ia):
+${MAUS}"
+fi
 command -v docker >/dev/null || fail "docker em falta"
 
 D="$(mktemp -d /tmp/restore-drill.XXXXXX)"
@@ -257,6 +278,20 @@ if [[ -n "${ANCORA_HERDADA}" ]]; then
   MONTAR_ANCORA=(-v "${D}/cfg/ancoras:/etc/aos/ancoras:ro" -v "${D}/cfg/pisos:/etc/aos/pisos:ro")
   log "  âncora do WORM ligada — checkpoints e pisos montados a partir do bundle"
 fi
+# O REGISTO DE APAGAMENTOS ENTRA ANTES DE O NÓ ARRANCAR (AOS-436). Vai para DENTRO do volume
+# restaurado, e o nó lê-o por AOS_DSAR_ERASURE_REGISTER_IMPORT: une-o à cadeia do bundle e ao
+# registo que o bundle trazia, funde-o neste último, e destrói de novo cada KEK que o Vault
+# restaurado ainda tenha e que nasceu antes da destruição registada. A linha herdada da produção
+# (vazia) sai primeiro — duas definições no --env-file dependeriam de qual ganha.
+sed -i '/^AOS_DSAR_ERASURE_REGISTER_IMPORT=/d' "${D}/env-aos"
+if [[ -n "${REGISTO}" ]]; then
+  install -m 644 "${REGISTO}" "${D}/vol/aos/apagamentos-importado.txt"
+  printf 'AOS_DSAR_ERASURE_REGISTER_IMPORT=/var/lib/aos/apagamentos-importado.txt\n' >> "${D}/env-aos"
+  REG_N="$(grep -cvE '^(#|[[:space:]]*$)' "${REGISTO}" || true)"
+  log "  registo de apagamentos importado: $(basename "${REGISTO}") (${REG_N:-0} entrada(s)); bundle $(sed -n 's/^stamp=//p' "${D}/x/MANIFEST")"
+else
+  log "  ⚠️  SEM registo de apagamentos (RESTORE_DRILL_SEM_REGISTO=1) — este ensaio NÃO prova que os apagamentos posteriores ao bundle sobrevivem"
+fi
 docker run -d --name "${PREFIX}-aos" --network "${NET}" --cpus 2 --env-file "${D}/env-aos" \
   -v "${D}/vol/aos:/var/lib/aos" \
   -v "${D}/cfg/model-tools/tools.json:/etc/aos/model-tools.json:ro" \
@@ -273,6 +308,19 @@ contem "bootstrap concluido" "${LOGAOS}" || {
   docker logs "${PREFIX}-aos" 2>&1 | tail -6; fail "o nó restaurado NÃO arrancou"; }
 PART="$(docker logs "${PREFIX}-aos" 2>&1 | sed -n 's/.*verificada no arranque (\([0-9]*\) particao.*/\1/p' | head -1)"
 log "  arrancou; hash-chain re-encadeada em ${PART} partição(ões)"
+# A RECONCILIAÇÃO DOS APAGAMENTOS (AOS-436) tem de ter ficado PROVADA. Por provar, o nó arranca mas
+# não se diz pronto — e o 200 do passo 7 não chegaria a acontecer, com um sintoma que se lê como
+# "o backup está mau". Dizê-lo aqui é dizer a causa.
+if contem "reconciliacao do arranque POR PROVAR" "${LOGAOS}"; then
+  grep -m1 "reconciliacao do arranque POR PROVAR" <<<"${LOGAOS}" >&2 || true
+  fail "o nó restaurado NÃO conseguiu reconciliar os apagamentos com o Vault restaurado — uma KEK destruída pode ter voltado"
+fi
+if [[ -n "${REGISTO}" ]]; then
+  contem "reconciliacao do arranque PROVADA" "${LOGAOS}" \
+    || fail "o registo foi importado mas o nó não declarou a reconciliação PROVADA — o import não chegou ao nó (AOS_DSAR_ERASURE_REGISTER_IMPORT?)"
+  RESUMO="$(sed -n 's/.*reconciliacao do arranque PROVADA — //p' <<<"${LOGAOS}")"
+  log "  apagamentos reconciliados: ${RESUMO%%$'\n'*}"
+fi
 
 log "6/7 leitura autenticada, do IdP restaurado para o nó restaurado"
 RID="${RID_PADRAO}"

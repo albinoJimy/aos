@@ -350,8 +350,9 @@ var ErrProductionNeedsDurableWORM = errors.New("aos: AOS_MODE=production exige u
 // a uma opção.
 //
 // O RACIONAL. As quatro rotas de `planoGovernacao` (`/dsar/erase`, `/dsar/hold`, `/dsar/release`,
-// `/dsar/expire`) conduzem o crypto-shred IRREVERSÍVEL da KEK por-titular — a única operação do nó
-// que nenhum restore drill desfaz. Fora de produção a prova de autoridade é opt-in por composição
+// `/dsar/expire`) conduzem o crypto-shred IRREVERSÍVEL da KEK por-titular. (Esta nota dizia que
+// nenhum restore drill o desfaz; um restauro de backup anterior desfazia-o até AOS-436, que passou a
+// re-destruir a KEK no arranque — ver reconciliacao_apagamentos.go.) Fora de produção a prova de autoridade é opt-in por composição
 // (lista vazia ⇒ desligada, retro-compatível com dev e testes por headers); mas a produção NÃO pode
 // deixá-las autorizadas por um simples token de LEITURA, porque um só par issuer/audience serve o
 // leitor e o operador DSAR. Exigir a lista não-vazia obriga o deployment a DECLARAR quem pode
@@ -986,6 +987,13 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("%w: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: %v", ErrBadTLSExternalTermination, derr)
 	}
 	cfg.ShredDestroyUnconditional = destroiIncond
+
+	// AOS-436 — O APAGAMENTO SOBREVIVE AO RESTAURO. O registo PRÓPRIO (onde cada destruição
+	// confirmada é acrescentada; vive no volume de dados) e um registo IMPORTADO no restauro
+	// (lido no arranque e unido à cadeia). Caminhos, material PÚBLICO: o registo só leva nomes
+	// não-reversíveis e instantes. Vazios ⇒ ausentes; a postura é declarada no banner.
+	cfg.DSARErasureRegister = strings.TrimSpace(os.Getenv("AOS_DSAR_ERASURE_REGISTER"))
+	cfg.DSARErasureRegisterImport = strings.TrimSpace(os.Getenv("AOS_DSAR_ERASURE_REGISTER_IMPORT"))
 
 	cfg.AttestationVerifierURL = strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_URL"))
 	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH")); p != "" {

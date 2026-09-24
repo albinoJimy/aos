@@ -112,6 +112,18 @@ type vaultKeyVault struct {
 	// sha256, sem PII). Não-vazio ⇒ a sonda de prontidão fica vermelha; uma destruição posterior
 	// CONFIRMADA da mesma chave limpa a entrada (o operador pode remediar sem reiniciar).
 	shredPend map[string]struct{}
+
+	// --- AOS-436: o apagamento sobrevive ao restauro, sob mu ---
+	// registo é o registo de apagamentos PRÓPRIO do nó: cada destruição CONFIRMADA acrescenta-lhe
+	// (nome, instante). nil ⇒ sem registo (declarado no banner). É ele que o backup.sh leva para
+	// fora do bundle, e é a única memória de um apagamento que sobrevive a restaurar TUDO antigo.
+	registo *registoDeApagamentos
+	// reconcErr é o desfecho da última reconciliação dos apagamentos com a custódia
+	// ([reconciliadorDeApagamentos]). Não-nil ⇒ uma KEK destruída pode ter voltado e a sonda
+	// de prontidão fica VERMELHA até uma passagem provada.
+	reconcErr error
+	// agora é o relógio do instante registado. Injectável nos testes.
+	agora func() time.Time
 }
 
 // vaultKeyVaultOption configura o adaptador na construção (variádica para não partir os
@@ -144,6 +156,7 @@ func newVaultKeyVault(addr, mount, token string, opts ...vaultKeyVaultOption) *v
 		minTTL:    DefaultVaultTokenMinTTL,
 		shredPend: make(map[string]struct{}),
 		hc:        &http.Client{Timeout: 10 * time.Second},
+		agora:     time.Now,
 	}
 	for _, o := range opts {
 		o(v)
@@ -516,7 +529,11 @@ func (v *vaultKeyVault) ready(ctx context.Context) error {
 	if err := v.tokenHealth(ctx); err != nil {
 		return err
 	}
-	return v.shredFault()
+	if err := v.shredFault(); err != nil {
+		return err
+	}
+	// (d) AOS-436: os apagamentos estão reconciliados com a custódia e o registo está escrito.
+	return v.apagamentosFault()
 }
 
 // ensureTransitKey garante (idempotente) que a chave Transit do titular existe. Criar uma chave já
@@ -620,20 +637,158 @@ func (v *vaultKeyVault) Key(keyRef string) ([]byte, bool) { return nil, false }
 // token expirado, os três pedidos levam 403 e é exactamente este caminho que dispara.
 func (v *vaultKeyVault) Delete(subjectID string) {
 	name := vaultKeyName(audit.KeyRefFor(subjectID))
-	// Habilita a destruição (config) e destrói. Best-effort idempotente; ignora 404 (já destruída).
-	_, _, _ = v.do(http.MethodPost, "/v1/"+v.mount+"/keys/"+name+"/config", map[string]bool{"deletion_allowed": true})
-	_, _, _ = v.do(http.MethodDelete, "/v1/"+v.mount+"/keys/"+name, nil)
-	// VERIFICA em vez de confiar: no Vault, uma chave Transit destruída responde 404 à leitura.
-	// Qualquer outra resposta (200 = ainda viva; 403 = sem autoridade para saber; erro de
-	// transporte) NÃO prova a irrecuperabilidade que o titular vai ouvir dizer que aconteceu.
-	_, code, err := v.doCtx(context.Background(), http.MethodGet, "/v1/"+v.mount+"/keys/"+name, nil)
+	err := v.destruirEVerificar(context.Background(), name)
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	if err == nil && code == http.StatusNotFound {
-		delete(v.shredPend, name) // confirmada (limpa também uma tentativa anterior falhada)
+	if err != nil {
+		v.shredPend[name] = struct{}{} // `name` é o sha256 do keyRef — sem PII, seguro de expor
+		v.mu.Unlock()
 		return
 	}
-	v.shredPend[name] = struct{}{} // `name` é o sha256 do keyRef — sem PII, seguro de expor
+	delete(v.shredPend, name) // confirmada (limpa também uma tentativa anterior falhada)
+	reg, agora := v.registo, v.agora
+	v.mu.Unlock()
+	// AOS-436: SÓ a destruição CONFIRMADA entra no registo — é um registo do que MORREU, e uma
+	// linha sobre uma chave viva faria a reconciliação destruí-la num restauro. Uma escrita que
+	// falha não se perde: fica pendente no registo e a sonda de prontidão fica vermelha até ela
+	// chegar ao disco ([vaultKeyVault.apagamentosFault]).
+	if reg != nil {
+		_ = reg.acrescentar(entradaDeApagamento{nome: name, destruidaEm: agora()})
+	}
+}
+
+// destruirEVerificar habilita a destruição, destrói e VERIFICA. Só devolve nil quando o Vault
+// responde 404 à leitura da chave — qualquer outra resposta (200 = ainda viva; 403 = sem autoridade
+// para saber; erro de transporte) NÃO prova a irrecuperabilidade que o titular vai ouvir dizer que
+// aconteceu. A habilitação e o DELETE são best-effort e idempotentes (destruir o que não existe é
+// no-op): quem decide é a verificação.
+func (v *vaultKeyVault) destruirEVerificar(ctx context.Context, name string) error {
+	_, _, _ = v.doCtx(ctx, http.MethodPost, "/v1/"+v.mount+"/keys/"+name+"/config", map[string]bool{"deletion_allowed": true})
+	_, _, _ = v.doCtx(ctx, http.MethodDelete, "/v1/"+v.mount+"/keys/"+name, nil)
+	_, code, err := v.doCtx(ctx, http.MethodGet, "/v1/"+v.mount+"/keys/"+name, nil)
+	if err != nil {
+		return fmt.Errorf("%w: chave %s: a verificacao nao correu: %v", ErrVaultShredUnconfirmed, name, err)
+	}
+	if code != http.StatusNotFound {
+		return fmt.Errorf("%w: chave %s continua a responder a leitura (HTTP %d)", ErrVaultShredUnconfirmed, name, code)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// AOS-436 — a porta [custodiaReconciliavel]: o apagamento sobrevive ao restauro
+// ---------------------------------------------------------------------------
+
+// ligarRegistoDeApagamentos liga o registo próprio do nó. Chamado uma vez pelo [Bootstrap], antes
+// de qualquer destruição.
+func (v *vaultKeyVault) ligarRegistoDeApagamentos(r *registoDeApagamentos) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.registo = r
+}
+
+// nascimentoDaKEK lê a chave Transit e devolve o instante de criação da geração MAIS ANTIGA que o
+// Vault guarda. É a pergunta que distingue a KEK destruída que um restauro ressuscitou (nascida
+// antes da destruição) de uma KEK nova de um titular que voltou (nascida depois). 404 ⇒ não existe.
+//
+// O nome vem da cadeia ou de um registo IMPORTADO: só passa a forma exacta [reNomeApagamento],
+// porque vai ser um segmento do caminho HTTP pedido ao Vault.
+func (v *vaultKeyVault) nascimentoDaKEK(ctx context.Context, nome string) (time.Time, bool, error) {
+	if !reNomeApagamento.MatchString(nome) {
+		return time.Time{}, false, fmt.Errorf("nome de KEK inadmissivel %q", nome)
+	}
+	rb, code, err := v.doCtx(ctx, http.MethodGet, "/v1/"+v.mount+"/keys/"+nome, nil)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("ler a chave %s: %v", nome, err)
+	}
+	switch code {
+	case http.StatusNotFound:
+		return time.Time{}, false, nil
+	case http.StatusOK:
+	default:
+		return time.Time{}, false, fmt.Errorf("ler a chave %s: HTTP %d", nome, code)
+	}
+	nascida, perr := nascimentoDeChaveTransit(rb)
+	if perr != nil {
+		return time.Time{}, false, fmt.Errorf("chave %s: %v", nome, perr)
+	}
+	return nascida, true, nil
+}
+
+// nascimentoDeChaveTransit extrai o nascimento de uma resposta de `GET transit/keys/<nome>`. O
+// Vault devolve em `data.keys` um mapa versão→criação: um inteiro (segundos Unix) nas chaves
+// simétricas — as `aes256-gcm96` que este nó cria — ou um objecto com `creation_time` nas
+// assimétricas. Fica o MAIS ANTIGO: uma chave rodada continua a ser a mesma chave, nascida quando
+// nasceu a versão 1. Sem nenhuma versão legível é erro — adivinhar a idade seria decidir às cegas
+// se se destrói.
+func nascimentoDeChaveTransit(rb []byte) (time.Time, error) {
+	var out struct {
+		Data struct {
+			Keys map[string]json.RawMessage `json:"keys"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rb, &out); err != nil {
+		return time.Time{}, fmt.Errorf("resposta ilegivel: %v", err)
+	}
+	var nascida time.Time
+	for _, raw := range out.Data.Keys {
+		var t time.Time
+		var segundos int64
+		if err := json.Unmarshal(raw, &segundos); err == nil && segundos > 0 {
+			t = time.Unix(segundos, 0).UTC()
+		} else {
+			var obj struct {
+				CreationTime time.Time `json:"creation_time"`
+			}
+			if err := json.Unmarshal(raw, &obj); err != nil || obj.CreationTime.IsZero() {
+				return time.Time{}, errors.New("versao sem instante de criacao legivel")
+			}
+			t = obj.CreationTime.UTC()
+		}
+		if nascida.IsZero() || t.Before(nascida) {
+			nascida = t
+		}
+	}
+	if nascida.IsZero() {
+		return time.Time{}, errors.New("resposta sem versoes (data.keys vazio)")
+	}
+	return nascida, nil
+}
+
+// destruirKEKPorNome destrói a chave pelo nome e só devolve nil com a destruição CONFIRMADA. Uma
+// destruição confirmada limpa uma pendência anterior da mesma chave, no molde do [Delete].
+func (v *vaultKeyVault) destruirKEKPorNome(ctx context.Context, nome string) error {
+	if !reNomeApagamento.MatchString(nome) {
+		return fmt.Errorf("nome de KEK inadmissivel %q", nome)
+	}
+	if err := v.destruirEVerificar(ctx, nome); err != nil {
+		return err
+	}
+	v.mu.Lock()
+	delete(v.shredPend, nome)
+	v.mu.Unlock()
+	return nil
+}
+
+// registarReconciliacao guarda o desfecho da última passagem da reconciliação.
+func (v *vaultKeyVault) registarReconciliacao(err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.reconcErr = err
+}
+
+// apagamentosFault é a alínea (d) da prontidão: a reconciliação não ficou provada, ou o registo
+// tem entradas por escrever. Nomeia o eixo, nunca um titular.
+func (v *vaultKeyVault) apagamentosFault() error {
+	v.mu.RLock()
+	err, reg := v.reconcErr, v.registo
+	v.mu.RUnlock()
+	if err != nil {
+		return err
+	}
+	if n := reg.pendentes(); n > 0 {
+		return fmt.Errorf("%w: %d destruicao(oes) confirmada(s) por escrever no registo", ErrRegistoDeApagamentos, n)
+	}
+	return nil
 }
 
 // Asserções de compile-time: o adaptador satisfaz ambas as portas (como o wrapper de referência).

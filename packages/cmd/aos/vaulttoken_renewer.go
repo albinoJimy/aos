@@ -100,6 +100,10 @@ func (s *NodeService) renewVaultTokenOnce(ctx context.Context) {
 			s.log("%s", msg)
 		}
 	}
+	// AOS-436: com a credencial provada, retoma a reconciliação dos apagamentos que o arranque
+	// deixou por provar (Vault ainda a arrancar, registo por escrever). Uma passagem já provada
+	// não se repete: seriam N leituras ao Vault por tick para não aprender nada.
+	s.node.apagamentos.retentarSeFalhou(ctx, s.log)
 }
 
 // RefreshVaultTokenNow corre UMA manutenção imediatamente. Existe para os testes a conduzirem de

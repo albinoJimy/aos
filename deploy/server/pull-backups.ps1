@@ -39,9 +39,16 @@
   A CHAVE SO RECOLHE. A tarefa corre sozinha, pelo que a chave nao tem passphrase — e o `aos` esta
   no grupo docker, onde uma shell e root no servidor. Por isso a chave e DEDICADA
   (secrets-local/backup-pull/) e o servidor forca-lhe um comando (backup-pull-gate.sh) que so
-  aceita tres pedidos: `listar`, `recente` e `scp -f <um artefacto do backup.sh>`. O `scp` vai com
-  -O (protocolo classico): por SFTP, que e o default do OpenSSH 9, o pedido nao traria um caminho
-  que o gate pudesse validar. Ver deploy/server/README.md seccao "Backup".
+  aceita quatro pedidos: `listar`, `recente`, `apagamentos` e `scp -f <um artefacto do backup.sh>`.
+  O `scp` vai com -O (protocolo classico): por SFTP, que e o default do OpenSSH 9, o pedido nao
+  traria um caminho que o gate pudesse validar. Ver deploy/server/README.md seccao "Backup".
+
+  O REGISTO DE APAGAMENTOS (AOS-436). Cada bundle leva o Vault tal como estava — com as KEKs vivas
+  nesse instante. Restaura-lo depois de um apagamento DSAR traz a KEK de volta. O backup.sh deixa,
+  ao lado de cada bundle e EM CLARO, o registo de apagamentos do no (so nomes aos-kek-<sha256> e
+  instantes, nunca titulares). Este script guarda o MAIS RECENTE — e superconjunto de todos os
+  anteriores — e verifica essa monotonia antes de largar o anterior. No restauro, e ele que se
+  importa ANTES de arrancar o no (README seccao "Restaurar").
 #>
 [CmdletBinding()]
 param(
@@ -89,6 +96,20 @@ function Escreve($msg) {
     $linha = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
     Write-Output $linha
     if (Test-Path $Destino) { Add-Content -Path $log -Value $linha -Encoding utf8 }
+}
+# Ler-Registo le um registo de apagamentos e devolve nome -> instante (o mais recente por nome), ou
+# $null se alguma linha estiver malformada. Estrito pela mesma razao que o no: uma linha saltada e um
+# apagamento esquecido. Os instantes sao RFC3339 UTC ('...Z'), pelo que a ordem de texto e a do tempo.
+function Ler-Registo([string]$caminho) {
+    $h = @{}
+    foreach ($l in (Get-Content -Path $caminho -Encoding UTF8)) {
+        $t = $l.Trim()
+        if ($t -eq '' -or $t.StartsWith('#')) { continue }
+        $c = $t -split '\s+'
+        if ($c.Count -ne 2 -or $c[0] -notmatch '^aos-kek-[0-9a-f]{64}$' -or $c[1] -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { return $null }
+        if (-not $h.ContainsKey($c[0]) -or [string]::CompareOrdinal($c[1], $h[$c[0]]) -gt 0) { $h[$c[0]] = $c[1] }
+    }
+    return $h
 }
 function Alerta($msg) {
     $script:alertas += $msg
@@ -165,6 +186,56 @@ foreach ($r in $remotos) {
     if ($bytes -lt 1024) { Alerta "$nome so tem $bytes bytes — removido"; Remove-Item $alvo -Force; continue }
     Escreve "recolhido $nome ($bytes bytes)"
     $novos++
+}
+
+# REGISTO DE APAGAMENTOS (AOS-436). So o mais recente interessa — e superconjunto de todos os
+# anteriores —, mas so se larga o anterior depois de VERIFICAR que o novo o contem. Um registo que
+# perdeu entradas e o sintoma de um volume restaurado sem importar o registo, ou de um no a escrever
+# noutro sitio: nos dois casos, o proximo restauro ressuscitaria apagamentos, e isso tem de gritar.
+$regRemoto = Nativo { & ssh -n @sshOpts -p $Porta $Servidor 'apagamentos' 2>$null }
+if ($LASTEXITCODE -ne 0 -or -not $regRemoto) {
+    Alerta "o servidor nao devolveu registo de apagamentos (AOS-436) - sem ele, um restauro de TUDO antigo ressuscita KEKs apagadas sem ninguem saber"
+} else {
+    $nomeReg = Split-Path ([string]($regRemoto | Select-Object -First 1)).Trim() -Leaf
+    if ($nomeReg -notmatch '^apagamentos-\d{8}T\d{6}Z\.txt$') {
+        Alerta "nome inesperado para o registo de apagamentos, ignorado: $nomeReg"
+    } else {
+        $alvoReg = Join-Path $Destino $nomeReg
+        if (-not (Test-Path $alvoReg)) {
+            Nativo { & scp -O -q @sshOpts -P $Porta "${Servidor}:/opt/aos/backups/$nomeReg" $alvoReg 2>$null }
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $alvoReg)) {
+                Alerta "falhou a recolha do registo de apagamentos $nomeReg"
+            } else {
+                $novo = Ler-Registo $alvoReg
+                if ($null -eq $novo) {
+                    Alerta "o registo de apagamentos $nomeReg tem linhas malformadas - removido; o anterior fica"
+                    Remove-Item $alvoReg -Force
+                } else {
+                    $anteriores = @(Get-ChildItem -Path $Destino -Filter 'apagamentos-*.txt' |
+                        Where-Object { $_.Name -ne $nomeReg -and $_.Name -match '^apagamentos-\d{8}T\d{6}Z\.txt$' } |
+                        Sort-Object Name -Descending)
+                    $perdidas = 0
+                    if ($anteriores.Count -gt 0) {
+                        $velho = Ler-Registo $anteriores[0].FullName
+                        if ($null -ne $velho) {
+                            foreach ($k in $velho.Keys) {
+                                if (-not $novo.ContainsKey($k) -or [string]::CompareOrdinal($novo[$k], $velho[$k]) -lt 0) { $perdidas++ }
+                            }
+                        }
+                    }
+                    if ($perdidas -gt 0) {
+                        Alerta ("o registo de apagamentos {0} NAO e superconjunto de {1}: {2} entrada(s) perdida(s). Os dois ficam guardados; investigar ANTES de qualquer restauro" -f $nomeReg, $anteriores[0].Name, $perdidas)
+                    } else {
+                        Escreve ("recolhido registo de apagamentos {0} ({1} entrada(s))" -f $nomeReg, $novo.Count)
+                        foreach ($a in $anteriores) {
+                            Remove-Item $a.FullName -Force
+                            Escreve "registo de apagamentos substituido: removido $($a.Name)"
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 # Rotacao local, por data de escrita.
