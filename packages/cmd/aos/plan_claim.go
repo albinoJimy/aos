@@ -428,6 +428,20 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	// O `run_id` do desfecho vai para um `StepID`, e um `StepID` entra na idempotency-key. Um
 	// valor que o Event Store recusasse daria 503 numa rota que devia dar 400.
+	// O RESERVADO TAMBÉM, e a ausência disto era um buraco real (AOS-430).
+	//
+	// O `POST /plans` recusa um `run_id` com o prefixo reservado (`runIDReservado`); esta rota
+	// só chamava o `runIDInvalido`, que valida REPRESENTABILIDADE — e a barra é representável,
+	// por decisão do AOS-424. Um desfecho podia portanto ser reportado para
+	// `aos-internal/qualquer-coisa` e gravar um `StepID` no espaço reservado.
+	//
+	// O dano hoje era pequeno (a projecção trata-o como órfão e ignora-o), mas a assimetria
+	// entre as duas rotas é que é o defeito: a mesma regra tem de valer nas duas pontas, senão
+	// a próxima pessoa a ler uma delas conclui o contrário da outra.
+	if runIDReservado(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id invalido")
+		return
+	}
 	if runIDInvalido(req.RunID) {
 		writeError(w, http.StatusBadRequest, "run_id invalido")
 		return

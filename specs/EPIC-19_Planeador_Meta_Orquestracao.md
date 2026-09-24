@@ -2931,10 +2931,15 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
 
 ## AOS-430 — Quem submete um plano não tem por onde ver o desfecho: o run de topo vive noutro Event Store
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum. A decisão (1) é de fronteira entre dois processos e
-     vai exigir ADR. As citações ao ADR-016 (read-path soberano), ADR-018, ADR-027 e ADR-030 são
-     RESTRIÇÕES. -->
+<!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa que saísse: dizia
+     que «a decisão (1) é de fronteira entre dois processos e vai exigir ADR». Exigiu, e o
+     ADR-031 é dele.
+
+     Este ticket IMPLEMENTA o ADR-031. O preço de tirar o marcador é o mesmo que o AOS-424 pagou
+     pelo ADR-029 e o AOS-417 pelo ADR-028: o ADR-016, o ADR-018, o ADR-027 e o ADR-030, que aqui
+     são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket na RTM.
+     Fica dito porque o parser é textual e o marcador é tudo-ou-nada — não há forma de separar os
+     dois papéis dentro do mesmo bloco. -->
 
 | Campo | Valor |
 |---|---|
@@ -2991,11 +2996,15 @@ não é a de produção hoje.
 
 ### Critérios de Aceitação
 
-- [ ] A conclusão acima é **verificada em execução**, não só por leitura: submeter um plano e
-      medir o que `GET /runs/<topo>` devolve.
-- [ ] Decisão (1) registada, com as alternativas rejeitadas e o custo de cada uma.
-- [ ] Quem submete por `POST /plans` tem uma forma de saber o desfecho que **não** reabre a
-      não-oracularidade do ADR-030 §2.1.
+- [x] **Verificada em execução** — `TestAOS430ORunDeTopoNaoEServivelPeloReadPath` submete um
+      plano e mede as TRÊS rotas de leitura de run (`/runs/{id}`, `/trajectory`, `/reconstruct`)
+      pelo `run_id` de topo. As três dão 404, e a premissa do ticket confirma-se.
+- [x] Decisão registada em **ADR-031**, com as quatro alternativas rejeitadas e o custo de cada
+      uma — incluindo o substrato partilhado, rejeitado **para já** e não em princípio.
+- [x] `GET /plans/{id}`, e **não reabre a não-oracularidade**: a fronteira é a titularidade, e as
+      três recusas (não existe / não é teu / outra região) dão o MESMO 404, com corpo comparado
+      byte-a-byte no teste. O ADR-030 §2.1 diz «não revelar a quem NÃO PODE AGIR sobre o
+      recurso», e quem submeteu pode — foi ele que o criou.
 
 ### Fora de âmbito, declarado
 
@@ -3004,7 +3013,62 @@ não é a de produção hoje.
 
 ### Estado
 
-**ABERTO.** Substitui a pergunta (5) do AOS-423, que estava certa na conclusão e errada na causa.
+**FECHADO.** O âmbito acabou menor do que o ticket supunha, e por uma boa razão.
+
+### A metade «o `aos-orq` reporta» já estava feita
+
+O ticket punha a decisão como sendo sobre o sentido do fluxo. Medido, o `POST /plans/outcome`
+**já reporta** `classe`, `codigo_saida` e `detalhe` desde o AOS-423 — e ninguém os lia: o
+`desfechoPayload` grava os três, e a projecção da fila só consulta o `Classe`.
+
+Logo o AOS-430 é **só read-path**. Não se tocou no `aos-orq`.
+
+### A objecção que quase parou isto, e a leitura que a resolve
+
+Uma rota de leitura de plano parece ser exactamente o oráculo que o ADR-030 §2.1 fecha — a fila
+não é enumerável *por construção*, e é essa premissa que sustenta o `201` a uma colisão e o `204`
+indistinguível entre «vazia» e «outra região».
+
+A regra, lida à letra, é outra: «não revela a EXISTÊNCIA de um recurso **a quem não pode agir
+sobre ele**». Quem submeteu pode — criou-o e escolheu-lhe o `run_id`. **Isto aplica o ADR-030;
+não o emenda.** O ADR-031 regista-o.
+
+### O `Principal` ganhou o primeiro leitor
+
+Era gravado desde o AOS-417 e **nunca lido por código nenhum**. Passa a ser a fronteira de
+titularidade. Um campo gravado que ninguém lê é uma afirmação por verificar.
+
+### UMA ARMADILHA QUE EU PRÓPRIO CRIEI NO TICKET ANTERIOR
+
+A marca de água do AOS-429 faz a projecção ler **a partir** do `seq` acima do qual tudo está
+terminado. Um pedido TERMINADO está, por definição, abaixo dela — e é precisamente o desfecho
+dele que quem submeteu vem procurar.
+
+Reutilizar o caminho quente devolveria «não existe» para **todos os planos que acabaram**: uma
+resposta errada e indistinguível da certa. A rota lê do princípio, e há teste com controlo de
+não-vacuidade que demonstra a armadilha antes de provar que ela foi evitada.
+
+### E UM DEFEITO ADJACENTE, FECHADO
+
+O `POST /plans` recusa um `run_id` com o prefixo reservado; o `POST /plans/outcome` **não** —
+só chamava o `runIDInvalido`, que valida representabilidade, e a barra É representável por
+decisão do AOS-424. O dano era pequeno (a projecção trata o resultado como órfão), mas a
+assimetria é que é o defeito: a mesma regra tem de valer nas duas pontas.
+
+### Resíduos declarados
+
+1. **O estado é grosso** — quatro valores mais o código de saída. Não há progresso por nó do
+   plano, porque esses factos vivem no Event Store do `aos-orq`, noutro volume.
+2. **Nada drena a fila em produção.** O `aos-orq` é `profiles: ["orq"]`, `restart: "no"`, e o
+   `consume` drena uma vez e termina. Enquanto não houver quem o dispare, a rota reporta
+   `pending` para sempre — é verdade, e é informação, mas não é o que um utilizador espera.
+   Trabalho de implantação, com âmbito próprio.
+3. **A leitura não sela WORM**, ao contrário das rotas de leitura de run. O que revela é estado
+   de processo e não conteúdo de run, e o objectivo fica de fora — mas a assimetria está
+   declarada e não resolvida.
+4. **O custo é linear no histórico da fila, por chamada.** Aceite porque a rota é autenticada e
+   não está em caminho quente; a saída, se doer, é persistir a marca de água (resíduo do
+   AOS-429).
 
 ---
 
