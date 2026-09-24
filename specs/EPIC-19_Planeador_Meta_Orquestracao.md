@@ -2965,14 +2965,24 @@ O código já existe e já foi migrado (`approval_store_durable.go:56`,
 
 ### Critérios de Aceitação
 
-- [ ] O CI levanta NATS JetStream e define `AOS_NATS_URL`, e o gate `dormencia` deixa de o
-      inventariar como ausente.
-- [ ] **Pelo menos um teste da cerimónia four-eyes sobre JetStream** — emitir, consumir uma vez, e
-      provar que o segundo consumo é recusado. Fecha o critério por marcar do AOS-424.
-- [ ] Os testes que hoje SALTAM sem `AOS_NATS_URL` passam a correr, e o número deles é reportado —
-      um teste que salta em silêncio é indistinguível de um que não existe.
-- [ ] O `subjectDe` é exercitado contra um NATS real com um nome legado, provando que a recusa é
-      a que se assume.
+- [x] O CI levanta NATS JetStream e define `AOS_NATS_URL` — job `nats`, `scripts/ci/nats.sh` +
+      `scripts/ci/nats-cluster.sh`, no `needs:` do agregador. **Não é um `services:`**: esse não
+      liga os contentores em rota de cluster (e sem cluster um stream R3 não é criável), não
+      injecta ficheiro de configuração (e `server_tags` só existe em configuração), e não
+      deixaria matar um nó de dentro do job. O `dormencia` deixou de o inventariar como ausente
+      — e a afirmação nova é **verificada** contra o `ci.yml`, não escrita: tirar o job
+      avermelha o gate (mutação corrida).
+- [x] **A cerimónia four-eyes sobre JetStream** —
+      `TestAOS431_FourEyesSobreJetStream_UsoUnicoSobrevive`, com o segundo consumo a vir de uma
+      **ligação nova** sobre um cluster R3. Fecha o critério por marcar do AOS-424. Sensor
+      verificado por mutação: repor `gov.approvals` como nome da cerimónia avermelha-o.
+- [x] Os testes que saltavam passam a correr, **e o número é contado na EXECUÇÃO**. Eram 45
+      dormentes; passaram a `PASS=70 FAIL=0 SKIP=0` no `eventstore` e `SKIP=0` por falta de
+      substrato nos quatro módulos. O gate falha com um skip que não esteja declarado por nome.
+- [x] O `subjectDe` é exercitado contra NATS real com o nome legado —
+      `TestAOS431_SubjectDeRecusaNomeLegadoContraNATSReal`. **E a recusa não é a que o critério
+      assumia**: vem da NOSSA regra (o aperto do `Append`, AOS-424), antes da rede. O nome nunca
+      chega ao servidor, o que é a postura certa e é o que o teste fixa.
 
 ### Fora de âmbito, declarado
 
@@ -2988,8 +2998,212 @@ O código já existe e já foi migrado (`approval_store_durable.go:56`,
 
 ### Estado
 
-**ABERTO.** O critério existia dentro do AOS-424, marcado como «trabalho de infraestrutura com
-âmbito próprio». Este é esse âmbito.
+**FECHADO.** De 45 testes dormentes para zero skips por falta de substrato, com dois defeitos
+reais encontrados pelo caminho — que é a razão de o ticket existir.
+
+### O que o ticket assumia e estava errado
+
+**«O código já existe e já foi migrado. O que falta é cobertura, não implementação.»** Certo
+quanto ao código, errado quanto ao custo. Ligar o cluster encontrou **dois defeitos vivos**, e
+nenhum deles era de cobertura.
+
+### O que se entregou
+
+- **`scripts/ci/nats-cluster.sh`** — quatro nós JetStream: três na região do board (`eu-west`,
+  a que os testes fixam em código) e **um fora** (`us-east`), que existe para um teste só — o
+  que prova que réplicas não caem fora da fronteira, a propriedade mais forte do ADR-011. A
+  receita (imagem pinada, flags, fragmento com `server_tags`) é copiada de
+  `infra/modules/eventstore/main.tf` de propósito: se divergirem, o CI mede um substrato que a
+  produção não tem, que é a classe de defeito que este ticket veio fechar.
+- **`scripts/ci/nats.sh`** — o gate, com contagem na execução, controlo de não-vacuidade
+  (um gate que levanta o cluster e corre zero testes é verde por acidente) e `trap` que derruba
+  sempre.
+- **Job `nats` no `ci.yml`**, no `needs:` do agregador.
+- **Dois testes novos** em `packages/integration`, um deles a fechar o critério do AOS-424.
+
+### OS DOIS DEFEITOS QUE SÓ O CLUSTER ENCONTROU
+
+**1. Dois testes disputavam o mesmo espaço de nomes de subject, e nunca se souberam.**
+`janela_test.go` criava o stream `AOSJANELA`, cujo subject derivado é `aosjanela.>`;
+`natsjs/integracao_test.go` cria `aosjanela.<hex>.>`, que cai dentro dele. O JetStream recusa o
+segundo com `subjects overlap with an existing stream` (10065), e **qual dos dois falha depende
+de quem corre primeiro** — falha intermitente. Nunca apareceu porque nenhum dos dois alguma vez
+correu. O nome determinista mantém-se (a razão dele é boa: não deixar lixo no cluster); o que
+mudou foi o espaço de nomes.
+
+**2. `AOS_NATS_URL` significava duas coisas incompatíveis.** O `jetstream.Abrir` reparte uma
+lista separada por vírgulas; o `natsjs` entrega a variável ao `net.Dial` e só sabe falar com um
+nó. Com a lista, cinco testes do `natsjs` falhavam com «too many colons in address». Com um
+endereço só, os **dois testes de reconexão** falhavam — e por uma razão que é o próprio objecto
+deles: matam o nó a que a ligação aponta e exigem que o cliente encontre outro. A lista ganha
+porque a propriedade que ela permite observar não é observável de outra forma; a limitação do
+`natsjs` resolve-se onde vive, no helper desse pacote.
+
+### O QUE EU MEDI MAL, E O QUE A EXECUÇÃO CORRIGIU
+
+- **«Um NATS single-node chega para a maioria»** — hipótese da discovery. **Não chega**: 24 de
+  53 falham, todas com `replicas > 1 not supported in non-clustered mode`. Baixar as réplicas
+  para 1 tornaria tudo verde e seria substituir o ambiente por uma fixture.
+- **«Nenhum teste pode saltar»** — regra que escrevi no gate. Forte demais: o
+  `TestSelftestApexEnforcementBypassReddensGate` é um teste-veneno do `selftest.sh` e salta por
+  desenho. A regra passou a ser por NOME, não por contagem.
+- **O meu gate morreu a diagnosticar.** O ramo que imprime o nome do teste que saltou era um
+  pipeline de `grep`s; sem correspondência, o `pipefail` matava o gate exactamente no caminho
+  que existe para explicar a falha.
+- **Deixei os testes destrutivos derrubarem o cluster.** Sem `AOS_RESTORE_CMD`, ficavam dois nós
+  em baixo e os 13 testes seguintes falhavam com 10008 — causa aparente soberania e arbitragem,
+  causa real o cluster em baixo. Os testes já suportavam o restauro; faltava definir a variável.
+
+### O DEFEITO DE PRODUTO QUE ISTO ENCONTROU — AOS-432
+
+A primeira coisa que as suites do `aos-orq` fizeram contra o cluster foi falhar, em dois testes
+que **nunca tinham corrido**. Medido:
+
+| Propriedade | Estado |
+|---|---|
+| A arbitragem funciona | **SIM** — exactamente 1 vencedor, 3/3 execuções |
+| Os perdedores são negados pelo LEASE | **NÃO** — `negados-pelo-lease=0`, sempre |
+| O que recebem | `natsjs: ninguém serve este subject (503)`, e saem com código genérico |
+
+**A propriedade de segurança do ADR-023 aguenta; a de diagnosticabilidade não.** Em incidente,
+um operador lê um erro de NATS quando a causa real é «outra réplica detém este run».
+
+Três hipóteses morreram por experiência — corrida de arranque (3/3 idêntico), o quarto nó
+noutra região (um cluster de 3 numa só região dá o mesmo), propagação do binding entre nós
+(todos no mesmo endereço dá o mesmo). A quarta exige ler o protocolo, e é o **AOS-432**.
+
+Fica **declarada no gate**, e não excluída: tirar o `cmd/aos-orq` da lista de módulos deixaria
+de a ver no dia seguinte. A lista auto-reforma-se — um teste declarado que PASSE avermelha o
+gate, para que dívida curada não fique a pesar sem razão.
+
+### O inventário do `dormencia` estava falso, e agora nomeia em vez de contar
+
+Contava por `grep -rl 'AOS_NATS_URL'` e **subestimava**: quatro ficheiros do pacote `jetstream`
+(19 funções) saltam pelo helper partilhado `servidor(t)` e nunca escrevem o nome da variável.
+Reportava 47 testes em 9 ficheiros; a árvore tinha 45 skips em 13.
+
+A primeira correcção que tentei — contar o directório inteiro — apanhava os escondidos e
+produzia «packages/cmd/aos <=1040 teste(s)» para 6 skips reais. Um número que erra por duas
+ordens de grandeza é pior do que número nenhum, porque convida a ser citado. O gate passou a
+**nomear** os pacotes; a contagem é do `nats.sh`, feita na execução.
+
+E a razão declarada que ele imprimia durante meses — «nenhum ficheiro de CI define
+AOS_NATS_URL» — era verdadeira quando foi escrita e passou a ser falsa sem que nada a
+reavaliasse. A nova é verificada contra o `ci.yml`.
+
+### Resíduos declarados
+
+1. **Isto não prova nada sobre produção.** O nó de produção corre sobre ficheiro. Migrá-lo é
+   outra decisão, declarada fora de âmbito, e é o destino que o ADR-030 §3 nomeia.
+2. **O cluster é de quatro nós num só host.** Partição de rede real, latência entre regiões e
+   perda de disco continuam por observar.
+3. **O gate corre sem `-race`.** Estes testes esperam por eleições de Raft e por janelas de
+   deduplicação; o detector levaria o job ao limite. O `-race` destes módulos continua no gate
+   `test`, sem cluster — logo uma corrida que só apareça sobre substrato real fica invisível.
+4. **`packages/substrate/eventstore` continua fora do gate de cobertura** (`lib.sh:434-436`,
+   com a nota «reavaliar quando o CI tiver NATS»). O CI passou a ter NATS; a reavaliação não
+   foi feita aqui, e é trabalho com âmbito próprio.
+5. **O nome de stream determinista do `janela_test.go`** colide se duas execuções partilharem
+   um cluster. No CI não acontece (o cluster é efémero e derrubado pelo `trap`); localmente,
+   duas sessões contra o mesmo cluster colidem.
+6. **As duas falhas do AOS-432 ficam declaradas.** O gate está verde COM dívida nomeada, não
+   sem ela — e di-lo em cada execução.
+
+---
+
+## AOS-432 — Sobre substrato replicado, quem PERDE o lease não sabe que o perdeu: sai com um erro de NATS
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: corrige um modo de FALHA no caminho do lease. As
+     citações ao ADR-023 (escritor único sob lease) e ao ADR-007 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade; o eixo é o EPIC-02 / execução durável) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | **P1** — não é falha de segurança, é de diagnosticabilidade, e cai em cima de um operador em incidente |
+| Estimativa | M |
+| Dependências | AOS-431 (o cluster no CI, que é o que torna isto observável — FECHADO) |
+| Bloqueia | O gate `nats` fica verde com duas falhas DECLARADAS até isto fechar |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/kernel/agent-runtime/durable/lease.go:317-360` (`Claim`), `packages/substrate/eventstore/natsjs/conn.go:37-41,276` (`ErrNoResponders`), `packages/cmd/aos-orq/main.go:331-335`, `packages/cmd/aos-orq/aos392_despacho_multiproc_test.go`, `packages/cmd/aos-orq/aos100_substrato_replicado_test.go` |
+
+### Contexto
+
+O AOS-431 ligou um cluster JetStream ao CI, e a primeira coisa que as suites do `aos-orq`
+fizeram foi falhar — em dois testes que **nunca tinham corrido**.
+
+Medido, e o que se mediu é preciso:
+
+| Propriedade | Estado |
+|---|---|
+| A arbitragem funciona | **SIM.** Exactamente 1 vencedor, em 3/3 execuções, com 3 e com 4 processos |
+| Os perdedores são negados PELO LEASE | **NÃO.** `negados-pelo-lease=0`, sempre |
+| O que os perdedores recebem | `aos-orq: posse do run "…": natsjs: ninguém serve este subject (503) (aos.es.<stream>.lease:<run>)` |
+| Os perdedores saem com | código `1` (genérico), não `exitPosseNegada` |
+| Posse SEQUENCIAL sobre o mesmo substrato | **passa** (`TestAOS100_PosseSequencialContinuaAFuncionarNoReplicado`) |
+
+**A propriedade de segurança do ADR-023 aguenta** — nunca há dois donos. O que falha é a
+capacidade de um operador distinguir «outra réplica detém este run» de «o substrato avariou».
+Em incidente, esta mensagem manda-o depurar o NATS quando o sistema está a funcionar como
+desenhado.
+
+### O que já está eliminado como causa
+
+Hipóteses testadas e MORTAS, para que ninguém as repita:
+
+- ❌ **Corrida de arranque.** 3/3 execuções idênticas (`vencedores=1 negados=0 outros=2`).
+  Determinista, não intermitente.
+- ❌ **O quarto nó noutra região.** Um cluster de 3 nós, todos `eu-west`, dá o mesmo.
+- ❌ **Propagação do binding do subject entre nós.** Com os três processos apontados ao
+  **mesmo** endereço, dá o mesmo.
+
+### A pista
+
+O `Claim` (`lease.go:321-359`) lê o estado, e se não houver lease vivo escreve com
+`WithExpectedSeq(st.lastSeq)`. O caminho DESENHADO para um perdedor é: a escrita colide,
+`isConcurrencyConflict` apanha-a, relê, vê o lease vivo, devolve `ErrLeaseHeld`. O que se
+observa é a escrita a falhar com **503 no_responders** — que `isConcurrencyConflict` não
+reconhece, e que sobe crua.
+
+Porque é que o MESMO subject aceita a escrita do vencedor e responde 503 à do perdedor é a
+pergunta central, e **não está respondida**. O `ErrNoResponders` do cliente
+(`conn.go:37-41`) documenta três causas — «JetStream desligado, stream inexistente, sem
+permissões» — e nenhuma delas explica um vencedor no mesmo instante.
+
+### Critérios de Aceitação
+
+- [ ] A causa do 503 está **medida**, não inferida: um traço do protocolo (PUB + headers +
+      resposta) do vencedor e de um perdedor, lado a lado.
+- [ ] Um processo que perca o lease sai com `exitPosseNegada` e uma mensagem que nomeia o
+      dono — não com um erro de transporte.
+- [ ] `TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado` e
+      `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` passam, e saem da lista de falhas
+      declaradas de `scripts/ci/nats.sh` — que **avermelha sozinho** quando elas passarem.
+- [ ] Se a correcção for mapear um erro, há teste que prova que o mapeamento não engole uma
+      indisponibilidade REAL do substrato: «o lease foi negado» e «o NATS está em baixo» têm
+      de continuar distinguíveis, senão troca-se um defeito por outro pior.
+
+### Fora de âmbito, declarado
+
+- **A arbitragem em si**, que está correcta e tem teste que o prova.
+- **A migração do nó para NATS**, que é outra decisão.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Mapear 503 para «lease detido» esconde uma indisponibilidade real do substrato | O critério 4 exige o teste que separa os dois casos |
+| A causa estar no cliente escrito à mão (`natsjs`), e não no lease | O critério 1 pede o traço do protocolo antes de qualquer correcção |
+
+### Estado
+
+**ABERTO.** Encontrado pelo AOS-431 ao ligar o cluster ao CI; declarado como falha conhecida
+no gate `nats` para que ele possa ficar verde sem esconder isto. Não foi diagnosticado até ao
+fim de propósito — três hipóteses foram mortas por experiência e a quarta exige ler o
+protocolo, que é trabalho com âmbito próprio.
 
 ---
 

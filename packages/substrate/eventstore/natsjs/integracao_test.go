@@ -30,6 +30,20 @@ func servidor(t *testing.T) string {
 	if addr == "" {
 		t.Skipf("sem cluster: define %s (ex.: túnel SSH para o nó 0 do cluster)", envServidor)
 	}
+	// TOMA O PRIMEIRO ENDEREÇO, porque `AOS_NATS_URL` nomeia o CLUSTER e este pacote só sabe
+	// falar com UM nó.
+	//
+	// `natsjs.Connect` entrega o endereço ao `net.Dial`; uma lista chega lá como
+	// «too many colons in address». Quem sabe repartir a lista é o `jetstream.Abrir`
+	// (`enderecos()`, store.go) — e ele PRECISA da lista, porque os testes de reconexão matam
+	// o nó a que a ligação aponta e exigem que o cliente encontre outro.
+	//
+	// Partir aqui, e não exportar um endereço só, é o que deixa a variável significar a mesma
+	// coisa nos dois pacotes. Descoberto ao ligar o cluster do AOS-431: com a lista falhavam
+	// cinco testes deste ficheiro; com um endereço falhavam os dois da reconexão.
+	if i := strings.IndexByte(addr, ','); i >= 0 {
+		addr = addr[:i]
+	}
 	return addr
 }
 
