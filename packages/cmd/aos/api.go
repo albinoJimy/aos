@@ -422,6 +422,14 @@ type apiHandler struct {
 	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
 	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
+	// credRecusadas conta as recusas por CREDENCIAL DO RUN que não verifica, nas duas rotas que
+	// a verificam: `POST /runs` (AOS-428) e `POST /runs/{id}/resume` (AOS-433).
+	//
+	// Existe porque a correcção do AOS-428 trocou uma negação TARDIA-MAS-AUDITADA por uma
+	// negação PRECOCE-E-NÃO-AUDITADA: antes, o token era negado pelo hook do RM e produzia um
+	// `MediationRecord` selado no WORM, com métrica; depois, passou a ser uma linha de log. Uma
+	// campanha de submissões com tokens roubados ficou invisível a qualquer série.
+	credRecusadas atomic.Int64
 	// controlMTLS indica se o mTLS do plano de controlo está LIGADO (DEF-012, EIXO 1). Quando
 	// true, os handlers de controlo exigem um certificado de cliente verificado — ADITIVO à
 	// assinatura ed25519. O ClientCAs/ClientAuth vive no listener ([NewAPIServer]); este flag é
@@ -755,6 +763,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			// próprio, o bit que vaza: distinguiria «credencial morta» de «não autorizado» para
 			// quem sonda. As sentinelas ficam no log, com o submissor nomeado — o que só é
 			// possível porque esta guarda corre DEPOIS do `authorize`.
+			h.credRecusadas.Add(1)
 			h.logf("submit RECUSADO (AOS-428): credencial do run nao verifica submissor=%q run=%q: %s",
 				submitter.principal, req.RunID, motivo)
 			writeError(w, http.StatusForbidden, "nao autorizado")
@@ -1647,6 +1656,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		g("aos_mediation_record_failures_total", "Registos de mediacao pos-decisao que FALHARAM a gravacao duravel desde o arranque. A PROVA do deny/escalate perdeu-se; a negacao aconteceu a mesma (o efeito ficou bloqueado). POR PROCESSO — um restart repoe.",
 			"counter", float64(h.node.Runtime.Metrics().RecordFailures()), "")
 	}
+
+	// CREDENCIAIS RECUSADAS NA PORTA — a série que a correcção do AOS-428 tinha deixado em falta.
+	//
+	// COMO SE LÊ: um valor que sobe devagar é ruído normal (tokens expirados de clientes com o
+	// relógio atrasado, retomas tardias). Um DEGRAU é o sinal — alguém a tentar submeter com
+	// credenciais que não verificam, em volume. Foi exactamente isso que deixou de ser visível
+	// quando a verificação passou do hook do RM para a porta: antes produzia um
+	// `MediationRecord` selado; depois, só uma linha de log sujeita à rotação do Docker.
+	//
+	// O QUE ESTA SÉRIE NÃO É: um registo de auditoria. Não diz QUEM nem QUANDO, e não é
+	// tamper-evidente. Fecha a detecção, não a prova — o registo durável continua declarado como
+	// resíduo do AOS-433, e tem uma dificuldade própria que vale a pena nomear: não se pode
+	// atribuir o facto ao principal da CREDENCIAL, porque foi ela que não verificou. Atribuível
+	// é o SUBMISSOR autenticado pelo gate soberano, que é outra coisa e tem de ser decidida.
+	g("aos_ingress_credential_denials_total", "Pedidos RECUSADOS a porta por a credencial do run nao verificar (POST /runs e POST /runs/{id}/resume) desde o arranque. Um DEGRAU sugere uso de credenciais roubadas ou caducadas em volume. POR PROCESSO — um restart repoe. NAO e auditoria: nao diz quem nem quando.",
+		"counter", float64(h.credRecusadas.Load()), "")
 
 	// RUNS À ESPERA DE UM HUMANO — a única paragem do nó que é DELIBERADA, e a única que não
 	// dava sinal nenhum.
@@ -2808,6 +2833,14 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "ha um prompt de exaustao de orcamento POR RESPONDER neste run (pending_exhaustion em GET /runs/{id}) — decida em "+exhaustionDecisionRoute+" (\""+exhaustionOptionContinue+"\" ou \""+exhaustionOptionAbort+"\", assinado por operador registado) antes de retomar; sem decisao, o TTL de pendentes expira a pergunta e a retoma volta a ser aceite")
 	case errors.Is(err, ErrResumeUnavailable):
 		writeError(w, http.StatusNotImplemented, "retoma indisponivel (four-eyes nao composto)")
+	case errors.Is(err, ErrResumeCredencialNaoVerifica):
+		// 403 e não 400: o corpo está bem formado, o que não passa é a autoridade. É a mesma
+		// resposta que o `POST /runs` dá a uma credencial que não verifica (AOS-428), e a
+		// uniformidade é deliberada — duas rotas que fazem a mesma verificação não devem
+		// distinguir-se pela resposta.
+		h.credRecusadas.Add(1)
+		h.logf("resume RECUSADO (AOS-433): %v", err)
+		writeError(w, http.StatusForbidden, "nao autorizado")
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
 	case errors.Is(err, ErrResumeNeedsEmitter):

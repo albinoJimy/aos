@@ -55,6 +55,21 @@ setup_env
 CLUSTER="$(dirname "${BASH_SOURCE[0]}")/nats-cluster.sh"
 rc=0
 
+# PISO DE COBERTURA DO `substrate/eventstore` — e este é o único gate onde ele pode existir.
+#
+# O gate de cobertura geral (`test.sh` + `COVERAGE_GATED_MODULES`) exclui este módulo, e a
+# exclusão está certa: ali não há cluster, e sem cluster o módulo mede 63,6% — gateá-lo lá
+# avermelharia por falta de infra, não por falta de teste.
+#
+# Aqui há cluster. Medido em AOS-433: **81,3%**. O piso entra em 75, abaixo do medido para
+# absorver variação de execução (os testes de perda de nó e reconexão não cobrem sempre os
+# mesmos ramos) e acima do que o módulo tinha sem cluster — o que garante que o piso está a
+# medir o ganho do cluster, e não a passar por acidente.
+#
+# O `FLOOR_MODULE_COVERAGE_MIN` de 80 não se aplica: é para módulos cuja suite corre inteira
+# sem infra externa. Este tem um piso próprio, declarado, e a razão está aqui.
+gate_threshold EVENTSTORE_COVERAGE_MIN 75 0 100 "%" always || exit 1
+
 # =============================================================================================
 # (0) O CLUSTER
 # =============================================================================================
@@ -233,6 +248,40 @@ for entrada in "${modulos_nats[@]}"; do
 
   rm -f "$saida"
 done
+
+# =============================================================================================
+# (2) COBERTURA DO `substrate/eventstore`, MEDIDA COM O CLUSTER
+# =============================================================================================
+log_gate "nats · cobertura do substrate/eventstore (piso ${EVENTSTORE_COVERAGE_MIN}%, so mensuravel com cluster)"
+
+# RESTAURAR O CLUSTER ANTES DE MEDIR, e a razão foi uma execução.
+#
+# Esta medição corre DEPOIS das suites, e as do `cmd/aos-orq` matam nós de propósito (perda de
+# nó, reconexão). O `AOS_RESTORE_CMD` repõe-nos no `t.Cleanup` de cada teste, mas as duas falhas
+# declaradas do AOS-432 param antes de lá chegar — e a medição encontrava um cluster degradado,
+# falhava a criar streams R3, e o gate dizia «a medição não correu» sem dizer porquê.
+bash "$CLUSTER" restore >/dev/null 2>&1 || true
+
+cov_out="$(mktemp)"
+cov_log="$(mktemp)"
+# A SAÍDA GUARDA-SE. A primeira versão fazia `>/dev/null 2>&1` e, quando falhou, o gate não
+# conseguia diagnosticar-se a si próprio — que é o defeito que ele existe para não ter.
+if (cd "$REPO_ROOT/packages/substrate/eventstore" && go test ./... -count=1 -covermode=atomic -coverprofile="$cov_out") >"$cov_log" 2>&1; then
+  pct="$(cd "$REPO_ROOT/packages/substrate/eventstore" && go tool cover -func="$cov_out" 2>/dev/null | awk '/^total:/{print $NF}')"
+  if coverage_meets_min "$pct" "$EVENTSTORE_COVERAGE_MIN"; then
+    log_ok "eventstore: cobertura ${pct} >= ${EVENTSTORE_COVERAGE_MIN}% (com cluster)"
+  else
+    log_fail "eventstore: cobertura ${pct:-n/a} < ${EVENTSTORE_COVERAGE_MIN}% — o substrato de que dependem o WORM, o replay e a tamper-evidence perdeu cobertura"
+    rc=1
+  fi
+else
+  # FAIL-CLOSED. Uma medição que não corre não é uma medição que passa — seria o caminho
+  # exacto pelo qual um gate de cobertura fica verde sem medir nada.
+  log_fail "eventstore: a medicao de cobertura NAO correu; sem numero nao ha veredicto"
+  grep -E "^(FAIL|---|.*\.go:[0-9]+:)" "$cov_log" | head -12
+  rc=1
+fi
+rm -f "$cov_out" "$cov_log"
 
 log_gate "nats · veredicto"
 printf '   TOTAL sobre substrato replicado real: PASS=%s FAIL=%s (%s declaradas no AOS-432) SKIP=%s (%s não declarados)\n' \

@@ -3333,6 +3333,210 @@ reavaliasse. A nova é verificada contra o `ci.yml`.
 
 ---
 
+## AOS-433 — Os resíduos vivos do eixo da identidade, por ordem de impacto
+
+<!-- Este ticket IMPLEMENTA parte do ADR-028 (a verificação de credencial no ingresso, estendida
+     à retoma). As citações ao ADR-003, ADR-006 e ADR-023 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção |
+| Prioridade | **P1** — o item 1 é explorável em produção hoje |
+| Estimativa | M |
+| Dependências | AOS-428, AOS-429, AOS-430, AOS-431 (todos FECHADOS) |
+| Responsável sugerido | Responsável de Segurança |
+
+### Contexto
+
+Uma triagem verificou **cada** resíduo declarado pelos tickets AOS-417 a AOS-431 contra o código
+actual, em vez de os ler pelo título. Resultado: alguns tinham sido fechados por tickets
+posteriores sem ninguém actualizar o texto, e outros eram mais graves do que o título sugeria.
+
+Este ticket fecha os de CÓDIGO com impacto real, por ordem.
+
+### (1) O `POST /runs/{id}/resume` aceitava credencial que não verifica
+
+```go
+if p, verr := v.Verify(ctx, credential); verr == nil && p.AgentID != rec.Principal.NHIID {
+```
+
+Quando o `Verify` **falha**, a conjunção curto-circuita, o corpo nunca corre, **não há `return`**,
+e a retoma prossegue: re-hospeda o run, toma lease, consome plano de replay.
+
+**A defesa a jusante não cobre isto, e o próprio ficheiro dizia porquê:** a retoma reproduz os
+turnos da captura sem reinterrogar o modelo, logo um run cuja acção escalada já não gere mediação
+nunca chega ao hook de identidade do RM. Era revogação que não revogava.
+
+**E havia um teste que fixava o defeito como comportamento desejado.** O
+`TestUmaCredencialQueNaoVERIFICANaoEDivergencia` aseria que o erro *não* era divergência de
+principal — e parava aí. Ao parar aí, documentava um buraco como se fosse desenho.
+
+O residual antigo justificava-o com um argumento que **era bom**: «transformar "não consegui
+verificar" em "não és tu" diria uma coisa diferente da que se sabe». Mas isso é sobre o TIPO DE
+ERRO, e dele não se segue deixar passar. Fecha-se com sentinela própria
+(`ErrResumeCredencialNaoVerifica`): diz-se o que se sabe, e recusa-se na mesma.
+
+**A regra não foi reescrita.** A guarda do AOS-428 passou a função livre sobre `*Node`
+(`credencialDoRunRecusadaNoNo`) e as duas rotas chamam a MESMA — o AOS-424 passou uma série
+inteira a fechar a classe «a mesma regra em três cópias».
+
+### (2) Uma avaria do registo de revogação era indistinguível de revogação
+
+`verifier.go` fazia `fmt.Errorf("%w: %v", ErrTokenRevoked, rerr)` — sentinela com `%w`, causa com
+`%v`. As duas condições resolviam em `ErrTokenRevoked`, e a causa era achatada para texto.
+
+Numa indisponibilidade do registo, **todas** as verificações de **todos** os titulares eram
+recusadas e o log dizia «revogada» para todos: o operador iria revogar e reemitir identidades num
+incidente que se resolvia reiniciando um serviço.
+
+Sentinela própria (`ErrRevocationUnavailable`), causa com `%w`. **A postura não muda** — continua
+fail-closed, e o hook do RM nega em qualquer erro.
+
+### (3) A recusa no ingresso não tinha sensor nenhum
+
+A correcção do AOS-428 trocou uma negação **tardia-mas-auditada** (um `MediationRecord` selado no
+WORM, com métrica) por uma **precoce-e-não-auditada** (uma linha de log). Uma campanha de
+submissões com tokens roubados ficou invisível.
+
+Entra `aos_ingress_credential_denials_total`, incrementado nas duas rotas.
+
+**O que isto NÃO é:** auditoria. Não diz quem nem quando, e não é tamper-evidente. Fecha a
+detecção, não a prova — e o registo durável tem uma dificuldade própria que vale a pena nomear:
+não se pode atribuir o facto ao principal da CREDENCIAL, porque foi ela que não verificou.
+Atribuível é o SUBMISSOR autenticado, que é outra coisa e é decisão por tomar.
+
+### (4) A cobertura do `eventstore` — e a medição mudou a conclusão
+
+O `lib.sh` excluía o módulo do gate com a nota «reavaliar quando o CI tiver NATS». O AOS-431 pôs
+NATS no CI. Medido nos dois regimes:
+
+| Regime | Cobertura |
+|---|---|
+| **SEM** cluster (como o gate `test` corre) | **63,6%** — a nota estava certa |
+| **COM** cluster de quatro nós | **81,3%** |
+
+**A conclusão não é «entra agora no gate geral».** Esse gate vive no `test.sh`, que não levanta
+cluster: pô-lo lá mediria 63,6% e avermelharia — exactamente o bloqueador de ambiente que a nota
+original recusou, e com razão. A premissa não caducou; caducou a ideia de que não havia onde
+gatear.
+
+O piso entra no gate `nats`, que tem o cluster: `EVENTSTORE_COVERAGE_MIN=75`, abaixo do medido
+para absorver variação e acima do valor sem cluster — o que garante que está a medir o ganho do
+cluster e não a passar por acidente.
+
+### (5) Três textos do registo estavam factualmente errados
+
+- **O AOS-425 citava um teste que não existe** (`TestAOS425WildcardAtravessaEEstaDeclarado`), e
+  descrevia uma «verificação na carga» que foi revertida dentro do próprio ticket. Um registo que
+  afirma ter um sensor é pior do que um que admite não ter: ninguém volta a olhar.
+- **O cabeçalho da baseline `stream-names` contradizia as suas próprias entradas** — dizia que
+  restava uma entrada com histórico real, e as duas entradas dizem, cada uma, que foram migradas.
+- **O AOS-426 dizia que a causa de fundo «continua aberta»** quando o AOS-424 fez seis renames,
+  dois com migração de factos.
+
+### UM GUARD DISPAROU PELA RAZÃO ERRADA — A TERCEIRA VEZ NESTA SÉRIE
+
+O `TestAOS428OEscopoNaoMigrouParaAPorta` procurava o literal `h.node.Verifier.Verify(`. Tornar a
+guarda partilhada mudou o receptor para `no`, e ele ficou vermelho — com a propriedade que vigia
+inteiramente verdadeira.
+
+É o mesmo padrão do `TestAOS417BannerDoConsumidorNaoApodrece` (AOS-423) e do
+`TestAOS417FormaDoFactoEEstavel` (AOS-429): um detector por PROXY, razoável quando escrito,
+desligado da mudança que o invalidou. Passou a procurar a chamada sem o receptor, e ganhou uma
+segunda asserção — que a regra continua partilhável com o `resume`.
+
+### Critérios de Aceitação
+
+- [x] O `resume` recusa credencial que não verifica, com sentinela própria, e o teste que fixava o
+      defeito passa a exigir a recusa. Sensor verificado por mutação: **5 vermelhos**.
+- [x] «Registo indisponível» distingue-se de «revogado», a causa é recuperável por `errors.As`, e
+      a postura fail-closed não relaxa (teste com controlo de não-vacuidade nos dois sentidos).
+- [x] A recusa no ingresso tem série em `/metrics`, com o que ela **não** é declarado.
+- [x] A cobertura do `eventstore` tem piso, no gate onde é mensurável, com os dois números.
+- [x] Os três textos errados estão corrigidos, cada um com a correcção visível e datada.
+
+### Resíduos declarados
+
+1. **Registo de auditoria DURÁVEL na recusa** — a métrica fecha a detecção, não a prova. Tem a
+   dificuldade de atribuição descrita em (3).
+2. **O `Subscribe` que falha em silêncio** (AOS-424): uma subscrição filtrada por um nome não
+   representável nunca casa nada, sem erro. Pior MODO de falha da lista, menor probabilidade
+   actual — o `Append` foi apertado e produção corre sobre ficheiro.
+3. **O gate `nats` corre sem `-race`**: uma corrida que só apareça sobre substrato replicado
+   continua invisível.
+4. **`GET /plans/{id}` não sela WORM** e é linear no histórico (AOS-430).
+
+### Estado
+
+**FECHADO.** Cinco itens, por ordem de impacto medido. O que ficou de fora está em ticket próprio
+(AOS-434) ou declarado acima.
+
+---
+
+## AOS-434 — O caminho do plano materializa com orçamento efectivamente infinito
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum. As citações ao ADR-008 (orçamento com circuit
+     breaker) e ao ADR-024 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção + decisão |
+| Prioridade | **P1 — mas só quando a fila for drenada.** Hoje é inalcançável |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | **O timer de deployment que drenar a fila.** Tem de ser feito ANTES, não depois |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/main.go` (`materializeBudgetTokens`), `docs/adr/ADR-008`, o resíduo do AOS-417 |
+
+### Contexto
+
+```go
+const (
+	materializeBudgetTokens = 1 << 30
+	materializeBudgetCost   = 1 << 30
+)
+```
+
+Mil milhões de tokens e mil milhões de unidades de custo. O comentário declara-o: «aqui são
+generosos e declarados, para que a admissão exercite o caminho de RESERVA sem ser o que decide o
+desfecho da demonstração».
+
+Era razoável enquanto o `serve` era invocado à mão por um operador. **Deixa de o ser no dia em que
+algo drenar a fila**: o `consume` corre pelo mesmo caminho, e a partir daí quem puder submeter a
+`POST /plans` queima orçamento de modelo sem travão node-local.
+
+**Hoje é inalcançável** — o AOS-430 mediu que nada drena a fila em produção. É por isso que a
+prioridade é condicional, e é por isso que tem de ser feito **antes** do timer e não depois: uma
+vez ligado, o custo é imediato e real.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Qual é o tecto?** Não há número decidido, e o certo depende do que um plano típico consome —
+   que não está medido. Sem medição, qualquer valor é arbitrário.
+2. **Vem de onde?** Constante, variável de ambiente, ou do plano de controlo (que é onde o
+   comentário diz que um tecto real vive)?
+3. **O que acontece ao exceder?** O caminho de admissão já sabe ADIAR (`defer` com `retry_after`)
+   em vez de descartar — é a postura do AOS-027. Aplica-se aqui?
+
+### Critérios de Aceitação
+
+- [ ] O tecto do caminho do plano é configurável e o valor em vigor é **declarado no banner** —
+      hoje o `bannerDoExecutor` não diz nada sobre orçamento.
+- [ ] Teste que prova que um plano acima do tecto é adiado ou recusado, e não materializado.
+- [ ] A decisão (1) tem um número com uma razão medida por trás, não um palpite.
+
+### Estado
+
+**ABERTO.** Encontrado pela triagem de resíduos do AOS-433, ao verificar o resíduo do AOS-417
+sobre o orçamento por árvore no caminho novo.
+
+---
+
 ## AOS-432 — Sobre substrato replicado, quem PERDE o lease não sabe que o perdeu: sai com um erro de NATS
 
 <!-- rtm: adrs-mencionados -->
@@ -3549,6 +3753,15 @@ com os dele, que é um problema pior do que não o conseguir ler.
   aberta**, e o fim-de-linha limpo é movê-los todos para o prefixo reservado `aos-internal/`. Isso
   é o AOS-424, e tem o custo de renomear streams com histórico. Esta trava **não** o dispensa: é a
   defesa que não obriga a migrar dados.
+
+  > **CORRECÇÃO (AOS-433).** Já não «continua aberta». O AOS-424 fez os **seis renames**, dois
+  > deles **com migração de factos** (`gov.approvals` e as quatro classes de memória), e o
+  > prefixo `aos-internal/` está hoje em `plan_ingress.go`, `plan_claim.go`, `planos.go`,
+  > `integration/approval_store_durable.go` e em `memory/{adapters,compression,episodic,
+  > migrations,semantic}`. O que resta na baseline do gate são constantes do nome ANTIGO em que
+  > nada escreve — ver o cabeçalho de `scripts/ci/baseline/stream-names.txt`, também corrigido
+  > aqui. O texto acima ficou por actualizar quando o AOS-424 fechou, e um resíduo que diz estar
+  > aberto quando já não está desvia trabalho de onde ele é preciso.
 
 ### Estado
 
@@ -3773,10 +3986,19 @@ caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria 
 
 ### Por fechar, declarado
 
-- **Uma policy com `models: ["*"]`** derrota a verificação na carga: o wildcard é uma escolha
-  legítima de produto e não é, ele próprio, um nome de stream. A defesa cai para a recusa tardia
-  do `Append`. Está fixado por teste (`TestAOS425WildcardAtravessaEEstaDeclarado`) para ser uma
-  decisão e não uma surpresa.
+- **Uma policy com `models: ["*"]`** — o wildcard é uma escolha legítima de produto e não é,
+  ele próprio, um nome de stream. A defesa contra um nome sujo cai para a recusa tardia do
+  `Append`.
+
+  > **CORRECÇÃO (AOS-433).** Este parágrafo dizia que isto estava «fixado por teste
+  > (`TestAOS425WildcardAtravessaEEstaDeclarado`)». **Esse teste não existe** — um `grep` em
+  > `packages/` não o encontra, e os testes reais do ficheiro são outros
+  > (`TestAOS425BundleComNomeDeModeloRealCarrega` e companhia). E a premissa também caiu: não há
+  > «verificação na carga» que o wildcard possa derrotar, porque essa verificação foi **revertida**
+  > dentro do próprio AOS-425 — o `allowlist.go` não chama `ValidarStreamID`.
+  >
+  > Um registo que afirma ter um sensor é pior do que um que admite não ter: ninguém volta a
+  > olhar para o que já está «fixado por teste». Fica por fechar, sem sensor, e dito.
 - **O teste sobre JetStream.** Hoje prova-se que os nomes passam na NOSSA regra; que o NATS os
   aceita é inferência. Depende de haver NATS no CI (AOS-423).
 - **O `provider` da chave de admissão** vem do PEDIDO (`req.Provider`), não da composição, e não

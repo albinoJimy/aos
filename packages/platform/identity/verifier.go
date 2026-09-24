@@ -183,10 +183,25 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 	}
 
 	// 5) Revogação. Erro de consulta ⇒ fail-closed (rejeita).
+	//
+	// # A CAUSA DEIXA DE SER ENGOLIDA (AOS-433)
+	//
+	// Isto devolvia `fmt.Errorf("%w: %v", ErrTokenRevoked, rerr)`: a sentinela com `%w`, a causa
+	// com `%v`. O efeito era que «este token foi revogado» e «não consegui perguntar ao registo»
+	// ficavam INDISTINGUÍVEIS — `errors.Is(err, ErrTokenRevoked)` dava `true` nos dois casos, e o
+	// erro do registo era achatado para texto, irrecuperável por `errors.As`.
+	//
+	// A consequência era operacional e cara: numa indisponibilidade do registo, TODAS as
+	// verificações de TODOS os titulares eram recusadas, e o log dizia «revogada» para todos. O
+	// operador iria revogar e reemitir identidades num incidente que se resolvia reiniciando um
+	// serviço — e o diagnóstico apontaria para o sítio errado precisamente quando isso custa mais.
+	//
+	// A postura NÃO muda: continua fail-closed, e o hook do RM nega em qualquer erro
+	// (`rmadapter.go`). O que muda é o que o erro DIZ sobre si próprio.
 	if v.revocations != nil {
 		revoked, rerr := v.revocations.IsRevoked(ctx, pt.claims.JTI)
 		if rerr != nil {
-			return Principal{}, fmt.Errorf("%w: %v", ErrTokenRevoked, rerr)
+			return Principal{}, fmt.Errorf("%w: %w", ErrRevocationUnavailable, rerr)
 		}
 		if revoked {
 			return Principal{}, ErrTokenRevoked

@@ -62,6 +62,19 @@ var (
 	// escopo).
 	ErrUnknownClass = &IdentityError{Code: "E_UNKNOWN_CLASS", msg: "classe de agente nao configurada"}
 
+	// ErrRevocationUnavailable — não foi possível CONSULTAR o registo de revogação (AOS-433).
+	//
+	// É fail-closed na mesma: o token é recusado, e o hook do RM nega em qualquer erro. O que
+	// esta sentinela dá é a DISTINÇÃO — «não consegui perguntar» não é «foi revogado».
+	//
+	// Antes, as duas resolviam em [ErrTokenRevoked] e a causa era achatada para texto com `%v`.
+	// Numa avaria do registo, todas as verificações de todos os titulares eram recusadas com o
+	// log a dizer «revogada»: o operador revogaria e reemitiria identidades num incidente que se
+	// resolvia reiniciando um serviço.
+	//
+	// A causa subjacente viaja com `%w` e é recuperável por errors.As.
+	ErrRevocationUnavailable = &IdentityError{Code: "E_REVOCATION_UNAVAILABLE", msg: "registo de revogacao indisponivel (fail-closed)"}
+
 	// ErrTTLForaDeGama — a política de uma classe pede um TTL inutilizável ou acima do tecto
 	// (AOS-427, decisão 4). Recusa-se na CONSTRUÇÃO do emissor, não na emissão: um emissor
 	// configurado com uma política impossível não chega a existir.

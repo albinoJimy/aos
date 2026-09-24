@@ -9,8 +9,21 @@
 # -----------------------------------------------------------------
 # Uma das duas entradas originais SAIU: o `gov.approvals` foi **migrado**. A que ficou no seu
 # lugar é de outra natureza — a constante do nome ANTIGO, que existe só para a migração o
-# conseguir ler, e em que nada escreve. Resta uma entrada com histórico REAL: o prefixo
-# `memory.`.
+# conseguir ler, e em que nada escreve.
+#
+# CORRIGIDO EM AOS-433: este parágrafo terminava em «resta uma entrada com histórico REAL: o
+# prefixo `memory.`», e **isso deixou de ser verdade dentro do próprio AOS-424** — o prefixo foi
+# migrado também, por `packages/platform/memory/adapters/migracao.go`. A entrada do `memory.` lá
+# em baixo di-lo, com todas as letras, desde que foi escrita: «NÃO É UM PREFIXO EM USO […] A
+# entrada anterior (o prefixo COM histórico) SAIU porque foi MIGRADA».
+#
+# Ou seja: o cabeçalho contradizia a sua própria entrada, e ficou assim quando a segunda migração
+# entrou. **NENHUMA das duas linhas abaixo tem histórico vivo.** As duas são constantes do nome
+# antigo, mantidas para as migrações conseguirem LER, e saem quando essas constantes puderem
+# desaparecer — o que é operação (saber que todas as implantações arrancaram uma vez com o
+# binário da migração), não código.
+#
+# Uma baseline cujo cabeçalho contradiz as suas entradas convida a ser mal citada, e foi.
 #
 # PORQUE É QUE O `memory.` NÃO FOI CORRIGIDO COM OS OUTROS
 # -----------------------------------------------------------------

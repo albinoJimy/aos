@@ -434,7 +434,23 @@ gate_threshold COVERAGE_MIN "$KERNEL_COVERAGE_MIN" "$FLOOR_COVERAGE_MIN" 100 "%"
 # `AOS_NATS_URL`, inventariadas pelo gate `dormencia`). Gatear o módulo inteiro avermelharia a CI
 # por falta de infra, não por falta de teste — trocaria um gate honesto por um bloqueador de
 # ambiente. A cobertura do núcleo é vigiada pelas suites que correm; o apodrecimento dos
-# adaptadores é vigiado pelo `dormencia` (exige que COMPILEM). Reavaliar quando o CI tiver NATS.
+# adaptadores é vigiado pelo `dormencia` (exige que COMPILEM).
+#
+# REAVALIADO EM AOS-433, DEPOIS DE O CI PASSAR A TER NATS (AOS-431). A nota acima terminava em
+# «reavaliar quando o CI tiver NATS», e o CI passou a ter. Medido, nos dois regimes:
+#
+#   · SEM cluster (que é como ESTE gate corre, no job `test`): 63,6% — a nota estava certa;
+#   · COM cluster de quatro nós:                               81,3%.
+#
+# A conclusão não é «entra agora». Este gate vive no `test.sh`, que NÃO levanta cluster: pôr o
+# módulo aqui mediria 63,6% contra o `COVERAGE_MIN` e avermelharia — exactamente o bloqueador de
+# ambiente que a nota original recusou. A premissa não caducou; o que caducou foi a ideia de que
+# não havia onde gatear.
+#
+# O SÍTIO CERTO É O GATE `nats`, que tem o cluster e mede o que ele exercita. É lá que o piso
+# vive (ver `scripts/ci/nats.sh`, EVENTSTORE_COVERAGE_MIN). Esta exclusão mantém-se, e deixa de
+# ser um deferimento: é uma repartição de responsabilidade entre dois gates, com o número de
+# cada um medido.
 COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/kernel/agent-runtime" "packages/testkit" "packages/control-plane/orchestrator" "packages/control-plane/scheduler" "packages/control-plane/pdp" "packages/platform/audit" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface" "packages/control-plane/governance/trajectory-surface")
 # Directório do testkit (conversor de cobertura cov2lcov, Go stdlib puro).
 TESTKIT_DIR="$REPO_ROOT/packages/testkit"
