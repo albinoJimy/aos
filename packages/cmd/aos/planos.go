@@ -227,6 +227,20 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// Plano de DADOS — DESFECHO de uma tentativa (AOS-423). Sem ela, um pedido cujo `serve`
 		// falhou por razão transitória só voltaria à fila ao fim do TTL da reclamação.
 		{"POST /plans/outcome", h.handlePlanOutcome, planoDados},
+		// Plano de DADOS — ESTADO do pedido DE QUEM PERGUNTA (AOS-430). Fecha o buraco de quem
+		// submete um plano receber `201` e não ter por onde seguir o que pediu: o run de TOPO
+		// nunca é hospedado pelo nó (só os filhos `<topo>~<nó>`), logo `GET /runs/<topo>` dá
+		// sempre 404.
+		//
+		// NÃO É UMA ROTA DE ENUMERAÇÃO e não emenda o ADR-030 §2.1 — aplica-o. A regra é «não
+		// revelar a existência a quem NÃO PODE AGIR sobre o recurso», e quem submeteu pode: foi
+		// ele que o criou. A titularidade é comparada contra o `principal` gravado no facto, e
+		// as três recusas (não existe / não é teu / outra região) dão o MESMO 404.
+		//
+		// ATENÇÃO, como nas irmãs: o caminho tem DOIS segmentos e não herda a protecção da barra
+		// que mantém `aos-internal/…` fora do alcance de `GET /runs/{id}`. Daí o
+		// `runIDReservado` explícito no handler.
+		{"GET /plans/{id}", h.handlePlanStatus, planoDados},
 		// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
 		{"GET /runs/{id}/trajectory", h.handleTrajectory, planoDados},
 		// Plano de DADOS — RECONSTRUÇÃO SOBERANA de conteúdo selado (AOS-214): decifra o conteúdo

@@ -197,8 +197,12 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		//
 		// O que ela NAO herda, e por isso e explicito no handler: a proteccao da barra que mantem
 		// `aos-internal/...` fora do alcance de `GET /runs/{id}`. O caminho tem dois segmentos.
-		"POST /plans/claim":          planoDados,
-		"POST /plans/outcome":        planoDados,
+		"POST /plans/claim":   planoDados,
+		"POST /plans/outcome": planoDados,
+		// AOS-430: leitura do estado do pedido DE QUEM PERGUNTA. planoDados porque e LEITURA e
+		// porque a titularidade se compara dentro do handler contra o principal gravado no facto
+		// — nao ha payload do chamador a virar sinal, que e o risco que a classe de controlo fecha.
+		"GET /plans/{id}":            planoDados,
 		"GET /runs/{id}/trajectory":  planoDados,
 		"GET /runs/{id}/reconstruct": planoDados,
 
