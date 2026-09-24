@@ -14,7 +14,7 @@
 # é a FONTE DE VERDADE e tem de coincidir, entrada a entrada e na mesma ordem, com o
 # `needs:` do job `gates` e com a lista de CONTRIBUTING.md §"Required checks" — o
 # self-test §M compara as três e fica vermelho se divergirem.
-# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · stream-names · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · policy-taint · selftest
+# REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · stream-names · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · nats · dormencia · sast · sca · policy-test · policy-taint · selftest
 # Em alternativa pode exigir-se apenas o agregador `gates`, que depende dos 25 acima
 # e é fail-closed por construção (`if: always()` + avaliação de `needs.*.result`),
 # pelo que fica `failure` — e não `skipped` — quando qualquer um deles não fica verde.
@@ -360,6 +360,34 @@ jobs:
       - name: Gate ux-dx (usabilidade · anti-fadiga override-rate · paridade · acessibilidade)
         run: bash scripts/ci/ux-dx.sh
 
+  # Gate do SUBSTRATO REPLICADO REAL (AOS-431).
+  #
+  # Levanta um cluster JetStream de QUATRO nós (tres na regiao do board, um fora, para a
+  # fronteira soberana) e corre as suites que ate aqui SALTAVAM por nao haver `AOS_NATS_URL`
+  # em ficheiro nenhum de CI. Eram 45 funcoes de teste em 13 ficheiros.
+  #
+  # Porque e que isto vale um job proprio: tudo o que este repositorio afirmava sobre o
+  # JetStream era uma afirmacao sobre a NOSSA regra, nunca sobre o servidor — e o AOS-424
+  # encontrou nove nomes de stream irrepresentaveis que tinham passado dez gates, uma revisao
+  # adversarial e o smoke, exactamente porque tudo corria sobre ficheiro.
+  #
+  # O cluster e levantado por `scripts/ci/nats-cluster.sh` com `docker run`, e nao por
+  # `services:`, por duas razoes medidas: o `services:` nao liga os conteineres numa rota de
+  # cluster (e sem cluster os streams R3 nao sao criaveis), e nao injecta ficheiro de
+  # configuracao — e `server_tags`, de que a colocacao soberana depende, so existe em
+  # configuracao. Ter o cluster nosso e tambem o que permite MATAR um no de dentro do job,
+  # que e o que os testes de perda e de reconexao exigem.
+  nats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache-dependency-path: "packages/**/go.sum"
+      - name: Gate nats (cluster JetStream R3 real · four-eyes · soberania · perda de no)
+        run: bash scripts/ci/nats.sh
+
   # Gate de DORMÊNCIA (AOS-358). Nomeia as suites que só correm com substrato externo
   # (AOS_NATS_URL) ou atrás de build tag (-tags fclive/gvlive) e EXIGE que estas COMPILEM.
   # Fail-closed sobre APODRECIMENTO, não sobre dormência: a dormência é a condição
@@ -439,7 +467,7 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     if: always()
-    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, stream-names, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, dormencia, sast, sca, policy-test, policy-taint, selftest]
+    needs: [secrets, build, lint, ref-lint, deferrals, estado-citado, rtm, layer-lint, test, integration, event-catalog, stream-names, replay, memory, supplychain, routing, apex, security, evalgate, scale, dr-e2e, ux-dx, nats, dormencia, sast, sca, policy-test, policy-taint, selftest]
     steps:
       - name: Todos os gates verdes (fail-closed)
         env:
