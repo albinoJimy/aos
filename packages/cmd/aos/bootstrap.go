@@ -36,6 +36,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -311,6 +312,14 @@ type Config struct {
 	// cai no modo de REFERÊNCIA (autoridade co-localizada). Mutuamente exclusiva com
 	// IssuerSigningKey.
 	IssuerPubKey ed25519.PublicKey
+	// MandatedIssuerID / MandatedIssuerPubKey / MandateSigners compõem o emissor AUTOMÁTICO
+	// (AOS-427, ADR-033): um segundo trust anchor cujos tokens só verificam com um mandato
+	// embebido, assinado por um dos humanos de MandateSigners (user_id → pubkey) e que cubra o
+	// token. Todos vazios ⇒ não composto. Juntos ou nenhum; colisões com o emissor manual abortam
+	// ([validarEmissorMandatado]).
+	MandatedIssuerID     string
+	MandatedIssuerPubKey ed25519.PublicKey
+	MandateSigners       map[string]ed25519.PublicKey
 
 	// --- Canal de controlo autenticado (AOS-160) -------------------------------
 	// Operators mapeia emitterID→PUBKEY dos operadores humanos/serviço autorizados a
@@ -1022,6 +1031,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.IssuerID == "" {
 		return nil, ErrNoIssuerID
 	}
+	// AOS-427: o emissor mandatado valida-se sobre a Config COMPOSTA, nos dois modos — a Config
+	// também se constrói sem o ambiente, e as colisões que anulam o mandato não dependem dele.
+	if err := validarEmissorMandatado(cfg); err != nil {
+		return nil, err
+	}
 	hardened := len(cfg.IssuerPubKey) > 0
 	if hardened {
 		// (AOS-225) Defesa-em-profundidade do trust anchor: a IssuerPubKey tem de ser
@@ -1650,6 +1664,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, fmt.Errorf("aos: reconstruir o registo de revogacao de NHI: %w", err)
 	}
 	verifierOpts = append(verifierOpts, identity.WithRevocations(revocations))
+	// AOS-427: o emissor automático entra aqui, e não num dos ramos, pela mesma razão da
+	// revogação acima — os dois ramos consomem `verifierOpts`. A revogação de um MANDATO usa o
+	// mesmo registo (`mandate:<id>`), pelo que tem de estar composta antes: está, na linha acima.
+	if cfg.MandatedIssuerID != "" {
+		verifierOpts = append(verifierOpts, identity.WithMandatedIssuer(
+			cfg.MandatedIssuerID, append(ed25519.PublicKey(nil), cfg.MandatedIssuerPubKey...), cfg.MandateSigners))
+	}
 	var authority *integration.IssuerAuthority
 	var verifier *identity.Verifier
 	var err error
@@ -1700,6 +1721,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		})
 		if err != nil {
 			return nil, fmt.Errorf("aos: autoridade de identidade (AOS-156): %w", err)
+		}
+		// AOS-427: a colisão de chaves do emissor mandatado também existe no modo de REFERÊNCIA — a
+		// chave da autoridade co-localizada não está na Config, só aqui. Se fosse a do emissor
+		// automático, ele assinaria com o iss desta autoridade e verificaria SEM mandato.
+		if cfg.MandatedIssuerID != "" {
+			if _, refPub := authority.TrustAnchor(); bytes.Equal(refPub, cfg.MandatedIssuerPubKey) {
+				return nil, fmt.Errorf("%w: a chave da autoridade de referencia e a do emissor automatico — cunharia como ela, sem mandato", ErrBadMandatedIssuer)
+			}
 		}
 		// VERIFIER REAL: só o trust anchor (issuerID + pubkey) da autoridade. NUNCA o
 		// identity.NewVerifier() sem anchors nem o IdentityStub do demo.
@@ -2757,6 +2786,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// onde a recusa se encadeia — reutilizá-lo, em vez de escrever um terceiro, é o que mantém as
 	// três linhas a descrever o mesmo nó.
 	for _, line := range credencialNaPortaPostureBanner(hardened, reclamavelNoArranque) {
+		log("%s", line)
+	}
+	// AOS-427: o que o nó aceita do emissor automático, e sob que limite.
+	for _, line := range emissorMandatadoPostureBanner(cfg.MandatedIssuerID, len(cfg.MandateSigners)) {
 		log("%s", line)
 	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto

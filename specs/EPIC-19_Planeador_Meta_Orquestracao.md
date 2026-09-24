@@ -2591,17 +2591,26 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 - [x] **As QUATRO decisões registadas em ADR-032**, com as quatro portas fechadas como
       restrições e cada alternativa rejeitada com o custo escrito. O ADR declara também, em §5, o
       que fica por construir e porquê — não é um ADR que finge que a implementação o segue toda.
-- [ ] **Corre sem ninguém no terminal, verificado em PRODUÇÃO.** POR FAZER, e depende de três
-      coisas que não existem: o emissor externo, a delegação, e **alguém a drenar a fila** — que
-      o AOS-430 mediu que hoje ninguém faz.
-- [ ] **Gate que prove que a `issuer.key` está fora do servidor.** POR FAZER. Não existe gate
-      desses hoje; o critério diz, e bem, que «não basta não a pôr lá».
-- [ ] **Sensor de renovação.** POR FAZER, e tem um obstáculo concreto medido: **o `aos-orq` não
+- [x] **ACRESCENTADO E ENTREGUE (2026-09-25) — o MANDATO, verificado pelo NÓ** (ADR-033, que
+      substitui o ADR-032 §2.2): o formato da delegação existe (`identity.Mandate`), assina-o o
+      humano com a sua chave (`aos-issuer mandate-sign`), cunha-se sob ele sem operador
+      (`aos-issuer mint-mandated`), e o nó só aceita o emissor automático DENTRO dele
+      (`AOS_MANDATED_ISSUER_ID` / `_PUBKEY` / `AOS_MANDATE_SIGNERS`). Revoga-se o mandato inteiro
+      por `jti=mandate:<id>`.
+- [ ] **Corre sem ninguém no terminal, verificado em PRODUÇÃO.** POR FAZER — o código de cunhagem
+      e de verificação existe; falta pô-lo a correr no servidor: o binário na imagem, o timer de
+      cunhagem, o de drenagem da fila e o sensor. É a entrega operacional seguinte (ticket por abrir).
+- [ ] **Gate que prove que a chave do HUMANO está fora do servidor.** POR FAZER, e o critério
+      MUDOU de objecto com o ADR-033: a `issuer.key` do emissor automático vive agora no Vault do
+      servidor por decisão; o que tem de estar fora é a chave que assina os MANDATOS. Não há gate
+      que o prove.
+- [ ] **Sensor de renovação.** POR FAZER na entrega operacional seguinte (no servidor, ao lado de quem cunha, no
+      molde do `alerta-ancora.sh` — ADR-033 §3). O obstáculo original continua medido: **o `aos-orq` não
       expõe `/metrics` de todo**. Quem quer que passe a cunhar tem de criar a superfície, não
       apenas a série. O critério («visível ANTES de o run falhar») exclui pô-lo no nó, que só
       sabe da credencial quando ela chega.
-- [ ] **O TTL no banner.** POR FAZER. O `bannerDoExecutor` do `aos-orq` não diz nada sobre
-      validade; é ali que aterra quando houver quem cunhe.
+- [ ] **O TTL no banner.** POR FAZER na entrega operacional seguinte. O `bannerDoExecutor` do `aos-orq` não diz
+      nada sobre validade. (O banner do NÓ já declara o emissor mandatado — ver abaixo.)
 - [x] **ACRESCENTADO E ENTREGUE — o tecto máximo de TTL na biblioteca** (decisão 4):
       `identity.TTLMaximo = 1h`, validado na construção nas duas vias, recusando também o TTL
       zero ou negativo que nascia expirado e nunca tinha sido recusado nem testado.
@@ -2622,8 +2631,9 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 
 ### Estado
 
-**PARCIALMENTE FECHADO.** As quatro decisões estão tomadas e registadas no **ADR-032**; uma
-delas está implementada e as outras três estão bloqueadas em DESENHO, não em esforço.
+**PARCIALMENTE FECHADO — o que falta é operação, não desenho.** As decisões (1) e (4) do ADR-032
+estão implementadas; a (2) foi substituída pelo **ADR-033** e implementada; a (3), renovação com
+sensor, e a verificação em produção são a entrega operacional seguinte.
 
 ### O que se entregou: o tecto de TTL (decisão 4)
 
@@ -2670,18 +2680,71 @@ perguntas por responder, todas de segurança: que campos a assinatura cobre; cur
    efémero e o armazém nasceria vazio a cada invocação. Um emissor persistente pode e deve
    ligá-lo; não o fazer seria regressão.
 
+### O que se entregou: o mandato (ADR-033, 2026-09-25)
+
+**A pergunta que bloqueava tudo tinha um pressuposto que não se aguentava.** O ADR-032 §2.2
+rejeitou o emissor no servidor para proteger a CHAVE. Mas o Vault de produção corre nesse mesmo
+servidor e destrava-se sozinho (`vault-init.json` está no disco): com a chave no Vault, quem
+comprometesse o servidor pedia assinaturas ao Vault. «Chave externa no Vault» e «emissor no
+servidor» davam a mesma protecção — nenhuma. O que importava proteger era o PODER DE CUNHAR.
+
+E o nó confiava no emissor por inteiro. O limite tinha de passar para o nó.
+
+| Peça | Onde |
+|---|---|
+| O mandato: tipo, forma canónica (netstrings com domínio), assinatura, `Covers` | `packages/platform/identity/mandate.go` |
+| O verificador com um segundo anchor que só aceita DENTRO do mandato | `identity.WithMandatedIssuer`, passo 7 do `Verify` |
+| O emissor honesto recusa cunhar fora do mandato (cortesia — quem decide é o nó) | `IssueRequest.Mandate` |
+| O humano assina UMA vez; o timer cunha sem flags de identidade | `aos-issuer mandate-sign` / `mint-mandated` |
+| O nó compõe-no, aborta nas colisões que o anulariam, e declara-o no banner | `packages/cmd/aos/emissor_mandatado.go` |
+
+**Sensores verificados por mutação:** desligar o passo 7 do verificador avermelha 8 testes;
+aceitar o mandato sem verificar a assinatura do humano avermelha os 2 testes de forja.
+
+**O que isto responde do ADR-032 §5:** onde corre o emissor (servidor, push para o ficheiro que o
+`aos-orq` relê); o formato da delegação (enumerado, sem curingas); como se revoga (o mandato
+inteiro, pelo registo durável que já existia); a validade da delegação (≤ 90 dias, tecto na
+biblioteca, renova-a o humano assinando outro).
+
+**Os achados que mudavam o desenho, revistos:**
+
+- O anti-replay (`RequireJTI`) continua desligado, e continua certo: o `mint-mandated` também é
+  um processo efémero, corrido por timer.
+- A rotação da chave e o token do Vault lidos uma vez **deixam de morder**: o emissor não é
+  persistente, lê ambos a cada execução do timer.
+
 ### Resíduos declarados
 
-1. **A verificação em produção** exige, além do emissor e da delegação, **alguém a drenar a
-   fila** — o AOS-430 mediu que nada o faz (`profiles: ["orq"]`, `restart: "no"`, e o `consume`
-   drena uma vez e termina).
-2. **Não há gate que prove que a `issuer.key` está fora do servidor.** O critério é explícito em
-   que não basta não a pôr lá, e hoje não existe nada que o verifique.
-3. **O `aos-orq` não expõe `/metrics`.** Qualquer sensor de credencial obriga a criar a
-   superfície.
-4. **A rotação da chave no Vault é invisível ao signer**: a pubkey é fixada no arranque. Num
-   processo efémero não morde; num emissor persistente, morde.
-5. **O token do Vault é lido uma vez** e nunca renovado — mesma razão, mesmo agravamento.
+1. **A verificação em produção** — o binário na imagem, o timer de cunhagem, o de drenagem da
+   fila (o AOS-430 mediu que nada a drena) e o sensor. É a entrega operacional seguinte (ticket por abrir).
+2. **Não há gate que prove que a chave do HUMANO está fora do servidor.** Com o ADR-033 é essa a
+   chave que tem de estar fora; a do emissor está no Vault por decisão.
+3. **A chave do humano é uma seed em ficheiro**, não hardware (ADR-016 §1 na forma, não no
+   espírito). Não existe no repositório via de assinatura por hardware.
+4. **Uma cunhagem que nunca é usada não deixa rasto** — o `mint-mandated` corre sem Event Store,
+   logo não há `identity.nhi.issued`. O ADR-033 §5 aceita-o: um token só age quando chega ao nó,
+   e aí é registado.
+5. **O `Principal.MandateID` não é selado nos registos de decisão.** O verificador devolve-o; a
+   atribuição «este run correu sob o mandato X» fica para quando a auditoria o consumir.
+6. **Dentro do mandato, um emissor comprometido cunha à vontade** — o mandato limita o QUÊ, não
+   o QUANTAS VEZES. O escopo e a janela devem ser os mínimos.
+7. **Root no host do NÓ não é coberto**: muda `AOS_MANDATE_SIGNERS` e reinicia. O mandato limita
+   o emissor, não o anfitrião (ADR-033 §2.1).
+
+**Revisão adversarial antes do merge (2026-09-25)** — um achado ALTO e cinco BAIXOS, todos
+fechados com sensor:
+
+| Achado | Correcção | Sensor |
+|---|---|---|
+| **ALTO** — `iat` escolhido pelo emissor: um token de 45 min válido até ao fim do mandato | o nó exige `nbf == iat`, e o passo 4 já recusa `nbf` futuro | 3 casos; mutação ⇒ 3 vermelhos |
+| Elos intermédios na cadeia, fora do mandato | emissor mandatado só cunha a raiz | mutação ⇒ 1 vermelho |
+| Overflow do `time.Duration` nos tectos | comparação em segundos inteiros, instantes positivos | 3 casos |
+| Colisão de chaves no modo de referência | comparada com a chave da autoridade co-localizada | mutação ⇒ 1 vermelho |
+| ID com espaço irrevogável pela rota | ID só base64url | 2 casos |
+| Buracos de teste (`iss` diferente, `Rebuild`, chave pinada inválida) | testes novos | — |
+
+E um de DESENHO, que mudou o texto e não o código: o ADR, o banner e o README prometiam proteger
+contra «quem comprometer o servidor». O que protegem é o comprometimento do **emissor**.
 
 ---
 

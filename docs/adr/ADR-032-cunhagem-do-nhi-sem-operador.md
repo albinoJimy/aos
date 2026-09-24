@@ -1,6 +1,6 @@
 # ADR-032 — A cunhagem do NHI sem operador: as quatro decisões, e o que fica por construir
 
-- **Estado:** Aceite (decisões); implementação **parcial** — ver §5
+- **Estado:** Aceite (decisões); **§2.2 substituída pelo ADR-033** (2026-09-25), que responde também às perguntas da §5
 - **Data:** 2026-09-24
 - **Ticket:** AOS-427
 - **Relacionados:** ADR-003 (cadeia `on-behalf-of` com raiz humana), ADR-006 (credential broker JIT;
@@ -52,6 +52,10 @@ rotação e revogação próprias — e a revogação **não existe hoje**: o me
 de *token*, não de *delegação*.
 
 ### 2.2 A autoridade de emissão é externa, com `crypto.Signer` sobre Vault
+
+> **SUBSTITUÍDA pelo [ADR-033](ADR-033-emissor-automatico-limitado-por-mandato.md).** O Vault de produção
+> corre no mesmo servidor e destrava-se sozinho, pelo que a chave no Vault não protegia o poder de cunhar de
+> quem comprometesse o servidor. O limite passou para o nó: o mandato. O texto abaixo fica como registo.
 
 É o desenho que o ADR-006 pede, e de que o `aos-issuer --vault-addr` já é meia implementação: o
 `vaultTransitSigner` está completo e testado, e a chave nunca entra no processo.

@@ -58,7 +58,11 @@ uso:
   aos-issuer worm-seal --worm <ficheiro> --key-file <ficheiro> [--partition <p>] [--anterior <ficheiro>] [--heads]
                           → imprime o corpo JSON de POST /promote (AOS-275)
   aos-issuer plan-approve-sign --request-id plan:<plano>:<hash> --approver <principal> --key-file <ficheiro> [--approve] [--out <ficheiro>]
-                          → imprime a decisão ASSINADA de um plano pendente do aos-orq (AOS-408)`
+                          → imprime a decisão ASSINADA de um plano pendente do aos-orq (AOS-408)
+  aos-issuer mandate-sign --key-file <chave-do-humano> --human <id> --board <b> --agent <id> --class <c> --caps <c1,c2> [--issuer iss:aos-issuer-auto] [--max-ttl 45m] [--valid-for 720h] [--out <ficheiro>]
+                          → o HUMANO assina UMA vez o mandato sob o qual o emissor automático cunha (AOS-427)
+  aos-issuer mint-mandated --mandate <ficheiro> --signer-pubkey <hex> --vault-addr ... [--ttl 45m] [--out <ficheiro>]
+                          → cunha SEM operador, dentro do mandato; o nó verifica-o contra a chave pinada (AOS-427)`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -97,6 +101,11 @@ func run(args []string, out, diag io.Writer) error {
 		return runRevokeSign(args[1:], out)
 	case "worm-seal":
 		return runWormSeal(args[1:], out)
+	// AOS-427: a cunhagem sem operador — o humano assina o mandato, o timer cunha dentro dele.
+	case "mandate-sign":
+		return cmdMandateSign(args[1:], out, diag)
+	case "mint-mandated":
+		return cmdMintMandated(args[1:], out)
 	default:
 		return fmt.Errorf("subcomando desconhecido %q\n%s", args[0], usage)
 	}
