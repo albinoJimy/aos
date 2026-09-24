@@ -308,9 +308,18 @@ func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planva
 	}
 
 	// (3) ORÇAMENTO PARTILHADO por Planner + Delegator + admissão da materialização (uma
-	// só árvore, raiz = runID). Tecto local generoso (o tecto real vem do plano de
-	// controlo — limitação de escopo deste binário).
-	bud, err := budget.New(runID, budget.Amount{Tokens: materializeBudgetTokens, CostMicroUSD: materializeBudgetCost})
+	// só árvore, raiz = runID).
+	//
+	// O TECTO É CONFIGURÁVEL DESDE AOS-434, e o que ele governa está escrito em
+	// `budget_env.go` — em resumo: a soma das ESTIMATIVAS DECLARADAS, não o consumo real. A
+	// leitura do ambiente já correu (e já falhou, se fosse para falhar) no arranque, antes de
+	// se tomar posse do run; aqui não pode falhar por configuração, e a segunda leitura dá o
+	// mesmo valor porque o ambiente do processo não muda.
+	tecto, err := tectoDoPlanoDoAmbiente()
+	if err != nil {
+		return nil, fmt.Errorf("tecto de orçamento do plano: %w", err)
+	}
+	bud, err := budget.New(runID, tecto)
 	if err != nil {
 		return nil, fmt.Errorf("orçamento da árvore: %w", err)
 	}

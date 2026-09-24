@@ -340,6 +340,17 @@ func cmdServe(args []string) error {
 	if *goal != "" || *planDoc != "" {
 		fmt.Println(bannerDoGateDePlano())
 		fmt.Println(bannerDoExecutor(cliDoNo))
+		// O TECTO DO ORÇAMENTO RESOLVE-SE AQUI, E É AQUI QUE FALHA SE ESTIVER MAL (AOS-434).
+		//
+		// Cedo de propósito: a composição só acontece depois de se tomar POSSE do run, e um
+		// `consume` que abortasse lá teria gasto uma geração de reclamação para descobrir um
+		// erro de configuração. A `comporBaseDeExecucao` relê a mesma função — o ambiente do
+		// processo não muda, logo o valor é o mesmo, e o banner declara o que vai ser composto.
+		tectoDoPlano, errTecto := tectoDoPlanoDoAmbiente()
+		if errTecto != nil {
+			return errTecto
+		}
+		fmt.Println(bannerDoOrcamentoDoPlano(tectoDoPlano))
 	}
 
 	// O emissor do domínio do plano (veredicto, payload, decisões de ramo) — os
@@ -583,10 +594,6 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 // compunha, e os nós ficavam pendentes para sempre). É a leitura do ADR-024 levada até ao fim:
 // efeito no despacho, e não «sem efeito nenhum por esta via».
 
-// Tectos do orçamento da árvore usados pela materialização deste comando. Um tecto
-// real vem do plano de controlo; aqui são generosos e declarados, para que a admissão
-// exercite o caminho de RESERVA sem ser o que decide o desfecho da demonstração.
-const (
-	materializeBudgetTokens = 1 << 30
-	materializeBudgetCost   = 1 << 30
-)
+// Os tectos do orçamento da árvore SAÍRAM daqui em AOS-434 — eram duas constantes fixas de
+// `1 << 30` e passaram a ser configuráveis, com os defaults e a explicação do que governam (e
+// do que NÃO governam) em `budget_env.go`.

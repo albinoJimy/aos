@@ -3506,9 +3506,26 @@ Mil milhões de tokens e mil milhões de unidades de custo. O comentário declar
 generosos e declarados, para que a admissão exercite o caminho de RESERVA sem ser o que decide o
 desfecho da demonstração».
 
-Era razoável enquanto o `serve` era invocado à mão por um operador. **Deixa de o ser no dia em que
-algo drenar a fila**: o `consume` corre pelo mesmo caminho, e a partir daí quem puder submeter a
-`POST /plans` queima orçamento de modelo sem travão node-local.
+Era razoável enquanto o `serve` era invocado à mão por um operador.
+
+> **CORRECÇÃO (AOS-434, na execução).** Este parágrafo dizia que, com a fila drenada, «quem puder
+> submeter a `POST /plans` queima orçamento de modelo sem travão node-local». **É falso, e fui eu
+> que o escrevi.** A discovery seguiu o que esta árvore efectivamente debita:
+>
+> | O que debita a árvore do `aos-orq` | O que NÃO debita |
+> |---|---|
+> | a ESTIMATIVA do planeador, reservada e confirmada tal-qual | o `usage` real da resposta do modelo — **não há reconciliação** |
+> | o `budget_estimate` DECLARADO por cada nó do documento | o trabalho dos nós, que corre como runs do nó `aos` e debita o orçamento DELE |
+> | `{1,1}` por avaliação de aresta condicional | |
+>
+> Ou seja: **um tecto aqui limita a soma de números que o próprio documento declara, e nada
+> mais.** Mexer nele não trava o custo do modelo, e a ligação que o parágrafo afirmava não existe
+> no código.
+>
+> O travão de custo REAL é o `AOS_BUDGET_MAX_TOKENS` do **nó**, que reserva antes do turno e
+> salda pelo consumo MEDIDO. Está **por definir** em produção — o que é uma escolha explícita
+> («quem quer o nó sem orçamento deixa a variável por definir») e que o nó **já declara no
+> arranque**, com todas as letras. Essa ausência não é invisível; é uma decisão do operador.
 
 **Hoje é inalcançável** — o AOS-430 mediu que nada drena a fila em produção. É por isso que a
 prioridade é condicional, e é por isso que tem de ser feito **antes** do timer e não depois: uma
@@ -3525,17 +3542,73 @@ vez ligado, o custo é imediato e real.
 
 ### Critérios de Aceitação
 
-- [ ] O tecto do caminho do plano é configurável e o valor em vigor é **declarado no banner** —
-      hoje o `bannerDoExecutor` não diz nada sobre orçamento.
-- [ ] Teste que prova que um plano acima do tecto é adiado ou recusado, e não materializado.
-- [ ] A decisão (1) tem um número com uma razão medida por trás, não um palpite.
+- [x] O tecto é configurável (`AOS_ORQ_PLAN_BUDGET_MAX_TOKENS` /
+      `_COST_MICRO_USD`, fail-closed no molde do `budget_env.go` do nó) e o valor em vigor é
+      **declarado no banner** — incluindo, e sobretudo, **o que ele NÃO cobre**. Há teste que
+      exige essa segunda metade: sem ela, o banner convidaria à mesma conclusão errada que o
+      ticket fazia.
+- [x] Um plano acima do tecto é **RECUSADO** na materialização, não adiado — e isso não é uma
+      escolha deste ticket, é o que o mecanismo faz: `Reserve` devolve `ErrNoHeadroom`
+      (`budget.go`), a admissão traduz em veredicto negado (`runlifecycle/materialize.go`) e o
+      materializador aborta o plano (`ErrNodeNotAdmitted`). **Não existe adiamento nesta
+      árvore**; o `defer`/`retry_after` da postura AOS-027 vive noutra admissão
+      (`scheduler/admission.go`), que o `aos-orq` não compõe. Cobertura do mecanismo já existia
+      (`TestBudgetAdmission_SemHeadroomNegaENaoVaza`).
+- [ ] **O número NÃO tem razão medida por trás, e por isso NÃO se escolheu um.** Não existe
+      medição de consumo de um plano no repositório — nem relatório, nem teste, nem número. O
+      único consumo medido é de UM run do nó (1 749 tokens contra tecto de 200 000), de uma
+      fonte que esta árvore nunca lê. O default mantém-se; a variável existe para quem tenha o
+      número. Inventar um valor e chamar-lhe tecto seria o oposto do que este critério pede.
 
 ### Estado
 
-**ABERTO.** Encontrado pela triagem de resíduos do AOS-433, ao verificar o resíduo do AOS-417
-sobre o orçamento por árvore no caminho novo.
+**FECHADO**, com o critério do número por marcar e a **premissa do próprio ticket corrigida**.
 
----
+### A PREMISSA ESTAVA ERRADA, E ERA MINHA
+
+O ticket dizia que `1<<30` deixava «queimar orçamento de modelo sem travão node-local». A
+discovery seguiu o que a árvore debita e mostrou que **o consumo real nunca passa por aqui**: o
+planeador reserva a estimativa e não a reconcilia com o `usage`, e o trabalho dos nós debita o
+orçamento do NÓ. A correcção está no Contexto, em tabela.
+
+Isto não anula o ticket — reenquadra-o, e para menos. O que `1<<30` estragava era outra coisa, e
+continua a valer a pena fechar.
+
+### O QUE ESTE TECTO GOVERNA, E PORQUE É QUE ISSO IMPORTA
+
+A admissão de materialização existe para recusar um plano cujas estimativas declaradas são
+implausíveis. Com `1<<30` em ambas as dimensões, essa admissão era **vácua**: nenhum documento
+era recusado, por mais absurdo que declarasse. Uma guarda que corre e nunca nega é o modo de
+falha que esta série passou a fechar noutros sítios — e estava aqui.
+
+### O QUE SE ENTREGOU
+
+| Peça | Nota |
+|---|---|
+| Tecto configurável, fail-closed | Molde do `budget_env.go` do nó, incluindo a razão de o ZERO abortar (não desliga o tecto — negaria todos os planos) |
+| Validação **cedo**, no arranque | Antes de tomar posse do run: um `consume` que abortasse na composição teria gasto uma geração de reclamação para descobrir um erro de configuração |
+| Banner que declara o tecto **e o que ele não cobre** | É a metade que importa, e tem teste próprio |
+| Variável no `docker-compose.prod.yml` | Com o aviso, no comentário, de que configurar esta e não a do nó deixa o custo sem tecto |
+
+### O DEFAULT NÃO DESCE, E ISSO É A RESPOSTA HONESTA
+
+Não há medição de consumo de um plano. Escolher um número sem ela seria inventar um tecto e
+chamar-lhe protecção — exactamente o que o critério 3 pede para não se fazer. O default mantém-se,
+a variável existe, e o banner diz qual está em vigor.
+
+### Resíduos declarados
+
+1. **O critério do número fica por marcar.** Fecha-se com uma medição, que pode sair dos factos
+   `plan.materialized` já gravados (a soma dos `BudgetEstimate` de planos reais), sem
+   instrumentação nova — não verificado se esses WAL estão acessíveis.
+2. **`dispatchNodeBudgetTokens = 100_000`** (`dispatch_wiring.go`) é um segundo número arbitrário
+   na mesma árvore, com o mesmo comentário «tecto local generoso». Fora do âmbito declarado deste
+   ticket, que só nomeava as duas constantes do `main.go`.
+3. **A estimativa nunca é reconciliada com o consumo.** É a razão de fundo pela qual esta árvore
+   não protege de custo, e fechá-la é outro eixo — exige o canal de `usage` do gateway a debitar
+   esta árvore, que hoje não existe no `aos-orq` (o `budgetbridge` não tem chamador).
+4. **O travão real depende de uma variável do NÓ que está por definir em produção.** É decisão do
+   operador, o nó declara-a, e não é código.
 
 ## AOS-432 — Sobre substrato replicado, quem PERDE o lease não sabe que o perdeu: sai com um erro de NATS
 

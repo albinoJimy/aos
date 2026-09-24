@@ -543,6 +543,21 @@ services:
       AOS_ORQ_OIDC_TOKEN_URL: "${AOS_ORQ_OIDC_TOKEN_URL:-}"
       AOS_ORQ_OIDC_CLIENT_ID: "${AOS_ORQ_OIDC_CLIENT_ID:-}"
       AOS_ORQ_OIDC_CLIENT_SECRET_FILE: "${AOS_ORQ_OIDC_CLIENT_SECRET_FILE:-}"
+
+      # AOS-434 — TECTO DA ÁRVORE DE ORÇAMENTO DO PLANO. Vazio ⇒ default do binário (1<<30),
+      # que o banner de arranque declara como POR OMISSÃO.
+      #
+      # LEIA ISTO ANTES DE CONFIGURAR: este tecto **não protege do custo do modelo**. O que ele
+      # limita é a soma das ESTIMATIVAS DECLARADAS — a do planeador e o `budget_estimate` de
+      # cada nó do documento de plano. O planeador reserva a estimativa e nunca a reconcilia
+      # com o consumo real, e o trabalho dos nós corre como runs do nó `aos` e debita o
+      # orçamento DELE.
+      #
+      # O travão de custo REAL é o `AOS_BUDGET_MAX_TOKENS` do serviço `aos` (linha ~338), que
+      # reserva antes do turno e salda pelo consumo MEDIDO — e que está vazio por omissão, o
+      # que o nó declara no arranque. Configurar este e não aquele deixa o custo sem tecto.
+      AOS_ORQ_PLAN_BUDGET_MAX_TOKENS: "${AOS_ORQ_PLAN_BUDGET_MAX_TOKENS:-}"
+      AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD: "${AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD:-}"
     volumes:
       - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação
       - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc, approvers)
