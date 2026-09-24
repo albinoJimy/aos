@@ -191,10 +191,30 @@ func TestAOS428OEscopoNaoMigrouParaAPorta(t *testing.T) {
 			"A capability nao existe na submissao — decidir escopo aqui so pode ser feito com\n" +
 			"uma capability inventada, e essa decisao pertence ao rmadapter, na chamada.")
 	}
-	if !strings.Contains(fonte, "h.node.Verifier.Verify(") {
+	// O LITERAL ERA O RECEPTOR, E O RECEPTOR MUDOU (AOS-433).
+	//
+	// Isto procurava `h.node.Verifier.Verify(`. Quando o AOS-433 tornou a guarda partilhada com
+	// o `resume` — função livre sobre `*Node`, para que a regra continuasse a ser UMA — o
+	// receptor passou de `h.node` para `no`, e este guard ficou vermelho. A propriedade que ele
+	// vigia continuava inteiramente verdadeira.
+	//
+	// É a terceira vez nesta série que um guard por PROXY dispara pela razão errada (o
+	// `TestAOS417BannerDoConsumidorNaoApodrece` no AOS-423, o `TestAOS417FormaDoFactoEEstavel`
+	// no AOS-429, e agora este). O padrão é sempre o mesmo: o proxy era razoável quando foi
+	// escrito e deixou de o ser por uma mudança que ninguém ligou a ele.
+	//
+	// Passa a procurar a CHAMADA, sem o receptor — que é a parte que exprime a propriedade.
+	if !strings.Contains(fonte, ".Verifier.Verify(") {
 		t.Error("a guarda deixou de chamar o Verifier do no.\n" +
 			"A regra tem de ser UMA: reimplementar a verificacao de identidade aqui e a classe\n" +
 			"de defeito que o AOS-424 passou uma serie inteira a fechar.")
+	}
+	// E A REGRA CONTINUA PARTILHADA. Desde AOS-433 o `resume` chama a MESMA função; se alguém
+	// a tornar privada ao handler outra vez, o `resume` fica sem guarda e ninguém dá por isso.
+	if !strings.Contains(fonte, "func credencialDoRunRecusadaNoNo(") {
+		t.Error("a guarda deixou de ser partilhavel com o `resume`.\n" +
+			"O `POST /runs/{id}/resume` chama-a desde o AOS-433; sem ela volta a aceitar\n" +
+			"credenciais que nao verificam, que era o residual que esse ticket fechou.")
 	}
 }
 

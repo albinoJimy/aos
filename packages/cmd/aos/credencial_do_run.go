@@ -22,9 +22,10 @@ package main
 // credencial malformada, expirada ou revogada re-hospeda um run, toma lease e consome plano de
 // replay — todos os danos que este ticket enumera, menos a criação.
 //
-// O `POST /runs/{id}/resume` continua com o defeito. Está declarado como resíduo no AOS-428, e
-// não se corrige aqui porque a retoma tem um eixo próprio: lá o `AgentID` do token e o do run
-// suspenso são ambos agentes e comparam-se, o que aqui não acontece.
+// **FECHADO EM AOS-433.** O `POST /runs/{id}/resume` passou a chamar esta mesma regra, por
+// `credencialDoRunRecusadaNoNo`, antes da comparação de principal que ele já fazia. O eixo
+// próprio da retoma — comparar o `AgentID` do token com o do run suspenso — mantém-se e continua
+// a correr a seguir; o que faltava era recusar a credencial que não verifica DE TODO.
 
 import (
 	"context"
@@ -47,12 +48,24 @@ import (
 // igualdade directa falharia. O `resume.go` faz essa comparação porque lá os dois lados são
 // agentes; aqui não são. Fica FORA de âmbito e declarado no AOS-428.
 func (h *apiHandler) credencialDoRunRecusada(ctx context.Context, credencial string) string {
+	return credencialDoRunRecusadaNoNo(ctx, h.node, credencial)
+}
+
+// credencialDoRunRecusadaNoNo e a MESMA regra, sobre o no, para quem nao tem `apiHandler`.
+//
+// Passou a funcao livre em AOS-433, quando o `POST /runs/{id}/resume` precisou dela. A
+// alternativa era escrever a verificacao uma segunda vez no `resume`, e este eixo ja pagou
+// caro por isso: o AOS-424 encontrou a regra do `stream_id` em TRES copias derivadas, e o
+// AOS-429 recusou duplicar a definicao de «terminado» pela mesma razao.
+//
+// Uma regra, uma fonte, dois chamadores.
+func credencialDoRunRecusadaNoNo(ctx context.Context, no *Node, credencial string) string {
 	// SEM VERIFICADOR NÃO SE RECUSA, e isto não é uma porta aberta: o `Bootstrap` ABORTA se não
 	// conseguir compor um verificador — nem o ramo endurecido (trust anchor) nem o de referência
 	// (autoridade co-localizada) deixam este campo a nil. O ramo existe porque um `apiHandler`
 	// montado à mão num teste pode não ter nó composto, e nesse caso a verificação de jusante
 	// (o `rmadapter`, que é fail-closed com verificador nil) continua a ser a rede.
-	if h.node == nil || h.node.Verifier == nil {
+	if no == nil || no.Verifier == nil {
 		return ""
 	}
 	// A CREDENCIAL AUSENTE SÓ SE RECUSA EM MODO ENDURECIDO, E A RAZÃO FOI MEDIDA PELO SMOKE.
@@ -74,12 +87,12 @@ func (h *apiHandler) credencialDoRunRecusada(ctx context.Context, credencial str
 	// criado e a morrer no RM com `denied_by=identity`. Fica por fechar de propósito, e o preço
 	// está escrito aqui em vez de ser descoberto.
 	if strings.TrimSpace(credencial) == "" {
-		if h.node.Authority == nil {
+		if no.Authority == nil {
 			return "credencial ausente"
 		}
 		return ""
 	}
-	if _, err := h.node.Verifier.Verify(ctx, credencial); err != nil {
+	if _, err := no.Verifier.Verify(ctx, credencial); err != nil {
 		return nomeDaRecusaDeCredencial(err)
 	}
 	return ""
@@ -99,16 +112,18 @@ func nomeDaRecusaDeCredencial(err error) string {
 		return "expirada"
 	case errors.Is(err, identity.ErrTokenNotYetValid):
 		return "ainda nao valida (nbf no futuro)"
+	case errors.Is(err, identity.ErrRevocationUnavailable):
+		// A DISTINÇÃO QUE FALTAVA (AOS-433). Antes, isto e a revogação genuína resolviam na
+		// mesma sentinela e o log dizia «revogada» às duas. Numa avaria do registo, todos os
+		// titulares eram recusados e o operador ia revogar identidades por causa de um serviço
+		// em baixo. Agora o log nomeia a causa, e a causa subjacente viaja no erro.
+		return "registo de revogacao INDISPONIVEL (nao e revogacao: fail-closed por nao se poder verificar)"
 	case errors.Is(err, identity.ErrTokenRevoked):
-		// «OU O REGISTO NÃO RESPONDEU», e a ambiguidade é do verificador, não desta linha: ele
-		// embrulha o erro de CONSULTA na mesma sentinela da revogação genuína, com `%v` e não
-		// `%w`, pelo que daqui não se distinguem. Num incidente do registo de revogação, TODAS as
-		// submissões seriam recusadas e o log diria «revogada» para todos os titulares — o
-		// diagnóstico apontaria para o sítio errado precisamente quando isso custa mais.
-		//
-		// RESÍDUO DECLARADO no AOS-428: a distinção exige uma sentinela própria no
-		// `identity.Verifier`, que é outro módulo. Enquanto não existir, a mensagem não mente.
-		return "revogada ou registo de revogacao indisponivel"
+		// REVOGAÇÃO GENUÍNA, e agora quer mesmo dizer isso (AOS-433). Até então esta linha
+		// tinha de se desculpar: o verificador embrulhava o erro de CONSULTA na mesma sentinela,
+		// com `%v` e não `%w`, e daqui não se distinguiam. A distinção passou a existir na
+		// fonte, que é onde tinha de estar.
+		return "revogada"
 	case errors.Is(err, identity.ErrUnknownIssuer):
 		return "emissor desconhecido (nao esta no trust anchor deste no)"
 	case errors.Is(err, identity.ErrSignatureInvalid):
