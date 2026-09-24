@@ -62,6 +62,15 @@ var (
 	// escopo).
 	ErrUnknownClass = &IdentityError{Code: "E_UNKNOWN_CLASS", msg: "classe de agente nao configurada"}
 
+	// ErrTTLForaDeGama — a política de uma classe pede um TTL inutilizável ou acima do tecto
+	// (AOS-427, decisão 4). Recusa-se na CONSTRUÇÃO do emissor, não na emissão: um emissor
+	// configurado com uma política impossível não chega a existir.
+	//
+	// Cobre as duas pontas com o mesmo sentinela porque é a mesma pergunta — «esta validade é
+	// utilizável?». Um TTL <= 0 nasce expirado; um acima de TTLMaximo dá a uma credencial
+	// automática o raio de acção que o atrito da cunhagem manual limitava por acidente.
+	ErrTTLForaDeGama = &IdentityError{Code: "E_TTL_FORA_DE_GAMA", msg: "TTL da classe fora da gama permitida"}
+
 	// ErrInvalidRequest — pedido de emissão/revogação com campos obrigatórios em
 	// falta (ex.: user_id, agent_id ou jti vazios).
 	ErrInvalidRequest = &IdentityError{Code: "E_INVALID_REQUEST", msg: "pedido invalido (campos obrigatorios em falta)"}

@@ -2490,10 +2490,15 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ## AOS-427 — A cunhagem do NHI do run é manual, e é o que separa «funciona» de «funciona sem ninguém no terminal»
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum ainda. As citações ao ADR-003, ADR-006, ADR-016 e
-     ADR-027 são RESTRIÇÕES sob as quais a solução tem de caber. A decisão (1) abaixo é de
-     ARQUITECTURA e vai exigir ADR próprio — quando existir, este marcador sai. -->
+<!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa a condição exacta:
+     «a decisão (1) é de ARQUITECTURA e vai exigir ADR próprio — quando existir, este marcador
+     sai». O ADR-032 existe, e regista as QUATRO decisões.
+
+     Este ticket IMPLEMENTA o ADR-032 — a decisão (4) dele, o tecto de TTL; as outras três estão
+     declaradas no próprio ADR §5 como por construir. O preço de tirar o marcador é o mesmo que o
+     AOS-430 pagou pelo ADR-031 e o AOS-424 pelo ADR-029: o ADR-003, o ADR-006, o ADR-016 e o
+     ADR-027, que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este
+     ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. -->
 
 | Campo | Valor |
 |---|---|
@@ -2583,16 +2588,23 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (1) registada em **ADR próprio**, com as quatro portas fechadas acima citadas como
-      restrições e a alternativa rejeitada com o custo escrito.
-- [ ] Um objectivo submetido por `POST /plans` corre até ao fim **sem ninguém no terminal** — o
-      critério que o AOS-417 e o AOS-423 deixaram por marcar. Verificado em PRODUÇÃO, não só em
-      teste.
-- [ ] A `issuer.key` continua fora do servidor, e há teste ou gate que o prove — não basta não a
-      pôr lá.
-- [ ] O caminho de renovação tem **sensor**: uma credencial que caduca sem ser renovada é visível
-      antes de o run falhar, não depois.
-- [ ] O TTL em vigor é declarado no banner de arranque de quem quer que passe a cunhar.
+- [x] **As QUATRO decisões registadas em ADR-032**, com as quatro portas fechadas como
+      restrições e cada alternativa rejeitada com o custo escrito. O ADR declara também, em §5, o
+      que fica por construir e porquê — não é um ADR que finge que a implementação o segue toda.
+- [ ] **Corre sem ninguém no terminal, verificado em PRODUÇÃO.** POR FAZER, e depende de três
+      coisas que não existem: o emissor externo, a delegação, e **alguém a drenar a fila** — que
+      o AOS-430 mediu que hoje ninguém faz.
+- [ ] **Gate que prove que a `issuer.key` está fora do servidor.** POR FAZER. Não existe gate
+      desses hoje; o critério diz, e bem, que «não basta não a pôr lá».
+- [ ] **Sensor de renovação.** POR FAZER, e tem um obstáculo concreto medido: **o `aos-orq` não
+      expõe `/metrics` de todo**. Quem quer que passe a cunhar tem de criar a superfície, não
+      apenas a série. O critério («visível ANTES de o run falhar») exclui pô-lo no nó, que só
+      sabe da credencial quando ela chega.
+- [ ] **O TTL no banner.** POR FAZER. O `bannerDoExecutor` do `aos-orq` não diz nada sobre
+      validade; é ali que aterra quando houver quem cunhe.
+- [x] **ACRESCENTADO E ENTREGUE — o tecto máximo de TTL na biblioteca** (decisão 4):
+      `identity.TTLMaximo = 1h`, validado na construção nas duas vias, recusando também o TTL
+      zero ou negativo que nascia expirado e nunca tinha sido recusado nem testado.
 
 ### Fora de âmbito, declarado
 
@@ -2610,8 +2622,66 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 
 ### Estado
 
-**ABERTO.** Nada implementado. É a única coisa entre o estado de hoje — caminho do plano completo
-e verificado em produção — e «usável sem operador».
+**PARCIALMENTE FECHADO.** As quatro decisões estão tomadas e registadas no **ADR-032**; uma
+delas está implementada e as outras três estão bloqueadas em DESENHO, não em esforço.
+
+### O que se entregou: o tecto de TTL (decisão 4)
+
+`identity.TTLMaximo = 1 hora`, imposto na CONSTRUÇÃO do emissor, nas duas vias.
+
+**É a mais valiosa das quatro, e é por isso que entra primeiro.** O atrito da cunhagem manual —
+dois logins no browser por token — era uma defesa ACIDENTAL: limitava o raio de acção de uma
+credencial sem que ninguém o tivesse decidido. Este ticket remove esse atrito, e uma defesa
+acidental desaparece exactamente no momento em que a emissão passa a ser automática. É o pior
+momento possível, porque ninguém a vê sair.
+
+Detalhes que a implementação obrigou a decidir, e porquê:
+
+| Escolha | Razão |
+|---|---|
+| Na **biblioteca**, não na receita | Vale para os três chamadores de hoje e para os que ainda não existem |
+| **Constante**, não configuração | Um tecto configurável é um tecto que um deployment novo volta a levantar |
+| **Recusa**, não clamp | Um clamp faria o banner dizer um TTL e o token ter outro |
+| Na **construção**, não na emissão | Um emissor com política impossível não chega a existir; e o mapa é copiado ali, logo é o que ele vai usar para sempre |
+| **Uma hora** | Medido: nó 15m, orq 30m, CLI 15m, receita de produção 45m. Fica acima de todos e continua a impedir um NHI que dure um turno |
+
+Cobre também o **TTL zero ou negativo**, que nascia expirado e que nenhum teste da árvore cobria —
+o que quer dizer que a ausência de tecto não era uma escolha testada, era um buraco.
+
+### O que BLOQUEIA as outras três, e não é tempo
+
+**A pergunta que determina tudo o resto não tem resposta:** onde corre o emissor externo, em
+concreto. Serviço no compose, ou o `aos-issuer` a ganhar um modo `serve`? Que rede alcança o
+Vault? O `aos-orq` pede o token, ou o emissor escreve o ficheiro? A resposta decide também onde
+vive o sensor.
+
+**E o formato da delegação não existe** — não há tipo, ficheiro, esquema nem nome. Quatro
+perguntas por responder, todas de segurança: que campos a assinatura cobre; curinga ou enumerada;
+**como se revoga** (hoje a revogação é por `jti` de TOKEN, não há revogação de DELEGAÇÃO); e qual
+é a validade da própria delegação e quem a renova — o mesmo problema um nível acima.
+
+### DOIS ACHADOS QUE MUDAM O DESENHO DO QUE FALTA
+
+1. **O `mint` não audita nada.** O caminho CLI não passa `WithEventStore`, logo `recordIssued` é
+   no-op e **não existe evento `identity.nhi.issued`**. O `Issue` já é fail-closed quando o store
+   existe e falha — falta ligá-lo. Uma cunhagem AUTOMÁTICA sem auditoria é muito pior do que uma
+   manual sem auditoria.
+2. **O anti-replay está desligado de propósito** no `mint` (`RequireJTI`), porque o binário é
+   efémero e o armazém nasceria vazio a cada invocação. Um emissor persistente pode e deve
+   ligá-lo; não o fazer seria regressão.
+
+### Resíduos declarados
+
+1. **A verificação em produção** exige, além do emissor e da delegação, **alguém a drenar a
+   fila** — o AOS-430 mediu que nada o faz (`profiles: ["orq"]`, `restart: "no"`, e o `consume`
+   drena uma vez e termina).
+2. **Não há gate que prove que a `issuer.key` está fora do servidor.** O critério é explícito em
+   que não basta não a pôr lá, e hoje não existe nada que o verifique.
+3. **O `aos-orq` não expõe `/metrics`.** Qualquer sensor de credencial obriga a criar a
+   superfície.
+4. **A rotação da chave no Vault é invisível ao signer**: a pubkey é fixada no arranque. Num
+   processo efémero não morde; num emissor persistente, morde.
+5. **O token do Vault é lido uma vez** e nunca renovado — mesma razão, mesmo agravamento.
 
 ---
 
