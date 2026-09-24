@@ -2821,14 +2821,27 @@ AOS-423 é linear nos eventos — o tecto limita os pendentes, não o trabalho d
 
 ### Critérios de Aceitação
 
-- [ ] Um pedido com desfecho terminal deixa de contar para o tecto **e** sai do stream por
-      retenção, ou a razão de não sair está escrita.
-- [ ] A projecção do AOS-423 deixa de ser linear no HISTÓRICO, ou o custo está medido e declarado
-      com um tecto conhecido.
-- [ ] O objectivo em claro tem decisão escrita (3), e se ficar em claro isso aparece onde um DPO o
-      veja — não só num comentário de código.
-- [ ] Teste que prova a expiração, com relógio injectado (fixtures do `testkit`, nunca
-      `time.Now()`).
+- [x] Um pedido terminal deixa de contar para o tecto **e** deixa de ser relido (marca de água).
+      **Não sai do stream, e a razão está escrita** — pelo ramo que o próprio critério prevê: o
+      contrato do Event Store não tem `Delete`/`Truncate`/`Purge`/`Compact`, e não é lacuna — um
+      log encadeado por hash de que se removessem entradas deixava de ser tamper-evident. O
+      apagamento é por **ilegibilidade**, e há guard de fonte que avermelha se alguém acrescentar
+      remoção ao contrato, para que a decisão seja reavaliada em vez de o comentário passar a
+      mentir.
+- [x] A projecção deixa de ser linear no histórico. **Marca de água**: o maior `seq` até ao qual
+      todos os pedidos estão terminados; abaixo dela não há nada que a projecção possa concluir
+      de diferente. Em regime o custo é linear nos pedidos NÃO TERMINADOS, que o tecto limita a
+      1000. Resíduo: a marca vive em memória, logo um restart paga uma leitura completa — uma vez
+      por processo, declarado.
+- [x] O objectivo **deixa de ficar em claro**: é cifrado sob a KEK do titular. A decisão está em
+      `tecnica/14_Matriz_Conformidade.md` §5.2, com linha própria e as duas ressalvas — e obrigou
+      a nomear uma **excepção** no parágrafo que afirmava que nenhuma PII era cifrada sob a KEK
+      do titular, que deixou de ser inteiramente verdade.
+- [x] Teste da expiração **ponta-a-ponta com relógio injectado**
+      (`TestAOS429AFilaExpiraPeloVarredorComposto`): submete pela rota real, corre o
+      `ExpirationJob` composto no nó, exige que o objectivo deixe de abrir e que o evento
+      CONTINUE no log. Sensor verificado por mutação. O relógio é injectado por
+      `cfg.RetentionClock`, não por `testkit.ManualClock` — ver a nota no teste.
 
 ### Fora de âmbito, declarado
 
@@ -2837,7 +2850,82 @@ AOS-423 é linear nos eventos — o tecto limita os pendentes, não o trabalho d
 
 ### Estado
 
-**ABERTO.** A lacuna foi confirmada por leitura do `subjectOf`, não inferida.
+**FECHADO**, e o desenho mudou a meio por duas medições que contradiziam a decisão inicial.
+
+### A DECISÃO APROVADA LEVAVA A DESTRUIR DADOS QUE NÃO ERAM DA FILA
+
+A decisão (1) — «o titular é o principal do submissor» — é a certa. O que a discovery mediu é que
+implementá-la com um TTL PRÓPRIO para a fila teria destruído, em cada expiração, a KEK partilhada
+desse principal — e com ela todo o `replay.captured` e `step.ledger.applied` dele. **Um pedido de
+plano de dez minutos apagaria os runs de dez meses.**
+
+A granularidade do mecanismo é por-titular: uma KEK embrulha as DEKs todas. A saída é o pedido
+**partilhar o TTL do titular** em vez de ganhar um mais curto. Expira mais tarde do que um TTL
+próprio daria, e é a única leitura que não destrói o que não devia.
+
+### E, COM O OBJECTIVO EM CLARO, A EXPIRAÇÃO ERA UM NO-OP POR CONSTRUÇÃO
+
+A decisão (3) inicial mantinha o objectivo em claro. Crypto-shred destrói uma chave; um payload
+que não está cifrado não fica ilegível por isso. As duas decisões juntas davam um mecanismo que
+corria, contava expirações e não tornava nada ilegível — um verde que mede o vazio. Posta a
+questão, a decisão (3) foi revertida: **o objectivo passa a ser cifrado por titular**.
+
+### E ISSO ERA MUITO MAIS BARATO DO QUE EU ESTIMEI
+
+Estimei que exigiria distribuir chaves ao `aos-orq`, e provavelmente um ADR. **Errado, e a
+resposta já estava no AOS-423:** desde que a fila ganhou a rota de reclamação, o `aos-orq` não lê
+o Event Store — reclama por HTTP e recebe o pedido no corpo da resposta. Quem lê e projecta é o
+nó, logo o nó decifra server-side e entrega em claro pelo canal já autenticado e gatado. O
+consumidor nunca precisa da chave, e a forma do wire (`respostaDeReclamo`) não muda.
+
+Não se escreveu cripto nenhuma: `audit.SealContent`/`OpenContent`, o mesmo que sela o conteúdo
+dos runs, sobre o mesmo `Node.DSARVault`.
+
+### O QUE SE ENTREGOU
+
+| Peça | Onde |
+|---|---|
+| Cifra do objectivo por titular, com ligação titular↔partição no índice DSAR | `plan_objetivo_selado.go` |
+| `subjectOf` reconhece `planrequest.submitted`, **só com ciphertext** | `retention.go` |
+| Marca de água: a projecção deixa de reler o histórico | `plan_marca_de_agua.go` |
+| Entrada para o DPO, com as duas ressalvas | `tecnica/14` §5.2 |
+
+### UM GUARD MUDOU DE PERGUNTA, E A PREMISSA ANTIGA ERA FALSA
+
+O `TestAOS417FormaDoFactoEEstavel` ficou vermelho, como devia. Mas a mensagem dele dizia que tirar
+uma chave do payload «quebra quem lá está do outro lado» — e **isso foi verificado e é falso**:
+ninguém fora de `packages/cmd/aos` lê este evento. O contrato entre módulos é a resposta HTTP, que
+o `aos-orq` espelha em `node_client.go:386-394`, e essa não mudou.
+
+É a mesma classe que o AOS-423 já apanhou neste eixo: um guard a detectar o consumidor por PROXY.
+O proxy era razoável quando foi escrito e deixou de o ser sem que nada o ligasse à mudança. Passou
+a fixar o que é mesmo contrato — nas duas pontas — e ganhou a invariante nova: `objective` e
+`objective_sealed` são mutuamente exclusivos, porque o texto em claro ao lado do ciphertext
+tornaria a cifra decorativa.
+
+### A VERSÃO DO PAYLOAD SUBIU, MAS SÓ A DESTE
+
+O `planRequestVersao` é partilhado por TRÊS payloads — submetido, reclamado e desfecho. Subi-lo
+teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
+`planRequestSubmittedVersao = "1.1"` só para o pedido.
+
+### Resíduos declarados
+
+1. **O evento não sai do log, e não pode sair.** Ver o critério 1. O apagamento é por
+   ilegibilidade.
+2. **A marca de água vive em memória.** Um restart paga uma leitura completa, uma vez.
+   Persisti-la exigiria um stream de marcas (que cresce, só mais devagar) ou uma leitura para
+   trás que o contrato não tem; nenhuma se justifica por um custo pago uma vez por processo.
+3. **Sem gate soberano o objectivo fica em claro.** Não há titular sob o qual selar. Não se fecha
+   com fail-closed porque fecharia a rota num nó de referência inteiro — a lição do AOS-428, em
+   que exigir uma credencial que o nó não sabe dar partiu o smoke. Em produção não ocorre.
+4. **Os backups continuam fora do alcance.** A KEK do backup é por REGIÃO, não por titular
+   (`platform/backup/crypto.go`). Destruir a KEK de um titular não torna o backup ilegível. Já
+   estava nomeado em `tecnica/14`; este ticket não o move.
+5. **A decisão (2) foi cumprida por um só eixo.** Escolheu-se expirar por desfecho E por idade; o
+   que se entregou é a idade (o TTL do titular, pelo varredor) mais o desfecho a deixar de contar
+   para o tecto e de ser relido. Um pedido terminal não é expirado ANTES do TTL do titular — e
+   não pode ser, pela razão da KEK partilhada.
 
 ---
 

@@ -429,6 +429,11 @@ type apiHandler struct {
 	controlMTLS bool
 	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
 	readGov *readGovernance
+	// marcaDaFila é o `seq` a partir do qual vale a pena reler a fila de pedidos de plano
+	// (AOS-429). Vive aqui, e não no `Node`, porque o `Node` é imutável pós-bootstrap por
+	// contrato e isto é estado que se move; o handler é uma instância por servidor, criada em
+	// [NewAPIHandler], que é exactamente o âmbito certo. Ver `plan_marca_de_agua.go`.
+	marcaDaFila marcaDeAgua
 	// O guard que serializa as passagens do [audit.ExpirationJob] vive em
 	// [NodeService.expireInFlight] — NÃO aqui. Mudou de sítio em AOS-267, quando o scheduler
 	// interno passou a conduzir a MESMA passagem: um guard no handler só excluiria as
@@ -1434,7 +1439,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_plan_queue_claimable", "Rota de reclamacao da fila de pedidos de plano a servir (1) ou a recusar 501 (0).",
 		"gauge", b01(h.readGov != nil), "")
 	if h.node != nil && h.node.EventStore != nil {
-		if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore); err == nil {
+		if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore, nil); err == nil {
 			g("aos_plan_queue_pending", "Pedidos de plano por drenar (submetidos, sem desfecho terminal e sem reclamacao viva).",
 				"gauge", float64(pendentes), "")
 			g("aos_plan_queue_ceiling", "Tecto a partir do qual o ingresso recusa pedidos novos.",
