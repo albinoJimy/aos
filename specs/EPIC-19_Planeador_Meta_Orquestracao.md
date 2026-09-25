@@ -5975,3 +5975,70 @@ O que fica é uma inconsistência do registo: o `turn.recorded` marca a ausênci
 ### Estado
 
 **ABERTO.**
+
+---
+
+## AOS-449 — O consumidor R1 da subscrição fica órfão no nó morto, e o intervalo nunca chega
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (substrato replicado sob o gate `nats`, AOS-431) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | **P1** — uma em cada três mortes de nó deixava uma subscrição sem entregar nada, em silêncio, até o nó voltar |
+| Estimativa | S |
+| Dependências | AOS-100 (o adaptador JetStream), AOS-431 (o cluster no CI que o expôs) |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/store.go` (`criarDuravel`, `reestabelecerEntrega`), `packages/substrate/eventstore/jetstream/reconexao_test.go`, ADR-007 |
+
+### Contexto — medido no CI, 2026-09-25
+
+`TestReconexao_SubscricaoRECUPERAOIntervalo` falhou de forma intermitente no gate `nats`: run
+36128693205 (base) e run 36194085946 (PR #383, duas tentativas), sempre com os três eventos
+escritos depois de matar `aos-ci-nats-1` a «NUNCA chegar», com execuções verdes pelo meio. Na
+36128693205 o mesmo teste **passou** na primeira execução do módulo e **falhou** na segunda (a da
+cobertura), sobre um cluster novo e o mesmo código.
+
+Não era flake do teste. O durável da subscrição é criado com `NumReplicas: 1`, valor herdado dos
+consumidores **de leitura** (efémeros, transitórios). Lido no nats-server v2.10:
+
+1. `createGroupForConsumer` coloca um R1 num par **activo sorteado** (`rand.Shuffle`) — uma vez em
+   três é o nó que o teste mata;
+2. o `CREATE` sobre um consumidor que já existe reutiliza **os mesmos pares** (`ca.copyGroup()`):
+   com o único par morto, ninguém responde e o pedido expira. O servidor não move um R1 órfão;
+3. a reafirmação do adaptador repetia esse `CREATE` para sempre. Até o nó voltar — o teste só o
+   repõe no `Cleanup` —, nada era entregue.
+
+A doc do pacote dizia o contrário («se o nó que o aloja morrer, é isto que o cobre»).
+
+### O que se entregou
+
+- `TestReconexao_MorteDoNoDoConsumidor`: pergunta ao servidor onde está o consumidor
+  (`CONSUMER.INFO`, `natsjs.Conn.LiderDoConsumidor`) e mata **esse** nó, sempre. Sem a correcção
+  falha de forma determinista (commit do teste sozinho, vermelho no CI do PR).
+- `reestabelecerEntrega`: quando a reafirmação **expira**, o consumidor apaga-se e recria-se
+  (`recolocarDuravel`). O `DELETE` de um consumidor sem pares vivos é respondido pelo meta-leader,
+  e a recriação sorteia um par vivo. Parte do seq fixado na subscrição: nada se perde, e o que já
+  tinha sido entregue desde então é reentregue (o at-least-once já declarado).
+- O teste antigo regista onde estava o consumidor antes da falha, para que um vermelho futuro se
+  leia pela causa e não como flake.
+- `nats-cluster.sh` exporta `AOS_KILL_NODE_CMD` (prefixo; o teste junta o nome do servidor).
+
+### Critérios de Aceitação
+
+- [x] Matar o nó que aloja o consumidor da subscrição não impede a entrega dos eventos escritos
+      depois, sem reiniciar o processo — medido no gate `nats`, de forma determinista.
+- [x] O teste determinista avermelha sem a correcção.
+- [x] A doc do pacote deixa de afirmar uma cobertura que não existia.
+
+### Resíduos declarados
+
+1. **A reentrega é desde o início da subscrição, não desde o último ACK.** Numa subscrição longa,
+   a recolocação reentrega tudo o que ela já viu. É correcto (idempotência por `(run_id, step_id)`),
+   mas o custo cresce com a idade da subscrição. Fechar exigiria recriar a partir do *ack floor*,
+   que o cliente não conhece com o consumidor morto.
+2. **A detecção custa um prazo do store.** A recolocação só começa quando a reafirmação expira.
+
+### Estado
+
+**FEITO** (CI do PR albinoJimy/aos#384).

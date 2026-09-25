@@ -874,8 +874,8 @@ func (sub *subscricao) Unsubscribe() {
 // Subscribe entrega por PUSH os eventos escritos A PARTIR DE AGORA que passem o filtro.
 //
 // A semântica é a do modelo de referência (fanout do que é escrito depois da
-// subscrição), materializada por um consumidor EFÉMERO com deliver_policy "new". Ver os
-// limites no doc do pacote: sem acks, sem flow control, sem heartbeats.
+// subscrição), materializada por um consumidor DURÁVEL com acks explícitos, flow control
+// e batimento. Ver [Store.criarDuravel] e [Store.reestabelecerEntrega].
 func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h eventstore.Handler) (_ eventstore.Subscription, err error) {
 	defer func() { err = indisponibilidadeTransitoria(err) }()
 	s.marcarUsado()
@@ -1241,8 +1241,24 @@ func (s *Store) criarDuravel(ctx context.Context, sub *subscricao) error {
 // O consumidor é DURÁVEL e sobreviveu à quebra: ele sabe até onde a entrega foi
 // confirmada e retoma aí. Criar um novo (ou recalcular o ponto de partida) reabriria
 // exactamente o buraco que o durável fecha — os eventos escritos no intervalo. Reafirma-se
-// a criação por idempotência, para o caso de o consumidor ter sido perdido com o nó que o
-// alojava, e nesse caso — declarado — o intervalo perde-se na mesma: o consumidor é R1.
+// a criação por idempotência, para o caso de o consumidor ter sido APAGADO.
+//
+// # O consumidor ÓRFÃO, e porque reafirmar não chega (AOS-449)
+//
+// O consumidor é R1 e o servidor sorteia-lhe o par. Se esse par MORRE, o consumidor não
+// desaparece: continua atribuído ao nó morto. Lido no nats-server v2.10, e não suposto: o
+// `CREATE` sobre um consumidor que existe reutiliza os MESMOS pares (`ca.copyGroup()`), e
+// com o único par morto ninguém responde — o pedido EXPIRA. O servidor não move um R1 órfão
+// sozinho. Reafirmar para sempre era esperar pelo regresso de um nó que pode não voltar, e
+// entretanto nada era entregue — o buraco silencioso que o durável existe para fechar,
+// medido a uma execução em três no CI.
+//
+// Quando a reafirmação EXPIRA, o consumidor apaga-se e cria-se de novo. O `DELETE` de um
+// consumidor sem pares vivos é respondido pelo meta-leader, e a recriação sorteia um par
+// ACTIVO. Parte do seq fixado na subscrição, pelo que nada se perde e o que já tinha sido
+// entregue desde então é REENTREGUE — o mesmo at-least-once declarado para o consumidor
+// apagado pelas costas. Se a expiração foi só lentidão e o consumidor estava vivo, o custo
+// é o mesmo: reentrega, nunca perda.
 func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func(), error) {
 	espera := 200 * time.Millisecond
 	const tecto = 5 * time.Second
@@ -1257,9 +1273,13 @@ func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func()
 		}
 		ch, cancelar, err := s.cn.SubscribeSubject(sub.entrega)
 		if err == nil {
-			// Reafirma o durável: se sobreviveu, o CREATE é idempotente; se o nó que o
-			// alojava morreu, recria-se — e aí o intervalo perde-se, o que fica dito.
-			if errC := s.criarDuravel(context.Background(), sub); errC == nil || errors.Is(errC, eventstore.ErrClosed) {
+			// Reafirma o durável: se sobreviveu, o CREATE é idempotente; se foi apagado,
+			// recria-se; se ficou ÓRFÃO no nó morto, o CREATE expira e recoloca-se.
+			errC := s.criarDuravel(context.Background(), sub)
+			if errors.Is(errC, natsjs.ErrTimeout) {
+				errC = s.recolocarDuravel(sub)
+			}
+			if errC == nil || errors.Is(errC, eventstore.ErrClosed) {
 				return ch, cancelar, nil
 			}
 			cancelar()
@@ -1268,6 +1288,16 @@ func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func()
 			espera *= 2
 		}
 	}
+}
+
+// recolocarDuravel apaga o consumidor da subscrição e cria-o de novo, num par vivo.
+//
+// O erro do `DELETE` ignora-se de propósito: se o consumidor já não existe, a recriação é
+// o que se quer; se o apagamento falhou por outra razão, a recriação falha também (mesmo
+// nome, pares mortos) e o recuo de [Store.reestabelecerEntrega] tenta outra vez.
+func (s *Store) recolocarDuravel(sub *subscricao) error {
+	_ = s.cn.DeleteConsumer(s.stream, sub.duravel, s.prazo)
+	return s.criarDuravel(context.Background(), sub)
 }
 
 var errPararSubscricao = errors.New("jetstream: subscrição parada pelo dono")
