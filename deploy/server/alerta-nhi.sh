@@ -18,6 +18,8 @@
 #   mandato ausente                       o emissor não tem o que cunhar
 #   mandato a menos de 7 dias do fim      o humano tem de assinar outro — o mint recusará depois
 #   aos-cunhar-nhi / aos-drenar-planos    a última execução falhou (`systemctl is-failed`)
+#   um dos dois timers não está activo    desligado, nunca instalado — fica `inactive`, não `failed`
+#   nenhuma drenagem bem-sucedida há 5 h  o defeito do AOS-430 (a fila parada) visto pelo efeito
 #
 # Só avisa ao fim de 2 leituras seguidas em falha (30 min com o cron de 15); relembra de 24 h em
 # 24 h enquanto durar; avisa quando passa. Um aviso que não sai NÃO conta: tenta de novo.
@@ -32,6 +34,7 @@ NTFY_BASE="${AOS_ALERTA_NTFY_BASE:-https://ntfy.sh}"
 ALPINE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 NHI_MIN_S=1200
 MANDATO_MIN_S=604800
+DRENAGEM_MAX_S=18000
 LEITURAS=2
 LEMBRETE_S=86400
 HOST_ID="$(hostname 2>/dev/null || echo servidor)"
@@ -64,7 +67,7 @@ avaliar() {
   CLASSE=mau
   local agora exp mexp u
   agora="$(date +%s)"
-  if [[ ! -s "${AOS_DIR}/orq/mandato.json" ]]; then
+  if [[ ! -f "${AOS_DIR}/orq/mandato.json" || ! -s "${AOS_DIR}/orq/mandato.json" ]]; then
     MOTIVO="não há mandato em ${AOS_DIR}/orq/mandato.json — o emissor automático não tem o que cunhar"
     return
   fi
@@ -92,6 +95,21 @@ avaliar() {
       return
     fi
   done
+  # `is-active` e não `is-failed`: um timer desligado ou nunca instalado NÃO está falhado — está
+  # parado, e parado era exactamente o estado da fila que o AOS-430 mediu. Uma consulta ao systemd
+  # que falhe conta como parado (fail-closed).
+  for u in aos-cunhar-nhi.timer aos-drenar-planos.timer; do
+    if ! systemctl is-active --quiet "${u}" 2>/dev/null; then
+      MOTIVO="o ${u} NÃO está activo — a cunhagem ou a drenagem não correm (systemctl enable --now ${u})"
+      return
+    fi
+  done
+  local ult
+  ult="$(cat "${AOS_DIR}/.drenagem/ultima-ok" 2>/dev/null || true)"
+  if [[ ! "${ult}" =~ ^[0-9]+$ ]] || (( agora - ult > DRENAGEM_MAX_S )); then
+    MOTIVO="nenhuma drenagem bem-sucedida há mais de $(horas "${DRENAGEM_MAX_S}") h — a fila de planos está parada (journalctl -u aos-drenar-planos.service)"
+    return
+  fi
   CLASSE=ok
   MOTIVO="NHI com $(( (exp - agora) / 60 )) min de vida; mandato com $(horas $(( mexp - agora ))) h"
 }

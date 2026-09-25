@@ -5294,8 +5294,38 @@ foi exercido com um NHI real no BusyBox 1.37.
 4. **O parser do prazo depende da ordem dos campos das Claims** — fixada por teste, não eliminada.
 5. **Uma cunhagem nunca usada não deixa rasto** (resíduo 4 do AOS-427): o `mint-mandated` corre
    sem Event Store.
-6. **A drenagem é sequencial** (um `consume` de cada vez, até 4 pedidos por passagem): a vazão da
+6. **A drenagem é sequencial** (um `consume` de cada vez, até 3 pedidos por passagem): a vazão da
    fila é a de um trabalhador.
+7. **Revogar o mandato não pára a máquina** (M1): o emissor não consulta o registo de revogação,
+   continua a cunhar, o nó recusa cada NHI, o `serve` classifica-o como transitório, o pedido volta
+   à fila e o `consume` sai com `0` — a cada 5 min, com uma decomposição ao modelo por tentativa. O
+   runbook manda parar os timers e retirar o mandato no mesmo acto. Fechar de todo exige que o
+   emissor pergunte ao nó, ou que o `consume` distinga a recusa de credencial.
+8. **Todos os planos da fila correm sob o humano do mandato**, seja quem for que os submeteu (M4):
+   o `POST /plans` grava o `principal` de quem pede, mas os runs levam o NHI do humano do mandato. A
+   cadeia on-behalf-of termina nele. Já era assim com o NHI manual do operador — mas aí havia um
+   operador a decidir drenar. Declarado no ADR-033 §5.
+9. **Só o primeiro pedido de cada drenagem vê o prazo do NHI** (B4): os seguintes são reclamados
+   sem nova verificação. Com a cunhagem a cada 15 min e o `consume` a reler o ficheiro a cada
+   submissão, só morde se a cunhagem parar a meio de uma drenagem longa.
+10. **O `aos-issuer` está na rede `default`** (B7), onde alcança o nó, o IdP e o LiteLLM; só precisa
+    do Vault. Uma rede dedicada obrigaria a mexer no serviço `vault`, o que o reinicia.
+11. **Não há procedimento de rotação do token do emissor** (B9); é filho do root, e revogar o root
+    revoga-o — o mesmo padrão do token do nó.
+12. **As chamadas ao Vault do controlo por ACL** (`sys/capabilities`, `auth/token/lookup` com o
+    token por stdin) **não foram exercidas contra um Vault real** — o Docker não estava disponível.
+    Correm no primeiro `provision-issuer-auto.sh`, que falha fechado se a forma da resposta divergir.
+
+**Revisão adversarial antes do merge (2026-09-25)** — um ALTO e quatro MÉDIOS:
+
+| Achado | Correcção |
+|---|---|
+| **ALTO** — o controlo negativo da política testava uma chave inexistente (404 com qualquer política; `encrypt` numa chave inexistente é um *create*), e um token existente era aceite sem verificar as políticas | controlo pela ACL (`sys/capabilities`, que responde pelo caminho e não pela existência) em oito caminhos proibidos, e políticas do token exactamente `[aos-issuer-auto]` |
+| M1 — revogar não pára a máquina | runbook: parar os timers e retirar o mandato no mesmo acto; resíduo 7 |
+| M2 — o sensor não via a drenagem parada (timer `inactive`, não `failed`) | `is-active` dos dois timers + carimbo da última drenagem bem-sucedida (alerta a 5 h) |
+| M3 — o teste da cadeia só casava a forma canónica do `COPY` | toda a linha `COPY`/`ADD` do estágio final tem de ser canónica; 6 variantes com mutação |
+| M4 — os planos correm sob o humano do mandato | declarado: resíduo 8, ADR-033 §5 |
+| BAIXOS | bind de um mandato inexistente criava uma directoria (verificado antes do compose); `Persistent=` sem efeito removido; `flock` e `--max 3` com 4h; prazo do NHI com tecto; comentário falso do deploy corrigido; `allow_plaintext_backup` verificado |
 
 ### Estado
 

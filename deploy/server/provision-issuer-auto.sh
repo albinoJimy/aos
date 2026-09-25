@@ -57,7 +57,8 @@ fi
 META="$(vaultx vault read -format=json "transit/keys/${CHAVE}")"
 grep -q '"type": "ed25519"' <<<"${META}" || fail "transit/keys/${CHAVE} existe mas não é ed25519 — não se reutiliza uma chave de outro tipo"
 grep -q '"exportable": false' <<<"${META}" || fail "transit/keys/${CHAVE} é EXPORTÁVEL — a chave podia sair do Vault; recrie-a"
-log "  ed25519, não exportável"
+grep -q '"allow_plaintext_backup": false' <<<"${META}" || fail "transit/keys/${CHAVE} permite backup em claro — a chave podia sair do Vault; recrie-a"
+log "  ed25519, não exportável, sem backup em claro"
 
 # --- 2. a política ----------------------------------------------------------------------------
 log "2/4 política ${CHAVE}"
@@ -88,22 +89,42 @@ else
   log "  já existia (mantido)"
 fi
 
-# CONTROLO com o token DO EMISSOR: consegue o que precisa, e NÃO consegue o que não deve.
+# CONTROLO — e vale também para um token que JÁ EXISTIA (um ficheiro copiado por engano, ou um
+# token com mais políticas do que esta, passaria todos os testes positivos).
+#
+# O QUE NÃO SE PODE FAZER é testar o negativo com uma operação: uma chave que não existe responde
+# 404 com QUALQUER política, e um `encrypt` numa chave inexistente é um *create* (upsert) — com uma
+# política larga, o «controlo» criava uma KEK espúria. A primeira versão deste script fazia isso e
+# não provava nada (revisão adversarial do AOS-437, achado A1). Pergunta-se à ACL, que responde
+# pelo caminho e não pela existência: `sys/capabilities`, com o token lido do STDIN (`token=-`),
+# para nunca aparecer na linha de comando.
 ISS_TOKEN="$(cat "${TOKEN_FILE}")"
 issx() { VAULT_TOKEN="${ISS_TOKEN}" docker exec -i -e VAULT_TOKEN -e VAULT_ADDR=https://127.0.0.1:8200 \
            -e VAULT_CACERT=/vault/tls/ca.crt aos-vault-1 "$@"; }
+caps() { printf '%s' "${ISS_TOKEN}" | vaultx vault write -format=json sys/capabilities token=- path="$1" 2>/dev/null \
+           | tr -d ' \n' | sed -n 's/.*"capabilities":\[\([^]]*\)\].*/\1/p'; }
+
+# (a) as políticas do token são EXACTAMENTE a deste emissor.
+POLS="$(printf '%s' "${ISS_TOKEN}" | vaultx vault write -format=json auth/token/lookup token=- 2>/dev/null \
+         | tr -d ' \n' | sed -n 's/.*"policies":\[\([^]]*\)\].*/\1/p')"
+[[ "${POLS}" == "\"${CHAVE}\"" ]] || fail "o token em ${TOKEN_FILE} tem as políticas [${POLS}] — quer EXACTAMENTE [\"${CHAVE}\"]; apague o ficheiro e corra de novo (revogue o token antigo com o root)"
+
+# (b) o que precisa, pela ACL e a funcionar.
+[[ "$(caps "transit/sign/${CHAVE}")" == *'"update"'* ]] || fail "a ACL não dá update em transit/sign/${CHAVE}"
 issx vault token lookup >/dev/null 2>&1 || fail "o token do emissor NÃO consegue lookup-self"
 issx vault token renew  >/dev/null 2>&1 || fail "o token do emissor NÃO consegue renew-self — morreria no fim do período"
 issx vault write -format=json "transit/sign/${CHAVE}" input=YW9zLTQzNw== >/dev/null 2>&1 \
   || fail "o token do emissor NÃO consegue assinar com ${CHAVE}"
-if issx vault write "transit/encrypt/aos-kek-controlo" plaintext=YQ== >/dev/null 2>&1; then
-  fail "o token do emissor consegue CIFRAR com uma KEK de titular — a política está larga demais"
-fi
-if issx vault read "transit/keys/aos-kek-controlo" >/dev/null 2>&1; then
-  fail "o token do emissor consegue LER chaves de titulares — a política está larga demais"
-fi
+
+# (c) o que NÃO pode — pela ACL, que não depende de a chave existir.
+for proibido in "transit/encrypt/aos-kek-x" "transit/decrypt/aos-kek-x" "transit/keys/aos-kek-x" \
+                "transit/keys/${CHAVE}/rotate" "transit/keys/${CHAVE}/config" "transit/export/signing-key/${CHAVE}" \
+                "auth/token/create" "sys/policy/aos-node"; do
+  c="$(caps "${proibido}")"
+  [[ "${c}" == '"deny"' ]] || fail "a ACL do token do emissor dá [${c}] em ${proibido} — quer só deny; a política está larga demais"
+done
 unset ISS_TOKEN ROOT_TOKEN
-log "  controlo: assina com ${CHAVE}, renova-se, e NÃO toca nas KEKs dos titulares"
+log "  controlo pela ACL: políticas exactamente [${CHAVE}], assina e renova-se, e deny nas KEKs, na rotação, na exportação e na emissão de tokens"
 
 # --- 4. a pasta do NHI ------------------------------------------------------------------------
 log "4/4 ${NHI_DIR} (uid 65532, 0700)"
@@ -112,6 +133,17 @@ docker run --rm --pull=never -v "${NHI_DIR}":/n "${ALPINE}" sh -c 'chown 65532:6
   || fail "não consegui entregar ${NHI_DIR} ao uid 65532"
 
 # --- a pubkey, pelo próprio emissor -----------------------------------------------------------
+# SÓ com o mandato no sítio: o serviço monta ./orq/mandato.json, e um bind de um ficheiro que não
+# existe faz o docker CRIAR uma DIRECTORIA de root com esse nome — o scp do mandato falharia a
+# seguir e o `-s` dos scripts daria verdadeiro sobre uma directoria (revisão, achado B1).
+if [[ -d "${AOS_DIR}/orq/mandato.json" ]]; then
+  fail "${AOS_DIR}/orq/mandato.json é uma DIRECTORIA (bind de uma corrida anterior sem o mandato) — remova-a (como root) e copie o mandato"
+fi
+if [[ ! -f "${AOS_DIR}/orq/mandato.json" ]]; then
+  log "FEITO, mas a pubkey NÃO foi impressa: falta ${AOS_DIR}/orq/mandato.json (passo 1 do runbook)."
+  log "  Copie o mandato e corra este script outra vez — só então se imprimem as linhas do .env."
+  exit 0
+fi
 if [[ -r "${AOS_DIR}/image.env" ]] && docker compose -f "${AOS_DIR}/docker-compose.prod.yml" \
      --env-file "${AOS_DIR}/.env" --env-file "${AOS_DIR}/image.env" --profile issuer \
      run --rm -T aos-issuer pubkey --vault-addr https://vault:8200 --vault-key "${CHAVE}" \

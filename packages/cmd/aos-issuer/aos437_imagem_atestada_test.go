@@ -73,7 +73,25 @@ var (
 )
 
 // binariosDaImagem deriva do Dockerfile o conjunto de binários que a imagem final carrega.
+//
+// TODA a linha COPY/ADD do ESTÁGIO FINAL tem de ter a forma canónica (achado M3 da revisão do
+// AOS-437). Só casar a forma canónica deixava passar em silêncio as variantes que metem um binário
+// na imagem sem o nomear — `--chmod`, destino directório, `/out/` inteiro, `/usr/bin/`, `ADD`, dois
+// espaços —, e o varredor dava verde sobre elas porque os outros três COPY continuavam lá.
 func (c aos437Cadeia) binariosDaImagem() (bins []string, erros []string) {
+	final := c.dockerfile
+	if i := strings.LastIndex(final, "\nFROM "); i >= 0 {
+		final = final[i:]
+	}
+	for _, linha := range strings.Split(final, "\n") {
+		campo := strings.ToUpper(strings.TrimSpace(linha))
+		if !strings.HasPrefix(campo, "COPY ") && !strings.HasPrefix(campo, "ADD ") {
+			continue
+		}
+		if !reAos437Copy.MatchString(strings.TrimRight(linha, "\r")) {
+			erros = append(erros, "linha fora da forma canonica no estagio final (so `COPY --from=builder /out/<bin> /usr/local/bin/<bin>`): "+strings.TrimSpace(linha))
+		}
+	}
 	for _, m := range reAos437Copy.FindAllStringSubmatch(c.dockerfile, -1) {
 		if m[1] != m[2] {
 			erros = append(erros, "COPY com nome de origem e destino diferentes: /out/"+m[1]+" -> /usr/local/bin/"+m[2])
@@ -341,6 +359,25 @@ func TestAOS437_MutacoesAvermelham(t *testing.T) {
 			}
 		}
 	})
+	// M3: cada variante que mete um binário na imagem sem a forma canónica avermelha.
+	for _, v := range []struct{ nome, linha string }{
+		{"--chmod", "COPY --from=builder --chmod=0555 /out/aos-x /usr/local/bin/aos-x"},
+		{"destino directorio", "COPY --from=builder /out/aos-x /usr/local/bin/"},
+		{"out inteiro", "COPY --from=builder /out/ /usr/local/bin/"},
+		{"usr/bin", "COPY --from=builder /out/aos-x /usr/bin/aos-x"},
+		{"ADD", "ADD /out/aos-x /usr/local/bin/aos-x"},
+		{"dois espacos", "COPY --from=builder  /out/aos-x /usr/local/bin/aos-x"},
+	} {
+		t.Run("COPY fora da forma: "+v.nome, func(t *testing.T) {
+			c := real
+			c.dockerfile = substituir(t, c.dockerfile,
+				"COPY --from=builder /out/aos-issuer /usr/local/bin/aos-issuer\n",
+				"COPY --from=builder /out/aos-issuer /usr/local/bin/aos-issuer\n"+v.linha+"\n")
+			if e := c.divergencias(); !contem(e, "fora da forma canonica") {
+				t.Errorf("%s: a variante nao avermelhou: %v", v.nome, e)
+			}
+		})
+	}
 	t.Run("aos-issuer fora de additionalSubjects", func(t *testing.T) {
 		c := real
 		c.sbom = substituir(t, c.sbom, `"name": "aos-issuer", "path": "usr/local/bin/aos-issuer"`, `"name": "aos-orq2", "path": "usr/local/bin/aos-orq2"`)

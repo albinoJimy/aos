@@ -168,3 +168,8 @@ de topologia que ninguém verificava.
    dos dois existe.
 6. **O `jti` do emissor mandatado é escolhido por ele**, logo a revogação por TOKEN não o trava:
    contra ele revoga-se o MANDATO.
+7. **Todos os planos drenados correm sob o humano do mandato**, seja quem for que os submeteu
+   (AOS-437, revisão adversarial M4). O `POST /plans` grava o `principal` de quem pede; os runs
+   levam o NHI do humano do mandato, e a cadeia on-behalf-of termina nele. Quem assina um mandato
+   para o drenador responde pelo que qualquer submissor autorizado pede — é por isso que o escopo
+   do mandato deve ser o mínimo do caminho do plano.

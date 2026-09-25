@@ -20,7 +20,7 @@ COMPOSE=(docker compose -f "${AOS_DIR}/docker-compose.prod.yml" --env-file "${AO
 log()  { logger -t aos-cunhar-nhi "$1" 2>/dev/null || true; printf '[cunhar-nhi] %s\n' "$1"; }
 fail() { log "ERRO: $1"; exit 1; }
 
-[[ -s "${AOS_DIR}/orq/mandato.json" ]] || fail "sem mandato em ${AOS_DIR}/orq/mandato.json — o humano assina-o na sua máquina (aos-issuer mandate-sign) e copia-o para aqui"
+[[ -f "${AOS_DIR}/orq/mandato.json" && -s "${AOS_DIR}/orq/mandato.json" ]] || fail "sem mandato em ${AOS_DIR}/orq/mandato.json — o humano assina-o na sua máquina (aos-issuer mandate-sign) e copia-o para aqui"
 [[ -s "${AOS_DIR}/secrets/vault-issuer-token" ]] || fail "sem token do emissor — corra provision-issuer-auto.sh"
 [[ -d "${AOS_DIR}/nhi" ]] || fail "sem ${AOS_DIR}/nhi — corra provision-issuer-auto.sh"
 

@@ -591,7 +591,7 @@ limita é o **nó**:
 | O **mandato** | assinado **uma vez** na máquina do humano, com a chave **dele** | fixa humano, board, agente, classe, política, escopo, TTL máximo e janela (≤ 90 dias) |
 | `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | servidor, a cada 15 min | `aos-issuer mint-mandated` com a chave `aos-issuer-auto` no Vault transit; escreve `/opt/aos/nhi/nhi-run.jwt` (45 min) |
 | `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim |
-| `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado |
+| `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado **ou parado**, nenhuma drenagem bem-sucedida há 5 h |
 
 > ⚠️ **O que o mandato protege, e o que não.** Quem comprometer o **emissor** — o contentor, o
 > token do Vault, a chave transit — só cunha o que o humano assinou: o nó recusa o resto
@@ -656,8 +656,24 @@ O anterior continua válido até caducar; se quer corte imediato, revogue-o.
 por `jti` de sempre (`aos-issuer revoke-sign`, `POST /nhi/revoke`), com `--jti mandate:<id>`.
 Contra o emissor automático é **esta** a revogação que serve: os `jti` dele são escolhidos por ele.
 
-**Parar tudo:** `systemctl disable --now aos-cunhar-nhi.timer aos-drenar-planos.timer` e apagar
-`/opt/aos/nhi/nhi-run.jwt` (como `65532`, via `docker run`). Tirar as três variáveis do `.env` e
+> ⚠️ **Revogar não pára a máquina — pare-a também.** O emissor não consulta o registo de revogação
+> (só o nó o tem), por isso continua a cunhar sob o mandato revogado; o nó recusa cada NHI, o `serve`
+> classifica a recusa como transitória, o pedido volta à fila, e o `consume` sai com `0`. A cada 5
+> min repete-se — e cada tentativa pode pagar uma decomposição ao modelo antes de o nó recusar. Por
+> isso, **no mesmo acto**:
+>
+> ```bash
+> systemctl disable --now aos-cunhar-nhi.timer aos-drenar-planos.timer   # como root
+> mv /opt/aos/orq/mandato.json /opt/aos/orq/mandato.revogado-$(date +%F)  # como aos
+> ```
+>
+> e só volte a ligar os timers com um mandato novo. O mesmo ciclo acontece com um
+> `AOS_MANDATED_ISSUER_PUBKEY` errado no `.env`, ou com o nó por reiniciar depois de o mudar — é o
+> resíduo 7 do AOS-437.
+
+**Parar tudo:** `systemctl disable --now aos-cunhar-nhi.timer aos-drenar-planos.timer`, apagar
+`/opt/aos/nhi/nhi-run.jwt` (como `65532`, via `docker run`) e **retirar a linha do `alerta-nhi.sh`
+do crontab** — senão o sensor passa a alertar, e com razão, que o NHI e as drenagens pararam. Tirar as três variáveis do `.env` e
 reiniciar o nó faz com que ele volte a confiar só no emissor manual.
 
 ---

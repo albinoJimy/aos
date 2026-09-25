@@ -161,8 +161,9 @@ jobs:
             "$USER@$HOST:/opt/aos/"
           rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
           # AOS-437: as unidades systemd da cunhagem e da drenagem viajam para /opt/aos/systemd e
-          # NÃO para /etc/systemd — instalá-las é acto do root (README §Cunhagem sem operador); o
-          # utilizador do deploy não tem, nem deve ter, esse poder.
+          # NÃO para /etc/systemd — instalá-las é acto DELIBERADO do root (README §Cunhagem sem
+          # operador), e o deploy não o faz sozinho. Não é uma fronteira de segurança: o `aos` está
+          # no grupo docker, que equivale a root (bootstrap.sh).
           rsync -az -e "$SSH" deploy/server/systemd/ "$USER@$HOST:/opt/aos/systemd/"
           # CONFIGURAÇÃO QUE O REPOSITÓRIO POSSUI e que o compose MONTA. Faltava aqui, e a
           # ausência não era inócua: o registry de tools ficava a derivar entre repo e servidor

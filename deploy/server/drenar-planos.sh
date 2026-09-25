@@ -16,7 +16,7 @@
 set -Eeuo pipefail
 
 AOS_DIR="${AOS_DIR:-/opt/aos}"
-MAX="${DRENAR_MAX:-4}"
+MAX="${DRENAR_MAX:-3}"
 NHI_MIN_S="${DRENAR_NHI_MIN_S:-600}"
 ALPINE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 COMPOSE=(docker compose -f "${AOS_DIR}/docker-compose.prod.yml" --env-file "${AOS_DIR}/.env"
@@ -24,6 +24,12 @@ COMPOSE=(docker compose -f "${AOS_DIR}/docker-compose.prod.yml" --env-file "${AO
 
 log()  { logger -t aos-drenar-planos "$1" 2>/dev/null || true; printf '[drenar-planos] %s\n' "$1"; }
 fail() { log "ERRO: $1"; exit 1; }
+
+# UMA drenagem de cada vez, também contra uma corrida À MÃO: o systemd só impede duas pelo timer.
+ESTADO_DIR="${AOS_DIR}/.drenagem"
+mkdir -p "${ESTADO_DIR}" && chmod 700 "${ESTADO_DIR}"
+exec 9>"${ESTADO_DIR}/lock"
+flock -n 9 || fail "outra drenagem em curso (${ESTADO_DIR}/lock) — esta não reclama nada"
 
 # nhi_exp — o `exp` de TOPO do NHI, lido como o uid 65532 (a pasta é dele e 0700), sem rede.
 # Ancora em `"exp":N,"jti"` porque o mandato embebido também tem `exp` e só o de topo é seguido de
@@ -43,6 +49,9 @@ EXP="$(nhi_exp || true)"
 [[ "${EXP}" =~ ^[0-9]+$ ]] || fail "sem NHI legível em ${AOS_DIR}/nhi/nhi-run.jwt — a cunhagem (aos-cunhar-nhi) não correu ou falhou; NÃO se reclama nenhum plano"
 RESTA=$(( EXP - $(date +%s) ))
 (( RESTA >= NHI_MIN_S )) || fail "o NHI caduca em ${RESTA}s (mínimo ${NHI_MIN_S}s) — a cunhagem parou; NÃO se reclama nenhum plano"
+# Um NHI não vive mais de 1h (tecto da biblioteca); um prazo maior é um ficheiro que não saiu do
+# emissor — e um número gigante dá a volta na aritmética do bash sem aviso.
+(( RESTA <= 3900 )) || fail "o NHI diz que vive ${RESTA}s — acima do tecto de 1h; não é um NHI do emissor, NÃO se reclama nenhum plano"
 
 # -T e </dev/null: o `compose run` come o stdin de quem o chama (lição do AOS-403).
 "${COMPOSE[@]}" --profile orq run --rm -T \
@@ -51,4 +60,7 @@ RESTA=$(( EXP - $(date +%s) ))
   --max "${MAX}" </dev/null \
   || fail "o consume saiu com erro — ver acima (AOS_ORQ_NODE_URL / AOS_ORQ_OIDC_* no .env? o nó responde?)"
 
+# CARIMBO DE SUCESSO, para o sensor: um timer parado ou nunca instalado fica `inactive` e não
+# `failed`, e só a idade deste carimbo o denuncia (revisão do AOS-437, achado M2).
+date +%s > "${ESTADO_DIR}/ultima-ok.novo" && mv -f "${ESTADO_DIR}/ultima-ok.novo" "${ESTADO_DIR}/ultima-ok"
 log "drenagem terminada (máximo ${MAX} pedidos; NHI com ${RESTA}s de vida)"
