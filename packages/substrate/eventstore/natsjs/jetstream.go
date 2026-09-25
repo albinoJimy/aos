@@ -665,3 +665,35 @@ func (cn *Conn) ConsumidoresDoStream(stream string, timeout time.Duration) ([]st
 	}
 	return r.Consumers, nil
 }
+
+type consumerClusterResponse struct {
+	Error   *JSError `json:"error"`
+	Cluster *struct {
+		Leader string `json:"leader"`
+	} `json:"cluster"`
+}
+
+// LiderDoConsumidor devolve o nome do servidor que lidera (aloja, se for R1) o consumidor.
+//
+// Existe para MEDIR onde o servidor pôs o consumidor, que não é escolha nossa: num R1 o
+// servidor sorteia um par activo do stream. Sem esta pergunta, um teste que mata «um nó»
+// só às vezes mata o do consumidor — e o defeito que isso esconde aparece como flake
+// (AOS-449). Um consumidor sem líder (o seu único par caiu) devolve "" sem erro, que é a
+// resposta honesta.
+func (cn *Conn) LiderDoConsumidor(stream, nome string, timeout time.Duration) (string, error) {
+	m, err := cn.Request("$JS.API.CONSUMER.INFO."+stream+"."+nome, nil, nil, timeout)
+	if err != nil {
+		return "", err
+	}
+	var r consumerClusterResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return "", fmt.Errorf("%w: resposta de CONSUMER.INFO ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return "", r.Error
+	}
+	if r.Cluster == nil {
+		return "", nil
+	}
+	return r.Cluster.Leader, nil
+}
