@@ -345,3 +345,39 @@ func TestAOS436R2_ErrosNaoNomeiamAKEK(t *testing.T) {
 		}
 	}
 }
+
+// N4 (terceira revisão) — a cadeia e o registo do MESMO tar podem não coincidir: o tar lê os
+// ficheiros pela ordem do directório, e um apagamento entre as duas leituras deixa a cadeia a saber
+// de um id que o registo ainda não tem. Importar o registo desse mesmo bundle NÃO pode ser recusado
+// por isso — e o que só a cadeia sabe é reconciliado pela cadeia na mesma.
+func TestAOS436R3_RegistoDoMesmoBundleAtrasadoFaceACadeiaEAceite(t *testing.T) {
+	const titularX = "nhi:X-so-na-cadeia"
+	nX, nY := nomeDaKEK(titularX), nomeDaKEK("nhi:Y")
+	dir := t.TempDir()
+	proprio := filepath.Join(dir, "apagamentos-dsar.txt")
+	importado := filepath.Join(dir, "importado.txt")
+	escreverComAChaveDe(t, proprio, proprio, entradaDeApagamento{nome: nY, destruidaEm: instanteDaDestruicao})
+	raw, err := os.ReadFile(proprio)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(importado, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := audit.NewMemStore()
+	cadeiaComApagamento(t, store, titularX, instanteDaDestruicao)
+
+	fv := novoVaultComIdades()
+	fv.restaurar(nX, nascidaAntes)
+	fv.restaurar(nY, nascidaAntes)
+	_, vault := noComVault(t, store, novoServidor(t, fv), func(c *Config) {
+		c.DSARErasureRegister = proprio
+		c.DSARErasureRegisterImport = importado
+	})
+	if err := vault.ready(context.Background()); err != nil {
+		t.Fatalf("o registo do MESMO bundle, atrasado face a cadeia, devia ser aceite; veio %v", err)
+	}
+	if fv.existe(nX) || fv.existe(nY) {
+		t.Fatalf("as duas KEKs ressuscitadas deviam ter sido re-destruidas: X=%v Y=%v", fv.existe(nX), fv.existe(nY))
+	}
+}

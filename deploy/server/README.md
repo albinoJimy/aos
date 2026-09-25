@@ -1280,8 +1280,11 @@ arrancar o nó (AOS-436).** É o `apagamentos-<stamp>.txt` mais recente de `%USE
 #    anterior ao AOS-436 não a traz (MANIFEST: apagamentos-chave=ausente). Tire-a do bundle MAIS
 #    RECENTE (decifrado como acima) e instale-a 0600 e do uid do nó (65532) — é material privado:
 tar xzf volumes.tar.gz aos/apagamentos-dsar.txt.chave          # no bundle MAIS RECENTE
+# SEMPRE por cima, e não «só se faltar»: se o nó arrancou antes de a importação estar configurada,
+# já criou uma chave NOVA no volume e escreveu sob ela — mantê-la tornava o importado ilegível
+# (achado N3 da terceira revisão). A chave certa é a do bundle mais recente, sempre.
 docker run --rm -v aos_aos-data:/aos -v "$PWD/aos":/in:ro alpine:3.20 sh -c \
-  'test -s /aos/apagamentos-dsar.txt.chave || install -m 600 -o 65532 -g 65532 /in/apagamentos-dsar.txt.chave /aos/'
+  'install -m 600 -o 65532 -g 65532 /in/apagamentos-dsar.txt.chave /aos/'
 # Os passos 1-3 só correm COM a chave: sem ela o bloco pára, e o nó não arranca por este caminho.
 if docker run --rm -v aos_aos-data:/aos alpine:3.20 sh -c 'test "$(wc -c < /aos/apagamentos-dsar.txt.chave)" -eq 32'; then
   # 1. o registo mais recente para DENTRO do volume de dados
@@ -1320,10 +1323,14 @@ o nó não decifra nem escreve conteúdo por-titular nenhum** — o portão est�
 sozinho não parava nada. Com o importado recusado, **nada é escrito** no registo próprio. A manutenção
 da custódia repete a passagem a cada minuto.
 
-**Se a chave do registo se perdeu.** O nó **nunca** cria outra por cima de um registo com entradas —
-deixava-o ilegível para sempre — e fica por provar a dizê-lo. Recuperar: (a) repor
-`apagamentos-dsar.txt.chave` do bundle mais recente (0600, uid 65532), que é o caminho normal; (b) só
-se ela não existir em bundle nenhum, pôr o registo de lado
+**Se a chave do registo se perdeu, se o registo tem uma linha corrompida, ou se o nó arrancou antes
+de a importação estar configurada.** O nó **nunca** cria outra chave por cima de um registo com
+entradas — deixava-o ilegível para sempre — e fica por provar a dizê-lo. Recuperar: (a) repor
+`apagamentos-dsar.txt.chave` do bundle mais recente (0600, uid 65532), que é o caminho normal e o
+único para a chave perdida; (b) quando (a) não resolve — a chave não existe em bundle nenhum, **ou** o
+registo tem uma linha corrompida a meio (cada linha autentica também a anterior, pelo que **apagar a
+linha má não recupera**: a seguinte deixa de autenticar), **ou** o nó arrancou cedo e escreveu sob uma
+chave própria que nenhuma cópia conhece — pôr o registo de lado
 (`mv apagamentos-dsar.txt apagamentos-dsar.txt.orfao-<data>` dentro do volume) e arrancar: o nó cria
 uma chave nova e volta a encher o registo **a partir da cadeia**. Os apagamentos que só esse registo
 conhecia (não os da cadeia) deixam de estar protegidos contra um restauro — e as cópias recolhidas

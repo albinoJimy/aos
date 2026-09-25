@@ -266,26 +266,25 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 		nomesCadeia := nomesOrdenados(porNome)
 		idCadeia, ierr := r.registo.idsDe(nomesCadeia)
 		idVivas, verr := r.registo.idsDe(vivas)
-		// O IMPORTADO TEM DE SABER PELO MENOS O QUE O BUNDLE RESTAURADO SABE. O registo mais
+		// O IMPORTADO TEM DE SABER PELO MENOS O QUE O REGISTO RESTAURADO SABE. O registo mais
 		// recente é superconjunto de qualquer anterior (monotonia); um importado a quem falta um
-		// id que o registo próprio restaurado — ou a cadeia restaurada — já conhece é MAIS ANTIGO
-		// do que o bundle, ou foi truncado. Aceitá-lo como «o mais recente» e declarar a
+		// id que o registo próprio restaurado já conhece é MAIS ANTIGO do que o bundle, ou foi
+		// truncado.
+		//
+		// SÓ O REGISTO PRÓPRIO, E NÃO A CADEIA (achado N4 da terceira revisão). A cadeia e o registo
+		// do MESMO tar podem não coincidir — o tar lê os ficheiros pela ordem do directório, e um
+		// apagamento entre a leitura de um e do outro deixa a cadeia a saber de um id que o registo
+		// ainda não tem. Exigi-lo recusava o registo legítimo desse mesmo bundle em cada tick. E não
+		// é preciso: o que a cadeia sabe é reconciliado pela cadeia, com ou sem importado. Aceitá-lo como «o mais recente» e declarar a
 		// reconciliação provada era a falha da segunda revisão: um apagamento posterior podia
 		// faltar-lhe sem ninguém o ver. (O corte do fim de um registo mais recente do que o bundle
 		// não se distingue por conteúdo — é resíduo declarado.)
 		importadoAceite := r.importado == "" || importadoLimpo
-		if r.importado != "" && importadoLimpo && ierr == nil {
+		if r.importado != "" && importadoLimpo {
 			faltam := 0
 			for id := range proprio {
 				if _, ok := importadas[id]; !ok {
 					faltam++
-				}
-			}
-			for id := range idCadeia {
-				if _, ok := importadas[id]; !ok {
-					if _, contado := proprio[id]; !contado {
-						faltam++
-					}
 				}
 			}
 			if faltam > 0 {
@@ -557,6 +556,10 @@ func comporReconciliacaoDeApagamentos(ctx context.Context, cfg Config, worm audi
 			log("apagamentos DSAR (AOS-436): a custodia da KEK injectada (%T) NAO implementa a reconciliacao — um restauro da custodia pode RESSUSCITAR KEKs destruidas sem o no o detectar; o registo de apagamentos NAO e escrito nem lido", vault)
 		case cfg.DSARErasureRegister != "" || cfg.DSARErasureRegisterImport != "":
 			log("apagamentos DSAR (AOS-436): AOS_DSAR_ERASURE_REGISTER/AOS_DSAR_ERASURE_REGISTER_IMPORT definidos com o vault in-memory de referencia — nada a reconciliar (as KEKs morrem com o processo, nenhum restauro as traz de volta); o registo NAO e escrito nem lido")
+		default:
+			// Sem linha, o nó de referência calava a postura — e o smoke não tinha como provar que
+			// este código está no binário que arrancou.
+			log("apagamentos DSAR (AOS-436): NAO APLICAVEL — custodia in-memory de referencia: as KEKs morrem com o processo e nenhum restauro as traz de volta; a reconciliacao e o registo de apagamentos so existem com o Vault (AOS_DSAR_VAULT_ADDR)")
 		}
 		return nil
 	}

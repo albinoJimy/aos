@@ -83,6 +83,16 @@ func (s *contentSealer) SealContent(_ context.Context, subject, streamID string,
 // já aplicado, e a retoma re-executava o efeito externo (ADR-015). Por isso: portão fechado, ou
 // falha com a KEK ainda viva (ou por verificar), sai como [durable.ErrConteudoIndisponivel] — e NÃO
 // como [audit.ErrDecrypt], que o read-path lê como «apagado» (410).
+//
+// O QUE ISTO CLASSIFICA MAL, DECLARADO (achado N1 da terceira revisão). «A KEK existe» pergunta pelo
+// NOME, e um titular apagado que VOLTOU tem uma KEK viva de geração nova. O conteúdo antigo dele —
+// selado sob a geração destruída — falha com a KEK viva e sai como INDISPONÍVEL (503, e o Rebuild
+// desses runs antigos falha em cada varrimento) quando é APAGADO. Não se distingue aqui porque a
+// porta [audit.KeyVault] devolve só um bool no UnwrapDEK: separar «400, este blob não é desta chave»
+// de «5xx, a custódia não respondeu» exige mudar essa porta partilhada. A alternativa barata — tratar
+// como apagado sempre que a KEK nasceu depois de um apagamento registado — reabria o H-a para os runs
+// NOVOS do mesmo titular numa falha passageira, e repetir um efeito externo é pior do que classificar
+// mal conteúdo que continua ilegível. O sentido do erro é o seguro: nada se decifra, nada se repete.
 func (s *contentSealer) OpenContent(ctx context.Context, subject string, sealed []byte) ([]byte, error) {
 	if p, ok := s.vault.(interface{ portaoDoTitular(string) error }); ok {
 		if err := p.portaoDoTitular(subject); err != nil {

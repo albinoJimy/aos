@@ -5108,7 +5108,7 @@ com o nó real e o Vault falso, os seguintes. Os testes do revisor serviram de p
 
 | # | Achado (confirmado) | Correcção | Sensor (mutação ⇒ vermelhos) |
 |---|---|---|---|
-| R1 | MÉDIO/ALTO — remover uma linha do importado desfaz o apagamento e a reconciliação declara-se PROVADA (MAC por linha, ninguém autentica o conjunto); também «importar um registo mais antigo» | MAC **encadeado** (cobre a linha anterior): remoção, inserção ou troca a meio parte a cadeia; o importado tem de conter **todos** os ids do registo próprio restaurado e da cadeia restaurada, senão é recusado como mais antigo. O **corte do fim** não se distingue de um registo mais antigo: resíduo 12 | sem encadeamento ⇒ 1 (`R2_LinhaRemovidaAMeioPartACadeia`); sem a verificação de contenção ⇒ 1 (`R2_ImportadoMaisAntigoQueOBundleERecusado`) |
+| R1 | MÉDIO/ALTO — remover uma linha do importado desfaz o apagamento e a reconciliação declara-se PROVADA (MAC por linha, ninguém autentica o conjunto); também «importar um registo mais antigo» | MAC **encadeado** (cobre a linha anterior): remoção, inserção ou troca a meio parte a cadeia; o importado tem de conter **todos** os ids do registo próprio restaurado (a cadeia deixou de contar na terceira revisão — ver N4), senão é recusado como mais antigo. O **corte do fim** não se distingue de um registo mais antigo: resíduo 12 | sem encadeamento ⇒ 1 (`R2_LinhaRemovidaAMeioPartACadeia`); sem a verificação de contenção ⇒ 1 (`R2_ImportadoMaisAntigoQueOBundleERecusado`) |
 | R4 | MÉDIO — registo presente e chave perdida: o nó criava outra em silêncio e escrevia sob ela ⇒ `MAC invalido` para sempre | a chave **nunca** se cria por cima de um registo com entradas: falha nomeada, nada escrito; recuperação no runbook (repor a chave; em último caso pôr o registo de lado) | criar por cima ⇒ 1 (`R2_ChavePerdidaNaoSeRecria`) |
 | R5 | MÉDIO — arrancar sem a chave num bundle antigo com importação: o nó escrevia as linhas da cadeia sob chave nova e copiar depois a chave certa não recuperava; o passo 0 do runbook só imprimia | com importação pedida a chave **não** se cria; importado não aceite ⇒ **nada** se escreve no registo próprio; o passo 0 do runbook passa a **impedir** os passos seguintes | criar com importação ⇒ 2 (`R2_ImportadoSemChave…`, `CicloCompleto…`); escrever com o importado recusado ⇒ 1 (`R2_ImportadoMaisAntigo…`) |
 | R3 | MÉDIO — o importado era relido a cada tick; apagá-lo com a variável definida fechava tudo | aceite e fundido, deixa de ser lido no processo; a variável sai do `.env` (passo 4 do runbook) antes do próximo arranque — escolhido em vez de um marcador persistente porque o restauro é um acto único e um marcador seria mais estado para restaurar | sempre exigido ⇒ 1 (`R2_ImportadoFundidoDeixaDeSerExigido`) |
@@ -5123,6 +5123,19 @@ com o nó real e o Vault falso, os seguintes. Os testes do revisor serviram de p
 | H-c | hipótese — `WriteAt`/`Truncate` sem lock entre processos | **declarada**: resíduo 15 (um processo por volume) | — |
 | H-d | hipótese — erros do portão com `aos-kek-<sha256>` | **confirmada** e corrigida: nenhum erro nem log nomeia a KEK pelo nome do Vault (prefixo do `id` do registo, ou nada); também o `shredConfirmed` de AOS-322 e o comentário que dizia o nome «sem PII» | portão a nomear a KEK ⇒ 1 (`R2_ErrosNaoNomeiamAKEK`) |
 | H-e | hipótese — zeros antes de `\n` depois de um crash ⇒ linha malformada permanente | **declarada**: resíduo 11 (a linha é completa, e a leitura estrita rejeita-a) | — |
+
+### Terceira revisão adversarial → correcção → sensor
+
+A terceira verificação, independente, correu os testes de ataque da segunda contra o código novo:
+R3, R4, R7, G e H-d **FECHADOS**; R1 fechado a meio e para o importado mais antigo, com o corte do fim
+declarado; R5 fechado na ordem do runbook. Mediu quatro achados novos:
+
+| # | Achado | Correcção | Sensor |
+|---|---|---|---|
+| N1 | MÉDIO (RGPD/disponibilidade) — um titular apagado que VOLTOU tem KEK viva de geração nova; o conteúdo antigo dele falha com a KEK «viva» e sai como INDISPONÍVEL (503, Rebuild dos runs antigos a falhar em cada varrimento) quando é APAGADO | **declarado**: resíduo 17. Distinguir exigia mudar a porta partilhada `audit.KeyVault` (o `UnwrapDEK` só devolve um bool); a heurística barata reabria o H-a para os runs NOVOS do titular numa falha passageira — repetir um efeito externo é pior do que classificar mal conteúdo que continua ilegível. O comentário do cifrador, que prometia «indisponível nunca é apagamento», foi corrigido | — |
+| N2 | MÉDIO (disponibilidade) — uma linha corrompida a meio do registo próprio: apagá-la não recupera, porque a seguinte autentica a anterior | runbook: a recuperação (b) passa a cobrir a corrupção, com o porquê; resíduo 18 | — (runbook) |
+| N3 | BAIXO/MÉDIO — o nó arrancado antes de a importação estar configurada cria uma chave própria, e o passo 0 (`test -s … \|\| install`) mantinha-a | o passo 0 instala **sempre** a chave do bundle mais recente, por cima; a recuperação (b) cobre também este caso | — (runbook) |
+| N4 | BAIXO — a contenção contava os ids da CADEIA: o registo do mesmo tar pode estar atrás dela (ordem do `readdir`), e o registo legítimo desse bundle era recusado em cada tick | a contenção exige só os ids do **registo próprio**; o que a cadeia sabe é reconciliado pela cadeia | regra antiga reposta ⇒ 1 (`R3_RegistoDoMesmoBundleAtrasadoFaceACadeiaEAceite`) |
 
 ### Critérios de Aceitação
 
@@ -5179,7 +5192,15 @@ com o nó real e o Vault falso, os seguintes. Os testes do revisor serviram de p
 15. **Um só processo por volume** (H-c): a escrita do registo não tem lock entre processos.
 16. **Não exercido em produção nem no ensaio.** Provado por teste com o nó real e um Vault falso; o
     `restore-drill.sh`, o `backup.sh`, o `pull-backups.ps1` e o runbook não foram corridos contra o
-    servidor.
+    servidor. (As premissas sobre o Vault — `data.keys` com segundos Unix, `LIST` vazio a 404, `LIST`
+    como lista de nomes, `DELETE` sem `deletion_allowed` a 400 — foram medidas num Vault 1.18 real.)
+17. **O conteúdo antigo de um titular que voltou sai como INDISPONÍVEL, não como APAGADO** (N1): 503
+    no replay soberano e o Rebuild dos seus runs antigos a falhar em cada varrimento de retoma.
+    Continua ilegível — nada se decifra —, mas a classificação mente e o varrimento gasta um GET por
+    tentativa. Fechar exige que o `UnwrapDEK` da porta `audit.KeyVault` distinga «este blob não é
+    desta chave» de «a custódia não respondeu».
+18. **Uma linha corrompida a meio do registo próprio só se resolve pondo o registo de lado** (N2),
+    perdendo as expirações por TTL e o que só veio por importação.
 
 ### Estado
 
