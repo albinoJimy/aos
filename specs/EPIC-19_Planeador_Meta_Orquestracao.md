@@ -5580,8 +5580,14 @@ snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º e
       `fs.read` e `doc_read`, não abre o WAL; e o controlo com o catálogo certo, que toma posse).
 - [x] Teste: renomear uma tool no catálogo avermelha. `TestAOS441RenomearUmaToolNoCatalogoAvermelha`
       (o caso de produção: `fs.read` → `doc_read`).
-- [ ] **Verificado em PRODUÇÃO**: o snapshot em uso bate com o catálogo do nó. Exige uma release com
-      esta alteração; o snapshot de produção tem o digest `sha256:aaa`, que passa a ser recusado.
+- [x] **Verificado em PRODUÇÃO** (v0.1.34, 2026-09-26): o snapshot em uso bate com o catálogo do nó.
+      Depois do deploy, `GET /tools` serviu `doc_read` (`sha256:cc05b325…`) e `web_post`
+      (`sha256:c8206d3d…`), e a drenagem recusou o snapshot com `sha256:aaa` — o serviço ficou
+      `failed`, como a transição previa. Corrigido o digest (rótulo `sha256:snap-aos441-prod`; cópia
+      em `orq/snapshot.json.antes-aos441`), uma drenagem imprimiu «snapshot: 1 tool(s) conferida(s)
+      com o catálogo do nó» e a do timer seguinte ficou verde. **Controlo negativo:** uma cópia do
+      snapshot com a tool chamada `fs.read` foi recusada antes de reclamar — «tool "fs.read" não
+      existe no nó (o nó tem: doc_read sha256:cc05…, web_post sha256:c820…)».
 
 ### Resíduos declarados
 
@@ -5605,7 +5611,11 @@ snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º e
 
 ### Estado
 
-**ABERTO** até à verificação em produção.
+**FECHADO**, com o critério da derivação por marcar: a conferência está em produção e
+provada nos dois sentidos, e o snapshot continua escrito à mão porque o nó não declara a
+sensibilidade nem a admissibilidade (resíduo 1). O `web_post` ficou de fora do snapshot de
+produção de propósito — admiti-lo é uma decisão sobre uma tool de egress externo e irreversível,
+não uma correcção.
 
 ---
 
@@ -5688,13 +5698,22 @@ Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estacion
 - [x] Um pedido em `aguarda_humano` volta a ser reclamável depois da decisão, e corre pelo documento
       aprovado.
 - [x] Testes: retoma pós-aprovação não re-decompõe; aprovação humana leva o pedido a correr.
-- [ ] **Verificado em PRODUÇÃO**: um plano com uma falha transitória induzida acaba `terminal` 0.
+- [x] **Verificado em PRODUÇÃO** (v0.1.34, 2026-09-26): um plano com uma falha transitória induzida
+      acaba `terminal` 0. `plan-e2e-442-1790377888`, submetido por `POST /plans`: a geração 1, com
+      `--plan-timeout 5s`, decompôs uma vez (2 nós), foi aprovada sem humano (L4) e saiu `8`
+      transitório; a geração 2 retomou «pelo plano validado; sem decomposicao», o gate reconheceu a
+      aprovação com o mesmo `plan_hash` (`sha256:efa522e7…`), materializou do log e saiu `0`
+      terminal. `GET /plans/{id}` → `terminal`, geração 2, `exit_code` 0; a pasta `planos/` do
+      volume ficou vazia (documento apagado no desfecho terminal). Antes do AOS-442 a mesma
+      sequência acabava em `7` (plan-e2e-437-1790336067).
 
 ### Resíduos declarados
 
 1. **A composição nó↔`consume` não corre num só teste.** São dois binários de módulos distintos: a
    re-oferta do nó está provada sobre a projecção (com o relógio dado pelo teste) e o `consume` contra
-   um nó falso que re-oferece. A prova conjunta é a verificação em produção.
+   um nó falso que re-oferece. A prova conjunta é a verificação em produção — feita para a retoma
+   transitória; o caminho `aguarda_humano` → decisão → corre não foi exercido em produção (nenhuma
+   tool de risco no snapshot de produção o dispara).
 2. **Planos validados antes desta release não têm documento guardado.** Uma retoma deles sai `7`
    sem modelo — o mesmo desfecho de antes, mas sem pagar a decomposição.
 3. **A latência depois da decisão humana** é até 10 min (re-oferta) mais o intervalo do timer de
@@ -5730,7 +5749,9 @@ Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estacion
 
 ### Estado
 
-**ABERTO** até à verificação em produção.
+**FECHADO.** A retoma pelo documento aprovado está em produção e provada com uma falha
+transitória induzida; os resíduos acima ficam declarados, e o 6 e o 7 pedem ticket ou decisão
+próprios.
 
 ---
 
