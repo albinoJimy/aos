@@ -196,6 +196,13 @@ func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(
 // codigoDe traduz o erro no código de saída que o distingue.
 func codigoDe(err error) int {
 	switch {
+	// SEM ERRO É SUCESSO (AOS-438). O `main` só chama isto com erro, e por isso o caso nunca fez
+	// falta — até o `consume` o chamar com o retorno do `serve` tal-qual. Sem este caso, `nil` caía no
+	// `default` e saía `exitErro`: TODO o plano bem-sucedido era reportado ao nó como falha
+	// transitória, voltava à fila, e a retoma re-decompunha e era recusada pelo gate. Medido em
+	// produção a 2026-09-25 (plan-e2e-437-1790336067: nó `complete`, desfecho final `7`).
+	case err == nil:
+		return exitOK
 	case errors.Is(err, eventstore.ErrWALHeld):
 		return exitWALDetido
 	case errors.Is(err, durable.ErrLeaseHeld):

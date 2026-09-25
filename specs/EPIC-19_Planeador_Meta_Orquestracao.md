@@ -5331,3 +5331,72 @@ foi exercido com um NHI real no BusyBox 1.37.
 
 **ABERTO** — entregue em código e em runbook; falta a verificação em produção, que depende de
 passos do operador.
+
+---
+
+## AOS-438 — A drenagem gravava como FALHADO um plano bem-sucedido, e não largava a posse
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | **P1** — cada plano bem-sucedido era gravado como falha e pagava uma decomposição extra ao modelo |
+| Estimativa | S |
+| Dependências | AOS-423 (o `consume`), AOS-437 (a drenagem em produção que o expôs) |
+| Documentos de referência | `packages/cmd/aos-orq/consumir.go`, `packages/cmd/aos-orq/main.go` (`codigoDe`) |
+
+### Contexto — medido em produção, 2026-09-25
+
+A prova ponta-a-ponta do AOS-437 submeteu `plan-e2e-437-1790336067` por `POST /plans`. O
+drenador reclamou-o, o plano foi aprovado (L4), o nó `n1` correu **e terminou `complete`**: o run
+filho `plan-e2e-437-1790336067~n1` existe no nó, `completed`, com a resposta certa — o que prova
+que o nó aceitou o NHI cunhado sob o mandato. **E o desfecho final gravado foi `7` (falha).**
+
+A reprodução controlada (`plan-e2e-437b-1790336718`, drenagem à mão com o output guardado) deu:
+
+```
+execucao: n1=complete
+desfecho: run=plan-e2e-437b-1790336718 codigo=1 classe=transitorio
+```
+
+Dois defeitos, no `consume`:
+
+1. **`codigoDe(nil)` devolvia `exitErro` (1).** O `main` só o chama com erro; o `consume` chamava-o
+   com o retorno do `serve` tal-qual. Todo o plano bem-sucedido era reportado como falha
+   TRANSITÓRIA, voltava à fila, e a retoma — que corre `serve --goal` outra vez — re-decompunha com
+   o modelo, produzia outro organigrama, e o gate recusava-o (AOS-412, saída `7`, terminal).
+2. **O `serve` do `consume` não largava a posse** (faltava `--release`). O lease do run ficava vivo
+   até ao TTL, e duas das quatro gerações do plano medido foram gastas contra ele (saída `3`).
+
+Os testes do AOS-423 cobriam a tabela código→classe, mas nunca a tradução do retorno do `serve` —
+que era onde estava o defeito.
+
+### O que se entregou
+
+- `codigoDe(nil)` = `exitOK`, com o porquê no código.
+- O desfecho passa a derivar-se numa função própria (`desfechoDoServe`), e a invocação do `serve`
+  noutra (`argsDoServe`), que passa `--release`.
+- `aos438_desfecho_test.go`: sem erro ⇒ `(0, terminal)`; os erros continuam classificados; o `serve`
+  do `consume` larga a posse. Mutações: tirar o caso `nil` ⇒ 1 vermelho; tirar o `--release` ⇒ 1.
+
+### Critérios de Aceitação
+
+- [x] Um `serve` sem erro é reportado ao nó como `terminal` com código `0`.
+- [x] O `serve` do `consume` larga a posse no fim.
+- [ ] **Verificado em PRODUÇÃO**: um plano submetido por `POST /plans` fica `terminal` com
+      `exit_code` 0, numa só geração. Exige a release com esta correcção.
+
+### Resíduos declarados
+
+1. **Uma retoma genuína depois da aprovação continua a falhar.** Se o `serve` falhar DE FACTO de
+   forma transitória depois de o plano estar aprovado, a retoma corre `serve --goal` outra vez, o
+   modelo re-decompõe, e o gate recusa o organigrama novo (AOS-412). Fechar exige que o `consume`
+   retome pelo documento aprovado (`--plan-doc`) em vez do objectivo.
+2. **Os dois planos de prova ficam gravados como falhados** no nó — o primeiro com `7`; o segundo
+   seguirá o mesmo caminho até esta correcção estar implantada. O trabalho deles foi feito.
+
+### Estado
+
+**ABERTO** até à verificação em produção.

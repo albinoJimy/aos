@@ -119,12 +119,7 @@ func cmdConsume(args []string) error {
 		fmt.Printf("reclamado: run=%s geracao=%d objectivo=%q\n", pedido.RunID, pedido.Geracao, pedido.Objective)
 
 		erroDoServe := correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker)
-		codigo := codigoDe(erroDoServe)
-		classe := classeDoDesfecho(codigo)
-		detalhe := ""
-		if erroDoServe != nil {
-			detalhe = erroDoServe.Error()
-		}
+		codigo, classe, detalhe := desfechoDoServe(erroDoServe)
 		fmt.Printf("desfecho: run=%s codigo=%d classe=%s\n", pedido.RunID, codigo, classe)
 
 		// O DESFECHO REPORTA-SE SEMPRE, mesmo quando o `serve` falhou. Não reportar deixa o
@@ -155,7 +150,28 @@ func cmdConsume(args []string) error {
 // a governação podia divergir, que é a forma de defeito que o AOS-424 e o AOS-425 passaram a
 // série inteira a encontrar.
 func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string) error {
-	args := []string{"--run", p.RunID, "--goal", p.Objective}
+	return cmdServe(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker))
+}
+
+// desfechoDoServe traduz o retorno do `serve` no que se reporta ao nó: código, classe e detalhe.
+// Existe como função — e não inline no ciclo — porque foi exactamente esta tradução que partiu
+// (AOS-438): o ciclo chamava `codigoDe` com `nil`, e nenhum teste passava por aqui.
+func desfechoDoServe(erroDoServe error) (codigo int, classe, detalhe string) {
+	codigo = codigoDe(erroDoServe)
+	if erroDoServe != nil {
+		detalhe = erroDoServe.Error()
+	}
+	return codigo, classeDoDesfecho(codigo), detalhe
+}
+
+// argsDoServe monta a invocação do `serve` para um pedido reclamado.
+//
+// `--release` (AOS-438): um `serve` que acaba bem LARGA a posse por anúncio. Sem isso o lease do run
+// ficava vivo até ao TTL, e qualquer nova reclamação do mesmo pedido — uma retoma depois de uma falha
+// transitória — batia em «run já tem um lease válido detido» (saída 3) até ele expirar. Medido em
+// produção: duas das quatro gerações de plan-e2e-437-1790336067 foram gastas contra o lease da primeira.
+func argsDoServe(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string) []string {
+	args := []string{"--run", p.RunID, "--goal", p.Objective, "--release"}
 	if snapshot != "" {
 		args = append(args, "--snapshot", snapshot)
 	}
@@ -164,5 +180,5 @@ func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout
 	}
 	args = append(args, "--plan-timeout", planTimeout.String(), "--poll-interval", pollInterval.String())
 	args = append(args, sub.comoFlags()...)
-	return cmdServe(args)
+	return args
 }
