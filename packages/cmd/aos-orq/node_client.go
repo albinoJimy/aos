@@ -381,6 +381,61 @@ func (c *nodeClient) Status(ctx context.Context, runID string) (estadoDoRun, boo
 	}
 }
 
+// toolDoNo é UMA tool do catálogo do nó (`GET /tools`, AOS-441): o nome que a lista-branca
+// compara, a versão e o digest do contrato (um pin do contrato — schema, scopes, egress — pela
+// fórmula do registo do nó, não prova de que algo foi assinado), e os dois eixos de risco que o
+// manifesto do nó declara, já normalizados fail-closed por ele (`egress` não declarado ⇒
+// `unknown`; `reversibility` que não seja «reversible» ⇒ `irreversible`).
+type toolDoNo struct {
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Digest        string `json:"digest"`
+	Egress        string `json:"egress"`
+	Reversibility string `json:"reversibility"`
+}
+
+// CatalogoDeTools lê o catálogo de tools do nó — as tools que ele oferece ao modelo.
+//
+// Tudo o que não seja um 200 com `tools` presente é ERRO, incluindo o 404 de um nó anterior ao
+// AOS-441: sem o catálogo não há com que comparar o snapshot, e o lado seguro é não arrancar.
+func (c *nodeClient) CatalogoDeTools(ctx context.Context) ([]toolDoNo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/tools", nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.autenticar(ctx, req); err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("catálogo de tools do nó: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return nil, errors.New("catálogo de tools do nó: GET /tools deu 404 — o nó é anterior ao AOS-441 e não expõe o catálogo; sem ele o snapshot não se confere")
+	default:
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("catálogo de tools do nó: HTTP %d %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	var corpo struct {
+		Tools *[]toolDoNo `json:"tools"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
+		return nil, fmt.Errorf("catálogo de tools do nó: resposta ilegível: %w", err)
+	}
+	if corpo.Tools == nil {
+		return nil, errors.New("catálogo de tools do nó: resposta sem `tools`")
+	}
+	for i, t := range *corpo.Tools {
+		if strings.TrimSpace(t.Name) == "" {
+			return nil, fmt.Errorf("catálogo de tools do nó: tool #%d sem nome", i)
+		}
+	}
+	return *corpo.Tools, nil
+}
+
 // pedidoReclamado é um pedido de plano que este consumidor tomou para si.
 //
 // A `Geracao` viaja porque é ela que amarra o DESFECHO à tentativa: sem ela, um desfecho

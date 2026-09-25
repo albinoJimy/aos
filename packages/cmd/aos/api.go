@@ -234,6 +234,9 @@ type apiConfig struct {
 	// fail-closed) e a selar cada leitura sensível no WORM. nil ⇒ read-path legado (sem authz
 	// por-chamador, sem selo) — a topologia soberana é condicional ao provisioning (deferido).
 	readGov *readGovernance
+	// toolCatalog é o catálogo que `GET /tools` serve (AOS-441, [WithToolCatalog]): as tools que
+	// o nó oferece ao modelo, com o digest do contrato. nil ⇒ catálogo vazio.
+	toolCatalog []entradaDoCatalogo
 }
 
 // APIOption configura a API HTTP.

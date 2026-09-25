@@ -202,7 +202,10 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		// AOS-430: leitura do estado do pedido DE QUEM PERGUNTA. planoDados porque e LEITURA e
 		// porque a titularidade se compara dentro do handler contra o principal gravado no facto
 		// — nao ha payload do chamador a virar sinal, que e o risco que a classe de controlo fecha.
-		"GET /plans/{id}":            planoDados,
+		"GET /plans/{id}": planoDados,
+		// AOS-441: o catálogo de tools do nó, lido pelo `aos-orq` para conferir o snapshot. LEITURA
+		// sem payload do chamador e sem dados de titular — nada nela vira sinal.
+		"GET /tools":                 planoDados,
 		"GET /runs/{id}/trajectory":  planoDados,
 		"GET /runs/{id}/reconstruct": planoDados,
 

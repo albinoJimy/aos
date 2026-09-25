@@ -241,6 +241,11 @@ func (h *apiHandler) tabelaDeRotas() []rota {
 		// que mantém `aos-internal/…` fora do alcance de `GET /runs/{id}`. Daí o
 		// `runIDReservado` explícito no handler.
 		{"GET /plans/{id}", h.handlePlanStatus, planoDados},
+		// Plano de DADOS — CATÁLOGO DE TOOLS do nó (AOS-441). LEITURA sem payload do chamador,
+		// para o `aos-orq` comparar o snapshot pinado com as tools que o nó de facto oferece ao
+		// modelo. Com o gate soberano composto, a mesma credencial das rotas irmãs; sem ele, o
+		// read-path legado do `GET /runs/{id}`. Ver catalogo_de_tools.go.
+		{"GET /tools", h.handleToolCatalog, planoDados},
 		// Plano de DADOS — read-path TEMPO-REAL (AOS-167): SSE dos eventos da trajectória.
 		{"GET /runs/{id}/trajectory", h.handleTrajectory, planoDados},
 		// Plano de DADOS — RECONSTRUÇÃO SOBERANA de conteúdo selado (AOS-214): decifra o conteúdo

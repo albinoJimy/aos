@@ -106,6 +106,19 @@ func cmdConsume(args []string) error {
 	}
 
 	ctx := context.Background()
+	// AOS-441 — O SNAPSHOT CONFERE-SE COM O NÓ ANTES DE RECLAMAR. Cada pedido corre um `serve
+	// --goal`, que exige o snapshot; um consume sem ele, ou com um que nomeia tools que o nó não
+	// tem, falharia TODOS os pedidos da mesma maneira — e cada falha gastava uma geração. Pela
+	// mesma razão do substrato acima: o que já se sabe antes de pedir não se descobre depois.
+	if *snapshot == "" {
+		return errors.New("consume exige --snapshot: cada pedido é decomposto por `serve --goal`, que valida o plano contra o snapshot pinado")
+	}
+	snapConferido, err := conferirSnapshotComONo(ctx, cli, *snapshot)
+	if err != nil {
+		return err
+	}
+	// A mesma linha do `serve`: é por ela que o registo da drenagem prova que a conferência correu.
+	fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
 	consumidos := 0
 	for consumidos < *maxPedidos {
 		pedido, houve, err := cli.ReclamarPedido(ctx)

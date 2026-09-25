@@ -98,6 +98,11 @@ func (f *aos413No) servidor(t *testing.T) *httptest.Server {
 		no := id[strings.LastIndex(id, "~")+1:]
 		_ = json.NewEncoder(w).Encode(map[string]any{"run_id": id, "status": "completed", "terminated": !f.aMeio[no], "final_text": saida})
 	})
+	// AOS-441: o `serve` com executor confere o snapshot com o catálogo do nó antes da posse. O
+	// nó falso tem as tools do snapshot destes testes (aos408SnapshotComPerigo), tal e qual.
+	mux.HandleFunc("GET /tools", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(aos441CatalogoDoSnapshotComPerigo))
+	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv

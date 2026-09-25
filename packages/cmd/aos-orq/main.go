@@ -299,6 +299,19 @@ func cmdServe(args []string) error {
 	}
 
 	ctx := context.Background()
+	// AOS-441: com o executor de nós composto, o snapshot confere-se com o catálogo de tools do
+	// nó ANTES da posse — é pelos nomes dele que os runs dos nós vão pedir as tools. Um snapshot
+	// que diverge recusa aqui, com a divergência nomeada, sem reclamar o lease.
+	// O conferido é o que se usa daqui em diante — não se relê o ficheiro (TOCTOU).
+	var conferido snapshotConferido
+	if cliDoNo != nil && *snapshot != "" {
+		snapConferido, err := conferirSnapshotComONo(ctx, cliDoNo, *snapshot)
+		if err != nil {
+			return err
+		}
+		conferido = snapshotConferido{snap: snapConferido, ok: true}
+		fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
+	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
 	// Ver substrato.go, onde essa diferença está nomeada.
@@ -407,7 +420,7 @@ func cmdServe(args []string) error {
 		if *snapshot == "" {
 			return errors.New("--goal exige --snapshot: o validador (AOS-231) e o oráculo de efeito derivam do snapshot pinado")
 		}
-		snap, err := carregarSnapshot(*snapshot)
+		snap, err := conferido.obter(*snapshot)
 		if err != nil {
 			return err
 		}
@@ -454,7 +467,7 @@ func cmdServe(args []string) error {
 	// snapshot pinado e não aceita substituição — ver o comentário lá. O que este
 	// comando fornece é a FONTE do snapshot e o documento aprovado.
 	if *planDoc != "" {
-		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, *worker, exe); err != nil {
+		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, conferido, *worker, exe); err != nil {
 			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
@@ -544,11 +557,11 @@ func separar(s string) []string {
 // tecto real vem do plano de controlo, e este comando não o compõe. É limitação de
 // escopo DESTE binário — a admissão em si ([runlifecycle.BudgetAdmission]) é a real,
 // com reserva atómica em toda a ancestralidade e saldo por Commit/Release.
-func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string, exe *configDoExecutor) error {
+func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath string, conferido snapshotConferido, worker string, exe *configDoExecutor) error {
 	if snapPath == "" {
 		return errors.New("--plan-doc exige --snapshot: sem o snapshot pinado não há oráculo de efeito real, e o verificador materializaria com autoridade vazia (DEF-273)")
 	}
-	snap, err := carregarSnapshot(snapPath)
+	snap, err := conferido.obter(snapPath)
 	if err != nil {
 		return err
 	}

@@ -5541,17 +5541,70 @@ compara rótulos (`plan_gate_wiring.go:76-84`) e sela o digest do conteúdo (`:8
 compara o conteúdo com as tools que o nó tem**. O próprio `snapshot.go:17-22` diz «em produção o
 snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º eixo.
 
+### O que se entregou
+
+- **O nó expõe o seu catálogo** em `GET /tools` (`packages/cmd/aos/catalogo_de_tools.go`), plano de
+  dados: por tool, o nome que a lista-branca compara, a versão, o digest do contrato e os dois eixos
+  de risco que o manifesto declara, normalizados fail-closed (`egress` não declarado ⇒ `unknown`;
+  `reversibility` que não seja «reversible» ⇒ `irreversible`). O digest é um **pin do contrato**
+  `KindTool` — schema de entrada, scopes e egress —, calculado pela fórmula do registo assinado; não
+  cobre a capability, o recurso, a reversibilidade nem o binding de sandbox, e **não prova registo
+  assinado**: em produção o `AOS_MODEL_TOOLS_REGISTER` vem vazio e nada é assinado. Compõe-se uma
+  vez no arranque (`serveAPI`), do mesmo manifesto que o nó oferece ao modelo; sem
+  `AOS_MODEL_ENDPOINT` é vazio. Com o gate soberano composto exige a credencial das rotas irmãs
+  (`/plans/claim`, `/plans/outcome`); sem ele serve pelo read-path legado, como o `GET /runs/{id}`.
+- **O `aos-orq` confere o snapshot com esse catálogo** (`conferirSnapshotComONo`, `snapshot.go`)
+  no arranque do `consume` — antes de reclamar qualquer pedido, e passa a exigir `--snapshot` — e
+  do `serve` com `AOS_ORQ_NODE_URL` — antes de abrir o WAL e de tomar posse. Recusa com
+  `ErrSnapshotDivergeDoNo` se uma tool do snapshot não existir no nó, se o digest não for o do nó,
+  ou se `egress`/`reversibility` forem **menos arriscados** do que o nó declara (mais conservador é
+  aceite; `unknown` no nó conta como o pior caso). Cada divergência vem nomeada, e a lista das tools
+  do nó vem com o digest a copiar. Um catálogo que não se lê (transporte, credencial, nó sem
+  `GET /tools`) ou com nomes repetidos recusa com `ErrCatalogoDoNoIlegivel` — fail-closed, mas sem
+  afirmar uma divergência que não se mediu. O `serve` usa daí em diante o snapshot **conferido**, e
+  não uma segunda leitura do ficheiro.
+- Testes: `aos441_snapshot_vs_catalogo_test.go` (aos-orq) e `aos441_catalogo_de_tools_test.go`
+  (nó), este último sobre o manifesto real de `deploy/server/model-tools/tools.json`, amarrando o
+  digest servido ao do registo, e batendo no servidor que o `serveAPI` constrói
+  (`TestAOS441ServeAPIServeOCatalogo`; apagar o `WithToolCatalog` avermelha-o).
+
 ### Critérios de Aceitação
 
 - [ ] O snapshot passa a derivar-se do catálogo do nó (ou do REG), com os digests reais das tools.
-- [ ] Um snapshot cujas tools não existam no nó é RECUSADO no arranque do `consume`/`serve`, com a
-      divergência nomeada.
-- [ ] Teste: renomear uma tool no catálogo avermelha.
-- [ ] **Verificado em PRODUÇÃO**: o snapshot em uso bate com o catálogo do nó.
+      **Parcial:** os digests reais passam a ser **obrigatórios** (um digest que não é o do nó é
+      recusado) e o nó serve-os, mas o snapshot não é gerado — ver o resíduo 1.
+- [x] Um snapshot cujas tools não existam no nó é RECUSADO no arranque do `consume`/`serve`, com a
+      divergência nomeada. `TestAOS441ConsumeRecusaSnapshotDivergenteAntesDeReclamar` (zero
+      reclamações) e `TestAOS441ServeConfereOSnapshotAntesDaPosse` (binário real: sai `1`, nomeia
+      `fs.read` e `doc_read`, não abre o WAL; e o controlo com o catálogo certo, que toma posse).
+- [x] Teste: renomear uma tool no catálogo avermelha. `TestAOS441RenomearUmaToolNoCatalogoAvermelha`
+      (o caso de produção: `fs.read` → `doc_read`).
+- [ ] **Verificado em PRODUÇÃO**: o snapshot em uso bate com o catálogo do nó. Exige uma release com
+      esta alteração; o snapshot de produção tem o digest `sha256:aaa`, que passa a ser recusado.
+
+### Resíduos declarados
+
+1. **A derivação completa do snapshot não se fez, porque exigiria inventar eixos de risco.** O
+   manifesto do nó (`AOS_MODEL_TOOLS`) declara `egress` e `reversibility`, mas não a
+   `sensitivity` nem a admissibilidade; gerar o snapshot a partir do catálogo obrigaria a
+   escolhê-las aqui. Continuam escritas à mão, e o que é conferível passa a sê-lo. Fechar exige que
+   o manifesto do nó (ou o REG) declare a sensibilidade.
+2. **A versão não se compara.** O manifesto do nó não versiona tools — o registo assinado pina
+   todas em `1.0.0` — pelo que uma diferença de versão não diria nada sobre a tool.
+3. **A conferência é no arranque.** Um nó reiniciado com outro manifesto a meio de uma drenagem só
+   é apanhado pelo `serve` do pedido seguinte, que também confere antes da posse.
+4. **A transição em produção tem uma ordem, e o código não a impõe.** O digest de cada tool entra
+   no `digestDoSnapshot` que o `plan.validated` sela, e o `exigirSnapshotSelado` recusa materializar
+   sob outro conteúdo. Por isso um plano pendente ou em voo validado sob o snapshot com
+   `sha256:aaa` deixa de correr quando o snapshot é corrigido: sai com `1`, que é transitório, e é
+   re-oferecido até ao tecto de pendentes sem nunca correr. E, entre o deploy e a correcção do
+   `orq/snapshot.json`, a drenagem recusa em cada tick. A ordem — drenar e decidir os pendentes
+   **antes** do release, corrigir o snapshot com os digests que a recusa (ou o `GET /tools`) lista
+   logo depois do deploy — está em `deploy/server/README.md` §executor de nós.
 
 ### Estado
 
-**ABERTO.**
+**ABERTO** até à verificação em produção.
 
 ---
 
