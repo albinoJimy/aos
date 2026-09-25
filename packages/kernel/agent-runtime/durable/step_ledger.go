@@ -704,6 +704,12 @@ func (l *StepLedger) Rebuild(ctx context.Context, runID string) error {
 			if errors.Is(cerr, ErrSealedResultNoCipher) {
 				return cerr
 			}
+			// AOS-436: INDISPONÍVEL não é APAGADO. Saltar aqui tirava do ledger um passo já
+			// aplicado e a retoma re-executava o efeito externo. Falha fechado: o run não é
+			// hospedado até o conteúdo voltar a abrir.
+			if errors.Is(cerr, ErrConteudoIndisponivel) {
+				return fmt.Errorf("durable: rebuild do ledger de %q interrompido: %w", runID, cerr)
+			}
 			continue
 		}
 		// `rec` (o persistido) tem o titular; `clear` já não. O índice alimenta-se do

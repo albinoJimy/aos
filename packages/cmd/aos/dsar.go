@@ -25,12 +25,14 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	control "github.com/aos-ref/kernel/agent-runtime/control"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	audit "github.com/aos-ref/platform/audit"
 )
 
@@ -73,8 +75,43 @@ func (s *contentSealer) SealContent(_ context.Context, subject, streamID string,
 
 // OpenContent decifra o que SealContent selou. FAIL-CLOSED após crypto-shredding: se a
 // KEK do titular foi destruída devolve [audit.ErrDecrypt] — o conteúdo é irrecuperável.
-func (s *contentSealer) OpenContent(_ context.Context, subject string, sealed []byte) ([]byte, error) {
-	return audit.OpenContent(s.vault, subject, sealed)
+//
+// AOS-436 — «NÃO ABRE» TEM DUAS CAUSAS, e o chamador precisa de as distinguir. O step-ledger
+// ([durable.StepLedger.Rebuild]) trata um conteúdo APAGADO como um passo que deixa de se
+// reconstruir; tratar assim um conteúdo que só está INDISPONÍVEL — portão da custódia fechado
+// enquanto a reconciliação não se prova, ou um Vault que não respondeu — apagava do ledger um passo
+// já aplicado, e a retoma re-executava o efeito externo (ADR-015). Por isso: portão fechado, ou
+// falha com a KEK ainda viva (ou por verificar), sai como [durable.ErrConteudoIndisponivel] — e NÃO
+// como [audit.ErrDecrypt], que o read-path lê como «apagado» (410).
+//
+// O QUE ISTO CLASSIFICA MAL, DECLARADO (achado N1 da terceira revisão). «A KEK existe» pergunta pelo
+// NOME, e um titular apagado que VOLTOU tem uma KEK viva de geração nova. O conteúdo antigo dele —
+// selado sob a geração destruída — falha com a KEK viva e sai como INDISPONÍVEL (503, e o Rebuild
+// desses runs antigos falha em cada varrimento) quando é APAGADO. Não se distingue aqui porque a
+// porta [audit.KeyVault] devolve só um bool no UnwrapDEK: separar «400, este blob não é desta chave»
+// de «5xx, a custódia não respondeu» exige mudar essa porta partilhada. A alternativa barata — tratar
+// como apagado sempre que a KEK nasceu depois de um apagamento registado — reabria o H-a para os runs
+// NOVOS do mesmo titular numa falha passageira, e repetir um efeito externo é pior do que classificar
+// mal conteúdo que continua ilegível. O sentido do erro é o seguro: nada se decifra, nada se repete.
+func (s *contentSealer) OpenContent(ctx context.Context, subject string, sealed []byte) ([]byte, error) {
+	if p, ok := s.vault.(interface{ portaoDoTitular(string) error }); ok {
+		if err := p.portaoDoTitular(subject); err != nil {
+			return nil, fmt.Errorf("%w: %v", durable.ErrConteudoIndisponivel, err)
+		}
+	}
+	claro, err := audit.OpenContent(s.vault, subject, sealed)
+	if err == nil {
+		return claro, nil
+	}
+	if k, ok := s.vault.(interface {
+		kekDestruida(context.Context, string) (bool, error)
+	}); ok {
+		destruida, kerr := k.kekDestruida(ctx, subject)
+		if kerr != nil || !destruida {
+			return nil, fmt.Errorf("%w: o desembrulho falhou com a KEK viva ou por verificar: %v", durable.ErrConteudoIndisponivel, err)
+		}
+	}
+	return nil, err
 }
 
 // contentSealer satisfaz a porta de cifra por-titular do substrato (compile-time).

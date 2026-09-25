@@ -58,7 +58,8 @@ const (
 	// A ACÇÃO entra no payload de propósito: uma assinatura produzida para `hold` não pode ser
 	// reapresentada como `erase`. Está aqui só pelo vocabulário do tuplo — é o `kind` que impede
 	// reutilizar a assinatura de uma revogação ou de uma mudança de autonomia como acção DSAR, e
-	// vice-versa. A destruição que autoriza é a única operação do nó que nenhum restore desfaz,
+	// vice-versa. A destruição que autoriza é a operação do nó que se quer irreversível (desde
+	// AOS-436 o nó re-destrói no arranque a KEK que um restauro de backup traga de volta),
 	// pelo que era a que menos podia ficar autorizada por um mero token de leitura (o defeito que
 	// AOS-367 fecha).
 	SignalDSAR SignalKind = "governance.dsar"

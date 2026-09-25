@@ -36,6 +36,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/substrate/eventstore"
@@ -184,6 +185,10 @@ func (h *apiHandler) handleReconstruct(w http.ResponseWriter, r *http.Request) {
 //   - o resto ⇒ 500 sem detalhe.
 func reconstructErrorStatus(err error) int {
 	switch {
+	case errors.Is(err, durable.ErrConteudoIndisponivel):
+		// AOS-436: portão da custódia fechado ou Vault sem resposta — o conteúdo NÃO foi apagado,
+		// está indisponível. 503, e não o 410 que diria ao leitor que foi.
+		return http.StatusServiceUnavailable
 	case errors.Is(err, audit.ErrDecrypt):
 		return http.StatusGone
 	case errors.Is(err, replay.ErrPayloadAccessDenied):
