@@ -13,8 +13,11 @@
 #       assina imagens — AOS-196) e estado errado desde AOS-207. Residual que CONTINUA aberto e
 #       nomeado: a assinatura não está ANEXADA à imagem no registry (sem OCI referrers);
 #   (4) gates FAIL-CLOSED na entrega (scripts/ci/package.sh reutiliza sast/sca/secrets);
-#   (5) a autoridade de IDENTIDADE (issuer, AOS-156) é um trust-domain SEPARADO — a sua chave
-#       NUNCA entra nesta imagem; vem do vault em runtime (ADR-006).
+#   (5) a autoridade de IDENTIDADE (issuer, AOS-156) é um trust-domain SEPARADO — a sua CHAVE
+#       NUNCA entra nesta imagem; vem do vault em runtime (ADR-006; o emissor automático assina
+#       no Vault transit, ADR-033). O BINÁRIO `aos-issuer` viaja nesta imagem desde AOS-437,
+#       atestado como o nó (subject `usr/local/bin/aos-issuer`): o que fica de fora é a chave e
+#       a sua custódia, não o código que a usa (emenda AOS-437 ao ADR-017).
 #
 # Contexto de build = RAIZ do repo (os 42 `replace ... => ../../` de packages/cmd/aos/go.mod
 # são relativos; a árvore packages/ inteira tem de estar no contexto para resolverem offline).
@@ -25,7 +28,7 @@
 # =============================================================================
 
 # ----------------------------------------------------------------------------
-# STAGE 1 — builder: compila os binários ESTÁTICOS zero-dep (nó e aos-orq) + o healthprobe.
+# STAGE 1 — builder: compila os binários ESTÁTICOS zero-dep (nó, aos-orq, aos-issuer) + o healthprobe.
 # golang:1.25.13-bookworm  (go 1.25.13, casa com `go 1.25` / `toolchain go1.25.13` dos módulos)
 # ----------------------------------------------------------------------------
 FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS builder
@@ -62,13 +65,25 @@ RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos .
 WORKDIR /src/packages/cmd/aos-orq
 RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos-orq .
 
+# --- Emissor de identidade `aos-issuer` (AOS-437) -----------------------------
+# Viaja na MESMA imagem assinada pela razão do aos-orq: produção corre-o (a cunhagem com mandato
+# do ADR-033, `mandate-sign`/`mint-mandated`) a partir do digest que o deploy pinou, atestado como
+# subject próprio (`usr/local/bin/aos-issuer`, SBOM `sbom-aos-issuer.json`). Só o BINÁRIO entra:
+# a chave do emissor vive no Vault transit e nunca nesta imagem (ponto 5 acima, ADR-017 §5).
+# Ao contrário do aos-orq, o módulo TEM go.sum (cedar-go, pelo grafo de governação): PRIME
+# EXPLÍCITO do seu próprio go.sum em vez de herdar o cache que o bloco do nó deixou — se os dois
+# go.sum divergirem um dia, é o `go mod verify` deste módulo que o apanha.
+WORKDIR /src/packages/cmd/aos-issuer
+RUN go mod download && go mod verify
+RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos-issuer .
+
 # --- healthprobe (zero-dep: só stdlib => offline trivial, sem cache externo) --
 WORKDIR /src/healthprobe
 RUN GOPROXY=off go build -trimpath -ldflags="-s -w -buildid=" -o /out/aos-healthprobe .
 
 # ----------------------------------------------------------------------------
 # STAGE 2 — final: distroless STATIC, NON-ROOT. Sem shell, sem package-manager,
-# sem segredos. Só os três binários estáticos (nó, orquestrador, healthprobe).
+# sem segredos. Só os quatro binários estáticos (nó, orquestrador, emissor, healthprobe).
 # gcr.io/distroless/static-debian12:nonroot
 # ----------------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35
@@ -92,7 +107,7 @@ FROM gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a
 # disser, o label parece uma instrução executável e não é. Por isso cada valor qualifica-se a si
 # próprio: onde NÃO está o artefacto, e o que a verificação EXIGE para dar verde.
 LABEL org.opencontainers.image.title="aos-node" \
-      org.opencontainers.image.description="Nó de referência do Agentic OS (AOS-168) e orquestrador aos-orq (AOS-403), distroless non-root read-only" \
+      org.opencontainers.image.description="Nó de referência do Agentic OS (AOS-168), orquestrador aos-orq (AOS-403) e emissor aos-issuer sem chave (AOS-437), distroless non-root read-only" \
       org.opencontainers.image.source="github.com/aos-ref/cmd/aos" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.aos.adr="ADR-017" \
@@ -106,6 +121,7 @@ LABEL org.opencontainers.image.title="aos-node" \
 # Binários estáticos (o único conteúdo mutável do artefacto).
 COPY --from=builder /out/aos /usr/local/bin/aos
 COPY --from=builder /out/aos-orq /usr/local/bin/aos-orq
+COPY --from=builder /out/aos-issuer /usr/local/bin/aos-issuer
 COPY --from=builder /out/aos-healthprobe /usr/local/bin/aos-healthprobe
 
 # NON-ROOT por UID NUMÉRICO (o distroless `nonroot` é uid:gid 65532:65532). UID numérico (não

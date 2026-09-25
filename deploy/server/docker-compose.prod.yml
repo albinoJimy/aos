@@ -569,8 +569,9 @@ services:
       # orçamento DELE.
       #
       # O travão de custo REAL é o `AOS_BUDGET_MAX_TOKENS` do serviço `aos` (linha ~338), que
-      # reserva antes do turno e salda pelo consumo MEDIDO — e que está vazio por omissão, o
-      # que o nó declara no arranque. Configurar este e não aquele deixa o custo sem tecto.
+      # reserva antes do turno e salda pelo consumo MEDIDO — vazio por omissão neste ficheiro (o
+      # que o nó declara no arranque), e em produção definido no .env (200000 por run, medido a
+      # 2026-09-25). Configurar este e não aquele deixa o custo sem tecto.
       AOS_ORQ_PLAN_BUDGET_MAX_TOKENS: "${AOS_ORQ_PLAN_BUDGET_MAX_TOKENS:-}"
       AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD: "${AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD:-}"
     volumes:
@@ -581,6 +582,69 @@ services:
       # AOS-413: o segredo do cliente do IdP com que o executor de nós obtém o Bearer (o mesmo
       # cliente `aos-reader` do E2E). Só é lido com AOS_ORQ_OIDC_CLIENT_SECRET_FILE apontado aqui.
       - ./secrets/reader-client-secret:/run/aos-orq/reader-client-secret:ro
+      # AOS-437: o NHI que o `aos-issuer` cunha sob o mandato (ver o serviço abaixo). SÓ LEITURA
+      # aqui: quem escreve é o emissor. O drenador aponta AOS_ORQ_NODE_CREDENTIAL_FILE para
+      # /run/aos-nhi/nhi-run.jwt, e o `consume` relê-o a cada submissão — renovar é substituir o
+      # ficheiro, sem reiniciar nada.
+      - ./nhi:/run/aos-nhi:ro
+
+  # --- o emissor AUTOMÁTICO `aos-issuer` (AOS-427/437, ADR-033): cunha o NHI do run sem operador ---
+  #
+  # Corrida PONTUAL, como o `aos-orq`: está no profile `issuer` para que o `deploy.sh` nunca o
+  # arranque, e corre-o o timer `aos-cunhar-nhi` (deploy/server/systemd/, via cunhar-nhi.sh).
+  #
+  # O QUE O LIMITA NÃO ESTÁ AQUI — está no NÓ. A chave `aos-issuer-auto` vive no Vault transit deste
+  # servidor e o token abaixo só a deixa ASSINAR; o nó só aceita o que ela assina DENTRO do mandato
+  # que um humano assinou com a SUA chave (AOS_MANDATE_SIGNERS). Quem comprometer este contentor, o
+  # token ou a chave cunha dentro do mandato e mais nada. Root no host não é coberto (ADR-033 §2.1).
+  #
+  # Sem nenhuma flag de identidade: humano, board, agente, classe, política e escopo vêm TODOS do
+  # mandato. A chave do humano escolhe-se da MESMA lista que o nó lê (`--signers`), e o mandato é
+  # verificado contra ela ANTES de se pedir uma assinatura ao Vault.
+  aos-issuer:
+    image: ${AOS_IMAGE:?AOS_IMAGE por definir — use --env-file /opt/aos/image.env}
+    profiles: ["issuer"]
+    entrypoint: ["/usr/local/bin/aos-issuer"]
+    command:
+      - mint-mandated
+      - --mandate
+      - /etc/aos-issuer/mandato.json
+      - --signers
+      - "${AOS_MANDATE_SIGNERS:-}"
+      - --vault-addr
+      - https://vault:8200
+      - --vault-key
+      - aos-issuer-auto
+      - --vault-token-path
+      - /run/aos-issuer/vault-token
+      - --vault-ca
+      - /etc/aos/internal-ca.crt
+      - --out
+      - /var/lib/aos-nhi/nhi-run.jwt
+      - --out-mode
+      - "0600"
+    restart: "no"
+    mem_limit: 64m
+    pids_limit: 64
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
+    # O HEALTHCHECK da imagem sonda o HTTP do NÓ, que este processo não serve.
+    healthcheck:
+      disable: true
+    volumes:
+      # O mandato que o humano assinou na SUA máquina (`aos-issuer mandate-sign`) e copiou para aqui.
+      - ./orq/mandato.json:/etc/aos-issuer/mandato.json:ro
+      # Token do Vault que SÓ assina com `aos-issuer-auto` (provision-issuer-auto.sh). NUNCA o do nó.
+      - ./secrets/vault-issuer-token:/run/aos-issuer/vault-token:ro
+      - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
+      # ÚNICA montagem gravável: a pasta do NHI, dona do uid 65532 e 0700 (provision-issuer-auto.sh).
+      # A escrita é atómica (temporário + rename no mesmo directório). NUNCA o aos-data do nó.
+      - ./nhi:/var/lib/aos-nhi
 
   # --- edge de ingresso: termina TLS e é a ÚNICA porta publicada no host ----------------------
   edge:

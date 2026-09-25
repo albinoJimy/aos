@@ -1,0 +1,15 @@
+[Unit]
+Description=Drena a fila de pedidos de plano do no AOS sem operador (AOS-437)
+Documentation=file:///opt/aos/README.md
+After=docker.service aos-cunhar-nhi.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=aos
+Group=aos
+ExecStart=/opt/aos/drenar-planos.sh
+# Um plano pode durar ate --plan-timeout (40 min por omissao) MAIS a decomposicao, e o consume
+# drena ate 3: ~2h30 no pior caso, dentro das 4h. O systemd nunca arranca um segundo oneshot
+# enquanto este esta activo, e o flock do script cobre uma corrida a mao.
+TimeoutStartSec=4h

@@ -1,0 +1,15 @@
+[Unit]
+Description=Cunha o NHI do run AOS sem operador, dentro do mandato (AOS-437, ADR-033)
+Documentation=file:///opt/aos/README.md
+After=docker.service
+Requires=docker.service
+Wants=aos-cunhar-nhi.timer
+
+[Service]
+Type=oneshot
+User=aos
+Group=aos
+ExecStart=/opt/aos/cunhar-nhi.sh
+# Sem Restart: a falha TEM de ficar visivel em `systemctl --failed`, que o alerta-nhi.sh le.
+# O token anterior dura ainda ~30 min; um retry automatico esconderia o sinal.
+TimeoutStartSec=5min

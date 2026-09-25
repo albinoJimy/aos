@@ -3,7 +3,8 @@
 Imagem **distroless, non-root, root-fs read-only** do nó de referência. A fronteira de
 supply-chain é ADR-017 (FIXA na Carta §4.1). Pontos **1/2/4 impostos**, ponto **3 mínimo**
 (SBOM + proveniência geradas; **assinatura DEFERIDA para EPIC-10** — declarado, não fingido),
-ponto **5 respeitado** (a chave do issuer **nunca** entra na imagem).
+ponto **5 respeitado** (a **chave** do issuer **nunca** entra na imagem; o **binário** `aos-issuer`
+viaja nela desde AOS-437, atestado como o nó — ver §«Entrega fail-closed»).
 
 ## Construir
 
@@ -45,9 +46,10 @@ O arranque de referência corre **in-memory** (não escreve no root-fs), pelo qu
 
 O ambiente é a **única** superfície de configuração do binário entregue (`Config` vive em
 `package main`: um campo que `nodeConfigFromEnv` não escreva é **inalcançável** por quem corre a
-imagem). A tabela abaixo é o **índice completo** — toda a variável lida pelos três binários da
+imagem). A tabela abaixo é o **índice completo** — toda a variável lida pelos binários da
 imagem (o nó, `packages/cmd/aos`, o orquestrador `aos-orq` desde AOS-403, e o `aos-healthprobe` do
-`HEALTHCHECK`) está aqui. O `aos-orq` lê variáveis do nó (`AOS_MODE`, as `AOS_MODEL_*`,
+`HEALTHCHECK`) está aqui. O quarto, o emissor `aos-issuer` (AOS-437), **não lê nenhuma**: tudo lhe
+chega por flags, e as que o timer de produção passa estão no serviço `aos-issuer` do compose. O `aos-orq` lê variáveis do nó (`AOS_MODE`, as `AOS_MODEL_*`,
 `AOS_APPROVERS_FILE`) e, desde AOS-413, as `AOS_ORQ_*` do executor de nós do plano.
 
 O teste `TestAOS203EnvSurfaceIsDocumented` (`packages/cmd/aos/env_surface_test.go`) **avermelha**
@@ -1287,10 +1289,15 @@ bash scripts/ci/verify-attestation.sh   # recusa a entrega que não valide
 
 **Atestação assinada (AOS-207, fecha o ponto 3).** `sign.sh` emite um envelope **DSSE v1** com um
 **in-toto Statement v1** assinado em **ed25519**, cujos *subjects* são o digest da imagem, os
-dois binários (`usr/local/bin/aos` e, desde AOS-403, `usr/local/bin/aos-orq`), o SBOM de cada um
-(`sbom.json`, `sbom-aos-orq.json`), a proveniência e o manifesto de entrega. A proveniência mantém
-o nó em `subject` e lista o orquestrador em `additionalSubjects`, com a sua própria verificação de
-reprodutibilidade. `verify-attestation.sh` verifica a
+binários (`usr/local/bin/aos`, desde AOS-403 `usr/local/bin/aos-orq` e, desde AOS-437,
+`usr/local/bin/aos-issuer`), o SBOM de cada um (`sbom.json`, `sbom-aos-orq.json`,
+`sbom-aos-issuer.json`), a proveniência e o manifesto de entrega. A proveniência mantém o nó em
+`subject` e lista o orquestrador e o emissor em `additionalSubjects`, cada um com a sua própria
+verificação de reprodutibilidade. Do emissor viaja só o **binário**: a sua chave nunca entra na
+imagem (Vault transit, ADR-033; emenda AOS-437 ao ADR-017). O `aos-healthprobe` é a única
+excepção sem subject próprio (coberto só pelo digest da imagem), nomeada em
+`packages/cmd/aos-issuer/aos437_imagem_atestada_test.go`, que avermelha qualquer outro binário
+copiado pelo Dockerfile sem atestação. `verify-attestation.sh` verifica a
 assinatura contra `release-pubkeys.json` e **recompara cada digest com o artefacto real** — mexer
 no digest da imagem dentro de `delivery-manifest.json` põe o gate **vermelho**.
 

@@ -3586,9 +3586,10 @@ Era razoável enquanto o `serve` era invocado à mão por um operador.
 > no código.
 >
 > O travão de custo REAL é o `AOS_BUDGET_MAX_TOKENS` do **nó**, que reserva antes do turno e
-> salda pelo consumo MEDIDO. Está **por definir** em produção — o que é uma escolha explícita
-> («quem quer o nó sem orçamento deixa a variável por definir») e que o nó **já declara no
-> arranque**, com todas as letras. Essa ausência não é invisível; é uma decisão do operador.
+> salda pelo consumo MEDIDO. ~~Está **por definir** em produção~~ — **CORRIGIDO pelo AOS-437
+> (2026-09-25):** estava a **200000 tokens por run**, medido no contentor, e o banner do nó
+> declara-o COMPOSTO. A afirmação riscada foi escrita sem ir ver; fica riscada, e não apagada,
+> porque outros documentos a citaram.
 
 **Hoje é inalcançável** — o AOS-430 mediu que nada drena a fila em produção. É por isso que a
 prioridade é condicional, e é por isso que tem de ser feito **antes** do timer e não depois: uma
@@ -5205,3 +5206,128 @@ declarado; R5 fechado na ordem do runbook. Mediu quatro achados novos:
 ### Estado
 
 **FECHADO.**
+
+---
+
+## AOS-437 — A cunhagem sem operador existia em código e não corria em lado nenhum: a imagem, os timers e o sensor
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano); o eixo de identidade é o EPIC-16 / D4 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | operação + implementação |
+| Prioridade | **P1** — é o que falta ao critério «sem ninguém no terminal» do AOS-417, do AOS-423 e do AOS-427 |
+| Estimativa | M |
+| Dependências | AOS-427 (o mandato e o `mint-mandated`, ADR-033) |
+| Responsável sugerido | Responsável de Plataforma |
+| Documentos de referência | `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md`, `docs/adr/ADR-017-supply-chain-node.md`, `deploy/server/docker-compose.prod.yml`, `deploy/server/systemd/`, `deploy/server/alerta-ancora.sh`, `packages/cmd/aos-orq/consumir.go` |
+
+### Contexto
+
+O AOS-427 entregou o mandato: o humano assina, o `aos-issuer mint-mandated` cunha sem operador, e
+o nó só aceita o emissor automático dentro do mandato. **Nada disso corria em produção**, e o que
+faltava foi medido no servidor em 2026-09-25:
+
+| O que faltava | Medido |
+|---|---|
+| O `aos-issuer` **não vinha na imagem** | o `deploy/node/Dockerfile` compilava `aos`, `aos-orq` e o `healthprobe`; e o ADR-017 §5 dizia «nunca na imagem do nó», sem distinguir binário de chave |
+| **Ninguém drenava a fila** de planos | o único timer do servidor era o `aos-tls-sync`; o `aos-orq` é `restart: "no"` e o `consume` drena uma vez e termina |
+| **Ninguém cunhava** | não havia chave `aos-issuer-auto` no Vault, nem política que só a deixasse assinar, nem token |
+| **Nenhum sensor** via a credencial a caducar | o `aos-orq` não expõe `/metrics`; o precedente que funciona é o `alerta-ancora.sh` |
+| **Nenhum gate** apanhava um binário na imagem sem atestação | um `COPY` novo no Dockerfile sem subject no sbom/sign/verify ficava só coberto pelo digest da imagem, e nada ficava vermelho |
+
+E uma afirmação falsa por corrigir: o AOS-434 escreveu que `AOS_BUDGET_MAX_TOKENS` estava **por
+definir** em produção. Estava a **200000 por run** — medido no contentor.
+
+### O que se entregou
+
+**A imagem.** O `aos-issuer` viaja na imagem assinada, atestado como o `aos-orq` no AOS-403 —
+subject `usr/local/bin/aos-issuer`, SBOM próprio, reprodutibilidade em `additionalSubjects`. O
+ADR-017 ganha uma emenda que resolve a ambiguidade da §5: **o binário vai na imagem, a chave
+nunca** (vive no Vault transit, ADR-033). E um teste novo lê o Dockerfile e os três scripts da
+cadeia, e fica vermelho se algum binário copiado para `/usr/local/bin/` não tiver subject.
+
+**O servidor.**
+
+| Peça | O que faz |
+|---|---|
+| `provision-issuer-auto.sh` | chave `aos-issuer-auto` (ed25519, não exportável), política que **só** assina, token periódico, pasta `/opt/aos/nhi` (uid 65532, `0700`); **controla** cada uma — incluindo que o token não toca nas KEKs dos titulares — e imprime a pubkey pelo próprio `aos-issuer` |
+| serviço `aos-issuer` (profile `issuer`) | `mint-mandated` sem flags de identidade; a chave do humano vem da **mesma** lista que o nó lê (`--signers`, novo) |
+| `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | a cada 15 min, com 45 de vida: o NHI tem sempre entre 30 e 45 min; renova o token do Vault a cada passagem |
+| `aos-drenar-planos.timer` → `drenar-planos.sh` | 5 min depois da última drenagem (nunca sobrepostas); **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim |
+| `alerta-nhi.sh` (cron) | ntfy **antes** de faltar a credencial: NHI a < 20 min, mandato a < 7 dias, timer falhado |
+
+O NHI deixa de ser um ficheiro `0644` em `orq/` (a receita manual) e passa a viver numa pasta do
+uid 65532 em `0700`; os scripts do host lêem o prazo por um contentor com esse uid, sem rede.
+
+**O prazo do NHI lê-se sem jq nem Go no host**, com `sed` sobre o payload — e o mandato embebido
+também tem `exp`. O parser ancora em `"exp":N,"jti"`, que só o de topo tem, e
+`TestAOS437OExpDeTopoESeguidoDoJti` fixa essa forma: se a ordem das Claims mudar, os scripts
+passariam a ler o prazo do MANDATO (dias) e a drenagem nunca recusaria um NHI caducado. O parser
+foi exercido com um NHI real no BusyBox 1.37.
+
+### Critérios de Aceitação
+
+- [x] O `aos-issuer` viaja na imagem assinada, com subject, SBOM e reprodutibilidade próprios, e a
+      emenda ao ADR-017 que o autoriza.
+- [x] Um gate que avermelha um binário na imagem sem atestação.
+- [x] Provisionamento idempotente da chave, da política e do token, com controlo do que o token
+      consegue e do que não consegue.
+- [x] Timer de cunhagem, com escrita atómica do NHI.
+- [x] Timer de drenagem, sem sobreposição, que recusa reclamar sem credencial.
+- [x] Sensor que avisa antes de a credencial faltar e antes de o mandato caducar.
+- [x] Runbook no `deploy/server/README.md`: cerimónia do mandato, provisionamento, timers,
+      revogação, renovação e paragem.
+- [x] A afirmação falsa do AOS-434 corrigida, no ticket, no `budget_env.go` e no compose.
+- [ ] **Verificado em PRODUÇÃO**: um pedido entra por `POST /plans` e corre sem ninguém no
+      terminal. POR FAZER — exige a release com a imagem nova, e os passos do operador do runbook
+      (o mandato assinado na máquina dele, o provisionamento, as variáveis no `.env`, os timers).
+
+### Resíduos declarados
+
+1. **Não verificado em produção** — ver o critério por marcar.
+2. **Root no host do nó não é coberto** (ADR-033 §2.1): muda `AOS_MANDATE_SIGNERS` e reinicia.
+3. **O token do Vault do emissor é `0644` dentro de `secrets/` (`0700`)**, o mesmo precedente do
+   token do nó: o contentor corre como 65532 e lê-o pelo bind-mount. Só assina com
+   `aos-issuer-auto`, e o que assina só vale dentro do mandato.
+4. **O parser do prazo depende da ordem dos campos das Claims** — fixada por teste, não eliminada.
+5. **Uma cunhagem nunca usada não deixa rasto** (resíduo 4 do AOS-427): o `mint-mandated` corre
+   sem Event Store.
+6. **A drenagem é sequencial** (um `consume` de cada vez, até 3 pedidos por passagem): a vazão da
+   fila é a de um trabalhador.
+7. **Revogar o mandato não pára a máquina** (M1): o emissor não consulta o registo de revogação,
+   continua a cunhar, o nó recusa cada NHI, o `serve` classifica-o como transitório, o pedido volta
+   à fila e o `consume` sai com `0` — a cada 5 min, com uma decomposição ao modelo por tentativa. O
+   runbook manda parar os timers e retirar o mandato no mesmo acto. Fechar de todo exige que o
+   emissor pergunte ao nó, ou que o `consume` distinga a recusa de credencial.
+8. **Todos os planos da fila correm sob o humano do mandato**, seja quem for que os submeteu (M4):
+   o `POST /plans` grava o `principal` de quem pede, mas os runs levam o NHI do humano do mandato. A
+   cadeia on-behalf-of termina nele. Já era assim com o NHI manual do operador — mas aí havia um
+   operador a decidir drenar. Declarado no ADR-033 §5.
+9. **Só o primeiro pedido de cada drenagem vê o prazo do NHI** (B4): os seguintes são reclamados
+   sem nova verificação. Com a cunhagem a cada 15 min e o `consume` a reler o ficheiro a cada
+   submissão, só morde se a cunhagem parar a meio de uma drenagem longa.
+10. **O `aos-issuer` está na rede `default`** (B7), onde alcança o nó, o IdP e o LiteLLM; só precisa
+    do Vault. Uma rede dedicada obrigaria a mexer no serviço `vault`, o que o reinicia.
+11. **Não há procedimento de rotação do token do emissor** (B9); é filho do root, e revogar o root
+    revoga-o — o mesmo padrão do token do nó.
+12. **As chamadas ao Vault do controlo por ACL** (`sys/capabilities`, `auth/token/lookup` com o
+    token por stdin) **não foram exercidas contra um Vault real** — o Docker não estava disponível.
+    Correm no primeiro `provision-issuer-auto.sh`, que falha fechado se a forma da resposta divergir.
+
+**Revisão adversarial antes do merge (2026-09-25)** — um ALTO e quatro MÉDIOS:
+
+| Achado | Correcção |
+|---|---|
+| **ALTO** — o controlo negativo da política testava uma chave inexistente (404 com qualquer política; `encrypt` numa chave inexistente é um *create*), e um token existente era aceite sem verificar as políticas | controlo pela ACL (`sys/capabilities`, que responde pelo caminho e não pela existência) em oito caminhos proibidos, e políticas do token exactamente `[aos-issuer-auto]` |
+| M1 — revogar não pára a máquina | runbook: parar os timers e retirar o mandato no mesmo acto; resíduo 7 |
+| M2 — o sensor não via a drenagem parada (timer `inactive`, não `failed`) | `is-active` dos dois timers + carimbo da última drenagem bem-sucedida (alerta a 5 h) |
+| M3 — o teste da cadeia só casava a forma canónica do `COPY` | toda a linha `COPY`/`ADD` do estágio final tem de ser canónica; 6 variantes com mutação |
+| M4 — os planos correm sob o humano do mandato | declarado: resíduo 8, ADR-033 §5 |
+| BAIXOS | bind de um mandato inexistente criava uma directoria (verificado antes do compose); `Persistent=` sem efeito removido; `flock` e `--max 3` com 4h; prazo do NHI com tecto; comentário falso do deploy corrigido; `allow_plaintext_backup` verificado |
+
+### Estado
+
+**ABERTO** — entregue em código e em runbook; falta a verificação em produção, que depende de
+passos do operador.

@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -108,5 +112,71 @@ func TestAOS427MandateSignNaoCriaAChaveDoHumano(t *testing.T) {
 	}
 	if _, serr := os.Stat(filepath.Join(dir, "nao-existe.key")); !os.IsNotExist(serr) {
 		t.Fatal("mandate-sign criou uma chave humana em silencio")
+	}
+}
+
+// AOS-437: o timer passa a lista do nó, e a chave escolhe-se pelo humano do mandato.
+func TestAOS437MintMandatedComAListaDoNo(t *testing.T) {
+	dir, humanoPub, _ := cerimoniaMandato(t)
+	outro := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{9}, 32)).Public().(ed25519.PublicKey)
+	base := []string{"mint-mandated", "--mandate", filepath.Join(dir, "mandato.json"),
+		"--key-file", filepath.Join(dir, "emissor.key")}
+	lista := "bob=" + hex.EncodeToString(outro) + ",alice=" + hex.EncodeToString(humanoPub)
+	var out bytes.Buffer
+	if err := run(append(base, "--signers", lista), &out, &bytes.Buffer{}); err != nil || out.Len() == 0 {
+		t.Fatalf("com a lista do no, a chave da alice tinha de ser escolhida: %v", err)
+	}
+	for _, c := range []struct {
+		nome  string
+		extra []string
+	}{
+		{"humano ausente da lista", []string{"--signers", "bob=" + hex.EncodeToString(outro)}},
+		{"humano duas vezes", []string{"--signers", "alice=" + hex.EncodeToString(humanoPub) + ",alice=" + hex.EncodeToString(outro)}},
+		{"as duas flags", []string{"--signers", lista, "--signer-pubkey", hex.EncodeToString(humanoPub)}},
+		{"nenhuma flag", nil},
+	} {
+		if err := run(append(append([]string(nil), base...), c.extra...), &bytes.Buffer{}, &bytes.Buffer{}); err == nil {
+			t.Errorf("%s: tinha de recusar", c.nome)
+		}
+	}
+}
+
+// AOS-437: o drenar-planos.sh e o alerta-nhi.sh lêem o prazo do NHI com
+// `sed 's/.*"exp":\([0-9]*\),"jti".*/\1/p'` sobre o payload decifrado — sem jq nem Go no host. O
+// mandato embebido também tem `exp`, e só o de TOPO é seguido de `jti`. Se a ordem dos campos das
+// Claims mudar, os scripts passam a ler o prazo do MANDATO (dias) em vez do do token (minutos), e a
+// drenagem nunca recusa um NHI caducado. Este teste é o que o impede.
+func TestAOS437OExpDeTopoESeguidoDoJti(t *testing.T) {
+	dir, humanoPub, _ := cerimoniaMandato(t)
+	var out bytes.Buffer
+	if err := run([]string{"mint-mandated", "--mandate", filepath.Join(dir, "mandato.json"),
+		"--signer-pubkey", hex.EncodeToString(humanoPub), "--key-file", filepath.Join(dir, "emissor.key")},
+		&out, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	partes := strings.Split(strings.TrimSpace(out.String()), ".")
+	if len(partes) != 3 {
+		t.Fatalf("NHI malformado: %q", out.String())
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(partes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`"exp":([0-9]+),"jti"`)
+	todos := re.FindAllStringSubmatch(string(payload), -1)
+	if len(todos) != 1 {
+		t.Fatalf("o payload tem de ter exactamente UM `\"exp\":N,\"jti\"` (o de topo); tem %d:\n%s", len(todos), payload)
+	}
+	var c struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil {
+		t.Fatal(err)
+	}
+	if todos[0][1] != strconv.FormatInt(c.Exp, 10) {
+		t.Fatalf("o que os scripts leem (%s) nao e o exp de topo (%d)", todos[0][1], c.Exp)
+	}
+	if !strings.Contains(string(payload), `"mandate":`) {
+		t.Fatal("o NHI do emissor mandatado tem de levar o mandato — sem ele este teste nao provava a ambiguidade")
 	}
 }

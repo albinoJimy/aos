@@ -101,13 +101,16 @@ BIN="$OUT_DIR/aos"
 # AOS-403: o orquestrador viaja na mesma imagem e é atestado como o nó — binário e SBOM próprios.
 BIN_ORQ="$OUT_DIR/aos-orq"
 SBOM_ORQ="$OUT_DIR/sbom-aos-orq.json"
+# AOS-437: o emissor `aos-issuer` viaja na mesma imagem (o binário; a chave vive no Vault transit).
+BIN_ISS="$OUT_DIR/aos-issuer"
+SBOM_ISS="$OUT_DIR/sbom-aos-issuer.json"
 MANIFEST="$OUT_DIR/delivery-manifest.json"
 ENVELOPE="$OUT_DIR/attestation.dsse.json"
 
 log_gate "sign · atestação de entrega assinada (ADR-017 ponto 3 / AOS-207)"
 
 # --- Pré-condições: não se assina o que não existe ---------------------------
-for f in "$SBOM" "$PROV" "$BIN" "$BIN_ORQ" "$SBOM_ORQ"; do
+for f in "$SBOM" "$PROV" "$BIN" "$BIN_ORQ" "$SBOM_ORQ" "$BIN_ISS" "$SBOM_ISS"; do
   if [ ! -f "$f" ]; then
     log_fail "artefacto de entrega ausente: $f — corra scripts/ci/sbom.sh primeiro (fail-closed)"
     exit 1
@@ -221,15 +224,21 @@ prov_sha="$( sha_of "$PROV" )"
 bin_sha="$( sha_of "$BIN" )"
 orq_sha="$( sha_of "$BIN_ORQ" )"
 sbom_orq_sha="$( sha_of "$SBOM_ORQ" )"
+iss_sha="$( sha_of "$BIN_ISS" )"
+sbom_iss_sha="$( sha_of "$SBOM_ISS" )"
 commit="$( git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown )"
 now="$( date -u +%Y-%m-%dT%H:%M:%SZ )"
 
 python3 - "$MANIFEST" "$IMAGE_TAG" "$image_id" "$image_repo_digest" \
           "$sbom_sha" "$prov_sha" "$bin_sha" "$commit" "$now" "$signed" "$keyid" "$image_bound" \
-          "$orq_sha" "$sbom_orq_sha" <<'PY'
+          "$orq_sha" "$sbom_orq_sha" "$iss_sha" "$sbom_iss_sha" <<'PY'
 import json, sys
+# `sys.argv[1:]` e não uma fatia fixa (AOS-437): com `[1:15]` um argumento acrescentado no bash
+# sem o nome aqui era cortado em SILÊNCIO e os nomes seguintes ficavam desalinhados — e isto só
+# corre no release, onde a chave existe. Desempacotar TUDO rebenta com ValueError em qualquer
+# desacerto de contagem; packages/cmd/aos-issuer/aos437_imagem_atestada_test.go prova-o estático.
 (out, tag, image_id, repo_digest, sbom_sha, prov_sha, bin_sha, commit, now, signed, keyid,
- image_bound, orq_sha, sbom_orq_sha) = sys.argv[1:15]
+ image_bound, orq_sha, sbom_orq_sha, iss_sha, sbom_iss_sha) = sys.argv[1:]
 is_signed = signed == "1"
 is_bound = image_bound == "1"
 doc = {
@@ -252,6 +261,10 @@ doc = {
         {"name": "aos-orq", "path": "aos-orq", "sha256": orq_sha,
          "note": "orquestrador multi-no que a imagem carrega em /usr/local/bin/aos-orq (AOS-403)"},
         {"name": "sbom-aos-orq.json", "path": "sbom-aos-orq.json", "sha256": sbom_orq_sha},
+        {"name": "aos-issuer", "path": "aos-issuer", "sha256": iss_sha,
+         "note": ("emissor de identidade que a imagem carrega em /usr/local/bin/aos-issuer "
+                  "(AOS-437) — so o binario; a chave vive no Vault transit (ADR-033)")},
+        {"name": "sbom-aos-issuer.json", "path": "sbom-aos-issuer.json", "sha256": sbom_iss_sha},
         {"name": "provenance.json", "path": "provenance.json", "sha256": prov_sha},
     ],
     "attestation": {
@@ -294,18 +307,20 @@ if [ "$signed" -ne 1 ]; then
 fi
 
 # --- (4) STATEMENT in-toto v1 -------------------------------------------------
-# Os `subject` são o conjunto ATESTADO: imagem (quando há), binários (nó e, desde AOS-403, o
-# orquestrador `aos-orq`), os SBOMs de cada um, proveniência e o
+# Os `subject` são o conjunto ATESTADO: imagem (quando há), binários (nó, desde AOS-403 o
+# orquestrador `aos-orq` e, desde AOS-437, o emissor `aos-issuer`), os SBOMs de cada um, proveniência e o
 # próprio MANIFESTO. Incluir o manifesto como subject é o que torna a prova negativa exacta:
 # qualquer byte alterado nele muda o seu sha256 e a verificação avermelha.
 manifest_sha="$( sha_of "$MANIFEST" )"
 STATEMENT="$TOOLDIR/statement.json"
 log_step "construir o in-toto Statement v1 (subjects = imagem + binários + SBOMs + proveniência + manifesto)"
 python3 - "$STATEMENT" "$PROV" "$IMAGE_TAG" "$image_id" "$image_repo_digest" \
-          "$bin_sha" "$sbom_sha" "$prov_sha" "$manifest_sha" "$now" "$orq_sha" "$sbom_orq_sha" <<'PY'
+          "$bin_sha" "$sbom_sha" "$prov_sha" "$manifest_sha" "$now" "$orq_sha" "$sbom_orq_sha" \
+          "$iss_sha" "$sbom_iss_sha" <<'PY'
 import json, sys
+# `sys.argv[1:]` e não `[1:13]` — ver o manifesto acima (AOS-437).
 (out, prov_path, tag, image_id, repo_digest, bin_sha, sbom_sha, prov_sha, manifest_sha, now,
- orq_sha, sbom_orq_sha) = sys.argv[1:13]
+ orq_sha, sbom_orq_sha, iss_sha, sbom_iss_sha) = sys.argv[1:]
 with open(prov_path, "r", encoding="utf-8") as f:
     prov = json.load(f)
 
@@ -318,6 +333,8 @@ subjects += [
     {"name": "sbom.json", "digest": {"sha256": sbom_sha}},
     {"name": "usr/local/bin/aos-orq", "digest": {"sha256": orq_sha}},
     {"name": "sbom-aos-orq.json", "digest": {"sha256": sbom_orq_sha}},
+    {"name": "usr/local/bin/aos-issuer", "digest": {"sha256": iss_sha}},
+    {"name": "sbom-aos-issuer.json", "digest": {"sha256": sbom_iss_sha}},
     {"name": "provenance.json", "digest": {"sha256": prov_sha}},
     {"name": "delivery-manifest.json", "digest": {"sha256": manifest_sha}},
 ]

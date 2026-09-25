@@ -580,6 +580,102 @@ O contentor corre com o root-fs só de leitura, sem capabilities, como `65532` e
 di-lo), leva `orq/` na configuração e escreve `aos-orq-data=volume|ausente` no MANIFEST. O
 `restore-drill.sh` não restaura este volume: prova o nó, não o orquestrador.
 
+#### Cunhagem e drenagem SEM OPERADOR (AOS-427, AOS-437, ADR-033)
+
+Até aqui o NHI do run era cunhado à mão (dois logins no browser) e **nada drenava a fila** de
+pedidos de plano (AOS-430). A partir daqui o servidor faz as duas coisas sozinho, e o que as
+limita é o **nó**:
+
+| Peça | Onde corre | O que faz |
+|---|---|---|
+| O **mandato** | assinado **uma vez** na máquina do humano, com a chave **dele** | fixa humano, board, agente, classe, política, escopo, TTL máximo e janela (≤ 90 dias) |
+| `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | servidor, a cada 15 min | `aos-issuer mint-mandated` com a chave `aos-issuer-auto` no Vault transit; escreve `/opt/aos/nhi/nhi-run.jwt` (45 min) |
+| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim |
+| `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado **ou parado**, nenhuma drenagem bem-sucedida há 5 h |
+
+> ⚠️ **O que o mandato protege, e o que não.** Quem comprometer o **emissor** — o contentor, o
+> token do Vault, a chave transit — só cunha o que o humano assinou: o nó recusa o resto
+> (`E_MANDATE_VIOLATED`), e um mandato assinado por outra chave também (`E_MANDATE_INVALID`).
+> **Root neste host não é coberto**: muda `AOS_MANDATE_SIGNERS` no `.env` e reinicia o nó. É o
+> resíduo 7 do AOS-427, e está escrito no ADR-033 §2.1.
+
+**1. Na máquina do humano (PowerShell) — o mandato.** A chave do humano **nunca** vai para o
+servidor. O `pubkey` cria-a se não existir e imprime a parte pública, que vai para o `.env`:
+
+```powershell
+cd C:\Jimy\AOS\packages\cmd\aos-issuer
+go run . pubkey --key-file C:\Jimy\AOS\deploy\server\secrets-local\humano-mandato.key
+go run . mandate-sign --key-file C:\Jimy\AOS\deploy\server\secrets-local\humano-mandato.key `
+  --human <user_id> --board board-eu --agent agent:aos-orq --class <classe> --caps <caps,separadas> `
+  --out C:\Jimy\AOS\deploy\server\secrets-local\mandato.json
+scp C:\Jimy\AOS\deploy\server\secrets-local\mandato.json aos@37.60.241.150:/opt/aos/orq/mandato.json
+```
+
+O `<user_id>` é o do humano no IdP — o mesmo que os NHI manuais traziam; o agente, a classe e as
+capacidades são os do caminho do plano (as tools do snapshot e `model:invoke`). O `mandate-sign`
+imprime o **id** do mandato e a chave de revogação: guarde-os. O mandato **não é segredo** (é um
+documento assinado), e o contentor lê-o como `65532`: no servidor, `chmod 644 /opt/aos/orq/mandato.json`.
+
+**2. No servidor, como `aos` — o Vault e a pasta do NHI.** Depois da release que traz o
+`aos-issuer` na imagem:
+
+```bash
+bash /opt/aos/provision-issuer-auto.sh
+```
+
+Cria a chave `aos-issuer-auto` (ed25519, não exportável), a política que **só** a deixa assinar, o
+token (`secrets/vault-issuer-token`) e a pasta `/opt/aos/nhi` (uid 65532, `0700`) — e **controla**
+cada uma, incluindo que o token **não** consegue tocar nas KEKs dos titulares. No fim imprime as
+linhas do `.env`. Acrescente-as (com a chave do humano do passo 1 em `AOS_MANDATE_SIGNERS`) e as
+quatro `AOS_ORQ_NODE_URL`/`AOS_ORQ_OIDC_*` do `.env.example`, e reinicie o nó. **Confirme no
+arranque:** `emissor MANDATADO (AOS-427, ADR-033): COMPOSTO — … 1 humano(s) pinado(s)`.
+
+**3. Provar à mão, antes de ligar os timers:**
+
+```bash
+bash /opt/aos/cunhar-nhi.sh        # «NHI cunhado em /opt/aos/nhi/nhi-run.jwt»
+bash /opt/aos/drenar-planos.sh     # drena (ou não há nada) e diz a vida que resta ao NHI
+bash /opt/aos/alerta-nhi.sh        # «ok (0/2): NHI com N min de vida; mandato com N h»
+```
+
+**4. Como root — ligar os timers**, e como `aos` o sensor:
+
+```bash
+install -m 644 /opt/aos/systemd/aos-cunhar-nhi.* /opt/aos/systemd/aos-drenar-planos.* /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now aos-cunhar-nhi.timer aos-drenar-planos.timer
+# como aos: crontab -e  →  */15 * * * * /bin/bash /opt/aos/alerta-nhi.sh >/dev/null 2>&1
+bash /opt/aos/alerta-nhi.sh --teste
+```
+
+Os serviços não têm `Restart`: uma falha fica em `systemctl --failed`, que o sensor lê.
+
+**Renovar o mandato** (o sensor avisa a 7 dias do fim): assine outro no passo 1 e copie-o por cima.
+O anterior continua válido até caducar; se quer corte imediato, revogue-o.
+
+**Revogar um mandato** mata **todos** os NHI cunhados sob ele, sem saber os `jti` — é a revogação
+por `jti` de sempre (`aos-issuer revoke-sign`, `POST /nhi/revoke`), com `--jti mandate:<id>`.
+Contra o emissor automático é **esta** a revogação que serve: os `jti` dele são escolhidos por ele.
+
+> ⚠️ **Revogar não pára a máquina — pare-a também.** O emissor não consulta o registo de revogação
+> (só o nó o tem), por isso continua a cunhar sob o mandato revogado; o nó recusa cada NHI, o `serve`
+> classifica a recusa como transitória, o pedido volta à fila, e o `consume` sai com `0`. A cada 5
+> min repete-se — e cada tentativa pode pagar uma decomposição ao modelo antes de o nó recusar. Por
+> isso, **no mesmo acto**:
+>
+> ```bash
+> systemctl disable --now aos-cunhar-nhi.timer aos-drenar-planos.timer   # como root
+> mv /opt/aos/orq/mandato.json /opt/aos/orq/mandato.revogado-$(date +%F)  # como aos
+> ```
+>
+> e só volte a ligar os timers com um mandato novo. O mesmo ciclo acontece com um
+> `AOS_MANDATED_ISSUER_PUBKEY` errado no `.env`, ou com o nó por reiniciar depois de o mudar — é o
+> resíduo 7 do AOS-437.
+
+**Parar tudo:** `systemctl disable --now aos-cunhar-nhi.timer aos-drenar-planos.timer`, apagar
+`/opt/aos/nhi/nhi-run.jwt` (como `65532`, via `docker run`) e **retirar a linha do `alerta-nhi.sh`
+do crontab** — senão o sensor passa a alertar, e com razão, que o NHI e as drenagens pararam. Tirar as três variáveis do `.env` e
+reiniciar o nó faz com que ele volte a confiar só no emissor manual.
+
 ---
 
 ## Operar o plano de controlo

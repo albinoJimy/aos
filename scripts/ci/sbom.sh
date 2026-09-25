@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# sbom.sh — SBOM + PROVENIÊNCIA dos binários da imagem do nó: `aos` e `aos-orq` (ADR-017 ponto 3).
+# sbom.sh — SBOM + PROVENIÊNCIA dos binários da imagem do nó: `aos`, `aos-orq` e `aos-issuer`
+# (ADR-017 ponto 3).
 #
 # ÂMBITO (mudou com AOS-207): este script GERA o SBOM e a proveniência; NÃO assina. A
 # assinatura e a recusa da entrega são de `scripts/ci/sign.sh` e
@@ -10,12 +11,14 @@
 #
 # Este script:
 #   (a) determina os SUBJECTS — os binários que a IMAGEM REALMENTE carrega: o nó
-#       /usr/local/bin/aos e, desde AOS-403, o orquestrador /usr/local/bin/aos-orq. Quando a
+#       /usr/local/bin/aos, desde AOS-403 o orquestrador /usr/local/bin/aos-orq e, desde AOS-437,
+#       o emissor /usr/local/bin/aos-issuer (o binário; a chave nunca entra). Quando a
 #       imagem (IMAGE_TAG) existe, EXTRAI cada um dela (docker create + docker cp) e hasheia
 #       ESSE artefacto. A proveniência tem de bindar-se ao que SHIPA, não a um rebuild do host
 #       (toolchain/cache do host divergem byte-a-byte do build da imagem);
 #   (b) extrai o SBOM dos MÓDULOS embebidos em CADA binário com `go version -m` (Go tooling):
-#       `sbom.json` para o nó e `sbom-aos-orq.json` para o orquestrador;
+#       `sbom.json` para o nó, `sbom-aos-orq.json` para o orquestrador e `sbom-aos-issuer.json`
+#       para o emissor;
 #   (c) emite o registo de PROVENIÊNCIA (quem/o-quê/quando) com o bloco `signature` ainda
 #       POR FINALIZAR — quem o fecha é o `sign.sh` (não se finge aqui uma garantia que só
 #       existe depois de assinada e verificada).
@@ -50,6 +53,7 @@ skip_declared() {
 
 NODE_MOD="packages/cmd/aos"
 ORQ_MOD="packages/cmd/aos-orq"
+ISSUER_MOD="packages/cmd/aos-issuer"
 OUT_DIR="${1:-$REPO_ROOT/deploy/node/build}"
 IMAGE_TAG="${IMAGE_TAG:-aos-node:local}"
 mkdir -p "$OUT_DIR"
@@ -89,9 +93,9 @@ unset _df _df_builder _df_runtime
 log_gate "sbom · binário estático + SBOM + proveniência (ADR-017 ponto 3; assina-se em sign.sh)"
 
 # ---------------------------------------------------------------------------
-# SUBJECTS — os binários que a IMAGEM carrega: o nó `aos` e, desde AOS-403, o orquestrador
-# `aos-orq`. Passam os DOIS pelo mesmo procedimento, para que nenhum saia com uma garantia mais
-# fraca do que o outro sem que a proveniência o diga.
+# SUBJECTS — os binários que a IMAGEM carrega: o nó `aos`, desde AOS-403 o orquestrador
+# `aos-orq` e, desde AOS-437, o emissor `aos-issuer`. Passam TODOS pelo mesmo procedimento, para
+# que nenhum saia com uma garantia mais fraca do que outro sem que a proveniência o diga.
 #
 # atestar_binario <nome> <módulo>
 #   Define sub_bin, sub_sha, sub_source, sub_host_sha, sub_repro e sub_repro_check; define
@@ -176,6 +180,11 @@ atestar_binario aos-orq "$ORQ_MOD"
 orq_bin="$sub_bin"; orq_sha="$sub_sha"; orq_source="$sub_source"
 orq_host_sha="$sub_host_sha"; orq_reproducible="$sub_repro"; orq_repro_check="$sub_repro_check"
 
+# AOS-437: o emissor viaja na mesma imagem (o binário; a chave vive no Vault transit, ADR-033).
+atestar_binario aos-issuer "$ISSUER_MOD"
+iss_bin="$sub_bin"; iss_sha="$sub_sha"; iss_source="$sub_source"
+iss_host_sha="$sub_host_sha"; iss_reproducible="$sub_repro"; iss_repro_check="$sub_repro_check"
+
 # ---------------------------------------------------------------------------
 # (b) SBOM a partir dos módulos embebidos NO SUBJECT (go version -m). Formato: JSON minimalista
 # com componentes {path,version,sum}. Não inventa CycloneDX/SPDX completo — forma MÍNIMA honesta;
@@ -222,6 +231,8 @@ escrever_sbom "$bin" "$sbom" aos "$bin_sha" "$subject_source" "github.com/aos-re
 # descreve UM subject, que é o contrato do formato desde o início.
 sbom_orq="$OUT_DIR/sbom-aos-orq.json"
 escrever_sbom "$orq_bin" "$sbom_orq" aos-orq "$orq_sha" "$orq_source" "github.com/aos-ref/cmd/aos-orq"
+sbom_iss="$OUT_DIR/sbom-aos-issuer.json"
+escrever_sbom "$iss_bin" "$sbom_iss" aos-issuer "$iss_sha" "$iss_source" "github.com/aos-ref/cmd/aos-issuer"
 
 # ---------------------------------------------------------------------------
 # (b') Cobertura do componente externo de autoridade (packages/platform/attestation).
@@ -292,7 +303,8 @@ builder_id="$( id -un 2>/dev/null || echo unknown )@$( hostname 2>/dev/null || e
   # AOS-403: o orquestrador viaja na MESMA imagem. `subject` continua a ser o nó (quem lê o
   # formato v1 não muda de leitura); os restantes binários atestados listam-se aqui, cada um com
   # a sua fonte, o seu SBOM e a SUA verificação de reprodutibilidade.
-  printf '  "additionalSubjects": [ { "name": "aos-orq", "path": "usr/local/bin/aos-orq", "sha256": "%s", "source": "%s", "sbom": "sbom-aos-orq.json", "hostRebuildSha256": "%s", "reproducible": %s, "reproducibilityCheck": "%s" } ],\n' "$orq_sha" "$orq_source" "$orq_host_sha" "$orq_reproducible" "$orq_repro_check"
+  # AOS-437: o emissor `aos-issuer` entra aqui pela mesma porta, com a sua verificação própria.
+  printf '  "additionalSubjects": [ { "name": "aos-orq", "path": "usr/local/bin/aos-orq", "sha256": "%s", "source": "%s", "sbom": "sbom-aos-orq.json", "hostRebuildSha256": "%s", "reproducible": %s, "reproducibilityCheck": "%s" }, { "name": "aos-issuer", "path": "usr/local/bin/aos-issuer", "sha256": "%s", "source": "%s", "sbom": "sbom-aos-issuer.json", "hostRebuildSha256": "%s", "reproducible": %s, "reproducibilityCheck": "%s" } ],\n' "$orq_sha" "$orq_source" "$orq_host_sha" "$orq_reproducible" "$orq_repro_check" "$iss_sha" "$iss_source" "$iss_host_sha" "$iss_reproducible" "$iss_repro_check"
   printf '  "builder": { "id": "%s", "toolchain": "%s" },\n' "$builder_id" "$( go version | awk '{print $3}' )"
   printf '  "source": { "repo": "github.com/aos-ref", "commit": "%s", "branch": "%s" },\n' "$commit" "$branch"
   printf '  "buildConfig": {\n'
@@ -309,7 +321,7 @@ log_ok "proveniência (não-assinada): $prov"
 # ---------------------------------------------------------------------------
 # INVALIDAÇÃO DOS ARTEFACTOS DE ASSINATURA DE UMA CORRIDA ANTERIOR.
 #
-# `sbom.json`, `sbom-aos-orq.json` e `provenance.json` acabaram de ser REESCRITOS: os seus sha256 mudaram (o bloco
+# `sbom.json`, `sbom-aos-orq.json`, `sbom-aos-issuer.json` e `provenance.json` acabaram de ser REESCRITOS: os seus sha256 mudaram (o bloco
 # `signature` sozinho já muda o digest da proveniência). Ambos são SUBJECTS assinados, pelo que
 # qualquer `attestation.dsse.json`/`delivery-manifest.json` que estivesse aqui deixou, neste
 # instante, de cobrir o que está no disco. Deixá-los seria publicar um envelope dessincronizado
@@ -337,4 +349,4 @@ gate_skip_file "$OUT_DIR/SKIPPED.txt" || true
 # O veredicto NÃO afirma nada sobre a assinatura: este script não assina. Dizia
 # «assinatura DEFERIDA-EPIC-10» — eixo errado (AOS-196) e, desde AOS-207, estado errado.
 # Quem tem autoridade para falar do estado da assinatura é o sign.sh/verify-attestation.sh.
-log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; aos-orq = $orq_source, reproducible=$orq_reproducible/$orq_repro_check; assinatura: fica para sign.sh — ver signature.status em provenance.json)"
+log_ok "sbom: verde (SBOM + proveniência mínima; subject = $subject_source; reproducible=$reproducible/$repro_check; aos-orq = $orq_source, reproducible=$orq_reproducible/$orq_repro_check; aos-issuer = $iss_source, reproducible=$iss_reproducible/$iss_repro_check; assinatura: fica para sign.sh — ver signature.status em provenance.json)"
