@@ -1409,6 +1409,9 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if a, ok := h.node.DSARVault.(interface{ apagamentosFault() error }); ok {
 		g("aos_dsar_erasure_reconciled", "Apagamentos DSAR reconciliados com a custodia da KEK e registo de apagamentos escrito (1) ou por provar (0); 0 mantem o no unready - uma KEK destruida pode ter voltado com um restauro de backup.", "gauge", b01(a.apagamentosFault() == nil), "")
 	}
+	if b, ok := h.node.DSARVault.(interface{ kekBloqueadas() int }); ok {
+		g("aos_dsar_erasure_blocked_keys", "KEKs ressuscitadas que o portao da custodia mantem FECHADAS (destruicao nao confirmada, idade por verificar ou legal hold); nada se decifra nem se escreve sob elas.", "gauge", float64(b.kekBloqueadas()), "")
+	}
 
 	// aos_ready espelha o veredito do /readyz — AS QUATRO condições: drain, Event Store,
 	// custódia da KEK e a hash-chain do WORM a ACEITAR ESCRITAS. É o SLI de disponibilidade a

@@ -122,6 +122,10 @@ type vaultKeyVault struct {
 	// ([reconciliadorDeApagamentos]). Não-nil ⇒ uma KEK destruída pode ter voltado e a sonda
 	// de prontidão fica VERMELHA até uma passagem provada.
 	reconcErr error
+	// bloqueadas são as KEKs que a reconciliação encontrou RESSUSCITADAS e não conseguiu (ou não
+	// pôde, por legal hold) destruir de novo. Por nome: o embrulho e o desembrulho sob elas são
+	// RECUSADOS — o portão que faz o «por provar» proteger alguma coisa ([vaultKeyVault.portao]).
+	bloqueadas map[string]bloqueioDeKEK
 	// agora é o relógio do instante registado. Injectável nos testes.
 	agora func() time.Time
 }
@@ -188,6 +192,13 @@ func (v *vaultKeyVault) do(method, path string, body any) ([]byte, int, error) {
 // doCtx é o [do] com contexto — usado pelas sondas, que trazem o timeout curto do /readyz e não
 // podem herdar só o timeout do cliente.
 func (v *vaultKeyVault) doCtx(ctx context.Context, method, path string, body any) ([]byte, int, error) {
+	return v.doCtxLimite(ctx, method, path, body, 1<<20)
+}
+
+// doCtxLimite é o [doCtx] com o tecto do corpo da resposta explícito. Existe para o LIST das chaves
+// Transit (AOS-436), cuja resposta cresce com o número de titulares e não cabe no tecto de 1 MiB
+// das operações de uma chave só.
+func (v *vaultKeyVault) doCtxLimite(ctx context.Context, method, path string, body any, limite int64) ([]byte, int, error) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -215,7 +226,7 @@ func (v *vaultKeyVault) doCtx(ctx context.Context, method, path string, body any
 		return nil, 0, erroVaultRedigido(v.addr, err)
 	}
 	defer resp.Body.Close()
-	rb, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	rb, _ := io.ReadAll(io.LimitReader(resp.Body, limite))
 	return rb, resp.StatusCode, nil
 }
 
@@ -558,6 +569,9 @@ func (v *vaultKeyVault) WrapDEK(subjectID string, dek []byte) ([]byte, string, e
 	}
 	ref := audit.KeyRefFor(subjectID)
 	name := vaultKeyName(ref)
+	if err := v.portao(name); err != nil {
+		return nil, "", err
+	}
 	if err := v.ensureTransitKey(name); err != nil {
 		return nil, "", err
 	}
@@ -585,6 +599,9 @@ func (v *vaultKeyVault) WrapDEK(subjectID string, dek []byte) ([]byte, string, e
 // irrecuperável. A KEK nunca entra no processo.
 func (v *vaultKeyVault) UnwrapDEK(keyRef string, wrapped []byte) ([]byte, bool) {
 	name := vaultKeyName(keyRef)
+	if v.portao(name) != nil {
+		return nil, false // AOS-436: KEK por reconciliar — nenhum conteúdo sai decifrado
+	}
 	rb, code, err := v.do(http.MethodPost, "/v1/"+v.mount+"/decrypt/"+name,
 		map[string]string{"ciphertext": string(wrapped)})
 	if err != nil || code != http.StatusOK {
@@ -612,6 +629,9 @@ func (v *vaultKeyVault) EnsureKey(subjectID string) ([]byte, string, error) {
 		return nil, "", audit.ErrNoSubject
 	}
 	ref := audit.KeyRefFor(subjectID)
+	if err := v.portao(vaultKeyName(ref)); err != nil {
+		return nil, "", err
+	}
 	if err := v.ensureTransitKey(vaultKeyName(ref)); err != nil {
 		return nil, "", err
 	}
@@ -644,7 +664,8 @@ func (v *vaultKeyVault) Delete(subjectID string) {
 		v.mu.Unlock()
 		return
 	}
-	delete(v.shredPend, name) // confirmada (limpa também uma tentativa anterior falhada)
+	delete(v.shredPend, name)  // confirmada (limpa também uma tentativa anterior falhada)
+	delete(v.bloqueadas, name) // uma KEK que morreu deixa de ter o que proteger
 	reg, agora := v.registo, v.agora
 	v.mu.Unlock()
 	// AOS-436: SÓ a destruição CONFIRMADA entra no registo — é um registo do que MORREU, e uma
@@ -765,22 +786,96 @@ func (v *vaultKeyVault) destruirKEKPorNome(ctx context.Context, nome string) err
 	}
 	v.mu.Lock()
 	delete(v.shredPend, nome)
+	delete(v.bloqueadas, nome)
 	v.mu.Unlock()
 	return nil
 }
 
-// registarReconciliacao guarda o desfecho da última passagem da reconciliação.
-func (v *vaultKeyVault) registarReconciliacao(err error) {
+// listarKEKs devolve os nomes `aos-kek-*` que o motor Transit TEM. É o que torna a reconciliação
+// barata e completa ao mesmo tempo: uma chave que o LIST não traz está destruída, sem um pedido por
+// chave — e é pelo LIST que um `id` do registo (um HMAC) volta a ser um nome. 404 ⇒ motor vazio.
+func (v *vaultKeyVault) listarKEKs(ctx context.Context) ([]string, error) {
+	rb, code, err := v.doCtxLimite(ctx, "LIST", "/v1/"+v.mount+"/keys", nil, 64<<20)
+	if err != nil {
+		return nil, fmt.Errorf("listar as chaves: %v", err)
+	}
+	switch code {
+	case http.StatusNotFound:
+		return nil, nil
+	case http.StatusOK:
+	default:
+		return nil, fmt.Errorf("listar as chaves: HTTP %d", code)
+	}
+	var out struct {
+		Data struct {
+			Keys []string `json:"keys"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rb, &out); err != nil {
+		return nil, fmt.Errorf("listar as chaves: resposta ilegivel (truncada acima de 64 MiB?): %v", err)
+	}
+	nomes := make([]string, 0, len(out.Data.Keys))
+	for _, k := range out.Data.Keys {
+		if reNomeApagamento.MatchString(k) {
+			nomes = append(nomes, k)
+		}
+	}
+	return nomes, nil
+}
+
+// exigirReconciliacao ARMA o portão: até à primeira passagem provada, nenhuma DEK se embrulha nem
+// desembrulha. Chamado pelo [Bootstrap] no instante em que compõe a custódia — antes de qualquer
+// conteúdo poder ser selado ou aberto.
+func (v *vaultKeyVault) exigirReconciliacao() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.reconcErr == nil {
+		v.reconcErr = fmt.Errorf("%w: a reconciliacao ainda nao correu", ErrApagamentoPorReconciliar)
+	}
+}
+
+// registarReconciliacao guarda o desfecho da última passagem: o erro global (nil = provada) e as
+// KEKs bloqueadas uma a uma.
+func (v *vaultKeyVault) registarReconciliacao(err error, bloqueadas map[string]bloqueioDeKEK) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.reconcErr = err
+	v.bloqueadas = bloqueadas
 }
 
-// apagamentosFault é a alínea (d) da prontidão: a reconciliação não ficou provada, ou o registo
-// tem entradas por escrever. Nomeia o eixo, nunca um titular.
+// portao é a barreira do conteúdo (AOS-436): enquanto a reconciliação não estiver provada, NADA se
+// embrulha nem desembrulha; provada, só as KEKs bloqueadas continuam fechadas. É aqui, e não no
+// cifrador de conteúdo, porque é o único ponto por onde TODO o conteúdo por-titular passa — o
+// capturer, o step-ledger, a retoma, o replay soberano e a fila de planos.
+//
+// A revisão adversarial mediu porque é que o `/readyz` não bastava: a sonda do contentor é o
+// `/healthz`, o proxy encaminha tudo e nenhum handler consulta a prontidão. Um nó «não pronto»
+// continuava a DECIFRAR com a KEK ressuscitada e a ESCREVER dados novos sob ela.
+func (v *vaultKeyVault) portao(nome string) error {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	if v.reconcErr != nil {
+		return v.reconcErr
+	}
+	if b, ok := v.bloqueadas[nome]; ok {
+		return fmt.Errorf("%w: a chave %s esta bloqueada: %s", ErrApagamentoPorReconciliar, nome, b.motivo)
+	}
+	return nil
+}
+
+// apagamentosFault é a alínea (d) da prontidão: a reconciliação não ficou provada, o registo tem
+// entradas por escrever, ou uma KEK ressuscitada não se deixou destruir. Uma KEK retida por LEGAL
+// HOLD fica bloqueada no portão mas NÃO tira o nó de rotação — um hold dura meses, e o que ele pede
+// é preservação, que o bloqueio dá. Nomeia o eixo, nunca um titular.
 func (v *vaultKeyVault) apagamentosFault() error {
 	v.mu.RLock()
 	err, reg := v.reconcErr, v.registo
+	naoRetidas := 0
+	for _, b := range v.bloqueadas {
+		if !b.retida {
+			naoRetidas++
+		}
+	}
 	v.mu.RUnlock()
 	if err != nil {
 		return err
@@ -788,7 +883,17 @@ func (v *vaultKeyVault) apagamentosFault() error {
 	if n := reg.pendentes(); n > 0 {
 		return fmt.Errorf("%w: %d destruicao(oes) confirmada(s) por escrever no registo", ErrRegistoDeApagamentos, n)
 	}
+	if naoRetidas > 0 {
+		return fmt.Errorf("%w: %d KEK(s) ressuscitada(s) por destruir", ErrApagamentoPorReconciliar, naoRetidas)
+	}
 	return nil
+}
+
+// kekBloqueadas devolve quantas KEKs o portão mantém fechadas (para a série de causa do /metrics).
+func (v *vaultKeyVault) kekBloqueadas() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return len(v.bloqueadas)
 }
 
 // Asserções de compile-time: o adaptador satisfaz ambas as portas (como o wrapper de referência).

@@ -46,11 +46,18 @@
 # um apagamento DSAR traz a KEK do titular de volta, e o WORM do mesmo bundle nem sabe que o
 # apagamento aconteceu. Nada DENTRO do bundle pode cobrir isto: é o bundle inteiro que recua.
 #
-# Por isso o registo de apagamentos do nó (`aos/apagamentos-dsar.txt`, só nomes não-reversíveis
-# `aos-kek-<sha256>` e instantes — nunca o titular) é copiado TAMBÉM para FORA do bundle, em claro,
-# como `backups/apagamentos-<stamp>.txt`. A recolha leva o mais recente; no restauro importa-se
-# ANTES de arrancar o nó, e o nó destrói de novo tudo o que ele diz destruído. Não é segredo, e é
-# monotónico: o mais recente é superconjunto de qualquer anterior.
+# Por isso o registo de apagamentos do nó (`aos/apagamentos-dsar.txt`) é copiado TAMBÉM para FORA
+# do bundle, em claro, como `backups/apagamentos-<stamp>.txt`. Cada linha é `<id> <instante> <mac>`,
+# com id e mac HMAC sob a chave do nó (`aos/apagamentos-dsar.txt.chave`) — que fica SÓ dentro do
+# bundle cifrado e NUNCA sai daqui em claro: sem ela, o registo não diz quem foi apagado nem se
+# deixa forjar. A recolha leva o mais recente; ao restaurar um bundle MAIS ANTIGO, importa-se antes
+# de arrancar o nó, e o nó destrói de novo o que ele diz destruído.
+#
+# O QUE ISTO NÃO COBRE, dito sem arredondar: esta cópia é tirada do MESMO tar e no MESMO instante que
+# o bundle. Para «perdi o host, restauro o último bundle» não acrescenta nada — o último bundle já
+# sabe o mesmo. Só ajuda quem restaura um bundle ANTERIOR ao último (o último está estragado, ou quer
+# voltar a um ponto antes de um deploy mau). Os apagamentos feitos depois do último backup não estão
+# em cópia nenhuma.
 
 set -Eeuo pipefail
 
@@ -206,8 +213,12 @@ fi
 # primeira destruição confirmada). Assim «o mais recente» existe sempre para ser recolhido, e a
 # ausência de linhas é uma afirmação («nenhum apagamento até aqui»), não um silêncio.
 if tem_membro "aos/apagamentos-dsar.txt"; then
-  tar xzOf "${WORK}/volumes.tar.gz" "aos/apagamentos-dsar.txt" > "${WORK}/apagamentos.txt" \
+  tar xzOf "${WORK}/volumes.tar.gz" "aos/apagamentos-dsar.txt" > "${WORK}/apagamentos-bruto.txt" \
     || fail "não consegui extrair aos/apagamentos-dsar.txt do tar dos volumes"
+  # O tar de um ficheiro vivo pode apanhar uma linha a meio de ser escrita. Só as linhas COMPLETAS
+  # saem (`wc -l` conta os '\n'): o fragmento final é o que o próprio nó trata como escrita
+  # interrompida, e deixá-lo sair faria a recolha rejeitar o registo todos os dias.
+  head -n "$(wc -l < "${WORK}/apagamentos-bruto.txt")" "${WORK}/apagamentos-bruto.txt" > "${WORK}/apagamentos.txt"
   REG_ESTADO="volume"
 else
   printf '# aos — registo de apagamentos (AOS-436): o volume nao tinha registo neste instante\n' > "${WORK}/apagamentos.txt"
@@ -293,6 +304,9 @@ fi
   printf 'aos-orq-data=%s\n' "$( [[ ${#ORQ_DIR[@]} -gt 0 ]] && echo volume || echo ausente )"
   # AOS-436: o registo de apagamentos que saiu em claro ao lado deste bundle.
   printf 'apagamentos=%s\napagamentos-entradas=%s\n' "${REG_ESTADO}" "${REG_N:-0}"
+  # A chave que autentica o registo viaja SÓ aqui dentro. Um bundle sem ela (anterior ao AOS-436)
+  # não consegue autenticar um registo importado — o restauro tem de a trazer do bundle mais recente.
+  printf 'apagamentos-chave=%s\n' "$(tem_membro "aos/apagamentos-dsar.txt.chave" && echo volume || echo ausente)"
 } > "${WORK}/MANIFEST"
 tar czf "${WORK}/bundle.tar.gz" -C "${WORK}" MANIFEST idp-db.sql volumes.tar.gz config.tar.gz
 OUT="${DEST}/aos-${STAMP}.tar.gz.enc"
@@ -317,7 +331,7 @@ log "  ${OUT} ($(wc -c < "${OUT}") bytes, envelope verificado)"
 # correspondente seria recolhido como «o mais recente» de um backup que não existe.
 REG_OUT="${DEST}/apagamentos-${STAMP}.txt"
 install -m 600 "${WORK}/apagamentos.txt" "${REG_OUT}" || fail "não consegui escrever ${REG_OUT}"
-log "  ${REG_OUT} (${REG_N:-0} entrada(s), EM CLARO — só nomes aos-kek-<sha256>, nunca titulares)"
+log "  ${REG_OUT} (${REG_N:-0} entrada(s), EM CLARO — ids HMAC sob a chave do nó, que fica só no bundle)"
 
 # --- Rotação ----------------------------------------------------------------------------------
 N=$(ls -1 "${DEST}"/aos-*.tar.gz.enc 2>/dev/null | wc -l)

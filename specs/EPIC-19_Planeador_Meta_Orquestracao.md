@@ -4980,6 +4980,7 @@ são o mesmo processo.
 | 1.17 | 2026-09-21 | +AOS-425 (composição de nomes de stream em runtime): a outra metade da classe do AOS-424, que um grep de literais não vê. O `stream_id` de admissão contém o NOME DO MODELO, que vem da allowlist assinada — hoje sem pontos (medido), mas acrescentar um `gpt-4.1` é uma alteração de POLÍTICA que partiria o substrato, e nada no repositório liga as duas coisas. | Equipa AOS |
 | 1.18 | 2026-09-21 | +AOS-426 (read-path servia streams internos): medido que `GET /runs/<stream>/trajectory` devolvia 200 e servia treze streams internos do nó a um leitor autenticado de OUTRA região — aprovações four-eyes, memória, identidade e os nonces de ratificação. NÃO latente: mede-se no substrato de ficheiro, que é o de produção. Fechado com uma trava que lê os DADOS, não uma lista de nomes. | Equipa AOS |
 | 1.19 | 2026-09-25 | +AOS-436 (o apagamento DSAR sobrevive ao restauro): medido que o `backup.sh` leva o volume do Vault com as KEKs vivas e que restaurar um bundle anterior a um apagamento repunha a KEK sem nada o detectar; três documentos afirmavam o contrário. Reconciliação no arranque por IDADE da chave + registo de apagamentos fora do bundle. Ticket acrescentado no fim do ficheiro. | Equipa AOS |
+| 1.20 | 2026-09-25 | AOS-436 refeito depois de uma revisão adversarial independente que o reprovou para produção: registo autenticado por HMAC, portão de conteúdo na custódia, fontes independentes, legal hold consultado, LIST em vez de GET por chave. Tabela «revisão → correcção → sensor» no ticket. | Equipa AOS |
 
 ---
 
@@ -5004,13 +5005,9 @@ KEKs vivas nesse instante — e o `vault-init.json`. Retenção: 14 cópias no s
 do operador.
 
 **Medido, e não suposto:** restaurar um bundle anterior a um apagamento repõe a KEK e o conteúdo
-volta a decifrar. Dois sabores:
-
-- **Vault antigo + WORM actual** — a cadeia sabe do apagamento, mas `restoreShredPending` só repõe
-  pendências `dsar.shred_unconfirmed`; `dsar.key_destroyed` é tratado como confirmado e nada volta a
-  perguntar ao Vault.
-- **Tudo antigo** — a cadeia restaurada é anterior ao apagamento e nem sabe que ele aconteceu.
-  Nenhum mecanismo dentro do bundle cobre este caso: é o bundle inteiro que recua.
+volta a decifrar. Dois sabores: Vault antigo com o WORM actual (a cadeia sabe do apagamento, mas
+`restoreShredPending` trata `dsar.key_destroyed` como confirmado e nada volta a perguntar ao Vault),
+e tudo antigo (a cadeia restaurada nem sabe que o apagamento aconteceu).
 
 Três documentos afirmavam o contrário — «a única operação que nenhum *restore drill* desfaz» —
 (`deploy/server/README.md` em duas passagens, `deploy/node/README.md`, `docs/conceitos-verificaveis.md`),
@@ -5025,100 +5022,130 @@ AOS-093 e o próprio banner do nó.
 backup desfaz o crypto-shred») apoiando-se na linha da `tecnica/14` sobre `platform/backup`, que é
 sobre outro mecanismo. A acusação estava certa quanto ao `backup.sh`. O relatório fica como está.
 
-### Decisão (do dono): reaplicar no restauro
+### Decisão (do dono): reaplicar no restauro — e o desenho que sobreviveu à revisão
 
-**1. Reconciliação no arranque, por IDADE da chave — e é aqui que o desenho diverge do enunciado.**
-O enunciado pedia «para cada titular cujo ÚLTIMO facto é `dsar.key_destroyed`, se a KEK existir,
-destrói-a». Isso destrói dados legítimos: um titular apagado pode voltar a gerar dados e o
-`EnsureKey` re-provisiona uma KEK **nova** com o mesmo nome (a nota em
-`vaultKeyVault.marcarShredPorConfirmar` já o avisava). A pergunta certa é «esta chave é a que foi
-destruída?», e responde-se pela idade: o Vault devolve em `GET transit/keys/<nome>` o instante de
-criação de cada versão. Uma KEK nascida **antes** (ou no mesmo segundo) da destruição registada é a
-destruída que o restauro ressuscitou ⇒ destrói-se de novo, verifica-se (404) e sela-se
-`dsar.key_reshredded` em nome próprio (`nhi:aos-node/erasure-reconciler`). Nascida **depois** ⇒
-geração nova ⇒ intacta. Pela mesma razão não se usa «o último facto»: conta o instante **mais
-recente** de destruição por chave, seja o que for que a cadeia diga depois.
+A primeira entrega (`2faff18`) foi **reprovada para produção** por uma revisão adversarial
+independente, que reproduziu oito achados com o nó real. O desenho abaixo é o refeito.
 
-**2. Registo de apagamentos fora da cadeia de backups.** `AOS_DSAR_ERASURE_REGISTER` (produção:
-`/var/lib/aos/apagamentos-dsar.txt`): a custódia acrescenta `aos-kek-<sha256> <RFC3339>` a cada
-destruição **confirmada** — erase e expiração por TTL, porque é escrito no `Delete` —, nunca o
-titular; append-only e monotónico. O `backup.sh` copia-o **em claro** para
-`backups/apagamentos-<stamp>.txt` (só depois de o bundle verificar), o `backup-pull-gate.sh` passa a
-aceitar `apagamentos` e o `scp -f` desse nome exacto, e o `pull-backups.ps1` guarda o mais recente
-depois de verificar que é superconjunto do anterior. No arranque, `AOS_DSAR_ERASURE_REGISTER_IMPORT`
-aponta para um registo importado, e a reconciliação usa a **união** (cadeia + registo próprio +
-importado), fundindo tudo no registo próprio antes de interrogar o Vault. Uma entrada do registo sem
-facto na cadeia também é re-destruída e selada (com o `Resource` a nomear a chave, `dsar.kek`).
+**1. A pergunta é pela IDADE da chave, não pela existência.** Um titular apagado pode voltar a gerar
+dados e o `EnsureKey` re-provisiona uma KEK nova com o MESMO nome. O Vault devolve em
+`GET transit/keys/<nome>` o instante de criação de cada versão (Vault 1.18: `data.keys={"1":<unix>}`
+para `aes256-gcm96`, verificado pela coordenação): nascida antes (ou no mesmo segundo) da destruição ⇒
+a destruída, ressuscitada ⇒ destrói-se de novo, verifica-se (404) e sela-se `dsar.key_reshredded` em
+nome próprio (`nhi:aos-node/erasure-reconciler`); nascida depois ⇒ geração nova ⇒ intacta.
 
-**Ajuste de pormenor, justificado: DUAS variáveis e não uma.** O enunciado nomeava uma variável
-para o registo importado; o registo próprio precisa da sua (o backup.sh procura-o num caminho fixo, e
-o nó tem de saber onde escrever). Juntá-las obrigaria a importação a ser «copiar por cima do registo
-do volume», que perde entradas se o importado for mais antigo — a união em código não perde.
+**2. Só `dsar.key_destroyed` é autoridade.** O `dsar.key_reshredded` é prova e nunca é relido. Um
+instante mais de 5 min no futuro — na cadeia ou no registo — é rejeitado e nomeado.
 
-**3. Fail-closed de prontidão, no molde das pendências de AOS-322.** Vault sem resposta, registo
-ilegível ou malformado, importação pedida e ausente, re-destruição não confirmada, selo que falha
-ou escrita do registo falhada ⇒ `vaultKeyVault.ready` devolve erro, logo `/readyz` 503,
-`aos_ready` 0, `aos_dsar_vault_ready` 0 e o SLI de disponibilidade em baixo — os três já consultam
-a mesma sonda. Série nova de causa: `aos_dsar_erasure_reconciled`. O nó **arranca** (recusar por um
-Vault momentaneamente em baixo dava crash-loop); a manutenção do token da custódia re-tenta a
-reconciliação a cada tick enquanto ela estiver por provar.
+**3. Registo de apagamentos autenticado.** `AOS_DSAR_ERASURE_REGISTER` (produção:
+`/var/lib/aos/apagamentos-dsar.txt`) com uma chave do nó em `<registo>.chave` (32 bytes, `0600`,
+criada uma vez, no volume — viaja só dentro do bundle cifrado). Linha: `<id> <instante> <mac>`, com
+`id = HMAC(k, "aos436/id\n"‖nome)` e `mac = HMAC(k, "aos436/mac\n"‖id‖" "‖instante)`. Sem a chave o
+`id` não identifica o titular (o nome do Vault, sha256 público de `aos.audit.pii:<user>`, era
+invertível por dicionário) e uma linha não se forja. A reconciliação volta do `id` ao nome enumerando
+as chaves do Vault (`LIST transit/keys`). Escrito pela custódia a cada destruição **confirmada** —
+erase e expiração por TTL. `AOS_DSAR_ERASURE_REGISTER_IMPORT` aponta, no restauro, para o registo mais
+recente recolhido; as linhas válidas são unidas à cadeia e fundidas no registo próprio.
 
-**4. Restauro.** `restore-drill.sh` passa a exigir o registo mais recente como segundo argumento
-(escape declarado `RESTORE_DRILL_SEM_REGISTO=1`), importa-o para dentro do volume antes de o nó
-arrancar e recusa se o nó não declarar a reconciliação PROVADA. O runbook do
-`deploy/server/README.md` §«Restaurar» ganha o passo explícito.
+**4. Portão de conteúdo NA CUSTÓDIA.** Enquanto a reconciliação estiver por provar, o
+`vaultKeyVault` recusa `WrapDEK`, `UnwrapDEK` e `EnsureKey`: nenhum conteúdo por-titular se lê nem se
+escreve — capturer, step-ledger, retoma, replay soberano e fila de planos passam todos por ali. O
+portão arma-se no instante em que o `Bootstrap` compõe a custódia. KEKs ressuscitadas que não se
+deixam destruir, ou cuja idade não se verifica, ficam fechadas uma a uma.
+
+**5. Legal hold consultado.** A re-destruição corre sob a barreira `BeginDestruction` e consulta
+`Shredder.Held` (titular e partições). Sob hold, a KEK **não** é destruída e fica fechada no portão;
+não tira o nó de rotação (um hold dura meses, e o que ele pede — preservação — o bloqueio dá).
+
+**6. Fontes independentes; um LIST; nenhuma chave pára as outras.** A cadeia é sempre processada;
+uma fonte que falha fica nomeada e mantém a passagem por provar. Um `LIST` diz o que existe; só as
+KEKs vivas levam um `GET`. Orçamento por passagem (30 s no arranque, 45 s por tick) com o que ficou
+por verificar contado e fechado.
+
+**7. Periódica.** A passagem corre em cada tick da manutenção do token da custódia (1 min), e não só
+no arranque — fecha o caso de um Vault restaurado com o nó a correr. O log só fala quando o desfecho
+muda.
+
+**8. Operação.** `backup.sh` copia o registo (sem o fragmento final de um ficheiro vivo) para
+`backups/apagamentos-<stamp>.txt` depois de o bundle verificar, e declara no `MANIFEST` se a chave vai
+no bundle; `backup-pull-gate.sh` aceita `apagamentos` e o `scp -f` desse nome exacto;
+`pull-backups.ps1` guarda o mais recente depois de verificar que contém todos os `id` do anterior;
+`restore-drill.sh` exige o registo (escape declarado `RESTORE_DRILL_SEM_REGISTO=1`), exige a chave no
+volume (ou `RESTORE_DRILL_CHAVE_DO_REGISTO`) e recusa se o nó não declarar a reconciliação PROVADA; o
+runbook do `deploy/server/README.md` §«Restaurar» ganha o passo, a substituir a definição no `.env`.
+
+**Ajustes ao enunciado, justificados.** (a) Duas variáveis e não uma: o registo próprio precisa da
+sua (o backup.sh procura-o num caminho fixo, e é a chave dele que autentica o importado). (b) A chave
+fica ao lado do registo próprio (`<registo>.chave`) e não em `secrets/`: nasce com o nó, sem passo de
+provisionamento, e viaja no mesmo tar do volume — o que faz o bundle trazê-la sempre que é posterior a
+ela. (c) Linhas rejeitadas não apagam as válidas da mesma fonte — a independência vale por linha.
+(d) Uma KEK sob hold não tira o nó de rotação; fica fechada no portão.
+
+### Revisão adversarial → correcção → sensor
+
+| # | Achado (confirmado) | Correcção | Sensor (mutação ⇒ vermelhos) |
+|---|---|---|---|
+| 1 | ALTO/CRÍTICO — registo importado forjado destrói a KEK viva; o selo relido eterniza a data; sem limite no futuro; hold não consultado | HMAC por linha; limite `agora+5min`; `key_reshredded` nunca é autoridade; hold consultado sob a barreira | sem MAC ⇒ 2 (`RegistoImportadoForjadoNaoDestroi`, `CicloCompleto…`); sem limite ⇒ 1 (`InstanteNoFuturo…`); selo como autoridade ⇒ 1 (`OSeloDoReApagamentoNaoEAutoridade`); sem hold ⇒ 1 (`LegalHoldNaoEDestruido…`) |
+| 2 | ALTO — «not-ready» não protege: o nó serve e decifra com a KEK ressuscitada | portão na custódia (`WrapDEK`/`UnwrapDEK`/`EnsureKey`), armado na composição | portão aberto ⇒ 3 (`ConteudoFechadoEnquantoPorProvar`, `LegalHold…`, `Milhares…`) |
+| 3 | ALTO — uma fonte opcional que falha aborta antes de a cadeia ser reconciliada | fontes independentes; a cadeia é sempre processada | abortar na primeira fonte falhada ⇒ 1 (`FonteQueFalhaNaoImpedeACadeia`) |
+| 4 | MÉDIO — linha rasgada permanente | fragmento final ignorado na leitura e truncado antes da escrita; linhas completas malformadas continuam rejeitadas | sem truncar ⇒ 1 (`LinhaCortadaETruncadaNaProximaEscrita`) |
+| 5 | MÉDIO (RGPD) — `aos-kek-<sha256>` invertível por dicionário | o registo leva `HMAC(k, nome)`; o selo sem titular leva o `id` | id reversível ⇒ 1 (`RegistoNaoRevelaOTitular`) |
+| 6 | MÉDIO — a cópia fora do bundle é do mesmo instante; «cobre (b)» exagerava | documentação: só acrescenta ao restaurar um bundle anterior ao último | documental (README do nó, README do servidor, backup.sh, `tecnica/14`) |
+| 7 | BAIXO — ps1 case-insensitive e `\d` Unicode; regex do drill mais estrita que o nó; `echo >>` no `.env` | `-cnotmatch`/`[0-9]`, dicionário ordinal, fragmento tolerado; regex do drill com a forma do parser; `sed -i …/d` antes do `echo` | exercido à mão (parser do PowerShell sem erros; leitor exercitado com maiúsculas, fragmento e linha malformada; regex do drill contra CRLF, tabs, fragmento e lixo) |
+| 8 | BAIXO — um GET por chave, aborta no 1.º erro | LIST + GET só das vivas; erro por chave fecha essa chave e continua; orçamento com contagem | GET por chave ⇒ 1 (`MilharesDeApagamentosUmLIST`); abortar no 1.º erro ⇒ 1 (idem) |
+| H1 | hipótese — Vault restaurado com o nó a correr não re-tenta | passagem em cada tick | só no arranque ⇒ 2 (`VaultRestauradoComONoACorrer`, `ConteudoFechado…`) |
+| H2 | hipótese — `key_destroyed` pré-AOS-249 sobre chave que nunca morreu | **não corrigido**: resíduo 7 | — |
+| H3 | hipótese — relógio do Vault adiantado deixa passar uma KEK | **não corrigido**: resíduo 3 | — |
+
+Mutação «desligar a reconciliação» (a composição devolve nil): **14** testes vermelhos.
 
 ### Critérios de Aceitação
 
-- [x] No arranque, uma KEK que a cadeia dá por destruída e que o Vault restaurado tem com
-      nascimento anterior à destruição é destruída de novo e `dsar.key_reshredded` fica selado
-      (`TestAOS436_VaultAntigoComWORMActualReDestroiAKEK`).
-- [x] A KEK de um titular que voltou (nascida depois da destruição) fica intacta
-      (`TestAOS436_TitularQueVoltouNaoEDestruido`) — o controlo que proíbe «destruir por existência»:
-      a mutação que retira a comparação de idades avermelha-o.
-- [x] Restaurar TUDO antigo com o registo importado re-destrói a KEK, sela o facto a nomear a chave,
-      e funde o importado no registo próprio (`TestAOS436_TudoAntigoComRegistoImportado`).
-- [x] O ciclo completo pelo fluxo DSAR real — apagar, restaurar (a), restaurar (b) — sem fabricar a
-      cadeia nem o registo à mão (`TestAOS436_CicloCompletoApagarERestaurar`).
-- [x] Fail-closed: Vault sem resposta ⇒ `/readyz` 503 e `aos_dsar_erasure_reconciled` 0, e a
-      manutenção da custódia prova-a quando o Vault volta; re-destruição não confirmada não é selada;
-      importação ausente e registo por escrever ⇒ custódia vermelha.
-- [x] Só destruições CONFIRMADAS entram no registo; o registo não leva o titular; a leitura é
-      estrita (incluindo *path traversal* no nome, que iria parar ao caminho HTTP do Vault).
-- [x] `backup.sh` copia o registo em claro para fora do bundle, `backup-pull-gate.sh` aceita-o com
-      validação de caminho estrita, `pull-backups.ps1` guarda o mais recente e verifica monotonia.
-- [x] `restore-drill.sh` e o runbook têm o passo «importar o registo mais recente antes de arrancar».
-- [x] As afirmações falsas corrigidas nos três documentos, nos dois comentários de código e nas
-      duas células da `tecnica/14`, dizendo o que passa a valer e o residual.
-- [x] `AOS_DSAR_ERASURE_REGISTER` e `AOS_DSAR_ERASURE_REGISTER_IMPORT` documentadas no índice do
-      `deploy/node/README.md` e passadas no `docker-compose.prod.yml`.
-- [x] Mutação «desligar a reconciliação» (a composição devolve nil): **8** testes vermelhos. As
-      outras quatro mutações também caem — comparação de idades removida (1), registo não escrito no
-      `Delete` (2), prontidão a ignorar a reconciliação (4), sem re-tentativa (1).
+- [x] Uma KEK que a cadeia dá por destruída e que o Vault tem com nascimento anterior à destruição é
+      destruída de novo e `dsar.key_reshredded` fica selado; a de um titular que voltou fica intacta.
+- [x] Restaurar um bundle anterior com o registo importado (mesma chave) re-destrói a KEK, sela o facto
+      a nomear o `id` e funde o importado no registo próprio; sem a chave, não destrói e diz porquê.
+- [x] Registo forjado, formato antigo, chave de outro nó, instante no futuro e selo relido **não
+      destroem** e ficam nomeados.
+- [x] KEK ressuscitada sob legal hold não é destruída e fica fechada; outro titular continua a servir.
+- [x] Enquanto a reconciliação estiver por provar, o `contentOpener` do replay soberano **não abre** o
+      que foi selado antes e nada novo se sela; provada, volta a abrir (controlo).
+- [x] Fontes independentes: com o registo próprio malformado e o importado ausente, a KEK que a cadeia
+      conhece é destruída e as duas fontes ficam nomeadas.
+- [x] Linha cortada: o fragmento final é ignorado e truncado na escrita seguinte; linha completa
+      malformada continua rejeitada.
+- [x] O registo não contém o titular nem o nome do Vault.
+- [x] 3000 apagamentos com 2 KEKs vivas: ≤ 10 GETs; uma KEK cuja leitura falha não impede a seguinte.
+- [x] O fake do Vault recusa com 400 o `DELETE` sem `deletion_allowed`, como o Vault real.
+- [x] Scripts de operação, runbook e documentação dizem o que o registo cobre e o que não, e o que o
+      portão faz e o `/readyz` não faz.
+- [x] `AOS_DSAR_ERASURE_REGISTER` e `AOS_DSAR_ERASURE_REGISTER_IMPORT` no índice do
+      `deploy/node/README.md` e no `docker-compose.prod.yml`.
 
 ### Resíduos declarados
 
-1. **A janela da recolha.** Um apagamento feito depois da última recolha do registo e antes da perda
-   do servidor não está em registo nenhum fora dele; com o Vault e o WORM restaurados de antes dele,
-   volta. A janela é a cadência da recolha (diária).
-2. **O segundo.** O Vault data a criação ao segundo: uma KEK re-provisionada no mesmo segundo da
-   destruição é tratada como a destruída. A ambiguidade resolve-se pelo lado do apagamento.
-3. **Relógios.** A destruição é datada pelo relógio do nó e o nascimento pelo do Vault. No compose de
-   produção partilham o kernel; numa implantação distribuída, um desvio de relógio maior do que o
-   intervalo entre um apagamento e o regresso do titular desloca a fronteira.
-4. **Só a custódia Vault implementa a porta.** Uma custódia injectada sem ela fica sem
-   reconciliação — declarado no banner, não imposto em produção.
-5. **Expirações por TTL anteriores a AOS-436** não entram no registo (a cadeia de retenção não nomeia
-   a chave); as posteriores entram, porque o registo é escrito pela custódia.
-6. **Selo perdido.** Se a re-destruição for confirmada e o selo falhar, a passagem fica por provar
-   nesse instante, mas na seguinte a chave já não existe e prova-se — o facto em falta só fica no log.
-7. **Linha cortada.** Uma escrita do registo interrompida por um crash deixa uma linha malformada; a
-   leitura estrita põe o nó UNREADY até o operador a corrigir (o ficheiro é texto e não é segredo).
-8. **Não exercido em produção nem no ensaio.** Provado por teste com o nó real sobre um Vault falso;
-   o `restore-drill.sh` não foi corrido com o registo, e o `pull-backups.ps1` não foi corrido contra o
-   servidor. A primeira recolha e o primeiro ensaio é que o provam.
-9. **Legal hold.** A re-destruição não consulta o legal hold: repõe um apagamento que já aconteceu, e
-   a KEK que um restauro devolve cifra dados que foram apagados antes de qualquer hold posterior.
+1. **Apagamentos posteriores ao último backup** não estão em cópia nenhuma e voltam com qualquer
+   restauro. Para «perdi o servidor, restauro o último bundle», o registo fora do bundle não acrescenta
+   nada — é do mesmo instante.
+2. **O segundo.** A KEK re-provisionada no mesmo segundo da destruição é tratada como a destruída.
+3. **Relógios.** Destruição pelo relógio do nó, nascimento pelo do Vault; um Vault adiantado mais do
+   que o intervalo entre a criação e a destruição faz uma KEK ressuscitada parecer nova (hipótese H3).
+4. **Só a custódia Vault implementa a porta.** Declarado no banner, não imposto em produção.
+5. **Hold de uma KEK que só o registo conhece.** O legal hold chega-lhe pelo titular que a cadeia
+   (DSAR ou de legal hold) nomeia; uma KEK cujo titular a cadeia restaurada não nomeia é destruída sem
+   hold consultável.
+6. **Expirações por TTL anteriores a AOS-436** não estão em registo nenhum.
+7. **`key_destroyed` anterior ao AOS-249** selado sobre uma chave que nunca morreu (hipótese H2): o
+   primeiro arranque destrói-a, com os dados escritos depois do pedido de apagamento. Não reproduzido.
+8. **Selo perdido.** Re-destruição confirmada com o selo a falhar: a passagem fica por provar nesse
+   instante e na seguinte prova-se — o facto em falta só fica no log.
+9. **Bundle anterior à chave.** Não autentica o importado; o operador copia a chave do bundle mais
+   recente (runbook e drill dizem-no). Perder o bundle mais recente **e** a chave é perder a capacidade
+   de usar o registo.
+10. **Portão global.** Por provar por uma fonte (ex.: registo importado com uma linha rejeitada) fecha o
+    conteúdo de TODOS os titulares até o operador corrigir a fonte — a escolha fail-closed pedida.
+11. **Não exercido em produção nem no ensaio.** Provado por teste com o nó real e um Vault falso; o
+    `restore-drill.sh`, o `backup.sh` e o `pull-backups.ps1` não foram corridos contra o servidor.
 
 ### Estado
 

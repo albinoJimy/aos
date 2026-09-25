@@ -20,9 +20,10 @@
 # recusado com esta chave é, por definição, alguém que não é a tarefa.
 #
 # O REGISTO DE APAGAMENTOS (AOS-436) passa pela MESMA porta estreita: `apagamentos` diz qual é o
-# mais recente, e `scp -f` aceita-o só na forma exacta que o backup.sh produz. Está em claro de
-# propósito — só leva nomes não-reversíveis `aos-kek-<sha256>` e instantes, nunca titulares — e é
-# o que um restauro importa para que um apagamento não seja desfeito pelo backup que o antecede.
+# mais recente, e `scp -f` aceita-o só na forma exacta que o backup.sh produz. Está em claro, e pode:
+# cada linha é um id e um MAC HMAC sob uma chave que só existe dentro do bundle cifrado — sem ela
+# não diz quem foi apagado nem se deixa forjar. É o que um restauro de um bundle ANTERIOR importa
+# para que um apagamento não seja desfeito por ele.
 set -euo pipefail
 
 DEST=/opt/aos/backups

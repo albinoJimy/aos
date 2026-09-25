@@ -1237,25 +1237,30 @@ perdida ser recuperada no arranque seguinte em vez de ser saltada.
 ### O registo de apagamentos sai do bundle, em claro (AOS-436)
 
 O bundle leva o Vault **tal como está**, com as KEKs vivas nesse instante. Restaurá-lo depois de um
-apagamento DSAR traz a KEK do titular de volta — e o WORM do mesmo bundle nem sabe que o apagamento
-aconteceu. Nada **dentro** do bundle pode cobrir isto: é o bundle inteiro que recua no tempo.
+apagamento DSAR traz a KEK do titular de volta. O nó mantém por isso um **registo de apagamentos**
+(`/var/lib/aos/apagamentos-dsar.txt`, variável `AOS_DSAR_ERASURE_REGISTER`): uma linha
+`<id> <instante> <mac>` por cada destruição de KEK **confirmada** pelo Vault, com `id` e `mac` HMAC sob
+a chave `/var/lib/aos/apagamentos-dsar.txt.chave`. A chave fica no volume e sai **só dentro do bundle
+cifrado**; o registo sai **em claro** como `backups/apagamentos-<stamp>.txt` (só depois de o bundle
+verificar, sem a linha a meio que o tar de um ficheiro vivo possa apanhar) e roda com a mesma conta.
+Sem a chave, o ficheiro no portátil **não diz quem foi apagado** — o nome `aos-kek-<sha256>` do Vault
+seria invertível por um dicionário de utilizadores, o HMAC não — e **não se deixa forjar**: uma linha
+sem MAC válido é rejeitada pelo nó e nunca destrói nada.
 
-Por isso o nó mantém um **registo de apagamentos** (`/var/lib/aos/apagamentos-dsar.txt`, variável
-`AOS_DSAR_ERASURE_REGISTER`): uma linha `aos-kek-<sha256> <instante>` por cada destruição de KEK
-**confirmada** pelo Vault — só o nome não-reversível que a chave já tem no Vault, **nunca o titular**.
-O `backup.sh` copia-o **em claro** para fora do bundle, como `backups/apagamentos-<stamp>.txt`, só
-depois de o bundle estar verificado, e roda-o com a mesma conta (o mais recente é superconjunto de
-todos os anteriores). O `MANIFEST` do bundle diz de onde veio (`apagamentos=volume|ausente-no-volume`,
-`apagamentos-entradas=N`). O `pull-backups.ps1` recolhe o **mais recente**, verifica que ele contém
-tudo o que o anterior tinha (um registo que perdeu entradas **alerta** e os dois ficam) e só então
-larga o anterior.
+O `MANIFEST` do bundle diz o que ele traz (`apagamentos=volume|ausente-no-volume`,
+`apagamentos-entradas=N`, `apagamentos-chave=volume|ausente`). O `pull-backups.ps1` recolhe o registo
+**mais recente**, verifica que ele contém todos os `id` do anterior (um registo que perdeu entradas
+**alerta** e os dois ficam) e só então larga o anterior. Não verifica o MAC — a chave não está lá.
+
+> **O que isto cobre, sem arredondar.** A cópia em claro é tirada do **mesmo** tar e no **mesmo**
+> instante que o bundle. Para «perdi o servidor, restauro o último bundle» **não acrescenta nada** —
+> o último bundle já sabe tudo o que o registo sabe. Serve para **restaurar um bundle anterior ao
+> último** (o último está estragado; ou volta-se a um ponto antes de um deploy mau): o registo mais
+> recente diz ao nó restaurado o que foi apagado entre esse bundle e o último. Os apagamentos feitos
+> **depois do último backup** não estão em cópia nenhuma, e voltam com qualquer restauro.
 
 Com a imagem de AOS-436 no ar, o primeiro arranque faz entrar no registo **todos** os apagamentos que
 a cadeia já conhecia — o registo não começa vazio, começa com a história.
-
-> **O residual, dito.** Um apagamento feito **depois** da última recolha e **antes** da perda do
-> servidor não está em nenhum registo fora dele. Com a máquina perdida, o Vault e o WORM restaurados
-> são anteriores a esse apagamento, e ele volta. A janela é a da recolha (diária, 04:30).
 
 ### Restaurar
 
@@ -1265,32 +1270,41 @@ openssl smime -decrypt -binary -inform DER -in aos-<stamp>.tar.gz.enc \
 tar xzf bundle.tar.gz          # MANIFEST, idp-db.sql, volumes.tar.gz, config.tar.gz
 ```
 
-**O passo que não se salta: importar o registo de apagamentos MAIS RECENTE antes de arrancar o nó
-restaurado (AOS-436).** É o `apagamentos-<stamp>.txt` mais recente de `%USERPROFILE%\aos-backups`
-— **não** o que vem dentro do bundle, que é tão antigo como ele. Com os volumes já repostos e o nó
+**Ao restaurar um bundle ANTERIOR ao último: importar o registo de apagamentos MAIS RECENTE antes de
+arrancar o nó (AOS-436).** É o `apagamentos-<stamp>.txt` mais recente de `%USERPROFILE%\aos-backups`
+— **não** o que vem com o bundle, que é tão antigo como ele. Com os volumes já repostos e o nó
 **parado**:
 
 ```bash
-# 1. o registo mais recente para DENTRO do volume de dados (o nó corre como 65532)
+# 0. a CHAVE do registo tem de estar no volume. Um bundle anterior ao AOS-436 não a traz (o MANIFEST
+#    diz apagamentos-chave=ausente): copie aos/apagamentos-dsar.txt.chave do bundle MAIS RECENTE.
+docker run --rm -v aos_aos-data:/aos alpine:3.20 test -s /aos/apagamentos-dsar.txt.chave || echo 'FALTA A CHAVE'
+# 1. o registo mais recente para DENTRO do volume de dados
 docker run --rm -v aos_aos-data:/aos -v /tmp:/in:ro alpine:3.20 sh -c \
   'install -m 644 /in/apagamentos-<stamp>.txt /aos/apagamentos-importado.txt'
-# 2. apontar o nó para ele, no .env que o compose lê
+# 2. apontar o nó para ele — SUBSTITUINDO uma definição anterior, não acrescentando uma segunda
+sed -i '/^AOS_DSAR_ERASURE_REGISTER_IMPORT=/d' /opt/aos/.env
 echo 'AOS_DSAR_ERASURE_REGISTER_IMPORT=/var/lib/aos/apagamentos-importado.txt' >> /opt/aos/.env
 # 3. arrancar e CONFIRMAR — a linha tem de dizer PROVADA, e o /readyz tem de dar 200
 docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env up -d aos
 docker logs aos-aos-1 2>&1 | grep 'reconciliacao do arranque'
 ```
 
-O nó une o importado à cadeia do bundle e ao registo que o bundle trazia, funde-o neste (o próximo
-backup já o leva), e **destrói de novo** cada KEK que o Vault restaurado ainda tenha e que nasceu
-antes da destruição registada — com `dsar.key_reshredded` selado. Uma KEK nascida **depois** (titular
-que voltou) fica intacta. Se a linha disser **POR PROVAR**, o nó não se declara pronto: a causa vem na
-mesma linha (Vault ainda selado, registo malformado, chave que não se deixou destruir), e a manutenção
-da custódia re-tenta a cada minuto. A variável pode ficar definida (a importação é idempotente); se o
-ficheiro for apagado, a variável sai com ele — senão o nó fica UNREADY por um registo pedido e ausente.
+O nó autentica cada linha, une as válidas à cadeia do bundle e ao registo que ele trazia, funde-as
+neste (o próximo backup já as leva) e **destrói de novo** cada KEK que o Vault restaurado tenha e que
+nasceu antes da destruição registada — com `dsar.key_reshredded` selado. Uma KEK nascida **depois**
+(titular que voltou) fica intacta; uma sob **legal hold** não é destruída e fica fechada.
+
+Se a linha disser **POR PROVAR**, a causa vem nela (Vault ainda selado, linha rejeitada, chave do
+registo criada agora, KEK que não se deixou destruir). **Enquanto estiver por provar, o nó não decifra
+nem escreve conteúdo por-titular nenhum** — o portão está na custódia, não no `/readyz`, porque a sonda
+do contentor é o `/healthz` e o proxy encaminha tudo: um 503 no `/readyz` sozinho não parava nada. A
+manutenção da custódia repete a passagem a cada minuto. A variável pode ficar definida (a importação é
+idempotente); se o ficheiro for apagado, a variável sai com ele.
 
 O [`restore-drill.sh`](restore-drill.sh) faz o mesmo no ensaio e **recusa** correr sem o registo
-(segundo argumento), salvo declarado com `RESTORE_DRILL_SEM_REGISTO=1`.
+(segundo argumento), salvo declarado com `RESTORE_DRILL_SEM_REGISTO=1`; um bundle sem a chave pede-a
+por `RESTORE_DRILL_CHAVE_DO_REGISTO=<ficheiro>`.
 
 Este ciclo foi **exercitado**, não presumido: recolhido, decifrado com a privada local e o
 conteúdo conferido — `events.wal`, `worm.wal`, o `pg_dump` com 87 tabelas, e a chave Transit
@@ -2291,9 +2305,9 @@ Por isso as duas resolvem-se **antes** de voltar a entregar, e não uma a cada t
 ### `AOS_DSAR_ERASERS`
 
 Decisão do operador, não do repositório: é a lista de quem pode ordenar crypto-shred. Um restauro
-**já não** o desfaz desde que o registo de apagamentos mais recente seja importado
-([AOS-436](#o-registo-de-apagamentos-sai-do-bundle-em-claro-aos-436)); o que fica de fora é a janela
-entre a última recolha e o desastre. Ver `.env.example`. Com um só eraser, `/dsar/expire` por rota fica indisponível
+**já não** o desfaz em silêncio: o nó re-destrói a KEK que um bundle anterior traga de volta e fecha o
+conteúdo enquanto não o provar ([AOS-436](#o-registo-de-apagamentos-sai-do-bundle-em-claro-aos-436));
+o que fica de fora são os apagamentos posteriores ao último backup. Ver `.env.example`. Com um só eraser, `/dsar/expire` por rota fica indisponível
 (exige duas assinaturas distintas); a expiração automática por TTL continua a correr.
 
 ### O modelo em https, sem sair da rede interna

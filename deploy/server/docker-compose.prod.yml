@@ -137,10 +137,10 @@ services:
       AOS_EVENTSTORE_PATH: "/var/lib/aos/events.wal"
       AOS_WORM_PATH: "/var/lib/aos/worm.wal"
       # AOS-436 — REGISTO DE APAGAMENTOS. Cada destruição de KEK CONFIRMADA pelo Vault acrescenta
-      # aqui (nome não-reversível, instante); o backup.sh copia-o EM CLARO para fora do bundle, e a
-      # recolha leva-o para a máquina do operador. É a única memória de um apagamento que sobrevive
-      # a restaurar TUDO antigo — o bundle traz o Vault de antes do apagamento e o WORM de antes
-      # dele. Caminho FIXO no volume, porque o backup.sh o procura em `aos/apagamentos-dsar.txt`.
+      # aqui uma linha (id HMAC, instante, MAC) sob a chave `apagamentos-dsar.txt.chave`, criada no
+      # mesmo volume e que só sai dentro do bundle cifrado. O backup.sh copia o registo EM CLARO para
+      # fora do bundle e a recolha leva-o; ao restaurar um bundle ANTERIOR ao último, é ele que diz
+      # ao nó o que foi apagado depois. Caminho FIXO: o backup.sh procura `aos/apagamentos-dsar.txt`.
       AOS_DSAR_ERASURE_REGISTER: "/var/lib/aos/apagamentos-dsar.txt"
       # Só num RESTAURO: o registo mais recente recolhido, copiado para dentro do volume antes de
       # arrancar (README §"Restaurar"). Vazio no dia-a-dia. Definido e ausente ⇒ o nó fica UNREADY.

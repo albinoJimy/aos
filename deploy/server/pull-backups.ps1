@@ -45,10 +45,12 @@
 
   O REGISTO DE APAGAMENTOS (AOS-436). Cada bundle leva o Vault tal como estava — com as KEKs vivas
   nesse instante. Restaura-lo depois de um apagamento DSAR traz a KEK de volta. O backup.sh deixa,
-  ao lado de cada bundle e EM CLARO, o registo de apagamentos do no (so nomes aos-kek-<sha256> e
-  instantes, nunca titulares). Este script guarda o MAIS RECENTE — e superconjunto de todos os
-  anteriores — e verifica essa monotonia antes de largar o anterior. No restauro, e ele que se
-  importa ANTES de arrancar o no (README seccao "Restaurar").
+  ao lado de cada bundle e EM CLARO, o registo de apagamentos do no: linhas `<id> <instante> <mac>`,
+  com id e mac HMAC sob uma chave que so existe dentro do bundle cifrado — o ficheiro nao diz quem
+  foi apagado e nao se forja sem ela. Este script guarda o MAIS RECENTE — e superconjunto de todos
+  os anteriores — e verifica essa monotonia (por id) antes de largar o anterior. Nao verifica o MAC:
+  a chave nao esta aqui, e e o no que o verifica ao importar. So serve para restaurar um bundle
+  ANTERIOR ao ultimo (README seccao "Restaurar"); para o ultimo bundle nao acrescenta nada.
 #>
 [CmdletBinding()]
 param(
@@ -97,19 +99,26 @@ function Escreve($msg) {
     Write-Output $linha
     if (Test-Path $Destino) { Add-Content -Path $log -Value $linha -Encoding utf8 }
 }
-# Ler-Registo le um registo de apagamentos e devolve nome -> instante (o mais recente por nome), ou
-# $null se alguma linha estiver malformada. Estrito pela mesma razao que o no: uma linha saltada e um
-# apagamento esquecido. Os instantes sao RFC3339 UTC ('...Z'), pelo que a ordem de texto e a do tempo.
+# Ler-Registo le um registo de apagamentos e devolve id -> instante (o mais recente por id), ou
+# $null se alguma linha COMPLETA estiver malformada. Estrito pela mesma razao que o no, e com as
+# mesmas regras: -cnotmatch e [0-9] (sensivel a maiusculas, so digitos ASCII — o -notmatch e o \d
+# do PowerShell aceitavam o que o no recusa), e o fragmento FINAL sem fim de linha e uma escrita
+# interrompida, ignorada. O no escreve instantes RFC3339 UTC ('...Z'): a ordem de texto e a do tempo.
 function Ler-Registo([string]$caminho) {
-    $h = @{}
-    foreach ($l in (Get-Content -Path $caminho -Encoding UTF8)) {
+    $h = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $texto = [IO.File]::ReadAllText($caminho, [Text.Encoding]::UTF8)
+    $fim = $texto.LastIndexOf([char]10)
+    $texto = if ($fim -ge 0) { $texto.Substring(0, $fim + 1) } else { '' }
+    foreach ($l in ($texto -split "`n")) {
         $t = $l.Trim()
         if ($t -eq '' -or $t.StartsWith('#')) { continue }
-        $c = $t -split '\s+'
-        if ($c.Count -ne 2 -or $c[0] -notmatch '^aos-kek-[0-9a-f]{64}$' -or $c[1] -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { return $null }
+        $c = $t -csplit '[ \t]+'
+        if ($c.Count -ne 3 -or $c[0] -cnotmatch '^[0-9a-f]{64}$' -or $c[2] -cnotmatch '^[0-9a-f]{64}$' -or
+            $c[1] -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') { return $null }
         if (-not $h.ContainsKey($c[0]) -or [string]::CompareOrdinal($c[1], $h[$c[0]]) -gt 0) { $h[$c[0]] = $c[1] }
     }
-    return $h
+    # A virgula impede o PowerShell de desenrolar o dicionario em pares ao devolve-lo.
+    return ,$h
 }
 function Alerta($msg) {
     $script:alertas += $msg
@@ -194,10 +203,10 @@ foreach ($r in $remotos) {
 # noutro sitio: nos dois casos, o proximo restauro ressuscitaria apagamentos, e isso tem de gritar.
 $regRemoto = Nativo { & ssh -n @sshOpts -p $Porta $Servidor 'apagamentos' 2>$null }
 if ($LASTEXITCODE -ne 0 -or -not $regRemoto) {
-    Alerta "o servidor nao devolveu registo de apagamentos (AOS-436) - sem ele, um restauro de TUDO antigo ressuscita KEKs apagadas sem ninguem saber"
+    Alerta "o servidor nao devolveu registo de apagamentos (AOS-436) - sem ele, restaurar um bundle ANTERIOR ao ultimo ressuscita as KEKs apagadas depois dele"
 } else {
     $nomeReg = Split-Path ([string]($regRemoto | Select-Object -First 1)).Trim() -Leaf
-    if ($nomeReg -notmatch '^apagamentos-\d{8}T\d{6}Z\.txt$') {
+    if ($nomeReg -cnotmatch '^apagamentos-[0-9]{8}T[0-9]{6}Z\.txt$') {
         Alerta "nome inesperado para o registo de apagamentos, ignorado: $nomeReg"
     } else {
         $alvoReg = Join-Path $Destino $nomeReg
@@ -212,7 +221,7 @@ if ($LASTEXITCODE -ne 0 -or -not $regRemoto) {
                     Remove-Item $alvoReg -Force
                 } else {
                     $anteriores = @(Get-ChildItem -Path $Destino -Filter 'apagamentos-*.txt' |
-                        Where-Object { $_.Name -ne $nomeReg -and $_.Name -match '^apagamentos-\d{8}T\d{6}Z\.txt$' } |
+                        Where-Object { $_.Name -cne $nomeReg -and $_.Name -cmatch '^apagamentos-[0-9]{8}T[0-9]{6}Z\.txt$' } |
                         Sort-Object Name -Descending)
                     $perdidas = 0
                     if ($anteriores.Count -gt 0) {

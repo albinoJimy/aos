@@ -13,12 +13,13 @@
 #   USO (no servidor, com o bundle JÁ DECIFRADO e o registo de apagamentos MAIS RECENTE):
 #     bash /opt/aos/restore-drill.sh /tmp/bundle.tar.gz /tmp/apagamentos-<stamp>.txt
 #
-#   O REGISTO DE APAGAMENTOS (AOS-436) é o passo que um restauro real não pode saltar. O bundle
-#   traz o Vault de ANTES dos apagamentos que se seguiram a ele — e com o Vault, as KEKs que esses
-#   apagamentos destruíram. O registo mais recente (recolhido pelo pull-backups.ps1, em claro: só
-#   nomes aos-kek-<sha256>) é importado ANTES de o nó arrancar, e o nó destrói de novo o que ele diz
-#   destruído. Sem registo o ensaio RECUSA; RESTORE_DRILL_SEM_REGISTO=1 aceita-o, declarado, e
-#   prova menos do que um restauro real tem de fazer.
+#   O REGISTO DE APAGAMENTOS (AOS-436). Ao restaurar um bundle ANTERIOR ao último, o Vault volta
+#   de antes dos apagamentos que se seguiram — e com ele as KEKs que eles destruíram. O registo mais
+#   recente (recolhido pelo pull-backups.ps1; ids e MACs HMAC, em claro) é importado ANTES de o nó
+#   arrancar, e o nó destrói de novo o que ele diz destruído. Só autentica sob a chave do registo
+#   (`apagamentos-dsar.txt.chave`), que viaja dentro do bundle: um bundle anterior à chave precisa
+#   dela vinda do bundle mais recente — RESTORE_DRILL_CHAVE_DO_REGISTO=<ficheiro>. Sem registo o
+#   ensaio RECUSA; RESTORE_DRILL_SEM_REGISTO=1 aceita-o, declarado, e prova menos.
 #
 #   O bundle decifra-se na MÁQUINA DO OPERADOR, onde vive a chave privada:
 #     openssl smime -decrypt -binary -inform DER -in aos-<stamp>.tar.gz.enc \
@@ -71,10 +72,12 @@ if [[ -z "${REGISTO}" ]]; then
   está em claro e não é segredo. Para ensaiar SEM ele, declare-o: RESTORE_DRILL_SEM_REGISTO=1"
 else
   [[ -f "${REGISTO}" ]] || fail "o registo de apagamentos ${REGISTO} não existe"
-  # A MESMA forma estrita que o nó impõe: uma linha que ele recusaria faz o nó ficar UNREADY, e é
-  # melhor saber aqui do que no passo 5.
-  MAUS="$(grep -nvE '^(#.*|[[:space:]]*|aos-kek-[0-9a-f]{64} [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$' "${REGISTO}" || true)"
-  [[ -z "${MAUS}" ]] || fail "o registo de apagamentos tem linhas malformadas (o nó recusá-lo-ia):
+  # A FORMA que o parser do nó aceita (campos separados por qualquer espaço, CR tolerado, o
+  # fragmento final sem '\n' ignorado). O MAC e o instante só o nó os verifica — é ele que tem a
+  # chave —, mas uma linha que ele rejeitaria pela forma sabe-se melhor aqui do que no passo 5.
+  REG_LINHAS="$(head -n "$(wc -l < "${REGISTO}")" "${REGISTO}" | tr -d '\r')"
+  MAUS="$(grep -nvE '^[[:space:]]*(#.*|[0-9a-f]{64}[[:space:]]+[^[:space:]]+[[:space:]]+[0-9a-f]{64})?[[:space:]]*$' <<<"${REG_LINHAS}" || true)"
+  [[ -z "${MAUS}" ]] || fail "o registo de apagamentos tem linhas que o nó rejeitaria pela forma:
 ${MAUS}"
 fi
 command -v docker >/dev/null || fail "docker em falta"
@@ -285,6 +288,15 @@ fi
 # (vazia) sai primeiro — duas definições no --env-file dependeriam de qual ganha.
 sed -i '/^AOS_DSAR_ERASURE_REGISTER_IMPORT=/d' "${D}/env-aos"
 if [[ -n "${REGISTO}" ]]; then
+  # A CHAVE do registo tem de estar no volume, e tem de ser a mesma que escreveu o importado. Um
+  # bundle anterior a ela não a traz: o nó criaria uma nova e o importado não autenticaria (o nó
+  # recusa-o e fica por provar — não destrói nada, mas o ensaio falharia sem dizer porquê).
+  if [[ -n "${RESTORE_DRILL_CHAVE_DO_REGISTO:-}" ]]; then
+    install -m 644 "${RESTORE_DRILL_CHAVE_DO_REGISTO}" "${D}/vol/aos/apagamentos-dsar.txt.chave"
+    log "  chave do registo trazida de ${RESTORE_DRILL_CHAVE_DO_REGISTO}"
+  fi
+  [[ -s "${D}/vol/aos/apagamentos-dsar.txt.chave" ]] || fail "o bundle não traz aos/apagamentos-dsar.txt.chave (é anterior ao AOS-436) e sem ela o registo importado não autentica.
+  Traga-a do bundle MAIS RECENTE: RESTORE_DRILL_CHAVE_DO_REGISTO=<vol/aos/apagamentos-dsar.txt.chave desse bundle>"
   install -m 644 "${REGISTO}" "${D}/vol/aos/apagamentos-importado.txt"
   printf 'AOS_DSAR_ERASURE_REGISTER_IMPORT=/var/lib/aos/apagamentos-importado.txt\n' >> "${D}/env-aos"
   REG_N="$(grep -cvE '^(#|[[:space:]]*$)' "${REGISTO}" || true)"
