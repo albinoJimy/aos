@@ -3,13 +3,16 @@ package jetstream_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aos-ref/substrate/eventstore"
+	"github.com/aos-ref/substrate/eventstore/jetstream"
 )
 
 // reconexao_test.go — o buraco que o AC1 tem enquanto o cliente não reconectar.
@@ -128,6 +131,13 @@ func TestReconexao_SubscricaoRECUPERAOIntervalo(t *testing.T) {
 		t.Fatal("o evento anterior à falha nem sequer chegou — a subscrição não está a funcionar")
 	}
 
+	// ONDE está o consumidor fica escrito ANTES da falha. Este teste mata o nó da LIGAÇÃO, e
+	// o servidor sorteia o par de um consumidor R1: uma em cada três execuções, é o mesmo
+	// nó. Sem esta linha essa execução lê-se como flake (AOS-449) — com ela, lê-se a causa.
+	if lider, err := liderDoConsumidorDaSubscricao(t, st); err == nil {
+		t.Logf("consumidor da subscrição alojado em %q (antes da falha)", lider)
+	}
+
 	correrComando(t, "matar o nó da ligação", matar)
 
 	// ESCRITAS NO INTERVALO: é isto que um efémero perderia.
@@ -162,6 +172,127 @@ func TestReconexao_SubscricaoRECUPERAOIntervalo(t *testing.T) {
 		}
 	}
 	t.Logf("todos os eventos escritos durante a quebra foram ENTREGUES depois dela — a subscrição recuperou, não só retomou")
+}
+
+// envKillNo é o PREFIXO de um comando que mata um nó pelo NOME que o servidor anuncia
+// (ex.: `docker stop`); o teste acrescenta o nome. Existe porque o nó a matar só se sabe
+// DEPOIS de o servidor colocar o consumidor — não há comando fixo que o acerte.
+const envKillNo = "AOS_KILL_NODE_CMD"
+
+// nomeDeNoValido restringe o que se acrescenta ao comando de falha: o nome vem do servidor
+// e vai para um `sh -c`.
+var nomeDeNoValido = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
+// liderDoConsumidorDaSubscricao devolve o nó que aloja o ÚNICO consumidor do stream do
+// teste — o da subscrição, porque o stream é deste teste e de mais ninguém.
+func liderDoConsumidorDaSubscricao(t *testing.T, st *jetstream.Store) (string, error) {
+	t.Helper()
+	nomes, err := st.ConsumidoresDoStream()
+	if err != nil {
+		return "", err
+	}
+	if len(nomes) != 1 {
+		return "", fmt.Errorf("esperava um consumidor no stream, há %d: %v", len(nomes), nomes)
+	}
+	return st.LiderDoConsumidor(nomes[0])
+}
+
+// TestReconexao_MorteDoNoDoConsumidor é a versão DETERMINISTA do teste anterior, e é a que
+// prova o AOS-449.
+//
+// O TestReconexao_SubscricaoRECUPERAOIntervalo mata o nó da LIGAÇÃO. O consumidor da
+// subscrição é R1 e o servidor sorteia-lhe o par, pelo que esse teste só às vezes mata o nó
+// do consumidor — e era aí, e só aí, que ele falhava: o evento escrito no intervalo NUNCA
+// chegava. Lido como flake, era um defeito com probabilidade 1/3 por execução.
+//
+// O mecanismo, lido no nats-server v2.10 e não suposto: o `CREATE` de reafirmação de um
+// consumidor que já existe REUTILIZA os mesmos pares (`ca.copyGroup()`), e, com o único
+// par morto, ninguém responde. O servidor não move um R1 órfão sozinho. A subscrição ficava
+// a reafirmar para sempre um consumidor que não pode voltar enquanto o nó não voltar.
+//
+// Aqui mata-se o nó do consumidor TODAS as vezes. Sem a recuperação, isto falha sempre.
+func TestReconexao_MorteDoNoDoConsumidor(t *testing.T) {
+	addr := servidor(t)
+	matarNo := os.Getenv(envKillNo)
+	if matarNo == "" {
+		t.Skipf("define %s (prefixo de comando que mata um nó pelo nome, ex.: docker stop)", envKillNo)
+	}
+	if restaurar := os.Getenv(envRestore); restaurar != "" {
+		t.Cleanup(func() { correrComando(t, "restauro", restaurar) })
+	}
+
+	st, err := abrirComOpcoes(t, addr, opcoesBase(t, "RECNO_")...)
+	if err != nil {
+		t.Fatalf("abrir: %v", err)
+	}
+	ctx := context.Background()
+	const stream = "run-no-do-consumidor"
+
+	recebidos := make(chan string, 256)
+	sub, err := st.Subscribe(ctx, eventstore.Filter{Types: []string{"recon.no"}},
+		func(ev eventstore.Event) { recebidos <- string(ev.Payload) })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Unsubscribe()
+	time.Sleep(time.Second)
+
+	escrever := func(marca string) error {
+		_, err := st.Append(ctx, stream, eventstore.EventInput{
+			Type: "recon.no", Payload: json.RawMessage(`{"m":"` + marca + `"}`),
+		})
+		return err
+	}
+	if err := escrever("antes"); err != nil {
+		t.Fatalf("escrita antes: %v", err)
+	}
+	select {
+	case <-recebidos:
+	case <-time.After(10 * time.Second):
+		t.Fatal("o evento anterior à falha nem sequer chegou — a subscrição não está a funcionar")
+	}
+
+	lider, err := liderDoConsumidorDaSubscricao(t, st)
+	if err != nil {
+		t.Fatalf("onde está o consumidor: %v", err)
+	}
+	if !nomeDeNoValido.MatchString(lider) {
+		t.Fatalf("nome de nó do consumidor inválido para o comando de falha: %q", lider)
+	}
+	correrComando(t, "matar o nó do consumidor ("+lider+")", matarNo+" "+lider)
+
+	esperadas := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		marca := "no-" + strconv.Itoa(i)
+		for tent := 0; tent < 15; tent++ {
+			if err := escrever(marca); err == nil {
+				esperadas[marca] = true
+				break
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	if len(esperadas) == 0 {
+		t.Fatal("nenhuma escrita passou depois da falha — o stream R3 devia sobreviver à perda de um nó")
+	}
+
+	// O prazo cobre, no pior caso, a detecção do silêncio (15 s), a reafirmação que expira
+	// sem resposta (o prazo do store) e a recriação num par vivo — com folga.
+	prazoFinal := time.After(90 * time.Second)
+	for len(esperadas) > 0 {
+		select {
+		case p := <-recebidos:
+			for m := range esperadas {
+				if strings.Contains(p, `"`+m+`"`) {
+					delete(esperadas, m)
+				}
+			}
+		case <-prazoFinal:
+			t.Fatalf("%d evento(s) escritos depois da morte do nó do consumidor (%s) NUNCA chegaram: %v — "+
+				"o consumidor R1 ficou órfão no nó morto e a subscrição não o recolocou", len(esperadas), lider, esperadas)
+		}
+	}
+	t.Logf("morreu o nó do consumidor (%s) e os eventos posteriores foram ENTREGUES — o consumidor foi recolocado num par vivo", lider)
 }
 
 // TestSubscricao_SilencioDoConsumidorEDETECTADO mede a falha SILENCIOSA — a única contra a

@@ -145,6 +145,11 @@ imprimir_env() {
 	# sem ele — desenho deliberado dele, para que ninguém meça perda de nó sem perder um nó.
 	printf 'export AOS_KILL_CMD="%s"\n' "docker stop $(nome_do_no 3)"
 	printf 'export AOS_KILL_CONNECTED_CMD="%s"\n' "docker stop $(nome_do_no 1)"
+	# O TERCEIRO É UM PREFIXO, e a razão é o AOS-449: o nó que aloja um consumidor R1 é
+	# SORTEADO pelo servidor e só se conhece depois de ele existir. Um comando fixo acertava-lhe
+	# uma vez em três — e o defeito que isso escondia lia-se como flake. O teste acrescenta o
+	# nome que o servidor anuncia, que é o do contentor (`--server_name`).
+	printf 'export AOS_KILL_NODE_CMD="%s"\n' "docker stop"
 	# O RESTAURO NÃO É OPCIONAL, E FOI UMA EXECUÇÃO QUE O PROVOU.
 	#
 	# Sem ele, os testes destrutivos deixam dois nós em baixo e TUDO o que corre a seguir
