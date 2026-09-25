@@ -44,7 +44,13 @@ ROOT_TOKEN="$(grep -o '"root_token":"[^"]*"' "${INIT_FILE}" | cut -d'"' -f4)"
 vaultx() { VAULT_TOKEN="${ROOT_TOKEN}" docker exec -i -e VAULT_TOKEN -e VAULT_ADDR=https://127.0.0.1:8200 \
              -e VAULT_CACERT=/vault/tls/ca.crt aos-vault-1 "$@"; }
 
-grep -q '"sealed":false' <<<"$(vaultx vault status -format=json 2>/dev/null || true)" \
+# O `-format=json` do CLI é INDENTADO (`"sealed": false`, com espaço); tiram-se os espaços antes de
+# comparar, como nas outras leituras deste script. A primeira versão procurava `"sealed":false` e
+# recusava um Vault destravado — medido na primeira corrida em produção (2026-09-25).
+# Captura para variável e compara em bash, sem `| grep -q`: com pipefail, um consumidor que fecha o
+# pipe cedo faz o pipeline falhar APESAR de ter encontrado (o defeito que o backup.sh já documenta).
+ESTADO_VAULT="$(vaultx vault status -format=json 2>/dev/null | tr -d ' \n' || true)"
+[[ "${ESTADO_VAULT}" == *'"sealed":false'* ]] \
   || fail "o Vault está selado ou não responde — destrave-o antes (vault-unseal)"
 
 # --- 1. a chave -------------------------------------------------------------------------------
