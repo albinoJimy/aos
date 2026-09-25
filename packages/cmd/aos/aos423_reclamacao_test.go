@@ -99,10 +99,12 @@ func TestAOS423ProjeccaoDaFila(t *testing.T) {
 			porque:    "um plano recusado retentado para sempre e um laco",
 		},
 		{
-			nome: "AGUARDA_HUMANO nao volta e nao falha",
+			// AOS-442: estaciona em vez de fechar. A re-oferta DEPOIS do intervalo está em
+			// aos442_reverificacao_test.go; aqui fica a metade que o AOS-423 já exigia.
+			nome: "AGUARDA_HUMANO nao volta ANTES do intervalo de re-oferta, e nao falha",
 			eventos: []eventstore.Event{
 				evSubmetido(1, "a", "eu"), evReclamado(2, "a", 1, recente),
-				evDesfecho(3, "a", 1, DesfechoAguardaHumano),
+				evDesfechoEm(3, "a", 1, DesfechoAguardaHumano, recente),
 			},
 			elegiveis: nil,
 			porque:    "ninguem decidiu ainda; retentar seria pedir de novo o que espera um humano",

@@ -50,9 +50,12 @@ const maxPedidosPorDrenagem = 16
 //	4 exitFenced               TRANSITÓRIO  a posse foi superada a meio; retenta-se
 //	5 exitWALDetido            TRANSITÓRIO  outro escritor detém o STORE; retenta-se
 //	8 exitNosEmVoo             TRANSITÓRIO  o prazo acabou com nós a correr; nova invocação retoma
-//	6 exitPendenteDeAprovacao  AGUARDA      o plano espera um humano; nem retentativa nem desfecho
+//	6 exitPendenteDeAprovacao  AGUARDA      o plano espera um humano; nem retentativa nem desfecho —
+//	                                        o nó estaciona-o e re-oferece-o, e a re-verificação corre
+//	                                        pelo documento, sem modelo (AOS-442)
 //	7 exitDecisaoRecusada      TERMINAL     houve decisão e foi NÃO; caso fechado
 //	9 exitPlanoRecusado        TERMINAL     o planeador esgotou tentativas; não se retenta
+//	10 exitDocumentoRecusado   TERMINAL     documento/snapshot recusado; determinista (AOS-442)
 //	0 (sem erro)               TERMINAL     o plano correu
 //	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
 //
@@ -64,7 +67,7 @@ const maxPedidosPorDrenagem = 16
 // descartar.
 func classeDoDesfecho(codigo int) string {
 	switch codigo {
-	case exitOK, exitDecisaoRecusada, exitPlanoRecusado:
+	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado:
 		return "terminal"
 	case exitPendenteDeAprovacao:
 		return "aguarda_humano"
@@ -81,6 +84,8 @@ func cmdConsume(args []string) error {
 	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "prazo de cada plano, passado ao `serve`")
 	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "intervalo de sondagem do executor, passado ao `serve`")
 	worker := fs.String("worker", "", "identidade deste trabalhador, passada ao `serve`")
+	planDir := fs.String("plan-dir", "", "pasta onde fica o documento de cada plano validado, para a retoma correr por --plan-doc em vez de decompor de novo (AOS-442); por omissão, `planos/` ao lado do --wal. Com --nats é obrigatória e tem de ser PARTILHADA entre as réplicas")
+	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: passado ao `serve --goal` (ver `serve -h`), para exercitar a drenagem sem LLM")
 	var sub substrato
 	sub.registarFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -95,6 +100,12 @@ func cmdConsume(args []string) error {
 	if err := sub.validar(); err != nil {
 		return err
 	}
+	// A PASTA DOS DOCUMENTOS também, e pela mesma razão (AOS-442): sem ela, a retoma de um plano
+	// aprovado não tem por onde correr senão decompor de novo.
+	pasta, err := pastaDosPlanos(*planDir, sub)
+	if err != nil {
+		return err
+	}
 
 	cli, err := nodeClientDoAmbiente()
 	if err != nil {
@@ -104,14 +115,18 @@ func cmdConsume(args []string) error {
 		return errors.New("consume exige AOS_ORQ_NODE_URL: a fila vive no nó, e sem o canal para o " +
 			"nó não há nada para reclamar")
 	}
+	if err := os.MkdirAll(pasta, 0o700); err != nil {
+		return fmt.Errorf("pasta dos documentos dos planos %q: %w", pasta, err)
+	}
 
 	ctx := context.Background()
-	// AOS-441 — O SNAPSHOT CONFERE-SE COM O NÓ ANTES DE RECLAMAR. Cada pedido corre um `serve
-	// --goal`, que exige o snapshot; um consume sem ele, ou com um que nomeia tools que o nó não
-	// tem, falharia TODOS os pedidos da mesma maneira — e cada falha gastava uma geração. Pela
-	// mesma razão do substrato acima: o que já se sabe antes de pedir não se descobre depois.
+	// AOS-441 — O SNAPSHOT CONFERE-SE COM O NÓ ANTES DE RECLAMAR. Cada pedido corre um `serve`
+	// (por `--goal` ou, na retoma, por `--plan-doc` — AOS-442), e os dois exigem o snapshot; um
+	// consume sem ele, ou com um que nomeia tools que o nó não tem, falharia TODOS os pedidos da
+	// mesma maneira — e cada falha gastava uma geração. Pela mesma razão do substrato acima: o que
+	// já se sabe antes de pedir não se descobre depois.
 	if *snapshot == "" {
-		return errors.New("consume exige --snapshot: cada pedido é decomposto por `serve --goal`, que valida o plano contra o snapshot pinado")
+		return errors.New("consume exige --snapshot: cada pedido corre um `serve` (`--goal` ou `--plan-doc`), que valida o plano contra o snapshot pinado")
 	}
 	snapConferido, err := conferirSnapshotComONo(ctx, cli, *snapshot)
 	if err != nil {
@@ -119,8 +134,8 @@ func cmdConsume(args []string) error {
 	}
 	// A mesma linha do `serve`: é por ela que o registo da drenagem prova que a conferência correu.
 	fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
-	consumidos := 0
-	for consumidos < *maxPedidos {
+	consumidos, reverificados := 0, 0
+	for consumidos < *maxPedidos && reverificados < maxReverificacoesPorDrenagem {
 		pedido, houve, err := cli.ReclamarPedido(ctx)
 		if err != nil {
 			return fmt.Errorf("reclamar pedido: %w", err)
@@ -128,12 +143,30 @@ func cmdConsume(args []string) error {
 		if !houve {
 			break // fila vazia para este consumidor — o desfecho normal
 		}
-		consumidos++
 		fmt.Printf("reclamado: run=%s geracao=%d objectivo=%q\n", pedido.RunID, pedido.Geracao, pedido.Objective)
 
-		erroDoServe := correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker)
+		// AOS-442: por onde o plano entra — o documento validado de uma tentativa anterior, ou a
+		// decomposição do objectivo —, decidido pelo LOG do run. Alguns casos são um desfecho sem
+		// `serve` (ver retoma_do_plano.go): um plano ainda à espera de humano, um prazo expirado,
+		// um documento recusado.
+		origem, erroDoServe := origemDoPedido(sub, pasta, pedido.RunID, *decomposeFixture, *snapshot, time.Now().UTC())
+		if erroDoServe == nil {
+			fmt.Printf("origem do plano: run=%s %s\n", pedido.RunID, origem.descrever())
+			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem)
+		}
 		codigo, classe, detalhe := desfechoDoServe(erroDoServe)
 		fmt.Printf("desfecho: run=%s codigo=%d classe=%s\n", pedido.RunID, codigo, classe)
+
+		// UMA RE-VERIFICAÇÃO NÃO GASTA O `--max` (AOS-442). O nó re-oferece os pedidos à espera
+		// de humano, pelos mais antigos primeiro; se cada verificação contasse, meia dúzia de
+		// planos à espera de decisão ocupava todas as drenagens e os pedidos novos nunca corriam.
+		// Não há laço: um pedido re-verificado fica estacionado no nó durante o intervalo de
+		// re-oferta. O tecto próprio é só um travão.
+		if origem.jaValidado && classe == "aguarda_humano" {
+			reverificados++
+		} else {
+			consumidos++
+		}
 
 		// O DESFECHO REPORTA-SE SEMPRE, mesmo quando o `serve` falhou. Não reportar deixa o
 		// pedido preso até ao TTL da reclamação — meia hora de silêncio por uma falha que já
@@ -144,26 +177,62 @@ func cmdConsume(args []string) error {
 			// trabalhar às cegas.
 			fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
 				"fila quando a reclamacao expirar\n", pedido.RunID, err)
+			continue
+		}
+		// O DOCUMENTO SAI QUANDO O PEDIDO FECHA (AOS-442). É conteúdo em claro — o objectivo
+		// derivado, os nós —, fora do alcance do apagamento DSAR; enquanto o pedido está vivo tem
+		// de existir (é por ele que a retoma corre), mas depois de um desfecho TERMINAL reportado
+		// já não serve a ninguém. Só depois de o nó o ter registado: apagar antes, e falhar o
+		// relatório, deixava uma retoma sem documento.
+		if classe == "terminal" {
+			apagarDocumentoDoPlano(origem.documento)
 		}
 	}
 
-	if consumidos == 0 {
+	if consumidos == 0 && reverificados == 0 {
 		fmt.Println("fila vazia: nada a consumir")
 	} else {
-		fmt.Printf("drenagem terminada: %d pedido(s) consumido(s)\n", consumidos)
+		fmt.Printf("drenagem terminada: %d pedido(s) consumido(s), %d re-verificado(s) ainda a espera de humano\n",
+			consumidos, reverificados)
 	}
 	return nil
 }
 
-// correrPedido corre UM pedido pelo mesmo caminho que um `serve --goal` manual.
+// apagarDocumentoDoPlano remove o documento de um pedido fechado. Um documento que já não existe
+// não é erro; uma falha a apagar é ruidosa mas não pára a drenagem — o pedido está fechado, e o que
+// fica é uma cópia a mais que o operador tem de ver.
+func apagarDocumentoDoPlano(caminho string) {
+	if caminho == "" {
+		return
+	}
+	if err := os.Remove(caminho); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(os.Stderr, "aos-orq: documento do plano fechado NAO apagado (%v): %s\n", err, caminho)
+	}
+}
+
+// maxReverificacoesPorDrenagem trava o número de re-verificações de planos à espera de humano
+// numa invocação. Não conta para o `--max` — ver o ciclo em [cmdConsume].
+const maxReverificacoesPorDrenagem = 64
+
+// descrever diz, numa linha de stdout, por onde o plano entra — é o que o operador procura quando
+// uma retoma se comporta de forma inesperada.
+func (o origemDoPlano) descrever() string {
+	if o.porDocumento {
+		return "documento=" + o.documento + " (retoma pelo plano validado; sem decomposicao)"
+	}
+	return "objectivo (decomposicao; documento a guardar em " + o.documento + ")"
+}
+
+// correrPedido corre UM pedido pelo mesmo caminho que um `serve` manual — `--goal` ou `--plan-doc`,
+// consoante a [origemDoPlano].
 //
 // Reutiliza o `cmdServe` em vez de reimplementar o pipeline: o pedido tem de atravessar
 // exactamente a mesma governação que uma invocação à mão — posse por lease, decomposição
 // governada, gate de aprovação, executor de nós. Um caminho paralelo seria um segundo sítio onde
 // a governação podia divergir, que é a forma de defeito que o AOS-424 e o AOS-425 passaram a
 // série inteira a encontrar.
-func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string) error {
-	return cmdServe(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker))
+func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string, origem origemDoPlano) error {
+	return cmdServe(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker, origem))
 }
 
 // desfechoDoServe traduz o retorno do `serve` no que se reporta ao nó: código, classe e detalhe.
@@ -183,8 +252,24 @@ func desfechoDoServe(erroDoServe error) (codigo int, classe, detalhe string) {
 // ficava vivo até ao TTL, e qualquer nova reclamação do mesmo pedido — uma retoma depois de uma falha
 // transitória — batia em «run já tem um lease válido detido» (saída 3) até ele expirar. Medido em
 // produção: duas das quatro gerações de plan-e2e-437-1790336067 foram gastas contra o lease da primeira.
-func argsDoServe(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string) []string {
-	args := []string{"--run", p.RunID, "--goal", p.Objective, "--release"}
+//
+// A ORIGEM do plano (AOS-442): com documento validado, `--plan-doc` — a retoma não decompõe; sem
+// ele, `--goal` e `--plan-out`, para que o documento validado fique guardado para a próxima.
+func argsDoServe(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string, origem origemDoPlano) []string {
+	args := []string{"--run", p.RunID}
+	switch {
+	case origem.porDocumento:
+		args = append(args, "--plan-doc", origem.documento)
+	default:
+		args = append(args, "--goal", p.Objective)
+		if origem.documento != "" {
+			args = append(args, "--plan-out", origem.documento)
+		}
+		if origem.decomposeFixture != "" {
+			args = append(args, "--decompose-fixture", origem.decomposeFixture)
+		}
+	}
+	args = append(args, "--release")
 	if snapshot != "" {
 		args = append(args, "--snapshot", snapshot)
 	}

@@ -69,9 +69,31 @@ const (
 	// correu. Não se retenta.
 	DesfechoTerminal = "terminal"
 	// DesfechoAguardaHumano — o plano exige aprovação humana e nada foi materializado. Nem
-	// retentativa (ninguém decidiu ainda) nem desfecho (não está fechado).
+	// retentativa (ninguém decidiu ainda) nem desfecho (não está fechado): o pedido fica
+	// ESTACIONADO, e volta a ser oferecido de [intervaloDeReverificacao] em
+	// [intervaloDeReverificacao] (AOS-442, emenda ao ADR-030 §2.6).
 	DesfechoAguardaHumano = "aguarda_humano"
 )
+
+// intervaloDeReverificacao é quanto tempo um pedido À ESPERA DE HUMANO fica fora da fila antes de
+// voltar a ser oferecido ao consumidor (AOS-442).
+//
+// # PORQUE É QUE O NÓ RE-OFERECE, E NÃO ESPERA QUE LHE DIGAM
+//
+// Até ao AOS-442 o `aguarda_humano` contava como terminado: depois da decisão humana, NADA no
+// caminho da fila voltava a correr o pedido — ficava aprovado e parado. Para o tirar dali o nó
+// precisava de saber que a decisão existe, e a decisão vive no Event Store do `aos-orq`, noutro
+// volume. Ensinar-lho seria pô-lo a conhecer a semântica do orquestrador — a fronteira do ADR-018.
+//
+// Por isso o nó sabe só isto: um pedido estacionado volta a ser oferecido, de tempos a tempos, a
+// quem drena a fila. Quem o reclama é que verifica se já há decisão — e, se não houver, reporta
+// `aguarda_humano` outra vez, numa geração nova, sem pagar nada ao modelo. É mecânica de fila, do
+// mesmo género do [ttlDaReclamacao]; não é o nó a decidir nada sobre o plano.
+//
+// O valor é o compromisso entre a espera depois de o humano decidir (até isto, mais o intervalo do
+// timer de drenagem) e o ruído no log (uma reclamação e um desfecho por re-oferta, enquanto o
+// pedido espera — o prazo do pendente, 24 h no `aos-orq`, fecha-o como recusado).
+const intervaloDeReverificacao = 10 * time.Minute
 
 // ttlDaReclamacao é quanto tempo uma reclamação sem desfecho segura o pedido.
 //
@@ -105,8 +127,9 @@ type pedidoNaFila struct {
 // É uma FUNÇÃO PURA de (eventos, agora) — sem relógio próprio, sem I/O — porque é onde vive toda
 // a lógica de elegibilidade e é isso que a torna testável sem levantar um nó.
 //
-// Um pedido está ELEGÍVEL quando: foi submetido, não tem desfecho terminal nem à-espera-de-humano,
-// e não tem reclamação VIVA (uma reclamação sem desfecho e dentro do [ttlDaReclamacao]).
+// Um pedido está ELEGÍVEL quando: foi submetido, não tem desfecho terminal, não tem reclamação
+// VIVA (uma reclamação sem desfecho e dentro do [ttlDaReclamacao]) e não está ESTACIONADO (a sua
+// última geração acabou em `aguarda_humano` há menos de [intervaloDeReverificacao]).
 //
 // Delega em [projectarComTerminados] e deita fora a segunda metade. Existe porque é esta a
 // pergunta que quase todos os chamadores fazem, e porque é a assinatura que os testes do AOS-423
@@ -129,6 +152,7 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 		maiorGeracao int
 		reclamadoEm  map[int]time.Time
 		desfechoDe   map[int]string
+		desfechoEm   map[int]time.Time
 	}
 	porRun := map[string]*estado{}
 	ordem := []string{}
@@ -136,7 +160,7 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 	garantir := func(runID string) *estado {
 		e, ok := porRun[runID]
 		if !ok {
-			e = &estado{reclamadoEm: map[int]time.Time{}, desfechoDe: map[int]string{}}
+			e = &estado{reclamadoEm: map[int]time.Time{}, desfechoDe: map[int]string{}, desfechoEm: map[int]time.Time{}}
 			e.p.RunID = runID
 			porRun[runID] = e
 			ordem = append(ordem, runID)
@@ -183,6 +207,9 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 				continue
 			}
 			e.desfechoDe[ger] = d.Classe
+			if t, err := time.Parse(time.RFC3339Nano, ev.Ts); err == nil {
+				e.desfechoEm[ger] = t
+			}
 			if ger > e.maiorGeracao {
 				e.maiorGeracao = ger
 			}
@@ -198,8 +225,12 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 			// tão-pouco — não tem `seq` de submissão, logo não há nada que autorize cortar.
 			continue
 		}
+		// SÓ O TERMINAL FECHA (AOS-442). O `aguarda_humano` fechava também, e era por isso que um
+		// plano aprovado depois da decisão humana nunca mais corria. Ele ESTACIONA — ver abaixo — e
+		// não conta como terminado para a marca de água: um pedido à espera de humano não acabou, e
+		// cortar o log acima dele esconderia a sua re-oferta.
 		for _, classe := range e.desfechoDe {
-			if classe == DesfechoTerminal || classe == DesfechoAguardaHumano {
+			if classe == DesfechoTerminal {
 				e.p.Terminado = true
 			}
 		}
@@ -221,6 +252,17 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 		}
 		if viva {
 			continue
+		}
+		// ESTACIONADO: a última geração acabou à espera de humano, e ainda não passou o intervalo
+		// de re-oferta. Só a ÚLTIMA conta — um `aguarda_humano` antigo seguido de uma tentativa
+		// posterior (transitória, ou uma reclamação expirada) já não diz nada sobre o agora.
+		//
+		// Um carimbo ilegível RE-OFERECE em vez de estacionar para sempre: estacionar sem prazo é
+		// exactamente o defeito que isto fecha, e re-oferecer custa uma verificação do consumidor.
+		if e.desfechoDe[e.maiorGeracao] == DesfechoAguardaHumano {
+			if em, ok := e.desfechoEm[e.maiorGeracao]; ok && agora.Sub(em) < intervaloDeReverificacao {
+				continue
+			}
 		}
 		e.p.Geracao = e.maiorGeracao + 1
 		fora = append(fora, e.p)
@@ -290,48 +332,68 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	pedido, err := h.reclamarUm(r.Context(), reclamante)
-	if err != nil {
-		h.logf("plan-claim: reclamacao falhou principal=%q: %v", reclamante.principal, err)
-		writeError(w, http.StatusServiceUnavailable, "reclamacao indisponivel")
-		return
-	}
-	if pedido == nil {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	// O OBJECTIVO ABRE-SE AQUI, e não na projecção (AOS-429).
-	//
-	// A projecção corre a cada submissão, sobre a fila toda, só para contar pendentes; decifrar
-	// ali seria pagar cripto por cada pedido de cada varredura para deitar fora tudo menos um.
-	// Aqui abre-se exactamente o pedido que vai ser entregue, uma vez.
-	//
-	// A forma do wire não muda: o consumidor recebe `objective` em claro, como sempre, pelo
-	// canal que o gate soberano já autenticou. É por isto que ele nunca precisa da chave.
-	objetivo, errAbrir := abrirObjetivo(h.node, pedido.Payload)
-	if errAbrir != nil {
-		// A CAUSA MAIS PROVÁVEL É LEGÍTIMA, e é o Art. 17 a funcionar: a KEK do titular foi
-		// destruída por um `/dsar/erase` e o pedido deixou de ser executável.
+	// UM PEDIDO ILEGÍVEL NÃO TAPA OS SEGUINTES (AOS-442). Até aqui a reclamação devolvia 503 ao
+	// primeiro objectivo que não abrisse, e o `consume` abortava a drenagem inteira. Com a
+	// re-oferta dos pedidos à espera de humano isso passava a repetir-se: o pedido morto voltava à
+	// cabeça da fila a cada expiração da reclamação e parava a drenagem de todos os outros. Agora
+	// salta-se para o seguinte; o 503 fica só para quando NADA do que se reclamou era entregável.
+	saltados := 0
+	for tentativa := 0; tentativa < maxIlegiveisPorReclamacao; tentativa++ {
+		pedido, err := h.reclamarUm(r.Context(), reclamante)
+		if err != nil {
+			h.logf("plan-claim: reclamacao falhou principal=%q: %v", reclamante.principal, err)
+			writeError(w, http.StatusServiceUnavailable, "reclamacao indisponivel")
+			return
+		}
+		if pedido == nil {
+			break
+		}
+		// O OBJECTIVO ABRE-SE AQUI, e não na projecção (AOS-429).
 		//
-		// O pedido JÁ FOI RECLAMADO quando se chega aqui — a reclamação é o que arbitra entre
-		// consumidores e tem de acontecer antes. Devolver 503 deixa-o reclamado, e a reclamação
-		// expira pelo TTL, que é o caminho normal de um consumidor que morre a meio. NÃO se
-		// escreve desfecho: quem reporta desfechos é o consumidor, e inventar um aqui poria o
-		// nó a afirmar sobre uma tentativa que nunca correu.
-		h.logf("plan-claim: pedido reclamado mas ILEGIVEL run=%q principal=%q: %v — "+
-			"tipicamente a chave do titular foi destruida por /dsar/erase",
-			pedido.RunID, reclamante.principal, errAbrir)
+		// A projecção corre a cada submissão, sobre a fila toda, só para contar pendentes;
+		// decifrar ali seria pagar cripto por cada pedido de cada varredura para deitar fora tudo
+		// menos um. Aqui abre-se exactamente o pedido que vai ser entregue, uma vez.
+		//
+		// A forma do wire não muda: o consumidor recebe `objective` em claro, como sempre, pelo
+		// canal que o gate soberano já autenticou. É por isto que ele nunca precisa da chave.
+		objetivo, errAbrir := abrirObjetivo(h.node, pedido.Payload)
+		if errAbrir != nil {
+			// A CAUSA MAIS PROVÁVEL É LEGÍTIMA, e é o Art. 17 a funcionar: a KEK do titular foi
+			// destruída por um `/dsar/erase` e o pedido deixou de ser executável.
+			//
+			// O pedido JÁ FOI RECLAMADO quando se chega aqui — a reclamação é o que arbitra entre
+			// consumidores e tem de acontecer antes. Fica reclamado, e a reclamação expira pelo
+			// TTL, que é o caminho normal de um consumidor que morre a meio. NÃO se escreve
+			// desfecho: quem reporta desfechos é o consumidor, e inventar um aqui poria o nó a
+			// afirmar sobre uma tentativa que nunca correu — fechar um pedido ilegível exige
+			// decidir QUEM escreve esse desfecho e com que código (resíduo do AOS-442).
+			h.logf("plan-claim: pedido reclamado mas ILEGIVEL run=%q principal=%q: %v — "+
+				"tipicamente a chave do titular foi destruida por /dsar/erase; segue para o seguinte",
+				pedido.RunID, reclamante.principal, errAbrir)
+			saltados++
+			continue
+		}
+		writeJSON(w, http.StatusOK, respostaDeReclamo{
+			RunID:     pedido.RunID,
+			Objective: objetivo,
+			Board:     pedido.Payload.Board,
+			Region:    pedido.Payload.Region,
+			Geracao:   pedido.Geracao,
+		})
+		return
+	}
+	if saltados > 0 {
+		// Nada entregável, e pelo menos um ilegível: o 503 de sempre, que é o que o operador vê.
 		writeError(w, http.StatusServiceUnavailable, "pedido indisponivel")
 		return
 	}
-	writeJSON(w, http.StatusOK, respostaDeReclamo{
-		RunID:     pedido.RunID,
-		Objective: objetivo,
-		Board:     pedido.Payload.Board,
-		Region:    pedido.Payload.Region,
-		Geracao:   pedido.Geracao,
-	})
+	w.WriteHeader(http.StatusNoContent)
 }
+
+// maxIlegiveisPorReclamacao limita quantos pedidos ilegíveis uma reclamação salta antes de
+// desistir. Cada salto escreve um facto de reclamação; sem tecto, uma fila de pedidos apagados
+// seria percorrida inteira num só pedido HTTP.
+const maxIlegiveisPorReclamacao = 16
 
 // reclamarUm projecta a fila, escolhe o pedido mais antigo elegível PARA ESTE reclamante, e
 // tenta reclamá-lo.

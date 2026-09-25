@@ -677,6 +677,27 @@ bash /opt/aos/alerta-nhi.sh --teste
 
 Os serviços não têm `Restart`: uma falha fica em `systemctl --failed`, que o sensor lê.
 
+**Um pedido da fila que fica à espera de humano (AOS-442).** O `consume` guarda o documento de cada
+plano validado em `/var/lib/aos-orq/planos/<sha256 do run_id>.plan.json` (no volume do `aos-orq`;
+a linha `origem do plano:` do journal do `aos-drenar-planos` diz o caminho, e
+`printf %s '<run>' | sha256sum` também). O ficheiro é apagado quando o pedido fecha; até lá é uma
+cópia em claro do organigrama que um `/dsar/erase` não alcança. Um plano de risco fica
+`aguarda_humano` no `GET /plans/{id}`; a cerimónia é a de cima, sobre o WAL e o documento do
+`consume`:
+
+```bash
+$C run --rm aos-orq plans --wal /var/lib/aos-orq/consume.wal --run <run>      # o request_id a assinar
+$C run --rm aos-orq decide --wal /var/lib/aos-orq/consume.wal --run <run> \
+   --plan-doc /var/lib/aos-orq/planos/<sha256>.plan.json --snapshot /etc/aos-orq/snapshot.json \
+   --decision approve --approval /etc/aos-orq/aprovacao.json
+```
+
+**Não corra o `serve` à mão depois disto.** O nó re-oferece o pedido de 10 em 10 min, e a drenagem
+seguinte corre-o pelo documento aprovado (`--plan-doc`) — nunca por nova decomposição. Um `decide`
+que saia com `5` apanhou uma drenagem a meio: repita. Sem decisão em 24 h, o pedido fecha com `7`.
+Um desfecho `10` é um documento ou snapshot recusado (o catálogo mudou desde a validação, ou o
+ficheiro foi trocado ou truncado) — fecha o pedido; um plano novo exige um run novo.
+
 **Renovar o mandato** (o sensor avisa a 7 dias do fim): assine outro no passo 1 e copie-o por cima.
 O anterior continua válido até caducar; se quer corte imediato, revogue-o.
 

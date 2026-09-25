@@ -234,18 +234,24 @@ func estadoDoPedido(ctx context.Context, store EventStorePort, runID string, ago
 	e.resposta.Geracao = maiorGer
 	// O ESTADO DERIVA-SE PELA MESMA ORDEM DA PROJECÇÃO DA FILA, e tem de derivar: se as duas
 	// discordassem, a rota diria «pendente» sobre um pedido que a fila já não serve, ou o
-	// inverso. Terminal primeiro, depois reclamação viva, depois pendente.
+	// inverso. Terminal primeiro, depois reclamação viva, depois à-espera-de-humano, depois
+	// pendente.
+	//
+	// O TERMINAL É O DE MAIOR GERAÇÃO, escolhido e não encontrado. Antes do AOS-442 a primeira
+	// entrada do mapa que fosse terminal OU à-espera-de-humano ganhava — e a ordem de um mapa em
+	// Go é aleatória. Com a re-oferta, um pedido pode ter `aguarda_humano` na geração 1 e
+	// `terminal` na 3, e a resposta tem de ser sempre a segunda.
+	terminal, gerTerminal := desfechoPayload{}, 0
 	for ger, d := range desfechoDe {
-		if d.Classe == DesfechoTerminal || d.Classe == DesfechoAguardaHumano {
-			e.resposta.Estado = EstadoPlanoTerminado
-			if d.Classe == DesfechoAguardaHumano {
-				e.resposta.Estado = EstadoPlanoAguardaHumano
-			}
-			e.resposta.CodigoSaida = d.CodigoDe
-			e.resposta.Detalhe = d.Detalhe
-			_ = ger
-			return e, true, nil
+		if d.Classe == DesfechoTerminal && ger > gerTerminal {
+			terminal, gerTerminal = d, ger
 		}
+	}
+	if gerTerminal > 0 {
+		e.resposta.Estado = EstadoPlanoTerminado
+		e.resposta.CodigoSaida = terminal.CodigoDe
+		e.resposta.Detalhe = terminal.Detalhe
+		return e, true, nil
 	}
 	for ger, em := range reclamadoEm {
 		if _, houve := desfechoDe[ger]; houve {
@@ -255,6 +261,16 @@ func estadoDoPedido(ctx context.Context, store EventStorePort, runID string, ago
 			e.resposta.Estado = EstadoPlanoEmCurso
 			return e, true, nil
 		}
+	}
+	// À ESPERA DE HUMANO quando é a ÚLTIMA geração que o diz — mesmo que a fila já o esteja a
+	// re-oferecer (AOS-442). A re-oferta é mecânica de fila, para o consumidor verificar se a
+	// decisão já existe; para quem submeteu, a verdade continua a ser «espera por um humano», até
+	// uma tentativa posterior dizer outra coisa.
+	if d, houve := desfechoDe[maiorGer]; houve && d.Classe == DesfechoAguardaHumano {
+		e.resposta.Estado = EstadoPlanoAguardaHumano
+		e.resposta.CodigoSaida = d.CodigoDe
+		e.resposta.Detalhe = d.Detalhe
+		return e, true, nil
 	}
 	// PENDENTE, e o último desfecho transitório (se houver) viaja com ele: é o que diz a quem
 	// submeteu PORQUE é que o pedido ainda está na fila depois de tentativas.

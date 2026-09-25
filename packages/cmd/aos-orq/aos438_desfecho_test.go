@@ -53,7 +53,7 @@ func TestAOS438ErrosContinuamClassificados(t *testing.T) {
 func TestAOS438OServeDoConsumeLargaAPosse(t *testing.T) {
 	args := argsDoServe("/etc/aos-orq/snapshot.json",
 		pedidoReclamado{RunID: "plan-x", Objective: "o objectivo"}, substrato{wal: "/var/lib/aos-orq/consume.wal"},
-		40*time.Minute, 2*time.Second, "orq")
+		40*time.Minute, 2*time.Second, "orq", origemDoPlano{})
 	if !slices.Contains(args, "--release") {
 		t.Fatalf("o consume tem de passar --release ao serve; args=%v", args)
 	}
