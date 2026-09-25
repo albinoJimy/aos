@@ -5393,7 +5393,8 @@ que era onde estava o defeito.
 1. **Uma retoma genuína depois da aprovação continua a falhar.** Se o `serve` falhar DE FACTO de
    forma transitória depois de o plano estar aprovado, a retoma corre `serve --goal` outra vez, o
    modelo re-decompõe, e o gate recusa o organigrama novo (AOS-412). Fechar exige que o `consume`
-   retome pelo documento aprovado (`--plan-doc`) em vez do objectivo.
+   retome pelo documento aprovado (`--plan-doc`) em vez do objectivo. **Entregue pelo AOS-442**
+   (por verificar em produção).
 2. **Os dois planos de prova ficam gravados como falhados** no nó — o primeiro com `7`; o segundo
    seguirá o mesmo caminho até esta correcção estar implantada. O trabalho deles foi feito.
 
@@ -5541,17 +5542,70 @@ compara rótulos (`plan_gate_wiring.go:76-84`) e sela o digest do conteúdo (`:8
 compara o conteúdo com as tools que o nó tem**. O próprio `snapshot.go:17-22` diz «em produção o
 snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º eixo.
 
+### O que se entregou
+
+- **O nó expõe o seu catálogo** em `GET /tools` (`packages/cmd/aos/catalogo_de_tools.go`), plano de
+  dados: por tool, o nome que a lista-branca compara, a versão, o digest do contrato e os dois eixos
+  de risco que o manifesto declara, normalizados fail-closed (`egress` não declarado ⇒ `unknown`;
+  `reversibility` que não seja «reversible» ⇒ `irreversible`). O digest é um **pin do contrato**
+  `KindTool` — schema de entrada, scopes e egress —, calculado pela fórmula do registo assinado; não
+  cobre a capability, o recurso, a reversibilidade nem o binding de sandbox, e **não prova registo
+  assinado**: em produção o `AOS_MODEL_TOOLS_REGISTER` vem vazio e nada é assinado. Compõe-se uma
+  vez no arranque (`serveAPI`), do mesmo manifesto que o nó oferece ao modelo; sem
+  `AOS_MODEL_ENDPOINT` é vazio. Com o gate soberano composto exige a credencial das rotas irmãs
+  (`/plans/claim`, `/plans/outcome`); sem ele serve pelo read-path legado, como o `GET /runs/{id}`.
+- **O `aos-orq` confere o snapshot com esse catálogo** (`conferirSnapshotComONo`, `snapshot.go`)
+  no arranque do `consume` — antes de reclamar qualquer pedido, e passa a exigir `--snapshot` — e
+  do `serve` com `AOS_ORQ_NODE_URL` — antes de abrir o WAL e de tomar posse. Recusa com
+  `ErrSnapshotDivergeDoNo` se uma tool do snapshot não existir no nó, se o digest não for o do nó,
+  ou se `egress`/`reversibility` forem **menos arriscados** do que o nó declara (mais conservador é
+  aceite; `unknown` no nó conta como o pior caso). Cada divergência vem nomeada, e a lista das tools
+  do nó vem com o digest a copiar. Um catálogo que não se lê (transporte, credencial, nó sem
+  `GET /tools`) ou com nomes repetidos recusa com `ErrCatalogoDoNoIlegivel` — fail-closed, mas sem
+  afirmar uma divergência que não se mediu. O `serve` usa daí em diante o snapshot **conferido**, e
+  não uma segunda leitura do ficheiro.
+- Testes: `aos441_snapshot_vs_catalogo_test.go` (aos-orq) e `aos441_catalogo_de_tools_test.go`
+  (nó), este último sobre o manifesto real de `deploy/server/model-tools/tools.json`, amarrando o
+  digest servido ao do registo, e batendo no servidor que o `serveAPI` constrói
+  (`TestAOS441ServeAPIServeOCatalogo`; apagar o `WithToolCatalog` avermelha-o).
+
 ### Critérios de Aceitação
 
 - [ ] O snapshot passa a derivar-se do catálogo do nó (ou do REG), com os digests reais das tools.
-- [ ] Um snapshot cujas tools não existam no nó é RECUSADO no arranque do `consume`/`serve`, com a
-      divergência nomeada.
-- [ ] Teste: renomear uma tool no catálogo avermelha.
-- [ ] **Verificado em PRODUÇÃO**: o snapshot em uso bate com o catálogo do nó.
+      **Parcial:** os digests reais passam a ser **obrigatórios** (um digest que não é o do nó é
+      recusado) e o nó serve-os, mas o snapshot não é gerado — ver o resíduo 1.
+- [x] Um snapshot cujas tools não existam no nó é RECUSADO no arranque do `consume`/`serve`, com a
+      divergência nomeada. `TestAOS441ConsumeRecusaSnapshotDivergenteAntesDeReclamar` (zero
+      reclamações) e `TestAOS441ServeConfereOSnapshotAntesDaPosse` (binário real: sai `1`, nomeia
+      `fs.read` e `doc_read`, não abre o WAL; e o controlo com o catálogo certo, que toma posse).
+- [x] Teste: renomear uma tool no catálogo avermelha. `TestAOS441RenomearUmaToolNoCatalogoAvermelha`
+      (o caso de produção: `fs.read` → `doc_read`).
+- [ ] **Verificado em PRODUÇÃO**: o snapshot em uso bate com o catálogo do nó. Exige uma release com
+      esta alteração; o snapshot de produção tem o digest `sha256:aaa`, que passa a ser recusado.
+
+### Resíduos declarados
+
+1. **A derivação completa do snapshot não se fez, porque exigiria inventar eixos de risco.** O
+   manifesto do nó (`AOS_MODEL_TOOLS`) declara `egress` e `reversibility`, mas não a
+   `sensitivity` nem a admissibilidade; gerar o snapshot a partir do catálogo obrigaria a
+   escolhê-las aqui. Continuam escritas à mão, e o que é conferível passa a sê-lo. Fechar exige que
+   o manifesto do nó (ou o REG) declare a sensibilidade.
+2. **A versão não se compara.** O manifesto do nó não versiona tools — o registo assinado pina
+   todas em `1.0.0` — pelo que uma diferença de versão não diria nada sobre a tool.
+3. **A conferência é no arranque.** Um nó reiniciado com outro manifesto a meio de uma drenagem só
+   é apanhado pelo `serve` do pedido seguinte, que também confere antes da posse.
+4. **A transição em produção tem uma ordem, e o código não a impõe.** O digest de cada tool entra
+   no `digestDoSnapshot` que o `plan.validated` sela, e o `exigirSnapshotSelado` recusa materializar
+   sob outro conteúdo. Por isso um plano pendente ou em voo validado sob o snapshot com
+   `sha256:aaa` deixa de correr quando o snapshot é corrigido: sai com `1`, que é transitório, e é
+   re-oferecido até ao tecto de pendentes sem nunca correr. E, entre o deploy e a correcção do
+   `orq/snapshot.json`, a drenagem recusa em cada tick. A ordem — drenar e decidir os pendentes
+   **antes** do release, corrigir o snapshot com os digests que a recusa (ou o `GET /tools`) lista
+   logo depois do deploy — está em `deploy/server/README.md` §executor de nós.
 
 ### Estado
 
-**ABERTO.**
+**ABERTO** até à verificação em produção.
 
 ---
 
@@ -5559,7 +5613,10 @@ snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º e
 
 <!-- rtm: adrs-mencionados -->
 <!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
-     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25).
+     EXCEPÇÃO DECLARADA: este ticket EMENDA o ADR-030 §2.6, e a emenda está registada no próprio
+     ADR, que o nomeia. O marcador fica porque o parser da RTM é tudo-ou-nada, e os restantes
+     (ADR-005, ADR-018, ADR-031) são de facto só menção. -->
 
 | Campo | Valor |
 |---|---|
@@ -5584,17 +5641,96 @@ E um segundo buraco, encontrado pela discovery: `aguarda_humano` marca o pedido 
 fila (`plan_claim.go:202-203`). Depois da decisão humana, **nada no caminho da fila volta a correr o
 pedido** — fica aprovado e parado.
 
+### O que se entregou
+
+Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estaciona; não fecha).
+
+- **Onde vive o documento aprovado.** Fora do log, como sempre (ADR-005): o `serve` escreve-o por
+  `--plan-out` quando o plano é VALIDADO — pendente ou aprovado, e não só pendente como até aqui — e
+  **antes** de apensar os factos (`gatearPlano`), para que nunca haja `plan.validated` sem documento.
+  A escrita é atómica (temporário, `fsync`, `rename`). O `consume` dá a cada pedido um ficheiro
+  em `planos/` ao lado do WAL, com o SHA-256 do `run_id` por nome (`--plan-dir` para outro sítio;
+  obrigatório sobre `--nats`), e apaga-o quando reporta um desfecho `terminal`.
+- **A retoma** (`retoma_do_plano.go`) é decidida pelo LOG do run, lido antes do `serve`: sem
+  `plan.validated`, `serve --goal --plan-out` (um documento que lá esteja não é usado); validado e
+  decidido, `serve --plan-doc` e o gate decide; validado sem decisão e com nós de risco,
+  `aguarda_humano` SEM correr o `serve`; validado sem decisão e sem risco (auto-aprovação a meio),
+  `--plan-doc`; fora do prazo, ou validado sem documento, `7` sem `serve`.
+- **O `--plan-doc` exige o organigrama do `plan.validated`** do run quando ele existe e ainda não
+  há decisão, em qualquer ramo do gate (`materializar`); com decisão, o gate já exigia o hash
+  decidido. Antes, um documento benigno com o mesmo `capabilities_hash` era auto-aprovado por cima
+  de um plano de risco pendente. O `serve --goal` repetido não é coberto (resíduo 7).
+- **Recusas deterministas fecham o pedido:** documento que não descodifica, não valida, não é o
+  validado ou não se lê, e snapshot que não é o declarado ou o selado, saem com o código novo `10`
+  (`exitDocumentoRecusado`, terminal). Como `1` genérico eram transitórios e voltavam à cabeça da
+  fila para sempre.
+- **O `aguarda_humano` no nó** (`plan_claim.go`): estaciona e é re-oferecido de 10 em 10 min
+  (`intervaloDeReverificacao`) numa geração nova; só `terminal` fecha; não conta para a marca de
+  água. O nó continua a não saber o que é uma decisão (ADR-018): quem re-verifica é o `consume`,
+  pelo documento, sem modelo e sem gastar o `--max`. O `GET /plans/{id}` passou a escolher o
+  desfecho terminal de maior geração (antes dependia da ordem de um mapa).
+- **O prazo do pendente** (24 h) passa a ser imposto pelo `consume` e pelo `serve` (saída `7`),
+  para a re-oferta de um plano que ninguém decide acabar; um carimbo ilegível conta como expirado.
+- **Um pedido cujo objectivo selado já não abre** deixa de tapar os seguintes: a reclamação salta-o
+  e entrega o próximo (o 503 fica só para quando nada era entregável).
+- Testes: `aos442_retoma_test.go` (aos-orq, `consume` real contra um nó falso, com o fixture a
+  devolver OUTRO organigrama na retoma e as decomposições contadas) e
+  `aos442_reverificacao_test.go` (nó, projecção e estado servido). Mutações: `argsDoServe` sempre
+  por `--goal` ⇒ 2 vermelhos; documento só no pendente ⇒ 1; `aguarda_humano` a fechar ⇒ 2; prazo
+  nunca expirado ⇒ 1. A revisão adversarial acrescentou: snapshot trocado entre tentativas ⇒
+  terminal 10; documento truncado ⇒ terminal 10; documento plantado num run novo não é usado;
+  `--plan-doc` benigno sobre um pendente ⇒ 10; pedido ilegível à frente não tapa o seguinte; o
+  documento de um pedido fechado é apagado.
+
 ### Critérios de Aceitação
 
-- [ ] Um pedido já aprovado é retomado pelo documento aprovado (`--plan-doc`), nunca por `--goal`.
-- [ ] Um pedido em `aguarda_humano` volta a ser reclamável depois da decisão, e corre pelo documento
+- [x] Um pedido já aprovado é retomado pelo documento aprovado (`--plan-doc`), nunca por `--goal`.
+- [x] Um pedido em `aguarda_humano` volta a ser reclamável depois da decisão, e corre pelo documento
       aprovado.
-- [ ] Testes: retoma pós-aprovação não re-decompõe; aprovação humana leva o pedido a correr.
+- [x] Testes: retoma pós-aprovação não re-decompõe; aprovação humana leva o pedido a correr.
 - [ ] **Verificado em PRODUÇÃO**: um plano com uma falha transitória induzida acaba `terminal` 0.
+
+### Resíduos declarados
+
+1. **A composição nó↔`consume` não corre num só teste.** São dois binários de módulos distintos: a
+   re-oferta do nó está provada sobre a projecção (com o relógio dado pelo teste) e o `consume` contra
+   um nó falso que re-oferece. A prova conjunta é a verificação em produção.
+2. **Planos validados antes desta release não têm documento guardado.** Uma retoma deles sai `7`
+   sem modelo — o mesmo desfecho de antes, mas sem pagar a decomposição.
+3. **A latência depois da decisão humana** é até 10 min (re-oferta) mais o intervalo do timer de
+   drenagem. Uma notificação pelo `decide` foi rejeitada na emenda (ADR-030); se a espera doer, o
+   intervalo é o botão.
+4. **A cópia em claro do documento** (organigrama e objectivos derivados) existe enquanto o pedido
+   não fecha, e um `/dsar/erase` do titular não a alcança. É apagada no desfecho `terminal`.
+5. **`--nats` exige a pasta dos documentos PARTILHADA entre as réplicas**, e nada o verifica: uma
+   pasta local fecharia com `7`, noutra réplica, um plano pendente ou aprovado. Produção usa `--wal`.
+6. **Um pedido com o objectivo ilegível não fecha:** é saltado e fica reclamado até ao TTL, para ser
+   saltado outra vez. Fechá-lo exige decidir quem escreve o desfecho e com que código (o nó não
+   conhece os códigos do `serve`) — mexe no contrato do ADR-030/031, e fica para ticket próprio.
+7. **O `serve --goal` repetido à mão sobre um plano pendente** continua a auto-aprovar um
+   organigrama novo sem risco com o seu próprio hash (comportamento do AOS-408, fixado pelo
+   `TestAOS408_AprovacaoDeOutroOrganigramaNaoServe`). O `consume` não o exerce: nunca decompõe um
+   run já validado. Fechá-lo muda um teste de aceitação do AOS-408 e fica para decisão.
+8. **A RTM não liga a emenda do ADR-030 a este ticket:** o marcador `adrs-mencionados` do bloco é
+   tudo-ou-nada, e os outros ADR citados são só menção. O próprio ADR nomeia o AOS-442.
+9. **Os pedidos `aguarda_humano` de ANTES desta release voltam à fila.** Deixaram de contar como
+   terminados, e a marca de água é recomputada no arranque do nó: são re-oferecidos depois do
+   intervalo e, como foram validados sem documento guardado, fecham com `7` sem correr o `serve`
+   nem o modelo. Mas cada um é um desfecho `terminal`, que conta para o `--max`: as primeiras
+   drenagens depois da release podem gastar-se neles e atrasar os pedidos novos.
+10. **`--plan-dir` passou a ser obrigatório com `--nats`.** Uma invocação existente do `consume`
+    sobre `--nats` sem ele deixa de correr — mas falha no arranque, antes de reclamar qualquer
+    pedido. Produção usa `--wal`, onde a pasta deriva do WAL.
+11. **Uma drenagem longa pode re-verificar o mesmo pedido estacionado mais de uma vez.** Com o
+    prazo de cada plano a 40 min, uma drenagem pode durar mais do que o intervalo de re-oferta
+    (10 min), e o pedido volta a ser oferecido dentro dela. Desde a revisão, a re-verificação só lê
+    o log e o documento (sem `serve`, sem posse, sem modelo): o custo é um par reclamação+desfecho
+    no stream da fila, não conta para o `--max`, e é travado pelo limite de 64 re-verificações por
+    drenagem (`maxReverificacoesPorDrenagem`).
 
 ### Estado
 
-**ABERTO.**
+**ABERTO** até à verificação em produção.
 
 ---
 

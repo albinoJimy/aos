@@ -24,9 +24,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
 	planapproval "github.com/aos-ref/control-plane/governance/plan-approval"
@@ -61,6 +63,14 @@ var errPlanoPendente = errors.New("plano PENDENTE de decisao humana: nada foi ma
 
 // errDecisaoRecusada — houve decisão e foi NÃO. Distinto do pendente: o caso está fechado.
 var errDecisaoRecusada = errors.New("plano RECUSADO pelo gate de aprovacao")
+
+// errDocumentoDoPlanoRecusado — o documento apresentado para retomar ou materializar um plano não
+// é aceitável, e voltar a apresentá-lo dá sempre o mesmo resultado (AOS-442): não descodifica, não
+// passa a validação estrutural, não é o organigrama que o `plan.validated` do run ancora, ou não se
+// consegue ler. Tem código de saída próprio ([exitDocumentoRecusado]) e é TERMINAL: tratado como
+// genérico, era transitório, e um pedido com um documento assim voltava à cabeça da fila para
+// sempre.
+var errDocumentoDoPlanoRecusado = errors.New("documento do plano RECUSADO")
 
 // ErrSnapshotNaoCorresponde — o snapshot dado não é aquele contra o qual o plano foi validado.
 //
@@ -174,9 +184,10 @@ type pedidoDeGate struct {
 // humano» seria a ausência de factos, indistinguível de «nunca foi proposto», e um restart perderia
 // o caso. Só depois se pergunta ao gate.
 //
-// Um plano que exige humano devolve [errPlanoPendente] com o hash e o resumo dos nós de risco, e
-// escreve o documento em `planOut` quando dado: o documento cru não vive no log (ADR-005), pelo que
-// a passagem da decisão tem de o receber por ficheiro e confrontá-lo com o hash selado.
+// Um plano que exige humano devolve [errPlanoPendente] com o hash e o resumo dos nós de risco. O
+// documento vai para `planOut` quando dado — pendente OU aprovado (AOS-442): o documento cru não vive
+// no log (ADR-005), pelo que a passagem da decisão, e a retoma, têm de o receber por ficheiro e
+// confrontá-lo com o hash selado.
 func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 	hash := hashDoPlano(p.doc)
 	if hash == "" {
@@ -204,6 +215,27 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 		}
 		return "", fmt.Errorf("%w: o plano %s ja tem decisao terminal %q (%s) para o organigrama %s, e este e %s — %s",
 			errDecisaoRecusada, p.rec.PlanID(), d, estado.DecisionRef(), estado.DecidedHash(), hash, dica)
+	}
+
+	// O DOCUMENTO GUARDA-SE ANTES DOS FACTOS (AOS-442), e só quando é ESTE o organigrama que o
+	// `plan.validated` ancora (o primeiro, ou uma repetição do mesmo).
+	//
+	// Antes só se escrevia o pendente — e um plano AUTO-APROVADO não deixava documento nenhum. Uma
+	// retoma depois de uma falha transitória não tinha por onde correr senão decompor de novo, e o
+	// gate recusava o organigrama novo (saída 7): uma falha passageira tornava-se definitiva, e
+	// pagava uma decomposição ao modelo. Com o documento guardado, a retoma corre por `--plan-doc`.
+	//
+	// ANTES dos factos, e não depois, porque a ordem inversa tem um buraco: com o `plan.validated`
+	// no log e o documento por escrever, o plano fica ancorado a um hash cujo documento não existe
+	// em lado nenhum — e nenhum `--goal` o volta a produzir. Nesta ordem, uma falha a escrever
+	// aborta sem factos, e a tentativa seguinte decompõe como se nada fosse.
+	//
+	// Um organigrama que NÃO é o ancorado (o `--goal` repetido antes da decisão) não se escreve:
+	// o ficheiro é o do plano decidível, e reescrevê-lo perdia-o (AOS-412).
+	if !estado.Validated() || estado.PlanHash() == hash {
+		if err := escreverDocumentoDoPlano(p.planOut, p.doc); err != nil {
+			return "", err
+		}
 	}
 
 	if _, err := p.rec.RecordProposed(ctx, plannerevents.ProposedPayload{
@@ -261,8 +293,11 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 			return "", fmt.Errorf("%w: o plano %s ja esta pendente para o organigrama %s, e este e %s — decida o documento pendente (`aos-orq decide --plan-doc <documento pendente>`) e execute-o com `aos-orq serve --plan-doc`; repetir o `--goal` re-decompoe e produz outro",
 				errDecisaoRecusada, p.rec.PlanID(), estado.PlanHash(), hash)
 		}
-		if err := escreverDocumentoPendente(p.planOut, p.doc); err != nil {
+		if err := recusarPendenteExpirado(estado, time.Now().UTC()); err != nil {
 			return "", err
+		}
+		if p.planOut != "" {
+			fmt.Printf("plano pendente escrito: %s\n", p.planOut)
 		}
 		fmt.Printf("pendente de aprovacao humana: plano=%s plan_hash=%s %s\n", p.rec.PlanID(), hash, resumoDosForcados(pl, forcados))
 		fmt.Printf("  decida com: aos-orq decide --run %s --plan-doc <doc.json> --decision approve|reject --approval <aprovacao.json>\n", p.runID)
@@ -311,6 +346,46 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 	}
 	fmt.Printf("gate de plano: APROVADO sem humano (nivel %s, sem nos de risco) plan_hash=%s\n", nivelDeAutonomiaDoOrq.String(), hash)
 	return hash, nil
+}
+
+// recusarPendenteExpirado recusa um plano cujo prazo de pendente já passou (AOS-442).
+//
+// O `decide` já o recusava; o `serve` dizia «pendente» para sempre. Com a fila a re-oferecer o
+// pedido estacionado, isso era um laço sem fim — a cada re-oferta, outro «pendente» sobre um plano
+// que ninguém pode decidir. NÃO se escreve facto, pela razão do `decide`: a expiração é derivada do
+// instante do `plan.validated` e do prazo da política, igual para toda a gente.
+func recusarPendenteExpirado(estado *runlifecycle.PlanDecisionSnapshot, agora time.Time) error {
+	if !pendenteExpirado(estado, agora) {
+		return nil
+	}
+	return fmt.Errorf("%w: o prazo do pendente do plano %s expirou (validado %s, prazo %s) — um plano novo exige um run novo",
+		errDecisaoRecusada, estado.PlanID(), estado.ValidatedAt().Format(time.RFC3339), ttlPendentePorOmissao)
+}
+
+// pendenteExpirado diz se um plano VALIDADO já passou o prazo do pendente.
+//
+// UM CARIMBO ILEGÍVEL CONTA COMO EXPIRADO, e é o contrário do que o
+// [runlifecycle.PlanDecisionSnapshot.Expirado] faz — de propósito. Lá, no momento de uma decisão
+// humana, desligar o prazo evita recusar uma decisão legítima por causa de um carimbo. Aqui a
+// pergunta é outra: se um pedido estacionado continua a ser re-oferecido. Sem prazo legível, a
+// re-oferta nunca acabava; fechá-lo é o lado seguro (AOS-442).
+func pendenteExpirado(estado *runlifecycle.PlanDecisionSnapshot, agora time.Time) bool {
+	if !estado.Validated() {
+		return false
+	}
+	if estado.ValidatedAt().IsZero() {
+		return true
+	}
+	return estado.Expirado(agora, ttlPendentePorOmissao)
+}
+
+// exigeDecisaoHumana diz se o documento, sob o snapshot, tem nós que exigem decisão humana — pelas
+// MESMAS funções que o gate usa ([planoParaGate], [nosQueExigemHumano]), para o `consume` poder
+// saber, sem correr o `serve`, se um plano validado e sem decisão está à espera de um humano ou
+// ficou a meio de uma auto-aprovação (AOS-442).
+func exigeDecisaoHumana(doc plan.PlanDocument, snap planvalidate.Snapshot, runID string) bool {
+	riscos := planvalidate.ResolveRisks(doc, snap, nil)
+	return len(nosQueExigemHumano(planoParaGate(doc, riscos, runID, agenteDoRun(runID), dominioDeAutonomia))) > 0
 }
 
 // lerDecisaoDoPlano relê o stream do plano e devolve o retrato da decisão (pendente, aprovada,
@@ -364,21 +439,57 @@ func hashDoPlano(doc plan.PlanDocument) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// escreverDocumentoPendente guarda o documento que ficou pendente, para o humano o rever e o
-// `decide` o reapresentar. Sem `--plan-out` não escreve nada — e isso é admissível: o operador
-// pode já ter o documento (fixture, ou o ficheiro que passou em `--plan-doc`).
-func escreverDocumentoPendente(caminho string, doc plan.PlanDocument) error {
+// escreverDocumentoDoPlano guarda o documento do plano validado: para o humano o rever e o `decide`
+// o reapresentar, quando fica pendente; e para a retoma correr por `--plan-doc` em vez de decompor
+// de novo, quando é aprovado (AOS-442). Sem `--plan-out` não escreve nada — e isso é admissível: o
+// operador pode já ter o documento (fixture, ou o ficheiro que passou em `--plan-doc`).
+//
+// O ficheiro NÃO é autoridade: quem o lê de volta confronta-o por HASH com o `plan.validated`
+// selado no log (o `serve --plan-doc`, o `consume` e o `decide`). Um ficheiro trocado dá outro hash,
+// e é recusado.
+//
+// A ESCRITA É ATÓMICA (AOS-442): ficheiro temporário na mesma pasta, `fsync`, e `rename` por cima.
+// Um processo que morresse a meio de um `WriteFile` deixava um documento TRUNCADO no lugar do bom —
+// e a retoma seguinte lia-o. Assim, ou fica o documento anterior, ou o novo inteiro.
+func escreverDocumentoDoPlano(caminho string, doc plan.PlanDocument) error {
 	if caminho == "" {
 		return nil
 	}
 	raw, err := plan.Encode(doc)
 	if err != nil {
-		return fmt.Errorf("codificação do plano pendente: %w", err)
+		return fmt.Errorf("codificação do documento do plano: %w", err)
 	}
-	if err := os.WriteFile(caminho, raw, 0o600); err != nil {
-		return fmt.Errorf("escrita do plano pendente em %q: %w", caminho, err)
+	pasta := filepath.Dir(caminho)
+	tmp, err := os.CreateTemp(pasta, ".plano-*.tmp")
+	if err != nil {
+		return fmt.Errorf("escrita do documento do plano em %q: %w", caminho, err)
 	}
-	fmt.Printf("plano pendente escrito: %s\n", caminho)
+	nomeTmp := tmp.Name()
+	falhou := func(e error) error {
+		_ = tmp.Close()
+		_ = os.Remove(nomeTmp)
+		return fmt.Errorf("escrita do documento do plano em %q: %w", caminho, e)
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		return falhou(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return falhou(err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(nomeTmp)
+		return fmt.Errorf("escrita do documento do plano em %q: %w", caminho, err)
+	}
+	if err := os.Rename(nomeTmp, caminho); err != nil {
+		_ = os.Remove(nomeTmp)
+		return fmt.Errorf("escrita do documento do plano em %q: %w", caminho, err)
+	}
+	// O `rename` só é durável com a PASTA sincronizada. Melhor-esforço: nem todos os sistemas
+	// deixam abrir uma pasta para `fsync` (o Windows não), e aí o `rename` já é o que há.
+	if d, err := os.Open(pasta); err == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
 	return nil
 }
 

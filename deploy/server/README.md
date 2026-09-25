@@ -520,9 +520,37 @@ até ao fim do plano.
 
 **Antes da corrida, três coisas que o executor não resolve sozinho:**
 
-- **O snapshot tem de usar os nomes de tool do nó.** A lista-branca compara o nome da tool no
-  plano com o `ToolID` das tools do nó (`AOS_MODEL_TOOLS`). Um snapshot com nomes que o nó não tem
-  deixa cada nó sem nenhuma tool utilizável — fail-closed, mas o plano não faz nada.
+- **O snapshot tem de bater com o catálogo de tools do nó — e desde o AOS-441 isso é verificado.**
+  A lista-branca compara o nome da tool no plano com o `ToolID` das tools do nó (`AOS_MODEL_TOOLS`).
+  Com `AOS_ORQ_NODE_URL` definido, o `consume` e o `serve` lêem o catálogo do nó (`GET /tools`, com
+  o mesmo Bearer das outras rotas) e **recusam arrancar** — antes de reclamar um pedido ou de tomar
+  posse do run — se o snapshot nomear uma tool que o nó não tem, com um `digest` diferente do dele,
+  ou com `egress`/`reversibility` **menos arriscados** do que o nó declara (mais conservador é
+  aceite). A recusa nomeia cada divergência e lista as tools do nó com o digest a copiar, p. ex.
+  `tool "fs.read" não existe no nó (o nó tem: doc_read sha256:…, web_post sha256:…)`. Quando bate,
+  o registo diz `snapshot: N tool(s) conferida(s) com o catálogo do nó`. O que o nó **não** declara
+  — `sensitivity`, `admissible` — continua a ser escrito à mão no snapshot. Uma tool sem `egress`
+  no `AOS_MODEL_TOOLS` aparece no catálogo como `unknown` (conta como externa), e o snapshot tem de
+  a declarar `external` ou `unknown`. O digest é um pin do **contrato** (schema, scopes, egress):
+  não cobre a capability, o recurso nem a reversibilidade, e não prova que algo foi assinado — com
+  `AOS_MODEL_TOOLS_REGISTER` vazio, como em produção, nada é. Se o catálogo não se ler (rede,
+  credencial, ou um nó anterior ao AOS-441, que responde 404) a recusa diz `catalogo de tools do
+  no ilegivel` e não `diverge`: actualize o nó primeiro.
+
+  **A transição, pela ordem.** A primeira release com o AOS-441 torna inválido um snapshot com
+  digests de marcador (`sha256:aaa`), e isso tem três consequências:
+
+  1. **Antes do release, drene e decida os planos pendentes.** O digest de cada tool entra no
+     digest do conteúdo do snapshot que o `plan.validated` sela, e a materialização exige que o
+     snapshot apresentado seja o selado. Um plano validado ou pendente sob o snapshot antigo já não
+     corre com o novo: sai com `1` (`o conteudo do snapshot nao e o selado`), que é **transitório**,
+     e volta à fila em cada geração até ao tecto de pendentes, sem nunca correr.
+  2. **Depois do deploy, a drenagem recusa em cada tick** até o `orq/snapshot.json` ser corrigido.
+     O timer continua a correr e cada execução falha antes de reclamar; nenhum pedido se perde, mas
+     também nenhum corre, e o `alerta-nhi.sh` acaba por avisar que a fila está parada.
+  3. **Os digests reais tiram-se da própria recusa**, que lista as tools do nó com o digest, ou
+     do `GET /tools` do nó, com o Bearer do `aos-reader`. Corrija nomes e digests, e confirme que
+     `egress`/`reversibility` não ficam abaixo do que o nó declara.
 - **O NHI do run é cunhado por si**, com o `aos-issuer`, na sua máquina: as tools do plano,
   `model:invoke` e o board (o `-Cunhar` do `get-id-token.ps1` copia o board do IdP). A validade
   (45 min) é o tecto de duração do plano. Copie-o para `/opt/aos/orq/nhi-run.jwt` e **apague-o no
@@ -648,6 +676,27 @@ bash /opt/aos/alerta-nhi.sh --teste
 ```
 
 Os serviços não têm `Restart`: uma falha fica em `systemctl --failed`, que o sensor lê.
+
+**Um pedido da fila que fica à espera de humano (AOS-442).** O `consume` guarda o documento de cada
+plano validado em `/var/lib/aos-orq/planos/<sha256 do run_id>.plan.json` (no volume do `aos-orq`;
+a linha `origem do plano:` do journal do `aos-drenar-planos` diz o caminho, e
+`printf %s '<run>' | sha256sum` também). O ficheiro é apagado quando o pedido fecha; até lá é uma
+cópia em claro do organigrama que um `/dsar/erase` não alcança. Um plano de risco fica
+`aguarda_humano` no `GET /plans/{id}`; a cerimónia é a de cima, sobre o WAL e o documento do
+`consume`:
+
+```bash
+$C run --rm aos-orq plans --wal /var/lib/aos-orq/consume.wal --run <run>      # o request_id a assinar
+$C run --rm aos-orq decide --wal /var/lib/aos-orq/consume.wal --run <run> \
+   --plan-doc /var/lib/aos-orq/planos/<sha256>.plan.json --snapshot /etc/aos-orq/snapshot.json \
+   --decision approve --approval /etc/aos-orq/aprovacao.json
+```
+
+**Não corra o `serve` à mão depois disto.** O nó re-oferece o pedido de 10 em 10 min, e a drenagem
+seguinte corre-o pelo documento aprovado (`--plan-doc`) — nunca por nova decomposição. Um `decide`
+que saia com `5` apanhou uma drenagem a meio: repita. Sem decisão em 24 h, o pedido fecha com `7`.
+Um desfecho `10` é um documento ou snapshot recusado (o catálogo mudou desde a validação, ou o
+ficheiro foi trocado ou truncado) — fecha o pedido; um plano novo exige um run novo.
 
 **Renovar o mandato** (o sensor avisa a 7 dias do fim): assine outro no passo 1 e copie-o por cima.
 O anterior continua válido até caducar; se quer corte imediato, revogue-o.

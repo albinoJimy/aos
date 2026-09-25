@@ -101,6 +101,12 @@ const (
 	// pela validação estrutural (AOS-415). Tem código PRÓPRIO porque a posse É largada: sem ele,
 	// esta saída seria um `1` genérico que larga o lease, quando todo o outro `1` o retém.
 	exitPlanoRecusado = 9
+	// exitDocumentoRecusado — o documento ou o snapshot apresentados para materializar um plano não
+	// são aceitáveis, e voltar a apresentá-los dá sempre o mesmo (AOS-442): o documento não
+	// descodifica, não valida, não é o organigrama que o `plan.validated` do run ancora, ou o
+	// snapshot não é o declarado/selado. Tem código PRÓPRIO porque é DETERMINISTA: como `1`
+	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila.
+	exitDocumentoRecusado = 10
 )
 
 func main() {
@@ -158,7 +164,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
 Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
 capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas)
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista
 `)
 }
 
@@ -180,8 +186,10 @@ func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(
 	// AOS-415: e a recusa da validação, depois de esgotadas as tentativas. Sem isto o `serve`
 	// seguinte, com o mesmo `--run`, saía com 3 («lease detido») e o operador esperava pelo TTL —
 	// observado na validação do AOS-414.
+	// AOS-442: e a recusa determinista do documento ou do snapshot — o fim do trabalho, também.
 	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) &&
-		!errors.Is(err, errNosEmVoo) && !errors.Is(err, planner.ErrPlanRejected) {
+		!errors.Is(err, errNosEmVoo) && !errors.Is(err, planner.ErrPlanRejected) &&
+		codigoDe(err) != exitDocumentoRecusado {
 		return err
 	}
 	if parar != nil {
@@ -219,6 +227,10 @@ func codigoDe(err error) int {
 		return exitNosEmVoo
 	case errors.Is(err, planner.ErrPlanRejected):
 		return exitPlanoRecusado
+	case errors.Is(err, errDocumentoDoPlanoRecusado),
+		errors.Is(err, ErrSnapshotNaoCorresponde),
+		errors.Is(err, ErrSnapshotDiferenteDoSelado):
+		return exitDocumentoRecusado
 	default:
 		return exitErro
 	}
@@ -241,7 +253,7 @@ func cmdServe(args []string) error {
 	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc/--goal: é dele que sai o oráculo de efeito e o validador AOS-231)")
 	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
 	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro(s) com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM. Vários ficheiros separados por vírgula ⇒ um por TENTATIVA (AOS-415), repetindo o último; um caminho com vírgula não é suportado por esta via")
-	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument que ficou PENDENTE de aprovação humana (AOS-408): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta")
+	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument validado — PENDENTE de aprovação humana (AOS-408) ou aprovado (AOS-442): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta e a retoma corre por --plan-doc")
 	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "com o executor de nós composto (AOS_ORQ_NODE_URL, AOS-413): quanto tempo o serve espera pelos runs dos nós; esgotado com nós em voo, sai com 8 e larga a posse. Abaixo da validade do NHI do run")
 	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "com o executor de nós composto: intervalo entre leituras do estado dos runs dos nós")
 	if err := fs.Parse(args); err != nil {
@@ -299,6 +311,19 @@ func cmdServe(args []string) error {
 	}
 
 	ctx := context.Background()
+	// AOS-441: com o executor de nós composto, o snapshot confere-se com o catálogo de tools do
+	// nó ANTES da posse — é pelos nomes dele que os runs dos nós vão pedir as tools. Um snapshot
+	// que diverge recusa aqui, com a divergência nomeada, sem reclamar o lease.
+	// O conferido é o que se usa daqui em diante — não se relê o ficheiro (TOCTOU).
+	var conferido snapshotConferido
+	if cliDoNo != nil && *snapshot != "" {
+		snapConferido, err := conferirSnapshotComONo(ctx, cliDoNo, *snapshot)
+		if err != nil {
+			return err
+		}
+		conferido = snapshotConferido{snap: snapConferido, ok: true}
+		fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
+	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
 	// Ver substrato.go, onde essa diferença está nomeada.
@@ -407,7 +432,7 @@ func cmdServe(args []string) error {
 		if *snapshot == "" {
 			return errors.New("--goal exige --snapshot: o validador (AOS-231) e o oráculo de efeito derivam do snapshot pinado")
 		}
-		snap, err := carregarSnapshot(*snapshot)
+		snap, err := conferido.obter(*snapshot)
 		if err != nil {
 			return err
 		}
@@ -454,7 +479,7 @@ func cmdServe(args []string) error {
 	// snapshot pinado e não aceita substituição — ver o comentário lá. O que este
 	// comando fornece é a FONTE do snapshot e o documento aprovado.
 	if *planDoc != "" {
-		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, *worker, exe); err != nil {
+		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, conferido, *worker, exe); err != nil {
 			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
@@ -544,11 +569,11 @@ func separar(s string) []string {
 // tecto real vem do plano de controlo, e este comando não o compõe. É limitação de
 // escopo DESTE binário — a admissão em si ([runlifecycle.BudgetAdmission]) é a real,
 // com reserva atómica em toda a ancestralidade e saldo por Commit/Release.
-func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string, exe *configDoExecutor) error {
+func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath string, conferido snapshotConferido, worker string, exe *configDoExecutor) error {
 	if snapPath == "" {
 		return errors.New("--plan-doc exige --snapshot: sem o snapshot pinado não há oráculo de efeito real, e o verificador materializaria com autoridade vazia (DEF-273)")
 	}
-	snap, err := carregarSnapshot(snapPath)
+	snap, err := conferido.obter(snapPath)
 	if err != nil {
 		return err
 	}
@@ -558,7 +583,26 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 	}
 	doc, err := plan.Decode(raw)
 	if err != nil {
-		return fmt.Errorf("documento aprovado %q: %w", docPath, err)
+		// AOS-442: um documento que não descodifica não descodificará à segunda — determinista.
+		return fmt.Errorf("%w: %q nao descodifica: %v", errDocumentoDoPlanoRecusado, docPath, err)
+	}
+	// AOS-442 — SE O RUN TEM UM PLANO VALIDADO E AINDA SEM DECISÃO, O DOCUMENTO TEM DE SER ESSE, em
+	// qualquer ramo do gate.
+	//
+	// Sem decisão, o gate só confrontava o hash com o `plan.validated` no ramo de RISCO. Um ficheiro
+	// trocado por um organigrama BENIGNO com o mesmo `capabilities_hash` caía no ramo sem risco e era
+	// auto-aprovado — contornando a revisão humana do plano que estava de facto pendente. O
+	// `plan.validated` é de primeira escrita: é ele a âncora do run.
+	//
+	// COM decisão, quem manda é ela: o gate recusa (7) qualquer documento cujo hash não seja o
+	// decidido, e diz qual foi a decisão — que é a causa que o operador precisa de ver.
+	estado, err := lerDecisaoDoPlano(ctx, store, rec.PlanID())
+	if err != nil {
+		return err
+	}
+	if h := hashDoPlano(doc); estado.Validated() && estado.Decision() == "" && h != estado.PlanHash() {
+		return fmt.Errorf("%w: %q tem hash %s e o plano %s ja foi validado com %s — nao e o organigrama deste run",
+			errDocumentoDoPlanoRecusado, docPath, h, rec.PlanID(), estado.PlanHash())
 	}
 	// AOS-412: o `--plan-doc` percorre o MESMO caminho que o `--goal`, menos a decomposição.
 	//
@@ -569,9 +613,10 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 	// re-decompõe e produz outro organigrama, e o `--plan-doc`, a via determinística, parava na
 	// admissão.
 	//
-	// (a) validação estrutural — o documento é untrusted, venha de onde vier;
+	// (a) validação estrutural — o documento é untrusted, venha de onde vier. Uma recusa aqui é
+	//     determinista (AOS-442): o mesmo documento sob o mesmo snapshot recusa sempre;
 	if err := validarEstrutura(doc, snap); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", errDocumentoDoPlanoRecusado, err)
 	}
 	// (b) o MESMO gate do `--goal`: um plano sem risco auto-aprova e fica com os factos no log;
 	//     um de risco exige a decisão humana DESTE organigrama, sob o mesmo catálogo e no plano do

@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Aceite (2026-09-23, AOS-423)** |
+| Estado | **Aceite (2026-09-23, AOS-423)** — §2.6 **emendado** (2026-09-25, AOS-442): o `aguarda_humano` ESTACIONA e é re-oferecido; já não fecha o pedido |
 | Decisores | Arquitecto de Plataforma |
 | Consultados | ADR-016 (fronteira de confiança da UI), ADR-018 (o nó é a única autoridade de ciclo de vida), ADR-023 (escritor único sob lease), ADR-028 (ingresso do caminho do plano), DEF-282 (o substrato de ficheiro não arbitra entre processos) |
 | Supera / emenda | **Nada supera.** Corrige uma ATRIBUIÇÃO errada no ADR-028 §2.3 e em `plan_ingress.go` — ver §1.2 |
@@ -127,6 +127,10 @@ reclamada na geração seguinte.
 
 ### 2.6 Desfecho: transitório e permanente NÃO se tratam igual
 
+> **Emendado por AOS-442 — ver [Emenda](#emenda-aos-442--o-aguarda_humano-estaciona-e-é-re-oferecido-não-fecha-o-pedido).**
+> A linha «nem um nem outro» da tabela fica como registo da decisão original; a implementação
+> tratava-a como terminal, e um plano aprovado depois da decisão humana nunca mais corria.
+
 Os códigos de saída do `serve` já distinguem, e a distinção mapeia-se assim:
 
 | Classe | Códigos | Tratamento |
@@ -142,6 +146,91 @@ parada: um pedido perdido, ou um laço a retentar para sempre uma recusa determi
 
 Com tecto atingido, o ingresso recusa **pedidos novos**. Descartar os antigos em silêncio é a mesma
 classe de defeito que este eixo fecha.
+
+## Emenda (AOS-442) — o `aguarda_humano` estaciona e é re-oferecido; não fecha o pedido
+
+**O que a produção e a discovery mostraram.** A §2.6 diz que um plano pendente de aprovação humana
+não é «nem retentativa nem desfecho», mas não diz como sai desse estado. A implementação do AOS-423
+preencheu o silêncio da forma errada: `aguarda_humano` contava como terminado na projecção da fila
+(`plan_claim.go`), e depois de o humano decidir **nada no caminho da fila voltava a correr o
+pedido** — ficava aprovado e parado. Em paralelo, o `consume` retomava sempre por `serve --goal`: o
+modelo re-decompunha, saía outro organigrama, e o gate recusava-o (AOS-412, saída `7`). Uma falha
+transitória depois da aprovação tornava-se definitiva (`plan-e2e-437-1790336067`; AOS-438 resíduo 1).
+
+**Decisão emendada.**
+
+1. **O nó ESTACIONA um pedido cujo último desfecho é `aguarda_humano`**, e volta a oferecê-lo a quem
+   drena a fila depois de um intervalo fixo (`intervaloDeReverificacao`, 10 min), numa geração
+   nova. Só a **última** geração estaciona; só um desfecho `terminal` fecha. O estacionado **não**
+   conta como terminado para a marca de água do AOS-429.
+2. **O nó não sabe o que é uma decisão** — a fronteira do ADR-018 fica onde estava. Re-oferecer é
+   mecânica de fila, do mesmo género do TTL da reclamação (§2.5). Quem reclama a re-oferta é que
+   verifica, **lendo o log do run no `aos-orq` antes de correr o `serve`**: com decisão, corre o
+   pedido pelo documento validado e o gate decide (aprovado corre, recusado fecha com `7`); sem
+   decisão e com o plano a exigir humano, reporta `aguarda_humano` **sem correr o `serve`** (sem
+   posse, sem modelo, sem gastar o `--max` da drenagem); sem decisão e sem nós de risco (uma
+   auto-aprovação que ficou a meio), corre-o pelo documento e o gate auto-aprova. O prazo do
+   pendente (24 h, o do `decide`) é imposto pelo `consume` e pelo `serve`: fora dele, `7`, e a
+   re-oferta acaba. Um carimbo do `plan.validated` ilegível conta como expirado.
+3. **A retoma de um pedido corre pelo documento validado, nunca por decomposição nova.** O documento
+   continua fora do log (ADR-005); o `serve` escreve-o por `--plan-out`, de forma atómica, quando o
+   plano é validado — pendente ou aprovado —, **antes** de apensar os factos, e o `consume` guarda um
+   por pedido numa pasta do volume do `aos-orq` (`planos/`, ao lado do WAL; o nome é o SHA-256 do
+   `run_id`). O LOG decide se o ficheiro é usado: sem `plan.validated` no run, decompõe-se
+   (`serve --goal`) e um documento que lá esteja é substituído, nunca usado; validado e sem
+   documento, `7` sem correr o `serve` — uma decomposição nova seria recusada pelo gate.
+4. **O que a retoma por documento garante, e só isso.** Num run com `plan.validated` e ainda sem
+   decisão, o `serve --plan-doc` exige que o hash do documento seja o do validado, **em qualquer
+   ramo** do gate (com ou sem risco); com decisão, o gate exige o hash DECIDIDO e recusa (`7`) o
+   resto. Passa pela mesma validação estrutural e pelo mesmo gate que o `--goal`, e o gate confronta
+   o conteúdo do snapshot com o selado. **Não cobre** o `serve --goal` repetido: um organigrama sem
+   risco decomposto por cima de um pendente continua a auto-aprovar-se com o seu próprio hash — é
+   comportamento do AOS-408 com teste que o fixa (`TestAOS408_AprovacaoDeOutroOrganigramaNaoServe`,
+   passo 2), e o `consume` não o exerce, porque nunca decompõe um run já validado. Num run SEM
+   `plan.validated`, um `serve --plan-doc` manual continua a aceitar o documento que o operador lhe
+   dá, como sempre — é o caminho do AOS-412, e o gate aplica-se-lhe como a qualquer outro.
+5. **Uma recusa determinista FECHA o pedido.** Um documento que não descodifica, não valida, não é o
+   do `plan.validated`, ou não se consegue ler, e um snapshot que não é o declarado ou o selado, saem
+   com um código novo, `10` (`exitDocumentoRecusado`), de classe `terminal`. Como `1` genérico eram
+   transitórios, e o pedido voltava à cabeça da fila para sempre.
+
+**Tabela da §2.6 à luz da emenda** — muda só a última linha:
+
+| Classe | Códigos | Tratamento |
+|---|---|---|
+| **Nem um nem outro** | 6 (pendente de aprovação humana) | o pedido fica **estacionado**; re-oferecido de 10 em 10 min para o consumidor re-verificar, até um desfecho de outra classe |
+| **Permanente** (acrescento) | 10 (documento ou snapshot recusado) | facto de desfecho terminal; **não** se retenta |
+
+**O vocabulário não muda.** As três classes (`transitorio`, `terminal`, `aguarda_humano`) e os
+quatro estados do `GET /plans/{id}` (ADR-031) continuam os mesmos; o estado servido de um pedido
+estacionado é `aguarda_humano` enquanto a última geração o disser, `in_progress` durante uma
+re-verificação, e `terminal` depois do desfecho que o fecha. O ADR-031 não é emendado.
+
+**Custo aceite e declarado.** Um pedido à espera de humano escreve uma reclamação e um desfecho no
+stream da fila por re-oferta — no máximo ~144 pares no dia que o prazo lhe dá. E a latência entre a
+decisão humana e a execução é até ao intervalo de re-oferta mais o do timer de drenagem.
+
+**Resíduos declarados da emenda.**
+
+- **A cópia em claro do documento.** O `planos/<sha256>.plan.json` contém o organigrama — o
+  objectivo derivado pelo modelo e o dos nós — em claro, fora do alcance do apagamento DSAR (que
+  destrói a KEK do titular, e este ficheiro não está cifrado sob ela). O `consume` apaga-o quando
+  reporta um desfecho `terminal`; **enquanto o pedido não fecha, a cópia existe**, e um `/dsar/erase`
+  do titular não a alcança.
+- **`--nats` exige a pasta PARTILHADA entre as réplicas.** O `--plan-dir` é obrigatório sobre o
+  substrato replicado, mas nada verifica que seja partilhado: uma pasta local a cada réplica faz a
+  re-oferta, noutra réplica, ver um plano validado sem documento — e fechá-lo com `7`. Produção corre
+  sobre `--wal`, com uma só réplica.
+- **Um pedido cujo objectivo selado já não abre** (KEK do titular destruída) não fecha: o nó salta-o
+  e entrega o seguinte, e ele fica reclamado até ao TTL, para ser saltado outra vez. Fechá-lo exige
+  decidir QUEM escreve esse desfecho e com que código — o nó não conhece os códigos do `serve`.
+- **A composição nó↔`consume` não corre num só teste** (dois binários de módulos distintos).
+
+**Alternativas rejeitadas.** (a) O `decide` notificar o nó por uma rota nova: acoplava a cerimónia
+humana à disponibilidade do nó, exigia uma rota e um tipo de facto novos, e uma notificação perdida
+deixava o pedido parado sem forma de a repetir (o `decide` recusa uma segunda decisão). (b) O
+`serve --goal` descobrir sozinho o documento guardado: mudava o sentido do `--plan-out` (de escrita
+para leitura) e o do `--goal` repetido, que é caminho testado (AOS-408, AOS-415).
 
 ## 3. Alternativas consideradas
 

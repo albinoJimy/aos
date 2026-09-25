@@ -27,6 +27,7 @@ func TestAOS423ClasseDeCadaCodigoDeSaida(t *testing.T) {
 		{exitPendenteDeAprovacao, "exitPendenteDeAprovacao", "aguarda_humano", "ninguem decidiu ainda"},
 		{exitDecisaoRecusada, "exitDecisaoRecusada", "terminal", "houve decisao e foi NAO; caso fechado"},
 		{exitPlanoRecusado, "exitPlanoRecusado", "terminal", "o planeador esgotou tentativas"},
+		{exitDocumentoRecusado, "exitDocumentoRecusado", "terminal", "documento/snapshot recusado; apresentá-lo outra vez dá o mesmo (AOS-442)"},
 	}
 	for _, c := range casos {
 		if got := classeDoDesfecho(c.codigo); got != c.classe {
@@ -61,7 +62,7 @@ func TestAOS423VocabularioDeClassesCasaComONo(t *testing.T) {
 	// concordam. Se o nó mudar o vocabulário, isto tem de ficar vermelho.
 	doNo := map[string]bool{"transitorio": true, "terminal": true, "aguarda_humano": true}
 	for _, codigo := range []int{exitOK, exitErro, exitPosseNegada, exitFenced, exitWALDetido,
-		exitPendenteDeAprovacao, exitDecisaoRecusada, exitNosEmVoo, exitPlanoRecusado} {
+		exitPendenteDeAprovacao, exitDecisaoRecusada, exitNosEmVoo, exitPlanoRecusado, exitDocumentoRecusado} {
 		if c := classeDoDesfecho(codigo); !doNo[c] {
 			t.Errorf("o codigo %d produz a classe %q, que o no NAO aceita (400): o desfecho nunca "+
 				"seria registado e o pedido ficava preso ate ao TTL", codigo, c)

@@ -140,8 +140,9 @@ func carregarFixtureModel(path string) (*fixtureModel, error) {
 //
 // govAudit é o WORM durável de governação do gateway resolvido do ambiente (AOS-395), ou nil
 // para o MemStore de referência. Só é usado quando a decomposição vai pelo gateway vivo.
-// planOut, quando dado, é o ficheiro onde o documento pendente é escrito para o humano o rever e
-// para o `decide` o reapresentar (o documento cru NÃO vive no log, ADR-005 — só o seu hash).
+// planOut, quando dado, é o ficheiro onde o documento validado é escrito — pendente, para o humano
+// o rever e o `decide` o reapresentar; aprovado, para a retoma correr por `--plan-doc` sem decompor
+// de novo (AOS-442). O documento cru NÃO vive no log, ADR-005 — só o seu hash.
 func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string, exe *configDoExecutor) error {
 	runID := ten.RunID()
 

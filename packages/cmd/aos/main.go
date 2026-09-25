@@ -1188,6 +1188,13 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// CATÁLOGO DE TOOLS (AOS-441): o que `GET /tools` serve ao `aos-orq`, composto UMA vez e do
+	// MESMO manifesto que o nó oferece ao modelo. Resolvido antes de compor o serviço: um eixo de
+	// risco ilegível aborta o arranque em vez de servir um adivinhado.
+	toolCatalog, err := catalogoDeToolsDoAmbiente()
+	if err != nil {
+		return err
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
@@ -1218,6 +1225,7 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	svc.StartOrphanSweeper(ctx, sweepInterval)
 	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
 	apiOpts = append(apiOpts, ingressOpts...)
+	apiOpts = append(apiOpts, WithToolCatalog(toolCatalog))
 	if maxTurnsOpt != nil {
 		apiOpts = append(apiOpts, maxTurnsOpt)
 	}
