@@ -153,9 +153,17 @@ jobs:
             deploy/server/backup-pull-gate.sh \
             deploy/server/worm-seal-gate.sh \
             deploy/server/restore-drill.sh \
+            deploy/server/provision-issuer-auto.sh \
+            deploy/server/cunhar-nhi.sh \
+            deploy/server/drenar-planos.sh \
+            deploy/server/alerta-nhi.sh \
             deploy/server/.env.example \
             "$USER@$HOST:/opt/aos/"
           rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
+          # AOS-437: as unidades systemd da cunhagem e da drenagem viajam para /opt/aos/systemd e
+          # NÃO para /etc/systemd — instalá-las é acto do root (README §Cunhagem sem operador); o
+          # utilizador do deploy não tem, nem deve ter, esse poder.
+          rsync -az -e "$SSH" deploy/server/systemd/ "$USER@$HOST:/opt/aos/systemd/"
           # CONFIGURAÇÃO QUE O REPOSITÓRIO POSSUI e que o compose MONTA. Faltava aqui, e a
           # ausência não era inócua: o registry de tools ficava a derivar entre repo e servidor
           # — uma migração feita no repo (ex.: o `resource_value` com slots, que o nó passou a

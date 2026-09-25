@@ -10,8 +10,8 @@
 #   4. docker build (se o Docker estiver disponível) — a imagem endurecida (ADR-017 ponto 2),
 #      provada no artefacto CONSTRUÍDO: USER non-root numérico + os labels de proveniência
 #      (OCI + org.aos.*) que têm de VIAJAR com a imagem, não apenas constar do Dockerfile;
-#   5. sbom.sh     — SBOM + proveniência dos binários que a imagem carrega, `aos` e `aos-orq`
-#                    (ADR-017 ponto 3; AOS-403);
+#   5. sbom.sh     — SBOM + proveniência dos binários que a imagem carrega, `aos`, `aos-orq` e
+#                    `aos-issuer` (ADR-017 ponto 3; AOS-403, AOS-437 — do emissor, só o binário);
 #   6. sign.sh     — ATESTAÇÃO ASSINADA (DSSE/ed25519) do conjunto entregue (AOS-207);
 #   7. verify-attestation.sh — a entrega RECUSA o que não valida (AOS-207).
 #

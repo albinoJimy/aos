@@ -206,6 +206,12 @@ pinou, pelo serviço `aos-orq` do compose (profile `orq`, que o `deploy.sh` nunc
 volume de estado próprio (`aos-orq-data`) e a config de modelo do nó. Receita em
 `deploy/server/README.md` §«Orquestrador multi-nó (`aos-orq`)».
 
+**Emissor na mesma imagem (AOS-437).** Pela mesma razão, o emissor de identidade `aos-issuer`
+(`mandate-sign`/`mint-mandated`, ADR-033) viaja na imagem assinada do nó como binário separado
+(`/usr/local/bin/aos-issuer`) e subject próprio da atestação, com SBOM próprio
+(`sbom-aos-issuer.json`) — emenda AOS-437 ao ADR-017 ponto 3. Viaja o **binário**, nunca a
+**chave**: a do emissor automático vive no Vault transit (ADR-033), fora da imagem.
+
 > **LIMITE OPERACIONAL DECLARADO (DEF-282, eixo AOS-100) — e agora IMPOSTO (AOS-285).** A
 > arbitragem da posse depende de o `expected_seq` do stream de lease ser atómico **entre
 > escritores**. O Event Store de referência não o é entre **processos**: as réplicas de

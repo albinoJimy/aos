@@ -30,12 +30,13 @@ package main
 // recusado, por mais absurdo que declare. É uma guarda que corre e nunca nega, que é o modo de
 // falha que este repositório passou a série a fechar noutros sítios.
 //
-// # O TRAVÃO DE CUSTO REAL É OUTRO, E ESTÁ POR LIGAR
+// # O TRAVÃO DE CUSTO REAL É OUTRO
 //
 // É o `AOS_BUDGET_MAX_TOKENS` do **nó**, que reserva antes do turno e salda pelo consumo MEDIDO.
-// Em produção está **por definir** — o que é uma escolha legítima e explícita («quem quer o nó
-// sem orçamento deixa a variável por definir»), e o nó declara-a no arranque com todas as
-// letras.
+// Em produção está a **200000 tokens por run** — medido no contentor em 2026-09-25 (AOS-437), e
+// declarado COMPOSTO pelo banner do nó. Este comentário dizia que estava «por definir»: estava
+// errado, e a afirmação vinha de quem o escreveu sem ir ver (AOS-434). Por omissão, no compose,
+// fica vazia — e sem ela o nó não tem orçamento, o que também declara no arranque.
 //
 // Isto está escrito aqui, e sai no banner, porque a confusão entre os dois é fácil de fazer e
 // cara: um operador que configure este tecto e conclua que está protegido do custo do modelo

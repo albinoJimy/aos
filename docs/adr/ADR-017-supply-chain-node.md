@@ -48,6 +48,26 @@ impõe às tools, materializadas na entrega:
      produção fora desta cadeia seria a excepção que o ponto 3 não admite. Consequência aceite:
      o verificador da árvore actual exige estes subjects, pelo que uma entrega anterior ao AOS-403
      reverificada com ele sai vermelha — verifica-se com o verificador da sua própria tag.
+     **Emenda (AOS-437, 2026-09-25):** a imagem passa a carregar também o emissor de identidade
+     `aos-issuer` (os subcomandos `mandate-sign`/`mint-mandated` do ADR-033), que produção corre a
+     partir do mesmo digest, pela razão do `aos-orq`: um binário que corre em produção fora desta
+     cadeia seria a excepção que o ponto 3 não admite. Entra como subject próprio
+     (`usr/local/bin/aos-issuer`) com SBOM próprio (`sbom-aos-issuer.json`), extraído da imagem e
+     com a sua verificação de reprodutibilidade em `additionalSubjects`; `verify-attestation.sh`
+     recusa a entrega que o traga sem o atestar ou com o digest divergente. O Dockerfile faz o
+     *prime* explícito do `go.sum` do módulo (`go mod download && go mod verify`) antes do build
+     offline. **Resolve a ambiguidade do ponto 5**, cujo «nunca na imagem do nó» se refere à
+     **chave** do emissor e à sua custódia, não ao **binário**: o binário viaja na imagem atestada;
+     a chave do emissor automático vive no Vault transit (ADR-033) e a do emissor manual entra por
+     caminho montado em runtime (ADR-006), e nenhuma das duas entra na imagem. **Fecha também a lacuna que deixava isto
+     passar em silêncio:** nenhum teste nem gate apanhava um binário acrescentado ao Dockerfile
+     sem subject na atestação; `packages/cmd/aos-issuer/aos437_imagem_atestada_test.go` deriva do
+     Dockerfile o conjunto de binários (`COPY --from=builder /out/<bin> /usr/local/bin/<bin>`) e
+     exige cada um nos três scripts da cadeia — excepção nomeada no próprio teste: o
+     `aos-healthprobe` (stdlib-only, só `HEALTHCHECK`), coberto apenas pelo digest da imagem,
+     resíduo anterior a este ticket. Consequência aceite, como no AOS-403: uma entrega anterior
+     ao AOS-437 reverificada com o verificador da árvore actual sai **vermelha** (subject
+     `usr/local/bin/aos-issuer` ausente do statement) — verifica-se com o verificador da sua tag.
    - **Primitiva: `crypto/ed25519` da stdlib**, não cosign/sigstore — decisão declarada, com o
      custo em §Consequências e a matriz comparativa em `deploy/node/CUSTODIA-CHAVE-RELEASE.md §0`.
      O assinador (`scripts/ci/attest`) é um passo de **entrega (CI)**: não entra no binário do nó,
@@ -65,7 +85,8 @@ impõe às tools, materializadas na entrega:
    (fail-closed), como no resto do programa.
 5. **Cada domínio de assinatura tem custódia PRÓPRIA.** O issuer de identidade (AOS-156,
    self-hosted Nível 2) é um artefacto/trust-domain distinto do nó — a sua chave e distribuição têm
-   custódia própria (nunca na imagem do nó). **A imagem do nó passou a ter o equivalente**
+   custódia própria (a **chave** nunca na imagem do nó; o **binário** `aos-issuer` viaja nela,
+   atestado, desde a emenda AOS-437 ao ponto 3). **A imagem do nó passou a ter o equivalente**
    (AOS-207): a chave de **release** é um terceiro trust-domain, com detentor, cofre, janela de
    validade, rotação por sobreposição e revogação documentados em
    `deploy/node/CUSTODIA-CHAVE-RELEASE.md` — antes não existia procedimento nenhum. As duas chaves

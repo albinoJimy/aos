@@ -1,0 +1,13 @@
+[Unit]
+Description=Cunhagem do NHI do run AOS a cada 15 minutos (AOS-437)
+
+[Timer]
+# O NHI dura 45 min e e recunhado a cada 15: o ficheiro tem sempre entre 30 e 45 min de vida.
+# Uma cunhagem falhada deixa 30 min de folga ate o sensor avisar e a drenagem parar.
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

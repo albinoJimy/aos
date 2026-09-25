@@ -100,6 +100,10 @@ func cmdMintMandated(args []string, out io.Writer) error {
 	buildSigner := vaultSignerFlags(fs, keyFile)
 	mandateFile := fs.String("mandate", "", "ficheiro do mandato assinado (de mandate-sign)")
 	signerPub := fs.String("signer-pubkey", "", "pubkey do humano em hex — a MESMA que está pinada no nó (AOS_MANDATE_SIGNERS)")
+	// AOS-437: o timer do servidor passa a lista INTEIRA, no formato do nó, e a chave escolhe-se pelo
+	// humano que o mandato nomeia. Uma só fonte para a chave pinada: o `.env` que o nó também lê — uma
+	// segunda variável só com a pubkey seria uma cópia que se desactualiza sem ninguém ver.
+	signers := fs.String("signers", "", "alternativa a --signer-pubkey: a lista AOS_MANDATE_SIGNERS do nó (user_id=hexpubkey,...)")
 	ttl := fs.Duration("ttl", 0, "TTL do token (0 ⇒ o máximo do mandato)")
 	caps := fs.String("caps", "", "subconjunto do escopo do mandato, CSV (vazio ⇒ o escopo inteiro)")
 	outFile := fs.String("out", "", "escreve o token neste ficheiro, atomicamente, em vez de o imprimir")
@@ -107,8 +111,8 @@ func cmdMintMandated(args []string, out io.Writer) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *mandateFile == "" || *signerPub == "" {
-		return errors.New("mint-mandated exige --mandate e --signer-pubkey")
+	if *mandateFile == "" || (*signerPub == "") == (*signers == "") {
+		return errors.New("mint-mandated exige --mandate e exactamente um de --signer-pubkey / --signers")
 	}
 	raw, err := os.ReadFile(*mandateFile)
 	if err != nil {
@@ -120,9 +124,16 @@ func cmdMintMandated(args []string, out io.Writer) error {
 	if err := dec.Decode(&sm); err != nil {
 		return fmt.Errorf("mandato ilegivel: %w", err)
 	}
-	pubRaw, err := hex.DecodeString(strings.TrimSpace(*signerPub))
+	pubHex := strings.TrimSpace(*signerPub)
+	if *signers != "" {
+		pubHex, err = pubkeyDoHumano(*signers, sm.Mandate.Human)
+		if err != nil {
+			return err
+		}
+	}
+	pubRaw, err := hex.DecodeString(pubHex)
 	if err != nil || len(pubRaw) != ed25519.PublicKeySize {
-		return errors.New("--signer-pubkey tem de ser uma pubkey ed25519 em hex (64 caracteres)")
+		return errors.New("a pubkey do humano tem de ser ed25519 em hex (64 caracteres)")
 	}
 	// VERIFICA ANTES DE PEDIR UMA ASSINATURA AO VAULT: um mandato que não verifica não chega a
 	// gerar tráfego para a chave do emissor.
@@ -164,6 +175,27 @@ func cmdMintMandated(args []string, out io.Writer) error {
 		return err
 	}
 	return escreverAtomico(*outFile, []byte(tok.Compact+"\n"), modo)
+}
+
+// pubkeyDoHumano escolhe, da lista no formato de AOS_MANDATE_SIGNERS, a chave do humano que o
+// mandato nomeia. Fail-closed: humano ausente ou nomeado duas vezes recusa — escolher a primeira
+// entrada seria escolher por nós entre duas autoridades.
+func pubkeyDoHumano(lista, humano string) (string, error) {
+	achada := ""
+	for _, par := range strings.Split(lista, ",") {
+		kv := strings.SplitN(strings.TrimSpace(par), "=", 2)
+		if len(kv) != 2 || strings.TrimSpace(kv[0]) != humano {
+			continue
+		}
+		if achada != "" {
+			return "", fmt.Errorf("--signers nomeia o humano %q mais de uma vez", humano)
+		}
+		achada = strings.TrimSpace(kv[1])
+	}
+	if achada == "" {
+		return "", fmt.Errorf("--signers nao tem chave pinada para o humano %q que o mandato nomeia", humano)
+	}
+	return achada, nil
 }
 
 // lerSeedHumana lê a seed do humano SEM a criar se faltar — ao contrário de [loadOrCreateKey],
