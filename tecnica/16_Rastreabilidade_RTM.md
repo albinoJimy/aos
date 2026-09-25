@@ -27,7 +27,7 @@ Este documento é a **Matriz de Rastreabilidade de Requisitos** (*Requirements T
 
 ### 1.2 Âmbito
 
-A rastreabilidade cobre os 33 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **448 tickets** `AOS-001`–`AOS-448` distribuídos por 25 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
+A rastreabilidade cobre os 33 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **449 tickets** `AOS-001`–`AOS-449` distribuídos por 25 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
 
 ### 1.3 Audiência
 
@@ -108,7 +108,7 @@ A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a
 | **ADR-004** | Isolamento ao nível do kernel | Catálogo, por materializar | 12 | AOS-046, AOS-064, AOS-065, AOS-066, AOS-067, AOS-068, AOS-075, AOS-098, AOS-103, AOS-117, AOS-142, AOS-358 | `tecnica/05`, `tecnica/07`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-005** | Separação control/data-plane + taint | Catálogo, por materializar | 19 | AOS-013, AOS-023, AOS-039, AOS-042, AOS-044, AOS-046, AOS-049, AOS-054, AOS-069, AOS-071, AOS-075, AOS-117, AOS-133, AOS-158, AOS-219, AOS-224, AOS-242, AOS-272, AOS-414 | `tecnica/02`, `tecnica/04`, `tecnica/05`, `tecnica/07`, `tecnica/09`, `tecnica/11`, `tecnica/12`, `tecnica/15`, `tecnica/18` |
 | **ADR-006** | Credential Broker com tokens JIT | Ratificado | 18 | AOS-048, AOS-051, AOS-055, AOS-056, AOS-057, AOS-064, AOS-070, AOS-073, AOS-075, AOS-093, AOS-098, AOS-101, AOS-129, AOS-132, AOS-156, AOS-333, AOS-427, AOS-433 | `tecnica/02`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
-| **ADR-007** | Event Store replicado | Catálogo, por materializar | 18 | AOS-001, AOS-002, AOS-015, AOS-022, AOS-027, AOS-030, AOS-035, AOS-038, AOS-045, AOS-098, AOS-099, AOS-100, AOS-101, AOS-102, AOS-118, AOS-281, AOS-358, AOS-424 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/09`, `tecnica/10`, `tecnica/11` |
+| **ADR-007** | Event Store replicado | Catálogo, por materializar | 19 | AOS-001, AOS-002, AOS-015, AOS-022, AOS-027, AOS-030, AOS-035, AOS-038, AOS-045, AOS-098, AOS-099, AOS-100, AOS-101, AOS-102, AOS-118, AOS-281, AOS-358, AOS-424, AOS-449 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/09`, `tecnica/10`, `tecnica/11` |
 | **ADR-008** | Admission control global em tokens/$ | Catálogo, por materializar | 28 | AOS-008, AOS-026, AOS-027, AOS-028, AOS-029, AOS-030, AOS-031, AOS-032, AOS-033, AOS-034, AOS-037, AOS-059, AOS-062, AOS-063, AOS-078, AOS-080, AOS-105, AOS-106, AOS-107, AOS-116, AOS-123, AOS-259, AOS-260, AOS-270, AOS-280, AOS-287, AOS-321, AOS-382 | `tecnica/01`, `tecnica/03`, `tecnica/04`, `tecnica/06`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/15` |
 | **ADR-009** | Layout de prompt cache-estável | Catálogo, por materializar | 16 | AOS-013, AOS-015, AOS-037, AOS-043, AOS-044, AOS-047, AOS-050, AOS-055, AOS-060, AOS-061, AOS-085, AOS-086, AOS-152, AOS-157, AOS-241, AOS-415 | `tecnica/02`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/08`, `tecnica/09`, `tecnica/11`, `tecnica/12`, `tecnica/18` |
 | **ADR-010** | Observabilidade OTel GenAI + audit WORM | Catálogo, por materializar | 54 | AOS-011, AOS-013, AOS-016, AOS-024, AOS-025, AOS-034, AOS-036, AOS-038, AOS-048, AOS-051, AOS-055, AOS-057, AOS-058, AOS-059, AOS-060, AOS-061, AOS-062, AOS-064, AOS-065, AOS-072, AOS-076, AOS-077, AOS-078, AOS-079, AOS-080, AOS-081, AOS-082, AOS-083, AOS-084, AOS-085, AOS-086, AOS-088, AOS-093, AOS-096, AOS-097, AOS-099, AOS-100, AOS-101, AOS-102, AOS-103, AOS-104, AOS-105, AOS-107, AOS-111, AOS-114, AOS-115, AOS-118, AOS-127, AOS-235, AOS-269, AOS-272, AOS-280, AOS-284, AOS-394 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/15`, `tecnica/18` |
@@ -173,7 +173,7 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 | Doc técnico | Epic(s) implementador(es) | Gama de tickets |
 |---|---|---|
-| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-448 |
+| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-449 |
 | `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |
 | `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |
 | `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |
@@ -182,14 +182,14 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 | `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |
 | `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |
 | `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |
-| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-087 – AOS-097 (+ AOS-190 – AOS-448) |
+| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-087 – AOS-097 (+ AOS-190 – AOS-449) |
 | `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |
-| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-09, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-448) |
+| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-09, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-449) |
 | `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |
 | `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |
 | `tecnica/14_Matriz_Conformidade.md` | EPIC-07, EPIC-08, EPIC-09 | AOS-072, AOS-076–086, AOS-087–097 |
 | `tecnica/15_Experiencia_HITL_UX.md` | EPIC-12 (+ EPIC-13 frontend) | AOS-119 – AOS-143 |
-| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-448 |
+| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-449 |
 | `tecnica/17_Analise_STRIDE.md` | EPIC-07, EPIC-15, EPIC-16 (análise em EPIC-18/AOS-194) | AOS-064–075, AOS-163–173, AOS-174–177 |
 
 ```mermaid
@@ -197,7 +197,7 @@ flowchart LR
     RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..033 (decisoes)"]
     NFR["NFR-01..NFR-12 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-25 (entregas)"]
-    EPIC --> TICK["AOS-001..AOS-448 (tickets)"]
+    EPIC --> TICK["AOS-001..AOS-449 (tickets)"]
     DOC["tecnica/00..17 (docs)"] --> EPIC
     TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]
     NFR --> TEST
@@ -213,7 +213,7 @@ Sinalizadas a partir dos dados reais das §§4–5, e **geradas com elas**: os n
 |---|---|---|---|
 | GAP-02 | **NFR-07 (*overhead* de mediação) sem alvo ratificado** — verificado por AOS-116, com alvo agregado «a ratificar por benchmark» e sem SLO numérico fixado | §3, §5 | Ratificar orçamento por sub-passo com benchmark e fixar SLO numérico |
 | GAP-04 | **RF-10 (controlo bidireccional) sem verificação e2e dedicada** — o mecanismo tem tickets (AOS-023, AOS-119, AOS-158, AOS-218, AOS-292), mas nenhum deles é um teste e2e de pausar→corrigir→retomar em EPIC-11; a verificação mais próxima é AOS-117 (*red-team*) | §5 | Adicionar caso de teste e2e de pausar→corrigir→retomar em EPIC-11 |
-| GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída*: nenhum dos 448 tickets do corpus traz estado Done/WIP para esta matriz | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
+| GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída*: nenhum dos 449 tickets do corpus traz estado Done/WIP para esta matriz | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
 | GAP-06 | **NFR-09 (DSAR) verificado indirectamente** — provado por AOS-091, AOS-092, AOS-113; o *crypto-shredding* tem ticket próprio (AOS-093) e um defeito conhecido de alcance (AOS-290), mas nenhum teste e2e exercita um DSAR sobre o log encadeado | §5 | Criar teste e2e de *crypto-shredding* preservando integridade da hash-chain |
 | GAP-08 | **Os catálogos de enunciado estão atrás do catálogo de documentos** — `docs/adr/README.md` enuncia 33 ADRs e é a fonte do canon que os gates lêem (AOS-314), mas `_BRIEF` §3 enuncia 14 (faltam ADR-015, ADR-016, ADR-017, ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023, ADR-024, ADR-025, ADR-026, ADR-027, ADR-028, ADR-029, ADR-030, ADR-031, ADR-032, ADR-033) e `specs/00` §11 enuncia 23 (faltam ADR-024, ADR-025, ADR-026, ADR-027, ADR-028, ADR-029, ADR-030, ADR-031, ADR-032, ADR-033). O próprio README declara os dois «a referência de enunciado para todos os ADRs», pelo que a divergência é, pela sua própria regra, um defeito e não uma actualização | `_BRIEF` §3, `specs/00` §11, `docs/adr/README.md` | Completar os dois catálogos de enunciado com os ADRs em falta, ou emendar o README para deixar de os declarar referência de enunciado |
 
