@@ -1276,35 +1276,62 @@ arrancar o nó (AOS-436).** É o `apagamentos-<stamp>.txt` mais recente de `%USE
 **parado**:
 
 ```bash
-# 0. a CHAVE do registo tem de estar no volume. Um bundle anterior ao AOS-436 não a traz (o MANIFEST
-#    diz apagamentos-chave=ausente): copie aos/apagamentos-dsar.txt.chave do bundle MAIS RECENTE.
-docker run --rm -v aos_aos-data:/aos alpine:3.20 test -s /aos/apagamentos-dsar.txt.chave || echo 'FALTA A CHAVE'
-# 1. o registo mais recente para DENTRO do volume de dados
-docker run --rm -v aos_aos-data:/aos -v /tmp:/in:ro alpine:3.20 sh -c \
-  'install -m 644 /in/apagamentos-<stamp>.txt /aos/apagamentos-importado.txt'
-# 2. apontar o nó para ele — SUBSTITUINDO uma definição anterior, não acrescentando uma segunda
+# 0. a CHAVE do registo tem de estar no volume — e este passo IMPEDE continuar sem ela. Um bundle
+#    anterior ao AOS-436 não a traz (MANIFEST: apagamentos-chave=ausente). Tire-a do bundle MAIS
+#    RECENTE (decifrado como acima) e instale-a 0600 e do uid do nó (65532) — é material privado:
+tar xzf volumes.tar.gz aos/apagamentos-dsar.txt.chave          # no bundle MAIS RECENTE
+docker run --rm -v aos_aos-data:/aos -v "$PWD/aos":/in:ro alpine:3.20 sh -c \
+  'test -s /aos/apagamentos-dsar.txt.chave || install -m 600 -o 65532 -g 65532 /in/apagamentos-dsar.txt.chave /aos/'
+# Os passos 1-3 só correm COM a chave: sem ela o bloco pára, e o nó não arranca por este caminho.
+if docker run --rm -v aos_aos-data:/aos alpine:3.20 sh -c 'test "$(wc -c < /aos/apagamentos-dsar.txt.chave)" -eq 32'; then
+  # 1. o registo mais recente para DENTRO do volume de dados
+  docker run --rm -v aos_aos-data:/aos -v /tmp:/in:ro alpine:3.20 sh -c \
+    'install -m 644 /in/apagamentos-<stamp>.txt /aos/apagamentos-importado.txt'
+  # 2. apontar o nó para ele — SUBSTITUINDO uma definição anterior, não acrescentando uma segunda
+  sed -i '/^AOS_DSAR_ERASURE_REGISTER_IMPORT=/d' /opt/aos/.env
+  echo 'AOS_DSAR_ERASURE_REGISTER_IMPORT=/var/lib/aos/apagamentos-importado.txt' >> /opt/aos/.env
+  # 3. arrancar e CONFIRMAR — PROVADA, FUNDIDO, e o /readyz a 200
+  docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env up -d aos
+  docker logs aos-aos-1 2>&1 | grep -E 'reconciliacao do arranque|registo importado'
+else
+  echo 'SEM A CHAVE DO REGISTO (32 bytes) — NAO arranque: traga-a do bundle mais recente'
+fi
+# 4. DEPOIS de «FUNDIDO»: a variável SAI do .env, e só então o ficheiro pode ir embora
 sed -i '/^AOS_DSAR_ERASURE_REGISTER_IMPORT=/d' /opt/aos/.env
-echo 'AOS_DSAR_ERASURE_REGISTER_IMPORT=/var/lib/aos/apagamentos-importado.txt' >> /opt/aos/.env
-# 3. arrancar e CONFIRMAR — a linha tem de dizer PROVADA, e o /readyz tem de dar 200
-docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env up -d aos
-docker logs aos-aos-1 2>&1 | grep 'reconciliacao do arranque'
 ```
 
-O nó autentica cada linha, une as válidas à cadeia do bundle e ao registo que ele trazia, funde-as
-neste (o próximo backup já as leva) e **destrói de novo** cada KEK que o Vault restaurado tenha e que
-nasceu antes da destruição registada — com `dsar.key_reshredded` selado. Uma KEK nascida **depois**
-(titular que voltou) fica intacta; uma sob **legal hold** não é destruída e fica fechada.
+O nó autentica cada linha (e a cadeia de MACs: uma linha removida, inserida ou trocada a meio parte-a),
+exige que o importado contenha **tudo o que o bundle restaurado já sabe** — um registo mais antigo do
+que o bundle é recusado —, aplica as linhas válidas e **destrói de novo** cada KEK que o Vault
+restaurado tenha e que nasceu antes da destruição registada, com `dsar.key_reshredded` selado. Uma
+KEK nascida **depois** (titular que voltou) fica intacta; uma sob **legal hold** não é destruída e
+fica fechada. Aceite o importado, funde-o no registo próprio e **deixa de o ler** («registo importado
+FUNDIDO»): apagar o ficheiro a seguir não fecha nada nesse processo. A variável tem de sair do `.env`
+(passo 4) antes do próximo arranque — definida e sem ficheiro, esse arranque fica por provar.
 
-Se a linha disser **POR PROVAR**, a causa vem nela (Vault ainda selado, linha rejeitada, chave do
-registo criada agora, KEK que não se deixou destruir). **Enquanto estiver por provar, o nó não decifra
-nem escreve conteúdo por-titular nenhum** — o portão está na custódia, não no `/readyz`, porque a sonda
-do contentor é o `/healthz` e o proxy encaminha tudo: um 503 no `/readyz` sozinho não parava nada. A
-manutenção da custódia repete a passagem a cada minuto. A variável pode ficar definida (a importação é
-idempotente); se o ficheiro for apagado, a variável sai com ele.
+**Confira o registo antes de o importar.** O encadeamento não vê o corte do **fim** do ficheiro: um
+registo truncado é igual a um registo mais antigo. Compare o número de entradas com a última linha
+`recolhido registo de apagamentos … (N entrada(s))` do `pull.log` da máquina do operador.
+
+Se a linha disser **POR PROVAR**, a causa vem nela (Vault ainda selado, linha rejeitada, importado mais
+antigo do que o bundle, chave em falta, KEK que não se deixou destruir). **Enquanto estiver por provar,
+o nó não decifra nem escreve conteúdo por-titular nenhum** — o portão está na custódia, não no
+`/readyz`, porque a sonda do contentor é o `/healthz` e o proxy encaminha tudo: um 503 no `/readyz`
+sozinho não parava nada. Com o importado recusado, **nada é escrito** no registo próprio. A manutenção
+da custódia repete a passagem a cada minuto.
+
+**Se a chave do registo se perdeu.** O nó **nunca** cria outra por cima de um registo com entradas —
+deixava-o ilegível para sempre — e fica por provar a dizê-lo. Recuperar: (a) repor
+`apagamentos-dsar.txt.chave` do bundle mais recente (0600, uid 65532), que é o caminho normal; (b) só
+se ela não existir em bundle nenhum, pôr o registo de lado
+(`mv apagamentos-dsar.txt apagamentos-dsar.txt.orfao-<data>` dentro do volume) e arrancar: o nó cria
+uma chave nova e volta a encher o registo **a partir da cadeia**. Os apagamentos que só esse registo
+conhecia (não os da cadeia) deixam de estar protegidos contra um restauro — e as cópias recolhidas
+também não autenticam sob a chave nova. É uma perda, e fica dita.
 
 O [`restore-drill.sh`](restore-drill.sh) faz o mesmo no ensaio e **recusa** correr sem o registo
 (segundo argumento), salvo declarado com `RESTORE_DRILL_SEM_REGISTO=1`; um bundle sem a chave pede-a
-por `RESTORE_DRILL_CHAVE_DO_REGISTO=<ficheiro>`.
+por `RESTORE_DRILL_CHAVE_DO_REGISTO=<ficheiro>`, e a chave fica 0600 e do uid 65532.
 
 Este ciclo foi **exercitado**, não presumido: recolhido, decifrado com a privada local e o
 conteúdo conferido — `events.wal`, `worm.wal`, o `pg_dump` com 87 tabelas, e a chave Transit

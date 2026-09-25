@@ -289,14 +289,19 @@ fi
 sed -i '/^AOS_DSAR_ERASURE_REGISTER_IMPORT=/d' "${D}/env-aos"
 if [[ -n "${REGISTO}" ]]; then
   # A CHAVE do registo tem de estar no volume, e tem de ser a mesma que escreveu o importado. Um
-  # bundle anterior a ela não a traz: o nó criaria uma nova e o importado não autenticaria (o nó
-  # recusa-o e fica por provar — não destrói nada, mas o ensaio falharia sem dizer porquê).
+  # bundle anterior a ela não a traz — e o nó, com uma importação pedida, NÃO cria outra: recusa,
+  # fica por provar e não escreve nada. O ensaio recusa antes, a dizer porquê.
   if [[ -n "${RESTORE_DRILL_CHAVE_DO_REGISTO:-}" ]]; then
-    install -m 644 "${RESTORE_DRILL_CHAVE_DO_REGISTO}" "${D}/vol/aos/apagamentos-dsar.txt.chave"
+    cp "${RESTORE_DRILL_CHAVE_DO_REGISTO}" "${D}/vol/aos/apagamentos-dsar.txt.chave"
     log "  chave do registo trazida de ${RESTORE_DRILL_CHAVE_DO_REGISTO}"
   fi
-  [[ -s "${D}/vol/aos/apagamentos-dsar.txt.chave" ]] || fail "o bundle não traz aos/apagamentos-dsar.txt.chave (é anterior ao AOS-436) e sem ela o registo importado não autentica.
-  Traga-a do bundle MAIS RECENTE: RESTORE_DRILL_CHAVE_DO_REGISTO=<vol/aos/apagamentos-dsar.txt.chave desse bundle>"
+  [[ "$(wc -c < "${D}/vol/aos/apagamentos-dsar.txt.chave" 2>/dev/null || echo 0)" -eq 32 ]] || fail "o volume não tem uma aos/apagamentos-dsar.txt.chave de 32 bytes (bundle anterior ao AOS-436?) e sem ela o registo importado não autentica.
+  Traga-a do bundle MAIS RECENTE: RESTORE_DRILL_CHAVE_DO_REGISTO=<aos/apagamentos-dsar.txt.chave desse bundle>"
+  # É material privado: 0600 e do uid do nó (65532), e não os a+rwX que o volume do ensaio levou
+  # acima. Pelo docker, porque o utilizador do ensaio não é root.
+  docker run --rm -v "${D}/vol/aos:/aos" alpine:3.20 sh -c \
+    'chown 65532:65532 /aos/apagamentos-dsar.txt.chave && chmod 600 /aos/apagamentos-dsar.txt.chave' \
+    || fail "não consegui pôr a chave do registo a 0600/65532"
   install -m 644 "${REGISTO}" "${D}/vol/aos/apagamentos-importado.txt"
   printf 'AOS_DSAR_ERASURE_REGISTER_IMPORT=/var/lib/aos/apagamentos-importado.txt\n' >> "${D}/env-aos"
   REG_N="$(grep -cvE '^(#|[[:space:]]*$)' "${REGISTO}" || true)"

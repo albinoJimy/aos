@@ -260,7 +260,7 @@ func noComVault(t *testing.T, store audit.Store, srv *httptest.Server, ajusta fu
 // viaja no bundle). Cria a chave se ainda não existir.
 func escreverComAChaveDe(t *testing.T, proprio, destino string, entradas ...entradaDeApagamento) {
 	t.Helper()
-	p := novoRegistoDeApagamentos(proprio)
+	p := novoRegistoDeApagamentos(proprio, true)
 	p.mu.Lock()
 	err := p.prepararChave()
 	chave := p.chave
@@ -382,7 +382,7 @@ func TestAOS436_BundleAntigoComRegistoImportado(t *testing.T) {
 		t.Errorf("o selo nomeia o nome do Vault (invertivel) em vez do id do registo: %q", selos[0].Resource.Value)
 	}
 	// O registo próprio passou a superconjunto — é isto que o próximo backup leva.
-	reg := novoRegistoDeApagamentos(proprio)
+	reg := novoRegistoDeApagamentos(proprio, true)
 	lido, err := reg.ler(proprio, false, time.Now())
 	if err != nil || len(lido.rejeitadas) != 0 || !lido.validas[reg.idDe(nome)].Equal(instanteDaDestruicao) {
 		t.Fatalf("a entrada importada devia ter sido fundida no registo proprio; veio %+v %v", lido, err)
@@ -415,6 +415,7 @@ func TestAOS436_RegistoImportadoForjadoNaoDestroi(t *testing.T) {
 	if err := os.WriteFile(importado, []byte(forjado), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	regCom(t, proprio) // o volume restaurado traz a chave do no, como num restauro a serio
 
 	fv := novoVaultComIdades()
 	fv.restaurar(nome, nascidaDepois)
@@ -604,7 +605,9 @@ func TestAOS436_FonteQueFalhaNaoImpedeACadeia(t *testing.T) {
 	nome := nomeDaKEK(titular)
 	dir := t.TempDir()
 	proprio := filepath.Join(dir, "apagamentos-dsar.txt")
-	// O registo próprio tem uma linha COMPLETA malformada, e o importado não existe.
+	// O registo próprio tem uma linha COMPLETA malformada, e o importado não existe. A chave existe
+	// (criada antes de o lixo aparecer, como num volume real).
+	regCom(t, proprio)
 	if err := os.WriteFile(proprio, []byte("isto nao e uma linha\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +646,7 @@ func TestAOS436_LinhaCortadaETruncadaNaProximaEscrita(t *testing.T) {
 	_, _ = f.WriteString(strings.Repeat("c", 40))
 	_ = f.Close()
 
-	reg := novoRegistoDeApagamentos(proprio)
+	reg := novoRegistoDeApagamentos(proprio, true)
 	lido, err := reg.ler(proprio, false, time.Now())
 	if err != nil || len(lido.rejeitadas) != 0 || !lido.fragmento || len(lido.validas) != 1 {
 		t.Fatalf("o fragmento final devia ser IGNORADO (e dito), sem rejeitar as linhas completas; veio %+v %v", lido, err)
@@ -780,7 +783,7 @@ func TestAOS436_CicloCompletoApagarERestaurar(t *testing.T) {
 	if fv.existe(nome) {
 		t.Fatal("PRECONDICAO: o erase nao destruiu a KEK (o fake exige deletion_allowed)")
 	}
-	reg1 := novoRegistoDeApagamentos(registo1)
+	reg1 := novoRegistoDeApagamentos(registo1, true)
 	if lido, err := reg1.ler(registo1, false, time.Now()); err != nil || len(lido.validas) != 1 {
 		t.Fatalf("o Delete CONFIRMADO devia ter escrito a entrada; veio %+v %v", lido, err)
 	}
@@ -817,8 +820,11 @@ func TestAOS436_CicloCompletoApagarERestaurar(t *testing.T) {
 	if !fv.existe(nome) {
 		t.Fatal("um registo que nao autentica sob a chave do no destruiu uma KEK")
 	}
-	if err := v3.ready(context.Background()); err == nil || !strings.Contains(err.Error(), "CRIADA neste arranque") {
-		t.Fatalf("devia ficar por provar a dizer que a chave e nova; veio %v", err)
+	if err := v3.ready(context.Background()); err == nil || !strings.Contains(err.Error(), "NAO existe e ha uma importacao pedida") {
+		t.Fatalf("devia ficar por provar a dizer que falta a chave; veio %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(d3, "apagamentos-dsar.txt"+sufixoDaChaveDoRegisto)); !os.IsNotExist(err) {
+		t.Fatal("com uma importacao pedida o no CRIOU uma chave nova — o importado nunca mais autenticaria")
 	}
 }
 
@@ -833,7 +839,7 @@ func TestAOS436_DestruicaoPorConfirmarNaoEntraNoRegisto(t *testing.T) {
 	node, _ := noComVault(t, audit.NewMemStore(), novoServidor(t, fv), func(c *Config) { c.DSARErasureRegister = registo })
 	_, _ = node.DSAR.Receive(context.Background(), dsar.Request{RequestID: "req-x", SubjectID: titular, Principal: "nhi:operador"})
 
-	lido, err := novoRegistoDeApagamentos(registo).ler(registo, true, time.Now())
+	lido, err := novoRegistoDeApagamentos(registo, true).ler(registo, true, time.Now())
 	if err != nil || len(lido.validas) != 0 {
 		t.Fatalf("uma destruicao POR CONFIRMAR entrou no registo: %+v %v", lido, err)
 	}
@@ -858,7 +864,7 @@ func TestAOS436_RegistoQueNaoSeEscreveDeixaONoUnready(t *testing.T) {
 	if err := vault.ready(context.Background()); err != nil {
 		t.Fatalf("depois de a pendente chegar ao disco a custodia devia estar pronta; veio %v", err)
 	}
-	reg := novoRegistoDeApagamentos(registo)
+	reg := novoRegistoDeApagamentos(registo, true)
 	if lido, _ := reg.ler(registo, false, time.Now()); lido.validas[reg.idDe(nomeDaKEK("nhi:z"))].IsZero() {
 		t.Fatal("a entrada pendente nao chegou ao registo")
 	}

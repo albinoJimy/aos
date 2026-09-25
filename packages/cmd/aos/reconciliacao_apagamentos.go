@@ -123,6 +123,7 @@ type relatorioDeReconciliacao struct {
 	DestruidasDeNovo int // ressuscitadas e destruídas de novo, com o facto selado
 	Retidas          int // ressuscitadas sob legal hold: bloqueadas, não destruídas
 	PorVerificar     int // ficaram por verificar (falha da custódia ou orçamento esgotado)
+	ImportadoFundido bool
 }
 
 // reconciliadorDeApagamentos junta as fontes, interroga a custódia e re-destrói o que voltou.
@@ -205,25 +206,18 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 	// (2) O REGISTO PRÓPRIO e (3) O IMPORTADO — cada um por si. Uma fonte que falha é NOMEADA e
 	// deixa a passagem por provar; as outras continuam a contar.
 	porId := make(map[string]*alvoDeReconciliacao)
-	var proprio map[string]time.Time
-	lerFonte := func(caminho string, ausenteOK bool, origem string) map[string]time.Time {
+	var proprio, importadas map[string]time.Time
+	importadoLimpo := false // lido sem erro nem linha rejeitada
+	lerFonte := func(caminho string, ausenteOK bool, origem string) (map[string]time.Time, bool) {
 		lida, lerr := r.registo.ler(caminho, ausenteOK, agora)
 		if lerr != nil {
-			dica := ""
-			if origem == "importado" && r.registo.foiCriadaAgora() {
-				dica = " — a chave do registo foi CRIADA neste arranque: o bundle restaurado e anterior a ela; copie `" +
-					sufixoDaChaveDoRegisto + "` do bundle mais recente para o volume"
-			}
-			falhas = append(falhas, origem+": "+lerr.Error()+dica)
-			return nil
+			falhas = append(falhas, origem+": "+lerr.Error())
+			return nil, false
 		}
 		if lida.fragmento {
 			r.log("apagamentos DSAR (AOS-436): %s termina num fragmento sem fim de linha (escrita interrompida) — ignorado nesta leitura", caminho)
 		}
 		for _, rej := range lida.rejeitadas {
-			if origem == "importado" && r.registo.foiCriadaAgora() {
-				rej += " (a chave do registo foi CRIADA neste arranque — o bundle e anterior a ela)"
-			}
 			falhas = append(falhas, origem+": "+rej)
 		}
 		rel.Rejeitadas += len(lida.rejeitadas)
@@ -237,19 +231,25 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 				a.destruidaEm = quando
 			}
 		}
-		return lida.validas
+		return lida.validas, len(lida.rejeitadas) == 0
 	}
 	if r.registo != nil {
-		proprio = lerFonte(r.registo.caminho, true, "registo")
+		proprio, _ = lerFonte(r.registo.caminho, true, "registo")
 		rel.DoRegisto = len(proprio)
 		if r.importado != "" {
-			rel.DoImportado = len(lerFonte(r.importado, false, "importado"))
+			importadas, importadoLimpo = lerFonte(r.importado, false, "importado")
+			rel.DoImportado = len(importadas)
 		}
 	} else if r.importado != "" {
 		falhas = append(falhas, "importado: AOS_DSAR_ERASURE_REGISTER_IMPORT sem AOS_DSAR_ERASURE_REGISTER — sem a chave do registo proprio nao ha como autenticar o importado")
 	}
 
 	if len(porNome) == 0 && len(porId) == 0 {
+		if r.registo != nil && r.importado != "" && importadoLimpo && len(proprio) == 0 {
+			// Um importado limpo e vazio sobre um registo vazio: não há nada a fundir.
+			r.importado = ""
+			rel.ImportadoFundido = true
+		}
 		return rel, bloqueadas, juntarFalhas(falhas) // nada conhecido como destruído: nada a pedir ao Vault
 	}
 
@@ -266,6 +266,33 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 		nomesCadeia := nomesOrdenados(porNome)
 		idCadeia, ierr := r.registo.idsDe(nomesCadeia)
 		idVivas, verr := r.registo.idsDe(vivas)
+		// O IMPORTADO TEM DE SABER PELO MENOS O QUE O BUNDLE RESTAURADO SABE. O registo mais
+		// recente é superconjunto de qualquer anterior (monotonia); um importado a quem falta um
+		// id que o registo próprio restaurado — ou a cadeia restaurada — já conhece é MAIS ANTIGO
+		// do que o bundle, ou foi truncado. Aceitá-lo como «o mais recente» e declarar a
+		// reconciliação provada era a falha da segunda revisão: um apagamento posterior podia
+		// faltar-lhe sem ninguém o ver. (O corte do fim de um registo mais recente do que o bundle
+		// não se distingue por conteúdo — é resíduo declarado.)
+		importadoAceite := r.importado == "" || importadoLimpo
+		if r.importado != "" && importadoLimpo && ierr == nil {
+			faltam := 0
+			for id := range proprio {
+				if _, ok := importadas[id]; !ok {
+					faltam++
+				}
+			}
+			for id := range idCadeia {
+				if _, ok := importadas[id]; !ok {
+					if _, contado := proprio[id]; !contado {
+						faltam++
+					}
+				}
+			}
+			if faltam > 0 {
+				importadoAceite = false
+				falhas = append(falhas, fmt.Sprintf("importado: faltam-lhe %d apagamento(s) que o bundle restaurado ja conhece — e MAIS ANTIGO do que o bundle, ou foi truncado; importe o registo MAIS RECENTE", faltam))
+			}
+		}
 		if ierr != nil || verr != nil {
 			falhas = append(falhas, "registo: a chave do registo nao esta legivel — o registo nao foi cruzado com a custodia")
 		} else {
@@ -303,10 +330,26 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 					}
 				}
 			}
-			if werr := r.registo.acrescentar(faltam...); werr != nil {
-				falhas = append(falhas, "registo: "+werr.Error())
-			} else {
-				rel.Acrescentadas = len(faltam)
+			switch {
+			case !importadoAceite:
+				// NADA SE ESCREVE enquanto o importado não for aceite: fundir parte de um registo
+				// suspeito no próprio tornava-o suspeito também, e é o registo próprio que o
+				// próximo backup leva. As destruições autenticadas aplicam-se na mesma (abaixo).
+				falhas = append(falhas, "registo: nada foi escrito no registo proprio enquanto o importado nao for aceite")
+			default:
+				if werr := r.registo.acrescentar(faltam...); werr != nil {
+					falhas = append(falhas, "registo: "+werr.Error())
+				} else {
+					rel.Acrescentadas = len(faltam)
+					if r.importado != "" {
+						// FUNDIDO: o registo próprio contém agora tudo o que o importado tinha,
+						// pelo que deixa de ser lido — apagá-lo depois não fecha nada. A variável
+						// deve sair do `.env` antes do próximo arranque (runbook).
+						r.log("apagamentos DSAR (AOS-436): registo importado %s FUNDIDO no registo proprio — deixa de ser lido neste processo; retire AOS_DSAR_ERASURE_REGISTER_IMPORT do .env antes do proximo arranque", r.importado)
+						r.importado = ""
+						rel.ImportadoFundido = true
+					}
+				}
 			}
 		}
 	}
@@ -337,12 +380,12 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 		switch {
 		case nerr != nil:
 			rel.PorVerificar++
-			bloqueadas[nome] = bloqueioDeKEK{motivo: "idade por verificar: " + nerr.Error()}
+			bloqueadas[nome] = bloqueioDeKEK{motivo: rotulo(a) + ": idade por verificar: " + nerr.Error()}
 			continue
 		case !viva:
 			continue // morreu entre o LIST e o GET
 		case a.destruidaEm.IsZero():
-			bloqueadas[nome] = bloqueioDeKEK{motivo: "a chave existe e o instante da destruicao e desconhecido"}
+			bloqueadas[nome] = bloqueioDeKEK{motivo: rotulo(a) + ": a chave existe e o instante da destruicao e desconhecido"}
 			continue
 		case nascida.After(a.destruidaEm.Truncate(time.Second)):
 			rel.Reprovisionadas++
@@ -353,7 +396,7 @@ func (r *reconciliadorDeApagamentos) passagem(ctx context.Context) (relatorioDeR
 			titular = titularDe[nome]
 		}
 		if motivo, retida := r.reDestruir(ctx, nome, titular); motivo != "" {
-			bloqueadas[nome] = bloqueioDeKEK{motivo: motivo, retida: retida}
+			bloqueadas[nome] = bloqueioDeKEK{motivo: rotulo(a) + ": " + motivo, retida: retida}
 			if retida {
 				rel.Retidas++
 			}
@@ -480,6 +523,15 @@ func apagamentosDaCadeia(ctx context.Context, store audit.Store, particao string
 	return porNome, titularDe, rejeitadas, nil
 }
 
+// rotulo nomeia uma KEK em erros e logs SEM o nome do Vault — que é o sha256 de um keyRef público
+// e se inverte por dicionário de utilizadores. Com registo, o prefixo do id HMAC; sem ele, nada.
+func rotulo(a *alvoDeReconciliacao) string {
+	if a != nil && len(a.id) >= 16 {
+		return "KEK id " + a.id[:16]
+	}
+	return "KEK (sem registo: sem rotulo nao-reversivel)"
+}
+
 func juntarFalhas(falhas []string) error {
 	if len(falhas) == 0 {
 		return nil
@@ -489,7 +541,8 @@ func juntarFalhas(falhas []string) error {
 
 func (rel relatorioDeReconciliacao) resumo() string {
 	return fmt.Sprintf("fontes: cadeia %d, registo proprio %d, importado %d (%d rejeitada(s), %d acrescentada(s) ao registo); %d KEK(s) conhecidas como destruidas existem no Vault: %d geracoes NOVAS (intactas), %d RESSUSCITADAS destruidas DE NOVO (dsar.key_reshredded selado), %d sob LEGAL HOLD (bloqueadas), %d por verificar",
-		rel.DaCadeia, rel.DoRegisto, rel.DoImportado, rel.Rejeitadas, rel.Acrescentadas, rel.Vivas, rel.Reprovisionadas, rel.DestruidasDeNovo, rel.Retidas, rel.PorVerificar)
+		rel.DaCadeia, rel.DoRegisto, rel.DoImportado, rel.Rejeitadas, rel.Acrescentadas, rel.Vivas, rel.Reprovisionadas, rel.DestruidasDeNovo, rel.Retidas, rel.PorVerificar) +
+		map[bool]string{true: "; registo importado FUNDIDO (deixa de ser lido)", false: ""}[rel.ImportadoFundido]
 }
 
 // comporReconciliacaoDeApagamentos liga o registo à custódia, corre a reconciliação do arranque e
@@ -509,7 +562,8 @@ func comporReconciliacaoDeApagamentos(ctx context.Context, cfg Config, worm audi
 	}
 	var reg *registoDeApagamentos
 	if cfg.DSARErasureRegister != "" {
-		reg = novoRegistoDeApagamentos(cfg.DSARErasureRegister)
+		// Com uma importação pedida a chave NÃO se cria: tem de vir no bundle (ou do mais recente).
+		reg = novoRegistoDeApagamentos(cfg.DSARErasureRegister, cfg.DSARErasureRegisterImport == "")
 		if l, ok := vault.(interface{ ligarRegistoDeApagamentos(*registoDeApagamentos) }); ok {
 			l.ligarRegistoDeApagamentos(reg)
 		}

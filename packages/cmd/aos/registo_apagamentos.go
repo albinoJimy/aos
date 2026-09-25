@@ -4,29 +4,34 @@ package main
 //
 // O QUE É. Uma lista append-only de destruições de KEK CONFIRMADAS pela custódia, escrita pelo nó.
 // O `deploy/server/backup.sh` copia-a em claro para fora do bundle cifrado, a recolha leva-a para a
-// máquina do operador, e num restauro de um bundle ANTERIOR a um apagamento o registo mais recente
-// é importado antes de o nó arrancar — a reconciliação ([reconciliadorDeApagamentos]) destrói de
-// novo o que ele diz destruído.
+// máquina do operador, e num restauro de um bundle ANTERIOR ao último o registo mais recente é
+// importado antes de o nó arrancar — a reconciliação ([reconciliadorDeApagamentos]) destrói de novo
+// o que ele diz destruído.
 //
-// O QUE A REVISÃO ADVERSARIAL DO PRIMEIRO DESENHO MEDIU, e que esta forma fecha:
-//
-//	(1) um registo IMPORTADO é entrada vinda de fora do nó, e uma linha forjada destruía a KEK
-//	    VIVA de qualquer titular — irreversivelmente. Sem integridade, «importar o registo» era
-//	    «dar a quem escreve o ficheiro o poder de apagar quem quiser»;
-//	(2) o nome `aos-kek-<sha256(keyRef)>` NÃO é irreversível: o keyRef é `aos.audit.pii:` + um
-//	    identificador de utilizador, sem sal, e um dicionário de utilizadores inverte-o. O ficheiro
-//	    em claro no portátil dizia quem exerceu o Art. 17, e quando.
-//
-// A FORMA (v2), com UMA chave secreta do nó (`<registo>.chave`, 32 bytes, no volume de dados — viaja
+// A FORMA (v3), com UMA chave secreta do nó (`<registo>.chave`, 32 bytes, no volume de dados — viaja
 // SÓ dentro do bundle cifrado, nunca ao lado do registo):
 //
 //	<id> <instante RFC3339 UTC> <mac>
 //	id  = HMAC-SHA256(k, "aos436/id\n"  ‖ nome-da-KEK-no-Vault)
-//	mac = HMAC-SHA256(k, "aos436/mac\n" ‖ id ‖ " " ‖ instante)
+//	mac = HMAC-SHA256(k, "aos436/mac\n" ‖ mac-da-linha-anterior ‖ "\n" ‖ id ‖ " " ‖ instante)
 //
-// Sem a chave, o `id` não se inverte (é um PRF, não um hash público) e uma linha não se forja (o MAC
-// não bate). Uma linha rejeitada é NOMEADA e NUNCA destrói. A reconciliação volta do `id` ao nome
-// enumerando as chaves que o Vault TEM — que são as únicas que interessam.
+// O que cada peça fecha, e foi medido por duas revisões adversariais:
+//
+//   - sem a chave o `id` não se inverte — o nome do Vault, `aos-kek-<sha256>` de um keyRef público,
+//     é invertível por dicionário de utilizadores; o HMAC não;
+//   - sem a chave uma linha não se forja, e uma linha legítima não se re-data (o instante está sob
+//     o MAC);
+//   - o MAC ENCADEADO faz de uma linha removida, inserida ou trocada a meio uma quebra visível: a
+//     linha seguinte deixa de autenticar. O que o encadeamento NÃO vê é o corte do FIM do ficheiro
+//     — um registo truncado é indistinguível de um registo mais antigo. Isso fica declarado e é
+//     vigiado fora daqui (a reconciliação recusa um importado que não contenha o que o bundle
+//     restaurado já sabe; a recolha recusa um registo que perdeu entradas).
+//
+// A CHAVE NUNCA SE RECRIA POR CIMA DE UM REGISTO. Um registo com entradas e sem chave, ou um
+// restauro que pede uma importação sem a chave presente, é FALHA — criar outra chave em silêncio
+// deixava o registo ilegível para sempre e, pior, fazia o nó escrever linhas sob a chave errada no
+// mesmo ficheiro. A chave só nasce quando não há registo nenhum, e nasce atómica (temporário +
+// link): um crash a meio deixa um temporário a mais, nunca uma chave curta.
 //
 // LINHA CORTADA. Só o fragmento FINAL sem '\n' é uma escrita interrompida: a leitura ignora-o (e
 // di-lo), e a próxima escrita trunca-o antes de acrescentar. Uma linha COMPLETA malformada continua
@@ -54,24 +59,23 @@ import (
 )
 
 // ErrRegistoDeApagamentos — o registo de apagamentos não pôde ser lido ou escrito, ou tem linhas
-// rejeitadas. Fail-closed de prontidão: um apagamento que não chega ao registo fica sem a rede que o
-// protege de um restauro, e uma linha rejeitada é alguém — ou um relógio — a pedir uma destruição
-// que o nó recusou fazer. As duas coisas têm de se ver.
+// rejeitadas. Fail-closed: um apagamento que não chega ao registo fica sem a rede que o protege de
+// um restauro, e uma linha rejeitada é alguém — ou um relógio — a pedir uma destruição que o nó
+// recusou fazer.
 var ErrRegistoDeApagamentos = errors.New("aos: registo de apagamentos (AOS-436) ilegivel, por escrever ou com linhas rejeitadas")
 
 const (
 	// cabecalhoRegistoApagamentos abre um registo novo. É comentário (a leitura ignora-o).
-	cabecalhoRegistoApagamentos = "# aos — registo de apagamentos (AOS-436), formato v2: <id> <instante RFC3339 UTC> <mac>\n" +
+	cabecalhoRegistoApagamentos = "# aos — registo de apagamentos (AOS-436), formato v3: <id> <instante RFC3339 UTC> <mac encadeado>\n" +
 		"# id e mac sao HMAC-SHA256 sob a chave do no (fica no volume de dados, so dentro do bundle cifrado);\n" +
-		"# sem ela o id nao identifica o titular e uma linha nao se forja. Append-only e monotonico.\n"
+		"# sem ela o id nao identifica o titular e uma linha nao se forja nem se remove a meio. Append-only.\n"
 
 	// sufixoDaChaveDoRegisto nomeia o ficheiro da chave, ao lado do registo próprio.
 	sufixoDaChaveDoRegisto = ".chave"
 
 	// folgaDoFuturo é o que um instante registado pode estar À FRENTE do relógio do nó. Um apagamento
-	// datado para lá disto não é um apagamento: é um relógio errado ou uma linha fabricada — e as
-	// duas coisas, aceites, deixavam um instante no futuro a condenar TODAS as gerações futuras da
-	// chave, a cada arranque. Cinco minutos cobrem o desvio normal entre nós sem abrir essa porta.
+	// datado para lá disto é um relógio errado ou uma linha fabricada — aceite, condenaria TODAS as
+	// gerações futuras da chave a cada arranque.
 	folgaDoFuturo = 5 * time.Minute
 )
 
@@ -83,7 +87,7 @@ var reHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var reNomeApagamento = regexp.MustCompile(`^aos-kek-[0-9a-f]{64}$`)
 
 // nomeDaKEK é o nome da chave Transit de um titular — o que o Vault conhece. NÃO entra no registo
-// (é invertível por dicionário); entra o seu HMAC.
+// nem em erros e logs (é invertível por dicionário); entra o seu HMAC.
 func nomeDaKEK(subjectID string) string {
 	return vaultKeyName(audit.KeyRefFor(subjectID))
 }
@@ -99,40 +103,140 @@ type entradaDeApagamento struct {
 }
 
 // registoDeApagamentos é o registo PRÓPRIO do nó e a chave que o autentica. Seguro para
-// concorrência: o shredder DSAR, o sink de expiração e a reconciliação escrevem ao mesmo tempo.
+// concorrência dentro do processo. Entre processos não há lock: o volume é de UM nó.
 type registoDeApagamentos struct {
 	caminho string
+	// podeCriarChave é falso quando há uma importação pedida: um restauro que importa tem de trazer
+	// a chave do bundle — uma nova nunca autenticaria o importado.
+	podeCriarChave bool
 
 	mu sync.Mutex
 	// chave é carregada (ou criada) na primeira utilização. nil ⇒ ainda não, ou falhou — e nesse
-	// caso nada se lê nem se escreve, tudo fica pendente e a prontidão vermelha.
+	// caso nada se lê nem se escreve, tudo fica pendente.
 	chave []byte
-	// chaveNova diz que a chave foi CRIADA por este processo. Num restauro isso significa que o
-	// bundle é anterior a ela, e que um registo importado escrito com a antiga não vai autenticar.
-	chaveNova bool
-	// porEscrever são entradas cuja escrita FALHOU. Não se perdem: a próxima escrita escreve-as
-	// primeiro, e enquanto existirem a prontidão da custódia fica vermelha.
+	// porEscrever são entradas cuja escrita FALHOU. A próxima escrita escreve-as primeiro, e
+	// enquanto existirem a prontidão da custódia fica vermelha.
 	porEscrever []entradaDeApagamento
-	// avisos acumula o que a escrita teve de corrigir (um fragmento final truncado) para o
-	// chamador o pôr no log — o registo não tem log próprio.
+	// avisos acumula o que a escrita teve de corrigir (um fragmento final truncado), para o log.
 	avisos []string
 }
 
-func novoRegistoDeApagamentos(caminho string) *registoDeApagamentos {
-	return &registoDeApagamentos{caminho: filepath.Clean(caminho)}
+func novoRegistoDeApagamentos(caminho string, podeCriarChave bool) *registoDeApagamentos {
+	return &registoDeApagamentos{caminho: filepath.Clean(caminho), podeCriarChave: podeCriarChave}
 }
 
-// prepararChave carrega (ou cria, UMA vez) a chave do registo. Idempotente; chamado sob r.mu.
+// prepararChave carrega a chave, ou cria-a — só quando é seguro. Chamado sob r.mu.
 func (r *registoDeApagamentos) prepararChave() error {
 	if r.chave != nil {
 		return nil
 	}
-	chave, nova, err := carregarOuCriarChaveDoRegisto(r.caminho + sufixoDaChaveDoRegisto)
+	caminhoChave := r.caminho + sufixoDaChaveDoRegisto
+	raw, err := os.ReadFile(caminhoChave)
+	if err == nil {
+		if len(raw) != 32 {
+			return fmt.Errorf("%w: %s tem %d bytes (esperados 32) — reponha-a do bundle mais recente; NAO se cria outra por cima de um registo", ErrRegistoDeApagamentos, caminhoChave, len(raw))
+		}
+		r.chave = raw
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: ler %s: %v", ErrRegistoDeApagamentos, caminhoChave, err)
+	}
+	if !r.podeCriarChave {
+		return fmt.Errorf("%w: a chave %s NAO existe e ha uma importacao pedida — um restauro tem de trazer a chave do bundle mais recente (uma chave nova nunca autenticaria o importado); nada foi criado nem escrito", ErrRegistoDeApagamentos, caminhoChave)
+	}
+	temEntradas, verr := registoTemEntradas(r.caminho)
+	if verr != nil {
+		return verr
+	}
+	if temEntradas {
+		return fmt.Errorf("%w: o registo %s tem entradas e a chave %s NAO existe — reponha-a do bundle mais recente; criar outra deixava o registo ilegivel para sempre (ver o runbook se ela se perdeu)", ErrRegistoDeApagamentos, r.caminho, caminhoChave)
+	}
+	chave, err := criarChaveAtomica(caminhoChave)
 	if err != nil {
 		return err
 	}
-	r.chave, r.chaveNova = chave, nova
+	r.chave = chave
 	return nil
+}
+
+// registoTemEntradas diz se o ficheiro tem alguma linha que não seja comentário nem vazia.
+func registoTemEntradas(caminho string) (bool, error) {
+	raw, err := os.ReadFile(caminho)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("%w: ler %s: %v", ErrRegistoDeApagamentos, caminho, err)
+	}
+	for _, l := range strings.Split(string(raw), "\n") {
+		if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// criarChaveAtomica escreve 32 bytes num temporário, faz fsync e publica-o com `link` — que falha
+// se o destino já existir, pelo que dois arranques concorrentes não se pisam e um crash a meio deixa
+// um temporário órfão, nunca uma chave curta.
+func criarChaveAtomica(caminho string) ([]byte, error) {
+	nova := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, nova); err != nil {
+		return nil, fmt.Errorf("%w: gerar a chave: %v", ErrRegistoDeApagamentos, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(caminho), filepath.Base(caminho)+".tmp-*")
+	if err != nil {
+		return nil, fmt.Errorf("%w: criar temporario da chave: %v", ErrRegistoDeApagamentos, err)
+	}
+	nomeTmp := tmp.Name()
+	defer os.Remove(nomeTmp)
+	if err := tmp.Chmod(0o600); err != nil && !errors.Is(err, os.ErrInvalid) {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("%w: permissoes do temporario: %v", ErrRegistoDeApagamentos, err)
+	}
+	if _, err := tmp.Write(nova); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("%w: gravar a chave: %v", ErrRegistoDeApagamentos, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return nil, fmt.Errorf("%w: fsync da chave: %v", ErrRegistoDeApagamentos, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Link(nomeTmp, caminho); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			raw, rerr := os.ReadFile(caminho)
+			if rerr == nil && len(raw) == 32 {
+				return raw, nil // outro arranque ganhou: fica a dele
+			}
+		}
+		return nil, fmt.Errorf("%w: publicar a chave %s: %v", ErrRegistoDeApagamentos, caminho, err)
+	}
+	if d, derr := os.Open(filepath.Dir(caminho)); derr == nil {
+		_ = d.Sync()
+		_ = d.Close()
+	}
+	return nova, nil
+}
+
+func (r *registoDeApagamentos) hmacHex(dominio string, partes ...string) string {
+	m := hmac.New(sha256.New, r.chave)
+	m.Write([]byte(dominio))
+	for _, p := range partes {
+		m.Write([]byte(p))
+	}
+	return hex.EncodeToString(m.Sum(nil))
+}
+
+// idDe devolve o id de uma KEK pelo seu nome no Vault.
+func (r *registoDeApagamentos) idDe(nome string) string { return r.hmacHex("aos436/id\n", nome) }
+
+// macDe é o MAC ENCADEADO de uma linha: cobre a linha anterior, o id e o instante.
+func (r *registoDeApagamentos) macDe(anterior, id, instante string) string {
+	return r.hmacHex("aos436/mac\n", anterior, "\n", id, " ", instante)
 }
 
 // idsDe devolve o id de cada nome, com a chave carregada. Erro ⇒ a chave não está legível.
@@ -149,81 +253,8 @@ func (r *registoDeApagamentos) idsDe(nomes []string) (map[string]string, error) 
 	return out, nil
 }
 
-// foiCriadaAgora diz se a chave foi criada por este processo.
-func (r *registoDeApagamentos) foiCriadaAgora() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.chaveNova
-}
-
-// carregarOuCriarChaveDoRegisto — molde de [LoadOrCreateIssuerKey]: lê a chave se existir; senão
-// gera 32 bytes por CSPRNG, grava-os 0600 com O_EXCL e fsync (ficheiro e directório).
-func carregarOuCriarChaveDoRegisto(caminho string) ([]byte, bool, error) {
-	raw, err := os.ReadFile(caminho)
-	if err == nil {
-		if len(raw) != 32 {
-			return nil, false, fmt.Errorf("%w: %s nao tem 32 bytes", ErrRegistoDeApagamentos, caminho)
-		}
-		return raw, false, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, false, fmt.Errorf("%w: ler %s: %v", ErrRegistoDeApagamentos, caminho, err)
-	}
-	nova := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, nova); err != nil {
-		return nil, false, fmt.Errorf("%w: gerar a chave: %v", ErrRegistoDeApagamentos, err)
-	}
-	f, err := os.OpenFile(caminho, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return carregarOuCriarChaveDoRegisto(caminho)
-		}
-		return nil, false, fmt.Errorf("%w: criar %s: %v", ErrRegistoDeApagamentos, caminho, err)
-	}
-	if _, err := f.Write(nova); err != nil {
-		_ = f.Close()
-		return nil, false, fmt.Errorf("%w: gravar %s: %v", ErrRegistoDeApagamentos, caminho, err)
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return nil, false, fmt.Errorf("%w: fsync %s: %v", ErrRegistoDeApagamentos, caminho, err)
-	}
-	if err := f.Close(); err != nil {
-		return nil, false, err
-	}
-	if d, derr := os.Open(filepath.Dir(caminho)); derr == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nova, true, nil
-}
-
-func (r *registoDeApagamentos) hmacHex(dominio, dados string) string {
-	m := hmac.New(sha256.New, r.chave)
-	m.Write([]byte(dominio))
-	m.Write([]byte(dados))
-	return hex.EncodeToString(m.Sum(nil))
-}
-
-// idDe devolve o id de uma KEK pelo seu nome no Vault.
-func (r *registoDeApagamentos) idDe(nome string) string { return r.hmacHex("aos436/id\n", nome) }
-
-func (r *registoDeApagamentos) macDe(id, instante string) string {
-	return r.hmacHex("aos436/mac\n", id+" "+instante)
-}
-
-func (r *registoDeApagamentos) linha(e entradaDeApagamento) string {
-	id := e.id
-	if id == "" {
-		id = r.idDe(e.nome)
-	}
-	t := e.destruidaEm.UTC().Format(time.RFC3339)
-	return id + " " + t + " " + r.macDe(id, t) + "\n"
-}
-
 // acrescentar escreve as entradas no fim do ficheiro (criando-o com o cabeçalho), com fsync. As
-// pendentes de uma falha anterior vão à frente. Em caso de erro nada se perde: tudo fica em
-// [porEscrever] até à próxima tentativa.
+// pendentes de uma falha anterior vão à frente. Em caso de erro nada se perde.
 func (r *registoDeApagamentos) acrescentar(novas ...entradaDeApagamento) error {
 	if r == nil {
 		return nil
@@ -246,12 +277,7 @@ func (r *registoDeApagamentos) acrescentar(novas ...entradaDeApagamento) error {
 	return nil
 }
 
-// escrever faz o append físico. Chamado sob r.mu.
-//
-// FRAGMENTO FINAL. Uma escrita anterior interrompida (crash, disco cheio a meio) deixa o ficheiro
-// sem '\n' final. Esse fragmento é truncado ANTES de acrescentar — é a única escrita não-append que
-// o registo conhece, e só alcança bytes que nunca chegaram a ser uma linha. Sem isto, a re-tentativa
-// colava a linha nova ao fragmento e fixava uma linha malformada para sempre.
+// escrever faz o append físico, encadeando cada linha na última que o ficheiro tem. Chamado sob r.mu.
 func (r *registoDeApagamentos) escrever(entradas []entradaDeApagamento) error {
 	f, err := os.OpenFile(r.caminho, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -263,6 +289,7 @@ func (r *registoDeApagamentos) escrever(entradas []entradaDeApagamento) error {
 		return err
 	}
 	tam := st.Size()
+	anterior := ""
 	if tam > 0 {
 		corte, terr := inicioDoFragmentoFinal(f, tam)
 		if terr != nil {
@@ -275,13 +302,24 @@ func (r *registoDeApagamentos) escrever(entradas []entradaDeApagamento) error {
 			r.avisos = append(r.avisos, fmt.Sprintf("%s: fragmento final de %d byte(s) sem fim de linha (escrita interrompida) TRUNCADO antes de acrescentar", r.caminho, tam-corte))
 			tam = corte
 		}
+		anterior, err = ultimoMac(f, tam)
+		if err != nil {
+			return err
+		}
 	}
 	var b strings.Builder
 	if tam == 0 {
 		b.WriteString(cabecalhoRegistoApagamentos)
 	}
 	for _, e := range entradas {
-		b.WriteString(r.linha(e))
+		id := e.id
+		if id == "" {
+			id = r.idDe(e.nome)
+		}
+		t := e.destruidaEm.UTC().Format(time.RFC3339)
+		mac := r.macDe(anterior, id, t)
+		b.WriteString(id + " " + t + " " + mac + "\n")
+		anterior = mac
 	}
 	if _, err := f.WriteAt([]byte(b.String()), tam); err != nil {
 		return err
@@ -298,8 +336,26 @@ func (r *registoDeApagamentos) escrever(entradas []entradaDeApagamento) error {
 	return nil
 }
 
-// inicioDoFragmentoFinal devolve o offset a seguir ao último '\n' (ou 0). Lê de trás para a frente
-// em blocos: o registo cresce sem limite e não se carrega inteiro para acrescentar uma linha.
+// ultimoMac devolve o MAC da última linha de registo do ficheiro (até `tam`, que termina em '\n'),
+// ou "" se não houver nenhuma. É o elo onde a próxima linha se encadeia.
+func ultimoMac(f *os.File, tam int64) (string, error) {
+	raw := make([]byte, tam)
+	if _, err := f.ReadAt(raw, 0); err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	linhas := strings.Split(string(raw), "\n")
+	for i := len(linhas) - 1; i >= 0; i-- {
+		t := strings.TrimSpace(linhas[i])
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		campos := strings.Fields(t)
+		return campos[len(campos)-1], nil
+	}
+	return "", nil
+}
+
+// inicioDoFragmentoFinal devolve o offset a seguir ao último '\n' (ou 0).
 func inicioDoFragmentoFinal(f *os.File, tam int64) (int64, error) {
 	const bloco = 4096
 	buf := make([]byte, bloco)
@@ -347,9 +403,9 @@ func (r *registoDeApagamentos) descarregar() error { return r.acrescentar() }
 
 // leituraDoRegisto é o que uma leitura aproveitou e o que recusou.
 type leituraDoRegisto struct {
-	// validas: id → instante MAIS RECENTE, só de linhas com MAC válido e instante são.
+	// validas: id → instante MAIS RECENTE, só de linhas que autenticam na cadeia e têm instante são.
 	validas map[string]time.Time
-	// rejeitadas: uma descrição por linha recusada (número, motivo) — nunca o conteúdo da linha.
+	// rejeitadas: uma descrição por linha recusada (ficheiro, número, motivo) — nunca a linha.
 	rejeitadas []string
 	// fragmento: havia um fragmento final sem '\n', ignorado (escrita interrompida).
 	fragmento bool
@@ -357,11 +413,12 @@ type leituraDoRegisto struct {
 
 // ler lê um registo sob a chave deste registo. `agora` é o relógio do nó, para o limite do futuro.
 //
-// POR LINHA, e não tudo-ou-nada: uma linha rejeitada não apaga as válidas que a rodeiam — a
-// independência que a revisão pediu vale também dentro de uma fonte. Mas uma rejeição deixa a
-// fonte POR PROVAR (o chamador torna-o prontidão vermelha), e NUNCA destrói nada.
+// O ENCADEAMENTO verifica-se contra o MAC ESCRITO na linha anterior, autêntico ou não: assim cada
+// linha autentica-se sozinha no seu lugar, e uma remoção, inserção ou troca a meio custa a linha
+// seguinte — que fica rejeitada e nomeada.
 //
-// ausenteOK distingue o registo próprio (pode não existir ainda) de um importado (foi pedido).
+// POR LINHA, e não tudo-ou-nada: uma linha rejeitada não apaga as válidas que a rodeiam. Mas uma
+// rejeição deixa a fonte POR PROVAR, e NUNCA destrói nada.
 func (r *registoDeApagamentos) ler(caminho string, ausenteOK bool, agora time.Time) (leituraDoRegisto, error) {
 	out := leituraDoRegisto{validas: make(map[string]time.Time)}
 	r.mu.Lock()
@@ -383,6 +440,7 @@ func (r *registoDeApagamentos) ler(caminho string, ausenteOK bool, agora time.Ti
 	}
 	sc := bufio.NewScanner(bytes.NewReader(raw))
 	sc.Buffer(make([]byte, 0, 4096), 1<<20)
+	anterior := ""
 	for n := 1; sc.Scan(); n++ {
 		t := strings.TrimSpace(sc.Text())
 		if t == "" || strings.HasPrefix(t, "#") {
@@ -391,10 +449,15 @@ func (r *registoDeApagamentos) ler(caminho string, ausenteOK bool, agora time.Ti
 		campos := strings.Fields(t)
 		if len(campos) != 3 || !reHex64.MatchString(campos[0]) || !reHex64.MatchString(campos[2]) {
 			out.rejeitadas = append(out.rejeitadas, fmt.Sprintf("%s:%d: linha malformada (esperado `<id 64 hex> <RFC3339> <mac 64 hex>`)", caminho, n))
+			if len(campos) > 0 {
+				anterior = campos[len(campos)-1]
+			}
 			continue
 		}
-		if !hmac.Equal([]byte(campos[2]), []byte(r.macDe(campos[0], campos[1]))) {
-			out.rejeitadas = append(out.rejeitadas, fmt.Sprintf("%s:%d: MAC invalido — linha nao escrita por este no (ou chave diferente); NAO destroi nada", caminho, n))
+		esperado := r.macDe(anterior, campos[0], campos[1])
+		anterior = campos[2]
+		if !hmac.Equal([]byte(campos[2]), []byte(esperado)) {
+			out.rejeitadas = append(out.rejeitadas, fmt.Sprintf("%s:%d: MAC invalido — linha forjada, re-datada, ou a cadeia partiu-se antes dela (linha removida/inserida/trocada) ou chave diferente; NAO destroi nada", caminho, n))
 			continue
 		}
 		quando, perr := time.Parse(time.RFC3339, campos[1])

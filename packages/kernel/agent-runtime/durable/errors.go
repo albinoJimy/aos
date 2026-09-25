@@ -74,6 +74,14 @@ var (
 	// fosse o resultado em claro.
 	ErrSealedResultNoCipher = errors.New("durable: registo cifrado por-titular sem ContentCipher ligado (AOS-093)")
 
+	// ErrConteudoIndisponivel — o conteúdo por-titular NÃO abriu, mas NÃO foi apagado: a custódia
+	// da KEK está fechada (reconciliação de apagamentos por provar, AOS-436) ou não respondeu. É a
+	// distinção que o [StepLedger.Rebuild] precisa: um passo cifrado cujo titular foi apagado deixa
+	// de se reconstruir, mas um passo cujo conteúdo está só INDISPONÍVEL não pode desaparecer do
+	// ledger — a retoma re-executaria um efeito externo já aplicado (ADR-015). Quem o devolve é o
+	// [ContentCipher] do nó; o Rebuild falha fechado com ele.
+	ErrConteudoIndisponivel = errors.New("durable: conteudo por-titular indisponivel (custodia da KEK fechada ou sem resposta) — nao e apagamento")
+
 	// --- AOS-018: liveness por lease/heartbeat + fencing tokens ---
 
 	// ErrInvalidTTL — o TTL passado a [NewLeaseManager] não é > 0. Um lease sem TTL
