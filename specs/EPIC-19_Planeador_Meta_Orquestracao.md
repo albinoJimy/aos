@@ -5400,3 +5400,442 @@ que era onde estava o defeito.
 ### Estado
 
 **ABERTO** até à verificação em produção.
+
+---
+
+## AOS-439 — O pedido de plano esquece quem o pediu: os runs correm sob o humano do mandato, seja quem for que submeteu
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura + implementação |
+| Prioridade | **P1** — o humano do mandato responde por tudo o que qualquer submissor autorizado pedir |
+| Estimativa | M |
+| Dependências | AOS-423 (fila), AOS-427/437 (mandato e drenagem) |
+| Documentos de referência | `packages/cmd/aos/plan_claim.go`, `packages/cmd/aos-orq/node_client.go`, `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md` §5 |
+
+### Contexto — medido em produção
+
+Em a prova ponta-a-ponta de 2026-09-25 (`plan-e2e-docread-1790340990`, v0.1.33): plano submetido por `POST /plans` pelo service account `aos-reader`, drenado pelo timer, dois nós, `terminal` com `exit_code 0` na geração 1, a chamada à tool foi selada como `agt-drenador` com a cadeia
+`human:a2b5947c-…` → `agt-drenador` — o humano que assinou o MANDATO —, embora o pedido tenha sido
+feito pelo `aos-reader`. O principal de quem submete fica gravado no `planrequest.submitted`
+(`plan_ingress.go:248`) e serve só a titularidade do `GET /plans/{id}`; **não viaja** na
+reclamação (`respostaDeReclamo`, `plan_claim.go:266-272`; `pedidoReclamado`, `node_client.go:389-395`)
+e o `aos-orq` usa um NHI único por ficheiro para todos os pedidos (`node_client.go:115-125`, `:316`).
+
+Está declarado como resíduo — ADR-033 §5 resíduo 7, AOS-437 resíduo 8 — e sem ticket que o feche.
+No fluxo manual havia um operador a decidir drenar cada pedido; com a drenagem automática, a
+responsabilidade de quem assinou o mandato estende-se a qualquer submissor autorizado sem que ele
+veja o pedido.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Quem é o humano responsável de um plano drenado?** (a) o submissor, e o mandato passa a
+   autorizar a MÁQUINA a agir por ele (a cadeia `human:<submissor>` → `agt-drenador`, o mandato como
+   prova de que o drenador pode cunhar para aquele submissor); (b) o humano do mandato, e o
+   submissor fica apenas registado; (c) um mandato por submissor.
+2. Um submissor que é um service account (como o `aos-reader`) pode pedir planos? Se sim, que
+   humano responde por ele?
+
+### Critérios de Aceitação
+
+- [ ] Decisão registada em ADR (emenda ao ADR-033, se mudar a raiz da cadeia).
+- [ ] O principal do submissor viaja do `planrequest.submitted` até ao run filho e fica selado no
+      registo de decisão da tool call.
+- [ ] Teste que liga o submissor de um `POST /plans` à cadeia selada do run filho.
+- [ ] **Verificado em PRODUÇÃO**: um plano submetido por um humano deixa a sua identidade no selo.
+
+### Estado
+
+**ABERTO** — espera a decisão 1.
+
+---
+
+## AOS-440 — O conteúdo dos runs filhos é cifrado sob a chave de quem chamou o nó, e não sob o titular dos dados
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de conformidade + implementação |
+| Prioridade | **P1** — um pedido de apagamento do titular não apaga o conteúdo; apagar a chave do service account apaga o de todos |
+| Estimativa | M |
+| Dependências | AOS-439 (o submissor tem de chegar ao run), AOS-429 (titular do objectivo) |
+| Documentos de referência | `packages/cmd/aos/api.go`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/activity/dispatch.go`, `tecnica/14_Matriz_Conformidade.md` |
+
+### Contexto — medido em produção
+
+Em a prova ponta-a-ponta de 2026-09-25 (`plan-e2e-docread-1790340990`, v0.1.33): plano submetido por `POST /plans` pelo service account `aos-reader`, drenado pelo timer, dois nós, `terminal` com `exit_code 0` na geração 1, o resultado da `doc_read` e as capturas de replay foram seladas com
+`key_ref: aos.audit.pii:91a30a69-…` — a KEK do service account `aos-reader`, que é quem chama
+`POST /runs` a partir do `aos-orq`. O titular é derivado do chamador HTTP (`api.go:707-728`, `:784`,
+`:812`) e propagado à captura (`loop.go:497`) e ao step-ledger (`dispatch.go:229`).
+
+Duas consequências:
+
+- **Um pedido de apagamento do humano que pediu o plano não apaga este conteúdo** — a KEK dele não o
+  selou.
+- **Apagar a KEK do service account apaga o conteúdo de TODOS os planos** que ele submeteu, de todos
+  os humanos.
+
+O AOS-429 decidiu «o titular é o principal do submissor» para o OBJECTIVO do pedido
+(`plan_objetivo_selado.go:60-66`); o conteúdo dos runs filhos nunca foi decidido. A observação O2 da
+auditoria de 2026-08-17 («duas credenciais, sem ligação entre si») apontava para isto e não foi
+seguida. DEF-307 trata o alcance do crypto-shredding de forma genérica.
+
+### Decisões a tomar primeiro (do dono, com o DPO)
+
+1. De quem são os dados de um run filho de um plano: do submissor do plano, do humano do mandato,
+   ou de quem os dados descrevem?
+2. Que fazer com o conteúdo já selado sob o `aos-reader`?
+
+### Critérios de Aceitação
+
+- [ ] Decisão registada na matriz de conformidade (`tecnica/14`) e, se mudar o modelo, em ADR.
+- [ ] O conteúdo de um run filho é selado sob o titular decidido, e um teste prova que o apagamento
+      desse titular o torna ilegível e não toca no de outros.
+- [ ] **Verificado em PRODUÇÃO**: o `key_ref` do run filho de um plano é o do titular decidido.
+
+### Estado
+
+**ABERTO** — espera a decisão 1.
+
+---
+
+## AOS-441 — O risco de um plano decide-se por um snapshot editado à mão, que ninguém compara com o catálogo do nó
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | **P1** — a aprovação automática (L4) confia num ficheiro que esteve semanas com a tool com o nome errado |
+| Estimativa | M |
+| Dependências | AOS-231 (validador), AOS-409 (4.º eixo), AOS-413 (lista-branca do nó) |
+| Documentos de referência | `packages/cmd/aos-orq/snapshot.go`, `packages/cmd/aos-orq/plan_gate_wiring.go`, `deploy/server/README.md` §executor de nós |
+
+### Contexto — medido em produção
+
+O `/opt/aos/orq/snapshot.json` de produção nomeava a tool `fs.read`; o nó chama-lhe `doc_read`
+(`AOS_MODEL_TOOLS`). Um plano que pedisse a tool ficaria sem nenhuma utilizável — fail-closed, mas
+sem fazer nada. Estava assim desde o AOS-395 e foi encontrado a olho, em 2026-09-25, e corrigido à
+mão (`snapshot.json.antes-doc_read` guardado). O digest da tool é o marcador `sha256:aaa`.
+
+O `hash` do snapshot é um rótulo que o ficheiro declara sobre si (`snapshot.go:52`, `:100`); o gate
+compara rótulos (`plan_gate_wiring.go:76-84`) e sela o digest do conteúdo (`:86-108`), mas **nada
+compara o conteúdo com as tools que o nó tem**. O próprio `snapshot.go:17-22` diz «em produção o
+snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º eixo.
+
+### Critérios de Aceitação
+
+- [ ] O snapshot passa a derivar-se do catálogo do nó (ou do REG), com os digests reais das tools.
+- [ ] Um snapshot cujas tools não existam no nó é RECUSADO no arranque do `consume`/`serve`, com a
+      divergência nomeada.
+- [ ] Teste: renomear uma tool no catálogo avermelha.
+- [ ] **Verificado em PRODUÇÃO**: o snapshot em uso bate com o catálogo do nó.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-442 — A retoma de um plano aprovado decompõe de novo e é recusada; um plano à espera de humano nunca é retomado
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | **P1** — uma falha transitória depois da aprovação torna-se definitiva, e paga uma decomposição ao modelo |
+| Estimativa | M |
+| Dependências | AOS-412 (plan-doc), AOS-423 (consume), AOS-438 (resíduo 1) |
+| Documentos de referência | `packages/cmd/aos-orq/consumir.go`, `packages/cmd/aos-orq/plan_gate_wiring.go`, `packages/cmd/aos/plan_claim.go` |
+
+### Contexto — medido em produção
+
+Na primeira prova do AOS-437 (`plan-e2e-437-1790336067`), a retoma do `consume` correu
+`serve --goal` outra vez: o modelo re-decompôs, saiu outro organigrama, e o gate recusou-o
+(`plan_gate_wiring.go:196-207`, saída `7`, terminal). O AOS-438 fechou a CAUSA desse caso (um
+sucesso reportado como falha), e deixou declarado como resíduo 1 o mecanismo: o `argsDoServe` usa
+sempre `--goal` (`consumir.go:173-184`), e uma falha REAL depois da aprovação continua a acabar assim.
+
+E um segundo buraco, encontrado pela discovery: `aguarda_humano` marca o pedido como terminado na
+fila (`plan_claim.go:202-203`). Depois da decisão humana, **nada no caminho da fila volta a correr o
+pedido** — fica aprovado e parado.
+
+### Critérios de Aceitação
+
+- [ ] Um pedido já aprovado é retomado pelo documento aprovado (`--plan-doc`), nunca por `--goal`.
+- [ ] Um pedido em `aguarda_humano` volta a ser reclamável depois da decisão, e corre pelo documento
+      aprovado.
+- [ ] Testes: retoma pós-aprovação não re-decompõe; aprovação humana leva o pedido a correr.
+- [ ] **Verificado em PRODUÇÃO**: um plano com uma falha transitória induzida acaba `terminal` 0.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-443 — O caminho do plano não se observa: o aos-orq não tem métricas, e o estado de um plano não diz porquê
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | P2 — o AOS-438 só foi diagnosticado reproduzindo à mão e lendo WALs com `strings` |
+| Estimativa | M |
+| Dependências | AOS-430 (estado do plano), AOS-437 (drenagem) |
+| Documentos de referência | `packages/cmd/aos-orq/`, `packages/cmd/aos/plan_estado.go`, `deploy/server/alerta-nhi.sh` |
+
+### Contexto — medido em produção
+
+Para encontrar o AOS-438 foi preciso submeter um segundo plano, correr a drenagem à mão a guardar o
+output, e indexar o WAL do `consume` dentro de um contentor. O stderr da drenagem vai para o journal
+do sistema, que o utilizador `aos` não lê. Declarado sem ticket em três sítios (ADR-032 §5 item 4,
+AOS-437, `alerta-nhi.sh:11`): **o `aos-orq` não expõe métricas**.
+
+E o `GET /plans/{id}` só traz `detail` quando há erro (`consumir.go:159-165`) — «terminado com
+sucesso» e «terminado» dizem o mesmo; declarado como resíduo 1 do AOS-430 / ADR-031 §4.
+
+### Critérios de Aceitação
+
+- [ ] Métricas do `aos-orq` legíveis pelo sensor: pedidos reclamados, desfechos por classe, duração
+      por plano, retomas.
+- [ ] O desfecho reportado ao nó leva um resumo também em sucesso (nós, gerações, duração).
+- [ ] O output da drenagem legível sem root (ficheiro de log do `aos`, com rotação).
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-444 — A reconstrução de um run (`GET /runs/{id}/reconstruct`) leva minutos em produção
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | medição + implementação |
+| Prioridade | P2 — a leitura que um auditor usa para reconstruir a autoria não escala |
+| Estimativa | S (medir) + M (corrigir) |
+| Dependências | AOS-214 (replay soberano) |
+| Documentos de referência | `packages/cmd/aos/sovereign_replay.go`, `packages/cmd/aos/sovereignty.go` |
+
+### Contexto — medido em produção
+
+Em 2026-09-25, a leitura de `/reconstruct` de um run de dois turnos não respondeu em mais de três
+minutos e foi abandonada; o `GET /runs/{id}` e o `/trajectory` do mesmo run responderam em segundos.
+O `handleReconstruct` lê o stream desde a seq 1, verifica o selo WORM e corre o motor de
+reconstrução (`sovereign_replay.go:91-172`), depois de resolver a residência (`sovereignty.go:343-358`).
+Não há medição, teste de desempenho nem registo deste custo.
+
+### Critérios de Aceitação
+
+- [ ] Medição: onde vai o tempo (leitura do stream, verificação do WORM, reconstrução, residência).
+- [ ] Correcção do troço dominante, ou tecto declarado com o porquê.
+- [ ] Teste de desempenho que avermelha uma regressão.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-445 — Ninguém é avisado do resultado de um plano: quem pediu só o sabe se perguntar
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de produto + implementação |
+| Prioridade | P2 — um plano que falha em produção passa despercebido |
+| Estimativa | M |
+| Dependências | AOS-430 (leitura do estado), AOS-133 (BFF com SSE, EPIC-13) |
+| Documentos de referência | `docs/adr/ADR-031-leitura-do-estado-de-um-pedido-de-plano.md`, `deploy/server/alerta-nhi.sh` |
+
+### Contexto
+
+O único aviso que existe é de INFRAESTRUTURA (`alerta-nhi.sh`, `alerta-ancora.sh`: NHI, timers,
+âncora). O resultado de um plano só se lê por sondagem de `GET /plans/{id}` (ADR-031), e só pelo
+submissor. Nas provas de 2026-09-25, três planos ficaram gravados como falhados sem que nada o
+dissesse a ninguém. O AOS-133 (SSE no BFF) está por fazer.
+
+### Decisões a tomar primeiro (do dono)
+
+1. Por onde: ntfy (como os alertas), webhook do submissor, SSE (AOS-133)?
+2. A quem: ao submissor, ao humano do mandato, ao operador?
+
+### Critérios de Aceitação
+
+- [ ] Um plano que termina (bem ou mal) produz um aviso pelo canal decidido, sem conteúdo do
+      objectivo nem do resultado (só id, desfecho e código).
+- [ ] **Verificado em PRODUÇÃO.**
+
+### Estado
+
+**ABERTO** — espera as decisões 1 e 2.
+
+---
+
+## AOS-446 — A fronteira do host: root contorna o mandato, o `aos` é root pelo grupo docker, e a chave do humano é um ficheiro
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano); o eixo é o EPIC-16 / D4 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de segurança + infraestrutura |
+| Prioridade | P2 — os três limites estão escritos como resíduos, mas não têm ticket nem plano |
+| Estimativa | L |
+| Dependências | AOS-427/437 (mandato), DEF-103 (HSM), DEF-107 (WebAuthn) |
+| Documentos de referência | `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md` §2.1 e §5, `deploy/server/bootstrap.sh`, `packages/cmd/aos-issuer/mandato.go` |
+
+### Contexto
+
+Três limites declarados, nenhum com ticket:
+
+1. **Root no host do nó contorna o mandato** — muda `AOS_MANDATE_SIGNERS` e reinicia (ADR-033 §2.1,
+   §5 resíduo 5; AOS-437 resíduo 2). O nó e o emissor partilham o host.
+2. **O utilizador `aos` está no grupo docker** (`bootstrap.sh:13-14`, `:74`), o que equivale a root:
+   a fronteira do root para instalar os timers (AOS-437) é de procedimento, não de segurança.
+3. **A chave que assina os mandatos é uma seed em ficheiro** na máquina do humano
+   (`mandato.go:204-217`), com passphrase — não hardware (ADR-033 §3, §5 resíduo 1). DEF-107
+   (four-eyes sem WebAuthn) e DEF-103 (HSM para a autoridade) são adjacentes.
+
+### Decisões a tomar primeiro (do dono)
+
+1. Separar o nó do emissor em hosts diferentes, ou pinar as chaves humanas fora do alcance do root?
+2. Tirar o `aos` do grupo docker (e com que substituto para o deploy e para os scripts)?
+3. Assinar mandatos com hardware (passkey/WebAuthn)?
+
+### Critérios de Aceitação
+
+- [ ] Cada uma das três com decisão registada (ADR ou emenda ao ADR-033) e, se implementada,
+      verificada em produção.
+
+### Estado
+
+**ABERTO** — espera as decisões.
+
+---
+
+## AOS-447 — A fila de planos drena-se com um trabalhador e de cinco em cinco minutos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura + implementação |
+| Prioridade | P3 — aceitável com o volume de hoje; limita a latência e a vazão quando houver utilizadores |
+| Estimativa | M |
+| Dependências | AOS-423 (forma do trabalhador, não decidida), ADR-030 §3-§4 |
+| Documentos de referência | `deploy/server/systemd/aos-drenar-planos.timer`, `deploy/server/drenar-planos.sh`, `packages/cmd/aos-orq/consumir.go` |
+
+### Contexto — medido em produção
+
+Nas provas de 2026-09-25 um pedido esperou até 5 minutos antes de começar
+(`OnUnitInactiveSec=5min`), e cada passagem drena até 3 pedidos, em série, com um WAL de ficheiro de
+posse sequencial (`consume.wal`). A forma do trabalhador ficou por decidir no AOS-423 (decisão 2) e
+o NATS partilhado foi rejeitado «por agora» (ADR-030 §3); o AOS-437 declarou-o como resíduo 6.
+
+### Decisões a tomar primeiro (do dono)
+
+1. `consume` contínuo (serviço de longa duração) em vez de timer?
+2. Vários trabalhadores — exige o substrato replicado (NATS) no `aos-orq`?
+
+### Critérios de Aceitação
+
+- [ ] Decisão registada; se mudar a forma, latência de arranque e vazão medidas antes e depois.
+
+### Estado
+
+**ABERTO** — espera as decisões.
+
+---
+
+## AOS-448 — A captura de replay grava 0 tokens sem dizer que não mediu
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | P3 — engana quem lê o registo; o orçamento não é afectado |
+| Estimativa | S |
+| Dependências | AOS-336 (marca de turno não medido), AOS-406 (custo não derivado) |
+| Documentos de referência | `packages/kernel/agent-runtime/replay/nondeterminism_capture.go`, `packages/kernel/agent-runtime/turn.go` |
+
+### Contexto — medido em produção
+
+A análise crítica de 2026-09-25 suspeitou que o consumo de tokens estava a zero, porque o
+`replay.captured` do run `plan-e2e-docread-1790340990~n1` regista `input_tokens: 0` e
+`output_tokens: 0` nos dois turnos. **Refutado:** o `turn.recorded` dos mesmos turnos tem o consumo
+real (434+1523 e 915+165 tokens), e o pico do run (3151) está no tecto de orçamento. O orçamento
+funciona.
+
+O que fica é uma inconsistência do registo: o `turn.recorded` marca a ausência de medição
+(`usage_ausente`, `turn.go:60-80`), e o `responseCapture` do replay grava números sem essa marca
+(`nondeterminism_capture.go:62-73`, `:360-368`) — um zero que não distingue «não medido» de «zero».
+
+### Critérios de Aceitação
+
+- [ ] O `replay.captured` leva o consumo medido ou uma marca explícita de não medido, nunca um zero
+      mudo.
+- [ ] Teste que avermelha um zero sem marca.
+
+### Estado
+
+**ABERTO.**

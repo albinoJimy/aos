@@ -398,6 +398,15 @@ injecção clássica embutida num tool result não gera acção privilegiada.
 Segue _BRIEF.md. Não expandas escopo.
 ```
 
+
+### Evidência de produção (2026-09-25)
+
+A análise crítica do ciclo do plano em produção mediu o caso que este ticket fecha: no plano
+`plan-e2e-docread-1790340990`, o nó `n1` leu o documento `notes` e publicou-o como contrato
+`document_content`, e o nó `n2` — um LLM — consumiu-o marcado `taint=untrusted`, inline no prompt.
+A marcação existe; a separação de planos não (DEF-806, DEF-807; ADR-027 §2.4). Não se abriu ticket
+novo: é este.
+
 ---
 
 ## AOS-070 — Credential Broker + Vault (tokens JIT server-side)
