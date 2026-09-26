@@ -1183,6 +1183,38 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+## AOS-451 — O executor gVisor de produção acumula zombies: o `/component` é PID 1 e não os recolhe
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | bug |
+| Prioridade | P2 |
+| Estimativa | XS |
+| Dependências | — |
+| Bloqueia | — |
+| Responsável sugerido | SRE |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `gvisor`), `deploy/server/gvisor/Dockerfile` (`HEALTHCHECK`, `ENTRYPOINT`) |
+
+**Contexto.** Medido em produção a 2026-09-26, ao investigar uma carga de ~12 num servidor de 8 cores. A carga é crónica e vem de um cluster Kubernetes vizinho (o `kube-apiserver` gasta em média 2 cores desde há 42 dias); a stack AOS usa menos de 15 % de um core. O que se encontrou do lado do AOS foi isto: **15 `curl <defunct>`** filhos do PID 1 do `aos-gvisor-1`, o mais antigo com ~28 dias.
+
+O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recolhe processos que não lançou. O healthcheck corre `sh -c "curl …"` com `timeout 3s`; quando expira — mais provável sob a pressão de CPU que o vizinho impõe —, o `sh` morre, o `curl` órfão passa para o PID 1 e fica zombie para sempre. O serviço tem `pids_limit: 512`: ao ritmo medido a fuga leva anos a esgotá-lo, mas o ritmo cresce com a pressão, e o que se esgota é a capacidade de o executor de sandbox fazer `fork`.
+
+**Objectivo.** O PID 1 do contentor do executor gVisor recolhe órfãos.
+
+**Critérios de Aceitação**
+- [x] O serviço `gvisor` do compose de produção declara `init: true` (o `docker-init` fica PID 1, recolhe os órfãos e reencaminha os sinais ao `/component`).
+- [x] `TestAOS451_GVisorCorreComInitNoPID1` (`packages/cmd/aos`) avermelha se a linha sair — verificado por mutação (`init: false` ⇒ vermelho).
+- [ ] **Verificado em PRODUÇÃO**: depois de recriar o `aos-gvisor-1`, o PID 1 é o `docker-init` e a contagem de zombies não cresce.
+
+**Fora de âmbito.** A carga do cluster Kubernetes vizinho não é do AOS e não se investigou por dentro: a conta `aos` não tem acesso a ele.
+
+**Estado.** **IMPLEMENTADO**, falta a verificação em produção (recriar o contentor).
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1202,3 +1234,4 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 | 1.2 | 2026-09-17 | +AOS-403 (o `aos-orq` na release assinada): o orquestrador viaja na imagem do nó, atestado como subject próprio, e corre em produção pelo serviço `aos-orq` do compose (profile `orq`). | Equipa AOS |
 | 1.3 | 2026-09-17 | AOS-403 validado em produção (v0.1.20): binário do servidor igual ao manifesto assinado, run pelo serviço do compose com o modelo real e selo no volume próprio. | Equipa AOS |
 | 1.4 | 2026-09-19 | +AOS-410 (o controlo do `provision-identity.sh` aceita o Transit vazio como o nó e as mensagens deixam de executar backticks): dois defeitos observados em produção a 2026-09-18. | Equipa AOS |
+| 1.5 | 2026-09-26 | +AOS-451 (o executor gVisor de produção acumula zombies): `init: true` no serviço `gvisor`, com sensor que avermelha se a linha sair. | Equipa AOS |

@@ -684,6 +684,13 @@ services:
       dockerfile: deploy/server/gvisor/Dockerfile
     image: aos-gvisor:local
     restart: unless-stopped
+    # INIT NO PID 1 (AOS-451). O `/component` não recolhe filhos que não são seus. Quando o
+    # healthcheck (`curl`, timeout 3 s) expira, o `sh` que o lançou morre, o `curl` órfão passa
+    # para o PID 1 e fica zombie para sempre — medido em produção a 2026-09-26: 15 `curl
+    # <defunct>` acumulados em ~28 dias, sob pressão de CPU de um cluster vizinho. Com
+    # `pids_limit: 512`, a fuga acaba por negar o `fork` ao próprio executor de sandbox. O
+    # `docker-init` recolhe-os e reencaminha os sinais ao `/component`.
+    init: true
     privileged: true
     mem_limit: ${GVISOR_MEM_LIMIT:-1g}
     pids_limit: 512
