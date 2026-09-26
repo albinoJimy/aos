@@ -5782,16 +5782,108 @@ AOS-437, `alerta-nhi.sh:11`): **o `aos-orq` não expõe métricas**.
 E o `GET /plans/{id}` só traz `detail` quando há erro (`consumir.go:159-165`) — «terminado com
 sucesso» e «terminado» dizem o mesmo; declarado como resíduo 1 do AOS-430 / ADR-031 §4.
 
+### O que se entregou
+
+- **As métricas são um ficheiro, não um `/metrics`.** O `consume` drena uma vez e termina: não há
+  processo vivo para um scrape, e um endpoint obrigaria a fazer do `aos-orq` um serviço de longa
+  duração com superfície de rede — o que o ADR-031 §3(b) já recusou. A forma que serve um processo
+  curto é a do *textfile collector*: no fim de cada drenagem, mesmo quando aborta, o `consume`
+  reescreve de forma atómica (temporário, `fsync`, `rename`) um ficheiro em formato de texto
+  Prometheus, `--metrics-file` (por omissão `aos-orq-consume.prom` ao lado do `--wal`). Os
+  contadores **acumulam-se** no próprio `consume` (lê o ficheiro anterior e soma), para que o
+  leitor, em bash, não faça contas; um ficheiro anterior ilegível recomeça do zero e di-lo.
+  Séries (`metricas_do_consumo.go`): `aos_orq_consume_drenagens_total{resultado}`,
+  `…_pedidos_reclamados_total`, `…_retomas_total` (geração > 1),
+  `…_origem_total{origem=decomposicao|documento|reverificacao|sem_serve}`,
+  `…_desfechos_total{classe,codigo}`, `…_desfechos_nao_reportados_total`,
+  `…_plano_duracao_segundos_{sum,count}{classe}`, e os gauges `…_falhas_consecutivas`,
+  `…_ultima_drenagem_timestamp_seconds`, `…_ultima_drenagem_pedidos`. Nenhum identificador. Não
+  conseguir escrever o ficheiro **falha a invocação**: o sensor leria um ficheiro parado.
+- **O sensor lê-o.** O `consume` da drenagem escreve-o pelo caminho por omissão, no volume do
+  `aos-orq` — o `drenar-planos.sh` **não** passa a flag, para que um rollback da imagem (que não
+  repõe os scripts) não pare a fila com uma flag desconhecida. No fim, o script copia o ficheiro
+  (como `65532`, sem rede) para `/opt/aos/logs/aos-orq-consume.prom` e, depois de um `consume`
+  bem-sucedido, falha se a cópia não tiver o carimbo desta drenagem. O `alerta-nhi.sh` avisa a
+  partir de **3** em `aos_orq_consume_falhas_consecutivas` (`AOS_ALERTA_FALHAS_PLANO_MAX`), com o
+  título «AOS: planos da fila em ALERTA».
+- **A regra das falhas seguidas** (`efeitoNasFalhas`): terminal/0 zera; `aguarda_humano` e o 8
+  (nós em voo — o caminho feliz de um plano mais longo do que o prazo, que a drenagem seguinte
+  retoma) são neutros; somam o genérico, os de posse/WAL (3, 4, 5) e os terminais ≠ 0. O 7 soma, e
+  é ambíguo: tanto é uma recusa humana (a governação a funcionar) como um plano perdido
+  (validado sem documento, pendente fora do prazo) — pelo código não se distinguem, e calar planos
+  perdidos custa mais do que um aviso sobre três recusas seguidas.
+- **O sensor já não se cala.** O `alerta-nhi.sh` corre todos os cheques e guarda no estado o
+  CONJUNTO de causas avisado; um conjunto diferente com o alerta disparado avisa logo («causas
+  mudaram»). Antes parava na primeira causa e um único `disparado` calava as seguintes. O debounce
+  de 2 leituras e o lembrete de 24 h mantêm-se para o mesmo conjunto.
+- **O resumo do desfecho, também em sucesso.** O `detalhe` do `POST /plans/outcome` passa a ser
+  `resumo: origem=<origem> geracao=<N> nos=<N|-> duracao_s=<s.mmm>`, com ` erro=<tipo>` no fim
+  quando o `serve` falhou. O **tipo** é o nome do sentinela que classifica o erro (`tipoDoErro`,
+  na tabela do `codigoDe`: `nos_em_voo`, `decisao_recusada`, `documento_recusado`,
+  `plano_recusado_pelo_planeador`, `snapshot_nao_corresponde`, …) ou `generico` — **nunca o texto
+  do erro**, que pode citar conteúdo escrito pelo modelo (o `plan.Decode` cita `node_id`s e campos
+  com `%q`) e que o nó gravaria em claro no stream da fila, fora do alcance do `/dsar/erase`. O
+  texto de um `generico` vai só para o stderr da drenagem. `nos` conta os nós do documento do plano
+  quando ele é deste pedido (ancorado no log, ou escrito durante o pedido) — um documento plantado
+  não conta. O nó **não muda**: o `GET /plans/{id}` já servia o `detail` quando não vazio, e o
+  contrato do ADR-031 §2.3 fica igual; o que passa a ser verdade é que o terminal/0 o traz.
+- **O log da drenagem sem root.** O `drenar-planos.sh` escreve tudo o que ele e o `consume` imprimem
+  (stdout e stderr), com carimbo UTC, em `/opt/aos/logs/drenar-planos.log` (do `aos`, `0750`),
+  além do journal. **Roda-o o próprio script**, debaixo do lock da drenagem, quando passa de
+  `DRENAR_LOG_MAX_BYTES` (5 MiB), guardando `DRENAR_LOG_GERACOES` (5) gerações.
+- **O objectivo sai do stdout NA ORIGEM.** A linha `reclamado:` imprimia `objectivo=%q` — dado do
+  titular que ia para o journal e iria para um ficheiro em claro que o `/dsar/erase` não alcança.
+  Passa a `objectivo_bytes=N`. Tirou-se no `consume` e não se filtrou no script: fecha também o
+  journal, e um filtro sobre texto livre seria uma lista negra que deixa passar a próxima linha
+  que alguém acrescente.
+- Testes: `aos443_observabilidade_test.go` (aos-orq — forma do resumo, o texto do erro fora do
+  `detail` e um tipo por sentinela, origem, contagem de nós, acumulação e regra das falhas seguidas
+  com o 8 neutro, escrita atómica, contrato dos nomes com os dois scripts e ausência da flag no
+  script, e o `consume` real numa retoma transitória→terminal/0 a ler o `detalhe` que chega ao nó,
+  o ficheiro de métricas e a ausência do objectivo no output) e
+  `aos443_resumo_do_desfecho_test.go` (nó — terminal/0 com resumo servido pelo `GET /plans/{id}`).
+
 ### Critérios de Aceitação
 
-- [ ] Métricas do `aos-orq` legíveis pelo sensor: pedidos reclamados, desfechos por classe, duração
+- [x] Métricas do `aos-orq` legíveis pelo sensor: pedidos reclamados, desfechos por classe, duração
       por plano, retomas.
-- [ ] O desfecho reportado ao nó leva um resumo também em sucesso (nós, gerações, duração).
-- [ ] O output da drenagem legível sem root (ficheiro de log do `aos`, com rotação).
+- [x] O desfecho reportado ao nó leva um resumo também em sucesso (nós, gerações, duração).
+- [x] O output da drenagem legível sem root (ficheiro de log do `aos`, com rotação).
+- [ ] **Verificado em PRODUÇÃO:** depois da release, uma drenagem com um plano deixa
+      `/opt/aos/logs/drenar-planos.log` e `/opt/aos/logs/aos-orq-consume.prom` legíveis pelo `aos`,
+      sem o objectivo no log, e o `GET /plans/{id}` desse plano terminado com 0 traz o resumo.
+
+### Resíduos declarados
+
+1. **Um escritor de métricas de cada vez** é garantia de quem invoca (o `flock` do
+   `drenar-planos.sh` e o oneshot do systemd), não do `consume`. Um `consume` corrido à mão ao mesmo
+   tempo que a drenagem perde incrementos — conta a menos, nunca a mais.
+2. **O texto de um erro `generico` vai para o log da drenagem.** O `detail` só leva o tipo; mas um
+   erro que nenhum sentinela classifica é o que mais precisa de diagnóstico, e o texto dele sai no
+   stderr do `consume` — journal e `/opt/aos/logs/drenar-planos.log`, com retenção limitada
+   (6 × 5 MiB) e fora do alcance do `/dsar/erase`. Os erros com conteúdo do modelo conhecidos
+   (recusas do documento e do planeador) têm sentinela e não vão.
+3. **Os `node_id` que o modelo escolhe aparecem no log** (já apareciam no journal). A gramática do
+   `node_id` limita-os, mas não impede um nome pessoal.
+4. **Um `panic` no `consume` regista `resultado="ok"` nas métricas** (o `defer` não o distingue); o
+   código de saída do processo, que o `drenar-planos.sh` lê, apanha-o.
+5. **Nenhum teste executa a lógica bash.** Os testes Go fixam o contrato de nomes entre o ficheiro e
+   os scripts; a rotação, a cópia, a frescura e as mudanças de causa do alerta foram exercidas num
+   smoke local com `docker`/`systemctl`/`curl` falsos, que não está versionado.
+6. **Depois de um rollback da imagem**, o script novo drena com o binário antigo mas falha a
+   verificação das métricas (ruidoso, esperado), e o binário antigo volta a pôr o objectivo no log.
+   Declarado no README do servidor.
+7. **As falhas seguidas não voltam a zero sozinhas.** Depois de 3 falhas, o alerta mantém-se (com
+   lembrete diário) até um plano acabar terminal/0 — é verdade que os últimos falharam, mas numa
+   fila sem pedidos novos o operador não tem como o calar senão submetendo um plano.
+8. **O nome do volume** (`aos_aos-orq-data`) é o do projecto `aos` do compose, como no `backup.sh`;
+   outro nome de projecto exige `DRENAR_ORQ_VOLUME`.
+9. **Sobre `--nats` sem `--metrics-file` não há métricas** (não há WAL de onde derivar o caminho);
+   o `consume` di-lo no stderr. Produção usa `--wal`.
 
 ### Estado
 
-**ABERTO.**
+**PARCIAL** — entregue em código e testado; falta a verificação em produção (último critério).
 
 ---
 
@@ -5820,15 +5912,83 @@ O `handleReconstruct` lê o stream desde a seq 1, verifica o selo WORM e corre o
 reconstrução (`sovereign_replay.go:91-172`), depois de resolver a residência (`sovereignty.go:343-358`).
 Não há medição, teste de desempenho nem registo deste custo.
 
+### Medição em produção — a premissa não se confirma
+
+Em 2026-09-26, na v0.1.34, sobre o run `plan-e2e-442-1790377888~n1`, com `curl -w` a partir da rede
+`aos_default` e um token novo por chamada:
+
+| Leitura | HTTP | TTFB | Total | Corpo |
+|---|---|---|---|---|
+| `GET /runs/{id}` | 200 | 0,024 s | 0,024 s | 1222 B |
+| `GET /runs/{id}/trajectory` | 200 | 0,013 s | 1200,0 s (cortado pelo `--max-time 1200`) | 38558 B |
+| `GET /runs/{id}/reconstruct` | 200 | 0,042 s | 0,043 s | 2881 B (turnos reconstruídos, correctos) |
+
+Nó durante a medição: CPU 0,5 %, 200 MiB.
+
+**Causa do «não respondeu em mais de três minutos»: erro de medição, não defeito do nó.** O
+`/trajectory` é SSE ao vivo por desenho (AOS-167, `packages/cmd/aos/trajectory.go`: backfill e
+depois subscrição live — a ligação não fecha quando o backfill acaba). O script de pegadas que fez
+a medição original chamava o `/trajectory` ANTES do `/reconstruct`, ficou pendurado nele à espera
+de um fim que não vem, e nunca chegou ao `/reconstruct`. O minuto que se atribuiu ao
+`/reconstruct` era o SSE lido como um pedido que termina. Quem medir estas rotas com um script tem
+de dar ao `/trajectory` um `--max-time` curto (ou ler só o backfill) e não pôr nada depois dele à
+espera do seu fim.
+
+### Medição local — o que o handler gasta, troço a troço
+
+Feita antes de haver os números de produção, para confirmar ou refutar as suspeitas do ticket. Nó
+REAL (`Bootstrap`) com execução durável, soberania de leitura e a custódia Vault de produção
+(`vaultKeyVault`) contra um Transit falso que conta os pedidos; Event Store e WORM envolvidos em
+contadores; cada troço cronometrado isolado (média de 20 corridas) e o handler inteiro pelo wire.
+O instrumento de tempo foi descartável e não ficou no repositório; as contagens ficaram, no teste.
+
+| Cenário | selo D6 | motor | handler | ES lido | WORM | Vault |
+|---|---|---|---|---|---|---|
+| 2 turnos | 2,9 ms (1.ª escrita) | 1,0 ms | 3,8 ms | 2× / 4 ev. | 1 At + 1 Append | 2 decrypt |
+| 2 turnos + 300 runs e 5000 selos alheios | 0,61 ms | 0,78 ms | 2,4 ms | 2× / 4 ev. | 1 At + 1 Append | 2 decrypt |
+| 20 turnos | 0,65 ms | 5,5 ms | 7,6 ms | 2× / 40 ev. | 1 At + 1 Append | 20 decrypt |
+| 20 turnos, Vault a 5 ms por pedido | 0,62 ms | 126 ms | 121 ms | 2× / 40 ev. | 1 At + 1 Append | 20 decrypt |
+
+A residência (`At`) e a leitura do stream ficam abaixo da resolução do relógio (< 0,1 ms).
+
+1. **Varrer o Event Store/WORM inteiro — refutada.** O custo é igual num nó limpo e num nó com 300
+   runs e 5000 selos alheios; o ES lê só o stream do run e nunca enumera streams.
+2. **Verificar a hash-chain do WORM por pedido — refutada.** Zero `Read`/`Head` no WORM por pedido;
+   um `At` (residência) e um `Append` com fsync (selo D6).
+3. **Uma chamada ao Vault por evento — refutada.** Há um `transit/decrypt` por captura selada (cada
+   captura tem a sua DEK — envelope DEK/KEK de `audit.SealContent`), não por evento; o
+   `turn.recorded` não vai ao Vault. É o troço dominante e é linear nas capturas: inerente à cifra
+   por-titular com a KEK dentro do Vault (AOS-216), não um defeito.
+4. **Timeout ou espera fixa — refutada.** Dois turnos reconstroem em milissegundos.
+
+Observado e **não corrigido**: o handler lê o stream do run duas vezes por pedido (a porta de posse
+e, de novo, o motor desde a seq 1). Custa microssegundos (ES em memória) — não é patológico e não
+justifica mexer no read-path soberano.
+
+### O que se entregou
+
+- **Nenhuma alteração ao read-path.** A premissa foi refutada em produção; a leitura dupla não é
+  patológica.
+- `packages/cmd/aos/aos444_reconstrucao_custo_test.go` — guarda BARATA das suspeitas do ticket, por
+  CONTAGEM (sem tempo de parede): sobre o nó real com a custódia Vault, uma reconstrução lê só o
+  stream do run e nunca enumera streams, faz 1 `At` + 1 `Append` no WORM sem verificar a cadeia, e
+  pede ao Vault exactamente 1 `decrypt` por captura; e esse custo é igual num nó com 30 runs e 500
+  selos alheios. Mutação: acrescentar ao handler uma enumeração de streams e um `Head` no WORM ⇒
+  vermelho (`streams=1`, `head=1`).
+
 ### Critérios de Aceitação
 
-- [ ] Medição: onde vai o tempo (leitura do stream, verificação do WORM, reconstrução, residência).
-- [ ] Correcção do troço dominante, ou tecto declarado com o porquê.
-- [ ] Teste de desempenho que avermelha uma regressão.
+- [x] Medição: onde vai o tempo (leitura do stream, verificação do WORM, reconstrução, residência).
+      Em produção: 42 ms; localmente, por troço, acima.
+- [x] Correcção do troço dominante, ou tecto declarado com o porquê. Nada a corrigir: o troço
+      dominante (um `decrypt` por captura) é o tecto inerente à cifra por-titular, e custa
+      milissegundos.
+- [x] Teste de desempenho que avermelha uma regressão.
 
 ### Estado
 
-**ABERTO.**
+**FECHADO-REFUTADO** — a reconstrução responde em 42 ms em produção; os minutos eram o SSE ao vivo
+do `/trajectory`, lido pelo script de medição como um pedido que termina.
 
 ---
 
@@ -5987,15 +6147,51 @@ O que fica é uma inconsistência do registo: o `turn.recorded` marca a ausênci
 (`usage_ausente`, `turn.go:60-80`), e o `responseCapture` do replay grava números sem essa marca
 (`nondeterminism_capture.go:62-73`, `:360-368`) — um zero que não distingue «não medido» de «zero».
 
+### Causa — seguida até quem fornece o valor
+
+A captura **recebia** o consumo: o loop passa o MESMO `resp` ao `turn.recorded` e ao capturer
+(`loop.go`, `recordTurn` e `captureTurn`), e o `encodeResponse` copiava os números. O zero nascia
+depois. Em produção o capturer é composto com a cifra por-titular (`cmd/aos/bootstrap.go`,
+`replay.WithContentSealer`, AOS-093): a resposta inteira era selada no envelope e o `response` do
+evento reposto a `responseCapture{}`. Como os campos de consumo não têm `omitempty`, o que ia ao WAL
+era `"input_tokens":0,"output_tokens":0,"cost_micro_usd":0` — o valor-zero da struct, não uma
+medição. O mode 3 (`WithPayloadStore`, AOS-079) reconstruía o evento com a mesma forma. Os números
+reais estavam dentro do `sealed_content`, ilegíveis sem a chave.
+
+### Correcção
+
+- Fora do inline, o `response` do evento passa a levar **só o consumo** (`responseCapture.consumo`:
+  tokens, custo, `custo_nao_derivado`, `usage_ausente`) em vez do valor-zero; o conteúdo continua
+  selado ou no PayloadStore. Os mesmos números já estão em claro no `turn.recorded` do mesmo turno,
+  pelo que nada novo fica exposto ao crypto-shredding.
+- `usage_ausente` (`omitempty`) entra no `responseCapture` com o critério do `turn.recorded`
+  (`!Usage.Definido()`, AOS-336) e volta na descodificação como `Usage.Ausente` — a marca atravessa a
+  retoma.
+- Compatibilidade: um turno medido serializa os bytes de sempre (as goldens do gate `replay` não
+  mudam de digest); as capturas antigas, incluindo as seladas com o exterior a zeros, descodificam
+  como antes; o motor de replay continua a substituir o `response` pelo conteúdo decifrado ou
+  resolvido, e não lê o exterior.
+
 ### Critérios de Aceitação
 
-- [ ] O `replay.captured` leva o consumo medido ou uma marca explícita de não medido, nunca um zero
-      mudo.
-- [ ] Teste que avermelha um zero sem marca.
+- [x] O `replay.captured` leva o consumo medido ou uma marca explícita de não medido, nunca um zero
+      mudo — nos três modos de escrita (inline, selado, mode 3).
+- [x] Teste que avermelha um zero sem marca (`aos448_consumo_na_captura_test.go`,
+      `TestAOS448_CapturaNuncaGravaZeroMudo`; reposto o comportamento anterior, os casos `selado` e
+      `mode3` falham com os bytes medidos em produção).
+
+### Resíduos declarados
+
+1. **As capturas já gravadas não mudam.** O log é append-only: os `replay.captured` selados até esta
+   correcção continuam com o exterior a zeros, e para eles o consumo lê-se no `turn.recorded`.
+2. **O `final` exterior continua a ser o valor-zero** num evento selado ou de mode 3. Não é consumo
+   e fica fora do âmbito; o `turn.recorded` tem-no.
+3. **`cost_micro_usd: 0` com tokens medidos e sem marca** fica como no `turn.recorded`: o custo sem
+   preço é o eixo do AOS-406 (`custo_nao_derivado`), não deste ticket.
 
 ### Estado
 
-**ABERTO.**
+**FEITO** — por verificar em produção no primeiro run depois da release que o leve.
 
 ---
 

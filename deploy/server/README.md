@@ -618,8 +618,8 @@ limita é o **nó**:
 |---|---|---|
 | O **mandato** | assinado **uma vez** na máquina do humano, com a chave **dele** | fixa humano, board, agente, classe, política, escopo, TTL máximo e janela (≤ 90 dias) |
 | `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | servidor, a cada 15 min | `aos-issuer mint-mandated` com a chave `aos-issuer-auto` no Vault transit; escreve `/opt/aos/nhi/nhi-run.jwt` (45 min) |
-| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim |
-| `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado **ou parado**, nenhuma drenagem bem-sucedida há 5 h |
+| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim; deixa o log e as métricas em `/opt/aos/logs` (AOS-443) |
+| `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado **ou parado**, nenhuma drenagem bem-sucedida há 5 h — e **3 desfechos de plano seguidos** falhados (AOS-443); volta a avisar quando o conjunto de causas muda |
 
 > ⚠️ **O que o mandato protege, e o que não.** Quem comprometer o **emissor** — o contentor, o
 > token do Vault, a chave transit — só cunha o que o humano assinou: o nó recusa o resto
@@ -677,9 +677,53 @@ bash /opt/aos/alerta-nhi.sh --teste
 
 Os serviços não têm `Restart`: uma falha fica em `systemctl --failed`, que o sensor lê.
 
+**Ver o que a drenagem fez, SEM ROOT (AOS-443).** O journal do sistema não é legível pelo `aos`;
+cada drenagem escreve também em `/opt/aos/logs/` (do `aos`, `0750`):
+
+| Ficheiro | O que tem |
+|---|---|
+| `drenar-planos.log` (+ `.1` … `.5`) | tudo o que a drenagem e o `consume` escrevem, com carimbo UTC. **Roda-o o próprio script** — sem logrotate, que exigiria root — quando passa de `DRENAR_LOG_MAX_BYTES` (5 MiB), guardando `DRENAR_LOG_GERACOES` (5) gerações |
+| `aos-orq-consume.prom` | as métricas do `consume` em formato de texto Prometheus, **acumuladas** entre drenagens; o original vive no volume (`/var/lib/aos-orq/aos-orq-consume.prom`) e a drenagem copia-o para aqui no fim — e **falha** se ele não for desta drenagem |
+
+```bash
+grep 'desfecho:' /opt/aos/logs/drenar-planos.log | tail      # desfecho: run=… codigo=0 classe=terminal origem=documento geracao=2 nos=3 duracao_s=41.207
+grep -v '^#' /opt/aos/logs/aos-orq-consume.prom              # contadores: reclamados, retomas, origem, desfechos por classe e código, duração
+```
+
+As séries: `aos_orq_consume_drenagens_total{resultado}`, `…_pedidos_reclamados_total`,
+`…_retomas_total` (geração > 1), `…_origem_total{origem=decomposicao|documento|reverificacao|sem_serve}`,
+`…_desfechos_total{classe,codigo}`, `…_desfechos_nao_reportados_total`,
+`…_plano_duracao_segundos_{sum,count}{classe}`, e os gauges `…_falhas_consecutivas` (o que o
+`alerta-nhi.sh` lê), `…_ultima_drenagem_timestamp_seconds` e `…_ultima_drenagem_pedidos`. **Não
+levam identificador nenhum** — nem `run_id` nem objectivo. O log leva ids (run, nós, plano),
+códigos, hashes e durações, e **não leva o objectivo** do pedido: o `consume` imprime só
+`objectivo_bytes=N`, porque um ficheiro em claro não é alcançado pelo `/dsar/erase`. Os `node_id`
+que o modelo escolhe aparecem no log (como já apareciam no journal).
+
+`falhas_consecutivas` sobe com os genéricos (1), os de posse/WAL (3, 4, 5) e os terminais ≠ 0 —
+incluindo o 7, que tanto é uma recusa humana como um plano perdido; volta a 0 num terminal/0; e
+**não se mexe** com `aguarda_humano` nem com o 8 (nós em voo: o plano é mais longo do que o prazo, e
+a drenagem seguinte retoma-o). O `alerta-nhi.sh` avisa a partir de 3 com o título «AOS: planos da
+fila em ALERTA», e volta a avisar se, com o alerta disparado, o **conjunto** de causas mudar (um
+NHI a caducar por cima dos planos a falhar, por exemplo).
+
+O mesmo resumo chega ao nó no `detail` do desfecho — **também em sucesso** —, e é o que o
+`GET /plans/{id}` passa a mostrar num plano terminado: `resumo: origem=… geracao=… nos=… duracao_s=…`,
+com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentinela
+(`nos_em_voo`, `decisao_recusada`, `documento_recusado`, `plano_recusado_pelo_planeador`, … ou
+`generico`) e **nunca o texto do erro**, que pode citar conteúdo escrito pelo modelo. O texto de um
+`generico` vai só para o log da drenagem, para diagnóstico.
+
+> ⚠️ **Rollback da imagem.** O deploy sincroniza os scripts ANTES de trocar a imagem, e o
+> `rollback.sh` repõe a imagem sem repor os scripts. Com uma imagem anterior ao AOS-443, o
+> `drenar-planos.sh` novo **drena na mesma** (não passa flags novas ao `consume`), mas a
+> verificação das métricas falha — «as métricas … não são desta drenagem» — e a unidade fica
+> `failed`, o que o `alerta-nhi.sh` avisa. É ruído esperado até se voltar a uma imagem com o
+> AOS-443; e essa imagem antiga volta a pôr o objectivo do pedido no log (`objectivo="…"`).
+
 **Um pedido da fila que fica à espera de humano (AOS-442).** O `consume` guarda o documento de cada
 plano validado em `/var/lib/aos-orq/planos/<sha256 do run_id>.plan.json` (no volume do `aos-orq`;
-a linha `origem do plano:` do journal do `aos-drenar-planos` diz o caminho, e
+a linha `origem do plano:` de `/opt/aos/logs/drenar-planos.log` diz o caminho, e
 `printf %s '<run>' | sha256sum` também). O ficheiro é apagado quando o pedido fecha; até lá é uma
 cópia em claro do organigrama que um `/dsar/erase` não alcança. Um plano de risco fica
 `aguarda_humano` no `GET /plans/{id}`; a cerimónia é a de cima, sobre o WAL e o documento do

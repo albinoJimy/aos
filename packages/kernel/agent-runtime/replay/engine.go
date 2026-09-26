@@ -179,7 +179,8 @@ type ReplayEngine struct {
 	reader EventReader
 	tracer agentruntime.Tracer
 	// payloadStore/accessor resolvem as referências de content-capture mode 3
-	// (AOS-079): quando um evento "replay.captured" é referência-só, o motor lê o
+	// (AOS-079): quando um evento "replay.captured" é de referência (sem conteúdo, só com o
+	// resumo de consumo do turno — AOS-448), o motor lê o
 	// payload completo do store externo IMPONDO o IAM (accessor autorizado). É só um
 	// LEITOR de payloads — não é caminho de efeito ao vivo (o store devolve bytes
 	// gravados, tal como o EventReader devolve eventos gravados). nil ⇒ só resolve
@@ -283,7 +284,8 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 			if err := json.Unmarshal(ev.Payload, &p); err != nil {
 				return trajectory{}, ErrCorruptCapture
 			}
-			// MODE 3 (AOS-079): evento referência-só ⇒ resolver o payload completo no
+			// MODE 3 (AOS-079): evento de referência (sem conteúdo; o `response` só leva o
+			// resumo de consumo, AOS-448, que aqui não se lê) ⇒ resolver o payload completo no
 			// PayloadStore externo (impondo o IAM). Fail-closed em qualquer falha.
 			if p.PayloadRef != "" {
 				resolved, err := e.resolvePayload(ctx, p)
@@ -313,7 +315,8 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 	return tr, nil
 }
 
-// resolvePayload resolve um evento de captura mode 3 (referência-só) para o seu
+// resolvePayload resolve um evento de captura mode 3 (referência sem conteúdo, com o resumo
+// de consumo do turno — AOS-448 — que o payload resolvido substitui por inteiro) para o seu
 // payload completo, lendo-o do [PayloadStore] externo com o accessor AUTORIZADO. É
 // fail-closed:
 //   - sem PayloadStore ligado ⇒ [ErrPayloadStoreRequired] (a ref é irrecuperável);

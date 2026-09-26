@@ -70,6 +70,41 @@ type responseCapture struct {
 	// emitir custo zero como se fosse gratuito. `omitempty` mantém os bytes de uma resposta com
 	// preço — nenhuma captura existente muda de digest.
 	CustoNaoDerivado bool `json:"custo_nao_derivado,omitempty"`
+	// UsageAusente (AOS-448) marca que o turno NÃO FOI MEDIDO: `input_tokens`/`output_tokens`
+	// acima não são uma leitura de zero, são a ausência de leitura. É a MESMA marca, com o MESMO
+	// critério ([agentruntime.Usage.Definido]), que o `turn.recorded` grava desde o AOS-336 — sem
+	// ela a captura era o único dos dois registos do turno a dizer «zero» onde o outro diz «não
+	// medido». `omitempty` mantém os bytes de um turno medido: nenhuma golden muda de digest, e
+	// uma captura antiga (sem o campo) descodifica exactamente como antes.
+	UsageAusente bool `json:"usage_ausente,omitempty"`
+}
+
+// consumo devolve SÓ a medição do turno — tokens, custo e as duas marcas que os qualificam —,
+// sem nenhum conteúdo (texto, tool calls). É o que fica EM CLARO no evento quando o conteúdo sai
+// dele: selado por-titular (AOS-093) ou movido para o PayloadStore (mode 3, AOS-079).
+//
+// # PORQUE (AOS-448, medido em produção)
+//
+// Nesses dois modos o `response` do evento era reposto a `responseCapture{}`, e como os campos de
+// consumo não têm `omitempty` o evento gravava `"input_tokens":0,"output_tokens":0` para um turno
+// que consumira 434+1523 tokens: a captura RECEBIA o usage (o mesmo `resp` que o `turn.recorded`
+// grava, `loop.go`), selava-o correctamente dentro do envelope, e o que ficava à vista era o zero
+// do valor-zero da struct — um zero que não distingue «não medido» de «zero» nem de «está no
+// envelope». Preservar a medição corrige a causa; a marca `usage_ausente` fica para quando de
+// facto não houve medição.
+//
+// NÃO é conteúdo nem abre nada novo ao crypto-shredding: os mesmos números estão em claro no
+// `turn.recorded` do mesmo turno, no mesmo stream. O `final` não é copiado — o âmbito é o consumo.
+// Nenhum leitor do replay depende disto: [ReplayEngine] substitui o `response` inteiro pelo
+// conteúdo decifrado ou resolvido ([resolveSealed], [resolvePayload]).
+func (r responseCapture) consumo() responseCapture {
+	return responseCapture{
+		InputTokens:      r.InputTokens,
+		OutputTokens:     r.OutputTokens,
+		CostMicroUSD:     r.CostMicroUSD,
+		CustoNaoDerivado: r.CustoNaoDerivado,
+		UsageAusente:     r.UsageAusente,
+	}
 }
 
 // toolResultCapture serializa o resultado observado de UMA tool call.
@@ -105,7 +140,8 @@ type toolResultCapture struct {
 //
 // Em mode 3 ([WithPayloadStore]) o payload COMPLETO (Response + ToolResults) migra
 // para o [PayloadStore] externo e o evento do Event Store carrega APENAS a
-// [PayloadRef] (PayloadRef != "", Response/ToolResults zero) — fica pequeno e fora
+// [PayloadRef] (PayloadRef != "", ToolResults vazio, Response só com o consumo —
+// AOS-448) — fica pequeno e fora
 // do caminho quente. O replay resolve a referência via o PayloadStore (com o
 // accessor autorizado) para reconstruir o payload. Sem a opção, o comportamento de
 // AOS-016 (inline: PayloadRef == "", omitido) é byte-idêntico.
@@ -116,12 +152,14 @@ type capturePayload struct {
 	ToolResults        []toolResultCapture `json:"tool_results,omitempty"`
 	ObservedAtUnixNano int64               `json:"observed_at_unix_nano"`
 	// PayloadRef, se != "", indica MODE 3: o payload completo reside no PayloadStore
-	// externo sob o seu próprio IAM; este evento é referência-só. Omitido (omitempty)
+	// externo sob o seu próprio IAM; este evento é uma referência sem conteúdo, com o resumo
+	// de consumo do turno no `response` (AOS-448). Omitido (omitempty)
 	// em mode inline ⇒ os bytes do evento AOS-016 mantêm-se inalterados.
 	PayloadRef string `json:"payload_ref,omitempty"`
 	// SealedContent, se != nil, CIFRA por-titular (envelope DEK/KEK, AOS-093) o
 	// conteúdo não-determinístico do turno (a [sealedContent]: resposta do modelo +
-	// resultados de tools). Quando presente, Response/ToolResults ficam VAZIOS — o
+	// resultados de tools). Quando presente, ToolResults fica VAZIO e Response só leva
+	// o consumo ([responseCapture.consumo], AOS-448) — o
 	// texto-claro NUNCA toca o WAL. Destruir a KEK do titular no crypto-shredding
 	// torna este blob irrecuperável, sem mutar o evento. Omitido ⇒ comportamento
 	// AOS-016 (inline em claro), byte-idêntico.
@@ -286,8 +324,8 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 
 	// CIFRA POR-TITULAR (AOS-093): antes de qualquer persistência, o conteúdo
 	// não-determinístico (resposta do modelo + resultados de tools) é cifrado por
-	// envelope DEK/KEK sob a KEK do TITULAR do run. Response/ToolResults ficam VAZIOS
-	// no evento — o texto-claro nunca toca o WAL nem, adiante, o PayloadStore de mode 3.
+	// envelope DEK/KEK sob a KEK do TITULAR do run. ToolResults fica VAZIO e Response só
+	// leva o consumo (AOS-448) no evento — o texto-claro nunca toca o WAL nem, adiante, o PayloadStore de mode 3.
 	// FAIL-CLOSED: um erro de cifra aborta a captura (nunca se cai para texto-claro).
 	if c.sealer != nil && tc.Subject != "" {
 		inner, err := json.Marshal(sealedContent{
@@ -302,7 +340,7 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 		if err != nil {
 			return err
 		}
-		payload.Response = responseCapture{}
+		payload.Response = payload.Response.consumo() // AOS-448: a medição fica, o conteúdo não
 		payload.ToolResults = nil
 		payload.LeadingCorrection = nil
 		payload.SealedContent = sealed
@@ -310,7 +348,8 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 	}
 
 	// MODE 3 (AOS-079): o payload completo migra para o PayloadStore externo e o
-	// evento do ES fica referência-só. O payload externo já leva a redação aplicada
+	// evento do ES fica uma referência sem conteúdo (só com o resumo de consumo, AOS-448). O
+	// payload externo já leva a redação aplicada
 	// (encodeResponse/encodeResults acima) — a PII nunca sai em claro para o store.
 	if c.payloadStore != nil {
 		full, err := json.Marshal(payload)
@@ -329,10 +368,12 @@ func (c *EventStoreCapturer) Capture(ctx context.Context, tc agentruntime.TurnCa
 			// referência pendurada (o replay ficaria inadmissível).
 			return err
 		}
-		// O evento do ES fica PEQUENO: só schema/turn/relógio + a referência opaca.
+		// O evento do ES fica PEQUENO: só schema/turn/relógio + a referência opaca, e a
+		// medição do turno (AOS-448) — sem ela o evento gravava zero tokens para um turno medido.
 		payload = capturePayload{
 			SchemaVersion:      captureSchemaVersion,
 			Turn:               tc.Turn,
+			Response:           payload.Response.consumo(),
 			ObservedAtUnixNano: observedAt,
 			PayloadRef:         ref.Digest,
 		}
@@ -367,6 +408,8 @@ func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) respon
 		OutputTokens:     r.Usage.OutputTokens,
 		CostMicroUSD:     r.CostMicroUSD,
 		CustoNaoDerivado: r.CustoNaoDerivado,
+		// AOS-448: o mesmo critério do `turn.recorded` (turn.go, AOS-336).
+		UsageAusente: !r.Usage.Definido(),
 	}
 	if c.sensitive && rc.Text != "" {
 		// NUNCA persistir o texto do modelo em claro em modo sensível — pode ecoar PII.
@@ -438,10 +481,13 @@ func (c *EventStoreCapturer) encodeResults(results []agentruntime.CapturedToolRe
 // decode reconstrói o [agentruntime.ModelResponse] a partir do registo canónico —
 // o cliente de modelo de replay devolve exactamente esta resposta (nunca ao vivo).
 func (r responseCapture) decode() agentruntime.ModelResponse {
+	// Usage.Ausente (AOS-448): a marca atravessa a retoma. Uma captura anterior ao campo
+	// descodifica Ausente=false — o comportamento de sempre, e [agentruntime.Usage.Definido]
+	// continua a apanhar o zero pelo `InputTokens > 0`.
 	resp := agentruntime.ModelResponse{
 		Text:             r.Text,
 		Final:            r.Final,
-		Usage:            agentruntime.Usage{InputTokens: r.InputTokens, OutputTokens: r.OutputTokens},
+		Usage:            agentruntime.Usage{InputTokens: r.InputTokens, OutputTokens: r.OutputTokens, Ausente: r.UsageAusente},
 		CostMicroUSD:     r.CostMicroUSD,
 		CustoNaoDerivado: r.CustoNaoDerivado,
 	}
