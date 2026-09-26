@@ -9,6 +9,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/aos-ref/control-plane/orchestrator"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/control-plane/orchestrator/plannerevents"
 )
@@ -159,11 +160,18 @@ type LeafNode struct {
 	Capabilities []string
 }
 
-// LeafAdmitter é a PORTA de admissão de um nó-folha no DAG (AOS-025). Ligada pelo
-// wiring a *orchestrator.GraphBuilder (ver adapters.go): AdmitLeaf produz
-// task.node.created.
+// LeafAdmitter é a PORTA de admissão no DAG (AOS-025): os nós (AdmitLeaf produz
+// task.node.created) E as arestas de dependência entre eles (AdmitEdge produz
+// task.edge.added; To depende de From). Ligada pelo wiring a *orchestrator.GraphBuilder
+// (ver adapters.go).
+//
+// As duas metades vivem na MESMA porta de propósito: o contrato do grafo não põe as
+// dependências no `task.node.created` (não há campo Deps), pelo que um wiring capaz de
+// admitir nós sem arestas deixaria o grafo durável a afirmar que o plano não tem
+// dependências — foi o que o E2E de 2026-09-15 mediu.
 type LeafAdmitter interface {
 	AdmitLeaf(ctx context.Context, node LeafNode) error
+	AdmitEdge(ctx context.Context, from, to string) error
 }
 
 // O EFEITO DE SPAWN SAIU DA MATERIALIZAÇÃO (AOS-390, ADR-024). A porta `Spawner` e o
@@ -285,17 +293,56 @@ type plannedNode struct {
 	caps []string
 }
 
+// planEdge é uma aresta de precedência do plano: `to` depende de `from`.
+type planEdge struct{ from, to string }
+
+// planEdges deriva as arestas de entrada de cada nó — `depends_on` E as origens das
+// arestas condicionais, pela MESMA união que o validador AOS-231 admite no seu DAG
+// ([plan.Node.IncomingEdges]) — em ordem canónica (nós por node_id, origens ordenadas,
+// sem duplicados), e confirma-as num DAG em memória antes de qualquer efeito.
+//
+// A admissão AOS-231 já recusa ciclos e referências soltas; esta confirmação é a segunda
+// linha, para documentos que cheguem por outra porta (replan, migração, edição no gate).
+// Sem ela, uma aresta inválida só seria descoberta na FASE 2, com os nós já duráveis e o
+// grafo a dizer que eram independentes. Fail-closed: [ErrInvalidRequest], com o sentinela
+// do DAG ([orchestrator.ErrEdgeClosesCycle] / [orchestrator.ErrNodeNotFound]) preservado.
+func planEdges(order []plan.Node) ([]planEdge, error) {
+	dag := orchestrator.NewDAG("planmaterialize")
+	for _, n := range order {
+		if err := dag.AddNode(orchestrator.NodeSpec{TaskID: n.NodeID}); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidRequest, err)
+		}
+	}
+	var edges []planEdge
+	for _, n := range order {
+		froms := append([]string(nil), n.IncomingEdges()...)
+		sort.Strings(froms)
+		for i, from := range froms {
+			if i > 0 && from == froms[i-1] {
+				continue
+			}
+			if err := dag.AddEdge(from, n.NodeID); err != nil {
+				return nil, fmt.Errorf("%w: aresta %s→%s: %w", ErrInvalidRequest, from, n.NodeID, err)
+			}
+			edges = append(edges, planEdge{from: from, to: n.NodeID})
+		}
+	}
+	return edges, nil
+}
+
 // Materialize materializa o documento APROVADO, DETERMINISTICAMENTE (§3.6):
 //
 //  1. valida o pedido e ordena os nós por node_id (ordem canónica, independente da
-//     ordem do slice — o mesmo documento produz sempre a mesma sequência);
+//     ordem do slice — o mesmo documento produz sempre a mesma sequência) e confirma as
+//     arestas do plano (sem ciclo, sem origem fora do plano — [planEdges]);
 //  2. classifica cada nó (folha vs papel) e calcula a autoridade CLAMPADA às suas
 //     tools;
 //  3. FASE 1 — admissão global de TODOS os nós (AOS-027/028). Uma negação aborta
 //     fail-closed ANTES de qualquer efeito (zero materialização parcial);
 //  4. FASE 2 — ADMITE cada nó no DAG como PENDENTE ([LeafAdmitter], task.node.created):
-//     a folha com a sua tool call, o papel-que-expande SEM tool (placeholder). NÃO
-//     produz efeito — o spawn do papel e o arranque da folha são do despacho governado
+//     a folha com a sua tool call, o papel-que-expande SEM tool (placeholder); depois
+//     admite as arestas de dependência (task.edge.added). NÃO produz efeito — o spawn do
+//     papel e o arranque da folha são do despacho governado
 //     (plandispatch.Dispatcher/DispatchSink), disparados por elegibilidade (ADR-024);
 //  5. apensa `plan.materialized` com o mapa node_id → materialização (kind + autoridade
 //     clampada), a fonte de verdade que o sink lê para spawnar.
@@ -325,6 +372,12 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 			return empty, fmt.Errorf("%w: node_id duplicado %q", ErrInvalidRequest, n.NodeID)
 		}
 		seen[n.NodeID] = struct{}{}
+	}
+
+	// Arestas do plano, confirmadas ANTES de qualquer efeito (ver [planEdges]).
+	edges, err := planEdges(order)
+	if err != nil {
+		return empty, err
 	}
 
 	// NOTA (AOS-390, ADR-024): a materialização é ADMISSÃO-PURA e NÃO lê `conditional_on`
@@ -406,6 +459,19 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 			return empty, fmt.Errorf("planmaterialize: admitir nó %q (%s): %w", p.node.NodeID, p.kind, err)
 		}
 		matNodes = append(matNodes, plannerevents.MaterializedNode{NodeID: p.node.NodeID, Kind: p.kind, Tools: p.caps})
+	}
+
+	// As DEPENDÊNCIAS, depois de todos os nós (uma aresta exige as duas pontas). Também são
+	// admissão — ordenação, não efeito (ADR-024 §2). É o `task.edge.added` que as torna
+	// duráveis: `plan.materialized` não as carrega e `task.node.created` não tem campo de
+	// dependências, pelo que sem estes factos o grafo que um dono seguinte re-hidrata (e o
+	// `inspect` lê) diria que os nós são independentes. A porta de produção
+	// (GraphBuilder.AddEdge) volta a impor a aciclicidade contra o grafo DURÁVEL da posse e
+	// regista `task.edge.rejected_cycle` se recusar.
+	for _, e := range edges {
+		if err := m.leaf.AdmitEdge(ctx, e.from, e.to); err != nil {
+			return empty, fmt.Errorf("planmaterialize: admitir aresta %s→%s: %w", e.from, e.to, err)
+		}
 	}
 
 	payload := plannerevents.MaterializedPayload{

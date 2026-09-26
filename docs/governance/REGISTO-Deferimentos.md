@@ -254,6 +254,7 @@ isolamento e credenciais · **8xx** wiring diferido · **9xx** helpers determini
 | DEF-910 | DOCUMENTAL | analises/10_Auditoria_ORQ_SCH_PDP_Adversarial.md | **O lock do dispatcher do SCH é mantido através do CAS durável da admissão.** `priority.go:Dispatch` mantinha `d.mu` durante o laço de candidatos, que chama `Admit` — e este faz `Read` do stream inteiro mais `Append` com `WithExpectedSeq`, em laço de retry. Medido sobre o substrato durável real: `Submit` bloqueado 25,4 ms a N=30 e 83,7 ms a N=100, LINEAR em N. O sinal estava invertido — quanto mais saturado, menos trabalho novo conseguia ENTRAR. **FECHADO por AOS-420 (2026-09-20):** o lock passou a cobrir só o índice de candidatos — snapshot ordenado sob o lock (candidatos copiados POR VALOR), `Admit` FORA dele, materialização sob o lock com RECONFIRMAÇÃO da pendência da tarefa. Provado nas duas direcções: um `Submit` concorrente bloqueava indefinidamente antes e completa depois; e N despachantes concorrentes sobre M tarefas dão M despachos distintos, zero duplicados, zero perdidos, sob `-race`. **Residual:** a reserva de um candidato que perde a corrida de materialização NÃO é devolvida — é correcto porque o `RequestID` deriva do `task_id` e a reserva do vencedor é a MESMA por idempotência de `step_id`, mas depende de o `AdmissionGate` honrar esse contrato; um gate que o ignore fica com reserva órfã. LATENTE como antes: o módulo continua fora do grafo de build de binário nenhum (ADR-018/023), pelo que a correcção está medida em teste e não em produção | AOS-420 | Arquitecto de Plataforma | FECHADO por AOS-420. Reabrir se o escalonador for composto num processo e a medição em produção divergir do teste, ou se for acoplado um `AdmissionGate` que não honre a idempotência por `RequestID` (nesse caso a reserva do despacho perdido tem de passar a ser devolvida) | FECHADO-RESIDUAL |
 | DEF-911 | DOCUMENTAL | analises/10_Auditoria_ORQ_SCH_PDP_Adversarial.md | **Cada admissão relê o stream do bucket desde a seq 1.** `admission.go` fazia `log.Read(ctx, bucketID, 1)` DENTRO do laço de CAS, sem `fromSeq` avançado, snapshot ou compactação: O(N) por decisão e O(N²) acumulado, no stream mais quente do sistema (partilhado por todos os tenants de um `provider:model:region`). Medido: 99,5 eventos lidos por admissão nas primeiras 200 e 699,5 nas 601-800. A `Window` limitava quais as reservas que CONTAVAM, não quais os eventos que eram LIDOS. **FECHADO por AOS-420 (2026-09-20):** `foldBucket` passou a ler a partir de uma FRONTEIRA por bucket, o par `(fromSeq, atNano)` onde `fromSeq` é o menor seq entre as reservas que ainda contam — derivada da fronteira da janela e das reconciliações, como o gatilho pedia. Não é compactação nem snapshot: o stream não é tocado e `Replay`/`ReplayAudit` continuam a lê-lo INTEIRO (asseverado nos testes). Medido com CONTAGEM DE EVENTOS e não com tempo de relógio: a admissão nº 400 lia 399 eventos (janela deslizante de 60) e 798 (reservas integralmente reconciliadas); passa a ler dentro de tectos constantes. **Residual:** a fronteira é estado em memória e por isso uma PISTA, não fonte de verdade — perdê-la só faz reler desde 1, e um relógio que ande para trás descarta-a (fail-safe). LATENTE como antes, pela mesma razão que DEF-910 | AOS-420 | Arquitecto de Plataforma | FECHADO por AOS-420. Reabrir se um bucket passar a ter mais reservas ACTIVAS dentro da janela do que cabe numa leitura — aí a fronteira deixa de bastar e a decisão volta a ser entre snapshot e compactação por bucket, que continuam fora de âmbito | FECHADO-RESIDUAL |
 | DEF-912 | DOCUMENTAL | scripts/ci/rtm-regenerate.py | **Um número de ticket atribuído noutro ramo suspende a guarda de contiguidade sobre esse número.** `ATRIBUIDOS_NOUTRO_RAMO` contém `AOS-317`, aberto em `claude/exciting-maxwell-aec36d` (`0e5966c`, 2026-09-04) no mesmo dia em que esta sessão abriu o seu — dois tickets, um número; o desta foi renumerado para AOS-319. Enquanto a entrada existir, a guarda de contiguidade do backlog **e** a expansão de gamas da §6 deixam de proteger o 317: se ele for apagado ou renumerado nesse ramo, nada o detecta aqui. **A decisão fica para o merge, e é binária:** (a) o ramo é fundido ⇒ o AOS-317 entra no corpus e a linha SAI, sem custo; (b) o ramo é abandonado ⇒ o 317 fica **queimado** — número atribuído a trabalho que nunca entrou — e a escolha é entre deixá-lo queimado (a numeração é append-only, e o corpus já trata IDs como não-recicláveis) ou reatribuí-lo, o que exige confirmar que nenhum documento, commit ou PR o cita com o sentido antigo. **Recomendação, se se chegar a (b): deixar queimado** e registar aqui a razão — reciclar um ID é a classe de defeito que o `_BRIEF` §9 e o próprio README dos ADRs proíbem por escrito, e o custo de um número perdido é menor do que o de uma referência ambígua. Em qualquer dos casos a linha tem de sair: se ficar depois do merge, protege um número que já não precisa de protecção e esconde a próxima colisão. | AOS-319 | Arquitecto de Plataforma | Merge ou abandono de `claude/exciting-maxwell-aec36d`; a entrada sai nesse momento, com a alínea aplicada escrita aqui | ABERTO |
+| DEF-913 | DOCUMENTAL | docs/adr/ADR-024-despacho-governado-move-efeito.md | **Um dono seguinte não retoma o despacho de um run.** MEDIDO no E2E manual de 2026-09-15 (`aos-orq` sobre `--wal`, plano com `analise` a depender de `recolha`): depois de `serve --goal … --release` despachar `recolha`, um segundo `serve` sobre o mesmo run re-hidrata os 2 nós e **não despacha nada** — o despacho só é composto dentro do pipeline `--goal` (`decomporEMaterializar` → `composeEDespachar`) — e um `serve --goal` repetido aborta na materialização com `nó já existe no grafo`. O `analise` fica pendente para sempre: fail-closed, nunca fora de ordem. Faltam duas peças: (1) uma via de `serve` que componha o despacho sobre um run JÁ materializado; (2) uma fonte DURÁVEL do plano despachável — `plandispatch.PlanFrom` lê `depends_on`, `conditional_on` e `risk_class` do `PlanDocument` EM MEMÓRIA, o `plan.materialized` não os carrega e o caminho `--goal` não apensa `plan.proposed`. As ARESTAS passaram a ser duráveis (`task.edge.added` na materialização, correcção que acompanha esta linha: antes o log não tinha nenhuma e o `inspect` ordenava `analise,recolha`), mas o grafo une os dois canais de aresta e não guarda os predicados nem o risco, pelo que não substitui o documento. O runbook `PROC-DESPACHO-MULTIPROC` afirmava que o despacho retomava após a morte de uma réplica e foi corrigido na mesma passagem. Fundamentação e ticket em falta em N-DEF-913 | POR ATRIBUIR | Arquitecto de Plataforma | Um ticket que componha a retoma do despacho sob um dono seguinte (via de `serve` sem `--goal` + plano despachável reconstruído do log), provada com dois processos reais: o primeiro larga ou perde a posse com `recolha` a correr e o segundo só despacha `analise` depois de `recolha` concluir | ABERTO |
 
 
 ### 3.1 Contagens declaradas por par (a verificação 1b lê-as)
@@ -916,6 +917,59 @@ AOS-100 replicação, AOS-101 backup, AOS-102 DR, AOS-103 microVMs, AOS-104/105/
 alertas e runbooks, AOS-107 escala, AOS-108 hipercare. AOS-168 entregou o **empacotamento**
 (distroless/non-root/read-only, binário zero-dep, SBOM gerado) e AOS-187 ligou os gates
 `package`/`sbom` à CI — nenhum dos dois assina a imagem.
+
+### N-DEF-913 — cobre DEF-913 — **TICKET POR CRIAR**
+
+O achado é de **2026-09-15**, do E2E manual do `aos-orq` (`--goal` + fixture com `analise` a
+depender de `recolha`). Nasceu de uma pergunta mais estreita — «um segundo dono pode despachar
+`analise` antes de `recolha`?» — cuja resposta é **não, mas pela razão errada**: não é o grafo
+que o impede, é não haver via nenhuma de despacho num dono seguinte.
+
+**O que se sabe, medido.**
+
+- `serve` sem `--goal` sobre um run já materializado: re-hidrata o grafo, não compõe o
+  Dispatcher, sai com exit 0. Nada despacha.
+- `serve --goal` repetido sobre o mesmo run: o Planner decompõe outra vez e a materialização
+  aborta com `nó já existe no grafo` antes do despacho.
+- O `plandispatch.PlanFrom` projecta o plano despachável a partir de `plan.materialized` **e do
+  `PlanDocument`**. O documento vem da memória do processo que decompôs. Não há, no log do run
+  ou do plano, nada de onde um dono seguinte o reconstrua: `plan.materialized` traz só
+  `node_id`/`kind`/autoridade, e o caminho `--goal` não apensa `plan.proposed`.
+- Até à correcção que acompanha esta nota, **as arestas também não eram duráveis**: o log tinha
+  `task.node.created` ×2 e zero `task.edge.added`, e o `inspect` imprimia `ordem=analise,recolha`.
+  Essa metade está fechada — a materialização admite `depends_on` e as origens de
+  `conditional_on` como `task.edge.added`, com rejeição de ciclo antes de qualquer efeito.
+
+**Porque o grafo re-hidratado não chega.** O DAG une os dois canais de aresta (como o DAG de
+admissão do AOS-231 faz): uma aresta `task.edge.added` não diz se é `depends_on` ou
+`conditional_on`, e não guarda os predicados da condição nem o `risk_class` que decide o cartão.
+Despachar a partir só do grafo trataria uma aresta condicional como dependência incondicional —
+o que perderia a poda `branch_not_taken` do ADR-022 §2.1 em silêncio. O documento aprovado é
+necessário.
+
+**Porque não aponta para AOS-390 nem para AOS-392.** O AOS-390 compôs o despacho e está fundido;
+citá-lo como eixo repetiria o defeito que o DEF-274 documentou (eixo num ticket fechado). O
+AOS-392 é a prova multi-processo de que **só o dono** despacha — tem os critérios marcados e não
+cobre a retoma; o seu runbook afirmava-a, e foi corrigido.
+
+**Ticket necessário — «Retomar o despacho governado num dono seguinte do run».** Epic sugerido:
+EPIC-19 (o despacho), com dependência de AOS-390 e AOS-281; a prova sob N réplicas reutiliza a
+topologia do AOS-392.
+
+- Apensar o documento aprovado (ou uma projecção suficiente: `depends_on`, `conditional_on` com
+  predicados, `risk_class`) num facto durável do stream do plano, sob a posse, no momento da
+  materialização.
+- Uma via de `serve` que, num run já materializado, reconstrua o plano despachável desse facto e
+  componha `composeEDespachar` — sem voltar a decompor nem a materializar.
+- Fail-closed se o facto faltar ou divergir de `plan.materialized` (nó num e não no outro): não
+  despachar, dizer porquê.
+- Prova com dois processos reais: o primeiro larga (ou perde) a posse com `recolha` a correr; o
+  segundo não despacha `analise` enquanto `recolha` não concluir, e despacha-o depois; um plano
+  condicional podado pelo primeiro não é despachado pelo segundo.
+
+**Consequência operacional enquanto não for feito:** um run cujo dono morre ou larga a posse a
+meio fica com os nós pendentes para sempre. É fail-closed (nada fora de ordem, nada duplicado),
+mas não termina — o runbook `PROC-DESPACHO-MULTIPROC` diz agora isso em vez de prometer a retoma.
 
 ---
 
