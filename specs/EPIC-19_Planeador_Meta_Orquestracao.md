@@ -5820,15 +5820,83 @@ O `handleReconstruct` lê o stream desde a seq 1, verifica o selo WORM e corre o
 reconstrução (`sovereign_replay.go:91-172`), depois de resolver a residência (`sovereignty.go:343-358`).
 Não há medição, teste de desempenho nem registo deste custo.
 
+### Medição em produção — a premissa não se confirma
+
+Em 2026-09-26, na v0.1.34, sobre o run `plan-e2e-442-1790377888~n1`, com `curl -w` a partir da rede
+`aos_default` e um token novo por chamada:
+
+| Leitura | HTTP | TTFB | Total | Corpo |
+|---|---|---|---|---|
+| `GET /runs/{id}` | 200 | 0,024 s | 0,024 s | 1222 B |
+| `GET /runs/{id}/trajectory` | 200 | 0,013 s | 1200,0 s (cortado pelo `--max-time 1200`) | 38558 B |
+| `GET /runs/{id}/reconstruct` | 200 | 0,042 s | 0,043 s | 2881 B (turnos reconstruídos, correctos) |
+
+Nó durante a medição: CPU 0,5 %, 200 MiB.
+
+**Causa do «não respondeu em mais de três minutos»: erro de medição, não defeito do nó.** O
+`/trajectory` é SSE ao vivo por desenho (AOS-167, `packages/cmd/aos/trajectory.go`: backfill e
+depois subscrição live — a ligação não fecha quando o backfill acaba). O script de pegadas que fez
+a medição original chamava o `/trajectory` ANTES do `/reconstruct`, ficou pendurado nele à espera
+de um fim que não vem, e nunca chegou ao `/reconstruct`. O minuto que se atribuiu ao
+`/reconstruct` era o SSE lido como um pedido que termina. Quem medir estas rotas com um script tem
+de dar ao `/trajectory` um `--max-time` curto (ou ler só o backfill) e não pôr nada depois dele à
+espera do seu fim.
+
+### Medição local — o que o handler gasta, troço a troço
+
+Feita antes de haver os números de produção, para confirmar ou refutar as suspeitas do ticket. Nó
+REAL (`Bootstrap`) com execução durável, soberania de leitura e a custódia Vault de produção
+(`vaultKeyVault`) contra um Transit falso que conta os pedidos; Event Store e WORM envolvidos em
+contadores; cada troço cronometrado isolado (média de 20 corridas) e o handler inteiro pelo wire.
+O instrumento de tempo foi descartável e não ficou no repositório; as contagens ficaram, no teste.
+
+| Cenário | selo D6 | motor | handler | ES lido | WORM | Vault |
+|---|---|---|---|---|---|---|
+| 2 turnos | 2,9 ms (1.ª escrita) | 1,0 ms | 3,8 ms | 2× / 4 ev. | 1 At + 1 Append | 2 decrypt |
+| 2 turnos + 300 runs e 5000 selos alheios | 0,61 ms | 0,78 ms | 2,4 ms | 2× / 4 ev. | 1 At + 1 Append | 2 decrypt |
+| 20 turnos | 0,65 ms | 5,5 ms | 7,6 ms | 2× / 40 ev. | 1 At + 1 Append | 20 decrypt |
+| 20 turnos, Vault a 5 ms por pedido | 0,62 ms | 126 ms | 121 ms | 2× / 40 ev. | 1 At + 1 Append | 20 decrypt |
+
+A residência (`At`) e a leitura do stream ficam abaixo da resolução do relógio (< 0,1 ms).
+
+1. **Varrer o Event Store/WORM inteiro — refutada.** O custo é igual num nó limpo e num nó com 300
+   runs e 5000 selos alheios; o ES lê só o stream do run e nunca enumera streams.
+2. **Verificar a hash-chain do WORM por pedido — refutada.** Zero `Read`/`Head` no WORM por pedido;
+   um `At` (residência) e um `Append` com fsync (selo D6).
+3. **Uma chamada ao Vault por evento — refutada.** Há um `transit/decrypt` por captura selada (cada
+   captura tem a sua DEK — envelope DEK/KEK de `audit.SealContent`), não por evento; o
+   `turn.recorded` não vai ao Vault. É o troço dominante e é linear nas capturas: inerente à cifra
+   por-titular com a KEK dentro do Vault (AOS-216), não um defeito.
+4. **Timeout ou espera fixa — refutada.** Dois turnos reconstroem em milissegundos.
+
+Observado e **não corrigido**: o handler lê o stream do run duas vezes por pedido (a porta de posse
+e, de novo, o motor desde a seq 1). Custa microssegundos (ES em memória) — não é patológico e não
+justifica mexer no read-path soberano.
+
+### O que se entregou
+
+- **Nenhuma alteração ao read-path.** A premissa foi refutada em produção; a leitura dupla não é
+  patológica.
+- `packages/cmd/aos/aos444_reconstrucao_custo_test.go` — guarda BARATA das suspeitas do ticket, por
+  CONTAGEM (sem tempo de parede): sobre o nó real com a custódia Vault, uma reconstrução lê só o
+  stream do run e nunca enumera streams, faz 1 `At` + 1 `Append` no WORM sem verificar a cadeia, e
+  pede ao Vault exactamente 1 `decrypt` por captura; e esse custo é igual num nó com 30 runs e 500
+  selos alheios. Mutação: acrescentar ao handler uma enumeração de streams e um `Head` no WORM ⇒
+  vermelho (`streams=1`, `head=1`).
+
 ### Critérios de Aceitação
 
-- [ ] Medição: onde vai o tempo (leitura do stream, verificação do WORM, reconstrução, residência).
-- [ ] Correcção do troço dominante, ou tecto declarado com o porquê.
-- [ ] Teste de desempenho que avermelha uma regressão.
+- [x] Medição: onde vai o tempo (leitura do stream, verificação do WORM, reconstrução, residência).
+      Em produção: 42 ms; localmente, por troço, acima.
+- [x] Correcção do troço dominante, ou tecto declarado com o porquê. Nada a corrigir: o troço
+      dominante (um `decrypt` por captura) é o tecto inerente à cifra por-titular, e custa
+      milissegundos.
+- [x] Teste de desempenho que avermelha uma regressão.
 
 ### Estado
 
-**ABERTO.**
+**FECHADO-REFUTADO** — a reconstrução responde em 42 ms em produção; os minutos eram o SSE ao vivo
+do `/trajectory`, lido pelo script de medição como um pedido que termina.
 
 ---
 
