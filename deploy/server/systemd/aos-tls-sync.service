@@ -6,7 +6,19 @@ Wants=aos-tls-sync.timer
 
 [Service]
 Type=oneshot
-Environment=KUBECONFIG=/etc/kubernetes/admin.conf
-ExecStart=/opt/aos/sync-tls.sh
-# Sem Restart: a falha TEM de ficar visivel em `systemctl --failed`. Um retry automatico
+# Corre como ROOT (sem User=), e por isso (AOS-446, ADR-033 sec. 2.1):
+#  - o executavel vive num caminho do ROOT, root:root 0755, fora do /opt/aos e fora do rsync do
+#    deploy. Em /opt/aos/sync-tls.sh era do `aos` e o CD reescrevia-o a cada deploy: quem
+#    escrevesse la ganhava root e cluster-admin na passagem diaria seguinte. Instala-o o root,
+#    a partir de uma copia verificada (README, TLS: "Instalar como root");
+#  - o kubeconfig e o da ServiceAccount aos-tls-sync (tls-sync-rbac.yaml), que so pode `get` no
+#    secret default/aos-node-tls. O admin.conf e recusado pelo script e pelo teste
+#    TestAOS446_UnidadesRootForaDoAlcanceDoAos.
+Environment=KUBECONFIG=/etc/aos/kube/aos-tls-sync.kubeconfig
+ExecStart=/usr/local/sbin/aos-sync-tls
+# Tecto: uma passagem normal leva segundos. O script le a pasta do edge como o `aos`, e um
+# edge.crt trocado por uma FIFO bloquearia o `cat` para sempre; o systemd mata-o e a unidade
+# fica `failed`, que e o sinal que este servico existe para dar.
+TimeoutStartSec=5min
+# Sem Restart:a falha TEM de ficar visivel em `systemctl --failed`. Um retry automatico
 # esconderia exactamente o sinal que este servico existe para dar.

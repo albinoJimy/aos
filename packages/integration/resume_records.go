@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -138,41 +139,121 @@ func (r *ResumeRecords) Put(ctx context.Context, rec ResumeRecord) error {
 	return err
 }
 
+// Erros da leitura do registo de retoma que RECUSAM a retoma (fail-closed). O `Goal` da retoma
+// decide a AUTORIDADE das tool calls do run re-hospedado (ADR-034: o rótulo é re-dobrado do
+// objectivo, dos `inputs` e da memória que o registo guarda) — um registo que perdesse os
+// `inputs` re-autorizaria trusted o que foi untrusted. Por isso a leitura só aceita o que o
+// próprio [ResumeRecords.Put] escreveria.
+var (
+	// ErrResumeRecordEmClaro — um corpo em CLARO por baixo de um cifrador activo. O Put com
+	// cifrador nunca escreve em claro (é fail-closed na escrita); um registo assim só pode
+	// vir de uma escrita crua no Event Store.
+	ErrResumeRecordEmClaro = errors.New("integration: ErrResumeRecordEmClaro: registo de retoma em claro com o cifrador activo — recusado (so o Put o escreve, e selado)")
+	// ErrResumeRecordDeOutroRun — o corpo decifrado nomeia outro run: um selado legítimo de
+	// outro run do mesmo titular copiado para este passo (a cifra por-titular não o impede,
+	// a chave é a mesma).
+	ErrResumeRecordDeOutroRun = errors.New("integration: ErrResumeRecordDeOutroRun: registo de retoma cujo corpo nomeia outro run — recusado")
+	// ErrResumeRecordDivergente — mais de um registo para o run, com conteúdo diferente.
+	ErrResumeRecordDivergente = errors.New("integration: ErrResumeRecordDivergente: registos de retoma divergentes para o mesmo run — recusado")
+	// ErrResumeRecordForaDoPut — um registo com o step_id de retoma do run mas com OUTRO
+	// run_id de envelope do Event Store. O Put escreve SEMPRE com [approvalRunID]; é esse par
+	// (run_id, step_id) que forma a idempotency_key e dá ao registo a deduplicação. Outro
+	// run_id é a única forma de pôr um segundo registo ao lado do legítimo, e só a tem quem
+	// escreve cru no stream.
+	ErrResumeRecordForaDoPut = errors.New("integration: ErrResumeRecordForaDoPut: registo de retoma com run_id de envelope diferente do do Put — recusado")
+)
+
+// RegistoDeRetomaRecusado diz se err é um dos sentinelas acima: o registo EXISTE e foi
+// recusado por não ser o que o Put escreveria. Para a API é um conflito com o estado do run
+// (409), não uma falha interna.
+func RegistoDeRetomaRecusado(err error) bool {
+	return errors.Is(err, ErrResumeRecordEmClaro) || errors.Is(err, ErrResumeRecordDeOutroRun) ||
+		errors.Is(err, ErrResumeRecordDivergente) || errors.Is(err, ErrResumeRecordForaDoPut)
+}
+
 // Get resolve o registo de retoma de um run. ok=false se não houver.
 //
 // Um titular já apagado por crypto-shredding torna o registo INDECIFRÁVEL e devolve erro —
 // por desenho: um run cujo conteúdo foi apagado não é retomável.
+//
+// O PRIMEIRO REGISTO GANHA, E OS SEGUINTES TÊM DE LHE SER IGUAIS (AOS-069, 2026-09-26). Os
+// escritores legítimos (suspensão por escalada e por exaustão, registo de arranque do
+// crash-resume, re-hospedagem na retoma) escrevem TODOS o mesmo Goal do mesmo run, e o Put
+// usa a mesma idempotency_key (`approval:resume-<run>`) — o Event Store deduplica sobre o
+// stream INTEIRO (a tabela de dedup reconstrói-se do stream, também no JetStream) e fica o
+// primeiro. Pelo Put há, portanto, UM só registo por run. Esta função lia o ÚLTIMO: quem
+// tivesse escrita crua no stream acrescentava, com outro run_id de envelope (que escapa à
+// dedup), um Goal sem `inputs`, e a retoma autorizava trusted. Agora qualquer registo que não
+// seja o que o Put escreveria — outro run_id de envelope, corpo em claro com cifrador activo,
+// corpo de outro run — RECUSA a retoma (erro nomeado), em vez de ser ignorado: ignorá-lo seria
+// seguro para esta retoma mas apagava a evidência de uma escrita adulterada no stream de
+// governação, e a recusa só custa disponibilidade a quem já tem escrita crua. A comparação
+// com o primeiro (ErrResumeRecordDivergente) fica como defesa-em-profundidade para o caso de
+// o transporte perder a dedup.
 func (r *ResumeRecords) Get(ctx context.Context, runID string) (ResumeRecord, bool, error) {
 	events, err := readApprovalStream(ctx, r.store)
 	if err != nil {
 		return ResumeRecord{}, false, err
 	}
 	want := "resume-" + runID
-	for i := len(events) - 1; i >= 0; i-- {
-		ev := events[i]
+	var (
+		first     ResumeRecord
+		firstJSON []byte
+		found     bool
+	)
+	for _, ev := range events {
 		if ev.Type != approvalResumeEventType || ev.StepID != want {
 			continue
 		}
-		var env resumeEnvelope
-		if err := json.Unmarshal(ev.Payload, &env); err != nil {
+		if ev.RunID != approvalRunID {
+			return ResumeRecord{}, false, ErrResumeRecordForaDoPut
+		}
+		rec, err := r.open(ctx, ev.Payload)
+		if err != nil {
 			return ResumeRecord{}, false, err
 		}
-		body := env.Body
-		if len(env.Sealed) > 0 {
-			if r.cipher == nil {
-				return ResumeRecord{}, false, errors.New("integration: registo de retoma selado mas sem cifrador para o abrir")
-			}
-			plain, oerr := r.cipher.OpenContent(ctx, env.Subject, env.Sealed)
-			if oerr != nil {
-				return ResumeRecord{}, false, oerr
-			}
-			body = plain
+		if rec.RunID != runID {
+			return ResumeRecord{}, false, ErrResumeRecordDeOutroRun
 		}
-		var rec ResumeRecord
-		if err := json.Unmarshal(body, &rec); err != nil {
+		canon, err := json.Marshal(rec)
+		if err != nil {
 			return ResumeRecord{}, false, err
 		}
-		return rec, true, nil
+		if !found {
+			first, firstJSON, found = rec, canon, true
+			continue
+		}
+		if !bytes.Equal(canon, firstJSON) {
+			return ResumeRecord{}, false, ErrResumeRecordDivergente
+		}
 	}
-	return ResumeRecord{}, false, nil
+	return first, found, nil
+}
+
+// open abre UM envelope de retoma tal como o [ResumeRecords.Put] deste nó o escreveria: com
+// cifrador, só selado; sem cifrador, só em claro (um selado sem cifrador não abre).
+func (r *ResumeRecords) open(ctx context.Context, payload []byte) (ResumeRecord, error) {
+	var env resumeEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return ResumeRecord{}, err
+	}
+	body := env.Body
+	switch {
+	case len(env.Sealed) > 0:
+		if r.cipher == nil {
+			return ResumeRecord{}, errors.New("integration: registo de retoma selado mas sem cifrador para o abrir")
+		}
+		plain, oerr := r.cipher.OpenContent(ctx, env.Subject, env.Sealed)
+		if oerr != nil {
+			return ResumeRecord{}, oerr
+		}
+		body = plain
+	case r.cipher != nil:
+		return ResumeRecord{}, ErrResumeRecordEmClaro
+	}
+	var rec ResumeRecord
+	if err := json.Unmarshal(body, &rec); err != nil {
+		return ResumeRecord{}, err
+	}
+	return rec, nil
 }

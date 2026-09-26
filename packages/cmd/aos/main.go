@@ -876,11 +876,9 @@ func nodeConfigFromEnv() (Config, error) {
 	// pede 30s e fica com outra coisa qualquer não tem forma de o notar, e o sintoma seria um RPO
 	// real diferente do anunciado, descoberto no dia do restauro.
 	//
-	// ISTO NÃO LIGA O BACKUP. O interruptor é [Config.BackupDestination], que é uma PORTA
-	// injectada e não tem superfície de ambiente — ver a nota nesse campo. Um destino durável já é
-	// utilizável (o exportador retoma a cadeia), mas este repositório não traz nenhuma
-	// implementação durável da porta, e o nó não inventa uma. Definir só esta variável configura a
-	// cadência de um exportador que continua por compor.
+	// ISTO NÃO LIGA O BACKUP. O interruptor é o DESTINO (AOS_BACKUP_DEST → [Config.BackupDestination],
+	// AOS-453 F2, mais abaixo). Definir só esta variável configura a cadência de um exportador que
+	// continua por compor.
 	backupPeriodicity, err := backupExportIntervalFromEnv()
 	if err != nil {
 		return Config{}, err
@@ -898,6 +896,22 @@ func nodeConfigFromEnv() (Config, error) {
 	if dsarVault != nil {
 		cfg.DSARVault = dsarVault
 	}
+
+	// BACKUP IMUTÁVEL — DESTINO, REGIÃO, CHAVE, RETENÇÃO E CUSTÓDIA DA KEK (AOS-453 F2). Depois da
+	// custódia DSAR, porque a do backup reutiliza o endereço e o token dela (num mount PRÓPRIO).
+	// Sem AOS_BACKUP_DEST nada muda: o exportador não é composto — também em produção. Com ele,
+	// tudo é obrigatório e fail-closed (ver [backupFromEnv]).
+	bEnv, err := backupFromEnv(production, boardRegions, dsarVault)
+	if err != nil {
+		return Config{}, err
+	}
+	if bEnv.dest != nil {
+		cfg.BackupDestination = bEnv.dest
+		cfg.BackupSigningKey = bEnv.signingKey
+		cfg.BackupRetention = bEnv.retention
+		cfg.BackupVault = bEnv.vault
+	}
+	cfg.BackupEnvIgnored = bEnv.ignoradas
 
 	// CUSTÓDIA DAS CREDENCIAIS DOWNSTREAM do credential broker (AOS-070/AOS-264) por
 	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*

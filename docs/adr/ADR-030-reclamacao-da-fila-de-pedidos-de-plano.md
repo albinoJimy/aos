@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | **Aceite (2026-09-23, AOS-423)** — §2.6 **emendado** (2026-09-25, AOS-442): o `aguarda_humano` ESTACIONA e é re-oferecido; já não fecha o pedido |
+| Estado | **Aceite (2026-09-23, AOS-423)** — §2.6 **emendado** (2026-09-25, AOS-442): o `aguarda_humano` ESTACIONA e é re-oferecido; já não fecha o pedido — §4 com **nota** (2026-09-26, AOS-447): a forma do trabalhador, decidida |
 | Decisores | Arquitecto de Plataforma |
 | Consultados | ADR-016 (fronteira de confiança da UI), ADR-018 (o nó é a única autoridade de ciclo de vida), ADR-023 (escritor único sob lease), ADR-028 (ingresso do caminho do plano), DEF-282 (o substrato de ficheiro não arbitra entre processos) |
 | Supera / emenda | **Nada supera.** Corrige uma ATRIBUIÇÃO errada no ADR-028 §2.3 e em `plan_ingress.go` — ver §1.2 |
@@ -262,8 +262,37 @@ soberano não estiver composto (`readGov == nil`), a rota tem de recusar, não d
 - **A forma do trabalhador** (processo longo vs temporizador) **não é decidida aqui**. Entrega-se um
   comando que DRENA UMA VEZ e termina; quem o invoca — um timer do host, como o `aos-tls-sync.timer`
   que já existe, ou um serviço — é decisão de implantação, e o código é o mesmo nos dois casos.
+  **Decidida depois** — ver a nota abaixo (AOS-447).
 - **O submissor continua sem forma directa de saber o desfecho.** A §2.6 grava factos de desfecho,
   mas se o `run_id` de topo nunca existir como run legível (ADR-027 materializa nós como
   `<run>~<nó>`), a leitura pelo read-path não o alcança. **POR CONFIRMAR** — e é critério do
   AOS-423, não deste ADR.
 - **A varredura linear do stream** que o molde usa não tem tecto numa fila de pedidos. Declarado.
+
+### Nota (2026-09-26, AOS-447) — a forma do trabalhador: um timer de 1 minuto, um pedido de cada vez
+
+**Decidido pelo dono**, sobre a medição de produção de 2026-09-25 (um pedido esperou até 5 min para
+começar, com `OnUnitInactiveSec=5min` e até 3 pedidos em série por drenagem):
+
+- **Um trabalhador**: o timer `aos-drenar-planos` do host, que volta **1 min depois** de a drenagem
+  anterior acabar (`OnUnitInactiveSec=1min`, `AccuracySec=5s`). O systemd nunca arranca um oneshot
+  que ainda está activo, pelo que continua a haver no máximo uma drenagem de cada vez.
+- **Um pedido por drenagem** (`Environment=DRENAR_MAX=1` na unidade, que muda junto com o timer): um pedido espera no
+  máximo o plano em curso mais ~1 min, e não os dois que calhassem à frente dele na mesma drenagem.
+- **Não** um `consume` contínuo: o comando continua a drenar uma vez e terminar, e nenhum binário além
+  do nó passa a ser um serviço de longa duração.
+
+**Vários trabalhadores só com uma medição que o justifique**, e não antes das duas pré-condições que
+o desenho encontrou:
+
+1. **O WAL do `consume` é de posse sequencial.** Dois trabalhadores sobre o mesmo `consume.wal`
+   serializam-se no `LockWAL` (saída 5); o caminho é um WAL **por run** (ou o substrato replicado da
+   §3). O mesmo WAL explica o achado vizinho: o `decide` da cerimónia de aprovação toma posse de
+   escrita desse WAL, e sai com 5 enquanto o `serve` de um plano o detém — o plano inteiro
+   (`TestAOS447DecideBloqueadoEnquantoUmServeDetemOWAL`).
+2. **O TTL da reclamação (30 min, `ttlDaReclamacao`) é mais curto do que o prazo do plano (40 min,
+   `prazoDoPlanoPorOmissao` do `aos-orq`).** Um plano entre os 30 e os 40 min vê a reclamação expirar
+   e o pedido volta a ser elegível — e o `GET /plans/{id}` diz `pending` — enquanto ainda corre. Com um
+   só trabalhador é inofensivo (ninguém mais o reclama; o desfecho tardio é aceite e fecha-o). Com
+   dois, o segundo reclamá-lo-ia e correria o mesmo plano (o lease do run arbitra, com saída 3). A
+   pré-condição é **TTL da reclamação ≥ prazo do plano** (mais a decomposição).

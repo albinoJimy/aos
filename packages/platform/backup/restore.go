@@ -191,17 +191,26 @@ func (r *Restorer) RestoreTo(ctx context.Context, m Manifest, cp Checkpoint, exp
 	// 2) Decifra os segmentos por ordem e acumula os eventos por stream (contíguos e
 	//    crescentes em seq, porque os segmentos estão em ordem de exportação).
 	byStream := make(map[string][]eventstore.Event)
+	// AOS-453: cada segmento tem de ser do titular da KEK do backup desta região (subject-binding
+	// em [openSegment]); a região é a do manifesto, que o VerifyManifest já confrontou com a assinada.
+	subject := backupSubjectFor(m.Region)
 	for i := range m.Segments {
 		seg := m.Segments[i]
 		blob, err := r.backup.Get(seg.Ref)
 		if err != nil {
 			return RestoreEvidence{}, err
 		}
+		// AOS-453 (revisão): o blob é LIDO DE NOVO depois do VerifyManifest; sem reconferir o hash,
+		// quem tem escrita no destino trocava-o entre a verificação e a abertura (TOCTOU) — e todas
+		// as épocas partilham a KEK aos.backup:<região>, pelo que um segmento de outra época abriria.
+		if sum := sha256.Sum256(blob); !bytes.Equal(sum[:], seg.ContentHash) {
+			return RestoreEvidence{}, ErrSegmentTampered
+		}
 		enc, err := unmarshalSegment(blob)
 		if err != nil {
 			return RestoreEvidence{}, ErrSegmentTampered
 		}
-		plaintext, err := openSegment(r.vault, enc)
+		plaintext, err := openSegment(r.vault, subject, enc)
 		if err != nil {
 			return RestoreEvidence{}, err
 		}

@@ -41,7 +41,7 @@ func TestAOS101_UmExportadorREINICIADORetomaACadeiaNoDestinoDURAVEL(t *testing.T
 	// auto-gerar uma (ErrBackupSigningKeyMissing).
 	signer := newSigner(t)
 	// E a CUSTÓDIA DA KEK também sobrevive ao processo — aqui um vault partilhado, que é uma FIXTURE:
-	// no deployment não existe hoje custódia que o faça (a do nó é key-never-leaves, AOS-453). Entropia REAL,
+	// no deployment, é a custódia Vault Transit num mount próprio que o faz (por envelope, AOS-453). Entropia REAL,
 	// e não detRand: com detRand dois vaults separados geravam a MESMA KEK e o teste passava pela
 	// razão errada. Uma KEK diferente por arranque é recusada — TestAOS101_RetomaComOUTRAKEKeRecusada.
 	vault := audit.NewInMemoryKeyVault(nil)
@@ -106,8 +106,8 @@ func TestAOS101_UmExportadorREINICIADORetomaACadeiaNoDestinoDURAVEL(t *testing.T
 // A assinatura prova quem selou; não prova que esta custódia ainda decifra o que foi selado. Sem a
 // verificação, o 2.º arranque retomava, anunciava «RETOMADA … verificada», o manifesto verificava —
 // e o restauro falhava no dia do DR com ErrSegmentTampered, lido como adulteração. É o que o vault
-// de referência (em memória) faz a cada reinício do nó — e é a única custódia com que o exportador
-// sela hoje (AOS-453).
+// de referência (em memória) faz a cada reinício do nó; a custódia que sobrevive é a de envelope
+// (AOS-453, aos453_custodia_test.go).
 func TestAOS101_RetomaComOUTRAKEKeRecusada(t *testing.T) {
 	ctx := context.Background()
 	src := newSourceStore(t, "board-eu", "eu-west")

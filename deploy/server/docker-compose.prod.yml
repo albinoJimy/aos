@@ -311,11 +311,23 @@ services:
       AOS_SLO_WINDOW: "${AOS_SLO_WINDOW:-}"
       AOS_SLO_EVAL_INTERVAL: "${AOS_SLO_EVAL_INTERVAL:-}"
       # AOS-101 — periodicidade do ciclo de exportacao para backup imutavel (a BASE do RPO).
-      # NAO liga o backup: o interruptor e o DESTINO (Config.BackupDestination), que hoje nao tem
-      # superficie de ambiente porque nao existe backend DURAVEL para a porta backup.ImmutableStore
-      # (ver deploy/node/README.md). Definir isto sozinho configura a cadencia de um exportador que
-      # continua por compor — e e por isso que fica vazio por omissao.
+      # NAO liga o backup: o interruptor e o DESTINO (AOS_BACKUP_DEST, abaixo).
       AOS_BACKUP_EXPORT_INTERVAL: "${AOS_BACKUP_EXPORT_INTERVAL:-}"
+      # AOS-453 (F2) — backup imutavel do Event Store. VAZIO POR OMISSAO ⇒ DESLIGADO, nada muda.
+      # Para ligar (passos do dono em deploy/server/README.md §Backup imutavel do Event Store):
+      #   AOS_BACKUP_DEST=file:///var/lib/aos-backup/epoca-AAAA-MM   (subdirectorio da montagem abaixo;
+      #                                                             epoca nova = subdirectorio novo)
+      #   AOS_BACKUP_DEST_REGION=eu-west                             (uma das regioes de AOS_BOARD_REGIONS)
+      #   AOS_BACKUP_SIGNING_KEY_PATH=/etc/aos/backup/signing.seed   (seed gerada OFFLINE; o no NUNCA a cria)
+      #   AOS_BACKUP_RETENTION=2160h                                 (finita: object-lock de cada objecto)
+      #   AOS_BACKUP_VAULT_TRANSIT_MOUNT=transit-backup              (custodia da KEK, mount PROPRIO sem delete)
+      # Com AOS_BACKUP_DEST definido, as outras quatro sao obrigatorias e o no ABORTA sem elas.
+      # s3:// e a F4 (S3 com Object Lock) e e RECUSADO: o disco local NAO protege da perda do host.
+      AOS_BACKUP_DEST: "${AOS_BACKUP_DEST:-}"
+      AOS_BACKUP_DEST_REGION: "${AOS_BACKUP_DEST_REGION:-}"
+      AOS_BACKUP_SIGNING_KEY_PATH: "${AOS_BACKUP_SIGNING_KEY_PATH:-}"
+      AOS_BACKUP_RETENTION: "${AOS_BACKUP_RETENTION:-}"
+      AOS_BACKUP_VAULT_TRANSIT_MOUNT: "${AOS_BACKUP_VAULT_TRANSIT_MOUNT:-}"
       AOS_SANDBOX_SEED_DIR: "${AOS_SANDBOX_SEED_DIR:-}"
 
       # --- TRÊS QUE FICAM DE FORA, E PORQUÊ --------------------------------------------------
@@ -473,6 +485,14 @@ services:
       - ./tls-internal/ca-bundle.crt:/etc/aos/internal-ca.crt:ro
       - ./secrets/vault-token:/etc/aos/vault-token:ro
       - ./secrets/model-api.key:/etc/aos/model-api.key:ro
+      # AOS-453 (F2) — backup imutavel. Montados SEMPRE (um `volumes:` condicional nao existe em
+      # compose); o que decide se sao usados e AOS_BACKUP_DEST, vazio por omissao. DIRECTORIOS e nao
+      # ficheiros (um bind de ficheiro inexistente vira directorio no host). O destino fica FORA do
+      # volume aos-data de proposito: o backup do log nao vive no mesmo volume que o log.
+      #   ./backup-es          → destino write-once (dono: uid 65532, 0700; criado pelo dono)
+      #   ./secrets/backup     → seed de assinatura (signing.seed, legivel pelo uid 65532), :ro
+      - ./backup-es:/var/lib/aos-backup
+      - ./secrets/backup:/etc/aos/backup:ro
     expose:
       - "8080"
     depends_on:

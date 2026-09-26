@@ -785,6 +785,11 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // apex (activity.Dispatcher sobre rm + durable.StepLedger) acrescenta idempotência/
 // replay pelo step-ledger à volta da MESMA mediação, SEM o loop perder o Credential
 // (AOS-152) nem o taint da autorização — a porta recebe o Call já construído aqui.
+// «Recebe o Call» não bastava: o adaptador durável traduzia-o numa Activity sem o taint e
+// o RM de produção via untrusted em todas as calls (fase 1 do AOS-069, 2026-09-26). O que
+// fixa a propriedade é a paridade entre as duas vias
+// (`TestAOS069_ViaDuravelPreservaOTaintDaAutorizacao`, packages/integration).
+//
 // toolOutcome é o desfecho de UMA tool call mediada, agregado para não multiplicar
 // valores de retorno.
 type toolOutcome struct {

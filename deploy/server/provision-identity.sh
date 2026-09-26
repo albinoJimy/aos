@@ -308,6 +308,11 @@ grep -q '"sealed":false' <<<"$(v 'https://127.0.0.1:8200/v1/sys/seal-status')" |
 
 # Motor Transit (204 = criado, 400 = já existia — ambos aceitáveis).
 vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit' "X-Vault-Token: ${ROOT_TOKEN}" '{"type":"transit"}' >/dev/null || true
+# AOS-453 — motor Transit PRÓPRIO da KEK do backup imutável (AOS_BACKUP_VAULT_TRANSIT_MOUNT=transit-backup).
+# Separado do `transit` do DSAR por duas razões: a política do nó tem `delete` sobre as chaves do
+# DSAR (é o crypto-shred do Art. 17) e NÃO pode ter sobre a do backup; e o portão da reconciliação
+# de apagamentos (AOS-436) fecha o embrulho do mount do DSAR no arranque.
+vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit-backup' "X-Vault-Token: ${ROOT_TOKEN}" '{"type":"transit"}' >/dev/null || true
 
 # Política least-privilege: SÓ as operações Transit que o nó precisa. O root token nunca chega
 # ao nó — fica em vault-init.json, para operações de administração.
@@ -320,7 +325,7 @@ vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit' "X-Vault-Token: ${ROOT_TOKE
 # esta chamada NÃO leva `|| true`.
 vaultx() { docker exec -i -e VAULT_TOKEN="${ROOT_TOKEN}" -e VAULT_ADDR=https://127.0.0.1:8200 \
              -e VAULT_CACERT=/vault/tls/ca.crt aos-vault-1 "$@"; }
-vaultx vault policy write aos-node - <<'POL' >/dev/null
+POLICY_HCL="$(cat <<'POL'
 # AUTO-CONSULTA E RENOVAÇÃO. Sem estes dois caminhos o token é emitido com `no_default_policy` e
 # fica SEM eles — é a política `default` que normalmente os concede. Duas consequências, e a
 # segunda é silenciosa:
@@ -338,9 +343,60 @@ path "transit/keys/aos-kek-*" { capabilities = ["create","read","update","delete
 path "transit/keys/aos-kek-*/config" { capabilities = ["update"] }
 path "transit/encrypt/aos-kek-*" { capabilities = ["update"] }
 path "transit/decrypt/aos-kek-*" { capabilities = ["update"] }
+# AOS-453 — a KEK do BACKUP, no mount PRÓPRIO: criar, ler, embrulhar e desembrulhar. SEM `delete`.
+# `+` e NÃO `*`: no Vault o `*` só é glob no FIM do caminho, e um `aos-kek-*` casa também
+# `aos-kek-X/config`, `/rotate` e `/trim` — com `update` neles o token do nó destruía a KEK sem
+# `delete` (rotate → min_decryption_version → trim apaga a v1; ou deletion_allowed). Medido num
+# Vault 1.18 real na revisão do AOS-453. O `+` casa UM segmento: os sub-caminhos da chave ficam em
+# deny IMPLÍCITO. O mount dedicado substitui a restrição de nome `aos-kek-`.
+# Quem destrói ou roda a KEK do backup é o dono, com a raiz — nunca o nó.
+path "transit-backup/keys/+" { capabilities = ["create","read","update"] }
+path "transit-backup/encrypt/+" { capabilities = ["update"] }
+path "transit-backup/decrypt/+" { capabilities = ["update"] }
 POL
+)"
+
+# verificar_acl_backup TOKEN — CONTROLO NEGATIVO pela ACL (AOS-453), e não por uma tentativa: um
+# `delete` sobre uma chave que não existe passaria com qualquer política. Pergunta-se ao Vault (com a
+# raiz) as capacidades de TOKEN: na chave do backup `update` e nunca `delete`; em /config, /rotate e
+# /trim exactamente `deny`; em encrypt/decrypt `update`. Devolve 1 e escreve a causa em stderr.
+verificar_acl_backup() {
+  local tok="$1" cap sub
+  cap="$(vaultx vault token capabilities "${tok}" transit-backup/keys/aos-kek-controlo 2>&1 || true)"
+  if grep -q 'delete' <<<"${cap}" || ! grep -q 'update' <<<"${cap}"; then
+    echo "transit-backup/keys/<chave>: ${cap} (esperado create/read/update, sem delete)" >&2; return 1
+  fi
+  for sub in config rotate trim; do
+    cap="$(vaultx vault token capabilities "${tok}" "transit-backup/keys/aos-kek-controlo/${sub}" 2>&1 || true)"
+    if [[ "$(tr -d '[:space:]' <<<"${cap}")" != "deny" ]]; then
+      echo "transit-backup/keys/<chave>/${sub}: ${cap} (esperado deny)" >&2; return 1
+    fi
+  done
+  for sub in encrypt decrypt; do
+    cap="$(vaultx vault token capabilities "${tok}" "transit-backup/${sub}/aos-kek-controlo" 2>&1 || true)"
+    grep -q 'update' <<<"${cap}" || { echo "transit-backup/${sub}/<chave>: ${cap} (esperado update)" >&2; return 1; }
+  done
+  return 0
+}
+
+# ORDEM (AOS-453): a política nova prova-se numa política CANDIDATA com um token de teste de vida
+# curta, e SÓ DEPOIS substitui a `aos-node`. Escrevê-la primeiro e verificar depois deixava, numa
+# falha, a política partida activa no token do nó.
+vaultx vault policy write aos-node-candidata - <<<"${POLICY_HCL}" >/dev/null
+CAND_TOK="$(vaultx vault token create -policy=aos-node-candidata -no-default-policy -ttl=2m -field=token 2>/dev/null || true)"
+[[ -n "${CAND_TOK}" ]] || fail "nao consegui emitir o token de teste da politica candidata"
+if ! ACL_ERR="$(verificar_acl_backup "${CAND_TOK}" 2>&1)"; then
+  vaultx vault token revoke "${CAND_TOK}" >/dev/null 2>&1 || true
+  vaultx vault policy delete aos-node-candidata >/dev/null 2>&1 || true
+  fail "a politica candidata da ao no poder de DESTRUIR ou rodar a KEK do backup — a aos-node NAO foi alterada: ${ACL_ERR}"
+fi
+vaultx vault token revoke "${CAND_TOK}" >/dev/null 2>&1 || true
+vaultx vault policy delete aos-node-candidata >/dev/null 2>&1 || true
+unset CAND_TOK ACL_ERR
+
+vaultx vault policy write aos-node - <<<"${POLICY_HCL}" >/dev/null
 vaultx vault policy read aos-node >/dev/null || fail "a politica aos-node nao ficou escrita — o token do no ficaria sem permissao nenhuma"
-log "  politica aos-node escrita e confirmada"
+log "  politica aos-node verificada (candidata) e escrita"
 
 if [[ "$(cat "${SECRETS}/vault-token" 2>/dev/null)" == "placeholder-ate-init" ]]; then
   TOK="$(vpost 'https://127.0.0.1:8200/v1/auth/token/create' "X-Vault-Token: ${ROOT_TOKEN}" \
@@ -381,8 +437,14 @@ if ! LIST_OUT="$(nodex vault list transit/keys 2>&1)"; then
   log "  transit/keys vazio (404 no LIST) — autorizado, ainda sem chaves"
 fi
 unset LIST_OUT
+# AOS-453 — e o mesmo controlo sobre o token REAL do nó (a candidata provou a política; isto prova
+# que é ESSA a política que o token do nó tem).
+if ! ACL_ERR="$(verificar_acl_backup "${NODE_TOK}" 2>&1)"; then
+  fail "o token do no tem poder de DESTRUIR ou rodar a KEK do backup, ou nao a consegue usar: ${ACL_ERR}"
+fi
+unset ACL_ERR
 unset NODE_TOK
-log "  token do no verificado: lookup-self, renew-self e list transit/keys PASSAM"
+log "  token do no verificado: lookup-self, renew-self e list transit/keys PASSAM; KEK do backup sem delete/rotate/trim/config"
 unset ROOT_TOKEN UNSEAL_KEY
 
 # ------------------------------------------------------------------------------------------
