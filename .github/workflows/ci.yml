@@ -377,8 +377,15 @@ jobs:
   # configuracao — e `server_tags`, de que a colocacao soberana depende, so existe em
   # configuracao. Ter o cluster nosso e tambem o que permite MATAR um no de dentro do job,
   # que e o que os testes de perda e de reconexao exigem.
+  #
+  # `timeout-minutes` é a REDE, não o limite (AOS-452). O limite é o `-timeout` de cada binário
+  # de teste (`NATS_GO_TEST_TIMEOUT`, 5 min), que ao disparar diz QUE teste estava pendurado; o
+  # do job só mata, e sem ele valia o do GitHub — 6 h. Pior caso com todos os binários
+  # pendurados: 4 módulos + a medição de cobertura × 5 min ≈ 25 min, mais o cluster. Medido a
+  # 2026-09-26: o job inteiro fecha em ~3,5 min.
   nats:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

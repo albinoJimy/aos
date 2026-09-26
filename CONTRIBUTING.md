@@ -79,6 +79,7 @@ verde sem exercitar nada; um gate cujo limiar se pode zerar em silêncio não é
 | `ROUTING_COVERAGE_MIN` | 80 | **80** | 0–100 (%) | `routing.sh` | «Igual ao limiar do kernel» (§4). |
 | `REGISTRY_COVERAGE_MIN` | 80 | **80** | 0–100 (%) | `supplychain.sh` | «Igual ao limiar do kernel» (§4). |
 | `EVAL_PASS_RATE_MIN` | 0.90 | **0.90** | 0–1 (**fracção**) | `evalgate.sh` | ADR-012 / AOS-114 fixam o alvo de eval-pass-rate em ≥ 90%. É o gate de *admission control*: abaixo do alvo, promover é admitir regressão comportamental. |
+| `NATS_GO_TEST_TIMEOUT` | 5 | **1** | 1–60 (**minutos**) | `nats.sh` | Não é uma barra de qualidade, é um limite de tempo (AOS-452). `0` é «sem timeout» para o `go test`, e é isso que o piso recusa. O default é mais de 10× o módulo mais lento medido no CI (~25 s). O máximo existe para postos lentos: em Windows o `cmd/aos-orq` passou só 17 testes em 5 min. |
 
 **Piso = default é deliberado.** O default **é** o compromisso documentado; um piso mais
 baixo seria uma segunda barra, não documentada, a autorizar em silêncio exactamente o que
@@ -248,6 +249,13 @@ transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de me
 > Ele tolera **duas falhas declaradas** (AOS-432): sobre substrato replicado, quem perde a
 > corrida ao lease sai com um erro de transporte em vez do código da posse. A lista
 > auto-reforma-se — se esses testes passarem, o gate avermelha para obrigar a fechar o ticket.
+>
+> Uma falha declarada explica **um teste que falhou**, nunca **um pacote que deixou de medir**
+> (AOS-452). Um pacote que termine em FAIL por timeout, panic, `[build failed]` ou `os.Exit`
+> fora de um teste avermelha o gate com diagnóstico próprio («pacote … em FAIL sem falha
+> declarada que o explique: TIMEOUT …»), mesmo que nenhuma linha `--- FAIL` o conte. Cada
+> binário de teste corre com `-timeout=${NATS_GO_TEST_TIMEOUT}m` (default 5; piso 1, máx. 60 —
+> ver a tabela de limiares). Num posto lento, sobe-se: `NATS_GO_TEST_TIMEOUT=60 make ci-nats`.
 
 Os três gates **anti-recorrência** (`ref-lint`, `rtm`, `layer-lint`, AOS-190) constam
 do `needs:` do agregador `gates` — é isso, e só isso, que os torna bloqueantes. Um

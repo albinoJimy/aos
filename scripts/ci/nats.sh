@@ -25,6 +25,11 @@
 #      `skips_legitimos`, com a razão. Não há limiar numérico: o que importa é QUAIS saltam.
 #   G3 A cerimónia four-eyes sobrevive a um restart REAL sobre JetStream — o critério que o
 #      AOS-424 deixou por marcar.
+#   G4 NENHUM pacote termina em FAIL sem um `--- FAIL` que o explique (AOS-452). Um timeout, um
+#      panic, um `[build failed]` ou um `os.Exit` fora de um teste fazem o `go test` sair ≠ 0
+#      SEM escrever as linhas que a contagem por nome lê — e o gate saía verde por baixo de
+#      uma tabela que dizia «(vermelho)». O veredicto de cada pacote vem agora da linha com que
+#      o `go test` o fecha (`gotest-pacotes.sh`), e um aborto nunca é «falha declarada».
 #
 # ─── O QUE ESTE GATE TOLERA, E PORQUÊ ──────────────────────────────────────────────────────
 #
@@ -50,6 +55,7 @@
 #      regiões e perda de disco não são observáveis aqui.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/gotest-pacotes.sh"
 setup_env
 
 CLUSTER="$(dirname "${BASH_SOURCE[0]}")/nats-cluster.sh"
@@ -69,6 +75,20 @@ rc=0
 # O `FLOOR_MODULE_COVERAGE_MIN` de 80 não se aplica: é para módulos cuja suite corre inteira
 # sem infra externa. Este tem um piso próprio, declarado, e a razão está aqui.
 gate_threshold EVENTSTORE_COVERAGE_MIN 75 0 100 "%" always || exit 1
+
+# O `-timeout` DE CADA BINÁRIO DE TESTE, em minutos (AOS-452).
+#
+# Sem ele valia o default do `go test`, 10 min — que ninguém escolheu, e que era o único limite
+# (o job `nats` não tinha `timeout-minutes`, logo o do GitHub, 6 h). Medido no CI a 2026-09-26
+# (run 36238560614): o módulo mais lento, `cmd/aos-orq`, fecha em ~25 s COM a compilação; os
+# quatro juntos em ~1 min 45 s. Cinco minutos são mais de dez vezes o pior módulo, e um teste
+# pendurado passa a dar o diagnóstico do `go` (quais estavam a correr) em minutos, não em horas.
+#
+# O piso 1 existe porque `-timeout=0` é «sem timeout» para o `go`. O máximo 60 é o domínio, e
+# não o CI. Num posto Windows (2026-09-26) o `cmd/aos-orq` passou só 17 testes em 5 min, contra
+# 167 em ~25 s no CI: ali é preciso subir (NATS_GO_TEST_TIMEOUT=60 make ci-nats). No CI fica o
+# default, bem abaixo do `timeout-minutes` do job, que mata sem dizer que teste estava pendurado.
+gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m" always || exit 1
 
 # =============================================================================================
 # (0) O CLUSTER
@@ -161,6 +181,7 @@ total_fail=0
 total_skip=0
 total_skip_inesperado=0
 total_fail_conhecida=0
+total_pacotes_inexplicados=0
 
 for entrada in "${modulos_nats[@]}"; do
   modulo="${entrada%%|*}"
@@ -168,11 +189,19 @@ for entrada in "${modulos_nats[@]}"; do
   log_gate "nats · $modulo"
 
   saida="$(mktemp)"
+  rc_go=0
   # `-count=1` porque um resultado em cache sobre um cluster que já não existe seria um
   # verde que não mediu nada. Sem `-race`: estes testes esperam por eleições de Raft e por
   # janelas de deduplicação, e o detector multiplica os tempos até ao limite do job — o
   # `-race` destes módulos corre no gate `test`, sem cluster.
-  if (cd "$REPO_ROOT/$modulo" && eval "go test $alvos -count=1 -v") >"$saida" 2>&1; then
+  #
+  # O `rc_go` guarda-se, e é o que o `estado` sempre devia ter sido: um VEREDICTO. Até ao
+  # AOS-452 só era impresso — ver o bloco G4, a seguir às falhas por nome.
+  #
+  # A invocação vive em `gotest-pacotes.sh` para que o `selftest.sh` (§Y) corra EXACTAMENTE
+  # este comando sobre pacotes sintéticos — os flags de lá são os daqui.
+  gotest_pacotes_corre "$REPO_ROOT/$modulo" "$alvos" "${NATS_GO_TEST_TIMEOUT}m" "$saida" || rc_go=$?
+  if [ "$rc_go" -eq 0 ]; then
     estado="verde"
   else
     estado="vermelho"
@@ -246,6 +275,26 @@ for entrada in "${modulos_nats[@]}"; do
     done <<< "$saltados"
   fi
 
+  # G4 — UM PACOTE EM FAIL QUE NENHUM `--- FAIL` EXPLICA É VERMELHO (AOS-452).
+  #
+  # Tudo o que está acima lê linhas `--- FAIL`/`--- SKIP`, e um pacote que morre por timeout,
+  # panic ou falta de compilação não as escreve (ou escreve uma só, a do teste que abortou, e
+  # cala os que ficaram por correr). O `rc_go` diz que algo correu mal; `gotest-pacotes.sh`
+  # diz QUAL pacote e PORQUÊ, pela linha com que o `go test` o fecha. Este bloco não pergunta
+  # se há falhas declaradas: uma falha declarada explica um teste que falhou, nunca um pacote
+  # que deixou de medir.
+  if [ "$rc_go" -ne 0 ]; then
+    if ! inexplicados="$(gotest_pacotes_inexplicados "$saida" "$rc_go")"; then
+      while IFS=$'\t' read -r pacote causa; do
+        [ -n "$pacote" ] || continue
+        log_fail "nats: $modulo — pacote $pacote em FAIL sem falha declarada que o explique: $causa"
+        total_pacotes_inexplicados=$((total_pacotes_inexplicados + 1))
+      done <<< "$inexplicados"
+      gotest_pacotes_diagnostico "$saida"
+      rc=1
+    fi
+  fi
+
   rm -f "$saida"
 done
 
@@ -266,7 +315,7 @@ cov_out="$(mktemp)"
 cov_log="$(mktemp)"
 # A SAÍDA GUARDA-SE. A primeira versão fazia `>/dev/null 2>&1` e, quando falhou, o gate não
 # conseguia diagnosticar-se a si próprio — que é o defeito que ele existe para não ter.
-if (cd "$REPO_ROOT/packages/substrate/eventstore" && go test ./... -count=1 -covermode=atomic -coverprofile="$cov_out") >"$cov_log" 2>&1; then
+if (cd "$REPO_ROOT/packages/substrate/eventstore" && go test ./... -count=1 -timeout="${NATS_GO_TEST_TIMEOUT}m" -covermode=atomic -coverprofile="$cov_out") >"$cov_log" 2>&1; then
   pct="$(cd "$REPO_ROOT/packages/substrate/eventstore" && go tool cover -func="$cov_out" 2>/dev/null | awk '/^total:/{print $NF}')"
   if coverage_meets_min "$pct" "$EVENTSTORE_COVERAGE_MIN"; then
     log_ok "eventstore: cobertura ${pct} >= ${EVENTSTORE_COVERAGE_MIN}% (com cluster)"
@@ -278,7 +327,7 @@ else
   # FAIL-CLOSED. Uma medição que não corre não é uma medição que passa — seria o caminho
   # exacto pelo qual um gate de cobertura fica verde sem medir nada.
   log_fail "eventstore: a medicao de cobertura NAO correu; sem numero nao ha veredicto"
-  grep -E "^(FAIL|---|.*\.go:[0-9]+:)" "$cov_log" | head -12
+  grep -E "^(FAIL|---|panic: |.*\.go:[0-9]+:)" "$cov_log" | head -12
   rc=1
 fi
 rm -f "$cov_out" "$cov_log"
@@ -286,6 +335,10 @@ rm -f "$cov_out" "$cov_log"
 log_gate "nats · veredicto"
 printf '   TOTAL sobre substrato replicado real: PASS=%s FAIL=%s (%s declaradas no AOS-432) SKIP=%s (%s não declarados)\n' \
   "$total_pass" "$total_fail" "$total_fail_conhecida" "$total_skip" "$total_skip_inesperado"
+
+if [ "$total_pacotes_inexplicados" -gt 0 ]; then
+  printf '   %s pacote(s) em FAIL por aborto (timeout, panic, build failed) — ver G4 acima\n' "$total_pacotes_inexplicados"
+fi
 
 if [ "$total_pass" -lt 60 ]; then
   # CONTROLO DE NÃO-VACUIDADE. Um gate que levanta o cluster e corre zero testes fica verde
