@@ -341,6 +341,53 @@ contexto já não existe.
 Um deploy **não** toca no volume `aos-data`: o Event Store e o trilho WORM sobrevivem à troca de
 imagem. É o que torna a reversão segura.
 
+**O deploy segura a drenagem da fila de planos (AOS-450).** O timer `aos-drenar-planos` corre a
+cada 5 min, e o CD sincroniza os scripts **antes** de trocar a imagem: na v0.1.35 uma drenagem calhou
+entre os dois, correu o `drenar-planos.sh` novo com o binário antigo e ficou `failed` (alerta falso).
+Agora:
+
+| Momento | O que acontece |
+|---|---|
+| antes do rsync | o CD corre `deploy.sh --anunciar` (do checkout, por stdin): escreve `/opt/aos/.drenagem/deploy-em-curso` e **espera** pela drenagem que estiver a correr, até 45 min por omissão (sobreponível pelo CD, ver abaixo). Ao desistir, o job **falha ali** — nada foi sincronizado nem trocado; repita com o mesmo digest quando a drenagem acabar |
+| `deploy.sh` (passo 0c) | assume o marcador com o seu pid e **segura o lock** da drenagem até sair — depois de o nó estar saudável com a imagem nova, ou de reverter |
+| uma drenagem nesse intervalo | sai **0** com `deploy em curso — drenagem ADIADA, nada reclamado` no `drenar-planos.log`; **não** escreve o carimbo `ultima-ok` (não drenou), e o `alerta-nhi.sh` só se queixa ao fim de 5 h sem sucesso |
+| `rollback.sh` | o mesmo, mas espera no máximo 5 min e, ao desistir, **avança** (`DEPLOY_AO_DESISTIR_DA_DRENAGEM=avancar`): é a saída de emergência de um nó partido, e o log di-lo |
+| um deploy que morreu | o marcador de um pid morto, ou o anúncio fora de prazo (15 min depois de tomado o lock; até 1 h se o job for cancelado durante a espera), é **órfão**: a drenagem seguinte ignora-o, apaga-o e drena. O lock morre com o processo |
+
+«Outra drenagem em curso» (o lock ocupado **sem** deploy) continua a falhar: o systemd nunca arranca
+duas, por isso é uma corrida à mão — que se quer visível.
+
+> ⚠️ **O que isto não fecha.** O par script novo/binário antigo só deixa de acontecer num deploy
+> **bem-sucedido**. Um deploy que falhe **depois** do rsync — bundle PDP ou âncora em falta, pull
+> falhado, desistência no passo 0c, reversão automática — deixa os scripts novos com a imagem
+> antiga e larga o marcador: a drenagem seguinte corre esse par e pode dar o mesmo `failed` falso da
+> v0.1.35. Idem depois de um `rollback.sh`, que não repõe os scripts.
+
+**Saída de emergência — um hotfix com uma drenagem longa em curso.** Uma drenagem pode levar até
+~2 h 30 (três planos de 40 min), e o deploy desiste aos 45 min.
+
+1. **Pelo CD:** em *Settings → Secrets and variables → Actions → Variables* (do repositório ou do
+   environment `production`), defina `DEPLOY_ESPERA_DRENAGEM_S` (segundos, inteiro sem zeros à
+   esquerda — p.ex. `9000`) e/ou `DEPLOY_AO_DESISTIR_DA_DRENAGEM` (`abortar` ou `avancar`) e dispare
+   o deploy. Valem para o anúncio **e** para o `deploy.sh`, e o workflow recusa outro valor antes de
+   abrir a ligação. `avancar` troca a imagem por baixo da drenagem: os pedidos que ela tiver a meio
+   podem falhar. Apague as variáveis a seguir.
+2. **Parar a drenagem em curso** (interrompe o plano a meio — só em emergência). Matar o `bash` do
+   `drenar-planos.sh` **não chega**: o cliente `docker compose run` herdou o descritor do lock e
+   segura-o, e o contentor do `aos-orq` continua a correr. Como `aos`, pare o contentor *one-off*:
+
+   ```bash
+   docker ps --filter label=com.docker.compose.project=aos \
+     --filter label=com.docker.compose.service=aos-orq --filter label=com.docker.compose.oneoff=True
+   docker stop <id>
+   ```
+
+   O `consume` termina, o `compose run` sai, a drenagem falha (e copia as métricas) e o lock vaga.
+   Como root, `systemctl stop aos-drenar-planos.service` mata o `bash` e o cliente `compose` (estão
+   no grupo de controlo da unidade) e o lock vaga; mas o contentor vive no do `dockerd` — confirme
+   com o `docker ps` acima e pare-o também. (Receita derivada do código e das etiquetas que o compose
+   põe; ainda não exercitada em produção.)
+
 ---
 
 ## Submeter um run — a receita que funciona, e porquê
@@ -527,7 +574,8 @@ até ao fim do plano.
   posse do run — se o snapshot nomear uma tool que o nó não tem, com um `digest` diferente do dele,
   ou com `egress`/`reversibility` **menos arriscados** do que o nó declara (mais conservador é
   aceite). A recusa nomeia cada divergência e lista as tools do nó com o digest a copiar, p. ex.
-  `tool "fs.read" não existe no nó (o nó tem: doc_read sha256:…, web_post sha256:…)`. Quando bate,
+  `tool "fs.read" não existe no nó (o nó tem: doc_read sha256:…)` — o catálogo de produção só oferece
+  `doc_read` desde 2026-09-26 (o `web_post` saiu por decisão do dono, ADR-034 §2.7). Quando bate,
   o registo diz `snapshot: N tool(s) conferida(s) com o catálogo do nó`. O que o nó **não** declara
   — `sensitivity`, `admissible` — continua a ser escrito à mão no snapshot. Uma tool sem `egress`
   no `AOS_MODEL_TOOLS` aparece no catálogo como `unknown` (conta como externa), e o snapshot tem de
@@ -618,7 +666,7 @@ limita é o **nó**:
 |---|---|---|
 | O **mandato** | assinado **uma vez** na máquina do humano, com a chave **dele** | fixa humano, board, agente, classe, política, escopo, TTL máximo e janela (≤ 90 dias) |
 | `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | servidor, a cada 15 min | `aos-issuer mint-mandated` com a chave `aos-issuer-auto` no Vault transit; escreve `/opt/aos/nhi/nhi-run.jwt` (45 min) |
-| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim; deixa o log e as métricas em `/opt/aos/logs` (AOS-443) |
+| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim; deixa o log e as métricas em `/opt/aos/logs` (AOS-443); **adia** (sai 0) durante um deploy (AOS-450) |
 | `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado **ou parado**, nenhuma drenagem bem-sucedida há 5 h — e **3 desfechos de plano seguidos** falhados (AOS-443); volta a avisar quando o conjunto de causas muda |
 
 > ⚠️ **O que o mandato protege, e o que não.** Quem comprometer o **emissor** — o contentor, o
@@ -714,8 +762,8 @@ com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentine
 `generico`) e **nunca o texto do erro**, que pode citar conteúdo escrito pelo modelo. O texto de um
 `generico` vai só para o log da drenagem, para diagnóstico.
 
-> ⚠️ **Rollback da imagem.** O deploy sincroniza os scripts ANTES de trocar a imagem, e o
-> `rollback.sh` repõe a imagem sem repor os scripts. Com uma imagem anterior ao AOS-443, o
+> ⚠️ **Rollback da imagem.** Durante o deploy a drenagem fica adiada (AOS-450, em §Operação), mas
+> o `rollback.sh` repõe a imagem sem repor os scripts. Com uma imagem anterior ao AOS-443, o
 > `drenar-planos.sh` novo **drena na mesma** (não passa flags novas ao `consume`), mas a
 > verificação das métricas falha — «as métricas … não são desta drenagem» — e a unidade fica
 > `failed`, o que o `alerta-nhi.sh` avisa. É ruído esperado até se voltar a uma imagem com o

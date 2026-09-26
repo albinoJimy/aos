@@ -26,11 +26,37 @@ import (
 // o snapshot de produção teve durante semanas.
 const aos441ManifestoDeProducao = "../../../deploy/server/model-tools/tools.json"
 
+// aos441ManifestoComEgress é o manifesto dos demos dev-hardened, que ainda oferece o `web_post`.
+// Desde a decisão do dono de 2026-09-26 (ADR-034 §2.7, AOS-069) o de produção só tem `doc_read`, e a
+// normalização de uma tool de egress externo sem reversibilidade declarada prova-se aqui.
+const aos441ManifestoComEgress = "../../../deploy/node/dev-hardened/model-tools/tools.json"
+
 func aos441Ambiente(t *testing.T, manifesto string) {
 	t.Helper()
 	t.Setenv("AOS_MODEL_ENDPOINT", "http://modelo.invalido")
 	t.Setenv("AOS_MODEL_TOOLS", manifesto)
 	t.Setenv("AOS_MODEL_TOOLS_REGISTER", "")
+}
+
+// Uma tool de egress externo SEM reversibility declarada é IRREVERSÍVEL pela semântica do nó, e o
+// catálogo tem de o dizer assim — servir o vazio deixaria o consumidor adivinhar. Provado sobre o
+// manifesto dos demos, que é o que ainda tem o `web_post`.
+func TestAOS441CatalogoNormalizaEgressExternoSemReversibilidade(t *testing.T) {
+	aos441Ambiente(t, aos441ManifestoComEgress)
+	cat, err := catalogoDeToolsDoAmbiente()
+	if err != nil {
+		t.Fatalf("catalogoDeToolsDoAmbiente: %v", err)
+	}
+	for _, e := range cat {
+		if e.Name != "web_post" {
+			continue
+		}
+		if e.Egress != "external" || e.Reversibility != "irreversible" {
+			t.Errorf("web_post: %+v — esperado egress external, irreversible", e)
+		}
+		return
+	}
+	t.Fatalf("o manifesto dev-hardened nomeia `web_post` e o catálogo não o tem: %+v", cat)
 }
 
 // O catálogo serve os nomes do manifesto e os eixos normalizados pela semântica do nó.
@@ -51,14 +77,9 @@ func TestAOS441CatalogoServeOsNomesDoManifesto(t *testing.T) {
 	if doc.Egress != "none" || doc.Reversibility != "reversible" || doc.Version != "1.0.0" {
 		t.Errorf("doc_read: %+v — esperado egress none, reversible, 1.0.0", doc)
 	}
-	post, ok := porNome["web_post"]
-	if !ok {
-		t.Fatalf("o manifesto de produção nomeia `web_post` e o catálogo não o tem: %+v", cat)
-	}
-	// `web_post` NÃO declara reversibility: pela semântica do nó isso é IRREVERSÍVEL, e o catálogo
-	// tem de o dizer assim — servir o vazio deixaria o consumidor adivinhar.
-	if post.Egress != "external" || post.Reversibility != "irreversible" {
-		t.Errorf("web_post: %+v — esperado egress external, irreversible", post)
+	// Decisão do dono (2026-09-26, ADR-034 §2.7): o catálogo de produção só tem `doc_read`.
+	if len(cat) != 1 {
+		t.Errorf("o manifesto de produção passou a oferecer %d tools (%+v) — era só doc_read por decisão do dono (ADR-034)", len(cat), cat)
 	}
 	if _, fantasma := porNome["fs.read"]; fantasma {
 		t.Error("o catálogo tem `fs.read`, que o manifesto do nó não nomeia")
@@ -207,7 +228,7 @@ func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
 	for _, e := range corpo.Tools {
 		nomes = append(nomes, e.Name)
 	}
-	if !reflect.DeepEqual(nomes, []string{"doc_read", "web_post"}) {
+	if !reflect.DeepEqual(nomes, []string{"doc_read"}) {
 		t.Fatalf("o servidor de serveAPI tinha de servir o catálogo do manifesto de produção, serviu %v", nomes)
 	}
 }

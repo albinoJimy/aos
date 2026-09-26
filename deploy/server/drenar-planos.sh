@@ -3,6 +3,7 @@
 #
 #   corre-o o timer aos-drenar-planos (systemd/), a cada 5 min
 #   à mão:  bash /opt/aos/drenar-planos.sh
+#   durante um deploy sai 0 SEM drenar («drenagem ADIADA») — ver «O DEPLOY SEGURA A DRENAGEM» (AOS-450)
 #
 # O AOS-430 mediu que NADA drenava a fila em produção: o serviço `aos-orq` é `restart: "no"` e o
 # `consume` drena uma vez e termina. Este é o «uma vez», repetido. Nunca há duas drenagens em
@@ -79,8 +80,84 @@ fail() { log "ERRO: $1"; exit 1; }
 # UMA drenagem de cada vez, também contra uma corrida À MÃO: o systemd só impede duas pelo timer.
 ESTADO_DIR="${AOS_DIR}/.drenagem"
 mkdir -p "${ESTADO_DIR}" && chmod 700 "${ESTADO_DIR}"
+
+# ─── O DEPLOY SEGURA A DRENAGEM (AOS-450) ───────────────────────────────────────────────────
+# O deploy.sh (e o rollback.sh, que corre por baixo dele) escreve ${DEPLOY_MARCADOR} ANTES de o CD
+# sincronizar os scripts, e apaga-o depois de o nó estar saudável com a imagem nova — o desenho está
+# no deploy.sh, «A DRENAGEM DA FILA». Enquanto ele for válido, esta drenagem sai 0 SEM reclamar
+# nada: um par script/binário misturado, ou um nó a reiniciar a meio de um plano, não são falhas da
+# fila, e um `failed` por eles era um alerta falso a cada release (medido na v0.1.35).
+#
+# O ADIAMENTO NÃO ESCREVE O CARIMBO ultima-ok: não drenou nada, e dizê-lo seria mentir ao sensor.
+# Não é preciso: o alerta-nhi.sh só se queixa ao fim de 5 h sem sucesso, e um deploy adia a fila
+# por minutos (até ~1 h, se esperar por uma drenagem longa).
+#
+# Válido é: `<epoch> <pid> <validade_s> <origem>` legível, com a idade dentro da validade (limitada
+# a DRENAR_DEPLOY_MAX_S) e — com pid > 0 — esse pid vivo e a correr um deploy.sh. pid 0 é o anúncio
+# do CD, que vale só pelo prazo. Tudo o resto é ÓRFÃO (um deploy que morreu sem trap): ignora-se, e
+# apaga-se quando esta drenagem tem o lock — a fila nunca pára para sempre por um deploy morto.
+# PRESSUPOSTO: o deploy e o timer correm como o mesmo `aos`. Com /proc montado com hidepid e um
+# DEPLOY_USER diferente, o pid do deploy não se vê e o marcador passa por órfão.
+DEPLOY_MARCADOR="${ESTADO_DIR}/deploy-em-curso"
+DEPLOY_MAX_S="${DRENAR_DEPLOY_MAX_S:-14400}"
+[[ "${DEPLOY_MAX_S}" =~ ^[1-9][0-9]{0,5}$ ]] || fail "DRENAR_DEPLOY_MAX_S='${DEPLOY_MAX_S}' inválido (segundos, inteiro)"
+
+# deploy_em_curso <tenho_o_lock: 0|1> — 0 se um deploy válido está em curso (e põe-no em DEPLOY_DESC).
+deploy_em_curso() {
+  local ini="" pid="" validade="" origem="" idade cmd="" motivo
+  # Sem zeros à esquerda: o bash leria `0900` como octal (e `09` rebenta a aritmética).
+  local num='^(0|[1-9][0-9]*)$'
+  DEPLOY_DESC=""
+  [[ -e "${DEPLOY_MARCADOR}" ]] || return 1
+  read -r ini pid validade origem < "${DEPLOY_MARCADOR}" 2>/dev/null || true
+  if [[ "${ini}" =~ ${num} && ${#ini} -le 12 && "${pid}" =~ ${num} && ${#pid} -le 10 \
+        && "${validade}" =~ ${num} && ${#validade} -le 6 ]]; then
+    (( validade <= DEPLOY_MAX_S )) || validade="${DEPLOY_MAX_S}"
+    idade=$(( $(date +%s) - ini ))
+    # -300: um relógio acertado para trás logo depois de escrever não torna o marcador órfão.
+    if (( idade < -300 )); then
+      motivo="escrito ${idade#-}s no FUTURO — relógio ou marcador forjado"
+    elif (( idade > validade )); then
+      motivo="EXPIROU: tem ${idade}s e valia ${validade}s (pid ${pid})"
+    elif (( pid == 0 )); then
+      DEPLOY_DESC="anunciado pelo CD há ${idade}s, vale ${validade}s"
+      return 0
+    else
+      cmd="$(tr '\0' ' ' 2>/dev/null < "/proc/${pid}/cmdline" || true)"
+      if [[ "${cmd}" == *deploy.sh* ]]; then
+        DEPLOY_DESC="deploy.sh pid ${pid} (${origem:-?}) há ${idade}s"
+        return 0
+      fi
+      if [[ -z "${cmd}" ]]; then
+        motivo="o deploy que o escreveu MORREU (pid ${pid} não existe)"
+      else
+        motivo="o pid ${pid} está vivo mas já não é um deploy.sh (o deploy morreu e o pid foi reutilizado)"
+      fi
+    fi
+  else
+    motivo="ilegível"
+  fi
+  log "marcador de deploy ÓRFÃO ignorado ($(head -c 80 "${DEPLOY_MARCADOR}" 2>/dev/null | tr -cd '[:alnum:] ')): ${motivo}"
+  if [[ "$1" == 1 ]]; then rm -f "${DEPLOY_MARCADOR}"; fi
+  return 1
+}
+
+adiar() {
+  log "deploy em curso — drenagem ADIADA, nada reclamado (${DEPLOY_DESC}); o timer volta a tentar"
+  exit 0
+}
+
 exec 9>"${ESTADO_DIR}/lock"
-flock -n 9 || fail "outra drenagem em curso (${ESTADO_DIR}/lock) — esta não reclama nada"
+if ! flock -n 9; then
+  # O lock ocupado é o deploy (que o segura até ao fim) ou outra drenagem. A segunda continua a
+  # FALHAR: o systemd nunca arranca dois oneshot, por isso é uma corrida à mão ou um deploy que
+  # perdeu o marcador — os dois querem-se visíveis.
+  if deploy_em_curso 0; then adiar; fi
+  fail "outra drenagem em curso (${ESTADO_DIR}/lock) — esta não reclama nada"
+fi
+# COM o lock na mão: o anúncio do CD não segura o lock (o rsync e o deploy.sh são ligações SSH
+# distintas), e o deploy.sh que avançou sem ele (rollback) também não.
+if deploy_em_curso 1; then adiar; fi
 
 # rodar_log — só DEBAIXO DO LOCK: duas drenagens a rodar ao mesmo tempo perdiam uma geração. Roda
 # no início de cada drenagem, pelo que um ficheiro passa do tecto no máximo pelo output de uma.

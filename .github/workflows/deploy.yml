@@ -129,6 +129,34 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
 
+      # AOS-450: ANTES do rsync. O timer da drenagem corre a cada 5 min, e um que calhasse entre o
+      # rsync e a troca da imagem corria o drenar-planos.sh NOVO com o binário ANTIGO (medido na
+      # v0.1.35: `failed` falso e alerta). O modo --anunciar do deploy.sh escreve o marcador que adia
+      # as drenagens e espera, com tecto (45 min), pela que estiver a correr; ao desistir falha AQUI,
+      # antes de se sincronizar ou trocar o que quer que seja. O script vai por STDIN, do checkout:
+      # o deploy.sh que está no servidor ainda é o da release anterior. O keepalive é para a espera,
+      # que pode passar muito tempo sem uma linha.
+      #
+      # A SAÍDA DE EMERGÊNCIA (um hotfix com uma drenagem longa em curso): as variáveis do
+      # repositório/ambiente DEPLOY_ESPERA_DRENAGEM_S (segundos) e DEPLOY_AO_DESISTIR_DA_DRENAGEM
+      # (abortar | avancar) sobrepõem os valores por omissão, no anúncio E no deploy. São validadas
+      # aqui ANTES de entrarem na linha de comando remota (que o shell do servidor interpreta) — e
+      # outra vez no deploy.sh. Ver deploy/server/README.md §Operação.
+      - name: Segurar a drenagem da fila (antes do rsync)
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          ESPERA: ${{ vars.DEPLOY_ESPERA_DRENAGEM_S || '2700' }}
+          AO_DESISTIR: ${{ vars.DEPLOY_AO_DESISTIR_DA_DRENAGEM || 'abortar' }}
+        run: |
+          set -euo pipefail
+          [[ "$ESPERA" =~ ^(0|[1-9][0-9]{0,5})$ ]] || { echo "::error::vars.DEPLOY_ESPERA_DRENAGEM_S='$ESPERA' inválida (segundos, inteiro)"; exit 1; }
+          case "$AO_DESISTIR" in abortar|avancar) ;; *) echo "::error::vars.DEPLOY_AO_DESISTIR_DA_DRENAGEM='$AO_DESISTIR' inválida (abortar | avancar)"; exit 1 ;; esac
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=5 "$USER@$HOST" \
+            "DEPLOY_ESPERA_DRENAGEM_S=$ESPERA DEPLOY_AO_DESISTIR_DA_DRENAGEM=$AO_DESISTIR bash -s -- --anunciar" \
+            < deploy/server/deploy.sh
+
       # Sincroniza SÓ os ficheiros geridos pelo repositório. Sem --delete e sem tocar em
       # .env, secrets/ ou image.env: esses são estado do servidor, não do repositório — um
       # --delete apagaria as chaves TLS e a configuração no primeiro deploy.
@@ -211,12 +239,19 @@ jobs:
           IMAGE: ${{ inputs.image }}
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ESPERA: ${{ vars.DEPLOY_ESPERA_DRENAGEM_S || '2700' }}
+          AO_DESISTIR: ${{ vars.DEPLOY_AO_DESISTIR_DA_DRENAGEM || 'abortar' }}
         run: |
           set -euo pipefail
+          # AOS-450: as mesmas variáveis do anúncio, validadas pela mesma razão.
+          [[ "$ESPERA" =~ ^(0|[1-9][0-9]{0,5})$ ]] || { echo "::error::vars.DEPLOY_ESPERA_DRENAGEM_S='$ESPERA' inválida (segundos, inteiro)"; exit 1; }
+          case "$AO_DESISTIR" in abortar|avancar) ;; *) echo "::error::vars.DEPLOY_AO_DESISTIR_DA_DRENAGEM='$AO_DESISTIR' inválida (abortar | avancar)"; exit 1 ;; esac
           # O token vai por STDIN, nunca em argv: um token na linha de comando remota fica
           # visível em `ps` para qualquer processo do servidor durante a execução do deploy.
-          printf '%s' "$GH_TOKEN" | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o BatchMode=yes "$USER@$HOST" \
-            "GHCR_USER='$GH_ACTOR' GHCR_TOKEN=\"\$(cat)\" bash /opt/aos/deploy.sh '$IMAGE'"
+          # O keepalive: o passo 0c do deploy.sh pode esperar por uma drenagem (AOS-450).
+          printf '%s' "$GH_TOKEN" | ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o BatchMode=yes \
+            -o ServerAliveInterval=60 -o ServerAliveCountMax=5 "$USER@$HOST" \
+            "GHCR_USER='$GH_ACTOR' GHCR_TOKEN=\"\$(cat)\" DEPLOY_ESPERA_DRENAGEM_S=$ESPERA DEPLOY_AO_DESISTIR_DA_DRENAGEM=$AO_DESISTIR bash /opt/aos/deploy.sh '$IMAGE'"
 
       # Smoke DE FORA: o deploy.sh já testou pelo loopback do servidor. Este passo prova o que
       # aquele não pode provar — que o serviço está alcançável pela rede, com a porta publicada

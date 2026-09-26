@@ -3,6 +3,20 @@
 # demo-pdp-taint-gate.sh — ISOLA o TAINT-GATE do Cedar (AOS-069/P4) por A/B, depois de o contrato de
 # tool ASSINADO passar a revalidação (AOS_MODEL_TOOLS_REGISTER=1).
 #
+# ⚠ DESACTUALIZADO — A PREMISSA DESTE DEMO JÁ NÃO É VERDADEIRA, por DUAS razões, e não foi re-corrido:
+#   1. AOS-407: as tools alinham-se ao board (`eu-west`), e `allow_http_post` exige
+#      `resource.region == "eu"`. O web_post morre na REGIÃO, não só no taint — o «region=eu✓»
+#      abaixo é falso desde então.
+#   2. ADR-034 (AOS-069): o taint da autorização é o rótulo do CONTEXTO do turno. Os dois runs deste
+#      demo pedem a tool no turno 1 com contexto só com o objectivo ⇒ `taint=trusted`, e a
+#      cláusula de taint PASSA. «mesmo taint=untrusted» é falso.
+#   Para isolar a cláusula de taint hoje é preciso (a) um contexto untrusted antes da call — um
+#   `inputs` (plan_input) no POST /runs, ou um primeiro turno que leia um resultado de tool — e (b)
+#   uma região que o Cedar aceite. O comportamento real está fixado em
+#   packages/cmd/aos/aos069_web_post_contexto_limpo_test.go e
+#   packages/security-tests/plan_input_injection_test.go. O texto abaixo é o original, mantido
+#   para o histórico.
+#
 # Com o catálogo assinado registado, a revalidação (2.º hook) admite as tools e a decisão chega ao
 # PDP. Mas o PDP tem, ANTES do Cedar, o gate de ALLOWLIST DE CAPABILITIES por agent_class (AOS-007):
 # a capability tem de constar da allowlist ASSINADA da classe. A classe TEM de ser `agent-worker`

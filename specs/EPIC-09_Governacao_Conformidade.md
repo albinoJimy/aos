@@ -933,6 +933,10 @@ ser imposta em cada tool call, com a mesma autoridade rotacionável do read-path
       antes —, mas a regra passa a estar desalinhada por si: se algum dia existir um caminho com taint
       confiável, a negação vem da região, com uma causa que ninguém procurou. Alinhar exige reassinar
       o bundle, o que pertence ao eixo de política e não a este ticket.
+      *Nota (2026-09-26, ADR-034/AOS-069): o caminho com taint confiável passou a existir — uma call
+      pedida sobre contexto só com o objectivo é `trusted` —, e a negação do `web_post` de contexto
+      limpo vem agora, como aqui se previu, da REGIÃO. Registado no ADR-034 (R8) como decisão para a
+      cerimónia do AOS-363 critério 6, e fixado por `TestAOS069_WebPostEmContextoLimpo_MorreNoPDPPelaRegiao`.*
 - [x] **Evidência de sistema.** Depois do deploy: o Keycloak de produção emite a claim `board` no
       cliente `aos-issuer` (reprovisionamento), um NHI cunhado leva `board:prod`, um run faz tool
       calls `eu-west` que EXECUTAM, e o banner declara a soberania de efeito LIGADA. Tokens cunhados

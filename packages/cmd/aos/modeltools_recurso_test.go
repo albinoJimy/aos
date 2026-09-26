@@ -98,12 +98,10 @@ func TestRecursoEfectivo_SlotPreenchidoPeloArgumento(t *testing.T) {
 	if got := resp.ToolCalls[0].ResourceValue; got != "doc://confidencial" {
 		t.Fatalf("o recurso auditado tem de ser o EFECTIVO; veio %q", got)
 	}
-	// O que NÃO muda: capability e taint continuam a vir do registry trusted.
+	// O que NÃO muda: a capability continua a vir do registry trusted. (O taint da autorização
+	// nem passa por aqui: é cunhado pelo runtime a partir do contexto, ADR-034.)
 	if resp.ToolCalls[0].Capability != "cap:fs.read" {
 		t.Fatalf("capability tem de continuar a vir do registry: %q", resp.ToolCalls[0].Capability)
-	}
-	if resp.ToolCalls[0].AuthorizationTaint != "" {
-		t.Fatal("o taint tem de continuar vazio (untrusted) — AOS-069")
 	}
 }
 

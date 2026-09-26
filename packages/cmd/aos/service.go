@@ -245,7 +245,8 @@ type NodeService struct {
 	//
 	// AS SÉRIES QUE O TORNAM OBSERVÁVEL. «O log está a ser exportado?» tem, como a expiração por
 	// TTL de AOS-267, três leituras que exigem acções diferentes: nunca armado (não há destino),
-	// armado e PARADO (soberania ou colisão de referência — não volta sozinho), armado e a
+	// armado e PARADO (soberania, outro dono da cadeia, registo que não verifica, colisão de conteúdo
+	// ou log atrás do cursor — não volta sozinho), armado e a
 	// correr. O contador dá a taxa; a IDADE é o detector, porque denuncia numa leitura só.
 	ciclosDeBackup   atomic.Int64
 	ultimoBackupUnix atomic.Int64
@@ -549,8 +550,8 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	// [Bootstrap] compôs o exportador (o que exige um destino imutável EXPLÍCITO — desligado por
 	// omissão) e a periodicidade dele é > 0. A cadência NÃO é uma opção deste serviço de
 	// propósito: é a do exportador, para que o RPO anunciado seja o RPO ligado. O banner DECLARA
-	// sempre a postura — ligada, dormente ou desligada — e, quando desligada, a ressalva de que
-	// não há hoje backend durável para a porta. Ver backup_scheduler.go.
+	// sempre a postura — ligada, dormente ou desligada — e, quando ligada, se a cadeia foi
+	// RETOMADA do destino ou começada aqui. Ver backup_scheduler.go.
 	if backupSchedulerArmed(node) {
 		go s.exportarBackups(s.sweepStop)
 	}

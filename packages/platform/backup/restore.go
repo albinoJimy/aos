@@ -6,6 +6,8 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -63,6 +65,55 @@ type RestoreEvidence struct {
 	HeadSeq        map[string]uint64 `json:"head_seq"`
 	EventsRestored uint64            `json:"events_restored"`
 	CheckpointHead []byte            `json:"checkpoint_head"`
+}
+
+// LoadManifest reconstrói a cadeia COMPLETA a partir dos registos de ciclo do destino, e devolve
+// também o último checkpoint assinado.
+//
+// # A segunda metade do limite do AOS-101
+//
+// Até aqui [Restorer.RestoreTo] recebia o `Manifest` e o `Checkpoint` COMO ARGUMENTOS e nada neste
+// módulo os persistia: segmentos duráveis sem manifesto guardado não eram restauráveis, e quem
+// operasse o backup tinha de guardar o manifesto algures por sua conta — um segundo artefacto,
+// fora do WORM, sem o qual todos os segmentos do mundo não valiam nada. Desde a retoma, cada ciclo
+// sela o seu elo num registo imutável no próprio destino, e a cadeia é reconstruível a partir do
+// que lá está.
+//
+// # O que este método NÃO faz, deliberadamente
+//
+// Não verifica. Devolve o que o destino diz, e a autoridade sobre isso continua a ser
+// [Restorer.VerifyManifest] — que [Restorer.RestoreTo] corre fail-closed ANTES de escrever o que
+// quer que seja. Duplicar aqui a verificação criaria uma segunda guarda a poder divergir da
+// primeira, e a primeira é a que corre no caminho que importa.
+//
+// Em particular, `expectedHead` continua a ser um argumento de quem restaura, e tem de vir de FORA
+// do backup: é a âncora anti-rollback, e uma âncora lida do mesmo sítio que se está a verificar
+// não ancora coisa nenhuma.
+//
+// Percorre os ciclos por ordem até ao primeiro ausente — O(N) leituras de objectos pequenos, pago
+// por quem restaura e não por cada arranque do nó.
+func (r *Restorer) LoadManifest() (Manifest, Checkpoint, error) {
+	region := r.backup.Region()
+	m := Manifest{Region: normalizeRegion(region)}
+	var last Checkpoint
+	for i := uint64(1); ; i++ {
+		rec, err := loadCycleRecord(r.backup, region, i)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				break
+			}
+			return Manifest{}, Checkpoint{}, err
+		}
+		if rec.Entry.Index != i {
+			return Manifest{}, Checkpoint{}, fmt.Errorf("%w: o registo do ciclo %d declara Index=%d", ErrChainBroken, i, rec.Entry.Index)
+		}
+		m.Segments = append(m.Segments, rec.Entry)
+		last = rec.Checkpoint
+	}
+	if len(m.Segments) == 0 {
+		return Manifest{}, Checkpoint{}, fmt.Errorf("%w: nenhum registo de ciclo na regiao %q — destino virgem ou cadeia noutra regiao", ErrNotFound, m.Region)
+	}
+	return m, last, nil
 }
 
 // VerifyManifest verifica a integridade do backup (AC3) SEM restaurar:

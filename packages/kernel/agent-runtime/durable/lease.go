@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -326,7 +327,13 @@ func (m *LeaseManager) Claim(ctx context.Context, runID string) (Lease, error) {
 		now := m.clock.Now()
 		if st.exists && now.UnixNano() < st.expiresUnixNano {
 			// Lease vivo detido por outro (ou por este) worker: não é reclamável.
-			return Lease{}, ErrLeaseHeld
+			//
+			// A recusa NOMEIA O DONO (AOS-432): quem a lê é um operador a decidir se pára
+			// o outro processo ou se espera pela expiração, e «há um lease» sem dizer de
+			// quem nem até quando manda-o procurar às cegas. O sentinela continua na
+			// cadeia — quem classifica usa errors.Is, e todos os consumidores o fazem.
+			return Lease{}, fmt.Errorf("%w: detido por %q (token %d) até %s", ErrLeaseHeld,
+				st.worker, st.token, time.Unix(0, st.expiresUnixNano).UTC().Format(time.RFC3339Nano))
 		}
 
 		newToken := st.token + 1

@@ -27,7 +27,7 @@ Este documento é a **Matriz de Rastreabilidade de Requisitos** (*Requirements T
 
 ### 1.2 Âmbito
 
-A rastreabilidade cobre os 33 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **452 tickets** `AOS-001`–`AOS-452` distribuídos por 25 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
+A rastreabilidade cobre os 34 ADRs canónicos (`docs/adr/README.md`), os 13 requisitos funcionais `RF-01`–`RF-13` (§2), os 12 requisitos não-funcionais `NFR-01`–`NFR-12` (§3) e os **453 tickets** `AOS-001`–`AOS-453` distribuídos por 25 epics. Os catálogos §2 e §3 partem das 11 capacidades funcionais de `specs/00` §4 e dos 10 *drivers* de `specs/00` §7 e estendem-nos com os requisitos entrados depois; os identificadores `RF-NN`/`NFR-NN` são estáveis e vivem aqui, não na System Spec. Os dados das matrizes ADR×ticket e NFR×ticket foram extraídos por análise textual dos ficheiros `specs/EPIC-*.md` (correspondência dos códigos `ADR-0NN` e `AOS-NNN` por bloco de ticket), não por atribuição editorial *a posteriori*.
 
 ### 1.3 Audiência
 
@@ -43,7 +43,7 @@ Gestão de produto e de programa (cobertura e priorização), arquitectura (veri
 
 ### 1.5 Princípios/decisões aplicáveis (ADRs)
 
-Este documento não introduz decisões de arquitectura; **rastreia** as 33 existentes (ADR-001 a ADR-033, `docs/adr/README.md`). Referencia-as sempre por código.
+Este documento não introduz decisões de arquitectura; **rastreia** as 34 existentes (ADR-001 a ADR-034, `docs/adr/README.md`). Referencia-as sempre por código.
 
 ---
 
@@ -96,7 +96,7 @@ Derivados dos *drivers* canónicos (`_BRIEF` §4 / `specs/00` §7) e dos KPIs/SL
 
 ## 4. Matriz ADR × ticket
 
-Para cada ADR-001…033, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
+Para cada ADR-001…034, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
 
 A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).
 
@@ -106,8 +106,8 @@ A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a
 | **ADR-002** | Reference Monitor mandatório | Catálogo, por materializar | 19 | AOS-003, AOS-013, AOS-021, AOS-025, AOS-026, AOS-045, AOS-051, AOS-054, AOS-055, AOS-064, AOS-069, AOS-071, AOS-074, AOS-076, AOS-087, AOS-099, AOS-113, AOS-117, AOS-234 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/18` |
 | **ADR-003** | Identidade não-humana por agente (NHI scoped/time-bound + binding humano↔NHI auditável) | Ratificado | 13 | AOS-005, AOS-006, AOS-025, AOS-026, AOS-057, AOS-071, AOS-073, AOS-097, AOS-185, AOS-278, AOS-288, AOS-427, AOS-433 | `tecnica/01`, `tecnica/03`, `tecnica/06`, `tecnica/07`, `tecnica/09`, `tecnica/11`, `tecnica/12` |
 | **ADR-004** | Isolamento ao nível do kernel | Catálogo, por materializar | 12 | AOS-046, AOS-064, AOS-065, AOS-066, AOS-067, AOS-068, AOS-075, AOS-098, AOS-103, AOS-117, AOS-142, AOS-358 | `tecnica/05`, `tecnica/07`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
-| **ADR-005** | Separação control/data-plane + taint | Catálogo, por materializar | 19 | AOS-013, AOS-023, AOS-039, AOS-042, AOS-044, AOS-046, AOS-049, AOS-054, AOS-069, AOS-071, AOS-075, AOS-117, AOS-133, AOS-158, AOS-219, AOS-224, AOS-242, AOS-272, AOS-414 | `tecnica/02`, `tecnica/04`, `tecnica/05`, `tecnica/07`, `tecnica/09`, `tecnica/11`, `tecnica/12`, `tecnica/15`, `tecnica/18` |
-| **ADR-006** | Credential Broker com tokens JIT | Ratificado | 18 | AOS-048, AOS-051, AOS-055, AOS-056, AOS-057, AOS-064, AOS-070, AOS-073, AOS-075, AOS-093, AOS-098, AOS-101, AOS-129, AOS-132, AOS-156, AOS-333, AOS-427, AOS-433 | `tecnica/02`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
+| **ADR-005** | Separação control/data-plane + taint — a semântica de enforcement com que o nó a cumpre hoje (opção C, autorização derivada do contexto) está materializada no **ADR-034**; a forma forte (dual-LLM/CaMeL, opção A) fica com gatilho | Catálogo, por materializar | 19 | AOS-013, AOS-023, AOS-039, AOS-042, AOS-044, AOS-046, AOS-049, AOS-054, AOS-069, AOS-071, AOS-075, AOS-117, AOS-133, AOS-158, AOS-219, AOS-224, AOS-242, AOS-272, AOS-414 | `tecnica/02`, `tecnica/04`, `tecnica/05`, `tecnica/07`, `tecnica/09`, `tecnica/11`, `tecnica/12`, `tecnica/15`, `tecnica/18` |
+| **ADR-006** | Credential Broker com tokens JIT | Ratificado | 19 | AOS-048, AOS-051, AOS-055, AOS-056, AOS-057, AOS-064, AOS-070, AOS-073, AOS-075, AOS-093, AOS-098, AOS-101, AOS-129, AOS-132, AOS-156, AOS-333, AOS-427, AOS-433, AOS-453 | `tecnica/02`, `tecnica/05`, `tecnica/06`, `tecnica/07`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/12`, `tecnica/15` |
 | **ADR-007** | Event Store replicado | Catálogo, por materializar | 19 | AOS-001, AOS-002, AOS-015, AOS-022, AOS-027, AOS-030, AOS-035, AOS-038, AOS-045, AOS-098, AOS-099, AOS-100, AOS-101, AOS-102, AOS-118, AOS-281, AOS-358, AOS-424, AOS-449 | `tecnica/01`, `tecnica/02`, `tecnica/03`, `tecnica/04`, `tecnica/05`, `tecnica/09`, `tecnica/10`, `tecnica/11` |
 | **ADR-008** | Admission control global em tokens/$ | Catálogo, por materializar | 28 | AOS-008, AOS-026, AOS-027, AOS-028, AOS-029, AOS-030, AOS-031, AOS-032, AOS-033, AOS-034, AOS-037, AOS-059, AOS-062, AOS-063, AOS-078, AOS-080, AOS-105, AOS-106, AOS-107, AOS-116, AOS-123, AOS-259, AOS-260, AOS-270, AOS-280, AOS-287, AOS-321, AOS-382 | `tecnica/01`, `tecnica/03`, `tecnica/04`, `tecnica/06`, `tecnica/08`, `tecnica/09`, `tecnica/10`, `tecnica/11`, `tecnica/15` |
 | **ADR-009** | Layout de prompt cache-estável | Catálogo, por materializar | 16 | AOS-013, AOS-015, AOS-037, AOS-043, AOS-044, AOS-047, AOS-050, AOS-055, AOS-060, AOS-061, AOS-085, AOS-086, AOS-152, AOS-157, AOS-241, AOS-415 | `tecnica/02`, `tecnica/04`, `tecnica/05`, `tecnica/06`, `tecnica/08`, `tecnica/09`, `tecnica/11`, `tecnica/12`, `tecnica/18` |
@@ -135,8 +135,9 @@ A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a
 | **ADR-031** | A leitura do estado de um pedido de plano vive no NÓ (`GET /plans/{id}`), e a fronteira é a **titularidade**: o `principal` do chamador contra o gravado no facto, com «não existe», «não é teu» e «outra região» a darem o MESMO 404. **Não emenda o ADR-030 §2.1 — aplica-o**, porque a regra é «não revelar a quem NÃO PODE AGIR» e quem submeteu pode. Lê do princípio do stream, contra a marca de água do AOS-429, que esconderia precisamente os planos terminados | Aceite | 2 | AOS-427, AOS-430 | `tecnica/09`, `tecnica/11` |
 | **ADR-032** | A cunhagem do NHI sem operador: a prova passa a ser uma **delegação de longa duração assinada UMA vez por um humano** (mantém a raiz humana do ADR-003, muda a frescura da prova), a autoridade é um **emissor externo com `crypto.Signer` sobre Vault**, **há renovação com sensor obrigatório**, e o **tecto máximo de TTL é imposto na BIBLIOTECA** (`identity.TTLMaximo = 1h`, constante e não configuração, porque o atrito da cunhagem manual era uma defesa ACIDENTAL que desaparece com a automação). **Só a quarta decisão está implementada** — o ADR declara em §5 o que falta e porquê | Aceite | 1 | AOS-427 | `tecnica/09`, `tecnica/11` |
 | **ADR-033** | O emissor AUTOMÁTICO vive no servidor, com a chave no Vault transit, e **é o NÓ que o limita**: cada token leva embebido um **MANDATO** assinado UMA vez pela chave do humano, que o nó verifica contra a chave **pinada no nó** (`AOS_MANDATE_SIGNERS`) — humano, agente, classe, política, board, escopo, TTL e janela, sem curingas. Quem comprometer o EMISSOR só cunha o que o humano assinou (root no host do nó não é coberto — declarado). **Substitui o ADR-032 §2.2**: com o Vault a destravar-se sozinho no mesmo servidor, «chave externa no Vault» e «emissor no servidor» davam a mesma protecção — nenhuma. Revoga-se o MANDATO inteiro por `POST /nhi/revoke` com `jti=mandate:<id>` | Aceite | 2 | AOS-427, AOS-437 | `tecnica/09`, `tecnica/11` |
+| **ADR-034** | A autorização de uma tool call é o rótulo do **CONTEXTO** que o modelo viu, cunhado no runtime: um **join monótono** dos rótulos de tudo o que entrou no tail (objectivo, correcção e prefixo trusted; `plan_input`, `tool_result` e memória untrusted, a memória fail-closed; histórico com o rótulo do contexto que o produziu), lido no Assemble do turno. `ToolInvocation.AuthorizationTaint` **sai** — a fronteira do `ModelClient` deixa de transportar autoridade (DEF-807 fecha em substância). Materializa a semântica provisória do **ADR-005** (opção C); a opção A (dual-LLM/CaMeL) fica com gatilho — uma tool de efeito parametrizada por dados untrusted (DEF-806, re-escopado). O critério 6 do AOS-363 (re-assinar o Cedar) fica para a próxima cerimónia de chave | Aceite | 3 | AOS-069, AOS-363, AOS-407 | `tecnica/07`, `tecnica/09`, `tecnica/11` |
 
-**Cobertura: 33/33 ADRs têm ≥ 1 ticket implementador.**
+**Cobertura: 34/34 ADRs têm ≥ 1 ticket implementador.**
 
 - **Sub-cobertura (≤3 tickets):** 
   - **ADR-024** (O efeito de despacho move-se da materialização para o despacho governado: a materialização admite o plano no DAG sem efeito; o `plandispatch.Dispatcher` decide a elegibilidade por passagem e produz o efeito (extende o AOS-237, dentro do ADR-023; supera o spawn-na-materialização do AOS-393, preservando as suas correcções)) — 2 ticket(s): AOS-390, AOS-413.
@@ -145,6 +146,7 @@ A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a
   - **ADR-031** (A leitura do estado de um pedido de plano vive no NÓ (`GET /plans/{id}`), e a fronteira é a **titularidade**: o `principal` do chamador contra o gravado no facto, com «não existe», «não é teu» e «outra região» a darem o MESMO 404. **Não emenda o ADR-030 §2.1 — aplica-o**, porque a regra é «não revelar a quem NÃO PODE AGIR» e quem submeteu pode. Lê do princípio do stream, contra a marca de água do AOS-429, que esconderia precisamente os planos terminados) — 2 ticket(s): AOS-427, AOS-430.
   - **ADR-032** (A cunhagem do NHI sem operador: a prova passa a ser uma **delegação de longa duração assinada UMA vez por um humano** (mantém a raiz humana do ADR-003, muda a frescura da prova), a autoridade é um **emissor externo com `crypto.Signer` sobre Vault**, **há renovação com sensor obrigatório**, e o **tecto máximo de TTL é imposto na BIBLIOTECA** (`identity.TTLMaximo = 1h`, constante e não configuração, porque o atrito da cunhagem manual era uma defesa ACIDENTAL que desaparece com a automação). **Só a quarta decisão está implementada** — o ADR declara em §5 o que falta e porquê) — 1 ticket(s): AOS-427.
   - **ADR-033** (O emissor AUTOMÁTICO vive no servidor, com a chave no Vault transit, e **é o NÓ que o limita**: cada token leva embebido um **MANDATO** assinado UMA vez pela chave do humano, que o nó verifica contra a chave **pinada no nó** (`AOS_MANDATE_SIGNERS`) — humano, agente, classe, política, board, escopo, TTL e janela, sem curingas. Quem comprometer o EMISSOR só cunha o que o humano assinou (root no host do nó não é coberto — declarado). **Substitui o ADR-032 §2.2**: com o Vault a destravar-se sozinho no mesmo servidor, «chave externa no Vault» e «emissor no servidor» davam a mesma protecção — nenhuma. Revoga-se o MANDATO inteiro por `POST /nhi/revoke` com `jti=mandate:<id>`) — 2 ticket(s): AOS-427, AOS-437.
+  - **ADR-034** (A autorização de uma tool call é o rótulo do **CONTEXTO** que o modelo viu, cunhado no runtime: um **join monótono** dos rótulos de tudo o que entrou no tail (objectivo, correcção e prefixo trusted; `plan_input`, `tool_result` e memória untrusted, a memória fail-closed; histórico com o rótulo do contexto que o produziu), lido no Assemble do turno. `ToolInvocation.AuthorizationTaint` **sai** — a fronteira do `ModelClient` deixa de transportar autoridade (DEF-807 fecha em substância). Materializa a semântica provisória do **ADR-005** (opção C); a opção A (dual-LLM/CaMeL) fica com gatilho — uma tool de efeito parametrizada por dados untrusted (DEF-806, re-escopado). O critério 6 do AOS-363 (re-assinar o Cedar) fica para a próxima cerimónia de chave) — 3 ticket(s): AOS-069, AOS-363, AOS-407.
 
 ## 5. Matriz NFR × ticket de verificação
 
@@ -173,7 +175,7 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 
 | Doc técnico | Epic(s) implementador(es) | Gama de tickets |
 |---|---|---|
-| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-452 |
+| `tecnica/00_Arquitectura_Solucao.md` | Todos (transversal) | AOS-001 – AOS-453 |
 | `tecnica/01_Reference_Monitor_Plano_Controlo.md` | EPIC-01 | AOS-001 – AOS-012 |
 | `tecnica/02_Agent_Runtime_Execucao_Duravel.md` | EPIC-02 | AOS-013 – AOS-024 |
 | `tecnica/03_Orquestracao_Escalonamento.md` | EPIC-03 | AOS-025 – AOS-034 |
@@ -182,22 +184,22 @@ O *back-link* que faltava (RAST). Cada documento de `tecnica/` mapeia para o(s) 
 | `tecnica/06_Model_Gateway_Custos.md` | EPIC-06 | AOS-055 – AOS-063 |
 | `tecnica/07_Seguranca_Isolamento.md` | EPIC-07 | AOS-064 – AOS-075 |
 | `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |
-| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-087 – AOS-097 (+ AOS-190 – AOS-452) |
+| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-087 – AOS-097 (+ AOS-190 – AOS-453) |
 | `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |
-| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-09, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-452) |
+| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), EPIC-01, EPIC-02, EPIC-03, EPIC-06, EPIC-08, EPIC-09, EPIC-10, EPIC-14, EPIC-16, EPIC-18, EPIC-19, EPIC-20, EPIC-21, EPIC-22, EPIC-23, EPIC-24, EPIC-25 | AOS-109 – AOS-118 (+ AOS-045–054, + AOS-190 – AOS-453) |
 | `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |
 | `tecnica/13_Modelo_Dados_Eventos.md` | EPIC-04, EPIC-05, EPIC-08 | AOS-035–044, AOS-045–054, AOS-076–086 |
 | `tecnica/14_Matriz_Conformidade.md` | EPIC-07, EPIC-08, EPIC-09 | AOS-072, AOS-076–086, AOS-087–097 |
 | `tecnica/15_Experiencia_HITL_UX.md` | EPIC-12 (+ EPIC-13 frontend) | AOS-119 – AOS-143 |
-| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-452 |
+| `tecnica/16_Rastreabilidade_RTM.md` | Todos (transversal — meta-rastreabilidade) | AOS-001 – AOS-453 |
 | `tecnica/17_Analise_STRIDE.md` | EPIC-07, EPIC-15, EPIC-16 (análise em EPIC-18/AOS-194) | AOS-064–075, AOS-163–173, AOS-174–177 |
 
 ```mermaid
 flowchart LR
-    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..033 (decisoes)"]
+    RF["RF-01..RF-13 (capacidades)"] --> ADR["ADR-001..034 (decisoes)"]
     NFR["NFR-01..NFR-12 (drivers)"] --> ADR
     ADR --> EPIC["EPIC-01..EPIC-25 (entregas)"]
-    EPIC --> TICK["AOS-001..AOS-452 (tickets)"]
+    EPIC --> TICK["AOS-001..AOS-453 (tickets)"]
     DOC["tecnica/00..17 (docs)"] --> EPIC
     TICK --> TEST["EPIC-11: AOS-109..118 (verificacao)"]
     NFR --> TEST
@@ -213,16 +215,16 @@ Sinalizadas a partir dos dados reais das §§4–5, e **geradas com elas**: os n
 |---|---|---|---|
 | GAP-02 | **NFR-07 (*overhead* de mediação) sem alvo ratificado** — verificado por AOS-116, com alvo agregado «a ratificar por benchmark» e sem SLO numérico fixado | §3, §5 | Ratificar orçamento por sub-passo com benchmark e fixar SLO numérico |
 | GAP-04 | **RF-10 (controlo bidireccional) sem verificação e2e dedicada** — o mecanismo tem tickets (AOS-023, AOS-119, AOS-158, AOS-218, AOS-292), mas nenhum deles é um teste e2e de pausar→corrigir→retomar em EPIC-11; a verificação mais próxima é AOS-117 (*red-team*) | §5 | Adicionar caso de teste e2e de pausar→corrigir→retomar em EPIC-11 |
-| GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída*: nenhum dos 452 tickets do corpus traz estado Done/WIP para esta matriz | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
+| GAP-05 | **Ausência de coluna de estado** — a RTM regista cobertura de *especificação*, não de *implementação concluída*: nenhum dos 453 tickets do corpus traz estado Done/WIP para esta matriz | §4–5 | Ligar a RTM ao *tracker* (estado por ticket) na próxima revisão |
 | GAP-06 | **NFR-09 (DSAR) verificado indirectamente** — provado por AOS-091, AOS-092, AOS-113; o *crypto-shredding* tem ticket próprio (AOS-093) e um defeito conhecido de alcance (AOS-290), mas nenhum teste e2e exercita um DSAR sobre o log encadeado | §5 | Criar teste e2e de *crypto-shredding* preservando integridade da hash-chain |
-| GAP-08 | **Os catálogos de enunciado estão atrás do catálogo de documentos** — `docs/adr/README.md` enuncia 33 ADRs e é a fonte do canon que os gates lêem (AOS-314), mas `_BRIEF` §3 enuncia 14 (faltam ADR-015, ADR-016, ADR-017, ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023, ADR-024, ADR-025, ADR-026, ADR-027, ADR-028, ADR-029, ADR-030, ADR-031, ADR-032, ADR-033) e `specs/00` §11 enuncia 23 (faltam ADR-024, ADR-025, ADR-026, ADR-027, ADR-028, ADR-029, ADR-030, ADR-031, ADR-032, ADR-033). O próprio README declara os dois «a referência de enunciado para todos os ADRs», pelo que a divergência é, pela sua própria regra, um defeito e não uma actualização | `_BRIEF` §3, `specs/00` §11, `docs/adr/README.md` | Completar os dois catálogos de enunciado com os ADRs em falta, ou emendar o README para deixar de os declarar referência de enunciado |
+| GAP-08 | **Os catálogos de enunciado estão atrás do catálogo de documentos** — `docs/adr/README.md` enuncia 34 ADRs e é a fonte do canon que os gates lêem (AOS-314), mas `_BRIEF` §3 enuncia 14 (faltam ADR-015, ADR-016, ADR-017, ADR-018, ADR-019, ADR-020, ADR-021, ADR-022, ADR-023, ADR-024, ADR-025, ADR-026, ADR-027, ADR-028, ADR-029, ADR-030, ADR-031, ADR-032, ADR-033, ADR-034) e `specs/00` §11 enuncia 23 (faltam ADR-024, ADR-025, ADR-026, ADR-027, ADR-028, ADR-029, ADR-030, ADR-031, ADR-032, ADR-033, ADR-034). O próprio README declara os dois «a referência de enunciado para todos os ADRs», pelo que a divergência é, pela sua própria regra, um defeito e não uma actualização | `_BRIEF` §3, `specs/00` §11, `docs/adr/README.md` | Completar os dois catálogos de enunciado com os ADRs em falta, ou emendar o README para deixar de os declarar referência de enunciado |
 
-Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: 33/33 ADRs (ADR-001…033) e 12/12 NFRs (NFR-01…NFR-12) têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação** — excepto GAP-08, que é de **coerência entre catálogos**.
+Nenhum ADR do canon gated e nenhum NFR está **sem** cobertura mínima: 34/34 ADRs (ADR-001…034) e 12/12 NFRs (NFR-01…NFR-12) têm pelo menos um ticket associado. As lacunas acima são de **profundidade e verificação** — excepto GAP-08, que é de **coerência entre catálogos**.
 
 **Lacunas fechadas pelo corpus** (registadas com a evidência que as fechou):
 
 - **GAP-01** — ADR-014 (L0–L5) foi registado como sub-coberto com 3 tickets; §4 conta agora 5 (AOS-022, AOS-089, AOS-090, AOS-125, AOS-380), acima do limiar de sub-cobertura (≤3), e a acção recomendada — medição de fiabilidade e demoção automática — é AOS-090, em EPIC-09.
-- **GAP-07** — registava que ADR-020…023 estavam fora do canon lido pelos gates e deixava a decisão por tomar. **Decidido em AOS-314: o canon passa a ADR-001…033.** ADR-020 tinha zero tickets e teria posto o `ref-lint` vermelho; passou a ser citado pelos cinco tickets que o próprio ADR nomeia (§5 e §6), em `specs/EPIC-19` — a lacuna era da citação, não da cobertura.
+- **GAP-07** — registava que ADR-020…023 estavam fora do canon lido pelos gates e deixava a decisão por tomar. **Decidido em AOS-314: o canon passa a ADR-001…034.** ADR-020 tinha zero tickets e teria posto o `ref-lint` vermelho; passou a ser citado pelos cinco tickets que o próprio ADR nomeia (§5 e §6), em `specs/EPIC-19` — a lacuna era da citação, não da cobertura.
 - **GAP-03** — ADR-003 foi registado como concentrado em AOS-005/006; §4 conta agora 13 tickets, e a rotação/revogação tem eixo próprio em AOS-288 e AOS-300.
 
 ---
@@ -247,7 +249,7 @@ A RTM serve sobretudo as dimensões **Governação** (prova auditável de que ca
 - **Rasto ascendente / descendente:** navegação da evidência para o requisito / do requisito para a evidência.
 - **RF / NFR:** requisito funcional (capacidade) / não-funcional (propriedade de qualidade com alvo mensurável).
 - **Sub-cobertura:** número de implementadores anormalmente baixo face à criticidade — sinal de revisão.
-- **ADR (Architecture Decision Record):** registo de decisão de arquitectura. O canon que os gates lêem é **ADR-001…033**, alinhado com o catálogo em `docs/adr/README.md` por AOS-314 (e ADR-024, AOS-390; ADR-025, AOS-090; ADR-026, AOS-398; ADR-027, AOS-413; ADR-028, AOS-417; ADR-029, AOS-424; ADR-030, AOS-423). Os catálogos de *enunciado* (`_BRIEF` §3, `specs/00` §11) estão atrás dele — divergência registada em **GAP-08**, não uma gama a corrigir por edição desta linha.
+- **ADR (Architecture Decision Record):** registo de decisão de arquitectura. O canon que os gates lêem é **ADR-001…034**, alinhado com o catálogo em `docs/adr/README.md` por AOS-314 (e ADR-024, AOS-390; ADR-025, AOS-090; ADR-026, AOS-398; ADR-027, AOS-413; ADR-028, AOS-417; ADR-029, AOS-424; ADR-030, AOS-423). Os catálogos de *enunciado* (`_BRIEF` §3, `specs/00` §11) estão atrás dele — divergência registada em **GAP-08**, não uma gama a corrigir por edição desta linha.
 - **SLO / SLI:** objectivo / indicador de nível de serviço (ex.: PDP p95 < 15 ms, cache-hit > 80%).
 - **Gate fail-closed:** etapa de CI que, em falha ou dúvida, **bloqueia** a promoção (`specs/01` §4).
 - **Eval-gate:** *admission control* da auto-modificação baseado em *golden-sets* (ADR-012).

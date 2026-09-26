@@ -82,8 +82,9 @@ func TestAnchorsVerifiedEspelhaOQueEComparado(t *testing.T) {
 	e := mustEngine(t, or)
 
 	casos := map[string]struct {
-		opts  Options
-		razao string
+		opts   Options
+		razao  string
+		engine *ReplayEngine // nil ⇒ o motor sobre o log original
 	}{
 		"model": {
 			opts: Options{Spec: func() TrajectorySpec {
@@ -108,16 +109,27 @@ func TestAnchorsVerifiedEspelhaOQueEComparado(t *testing.T) {
 			},
 			razao: "step_id sequence",
 		},
+		// ADR-034: o taint selado nas mediações é adulterado (trusted↔untrusted) — o tail
+		// re-dobrado deixa de ser o que autorizou as calls.
+		"authority": {
+			opts:   Options{Spec: or.spec, VerifyAuthority: true},
+			razao:  "authority",
+			engine: mustEngineOn(t, &taintFlippingReader{inner: or.store}),
+		},
 	}
 
-	for _, nome := range activeAnchors(or.spec, identFixa{}) {
+	for _, nome := range activeAnchors(or.spec, identFixa{}, true) {
 		caso, ok := casos[nome]
 		if !ok {
 			t.Fatalf("activeAnchors declara a âncora %q e este teste não a sabe forçar — "+
 				"acrescentou-se uma âncora sem prova de que é COMPARADA", nome)
 		}
 		t.Run(nome, func(t *testing.T) {
-			res, err := e.Replay(ctx, or.goal.RunID, caso.opts)
+			eng := e
+			if caso.engine != nil {
+				eng = caso.engine
+			}
+			res, err := eng.Replay(ctx, or.goal.RunID, caso.opts)
 			if err != nil {
 				t.Fatalf("replay: %v", err)
 			}

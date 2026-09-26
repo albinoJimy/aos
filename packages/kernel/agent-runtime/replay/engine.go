@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -95,6 +96,15 @@ type Options struct {
 	// uma divergência de sequência de passos é detectada e localizada. Default: sem
 	// verificação de sequência (usa os step_ids do log tal-e-qual).
 	StepIdentity agentruntime.StepIdentity
+	// VerifyAuthority, se true, COMPARA a autoridade re-dobrada de cada turno
+	// ([ReplayedTurn.Authority], ADR-034) com o taint SELADO nos eventos de mediação
+	// (`tool.call.*`) desse turno no mesmo stream. Uma diferença é localizada com
+	// Reason="authority": o tail que se reconstrói não é o que autorizou as calls — por
+	// exemplo, um registo de retoma que perdeu os `inputs` e re-autorizaria trusted o que foi
+	// untrusted. OPT-IN, como as outras âncoras não-prompt: uma trajectória gravada ANTES do
+	// ADR-034 tem todas as calls seladas untrusted e divergiria em todo o turno de contexto
+	// limpo — essa divergência é real (a semântica mudou) mas não é um defeito do run.
+	VerifyAuthority bool
 }
 
 // ReplayDivergence localiza o passo EXACTO onde o replay diverge da execução
@@ -110,8 +120,9 @@ type ReplayDivergence struct {
 	ActualHash string
 	// Reason descreve a natureza da divergência: "prompt_hash" (os bytes materializados
 	// do prompt divergem), "model" (model_id/params/seed pinados divergem — invisível
-	// ao prompt_hash), "assembly_version" (a versão do assembler diverge) ou
-	// "step_id sequence" (a derivação de step_id não reproduz o gravado).
+	// ao prompt_hash), "assembly_version" (a versão do assembler diverge),
+	// "step_id sequence" (a derivação de step_id não reproduz o gravado) ou "authority"
+	// (a autoridade re-dobrada não é a selada nas mediações do turno — [Options.VerifyAuthority]).
 	Reason string
 }
 
@@ -133,6 +144,11 @@ type ReplayedTurn struct {
 	Response agentruntime.ModelResponse
 	// Matched indica se o prompt_hash re-materializado coincidiu com o gravado.
 	Matched bool
+	// Authority é o rótulo do contexto re-materializado neste turno — o taint da autorização
+	// que o loop deu às tool calls do turno (AOS-069, ADR-034). Calculado pela MESMA função
+	// que o loop usa ([agentruntime.ContextAuthority]) sobre o tail reconstruído, é a prova de
+	// que o replay e a retoma reproduzem a autorização, e não só o prompt.
+	Authority string
 }
 
 // ReplayResult é o desfecho de um replay.
@@ -152,7 +168,7 @@ type ReplayResult struct {
 	// Fidelity é a fracção de turnos verificados cujo hash coincidiu (1.0 = 100%).
 	Fidelity float64
 	// AnchorsVerified nomeia as comparações NÃO-prompt que CORRERAM de facto neste
-	// replay: "model", "assembly_version", "step_id". Ver [activeAnchors].
+	// replay: "model", "assembly_version", "step_id", "authority". Ver [activeAnchors].
 	//
 	// # PORQUE ISTO EXISTE
 	//
@@ -249,6 +265,9 @@ type trajectory struct {
 	manifest   map[int]agentruntime.Manifest
 	capture    map[int]capturePayload
 	stepByTurn map[int]string
+	// sealedTaint é o taint da autorização selado em cada evento de mediação, pelo step do
+	// turno que pediu a call (ParentStepID). Só é lido com [Options.VerifyAuthority].
+	sealedTaint map[string][]string
 }
 
 // load relê o stream do run e indexa turn.recorded + replay.captured por turno.
@@ -261,9 +280,10 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 		return trajectory{}, err
 	}
 	tr := trajectory{
-		manifest:   make(map[int]agentruntime.Manifest),
-		capture:    make(map[int]capturePayload),
-		stepByTurn: make(map[int]string),
+		manifest:    make(map[int]agentruntime.Manifest),
+		capture:     make(map[int]capturePayload),
+		stepByTurn:  make(map[int]string),
+		sealedTaint: make(map[string][]string),
 	}
 	seen := make(map[int]bool)
 	for _, ev := range events {
@@ -279,6 +299,16 @@ func (e *ReplayEngine) load(ctx context.Context, runID string) (trajectory, erro
 				seen[p.Turn] = true
 				tr.turns = append(tr.turns, p.Turn)
 			}
+		case referencemonitor.EventTypeMediated, referencemonitor.EventTypeDenied, referencemonitor.EventTypeEscalated:
+			var m struct {
+				Context struct {
+					Taint string `json:"taint"`
+				} `json:"context"`
+			}
+			if err := json.Unmarshal(ev.Payload, &m); err != nil {
+				return trajectory{}, err
+			}
+			tr.sealedTaint[ev.ParentStepID] = append(tr.sealedTaint[ev.ParentStepID], m.Context.Taint)
 		case EventTypeCaptured:
 			var p capturePayload
 			if err := json.Unmarshal(ev.Payload, &p); err != nil {
@@ -479,7 +509,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		RunID:             runID,
 		ResumedFromStepID: opts.FromStepID,
 		Fidelity:          1.0,
-		AnchorsVerified:   activeAnchors(opts.Spec, opts.StepIdentity),
+		AnchorsVerified:   activeAnchors(opts.Spec, opts.StepIdentity, opts.VerifyAuthority),
 	}
 
 	// Semeia o tail EXACTAMENTE como o loop (memory_context + objectivo).
@@ -512,6 +542,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		// (1) RE-MATERIALIZAR o prompt do turno com o tail corrente.
 		incoming := tailHash(tail)
 		view := asm.Assemble(turn, tail)
+		authority := agentruntime.ContextAuthority(tail)
 
 		// (2) "CHAMAR" o modelo de replay — devolve a resposta REGISTADA.
 		resp, cerr := modelClient.Call(ctx, view)
@@ -530,8 +561,13 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 				Seed:               manifest.Model.Seed,
 				ObservedAtUnixNano: capt.ObservedAtUnixNano,
 				Response:           resp,
+				Authority:          authority.String(),
 			}
-			if div := e.detectDivergence(runID, turn, stepID, view.PromptHash, manifest, opts.Spec, opts.StepIdentity); div != nil {
+			div := e.detectDivergence(runID, turn, stepID, view.PromptHash, manifest, opts.Spec, opts.StepIdentity)
+			if div == nil && opts.VerifyAuthority {
+				div = authorityDivergence(turn, stepID, authority.String(), tr.sealedTaint[stepID])
+			}
+			if div != nil {
 				res.Steps = append(res.Steps, rt) // rt.Matched fica false
 				res.Divergence = div
 				res.Fidelity = fidelity(matched, verified)
@@ -617,7 +653,7 @@ func (e *ReplayEngine) detectDivergence(runID string, turn int, stepID, actual s
 // [TestAnchorsVerifiedEspelhaOQueEComparado] amarra as duas: por cada âncora que esta
 // função declara activa, o teste força a divergência correspondente e exige que ela
 // saia — se uma condição mudar num sítio e não no outro, fica vermelho.
-func activeAnchors(spec TrajectorySpec, ident agentruntime.StepIdentity) []string {
+func activeAnchors(spec TrajectorySpec, ident agentruntime.StepIdentity, verifyAuthority bool) []string {
 	var out []string
 	if spec.Model.ModelID != "" {
 		out = append(out, "model")
@@ -628,7 +664,21 @@ func activeAnchors(spec TrajectorySpec, ident agentruntime.StepIdentity) []strin
 	if ident != nil {
 		out = append(out, "step_id")
 	}
+	if verifyAuthority {
+		out = append(out, "authority")
+	}
 	return out
+}
+
+// authorityDivergence compara a autoridade re-dobrada do turno com o taint selado em cada
+// mediação desse turno (ADR-034). Sem mediações seladas não há nada a comparar (nil).
+func authorityDivergence(turn int, stepID, actual string, sealed []string) *ReplayDivergence {
+	for _, rec := range sealed {
+		if rec != actual {
+			return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: rec, ActualHash: actual, Reason: "authority"}
+		}
+	}
+	return nil
 }
 
 // canonicalModel devolve uma representação estável e comparável da configuração de
@@ -673,8 +723,9 @@ func (e *ReplayEngine) emitMarker(ctx context.Context, res ReplayResult) {
 	span.End()
 }
 
-// seedTail semeia o tail append-only tal como o loop base (memory_context +
-// objectivo, por esta ordem, ambos trusted).
+// seedTail semeia o tail append-only tal como o loop base (memory_context, payloads do
+// plano e objectivo, por esta ordem). Na autoridade (ADR-034) só o objectivo é trusted: a
+// memória e os payloads tornam o contexto untrusted, exactamente como no loop.
 func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
 	tail := make([]agentruntime.TailSegment, 0, 8)
 	if len(spec.MemoryContext) > 0 {

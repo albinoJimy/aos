@@ -877,9 +877,10 @@ func nodeConfigFromEnv() (Config, error) {
 	// real diferente do anunciado, descoberto no dia do restauro.
 	//
 	// ISTO NÃO LIGA O BACKUP. O interruptor é [Config.BackupDestination], que é uma PORTA
-	// injectada e não tem superfície de ambiente — ver a nota nesse campo: não há hoje backend
-	// DURÁVEL para `backup.ImmutableStore` e o nó recusa-se a inventar um. Definir só esta
-	// variável configura a cadência de um exportador que continua por compor.
+	// injectada e não tem superfície de ambiente — ver a nota nesse campo. Um destino durável já é
+	// utilizável (o exportador retoma a cadeia), mas este repositório não traz nenhuma
+	// implementação durável da porta, e o nó não inventa uma. Definir só esta variável configura a
+	// cadência de um exportador que continua por compor.
 	backupPeriodicity, err := backupExportIntervalFromEnv()
 	if err != nil {
 		return Config{}, err
@@ -1090,8 +1091,8 @@ func nodeConfigFromEnv() (Config, error) {
 
 	// REGISTRY ASSINADO DE TOOLS (AOS_MODEL_TOOLS_REGISTER): regista as tools de AOS_MODEL_TOOLS
 	// como catálogo ASSINADO+congelável para a REVALIDAÇÃO do RM as admitir — a decisão passa então
-	// ao PDP/Cedar (o gate seguinte), que nega uma capability privilegiada originada pelo modelo
-	// (taint=untrusted). Desligado ⇒ nil: o nó mantém o catálogo/revalidador de referência
+	// ao PDP/Cedar (o gate seguinte), que nega uma capability privilegiada pedida sobre contexto
+	// untrusted (o taint é o do contexto do turno, ADR-034). Desligado ⇒ nil: o nó mantém o catálogo/revalidador de referência
 	// (default-deny na revalidação). Ver modelcatalog.go. Fail-closed: config incoerente ABORTA.
 	//
 	// AOS-381: guardamos os DADOS do registo (spec), NÃO um revalidador já construído. O
@@ -2172,7 +2173,8 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	}
 	// Tool set OFERECIDO ao modelo (registry opt-in AOS_MODEL_TOOLS): sem ele o modelo não pede
 	// tools; com ele, cada tool call é MEDIADA pelo Reference Monitor (o binding capability/recurso
-	// vem do registry trusted, o AuthorizationTaint fica untrusted). Ver modeltools.go.
+	// vem do registry trusted; o taint da autorização é cunhado pelo runtime a partir do contexto do
+	// turno, ADR-034). Ver modeltools.go.
 	tools, bindings, err := loadModelToolsFromEnv()
 	if err != nil {
 		return nil, nil, err

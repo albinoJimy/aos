@@ -37,7 +37,9 @@ type suiteReport struct {
 	HallucinationGate bool `json:"hallucination_gate"`
 	MCPReapproval     bool `json:"mcp_reapproval"`
 	PDPLayered        bool `json:"pdp_layered"`
-	Pass              bool `json:"pass"`
+	// AOS-069 (ADR-034) — injecção num plan_input pelo loop REAL: nenhuma call privilegiada.
+	PlanInputInjection bool `json:"plan_input_injection"`
+	Pass               bool `json:"pass"`
 }
 
 // TestSuiteReportEmitted re-corre CADA cenário como um PROBE puro (sem *testing.T nas
@@ -46,21 +48,23 @@ type suiteReport struct {
 // Também FALHA o teste se o agregado não for pass — dupla salvaguarda com require_tests.
 func TestSuiteReportEmitted(t *testing.T) {
 	r := suiteReport{
-		Suite:             SuiteVersion,
-		PromptInjection:   probePromptInjectionBlocked(),
-		ExfilEgress:       probeEgressBlocked(),
-		ExfilDNS:          probeDNSBlocked(),
-		Secrets:           probeSecretNotObservable(),
-		IsolationOverlay:  probeIsolationOverlayDoesNotPersist(),
-		IsolationSeccomp:  probeIsolationSeccompBlocks(),
-		MemoryPoisoning:   probeMemoryPoisoningQuarantined(),
-		HallucinationGate: probeHallucinationForgedBlocked(),
-		MCPReapproval:     probeMCPReapprovalGated(),
-		PDPLayered:        probePDPLayeredBlocked(),
+		Suite:              SuiteVersion,
+		PromptInjection:    probePromptInjectionBlocked(),
+		ExfilEgress:        probeEgressBlocked(),
+		ExfilDNS:           probeDNSBlocked(),
+		Secrets:            probeSecretNotObservable(),
+		IsolationOverlay:   probeIsolationOverlayDoesNotPersist(),
+		IsolationSeccomp:   probeIsolationSeccompBlocks(),
+		MemoryPoisoning:    probeMemoryPoisoningQuarantined(),
+		HallucinationGate:  probeHallucinationForgedBlocked(),
+		MCPReapproval:      probeMCPReapprovalGated(),
+		PDPLayered:         probePDPLayeredBlocked(),
+		PlanInputInjection: probePlanInputInjectionBlocked(),
 	}
 	r.Pass = r.PromptInjection && r.ExfilEgress && r.ExfilDNS && r.Secrets &&
 		r.IsolationOverlay && r.IsolationSeccomp &&
-		r.MemoryPoisoning && r.HallucinationGate && r.MCPReapproval && r.PDPLayered
+		r.MemoryPoisoning && r.HallucinationGate && r.MCPReapproval && r.PDPLayered &&
+		r.PlanInputInjection
 
 	b, err := json.Marshal(r)
 	if err != nil {
