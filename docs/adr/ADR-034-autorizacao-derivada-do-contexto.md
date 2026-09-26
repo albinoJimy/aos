@@ -103,6 +103,10 @@ appends, logo o mesmo rótulo. Provado por `TestAOS069_RetomaReproduzOMesmoRotul
   **Primeira tentativa falhada (2026-09-26, v0.1.36, revertida):** o `doc_read` de `n1` foi negado
   por taint no turno 1 — a via de despacho durável deitava fora o rótulo (§2.8). A fase 1 só se
   volta a armar com a release que traz a correcção.
+  **Armada e verificada em produção (2026-09-26, v0.1.37):** no plano
+  `plan-e2e-069f1b-neg-1790461111` o `doc_read` do nó de contexto limpo foi mediado com
+  `taint=trusted` e o do nó que recebeu o `plan_input` foi negado três vezes com
+  `denied_by=taint` (AOS-069 §Estado).
 
 ### 2.8 O rótulo atravessa as DUAS vias de despacho (acrescento de 2026-09-26)
 
