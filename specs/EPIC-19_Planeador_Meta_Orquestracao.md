@@ -6055,15 +6055,51 @@ O que fica é uma inconsistência do registo: o `turn.recorded` marca a ausênci
 (`usage_ausente`, `turn.go:60-80`), e o `responseCapture` do replay grava números sem essa marca
 (`nondeterminism_capture.go:62-73`, `:360-368`) — um zero que não distingue «não medido» de «zero».
 
+### Causa — seguida até quem fornece o valor
+
+A captura **recebia** o consumo: o loop passa o MESMO `resp` ao `turn.recorded` e ao capturer
+(`loop.go`, `recordTurn` e `captureTurn`), e o `encodeResponse` copiava os números. O zero nascia
+depois. Em produção o capturer é composto com a cifra por-titular (`cmd/aos/bootstrap.go`,
+`replay.WithContentSealer`, AOS-093): a resposta inteira era selada no envelope e o `response` do
+evento reposto a `responseCapture{}`. Como os campos de consumo não têm `omitempty`, o que ia ao WAL
+era `"input_tokens":0,"output_tokens":0,"cost_micro_usd":0` — o valor-zero da struct, não uma
+medição. O mode 3 (`WithPayloadStore`, AOS-079) reconstruía o evento com a mesma forma. Os números
+reais estavam dentro do `sealed_content`, ilegíveis sem a chave.
+
+### Correcção
+
+- Fora do inline, o `response` do evento passa a levar **só o consumo** (`responseCapture.consumo`:
+  tokens, custo, `custo_nao_derivado`, `usage_ausente`) em vez do valor-zero; o conteúdo continua
+  selado ou no PayloadStore. Os mesmos números já estão em claro no `turn.recorded` do mesmo turno,
+  pelo que nada novo fica exposto ao crypto-shredding.
+- `usage_ausente` (`omitempty`) entra no `responseCapture` com o critério do `turn.recorded`
+  (`!Usage.Definido()`, AOS-336) e volta na descodificação como `Usage.Ausente` — a marca atravessa a
+  retoma.
+- Compatibilidade: um turno medido serializa os bytes de sempre (as goldens do gate `replay` não
+  mudam de digest); as capturas antigas, incluindo as seladas com o exterior a zeros, descodificam
+  como antes; o motor de replay continua a substituir o `response` pelo conteúdo decifrado ou
+  resolvido, e não lê o exterior.
+
 ### Critérios de Aceitação
 
-- [ ] O `replay.captured` leva o consumo medido ou uma marca explícita de não medido, nunca um zero
-      mudo.
-- [ ] Teste que avermelha um zero sem marca.
+- [x] O `replay.captured` leva o consumo medido ou uma marca explícita de não medido, nunca um zero
+      mudo — nos três modos de escrita (inline, selado, mode 3).
+- [x] Teste que avermelha um zero sem marca (`aos448_consumo_na_captura_test.go`,
+      `TestAOS448_CapturaNuncaGravaZeroMudo`; reposto o comportamento anterior, os casos `selado` e
+      `mode3` falham com os bytes medidos em produção).
+
+### Resíduos declarados
+
+1. **As capturas já gravadas não mudam.** O log é append-only: os `replay.captured` selados até esta
+   correcção continuam com o exterior a zeros, e para eles o consumo lê-se no `turn.recorded`.
+2. **O `final` exterior continua a ser o valor-zero** num evento selado ou de mode 3. Não é consumo
+   e fica fora do âmbito; o `turn.recorded` tem-no.
+3. **`cost_micro_usd: 0` com tokens medidos e sem marca** fica como no `turn.recorded`: o custo sem
+   preço é o eixo do AOS-406 (`custo_nao_derivado`), não deste ticket.
 
 ### Estado
 
-**ABERTO.**
+**FEITO** — por verificar em produção no primeiro run depois da release que o leve.
 
 ---
 

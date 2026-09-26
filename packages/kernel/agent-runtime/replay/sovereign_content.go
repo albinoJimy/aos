@@ -167,7 +167,8 @@ func (e *ReplayEngine) reconstruct(ctx context.Context, runID string, tolerarTra
 			if uerr := json.Unmarshal(ev.Payload, &p); uerr != nil {
 				return nil, ErrCorruptCapture
 			}
-			// MODE 3 (AOS-079): referência-só ⇒ resolve o payload completo no PayloadStore (com o
+			// MODE 3 (AOS-079): referência sem conteúdo (o `response` só leva o resumo de consumo,
+			// AOS-448) ⇒ resolve o payload completo no PayloadStore (com o
 			// accessor de leitura de payloads). Fail-closed em qualquer falha.
 			if p.PayloadRef != "" {
 				resolved, rerr := e.resolvePayload(ctx, p)
