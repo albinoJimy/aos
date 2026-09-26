@@ -6391,8 +6391,16 @@ módulo mais lento, `cmd/aos-orq`, fecha em ~25 s já com a compilação, e o jo
       explique: TIMEOUT`, seguido de `panic: test timed out after 5m0s` e do teste em curso
       (`TestAOS395_ProcessoReal_SeloDuravelComRunEPasso`). Antes deste ticket, este mesmo caso
       saía 0.
-- [ ] **Verificado no CI**: o job `nats` fica verde com o `-timeout` novo, e a tabela e o
-      veredicto batem certo.
+- [x] **Verificado no CI**: o job `nats` fica verde com o `-timeout` novo, e a tabela e o
+      veredicto batem certo. — *Run 36250347573 do PR #389, fundido como `d84aa65`, a
+      2026-09-26. O job `nats` (108427089945) correu com
+      `AOS_GATE_THRESHOLD NATS_GO_TEST_TIMEOUT=5m`; o `cmd/aos-orq` deu `PASS=167 FAIL=2`, e as
+      2 falhas são as declaradas do AOS-432. Como explicam o FAIL do pacote, o G4 não disparou,
+      que era o controlo pretendido: avermelha abortos, não as falhas que o gate já tolera.
+      `TOTAL … PASS=1633`. O job `selftest` (108427090076) correu o §Y em Linux, Y1–Y6 verdes,
+      com «TODOS OS SELF-TESTS OK».*
+- **Sem critério de produção, por desenho.** O ticket corrige um gate de CI, e o `nats.sh`
+  declara no N1 que não prova nada sobre produção, que corre sobre ficheiro.
 
 ### Fora de âmbito, declarado
 
@@ -6411,4 +6419,5 @@ módulo mais lento, `cmd/aos-orq`, fecha em ~25 s já com a compilação, e o jo
 
 ### Estado
 
-**ABERTO**, com a implementação feita e à espera do critério de CI.
+**FECHADO.** O gate `nats` falha fechado quando um pacote aborta. Isto foi provado ao vivo
+(rc=1 no timeout do `cmd/aos-orq`), pelo self-test §Y e no CI do PR #389, que ficou verde.
