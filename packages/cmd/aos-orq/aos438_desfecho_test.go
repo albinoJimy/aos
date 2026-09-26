@@ -31,19 +31,22 @@ func TestAOS438ServeSemErroETerminalComCodigoZero(t *testing.T) {
 }
 
 func TestAOS438ErrosContinuamClassificados(t *testing.T) {
+	// O terceiro valor é o TIPO do erro, e não o texto (AOS-443): o texto pode citar conteúdo do
+	// modelo e não vai para o nó.
 	for _, c := range []struct {
 		nome   string
 		err    error
 		codigo int
 		classe string
+		tipo   string
 	}{
-		{"generico", errors.New("rede em baixo"), exitErro, "transitorio"},
-		{"plano recusado pelo planeador", fmt.Errorf("x: %w", planner.ErrPlanRejected), exitPlanoRecusado, "terminal"},
-		{"posse negada", fmt.Errorf("posse: %w", durable.ErrLeaseHeld), exitPosseNegada, "transitorio"},
+		{"generico", errors.New("rede em baixo"), exitErro, "transitorio", "generico"},
+		{"plano recusado pelo planeador", fmt.Errorf("x: %w", planner.ErrPlanRejected), exitPlanoRecusado, "terminal", "plano_recusado_pelo_planeador"},
+		{"posse negada", fmt.Errorf("posse: %w", durable.ErrLeaseHeld), exitPosseNegada, "transitorio", "posse_negada"},
 	} {
-		codigo, classe, detalhe := desfechoDoServe(c.err)
-		if codigo != c.codigo || classe != c.classe || detalhe != c.err.Error() {
-			t.Errorf("%s: quer (%d, %q, detalhe), veio (%d, %q, %q)", c.nome, c.codigo, c.classe, codigo, classe, detalhe)
+		codigo, classe, tipo := desfechoDoServe(c.err)
+		if codigo != c.codigo || classe != c.classe || tipo != c.tipo {
+			t.Errorf("%s: quer (%d, %q, %q), veio (%d, %q, %q)", c.nome, c.codigo, c.classe, c.tipo, codigo, classe, tipo)
 		}
 	}
 }

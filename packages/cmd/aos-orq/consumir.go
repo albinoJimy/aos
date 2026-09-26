@@ -30,6 +30,10 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	planner "github.com/aos-ref/control-plane/orchestrator/planner"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // maxPedidosPorDrenagem limita quantos pedidos uma invocação consome.
@@ -77,7 +81,10 @@ func classeDoDesfecho(codigo int) string {
 }
 
 // cmdConsume drena a fila de pedidos de plano do nó.
-func cmdConsume(args []string) error {
+//
+// O `err` é nomeado porque o ficheiro de métricas (AOS-443) se escreve no `defer`, também quando a
+// drenagem aborta — e tem de saber se abortou.
+func cmdConsume(args []string) (err error) {
 	fs := flag.NewFlagSet("consume", flag.ContinueOnError)
 	snapshot := fs.String("snapshot", "", "instantâneo de validação que o planeador consome (o mesmo do `serve --goal`)")
 	maxPedidos := fs.Int("max", maxPedidosPorDrenagem, "número máximo de pedidos a consumir nesta invocação")
@@ -86,6 +93,7 @@ func cmdConsume(args []string) error {
 	worker := fs.String("worker", "", "identidade deste trabalhador, passada ao `serve`")
 	planDir := fs.String("plan-dir", "", "pasta onde fica o documento de cada plano validado, para a retoma correr por --plan-doc em vez de decompor de novo (AOS-442); por omissão, `planos/` ao lado do --wal. Com --nats é obrigatória e tem de ser PARTILHADA entre as réplicas")
 	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: passado ao `serve --goal` (ver `serve -h`), para exercitar a drenagem sem LLM")
+	metricsFile := fs.String("metrics-file", "", "ficheiro de métricas em formato de texto Prometheus, reescrito de forma atómica no fim de cada drenagem com os contadores acumulados (AOS-443); por omissão, "+nomeDoFicheiroDeMetricas+" ao lado do --wal. Sem --wal e sem ele, não se escreve")
 	var sub substrato
 	sub.registarFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -106,6 +114,36 @@ func cmdConsume(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// AOS-443 — AS MÉTRICAS ESCREVEM-SE NO FIM, ACONTEÇA O QUE ACONTECER. Daqui para baixo, uma
+	// falha é uma drenagem que correu e falhou, e conta como tal; antes disto era configuração, e
+	// nada foi tentado. Não escrever o ficheiro FALHA a invocação: é ele que o sensor lê, e um
+	// sensor a ler um ficheiro parado diria «tudo bem» sobre uma fila que ninguém vê.
+	caminhoMetricas := caminhoDasMetricas(*metricsFile, sub)
+	metricas, errLer := &metricasDoConsumo{series: map[string]float64{}}, error(nil)
+	if caminhoMetricas != "" {
+		metricas, errLer = lerMetricas(caminhoMetricas)
+	}
+	if errLer != nil {
+		fmt.Fprintf(os.Stderr, "aos-orq: metricas anteriores ilegiveis em %s (%v); os contadores recomecam do zero\n",
+			caminhoMetricas, errLer)
+	}
+	tratados := 0
+	defer func() {
+		if caminhoMetricas == "" {
+			return
+		}
+		resultado := "ok"
+		if err != nil {
+			resultado = "erro"
+		}
+		metricas.registarDrenagem(resultado, tratados, time.Now().UTC())
+		if errEsc := escreverMetricas(caminhoMetricas, metricas.texto()); errEsc != nil {
+			err = errors.Join(err, fmt.Errorf("metricas da drenagem NAO escritas em %s: %w", caminhoMetricas, errEsc))
+			return
+		}
+		fmt.Printf("metricas: %s (drenagem %s)\n", caminhoMetricas, resultado)
+	}()
 
 	cli, err := nodeClientDoAmbiente()
 	if err != nil {
@@ -143,19 +181,43 @@ func cmdConsume(args []string) error {
 		if !houve {
 			break // fila vazia para este consumidor — o desfecho normal
 		}
-		fmt.Printf("reclamado: run=%s geracao=%d objectivo=%q\n", pedido.RunID, pedido.Geracao, pedido.Objective)
+		// O OBJECTIVO NÃO SE IMPRIME (AOS-443). É dado do titular, selado no nó sob a KEK dele
+		// (AOS-429); este stdout vai para o journal e para o log da drenagem, que o apagamento DSAR
+		// não alcança. O tamanho chega para distinguir um objectivo vazio de um presente.
+		fmt.Printf("reclamado: run=%s geracao=%d objectivo_bytes=%d\n", pedido.RunID, pedido.Geracao, len(pedido.Objective))
+		metricas.registarReclamacao(pedido.Geracao)
+		tratados++
+		inicio := time.Now()
 
 		// AOS-442: por onde o plano entra — o documento validado de uma tentativa anterior, ou a
 		// decomposição do objectivo —, decidido pelo LOG do run. Alguns casos são um desfecho sem
 		// `serve` (ver retoma_do_plano.go): um plano ainda à espera de humano, um prazo expirado,
 		// um documento recusado.
-		origem, erroDoServe := origemDoPedido(sub, pasta, pedido.RunID, *decomposeFixture, *snapshot, time.Now().UTC())
-		if erroDoServe == nil {
+		origem, erroDoServe := origemDoPedido(sub, pasta, pedido.RunID, *decomposeFixture, *snapshot, inicio.UTC())
+		serveCorreu := erroDoServe == nil
+		if serveCorreu {
 			fmt.Printf("origem do plano: run=%s %s\n", pedido.RunID, origem.descrever())
 			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem)
 		}
-		codigo, classe, detalhe := desfechoDoServe(erroDoServe)
-		fmt.Printf("desfecho: run=%s codigo=%d classe=%s\n", pedido.RunID, codigo, classe)
+		codigo, classe, tipo := desfechoDoServe(erroDoServe)
+		// AOS-443: o resumo vai TAMBÉM em sucesso — antes, o `detail` só existia com erro, e
+		// «terminado com sucesso» e «terminado» diziam o mesmo a quem pergunta pelo plano. Com erro,
+		// leva o TIPO do erro e nunca o texto (ver [tipoDoErro]).
+		resumo := resumoDoPedido{
+			origem:  origemDoResumo(origem, serveCorreu, classe),
+			geracao: pedido.Geracao,
+			nos:     nosDoDocumento(origem.documento, origem.jaValidado, inicio),
+			duracao: time.Since(inicio),
+			erro:    tipo,
+		}
+		detalhe := detalheDoDesfecho(resumo)
+		fmt.Printf("desfecho: run=%s codigo=%d classe=%s %s\n", pedido.RunID, codigo, classe, resumo.linha())
+		if tipo == "generico" {
+			// Um erro que nenhum sentinela classifica é o que mais precisa de diagnóstico, e o tipo
+			// não diz nada. O texto vai SÓ para o stderr desta drenagem (journal e log do `aos`, com
+			// retenção limitada), nunca para o nó. Resíduo declarado no AOS-443.
+			fmt.Fprintf(os.Stderr, "aos-orq: erro nao classificado do serve de %s: %v\n", pedido.RunID, erroDoServe)
+		}
 
 		// UMA RE-VERIFICAÇÃO NÃO GASTA O `--max` (AOS-442). O nó re-oferece os pedidos à espera
 		// de humano, pelos mais antigos primeiro; se cada verificação contasse, meia dúzia de
@@ -177,8 +239,10 @@ func cmdConsume(args []string) error {
 			// trabalhar às cegas.
 			fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
 				"fila quando a reclamacao expirar\n", pedido.RunID, err)
+			metricas.registarDesfecho(resumo, classe, codigo, false)
 			continue
 		}
+		metricas.registarDesfecho(resumo, classe, codigo, true)
 		// O DOCUMENTO SAI QUANDO O PEDIDO FECHA (AOS-442). É conteúdo em claro — o objectivo
 		// derivado, os nós —, fora do alcance do apagamento DSAR; enquanto o pedido está vivo tem
 		// de existir (é por ele que a retoma corre), mas depois de um desfecho TERMINAL reportado
@@ -235,15 +299,52 @@ func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout
 	return cmdServe(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker, origem))
 }
 
-// desfechoDoServe traduz o retorno do `serve` no que se reporta ao nó: código, classe e detalhe.
-// Existe como função — e não inline no ciclo — porque foi exactamente esta tradução que partiu
-// (AOS-438): o ciclo chamava `codigoDe` com `nil`, e nenhum teste passava por aqui.
-func desfechoDoServe(erroDoServe error) (codigo int, classe, detalhe string) {
+// desfechoDoServe traduz o retorno do `serve` no que se reporta ao nó: código, classe e o tipo do
+// erro ([tipoDoErro]; vazio sem erro). Existe como função — e não inline no ciclo — porque foi
+// exactamente esta tradução que partiu (AOS-438): o ciclo chamava `codigoDe` com `nil`, e nenhum
+// teste passava por aqui.
+func desfechoDoServe(erroDoServe error) (codigo int, classe, erro string) {
 	codigo = codigoDe(erroDoServe)
-	if erroDoServe != nil {
-		detalhe = erroDoServe.Error()
+	return codigo, classeDoDesfecho(codigo), tipoDoErro(erroDoServe)
+}
+
+// tipoDoErro devolve um NOME ESTÁVEL para o erro do `serve` — o sentinela que o classifica —, e
+// nunca o texto dele (AOS-443).
+//
+// O TEXTO NÃO VAI PARA O NÓ. Um erro do `serve` pode citar conteúdo escrito pelo modelo — o
+// `plan.Decode` cita com `%q` os `node_id`, o `risk_class` e os campos desconhecidos do documento, e
+// o planeador embrulha essas recusas —, e o nó grava o `detail` em claro no stream da fila, fora do
+// alcance do `/dsar/erase`. O nome do sentinela diz o que aconteceu sem transportar nada disso. A
+// tabela segue a de [codigoDe]; o que ela não conhece é `generico`.
+func tipoDoErro(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, eventstore.ErrWALHeld):
+		return "wal_detido"
+	case errors.Is(err, durable.ErrLeaseHeld):
+		return "posse_negada"
+	case errors.Is(err, durable.ErrStaleFencingToken),
+		errors.Is(err, durable.ErrLeaseSuperseded),
+		errors.Is(err, durable.ErrLeaseExpired):
+		return "posse_superada"
+	case errors.Is(err, errPlanoPendente):
+		return "plano_pendente"
+	case errors.Is(err, errDecisaoRecusada):
+		return "decisao_recusada"
+	case errors.Is(err, errNosEmVoo):
+		return "nos_em_voo"
+	case errors.Is(err, planner.ErrPlanRejected):
+		return "plano_recusado_pelo_planeador"
+	case errors.Is(err, errDocumentoDoPlanoRecusado):
+		return "documento_recusado"
+	case errors.Is(err, ErrSnapshotNaoCorresponde):
+		return "snapshot_nao_corresponde"
+	case errors.Is(err, ErrSnapshotDiferenteDoSelado):
+		return "snapshot_diferente_do_selado"
+	default:
+		return "generico"
 	}
-	return codigo, classeDoDesfecho(codigo), detalhe
 }
 
 // argsDoServe monta a invocação do `serve` para um pedido reclamado.
