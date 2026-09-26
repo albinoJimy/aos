@@ -462,10 +462,18 @@ mesma release: o `deploy.yml` sincroniza `deploy/server/model-tools/` sem `--ign
 deploy recria o nó. O snapshot do `aos-orq` (só `doc_read`) não muda, e a conferência do AOS-441
 continua a bater (tools do nó que o snapshot não nomeia não contam).
 
-**Passo de produção seguinte — do dono/operador, depois da release com a opção C:** definir
-`AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read` (a fase 0, `cap:http.post`, já está armada
-desde 2026-09-26). Antes dessa release NÃO se arma `cap:fs.read`: toda a tool call sairia
-untrusted e o `doc_read` de um nó com contexto limpo seria negado.
+**Fase 1 armada e verificada em PRODUÇÃO (2026-09-26, v0.1.37).** Com a release que traz a
+correcção da via durável (abaixo), o operador definiu `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`
+(cópia anterior em `/opt/aos/.env.antes-aos069-fase1-v0137`) e recriou só o nó, com o lock da
+drenagem seguro (AOS-450). Prova com um plano real pela fila, `plan-e2e-069f1b-neg-1790461111`
+(dois nós, `terminal`, geração 1, `exit_code 0`, 58 s): `n1`, de contexto limpo (só o objectivo),
+leu com `doc_read` — `tool.call.mediated`, `taint=trusted`; `n2`, que recebe o resultado de `n1`
+como `plan_input`, tentou `doc_read` três vezes e as três foram `tool.call.denied` com
+`denied_by=taint`. É o critério 3 medido no nó composto de produção (execução durável, cifra
+por-titular, bundle Cedar assinado, credencial do mandato), e não só nos testes. O plano positivo
+de um só nó da mesma prova (`plan-e2e-069f1b-pos-1790461111`, `terminal`, `exit_code 0`) não
+chamou a tool, pelo que não prova nada sobre o taint; a prova positiva é o `n1` do negativo. A
+fase 0 (`cap:http.post`) está armada desde a mesma data.
 
 **Fase 1 falhou em produção (2026-09-26, v0.1.36) e foi revertida.** Com
 `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`, um plano de um só nó (`n1`, sem `consumes`, sem
