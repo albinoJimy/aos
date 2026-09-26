@@ -6318,3 +6318,97 @@ como transitórios.
 ### Estado
 
 **ABERTO.**
+
+## AOS-452 — O gate `nats` sai verde quando um pacote morre por timeout: a contagem só lê `--- FAIL`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade, com o AOS-431 e o AOS-432; o eixo é a infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção (CI) |
+| Prioridade | **P1**: é um gate FAIL-OPEN, e é o único que exercita o substrato replicado real |
+| Estimativa | S |
+| Dependências | AOS-431 (o gate `nats`, FECHADO) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/nats.sh` (ciclo dos módulos), `scripts/ci/gotest-pacotes.sh`, `scripts/ci/selftest.sh` §Y, `.github/workflows/ci.yml` (job `nats`) |
+
+### Contexto: medido localmente, 2026-09-26
+
+Ao corrigir o AOS-432, a suite de `packages/cmd/aos-orq` rebentou com
+`panic: test timed out after 10m0s`. A tabela do gate mostrou o módulo como `FAIL=0 (vermelho)`,
+e o gate saiu **0**.
+
+O defeito está no ciclo dos módulos do `nats.sh`. O `rc` do `go test` só servia para escrever
+`verde`/`vermelho` na tabela e nunca chegava ao `rc` do gate. O que avermelhava era a contagem
+das linhas `--- FAIL` por nome (teste novo ou declarado). Há três formas de um pacote terminar
+em FAIL **sem escrever `--- FAIL` nenhum**, e todas passavam:
+
+- **timeout**: o `go` imprime `panic: test timed out after …` e o teste em curso é morto sem
+  veredicto;
+- **`FAIL <pacote> [build failed]`**: o pacote não compilou e não correu nenhum teste;
+- **`os.Exit`/`log.Fatal` fora de um teste** (num `TestMain`): `exit status 1`.
+
+Há ainda um quarto caso que escreve `--- FAIL` e mesmo assim não fica explicado por ele. Um
+`panic` num teste aborta o binário do pacote, e os testes seguintes não correm. Se o teste em
+pânico estiver em `falhas_conhecidas`, a contagem por nome dá «falha declarada» e não diz nada
+sobre os que ficaram por medir.
+
+Por fim, não havia `-timeout` explícito: valia o default de 10 min do `go test`. O job `nats`
+também não tem `timeout-minutes`, e por isso o do GitHub era de 6 h. No CI (run 36238560614) o
+módulo mais lento, `cmd/aos-orq`, fecha em ~25 s já com a compilação, e o job inteiro em ~3,5 min.
+
+### Critérios de Aceitação
+
+- [x] O defeito está localizado no script: o `estado` do ciclo dos módulos era calculado do `rc`
+      do `go test` e só impresso. — *`nats.sh`, ciclo `for entrada in "${modulos_nats[@]}"`.
+      O `rc_go` passa a guardar-se e a entrar no veredicto (bloco G4).*
+- [x] Um pacote que termine em FAIL sem um `--- FAIL` limpo que o explique avermelha o gate,
+      com diagnóstico próprio que nomeia o pacote e a causa (TIMEOUT, PANIC, NAO COMPILOU,
+      `os.Exit` fora de um teste, ou `go` que falhou antes de correr testes), seguido das linhas
+      que dizem porquê (mensagem do panic, testes em curso no timeout, erros de compilação).
+      — *`gotest-pacotes.sh`: o veredicto é por **pacote**, pela linha com que o `go test` fecha
+      cada um. Por módulo não bastava: uma falha declarada num pacote «explicaria» o timeout de
+      outro.*
+- [x] Um aborto nunca é «falha declarada»: um `panic` num teste que está em `falhas_conhecidas`
+      avermelha na mesma.
+- [x] `-timeout` explícito em todas as invocações do `go test` do gate (suites e medição de
+      cobertura), resolvido por `gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m"`. O piso 1 recusa
+      o `0`, que para o `go` quer dizer «sem timeout». O job `nats` ganha `timeout-minutes: 40`
+      como rede.
+- [x] O `selftest.sh` prova-o (§Y), com a MESMA invocação (`gotest_pacotes_corre`) e o MESMO
+      classificador do gate sobre módulos sintéticos fora do repo: Y1 panic, Y2 timeout sem
+      `--- FAIL`, Y3 build failed e Y4 `os.Exit` num `TestMain` ao lado de uma falha declarada
+      noutro pacote avermelham. Y5 é o controlo: um `t.Fatal` limpo e um módulo verde não
+      avermelham. Y6 confirma que o `nats.sh` usa as duas funções e põe `rc=1` no ramo, e que
+      `NATS_GO_TEST_TIMEOUT=0` é recusado por VIOLAÇÃO DE PISO antes de subir o cluster.
+- [x] **O gate avermelha ao vivo.** Correu localmente contra o cluster de 4 nós a 2026-09-26,
+      sobre a base e sem a correcção do AOS-432. O `cmd/aos-orq` excedeu os 5 min e o gate saiu
+      **rc=1** com: `pacote github.com/aos-ref/cmd/aos-orq em FAIL sem falha declarada que o
+      explique: TIMEOUT`, seguido de `panic: test timed out after 5m0s` e do teste em curso
+      (`TestAOS395_ProcessoReal_SeloDuravelComRunEPasso`). Antes deste ticket, este mesmo caso
+      saía 0.
+- [ ] **Verificado no CI**: o job `nats` fica verde com o `-timeout` novo, e a tabela e o
+      veredicto batem certo.
+
+### Fora de âmbito, declarado
+
+- **Porque é que o `cmd/aos-orq` é tão lento localmente.** É o sintoma que revelou o defeito, e
+  não é este defeito. O run acima sugere que não é um teste pendurado. Em 5 min passaram 17
+  testes, e o que estava a correr quando o timeout disparou levava 31 s. No CI passam 167 em
+  ~25 s. O timeout de 10 min observado ao corrigir o AOS-432 pode ter sido lentidão, e não um
+  bloqueio. A causa não foi medida.
+- **`EVENTSTORE_COVERAGE_MIN` tem piso 0** (`gate_threshold … 75 0 100`), o que quer dizer que
+  `EVENTSTORE_COVERAGE_MIN=0` desliga o piso de cobertura do `substrate/eventstore` neste gate.
+  É o mesmo tipo de buraco (ORF-06), noutro knob, e fica para ticket próprio.
+- **Os outros gates que correm `go test`.** Uma pesquisa em `scripts/ci/*.sh` mostra que só o
+  `nats.sh` decidia contando `--- FAIL`. O `test.sh` e o `require_tests` (`lib.sh`) avermelham
+  pelo `rc` do `go test`, e o `require_tests` também exige `--- PASS` por nome. Foi uma pesquisa
+  por texto e não uma auditoria gate a gate.
+
+### Estado
+
+**ABERTO**, com a implementação feita e à espera do critério de CI.

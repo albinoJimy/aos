@@ -29,6 +29,8 @@
 #      estar fora do ref-lint (AOS-313).
 #   T) a suite recusa correr concorrente consigo própria, e recusa arrancar
 #      sobre resíduo de um run morto sem trap (AOS-316).
+#   Y) um pacote que aborta (panic, timeout, build failed, os.Exit) avermelha o
+#      gate nats mesmo sem `--- FAIL` que o conte (AOS-452).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -161,6 +163,8 @@ RTM_GEN_BAK=""
 # suite não lhe tocou. Comparar com o git seria outra coisa — daria vermelho a
 # quem tivesse o ficheiro por commitar, que é o caso normal de quem o edita.
 RTM_GEN_SHA_INICIO="$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")"
+# §Y monta os seus módulos sintéticos FORA do repo (como §L): não muta a árvore.
+GOTEST_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -170,6 +174,7 @@ cleanup() {
   rm -rf "$REFLINT_TMP"
   rm -rf "$EC_TMP"
   rm -rf "$RTM_SANDBOX"
+  rm -rf "$GOTEST_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
@@ -1615,6 +1620,124 @@ else
 fi
 rm -f "$PT_ANON" "$PT_UNLESS" "$PT_DISJ"
 rm -f "$PT_EMPTY" "$PT_FIX"
+
+# ============================================================================
+# Y) um pacote que ABORTA avermelha o gate nats (AOS-452)
+# ============================================================================
+log_gate "self-test Y · pacote com panic/timeout/build failed avermelha o gate nats (AOS-452)"
+# O gate nats contava falhas pelas linhas `--- FAIL`, e o rc do `go test` só pintava a tabela.
+# Um timeout (`panic: test timed out`), um `[build failed]` ou um `os.Exit` num `TestMain` não
+# escrevem `--- FAIL` nenhum — medido a 2026-09-26: o `cmd/aos-orq` rebentou aos 10 min, a
+# tabela disse FAIL=0 (vermelho), e o gate saiu 0.
+#
+# O gate não corre aqui (precisa do cluster JetStream); corre o que ele usa para decidir: a
+# MESMA invocação (`gotest_pacotes_corre`, com os flags do gate) sobre módulos sintéticos, e o
+# MESMO classificador (`gotest_pacotes_inexplicados`). Y6 prova que o gate os usa aos dois e
+# que o ramo avermelha. Módulos fora do repo, sem rede nem dependências; a árvore não muda.
+source "$CI_DIR/gotest-pacotes.sh"
+GOTEST_TMP="$(mktemp -d)"
+
+# y_modulo <nome> — um módulo Go vazio em $GOTEST_TMP/<nome>.
+y_modulo() { mkdir -p "$GOTEST_TMP/$1"; printf 'module aos-selftest/%s\n\ngo 1.24\n' "$1" > "$GOTEST_TMP/$1/go.mod"; }
+# y_corre <nome> <timeout> — corre-o como o gate; deixa a saída em .out e o rc em Y_RC.
+y_corre() {
+  Y_RC=0
+  gotest_pacotes_corre "$GOTEST_TMP/$1" "./..." "$2" "$GOTEST_TMP/$1.out" || Y_RC=$?
+}
+# y_exige_vermelho <id> <nome> <padrão da causa> <descrição>
+y_exige_vermelho() {
+  local id="$1" nome="$2" causa="$3" desc="$4" out
+  if out="$(gotest_pacotes_inexplicados "$GOTEST_TMP/$nome.out" "$Y_RC")"; then
+    bad "$id: $desc — o classificador aceitou-o (rc_go=$Y_RC); o gate nats saía VERDE"
+  elif ! printf '%s' "$out" | grep -q -- "$causa"; then
+    bad "$id: $desc — avermelhou mas sem o diagnóstico «$causa»: $out"
+  else
+    pass "$id: $desc avermelha o gate nats ($causa)"
+  fi
+}
+
+# Y1 — PANIC num teste. Escreve UM `--- FAIL` (o do teste que abortou), e é por isso que este
+# caso é o mais traiçoeiro: se esse teste estivesse em `falhas_conhecidas`, a contagem por nome
+# dizia «falha declarada» e calava os testes que ficaram por correr a seguir.
+y_modulo pan
+printf 'package pan\n\nimport "testing"\n\nfunc TestAntes(t *testing.T) {}\n\nfunc TestPanico(t *testing.T) { panic("veneno do selftest") }\n\nfunc TestNuncaCorre(t *testing.T) {}\n' > "$GOTEST_TMP/pan/p_test.go"
+y_corre pan 1m
+y_exige_vermelho Y1 pan "PANIC" "um pacote cujo teste entra em pânico"
+
+# Y2 — TIMEOUT. O caso medido: nenhum `--- FAIL`, só `panic: test timed out after`.
+y_modulo tmo
+printf 'package tmo\n\nimport (\n\t"testing"\n\t"time"\n)\n\nfunc TestPendurado(t *testing.T) { time.Sleep(time.Hour) }\n' > "$GOTEST_TMP/tmo/p_test.go"
+y_corre tmo 2s
+if grep -q '^--- FAIL' "$GOTEST_TMP/tmo.out"; then
+  bad "Y2: a saída do timeout tem um --- FAIL — o caso já não reproduz o defeito medido"
+fi
+y_exige_vermelho Y2 tmo "TIMEOUT" "um pacote que excede o -timeout (sem nenhum --- FAIL)"
+
+# Y3 — BUILD FAILED. Zero testes, zero `--- FAIL`.
+y_modulo bld
+printf 'package bld\n\nimport "testing"\n\nfunc TestX(t *testing.T) { naoExiste() }\n' > "$GOTEST_TMP/bld/p_test.go"
+y_corre bld 1m
+y_exige_vermelho Y3 bld "NAO COMPILOU" "um pacote que não compila"
+
+# Y4 — A GRANULARIDADE É O PACOTE. Um módulo com uma falha «declarável» num pacote e um
+# `os.Exit(1)` num `TestMain` noutro: por módulo, «saiu ≠ 0 e há falhas» parecia explicado. O
+# veredicto tem de nomear o pacote que abortou, e só esse.
+y_modulo mix
+mkdir -p "$GOTEST_TMP/mix/dec" "$GOTEST_TMP/mix/ext"
+printf 'package dec\n\nimport "testing"\n\nfunc TestFalhaDeclarada(t *testing.T) { t.Fatal("falha que o gate conhece") }\n' > "$GOTEST_TMP/mix/dec/p_test.go"
+printf 'package ext\n\nimport (\n\t"os"\n\t"testing"\n)\n\nfunc TestMain(m *testing.M) { os.Exit(1) }\n\nfunc TestX(t *testing.T) {}\n' > "$GOTEST_TMP/mix/ext/p_test.go"
+y_corre mix 1m
+y_exige_vermelho Y4 mix "aos-selftest/mix/ext" "um os.Exit num TestMain ao lado de uma falha declarada noutro pacote"
+if gotest_pacotes_inexplicados "$GOTEST_TMP/mix.out" "$Y_RC" | grep -q 'aos-selftest/mix/dec'; then
+  bad "Y4: o pacote com a falha declarada (t.Fatal limpo) foi dado como inexplicado — o classificador não distingue falhar de abortar"
+fi
+
+# Y5 — CONTROLOS (o molde do X3/P3): sem eles um classificador «sempre vermelho» passava
+# Y1–Y4 sem distinguir nada. Um `t.Fatal` limpo É explicado pelo seu `--- FAIL` (se é novo ou
+# declarado decide-o o gate pelo nome, como antes); um módulo verde não tem nada a explicar.
+y_modulo fal
+printf 'package fal\n\nimport "testing"\n\nfunc TestFalha(t *testing.T) { t.Fatal("falha limpa") }\n\nfunc TestBoa(t *testing.T) {}\n' > "$GOTEST_TMP/fal/p_test.go"
+y_corre fal 1m
+if [ "$Y_RC" -eq 0 ]; then
+  bad "Y5: o go test saiu 0 com um t.Fatal — o módulo de controlo não falhou"
+elif out="$(gotest_pacotes_inexplicados "$GOTEST_TMP/fal.out" "$Y_RC")"; then
+  pass "Y5: controlo — um t.Fatal limpo é explicado pelo seu --- FAIL (não é aborto)"
+else
+  bad "Y5: um t.Fatal limpo foi dado como aborto: $out"
+fi
+y_modulo boa
+printf 'package boa\n\nimport "testing"\n\nfunc TestBoa(t *testing.T) {}\n' > "$GOTEST_TMP/boa/p_test.go"
+y_corre boa 1m
+if [ "$Y_RC" -eq 0 ] && gotest_pacotes_inexplicados "$GOTEST_TMP/boa.out" 0 >/dev/null; then
+  pass "Y5: controlo — um módulo verde não tem nada a explicar"
+else
+  bad "Y5: um módulo verde foi recusado (rc_go=$Y_RC)"
+fi
+
+# Y6 — O GATE USA-OS. Y1–Y5 provam o classificador; isto prova que o nats.sh corre a mesma
+# invocação, lhe passa o rc e AVERMELHA no ramo — e que o -timeout passa pelo piso. Sem isto,
+# desligar a chamada no nats.sh deixava Y1–Y5 verdes e o gate aberto outra vez.
+NATS_SH="$CI_DIR/nats.sh"
+if ! grep -qE '^[[:space:]]*gotest_pacotes_corre .*\$\{NATS_GO_TEST_TIMEOUT\}m.*\|\| rc_go=\$\?' "$NATS_SH"; then
+  bad "Y6: o nats.sh não corre as suites por gotest_pacotes_corre com o -timeout do gate e o rc guardado"
+elif ! awk '/gotest_pacotes_inexplicados "\$saida" "\$rc_go"/{dentro=1} dentro&&/rc=1/{ok=1} dentro&&/^  rm -f "\$saida"/{exit} END{exit !ok}' "$NATS_SH"; then
+  bad "Y6: o nats.sh não avermelha (rc=1) quando gotest_pacotes_inexplicados acusa um pacote"
+elif ! grep -qE '^gate_threshold NATS_GO_TEST_TIMEOUT [0-9]+ [1-9][0-9]* [0-9]+ "m" always \|\| exit 1$' "$NATS_SH"; then
+  bad "Y6: o -timeout do nats.sh não passa por gate_threshold com piso >= 1 (um -timeout=0 desliga-o)"
+else
+  pass "Y6: o nats.sh corre a invocação partilhada, entrega o rc ao classificador e avermelha no ramo"
+fi
+# E o piso morde de facto: 0 é «sem timeout» para o go. Recusa-se ANTES do cluster (a
+# linha do gate_threshold precede o docker), pelo que isto não levanta nada.
+if out="$( NATS_GO_TEST_TIMEOUT=0 bash "$NATS_SH" 2>&1 )"; then
+  bad "Y6: NATS_GO_TEST_TIMEOUT=0 foi aceite — o go test correria sem timeout"
+else
+  case "$out" in
+    *"VIOLAÇÃO DE PISO"*) pass "Y6: NATS_GO_TEST_TIMEOUT=0 é recusado por VIOLAÇÃO DE PISO, antes do cluster" ;;
+    *) bad "Y6: NATS_GO_TEST_TIMEOUT=0 avermelhou mas não por VIOLAÇÃO DE PISO — a recusa não é a do piso" ;;
+  esac
+fi
+rm -rf "$GOTEST_TMP"; GOTEST_TMP=""
 
 
 # ============================================================================
