@@ -5849,9 +5849,17 @@ sucesso» e «terminado» dizem o mesmo; declarado como resíduo 1 do AOS-430 / 
       por plano, retomas.
 - [x] O desfecho reportado ao nó leva um resumo também em sucesso (nós, gerações, duração).
 - [x] O output da drenagem legível sem root (ficheiro de log do `aos`, com rotação).
-- [ ] **Verificado em PRODUÇÃO:** depois da release, uma drenagem com um plano deixa
-      `/opt/aos/logs/drenar-planos.log` e `/opt/aos/logs/aos-orq-consume.prom` legíveis pelo `aos`,
-      sem o objectivo no log, e o `GET /plans/{id}` desse plano terminado com 0 traz o resumo.
+- [x] **Verificado em PRODUÇÃO** (v0.1.35, 2026-09-26): depois da release, uma drenagem com um plano
+      deixa `/opt/aos/logs/drenar-planos.log` e `/opt/aos/logs/aos-orq-consume.prom` legíveis pelo
+      `aos`, sem o objectivo no log, e o `GET /plans/{id}` desse plano terminado com 0 traz o resumo.
+      `plan-e2e-443-1790420556`, drenado pelo `drenar-planos.sh`: o log tem
+      `reclamado: … objectivo_bytes=96` e `desfecho: … codigo=0 classe=terminal origem=decomposicao
+      geracao=1 nos=1 duracao_s=63.832`, e `objectivo=` aparece 0 vezes; as métricas trazem
+      `pedidos_reclamados_total 1`, `desfechos_total{classe="terminal",codigo="0"} 1`,
+      `origem_total{origem="decomposicao"} 1` e `falhas_consecutivas 0`; o `GET /plans/{id}` devolve
+      `terminal`, `exit_code` 0 e `detail` `resumo: origem=decomposicao geracao=1 nos=1
+      duracao_s=63.832`. A primeira drenagem da release falhou por correr o script novo com o
+      binário antigo na janela do deploy — aberto o AOS-450.
 
 ### Resíduos declarados
 
@@ -5883,7 +5891,8 @@ sucesso» e «terminado» dizem o mesmo; declarado como resíduo 1 do AOS-430 / 
 
 ### Estado
 
-**PARCIAL** — entregue em código e testado; falta a verificação em produção (último critério).
+**FECHADO** — verificado em produção na v0.1.35. A corrida entre o deploy e a drenagem que a
+primeira drenagem da release expôs é o AOS-450.
 
 ---
 
@@ -6179,6 +6188,9 @@ reais estavam dentro do `sealed_content`, ilegíveis sem a chave.
 - [x] Teste que avermelha um zero sem marca (`aos448_consumo_na_captura_test.go`,
       `TestAOS448_CapturaNuncaGravaZeroMudo`; reposto o comportamento anterior, os casos `selado` e
       `mode3` falham com os bytes medidos em produção).
+- [x] **Verificado em PRODUÇÃO** (v0.1.35, 2026-09-26): no run `plan-e2e-443-1790420556~n1`, lido
+      pelo `GET /runs/{id}/trajectory`, o `replay.captured` de cada turno tem os tokens do
+      `turn.recorded` do mesmo turno — 437/79 e 918/1903 nos dois (antes: 0/0).
 
 ### Resíduos declarados
 
@@ -6191,7 +6203,7 @@ reais estavam dentro do `sealed_content`, ilegíveis sem a chave.
 
 ### Estado
 
-**FEITO** — por verificar em produção no primeiro run depois da release que o leve.
+**FECHADO** — verificado em produção na v0.1.35.
 
 ---
 
@@ -6259,3 +6271,50 @@ A doc do pacote dizia o contrário («se o nó que o aloja morrer, é isto que o
 ### Estado
 
 **FEITO** (CI do PR albinoJimy/aos#384).
+
+---
+
+## AOS-450 — O deploy corre contra a drenagem: um timer que calhe na janela do deploy dá uma falha falsa
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção (operação) |
+| Prioridade | P3 — nenhum pedido se perde; é um `failed` falso e um alerta a cada release que mude os scripts |
+| Estimativa | S |
+| Dependências | AOS-437 (timer de drenagem), AOS-443 (verificação de frescura das métricas) |
+| Documentos de referência | `.github/workflows/deploy.yml` (rsync dos scripts antes do `deploy.sh`), `deploy/server/deploy.sh`, `deploy/server/rollback.sh`, `deploy/server/drenar-planos.sh` (`flock` em `/opt/aos/.drenagem/lock`) |
+
+### Contexto — medido em produção, 2026-09-26
+
+No deploy da v0.1.35 o `deploy.yml` sincronizou os scripts do servidor (rsync) ANTES de o
+`deploy.sh` trocar a imagem. O timer `aos-drenar-planos` disparou na janela entre os dois: a
+drenagem das 11:00:18Z correu o `drenar-planos.sh` NOVO com o binário ANTIGO (o nó só reiniciou
+às 11:00:24Z). A fila estava vazia e drenou, mas o binário antigo não escreve o ficheiro de
+métricas do AOS-443, e a verificação de frescura falhou — «métricas do consume NÃO copiadas».
+Resultado: o serviço ficou `failed` e o `alerta-nhi.sh` passou a «mau (1/2)» até à drenagem
+seguinte. A drenagem manual das 11:01, já com a imagem nova, ficou verde.
+
+É a forma declarada na revisão do AOS-443 para o rollback, mas acontece em QUALQUER release que
+mude os scripts, sempre que o timer calhe na janela. E há um segundo efeito na mesma janela: uma
+drenagem que esteja a correr quando o `compose up` reinicia o nó vê os pedidos a meio falharem
+como transitórios.
+
+### Critérios de Aceitação
+
+- [ ] O deploy (e o rollback) seguram o lock da drenagem (`/opt/aos/.drenagem/lock`) desde antes
+      do rsync dos scripts até o nó estar saudável com a imagem nova — ou a troca dos scripts passa
+      para depois da troca da imagem —, de forma que nenhuma drenagem corra com um par
+      script/binário misturado nem durante o reinício do nó.
+- [ ] Uma drenagem que encontre o lock ocupado pelo deploy termina sem `failed` (hoje o `flock -n`
+      sai com erro): distinguir «deploy em curso» de «outra drenagem em curso».
+- [ ] O deploy espera, com prazo, que uma drenagem em curso termine antes de trocar a imagem, e
+      diz no log se desistiu de esperar.
+- [ ] **Verificado em PRODUÇÃO**: num deploy com o timer a disparar na janela, o serviço não fica
+      `failed` e o alerta não passa a «mau».
+
+### Estado
+
+**ABERTO.**
