@@ -208,6 +208,7 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 	act := activity.Activity{
 		RunID:                 call.RunID,
 		StepID:                call.StepID,
+		ParentStepID:          call.ParentStepID, // AOS-454: rasto do passo pai no evento de mediação
 		ToolID:                call.ToolID,
 		Capability:            call.Capability,
 		Resource:              call.Resource,
