@@ -7,7 +7,10 @@
 #   1. PROMPT INJECTION (AOS-069) — injecção em tool result / web / memória (conteúdo
 #                        untrusted) NÃO origina acção privilegiada: o TaintGate NEGA a
 #                        tool call privilegiada autorizada por untrusted (ADR-005).
-#                        Bateria do corpus versionado → 100% bloqueado;
+#                        Bateria do corpus versionado → 100% bloqueado; e (ADR-034) a
+#                        mesma bateria como plan_input pelo Agent Runtime REAL, cujo
+#                        taint da autorização é o rótulo do contexto — nenhuma call
+#                        privilegiada permitida, com o conjunto da fase 0 e da fase 1;
 #   2. EXFILTRAÇÃO (AOS-067/068) — egress fora da allowlist (EgressFilter DENY), DNS
 #                        tunneling / domínio fora da allowlist (DNSFilter DENY) e tool
 #                        "benigna" com recurso mislabelado (EgressHook DENY fail-closed) —
@@ -84,6 +87,8 @@ REQUIRED=(
   TestMetaDetects_HallucinationGate_WhenForgedAccepted
   TestMetaDetects_MCPReapproval_WhenDigestUnchanged
   TestMetaDetects_PDPLayered_WhenTaintGateAbsent
+  TestPromptInjection_PlanInput_NoPrivilegedCallPermitted
+  TestMetaDetects_PlanInputInjection_WhenTaintGateBypassed
   TestCorpusVersionedAndExtensible
   TestSuiteReportEmitted
 )

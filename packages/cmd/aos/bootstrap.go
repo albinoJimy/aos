@@ -683,14 +683,21 @@ type Config struct {
 	//
 	// BackupDestination é o armazenamento imutável (object-lock/WORM) para onde os segmentos
 	// cifrados são escritos. É uma PORTA injectada, e o nó NÃO inventa uma implementação por
-	// ambiente de propósito: está MEDIDO (packages/platform/backup/reinicio_test.go) que
-	// `platform/backup` não sabe RETOMAR um manifesto — o exportador começa sempre do génesis e
-	// o primeiro ciclo depois de um reinício colide com [backup.ErrImmutable] sobre qualquer
-	// destino que sobreviva ao processo; e [backup.Restorer.RestoreTo] recebe o manifesto e o
-	// checkpoint COMO ARGUMENTOS, sem que nada os persista. Um backend de ficheiro composto por
-	// `AOS_BACKUP_DIR` produziria segmentos write-once não-restauráveis que deixavam de ser
-	// escritos ao segundo arranque — uma promessa de backup pior do que a ausência dela. Quem
-	// injecta este destino assume as duas propriedades.
+	// ambiente.
+	//
+	// A RAZÃO MUDOU, e é justo que fique escrito qual era: até à retoma de manifesto, um destino
+	// DURÁVEL era simplesmente inutilizável — o exportador começava sempre do génesis, o primeiro
+	// ciclo depois de qualquer reinício colidia com [backup.ErrImmutable], e o restauro precisava
+	// de um manifesto que nada persistia. Um `AOS_BACKUP_DIR` teria produzido segmentos
+	// write-once não-restauráveis que deixavam de ser escritos ao segundo arranque — uma promessa
+	// de backup pior do que a ausência dela.
+	//
+	// Isso está fechado (`packages/platform/backup/resume.go`): o exportador retoma a cadeia do
+	// destino, verificada fail-closed, e [backup.Restorer.LoadManifest] reconstrói-a para
+	// restauro. O que continua a não existir neste repositório é uma IMPLEMENTAÇÃO durável da
+	// porta — só a de referência, em memória. A injecção mantém-se pela razão ordinária: onde é
+	// que os backups de uma organização vivem não é uma escolha que um default deva fazer por
+	// ela.
 	//
 	// FAIL-CLOSED na composição: com destino presente, um Event Store que não satisfaça
 	// [eventstore.BackupSource], uma chave de assinatura em falta ou uma violação de soberania
@@ -3025,15 +3032,22 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// `go list -deps` do módulo do nó). O módulo sabia exportar, cifrar, encadear e restaurar; o
 	// que não existia era alguém a chamá-lo. Sem destino ([Config.BackupDestination] nil) nada
 	// muda — o exportador não é composto e o laço do loop de serviço não arranca. COM destino, a
-	// composição é fail-closed em cada perna (fonte, chave, soberania) e o arranque ABORTA em vez
+	// composição é fail-closed em cada perna (fonte, chave, soberania, e a retoma da cadeia que já
+	// esteja no destino — backup.ErrResumeUnverifiable) e o arranque ABORTA em vez
 	// de deixar o operador com um backup que não existe. Ver backup_scheduler.go.
 	backupExporter, err := comporExportadorDeBackup(cfg, es, dsarVault)
 	if err != nil {
 		return nil, err
 	}
 	if backupExporter != nil {
-		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q tipo=%T, periodicidade=%s, KEK do backup na custodia do no (audit.KeyVault); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
-			backupExporter.Immutable().Region(), backupExporter.Immutable(), backupExporter.Periodicity())
+		// A retoma acontece na CONSTRUÇÃO, e é por isso que o banner da composição a declara: um
+		// exportador que continuou a cadeia do destino e um que a começou são estados diferentes.
+		cadeiaBackup := "cadeia NOVA (destino virgem)"
+		if c := backupExporter.ResumedFrom(); c > 0 {
+			cadeiaBackup = fmt.Sprintf("cadeia RETOMADA do ciclo %d do destino (conferido fail-closed SO o ultimo elo: assinatura, indice, regiao, EntryHash e o segmento a abrir com a KEK deste no; a cadeia inteira so no restauro)", c)
+		}
+		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q tipo=%T, periodicidade=%s, %s, KEK do backup no audit.KeyVault do no (SO funciona com o vault de referencia em memoria, que morre com o processo; a custodia Vault Transit e key-never-leaves e nao sela segmentos — AOS-453); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
+			backupExporter.Immutable().Region(), backupExporter.Immutable(), backupExporter.Periodicity(), cadeiaBackup)
 	} else {
 		log("backup imutavel + PITR (AOS-101): DESLIGADO (por omissao) — sem Config.BackupDestination o Event Store NAO e exportado para backup imutavel por este no; o que corre no servidor e o deploy/server/backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa e nao produz segmentos cifrados nem manifesto verificavel")
 	}

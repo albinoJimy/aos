@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
@@ -266,6 +267,16 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 	return rt
 }
 
+// openWindow constrói a janela do run JÁ decorada com o rótulo de autoridade (ADR-034). É o
+// único sítio que vê a janela da fábrica; fail-closed: sem janela não há prompt a montar.
+func (rt *Runtime) openWindow(goal Goal) (*authorityWindow, error) {
+	w, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrWindow, err)
+	}
+	return newAuthorityWindow(w), nil
+}
+
 // validate verifica pré-condições do run.
 func (rt *Runtime) validate(goal Goal) error {
 	switch {
@@ -300,9 +311,15 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// tail append-only e da montagem cache-estável à [WindowPort] — há UM só assembler /
 	// prefix-hash por run (o da janela). Fail-closed: sem janela não há prompt a montar.
 	// O default ([inlineWindow]) reproduz o PromptAssembler + tail inline byte-a-byte.
-	win, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools)
+	//
+	// AUTORIZAÇÃO DERIVADA DO CONTEXTO (AOS-069, ADR-034): o loop só conhece a janela
+	// decorada, que junta o rótulo de cada segmento ao do contexto. É daqui — e não da
+	// resposta do modelo — que sai o taint da autorização de cada tool call. A janela de
+	// baixo nunca tem nome neste âmbito ([Runtime.openWindow]): um Append que a contornasse
+	// não é escrevível sem se ver.
+	win, err := rt.openWindow(goal)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %w", ErrWindow, err)
+		return Result{}, err
 	}
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
@@ -364,6 +381,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	//
 	// Um rótulo aqui seria pior do que a ausência dele: leria como se o envenenamento de
 	// memória estivesse tratado.
+	//
+	// Na AUTORIDADE a memória já conta (ADR-034): o segmento `memory` torna o contexto
+	// untrusted, FAIL-CLOSED, pelo que nenhuma tool call privilegiada pode ser pedida depois
+	// dele. Isso não é a defesa contra o envenenamento — é só a garantia de que memória sem
+	// proveniência verificada não autoriza nada.
 	if len(goal.MemoryContext) > 0 {
 		win.Append(TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
 	}
@@ -390,6 +412,10 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// (1) MONTAR — prompt cache-estável (prefixo imutável + tail append-only). A
 		// janela é o dono único do assembler: um só prefix-hash por run.
 		view := win.Assemble(ctx, turn)
+		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
+		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
+		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
+		turnAuthority := win.authority()
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseAssembled); err != nil {
 			return res, err
 		}
@@ -455,22 +481,21 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, err
 		}
 
-		// Histórico do turno no tail append-only (o prefixo nunca muda). A saída do
-		// modelo é untrusted-por-construção — marcada com a mesma proveniência dos
-		// resultados de tool (consistência de auditoria, ADR-005).
+		// Histórico do turno no tail append-only (o prefixo nunca muda). No PROMPT, a saída
+		// do modelo leva `taint=untrusted` — a mesma marcação de proveniência dos resultados
+		// de tool (consistência de auditoria, ADR-005). Na AUTORIDADE, herda o rótulo do
+		// contexto que a produziu ([SegmentAuthority]): não o eleva nem o baixa.
 		//
-		// SEPARAÇÃO DE PLANOS (dual-LLM/CaMeL) — DIFERIDA (AOS-069). O conteúdo
-		// untrusted (esta saída do modelo e os resultados de tool abaixo) é acrescentado
-		// INLINE ao tail que asm.Assemble transforma no prompt do próximo turno; NÃO
-		// passa ainda por [SeparatePlanes]/[ControlPlanner]/[Quarantine]. A defesa activa
-		// no loop base é o default fail-closed do [referencemonitor.TaintGate]: nenhuma
-		// call é marcada trusted por omissão, logo uma acção privilegiada influenciada
-		// por injecção é BLOQUEADA (ver taint_plane_test.go). A barreira estrutural "o
-		// planeador só vê trusted + handles" existe como primitivo (taint_plane.go) mas o
-		// seu wiring à montagem de prompt do loop é DIFERIDO para o ticket de integração
-		// de superfície (EPIC-12), à semelhança das notas de AOS-021/022 em
-		// mediateToolCall e da fronteira de fim-de-turno de AOS-023 — sem ele o
-		// comportamento de AOS-013 permanece inalterado.
+		// O QUE O ADR-034 FECHOU E O QUE NÃO FECHOU. Fechou a AUTORIZAÇÃO: uma tool call
+		// pedida depois de conteúdo untrusted entrar no tail (plan_input, tool_result,
+		// memória) sai com taint untrusted, cunhado aqui a partir do contexto, e o
+		// [referencemonitor.TaintGate] nega-a se a capability for privilegiada. Não fechou a
+		// SEPARAÇÃO DE PLANOS por handle (dual-LLM/CaMeL, opção A): o conteúdo untrusted
+		// continua a entrar INLINE no tail que o modelo lê, e não passa por
+		// [SeparatePlanes]/[ControlPlanner]/[Quarantine]. Essa separação fica DIFERIDA no
+		// DEF-806 (eixo AOS-069), re-escopada a efeitos parametrizados por dados untrusted,
+		// com gatilho: a entrada de uma tool de efeito cujos argumentos venham de conteúdo
+		// untrusted.
 		if resp.Text != "" {
 			win.Append(tailFromHistory(resp.Text))
 		}
@@ -505,7 +530,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return nil
 		}
 		for j, inv := range resp.ToolCalls {
-			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
+			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv, turnAuthority)
 			if err != nil {
 				return res, err
 			}
@@ -751,7 +776,8 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // [ToolDenial]), o erro DA TOOL (dec.ToolErr — não-fatal, para o loop materializar no
 // tail) e o erro FATAL do loop (só cancelamento de contexto). Um erro da tool NÃO é uma
 // negação de política: a decisão foi Permit e o efeito ocorreu, mas a execução
-// downstream falhou (ADR-005 / decision.ToolErr).
+// downstream falhou (ADR-005 / decision.ToolErr). authority é o rótulo do contexto no
+// Assemble do turno que pediu a call (ADR-034) e vai tal e qual para o CallContext.Taint.
 //
 // ADOPÇÃO DO CONTRATO DE ACTIVITY (AOS-021): o despacho passa agora pela porta
 // [ActivityDispatcher] (ver ports.go, AOS-157). O default é Mediate directo (byte-
@@ -778,7 +804,7 @@ func (o toolOutcome) escalated() bool {
 	return o.Denial != nil && o.Denial.Effect == string(referencemonitor.EffectEscalate)
 }
 
-func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (toolOutcome, error) {
+func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation, authority taint.Label) (toolOutcome, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 
 	call := referencemonitor.Call{
@@ -797,12 +823,12 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		// identidade (AOS-152). Vazio ⇒ anónimo ⇒ deny fail-closed sob o hook real.
 		Credential: goal.Credential,
 		Context: referencemonitor.CallContext{
-			// Taint da AUTORIZAÇÃO da call (ADR-005/AOS-069): a proveniência do PLANO
-			// que a originou, não a dos seus dados. Só o control-plane sobre dados
-			// trusted marca trusted (ver [AuthorizeTrusted]); por omissão é untrusted
-			// (fail-closed). O [referencemonitor.TaintGate] impõe: uma autorização
-			// untrusted não pode originar uma capability privilegiada.
-			Taint: authorizationTaintOf(inv),
+			// Taint da AUTORIZAÇÃO da call (ADR-005/AOS-069, ADR-034): o rótulo do CONTEXTO
+			// que o modelo viu no turno que a pediu — cunhado pelo runtime a partir do tail
+			// ([ContextAuthority]), nunca lido da [ToolInvocation], que é saída do modelo. O
+			// [referencemonitor.TaintGate] impõe: uma autorização untrusted não pode originar
+			// uma capability privilegiada.
+			Taint: authority.String(),
 			// A reversibilidade DECLARADA pelo registry. Sem isto o classificador recebe vazio,
 			// trata a acção como irreversível, e toda a tool call sai `danger` — o que colapsa
 			// a taxonomia de autonomia L0–L5 em dois estados.

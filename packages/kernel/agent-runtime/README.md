@@ -52,6 +52,7 @@ Fora de âmbito e **não** implementados aqui: idempotência de passo (AOS-014),
 | `tracing.go` | porta `Tracer`, semconv GenAI, `NoopTracer`, `RecordingTracer` |
 | `turn.go` | `TurnRecorder` + `Manifest` (evento `turn.recorded` no Event Store) |
 | `taint.go` | `Tainted` / níveis de taint (ADR-005) |
+| `context_authority.go` | taint da AUTORIZAÇÃO derivado do contexto do turno — `SegmentAuthority`, `ContextAuthority`, janela decorada (AOS-069, ADR-034) |
 | `hooks.go` | `StepIdentity` (AOS-014) e `Checkpointer` (AOS-015) — hooks |
 | `loop.go` | `Runtime`, `Goal`, `Result`, `Run` (o loop) |
 | `errors.go` | sentinelas |

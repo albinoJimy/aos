@@ -108,14 +108,21 @@ const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo 
 // Cedar traga — e o banner NÃO afirma que todas a trazem: no bundle de referência a regra
 // `allow_fs_read` ainda não a tem (AOS-363 critério 6, por fechar), pelo que o banner nomeia o
 // buraco em vez de o esconder. É o achado central de analises/13 §2.1 tornado visível no arranque.
+//
+// O QUE O RÓTULO SIGNIFICA (AOS-069, ADR-034). A linha activa diz de onde vem o taint que o gate
+// lê, porque é isso que decide o que um run consegue fazer: é o rótulo do CONTEXTO do turno que
+// pediu a call, cunhado pelo runtime — trusted enquanto o contexto só tem o que o humano deu,
+// untrusted a partir do primeiro plan_input, tool_result ou memória, e sem volta no mesmo run.
+// Antes do ADR-034 toda a tool call do modelo saía untrusted, e armar o gate para uma capability
+// era proibi-la; a linha que o afirmasse hoje estaria a mentir no sentido contrário.
 func taintGatePostureBanner(active bool) []string {
 	if active {
 		return []string{
-			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao foi promovida sobre dados NAO-CONFIAVEIS (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar",
+			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao e NAO-CONFIAVEL (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar. O taint da autorizacao e o rotulo do CONTEXTO do turno que pediu a call, cunhado pelo runtime (ADR-034) e nunca pelo modelo: trusted enquanto o contexto so tem o objectivo e correccoes do humano, untrusted a partir do primeiro plan_input, tool_result ou memoria, e sem volta no mesmo run — uma capability privilegiada so pode ser pedida ANTES de o run ler conteudo nao-confiavel (um no que ja leu um documento nao le outro)",
 		}
 	}
 	return []string{
-		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); e OPT-IN de proposito",
+		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); desde o ADR-034 o taint e o do contexto do turno, pelo que armar cap:fs.read nao impede a leitura de um run cujo contexto so tem o objectivo. E OPT-IN de proposito",
 	}
 }
 

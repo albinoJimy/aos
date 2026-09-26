@@ -91,11 +91,16 @@ services:
       # Sem estas duas o nó fica em default-deny explícito e nenhuma tool call passa.
       AOS_POLICY_BUNDLE_DIR: "/etc/aos/policies"
       AOS_POLICY_TRUST_ANCHOR: "${AOS_POLICY_TRUST_ANCHOR:?}"
-      # AOS-363: barreira control/data-plane EFICAZ. Vazio ⇒ TaintGate inerte, retro-compat
-      # (o estado deste deployment até se definir capabilities privilegiadas). Lista não-vazia
-      # (ex. "cap:fs.read,cap:fs.write,cap:net.connect") ⇒ o ápice endurece e barra promoções
-      # tainted. Inclui cap:fs.read: a regra allow_fs_read do bundle ainda não tem cláusula de
-      # taint (AOS-363 crit. 6, por fechar), logo é o TaintGate que a cobre quando ligado.
+      # AOS-363: barreira control/data-plane EFICAZ. Vazio ⇒ TaintGate inerte, retro-compat.
+      # Lista não-vazia ⇒ o ápice endurece e barra tool calls privilegiadas com autorização
+      # untrusted. Fase 0 do AOS-069 (armada pelo dono no ambiente do servidor, 2026-09-26):
+      # AOS_PRIVILEGED_CAPS=cap:http.post.
+      # cap:fs.read SÓ entra DEPOIS da release com a opção C (AOS-069, ADR-034 — autorização
+      # derivada do contexto do turno). Antes dela toda a tool call do modelo sai untrusted e
+      # armar cap:fs.read parte o doc_read de um nó cujo contexto só tem o objectivo; com ela,
+      # esse doc_read passa e o de um nó que leu um plan_input é negado. A regra allow_fs_read
+      # do bundle continua sem cláusula de taint (AOS-363 crit. 6, adiado para a próxima
+      # cerimónia de chave), pelo que é o TaintGate que a cobre quando cap:fs.read for armada.
       AOS_PRIVILEGED_CAPS: "${AOS_PRIVILEGED_CAPS:-}"
 
       # Substrato + execução DURÁVEIS no volume gravável. É o que faz o estado
@@ -398,9 +403,15 @@ services:
       AOS_MODEL_AUDIT_PATH: "${AOS_MODEL_AUDIT_PATH:-/var/lib/aos/model-audit.wal}"
       # REGISTRY DE TOOLS oferecidas ao modelo. Sem ele o modelo não emite `tool_calls` e o
       # Reference Monitor não tem o que mediar. Com ele, cada call é mediada no ponto único:
-      # o binding de governança vem DAQUI (config trusted), o modelo só escolhe o NOME, e o
-      # taint fica `untrusted` — pelo que uma capability privilegiada pedida pelo modelo é
-      # NEGADA pelo taint-gate ("untrusted não comanda").
+      # o binding de governança vem DAQUI (config trusted) e o modelo só escolhe o NOME. O taint
+      # da autorização é o rótulo do CONTEXTO do turno, cunhado pelo runtime (ADR-034): trusted
+      # enquanto o contexto só tem o objectivo, untrusted depois de um plan_input, resultado de
+      # tool ou memória — e uma capability privilegiada pedida sobre contexto untrusted é NEGADA
+      # pelo taint-gate. O ./model-tools/tools.json deste servidor só oferece `doc_read`: o
+      # `web_post` (cap:http.post, egress externo) SAIU por decisão do dono a 2026-09-26 (ADR-034
+      # §2.7) — com a opção C um web_post de contexto limpo já não morre pelo taint, só pela região
+      # do Cedar. Voltar a oferecer uma tool de egress externo é decisão explícita (fase 2 /
+      # opção A do ADR-034), não uma edição deste ficheiro.
       AOS_MODEL_TOOLS: "${AOS_MODEL_TOOLS:-}"
       AOS_MODEL_TOOLS_REGISTER: "${AOS_MODEL_TOOLS_REGISTER:-}"
 

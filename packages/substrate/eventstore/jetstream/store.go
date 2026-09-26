@@ -166,6 +166,16 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 			}
 			return nil, fmt.Errorf("jetstream: criar stream %q: %w", cfg.stream, err)
 		}
+		// AOS-432: o CREATE responde antes de o grupo R3 eleger líder, e até lá toda a
+		// publicação recebe 503. Ver lider.go para a medição e para porque é que a
+		// correcção é aqui e não no mapeamento do 503.
+		if err := esperarLider(cfg.stream, func(resta time.Duration) (string, error) {
+			c, err := cn.ColocacaoDoStream(cfg.stream, resta)
+			return c.Lider, err
+		}, cfg.prazo, time.Now, time.Sleep); err != nil {
+			_ = cn.Close()
+			return nil, err
+		}
 	}
 	// SOBERANIA (AC5, ADR-011): a fronteira é verificada contra a configuração
 	// ARMAZENADA, não contra a que pedimos. Ver soberania.go para os três modos de

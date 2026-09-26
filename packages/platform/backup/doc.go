@@ -16,6 +16,13 @@
 //     assinado (ed25519). O Event Store não tem cadeia nativa — ela é construída
 //     aqui sobre os segmentos.
 //
+//   - RETOMA: cada ciclo sela também um registo IMUTÁVEL (`<região>/cycle-%08d`) com o
+//     elo e o checkpoint que o autentica. [NewExporter] sonda o último, verifica-o
+//     fail-closed ([ErrResumeUnverifiable]) e CONTINUA a cadeia — pelo que um destino que
+//     sobreviva ao processo é utilizável, e não colide para sempre ao segundo arranque.
+//     [Restorer.LoadManifest] reconstrói a cadeia completa a partir desses registos. Ver
+//     resume.go para o desenho e para o que a verificação de arranque cobre.
+//
 //   - PITR: o [Restorer] reconstrói um Event Store até um seq-alvo por stream,
 //     VERIFICANDO o manifesto hash-chain no processo (uma adulteração de um
 //     segmento é detectada) e reinserindo os eventos com o ENVELOPE preservado

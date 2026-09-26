@@ -563,8 +563,10 @@ type streamClusterResponse struct {
 
 // ColocacaoDoStream lê que pares do cluster alojam o stream.
 //
-// Um stream não-replicado (R1 fora de cluster) não traz bloco `cluster`; devolve-se o
-// zero-value, que é a resposta honesta a «onde está replicado?» quando não está.
+// Uma resposta sem bloco `cluster` devolve o zero-value. NÃO é o caso de um R1 fora de
+// cluster: medido na revisão do AOS-432 contra `nats:2.10-alpine` standalone, esse traz o
+// bloco com `leader` igual ao id do servidor. `Lider` vazio significa, portanto, grupo
+// sem líder eleito — é a pergunta que o `jetstream.Abrir` faz aqui antes de devolver.
 func (cn *Conn) ColocacaoDoStream(stream string, timeout time.Duration) (ColocacaoEfectiva, error) {
 	m, err := cn.Request("$JS.API.STREAM.INFO."+stream, nil, nil, timeout)
 	if err != nil {

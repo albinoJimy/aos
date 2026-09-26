@@ -20,6 +20,11 @@
 #   GHCR_USER / GHCR_TOKEN   login efémero no registry (o token é revogado ao fim do job de CD)
 #   HEALTH_TIMEOUT           segundos a esperar pelo healthy (default 180)
 #   NO_ROLLBACK=1            desliga a reversão automática (para depurar um arranque falhado)
+#   DEPLOY_ESPERA_DRENAGEM_S tecto da espera por uma drenagem da fila em curso (default 2700)
+#   DEPLOY_AO_DESISTIR_DA_DRENAGEM  abortar (default) | avancar — o que fazer quando esse tecto passa
+#
+#   bash -s -- --anunciar < deploy.sh   modo ANÚNCIO (AOS-450): o CD corre-o ANTES do rsync dos
+#                                       scripts; ver «A DRENAGEM DA FILA» abaixo.
 # =============================================================================
 set -euo pipefail
 
@@ -40,6 +45,116 @@ log()  { printf '\033[36m[deploy]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[deploy] FAIL:\033[0m %s\n' "$*" >&2; exit 1; }
 
 dc() { docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" --env-file "${IMAGE_ENV}" "$@"; }
+
+# --- A DRENAGEM DA FILA DE PLANOS: o deploy segura-a (AOS-450) ---------------------------------
+# O timer `aos-drenar-planos` corre o drenar-planos.sh a cada 5 min, e o CD sincroniza os scripts
+# (rsync) ANTES de este script trocar a imagem. Medido no deploy da v0.1.35: uma drenagem calhou
+# entre os dois e correu o script NOVO com o binário ANTIGO — falhou a verificação das métricas do
+# AOS-443 e a unidade ficou `failed`. E uma drenagem a meio do `compose up` vê o nó reiniciar e os
+# pedidos que tinha a meio falharem.
+#
+# POR QUE UM MARCADOR E NÃO SÓ O LOCK. O lock da drenagem é um `flock`, e um `flock` só vive
+# enquanto um processo o detém — mas o rsync e este script são DUAS ligações SSH do runner. Nenhum
+# processo atravessa as duas. Por isso há duas peças:
+#   · o MARCADOR ${MARCADOR_DEPLOY} — «um deploy anunciou a troca»; o drenar-planos.sh, ao vê-lo
+#     válido, sai 0 com «drenagem adiada» sem reclamar nada. Linha: `<epoch> <pid> <validade_s> <origem>`;
+#   · o LOCK — a espera por uma drenagem que JÁ corria (o marcador não a pára) e, neste script, a
+#     posse até ao fim: fecha a janela do `compose up` também contra uma drenagem à mão.
+# O CD escreve o marcador com o modo --anunciar ANTES do rsync (o script vai por stdin, do checkout
+# — o que está no servidor ainda é o da release anterior). Este script, ao arrancar, assume-o com o
+# SEU pid; e apaga-o à saída, seja qual for o desfecho.
+#
+# PORQUE NÃO SÓ MUDAR A ORDEM (rsync dos scripts depois da troca): trocava a janela «script novo,
+# binário antigo» pela inversa, e não protegia nada durante o reinício do nó.
+#
+# O QUE ISTO NÃO FECHA: um deploy que FALHE depois do rsync (passos 0/0b, pull, desistência no 0c,
+# reversão automática) deixa scripts novos com o binário antigo e larga o marcador — a drenagem
+# seguinte corre esse par (o `failed` falso da v0.1.35). O par misturado só deixa de acontecer num
+# deploy BEM-SUCEDIDO. Fechá-lo também nos falhados pede o rsync para uma pasta de preparação e a
+# instalação dos scripts por este script, debaixo do lock, depois do nó saudável (AOS-450, Estado).
+#
+# UM DEPLOY QUE MORRE não pára a fila: o marcador de um pid morto, ou de pid 0 (o anúncio) com o
+# prazo passado, é ÓRFÃO para o drenar-planos.sh, que o ignora e apaga; e o flock morre com o
+# processo — e com os filhos que o herdaram (um `docker` a meio de um deploy morto por SIGKILL
+# segura-o até acabar: a drenagem desse intervalo falha como «outra drenagem», transitório).
+DRENAGEM_DIR="${APP_DIR}/.drenagem"
+DRENAGEM_LOCK="${DRENAGEM_DIR}/lock"
+MARCADOR_DEPLOY="${DRENAGEM_DIR}/deploy-em-curso"
+# Um plano pode durar até 40 min (--plan-timeout); 45 min cobre UM plano a meio. Uma drenagem de 3
+# planos compridos pode passar disto — é o caso de desistir.
+ESPERA_DRENAGEM_S="${DEPLOY_ESPERA_DRENAGEM_S:-2700}"
+AO_DESISTIR="${DEPLOY_AO_DESISTIR_DA_DRENAGEM:-abortar}"
+# Quanto vale o anúncio depois de tomado o lock: o rsync e o arranque deste script. Se o deploy
+# não chegar a correr (rsync falhado, job cancelado), as drenagens retomam sozinhas ao fim disto.
+# ENQUANTO ESPERA pela drenagem em curso, o anúncio vale a espera MAIS isto (1 h por omissão). Um
+# job cancelado a meio da espera pode deixá-lo assim: sem pty o processo remoto não é sinalizado de
+# forma fiável, e se morrer (ou não renovar) o marcador fica com essa validade — a fila adia no
+# máximo esse tempo, muito abaixo das 5 h do alerta.
+ANUNCIO_VALIDADE_S=900
+# Quanto vale o marcador deste script depois de tomado o lock: o pull, o up, o healthy e o smoke. É
+# um TECTO contra a reutilização do pid — enquanto vale, o drenar-planos.sh exige ainda que o pid
+# seja um deploy.sh vivo.
+DEPLOY_VALIDADE_S=3600
+
+# Sem zeros à esquerda: o bash lê `0900` como octal e a aritmética rebenta.
+[[ "${ESPERA_DRENAGEM_S}" =~ ^(0|[1-9][0-9]{0,5})$ ]] \
+  || fail "DEPLOY_ESPERA_DRENAGEM_S='${ESPERA_DRENAGEM_S}' inválido (segundos, inteiro)"
+case "${AO_DESISTIR}" in
+  abortar|avancar) : ;;
+  *) fail "DEPLOY_AO_DESISTIR_DA_DRENAGEM='${AO_DESISTIR}' inválido (abortar | avancar)" ;;
+esac
+
+# marcar_deploy <pid> <validade_s> <origem> — escreve o marcador de forma atómica.
+marcar_deploy() {
+  mkdir -p "${DRENAGEM_DIR}" && chmod 700 "${DRENAGEM_DIR}" \
+    && printf '%s %s %s %s\n' "$(date +%s)" "$1" "$2" "$3" > "${MARCADOR_DEPLOY}.novo" \
+    && mv -f "${MARCADOR_DEPLOY}.novo" "${MARCADOR_DEPLOY}"
+}
+
+# esperar_drenagem — toma o lock da drenagem no fd 8, esperando até ESPERA_DRENAGEM_S por uma que
+# esteja em curso. 0 = tomado (e fica tomado até este processo sair).
+esperar_drenagem() {
+  local t0
+  exec 8>"${DRENAGEM_LOCK}" || return 1
+  if flock -n 8; then
+    log "     nenhuma drenagem em curso — lock tomado"
+    return 0
+  fi
+  log "     uma drenagem da fila está EM CURSO — à espera que termine (tecto ${ESPERA_DRENAGEM_S}s) ..."
+  t0="${SECONDS}"
+  if flock -w "${ESPERA_DRENAGEM_S}" 8 </dev/null; then
+    log "     a drenagem terminou ao fim de $(( SECONDS - t0 ))s — lock tomado"
+    return 0
+  fi
+  return 1
+}
+
+# libertar_drenagem — à saída: apaga o marcador se ainda for DESTE processo, e larga o lock (um filho
+# que tivesse herdado o fd 8 e sobrevivesse seguraria o lock por nós).
+libertar_drenagem() {
+  local pid=""
+  read -r _ pid _ < "${MARCADOR_DEPLOY}" 2>/dev/null || true
+  if [ "${pid}" = "$$" ]; then rm -f "${MARCADOR_DEPLOY}"; fi
+  flock -u 8 2>/dev/null || true
+  return 0
+}
+
+# MODO ANÚNCIO — o CD corre-o antes do rsync: `ssh aos@host 'bash -s -- --anunciar' < deploy.sh`.
+# Nada do que vem depois deste bloco corre neste modo, e ele não lê o stdin (que é o próprio script).
+if [ "${IMAGE_REF}" = "--anunciar" ]; then
+  log "anúncio (AOS-450): as drenagens da fila de planos ficam ADIADAS até o deploy.sh terminar"
+  marcar_deploy 0 "$(( ESPERA_DRENAGEM_S + ANUNCIO_VALIDADE_S ))" anuncio \
+    || fail "impossível escrever ${MARCADOR_DEPLOY} — NADA foi sincronizado nem trocado"
+  if ! esperar_drenagem; then
+    rm -f "${MARCADOR_DEPLOY}"
+    fail "desisti de esperar pela drenagem em curso ao fim de ${ESPERA_DRENAGEM_S}s — NADA foi sincronizado nem trocado, e as drenagens retomam. Repita o deploy (o mesmo digest) quando ela acabar: ${APP_DIR}/logs/drenar-planos.log"
+  fi
+  # O prazo conta a partir de AGORA: a espera acima não pode ter gasto o tempo do rsync.
+  marcar_deploy 0 "${ANUNCIO_VALIDADE_S}" anuncio \
+    || fail "impossível renovar ${MARCADOR_DEPLOY} — NADA foi sincronizado nem trocado"
+  log "anúncio feito: sem drenagens até o deploy.sh assumir (ou ${ANUNCIO_VALIDADE_S}s, se ele não chegar a correr)"
+  exit 0
+fi
 
 [ -n "${IMAGE_REF}" ] || fail "uso: deploy.sh <image-ref>  (ex.: ghcr.io/albinojimy/aos-node@sha256:...)"
 [ -s "${COMPOSE_FILE}" ] || fail "${COMPOSE_FILE} ausente — sincroniza deploy/server/ para ${APP_DIR}"
@@ -94,6 +209,31 @@ else
   log "0b/6 âncora do WORM DESLIGADA (AOS_WORM_TRUST_ANCHOR vazia) — só re-encadeamento, sem truncatura do tail nem reescrita da génese."
 fi
 
+# --- 0c. Segurar a drenagem da fila (AOS-450) ------------------------------------------------------
+# Antes de tocar em qualquer coisa, e até ao fim: o marcador (com o pid deste processo) adia as
+# drenagens do timer, e o lock espera pela que estiver a correr. O deploy do CD já o anunciou antes
+# do rsync e já esperou; o rollback.sh e um deploy à mão chegam aqui sem anúncio.
+#
+# AO DESISTIR DE ESPERAR, o deploy ABORTA (fail-closed) e o rollback AVANÇA:
+#   · um deploy não é urgente — adiá-lo não perde nada, e interromper um plano a meio fecha o
+#     pedido como falhado (gasta uma geração) e o utilizador vê-o;
+#   · um rollback é a saída de emergência de um nó partido AGORA, e a drenagem que corre contra ele
+#     provavelmente já está a falhar; esperar 45 min para a proteger deixava o nó partido a servir.
+#     O rollback.sh pede-o com DEPLOY_AO_DESISTIR_DA_DRENAGEM=avancar e uma espera mais curta.
+log "0c/6 a segurar a drenagem da fila de planos (${DRENAGEM_LOCK}) ..."
+marcar_deploy "$$" "$(( ESPERA_DRENAGEM_S + DEPLOY_VALIDADE_S ))" deploy \
+  || fail "impossível escrever ${MARCADOR_DEPLOY} — o stack NÃO foi tocado"
+trap libertar_drenagem EXIT
+if esperar_drenagem; then
+  marcar_deploy "$$" "${DEPLOY_VALIDADE_S}" deploy \
+    || fail "impossível renovar ${MARCADOR_DEPLOY} — o stack NÃO foi tocado"
+  log "     as drenagens do timer ficam ADIADAS até este deploy terminar"
+elif [ "${AO_DESISTIR}" = "avancar" ]; then
+  log "⚠️ desisti de esperar pela drenagem em curso ao fim de ${ESPERA_DRENAGEM_S}s — AVANÇO (DEPLOY_AO_DESISTIR_DA_DRENAGEM=avancar): os pedidos que ela tem a meio podem falhar quando o nó reiniciar. As drenagens seguintes continuam adiadas."
+else
+  fail "desisti de esperar pela drenagem em curso ao fim de ${ESPERA_DRENAGEM_S}s — o stack NÃO foi tocado (DEPLOY_AO_DESISTIR_DA_DRENAGEM=abortar). Repita o deploy quando ela acabar: ${APP_DIR}/logs/drenar-planos.log"
+fi
+
 # --- 1. Login efémero no registry (se fornecido) ------------------------------------------------
 LOGGED_IN=0
 if [ -n "${GHCR_TOKEN:-}" ]; then
@@ -107,7 +247,8 @@ fi
 # O logout corre SEMPRE, incluindo em falha: uma credencial de CD não fica a residir no
 # ~/.docker/config.json de um servidor entre deploys.
 cleanup_login() { [ "${LOGGED_IN}" -eq 1 ] && docker logout ghcr.io >/dev/null 2>&1 || true; }
-trap cleanup_login EXIT
+# Substitui o trap do passo 0c: a drenagem também se liberta em QUALQUER saída (AOS-450).
+trap 'cleanup_login; libertar_drenagem' EXIT
 
 # --- 2. Pull ANTES de tocar no que corre ---------------------------------------------------------
 log "2/6 pull ${IMAGE_REF} ..."

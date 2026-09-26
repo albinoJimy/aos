@@ -33,11 +33,10 @@
 #
 # ─── O QUE ESTE GATE TOLERA, E PORQUÊ ──────────────────────────────────────────────────────
 #
-# Duas falhas DECLARADAS (`falhas_conhecidas`, AOS-432): sobre substrato replicado, quem perde
-# a corrida ao lease sai com um erro de transporte em vez do código da posse. A arbitragem
-# está certa — exactamente 1 vencedor, sempre —; o que falha é a distinção entre «recusado» e
-# «avariado». Foi este gate que o encontrou, e a alternativa (tirar `cmd/aos-orq` daqui) seria
-# deixar de o ver. A lista auto-reforma-se: um teste dela que PASSE avermelha o gate.
+# Falhas DECLARADAS (`falhas_conhecidas`), cada uma com ticket. HOJE A LISTA ESTÁ VAZIA: as
+# duas que ela teve (AOS-432 — quem perdia a corrida ao lease saía com 503 em vez do código da
+# posse) foram corrigidas e saíram dela porque PASSARAM, que é o que a lista exige. A lista
+# auto-reforma-se: um teste dela que PASSE avermelha o gate.
 #
 # ─── PORQUE É QUE A CONTAGEM É POR EXECUÇÃO E NÃO POR GREP ─────────────────────────────────
 #
@@ -160,21 +159,19 @@ em_linux=0
 
 # FALHAS CONHECIDAS, COM TICKET — e o gate avermelha quando DEIXAREM de falhar.
 #
-# Ligar o cluster encontrou um defeito REAL que não é deste ticket: sobre substrato replicado,
-# quem PERDE a corrida ao lease sai com `natsjs: ninguém serve este subject (503)` em vez de
-# `ErrLeaseHeld`. A arbitragem está certa (exactamente 1 vencedor, 3/3); o que está errado é o
-# modo de falha dos perdedores — «recusar tem de ser distinguível de avariar». É o AOS-432.
+# O mecanismo fica, e a lista fica VAZIA. Ligar o cluster (AOS-431) encontrou um defeito REAL:
+# sobre um stream acabado de criar, quem PERDIA a corrida ao lease saía com
+# `natsjs: ninguém serve este subject (503)` em vez de `ErrLeaseHeld` — o `STREAM.CREATE`
+# responde antes de o grupo R3 eleger líder, e até lá ninguém serve os subjects. Foi declarado
+# aqui em vez de se tirar `cmd/aos-orq` do gate, e o AOS-432 corrigiu-o na causa
+# (`jetstream.Abrir` espera pelo líder). Os dois testes que o mediam PASSARAM, e por isso
+# saíram — era isso ou o gate avermelhar.
 #
-# A alternativa era não pôr `cmd/aos-orq` neste gate, e seria pior: a falha deixaria de ser
-# vista no dia seguinte. Declarada, ela é contada, nomeada e tem dono.
-#
-# A lista AUTO-REFORMA-SE: um teste aqui que passe avermelha o gate. Uma falha declarada que
-# se cure sem ninguém dar por isso é dívida que fica a pesar sem razão, e é o modo de falha
-# das baselines que ninguém revisita.
-falhas_conhecidas=(
-  "TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado"  # AOS-432
-  "TestAOS100_NServeEmParaleloSobreOSubstratoReplicado"      # AOS-432
-)
+# Quem declarar uma falha nova põe o nome do teste E o ticket em comentário na mesma linha. A
+# lista AUTO-REFORMA-SE: um teste aqui que passe avermelha o gate. Uma falha declarada que se
+# cure sem ninguém dar por isso é dívida que fica a pesar sem razão, e é o modo de falha das
+# baselines que ninguém revisita.
+falhas_conhecidas=()
 
 total_pass=0
 total_fail=0
@@ -225,7 +222,7 @@ for entrada in "${modulos_nats[@]}"; do
       [ "$nome_teste" = "$c" ] && conhecida=1 && break
     done
     if [ "$conhecida" -eq 1 ]; then
-      printf '     falha DECLARADA (AOS-432): %s\n' "$nome_teste"
+      printf '     falha DECLARADA (ver o ticket em falhas_conhecidas): %s\n' "$nome_teste"
       total_fail_conhecida=$((total_fail_conhecida + 1))
     else
       log_fail "nats: $modulo — teste NOVO a falhar sobre substrato real: $nome_teste"
@@ -237,8 +234,8 @@ for entrada in "${modulos_nats[@]}"; do
   # A LISTA AUTO-REFORMA-SE: uma falha declarada que passou tem de sair da lista.
   for c in "${falhas_conhecidas[@]}"; do
     if grep -q "^--- PASS: $c" "$saida" 2>/dev/null; then
-      log_fail "nats: $c está declarado como falha conhecida (AOS-432) e PASSOU"
-      log_fail "     tira-o de falhas_conhecidas e fecha o AOS-432 — dívida curada que fica declarada é dívida que ninguém revisita"
+      log_fail "nats: $c está declarado como falha conhecida e PASSOU"
+      log_fail "     tira-o de falhas_conhecidas e fecha o ticket dele — dívida curada que fica declarada é dívida que ninguém revisita"
       rc=1
     fi
   done
@@ -306,9 +303,10 @@ log_gate "nats · cobertura do substrate/eventstore (piso ${EVENTSTORE_COVERAGE_
 # RESTAURAR O CLUSTER ANTES DE MEDIR, e a razão foi uma execução.
 #
 # Esta medição corre DEPOIS das suites, e as do `cmd/aos-orq` matam nós de propósito (perda de
-# nó, reconexão). O `AOS_RESTORE_CMD` repõe-nos no `t.Cleanup` de cada teste, mas as duas falhas
-# declaradas do AOS-432 param antes de lá chegar — e a medição encontrava um cluster degradado,
-# falhava a criar streams R3, e o gate dizia «a medição não correu» sem dizer porquê.
+# nó, reconexão). O `AOS_RESTORE_CMD` repõe-nos no `t.Cleanup` de cada teste, mas um teste que
+# falhe antes de lá chegar (foi o caso das duas falhas declaradas do AOS-432, já corrigidas)
+# deixava a medição num cluster degradado: falhava a criar streams R3, e o gate dizia «a
+# medição não correu» sem dizer porquê.
 bash "$CLUSTER" restore >/dev/null 2>&1 || true
 
 cov_out="$(mktemp)"
@@ -333,7 +331,7 @@ fi
 rm -f "$cov_out" "$cov_log"
 
 log_gate "nats · veredicto"
-printf '   TOTAL sobre substrato replicado real: PASS=%s FAIL=%s (%s declaradas no AOS-432) SKIP=%s (%s não declarados)\n' \
+printf '   TOTAL sobre substrato replicado real: PASS=%s FAIL=%s (%s declaradas) SKIP=%s (%s não declarados)\n' \
   "$total_pass" "$total_fail" "$total_fail_conhecida" "$total_skip" "$total_skip_inesperado"
 
 if [ "$total_pacotes_inexplicados" -gt 0 ]; then
@@ -351,7 +349,7 @@ fi
 if [ "$rc" -eq 0 ]; then
   log_ok "nats: substrato replicado real exercitado, $total_pass teste(s), nenhum skip por falta de substrato"
   if [ "$total_fail_conhecida" -gt 0 ]; then
-    log_warn "  $total_fail_conhecida falha(s) DECLARADA(S) no AOS-432 — o gate está verde COM dívida nomeada, não sem ela"
+    log_warn "  $total_fail_conhecida falha(s) DECLARADA(S) em falhas_conhecidas — o gate está verde COM dívida nomeada, não sem ela"
   fi
 fi
 

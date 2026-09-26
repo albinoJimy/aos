@@ -1557,7 +1557,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				"counter", float64(h.svc.ciclosDeBackup.Load()), "")
 			g("aos_backup_export_failures_total", "Ciclos de exportacao FALHADOS desde o arranque (fail-open: nao afectam os runs).",
 				"counter", float64(h.svc.backupFalhas.Load()), "")
-			g("aos_backup_scheduler_stopped", "O agendador PAROU definitivamente por erro permanente (violacao de soberania ou colisao de referencia no destino) (1). Nao volta sozinho.",
+			g("aos_backup_scheduler_stopped", "O agendador PAROU definitivamente por erro permanente (violacao de soberania, cadeia com outro dono, registo de ciclo que nao verifica, colisao de conteudo na ref do segmento, ou log atras do cursor da cadeia) (1). Nao volta sozinho.",
 				"gauge", b01(h.svc.backupParado.Load()), "")
 			// A JANELA EFECTIVA DE RPO, medida pelo próprio exportador: quanto tempo passou desde
 			// que o backup confirmou estar em dia com o head do Store. É o número que o critério

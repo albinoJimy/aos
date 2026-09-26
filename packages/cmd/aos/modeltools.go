@@ -13,12 +13,13 @@ package main
 // modelo pede uma tool → o RM decide (allow/deny) no ponto de mediação único (ADR-002). Produção
 // ligaria aqui o registry real (catálogo assinado + executor da tool).
 //
-// INVARIANTE DE SEGURANÇA (AOS-069, ver ToolInvocation.AuthorizationTaint): o binding
-// capability/recurso vem do REGISTRY (config trusted), não da saída do modelo — o modelo só escolhe
-// QUAL tool pelo nome. O AuthorizationTaint NUNCA é preenchido aqui: fica vazio ⇒ untrusted
-// (fail-closed). Uma tool call ORIGINADA pelo modelo é autorização untrusted, e o TaintGate do RM
-// impede que uma autorização untrusted origine uma capability privilegiada. É exactamente esta a
-// propriedade que o seam demonstra (P4: "untrusted não comanda").
+// INVARIANTE DE SEGURANÇA (AOS-069, ADR-034): o binding capability/recurso vem do REGISTRY
+// (config trusted), não da saída do modelo — o modelo só escolhe QUAL tool pelo nome. Este
+// decorador NÃO decide a autorização, e desde o ADR-034 nem tem por onde: a ToolInvocation deixou
+// de ter campo de taint. O taint da autorização é cunhado pelo Agent Runtime a partir do CONTEXTO
+// do turno (trusted só com objectivo/correcções; untrusted depois de plan_input, tool_result ou
+// memória), e o TaintGate do RM impede que uma autorização untrusted origine uma capability
+// privilegiada (P4: "untrusted não comanda").
 
 import (
 	"context"
@@ -277,8 +278,8 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 // toolEnrichingClient decora um [agentruntime.ModelClient]: quando o modelo escolhe uma tool pelo
 // NOME, preenche o binding de GOVERNANÇA (capability + recurso) a partir do registry trusted, para
 // o Reference Monitor ter o que avaliar. Uma tool fora do registry fica com Capability vazia ⇒
-// default-deny no RM (o modelo não pode inventar uma capability). NÃO toca em AuthorizationTaint
-// (fica untrusted, fail-closed — AOS-069).
+// default-deny no RM (o modelo não pode inventar uma capability). NÃO decide a autorização: essa
+// é cunhada pelo runtime a partir do contexto (AOS-069, ADR-034).
 type toolEnrichingClient struct {
 	inner    agentruntime.ModelClient
 	bindings map[string]toolBinding
@@ -317,7 +318,6 @@ func (c *toolEnrichingClient) Call(ctx context.Context, view agentruntime.Prompt
 		// acima, de proposito: uma call que ja vai ser negada nao deve levar consigo uma
 		// declaracao de benignidade.
 		resp.ToolCalls[i].Reversibility = b.reversibility
-		// AuthorizationTaint: DELIBERADAMENTE não preenchido (vazio ⇒ untrusted). Ver AOS-069.
 	}
 	return resp, nil
 }

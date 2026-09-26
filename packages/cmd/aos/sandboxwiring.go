@@ -224,7 +224,9 @@ func sandboxSnapshotFromEnv() (*sandbox.Snapshot, error) {
 // O QUE FALTAVA, então, não era uma recusa — era a DECLARAÇÃO. O banner dizia «1 tool(s)
 // [doc_read] ligadas ao driver» e calava-se sobre a segunda: em produção, o manifesto oferecia
 // `doc_read` e `web_post`, e nada dizia que uma delas nunca correria. O modelo gasta um turno a
-// tentá-la e o operador não sabe porquê.
+// tentá-la e o operador não sabe porquê. (Desde 2026-09-26 o manifesto de produção já não oferece o
+// `web_post` — decisão do dono, ADR-034 §2.7; o de dev-hardened ainda o oferece, e é aí que esta
+// declaração continua a aparecer.)
 //
 // «A postura anunciada = a postura ligada» é a regra desta casa (AOS-203/AOS-248). Uma tool
 // oferecida e não executável é postura, e passa a ser anunciada.

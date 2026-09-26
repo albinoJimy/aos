@@ -3813,16 +3813,23 @@ permissões» — e nenhuma delas explica um vencedor no mesmo instante.
 
 ### Critérios de Aceitação
 
-- [ ] A causa do 503 está **medida**, não inferida: um traço do protocolo (PUB + headers +
-      resposta) do vencedor e de um perdedor, lado a lado.
-- [ ] Um processo que perca o lease sai com `exitPosseNegada` e uma mensagem que nomeia o
-      dono — não com um erro de transporte.
-- [ ] `TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado` e
+- [x] A causa do 503 está **medida**, não inferida: um traço do protocolo (PUB + headers +
+      resposta) do vencedor e de um perdedor, lado a lado. — *Ver «A medição», abaixo.*
+- [x] Um processo que perca o lease sai com `exitPosseNegada` e uma mensagem que nomeia o
+      dono — não com um erro de transporte. — *`aos-orq: posse do run "r-msg": durable: run
+      já tem um lease válido detido (não expirado): detido por "dono-1" (token 1) até
+      2026-09-26T12:20:07.2729463Z`, saída `3`. O `TestAOS100_NServe…` passa a exigir o dono
+      na mensagem de cada perdedor; `TestAOS432_RecusaDoLeaseNomeiaODono` fixa-o no `durable`.*
+- [x] `TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado` e
       `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` passam, e saem da lista de falhas
-      declaradas de `scripts/ci/nats.sh` — que **avermelha sozinho** quando elas passarem.
-- [ ] Se a correcção for mapear um erro, há teste que prova que o mapeamento não engole uma
+      declaradas de `scripts/ci/nats.sh` — que **avermelha sozinho** quando elas passarem. —
+      *3/3 execuções sobre o cluster do gate: `vencedores=1 negados-pelo-lease=3` e
+      `vencedores=1 negados-pelo-lease=2`. `falhas_conhecidas` fica vazia; o mecanismo fica.*
+- [x] Se a correcção for mapear um erro, há teste que prova que o mapeamento não engole uma
       indisponibilidade REAL do substrato: «o lease foi negado» e «o NATS está em baixo» têm
-      de continuar distinguíveis, senão troca-se um defeito por outro pior.
+      de continuar distinguíveis, senão troca-se um defeito por outro pior. — *A correcção NÃO
+      mapeia erro nenhum, e mesmo assim o teste existe: `TestAOS432_503VerdadeiroNaoEPosseNegada`,
+      em «Os testes, e o que cada um prova».*
 
 ### Fora de âmbito, declarado
 
@@ -3838,10 +3845,126 @@ permissões» — e nenhuma delas explica um vencedor no mesmo instante.
 
 ### Estado
 
-**ABERTO.** Encontrado pelo AOS-431 ao ligar o cluster ao CI; declarado como falha conhecida
-no gate `nats` para que ele possa ficar verde sem esconder isto. Não foi diagnosticado até ao
-fim de propósito — três hipóteses foram mortas por experiência e a quarta exige ler o
-protocolo, que é trabalho com âmbito próprio.
+**FECHADO.** Encontrado pelo AOS-431 ao ligar o cluster ao CI e declarado como falha conhecida
+no gate `nats`; medido ao nível do protocolo, corrigido na causa, e as duas falhas declaradas
+saíram da lista porque passaram.
+
+### A medição
+
+Instrumento: três experiências com o cliente `natsjs` do próprio repositório contra o cluster
+do `nats-cluster.sh` (quatro nós, `nats:2.10-alpine`), a 2026-09-26. O instrumento não ficou
+versionado: é um traço de uma vez, e o que ele prova está fixado pelos testes de regressão
+abaixo.
+
+**A — a sequência do `aos-orq serve --nats` em quatro ligações, sobre um stream NOVO**
+(`STREAM.CREATE` → `STREAM.INFO` → `PUB` com `Nats-Expected-Last-Subject-Sequence: 0`):
+
+| Ligação | CREATE | `cluster.leader` no CREATE | PUB (CAS 0) | Resposta ao PUB |
+|---|---|---|---|---|
+| 0 | 42 ms, sucesso | `""` | 2,8 ms | **Status 503**, sem corpo |
+| 1 | 40 ms, sucesso | `""` | 2,2 ms | **Status 503**, sem corpo |
+| 2 | 40 ms, sucesso | `""` | 3,6 ms | **Status 503**, sem corpo |
+| 3 | **106 ms**, sucesso | `"aos432-4"` | 5,8 ms | `{"stream":"…","seq":1}` |
+
+As quatro recebem o CREATE com sucesso. Três recebem-no em ~40 ms com o líder **vazio**, e o
+`STREAM.INFO` seguinte também o traz vazio; uma recebe-o em ~106 ms, já com líder. As três
+sem líder publicam e recebem 503. O que responde é o servidor, e não há ninguém do outro lado:
+no JetStream em cluster só o **líder** do stream subscreve os subjects dele, e o líder ainda
+não existe.
+
+**B — controlo: o mesmo PUB concorrente contra um stream que JÁ tem líder.** Zero 503: um
+`seq:1` e três `{"error":{"code":400,"err_code":10071,"description":"wrong last sequence: 1"}}`
+— exactamente a recusa do CAS de que o `Claim` precisa para reler e devolver `ErrLeaseHeld`.
+
+**C — a janela.** Uma ligação publica em ciclo enquanto outra cria o stream: 503 a +12, +24,
++37, +48, +58, +66, +74, +84, +93 e +101 ms, e `seq:1` a +111 ms. A janela entre o stream
+existir e ser servido é de **~100 ms** neste cluster.
+
+**A pergunta central do ticket — «porque é que o mesmo subject aceita a escrita do vencedor e
+responde 503 à do perdedor» — tem resposta:** não é o mesmo instante. O vencedor é quem
+publica depois de o líder existir; os perdedores publicam dentro da janela. O `Claim` estava
+certo; o que recebia era um stream que ainda não estava em condições de receber escritas.
+
+### Porque é que as hipóteses mortas não mataram esta
+
+- **«Corrida de arranque» foi refutada por ser determinista (3/3), e isso não a refutava.** A
+  corrida existe, mas o desfecho dela é fixado por uma razão de tempos que não varia: a janela
+  de eleição (~100 ms) é várias vezes maior do que o tempo que um processo leva do CREATE ao
+  PUB (~25 ms). Uma corrida com essa margem dá sempre o mesmo resultado — determinismo não
+  distingue «não há corrida» de «há uma corrida que se perde sempre».
+- **«Propagação do binding entre nós» foi refutada apontando os processos ao mesmo nó, e
+  estava bem refutada** — só que a hipótese que sobra não é sobre propagação: antes de o líder
+  ser eleito, o binding não existe em nó NENHUM.
+- **A medição do AOS-100 (2026-08-31), que deu `negados-pelo-lease=3`,** correu por túnel SSH
+  para o nó 0. **Hipótese, não medida:** a latência do túnel dava tempo à eleição antes do
+  primeiro PUB; o cluster local do AOS-431, com latência de micro-segundos, não dá.
+
+### A correcção
+
+Na causa, e nenhum 503 é remapeado:
+
+- **`jetstream.Abrir` espera pelo líder depois do CREATE** (`jetstream/lider.go`,
+  `esperarLider`): consulta o `STREAM.INFO` (via `ColocacaoDoStream`) com intervalo de 5 ms a
+  duplicar até 100 ms. O prazo do store é **um só orçamento**: cada consulta recebe o que
+  RESTA dele, e cada espera é cortada ao que resta — a espera nunca excede o prazo (a
+  primeira versão passava o prazo inteiro a cada INFO, e o pior caso era ~2× na espera e ~4×
+  no `Abrir`; apanhado na revisão). Prazo esgotado sem líder falha fechado com
+  `ErrStreamSemLider` embrulhado em `eventstore.ErrNoQuorum` — o sentinela canónico de
+  indisponibilidade da porta. Um erro do INFO sobe tal qual, sem re-tentar.
+- **Não há ramo «sem grupo Raft».** A primeira versão tratava um INFO sem bloco `cluster` como
+  «R1 fora de cluster, não espera». A revisão MEDIU contra `nats:2.10-alpine` standalone que um
+  R1 traz o bloco com `leader` = id do servidor — o ramo nunca acontecia com o servidor real,
+  e a frase que o justificava (também na documentação pré-existente do `ColocacaoDoStream`)
+  era falsa. Foi retirado com a função que o servia; líder vazio é «não pronto», que é o lado
+  fail-closed.
+- **A recusa do lease nomeia o dono** (`durable/lease.go`): `ErrLeaseHeld` continua na cadeia e
+  a mensagem acrescenta o worker, o token e a expiração. Todos os consumidores classificam por
+  `errors.Is` (verificado na árvore), pelo que o código de saída não muda.
+- **`scripts/ci/nats.sh`** — `falhas_conhecidas` fica vazia, com o mecanismo intacto.
+
+**Contra-provas.** Com a espera desligada, `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease`
+(sobre o cluster) falha 3/3 com exactamente o defeito original (`vencedores=1
+negados-pelo-lease=0`, três `ninguém serve este subject (503)`); com ela ligada, passa 3/3.
+Fora do cluster, com a chamada ao `esperarLider` retirada do `Abrir`, os dois testes do
+servidor de brincar em `jetstream/aos432_abrir_espera_test.go` ficam vermelhos (`INFO = 0,
+quer 4`; `Abrir devolveu um Store sobre um stream que nunca elegeu líder`) — apagar a chamada
+já não passa verde fora do gate `nats`.
+
+### Os testes, e o que cada um prova
+
+| Teste | Onde | O que prova |
+|---|---|---|
+| `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` | `integration`, sobre o cluster | **A correcção:** N ligações abrem o mesmo stream novo e disputam o run — 1 vencedor, N-1 × `ErrLeaseHeld`, zero 503 |
+| `TestAOS432_503VerdadeiroNaoEPosseNegada` | `integration`, sobre o cluster | **Critério 4:** um `Claim` sobre um subject que nenhum stream captura recebe o 503 REAL e devolve `natsjs.ErrNoResponders`, nunca `ErrLeaseHeld`. Contra-prova: com o 503 tratado como conflito no `isConcurrencyConflict`, fica vermelho |
+| `TestAOS432_AbrirNaoDevolveAntesDeHaverLider`, `TestAOS432_AbrirSemLiderFalhaFechadoDentroDoPrazo` | `jetstream`, sem cluster (servidor NATS de brincar) | O `Abrir` CHAMA a espera, e falha fechado dentro do prazo — não o dobro |
+| `TestAOS432_CadaConsultaRecebeOPrazoQueResta` e mais quatro | `jetstream`, determinista | A espera: orçamento único, devolve ao aparecer o líder, não espera com líder presente, falha fechado no prazo, não re-tenta um erro de consulta |
+| `TestAOS432_RecusaDoLeaseNomeiaODono` | `durable`, determinista | A mensagem de posse negada nomeia worker, token e expiração, com `ErrLeaseHeld` na cadeia |
+| `TestAOS432_IndisponibilidadeDoSubstratoNaoEPosseNegada`, `TestAOS432_NATSEmBaixoSaiComErroENaoComPosse` | `cmd/aos-orq` | **Guardas de regressão do `codigoDe`, NÃO prova desta correcção.** O primeiro verifica o `switch` (quase tautológico por construção); o segundo falha na ligação, antes de qualquer CREATE. Ficam porque fixam que nenhuma forma de indisponibilidade sai com o código `3` se alguém mexer no `codigoDe` |
+
+### Residual declarado
+
+- **O gate `nats` é fail-open quando um módulo morre sem `--- FAIL`** (panic, timeout, erro de
+  build): o módulo desaparece da contagem e o gate fica verde. Visto nesta entrega — localmente
+  a suite do `cmd/aos-orq` excedeu os 10 min do `go test` e o gate deu `rc=0` com o módulo
+  «vermelho». Tratado à parte e já FECHADO pelo AOS-452 (albinoJimy/aos#389): o gate falha
+  fechado quando um pacote aborta sem `--- FAIL`.
+- **«Stream sem líder» classifica-se de três maneiras conforme o instante** (declarado pela
+  revisão a partir do código, não medido): no `Abrir` de um stream fresco sai
+  `ErrNoQuorum` + `ErrStreamSemLider`; numa publicação posterior sai `natsjs.ErrNoResponders`
+  cru — `indisponibilidadeTransitoria` (`jetstream/store.go`) só traduz `ErrDesligado`; num
+  stream existente em re-eleição, o erro genérico do caminho que a apanhar. Quem ramificar em
+  `ErrNoQuorum` trata de forma diferente a mesma indisponibilidade. Unificá-lo é decidir que um
+  503 do JetStream é transitório — a mesma decisão que o AOS-354 deixou em aberto para o
+  timeout.
+- **Uma janela residual entre o INFO anunciar o líder e o líder subscrever os subjects** não
+  está excluída: o 3/3 e as execuções do gate não a mostraram, mas não a provam inexistente.
+  Se existir, o sintoma é o original (um perdedor com 503), e o teste de integração acima é
+  quem o apanha.
+- **A mesma janela deve reabrir quando o líder de um stream EXISTENTE cai** (perda do nó que
+  o lidera) — **inferido do mecanismo, não medido**: até à nova eleição, publicações recebem
+  503 e um `Claim` nessa janela sai `1` e não `3`. É indisponibilidade REAL do substrato e o
+  código genérico está certo para ela; fica escrito para que não se leia como regressão deste
+  ticket.
 
 ---
 
@@ -5617,6 +5740,13 @@ sensibilidade nem a admissibilidade (resíduo 1). O `web_post` ficou de fora do 
 produção de propósito — admiti-lo é uma decisão sobre uma tool de egress externo e irreversível,
 não uma correcção.
 
+*Nota (2026-09-26, AOS-069 / ADR-034 §2.7):* o **catálogo do nó** de produção passou a ter só
+`doc_read` — o `web_post` saiu de `deploy/server/model-tools/tools.json` por decisão do dono. Chega a
+produção com a próxima release (o `deploy.yml` sincroniza `deploy/server/model-tools/` sem
+`--ignore-existing` e o deploy recria o nó). A conferência deste ticket continua a bater: o snapshot
+de produção já só nomeava `doc_read`, e as tools do nó que o snapshot não nomeia não contam. O
+exemplo de recusa em `deploy/server/README.md` foi actualizado.
+
 ---
 
 ## AOS-442 — A retoma de um plano aprovado decompõe de novo e é recusada; um plano à espera de humano nunca é retomado
@@ -6308,16 +6438,69 @@ como transitórios.
       do rsync dos scripts até o nó estar saudável com a imagem nova — ou a troca dos scripts passa
       para depois da troca da imagem —, de forma que nenhuma drenagem corra com um par
       script/binário misturado nem durante o reinício do nó.
-- [ ] Uma drenagem que encontre o lock ocupado pelo deploy termina sem `failed` (hoje o `flock -n`
+      — **Cumprido só num deploy BEM-SUCEDIDO**: nenhuma drenagem corre entre o anúncio e o fim do
+      `deploy.sh`, nem durante o reinício do nó. Num deploy que falhe DEPOIS do rsync (passos 0/0b
+      antes do 0c, pull falhado, desistência no 0c, reversão automática) os scripts novos ficam com o
+      binário antigo e o marcador é largado: a drenagem seguinte corre esse par (o mesmo `failed`
+      falso da v0.1.35). Idem depois de um `rollback.sh`, que não repõe os scripts.
+- [x] Uma drenagem que encontre o lock ocupado pelo deploy termina sem `failed` (hoje o `flock -n`
       sai com erro): distinguir «deploy em curso» de «outra drenagem em curso».
-- [ ] O deploy espera, com prazo, que uma drenagem em curso termine antes de trocar a imagem, e
+- [x] O deploy espera, com prazo, que uma drenagem em curso termine antes de trocar a imagem, e
       diz no log se desistiu de esperar.
 - [ ] **Verificado em PRODUÇÃO**: num deploy com o timer a disparar na janela, o serviço não fica
       `failed` e o alerta não passa a «mau».
 
+### Desenho
+
+- **Marcador + lock, e não só a ordem.** O rsync e o `deploy.sh` são duas ligações SSH, e um `flock`
+  não atravessa processos que não existem. O CD corre `deploy.sh --anunciar` ANTES do rsync (o
+  script vai por stdin, do checkout): escreve `/opt/aos/.drenagem/deploy-em-curso`
+  (`<epoch> <pid> <validade_s> <origem>`, pid 0 = anúncio) e espera pelo lock da drenagem em curso.
+  O `deploy.sh` (passo 0c) assume o marcador com o seu pid e segura o lock até sair — depois de o nó
+  estar saudável, ou de reverter —, e apaga-o num trap. Mudar só a ordem (scripts depois da imagem)
+  trocava a janela pela inversa e não protegia o reinício do nó.
+- **A drenagem perante o deploy** sai 0 com «deploy em curso — drenagem ADIADA, nada reclamado», sem
+  docker e sem escrever `ultima-ok` (não drenou). Confere o marcador também COM o lock na mão (o
+  anúncio não segura o lock). «Outra drenagem em curso» continua a falhar: o systemd nunca arranca
+  dois oneshot, por isso é uma corrida à mão.
+- **Ao desistir de esperar** (45 min por omissão): o anúncio aborta ANTES do rsync, sem tocar em
+  nada; o `deploy.sh` aborta sem trocar a imagem — adiar um deploy não perde nada, interromper um
+  plano fecha o pedido; o `rollback.sh` espera 5 min e AVANÇA, porque é a saída de emergência de um
+  nó partido. O CD sobrepõe a espera e a decisão pelas variáveis do GitHub
+  `DEPLOY_ESPERA_DRENAGEM_S` e `DEPLOY_AO_DESISTIR_DA_DRENAGEM` (validadas no workflow e no script);
+  o README (§Operação) diz também como parar uma drenagem em curso.
+- **Um deploy morto** não pára a fila: pid morto ou que não corre um `deploy.sh`, marcador expirado
+  (o anúncio vale 15 min depois de tomado o lock, até 1 h se o job for cancelado durante a espera),
+  ilegível, com zeros à esquerda ou com validade acima de `DRENAR_DEPLOY_MAX_S` (4 h) são órfãos — a
+  drenagem ignora-os, di-lo com o motivo (morreu, expirou, ilegível), apaga-os com o lock na mão, e
+  drena.
+
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO** (2026-09-26) com o critério 1 cumprido só para deploys bem-sucedidos;
+verificação em produção por fazer. Verificado:
+`TestAOS450DeployEDrenagem` corre o `deploy.sh`, o `rollback.sh` e o `drenar-planos.sh` reais contra
+stubs de docker/curl (58 verificações, em Linux; localmente em Git Bash com um `flock` emulado), e o
+mesmo cenário contra os scripts anteriores dá 26 falhas; `TestAOS450ContratoDoAnuncioEDoMarcador`
+fixa o caminho do marcador nos dois lados e a ordem anúncio → rsync → deploy no `deploy.yml`.
+Revisão adversarial independente: sem crítico nem alto; o cenário correu também num Debian 12 com
+o `flock(1)` real (58/0) e com o anúncio entregue por pipe, como o SSH o entrega.
+
+**Resíduos**:
+1. **Par misturado nos deploys que falham** depois do rsync, e depois de um `rollback.sh` (ver o
+   critério 1). A alternativa que o fecharia, **não implementada**: o CD sincroniza os scripts para
+   uma pasta de preparação e o `deploy.sh` instala-os debaixo do lock, só depois do nó saudável —
+   um deploy falhado deixaria o par antigo intacto.
+2. **Primeiro deploy com isto**: o servidor ainda tem o `drenar-planos.sh` antigo, que ignora o
+   marcador (corre com o binário antigo, par coerente, e o `deploy.sh` novo espera por ele antes do
+   `compose up`). Mas se essa drenagem durar mais de 45 min, o passo 0c desiste DEPOIS do rsync e
+   fica o par misturado do resíduo 1.
+3. Um adiamento sai 0 e por isso limpa um `failed` anterior da unidade até à drenagem seguinte.
+4. Um filho vivo de um `deploy.sh` morto por SIGKILL (um `docker` a meio) herdou o lock e segura-o
+   até acabar: a drenagem desse intervalo falha como «outra drenagem em curso» (transitório).
+5. O marcador confere o pid por `/proc/<pid>/cmdline`: com `/proc` montado com `hidepid` e um
+   `DEPLOY_USER` diferente do `aos`, o deploy vivo passa por órfão.
+6. O anúncio cancelado a meio da espera vale até 1 h (a espera + 15 min), não 15 min.
 
 ## AOS-452 — O gate `nats` sai verde quando um pacote morre por timeout: a contagem só lê `--- FAIL`
 
