@@ -78,6 +78,14 @@ type Activity struct {
 	// o adaptador de engine / evolução do evento de ledger; ver doc.go, "Âncora de
 	// identidade: step_id".)
 	StepID string
+	// ParentStepID é o passo pai da call (o turno que a pediu), PROPAGADO ao
+	// [referencemonitor.Call] para o evento de mediação o gravar em `parent_step_id` — a
+	// ligação de auditoria entre a tool call e o turno. Até AOS-454 a Activity não o tinha
+	// e, num nó com AOS_DURABLE_EXECUTION=1, o evento saía sem ele. É rasto, não
+	// autorização: NÃO entra na idempotency key (é (RunID, StepID)) nem na impressão da
+	// acção (ToolID, Input) — dois despachos do mesmo passo com pais diferentes são o
+	// MESMO efeito lógico.
+	ParentStepID string
 	// ToolID identifica a tool registada no RM (o efeito externo). Default-deny: uma
 	// tool não registada é negada.
 	ToolID string
@@ -141,13 +149,14 @@ func (a Activity) validate() error {
 // toCall traduz a activity num [referencemonitor.Call]. O Taint é SEMPRE untrusted.
 func (a Activity) toCall() referencemonitor.Call {
 	return referencemonitor.Call{
-		RunID:      a.RunID,
-		StepID:     a.StepID,
-		ToolID:     a.ToolID,
-		Capability: a.Capability,
-		Resource:   a.Resource,
-		Principal:  a.Principal,
-		Credential: a.Credential,
+		RunID:        a.RunID,
+		StepID:       a.StepID,
+		ParentStepID: a.ParentStepID,
+		ToolID:       a.ToolID,
+		Capability:   a.Capability,
+		Resource:     a.Resource,
+		Principal:    a.Principal,
+		Credential:   a.Credential,
 		Context: referencemonitor.CallContext{
 			Taint:                 agentruntime.TaintUntrusted,
 			BudgetTokensRemaining: a.BudgetTokensRemaining,

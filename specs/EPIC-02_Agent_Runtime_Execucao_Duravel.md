@@ -1348,6 +1348,98 @@ não distinguia «correu e saltou bem» de «não correu». Metade disso estava 
 
 ---
 
+## AOS-454 — A via durável perde o `parent_step_id` do evento de mediação
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação (achado da fase 1 do AOS-069) |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-021 (a porta `ActivityDispatcher` e o `DurableDispatcher`), AOS-157 (o loop despacha pela porta) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/integration/runtime_ports.go` (`DurableDispatcher.Dispatch`), `packages/kernel/agent-runtime/activity/contract.go` (`Activity`, `toCall`), `packages/kernel/reference-monitor/eventsink.go` (`MediationRecord`) |
+
+### Contexto
+
+**Achado no diagnóstico da fase 1 do AOS-069 (2026-09-26).** O `DurableDispatcher` traduz o
+`referencemonitor.Call` que o loop constrói numa `activity.Activity`, e `Activity.toCall` volta a
+construir o `Call` que o Reference Monitor medeia. A `Activity` não tinha campo para o passo pai:
+o `Call` re-hidratado chegava ao RM com `ParentStepID` vazio.
+
+Num nó com `AOS_DURABLE_EXECUTION=1` — **produção** — o evento `tool.call.mediated` saía sem
+`parent_step_id`. A via directa (o default do kernel, a de quase todos os testes) grava-o. Perde-se
+a ligação de auditoria entre a tool call e o turno que a pediu; **não é autorização** — nenhum hook
+decide pelo passo pai.
+
+**É a quarta vez que a mesma tradução perde um campo do `Call`:** o `Credential` (AOS-152), a
+`ApprovalEvidence` (AOS-021), o taint da autorização (AOS-069) e agora o passo pai. Cada correcção
+acrescentou o campo que faltava e nenhuma fixou a propriedade. Este ticket fixa-a.
+
+### Objectivo
+
+O `parent_step_id` do evento de mediação é o mesmo nas duas implementações da porta, e qualquer
+campo novo do `Call` é propagado pela via durável ou declarado perdido, com razão.
+
+### Critérios de aceitação
+
+- [x] Paridade medida no evento gravado no Event Store: o `parent_step_id` do `tool.call.mediated`
+      é igual pela via directa e pela durável, e não-vazio
+      (`TestAOS454_ViaDuravelPreservaOParentStepIDNoEvento`, `packages/integration`). **Vermelho na
+      base 9fd4c87**: via directa `step-000001`, via durável vazio.
+- [x] `Activity.ParentStepID` chega ao evento de mediação
+      (`TestAOS454_ParentStepIDChegaAoEventoDeMediacao`, `activity`).
+- [x] O passo pai **não** entra na idempotency key nem na impressão da acção: o mesmo
+      `(RunID, StepID)` com outro pai deduplica e não re-executa
+      (`TestAOS454_ParentStepIDForaDaChaveDeIdempotencia`).
+- [x] Auditoria campo a campo `Call → Activity → toCall` por reflexão: um `Call` com **todos** os
+      campos exportados preenchidos passa pelo `DurableDispatcher`, e cada campo chega igual ao RM
+      ou está declarado em `camposNaoPropagados` com a razão — e, se declarado, tem de chegar
+      diferente (`TestAOS454_AuditoriaCampoACampoCallActivityCall`). Um campo novo no `Call` que
+      ninguém propague avermelha este teste.
+- [ ] Verificado em produção: num nó durável, um `tool.call.mediated` de um run novo traz
+      `parent_step_id`.
+
+### Auditoria campo a campo
+
+Medida pelo teste de reflexão, não lida no código. Na base, só o `ParentStepID` se perdia para
+além do que fica declarado:
+
+| Campo do `Call` | Via durável | Razão |
+|---|---|---|
+| `RunID`, `StepID`, `ToolID`, `Capability`, `Resource`, `Principal`, `Credential`, `Input`, `ApprovalEvidence` | propagado | — |
+| `Context.BudgetTokensRemaining`, `Context.Reversibility`, `Context.Sensitivity` | propagado | — |
+| `ParentStepID` | **perdido → propagado (este ticket)** | — |
+| `Context.Taint` | traduzido, não copiado | Correcção do AOS-069 (fase 1): `Activity.AuthorizationTaint` com `taint.ParseLabel`, fail-closed. Tem teste próprio. Na base 9fd4c87 ainda é fixado em untrusted. |
+| `RequestID` | perdido — **latente** | Nenhum chamador o preenche: o loop não põe `RequestID` na `Call`, e o `DurableDispatcher` só é chamado pelo loop. Se passar a ter produtor, o teste de paridade não o apanha, mas a declaração tem de ser revista. |
+| `Context.RiskClass`, `Context.RiskApprover`, `Context.RiskDecisionMode` | descartado — **correcto** | São saídas do `RiskGate`, escritas dentro de `Mediate`. Deixá-las atravessar vindas do chamador permitiria pré-preencher a atribuição (`RiskApprover`) de uma acção que nenhum humano aprovou, num RM sem `RiskGate` na cadeia. |
+| `humanApproved` (não exportado) | não aplicável | Só o `ApprovalGate` o escreve, dentro do RM; nenhum chamador o consegue passar em nenhuma das vias. |
+
+### Coordenação com o AOS-069 (fase 1)
+
+A correcção do taint na via durável (`Activity.AuthorizationTaint`) estava por fundir quando este
+ticket foi feito, e toca os mesmos dois ficheiros. Os hunks deste ticket ficam longe dos dela (o
+campo a seguir a `StepID`; os dela no fim da `Activity` e no `Taint` do `toCall`). Verificado:
+`git merge-file` de cada ficheiro (base × AOS-454 × AOS-069) sai com **zero conflitos**, e na árvore
+integrada as suites de `activity` e os testes `TestAOS069_*`, `TestAOS454_*` e
+`TestDurableDispatcher_*` de `packages/integration` passam juntos. Funde-se em qualquer ordem.
+
+### O que este ticket NÃO faz, e porquê
+
+**Não propaga o `RequestID`.** Sem produtor, propagá-lo seria código sem caso. Fica declarado
+como perda latente na tabela e no teste.
+
+**Não mexe no taint.** É do AOS-069.
+
+### Estado
+
+**FEITO no código**; falta a verificação em produção (último critério).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1357,3 +1449,4 @@ não distinguia «correu e saltou bem» de «não correu». Metade disso estava 
 | 1.2 | 2026-09-19 | +AOS-411: a re-varredura de órfãos tratava um run vivo como órfão e decifrava-lhe as capturas antes de verificar o dono (observado em produção na v0.1.22) | Equipa AOS |
 | 1.3 | 2026-09-20 | +AOS-419: `paused` e `waiting_on_tool` não tinham backstop de wall-clock nem aresta de saída para terminal (eixo novo do DEF-906) | Equipa AOS |
 | 1.4 | 2026-09-21 | +AOS-422 (os runs vivos saltados vão ao `/metrics`): medido ao tentar verificar o AOS-411 em produção que a correcção tornou a sua própria evidência inobservável — a passagem periódica só fala com órfãos verdadeiros, e os contadores eram variáveis locais. | Equipa AOS |
+| 1.5 | 2026-09-26 | +AOS-454 (a via durável perde o `parent_step_id` do evento de mediação): achado no diagnóstico da fase 1 do AOS-069; auditoria campo a campo `Call → Activity → toCall` fixada por teste de reflexão. | Equipa AOS |
