@@ -1241,11 +1241,11 @@ O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recol
 **Critérios de Aceitação**
 - [x] O serviço `gvisor` do compose de produção declara `init: true` (o `docker-init` fica PID 1, recolhe os órfãos e reencaminha os sinais ao `/component`).
 - [x] `TestAOS451_GVisorCorreComInitNoPID1` (`packages/cmd/aos`) avermelha se a linha sair — verificado por mutação (`init: false` ⇒ vermelho).
-- [ ] **Verificado em PRODUÇÃO**: depois de recriar o `aos-gvisor-1`, o PID 1 é o `docker-init` e a contagem de zombies não cresce.
+- [x] **Verificado em PRODUÇÃO** (2026-09-26, 15:40 CEST): o compose do servidor era igual ao da base, pelo que só o bloco `init: true` foi aplicado (cópia anterior em `/opt/aos/docker-compose.prod.yml.antes-aos451`); recriado só o `gvisor` (`up -d --no-deps --no-build`). Depois: PID 1 = `/sbin/docker-init -- /component`, `healthy`, **0 zombies** (eram 15), `/healthz` 200 a partir da rede do nó, nó `healthy`, e a primeira drenagem a seguir (15:43) saiu `success`.
 
 **Fora de âmbito.** A carga do cluster Kubernetes vizinho não é do AOS e não se investigou por dentro: a conta `aos` não tem acesso a ele.
 
-**Estado.** **IMPLEMENTADO**, falta a verificação em produção (recriar o contentor).
+**Estado.** **FEITO** — implementado (PR albinoJimy/aos#388) e verificado em produção.
 
 ---
 
@@ -1269,4 +1269,5 @@ O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recol
 | 1.3 | 2026-09-17 | AOS-403 validado em produção (v0.1.20): binário do servidor igual ao manifesto assinado, run pelo serviço do compose com o modelo real e selo no volume próprio. | Equipa AOS |
 | 1.4 | 2026-09-19 | +AOS-410 (o controlo do `provision-identity.sh` aceita o Transit vazio como o nó e as mensagens deixam de executar backticks): dois defeitos observados em produção a 2026-09-18. | Equipa AOS |
 | 1.5 | 2026-09-26 | +AOS-451 (o executor gVisor de produção acumula zombies): `init: true` no serviço `gvisor`, com sensor que avermelha se a linha sair. | Equipa AOS |
-| 1.6 | 2026-09-26 | AOS-101: retoma do manifesto do exportador (porta do PR #206) com duas rondas de revisão adversarial; +AOS-453 (custódia de KEK que sela segmentos do backup), que bloqueia ligar o exportador em produção. | Equipa AOS |
+| 1.6 | 2026-09-26 | AOS-451 verificado em produção: o `aos-gvisor-1` recriado corre com o `docker-init` no PID 1 e os 15 zombies desapareceram. | Equipa AOS |
+| 1.7 | 2026-09-26 | AOS-101: retoma do manifesto do exportador (porta do PR #206) com duas rondas de revisão adversarial; +AOS-453 (custódia de KEK que sela segmentos do backup), que bloqueia ligar o exportador em produção. | Equipa AOS |
