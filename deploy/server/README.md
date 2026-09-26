@@ -104,6 +104,46 @@ propósito: o IdP não precisa de ser confiável pelo mundo, só pelo nó e pelo
 
 O servidor, portanto, **não guarda nenhuma credencial que conceda autoridade sobre o sistema**.
 
+### Custódia das chaves humanas (AOS-446) — passos do dono
+
+«Máquina do operador» na tabela acima é **uma** máquina, e é a mesma que corre a selagem diária do
+WORM. Na mesma pasta `secrets-local/` estão a `humano-mandato.key` (assina qualquer mandato), a
+`issuer.key` (o emissor manual, que o nó aceita **sem mandato**), as duas seeds do *four-eyes*
+(`approver-a/b.seed`), a `wormseal.key` e a `backup-key/`. E a chave do humano é uma seed ed25519
+**em hex, em claro**: não tem passphrase (`lerSeedHumana`, `packages/cmd/aos-issuer/mandato.go`).
+Quem copia a pasta contorna o mandato (ADR-033 §6.1). Até à Fase 1 do AOS-446 (mandato assinado por
+FIDO2), a mitigação é de custódia:
+
+1. **`humano-mandato.key` e `issuer.key` saem desta máquina** para suporte offline cifrado (p.ex.
+   um volume VeraCrypt ou BitLocker To Go numa pen que fica guardada). Nenhuma tarefa diária as usa:
+   a selagem usa a `wormseal.key`, e a cunhagem diária é o emissor automático no servidor. Trazem-se
+   de volta só para renovar o mandato (≤ 90 dias, §Cunhagem sem operador) ou cunhar à mão
+   (`get-id-token.ps1 -Cunhar`), e voltam a sair a seguir. Confirma antes de as retirar que tens a
+   **pública** de cada uma (`aos-issuer pubkey --key-file …`): é a que está no `.env`, e é por ela
+   que verificas, ao repô-las, que trouxeste a chave certa.
+2. **A chave SSH interactiva do operador para o `aos` passa a `ed25519-sk`** (FIDO2 — cada uso pede
+   o toque na chave física). Muda só o `authorized_keys` do `aos`. Exige OpenSSH ≥ 8.2 nos dois
+   lados (`ssh -V`) e um cliente com suporte FIDO2 — a prova do passo (b) é o que o confirma:
+
+   ```powershell
+   # (a) na máquina do operador
+   ssh-keygen -t ed25519-sk -C "operador-aos-fido2" -f $env:USERPROFILE\.ssh\id_ed25519_sk_aos
+   scp $env:USERPROFILE\.ssh\id_ed25519_sk_aos.pub aos@37.60.241.150:/tmp/operador-sk.pub
+   ssh aos@37.60.241.150 'cat /tmp/operador-sk.pub >> ~/.ssh/authorized_keys && rm /tmp/operador-sk.pub'
+   # (b) PROVAR que entra com ela (pede o toque) ANTES de retirar a antiga
+   ssh -i $env:USERPROFILE\.ssh\id_ed25519_sk_aos -o IdentitiesOnly=yes aos@37.60.241.150 'echo entrou'
+   ```
+
+   (c) Só depois, no `~/.ssh/authorized_keys` do `aos`, retira a linha da chave interactiva antiga —
+   **não** a da chave de deploy nem as de comando forçado (`command=…`) — e aponta o `IdentityFile`
+   do alias `aos-prod` do `~/.ssh/config` para a chave nova.
+
+   Fica como está o que corre sem pessoa: a `DEPLOY_SSH_KEY` do CD e as chaves de comando forçado
+   (recolha dos backups, selagem do WORM) — uma `-sk` pediria um toque que ninguém está lá para dar.
+3. **Declarado, não resolvido:** as duas seeds de aprovador do *four-eyes* vivem nesta mesma
+   máquina. São duas chaves e **um** custodiante: o *four-eyes* prova duas assinaturas, não duas
+   pessoas (adjacente ao DEF-107).
+
 ---
 
 ## Sandbox das tool calls — porquê gVisor e não Firecracker
@@ -341,9 +381,9 @@ contexto já não existe.
 Um deploy **não** toca no volume `aos-data`: o Event Store e o trilho WORM sobrevivem à troca de
 imagem. É o que torna a reversão segura.
 
-**O deploy segura a drenagem da fila de planos (AOS-450).** O timer `aos-drenar-planos` corre a
-cada 5 min, e o CD sincroniza os scripts **antes** de trocar a imagem: na v0.1.35 uma drenagem calhou
-entre os dois, correu o `drenar-planos.sh` novo com o binário antigo e ficou `failed` (alerta falso).
+**O deploy segura a drenagem da fila de planos (AOS-450).** O timer `aos-drenar-planos` corre 1 min
+depois da drenagem anterior (AOS-447), e o CD sincroniza os scripts **antes** de trocar a imagem:
+na v0.1.35 uma drenagem calhou entre os dois, correu o `drenar-planos.sh` novo com o binário antigo e ficou `failed` (alerta falso).
 Agora:
 
 | Momento | O que acontece |
@@ -364,7 +404,8 @@ duas, por isso é uma corrida à mão — que se quer visível.
 > v0.1.35. Idem depois de um `rollback.sh`, que não repõe os scripts.
 
 **Saída de emergência — um hotfix com uma drenagem longa em curso.** Uma drenagem pode levar até
-~2 h 30 (três planos de 40 min), e o deploy desiste aos 45 min.
+~45 min (um plano de 40 min mais a decomposição — `Environment=DRENAR_MAX=1` na unidade desde o
+AOS-447; com 3, a omissão do script à mão, ~2 h 30), e o deploy desiste aos 45 min.
 
 1. **Pelo CD:** em *Settings → Secrets and variables → Actions → Variables* (do repositório ou do
    environment `production`), defina `DEPLOY_ESPERA_DRENAGEM_S` (segundos, inteiro sem zeros à
@@ -666,14 +707,20 @@ limita é o **nó**:
 |---|---|---|
 | O **mandato** | assinado **uma vez** na máquina do humano, com a chave **dele** | fixa humano, board, agente, classe, política, escopo, TTL máximo e janela (≤ 90 dias) |
 | `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | servidor, a cada 15 min | `aos-issuer mint-mandated` com a chave `aos-issuer-auto` no Vault transit; escreve `/opt/aos/nhi/nhi-run.jwt` (45 min) |
-| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 5 min depois da última drenagem | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim; deixa o log e as métricas em `/opt/aos/logs` (AOS-443); **adia** (sai 0) durante um deploy (AOS-450) |
+| `aos-drenar-planos.timer` → `drenar-planos.sh` | servidor, 1 min depois da última drenagem, **um** pedido por drenagem (AOS-447) | `aos-orq consume`; **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim; deixa o log e as métricas em `/opt/aos/logs` (AOS-443); **adia** (sai 0) durante um deploy (AOS-450) |
 | `alerta-nhi.sh` (cron) | servidor, a cada 15 min | avisa por ntfy **antes** de a credencial faltar: NHI a < 20 min, mandato a < 7 dias, timer falhado **ou parado**, nenhuma drenagem bem-sucedida há 5 h — e **3 desfechos de plano seguidos** falhados (AOS-443); volta a avisar quando o conjunto de causas muda |
+| `avisar-planos.sh` (cron) | servidor, a cada minuto | avisa o **operador** por ntfy, num tópico **próprio**, de cada plano que **termina** — bem ou mal: id pseudonimizado, classe e código, e nada mais (AOS-445) |
 
 > ⚠️ **O que o mandato protege, e o que não.** Quem comprometer o **emissor** — o contentor, o
 > token do Vault, a chave transit — só cunha o que o humano assinou: o nó recusa o resto
 > (`E_MANDATE_VIOLATED`), e um mandato assinado por outra chave também (`E_MANDATE_INVALID`).
 > **Root neste host não é coberto**: muda `AOS_MANDATE_SIGNERS` no `.env` e reinicia o nó. É o
-> resíduo 7 do AOS-427, e está escrito no ADR-033 §2.1.
+> resíduo 7 do AOS-427, e está escrito no ADR-033 §2.1. E root é só um de seis (ADR-033 §6.1,
+> AOS-446): o `.env` é do `aos`, o `aos` está no grupo `docker`, a chave de deploy e quem aprova o
+> environment `production` (ou administra o repositório) agem como o `aos`, a máquina do operador tem
+> a chave do humano, a `issuer.key` (que cunha sem mandato) e SSH como root, e quem é cluster-admin
+> é root neste nó control-plane. O pino também não é só `AOS_MANDATE_SIGNERS`: o
+> `AOS_ISSUER_PUBKEY`, os operadores, os ratificadores e a âncora da política estão no mesmo `.env`.
 
 **1. Na máquina do humano (PowerShell) — o mandato.** A chave do humano **nunca** vai para o
 servidor. O `pubkey` cria-a se não existir e imprime a parte pública, que vai para o `.env`:
@@ -714,10 +761,13 @@ bash /opt/aos/drenar-planos.sh     # drena (ou não há nada) e diz a vida que r
 bash /opt/aos/alerta-nhi.sh        # «ok (0/2): NHI com N min de vida; mandato com N h»
 ```
 
-**4. Como root — ligar os timers**, e como `aos` o sensor:
+**4. Como root — ligar os timers**, e como `aos` o sensor. As unidades instalam-se **pelo nome, a
+partir do pacote verificado** (§TLS, «Instalar como root», passos A, B e 4) — **nunca** por glob a
+partir de `/opt/aos/systemd/`, que é do `aos` (AOS-446: o glob apanhava um symlink plantado lá e o
+`install` copiava o alvo; e o conteúdo era o que o `aos` escrevesse, `User=root` incluído):
 
 ```bash
-install -m 644 /opt/aos/systemd/aos-cunhar-nhi.* /opt/aos/systemd/aos-drenar-planos.* /etc/systemd/system/
+# depois dos passos A, B e 4 do «Instalar como root», que puseram as seis unidades em /etc/systemd/system
 systemctl daemon-reload && systemctl enable --now aos-cunhar-nhi.timer aos-drenar-planos.timer
 # como aos: crontab -e  →  */15 * * * * /bin/bash /opt/aos/alerta-nhi.sh >/dev/null 2>&1
 bash /opt/aos/alerta-nhi.sh --teste
@@ -769,6 +819,109 @@ com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentine
 > `failed`, o que o `alerta-nhi.sh` avisa. É ruído esperado até se voltar a uma imagem com o
 > AOS-443; e essa imagem antiga volta a pôr o objectivo do pedido no log (`objectivo="…"`).
 
+**Aviso do resultado de um plano (AOS-445).** Cada plano que **termina** — bem ou mal — dá um
+aviso por ntfy ao **operador**, num tópico **separado** do dos alertas de infraestrutura. O que sai
+do servidor é só o **id pseudonimizado** (os 12 primeiros hex de `HMAC-SHA256(chave, run_id)`, com
+a chave em `secrets/aviso-planos-hmac.key` — um `sha256` sem chave de um id previsível inverte-se
+por dicionário, e é o prefixo do documento do plano no volume), a classe e o código: nunca o `run_id` (escolhe-o quem submete), o objectivo, o resultado ou o tipo do erro. O `0`
+vai com prioridade *default*; qualquer outro com *high*; o `7` aparece como «recusado» (houve decisão
+e foi não — ou um pendente fora do prazo). Os planos à espera de humano e os transitórios **não**
+avisam: ainda não acabaram.
+
+| Peça | O que faz |
+|---|---|
+| `aos-orq consume` | imprime `aviso: run=<id> geracao=<g> classe=terminal codigo=<n>` **depois** de o nó ter registado o desfecho terminal — um reporte falhado não avisa |
+| `drenar-planos.sh` | recolhe essas linhas e acrescenta-as, debaixo do lock dele, ao outbox `/opt/aos/.avisos-planos/pendentes` (`600`). **Falhar a escrever o outbox nunca faz falhar a drenagem** (di-lo o log). E confere: se o delta de `aos_orq_consume_desfechos_total{classe="terminal"}` não bater com as linhas lidas — uma imagem anterior ao AOS-445 depois de um rollback, ou um reporte falhado —, di-lo no log com `AVISO:` e põe um `desencontro:` no outbox |
+| `avisar-planos.sh` (cron, a cada minuto) | consome o outbox e envia; um envio falhado **fica** e tenta-se no minuto seguinte; regista os enviados em `.avisos-planos/enviados` (por **run**, sem o `run_id`, 30 dias). **No máximo um aviso por plano**: um segundo fim do mesmo run não é avisado e fica no log dele. Um `desencontro:` também só sai uma vez. A volta **pára no primeiro envio falhado** (o resto fica, pela ordem). Recusa enviar se o tópico dos planos for o mesmo da infraestrutura, e **sem a chave HMAC não envia nada** (fail-closed) |
+
+**Instalar — passos do dono, como `aos`, depois do deploy que traz o `avisar-planos.sh`:**
+
+```bash
+# 1. o tópico NOVO (outro, e não o dos alertas: quem o souber lê e publica — é o segredo)
+printf '%s' '<tópico-dos-planos>' > /opt/aos/secrets/ntfy-topico-planos && chmod 600 /opt/aos/secrets/ntfy-topico-planos
+# 2. a chave do pseudónimo (64 hex; sem ela nada sai). Rodá-la muda os pseudónimos dali em diante.
+( umask 077; openssl rand -hex 32 > /opt/aos/secrets/aviso-planos-hmac.key )
+# 3. subscrever esse tópico na app ntfy do telemóvel, e provar que chega (não mexe no estado)
+bash /opt/aos/avisar-planos.sh --teste
+# 4. o cron
+( crontab -l; echo '* * * * * /bin/bash /opt/aos/avisar-planos.sh >/dev/null 2>&1' ) | crontab -
+```
+
+Os dois ficheiros vivem em `secrets/` e vão no backup cifrado, como o `ntfy-topico`.
+
+**Cruzar um aviso com o plano.** O pseudónimo não se inverte sem a chave; cruza-se no servidor:
+
+```bash
+grep '<pseudónimo>' /opt/aos/logs/avisar-planos.log                # enviado: plano <p> run=<run_id> geracao=… codigo=…
+bash /opt/aos/avisar-planos.sh --pseudonimo '<run_id>'           # o sentido inverso: o pseudónimo de um run
+grep 'aviso: run=' /opt/aos/logs/drenar-planos.log | tail         # o que a drenagem entregou ao outbox
+```
+
+O `/opt/aos/logs/avisar-planos.log` (do `aos`) tem uma linha por envio, pendente e repetido, e roda
+sozinho a 1 MiB (uma geração).
+
+> **Limites declarados** (AOS-445, revisão): um disco cheio a meio de uma escrita pode colar duas
+> linhas do outbox (a linha colada é descartada como forma desconhecida, e di-lo o log); a drenagem
+> recolhe as linhas `aviso:` do stdout **e** do stderr do `consume` — não se encontrou caminho para
+> uma linha não confiável lá chegar a começar por `aviso: run=` (o `ValidarStreamID` exclui `\n` e
+> controlo), mas é essa a hipótese; o contrato Go da regex não prova a semântica do bash — prova-a o
+> cenário shell (`testdata/aos445_avisos_planos.sh`, com `LC_ALL=C.UTF-8` por fora).
+
+> **Fase 2, não feita:** avisar o **submissor** por SSE (AOS-133, EPIC-13). O webhook do submissor
+> foi rejeitado pelo dono. Hoje quem submete só sabe do fim pelo `GET /plans/{id}` (ADR-031).
+
+**A forma do trabalhador (AOS-447).** Decidida pelo dono: **um** trabalhador — o timer
+`aos-drenar-planos`, **1 min** depois de a drenagem anterior acabar (`OnUnitInactiveSec=1min`,
+`AccuracySec=5s`) —, e **um** pedido por drenagem (`Environment=DRENAR_MAX=1` no
+`aos-drenar-planos.service`, para mudar **junto** com o timer quando o root reinstala as duas
+unidades; à mão, sem a variável, o script continua a drenar até 3). Até ao AOS-447 eram 3 de 5 em 5 min: um pedido esperava até 5 min para
+começar. Um `consume` contínuo e vários trabalhadores ficam para quando uma medição o justificar
+(nota ao ADR-030 §4).
+
+O que muda na operação: o log da drenagem cresce ~5× mais depressa (as 5 gerações de 5 MiB cobrem
+agora semanas e não meses); uma causa de falha que se repete — um mandato revogado, um snapshot
+errado — repete-se **a cada minuto** e não a cada 5; e um `decide` que apanhe um plano a correr sai
+com `5` (o `serve` do `consume` detém o `consume.wal` enquanto o plano corre) — repita-o depois.
+E o `alerta-nhi.sh` lê o `is-failed` da unidade de 15 em 15 min: com uma drenagem por minuto, uma
+falha isolada é sobreposta pela passagem seguinte e tem menos probabilidade de ser vista (as
+falhas seguidas continuam a ser).
+
+**Reinstalar o timer — passo do dono, como root.** A unidade instalada continua a antiga até isto.
+O root **não** a lê de `/opt/aos/systemd/`: essa pasta é escrita pelo `aos`, e um symlink plantado lá
+fazia o root copiar para `/etc/systemd/system/` um ficheiro que o `aos` não pode ler (confirmado na
+revisão do AOS-446). Siga o procedimento de instalação das units a partir do pacote verificado
+(AOS-446): o `git archive` do SHA do merge, conferido por hash e extraído em `/root/<pacote>`. Depois
+instale estas duas unidades **pelo nome**, uma a uma e sem glob:
+
+```bash
+install -o root -g root -m 0644 /root/<pacote>/deploy/server/systemd/aos-drenar-planos.timer /etc/systemd/system/aos-drenar-planos.timer
+install -o root -g root -m 0644 /root/<pacote>/deploy/server/systemd/aos-drenar-planos.service /etc/systemd/system/aos-drenar-planos.service
+systemctl daemon-reload && systemctl restart aos-drenar-planos.timer
+systemctl list-timers aos-drenar-planos.timer        # NEXT a menos de 1 min do fim da última drenagem
+```
+
+**Medir (fase 0 do AOS-447) — como `aos`, antes e depois de reinstalar o timer:**
+
+```bash
+# uma vez: a imagem do curl, FIXADA por digest (o script corre com --pull=never)
+docker pull curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+bash /opt/aos/medir-latencia-fila.sh              # submete UM pedido de prova (plan-e2e-447-<epoch>, doc_read) e mede o arranque
+bash /opt/aos/medir-latencia-fila.sh --ate-ao-fim # idem, e espera pelo fim do plano
+bash /opt/aos/medir-latencia-fila.sh --so-logs    # só lê o drenar-planos.log e o aos-orq-consume.prom
+```
+
+O script pede um token `client_credentials` do `aos-reader` por chamada, **dentro** de um contentor
+`curlimages/curl` fixado por digest (8.11.1), na rede `aos_default` (o segredo é montado só-leitura
+e não passa pela linha de comando; o Bearer vai por `-H @ficheiro`, nunca no argv), faz `POST /plans` e sonda `GET /plans/<id>` de ~1 s em ~1 s até sair de `pending` —
+`arranque: Ns` é `t(saída de pending) − t(201)`. Dos logs tira `S` (a duração de uma passagem
+vazia, do «drenagem a começar» ao «drenagem terminada»), o intervalo entre passagens, os planos por
+passagem, a duração de cada plano e a vazão (desfechos por hora na janela do log). O pedido de prova
+custa uma decomposição e um run do nó, como qualquer plano.
+
+> **O que a medição suja:** submete com a identidade do `aos-reader`; o pedido de prova conta nas
+> métricas do `consume`, no log da drenagem, no histórico do `GET /plans` e **dá um aviso** ao
+> operador (AOS-445); e a sondagem pede ~1 token por segundo ao IdP. Não a corra em ciclo.
+
 **Um pedido da fila que fica à espera de humano (AOS-442).** O `consume` guarda o documento de cada
 plano validado em `/var/lib/aos-orq/planos/<sha256 do run_id>.plan.json` (no volume do `aos-orq`;
 a linha `origem do plano:` de `/opt/aos/logs/drenar-planos.log` diz o caminho, e
@@ -799,8 +952,8 @@ Contra o emissor automático é **esta** a revogação que serve: os `jti` dele 
 
 > ⚠️ **Revogar não pára a máquina — pare-a também.** O emissor não consulta o registo de revogação
 > (só o nó o tem), por isso continua a cunhar sob o mandato revogado; o nó recusa cada NHI, o `serve`
-> classifica a recusa como transitória, o pedido volta à fila, e o `consume` sai com `0`. A cada 5
-> min repete-se — e cada tentativa pode pagar uma decomposição ao modelo antes de o nó recusar. Por
+> classifica a recusa como transitória, o pedido volta à fila, e o `consume` sai com `0`. A cada
+> minuto (AOS-447) repete-se — e cada tentativa pode pagar uma decomposição ao modelo antes de o nó recusar. Por
 > isso, **no mesmo acto**:
 >
 > ```bash
@@ -814,7 +967,7 @@ Contra o emissor automático é **esta** a revogação que serve: os `jti` dele 
 
 **Parar tudo:** `systemctl disable --now aos-cunhar-nhi.timer aos-drenar-planos.timer`, apagar
 `/opt/aos/nhi/nhi-run.jwt` (como `65532`, via `docker run`) e **retirar a linha do `alerta-nhi.sh`
-do crontab** — senão o sensor passa a alertar, e com razão, que o NHI e as drenagens pararam. Tirar as três variáveis do `.env` e
+do crontab** (a do `avisar-planos.sh` pode ficar: sem drenagens, o outbox não recebe nada) — senão o sensor passa a alertar, e com razão, que o NHI e as drenagens pararam. Tirar as três variáveis do `.env` e
 reiniciar o nó faz com que ele volte a confiar só no emissor manual.
 
 ---
@@ -939,13 +1092,7 @@ O cert-manager renova **dentro** do cluster. O edge é um contentor Docker **for
 até expirar — **pior do que self-signed, porque expira em silêncio**.
 
 Essa ponte é o [`sync-tls.sh`](sync-tls.sh), agendado por systemd
-([`systemd/`](systemd/)):
-
-```bash
-install -m 755 sync-tls.sh /opt/aos/sync-tls.sh
-install -m 644 systemd/aos-tls-sync.* /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now aos-tls-sync.timer
-```
+([`systemd/`](systemd/)) e instalado **pelo root** — ver «Instalar como root», abaixo.
 
 É idempotente (compara *fingerprints*, só recarrega o nginx quando o material muda de facto),
 recusa escrever um par cert/chave que não corresponda, e escreve atomicamente.
@@ -957,9 +1104,240 @@ recusa escrever um par cert/chave que não corresponda, e escreve atomicamente.
 
 A segunda é a que importa e custou um teste para descobrir: sob systemd o serviço não herda o
 ambiente do root, o `kubectl` não encontrava o `~/.kube/config`, e a sincronização falhava **em
-silêncio**. À mão funcionava; pelo timer não. Por isso o `KUBECONFIG` é explícito na unidade
-**e** detectado no script, e por isso uma leitura falhada é falha e não aviso — esperar pelos
-15 dias finais seria descobrir tarde de mais.
+silêncio**. À mão funcionava; pelo timer não. Por isso o `KUBECONFIG` é explícito na unidade, e
+por isso uma leitura falhada é falha e não aviso — esperar pelos 15 dias finais seria descobrir
+tarde de mais.
+
+### Porque é que a ponte NÃO vive em `/opt/aos` (AOS-446)
+
+O serviço corre como **root**. Até ao AOS-446 corria o `/opt/aos/sync-tls.sh` — ficheiro do `aos`,
+reescrito pelo CD a cada deploy — com o `/etc/kubernetes/admin.conf`. Quem escrevesse naquele
+ficheiro (o `aos`, a chave de deploy, quem aprovasse o environment `production`, ou quem fizesse
+merge de uma alteração ao script) ganhava root no host e cluster-admin no cluster na passagem
+diária seguinte. Agora:
+
+| Peça | Onde | De quem |
+|---|---|---|
+| o executável | `/usr/local/sbin/aos-sync-tls` | root:root `0755`; **fora do rsync do deploy** — o gate `lint` recusa-o lá |
+| o kubeconfig | `/etc/aos/kube/aos-tls-sync.kubeconfig` | root:root `0600`, numa pasta `0700`; ServiceAccount `aos-tls-sync`, só `get` em `default/aos-node-tls` ([`tls-sync-rbac.yaml`](tls-sync-rbac.yaml)) |
+| a pasta do edge | `/opt/aos/secrets/tls` | do `aos`; o script lê e escreve lá **como o `aos`** (`runuser`), nunca como root |
+
+O script recusa correr como root a partir de `/opt/aos`, com um executável que não seja do root ou
+que tenha escrita de grupo, com qualquer kubeconfig que não seja **exactamente** o mínimo (allowlist:
+o `admin.conf`, o `controller-manager.conf` e o `scheduler.conf` do kubeadm ficam todos de fora), com
+um kubeconfig que não seja root:root `0600`, ou com uma credencial que consiga `list secrets` (a
+resposta do `kubectl auth can-i`). Lê o `edge.crt` — e analisa-o com o `openssl` — como o `aos`. A
+unidade tem `TimeoutStartSec=5min`: um `edge.crt` trocado por uma FIFO bloquearia a leitura.
+
+**O que isto não muda:** o `aos` está no grupo `docker`, que equivale a root (§Onde vive cada
+chave, `bootstrap.sh`). Fechar esta ponte — e a instalação por glob das unidades da cunhagem, da
+mesma classe — tira caminhos não declarados para o mesmo root, e é o que torna possível tirar o
+`aos` do `docker` (decisão 2 do AOS-446); mas enquanto ele lá estiver, quem é o `aos` continua a ser
+root (ADR-033 §6.2).
+
+### Instalar como root — o pacote do root
+
+O CD **não entrega** nada que o root execute ou instale. O `sync-tls.sh`, as seis unidades systemd
+(`aos-tls-sync`, `aos-cunhar-nhi`, `aos-drenar-planos`, `.service` e `.timer`) e o RBAC chegam ao
+servidor **só** por estes passos, corridos pelo dono, a partir de um pacote tirado de um commit
+**fixo** e conferido por hash. O `/opt/aos/systemd/` que o rsync ainda escreve fica como
+**referência de leitura**: é do `aos`, e o root nunca copia de lá (ver «Porque é que o root não
+instala de `/opt/aos/systemd/`», abaixo). Cada alteração futura a um destes ficheiros repete os
+passos A, B e 4 (e o 5).
+
+**0. No servidor, como root — conter e guardar a prova, ANTES DE TUDO.** O timer pára primeiro: até ao passo
+4, o root continuava a executar um ficheiro do `aos` todos os dias. A cópia do `/opt/aos` é a única
+prova do que o root executou, e guarda-se antes de ser apagada:
+
+```bash
+systemctl disable --now aos-tls-sync.timer
+install -d -m 700 /root/aos-446-prova
+cp -a /opt/aos/sync-tls.sh /root/aos-446-prova/sync-tls.sh.prod
+stat -c '%U:%G %a %y %n' /opt/aos/sync-tls.sh > /root/aos-446-prova/stat.txt
+# as unidades instaladas, e drop-ins, que ninguém declarou:
+ls -la /etc/systemd/system/ | grep -E 'aos-' ; ls -la /etc/systemd/system/aos-*.d/ 2>&1
+for u in aos-tls-sync.service aos-tls-sync.timer aos-cunhar-nhi.service aos-cunhar-nhi.timer aos-drenar-planos.service aos-drenar-planos.timer; do
+  echo "== $u"; systemctl cat "$u" 2>&1 | grep -vE '^#' | head -40
+done > /root/aos-446-prova/units-antes.txt
+journalctl -u aos-tls-sync.service --since "-90 days" --no-pager > /root/aos-446-prova/journal-tls.txt
+grep -vE 'sync-tls\] (sem alteracoes|em vigor:|OK$|certificado NOVO|nginx recarregado)|Starting|Started|Finished|Deactivated|Consumed' /root/aos-446-prova/journal-tls.txt | head -40
+```
+
+Uma linha do journal fora do padrão, uma unidade `aos-*` a mais, ou um drop-in (`*.d/`) que não
+puseste lá: **pára** — a prova está em `/root/aos-446-prova`. A comparação com o repositório é no
+passo B, quando o pacote chegar.
+
+**A. Na máquina do dono (PowerShell) — o pacote, de um SHA FIXO.** `$C` é o SHA do commit de merge
+do PR, copiado da página do PR — **não** o `rev-parse` do ramo, que é o que lá estiver no momento
+em que o comando corre. `$A` é o commit anterior, de onde sai a versão que o CD entregou até aqui:
+
+```powershell
+cd C:\Jimy\AOS
+git fetch origin
+$C = '<SHA do commit de merge do PR>'
+git merge-base --is-ancestor $C origin/feature/AOS-128-ux-dx-tests; "no-ramo=$LASTEXITCODE"   # no-ramo=0
+$A = "$C~1"
+git archive $C deploy/server/sync-tls.sh deploy/server/tls-sync-rbac.yaml `
+  deploy/server/systemd/aos-tls-sync.service deploy/server/systemd/aos-tls-sync.timer `
+  deploy/server/systemd/aos-cunhar-nhi.service deploy/server/systemd/aos-cunhar-nhi.timer `
+  deploy/server/systemd/aos-drenar-planos.service deploy/server/systemd/aos-drenar-planos.timer `
+  -o $env:TEMP\aos-root.tar
+git archive $A deploy/server/sync-tls.sh -o $env:TEMP\aos-root-anterior.tar
+(Get-FileHash -Algorithm SHA256 $env:TEMP\aos-root.tar).Hash.ToLower()
+(Get-FileHash -Algorithm SHA256 $env:TEMP\aos-root-anterior.tar).Hash.ToLower()
+scp $env:TEMP\aos-root.tar $env:TEMP\aos-root-anterior.tar root@37.60.241.150:/root/
+```
+
+**B. No servidor, como root — conferir e desempacotar.** Os dois hashes têm de ser os impressos no
+passo A:
+
+```bash
+sha256sum /root/aos-root.tar /root/aos-root-anterior.tar
+rm -rf /root/aos-root /root/aos-root-anterior
+mkdir -m 700 /root/aos-root /root/aos-root-anterior
+tar -xf /root/aos-root.tar -C /root/aos-root
+tar -xf /root/aos-root-anterior.tar -C /root/aos-root-anterior
+# o que o root executou tem de ser IGUAL à versão que o repositório entregou até aqui:
+cmp /root/aos-446-prova/sync-tls.sh.prod /root/aos-root-anterior/deploy/server/sync-tls.sh && echo "IGUAL ao repositorio"
+# e as unidades instaladas contra as do pacote (a diferença esperada é só a do aos-tls-sync):
+for u in aos-tls-sync.service aos-tls-sync.timer aos-cunhar-nhi.service aos-cunhar-nhi.timer aos-drenar-planos.service aos-drenar-planos.timer; do
+  diff -u "/etc/systemd/system/$u" "/root/aos-root/deploy/server/systemd/$u" > /dev/null && echo "$u = pacote" || echo "$u DIFERE"
+done
+```
+
+Se o `cmp` diferir, **pára**: antes de concluir adulteração, confirma no `git log --
+deploy/server/sync-tls.sh` se o último deploy saiu de um commit anterior a `$A` (o ficheiro não muda
+desde 2026-08-23); se não saiu, o que o root executou não era o do repositório, e a prova está em
+`/root/aos-446-prova`. Uma unidade da cunhagem ou da drenagem que `DIFERE` lê-se com `diff -u`
+antes de continuar: pode ser só uma versão mais antiga do repositório, ou pode não ser.
+
+**1. A identidade mínima no cluster** (a última vez que se usa o `admin.conf` para isto):
+
+```bash
+cd /root/aos-root/deploy/server
+KC=/etc/kubernetes/admin.conf
+kubectl --kubeconfig $KC apply -f tls-sync-rbac.yaml
+# o controlador de tokens preenche o Secret em segundos; tem de sair um número > 0
+kubectl --kubeconfig $KC -n aos-tls-sync get secret aos-tls-sync-token -o jsonpath='{.data.token}' | wc -c
+```
+
+**2. O kubeconfig mínimo** — escrito por *heredoc*, para o token não passar pelos argumentos de um
+processo (visíveis a qualquer utilizador em `ps`), numa pasta só do root:
+
+```bash
+install -d -m 0755 -o root -g root /etc/aos
+install -d -m 0700 -o root -g root /etc/aos/kube
+K=/etc/aos/kube/aos-tls-sync.kubeconfig
+SERVER=$(kubectl --kubeconfig $KC config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}')
+CA=$(kubectl --kubeconfig $KC config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')
+TOKEN=$(kubectl --kubeconfig $KC -n aos-tls-sync get secret aos-tls-sync-token -o jsonpath='{.data.token}' | base64 -d)
+( umask 077; cat > $K <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+- name: aos
+  cluster:
+    server: $SERVER
+    certificate-authority-data: $CA
+users:
+- name: aos-tls-sync
+  user:
+    token: $TOKEN
+contexts:
+- name: aos-tls-sync
+  context:
+    cluster: aos
+    user: aos-tls-sync
+    namespace: default
+current-context: aos-tls-sync
+EOF
+)
+unset TOKEN CA
+chown root:root $K && chmod 0600 $K
+```
+
+**3. Verificar o kubeconfig — o positivo e os negativos, sobre recursos que EXISTEM** (um «não
+consegue» testado num secret que não existe passa com qualquer política):
+
+```bash
+kubectl --kubeconfig $K -n default get secret aos-node-tls -o name            # secret/aos-node-tls
+kubectl --kubeconfig $K auth can-i get secret/aos-node-tls -n default          # yes
+kubectl --kubeconfig $K auth can-i list secrets -n default                     # no
+kubectl --kubeconfig $K auth can-i get secrets -n kube-system                  # no
+kubectl --kubeconfig $K auth can-i '*' '*' --all-namespaces                    # no
+# um secret REAL que não é o aos-node-tls, lido com a conta mínima: tem de dar Forbidden
+OUTRO=$(kubectl --kubeconfig $KC -n default get secrets -o name | grep -v '^secret/aos-node-tls$' | head -1)
+echo "$OUTRO"; kubectl --kubeconfig $K -n default get "$OUTRO"                 # Error ... forbidden
+kubectl --kubeconfig $K -n aos-tls-sync get secret aos-tls-sync-token          # Error ... forbidden
+```
+
+**4. O executável e as seis unidades — PELO NOME, do pacote, nunca por glob nem do `/opt/aos`:**
+
+```bash
+cd /root/aos-root/deploy/server
+install -o root -g root -m 0755 sync-tls.sh /usr/local/sbin/aos-sync-tls
+for u in aos-tls-sync.service aos-tls-sync.timer aos-cunhar-nhi.service aos-cunhar-nhi.timer aos-drenar-planos.service aos-drenar-planos.timer; do
+  install -o root -g root -m 0644 "systemd/$u" "/etc/systemd/system/$u"
+done
+systemctl daemon-reload
+systemctl start aos-tls-sync.service; echo "saida=$?"                         # saida=0
+journalctl -u aos-tls-sync.service -n 20 --no-pager                            # «sem alteracoes» … «OK»
+systemctl enable --now aos-tls-sync.timer
+```
+
+As unidades da cunhagem e da drenagem já estavam ligadas; o `daemon-reload` basta para o systemd
+passar a ler as do pacote.
+
+**5. Verificar a instalação, e que o `aos` já não lhe chega.** O `systemctl cat` mostra a unidade
+**e os drop-ins** — o `show` sozinho dava o valor efectivo sem dizer de onde vinha:
+
+```bash
+systemctl cat aos-tls-sync.service                                             # um só ficheiro, sem drop-ins
+systemctl show aos-tls-sync.service -p ExecStart -p Environment -p User -p TimeoutStartUSec
+#   ExecStart={ path=/usr/local/sbin/aos-sync-tls ; … }
+#   Environment=KUBECONFIG=/etc/aos/kube/aos-tls-sync.kubeconfig
+#   User=                                     (vazio: corre como root, e é por isso que o resto importa)
+#   TimeoutStartUSec=5min
+stat -c '%U:%G %a %n' /usr/local/sbin/aos-sync-tls /etc/aos/kube /etc/aos/kube/aos-tls-sync.kubeconfig
+#   root:root 755 /usr/local/sbin/aos-sync-tls
+#   root:root 700 /etc/aos/kube
+#   root:root 600 /etc/aos/kube/aos-tls-sync.kubeconfig
+runuser -u aos -- test -w /usr/local/sbin/aos-sync-tls; echo "aos-escreve=$?"  # aos-escreve=1
+runuser -u aos -- cat /etc/aos/kube/aos-tls-sync.kubeconfig                    # Permission denied
+for u in aos-tls-sync.service aos-tls-sync.timer aos-cunhar-nhi.service aos-cunhar-nhi.timer aos-drenar-planos.service aos-drenar-planos.timer; do
+  cmp "/etc/systemd/system/$u" "/root/aos-root/deploy/server/systemd/$u" && echo "$u = pacote"
+done
+systemctl list-timers 'aos-*'
+```
+
+**6. Arrumar — DEPOIS de a prova estar em `/root/aos-446-prova`.** A cópia antiga já não é
+executada e o CD já não a reescreve; fica só a confundir quem lê o `/opt/aos`:
+
+```bash
+ls -la /root/aos-446-prova/sync-tls.sh.prod                                    # a prova existe
+rm -f /opt/aos/sync-tls.sh
+rm -rf /root/aos-root /root/aos-root-anterior /root/aos-root.tar /root/aos-root-anterior.tar
+```
+
+**Revogar a conta** (se o kubeconfig vazar): `kubectl --kubeconfig /etc/kubernetes/admin.conf -n
+aos-tls-sync delete secret aos-tls-sync-token` mata o token; para a repor, repete os passos 1 e 2. O
+token não expira sozinho — é o preço de não precisar de uma credencial maior no host para o
+renovar — e só vale `get` num secret.
+
+#### Porque é que o root não instala de `/opt/aos/systemd/`
+
+O procedimento anterior da cunhagem fazia `install -m 644 /opt/aos/systemd/aos-cunhar-nhi.* …
+/etc/systemd/system/`. O `/opt/aos/systemd/` é do `aos`, e isso dava-lhe duas vias, confirmadas
+num contentor pela revisão de segurança da Fase 0:
+
+- **o glob apanha o que o `aos` lá puser**, e o `install` segue symlinks: um
+  `aos-cunhar-nhi.conf -> /etc/kubernetes/admin.conf` plantado ali era copiado para
+  `/etc/systemd/system/` com modo `0644` — o cluster-admin legível por todos;
+- **o conteúdo é o que o `aos` escreveu**: um `User=root` numa unidade da cunhagem passava.
+
+Em produção, a 2026-09-26, `/etc/systemd/system` tinha só as seis unidades esperadas — nada foi
+explorado. O rsync continua a levar `deploy/server/systemd/` para `/opt/aos/systemd/`, como
+referência para quem lê o servidor; **não é fonte do root**.
 
 Ver o estado:
 
@@ -1613,6 +1991,102 @@ caminhos, a guarda recusa em vez de verificar com sucesso o ficheiro errado.
 > gravado no `MANIFEST` (`eventstore=externo`), é o que o `restore-drill.sh` lê para recusar um
 > ensaio que não poderia provar nada, e **não copia coisa nenhuma**: é uma declaração, não um
 > mecanismo. Copiar o log replicado continua por fazer — o `backup.sh` deixou de o poder fingir.
+
+### Backup imutável do Event Store — o exportador contínuo (AOS-453 F2, desligado por omissão)
+
+O `backup.sh` é uma cópia de **volume**, diária (RPO de 24 h). O nó traz também o exportador
+**contínuo** do AOS-101 — segmentos cifrados, encadeados num manifesto hash-chain com checkpoint
+ed25519, retomáveis e restauráveis por PITR — e desde o AOS-453 ele é **ligável em produção**: há
+custódia de KEK que sela segmentos (Vault Transit por envelope, num mount **próprio**) e um destino
+durável (directório local write-once). **Por omissão continua DESLIGADO**: sem `AOS_BACKUP_DEST`
+nada muda. Não substitui o `backup.sh` (que leva Vault, IdP e configuração) e **não protege da
+perda do host** — o destino fora do host é a F4 (S3 com Object Lock), ainda não implementada.
+
+**Passos do dono para ligar (nada disto corre sozinho):**
+
+1. **Mount Transit do backup e política sem `delete`.** Voltar a correr
+   `provision-identity.sh` (idempotente): cria o mount `transit-backup` e dá ao nó, nesse mount,
+   `create/read/update` em `transit-backup/keys/+` e `update` em `transit-backup/encrypt/+` e
+   `transit-backup/decrypt/+` — **sem `delete`**. É `+` (um segmento) e **não** `*`: no Vault o `*`
+   só é glob no fim do caminho, e `keys/aos-kek-*` casaria também `…/config`, `…/rotate` e `…/trim`,
+   com os quais o token do nó destruía a KEK sem `delete` (rotate → `min_decryption_version` → `trim`,
+   ou `deletion_allowed`) — medido num Vault 1.18 real na revisão do AOS-453; a primeira versão
+   desta política tinha esse defeito. Com `+`, os sub-caminhos ficam em deny **implícito**. O script
+   prova a política numa política **candidata** com um token de teste de 2 min (`update` na chave,
+   sem `delete`; `deny` exacto em `/config`, `/rotate` e `/trim`; `update` em encrypt/decrypt) e
+   **só depois** substitui a `aos-node`; numa falha, a `aos-node` fica como estava. Repete a mesma
+   verificação sobre o token real do nó. O token do nó é o **mesmo** (`secrets/vault-token`).
+
+   *Guião para provar a política fora do servidor* (o `fakeTransit` dos testes Go **não modela
+   ACL**; o teste Go só fixa a forma das regras):
+   ```bash
+   vault server -dev -dev-root-token-id=root &   # Vault >= 1.18
+   export VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=root
+   vault secrets enable -path=transit-backup transit
+   printf '%s\n' 'path "transit-backup/keys/+" { capabilities = ["create","read","update"] }' \
+     'path "transit-backup/encrypt/+" { capabilities = ["update"] }' \
+     'path "transit-backup/decrypt/+" { capabilities = ["update"] }' | vault policy write t -
+   T="$(vault token create -policy=t -no-default-policy -field=token)"
+   for p in keys/k keys/k/config keys/k/rotate keys/k/trim encrypt/k; do
+     echo "$p: $(vault token capabilities "$T" transit-backup/$p)"; done
+   # esperado: keys/k create, read, update · config/rotate/trim deny · encrypt/k update
+   VAULT_TOKEN="$T" vault write -f transit-backup/keys/k/rotate   # tem de dar 403
+   ```
+2. **Seed de assinatura, OFFLINE**, na máquina do operador (nunca no servidor), guardada ao lado
+   da `issuer.key` em `secrets-local/`: `openssl rand -hex 32 > backup-signing.seed`. Levar para
+   `/opt/aos/secrets/backup/signing.seed` com `chown 65532:65532` e `chmod 0400`. O nó **lê-a e
+   nunca a cria**; perdê-la é deixar de poder continuar a cadeia (a retoma recusa outra chave) — a
+   chave pública, essa, verifica os checkpoints no restauro.
+3. **Destino.** `install -d -o 65532 -g 65532 -m 0700 /opt/aos/backup-es/epoca-AAAA-MM` (o
+   compose monta `./backup-es` em `/var/lib/aos-backup`; o nó **não cria** o directório).
+4. **`.env`:**
+   `AOS_BACKUP_DEST=file:///var/lib/aos-backup/epoca-AAAA-MM`, `AOS_BACKUP_DEST_REGION=eu-west`
+   (uma região de `AOS_BOARD_REGIONS`), `AOS_BACKUP_SIGNING_KEY_PATH=/etc/aos/backup/signing.seed`,
+   `AOS_BACKUP_RETENTION=2160h`, `AOS_BACKUP_VAULT_TRANSIT_MOUNT=transit-backup`. Com
+   `AOS_BACKUP_DEST` definido as outras quatro são obrigatórias e o nó **ABORTA** sem elas.
+5. **Forçar um `backup.sh` depois de ligar**, para a cópia de volume do dia já incluir o estado
+   novo (a chave Transit do backup vive no `vault-data`, que o `backup.sh` leva; sem ela os
+   segmentos não se decifram num restauro do host).
+
+**Verificar em produção.** No arranque, o banner de composição diz `exportador COMPOSTO — destino
+regiao="eu-west" tipo=*backup.FileImmutableStore file:///var/lib/aos-backup/epoca-…`, `cadeia NOVA`
+(ou `RETOMADA do ciclo N`) e `KEK do backup selada por: Vault Transit mount="transit-backup"
+(ENVELOPE…)`; o do agendador diz `LIGADO`. Em `/metrics`, `aos_backup_scheduler_armed 1`,
+`aos_backup_export_cycles_total` a subir, `aos_backup_export_failures_total` parado e
+`aos_backup_scheduler_stopped 0`. No disco, `<região>/cycle-00000001` e `<região>/seg-…` sob o
+directório da época, objectos `0440`. Um segundo arranque tem de dizer `cadeia RETOMADA`.
+
+**Épocas (retenção finita).** A cadeia é incremental: um prefixo expirado torna-a irrestaurável e
+a retoma recusa-a. Rodar de época = criar `epoca-<nova>` (passo 3), apontar `AOS_BACKUP_DEST` para
+ela e reiniciar o nó **antes** de a época anterior expirar; o primeiro ciclo da nova exporta o log
+inteiro (génese nova). A época anterior mantém-se restaurável até ao fim do object-lock e só então
+se remove. Uma época nova **não** se usa para contornar um erro de retoma sem perceber a causa: a
+mensagem distingue custódia em baixo (`ErrKEKCustodyUnavailable` — repor o Vault) de KEK que não
+é a que selou (`ErrResumeUnverifiable`).
+
+**O que isto NÃO garante, e fica dito (revisão de segurança do AOS-453):**
+
+- **Um Vault lento no arranque atrasa e pode abortar o arranque.** Com o backup ligado, a composição
+  faz até ~4 pedidos ao Vault em série (criar a chave, `encrypt`, `decrypt` da sonda, e o `decrypt`
+  do último segmento na retoma), cada um com tecto de 10 s: até ~40 s de bloqueio, e um que expire
+  **aborta** o arranque. Durante esse tempo a API não escuta e o `aos-healthprobe` falha; o
+  `start_period: 300s` do compose absorve-o (não conta para as 5 falhas), e um aborto sai do
+  contentor e entra no ciclo de reinício — o mesmo padrão do incidente da v0.1.11. Sem o backup
+  ligado, nada disto acontece.
+- **Uma falha transitória ENTRE a sonda e a retoma lê-se como KEK errada.** O `UnwrapDEK` da porta
+  só devolve `ok=false`, pelo que um Vault que cai depois da sonda de composição e antes do
+  `decrypt` do último segmento dá `ErrResumeUnverifiable` com «use um destino novo». Remédio:
+  **re-arrancar primeiro**; só se repetir com o Vault saudável é que a KEK não é a que selou.
+- **Quem tem escrita no directório de destino pode parar o backup.** Um symlink pendente plantado
+  num nome de referência faz o `Get` falhar com um erro que não é «não existe»: o laço pára fechado
+  (não corrompe nem aceita). O destino é do uid 65532, `0700`.
+- **O crypto-shred de um titular não alcança campos EM CLARO dos eventos.** Dentro do backup, só o
+  conteúdo que o nó já sela por titular (AOS-093) fica irrecuperável com a KEK desse titular; os
+  campos do envelope que o Event Store guarda em claro (ids, tipos, carimbos, metadados) ficam
+  legíveis a quem tiver a KEK do backup, durante a retenção da época.
+- **Todas as épocas partilham a KEK `aos.backup:<região>`.** O restauro reconfere o hash de cada
+  segmento que abre (um blob trocado depois da verificação, mesmo autêntico e de outra época, é
+  `ErrSegmentTampered`), mas destruir a KEK do backup destrói todas as épocas da região.
 
 ---
 

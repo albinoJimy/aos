@@ -128,6 +128,14 @@ type vaultKeyVault struct {
 	bloqueadas map[string]bloqueioDeKEK
 	// agora é o relógio do instante registado. Injectável nos testes.
 	agora func() time.Time
+
+	// --- AOS-453: a custódia da KEK do BACKUP, num mount PRÓPRIO ---
+	// tokenDe é a instância (a da custódia DSAR) de onde ESTA lê o token a cada pedido. A custódia
+	// do backup é uma segunda instância sobre o MESMO Vault e o MESMO token, noutro mount: não tem
+	// ficheiro nem renovador próprios — a credencial é uma só, mantida pelo renovador da DSAR
+	// ([NodeService.renewVaultToken]), e duas manutenções da mesma credencial seriam dois sítios a
+	// divergir sobre se ela ainda serve. nil ⇒ o token é o desta instância.
+	tokenDe *vaultKeyVault
 }
 
 // vaultKeyVaultOption configura o adaptador na construção (variádica para não partir os
@@ -168,8 +176,17 @@ func newVaultKeyVault(addr, mount, token string, opts ...vaultKeyVaultOption) *v
 	return v
 }
 
+// withVaultTokenFrom faz ESTA instância usar, a cada pedido, o token em vigor da instância src
+// (AOS-453: a custódia do backup lê o token da custódia DSAR, que é quem o renova).
+func withVaultTokenFrom(src *vaultKeyVault) vaultKeyVaultOption {
+	return func(v *vaultKeyVault) { v.tokenDe = src }
+}
+
 // currentToken devolve o token em vigor sob lock de leitura. NUNCA logar o retorno.
 func (v *vaultKeyVault) currentToken() string {
+	if v.tokenDe != nil {
+		return v.tokenDe.currentToken()
+	}
 	v.mu.RLock()
 	defer v.mu.RUnlock()
 	return v.token

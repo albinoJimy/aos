@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # drenar-planos.sh — drena a fila de pedidos de plano SEM OPERADOR (AOS-437).
 #
-#   corre-o o timer aos-drenar-planos (systemd/), a cada 5 min
+#   corre-o o timer aos-drenar-planos (systemd/), 1 min depois de a drenagem anterior acabar (AOS-447)
 #   à mão:  bash /opt/aos/drenar-planos.sh
 #   durante um deploy sai 0 SEM drenar («drenagem ADIADA») — ver «O DEPLOY SEGURA A DRENAGEM» (AOS-450)
 #
@@ -32,8 +32,39 @@
 # `objectivo_bytes=N`), o que fecha também o journal — um filtro neste script seria uma lista
 # negra sobre texto livre, que deixa passar a próxima linha que alguém acrescente. O que o log leva
 # são ids (run, nós, planos), contagens, códigos, hashes e durações.
+#
+# ─── UM PLANO POR DRENAGEM, DE MINUTO A MINUTO (AOS-447) ────────────────────────────────────
+# A forma do trabalhador decidida pelo dono: UM trabalhador (este timer), que volta 1 min depois de
+# a drenagem anterior acabar, e cada drenagem consome UM pedido (`Environment=DRENAR_MAX=1` na
+# unidade aos-drenar-planos.service). Até aqui eram 3 de 5 em 5 min: um pedido esperava até 5 min para começar, e um que chegasse atrás de dois planos
+# longos esperava também por eles. Com 1, um pedido espera no máximo o plano em curso mais ~1 min, e
+# o aviso do resultado (abaixo) sai quando ESTE plano acaba, não quando acabam os três. As
+# re-verificações de planos à espera de humano não contam para o máximo (AOS-442).
+#
+# O 1 vive na UNIDADE e não aqui, de propósito: este script chega pelo rsync em cada deploy, mas o
+# timer só muda quando o root reinstala as unidades. Com o 1 aqui, entre um e outro a fila drenava 1
+# pedido de 5 em 5 min. Na unidade, o máximo e o intervalo mudam juntos; à mão, sem a variável,
+# continua a ser 3.
+#
+# ─── O AVISO DO RESULTADO DE UM PLANO (AOS-445) ─────────────────────────────────────────────
+# O `consume` imprime `aviso: run=<id> geracao=<g> classe=terminal codigo=<n>` DEPOIS de o nó ter
+# registado um desfecho terminal. Esta drenagem recolhe essas linhas e, debaixo do lock dela,
+# acrescenta-as ao OUTBOX ${AVISOS_DIR}/pendentes (600), que o avisar-planos.sh (cron do `aos`)
+# consome e envia por ntfy ao operador, pseudonimizadas. Falhar a escrever o outbox NUNCA faz
+# falhar a drenagem — os pedidos já foram drenados e reportados; perde-se o aviso, e di-lo o log,
+# onde as linhas `aviso:` ficam.
+#
+# E CONFERE-SE a contagem: o delta de aos_orq_consume_desfechos_total{classe="terminal"} nas
+# métricas desta drenagem tem de bater com as linhas `aviso:` lidas. Não bate quando o binário não
+# as imprime (uma imagem anterior ao AOS-445, depois de um rollback — o par misturado do AOS-450)
+# ou quando o reporte de um terminal falhou; nos dois casos há planos que terminaram sem aviso, e
+# isso vai também para o outbox (`desencontro:`), para chegar ao operador pelo mesmo canal.
 
 set -Eeuo pipefail
+# O `[^[:space:]]` da AVISO_RE depende do locale: em C.UTF-8, um run_id com U+3000 (que o
+# ValidarStreamID aceita) não casaria, e o submissor fazia desaparecer o aviso do seu plano. Em C,
+# cada byte ≥ 0x80 conta como não-espaço — a mesma leitura do avisar-planos.sh (AOS-445).
+export LC_ALL=C
 
 AOS_DIR="${AOS_DIR:-/opt/aos}"
 MAX="${DRENAR_MAX:-3}"
@@ -51,6 +82,12 @@ ORQ_VOLUME="${DRENAR_ORQ_VOLUME:-aos_aos-orq-data}"
 # mesma; só a verificação de frescura das métricas, abaixo, falha (ruidosa, depois de drenar).
 METRICAS_NO_VOLUME="aos-orq-consume.prom"
 METRICAS="${LOG_DIR}/aos-orq-consume.prom"
+# AOS-445: o outbox dos avisos, e a forma EXACTA da linha que o `consume` imprime — a mesma regex
+# está no avisar-planos.sh, e o TestAOS445ContratoDaLinhaDoAvisoComOsScripts fixa as duas contra o
+# `linhaDoAviso` do Go. O run_id vai com `+` e não com um tecto `{1,N}`: acima de 255 o regcomp de
+# algumas libc recusa a regex, e o bash trata isso como «não casa» — em silêncio.
+AVISOS_DIR="${DRENAR_AVISOS_DIR:-${AOS_DIR}/.avisos-planos}"
+AVISO_RE='^aviso: run=[^[:space:]]+ geracao=[0-9]{1,9} classe=terminal codigo=[0-9]{1,3}$'
 ALPINE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 COMPOSE=(docker compose -f "${AOS_DIR}/docker-compose.prod.yml" --env-file "${AOS_DIR}/.env"
          --env-file "${AOS_DIR}/image.env")
@@ -177,13 +214,96 @@ rodar_log() {
 }
 rodar_log
 
-# carimbar — cada linha do `consume` para o stdout (journal) e, com carimbo, para o log.
+# carimbar — cada linha do `consume` para o stdout (journal) e, com carimbo, para o log. As linhas
+# `aviso:` (AOS-445) vão também, tal e qual, para ${AVISOS_DESTA} — e uma falha aí não pára nada.
+AVISOS_DESTA="${ESTADO_DIR}/avisos-desta-drenagem"
+AVISOS_CONTAGEM="${ESTADO_DIR}/avisos-contagem"
 carimbar() {
   local linha
   while IFS= read -r linha || [[ -n "${linha}" ]]; do
     printf '%s\n' "${linha}"
     printf '%s | %s\n' "$(carimbo)" "${linha}" >> "${LOG_FILE}"
+    if [[ "${linha}" =~ ${AVISO_RE} ]]; then
+      printf '%s\n' "${linha}" >> "${AVISOS_DESTA}" 2>/dev/null || true
+    fi
   done
+}
+
+# ─── os avisos desta drenagem (AOS-445) ─────────────────────────────────────────────────────
+# terminais_em <ficheiro .prom> — a soma de aos_orq_consume_desfechos_total{classe="terminal",…}
+# (todos os códigos). Vazio se o ficheiro não existir: sem «antes» não há delta a conferir.
+terminais_em() {
+  [[ -s "$1" ]] || return 0
+  awk 'index($1, "aos_orq_consume_desfechos_total{classe=\"terminal\",") == 1 { s += $2 } END { printf "%d\n", s }' "$1" 2>/dev/null || true
+}
+# nao_reportados_em <ficheiro .prom> — aos_orq_consume_desfechos_nao_reportados_total (0 se ausente).
+nao_reportados_em() {
+  [[ -s "$1" ]] || return 0
+  awk '$1 == "aos_orq_consume_desfechos_nao_reportados_total" { s = $2 } END { printf "%d\n", s }' "$1" 2>/dev/null || true
+}
+
+# para_o_outbox <ficheiro> — acrescenta as linhas ao outbox, debaixo do lock do outbox (o
+# avisar-planos.sh reescreve-o debaixo do mesmo). Devolve != 0 se não conseguiu; NUNCA sai.
+para_o_outbox() {
+  (
+    umask 077
+    mkdir -p "${AVISOS_DIR}" && chmod 700 "${AVISOS_DIR}" || exit 1
+    exec 8>>"${AVISOS_DIR}/lock" || exit 1
+    flock -w 30 8 || exit 1
+    cat "$1" >> "${AVISOS_DIR}/pendentes" && chmod 600 "${AVISOS_DIR}/pendentes"
+  ) 2>> "${LOG_FILE}"
+}
+
+# entregar_avisos <métricas desta drenagem: 0|1> — as linhas `aviso:` desta drenagem para o outbox,
+# e a conferência com o delta de terminais nas métricas. Nada aqui faz falhar a drenagem.
+entregar_avisos() {
+  local n=0 depois nr_depois delta nr_delta
+  if [[ -s "${AVISOS_DESTA}" ]]; then
+    n="$(wc -l < "${AVISOS_DESTA}" 2>/dev/null | tr -d ' ' || true)"
+    [[ "${n}" =~ ^[0-9]+$ ]] || n=0
+  fi
+  if (( n > 0 )); then
+    if para_o_outbox "${AVISOS_DESTA}"; then
+      log "${n} aviso(s) de plano terminado no outbox ${AVISOS_DIR}/pendentes (o avisar-planos.sh envia-os)"
+    else
+      log "AVISO: ${n} aviso(s) de plano terminado NÃO entraram no outbox ${AVISOS_DIR}/pendentes — ninguém será avisado destes planos; as linhas «aviso:» estão neste log"
+    fi
+  fi
+
+  # A CONFERÊNCIA. Só com as métricas DESTA drenagem e um «antes» conferido; sem isso diz-se porquê.
+  if [[ "$1" != 1 ]]; then
+    log "avisos: contagem por conferir — sem as métricas desta drenagem (a seguinte também não confere)"
+    rm -f "${AVISOS_DESTA}" 2>/dev/null || true
+    return 0
+  fi
+  depois="$(terminais_em "${METRICAS}")"; nr_depois="$(nao_reportados_em "${METRICAS}")"
+  printf '%s %s\n' "${depois:-0}" "${nr_depois:-0}" > "${AVISOS_CONTAGEM}" 2>/dev/null \
+    || log "avisos: contagem NÃO guardada em ${AVISOS_CONTAGEM} — a drenagem seguinte não confere"
+  if [[ -z "${TERMINAIS_ANTES}" ]]; then
+    log "avisos: contagem por conferir nesta drenagem — sem contagem anterior (primeira com o AOS-445, ou a anterior não leu métricas suas)"
+  else
+    delta=$(( ${depois:-0} - TERMINAIS_ANTES )); nr_delta=$(( ${nr_depois:-0} - NAO_REPORTADOS_ANTES ))
+    if (( delta < 0 || nr_delta < 0 )); then
+      log "avisos: contagem por conferir — os contadores do consume recomeçaram (métricas ilegíveis?)"
+    elif (( n != delta )); then
+      # n < delta com nr_delta que o explique: terminais cujo reporte falhou. n < delta sem isso: um
+      # binário que não imprime a linha, ou um `consume` corrido fora desta drenagem (conta no
+      # volume e não passou por aqui). n > delta não tem causa conhecida — diz-se na mesma.
+      if (( n < delta && delta - n <= nr_delta )); then
+        log "AVISO: ${delta} desfecho(s) terminal(is) e só ${n} aviso(s) — o reporte de $(( delta - n )) falhou («NAO reportado» acima): se o nó o registou na mesma, o pedido FECHOU sem aviso; se não, volta à fila e avisa na geração seguinte"
+      elif (( n < delta )); then
+        log "AVISO: ${delta} desfecho(s) terminal(is) nas métricas e ${n} linha(s) «aviso:» — o aos-orq desta imagem não as imprime (anterior ao AOS-445, depois de um rollback?), ou um consume correu à mão desde a drenagem anterior; há planos que terminaram SEM aviso"
+      else
+        log "AVISO: ${n} linha(s) «aviso:» e só ${delta} desfecho(s) terminal(is) nas métricas — a contagem não bate, e não há causa conhecida para isto"
+      fi
+      # `em=` (o início desta drenagem) torna a linha única: o avisar-planos.sh envia cada uma só uma vez.
+      printf 'desencontro: terminais=%d avisos=%d em=%d\n' "${delta}" "${n}" "${INICIO}" > "${AVISOS_DESTA}.desencontro" 2>/dev/null \
+        && para_o_outbox "${AVISOS_DESTA}.desencontro" \
+        || log "AVISO: o desencontro também NÃO entrou no outbox"
+      rm -f "${AVISOS_DESTA}.desencontro" 2>/dev/null || true
+    fi
+  fi
+  rm -f "${AVISOS_DESTA}" 2>/dev/null || true
 }
 
 # copiar_metricas — o ficheiro vive no volume do `aos-orq` (escreve-o o uid 65532, que é quem lá
@@ -213,6 +333,20 @@ nhi_exp() {
       printf %s "$p" | base64 -d 2>/dev/null | sed -n "s/.*\"exp\":\([0-9]*\),\"jti\".*/\1/p"'
 }
 
+# AS SOBRAS DE UMA DRENAGEM INTERROMPIDA (AOS-445). Uma drenagem morta entre a linha `aviso:` e o
+# entregar_avisos (SIGKILL, reinício do host) deixa ${AVISOS_DESTA} para trás. Entrega-se agora,
+# antes de qualquer outra verificação — apagá-lo perdia esses avisos sem desencontro nenhum (a
+# drenagem morta também não deixou contagem). Um aviso que já tivesse entrado no outbox não se
+# repete: o avisar-planos.sh regista os enviados por run.
+if [[ -s "${AVISOS_DESTA}" ]]; then
+  if para_o_outbox "${AVISOS_DESTA}"; then
+    log "$(wc -l < "${AVISOS_DESTA}" | tr -d ' ') aviso(s) de uma drenagem INTERROMPIDA entregue(s) ao outbox"
+    rm -f "${AVISOS_DESTA}"
+  else
+    log "AVISO: os avisos de uma drenagem interrompida (${AVISOS_DESTA}) NÃO entraram no outbox — ficam para a próxima"
+  fi
+fi
+
 [[ -s "${AOS_DIR}/orq/snapshot.json" ]] || fail "sem ${AOS_DIR}/orq/snapshot.json — o planeador precisa do instantâneo de validação"
 
 EXP="$(nhi_exp || true)"
@@ -224,6 +358,15 @@ RESTA=$(( EXP - $(date +%s) ))
 (( RESTA <= 3900 )) || fail "o NHI diz que vive ${RESTA}s — acima do tecto de 1h; não é um NHI do emissor, NÃO se reclama nenhum plano"
 
 log "drenagem a começar (máximo ${MAX} pedidos; NHI com ${RESTA}s de vida)"
+# AOS-445: o «antes» da conferência dos avisos é o que a última drenagem CONFERIDA deixou. Apaga-se
+# já: se esta drenagem não chegar a ler métricas suas, a seguinte não confere contra um «antes»
+# velho (daria um desencontro falso com os avisos que esta entregou).
+TERMINAIS_ANTES=""; NAO_REPORTADOS_ANTES=""
+read -r TERMINAIS_ANTES NAO_REPORTADOS_ANTES 2>/dev/null < "${AVISOS_CONTAGEM}" || true
+[[ "${TERMINAIS_ANTES}" =~ ^[0-9]{1,12}$ && "${NAO_REPORTADOS_ANTES}" =~ ^[0-9]{1,12}$ ]] \
+  || { TERMINAIS_ANTES=""; NAO_REPORTADOS_ANTES=""; }
+rm -f "${AVISOS_CONTAGEM}" 2>/dev/null || true
+# O que ainda lá estiver (as sobras acima não entraram no outbox) junta-se aos desta drenagem.
 # -T e </dev/null: o `compose run` come o stdin de quem o chama (lição do AOS-403). O stderr junta-se
 # ao stdout para chegar também ao log; o código de saída é o do `compose`, não o do `carimbar`.
 set +e
@@ -235,19 +378,38 @@ ESTADOS=("${PIPESTATUS[@]}")
 set -e
 RC="${ESTADOS[0]}"
 
+# metricas_desta_drenagem — 0 se a cópia em ${METRICAS} traz o carimbo desta drenagem.
+metricas_desta_drenagem() {
+  FIM_METRICAS="$(awk '$1 == "aos_orq_consume_ultima_drenagem_timestamp_seconds" { print $2 }' "${METRICAS}" 2>/dev/null || true)"
+  [[ "${FIM_METRICAS}" =~ ^[0-9]+$ ]] && (( FIM_METRICAS >= INICIO ))
+}
+
 if (( RC != 0 )); then
   # As métricas desta drenagem falhada também contam (o `consume` escreve-as mesmo a falhar); sem
-  # elas é só menos informação, e o erro que importa é o de cima.
-  copiar_metricas || log "métricas do consume NÃO copiadas de ${ORQ_VOLUME}"
+  # elas é só menos informação, e o erro que importa é o de cima. Os avisos TAMBÉM se entregam: um
+  # `consume` que falha no 2.º pedido já reportou o 1.º.
+  frescas=0
+  if copiar_metricas; then
+    metricas_desta_drenagem && frescas=1
+  else
+    log "métricas do consume NÃO copiadas de ${ORQ_VOLUME}"
+  fi
+  entregar_avisos "${frescas}"
   fail "o consume saiu com ${RC} — ver acima ou ${LOG_FILE} (AOS_ORQ_NODE_URL / AOS_ORQ_OIDC_* no .env? o nó responde?)"
 fi
 
 # MÉTRICAS DESTA DRENAGEM, OU FALHA. O sensor lê a cópia; uma cópia parada diria «tudo bem» sobre
 # desfechos que ninguém contou. Prova-se que é DESTA drenagem pelo carimbo que o `consume` lá põe.
-copiar_metricas || fail "métricas do consume NÃO copiadas de ${ORQ_VOLUME}:/${METRICAS_NO_VOLUME} para ${METRICAS}"
-FIM_METRICAS="$(awk '$1 == "aos_orq_consume_ultima_drenagem_timestamp_seconds" { print $2 }' "${METRICAS}")"
-[[ "${FIM_METRICAS}" =~ ^[0-9]+$ ]] && (( FIM_METRICAS >= INICIO )) \
-  || fail "as métricas em ${METRICAS} não são desta drenagem (fim=${FIM_METRICAS:-?}, início=${INICIO}) — o consume não as escreveu (imagem anterior ao AOS-443, depois de um rollback? os pedidos foram drenados na mesma)"
+# Os avisos entregam-se ANTES de falhar: os pedidos foram drenados e reportados na mesma.
+if ! copiar_metricas; then
+  entregar_avisos 0
+  fail "métricas do consume NÃO copiadas de ${ORQ_VOLUME}:/${METRICAS_NO_VOLUME} para ${METRICAS}"
+fi
+if ! metricas_desta_drenagem; then
+  entregar_avisos 0
+  fail "as métricas em ${METRICAS} não são desta drenagem (fim=${FIM_METRICAS:-?}, início=${INICIO}) — o consume não as escreveu (imagem anterior ao AOS-443, depois de um rollback? os pedidos foram drenados na mesma)"
+fi
+entregar_avisos 1
 
 # CARIMBO DE SUCESSO, para o sensor: um timer parado ou nunca instalado fica `inactive` e não
 # `failed`, e só a idade deste carimbo o denuncia (revisão do AOS-437, achado M2).

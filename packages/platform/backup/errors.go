@@ -99,6 +99,20 @@ var (
 	// devolve sucesso): a escrita tem de ser condicional (`If-None-Match: *` ou equivalente).
 	ErrDestinationNotConditional = errors.New("backup: o destino aceitou uma SEGUNDA escrita na mesma referencia — a porta ImmutableStore exige Put condicional (ErrImmutable numa ref existente; em S3, If-None-Match: *), e o exportador recusa arrancar sobre um destino que nao o cumpre")
 
+	// ErrKEKCustodyUnsupported — a custódia de KEK injectada NÃO sabe selar segmentos: não entrega
+	// a KEK crua ([audit.KeyVault.EnsureKey] devolve uma chave que não tem 32 bytes — tipicamente
+	// `nil`, key-never-leaves) E não implementa a porta de envelope [audit.KeyWrapper]. Recusada na
+	// COMPOSIÇÃO do exportador (AOS-453): antes disto, uma custódia assim deixava compor e TODOS os
+	// ciclos falhavam com `crypto/aes: invalid key size 0`.
+	ErrKEKCustodyUnsupported = errors.New("backup: a custodia de KEK nao sela segmentos — nao entrega a KEK crua (32 bytes) nem implementa a porta de envelope audit.KeyWrapper (AOS-453)")
+
+	// ErrKEKCustodyUnavailable — a custódia de KEK do backup não respondeu, ou recusou, a sonda de
+	// composição (a volta WrapDEK→UnwrapDEK sob o titular do backup, ou o EnsureKey). É uma causa
+	// DIFERENTE de «a KEK não é a que selou a cadeia» ([ErrResumeUnverifiable]): aqui a custódia está
+	// em baixo, o token/política não autoriza, ou um portão da custódia está fechado — e o remédio
+	// é repô-la, não trocar de destino. Fail-closed: o exportador não é construído.
+	ErrKEKCustodyUnavailable = errors.New("backup: a custodia da KEK do backup nao responde ou recusa a sonda de composicao (WrapDEK/UnwrapDEK ou EnsureKey) — nao e uma KEK errada: e a custodia indisponivel")
+
 	// ErrInvalidKey — chave ed25519 de dimensão inválida.
 	ErrInvalidKey = errors.New("backup: chave ed25519 invalida")
 

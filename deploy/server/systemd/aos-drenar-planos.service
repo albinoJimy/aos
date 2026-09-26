@@ -9,7 +9,12 @@ Type=oneshot
 User=aos
 Group=aos
 ExecStart=/opt/aos/drenar-planos.sh
+# AOS-447: UM pedido por drenagem. Vive AQUI, e nao como omissao do script, para mudar junto com o
+# OnUnitInactiveSec=1min do timer: o script chega pelo rsync em cada deploy, as unidades so quando
+# o root as reinstala - com o 1 no script, entre um e outro a fila drenava 1 pedido de 5 em 5 min.
+Environment=DRENAR_MAX=1
 # Um plano pode durar ate --plan-timeout (40 min por omissao) MAIS a decomposicao, e o consume
-# drena ate 3: ~2h30 no pior caso, dentro das 4h. O systemd nunca arranca um segundo oneshot
-# enquanto este esta activo, e o flock do script cobre uma corrida a mao.
+# drena DRENAR_MAX pedidos: com 1, ~45 min no pior caso; com 3 (a omissao do script), ~2h30,
+# ainda dentro das 4h. O systemd nunca arranca um segundo oneshot enquanto este esta
+# activo, e o flock do script cobre uma corrida a mao.
 TimeoutStartSec=4h

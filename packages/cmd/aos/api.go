@@ -2864,6 +2864,12 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "nao autorizado")
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
+	case integration.RegistoDeRetomaRecusado(err):
+		// 409 como o ErrNoResumeRecord (AOS-069): o registo existe e foi RECUSADO por não ser o
+		// que o Put do nó escreveria — um conflito com o estado do run, não uma falha interna.
+		// A causa (o nome do sentinela) vai ao log do operador; ao cliente, uma frase fechada.
+		h.svc.log("retoma do run %q RECUSADA: registo de retoma adulterado ou divergente: %v", runID, err)
+		writeError(w, http.StatusConflict, "registo de retoma recusado (nao e o que o no escreveu) — nao e reconstituivel")
 	case errors.Is(err, ErrResumeNeedsEmitter):
 		// 403, e NOMEANDO o que falta (AOS-292). Não é 404 uniforme porque não há nada a
 		// esconder — quem pede já provou conhecer o run com uma credencial válida — e não é

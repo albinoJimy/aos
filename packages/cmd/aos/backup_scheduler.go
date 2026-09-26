@@ -86,9 +86,13 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -136,7 +140,170 @@ var (
 	// auto-gera uma: uma chave nova a cada arranque tornaria inverificáveis os checkpoints
 	// anteriores, e o operador só descobriria no restauro.
 	ErrBackupSigningKeyMissing = errors.New("aos: Config.BackupDestination exige Config.BackupSigningKey (chave ed25519 que sela os checkpoints do manifesto hash-chain do backup) — trust domain PROPRIO (ADR-017 §5): nao se reutiliza a chave do issuer nem a de release, e o no nao gera uma sozinho (uma chave nova por arranque tornaria os checkpoints anteriores inverificaveis)")
+
+	// ErrBackupVaultMountMissing — a custódia DSAR do nó é o Vault Transit (AOS-215) e o backup não
+	// tem mount PRÓPRIO (AOS-453). Usar o mount do DSAR poria a KEK do backup (1) atrás do portão
+	// da reconciliação de apagamentos (AOS-436), que corre DEPOIS da composição e fecha o
+	// embrulho até à primeira passagem — a retoma abortaria a dizer «KEK errada» sobre uma cadeia
+	// boa —, e (2) sob a política do nó, que tem `delete` sobre as chaves desse mount. O backup
+	// exige o seu mount, numa política sem `delete`.
+	ErrBackupVaultMountMissing = errors.New("aos: a custodia da KEK do nó e o Vault Transit (AOS_DSAR_VAULT_ADDR) e o backup nao tem mount PROPRIO — defina AOS_BACKUP_VAULT_TRANSIT_MOUNT (ex.: transit-backup), um mount diferente do do DSAR, numa politica SEM delete (AOS-453). O mount do DSAR poria a KEK do backup atras do portao da reconciliacao de apagamentos (AOS-436) e ao alcance do delete da politica do nó")
 )
+
+// Erros da SUPERFÍCIE DE AMBIENTE do backup (AOS-453 F2). Todos abortam o arranque: pedir backup
+// com uma config que não se compõe e ficar sem ele em silêncio é o modo de falha que o destino
+// explícito existe para excluir.
+var (
+	// ErrBadBackupDest — AOS_BACKUP_DEST definido com um esquema ou caminho que o nó não compõe.
+	ErrBadBackupDest = errors.New("aos: AOS_BACKUP_DEST invalido — esperado file:///caminho/absoluto (um directorio que JA existe, gravavel pelo uid do no); vazio desliga o backup")
+
+	// ErrBackupDestNotImplemented — AOS_BACKUP_DEST=s3://… : o destino fora do host (S3 com Object
+	// Lock e escrita condicional) é a fase F4 do desenho e NÃO está implementado. Recusado em vez de
+	// aceite e ignorado.
+	ErrBackupDestNotImplemented = errors.New("aos: AOS_BACKUP_DEST=s3://… — o destino S3 com Object Lock e a fase F4 do AOS-453 e NAO esta implementado; hoje so file:///")
+
+	// ErrBadBackupDestRegion — AOS_BACKUP_DEST_REGION ausente com destino definido, ou fora das
+	// regiões do board (AOS_BOARD_REGIONS). Um destino sem região não prova respeitar a fronteira
+	// de soberania (ADR-011).
+	ErrBadBackupDestRegion = errors.New("aos: AOS_BACKUP_DEST_REGION invalida — obrigatoria com AOS_BACKUP_DEST, e tem de ser uma das regioes de AOS_BOARD_REGIONS (soberania ADR-011: o backup nunca cruza a fronteira do board)")
+
+	// ErrBadBackupSigningKey — AOS_BACKUP_SIGNING_KEY_PATH ausente, ilegível, ou sem uma seed
+	// ed25519 em hex (64 caracteres). O nó LÊ a seed e nunca a cria (não há LoadOrCreate aqui): uma
+	// chave nova por arranque tornaria inverificáveis os checkpoints anteriores.
+	ErrBadBackupSigningKey = errors.New("aos: AOS_BACKUP_SIGNING_KEY_PATH invalido — obrigatorio com AOS_BACKUP_DEST, ficheiro legivel com a seed ed25519 do backup em hex (64 caracteres), gerada OFFLINE; o no le-a e NUNCA a cria")
+
+	// ErrBadBackupRetention — AOS_BACKUP_RETENTION ausente com destino, ou não é uma duração Go > 0.
+	// A retenção é FINITA por decisão do dono (épocas): sem ela o object-lock seria «para sempre».
+	ErrBadBackupRetention = errors.New("aos: AOS_BACKUP_RETENTION invalida — obrigatoria com AOS_BACKUP_DEST, duracao Go > 0 (ex.: 2160h = 90 dias); e o object-lock de cada objecto do backup, FINITO por decisao (rotacao por epocas)")
+
+	// ErrBadBackupVault — AOS_BACKUP_VAULT_TRANSIT_MOUNT definido sem a custódia Vault do nó
+	// (AOS_DSAR_VAULT_ADDR), igual ao mount do DSAR, ou em falta num nó de produção com destino.
+	ErrBadBackupVault = errors.New("aos: AOS_BACKUP_VAULT_TRANSIT_MOUNT invalido — exige a custodia Vault do no (AOS_DSAR_VAULT_ADDR, cujo endereco e token reutiliza), tem de ser um mount DIFERENTE do do DSAR, e e obrigatorio em AOS_MODE=production com AOS_BACKUP_DEST (a KEK do backup tem de sobreviver ao processo)")
+)
+
+// backupEnv é o que a superfície de ambiente do backup produz para a [Config].
+type backupEnv struct {
+	dest       backup.ImmutableStore
+	signingKey ed25519.PrivateKey
+	retention  time.Duration
+	vault      audit.KeyVault
+	// ignoradas são variáveis AOS_BACKUP_* definidas SEM AOS_BACKUP_DEST — sem efeito, e o banner
+	// di-lo (uma config a meio não é um backup ligado).
+	ignoradas []string
+}
+
+// backupFromEnv resolve o backup a partir do ambiente (AOS-453 F2). Sem AOS_BACKUP_DEST devolve o
+// zero-value: o exportador NÃO é composto e nada muda — o estado por omissão, também em produção.
+//
+// Com destino, TUDO é obrigatório e fail-closed: região (∈ board), seed de assinatura (lida, nunca
+// criada), retenção finita e — em produção — o mount Transit próprio do backup.
+func backupFromEnv(production bool, boardRegions map[string]string, dsarVault audit.KeyVault) (backupEnv, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_BACKUP_DEST"))
+	if raw == "" {
+		var out backupEnv
+		// Leituras LITERAIS (o gate da superfície de ambiente exige saber o nome de cada uma).
+		for _, kv := range [][2]string{
+			{"AOS_BACKUP_DEST_REGION", os.Getenv("AOS_BACKUP_DEST_REGION")},
+			{"AOS_BACKUP_SIGNING_KEY_PATH", os.Getenv("AOS_BACKUP_SIGNING_KEY_PATH")},
+			{"AOS_BACKUP_RETENTION", os.Getenv("AOS_BACKUP_RETENTION")},
+			{"AOS_BACKUP_VAULT_TRANSIT_MOUNT", os.Getenv("AOS_BACKUP_VAULT_TRANSIT_MOUNT")},
+		} {
+			if strings.TrimSpace(kv[1]) != "" {
+				out.ignoradas = append(out.ignoradas, kv[0])
+			}
+		}
+		return out, nil
+	}
+
+	// REGIÃO — antes do destino, porque o destino nasce com ela.
+	region := strings.ToLower(strings.TrimSpace(os.Getenv("AOS_BACKUP_DEST_REGION")))
+	if region == "" {
+		return backupEnv{}, fmt.Errorf("%w: AOS_BACKUP_DEST definido sem AOS_BACKUP_DEST_REGION", ErrBadBackupDestRegion)
+	}
+	if len(boardRegions) > 0 {
+		naBoard := false
+		for _, r := range boardRegions {
+			if strings.EqualFold(strings.TrimSpace(r), region) {
+				naBoard = true
+				break
+			}
+		}
+		if !naBoard {
+			return backupEnv{}, fmt.Errorf("%w: %q nao e uma regiao de AOS_BOARD_REGIONS", ErrBadBackupDestRegion, region)
+		}
+	} else if production {
+		return backupEnv{}, fmt.Errorf("%w: em producao a regiao do destino confronta-se com AOS_BOARD_REGIONS, e este esta vazio", ErrBadBackupDestRegion)
+	}
+
+	// DESTINO.
+	var dest backup.ImmutableStore
+	switch {
+	case strings.HasPrefix(raw, "s3://"):
+		return backupEnv{}, ErrBackupDestNotImplemented
+	case strings.HasPrefix(raw, "file://"):
+		u, err := url.Parse(raw)
+		if err != nil || u.Host != "" || u.RawQuery != "" || u.Fragment != "" {
+			return backupEnv{}, fmt.Errorf("%w: %q (esperado file:///caminho, sem host, query nem fragmento)", ErrBadBackupDest, raw)
+		}
+		p := filepath.FromSlash(u.Path)
+		// file:///C:/x em Windows chega como "\C:\x" (só dev/testes; o alvo é Linux).
+		if runtime.GOOS == "windows" && len(p) >= 3 && p[0] == '\\' && p[2] == ':' {
+			p = p[1:]
+		}
+		ds, err := backup.NewFileImmutableStore(p, region)
+		if err != nil {
+			return backupEnv{}, fmt.Errorf("%w: %w", ErrBadBackupDest, err)
+		}
+		dest = ds
+	default:
+		return backupEnv{}, fmt.Errorf("%w: esquema de %q nao suportado", ErrBadBackupDest, raw)
+	}
+
+	// CHAVE DE ASSINATURA — lida, nunca criada.
+	keyPath := strings.TrimSpace(os.Getenv("AOS_BACKUP_SIGNING_KEY_PATH"))
+	if keyPath == "" {
+		return backupEnv{}, fmt.Errorf("%w: AOS_BACKUP_DEST definido sem AOS_BACKUP_SIGNING_KEY_PATH", ErrBadBackupSigningKey)
+	}
+	// Material PRIVADO: recusa-se um ficheiro que outros utilizadores leiam ou que o grupo escreva
+	// (0400/0440 servem). Em Windows as permissões POSIX não se medem (só dev/testes).
+	if st, serr := os.Stat(keyPath); serr == nil && runtime.GOOS != "windows" && st.Mode().Perm()&0o037 != 0 {
+		return backupEnv{}, fmt.Errorf("%w: %q tem permissoes %04o — a seed e material privado (0400, dono uid 65532)", ErrBadBackupSigningKey, keyPath, st.Mode().Perm())
+	}
+	rawSeed, err := os.ReadFile(keyPath) // #nosec G304 -- caminho do operador (material montado), não input de rede
+	if err != nil {
+		return backupEnv{}, fmt.Errorf("%w: ler %q: %v", ErrBadBackupSigningKey, keyPath, err)
+	}
+	seed, err := hex.DecodeString(strings.TrimSpace(string(semBOM(rawSeed))))
+	if err != nil || len(seed) != ed25519.SeedSize {
+		return backupEnv{}, fmt.Errorf("%w: %q nao contem 64 caracteres hex", ErrBadBackupSigningKey, keyPath)
+	}
+
+	// RETENÇÃO FINITA.
+	rawRet := strings.TrimSpace(os.Getenv("AOS_BACKUP_RETENTION"))
+	ret, perr := time.ParseDuration(rawRet)
+	if rawRet == "" || perr != nil || ret <= 0 {
+		return backupEnv{}, fmt.Errorf("%w: AOS_BACKUP_RETENTION=%q", ErrBadBackupRetention, rawRet)
+	}
+
+	// CUSTÓDIA DA KEK DO BACKUP — mount PRÓPRIO sobre o mesmo Vault e o mesmo token do DSAR.
+	out := backupEnv{dest: dest, signingKey: ed25519.NewKeyFromSeed(seed), retention: ret}
+	mount := strings.Trim(strings.TrimSpace(os.Getenv("AOS_BACKUP_VAULT_TRANSIT_MOUNT")), "/")
+	if mount == "" {
+		if production {
+			return backupEnv{}, fmt.Errorf("%w: AOS_MODE=production com AOS_BACKUP_DEST exige AOS_BACKUP_VAULT_TRANSIT_MOUNT", ErrBadBackupVault)
+		}
+		return out, nil // fora de produção: o composer decide (e recusa o mount do DSAR)
+	}
+	dv, ok := dsarVault.(*vaultKeyVault)
+	if !ok {
+		return backupEnv{}, fmt.Errorf("%w: AOS_BACKUP_VAULT_TRANSIT_MOUNT sem AOS_DSAR_VAULT_ADDR", ErrBadBackupVault)
+	}
+	if mount == dv.mount {
+		return backupEnv{}, fmt.Errorf("%w: %q e o mount do DSAR", ErrBadBackupVault, mount)
+	}
+	out.vault = newVaultKeyVault(dv.addr, mount, "", withVaultTokenFrom(dv))
+	return out, nil
+}
 
 // comporExportadorDeBackup compõe o [backup.Exporter] do nó a partir da config, ou devolve
 // (nil, nil) quando não há destino — o estado POR OMISSÃO, em que o nó não exporta nada.
@@ -145,16 +312,22 @@ var (
 //
 //   - o Event Store composto como fonte, pela porta [eventstore.BackupSource] — é a MESMA
 //     instância que serve os runs, pelo que o backup é do log real e não de uma cópia;
-//   - o [audit.KeyVault] do nó (a custódia da KEK de AOS-215) como cofre da KEK do backup. Sem
-//     isto, [backup.NewExporter] construiria um vault in-memory PRÓPRIO e a KEK dos segmentos
-//     morreria com o processo — segmentos cifrados que ninguém voltaria a decifrar. MAS a custódia
-//     Vault Transit do nó é key-never-leaves: não entrega a KEK crua de que o sealSegment precisa,
-//     e com ela todos os ciclos falham. Só o vault de referência em memória funciona, e morre com
-//     o processo — ligar o exportador em produção está bloqueado pelo AOS-453;
+//   - a CUSTÓDIA DA KEK DO BACKUP (AOS-453): [Config.BackupVault] quando composto — em produção,
+//     uma segunda instância do Vault Transit num mount PRÓPRIO, que sela por ENVELOPE (a DEK é
+//     embrulhada no Vault e a KEK nunca entra no processo). Sem ele, o [audit.KeyVault] do nó
+//     (dsarVault) — mas SÓ quando não é o Vault: o mount do DSAR está atrás do portão da
+//     reconciliação de apagamentos (AOS-436) e ao alcance do `delete` da política do nó, e é
+//     recusado ([ErrBackupVaultMountMissing]). Com o vault de referência em memória o exportador
+//     compõe (dev/testes), e a KEK morre com o processo: o 2.º arranque recusa a retoma a nomeá-la;
 //   - a soberania é a do [backup.NewExporter] (fail-closed, ADR-011): destino noutra região, ou
 //     sem região, ABORTA o arranque. Não se re-valida aqui — uma segunda guarda podia divergir
 //     da primeira, e a primeira é a que corre também a cada ciclo.
-func comporExportadorDeBackup(cfg Config, es EventStorePort, vault audit.KeyVault) (*backup.Exporter, error) {
+//
+// O portão do DSAR (AOS-436) NÃO se aplica à custódia do backup, de propósito: a garantia do Art.
+// 17 continua nas KEKs dos TITULARES — o conteúdo deles vai selado por titular DENTRO dos eventos
+// do backup, e destruir a KEK de um titular torna-o ilegível também no backup. A KEK do backup só
+// protege o segmento em repouso.
+func comporExportadorDeBackup(cfg Config, es EventStorePort, dsarVault audit.KeyVault) (*backup.Exporter, error) {
 	if cfg.BackupDestination == nil {
 		return nil, nil
 	}
@@ -169,6 +342,10 @@ func comporExportadorDeBackup(cfg Config, es EventStorePort, vault audit.KeyVaul
 	if err != nil {
 		return nil, fmt.Errorf("aos: assinador de checkpoints do backup (AOS-101): %w", err)
 	}
+	vault, err := custodiaDoBackup(cfg.BackupVault, dsarVault)
+	if err != nil {
+		return nil, err
+	}
 	opts := []backup.ExporterOption{}
 	if vault != nil {
 		opts = append(opts, backup.WithKeyVault(vault))
@@ -178,18 +355,58 @@ func comporExportadorDeBackup(cfg Config, es EventStorePort, vault audit.KeyVaul
 	if cfg.BackupPeriodicity > 0 {
 		opts = append(opts, backup.WithPeriodicity(cfg.BackupPeriodicity))
 	}
+	if cfg.BackupRetention > 0 {
+		opts = append(opts, backup.WithRetention(audit.NewRetentionPolicy(map[audit.DataClass]time.Duration{audit.ClassAudit: cfg.BackupRetention}), audit.ClassAudit))
+	}
 	if cfg.BackupClock != nil {
 		opts = append(opts, backup.WithClock(cfg.BackupClock))
 	}
 	exp, err := backup.NewExporter(src, cfg.BackupDestination, signer, opts...)
 	if err != nil {
 		// Desde a retoma a construção falha por mais do que a soberania (ADR-011), e a mensagem
-		// nomeia-o: um destino que não é write-once condicional (backup.ErrDestinationNotConditional)
-		// e uma cadeia no destino que não prova ser deste exportador — outra chave, outra região,
-		// um buraco, ou uma KEK que não abre o último segmento (backup.ErrResumeUnverifiable).
-		return nil, fmt.Errorf("aos: exportador de backup (AOS-101 — soberania ADR-011, destino write-once condicional e retoma da cadeia do destino, todas fail-closed): %w", err)
+		// nomeia-o: um destino que não é write-once condicional (backup.ErrDestinationNotConditional),
+		// uma custódia que não sela segmentos ou não responde (backup.ErrKEKCustodyUnsupported /
+		// ErrKEKCustodyUnavailable — AOS-453, verificadas ANTES da retoma para uma custódia em baixo
+		// não se ler como KEK errada) e uma cadeia no destino que não prova ser deste exportador —
+		// outra chave, outra região, um buraco, ou uma KEK que não abre o último segmento
+		// (backup.ErrResumeUnverifiable).
+		return nil, fmt.Errorf("aos: exportador de backup (AOS-101/453 — soberania ADR-011, destino write-once condicional, custodia da KEK e retoma da cadeia do destino, todas fail-closed; custodia: %s): %w", descreverCustodiaDoBackup(vault), err)
 	}
 	return exp, nil
+}
+
+// custodiaDoBackup escolhe a custódia da KEK do backup: a própria quando composta; senão a do nó,
+// EXCEPTO quando esta é o Vault Transit do DSAR ([ErrBackupVaultMountMissing]). Uma custódia
+// própria que seja, afinal, a instância do DSAR ou o mesmo mount também é recusada.
+func custodiaDoBackup(propria, dsarVault audit.KeyVault) (audit.KeyVault, error) {
+	dv, dsarEVault := dsarVault.(*vaultKeyVault)
+	if propria == nil {
+		if dsarEVault {
+			return nil, ErrBackupVaultMountMissing
+		}
+		return dsarVault, nil
+	}
+	if pv, ok := propria.(*vaultKeyVault); ok && dsarEVault && (pv == dv || pv.mount == dv.mount) {
+		return nil, fmt.Errorf("%w (a custodia do backup injectada e a do DSAR, ou o mesmo mount %q)", ErrBackupVaultMountMissing, pv.mount)
+	}
+	return propria, nil
+}
+
+// descreverCustodiaDoBackup diz, para os banners e erros, QUE custódia sela a KEK do backup
+// (AOS-453, critério 5). Nunca inclui o token nem o endereço com credenciais.
+func descreverCustodiaDoBackup(v audit.KeyVault) string {
+	switch c := v.(type) {
+	case nil:
+		return "vault de referencia em memoria do proprio modulo (KEK-crua) — MORRE com o processo"
+	case *vaultKeyVault:
+		return fmt.Sprintf("Vault Transit mount=%q (ENVELOPE: a DEK de cada segmento e embrulhada DENTRO do Vault, a KEK nunca entra no processo; mount PROPRIO do backup, fora do portao AOS-436, token da custodia DSAR)", c.mount)
+	case *audit.InMemoryKeyVault:
+		return "vault de referencia em memoria do no (KEK-crua) — a KEK MORRE com o processo: o 2.º arranque recusa a retoma a nomear a KEK (so dev/testes)"
+	case audit.KeyWrapper:
+		return fmt.Sprintf("custodia de envelope %T (audit.KeyWrapper: a DEK e embrulhada dentro da custodia)", c)
+	default:
+		return fmt.Sprintf("custodia KEK-crua %T (a KEK entra no processo para embrulhar a DEK)", c)
+	}
 }
 
 // backupSchedulerArmed decide se o laço ARRANCA. É a conjunção mínima e honesta:
@@ -310,7 +527,7 @@ func (s *NodeService) BackupSchedulerArmed() bool { return backupSchedulerArmed(
 func backupSchedulerBanner(node *Node) string {
 	if !backupSchedulerArmed(node) {
 		if node == nil || node.BackupExporter == nil {
-			return "agendador de backup (AOS-101): DESLIGADO (por omissao) — nenhum destino imutavel composto (Config.BackupDestination). O Event Store NAO e exportado para backup imutavel por este no; o que existe no servidor e o backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa. O QUE MUDOU: um destino DURAVEL passou a ser utilizavel — o exportador RETOMA a cadeia que ja esteja no destino (sonda o ultimo ciclo, verifica-o fail-closed e continua no seguinte) e a cadeia e reconstruivel para restauro sem manifesto guardado a parte (backup.Restorer.LoadManifest). O que ainda NAO existe neste repositorio e uma IMPLEMENTACAO duravel da porta backup.ImmutableStore (so a de referencia, em memoria): o no continua a nao inventar um destino, e exige um injectado"
+			return "agendador de backup (AOS-101): DESLIGADO (por omissao) — nenhum destino imutavel composto (AOS_BACKUP_DEST / Config.BackupDestination). O Event Store NAO e exportado para backup imutavel por este no; o que existe no servidor e o backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa. Para ligar (AOS-453): AOS_BACKUP_DEST=file:///<directorio>, AOS_BACKUP_DEST_REGION, AOS_BACKUP_SIGNING_KEY_PATH, AOS_BACKUP_RETENTION e, em producao, AOS_BACKUP_VAULT_TRANSIT_MOUNT (custodia da KEK do backup num mount Transit PROPRIO) — todos fail-closed; o exportador RETOMA a cadeia que ja esteja no destino e a cadeia e reconstruivel para restauro (backup.Restorer.LoadManifest)"
 		}
 		return "agendador de backup (AOS-101): DORMENTE — ha destino composto mas a periodicidade do exportador e <= 0; nenhum ciclo corre sozinho"
 	}
@@ -328,6 +545,20 @@ func backupSchedulerBanner(node *Node) string {
 	if retomado := exp.ResumedFrom(); retomado > 0 {
 		cadeia = fmt.Sprintf("cadeia RETOMADA do ciclo %d que ja estava no destino (conferido fail-closed no arranque SO o ultimo elo: assinatura do checkpoint, indice, regiao, EntryHash recomputado e o segmento desse elo a abrir com a KEK deste no; a cadeia inteira so e verificada no restauro, e o log contra o cursor a cada ciclo)", retomado)
 	}
-	return fmt.Sprintf("agendador de backup (AOS-101): LIGADO — o Event Store e exportado de %s em %s (AOS_BACKUP_EXPORT_INTERVAL) para o destino imutavel regiao=%q tipo=%T; %s; %s. Cada ciclo e INCREMENTAL (so o que passou do head anterior), cifrado em repouso (AES-256-GCM, KEK do audit.KeyVault do no — so o vault de referencia em memoria a entrega, e morre com o processo: AOS-453) e encadeado num manifesto hash-chain com checkpoint ed25519. FAIL-OPEN: um ciclo falhado NAO derruba o no; a violacao de soberania, a cadeia com outro dono, o registo de ciclo que nao verifica, a colisao de conteudo e o log atras do cursor PARAM o laco (ver /metrics aos_backup_scheduler_stopped)",
-		periodicidade, periodicidade, exp.Immutable().Region(), exp.Immutable(), veredicto, cadeia)
+	return fmt.Sprintf("agendador de backup (AOS-101): LIGADO — o Event Store e exportado de %s em %s (AOS_BACKUP_EXPORT_INTERVAL) para o destino imutavel regiao=%q %s; %s; %s. Cada ciclo e INCREMENTAL (so o que passou do head anterior), cifrado em repouso (AES-256-GCM, DEK fresca por segmento; KEK do backup selada por: %s — AOS-453) e encadeado num manifesto hash-chain com checkpoint ed25519. FAIL-OPEN: um ciclo falhado NAO derruba o no; a violacao de soberania, a cadeia com outro dono, o registo de ciclo que nao verifica, a colisao de conteudo e o log atras do cursor PARAM o laco (ver /metrics aos_backup_scheduler_stopped)",
+		periodicidade, periodicidade, exp.Immutable().Region(), descreverDestinoDoBackup(exp.Immutable()), veredicto, cadeia, descreverCustodiaDoBackup(exp.Vault()))
+}
+
+// descreverDestinoDoBackup nomeia o destino para os banners: o tipo concreto por trás da porta e,
+// quando ele se sabe descrever (o destino em disco diz o directório), a descrição. Um destino que
+// não se sabe nomear é um backup que não se sabe ir buscar.
+func descreverDestinoDoBackup(dst backup.ImmutableStore) string {
+	switch d := dst.(type) {
+	case *backup.FileImmutableStore:
+		return fmt.Sprintf("tipo=%T %s (directorio local write-once: NAO protege da perda do host nem de root — a copia fora do host e a F4)", d, d.String())
+	case *backup.InMemoryImmutableStore:
+		return fmt.Sprintf("tipo=%T (referencia em MEMORIA: NAO duravel)", d)
+	default:
+		return fmt.Sprintf("tipo=%T", d)
+	}
 }

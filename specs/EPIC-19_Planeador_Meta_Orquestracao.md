@@ -6146,7 +6146,7 @@ do `/trajectory`, lido pelo script de medição como um pedido que termina.
 | Prioridade | P2 — um plano que falha em produção passa despercebido |
 | Estimativa | M |
 | Dependências | AOS-430 (leitura do estado), AOS-133 (BFF com SSE, EPIC-13) |
-| Documentos de referência | `docs/adr/ADR-031-leitura-do-estado-de-um-pedido-de-plano.md`, `deploy/server/alerta-nhi.sh` |
+| Documentos de referência | `docs/adr/ADR-031-leitura-do-estado-de-um-pedido-de-plano.md`, `deploy/server/alerta-nhi.sh`, `deploy/server/avisar-planos.sh`, `deploy/server/drenar-planos.sh`, `packages/cmd/aos-orq/consumir.go` |
 
 ### Contexto
 
@@ -6155,20 +6155,127 @@ O único aviso que existe é de INFRAESTRUTURA (`alerta-nhi.sh`, `alerta-ancora.
 submissor. Nas provas de 2026-09-25, três planos ficaram gravados como falhados sem que nada o
 dissesse a ninguém. O AOS-133 (SSE no BFF) está por fazer.
 
-### Decisões a tomar primeiro (do dono)
+### Decisões do dono (2026-09-26)
 
-1. Por onde: ntfy (como os alertas), webhook do submissor, SSE (AOS-133)?
-2. A quem: ao submissor, ao humano do mandato, ao operador?
+1. **Por onde: ntfy**, enviado a partir do HOST (o molde do `alerta-nhi.sh`), num **tópico separado**
+   do dos alertas de infraestrutura (`/opt/aos/secrets/ntfy-topico-planos`). O webhook do submissor
+   foi rejeitado; o **SSE ao submissor** (AOS-133) fica para uma **fase 2** — não feita aqui.
+2. **A quem: ao operador.**
+3. **O quê:** só desfechos TERMINAIS (0 e ≠ 0); o conteúdo é o id **pseudonimizado**
+   (`sha256(run_id)[:12]` na decisão; **HMAC-SHA256 com chave** depois da revisão — ver Desenho), a
+   classe e o código — sem objectivo, sem
+   resultado, sem tipo de erro. Prioridade *default* para 0, *high* para ≠ 0; o 7 aparece como
+   «recusado».
 
 ### Critérios de Aceitação
 
-- [ ] Um plano que termina (bem ou mal) produz um aviso pelo canal decidido, sem conteúdo do
+- [x] Um plano que termina (bem ou mal) produz um aviso pelo canal decidido, sem conteúdo do
       objectivo nem do resultado (só id, desfecho e código).
+      — ntfy ao operador, tópico próprio, id pseudonimizado + classe + código; verificado contra
+      stubs (ver Estado), **não** em produção.
 - [ ] **Verificado em PRODUÇÃO.**
+
+### Desenho
+
+- **A linha, e a ordem.** O `aos-orq consume` imprime `aviso: run=<id> geracao=<g> classe=terminal
+  codigo=<n>` SÓ DEPOIS de o `ReportarDesfecho` ter sucesso (`reportarEAvisar` em `consumir.go`) —
+  a linha `desfecho:` sai antes do reporte e diz o que o `serve` deu; esta diz o que o nó registou.
+  Um reporte falhado não avisa (o pedido volta à fila e a geração seguinte terá o seu desfecho).
+- **O outbox.** O `drenar-planos.sh` recolhe as linhas `aviso:` (a mesma regex `AVISO_RE` que o
+  `avisar-planos.sh` usa) e, debaixo do lock da drenagem e de um lock próprio do outbox, acrescenta-as
+  a `/opt/aos/.avisos-planos/pendentes` (600, pasta 700). **Falhar a escrever o outbox nunca faz
+  falhar a drenagem** (di-lo o log). Um `consume` que falha entrega na mesma o que já tinha reportado.
+- **A conferência.** A drenagem compara o delta de `aos_orq_consume_desfechos_total{classe="terminal"}`
+  nas métricas DESTA drenagem com as linhas `aviso:` lidas. O «antes» é a contagem que a última
+  drenagem conferida guardou (`.drenagem/avisos-contagem`), apagada no início de cada drenagem — uma
+  que não leia métricas suas não deixa a seguinte conferir contra um «antes» velho. Um desencontro
+  (imagem anterior ao AOS-445 depois de um rollback — o par misturado do AOS-450 —, reporte falhado,
+  ou um `consume` corrido à mão) é dito com `AVISO:` no log e posto no outbox como `desencontro:`, que
+  chega ao operador pelo mesmo canal.
+- **O envio.** `deploy/server/avisar-planos.sh`, no cron do `aos` a cada minuto, com `flock`: consome o
+  outbox (lê e reescreve debaixo do lock do outbox; envia fora dele, para a drenagem não esperar pela
+  rede), pseudonimiza, envia pelo molde `notificar()` do `alerta-nhi.sh` para o tópico dos planos, e
+  recusa se esse tópico for o mesmo da infraestrutura. Um envio falhado **fica** no outbox, e a volta
+  **pára nele** (com o ntfy em baixo, cada tentativa custava até 20 s); um feito regista-se em
+  `.avisos-planos/enviados` por **run** (o HMAC completo, sem o `run_id`; 30 dias). Os `desencontro:`
+  levam `em=<início da drenagem>` e também se registam — não se reenviam numa reescrita falhada.
+  Até 20 avisos por execução. `--teste` envia um aviso de teste sem mexer no estado. O
+  `logs/avisar-planos.log` tem uma linha por envio com o pseudónimo e o `run_id` lado a lado — é por
+  ela que o operador cruza.
+- **O pseudónimo é HMAC-SHA256 com chave** (revisão): um `sha256` sem chave de um id previsível
+  inverte-se por dicionário, e era o prefixo do nome do documento do plano no volume
+  (`planos/<sha256>.plan.json`, AOS-442). A chave (`/opt/aos/secrets/aviso-planos-hmac.key`, 64 hex)
+  cria-a o dono; **sem ela nada sai** (fail-closed, também o `--teste`). O HMAC calcula-se em bash com
+  o `sha256sum` — a chave nunca vai para o argv de outro processo, que um `openssl dgst -hmac` exporia
+  a `ps`; o cenário confere-o contra o vector 2 do RFC 4231, e localmente contra o `openssl`.
+  `--pseudonimo <run>` dá o sentido inverso ao operador.
+- **Locale** (revisão): os dois scripts fazem `export LC_ALL=C`. O `[^[:space:]]` da regex dependia do
+  locale: em C.UTF-8 um run_id com U+3000/U+2028 (que o `ValidarStreamID` aceita) não casava — o
+  submissor fazia desaparecer o aviso do seu plano, e com locales diferentes no systemd e no cron o
+  `avisar` descartava a linha sem desencontro.
+- **Sobras de uma drenagem interrompida** (revisão): a drenagem que arranca entrega ao outbox o
+  `avisos-desta-drenagem` que uma drenagem morta (entre o `aviso:` e o `entregar_avisos`) deixou, em
+  vez de o apagar; o registo de enviados cobre a duplicação.
+- **Instalação** (passos do dono, README §Aviso do resultado de um plano): criar o tópico e a chave,
+  `--teste`, e a linha do cron. Cron e não systemd: é o padrão dos outros avisos do `aos` (`alerta-nhi.sh`,
+  `alerta-ancora.sh`), invocado por `/bin/bash`, pelo que o lint do `ExecStart` não se aplica; o
+  script está na lista do rsync do `deploy.yml`.
 
 ### Estado
 
-**ABERTO** — espera as decisões 1 e 2.
+**IMPLEMENTADO** (2026-09-26); verificação em produção por fazer. Verificado:
+
+- `TestAOS445AvisoSoDepoisDoReporte` — a linha só sai depois de um reporte bem-sucedido, e só para
+  terminais (0 e 7); um reporte falhado, um transitório e um `aguarda_humano` não avisam. Controlo
+  negativo: com a linha impressa ANTES do reporte, 3 dos 5 casos falham.
+- `TestAOS445ContratoDaLinhaDoAvisoComOsScripts` — a `AVISO_RE` é a mesma nos dois scripts e aceita o
+  que o `linhaDoAviso` do Go imprime (e recusa transitórios, a linha `desfecho:` e um run com espaço);
+  o prefixo da série dos terminais que a drenagem soma é o que o `serie` escreve; os caminhos do
+  outbox e do tópico; o `consume` reporta pelo `reportarEAvisar`; o script está no rsync.
+- `TestAOS445OutboxEAvisos` corre o `drenar-planos.sh` e o `avisar-planos.sh` REAIS contra stubs de
+  docker/curl/logger (`testdata/aos445_avisos_planos.sh`, 63 verificações; em Linux, mais uma, dos
+  modos 600/700). Git Bash com um `flock` falso: 63/0; num `debian:12` com o `flock(1)` real: 64/0 (e
+  o cenário do AOS-450 77/0). Cobre, além do desenho de base: o vector do RFC 4231, a recusa sem
+  chave, `--pseudonimo`, a volta que pára no primeiro envio falhado, o desencontro que não se reenvia,
+  as sobras de uma drenagem interrompida e o run_id com U+3000/U+2028 com `LC_ALL=C.UTF-8` por fora.
+  **Controlo negativo** (no `debian:12`): sem o `export LC_ALL=C` nos dois scripts, os dois casos do
+  locale falham. Uma primeira versão com `{1,512}` na regex deu 25 falhas — o `regcomp` do MSYS recusa
+  intervalos acima de 255 e o bash lê isso como «não casa»; a regex passou a `+`.
+- Revisão adversarial independente (2026-09-26): sem injecção nem fuga (o `ValidarStreamID` exclui
+  newline e controlo; nada do run_id sai para o ntfy); os médios e baixos que apontou estão corrigidos
+  acima e no AOS-447.
+
+**Resíduos**:
+1. **Um reporte cuja resposta se perdeu** (o nó gravou o terminal; o `consume` viu erro) não imprime a
+   linha, e o pedido fica FECHADO no nó — esse plano não é avisado. A conferência apanha-o (`AVISO:` +
+   `desencontro:` ao operador, com as contagens), mas o aviso nomeado não sai.
+2. **No máximo um aviso por plano**: um segundo terminal do mesmo run (reporte falhado seguido de
+   nova geração) não é avisado — fica no `avisar-planos.log`, com a geração e o código de cada um.
+3. **Um `consume` corrido à mão** entre drenagens conta terminais no volume sem passar pelo outbox: a
+   drenagem seguinte acusa um desencontro (e os planos dele não são avisados).
+4. **Fase 2 declarada**: avisar o SUBMISSOR por SSE (AOS-133) — hoje só pela sondagem do
+   `GET /plans/{id}` (ADR-031).
+5. A primeira drenagem com o AOS-445 — e a primeira depois de uma que não leu métricas suas — não
+   confere a contagem (não tem contagem anterior) e di-lo no log; os avisos dela seguem na mesma.
+6. Sem tópico em `secrets/ntfy-topico-planos` (ou com o mesmo da infraestrutura), os avisos acumulam
+   no outbox sem tecto e saem, 20 por minuto, quando o tópico existir. **Nenhum sensor vigia o
+   outbox**: sem o cron instalado, ou com o ntfy em baixo durante dias, os avisos acumulam em
+   silêncio — o `alerta-nhi.sh` não o lê.
+7. **Declarados na revisão**: um disco cheio a meio de uma escrita pode colar duas linhas do outbox (a
+   colada não casa com a forma e é descartada, com linha no log); a drenagem recolhe as linhas
+   `aviso:` do stdout **e** do stderr do `consume` — não se encontrou caminho para uma linha não
+   confiável lá chegar a começar por `aviso: run=` (o `ValidarStreamID` exclui `\n`), mas fica como
+   hipótese; o contrato Go da regex não prova a semântica do bash (prova-a o cenário shell, com
+   `LC_ALL=C.UTF-8` por fora); rodar a chave HMAC muda os pseudónimos dali em diante e desliga o
+   registo de enviados dos anteriores (inofensivo fora da janela de 30 min do TTL da reclamação).
+
+**Verificação em produção (do dono)**: depois do deploy — (a) criar o tópico
+(`secrets/ntfy-topico-planos`) e a chave (`( umask 077; openssl rand -hex 32 >
+/opt/aos/secrets/aviso-planos-hmac.key )`) e correr `bash /opt/aos/avisar-planos.sh --teste` (tem de
+chegar ao telemóvel); (b) instalar o cron; (c) submeter um plano (p.ex. pelo
+`medir-latencia-fila.sh --ate-ao-fim` do AOS-447) e confirmar que chega **um** aviso com o pseudónimo
+de `bash /opt/aos/avisar-planos.sh --pseudonimo '<run>'`, código e classe, e nada mais;
+`grep '<pseudónimo>' /opt/aos/logs/avisar-planos.log` devolve o run.
 
 ---
 
@@ -6176,7 +6283,8 @@ dissesse a ninguém. O AOS-133 (SSE no BFF) está por fazer.
 
 <!-- rtm: adrs-mencionados -->
 <!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
-     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). A
+     Fase 0 EMENDA o ADR-033 (§6), cuja implementação continua a ser a do AOS-427. -->
 
 | Campo | Valor |
 |---|---|
@@ -6184,10 +6292,10 @@ dissesse a ninguém. O AOS-133 (SSE no BFF) está por fazer.
 | Fase | Prontidão para utilizadores reais |
 | Milestone | v1.1 |
 | Tipo | decisão de segurança + infraestrutura |
-| Prioridade | P2 — os três limites estão escritos como resíduos, mas não têm ticket nem plano |
+| Prioridade | P2 — os três limites estão escritos como resíduos, mas não têm ticket nem plano; a F3 (Fase 0) era P1 — root e cluster-admin a quem escrevesse num ficheiro do `aos` |
 | Estimativa | L |
 | Dependências | AOS-427/437 (mandato), DEF-103 (HSM), DEF-107 (WebAuthn) |
-| Documentos de referência | `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md` §2.1 e §5, `deploy/server/bootstrap.sh`, `packages/cmd/aos-issuer/mandato.go` |
+| Documentos de referência | `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md` §2.1, §5 e §6 (emenda deste ticket), `deploy/server/bootstrap.sh`, `deploy/server/sync-tls.sh`, `deploy/server/systemd/aos-tls-sync.service`, `deploy/server/tls-sync-rbac.yaml`, `packages/cmd/aos-issuer/mandato.go` |
 
 ### Contexto
 
@@ -6198,8 +6306,27 @@ Três limites declarados, nenhum com ticket:
 2. **O utilizador `aos` está no grupo docker** (`bootstrap.sh:13-14`, `:74`), o que equivale a root:
    a fronteira do root para instalar os timers (AOS-437) é de procedimento, não de segurança.
 3. **A chave que assina os mandatos é uma seed em ficheiro** na máquina do humano
-   (`mandato.go:204-217`), com passphrase — não hardware (ADR-033 §3, §5 resíduo 1). DEF-107
-   (four-eyes sem WebAuthn) e DEF-103 (HSM para a autoridade) são adjacentes.
+   (`lerSeedHumana`, `mandato.go:204-218`), **em hex e em claro — sem passphrase** (esta linha dizia
+   «com passphrase», e estava errada: o código lê hex e decodifica, sem cifra nenhuma) — não
+   hardware (ADR-033 §3, §5 resíduo 1). DEF-107 (four-eyes sem WebAuthn) e DEF-103 (HSM para a
+   autoridade) são adjacentes.
+
+### O que o desenho mediu (2026-09-26, código e produção)
+
+- **Quem contorna o mandato não é só root** (ADR-033 §6.1): o `.env` com o pino é do `aos`; o `aos`
+  está no grupo `docker`; a chave de deploy e quem aprova o environment `production` agem como o
+  `aos`; a máquina do operador guarda a `humano-mandato.key` e a `issuer.key` (que cunha sem
+  mandato), na mesma `secrets-local/` que as duas seeds do *four-eyes*, a `wormseal.key` e a chave
+  dos backups.
+- **F3 — a ponte TLS escalava para root e cluster-admin.** Verificado em produção: o
+  `aos-tls-sync.timer` activo, o serviço como **root** (sem `User=`), `KUBECONFIG=/etc/kubernetes/admin.conf`,
+  `ExecStart=/opt/aos/sync-tls.sh` — ficheiro `aos:aos 0755`, reescrito pelo CD a cada deploy. Quem
+  escrevesse nele ganhava root e cluster-admin na passagem diária seguinte. E o script fazia um
+  `chown` do root sobre caminhos da pasta do edge, que é do `aos` (symlink plantado entre o `mv` e o
+  `chown`).
+- **F5 — o pino não é só `AOS_MANDATE_SIGNERS`.** O mesmo `.env` traz o `AOS_ISSUER_PUBKEY` (confiado
+  por inteiro), `AOS_OPERATORS`, `AOS_RATIFIERS`, `AOS_POLICY_TRUST_ANCHOR` e `AOS_WORM_TRUST_ANCHOR`,
+  e o `secrets/approvers.json` também é do `aos`.
 
 ### Decisões a tomar primeiro (do dono)
 
@@ -6207,14 +6334,111 @@ Três limites declarados, nenhum com ticket:
 2. Tirar o `aos` do grupo docker (e com que substituto para o deploy e para os scripts)?
 3. Assinar mandatos com hardware (passkey/WebAuthn)?
 
+**Decidido pelo dono (2026-09-26): Fase 0 + Fase 1.** A Fase 0 fecha a F3, emenda o ADR-033 e
+fixa a custódia; a Fase 1 responde às decisões 1 e 3 — as âncoras de confiança registadas no WORM
+(um pino trocado deixa rasto selado) e o mandato assinado por FIDO2 `sk-ssh`. A decisão 2 continua
+aberta.
+
+### Fase 0 — o que se entregou
+
+- **A ponte TLS sai do alcance do `aos`.** O executável que o root corre passa a
+  `/usr/local/sbin/aos-sync-tls` (root:root 0755), instalado **pelo root** a partir de um pacote
+  tirado do commit revisto e conferido por SHA-256 (`deploy/server/README.md` §TLS, «Instalar como
+  root»); o `sync-tls.sh` **sai do rsync** do `deploy.yml`.
+- **O `admin.conf` dá lugar a uma identidade mínima:** ServiceAccount `aos-tls-sync` num namespace
+  próprio, com uma Role que só permite `get` em `default/aos-node-tls`
+  (`deploy/server/tls-sync-rbac.yaml`), e o kubeconfig em `/etc/aos/kube/aos-tls-sync.kubeconfig`
+  (root:root 0600). O procedimento gera-o sem pôr o token nos argumentos de um processo, e verifica
+  o positivo e os negativos sobre recursos que existem.
+- **O script recusa a instalação errada:** correr como root a partir de `/opt/aos`, um executável
+  que não seja do root ou tenha escrita de grupo, um `KUBECONFIG` que não seja **exactamente** o
+  mínimo (allowlist — o `admin.conf`, o `controller-manager.conf` e o `scheduler.conf` do kubeadm
+  ficam de fora), um kubeconfig que não seja root:root 0600, ou uma credencial que consiga
+  `list secrets`. Já não recua para o `admin.conf` quando o `KUBECONFIG` falta. Lê, escreve **e
+  analisa** (`openssl`) o que está na pasta do edge **como o `aos`** (`runuser`): o `chown` do root
+  desapareceu. A unidade tem `TimeoutStartSec=5min` (um `edge.crt` trocado por uma FIFO bloquearia a
+  leitura).
+- **As unidades da cunhagem e da drenagem deixam de ser instaladas por glob a partir de
+  `/opt/aos/systemd/`** (do `aos`): as seis unidades entram no mesmo pacote verificado e instalam-se
+  pelo nome. O rsync de `deploy/server/systemd/` fica como referência de leitura, não fonte do root.
+- **O procedimento de root começa por conter e guardar a prova:** pára o timer, copia o
+  `/opt/aos/sync-tls.sh` e compara-o com a versão do repositório, e revê o journal, as unidades e os
+  drop-ins — antes de mudar qualquer coisa. O pacote sai de um SHA **fixo** do merge.
+- **Gate e teste.** O gate `lint` (entrega do servidor) passa a aplicar a regra inversa às unidades
+  root: `ExecStart=/usr/local/sbin/aos-<nome>`, fonte `deploy/server/<nome>.sh` em modo 755 e
+  **fora** do deploy em qualquer forma (nome, glob, directório inteiro); lê o **último** `User=` e
+  recusa um repetido; trata `+`/`!` como root. As unidades do `aos` mantêm a regra de sempre.
+  `aos446_fronteira_host_test.go` (`packages/cmd/aos-issuer`) deriva as unidades root de
+  `deploy/server/systemd/` e recusa, com uma mutação por caso: executável, linha de comando,
+  `EnvironmentFile`, `WorkingDirectory` ou `Environment=` sob `/opt/aos` ou `/home`; `BASH_ENV`,
+  `ENV`, `LD_*` e `PATH`; um `KUBECONFIG` que não seja o mínimo; `User=` repetido; a fonte no rsync
+  em qualquer forma; e um RBAC com mais do que um verbo.
+- **ADR-033 emendado** (§2.1, §3, §5 e §6 nova): o conjunto de quem contorna o mandato, a F3, a F5, a
+  seed em claro e a custódia.
+- **Custódia** (passos do dono, `deploy/server/README.md` §Custódia das chaves humanas):
+  `humano-mandato.key` e `issuer.key` para suporte offline cifrado; chave SSH interactiva do
+  operador para o `aos` em `ed25519-sk`; declarado que as duas seeds do *four-eyes* estão na mesma
+  máquina.
+
 ### Critérios de Aceitação
 
-- [ ] Cada uma das três com decisão registada (ADR ou emenda ao ADR-033) e, se implementada,
-      verificada em produção.
+- [x] **Fase 0 — F3 fechada no repositório:** nenhuma unidade root executa um ficheiro, um
+      `EnvironmentFile` ou um kubeconfig ao alcance do `aos` ou do deploy.
+      `TestAOS446_UnidadesRootForaDoAlcanceDoAos`, `TestAOS446_VerificadorRecusaAUnidadeDeProducao`
+      e `TestAOS446_SyncTLSNaoRecuaParaOAdminConf` passam; repostos a unidade, o script e o
+      `deploy.yml` anteriores, avermelham os três aspectos (executável sob `/opt/aos`, fora de
+      `/usr/local/sbin`, `admin.conf`) e o recuo do script para o `admin.conf`. O gate `lint` recusa a
+      unidade anterior (`corre como ROOT e ExecStart=/opt/aos/sync-tls.sh …`).
+- [x] **Fase 0 — o script prova as recusas como root:** num contentor descartável (root, `runuser`,
+      `kubectl` e `docker` falsos), 17/17 — instala como `aos:aos` 644/640, idempotente, `/etc/shadow`
+      intacto com symlinks plantados pelo `aos` na pasta do edge, recusa `/opt/aos`, `admin.conf`,
+      `controller-manager.conf`, kubeconfig 644 ou do `aos`, executável 775, e uma credencial que
+      responde «yes» a `can-i list secrets`; ponte partida e expiração < 15 dias falham.
+- [x] **Revisão de segurança independente da Fase 0** (2026-09-26): três médios e os baixos
+      corrigidos — o verificador Go aceitava `BASH_ENV`/`PATH`/`WorkingDirectory` do `aos` e
+      KUBECONFIGs largos não listados; a instalação por glob das unidades da cunhagem; a prova
+      forense apagada pelo procedimento. O lint recusa, por mutação na árvore, o rsync por glob, o
+      `sync-tls.sh` de volta na lista, `User=` repetido e `ExecStart=+` sob `User=aos`.
+- [ ] **Fase 0 — F3 fechada em PRODUÇÃO:** o dono corre «Instalar como root» (README §TLS), e o
+      passo 0 guarda a prova e o `cmp` do passo B dá «IGUAL ao repositorio»; o passo 5 mostra
+      `ExecStart=/usr/local/sbin/aos-sync-tls`, `KUBECONFIG=/etc/aos/kube/aos-tls-sync.kubeconfig`,
+      `TimeoutStartUSec=5min`, `systemctl cat` sem drop-ins, `root:root 755`/`700`/`600`, as seis
+      unidades iguais às do pacote, e o `aos` sem escrita no executável nem leitura do kubeconfig;
+      `systemctl start aos-tls-sync.service` sai 0; os negativos do passo 3 dão `forbidden` sobre um
+      secret que existe.
+- [x] **Fase 0 — decisão registada:** emenda ao ADR-033 (§6), com a F3, a F5 e a seed em claro.
+- [ ] **Fase 0 — custódia feita pelo dono** (README §Custódia das chaves humanas, passos 1 e 2).
+- [ ] **Fase 1** — âncoras no WORM e mandato FIDO2, verificados em produção.
+- [ ] **Decisão 2** (o `aos` fora do grupo `docker`) registada.
+
+### Resíduos declarados
+
+1. **Enquanto o `aos` estiver no grupo `docker`, o conjunto de quem contorna o mandato não muda.** A
+   F3 e a instalação por glob das unidades eram dois caminhos a mais para o mesmo root, nenhum
+   declarado; a F3 era o que chegava ao cluster sem passar pelo `docker`. Fechá-los é necessário
+   para a decisão 2 valer; não chega. E o cluster é outra porta: o host é nó control-plane, e quem é
+   cluster-admin é root nele (ADR-033 §6.1 — o agendamento de um pod privilegiado neste nó é
+   inferência, não verificado).
+2. ~~As unidades da cunhagem e da drenagem instaladas por glob a partir de `/opt/aos/systemd/`.~~
+   **Fechado na Fase 0** (achado MÉDIO da revisão de segurança, confirmado num contentor: um
+   symlink plantado pelo `aos` levava o `install` a copiar o `admin.conf` para `/etc/systemd/system`
+   a `0644`, e um `User=root` escrito pelo `aos` passava; em produção nada foi explorado). As seis
+   unidades instalam-se pelo nome a partir do pacote verificado; o `/opt/aos/systemd/` fica como
+   referência. O que **não** fecha: um root que, apesar do README, copie de lá.
+3. **O token da ServiceAccount não expira.** Renová-lo exigiria uma credencial maior no host, que é o
+   que a Fase 0 tira de lá; revoga-se apagando o Secret, e só vale `get` num secret.
+4. **Cada alteração ao `sync-tls.sh` ou a uma das seis unidades exige o passo de root** (A, B, 4 e
+   5): o CD já não as entrega ao root. É o preço de o que o root executa não ser escrito por quem não
+   é root.
+5. **Um `edge.crt` trocado pelo `aos` por uma FIFO bloqueia a leitura** (feita como o `aos`): o
+   `TimeoutStartSec=5min` corta-a e deixa a unidade `failed` — é disponibilidade (uma passagem
+   perdida), não escalada.
 
 ### Estado
 
-**ABERTO** — espera as decisões.
+**ABERTO — Fase 0 entregue no repositório**; falta a instalação como root em produção e a custódia
+(passos do dono). A **Fase 1** (âncoras no WORM e mandato FIDO2) é a onda seguinte: mexe em
+`platform/audit/record.go` e `platform/identity/mandate.go`, que o AOS-439 também muda.
 
 ---
 
@@ -6233,7 +6457,7 @@ Três limites declarados, nenhum com ticket:
 | Prioridade | P3 — aceitável com o volume de hoje; limita a latência e a vazão quando houver utilizadores |
 | Estimativa | M |
 | Dependências | AOS-423 (forma do trabalhador, não decidida), ADR-030 §3-§4 |
-| Documentos de referência | `deploy/server/systemd/aos-drenar-planos.timer`, `deploy/server/drenar-planos.sh`, `packages/cmd/aos-orq/consumir.go` |
+| Documentos de referência | `deploy/server/systemd/aos-drenar-planos.timer`, `deploy/server/drenar-planos.sh`, `packages/cmd/aos-orq/consumir.go`, `deploy/server/medir-latencia-fila.sh`, `docs/adr/ADR-030-reclamacao-da-fila-de-pedidos-de-plano.md` (nota ao §4) |
 
 ### Contexto — medido em produção
 
@@ -6242,18 +6466,91 @@ Nas provas de 2026-09-25 um pedido esperou até 5 minutos antes de começar
 posse sequencial (`consume.wal`). A forma do trabalhador ficou por decidir no AOS-423 (decisão 2) e
 o NATS partilhado foi rejeitado «por agora» (ADR-030 §3); o AOS-437 declarou-o como resíduo 6.
 
-### Decisões a tomar primeiro (do dono)
+### Decisões do dono (2026-09-26)
 
-1. `consume` contínuo (serviço de longa duração) em vez de timer?
-2. Vários trabalhadores — exige o substrato replicado (NATS) no `aos-orq`?
+1. **Não** um `consume` contínuo: continua o timer, com **`OnUnitInactiveSec=1min`** e
+   `AccuracySec=5s`, e **um pedido por drenagem** (`DRENAR_MAX=1`, na unidade — ver Desenho).
+2. **Um trabalhador.** Vários só com uma medição que o justifique, por um WAL por run, e com a
+   pré-condição TTL da reclamação ≥ prazo do plano (ver os achados abaixo).
+3. Em duas fases: **fase 0** mede (antes), **fase 1** baixa o timer — e mede-se outra vez (depois).
 
 ### Critérios de Aceitação
 
-- [ ] Decisão registada; se mudar a forma, latência de arranque e vazão medidas antes e depois.
+- [x] Decisão registada — nota ao ADR-030 §4 (2026-09-26).
+- [ ] Latência de arranque e vazão medidas **antes** (fase 0, `medir-latencia-fila.sh`, em produção).
+- [ ] Latência de arranque e vazão medidas **depois** de reinstalar o timer (idem).
+
+### Desenho
+
+- **Fase 0 — medir.** `deploy/server/medir-latencia-fila.sh` (no rsync do `deploy.yml`; corre como
+  `aos`): submete um pedido de prova `plan-e2e-447-<epoch>` com um objectivo inócuo (`doc_read` sobre
+  o `notes`) por `POST /plans`, com um token `client_credentials` do `aos-reader` POR CHAMADA, pedido
+  de dentro de um contentor `curlimages/curl` **fixado por digest** e corrido com `--pull=never` (o
+  dono puxa-o uma vez pelo digest), na rede `aos_default` (o segredo montado só-leitura; o Bearer por
+  `-H @ficheiro`, nunca no argv; o IdP validado pela CA interna); sonda `GET /plans/<id>` de ~1 s em ~1 s e regista `t(saída de pending) − t(201)`.
+  Do `drenar-planos.log` tira `S` (a duração das passagens vazias), o intervalo entre passagens, os
+  planos por passagem, a duração de cada plano e a vazão; do `aos-orq-consume.prom`, os contadores
+  acumulados. `--so-logs` não submete nada; `--ate-ao-fim` espera também pelo fim do plano.
+- **Fase 1 — baixar.** `aos-drenar-planos.timer`: `OnUnitInactiveSec=1min`, `AccuracySec=5s`.
+  `aos-drenar-planos.service`: `Environment=DRENAR_MAX=1` — na UNIDADE e não como omissão do script
+  (revisão): o script chega pelo rsync em cada deploy e as unidades só quando o root as reinstala;
+  com o 1 no script, entre um e outro a fila drenava 1 pedido de 5 em 5 min. O script mantém a
+  omissão 3 (corridas à mão). Os comentários «a cada 5 min» do
+  `drenar-planos.sh`, do `deploy.sh`, do `deploy.yml` e do `.service` foram corrigidos, e o README
+  (§A forma do trabalhador) diz o que muda na operação. **Reinstalar a unidade exige root** — passo do
+  dono, no README.
+
+### Achados do desenho (declarados)
+
+1. **O `decide` fica bloqueado enquanto um plano corre.** O `decide` toma posse de ESCRITA do
+   `consume.wal`, e o `serve` que o `consume` corre por cada pedido detém-na durante o plano inteiro
+   (o `abrirParaEscrita` do `cmdServe` só a larga no fim): o `decide` sai com 5 (WAL detido,
+   transitório) e tem de ser repetido. Medido por `TestAOS447DecideBloqueadoEnquantoUmServeDetemOWAL`
+   (com o WAL detido pelo teste no papel do `serve`: `ErrWALHeld`, código 5; largado, passa da posse).
+   O README já dizia «um `decide` que saia com 5 apanhou uma drenagem a meio: repita».
+2. **A reclamação (30 min, `ttlDaReclamacao` em `packages/cmd/aos/plan_claim.go`) expira antes do
+   prazo do plano (40 min, `prazoDoPlanoPorOmissao` em `packages/cmd/aos-orq/node_executor.go`).**
+   Com um trabalhador é inofensivo: ninguém mais reclama o pedido, e o desfecho tardio é aceite e
+   fecha-o — mas o `GET /plans/{id}` diz `pending` entre os 30 min e o fim. Com dois trabalhadores o
+   segundo reclamá-lo-ia. Pré-condição registada no ADR-030 §4 (nota).
 
 ### Estado
 
-**ABERTO** — espera as decisões.
+**IMPLEMENTADO** (2026-09-26) — fases 0 e 1 no repositório; as medições e a reinstalação do timer
+são do dono, em produção. Verificado: `TestAOS447TimerDeUmMinutoEUmPedidoPorDrenagem` (o timer, o
+`Environment=DRENAR_MAX=1` da unidade, a omissão 3 do script e a ausência de «a cada 5 min» nos três
+ficheiros); `TestAOS447DecideBloqueadoEnquantoUmServeDetemOWAL`; o cenário do AOS-450
+(`testdata/aos450_deploy_drenagem.sh`) num `debian:12` com o `flock(1)` real: 77/0 (em Git Bash, com
+um `flock` falso, as MESMAS 13 falhas contra o script novo e o de HEAD — as que dependem de o lock
+arbitrar). Smoke do `medir-latencia-fila.sh` com stubs (docker a correr o script interno, curl a
+fingir o IdP e o nó): mede o arranque e o fim, lê S/intervalo/vazão de um log sintético, corre com
+`--pull=never`, e nem o segredo nem o Bearer aparecem no argv.
+
+**O que muda na operação**: o log da drenagem cresce ~5× mais depressa (5 × 5 MiB passam a cobrir
+semanas); uma causa de falha que se repete (mandato revogado, snapshot errado) repete-se a cada
+minuto — e cada tentativa pode pagar uma decomposição (README §Revogar um mandato); cada passagem
+vazia custa um `compose run` e dois `docker run` por minuto (é o `S` que a fase 0 mede); e o
+`alerta-nhi.sh` lê o `is-failed` da unidade de 15 em 15 min, pelo que uma falha ISOLADA, sobreposta
+pela passagem seguinte, tem menos probabilidade de ser vista (declarado na revisão).
+
+**A medição suja** (declarado): submete com a identidade do `aos-reader`; o pedido de prova conta nas
+métricas, no log da drenagem, no histórico do `GET /plans` e dá um aviso do AOS-445; a sondagem pede
+~1 token por segundo ao IdP.
+
+**Verificação em produção (do dono)**:
+0. Uma vez, como `aos`: `docker pull curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69`.
+1. Antes de reinstalar: `bash /opt/aos/medir-latencia-fila.sh` (uma ou mais vezes) e
+   `bash /opt/aos/medir-latencia-fila.sh --so-logs` — guardar `arranque`, `S`, intervalo e vazão.
+2. Como root, pelo procedimento de instalação das units a partir do pacote verificado (AOS-446) —
+   nunca de `/opt/aos/systemd/`, que é escrita pelo `aos` (um symlink plantado fazia o root copiar
+   um ficheiro que o `aos` não pode ler; confirmado na revisão do AOS-446). Pelo nome e sem glob:
+   `install -o root -g root -m 0644 /root/<pacote>/deploy/server/systemd/aos-drenar-planos.timer /etc/systemd/system/aos-drenar-planos.timer`
+   e `install -o root -g root -m 0644 /root/<pacote>/deploy/server/systemd/aos-drenar-planos.service /etc/systemd/system/aos-drenar-planos.service`;
+   depois `systemctl daemon-reload && systemctl restart aos-drenar-planos.timer`, e `systemctl list-timers
+   aos-drenar-planos.timer` mostra o próximo a ≤ 1 min do fim do anterior; `systemctl show -p
+   Environment aos-drenar-planos.service` mostra `DRENAR_MAX=1`.
+3. Depois: as mesmas medições — o `arranque` esperado passa de 0–5 min para ~0–1 min mais `S`, e o
+   intervalo entre passagens de ~300 s para ~60 s.
 
 ---
 

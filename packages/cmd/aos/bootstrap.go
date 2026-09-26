@@ -694,10 +694,11 @@ type Config struct {
 	//
 	// Isso está fechado (`packages/platform/backup/resume.go`): o exportador retoma a cadeia do
 	// destino, verificada fail-closed, e [backup.Restorer.LoadManifest] reconstrói-a para
-	// restauro. O que continua a não existir neste repositório é uma IMPLEMENTAÇÃO durável da
-	// porta — só a de referência, em memória. A injecção mantém-se pela razão ordinária: onde é
-	// que os backups de uma organização vivem não é uma escolha que um default deva fazer por
-	// ela.
+	// restauro. Desde o AOS-453 (F2) há uma IMPLEMENTAÇÃO durável da porta neste repositório —
+	// [backup.FileImmutableStore], um directório local write-once (tmp+fsync+link) — e uma
+	// superfície de ambiente que a compõe (AOS_BACKUP_DEST=file:///…). O default continua a ser
+	// NENHUM destino: onde é que os backups de uma organização vivem não é uma escolha que um
+	// default deva fazer por ela.
 	//
 	// FAIL-CLOSED na composição: com destino presente, um Event Store que não satisfaça
 	// [eventstore.BackupSource], uma chave de assinatura em falta ou uma violação de soberania
@@ -721,6 +722,19 @@ type Config struct {
 	// a janela de RPO ([backup.Exporter.RPOWindow]). nil ⇒ time.Now. Uso interno/testes
 	// deterministas: a janela de RPO mede-se avançando ESTE relógio, nunca com `time.Sleep`.
 	BackupClock func() time.Time
+	// BackupVault é a CUSTÓDIA DA KEK DO BACKUP (AOS-453). Em produção, uma segunda instância do
+	// Vault Transit num mount PRÓPRIO (AOS_BACKUP_VAULT_TRANSIT_MOUNT), sobre o mesmo endereço e o
+	// mesmo token da custódia DSAR, que sela os segmentos por ENVELOPE (a DEK é embrulhada no Vault;
+	// a KEK nunca entra no processo). nil ⇒ a custódia do nó ([Config.DSARVault]/referência) —
+	// RECUSADA quando essa é o Vault do DSAR ([ErrBackupVaultMountMissing]).
+	BackupVault audit.KeyVault
+	// BackupRetention é o object-lock de cada objecto do backup — FINITO por decisão do dono
+	// (rotação por épocas). <= 0 ⇒ o default do módulo (sem período: «para sempre»), que só os
+	// testes usam: a superfície de ambiente EXIGE AOS_BACKUP_RETENTION com destino.
+	BackupRetention time.Duration
+	// BackupEnvIgnored são variáveis AOS_BACKUP_* definidas SEM AOS_BACKUP_DEST — sem efeito; o
+	// banner nomeia-as, para uma config a meio não se ler como backup ligado.
+	BackupEnvIgnored []string
 
 	// --- Observabilidade OTLP (AOS-173, EPIC-15 §13) ---------------------------
 	// OTLPEndpoint é o endpoint do colector OTLP/HTTP (ex.: "http://collector:4318").
@@ -3046,10 +3060,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if c := backupExporter.ResumedFrom(); c > 0 {
 			cadeiaBackup = fmt.Sprintf("cadeia RETOMADA do ciclo %d do destino (conferido fail-closed SO o ultimo elo: assinatura, indice, regiao, EntryHash e o segmento a abrir com a KEK deste no; a cadeia inteira so no restauro)", c)
 		}
-		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q tipo=%T, periodicidade=%s, %s, KEK do backup no audit.KeyVault do no (SO funciona com o vault de referencia em memoria, que morre com o processo; a custodia Vault Transit e key-never-leaves e nao sela segmentos — AOS-453); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
-			backupExporter.Immutable().Region(), backupExporter.Immutable(), backupExporter.Periodicity(), cadeiaBackup)
+		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q %s, periodicidade=%s, %s, KEK do backup selada por: %s (AOS-453); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
+			backupExporter.Immutable().Region(), descreverDestinoDoBackup(backupExporter.Immutable()), backupExporter.Periodicity(), cadeiaBackup, descreverCustodiaDoBackup(backupExporter.Vault()))
 	} else {
-		log("backup imutavel + PITR (AOS-101): DESLIGADO (por omissao) — sem Config.BackupDestination o Event Store NAO e exportado para backup imutavel por este no; o que corre no servidor e o deploy/server/backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa e nao produz segmentos cifrados nem manifesto verificavel")
+		log("backup imutavel + PITR (AOS-101): DESLIGADO (por omissao) — sem AOS_BACKUP_DEST (Config.BackupDestination) o Event Store NAO e exportado para backup imutavel por este no; o que corre no servidor e o deploy/server/backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa e nao produz segmentos cifrados nem manifesto verificavel")
+		if len(cfg.BackupEnvIgnored) > 0 {
+			log("backup imutavel (AOS-453): IGNORADAS por falta de AOS_BACKUP_DEST — %s: sem destino nada disto tem efeito, e o backup continua DESLIGADO", strings.Join(cfg.BackupEnvIgnored, ", "))
+		}
 	}
 
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.

@@ -25,9 +25,9 @@ import (
 
 // aos101NoDuravel compõe um nó com Event Store em FICHEIRO (sobrevive ao Close), backup ligado e,
 // se kek != nil, essa custódia de KEK injectada. É uma FIXTURE: um InMemoryKeyVault partilhado entre
-// arranques modela uma custódia que sobrevive ao processo e ENTREGA a KEK — o que nenhuma custódia do
-// deployment faz hoje (a do nó, AOS_DSAR_VAULT_ADDR, é key-never-leaves e não sela segmentos:
-// AOS-453). kek == nil é o vault de referência em memória, que nasce vazio a cada arranque.
+// arranques modela uma custódia que sobrevive ao processo e ENTREGA a KEK (KEK-crua). No deployment
+// a custódia é o Vault Transit num mount próprio, por envelope (AOS-453 — aos453_custodia_backup_test.go).
+// kek == nil é o vault de referência em memória, que nasce vazio a cada arranque.
 func aos101NoDuravel(t *testing.T, walPath string, dst backup.ImmutableStore, chave []byte, kek audit.KeyVault, arranque io.Writer) (*Node, error) {
 	t.Helper()
 	cfg := aos101Config(t, dst, time.Hour)
@@ -75,7 +75,7 @@ func TestAOS101_ONoREINICIADORetomaACadeiaEOBannerDizQueRetomou(t *testing.T) {
 	wal := filepath.Join(t.TempDir(), "events.wal")
 	dst := backup.NewInMemoryImmutableStore("eu-west") // o MESMO objecto nos dois arranques = durável
 	chave := aos101Key(t)
-	kek := audit.NewInMemoryKeyVault(nil) // FIXTURE de uma custódia que sobrevive ao processo (não é o deployment: AOS-453)
+	kek := audit.NewInMemoryKeyVault(nil) // FIXTURE KEK-crua de uma custódia que sobrevive ao processo (o deployment usa envelope: AOS-453)
 
 	aos101PrimeiroArranque(t, wal, dst, chave, kek, 3)
 

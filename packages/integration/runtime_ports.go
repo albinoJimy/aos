@@ -8,6 +8,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/activity"
 	"github.com/aos-ref/kernel/agent-runtime/breaker"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/platform/memory/working"
 )
 
@@ -162,7 +163,10 @@ var _ agentruntime.WindowPort = (*windowManagerPort)(nil)
 // acrescenta idempotência/replay durável (step-ledger, AOS-014) à volta da MESMA mediação
 // do RM, PRESERVANDO o Credential (AOS-152) do Call construído pelo loop — o campo
 // Activity.Credential propaga-se ao Call que o dispatcher medeia, pelo que a identidade
-// nunca se perde.
+// nunca se perde — e o taint da AUTORIZAÇÃO (ADR-034), por Activity.AuthorizationTaint.
+// Este segundo só existe desde a fase 1 do AOS-069 em produção (2026-09-26): até lá a
+// Activity não o tinha, o RM de todo o nó durável via untrusted em TODAS as calls, e o
+// `doc_read` do turno 1 de um nó só com o objectivo foi negado pelo TaintGate.
 //
 // SEMÂNTICA de deny: o activity.Dispatcher reporta um deny do RM como erro
 // ([activity.ErrMediationDenied]); o loop base espera uma Decision de Deny não-fatal (que
@@ -220,6 +224,12 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 		// AOS-021: a prova de aprovação tem de atravessar a via durável — sem ela o
 		// ApprovalGate nada vê e a acção escalada nunca destrava.
 		ApprovalEvidence: call.ApprovalEvidence,
+		// AOS-069/ADR-034: o taint da AUTORIZAÇÃO que o loop cunhou a partir do contexto do
+		// turno tem de atravessar a via durável. Sem esta linha a Activity nascia com o
+		// valor-zero (untrusted) e o TaintGate negava TODA a call privilegiada em produção
+		// — o `doc_read` do turno 1 de um nó só com o objectivo incluído (fase 1,
+		// 2026-09-26). ParseLabel é fail-closed: vazio ou desconhecido ⇒ untrusted.
+		AuthorizationTaint: taint.ParseLabel(call.Context.Taint),
 	}
 	res, err := d.dispatcher.Dispatch(ctx, act)
 	if err != nil {

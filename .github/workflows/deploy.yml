@@ -129,9 +129,9 @@ jobs:
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/id_deploy ~/.ssh/known_hosts
 
-      # AOS-450: ANTES do rsync. O timer da drenagem corre a cada 5 min, e um que calhasse entre o
-      # rsync e a troca da imagem corria o drenar-planos.sh NOVO com o binário ANTIGO (medido na
-      # v0.1.35: `failed` falso e alerta). O modo --anunciar do deploy.sh escreve o marcador que adia
+      # AOS-450: ANTES do rsync. O timer da drenagem corre de minuto a minuto (AOS-447), e um que
+      # calhasse entre o rsync e a troca da imagem corria o drenar-planos.sh NOVO com o binário
+      # ANTIGO (medido na v0.1.35: `failed` falso e alerta). O modo --anunciar do deploy.sh escreve o marcador que adia
       # as drenagens e espera, com tecto (45 min), pela que estiver a correr; ao desistir falha AQUI,
       # antes de se sincronizar ou trocar o que quer que seja. O script vai por STDIN, do checkout:
       # o deploy.sh que está no servidor ainda é o da release anterior. O keepalive é para a espera,
@@ -167,6 +167,8 @@ jobs:
         run: |
           set -euo pipefail
           SSH="ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o BatchMode=yes"
+          # AOS-446: o sync-tls.sh NÃO viaja. Corre como root, e um ficheiro que o root executa não
+          # pode ser escrito pelo `aos` nem por este passo — instala-o o root (README §TLS).
           rsync -az -e "$SSH" \
             deploy/server/docker-compose.prod.yml \
             deploy/server/nginx.conf \
@@ -174,7 +176,6 @@ jobs:
             deploy/server/deploy.sh \
             deploy/server/rollback.sh \
             deploy/server/provision.sh \
-            deploy/server/sync-tls.sh \
             deploy/server/provision-identity.sh \
             deploy/server/backup.sh \
             deploy/server/alerta-ancora.sh \
@@ -185,6 +186,8 @@ jobs:
             deploy/server/cunhar-nhi.sh \
             deploy/server/drenar-planos.sh \
             deploy/server/alerta-nhi.sh \
+            deploy/server/avisar-planos.sh \
+            deploy/server/medir-latencia-fila.sh \
             deploy/server/.env.example \
             "$USER@$HOST:/opt/aos/"
           rsync -az -e "$SSH" deploy/server/templates/ "$USER@$HOST:/opt/aos/templates/"
@@ -192,6 +195,8 @@ jobs:
           # NÃO para /etc/systemd — instalá-las é acto DELIBERADO do root (README §Cunhagem sem
           # operador), e o deploy não o faz sozinho. Não é uma fronteira de segurança: o `aos` está
           # no grupo docker, que equivale a root (bootstrap.sh).
+          # AOS-446: o /opt/aos/systemd é do `aos` e fica só como REFERÊNCIA de leitura. O root não
+          # instala de lá: instala pelo nome a partir do pacote verificado (README §TLS).
           rsync -az -e "$SSH" deploy/server/systemd/ "$USER@$HOST:/opt/aos/systemd/"
           # CONFIGURAÇÃO QUE O REPOSITÓRIO POSSUI e que o compose MONTA. Faltava aqui, e a
           # ausência não era inócua: o registry de tools ficava a derivar entre repo e servidor

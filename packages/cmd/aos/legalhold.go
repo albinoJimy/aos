@@ -156,6 +156,10 @@ func (h *apiHandler) handleLegalHold(w http.ResponseWriter, r *http.Request, pla
 		writeError(w, http.StatusBadRequest, "subject_id invalido (esperado pseudonimo opaco)")
 		return
 	}
+	if err := titularReservado(req.SubjectID); err != nil { // AOS-453: `aos.*` é do nó
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if req.Partition != "" && !validPseudonym(req.Partition) {
 		writeError(w, http.StatusBadRequest, "partition invalida (esperado identificador opaco)")
 		return

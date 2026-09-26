@@ -100,6 +100,26 @@ appends, logo o mesmo rótulo. Provado por `TestAOS069_RetomaReproduzOMesmoRotul
 - **Fase 1** (depois da release): `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`. Com a opção C o
   `doc_read` de um nó cujo contexto só tem o objectivo passa, e o de um nó que leu um
   `plan_input` é negado com `denied_by=taint`. É um passo do dono/operador, registado no AOS-069.
+  **Primeira tentativa falhada (2026-09-26, v0.1.36, revertida):** o `doc_read` de `n1` foi negado
+  por taint no turno 1 — a via de despacho durável deitava fora o rótulo (§2.8). A fase 1 só se
+  volta a armar com a release que traz a correcção.
+
+### 2.8 O rótulo atravessa as DUAS vias de despacho (acrescento de 2026-09-26)
+
+A §2.3 afirmava um só rótulo para todos os leitores, e o loop cumpria-o: escrevia-o em
+`CallContext.Taint`. Mas a porta `ActivityDispatcher` tem duas implementações — a directa (default
+do kernel) e a durável (`integration.DurableDispatcher`, composta com
+`AOS_DURABLE_EXECUTION=1`, a de produção) — e a durável traduzia o `Call` numa `activity.Activity`
+que não tinha campo para o taint; `Activity.toCall` repunha-o fixo em untrusted. Em produção o RM
+via, portanto, **untrusted em todas as calls**, qualquer que fosse o contexto: o estado de antes
+deste ADR. Nenhum teste o via, porque todos os do AOS-069 corriam pela via directa.
+
+Decisão: o taint da autorização é um campo do contrato de activity,
+`Activity.AuthorizationTaint` (`taint.Label`), preenchido pelo adaptador a partir do `Call` que o
+loop construiu e levado ao `CallContext.Taint` do RM. O valor-zero é untrusted: uma activity
+construída por quem não conhece o campo continua fail-closed. Não entra na idempotency key (é
+material de mediação, como o `Credential`). A propriedade que o fixa é a **paridade** das duas vias
+para os dois lados do reticulado, e a reprodução no nó composto (§6).
 
 ### 2.6 A cláusula Cedar de `allow_fs_read` fica para a próxima cerimónia de chave
 
@@ -168,6 +188,14 @@ snapshot não nomeia não contam.
   admissão do plano: um consumidor privilegiado de um veredicto não usa uma capability armada.
   Nunca é mais restritivo do que o estado anterior (em que toda a call era untrusted). Levar ao nó
   o rótulo efectivo do contrato é uma decisão por tomar, e não é tomada aqui.
+- **Em produção, estas consequências só ficam TODAS vivas com a release que traz a §2.8.** Até
+  ela, a via durável selava untrusted em todas as calls, e nenhuma se via no nó de produção. A
+  partir dela: o classificador de risco deixa de elevar a sensibilidade de uma call de contexto
+  limpo (`kernel/reference-monitor/risk/classifier.go`, `effectiveSensitivity`) — menos calls
+  sobem de classe, menos escaladas HITL, e os contadores do controlador de autonomia (AOS-090)
+  passam a ver outra distribuição de classes; e a cláusula `context.taint != "untrusted"` do
+  `allow_http_post` passa a poder ser satisfeita (hoje sem tool que a use: o `web_post` está fora
+  do manifesto de produção, §2.7).
 - O `AssemblyVersion` não muda: os bytes do prompt são os mesmos; só a autorização muda.
 - Demonstrações cuja premissa era «toda a tool call do modelo é untrusted» deixam de a ter (ex.
   `deploy/node/dev-hardened/demo-pdp-taint-gate.sh`, que isola a cláusula Cedar com um `web_post`
@@ -221,6 +249,30 @@ snapshot não nomeia não contam.
    `Reason="authority"` (`TestAOS069_AncoraAuthority_DetectaTaintSeladoDivergente`). Opt-in porque
    uma trajectória gravada antes deste ADR tem todas as calls seladas untrusted e divergiria em todo
    o turno de contexto limpo. Não está no caminho da retoma — pô-lo lá é trabalho por decidir.
+   **Cego na via durável (a de produção), verificado a 2026-09-26:** o taint selado é indexado pelo
+   `parent_step_id` dos eventos de mediação, e o `DurableDispatcher` não propaga o `ParentStepID`
+   do `Call`; na via durável a lista a comparar vem vazia e o detector devolve «sem divergência» em
+   todos os turnos. Não detecta um registo de retoma adulterado num nó durável, e pela mesma razão
+   não dá falsos alarmes sobre as trajectórias duráveis gravadas antes da §2.8 (todas seladas
+   untrusted). Deixa de ser cego quando o `ParentStepID` atravessar a via durável (ticket próprio).
+   **Leitura do registo endurecida (2026-09-26):** `ResumeRecords.Get` deixou de escolher o
+   último registo e de aceitar corpo em claro com o cifrador activo; o primeiro registo ganha, os
+   seguintes têm de lhe ser iguais, um registo com outro run_id de envelope ou um corpo de outro
+   run é recusado, e a rota de retoma responde 409 (AOS-069 §Estado). Fica o escritor que ponha
+   um blob selado sob o titular ANTES do primeiro registo legítimo (resíduo seguinte).
+   **Resíduo declarado — o selo do registo não está amarrado ao tipo nem ao run (ticket a abrir,
+   sem número):** o `contentSealer` do nó sela sem dados associados
+   (`packages/cmd/aos/dsar.go`, `audit.SealContent(..., nil)`), pelo que QUALQUER blob selado sob o
+   titular abre como corpo de um registo de retoma. Cenário: com escrita crua no Event Store e um
+   run id previsível, copia-se para `resume-<run>`, ANTES do Put legítimo, um blob selado sob o mesmo
+   titular cujo texto claro se controla por inteiro e é um JSON com `RunID` igual ao do run; o Put
+   legítimo passa a `StatusDuplicate` e o forjado é o único registo — sem `inputs` e com
+   `AllowedTools` nil, e a retoma autoriza trusted. A verificação do `RunID` do corpo estreita-o a
+   blobs cujo texto claro inteiro o atacante escolhe (um corpo de captura decodifica com `RunID`
+   vazio e é recusado). Correcção proposta: selar o registo com dados associados
+   `"resume:"+runID` e exigi-los na leitura; como torna ilegíveis os registos já selados, a leitura
+   tem de aceitar os dois formatos durante a transição (o antigo só para registos anteriores à
+   release, p.ex. por uma marca de formato no envelope).
 
 ## 6. Conformidade / enforcement
 
@@ -240,6 +292,14 @@ snapshot não nomeia não contam.
   (R7).
 - `packages/kernel/agent-runtime/replay/aos069_autoridade_replay_test.go` — a âncora opt-in
   `authority` (resíduo 9).
+- `packages/cmd/aos/aos069_fase1_no_composto_test.go` — a fase 1 no nó composto pela API
+  (`POST /runs` com `inputs: []`, execução durável ligada e desligada, cifra por-titular, bundle
+  assinado, `cap:fs.read` armada): a leitura do turno 1 passa com o rótulo trusted selado, e com um
+  `plan_input` é negada por taint (§2.8).
+- `packages/integration/aos069_via_duravel_preserva_taint_test.go` — paridade do rótulo entre a
+  via directa e a durável, com a janela inline e a do MEM, e fail-closed de um rótulo desconhecido.
+- `packages/kernel/agent-runtime/activity/authorization_taint_test.go` — o
+  `Activity.AuthorizationTaint` chega ao TaintGate; o valor-zero é untrusted.
 - Banner de arranque (`posture_banner.go`): a linha ATIVA do taint declara de onde vem o rótulo.
 
 ## 7. Referências

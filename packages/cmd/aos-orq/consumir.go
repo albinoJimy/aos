@@ -11,11 +11,11 @@ package main
 // Não é um serviço de longa duração. Reclama, corre, reporta, repete — e termina quando a fila
 // não tem mais nada para este consumidor.
 //
-// A razão é que a FORMA DO TRABALHADOR não está decidida (ADR-030 §4), e um comando drenável não
-// obriga a decidir: quem o invoca pode ser um timer do host (há o precedente do
-// `aos-tls-sync.timer`) ou um laço de um serviço. O código é o mesmo nos dois casos, e nenhum dos
-// dois exige que este binário seja o primeiro serviço de longa duração do AOS além do nó — com o
-// healthcheck, o reinício e a observabilidade próprios que isso traria.
+// A razão era que a FORMA DO TRABALHADOR não estava decidida (ADR-030 §4), e um comando drenável não
+// obrigava a decidir: quem o invoca pode ser um timer do host ou um laço de um serviço, com o mesmo
+// código. Decidiu-a o dono no AOS-447 (nota ao ADR-030 §4): UM trabalhador, o timer
+// `aos-drenar-planos` 1 min depois da drenagem anterior, com `--max 1` — sem fazer deste binário o
+// primeiro serviço de longa duração do AOS além do nó.
 //
 // # A TRADUÇÃO CÓDIGO→CLASSE VIVE AQUI, E NÃO NO NÓ
 //
@@ -28,6 +28,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -233,7 +234,7 @@ func cmdConsume(args []string) (err error) {
 		// O DESFECHO REPORTA-SE SEMPRE, mesmo quando o `serve` falhou. Não reportar deixa o
 		// pedido preso até ao TTL da reclamação — meia hora de silêncio por uma falha que já
 		// conhecemos.
-		if err := cli.ReportarDesfecho(ctx, pedido.RunID, pedido.Geracao, classe, codigo, detalhe); err != nil {
+		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe); err != nil {
 			// Falhar a reportar NÃO é fatal para os pedidos seguintes: o TTL recupera este.
 			// Mas é ruidoso de propósito — um consumidor que não consegue reportar está a
 			// trabalhar às cegas.
@@ -258,6 +259,44 @@ func cmdConsume(args []string) (err error) {
 	} else {
 		fmt.Printf("drenagem terminada: %d pedido(s) consumido(s), %d re-verificado(s) ainda a espera de humano\n",
 			consumidos, reverificados)
+	}
+	return nil
+}
+
+// reportadorDeDesfecho é a metade do cliente do nó que [reportarEAvisar] usa — existe para o teste
+// do AOS-445 poder provar a ORDEM (reporte, depois aviso) sem levantar um nó.
+type reportadorDeDesfecho interface {
+	ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string) error
+}
+
+// prefixoDoAviso abre a linha que o `drenar-planos.sh` recolhe para o outbox dos avisos (AOS-445).
+// A forma inteira é [linhaDoAviso]; o TestAOS445ContratoDaLinhaDoAvisoComOsScripts fixa-a dos dois
+// lados.
+const prefixoDoAviso = "aviso: "
+
+// linhaDoAviso é a linha estável que diz «este plano TERMINOU, e o nó já o sabe» (AOS-445).
+//
+// Só leva o que o aviso ao operador pode levar: o `run_id` (que o `avisar-planos.sh` pseudonimiza
+// antes de sair do servidor), a geração, a classe e o código. Nunca o objectivo, o resultado nem o
+// tipo do erro — esses ficam no log da drenagem e no `GET /plans/{id}`.
+func linhaDoAviso(runID string, geracao int, classe string, codigo int) string {
+	return fmt.Sprintf("%srun=%s geracao=%d classe=%s codigo=%d", prefixoDoAviso, runID, geracao, classe, codigo)
+}
+
+// reportarEAvisar reporta o desfecho ao nó e, SÓ DEPOIS de o nó o ter aceitado, imprime a linha
+// `aviso:` de um desfecho TERMINAL (AOS-445).
+//
+// A ORDEM É O CONTRATO. A linha `desfecho:` sai antes do reporte e diz o que o `serve` deu; esta diz
+// o que o nó registou. Um reporte falhado devolve o pedido à fila quando a reclamação expirar, e a
+// geração seguinte terá o seu desfecho — avisar já seria anunciar um fim que o nó não conhece, e
+// possivelmente dois fins para o mesmo plano. Os desfechos que não são terminais (transitório, à
+// espera de humano) não avisam: o plano ainda não acabou.
+func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string) error {
+	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe); err != nil {
+		return err
+	}
+	if classe == "terminal" {
+		fmt.Fprintln(out, linhaDoAviso(runID, geracao, classe, codigo))
 	}
 	return nil
 }
