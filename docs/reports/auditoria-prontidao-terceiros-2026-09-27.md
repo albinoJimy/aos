@@ -142,7 +142,7 @@ interessam num incidente são as que têm a dependência mais frágil.
 ### 2.3 ~~A entrega vai declaradamente não-assinada~~ — CORRIGIDO: vai assinada
 
 > ⚠️ **Este ponto estava ERRADO, e a correcção interessa mais do que o ponto.** A versão original
-> dizia que `deploy/node/release-pubkeys.json` tem `keys: []` e que a entrega segue
+> dizia que `deploy/node/release-pubkeys.json` tem `keys: []` e que a entrega segue <!-- roster:historico -->
 > **não-assinada**. **Medido no ficheiro a 2026-09-27: tem 1 chave**, do Arquitecto de Plataforma,
 > e o próprio JSON declara que *«o roster deixou de estar vazio em 2026-08-14, no primeiro release
 > distribuído fora do repositório (v0.1.0)»*. Mais: `release.yml` faz **`exit 1`** se
@@ -155,7 +155,7 @@ interessam num incidente são as que têm a dependência mais frágil.
 > corpus de estar desactualizado, repeti uma linha desactualizada em vez de medir a fonte
 > primária — e o erro fez a postura de segurança parecer **mais fraca** do que é.
 >
-> **E não era uma cópia, eram quatro.** À data da correcção, afirmavam `keys: []`:
+> **E não era uma cópia, eram quatro.** À data da correcção, afirmavam `keys: []`: <!-- roster:historico -->
 > `deploy/server/README.md:2376`, `deploy/node/CUSTODIA-CHAVE-RELEASE.md:83` e `:174`, e
 > **`docs/adr/ADR-017-supply-chain-node.md:174`** — um ADR canónico. Todas corrigidas no mesmo
 > commit que esta nota, porque corrigir só a minha teria deixado as outras três a mentir, que é

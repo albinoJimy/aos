@@ -123,6 +123,46 @@ RE_TITLE_HEADING = re.compile(r"^#{1,6}\s+\**\s*(AOS-\d{3})\s*\**\s*[-–—]\s*
 # Cabeçalho de secção detalhada de ticket na EPIC (fonte do título canónico).
 RE_TICKET_HEADING = re.compile(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", re.MULTILINE)
 
+# ---------------------------------------------------------------------------
+# DELIMITAÇÃO DO BLOCO DE UM TICKET — GÉMEA de `scripts/ci/rtm-regenerate.py`.
+#
+# Duas cópias de propósito (os dois scripts não partilham módulo), e o invariante está declarado no
+# comentário de `RE_ADRS_MENCIONADOS` do gémeo: «os dois leitores do corpus nunca discordem sobre o
+# que um ticket implementa». Corrigir um sem o outro quebra-o — foi o que aconteceu a 2026-09-27, e
+# mediu-se: 6 dos 35 ADRs ficaram com atribuição divergente entre os dois leitores, com o `ref-lint`
+# a ser o mais LARGO dos dois. Isso é fail-open na própria afirmação de cobertura: um ADR cuja única
+# atribuição venha de prosa de cauda aparecia com 0 tickets na RTM e o `ref-lint` ficava verde.
+#
+# A razão de cada parte do terminador está no comentário do gémeo. Se mudares um, muda o outro NO
+# MESMO COMMIT.
+# ---------------------------------------------------------------------------
+
+_RE_FENCE = re.compile(r"^[ \t]*(```|~~~)", re.MULTILINE)
+
+
+def mascarar_fences(text: str) -> str:
+    """Neutraliza os `#` dentro de blocos de código cercados, preservando o COMPRIMENTO do texto
+    (os offsets de quem chama continuam válidos sobre o original)."""
+    linhas = text.split("\n")
+    dentro = False
+    for i, ln in enumerate(linhas):
+        if _RE_FENCE.match(ln):
+            dentro = not dentro
+            continue
+        if dentro and "#" in ln:
+            linhas[i] = ln.replace("#", ".")
+    return "\n".join(linhas)
+
+
+def fim_do_bloco(texto_mascarado: str, start: int, nivel: int) -> int:
+    """Próximo cabeçalho de nível igual ou superior, OU próximo cabeçalho de ticket (níveis 2-3).
+    -1 se o bloco vai até ao fim."""
+    m = re.search(
+        r"\n(?:#{1,%d}[ \t]|#{2,3} AOS-\d{3}\s*[-–—])" % nivel, texto_mascarado[start:]
+    )
+    return m.start() if m else -1
+
+
 # Stopwords PT + ruído editorial recorrente no corpus (estado, prioridade,
 # marcadores de entrega). Não são discriminantes entre tickets.
 STOPWORDS = {
@@ -197,11 +237,13 @@ def extract_backlog() -> dict:
         text = _read(epic_file)
 
         # Secções detalhadas (fonte primária para ADRs)
-        for m in re.finditer(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
-            aos = m.group(1)
+        mascarado = mascarar_fences(text)
+        for m in re.finditer(r"^(#{2,3}) (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
+            nivel = len(m.group(1))
+            aos = m.group(2)
             start = m.end()
-            next_h = re.search(r"\n#{2,3} (AOS-\d{3})\s*[-–—]", text[start:])
-            block = text[start : start + next_h.start()] if next_h else text[start:]
+            fim = fim_do_bloco(mascarado, start, nivel)
+            block = text[start : start + fim] if fim >= 0 else text[start:]
             adrs = (
                 set()
                 if RE_ADRS_MENCIONADOS.search(block)

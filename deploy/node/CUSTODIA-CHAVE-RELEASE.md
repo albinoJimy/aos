@@ -84,7 +84,7 @@ poder ver, em revisão de código, **que chaves passaram a ser confiáveis e qua
 > (Arquitecto de Plataforma) e o gatilho que esta secção previa — o **primeiro release distribuído
 > fora do repositório** — ocorreu com a v0.1.0, exactamente como a linha `DEF-501` declarava. Os
 > passos abaixo ficam como **procedimento de rotação e de re-provisionamento**, não como estado
-> actual. O texto que dizia «hoje tem `keys: []`» sobreviveu à sua própria premissa por treze meses
+> actual. O texto que dizia «hoje tem `keys: []`» sobreviveu à sua própria premissa por treze meses <!-- roster:historico -->
 > de commits e foi corrigido a 2026-09-27.
 
 Com o roster **vazio** a verificação recusa qualquer envelope (fail-closed por omissão,
