@@ -375,6 +375,13 @@ services:
       AOS_INGRESS_RATE: "${AOS_INGRESS_RATE:-64}"
       AOS_INGRESS_BURST: "${AOS_INGRESS_BURST:-128}"
       AOS_INGRESS_MAX_INFLIGHT: "${AOS_INGRESS_MAX_INFLIGHT:-512}"
+      # AOS-456 — 2.a etapa da admission de POST /runs (por-principal). Vazias => defaults do
+      # binario (tecto 4096, dotacao por-chamador IGUAL a global). ATENCAO: igual a global da
+      # atribuicao mas NAO protege um chamador da rajada de outro — para isso ponha RATE/BURST
+      # abaixo de AOS_INGRESS_RATE/_BURST. O banner de arranque declara qual postura esta em vigor.
+      AOS_INGRESS_PER_CALLER_MAX: "${AOS_INGRESS_PER_CALLER_MAX:-}"
+      AOS_INGRESS_PER_CALLER_RATE: "${AOS_INGRESS_PER_CALLER_RATE:-}"
+      AOS_INGRESS_PER_CALLER_BURST: "${AOS_INGRESS_PER_CALLER_BURST:-}"
 
       # Tecto de ORÇAMENTO por-run, em tokens (AOS-008/AOS-256/AOS-260). Vazio ⇒ o ponto de
       # injecção `budget` fica o stub neutro e a porta de admissão do turno de modelo NÃO é

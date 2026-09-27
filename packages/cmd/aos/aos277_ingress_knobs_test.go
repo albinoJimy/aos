@@ -88,8 +88,24 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		if lim.tuned {
 			t.Fatal("sem variaveis definidas o banner nao pode anunciar limites AFINADOS")
 		}
-		if len(opts) != 2 {
-			t.Fatalf("esperava 2 opcoes de API (rate-limit + max-in-flight), vieram %d", len(opts))
+		// AOS-456 acrescentou a 3.ª opção (per-caller). Uma contagem crua não diz o que as
+		// opções FAZEM: aplica-as e verifica o efeito, para que a próxima opção nova não obrigue
+		// a mexer num número mágico nem possa passar sem ser aplicada.
+		if len(opts) != 3 {
+			t.Fatalf("esperava 3 opcoes de API (rate-limit + max-in-flight + per-caller), vieram %d", len(opts))
+		}
+		var cfg apiConfig
+		for _, o := range opts {
+			o(&cfg)
+		}
+		if cfg.ratePerSec != DefaultRatePerSec || cfg.rateBurst != DefaultRateBurst {
+			t.Fatalf("WithRateLimit nao aplicou os defaults: %+v", cfg)
+		}
+		if cfg.maxInFlight != DefaultMaxInFlight {
+			t.Fatalf("WithMaxInFlight nao aplicou o default: %d", cfg.maxInFlight)
+		}
+		if cfg.perCallerMax != DefaultPerCallerMax {
+			t.Fatalf("WithPerCallerRateLimit nao aplicou o default do tecto: %d", cfg.perCallerMax)
 		}
 	})
 

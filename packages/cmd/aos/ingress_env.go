@@ -53,7 +53,7 @@ import (
 // recusa arrancar em vez de silenciosamente aplicar o default (o operador ficaria
 // convencido de que o nó admite o que ele escreveu) ou de aplicar um valor degenerado que
 // fecha o ingresso por inteiro.
-var ErrBadIngressLimits = errors.New("aos: limites de ingresso mal configurados — AOS_INGRESS_RATE (pedidos/segundo, numero finito > 0), AOS_INGRESS_BURST (capacidade do balde, numero finito >= 1) e AOS_INGRESS_MAX_INFLIGHT (inteiro > 0). Deixe a variavel POR DEFINIR para manter o default; NENHUM valor desliga o limite (0 nao desliga: no rate/burst fecharia o ingresso, no max-inflight abriria-o sem tecto)")
+var ErrBadIngressLimits = errors.New("aos: limites de ingresso mal configurados — AOS_INGRESS_RATE (pedidos/segundo, numero finito > 0), AOS_INGRESS_BURST (capacidade do balde, numero finito >= 1) AOS_INGRESS_MAX_INFLIGHT (inteiro > 0), AOS_INGRESS_PER_CALLER_MAX (inteiro > 0, tecto da tabela de baldes por-principal), AOS_INGRESS_PER_CALLER_RATE e AOS_INGRESS_PER_CALLER_BURST (a forma de cada balde por-chamador; por omissao iguais aos globais). Deixe a variavel POR DEFINIR para manter o default; NENHUM valor desliga o limite (0 nao desliga: no rate/burst fecharia o ingresso, no max-inflight abriria-o sem tecto)")
 
 // ingressLimits são os três números EFECTIVAMENTE em vigor na admission de `POST /runs`
 // — os defaults do binário quando as variáveis não estão definidas, o valor lido quando
@@ -63,6 +63,11 @@ type ingressLimits struct {
 	ratePerSec  float64
 	burst       float64
 	maxInFlight int
+	// perCaller* são a 2.ª etapa (AOS-456): tecto da TABELA de baldes por-principal, e a forma
+	// de cada balde. `perCallerMax == 0` ⇒ etapa NÃO COMPOSTA, e o banner declara-o.
+	perCallerMax   int
+	perCallerRate  float64
+	perCallerBurst float64
 	// tuned diz se ALGUMA das três variáveis foi definida. Vive AQUI (e não num parâmetro
 	// do banner) para que o texto do banner não possa divergir do que a leitura viu: a
 	// origem dos números e os números são o MESMO valor de retorno.
@@ -82,6 +87,7 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		burst:       DefaultRateBurst,
 		maxInFlight: DefaultMaxInFlight,
 	}
+	lim.perCallerMax = DefaultPerCallerMax
 
 	rawRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_RATE"))
 	if rawRate != "" {
@@ -111,9 +117,49 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		lim.maxInFlight, lim.tuned = n, true
 	}
 
+	rawPerMax := strings.TrimSpace(os.Getenv("AOS_INGRESS_PER_CALLER_MAX"))
+	if rawPerMax != "" {
+		n, err := strconv.Atoi(rawPerMax)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_PER_CALLER_MAX=%q", ErrBadIngressLimits, rawPerMax)
+		}
+		lim.perCallerMax, lim.tuned = n, true
+	}
+
+	rawPerRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_PER_CALLER_RATE"))
+	if rawPerRate != "" {
+		v, ok := parsePositiveFloat(rawPerRate, 0)
+		if !ok {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_PER_CALLER_RATE=%q", ErrBadIngressLimits, rawPerRate)
+		}
+		lim.perCallerRate, lim.tuned = v, true
+	}
+
+	rawPerBurst := strings.TrimSpace(os.Getenv("AOS_INGRESS_PER_CALLER_BURST"))
+	if rawPerBurst != "" {
+		v, ok := parsePositiveFloat(rawPerBurst, 1)
+		if !ok {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_PER_CALLER_BURST=%q", ErrBadIngressLimits, rawPerBurst)
+		}
+		lim.perCallerBurst, lim.tuned = v, true
+	}
+
+	// Por omissão cada balde tem a MESMA forma que o global. Ver o banner: com esta forma a 2.ª
+	// etapa dá ATRIBUIÇÃO e um tecto por-chamador, mas NÃO protege B da rajada de A — para isso
+	// a dotação por-chamador tem de ser estritamente MENOR que a global.
+	perRate, perBurst := lim.perCallerRate, lim.perCallerBurst
+	if perRate <= 0 {
+		perRate = lim.ratePerSec
+	}
+	if perBurst <= 0 {
+		perBurst = lim.burst
+	}
+	lim.perCallerRate, lim.perCallerBurst = perRate, perBurst
+
 	return lim, []APIOption{
 		WithRateLimit(lim.ratePerSec, lim.burst),
 		WithMaxInFlight(lim.maxInFlight),
+		WithPerCallerRateLimit(lim.perCallerMax, lim.perCallerRate, lim.perCallerBurst),
 	}, nil
 }
 
@@ -159,12 +205,26 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 //   - O 429 é seco: `writeError` não emite `Retry-After`, pelo que o cliente não recebe
 //     indicação de quando repetir.
 func ingressPostureBanner(lim ingressLimits) []string {
+	// DOBRA DA 2.ª ETAPA (AOS-456). O texto DERIVA dos números em vigor e da comparação entre
+	// eles — não de uma frase fixa. É a disciplina do resto deste ficheiro: postura anunciada =
+	// postura ligada. E diz a VERDADE INCÓMODA quando a dotação por-chamador iguala a global:
+	// nesse caso a etapa dá atribuição mas NÃO protege um chamador da rajada de outro, porque o
+	// balde global esgota-se primeiro.
+	porChamador := " 2.a ETAPA (por-chamador, AOS-456): NAO COMPOSTA — sem gate soberano nao ha principal verificado a que imputar consumo, logo o unico tecto e o global acima."
+	if lim.perCallerMax > 0 {
+		justo := "NAO protege um chamador da rajada de outro: a dotacao por-chamador IGUALA a global, logo o balde global esgota-se primeiro e o 429 atinge todos. Para justica entre pares, ponha AOS_INGRESS_PER_CALLER_RATE/_BURST ESTRITAMENTE ABAIXO de AOS_INGRESS_RATE/_BURST"
+		if lim.perCallerRate < lim.ratePerSec || lim.perCallerBurst < lim.burst {
+			justo = "PROTEGE um chamador da rajada de outro: a dotacao por-chamador e menor que a global, logo quem inunda esgota o SEU balde antes de drenar o comum"
+		}
+		porChamador = fmt.Sprintf(" 2.a ETAPA (por-chamador, AOS-456): LIGADA — cada principal verificado tem o seu balde de %.4g pedido(s)/segundo com burst de %.4g, numa tabela de no maximo %d principais; cheia a tabela, evicta-se o balde MAIS CHEIO (que e o que menos estado perde, e nunca o do atacante, cujo balde e o mais vazio). %s. So o POST /runs passa por ela; o plano de controlo e as leituras NAO.",
+			lim.perCallerRate, lim.perCallerBurst, lim.perCallerMax, justo)
+	}
 	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT definida)"
 	if lim.tuned {
 		origem = "AFINADO por AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT"
 	}
 	return []string{
-		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After",
-			origem, lim.ratePerSec, lim.burst, lim.maxInFlight),
+		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde da 1.a etapa e POR-PROCESSO, em memoria e GLOBAL entre chamadores (nao e por-IP), e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster.%s O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After",
+			origem, lim.ratePerSec, lim.burst, lim.maxInFlight, porChamador),
 	}
 }

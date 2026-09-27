@@ -235,6 +235,11 @@ type apiConfig struct {
 	// fail-closed) e a selar cada leitura sensível no WORM. nil ⇒ read-path legado (sem authz
 	// por-chamador, sem selo) — a topologia soberana é condicional ao provisioning (deferido).
 	readGov *readGovernance
+	// perCaller* são os parâmetros da 2.ª etapa de admission (AOS-456). perCallerMax <= 0
+	// desliga a etapa (tabela não composta).
+	perCallerMax   int
+	perCallerRate  float64
+	perCallerBurst float64
 	// toolCatalog é o catálogo que `GET /tools` serve (AOS-441, [WithToolCatalog]): as tools que
 	// o nó oferece ao modelo, com o digest do contrato. nil ⇒ catálogo vazio.
 	toolCatalog []entradaDoCatalogo
@@ -263,6 +268,24 @@ func WithRateLimit(perSec, burst float64) APIOption {
 		}
 		if perSec >= 0 {
 			c.ratePerSec = perSec
+		}
+	}
+}
+
+// WithPerCallerRateLimit define a 2.ª etapa de admission de `POST /runs` (AOS-456): um
+// token-bucket POR PRINCIPAL numa tabela com `max` entradas, cada balde com `burst` de
+// capacidade e `perSec` de reabastecimento.
+//
+// `max <= 0` deixa a etapa NÃO COMPOSTA — e é isso que o banner declara. Não há valor que a
+// "desligue" silenciosamente: a ausência é visível.
+func WithPerCallerRateLimit(max int, perSec, burst float64) APIOption {
+	return func(c *apiConfig) {
+		c.perCallerMax = max
+		if perSec > 0 {
+			c.perCallerRate = perSec
+		}
+		if burst > 0 {
+			c.perCallerBurst = burst
 		}
 	}
 }
@@ -423,9 +446,13 @@ type apiHandler struct {
 	svc        *NodeService
 	node       *Node
 	cfg        apiConfig
-	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
+	bucket     *tokenBucket // admission do plano de DADOS (POST /runs) — GLOBAL, 1.ª etapa
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
-	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
+	// porChamador é a 2.ª etapa da admission de `POST /runs` (AOS-456): um token-bucket POR
+	// PRINCIPAL, numa tabela LIMITADA. nil ⇒ NÃO COMPOSTO (modo legado, sem gate soberano, ou
+	// tecto <= 0), e o banner declara-o — a barreira ausente diz-se, não se finge.
+	porChamador *baldesPorChamador
+	trajConns   atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
 	// credRecusadas conta as recusas por CREDENCIAL DO RUN que não verifica, nas duas rotas que
 	// a verificam: `POST /runs` (AOS-428) e `POST /runs/{id}/resume` (AOS-433).
 	//
@@ -506,12 +533,27 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		readGov.declararRecusa = svc.log
 		readGov.saude = &svc.seloWORM
 	}
+	// AOS-456 — a 2.ª etapa só se compõe quando HÁ a quem atribuir. Sem `readGov` não existe
+	// principal verificado, e uma tabela indexada por "" seria um balde partilhado a fingir-se
+	// por-chamador. nil aqui ⇒ o banner declara NÃO COMPOSTA.
+	var porChamador *baldesPorChamador
+	if readGov != nil {
+		rate, burst := cfg.perCallerRate, cfg.perCallerBurst
+		if rate <= 0 {
+			rate = cfg.ratePerSec
+		}
+		if burst <= 0 {
+			burst = cfg.rateBurst
+		}
+		porChamador = newBaldesPorChamador(cfg.perCallerMax, burst, rate, cfg.now)
+	}
 	h := &apiHandler{
 		svc:         svc,
 		node:        node,
 		cfg:         cfg,
 		bucket:      newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
 		ctrlBucket:  newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+		porChamador: porChamador,
 		controlMTLS: cfg.controlMTLSCAPath != "",
 		readGov:     readGov,
 	}
@@ -726,6 +768,20 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		submitterRegion = submitter.region
+
+		// (1-bis) ADMISSION POR-CHAMADOR (AOS-456) — a 2.ª etapa, aqui e não antes porque é aqui
+		// que existe um principal VERIFICADO a que imputar o consumo. O balde global da etapa (1)
+		// já mordeu; este morde o chamador, e é o que impede que a rajada de A produza 429 em B.
+		//
+		// FAIL-CLOSED SEM SER FAIL-SHUT: `porChamador == nil` significa etapa não composta (modo
+		// legado, ou tecto <= 0) e o pedido segue — porque a etapa (1) já o limitou e o banner
+		// declara a ausência. O que NÃO acontece é um nil silencioso a parecer barreira: ver
+		// [baldesPorChamador.allow], que devolve false para receiver nil e obriga esta decisão a
+		// ser explícita aqui.
+		if h.porChamador != nil && !h.porChamador.allow(submitter.principal) {
+			writeError(w, http.StatusTooManyRequests, "rate limit do chamador excedido")
+			return
+		}
 		// AOS-217 (achado A1+A7) — TITULAR FAIL-CLOSED, DERIVADO DA CREDENCIAL VERIFICADA. Em modo
 		// SOBERANO o TITULAR do run (o `Subject` sob cuja chave por-titular AOS-093 cifra o conteúdo
 		// não-determinístico — texto do modelo, outputs de tools — ANTES do WAL do Event Store) é
