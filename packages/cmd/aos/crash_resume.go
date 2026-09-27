@@ -203,7 +203,8 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 
 		// (4) Plano de replay das capturas — a MESMA mecânica de dedup de AOS-021. Fail-closed:
 		// capturas ilegíveis (ex.: titular apagado por crypto-shredding) não se retomam.
-		plan, perr := s.replayPlanFor(ctx, runID, rec.Principal.NHIID)
+		// AOS-440: abertas pelo TITULAR dos dados, que é sob quem o run as selou.
+		plan, perr := s.replayPlanFor(ctx, runID, rec.Titular())
 		if perr != nil {
 			failed++
 			s.log("crash-resume: capturas do run %q ILEGIVEIS — NAO retomado (fail-closed): %v", runID, perr)

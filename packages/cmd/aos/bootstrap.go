@@ -338,6 +338,18 @@ type Config struct {
 	// por leitura (retro-compatível). Em produção a lista é obrigatória (main.go,
 	// ErrProductionNeedsDSARErasers).
 	DSARErasers []string
+	// PlanDrainers são os principals (o `sub` do ID-token do gate soberano) que podem drenar a
+	// fila de planos — `POST /plans/claim` e `POST /plans/outcome` (AOS-439). Lista FECHADA e
+	// FAIL-CLOSED: vazia ⇒ ninguém drena (ver drenadores_do_plano.go).
+	PlanDrainers []string
+	// MandateV1Until é o fim da JANELA DE MIGRAÇÃO dos mandatos v1 — os que não enumeram
+	// `requesters` (AOS-439, emenda ao ADR-033 §2.1). Até lá o nó aceita-os; a partir daí recusa-os.
+	// Zero ⇒ janela FECHADA (fail-closed). Só tem efeito com o emissor mandatado composto.
+	MandateV1Until time.Time
+	// AuditWriteV4 liga a escrita do WORM v4 (AOS-439; `requested_by` e `mandate_id` no selo).
+	// false ⇒ v3, que os binários anteriores ainda verificam (worm_v4.go). Só se aplica ao WORM
+	// que o próprio Bootstrap abre, não a um [Config.WORM] fornecido.
+	AuditWriteV4 bool
 	// SteerTTL é a janela de frescura dos sinais de controlo. <=0 ⇒ default 5min.
 	SteerTTL time.Duration
 	// SteerSkew tolera carimbos ligeiramente no futuro (relógios adiantados). Default 0.
@@ -846,6 +858,9 @@ type Node struct {
 	// exigir a prova de autoridade. Vazio (não composto) ⇒ prova DESLIGADA (as rotas mantêm a
 	// autenticação por leitura, retro-compatível); não-vazio ⇒ prova EXIGIDA.
 	DSARErasers map[string]bool
+	// PlanDrainers é o conjunto dos principals que podem drenar a fila de planos (AOS-439),
+	// validado no arranque. Vazio ⇒ ninguém reclama nem reporta.
+	PlanDrainers map[string]bool
 	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
 	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
 	// ninguém tem razão para lhe tocar. nil fora da execução durável.
@@ -1171,6 +1186,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 		dsarErasers[id] = true
 	}
+	// (1a-quater) QUEM DRENA A FILA DE PLANOS (AOS-439). Validado aqui além de no parser do
+	// ambiente, porque a Config também se constrói à mão (testes, composition-root).
+	planDrainers, errDrenadores := conjuntoDeDrenadores(cfg.PlanDrainers)
+	if errDrenadores != nil {
+		return nil, errDrenadores
+	}
 	seenPrincipal := make(map[string]struct{}, len(cfg.Approvers))
 	seenApKey := make(map[string]string, len(cfg.Approvers))
 	for i, a := range cfg.Approvers {
@@ -1306,8 +1327,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	worm := cfg.WORM
 	ownsWORM := false
 	if worm == nil {
+		// AOS-439: v3 por omissão; v4 só com AOS_AUDIT_WRITE_V4 (ver worm_v4.go).
+		versaoWORM := versaoDeEscritaDoWORM(cfg.AuditWriteV4)
 		if cfg.WORMPath != "" {
-			fs, err := audit.OpenFileStore(cfg.WORMPath)
+			fs, err := audit.OpenFileStore(cfg.WORMPath, audit.ComVersaoDeEscrita(versaoWORM))
 			if err != nil {
 				if ownsES {
 					_ = es.Close()
@@ -1317,7 +1340,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			worm = fs
 			ownsWORM = true
 		} else {
-			worm = audit.NewMemStore()
+			mem, err := audit.NewMemStore().ComVersaoDeEscrita(versaoWORM)
+			if err != nil {
+				if ownsES {
+					_ = es.Close()
+				}
+				return nil, fmt.Errorf("aos: WORM em memoria: %w", err)
+			}
+			worm = mem
 		}
 	}
 
@@ -1715,6 +1745,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.MandatedIssuerID != "" {
 		verifierOpts = append(verifierOpts, identity.WithMandatedIssuer(
 			cfg.MandatedIssuerID, append(ed25519.PublicKey(nil), cfg.MandatedIssuerPubKey...), cfg.MandateSigners))
+		// AOS-439: a janela de migração dos mandatos v1. Zero ⇒ fechada (o verificador recusa-os).
+		verifierOpts = append(verifierOpts, identity.WithMandateV1Until(cfg.MandateV1Until))
 	}
 	var authority *integration.IssuerAuthority
 	var verifier *identity.Verifier
@@ -2848,6 +2880,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range emissorMandatadoPostureBanner(cfg.MandatedIssuerID, len(cfg.MandateSigners)) {
 		log("%s", line)
 	}
+	// AOS-439: a janela dos mandatos v1, pelo MESMO relógio que o verificador usa.
+	relogioDoVerificador := time.Now
+	if cfg.VerifierClock != nil {
+		relogioDoVerificador = cfg.VerifierClock
+	}
+	for _, line := range janelaV1PostureBanner(cfg.MandatedIssuerID, cfg.MandateV1Until, relogioDoVerificador()) {
+		log("%s", line)
+	}
+	// AOS-439: que versão do WORM se escreve — e se o rollback continua possível.
+	for _, line := range wormV4PostureBanner(cfg.AuditWriteV4, cfg.WORM == nil) {
+		log("%s", line)
+	}
+	// AOS-439: quem drena a fila de planos. O argumento é o conjunto VALIDADO, o mesmo que as rotas
+	// consultam — não a Config.
+	for _, line := range planDrainersPostureBanner(planDrainers) {
+		log("%s", line)
+	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
 	// (`progress`, o mesmo valor entregue a agentruntime.WithProgressObserver), nunca a
 	// intenção da config. Vem LOGO A SEGUIR ao orçamento porque é a leitura desse tecto.
@@ -3093,6 +3142,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		SteerAuth:          steerAuth,
 		AutonomySetters:    autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
 		DSARErasers:        dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
+		PlanDrainers:       planDrainers,    // AOS-439: quem drena a fila de planos (lista fechada)
 		Revocations:        revocations,
 		Autonomy:           cfg.Autonomy,
 		EventStore:         es,

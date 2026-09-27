@@ -730,12 +730,16 @@ cd C:\Jimy\AOS\packages\cmd\aos-issuer
 go run . pubkey --key-file C:\Jimy\AOS\deploy\server\secrets-local\humano-mandato.key
 go run . mandate-sign --key-file C:\Jimy\AOS\deploy\server\secrets-local\humano-mandato.key `
   --human <user_id> --board board-eu --agent agent:aos-orq --class <classe> --caps <caps,separadas> `
+  --requesters <sub1,sub2> `
   --out C:\Jimy\AOS\deploy\server\secrets-local\mandato.json
 scp C:\Jimy\AOS\deploy\server\secrets-local\mandato.json aos@37.60.241.150:/opt/aos/orq/mandato.json
 ```
 
 O `<user_id>` é o do humano no IdP — o mesmo que os NHI manuais traziam; o agente, a classe e as
-capacidades são os do caminho do plano (as tools do snapshot e `model:invoke`). O `mandate-sign`
+capacidades são os do caminho do plano (as tools do snapshot e `model:invoke`). Os `--requesters`
+(AOS-439, obrigatórios) são o `sub` de **cada submissor** de planos por quem o emissor pode agir —
+um humano ou um service account; o `aos-reader` só submete se estiver nomeado. Ver «Submissor do
+plano e titular do run filho» abaixo. O `mandate-sign`
 imprime o **id** do mandato e a chave de revogação: guarde-os. O mandato **não é segredo** (é um
 documento assinado), e o contentor lê-o como `65532`: no servidor, `chmod 644 /opt/aos/orq/mandato.json`.
 
@@ -969,6 +973,103 @@ Contra o emissor automático é **esta** a revogação que serve: os `jti` dele 
 `/opt/aos/nhi/nhi-run.jwt` (como `65532`, via `docker run`) e **retirar a linha do `alerta-nhi.sh`
 do crontab** (a do `avisar-planos.sh` pode ficar: sem drenagens, o outbox não recebe nada) — senão o sensor passa a alertar, e com razão, que o NHI e as drenagens pararam. Tirar as três variáveis do `.env` e
 reiniciar o nó faz com que ele volte a confiar só no emissor manual.
+
+#### Submissor do plano e titular do run filho (AOS-439, AOS-440, ADR-035)
+
+Desde esta release o nó **deriva** o submissor de cada run filho da reclamação do pedido (o
+`consume` passa `--plan-request-generation` ao `serve`, e cada `POST /runs` leva `plan_request`), põe-no
+como `requested_by` — com o `mandate_id` — no evento de mediação de cada decisão (e no WORM, quando o
+v4 estiver ligado, passo 3), e sela o **conteúdo** do run filho sob a KEK de quem pediu o plano, e não
+do `aos-reader`. Quem drena a fila passa a ser uma lista fechada, e o `drenar-planos.sh` passa o
+`mandato.json` ao `consume` para fechar logo (saída **`11`**) os pedidos de quem o mandato não nomeia.
+Passos do dono, por esta ordem.
+
+**1. Depois do deploy, como `aos` — confirmar o banner.** O compose traz por omissão
+`AOS_PLAN_DRAINERS=<sub do aos-reader>`, `AOS_MANDATE_V1_UNTIL=2026-10-25T23:59:59Z` (o fim do mandato
+v1 em vigor) e o WORM a escrever **v3**. No log de arranque do nó têm de aparecer:
+
+```bash
+docker logs aos-aos-1 2>&1 | grep -E 'drenadores da fila de planos|mandatos v1|WORM \(AOS-439\)'
+# drenadores da fila de planos (AOS-439): 1 principal(is) — "91a30a69-781d-448e-90c9-1de9f5e7bcbe". ...
+# mandatos v1 (sem requesters, AOS-439): ACEITES ate 2026-10-25T23:59:59Z ...
+# WORM (AOS-439): escreve v3 (por omissao) — ...
+```
+
+`NENHUM` na primeira linha ⇒ a drenagem pára (403 no `claim`): corrija `AOS_PLAN_DRAINERS` no `.env`
+e reinicie o nó. A drenagem seguinte do timer tem de continuar a dar `desfecho: ... classe=terminal`.
+O `mandato.json` tem de estar em `/opt/aos/orq/mandato.json` e legível pelo `65532` (já está, é o
+mesmo que o timer de cunhagem lê): sem ele o `consume` sai antes de reclamar.
+
+**2. Depois de confirmar a release, e antes de 2026-10-25 — re-assinar o mandato com
+`--requesters`.** ⚠️ **Re-assinar também corta o rollback:** o binário anterior não lê um mandato v2
+(o `VerifySignature` dele recusa-o, e o `mint-mandated` dele recusa o `mandato.json` com o campo
+`requesters`). Por isso a ordem é: deploy → confirmar a release saudável → re-assinar →
+revogar o v1 ou fechar a janela — e, até à confirmação, **guardar o `mandato.json` v1** (é o que um
+rollback precisaria) e **não revogar o v1**. Re-assinar com **`aos_runs_suspended = 0`** no
+`/metrics` do nó: o mandato novo tem outro id, e um run suspenso sob o anterior deixa de ser
+retomável com os tokens do novo. (A série é por réplica e um restart zera-a sem que a suspensão
+deixe de ser verdade: se o nó reiniciou desde a última escalada, confirme também pelo estado
+`waiting_on_human` dos runs.)
+
+O passo 1 de «Cunhagem e drenagem SEM OPERADOR», com a lista de quem pode pedir planos: o `sub` de
+cada humano no IdP e, se o service account continuar a submeter, o do `aos-reader`
+(`91a30a69-781d-448e-90c9-1de9f5e7bcbe`). Copiar por cima de `/opt/aos/orq/mandato.json`; o timer de
+cunhagem relê-o, e a linha `aviso: mandato ... e v1` deixa de aparecer no journal da cunhagem. Até o
+timer trocar o NHI (≤ 15 min), a drenagem **aborta antes de reclamar** — o NHI em uso ainda é do
+mandato antigo, e o `consume` recusa decidir por um mandato que não é o do NHI; os pedidos ficam na
+fila. Um pedido cujo submissor não conste da lista (ou sem submissor) fecha com o desfecho **`11`**
+(`requerente_fora_do_mandato`, terminal) — sem planear, e não se retenta.
+
+**Depois de assinar o v2 e confirmado que a drenagem corre com ele, retirar o v1** — durante a
+janela, um token cunhado sob o v1 continua a verificar. Uma das duas: revogar o v1
+(`aos-issuer revoke-sign --jti mandate:<id-do-v1>`, `POST /nhi/revoke` — o id é o `btmgjRL9…` em
+vigor), ou fechar a janela (`AOS_MANDATE_V1_UNTIL=<um instante no passado>` no `.env` e reiniciar o
+nó; o banner passa a `RECUSADOS`). Um `serve` corrido à mão com o NHI do mandato v2 é recusado (não
+tem pedido, logo não tem submissor): à mão, use um NHI do emissor **manual** — só para runs NOVOS:
+**retomar** um run mandatado com um NHI do emissor manual é recusado (o mandato do token, vazio, não
+é o do run). **Renovar** o mandato mais tarde (outro id) torna os runs suspensos sob o anterior
+irretomáveis com os tokens do novo — renove-o, também, com `aos_runs_suspended = 0`.
+
+**3. Ligar o WORM v4 — depois de confirmar o deploy saudável.** Só com o v4 o `requested_by` e o
+`mandate_id` entram no **selo** de cada decisão. ⚠️ **Ligar corta o rollback**: um binário anterior a
+esta release não conhece o v4 e não arranca sobre o WORM. **Pré-requisito: reconstruir o `aos-issuer`
+na máquina do operador a partir desta release** — o `aos-issuer worm-seal` da selagem diária lê o
+WORM, e o de antes lê um v4 como «hash-chain adulterada … mutation»: pára a âncora diária e aponta
+para uma adulteração que não existe. Depois: deixe a release correr (drenagem verde, sem incidentes),
+`AOS_AUDIT_WRITE_V4=1` no `.env` e reinicie o nó; o banner passa a `WORM (AOS-439): escreve v4`. A
+partir daí, voltar atrás exige um binário desta release ou posterior — do nó e do `aos-issuer`.
+
+**4. Migração M1 do conteúdo antigo — só quando o dono decidir.** O conteúdo dos runs filhos
+drenados ANTES desta release está selado sob a KEK do `aos-reader`. A migração decidida é **destruir
+essa KEK uma vez** (`/dsar/erase` do `sub` do `aos-reader`, pelos operadores de `AOS_DSAR_ERASERS`).
+Antes de o fazer, e porque é **irreversível**:
+
+- **Inventário.** O índice titular→partição do nó (`DSARIndex`) não tem rota nem comando que o
+  liste. O inventário faz-se a partir do Event Store: as partições com `~` no nome (runs filhos de
+  planos) cujos eventos `replay.captured`/`step.ledger.applied` trazem o `sub` do `aos-reader` como
+  titular. **O comando exacto está por validar no servidor** — não se executou nada daqui.
+- **O que mais cai com a mesma KEK:** o objectivo dos pedidos de plano que o `aos-reader` submeteu
+  (AOS-429), o conteúdo de qualquer run que ele tenha submetido directamente, e os registos de
+  retoma desses runs. Um plano ainda em curso sob essa KEK deixa de ser retomável.
+- **O que NÃO cai:** o objectivo redigido de cada run em `memory.episodic` (em claro, ADR-035 §5) e
+  o `requested_by` no evento de mediação e no WORM.
+- **Ordem:** sem planos em voo (os timers de drenagem parados e a última drenagem terminada — o log
+  em `/opt/aos/logs`), com o passo 2 feito, e
+  sem legal hold sobre o `aos-reader` (um hold bloqueia o apagamento, e o nó di-lo).
+
+**Verificar em produção (critérios de produção do AOS-439 e do AOS-440).** Com o v4 ligado (passo
+3), submeter um plano **como um humano** nomeado no mandato v2 (o seu próprio token do IdP no
+`POST /plans`), esperar a drenagem, e:
+
+```bash
+# a decisão selada de cada tool call do run filho nomeia quem pediu e o mandato (só em registos v4)
+docker exec aos-aos-1 /usr/local/bin/aos audit-trail \
+  --path /var/lib/aos/worm.wal --run '<plano>~<no>' | grep 'requested_by=<sub-do-humano> mandate=<id>'
+```
+
+e confirmar que o titular (`key_ref`/`sealed_subject`) das capturas e do step-ledger do run filho é o
+`sub` do humano, e não o do `aos-reader` — pela mesma leitura da prova de 2026-09-25. Sem o v4, o
+`requested_by` verifica-se no evento `tool.call.mediated` do run filho, não no WORM.
 
 ---
 

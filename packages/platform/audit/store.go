@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -30,11 +31,26 @@ type Store interface {
 type MemStore struct {
 	mu    sync.RWMutex
 	parts map[string][]AuditRecord
+	// escrita é a versão que se sela por omissão (0 ⇒ [CurrentSchemaVersion]; AOS-439).
+	escrita uint8
 }
 
 // NewMemStore constrói um MemStore vazio.
 func NewMemStore() *MemStore {
 	return &MemStore{parts: make(map[string][]AuditRecord)}
+}
+
+// ComVersaoDeEscrita faz o store selar os registos novos na versão `v` (AOS-439: v3 por omissão,
+// v4 quando o operador o liga). Uma versão que esta release não escreve é recusada com
+// [ErrVersaoDeEscrita] — um store não pode ficar a escrever uma época que ninguém verifica.
+func (s *MemStore) ComVersaoDeEscrita(v uint8) (*MemStore, error) {
+	if !versaoDeEscritaValida(v) {
+		return nil, fmt.Errorf("%w: %d", ErrVersaoDeEscrita, v)
+	}
+	s.mu.Lock()
+	s.escrita = v
+	s.mu.Unlock()
+	return s, nil
 }
 
 // Append implementa [Store.Append]: sela o registo na cadeia da partição.
@@ -47,6 +63,10 @@ func (s *MemStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, er
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// AOS-439: uma versão preposta acima da que o store escreve é recusada antes de haver efeito.
+	if err := versaoPrepostaAceite(rec, s.escrita); err != nil {
+		return AuditRecord{}, err
+	}
 
 	part := s.parts[rec.Partition]
 	var prev []byte
@@ -59,7 +79,7 @@ func (s *MemStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, er
 		rec.AuditSeq = last.AuditSeq + 1
 	}
 	rec.PrevHash = prev
-	stampSchema(&rec)
+	stampSchema(&rec, s.escrita)
 	rec.EntryHash = ComputeEntryHash(prev, rec)
 
 	// Cópia defensiva das slices mutáveis para que o chamador não altere o estado

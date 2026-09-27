@@ -348,6 +348,9 @@ if [[ -s "${AVISOS_DESTA}" ]]; then
 fi
 
 [[ -s "${AOS_DIR}/orq/snapshot.json" ]] || fail "sem ${AOS_DIR}/orq/snapshot.json — o planeador precisa do instantâneo de validação"
+# AOS-439: o consume recebe --mandate com este ficheiro, e sem ele sai antes de reclamar. Diz-se
+# aqui, pelo nome, em vez de o operador ter de o deduzir do erro do consume.
+[[ -s "${AOS_DIR}/orq/mandato.json" ]] || fail "sem ${AOS_DIR}/orq/mandato.json (ou vazio) — o consume confronta cada pedido com os requesters do mandato (AOS-439); é o MESMO ficheiro que o timer de cunhagem lê"
 
 EXP="$(nhi_exp || true)"
 [[ "${EXP}" =~ ^[0-9]+$ ]] || fail "sem NHI legível em ${AOS_DIR}/nhi/nhi-run.jwt — a cunhagem (aos-cunhar-nhi) não correu ou falhou; NÃO se reclama nenhum plano"
@@ -369,10 +372,14 @@ rm -f "${AVISOS_CONTAGEM}" 2>/dev/null || true
 # O que ainda lá estiver (as sobras acima não entraram no outbox) junta-se aos desta drenagem.
 # -T e </dev/null: o `compose run` come o stdin de quem o chama (lição do AOS-403). O stderr junta-se
 # ao stdout para chegar também ao log; o código de saída é o do `compose`, não o do `carimbar`.
+# AOS-439: --mandate é o MESMO mandato.json que o timer de cunhagem lê (./orq, montado em
+# /etc/aos-orq). Um pedido cujo submissor ele não nomeia fecha com 11 SEM planear; um mandato
+# ilegível faz o consume sair antes de reclamar.
 set +e
 "${COMPOSE[@]}" --profile orq run --rm -T \
   -e AOS_ORQ_NODE_CREDENTIAL_FILE=/run/aos-nhi/nhi-run.jwt \
   aos-orq consume --snapshot /etc/aos-orq/snapshot.json --wal /var/lib/aos-orq/consume.wal \
+  --mandate /etc/aos-orq/mandato.json \
   --max "${MAX}" </dev/null 2>&1 | carimbar
 ESTADOS=("${PIPESTATUS[@]}")
 set -e

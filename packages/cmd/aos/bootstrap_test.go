@@ -46,6 +46,9 @@ func tnBaseConfig() Config {
 		},
 		IssuerClock:   tnClock(),
 		VerifierClock: tnClock(),
+		// AOS-439: a lista de drenadores é fail-closed. O leitor de governação das fixtures é o
+		// drenador da fila, como o `aos-reader` é em produção.
+		PlanDrainers: []string{govReader},
 	}
 }
 

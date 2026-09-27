@@ -62,6 +62,7 @@ func cunharSobMandato(t *testing.T, auto, humano ed25519.PrivateKey, sm *identit
 			AgentClass: "planner", PolicyRef: "policy://planner", Scope: []string{"run:submit"},
 			Issuer: issAutoDeTeste, MaxTTLSeconds: 2700,
 			NotBefore: agora.Add(-time.Hour).Unix(), NotAfter: agora.Add(24 * time.Hour).Unix(),
+			Requesters: []string{"sub-bob"}, // AOS-439: um mandato novo é v2
 		})
 		if err != nil {
 			t.Fatal(err)

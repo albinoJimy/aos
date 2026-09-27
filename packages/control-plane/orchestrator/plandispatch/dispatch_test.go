@@ -378,6 +378,11 @@ func TestDispatch_SinkFailureReleasesSlotAndSurfaces(t *testing.T) {
 	if !errors.Is(err, ErrDispatchSink) {
 		t.Fatalf("erro = %v, quer envolver ErrDispatchSink", err)
 	}
+	// AOS-439: a CAUSA do sink também atravessa — o `aos-orq` classifica por ela (uma recusa
+	// determinista do nó fecha o pedido; uma avaria retenta-se). Era `%v`, e perdia-se.
+	if !errors.Is(err, sinkErr) {
+		t.Fatalf("erro = %v, quer envolver tambem a causa do sink", err)
+	}
 	if res.Dispatched != 0 {
 		t.Errorf("despachados = %d, quer 0 (o sink falhou)", res.Dispatched)
 	}

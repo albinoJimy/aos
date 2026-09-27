@@ -110,8 +110,9 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 // a ser invisível no log. Uma falha é registada em voz alta e NÃO sobrepõe o desfecho em
 // memória (o trabalho já aconteceu; o que falhou foi o registo).
 // sealTerminalState sela o desfecho durável e, quando esse desfecho é `failed`, CONDUZ a saga de
-// rollback (AOS-254). titular é o Principal.NHIID do run (goal.Principal.NHIID), propagado do
-// hostRun: a compensação corre no step-ledger cifrado por-titular, que o recusa se ele faltar.
+// rollback (AOS-254). titular é o titular dos dados do run (goal.Titular(), AOS-440 — o
+// Principal.NHIID quando o run não tem Subject), propagado do hostRun: a compensação corre no
+// step-ledger cifrado por-titular, que o recusa se ele faltar.
 func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentruntime.Result, runErr error, panicked bool) {
 	// TERMINOU EM MEMÓRIA? É esta premissa que separa uma DIVERGÊNCIA de um no-op legítimo.
 	//

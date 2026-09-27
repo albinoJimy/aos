@@ -220,19 +220,64 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	}
 
 	// (2-quater) E É DE QUEM? A divergência de principal, que já existia e continua.
-	if v := s.node.Verifier; v != nil && rec.Principal.NHIID != "" {
-		if p, verr := v.Verify(ctx, credential); verr == nil && p.AgentID != rec.Principal.NHIID {
+	//
+	// # COM QUÊ SE COMPARA (AOS-440)
+	//
+	// Comparava-se o `AgentID` da credencial com o `Principal.NHIID` do registo. Em modo SOBERANO
+	// isso NUNCA batia: o `POST /runs` põe no NHIID o principal OIDC de quem CHAMA o nó (um humano
+	// ou um service account), e o `AgentID` do token é o do AGENTE — dois eixos diferentes, como o
+	// `credencial_do_run.go` já dizia. Todo o run soberano escalado era irretomável com a sua
+	// própria credencial (medido: `TestAOS440RetomaSoberanaComACredencialDoProprioAgente`).
+	//
+	// Desde o AOS-440 o `POST /runs` grava no registo o `AgentID` da credencial que VERIFICOU, e é
+	// com ele que se compara. Um registo que não o tem (anterior, ou de um run sem credencial
+	// verificada na porta) compara com o NHIID, como sempre — o modo não-soberano, onde os dois
+	// coincidem, não muda. RESÍDUO DECLARADO: um run soberano escalado ANTES deste binário continua
+	// irretomável pela mesma razão de antes.
+	esperado := rec.Principal.AgentID
+	if esperado == "" {
+		esperado = rec.Principal.NHIID
+	}
+	if v := s.node.Verifier; v != nil && esperado != "" {
+		if p, verr := v.Verify(ctx, credential); verr == nil {
 			// O mapeamento identidade→NHI é o canónico de `identity/rmadapter.go`
 			// (`NHIID: principal.AgentID`), e não uma segunda regra escrita aqui.
-			return fmt.Errorf("%w: run %q e de %q e a credencial e de %q",
-				ErrResumePrincipalMismatch, runID, rec.Principal.NHIID, p.AgentID)
+			if p.AgentID != esperado {
+				return fmt.Errorf("%w: run %q e de %q e a credencial e de %q",
+					ErrResumePrincipalMismatch, runID, esperado, p.AgentID)
+			}
+			// O AGENTE NÃO CHEGA (revisão do AOS-439/440). O mesmo `agent_id` pode ser cunhado para
+			// OUTRO humano, ou sob OUTRO mandato; comparar só o agente deixava um token do humano B
+			// continuar o run do humano A. O registo guarda, desde esta release, o humano da raiz e
+			// o mandato da credencial verificada no `POST /runs`; cada um compara-se quando existe
+			// no registo — vazio (registo anterior, ou emissor manual sem mandato) mantém o
+			// comportamento de antes.
+			//
+			// CONSEQUÊNCIA DECLARADA: renovar o mandato (outro id) torna os runs suspensos sob o
+			// anterior irretomáveis com os tokens do novo — a retoma exige o mesmo mandato.
+			if rec.Principal.UserID != "" && p.UserID != rec.Principal.UserID {
+				return fmt.Errorf("%w: run %q foi autorizado por %q e a credencial por %q",
+					ErrResumePrincipalMismatch, runID, rec.Principal.UserID, p.UserID)
+			}
+			if rec.Principal.MandateID != "" && p.MandateID != rec.Principal.MandateID {
+				return fmt.Errorf("%w: run %q correu sob o mandato %q e a credencial e do mandato %q",
+					ErrResumePrincipalMismatch, runID, rec.Principal.MandateID, p.MandateID)
+			}
+		}
+	}
+	// (2-quinquies) O MANDATO DA CREDENCIAL FRESCA TEM DE COBRIR QUEM PEDIU O RUN (AOS-439). A
+	// MESMA regra do `POST /runs`: sem ela, uma retoma com um token de um mandato v2 continuava o
+	// run de um submissor que esse mandato não nomeia.
+	if p, verificada, _ := credencialDoRunVerificadaNoNo(ctx, s.node, credential); verificada {
+		if merr := p.MandateAdmitsRequester(rec.Principal.RequestedBy); merr != nil {
+			return fmt.Errorf("%w: run %q: %v", ErrResumeCredencialNaoVerifica, runID, merr)
 		}
 	}
 
 	// (3) Plano de replay: as respostas do modelo JÁ REGISTADAS, por turno. Sem elas a
 	// retoma reinterrogaria o modelo e a aprovação — amarrada à preview da call original —
-	// nunca se aplicaria.
-	plan, err := s.replayPlanFor(ctx, runID, rec.Principal.NHIID)
+	// nunca se aplicaria. AOS-440: abertas pelo TITULAR, que é sob quem foram seladas.
+	plan, err := s.replayPlanFor(ctx, runID, rec.Titular())
 	if err != nil {
 		return fmt.Errorf("aos: carregar capturas do run %q para a retoma: %w", runID, err)
 	}

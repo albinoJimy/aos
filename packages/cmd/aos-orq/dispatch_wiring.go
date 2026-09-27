@@ -298,6 +298,7 @@ func composeEDespachar(
 		if errEx != nil {
 			return errEx
 		}
+		ex.geracaoDoPedido = exe.geracaoDoPedido // AOS-439: o vínculo ao pedido de plano
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {

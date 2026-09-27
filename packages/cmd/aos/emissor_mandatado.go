@@ -19,6 +19,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
+
+	identity "github.com/aos-ref/platform/identity"
 )
 
 // ErrBadMandatedIssuer — configuração do emissor mandatado incompleta, malformada, ou numa
@@ -128,6 +131,55 @@ func validarEmissorMandatado(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+// ErrBadMandateV1Until — `AOS_MANDATE_V1_UNTIL` malformada ou demasiado longe. Aborta o arranque.
+var ErrBadMandateV1Until = errors.New("aos: AOS_MANDATE_V1_UNTIL invalida")
+
+// parseMandateV1Until interpreta o fim da janela de migração dos mandatos v1 (AOS-439): um
+// instante RFC 3339. Vazia ⇒ zero ⇒ janela FECHADA (um v1 é recusado).
+//
+// O TECTO: um fim mais longe do que [identity.MandatoValidadeMaxima] a contar do arranque aborta.
+// Um mandato v1 nunca vive mais do que isso, pelo que uma janela maior só serviria para aceitar v1
+// que ainda nem foram assinados — e um valor como `2099-01-01` é o que um operador escreve para
+// «desligar a verificação». Não é uma defesa contra quem reescreve o `.env`: é um tecto contra o
+// esquecimento, como o próprio tecto do mandato.
+func parseMandateV1Until(s string, agora time.Time) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: %q nao e RFC 3339 (ex.: 2026-10-25T23:59:59Z)", ErrBadMandateV1Until, s)
+	}
+	if t.After(agora.Add(identity.MandatoValidadeMaxima)) {
+		return time.Time{}, fmt.Errorf("%w: %s esta a mais de %s do arranque — a janela serve a migracao, nao a desliga",
+			ErrBadMandateV1Until, t.UTC().Format(time.RFC3339), identity.MandatoValidadeMaxima)
+	}
+	return t.UTC(), nil
+}
+
+// janelaV1PostureBanner declara a janela de migração dos mandatos v1, pelo relógio do arranque.
+// Só é emitida com o emissor mandatado composto — sem ele não há mandatos a verificar.
+func janelaV1PostureBanner(iss string, ate, agora time.Time) []string {
+	if iss == "" {
+		return nil
+	}
+	switch {
+	case ate.IsZero():
+		return []string{"mandatos v1 (sem requesters, AOS-439): RECUSADOS — AOS_MANDATE_V1_UNTIL vazia, a janela " +
+			"de migracao esta FECHADA. So um mandato v2 (mandate-sign --requesters) cunha tokens aceites, e o POST " +
+			"/runs sob ele exige que o submissor derivado pelo no conste dos requesters"}
+	case !agora.Before(ate):
+		return []string{"mandatos v1 (sem requesters, AOS-439): RECUSADOS — a janela de migracao fechou em " +
+			ate.UTC().Format(time.RFC3339) + ". So um mandato v2 (mandate-sign --requesters) cunha tokens aceites"}
+	default:
+		return []string{"mandatos v1 (sem requesters, AOS-439): ACEITES ate " + ate.UTC().Format(time.RFC3339) +
+			" (janela de migracao, AOS_MANDATE_V1_UNTIL) — sob um v1 o emissor age por QUALQUER submissor; o " +
+			"humano tem de re-assinar com mandate-sign --requesters antes do fim, ou a drenagem para. Um v2 exige " +
+			"que o submissor derivado pelo no conste dos requesters"}
+	}
 }
 
 // emissorMandatadoPostureBanner declara, no arranque, se há emissor automático e o que o limita.

@@ -46,11 +46,17 @@ func cmdMandateSign(args []string, out, diag io.Writer) error {
 	maxTTL := fs.Duration("max-ttl", 45*time.Minute, "TTL máximo de cada token cunhado (≤ 1h, o tecto da biblioteca)")
 	validFor := fs.Duration("valid-for", 30*24*time.Hour, "validade do mandato a partir de agora (≤ 90 dias)")
 	outFile := fs.String("out", "", "grava o mandato neste ficheiro (0600) em vez de o imprimir")
+	requesters := fs.String("requesters", "", "OBRIGATÓRIO (AOS-439): os submissores por quem o emissor pode agir, CSV — o `sub` do ID-token de cada um, sem curingas; um service account só submete se estiver aqui")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *keyFile == "" {
 		return errors.New("mandate-sign exige --key-file (a chave do humano)")
+	}
+	// Verificado ANTES de ler a chave do humano: um mandato sem requesters seria recusado pela
+	// biblioteca na mesma, mas não há razão para abrir a seed para o descobrir.
+	if len(splitCSV(*requesters)) == 0 {
+		return errors.New("mandate-sign exige --requesters (AOS-439): o mandato nomeia por quem o emissor pode agir — o sub de cada submissor, separados por virgula")
 	}
 	priv, err := lerSeedHumana(*keyFile)
 	if err != nil {
@@ -69,6 +75,7 @@ func cmdMandateSign(args []string, out, diag io.Writer) error {
 		ID: id, Human: *human, Board: *board, AgentID: *agent, AgentClass: *class, PolicyRef: pr,
 		Scope: splitCSV(*caps), Issuer: *issuer, MaxTTLSeconds: int64(maxTTL.Seconds()),
 		NotBefore: agora.Unix(), NotAfter: agora.Add(*validFor).Unix(),
+		Requesters: splitCSV(*requesters),
 	})
 	if err != nil {
 		return fmt.Errorf("mandate-sign: %w", err)
@@ -141,6 +148,12 @@ func cmdMintMandated(args []string, out io.Writer) error {
 		return fmt.Errorf("mint-mandated: %w", err)
 	}
 	m := sm.Mandate
+	// AOS-439: um mandato v1 (sem requesters) ainda cunha — a decisão é do NÓ, pela janela de
+	// migração (AOS_MANDATE_V1_UNTIL). Diz-se aqui, no journal do timer, para o operador ver que o
+	// humano tem de re-assinar antes de a janela fechar.
+	if m.Version() < 2 {
+		fmt.Fprintf(os.Stderr, "aviso: mandato %s e v1 (sem requesters) — o no so o aceita dentro da janela AOS_MANDATE_V1_UNTIL; re-assinar com mandate-sign --requesters\n", m.ID)
+	}
 	d := *ttl
 	if d == 0 {
 		d = time.Duration(m.MaxTTLSeconds) * time.Second

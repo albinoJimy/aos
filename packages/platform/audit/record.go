@@ -32,6 +32,15 @@ type DelegationHop struct {
 type Principal struct {
 	NHIID           string
 	DelegationChain []DelegationHop
+	// RequestedBy é o SUBMISSOR do run (AOS-439): quem pediu o plano de que o run é trabalho,
+	// derivado pelo nó da reclamação — nunca do corpo. MandateID é o mandato VERIFICADO sob o qual
+	// o token foi cunhado (resíduo 3 do ADR-033). Só entram no selo a partir de [SchemaV4]; um
+	// registo anterior não os tem, e continua a verificar com os bytes da sua época.
+	//
+	// `omitempty` com o nome de sempre: um registo sem eles (todo o v2/v3) serializa no ficheiro
+	// do WORM exactamente como um binário anterior o serializava.
+	RequestedBy string `json:"RequestedBy,omitempty"`
+	MandateID   string `json:"MandateID,omitempty"`
 }
 
 // PayloadRef é a referência (opcional) ao payload pessoal associado à decisão.
@@ -171,13 +180,25 @@ const (
 	SchemaV2 uint8 = 2
 	// SchemaV3 acrescenta ao selo a ATRIBUIÇÃO: code, denied_by e reason.
 	SchemaV3 uint8 = 3
-	// CurrentSchemaVersion é a versão com que se selam registos NOVOS.
+	// SchemaV4 acrescenta ao selo QUEM PEDIU e SOB QUE MANDATO (AOS-439): o `requested_by` do
+	// run e o `mandate_id` da credencial, no FIM do conteúdo canónico.
+	SchemaV4 uint8 = 4
+	// CurrentSchemaVersion é a versão com que um store sela registos NOVOS por omissão.
+	//
+	// CONTINUA v3 NESTA RELEASE, e é deliberado (expand/contract, revisão do AOS-439): este binário
+	// LÊ e VERIFICA v4, mas só o ESCREVE quando o store é aberto com [ComVersaoDeEscrita] — no nó,
+	// `AOS_AUDIT_WRITE_V4=1`. Um binário anterior não conhece o v4 e recusa arrancar sobre um WORM
+	// que o tenha; escrever v4 por omissão cortava o rollback no primeiro registo selado depois do
+	// deploy. Ligar o v4 é um passo do operador, depois de confirmar o deploy saudável.
 	CurrentSchemaVersion = SchemaV3
 )
 
 // canonicalDomainV3 é o separador de domínio do formato v3. Distinto do v2 para que os
 // hashes das duas épocas nunca possam colidir nem ser comparados como iguais.
 const canonicalDomainV3 = "aos.audit.v3"
+
+// canonicalDomainV4 é o separador de domínio do formato v4 (AOS-439).
+const canonicalDomainV4 = "aos.audit.v4"
 
 // domainFor devolve o separador de domínio da versão de um registo. Uma versão
 // desconhecida (formato de futuro, ou log corrompido) NÃO é adivinhada: devolve "" e o
@@ -188,6 +209,8 @@ func domainFor(v uint8) string {
 		return canonicalDomain
 	case SchemaV3:
 		return canonicalDomainV3
+	case SchemaV4:
+		return canonicalDomainV4
 	default:
 		return ""
 	}
@@ -276,6 +299,12 @@ func canonicalContent(rec AuditRecord) []byte {
 		buf = putString(buf, rec.Code)
 		buf = putString(buf, rec.DeniedBy)
 		buf = putString(buf, rec.Reason)
+	}
+	// v4 e seguintes: QUEM PEDIU o run e SOB QUE MANDATO correu (AOS-439), no FIM e só nesta
+	// versão — pela mesma razão do bloco v3: um registo v2 ou v3 produz os bytes de antes.
+	if rec.SchemaVersion >= SchemaV4 {
+		buf = putString(buf, rec.Principal.RequestedBy)
+		buf = putString(buf, rec.Principal.MandateID)
 	}
 	return buf
 }

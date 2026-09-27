@@ -89,6 +89,7 @@ chmod +x "${T}/bin/docker" "${T}/bin/curl" "${T}/bin/logger"
 AOS="${T}/aos"
 mkdir -p "${AOS}/orq" "${AOS}/secrets"
 echo '{}' > "${AOS}/orq/snapshot.json"
+echo '{}' > "${AOS}/orq/mandato.json"   # AOS-439: o drenar-planos.sh exige-o (o consume recebe --mandate)
 TOPICO_PLANOS="topico-dos-planos-0123456789"
 printf '%s\n' "${TOPICO_PLANOS}" > "${AOS}/secrets/ntfy-topico-planos"
 printf '%s\n' "topico-da-infra-9876543210" > "${AOS}/secrets/ntfy-topico"
@@ -259,6 +260,11 @@ mv "${T}/chave.guardada" "${AOS}/secrets/aviso-planos-hmac.key"
 avisar
 exige "  … com a chave, sai" contem "${STUB_DIR}/ntfy.log" "CORPO Plano $(pseudo plan-sem-chave): terminal, código 0 (ok)."
 exige "--pseudonimo dá o mesmo pseudónimo que o aviso" bash -c '[[ "$(AOS_DIR="$1" bash "$1/avisar-planos.sh" --pseudonimo plan-sem-chave | tail -1)" == "$2" ]]' _ "${AOS}" "$(pseudo plan-sem-chave)"
+
+echo "── 3. o código 11 tem rótulo próprio, e o texto não leva o submissor (AOS-439)"
+printf 'aviso: run=plan-p11 geracao=1 classe=terminal codigo=11\n' > "${OUTBOX}"
+avisar
+exige "o 11: «submissor fora do mandato», título próprio, prioridade high" bash -c 'grep -qF "CORPO Plano $2: terminal, código 11 (submissor fora do mandato)." "$1" && grep -qF "H Title: AOS: plano fora do mandato (codigo 11)" "$1" && grep -qF "H Priority: high" "$1"' _ "${STUB_DIR}/ntfy.log" "$(pseudo plan-p11)"
 
 echo "── 5. espaços Unicode no run_id casam em qualquer locale"
 RU=$'plan-u\xe3\x80\x80x\xe2\x80\xa8y'   # U+3000 e U+2028, que o ValidarStreamID aceita
