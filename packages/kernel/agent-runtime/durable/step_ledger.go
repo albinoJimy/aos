@@ -286,7 +286,7 @@ type titularKey struct{}
 // intermédia o tenha de transportar.
 //
 // Quem o anexa é o ponto que CONHECE o run: o [activity.Dispatcher], a partir do
-// Principal da activity — o mesmo valor que o capturer sela (goal.Principal.NHIID),
+// Principal da activity — o mesmo valor que o capturer sela (goal.Titular(), AOS-440),
 // para que os MESMOS bytes fiquem sob a MESMA KEK em replay.captured e em
 // step.ledger.applied.
 func ContextWithTitular(ctx context.Context, subject string) context.Context {

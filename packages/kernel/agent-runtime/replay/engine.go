@@ -102,8 +102,17 @@ type Options struct {
 	// Reason="authority": o tail que se reconstrói não é o que autorizou as calls — por
 	// exemplo, um registo de retoma que perdeu os `inputs` e re-autorizaria trusted o que foi
 	// untrusted. OPT-IN, como as outras âncoras não-prompt: uma trajectória gravada ANTES do
-	// ADR-034 tem todas as calls seladas untrusted e divergiria em todo o turno de contexto
-	// limpo — essa divergência é real (a semântica mudou) mas não é um defeito do run.
+	// ADR-034 pela via DIRECTA tem todas as calls seladas untrusted e divergiria em todo o
+	// turno de contexto limpo — essa divergência é real (a semântica mudou) mas não é um
+	// defeito do run.
+	//
+	// CEGO NA VIA DURÁVEL (a de produção, AOS_DURABLE_EXECUTION=1). O taint selado é
+	// indexado pelo `parent_step_id` do evento de mediação, e o `DurableDispatcher` não
+	// propaga o `ParentStepID` do Call: na via durável os eventos saem com parent vazio, a
+	// lista a comparar vem vazia e [authorityDivergence] devolve nil em TODOS os turnos. Não
+	// detecta nada — e, pela mesma razão, não dá falsos alarmes sobre as trajectórias
+	// duráveis antigas (todas seladas untrusted, AOS-069 fase 1). Deixa de ser cego quando a
+	// via durável propagar o ParentStepID (tratado fora do AOS-069, em ticket próprio).
 	VerifyAuthority bool
 }
 

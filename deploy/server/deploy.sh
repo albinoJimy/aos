@@ -47,11 +47,11 @@ fail() { printf '\033[31m[deploy] FAIL:\033[0m %s\n' "$*" >&2; exit 1; }
 dc() { docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" --env-file "${IMAGE_ENV}" "$@"; }
 
 # --- A DRENAGEM DA FILA DE PLANOS: o deploy segura-a (AOS-450) ---------------------------------
-# O timer `aos-drenar-planos` corre o drenar-planos.sh a cada 5 min, e o CD sincroniza os scripts
-# (rsync) ANTES de este script trocar a imagem. Medido no deploy da v0.1.35: uma drenagem calhou
-# entre os dois e correu o script NOVO com o binário ANTIGO — falhou a verificação das métricas do
-# AOS-443 e a unidade ficou `failed`. E uma drenagem a meio do `compose up` vê o nó reiniciar e os
-# pedidos que tinha a meio falharem.
+# O timer `aos-drenar-planos` corre o drenar-planos.sh 1 min depois da drenagem anterior (AOS-447),
+# e o CD sincroniza os scripts (rsync) ANTES de este script trocar a imagem. Medido no deploy da
+# v0.1.35: uma drenagem calhou entre os dois e correu o script NOVO com o binário ANTIGO — falhou
+# a verificação das métricas do AOS-443 e a unidade ficou `failed`. E uma drenagem a meio do
+# `compose up` vê o nó reiniciar e os pedidos que tinha a meio falharem.
 #
 # POR QUE UM MARCADOR E NÃO SÓ O LOCK. O lock da drenagem é um `flock`, e um `flock` só vive
 # enquanto um processo o detém — mas o rsync e este script são DUAS ligações SSH do runner. Nenhum
@@ -80,8 +80,9 @@ dc() { docker compose -f "${COMPOSE_FILE}" --env-file "${ENV_FILE}" --env-file "
 DRENAGEM_DIR="${APP_DIR}/.drenagem"
 DRENAGEM_LOCK="${DRENAGEM_DIR}/lock"
 MARCADOR_DEPLOY="${DRENAGEM_DIR}/deploy-em-curso"
-# Um plano pode durar até 40 min (--plan-timeout); 45 min cobre UM plano a meio. Uma drenagem de 3
-# planos compridos pode passar disto — é o caso de desistir.
+# Um plano pode durar até 40 min (--plan-timeout); 45 min cobre UM plano a meio, que é o que uma
+# drenagem leva desde o AOS-447 (DRENAR_MAX=1 na unidade). Com mais, uma drenagem de vários planos
+# compridos pode passar disto — é o caso de desistir.
 ESPERA_DRENAGEM_S="${DEPLOY_ESPERA_DRENAGEM_S:-2700}"
 AO_DESISTIR="${DEPLOY_AO_DESISTIR_DA_DRENAGEM:-abortar}"
 # Quanto vale o anúncio depois de tomado o lock: o rsync e o arranque deste script. Se o deploy

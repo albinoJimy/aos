@@ -113,7 +113,10 @@ func TestAtribuicao_RegistoV2ContinuaAVerificar(t *testing.T) {
 		t.Fatalf("uma cadeia com registos de DUAS epocas tem de verificar: %v", err)
 	}
 	recs, _ := s.Read(ctx, "run-legado", 1, 2)
-	if recs[0].SchemaVersion != SchemaV2 || recs[1].SchemaVersion != SchemaV3 {
+	// O segundo é selado na versão CORRENTE de escrita — a v3, que o AOS-439 mantém como omissão
+	// (o v4 só se escreve com o store configurado para ele); o que se prova é que cada registo
+	// guarda a sua.
+	if recs[0].SchemaVersion != SchemaV2 || recs[1].SchemaVersion != CurrentSchemaVersion {
 		t.Fatalf("cada registo guarda a SUA versao: %d e %d", recs[0].SchemaVersion, recs[1].SchemaVersion)
 	}
 }
@@ -151,12 +154,15 @@ func TestAtribuicao_V2NaoSelaOsCamposNovos(t *testing.T) {
 func TestAtribuicao_VersaoDesconhecidaEhFailClosedComTipoProprio(t *testing.T) {
 	ctx := context.Background()
 	s := NewMemStore()
-	if _, err := s.Append(ctx, AuditRecord{
-		SchemaVersion: 99, // época do futuro
-		Partition:     "run-futuro", Timestamp: time.Unix(1, 0).UTC(), Decision: DecisionAllow,
-	}); err != nil {
-		t.Fatalf("Append: %v", err)
+	// Desde o AOS-439 o Append RECUSA uma versão acima da que o store escreve
+	// (ErrVersaoAcimaDaEscrita), pelo que o registo de uma época do futuro — o que um binário mais
+	// NOVO teria deixado no log — entra directamente na partição, como o replay o carregaria.
+	futuro := AuditRecord{
+		SchemaVersion: 99, AuditSeq: 1, PrevHash: GenesisHash("run-futuro"),
+		Partition: "run-futuro", Timestamp: time.Unix(1, 0).UTC(), Decision: DecisionAllow,
 	}
+	futuro.EntryHash = ComputeEntryHash(futuro.PrevHash, futuro)
+	s.parts["run-futuro"] = []AuditRecord{futuro}
 	err := Verify(ctx, s, "run-futuro", 1, 1)
 	if !errors.Is(err, ErrTampered) {
 		t.Fatalf("uma versao desconhecida tem de ser fail-closed; veio %v", err)

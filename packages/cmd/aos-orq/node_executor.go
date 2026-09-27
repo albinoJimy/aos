@@ -71,6 +71,10 @@ type configDoExecutor struct {
 	sondagem time.Duration
 	// perdida recebe a perda da posse do run: a espera pára em vez de sondar até ao prazo.
 	perdida <-chan error
+	// geracaoDoPedido é a geração da reclamação do pedido de plano que este `serve` trabalha
+	// (AOS-439, `--plan-request-generation`). > 0 ⇒ cada run filho leva o vínculo ao pedido, e o nó
+	// deriva dele o submissor; 0 ⇒ `serve` manual, sem pedido.
+	geracaoDoPedido int
 }
 
 // bannerDoExecutor declara no arranque se o trabalho dos nós é executado — e onde.
@@ -247,6 +251,8 @@ type executorDeNos struct {
 	nos      map[string]plan.Node // o documento aprovado, por node_id
 	tools    map[string][]string  // as tools pinadas de cada nó, do plan.materialized
 	headroom *boundedHeadroom
+	// geracaoDoPedido — ver [configDoExecutor.geracaoDoPedido] (AOS-439).
+	geracaoDoPedido int
 	// emVoo são os nós cujo run foi submetido e ainda não foi recolhido.
 	emVoo map[string]struct{}
 	// sumidos marca desde quando um nó em voo responde 404, e agora dá o relógio.
@@ -346,12 +352,19 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	if err != nil {
 		return err
 	}
-	if err := e.cli.Submit(ctx, pedidoDeRun{
+	p := pedidoDeRun{
 		RunID:     childRunID(e.runID, nodeID),
 		Objective: objectivo,
 		Tools:     nomesDasTools(e.tools[nodeID]),
 		Inputs:    entradas,
-	}); err != nil {
+	}
+	// AOS-439: o vínculo ao pedido — de que plano, e de que geração da reclamação, este run é
+	// trabalho. Não diz quem é o submissor: o nó lê-o do seu log, e só se a reclamação viva for
+	// deste chamador.
+	if e.geracaoDoPedido > 0 {
+		p.PlanRequest = &vinculoAoPedido{RunID: e.runID, Geracao: e.geracaoDoPedido}
+	}
+	if err := e.cli.Submit(ctx, p); err != nil {
 		return err
 	}
 	e.emVoo[nodeID] = struct{}{}

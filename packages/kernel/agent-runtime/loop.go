@@ -22,6 +22,15 @@ type Goal struct {
 	// Principal é a NHI que origina o run e a sua cadeia de delegação (ADR-003).
 	// NHIID é obrigatório.
 	Principal referencemonitor.Principal
+	// Subject é o TITULAR DOS DADOS do run (AOS-440): a KEK por-titular sob a qual o conteúdo
+	// não-determinístico (texto do modelo, outputs de tools) é selado — na captura do turno e no
+	// step-ledger — e a que um apagamento DSAR tem de destruir para o tornar ilegível. SEPARADO do
+	// `Principal.NHIID`, que continua a ser o produtor dos eventos e o atributo do span: num run
+	// filho de um plano quem chama o nó é o drenador, e os dados são de quem pediu o plano.
+	//
+	// Vazio ⇒ `Principal.NHIID` ([Goal.Titular]) — o que todos os runs anteriores usaram, e o que
+	// continua a valer para um run que não é trabalho de um plano.
+	Subject string
 	// Credential é o token NHI (AOS-005) que autentica o Principal do run. É
 	// PROPAGADO a cada [referencemonitor.Call] mediada (Credential), onde o hook de
 	// identidade (identity.IdentityCheck) o verifica e resolve a autoridade. Vazio ⇒
@@ -277,6 +286,25 @@ func (rt *Runtime) openWindow(goal Goal) (*authorityWindow, error) {
 	return newAuthorityWindow(w), nil
 }
 
+// Titular devolve o titular dos dados do run: [Goal.Subject], ou o `Principal.NHIID` quando vazio
+// (AOS-440). É a ÚNICA regra — a captura, o step-ledger (pela Activity), o registo de retoma e o
+// selo terminal perguntam-lha a ela.
+func (g Goal) Titular() string {
+	if g.Subject != "" {
+		return g.Subject
+	}
+	return g.Principal.NHIID
+}
+
+// callPrincipal é o Principal que o loop põe em cada tool call: o do Goal, com o titular DERIVADO
+// (AOS-440). É por ele que o titular atravessa a via durável até ao step-ledger — a Activity leva o
+// Principal inteiro —, sem que a porta da Activity tenha de mudar.
+func (g Goal) callPrincipal() referencemonitor.Principal {
+	p := g.Principal
+	p.Subject = g.Titular()
+	return p
+}
+
 // validate verifica pré-condições do run.
 func (rt *Runtime) validate(goal Goal) error {
 	switch {
@@ -517,9 +545,10 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				Response:    resp,
 				ToolResults: turnCaptured,
 				Producer:    producer,
-				// AOS-093: o TITULAR do run (o principal, ADR-003) sob cuja chave
-				// por-titular o capturer cifra o conteúdo não-determinístico antes do ES.
-				Subject: goal.Principal.NHIID,
+				// AOS-093: o TITULAR do run sob cuja chave por-titular o capturer cifra o
+				// conteúdo não-determinístico antes do ES. AOS-440: o titular dos DADOS
+				// ([Goal.Titular]) — o submissor, num run filho de um plano —, e não o chamador.
+				Subject: goal.Titular(),
 				// AOS-218: a correcção de steer TRUSTED que o turno ANTERIOR injectou no tail
 				// (leading correction deste turno). Vazia nos runs sem steer — captura
 				// byte-idêntica. Capturá-la aqui é o que torna o replay do run steerado fiel.
@@ -785,6 +814,11 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // apex (activity.Dispatcher sobre rm + durable.StepLedger) acrescenta idempotência/
 // replay pelo step-ledger à volta da MESMA mediação, SEM o loop perder o Credential
 // (AOS-152) nem o taint da autorização — a porta recebe o Call já construído aqui.
+// «Recebe o Call» não bastava: o adaptador durável traduzia-o numa Activity sem o taint e
+// o RM de produção via untrusted em todas as calls (fase 1 do AOS-069, 2026-09-26). O que
+// fixa a propriedade é a paridade entre as duas vias
+// (`TestAOS069_ViaDuravelPreservaOTaintDaAutorizacao`, packages/integration).
+//
 // toolOutcome é o desfecho de UMA tool call mediada, agregado para não multiplicar
 // valores de retorno.
 type toolOutcome struct {
@@ -818,7 +852,8 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			Value:  inv.ResourceValue,
 			Region: inv.ResourceRegion,
 		},
-		Principal: goal.Principal,
+		// AOS-440: com o titular derivado — ver [Goal.callPrincipal].
+		Principal: goal.callPrincipal(),
 		// Credential do run propagado à call: é AQUI que o token NHI chega ao hook de
 		// identidade (AOS-152). Vazio ⇒ anónimo ⇒ deny fail-closed sob o hook real.
 		Credential: goal.Credential,

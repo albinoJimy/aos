@@ -69,6 +69,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
+	identity "github.com/aos-ref/platform/identity"
 )
 
 // Defaults da API (todos endurecíveis por [APIOption]).
@@ -548,6 +549,10 @@ type submitRequest struct {
 	// como segmentos `plan_input` marcados `taint=untrusted`, com a proveniência nos rótulos —
 	// NUNCA como objectivo, que é trusted. Ausente ⇒ nada muda.
 	Inputs []planInputWire `json:"inputs,omitempty"`
+	// PlanRequest liga o run ao PEDIDO DE PLANO de que é trabalho (AOS-439): `{run_id, generation}`.
+	// NÃO traz o submissor — o nó deriva-o do seu próprio log da fila, depois de verificar que o
+	// chamador tem a reclamação viva dessa geração (submissor_do_plano.go). Ausente ⇒ nada muda.
+	PlanRequest *vinculoAoPedido `json:"plan_request,omitempty"`
 }
 
 // planInputWire é a representação de wire de um payload consumido (AOS-414). O `digest` é
@@ -700,6 +705,20 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// Região do submissor, retida para a decisão de colisão de run_id mais abaixo. Vazia ⇒ modo
 	// legado (sem gate soberano), onde a colisão continua a responder 201 uniforme.
 	var submitterRegion string
+	// AOS-439/440: o SUBMISSOR do plano de que o run é trabalho (derivado pelo nó, nunca do corpo)
+	// e a credencial verificada na porta — de onde saem o mandato e o agente do run.
+	var (
+		requestedBy       string
+		credDoRun         identity.Principal
+		credDoRunVerifica bool
+	)
+	// SEM GATE SOBERANO NÃO HÁ VÍNCULO (AOS-439). O vínculo exige um chamador autenticado — é ele
+	// que tem de ter a reclamação viva —, e um nó sem gate não autentica ninguém. Aceitar o campo
+	// e ignorá-lo seria correr o run como se o submissor tivesse sido verificado.
+	if req.PlanRequest != nil && h.readGov == nil {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
 	if h.readGov != nil {
 		submitter, ok := h.readGov.authorize(r)
 		if !ok {
@@ -761,7 +780,9 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		//
 		// E não queima o token: o `Verify` CONSULTA a revogação, não marca uso. Se consumisse o
 		// `jti`, verificar na porta faria da primeira tool call um falso replay.
-		if motivo := h.credencialDoRunRecusada(r.Context(), req.Credential); motivo != "" {
+		var motivo string
+		credDoRun, credDoRunVerifica, motivo = credencialDoRunVerificadaNoNo(r.Context(), h.node, req.Credential)
+		if motivo != "" {
 			// A MESMA 403 do `authorize`, e não um código próprio. Um status diferente é, ele
 			// próprio, o bit que vaza: distinguiria «credencial morta» de «não autorizado» para
 			// quem sonda. As sentinelas ficam no log, com o submissor nomeado — o que só é
@@ -778,6 +799,45 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			}
 			writeError(w, http.StatusForbidden, "nao autorizado")
 			return
+		}
+
+		// AOS-439 — O SUBMISSOR DO PLANO, DERIVADO PELO NÓ. Depois da credencial (quem não a tem
+		// válida já saiu), antes da primeira escrita durável (a selagem da residência). A recusa é
+		// a MESMA 403, e a causa fica no log.
+		if req.PlanRequest != nil {
+			rb, verr := h.submissorDoPedido(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
+			if verr != nil {
+				h.logf("submit RECUSADO (AOS-439): vinculo ao pedido de plano chamador=%q run=%q plano=%q geracao=%d: %v",
+					submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.Geracao, verr)
+				writeError(w, http.StatusForbidden, "nao autorizado")
+				return
+			}
+			requestedBy = rb
+		}
+		// AOS-439 — O MANDATO DA CREDENCIAL TEM DE NOMEAR O SUBMISSOR. Um mandato v2 só autoriza o
+		// emissor a agir pelos `requesters` que o humano assinou; um run sem submissor derivado,
+		// sob um v2, também é recusado. O v1 foi decidido pela janela de migração no `Verify`.
+		if credDoRunVerifica {
+			if merr := credDoRun.MandateAdmitsRequester(requestedBy); merr != nil {
+				h.credRecusadas.Add(1)
+				h.logf("submit RECUSADO (AOS-439): submissor fora do mandato chamador=%q run=%q requested_by=%q: %v",
+					submitter.principal, req.RunID, requestedBy, merr)
+				if serr := h.readGov.selarRecusaDeCredencial(r.Context(), submitter, req.RunID, merr.Error()); serr != nil {
+					h.logf("submit RECUSADO (AOS-439): o SELO da recusa nao foi gravado run=%q: %v", req.RunID, serr)
+				}
+				if requestedBy == "" {
+					// Sem vínculo, a recusa é a uniforme: o chamador não provou nada sobre o pedido.
+					writeError(w, http.StatusForbidden, "nao autorizado")
+					return
+				}
+				// Com o vínculo verificado, o chamador é o drenador com a reclamação viva do pedido e
+				// o portador do mandato que o recusa — o código não lhe diz nada que ele não tenha, e
+				// é o que permite ao `aos-orq` fechar o pedido como TERMINAL em vez de o retentar.
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "submissor fora do mandato", "code": codigoRequerenteForaDoMandato,
+				})
+				return
+			}
 		}
 
 		if err := h.readGov.sealResidency(r.Context(), submitter, req.RunID); err != nil {
@@ -813,6 +873,20 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		Inputs: inputs,
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
+	// AOS-439: quem pediu o run, para o selo de cada decisão. Vazio num run que não é de um plano.
+	goal.Principal.RequestedBy = requestedBy
+	// AOS-440: o TITULAR DOS DADOS de um run filho é o submissor do plano, e não quem chama o nó
+	// (o drenador). Vazio ⇒ o Principal.NHIID, como sempre ([agentruntime.Goal.Titular]).
+	goal.Subject = requestedBy
+	// AOS-440: o agente da credencial VERIFICADA na porta, para a retoma comparar agente com agente
+	// (resume.go, passo 2-quater) — em modo soberano o NHIID é o principal OIDC de quem chama.
+	// Revisão do AOS-439/440: também o HUMANO da raiz e o MANDATO da credencial — a retoma compara os
+	// três, porque o mesmo agente pode ser cunhado para outro humano ou sob outro mandato.
+	if credDoRunVerifica {
+		goal.Principal.AgentID = credDoRun.AgentID
+		goal.Principal.UserID = credDoRun.UserID
+		goal.Principal.MandateID = credDoRun.MandateID
+	}
 
 	// (3) SUBMETE ao loop de serviço. O ctx do pedido governa SÓ a aquisição do lease; o run
 	// sobrevive ao retorno (é cancelado só por Shutdown).
@@ -2864,6 +2938,12 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "nao autorizado")
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
+	case integration.RegistoDeRetomaRecusado(err):
+		// 409 como o ErrNoResumeRecord (AOS-069): o registo existe e foi RECUSADO por não ser o
+		// que o Put do nó escreveria — um conflito com o estado do run, não uma falha interna.
+		// A causa (o nome do sentinela) vai ao log do operador; ao cliente, uma frase fechada.
+		h.svc.log("retoma do run %q RECUSADA: registo de retoma adulterado ou divergente: %v", runID, err)
+		writeError(w, http.StatusConflict, "registo de retoma recusado (nao e o que o no escreveu) — nao e reconstituivel")
 	case errors.Is(err, ErrResumeNeedsEmitter):
 		// 403, e NOMEANDO o que falta (AOS-292). Não é 404 uniforme porque não há nada a
 		// esconder — quem pede já provou conhecer o run com uma credencial válida — e não é

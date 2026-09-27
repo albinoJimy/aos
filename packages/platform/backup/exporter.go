@@ -74,6 +74,11 @@ type ExporterOption func(*Exporter)
 
 // WithKeyVault injecta o audit.KeyVault (KMS/Vault) que detém a KEK do backup. Por
 // omissão usa um InMemoryKeyVault de referência com a RandSource configurada.
+//
+// AOS-453: se o vault implementar também [audit.KeyWrapper] (custódia key-never-leaves, p.ex.
+// Vault Transit), os segmentos selam-se por ENVELOPE — a DEK é embrulhada dentro da custódia e a
+// KEK nunca entra no processo. Uma custódia que nem entrega a KEK nem implementa o envelope é
+// recusada na construção ([ErrKEKCustodyUnsupported]).
 func WithKeyVault(v audit.KeyVault) ExporterOption { return func(e *Exporter) { e.vault = v } }
 
 // WithRandSource injecta a fonte de entropia (determinística em testes).
@@ -140,10 +145,15 @@ func NewExporter(src eventstore.BackupSource, dst ImmutableStore, signer Signer,
 	}
 	// O titular da KEK do backup é derivado da região de soberania: uma chave por
 	// fronteira, nunca partilhada entre regiões.
-	e.subject = backupSubjectPrefix + normalizeRegion(dst.Region())
+	e.subject = backupSubjectFor(dst.Region())
 	// A retoma e a colisão entre dois donos assentam em write-once condicional. Um destino que não
 	// o cumpra bifurcava em silêncio; prova-se aqui, antes de qualquer ciclo (ver resume.go).
 	if err := probeConditionalPut(dst, e.manifest.Region, retainUntilFor(e.policy, e.retClass, e.now().UTC())); err != nil {
+		return nil, err
+	}
+	// AOS-453: a custódia tem de saber selar segmentos — provado AQUI, e não ciclo a ciclo. E ANTES
+	// da retoma: uma custódia em baixo não pode chegar à retoma e ler-se lá como «KEK errada».
+	if err := checkKEKCustody(e.vault, e.subject, e.rand); err != nil {
 		return nil, err
 	}
 	if err := e.resume(); err != nil {
@@ -173,7 +183,7 @@ func (e *Exporter) resume() error {
 	}
 	// A assinatura prova quem selou; não prova que ESTA custódia de chaves ainda decifra o que foi
 	// selado. Sem isto a cadeia retomava, verificava, e não restaurava (ver resume.go).
-	if err := checkLastSegmentOpens(e.dst, e.vault, rec.Entry); err != nil {
+	if err := checkLastSegmentOpens(e.dst, e.vault, e.subject, rec.Entry); err != nil {
 		return err
 	}
 	// O que a retoma NÃO confere é se a cadeia é deste LOG: é o Export que recusa, sem escrever,

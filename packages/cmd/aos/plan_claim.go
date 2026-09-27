@@ -104,7 +104,16 @@ const intervaloDeReverificacao = 10 * time.Minute
 //
 // O valor é generoso de propósito. Curto de mais, um `serve` lento é reclamado duas vezes e
 // corre duas — e a segunda bate no lease do primeiro (saída 3), o que é recuperável mas ruidoso.
-const ttlDaReclamacao = 30 * time.Minute
+//
+// TEM DE EXCEDER O PIOR CASO DE UMA GERAÇÃO (AOS-439). Desde o vínculo reclamação→run, cada run
+// filho só é aceite com a reclamação VIVA; a 30 min, abaixo dos 40 do `--plan-timeout` do
+// `aos-orq`, um nó que ficasse pronto depois do TTL era recusado e a geração inteira perdia-se (e a
+// saída 1 não larga o lease). O pior caso não é só o prazo: antes dele o `serve` decompõe (até 3
+// tentativas do planeador, cada uma com o egress do modelo — 120 s em produção) e re-hidrata os
+// payloads (2 min): 40 + 3×2 + 2 = 48 min. 60 min dá 12 de folga.
+// `TestAOS439TTLDaReclamacaoExcedeOPrazoDoPlano` soma essas parcelas das fontes e falha se este
+// valor ficar abaixo. Custo: um consumidor que morra segura o pedido até uma hora.
+const ttlDaReclamacao = 60 * time.Minute
 
 // tectoDePendentes é o número máximo de pedidos por drenar.
 //
@@ -311,6 +320,12 @@ type respostaDeReclamo struct {
 	Board     string `json:"board,omitempty"`
 	Region    string `json:"region,omitempty"`
 	Geracao   int    `json:"generation"`
+	// RequestedBy é o principal que SUBMETEU o pedido (o do `planrequest.submitted`, AOS-439). Vai
+	// ao drenador para ele recusar ANTES de planear um pedido cujo submissor o seu mandato não
+	// nomeia — sem isto o planeador corria o modelo com o NHI do mandato por um submissor que o
+	// humano não autorizou. Não revela nada novo a quem o recebe: o drenador já recebe o objectivo
+	// decifrado, e o `requested_by` é o que o nó derivará do mesmo pedido no `POST /runs`.
+	RequestedBy string `json:"requested_by,omitempty"`
 }
 
 // handlePlanClaim reclama UM pedido pendente e devolve-o.
@@ -328,6 +343,14 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	reclamante, ok := h.readGov.authorize(r)
 	if !ok || reclamante.principal == "" {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
+	// SÓ QUEM O DONO NOMEOU DRENA (AOS-439). Autenticado não chega: qualquer identidade da região
+	// reclamava pedidos ALHEIOS e recebia o objectivo DECIFRADO. A recusa é a MESMA 403 de cima, e
+	// vem ANTES de qualquer escrita — uma reclamação recusada não gasta uma geração do pedido.
+	if !h.eDrenador(reclamante.principal) {
+		h.logf("plan-claim: RECUSADO (AOS-439) — principal=%q nao consta de AOS_PLAN_DRAINERS", reclamante.principal)
 		writeError(w, http.StatusForbidden, "nao autorizado")
 		return
 	}
@@ -379,6 +402,8 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 			Board:     pedido.Payload.Board,
 			Region:    pedido.Payload.Region,
 			Geracao:   pedido.Geracao,
+			// AOS-439: o submissor, para o drenador o confrontar com o seu mandato antes de planear.
+			RequestedBy: pedido.Payload.Principal,
 		})
 		return
 	}
@@ -470,6 +495,12 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	quem, ok := h.readGov.authorize(r)
 	if !ok || quem.principal == "" {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
+	// A MESMA LISTA da reclamação (AOS-439): quem não drena também não fecha pedidos de ninguém.
+	if !h.eDrenador(quem.principal) {
+		h.logf("plan-outcome: RECUSADO (AOS-439) — principal=%q nao consta de AOS_PLAN_DRAINERS", quem.principal)
 		writeError(w, http.StatusForbidden, "nao autorizado")
 		return
 	}

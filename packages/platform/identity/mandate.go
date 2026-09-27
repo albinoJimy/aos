@@ -53,6 +53,18 @@ const MandatoValidadeMaxima = 90 * 24 * time.Hour
 // noutro protocolo podia, em teoria, ser reinterpretada como mandato.
 const mandateDomain = "aos.identity.mandate.v1"
 
+// mandateDomainV2 é o domínio de um mandato que enumera `requesters` (AOS-439). Domínio NOVO, e
+// não o v1 com um campo a mais: os bytes que um humano assinou em v1 continuam a ser exactamente
+// os de antes, e um mandato v2 a que se arranquem os `requesters` passa a pedir o domínio v1 —
+// cuja assinatura o humano nunca produziu para aquele conteúdo. Não há forma de converter um no
+// outro sem a chave do humano.
+const mandateDomainV2 = "aos.identity.mandate.v2"
+
+// MandatoRequerentesMaximo é o tecto de `requesters` de um mandato. Um mandato viaja embebido em
+// CADA token; uma lista sem tecto faria de cada token um documento. 64 cobre uma equipa; mais do
+// que isso é um grupo, e grupos não são o que um humano deve assinar nome a nome.
+const MandatoRequerentesMaximo = 64
+
 // mandateRevocationPrefix é o espaço de nomes da revogação de mandatos no MESMO registo durável
 // dos jti ([Revocations]). Um jti é aleatório em base64url (sem ':'), pelo que o prefixo não pode
 // colidir com a revogação de um token.
@@ -87,6 +99,39 @@ type Mandate struct {
 	// nascer e morrer dentro da janela. NotAfter − NotBefore ≤ [MandatoValidadeMaxima].
 	NotBefore int64 `json:"nbf"`
 	NotAfter  int64 `json:"exp"`
+	// Requesters são os SUBMISSORES por quem o emissor pode agir (AOS-439, emenda ao ADR-033
+	// §2.1): o `sub` do ID-token de quem pede um plano, exactamente como o nó o grava no
+	// `planrequest.submitted`. O nó recusa o `POST /runs` de um run cujo submissor (o
+	// `requested_by`, que o NÓ deriva da reclamação — nunca do corpo) não esteja aqui. Um service
+	// account só submete se estiver nomeado.
+	//
+	// OBRIGATÓRIO NA ASSINATURA ([SignMandate] recusa sem ele), sem curingas e sem repetidos. Um
+	// mandato SEM `requesters` é um mandato v1, anterior a esta capacidade: verifica-se com o
+	// domínio v1 e o nó só o aceita dentro da janela de migração ([WithMandateV1Until]).
+	Requesters []string `json:"requesters,omitempty"`
+}
+
+// Version é a versão do formato do mandato: 2 quando enumera `requesters`, 1 quando não.
+func (m Mandate) Version() int {
+	if len(m.Requesters) > 0 {
+		return 2
+	}
+	return 1
+}
+
+// AdmitsRequester diz se o submissor `requestedBy` está dentro dos `requesters` do mandato.
+// Um mandato v1 (sem lista) não admite ninguém por esta via — a sua aceitação é decidida pela
+// janela de migração, não por esta função.
+func (m Mandate) AdmitsRequester(requestedBy string) bool {
+	if requestedBy == "" {
+		return false
+	}
+	for _, r := range m.Requesters {
+		if r == requestedBy {
+			return true
+		}
+	}
+	return false
 }
 
 // SignedMandate é o mandato com a assinatura ed25519 do humano sobre [Mandate.SigningInput].
@@ -145,12 +190,39 @@ func (m Mandate) Validate() error {
 	if m.NotAfter-m.NotBefore > int64(MandatoValidadeMaxima/time.Second) {
 		return fmt.Errorf("%w: janela de %ds acima do tecto de %s", ErrMandateInvalid, m.NotAfter-m.NotBefore, MandatoValidadeMaxima)
 	}
+	return validarRequerentes(m.Requesters)
+}
+
+// validarRequerentes impõe a forma dos `requesters` (AOS-439) quando existem. A AUSÊNCIA não é
+// decidida aqui — é o que distingue v1 de v2, e quem a recusa é [SignMandate] (não se assina v1) e
+// o verificador (fora da janela de migração).
+//
+// Cada entrada é um NOME EXACTO: sem espaços, sem curingas (`*`), sem vírgulas (a lista chega por
+// CSV ao `mandate-sign`, e uma vírgula dentro de um nome seria dois nomes num lado e um no outro).
+func validarRequerentes(rs []string) error {
+	if len(rs) > MandatoRequerentesMaximo {
+		return fmt.Errorf("%w: %d requesters, acima do tecto de %d", ErrMandateInvalid, len(rs), MandatoRequerentesMaximo)
+	}
+	visto := make(map[string]bool, len(rs))
+	for _, r := range rs {
+		if r == "" || len(r) > 256 || strings.ContainsAny(r, " \t\r\n,*") {
+			return fmt.Errorf("%w: requester %q vazio, longo, com espaco, virgula ou curinga", ErrMandateInvalid, r)
+		}
+		if visto[r] {
+			return fmt.Errorf("%w: requester %q repetido", ErrMandateInvalid, r)
+		}
+		visto[r] = true
+	}
 	return nil
 }
 
 // SigningInput é a forma CANÓNICA que o humano assina: o domínio e cada campo como netstring
 // (`<len>:<valor>,`), por ordem fixa, com o escopo ORDENADO. A codificação é injectiva — nenhum
 // par de mandatos distintos produz os mesmos bytes — e não depende da ordem das chaves de um JSON.
+//
+// v2 (AOS-439): com `requesters`, o domínio é [mandateDomainV2] e a lista ORDENADA vai no FIM,
+// depois do escopo, com a contagem à frente. Sem eles, os bytes são exactamente os do v1 — um
+// mandato já assinado continua a verificar.
 func (m Mandate) SigningInput() []byte {
 	var b strings.Builder
 	ns := func(s string) {
@@ -159,7 +231,11 @@ func (m Mandate) SigningInput() []byte {
 		b.WriteString(s)
 		b.WriteByte(',')
 	}
-	ns(mandateDomain)
+	if m.Version() == 2 {
+		ns(mandateDomainV2)
+	} else {
+		ns(mandateDomain)
+	}
 	ns(m.ID)
 	ns(m.Human)
 	ns(m.Board)
@@ -176,6 +252,14 @@ func (m Mandate) SigningInput() []byte {
 	for _, s := range scope {
 		ns(s)
 	}
+	if m.Version() == 2 {
+		rs := append([]string(nil), m.Requesters...)
+		sort.Strings(rs)
+		ns(strconv.Itoa(len(rs)))
+		for _, r := range rs {
+			ns(r)
+		}
+	}
 	return []byte(b.String())
 }
 
@@ -187,6 +271,12 @@ func SignMandate(signer crypto.Signer, m Mandate) (SignedMandate, error) {
 	}
 	if err := m.Validate(); err != nil {
 		return SignedMandate{}, err
+	}
+	// JÁ NÃO SE ASSINA v1 (AOS-439). Um mandato sem `requesters` autoriza o emissor a agir por
+	// QUALQUER submissor — é o curinga que o mandato existe para não ter. Os v1 já assinados
+	// verificam dentro da janela de migração do nó; novos não nascem.
+	if m.Version() < 2 {
+		return SignedMandate{}, fmt.Errorf("%w: requesters vazio — um mandato tem de nomear por quem o emissor pode agir (v1 ja nao se assina)", ErrMandateInvalid)
 	}
 	pub, err := signerPublicKey(signer)
 	if err != nil {
@@ -252,10 +342,10 @@ func (m Mandate) Covers(c Claims) error {
 
 // verifyMandate é o passo do [Verifier] para um emissor MANDATADO: exige o mandato embebido,
 // verifica-o contra a chave PINADA do humano que ele nomeia, confirma que o token está dentro
-// dele e consulta a revogação do mandato. Devolve o ID do mandato verificado.
-func (v *Verifier) verifyMandate(ctx context.Context, c Claims) (string, error) {
+// dele e consulta a revogação do mandato. Devolve o mandato verificado.
+func (v *Verifier) verifyMandate(ctx context.Context, c Claims) (Mandate, error) {
 	if c.Mandate == nil {
-		return "", fmt.Errorf("%w: iss=%q so e aceite com mandato embebido", ErrMandateRequired, c.Issuer)
+		return Mandate{}, fmt.Errorf("%w: iss=%q so e aceite com mandato embebido", ErrMandateRequired, c.Issuer)
 	}
 	// O TTL DO MANDATO CONTA A PARTIR DE AGORA, E NÃO DE UM iat QUE O EMISSOR ESCOLHE.
 	//
@@ -268,33 +358,40 @@ func (v *Verifier) verifyMandate(ctx context.Context, c Claims) (string, error) 
 	// Covers (exp − iat ≤ TTL máximo) fica exp ≤ agora + folga + TTL máximo. Um nbf a zero — que o
 	// passo 4 salta — também cai aqui, porque o iat de um token nunca é zero.
 	if c.NotBefore != c.IssuedAt {
-		return "", fmt.Errorf("%w: nbf (%d) diferente de iat (%d) num emissor mandatado — o TTL do mandato conta a partir de agora", ErrMandateViolated, c.NotBefore, c.IssuedAt)
+		return Mandate{}, fmt.Errorf("%w: nbf (%d) diferente de iat (%d) num emissor mandatado — o TTL do mandato conta a partir de agora", ErrMandateViolated, c.NotBefore, c.IssuedAt)
 	}
 	// UM SÓ ELO. O emissor honesto cunha sempre a raiz (humano → agente); os elos intermédios não
 	// dão autoridade (o escopo é intersectado), mas escrevem na auditoria agentes que o humano não
 	// autorizou, e a profundidade da cadeia passa a ser escolhida pelo emissor.
 	if len(c.DelegationChain) != 1 {
-		return "", fmt.Errorf("%w: cadeia com %d elos num emissor mandatado (so a raiz humano->agente)", ErrMandateViolated, len(c.DelegationChain))
+		return Mandate{}, fmt.Errorf("%w: cadeia com %d elos num emissor mandatado (so a raiz humano->agente)", ErrMandateViolated, len(c.DelegationChain))
 	}
 	sm := *c.Mandate
 	pub, ok := v.mandateSigners[sm.Mandate.Human]
 	if !ok {
-		return "", fmt.Errorf("%w: nenhuma chave pinada para o humano %q", ErrMandateInvalid, sm.Mandate.Human)
+		return Mandate{}, fmt.Errorf("%w: nenhuma chave pinada para o humano %q", ErrMandateInvalid, sm.Mandate.Human)
 	}
 	if err := sm.VerifySignature(pub); err != nil {
-		return "", err
+		return Mandate{}, err
+	}
+	// A JANELA DE MIGRAÇÃO DOS v1 (AOS-439). Depois da assinatura — só se decide sobre um mandato
+	// que o humano pinado assinou mesmo — e antes de tudo o resto. Fora da janela, um v1 é recusado
+	// mesmo sendo autêntico: autoriza o emissor a agir por QUALQUER submissor, e isso só se tolera
+	// enquanto o humano não re-assina com `requesters`. A janela compara com o relógio do NÓ.
+	if sm.Mandate.Version() < 2 && (v.mandateV1Until.IsZero() || !v.now().Before(v.mandateV1Until)) {
+		return Mandate{}, fmt.Errorf("%w: id=%q (re-assinar com requesters: aos-issuer mandate-sign --requesters)", ErrMandateV1Closed, sm.Mandate.ID)
 	}
 	if err := sm.Mandate.Covers(c); err != nil {
-		return "", err
+		return Mandate{}, err
 	}
 	if v.revocations != nil {
 		revoked, rerr := v.revocations.IsRevoked(ctx, MandateRevocationKey(sm.Mandate.ID))
 		if rerr != nil {
-			return "", fmt.Errorf("%w: %w", ErrRevocationUnavailable, rerr)
+			return Mandate{}, fmt.Errorf("%w: %w", ErrRevocationUnavailable, rerr)
 		}
 		if revoked {
-			return "", fmt.Errorf("%w: id=%q", ErrMandateRevoked, sm.Mandate.ID)
+			return Mandate{}, fmt.Errorf("%w: id=%q", ErrMandateRevoked, sm.Mandate.ID)
 		}
 	}
-	return sm.Mandate.ID, nil
+	return sm.Mandate, nil
 }

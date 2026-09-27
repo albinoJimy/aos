@@ -97,7 +97,7 @@ const (
 // selar `failed` no caminho de saída de [NodeService.hostRun] (chamado por [sealTerminalState]).
 // É a composição de PRODUÇÃO que faltava: sem ela failed→compensating era um caminho morto.
 //
-// titular é o Principal.NHIID do run: a compensação corre DENTRO do step-ledger, que cifra o
+// titular é o titular dos dados do run (goal.Titular(), AOS-440): a compensação corre DENTRO do step-ledger, que cifra o
 // registo por-titular (AOS-093/245) e — com [durable.WithRequireTitular] — RECUSA um Apply sem
 // titular; por isso ele é anexado ao ctx ([durable.ContextWithTitular]).
 //

@@ -11,11 +11,11 @@ package main
 // Não é um serviço de longa duração. Reclama, corre, reporta, repete — e termina quando a fila
 // não tem mais nada para este consumidor.
 //
-// A razão é que a FORMA DO TRABALHADOR não está decidida (ADR-030 §4), e um comando drenável não
-// obriga a decidir: quem o invoca pode ser um timer do host (há o precedente do
-// `aos-tls-sync.timer`) ou um laço de um serviço. O código é o mesmo nos dois casos, e nenhum dos
-// dois exige que este binário seja o primeiro serviço de longa duração do AOS além do nó — com o
-// healthcheck, o reinício e a observabilidade próprios que isso traria.
+// A razão era que a FORMA DO TRABALHADOR não estava decidida (ADR-030 §4), e um comando drenável não
+// obrigava a decidir: quem o invoca pode ser um timer do host ou um laço de um serviço, com o mesmo
+// código. Decidiu-a o dono no AOS-447 (nota ao ADR-030 §4): UM trabalhador, o timer
+// `aos-drenar-planos` 1 min depois da drenagem anterior, com `--max 1` — sem fazer deste binário o
+// primeiro serviço de longa duração do AOS além do nó.
 //
 // # A TRADUÇÃO CÓDIGO→CLASSE VIVE AQUI, E NÃO NO NÓ
 //
@@ -28,11 +28,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 	"time"
 
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -60,6 +63,8 @@ const maxPedidosPorDrenagem = 16
 //	7 exitDecisaoRecusada      TERMINAL     houve decisão e foi NÃO; caso fechado
 //	9 exitPlanoRecusado        TERMINAL     o planeador esgotou tentativas; não se retenta
 //	10 exitDocumentoRecusado   TERMINAL     documento/snapshot recusado; determinista (AOS-442)
+//	11 exitRequerenteForaDoMandato TERMINAL o submissor não consta dos requesters do mandato;
+//	                                        determinista até o humano re-assinar (AOS-439)
 //	0 (sem erro)               TERMINAL     o plano correu
 //	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
 //
@@ -71,7 +76,7 @@ const maxPedidosPorDrenagem = 16
 // descartar.
 func classeDoDesfecho(codigo int) string {
 	switch codigo {
-	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado:
+	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato:
 		return "terminal"
 	case exitPendenteDeAprovacao:
 		return "aguarda_humano"
@@ -93,6 +98,7 @@ func cmdConsume(args []string) (err error) {
 	worker := fs.String("worker", "", "identidade deste trabalhador, passada ao `serve`")
 	planDir := fs.String("plan-dir", "", "pasta onde fica o documento de cada plano validado, para a retoma correr por --plan-doc em vez de decompor de novo (AOS-442); por omissão, `planos/` ao lado do --wal. Com --nats é obrigatória e tem de ser PARTILHADA entre as réplicas")
 	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: passado ao `serve --goal` (ver `serve -h`), para exercitar a drenagem sem LLM")
+	mandateFile := fs.String("mandate", "", "AOS-439: o mandato do drenador (o mandato.json que o timer de cunhagem lê). Com ele, um pedido cujo submissor não conste dos `requesters` de um mandato v2 fecha JÁ com a saída 11, sem `serve` nem decomposição; um mandato ilegível aborta a drenagem antes de reclamar. Sem ele não se confronta — o nó recusa, mas só depois de planear")
 	metricsFile := fs.String("metrics-file", "", "ficheiro de métricas em formato de texto Prometheus, reescrito de forma atómica no fim de cada drenagem com os contadores acumulados (AOS-443); por omissão, "+nomeDoFicheiroDeMetricas+" ao lado do --wal. Sem --wal e sem ele, não se escreve")
 	var sub substrato
 	sub.registarFlags(fs)
@@ -174,6 +180,21 @@ func cmdConsume(args []string) (err error) {
 	fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
 	consumidos, reverificados := 0, 0
 	for consumidos < *maxPedidos && reverificados < maxReverificacoesPorDrenagem {
+		// AOS-439: o mandato relê-se a cada pedido (o dono re-assina-o por cima), e ANTES de
+		// reclamar — um mandato ilegível não pode gastar uma geração do pedido.
+		var mandato *identity.Mandate
+		if *mandateFile != "" {
+			m, err := lerMandatoDoDrenador(*mandateFile)
+			if err != nil {
+				return fmt.Errorf("%w — nao se reclama nenhum pedido sem saber por quem o mandato deixa agir", err)
+			}
+			// O NHI em uso tem de ter sido cunhado sob ESTE mandato; senão o que aqui se decide não
+			// é o que o nó vai decidir. Aborta antes de reclamar: os pedidos ficam na fila.
+			if err := cruzarMandatoComONHI(m, cli.credFile); err != nil {
+				return err
+			}
+			mandato = &m
+		}
 		pedido, houve, err := cli.ReclamarPedido(ctx)
 		if err != nil {
 			return fmt.Errorf("reclamar pedido: %w", err)
@@ -188,6 +209,24 @@ func cmdConsume(args []string) (err error) {
 		metricas.registarReclamacao(pedido.Geracao)
 		tratados++
 		inicio := time.Now()
+
+		// AOS-439: um submissor que o mandato não nomeia fecha JÁ — sem `serve`, sem decomposição,
+		// sem o modelo a correr com o NHI do mandato por quem o humano não autorizou.
+		if requerenteForaDoMandato(mandato, pedido) {
+			consumidos++
+			resumo := resumoDoPedido{origem: origemSemServe, geracao: pedido.Geracao, nos: -1,
+				duracao: time.Since(inicio), erro: "requerente_fora_do_mandato"}
+			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitRequerenteForaDoMandato, resumo.linha())
+			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
+				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo)); err != nil {
+				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
+					"fila quando a reclamacao expirar\n", pedido.RunID, err)
+				metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, false)
+				continue
+			}
+			metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, true)
+			continue
+		}
 
 		// AOS-442: por onde o plano entra — o documento validado de uma tentativa anterior, ou a
 		// decomposição do objectivo —, decidido pelo LOG do run. Alguns casos são um desfecho sem
@@ -233,7 +272,7 @@ func cmdConsume(args []string) (err error) {
 		// O DESFECHO REPORTA-SE SEMPRE, mesmo quando o `serve` falhou. Não reportar deixa o
 		// pedido preso até ao TTL da reclamação — meia hora de silêncio por uma falha que já
 		// conhecemos.
-		if err := cli.ReportarDesfecho(ctx, pedido.RunID, pedido.Geracao, classe, codigo, detalhe); err != nil {
+		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe); err != nil {
 			// Falhar a reportar NÃO é fatal para os pedidos seguintes: o TTL recupera este.
 			// Mas é ruidoso de propósito — um consumidor que não consegue reportar está a
 			// trabalhar às cegas.
@@ -258,6 +297,44 @@ func cmdConsume(args []string) (err error) {
 	} else {
 		fmt.Printf("drenagem terminada: %d pedido(s) consumido(s), %d re-verificado(s) ainda a espera de humano\n",
 			consumidos, reverificados)
+	}
+	return nil
+}
+
+// reportadorDeDesfecho é a metade do cliente do nó que [reportarEAvisar] usa — existe para o teste
+// do AOS-445 poder provar a ORDEM (reporte, depois aviso) sem levantar um nó.
+type reportadorDeDesfecho interface {
+	ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string) error
+}
+
+// prefixoDoAviso abre a linha que o `drenar-planos.sh` recolhe para o outbox dos avisos (AOS-445).
+// A forma inteira é [linhaDoAviso]; o TestAOS445ContratoDaLinhaDoAvisoComOsScripts fixa-a dos dois
+// lados.
+const prefixoDoAviso = "aviso: "
+
+// linhaDoAviso é a linha estável que diz «este plano TERMINOU, e o nó já o sabe» (AOS-445).
+//
+// Só leva o que o aviso ao operador pode levar: o `run_id` (que o `avisar-planos.sh` pseudonimiza
+// antes de sair do servidor), a geração, a classe e o código. Nunca o objectivo, o resultado nem o
+// tipo do erro — esses ficam no log da drenagem e no `GET /plans/{id}`.
+func linhaDoAviso(runID string, geracao int, classe string, codigo int) string {
+	return fmt.Sprintf("%srun=%s geracao=%d classe=%s codigo=%d", prefixoDoAviso, runID, geracao, classe, codigo)
+}
+
+// reportarEAvisar reporta o desfecho ao nó e, SÓ DEPOIS de o nó o ter aceitado, imprime a linha
+// `aviso:` de um desfecho TERMINAL (AOS-445).
+//
+// A ORDEM É O CONTRATO. A linha `desfecho:` sai antes do reporte e diz o que o `serve` deu; esta diz
+// o que o nó registou. Um reporte falhado devolve o pedido à fila quando a reclamação expirar, e a
+// geração seguinte terá o seu desfecho — avisar já seria anunciar um fim que o nó não conhece, e
+// possivelmente dois fins para o mesmo plano. Os desfechos que não são terminais (transitório, à
+// espera de humano) não avisam: o plano ainda não acabou.
+func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string) error {
+	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe); err != nil {
+		return err
+	}
+	if classe == "terminal" {
+		fmt.Fprintln(out, linhaDoAviso(runID, geracao, classe, codigo))
 	}
 	return nil
 }
@@ -342,6 +419,8 @@ func tipoDoErro(err error) string {
 		return "snapshot_nao_corresponde"
 	case errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return "snapshot_diferente_do_selado"
+	case errors.Is(err, errRequerenteForaDoMandato):
+		return "requerente_fora_do_mandato"
 	default:
 		return "generico"
 	}
@@ -371,6 +450,12 @@ func argsDoServe(snapshot string, p pedidoReclamado, sub substrato, planTimeout,
 		}
 	}
 	args = append(args, "--release")
+	// AOS-439: o vínculo ao pedido reclamado. É o que faz cada run filho levar ao nó de que pedido
+	// é trabalho, e o nó derivar daí o submissor — sem ele, o run corria sem submissor e, sob um
+	// mandato v2, seria recusado.
+	if p.Geracao > 0 {
+		args = append(args, "--plan-request-generation", strconv.Itoa(p.Geracao))
+	}
 	if snapshot != "" {
 		args = append(args, "--snapshot", snapshot)
 	}

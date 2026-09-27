@@ -18,7 +18,9 @@
 //   - REPLAY (AOS-016): em [ModeReplay] a activity DEVOLVE o resultado REGISTADO do
 //     log (via [ReplaySource]) com ZERO efeito, SEM mediação nem execução.
 //   - TAINT (ADR-005): o resultado devolvido ao loop está SEMPRE marcado
-//     [agentruntime.TaintUntrusted].
+//     [agentruntime.TaintUntrusted]. O taint da AUTORIZAÇÃO da call é outro: é o
+//     [Activity.AuthorizationTaint] que o chamador traz (o rótulo do contexto cunhado pelo
+//     loop, ADR-034), untrusted por omissão.
 //   - COMPENSAÇÃO (AOS-020): se a activity tiver uma [Compensation], é registada no
 //     [saga.CompensationRegistry] associada ao step_id, no momento do permit.
 //

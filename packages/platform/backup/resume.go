@@ -62,8 +62,8 @@ import (
 //
 // E o segmento desse último elo tem de estar no destino, bater com o content-hash selado e ABRIR com
 // a KEK do vault deste exportador ([checkLastSegmentOpens]). Sem isto, um processo com outra KEK
-// (o vault de referência, em memória, nasce vazio a cada arranque — e não há ainda custódia
-// durável que sele segmentos, AOS-453) retomava a cadeia, o manifesto
+// (o vault de referência, em memória, nasce vazio a cada arranque; ou uma custódia cuja KEK do
+// backup foi destruída ou é de outro mount) retomava a cadeia, o manifesto
 // verificava, e o restauro falhava no dia do DR com [ErrSegmentTampered] — lido como adulteração
 // quando a causa é uma custódia de chaves que não sobreviveu ao processo.
 //
@@ -253,7 +253,7 @@ func checkNoCyclesBeyond(store ImmutableStore, region string, last uint64) error
 // não faz: o checkpoint prova quem selou a cadeia, e nada diz sobre se esta custódia de chaves
 // ainda decifra o que foi selado. Um segmento ausente é [ErrResumeUnverifiable] (o registo aponta
 // para nada); um destino que não responde propaga o erro dele (não se lê como «em falta»).
-func checkLastSegmentOpens(store ImmutableStore, vault audit.KeyVault, entry SegmentEntry) error {
+func checkLastSegmentOpens(store ImmutableStore, vault audit.KeyVault, subjectID string, entry SegmentEntry) error {
 	blob, err := store.Get(entry.Ref)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -269,8 +269,8 @@ func checkLastSegmentOpens(store ImmutableStore, vault audit.KeyVault, entry Seg
 	if err != nil {
 		return fmt.Errorf("%w: o segmento %q do ciclo %d e ilegivel: %v", ErrResumeUnverifiable, entry.Ref, entry.Index, err)
 	}
-	if _, err := openSegment(vault, enc); err != nil {
-		return fmt.Errorf("%w: a KEK do backup NAO e a que selou a cadeia — o segmento %q do ciclo %d nao abre com o vault deste exportador (%v). Retomar daria uma cadeia que verifica e nao restaura. A KEK do vault de referencia (em memoria) morre com o processo, e a custodia Vault do no (key-never-leaves) ainda nao sela segmentos (AOS-453): nao ha hoje custodia que a faca sobreviver. Use um destino novo", ErrResumeUnverifiable, entry.Ref, entry.Index, err)
+	if _, err := openSegment(vault, subjectID, enc); err != nil {
+		return fmt.Errorf("%w: a KEK do backup NAO e a que selou a cadeia — o segmento %q do ciclo %d nao abre com o vault deste exportador (%v). Retomar daria uma cadeia que verifica e nao restaura. A custodia RESPONDEU a sonda de composicao (nao esta em baixo): a KEK que selou esta cadeia nao e a dela — foi destruida (crypto-shred do titular do backup), e de outra custodia/mount, ou era o vault de referencia em memoria, que morre com o processo. Use um destino novo (epoca nova) ou reponha a custodia que selou a cadeia", ErrResumeUnverifiable, entry.Ref, entry.Index, err)
 	}
 	return nil
 }

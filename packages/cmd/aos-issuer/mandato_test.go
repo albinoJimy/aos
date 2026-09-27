@@ -30,7 +30,8 @@ func cerimoniaMandato(t *testing.T) (dir string, humanoPub, emissorPub ed25519.P
 	var out, diag bytes.Buffer
 	err := run([]string{"mandate-sign", "--key-file", filepath.Join(dir, "humano.key"),
 		"--human", "alice", "--board", "board-eu", "--agent", "agent:aos-orq", "--class", "planner",
-		"--caps", "run:submit,model:invoke", "--out", filepath.Join(dir, "mandato.json")}, &out, &diag)
+		"--caps", "run:submit,model:invoke", "--requesters", "sub-bob, sub-carla",
+		"--out", filepath.Join(dir, "mandato.json")}, &out, &diag)
 	if err != nil {
 		t.Fatalf("mandate-sign: %v", err)
 	}
@@ -73,6 +74,10 @@ func TestAOS427CerimoniaDoMandatoPontaAPonta(t *testing.T) {
 	if p.UserID != "alice" || p.AgentID != "agent:aos-orq" || p.Board != "board-eu" || p.MandateID == "" {
 		t.Fatalf("principal inesperado: %+v", p)
 	}
+	// AOS-439: os requesters do `--requesters` chegam ao nó dentro do mandato assinado.
+	if len(p.MandateRequesters) != 2 || p.MandateRequesters[0] != "sub-bob" || p.MandateRequesters[1] != "sub-carla" {
+		t.Fatalf("os requesters do mandato tinham de chegar ao Principal, vieram %v", p.MandateRequesters)
+	}
 	if got := p.Expiry.Sub(p.IssuedAt); got.Minutes() != 45 {
 		t.Fatalf("sem --ttl o token leva o maximo do mandato (45m), veio %v", got)
 	}
@@ -112,6 +117,30 @@ func TestAOS427MandateSignNaoCriaAChaveDoHumano(t *testing.T) {
 	}
 	if _, serr := os.Stat(filepath.Join(dir, "nao-existe.key")); !os.IsNotExist(serr) {
 		t.Fatal("mandate-sign criou uma chave humana em silencio")
+	}
+}
+
+// AOS-439: um mandato sem `--requesters` já não se assina — nem com curinga.
+func TestAOS439MandateSignExigeRequesters(t *testing.T) {
+	dir := t.TempDir()
+	humano := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, 32))
+	if err := os.WriteFile(filepath.Join(dir, "humano.key"), []byte(hex.EncodeToString(humano.Seed())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"mandate-sign", "--key-file", filepath.Join(dir, "humano.key"),
+		"--human", "alice", "--board", "b", "--agent", "a", "--class", "c", "--caps", "x"}
+	for _, c := range []struct {
+		nome  string
+		extra []string
+	}{
+		{"sem a flag", nil},
+		{"flag vazia", []string{"--requesters", " , "}},
+		{"curinga", []string{"--requesters", "*"}},
+	} {
+		var out bytes.Buffer
+		if err := run(append(append([]string(nil), base...), c.extra...), &out, &bytes.Buffer{}); err == nil || out.Len() != 0 {
+			t.Errorf("%s: mandate-sign tinha de recusar sem emitir mandato; err=%v out=%q", c.nome, err, out.String())
+		}
 	}
 }
 

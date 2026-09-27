@@ -682,6 +682,23 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AOS-439: a JANELA DE MIGRAÇÃO dos mandatos v1 (sem `requesters`). Vazia ⇒ fechada: um
+	// mandato v1 é recusado. Malformada, ou mais longe do que a validade máxima de um mandato,
+	// aborta o arranque — ver emissor_mandatado.go.
+	mandateV1Until, err := parseMandateV1Until(os.Getenv("AOS_MANDATE_V1_UNTIL"), time.Now().UTC())
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439: a escrita do WORM v4. Vazia ⇒ v3 (o rollback continua possível) — worm_v4.go.
+	auditWriteV4, err := parseAuditWriteV4(os.Getenv("AOS_AUDIT_WRITE_V4"))
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439: quem drena a fila de planos. Vazia ⇒ ninguém (fail-closed) — drenadores_do_plano.go.
+	planDrainers, err := parsePlanDrainers(os.Getenv("AOS_PLAN_DRAINERS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	// FAIL-CLOSED de produção: AOS_MODE=production recusa o modo de referência (autoridade
 	// co-localizada). Um operador não pode confundir o arranque de referência com uma
@@ -721,6 +738,9 @@ func nodeConfigFromEnv() (Config, error) {
 		MandatedIssuerID:     mandatedID,
 		MandatedIssuerPubKey: mandatedPub,
 		MandateSigners:       mandateSigners,
+		MandateV1Until:       mandateV1Until, // AOS-439: zero ⇒ mandatos v1 recusados
+		PlanDrainers:         planDrainers,   // AOS-439: vazia ⇒ ninguém drena a fila de planos
+		AuditWriteV4:         auditWriteV4,   // AOS-439: false ⇒ o WORM escreve v3
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},
@@ -876,11 +896,9 @@ func nodeConfigFromEnv() (Config, error) {
 	// pede 30s e fica com outra coisa qualquer não tem forma de o notar, e o sintoma seria um RPO
 	// real diferente do anunciado, descoberto no dia do restauro.
 	//
-	// ISTO NÃO LIGA O BACKUP. O interruptor é [Config.BackupDestination], que é uma PORTA
-	// injectada e não tem superfície de ambiente — ver a nota nesse campo. Um destino durável já é
-	// utilizável (o exportador retoma a cadeia), mas este repositório não traz nenhuma
-	// implementação durável da porta, e o nó não inventa uma. Definir só esta variável configura a
-	// cadência de um exportador que continua por compor.
+	// ISTO NÃO LIGA O BACKUP. O interruptor é o DESTINO (AOS_BACKUP_DEST → [Config.BackupDestination],
+	// AOS-453 F2, mais abaixo). Definir só esta variável configura a cadência de um exportador que
+	// continua por compor.
 	backupPeriodicity, err := backupExportIntervalFromEnv()
 	if err != nil {
 		return Config{}, err
@@ -898,6 +916,22 @@ func nodeConfigFromEnv() (Config, error) {
 	if dsarVault != nil {
 		cfg.DSARVault = dsarVault
 	}
+
+	// BACKUP IMUTÁVEL — DESTINO, REGIÃO, CHAVE, RETENÇÃO E CUSTÓDIA DA KEK (AOS-453 F2). Depois da
+	// custódia DSAR, porque a do backup reutiliza o endereço e o token dela (num mount PRÓPRIO).
+	// Sem AOS_BACKUP_DEST nada muda: o exportador não é composto — também em produção. Com ele,
+	// tudo é obrigatório e fail-closed (ver [backupFromEnv]).
+	bEnv, err := backupFromEnv(production, boardRegions, dsarVault)
+	if err != nil {
+		return Config{}, err
+	}
+	if bEnv.dest != nil {
+		cfg.BackupDestination = bEnv.dest
+		cfg.BackupSigningKey = bEnv.signingKey
+		cfg.BackupRetention = bEnv.retention
+		cfg.BackupVault = bEnv.vault
+	}
+	cfg.BackupEnvIgnored = bEnv.ignoradas
 
 	// CUSTÓDIA DAS CREDENCIAIS DOWNSTREAM do credential broker (AOS-070/AOS-264) por
 	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*

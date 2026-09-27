@@ -1,0 +1,74 @@
+# =============================================================================
+# tls-sync-rbac.yaml — a identidade MÍNIMA com que o aos-tls-sync lê o certificado (AOS-446).
+#
+# Até ao AOS-446 o aos-tls-sync.service lia o secret com o /etc/kubernetes/admin.conf:
+# cluster-admin para uma leitura de UM secret. Isto troca-o por uma ServiceAccount cujo único
+# poder é `get` em default/aos-node-tls — o secret que o sync-tls.sh lê (NS/SECRET, linhas do
+# topo do script). Nem `list`, nem `watch`, nem outro secret, nem outro namespace.
+#
+# NÃO é aplicado pelo CD nem por nenhum script: aplica-o o ROOT do host, uma vez, com o admin.conf
+# (deploy/server/README.md §TLS, «Instalar como root»). O CD não tem credenciais do cluster, e
+# não deve passar a tê-las por causa disto.
+#
+# A ServiceAccount vive num namespace PRÓPRIO, e não em `default`: quem pode criar pods ou pedir
+# tokens em `default` não herda por isso a identidade desta ponte. O token é um Secret
+# `kubernetes.io/service-account-token` — não expira, mas é revogável apagando-o, e só vale
+# `get` num secret. Um token com expiração exigiria renová-lo com uma credencial maior, que é
+# exactamente o que isto tira do host.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aos-tls-sync
+  labels:
+    app.kubernetes.io/part-of: aos
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aos-tls-sync
+  namespace: aos-tls-sync
+  labels:
+    app.kubernetes.io/part-of: aos
+# Nenhum pod usa esta conta: o token é do host, não de um contentor.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aos-tls-sync-token
+  namespace: aos-tls-sync
+  labels:
+    app.kubernetes.io/part-of: aos
+  annotations:
+    kubernetes.io/service-account.name: aos-tls-sync
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aos-tls-sync-leitura
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: aos
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["aos-node-tls"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aos-tls-sync-leitura
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: aos
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aos-tls-sync-leitura
+subjects:
+  - kind: ServiceAccount
+    name: aos-tls-sync
+    namespace: aos-tls-sync

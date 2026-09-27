@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	integration "github.com/aos-ref/integration"
@@ -172,6 +173,24 @@ func validPseudonym(s string) bool {
 	return true
 }
 
+// prefixoTitularReservado é o domínio dos titulares INTERNOS do nó (AOS-453): a KEK do backup
+// vive sob `aos.backup:<região>`. Um subject_id externo com este prefixo seria o nome de uma chave
+// interna — um /dsar/erase de `aos.backup:eu` destruiria a KEK que sela o backup da região inteira.
+// Comparado sem caixa, por prudência: o prefixo é do nó, em qualquer grafia.
+const prefixoTitularReservado = "aos."
+
+// ErrSubjectIDReservado — um pedido DSAR/legal hold nomeou um subject_id com o prefixo reservado
+// `aos.` (titulares internos do nó, como a KEK do backup). Recusado ANTES de qualquer efeito.
+var ErrSubjectIDReservado = errors.New("aos: subject_id com o prefixo RESERVADO `aos.` — e o dominio dos titulares internos do no (ex.: a KEK do backup, aos.backup:<regiao>); um pedido DSAR nao os pode nomear (AOS-453)")
+
+// titularReservado devolve [ErrSubjectIDReservado] quando o subject_id é do domínio interno.
+func titularReservado(s string) error {
+	if strings.HasPrefix(strings.ToLower(s), prefixoTitularReservado) {
+		return ErrSubjectIDReservado
+	}
+	return nil
+}
+
 // dsarResponse é o desfecho SEM PII de um pedido DSAR: se foi apagado ou BLOQUEADO (legal
 // hold), os rótulos dos stores destruídos e os audit_seq selados (prova de auditabilidade).
 type dsarResponse struct {
@@ -239,6 +258,12 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 	// ErrNoSubject ⇒ "em falta"), preservando a mensagem existente.
 	if req.SubjectID != "" && !validPseudonym(req.SubjectID) {
 		writeError(w, http.StatusBadRequest, "subject_id invalido (esperado pseudonimo opaco)")
+		return
+	}
+	// (4b-ter) PREFIXO RESERVADO (AOS-453): `aos.*` são titulares internos do nó — a KEK do backup
+	// é `aos.backup:<região>`. Recusado antes da prova de autoridade e de qualquer efeito.
+	if err := titularReservado(req.SubjectID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

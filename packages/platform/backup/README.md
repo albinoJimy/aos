@@ -105,9 +105,9 @@ ev, _ := rst.RestoreTo(ctx, manifesto, checkpoint,
   **saltar eventos**. O `PrevHash` desse elo não é confrontado com o anterior — a cadeia
   inteira só se verifica no restauro. Um registo ilegível também é `ErrResumeUnverifiable`,
   e um destino que não responde aborta a construção: nenhum dos dois se lê como «virgem».
-- **E o segmento desse elo tem de ABRIR com a KEK deste exportador.** (Hoje só o vault de
-  referência em memória entrega a KEK crua de que o exportador precisa, e morre com o processo;
-  a custódia Vault do nó é *key-never-leaves* e ainda não sela segmentos — AOS-453.) A assinatura prova
+- **E o segmento desse elo tem de ABRIR com a KEK deste exportador.** (Desde o AOS-453 a
+  custódia Vault do nó sela segmentos por envelope — ver §«Custódia da KEK do backup»; o vault
+  de referência em memória continua a morrer com o processo.) A assinatura prova
   quem selou; não prova que esta custódia de chaves ainda decifra o que foi selado. Sem esta
   verificação, um processo com outra KEK (o vault de referência nasce vazio a cada arranque)
   retomava, o manifesto verificava, e o restauro falhava com `ErrSegmentTampered` — lido
@@ -172,11 +172,74 @@ e recusa com `ErrDestinationNotConditional` se a segunda for aceite:
   exportador retomar de um ciclo antigo — e parar em `ErrChainOwned` no ciclo seguinte,
   a apontar dois escritores onde há um backend a mentir.
 
-**Consequência para quem compõe:** o nó continua a exigir o `ImmutableStore` **injectado**
-(`Config.BackupDestination`) — mas pela razão ordinária, não por o destino durável ser
-inutilizável. Este repositório não traz nenhuma **implementação** durável da porta: só a de
-referência, em memória. S3 Object Lock / GCS retention / Azure immutable blob ligam-se por
-trás da mesma interface, sem alterar o exportador nem o restaurador.
+**Consequência para quem compõe:** o nó compõe o destino a partir de `AOS_BACKUP_DEST`
+(AOS-453 F2), vazio por omissão. A primeira implementação durável da porta é a de disco local
+(abaixo); S3 Object Lock / GCS retention / Azure immutable blob ligam-se por trás da mesma
+interface, sem alterar o exportador nem o restaurador (S3 é a fase F4, não implementada).
+
+### Destino em disco local — `FileImmutableStore` (AOS-453 F2)
+
+`NewFileImmutableStore(raizAbsoluta, região)` sobre um directório que **já existe** (o adaptador
+não o cria: um caminho mal escrito criaria em silêncio um destino vazio). Cumpre o contrato acima
+só com a stdlib:
+
+- **`Put` condicional e atómico:** escreve num temporário (`.tmp-*`) no mesmo directório, `fsync`,
+  e publica com `os.Link(tmp, final)`. O link falha se o nome existir (`EEXIST` ⇒ `ErrImmutable`) —
+  o equivalente local do `If-None-Match: *`; depois faz `fsync` do directório. Nunca há um objecto
+  meio escrito à vista, e de N escritas concorrentes na mesma ref vence exactamente uma.
+- **`Get` fiel:** `ErrNotFound` só para ficheiro inexistente; um objecto sem o cabeçalho
+  `AOS-BACKUP-OBJ/1` (lixo, adulteração, outro escritor) é erro, e não «virgem».
+- **Object-lock:** o instante de retenção viaja no cabeçalho do próprio objecto (um só ficheiro,
+  publicado atomicamente com o blob); `Delete` antes dele é `ErrObjectLocked`. Objectos `0440`.
+
+**O que NÃO protege, e fica dito:** a perda do host ou do disco (é uma cópia local — a cópia fora
+do host é a F4), **root** e quem tenha escrita no directório (o write-once é disciplina da porta,
+não um object-lock do armazenamento), e um restauro do volume para um ponto anterior.
+
+## Custódia da KEK do backup (AOS-453)
+
+Cada segmento é cifrado com uma DEK fresca, e a DEK é embrulhada pela KEK do titular
+`aos.backup:<região>`. **Dois formatos, escolhidos pela custódia** (molde de
+`audit.SealContent`/`OpenContent`):
+
+| Custódia | Embrulho da DEK | Formato no destino |
+|---|---|---|
+| implementa `audit.KeyWrapper` (Vault Transit, HSM — *key-never-leaves*) | **dentro** da custódia (`WrapDEK`/`UnwrapDEK`); a KEK nunca entra no processo | `key_ref`, `wrapped_dek`, `ciphertext`, `nonce`, **`"wrap":"envelope"`** — sem `dek_nonce` |
+| só `audit.KeyVault` (entrega a KEK crua de 32 bytes) | in-process, AES-GCM com `dek_nonce` | o de sempre, **byte a byte** (fixado por `TestAOS453_FormatoKEKCruaByteAByte`) |
+
+O discriminador é **explícito** (`wrap`): o formato KEK-crua serializa sempre `key_ref` e
+`dek_nonce`, pelo que a presença de `key_ref` (o discriminador do audit) não serviria. Um `wrap`
+desconhecido é recusado.
+
+**Na composição, e não ciclo a ciclo:** `NewExporter` prova a custódia **antes da retoma** —
+uma volta `WrapDEK→UnwrapDEK` sob o titular do backup (envelope), ou `EnsureKey` a devolver 32
+bytes (KEK-crua). Uma custódia que não entrega a KEK nem embrulha é `ErrKEKCustodyUnsupported`
+(antes: `crypto/aes: invalid key size 0` a cada ciclo); uma que não responde ou recusa é
+`ErrKEKCustodyUnavailable` — **não** «a KEK não é a que selou» (`ErrResumeUnverifiable`), que
+mandaria abandonar um backup bom por causa de um Vault em baixo.
+
+**Abertura:** o segmento tem de ser do titular pedido (`key_ref == KeyRefFor(aos.backup:<região>)`)
+nos dois formatos. KEK destruída/ausente/indisponível ⇒ `ErrRestoreVerify` (não há como abrir, e
+não é adulteração); conteúdo que não autentica ⇒ `ErrSegmentTampered`.
+
+**Crypto-shred do titular do backup** (destruir a KEK `aos.backup:<região>` na custódia) torna
+todos os segmentos da região irrecuperáveis: o restauro aborta com `ErrRestoreVerify` sem escrever
+nada, e a retoma é recusada a nomear a KEK. No nó, essa KEK vive num **mount Transit próprio**
+(`AOS_BACKUP_VAULT_TRANSIT_MOUNT`) onde a política do nó **não tem `delete`** — só o dono, com a
+raiz, a destrói; e o DSAR **reserva o prefixo `aos.`** nos `subject_id` (um `/dsar/erase` de
+`aos.backup:eu` é recusado). A garantia do Art. 17 continua nas KEKs dos titulares: o conteúdo
+deles vai selado por titular dentro dos eventos do backup.
+
+## Retenção finita e épocas
+
+A retenção do destino é **finita** (`WithRetention`; no nó `AOS_BACKUP_RETENTION`, obrigatória).
+Como a cadeia é **incremental**, um prefixo expirado torna-a irrestaurável e a retoma **recusa**
+um destino sem o ciclo 1. A resposta é a **época**: um destino novo (no disco, um subdirectório
+novo de `AOS_BACKUP_DEST`) começa uma génese nova — o primeiro ciclo exporta o log inteiro, que é
+o snapshot completo. Regra operacional: **rodar de época antes de a anterior expirar**, com folga
+de pelo menos um ciclo verificado da nova; a época anterior fica restaurável até ao fim do seu
+object-lock e só então se remove (`Delete` respeita o lock). O módulo não roda épocas sozinho —
+é um passo de operação (`deploy/server/README.md` §Backup imutável).
 
 ## Runbook — Restauro / PITR do Event Store (esboço, liga a AOS-106)
 

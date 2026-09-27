@@ -304,7 +304,7 @@ func TestAOS101_StreamQueAFonteDeixaDeEnumerarFalhaOCiclo(t *testing.T) {
 // antigo era outra: um restauro sem manifesto guardado à parte. Aqui o restauro corre sobre
 // [Restorer.LoadManifest] e os eventos saem com o envelope dos DOIS arranques, seq a seq. A KEK é
 // a mesma nos dois (o [audit.KeyVault] partilhado é uma FIXTURE de uma custódia que sobrevive ao
-// processo — que no deployment ainda não existe para o backup, AOS-453); sem isso os
+// processo — no deployment, o Vault Transit do backup por envelope, AOS-453); sem isso os
 // segmentos do primeiro arranque seriam indecifráveis — que é um passo de operação, não do módulo.
 func TestAOS101_ACadeiaDeDoisArranquesRestauraPeloLoadManifest(t *testing.T) {
 	ctx := context.Background()

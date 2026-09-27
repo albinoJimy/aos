@@ -81,6 +81,7 @@ chmod +x "${T}/bin/docker" "${T}/bin/curl" "${T}/bin/logger"
 AOS="${T}/aos"
 mkdir -p "${AOS}/orq" "${AOS}/policies" "${AOS}/.drenagem"
 echo '{}' > "${AOS}/orq/snapshot.json"
+echo '{}' > "${AOS}/orq/mandato.json"   # AOS-439: o drenar-planos.sh exige-o (o consume recebe --mandate)
 echo 'services: {}' > "${AOS}/docker-compose.prod.yml"
 printf 'AOS_EDGE_PORT=8444\n' > "${AOS}/.env"
 echo x > "${AOS}/policies/aos_authz.cedar"

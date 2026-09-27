@@ -126,6 +126,12 @@ type principalDTO struct {
 	// actual) também no payload da mediação, para reconstruir "quem autorizou"
 	// directamente do payload sem depender do envelope Producer (AOS-006).
 	DelegationChain []delegationHopDTO `json:"delegation_chain,omitempty"`
+	// MandateID é o mandato verificado sob o qual o token foi cunhado (AOS-439, resíduo 3 do
+	// ADR-033). RequestedBy é o submissor do run, derivado pelo nó da reclamação do plano
+	// (AOS-439). Os dois são OPCIONAIS (`omitempty`): o payload de um run sem mandato nem
+	// submissor fica byte-a-byte igual ao de antes — MINOR no `port_version` (tecnica/12 §4).
+	MandateID   string `json:"mandate_id,omitempty"`
+	RequestedBy string `json:"requested_by,omitempty"`
 }
 
 // delegationHopDTO é um elo (sub/act_as) da cadeia serializado no payload.
@@ -182,6 +188,8 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			AgentClass:      rec.Principal.AgentClass,
 			Authority:       rec.Principal.Authority,
 			DelegationChain: toHopDTOs(rec.Principal.DelegationChain),
+			MandateID:       rec.Principal.MandateID,
+			RequestedBy:     rec.Principal.RequestedBy,
 		},
 		Obligations: rec.Obligations,
 		Metadata:    rec.Metadata,

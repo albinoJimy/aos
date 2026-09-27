@@ -462,10 +462,82 @@ mesma release: o `deploy.yml` sincroniza `deploy/server/model-tools/` sem `--ign
 deploy recria o nó. O snapshot do `aos-orq` (só `doc_read`) não muda, e a conferência do AOS-441
 continua a bater (tools do nó que o snapshot não nomeia não contam).
 
-**Passo de produção seguinte — do dono/operador, depois da release com a opção C:** definir
-`AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read` (a fase 0, `cap:http.post`, já está armada
-desde 2026-09-26). Antes dessa release NÃO se arma `cap:fs.read`: toda a tool call sairia
-untrusted e o `doc_read` de um nó com contexto limpo seria negado.
+**Fase 1 armada e verificada em PRODUÇÃO (2026-09-26, v0.1.37).** Com a release que traz a
+correcção da via durável (abaixo), o operador definiu `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`
+(cópia anterior em `/opt/aos/.env.antes-aos069-fase1-v0137`) e recriou só o nó, com o lock da
+drenagem seguro (AOS-450). Prova com um plano real pela fila, `plan-e2e-069f1b-neg-1790461111`
+(dois nós, `terminal`, geração 1, `exit_code 0`, 58 s): `n1`, de contexto limpo (só o objectivo),
+leu com `doc_read` — `tool.call.mediated`, `taint=trusted`; `n2`, que recebe o resultado de `n1`
+como `plan_input`, tentou `doc_read` três vezes e as três foram `tool.call.denied` com
+`denied_by=taint`. É o critério 3 medido no nó composto de produção (execução durável, cifra
+por-titular, bundle Cedar assinado, credencial do mandato), e não só nos testes. O plano positivo
+de um só nó da mesma prova (`plan-e2e-069f1b-pos-1790461111`, `terminal`, `exit_code 0`) não
+chamou a tool, pelo que não prova nada sobre o taint; a prova positiva é o `n1` do negativo. A
+fase 0 (`cap:http.post`) está armada desde a mesma data.
+
+**Fase 1 falhou em produção (2026-09-26, v0.1.36) e foi revertida.** Com
+`AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`, um plano de um só nó (`n1`, sem `consumes`, sem
+inputs) teve o `doc_read` negado no **turno 1**, e nos cinco seguintes: `tool.call.denied`,
+`denied_by=taint`, `context.taint=untrusted`. O operador repôs só `cap:http.post`.
+
+*Causa:* o rótulo era bem cunhado pelo loop e **perdia-se a caminho do RM na via de despacho
+durável** (`AOS_DURABLE_EXECUTION=1`, a de produção). O `integration.DurableDispatcher` traduzia o
+`Call` numa `activity.Activity`, que não tinha campo para o taint, e `Activity.toCall`
+(`packages/kernel/agent-runtime/activity/contract.go`) repunha-o fixo em untrusted — um resto de
+antes do ADR-034, quando toda a call do modelo era untrusted e o campo «não era configurável».
+Todos os testes do AOS-069 corriam pela via directa (o default do kernel), que não tem o defeito;
+o critério «o `doc_read` de `n1` passa» nunca tinha sido medido no nó composto. Reproduzido no nó
+real pela API (`TestAOS069_Fase1_NoComposto_DocReadDoTurno1Passa`, `packages/cmd/aos`): vermelho
+com execução durável, verde sem ela, com tudo o resto igual (`inputs: []`, lista-branca de tools,
+cifra por-titular, bundle Cedar assinado) — o eixo é esse. A janela do MEM não muda o rótulo (teste
+de paridade abaixo); a credencial de mandato não foi composta no teste, e não precisa: o taint não
+depende dela, e a via não-durável com a credencial do nó já chega trusted ao RM.
+
+*Correcção:* `activity.Activity.AuthorizationTaint` (`taint.Label`, valor-zero untrusted, pelo que
+um chamador que não o conheça continua fail-closed), preenchido pelo `DurableDispatcher` com
+`taint.ParseLabel(call.Context.Taint)` e levado por `toCall` ao `CallContext.Taint`. Fixado por:
+`TestAOS069_Fase1_NoComposto_*` (nó composto, durável e não-durável, com o controlo de que um
+`plan_input` continua a ser negado por taint), `TestAOS069_ViaDuravelPreservaOTaintDaAutorizacao`
+(paridade das duas vias da porta, janela inline e do MEM) e
+`TestAOS069_ViaDuravelTaintDesconhecidoResolveUntrusted` (`packages/integration`), e
+`TestDispatch_AuthorizationTaintChegaAoTaintGate` (`activity`). Voltar a armar `cap:fs.read` só
+com a release que traz esta correcção. Consequência forense: as trajectórias duráveis gravadas até
+essa release têm todas as calls seladas untrusted, como as de antes do ADR-034. O detector opt-in
+do resíduo 9 do ADR-034 (`VerifyAuthority`) **não as vê — nem a nenhuma trajectória durável**: o
+`DurableDispatcher` também não propaga o `ParentStepID` do Call, o taint selado é indexado por ele,
+e na via durável a lista a comparar vem vazia em todos os turnos. O detector está cego em produção
+(e, pela mesma razão, não dá falsos alarmes sobre as trajectórias antigas) até o `ParentStepID`
+atravessar a via durável — trabalho tratado fora deste ticket.
+
+*O que muda em produção com esta release, além da leitura:* é a primeira em que as consequências da
+§4 do ADR-034 ficam todas vivas no nó. O classificador de risco deixa de elevar a sensibilidade de
+calls de contexto limpo (menos escaladas HITL; efeito nos contadores do controlador de autonomia,
+AOS-090), e o `allow_http_post` passa a poder ser satisfeito (sem tool que o use hoje).
+
+*Registo de retoma (revisão de segurança da correcção, 2026-09-26).* Com o rótulo a chegar ao RM,
+o `Goal` da retoma passa a decidir autoridade: um registo sem os `inputs` re-autorizaria trusted.
+`integration.ResumeRecords.Get` lia o ÚLTIMO registo do run e aceitava um corpo em claro mesmo com
+o cifrador activo — quem tivesse escrita crua no Event Store sobrepunha um `Goal` sem `inputs`.
+Agora um registo que o Put não escreveria recusa a retoma com erro nomeado: outro run_id de
+envelope (`ErrResumeRecordForaDoPut` — é a única forma de pôr um segundo registo ao lado do
+legítimo, porque o Put usa sempre `approval:resume-<run>` e a dedup cobre o stream inteiro), corpo
+em claro com cifrador activo (`ErrResumeRecordEmClaro`), corpo de outro run
+(`ErrResumeRecordDeOutroRun`) e, como defesa-em-profundidade, um segundo registo diferente do
+primeiro (`ErrResumeRecordDivergente`). A rota `POST /runs/{id}/resume` responde 409 a qualquer
+deles (como ao `ErrNoResumeRecord`) e o log do operador e o do crash-resume nomeiam o sentinela.
+Fixado em `packages/integration/aos069_registo_de_retoma_test.go` e
+`packages/cmd/aos/aos069_retoma_recusada_test.go`.
+
+**Ticket a abrir (sem número; resíduo do ADR-034):** o selo do registo de retoma não está amarrado
+ao tipo nem ao run — o `contentSealer` sela sem dados associados (`packages/cmd/aos/dsar.go`,
+`audit.SealContent(..., nil)`). Com escrita crua no Event Store e um run id previsível, um blob
+selado sob o mesmo titular, cujo texto claro inteiro se controla (um JSON com o `RunID` do run),
+copiado para `resume-<run>` ANTES do Put legítimo, faz o Put legítimo virar `StatusDuplicate` e o
+forjado ser o único registo (sem `inputs`, `AllowedTools` nil) — a retoma autoriza trusted.
+Correcção proposta: dados associados `"resume:"+runID` no selo e na leitura, com a leitura a
+aceitar os dois formatos durante a transição (os registos já selados deixariam de abrir). O
+`broker` que fixa `Taint` trusted na troca (latente, sem chamador) ficou como
+pré-condição no DEF-218.
 
 ---
 
