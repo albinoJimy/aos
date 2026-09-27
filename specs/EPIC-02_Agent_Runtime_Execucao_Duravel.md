@@ -1413,7 +1413,7 @@ além do que fica declarado:
 | `RunID`, `StepID`, `ToolID`, `Capability`, `Resource`, `Principal`, `Credential`, `Input`, `ApprovalEvidence` | propagado | — |
 | `Context.BudgetTokensRemaining`, `Context.Reversibility`, `Context.Sensitivity` | propagado | — |
 | `ParentStepID` | **perdido → propagado (este ticket)** | — |
-| `Context.Taint` | traduzido, não copiado | Correcção do AOS-069 (fase 1): `Activity.AuthorizationTaint` com `taint.ParseLabel`, fail-closed. Tem teste próprio. Na base 9fd4c87 ainda é fixado em untrusted. |
+| `Context.Taint` | traduzido, não copiado | Correcção do AOS-069 (fase 1): `Activity.AuthorizationTaint` com `taint.ParseLabel`, fail-closed. Tem teste próprio. Na base 9fd4c87 era fixado em untrusted; fundido no #394. |
 | `RequestID` | perdido — **latente** | Nenhum chamador o preenche: o loop não põe `RequestID` na `Call`, e o `DurableDispatcher` só é chamado pelo loop. Se passar a ter produtor, o teste de paridade não o apanha, mas a declaração tem de ser revista. |
 | `Context.RiskClass`, `Context.RiskApprover`, `Context.RiskDecisionMode` | descartado — **correcto** | São saídas do `RiskGate`, escritas dentro de `Mediate`. Deixá-las atravessar vindas do chamador permitiria pré-preencher a atribuição (`RiskApprover`) de uma acção que nenhum humano aprovou, num RM sem `RiskGate` na cadeia. |
 | `humanApproved` (não exportado) | não aplicável | Só o `ApprovalGate` o escreve, dentro do RM; nenhum chamador o consegue passar em nenhuma das vias. |
@@ -1425,7 +1425,10 @@ ticket foi feito, e toca os mesmos dois ficheiros. Os hunks deste ticket ficam l
 campo a seguir a `StepID`; os dela no fim da `Activity` e no `Taint` do `toCall`). Verificado:
 `git merge-file` de cada ficheiro (base × AOS-454 × AOS-069) sai com **zero conflitos**, e na árvore
 integrada as suites de `activity` e os testes `TestAOS069_*`, `TestAOS454_*` e
-`TestDurableDispatcher_*` de `packages/integration` passam juntos. Funde-se em qualquer ordem.
+`TestDurableDispatcher_*` de `packages/integration` passam juntos.
+
+O AOS-069 fundiu-se primeiro (#394). O merge da base neste ramo confirmou a previsão: o código
+fundiu sem conflito, e o único conflito foi a RTM gerada (`tecnica/16`), resolvido regenerando-a.
 
 ### O que este ticket NÃO faz, e porquê
 
