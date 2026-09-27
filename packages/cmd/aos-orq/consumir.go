@@ -30,10 +30,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	identity "github.com/aos-ref/platform/identity"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -61,6 +63,8 @@ const maxPedidosPorDrenagem = 16
 //	7 exitDecisaoRecusada      TERMINAL     houve decisão e foi NÃO; caso fechado
 //	9 exitPlanoRecusado        TERMINAL     o planeador esgotou tentativas; não se retenta
 //	10 exitDocumentoRecusado   TERMINAL     documento/snapshot recusado; determinista (AOS-442)
+//	11 exitRequerenteForaDoMandato TERMINAL o submissor não consta dos requesters do mandato;
+//	                                        determinista até o humano re-assinar (AOS-439)
 //	0 (sem erro)               TERMINAL     o plano correu
 //	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
 //
@@ -72,7 +76,7 @@ const maxPedidosPorDrenagem = 16
 // descartar.
 func classeDoDesfecho(codigo int) string {
 	switch codigo {
-	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado:
+	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato:
 		return "terminal"
 	case exitPendenteDeAprovacao:
 		return "aguarda_humano"
@@ -94,6 +98,7 @@ func cmdConsume(args []string) (err error) {
 	worker := fs.String("worker", "", "identidade deste trabalhador, passada ao `serve`")
 	planDir := fs.String("plan-dir", "", "pasta onde fica o documento de cada plano validado, para a retoma correr por --plan-doc em vez de decompor de novo (AOS-442); por omissão, `planos/` ao lado do --wal. Com --nats é obrigatória e tem de ser PARTILHADA entre as réplicas")
 	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: passado ao `serve --goal` (ver `serve -h`), para exercitar a drenagem sem LLM")
+	mandateFile := fs.String("mandate", "", "AOS-439: o mandato do drenador (o mandato.json que o timer de cunhagem lê). Com ele, um pedido cujo submissor não conste dos `requesters` de um mandato v2 fecha JÁ com a saída 11, sem `serve` nem decomposição; um mandato ilegível aborta a drenagem antes de reclamar. Sem ele não se confronta — o nó recusa, mas só depois de planear")
 	metricsFile := fs.String("metrics-file", "", "ficheiro de métricas em formato de texto Prometheus, reescrito de forma atómica no fim de cada drenagem com os contadores acumulados (AOS-443); por omissão, "+nomeDoFicheiroDeMetricas+" ao lado do --wal. Sem --wal e sem ele, não se escreve")
 	var sub substrato
 	sub.registarFlags(fs)
@@ -175,6 +180,21 @@ func cmdConsume(args []string) (err error) {
 	fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
 	consumidos, reverificados := 0, 0
 	for consumidos < *maxPedidos && reverificados < maxReverificacoesPorDrenagem {
+		// AOS-439: o mandato relê-se a cada pedido (o dono re-assina-o por cima), e ANTES de
+		// reclamar — um mandato ilegível não pode gastar uma geração do pedido.
+		var mandato *identity.Mandate
+		if *mandateFile != "" {
+			m, err := lerMandatoDoDrenador(*mandateFile)
+			if err != nil {
+				return fmt.Errorf("%w — nao se reclama nenhum pedido sem saber por quem o mandato deixa agir", err)
+			}
+			// O NHI em uso tem de ter sido cunhado sob ESTE mandato; senão o que aqui se decide não
+			// é o que o nó vai decidir. Aborta antes de reclamar: os pedidos ficam na fila.
+			if err := cruzarMandatoComONHI(m, cli.credFile); err != nil {
+				return err
+			}
+			mandato = &m
+		}
 		pedido, houve, err := cli.ReclamarPedido(ctx)
 		if err != nil {
 			return fmt.Errorf("reclamar pedido: %w", err)
@@ -189,6 +209,24 @@ func cmdConsume(args []string) (err error) {
 		metricas.registarReclamacao(pedido.Geracao)
 		tratados++
 		inicio := time.Now()
+
+		// AOS-439: um submissor que o mandato não nomeia fecha JÁ — sem `serve`, sem decomposição,
+		// sem o modelo a correr com o NHI do mandato por quem o humano não autorizou.
+		if requerenteForaDoMandato(mandato, pedido) {
+			consumidos++
+			resumo := resumoDoPedido{origem: origemSemServe, geracao: pedido.Geracao, nos: -1,
+				duracao: time.Since(inicio), erro: "requerente_fora_do_mandato"}
+			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitRequerenteForaDoMandato, resumo.linha())
+			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
+				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo)); err != nil {
+				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
+					"fila quando a reclamacao expirar\n", pedido.RunID, err)
+				metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, false)
+				continue
+			}
+			metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, true)
+			continue
+		}
 
 		// AOS-442: por onde o plano entra — o documento validado de uma tentativa anterior, ou a
 		// decomposição do objectivo —, decidido pelo LOG do run. Alguns casos são um desfecho sem
@@ -381,6 +419,8 @@ func tipoDoErro(err error) string {
 		return "snapshot_nao_corresponde"
 	case errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return "snapshot_diferente_do_selado"
+	case errors.Is(err, errRequerenteForaDoMandato):
+		return "requerente_fora_do_mandato"
 	default:
 		return "generico"
 	}
@@ -410,6 +450,12 @@ func argsDoServe(snapshot string, p pedidoReclamado, sub substrato, planTimeout,
 		}
 	}
 	args = append(args, "--release")
+	// AOS-439: o vínculo ao pedido reclamado. É o que faz cada run filho levar ao nó de que pedido
+	// é trabalho, e o nó derivar daí o submissor — sem ele, o run corria sem submissor e, sob um
+	// mandato v2, seria recusado.
+	if p.Geracao > 0 {
+		args = append(args, "--plan-request-generation", strconv.Itoa(p.Geracao))
+	}
 	if snapshot != "" {
 		args = append(args, "--snapshot", snapshot)
 	}

@@ -60,13 +60,23 @@ func (h *apiHandler) credencialDoRunRecusada(ctx context.Context, credencial str
 //
 // Uma regra, uma fonte, dois chamadores.
 func credencialDoRunRecusadaNoNo(ctx context.Context, no *Node, credencial string) string {
+	_, _, motivo := credencialDoRunVerificadaNoNo(ctx, no, credencial)
+	return motivo
+}
+
+// credencialDoRunVerificadaNoNo é a MESMA regra, que devolve também o Principal verificado
+// (AOS-439): o `POST /runs` e a retoma precisam dele para confrontar o mandato da credencial com o
+// submissor do run, e para amarrar o agente do token ao registo de retoma. `verificada` é false
+// quando não houve credencial a verificar (ausente e aceite, ou nó sem verificador) — e aí o
+// Principal é o zero.
+func credencialDoRunVerificadaNoNo(ctx context.Context, no *Node, credencial string) (identity.Principal, bool, string) {
 	// SEM VERIFICADOR NÃO SE RECUSA, e isto não é uma porta aberta: o `Bootstrap` ABORTA se não
 	// conseguir compor um verificador — nem o ramo endurecido (trust anchor) nem o de referência
 	// (autoridade co-localizada) deixam este campo a nil. O ramo existe porque um `apiHandler`
 	// montado à mão num teste pode não ter nó composto, e nesse caso a verificação de jusante
 	// (o `rmadapter`, que é fail-closed com verificador nil) continua a ser a rede.
 	if no == nil || no.Verifier == nil {
-		return ""
+		return identity.Principal{}, false, ""
 	}
 	// A CREDENCIAL AUSENTE SÓ SE RECUSA EM MODO ENDURECIDO, E A RAZÃO FOI MEDIDA PELO SMOKE.
 	//
@@ -88,14 +98,15 @@ func credencialDoRunRecusadaNoNo(ctx context.Context, no *Node, credencial strin
 	// está escrito aqui em vez de ser descoberto.
 	if strings.TrimSpace(credencial) == "" {
 		if no.Authority == nil {
-			return "credencial ausente"
+			return identity.Principal{}, false, "credencial ausente"
 		}
-		return ""
+		return identity.Principal{}, false, ""
 	}
-	if _, err := no.Verifier.Verify(ctx, credencial); err != nil {
-		return nomeDaRecusaDeCredencial(err)
+	p, err := no.Verifier.Verify(ctx, credencial)
+	if err != nil {
+		return identity.Principal{}, false, nomeDaRecusaDeCredencial(err)
 	}
-	return ""
+	return p, true, ""
 }
 
 // nomeDaRecusaDeCredencial traduz a sentinela do verificador num nome para o log.

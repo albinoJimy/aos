@@ -74,10 +74,31 @@ func cmdAuditTrail(args []string, w io.Writer) error {
 		if *deniedOnly && r.Decision == audit.DecisionAllow {
 			continue
 		}
-		fmt.Fprintf(w, "seq=%d %s tool=%s cap=%s%s\n",
-			r.AuditSeq, r.Decision, orDash(r.ToolID), orDash(r.Capability), atribuicao(r))
+		fmt.Fprintf(w, "seq=%d %s tool=%s cap=%s%s%s\n",
+			r.AuditSeq, r.Decision, orDash(r.ToolID), orDash(r.Capability), atribuicao(r), quemPediu(r))
 	}
 	return nil
+}
+
+// quemPediu formata o submissor e o mandato selados a partir do WORM v4 (AOS-439). Vazia num
+// registo sem eles — um run que não é de um plano, ou um selo anterior —, e a linha fica igual à de
+// antes.
+//
+// SÓ EM v4. Num registo v2/v3 os dois campos não entram no hash: se estivessem no ficheiro (alguém
+// que o escreva à mão, ou um binário de teste), mostrá-los aqui apresentava como selado o que
+// nenhuma cadeia prova. A via de acesso do operador não pode afirmar mais do que o selo.
+func quemPediu(r audit.AuditRecord) string {
+	if r.SchemaVersion < audit.SchemaV4 {
+		return ""
+	}
+	out := ""
+	if r.Principal.RequestedBy != "" {
+		out += " requested_by=" + r.Principal.RequestedBy
+	}
+	if r.Principal.MandateID != "" {
+		out += " mandate=" + r.Principal.MandateID
+	}
+	return out
 }
 
 // auditTrailMaxSeq é o tecto do intervalo de leitura. O store devolve o que existir até

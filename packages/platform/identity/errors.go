@@ -117,4 +117,12 @@ var (
 	// ErrMandateRevoked — o mandato sob o qual o token foi cunhado foi revogado. Todos os tokens
 	// cunhados sob ele deixam de verificar, incluindo os que ainda não expiraram.
 	ErrMandateRevoked = &IdentityError{Code: "E_MANDATE_REVOKED", msg: "mandato revogado"}
+
+	// ErrMandateV1Closed — o mandato é v1 (não enumera `requesters`, AOS-439) e a JANELA DE
+	// MIGRAÇÃO do nó está fechada ([WithMandateV1Until]). O humano tem de assinar um mandato v2.
+	ErrMandateV1Closed = &IdentityError{Code: "E_MANDATE_V1_CLOSED", msg: "mandato v1 (sem requesters) fora da janela de migracao"}
+
+	// ErrMandateRequester — o mandato é v2 e o SUBMISSOR do run (o `requested_by` que o nó
+	// derivou, AOS-439) não consta dos `requesters` que o humano assinou — ou não há submissor.
+	ErrMandateRequester = &IdentityError{Code: "E_MANDATE_REQUESTER", msg: "submissor fora dos requesters do mandato"}
 )

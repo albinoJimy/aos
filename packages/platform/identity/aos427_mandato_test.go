@@ -47,6 +47,8 @@ func novoCenario(t *testing.T) *cenarioMandato {
 		Scope:  []string{"run:submit", "model:invoke"},
 		Issuer: issAuto, MaxTTLSeconds: int64((45 * time.Minute).Seconds()),
 		NotBefore: t0.Unix(), NotAfter: t0.Add(30 * 24 * time.Hour).Unix(),
+		// AOS-439: um mandato novo nomeia por quem o emissor pode agir (v2).
+		Requesters: []string{"sub-bob", "sub-carla"},
 	}
 	sm, err := SignMandate(c.humano, m)
 	if err != nil {

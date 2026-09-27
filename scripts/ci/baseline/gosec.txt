@@ -72,6 +72,7 @@
 #       (AOS-395: +1 ocorrencia aos-orq/model_audit_env.go|G703 = o os.Stat do directorio de AOS_MODEL_AUDIT_PATH, o WORM de governacao do gateway do planeador. Variavel de ambiente lida no arranque do aos-orq, config do operador; o agente e o modelo nao a escolhem.)
 #       (AOS-413: +1 ocorrencia aos-orq/node_client.go|G703 = a leitura dos ficheiros MONTADOS do executor de nos — o NHI do run (AOS_ORQ_NODE_CREDENTIAL_FILE) e o segredo do cliente do IdP (AOS_ORQ_OIDC_CLIENT_SECRET_FILE). Config do operador; o agente e o modelo nao a escolhem.)
 #       (AOS-453: +2 ocorrencias aos/backup_scheduler.go|G703 = o os.Stat (verificacao das permissoes) e a leitura da seed de assinatura do backup em AOS_BACKUP_SIGNING_KEY_PATH, ficheiro MONTADO pelo operador e lido no arranque (nunca criado). Config do operador; o agente e o modelo nao a escolhem.)
+#       (AOS-439: +1 ocorrencia aos-orq/requerentes_do_mandato.go|G703 = a leitura do mandato do drenador (--mandate, o mesmo mandato.json que o timer de cunhagem le) e do NHI em uso (AOS_ORQ_NODE_CREDENTIAL_FILE, ja na baseline pelo node_client.go). Os dois sao ficheiros MONTADOS pelo operador; o agente e o modelo nao os escolhem, e o mandato nem sequer decide nada aqui — o no decide, contra a chave pinada.)
 #     G704 "SSRF" (cli.go:278,293): o `base` e a flag --addr / AOS_API_ADDR do CLI — o
 #       operador a dizer ao SEU proprio cliente a que no se liga. Nao ha atacante a
 #       controlar o destino.
@@ -105,6 +106,7 @@ packages/cmd/aos-orq/model_audit_env.go|G703
 packages/cmd/aos-orq/node_client.go|G703
 packages/cmd/aos-orq/node_client.go|G704
 packages/cmd/aos-orq/node_client.go|G704
+packages/cmd/aos-orq/requerentes_do_mandato.go|G703
 packages/cmd/aos/authority_directory.go|G703
 packages/cmd/aos/backup_scheduler.go|G703
 packages/cmd/aos/backup_scheduler.go|G703

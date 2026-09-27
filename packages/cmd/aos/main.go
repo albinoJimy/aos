@@ -682,6 +682,23 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AOS-439: a JANELA DE MIGRAÇÃO dos mandatos v1 (sem `requesters`). Vazia ⇒ fechada: um
+	// mandato v1 é recusado. Malformada, ou mais longe do que a validade máxima de um mandato,
+	// aborta o arranque — ver emissor_mandatado.go.
+	mandateV1Until, err := parseMandateV1Until(os.Getenv("AOS_MANDATE_V1_UNTIL"), time.Now().UTC())
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439: a escrita do WORM v4. Vazia ⇒ v3 (o rollback continua possível) — worm_v4.go.
+	auditWriteV4, err := parseAuditWriteV4(os.Getenv("AOS_AUDIT_WRITE_V4"))
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439: quem drena a fila de planos. Vazia ⇒ ninguém (fail-closed) — drenadores_do_plano.go.
+	planDrainers, err := parsePlanDrainers(os.Getenv("AOS_PLAN_DRAINERS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	// FAIL-CLOSED de produção: AOS_MODE=production recusa o modo de referência (autoridade
 	// co-localizada). Um operador não pode confundir o arranque de referência com uma
@@ -721,6 +738,9 @@ func nodeConfigFromEnv() (Config, error) {
 		MandatedIssuerID:     mandatedID,
 		MandatedIssuerPubKey: mandatedPub,
 		MandateSigners:       mandateSigners,
+		MandateV1Until:       mandateV1Until, // AOS-439: zero ⇒ mandatos v1 recusados
+		PlanDrainers:         planDrainers,   // AOS-439: vazia ⇒ ninguém drena a fila de planos
+		AuditWriteV4:         auditWriteV4,   // AOS-439: false ⇒ o WORM escreve v3
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},

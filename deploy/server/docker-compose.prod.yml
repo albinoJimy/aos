@@ -72,6 +72,19 @@ services:
       AOS_MANDATED_ISSUER_ID: "${AOS_MANDATED_ISSUER_ID:-}"
       AOS_MANDATED_ISSUER_PUBKEY: "${AOS_MANDATED_ISSUER_PUBKEY:-}"
       AOS_MANDATE_SIGNERS: "${AOS_MANDATE_SIGNERS:-}"
+      # AOS-439: janela de migração dos mandatos v1 (sem `requesters`). A omissão é o FIM do mandato
+      # v1 em vigor em produção (btmgjRL9…, válido até 2026-10-25): o deploy que traz os requesters
+      # não pára a drenagem, e a janela fecha sozinha quando o mandato acabaria de qualquer modo. O
+      # humano tem de re-assinar com `mandate-sign --requesters` antes disso (README §Cunhagem sem
+      # operador). Vazia no .env ⇒ vale esta omissão; para fechar já, um instante no passado.
+      AOS_MANDATE_V1_UNTIL: "${AOS_MANDATE_V1_UNTIL:-2026-10-25T23:59:59Z}"
+      # AOS-439: quem drena a fila de planos (lista fechada, fail-closed). A omissão é o `sub` do
+      # service account `aos-reader` — o que o `drenar-planos.sh` usa (AOS_ORQ_OIDC_CLIENT_ID).
+      AOS_PLAN_DRAINERS: "${AOS_PLAN_DRAINERS:-91a30a69-781d-448e-90c9-1de9f5e7bcbe}"
+      # AOS-439: escrita do WORM v4 (requested_by e mandate_id no selo). DESLIGADA por omissão
+      # (expand/contract): um binário anterior a esta release não arranca sobre um WORM v4, e ligá-la
+      # corta o rollback. O dono liga-a (=1) no .env DEPOIS de confirmar o deploy saudável.
+      AOS_AUDIT_WRITE_V4: "${AOS_AUDIT_WRITE_V4:-}"
 
       # Plano de controlo: operadores (steer/pause), ratificadores (promoção), four-eyes.
       # AOS_OPERATORS vazio ⇒ o bind não-loopback acima é RECUSADO (bind-guardrail).

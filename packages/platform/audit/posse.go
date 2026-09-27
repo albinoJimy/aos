@@ -71,6 +71,19 @@ func ComPosseDeParticao(p PosseDeParticao) FileStoreOption {
 	return func(s *FileStore) { s.posse = p }
 }
 
+// ComVersaoDeEscrita faz o [FileStore] selar os registos novos na versão `v` (AOS-439). Sem ela
+// escreve [CurrentSchemaVersion] (v3). Só v3 e v4 são aceites; outra versão faz a abertura falhar
+// com [ErrVersaoDeEscrita] — ver [MemStore.ComVersaoDeEscrita].
+func ComVersaoDeEscrita(v uint8) FileStoreOption {
+	return func(s *FileStore) {
+		if !versaoDeEscritaValida(v) {
+			s.escrita = 255
+			return
+		}
+		s.escrita = v
+	}
+}
+
 // recusasDePosse conta as recusas por partição (AC3: o facto de recusa é OBSERVÁVEL).
 //
 // Contar por partição e não só no total é o que torna o contador accionável: «houve 400

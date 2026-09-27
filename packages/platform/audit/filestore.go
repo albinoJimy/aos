@@ -72,6 +72,10 @@ type FileStore struct {
 	// Head/At servem de s.parts sob RLock (não tocam em f/w); Append recusa com
 	// [ErrAuditReadOnly] e Close tolera os handles nil.
 	soLeitura bool
+
+	// escrita é a versão que se sela por omissão (0 ⇒ [CurrentSchemaVersion]; AOS-439, ver
+	// [ComVersaoDeEscrita]). Uma versão inválida chega aqui como 255 e a abertura recusa-a.
+	escrita uint8
 }
 
 // OpenFileStore cria OU reabre um WORM durável respaldado pelo WAL em path. No
@@ -203,6 +207,14 @@ func abrirFileStore(path string, soLeitura bool, opts ...FileStoreOption) (*File
 	for _, o := range opts {
 		o(s)
 	}
+	// AOS-439: uma versão de escrita que esta release não escreve recusa a abertura — antes de o
+	// store servir qualquer escrita.
+	if s.escrita == 255 {
+		if f != nil {
+			_ = f.Close()
+		}
+		return nil, ErrVersaoDeEscrita
+	}
 	// Reconstrói as cadeias por partição na ordem de escrita (a ordem no ficheiro é a
 	// ordem de Append, que dentro de cada partição é a ordem de audit_seq).
 	for _, rec := range recs {
@@ -271,6 +283,11 @@ func (s *FileStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, e
 	if s.soLeitura {
 		return AuditRecord{}, ErrAuditReadOnly
 	}
+	// AOS-439: uma versão preposta acima da que o store escreve é recusada antes de haver efeito
+	// (s.escrita é fixada na abertura e não muda depois).
+	if err := versaoPrepostaAceite(rec, s.escrita); err != nil {
+		return AuditRecord{}, err
+	}
 	// POSSE ANTES DE TUDO (AC1/AC3 do AOS-284). Fora do s.mu de propósito: a porta pode ir
 	// à rede, e serializar todas as escritas atrás de uma chamada remota trocaria um
 	// defeito de correcção por um de desempenho. A recusa acontece ANTES de haver efeito:
@@ -302,7 +319,7 @@ func (s *FileStore) Append(ctx context.Context, rec AuditRecord) (AuditRecord, e
 		rec.AuditSeq = last.AuditSeq + 1
 	}
 	rec.PrevHash = prev
-	stampSchema(&rec)
+	stampSchema(&rec, s.escrita)
 	rec.EntryHash = ComputeEntryHash(prev, rec)
 	sealed := cloneRecord(rec)
 

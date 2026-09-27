@@ -107,6 +107,12 @@ const (
 	// snapshot não é o declarado/selado. Tem código PRÓPRIO porque é DETERMINISTA: como `1`
 	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila.
 	exitDocumentoRecusado = 10
+	// exitRequerenteForaDoMandato — o nó recusou o run de um nó do plano porque o SUBMISSOR do
+	// pedido não consta dos `requesters` do mandato da credencial (AOS-439). É DETERMINISTA — o
+	// submissor de um pedido não muda, e o mandato só muda quando o humano assina outro —, por isso
+	// TERMINAL: retentá-lo seria um laço. Só sai de um `serve` com o vínculo ao pedido
+	// (`--plan-request-generation`), porque é só aí que o nó distingue esta recusa das outras.
+	exitRequerenteForaDoMandato = 11
 )
 
 func main() {
@@ -187,9 +193,9 @@ func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(
 	// seguinte, com o mesmo `--run`, saía com 3 («lease detido») e o operador esperava pelo TTL —
 	// observado na validação do AOS-414.
 	// AOS-442: e a recusa determinista do documento ou do snapshot — o fim do trabalho, também.
-	if !errors.Is(err, errPlanoPendente) && !errors.Is(err, errDecisaoRecusada) &&
-		!errors.Is(err, errNosEmVoo) && !errors.Is(err, planner.ErrPlanRejected) &&
-		codigoDe(err) != exitDocumentoRecusado {
+	// AOS-439: e a recusa do nó por o submissor não constar do mandato (saída 11) — terminal, e sem
+	// isto o lease ficava vivo até ao TTL sobre um pedido que já fechou.
+	if !largaAPosse(err) {
 		return err
 	}
 	if parar != nil {
@@ -199,6 +205,24 @@ func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(
 		return fmt.Errorf("%w (e o anúncio de largar a posse falhou: %v)", err, rerr)
 	}
 	return err
+}
+
+// largaAPosse diz se o erro de um `serve` é o FIM do trabalho deste processo sobre o run — e por
+// isso se anuncia que se larga a posse — ou um erro de que o mesmo run se retoma (o lease fica).
+// Existe como função para o critério ser testável sem um lease vivo.
+func largaAPosse(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errPlanoPendente) || errors.Is(err, errDecisaoRecusada) ||
+		errors.Is(err, errNosEmVoo) || errors.Is(err, planner.ErrPlanRejected) {
+		return true
+	}
+	switch codigoDe(err) {
+	case exitDocumentoRecusado, exitRequerenteForaDoMandato:
+		return true
+	}
+	return false
 }
 
 // codigoDe traduz o erro no código de saída que o distingue.
@@ -231,6 +255,8 @@ func codigoDe(err error) int {
 		errors.Is(err, ErrSnapshotNaoCorresponde),
 		errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return exitDocumentoRecusado
+	case errors.Is(err, errRequerenteForaDoMandato):
+		return exitRequerenteForaDoMandato
 	default:
 		return exitErro
 	}
@@ -256,11 +282,15 @@ func cmdServe(args []string) error {
 	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument validado — PENDENTE de aprovação humana (AOS-408) ou aprovado (AOS-442): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta e a retoma corre por --plan-doc")
 	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "com o executor de nós composto (AOS_ORQ_NODE_URL, AOS-413): quanto tempo o serve espera pelos runs dos nós; esgotado com nós em voo, sai com 8 e larga a posse. Abaixo da validade do NHI do run")
 	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "com o executor de nós composto: intervalo entre leituras do estado dos runs dos nós")
+	geracaoDoPedido := fs.Int("plan-request-generation", 0, "AOS-439: a geração da reclamação do PEDIDO DE PLANO que este serve trabalha (o `consume` passa-a). Com ela, cada run filho leva o vínculo `plan_request` ao nó, que deriva daí o submissor do plano; 0 ⇒ serve manual, sem pedido e sem submissor")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *planTimeout <= 0 || *pollInterval <= 0 {
 		return errors.New("--plan-timeout e --poll-interval têm de ser positivos")
+	}
+	if *geracaoDoPedido < 0 {
+		return errors.New("--plan-request-generation não pode ser negativa")
 	}
 	// AOS-425 — OS IDs VALIDAM-SE PRIMEIRO, ANTES DE SE LER O AMBIENTE.
 	//
@@ -408,7 +438,8 @@ func cmdServe(args []string) error {
 	// AOS-413: o executor de nós, quando composto; nil ⇒ o despacho não executa (como antes).
 	var exe *configDoExecutor
 	if cliDoNo != nil {
-		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida}
+		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
+			geracaoDoPedido: *geracaoDoPedido}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse
