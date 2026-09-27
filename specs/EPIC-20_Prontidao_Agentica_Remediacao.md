@@ -1597,6 +1597,115 @@ Ligar o estágio `pipeline/authn` real na composição do GW, com o principal do
 
 ---
 
+## AOS-456 — Rate-limit do ingresso POR-CHAMADOR (o balde global não separa utilizadores)
+
+### Contexto
+O AOS-277 deu ao ingresso um token-bucket e um tecto de in-flight, e ambos são **por-nó**:
+`apiHandler.bucket` (`packages/cmd/aos/api.go:426`) é **um** balde consumido por
+`handleSubmit` (`:634`) para todo o `POST /runs`, e `maxInFlight` é um contador único. Com **um**
+utilizador — o dono — isso é protecção anti-exaustão correcta e foi o que o AOS-277 pediu. Com N
+utilizadores é um vector de negação de serviço **entre pares**, sem malícia necessária: quem
+submeter em rajada esgota o balde de todos os outros, e o segundo utilizador vê `429` por causa do
+primeiro.
+
+Apurado na auditoria de prontidão para terceiros
+(`docs/reports/auditoria-prontidao-terceiros-2026-09-27.md` §3.1), que o classificou como
+«pequeno». **A auditoria não viu o ponto difícil**, medido depois:
+`h.bucket.allow()` corre **antes** de o chamador ser identificado — a identidade só aparece mais
+abaixo, no `h.readGov.authorize(r)` do gate soberano. Não existe hoje principal nenhum na altura em
+que o balde decide.
+
+### Objectivo
+Dar a cada **principal** o seu próprio balde, **sem** perder a protecção que o balde global dá
+contra tráfego não-autenticado, e **sem** que a tabela de baldes se torne ela própria um vector de
+exaustão de memória.
+
+### Desenho proposto (as três decisões que o ticket tem de fixar)
+
+1. **DUAS ETAPAS, não substituição.** O balde global fica onde está, antes da descodificação:
+   é a única barreira que pode morder num pedido cujo chamador ainda não se conhece. O balde
+   **por-principal** entra **depois** do `authorize`, com o `submitter.principal` que ele resolve.
+   Substituir o global pelo por-chamador seria uma **regressão**: uma rajada sem credencial deixaria
+   de ter tecto, porque não há a quem atribuí-la.
+   *O custo do `authorize` não é objecção:* o resultado é memoizado por-pedido
+   (`memoDe(r)` em `sovereignty.go:561`), pelo que chamá-lo antes do segundo balde não duplica
+   verificação.
+2. **A TABELA É LIMITADA.** Um `map[principal]*tokenBucket` sem tecto é um vector: quem rode
+   principais faz a tabela crescer sem limite. Tecto declarado + evicção do balde **cheio** há mais
+   tempo (um balde cheio não tem estado que se perca — é indistinguível de um recém-criado), e
+   `AOS_INGRESS_PER_CALLER_MAX` no molde de `ErrBadIngressLimits`: valor ilegível, negativo ou zero
+   **aborta o arranque**, como o resto dos knobs de ingresso.
+3. **MODO LEGADO declarado.** Sem gate soberano composto (`readGov == nil`) não há principal, logo
+   não há balde por-chamador. O banner **declara-o** em vez de o omitir — o molde é o
+   `HasActiveTaintGate`: uma barreira não-composta diz-se, não se finge.
+
+### Critérios de Aceitação
+- [ ] Dois chamadores distintos: a rajada de A **não** produz `429` em B enquanto B estiver dentro
+      do seu próprio balde (o teste que hoje não existe e é a razão do ticket).
+- [ ] O balde global continua a morder **sem credencial** — prova negativa, senão a etapa 1 é
+      teatro.
+- [ ] A tabela respeita o tecto: `AOS_INGRESS_PER_CALLER_MAX + 1` principais distintos não fazem a
+      tabela crescer além do tecto, e o balde evicto é um **cheio**.
+- [ ] `AOS_INGRESS_PER_CALLER_MAX` a `0`, negativo ou ilegível **aborta o arranque**
+      (molde `ErrBadIngressLimits`; `0` não desliga — desligaria a barreira anunciando-a).
+- [ ] Banner declara o estado real, incluindo «não composto» em modo legado.
+- [ ] Determinismo: relógio injectado (`WithAPIClock`), sem `time.Now()` na asserção.
+
+### Estado
+**ABERTO.** Reservado por `sessoes.py reservar`. Dependência: nenhuma — o `authorize` já resolve o
+principal do submissor desde AOS-182/A7.
+
+---
+
+## AOS-457 — Orçamento POR-PRINCIPAL (o tecto por-run não contém quem submete N runs)
+
+### Contexto
+`AOS_BUDGET_MAX_TOKENS` e `AOS_BUDGET_MAX_COST_MICRO_USD` (AOS-257/AOS-260) são o tecto que
+**CADA run** recebe, de uma variável de ambiente única — `packages/cmd/aos/budget_env.go` di-lo na
+primeira linha. Não existe tecto **por-principal**: N runs × tecto = despesa ilimitada por um só
+chamador. Num nó que fala com um modelo pago, é o risco financeiro mais directo de abrir a
+terceiros, e o único item da auditoria de prontidão (§3.2) cujo dano é irreversível — tokens gastos
+não se devolvem.
+
+### Objectivo
+Um tecto de consumo **agregado por principal**, numa janela declarada, que negue a admissão de um
+run novo quando o principal já esgotou a sua quota — sem tocar na semântica por-run, que continua a
+ser o que o disjuntor e o burn-down usam.
+
+### O que torna este ticket MAIOR do que o AOS-456, e a auditoria não distinguiu
+O orçamento por-run é composto **na admissão** e vive na árvore daquele run. Um tecto por-principal
+é **estado agregado que atravessa runs** e, portanto:
+
+- tem de ser **durável** (um restart não pode zerar a quota de quem já gastou — senão o tecto
+  contorna-se reiniciando o nó, e um tecto que se contorna é pior do que nenhum, porque é anunciado);
+- tem de ter **semântica de janela declarada** (diária? mensal? deslizante?) e de **reposição** —
+  e essa é uma decisão de produto, não de engenharia;
+- interage com o `burndown_ledger` e com o crypto-shredding por-titular: um agregado por principal é
+  um **registo sobre uma pessoa**, logo cai no alcance do Art. 17 e tem de ser apagável sem partir
+  a contabilidade (o precedente é o AOS-429 — um TTL próprio destruiria a KEK partilhada).
+
+**Por isso este ticket não deve ser implementado sem a janela e a reposição decididas pelo dono.**
+Implementá-lo com uma janela inventada entregaria um tecto que ninguém pediu e que o DPO tem de
+avaliar.
+
+### Critérios de Aceitação
+- [ ] Janela e reposição **declaradas** (decisão do dono registada no ticket antes de implementar).
+- [ ] O agregado é **durável**: um restart do nó não repõe a quota consumida — provado por teste de
+      crash/retoma, não por inspecção.
+- [ ] Principal com quota esgotada é **negado na admissão** do run novo, com recusa atribuível.
+- [ ] O tecto por-run continua a valer de forma independente (os dois compõem-se; nenhum substitui
+      o outro).
+- [ ] O agregado por-principal é alcançável pelo `/dsar/erase` sem destruir a contabilidade dos
+      outros titulares (molde AOS-429).
+- [ ] `0` ou valor ilegível **aborta o arranque** (molde `ErrBadBudget`).
+
+### Estado
+**ABERTO — BLOQUEADO por decisão de produto** (janela + reposição). Reservado por
+`sessoes.py reservar`. Dependência: AOS-456 não é pré-requisito; são eixos independentes
+(um limita frequência, o outro limita despesa).
+
+---
+
 ## Mapa de dependências desta epic
 
 ```

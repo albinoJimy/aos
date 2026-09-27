@@ -322,12 +322,28 @@ def extract_all_tickets() -> dict:
                 tickets[aos]["title"] = title  # título da tabela é mais limpo
 
         # 2. Secções detalhadas (fonte primária para ADRs)
-        for m in re.finditer(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
-            aos = m.group(1)
-            title = m.group(2).strip()
+        for m in re.finditer(r"^(#{2,3}) (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
+            nivel = len(m.group(1))
+            aos = m.group(2)
+            title = m.group(3).strip()
             start = m.end()
-            # Fim do bloco: próximo cabeçalho de mesmo nível ou fim
-            next_h = re.search(r"\n#{2,3} (AOS-\d{3})\s*[-–—]", text[start:])
+            # Fim do bloco: próximo cabeçalho de nível IGUAL OU SUPERIOR (menos `#`), seja ou
+            # não um ticket.
+            #
+            # A versão anterior procurava só o próximo cabeçalho `AOS-NNN`, e o comentário dizia
+            # «próximo cabeçalho de mesmo nível ou fim» — descrevia o que o código NÃO fazia. A
+            # consequência: o ÚLTIMO ticket de cada epic absorvia toda a prosa final do ficheiro,
+            # e com ela os `ADR-NNN` que essa prosa menciona. No EPIC-20 isso atribuía ADR-021 e
+            # ADR-022 ao AOS-278 por o «Mapa de dependências desta epic» citar os dois — uma
+            # atribuição que nenhum critério de aceitação do AOS-278 sustenta. Descoberto ao
+            # inserir AOS-456/457 antes do mapa: a falsa atribuição MUDOU DE VÍTIMA para o
+            # AOS-457, que é como se torna visível.
+            #
+            # O nível tem de vir do cabeçalho do próprio ticket, não de uma constante: um ticket
+            # `##` termina no próximo `##` (ou `#`), um `###` no próximo `###`/`##`/`#`. Cortar em
+            # qualquer `#{2,3}` truncaria todo o bloco no seu primeiro `### Contexto` e perderia
+            # os ADRs do corpo — que é a regressão simétrica, e pior.
+            next_h = re.search(r"\n#{1,%d} " % nivel, text[start:])
             block = text[start : start + next_h.start()] if next_h else text[start:]
             adrs = (
                 set()
