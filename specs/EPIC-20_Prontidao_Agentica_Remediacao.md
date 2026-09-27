@@ -1600,97 +1600,94 @@ Ligar o estágio `pipeline/authn` real na composição do GW, com o principal do
 ## AOS-456 — Rate-limit do ingresso POR-CHAMADOR (o balde global não separa utilizadores)
 
 ### Contexto
-O AOS-277 deu ao ingresso um token-bucket e um tecto de in-flight, e ambos são **por-nó**:
-`apiHandler.bucket` (`packages/cmd/aos/api.go:426`) é **um** balde consumido por
-`handleSubmit` (`:634`) para todo o `POST /runs`, e `maxInFlight` é um contador único. Com **um**
-utilizador — o dono — isso é protecção anti-exaustão correcta e foi o que o AOS-277 pediu. Com N
-utilizadores é um vector de negação de serviço **entre pares**, sem malícia necessária: quem
-submeter em rajada esgota o balde de todos os outros, e o segundo utilizador vê `429` por causa do
-primeiro.
+O AOS-277 deu ao ingresso um token-bucket e um tecto de in-flight, ambos **por-nó**:
+`apiHandler.bucket` é **um** balde consumido por `handleSubmit` para todo o `POST /runs`. Com um
+utilizador — o dono — é anti-exaustão correcta, e era o que aquele ticket pedia. Com N é negação de
+serviço **entre pares**, sem malícia necessária: quem submeter em rajada esgota o balde de todos, e
+o segundo utilizador vê `429` por causa do primeiro. O banner de arranque declara-o em voz alta.
 
 Apurado na auditoria de prontidão para terceiros
-(`docs/reports/auditoria-prontidao-terceiros-2026-09-27.md` §3.1), que o classificou como
-«pequeno». **A auditoria não viu o ponto difícil**, medido depois:
-`h.bucket.allow()` corre **antes** de o chamador ser identificado — a identidade só aparece mais
-abaixo, no `h.readGov.authorize(r)` do gate soberano. Não existe hoje principal nenhum na altura em
-que o balde decide.
+(`docs/reports/auditoria-prontidao-terceiros-2026-09-27.md` §3.1).
+
+### ⛔ TENTATIVA 1 (2026-09-27) — IMPLEMENTADA, REVERTIDA. Leia isto antes de tentar outra vez.
+Uma implementação foi escrita, passou **31 check runs de CI** e foi **revertida** depois de uma
+revisão adversarial independente a medir contra o handler real. **Não entregava nada do que
+prometia, em nenhuma configuração.** O que se aprendeu é o valor deste ticket, e custa menos ler
+do que redescobrir.
+
+**O DEFEITO DE RAIZ — a ordem das duas etapas.** O desenho era «mantém o balde global como 1.ª
+etapa e acrescenta o por-chamador como 2.ª, depois de o `authorize` resolver o principal». O token
+global é consumido em `api.go:676`; a 2.ª etapa decidia em `api.go:781`. Logo **cada pedido
+recusado pela 2.ª etapa já tinha gasto um token global**: A inunda, os seus pedidos recusados
+drenam o comum, e B leva `429` na **1.ª** etapa. Medido no handler real, na configuração que o
+banner anunciava como protectora:
+
+```
+alice #1,#2 -> passam           alice #3..#10 -> 429 da 2.ª etapa (e gastam o global)
+BOB   #1    -> 429 da 1.ª etapa (global vazio)
+```
+
+**Nenhum valor de configuração o corrige.** E o cabeçalho do ficheiro implementado afirmava o
+desenho correcto — «pedido atribuível ⇒ balde desse principal, **e só dele**» — que o código não
+fazia. A prosa descrevia a solução; o código fazia outra coisa.
+
+**A RESTRIÇÃO REAL, que qualquer tentativa nova tem de resolver primeiro.** Para B não ser
+afectado por A, os pedidos **atribuíveis** de A não podem consumir um recurso partilhado. Isso
+obriga a resolver a identidade **antes** do balde global — e aí abre um vector oposto: o
+`authorize` faz verificação criptográfica, e a correr antes de qualquer tecto fica a taxa
+ilimitada para quem envie tokens inválidos. **É este o trade-off a desenhar, e não é um detalhe de
+implementação.** Uma pista não explorada: um balde dedicado a *bounded verification work* antes do
+`authorize`, com o balde de dados a servir só o tráfego não-atribuível.
+
+**OS OUTROS DOZE ACHADOS, todos medidos** (a evidência completa está no relatório da revisão; aqui
+ficam os que restringem o desenho):
+
+| # | Achado |
+|---|---|
+| ALTO | O banner declarava «PROTEGE» uma postura que medidamente não protege. Verificado no binário real. |
+| ALTO | O critério de aceitação central estava `[x]` com um teste que exercitava a **tabela isolada**, nunca o `handleSubmit`. Com os defaults a 2.ª etapa era **inalcançável como recusa**. |
+| ALTO | O banner derivava a postura só da **config**; a composição dependia de `readGov != nil`. Sem `AOS_BOARD_REGIONS` anunciava «LIGADA» e «PROTEGE» com a tabela a `nil` — e o ramo «NÃO COMPOSTA» era **inalcançável por env**, porque o único valor que o produzia abortava o arranque. |
+| ALTO | `AOS_INGRESS_PER_CALLER_MAX` sem tecto **superior**: `262144` fazia **uma** inserção segurar o mutex global **8,79 s**; `1e8` era aceite sem uma palavra. Fail-closed contra `0`, aberto contra o absurdo. |
+| MÉDIO | DoS novo: 3x de latência no caso benigno, 6,76 ms de pior caso para um chamador benigno com um atacante a rodar principais. Antes era um `allow()` sem varredura. |
+| MÉDIO | «O(8) amortizado por pedido» era **falso** — busca linear do mínimo por entrada dá O(n) por pedido. Medido: 4x no tecto ⇒ ~3x no custo/pedido. Exige heap ou limiar. |
+| MÉDIO | Rotação de principais anulava a etapa na via legada por headers (principal auto-declarado): 30 pedidos rotativos ⇒ **0** recusas; 30 do mesmo ⇒ 28. |
+| MÉDIO | `POST /plans` é segunda porta, consome o global e **não** debita o balde do chamador. |
+| MÉDIO | `tuned` passou a ser accionado pelas variáveis novas mas o texto de origem só nomeava as antigas: o banner afirmava «AFINADO por» três variáveis que o operador não definira. |
+| MÉDIO | A condição do banner era um `OR` de dois eixos: bastava o burst ser 1 abaixo para declarar «PROTEGE» com a taxa 100 000x acima. Os três casos do teste não distinguiam a condição de nenhum mutante de um eixo. |
+| MÉDIO | `aos-orq` submete todos os runs-filho com **um** principal (o dele), colapsando todos os humanos num balde; e o `429` novo chegava ao executor como erro genérico, sem retry/backoff. |
+| BAIXO | O teste do critério era satisfeito por um contador que **nunca reabastece** (`rate=0` passava-o palavra por palavra). |
+
+**O que sobreviveu e foi confirmado por medição independente:** a tabela nunca cresce acima do
+tecto (8000 inserções concorrentes, `-race` limpo); a selecção dos mais cheios está correcta (200
+repetições, ordem aleatória de map como vector); não há data race; a config é fail-closed por
+baixo; e o lote melhora 9x face a um-a-um. **Nada disso compensa o defeito de raiz.**
 
 ### Objectivo
-Dar a cada **principal** o seu próprio balde, **sem** perder a protecção que o balde global dá
-contra tráfego não-autenticado, e **sem** que a tabela de baldes se torne ela própria um vector de
-exaustão de memória.
-
-### Desenho proposto (as três decisões que o ticket tem de fixar)
-
-1. **DUAS ETAPAS, não substituição.** O balde global fica onde está, antes da descodificação:
-   é a única barreira que pode morder num pedido cujo chamador ainda não se conhece. O balde
-   **por-principal** entra **depois** do `authorize`, com o `submitter.principal` que ele resolve.
-   Substituir o global pelo por-chamador seria uma **regressão**: uma rajada sem credencial deixaria
-   de ter tecto, porque não há a quem atribuí-la.
-   *O custo do `authorize` não é objecção:* o resultado é memoizado por-pedido
-   (`memoDe(r)` em `sovereignty.go:561`), pelo que chamá-lo antes do segundo balde não duplica
-   verificação.
-2. **A TABELA É LIMITADA.** Um `map[principal]*tokenBucket` sem tecto é um vector: quem rode
-   principais faz a tabela crescer sem limite. Tecto declarado + evicção do balde **cheio** há mais
-   tempo (um balde cheio não tem estado que se perca — é indistinguível de um recém-criado), e
-   `AOS_INGRESS_PER_CALLER_MAX` no molde de `ErrBadIngressLimits`: valor ilegível, negativo ou zero
-   **aborta o arranque**, como o resto dos knobs de ingresso.
-3. **MODO LEGADO declarado.** Sem gate soberano composto (`readGov == nil`) não há principal, logo
-   não há balde por-chamador. O banner **declara-o** em vez de o omitir — o molde é o
-   `HasActiveTaintGate`: uma barreira não-composta diz-se, não se finge.
+Dar a cada **principal** um tecto próprio de forma que a rajada de um **não** produza `429` noutro,
+resolvendo primeiro o trade-off de ordem descrito acima.
 
 ### Critérios de Aceitação
-- [x] Dois chamadores distintos: a rajada de A **não** produz `429` em B enquanto B estiver dentro
-      do seu próprio balde — `TestAOS456RajadaDeUmNaoAtingeOOutro`. Mutação: o balde por-chamador a
-      permitir sempre derruba-o.
-- [x] O balde global continua a morder — **intocado**, mantém-se como 1.ª etapa antes da
-      descodificação do corpo (`api.go`, `handleSubmit`).
-- [x] A tabela respeita o tecto e o balde evicto é o **mais cheio** —
-      `TestAOS456TabelaRespeitaOTectoEEvictaOMaisCheio`, que exige que o balde **drenado**
-      SOBREVIVA. Mutação «evicta o mais vazio» derruba-o.
-- [x] `AOS_INGRESS_PER_CALLER_MAX` a `0`, negativo ou ilegível **aborta o arranque** —
-      `TestAOS456EnvFailClosed`, e verificado no **binário real**: `PER_CALLER_MAX=0` sai com
-      «limites de ingresso mal configurados» e zero linhas de banner.
-- [x] Banner declara o estado real — `TestAOS456BannerDeclaraAPosturaVERDADEIRA` cobre as **três**
-      posturas, e a do meio é a que interessa: LIGADA mas **sem justiça**. Verificado no binário
-      real nos três casos.
-- [x] Determinismo: relógio manual injectado; nenhuma asserção sobre `time.Now()`.
-
-### O que a implementação MUDOU face ao desenho deste ticket
-O ticket escrevia «duas etapas: mantém o global e acrescenta o por-chamador a seguir». **Está
-incompleto,** e a discovery mostrou-o: se o pedido autenticado continuar a consumir o balde global,
-A drena o global antes de esgotar o seu próprio e B é recusado por falta de tokens **globais** — a
-starvation sobrevive ao balde novo. Identificar ANTES do balde global abriria vector pior (a
-verificação de token a taxa ilimitada).
-
-O que ficou entregue é o mecanismo com o **limite declarado**: a justiça entre pares exige
-`AOS_INGRESS_PER_CALLER_RATE`/`_BURST` **estritamente abaixo** dos globais, e com os defaults (iguais
-aos globais) o banner diz em voz alta que **NÃO protege**. Anunciar justiça que a config não dá seria
-o defeito que este repositório persegue.
-
-### O QUE ESTE TICKET **NÃO** FECHA, e a auditoria de completude obrigou a nomear
-**`POST /plans` é uma segunda porta de submissão e NÃO passa pela 2.ª etapa.** Ela consome o balde
-**global** da 1.ª etapa (`plan_ingress.go`, `h.bucket.allow()`), pelo que uma rajada de *pedidos de
-plano* de A continua a poder esgotar o global e a produzir `429` no `POST /runs` de B. O critério de
-aceitação deste ticket — «a rajada de A não produz 429 em B» — vale para A a inundar `POST /runs`;
-**não vale** para A a inundar `POST /plans`.
-
-Não foi alargado aqui de propósito (AGENTS.md §5: âmbito do ticket é `POST /runs`; o que falta abre
-ticket próprio). Mas fica **escrito no ticket e no banner de arranque**, porque um ticket marcado
-FEITO que se leia como «starvation entre pares fechada» seria mais perigoso do que o defeito: quem o
-ler decidiria abrir o nó a terceiros sobre uma garantia que tem uma porta aberta ao lado.
-
-**Também por fechar:** a evicção em lote varre O(n) sob o mutex global — amortizada em `tecto/8`
-inserções, medida por `TestAOS456EviccaoAmortizaEmLote`, mas não eliminada; e a tabela só encolhe
-por evicção ao atingir o tecto (um nó com poucos chamadores mantém os baldes indefinidamente, o que
-é memória irrelevante mas não é zero).
+- [ ] **Medido no `handleSubmit`, não na tabela isolada:** com A em rajada, B é admitido. Um teste
+      que só exercite a estrutura de dados **não** fecha este critério — foi assim que a tentativa 1
+      passou com o critério por cumprir.
+- [ ] Prova negativa de que o tráfego **não-atribuível** continua com tecto (senão a 1.ª etapa
+      deixa de proteger).
+- [ ] O custo de verificação criptográfica tem tecto **antes** de a identidade ser resolvida.
+- [ ] O banner deriva a postura da **composição real** (o handler), não só da config; e o ramo
+      «não composta» é **alcançável** e testado.
+- [ ] `AOS_INGRESS_PER_CALLER_MAX` tem tecto superior **e** inferior, ambos com o valor recusado
+      medido.
+- [ ] A estrutura não degrada a latência do caso benigno face ao estado anterior — com número
+      medido, não com afirmação.
+- [ ] `POST /plans` é coberto, ou a exclusão é declarada **no banner e no ticket** com o efeito
+      nomeado (uma barreira que só metade das portas respeita não é uma barreira — a doutrina do
+      `plan_ingress.go` para a reserva de `run_id`).
+- [ ] O teste do critério não passa com um balde que nunca reabastece.
 
 ### Estado
-**FEITO — com o alcance declarado acima.** Suite do módulo verde com `-race`; **sete** mutações
-apanhadas; três posturas de banner provadas no binário real; `apex`, `security`, `policy-test`,
-`layer-lint` verdes. Revisão adversarial independente lançada sobre o diff. Residuais declarados no commit: a taxa **agregada** de pedidos atribuíveis
-não tem tecto em taxa (limitam-na `AOS_INGRESS_MAX_INFLIGHT`, intocado, e o tecto da tabela); a
-tabela é por-processo; o plano de controlo e as leituras ficam fora da etapa.
+**ABERTO.** A tentativa 1 está revertida; o código não vive no repositório. O que fica é esta
+secção, que vale mais do que ela valia: sabe-se agora o que **não** funciona, porquê, e com que
+números.
 
 ---
 
