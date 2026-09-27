@@ -1640,20 +1640,39 @@ exaustão de memória.
    `HasActiveTaintGate`: uma barreira não-composta diz-se, não se finge.
 
 ### Critérios de Aceitação
-- [ ] Dois chamadores distintos: a rajada de A **não** produz `429` em B enquanto B estiver dentro
-      do seu próprio balde (o teste que hoje não existe e é a razão do ticket).
-- [ ] O balde global continua a morder **sem credencial** — prova negativa, senão a etapa 1 é
-      teatro.
-- [ ] A tabela respeita o tecto: `AOS_INGRESS_PER_CALLER_MAX + 1` principais distintos não fazem a
-      tabela crescer além do tecto, e o balde evicto é um **cheio**.
-- [ ] `AOS_INGRESS_PER_CALLER_MAX` a `0`, negativo ou ilegível **aborta o arranque**
-      (molde `ErrBadIngressLimits`; `0` não desliga — desligaria a barreira anunciando-a).
-- [ ] Banner declara o estado real, incluindo «não composto» em modo legado.
-- [ ] Determinismo: relógio injectado (`WithAPIClock`), sem `time.Now()` na asserção.
+- [x] Dois chamadores distintos: a rajada de A **não** produz `429` em B enquanto B estiver dentro
+      do seu próprio balde — `TestAOS456RajadaDeUmNaoAtingeOOutro`. Mutação: o balde por-chamador a
+      permitir sempre derruba-o.
+- [x] O balde global continua a morder — **intocado**, mantém-se como 1.ª etapa antes da
+      descodificação do corpo (`api.go`, `handleSubmit`).
+- [x] A tabela respeita o tecto e o balde evicto é o **mais cheio** —
+      `TestAOS456TabelaRespeitaOTectoEEvictaOMaisCheio`, que exige que o balde **drenado**
+      SOBREVIVA. Mutação «evicta o mais vazio» derruba-o.
+- [x] `AOS_INGRESS_PER_CALLER_MAX` a `0`, negativo ou ilegível **aborta o arranque** —
+      `TestAOS456EnvFailClosed`, e verificado no **binário real**: `PER_CALLER_MAX=0` sai com
+      «limites de ingresso mal configurados» e zero linhas de banner.
+- [x] Banner declara o estado real — `TestAOS456BannerDeclaraAPosturaVERDADEIRA` cobre as **três**
+      posturas, e a do meio é a que interessa: LIGADA mas **sem justiça**. Verificado no binário
+      real nos três casos.
+- [x] Determinismo: relógio manual injectado; nenhuma asserção sobre `time.Now()`.
+
+### O que a implementação MUDOU face ao desenho deste ticket
+O ticket escrevia «duas etapas: mantém o global e acrescenta o por-chamador a seguir». **Está
+incompleto,** e a discovery mostrou-o: se o pedido autenticado continuar a consumir o balde global,
+A drena o global antes de esgotar o seu próprio e B é recusado por falta de tokens **globais** — a
+starvation sobrevive ao balde novo. Identificar ANTES do balde global abriria vector pior (a
+verificação de token a taxa ilimitada).
+
+O que ficou entregue é o mecanismo com o **limite declarado**: a justiça entre pares exige
+`AOS_INGRESS_PER_CALLER_RATE`/`_BURST` **estritamente abaixo** dos globais, e com os defaults (iguais
+aos globais) o banner diz em voz alta que **NÃO protege**. Anunciar justiça que a config não dá seria
+o defeito que este repositório persegue.
 
 ### Estado
-**ABERTO.** Reservado por `sessoes.py reservar`. Dependência: nenhuma — o `authorize` já resolve o
-principal do submissor desde AOS-182/A7.
+**FEITO.** Suite do módulo verde com `-race`; cinco mutações apanhadas; três posturas de banner
+provadas no binário real. Residuais declarados no commit: a taxa **agregada** de pedidos atribuíveis
+não tem tecto em taxa (limitam-na `AOS_INGRESS_MAX_INFLIGHT`, intocado, e o tecto da tabela); a
+tabela é por-processo; o plano de controlo e as leituras ficam fora da etapa.
 
 ---
 
