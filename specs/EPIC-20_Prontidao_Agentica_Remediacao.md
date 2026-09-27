@@ -1597,6 +1597,149 @@ Ligar o estágio `pipeline/authn` real na composição do GW, com o principal do
 
 ---
 
+## AOS-456 — Rate-limit do ingresso POR-CHAMADOR (o balde global não separa utilizadores)
+
+### Contexto
+O AOS-277 deu ao ingresso um token-bucket e um tecto de in-flight, ambos **por-nó**:
+`apiHandler.bucket` é **um** balde consumido por `handleSubmit` para todo o `POST /runs`. Com um
+utilizador — o dono — é anti-exaustão correcta, e era o que aquele ticket pedia. Com N é negação de
+serviço **entre pares**, sem malícia necessária: quem submeter em rajada esgota o balde de todos, e
+o segundo utilizador vê `429` por causa do primeiro. O banner de arranque declara-o em voz alta.
+
+Apurado na auditoria de prontidão para terceiros
+(`docs/reports/auditoria-prontidao-terceiros-2026-09-27.md` §3.1).
+
+### ⛔ TENTATIVA 1 (2026-09-27) — IMPLEMENTADA, REVERTIDA. Leia isto antes de tentar outra vez.
+Uma implementação foi escrita, passou **31 check runs de CI** e foi **revertida** depois de uma
+revisão adversarial independente a medir contra o handler real. **Não entregava nada do que
+prometia, em nenhuma configuração.** O que se aprendeu é o valor deste ticket, e custa menos ler
+do que redescobrir.
+
+**O DEFEITO DE RAIZ — a ordem das duas etapas.** O desenho era «mantém o balde global como 1.ª
+etapa e acrescenta o por-chamador como 2.ª, depois de o `authorize` resolver o principal». O token
+global é consumido em `api.go:676`; a 2.ª etapa decidia em `api.go:781`. Logo **cada pedido
+recusado pela 2.ª etapa já tinha gasto um token global**: A inunda, os seus pedidos recusados
+drenam o comum, e B leva `429` na **1.ª** etapa. Medido no handler real, na configuração que o
+banner anunciava como protectora:
+
+```
+alice #1,#2 -> passam           alice #3..#10 -> 429 da 2.ª etapa (e gastam o global)
+BOB   #1    -> 429 da 1.ª etapa (global vazio)
+```
+
+**Nenhum valor de configuração o corrige.** E o cabeçalho do ficheiro implementado afirmava o
+desenho correcto — «pedido atribuível ⇒ balde desse principal, **e só dele**» — que o código não
+fazia. A prosa descrevia a solução; o código fazia outra coisa.
+
+**A RESTRIÇÃO REAL, que qualquer tentativa nova tem de resolver primeiro.** Para B não ser
+afectado por A, os pedidos **atribuíveis** de A não podem consumir um recurso partilhado. Isso
+obriga a resolver a identidade **antes** do balde global — e aí abre um vector oposto: o
+`authorize` faz verificação criptográfica, e a correr antes de qualquer tecto fica a taxa
+ilimitada para quem envie tokens inválidos. **É este o trade-off a desenhar, e não é um detalhe de
+implementação.** Uma pista não explorada: um balde dedicado a *bounded verification work* antes do
+`authorize`, com o balde de dados a servir só o tráfego não-atribuível.
+
+**OS OUTROS DOZE ACHADOS, todos medidos** (a evidência completa está no relatório da revisão; aqui
+ficam os que restringem o desenho):
+
+| # | Achado |
+|---|---|
+| ALTO | O banner declarava «PROTEGE» uma postura que medidamente não protege. Verificado no binário real. |
+| ALTO | O critério de aceitação central estava `[x]` com um teste que exercitava a **tabela isolada**, nunca o `handleSubmit`. Com os defaults a 2.ª etapa era **inalcançável como recusa**. |
+| ALTO | O banner derivava a postura só da **config**; a composição dependia de `readGov != nil`. Sem `AOS_BOARD_REGIONS` anunciava «LIGADA» e «PROTEGE» com a tabela a `nil` — e o ramo «NÃO COMPOSTA» era **inalcançável por env**, porque o único valor que o produzia abortava o arranque. |
+| ALTO | `AOS_INGRESS_PER_CALLER_MAX` sem tecto **superior**: `262144` fazia **uma** inserção segurar o mutex global **8,79 s**; `1e8` era aceite sem uma palavra. Fail-closed contra `0`, aberto contra o absurdo. |
+| MÉDIO | DoS novo: 3x de latência no caso benigno, 6,76 ms de pior caso para um chamador benigno com um atacante a rodar principais. Antes era um `allow()` sem varredura. |
+| MÉDIO | «O(8) amortizado por pedido» era **falso** — busca linear do mínimo por entrada dá O(n) por pedido. Medido: 4x no tecto ⇒ ~3x no custo/pedido. Exige heap ou limiar. |
+| MÉDIO | Rotação de principais anulava a etapa na via legada por headers (principal auto-declarado): 30 pedidos rotativos ⇒ **0** recusas; 30 do mesmo ⇒ 28. |
+| MÉDIO | `POST /plans` é segunda porta, consome o global e **não** debita o balde do chamador. |
+| MÉDIO | `tuned` passou a ser accionado pelas variáveis novas mas o texto de origem só nomeava as antigas: o banner afirmava «AFINADO por» três variáveis que o operador não definira. |
+| MÉDIO | A condição do banner era um `OR` de dois eixos: bastava o burst ser 1 abaixo para declarar «PROTEGE» com a taxa 100 000x acima. Os três casos do teste não distinguiam a condição de nenhum mutante de um eixo. |
+| MÉDIO | `aos-orq` submete todos os runs-filho com **um** principal (o dele), colapsando todos os humanos num balde; e o `429` novo chegava ao executor como erro genérico, sem retry/backoff. |
+| BAIXO | O teste do critério era satisfeito por um contador que **nunca reabastece** (`rate=0` passava-o palavra por palavra). |
+
+**O que sobreviveu e foi confirmado por medição independente:** a tabela nunca cresce acima do
+tecto (8000 inserções concorrentes, `-race` limpo); a selecção dos mais cheios está correcta (200
+repetições, ordem aleatória de map como vector); não há data race; a config é fail-closed por
+baixo; e o lote melhora 9x face a um-a-um. **Nada disso compensa o defeito de raiz.**
+
+### Objectivo
+Dar a cada **principal** um tecto próprio de forma que a rajada de um **não** produza `429` noutro,
+resolvendo primeiro o trade-off de ordem descrito acima.
+
+### Critérios de Aceitação
+- [ ] **Medido no `handleSubmit`, não na tabela isolada:** com A em rajada, B é admitido. Um teste
+      que só exercite a estrutura de dados **não** fecha este critério — foi assim que a tentativa 1
+      passou com o critério por cumprir.
+- [ ] Prova negativa de que o tráfego **não-atribuível** continua com tecto (senão a 1.ª etapa
+      deixa de proteger).
+- [ ] O custo de verificação criptográfica tem tecto **antes** de a identidade ser resolvida.
+- [ ] O banner deriva a postura da **composição real** (o handler), não só da config; e o ramo
+      «não composta» é **alcançável** e testado.
+- [ ] `AOS_INGRESS_PER_CALLER_MAX` tem tecto superior **e** inferior, ambos com o valor recusado
+      medido.
+- [ ] A estrutura não degrada a latência do caso benigno face ao estado anterior — com número
+      medido, não com afirmação.
+- [ ] `POST /plans` é coberto, ou a exclusão é declarada **no banner e no ticket** com o efeito
+      nomeado (uma barreira que só metade das portas respeita não é uma barreira — a doutrina do
+      `plan_ingress.go` para a reserva de `run_id`).
+- [ ] O teste do critério não passa com um balde que nunca reabastece.
+
+### Estado
+**ABERTO.** A tentativa 1 está revertida; o código não vive no repositório. O que fica é esta
+secção, que vale mais do que ela valia: sabe-se agora o que **não** funciona, porquê, e com que
+números.
+
+---
+
+## AOS-457 — Orçamento POR-PRINCIPAL (o tecto por-run não contém quem submete N runs)
+
+### Contexto
+`AOS_BUDGET_MAX_TOKENS` e `AOS_BUDGET_MAX_COST_MICRO_USD` (AOS-257/AOS-260) são o tecto que
+**CADA run** recebe, de uma variável de ambiente única — `packages/cmd/aos/budget_env.go` di-lo na
+primeira linha. Não existe tecto **por-principal**: N runs × tecto = despesa ilimitada por um só
+chamador. Num nó que fala com um modelo pago, é o risco financeiro mais directo de abrir a
+terceiros, e o único item da auditoria de prontidão (§3.2) cujo dano é irreversível — tokens gastos
+não se devolvem.
+
+### Objectivo
+Um tecto de consumo **agregado por principal**, numa janela declarada, que negue a admissão de um
+run novo quando o principal já esgotou a sua quota — sem tocar na semântica por-run, que continua a
+ser o que o disjuntor e o burn-down usam.
+
+### O que torna este ticket MAIOR do que o AOS-456, e a auditoria não distinguiu
+O orçamento por-run é composto **na admissão** e vive na árvore daquele run. Um tecto por-principal
+é **estado agregado que atravessa runs** e, portanto:
+
+- tem de ser **durável** (um restart não pode zerar a quota de quem já gastou — senão o tecto
+  contorna-se reiniciando o nó, e um tecto que se contorna é pior do que nenhum, porque é anunciado);
+- tem de ter **semântica de janela declarada** (diária? mensal? deslizante?) e de **reposição** —
+  e essa é uma decisão de produto, não de engenharia;
+- interage com o `burndown_ledger` e com o crypto-shredding por-titular: um agregado por principal é
+  um **registo sobre uma pessoa**, logo cai no alcance do Art. 17 e tem de ser apagável sem partir
+  a contabilidade (o precedente é o AOS-429 — um TTL próprio destruiria a KEK partilhada).
+
+**Por isso este ticket não deve ser implementado sem a janela e a reposição decididas pelo dono.**
+Implementá-lo com uma janela inventada entregaria um tecto que ninguém pediu e que o DPO tem de
+avaliar.
+
+### Critérios de Aceitação
+- [ ] Janela e reposição **declaradas** (decisão do dono registada no ticket antes de implementar).
+- [ ] O agregado é **durável**: um restart do nó não repõe a quota consumida — provado por teste de
+      crash/retoma, não por inspecção.
+- [ ] Principal com quota esgotada é **negado na admissão** do run novo, com recusa atribuível.
+- [ ] O tecto por-run continua a valer de forma independente (os dois compõem-se; nenhum substitui
+      o outro).
+- [ ] O agregado por-principal é alcançável pelo `/dsar/erase` sem destruir a contabilidade dos
+      outros titulares (molde AOS-429).
+- [ ] `0` ou valor ilegível **aborta o arranque** (molde `ErrBadBudget`).
+
+### Estado
+**ABERTO — BLOQUEADO por decisão de produto** (janela + reposição). Reservado por
+`sessoes.py reservar`. Dependência: AOS-456 não é pré-requisito; são eixos independentes
+(um limita frequência, o outro limita despesa).
+
+---
+
 ## Mapa de dependências desta epic
 
 ```

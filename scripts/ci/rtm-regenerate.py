@@ -103,6 +103,65 @@ NFR_MANUAL_TICKETS = {
 # leitores do corpus nunca discordem sobre o que um ticket implementa.
 RE_ADRS_MENCIONADOS = re.compile(r"<!--\s*rtm:\s*adrs-mencionados\s*-->")
 
+# ---------------------------------------------------------------------------
+# DELIMITAÇÃO DO BLOCO DE UM TICKET — partilhada em ESPÍRITO com o gémeo.
+#
+# Este código existe em DUAS cópias, `scripts/ci/rtm-regenerate.py` e
+# `scripts/ci/ref-lint.py`, porque os dois leem o mesmo corpus e o comentário de
+# `RE_ADRS_MENCIONADOS` declara o invariante: «os dois leitores do corpus nunca discordem sobre o
+# que um ticket implementa». Uma correcção aqui SEM a gémea quebra esse invariante — foi o que
+# aconteceu a 2026-09-27, e mediu-se: 6 dos 35 ADRs passaram a ter atribuição divergente entre os
+# dois leitores. Se mudares um, muda o outro NO MESMO COMMIT.
+#
+# TRÊS DEFEITOS QUE ESTA VERSÃO FECHA, todos apurados por revisão adversarial:
+#
+#  1. O terminador original procurava só o próximo cabeçalho `AOS-NNN`, pelo que o ÚLTIMO ticket
+#     de cada epic absorvia toda a prosa final do ficheiro — e com ela os `ADR-NNN` que ela cita
+#     (glossários, tabelas de aprovação, mapas de waves). Atribuição FALSA.
+#
+#  2. A primeira correcção trocou-o por «qualquer cabeçalho de nível igual ou superior» e criou
+#     duas regressões novas: (a) uma linha `# comentário` DENTRO de um bloco de código cercado
+#     passou a terminar o bloco — vivo no corpus, `EPIC-19` AOS-417, que ficava cortado a 17% do
+#     tamanho real, 134 linhas descartadas incluindo os Critérios de Aceitação; e (b) perdeu-se a
+#     condição do cabeçalho de ticket, pelo que um ticket `##` passou a absorver um sub-ticket
+#     `### AOS-NNN` — atribuição a MAIS, que INVENTA cobertura. Nenhuma epic mistura níveis hoje,
+#     mas o script não impõe a convenção e a EPIC-17/18 usam `###` exclusivamente.
+#
+#  3. `#{1,N} ` exigia espaço, e `#\tTítulo` é cabeçalho ATX válido em CommonMark. Sem o `[ \t]`,
+#     o bloco SOBRE-extende e as atribuições falsas do ponto 1 regressam.
+#
+# A máscara preserva o COMPRIMENTO do texto de propósito: os offsets do `finditer` de quem chama
+# continuam válidos sobre o original.
+# ---------------------------------------------------------------------------
+
+_RE_FENCE = re.compile(r"^[ \t]*(```|~~~)", re.MULTILINE)
+
+
+def mascarar_fences(text: str) -> str:
+    """Devolve `text` com o MESMO comprimento, tendo neutralizado os `#` dentro de blocos de
+    código cercados. Um `# comentário` de bash deixa de se ler como cabeçalho Markdown."""
+    linhas = text.split("\n")
+    dentro = False
+    for i, ln in enumerate(linhas):
+        if _RE_FENCE.match(ln):
+            dentro = not dentro
+            continue
+        if dentro and "#" in ln:
+            linhas[i] = ln.replace("#", ".")
+    return "\n".join(linhas)
+
+
+def fim_do_bloco(texto_mascarado: str, start: int, nivel: int) -> int:
+    """Offset (relativo a `start`) onde termina o bloco de um ticket cujo cabeçalho tem `nivel`
+    cardinais. Termina no próximo cabeçalho de nível IGUAL OU SUPERIOR (menos `#`), ou no próximo
+    cabeçalho de TICKET a qualquer nível 2-3 — a disjunção é o que impede as duas regressões
+    simétricas. Devolve -1 se não houver terminador (o bloco vai até ao fim)."""
+    m = re.search(
+        r"\n(?:#{1,%d}[ \t]|#{2,3} AOS-\d{3}\s*[-–—])" % nivel, texto_mascarado[start:]
+    )
+    return m.start() if m else -1
+
+
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
@@ -322,13 +381,30 @@ def extract_all_tickets() -> dict:
                 tickets[aos]["title"] = title  # título da tabela é mais limpo
 
         # 2. Secções detalhadas (fonte primária para ADRs)
-        for m in re.finditer(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
-            aos = m.group(1)
-            title = m.group(2).strip()
+        mascarado = mascarar_fences(text)
+        for m in re.finditer(r"^(#{2,3}) (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
+            nivel = len(m.group(1))
+            aos = m.group(2)
+            title = m.group(3).strip()
             start = m.end()
-            # Fim do bloco: próximo cabeçalho de mesmo nível ou fim
-            next_h = re.search(r"\n#{2,3} (AOS-\d{3})\s*[-–—]", text[start:])
-            block = text[start : start + next_h.start()] if next_h else text[start:]
+            # Fim do bloco: próximo cabeçalho de nível IGUAL OU SUPERIOR (menos `#`), seja ou
+            # não um ticket.
+            #
+            # A versão anterior procurava só o próximo cabeçalho `AOS-NNN`, e o comentário dizia
+            # «próximo cabeçalho de mesmo nível ou fim» — descrevia o que o código NÃO fazia. A
+            # consequência: o ÚLTIMO ticket de cada epic absorvia toda a prosa final do ficheiro,
+            # e com ela os `ADR-NNN` que essa prosa menciona. No EPIC-20 isso atribuía ADR-021 e
+            # ADR-022 ao AOS-278 por o «Mapa de dependências desta epic» citar os dois — uma
+            # atribuição que nenhum critério de aceitação do AOS-278 sustenta. Descoberto ao
+            # inserir AOS-456/457 antes do mapa: a falsa atribuição MUDOU DE VÍTIMA para o
+            # AOS-457, que é como se torna visível.
+            #
+            # O nível tem de vir do cabeçalho do próprio ticket, não de uma constante: um ticket
+            # `##` termina no próximo `##` (ou `#`), um `###` no próximo `###`/`##`/`#`. Cortar em
+            # qualquer `#{2,3}` truncaria todo o bloco no seu primeiro `### Contexto` e perderia
+            # os ADRs do corpo — que é a regressão simétrica, e pior.
+            fim = fim_do_bloco(mascarado, start, nivel)
+            block = text[start : start + fim] if fim >= 0 else text[start:]
             adrs = (
                 set()
                 if RE_ADRS_MENCIONADOS.search(block)
