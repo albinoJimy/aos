@@ -42,7 +42,7 @@ func noComEmissorMandatado(t *testing.T) (*Node, string, ed25519.PrivateKey, ed2
 		VerifierClock:        tnClock(),
 		MandatedIssuerID:     issAutoDeTeste,
 		MandatedIssuerPubKey: auto.Public().(ed25519.PublicKey),
-		MandateSigners:       map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)},
+		MandateSigners:       pinosDeSoftwareNo(map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)}),
 	}, &log)
 	if err != nil {
 		t.Fatalf("Bootstrap com emissor mandatado: %v", err)
@@ -144,7 +144,7 @@ func TestAOS427ColisoesQueAnulamOMandatoAbortam(t *testing.T) {
 			IssuerID: "iss:aos-issuer", IssuerPubKey: manual.Public().(ed25519.PublicKey),
 			IssuerClasses: tnBaseConfig().IssuerClasses, VerifierClock: tnClock(),
 			MandatedIssuerID: issAutoDeTeste, MandatedIssuerPubKey: auto.Public().(ed25519.PublicKey),
-			MandateSigners: map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)},
+			MandateSigners: pinosDeSoftwareNo(map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)}),
 		}
 	}
 	for _, caso := range []struct {
@@ -156,7 +156,7 @@ func TestAOS427ColisoesQueAnulamOMandatoAbortam(t *testing.T) {
 			c.MandatedIssuerPubKey = manual.Public().(ed25519.PublicKey)
 		}},
 		{"humano com a chave do emissor", func(c *Config) {
-			c.MandateSigners = map[string]ed25519.PublicKey{"alice": auto.Public().(ed25519.PublicKey)}
+			c.MandateSigners = pinosDeSoftwareNo(map[string]ed25519.PublicKey{"alice": auto.Public().(ed25519.PublicKey)})
 		}},
 		{"sem humanos", func(c *Config) { c.MandateSigners = nil }},
 		{"pubkey curta", func(c *Config) { c.MandatedIssuerPubKey = c.MandatedIssuerPubKey[:16] }},
@@ -189,7 +189,11 @@ func TestAOS427VariaveisDoEmissorMandatado(t *testing.T) {
 	for _, mau := range []string{
 		"alice",                    // sem '='
 		"human:alice=" + hexPub(h), // prefixo
-		"alice=" + hexPub(h) + ",alice=" + hexPub(a), // nome repetido
+		// AOS-446 fase 1: o NOME repetido com DUAS chaves deixou de ser erro de PARSE — é a
+		// janela de rotação, e quem a recusa (sem AOS_MANDATE_DUAL_PIN_UNTIL) é o
+		// `validarEmissorMandatado`, ver TestAOS446JanelaDeRotacaoNoArranque. O MESMO pino duas
+		// vezes continua a ser erro aqui: não é uma rotação.
+		"alice=" + hexPub(h) + ",alice=" + hexPub(h), // o MESMO pino repetido
 		"alice=" + hexPub(h) + ",bob=" + hexPub(h),   // chave repetida
 		"alice=zz", // pubkey invalida
 		" , ",      // nada
@@ -212,7 +216,7 @@ func TestAOS427ColisaoComAAutoridadeDeReferenciaAborta(t *testing.T) {
 	cfg.IssuerSigningKey = auto
 	cfg.MandatedIssuerID = issAutoDeTeste
 	cfg.MandatedIssuerPubKey = auto.Public().(ed25519.PublicKey)
-	cfg.MandateSigners = map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)}
+	cfg.MandateSigners = pinosDeSoftwareNo(map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)})
 	node, err := Bootstrap(context.Background(), cfg, io.Discard)
 	if err == nil {
 		_ = node.Close()
@@ -230,8 +234,11 @@ func TestAOS427ChavePinadaInvalidaAborta(t *testing.T) {
 		IssuerID: "iss:aos-issuer", IssuerPubKey: manual.Public().(ed25519.PublicKey),
 		IssuerClasses: tnBaseConfig().IssuerClasses, VerifierClock: tnClock(),
 		MandatedIssuerID: issAutoDeTeste, MandatedIssuerPubKey: auto.Public().(ed25519.PublicKey),
-		MandateSigners: map[string]ed25519.PublicKey{
-			"alice": humano.Public().(ed25519.PublicKey), "bob": ed25519.PublicKey{1, 2, 3},
+		// AOS-446 fase 1: o pino passou a ser um tipo opaco, e um pino MEIO-FORMADO já não se
+		// consegue construir pelo parser — mas o valor-zero continua a chegar aqui por uma Config
+		// montada em código, que é exactamente o caso que este teste cobre.
+		MandateSigners: map[string][]identity.MandateSigner{
+			"alice": {pinoDeSoftwareNoUm(t, humano.Public().(ed25519.PublicKey))}, "bob": {{}},
 		},
 	}, io.Discard)
 	if err == nil {

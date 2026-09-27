@@ -62,7 +62,7 @@ func (c *cenarioMandato) verificador(agora time.Time) *Verifier {
 	return NewVerifier(
 		WithTrustedIssuer(issManual, c.manual.Public().(ed25519.PublicKey)),
 		WithMandatedIssuer(issAuto, c.emissor.Public().(ed25519.PublicKey),
-			map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)}),
+			pinosRaw(map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)})),
 		WithRevocations(c.revogado),
 		WithVerifierClock(func() time.Time { return agora }),
 		WithVerifierLeeway(0),
@@ -170,9 +170,9 @@ func TestAOS427MandatoDeUmHumanoNaoCunhaParaOutro(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := NewVerifier(
-		WithMandatedIssuer(issAuto, c.emissor.Public().(ed25519.PublicKey), map[string]ed25519.PublicKey{
+		WithMandatedIssuer(issAuto, c.emissor.Public().(ed25519.PublicKey), pinosRaw(map[string]ed25519.PublicKey{
 			"alice": c.humano.Public().(ed25519.PublicKey), "bob": bob.Public().(ed25519.PublicKey),
-		}),
+		})),
 		WithVerifierClock(func() time.Time { return t0.Add(time.Hour) }), WithVerifierLeeway(0),
 	)
 	cl := c.claimsDentro(t) // user_id = alice
@@ -275,7 +275,7 @@ func TestAOS427EmissorMandatadoSemSignatariosNaoEConfiado(t *testing.T) {
 func TestAOS427RegistoDuploNaoDispensaOMandato(t *testing.T) {
 	c := novoCenario(t)
 	pub := c.emissor.Public().(ed25519.PublicKey)
-	signers := map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)}
+	signers := pinosRaw(map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)})
 	for _, ordem := range [][]VerifierOption{
 		{WithTrustedIssuer(issAuto, pub), WithMandatedIssuer(issAuto, pub, signers)},
 		{WithMandatedIssuer(issAuto, pub, signers), WithTrustedIssuer(issAuto, pub)},
@@ -460,7 +460,7 @@ func TestAOS427RevogacaoDoMandatoSobreviveAoRestart(t *testing.T) {
 	tok := c.cunharHonesto(t, &c.mandato)
 	v := NewVerifier(
 		WithMandatedIssuer(issAuto, c.emissor.Public().(ed25519.PublicKey),
-			map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)}),
+			pinosRaw(map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)})),
 		WithRevocations(depois),
 		WithVerifierClock(func() time.Time { return t0.Add(time.Hour) }),
 	)

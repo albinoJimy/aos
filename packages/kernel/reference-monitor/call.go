@@ -58,6 +58,12 @@ type Principal struct {
 	// evento de mediação e ao selo WORM: fecha o resíduo 3 do ADR-033 («este run correu sob o
 	// mandato X» deixa de depender de reconstituir o token).
 	MandateID string
+	// MandateSigner é a IMPRESSÃO DIGITAL do pino que VERIFICOU esse mandato (AOS-446 fase 1),
+	// resolvida pelo mesmo hook e pela mesma via — do token verificado, nunca da call. Vazia
+	// quando o emissor não é mandatado. Vai ao evento de mediação e ao selo WORM (a partir do
+	// `SchemaV5`): o `mandate_id` diz QUAL mandato, esta diz sob QUE CHAVE ele foi aceite, que é
+	// o que denuncia um `AOS_MANDATE_SIGNERS` trocado por quem tem root no host.
+	MandateSigner string
 	// RequestedBy é o SUBMISSOR do run (AOS-439): quem pediu o plano de que o run é trabalho. NÃO
 	// é uma afirmação de identidade nem vem do token — é derivado pelo NÓ do seu próprio log da
 	// fila de planos, no `POST /runs`, e viaja do Goal até aqui. O hook de identidade PRESERVA-O

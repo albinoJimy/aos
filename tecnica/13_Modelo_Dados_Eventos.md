@@ -227,7 +227,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `turn.recorded` | 1 | `packages/kernel/agent-runtime/turn.go` |
 | `worker.step.dispatched` | 1 | `packages/kernel/agent-runtime/worker/worker.go` |
 
-**(b) Rótulos de `audit.AuditRecord` — 7, não são tipos do Event Store.** Têm a mesma forma de nome e aparecem no mesmo comando de verificação, mas são gravados em `Resource.Type` / `Obligation.Type` de um `AuditRecord` (§4) e **nunca** chegam a um `eventstore.EventInput` — os pacotes que os declaram não importam sequer `substrate/eventstore`. Catalogá-los como tipos de evento seria repetir, em sentido inverso, o defeito que esta revisão corrige:
+**(b) Rótulos de `audit.AuditRecord` — 9, não são tipos do Event Store.** Têm a mesma forma de nome e aparecem no mesmo comando de verificação, mas são gravados em `Resource.Type` / `Obligation.Type` de um `AuditRecord` (§4) e **nunca** chegam a um `eventstore.EventInput` — os pacotes que os declaram não importam sequer `substrate/eventstore`. Catalogá-los como tipos de evento seria repetir, em sentido inverso, o defeito que esta revisão corrige:
 
 | Rótulo | Nº | Componente dono |
 |---|---|---|
@@ -235,6 +235,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `dsar.*` (`received`, `key_destroyed`, `blocked`) | 3 | `packages/control-plane/governance/dsar/flow.go` (selados por `Flow.seal`) |
 | `dsar.key_reshredded` (AOS-436) | 1 | `packages/cmd/aos/reconciliacao_apagamentos.go` — selado pelo nó em nome próprio quando uma KEK dada por destruída reaparece na custódia (restauro de backup) e é destruída de novo |
 | `policy.changed` | 1 | `packages/control-plane/pdp/audit_sink.go` (`BuildPolicyChangedRecord`) |
+| `trust_anchors.*` (`changed`, `active`) (AOS-446 fase 1) | 2 | `packages/platform/audit/trustanchors.go` — a FORMA do registo das âncoras de confiança do nó (impressões digitais de `AOS_MANDATE_SIGNERS`, `AOS_ISSUER_PUBKEY`, operadores, ratificadores, aprovadores, âncora da política e do selador do WORM), selado pelo nó em cada arranque na partição `trust-anchors` (`packages/cmd/aos/ancoras_de_confianca.go`) e lido FORA do host pelo `aos-issuer worm-seal`, que recusa selar uma troca não declarada. Os dois rótulos distinguem TRANSIÇÃO de CONFIRMAÇÃO — sela-se sempre, para que quem escreve no ficheiro não possa silenciar o registo pré-plantando o retrato que vai instalar (o argumento S-02 do `policy.changed`) |
 | `retention.*` (`expired`, `config.changed`) | 2 | `packages/platform/audit/retentionevents.go` |
 
 #### Regras do catálogo

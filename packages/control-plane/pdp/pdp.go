@@ -238,6 +238,25 @@ func (p *PDP) Version() string {
 	return p.engine.version
 }
 
+// TrustAnchor devolve a chave pública que VERIFICOU o bundle em vigor — a de [WithTrustAnchor]
+// quando foi fornecida, senão a que o `Open` leu do directório do bundle. Vazia quando não há
+// política carregada.
+//
+// É INTROSPECÇÃO SÓ-LEITURA, e existe por uma razão concreta (AOS-446 fase 1, achado A4 da
+// revisão adversarial): o registo das âncoras de confiança no arranque tem de selar a âncora
+// EM USO. Derivá-la de `os.Getenv("AOS_POLICY_TRUST_ANCHOR")` selaria a intenção do ambiente,
+// que pode não ser a chave que o PDP composto está mesmo a usar — e um registo de âncoras que
+// nomeia a chave errada é pior do que registo nenhum. Devolve uma CÓPIA: material público, mas
+// não se entrega o slice interno a quem o possa mutar.
+func (p *PDP) TrustAnchor() ed25519.PublicKey {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.engine == nil {
+		return nil
+	}
+	return append(ed25519.PublicKey(nil), p.anchor...)
+}
+
 // RuleIDs devolve, ORDENADOS, os identificadores (@id) das regras Cedar
 // actualmente compiladas e em vigor (vazio se não houver política carregada). É
 // uma API de INTROSPECÇÃO estritamente SÓ-LEITURA: itera a policy set imutável sob

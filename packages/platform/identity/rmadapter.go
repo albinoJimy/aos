@@ -88,6 +88,10 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 		// AOS-439: o mandato VERIFICADO sob o qual o token foi cunhado — vai ao selo da decisão
 		// (resíduo 3 do ADR-033). Vem do Verify, nunca da call.
 		MandateID: principal.MandateID,
+		// AOS-446 fase 1: a impressão do PINO que verificou esse mandato. Vem do Verify pela
+		// mesma via e pela mesma razão — quem a recalculasse a partir da configuração do processo
+		// estaria a perguntar ao suspeito.
+		MandateSigner: principal.MandateSigner,
 		// AOS-440: o humano da raiz, do token verificado — nunca da call.
 		UserID: principal.UserID,
 		// AOS-439/440: o submissor e o titular dos dados NÃO são claims do token — são derivados

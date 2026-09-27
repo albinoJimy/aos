@@ -263,6 +263,18 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 				return fmt.Errorf("%w: run %q correu sob o mandato %q e a credencial e do mandato %q",
 					ErrResumePrincipalMismatch, runID, rec.Principal.MandateID, p.MandateID)
 			}
+			// AOS-446 fase 1: e sob a MESMA CHAVE. É a mesma regra, aplicada ao que o `mandate_id`
+			// não cobre: um `AOS_MANDATE_SIGNERS` trocado entre a suspensão e a retoma pode
+			// re-assinar um mandato com o MESMO id (o id é escolhido por quem assina), e sem esta
+			// linha o run continuava sob uma autoridade que não é a que o autorizou.
+			//
+			// CONSEQUÊNCIA DECLARADA, gémea da do mandato: RODAR a chave do humano torna os runs
+			// suspensos sob a anterior irretomáveis. É o preço de a retoma exigir a mesma
+			// autoridade, e o operador escolhe o momento da rotação.
+			if rec.Principal.MandateSigner != "" && p.MandateSigner != rec.Principal.MandateSigner {
+				return fmt.Errorf("%w: run %q correu sob a chave %q e a credencial vem da chave %q",
+					ErrResumePrincipalMismatch, runID, rec.Principal.MandateSigner, p.MandateSigner)
+			}
 		}
 	}
 	// (2-quinquies) O MANDATO DA CREDENCIAL FRESCA TEM DE COBRIR QUEM PEDIU O RUN (AOS-439). A

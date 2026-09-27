@@ -34,7 +34,7 @@ func (c *cenarioMandato) verificadorComJanela(agora, ate time.Time) *Verifier {
 	return NewVerifier(
 		WithTrustedIssuer(issManual, c.manual.Public().(ed25519.PublicKey)),
 		WithMandatedIssuer(issAuto, c.emissor.Public().(ed25519.PublicKey),
-			map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)}),
+			pinosRaw(map[string]ed25519.PublicKey{"alice": c.humano.Public().(ed25519.PublicKey)})),
 		WithRevocations(c.revogado),
 		WithVerifierClock(func() time.Time { return agora }),
 		WithVerifierLeeway(0),
@@ -63,7 +63,7 @@ func TestAOS439SigningInputV1InalteradoEV2Distinto(t *testing.T) {
 // ARRANCAR OS REQUESTERS NÃO PRODUZ UM v1 VÁLIDO, e acrescentá-los não produz um v2 válido.
 func TestAOS439V1EV2NaoSeConvertemSemAChaveDoHumano(t *testing.T) {
 	c := novoCenario(t)
-	pub := c.humano.Public().(ed25519.PublicKey)
+	pub := pinoDeSoftware(t, c.humano.Public().(ed25519.PublicKey))
 
 	despido := c.mandato
 	despido.Mandate.Requesters = nil

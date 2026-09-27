@@ -98,6 +98,9 @@ func quemPediu(r audit.AuditRecord) string {
 	if r.Principal.MandateID != "" {
 		out += " mandate=" + r.Principal.MandateID
 	}
+	if r.Principal.MandateSigner != "" {
+		out += " signer=" + r.Principal.MandateSigner
+	}
 	return out
 }
 

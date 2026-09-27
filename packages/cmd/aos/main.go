@@ -689,8 +689,15 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	// AOS-439: a escrita do WORM v4. Vazia ⇒ v3 (o rollback continua possível) — worm_v4.go.
-	auditWriteV4, err := parseAuditWriteV4(os.Getenv("AOS_AUDIT_WRITE_V4"))
+	// AOS-446 fase 1: a JANELA DE ROTAÇÃO de pinos (dois pinos para o mesmo humano). Vazia ⇒
+	// fechada: dois pinos abortam o arranque — ver emissor_mandatado.go.
+	mandateDualPinUntil, err := parseMandateDualPinUntil(os.Getenv("AOS_MANDATE_DUAL_PIN_UNTIL"), time.Now().UTC())
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439/AOS-446: a ÉPOCA que o WORM escreve. Vazia ⇒ v3 (o rollback continua possível) —
+	// worm_v4.go.
+	auditWriteSchema, err := parseAuditWriteSchema(os.Getenv("AOS_AUDIT_WRITE_SCHEMA"), os.Getenv("AOS_AUDIT_WRITE_V4"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -738,9 +745,10 @@ func nodeConfigFromEnv() (Config, error) {
 		MandatedIssuerID:     mandatedID,
 		MandatedIssuerPubKey: mandatedPub,
 		MandateSigners:       mandateSigners,
-		MandateV1Until:       mandateV1Until, // AOS-439: zero ⇒ mandatos v1 recusados
-		PlanDrainers:         planDrainers,   // AOS-439: vazia ⇒ ninguém drena a fila de planos
-		AuditWriteV4:         auditWriteV4,   // AOS-439: false ⇒ o WORM escreve v3
+		MandateV1Until:       mandateV1Until,      // AOS-439: zero ⇒ mandatos v1 recusados
+		MandateDualPinUntil:  mandateDualPinUntil, // AOS-446 fase 1: zero ⇒ um pino por humano
+		PlanDrainers:         planDrainers,        // AOS-439: vazia ⇒ ninguém drena a fila de planos
+		AuditWriteSchema:     auditWriteSchema,    // AOS-439/AOS-446: zero ⇒ o WORM escreve v3
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},
@@ -843,6 +851,19 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.PDP = policyDP // nil ⇒ NewUnloaded (default-deny EXPLÍCITO) no composition-root; != nil ⇒ precedência
+	// AOS-446 fase 1: a âncora da política também na Config, para o registo das âncoras no
+	// arranque a poder resumir.
+	//
+	// SAI DO PDP COMPOSTO, E NÃO DO AMBIENTE (achado A4 da revisão adversarial, 2026-09-27). A
+	// primeira versão lia `os.Getenv("AOS_POLICY_TRUST_ANCHOR")` e ENGOLIA o erro do parse — duas
+	// coisas erradas ao mesmo tempo: registava a intenção do ambiente em vez da chave em uso (com
+	// um bundle aberto sem `WithTrustAnchor`, a âncora efectiva vem do próprio directório), e uma
+	// variável malformada dava um retrato com a âncora «ausente» em vez de um erro. Agora vem de
+	// [pdp.PDP.TrustAnchor], que é a chave que verificou o bundle — e não há nada que engolir:
+	// sem bundle carregado não há âncora em uso, e é isso que se sela.
+	if policyDP != nil {
+		cfg.PolicyTrustAnchor = policyDP.TrustAnchor()
+	}
 	// ORÁCULO DE AUTONOMIA (AOS-087/AOS-248), fase 1 de 2. O registo já vai com o sink de audit
 	// ligado, mas VAZIO: os níveis só são aplicados — e SELADOS — em [Bootstrap], que é quem tem
 	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.

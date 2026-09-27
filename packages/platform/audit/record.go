@@ -41,6 +41,18 @@ type Principal struct {
 	// do WORM exactamente como um binário anterior o serializava.
 	RequestedBy string `json:"RequestedBy,omitempty"`
 	MandateID   string `json:"MandateID,omitempty"`
+	// MandateSigner e a IMPRESSAO DIGITAL DO PINO que verificou o mandato (AOS-446 fase 1):
+	// `SHA256:...` numa chave FIDO2, `ed25519:...` numa de software. So entra no selo a partir de
+	// [SchemaV5], com `omitempty` e o nome de sempre, pela mesma razao dos dois campos acima.
+	//
+	// PORQUE E UM CAMPO A MAIS E NAO UM DETALHE DO [MandateID]. O `mandate_id` e escolhido por quem
+	// ASSINA o mandato. Root no host do no troca `AOS_MANDATE_SIGNERS` pela sua propria chave,
+	// assina um mandato novo em nome do mesmo humano e com o id que quiser, e TODO o selo fica
+	// igual ao de antes: mesmo humano, mesma cadeia, mesmo mandate_id. O que muda e a chave que o
+	// verificou -- e por isso e a impressao dela que se sela. O registo das ancoras no arranque
+	// (`packages/cmd/aos/ancoras_de_confianca.go`) fecha a outra metade: esta diz sob que chave
+	// CADA DECISAO correu, aquela diz que chaves o PROCESSO tinha.
+	MandateSigner string `json:"MandateSigner,omitempty"`
 }
 
 // PayloadRef é a referência (opcional) ao payload pessoal associado à decisão.
@@ -183,13 +195,27 @@ const (
 	// SchemaV4 acrescenta ao selo QUEM PEDIU e SOB QUE MANDATO (AOS-439): o `requested_by` do
 	// run e o `mandate_id` da credencial, no FIM do conteúdo canónico.
 	SchemaV4 uint8 = 4
+	// SchemaV5 acrescenta ao selo A IMPRESSAO DIGITAL DO PINO que verificou o mandato
+	// (AOS-446 fase 1), no FIM do conteúdo canónico.
+	//
+	// PORQUE UMA VERSAO NOVA, E NAO O CAMPO DENTRO DO [SchemaV4]. O v4 não tem registos em
+	// produção — a escrita v4 nunca foi ligada lá —, e a tentação era acrescentar o campo ao v4 e
+	// poupar uma época. Perde por uma razão concreta e não estética: o binário que ESCREVE v4 já
+	// está entregue (a release da onda B1 corre hoje em produção), e basta o operador pôr
+	// `AOS_AUDIT_WRITE_V4=1` para nascerem registos v4 com a serialização DESSA release. Se o v4
+	// passasse a significar outra coisa, esses registos deixavam de verificar — e como o arranque
+	// re-verifica a hash-chain fail-closed, o nó deixava de arrancar sobre o seu próprio log. Uma
+	// versão de formato só protege o que promete enquanto significar UM layout de bytes, para
+	// sempre. Uma constante a mais é barata; um nó que não arranca não é.
+	SchemaV5 uint8 = 5
 	// CurrentSchemaVersion é a versão com que um store sela registos NOVOS por omissão.
 	//
-	// CONTINUA v3 NESTA RELEASE, e é deliberado (expand/contract, revisão do AOS-439): este binário
-	// LÊ e VERIFICA v4, mas só o ESCREVE quando o store é aberto com [ComVersaoDeEscrita] — no nó,
-	// `AOS_AUDIT_WRITE_V4=1`. Um binário anterior não conhece o v4 e recusa arrancar sobre um WORM
-	// que o tenha; escrever v4 por omissão cortava o rollback no primeiro registo selado depois do
-	// deploy. Ligar o v4 é um passo do operador, depois de confirmar o deploy saudável.
+	// CONTINUA v3 NESTA RELEASE, e é deliberado (expand/contract, revisão do AOS-439, mantido pelo
+	// AOS-446 fase 1): este binário LÊ e VERIFICA v4 e v5, mas só os ESCREVE quando o store é
+	// aberto com [ComVersaoDeEscrita] — no nó, `AOS_AUDIT_WRITE_SCHEMA=4|5`. Um binário anterior
+	// não conhece a época nova e recusa arrancar sobre um WORM que a tenha; escrevê-la por omissão
+	// cortava o rollback no primeiro registo selado depois do deploy. Subir a época é um passo do
+	// operador, depois de confirmar o deploy saudável, e é IRREVERSÍVEL para trás.
 	CurrentSchemaVersion = SchemaV3
 )
 
@@ -199,6 +225,9 @@ const canonicalDomainV3 = "aos.audit.v3"
 
 // canonicalDomainV4 é o separador de domínio do formato v4 (AOS-439).
 const canonicalDomainV4 = "aos.audit.v4"
+
+// canonicalDomainV5 é o separador de domínio do formato v5 (AOS-446 fase 1).
+const canonicalDomainV5 = "aos.audit.v5"
 
 // domainFor devolve o separador de domínio da versão de um registo. Uma versão
 // desconhecida (formato de futuro, ou log corrompido) NÃO é adivinhada: devolve "" e o
@@ -211,6 +240,8 @@ func domainFor(v uint8) string {
 		return canonicalDomainV3
 	case SchemaV4:
 		return canonicalDomainV4
+	case SchemaV5:
+		return canonicalDomainV5
 	default:
 		return ""
 	}
@@ -305,6 +336,11 @@ func canonicalContent(rec AuditRecord) []byte {
 	if rec.SchemaVersion >= SchemaV4 {
 		buf = putString(buf, rec.Principal.RequestedBy)
 		buf = putString(buf, rec.Principal.MandateID)
+	}
+	// v5 e seguintes: SOB QUE CHAVE o mandato foi verificado (AOS-446 fase 1), no FIM e só nesta
+	// versão — pela mesma razão dos dois blocos acima.
+	if rec.SchemaVersion >= SchemaV5 {
+		buf = putString(buf, rec.Principal.MandateSigner)
 	}
 	return buf
 }

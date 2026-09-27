@@ -122,6 +122,11 @@ var (
 	// MIGRAÇÃO do nó está fechada ([WithMandateV1Until]). O humano tem de assinar um mandato v2.
 	ErrMandateV1Closed = &IdentityError{Code: "E_MANDATE_V1_CLOSED", msg: "mandato v1 (sem requesters) fora da janela de migracao"}
 
+	// ErrMandateDualPinClosed — o humano tem MAIS DO QUE UM pino em `AOS_MANDATE_SIGNERS` e a
+	// JANELA DE ROTAÇÃO (AOS-446 fase 1) está fechada. A janela existe para que trocar a chave de
+	// um humano não pare a cunhagem entre a troca do `.env` e a entrega do mandato novo; fora
+	// dela, dois pinos são duas autoridades sem justificação e o mandato é recusado.
+	ErrMandateDualPinClosed = &IdentityError{Code: "E_MANDATE_DUAL_PIN_CLOSED", msg: "humano com dois pinos fora da janela de rotacao"}
 	// ErrMandateRequester — o mandato é v2 e o SUBMISSOR do run (o `requested_by` que o nó
 	// derivou, AOS-439) não consta dos `requesters` que o humano assinou — ou não há submissor.
 	ErrMandateRequester = &IdentityError{Code: "E_MANDATE_REQUESTER", msg: "submissor fora dos requesters do mandato"}

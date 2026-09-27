@@ -1,0 +1,62 @@
+[
+  {
+    "nome": "sha512_up",
+    "seed_hex": "4141414141414141414141414141414141414141414141414141414141414141",
+    "application": "ssh:aos-mandate",
+    "namespace": "aos.identity.mandate",
+    "hash_algorithm": "sha512",
+    "flags": 1,
+    "counter": 7,
+    "mensagem_b64": "QU9TLTQ0NiBmYXNlIDE6IHZlY3RvciBnb2xkZW4gZG8gbWFuZGF0byBGSURPMgo=",
+    "chave_blob_b64": "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINuZX+JRadFByrm7upK6oB+fLh7OffTLKsBRkPN/zB+dAAAAD3NzaDphb3MtbWFuZGF0ZQ==",
+    "chave_linha": "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINuZX+JRadFByrm7upK6oB+fLh7OffTLKsBRkPN/zB+dAAAAD3NzaDphb3MtbWFuZGF0ZQ==",
+    "envelope_b64": "U1NIU0lHAAAAAQAAAFUAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20AAAAg25lf4lFp0UHKubu6krqgH58uHs599MsqwFGQ83/MH50AAAAPc3NoOmFvcy1tYW5kYXRlAAAAFGFvcy5pZGVudGl0eS5tYW5kYXRlAAAAAAAAAAZzaGE1MTIAAABnAAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAQGx4OHULY8Qdwg356yM4YJAMKzkyGsMn0Nz1twAecW0wheFWqohVaevqjLDIhb6yJSlJOiSE8DXXGeUtFyeO4g0BAAAABw==",
+    "ssh_fingerprint": "SHA256:NptMONesV1zvQt3rvUGXqipxV96EE0ERyKbato1QuqY",
+    "openssh_veredicto": "Good (OpenSSH_10.3p1, ssh-keygen -Y verify, 2026-09-27)"
+  },
+  {
+    "nome": "sha256_up_uv",
+    "seed_hex": "4141414141414141414141414141414141414141414141414141414141414141",
+    "application": "ssh:aos-mandate",
+    "namespace": "aos.identity.mandate",
+    "hash_algorithm": "sha256",
+    "flags": 5,
+    "counter": 4294967295,
+    "mensagem_b64": "QU9TLTQ0NiBmYXNlIDE6IHZlY3RvciBnb2xkZW4gZG8gbWFuZGF0byBGSURPMgo=",
+    "chave_blob_b64": "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINuZX+JRadFByrm7upK6oB+fLh7OffTLKsBRkPN/zB+dAAAAD3NzaDphb3MtbWFuZGF0ZQ==",
+    "chave_linha": "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINuZX+JRadFByrm7upK6oB+fLh7OffTLKsBRkPN/zB+dAAAAD3NzaDphb3MtbWFuZGF0ZQ==",
+    "envelope_b64": "U1NIU0lHAAAAAQAAAFUAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20AAAAg25lf4lFp0UHKubu6krqgH58uHs599MsqwFGQ83/MH50AAAAPc3NoOmFvcy1tYW5kYXRlAAAAFGFvcy5pZGVudGl0eS5tYW5kYXRlAAAAAAAAAAZzaGEyNTYAAABnAAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAQFq0KmWg14TKKIuwy6LdH5sVTYfrwVFG8oLcZld+FbWGNPtZ/9BhVECxMkEMIymgwBC90gzNijTGAiILtG7j5gQF/////w==",
+    "ssh_fingerprint": "SHA256:NptMONesV1zvQt3rvUGXqipxV96EE0ERyKbato1QuqY",
+    "openssh_veredicto": "Good (OpenSSH_10.3p1, ssh-keygen -Y verify, 2026-09-27)"
+  },
+  {
+    "nome": "sem_toque",
+    "seed_hex": "4141414141414141414141414141414141414141414141414141414141414141",
+    "application": "ssh:aos-mandate",
+    "namespace": "aos.identity.mandate",
+    "hash_algorithm": "sha512",
+    "flags": 0,
+    "counter": 8,
+    "mensagem_b64": "QU9TLTQ0NiBmYXNlIDE6IHZlY3RvciBnb2xkZW4gZG8gbWFuZGF0byBGSURPMgo=",
+    "chave_blob_b64": "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINuZX+JRadFByrm7upK6oB+fLh7OffTLKsBRkPN/zB+dAAAAD3NzaDphb3MtbWFuZGF0ZQ==",
+    "chave_linha": "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAINuZX+JRadFByrm7upK6oB+fLh7OffTLKsBRkPN/zB+dAAAAD3NzaDphb3MtbWFuZGF0ZQ==",
+    "envelope_b64": "U1NIU0lHAAAAAQAAAFUAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20AAAAg25lf4lFp0UHKubu6krqgH58uHs599MsqwFGQ83/MH50AAAAPc3NoOmFvcy1tYW5kYXRlAAAAFGFvcy5pZGVudGl0eS5tYW5kYXRlAAAAAAAAAAZzaGE1MTIAAABnAAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAQIId8faPZfZEJpCviR0yfglJLizDS3gx0Iihmxh/Tu0DG/KzBRvbKkpBCc3X61ju2J8dHH68e/YEEk1g9diA8gcAAAAACA==",
+    "ssh_fingerprint": "SHA256:NptMONesV1zvQt3rvUGXqipxV96EE0ERyKbato1QuqY",
+    "openssh_veredicto": "Good (OpenSSH_10.3p1, ssh-keygen -Y verify, 2026-09-27)"
+  },
+  {
+    "nome": "outra_application",
+    "seed_hex": "5262626262626262626262626262626262626262626262626262626262626262",
+    "application": "ssh:outra-coisa",
+    "namespace": "aos.identity.mandate",
+    "hash_algorithm": "sha512",
+    "flags": 1,
+    "counter": 1,
+    "mensagem_b64": "QU9TLTQ0NiBmYXNlIDE6IHZlY3RvciBnb2xkZW4gZG8gbWFuZGF0byBGSURPMgo=",
+    "chave_blob_b64": "AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIN+zW4Sn/ePtreCXcz14ijzs0QoSb2e/qZ4YKBwfJfwLAAAAD3NzaDpvdXRyYS1jb2lzYQ==",
+    "chave_linha": "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIN+zW4Sn/ePtreCXcz14ijzs0QoSb2e/qZ4YKBwfJfwLAAAAD3NzaDpvdXRyYS1jb2lzYQ==",
+    "envelope_b64": "U1NIU0lHAAAAAQAAAFUAAAAac2stc3NoLWVkMjU1MTlAb3BlbnNzaC5jb20AAAAg37NbhKf94+2t4JdzPXiKPOzRChJvZ7+pnhgoHB8l/AsAAAAPc3NoOm91dHJhLWNvaXNhAAAAFGFvcy5pZGVudGl0eS5tYW5kYXRlAAAAAAAAAAZzaGE1MTIAAABnAAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAQIqvLVURtXxbSiDqSx6nV1uan08iapf8CF8yInioZH+jOCbQg+UotZQKVbMMaoqiNj5CdT7wTXBse6cDoan0OwsBAAAAAQ==",
+    "ssh_fingerprint": "SHA256:69rlUxGHC7r1TVAq/biCNBkC2jDKG/C6vr46Mjn4lOk",
+    "openssh_veredicto": "Good (OpenSSH_10.3p1, ssh-keygen -Y verify, 2026-09-27)"
+  }
+]

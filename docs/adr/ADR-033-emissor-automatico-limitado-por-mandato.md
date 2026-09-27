@@ -3,7 +3,10 @@
 - **Estado:** Aceite — §2.1, §3 e §5 **emendados** (2026-09-26, AOS-446): quem contorna o
   mandato não é só root no host, e a ponte TLS dava root a quem escrevesse num ficheiro do `aos`
   (§6). §2.1 e §5 **emendados de novo** (2026-09-27, AOS-439, aditivo): o mandato enumera os
-  `requesters` por quem o emissor pode agir (§7; decisão em ADR-035)
+  `requesters` por quem o emissor pode agir (§7; decisão em ADR-035). §6.5 **respondida**
+  (2026-09-27, AOS-446 **fase 1**): as âncoras de confiança ficam **seladas no WORM** e a chave que
+  aceitou cada mandato entra no selo de **cada decisão**; o mandato pode ser assinado por uma chave
+  **FIDO2** `sk-ssh-ed25519` (§8)
 - **Data:** 2026-09-25
 - **Ticket:** AOS-427
 - **Substitui:** ADR-032 **§2.2** (onde vive a autoridade de emissão). As §2.1, §2.3 e §2.4 do
@@ -284,11 +287,12 @@ Decididos em 2026-09-26 e descritos em `deploy/server/README.md` §Custódia das
    chaves e **um** custodiante — o *four-eyes* prova duas assinaturas, não duas pessoas (adjacente
    ao DEF-107).
 
-### 6.5 O que fica para a Fase 1
+### 6.5 O que ficou para a Fase 1 — **entregue, ver §8**
 
 Registar no WORM as âncoras da §6.3 (um pino trocado passa a deixar rasto selado) e assinar o
-mandato com FIDO2 `sk-ssh` em vez da seed em claro. Vai numa onda seguinte porque mexe em
-`platform/audit/record.go` e `platform/identity/mandate.go`, que o AOS-439 também muda.
+mandato com FIDO2 `sk-ssh` em vez da seed em claro. Foi numa onda seguinte porque mexe em
+`platform/audit/record.go` e `platform/identity/mandate.go`, que o AOS-439 também mudou. **A
+decisão está na §8.**
 
 ## 7. Emenda (AOS-439, 2026-09-27) — o mandato nomeia por quem o emissor age
 
@@ -325,5 +329,264 @@ mandate:<id>`) ou fecha a janela.
 
 - A raiz da cadeia on-behalf-of continua a ser o humano do mandato (ADR-003).
 - Os limites da §2.1 (humano, agente, classe, política, board, escopo, TTL, janela) e a §6.
-- A Fase 1 do AOS-446 (âncoras no WORM, mandato FIDO2) continua por fazer; mexerá nos mesmos
-  ficheiros e tem de preservar o domínio v2.
+- A Fase 1 do AOS-446 (âncoras no WORM, mandato FIDO2) **está feita** (§8) e **preserva** o
+  domínio v2: o campo `fmt` que ela introduz vive no ENVELOPE (`SignedMandate`) e não no
+  `SigningInput`, pelo que os bytes que o v1 e o v2 assinaram são exactamente os de antes.
+
+
+## 8. Emenda (AOS-446 fase 1, 2026-09-27) — a troca de uma âncora deixa rasto, e o mandato pode ser de hardware
+
+Responde à §6.5. São **duas** decisões, e a segunda só vale porque a primeira existe: pôr a chave
+do humano em hardware não serve de nada se trocar o *pino* no `.env` continuar a ser invisível.
+
+### 8.1 As âncoras de confiança ficam seladas no arranque
+
+O nó passa a selar, em **cada arranque** e na partição `trust-anchors` do WORM, a **impressão
+digital** de cada âncora da §6.3: o emissor manual (`AOS_ISSUER_PUBKEY`), o emissor mandatado, os
+assinantes de mandatos (`AOS_MANDATE_SIGNERS`), os operadores, os ratificadores, os aprovadores do
+*four-eyes* (com a **autoridade** de cada um, não só a chave), a âncora da política e a do selador
+do WORM. Uma âncora **ausente** é selada como ausente — é um facto sobre a postura, e omiti-la
+tornaria «deixou de haver» indistinguível de «esta versão ainda não a conhecia».
+
+**Sela-se sempre**, mude ou não, e o tipo do registo distingue as duas leituras
+(`trust_anchors.changed` / `trust_anchors.active`). É o argumento **S-02** do changelog de política
+(§ `policy_changelog.go`), e vale aqui letra por letra: decidir escrever a partir do que se lê da
+própria partição dá a quem escreve no ficheiro um **botão de silenciamento** — pré-plantar um
+registo com as impressões que vai instalar faz o nó concluir «igual ao último» e a troca real nunca
+é registada.
+
+**Impressões, e não chaves.** Uma pubkey é pública, mas pô-la no registo faria do WORM um
+directório de chaves e fá-lo-ia crescer com o número de operadores. O que ele precisa de provar é
+«mudou / não mudou». A impressão de uma chave FIDO2 é a **do `ssh-keygen -lf`** (`SHA256:…`), de
+propósito: o operador confere sem converter nada.
+
+**E as JANELAS, que também são autoridade** (achado A3 da revisão adversarial, 2026-09-27). Sob um
+mandato v1 o emissor age por **qualquer** submissor; com dois pinos em vigor, **duas** chaves
+assinam mandatos. Root que estenda `AOS_MANDATE_V1_UNTIL` ou `AOS_MANDATE_DUAL_PIN_UNTIL` alarga o
+que o nó aceita **sem tocar em chave nenhuma** — e, até à revisão, o digest ficava byte a byte
+igual. Os dois instantes entram no retrato como valores; o digest cobre-os de graça.
+
+**O que NÃO entra, e é decisão:** o piso de frescura (`AOS_WORM_EXPECTED_HEAD(S_FILE)`) e o
+ficheiro de checkpoints. A `AOS_WORM_TRUST_ANCHOR` entra porque é uma **chave**; o piso e os
+checkpoints são o **estado** da ancoragem e mudam legitimamente a cada selagem diária. Selá-los
+faria o registo declarar uma «troca de âncora» todos os dias — e um sinal que dispara todos os
+dias é um sinal que ninguém lê, o que destruiria este registo para cobrir um vector que já está
+fechado noutro sítio: baixar o piso é recusado pelo `VerifyFromCheckpointAtHead` no arranque
+(`ErrCheckpointStale`).
+
+**A âncora da política é a do PDP composto** (achado A4), e não `AOS_POLICY_TRUST_ANCHOR`: um
+bundle aberto sem `WithTrustAnchor` tira a âncora do próprio directório, e aí a variável não é a
+chave que verificou o bundle. Sai de `pdp.PDP.TrustAnchor()`.
+
+### 8.2 E quem as verifica corre **fora** do host
+
+Selar no WORM, sozinho, não vale muito: quem escreve o `.env` também escreve o ficheiro do WORM, e
+o `EntryHash` é um SHA-256 **sem chave**. O que fecha é o `aos-issuer worm-seal` — que corre na
+máquina do operador, com uma chave que não está no host — comparar, **entre âncoras diárias**, o
+retrato que a selagem anterior cobria com o que está no WORM agora. Diferentes ⇒ **recusa selar**
+(`ErrWormSealAncorasTrocadas`), nomeando as âncoras que mudaram. Uma rotação legítima aceita-se com
+`--aceitar-ancoras <digest>`: exige-se o **digest exacto**, e não um `--sim`, porque escrever o
+valor obriga a olhar para ele.
+
+**VARRE TODOS OS REGISTOS DO INTERVALO, e não só o último de cada lado** (achado A1 da revisão
+adversarial de segurança, 2026-09-27, **provado a correr**). A primeira versão fazia duas leituras
+— o último registo ancorado e o último registo do store — e concluía sobre o intervalo inteiro. Os
+registos **do meio** nunca eram lidos, e derrotá-la não exigia apagar nada:
+
+1. root troca o pino e reinicia; o nó sela **honestamente** um `trust_anchors.changed` (seq N+1);
+2. root **deixa a troca em vigor** e faz *append* de um `trust_anchors.active` com os parâmetros
+   **antigos** (seq N+2) — escrever no ficheiro do WORM é o que ele já podia fazer;
+3. a selagem seguinte lia o primeiro e o terceiro, dizia «INALTERADAS» e **selava** (exit 0).
+
+Medido exactamente assim, com a sequência `[honesto, do-atacante, honesto]`. A varredura fecha-o
+porque o registo do passo 1 fica no caminho: a troca real deixou rasto, e o rasto passa a ser
+**lido**, com o `audit_seq` nomeado na recusa. Para o esconder, o atacante tem agora de **apagar**
+o registo N+1 — e aí caem as guardas que já existiam (`ErrWormSealRecuo` / `ErrWormSealDivergencia`),
+porque o `audit_seq` é *gapless* dentro da partição.
+
+**O que isto NÃO fecha, e é preciso dizê-lo com as mesmas letras:**
+
+1. **O tail ainda não ancorado.** Tudo o que está depois do último checkpoint é reescrevível por
+   inteiro por quem tem root — o `EntryHash` é um SHA-256 **sem chave**, pelo que apagar os
+   registos do intervalo e re-encadear o que resta produz um WORM que verifica. A garantia vale
+   para registos que **já atravessaram uma selagem**; para os outros, o que se ganha é obrigar o
+   atacante a **reescrever** em vez de acrescentar.
+2. **A janela entre a troca e a selagem seguinte**, se a troca, a reposição **e** a reescrita do
+   tail couberem toda dentro dela. Encolher a janela é selar mais vezes; fechá-la exigiria uma
+   testemunha independente — **DEF-268**.
+3. **O primeiro registo de sempre**: até haver uma selagem que o cubra não há base de comparação,
+   e o banner do arranque di-lo.
+
+### 8.3 E a chave do mandato entra no selo de **cada decisão** — `SchemaV5`
+
+O `mandate_id` que a onda do AOS-439 selou (§7, resíduo 3) **não** denuncia uma troca de pino: o id
+é escolhido por quem assina, e quem trocar `AOS_MANDATE_SIGNERS` pela sua chave re-assina um mandato
+com o mesmo nome de humano e o mesmo id. O que muda é a **chave que o aceitou**, e é a impressão
+dela — `mandate_signer` — que passa a ser selada, no `SchemaV5`.
+
+**Porquê uma época nova e não o campo dentro do `SchemaV4`.** O v4 ainda não tem registos em
+produção, e a tentação era poupar uma época. Perde por uma razão concreta: o binário que **escreve**
+v4 já está entregue (a release da onda B1 corre hoje em produção) e basta o operador pôr
+`AOS_AUDIT_WRITE_V4=1` para nascerem registos v4 com a serialização **dessa** release. Se o v4
+passasse a significar outra coisa, esses registos deixavam de verificar — e como o arranque
+re-verifica a hash-chain fail-closed, **o nó deixava de arrancar sobre o seu próprio log**. Uma
+versão de formato só protege o que promete enquanto significar **um** layout de bytes, para sempre.
+
+O **expand/contract** do AOS-439 mantém-se tal e qual: esta release **lê e verifica** v3, v4 e v5, e
+**escreve v3** por omissão. A época sobe com `AOS_AUDIT_WRITE_SCHEMA=4|5`, passo do operador.
+`AOS_AUDIT_WRITE_V4=1` continua a funcionar como sinónimo de `=4` — está no `docker-compose.prod.yml`
+e tirá-la faria um deploy que a tivesse ligada passar, em silêncio, a escrever v3; as duas em
+**desacordo abortam** o arranque, porque quando a configuração se contradiz nenhuma das leituras é
+a intenção do operador.
+
+A **retoma** passa a comparar também a impressão (`resume.go`), a par do humano e do mandato. A
+consequência é a gémea da que o AOS-439 declarou: **rodar a chave do humano torna os runs suspensos
+sob a anterior irretomáveis**. É o preço de a retoma exigir a mesma autoridade que autorizou o run.
+
+### 8.4 O mandato pode ser assinado por uma chave FIDO2 `sk-ssh-ed25519`
+
+A seed em ficheiro da §6.1 — hex, em claro, sem passphrase — copia-se com um `cat`, e quem a copie
+assina mandatos para sempre sem o humano dar por isso. Uma chave FIDO2 residente **não se copia**, e
+a assinatura só existe se alguém tocar no dispositivo.
+
+**A verificação é em stdlib** (`platform/identity/sshsig.go`): SSHSIG (PROTOCOL.sshsig) sobre
+`sk-ssh-ed25519@openssh.com`, na namespace própria `aos.identity.mandate`, com o
+`SHA-256(application) || flags || counter || SHA-256(signed-data)` que o OpenSSH assina. Sem
+dependências novas — o ambiente de build é offline —, e o formato **não foi lido de memória**: os
+vectores de `platform/identity/testdata/aos446_sshsig_sk_vectores.json` foram gerados com esta
+serialização e **aceites pelo `ssh-keygen -Y verify` do OpenSSH_10.3p1**, que os recusa com o
+contador mutado, a namespace trocada ou a mensagem trocada.
+
+**A `application` é exigida, e não só não-vazia** (achado A5). O pino tem de trazer
+`application=ssh:aos-mandate`. Uma chave gerada sem `-O application=` fica com `ssh:` — e é
+exactamente o que o §6.4 manda criar **na mesma máquina** para o SSH interactivo do operador.
+Pinada como assinante de mandatos, cada login passaria a produzir assinaturas sob a mesma
+`application`, e a namespace SSHSIG seria a única coisa a separar os dois usos; exigir a
+`application` põe uma segunda separação, e é a que o operador vê no pino.
+
+**Somos mais estritos do que o OpenSSH num ponto, e é deliberado.** Medido, não suposto: um vector
+com `flags = 0x00` — **nenhuma presença de utilizador** — é aceite pelo `ssh-keygen -Y verify` sem
+uma palavra. Para um mandato isso é o contrário de tudo o que ele existe para provar, e o nó
+**recusa-o** (`ErrSSHSigSemToque`).
+
+**Assinar continua a ser fora daqui.** Falar CTAP2/USB-HID exigiria um driver que este binário não
+tem. A cerimónia parte-se em dois comandos, com o toque no meio:
+`aos-issuer mandate-prepare` (escreve o rascunho e os **bytes exactos** a assinar) →
+`ssh-keygen -Y sign -n aos.identity.mandate` → `aos-issuer mandate-attach` (verifica contra o pino e
+emite o mandato com `fmt: sshsig`).
+
+### 8.5 O que acontece a cada combinação de pino e formato
+
+O `fmt` **não entra** no `SigningInput` — se entrasse, os bytes de todos os mandatos já assinados
+mudavam, e nem o **v1 que corre hoje em produção** (dentro da janela `AOS_MANDATE_V1_UNTIL`, aberta
+até 2026-10-25) nem o **v2 acabado de entrar** voltavam a verificar. Vive no envelope
+(`SignedMandate`), e **quem decide é o pino**, que está no `.env` do nó e não viaja com o documento:
+
+| pino em `AOS_MANDATE_SIGNERS` | `fmt` ausente ou `ed25519` | `fmt: sshsig` |
+|---|---|---|
+| 64 hex (software) | **aceita** — o caminho de sempre, v1 e v2 inalterados | **RECUSA**: o pino não é hardware |
+| `sk-ssh-ed25519@openssh.com …` | **RECUSA**: um pino de hardware não aceita assinatura crua | **aceita**, com presença de utilizador obrigatória |
+
+As duas recusas são o que torna o campo **inofensivo**: trocá-lo no documento não converte uma
+assinatura de software numa de hardware nem o contrário. E um mandato FIDO2 é **distinguível** — pelo
+`fmt`, pelo pino e pela impressão `SHA256:…` que entra no selo de cada decisão.
+
+O valor **não se apara** (achado A5): `" sshsig "` era aceite. É uma enumeração fechada de dois
+valores escritos por uma ferramenta, não texto de um humano — qualquer outra coisa é recusada.
+
+**Compatibilidade, caso a caso:** um mandato de software continua a serializar **sem** o campo
+`fmt` (o `SignMandate` deixa-o vazio de propósito), pelo que um binário anterior — que descodifica
+com `DisallowUnknownFields` — continua a lê-lo. Um mandato FIDO2 apresentado a um binário anterior
+ou é recusado na descodificação, ou é lido como ed25519 cru sobre um envelope SSHSIG e não verifica:
+as duas saídas são fail-closed. Um mandato FIDO2 só funciona depois de o nó **e** o emissor
+subirem **e** o pino ser trocado.
+
+### 8.6 Um parser de assinante, e não dois
+
+A gramática de `AOS_MANDATE_SIGNERS` tinha dois leitores: o do nó (`parseMandateSigners`, que impunha
+a forma inteira) e o do emissor (`pubkeyDoHumano`, que devolvia texto e não impunha nada). Enquanto o
+pino era sempre hex a divergência era invisível; com duas formas de pino deixaria de ser. Passa a
+haver um, em `platform/identity` (`ParseMandateSigners` → `MandateSigner`), e um `.env` que o nó
+recusa deixa de poder cunhar no emissor.
+
+### 8.7 O que a fase 1 **não** muda
+
+- A §6.1 continua igual: enquanto o `aos` estiver no grupo `docker`, o conjunto de quem contorna o
+  mandato é o mesmo. A fase 1 não impede a troca — **denuncia-a**.
+- A decisão 2 do AOS-446 (tirar o `aos` do grupo `docker`) continua **aberta**.
+- O **contador** de uma assinatura SSHSIG aceita qualquer valor, incluindo um recuo (como o
+  `ssh-keygen -Y verify`). Detectar um autenticador clonado exigiria guardar o último valor por
+  chave, que é estado persistente que este verificador não tem — e o impacto aqui é nulo: um
+  mandato assina-se **uma** vez e verifica-se muitas sobre os **mesmos** bytes. Quem fecha o clone
+  é a custódia do autenticador. Declarado na revisão adversarial (A5).
+- O `worm-seal` de uma **release anterior** lê um WORM v4 como «hash-chain adulterada»; com o v5
+  passa-se o mesmo, e pela mesma razão. O agravamento é de grau, não de natureza: quem subir a época
+  fica preso a um selador desta release ou posterior.
+### 8.8 A janela de rotação de pinos — dois pinos por humano, com data-limite
+
+**Decisão do dono, 2026-09-27** (achado A7 da revisão adversarial). Trocar o pino de um humano do
+software para o FIDO2 invalida, **no mesmo instante**, todos os mandatos dele: a verificação da
+assinatura corre antes da janela dos v1 e antes de tudo o resto. Entre reescrever o `.env` e
+entregar o mandato novo, a drenagem **pára**. As opções eram a paragem programada ou a janela; o
+dono escolheu a janela.
+
+`AOS_MANDATE_SIGNERS` passa a admitir **dois** pinos para o mesmo `user_id`, e
+`AOS_MANDATE_DUAL_PIN_UNTIL` (RFC 3339, molde de `AOS_MANDATE_V1_UNTIL`) diz até quando. Os dois
+pinos verificam, e o `mandate_signer` de cada decisão selada diz **qual** — que é como o operador
+confirma, pelo WORM, que o mandato em uso já é o de hardware antes de remover o antigo.
+
+**Fail-closed em todo o lado:** vazia com dois pinos ⇒ o arranque **aborta**; já passada com dois
+pinos ⇒ **aborta**; mais de dois pinos para o mesmo humano ⇒ **aborta** (uma rotação é **uma**
+troca, não um conjunto de chaves que ninguém sabe justificar); o **mesmo** pino repetido ⇒
+**aborta** (não é uma rotação); a mesma chave sob **dois nomes** continua a abortar, como sempre —
+é a única forma de repetição que destrói a atribuição. Se a data passar com o nó a correr, um
+mandato desse humano é recusado com `E_MANDATE_DUAL_PIN_CLOSED`.
+
+**Não se escolhe um dos dois no fim da janela**, e é deliberado: escolher seria decidir a
+autoridade do humano por conta própria, e nenhuma das escolhas é evidente (o mais recente no
+`.env` não é necessariamente o novo). Recusar força o operador a dizê-lo — que é o passo que a
+janela existe para lhe lembrar.
+
+O **emissor** tenta os dois pelo mesmo motivo: se escolhesse um, recusaria com «assinatura
+inválida» o mandato que o nó aceitaria. E a tabela de §8.5 continua a valer **por pino**: o pino
+de software só aceita `ed25519`, o de hardware só aceita `sshsig`, cada um por si.
+
+**A RETOMA TAMBÉM COMPARA O PINO, e isso interage com a rotação.** A guarda de `resume.go`
+confronta o `mandate_signer` gravado no registo de retoma com o da credencial fresca: um run
+suspenso sob o pino antigo **não retoma** sob o novo. Durante a janela isso é o comportamento
+certo (a autoridade que autorizou o run é a que o continua), mas quer dizer que **fechar a janela
+com runs suspensos torna-os irretomáveis**. Ou se esperam os runs, ou se aceita perdê-los.
+E há um caso em que a guarda **não dispara** — ver §8.9.
+
+### 8.9 Emenda (2.ª ronda de revisão, 2026-09-27)
+
+**B1 — `--aceitar-ancoras` é uma LISTA.** O flag guardava um digest e comparava com `==`, e o
+procedimento de rotação produz **duas** mudanças do retrato: o passo que abre a janela e o que a
+fecha. Com as duas entre dois selos diários, **nenhuma** forma de invocar o flag selava — e a
+mensagem mandava declarar «o digest de cada retrato que reconhece», que era impossível de
+cumprir. A saída que isso empurrava era largar o `--anterior`, e sem ele a verificação da §8.2
+**nem corre**. Passa a aceitar uma lista separada por vírgulas, comparada por pertença, e o
+diagnóstico diz quais dos declarados foram usados e quais não apareceram. O procedimento também
+passa a dizer que se pode selar **entre** os dois passos.
+
+**B2 — a época de escrita decide se a rotação é conferível.** O passo de confirmação manda ler
+`signer=SHA256:…` no `audit-trail`, mas o `mandate_signer` só entra no selo a partir do **v5** — o
+`stampSchema` apaga-o abaixo disso — e produção escreve **v3** por omissão. O operador fazia o
+grep, não via nada, e fechava a janela às cegas. Por isso `AOS_AUDIT_WRITE_SCHEMA=5` passa a ser
+**pré-requisito** de abrir a janela (e o aviso do corte de rollback mudou-se para lá), e o banner
+declara-o quando a época é inferior. **Consequência gémea, declarada:** com v3/v4 a guarda da
+retoma compara um `rec.Principal.MandateSigner` **vazio** e não dispara — hoje, em produção, um
+run suspenso sob o pino A retomaria sob o B sem dizer nada.
+
+**B3 — a colisão de chave entre FORMAS.** A guarda de «a mesma chave sob dois nomes» indexava
+pela impressão, que é `ed25519:…` num pino de software e `SHA256:…` num FIDO2: a **mesma** chave
+ed25519 nas duas formas passava, e quem a detivesse assinava mandatos em nome dos dois humanos.
+Passa a colidir também pela chave **crua**. Sob o mesmo humano continua a passar — o detentor é o
+mesmo, e não acrescenta ninguém à autoridade.
+
+**B4 — as duas janelas ao mesmo tempo.** Um mandato **v1** assinado pelo pino acabado de
+acrescentar é aceite, e sob um v1 o emissor age por **qualquer** submissor: durante a rotação
+abre-se um caminho para contornar os `requesters` (§7.1). **Não se recusa** — em produção o
+mandato vivo *é* v1 e recusar partiria a rotação no estado actual —, mas o procedimento manda
+**fechar a janela dos v1 primeiro** (re-assinar com `--requesters` e pôr `AOS_MANDATE_V1_UNTIL` no
+passado) e o banner avisa quando as duas estão abertas.

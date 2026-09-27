@@ -35,7 +35,8 @@ func GenesisHash(partition string) []byte {
 // SELADO, pelo que carimbá-la mais tarde mudaria o hash de um registo já na cadeia.
 //
 // `escrita` é a versão que o STORE escreve por omissão (0 ⇒ [CurrentSchemaVersion]; ver
-// [ComVersaoDeEscrita]). Um registo abaixo de [SchemaV4] PERDE o `requested_by` e o `mandate_id`
+// [ComVersaoDeEscrita]). Um registo abaixo de [SchemaV5] PERDE a impressão do pino do mandato, e
+// um abaixo de [SchemaV4] PERDE também o `requested_by` e o `mandate_id`
 // antes de ser selado (AOS-439): num v3 eles não entram no hash, e guardá-los ao lado — o ficheiro
 // é o JSON do registo inteiro — punha no WORM uma atribuição que parece selada e não é.
 func stampSchema(rec *AuditRecord, escrita uint8) {
@@ -48,6 +49,12 @@ func stampSchema(rec *AuditRecord, escrita uint8) {
 	if rec.SchemaVersion < SchemaV4 {
 		rec.Principal.RequestedBy = ""
 		rec.Principal.MandateID = ""
+	}
+	// AOS-446 fase 1, pela mesma razão: num registo abaixo de [SchemaV5] a impressão do pino não
+	// entra no hash, e guardá-la ao lado — o ficheiro do WORM é o JSON do registo inteiro — punha
+	// lá uma atribuição que parece selada e não é.
+	if rec.SchemaVersion < SchemaV5 {
+		rec.Principal.MandateSigner = ""
 	}
 }
 
@@ -68,9 +75,9 @@ func versaoPrepostaAceite(rec AuditRecord, escrita uint8) error {
 }
 
 // versaoDeEscritaValida diz se um store pode ser configurado para escrever a versão `v`.
-// Só as duas épocas que um binário desta release escreve: v3 (por omissão, que os binários
-// anteriores ainda verificam) e v4.
-func versaoDeEscritaValida(v uint8) bool { return v == SchemaV3 || v == SchemaV4 }
+// Só as épocas que um binário desta release escreve: v3 (por omissão, que os binários anteriores
+// ainda verificam), v4 e v5.
+func versaoDeEscritaValida(v uint8) bool { return v == SchemaV3 || v == SchemaV4 || v == SchemaV5 }
 
 func ComputeEntryHash(prevHash []byte, rec AuditRecord) []byte {
 	h := sha256.New()
