@@ -3778,8 +3778,12 @@ stream (`esperarLider`). Ficou uma janela mais estreita, e ela está VIVA no gat
 | 36279687386 | `feature/AOS-128-ux-dx-tests` (base) | `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` (`packages/integration`) |
 | 36288541771 | PR #396 | `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` (`packages/cmd/aos-orq`) |
 | 36330671442 | PR #399 | `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` (`packages/integration`) |
+| 36330671442 (re-corrida) | PR #399 | `TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal` (`substrate/eventstore/natsjs`), na passagem da COBERTURA — os quatro pacotes tinham ficado verdes (1733/0) |
 
-Localmente não reproduz: 13 corridas com cluster real, todas verdes.
+Localmente não reproduz: 13 corridas com cluster real, todas verdes. A quarta ocorrência mostrou
+que a **passagem da cobertura** morre pela mesma causa depois de os quatro pacotes ficarem verdes:
+o gate reprova com «a medicao de cobertura NAO correu; sem numero nao ha veredicto», o que é
+correcto (fail-closed) mas soma uma re-corrida inteira a cada flake.
 
 Hipótese (POR PROVAR): o `esperarLider` garante que o stream tem líder no momento do `Abrir`, mas
 não que o servidor a que a ligação está presa já instalou o interesse nos subjects do stream fresco,
