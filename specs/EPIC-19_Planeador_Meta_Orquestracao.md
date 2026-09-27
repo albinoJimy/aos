@@ -3749,6 +3749,93 @@ WORM sem ganho nenhum. A métrica conta a recusa na mesma.
 
 ---
 
+## AOS-455 — Janela residual do AOS-432: o primeiro CAS sobre um stream FRESCO ainda apanha 503
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador e Meta-Orquestração |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-432 |
+| Bloqueia | — |
+| Responsável sugerido | Engenheiro de Runtime |
+| Documentos de referência | ADR-023, `scripts/ci/nats.sh`, `packages/substrate/eventstore/jetstream/lider.go` |
+
+### Contexto
+O AOS-432 fechou o caso em que quem PERDE o lease sobre substrato replicado saía com um erro de
+transporte em vez de `durable.ErrLeaseHeld`: o `jetstream.Abrir` passou a esperar pelo líder do
+stream (`esperarLider`). Ficou uma janela mais estreita, e ela está VIVA no gate `nats`.
+
+**Medido, sem alteração de código nenhuma.** Os commits `c0d7fde` e `c595782` têm o **mesmo SHA de
+árvore** (`73846cb6891b671e8b33a4c276ca24a78c4a618b`): o gate `nats` ficou **verde** no run
+36277503033 e **vermelho** no 36279687386. Três ocorrências em dois dias, sempre o mesmo mecanismo
+— N reclamantes a disputar o lease sobre um stream R3 **acabado de criar**:
+
+| Run | Ramo | Teste que falhou |
+|---|---|---|
+| 36279687386 | `feature/AOS-128-ux-dx-tests` (base) | `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` (`packages/integration`) |
+| 36288541771 | PR #396 | `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` (`packages/cmd/aos-orq`) |
+| 36330671442 | PR #399 | `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` (`packages/integration`) |
+
+Localmente não reproduz: 13 corridas com cluster real, todas verdes.
+
+Hipótese (POR PROVAR): o `esperarLider` garante que o stream tem líder no momento do `Abrir`, mas
+não que o servidor a que a ligação está presa já instalou o interesse nos subjects do stream fresco,
+nem que não há re-eleição entre o `Abrir` e o PUB do CAS. Em qualquer dessas janelas o PUB recebe
+503 `no_responders`, o `Claim` devolve erro de transporte em vez de `ErrLeaseHeld`, e o perdedor
+sai `1` em vez de `3`.
+
+### Objectivo
+Fechar a janela para que a recusa por lease seja SEMPRE distinguível de uma avaria de transporte,
+e o gate `nats` deixe de flakear.
+
+### Critérios de Aceitação
+- [ ] O diagnóstico está PROVADO e não suposto: existe uma reprodução determinista da janela — por
+      exemplo com o líder do stream derrubado entre o `Abrir` e o primeiro CAS — que mostra o
+      código de saída errado antes da correcção.
+- [ ] Um 503 `no_responders` no primeiro CAS sobre um stream fresco **não** se confunde com «o lease
+      é de outro»: ou se retenta até o interesse estar instalado, ou sai com um erro de transporte
+      próprio, nomeado e distinto de `ErrLeaseHeld`.
+- [ ] O gate `nats` corre os dois testes afectados N vezes seguidas sem falhar.
+- [ ] `falhas_conhecidas` do `nats.sh` continua **VAZIA** — este defeito fecha-se, não se declara.
+- [ ] O gate publica o output da asserção (ver Detalhes Técnicos): sem isso, o próximo vermelho
+      volta a diagnosticar-se por hipótese.
+
+### Detalhes Técnicos
+- Componentes: ES (`substrate/eventstore/jetstream`), ORQ (`cmd/aos-orq`), `durable`.
+- **O output da asserção não chega ao log do CI.** O gate imprime `grep -A8` a partir do
+  `--- FAIL`, e em `go test -v` as linhas de `t.Logf`/`t.Errorf` saem **antes** dessa linha; o
+  ficheiro completo é um `mktemp` que não é publicado. Em três vermelhos ninguém viu as contagens.
+  Corrigir isto é pré-requisito de diagnosticar o resto com evidência.
+
+### Testes Requeridos
+- Reprodução determinista da janela (líder derrubado, ou interesse ainda não instalado).
+- Repetição: os dois testes afectados, N corridas sem falha.
+
+### Definition of Done
+- [ ] Critérios de Aceitação satisfeitos e demonstráveis.
+- [ ] Gate `nats` verde em corridas consecutivas, sem entradas novas em `falhas_conhecidas`.
+
+### Handoff para Claude Code
+```text
+Implementa AOS-455 (EPIC-19). O AOS-432 deixou uma janela: o primeiro CAS sobre
+um stream R3 FRESCO ainda pode apanhar 503 no_responders, e o perdedor do lease
+sai 1 em vez de 3. Começa por fazer o gate publicar o output da asserção — sem
+isso o diagnóstico é hipótese. PROVA a janela com uma reprodução determinista
+antes de a fechar. Não declares o flake em falhas_conhecidas. Segue _BRIEF.md.
+Não expandas escopo.
+```
+
+### Estado
+
+**ABERTO** (2026-09-27). Aberto a partir da análise do vermelho do gate `nats` no PR #396, que
+mediu o flake em árvores idênticas e excluiu o commit desse PR como causa; a terceira ocorrência
+veio no PR #399.
+
+---
+
 ## AOS-432 — Sobre substrato replicado, quem PERDE o lease não sabe que o perdeu: sai com um erro de NATS
 
 <!-- rtm: adrs-mencionados -->
