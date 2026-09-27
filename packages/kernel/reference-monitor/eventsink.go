@@ -132,6 +132,9 @@ type principalDTO struct {
 	// submissor fica byte-a-byte igual ao de antes — MINOR no `port_version` (tecnica/12 §4).
 	MandateID   string `json:"mandate_id,omitempty"`
 	RequestedBy string `json:"requested_by,omitempty"`
+	// MandateSigner é a impressão digital do pino que verificou o mandato (AOS-446 fase 1).
+	// OPCIONAL pela mesma razão dos dois acima: sem mandato o payload fica byte-a-byte igual.
+	MandateSigner string `json:"mandate_signer,omitempty"`
 }
 
 // delegationHopDTO é um elo (sub/act_as) da cadeia serializado no payload.
@@ -190,6 +193,7 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			DelegationChain: toHopDTOs(rec.Principal.DelegationChain),
 			MandateID:       rec.Principal.MandateID,
 			RequestedBy:     rec.Principal.RequestedBy,
+			MandateSigner:   rec.Principal.MandateSigner,
 		},
 		Obligations: rec.Obligations,
 		Metadata:    rec.Metadata,

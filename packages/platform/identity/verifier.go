@@ -40,6 +40,18 @@ type Principal struct {
 	// emissor é MANDATADO e o mandato VERIFICOU; vazio em todos os outros casos — nunca se
 	// devolve o ID de um mandato que ninguém verificou.
 	MandateID string
+	// MandateSigner é a IMPRESSÃO DIGITAL do pino que verificou o mandato (AOS-446 fase 1):
+	// `SHA256:…` numa chave FIDO2, `ed25519:…` numa de software. Vazia quando não há mandato.
+	//
+	// PORQUE NÃO CHEGA O [MandateID]. O `mandate_id` é escolhido por QUEM ASSINA: quem trocar
+	// `AOS_MANDATE_SIGNERS` pela sua própria chave assina um mandato novo com o nome do mesmo
+	// humano e o id que quiser, e o selo da decisão fica igual ao de antes. A impressão digital do
+	// pino é o que muda, e é por isso que é ELA que se sela — o registo denuncia a troca mesmo
+	// que tudo o resto seja reproduzido.
+	MandateSigner string
+	// MandateSignerKind é a forma desse pino ([MandateFormatEd25519] ou [MandateFormatSSHSIG]),
+	// para a postura e os diagnósticos dizerem «hardware» sem terem de reinterpretar a impressão.
+	MandateSignerKind string
 	// MandateRequesters são os `requesters` do mandato verificado (AOS-439): por quem o emissor
 	// pode agir. Vazio num mandato v1 (aceite só dentro da janela de migração) e em todos os tokens
 	// que não vêm de um emissor mandatado.
@@ -95,7 +107,10 @@ type Verifier struct {
 	// mandated são os emissores que só se aceitam DENTRO de um mandato (AOS-427), e
 	// mandateSigners as chaves PÚBLICAS dos humanos cujos mandatos se aceitam, por user_id.
 	mandated       map[string]bool
-	mandateSigners map[string]ed25519.PublicKey
+	mandateSigners map[string][]MandateSigner
+	// mandateDualPinUntil é o fim da JANELA DE ROTAÇÃO de pinos (AOS-446 fase 1, revisão de
+	// 2026-09-27). Zero ⇒ fechada: um humano com dois pinos é recusado.
+	mandateDualPinUntil time.Time
 	// mandateV1Until é o fim da janela de migração dos mandatos v1 (AOS-439). Zero ⇒ fechada.
 	mandateV1Until time.Time
 	now            func() time.Time
@@ -126,22 +141,38 @@ func WithTrustedIssuer(iss string, pub ed25519.PublicKey) VerifierOption {
 
 // WithMandatedIssuer regista um emissor AUTOMÁTICO (AOS-427, ADR-033): um trust anchor cujos
 // tokens SÓ verificam com um mandato embebido, assinado por um dos humanos de `signers`
-// (user_id → chave pública ed25519) e que cubra o token. É a forma de confiar num emissor que
+// (user_id → pino, [MandateSigner]: uma chave ed25519 de software ou uma chave FIDO2) e que
+// cubra o token. É a forma de confiar num emissor que
 // corre sem humano presente sem lhe dar mais poder do que o humano assinou.
 //
 // Fail-closed na composição: iss vazio, pubkey de tamanho errado ou `signers` sem nenhuma chave
 // válida deixam o emissor SEM anchor — os seus tokens são recusados com [ErrUnknownIssuer], em
 // vez de verificarem sem mandato. Se o mesmo iss for também registado com [WithTrustedIssuer],
 // a exigência de mandato prevalece: um emissor não deixa de ser mandatado por ter dois registos.
-func WithMandatedIssuer(iss string, pub ed25519.PublicKey, signers map[string]ed25519.PublicKey) VerifierOption {
+func WithMandatedIssuer(iss string, pub ed25519.PublicKey, signers map[string][]MandateSigner) VerifierOption {
 	return func(v *Verifier) {
 		if iss == "" || len(pub) != ed25519.PublicKeySize {
 			return
 		}
 		validos := 0
-		for human, k := range signers {
-			if human != "" && len(k) == ed25519.PublicKeySize {
-				v.mandateSigners[human] = append(ed25519.PublicKey(nil), k...)
+		for human, ks := range signers {
+			if human == "" {
+				continue
+			}
+			// O TECTO TAMBÉM AQUI, e não só no parser (achado BAIXO 3 da 2.ª ronda). O
+			// `ParseMandateSigners` impõe-o sobre o texto de `AOS_MANDATE_SIGNERS`, mas uma
+			// Config montada em código chega a esta opção sem passar por ele — e, medido, TRÊS
+			// pinos verificavam. Defesa-em-profundidade: os que passam do tecto são DESCARTADOS,
+			// no molde do resto desta opção (uma chave malformada também é), e o
+			// `validarEmissorMandatado` do nó aborta o arranque antes de se chegar aqui.
+			for _, k := range ks {
+				if !k.Valid() {
+					continue
+				}
+				if len(v.mandateSigners[human]) >= MandatePinosMaximoPorHumano {
+					break
+				}
+				v.mandateSigners[human] = append(v.mandateSigners[human], k)
 				validos++
 			}
 		}
@@ -162,6 +193,30 @@ func WithMandatedIssuer(iss string, pub ed25519.PublicKey, signers map[string]ed
 // mandato em vigor é v1 até o humano o re-assinar.
 func WithMandateV1Until(until time.Time) VerifierOption {
 	return func(v *Verifier) { v.mandateV1Until = until }
+}
+
+// WithMandateDualPinUntil abre a JANELA DE ROTAÇÃO DE PINOS (AOS-446 fase 1, revisão de
+// 2026-09-27): um humano pode ter DOIS pinos em `AOS_MANDATE_SIGNERS` até `until` (exclusive),
+// pelo relógio do verificador, e a partir daí um mandato desse humano é recusado com
+// [ErrMandateDualPinClosed]. Sem esta opção a janela está FECHADA — fail-closed.
+//
+// PORQUE EXISTE. Trocar o pino de um humano do software para o FIDO2 invalida, no MESMO instante,
+// TODOS os mandatos dele: a verificação da assinatura corre antes de tudo o resto. Entre
+// reescrever o `.env` e entregar o mandato novo, a drenagem PARA. O dono escolheu a janela em vez
+// da paragem programada (2026-09-27).
+//
+// PORQUE RECUSA EM VEZ DE ENCOLHER PARA UM PINO no fim da janela: escolher por conta própria
+// QUAL dos dois sobrevive seria escolher a autoridade do humano, e nenhuma das duas escolhas é
+// evidente (o mais recente no `.env` não é necessariamente o novo). Recusar força o operador a
+// dizê-lo, que é o passo que a janela existe para lhe lembrar.
+//
+// NÃO É UMA DEFESA CONTRA QUEM REESCREVE O `.env` — a frase é a mesma de [WithMandateV1Until], e
+// vale letra por letra: quem lá chega põe a data que quiser e acrescenta o pino que quiser. É um
+// tecto contra o ESQUECIMENTO, para que uma rotação a meio não fique a meio para sempre. O que
+// denuncia a reescrita é outra coisa: o registo das âncoras no arranque (AOS-446 §8.1), que sela
+// esta data e o conjunto de pinos, e o `worm-seal` que o confere fora do host.
+func WithMandateDualPinUntil(until time.Time) VerifierOption {
+	return func(v *Verifier) { v.mandateDualPinUntil = until }
 }
 
 // WithRevocations liga o verificador ao registo de revogação. Sem ele, nenhum
@@ -199,7 +254,7 @@ func NewVerifier(opts ...VerifierOption) *Verifier {
 	v := &Verifier{
 		trust:          make(map[string]ed25519.PublicKey),
 		mandated:       make(map[string]bool),
-		mandateSigners: make(map[string]ed25519.PublicKey),
+		mandateSigners: make(map[string][]MandateSigner),
 		now:            time.Now,
 		leeway:         60 * time.Second,
 	}
@@ -326,14 +381,16 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 	// token cuja assinatura, janela, revogação e cadeia já passaram. Num token de um emissor NÃO
 	// mandatado um mandato embebido é ignorado e o MandateID fica vazio — o emissor manual é
 	// confiado por inteiro, e um mandato que ninguém verificou não se devolve a ninguém.
-	var mandateID string
+	var mandateID, mandateSignerFP, mandateSignerKind string
 	var requesters []string
 	if v.mandated[c.Issuer] {
-		m, merr := v.verifyMandate(ctx, c)
+		m, signer, merr := v.verifyMandate(ctx, c)
 		if merr != nil {
 			return Principal{}, merr
 		}
 		mandateID = m.ID
+		mandateSignerFP = signer.Fingerprint()
+		mandateSignerKind = signer.Kind()
 		requesters = append([]string(nil), m.Requesters...)
 	}
 
@@ -351,6 +408,8 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 		Expiry:            time.Unix(c.Expiry, 0),
 		DelegationChain:   c.DelegationChain.Clone(),
 		MandateID:         mandateID,
+		MandateSigner:     mandateSignerFP,
+		MandateSignerKind: mandateSignerKind,
 		MandateRequesters: requesters,
 	}, nil
 }

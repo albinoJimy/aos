@@ -111,8 +111,10 @@ WORM. Na mesma pasta `secrets-local/` estão a `humano-mandato.key` (assina qual
 `issuer.key` (o emissor manual, que o nó aceita **sem mandato**), as duas seeds do *four-eyes*
 (`approver-a/b.seed`), a `wormseal.key` e a `backup-key/`. E a chave do humano é uma seed ed25519
 **em hex, em claro**: não tem passphrase (`lerSeedHumana`, `packages/cmd/aos-issuer/mandato.go`).
-Quem copia a pasta contorna o mandato (ADR-033 §6.1). Até à Fase 1 do AOS-446 (mandato assinado por
-FIDO2), a mitigação é de custódia:
+Quem copia a pasta contorna o mandato (ADR-033 §6.1). A **Fase 1 do AOS-446** entregou a saída
+definitiva para a primeira dessas chaves — o mandato assinado por FIDO2, §Mandato em hardware, mais
+abaixo —, mas ela é um passo do dono com a chave física. Enquanto não estiver dado, e para tudo o
+resto, a mitigação é de custódia:
 
 1. **`humano-mandato.key` e `issuer.key` saem desta máquina** para suporte offline cifrado (p.ex.
    um volume VeraCrypt ou BitLocker To Go numa pen que fica guardada). Nenhuma tarefa diária as usa:
@@ -143,6 +145,147 @@ FIDO2), a mitigação é de custódia:
 3. **Declarado, não resolvido:** as duas seeds de aprovador do *four-eyes* vivem nesta mesma
    máquina. São duas chaves e **um** custodiante: o *four-eyes* prova duas assinaturas, não duas
    pessoas (adjacente ao DEF-107).
+
+### Mandato em hardware — `sk-ssh-ed25519` (AOS-446 fase 1) — passos do dono
+
+Substitui a `humano-mandato.key` por uma chave **FIDO2 residente**: a privada nunca sai do
+autenticador, e cada mandato exige um **toque** na chave física. Corre tudo na **máquina do
+operador** — nenhum destes passos toca no servidor até ao passo 5.
+
+```powershell
+# 1. Gerar a chave no autenticador (pede o toque; --application prende a assinatura a este uso)
+ssh-keygen -t ed25519-sk -O application=ssh:aos-mandate -O resident `
+           -C "aos-mandato" -f $env:USERPROFILE\.ssh\id_ed25519_sk_mandato
+#    A pública é o PINO. Guarda-a: é o que vai para AOS_MANDATE_SIGNERS.
+Get-Content $env:USERPROFILE\.ssh\id_ed25519_sk_mandato.pub
+ssh-keygen -lf $env:USERPROFILE\.ssh\id_ed25519_sk_mandato.pub   # a impressao SHA256:... que o WORM vai selar
+
+# 2. Preparar o mandato (NAO toca em chave nenhuma; escreve o rascunho e os bytes a assinar)
+aos-issuer mandate-prepare --human jimy --board eu-west --agent agent:aos-orq --class orq `
+    --caps "cap:doc.read" --requesters "<sub-do-submissor>" --out mandato
+
+# 3. ASSINAR (o autenticador pisca; toca na chave)
+ssh-keygen -Y sign -f $env:USERPROFILE\.ssh\id_ed25519_sk_mandato `
+    -n aos.identity.mandate mandato.signing-input
+
+# 4. Juntar a assinatura e emitir o mandato (verifica ANTES de emitir, contra o pino)
+aos-issuer mandate-attach --mandate mandato.mandate.json --sig mandato.signing-input.sig `
+    --signer (Get-Content $env:USERPROFILE\.ssh\id_ed25519_sk_mandato.pub) --out mandato.json
+```
+
+**A TROCA DO PINO FAZ-SE COM OS DOIS EM VIGOR, e a ordem é esta.** Substituir o pino de uma vez
+invalida, **no mesmo instante**, todos os mandatos daquele humano — a assinatura verifica-se antes
+de tudo o resto — e a drenagem pára entre a troca do `.env` e a entrega do mandato novo. Por isso
+existe a **janela de rotação** (AOS-446 fase 1, ADR-033 §8.8): durante ela o humano tem **dois**
+pinos, os dois assinam, e o selo de cada decisão diz **qual** verificou.
+
+**PRÉ-REQUISITOS DO PASSO 5, e não são opcionais** (achados B2 e B4 da 2.ª ronda de revisão):
+
+- **`AOS_AUDIT_WRITE_SCHEMA=5`** no `.env`, e reiniciar, **antes** de abrir a janela. O passo 7
+  confirma a rotação lendo `signer=` no `audit-trail`, e o `mandate_signer` **só entra no selo a
+  partir do v5**: com o v3 de omissão o grep não devolve nada, e fechar a janela sem ele é
+  fechá-la às cegas. ⚠️ **Subir a época corta o rollback** para binários anteriores — é aqui que
+  esse custo se paga, e é a razão de ser um passo separado e confirmado.
+  **Consequência gémea, para saberes onde estás hoje:** com v3/v4 a guarda da retoma compara um
+  campo vazio, pelo que um run suspenso sob o pino antigo retomaria sob o novo **sem dizer nada**.
+- **Fechar a janela dos mandatos v1 PRIMEIRO.** Re-assina o mandato com
+  `mandate-sign --requesters` (ou o `mandate-prepare`/`attach`, se já for FIDO2) e põe
+  `AOS_MANDATE_V1_UNTIL` no passado. **Porquê:** um mandato **v1** assinado pelo pino acabado de
+  acrescentar é aceite, e sob um v1 o emissor age por **qualquer** submissor — durante a rotação,
+  as duas janelas abertas ao mesmo tempo abrem um caminho para contornar os `requesters`
+  (AOS-439). Em produção a janela v1 está aberta até **2026-10-25**, que é a mesma em que a
+  rotação vai acontecer. O banner avisa quando as duas estão abertas.
+- **Runs suspensos:** a retoma exige o **mesmo** pino que autorizou o run. Fechar a janela (passo
+  8) torna irretomável um run suspenso sob o pino antigo. Ou esperas que drenem, ou aceitas
+  perdê-los.
+
+**5. No servidor — ABRIR a janela e ACRESCENTAR o pino novo** (não substituir). No `/opt/aos/.env`:
+
+```bash
+# a entrada do humano passa a ter DUAS, separadas por virgula, com o MESMO user_id:
+AOS_MANDATE_SIGNERS="jimy=<hex-de-sempre>,jimy=sk-ssh-ed25519@openssh.com AAAA…"
+AOS_MANDATE_DUAL_PIN_UNTIL=2026-10-10T23:59:59Z   # RFC 3339, tecto de 90 dias
+```
+
+Reiniciar o nó. O banner tem de dizer `rotacao de pinos (AOS-446 fase 1): EM CURSO para jimy`.
+Sem a janela, **o arranque aborta** com dois pinos — e é assim de propósito.
+
+**6. Entregar o `mandato.json` novo** onde o `provision-issuer-auto.sh` o espera. O mandato antigo
+continua a valer, pelo que não há paragem.
+
+**7. CONFIRMAR PELO SELO qual pino está em uso** — é este o passo que a janela existe para
+permitir, e é o único que prova a rotação em vez de a presumir:
+
+```bash
+ssh aos-prod 'docker exec aos aos audit-trail --run <run-recente>' < /dev/null | grep signer=
+# tem de mostrar signer=SHA256:…  (a impressao de `ssh-keygen -lf` da chave FIDO2),
+# e NAO signer=ed25519:…
+```
+
+**8. FECHAR a janela:** remover o pino antigo de `AOS_MANDATE_SIGNERS`, apagar
+`AOS_MANDATE_DUAL_PIN_UNTIL`, reiniciar. O banner volta a `UM pino por humano`.
+
+> 📌 **A selagem diária entre os passos 5 e 8.** Os passos 5 e 8 produzem **duas** mudanças do
+> retrato das âncoras, e nada obriga a que caiam no mesmo dia. O `--aceitar-ancoras` aceita uma
+> **lista** separada por vírgulas, exactamente para isto:
+>
+> ```
+> aos-issuer worm-seal --worm <copia> --key-file <wormseal.key> --anterior checkpoints.json \
+>     --aceitar-ancoras <digest-com-dois-pinos>,<digest-com-um-pino>
+> ```
+>
+> Os digests são os que a recusa imprime, um por registo divergente. Declarar só um dos dois
+> **não chega** — e é deliberado: cada retrato que passou a vigorar tem de ser reconhecido.
+> **Nunca largues o `--anterior` para contornar a recusa:** sem ele a verificação das âncoras
+> nem corre, que é o oposto do que estás a tentar fazer.
+
+> ⚠️ **Se a data passar com os dois pinos ainda no `.env`**, o arranque **aborta** e um mandato
+> desse humano é recusado com `E_MANDATE_DUAL_PIN_CLOSED`. O nó **não** escolhe um dos dois —
+> escolher seria decidir a autoridade do humano por ti.
+>
+> **O que a chave física obriga, e é o ponto:** renovar o mandato (≤ 90 dias) passa a exigir a chave
+> na mão. Nenhuma tarefa **diária** a pede — a cunhagem corre pelo emissor automático dentro do
+> mandato —, mas se a chave se perder não há como assinar o mandato seguinte. **Regista uma
+> segunda chave FIDO2** como pino de um segundo `user_id`, ou guarda a
+> `humano-mandato.key` antiga no suporte offline do passo 1 acima como via de recuperação
+> (e nesse caso o pino dela volta a ter de estar no `.env`, o que reabre o vector — decide qual dos
+> dois riscos preferes e escreve-o aqui).
+>
+> ℹ️ **A `application` é obrigatória.** Uma chave `ed25519-sk` gerada **sem** `-O application=` fica
+> com `ssh:` e é **recusada** como pino de mandato: é a mesma forma da chave SSH interactiva que o
+> passo 2 da custódia manda criar nesta máquina, e pinar uma dessas faria cada login produzir
+> assinaturas sob a mesma `application`.
+
+### As âncoras de confiança seladas no WORM (AOS-446 fase 1) — passos do dono
+
+O nó passa a selar em cada arranque, na partição `trust-anchors`, a impressão de **todas** as
+âncoras do `.env` (ADR-033 §6.3 e §8.1). O que torna isso uma defesa, e não só um log, é a
+verificação correr **fora do host**, na selagem diária:
+
+1. **Nada a instalar.** O `selar-worm.ps1` já passa `--anterior`, que é a condição para a
+   verificação correr. A partir da primeira selagem depois do deploy, o `worm-seal` compara e
+   **recusa selar** se alguma âncora tiver mudado sem ser declarada.
+2. **Quando fores tu a rodar uma âncora** (o pino do mandato, uma chave de operador, a âncora da
+   política, ou qualquer das duas **janelas** — que também são âncoras), a selagem seguinte vai
+   recusar e **dizer qual mudou**, com o digest e o `audit_seq` de **cada** registo divergente.
+   Repete com `--aceitar-ancoras <d1>,<d2>,…` — os valores exactos que a recusa imprime,
+   separados por vírgulas; uma rotação de pinos produz normalmente **dois**. O `selar-worm.ps1`
+   propaga o que lhe passares a seguir a `--`; em alternativa, corre o `aos-issuer worm-seal` à
+   mão sobre a cópia do backup.
+3. **Se recusar sem tu teres rodado nada, PÁRA.** Significa que o `.env` do host foi reescrito e o
+   nó está a servir sob outra autoridade. Guarda o WORM (não voltes a selar), lê a partição:
+   `aos audit-trail --run trust-anchors` mostra cada arranque, o que mudou e quando. A recusa
+   nomeia o `audit_seq` de **cada** registo divergente do intervalo — a verificação varre-os
+   todos, e não só o último (achado A1 da revisão de segurança: acrescentar um registo com o
+   retrato antigo por cima da troca derrotava a versão anterior sem apagar nada).
+4. **Subir a época do WORM para v5** (o que faz cada decisão selar a chave que aceitou o mandato):
+   `AOS_AUDIT_WRITE_SCHEMA=5` no `.env` e reiniciar. ⚠️ **Corta o rollback** para qualquer binário
+   anterior — fá-lo depois de o deploy estar confirmado saudável, e nunca no mesmo passo do deploy.
+   Sem isso, a troca do pino continua a deixar rasto no registo das âncoras; o que falta é o rasto
+   **por decisão** — e, com ele, a confirmação do passo 7 da rotação e a guarda da retoma, que
+   comparam exactamente esse campo. **É pré-requisito de §Mandato em hardware, passo 5.**
+5. **Com `--partition`, a verificação das âncoras NÃO corre**, e o comando di-lo em stderr. Selar
+   uma partição só é recuperação; para a verificação valer, sela sem `--partition`.
 
 ---
 

@@ -29,7 +29,7 @@ func noComJanela(t *testing.T, ate time.Time) (*Node, string, ed25519.PrivateKey
 		IssuerID: "iss:aos-issuer", IssuerPubKey: manual.Public().(ed25519.PublicKey),
 		IssuerClasses: tnBaseConfig().IssuerClasses, VerifierClock: tnClock(),
 		MandatedIssuerID: issAutoDeTeste, MandatedIssuerPubKey: auto.Public().(ed25519.PublicKey),
-		MandateSigners: map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)},
+		MandateSigners: pinosDeSoftwareNo(map[string]ed25519.PublicKey{"alice": humano.Public().(ed25519.PublicKey)}),
 		MandateV1Until: ate,
 	}, &log)
 	if err != nil {
@@ -125,10 +125,13 @@ func TestAOS439ParseEBannerDoWORMV4(t *testing.T) {
 	if _, err := parseAuditWriteV4("talvez"); !errors.Is(err, ErrBadAuditWriteV4) {
 		t.Fatalf("valor invalido tem de abortar, veio %v", err)
 	}
-	if l := strings.Join(wormV4PostureBanner(false, true), ""); !strings.Contains(l, "escreve v3") || !strings.Contains(l, "AOS_AUDIT_WRITE_V4=1") {
+	// AOS-446 fase 1: o banner passou a receber a EPOCA (ha tres) em vez de um booleano, e a
+	// instrucao passou a nomear a variavel nova. A do AOS-439 continua a funcionar — ver
+	// TestAOS446EpocaDeEscritaDoWORM, que prova as duas e o desacordo entre elas.
+	if l := strings.Join(wormV4PostureBanner(audit.SchemaV3, true), ""); !strings.Contains(l, "escreve v3") || !strings.Contains(l, "AOS_AUDIT_WRITE_SCHEMA=5") {
 		t.Fatalf("banner v3: %s", l)
 	}
-	if l := strings.Join(wormV4PostureBanner(true, true), ""); !strings.Contains(l, "escreve v4") || !strings.Contains(l, "rollback") {
+	if l := strings.Join(wormV4PostureBanner(audit.SchemaV4, true), ""); !strings.Contains(l, "escreve v4") || !strings.Contains(l, "rollback") {
 		t.Fatalf("banner v4: %s", l)
 	}
 }

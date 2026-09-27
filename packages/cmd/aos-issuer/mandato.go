@@ -106,7 +106,7 @@ func cmdMintMandated(args []string, out io.Writer) error {
 	keyFile := fs.String("key-file", "issuer-auto.key", "chave do emissor em ficheiro (só sem --vault-addr — em produção a chave vive no Vault)")
 	buildSigner := vaultSignerFlags(fs, keyFile)
 	mandateFile := fs.String("mandate", "", "ficheiro do mandato assinado (de mandate-sign)")
-	signerPub := fs.String("signer-pubkey", "", "pubkey do humano em hex — a MESMA que está pinada no nó (AOS_MANDATE_SIGNERS)")
+	signerPub := fs.String("signer-pubkey", "", "pino do humano — a MESMA entrada que está pinada no nó (AOS_MANDATE_SIGNERS): 64 hex, ou `sk-ssh-ed25519@openssh.com AAAA…` para uma chave FIDO2")
 	// AOS-437: o timer do servidor passa a lista INTEIRA, no formato do nó, e a chave escolhe-se pelo
 	// humano que o mandato nomeia. Uma só fonte para a chave pinada: o `.env` que o nó também lê — uma
 	// segunda variável só com a pubkey seria uma cópia que se desactualiza sem ninguém ver.
@@ -131,21 +131,21 @@ func cmdMintMandated(args []string, out io.Writer) error {
 	if err := dec.Decode(&sm); err != nil {
 		return fmt.Errorf("mandato ilegivel: %w", err)
 	}
-	pubHex := strings.TrimSpace(*signerPub)
-	if *signers != "" {
-		pubHex, err = pubkeyDoHumano(*signers, sm.Mandate.Human)
-		if err != nil {
-			return err
-		}
-	}
-	pubRaw, err := hex.DecodeString(pubHex)
-	if err != nil || len(pubRaw) != ed25519.PublicKeySize {
-		return errors.New("a pubkey do humano tem de ser ed25519 em hex (64 caracteres)")
+	pinos, err := pinosDoHumano(strings.TrimSpace(*signerPub), *signers, sm.Mandate.Human)
+	if err != nil {
+		return err
 	}
 	// VERIFICA ANTES DE PEDIR UMA ASSINATURA AO VAULT: um mandato que não verifica não chega a
 	// gerar tráfego para a chave do emissor.
-	if err := sm.VerifySignature(ed25519.PublicKey(pubRaw)); err != nil {
+	pino, err := verificarComAlgumPino(sm, pinos)
+	if err != nil {
 		return fmt.Errorf("mint-mandated: %w", err)
+	}
+	// Durante a janela de rotação diz-se QUAL pino serviu, no journal do timer: é por aqui que o
+	// operador confirma que o mandato em uso já é o de hardware antes de remover o pino antigo.
+	if len(pinos) > 1 {
+		fmt.Fprintf(os.Stderr, "nota: %d pinos em vigor para %q (janela de rotacao); este mandato verificou com %s\n",
+			len(pinos), sm.Mandate.Human, pino.Fingerprint())
 	}
 	m := sm.Mandate
 	// AOS-439: um mandato v1 (sem requesters) ainda cunha — a decisão é do NÓ, pela janela de
@@ -190,25 +190,55 @@ func cmdMintMandated(args []string, out io.Writer) error {
 	return escreverAtomico(*outFile, []byte(tok.Compact+"\n"), modo)
 }
 
-// pubkeyDoHumano escolhe, da lista no formato de AOS_MANDATE_SIGNERS, a chave do humano que o
-// mandato nomeia. Fail-closed: humano ausente ou nomeado duas vezes recusa — escolher a primeira
-// entrada seria escolher por nós entre duas autoridades.
-func pubkeyDoHumano(lista, humano string) (string, error) {
-	achada := ""
-	for _, par := range strings.Split(lista, ",") {
-		kv := strings.SplitN(strings.TrimSpace(par), "=", 2)
-		if len(kv) != 2 || strings.TrimSpace(kv[0]) != humano {
+// pinoDoHumano resolve o PINO com que o mandato se verifica: um pino avulso (`--signer-pubkey`)
+// ou o do humano que o mandato nomeia, tirado da lista no formato de `AOS_MANDATE_SIGNERS`
+// (`--signers`).
+//
+// A GRAMÁTICA É A DO NÓ, E AGORA É LITERALMENTE A MESMA FUNÇÃO (AOS-446 fase 1). A versão
+// anterior desta função — `pubkeyDoHumano` — percorria a lista à mão e devolvia TEXTO: aceitava
+// nomes repetidos com chaves diferentes desde que o humano procurado só aparecesse uma vez, não
+// via uma chave partilhada por dois nomes, e não teria como ler um pino FIDO2. Passa por
+// [identity.ParseMandateSigners], que impõe a forma INTEIRA — e assim um `.env` que o nó recusa
+// deixa de poder cunhar aqui, que era a divergência silenciosa entre os dois leitores.
+// DEVOLVE TODOS OS PINOS DO HUMANO, e não um (AOS-446 fase 1, revisão de 2026-09-27): durante a
+// janela de rotação o humano tem dois, e o emissor tem de aceitar o mandato que verifique com
+// QUALQUER um deles — exactamente como o nó. Escolher um aqui faria o emissor recusar, com uma
+// mensagem de assinatura inválida, o mandato que o nó aceitaria.
+func pinosDoHumano(avulso, lista, humano string) ([]identity.MandateSigner, error) {
+	if avulso != "" {
+		s, err := identity.ParseMandateSigner(avulso)
+		if err != nil {
+			return nil, fmt.Errorf("--signer-pubkey: %w", err)
+		}
+		return []identity.MandateSigner{s}, nil
+	}
+	todos, err := identity.ParseMandateSigners(lista)
+	if err != nil {
+		return nil, fmt.Errorf("--signers: %w", err)
+	}
+	ps, ok := todos[humano]
+	if !ok || len(ps) == 0 {
+		return nil, fmt.Errorf("--signers nao tem chave pinada para o humano %q que o mandato nomeia", humano)
+	}
+	return ps, nil
+}
+
+// verificarComAlgumPino corre a verificação contra cada pino e devolve o que serviu. É a mesma
+// regra do nó ([Verifier.verifyMandate]): um mandato verifica com um pino ou com nenhum.
+func verificarComAlgumPino(sm identity.SignedMandate, pinos []identity.MandateSigner) (identity.MandateSigner, error) {
+	var erros []string
+	for _, p := range pinos {
+		if err := sm.VerifySignature(p); err != nil {
+			erros = append(erros, p.Fingerprint()+": "+err.Error())
 			continue
 		}
-		if achada != "" {
-			return "", fmt.Errorf("--signers nomeia o humano %q mais de uma vez", humano)
-		}
-		achada = strings.TrimSpace(kv[1])
+		return p, nil
 	}
-	if achada == "" {
-		return "", fmt.Errorf("--signers nao tem chave pinada para o humano %q que o mandato nomeia", humano)
-	}
-	return achada, nil
+	// EMBRULHA A SENTINELA. «Nenhum pino verifica» É [identity.ErrMandateInvalid] — é o mesmo
+	// veredicto que o nó dá, e quem chama compara com `errors.Is`. Um agregado sem `%w` perdia-a
+	// e transformava um erro classificado num texto.
+	return identity.MandateSigner{}, fmt.Errorf("%w: nenhum dos %d pino(s) de %q verifica o mandato — %s",
+		identity.ErrMandateInvalid, len(pinos), sm.Mandate.Human, strings.Join(erros, " | "))
 }
 
 // lerSeedHumana lê a seed do humano SEM a criar se faltar — ao contrário de [loadOrCreateKey],

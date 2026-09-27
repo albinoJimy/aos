@@ -139,8 +139,31 @@ func (m Mandate) AdmitsRequester(requestedBy string) bool {
 // cunhado sob ela ([Claims.Mandate]).
 type SignedMandate struct {
 	Mandate Mandate `json:"mandate"`
-	// Signature é a assinatura em base64url (sem padding).
+	// Signature é a assinatura em base64url (sem padding). Numa assinatura FIDO2 são os bytes do
+	// ENVELOPE SSHSIG (o mesmo blob que o armor `-----BEGIN SSH SIGNATURE-----` transporta),
+	// e não uma assinatura ed25519 crua.
 	Signature string `json:"sig"`
+	// Format é a FORMA da assinatura (AOS-446 fase 1): ausente ou [MandateFormatEd25519] ⇒
+	// ed25519 cru sobre [Mandate.SigningInput], que é o formato de sempre;
+	// [MandateFormatSSHSIG] ⇒ envelope SSHSIG de uma chave FIDO2 `sk-ssh-ed25519@openssh.com`.
+	//
+	// NÃO ENTRA NO [Mandate.SigningInput], e é deliberado. Se entrasse, os bytes de TODOS os
+	// mandatos já assinados mudavam — o v1 que corre hoje em produção e o v2 que acabou de
+	// entrar —, e nenhum deles voltaria a verificar. Como está, um mandato assinado antes deste
+	// ticket produz exactamente os bytes de antes.
+	//
+	// E não precisa de estar lá dentro para ser seguro: quem decide o que se aceita é o PINO
+	// ([MandateSigner.Verify]), que vive no `.env` do nó e não viaja com o documento. Trocar este
+	// campo não converte uma assinatura de software numa de hardware nem o contrário — as duas
+	// combinações cruzadas são RECUSA explícita. O campo existe para o verificador dar a razão
+	// certa, para o emissor saber o que produzir, e para a postura de arranque poder dizer se o
+	// mandato em vigor é de hardware.
+	//
+	// Um binário ANTERIOR a este ticket que leia um mandato com `fmt` ou o recusa (o
+	// `mint-mandated` descodifica com `DisallowUnknownFields`) ou o ignora e tenta ed25519 cru
+	// sobre um envelope SSHSIG, que não verifica. As duas saídas são fail-closed: um mandato
+	// FIDO2 não funciona antes de o nó e o emissor serem actualizados E o pino ser trocado.
+	Format string `json:"fmt,omitempty"`
 }
 
 // NewMandateID devolve um identificador aleatório de 128 bits em base64url — o mesmo formato do
@@ -289,20 +312,53 @@ func SignMandate(signer crypto.Signer, m Mandate) (SignedMandate, error) {
 	if len(sig) != ed25519.SignatureSize || !ed25519.Verify(pub, m.SigningInput(), sig) {
 		return SignedMandate{}, ErrInvalidSigner
 	}
+	// `Format` fica VAZIO, e não `"ed25519"`: vazio já significa ed25519 cru, e escrevê-lo faria
+	// o `mint-mandated` de um binário anterior — que descodifica com `DisallowUnknownFields` —
+	// recusar um mandato que ele sabe verificar. O campo só aparece num mandato FIDO2, onde a
+	// recusa de um binário anterior é o comportamento certo.
 	return SignedMandate{Mandate: m, Signature: b64enc(sig)}, nil
 }
 
-// VerifySignature confirma que o mandato foi assinado pela chave `pub` e tem forma válida.
-func (s SignedMandate) VerifySignature(pub ed25519.PublicKey) error {
-	if len(pub) != ed25519.PublicKeySize {
+// AttachSSHSIG monta a forma assinada de um mandato a partir de um envelope SSHSIG produzido
+// FORA deste processo — pelo `ssh-keygen -Y sign` com a chave FIDO2 do humano (AOS-446 fase 1).
+//
+// PORQUE É ASSIM, E NÃO UM `SignMandate` COM HARDWARE: assinar com um autenticador FIDO2 exige
+// falar CTAP2/USB-HID, que é uma dependência (e um driver) que este binário não tem nem pode ter
+// (o ambiente de build é offline). O humano assina com a ferramenta que já usa; o AOS verifica.
+//
+// VERIFICA ANTES DE DEVOLVER, contra o pino que o chamador diz ser o do humano: um mandato que
+// não verifica aqui também não verificaria no nó, e é melhor descobri-lo na máquina de quem
+// assina do que num 403 três dias depois.
+func AttachSSHSIG(m Mandate, envelope []byte, signer MandateSigner) (SignedMandate, error) {
+	if err := m.Validate(); err != nil {
+		return SignedMandate{}, err
+	}
+	if m.Version() < 2 {
+		return SignedMandate{}, fmt.Errorf("%w: requesters vazio — um mandato tem de nomear por quem o emissor pode agir (v1 ja nao se assina)", ErrMandateInvalid)
+	}
+	if !signer.Hardware() {
+		return SignedMandate{}, fmt.Errorf("%w: a assinatura e SSHSIG e o pino dado nao e uma chave %s", ErrMandateInvalid, SSHSigAlgSKEd25519)
+	}
+	sm := SignedMandate{Mandate: m, Signature: b64enc(envelope), Format: MandateFormatSSHSIG}
+	if err := sm.VerifySignature(signer); err != nil {
+		return SignedMandate{}, err
+	}
+	return sm, nil
+}
+
+// VerifySignature confirma que o mandato foi assinado pelo humano PINADO em `signer` e tem forma
+// válida. A forma da assinatura (ed25519 cru ou envelope SSHSIG de uma chave FIDO2) é decidida
+// pelo PINO, não pelo campo `fmt` do documento — ver [MandateSigner.Verify].
+func (s SignedMandate) VerifySignature(signer MandateSigner) error {
+	if !signer.Valid() {
 		return fmt.Errorf("%w: chave do signatario invalida", ErrMandateInvalid)
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(s.Signature)
-	if err != nil || len(sig) != ed25519.SignatureSize {
+	if err != nil || len(sig) == 0 {
 		return fmt.Errorf("%w: assinatura malformada", ErrMandateInvalid)
 	}
-	if !ed25519.Verify(pub, s.Mandate.SigningInput(), sig) {
-		return fmt.Errorf("%w: assinatura nao verifica com a chave pinada de %q", ErrMandateInvalid, s.Mandate.Human)
+	if err := signer.Verify(s.Format, sig, s.Mandate.SigningInput()); err != nil {
+		return fmt.Errorf("%w (humano %q)", err, s.Mandate.Human)
 	}
 	return s.Mandate.Validate()
 }
@@ -342,10 +398,13 @@ func (m Mandate) Covers(c Claims) error {
 
 // verifyMandate é o passo do [Verifier] para um emissor MANDATADO: exige o mandato embebido,
 // verifica-o contra a chave PINADA do humano que ele nomeia, confirma que o token está dentro
-// dele e consulta a revogação do mandato. Devolve o mandato verificado.
-func (v *Verifier) verifyMandate(ctx context.Context, c Claims) (Mandate, error) {
+// dele e consulta a revogação do mandato. Devolve o mandato verificado e o PINO que o verificou —
+// a impressão digital desse pino é o que o nó sela em cada decisão (AOS-446 fase 1), e é por isso
+// que ela sai daqui e não de um sítio que a possa recalcular a partir de outra coisa.
+func (v *Verifier) verifyMandate(ctx context.Context, c Claims) (Mandate, MandateSigner, error) {
+	var nenhum MandateSigner
 	if c.Mandate == nil {
-		return Mandate{}, fmt.Errorf("%w: iss=%q so e aceite com mandato embebido", ErrMandateRequired, c.Issuer)
+		return Mandate{}, nenhum, fmt.Errorf("%w: iss=%q so e aceite com mandato embebido", ErrMandateRequired, c.Issuer)
 	}
 	// O TTL DO MANDATO CONTA A PARTIR DE AGORA, E NÃO DE UM iat QUE O EMISSOR ESCOLHE.
 	//
@@ -358,40 +417,70 @@ func (v *Verifier) verifyMandate(ctx context.Context, c Claims) (Mandate, error)
 	// Covers (exp − iat ≤ TTL máximo) fica exp ≤ agora + folga + TTL máximo. Um nbf a zero — que o
 	// passo 4 salta — também cai aqui, porque o iat de um token nunca é zero.
 	if c.NotBefore != c.IssuedAt {
-		return Mandate{}, fmt.Errorf("%w: nbf (%d) diferente de iat (%d) num emissor mandatado — o TTL do mandato conta a partir de agora", ErrMandateViolated, c.NotBefore, c.IssuedAt)
+		return Mandate{}, nenhum, fmt.Errorf("%w: nbf (%d) diferente de iat (%d) num emissor mandatado — o TTL do mandato conta a partir de agora", ErrMandateViolated, c.NotBefore, c.IssuedAt)
 	}
 	// UM SÓ ELO. O emissor honesto cunha sempre a raiz (humano → agente); os elos intermédios não
 	// dão autoridade (o escopo é intersectado), mas escrevem na auditoria agentes que o humano não
 	// autorizou, e a profundidade da cadeia passa a ser escolhida pelo emissor.
 	if len(c.DelegationChain) != 1 {
-		return Mandate{}, fmt.Errorf("%w: cadeia com %d elos num emissor mandatado (so a raiz humano->agente)", ErrMandateViolated, len(c.DelegationChain))
+		return Mandate{}, nenhum, fmt.Errorf("%w: cadeia com %d elos num emissor mandatado (so a raiz humano->agente)", ErrMandateViolated, len(c.DelegationChain))
 	}
 	sm := *c.Mandate
-	pub, ok := v.mandateSigners[sm.Mandate.Human]
-	if !ok {
-		return Mandate{}, fmt.Errorf("%w: nenhuma chave pinada para o humano %q", ErrMandateInvalid, sm.Mandate.Human)
+	pinos := v.mandateSigners[sm.Mandate.Human]
+	if len(pinos) == 0 {
+		return Mandate{}, nenhum, fmt.Errorf("%w: nenhuma chave pinada para o humano %q", ErrMandateInvalid, sm.Mandate.Human)
 	}
-	if err := sm.VerifySignature(pub); err != nil {
-		return Mandate{}, err
+	// QUALQUER UM DOS PINOS VIVOS SERVE, e o que servir é o que fica no selo (AOS-446 fase 1,
+	// revisão de 2026-09-27). Durante a janela de rotação um humano tem dois; o mandato antigo
+	// verifica com o pino antigo e o novo com o novo, e o `mandate_signer` de cada decisão diz
+	// QUAL — que é o que permite ao operador confirmar, pelo registo, que o mandato em uso já é o
+	// de hardware antes de remover o pino velho.
+	//
+	// A ORDEM DAS TENTATIVAS NÃO É AUTORIDADE: um mandato verifica com um pino ou com nenhum, e
+	// ed25519 não tem colisões que façam dois pinos aceitarem o mesmo documento. Tenta-se por
+	// ordem da lista só para o erro ser determinista.
+	var signer MandateSigner
+	var erros []string
+	verificou := false
+	for _, p := range pinos {
+		if err := sm.VerifySignature(p); err != nil {
+			erros = append(erros, p.Fingerprint()+": "+err.Error())
+			continue
+		}
+		signer = p
+		verificou = true
+		break
+	}
+	if !verificou {
+		return Mandate{}, nenhum, fmt.Errorf("%w: nenhum dos %d pino(s) de %q verifica o mandato — %s",
+			ErrMandateInvalid, len(pinos), sm.Mandate.Human, strings.Join(erros, " | "))
+	}
+	// A JANELA DE ROTAÇÃO. Depois da assinatura, pela mesma razão da janela dos v1: só se decide
+	// sobre um mandato que uma chave pinada assinou mesmo. Fora da janela, DOIS pinos para o
+	// mesmo humano são recusados — ver [WithMandateDualPinUntil] para o porquê de não se escolher
+	// um deles.
+	if len(pinos) > 1 && (v.mandateDualPinUntil.IsZero() || !v.now().Before(v.mandateDualPinUntil)) {
+		return Mandate{}, nenhum, fmt.Errorf("%w: o humano %q tem %d pinos e a janela de rotacao esta fechada (remova o pino antigo de AOS_MANDATE_SIGNERS e reinicie)",
+			ErrMandateDualPinClosed, sm.Mandate.Human, len(pinos))
 	}
 	// A JANELA DE MIGRAÇÃO DOS v1 (AOS-439). Depois da assinatura — só se decide sobre um mandato
 	// que o humano pinado assinou mesmo — e antes de tudo o resto. Fora da janela, um v1 é recusado
 	// mesmo sendo autêntico: autoriza o emissor a agir por QUALQUER submissor, e isso só se tolera
 	// enquanto o humano não re-assina com `requesters`. A janela compara com o relógio do NÓ.
 	if sm.Mandate.Version() < 2 && (v.mandateV1Until.IsZero() || !v.now().Before(v.mandateV1Until)) {
-		return Mandate{}, fmt.Errorf("%w: id=%q (re-assinar com requesters: aos-issuer mandate-sign --requesters)", ErrMandateV1Closed, sm.Mandate.ID)
+		return Mandate{}, nenhum, fmt.Errorf("%w: id=%q (re-assinar com requesters: aos-issuer mandate-sign --requesters)", ErrMandateV1Closed, sm.Mandate.ID)
 	}
 	if err := sm.Mandate.Covers(c); err != nil {
-		return Mandate{}, err
+		return Mandate{}, nenhum, err
 	}
 	if v.revocations != nil {
 		revoked, rerr := v.revocations.IsRevoked(ctx, MandateRevocationKey(sm.Mandate.ID))
 		if rerr != nil {
-			return Mandate{}, fmt.Errorf("%w: %w", ErrRevocationUnavailable, rerr)
+			return Mandate{}, nenhum, fmt.Errorf("%w: %w", ErrRevocationUnavailable, rerr)
 		}
 		if revoked {
-			return Mandate{}, fmt.Errorf("%w: id=%q", ErrMandateRevoked, sm.Mandate.ID)
+			return Mandate{}, nenhum, fmt.Errorf("%w: id=%q", ErrMandateRevoked, sm.Mandate.ID)
 		}
 	}
-	return sm.Mandate, nil
+	return sm.Mandate, signer, nil
 }

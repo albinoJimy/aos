@@ -886,6 +886,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		goal.Principal.AgentID = credDoRun.AgentID
 		goal.Principal.UserID = credDoRun.UserID
 		goal.Principal.MandateID = credDoRun.MandateID
+		// AOS-446 fase 1: e sob QUE CHAVE esse mandato foi aceite. Um `AOS_MANDATE_SIGNERS`
+		// trocado produz um mandato com outro id — mas nada obriga o atacante a mudar o id, e o
+		// que ele NÃO consegue reproduzir é a impressão do pino.
+		goal.Principal.MandateSigner = credDoRun.MandateSigner
 	}
 
 	// (3) SUBMETE ao loop de serviço. O ctx do pedido governa SÓ a aquisição do lease; o run

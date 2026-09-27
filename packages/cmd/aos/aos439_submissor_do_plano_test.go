@@ -84,6 +84,8 @@ type aos439Fixture struct {
 	humano ed25519.PrivateKey
 	// humanoB é um SEGUNDO humano pinado (revisão do AOS-440): o mesmo agente, outro humano.
 	humanoB ed25519.PrivateKey
+	// sk é o autenticador FIDO2 do `tnHuman`, quando a fixture foi montada com um (AOS-446 fase 1).
+	sk *aos446Autenticador
 }
 
 // noAOS439 compõe o nó: durável (WAL + WORM em disco), soberano (um board), a cadeia real de
@@ -97,14 +99,33 @@ func noAOS439(t *testing.T) *aos439Fixture {
 // noAOS439ComWORM é o mesmo nó, com a escrita do WORM v4 ligada ou não (AOS_AUDIT_WRITE_V4).
 func noAOS439ComWORM(t *testing.T, v4 bool) *aos439Fixture {
 	t.Helper()
-	dir := t.TempDir()
+	epoca := audit.SchemaV3
+	if v4 {
+		epoca = audit.SchemaV4
+	}
+	return noAOS439Com(t, epoca, nil)
+}
+
+// noAOS439Com é a fixture parametrizada (AOS-446 fase 1): a ÉPOCA que o WORM escreve, e um
+// autenticador FIDO2 opcional — quando != nil, o humano `tnHuman` é pinado com a chave de
+// HARDWARE dele em vez da seed de software, e os mandatos dele assinam-se em SSHSIG.
+func noAOS439Com(t *testing.T, epoca uint8, sk *aos446Autenticador) *aos439Fixture {
+	t.Helper()
+	return noAOS439Em(t, t.TempDir(), epoca, sk, nil, nil)
+}
+
+// noAOS439Em é a mesma fixture sobre um DIRECTÓRIO dado e com o pino do `tnHuman` substituível —
+// as duas coisas de que um teste de REINÍCIO precisa: o WAL, o WORM e o registo de retoma
+// sobrevivem, e o `.env` é outro (AOS-446 fase 1).
+func noAOS439Em(t *testing.T, dir string, epoca uint8, sk *aos446Autenticador, pinoDoHumano *identity.MandateSigner, kek audit.KeyVault) *aos439Fixture {
+	t.Helper()
 	signer := durSigner(t)
 	entry := counterEntry(t, signer)
 	auto, humano := chaveAos427(t, 21), chaveAos427(t, 22)
 
 	cfg := tnBaseConfig()
 	cfg.PlanDrainers = []string{aos439Drenador, aos439Outro}
-	cfg.AuditWriteV4 = v4
+	cfg.AuditWriteSchema = epoca
 	cfg.DurableExecution = true
 	cfg.EventStorePath = filepath.Join(dir, "events.wal")
 	cfg.WORMPath = filepath.Join(dir, "worm.wal")
@@ -125,7 +146,20 @@ func noAOS439ComWORM(t *testing.T, v4 bool) *aos439Fixture {
 	cfg.MandatedIssuerID = issAutoDeTeste
 	cfg.MandatedIssuerPubKey = auto.Public().(ed25519.PublicKey)
 	humanoB := chaveAos427(t, 24)
-	cfg.MandateSigners = map[string]ed25519.PublicKey{tnHuman: humano.Public().(ed25519.PublicKey), aos440HumanoB: humanoB.Public().(ed25519.PublicKey)}
+	cfg.MandateSigners = pinosDeSoftwareNo(map[string]ed25519.PublicKey{tnHuman: humano.Public().(ed25519.PublicKey), aos440HumanoB: humanoB.Public().(ed25519.PublicKey)})
+	if sk != nil {
+		cfg.MandateSigners[tnHuman] = []identity.MandateSigner{sk.pino(t)}
+	}
+	if pinoDoHumano != nil {
+		cfg.MandateSigners[tnHuman] = []identity.MandateSigner{*pinoDoHumano}
+	}
+	// A CUSTÓDIA DA KEK, partilhada entre dois arranques. Sem ela o vault de referência é
+	// in-memory e as KEK morrem com o processo — o registo de retoma, que é cifrado sob a KEK do
+	// titular, deixaria de se conseguir ler. Injectá-la é o que a produção faz (Config.DSARVault),
+	// e é o que torna o teste de REINÍCIO possível.
+	if kek != nil {
+		cfg.DSARVault = kek
+	}
 	// O four-eyes composto é o que compõe o registo de retoma (AOS-021) — é por ele que se mede a
 	// retoma do run filho (AOS-440).
 	aprovador := chaveAos427(t, 23)
@@ -145,7 +179,7 @@ func noAOS439ComWORM(t *testing.T, v4 bool) *aos439Fixture {
 		t.Fatal("fixture: o registo de retoma tem de estar composto")
 	}
 	svc, h := newAPI(t, node)
-	return &aos439Fixture{node: node, svc: svc, h: h, auto: auto, humano: humano, humanoB: humanoB}
+	return &aos439Fixture{node: node, svc: svc, h: h, auto: auto, humano: humano, humanoB: humanoB, sk: sk}
 }
 
 // tokenDoMandato cunha o NHI do run como o timer do servidor: sob um mandato v2 assinado pelo

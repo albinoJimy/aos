@@ -66,7 +66,7 @@ func TestAOS427CerimoniaDoMandatoPontaAPonta(t *testing.T) {
 		t.Fatalf("a escrita atomica deixou temporarios: %v", restos)
 	}
 	v := identity.NewVerifier(identity.WithMandatedIssuer("iss:aos-issuer-auto", emissorPub,
-		map[string]ed25519.PublicKey{"alice": humanoPub}))
+		pinosDoEmissor(t, map[string]ed25519.PublicKey{"alice": humanoPub})))
 	p, err := v.Verify(context.Background(), strings.TrimSpace(string(raw)))
 	if err != nil {
 		t.Fatalf("o no tem de aceitar o token cunhado sob o mandato: %v", err)
@@ -155,12 +155,23 @@ func TestAOS437MintMandatedComAListaDoNo(t *testing.T) {
 	if err := run(append(base, "--signers", lista), &out, &bytes.Buffer{}); err != nil || out.Len() == 0 {
 		t.Fatalf("com a lista do no, a chave da alice tinha de ser escolhida: %v", err)
 	}
+	// AOS-446 fase 1: com a alice a MEIO de uma rotação (dois pinos), o mandato assinado pela
+	// chave ANTIGA continua a cunhar — é exactamente isso que a janela existe para permitir.
+	out.Reset()
+	rot := "alice=" + hex.EncodeToString(humanoPub) + ",alice=" + hex.EncodeToString(outro)
+	if err := run(append(base, "--signers", rot), &out, &bytes.Buffer{}); err != nil || out.Len() == 0 {
+		t.Fatalf("durante a rotacao, o mandato do pino antigo tinha de cunhar: %v", err)
+	}
 	for _, c := range []struct {
 		nome  string
 		extra []string
 	}{
 		{"humano ausente da lista", []string{"--signers", "bob=" + hex.EncodeToString(outro)}},
-		{"humano duas vezes", []string{"--signers", "alice=" + hex.EncodeToString(humanoPub) + ",alice=" + hex.EncodeToString(outro)}},
+		// AOS-446 fase 1: o humano com DUAS chaves deixou de ser recusa — é a janela de rotação,
+		// e o emissor tenta os dois (quem a limita no tempo é o NÓ, por AOS_MANDATE_DUAL_PIN_UNTIL).
+		// O que continua a ser recusa é o MESMO pino duas vezes: não é uma rotação.
+		{"mesmo pino duas vezes", []string{"--signers", "alice=" + hex.EncodeToString(humanoPub) + ",alice=" + hex.EncodeToString(humanoPub)}},
+		{"tres pinos para o mesmo humano", []string{"--signers", "alice=" + hex.EncodeToString(humanoPub) + ",alice=" + hex.EncodeToString(outro) + ",alice=" + strings.Repeat("cc", 32)}},
 		{"as duas flags", []string{"--signers", lista, "--signer-pubkey", hex.EncodeToString(humanoPub)}},
 		{"nenhuma flag", nil},
 	} {

@@ -82,7 +82,7 @@ func TestAOS439PorOmissaoEscreveV3SemOsCamposNovos(t *testing.T) {
 
 // Uma versão que esta release não escreve é recusada — nos dois stores.
 func TestAOS439VersaoDeEscritaInvalidaERecusada(t *testing.T) {
-	for _, v := range []uint8{0, SchemaV2, 5} {
+	for _, v := range []uint8{0, SchemaV2, 6} { // o 5 passou a ser escrevivel no AOS-446 fase 1
 		if _, err := NewMemStore().ComVersaoDeEscrita(v); !errors.Is(err, ErrVersaoDeEscrita) {
 			t.Errorf("MemStore v%d: tinha de recusar, veio %v", v, err)
 		}

@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 
 	audit "github.com/aos-ref/platform/audit"
 )
@@ -82,6 +83,7 @@ func runWormSeal(args []string, out io.Writer) error {
 	partition := fs.String("partition", "", "selar SO esta particao (vazio ⇒ TODAS as que o store conhece)")
 	anterior := fs.String("anterior", "", "ficheiro de checkpoints da selagem ANTERIOR — recusa selar se alguma particao ja ancorada tiver DESAPARECIDO ou RECUADO")
 	heads := fs.Bool("heads", false, "imprimir os pisos de frescura (AOS_WORM_EXPECTED_HEAD) em vez dos checkpoints")
+	aceitarAncoras := fs.String("aceitar-ancoras", "", "ACEITAR digests NOVOS das ancoras de confianca (AOS-446 fase 1), separados por virgula: sem isto, ancoras trocadas desde a selagem anterior RECUSAM a selagem. O procedimento de rotacao de pinos produz DUAS mudancas (abrir e fechar a janela) e pode precisar dos dois digests")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -130,6 +132,23 @@ func runWormSeal(args []string, out io.Writer) error {
 		if merr := exigirContinuidade(ctx, store, priv.Public().(ed25519.PublicKey), anteriores); merr != nil {
 			return merr
 		}
+		// AOS-446 fase 1: e as ÂNCORAS DE CONFIANÇA do nó têm de ser as mesmas. Depois da
+		// continuidade, e não antes: só faz sentido comparar com um passado que já se provou não
+		// ter sido reescrito.
+		// COM `--partition`, A VERIFICAÇÃO DAS ÂNCORAS NÃO CORRE — e diz-se (achado BAIXO 4 da 2.ª
+		// ronda de revisão). Selar uma partição só é uma operação de recuperação; correr a
+		// verificação sobre ela seria compará-la com uma base que a selagem não vai cobrir. O que
+		// não se pode é ficar em silêncio: um `--partition` teclado por engano tornaria a
+		// verificação num no-op sem ninguém dar por isso.
+		if *partition != "" && *partition != audit.TrustAnchorsPartition {
+			fmt.Fprintf(os.Stderr, "AVISO: com --partition=%q a verificacao das ANCORAS DE CONFIANCA (AOS-446) NAO CORREU. "+
+				"Esta selagem nao prova nada sobre as ancoras do no; corra-a sem --partition para a fazer.\n", *partition)
+		} else if merr := exigirAncorasIguais(ctx, store, anteriores, *aceitarAncoras, os.Stderr); merr != nil {
+			return merr
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "aviso: sem --anterior, a verificacao das ancoras de confianca (AOS-446) NAO corre — "+
+			"nao ha selagem anterior com que comparar. O procedimento do operador passa sempre --anterior.")
 	}
 
 	alvos := store.Partitions()
@@ -227,4 +246,189 @@ var ErrWormSealDivergencia = errors.New("aos-issuer: o WORM DIVERGIU do que ja e
 // sítios, que é o que a torna manutenível em vez de acidental.
 func semBOM(raw []byte) []byte {
 	return bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
+}
+
+// ------------------------------------------------------------------------------------------
+// AS ÂNCORAS DE CONFIANÇA DO NÓ, VERIFICADAS FORA DO HOST (AOS-446 fase 1, ADR-033 §6.3 e §8)
+//
+// O DEFEITO. Quem tem root no host do nó troca `AOS_MANDATE_SIGNERS`, `AOS_ISSUER_PUBKEY`, a
+// âncora da política ou a do próprio selador, reinicia, e o nó passa a servir sob outra
+// autoridade. Nenhuma verificação DENTRO do processo protege contra quem reescreve o processo —
+// o ADR-033 §2.1 já o dizia, e o §6.1 conta seis caminhos para lá.
+//
+// A METADE QUE SE PODE FECHAR. O nó sela, em cada arranque, as impressões das âncoras em uso
+// (`packages/cmd/aos/ancoras_de_confianca.go`). Isso, sozinho, não vale muito: quem escreve no
+// ficheiro do WORM também escreve lá o que quiser (o `EntryHash` é um SHA-256 SEM chave). O que
+// fecha é ISTO correr AQUI: na máquina do operador, com uma chave que não está no host, sobre a
+// cópia que o backup trouxe. A partir do momento em que uma selagem cobre o registo, a história
+// até ali está congelada — a continuidade recusa selar por cima de uma reescrita — e a troca ou
+// aparece, ou obriga a apagar o que já está ancorado, que é a outra recusa.
+//
+// O QUE NÃO SE FECHA, e é preciso dizê-lo com as mesmas letras:
+//
+//  1. **O TAIL AINDA NÃO ANCORADO.** Tudo o que está DEPOIS do último checkpoint é reescrevível
+//     por inteiro por quem tem root — o `EntryHash` é um SHA-256 SEM chave, pelo que apagar os
+//     registos do intervalo e re-encadear o que resta produz um WORM que verifica. A garantia
+//     desta função vale para registos que JÁ ATRAVESSARAM uma selagem; para os outros, o que ela
+//     faz é obrigar o atacante a reescrever em vez de acrescentar — e a reescrita, se for
+//     descoberta, cai nas guardas da continuidade na selagem seguinte.
+//  2. **A janela entre a troca e a selagem seguinte.** Se a troca e a reposição couberem as duas
+//     dentro dela E o atacante reescrever o tail para as apagar, não fica rasto. Encolher a
+//     janela é selar mais vezes; fechá-la exigiria uma testemunha independente — DEF-268.
+//
+// O que NÃO é limite (e era, até à revisão adversarial de 2026-09-27): acrescentar um registo com
+// o retrato antigo por cima da troca. Ver [exigirAncorasIguais].
+// ------------------------------------------------------------------------------------------
+
+// ErrWormSealAncorasTrocadas — as âncoras de confiança do nó mudaram desde a selagem anterior, e
+// o operador não o declarou. Não se sela.
+var ErrWormSealAncorasTrocadas = errors.New("aos-issuer: as ANCORAS DE CONFIANCA do no MUDARAM desde a selagem anterior — se nao foi o operador a roda-las, o .env do host foi reescrito e o no esta a servir sob outra autoridade; selar aqui carimbaria a troca com a chave do selador")
+
+// exigirAncorasIguais compara o retrato das âncoras que estava ancorado pela selagem anterior com
+// o que está no WORM agora.
+//
+// `aceitar` é o digest NOVO que o operador declara esperar — o escape para uma rotação legítima.
+// Exige-se o digest e não um `--sim`: escrever o valor obriga a olhar para ele, e um `--sim`
+// aceitaria qualquer troca, incluindo a que aconteceu enquanto o operador rodava outra coisa.
+func exigirAncorasIguais(ctx context.Context, store *audit.FileStore, anteriores []audit.Checkpoint, aceitar string, diag io.Writer) error {
+	var ancorado uint64
+	for _, cp := range anteriores {
+		if cp.Partition == audit.TrustAnchorsPartition {
+			ancorado = cp.AuditSeq
+			break
+		}
+	}
+	if ancorado == 0 {
+		fmt.Fprintf(diag, "aviso: a selagem anterior nao cobria a particao %q — nao ha base com que comparar as ancoras de confianca (AOS-446). A partir desta selagem passa a haver.\n", audit.TrustAnchorsPartition)
+		return nil
+	}
+	base, digestBase, seqBase, achouBase, err := audit.UltimasAncoras(ctx, store, ancorado)
+	if err != nil {
+		return fmt.Errorf("aos-issuer: ler as ancoras ancoradas em %d: %w", ancorado, err)
+	}
+	if !achouBase {
+		fmt.Fprintf(diag, "aviso: a particao %q nao tem registos de ancoras legiveis ate %d — a verificacao do AOS-446 nao corre nesta selagem\n", audit.TrustAnchorsPartition, ancorado)
+		return nil
+	}
+	// TODOS OS REGISTOS DO INTERVALO, E NAO SO O ULTIMO.
+	//
+	// O DEFEITO QUE ISTO FECHA (achado A1 da revisão adversarial de segurança, 2026-09-27,
+	// PROVADO a correr). Esta função comparava o último registo ancorado com o último registo do
+	// store — duas leituras — e concluía sobre o intervalo inteiro. Os registos DO MEIO nunca
+	// eram lidos, e derrotá-la não exigia apagar nada:
+	//
+	//   1. root troca o pino e reinicia; o nó sela HONESTAMENTE um `trust_anchors.changed` com o
+	//      retrato novo (seq N+1);
+	//   2. root DEIXA a troca em vigor e faz append de um `trust_anchors.active` com os
+	//      parâmetros ANTIGOS (seq N+2) — escrever no ficheiro do WORM é o que ele já podia fazer;
+	//   3. a selagem seguinte lê o último (N+2, antigo), compara com o base (N, antigo), conclui
+	//      «INALTERADAS» e SELA — carimbando a troca com a autoridade da chave do selador.
+	//
+	// Medido: exit 0 e a linha «INALTERADAS» sobre a sequência [honesto, do-atacante, honesto].
+	// A varredura fecha-o porque o registo do passo 1 fica no caminho: a troca real deixou rasto,
+	// e o rasto passa a ser LIDO. O que o atacante teria de fazer para o esconder é APAGAR o
+	// registo N+1 — e aí caem as guardas que já existiam ([ErrWormSealRecuo] e
+	// [ErrWormSealDivergencia]), porque o `audit_seq` é gapless dentro da partição.
+	recs, err := store.Read(ctx, audit.TrustAnchorsPartition, ancorado+1, audit.TrustAnchorsMaxSeq)
+	if err != nil {
+		return fmt.Errorf("aos-issuer: ler as ancoras depois de %d: %w", ancorado, err)
+	}
+	declarados := digestsDeclarados(aceitar)
+	usados := map[string]bool{}
+	var varridos, ignorados int
+	var naoReconhecidos []string
+	var divergentes []string
+	var ultimo audit.TrustAnchors
+	digestAgora, seqAgora := digestBase, seqBase
+	for _, rec := range recs {
+		r, d, ok := audit.TrustAnchorsFromRecord(rec)
+		if !ok {
+			// UM REGISTO QUE NÃO SE RECONHECE CONTA, E DIZ-SE QUAL (achado BAIXO 5 da 2.ª ronda).
+			// Saltá-lo em silêncio fazia o diagnóstico chegar a dizer «nenhum registo novo» sobre
+			// uma partição onde alguém tinha escrito — que é precisamente o sítio onde um
+			// registo estranho interessa.
+			ignorados++
+			naoReconhecidos = append(naoReconhecidos, fmt.Sprintf("seq %d (tipo %q)", rec.AuditSeq, rec.Resource.Type))
+			continue
+		}
+		varridos++
+		ultimo, digestAgora, seqAgora = r, d, rec.AuditSeq
+		if d == digestBase {
+			continue
+		}
+		if declarados[d] {
+			usados[d] = true
+			continue
+		}
+		divergentes = append(divergentes, fmt.Sprintf("seq %d (digest %s): %s",
+			rec.AuditSeq, d, strings.Join(r.Diferencas(base), ", ")))
+	}
+	if ignorados > 0 {
+		fmt.Fprintf(diag, "AVISO: %d registo(s) da particao %q sem retrato de ancoras legivel — %s. A verificacao do AOS-446 nao os cobre\n",
+			ignorados, audit.TrustAnchorsPartition, strings.Join(naoReconhecidos, ", "))
+	}
+	if len(divergentes) > 0 {
+		return fmt.Errorf("%w: entre o seq %d (ja ancorado) e o %d houve %d registo(s) de ancoras e %d com um retrato DIFERENTE do ancorado e NAO declarado — %s. "+
+			"Se foi o operador a rodar: repita com --aceitar-ancoras a listar, SEPARADOS POR VIRGULA, o digest de cada retrato que reconhece",
+			ErrWormSealAncorasTrocadas, seqBase, seqAgora, varridos, len(divergentes), strings.Join(divergentes, "; "))
+	}
+	switch {
+	case varridos == 0 && ignorados > 0:
+		// HAVIA registos — nenhum deles legível. Não se diz «nada novo»: diz-se o que há.
+		fmt.Fprintf(diag, "ancoras de confianca: nenhum registo LEGIVEL desde a selagem anterior, mas a particao ganhou %d registo(s) que nao sao retratos de ancoras (ver o aviso acima); o ancorado em seq %d continua a ser a ultima afirmacao do no (digest %s)\n", ignorados, seqBase, digestBase)
+	case varridos == 0:
+		fmt.Fprintf(diag, "ancoras de confianca: nenhum registo de ancoras novo desde a selagem anterior (o no nao reiniciou); o ancorado em seq %d continua em vigor (digest %s)\n", seqBase, digestBase)
+	case len(usados) > 0:
+		fmt.Fprintf(diag, "ancoras de confianca: MUDARAM e o operador declarou-o — %d de %d digest(s) de --aceitar-ancoras usado(s) [%s], em %d registo(s) varrido(s) ate ao seq %d. No fim: %s\n",
+			len(usados), len(declarados), strings.Join(ordenados(usados), ", "), varridos, seqAgora, strings.Join(ultimo.Diferencas(base), "; "))
+	default:
+		fmt.Fprintf(diag, "ancoras de confianca: INALTERADAS em TODOS os %d registo(s) entre o seq %d e o %d (digest %s)\n", varridos, seqBase, seqAgora, digestAgora)
+	}
+	// UM DIGEST DECLARADO QUE NÃO APARECEU não é erro, mas é informação: ou o operador o colou
+	// errado, ou o registo que ele esperava não está no intervalo desta selagem.
+	if sobram := naoUsados(declarados, usados); len(sobram) > 0 {
+		fmt.Fprintf(diag, "nota: %d digest(s) de --aceitar-ancoras nao correspondem a nenhum registo do intervalo [%s]\n",
+			len(sobram), strings.Join(sobram, ", "))
+	}
+	return nil
+}
+
+// digestsDeclarados lê a LISTA de `--aceitar-ancoras` (separada por vírgulas).
+//
+// PORQUE É UMA LISTA, E NÃO UM VALOR (achado B1 da 2.ª ronda de revisão de segurança). O flag
+// guardava UM digest e comparava com `==` — e o procedimento de rotação de pinos da própria
+// README produz DUAS mudanças do retrato: o passo que ABRE a janela (dois pinos) e o que a FECHA
+// (volta a um). Se as duas caírem entre dois selos diários, NENHUMA forma de invocar o flag
+// selava: nem vazio, nem o primeiro, nem o segundo, nem os dois de qualquer maneira — e a
+// mensagem mandava declarar «o digest de CADA retrato que reconhece», que era impossível de
+// cumprir. A saída que isso empurrava era largar o `--anterior`, e sem ele a verificação inteira
+// nem corre. O flag passa a aceitar a lista, e compara-se por PERTENÇA.
+func digestsDeclarados(bruto string) map[string]bool {
+	out := map[string]bool{}
+	for _, d := range strings.Split(bruto, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			out[d] = true
+		}
+	}
+	return out
+}
+
+func ordenados(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func naoUsados(declarados, usados map[string]bool) []string {
+	var out []string
+	for d := range declarados {
+		if !usados[d] {
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

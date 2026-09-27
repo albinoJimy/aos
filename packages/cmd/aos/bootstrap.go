@@ -319,7 +319,21 @@ type Config struct {
 	// ([validarEmissorMandatado]).
 	MandatedIssuerID     string
 	MandatedIssuerPubKey ed25519.PublicKey
-	MandateSigners       map[string]ed25519.PublicKey
+	// MandateSigners é o PINO de cada humano, por user_id ([identity.MandateSigner]: uma chave
+	// ed25519 de software ou uma chave FIDO2 `sk-ssh-ed25519@openssh.com`, AOS-446 fase 1).
+	// Um humano pode ter MAIS DO QUE UM pino durante a janela de rotação ([MandateDualPinUntil],
+	// AOS-446 fase 1): trocar a chave de um humano invalida todos os mandatos dele no mesmo
+	// instante, e sem janela a cunhagem pára entre a troca do `.env` e a entrega do mandato novo.
+	MandateSigners map[string][]identity.MandateSigner
+	// MandateDualPinUntil é o fim da janela de rotação. Zero ⇒ fechada: dois pinos abortam.
+	MandateDualPinUntil time.Time
+	// PolicyTrustAnchor é a pubkey que VERIFICOU o bundle do PDP em vigor. Fica AQUI porque é uma
+	// ÂNCORA DE CONFIANÇA e o registo do arranque (AOS-446 fase 1, `ancoras_de_confianca.go`) tem
+	// de a resumir. A fronteira de ambiente preenche-a a partir de [pdp.PDP.TrustAnchor] — a
+	// chave EM USO — e não de `AOS_POLICY_TRUST_ANCHOR`: um bundle aberto sem `WithTrustAnchor`
+	// tira a âncora do próprio directório, e aí a variável não é o que o PDP usou (achado A4 da
+	// revisão adversarial). Vazia ⇒ sem bundle carregado, e é isso que se sela.
+	PolicyTrustAnchor ed25519.PublicKey
 
 	// --- Canal de controlo autenticado (AOS-160) -------------------------------
 	// Operators mapeia emitterID→PUBKEY dos operadores humanos/serviço autorizados a
@@ -346,6 +360,9 @@ type Config struct {
 	// `requesters` (AOS-439, emenda ao ADR-033 §2.1). Até lá o nó aceita-os; a partir daí recusa-os.
 	// Zero ⇒ janela FECHADA (fail-closed). Só tem efeito com o emissor mandatado composto.
 	MandateV1Until time.Time
+	// AuditWriteSchema é a ÉPOCA que o WORM escreve (AOS-439/AOS-446 fase 1). Zero ⇒
+	// [audit.CurrentSchemaVersion] (v3), que é o que mantém o rollback possível.
+	AuditWriteSchema uint8
 	// AuditWriteV4 liga a escrita do WORM v4 (AOS-439; `requested_by` e `mandate_id` no selo).
 	// false ⇒ v3, que os binários anteriores ainda verificam (worm_v4.go). Só se aplica ao WORM
 	// que o próprio Bootstrap abre, não a um [Config.WORM] fornecido.
@@ -1328,7 +1345,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	ownsWORM := false
 	if worm == nil {
 		// AOS-439: v3 por omissão; v4 só com AOS_AUDIT_WRITE_V4 (ver worm_v4.go).
-		versaoWORM := versaoDeEscritaDoWORM(cfg.AuditWriteV4)
+		versaoWORM := versaoDeEscritaDoWORM(cfg.AuditWriteSchema)
 		if cfg.WORMPath != "" {
 			fs, err := audit.OpenFileStore(cfg.WORMPath, audit.ComVersaoDeEscrita(versaoWORM))
 			if err != nil {
@@ -1493,6 +1510,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	policyChangelog, perr := provisionPolicyChangelog(ctx, worm, cfg.PDP, time.Now())
 	if perr != nil {
 		return nil, perr
+	}
+
+	// (2b-quater) AS ÂNCORAS DE CONFIANÇA FICAM SELADAS (AOS-446 fase 1, ADR-033 §6.3/§8) — a
+	// transposição de (2b) e (2b-bis) para TODAS as raízes de confiança do nó, e não só a
+	// política. AQUI, e não antes, pela mesma razão: o WORM já existe, e a hash-chain já foi
+	// re-encadeada e ancorada, pelo que o registo entra numa cadeia verificada. Fail-closed como
+	// os dois anteriores: se o nó não consegue registar sob que âncoras vai servir, não serve.
+	trustAnchors, terr := provisionTrustAnchors(ctx, worm, cfg, time.Now())
+	if terr != nil {
+		return nil, terr
 	}
 
 	// (2b-ter) SOBERANIA POR BOARD NO CAMINHO DE EFEITO (AOS-407, fecha DEF-909). A autoridade
@@ -1744,7 +1771,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// mesmo registo (`mandate:<id>`), pelo que tem de estar composta antes: está, na linha acima.
 	if cfg.MandatedIssuerID != "" {
 		verifierOpts = append(verifierOpts, identity.WithMandatedIssuer(
-			cfg.MandatedIssuerID, append(ed25519.PublicKey(nil), cfg.MandatedIssuerPubKey...), cfg.MandateSigners))
+			cfg.MandatedIssuerID, append(ed25519.PublicKey(nil), cfg.MandatedIssuerPubKey...), cfg.MandateSigners),
+			identity.WithMandateDualPinUntil(cfg.MandateDualPinUntil))
 		// AOS-439: a janela de migração dos mandatos v1. Zero ⇒ fechada (o verificador recusa-os).
 		verifierOpts = append(verifierOpts, identity.WithMandateV1Until(cfg.MandateV1Until))
 	}
@@ -2802,6 +2830,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
 	}
 	// AOS-310: o que o arranque fez com o changelog `policy.changed` (nada, se não há bundle).
+	// AOS-446 fase 1: sob que âncoras de confiança este arranque vai servir, e se mudaram.
+	for _, line := range trustAnchorsBanner(trustAnchors) {
+		log("%s", line)
+	}
+	for _, line := range mandatoFIDO2PostureBanner(cfg.MandatedIssuerID, cfg.MandateSigners) {
+		log("%s", line)
+	}
+	for _, line := range janelaDeRotacaoPostureBanner(cfg.MandatedIssuerID, cfg.MandateSigners, cfg.MandateDualPinUntil, time.Now().UTC(), cfg.AuditWriteSchema, cfg.MandateV1Until) {
+		log("%s", line)
+	}
 	for _, line := range policyChangelogBanner(cfg.PDP, policyChangelog) {
 		log("%s", line)
 	}
@@ -2889,7 +2927,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("%s", line)
 	}
 	// AOS-439: que versão do WORM se escreve — e se o rollback continua possível.
-	for _, line := range wormV4PostureBanner(cfg.AuditWriteV4, cfg.WORM == nil) {
+	for _, line := range wormV4PostureBanner(cfg.AuditWriteSchema, cfg.WORM == nil) {
 		log("%s", line)
 	}
 	// AOS-439: quem drena a fila de planos. O argumento é o conjunto VALIDADO, o mesmo que as rotas
