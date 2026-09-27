@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Data | 2026-09-27 |
-| Âmbito | Estado do repositório face à pergunta do dono. Medido originalmente sobre `c595782`; **re-verificado após fundir `origin/feature/AOS-128-ux-dx-tests` em `483e35e`** (AOS-439/440, 3794 inserções) — as contagens de tickets mantiveram-se (441/211/453) e as afirmações da §3 mantiveram-se, com as linhas de `api.go` deslocadas de 425/629 para 426/634 e corrigidas aqui |
+| Âmbito | Estado do repositório face à pergunta do dono, **medido em `39dead8`**. A base avançou duas vezes durante a vida deste relatório — `c595782` → `483e35e` (AOS-439/440) → `39dead8` (AOS-454) — e cada avanço foi **re-medido, não assumido**: as afirmações da §3 mantiveram-se nas três bases; as linhas de `api.go` deslocaram-se 425/629 → 426/634 na primeira e ficaram na segunda; as contagens de tickets mantiveram-se na primeira e mexeram na segunda (441/211/453 → 442/212/454). Ver a nota da §1.4 |
 | Método | Leitura de fontes canónicas (Carta, System Spec, INDICE, registo de deferimentos), leitura do código do nó, e **execução** de dois gates |
 | Gates executados | `build` (49 módulos), `lint`, `secrets`, `ref-lint` — todos exit 0. **4 de 29.** Os outros 25 não foram corridos nesta sessão |
 | Não verificado | Nada foi verificado **contra o servidor de produção**. As afirmações sobre `37.60.241.150` são leitura de `deploy/server/README.md`, não medição independente |
@@ -56,7 +56,7 @@ custódia externa da chave (`issuer.key` vive na máquina do operador, o nó cor
 (`aos266_device_enrollment_test.go`).
 
 A última emenda da Carta é a **1.4, de 2026-08-31**. Desde então entraram, no mínimo, os tickets
-AOS-383..453. **A fonte única de «o que está decidido» está quase um mês atrás do que existe.** Uma
+AOS-383..454. **A fonte única de «o que está decidido» está quase um mês atrás do que existe.** Uma
 Carta desactualizada tem exactamente o mesmo modo de falha que a Carta existe para fechar: cada
 leitor tira conclusões diferentes sobre o que é «done».
 
@@ -77,21 +77,29 @@ ambiguidade que o §0 da Carta diz existir para eliminar.
 
 ### 1.4 Metade do backlog vive em epics não-ratificadas
 
-**441 cabeçalhos de ticket** (`AOS-NNN`, ids únicos) em `specs/EPIC-*.md`, dos quais **211 em
-EPIC-01..17** e **230 em EPIC-18..25**. O `INDICE.md` declara **189 ratificados** (EPIC-01..17) e
-tudo a partir da EPIC-18 como *«proposta por ratificar»*.
+**442 cabeçalhos de ticket** (`AOS-NNN`, ids únicos) em `specs/EPIC-*.md`, dos quais **212 em
+EPIC-01..17** e **230 em EPIC-18..25** — medido em `39dead8`. O `INDICE.md` declara **189
+ratificados** (EPIC-01..17) e tudo a partir da EPIC-18 como *«proposta por ratificar»*.
 
 São, portanto, **pelo menos 230 tickets — mais de metade do backlog — em epics que a governança do
-próprio projecto não aceitou**; e mesmo dentro das epics ratificadas há 211 cabeçalhos contra 189
-declarados, ou seja 22 tickets cuja ratificação o índice não cobre (AOS-226..229 são nomeados como
+próprio projecto não aceitou**; e mesmo dentro das epics ratificadas há 212 cabeçalhos contra 189
+declarados, ou seja 23 tickets cuja ratificação o índice não cobre (AOS-226..229 são nomeados como
 «fora das epics listadas», os restantes não).
 
-Três contagens diferentes do mesmo backlog, e nenhuma bate: **441** (cabeçalhos na árvore), **453**
+Três contagens diferentes do mesmo backlog, e nenhuma bate: **442** (cabeçalhos na árvore), **454**
 (o que o gate `ref-lint` reporta como «tickets no backlog»), **189** (o que o `INDICE.md` declara
-ratificado). O `INDICE.md` pára em AOS-382 enquanto a árvore tem AOS-453. Não tento arbitrar qual
+ratificado). O `INDICE.md` pára em AOS-382 enquanto a árvore tem AOS-454. Não tento arbitrar qual
 está certa — o ponto é que **o projecto não sabe dizer, por comando, quantos tickets tem e quantos
 estão aceites**, e isso é a mesma classe de defeito que o registo de deferimentos foi criado para
 fechar noutro eixo.
+
+> **E este parágrafo mede-se a si próprio.** Foi escrito com 441/211/453 sobre `c595782`,
+> reverificado sem mudança em `483e35e`, e reescrito para 442/212/454 em `39dead8` — **três bases
+> em pouco mais de uma hora**, com o número a mexer na terceira (AOS-454 entrou na EPIC-02). Isto
+> não enfraquece o achado: é a sua demonstração. Um backlog cujo tamanho muda debaixo de quem o
+> conta, sem que nenhuma das três fontes concorde, não é contável por inspecção — precisa de UMA
+> fonte e de um gate que a imponha, como o `deferrals` faz no seu eixo. Enquanto não existir,
+> qualquer número escrito aqui está certo à data e errado depois.
 
 ### 1.5 O hipercare nunca encerrou
 
@@ -276,7 +284,8 @@ dono, e poder gastar a factura do modelo toda sem tecto.
 1. Reconciliar a Carta com o código (emenda que actualize D4 e o §4.2 para o que existe).
 2. Resolver a contradição do sign-off (§1.3): ou N-011 cobre o §5, ou não cobre e falta obtê-lo.
 3. Marcar os seis `[x]` do §5 com evidência, ou dizer por escrito qual não está.
-4. Ratificar (ou fechar) as EPIC-18..25 e actualizar o `INDICE.md` até AOS-453.
+4. Ratificar (ou fechar) as EPIC-18..25 e actualizar o `INDICE.md` até ao ticket mais alto da árvore
+   (AOS-454 em `39dead8`, e a subir — ver a nota da §1.4).
 5. Preencher `docs/hipercare/transicao.md` e fechar o AOS-108, ou declarar que o hipercare não corre.
 
 **Para «ser usado por outras pessoas», por ordem de retorno sobre esforço:**
@@ -307,7 +316,7 @@ remediação. São também o que decide se existe uma segunda pessoa a usar isto
 - **Nada foi verificado contra o servidor.** Tudo o que esta auditoria diz sobre produção é leitura
   de `deploy/server/README.md` — um documento que se mostrou rigoroso e auto-crítico, mas que é
   testemunho, não medição.
-- **Não li os 441 tickets.** Contei-os e li os epics-índice, a Carta, o System Spec §13/§14, o
+- **Não li os 442 tickets.** Contei-os e li os epics-índice, a Carta, o System Spec §13/§14, o
   registo de deferimentos e o código do nó nas superfícies relevantes à pergunta.
 - O ponto §3.5 (mTLS do plano de controlo) baseia-se no default vazio da variável e na ausência de
   qualquer script que a defina. Se estiver definida à mão no `.env` do servidor, o ponto cai — e não
