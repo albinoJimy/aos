@@ -1400,8 +1400,8 @@ campo novo do `Call` é propagado pela via durável ou declarado perdido, com ra
       ou está declarado em `camposNaoPropagados` com a razão — e, se declarado, tem de chegar
       diferente (`TestAOS454_AuditoriaCampoACampoCallActivityCall`). Um campo novo no `Call` que
       ninguém propague avermelha este teste.
-- [ ] Verificado em produção: num nó durável, um `tool.call.mediated` de um run novo traz
-      `parent_step_id`.
+- [x] Verificado em produção: num nó durável, um `tool.call.mediated` de um run novo traz
+      `parent_step_id` *(ver Estado)*.
 
 ### Auditoria campo a campo
 
@@ -1439,7 +1439,30 @@ como perda latente na tabela e no teste.
 
 ### Estado
 
-**FEITO no código**; falta a verificação em produção (último critério).
+**FEITO.**
+
+**Verificado em produção a 2026-09-27** (`v0.1.39`, imagem `sha256:95e41051…`, o digest que o
+`publish` da release anunciou), com `AOS_DURABLE_EXECUTION=1` no contentor e o banner da execução
+durável (AOS-180) `LIGADA`. As contagens são do `events.wal`, lido só em leitura.
+
+**Antes do deploy (v0.1.38) — o defeito vivo.** 61 eventos de mediação (51 `tool.call.mediated`,
+10 `tool.call.denied`), **nenhum** com `parent_step_id`. Contar ausências num WAL codificado não
+chega sozinho: a chave podia simplesmente não se gravar em texto. O controlo foi contá-la noutros
+tipos — aparece em 1281 eventos (`step.checkpoint`, `replay.captured`, `sandbox.*`). A ausência é
+do evento de mediação, não da codificação.
+
+**Depois do deploy — um run novo.** Um plano de prova pela fila real
+(`medir-latencia-fila.sh --ate-ao-fim`, `plan-e2e-447-1790511800`, `terminal`, `exit_code 0`) cujo
+nó `n1` chamou `doc_read` duas vezes:
+
+```console
+tool.call.mediated  run=plan-e2e-447-1790511800~n1  step=step-000001-tool-1  parent_step_id=step-000001
+tool.call.denied    run=plan-e2e-447-1790511800~n1  step=step-000002-tool-1  parent_step_id=step-000002
+```
+
+As duas mediações do run trazem o passo pai, e cada uma aponta para o **seu** turno. Os 61 eventos
+anteriores continuam sem ele, porque o WAL é append-only. O total passou a 52 `mediated` e 11
+`denied`, exactamente um com `parent_step_id` em cada tipo — os deste run.
 
 ---
 
