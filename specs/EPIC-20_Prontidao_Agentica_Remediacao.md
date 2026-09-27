@@ -1634,10 +1634,23 @@ fazia. A prosa descrevia a solução; o código fazia outra coisa.
 **A RESTRIÇÃO REAL, que qualquer tentativa nova tem de resolver primeiro.** Para B não ser
 afectado por A, os pedidos **atribuíveis** de A não podem consumir um recurso partilhado. Isso
 obriga a resolver a identidade **antes** do balde global — e aí abre um vector oposto: o
-`authorize` faz verificação criptográfica, e a correr antes de qualquer tecto fica a taxa
-ilimitada para quem envie tokens inválidos. **É este o trade-off a desenhar, e não é um detalhe de
-implementação.** Uma pista não explorada: um balde dedicado a *bounded verification work* antes do
-`authorize`, com o balde de dados a servir só o tráfego não-atribuível.
+`authorize` faz verificação criptográfica.
+
+**➜ DESENHADO (2026-09-27):** [`docs/reports/AOS-456-desenho-do-trade-off-de-ordem.md`](../docs/reports/AOS-456-desenho-do-trade-off-de-ordem.md),
+com os custos medidos (recusar anónimo: **41 ns**; `ed25519.Verify`: **59,9 µs**, igual para
+assinatura válida e inválida; razão **1461x**) e três opções. O desenho **recomenda dividir este
+ticket**, e a razão vale ler antes de tocar em código:
+
+- **AOS-456a — justiça em CONCORRÊNCIA** (tecto de runs EM CURSO por principal). Não exige
+  reordenação **nenhuma**, porque um pedido recusado **não ocupa lugar** — ao contrário de um token,
+  que é gasto. Toda a maquinaria já existe (`len(s.runs)` e `goal.Principal`). É o que dá a
+  propriedade que interessa sobre o recurso que interessa.
+- **AOS-456b — justiça em TAXA** (orçamento de verificação + balde por-chamador + cache de
+  verificação). Exige a reordenação, e tem um residual que **não se elimina** neste ponto do
+  sistema: quem queime verificação degrada-a para todos. A mitigação vive no `edge`, não no nó — o
+  que pode tornar o 456b desnecessário, e é decisão a tomar antes de escrever código.
+
+O desenho **não decide nada** e não implementa. Fica a escolha ao dono.
 
 **OS OUTROS DOZE ACHADOS, todos medidos** (a evidência completa está no relatório da revisão; aqui
 ficam os que restringem o desenho):
