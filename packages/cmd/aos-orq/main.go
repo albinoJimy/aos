@@ -170,7 +170,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
 Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
 capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista · 11 SUBMISSOR do pedido fora dos requesters do mandato — determinista
 `)
 }
 
