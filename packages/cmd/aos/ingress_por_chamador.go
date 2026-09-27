@@ -78,6 +78,11 @@ type baldesPorChamador struct {
 	rate     float64
 	now      func() time.Time
 
+	// varreduras conta as PASSAGENS de evicção (não os baldes evictados). Existe para que a
+	// amortização do lote seja VERIFICÁVEL: sem ela, «é em lote» é uma afirmação sobre o código,
+	// não sobre o comportamento — ver o teste da amortização.
+	varreduras int64
+
 	// eviccoes conta as evicções por tecto. Existe para que o tecto seja OBSERVÁVEL: uma tabela
 	// que evicta constantemente está subdimensionada, e sem esta contagem isso é invisível —
 	// nada no comportamento externo distingue «tabela folgada» de «tabela a reciclar baldes a
@@ -124,36 +129,75 @@ func (b *baldesPorChamador) allow(principal string) bool {
 	}
 
 	if len(b.baldes) >= b.tecto {
-		b.evictarMaisCheioLocked()
+		b.evictarLoteLocked()
 	}
 	balde := newTokenBucket(b.capacity, b.rate, b.now)
 	b.baldes[principal] = balde
 	return balde.allow()
 }
 
-// evictarMaisCheioLocked remove o balde com MAIS tokens. Exige b.mu.
+// evictarLoteLocked liberta espaço removendo os baldes MAIS CHEIOS, em LOTE. Exige b.mu.
 //
-// Lê `tokens` sem tomar o mutex do balde: é uma leitura aproximada de propósito. Tomar o mutex de
-// cada balde para escolher a vítima seria ordem de aquisição de N mutexes dentro do mutex da
-// tabela, e o valor exacto não muda a correcção — a política só precisa de preferir os cheios aos
-// vazios. Uma leitura desalinhada escolheria uma vítima ligeiramente pior, nunca uma insegura: a
-// vítima ganha uma dotação fresca.
-func (b *baldesPorChamador) evictarMaisCheioLocked() {
-	var (
-		vitima    string
-		melhor    float64 = -1
-		encontrou bool
-	)
+// SINCRONIZAÇÃO — o invariante real, e a razão de estar escrito aqui. [allow] mantém `b.mu`
+// DURANTE a chamada a `balde.allow()`, pelo que a tabela serializa TODO o acesso a TODOS os
+// baldes: a leitura de `balde.tokens` abaixo é EXACTA, não aproximada, e não há data race.
+//
+// ⚠️ Quem estreitar o lock de [allow] — por exemplo largando `b.mu` antes de `balde.allow()`,
+// que é uma optimização de contenção razoável — TORNA esta leitura uma data race sobre um
+// float64 protegido por `balde.mu`. O invariante tem de mudar com o lock, ou este loop passa a
+// ler memória sob escrita concorrente. Uma versão anterior deste comentário dizia que a leitura
+// era «aproximada de propósito», o que descrevia um perigo que o desenho já exclui e escondia o
+// que realmente o segura.
+//
+// PORQUE É EM LOTE, e não um a um. A varredura é O(n) sobre a tabela (até
+// [DefaultPerCallerMax] = 4096 entradas) e corre com o mutex GLOBAL tomado, no caminho quente
+// de `POST /runs`. Evictar UM por inserção faria um atacante que rode principais pagar essa
+// varredura a CADA pedido — e, com o lock global, serializar todas as submissões atrás dela.
+// Seria amplificação perversa: o mecanismo construído para impedir que um chamador esfomeie os
+// outros tornar-se-ia a via para esfomear todos. Em lote de n/8, a varredura amortiza sobre n/8
+// inserções: O(8) por pedido, com o mesmo critério de vítima.
+//
+// A POLÍTICA (os mais cheios) é a mesma, e continua inexplorável:
+//
+//   - um balde à capacidade não tem estado que se perca — é indistinguível de um recém-criado;
+//   - evicção DÁ dotação fresca, logo nunca prejudica a vítima;
+//   - um atacante que queira reiniciar o SEU balde drenado não consegue: o dele é dos mais
+//     VAZIOS, e o lote escolhe pelo topo.
+func (b *baldesPorChamador) evictarLoteLocked() {
+	lote := b.tecto / 8
+	if lote < 1 {
+		lote = 1
+	}
+
+	// Selecção dos `lote` mais cheios numa só passagem, mantendo apenas os candidatos. `lote` é
+	// tecto/8, pelo que a lista é pequena face à tabela.
+	type cand struct {
+		p      string
+		tokens float64
+	}
+	topo := make([]cand, 0, lote)
 	for p, balde := range b.baldes {
 		t := balde.tokens
-		if t > melhor {
-			vitima, melhor, encontrou = p, t, true
+		if len(topo) < lote {
+			topo = append(topo, cand{p, t})
+			continue
+		}
+		// Substitui o MENOR do topo, se este for maior.
+		menor := 0
+		for i := 1; i < len(topo); i++ {
+			if topo[i].tokens < topo[menor].tokens {
+				menor = i
+			}
+		}
+		if t > topo[menor].tokens {
+			topo[menor] = cand{p, t}
 		}
 	}
-	if encontrou {
-		delete(b.baldes, vitima)
+	for _, c := range topo {
+		delete(b.baldes, c.p)
 		b.eviccoes++
 	}
+	b.varreduras++
 }
 
 // tamanho devolve quantos baldes a tabela tem. Só para teste e para métrica.
@@ -186,4 +230,15 @@ func (b *baldesPorChamador) temPrincipal(principal string) bool {
 	defer b.mu.Unlock()
 	_, ok := b.baldes[principal]
 	return ok
+}
+
+// varreduraDeEviccao devolve o número de PASSAGENS de evicção desde o arranque. Só para teste e
+// métrica: é o que distingue «lote» de «um a um».
+func (b *baldesPorChamador) varreduraDeEviccao() int64 {
+	if b == nil {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.varreduras
 }

@@ -1668,9 +1668,27 @@ O que ficou entregue é o mecanismo com o **limite declarado**: a justiça entre
 aos globais) o banner diz em voz alta que **NÃO protege**. Anunciar justiça que a config não dá seria
 o defeito que este repositório persegue.
 
+### O QUE ESTE TICKET **NÃO** FECHA, e a auditoria de completude obrigou a nomear
+**`POST /plans` é uma segunda porta de submissão e NÃO passa pela 2.ª etapa.** Ela consome o balde
+**global** da 1.ª etapa (`plan_ingress.go`, `h.bucket.allow()`), pelo que uma rajada de *pedidos de
+plano* de A continua a poder esgotar o global e a produzir `429` no `POST /runs` de B. O critério de
+aceitação deste ticket — «a rajada de A não produz 429 em B» — vale para A a inundar `POST /runs`;
+**não vale** para A a inundar `POST /plans`.
+
+Não foi alargado aqui de propósito (AGENTS.md §5: âmbito do ticket é `POST /runs`; o que falta abre
+ticket próprio). Mas fica **escrito no ticket e no banner de arranque**, porque um ticket marcado
+FEITO que se leia como «starvation entre pares fechada» seria mais perigoso do que o defeito: quem o
+ler decidiria abrir o nó a terceiros sobre uma garantia que tem uma porta aberta ao lado.
+
+**Também por fechar:** a evicção em lote varre O(n) sob o mutex global — amortizada em `tecto/8`
+inserções, medida por `TestAOS456EviccaoAmortizaEmLote`, mas não eliminada; e a tabela só encolhe
+por evicção ao atingir o tecto (um nó com poucos chamadores mantém os baldes indefinidamente, o que
+é memória irrelevante mas não é zero).
+
 ### Estado
-**FEITO.** Suite do módulo verde com `-race`; cinco mutações apanhadas; três posturas de banner
-provadas no binário real. Residuais declarados no commit: a taxa **agregada** de pedidos atribuíveis
+**FEITO — com o alcance declarado acima.** Suite do módulo verde com `-race`; **sete** mutações
+apanhadas; três posturas de banner provadas no binário real; `apex`, `security`, `policy-test`,
+`layer-lint` verdes. Revisão adversarial independente lançada sobre o diff. Residuais declarados no commit: a taxa **agregada** de pedidos atribuíveis
 não tem tecto em taxa (limitam-na `AOS_INGRESS_MAX_INFLIGHT`, intocado, e o tecto da tabela); a
 tabela é por-processo; o plano de controlo e as leituras ficam fora da etapa.
 

@@ -216,7 +216,7 @@ func ingressPostureBanner(lim ingressLimits) []string {
 		if lim.perCallerRate < lim.ratePerSec || lim.perCallerBurst < lim.burst {
 			justo = "PROTEGE um chamador da rajada de outro: a dotacao por-chamador e menor que a global, logo quem inunda esgota o SEU balde antes de drenar o comum"
 		}
-		porChamador = fmt.Sprintf(" 2.a ETAPA (por-chamador, AOS-456): LIGADA — cada principal verificado tem o seu balde de %.4g pedido(s)/segundo com burst de %.4g, numa tabela de no maximo %d principais; cheia a tabela, evicta-se o balde MAIS CHEIO (que e o que menos estado perde, e nunca o do atacante, cujo balde e o mais vazio). %s. So o POST /runs passa por ela; o plano de controlo e as leituras NAO.",
+		porChamador = fmt.Sprintf(" 2.a ETAPA (por-chamador, AOS-456): LIGADA — cada principal verificado tem o seu balde de %.4g pedido(s)/segundo com burst de %.4g, numa tabela de no maximo %d principais; cheia a tabela, evictam-se EM LOTE (tecto/8) os baldes mais CHEIOS — os que menos estado perdem, e nunca o do atacante, cujo balde e dos mais vazios; em lote para que a varredura O(n) nao corra a cada pedido com o mutex tomado. %s. ALCANCE DA 2.a ETAPA: SO o POST /runs. O plano de controlo e as leituras NAO, e o POST /plans TAMBEM NAO — ele consome o balde GLOBAL da 1.a etapa, pelo que uma rajada de pedidos de plano continua a poder esgotar o global e a produzir 429 no POST /runs de OUTRO chamador (AOS-457 e seguintes; declarado, nao fechado).",
 			lim.perCallerRate, lim.perCallerBurst, lim.perCallerMax, justo)
 	}
 	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT definida)"

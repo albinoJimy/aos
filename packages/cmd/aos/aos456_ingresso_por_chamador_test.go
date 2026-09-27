@@ -62,14 +62,14 @@ func TestAOS456TabelaRespeitaOTectoEEvictaOMaisCheio(t *testing.T) {
 		t.Fatalf("tabela com %d entradas, esperava 3 (o tecto)", got)
 	}
 
-	// O quarto principal força evicção.
+	// O quarto principal força evicção. Com tecto 3 o lote é max(1, 3/8) = 1.
 	tab.allow("human:novo")
 	if got := tab.tamanho(); got > 3 {
 		t.Fatalf("tabela cresceu para %d ACIMA do tecto de 3 — o map sem tecto e o vector que "+
 			"este ficheiro existe para fechar", got)
 	}
 	if tab.evictados() != 1 {
-		t.Fatalf("evicções = %d, esperava 1", tab.evictados())
+		t.Fatalf("evicções = %d, esperava 1 (lote = max(1, tecto/8) = 1 com tecto 3)", tab.evictados())
 	}
 
 	// O drenado SOBREVIVEU: evictá-lo dar-lhe-ia dotação fresca, que é o que um atacante
@@ -226,5 +226,41 @@ func TestAOS456CadaBaldeEIndependente(t *testing.T) {
 		if tab.allow(p) {
 			t.Fatalf("%s passou o 3.o pedido", p)
 		}
+	}
+}
+
+// TestAOS456EviccaoAmortizaEmLote — a varredura de evicção é O(n) sobre a tabela e corre com o
+// mutex GLOBAL tomado, no caminho quente de `POST /runs`. Evictar um por inserção faria um
+// atacante que rode principais pagar essa varredura a CADA pedido e, com o lock global,
+// serializar todas as submissões atrás dela: o mecanismo que impede um chamador de esfomear os
+// outros tornar-se-ia a via para esfomear todos.
+//
+// Este teste é o sensor dessa propriedade. Sem ele, «é em lote» é uma afirmação sobre o código e
+// não sobre o comportamento.
+func TestAOS456EviccaoAmortizaEmLote(t *testing.T) {
+	rel := novoRelogio()
+	const tecto = 64
+	lote := tecto / 8 // 8
+	tab := newBaldesPorChamador(tecto, 5, 0.001, rel.agora)
+
+	// Enche até ao tecto — sem evicção nenhuma.
+	for i := 0; i < tecto; i++ {
+		tab.allow(fmt.Sprintf("human:base%03d", i))
+	}
+	if tab.varreduraDeEviccao() != 0 {
+		t.Fatalf("houve %d varredura(s) a ENCHER a tabela, esperava 0", tab.varreduraDeEviccao())
+	}
+
+	// `lote` principais novos têm de custar UMA varredura, não `lote`.
+	for i := 0; i < lote; i++ {
+		tab.allow(fmt.Sprintf("human:novo%03d", i))
+	}
+	if got := tab.varreduraDeEviccao(); got != 1 {
+		t.Fatalf("%d principais novos custaram %d varredura(s), esperava 1 — a evicção NAO esta a "+
+			"amortizar, e um atacante que rode principais paga (e impoe) uma varredura O(n) com o "+
+			"mutex global tomado a cada pedido", lote, got)
+	}
+	if got := tab.tamanho(); got > tecto {
+		t.Fatalf("tabela em %d, acima do tecto %d", got, tecto)
 	}
 }
