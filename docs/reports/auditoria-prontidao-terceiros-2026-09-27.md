@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | Data | 2026-09-27 |
-| Âmbito | Estado do repositório face à pergunta do dono, medido na árvore de `claude/gracious-turing-xd405r` (HEAD `c595782`) |
+| Âmbito | Estado do repositório face à pergunta do dono. Medido originalmente sobre `c595782`; **re-verificado após fundir `origin/feature/AOS-128-ux-dx-tests` em `483e35e`** (AOS-439/440, 3794 inserções) — as contagens de tickets mantiveram-se (441/211/453) e as afirmações da §3 mantiveram-se, com as linhas de `api.go` deslocadas de 425/629 para 426/634 e corrigidas aqui |
 | Método | Leitura de fontes canónicas (Carta, System Spec, INDICE, registo de deferimentos), leitura do código do nó, e **execução** de dois gates |
 | Gates executados | `build` (49 módulos), `lint`, `secrets`, `ref-lint` — todos exit 0. **4 de 29.** Os outros 25 não foram corridos nesta sessão |
 | Não verificado | Nada foi verificado **contra o servidor de produção**. As afirmações sobre `37.60.241.150` são leitura de `deploy/server/README.md`, não medição independente |
@@ -147,9 +147,9 @@ está mais fraco. Três defeitos estruturais, todos pequenos em código:
 
 ### 3.1 O rate-limit é global, não por-chamador
 
-`packages/cmd/aos/api.go:425` — há **dois** token-buckets: um do plano de dados (`POST /runs`) e um
+`packages/cmd/aos/api.go:426` — há **dois** token-buckets: um do plano de dados (`POST /runs`) e um
 dedicado ao plano de controlo. Ambos **por-nó**, não por-principal. Verificado em `handleSubmit`
-(api.go:629): `if !h.bucket.allow()`.
+(api.go:634): `if !h.bucket.allow()`.
 
 **Consequência:** um chamador esgota o ingresso de todos os outros. Com um utilizador (o dono) é
 proteção anti-exaustão correcta; com N utilizadores é um vector de negação de serviço entre pares,
