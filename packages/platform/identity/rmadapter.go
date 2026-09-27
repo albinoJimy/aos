@@ -85,6 +85,17 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 		// issuer, por-sujeito, para o ScopeGate (AOS-071) resolver — incl. o agente
 		// por-mint, que nenhum directório estático pode conhecer. Ver [subjectAuthorityFromScope].
 		SubjectAuthority: subjectAuthorityFromScope(principal),
+		// AOS-439: o mandato VERIFICADO sob o qual o token foi cunhado — vai ao selo da decisão
+		// (resíduo 3 do ADR-033). Vem do Verify, nunca da call.
+		MandateID: principal.MandateID,
+		// AOS-440: o humano da raiz, do token verificado — nunca da call.
+		UserID: principal.UserID,
+		// AOS-439/440: o submissor e o titular dos dados NÃO são claims do token — são derivados
+		// pelo NÓ no `POST /runs` e viajam do Goal. Este hook substitui a identidade inteira; estes
+		// dois preservam-se, porque não autorizam nada (nenhum gate decide por eles) e sem eles a
+		// decisão selada perdia quem pediu o run e o step-ledger perdia a chave do titular.
+		RequestedBy: call.Principal.RequestedBy,
+		Subject:     call.Principal.Subject,
 	}
 	return rm.HookResult{Decision: rm.HookAllow}, nil
 }

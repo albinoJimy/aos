@@ -2,7 +2,8 @@
 
 - **Estado:** Aceite — §2.1, §3 e §5 **emendados** (2026-09-26, AOS-446): quem contorna o
   mandato não é só root no host, e a ponte TLS dava root a quem escrevesse num ficheiro do `aos`
-  (§6)
+  (§6). §2.1 e §5 **emendados de novo** (2026-09-27, AOS-439, aditivo): o mandato enumera os
+  `requesters` por quem o emissor pode agir (§7; decisão em ADR-035)
 - **Data:** 2026-09-25
 - **Ticket:** AOS-427
 - **Substitui:** ADR-032 **§2.2** (onde vive a autoridade de emissão). As §2.1, §2.3 e §2.4 do
@@ -52,6 +53,7 @@ exactamente o que um emissor automático pode cunhar em seu nome:
 | `iss` | o único emissor autorizado |
 | `max_ttl_s` | o TTL máximo de cada token, ≤ `identity.TTLMaximo` |
 | `nbf`, `exp` | a janela em que se pode cunhar, ≤ `identity.MandatoValidadeMaxima` (90 dias) |
+| `requesters` | **(emenda AOS-439, §7)** por quem o emissor pode agir: o `sub` de cada submissor de planos, sem curingas; o nó recusa um run cujo submissor — derivado por ele, ADR-035 — não esteja aqui |
 
 **Nenhum campo é opcional.** Um campo vazio seria um curinga, e o mandato existe para não haver
 curingas.
@@ -167,8 +169,8 @@ de topologia que ninguém verificava.
 2. **Uma cunhagem que nunca é usada não deixa rasto.** O `mint-mandated` corre sem Event Store,
    logo não há `identity.nhi.issued`. Um token só aparece no registo quando chega ao nó. Um
    atacante que cunhe dentro do mandato e não use o token não se vê — mas também não fez nada.
-3. **O `Principal.MandateID` não é ainda selado nos registos de decisão.** O verificador devolve-o;
-   a atribuição «este run correu sob o mandato X» fica para quando a auditoria o consumir.
+3. ~~**O `Principal.MandateID` não é ainda selado nos registos de decisão.**~~ **FECHADO pelo
+   AOS-439** (§7): o `mandate_id` entra no selo de cada decisão (WORM v4) e no evento de mediação.
 4. **Dentro do mandato, um emissor comprometido cunha à vontade.** O mandato limita o que se
    cunha, não quantas vezes. É por isso que o escopo e a janela devem ser os mínimos que o
    trabalho precisa.
@@ -185,6 +187,9 @@ de topologia que ninguém verificava.
    levam o NHI do humano do mandato, e a cadeia on-behalf-of termina nele. Quem assina um mandato
    para o drenador responde pelo que qualquer submissor autorizado pede — é por isso que o escopo
    do mandato deve ser o mínimo do caminho do plano.
+   **Emendado (AOS-439, §7):** o humano do mandato continua a ser a raiz da cadeia, mas só responde
+   pelos submissores que NOMEOU nos `requesters`; o submissor de cada run fica selado como
+   `requested_by`. O resíduo passa a ser a janela de migração dos mandatos v1 (§7.2).
 
 ## 6. Emenda (AOS-446, 2026-09-26) — a fronteira do host
 
@@ -284,3 +289,41 @@ Decididos em 2026-09-26 e descritos em `deploy/server/README.md` §Custódia das
 Registar no WORM as âncoras da §6.3 (um pino trocado passa a deixar rasto selado) e assinar o
 mandato com FIDO2 `sk-ssh` em vez da seed em claro. Vai numa onda seguinte porque mexe em
 `platform/audit/record.go` e `platform/identity/mandate.go`, que o AOS-439 também muda.
+
+## 7. Emenda (AOS-439, 2026-09-27) — o mandato nomeia por quem o emissor age
+
+Aditiva à §2.1. A decisão e o vínculo que a tornam imponível estão no **ADR-035**; aqui fica só o
+que muda no mandato.
+
+### 7.1 O campo `requesters`
+
+O mandato passa a enumerar os **submissores** por quem o emissor pode agir: o `sub` do ID-token de
+cada um, exactamente como o nó o grava no `planrequest.submitted`. É **obrigatório** na assinatura
+(`SignMandate` e `aos-issuer mandate-sign --requesters` recusam sem ele), sem curingas, vírgulas,
+espaços nem repetidos, com um tecto de 64 entradas. Um service account só submete se estiver nomeado.
+
+Assina-se sob um domínio **novo**, `aos.identity.mandate.v2`, com a lista ORDENADA no fim do
+`SigningInput`. Um mandato sem `requesters` produz exactamente os bytes do v1 — o mandato em vigor
+continua a verificar —, e nenhum dos dois se converte no outro sem a chave do humano: arrancar os
+`requesters` a um v2 pede o domínio v1, cuja assinatura o humano nunca produziu para aquele
+conteúdo.
+
+O nó recusa o `POST /runs` (e a retoma) de um run cujo submissor — o `requested_by`, que o nó
+**deriva** da reclamação do pedido e nunca aceita do corpo (ADR-035 §2.2) — não conste dos
+`requesters` (`E_MANDATE_REQUESTER`); e recusa, sob um v2, um run sem submissor.
+
+### 7.2 A janela de migração dos v1
+
+Um mandato v1 é aceite até `AOS_MANDATE_V1_UNTIL` e recusado depois (`E_MANDATE_V1_CLOSED`), pelo
+relógio do nó. Fechada por omissão (fail-closed); no compose de produção a omissão é o fim do
+mandato v1 em vigor (2026-10-25), para que o deploy não pare a drenagem. Tecto: 90 dias do arranque.
+O banner declara a janela. Enquanto está aberta, o resíduo 7 (§5) vale para o mandato v1 — e um v1
+continua a verificar mesmo depois de assinado o v2: o humano revoga-o (`revoke-sign --jti
+mandate:<id>`) ou fecha a janela.
+
+### 7.3 O que isto NÃO muda
+
+- A raiz da cadeia on-behalf-of continua a ser o humano do mandato (ADR-003).
+- Os limites da §2.1 (humano, agente, classe, política, board, escopo, TTL, janela) e a §6.
+- A Fase 1 do AOS-446 (âncoras no WORM, mandato FIDO2) continua por fazer; mexerá nos mesmos
+  ficheiros e tem de preservar o domínio v2.

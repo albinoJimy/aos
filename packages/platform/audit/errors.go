@@ -37,6 +37,12 @@ var (
 	// ErrDecrypt — o payload cifrado não autentica sob a chave/blob dados
 	// (adulteração do ciphertext, ou KEK errada). Fail-closed na decifragem.
 	ErrDecrypt = errors.New("audit: decifragem de payload falhou")
+	// ErrVersaoDeEscrita — um store configurado para escrever uma versão de formato que esta
+	// release não escreve (só v3 e v4, AOS-439).
+	ErrVersaoDeEscrita = errors.New("audit: versao de escrita do WORM nao suportada (so 3 ou 4)")
+	// ErrVersaoAcimaDaEscrita — o produtor prepôs ao registo uma versão de formato acima da que
+	// o store escreve (AOS-439): um v4 num WORM em v3 cortaria o rollback por fora do expand/contract.
+	ErrVersaoAcimaDaEscrita = errors.New("audit: registo preposto numa versao acima da que o store escreve (E_AUDIT_SCHEMA_ABOVE_WRITE)")
 	// ErrShredded — a chave por titular foi destruída (crypto-shredding): o payload
 	// pessoal é IRRECUPERÁVEL (GDPR Art. 17). A cadeia mantém-se íntegra.
 	ErrShredded = errors.New("audit: chave do titular destruida (payload irrecuperavel)")

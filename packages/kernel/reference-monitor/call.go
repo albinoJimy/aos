@@ -48,6 +48,40 @@ type Principal struct {
 	// externa quando configurada (defesa-em-profundidade: o directório pode restringir
 	// mais, nunca ampliar). nil ⇒ o gate cai só na fonte estática (retro-compatível).
 	SubjectAuthority map[string][]string
+	// UserID é o HUMANO na raiz da cadeia do token (claim `user_id`), resolvido pelo hook de
+	// identidade a partir do token VERIFICADO. O nó grava-o também no Goal, a partir da credencial
+	// verificada no `POST /runs`, para a retoma confrontar a credencial fresca com a do run
+	// (AOS-440): o mesmo agente cunhado para OUTRO humano não continua o run de ninguém.
+	UserID string
+	// MandateID é o mandato sob o qual o token foi cunhado (AOS-427), resolvido pelo hook de
+	// identidade a partir do token VERIFICADO — vazio quando o emissor não é mandatado. Vai ao
+	// evento de mediação e ao selo WORM: fecha o resíduo 3 do ADR-033 («este run correu sob o
+	// mandato X» deixa de depender de reconstituir o token).
+	MandateID string
+	// RequestedBy é o SUBMISSOR do run (AOS-439): quem pediu o plano de que o run é trabalho. NÃO
+	// é uma afirmação de identidade nem vem do token — é derivado pelo NÓ do seu próprio log da
+	// fila de planos, no `POST /runs`, e viaja do Goal até aqui. O hook de identidade PRESERVA-O
+	// quando substitui o resto do Principal: é atribuição, não autoridade, e nenhum gate decide por
+	// ele. Vazio num run que não é trabalho de um plano.
+	RequestedBy string
+	// Subject é o TITULAR DOS DADOS do run (AOS-440): a chave por-titular sob a qual o conteúdo do
+	// run é selado. Vazio ⇒ NHIID, que é o que todos os runs anteriores usaram ([Principal.Titular]).
+	// Separado do NHIID porque são perguntas diferentes: o NHIID diz QUEM chamou o nó, o Subject
+	// diz DE QUEM são os dados. Num run filho de um plano, o chamador é o drenador e o titular é o
+	// submissor.
+	//
+	// A FONTE é o `Goal.Subject` do agent-runtime: o loop copia-o para cá em cada tool call, e é
+	// por aqui que ele atravessa a via durável (a Activity leva o Principal inteiro) até ao
+	// step-ledger, que sela o output da tool sob a MESMA chave que a captura do turno.
+	Subject string
+}
+
+// Titular devolve o titular dos dados: [Principal.Subject], ou o NHIID quando vazio (AOS-440).
+func (p Principal) Titular() string {
+	if p.Subject != "" {
+		return p.Subject
+	}
+	return p.NHIID
 }
 
 // Resource é o alvo concreto da tool call (contrato C1, tecnica/12 §4).

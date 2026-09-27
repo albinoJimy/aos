@@ -296,3 +296,7 @@ o desenho encontrou:
    só trabalhador é inofensivo (ninguém mais o reclama; o desfecho tardio é aceite e fecha-o). Com
    dois, o segundo reclamá-lo-ia e correria o mesmo plano (o lease do run arbitra, com saída 3). A
    pré-condição é **TTL da reclamação ≥ prazo do plano** (mais a decomposição).
+   **Cumprida pelo AOS-439 (2026-09-27):** o vínculo reclamação→run passou a exigir a reclamação
+   viva também com um só trabalhador, e o TTL subiu para **60 min** — o pior caso de uma geração é
+   prazo do plano + tentativas do planeador × egress do modelo + re-hidratação = 40 + 3×2 + 2 = 48
+   min. Um teste soma essas parcelas das fontes e falha se o TTL voltar a ficar abaixo.

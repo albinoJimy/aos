@@ -31,6 +31,7 @@
 #
 #   código 0        «ok»         prioridade default
 #   código 7        «recusado»   prioridade high   (houve decisão e foi NÃO — ou um pendente fora do prazo)
+#   código 11       «submissor fora do mandato»  prioridade high  (AOS-439; o texto não leva o submissor)
 #   outro código    «falhou»     prioridade high
 #
 # O TÓPICO É OUTRO: ${TOPICO_FILE}, separado do dos alertas de infraestrutura (secrets/ntfy-topico),
@@ -66,7 +67,7 @@ LOG_MAX_BYTES=1048576
 MAX_POR_EXECUCAO="${AOS_AVISO_PLANOS_MAX:-20}"
 [[ "${MAX_POR_EXECUCAO}" =~ ^[1-9][0-9]{0,2}$ ]] || MAX_POR_EXECUCAO=20
 # Quanto tempo se guarda um enviado. A duplicação que o registo trava vive dentro do TTL da
-# reclamação (30 min); 30 dias é folga larga, e o ficheiro não cresce sem fim.
+# reclamação (60 min desde o AOS-439); 30 dias é folga larga, e o ficheiro não cresce sem fim.
 RETER_S=2592000
 # A forma EXACTA da linha — a mesma do drenar-planos.sh; o TestAOS445ContratoDaLinhaDoAvisoComOsScripts
 # fixa as duas contra o `linhaDoAviso` do Go.
@@ -206,6 +207,9 @@ for (( i = 0; i < K; i++ )); do
     case "${codigo}" in
       0) rotulo="ok";       prio=default; tags="white_check_mark"; titulo="AOS: plano terminado (ok)" ;;
       7) rotulo="recusado"; prio=high;    tags="no_entry";         titulo="AOS: plano recusado (codigo 7)" ;;
+      # AOS-439: o submissor não consta dos requesters do mandato. O texto NÃO leva o submissor (é
+      # um sub do IdP, dado pessoal): quem é, vê-se no GET /plans/{id} e no log da drenagem.
+      11) rotulo="submissor fora do mandato"; prio=high; tags="no_entry"; titulo="AOS: plano fora do mandato (codigo 11)" ;;
       *) rotulo="falhou";   prio=high;    tags="x";                titulo="AOS: plano falhou (codigo ${codigo})" ;;
     esac
     if notificar "${titulo}" "${prio}" "${tags}" "Plano ${p}: terminal, código ${codigo} (${rotulo})."; then

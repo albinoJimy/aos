@@ -40,6 +40,33 @@ type Principal struct {
 	// emissor é MANDATADO e o mandato VERIFICOU; vazio em todos os outros casos — nunca se
 	// devolve o ID de um mandato que ninguém verificou.
 	MandateID string
+	// MandateRequesters são os `requesters` do mandato verificado (AOS-439): por quem o emissor
+	// pode agir. Vazio num mandato v1 (aceite só dentro da janela de migração) e em todos os tokens
+	// que não vêm de um emissor mandatado.
+	MandateRequesters []string
+}
+
+// MandateAdmitsRequester decide se o run pedido por `requestedBy` pode correr sob esta credencial
+// (AOS-439). Devolve nil quando:
+//
+//   - o token não vem de um emissor mandatado (o emissor manual é confiado por inteiro);
+//   - o mandato é v1 — a sua aceitação já foi decidida pela janela de migração no [Verifier.Verify].
+//
+// Num mandato v2, `requestedBy` tem de constar dos `requesters`; vazio (um run sem submissor
+// derivado) é recusado — o mandato v2 existe para o emissor só agir por quem o humano nomeou.
+func (p Principal) MandateAdmitsRequester(requestedBy string) error {
+	if p.MandateID == "" || len(p.MandateRequesters) == 0 {
+		return nil
+	}
+	if requestedBy == "" {
+		return fmt.Errorf("%w: mandato %q exige um submissor derivado pelo no, e o run nao tem", ErrMandateRequester, p.MandateID)
+	}
+	for _, r := range p.MandateRequesters {
+		if r == requestedBy {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %q nao consta do mandato %q", ErrMandateRequester, requestedBy, p.MandateID)
 }
 
 // HumanPrincipal resolve o humano responsável único na raiz da cadeia de
@@ -69,6 +96,8 @@ type Verifier struct {
 	// mandateSigners as chaves PÚBLICAS dos humanos cujos mandatos se aceitam, por user_id.
 	mandated       map[string]bool
 	mandateSigners map[string]ed25519.PublicKey
+	// mandateV1Until é o fim da janela de migração dos mandatos v1 (AOS-439). Zero ⇒ fechada.
+	mandateV1Until time.Time
 	now            func() time.Time
 	// leeway é a tolerância de relógio aplicada a nbf/exp (AOS-278). Espelha o
 	// verificador OIDC ([integration/oidc], 60s por omissão): o issuer e o nó são
@@ -122,6 +151,17 @@ func WithMandatedIssuer(iss string, pub ed25519.PublicKey, signers map[string]ed
 		v.trust[iss] = append(ed25519.PublicKey(nil), pub...)
 		v.mandated[iss] = true
 	}
+}
+
+// WithMandateV1Until abre a JANELA DE MIGRAÇÃO dos mandatos v1 (AOS-439): um mandato sem
+// `requesters` verifica até `until` (exclusive), pelo relógio do verificador, e é recusado com
+// [ErrMandateV1Closed] a partir daí. Sem esta opção a janela está FECHADA — fail-closed: um v1
+// autoriza o emissor a agir por qualquer submissor, e isso só se tolera por decisão explícita.
+//
+// Existe para NÃO partir uma drenagem em produção no deploy que introduz os `requesters`: o
+// mandato em vigor é v1 até o humano o re-assinar.
+func WithMandateV1Until(until time.Time) VerifierOption {
+	return func(v *Verifier) { v.mandateV1Until = until }
 }
 
 // WithRevocations liga o verificador ao registo de revogação. Sem ele, nenhum
@@ -287,27 +327,30 @@ func (v *Verifier) Verify(ctx context.Context, compact string) (Principal, error
 	// mandatado um mandato embebido é ignorado e o MandateID fica vazio — o emissor manual é
 	// confiado por inteiro, e um mandato que ninguém verificou não se devolve a ninguém.
 	var mandateID string
+	var requesters []string
 	if v.mandated[c.Issuer] {
-		id, merr := v.verifyMandate(ctx, c)
+		m, merr := v.verifyMandate(ctx, c)
 		if merr != nil {
 			return Principal{}, merr
 		}
-		mandateID = id
+		mandateID = m.ID
+		requesters = append([]string(nil), m.Requesters...)
 	}
 
 	return Principal{
-		UserID:          c.UserID,
-		AgentID:         c.AgentID,
-		AgentClass:      c.AgentClass,
-		PolicyRef:       c.PolicyRef,
-		Board:           c.Board,
-		Issuer:          c.Issuer,
-		JTI:             c.JTI,
-		Scope:           append([]string(nil), c.Scope...),
-		IssuedAt:        time.Unix(c.IssuedAt, 0),
-		NotBefore:       time.Unix(c.NotBefore, 0),
-		Expiry:          time.Unix(c.Expiry, 0),
-		DelegationChain: c.DelegationChain.Clone(),
-		MandateID:       mandateID,
+		UserID:            c.UserID,
+		AgentID:           c.AgentID,
+		AgentClass:        c.AgentClass,
+		PolicyRef:         c.PolicyRef,
+		Board:             c.Board,
+		Issuer:            c.Issuer,
+		JTI:               c.JTI,
+		Scope:             append([]string(nil), c.Scope...),
+		IssuedAt:          time.Unix(c.IssuedAt, 0),
+		NotBefore:         time.Unix(c.NotBefore, 0),
+		Expiry:            time.Unix(c.Expiry, 0),
+		DelegationChain:   c.DelegationChain.Clone(),
+		MandateID:         mandateID,
+		MandateRequesters: requesters,
 	}, nil
 }

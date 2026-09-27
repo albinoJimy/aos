@@ -75,7 +75,26 @@ type pedidoDeRun struct {
 	// Inputs são os payloads que o `consumes` DESTE nó declara (AOS-414). Vão ao tail do run
 	// como segmentos untrusted, com a proveniência do contrato.
 	Inputs []entradaDoNo
+	// PlanRequest liga o run ao pedido de plano que o `consume` reclamou (AOS-439). nil num
+	// `serve` manual.
+	PlanRequest *vinculoAoPedido
 }
+
+// vinculoAoPedido é o `plan_request` do `POST /runs` (AOS-439): o plano e a geração da
+// reclamação. Espelha o `vinculoAoPedido` do nó (`packages/cmd/aos/submissor_do_plano.go`), que
+// este módulo não pode importar.
+type vinculoAoPedido struct {
+	RunID   string `json:"run_id"`
+	Geracao int    `json:"generation"`
+}
+
+// errRequerenteForaDoMandato — o nó recusou o run porque o submissor do pedido não consta dos
+// `requesters` do mandato da credencial (AOS-439). Determinista: o `consume` fecha o pedido como
+// TERMINAL ([exitRequerenteForaDoMandato]).
+var errRequerenteForaDoMandato = errors.New("aos-orq: o no recusou o run: o submissor do pedido nao consta dos requesters do mandato")
+
+// codigoRequerenteForaDoMandato é o `code` do corpo dessa recusa — o mesmo literal do nó.
+const codigoRequerenteForaDoMandato = "E_MANDATE_REQUESTER"
 
 // entradaDoNo é um payload entregue ao run de um nó: o contrato que o declara, o digest do
 // conteúdo e o conteúdo.
@@ -317,14 +336,18 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 	if err != nil {
 		return fmt.Errorf("NHI do run: %w", err)
 	}
-	corpo, err := json.Marshal(map[string]any{
+	campos := map[string]any{
 		"run_id":        p.RunID,
 		"objective":     p.Objective,
 		"principal_nhi": c.principal,
 		"credential":    cred,
 		"tools":         p.Tools,
 		"inputs":        p.Inputs,
-	})
+	}
+	if p.PlanRequest != nil {
+		campos["plan_request"] = p.PlanRequest
+	}
+	corpo, err := json.Marshal(campos)
 	if err != nil {
 		return err
 	}
@@ -348,6 +371,16 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 		return fmt.Errorf("%w: %s", errRunFilhoJaExiste, p.RunID)
 	default:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		// AOS-439: a ÚNICA recusa com código próprio. Só a reconhece com o vínculo enviado — é só
+		// aí que o nó a pode emitir —, e pelo `code` do corpo, não pelo texto.
+		if resp.StatusCode == http.StatusForbidden && p.PlanRequest != nil {
+			var corpo struct {
+				Code string `json:"code"`
+			}
+			if json.Unmarshal(msg, &corpo) == nil && corpo.Code == codigoRequerenteForaDoMandato {
+				return fmt.Errorf("%w: %s", errRequerenteForaDoMandato, p.RunID)
+			}
+		}
 		return fmt.Errorf("submeter %s ao nó: HTTP %d %s", p.RunID, resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
 }
@@ -447,6 +480,9 @@ type pedidoReclamado struct {
 	Board     string `json:"board"`
 	Region    string `json:"region"`
 	Geracao   int    `json:"generation"`
+	// RequestedBy é quem submeteu o pedido (AOS-439), para o `consume` o confrontar com o seu
+	// mandato ANTES de planear ([requerenteForaDoMandato]). Vazio num nó anterior ou sem gate.
+	RequestedBy string `json:"requested_by"`
 }
 
 // ReclamarPedido pede ao nó UM pedido de plano pendente, reclamando-o.

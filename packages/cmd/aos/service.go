@@ -715,11 +715,14 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	// run (não se hospeda sobre uma minimização parcial). Corre APÓS o wg.Add/rs.lease
 	// para o desenrolar reutilizar o mesmo caminho de finish em caso de erro.
 	if s.node.Ingestion != nil && goal.Objective != "" && goal.Principal.NHIID != "" {
-		// AOS-208: `subject` é o PRINCIPAL DO RUN (a NHI do agente), não o titular dos
-		// dados (GDPR data subject). Sob RemoveAllPolicy (minimização, sem tokenização) só
-		// alimenta o SubjectID do registo de audit; ver o aviso de crypto-shredding em
+		// AOS-208: sob RemoveAllPolicy (minimização, sem tokenização) `subject` só alimenta o
+		// SubjectID do registo de audit; ver o aviso de crypto-shredding em
 		// integration.IngestObjective antes de habilitar tokenização por-titular.
-		subject := goal.Principal.NHIID
+		//
+		// AOS-440: é o TITULAR DOS DADOS ([agentruntime.Goal.Titular]) — o submissor, num run
+		// filho de um plano; o principal do run nos outros, como até aqui. O agente (quarto
+		// argumento) continua a ser o principal.
+		subject := goal.Titular()
 		ing, ierr := s.node.Ingestion.IngestObjective(ctx, subject, runID, goal.Principal.NHIID, goal.Objective)
 		if ierr != nil {
 			// Desenrola a posse contabilizada: decrementa o wg, larga o lease e move o
@@ -894,9 +897,10 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		// MaxTurns, trip do breaker (no-op — já materializado) e panic.
 		defer func() {
 			r := recover()
-			// AOS-254: o titular (goal.Principal.NHIID) acompanha o selo — a saga de rollback que
-			// um desfecho `failed` aciona corre no step-ledger cifrado por-titular, que o exige.
-			s.sealTerminalState(rs, goal.Principal.NHIID, res, err, r != nil)
+			// AOS-254: o titular acompanha o selo — a saga de rollback que um desfecho `failed`
+			// aciona corre no step-ledger cifrado por-titular, que o exige. AOS-440: o titular
+			// dos DADOS (goal.Titular()), o mesmo sob o qual o step-ledger selou os outputs.
+			s.sealTerminalState(rs, goal.Titular(), res, err, r != nil)
 			if r != nil {
 				panic(r)
 			}
@@ -1008,7 +1012,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 // do registo de retoma trocaria uma degradação recuperável por uma paragem dura; a suspensão de
 // AOS-021 aborta porque aí o "suspenso" seria irretomável, o que é pior — aqui o run corre na mesma.
 func (s *NodeService) persistCrashResumeRecord(ctx context.Context, goal agentruntime.Goal) {
-	if s.node == nil || s.node.ResumeRecords == nil || goal.Principal.NHIID == "" {
+	// AOS-440: o guard pergunta pelo TITULAR (goal.Titular()), que é sob quem o Put sela — igual
+	// ao de sempre quando o run não tem Subject.
+	if s.node == nil || s.node.ResumeRecords == nil || goal.Titular() == "" {
 		return
 	}
 	if err := s.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
@@ -1022,6 +1028,7 @@ func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 	return integration.ResumeRecord{
 		RunID:             goal.RunID,
 		Principal:         goal.Principal,
+		Subject:           goal.Subject, // AOS-440: o titular dos dados sobrevive à retoma
 		Scope:             goal.Scope,
 		Model:             goal.Model,
 		System:            goal.System,

@@ -5529,9 +5529,8 @@ que era onde estava o defeito.
 
 ## AOS-439 — O pedido de plano esquece quem o pediu: os runs correm sob o humano do mandato, seja quem for que submeteu
 
-<!-- rtm: adrs-mencionados -->
-<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
-     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+<!-- Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). Implementa o ADR-035 e a
+     emenda §7 do ADR-033 (2026-09-27): os ADR citados neste bloco são IMPLEMENTAÇÃO. -->
 
 | Campo | Valor |
 |---|---|
@@ -5567,25 +5566,52 @@ veja o pedido.
 2. Um submissor que é um service account (como o `aos-reader`) pode pedir planos? Se sim, que
    humano responde por ele?
 
+### Decisões tomadas (dono, 2026-09-26)
+
+1. **B+**: o humano do mandato continua a RAIZ da cadeia; o SUBMISSOR viaja até ao run filho e fica
+   SELADO como `requested_by`. O vínculo é DERIVADO PELO NÓ do seu log da fila — nunca aceite do
+   corpo. O mandato passa a enumerar os `requesters`; o nó recusa o `POST /runs` quando o submissor
+   não consta deles.
+2. Um service account só submete se estiver nomeado nos `requesters`.
+3. **Pré-requisito**: `POST /plans/claim` e `POST /plans/outcome` restritos a uma lista FECHADA de
+   drenadores (`AOS_PLAN_DRAINERS`, fail-closed).
+
 ### Critérios de Aceitação
 
-- [ ] Decisão registada em ADR (emenda ao ADR-033, se mudar a raiz da cadeia).
-- [ ] O principal do submissor viaja do `planrequest.submitted` até ao run filho e fica selado no
-      registo de decisão da tool call.
-- [ ] Teste que liga o submissor de um `POST /plans` à cadeia selada do run filho.
-- [ ] **Verificado em PRODUÇÃO**: um plano submetido por um humano deixa a sua identidade no selo.
+- [x] Decisão registada em ADR: **ADR-035** (novo) e **ADR-033 §7** (emenda aditiva a §2.1 e §5:
+      `requesters`, janela dos v1, resíduo 3 fechado).
+- [x] O principal do submissor viaja do `planrequest.submitted` até ao run filho e fica no registo
+      de decisão da tool call — `requested_by` e `mandate_id` no evento `tool.call.*` SEMPRE, e
+      **selados no WORM v4 com `AOS_AUDIT_WRITE_V4=1`** (`platform/audit/record.go`, `SchemaV4`;
+      expand/contract da revisão adversarial: por omissão escreve-se v3, para o rollback continuar
+      possível — `TestAOS439PorOmissaoOWORMEscreveV3EOEventoLevaOSubmissor`); o `plan_request` do
+      `POST /runs` é verificado em `packages/cmd/aos/submissor_do_plano.go`. O drenador fecha com a
+      saída 11, sem planear, os pedidos de quem o mandato não nomeia
+      (`TestAOS439ConsumeNaoPlaneiaPorQuemOMandatoNaoNomeia`; sob um v2 também o pedido sem
+      submissor, e um NHI cunhado sob outro mandato aborta a drenagem antes de reclamar).
+- [x] Teste que liga o submissor de um `POST /plans` à cadeia selada do run filho —
+      `TestAOS439SubmissorViajaAteAoSeloEOsDadosSaoDele` (nó durável e soberano, emissor mandatado:
+      `POST /plans` pela submissora → reclamação pelo drenador → `POST /runs` com o vínculo → a
+      decisão selada da tool call nomeia a submissora e o mandato, com a raiz no humano do mandato).
+      As recusas: `TestAOS439VinculoRecusaCadaFalha`, `TestAOS439MandatoRecusaSubmissorForaDosRequesters`,
+      `TestAOS439VinculoExpiradoOuDeOutraRegiao`; a lista de drenadores, vermelha antes da guarda:
+      `TestAOS439ReclamacaoRecusaQuemNaoEDrenador`.
+- [ ] **Verificado em PRODUÇÃO**: um plano submetido por um humano deixa a sua identidade no selo
+      (com o WORM v4 ligado). Passos do dono em `deploy/server/README.md` §«Submissor do plano e
+      titular do run filho».
 
 ### Estado
 
-**ABERTO** — espera a decisão 1.
+**IMPLEMENTADO — por verificar em produção.** Código, testes e emenda documental entregues
+(2026-09-27); falta o critério de produção, que depende de o dono re-assinar o mandato com
+`--requesters` e de um plano submetido por um humano.
 
 ---
 
 ## AOS-440 — O conteúdo dos runs filhos é cifrado sob a chave de quem chamou o nó, e não sob o titular dos dados
 
-<!-- rtm: adrs-mencionados -->
-<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
-     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+<!-- Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). Implementa o ADR-035
+     §2.5 (2026-09-27): os ADR citados neste bloco são IMPLEMENTAÇÃO. -->
 
 | Campo | Valor |
 |---|---|
@@ -5617,22 +5643,42 @@ O AOS-429 decidiu «o titular é o principal do submissor» para o OBJECTIVO do 
 auditoria de 2026-08-17 («duas credenciais, sem ligação entre si») apontava para isto e não foi
 seguida. DEF-307 trata o alcance do crypto-shredding de forma genérica.
 
-### Decisões a tomar primeiro (do dono, com o DPO)
+### Decisões tomadas (dono, 2026-09-26)
 
-1. De quem são os dados de um run filho de um plano: do submissor do plano, do humano do mandato,
-   ou de quem os dados descrevem?
-2. Que fazer com o conteúdo já selado sob o `aos-reader`?
+1. O titular do conteúdo do run filho é o **submissor autenticado** do plano, derivado pelo nó pelo
+   MESMO vínculo do AOS-439. Campo novo `Goal.Subject`, **separado** de `Principal.NHIID` (vazio ⇒
+   `Principal.NHIID`, compatível com os registos antigos). O produtor dos eventos e o atributo do
+   span continuam o principal.
+2. O conteúdo já selado sob o `aos-reader` migra-se por **M1** (destruir a KEK do `aos-reader` uma
+   vez, depois de inventariar as partições `~`) — operação do dono, documentada, não executada.
+3. Declarados, sem implementação: conteúdo sobre terceiros dentro de um run fica sob o submissor; um
+   `POST /runs` directo por um service account tem a SA como titular; documentos de plano em claro
+   no `aos-orq`, veredictos no WAL do orquestrador e `--goal` na linha de comando ficam fora do
+   crypto-shredding (ticket a abrir).
 
 ### Critérios de Aceitação
 
-- [ ] Decisão registada na matriz de conformidade (`tecnica/14`) e, se mudar o modelo, em ADR.
-- [ ] O conteúdo de um run filho é selado sob o titular decidido, e um teste prova que o apagamento
-      desse titular o torna ilegível e não toca no de outros.
+- [x] Decisão registada na matriz de conformidade (`tecnica/14`, linha AOS-440) e em ADR
+      (**ADR-035** §2.5).
+- [x] O conteúdo de um run filho é selado sob o titular decidido, e um teste prova que o apagamento
+      desse titular o torna ilegível e não toca no de outros —
+      `TestAOS439SubmissorViajaAteAoSeloEOsDadosSaoDele`: a captura do turno e o output da tool
+      (step-ledger) do run filho saem selados sob a submissora; `/dsar` dela ⇒ `ErrDecrypt` nos
+      dois; o run de outro titular continua legível. Pontos tocados: captura (`loop.go`),
+      step-ledger pela Activity (`dispatch.go`, `Principal.Titular()`), registo de retoma
+      (`integration/resume_records.go`), `replayPlanFor` (`resume.go`, `crash_resume.go`), selo
+      terminal e saga, ingestão. A hipótese da retoma soberana confirmou-se e corrigiu-se —
+      `TestAOS440RetomaSoberanaComACredencialDoProprioAgente` (vermelho com a comparação antiga) — e
+      a retoma compara agente, humano e mandato (`TestAOS440RetomaComparaHumanoEMandato`).
+      **Excepção declarada:** o objectivo redigido em `memory.episodic` (em claro, pré-existente)
+      sobrevive ao apagamento — ADR-035 §5.
 - [ ] **Verificado em PRODUÇÃO**: o `key_ref` do run filho de um plano é o do titular decidido.
+      Passos do dono em `deploy/server/README.md` §«Submissor do plano e titular do run filho».
 
 ### Estado
 
-**ABERTO** — espera a decisão 1.
+**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-09-27); falta o
+critério de produção e a migração M1, ambos do dono.
 
 ---
 

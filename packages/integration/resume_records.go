@@ -41,10 +41,14 @@ var ErrNilResumeStore = errors.New("integration: event store nil para o registo 
 type ResumeRecord struct {
 	RunID     string
 	Principal referencemonitor.Principal
-	Scope     []string
-	Model     agentruntime.ModelConfig
-	System    string
-	Tools     []agentruntime.ToolSpec
+	// Subject é o titular dos dados do run (AOS-440, [agentruntime.Goal.Subject]). Um registo
+	// anterior não o tem e decodifica vazio — e o titular desse run era o `Principal.NHIID`, que é
+	// exactamente o que [ResumeRecord.Titular] devolve nesse caso.
+	Subject string
+	Scope   []string
+	Model   agentruntime.ModelConfig
+	System  string
+	Tools   []agentruntime.ToolSpec
 	// AllowedTools é a lista-branca do run (AOS-413). Tem de sobreviver à retoma: um run
 	// re-hospedado sem ela ganhava as tools de todo o token. nil e vazia NÃO são o mesmo (vazia
 	// nega tudo), e o JSON preserva a diferença (`null` vs `[]`). Um registo anterior não a tem
@@ -66,6 +70,7 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 	return agentruntime.Goal{
 		RunID:             r.RunID,
 		Principal:         r.Principal,
+		Subject:           r.Subject,
 		Credential:        credential,
 		Scope:             r.Scope,
 		Model:             r.Model,
@@ -79,6 +84,13 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		MaxTurns:          r.MaxTurns,
 		ParentTraceParent: r.ParentTraceParent,
 	}
+}
+
+// Titular é o titular dos dados do run: [ResumeRecord.Subject], ou o `Principal.NHIID` quando
+// vazio (AOS-440) — a MESMA regra de [agentruntime.Goal.Titular], para que o registo seja selado,
+// e as capturas abertas na retoma, sob a chave com que o run as selou.
+func (r ResumeRecord) Titular() string {
+	return r.GoalWith("").Titular()
 }
 
 // resumeEnvelope é o que vai ao log: o corpo (cifrado ou em claro) mais o titular sob cuja
@@ -116,7 +128,9 @@ func (r *ResumeRecords) Put(ctx context.Context, rec ResumeRecord) error {
 	}
 	env := resumeEnvelope{RunID: rec.RunID}
 	if r.cipher != nil {
-		subject := rec.Principal.NHIID
+		// AOS-440: sob o TITULAR DOS DADOS. O envelope grava o titular com que selou, e a leitura
+		// abre por ele — um registo antigo, selado sob o NHIID, continua a abrir.
+		subject := rec.Titular()
 		sealed, serr := r.cipher.SealContent(ctx, subject, approvalStream, body)
 		if serr != nil {
 			// FAIL-CLOSED: nunca persistir em claro por baixo de um cifrador activo.
