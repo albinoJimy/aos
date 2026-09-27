@@ -170,14 +170,22 @@ de quem auditou — porque o instrumento durável tem de registar o defeito, nã
    assinatura da atestação como «deferida-com-eixo (AOS-207, DEF-501)» e `tecnica/16_Rastreabilidade_RTM.md`
    descreve o ADR-017 como «SBOM+proveniência». Depois desta entrega, as duas afirmações
    contradizem este ADR. **Eixo: dono de `tecnica/**`** (pista proibida a AOS-207).
-10. **A cadeia assinada nunca correu com uma chave de release REAL.** `deploy/node/release-pubkeys.json`
-    tem `keys: []` de propósito (fail-closed: com o roster vazio **qualquer** envelope é recusado,
-    logo **nenhuma** entrega é publicável hoje). A prova end-to-end existe, mas foi feita com chave
-    efémera. Consequência operacional a declarar: enquanto não houver `AOS_RELEASE_KEY_FILE`
-    montada, o `package.sh` devolve **3** e a CI — que não distingue 3 de 1 — deixa o job
-    `delivery` **vermelho** em push para `main`. É o comportamento pretendido (não se publica o
-    que não está verificado), mas exige decisão do **dono de `ci.yml`**: provisionar a chave no job
-    de release, ou tratar o 3 como «não-fatal mas não publicável».
+10. ~~**A cadeia assinada nunca correu com uma chave de release REAL.**~~ **FECHADO em
+    2026-08-14 — correcção de FACTO, não de decisão (2026-09-27).** A decisão deste ADR não muda:
+    o roster **vazio** recusa qualquer envelope (fail-closed), e é isso que faz do provisionamento
+    a única via para publicar. O que mudou é o estado que este ponto descrevia:
+    `deploy/node/release-pubkeys.json` tem **1 chave** (Arquitecto de Plataforma) desde o primeiro
+    release distribuído fora do repositório, pelo que **a entrega é publicável e a verificação é
+    bloqueante**. A decisão que o ponto pedia ao **dono de `ci.yml`** foi tomada pela primeira via:
+    `release.yml` provisiona a chave no job de release e faz **`exit 1`** se
+    `secrets.AOS_RELEASE_KEY` estiver vazia — o `3` do `package.sh` deixou de ser alcançável por
+    falta de chave. A prova end-to-end original foi feita com chave efémera.
+
+    > Este ponto afirmava «hoje» sobre um estado que caducou, e sobreviveu assim porque nada o
+    > cruzava com o ficheiro. Corrigi-lo **não** é supersessão (AGENTS.md §5): a decisão
+    > fail-closed está intacta e reforçada. O que se corrige é uma medição desactualizada dentro
+    > de um ADR — a mesma regra que o registo de deferimentos aplica quando marca uma linha
+    > **OBSOLETA** por o seu referente ter desaparecido do código.
 
 **Pendência de governação:** fechar a linha `DEF-501` em `docs/governance/REGISTO-Deferimentos.md`
 com eixo AOS-207 — ficheiro de outra pista, não alterado aqui.

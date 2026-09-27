@@ -139,12 +139,33 @@ A integridade ancorada do log de auditoria e a cópia off-host dependem de um de
 Para uso próprio é uma escolha defensável. Para servir terceiros, as duas propriedades que mais
 interessam num incidente são as que têm a dependência mais frágil.
 
-### 2.3 A entrega vai declaradamente não-assinada
+### 2.3 ~~A entrega vai declaradamente não-assinada~~ — CORRIGIDO: vai assinada
 
-`deploy/node/release-pubkeys.json` tem `keys: []`. Sem o secret `AOS_RELEASE_KEY`, a verificação
-recusa tudo e o workflow emite o aviso — a entrega segue **não-assinada**. E a atestação DSSE é
-artefacto separado: um `docker pull` não a traz, o servidor verifica o **digest**, não a assinatura.
-Residual já declarado em ADR-017, mas é uma chave por provisionar, não um problema de desenho.
+> ⚠️ **Este ponto estava ERRADO, e a correcção interessa mais do que o ponto.** A versão original
+> dizia que `deploy/node/release-pubkeys.json` tem `keys: []` e que a entrega segue
+> **não-assinada**. **Medido no ficheiro a 2026-09-27: tem 1 chave**, do Arquitecto de Plataforma,
+> e o próprio JSON declara que *«o roster deixou de estar vazio em 2026-08-14, no primeiro release
+> distribuído fora do repositório (v0.1.0)»*. Mais: `release.yml` faz **`exit 1`** se
+> `secrets.AOS_RELEASE_KEY` estiver vazia, pelo que nenhum dos releases publicados (v0.1.29,
+> v0.1.35) poderia ter saído sem ela — inferência do gate, não observação directa do secret, que
+> daqui não se vê.
+>
+> **Como errei:** citei `deploy/server/README.md` §«O que esta configuração ainda não fecha»
+> ponto 2, em vez de abrir o JSON, que estava a um `cat` de distância. Num relatório que acusa o
+> corpus de estar desactualizado, repeti uma linha desactualizada em vez de medir a fonte
+> primária — e o erro fez a postura de segurança parecer **mais fraca** do que é.
+>
+> **E não era uma cópia, eram quatro.** À data da correcção, afirmavam `keys: []`:
+> `deploy/server/README.md:2376`, `deploy/node/CUSTODIA-CHAVE-RELEASE.md:83` e `:174`, e
+> **`docs/adr/ADR-017-supply-chain-node.md:174`** — um ADR canónico. Todas corrigidas no mesmo
+> commit que esta nota, porque corrigir só a minha teria deixado as outras três a mentir, que é
+> exactamente o modo de falha que este relatório persegue e que já me apanhou três vezes nesta
+> sessão.
+
+**O que continua verdadeiro**, e não depende do roster: a atestação DSSE é um artefacto separado
+(vai para a GitHub Release), um `docker pull` não a traz, e **o servidor verifica o `digest`, não a
+assinatura** — residual declarado em ADR-017 ponto 1. Quem assina é a CI; quem corre o nó confia no
+digest que o release fixou.
 
 ---
 

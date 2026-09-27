@@ -2373,10 +2373,11 @@ Nomeado, não escondido:
    GitHub Release); um `docker pull` não o traz. Sem OCI *referrers*, o servidor **não** verifica
    a assinatura antes de correr — verifica o **digest**, que o release fixou. Residual já
    declarado em ADR-017.
-2. **Roster de release vazio.** `../node/release-pubkeys.json` tem `keys: []`, pelo que a
-   verificação recusa tudo por omissão. Sem o secret `AOS_RELEASE_KEY` a entrega segue
-   declaradamente **não-assinada** (o workflow emite o aviso e a Release di-lo). Com a chave
-   provisionada, a verificação passa a bloqueante.
+2. **~~Roster de release vazio.~~ PROVISIONADO desde 2026-08-14 — esta linha estava
+   desactualizada.** `../node/release-pubkeys.json` tem **1 chave** (Arquitecto de Plataforma), e o
+   `release.yml` faz `exit 1` se `secrets.AOS_RELEASE_KEY` estiver vazia: a verificação é
+   **bloqueante**, não um aviso. O que fica é o ponto 1 acima — a atestação não viaja no registry,
+   pelo que o servidor verifica o **digest**, não a assinatura.
 3. **Nó único.** Uma máquina, sem réplica. O DR de EPIC-10 (Event Store replicado, failover)
    não está aqui — o que existe é durabilidade local mais reversão por digest.
 4. **O host não tem firewall, e estes scripts não lha põem.** Ver §"O servidor real", ponto 2.
