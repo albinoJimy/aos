@@ -15,7 +15,9 @@ package main
 //   - AOS_INGRESS_RATE — reabastecimento do balde, em tokens (= pedidos) por SEGUNDO;
 //   - AOS_INGRESS_BURST — capacidade do balde: quantos pedidos são absorvidos de uma vez
 //     com o balde cheio;
-//   - AOS_INGRESS_MAX_INFLIGHT — tecto de runs EM CURSO nesta réplica.
+//   - AOS_INGRESS_MAX_INFLIGHT — tecto de runs EM CURSO nesta réplica;
+//   - AOS_INGRESS_MAX_INFLIGHT_PER_CALLER — tecto de runs EM CURSO POR SUBMISSOR (AOS-456).
+//     Vazia ⇒ tecto por-chamador NÃO COMPOSTO, e o banner declara-o.
 //
 // FAIL-CLOSED NA CONFIGURAÇÃO (molde de [ErrBadBreakerThresholds]/[ErrBadRetention]/
 // [ErrBadBudget]): qualquer das três com valor ilegível, não-finito, negativo ou ZERO
@@ -53,7 +55,7 @@ import (
 // recusa arrancar em vez de silenciosamente aplicar o default (o operador ficaria
 // convencido de que o nó admite o que ele escreveu) ou de aplicar um valor degenerado que
 // fecha o ingresso por inteiro.
-var ErrBadIngressLimits = errors.New("aos: limites de ingresso mal configurados — AOS_INGRESS_RATE (pedidos/segundo, numero finito > 0), AOS_INGRESS_BURST (capacidade do balde, numero finito >= 1) e AOS_INGRESS_MAX_INFLIGHT (inteiro > 0). Deixe a variavel POR DEFINIR para manter o default; NENHUM valor desliga o limite (0 nao desliga: no rate/burst fecharia o ingresso, no max-inflight abriria-o sem tecto)")
+var ErrBadIngressLimits = errors.New("aos: limites de ingresso mal configurados — AOS_INGRESS_RATE (pedidos/segundo, numero finito > 0), AOS_INGRESS_BURST (capacidade do balde, numero finito >= 1) AOS_INGRESS_MAX_INFLIGHT (inteiro > 0) e AOS_INGRESS_MAX_INFLIGHT_PER_CALLER (inteiro > 0 e NAO superior a AOS_INGRESS_MAX_INFLIGHT; vazia => tecto por-chamador NAO COMPOSTO). Deixe a variavel POR DEFINIR para manter o default; NENHUM valor desliga o limite (0 nao desliga: no rate/burst fecharia o ingresso, no max-inflight abriria-o sem tecto)")
 
 // ingressLimits são os três números EFECTIVAMENTE em vigor na admission de `POST /runs`
 // — os defaults do binário quando as variáveis não estão definidas, o valor lido quando
@@ -63,7 +65,10 @@ type ingressLimits struct {
 	ratePerSec  float64
 	burst       float64
 	maxInFlight int
-	// tuned diz se ALGUMA das três variáveis foi definida. Vive AQUI (e não num parâmetro
+	// inFlightPerCaller é o tecto de runs EM CURSO por SUBMISSOR (AOS-456). 0 ⇒ NÃO COMPOSTO, e o
+	// banner declara-o.
+	inFlightPerCaller int
+	// tuned diz se ALGUMA das variáveis foi definida. Vive AQUI (e não num parâmetro
 	// do banner) para que o texto do banner não possa divergir do que a leitura viu: a
 	// origem dos números e os números são o MESMO valor de retorno.
 	tuned bool
@@ -109,6 +114,25 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_INFLIGHT=%q", ErrBadIngressLimits, rawInFlight)
 		}
 		lim.maxInFlight, lim.tuned = n, true
+	}
+
+	// AOS-456 — tecto de concorrência POR-CHAMADOR.
+	//
+	// VALIDADO NOS DOIS SENTIDOS, e o superior não é zelo: a tentativa 1 deste ticket validou só
+	// `> 0` num tecto de tabela, e um `100000000` era aceite sem uma palavra — fail-closed contra
+	// o zero, aberto de par em par contra o absurdo. Aqui o tecto superior tem significado
+	// próprio: um tecto por-chamador ACIMA do global nunca morde (o global morde primeiro), logo
+	// é configuração que anuncia uma barreira inerte. Recusa-se em vez de a deixar mentir.
+	rawPerCaller := strings.TrimSpace(os.Getenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER"))
+	if rawPerCaller != "" {
+		n, err := strconv.Atoi(rawPerCaller)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_INFLIGHT_PER_CALLER=%q", ErrBadIngressLimits, rawPerCaller)
+		}
+		if n > lim.maxInFlight {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_INFLIGHT_PER_CALLER=%q excede AOS_INGRESS_MAX_INFLIGHT=%d — um tecto por-chamador acima do global NUNCA morde (o global morde primeiro) e anunciaria uma barreira inerte", ErrBadIngressLimits, rawPerCaller, lim.maxInFlight)
+		}
+		lim.inFlightPerCaller, lim.tuned = n, true
 	}
 
 	return lim, []APIOption{
@@ -158,13 +182,30 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 //     `handleSubmit` o lê. O tecto trava admissões NOVAS, não o total de runs vivos.
 //   - O 429 é seco: `writeError` não emite `Retry-After`, pelo que o cliente não recebe
 //     indicação de quando repetir.
-func ingressPostureBanner(lim ingressLimits) []string {
-	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT definida)"
+//
+// ingressPostureBanner declara os limites EM VIGOR. `principalVerificavel` é a COMPOSIÇÃO REAL do
+// tecto por-chamador (AOS-456), não a config: a tentativa 1 deste ticket derivava a postura só de
+// `lim` e anunciava «LIGADA» com a barreira a `nil` porque a composição dependia de outra coisa.
+// Aqui o segundo parâmetro existe para que isso não possa acontecer — e para que o ramo «configurado
+// mas NÃO COMPOSTO» seja ALCANÇÁVEL e testável, que era o outro defeito.
+func ingressPostureBanner(lim ingressLimits, principalVerificavel bool) []string {
+	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER definida)"
 	if lim.tuned {
-		origem = "AFINADO por AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT"
+		origem = "AFINADO por AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER"
+	}
+	// DOBRA DO TECTO POR-CHAMADOR (AOS-456) — três posturas DISTINGUÍVEIS, e a do meio é a que
+	// a revisão adversarial da tentativa 1 apanhou: configurado e inerte.
+	porChamador := " TECTO POR-CHAMADOR (AOS-456): NAO CONFIGURADO — AOS_INGRESS_MAX_INFLIGHT_PER_CALLER vazia, logo o tecto de runs em curso e SO global e uma rajada de um chamador pode ocupar todos os lugares."
+	switch {
+	case lim.inFlightPerCaller > 0 && principalVerificavel:
+		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): LIGADO — cada SUBMISSOR VERIFICADO ocupa no maximo %d run(s) EM CURSO; exceder responde 429 SEM ocupar lugar nenhum, pelo que a rajada de um chamador nao tira lugares aos outros. A RETOMA (/resume) e ISENTA (re-hospeda um run ja admitido). Um run SUSPENSO a espera de aval humano SAI desta contagem, como sai da global: um chamador pode acumular suspensos sem bater no tecto.",
+			lim.inFlightPerCaller)
+	case lim.inFlightPerCaller > 0:
+		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): CONFIGURADO (%d) mas NAO COMPOSTO — sem gate soberano de leitura o principal do run vem do CORPO do pedido (auto-declarado), e um tecto sobre um valor que o chamador escolhe contorna-se mudando-o. NAO esta em vigor: defina AOS_BOARD_REGIONS (e o WORM) para que o principal seja VERIFICADO.",
+			lim.inFlightPerCaller)
 	}
 	return []string{
-		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After",
-			origem, lim.ratePerSec, lim.burst, lim.maxInFlight),
+		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
+			origem, lim.ratePerSec, lim.burst, lim.maxInFlight, porChamador),
 	}
 }

@@ -154,6 +154,31 @@ type readGovernance struct {
 	now func() time.Time
 }
 
+// noTemGateSoberanoDeLeitura diz se um NÓ compõe o gate de leitura soberana — e, por
+// consequência, se o principal de um run submetido a ele é VERIFICADO pelo nó em vez de
+// auto-declarado no corpo do pedido.
+//
+// EXISTE PORQUE UMA CÓPIA DIVERGIU (AOS-456). O tecto de concorrência por-chamador só entra em
+// vigor quando o principal é verificável, e a primeira versão desse wiring escreveu o predicado à
+// mão como `SovereignReadRegions != nil && WORM != nil`, omitindo o ramo `SovereignAuthority` —
+// a via FORTE, com credencial verificada.
+//
+// GRAVIDADE, MEDIDA E NÃO SUPOSTA: pelo caminho do `Bootstrap` a divergência NÃO era alcançável,
+// porque `readRegions = readAuthority.Registry()` (bootstrap.go:2457) deriva o registo da
+// autoridade e as duas nascem juntas. Era alcançável por um `Node` composto IN-PROCESSO com
+// autoridade e sem registo — e, sobretudo, era uma cópia que nada obrigava a acompanhar a
+// composição real. O defeito estava na FORMA, não ainda no comportamento; esta função remove a
+// forma. O mesmo predicado à mão continua em `main.go:417` (banner do kill-switch AOS-203) e fica
+// registado no ticket: é outro ticket, não escopo deste.
+//
+// ALCANCE: cobre a via do NÓ, que é a única que [serveAPI] usa (nunca passa [WithReadSovereignty]).
+// Um handler composto pela OPÇÃO tem `readGov` sem que o nó o declare; ver a nota do teste de
+// equivalência.
+func noTemGateSoberanoDeLeitura(node *Node) bool {
+	return node != nil && node.WORM != nil &&
+		(node.SovereignAuthority != nil || node.SovereignReadRegions != nil)
+}
+
 // newReadGovernance compõe a costura de leitura soberana. regions e worm são obrigatórios (o
 // chamador só a compõe quando ambos existem — ver [WithReadSovereignty]/[WithSovereignAuthority]
 // e o auto-wiring de [NewAPIHandler]). cred nil ⇒ via LEGADA por headers (demo-grade); composta

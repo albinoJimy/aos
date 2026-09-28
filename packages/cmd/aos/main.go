@@ -1251,6 +1251,23 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// AOS-456 — TECTO DE CONCORRÊNCIA POR-CHAMADOR, composto SÓ quando o principal é
+	// VERIFICÁVEL.
+	//
+	// O tecto imputa lugares a `goal.Principal.NHIID`. Em modo SOBERANO esse valor é o principal
+	// que `readGovernance.authorize` resolveu da credencial verificada. SEM o gate soberano, é o
+	// `principal_nhi` do CORPO — auto-declarado — e um tecto sobre um valor que o chamador escolhe
+	// é contornado mudando-o: pior do que não existir, porque seria anunciado.
+	//
+	// O predicado é O MESMO valor que decide a composição do gate, porque é a MESMA função
+	// ([noTemGateSoberanoDeLeitura], usada por [NewAPIHandler]) — e não uma cópia à mão. A primeira
+	// versão disto era uma cópia que omitia o ramo `SovereignAuthority`. Ver a nota da função para
+	// a gravidade real (não alcançável pelo `Bootstrap`, alcançável in-process) e para o predicado
+	// à mão que ainda sobrevive no banner do kill-switch, que é outro ticket.
+	principalVerificavel := noTemGateSoberanoDeLeitura(node)
+	if ingressLim.inFlightPerCaller > 0 && principalVerificavel {
+		svcOpts = append(svcOpts, WithInFlightPerCaller(ingressLim.inFlightPerCaller))
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
@@ -1293,7 +1310,7 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	// acima — postura anunciada = postura ligada (AOS-248). Sai aqui, e não no banner de
 	// bootstrap, porque a admission só existe quando o nó SERVE: um `aos` que faz bootstrap
 	// sem AOS_API_ADDR não tem ingresso nenhum para anunciar.
-	for _, line := range ingressPostureBanner(ingressLim) {
+	for _, line := range ingressPostureBanner(ingressLim, principalVerificavel) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina

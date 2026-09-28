@@ -1679,28 +1679,92 @@ baixo; e o lote melhora 9x face a um-a-um. **Nada disso compensa o defeito de ra
 Dar a cada **principal** um tecto próprio de forma que a rajada de um **não** produza `429` noutro,
 resolvendo primeiro o trade-off de ordem descrito acima.
 
-### Critérios de Aceitação
-- [ ] **Medido no `handleSubmit`, não na tabela isolada:** com A em rajada, B é admitido. Um teste
-      que só exercite a estrutura de dados **não** fecha este critério — foi assim que a tentativa 1
-      passou com o critério por cumprir.
-- [ ] Prova negativa de que o tráfego **não-atribuível** continua com tecto (senão a 1.ª etapa
-      deixa de proteger).
+### DIVIDIDO (2026-09-28), como o desenho recomendou
+O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO**:
+
+- **AOS-456a — justiça em CONCORRÊNCIA:** tecto de runs EM CURSO por submissor. ✅ **FEITO.**
+- **AOS-456b — justiça em TAXA:** balde por-chamador + orçamento de verificação. **ABERTO**, e o
+  desenho põe em causa que deva existir no nó (a mitigação vive no `edge`). Não é pré-requisito de
+  nada; **não** foi reservado ticket novo — vive aqui até alguém decidir que se faz.
+
+### Critérios de Aceitação — AOS-456a (CONCORRÊNCIA) ✅
+- [x] **Medido no `handleSubmit`, não na tabela isolada:** com A em rajada, B é admitido.
+      `TestAOS456ARajadaDeUmNaoTiraLugaresAoOutro` submete por HTTP contra um nó com o gate soberano
+      composto, com o **modelo bloqueado** (sem isso os runs terminavam entre submissões e o teste
+      passaria com o tecto REMOVIDO) e o **balde global largo com o relógio parado** (um `429` que
+      viesse do balde tornaria o teste vacuoso). Mutação `M1` (tecto removido) ⇒ 5 testes vermelhos.
+- [x] **Uma recusa não consome recurso partilhado.** `TestAOS456AUmaRECUSANaoConsomeRecursoPartilhado`:
+      40 recusas de A não tiram nada a B. É a assimetria em que o desenho assenta, e a propriedade
+      exacta que a tentativa 1 não tinha.
+- [x] **A verificação e a reserva são atómicas** (partilham a secção crítica de `s.mu`).
+      `TestAOS456ATectoEAtomico`: 40 pedidos concorrentes, tecto 3, admitidos **exactamente** 3.
+      ⚠️ **O sensor é probabilístico e o teste di-lo, com a tabela medida:** apanha
+      `runtime.Gosched()` e 50 µs, **não** apanha unlock/relock imediato nem 1 µs. Apanha a janela
+      que o defeito REAL teria (a verificação no handler, com `authorize` + `ed25519.Verify` 59,9 µs
+      + selagem WORM pelo meio); contra um reordering de nanossegundos a garantia vem da estrutura.
+- [x] O banner deriva a postura da **composição real**, e o ramo «não composta» é **alcançável** e
+      testado: `TestAOS456ABannerDistingueAsTRESPosturas` cobre as três, e
+      `TestAOS456APredicadoDeComposicaoCOINCIDEComOGateReal` compara o predicado do arranque com o
+      comportamento do handler. **Achado próprio, durante a implementação:** o predicado escrito à
+      mão omitia o ramo `SovereignAuthority` — a via FORTE. Não era alcançável pelo `Bootstrap`
+      (`readRegions = readAuthority.Registry()`), era-o in-process, e era uma cópia que nada obrigava
+      a acompanhar. Extraído para `noTemGateSoberanoDeLeitura`, usado pelos dois sítios. Mutação
+      `M8` (repor a cópia) ⇒ vermelho.
+- [x] `AOS_INGRESS_MAX_INFLIGHT_PER_CALLER` tem tecto superior **e** inferior, com o valor recusado
+      medido: 12 casos em `TestAOS456AEnvFailClosedNOSDOISSENTIDOS`. O superior tem significado
+      próprio — acima do global **nunca morde** e anunciaria uma barreira inerte. Mutações `M6`/`M7`
+      ⇒ vermelho. A variável está no README do operador e no `docker-compose.prod.yml` (vazia por
+      omissão) — o gate `TestManifestoDeDeployPassaTodaAConfigQueONoLe` apanhou a falta.
+- [x] **A latência não degrada, com número.** `BenchmarkAOS456ContagemPorChamador`: **42,5 ns** com
+      1 run, **718 ns** com 64, **6,65 µs** com 512 (o tecto global por omissão, e o pior caso).
+      Está dentro de `s.mu`; a `ed25519.Verify` do mesmo pedido custa **9x mais** e fora do mutex, e
+      o rate-limit por omissão admite 64/s quando esta secção sustentaria ~150 mil.
+      **Porquê varredura e não contador O(1):** um `map[principal]int` teria de ser decrementado nos
+      **quatro** sítios onde um run sai de `s.runs`, e uma entrada a mais tranca o chamador para
+      sempre — fail-**closed** e silencioso, pior do que 6,65 µs. A contagem derivada de `s.runs`
+      não tem estado próprio e não pode dessincronizar-se.
+- [x] `POST /plans` — **exclusão declarada, e estrutural:** essa rota **não hospeda runs**
+      (`TestAOS417IngressoNaoHospedaORun`), logo não há lugar a ocupar e uma guarda ali nunca
+      dispararia. O `plan_ingress.go` já o diz para o tecto global, pela mesma razão. E a porta que
+      *conta* — os runs-filho que o `aos-orq` submete por `POST /runs` — **está coberta**: ver
+      abaixo.
+- [x] **O achado do `aos-orq` está FECHADO, não declarado como resíduo.** O drenador submete todos
+      os runs-filho sob o **seu** principal; imputar ao chamador colapsaria os planos de todos os
+      humanos num tecto — o defeito deste ticket reaparecido noutra porta. A imputação vai ao
+      `RequestedBy`, **derivado pelo nó** do `planrequest.submitted` sob reclamação viva (AOS-439),
+      nunca do corpo — o mesmo valor que o `Goal.Subject` já usa como titular (AOS-440).
+      `TestAOS456ARunFilhoEImputadoAQuemPediuOPlano`; mutações `M9` (imputar ao drenador) e `M10`
+      (imputar sempre ao `RequestedBy`, tirando o tecto a quem não submete planos) ⇒ vermelho.
+- [x] O teste do critério **não** passa com um balde que nunca reabastece: não há balde nenhum neste
+      eixo. É um tecto de ocupação, e o que o torna não-vacuoso são as mutações acima.
+
+### Critérios de Aceitação — AOS-456b (TAXA), por fazer
+- [ ] Prova negativa de que o tráfego **não-atribuível** continua com tecto.
 - [ ] O custo de verificação criptográfica tem tecto **antes** de a identidade ser resolvida.
-- [ ] O banner deriva a postura da **composição real** (o handler), não só da config; e o ramo
-      «não composta» é **alcançável** e testado.
-- [ ] `AOS_INGRESS_PER_CALLER_MAX` tem tecto superior **e** inferior, ambos com o valor recusado
-      medido.
-- [ ] A estrutura não degrada a latência do caso benigno face ao estado anterior — com número
-      medido, não com afirmação.
-- [ ] `POST /plans` é coberto, ou a exclusão é declarada **no banner e no ticket** com o efeito
-      nomeado (uma barreira que só metade das portas respeita não é uma barreira — a doutrina do
-      `plan_ingress.go` para a reserva de `run_id`).
-- [ ] O teste do critério não passa com um balde que nunca reabastece.
+- [ ] Decidido, **antes** de escrever código, se a mitigação pertence ao nó ou ao `edge` (o desenho
+      argumenta que pertence ao `edge`, e que este eixo pode ser desnecessário).
+
+### Disciplina desta entrega (o que a tentativa 1 não teve)
+**Dez mutações injectadas no código real, uma a uma, com o teste a ter de avermelhar.** Todas
+avermelharam. A que **sobreviveu** à primeira tentativa — separar contagem de reserva com janela
+nula — está registada no teste como limite conhecido do sensor, em vez de ser tapada. Passar não
+prova nada; o que prova é falhar quando se parte o que se diz proteger.
+
+### Residuais DECLARADOS (não defeitos: fronteiras conhecidas)
+- Um run **SUSPENSO** à espera de aval humano sai de `s.runs` e **não** ocupa lugar — igual ao tecto
+  global. Um chamador pode acumular suspensos sem bater no tecto. Está no banner e no README.
+- A **retoma** (`/resume`) é **isenta**. Contá-la tornaria um run irretomável por quota, e um run
+  que não se pode retomar é um run **preso**, não limitado.
+- O tecto é **por-réplica**, como todo o resto da admission: N réplicas valem N vezes o tecto.
+- Sem o **gate soberano** composto o tecto **não** entra em vigor, e o banner declara-o
+  (`CONFIGURADO (n) mas NAO COMPOSTO`): sobre um principal auto-declarado no corpo, um tecto
+  contorna-se mudando o valor — pior do que não existir, porque seria anunciado.
+- O predicado à mão que este ticket removeu do wiring **sobrevive no banner do kill-switch de
+  soberania** (`main.go:417`, AOS-203). Mesma classe, outro ticket — registado, não corrigido aqui.
 
 ### Estado
-**ABERTO.** A tentativa 1 está revertida; o código não vive no repositório. O que fica é esta
-secção, que vale mais do que ela valia: sabe-se agora o que **não** funciona, porquê, e com que
-números.
+**AOS-456a FEITO** (2026-09-28). **AOS-456b ABERTO**, e possivelmente desnecessário — a decisão
+precede o código.
 
 ---
 

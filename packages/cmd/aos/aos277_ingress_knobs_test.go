@@ -65,6 +65,9 @@ func clearIngressEnv(t *testing.T) {
 	t.Setenv("AOS_INGRESS_RATE", "")
 	t.Setenv("AOS_INGRESS_BURST", "")
 	t.Setenv("AOS_INGRESS_MAX_INFLIGHT", "")
+	// AOS-456: a quarta. Sem a limpar, um ambiente de processo que a defina contamina os casos
+	// deste ficheiro que asserem `tuned` e o numero de opcoes.
+	t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +271,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 // e que o limite é por-réplica.
 func TestAOS277BannerDeclaresLimits(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
-		lines := ingressPostureBanner(ingressLimits{ratePerSec: DefaultRatePerSec, burst: DefaultRateBurst, maxInFlight: DefaultMaxInFlight})
+		lines := ingressPostureBanner(ingressLimits{ratePerSec: DefaultRatePerSec, burst: DefaultRateBurst, maxInFlight: DefaultMaxInFlight}, false)
 		if len(lines) != 1 {
 			t.Fatalf("esperava 1 linha de banner, vieram %d", len(lines))
 		}
@@ -280,7 +283,7 @@ func TestAOS277BannerDeclaresLimits(t *testing.T) {
 	})
 
 	t.Run("afinados", func(t *testing.T) {
-		lines := ingressPostureBanner(ingressLimits{ratePerSec: 12, burst: 34, maxInFlight: 56, tuned: true})
+		lines := ingressPostureBanner(ingressLimits{ratePerSec: 12, burst: 34, maxInFlight: 56, tuned: true}, false)
 		if len(lines) != 1 {
 			t.Fatalf("esperava 1 linha de banner, vieram %d", len(lines))
 		}
