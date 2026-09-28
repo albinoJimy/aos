@@ -151,28 +151,95 @@ func TestAOS456ARajadaDeUmNaoTiraLugaresAoOutro(t *testing.T) {
 	}
 }
 
-// TestAOS456AUmaRECUSANaoConsomeRecursoPartilhado — a assimetria em que o desenho assenta (ver
-// `docs/reports/AOS-456-desenho-do-trade-off-de-ordem.md`): um pedido RECUSADO não ocupa lugar
-// nenhum, ao contrário de um token de balde, que se GASTA na recusa. Se a recusa consumisse
-// recurso partilhado, 40 recusas de alice bloqueariam bob — que foi o defeito da tentativa 1.
-func TestAOS456AUmaRECUSANaoConsomeRecursoPartilhado(t *testing.T) {
+// TestAOS456AUmaRECUSANaoOcupaLUGAR_MasGASTAUmTOKEN — a fronteira exacta do que este eixo dá, e o
+// teste que a mede em vez de a esconder.
+//
+// A VERSÃO ANTERIOR DESTE TESTE ERA O PECADO DA TENTATIVA 1, COMETIDO POR MIM. Chamava-se
+// «UmaRECUSANaoConsomeRecursoPartilhado», e só era verde porque punha o balde global a 4096 com o
+// relógio parado: pôs o recurso partilhado FORA DO ALCANCE DO SENSOR e declarou a propriedade
+// provada. Uma revisão adversarial mediu a tabela real, com um balde de tamanho realista:
+//
+//	alice #1       -> 201
+//	alice #2..#10  -> 429 da etapa POR-CHAMADOR (e cada uma GASTOU um token global)
+//	bob   #1       -> 429 "rate limit excedido"  <- a 1.ª etapa, balde vazio
+//
+// É a forma da tabela que reverteu a tentativa 1. O que MUDOU e o que NÃO mudou:
+//
+//   - NÃO mudou: o token global é consumido no topo do `handleSubmit` e a decisão por-chamador
+//     acontece dentro do `submit`. Justiça em TAXA é o eixo AOS-456b, e não está feita.
+//   - MUDOU: A não tira LUGARES a B. É o recurso que este eixo governa, e é o que o teste afirma.
+//
+// Este teste mede AS DUAS metades, com um balde apertado de propósito. Uma afirmação que só é
+// verdadeira com o sensor cego não é uma afirmação.
+func TestAOS456AUmaRECUSANaoOcupaLUGAR_MasGASTAUmTOKEN(t *testing.T) {
 	const tecto = 1
-	srv, cred := noSoberanoComTecto(t, tecto)
+	const burst = 10
 
-	if st := submeterComo(t, srv, cred, "human:alice", "a-000"); st != http.StatusCreated {
-		t.Fatalf("a 1a submissao de alice devia ser admitida, veio %d", st)
+	model := &aos456Bloqueado{entrou: make(chan struct{}, 64), release: make(chan struct{})}
+	t.Cleanup(model.libertar)
+	node, _ := newAPINode(t, model, false)
+	t.Cleanup(func() { _ = node.Close() })
+	svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute),
+		WithInFlightPerCaller(tecto))
+	if err != nil {
+		t.Fatalf("NewNodeService: %v", err)
 	}
-	// 40 recusas seguidas.
-	for i := 1; i <= 40; i++ {
-		if st := submeterComo(t, srv, cred, "human:alice", fmt.Sprintf("a-%03d", i)); st != http.StatusTooManyRequests {
-			t.Fatalf("alice: submissao %d devia ser recusada com o tecto em 1, veio %d", i+1, st)
+	regions := govsov.NewRegistry(map[string]string{"board:demo": "eu"})
+	// BALDE APERTADO e relógio PARADO: `burst` tokens, e não reabastecem. É o que torna o custo
+	// partilhado VISÍVEL.
+	h, err := NewAPIHandler(svc, node, WithReadSovereignty(regions, audit.NewMemStore()),
+		WithRateLimit(1000, burst), WithAPIClock(aos277Clock()))
+	if err != nil {
+		t.Fatalf("NewAPIHandler: %v", err)
+	}
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	cred := credencialDeTeste(t, node)
+
+	// (1) Alice esgota o balde: 1 admitida, burst-1 recusadas pelo tecto POR-CHAMADOR.
+	admitidas, recusadas := 0, 0
+	for i := 0; i < burst; i++ {
+		switch st := submeterComo(t, srv, cred, "human:alice", fmt.Sprintf("a-%02d", i)); st {
+		case http.StatusCreated:
+			admitidas++
+		case http.StatusTooManyRequests:
+			recusadas++
+		default:
+			t.Fatalf("status inesperado %d", st)
 		}
 	}
-	// Bob continua a ser admitido. E o seu tecto está INTACTO — as 40 recusas de alice não lhe
-	// gastaram nada.
-	if st := submeterComo(t, srv, cred, "human:bob", "b-000"); st != http.StatusCreated {
-		t.Fatalf("bob levou %d depois de 40 pedidos RECUSADOS de alice — uma recusa esta a consumir "+
-			"recurso partilhado, que e precisamente o defeito da tentativa 1", st)
+	if admitidas != tecto || recusadas != burst-tecto {
+		t.Fatalf("esperava %d admitida(s) e %d recusada(s), veio %d/%d", tecto, burst-tecto, admitidas, recusadas)
+	}
+
+	// (2) A METADE QUE ESTE EIXO **NÃO** DÁ, e que o banner tem de declarar: bob leva 429 do BALDE,
+	// porque as recusas de alice gastaram os tokens. Se isto passar a 201 um dia, o eixo 456b foi
+	// feito — e este teste tem de ser reescrito, não removido.
+	if st := submeterComo(t, srv, cred, "human:bob", "b-00"); st != http.StatusTooManyRequests {
+		t.Fatalf("bob veio %d. A propriedade MEDIDA e conhecida e que as recusas de alice GASTAM "+
+			"tokens do balde global (consumido no topo do handleSubmit, antes da decisao por-chamador): "+
+			"esperava 429. Se isto mudou, foi o AOS-456b a ser feito — actualize o banner, o README e "+
+			"este teste, em vez de apagar a assercao", st)
+	}
+
+	// (3) A METADE QUE ESTE EIXO **DÁ**: os LUGARES de alice não são os de bob. Com o balde
+	// reposto (handler novo, mesmo serviço — é o `s.runs` que conta), bob é admitido enquanto alice
+	// continua no tecto.
+	h2, err := NewAPIHandler(svc, node, WithReadSovereignty(regions, audit.NewMemStore()),
+		WithRateLimit(1000, burst), WithAPIClock(aos277Clock()))
+	if err != nil {
+		t.Fatalf("NewAPIHandler: %v", err)
+	}
+	srv2 := httptest.NewServer(h2)
+	t.Cleanup(srv2.Close)
+	if st := submeterComo(t, srv2, cred, "human:bob", "b-01"); st != http.StatusCreated {
+		t.Fatalf("com o balde reposto bob devia ser admitido (o LUGAR de alice nao e o dele), veio %d — "+
+			"e esta a propriedade que o eixo da concorrencia existe para dar", st)
+	}
+	// CONTROLO: alice, com o balde igualmente reposto, continua recusada — o 429 dela vem do
+	// TECTO e não do balde, senão (3) não provava nada.
+	if st := submeterComo(t, srv2, cred, "human:alice", "a-99"); st != http.StatusTooManyRequests {
+		t.Fatalf("CONTROLO: alice devia continuar recusada pelo TECTO com o balde reposto, veio %d", st)
 	}
 }
 
@@ -357,23 +424,31 @@ func TestAOS456ABannerDistingueAsTRESPosturas(t *testing.T) {
 	casos := []struct {
 		nome      string
 		lim       ingressLimits
+		gate      bool
 		verificav bool
 		exige     []string
 		proibe    []string
 	}{
-		// Sem config, a verificabilidade é irrelevante: não há tecto nenhum para anunciar.
-		{"nao configurado (com gate)", base, true,
-			[]string{"NAO CONFIGURADO"}, []string{"LIGADO —", "NAO COMPOSTO", "(4)"}},
-		{"nao configurado (sem gate)", base, false,
-			[]string{"NAO CONFIGURADO"}, []string{"LIGADO —", "NAO COMPOSTO"}},
-		{"configurado mas NAO composto", comTecto(), false,
-			[]string{"NAO COMPOSTO", "(4)", "auto-declarado"}, []string{"LIGADO —", "NAO CONFIGURADO"}},
-		{"ligado", comTecto(), true,
-			[]string{"LIGADO —", "4 run(s)", "429"}, []string{"NAO COMPOSTO", "NAO CONFIGURADO"}},
+		// Sem config, a composição é irrelevante: não há tecto nenhum para anunciar.
+		{"nao configurado (com gate)", base, true, true,
+			[]string{"NAO CONFIGURADO"}, []string{"LIGADO sobre", "NAO COMPOSTO", "(4)"}},
+		{"nao configurado (sem gate)", base, false, false,
+			[]string{"NAO CONFIGURADO"}, []string{"LIGADO sobre", "NAO COMPOSTO"}},
+		{"configurado mas NAO composto", comTecto(), false, false,
+			[]string{"NAO COMPOSTO", "(4)", "auto-declarado"}, []string{"LIGADO sobre", "NAO CONFIGURADO"}},
+		// A POSTURA QUE A REVISÃO ADVERSARIAL DESCOBRIU: gate composto, credencial forte AUSENTE. O
+		// tecto está em vigor e é CONTORNÁVEL rodando o header. Antes desta correcção o banner
+		// dizia-lhe «SUBMISSOR VERIFICADO».
+		{"LIGADO mas DEMO-GRADE (contornavel por header)", comTecto(), true, false,
+			[]string{"DEMO-GRADE", "X-Aos-Reader", "CONTORNA-SE", "NAO vale contra abuso", "AOS_SOVEREIGN_OIDC_ISSUER"},
+			[]string{"VERIFICADO —", "NAO COMPOSTO", "NAO CONFIGURADO"}},
+		{"LIGADO sobre principal VERIFICADO", comTecto(), true, true,
+			[]string{"VERIFICADO", "credencial FORTE", "4 submissao"},
+			[]string{"DEMO-GRADE", "NAO COMPOSTO", "NAO CONFIGURADO"}},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			txt := strings.Join(ingressPostureBanner(c.lim, c.verificav), "\n")
+			txt := strings.Join(ingressPostureBanner(c.lim, c.gate, c.verificav), "\n")
 			for _, ex := range c.exige {
 				if !strings.Contains(txt, ex) {
 					t.Errorf("banner NAO declara %q\n--- banner ---\n%s", ex, txt)
@@ -456,52 +531,58 @@ func TestAOS456AEnvFailClosedNOSDOISSENTIDOS(t *testing.T) {
 	}
 }
 
-// BenchmarkAOS456ContagemPorChamador mede o que o desenho deixou explicitamente NÃO VERIFICADO: o
-// custo da varredura de `s.runs` na secção crítica do submit.
+// BenchmarkAOS456SubmitRecusadoInSitu mede o custo do tecto NO CAMINHO DE PRODUÇÃO — o que o
+// critério «a latência não degrada, com número» pede.
 //
-// PORQUE UMA VARREDURA E NÃO UM CONTADOR. Um `map[principal]int` incrementado na reserva seria
-// O(1), mas teria de ser decrementado nos QUATRO sítios onde um run sai de `s.runs`
-// (service.go:771, :821, :1184, :1195) — e uma entrada que fique a mais tranca o chamador para
-// sempre, uma falha fail-CLOSED e silenciosa, pior do que a varredura. A contagem derivada de
-// `s.runs` não pode dessincronizar-se porque não tem estado próprio. Este benchmark existe para
-// que a troca seja feita com um número, e não com uma intuição: `s.runs` está limitado pelo tecto
-// global (default 512), pelo que o pior caso é conhecido.
+// A PRIMEIRA VERSÃO DESTE BENCHMARK MEDIA UMA CÓPIA DO LAÇO, e foi um achado de revisão
+// adversarial: reimplementava a varredura sobre um `map` local, nunca chamava `submit` e nunca
+// tomava `s.mu`. Provado inútil por mutação — pôr o laço de PRODUÇÃO a fazer 20x o trabalho não
+// mexia um nanossegundo no número. Um sensor que não vê o código que mede não é um sensor.
 //
-// MEDIDO (go test -bench, -benchtime 200000x, este contentor):
+// Aqui o caminho é o real: `submit` com o tecto cheio é exactamente `Lock → varredura → Unlock →
+// return ErrCallerInFlightCeiling`, sem lease, sem goroutine, sem I/O.
 //
-//	runs=1     42.5 ns/op
-//	runs=64     718 ns/op
-//	runs=512   6.65 µs/op   <- PIOR CASO (o tecto global por omissão)
+// MEDIDO in situ (revisão independente, mesmo contentor): 1,10 µs com 64 runs, 6,17 µs com 512,
+// 69 µs com 4096, 1,37 ms com 32768. A ordem de grandeza confirma-se ONDE a premissa vale.
 //
-// COMO LER 6.65 µs. Está DENTRO de `s.mu`, que serializa todas as submissões — é o número que
-// importa, e não o custo por pedido. Dois pontos de comparação do MESMO pedido: a
-// `ed25519.Verify` da credencial mede 59.9 µs (nove vezes mais, e FORA do mutex) e o rate-limit
-// de ingresso por omissão admite 64 pedidos/segundo, quando esta secção crítica sozinha
-// sustentaria ~150 mil. A varredura não é o gargalo em nenhuma configuração de referência.
-//
-// QUANDO DEIXARIA DE SER VERDADE: um operador que suba muito `AOS_INGRESS_RATE` **e** mantenha
-// `AOS_INGRESS_MAX_INFLIGHT` no máximo. Fica declarado, não resolvido — trocar por um contador
-// O(1) é uma optimização com um risco fail-CLOSED próprio (uma entrada que fique a mais tranca o
-// chamador para sempre) e não se paga contra estes números.
-func BenchmarkAOS456ContagemPorChamador(b *testing.B) {
-	for _, n := range []int{1, 64, 512} {
+// ⚠️ A PREMISSA `s.runs ≤ 512` É FALSA, e é o resíduo honesto deste eixo: nem `handleResume` nem o
+// `ResumeInterruptedRuns` (arranque e varredura periódica) consultam o tecto GLOBAL, e o check
+// global do handler é um TOCTOU fora do mutex. `s.runs` pode passar o tecto, e aí a varredura
+// degrada linearmente segurando o mutex. Fica declarado no ticket como fronteira conhecida, não
+// resolvido: a alternativa O(1) tem um risco fail-CLOSED próprio (uma entrada a mais tranca o
+// chamador para sempre) e a via que faz `s.runs` crescer exige four-eyes composto e credencial
+// fresca por retoma.
+func BenchmarkAOS456SubmitRecusadoInSitu(b *testing.B) {
+	for _, n := range []int{1, 64, 512, 4096} {
 		b.Run(fmt.Sprintf("runs=%d", n), func(b *testing.B) {
-			runs := make(map[string]*runState, n)
-			for i := 0; i < n; i++ {
-				id := fmt.Sprintf("run-%04d", i)
-				runs[id] = &runState{runID: id, principal: fmt.Sprintf("human:p%03d", i%16)}
+			node, _ := newAPINode(&testing.T{}, &countingModel{}, false)
+			defer func() { _ = node.Close() }()
+			svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute),
+				WithInFlightPerCaller(1))
+			if err != nil {
+				b.Fatalf("NewNodeService: %v", err)
 			}
-			alvo := "human:p007"
+			// `s.runs` povoado à mão: o benchmark mede a VARREDURA, e hospedar n runs a sério mediria
+			// o loop de serviço.
+			svc.mu.Lock()
+			for i := 0; i < n; i++ {
+				id := fmt.Sprintf("run-%05d", i)
+				svc.runs[id] = &runState{runID: id, done: make(chan struct{}),
+					principal: fmt.Sprintf("human:p%03d", i%16)}
+			}
+			svc.mu.Unlock()
+
+			g := agentruntime.Goal{RunID: "medido", Objective: "x", MaxTurns: 1}
+			// `human:p000` porque `i%16` com i=0 o produz sempre: para QUALQUER n >= 1 este principal
+			// tem ao menos um run, logo o tecto de 1 está cheio e o caminho medido é a RECUSA. Um
+			// principal que não estivesse no tecto deixaria o submit seguir para o lease, e o
+			// benchmark mediria I/O em vez da varredura (o `runs=1` apanhou isto).
+			g.Principal.NHIID = "human:p000"
+			ctx := context.Background()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				c := 0
-				for _, r := range runs {
-					if r.principal == alvo {
-						c++
-					}
-				}
-				if c == -1 {
-					b.Fatal("impossivel")
+				if err := svc.submit(ctx, g, false); err != ErrCallerInFlightCeiling {
+					b.Fatalf("esperava a recusa pelo tecto (o caminho que se mede), veio %v", err)
 				}
 			}
 		})
@@ -650,4 +731,166 @@ func TestAOS456ARunFilhoEImputadoAQuemPediuOPlano(t *testing.T) {
 	if got := imputadoA(filhoDaAlice); got != "human:alice" {
 		t.Fatalf("com RequestedBy a imputacao e a quem PEDIU o plano, veio %q", got)
 	}
+}
+
+// TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL — o sensor que FALTAVA, e a lacuna foi apanhada
+// por revisão adversarial: duas mutações no wiring de [serveAPI] sobreviviam à suite INTEIRA.
+//
+//	N1: remover `&& gateComposto` da condição de composição  -> tecto sobre principal do CORPO
+//	N2: passar `true` fixo ao banner                          -> anuncia VERIFICADO sempre
+//
+// A N2 é LITERALMENTE o defeito ALTO da tentativa 1, e era reintroduzível sem uma linha vermelha: o
+// teste do banner injecta os booleanos à mão e o teste do predicado compara-o com o handler —
+// nenhum dos dois passa pelo `serveAPI`, que é o único sítio onde a decisão é tomada. Este teste
+// arranca o servidor REAL, com as variáveis REAIS, e lê o banner que sai.
+func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
+	// Arranca o servidor REAL numa porta conhecida, corre `medir` contra ele, encerra, e devolve o
+	// banner. A porta vem de [portaLivreLoopback] porque `serveAPI` recebe um endereço e não um
+	// listener — sem isso o teste leria o texto sem poder MEDIR o comportamento, que foi
+	// exactamente a lacuna que deixou a mutação N1 sobreviver.
+	arrancarMedirELerBanner := func(t *testing.T, node *Node, medir func(t *testing.T, addr string)) string {
+		t.Helper()
+		addr := portaLivreLoopback(t)
+		var out syncBuf
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- serveAPI(ctx, &out, node, addr) }()
+		time.Sleep(250 * time.Millisecond)
+		if medir != nil {
+			medir(t, "http://"+addr)
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("serveAPI devia encerrar graciosamente, veio %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("serveAPI nao encerrou apos cancelamento do ctx")
+		}
+		return out.String()
+	}
+
+	// (A) NÓ LEGADO (sem gate soberano) com a variável DEFINIDA. O tecto NÃO se compõe, e o banner
+	// tem de dizer «NAO COMPOSTO». Mata a N1: se a condição perder o `gateComposto`, o banner
+	// continua a dizer «NAO COMPOSTO» (deriva do mesmo booleano) mas o tecto fica LIGADO sobre um
+	// principal do corpo — por isso o caso (A) também MEDE o comportamento, não só o texto.
+	t.Run("no LEGADO: NAO compoe e NAO anuncia", func(t *testing.T) {
+		clearIngressEnv(t)
+		t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "1")
+		// MODELO BLOQUEADO, e é a diferença entre um sensor e um teste que passa sempre: com o
+		// `countingModel` o primeiro run TERMINA antes do segundo POST, `s.runs` esvazia-se e a
+		// medição abaixo passaria mesmo com o tecto composto. Foi assim que a mutação N1 sobreviveu
+		// à primeira versão deste caso.
+		model := &aos456Bloqueado{entrou: make(chan struct{}, 16), release: make(chan struct{})}
+		t.Cleanup(model.libertar)
+		node, _ := newAPINode(t, model, true)
+		t.Cleanup(func() { _ = node.Close() })
+		node.SovereignReadRegions = nil
+		node.SovereignAuthority = nil
+
+		// MEDE, e não só lê: com o tecto a 1 e o nó em modo LEGADO, DUAS submissões do mesmo
+		// `principal_nhi` do corpo TÊM de passar. Se a condição de composição perder o
+		// `gateComposto` (mutação N1), a segunda leva 429 e este caso avermelha — que é o que o
+		// texto do banner sozinho não conseguia ver.
+		banner := arrancarMedirELerBanner(t, node, func(t *testing.T, base string) {
+			for i := 0; i < 2; i++ {
+				corpo, _ := json.Marshal(map[string]any{
+					"run_id": fmt.Sprintf("legado-%02d", i), "objective": "x",
+					"principal_nhi": "nhi:mesmo", "credential": credencialDeTeste(t, node),
+				})
+				resp, err := http.Post(base+"/runs", "application/json", bytes.NewReader(corpo))
+				if err != nil {
+					t.Fatalf("POST /runs: %v", err)
+				}
+				st := resp.StatusCode
+				_ = resp.Body.Close()
+				if st == http.StatusTooManyRequests {
+					t.Fatalf("submissao %d do mesmo principal_nhi levou 429 num no LEGADO com o tecto a 1 "+
+						"— o tecto foi COMPOSTO sobre um principal que vem do CORPO do pedido, que o chamador "+
+						"escolhe. E a mutacao N1, e um tecto contornavel mudando um campo do corpo", i+1)
+				}
+				if st != http.StatusCreated {
+					t.Fatalf("submissao %d devia dar 201 num no legado, veio %d", i+1, st)
+				}
+			}
+		})
+		if !strings.Contains(banner, "NAO COMPOSTO") {
+			t.Fatalf("num no LEGADO o banner devia declarar NAO COMPOSTO; saiu:\n%s", banner)
+		}
+		for _, proibido := range []string{"LIGADO sobre principal VERIFICADO", "LIGADO sobre principal DEMO-GRADE"} {
+			if strings.Contains(banner, proibido) {
+				t.Fatalf("num no LEGADO o banner NAO pode declarar %q; saiu:\n%s", proibido, banner)
+			}
+		}
+	})
+
+	// (B) NÓ COM GATE mas SEM credencial forte: compõe, e anuncia DEMO-GRADE. Mata a N2 — um `true`
+	// fixo no banner produziria «VERIFICADO» aqui.
+	t.Run("gate composto SEM credencial forte: compoe e anuncia DEMO-GRADE", func(t *testing.T) {
+		clearIngressEnv(t)
+		t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "2")
+		node, _ := newAPINode(t, &countingModel{}, true)
+		t.Cleanup(func() { _ = node.Close() })
+		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
+		node.SovereignReadCredential = nil // a postura que o achado descobriu
+
+		banner := arrancarMedirELerBanner(t, node, nil)
+		if !strings.Contains(banner, "DEMO-GRADE") {
+			t.Fatalf("com o gate composto e SEM credencial forte o banner devia declarar DEMO-GRADE — "+
+				"anunciar VERIFICADO aqui e o defeito ALTO da tentativa 1; saiu:\n%s", banner)
+		}
+		// E tem de dizer COMO se contorna, senão o aviso não é accionável.
+		for _, exigido := range []string{"X-Aos-Reader", "CONTORNA-SE", "AOS_SOVEREIGN_OIDC_ISSUER"} {
+			if !strings.Contains(banner, exigido) {
+				t.Fatalf("o aviso DEMO-GRADE devia nomear %q; saiu:\n%s", exigido, banner)
+			}
+		}
+		if strings.Contains(banner, "LIGADO sobre principal VERIFICADO") {
+			t.Fatalf("banner declara VERIFICADO sem credencial forte composta; saiu:\n%s", banner)
+		}
+	})
+
+	// (C) NÓ COM CREDENCIAL FORTE: anuncia VERIFICADO. Sem este caso, um banner que dissesse
+	// DEMO-GRADE sempre passaria (A) e (B) — o ramo VERIFICADO tem de ser alcançável.
+	t.Run("credencial forte composta: anuncia VERIFICADO", func(t *testing.T) {
+		clearIngressEnv(t)
+		t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "3")
+		node, _ := newAPINode(t, &countingModel{}, true)
+		t.Cleanup(func() { _ = node.Close() })
+		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
+		node.SovereignReadCredential = credencialDeLeituraInerte{}
+
+		banner := arrancarMedirELerBanner(t, node, nil)
+		if !strings.Contains(banner, "LIGADO sobre principal VERIFICADO") {
+			t.Fatalf("com credencial forte composta o banner devia declarar VERIFICADO; saiu:\n%s", banner)
+		}
+		if strings.Contains(banner, "DEMO-GRADE") {
+			t.Fatalf("banner declara DEMO-GRADE com credencial forte composta; saiu:\n%s", banner)
+		}
+	})
+
+	// (D) A VARIÁVEL AUSENTE não pode anunciar tecto nenhum, em nó nenhum.
+	t.Run("variavel ausente: NAO CONFIGURADO", func(t *testing.T) {
+		clearIngressEnv(t)
+		node, _ := newAPINode(t, &countingModel{}, true)
+		t.Cleanup(func() { _ = node.Close() })
+		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
+		node.SovereignReadCredential = credencialDeLeituraInerte{}
+
+		banner := arrancarMedirELerBanner(t, node, nil)
+		if !strings.Contains(banner, "NAO CONFIGURADO") {
+			t.Fatalf("sem a variavel o banner devia declarar NAO CONFIGURADO; saiu:\n%s", banner)
+		}
+	})
+}
+
+// credencialDeLeituraInerte compõe o campo `SovereignReadCredential` sem trazer um IdP: este
+// ficheiro só precisa que ele esteja NÃO-NULO, porque é isso que [principalDoRunEVerificavel] lê. O
+// `verify` nega sempre — o que é a postura fail-closed correcta para uma credencial sem IdP, e
+// impede que alguém use este tipo como atalho para autorizar algo.
+type credencialDeLeituraInerte struct{}
+
+func (credencialDeLeituraInerte) verify(context.Context, *http.Request) (string, string, error) {
+	return "", "", ErrNoReadCredential
 }

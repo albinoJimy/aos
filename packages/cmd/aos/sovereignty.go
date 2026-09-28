@@ -179,6 +179,25 @@ func noTemGateSoberanoDeLeitura(node *Node) bool {
 		(node.SovereignAuthority != nil || node.SovereignReadRegions != nil)
 }
 
+// principalDoRunEVerificavel diz se o principal que o nó atribui a um run submetido é INFORJÁVEL
+// pelo submissor — condição de um tecto por-chamador que signifique alguma coisa contra abuso.
+//
+// É MAIS ESTREITO do que [noTemGateSoberanoDeLeitura], E A DIFERENÇA FOI UM ACHADO DE REVISÃO
+// ADVERSARIAL (AOS-456a). Com o gate composto mas SEM credencial forte — `AOS_BOARD_REGIONS`
+// definida e `AOS_SOVEREIGN_OIDC_ISSUER`/`AUDIENCE` ausentes, fora de produção — o
+// `readGovernance.autorizarComCausa` cai na VIA LEGADA e lê o principal de `X-Aos-Reader`
+// (sovereignty.go, ramo `g.cred == nil`). Isso é um valor que o chamador escreve: 60 submissões com
+// o header a rodar mediram 60 admitidas e 0 recusadas com o tecto a 2. O predicado que compunha o
+// tecto era o do gate, e o banner anunciava «SUBMISSOR VERIFICADO» sobre um header.
+//
+// O tecto CONTINUA a compor-se na postura demo — vale contra um cliente honesto em rajada, que é o
+// caso comum —, mas deixa de ser ANUNCIADO como o que não é: o banner distingue as duas
+// («VERIFICADO» vs «DEMO-GRADE, contornável por header»). Uma barreira útil contra acidente é
+// legítima; anunciá-la como protecção contra abuso não é.
+func principalDoRunEVerificavel(node *Node) bool {
+	return noTemGateSoberanoDeLeitura(node) && node.SovereignReadCredential != nil
+}
+
 // newReadGovernance compõe a costura de leitura soberana. regions e worm são obrigatórios (o
 // chamador só a compõe quando ambos existem — ver [WithReadSovereignty]/[WithSovereignAuthority]
 // e o auto-wiring de [NewAPIHandler]). cred nil ⇒ via LEGADA por headers (demo-grade); composta

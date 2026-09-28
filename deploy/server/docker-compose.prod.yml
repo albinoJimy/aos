@@ -375,11 +375,18 @@ services:
       AOS_INGRESS_RATE: "${AOS_INGRESS_RATE:-64}"
       AOS_INGRESS_BURST: "${AOS_INGRESS_BURST:-128}"
       AOS_INGRESS_MAX_INFLIGHT: "${AOS_INGRESS_MAX_INFLIGHT:-512}"
-      # AOS-456 — tecto de runs EM CURSO POR SUBMISSOR. VAZIO por omissão (⇒ NÃO COMPOSTO, o
-      # comportamento de hoje): defini-lo é uma decisão do operador, porque fecha admissões que
-      # hoje passam. Tem de ser <= AOS_INGRESS_MAX_INFLIGHT (acima nunca morderia) e só entra em
-      # vigor com o gate soberano de leitura composto — sem ele o principal vem do corpo do pedido
-      # e o banner declara `CONFIGURADO (n) mas NAO COMPOSTO`.
+      # AOS-456 — tecto de SUBMISSÕES NOVAS simultâneas POR SUBMISSOR. VAZIO por omissão (⇒ NÃO
+      # COMPOSTO, o comportamento de hoje): defini-lo é uma decisão do operador, porque fecha
+      # admissões que hoje passam. Tem de ser <= AOS_INGRESS_MAX_INFLIGHT (acima nunca morderia).
+      #
+      # NÃO O PONHA ABAIXO DE 16 se usar o aos-orq: ele despacha até 16 runs-filho por plano, todos
+      # imputados ao mesmo submissor, e trata o 429 como erro genérico sem backoff — um valor menor
+      # parte planos com fan-out de forma reprodutível.
+      #
+      # Só é INFORJÁVEL com credencial forte de leitura composta (AOS_SOVEREIGN_OIDC_*, que
+      # AOS_MODE=production já exige): com o gate soberano mas sem OIDC a atribuição vem do header
+      # X-Aos-Reader e contorna-se rodando-o — o banner declara-o `LIGADO sobre principal
+      # DEMO-GRADE`. Ver deploy/node/README.md para as fronteiras completas.
       AOS_INGRESS_MAX_INFLIGHT_PER_CALLER: "${AOS_INGRESS_MAX_INFLIGHT_PER_CALLER:-}"
 
       # Tecto de ORÇAMENTO por-run, em tokens (AOS-008/AOS-256/AOS-260). Vazio ⇒ o ponto de

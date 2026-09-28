@@ -183,12 +183,18 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 //   - O 429 é seco: `writeError` não emite `Retry-After`, pelo que o cliente não recebe
 //     indicação de quando repetir.
 //
-// ingressPostureBanner declara os limites EM VIGOR. `principalVerificavel` é a COMPOSIÇÃO REAL do
-// tecto por-chamador (AOS-456), não a config: a tentativa 1 deste ticket derivava a postura só de
-// `lim` e anunciava «LIGADA» com a barreira a `nil` porque a composição dependia de outra coisa.
-// Aqui o segundo parâmetro existe para que isso não possa acontecer — e para que o ramo «configurado
-// mas NÃO COMPOSTO» seja ALCANÇÁVEL e testável, que era o outro defeito.
-func ingressPostureBanner(lim ingressLimits, principalVerificavel bool) []string {
+// ingressPostureBanner declara os limites EM VIGOR. Os dois booleanos são COMPOSIÇÕES REAIS, não
+// config — a tentativa 1 deste ticket derivava a postura só de `lim` e anunciava «LIGADA» com a
+// barreira a `nil`. E são DOIS porque uma revisão adversarial mediu que colapsá-los num era o mesmo
+// defeito noutra forma:
+//
+//   - `gateComposto` ([noTemGateSoberanoDeLeitura]): o tecto por-chamador está em vigor;
+//   - `principalVerificavel` ([principalDoRunEVerificavel]): e a atribuição é INFORJÁVEL.
+//
+// Com o gate composto e SEM credencial forte o principal vem do header `X-Aos-Reader`, que o
+// chamador escreve — medido: 60 submissões com o header a rodar, 60 admitidas, tecto a 2. O tecto
+// compõe-se nessa postura (vale contra rajada honesta) mas o banner tem de dizer QUAL das duas é.
+func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel bool) []string {
 	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER definida)"
 	if lim.tuned {
 		origem = "AFINADO por AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER"
@@ -196,12 +202,27 @@ func ingressPostureBanner(lim ingressLimits, principalVerificavel bool) []string
 	// DOBRA DO TECTO POR-CHAMADOR (AOS-456) — três posturas DISTINGUÍVEIS, e a do meio é a que
 	// a revisão adversarial da tentativa 1 apanhou: configurado e inerte.
 	porChamador := " TECTO POR-CHAMADOR (AOS-456): NAO CONFIGURADO — AOS_INGRESS_MAX_INFLIGHT_PER_CALLER vazia, logo o tecto de runs em curso e SO global e uma rajada de um chamador pode ocupar todos os lugares."
+	// O ALCANCE EXACTO, e o que ele NAO da — as tres frases sao achados de revisao adversarial e
+	// nenhuma e opcional:
+	//
+	//  (1) «admite N submissoes NOVAS simultaneas», nao «ocupa N lugares»: as duas isencoes
+	//      (suspenso sai da contagem, retoma nao consulta o tecto) COMPOEM-SE, e medidos deram 20
+	//      runs em `s.runs` de um submissor com o tecto a 1;
+	//  (2) o 429 por-chamador GASTA um token do balde global, porque o balde e consumido no topo do
+	//      handler e a decisao por-chamador acontece no submit. A rajada de A nao tira LUGARES a B,
+	//      mas gasta TAXA comum — a justica em taxa e o eixo 456b, e nao esta feita;
+	//  (3) o tecto tem um PISO pratico ditado por quem submete em paralelo: o `aos-orq` despacha ate
+	//      16 runs-filho por plano, todos imputados ao mesmo submissor.
+	alcance := " ALCANCE do tecto por-chamador: admite N submissoes NOVAS simultaneas — NAO e um tecto de OCUPACAO: um run SUSPENSO a espera de aval humano SAI da contagem e a RETOMA (/resume) NAO a consulta, pelo que um submissor pode ter MAIS de N runs em `s.runs` (medido: 20 com o tecto a 1). E o 429 por-chamador GASTA um token do balde GLOBAL (o balde e consumido no topo do handler, a decisao por-chamador no submit): a rajada de um chamador nao tira LUGARES aos outros, mas gasta TAXA comum — justica em TAXA e o eixo AOS-456b, NAO esta feita. PISO PRATICO: o aos-orq despacha ate 16 runs-filho por plano, todos do mesmo submissor, pelo que um valor abaixo de 16 parte planos com fan-out."
 	switch {
 	case lim.inFlightPerCaller > 0 && principalVerificavel:
-		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): LIGADO — cada SUBMISSOR VERIFICADO ocupa no maximo %d run(s) EM CURSO; exceder responde 429 SEM ocupar lugar nenhum, pelo que a rajada de um chamador nao tira lugares aos outros. A RETOMA (/resume) e ISENTA (re-hospeda um run ja admitido). Um run SUSPENSO a espera de aval humano SAI desta contagem, como sai da global: um chamador pode acumular suspensos sem bater no tecto.",
-			lim.inFlightPerCaller)
+		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): LIGADO sobre principal VERIFICADO — cada submissor admite no maximo %d submissao(oes) NOVA(s) simultanea(s); exceder responde 429 sem ocupar lugar nenhum. A atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel pelo chamador.%s",
+			lim.inFlightPerCaller, alcance)
+	case lim.inFlightPerCaller > 0 && gateComposto:
+		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): LIGADO sobre principal DEMO-GRADE (%d) — ATENCAO: sem credencial forte composta o principal vem do header X-Aos-Reader, que o CHAMADOR escreve, pelo que este tecto CONTORNA-SE rodando o header (medido: 60 submissoes rotativas, 60 admitidas com o tecto a 2). Vale contra rajada HONESTA ou cliente mal configurado; NAO vale contra abuso. Para o tornar inforjavel defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE (AOS_MODE=production ja os exige).%s",
+			lim.inFlightPerCaller, alcance)
 	case lim.inFlightPerCaller > 0:
-		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): CONFIGURADO (%d) mas NAO COMPOSTO — sem gate soberano de leitura o principal do run vem do CORPO do pedido (auto-declarado), e um tecto sobre um valor que o chamador escolhe contorna-se mudando-o. NAO esta em vigor: defina AOS_BOARD_REGIONS (e o WORM) para que o principal seja VERIFICADO.",
+		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): CONFIGURADO (%d) mas NAO COMPOSTO — sem gate soberano de leitura o principal do run vem do CORPO do pedido (auto-declarado), e um tecto sobre um valor que o chamador escolhe contorna-se mudando-o. NAO esta em vigor: defina AOS_BOARD_REGIONS (e o WORM).",
 			lim.inFlightPerCaller)
 	}
 	return []string{

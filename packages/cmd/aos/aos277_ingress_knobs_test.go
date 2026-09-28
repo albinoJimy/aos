@@ -271,7 +271,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 // e que o limite é por-réplica.
 func TestAOS277BannerDeclaresLimits(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
-		lines := ingressPostureBanner(ingressLimits{ratePerSec: DefaultRatePerSec, burst: DefaultRateBurst, maxInFlight: DefaultMaxInFlight}, false)
+		lines := ingressPostureBanner(ingressLimits{ratePerSec: DefaultRatePerSec, burst: DefaultRateBurst, maxInFlight: DefaultMaxInFlight}, false, false)
 		if len(lines) != 1 {
 			t.Fatalf("esperava 1 linha de banner, vieram %d", len(lines))
 		}
@@ -283,7 +283,7 @@ func TestAOS277BannerDeclaresLimits(t *testing.T) {
 	})
 
 	t.Run("afinados", func(t *testing.T) {
-		lines := ingressPostureBanner(ingressLimits{ratePerSec: 12, burst: 34, maxInFlight: 56, tuned: true}, false)
+		lines := ingressPostureBanner(ingressLimits{ratePerSec: 12, burst: 34, maxInFlight: 56, tuned: true}, false, false)
 		if len(lines) != 1 {
 			t.Fatalf("esperava 1 linha de banner, vieram %d", len(lines))
 		}

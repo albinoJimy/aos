@@ -1693,32 +1693,66 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
       composto, com o **modelo bloqueado** (sem isso os runs terminavam entre submissões e o teste
       passaria com o tecto REMOVIDO) e o **balde global largo com o relógio parado** (um `429` que
       viesse do balde tornaria o teste vacuoso). Mutação `M1` (tecto removido) ⇒ 5 testes vermelhos.
-- [x] **Uma recusa não consome recurso partilhado.** `TestAOS456AUmaRECUSANaoConsomeRecursoPartilhado`:
-      40 recusas de A não tiram nada a B. É a assimetria em que o desenho assenta, e a propriedade
-      exacta que a tentativa 1 não tinha.
+- [x] **Uma recusa não ocupa LUGAR** — e ⚠️ **gasta um token do balde global.** A primeira versão
+      deste critério dizia «não consome recurso partilhado» e era **falsa**: o balde é consumido no
+      topo do `handleSubmit` e a decisão por-chamador acontece no `submit`, pelo que cada 429
+      por-chamador gastou um token comum. O teste que o «provava» só era verde porque punha o balde
+      a **4096 com o relógio parado** — pôs o recurso partilhado fora do alcance do sensor, que é o
+      movimento exacto que fez a tentativa 1 passar 31 gates. **Apanhado por revisão adversarial
+      independente, não por mim.** O teste
+      (`TestAOS456AUmaRECUSANaoOcupaLUGAR_MasGASTAUmTOKEN`) passou a medir as DUAS metades com um
+      balde apertado, e a afirmar a tabela verdadeira:
+      `alice #1 -> 201; #2..#10 -> 429 por-chamador (gastam tokens); bob #1 -> 429 "rate limit"`.
+      O que este eixo dá é que A não tira **lugares** a B; **taxa** é o 456b e não está feita.
 - [x] **A verificação e a reserva são atómicas** (partilham a secção crítica de `s.mu`).
       `TestAOS456ATectoEAtomico`: 40 pedidos concorrentes, tecto 3, admitidos **exactamente** 3.
       ⚠️ **O sensor é probabilístico e o teste di-lo, com a tabela medida:** apanha
       `runtime.Gosched()` e 50 µs, **não** apanha unlock/relock imediato nem 1 µs. Apanha a janela
       que o defeito REAL teria (a verificação no handler, com `authorize` + `ed25519.Verify` 59,9 µs
       + selagem WORM pelo meio); contra um reordering de nanossegundos a garantia vem da estrutura.
-- [x] O banner deriva a postura da **composição real**, e o ramo «não composta» é **alcançável** e
-      testado: `TestAOS456ABannerDistingueAsTRESPosturas` cobre as três, e
-      `TestAOS456APredicadoDeComposicaoCOINCIDEComOGateReal` compara o predicado do arranque com o
-      comportamento do handler. **Achado próprio, durante a implementação:** o predicado escrito à
-      mão omitia o ramo `SovereignAuthority` — a via FORTE. Não era alcançável pelo `Bootstrap`
-      (`readRegions = readAuthority.Registry()`), era-o in-process, e era uma cópia que nada obrigava
-      a acompanhar. Extraído para `noTemGateSoberanoDeLeitura`, usado pelos dois sítios. Mutação
-      `M8` (repor a cópia) ⇒ vermelho.
+- [x] O banner deriva a postura da **composição real**, e há **quatro** posturas, todas alcançáveis
+      e testadas. Duas correcções de revisão adversarial entraram aqui:
+      - **ALTO-1 (mentira no banner):** o predicado de composição testava «gate soberano composto»,
+        que **não é** «principal verificado». Com o gate composto e a credencial forte AUSENTE
+        (`AOS_BOARD_REGIONS` definida, `AOS_SOVEREIGN_OIDC_*` ausentes, fora de produção) o
+        principal vem do header `X-Aos-Reader` — que o chamador escreve. **Medido: 60 submissões com
+        o header a rodar, 60 admitidas com o tecto a 2**, e o banner dizia «SUBMISSOR VERIFICADO».
+        Agravante: o meu próprio teste de aceitação distingue alice de bob **por esse header**, logo
+        o critério foi provado na única configuração em que o mecanismo se contorna. Corrigido com
+        um predicado próprio (`principalDoRunEVerificavel`, que exige a credencial forte) e uma
+        **quarta** postura no banner: `LIGADO sobre principal DEMO-GRADE`, que nomeia o header, diz
+        que se contorna e diz como se fecha. O tecto continua composto nessa postura — vale contra
+        rajada honesta — mas deixa de ser anunciado como o que não é.
+      - **ALTO-2 (sensor ausente no elo que este critério declarava fechado):** duas mutações no
+        wiring de `serveAPI` — remover a condição de composição (`N1`) e passar `true` fixo ao banner
+        (`N2`) — **sobreviviam à suite inteira**, e a `N2` é literalmente o defeito ALTO da
+        tentativa 1. Nenhum teste tocava `serveAPI`. Fechado com
+        `TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL`, que arranca o servidor real em quatro
+        posturas, **mede** o comportamento (não só lê o texto) e mata `N1`, `N2` e `N4`. A primeira
+        versão desse teste ainda deixava a `N1` sobreviver, porque usava o `countingModel` e o run
+        terminava entre os dois POSTs — corrigido com o modelo bloqueado.
+      - **Achado próprio, anterior:** o predicado escrito à mão omitia o ramo `SovereignAuthority`.
+        Não era alcançável pelo `Bootstrap` (`readRegions = readAuthority.Registry()`), era-o
+        in-process. Extraído para `noTemGateSoberanoDeLeitura`. Mutação `M8` ⇒ vermelho.
 - [x] `AOS_INGRESS_MAX_INFLIGHT_PER_CALLER` tem tecto superior **e** inferior, com o valor recusado
       medido: 12 casos em `TestAOS456AEnvFailClosedNOSDOISSENTIDOS`. O superior tem significado
       próprio — acima do global **nunca morde** e anunciaria uma barreira inerte. Mutações `M6`/`M7`
       ⇒ vermelho. A variável está no README do operador e no `docker-compose.prod.yml` (vazia por
       omissão) — o gate `TestManifestoDeDeployPassaTodaAConfigQueONoLe` apanhou a falta.
-- [x] **A latência não degrada, com número.** `BenchmarkAOS456ContagemPorChamador`: **42,5 ns** com
-      1 run, **718 ns** com 64, **6,65 µs** com 512 (o tecto global por omissão, e o pior caso).
-      Está dentro de `s.mu`; a `ed25519.Verify` do mesmo pedido custa **9x mais** e fora do mutex, e
-      o rate-limit por omissão admite 64/s quando esta secção sustentaria ~150 mil.
+- [x] **A latência não degrada, com número — e o número passou a vir do código de produção.** A
+      primeira versão (`BenchmarkAOS456ContagemPorChamador`) media uma **cópia** do laço sobre um
+      `map` local: nunca chamava `submit`, nunca tomava `s.mu`. **Provado inútil por mutação (achado
+      de revisão):** pôr o laço de produção a fazer 20x o trabalho não mexia um nanossegundo.
+      Substituído por `BenchmarkAOS456SubmitRecusadoInSitu`, que percorre o caminho real
+      (`Lock → varredura → Unlock → recusa`): **75,9 ns** com 1 run, **760 ns** com 64, **6,28 µs**
+      com 512, **61,1 µs** com 4096. A mesma mutação N3 agora move o número **18–19x**.
+      Os 6,28 µs estão dentro de `s.mu`; a `ed25519.Verify` do mesmo pedido custa 59,9 µs e fora do
+      mutex, e o rate-limit por omissão admite 64/s.
+      ⚠️ **A premissa `s.runs ≤ 512` é FALSA**, e é resíduo declarado: nem `handleResume` nem o
+      `ResumeInterruptedRuns` consultam o tecto global, e o check global do handler é um TOCTOU fora
+      do mutex. Acima de 512 a varredura degrada linearmente segurando o mutex (medido pela revisão:
+      1,37 ms com 32768 runs). A via que faz `s.runs` crescer exige four-eyes composto e credencial
+      fresca por retoma.
       **Porquê varredura e não contador O(1):** um `map[principal]int` teria de ser decrementado nos
       **quatro** sítios onde um run sai de `s.runs`, e uma entrada a mais tranca o chamador para
       sempre — fail-**closed** e silencioso, pior do que 6,65 µs. A contagem derivada de `s.runs`
@@ -1744,11 +1778,30 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
 - [ ] Decidido, **antes** de escrever código, se a mitigação pertence ao nó ou ao `edge` (o desenho
       argumenta que pertence ao `edge`, e que este eixo pode ser desnecessário).
 
-### Disciplina desta entrega (o que a tentativa 1 não teve)
-**Dez mutações injectadas no código real, uma a uma, com o teste a ter de avermelhar.** Todas
-avermelharam. A que **sobreviveu** à primeira tentativa — separar contagem de reserva com janela
-nula — está registada no teste como limite conhecido do sensor, em vez de ser tapada. Passar não
-prova nada; o que prova é falhar quando se parte o que se diz proteger.
+### Disciplina desta entrega, e onde ela falhou
+**Catorze mutações injectadas no código real, uma a uma.** As dez primeiras (o mecanismo, a
+imputação, a env, o predicado) avermelharam à primeira. Quatro **não**, e nenhuma foi encontrada por
+mim:
+
+| | Mutação | Quem apanhou |
+|---|---|---|
+| `M2` | separar contagem de reserva com janela **nula** | eu, ao mutar |
+| `N1` | remover a condição de composição em `serveAPI` | **revisão adversarial** |
+| `N2` | passar `true` fixo ao banner em `serveAPI` | **revisão adversarial** |
+| `N3` | laço de produção 20x mais lento (o benchmark não via) | **revisão adversarial** |
+
+A `M2` está registada no teste como limite **conhecido** do sensor, com a tabela de sensibilidade
+medida, em vez de tapada. As `N1`–`N3` eram **lacunas de sensor sobre critérios que este ticket
+declarava fechados** — e a `N2` é literalmente o defeito ALTO da tentativa 1, reintroduzível sem uma
+linha vermelha. Estão fechadas.
+
+**A lição, e é contra mim:** a tentativa 1 morreu de prosa correcta sobre código que fazia outra
+coisa. Esta entrega repetiu a forma em três sítios — o critério «não consome recurso partilhado»
+(falso, e o teste escondia o balde), o banner a dizer «VERIFICADO» sobre um header, e o benchmark a
+medir uma cópia do laço. **O mecanismo funcionava; as afirmações sobre ele não.** Nenhum dos três foi
+apanhado por mutação minha, porque as minhas mutações atacaram o mecanismo e as afirmações estavam
+noutro lado. Mutar o código não basta: há que mutar aquilo de que a afirmação depende, incluindo a
+configuração do próprio teste.
 
 ### Residuais DECLARADOS (não defeitos: fronteiras conhecidas)
 - Um run **SUSPENSO** à espera de aval humano sai de `s.runs` e **não** ocupa lugar — igual ao tecto
@@ -1761,10 +1814,28 @@ prova nada; o que prova é falhar quando se parte o que se diz proteger.
   contorna-se mudando o valor — pior do que não existir, porque seria anunciado.
 - O predicado à mão que este ticket removeu do wiring **sobrevive no banner do kill-switch de
   soberania** (`main.go:417`, AOS-203). Mesma classe, outro ticket — registado, não corrigido aqui.
+- **`s.runs` NÃO está limitado por `AOS_INGRESS_MAX_INFLIGHT`:** `handleResume` e o
+  `ResumeInterruptedRuns` (arranque e varredura periódica) não o consultam, e o check do handler é um
+  TOCTOU fora do mutex. Consequência para este eixo: a varredura O(n) pode degradar acima de 512
+  (1,37 ms com 32768 runs, medido). Pré-condição para o provocar: four-eyes/`ResumeRecords` composto
+  e credencial fresca por retoma — não é via para criar trabalho novo.
+- **PISO PRÁTICO ditado pelo `aos-orq`, e não validável no nó:** ele despacha até **16** runs-filho
+  por plano (`dispatchMaxConcurrency`), todos imputados ao mesmo submissor — o que é o acerto deste
+  ticket, e faz com que **qualquer valor abaixo de 16 parta planos com *fan-out* de forma
+  reprodutível**. Pior: `nodeClient.Submit` trata o 429 como erro genérico (sem `Retry-After`, sem
+  backoff, sem ler o corpo que distingue as três recusas) e o erro aborta a passagem de despacho
+  inteira. O nó não conhece o orquestrador, logo não pode validar este piso: está declarado no
+  banner, no README do operador e no compose. **O retry/backoff no `aos-orq` é trabalho do lado dele
+  — ticket próprio, não escopo deste.**
+- **Um drenador configurado (`AOS_PLAN_DRAINERS`) pode imputar runs a qualquer humano com reclamação
+  viva**, logo um drenador comprometido esgota o tecto de uma vítima. Fronteira aceitável (o drenador
+  é confiado por configuração), declarada aqui porque não estava.
 
 ### Estado
-**AOS-456a FEITO** (2026-09-28). **AOS-456b ABERTO**, e possivelmente desnecessário — a decisão
-precede o código.
+**AOS-456a FEITO** (2026-09-28), depois de uma revisão adversarial independente encontrar 3 ALTO e 3
+MÉDIO na primeira versão do commit — dois deles contra afirmações que este ticket declarava provadas.
+As correcções estão acima, cada uma com a mutação que agora a guarda. **AOS-456b ABERTO**, e
+possivelmente desnecessário — a decisão precede o código.
 
 ---
 
