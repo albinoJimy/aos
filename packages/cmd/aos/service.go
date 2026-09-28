@@ -66,13 +66,14 @@ var (
 	// vezes).
 	ErrRunAlreadyInProgress = errors.New("aos: run ja em curso nesta replica (RunID duplicado)")
 
-	// ErrCallerInFlightCeiling — o SUBMISSOR já tem o seu tecto de runs EM CURSO (AOS-456).
+	// ErrCallerInFlightCeiling — o SUBMISSOR já tem o seu tecto de SUBMISSÕES NOVAS simultâneas
+	// (AOS-456). NÃO é um tecto de ocupação: ver [WithInFlightPerCaller].
 	//
 	// É distinto de [ErrTooManyInFlight]/do tecto global de propósito: um 429 que não distingue
 	// «o nó está cheio» de «TU estás cheio» manda o operador diagnosticar o nó quando o problema
 	// é a quota de um chamador. O corpo da resposta continua uniforme; o que muda é o erro que o
 	// log do operador nomeia.
-	ErrCallerInFlightCeiling = errors.New("aos: o submissor ja tem o seu tecto de runs EM CURSO (AOS_INGRESS_MAX_INFLIGHT_PER_CALLER) — a rajada de um chamador nao ocupa os lugares dos outros")
+	ErrCallerInFlightCeiling = errors.New("aos: o submissor ja tem o seu tecto de SUBMISSOES NOVAS simultaneas (AOS_INGRESS_MAX_INFLIGHT_PER_CALLER) — a rajada de um chamador nao ocupa os lugares dos outros; nao e um tecto de OCUPACAO (um run suspenso sai da contagem e a retoma nao a consulta)")
 
 	// ErrRunSuspended — o run PAROU à espera de aval humano (AOS-021) e não é
 	// re-submissível: re-submeter perderia o estado suspenso e a aprovação pendente.
@@ -110,8 +111,8 @@ type runState struct {
 	cancel context.CancelFunc
 	done   chan struct{} // fechado quando o run termina e sai do registo de em-curso
 
-	// principal é o SUBMISSOR a que este run é imputado, para o tecto de concorrência
-	// POR-CHAMADOR (AOS-456). Vem de [imputadoA] — que em modo SOBERANO devolve sempre um valor
+	// principal é o SUBMISSOR a que este run é imputado, para o tecto de submissões novas
+	// simultâneas POR-CHAMADOR (AOS-456). Vem de [imputadoA] — que em modo SOBERANO devolve sempre um valor
 	// DERIVADO PELO NÓ (o submissor do plano lido do Event Store, ou o principal que o
 	// `readGovernance.authorize` resolveu da credencial verificada, achado A7 do AOS-217), nunca
 	// um campo de corpo auto-declarado. Ver a nota de [imputadoA] para o porquê de um run-filho
@@ -165,7 +166,7 @@ type NodeService struct {
 
 	hbInterval   time.Duration // período de renovação (heartbeat) da posse; <= 0 desliga
 	completedCap int           // teto de desfechos retidos (FIFO); <= 0 = ilimitado
-	// inFlightPerCaller é o tecto de runs EM CURSO por SUBMISSOR (AOS-456). <= 0 ⇒ NÃO COMPOSTO,
+	// inFlightPerCaller é o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456). <= 0 ⇒ NÃO COMPOSTO,
 	// e o banner declara-o — não se finge uma barreira que não existe.
 	inFlightPerCaller int
 
@@ -319,7 +320,7 @@ type nodeServiceConfig struct {
 	hbInterval      time.Duration // 0 ⇒ derivado de ttl/3 em NewNodeService
 	completedCap    int           // 0 ⇒ DefaultCompletedRetention; < 0 ⇒ ilimitado
 	completedCapSet bool
-	// inFlightPerCaller — tecto de runs EM CURSO por submissor (AOS-456). <= 0 ⇒ não composto.
+	// inFlightPerCaller — tecto de SUBMISSÕES NOVAS simultâneas por submissor (AOS-456). <= 0 ⇒ não composto.
 	inFlightPerCaller int
 	workerID          string
 	leaseClock        durable.Clock
@@ -372,8 +373,8 @@ func WithLeaseHeartbeat(interval time.Duration) NodeServiceOption {
 	}
 }
 
-// WithInFlightPerCaller define o tecto de runs EM CURSO por SUBMISSOR (AOS-456) — o número de
-// lugares que um mesmo submissor pode ocupar ao mesmo tempo. Ver [imputadoA] para o que conta como
+// WithInFlightPerCaller define o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456) —
+// e NÃO de ocupação: as isenções (suspenso, retoma) compõem-se. Ver [imputadoA] para o que conta como
 // submissor e [NodeService.submit] para onde o tecto morde.
 //
 // `max <= 0` deixa o tecto NÃO COMPOSTO, que é o default. NÃO é um valor que "desliga" em silêncio:
@@ -691,7 +692,9 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		s.mu.Unlock()
 		return ErrRunAlreadyCompleted
 	}
-	// (2-ter) TECTO DE CONCORRÊNCIA POR-CHAMADOR (AOS-456).
+	// (2-ter) TECTO DE SUBMISSÕES NOVAS SIMULTÂNEAS POR-CHAMADOR (AOS-456). É a ÚLTIMA guarda de
+	// propósito: ver [TestAOS456AAOrdemDasGuardasEidempotenciaDaReSUBMISSAO] para o que se quebra ao
+	// movê-la para antes das guardas de estado do run.
 	//
 	// PORQUE AQUI, e não no handler. A verificação e a RESERVA têm de ser ATÓMICAS: se o handler
 	// contasse e só depois submetesse, dois pedidos concorrentes do mesmo submissor veriam ambos

@@ -1692,7 +1692,7 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
       `TestAOS456ARajadaDeUmNaoTiraLugaresAoOutro` submete por HTTP contra um nó com o gate soberano
       composto, com o **modelo bloqueado** (sem isso os runs terminavam entre submissões e o teste
       passaria com o tecto REMOVIDO) e o **balde global largo com o relógio parado** (um `429` que
-      viesse do balde tornaria o teste vacuoso). Mutação `M1` (tecto removido) ⇒ 5 testes vermelhos.
+      viesse do balde tornaria o teste vacuoso). Mutação `M1` (tecto removido) ⇒ **6** testes vermelhos (a primeira versão desta linha dizia 5 — contei mal).
 - [x] **Uma recusa não ocupa LUGAR** — e ⚠️ **gasta um token do balde global.** A primeira versão
       deste critério dizia «não consome recurso partilhado» e era **falsa**: o balde é consumido no
       topo do `handleSubmit` e a decisão por-chamador acontece no `submit`, pelo que cada 429
@@ -1727,8 +1727,9 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
         wiring de `serveAPI` — remover a condição de composição (`N1`) e passar `true` fixo ao banner
         (`N2`) — **sobreviviam à suite inteira**, e a `N2` é literalmente o defeito ALTO da
         tentativa 1. Nenhum teste tocava `serveAPI`. Fechado com
-        `TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL`, que arranca o servidor real em quatro
-        posturas, **mede** o comportamento (não só lê o texto) e mata `N1`, `N2` e `N4`. A primeira
+        `TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL`, que arranca o servidor real em **cinco**
+        posturas e mata `N1`, `N2` e `N5`. (Uma versão desta linha citava um `N4` que nunca foi
+        definido em sítio nenhum — erro meu, apanhado pela segunda revisão.) A primeira
         versão desse teste ainda deixava a `N1` sobreviver, porque usava o `countingModel` e o run
         terminava entre os dois POSTs — corrigido com o modelo bloqueado.
       - **ALTO-1b (SEGUNDA revisão adversarial): a correcção do ALTO-1 estava incompleta, e pela
@@ -1748,6 +1749,19 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
         Pelo `Bootstrap` o estado é inalcançável (`readRegions` só é atribuído dentro de
         `if sovAuthority != nil`, bootstrap.go:2457), logo era alcançável in-process — mas um
         predicado não pode depender dessa coincidência para estar certo.
+      - **ALTO-B (2.ª revisão): a decisão de compor o tecto na postura DEMO-GRADE não tinha sensor
+        nenhum.** Está escrita em quatro sítios — «o tecto CONTINUA composto, porque vale contra rajada
+        honesta» — e a mutação que a quebra (compor só com credencial forte) **sobrevivia à suite
+        inteira**. Medido na postura DEMO-GRADE, que é a **única que um nó configurado por env fora de
+        produção alcança**: sem mutação 2 admitidas / 6 recusadas; com mutação **8 admitidas / 0
+        recusadas**, e o banner a dizer «LIGADO … vale contra rajada HONESTA» com nada composto. É o
+        defeito ALTO da tentativa 1 outra vez.
+        **Causa: 4 dos 5 casos do meu teste passavam `medir = nil` — só liam texto.** A afirmação do
+        commit anterior («arranca o servidor real em quatro posturas e **MEDE** o comportamento») era
+        falsa em 4 de 5. O caso (B) passou a medir; mutação `N6` ⇒ vermelho.
+        E a primeira versão desse sensor **apanhou-se a si mesma**: usava o `countingModel`, os runs
+        terminavam entre submissões e a medição passava com o tecto desligado — o mesmo erro que eu já
+        tinha corrigido no caso (A).
       - **Achado próprio, anterior:** o predicado escrito à mão omitia o ramo `SovereignAuthority`.
         Não era alcançável pelo `Bootstrap` (`readRegions = readAuthority.Registry()`), era-o
         in-process. Extraído para `noTemGateSoberanoDeLeitura`. Mutação `M8` ⇒ vermelho.
@@ -1807,6 +1821,9 @@ mim:
 | `N2` | passar `true` fixo ao banner em `serveAPI` | **1.ª revisão adversarial** |
 | `N3` | laço de produção 20x mais lento (o benchmark não via) | **1.ª revisão adversarial** |
 | `N5` | predicado a ler a EXISTÊNCIA da credencial em vez do ramo que a USA | **2.ª revisão adversarial** |
+| `N6` | compor o tecto SÓ com credencial forte (nada composto na postura DEMO-GRADE) | **2.ª revisão adversarial** |
+| `N7` | mover o tecto para ANTES das guardas de estado do run | **2.ª revisão adversarial** |
+| `N8` | zerar o bloco `alcance` do banner | **2.ª revisão adversarial** |
 
 A `M2` está registada no teste como limite **conhecido** do sensor, com a tabela de sensibilidade
 medida, em vez de tapada. As `N1`–`N3` eram **lacunas de sensor sobre critérios que este ticket
@@ -1820,6 +1837,37 @@ medir uma cópia do laço. **O mecanismo funcionava; as afirmações sobre ele n
 apanhado por mutação minha, porque as minhas mutações atacaram o mecanismo e as afirmações estavam
 noutro lado. Mutar o código não basta: há que mutar aquilo de que a afirmação depende, incluindo a
 configuração do próprio teste.
+
+### Também fechado pela 2.ª revisão adversarial
+- **O piso do `aos-orq` estava ERRADO, e documentação errada é pior do que nenhuma.** Eu escrevi «16
+  runs-filho por plano, abaixo de 16 parte planos» — o que sugere que 16 basta. **Não basta:** a
+  imputação é ao **humano** que pediu o plano, não ao plano, logo dois planos concorrentes do mesmo
+  humano **partilham** o tecto e o piso real é `16 × (planos concorrentes do mesmo humano)`. Medido:
+  com o tecto em 16 e um plano de `human:alice` no tecto, o 1.º filho de um **segundo** plano de
+  `human:alice` é recusado e um de `human:bob` passa. E com `aos-orq serve` manual não há submissor
+  derivado: **todos** os filhos vão ao principal do `aos-orq`. Corrigido no banner, no README e no
+  compose.
+- **A ordem das guardas em `submit` é *load-bearing* e não tinha sensor.** Mover o tecto para antes das
+  guardas duplicado/suspenso/terminado passava a suite inteira, e a consequência é real: com o
+  chamador no tecto, uma re-submissão do MESMO `run_id` passaria de «duplicado» (201, idempotente)
+  para **429** — e o `nodeClient.Submit` do `aos-orq` **depende** dessa idempotência, porque repete o
+  `submeter` por passagem. Regra fixada em teste: **o tecto é a ÚLTIMA guarda**; um pedido cuja
+  resposta é determinada pelo ESTADO do run recebe essa resposta, não uma quota. Mutação `N7`.
+- **O bloco `alcance` do banner era removível com a suite verde.** O commit afirmava que «nenhuma
+  das três frases é opcional» e nada as prendia. Mutação `N8` ⇒ vermelho, nas duas posturas.
+- **`PER_CALLER == global` era aceite e é INERTE.** O teste declarava a igualdade «coerente, degenera
+  no global». Medido com global=3/per-caller=3: a 4.ª submissão dá 429 **igual com e sem** o tecto
+  composto, porque o check global corre no handler **antes** do submit. Passou a exigir-se
+  **estritamente menor** — a mesma razão que já recusava «acima».
+- **O ramo VERIFICADO do banner ignorava `gateComposto`.** Inalcançável hoje pelos predicados reais,
+  mas era a forma do ALTO-1b (confiar numa coincidência de outro sítio). Conjunção explícita + caso.
+- **A formulação declarada FALSA sobrevivia em 8 sítios**, incluindo a **mensagem de erro voltada ao
+  operador** (`ErrCallerInFlightCeiling`) e a primeira frase da célula do README, que se contradizia
+  com o aviso da mesma célula. Corrigidos.
+- **Dois erros factuais meus:** citei uma mutação `N4` que nunca defini, e disse «5 testes vermelhos»
+  onde são 6.
+- **Flake latente:** o arranque do teste de gate usava `time.Sleep(250ms)` em vez do `esperarPorta`
+  que o pacote já tem. Trocado.
 
 ### Residuais DECLARADOS (não defeitos: fronteiras conhecidas)
 - Um run **SUSPENSO** à espera de aval humano sai de `s.runs` e **não** ocupa lugar — igual ao tecto
@@ -1852,8 +1900,16 @@ configuração do próprio teste.
 ### Estado
 **AOS-456a FEITO** (2026-09-28), depois de DUAS revisões adversariais independentes. A primeira
 encontrou 3 ALTO e 3 MÉDIO — dois contra afirmações que este ticket declarava provadas. A segunda
-encontrou que a correcção do ALTO-1 estava **incompleta pela mesma razão** (predicado a descrever uma
-garantia que o código não dava) e que o teste escrito para a provar compunha o estado defeituoso.
+encontrou **2 ALTO, 3 MÉDIO e 9 BAIXO**: a correcção do ALTO-1 estava **incompleta pela mesma razão**
+(predicado a descrever uma garantia que o código não dava), o teste escrito para a provar compunha o
+estado defeituoso, e a decisão de compor o tecto na postura DEMO-GRADE — escrita em quatro sítios —
+não tinha sensor nenhum porque 4 dos 5 casos do teste só liam texto.
+
+**O padrão, três revisões seguidas: o mecanismo esteve sempre certo; as afirmações sobre ele não.**
+Das oito mutações que sobreviveram à primeira tentativa, **sete foram encontradas pelas revisões e
+uma por mim**. Mutar o código de produção não basta — as afirmações falsas vivem na configuração do
+teste, no wiring que nenhum teste toca, no texto que nada prende, e em predicados que leem a
+existência de uma coisa em vez do sítio onde ela é usada.
 As correcções estão acima, cada uma com a mutação que agora a guarda. **AOS-456b ABERTO**, e
 possivelmente desnecessário — a decisão precede o código.
 

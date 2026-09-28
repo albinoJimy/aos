@@ -377,11 +377,15 @@ services:
       AOS_INGRESS_MAX_INFLIGHT: "${AOS_INGRESS_MAX_INFLIGHT:-512}"
       # AOS-456 — tecto de SUBMISSÕES NOVAS simultâneas POR SUBMISSOR. VAZIO por omissão (⇒ NÃO
       # COMPOSTO, o comportamento de hoje): defini-lo é uma decisão do operador, porque fecha
-      # admissões que hoje passam. Tem de ser <= AOS_INGRESS_MAX_INFLIGHT (acima nunca morderia).
+      # admissões que hoje passam. Tem de ser ESTRITAMENTE MENOR que AOS_INGRESS_MAX_INFLIGHT (igual ou
+      # acima não morde: o tecto global é verificado no handler, antes do submit).
       #
-      # NÃO O PONHA ABAIXO DE 16 se usar o aos-orq: ele despacha até 16 runs-filho por plano, todos
-      # imputados ao mesmo submissor, e trata o 429 como erro genérico sem backoff — um valor menor
-      # parte planos com fan-out de forma reprodutível.
+      # PISO PRÁTICO se usar o aos-orq, e 16 NÃO basta: ele despacha até 16 runs-filho em paralelo por
+      # plano, e a imputação é ao HUMANO que pediu o plano — não ao plano. Dois planos concorrentes do
+      # mesmo humano PARTILHAM este tecto, logo o piso real é 16 x (planos concorrentes do mesmo
+      # humano). Com `aos-orq serve` manual não há submissor derivado e TODOS os filhos vão ao
+      # principal do aos-orq. Ele trata o 429 como erro genérico sem backoff, e o erro aborta a
+      # passagem de despacho inteira.
       #
       # Só é INFORJÁVEL com credencial forte de leitura composta (AOS_SOVEREIGN_OIDC_*, que
       # AOS_MODE=production já exige): com o gate soberano mas sem OIDC a atribuição vem do header

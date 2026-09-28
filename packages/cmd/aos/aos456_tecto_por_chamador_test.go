@@ -9,8 +9,12 @@ package main
 // TODAS as configurações. Foi revertida (`0834dd8`).
 //
 // Por isso os casos que medem o CRITÉRIO submetem por HTTP, contra um nó com o gate soberano
-// composto (a única postura em que o principal é VERIFICADO e o tecto entra em vigor), e leem os
-// códigos que dois chamadores distintos recebem. Nenhum deles chama `svc.submit` para provar o
+// composto — que é a postura em que o tecto ENTRA EM VIGOR, e **não** aquela em que o principal é
+// verificado. A primeira versão desta frase dizia «a única postura em que o principal é VERIFICADO»,
+// e era FALSA: sem credencial forte o principal vem do header `X-Aos-Reader`, que o chamador
+// escreve. A frase sobreviveu byte-a-byte a dois commits que corrigiram exactamente isso — e é o
+// padrão deste ticket em miniatura. Ver [TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL] para as
+// quatro posturas e o que cada uma vale, e a nota de [principalDoRunEVerificavel] para a diferença. Nenhum deles chama `svc.submit` para provar o
 // critério; os dois que o chamam directamente provam ramos que o HTTP não alcança (a isenção da
 // retoma) e dizem-no.
 
@@ -346,9 +350,8 @@ func TestAOS456ARetomaEIsenta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNodeService: %v", err)
 	}
-	// Sem `Shutdown` no cleanup, pelo molde de `newAPI` (api_test.go): com o modelo BLOQUEADO um
-	// shutdown ficaria à espera de runs que só terminam quando o modelo é libertado, e a ordem LIFO
-	// dos cleanups libertá-lo-ia depois. Os runs caem com o contexto do nó.
+	// Sem `Shutdown` no cleanup, pelo molde de `newAPI` (api_test.go): os runs caem com o contexto
+	// do nó. (Este caso usa o `countingModel`, não o bloqueado — não há runs presos por que esperar.)
 
 	// Um run do MESMO principal já registado, com o tecto em 1: a contagem está NO tecto.
 	svc.mu.Lock()
@@ -390,9 +393,8 @@ func TestAOS456ATectoEPorVALORDePrincipal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNodeService: %v", err)
 	}
-	// Sem `Shutdown` no cleanup, pelo molde de `newAPI` (api_test.go): com o modelo BLOQUEADO um
-	// shutdown ficaria à espera de runs que só terminam quando o modelo é libertado, e a ordem LIFO
-	// dos cleanups libertá-lo-ia depois. Os runs caem com o contexto do nó.
+	// Sem `Shutdown` no cleanup, pelo molde de `newAPI` (api_test.go): os runs caem com o contexto
+	// do nó. (Este caso usa o `countingModel`, não o bloqueado — não há runs presos por que esperar.)
 
 	svc.mu.Lock()
 	svc.runs["da-alice"] = &runState{runID: "da-alice", done: make(chan struct{}), principal: "human:alice"}
@@ -445,6 +447,11 @@ func TestAOS456ABannerDistingueAsTRESPosturas(t *testing.T) {
 		{"LIGADO sobre principal VERIFICADO", comTecto(), true, true,
 			[]string{"VERIFICADO", "credencial FORTE", "4 submissao"},
 			[]string{"DEMO-GRADE", "NAO COMPOSTO", "NAO CONFIGURADO"}},
+		// RAMO SEM GUARDA (achado da segunda revisão): `verificável` sem `gate` NÃO compõe o tecto no
+		// `serveAPI`, logo o banner não pode anunciar VERIFICADO. Inalcançável hoje pelos predicados
+		// reais, mas a função não pode depender dessa coincidência — era a forma do ALTO-1b.
+		{"verificavel SEM gate: nada esta composto", comTecto(), false, true,
+			[]string{"NAO COMPOSTO"}, []string{"LIGADO sobre"}},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -467,6 +474,13 @@ func TestAOS456ABannerDistingueAsTRESPosturas(t *testing.T) {
 // uma palavra: fail-closed contra o zero, aberto de par em par contra o absurdo. Aqui o tecto
 // SUPERIOR tem significado próprio — um tecto por-chamador ACIMA do global nunca morde (o global
 // morde primeiro), logo é configuração que anuncia uma barreira inerte.
+//
+// A IGUALDADE TAMBÉM É RECUSADA, e a primeira versão deste teste declarava-a «coerente, degenera no
+// global» — achado da segunda revisão adversarial. Medido com global=3 e per-caller=3: a 4.ª
+// submissão do mesmo chamador dá 429 **igual com e sem** o tecto por-chamador composto, porque o
+// check global corre no `handleSubmit` ANTES do `submit`. O por-chamador só dispararia na janela de
+// corrida desse check (que é um TOCTOU fora do mutex) — e uma barreira que só morde por acidente,
+// anunciada como LIGADA, é a forma de falha que este ticket existe para não repetir.
 func TestAOS456AEnvFailClosedNOSDOISSENTIDOS(t *testing.T) {
 	casos := []struct {
 		valor  string
@@ -476,7 +490,8 @@ func TestAOS456AEnvFailClosedNOSDOISSENTIDOS(t *testing.T) {
 	}{
 		{"", "", true, "vazia => tecto NAO COMPOSTO, que e o default"},
 		{"4", "", true, "dentro do global por omissao (512)"},
-		{"512", "", true, "IGUAL ao global por omissao: degenera no global, e e coerente"},
+		{"511", "", true, "um abaixo do global por omissao: o maior valor que MORDE"},
+		{"512", "", false, "IGUAL ao global por omissao: NAO morde — o check global corre no handler, antes do submit"},
 		{"0", "", false, "zero NAO desliga: seria a armadilha inversa do AOS_INGRESS_MAX_INFLIGHT"},
 		{"-1", "", false, "negativo"},
 		{"abc", "", false, "ilegivel"},
@@ -484,7 +499,7 @@ func TestAOS456AEnvFailClosedNOSDOISSENTIDOS(t *testing.T) {
 		{"513", "", false, "ACIMA do global por omissao => barreira INERTE"},
 		{"999999", "", false, "muito acima do global => barreira INERTE (o caso que a tentativa 1 aceitava)"},
 		{"8", "4", false, "acima do global EXPLICITO"},
-		{"4", "4", true, "igual ao global explicito"},
+		{"4", "4", false, "igual ao global explicito: barreira inerte, anunciada como LIGADA"},
 		{"3", "4", true, "abaixo do global explicito"},
 	}
 	for _, c := range casos {
@@ -755,7 +770,9 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- serveAPI(ctx, &out, node, addr) }()
-		time.Sleep(250 * time.Millisecond)
+		// ESPERA PELO LISTENER em vez de um Sleep fixo (achado da segunda revisão: um sleep de 250 ms
+		// é um flake latente — o POST do caso (A) faz `t.Fatalf` se a porta ainda não estiver aberta).
+		esperarPorta(t, addr)
 		if medir != nil {
 			medir(t, "http://"+addr)
 		}
@@ -830,12 +847,59 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 	t.Run("gate composto SEM credencial forte: compoe e anuncia DEMO-GRADE", func(t *testing.T) {
 		clearIngressEnv(t)
 		t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "2")
-		node, _ := newAPINode(t, &countingModel{}, true)
+		// MODELO BLOQUEADO: com o `countingModel` os runs terminam entre submissões e `s.runs`
+		// esvazia-se, pelo que a medição abaixo passaria com o tecto DESLIGADO. A primeira versão
+		// deste caso usava-o — e o sensor novo apanhou-se a si mesmo antes de eu o empurrar.
+		model := &aos456Bloqueado{entrou: make(chan struct{}, 64), release: make(chan struct{})}
+		t.Cleanup(model.libertar)
+		node, _ := newAPINode(t, model, true)
 		t.Cleanup(func() { _ = node.Close() })
 		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
 		node.SovereignReadCredential = nil // a postura que o achado descobriu
 
-		banner := arrancarMedirELerBanner(t, node, nil)
+		// MEDE, e é o achado da SEGUNDA revisão adversarial: a decisão deliberada «o tecto CONTINUA
+		// composto na postura DEMO-GRADE, porque vale contra rajada honesta» estava escrita em quatro
+		// sítios e fixada em ZERO testes. A mutação que compõe o tecto só com credencial forte
+		// (`&& gateComposto` → `&& principalVerificavel` em serveAPI) sobrevivia à suite inteira, e
+		// deixava o banner a dizer «LIGADO … vale contra rajada HONESTA» com NADA composto — o defeito
+		// ALTO da tentativa 1, na única postura que um nó configurado por env fora de produção alcança.
+		//
+		// O sensor é o MESMO header repetido: com o tecto a 2 e os runs presos no modelo, a 3.ª
+		// submissão do mesmo `X-Aos-Reader` TEM de levar 429. (Que o header ROTATIVO passe é a
+		// fronteira desta postura, medida no caso (F) abaixo — aqui prova-se que o mecanismo está
+		// LIGADO, não que é inforjável.)
+		banner := arrancarMedirELerBanner(t, node, func(t *testing.T, base string) {
+			cred := credencialDeTeste(t, node)
+			admitidas, recusadas := 0, 0
+			for i := 0; i < 8; i++ {
+				corpo, _ := json.Marshal(map[string]any{
+					"run_id": fmt.Sprintf("demo-%02d", i), "objective": "x", "credential": cred,
+				})
+				req, _ := http.NewRequest(http.MethodPost, base+"/runs", bytes.NewReader(corpo))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set(HeaderReaderPrincipal, "human:mesmo") // O MESMO, sempre
+				req.Header.Set(HeaderReaderBoard, "board:demo")
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatalf("POST /runs: %v", err)
+				}
+				switch resp.StatusCode {
+				case http.StatusCreated:
+					admitidas++
+				case http.StatusTooManyRequests:
+					recusadas++
+				}
+				_ = resp.Body.Close()
+			}
+			if recusadas == 0 {
+				t.Fatalf("8 submissoes do MESMO header com o tecto a 2: %d admitidas, 0 recusadas — o "+
+					"tecto NAO esta composto nesta postura, e o banner diz que esta. E a decisao "+
+					"deliberada («vale contra rajada honesta») a nao ser imposta", admitidas)
+			}
+			if admitidas == 0 {
+				t.Fatal("NENHUMA submissao admitida — o teste nao esta a medir o tecto")
+			}
+		})
 		if !strings.Contains(banner, "DEMO-GRADE") {
 			t.Fatalf("com o gate composto e SEM credencial forte o banner devia declarar DEMO-GRADE — "+
 				"anunciar VERIFICADO aqui e o defeito ALTO da tentativa 1; saiu:\n%s", banner)
@@ -941,4 +1005,127 @@ type credencialDeLeituraInerte struct{}
 
 func (credencialDeLeituraInerte) verify(context.Context, *http.Request) (string, string, error) {
 	return "", "", ErrNoReadCredential
+}
+
+// TestAOS456AAOrdemDasGuardasEidempotenciaDaReSUBMISSAO — a ordem das guardas em [NodeService.submit]
+// é *load-bearing* e não tinha sensor nenhum (achado da segunda revisão adversarial: mover o bloco do
+// tecto para ANTES das guardas duplicado/suspenso/completado passava a suite inteira).
+//
+// A CONSEQUÊNCIA, medida: com o chamador NO tecto, uma re-submissão do MESMO `run_id` responde hoje
+// «duplicado» (idempotente); com a ordem trocada responderia 429. Um retry de rede de um cliente no
+// tecto passaria a ser recusado por quota para sempre — e o `nodeClient.Submit` do `aos-orq` DEPENDE
+// dessa idempotência: ele repete o `submeter` por passagem, e um 429 aí aborta a passagem inteira.
+//
+// A regra que este teste fixa: **o tecto é a ÚLTIMA guarda**. Um pedido que já tem resposta
+// determinada pelo ESTADO do run (duplicado, suspenso, terminado) recebe essa resposta, não uma quota.
+func TestAOS456AAOrdemDasGuardasEidempotenciaDaReSUBMISSAO(t *testing.T) {
+	novo := func(t *testing.T) *NodeService {
+		t.Helper()
+		node, _ := newAPINode(t, &countingModel{}, false)
+		t.Cleanup(func() { _ = node.Close() })
+		svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute),
+			WithInFlightPerCaller(1))
+		if err != nil {
+			t.Fatalf("NewNodeService: %v", err)
+		}
+		return svc
+	}
+
+	// (1) DUPLICADO ganha ao tecto: o run já está em curso, e o chamador está no tecto por causa dele.
+	t.Run("re-submissao de run EM CURSO responde duplicado, nao 429", func(t *testing.T) {
+		svc := novo(t)
+		svc.mu.Lock()
+		svc.runs["ja-existe"] = &runState{runID: "ja-existe", done: make(chan struct{}), principal: "human:alice"}
+		svc.mu.Unlock()
+		g := agentruntime.Goal{RunID: "ja-existe", Objective: "x", MaxTurns: 1}
+		g.Principal.NHIID = "human:alice"
+		err := svc.submit(context.Background(), g, false)
+		if err == ErrCallerInFlightCeiling {
+			t.Fatal("a re-submissao do MESMO run_id respondeu com o TECTO em vez de «duplicado» — a ordem " +
+				"das guardas foi trocada. Um retry de rede de um cliente no tecto fica recusado por quota " +
+				"para sempre, e o aos-orq depende desta idempotencia (repete o submeter por passagem)")
+		}
+		if err != ErrRunAlreadyInProgress {
+			t.Fatalf("esperava ErrRunAlreadyInProgress, veio %v", err)
+		}
+	})
+
+	// (2) SUSPENSO ganha ao tecto: senão um run à espera de um humano fica irretomável por quota — e o
+	// chamador nem sabe que ele existe.
+	t.Run("re-submissao de run SUSPENSO responde suspenso, nao 429", func(t *testing.T) {
+		svc := novo(t)
+		svc.mu.Lock()
+		svc.runs["outro"] = &runState{runID: "outro", done: make(chan struct{}), principal: "human:alice"}
+		svc.suspended["suspenso"] = &runState{runID: "suspenso", done: make(chan struct{}), principal: "human:alice"}
+		svc.mu.Unlock()
+		g := agentruntime.Goal{RunID: "suspenso", Objective: "x", MaxTurns: 1}
+		g.Principal.NHIID = "human:alice"
+		if err := svc.submit(context.Background(), g, false); err != ErrRunSuspended {
+			t.Fatalf("esperava ErrRunSuspended (o estado do run ganha ao tecto), veio %v", err)
+		}
+	})
+
+	// (3) TERMINADO ganha ao tecto, pela mesma razão: o desfecho é a resposta certa.
+	t.Run("re-submissao de run TERMINADO responde terminado, nao 429", func(t *testing.T) {
+		svc := novo(t)
+		svc.mu.Lock()
+		svc.runs["outro"] = &runState{runID: "outro", done: make(chan struct{}), principal: "human:alice"}
+		svc.completed["feito"] = &runState{runID: "feito", done: make(chan struct{}), principal: "human:alice"}
+		svc.mu.Unlock()
+		g := agentruntime.Goal{RunID: "feito", Objective: "x", MaxTurns: 1}
+		g.Principal.NHIID = "human:alice"
+		if err := svc.submit(context.Background(), g, false); err != ErrRunAlreadyCompleted {
+			t.Fatalf("esperava ErrRunAlreadyCompleted (o desfecho ganha ao tecto), veio %v", err)
+		}
+	})
+
+	// (4) CONTROLO: um run_id NOVO do chamador no tecto leva 429. Sem isto, (1)–(3) passariam com o
+	// tecto removido.
+	t.Run("CONTROLO: run_id NOVO do chamador no tecto leva o tecto", func(t *testing.T) {
+		svc := novo(t)
+		svc.mu.Lock()
+		svc.runs["ja-existe"] = &runState{runID: "ja-existe", done: make(chan struct{}), principal: "human:alice"}
+		svc.mu.Unlock()
+		g := agentruntime.Goal{RunID: "novo", Objective: "x", MaxTurns: 1}
+		g.Principal.NHIID = "human:alice"
+		if err := svc.submit(context.Background(), g, false); err != ErrCallerInFlightCeiling {
+			t.Fatalf("CONTROLO: um run_id NOVO devia levar o tecto, veio %v — sem esta recusa os casos "+
+				"(1)-(3) acima passam com o tecto desligado", err)
+		}
+	})
+}
+
+// TestAOS456AOBannerDeclaraOQueOEIXONAODA — o commit deste ticket afirmou das três frases do bloco
+// `alcance` que «são achados de revisão adversarial e NENHUMA é opcional». Nada as prendia: zerar o
+// bloco `alcance` passava a suite inteira (achado da segunda revisão).
+//
+// Cada uma destas frases existe porque a sua ausência já enganou alguém neste ticket. São o que o
+// operador precisa de saber para NÃO supor mais do que o eixo dá.
+func TestAOS456AOBannerDeclaraOQueOEIXONAODA(t *testing.T) {
+	lim := ingressLimits{ratePerSec: 10, burst: 20, maxInFlight: 50, inFlightPerCaller: 4}
+	exigencias := []struct{ marcador, porque string }{
+		{"NAO e um tecto de OCUPACAO", "as duas isencoes compoem-se: mediram-se 20 runs com o tecto a 1"},
+		{"SUSPENSO", "um run suspenso sai da contagem"},
+		{"RETOMA (/resume) NAO a consulta", "a retoma e isenta, e isso aumenta os runs vivos por chamador"},
+		{"GASTA um token do balde GLOBAL", "a recusa por-chamador consome taxa comum — o criterio que era FALSO"},
+		{"AOS-456b", "justica em TAXA nao esta feita, e o operador tem de saber que nao esta"},
+		{"PISO PRATICO", "um valor demasiado baixo parte planos com fan-out do aos-orq"},
+	}
+	// Nas DUAS posturas em que o tecto está em vigor: o alcance não pode existir só numa.
+	for _, postura := range []struct {
+		nome                    string
+		gate, principalVerifica bool
+	}{
+		{"DEMO-GRADE", true, false},
+		{"VERIFICADO", true, true},
+	} {
+		t.Run(postura.nome, func(t *testing.T) {
+			txt := strings.Join(ingressPostureBanner(lim, postura.gate, postura.principalVerifica), "\n")
+			for _, e := range exigencias {
+				if !strings.Contains(txt, e.marcador) {
+					t.Errorf("o banner NAO declara %q — %s\n--- banner ---\n%s", e.marcador, e.porque, txt)
+				}
+			}
+		})
+	}
 }

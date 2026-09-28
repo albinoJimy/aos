@@ -16,7 +16,8 @@ package main
 //   - AOS_INGRESS_BURST — capacidade do balde: quantos pedidos são absorvidos de uma vez
 //     com o balde cheio;
 //   - AOS_INGRESS_MAX_INFLIGHT — tecto de runs EM CURSO nesta réplica;
-//   - AOS_INGRESS_MAX_INFLIGHT_PER_CALLER — tecto de runs EM CURSO POR SUBMISSOR (AOS-456).
+//   - AOS_INGRESS_MAX_INFLIGHT_PER_CALLER — tecto de SUBMISSÕES NOVAS simultâneas POR
+//     SUBMISSOR (AOS-456). NÃO é um tecto de ocupação — ver a nota do banner.
 //     Vazia ⇒ tecto por-chamador NÃO COMPOSTO, e o banner declara-o.
 //
 // FAIL-CLOSED NA CONFIGURAÇÃO (molde de [ErrBadBreakerThresholds]/[ErrBadRetention]/
@@ -55,7 +56,7 @@ import (
 // recusa arrancar em vez de silenciosamente aplicar o default (o operador ficaria
 // convencido de que o nó admite o que ele escreveu) ou de aplicar um valor degenerado que
 // fecha o ingresso por inteiro.
-var ErrBadIngressLimits = errors.New("aos: limites de ingresso mal configurados — AOS_INGRESS_RATE (pedidos/segundo, numero finito > 0), AOS_INGRESS_BURST (capacidade do balde, numero finito >= 1) AOS_INGRESS_MAX_INFLIGHT (inteiro > 0) e AOS_INGRESS_MAX_INFLIGHT_PER_CALLER (inteiro > 0 e NAO superior a AOS_INGRESS_MAX_INFLIGHT; vazia => tecto por-chamador NAO COMPOSTO). Deixe a variavel POR DEFINIR para manter o default; NENHUM valor desliga o limite (0 nao desliga: no rate/burst fecharia o ingresso, no max-inflight abriria-o sem tecto)")
+var ErrBadIngressLimits = errors.New("aos: limites de ingresso mal configurados — AOS_INGRESS_RATE (pedidos/segundo, numero finito > 0), AOS_INGRESS_BURST (capacidade do balde, numero finito >= 1) AOS_INGRESS_MAX_INFLIGHT (inteiro > 0) e AOS_INGRESS_MAX_INFLIGHT_PER_CALLER (inteiro > 0 e ESTRITAMENTE MENOR que AOS_INGRESS_MAX_INFLIGHT; vazia => tecto por-chamador NAO COMPOSTO). Deixe a variavel POR DEFINIR para manter o default; NENHUM valor desliga o limite (0 nao desliga: no rate/burst fecharia o ingresso, no max-inflight abriria-o sem tecto)")
 
 // ingressLimits são os três números EFECTIVAMENTE em vigor na admission de `POST /runs`
 // — os defaults do binário quando as variáveis não estão definidas, o valor lido quando
@@ -65,8 +66,9 @@ type ingressLimits struct {
 	ratePerSec  float64
 	burst       float64
 	maxInFlight int
-	// inFlightPerCaller é o tecto de runs EM CURSO por SUBMISSOR (AOS-456). 0 ⇒ NÃO COMPOSTO, e o
-	// banner declara-o.
+	// inFlightPerCaller é o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456) — e não
+	// de OCUPAÇÃO: as isenções (suspenso, retoma) compõem-se e um submissor pode ter mais runs vivos
+	// do que este número. 0 ⇒ NÃO COMPOSTO, e o banner declara-o.
 	inFlightPerCaller int
 	// tuned diz se ALGUMA das variáveis foi definida. Vive AQUI (e não num parâmetro
 	// do banner) para que o texto do banner não possa divergir do que a leitura viu: a
@@ -129,8 +131,15 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		if err != nil || n <= 0 {
 			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_INFLIGHT_PER_CALLER=%q", ErrBadIngressLimits, rawPerCaller)
 		}
-		if n > lim.maxInFlight {
-			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_INFLIGHT_PER_CALLER=%q excede AOS_INGRESS_MAX_INFLIGHT=%d — um tecto por-chamador acima do global NUNCA morde (o global morde primeiro) e anunciaria uma barreira inerte", ErrBadIngressLimits, rawPerCaller, lim.maxInFlight)
+		// ESTRITAMENTE MENOR, e a IGUALDADE também é recusada — achado da segunda revisão
+		// adversarial. A primeira versão aceitava `== global` e o teste declarava-o «coerente, degenera
+		// no global». Medido: com global=3 e per-caller=3, a 4.ª submissão do mesmo chamador dá 429
+		// **igual com e sem o tecto por-chamador composto** — porque o check global corre no
+		// `handleSubmit`, ANTES do `submit`. O por-chamador só dispararia na janela de corrida do check
+		// global (que é um TOCTOU fora do mutex). É a MESMA razão que recusa «acima»: uma barreira que
+		// não morde, anunciada como LIGADA, é a forma de falha que este ticket existe para não repetir.
+		if n >= lim.maxInFlight {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_MAX_INFLIGHT_PER_CALLER=%q tem de ser ESTRITAMENTE MENOR que AOS_INGRESS_MAX_INFLIGHT=%d — igual ou acima do global a barreira por-chamador nao morde (o tecto global e verificado no handler, ANTES do submit) e seria anunciada como LIGADA sem o estar", ErrBadIngressLimits, rawPerCaller, lim.maxInFlight)
 		}
 		lim.inFlightPerCaller, lim.tuned = n, true
 	}
@@ -213,9 +222,14 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	//      mas gasta TAXA comum — a justica em taxa e o eixo 456b, e nao esta feita;
 	//  (3) o tecto tem um PISO pratico ditado por quem submete em paralelo: o `aos-orq` despacha ate
 	//      16 runs-filho por plano, todos imputados ao mesmo submissor.
-	alcance := " ALCANCE do tecto por-chamador: admite N submissoes NOVAS simultaneas — NAO e um tecto de OCUPACAO: um run SUSPENSO a espera de aval humano SAI da contagem e a RETOMA (/resume) NAO a consulta, pelo que um submissor pode ter MAIS de N runs em `s.runs` (medido: 20 com o tecto a 1). E o 429 por-chamador GASTA um token do balde GLOBAL (o balde e consumido no topo do handler, a decisao por-chamador no submit): a rajada de um chamador nao tira LUGARES aos outros, mas gasta TAXA comum — justica em TAXA e o eixo AOS-456b, NAO esta feita. PISO PRATICO: o aos-orq despacha ate 16 runs-filho por plano, todos do mesmo submissor, pelo que um valor abaixo de 16 parte planos com fan-out."
+	alcance := " ALCANCE do tecto por-chamador: admite N submissoes NOVAS simultaneas — NAO e um tecto de OCUPACAO: um run SUSPENSO a espera de aval humano SAI da contagem e a RETOMA (/resume) NAO a consulta, pelo que um submissor pode ter MAIS de N runs em `s.runs` (medido: 20 com o tecto a 1). E o 429 por-chamador GASTA um token do balde GLOBAL (o balde e consumido no topo do handler, a decisao por-chamador no submit): a rajada de um chamador nao tira LUGARES aos outros, mas gasta TAXA comum — justica em TAXA e o eixo AOS-456b, NAO esta feita. PISO PRATICO: o aos-orq despacha ate 16 runs-filho em paralelo por plano, e a imputacao e ao HUMANO que pediu o plano — nao ao plano. Logo DOIS planos concorrentes do mesmo humano PARTILHAM este tecto, e o piso real e 16 x (planos concorrentes do mesmo humano), nao 16. Um valor abaixo disso recusa filhos de um plano cujo fan-out SIMULTANEO o exceda. E com `aos-orq serve` manual (sem geracao de pedido) nao ha submissor derivado: TODOS os filhos sao imputados ao principal do proprio aos-orq, que passa a ter um tecto unico para tudo o que despacha."
 	switch {
-	case lim.inFlightPerCaller > 0 && principalVerificavel:
+	// A CONJUNÇÃO É EXPLÍCITA (achado da segunda revisão adversarial): sem `gateComposto` o
+	// `serveAPI` NÃO compõe o tecto, pelo que anunciar VERIFICADO seria anunciar uma barreira
+	// inexistente. Hoje `principalDoRunEVerificavel ⇒ noTemGateSoberanoDeLeitura` torna a combinação
+	// inalcançável, mas esta função não pode depender disso para estar certa — era exactamente a
+	// forma do ALTO-1b (um predicado a confiar numa coincidência de outro sítio).
+	case lim.inFlightPerCaller > 0 && gateComposto && principalVerificavel:
 		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): LIGADO sobre principal VERIFICADO — cada submissor admite no maximo %d submissao(oes) NOVA(s) simultanea(s); exceder responde 429 sem ocupar lugar nenhum. A atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel pelo chamador.%s",
 			lim.inFlightPerCaller, alcance)
 	case lim.inFlightPerCaller > 0 && gateComposto:
