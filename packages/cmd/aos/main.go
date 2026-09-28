@@ -1251,6 +1251,27 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// AOS-456 — TECTO DE CONCORRÊNCIA POR-CHAMADOR, composto SÓ quando o principal é
+	// VERIFICÁVEL.
+	//
+	// DOIS predicados, e não um — a diferença foi um achado de revisão adversarial.
+	//
+	//  - COMPOR (`gateComposto`): sem gate soberano o principal do run vem do CORPO do pedido, e um
+	//    tecto sobre um valor que o chamador escreve no corpo não é um tecto. Aí não se compõe.
+	//  - ANUNCIAR (`principalVerificavel`): com o gate composto mas SEM credencial forte, o principal
+	//    vem do header `X-Aos-Reader` — que o chamador também escreve. O tecto compõe-se (vale contra
+	//    rajada honesta) mas o banner NÃO pode chamar-lhe «VERIFICADO»: mede-se 60 submissões
+	//    rotativas admitidas com o tecto a 2. Ver [principalDoRunEVerificavel].
+	//
+	// Ambos são funções partilhadas com [NewAPIHandler], não cópias à mão. A primeira versão disto
+	// era uma cópia, e omitia o ramo `SovereignAuthority`; a nota de
+	// [noTemGateSoberanoDeLeitura] tem a gravidade real e o predicado à mão que ainda sobrevive no
+	// banner do kill-switch, que é outro ticket.
+	gateComposto := noTemGateSoberanoDeLeitura(node)
+	principalVerificavel := principalDoRunEVerificavel(node)
+	if ingressLim.inFlightPerCaller > 0 && gateComposto {
+		svcOpts = append(svcOpts, WithInFlightPerCaller(ingressLim.inFlightPerCaller))
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
@@ -1293,7 +1314,7 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	// acima — postura anunciada = postura ligada (AOS-248). Sai aqui, e não no banner de
 	// bootstrap, porque a admission só existe quando o nó SERVE: um `aos` que faz bootstrap
 	// sem AOS_API_ADDR não tem ingresso nenhum para anunciar.
-	for _, line := range ingressPostureBanner(ingressLim) {
+	for _, line := range ingressPostureBanner(ingressLim, gateComposto, principalVerificavel) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina

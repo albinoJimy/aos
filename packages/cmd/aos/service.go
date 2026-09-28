@@ -66,6 +66,15 @@ var (
 	// vezes).
 	ErrRunAlreadyInProgress = errors.New("aos: run ja em curso nesta replica (RunID duplicado)")
 
+	// ErrCallerInFlightCeiling — o SUBMISSOR já tem o seu tecto de SUBMISSÕES NOVAS simultâneas
+	// (AOS-456). NÃO é um tecto de ocupação: ver [WithInFlightPerCaller].
+	//
+	// É distinto de [ErrTooManyInFlight]/do tecto global de propósito: um 429 que não distingue
+	// «o nó está cheio» de «TU estás cheio» manda o operador diagnosticar o nó quando o problema
+	// é a quota de um chamador. O corpo da resposta continua uniforme; o que muda é o erro que o
+	// log do operador nomeia.
+	ErrCallerInFlightCeiling = errors.New("aos: o submissor ja tem o seu tecto de SUBMISSOES NOVAS simultaneas (AOS_INGRESS_MAX_INFLIGHT_PER_CALLER) — a rajada de um chamador nao ocupa os lugares dos outros; nao e um tecto de OCUPACAO (um run suspenso sai da contagem e a retoma nao a consulta)")
+
 	// ErrRunSuspended — o run PAROU à espera de aval humano (AOS-021) e não é
 	// re-submissível: re-submeter perderia o estado suspenso e a aprovação pendente.
 	// É RETOMÁVEL por POST /runs/{id}/resume com uma credencial NHI FRESCA.
@@ -101,6 +110,17 @@ type runState struct {
 	lease  durable.Lease
 	cancel context.CancelFunc
 	done   chan struct{} // fechado quando o run termina e sai do registo de em-curso
+
+	// principal é o SUBMISSOR a que este run é imputado, para o tecto de submissões novas
+	// simultâneas POR-CHAMADOR (AOS-456). Vem de [imputadoA] — que em modo SOBERANO devolve sempre um valor
+	// DERIVADO PELO NÓ (o submissor do plano lido do Event Store, ou o principal que o
+	// `readGovernance.authorize` resolveu da credencial verificada, achado A7 do AOS-217), nunca
+	// um campo de corpo auto-declarado. Ver a nota de [imputadoA] para o porquê de um run-filho
+	// ser imputado a quem pediu o plano e não ao drenador que o submete.
+	//
+	// Fica AQUI e não se recalcula: o `goal` não sobrevive ao registo, e contar por um valor que
+	// se fosse buscar noutro sítio seria contar por um proxy.
+	principal string
 
 	// outcome — escrito UMA vez sob o mutex do serviço, antes de close(done).
 	result   agentruntime.Result
@@ -146,6 +166,9 @@ type NodeService struct {
 
 	hbInterval   time.Duration // período de renovação (heartbeat) da posse; <= 0 desliga
 	completedCap int           // teto de desfechos retidos (FIFO); <= 0 = ilimitado
+	// inFlightPerCaller é o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456). <= 0 ⇒ NÃO COMPOSTO,
+	// e o banner declara-o — não se finge uma barreira que não existe.
+	inFlightPerCaller int
 
 	// AOS-021 — varrimento de aprovações expiradas (decisão do dono: no loop de serviço).
 	sweepInterval time.Duration // período do varrimento; <= 0 desliga
@@ -297,9 +320,11 @@ type nodeServiceConfig struct {
 	hbInterval      time.Duration // 0 ⇒ derivado de ttl/3 em NewNodeService
 	completedCap    int           // 0 ⇒ DefaultCompletedRetention; < 0 ⇒ ilimitado
 	completedCapSet bool
-	workerID        string
-	leaseClock      durable.Clock
-	logw            io.Writer
+	// inFlightPerCaller — tecto de SUBMISSÕES NOVAS simultâneas por submissor (AOS-456). <= 0 ⇒ não composto.
+	inFlightPerCaller int
+	workerID          string
+	leaseClock        durable.Clock
+	logw              io.Writer
 	// AOS-021 — varrimento de aprovações. sweepIntervalSet distingue "não configurado"
 	// (⇒ default) de "explicitamente 0" (⇒ DESLIGADO, usado em testes).
 	sweepInterval    time.Duration
@@ -346,6 +371,19 @@ func WithLeaseHeartbeat(interval time.Duration) NodeServiceOption {
 			c.hbInterval = interval
 		}
 	}
+}
+
+// WithInFlightPerCaller define o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456) —
+// e NÃO de ocupação: as isenções (suspenso, retoma) compõem-se. Ver [imputadoA] para o que conta como
+// submissor e [NodeService.submit] para onde o tecto morde.
+//
+// `max <= 0` deixa o tecto NÃO COMPOSTO, que é o default. NÃO é um valor que "desliga" em silêncio:
+// a superfície do operador ([ingressLimitsFromEnv]) RECUSA `0` e negativos, e a ausência do tecto é
+// declarada no banner de arranque. Esta opção é composição in-process e não tem por onde recusar
+// (uma [NodeServiceOption] não devolve erro), pelo que a validação vive na fronteira que o operador
+// toca.
+func WithInFlightPerCaller(max int) NodeServiceOption {
+	return func(c *nodeServiceConfig) { c.inFlightPerCaller = max }
 }
 
 // WithCompletedRetention limita quantos desfechos de runs terminados o serviço retém em
@@ -479,18 +517,21 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
-		node:          node,
-		assigner:      assigner,
-		leases:        leases,
-		logw:          cfg.logw,
-		hbInterval:    hbInterval,
-		completedCap:  completedCap,
-		runs:          make(map[string]*runState),
-		completed:     make(map[string]*runState),
-		suspended:     make(map[string]*runState),
-		sweepInterval: sweepInterval,
-		approvalTTL:   approvalTTL,
-		sweepStop:     make(chan struct{}),
+		node:         node,
+		assigner:     assigner,
+		leases:       leases,
+		logw:         cfg.logw,
+		hbInterval:   hbInterval,
+		completedCap: completedCap,
+		// AOS-456 — tecto por-chamador. Copiado tal como veio: <= 0 mantém-se <= 0 e o banner
+		// declara NÃO COMPOSTO.
+		inFlightPerCaller: cfg.inFlightPerCaller,
+		runs:              make(map[string]*runState),
+		completed:         make(map[string]*runState),
+		suspended:         make(map[string]*runState),
+		sweepInterval:     sweepInterval,
+		approvalTTL:       approvalTTL,
+		sweepStop:         make(chan struct{}),
 
 		deadlineSweepInterval:   deadlineSweepInterval,
 		vaultTokenRenewInterval: vaultTokenRenewInterval,
@@ -597,6 +638,31 @@ func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error 
 // [NodeService.Resume] e dispensa a recusa por suspensão — é precisamente o run suspenso
 // que se está a re-hospedar, e o log continua a dizer `waiting_on_human` até o arranque o
 // repor em `running`. Nenhuma outra via o liga.
+// imputadoA devolve o SUBMISSOR a que um run é imputado para efeitos do tecto de concorrência
+// por-chamador (AOS-456) — e a escolha não é cosmética.
+//
+// UM RUN-FILHO DE PLANO É IMPUTADO A QUEM PEDIU O PLANO, não a quem chama o nó. O `aos-orq` drena
+// a fila de pedidos e submete TODOS os runs-filho sob o SEU principal: imputar ao chamador
+// colapsaria os planos de todos os humanos num único tecto — o defeito deste ticket reaparecido
+// noutra porta, e foi um dos achados medidos na revisão da tentativa 1 (dois humanos com planos
+// distintos partilhariam o tecto do drenador).
+//
+// O `RequestedBy` serve para isto porque é DERIVADO PELO NÓ e não declarado: vem do
+// `planrequest.submitted` lido do Event Store, sob reclamação viva do chamador e com a região a
+// coincidir (AOS-439, `submissorDoPedido` → `pedido.Principal`). Nunca é um campo do corpo do
+// `POST /runs`. E é o MESMO valor que o [agentruntime.Goal.Subject] já usa como titular dos dados
+// de um run-filho, pela mesma razão (AOS-440): o dono do trabalho é quem o pediu.
+//
+// Vazio ⇒ o run não é trabalho de um plano, e o submissor é quem chama. Em modo LEGADO é sempre
+// vazio (a derivação só corre com o gate soberano composto) — e é também aí que o tecto não está
+// em vigor, pelo que as duas condições coincidem por construção.
+func imputadoA(goal agentruntime.Goal) string {
+	if rb := goal.Principal.RequestedBy; rb != "" {
+		return rb
+	}
+	return goal.Principal.NHIID
+}
+
 func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resuming bool) error {
 	if goal.RunID == "" {
 		return ErrEmptyRunID
@@ -626,7 +692,50 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		s.mu.Unlock()
 		return ErrRunAlreadyCompleted
 	}
-	rs := &runState{runID: runID, done: make(chan struct{})}
+	// (2-ter) TECTO DE SUBMISSÕES NOVAS SIMULTÂNEAS POR-CHAMADOR (AOS-456). É a ÚLTIMA guarda de
+	// propósito: ver [TestAOS456AAOrdemDasGuardasEidempotenciaDaReSUBMISSAO] para o que se quebra ao
+	// movê-la para antes das guardas de estado do run.
+	//
+	// PORQUE AQUI, e não no handler. A verificação e a RESERVA têm de ser ATÓMICAS: se o handler
+	// contasse e só depois submetesse, dois pedidos concorrentes do mesmo submissor veriam ambos
+	// `count < tecto` e passariam ambos — um TOCTOU que torna o tecto uma sugestão. Sob este
+	// mutex, contar e reservar são a mesma secção crítica, e o tecto é um tecto.
+	//
+	// PORQUE ISTO NÃO EXIGE REORDENAR NADA — a assimetria que faz o AOS-456 funcionar em
+	// concorrência onde falhou em taxa (ver
+	// `docs/reports/AOS-456-desenho-do-trade-off-de-ordem.md`):
+	//
+	//	um pedido RECUSADO não ocupa lugar nenhum;
+	//	um pedido RECUSADO **gasta** um token de um balde.
+	//
+	// Por isso o tecto pode ser verificado TARDE, depois de a identidade estar resolvida, sem que
+	// a recusa tenha custado nada partilhado a quem a sofreu ou a quem vem a seguir. A tentativa
+	// de fazer o mesmo com um token-bucket falhou exactamente por não ter esta propriedade: o
+	// token global era gasto antes de a etapa por-chamador decidir.
+	//
+	// RETOMA ISENTA (`resuming`): o `POST /runs/{id}/resume` re-hospeda um run que JÁ foi admitido
+	// e que está suspenso à espera de um humano. Contá-lo aqui tornaria a retoma recusável pelo
+	// tecto — e um run que não se pode retomar por causa de uma quota é um run preso, não um run
+	// limitado. É a mesma isenção que o tecto GLOBAL já faz (a retoma não consulta `maxInFlight`).
+	//
+	// UM SUSPENSO NÃO OCUPA LUGAR, por coerência com o tecto global: `s.runs` só tem os em curso,
+	// e um run que entra em `s.suspended` sai desta contagem. O residual está declarado no ticket:
+	// um chamador pode acumular suspensos sem bater no tecto.
+	if !resuming && s.inFlightPerCaller > 0 {
+		if p := imputadoA(goal); p != "" {
+			n := 0
+			for _, r := range s.runs {
+				if r.principal == p {
+					n++
+				}
+			}
+			if n >= s.inFlightPerCaller {
+				s.mu.Unlock()
+				return ErrCallerInFlightCeiling
+			}
+		}
+	}
+	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal)}
 	s.runs[runID] = rs // RESERVA — bloqueia duplicados enquanto adquirimos o lease
 	s.mu.Unlock()
 

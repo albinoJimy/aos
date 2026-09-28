@@ -486,7 +486,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// por lembrança de passar uma opção). Um nó sem soberania configurada (SovereignReadRegions
 	// nil) mantém o read-path legado — a regra é fixa, a topologia é condicional (deferido).
 	readGov := cfg.readGov
-	if readGov == nil && node.WORM != nil {
+	if readGov == nil && noTemGateSoberanoDeLeitura(node) {
 		switch {
 		case node.SovereignAuthority != nil:
 			// AOS-205: a FONTE DE AUTORIDADE (rotação+auditoria) e — quando composta — a
@@ -966,6 +966,10 @@ func submitErrorStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrServiceShuttingDown):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrCallerInFlightCeiling):
+		// 429 como o tecto GLOBAL, e pela mesma razão: é uma recusa por saturação, não um erro
+		// do pedido. O corpo é uniforme; o log do operador nomeia qual dos dois tectos mordeu.
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}

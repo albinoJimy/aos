@@ -154,6 +154,71 @@ type readGovernance struct {
 	now func() time.Time
 }
 
+// noTemGateSoberanoDeLeitura diz se um NÓ compõe o gate de leitura soberana — e, por
+// consequência, se o principal de um run submetido a ele é VERIFICADO pelo nó em vez de
+// auto-declarado no corpo do pedido.
+//
+// EXISTE PORQUE UMA CÓPIA DIVERGIU (AOS-456). O tecto de concorrência por-chamador só entra em
+// vigor quando o principal é verificável, e a primeira versão desse wiring escreveu o predicado à
+// mão como `SovereignReadRegions != nil && WORM != nil`, omitindo o ramo `SovereignAuthority` —
+// a via FORTE, com credencial verificada.
+//
+// GRAVIDADE, MEDIDA E NÃO SUPOSTA: pelo caminho do `Bootstrap` a divergência NÃO era alcançável,
+// porque `readRegions = readAuthority.Registry()` (bootstrap.go:2457) deriva o registo da
+// autoridade e as duas nascem juntas. Era alcançável por um `Node` composto IN-PROCESSO com
+// autoridade e sem registo — e, sobretudo, era uma cópia que nada obrigava a acompanhar a
+// composição real. O defeito estava na FORMA, não ainda no comportamento; esta função remove a
+// forma. O mesmo predicado à mão continua em `main.go:417` (banner do kill-switch AOS-203) e fica
+// registado no ticket: é outro ticket, não escopo deste.
+//
+// ALCANCE: cobre a via do NÓ, que é a única que [serveAPI] usa (nunca passa [WithReadSovereignty]).
+// Um handler composto pela OPÇÃO tem `readGov` sem que o nó o declare; ver a nota do teste de
+// equivalência.
+func noTemGateSoberanoDeLeitura(node *Node) bool {
+	return node != nil && node.WORM != nil &&
+		(node.SovereignAuthority != nil || node.SovereignReadRegions != nil)
+}
+
+// principalDoRunEVerificavel diz se o principal que o nó atribui a um run submetido é INFORJÁVEL
+// pelo submissor — condição de um tecto por-chamador que signifique alguma coisa contra abuso.
+//
+// É MAIS ESTREITO do que [noTemGateSoberanoDeLeitura], E A DIFERENÇA FOI UM ACHADO DE REVISÃO
+// ADVERSARIAL (AOS-456a). Com o gate composto mas SEM credencial forte — `AOS_BOARD_REGIONS`
+// definida e `AOS_SOVEREIGN_OIDC_ISSUER`/`AUDIENCE` ausentes, fora de produção — o
+// `readGovernance.autorizarComCausa` cai na VIA LEGADA e lê o principal de `X-Aos-Reader`
+// (sovereignty.go, ramo `g.cred == nil`). Isso é um valor que o chamador escreve: 60 submissões com
+// o header a rodar mediram 60 admitidas e 0 recusadas com o tecto a 2. O predicado que compunha o
+// tecto era o do gate, e o banner anunciava «SUBMISSOR VERIFICADO» sobre um header.
+//
+// O tecto CONTINUA a compor-se na postura demo — vale contra um cliente honesto em rajada, que é o
+// caso comum —, mas deixa de ser ANUNCIADO como o que não é: o banner distingue as duas
+// («VERIFICADO» vs «DEMO-GRADE, contornável por header»). Uma barreira útil contra acidente é
+// legítima; anunciá-la como protecção contra abuso não é.
+func principalDoRunEVerificavel(node *Node) bool {
+	// A CREDENCIAL TEM DE CHEGAR AO SÍTIO ONDE É USADA, e não só existir no nó — SEGUNDA revisão
+	// adversarial, e é o mesmo defeito da primeira uma camada abaixo.
+	//
+	// [NewAPIHandler] compõe a read-governance em DOIS ramos, e passa a credencial em UM só:
+	//
+	//	case node.SovereignAuthority != nil:      newReadGovernance(authority, node.SovereignReadCredential, …)
+	//	case node.SovereignReadRegions != nil:    newReadGovernance(regions,   nil,                          …)
+	//
+	// Logo um nó com registo board→região e credencial forte mas SEM autoridade tem a credencial
+	// COMPOSTA e IGNORADA: o `autorizarComCausa` cai na via legada e lê o principal do header. A
+	// primeira versão deste predicado testava `SovereignReadCredential != nil` e declarava esse
+	// estado VERIFICADO — medido, 60 submissões rotativas admitidas com o tecto a 2, e o banner a
+	// dizer «VERIFICADO». Exigir a AUTORIDADE fecha-o: é a condição do ramo que realmente usa a
+	// credencial.
+	//
+	// GRAVIDADE: pelo `Bootstrap` o estado NÃO é alcançável — `readRegions` só é atribuído dentro de
+	// `if sovAuthority != nil` (bootstrap.go:2457), pelo que registo ⇒ autoridade. Era alcançável
+	// in-process, e o agravante estava no TESTE: o caso que eu escrevi para provar a postura
+	// VERIFICADO compunha exactamente este estado, pelo que o sensor validava o estado errado e não
+	// cobria o caminho que o binário produz.
+	return noTemGateSoberanoDeLeitura(node) &&
+		node.SovereignAuthority != nil && node.SovereignReadCredential != nil
+}
+
 // newReadGovernance compõe a costura de leitura soberana. regions e worm são obrigatórios (o
 // chamador só a compõe quando ambos existem — ver [WithReadSovereignty]/[WithSovereignAuthority]
 // e o auto-wiring de [NewAPIHandler]). cred nil ⇒ via LEGADA por headers (demo-grade); composta
