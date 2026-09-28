@@ -1731,6 +1731,23 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
         posturas, **mede** o comportamento (não só lê o texto) e mata `N1`, `N2` e `N4`. A primeira
         versão desse teste ainda deixava a `N1` sobreviver, porque usava o `countingModel` e o run
         terminava entre os dois POSTs — corrigido com o modelo bloqueado.
+      - **ALTO-1b (SEGUNDA revisão adversarial): a correcção do ALTO-1 estava incompleta, e pela
+        mesma razão.** O predicado passou a exigir `SovereignReadCredential != nil` — a EXISTÊNCIA da
+        credencial no nó — mas `NewAPIHandler` compõe a read-governance em DOIS ramos e passa a
+        credencial em UM só: `case node.SovereignAuthority != nil` passa-a, `case
+        node.SovereignReadRegions != nil` passa `nil`. Um nó com registo board→região e credencial
+        forte mas SEM autoridade tinha a credencial **composta e ignorada**, e o banner dizia
+        «VERIFICADO» sobre um header — **medido: 60 submissões rotativas, todas admitidas com o tecto
+        a 2**. O predicado passou a exigir `SovereignAuthority != nil` também: é a condição do ramo
+        que realmente USA a credencial.
+        **Agravante, e é o que importa:** o caso (C) do teste que eu escrevi para provar a postura
+        VERIFICADO compunha exactamente este estado — o sensor validava o estado errado e não cobria
+        o caminho que o `Bootstrap` produz. Corrigido: (C) compõe a autoridade a sério, e um caso (E)
+        novo fixa o estado defeituoso como NÃO-verificado. Mutação `N5` (repor o predicado que lê a
+        existência em vez do ramo) ⇒ vermelho, e só nesse caso.
+        Pelo `Bootstrap` o estado é inalcançável (`readRegions` só é atribuído dentro de
+        `if sovAuthority != nil`, bootstrap.go:2457), logo era alcançável in-process — mas um
+        predicado não pode depender dessa coincidência para estar certo.
       - **Achado próprio, anterior:** o predicado escrito à mão omitia o ramo `SovereignAuthority`.
         Não era alcançável pelo `Bootstrap` (`readRegions = readAuthority.Registry()`), era-o
         in-process. Extraído para `noTemGateSoberanoDeLeitura`. Mutação `M8` ⇒ vermelho.
@@ -1786,9 +1803,10 @@ mim:
 | | Mutação | Quem apanhou |
 |---|---|---|
 | `M2` | separar contagem de reserva com janela **nula** | eu, ao mutar |
-| `N1` | remover a condição de composição em `serveAPI` | **revisão adversarial** |
-| `N2` | passar `true` fixo ao banner em `serveAPI` | **revisão adversarial** |
-| `N3` | laço de produção 20x mais lento (o benchmark não via) | **revisão adversarial** |
+| `N1` | remover a condição de composição em `serveAPI` | **1.ª revisão adversarial** |
+| `N2` | passar `true` fixo ao banner em `serveAPI` | **1.ª revisão adversarial** |
+| `N3` | laço de produção 20x mais lento (o benchmark não via) | **1.ª revisão adversarial** |
+| `N5` | predicado a ler a EXISTÊNCIA da credencial em vez do ramo que a USA | **2.ª revisão adversarial** |
 
 A `M2` está registada no teste como limite **conhecido** do sensor, com a tabela de sensibilidade
 medida, em vez de tapada. As `N1`–`N3` eram **lacunas de sensor sobre critérios que este ticket
@@ -1832,8 +1850,10 @@ configuração do próprio teste.
   é confiado por configuração), declarada aqui porque não estava.
 
 ### Estado
-**AOS-456a FEITO** (2026-09-28), depois de uma revisão adversarial independente encontrar 3 ALTO e 3
-MÉDIO na primeira versão do commit — dois deles contra afirmações que este ticket declarava provadas.
+**AOS-456a FEITO** (2026-09-28), depois de DUAS revisões adversariais independentes. A primeira
+encontrou 3 ALTO e 3 MÉDIO — dois contra afirmações que este ticket declarava provadas. A segunda
+encontrou que a correcção do ALTO-1 estava **incompleta pela mesma razão** (predicado a descrever uma
+garantia que o código não dava) e que o teste escrito para a provar compunha o estado defeituoso.
 As correcções estão acima, cada uma com a mutação que agora a guarda. **AOS-456b ABERTO**, e
 possivelmente desnecessário — a decisão precede o código.
 

@@ -851,22 +851,70 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		}
 	})
 
-	// (C) NÓ COM CREDENCIAL FORTE: anuncia VERIFICADO. Sem este caso, um banner que dissesse
-	// DEMO-GRADE sempre passaria (A) e (B) — o ramo VERIFICADO tem de ser alcançável.
-	t.Run("credencial forte composta: anuncia VERIFICADO", func(t *testing.T) {
+	// (C) NÓ COM AUTORIDADE **E** CREDENCIAL FORTE: anuncia VERIFICADO. Sem este caso, um banner que
+	// dissesse DEMO-GRADE sempre passaria (A) e (B) — o ramo VERIFICADO tem de ser alcançável.
+	//
+	// A AUTORIDADE É COMPOSTA A SÉRIO, e a primeira versão deste caso não a compunha — punha só o
+	// registo board→região e a credencial, que é precisamente o estado que o caso (E) abaixo agora
+	// fixa como NÃO-verificado. O sensor validava o estado errado e não cobria o caminho que o
+	// `Bootstrap` produz (onde registo ⇒ autoridade). Achado da SEGUNDA revisão adversarial.
+	t.Run("autoridade E credencial forte: anuncia VERIFICADO", func(t *testing.T) {
 		clearIngressEnv(t)
 		t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "3")
 		node, _ := newAPINode(t, &countingModel{}, true)
 		t.Cleanup(func() { _ = node.Close() })
-		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
+		auth, err := NewSovereignRegionAuthority(context.Background(),
+			map[string]string{"board:demo": "eu"}, node.WORM, time.Now)
+		if err != nil {
+			t.Fatalf("NewSovereignRegionAuthority: %v", err)
+		}
+		node.SovereignAuthority = auth
+		node.SovereignReadRegions = auth.Registry() // como o Bootstrap o faz (bootstrap.go:2457)
 		node.SovereignReadCredential = credencialDeLeituraInerte{}
 
 		banner := arrancarMedirELerBanner(t, node, nil)
 		if !strings.Contains(banner, "LIGADO sobre principal VERIFICADO") {
-			t.Fatalf("com credencial forte composta o banner devia declarar VERIFICADO; saiu:\n%s", banner)
+			t.Fatalf("com autoridade E credencial forte o banner devia declarar VERIFICADO; saiu:\n%s", banner)
 		}
 		if strings.Contains(banner, "DEMO-GRADE") {
 			t.Fatalf("banner declara DEMO-GRADE com credencial forte composta; saiu:\n%s", banner)
+		}
+	})
+
+	// (E) O ESTADO QUE A SEGUNDA REVISÃO ADVERSARIAL DESCOBRIU: registo board→região **e**
+	// credencial forte, mas SEM autoridade. Aqui a credencial está composta no nó e **IGNORADA**
+	// pelo handler — `NewAPIHandler` cai no `case node.SovereignReadRegions != nil:` e passa `nil`,
+	// pelo que o `autorizarComCausa` lê o principal do header.
+	//
+	// O banner NÃO pode dizer VERIFICADO. Antes desta correcção dizia, e a medição foi 60
+	// submissões com o header a rodar, todas admitidas com o tecto a 2 — o ALTO-1 da primeira
+	// revisão, uma camada mais abaixo.
+	//
+	// Pelo `Bootstrap` o estado é inalcançável (registo ⇒ autoridade); o caso existe porque o
+	// predicado não pode depender dessa coincidência para estar certo, e porque era este o estado
+	// que o caso (C) compunha.
+	t.Run("credencial COMPOSTA mas IGNORADA pelo handler: NAO e VERIFICADO", func(t *testing.T) {
+		clearIngressEnv(t)
+		t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "2")
+		model := &aos456Bloqueado{entrou: make(chan struct{}, 128), release: make(chan struct{})}
+		t.Cleanup(model.libertar)
+		node, _ := newAPINode(t, model, true)
+		t.Cleanup(func() { _ = node.Close() })
+		node.SovereignAuthority = nil // SEM autoridade: o handler ignora a credencial
+		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
+		node.SovereignReadCredential = credencialDeLeituraInerte{}
+
+		if principalDoRunEVerificavel(node) {
+			t.Fatal("o predicado diz VERIFICADO com a credencial COMPOSTA mas IGNORADA pelo handler " +
+				"(NewAPIHandler passa nil no ramo do registo) — o principal vem do header, e um tecto " +
+				"sobre um header contorna-se rodando-o")
+		}
+		banner := arrancarMedirELerBanner(t, node, nil)
+		if strings.Contains(banner, "LIGADO sobre principal VERIFICADO") {
+			t.Fatalf("banner declara VERIFICADO sobre um principal que vem do HEADER; saiu:\n%s", banner)
+		}
+		if !strings.Contains(banner, "DEMO-GRADE") {
+			t.Fatalf("banner devia declarar DEMO-GRADE neste estado; saiu:\n%s", banner)
 		}
 	})
 

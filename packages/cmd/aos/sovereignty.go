@@ -195,7 +195,28 @@ func noTemGateSoberanoDeLeitura(node *Node) bool {
 // («VERIFICADO» vs «DEMO-GRADE, contornável por header»). Uma barreira útil contra acidente é
 // legítima; anunciá-la como protecção contra abuso não é.
 func principalDoRunEVerificavel(node *Node) bool {
-	return noTemGateSoberanoDeLeitura(node) && node.SovereignReadCredential != nil
+	// A CREDENCIAL TEM DE CHEGAR AO SÍTIO ONDE É USADA, e não só existir no nó — SEGUNDA revisão
+	// adversarial, e é o mesmo defeito da primeira uma camada abaixo.
+	//
+	// [NewAPIHandler] compõe a read-governance em DOIS ramos, e passa a credencial em UM só:
+	//
+	//	case node.SovereignAuthority != nil:      newReadGovernance(authority, node.SovereignReadCredential, …)
+	//	case node.SovereignReadRegions != nil:    newReadGovernance(regions,   nil,                          …)
+	//
+	// Logo um nó com registo board→região e credencial forte mas SEM autoridade tem a credencial
+	// COMPOSTA e IGNORADA: o `autorizarComCausa` cai na via legada e lê o principal do header. A
+	// primeira versão deste predicado testava `SovereignReadCredential != nil` e declarava esse
+	// estado VERIFICADO — medido, 60 submissões rotativas admitidas com o tecto a 2, e o banner a
+	// dizer «VERIFICADO». Exigir a AUTORIDADE fecha-o: é a condição do ramo que realmente usa a
+	// credencial.
+	//
+	// GRAVIDADE: pelo `Bootstrap` o estado NÃO é alcançável — `readRegions` só é atribuído dentro de
+	// `if sovAuthority != nil` (bootstrap.go:2457), pelo que registo ⇒ autoridade. Era alcançável
+	// in-process, e o agravante estava no TESTE: o caso que eu escrevi para provar a postura
+	// VERIFICADO compunha exactamente este estado, pelo que o sensor validava o estado errado e não
+	// cobria o caminho que o binário produz.
+	return noTemGateSoberanoDeLeitura(node) &&
+		node.SovereignAuthority != nil && node.SovereignReadCredential != nil
 }
 
 // newReadGovernance compõe a costura de leitura soberana. regions e worm são obrigatórios (o
