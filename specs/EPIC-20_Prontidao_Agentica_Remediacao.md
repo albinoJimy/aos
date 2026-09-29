@@ -2397,53 +2397,55 @@ eixo AOS-456 tem a gémea («60 submissões rotativas») fixada no arranque real
 
 ### Contexto
 Em Go, um bloco de comentário imediatamente antes de uma declaração (sem linha em branco) **é** o godoc
-dessa declaração. Inserir uma função entre um comentário e o símbolo que ele documenta transfere o doc
-para o símbolo errado e deixa o original **sem documentação nenhuma** — e `gofmt`, `go vet` e
-`staticcheck` não dizem nada, porque nada está sintacticamente errado.
+dessa declaração. Inserir uma declaração entre um comentário e o símbolo que ele documenta transfere o
+doc para o símbolo errado e deixa o original **sem documentação nenhuma** — e `gofmt`, `go vet` e
+`staticcheck` não dizem nada, porque nada está sintacticamente errado (o `ST1020` só cobre
+identificadores exportados).
 
-Aconteceu **quatro vezes na mesma sessão** em `packages/cmd/aos`, sempre igual e sempre corrigido só na
-instância: `WithCompletedRetention` (AOS-456a), `newReadGovernance` (AOS-456a), `WithMaxTrajectoryConns`
-e o doc de `handleTrajectory` (AOS-459), e `WithControlRateLimit` — sequestrado pelo `WithReadRateLimit`
-do AOS-458 e reposto no AOS-461. Corrigir a instância e não a classe garante uma quinta.
+Aconteceu **cinco vezes na mesma sessão**, sempre igual e sempre corrigido só na instância:
+`WithCompletedRetention` e `newReadGovernance` (AOS-456a), `WithMaxTrajectoryConns` e o doc de
+`handleTrajectory` (AOS-459), `WithControlRateLimit` (AOS-458, reposto no AOS-461) e — **no próprio
+commit do AOS-463, que declarou que corrigir a instância e não a classe garantia uma quinta vez** —
+`ingressPostureBanner`, o maior documento de contrato do `ingress_env.go`, que passou a ser o godoc de um
+helper de quatro linhas enquanto a função ficava com zero.
 
-Uma varredura AST do pacote encontra hijacks fora dos já corrigidos. **A lista abaixo não é uma
-contagem fechada** — a primeira versão deste ticket dava uma, e era parcial em dois sentidos (achado
-BAIXO-3 da oitava revisão adversarial): omitia `service.go` e classificava como hijack um caso que é
-outra coisa. Fechar a contagem à mão é o defeito que o ticket existe para eliminar.
-
-Confirmados por leitura directa:
-
-| ficheiro | símbolo que ficou sem doc | doc que lá está |
-|---|---|---|
-| `service.go:666` | **`NodeService.submit`** — *de um símbolo do AOS-456a* | o de `submit`, colado a `imputadoA` |
-| `posture_banner.go` ×3 | `taintGatePostureBanner`, `materialPrivadoDoNo`, `revogacaoNoBanner` | de outros três banners |
-| `sovereignty.go` ×2 | `recusaDeLeitura`, `autorizarComCausa` | de `authorize` e de `autorizarSemMemo` |
-| `main.go` ×3, `broker_vault_env.go` | vars de erro adjacentes | doc do erro anterior |
-
-**Caso à parte, classe diferente:** `promotion_api.go:128` tem um doc que começa por `decodeArtifact`
-sobre o método `decode` — é um **nome obsoleto no doc**, não um hijack (nenhum símbolo perdeu o seu). O
-ticket deve distinguir as duas classes em vez de as somar.
-
-A varredura ingénua produz também falsos positivos que o ticket tem de eliminar: docs de **grupo** antes
-de blocos `var`/`const` de erros, `var _ = …` de asserção de interface, e prosa PT-PT que começa por
-maiúscula (`// O …`, `// Erros …`, `// Assegura …`).
+**A justificação para adiar este ticket foi refutada pelo commit que a escreveu.** Foi isso, e não um
+pedido novo, que o trouxe para dentro do AOS-463.
 
 ### Critérios de aceitação
-- [ ] Um sensor mecânico que falha quando a primeira palavra de um godoc é um **identificador declarado
-  no pacote** diferente do símbolo que documenta. Discriminar por «existe como símbolo» é o que separa
-  o hijack real da prosa; a heurística de maiúscula **não** basta (medido: 15 achados, ~7 falsos).
-- [ ] Decidido e justificado **onde vive**: teste Go no pacote (corre em `ci-test`, sem tocar em
-  `scripts/ci/`) ou gate próprio com baseline. Preferir o primeiro se cobrir o alcance necessário — o
-  `AGENTS.md` avisa que `scripts/ci/` é território de sessões concorrentes.
-- [ ] Os hijacks pré-existentes **corrigidos**, não baselinados, ou cada excepção com dono e razão.
-- [ ] O sensor prova-se com uma mutação: inserir uma função entre um comentário e o seu símbolo tem de
-  avermelhar.
+- [x] Sensor mecânico: `TestAOS462NenhumGodocSequestrado` varre a AST do pacote e falha quando a
+  primeira palavra de um godoc é **um identificador declarado no pacote** diferente do símbolo que
+  documenta.
+- [x] **O discriminante é «existe como símbolo declarado»**, e é ele que separa o hijack real da prosa.
+  Medido: a varredura ingénua (primeira palavra ≠ nome do símbolo, com heurística de maiúscula) dá 15
+  achados, ~7 falsos — docs de grupo antes de blocos `var`/`const` («`// Erros …`»), asserções de
+  interface («`// Assegura …`») e prosa PT-PT («`// O …`», «`// PRODUTOR …`»). Com o discriminante:
+  **11 achados, zero falsos positivos.**
+- [x] **O identificador branco está fora, e é correcção do sensor, não do código.** Uma asserção de
+  interface (`var _ Porta = (*tipo)(nil)`) declara o símbolo `_`, que não é documentável, e um comentário
+  que nomeia o tipo afirmado está correcto ali (`dsar.go` tem um). Um sensor que manda corrigir código
+  correcto ensina a ignorá-lo, o que é pior do que não vigiar.
+- [x] Os **11 hijacks pré-existentes corrigidos**, não baselinados, movendo o **comentário** e nunca o
+  código — a operação de menor risco: `broker_vault_env.go`, `main.go` ×3, `service.go`,
+  `posture_banner.go` ×3, `sovereignty.go` ×2, mais o `ingress_env.go` do AOS-463.
+- [x] Provado por mutação: inserir uma função entre um comentário e o seu símbolo avermelha **3/3**
+  corridas, nas duas formas testadas (`ingressPostureBanner` e `budgetPostureBanner`).
+- [x] Vive como **teste Go no pacote** (corre em `ci-test`), e não como gate novo: o `AGENTS.md` §6 avisa
+  que `scripts/ci/` é território de sessões concorrentes, e o alcance necessário é um pacote.
 
-### Dependências
-Nenhuma. AOS-461 repôs a instância de `WithControlRateLimit`.
+### O que o sequestro estava a mascarar
+Corrigidos os 11, quatro símbolos ficaram **sem doc nenhum** — que é o estado verdadeiro: nunca tiveram,
+apenas carregavam o de outro. Escreveram-se docs para `taintGatePostureBanner`, `revogacaoNoBanner`,
+`autorizarComCausa` e `imputadoA`, **só com o que se verifica por leitura do corpo**; inventar
+descrições é o modo de falha que esta sessão passou o dia a pagar.
+
+### Limite declarado
+Não apanha um doc cuja primeira palavra nomeie um símbolo de **outro** pacote, nem um que descreva o
+símbolo errado sem o nomear. Apanha a forma que custou cinco ocorrências, e só o pacote
+`packages/cmd/aos` — alargá-lo aos outros 48 módulos é trabalho que ninguém mediu ainda.
 
 ### Estado
-**ABERTO.**
+**FEITO** (2026-09-29).
 
 ---
 
@@ -2530,7 +2532,47 @@ ticket — mas é uma quebra e tem de estar dita onde o operador olha.
   não só na do por-leitor: quem baixa uma variável lê a linha dela. A primeira versão deste ticket pôs a
   nota só na linha do por-leitor — colocação parcial, a sexta desta sessão.
 
+### E a NONA revisão adversarial, sobre este mesmo commit
+Mandato estreito (só `c91e3b9..2e24838`, focado na validação de arranque). **Sem ALTO** — o mecanismo
+está certo e medido: o fail-open fecha, o abort morde no binário real, nenhuma configuração do
+repositório passa a abortar, e os três casos novos não são vácuos. Todos os achados foram afirmações
+falsas ou parciais em torno de um mecanismo correcto, que é o padrão desta sessão à nona vez.
+
+- [x] **`ingressPostureBanner` perdeu o godoc INTEIRO para `origemDoLimite`** — o helper foi inserido
+  entre o bloco de comentário e a função, sem linha em branco, e o maior documento de contrato do
+  ficheiro (alvo de `[ingressPostureBanner]` em três outros ficheiros) passou a documentar quatro linhas.
+  **Quinta ocorrência da classe, no commit que declarou que a quinta viria.** Reposto, e a classe fechada
+  em **AOS-462**, que este commit tinha adiado.
+- [x] **A história do ramo INERTE era a TERCEIRA versão errada.** A nota dizia «o ramo fica para a
+  composição in-process, que não passa por essa validação». Falso, medido: a função tem **um** chamador
+  de produção alimentado pelo `ingressLim` do ambiente, o `ingressLimits` é não-exportado, e
+  `WithMaxTrajectoryConns*` configuram o `apiHandler.cfg` — a composição in-process **não chega ao banner
+  de todo**. Logo o ramo é hoje inalcançável pelos dois caminhos, e a conclusão do AOS-461 voltou a ser
+  verdadeira **por causa deste commit**, não por já o ser. O ramo fica porque está fixado em teste.
+- [x] **«VARRE TODAS AS COMBINAÇÕES DE POSTURA» era falso:** a varredura variava 2 de 8 campos de `lim` e
+  deixava `tuned` a `false` — um campo em que a função **já ramifica**. Medido: uma dobra condicionada a
+  `lim.tuned`, com nome conforme, escapava 5/5. Passa a varrer 24 combinações (3 formas × `tuned` × gate ×
+  verif); verificado que apanha o caso, 5/5. Sexta enumeração parcial da sessão.
+- [x] **Dos três sítios que o próprio ticket nomeia, corrigiu um.** O godoc de
+  `TestAOS460OBannerDECLARAUmParINERTE` e a secção do AOS-460 continuavam a dizer «não é alcançável» e
+  «catorze casos» — deixando o repositório com **duas declarações contraditórias** sobre o mesmo ramo,
+  em que a marcada como errada era a exacta. Corrigidos, e a contagem passa a **17**.
+- [x] **O commit introduziu a contradição de gamas que se propôs a remover:** `trajectory.go` ficou com
+  a tabela **pré-alargamento** (`34–52 / 29–42`) enquanto o cabeçalho do teste levou `34–75 / 29–59` e a
+  nota de dependência da carga. Em `c91e3b9` os dois concordavam; o sítio em **produção** ficou o menos
+  honesto dos dois.
+- [x] **«com a maquina declarada» sobre-promete** — o que está declarado é a condição (mesmo contentor,
+  carga diferente), não a máquina, os cores nem o `GOMAXPROCS`. Corrigido para o que é.
+- [x] **Fronteira declarada:** `origemDoLimite` quase nunca dirá «default do binario» no deployment
+  recomendado, porque o `docker-compose.prod.yml` exporta **sempre** as duas variáveis — quem baixa só o
+  global lê «PER_READER=32 (definida)», um 32 que não escreveu em sítio nenhum. O propósito do helper é
+  derrotado onde mais faria falta, e a correcção é no compose. E o quarto caso do helper é **vácuo**: com
+  nenhuma definida o par é 32 < 256 e o abort não dispara.
+
 ### Residual declarado
+- **Dívida herdada, não tocada:** o texto de ajuda do `ErrBadIngressLimits` enumera **4 das 8** variáveis
+  de ingresso, e o operador lê esse prefixo colado a uma mensagem sobre `AOS_TRAJECTORY_MAX_CONNS*`, que
+  não está na lista. Antecede o AOS-459.
 - **Fronteira não declarada (mantida):** o sensor de «12 streams vivos com o tecto a 1» fixa
   `global=100 / por-leitor=1`, uma composição que **nenhum nó por defeito tem** (256/32). A frase que o
   operador lê cita um número medido sob um tecto que o seu nó não corre. O eixo gémeo do AOS-456 tem o

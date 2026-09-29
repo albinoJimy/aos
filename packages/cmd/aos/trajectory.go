@@ -207,8 +207,15 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	// concorrentes dela (cinco corridas por ordem, as DUAS categorias de 429 separadas):
 	//
 	//	ordem                429 pelo tecto GLOBAL   429 pelo tecto DE BOB
-	//	AOS-459 (antiga)     34–52                   0
-	//	esta                 0                       29–42
+	//	AOS-459 (antiga)     34–75                   0
+	//	esta                 0                       29–59
+	//
+	// A LARGURA É A UNIÃO DE DUAS SÉRIES de cinco corridas no mesmo contentor sob carga diferente
+	// (34–52/29–42 numa, 51–75/51–59 noutra). São contagens sob contenção e deslocam-se ~10 pontos
+	// percentuais entre séries; o que reproduz 5/5 nas duas séries e nas duas ordens é a FORMA — qual
+	// das colunas vai a zero. O AOS-463 alargou a tabela do teste e deixou esta estreita e sem a
+	// condição: a versão em PRODUÇÃO ficou a ser a menos honesta das duas (achado MÉDIO-6 da nona
+	// revisão, que é o mesmo defeito que o AOS-461 se propôs a fechar).
 	//
 	// É a mesma assimetria que o AOS-456a declara e cumpre — «exceder responde 429 SEM ocupar lugar
 	// nenhum» —, que o AOS-459 dizia replicar e não replicava. Uma recusa por-leitor passa a não

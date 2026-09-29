@@ -248,6 +248,31 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 	return v, true
 }
 
+// origemDoLimite diz se um valor veio da variável de ambiente ou do default do binário. Existe para
+// que a recusa do par inerte nomeie a origem de cada número: um operador que definiu UMA das duas
+// variáveis precisa de saber que o outro valor é um default, senão depura o número errado.
+//
+// FRONTEIRA MEDIDA (achado BAIXO-1 da nona revisão): no deployment recomendado este helper quase nunca
+// dirá «default do binario». O `deploy/server/docker-compose.prod.yml` exporta SEMPRE as duas variáveis
+// (`${…:-256}`/`${…:-32}`), pelo que quem baixa só o global no `.env` lê «PER_READER=32 (definida)» — um
+// 32 que não escreveu em sítio nenhum. O propósito do helper é derrotado exactamente onde mais faria
+// falta, e a correcção é no compose, não aqui.
+//
+// E O QUARTO CASO É VÁCUO: com nenhuma das duas definida o par é 32 < 256, o abort não dispara, e
+// `(default, default)` nunca chega à mensagem. São três casos alcançáveis, não quatro.
+//
+// A POSIÇÃO DESTA FUNÇÃO É LOAD-BEARING: o AOS-463 inseriu-a entre o godoc de [ingressPostureBanner] e
+// a função, sem linha em branco, e o maior documento de contrato deste ficheiro passou a ser o godoc
+// deste helper de quatro linhas — enquanto [ingressPostureBanner] ficava com ZERO. Quinta ocorrência da
+// classe nesta sessão, cometida no commit que declarou que corrigir a instância e não a classe garantia
+// uma quinta. O sensor está em [TestAOS462NenhumGodocSequestrado].
+func origemDoLimite(raw string) string {
+	if raw != "" {
+		return "definida"
+	}
+	return "default do binario"
+}
+
 // ingressPostureBanner declara os limites de ingresso EM VIGOR, a partir dos números
 // REALMENTE aplicados às [APIOption] — nunca da intenção da config (a mesma disciplina de
 // [budgetPostureBanner]/[modelPostureBanner]: postura anunciada = postura ligada).
@@ -297,16 +322,6 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 // Com o gate composto e SEM credencial forte o principal vem do header `X-Aos-Reader`, que o
 // chamador escreve — medido: 60 submissões com o header a rodar, 60 admitidas, tecto a 2. O tecto
 // compõe-se nessa postura (vale contra rajada honesta) mas o banner tem de dizer QUAL das duas é.
-// origemDoLimite diz se um valor veio da variável de ambiente ou do default do binário. Existe para
-// que a recusa do par inerte nomeie a origem de cada número: um operador que definiu UMA das duas
-// variáveis precisa de saber que o outro valor é um default, senão depura o número errado.
-func origemDoLimite(raw string) string {
-	if raw != "" {
-		return "definida"
-	}
-	return "default do binario"
-}
-
 func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel bool) []string {
 	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER/AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST/AOS_TRAJECTORY_MAX_CONNS/AOS_TRAJECTORY_MAX_CONNS_PER_READER definida)"
 	if lim.tuned {
@@ -358,7 +373,7 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	// o AOS-456a fechou. Achado MÉDIO-1 da sétima revisão adversarial; o caso está na tabela de
 	// [TestAOS460OBannerDeclaraAsTRESPosturasDoTectoPorLeitor] como «verificavel SEM gate».
 	case lim.trajMaxConnsPerReader > 0 && gateComposto && principalVerificavel:
-		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal VERIFICADO — cada leitor ocupa no maximo %d de %d stream(s) concorrentes; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. A recusa por-leitor NAO toma lugar global nenhum (AOS-460: a reparticao corre ANTES do tecto global, logo uma rajada de recusas de um leitor deixa de negar a rota aos outros pelo tecto GLOBAL). NAO promete que o outro leitor nao leve 429: dentro da sua quota um leitor ocupa lugares globais legitimamente, e um tecto por-leitor a 1 faz o proprio leitor colidir com o seu lugar ainda nao libertado — o que desaparece a 8 e a 32 (AOS-461). As gamas medidas ficam no ticket, com a maquina declarada: sao contagens sob contencao e mudam com a carga, logo nao pertencem a um banner.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
+		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal VERIFICADO — cada leitor ocupa no maximo %d de %d stream(s) concorrentes; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. A recusa por-leitor NAO toma lugar global nenhum (AOS-460: a reparticao corre ANTES do tecto global, logo uma rajada de recusas de um leitor deixa de negar a rota aos outros pelo tecto GLOBAL). NAO promete que o outro leitor nao leve 429: dentro da sua quota um leitor ocupa lugares globais legitimamente, e um tecto por-leitor a 1 faz o proprio leitor colidir com o seu lugar ainda nao libertado — o que desaparece a 8 e a 32 (AOS-461). As gamas medidas ficam no ticket e no cabecalho do teste, com a CONDICAO declarada (mesmo contentor, carga diferente — nao ha maquina, cores nem GOMAXPROCS declarados): sao contagens sob contencao e mudam com a carga, logo nao pertencem a um banner.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	case lim.trajMaxConnsPerReader > 0 && gateComposto:
 		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal DEMO-GRADE (%d de %d) — ATENCAO: sem credencial forte composta o leitor vem do header X-Aos-Reader, que o CHAMADOR escreve, pelo que este tecto CONTORNA-SE rodando o header (medido: 12 streams vivos com o tecto a 1). Vale contra rajada HONESTA ou cliente mal configurado; NAO vale contra abuso. Para o tornar inforjavel defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	case lim.trajMaxConnsPerReader > 0:
@@ -375,11 +390,23 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	// enquanto o AOS-461 o declarava inalcançável. Ver a nota do abort em [ingressLimitsFromEnv].
 	//
 	// HOJE, depois de o AOS-463 validar o PAR FINAL: o abort cobre todos os estados alcançáveis por
-	// ambiente (17 casos em [TestAOS459EnvFailClosedEORRACIOENTREOSDOIS]), e é ele a barreira que
-	// morde. O ramo fica para a composição in-process
-	// ([WithMaxTrajectoryConns]/[WithMaxTrajectoryConnsPerReader]), que não passa por essa validação —
-	// e a lição registada é que declarar um ramo inalcançável é uma afirmação sobre TODOS os caminhos
-	// de entrada, e portanto a espécie de afirmação que este ciclo já errou duas vezes.
+	// ambiente (17 casos em [TestAOS459EnvFailClosedEORRACIOENTREOSDOIS]), e é ele a barreira que morde.
+	//
+	// E A RAZÃO PELA QUAL O RAMO FICA — terceira tentativa, porque a segunda também estava errada
+	// (achado MÉDIO-3 da nona revisão). Ela dizia «fica para a composição in-process, que não passa por
+	// essa validação». **Falso, e medido:** esta função tem UM chamador de produção (`main.go`,
+	// alimentado pelo `ingressLim` lido do ambiente e nunca reatribuído), o `ingressLimits` é
+	// não-exportado, e [WithMaxTrajectoryConns]/[WithMaxTrajectoryConnsPerReader] configuram o
+	// `apiHandler.cfg` — nunca um `ingressLimits`. A composição in-process **não chega ao banner de
+	// todo**. Logo o ramo é hoje inalcançável pelos DOIS caminhos, e a conclusão do AOS-461 («um
+	// operador nunca vê este texto») voltou a ser verdadeira — por causa do abort do AOS-463, não por
+	// já o ser quando ele a escreveu.
+	//
+	// O ramo fica porque está FIXADO EM TESTE (`TestAOS460OBannerDECLARAUmParINERTE`): se alguém
+	// alargar a validação da env, ou der ao banner outra fonte de limites, o texto tem de continuar a
+	// existir e a dizer a verdade. É uma asserção sobre a função, não a protecção de um caminho de
+	// composição. A lição, à terceira: «este ramo é inalcançável» e «este ramo protege X» são ambas
+	// afirmações sobre TODOS os caminhos de entrada — a espécie que este ciclo já errou três vezes.
 	if lim.trajMaxConnsPerReader > 0 && lim.trajMaxConnsPerReader >= lim.trajMaxConns {
 		porLeitorSSE += fmt.Sprintf(" ATENCAO: o tecto por-leitor (%d) NAO e menor que o global (%d), logo o global corta primeiro e a reparticao NUNCA dispara — esta INERTE.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	}

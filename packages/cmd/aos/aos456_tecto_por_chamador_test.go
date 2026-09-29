@@ -1210,9 +1210,17 @@ func dobraDoEixo(t *testing.T, banner, inicio string) string {
 // `!gateComposto` tem nome conforme e **escapava** à varredura, voltando a alargar a dobra anterior em
 // silêncio.
 //
-// LIMITE QUE FICA, e é honesto: uma dobra cujo nome NÃO siga a convenção «TECTO … (AOS-NNN):» não é
-// apanhada por nenhuma destas combinações. Fechá-lo exigiria que o banner declarasse as suas próprias
-// dobras em vez de as escrever em texto livre — vale a pena quando houver uma terceira, não antes.
+// E `tuned` É O QUARTO EIXO, porque é um campo em que a função JÁ ramifica (a string `origem`, primeira
+// linha do corpo). A primeira versão desta varredura variava `gateComposto` e `principalVerificavel` e
+// deixava `tuned` a `false` nas três formas: uma dobra emitida só quando `lim.tuned` tinha nome conforme
+// e **escapava** — medido, 5/5 corridas, e o «limite declarado» nomeava só a convenção de nome, não
+// este. Achado MÉDIO-4 da nona revisão adversarial, e é a sexta enumeração parcial da sessão.
+//
+// LIMITE QUE FICA, e é honesto: uma dobra cujo nome NÃO siga a convenção «TECTO … (AOS-NNN):», ou que
+// ramifique num campo de `lim` que esta tabela não varia, não é apanhada. Fechá-lo a sério exigiria que
+// o banner declarasse as suas próprias dobras em vez de as escrever em texto livre — vale a pena quando
+// houver uma terceira, não antes. O que se pode fazer agora, e se faz, é varrer todos os campos em que
+// a função ramifica HOJE.
 func TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS(t *testing.T) {
 	// AS FORMAS DE `lim` que mudam de RAMO em alguma dobra: tectos ligados, tectos desligados, e o par
 	// inerte (`por-leitor >= global`), que é o ramo condicional do banner.
@@ -1226,22 +1234,27 @@ func TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS(t *testing.T) {
 	}
 	re := regexp.MustCompile(`TECTO [^:]*\(AOS-\d+\):`)
 	vistos := map[string]bool{}
-	for nomeForma, lim := range formas {
-		for _, gate := range []bool{false, true} {
-			for _, verif := range []bool{false, true} {
-				banner := strings.Join(ingressPostureBanner(lim, gate, verif), "\n")
-				achados := re.FindAllString(banner, -1)
-				if len(achados) == 0 {
-					t.Fatalf("%s/gate=%v/verif=%v: nenhum marcador de dobra no banner — a varredura "+
-						"deixou de medir o que quer que fosse", nomeForma, gate, verif)
-				}
-				for _, a := range achados {
-					nome := strings.TrimSuffix(a, ":")
-					vistos[nome] = true
-					if !slices.Contains(marcadoresDeDobra, nome) {
-						t.Errorf("%s/gate=%v/verif=%v: a dobra %q aparece no banner e NAO esta em "+
-							"marcadoresDeDobra: dobraDoEixo nao a consegue fechar, e a dobra anterior "+
-							"a esta engole-a — registe-a", nomeForma, gate, verif, nome)
+	for nomeForma, limBase := range formas {
+		for _, afinado := range []bool{false, true} {
+			for _, gate := range []bool{false, true} {
+				for _, verif := range []bool{false, true} {
+					lim := limBase
+					lim.tuned = afinado
+					banner := strings.Join(ingressPostureBanner(lim, gate, verif), "\n")
+					achados := re.FindAllString(banner, -1)
+					if len(achados) == 0 {
+						t.Fatalf("%s/tuned=%v/gate=%v/verif=%v: nenhum marcador de dobra no banner — a "+
+							"varredura deixou de medir o que quer que fosse", nomeForma, afinado, gate, verif)
+					}
+					for _, a := range achados {
+						nome := strings.TrimSuffix(a, ":")
+						vistos[nome] = true
+						if !slices.Contains(marcadoresDeDobra, nome) {
+							t.Errorf("%s/tuned=%v/gate=%v/verif=%v: a dobra %q aparece no banner e NAO "+
+								"esta em marcadoresDeDobra: dobraDoEixo nao a consegue fechar, e a dobra "+
+								"anterior a esta engole-a — registe-a",
+								nomeForma, afinado, gate, verif, nome)
+						}
 					}
 				}
 			}
@@ -1252,7 +1265,7 @@ func TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS(t *testing.T) {
 	for _, m := range marcadoresDeDobra {
 		if !vistos[m] {
 			t.Errorf("o marcador registado %q NAO aparece em nenhuma das %d posturas varridas — "+
-				"registo obsoleto", m, len(formas)*4)
+				"registo obsoleto", m, len(formas)*8)
 		}
 	}
 }

@@ -230,14 +230,6 @@ func newReadGovernance(regions boardRegionResolver, cred readCredentialVerifier,
 	return &readGovernance{regions: regions, cred: cred, worm: worm, now: now}
 }
 
-// authorize aplica a REGRA D7 fail-closed a um pedido de leitura: extrai o principal+board dos
-// headers de leitura e resolve o board para a sua região autorizada pelo [govsov.Registry].
-// Devolve (identidade resolvida, true) SÓ quando o principal e o board estão presentes E o
-// board resolve para uma região autorizada; caso contrário (_, false) — NEGA fail-closed. NÃO
-// revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
-// registo GOV, nunca do run pedido).
-// recusaDeLeitura é a CAUSA de uma recusa de admissão de leitura. Existe para separar as duas
-// que o `false` colapsava, e a distinção tem consequência no wire — ver [apiHandler.admitSovereignRead].
 type recusaDeLeitura uint8
 
 const (
@@ -252,7 +244,10 @@ const (
 	recusaGovernacao
 )
 
-// autorizarSemMemo aplica a regra e devolve a CAUSA da recusa, não só um booleano.
+// autorizarComCausa aplica a regra D7 e devolve a CAUSA da recusa, não só um booleano — é a variante
+// de [readGovernance.authorize] que o wire precisa para distinguir «credencial recusada» de «governação
+// nega» sem revelar existência de runs. A distinção vive em [recusaDeLeitura]; ver
+// [apiHandler.admitSovereignRead] para o que cada uma vale no estado da resposta.
 func (g *readGovernance) autorizarComCausa(r *http.Request) (readerIdentity, recusaDeLeitura) {
 	var principal, board string
 	if g.cred != nil {
@@ -309,6 +304,7 @@ func (g *readGovernance) autorizarComCausa(r *http.Request) (readerIdentity, rec
 // autorizarSemMemo mantém a face BOOLEANA para os chamadores que só precisam de saber se podem
 // prosseguir. A causa fica em [readGovernance.autorizarComCausa]; quem escolhe o status do wire
 // usa essa.
+// autorizarSemMemo aplica a regra e devolve a CAUSA da recusa, não só um booleano.
 func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool) {
 	id, causa := g.autorizarComCausa(r)
 	return id, causa == recusaNenhuma
@@ -603,6 +599,14 @@ func (h *apiHandler) sealSensitiveRead(w http.ResponseWriter, r *http.Request, i
 //
 // Sem memo no contexto (pedido construído à mão, contexto derivado), verifica como sempre
 // verificou: degrada para o comportamento anterior, nunca para «aceita sem verificar».
+// authorize aplica a REGRA D7 fail-closed a um pedido de leitura: extrai o principal+board dos
+// headers de leitura e resolve o board para a sua região autorizada pelo [govsov.Registry].
+// Devolve (identidade resolvida, true) SÓ quando o principal e o board estão presentes E o
+// board resolve para uma região autorizada; caso contrário (_, false) — NEGA fail-closed. NÃO
+// revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
+// registo GOV, nunca do run pedido).
+// recusaDeLeitura é a CAUSA de uma recusa de admissão de leitura. Existe para separar as duas
+// que o `false` colapsava, e a distinção tem consequência no wire — ver [apiHandler.admitSovereignRead].
 func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
 	m := memoDe(r)
 	if m == nil {

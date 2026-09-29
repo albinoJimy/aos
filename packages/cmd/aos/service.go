@@ -634,6 +634,21 @@ func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error 
 	return s.submit(ctx, goal, false)
 }
 
+// imputadoA resolve A QUEM se imputa um run para efeitos do tecto por-chamador (AOS-456a): o
+// `RequestedBy` quando existe — que é o principal que o gate soberano resolveu — e o `NHIID` em
+// último recurso.
+//
+// A ORDEM É A FRONTEIRA DE SEGURANÇA, não uma preferência: sem gate soberano composto o `RequestedBy`
+// vem vazio e cai-se no `NHIID`, que vem do CORPO do pedido e o chamador escolhe — um tecto sobre um
+// valor auto-declarado contorna-se mudando-o. É por isso que o banner de arranque distingue TRÊS
+// posturas em vez de duas; ver [ingressPostureBanner].
+func imputadoA(goal agentruntime.Goal) string {
+	if rb := goal.Principal.RequestedBy; rb != "" {
+		return rb
+	}
+	return goal.Principal.NHIID
+}
+
 // submit é o Submit com o interruptor da RETOMA. resuming=true vem exclusivamente de
 // [NodeService.Resume] e dispensa a recusa por suspensão — é precisamente o run suspenso
 // que se está a re-hospedar, e o log continua a dizer `waiting_on_human` até o arranque o
@@ -656,13 +671,6 @@ func (s *NodeService) Submit(ctx context.Context, goal agentruntime.Goal) error 
 // Vazio ⇒ o run não é trabalho de um plano, e o submissor é quem chama. Em modo LEGADO é sempre
 // vazio (a derivação só corre com o gate soberano composto) — e é também aí que o tecto não está
 // em vigor, pelo que as duas condições coincidem por construção.
-func imputadoA(goal agentruntime.Goal) string {
-	if rb := goal.Principal.RequestedBy; rb != "" {
-		return rb
-	}
-	return goal.Principal.NHIID
-}
-
 func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resuming bool) error {
 	if goal.RunID == "" {
 		return ErrEmptyRunID

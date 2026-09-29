@@ -253,11 +253,18 @@ func TestAOS460OBannerDeclaraAsTRESPosturasDoTectoPorLeitor(t *testing.T) {
 // in-process não. Um par inerte anunciado como repartição é a forma de falha que este ciclo pagou
 // cinco vezes; o banner passa a dizê-lo.
 //
-// ALCANCE, corrigido pelo AOS-461: este aviso NÃO é alcançável por um operador. Todos os estados que
-// o disparam abortam o arranque em `ingressLimitsFromEnv`, e o único chamador de produção do banner
-// é alimentado por essa leitura — ver a nota no ramo correspondente de [ingressPostureBanner] e os
-// catorze casos de [TestAOS459EnvFailClosedEORRACIOENTREOSDOIS], que são a barreira que morde. Este
-// teste fixa o ramo para quem compõe in-process, e não uma protecção do operador.
+// ALCANCE — e esta nota já esteve errada duas vezes, ver a história completa no ramo correspondente de
+// [ingressPostureBanner]. Em resumo: o AOS-460 chamou ao aviso uma protecção do operador; o AOS-461
+// chamou-lhe ramo morto porque «nenhuma configuração por ambiente o alcança», e ISSO ERA FALSO —
+// `AOS_TRAJECTORY_MAX_CONNS=4` sozinho arrancava com a repartição inerte, e este aviso era a única
+// coisa que o dizia. Só depois de o AOS-463 validar o PAR FINAL é que o abort passou a cobrir todos os
+// estados alcançáveis por ambiente (**17** casos em [TestAOS459EnvFailClosedEORRACIOENTREOSDOIS], não
+// catorze), e é ele a barreira que morde.
+//
+// ESTE TESTE é a razão pela qual o ramo fica: fixa-o como asserção sobre a função. NÃO é «para quem
+// compõe in-process» — essa justificação, que o AOS-461 escreveu aqui, também é falsa: a composição
+// in-process configura o `apiHandler.cfg` e não chega ao banner de todo (achado MÉDIO-3 da nona
+// revisão).
 func TestAOS460OBannerDECLARAUmParINERTE(t *testing.T) {
 	inerte := ingressLimits{ratePerSec: 10, burst: 20, maxInFlight: 50,
 		trajMaxConns: 4, trajMaxConnsPerReader: 4} // IGUAIS ⇒ o global corta primeiro
