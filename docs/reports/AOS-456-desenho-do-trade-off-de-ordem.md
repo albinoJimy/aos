@@ -163,7 +163,10 @@ Este documento pediu que a escolha fosse feita antes de código. Foi, e ficou as
 `recusar : verificar` como *o custo de atribuir taxa*. É também, e sobretudo, *o preço de admissão de
 um vector novo*: hoje o `bucket.allow()` corre na primeira linha do `handleSubmit` e a primeira
 `ed25519.Verify` ~150 linhas depois, pelo que **o balde limita quantas verificações um chamador não
-autenticado pode forçar** — 64/s por omissão, ou ~0,34% de um core. A reordenação que o 456b exige
+autenticado pode forçar**. E vale para as DUAS portas que verificam: o `POST /runs/{id}/resume` é
+classificado `planoControlo` e passa pelo `ctrlBucket` dedicado antes do handler (a barreira está no
+registo da rota, não no corpo — a primeira versão desta nota dava-a como ausente). Tecto agregado:
+128/s, ou ~0,67% de um core. A reordenação que o 456b exige
 **remove esse limitador**, e o «orçamento de verificação» da Opção A existiria para fechar um buraco
 que a própria mudança abriu.
 

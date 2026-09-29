@@ -1818,11 +1818,20 @@ se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo
 - [x] **O custo de verificação já tem tecto — é o próprio balde, e o 456b removia-o.** Este é o
       achado que fecha o eixo, e inverte a leitura do desenho.
 
-      `handleSubmit` consome o balde global na **primeira** linha (`api.go`, `h.bucket.allow()`) e a
-      primeira `ed25519.Verify` acontece **~150 linhas depois**, dentro do gate soberano. Logo o
-      balde **limita quantas verificações um chamador não autenticado pode forçar**: 64/s por
-      omissão. Medido em `BenchmarkAOS456BCustoDaVerificacao` (neste contentor, e **não** reciclando
-      o número do desenho):
+      As **duas** portas que verificam credenciais põem um balde à frente — e é «as duas» de
+      propósito, pela doutrina que o próprio 456a aplicou à reserva de `run_id` («uma barreira que só
+      metade das portas respeita não é uma barreira»):
+
+      | porta | barreira | onde está |
+      |---|---|---|
+      | `POST /runs` | `h.bucket.allow()` na **primeira** linha; a 1.ª `ed25519.Verify` ~150 linhas depois | no handler |
+      | `POST /runs/{id}/resume` | `admitControl` (o `ctrlBucket` **dedicado**) antes de o handler correr | no **registo** da rota (`planos.go`, `planoControlo`) |
+
+      A segunda quase me escapou: a barreira está no **registo** da rota e não no corpo do handler,
+      pelo que ler `handleResume` não a mostra — a primeira versão desta análise dava-a como ausente.
+      São dois baldes **independentes**, logo o tecto agregado do vector é `128/s`, não `64/s`.
+      Medido em `BenchmarkAOS456BCustoDaVerificacao` (neste contentor, e **não** reciclando o número
+      do desenho):
 
       | operação | custo |
       |---|---|
@@ -1831,7 +1840,8 @@ se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo
       | recusar no balde, **sem** verificar | 30,2 ns |
       | **rácio** | **1742x** |
 
-      Tecto actual do vector: `64/s × 52,7 µs` ≈ **3,4 ms/s de CPU = 0,34% de um core**. O custo é
+      Tecto actual do vector: `128/s × 52,7 µs` ≈ **6,7 ms/s de CPU = 0,67% de um core** (as duas
+      portas somadas). O custo é
       idêntico para assinatura válida e inválida porque `ed25519.Verify` é de tempo constante — um
       atacante não precisa de credenciais válidas, qualquer lixo bem-formado serve.
 
@@ -1848,6 +1858,12 @@ se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo
       com credencial inválida dá **403** e o contador **sobe**; o 2.º dá **429** e o contador **não
       sobe**. Verificado por mutação: mover o `bucket.allow()` para depois do gate soberano — que é
       literalmente o que o 456b pedia — **avermelha** o gate, com a razão na mensagem de falha.
+
+      E um segundo caso, `TestAOS456BAAdmissaoDeCONTROLOPrecedeARotaDeRetoma`, cobre a **outra**
+      porta: com o `ctrlBucket` a 1 token, o 1.º `POST /runs/{id}/resume` corre a rota (qualquer erro
+      menos 429) e o 2.º leva **429** sem a rota correr. Sensor pelo **código**, e não pelo contador,
+      de propósito: não obriga o teste a compor um run realmente suspenso, o que mediria outra coisa.
+      Mutação: reclassificar a rota de `planoControlo` para `planoDados` ⇒ **vermelho**.
 
 ### O que fica NÃO COBERTO, e é a fronteira honesta deste fecho
 O `edge` limita por **IP**, não por **principal**. Consequências, declaradas em vez de resolvidas:

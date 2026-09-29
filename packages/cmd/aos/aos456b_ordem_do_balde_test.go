@@ -10,11 +10,21 @@ package main
 // `bucket.allow()`. Essa inversão foi **decidida como NÃO SE FAZ** (2026-09-28), e a razão é medida,
 // não estética:
 //
-//	HOJE   `handleSubmit` consome o balde global na PRIMEIRA linha (api.go, `h.bucket.allow()`) e a
-//	       primeira `ed25519.Verify` acontece ~150 linhas depois, dentro do gate soberano. Logo o
-//	       balde LIMITA quantas verificações um chamador pode forçar: com os defaults, 64/s.
-//	       Um atacante não autenticado impõe no máximo 64 × 52,7 µs ≈ 3,4 ms/s de CPU — 0,34% de
-//	       um core.
+//	HOJE   As DUAS portas que verificam credenciais põem um balde à frente:
+//
+//	         POST /runs              — `handleSubmit` consome `h.bucket` na PRIMEIRA linha e a
+//	                                   primeira `ed25519.Verify` acontece ~150 linhas depois,
+//	                                   dentro do gate soberano;
+//	         POST /runs/{id}/resume  — classificada `planoControlo` na tabela de rotas, o que lhe
+//	                                   aplica `admitControl` (o `ctrlBucket` DEDICADO) ANTES de o
+//	                                   handler correr (planos.go). A barreira está no REGISTO da
+//	                                   rota, não no corpo do handler — é por isso que não se vê a
+//	                                   ler `handleResume`, e foi por isso que a primeira versão
+//	                                   deste comentário a deu como ausente.
+//
+//	       Logo o balde LIMITA quantas verificações um chamador pode forçar, em AMBAS: 64/s cada
+//	       com os defaults. São dois baldes independentes, pelo que o tecto agregado do vector é
+//	       128/s × 52,7 µs ≈ 6,7 ms/s de CPU — 0,67% de um core.
 //
 //	       MEDIDO NESTE CONTENTOR por [BenchmarkAOS456BCustoDaVerificacao], e os números são os
 //	       daqui e não os do desenho: verificar 52,7 µs (idêntico para assinatura válida e
@@ -36,10 +46,19 @@ package main
 // Que alguém inverta a ordem — por causa do 456b ou por refactor — e o repositório não dê sinal. É
 // um gate, não um teste de unidade: a asserção é sobre a ARQUITECTURA do caminho de ingresso.
 //
-// O sensor é a métrica REAL (`aos_ingress_credential_denials_total`, exposta em `/metrics`), que só
-// sobe quando uma credencial é efectivamente VERIFICADA e recusada. Se a verificação passar a
-// correr antes do balde, um pedido recusado pelo balde passa a fazê-la subir — e este teste
-// avermelha com a razão escrita.
+// O sensor do `POST /runs` é a métrica REAL (`aos_ingress_credential_denials_total`, exposta em
+// `/metrics`), que só sobe quando uma credencial é efectivamente VERIFICADA e recusada. Se a
+// verificação passar a correr antes do balde, um pedido recusado pelo balde passa a fazê-la subir —
+// e este teste avermelha com a razão escrita.
+//
+// O sensor do `/resume` é o CÓDIGO DE RESPOSTA, e é assim de propósito: com o balde de controlo
+// esgotado a resposta tem de ser 429 e não o erro que a lógica da rota daria. Isso prova que a
+// admissão precede TODA a rota — incluindo a verificação — sem obrigar o teste a compor um run
+// realmente suspenso, que mediria outra coisa.
+//
+// AS DUAS PORTAS, e não só uma: é a doutrina que o próprio AOS-456a aplicou à reserva de `run_id`
+// («uma barreira que só metade das portas respeita não é uma barreira»). A primeira versão deste
+// ficheiro cobria só o `POST /runs`.
 
 import (
 	"crypto/ed25519"
@@ -187,4 +206,57 @@ func BenchmarkAOS456BCustoDaVerificacao(b *testing.B) {
 	})
 	b.Log("o racio entre 'invalida' e 'recusar-sem-verificar' e o argumento do AOS-456b: e quanto " +
 		"trabalho a inversao da ordem daria de graca a um chamador nao autenticado")
+}
+
+// TestAOS456BAAdmissaoDeCONTROLOPrecedeARotaDeRetoma — a SEGUNDA porta que verifica credenciais.
+//
+// `POST /runs/{id}/resume` verifica uma credencial fresca (`ErrResumeCredencialNaoVerifica`, que
+// incrementa o mesmo contador). Se a admissão não a precedesse, o vector do AOS-456b existiria por
+// esta porta mesmo com o `POST /runs` protegido — e a decisão de fechar o 456b assenta em não
+// existir por porta nenhuma.
+//
+// A barreira está no REGISTO da rota e não no handler: `planos.go` classifica-a `planoControlo`, e o
+// wrapper desse plano corre `admitControl` (o `ctrlBucket` dedicado) antes do handler. Ler
+// `handleResume` não a mostra — este teste mede-a.
+func TestAOS456BAAdmissaoDeCONTROLOPrecedeARotaDeRetoma(t *testing.T) {
+	node := newTwoRegionGovNode(t, &countingModel{})
+	svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute))
+	if err != nil {
+		t.Fatalf("NewNodeService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Shutdown(t.Context()) })
+	regions := govsov.NewRegistry(map[string]string{govBoard: govRegion, govBoardUS: govRegionUS})
+	// Balde de CONTROLO com UM token e relógio parado. O balde de DADOS fica largo, para que o 429
+	// que se mede não possa vir dele.
+	h, err := NewAPIHandler(svc, node, WithReadSovereignty(regions, node.WORM),
+		WithRateLimit(1000, 4096), WithControlRateLimit(1000, 1), WithAPIClock(aos277Clock()))
+	if err != nil {
+		t.Fatalf("NewAPIHandler: %v", err)
+	}
+
+	// (1) PRIMEIRO pedido: o balde de controlo tem 1 token, logo a rota CORRE e responde com o erro
+	// da sua própria lógica — o que for. O que NÃO pode ser é 429.
+	rec1 := postReq(h, "/runs/nao-existe/resume", map[string]any{"credential": "credencial-invalida"},
+		euReaderHeaders())
+	if rec1.Code == http.StatusTooManyRequests {
+		t.Fatalf("1o pedido, DENTRO do burst de controlo, levou 429 — o teste nao esta a medir a ordem: %s",
+			rec1.Body.String())
+	}
+
+	// (2) SEGUNDO pedido: o balde de controlo está vazio ⇒ 429, e a rota nem corre. Se a admissão
+	// deixasse de preceder a rota, viria o mesmo código do (1) e a verificação teria acontecido.
+	rec2 := postReq(h, "/runs/nao-existe/resume", map[string]any{"credential": "credencial-invalida"},
+		euReaderHeaders())
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("2o pedido com o balde de CONTROLO vazio devia dar 429, veio %d (%s).\n\n"+
+			"A ADMISSAO DEIXOU DE PRECEDER A ROTA DE RETOMA. Esta e a segunda porta que verifica "+
+			"credenciais, e a decisao de fechar o AOS-456b assenta em NENHUMA delas permitir forcar "+
+			"verificacao sem tecto de taxa. A barreira vem da classificacao `planoControlo` em "+
+			"planos.go, nao do handler: se a rota foi reclassificada, e isso que ha a rever.",
+			rec2.Code, rec2.Body.String())
+	}
+	if rec1.Code == rec2.Code {
+		t.Fatalf("os dois pedidos deram o MESMO codigo (%d) — o teste nao distingue admitido de "+
+			"recusado e nao prova ordem nenhuma", rec1.Code)
+	}
 }
