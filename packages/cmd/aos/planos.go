@@ -53,15 +53,21 @@ const (
 	// token-bucket causaria falso-unready. Restringe-se por REDE, não por credencial.
 	planoAberto
 
-	// planoDados — o read/write path dos runs.
+	// planoDados — o read/write path dos runs. Aplica ADMISSION DE TAXA no invólucro
+	// (`readBucket`, AOS-458).
 	//
-	// NÃO aplica barreira no invólucro, e a razão é honesta: o balde de dados (`h.bucket`)
-	// pertence só à SUBMISSÃO, e `admitSovereignRead` devolve a identidade do leitor que o
-	// CORPO do handler consome. Nenhuma das duas reduz a um invólucro sem mudar assinaturas ou
-	// sem passar a limitar rotas que hoje não são limitadas.
+	// ISTO MUDOU, e vale saber porquê. Este comentário dizia que o plano «NÃO aplica barreira no
+	// invólucro», com o argumento de que o balde de dados pertence só à submissão e que reduzir a
+	// autorização a um invólucro «passaria a limitar rotas que hoje não são limitadas». A segunda
+	// metade era verdadeira e passou a ser o objectivo: sete rotas deste plano chamavam
+	// `readGovernance.authorize` — verificação de JWS em produção — SEM tecto de taxa nenhum, o que
+	// fazia delas um vector de CPU que o `POST /runs` nunca foi. Ver [barreirasDe] para a medição.
 	//
-	// A classificação vale à mesma: impede que uma rota de dados seja tratada como aberta ou
-	// como controlo por distracção, e o teste de planos verifica que ela não escorrega.
+	// A barreira é um balde SEPARADO e generoso, não o da submissão: alargar o da submissão faria
+	// um scrape de leitura negar submissões. Quem submete atravessa os dois.
+	//
+	// A classificação continua a valer por si: impede que uma rota de dados seja tratada como
+	// aberta ou como controlo por distracção, e o teste de planos verifica que ela não escorrega.
 	planoDados
 
 	// planoGovernacao — DSAR e legal hold: admission do plano de controlo + credencial FORTE
@@ -152,10 +158,32 @@ func (h *apiHandler) barreirasDe(p plano, next http.HandlerFunc) http.HandlerFun
 			}
 			next(w, comMemoLeitor(r))
 		}
+	case planoDados:
+		// ADMISSION DE TAXA NO INVÓLUCRO (AOS-458), e é uma mudança de comportamento deliberada.
+		//
+		// Esta linha não existia, e a razão estava escrita no comentário de [planoDados]: pô-la aqui
+		// «passaria a limitar rotas que hoje não são limitadas». Passa — e é isso que se quer. O que
+		// o comentário antigo não pesava é o que essas rotas FAZEM sem limite: sete delas chamam
+		// `readGovernance.authorize`, que em produção verifica um JWS (RS256 ≈ 42 µs, ES256 ≈ 91 µs),
+		// e MEDIU-SE 200 pedidos ⇒ 200 verificações, zero 429. Um chamador impunha trabalho
+		// criptográfico sem tecto — o que o `POST /runs` nunca permitiu, e que a análise do AOS-456b
+		// afirmou não existir em porta nenhuma. Afirmou mal.
+		//
+		// AQUI e não no corpo do handler, porque é o único ponto que precede TODAS as rotas do plano
+		// e, em cada uma, precede a criptografia. O balde é o `readBucket`, SEPARADO do de submissão
+		// (ver [DefaultReadRatePerSec]): `POST /runs` e `POST /plans` continuam a consumir também o
+		// seu, que é mais apertado e morde primeiro, pelo que o comportamento deles não muda.
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !h.readBucket.allow() {
+				writeError(w, http.StatusTooManyRequests, "rate limit excedido")
+				return
+			}
+			next(w, comMemoLeitor(r))
+		}
 	default:
-		// planoAberto e planoDados: sem barreira de ADMISSÃO no invólucro, pelas razões escritas em
-		// cada um — mas o memo do leitor entra na mesma, porque a propriedade que ele defende não é
-		// de admissão e vale para TODAS as rotas.
+		// planoAberto: sem barreira de ADMISSÃO no invólucro, por decisão explícita (sondas e scrape
+		// de métricas são frequentes e não assinam; limitá-las causaria falso-unready). O memo do
+		// leitor entra na mesma, porque a propriedade que ele defende não é de admissão.
 		return func(w http.ResponseWriter, r *http.Request) { next(w, comMemoLeitor(r)) }
 	}
 }

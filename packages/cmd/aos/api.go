@@ -82,6 +82,25 @@ const (
 	DefaultRateBurst = 128
 	// DefaultRatePerSec é o reabastecimento por omissão (tokens/segundo) do token-bucket.
 	DefaultRatePerSec = 64
+	// DefaultReadRateBurst / DefaultReadRatePerSec são a admission de TAXA do plano de DADOS
+	// inteiro — as LEITURAS incluídas (AOS-458).
+	//
+	// PORQUE EXISTEM, e porque são GENEROSOS. Até AOS-458 as rotas de leitura (`GET /runs/{id}`,
+	// `/trajectory`, `/reconstruct`, `GET /tools`, `GET /plans/{id}`, `POST /plans/claim`,
+	// `POST /plans/outcome`) não tinham tecto de taxa NENHUM — e todas chamam
+	// `readGovernance.authorize`, que em produção verifica um JWS (RS256 ≈ 42 µs, ES256 ≈ 91 µs).
+	// Um chamador podia impor trabalho criptográfico sem limite, o que o `POST /runs` nunca
+	// permitiu. MEDIDO: 200 pedidos ⇒ 200 verificações, zero 429.
+	//
+	// O tecto não precisa de APERTAR para fechar isso; precisa de EXISTIR. A 256/s o vector fica
+	// limitado a ~1,1% de um core em RS256, e nenhum cliente de leitura razoável o alcança. Quem
+	// precisar de mais sobe-o por `AOS_INGRESS_READ_RATE`/`AOS_INGRESS_READ_BURST`.
+	//
+	// É um balde SEPARADO do de submissão, de propósito: o número de `AOS_INGRESS_RATE` foi
+	// escolhido para submissões, e partilhá-lo faria um scrape de leitura negar submissões — uma
+	// regressão funcional em troca de menos código.
+	DefaultReadRateBurst  = 512
+	DefaultReadRatePerSec = 256
 	// DefaultMaxInFlight é o tecto por omissão de runs EM CURSO admissíveis por esta réplica.
 	// Exceder ⇒ 429 (o ingresso não sobrecarrega o loop de serviço). <= 0 desliga o tecto.
 	DefaultMaxInFlight = 512
@@ -194,6 +213,8 @@ type apiConfig struct {
 	ratePerSec     float64
 	ctrlRateBurst  float64
 	ctrlRatePerSec float64
+	readRateBurst  float64
+	readRatePerSec float64
 	maxInFlight    int
 	// maxTurnsCeiling é o TECTO node-local do nº de turnos de um run (AOS-203, achado F2 do
 	// desafio A5). Um `max_turns` do corpo de POST /runs é CLAMPADO a este valor na fronteira
@@ -274,6 +295,20 @@ func WithRateLimit(perSec, burst float64) APIOption {
 // ed25519.Verify) não esgote CPU nem esfomeie o plano de dados, e vice-versa. Um burst <= 0
 // mantém o default [DefaultRateBurst]; perSec < 0 é ignorado (0 é válido: bucket sem
 // reabastecimento, útil em testes determinísticos).
+// WithReadRateLimit afina a admission de TAXA do plano de DADOS inteiro (AOS-458) — o balde que
+// o invólucro da rota consome ANTES do handler, e portanto antes de qualquer verificação
+// criptográfica. Valores <= 0 são ignorados (mantêm o default), como nas outras opções de balde.
+func WithReadRateLimit(perSec, burst float64) APIOption {
+	return func(c *apiConfig) {
+		if burst > 0 {
+			c.readRateBurst = burst
+		}
+		if perSec > 0 {
+			c.readRatePerSec = perSec
+		}
+	}
+}
+
 func WithControlRateLimit(perSec, burst float64) APIOption {
 	return func(c *apiConfig) {
 		if burst > 0 {
@@ -425,6 +460,10 @@ type apiHandler struct {
 	cfg        apiConfig
 	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
+	// readBucket é a admission de TAXA do plano de DADOS inteiro, consumida no INVÓLUCRO da rota
+	// (planos.go) e portanto ANTES de qualquer verificação criptográfica no corpo do handler
+	// (AOS-458). Ver [DefaultReadRatePerSec] para o porquê de ser separado e generoso.
+	readBucket *tokenBucket
 	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
 	// credRecusadas conta as recusas por CREDENCIAL DO RUN que não verifica, nas duas rotas que
 	// a verificam: `POST /runs` (AOS-428) e `POST /runs/{id}/resume` (AOS-433).
@@ -468,6 +507,8 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		ratePerSec:       DefaultRatePerSec,
 		ctrlRateBurst:    DefaultRateBurst,
 		ctrlRatePerSec:   DefaultRatePerSec,
+		readRateBurst:    DefaultReadRateBurst,
+		readRatePerSec:   DefaultReadRatePerSec,
 		maxInFlight:      DefaultMaxInFlight,
 		maxTurnsCeiling:  agentruntime.DefaultMaxTurns,
 		trajWriteTimeout: DefaultTrajectoryWriteTimeout,
@@ -512,6 +553,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		cfg:         cfg,
 		bucket:      newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
 		ctrlBucket:  newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+		readBucket:  newTokenBucket(cfg.readRateBurst, cfg.readRatePerSec, cfg.now),
 		controlMTLS: cfg.controlMTLSCAPath != "",
 		readGov:     readGov,
 	}
@@ -2529,6 +2571,17 @@ func newTokenBucket(capacity, refillRate float64, now func() time.Time) *tokenBu
 // allow consome um token se houver; devolve false quando o bucket está vazio (⇒ 429). Um
 // bucket de capacidade <= 0 é interpretado como SEM limite (sempre permite).
 func (b *tokenBucket) allow() bool {
+	// BALDE NIL NÃO LIMITA, e a guarda existe por uma razão concreta (AOS-458): desde que a
+	// admission de taxa do plano de DADOS passou a correr no INVÓLUCRO da rota, um `apiHandler`
+	// composto à mão — como dezenas de testes o fazem — alcança `allow()` com o balde a nil, e um
+	// nil deref no caminho de pedido é pior do que a ausência de tecto.
+	//
+	// O QUE IMPEDE ISTO DE SER UM FAIL-OPEN EM PRODUÇÃO: [NewAPIHandler] compõe SEMPRE os três
+	// baldes, e [TestAOS458OsTresBaldesMORDEMNumHandlerDoConstrutor] fixa-o. Um handler de produção
+	// nunca chega aqui com nil; um handler de teste que chegue não é o de produção.
+	if b == nil {
+		return true
+	}
 	if b.capacity <= 0 {
 		return true
 	}
