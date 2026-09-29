@@ -2068,18 +2068,83 @@ isso que faltava querer.
       de cada um — não os campos, porque `NewAPIHandler` devolve o mux.
 
 ### Residuais DECLARADOS
-- **O tecto de streams SSE continua GLOBAL.** `trajConns` limita 256 ligações concorrentes sem
-  repartição por chamador, sem knob de ambiente, e o `nginx.conf` não tem `limit_conn` nenhum (só
-  `limit_req`, que limita taxa e não ligações vivas). Um tenant autenticado abre 256 streams em ~16 s
-  a 16 r/s e nega `GET /runs/{id}/trajectory` a todos os outros. **Este ticket não fecha isso** — é
-  ocupação, não taxa, e o eixo da concorrência (AOS-456a) cobre runs e não ligações. Achado da mesma
-  revisão; fica por decidir se se reparte ou se se declara aceitável.
+- ~~**O tecto de streams SSE continua GLOBAL.**~~ ✅ **FECHADO pelo AOS-459** — repartido por leitor,
+  com o global a ganhar também a variável de ambiente que nunca teve.
 - O tecto é **por-réplica** e **global entre chamadores**, como todo o resto da admission: não é por
   IP nem por principal. A justiça por-origem vive no `edge`.
 - **Nada no repositório verifica o `deploy/server/nginx.conf`.** A perna da decisão do 456b que
   depende do `edge` («a justiça por-origem já está em produção») não tem sensor nenhum, e o ficheiro
   chega ao servidor por `scp` manual. O outro `nginx.conf` do repo (`deploy/node/dev-hardened/`)
   **não tem `limit_req`**. Fica registado como resíduo próprio.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-459 — O tecto de streams SSE é repartido por LEITOR
+
+### Contexto
+Resíduo declarado no AOS-458 e apanhado pela mesma revisão adversarial. `trajConns` limitava 256
+streams SSE concorrentes de forma **global**: um leitor autenticado abria os 256 e negava
+`GET /runs/{id}/trajectory` a **todos** os outros. E não é uma rajada que passa — é **ocupação que
+fica** enquanto ele mantiver as ligações abertas.
+
+**Nenhuma das barreiras existentes o fechava**, e vale a pena ver porquê:
+
+| barreira | porque não cobre |
+|---|---|
+| `AOS-456a` (concorrência por submissor) | conta **runs** em curso, não **ligações** |
+| `AOS-458` (taxa do plano de dados) | limita **taxa**; abrir um stream custa **um** token e a ligação vive minutos |
+| *edge* (`nginx.conf`) | tem `limit_req` (taxa) e **não** tem `limit_conn` (ligações vivas) |
+
+**Lacuna adjacente, fechada ao mesmo tempo:** o tecto global existia como constante do binário e
+**não era afinável por ambiente**. Validar «o por-leitor é estritamente menor que o global» sem poder
+configurar o global deixaria o par inútil.
+
+### Critérios de Aceitação ✅
+- [x] **Um leitor não ocupa os lugares dos outros:** alice enche o seu tecto e é recusada; bob passa,
+      e tem o **seu** tecto (não passe livre).
+- [x] **Medido na rota REAL, com um stream VIVO** (`TestAOS459ARotaREALComUmStreamVIVODevolve429AoSegundo`):
+      servidor HTTP, run com residência selada, o 1.º stream aberto e a ler backfill, o 2.º do mesmo
+      leitor a levar **429**. Um pedido que já terminou não ocupa lugar, e o teste passaria com a
+      repartição desligada — foi a lição da tentativa 1 do AOS-456.
+      ⚠️ A primeira versão deste caso dava **404**: o `admitSovereignRead` recusa um run inexistente
+      **antes** da admission, pelo que o teste não alcançava o mecanismo. Só com residência selada mede.
+- [x] **A contagem volta a zero e a entrada DESAPARECE**
+      (`TestAOS459AContagemVOLTAAZeroEAEntradaDesaparece`, três voltas). São dois defeitos distintos:
+      um decremento em falta **tranca o leitor para sempre** (fail-**closed** silencioso, pior do que
+      não ter tecto), e uma entrada que fique no mapa é uma **fuga sem tecto** num nó de vida longa.
+      Este eixo tem **estado próprio**, ao contrário do AOS-456a, que deriva a contagem de `s.runs` e
+      por isso não pode dessincronizar-se.
+- [x] **A reserva é atómica** (60 pedidos concorrentes, tecto 3 ⇒ exactamente 3 reservas, `-race`).
+- [x] **Uma recusa por-leitor DEVOLVE o lugar global.** Se não devolvesse, **N recusas esgotariam o
+      tecto do nó** — um DoS que esta correcção introduziria, pior do que o defeito que fecha.
+      **Esta mutação SOBREVIVEU à primeira volta**, porque eu perdi a asserção ao reescrever o teste
+      da rota. Fechada com `TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal`, que mede pela métrica
+      **real** (`aos_trajectory_streams_active`, nova): 10 recusas ⇒ ainda **1** activo; com a mutação,
+      **11**.
+- [x] **`por-leitor >= global` é INERTE e é recusado**, e a razão foi verificada **neste** eixo, não
+      copiada do AOS-456a: os dois tectos são verificados no **mesmo** ponto, um após o outro. Com
+      ambos a N, um leitor chega a N sem exceder nenhum e na (N+1)-ésima é o **global** que corta — o
+      por-leitor nunca dispara. 14 casos em `TestAOS459EnvFailClosedEORRACIOENTREOSDOIS`.
+- [x] **As fronteiras estão fixadas em teste, não só em prosa:** principal vazio (modo legado — não há
+      a quem imputar, degenera no global), repartição desligada (`<= 0`), e mapa não composto (um
+      `apiHandler` construído à mão; um panic no caminho de pedido é pior do que a ausência de tecto —
+      o mesmo compromisso da guarda nil de `tokenBucket.allow`).
+- [x] **Superfície do operador:** `AOS_TRAJECTORY_MAX_CONNS` (a que faltava) e
+      `AOS_TRAJECTORY_MAX_CONNS_PER_READER`, fail-closed, no README e no compose. E a métrica
+      `aos_trajectory_streams_active`, sem a qual o operador tinha dois tectos para afinar e nenhuma
+      leitura de quantos lugares estão ocupados.
+
+### Residuais DECLARADOS
+- **A atribuição só é inforjável com credencial forte**, como no AOS-456a: em modo legado o principal
+  vem do header, e a repartição contorna-se rodando-o. Em modo legado o gate devolve principal
+  **vazio** e a repartição degenera no global — o que é a postura honesta, não uma protecção.
+- O tecto é **por-réplica**: N réplicas valem N vezes os lugares.
+- **Um stream ocupa um lugar durante toda a sua vida**, e este eixo não põe limite à *duração*. Um
+  leitor dentro do seu tecto pode mantê-lo ocupado indefinidamente; o que deixa de poder é ocupar o
+  dos outros.
 
 ### Estado
 **FEITO** (2026-09-29).

@@ -70,6 +70,12 @@ type ingressLimits struct {
 	// balde que o invólucro da rota consome ANTES de qualquer verificação criptográfica.
 	readRatePerSec float64
 	readBurst      float64
+	// trajMaxConns / trajMaxConnsPerReader são o tecto de streams SSE de trajectória e a sua
+	// REPARTIÇÃO por leitor (AOS-459). O global já existia como constante do binário e **não era
+	// afinável por ambiente** — lacuna que este ticket fecha ao mesmo tempo: validar «o por-leitor é
+	// estritamente menor que o global» sem poder configurar o global deixaria o par inútil.
+	trajMaxConns          int
+	trajMaxConnsPerReader int
 	// inFlightPerCaller é o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456) — e não
 	// de OCUPAÇÃO: as isenções (suspenso, retoma) compõem-se e um submissor pode ter mais runs vivos
 	// do que este número. 0 ⇒ NÃO COMPOSTO, e o banner declara-o.
@@ -89,11 +95,13 @@ type ingressLimits struct {
 // RAW, não o nome.
 func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 	lim := ingressLimits{
-		ratePerSec:     DefaultRatePerSec,
-		burst:          DefaultRateBurst,
-		maxInFlight:    DefaultMaxInFlight,
-		readRatePerSec: DefaultReadRatePerSec,
-		readBurst:      DefaultReadRateBurst,
+		ratePerSec:            DefaultRatePerSec,
+		burst:                 DefaultRateBurst,
+		maxInFlight:           DefaultMaxInFlight,
+		readRatePerSec:        DefaultReadRatePerSec,
+		readBurst:             DefaultReadRateBurst,
+		trajMaxConns:          DefaultMaxTrajectoryConns,
+		trajMaxConnsPerReader: DefaultMaxTrajectoryConnsPerReader,
 	}
 
 	rawRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_RATE"))
@@ -173,10 +181,40 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		lim.readBurst, lim.tuned = v, true
 	}
 
+	// AOS-459 — O TECTO DE STREAMS SSE E A SUA REPARTIÇÃO POR LEITOR.
+	//
+	// O global lê-se PRIMEIRO, porque a validação do por-leitor depende dele.
+	rawTraj := strings.TrimSpace(os.Getenv("AOS_TRAJECTORY_MAX_CONNS"))
+	if rawTraj != "" {
+		n, err := strconv.Atoi(rawTraj)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_TRAJECTORY_MAX_CONNS=%q", ErrBadIngressLimits, rawTraj)
+		}
+		lim.trajMaxConns, lim.tuned = n, true
+	}
+	rawTrajPer := strings.TrimSpace(os.Getenv("AOS_TRAJECTORY_MAX_CONNS_PER_READER"))
+	if rawTrajPer != "" {
+		n, err := strconv.Atoi(rawTrajPer)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_TRAJECTORY_MAX_CONNS_PER_READER=%q", ErrBadIngressLimits, rawTrajPer)
+		}
+		// ESTRITAMENTE MENOR, e a razão é PRÓPRIA deste eixo — não copiada do AOS-456a. Aqui os dois
+		// tectos são verificados no MESMO ponto, um após o outro: com ambos a N, um leitor sozinho
+		// chega a N sem exceder nenhum, e na (N+1)-ésima é o GLOBAL que corta. O por-leitor nunca
+		// dispara, logo é inerte — e um tecto inerte anunciado como repartição é a forma de falha que
+		// este ciclo de tickets já pagou quatro vezes.
+		if n >= lim.trajMaxConns {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_TRAJECTORY_MAX_CONNS_PER_READER=%q tem de ser ESTRITAMENTE MENOR que AOS_TRAJECTORY_MAX_CONNS=%d — igual ou acima o tecto global corta primeiro e a reparticao por leitor NUNCA dispara (seria um tecto inerte anunciado como equidade)", ErrBadIngressLimits, rawTrajPer, lim.trajMaxConns)
+		}
+		lim.trajMaxConnsPerReader, lim.tuned = n, true
+	}
+
 	return lim, []APIOption{
 		WithRateLimit(lim.ratePerSec, lim.burst),
 		WithMaxInFlight(lim.maxInFlight),
 		WithReadRateLimit(lim.readRatePerSec, lim.readBurst),
+		WithMaxTrajectoryConns(lim.trajMaxConns),
+		WithMaxTrajectoryConnsPerReader(lim.trajMaxConnsPerReader),
 	}, nil
 }
 
@@ -212,8 +250,12 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 //     leitura não tinham tecto de taxa NENHUM — e todas chamam `readGovernance.authorize`, que em
 //     produção verifica um JWS. Esta linha dizia «NÃO cobre as LEITURAS», e foi a refutação do
 //     argumento com que o AOS-456b se fechou: estava escrita aqui e ninguém a leu.
-//     O stream SSE de trajectória tem AINDA o seu próprio tecto de LIGAÇÕES
-//     ([DefaultMaxTrajectoryConns]), que é global e não por-chamador — resíduo declarado no AOS-458.
+//     O stream SSE de trajectória tem AINDA o seu próprio tecto de LIGAÇÕES, agora em DUAS camadas
+//     (AOS-459): o global ([DefaultMaxTrajectoryConns], `AOS_TRAJECTORY_MAX_CONNS`) que protege o
+//     nó, e a REPARTIÇÃO por leitor (`AOS_TRAJECTORY_MAX_CONNS_PER_READER`) que impede um leitor
+//     autenticado de ocupar todos os lugares e negar a rota aos outros. Era o resíduo declarado no
+//     AOS-458, e está fechado; a repartição imputa ao principal que o gate soberano resolveu, e em
+//     modo legado (principal vazio) degenera no global.
 //   - É POR-PROCESSO e GLOBAL entre chamadores: o balde vive em memória nesta réplica e
 //     não é por-IP nem por-principal. N réplicas ⇒ N vezes o limite; e um único cliente
 //     ruidoso pode esgotar o balde para todos (a equidade entre chamadores não existe

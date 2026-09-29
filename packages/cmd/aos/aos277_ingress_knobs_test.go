@@ -68,6 +68,11 @@ func clearIngressEnv(t *testing.T) {
 	// AOS-456: a quarta. Sem a limpar, um ambiente de processo que a defina contamina os casos
 	// deste ficheiro que asserem `tuned` e o numero de opcoes.
 	t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "")
+	// AOS-458/AOS-459: as quatro seguintes, pela mesma razao.
+	t.Setenv("AOS_INGRESS_READ_RATE", "")
+	t.Setenv("AOS_INGRESS_READ_BURST", "")
+	t.Setenv("AOS_TRAJECTORY_MAX_CONNS", "")
+	t.Setenv("AOS_TRAJECTORY_MAX_CONNS_PER_READER", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -91,10 +96,12 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		if lim.tuned {
 			t.Fatal("sem variaveis definidas o banner nao pode anunciar limites AFINADOS")
 		}
-		// TRÊS desde AOS-458: rate-limit da submissão, max-in-flight, e o rate-limit do plano de
-		// DADOS inteiro (as leituras, que até lá não tinham tecto de taxa nenhum).
-		if len(opts) != 3 {
-			t.Fatalf("esperava 3 opcoes de API (rate-limit + max-in-flight + read-rate-limit), vieram %d", len(opts))
+		// CINCO: rate-limit da submissão, max-in-flight, o rate-limit do plano de DADOS inteiro
+		// (AOS-458 — as leituras, que até lá não tinham tecto de taxa nenhum), e os dois tectos de
+		// streams SSE (AOS-459 — o global, que até lá não era afinável por ambiente, e a repartição
+		// por leitor).
+		if len(opts) != 5 {
+			t.Fatalf("esperava 5 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE), vieram %d", len(opts))
 		}
 	})
 
