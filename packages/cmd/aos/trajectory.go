@@ -120,15 +120,6 @@ func (c *sseConn) pop() (eventstore.Event, bool) {
 	return ev, true
 }
 
-// handleTrajectory serve GET /runs/{id}/trajectory como SSE. Ordem deliberada:
-//  1. valida + tecto de concorrência (admission) + verifica suporte a streaming (http.Flusher);
-//  2. ISENTA a ligação do WriteTimeout herdado do http.Server (SSE é longo — transporte fail-safe);
-//  3. SUBSCRIBE primeiro (garante SEM-LACUNA face ao backfill);
-//  4. BACKFILL via Read + POSSE — stream inexistente E run desconhecido ⇒ 404 uniforme
-//     (não-enumerável); outro erro ⇒ status HTTP (headers não enviados);
-//  5. só então compromete o SSE (200 + headers) e emite backfill + live com dedup por
-//     watermark, drop-slow-consumer por write-deadline e limpeza no cancelamento do ctx.
-//
 // reservarStreamDoLeitor reserva um lugar de stream SSE para `principal` (AOS-459). Devolve a
 // função que o LIBERTA e `true` quando há lugar; `(nil, false)` quando o tecto do leitor está cheio.
 //
@@ -169,6 +160,14 @@ func (h *apiHandler) streamsDoLeitor(principal string) (int, bool) {
 	return n, presente
 }
 
+// handleTrajectory serve GET /runs/{id}/trajectory como SSE. Ordem deliberada:
+//  1. valida + tecto de concorrência (admission) + verifica suporte a streaming (http.Flusher);
+//  2. ISENTA a ligação do WriteTimeout herdado do http.Server (SSE é longo — transporte fail-safe);
+//  3. SUBSCRIBE primeiro (garante SEM-LACUNA face ao backfill);
+//  4. BACKFILL via Read + POSSE — stream inexistente E run desconhecido ⇒ 404 uniforme
+//     (não-enumerável); outro erro ⇒ status HTTP (headers não enviados);
+//  5. só então compromete o SSE (200 + headers) e emite backfill + live com dedup por
+//     watermark, drop-slow-consumer por write-deadline e limpeza no cancelamento do ctx.
 func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	if runID == "" {
@@ -186,37 +185,61 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// (1) ADMISSION — tecto de streams SSE concorrentes por-nó (anti-exaustão, coerente com o
-	// hardening de ingresso de AOS-166). Incrementado cedo, decrementado ao sair: bounda o número
-	// de subscrições + goroutines vivas, incluindo tentativas para runs inexistentes.
-	if n := h.trajConns.Add(1); h.cfg.trajMaxConns > 0 && int(n) > h.cfg.trajMaxConns {
-		h.trajConns.Add(-1)
-		writeError(w, http.StatusTooManyRequests, "tecto de streams concorrentes atingido")
-		return
-	}
-	defer h.trajConns.Add(-1)
-
-	// (1-bis) ADMISSION POR LEITOR (AOS-459) — a equidade que o tecto global não dá.
+	// (1) ADMISSION POR LEITOR (AOS-459/AOS-460) — a equidade que o tecto global não dá, e PRIMEIRO.
 	//
-	// O tecto acima protege o NÓ e não diz nada sobre quem ocupa os lugares: um leitor autenticado
+	// O tecto global protege o NÓ e não diz nada sobre quem ocupa os lugares: um leitor autenticado
 	// abre os 256 e nega esta rota a TODOS os outros enquanto quiser. Não é uma rajada que passa —
 	// é ocupação que fica. O AOS-456a conta runs (não ligações), o AOS-458 limita taxa (abrir um
 	// stream custa UM token e a ligação vive minutos), e o `edge` tem `limit_req` e NÃO `limit_conn`.
 	//
-	// AQUI e depois do global, de propósito: o global é a barreira do nó e é a mais barata; este é a
-	// repartição. Uma recusa DEVOLVE o lugar global (o `defer` acima já está armado, logo o rollback
-	// é explícito e único — ver o `reservarStreamDoLeitor`).
+	// # PORQUE ANTES DO GLOBAL, e a primeira versão fazia o contrário
 	//
-	// A ATRIBUIÇÃO é o `reader.principal` que o `admitSovereignRead` resolveu ACIMA, e em modo
-	// SOBERANO vem da credencial verificada. Em modo LEGADO vem vazio (o gate devolve
-	// `readerIdentity{}`), e a repartição degenera no tecto global — declarado, e é a mesma fronteira
-	// do AOS-456a.
+	// O AOS-459 pôs esta reserva DEPOIS do incremento global, com o argumento de que «o global é a
+	// barreira do nó e é a mais barata». O argumento era falso por duas razões, e uma revisão
+	// adversarial mediu a consequência:
+	//
+	//   - «a mais barata» não decide nada: o passo CARO (`admitSovereignRead`, verificação de JWS
+	//     mais consulta de residência) corre ANTES dos dois;
+	//   - e um pedido destinado a ser RECUSADO pela repartição TOMAVA primeiro um lugar global, só
+	//     o devolvendo à saída. Enquanto está em voo, ocupa-o.
+	//
+	// MEDIDO na rota real, com `global=2`, `por-leitor=1` e alice presa a UM stream: 32 recusas
+	// concorrentes dela faziam bob levar 429 do tecto GLOBAL em 54–78 de 200 pedidos (27–39%),
+	// contra 1–2 sem a rajada. Trocada a ordem: 0 em 200, três corridas.
+	//
+	// É a mesma assimetria que o AOS-456a declara e cumpre — «exceder responde 429 SEM ocupar lugar
+	// nenhum» —, que o AOS-459 dizia replicar e não replicava. Uma recusa por-leitor passa a não
+	// tocar no contador global de todo, e não há rollback a fazer.
+	//
+	// # A ATRIBUIÇÃO, e as DUAS posturas legadas que a primeira versão colapsou numa
+	//
+	// `reader.principal` vem do `admitSovereignRead` acima. Há TRÊS posturas, não duas:
+	//
+	//	readGov == nil                    principal VAZIO ⇒ sem repartição (degenera no global)
+	//	readGov != nil, cred == nil       principal do HEADER `X-Aos-Reader` ⇒ reparte, mas o
+	//	                                  chamador escolhe o valor: CONTORNA-SE rodando o header
+	//	readGov != nil, cred composta     principal da credencial VERIFICADA ⇒ inforjável
+	//
+	// A segunda é a que um nó com `AOS_BOARD_REGIONS` e sem OIDC tem, é a que os testes deste
+	// ficheiro compõem, e o AOS-459 descrevia-a como se fosse a primeira («em modo legado vem
+	// vazio»). Vale contra rajada honesta; NÃO vale contra abuso. O banner de arranque declara qual
+	// está em vigor — ver [ingressPostureBanner].
 	if libertar, ok := h.reservarStreamDoLeitor(reader.principal); !ok {
 		writeError(w, http.StatusTooManyRequests, "tecto de streams concorrentes deste leitor atingido")
 		return
 	} else if libertar != nil {
 		defer libertar()
 	}
+
+	// (2) ADMISSION GLOBAL — tecto de streams SSE concorrentes por-nó (AOS-166/AOS-167).
+	// Incrementado depois da repartição, decrementado ao sair: bounda o número de subscrições +
+	// goroutines vivas.
+	if n := h.trajConns.Add(1); h.cfg.trajMaxConns > 0 && int(n) > h.cfg.trajMaxConns {
+		h.trajConns.Add(-1)
+		writeError(w, http.StatusTooManyRequests, "tecto de streams concorrentes atingido")
+		return
+	}
+	defer h.trajConns.Add(-1)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
