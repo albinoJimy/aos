@@ -1818,9 +1818,16 @@ se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo
 - [x] **O custo de verificação já tem tecto — é o próprio balde, e o 456b removia-o.** Este é o
       achado que fecha o eixo, e inverte a leitura do desenho.
 
-      As **duas** portas que verificam credenciais põem um balde à frente — e é «as duas» de
-      propósito, pela doutrina que o próprio 456a aplicou à reserva de `run_id` («uma barreira que só
-      metade das portas respeita não é uma barreira»):
+      ⛔ **ERRADO, e corrigido pelo AOS-458.** Esta análise afirmava que **as duas** portas que
+      verificam credenciais põem um balde à frente, e concluía que «nenhuma permite forçar verificação
+      sem tecto». **Era falso.** A enumeração foi de `ed25519.Verify` (a credencial do *run*); a
+      verificação que o nó faz **primeiro e em mais sítios** é o JWS de `readGovernance.authorize`, e
+      **sete** rotas de leitura chamavam-no sem tecto de taxa nenhum. MEDIDO: 200 pedidos ⇒ 200
+      verificações, zero 429, contra 1 verificação / 199 recusas no `POST /runs`.
+      **A refutação estava escrita no banner do próprio nó** (`ingress_env.go`: «NÃO cobre as
+      LEITURAS. `GET /runs/{id}` não é limitado por taxa nenhuma») — no ficheiro que este ticket
+      editou repetidamente. Apanhado por revisão adversarial independente, não por mim.
+      O que segue vale para as duas portas que a análise nomeou, e **não** para o nó:
 
       | porta | barreira | onde está |
       |---|---|---|
@@ -1840,8 +1847,10 @@ se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo
       | recusar no balde, **sem** verificar | 30,2 ns |
       | **rácio** | **1742x** |
 
-      Tecto actual do vector: `128/s × 52,7 µs` ≈ **6,7 ms/s de CPU = 0,67% de um core** (as duas
-      portas somadas). O custo é
+      Tecto **destas duas portas**: `128/s × 52,7 µs` ≈ 6,7 ms/s de CPU. ⚠️ **Não era o tecto do
+      nó** — era a propriedade de um subconjunto apresentada como propriedade do sistema, que é a
+      mesma classe de erro que este ticket cometeu três vezes. O AOS-458 fecha as sete rotas que
+      faltavam. O custo é
       idêntico para assinatura válida e inválida porque `ed25519.Verify` é de tempo constante — um
       atacante não precisa de credenciais válidas, qualquer lixo bem-formado serve.
 
@@ -1879,8 +1888,17 @@ verificar antes de admitir. Isso é trabalho de `deploy/`, não de `packages/`, 
 próprio quando houver necessidade medida — não por simetria com o 456a.
 
 ### Estado (AOS-456b)
-**FECHADO — DECIDIDO E NÃO FEITO.** Não é um deferimento por falta de tempo: é uma decisão de
-arquitectura com a medição que a sustenta e um gate que a protege. O eixo da **concorrência**
+**FECHADO — DECIDIDO E NÃO FEITO, com a justificação CORRIGIDA pelo AOS-458.**
+
+O **núcleo** da decisão aguenta-se: inverter a ordem em `POST /runs` removeria um limitador real, e
+isso é razão legítima para não fazer o 456b **tal como desenhado**. O que não se aguentou foi a
+**justificação publicada**, e falhou do lado que importa: dizia que a inversão *abriria* um vector
+que o nó não tinha, quando o nó **já o tinha em sete rotas, na configuração obrigatória de
+produção**. Com isso, o dano marginal de inverter numa porta era muito menor do que o texto afirmava.
+
+**E o eixo certo era outro, mais simples:** não «inverter a ordem no `POST /runs`», mas «pôr tecto de
+taxa nas superfícies que verificam e não têm» — as leituras —, que **não exige inversão nenhuma**. É
+o AOS-458, e está feito. O eixo da **concorrência**
 (AOS-456a) está feito e mergeado; o da **taxa por-origem** vive no `edge` e está em produção; o da
 **taxa por-principal** fica declarado como não-coberto, com o caminho nomeado caso venha a ser
 preciso.
@@ -1989,6 +2007,82 @@ teste, no wiring que nenhum teste toca, no texto que nada prende, e em predicado
 existência de uma coisa em vez do sítio onde ela é usada.
 As correcções estão acima, cada uma com a mutação que agora a guarda. **AOS-456b ABERTO**, e
 possivelmente desnecessário — a decisão precede o código.
+
+---
+
+## AOS-458 — As LEITURAS não tinham tecto de taxa, e verificam JWS
+
+### Contexto
+Nasceu de uma revisão adversarial ao fecho do AOS-456b, que mediu o que esse fecho afirmava não
+existir. Sete rotas do `planoDados` chamavam `readGovernance.authorize` **sem tecto de taxa nenhum**:
+
+| rota | chamador |
+|---|---|
+| `GET /runs/{id}` | `api.go` |
+| `GET /runs/{id}/trajectory` | `trajectory.go` |
+| `GET /runs/{id}/reconstruct` | `sovereign_replay.go` |
+| `GET /tools` | `catalogo_de_tools.go` |
+| `GET /plans/{id}` | `plan_estado.go` |
+| `POST /plans/claim` | `plan_claim.go` |
+| `POST /plans/outcome` | `plan_claim.go` |
+
+Em produção (`AOS_MODE=production` **exige** a credencial forte OIDC) esse `authorize` verifica um
+**JWS**: RS256 ≈ **42 µs**, ES256 ≈ **91 µs** — mais caro que a `ed25519.Verify` de 52 µs do
+`POST /runs`. **Medido:** 200 pedidos ⇒ 200 verificações e zero 429, contra 1 verificação e 199
+recusas no `POST /runs`. Um core dá ~24 000 verificações RS256/s; via *edge* (16 r/s por IP), ~1500
+IPs saturam um core — ao passo que no `POST /runs` **nenhum número de IPs** ultrapassa os 64/s.
+
+**Porque é que ninguém viu:** só **dois** handlers consumiam um balde (`handleSubmit`,
+`handlePlanRequest`), e o invólucro do `planoDados` não aplicava barreira — com a razão escrita no
+comentário do plano: pô-la ali «passaria a limitar rotas que hoje não são limitadas». Passava, e era
+isso que faltava querer.
+
+### Critérios de Aceitação ✅
+- [x] **As sete rotas têm tecto**, medido rota a rota: com o balde a 1 token, o 1.º pedido atravessa
+      o invólucro e o 2.º leva **429** sem a rota correr (`TestAOS458AsLeiturasTemTectoDeTaxa`).
+      Mutação `M1` (remover o balde do invólucro — o estado anterior) ⇒ **vermelho nas sete**.
+- [x] **O tecto PRECEDE a criptografia**, e não só limita a taxa: com credencial forte composta e um
+      verificador que **conta** as chamadas, 20 pedidos com o balde a 1 token produzem **1**
+      verificação (`TestAOS458OTectoPRECEDEAVerificacao`). Mutação `M2` (consumir o balde **depois**
+      do handler) ⇒ vermelho.
+      ⚠️ **A credencial forte no teste não é detalhe:** os gates do AOS-456b usavam
+      `WithReadSovereignty(regions, worm)` ⇒ `cred == nil` ⇒ via legada por **headers**, sem
+      criptografia nenhuma. Eram cegos ao que diziam medir.
+- [x] **O balde é SEPARADO do de submissão.** Alargar o da submissão faria um *scrape* de leitura
+      negar submissões — uma regressão funcional em troca de menos código. `POST /runs` e
+      `POST /plans` atravessam os dois; o seu é mais apertado e morde primeiro, pelo que o
+      comportamento deles não muda.
+- [x] **Defaults GENEROSOS, e é deliberado:** 256/s com burst 512. O objectivo é que o tecto
+      **exista**, não que aperte — a 256/s o vector fica em ~1,1% de um core em RS256, e nenhum
+      cliente de leitura razoável o alcança.
+- [x] **Superfície do operador:** `AOS_INGRESS_READ_RATE`/`AOS_INGRESS_READ_BURST`, fail-closed como
+      as outras (ilegível, não-finito, negativo ou `0` ⇒ aborta), documentadas no README do operador
+      e no compose. Os gates `TestAOS203EnvSurfaceIsDocumented` e
+      `TestManifestoDeDeployPassaTodaAConfigQueONoLe` apanharam as duas faltas antes de eu as ver.
+- [x] **O banner deixou de mentir.** A linha que dizia «NÃO cobre as LEITURAS» era verdadeira e era a
+      refutação do AOS-456b; passa a declarar o balde novo e a nomear o resíduo que fica.
+- [x] **O fail-open da guarda nil está fechado.** `tokenBucket.allow()` passou a tratar receiver nil
+      (dezenas de testes compõem `apiHandler` à mão, e um nil deref no caminho de pedido é pior do
+      que a ausência de tecto). O que impede isso de ser fail-open em produção é o construtor compor
+      sempre os três baldes, e `TestAOS458OsTresBaldesMORDEMNumHandlerDoConstrutor` mede o **efeito**
+      de cada um — não os campos, porque `NewAPIHandler` devolve o mux.
+
+### Residuais DECLARADOS
+- **O tecto de streams SSE continua GLOBAL.** `trajConns` limita 256 ligações concorrentes sem
+  repartição por chamador, sem knob de ambiente, e o `nginx.conf` não tem `limit_conn` nenhum (só
+  `limit_req`, que limita taxa e não ligações vivas). Um tenant autenticado abre 256 streams em ~16 s
+  a 16 r/s e nega `GET /runs/{id}/trajectory` a todos os outros. **Este ticket não fecha isso** — é
+  ocupação, não taxa, e o eixo da concorrência (AOS-456a) cobre runs e não ligações. Achado da mesma
+  revisão; fica por decidir se se reparte ou se se declara aceitável.
+- O tecto é **por-réplica** e **global entre chamadores**, como todo o resto da admission: não é por
+  IP nem por principal. A justiça por-origem vive no `edge`.
+- **Nada no repositório verifica o `deploy/server/nginx.conf`.** A perna da decisão do 456b que
+  depende do `edge` («a justiça por-origem já está em produção») não tem sensor nenhum, e o ficheiro
+  chega ao servidor por `scp` manual. O outro `nginx.conf` do repo (`deploy/node/dev-hardened/`)
+  **não tem `limit_req`**. Fica registado como resíduo próprio.
+
+### Estado
+**FEITO** (2026-09-29).
 
 ---
 

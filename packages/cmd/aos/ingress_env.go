@@ -66,6 +66,10 @@ type ingressLimits struct {
 	ratePerSec  float64
 	burst       float64
 	maxInFlight int
+	// readRatePerSec/readBurst são a admission de TAXA do plano de DADOS inteiro (AOS-458) — o
+	// balde que o invólucro da rota consome ANTES de qualquer verificação criptográfica.
+	readRatePerSec float64
+	readBurst      float64
 	// inFlightPerCaller é o tecto de SUBMISSÕES NOVAS simultâneas por SUBMISSOR (AOS-456) — e não
 	// de OCUPAÇÃO: as isenções (suspenso, retoma) compõem-se e um submissor pode ter mais runs vivos
 	// do que este número. 0 ⇒ NÃO COMPOSTO, e o banner declara-o.
@@ -85,9 +89,11 @@ type ingressLimits struct {
 // RAW, não o nome.
 func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 	lim := ingressLimits{
-		ratePerSec:  DefaultRatePerSec,
-		burst:       DefaultRateBurst,
-		maxInFlight: DefaultMaxInFlight,
+		ratePerSec:     DefaultRatePerSec,
+		burst:          DefaultRateBurst,
+		maxInFlight:    DefaultMaxInFlight,
+		readRatePerSec: DefaultReadRatePerSec,
+		readBurst:      DefaultReadRateBurst,
 	}
 
 	rawRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_RATE"))
@@ -144,9 +150,33 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		lim.inFlightPerCaller, lim.tuned = n, true
 	}
 
+	// AOS-458 — A TAXA DO PLANO DE DADOS INTEIRO, as LEITURAS incluídas.
+	//
+	// Até este ticket as sete rotas de leitura que chamam `readGovernance.authorize` não tinham
+	// tecto de taxa nenhum, e em produção esse `authorize` verifica um JWS. Ver
+	// [DefaultReadRatePerSec]. Mesma disciplina fail-closed das outras: valor ilegível, não-finito,
+	// negativo ou ZERO aborta o arranque.
+	rawReadRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_READ_RATE"))
+	if rawReadRate != "" {
+		v, ok := parsePositiveFloat(rawReadRate, 0)
+		if !ok {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_READ_RATE=%q", ErrBadIngressLimits, rawReadRate)
+		}
+		lim.readRatePerSec, lim.tuned = v, true
+	}
+	rawReadBurst := strings.TrimSpace(os.Getenv("AOS_INGRESS_READ_BURST"))
+	if rawReadBurst != "" {
+		v, ok := parsePositiveFloat(rawReadBurst, 1)
+		if !ok {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_INGRESS_READ_BURST=%q", ErrBadIngressLimits, rawReadBurst)
+		}
+		lim.readBurst, lim.tuned = v, true
+	}
+
 	return lim, []APIOption{
 		WithRateLimit(lim.ratePerSec, lim.burst),
 		WithMaxInFlight(lim.maxInFlight),
+		WithReadRateLimit(lim.readRatePerSec, lim.readBurst),
 	}, nil
 }
 
@@ -176,9 +206,14 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 //   - NÃO cobre o plano de CONTROLO. `/steer`,`/pause`,`/approve`,`/resume` passam por
 //     `admitControl`, que usa um bucket DEDICADO (`ctrlBucket`) alimentado por
 //     [WithControlRateLimit] — que estas variáveis NÃO tocam (continua nos defaults).
-//   - NÃO cobre as LEITURAS. `GET /runs/{id}` não é limitado por taxa nenhuma; o stream
-//     SSE de trajectória tem o seu próprio tecto de ligações ([DefaultMaxTrajectoryConns]),
-//     também fora destas variáveis.
+//   - COBRE as LEITURAS desde AOS-458, por um balde SEPARADO (`AOS_INGRESS_READ_RATE`/
+//     `AOS_INGRESS_READ_BURST`), consumido no INVÓLUCRO da rota e portanto antes de qualquer
+//     verificação criptográfica no corpo. Antes disso `GET /runs/{id}` e as outras seis rotas de
+//     leitura não tinham tecto de taxa NENHUM — e todas chamam `readGovernance.authorize`, que em
+//     produção verifica um JWS. Esta linha dizia «NÃO cobre as LEITURAS», e foi a refutação do
+//     argumento com que o AOS-456b se fechou: estava escrita aqui e ninguém a leu.
+//     O stream SSE de trajectória tem AINDA o seu próprio tecto de LIGAÇÕES
+//     ([DefaultMaxTrajectoryConns]), que é global e não por-chamador — resíduo declarado no AOS-458.
 //   - É POR-PROCESSO e GLOBAL entre chamadores: o balde vive em memória nesta réplica e
 //     não é por-IP nem por-principal. N réplicas ⇒ N vezes o limite; e um único cliente
 //     ruidoso pode esgotar o balde para todos (a equidade entre chamadores não existe
@@ -240,7 +275,7 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 			lim.inFlightPerCaller)
 	}
 	return []string{
-		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
+		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
 			origem, lim.ratePerSec, lim.burst, lim.maxInFlight, porChamador),
 	}
 }

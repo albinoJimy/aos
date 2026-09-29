@@ -91,8 +91,10 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		if lim.tuned {
 			t.Fatal("sem variaveis definidas o banner nao pode anunciar limites AFINADOS")
 		}
-		if len(opts) != 2 {
-			t.Fatalf("esperava 2 opcoes de API (rate-limit + max-in-flight), vieram %d", len(opts))
+		// TRÊS desde AOS-458: rate-limit da submissão, max-in-flight, e o rate-limit do plano de
+		// DADOS inteiro (as leituras, que até lá não tinham tecto de taxa nenhum).
+		if len(opts) != 3 {
+			t.Fatalf("esperava 3 opcoes de API (rate-limit + max-in-flight + read-rate-limit), vieram %d", len(opts))
 		}
 	})
 
@@ -353,7 +355,7 @@ func TestAOS277ServeAPIDeclaresAndEnforcesLimits(t *testing.T) {
 		}
 
 		banner := out.String()
-		for _, marker := range []string{"ingresso / admission (AOS-166/AOS-277)", "AFINADO", "9 pedido(s)/segundo", "burst de 11", "13 run(s) EM CURSO"} {
+		for _, marker := range []string{"ingresso / admission (AOS-166/AOS-277/AOS-458)", "AFINADO", "9 pedido(s)/segundo", "burst de 11", "13 run(s) EM CURSO"} {
 			if !strings.Contains(banner, marker) {
 				t.Fatalf("o banner de arranque devia conter %q; saiu:\n%s", marker, banner)
 			}
