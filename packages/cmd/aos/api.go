@@ -369,16 +369,25 @@ func WithTrajectoryWriteTimeout(d time.Duration) APIOption {
 	}
 }
 
-// WithMaxTrajectoryConns define o tecto de streams SSE de trajectória concorrentes por-nó
-// (AOS-167; default [DefaultMaxTrajectoryConns]). Exceder ⇒ 429. <= 0 desliga o tecto (útil
-// em testes que abrem muitas ligações). É a admission anti-exaustão do read-path tempo-real,
-// coerente com o hardening de ingresso de AOS-166.
-// WithMaxTrajectoryConnsPerReader reparte o tecto de streams SSE por LEITOR (AOS-459). <= 0
-// desliga a repartição. Ver [DefaultMaxTrajectoryConnsPerReader] para o porquê de ser preciso.
+// WithMaxTrajectoryConnsPerReader reparte o tecto de streams SSE por LEITOR (AOS-459/AOS-460).
+// <= 0 desliga a repartição. Ver [DefaultMaxTrajectoryConnsPerReader] para o porquê de ser preciso, e
+// [ingressPostureBanner] para as três posturas que o arranque declara.
+//
+// ⚠️ O invariante «por-leitor < global» só é imposto na leitura do ambiente: composto por esta opção,
+// um valor >= [WithMaxTrajectoryConns] deixa a repartição INERTE (o global corta primeiro). O banner
+// de arranque declara-o quando acontece, em vez de se calar.
 func WithMaxTrajectoryConnsPerReader(n int) APIOption {
 	return func(c *apiConfig) { c.trajMaxConnsPerReader = n }
 }
 
+// WithMaxTrajectoryConns define o tecto de streams SSE de trajectória concorrentes por-nó
+// (AOS-167; default [DefaultMaxTrajectoryConns]). Exceder ⇒ 429. <= 0 desliga o tecto (útil
+// em testes que abrem muitas ligações). É a admission anti-exaustão do read-path tempo-real,
+// coerente com o hardening de ingresso de AOS-166.
+//
+// Este comentário esteve SEQUESTRADO: o AOS-459 inseriu a opção por-leitor entre ele e esta
+// assinatura, e o `go doc` passou a mostrar esta função sem documentação nenhuma. Terceira vez na
+// mesma sessão — daí a nota, que é para o próximo.
 func WithMaxTrajectoryConns(n int) APIOption {
 	return func(c *apiConfig) { c.trajMaxConns = n }
 }

@@ -455,7 +455,13 @@ func TestAOS456ABannerDistingueAsTRESPosturas(t *testing.T) {
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			txt := strings.Join(ingressPostureBanner(c.lim, c.gate, c.verificav), "\n")
+			// A DOBRA DESTE EIXO, e não o banner inteiro. O banner passou a ter outra dobra com o
+			// mesmo vocabulário («NAO COMPOSTO», «DEMO-GRADE») para o tecto de streams SSE
+			// (AOS-459/AOS-460), e procurar no texto todo confundia os dois eixos — o que também
+			// tornava estas asserções mais fracas do que pareciam: qualquer ocorrência em qualquer
+			// parte do banner as satisfazia.
+			txt := dobraDoEixo(t, strings.Join(ingressPostureBanner(c.lim, c.gate, c.verificav), "\n"),
+				"TECTO POR-CHAMADOR (AOS-456)", "TECTO DE STREAMS SSE POR LEITOR")
 			for _, ex := range c.exige {
 				if !strings.Contains(txt, ex) {
 					t.Errorf("banner NAO declara %q\n--- banner ---\n%s", ex, txt)
@@ -1128,4 +1134,20 @@ func TestAOS456AOBannerDeclaraOQueOEIXONAODA(t *testing.T) {
 			}
 		})
 	}
+}
+
+// dobraDoEixo devolve a parte do banner que começa em `inicio` e termina antes de `fim` (ou no fim
+// do texto). Existe porque o banner de ingresso acumula dobras de eixos diferentes com vocabulário
+// partilhado, e uma asserção sobre o texto inteiro não distingue qual eixo a satisfez.
+func dobraDoEixo(t *testing.T, banner, inicio, fim string) string {
+	t.Helper()
+	i := strings.Index(banner, inicio)
+	if i < 0 {
+		t.Fatalf("o banner NAO tem a dobra %q — a assercao seguinte nao mediria o eixo certo:\n%s", inicio, banner)
+	}
+	resto := banner[i:]
+	if j := strings.Index(resto, fim); j > 0 {
+		resto = resto[:j]
+	}
+	return resto
 }

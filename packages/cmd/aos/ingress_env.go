@@ -281,9 +281,9 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 // chamador escreve — medido: 60 submissões com o header a rodar, 60 admitidas, tecto a 2. O tecto
 // compõe-se nessa postura (vale contra rajada honesta) mas o banner tem de dizer QUAL das duas é.
 func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel bool) []string {
-	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER definida)"
+	origem := "nos DEFAULTS do binario (nenhuma de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER/AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST/AOS_TRAJECTORY_MAX_CONNS/AOS_TRAJECTORY_MAX_CONNS_PER_READER definida)"
 	if lim.tuned {
-		origem = "AFINADO por AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER"
+		origem = "AFINADO por uma ou mais de AOS_INGRESS_RATE/AOS_INGRESS_BURST/AOS_INGRESS_MAX_INFLIGHT/AOS_INGRESS_MAX_INFLIGHT_PER_CALLER/AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST/AOS_TRAJECTORY_MAX_CONNS/AOS_TRAJECTORY_MAX_CONNS_PER_READER"
 	}
 	// DOBRA DO TECTO POR-CHAMADOR (AOS-456) — três posturas DISTINGUÍVEIS, e a do meio é a que
 	// a revisão adversarial da tentativa 1 apanhou: configurado e inerte.
@@ -316,8 +316,29 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 		porChamador = fmt.Sprintf(" TECTO POR-CHAMADOR (AOS-456): CONFIGURADO (%d) mas NAO COMPOSTO — sem gate soberano de leitura o principal do run vem do CORPO do pedido (auto-declarado), e um tecto sobre um valor que o chamador escolhe contorna-se mudando-o. NAO esta em vigor: defina AOS_BOARD_REGIONS (e o WORM).",
 			lim.inFlightPerCaller)
 	}
+	// DOBRA DO TECTO DE STREAMS SSE POR LEITOR (AOS-459/AOS-460) — TRÊS posturas, no molde do
+	// AOS-456, e a do meio é a que a revisão adversarial apanhou OUTRA VEZ: o AOS-459 descrevia-a
+	// como se fosse a primeira («em modo legado o principal vem vazio»), quando é a postura de um nó
+	// com `AOS_BOARD_REGIONS` e sem OIDC — o principal vem do header `X-Aos-Reader` e a repartição
+	// contorna-se rodando-o. Medido: 12 streams vivos com o tecto a 1, só a rodar o header.
+	porLeitorSSE := fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): NAO COMPOSTO — AOS_TRAJECTORY_MAX_CONNS_PER_READER desligado (<=0), logo o tecto de %d stream(s) e SO global e um leitor pode ocupar todos e negar GET /runs/{id}/trajectory aos outros.", lim.trajMaxConns)
+	switch {
+	case lim.trajMaxConnsPerReader > 0 && principalVerificavel:
+		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal VERIFICADO — cada leitor ocupa no maximo %d de %d stream(s) concorrentes; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. A recusa por-leitor NAO toma lugar global nenhum (AOS-460: a reparticao corre ANTES do tecto global, medido — com a ordem inversa uma rajada de recusas de um leitor negava 27-39%% dos pedidos aos outros).", lim.trajMaxConnsPerReader, lim.trajMaxConns)
+	case lim.trajMaxConnsPerReader > 0 && gateComposto:
+		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal DEMO-GRADE (%d de %d) — ATENCAO: sem credencial forte composta o leitor vem do header X-Aos-Reader, que o CHAMADOR escreve, pelo que este tecto CONTORNA-SE rodando o header (medido: 12 streams vivos com o tecto a 1). Vale contra rajada HONESTA ou cliente mal configurado; NAO vale contra abuso. Para o tornar inforjavel defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
+	case lim.trajMaxConnsPerReader > 0:
+		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): CONFIGURADO (%d) mas NAO COMPOSTO — sem gate soberano de leitura o `admitSovereignRead` devolve principal VAZIO, nao ha a quem imputar, e a reparticao degenera no tecto global de %d. Defina AOS_BOARD_REGIONS (e o WORM).", lim.trajMaxConnsPerReader, lim.trajMaxConns)
+	}
+	// INVARIANTE INERTE (AOS-460): a env recusa `por-leitor >= global`, mas a composicao in-process
+	// ([WithMaxTrajectoryConns]) nao, e um par inerte anunciado como reparticao e a forma de falha que
+	// este ciclo pagou cinco vezes. Declara-se em vez de se calar.
+	if lim.trajMaxConnsPerReader > 0 && lim.trajMaxConnsPerReader >= lim.trajMaxConns {
+		porLeitorSSE += fmt.Sprintf(" ATENCAO: o tecto por-leitor (%d) NAO e menor que o global (%d), logo o global corta primeiro e a reparticao NUNCA dispara — esta INERTE.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
+	}
+
 	return []string{
-		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id}) nao tem limite de taxa nenhum e o stream SSE de trajectoria tem o seu proprio tecto de ligacoes, tambem fora destas variaveis. O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
-			origem, lim.ratePerSec, lim.burst, lim.maxInFlight, porChamador),
+		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id} e o resto do plano de DADOS) tem desde AOS-458 um balde de TAXA proprio (AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST) consumido no involucro da rota, e o stream SSE de trajectoria tem AINDA um tecto de LIGACOES em duas camadas (AOS_TRAJECTORY_MAX_CONNS global + AOS_TRAJECTORY_MAX_CONNS_PER_READER por leitor). O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
+			origem, lim.ratePerSec, lim.burst, lim.maxInFlight, porChamador+porLeitorSSE),
 	}
 }

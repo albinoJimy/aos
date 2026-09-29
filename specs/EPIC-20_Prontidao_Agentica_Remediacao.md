@@ -2138,13 +2138,93 @@ configurar o global deixaria o par inútil.
       leitura de quantos lugares estão ocupados.
 
 ### Residuais DECLARADOS
-- **A atribuição só é inforjável com credencial forte**, como no AOS-456a: em modo legado o principal
-  vem do header, e a repartição contorna-se rodando-o. Em modo legado o gate devolve principal
-  **vazio** e a repartição degenera no global — o que é a postura honesta, não uma protecção.
+- ⛔ **ERRADO, e corrigido pelo AOS-460.** Este bullet dizia duas coisas contraditórias no mesmo
+  parágrafo, e a segunda era falsa. Há **TRÊS** posturas, não duas:
+
+  | composição | principal | consequência |
+  |---|---|---|
+  | `readGov == nil` | **vazio** | sem repartição: degenera no global |
+  | `readGov != nil`, `cred == nil` | do header `X-Aos-Reader` | reparte, mas **contorna-se rodando o header** |
+  | `readGov != nil`, credencial composta | da credencial **verificada** | inforjável |
+
+  A do meio é a de um nó com `AOS_BOARD_REGIONS` e sem OIDC — **e é a que os testes deste ticket
+  compõem**. Medido: 12 streams vivos com o tecto a 1, só a rodar o header. Ou seja, os testes do
+  AOS-459 **só passam porque o principal não é vazio, e a prosa afirmava que era**. E o banner não
+  declarava nenhuma delas, ao contrário do AOS-456a — que tem as três e cujo próprio comentário diz
+  que a do meio «é a que a revisão adversarial apanhou».
 - O tecto é **por-réplica**: N réplicas valem N vezes os lugares.
 - **Um stream ocupa um lugar durante toda a sua vida**, e este eixo não põe limite à *duração*. Um
   leitor dentro do seu tecto pode mantê-lo ocupado indefinidamente; o que deixa de poder é ocupar o
   dos outros.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-460 — A repartição corre ANTES do tecto global, e o banner declara as três posturas
+
+### Contexto
+Correcção de dois ALTO que uma revisão adversarial encontrou no AOS-459 **depois de mergeado**.
+
+### ALTO-1 — uma rajada de RECUSAS negava a rota aos outros pelo tecto GLOBAL
+O AOS-459 pôs a reserva por-leitor **depois** do incremento global, argumentando que «o global é a
+barreira do nó e é a mais barata». Falso por duas razões: o passo caro (`admitSovereignRead`, JWS +
+residência) corre **antes dos dois**; e um pedido destinado a ser **recusado** tomava primeiro um
+lugar global, ocupando-o enquanto estava em voo.
+
+Medido na rota real, `global=2`, `por-leitor=1`, alice presa a **um** stream:
+
+| | bob 200 | bob 429 pelo tecto **global** |
+|---|---|---|
+| sem rajada | 199/199/198 | 1/1/2 |
+| 32 recusas de alice em voo | 142/122/146 | **58/78/54** (27–39%) |
+
+É a assimetria que o **AOS-456a declara e cumpre** — «exceder responde 429 **sem ocupar lugar
+nenhum**» — e que o AOS-459 dizia replicar. Trocada a ordem: **0 de 200**. Nenhum dos seis testes do
+AOS-459 distinguia as duas ordens, porque todos mediam **um** pedido de cada vez.
+`TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor` é o sensor que faltava: com a ordem antiga
+mede **50 de 200**, com a nova **0**.
+
+### ALTO-2 — a fronteira de segurança estava declarada ao contrário
+Ver o bullet corrigido na secção do AOS-459: há **três** posturas e o ticket colapsou-as em duas,
+descrevendo a do meio (principal do header, contornável) como se fosse a primeira (principal vazio).
+O banner ganhou as três, no molde do AOS-456a, mais um aviso quando o par fica **inerte**
+(`por-leitor >= global`, que a env recusa mas a composição in-process não).
+
+### E dois testes que não mediam o que prometiam
+- **A libertação DUPLA** passava incólume pelos seis testes do AOS-459 — e também pela primeira versão
+  do caso novo, que exercitava a **função** quando a duplicação vive no **handler**.
+  `TestAOS460ALibertacaoDUPLANoHandlerDaStreamsAMais` mede pela rota: fechado 1 de 2 streams com o
+  tecto em 2, admitidos **2** em vez de 1.
+- **A atomicidade.** O teste do AOS-459 era um detector de ~4%. A barreira de arranque melhora-o, e
+  **não chega** — medido:
+
+  | janela entre verificar e incrementar | detecta |
+  |---|---|
+  | nenhuma (`Unlock`/`Lock` adjacentes) | **1 de 10** |
+  | `runtime.Gosched()` | 10 de 10 |
+  | `time.Sleep(1µs)` | 9 de 10 |
+
+  Registado no teste: **não prova atomicidade**; prova a ausência de uma janela da ordem que um
+  defeito real teria. A garantia vem da estrutura. É o mesmo limite, medido da mesma forma, que o
+  AOS-456a registou para a sua própria asserção.
+
+### Também corrigido
+- **Dois godoc SEQUESTRADOS** pelo AOS-459: `WithMaxTrajectoryConns` ficou **sem documentação
+  nenhuma** e o doc de `handleTrajectory` passou a descrever `reservarStreamDoLeitor`. Terceira vez na
+  mesma sessão; nenhum gate apanha (não são símbolos exportados).
+- O banner afirmava «AFINADO por» quatro variáveis que podiam não estar definidas, e continuava a
+  dizer que **«as leituras não têm limite de taxa nenhum»** — falso desde o AOS-458, cujo número o
+  próprio banner exibe.
+- `TestAOS456ABannerDistingueAsTRESPosturas` procurava no banner **inteiro**, e o vocabulário passou a
+  ser partilhado por dois eixos. Passou a procurar na sua própria dobra — o que também o **fortalece**.
+
+### Residual NÃO fechado, e é enumeração parcial outra vez
+**`tectoDePendentes = 1000`** (`plan_claim.go`) é um **segundo** tecto de ocupação global, sem
+repartição por chamador, sem variável de ambiente, no mesmo plano de dados. Um submissor autenticado
+enche os 1000 e todos os outros levam **503** em `POST /plans`. O AOS-459 afirmou que `trajConns` era
+o único; não era. Fica por abrir.
 
 ### Estado
 **FEITO** (2026-09-29).
