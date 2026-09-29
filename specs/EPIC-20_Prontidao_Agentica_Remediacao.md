@@ -2515,6 +2515,21 @@ com uma variável de ambiente.
   diagnóstico certo.
 - [x] `abrirTrajComo` passa o `context.Context` em primeiro, pela convenção Go.
 
+### QUEBRA DE COMPATIBILIDADE OPERACIONAL, declarada
+Esta correcção transforma um arranque silencioso numa **recusa de arranque**. Um nó com
+`AOS_TRAJECTORY_MAX_CONNS <= 32` e **sem** `AOS_TRAJECTORY_MAX_CONNS_PER_READER` arrancava antes (com a
+repartição desligada em silêncio) e **deixa de arrancar** depois. É deliberado — é a postura fail-closed
+que o `AGENTS.md` §7.8 exige, e trocar um buraco silencioso por uma recusa audível é o objectivo do
+ticket — mas é uma quebra e tem de estar dita onde o operador olha.
+
+- [x] Nada no repositório é afectado: o único sítio que define as variáveis
+  (`deploy/server/docker-compose.prod.yml`) define **as duas**, com os defaults 256/32 (par válido).
+- [x] O erro nomeia os dois valores e a origem de cada um, para que a correcção seja óbvia sem ler
+  código.
+- [x] A nota de migração está na linha do **`AOS_TRAJECTORY_MAX_CONNS`** no `deploy/node/README.md`, e
+  não só na do por-leitor: quem baixa uma variável lê a linha dela. A primeira versão deste ticket pôs a
+  nota só na linha do por-leitor — colocação parcial, a sexta desta sessão.
+
 ### Residual declarado
 - **Fronteira não declarada (mantida):** o sensor de «12 streams vivos com o tecto a 1» fixa
   `global=100 / por-leitor=1`, uma composição que **nenhum nó por defeito tem** (256/32). A frase que o
