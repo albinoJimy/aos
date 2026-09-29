@@ -124,6 +124,18 @@ const (
 	// confiança (coerente com o hardening de ingresso de AOS-166). Exceder ⇒ 429. <= 0
 	// desliga o tecto.
 	DefaultMaxTrajectoryConns = 256
+	// DefaultMaxTrajectoryConnsPerReader reparte o tecto acima POR LEITOR (AOS-459).
+	//
+	// PORQUE EXISTE. O tecto global é anti-exaustão do NÓ e não diz nada sobre equidade: um leitor
+	// autenticado abre os 256 e nega `GET /runs/{id}/trajectory` a **todos** os outros,
+	// indefinidamente — não é uma rajada que passa, é ocupação que fica enquanto ele quiser. Nem o
+	// AOS-456a fecha isso (conta runs, não ligações) nem o AOS-458 (limita taxa, e abrir um stream
+	// custa UM token; depois a ligação vive minutos), nem o `edge` (o `nginx.conf` tem `limit_req`,
+	// que é taxa, e NÃO tem `limit_conn`).
+	//
+	// 32 reparte 8 leitores sobre o global de 256 e é folgado para um cliente real: uma UI observa
+	// um punhado de runs ao mesmo tempo, não trinta.
+	DefaultMaxTrajectoryConnsPerReader = 32
 )
 
 // Erros da API (fail-closed).
@@ -226,9 +238,12 @@ type apiConfig struct {
 	maxTurnsCeiling  int
 	trajWriteTimeout time.Duration // write-deadline por-escrita do SSE de trajectória
 	trajMaxConns     int           // tecto de streams SSE concorrentes por-nó
-	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
-	now              func() time.Time
-	logw             io.Writer
+	// trajMaxConnsPerReader reparte o tecto acima por LEITOR (AOS-459). <= 0 desliga a repartição,
+	// e aí o global volta a ser a única barreira — com o residual que o AOS-459 fecha.
+	trajMaxConnsPerReader int
+	serverWriteTO         time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
+	now                   func() time.Time
+	logw                  io.Writer
 	// --- Terminação TLS do ingresso (AOS-209) --------------------------------
 	// tlsCertPath/tlsKeyPath apontam para o certificado e a CHAVE PRIVADA montados por
 	// ficheiro (padrão AOS_ISSUER_KEY_PATH: material privado NUNCA por variável de ambiente).
@@ -358,6 +373,12 @@ func WithTrajectoryWriteTimeout(d time.Duration) APIOption {
 // (AOS-167; default [DefaultMaxTrajectoryConns]). Exceder ⇒ 429. <= 0 desliga o tecto (útil
 // em testes que abrem muitas ligações). É a admission anti-exaustão do read-path tempo-real,
 // coerente com o hardening de ingresso de AOS-166.
+// WithMaxTrajectoryConnsPerReader reparte o tecto de streams SSE por LEITOR (AOS-459). <= 0
+// desliga a repartição. Ver [DefaultMaxTrajectoryConnsPerReader] para o porquê de ser preciso.
+func WithMaxTrajectoryConnsPerReader(n int) APIOption {
+	return func(c *apiConfig) { c.trajMaxConnsPerReader = n }
+}
+
 func WithMaxTrajectoryConns(n int) APIOption {
 	return func(c *apiConfig) { c.trajMaxConns = n }
 }
@@ -465,6 +486,17 @@ type apiHandler struct {
 	// (AOS-458). Ver [DefaultReadRatePerSec] para o porquê de ser separado e generoso.
 	readBucket *tokenBucket
 	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
+	// trajPorLeitor conta os streams SSE VIVOS por leitor, para o tecto por-chamador (AOS-459).
+	//
+	// ESTADO PRÓPRIO, ao contrário do tecto por-chamador de runs (AOS-456a), que deriva a contagem
+	// de `s.runs` e por isso não pode dessincronizar-se. Aqui não há estrutura existente que
+	// registe as ligações vivas, pelo que o mapa é a única via — e o risco correspondente está
+	// nomeado: uma entrada que fique a MAIS tranca o leitor para sempre. Por isso o decremento é
+	// um `defer` imediatamente após a reserva bem-sucedida, a entrada é APAGADA ao chegar a zero
+	// (senão o mapa cresce sem limite com leitores que vêm e vão), e
+	// [TestAOS459AContagemVOLTAAZeroEAEntradaDesaparece] mede as duas coisas.
+	trajPorLeitorMu sync.Mutex
+	trajPorLeitor   map[string]int
 	// credRecusadas conta as recusas por CREDENCIAL DO RUN que não verifica, nas duas rotas que
 	// a verificam: `POST /runs` (AOS-428) e `POST /runs/{id}/resume` (AOS-433).
 	//
@@ -502,18 +534,19 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		return nil, ErrNilNode
 	}
 	cfg := apiConfig{
-		maxBodyBytes:     DefaultMaxBodyBytes,
-		rateBurst:        DefaultRateBurst,
-		ratePerSec:       DefaultRatePerSec,
-		ctrlRateBurst:    DefaultRateBurst,
-		ctrlRatePerSec:   DefaultRatePerSec,
-		readRateBurst:    DefaultReadRateBurst,
-		readRatePerSec:   DefaultReadRatePerSec,
-		maxInFlight:      DefaultMaxInFlight,
-		maxTurnsCeiling:  agentruntime.DefaultMaxTurns,
-		trajWriteTimeout: DefaultTrajectoryWriteTimeout,
-		trajMaxConns:     DefaultMaxTrajectoryConns,
-		now:              time.Now,
+		maxBodyBytes:          DefaultMaxBodyBytes,
+		rateBurst:             DefaultRateBurst,
+		ratePerSec:            DefaultRatePerSec,
+		ctrlRateBurst:         DefaultRateBurst,
+		ctrlRatePerSec:        DefaultRatePerSec,
+		readRateBurst:         DefaultReadRateBurst,
+		readRatePerSec:        DefaultReadRatePerSec,
+		maxInFlight:           DefaultMaxInFlight,
+		maxTurnsCeiling:       agentruntime.DefaultMaxTurns,
+		trajWriteTimeout:      DefaultTrajectoryWriteTimeout,
+		trajMaxConns:          DefaultMaxTrajectoryConns,
+		trajMaxConnsPerReader: DefaultMaxTrajectoryConnsPerReader,
+		now:                   time.Now,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -548,14 +581,19 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		readGov.saude = &svc.seloWORM
 	}
 	h := &apiHandler{
-		svc:         svc,
-		node:        node,
-		cfg:         cfg,
-		bucket:      newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
-		ctrlBucket:  newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
-		readBucket:  newTokenBucket(cfg.readRateBurst, cfg.readRatePerSec, cfg.now),
-		controlMTLS: cfg.controlMTLSCAPath != "",
-		readGov:     readGov,
+		svc:        svc,
+		node:       node,
+		cfg:        cfg,
+		bucket:     newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
+		ctrlBucket: newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+		readBucket: newTokenBucket(cfg.readRateBurst, cfg.readRatePerSec, cfg.now),
+		// AOS-459: um mapa nil aceita LEITURAS mas faz panic na ESCRITA, e a escrita está no caminho
+		// de pedido. Composto aqui, e a reserva por-leitor trata o nil como «sem repartição» para
+		// que um `apiHandler` construído à mão em teste não morra — o mesmo compromisso, e a mesma
+		// razão, da guarda nil de [tokenBucket.allow].
+		trajPorLeitor: make(map[string]int),
+		controlMTLS:   cfg.controlMTLSCAPath != "",
+		readGov:       readGov,
 	}
 
 	mux := http.NewServeMux()
@@ -1815,6 +1853,14 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// resíduo do AOS-433, e tem uma dificuldade própria que vale a pena nomear: não se pode
 	// atribuir o facto ao principal da CREDENCIAL, porque foi ela que não verificou. Atribuível
 	// é o SUBMISSOR autenticado pelo gate soberano, que é outra coisa e tem de ser decidida.
+	// STREAMS SSE VIVOS (AOS-459). Sem esta série o operador tem DOIS tectos para afinar
+	// (`AOS_TRAJECTORY_MAX_CONNS` e `..._PER_READER`) e nenhuma leitura de quantos lugares estão
+	// ocupados — afinar às cegas. E serve de sensor ao invariante que mais importa neste eixo: uma
+	// recusa por-leitor TEM de devolver o lugar global, senão N recusas esgotam o tecto do nó. Ver
+	// [TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal].
+	g("aos_trajectory_streams_active", "Streams SSE de trajectoria VIVOS nesta replica. Comparar com AOS_TRAJECTORY_MAX_CONNS: perto do tecto, novas ligacoes levam 429. POR PROCESSO.",
+		"gauge", float64(h.trajConns.Load()), "")
+
 	g("aos_ingress_credential_denials_total", "Pedidos RECUSADOS a porta por a credencial do run nao verificar (POST /runs e POST /runs/{id}/resume) desde o arranque. Um DEGRAU sugere uso de credenciais roubadas ou caducadas em volume. POR PROCESSO — um restart repoe. NAO e auditoria: nao diz quem nem quando.",
 		"counter", float64(h.credRecusadas.Load()), "")
 

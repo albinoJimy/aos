@@ -128,6 +128,47 @@ func (c *sseConn) pop() (eventstore.Event, bool) {
 //     (não-enumerável); outro erro ⇒ status HTTP (headers não enviados);
 //  5. só então compromete o SSE (200 + headers) e emite backfill + live com dedup por
 //     watermark, drop-slow-consumer por write-deadline e limpeza no cancelamento do ctx.
+//
+// reservarStreamDoLeitor reserva um lugar de stream SSE para `principal` (AOS-459). Devolve a
+// função que o LIBERTA e `true` quando há lugar; `(nil, false)` quando o tecto do leitor está cheio.
+//
+// `(nil, true)` significa «não há repartição a aplicar» e nada a libertar — quando a repartição está
+// desligada (`<= 0`), quando o principal é vazio (modo legado: não há a quem imputar) ou quando o
+// mapa não foi composto (um `apiHandler` construído à mão em teste; o mesmo compromisso da guarda
+// nil de [tokenBucket.allow], e a razão é a mesma — um panic no caminho de pedido é pior).
+//
+// A ENTRADA É APAGADA ao chegar a zero. Sem isso o mapa cresce uma entrada por leitor que já se foi,
+// e um nó de vida longa acumula-as sem limite — a fuga é pequena por entrada e não tem tecto.
+func (h *apiHandler) reservarStreamDoLeitor(principal string) (func(), bool) {
+	if h.cfg.trajMaxConnsPerReader <= 0 || principal == "" || h.trajPorLeitor == nil {
+		return nil, true
+	}
+	h.trajPorLeitorMu.Lock()
+	defer h.trajPorLeitorMu.Unlock()
+	if h.trajPorLeitor[principal] >= h.cfg.trajMaxConnsPerReader {
+		return nil, false
+	}
+	h.trajPorLeitor[principal]++
+	return func() {
+		h.trajPorLeitorMu.Lock()
+		defer h.trajPorLeitorMu.Unlock()
+		if n := h.trajPorLeitor[principal] - 1; n > 0 {
+			h.trajPorLeitor[principal] = n
+		} else {
+			delete(h.trajPorLeitor, principal)
+		}
+	}, true
+}
+
+// streamsDoLeitor devolve a contagem viva de um leitor. Existe para os testes poderem medir o
+// invariante (a contagem volta a zero e a entrada desaparece) sem lerem o mapa por baixo do mutex.
+func (h *apiHandler) streamsDoLeitor(principal string) (int, bool) {
+	h.trajPorLeitorMu.Lock()
+	defer h.trajPorLeitorMu.Unlock()
+	n, presente := h.trajPorLeitor[principal]
+	return n, presente
+}
+
 func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
 	if runID == "" {
@@ -154,6 +195,28 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer h.trajConns.Add(-1)
+
+	// (1-bis) ADMISSION POR LEITOR (AOS-459) — a equidade que o tecto global não dá.
+	//
+	// O tecto acima protege o NÓ e não diz nada sobre quem ocupa os lugares: um leitor autenticado
+	// abre os 256 e nega esta rota a TODOS os outros enquanto quiser. Não é uma rajada que passa —
+	// é ocupação que fica. O AOS-456a conta runs (não ligações), o AOS-458 limita taxa (abrir um
+	// stream custa UM token e a ligação vive minutos), e o `edge` tem `limit_req` e NÃO `limit_conn`.
+	//
+	// AQUI e depois do global, de propósito: o global é a barreira do nó e é a mais barata; este é a
+	// repartição. Uma recusa DEVOLVE o lugar global (o `defer` acima já está armado, logo o rollback
+	// é explícito e único — ver o `reservarStreamDoLeitor`).
+	//
+	// A ATRIBUIÇÃO é o `reader.principal` que o `admitSovereignRead` resolveu ACIMA, e em modo
+	// SOBERANO vem da credencial verificada. Em modo LEGADO vem vazio (o gate devolve
+	// `readerIdentity{}`), e a repartição degenera no tecto global — declarado, e é a mesma fronteira
+	// do AOS-456a.
+	if libertar, ok := h.reservarStreamDoLeitor(reader.principal); !ok {
+		writeError(w, http.StatusTooManyRequests, "tecto de streams concorrentes deste leitor atingido")
+		return
+	} else if libertar != nil {
+		defer libertar()
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

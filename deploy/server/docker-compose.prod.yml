@@ -375,6 +375,13 @@ services:
       AOS_INGRESS_RATE: "${AOS_INGRESS_RATE:-64}"
       AOS_INGRESS_BURST: "${AOS_INGRESS_BURST:-128}"
       AOS_INGRESS_MAX_INFLIGHT: "${AOS_INGRESS_MAX_INFLIGHT:-512}"
+      # AOS-459 — tecto de streams SSE de trajectoria e a sua REPARTICAO por leitor. O global
+      # protege o no; a reparticao impede que um leitor autenticado ocupe os 256 lugares e negue a
+      # rota a todos os outros — ocupacao, nao taxa, e por isso nem o AOS-458 nem o limit_req do
+      # nginx a fecham. O por-leitor tem de ser ESTRITAMENTE MENOR que o global (igual ou acima o
+      # global corta primeiro e a reparticao nunca dispara).
+      AOS_TRAJECTORY_MAX_CONNS: "${AOS_TRAJECTORY_MAX_CONNS:-256}"
+      AOS_TRAJECTORY_MAX_CONNS_PER_READER: "${AOS_TRAJECTORY_MAX_CONNS_PER_READER:-32}"
       # AOS-458 — admission de TAXA do plano de DADOS inteiro, as LEITURAS incluídas. Até esse
       # ticket as sete rotas de leitura que chamam `readGovernance.authorize` não tinham tecto de
       # taxa nenhum, e em produção esse authorize verifica um JWS (RS256 ~42us, ES256 ~91us): um
