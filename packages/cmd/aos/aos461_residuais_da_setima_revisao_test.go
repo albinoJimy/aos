@@ -49,9 +49,15 @@ func TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal(t *testing.T) {
 	t.Cleanup(func() { _ = node.Close() })
 	regions := govsov.NewRegistry(map[string]string{govBoard: govRegion, govBoardUS: govRegionUS})
 	svc, h := newAPI(t, node, WithReadSovereignty(regions, node.WORM),
-		// global=3 e por-leitor=2: o global enche-se com leitores DENTRO da sua quota (bob 2 + carol 1),
-		// e sobra medir o que uma recusa GLOBAL faz aos dois contadores.
-		WithMaxTrajectoryConns(3), WithMaxTrajectoryConnsPerReader(2),
+		// global=11 e por-leitor=10: o global enche-se com leitores DENTRO da sua quota (bob 10 +
+		// carol 1), e sobra medir o que uma recusa GLOBAL faz aos dois contadores.
+		//
+		// PORQUE A QUOTA (10) É MAIOR QUE O NÚMERO DE RECUSAS (10, e a 11.ª é a sonda): com a quota a 2
+		// e dez recusas, uma fuga por-leitor esgotava-a à 3.ª e disparava a GUARDA DE CENÁRIO abaixo —
+		// cuja mensagem diz «o cenário deixou de medir o que diz medir» e convida a corrigir o TESTE. A
+		// asserção (2), que o godoc diz medir este sentido, ficava inalcançável. Achado BAIXO-2 da
+		// oitava revisão adversarial: o sensor acertava pelo sítio errado, com o diagnóstico errado.
+		WithMaxTrajectoryConns(11), WithMaxTrajectoryConnsPerReader(10),
 		// balde de taxa fora do caminho: o 429 medido tem de vir do tecto de OCUPAÇÃO
 		WithReadRateLimit(1e9, 1e9), WithAPIClock(aos277Clock()))
 	ts := httptest.NewServer(h)
@@ -112,14 +118,16 @@ func TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal(t *testing.T) {
 		}
 		return resp, cancelar
 	}
-	rb1, cb1 := abrirVivo("human:bob")
-	defer func() { _ = rb1.Body.Close(); cb1() }()
-	rb2, cb2 := abrirVivo("human:bob")
-	defer func() { _ = rb2.Body.Close(); cb2() }()
+	const daBob = 10 // a quota inteira de bob
+	for i := 0; i < daBob; i++ {
+		r, c := abrirVivo("human:bob")
+		defer func() { _ = r.Body.Close(); c() }()
+	}
 	rc1, cc1 := abrirVivo("human:carol")
 	defer func() { _ = rc1.Body.Close(); cc1() }()
-	if n := activos(); n != 3 {
-		t.Fatalf("com tres streams vivos devia haver 3 activos, ha %v", n)
+	const vivos = daBob + 1 // = o tecto global
+	if n := activos(); n != vivos {
+		t.Fatalf("com %d streams vivos devia haver %d activos, ha %v", vivos, vivos, n)
 	}
 
 	// DEZ recusas do tecto GLOBAL, de um leitor cuja quota está LIVRE.
@@ -140,21 +148,23 @@ func TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal(t *testing.T) {
 		cancelar()
 	}
 
-	// (1) O LUGAR GLOBAL VOLTA. Sem o rollback, dez recusas levariam a métrica a 13 e o tecto do nó
+	// (1) O LUGAR GLOBAL VOLTA. Sem o rollback, dez recusas levariam a métrica a 21 e o tecto do nó
 	// esgotar-se-ia por recusas, sem uma única ligação nova viva.
-	if n := activos(); n != 3 {
-		t.Fatalf("depois de %d RECUSAS do tecto GLOBAL ha %v streams activos, esperava 3 — cada recusa "+
+	if n := activos(); n != vivos {
+		t.Fatalf("depois de %d RECUSAS do tecto GLOBAL ha %v streams activos, esperava %d — cada recusa "+
 			"RETEVE o lugar que o `trajConns.Add(1)` tomou antes de decidir. A fuga e PERMANENTE: o "+
 			"tecto do no esgota-se por recusas, e o operador ve a metrica a subir sem ninguem a ligar. "+
-			"Falta o `h.trajConns.Add(-1)` no ramo de recusa de handleTrajectory", recusas, n)
+			"Falta o `h.trajConns.Add(-1)` no ramo de recusa de handleTrajectory", recusas, n, vivos)
 	}
 
 	// (2) O LUGAR POR-LEITOR TAMBÉM VOLTA. Liberta-se UM lugar global, e alice — que acabou de levar
 	// dez recusas — tem de ser ADMITIDA. Se o `defer libertar()` não cobrisse o ramo de recusa global,
-	// a quota dela (2) estaria gasta e ela levaria 429 do tecto DELA com o nó a ter lugar.
+	// a quota dela (10) estaria exactamente esgotada pelas dez recusas e ela levaria 429 do tecto DELA
+	// com o nó a ter lugar. É por isso que a quota iguala o número de recusas: uma a mais e a fuga
+	// disparava a guarda de cenário; uma a menos e esta asserção não a via.
 	cc1()
 	_ = rc1.Body.Close()
-	esperarActivos(t, activos, 2)
+	esperarActivos(t, activos, float64(daBob))
 
 	ctxA, pararA := context.WithCancel(context.Background())
 	defer pararA()
@@ -231,7 +241,7 @@ func TestAOS461ODEMOGRADEContornaSeRodandoOHeader(t *testing.T) {
 	})
 	for i := 0; i < distintos; i++ {
 		ctx, c := context.WithCancel(context.Background())
-		resp := abrirTrajComo(t, ts.URL, runID, fmt.Sprintf("human:sybil-%02d", i), ctx)
+		resp := abrirTrajComo(ctx, t, ts.URL, runID, fmt.Sprintf("human:sybil-%02d", i))
 		if resp.StatusCode != http.StatusOK {
 			c()
 			t.Fatalf("o %do principal rotativo levou %d — se o tecto passou a ser inforjavel nesta "+
@@ -252,7 +262,7 @@ func TestAOS461ODEMOGRADEContornaSeRodandoOHeader(t *testing.T) {
 	// recusado ao segundo. Sem ele, um tecto simplesmente DESLIGADO passaria este teste.
 	ctx, c := context.WithCancel(context.Background())
 	defer c()
-	resp := abrirTrajComo(t, ts.URL, runID, "human:sybil-00", ctx)
+	resp := abrirTrajComo(ctx, t, ts.URL, runID, "human:sybil-00")
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("o MESMO principal devia levar 429 ao segundo stream, veio %d — o tecto por-leitor esta "+
@@ -261,7 +271,7 @@ func TestAOS461ODEMOGRADEContornaSeRodandoOHeader(t *testing.T) {
 }
 
 // abrirTrajComo abre a rota de trajectória com um principal de leitor arbitrário.
-func abrirTrajComo(t *testing.T, base, runID, principal string, ctx context.Context) *http.Response {
+func abrirTrajComo(ctx context.Context, t *testing.T, base, runID, principal string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/runs/"+runID+"/trajectory", nil)
 	if err != nil {

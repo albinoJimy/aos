@@ -9,9 +9,16 @@ package main
 // separadas (cinco corridas por ordem, este teste, `global=2 / por-leitor=1`, alice presa a UM stream
 // vivo e 32 recusas dela em voo, bob a pedir sequencialmente):
 //
-//	ordem                429 pelo tecto GLOBAL   429 pelo tecto DE BOB   total negado a bob
-//	AOS-459 (antiga)     34–52                   0                       34–52  (17–26%)
-//	AOS-460 (esta)       0                       29–42                   29–42  (15–21%)
+//	ordem                429 pelo tecto GLOBAL   429 pelo tecto DE BOB
+//	AOS-459 (antiga)     34–75                   0
+//	AOS-460 (esta)       0                       29–59
+//
+// AS GAMAS SÃO DEPENDENTES DA CARGA, e a largura acima é a união de duas séries de cinco corridas no
+// MESMO contentor sob carga diferente (34–52/29–42 numa, 51–75/51–59 noutra — uma revisão adversarial
+// mediu a segunda e a primeira não reproduziu). São contagens sob contenção; ~10 pontos percentuais de
+// deslocamento entre séries é o normal, e é a razão pela qual o AOS-461 as tirou do banner de produção
+// e por que o critério do gate não depende delas. **O que reproduz 5/5 nas duas séries e nas duas
+// ordens é a FORMA: qual das duas colunas vai a zero.** É isso que este teste mede.
 //
 // O QUE ESTA CORRECÇÃO ENTREGA, E O QUE NÃO ENTREGA — e a primeira versão deste ficheiro dizia só
 // «Trocada a ordem: 0 em 200», numa tabela cujas colunas eram «bob 200 | bob 429». A leitura que isso
@@ -173,15 +180,16 @@ func TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor(t *testing.T) {
 		"%d pelo tecto DELE (residuo do tecto por-leitor a 1, ZERO a 8 e a 32 — AOS-461)",
 		negadoAoBob, tentativas, negadoPeloTectoDele)
 
-	// O CRITÉRIO. Com a ordem errada mediram-se 44–78 negados pelo GLOBAL; com a certa, 0. Uma folga
-	// pequena admite ruído de agendamento sem admitir o defeito, que é de outra ordem de grandeza.
+	// O CRITÉRIO é a FORMA, não a gama: com a ordem errada a coluna do GLOBAL é de dezenas em 200 (ver
+	// o cabeçalho para a largura medida e porque é larga); com a certa é 0. A folga de 5% admite ruído
+	// de agendamento sem admitir o defeito, que é de outra ordem de grandeza.
 	if negadoAoBob > tentativas/20 {
 		t.Fatalf("bob levou %d de %d recusas pelo tecto GLOBAL enquanto alice — PRESA ao seu tecto de "+
 			"UM stream — mandava recusas em voo.\n\n"+
 			"A REPARTICAO POR LEITOR ESTA A CORRER DEPOIS DO INCREMENTO GLOBAL: cada pedido destinado "+
 			"a recusa TOMA um lugar global antes de o devolver, e enquanto esta em voo ocupa-o. E a "+
 			"assimetria que o AOS-456a declara e cumpre («429 SEM ocupar lugar nenhum») e que o "+
-			"AOS-459 dizia replicar. Medido com a ordem errada: 54-78 de 200; com a certa: 0.\n\n"+
+			"AOS-459 dizia replicar. Com a ordem errada esta coluna e de DEZENAS em 200; com a certa, 0.\n\n"+
 			"A correccao e reservar por-leitor ANTES de `trajConns.Add(1)` em handleTrajectory.",
 			negadoAoBob, tentativas)
 	}

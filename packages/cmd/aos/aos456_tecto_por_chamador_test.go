@@ -1203,32 +1203,56 @@ func dobraDoEixo(t *testing.T, banner, inicio string) string {
 // envelhece em silêncio: a dobra nova fica de fora, a anterior volta a ir até ao fim do texto, e as
 // asserções sobre ela voltam a poder ser satisfeitas por vocabulário de outro eixo.
 //
-// Varre o banner na postura em que TODAS as dobras aparecem e exige que cada marcador que segue a
-// convenção «TECTO … (AOS-NNN):» esteja registado. NÃO apanha uma dobra com outro nome — é o limite
-// declarado em [marcadoresDeDobra], e não vale a pena finge-lo.
+// VARRE TODAS AS COMBINAÇÕES DE POSTURA, e a primeira versão varria UMA (achado MÉDIO-4 da oitava
+// revisão adversarial). Varrer uma postura basta para as duas dobras de hoje — o marcador de cada uma
+// está nos quatro ramos do seu `switch` — e é **falso para uma dobra condicional**, que é a forma do
+// ramo INERTE que já existe. Medido pela revisão: uma dobra `TECTO DE Z (AOS-465):` emitida só quando
+// `!gateComposto` tem nome conforme e **escapava** à varredura, voltando a alargar a dobra anterior em
+// silêncio.
+//
+// LIMITE QUE FICA, e é honesto: uma dobra cujo nome NÃO siga a convenção «TECTO … (AOS-NNN):» não é
+// apanhada por nenhuma destas combinações. Fechá-lo exigiria que o banner declarasse as suas próprias
+// dobras em vez de as escrever em texto livre — vale a pena quando houver uma terceira, não antes.
 func TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS(t *testing.T) {
-	lim := ingressLimits{
-		ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
-		trajMaxConns: 8, trajMaxConnsPerReader: 2,
+	// AS FORMAS DE `lim` que mudam de RAMO em alguma dobra: tectos ligados, tectos desligados, e o par
+	// inerte (`por-leitor >= global`), que é o ramo condicional do banner.
+	formas := map[string]ingressLimits{
+		"tectos ligados": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
+			trajMaxConns: 8, trajMaxConnsPerReader: 2},
+		"tectos desligados": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 0,
+			trajMaxConns: 8, trajMaxConnsPerReader: 0},
+		"par INERTE": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
+			trajMaxConns: 4, trajMaxConnsPerReader: 4},
 	}
-	banner := strings.Join(ingressPostureBanner(lim, true, true), "\n")
 	re := regexp.MustCompile(`TECTO [^:]*\(AOS-\d+\):`)
-	achados := re.FindAllString(banner, -1)
-	if len(achados) == 0 {
-		t.Fatal("nenhum marcador de dobra no banner — a varredura deixou de medir o que quer que fosse")
-	}
-	for _, a := range achados {
-		nome := strings.TrimSuffix(a, ":")
-		if !slices.Contains(marcadoresDeDobra, nome) {
-			t.Errorf("a dobra %q aparece no banner e NAO esta em marcadoresDeDobra: dobraDoEixo nao a "+
-				"consegue fechar, e a dobra anterior a esta engole-a — registe-a", nome)
+	vistos := map[string]bool{}
+	for nomeForma, lim := range formas {
+		for _, gate := range []bool{false, true} {
+			for _, verif := range []bool{false, true} {
+				banner := strings.Join(ingressPostureBanner(lim, gate, verif), "\n")
+				achados := re.FindAllString(banner, -1)
+				if len(achados) == 0 {
+					t.Fatalf("%s/gate=%v/verif=%v: nenhum marcador de dobra no banner — a varredura "+
+						"deixou de medir o que quer que fosse", nomeForma, gate, verif)
+				}
+				for _, a := range achados {
+					nome := strings.TrimSuffix(a, ":")
+					vistos[nome] = true
+					if !slices.Contains(marcadoresDeDobra, nome) {
+						t.Errorf("%s/gate=%v/verif=%v: a dobra %q aparece no banner e NAO esta em "+
+							"marcadoresDeDobra: dobraDoEixo nao a consegue fechar, e a dobra anterior "+
+							"a esta engole-a — registe-a", nomeForma, gate, verif, nome)
+					}
+				}
+			}
 		}
 	}
-	// E o inverso: um marcador registado que já não exista no banner deixa dobraDoEixo a delimitar
-	// por um texto morto, e a dobra anterior a ir longe demais outra vez.
+	// E o inverso: um marcador registado que já não apareça em NENHUMA postura deixa dobraDoEixo a
+	// delimitar por um texto morto, e a dobra anterior a ir longe demais outra vez.
 	for _, m := range marcadoresDeDobra {
-		if !strings.Contains(banner, m) {
-			t.Errorf("o marcador registado %q NAO aparece no banner — registo obsoleto", m)
+		if !vistos[m] {
+			t.Errorf("o marcador registado %q NAO aparece em nenhuma das %d posturas varridas — "+
+				"registo obsoleto", m, len(formas)*4)
 		}
 	}
 }

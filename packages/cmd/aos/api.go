@@ -1870,9 +1870,12 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// por-leitor TEM de devolver o lugar global, senão N recusas esgotam o tecto do nó». Desde o
 	// AOS-460 a repartição corre ANTES do incremento global, pelo que uma recusa por-leitor **nunca
 	// toma** o lugar global e o invariante nomeado ficou sem sujeito. O que a métrica vigia hoje é o
-	// inverso: uma recusa do tecto GLOBAL tem de devolver o lugar que já tomou — e esse rollback não
-	// tem teste nenhum (lacuna anterior ao AOS-460, declarada no AOS-461). Ver
-	// [TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal], que passa hoje por construção.
+	// inverso: uma recusa do tecto GLOBAL tem de devolver o lugar que já tomou, senão N recusas
+	// esgotam o tecto do nó sem uma única ligação viva. Essa lacuna era anterior ao AOS-460 — a
+	// mutação que remove o `trajConns.Add(-1)` passava a suite inteira — e fechou no AOS-461: ver
+	// [TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal], que a detecta 5/5. O
+	// [TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal] passa hoje por construção e mantém-se por outra
+	// razão, declarada no seu godoc.
 	g("aos_trajectory_streams_active", "Streams SSE de trajectoria VIVOS nesta replica. Comparar com AOS_TRAJECTORY_MAX_CONNS: perto do tecto, novas ligacoes levam 429. POR PROCESSO.",
 		"gauge", float64(h.trajConns.Load()), "")
 

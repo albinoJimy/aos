@@ -300,6 +300,14 @@ func TestAOS459EnvFailClosedEORRACIOENTREOSDOIS(t *testing.T) {
 		{"0", "", false, "global zero NAO desliga: seria a armadilha do AOS_INGRESS_MAX_INFLIGHT"},
 		{"-1", "", false, "global negativo"},
 		{"abc", "", false, "global ilegivel"},
+		// O FAIL-OPEN QUE ESTA TABELA NAO COBRIA (AOS-463). Todos os casos com `global` explicito punham
+		// tambem o `porLeitor` explicito, pelo que a validacao — que vivia DENTRO do ramo do por-leitor
+		// — nunca era alcancada por um par onde um dos dois vem do DEFAULT. Medido antes da correccao:
+		// ambos ARRANCAVAM com por-leitor=32 >= global, reparticao INERTE, e um leitor ocupava todos os
+		// lugares. E o DoS que o AOS-459 existe para fechar, alcancavel com UMA variavel.
+		{"4", "", false, "SO o global baixado: o por-leitor fica no default 32 >= 4 ⇒ INERTE"},
+		{"32", "", false, "SO o global, IGUAL ao default do por-leitor ⇒ INERTE"},
+		{"33", "", true, "SO o global, um acima do default do por-leitor: o menor que MORDE"},
 		{"", "0", false, "por-leitor zero"},
 		{"", "-1", false, "por-leitor negativo"},
 		{"", "2.5", false, "nao-inteiro: um tecto de ligacoes e um inteiro"},
@@ -410,8 +418,11 @@ func TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal(t *testing.T) {
 		t.Fatalf("com um stream vivo devia haver 1 activo, ha %v", n)
 	}
 
-	// DEZ recusas por-leitor. Se cada uma retivesse o lugar global, o contador subiria para 11 e o
-	// tecto do nó esgotava-se por recusas.
+	// DEZ recusas por-leitor. Desde o AOS-460 a reserva por-leitor corre ANTES do incremento global,
+	// pelo que nenhuma delas chega a TOMAR um lugar global — o contador fica em 1 por não haver nada
+	// a devolver, e não por o rollback funcionar. É a tautologia que o godoc acima declara. O sentido
+	// com sujeito — uma recusa GLOBAL devolver o lugar que já tomou — está em
+	// [TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal].
 	for i := 0; i < 10; i++ {
 		ctx, cancelar := context.WithCancel(context.Background())
 		resp := abrir(ctx)
@@ -422,8 +433,9 @@ func TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal(t *testing.T) {
 		cancelar()
 	}
 	if n := activos(); n != 1 {
-		t.Fatalf("depois de 10 RECUSAS por-leitor ha %v streams activos, esperava 1 — cada recusa RETEVE "+
-			"o lugar global que o incremento tomou, logo N recusas esgotam o tecto do no (%d). E um DoS "+
-			"que esta correccao introduziria, pior do que o defeito que fecha", n, 100)
+		t.Fatalf("depois de 10 RECUSAS por-leitor ha %v streams activos, esperava 1 — uma recusa por-leitor "+
+			"TOCOU no contador global. Ou a reserva voltou a correr DEPOIS do incremento sem devolver o "+
+			"lugar, ou o incremento passou a acontecer antes dela: em qualquer dos casos N recusas "+
+			"esgotam o tecto do no (%d) sem uma unica ligacao viva. Ver a ordem em handleTrajectory", n, 100)
 	}
 }

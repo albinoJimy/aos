@@ -2334,14 +2334,16 @@ nenhuma**.
 - [x] O caso que faltava na tabela (`verificavel SEM gate: nada esta composto`) — o gémeo do que a
   tabela do AOS-456 tem. Medido: é o **único** dos cinco casos que detecta a remoção da guarda.
 
-### MÉDIO-2 — o aviso «par INERTE» não é alcançável, e foi contado como correcção entregue
-`ingressLimitsFromEnv` aborta o arranque em todos os estados que o disparam (14 casos fixados em
-`TestAOS459EnvFailClosedEORRACIOENTREOSDOIS`), e `ingressPostureBanner` tem **um** chamador de produção
-alimentado por essa leitura. Logo o texto nunca chega a um operador.
+### MÉDIO-2 — ⚠️ **ESTA CORRECÇÃO ESTAVA ERRADA. Ver AOS-463.**
+O AOS-461 afirmou que `ingressLimitsFromEnv` aborta em todos os estados que disparam o aviso «par
+INERTE», logo o texto nunca chegaria a um operador, e **rebaixou** o aviso de protecção do operador a
+cinto-e-suspensórios.
 
-- [x] O ramo **fica** — cinto-e-suspensórios para a composição in-process, que não passa pela validação
-  da env — e passa a declarar no comentário e no godoc do teste que **não** é protecção do operador. A
-  barreira que morde é o abort.
+**Era falso, e a falsidade tapava um fail-open.** A comparação `por-leitor < global` vivia **dentro** do
+ramo `if rawTrajPer != ""`: baixar só `AOS_TRAJECTORY_MAX_CONNS` deixava o por-leitor no default 32 e
+ninguém comparava nada. `AOS_TRAJECTORY_MAX_CONNS=4` **arrancava** com a repartição INERTE, e este aviso
+era a única coisa que o dizia ao operador — precisamente enquanto o AOS-461 o declarava inalcançável.
+Corrigido no **AOS-463**, que valida o **par final**.
 
 ### MÉDIO-3 / BAIXO-1 — o rollback do tecto GLOBAL não tinha sensor nenhum
 A hipótese do defeito simétrico **não se confirma**: o `defer libertar()` é registado antes do bloco
@@ -2404,9 +2406,25 @@ instância: `WithCompletedRetention` (AOS-456a), `newReadGovernance` (AOS-456a),
 e o doc de `handleTrajectory` (AOS-459), e `WithControlRateLimit` — sequestrado pelo `WithReadRateLimit`
 do AOS-458 e reposto no AOS-461. Corrigir a instância e não a classe garante uma quinta.
 
-Uma varredura AST do pacote encontra hijacks reais fora dos já corrigidos, em ~6 ficheiros
-(`promotion_api.go`, `posture_banner.go` ×3, `sovereignty.go`, `main.go` ×3, `broker_vault_env.go`). A
-varredura ingénua produz também falsos positivos que o ticket tem de eliminar: docs de **grupo** antes
+Uma varredura AST do pacote encontra hijacks fora dos já corrigidos. **A lista abaixo não é uma
+contagem fechada** — a primeira versão deste ticket dava uma, e era parcial em dois sentidos (achado
+BAIXO-3 da oitava revisão adversarial): omitia `service.go` e classificava como hijack um caso que é
+outra coisa. Fechar a contagem à mão é o defeito que o ticket existe para eliminar.
+
+Confirmados por leitura directa:
+
+| ficheiro | símbolo que ficou sem doc | doc que lá está |
+|---|---|---|
+| `service.go:666` | **`NodeService.submit`** — *de um símbolo do AOS-456a* | o de `submit`, colado a `imputadoA` |
+| `posture_banner.go` ×3 | `taintGatePostureBanner`, `materialPrivadoDoNo`, `revogacaoNoBanner` | de outros três banners |
+| `sovereignty.go` ×2 | `recusaDeLeitura`, `autorizarComCausa` | de `authorize` e de `autorizarSemMemo` |
+| `main.go` ×3, `broker_vault_env.go` | vars de erro adjacentes | doc do erro anterior |
+
+**Caso à parte, classe diferente:** `promotion_api.go:128` tem um doc que começa por `decodeArtifact`
+sobre o método `decode` — é um **nome obsoleto no doc**, não um hijack (nenhum símbolo perdeu o seu). O
+ticket deve distinguir as duas classes em vez de as somar.
+
+A varredura ingénua produz também falsos positivos que o ticket tem de eliminar: docs de **grupo** antes
 de blocos `var`/`const` de erros, `var _ = …` de asserção de interface, e prosa PT-PT que começa por
 maiúscula (`// O …`, `// Erros …`, `// Assegura …`).
 
@@ -2426,6 +2444,85 @@ Nenhuma. AOS-461 repôs a instância de `WithControlRateLimit`.
 
 ### Estado
 **ABERTO.**
+
+---
+
+## AOS-463 — O par inerte era alcançável com UMA variável, e duas correcções seguidas juraram que não
+
+### Contexto
+`ingressLimitsFromEnv` validava `AOS_TRAJECTORY_MAX_CONNS_PER_READER < AOS_TRAJECTORY_MAX_CONNS`
+**dentro** do ramo `if rawTrajPer != ""`. Só um par **explícito** era validado. Baixar apenas o global —
+a coisa mais natural de fazer num nó pequeno — deixava o por-leitor no **default 32** e ninguém
+comparava nada.
+
+Medido (determinista, `ingressLimitsFromEnv` directamente, 3 corridas idênticas):
+
+| `AOS_TRAJECTORY_MAX_CONNS` | `..._PER_READER` | resultado | repartição |
+|---|---|---|---|
+| `4` | ausente | **ARRANCA** `global=4 por-leitor=32` | **INERTE** |
+| `32` | ausente | **ARRANCA** `global=32 por-leitor=32` | **INERTE** |
+| `33` | ausente | arranca `global=33 por-leitor=32` | activa |
+
+Com a repartição inerte, um leitor ocupa os quatro lugares globais e nega
+`GET /runs/{id}/trajectory` a todos os outros — **o DoS que o AOS-459 existe para fechar**, alcançável
+com uma variável de ambiente.
+
+### Porque nenhum dos dois tickets anteriores deu por isso
+- A tabela de 14 casos de `TestAOS459EnvFailClosedEORRACIOENTREOSDOIS` **não cobria a combinação**:
+  todos os casos com `global` explícito punham também o `porLeitor` explícito. A asserção final do teste
+  (`por-leitor >= global ⇒ Fatal`) estava certa e nunca era alcançada por um par com um default.
+- O **AOS-461 afirmou o contrário do facto** — «nenhuma configuração por ambiente alcança o par
+  inerte» — em três sítios novos (banner, godoc do teste, ticket) e **rebaixou** o aviso do banner de
+  protecção do operador a cinto-e-suspensórios. Esse aviso era a única coisa que nomeava o estado.
+- O `deploy/node/README.md` promete ao operador «`>=` global ⇒ **ABORTA**», sem dizer que a promessa só
+  valia quando ele definisse a variável.
+
+### Critérios de aceitação
+- [x] A comparação sai de dentro do ramo e valida o **par final**, depois de lidas as duas variáveis.
+- [x] O erro **nomeia a origem de cada valor** (`definida` / `default do binario`): sem isso o operador
+  que definiu uma variável lê uma recusa sobre um número que não escreveu.
+- [x] Três casos novos na tabela (`{"4",""}`, `{"32",""}`, `{"33",""}`). Medido: devolvendo a validação
+  para dentro do ramo, os **dois** primeiros avermelham e mais nenhum — não são vácuos.
+- [x] O comentário do ramo INERTE do banner passa a contar a história correcta: o AOS-460 chamou-lhe
+  correcção entregue, o AOS-461 chamou-lhe ramo morto, **as duas estavam erradas**, e hoje é o abort que
+  morde *por causa desta correcção*.
+- [x] O README do operador deixa de prometer um abort incondicional.
+
+### E os residuais da oitava revisão, no mesmo commit
+- [x] **O comentário de `aos_trajectory_streams_active` contradizia o próprio commit que o escreveu:**
+  dizia que o rollback do tecto global «não tem teste nenhum» e apontava para o teste tautológico,
+  quando o AOS-461 acabara de acrescentar `TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal`. Um leitor futuro
+  concluiria que podia removê-lo.
+- [x] **Referência godoc pendurada** introduzida pelo AOS-461: `[TestAOS460OBannerDeclaraAsTRESPosturasDoSSE]`
+  não existe. O `ref-lint` não vê referências godoc em Go — fica como limite conhecido do gate.
+- [x] **TRÊS gamas contraditórias para a mesma grandeza**, no ficheiro que o AOS-461 editou (`34–52` no
+  cabeçalho, `44–78` no comentário do critério, `54-78` na mensagem de falha). Duas séries de cinco
+  corridas no mesmo contentor sob carga diferente deram `34–52/29–42` e `51–75/51–59` — ~10 pontos
+  percentuais de deslocamento. **As gamas saíram do banner de produção** (AOS-461 pô-las lá) e ficam no
+  cabeçalho do teste, com a condição declarada. O que reproduz 5/5 nas duas séries e nas duas ordens é a
+  **forma**: qual das colunas vai a zero. É isso que o critério mede.
+- [x] **Prosa obsoleta no CORPO do teste cujo godoc o AOS-461 corrigiu** (`aos459_…:421` e `:433`),
+  80 linhas abaixo da correcção.
+- [x] **O guarda do registo de dobras varria UMA postura** e o godoc dizia que varria todas. Basta para
+  as duas dobras de hoje e é falso para uma dobra **condicional** — a forma do ramo INERTE que já
+  existe. Medido: uma dobra com nome conforme emitida só quando `!gateComposto` escapava. Passa a varrer
+  12 combinações (3 formas de `lim` × 4 posturas); verificado que apanha o caso que escapava. Limite que
+  fica, declarado: uma dobra com nome fora da convenção continua invisível.
+- [x] **O sensor do rollback acertava pelo sítio errado.** Com a quota do leitor a 2 e dez recusas, a
+  fuga por-leitor disparava a **guarda de cenário** («o cenário deixou de medir o que diz medir»), que
+  convida a corrigir o *teste*, e a asserção que o godoc diz medir era inalcançável. Com a quota a 10 e
+  dez recusas, cada mutação passa a disparar na sua própria asserção — medido 5/5 cada, com o
+  diagnóstico certo.
+- [x] `abrirTrajComo` passa o `context.Context` em primeiro, pela convenção Go.
+
+### Residual declarado
+- **Fronteira não declarada (mantida):** o sensor de «12 streams vivos com o tecto a 1» fixa
+  `global=100 / por-leitor=1`, uma composição que **nenhum nó por defeito tem** (256/32). A frase que o
+  operador lê cita um número medido sob um tecto que o seu nó não corre. O eixo gémeo do AOS-456 tem o
+  mesmo problema («60 submissões, tecto a 2»). Não é defeito; é escopo que passa a estar dito.
+
+### Estado
+**FEITO** (2026-09-29).
 
 ---
 
