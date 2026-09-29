@@ -303,13 +303,6 @@ func WithRateLimit(perSec, burst float64) APIOption {
 	}
 }
 
-// WithControlRateLimit define o token-bucket de admission do PLANO DE CONTROLO (/steer,
-// /pause, /approve): burst (capacidade) e perSec (reabastecimento). Semântica idêntica a
-// [WithRateLimit], mas sobre um bucket DEDICADO — o plano de controlo trusted tem o seu
-// próprio tecto de taxa, para que uma inundação de sinais (cada um a forçar um decode +
-// ed25519.Verify) não esgote CPU nem esfomeie o plano de dados, e vice-versa. Um burst <= 0
-// mantém o default [DefaultRateBurst]; perSec < 0 é ignorado (0 é válido: bucket sem
-// reabastecimento, útil em testes determinísticos).
 // WithReadRateLimit afina a admission de TAXA do plano de DADOS inteiro (AOS-458) — o balde que
 // o invólucro da rota consome ANTES do handler, e portanto antes de qualquer verificação
 // criptográfica. Valores <= 0 são ignorados (mantêm o default), como nas outras opções de balde.
@@ -324,6 +317,13 @@ func WithReadRateLimit(perSec, burst float64) APIOption {
 	}
 }
 
+// WithControlRateLimit define o token-bucket de admission do PLANO DE CONTROLO (/steer,
+// /pause, /approve): burst (capacidade) e perSec (reabastecimento). Semântica idêntica a
+// [WithRateLimit], mas sobre um bucket DEDICADO — o plano de controlo trusted tem o seu
+// próprio tecto de taxa, para que uma inundação de sinais (cada um a forçar um decode +
+// ed25519.Verify) não esgote CPU nem esfomeie o plano de dados, e vice-versa. Um burst <= 0
+// mantém o default [DefaultRateBurst]; perSec < 0 é ignorado (0 é válido: bucket sem
+// reabastecimento, útil em testes determinísticos).
 func WithControlRateLimit(perSec, burst float64) APIOption {
 	return func(c *apiConfig) {
 		if burst > 0 {
@@ -1864,9 +1864,15 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// é o SUBMISSOR autenticado pelo gate soberano, que é outra coisa e tem de ser decidida.
 	// STREAMS SSE VIVOS (AOS-459). Sem esta série o operador tem DOIS tectos para afinar
 	// (`AOS_TRAJECTORY_MAX_CONNS` e `..._PER_READER`) e nenhuma leitura de quantos lugares estão
-	// ocupados — afinar às cegas. E serve de sensor ao invariante que mais importa neste eixo: uma
-	// recusa por-leitor TEM de devolver o lugar global, senão N recusas esgotam o tecto do nó. Ver
-	// [TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal].
+	// ocupados — afinar às cegas.
+	//
+	// SENSOR DE QUÊ, depois do AOS-460 (corrigido pelo AOS-461): esta prosa dizia «uma recusa
+	// por-leitor TEM de devolver o lugar global, senão N recusas esgotam o tecto do nó». Desde o
+	// AOS-460 a repartição corre ANTES do incremento global, pelo que uma recusa por-leitor **nunca
+	// toma** o lugar global e o invariante nomeado ficou sem sujeito. O que a métrica vigia hoje é o
+	// inverso: uma recusa do tecto GLOBAL tem de devolver o lugar que já tomou — e esse rollback não
+	// tem teste nenhum (lacuna anterior ao AOS-460, declarada no AOS-461). Ver
+	// [TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal], que passa hoje por construção.
 	g("aos_trajectory_streams_active", "Streams SSE de trajectoria VIVOS nesta replica. Comparar com AOS_TRAJECTORY_MAX_CONNS: perto do tecto, novas ligacoes levam 429. POR PROCESSO.",
 		"gauge", float64(h.trajConns.Load()), "")
 

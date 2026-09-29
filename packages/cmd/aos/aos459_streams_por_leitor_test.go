@@ -332,9 +332,15 @@ func TestAOS459EnvFailClosedEORRACIOENTREOSDOIS(t *testing.T) {
 // TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal — o invariante do ROLLBACK, e sobreviveu à primeira
 // volta de mutações.
 //
-// A reserva por-leitor corre DEPOIS do incremento global, pelo que uma recusa dela tem de devolver o
-// lugar que o global já tomou. Se não devolver, **N recusas esgotam o tecto do nó** — um DoS que esta
-// própria correcção introduziria, e que é pior do que o defeito que ela fecha.
+// PASSA HOJE POR CONSTRUÇÃO, e a sua justificação estava obsoleta (corrigida pelo AOS-461). Dizia: «a
+// reserva por-leitor corre DEPOIS do incremento global, pelo que uma recusa dela tem de devolver o
+// lugar que o global já tomou». Desde o AOS-460 a reserva corre ANTES, pelo que uma recusa por-leitor
+// **nunca toma** o lugar global — não há rollback a fazer e não há nada a devolver. Mantém-se porque
+// fixa a ordem pelo lado do efeito observável: se alguém voltar a pôr a reserva depois do incremento
+// E se esquecer do rollback, este teste avermelha.
+//
+// O invariante com sujeito é o SIMÉTRICO, e não tinha sensor nenhum até ao AOS-461 — ver
+// [TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal].
 //
 // O sensor é a métrica REAL (`aos_trajectory_streams_active`), e não uma leitura da struct: o
 // `NewAPIHandler` devolve o mux, e a métrica é também o que o operador tem para afinar os dois tectos.

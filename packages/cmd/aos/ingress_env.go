@@ -323,16 +323,34 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	// contorna-se rodando-o. Medido: 12 streams vivos com o tecto a 1, só a rodar o header.
 	porLeitorSSE := fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): NAO COMPOSTO — AOS_TRAJECTORY_MAX_CONNS_PER_READER desligado (<=0), logo o tecto de %d stream(s) e SO global e um leitor pode ocupar todos e negar GET /runs/{id}/trajectory aos outros.", lim.trajMaxConns)
 	switch {
-	case lim.trajMaxConnsPerReader > 0 && principalVerificavel:
-		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal VERIFICADO — cada leitor ocupa no maximo %d de %d stream(s) concorrentes; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. A recusa por-leitor NAO toma lugar global nenhum (AOS-460: a reparticao corre ANTES do tecto global, medido — com a ordem inversa uma rajada de recusas de um leitor negava 27-39%% dos pedidos aos outros).", lim.trajMaxConnsPerReader, lim.trajMaxConns)
+	// A CONJUNÇÃO É EXPLÍCITA, pela mesma razão que o switch do AOS-456 acima a tem: hoje
+	// `principalDoRunEVerificavel ⇒ noTemGateSoberanoDeLeitura`, mas esta função não pode depender
+	// dessa implicação para estar certa. Sem o `gateComposto` este ramo anuncia «LIGADO sobre
+	// principal VERIFICADO … credencial FORTE» num nó onde o `admitSovereignRead` devolve principal
+	// VAZIO e NÃO há repartição nenhuma — duplamente falso, e é literalmente a forma do ALTO-1b que
+	// o AOS-456a fechou. Achado MÉDIO-1 da sétima revisão adversarial; o caso está na tabela de
+	// [TestAOS460OBannerDeclaraAsTRESPosturasDoSSE] como «verificavel SEM gate».
+	case lim.trajMaxConnsPerReader > 0 && gateComposto && principalVerificavel:
+		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal VERIFICADO — cada leitor ocupa no maximo %d de %d stream(s) concorrentes; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. A recusa por-leitor NAO toma lugar global nenhum (AOS-460: a reparticao corre ANTES do tecto global; medido com a folga global a UM lugar, a ordem inversa negava a OUTRO leitor 17-26%% dos pedidos pelo tecto global, e esta ordem 0). NAO promete que o outro leitor nao leve 429: dentro da sua quota um leitor ocupa lugares globais legitimamente, e um tecto por-leitor a 1 faz o proprio leitor colidir com o seu lugar ainda nao libertado (AOS-461: 15-21%% com o tecto a 1, ZERO a 8 e a 32).", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	case lim.trajMaxConnsPerReader > 0 && gateComposto:
 		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): LIGADO sobre principal DEMO-GRADE (%d de %d) — ATENCAO: sem credencial forte composta o leitor vem do header X-Aos-Reader, que o CHAMADOR escreve, pelo que este tecto CONTORNA-SE rodando o header (medido: 12 streams vivos com o tecto a 1). Vale contra rajada HONESTA ou cliente mal configurado; NAO vale contra abuso. Para o tornar inforjavel defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	case lim.trajMaxConnsPerReader > 0:
 		porLeitorSSE = fmt.Sprintf(" TECTO DE STREAMS SSE POR LEITOR (AOS-459): CONFIGURADO (%d) mas NAO COMPOSTO — sem gate soberano de leitura o `admitSovereignRead` devolve principal VAZIO, nao ha a quem imputar, e a reparticao degenera no tecto global de %d. Defina AOS_BOARD_REGIONS (e o WORM).", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	}
-	// INVARIANTE INERTE (AOS-460): a env recusa `por-leitor >= global`, mas a composicao in-process
-	// ([WithMaxTrajectoryConns]) nao, e um par inerte anunciado como reparticao e a forma de falha que
-	// este ciclo pagou cinco vezes. Declara-se em vez de se calar.
+	// INVARIANTE INERTE — E O QUE ESTE AVISO **NÃO** É (correcção do AOS-461).
+	//
+	// O AOS-460 declarou-o como correcção entregue («mais um aviso quando o par fica inerte»). Era
+	// falso no que importa: nenhuma configuração por ambiente o alcança. `ingressLimitsFromEnv`
+	// ABORTA o arranque em todos os estados que o disparariam (`por-leitor >= global`, zero,
+	// negativo, ilegível — catorze casos fixados em [TestAOS459EnvFailClosedEORRACIOENTREOSDOIS]), e
+	// `ingressPostureBanner` tem UM só chamador de produção, alimentado exactamente por essa leitura.
+	// Logo um operador nunca vê este texto. A barreira que morde é o abort, não o aviso.
+	//
+	// O ramo FICA, e não como correcção: é cinto-e-suspensórios para a composição in-process
+	// ([WithMaxTrajectoryConns]/[WithMaxTrajectoryConnsPerReader]), que não passa pela validação da
+	// env. Anunciar repartição sobre um par inerte é a forma de falha que este ciclo pagou cinco
+	// vezes, e um ramo morto custa menos do que a alternativa. O que não se faz é contá-lo como
+	// protecção do operador.
 	if lim.trajMaxConnsPerReader > 0 && lim.trajMaxConnsPerReader >= lim.trajMaxConns {
 		porLeitorSSE += fmt.Sprintf(" ATENCAO: o tecto por-leitor (%d) NAO e menor que o global (%d), logo o global corta primeiro e a reparticao NUNCA dispara — esta INERTE.", lim.trajMaxConnsPerReader, lim.trajMaxConns)
 	}

@@ -5,21 +5,38 @@ package main
 // # O DEFEITO QUE ISTO FECHA
 //
 // O AOS-459 pôs a reserva por-leitor DEPOIS do incremento global, com o argumento de que «o global é
-// a barreira do nó e é a mais barata». Consequência, medida por revisão adversarial na rota real:
+// a barreira do nó e é a mais barata». Consequência, na rota real, com as DUAS categorias de 429
+// separadas (cinco corridas por ordem, este teste, `global=2 / por-leitor=1`, alice presa a UM stream
+// vivo e 32 recusas dela em voo, bob a pedir sequencialmente):
 //
-//	global=2, por-leitor=1, alice presa a UM stream vivo, bob a pedir sequencialmente
+//	ordem                429 pelo tecto GLOBAL   429 pelo tecto DE BOB   total negado a bob
+//	AOS-459 (antiga)     34–52                   0                       34–52  (17–26%)
+//	AOS-460 (esta)       0                       29–42                   29–42  (15–21%)
 //
-//	                             bob 200      bob 429 pelo tecto GLOBAL
-//	sem rajada de alice          199/199/198  1/1/2
-//	32 recusas de alice em voo   142/122/146  58/78/54   <- 27–39% negados a bob
+// O QUE ESTA CORRECÇÃO ENTREGA, E O QUE NÃO ENTREGA — e a primeira versão deste ficheiro dizia só
+// «Trocada a ordem: 0 em 200», numa tabela cujas colunas eram «bob 200 | bob 429». A leitura que isso
+// convidava — bob deixa de ser negado — é falsa, e o sensor abaixo filtrava em silêncio precisamente
+// a categoria para onde o dano migra (achado ALTO-1 da sétima revisão adversarial).
 //
-// Alice, **presa ao seu tecto de um único stream**, negava a bob mais de um quarto dos pedidos — só
-// com pedidos que a repartição recusa. Cada um deles TOMAVA um lugar global antes de o devolver, e
-// enquanto estava em voo ocupava-o.
+// ENTREGA: uma recusa da repartição por-leitor **não consome lugar global**. A categoria que a ordem
+// move vai a ZERO, e isso é negação por razão ERRADA que desaparece — o nó estava cheio de pedidos
+// destinados a serem recusados.
+//
+// NÃO ENTREGA: que bob deixe de levar 429. O que sobra é bob a colidir com o SEU PRÓPRIO tecto de UM:
+// sob contenção, o pedido N+1 dele chega antes de o lugar do pedido N ser libertado. É recusa por
+// razão CERTA, confinada ao próprio principal — e é artefacto do tecto a 1. Medido no AOS-461, mesma
+// rajada, proporção sã (`por-leitor ≤ global/2`):
+//
+//	global=16 / por-leitor=8    bob 200/200, ZERO de qualquer categoria (3 corridas)
+//	global=64 / por-leitor=32   bob 200/200, ZERO de qualquer categoria (3 corridas)   <- o default é 32
+//
+// E nessa proporção as DUAS ordens dão 0: a ordem só é observável quando a folga global é de UM
+// lugar. Isso não a torna dispensável — torna-a a diferença entre um nó apertado que degrada com
+// razão e um que degrada sem razão.
 //
 // É a assimetria que o AOS-456a declara e cumpre — «exceder responde 429 SEM ocupar lugar nenhum, pelo
 // que a rajada de um chamador não tira lugares aos outros» —, que o AOS-459 dizia replicar e não
-// replicava. Trocada a ordem: 0 em 200.
+// replicava.
 //
 // # PORQUE NENHUM DOS SEIS TESTES DO AOS-459 DAVA POR ISSO
 //
@@ -121,21 +138,43 @@ func TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor(t *testing.T) {
 	}
 	t.Cleanup(func() { close(pararRajada); wgRajada.Wait() })
 
+	// AS DUAS CATEGORIAS, CONTADAS — e a primeira versão contava uma e descartava a outra em
+	// silêncio, o que é o achado ALTO-1 da sétima revisão adversarial.
+	//
+	// O critério é, e continua a ser, o 429 do tecto GLOBAL: é a ÚNICA categoria que a ordem move, e
+	// uma recusa global aqui significa «o nó está cheio de pedidos que vão ser RECUSADOS» — negação
+	// por razão errada. Mas a versão anterior filtrava a outra categoria com o comentário «bob nunca
+	// devia vê-lo», que é FALSO e mensurável: com o tecto por-leitor a 1, o pedido N+1 de bob chega
+	// antes de o lugar do pedido N ser libertado (a contenção atrasa o retorno do handler anterior),
+	// e bob colide com o SEU PRÓPRIO tecto.
+	//
+	// A diferença entre as duas é qualitativa e não deve ser aplanada: a global é uma recusa por
+	// razão ERRADA (o nó cheio de recusas alheias), a por-leitor é a repartição de bob a funcionar
+	// sobre um tecto de UM. Ambas se registam; só a primeira avermelha.
+	//
+	// ALCANCE, medido no AOS-461 (ver a tabela no ticket): o resíduo por-leitor é artefacto do tecto
+	// a 1 e desaparece por completo a 8 e a 32 — o default do binário é 32.
 	const tentativas = 200
-	negadoAoBob := 0
+	negadoAoBob, negadoPeloTectoDele := 0, 0
 	for i := 0; i < tentativas; i++ {
 		ctx, cancelar := context.WithTimeout(context.Background(), 2*time.Second)
 		code, corpo := pedirComo(ctx, "human:bob")
 		cancelar()
-		// Só conta o 429 do tecto GLOBAL. O do leitor tem outra mensagem, e bob nunca devia vê-lo
-		// (tem o seu tecto de 1 livre, porque cada pedido dele fecha antes do seguinte).
-		if code == http.StatusTooManyRequests && !strings.Contains(corpo, "deste leitor") {
+		switch {
+		case code != http.StatusTooManyRequests:
+		case strings.Contains(corpo, "deste leitor"):
+			negadoPeloTectoDele++
+		default:
 			negadoAoBob++
 		}
 	}
+	// REGISTADO SEMPRE, e não só no caminho de falha: é o número que a afirmação «0 de 200» omitia.
+	t.Logf("bob, sob rajada de recusas de alice: %d de %d negados pelo tecto GLOBAL (o criterio) e "+
+		"%d pelo tecto DELE (residuo do tecto por-leitor a 1, ZERO a 8 e a 32 — AOS-461)",
+		negadoAoBob, tentativas, negadoPeloTectoDele)
 
-	// O CRITÉRIO. Com a ordem errada mediram-se 54–78 negados; com a certa, 0. Uma folga pequena
-	// admite ruído de agendamento sem admitir o defeito, que é de outra ordem de grandeza.
+	// O CRITÉRIO. Com a ordem errada mediram-se 44–78 negados pelo GLOBAL; com a certa, 0. Uma folga
+	// pequena admite ruído de agendamento sem admitir o defeito, que é de outra ordem de grandeza.
 	if negadoAoBob > tentativas/20 {
 		t.Fatalf("bob levou %d de %d recusas pelo tecto GLOBAL enquanto alice — PRESA ao seu tecto de "+
 			"UM stream — mandava recusas em voo.\n\n"+
@@ -146,7 +185,6 @@ func TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor(t *testing.T) {
 			"A correccao e reservar por-leitor ANTES de `trajConns.Add(1)` em handleTrajectory.",
 			negadoAoBob, tentativas)
 	}
-	t.Logf("bob: %d de %d negados pelo tecto global sob rajada de recusas de alice", negadoAoBob, tentativas)
 }
 
 // TestAOS460OBannerDeclaraAsTRESPosturasDoTectoPorLeitor — o AOS-459 não declarava NENHUMA.
@@ -174,11 +212,21 @@ func TestAOS460OBannerDeclaraAsTRESPosturasDoTectoPorLeitor(t *testing.T) {
 		{"LIGADO sobre principal VERIFICADO", comTecto(), true, true,
 			[]string{"VERIFICADO", "credencial FORTE", "NAO toma lugar global"},
 			[]string{"DEMO-GRADE", "CONTORNA-SE"}},
+		// O CASO QUE FALTAVA (AOS-461, MÉDIO-1 da sétima revisão): verificável SEM gate composto.
+		// Sem o `&& gateComposto` no ramo VERIFICADO, esta combinação anuncia «LIGADO sobre principal
+		// VERIFICADO … credencial FORTE verificada» num nó onde o `admitSovereignRead` devolve
+		// principal VAZIO e NÃO há repartição nenhuma. Inalcançável hoje pelo `Bootstrap`
+		// (`principalDoRunEVerificavel ⇒ noTemGateSoberanoDeLeitura`) — está aqui porque a função não
+		// pode depender dessa implicação para estar certa, que é a razão pela qual a tabela do
+		// AOS-456 tem o caso gémeo e esta não tinha.
+		{"verificavel SEM gate: nada esta composto", comTecto(), false, true,
+			[]string{"CONFIGURADO (4)", "principal VAZIO", "degenera"},
+			[]string{"VERIFICADO", "credencial FORTE", "DEMO-GRADE"}},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
 			txt := dobraDoEixo(t, strings.Join(ingressPostureBanner(c.lim, c.gate, c.principalVerifica), "\n"),
-				"TECTO DE STREAMS SSE POR LEITOR", "\x00")
+				marcadorDobraSSE)
 			for _, ex := range c.exige {
 				if !strings.Contains(txt, ex) {
 					t.Errorf("a dobra do SSE NAO declara %q\n--- dobra ---\n%s", ex, txt)
@@ -196,6 +244,12 @@ func TestAOS460OBannerDeclaraAsTRESPosturasDoTectoPorLeitor(t *testing.T) {
 // TestAOS460OBannerDECLARAUmParINERTE — a env recusa `por-leitor >= global`, mas a composição
 // in-process não. Um par inerte anunciado como repartição é a forma de falha que este ciclo pagou
 // cinco vezes; o banner passa a dizê-lo.
+//
+// ALCANCE, corrigido pelo AOS-461: este aviso NÃO é alcançável por um operador. Todos os estados que
+// o disparam abortam o arranque em `ingressLimitsFromEnv`, e o único chamador de produção do banner
+// é alimentado por essa leitura — ver a nota no ramo correspondente de [ingressPostureBanner] e os
+// catorze casos de [TestAOS459EnvFailClosedEORRACIOENTREOSDOIS], que são a barreira que morde. Este
+// teste fixa o ramo para quem compõe in-process, e não uma protecção do operador.
 func TestAOS460OBannerDECLARAUmParINERTE(t *testing.T) {
 	inerte := ingressLimits{ratePerSec: 10, burst: 20, maxInFlight: 50,
 		trajMaxConns: 4, trajMaxConnsPerReader: 4} // IGUAIS ⇒ o global corta primeiro

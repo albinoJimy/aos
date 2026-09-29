@@ -2181,16 +2181,27 @@ Medido na rota real, `global=2`, `por-leitor=1`, alice presa a **um** stream:
 | 32 recusas de alice em voo | 142/122/146 | **58/78/54** (27–39%) |
 
 É a assimetria que o **AOS-456a declara e cumpre** — «exceder responde 429 **sem ocupar lugar
-nenhum**» — e que o AOS-459 dizia replicar. Trocada a ordem: **0 de 200**. Nenhum dos seis testes do
-AOS-459 distinguia as duas ordens, porque todos mediam **um** pedido de cada vez.
-`TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor` é o sensor que faltava: com a ordem antiga
-mede **50 de 200**, com a nova **0**.
+nenhum**» — e que o AOS-459 dizia replicar. Nenhum dos seis testes do AOS-459 distinguia as duas
+ordens, porque todos mediam **um** pedido de cada vez.
+`TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor` é o sensor que faltava.
+
+> ⚠️ **A tabela acima é incompleta, e a frase que a seguia («Trocada a ordem: 0 de 200») era uma
+> afirmação que a medição não sustenta.** Contava só a categoria de 429 que a ordem *move* e descartava
+> em silêncio a categoria para onde ela a move. Corrigido e re-medido no **AOS-461**, com as duas
+> categorias separadas; ver a tabela de lá. O que esta correcção entrega é que **uma recusa por-leitor
+> não consome lugar global** — não que o outro leitor deixe de levar 429.
 
 ### ALTO-2 — a fronteira de segurança estava declarada ao contrário
 Ver o bullet corrigido na secção do AOS-459: há **três** posturas e o ticket colapsou-as em duas,
 descrevendo a do meio (principal do header, contornável) como se fosse a primeira (principal vazio).
-O banner ganhou as três, no molde do AOS-456a, mais um aviso quando o par fica **inerte**
+O banner ganhou as três, no molde do AOS-456a, mais um ramo de aviso quando o par fica **inerte**
 (`por-leitor >= global`, que a env recusa mas a composição in-process não).
+
+> ⚠️ **O aviso «inerte» NÃO é uma protecção do operador**, e este ticket contou-o como tal. Todos os
+> estados que o disparam abortam o arranque em `ingressLimitsFromEnv`, e o banner tem um só chamador de
+> produção alimentado por essa leitura — logo nenhuma configuração por ambiente o alcança. A barreira
+> que morde é o abort. Corrigido no **AOS-461**; o ramo fica como cinto-e-suspensórios para quem compõe
+> in-process.
 
 ### E dois testes que não mediam o que prometiam
 - **A libertação DUPLA** passava incólume pelos seis testes do AOS-459 — e também pela primeira versão
@@ -2220,6 +2231,11 @@ O banner ganhou as três, no molde do AOS-456a, mais um aviso quando o par fica 
 - `TestAOS456ABannerDistingueAsTRESPosturas` procurava no banner **inteiro**, e o vocabulário passou a
   ser partilhado por dois eixos. Passou a procurar na sua própria dobra — o que também o **fortalece**.
 
+> ⚠️ **E enfraqueceu quatro asserções do OUTRO sensor no mesmo movimento.** A dobra nova usa o mesmo
+> vocabulário, e `TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL` — que asserta sobre o banner
+> inteiro — passou a ser satisfeito por ela. Medido: detecção da mutação que neutraliza a dobra AOS-456
+> passou de **5/5 para 1/5**. É regressão introduzida por este ticket, fechada no **AOS-461**.
+
 ### Residual NÃO fechado, e é enumeração parcial outra vez
 **`tectoDePendentes = 1000`** (`plan_claim.go`) é um **segundo** tecto de ocupação global, sem
 repartição por chamador, sem variável de ambiente, no mesmo plano de dados. Um submissor autenticado
@@ -2228,6 +2244,188 @@ o único; não era. Fica por abrir.
 
 ### Estado
 **FEITO** (2026-09-29).
+
+---
+
+## AOS-461 — Os residuais da sétima revisão: um sensor cego, um sensor desarmado e uma barreira que não morde
+
+### Contexto
+Uma sétima revisão adversarial correu sobre o AOS-460 **já mergeado**, com o mandato de testar a
+hipótese de que a correcção tinha introduzido o seu simétrico. Não tinha — mas encontrou **dois ALTO**,
+um deles regressão do próprio AOS-460. Todos os achados abaixo foram **reproduzidos de forma
+independente** antes de serem aceites; um deles teve o enquadramento da revisão **refutado** pela
+medição (ver ALTO-1).
+
+### ALTO-1 — a afirmação «0 de 200» não era a medida, e o sensor filtrava o que sobra
+`TestAOS460RecusasEmVOO…` contava o 429 do tecto **global** e descartava com
+`!strings.Contains(corpo, "deste leitor")` a outra categoria — exactamente a categoria para onde o dano
+migra. O comentário que o justificava («bob nunca devia vê-lo») é **falso e mensurável**.
+
+Re-medido, mesma rota, mesmo cenário (`global=2 / por-leitor=1`, alice presa a um stream, 32 recusas
+dela em voo, bob sequencial), **cinco corridas por ordem, as duas categorias separadas**:
+
+| ordem | 429 pelo tecto **GLOBAL** | 429 pelo tecto **DE BOB** | total negado a bob |
+|---|---|---|---|
+| AOS-459 (antiga) | 34–52 | 0 | 34–52 (17–26%) |
+| AOS-460 (esta) | **0** | 29–42 | 29–42 (15–21%) |
+
+**Onde a revisão acertou:** o total negado a bob move-se pouco, e a afirmação «0 de 200» convida a ler
+«bob deixa de ser negado», que é falso.
+
+**Onde a revisão errou, e a medição refuta-a:** ela apresenta o resíduo como se a rajada de alice
+continuasse a negar a bob 15–20% «da mesma ordem de grandeza» do defeito fechado. Não é o mesmo
+fenómeno, e não é propriedade do mecanismo. Medido, mesma rajada, proporção sã (`por-leitor ≤
+global/2`):
+
+| composição | bob 200 | 429-global | 429-por-leitor | corridas |
+|---|---|---|---|---|
+| `global=16 / por-leitor=8` | 200/200 | **0** | **0** | 3 |
+| `global=64 / por-leitor=32` (o **default** é 32) | 200/200 | **0** | **0** | 3 |
+
+O resíduo é **artefacto do tecto por-leitor a 1**: sob contenção, o pedido N+1 de bob chega antes de o
+lugar do N ser libertado, e bob colide com o **seu próprio** tecto. É recusa por razão **certa**,
+confinada ao próprio principal. A que desapareceu era recusa por razão **errada** — o nó cheio de
+pedidos destinados a serem recusados. Aplanar as duas numa coluna de «total 429» apaga a distinção que
+é o objecto do ticket.
+
+**E um resultado que não estava em nenhum dos dois lados:** nessa proporção sã as **duas ordens
+empatam** (ambas 0). A ordem só é observável quando a folga global é de **um** lugar. Isso não torna a
+correcção dispensável — torna-a a diferença entre um nó apertado que degrada com razão e um que degrada
+sem razão —, mas é o alcance real e não estava declarado.
+
+- [x] O sensor conta e **registra** as duas categorias; só a global avermelha, e o `t.Logf` publica o
+  resíduo em toda a corrida. O critério (global ≤ 5%) fica igual: continua a detectar a ordem antiga.
+- [x] A afirmação corrigida nos **quatro** sítios onde viajava: cabeçalho de
+  `aos460_ordem_da_admissao_test.go`, prosa de `handleTrajectory`, banner de produção
+  (`ingress_env.go`, postura VERIFICADO) e a secção do AOS-460 acima.
+
+### ALTO-2 — a dobra nova desarmou o sensor de arranque real do AOS-456a (regressão)
+`TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL` asserta `strings.Contains` sobre o banner
+**inteiro**. A dobra SSE que o AOS-460 acrescentou usa o mesmo vocabulário (`NAO COMPOSTO`,
+`DEMO-GRADE`, `LIGADO sobre principal VERIFICADO`), pelo que quatro dos cinco casos passaram a ser
+satisfeitos por ela.
+
+Medido nas duas árvores, com a dobra AOS-456 neutralizada (quatro posturas trocadas por tokens):
+
+| árvore | subtestes que **detectam** |
+|---|---|
+| `3ff4611` (AOS-460, antes desta correcção) | **1 de 5** |
+| esta | **5 de 5** |
+
+- [x] O helper devolve **a dobra do eixo**, não a saída do arranque (`arrancarMedirELerDobra456`), e
+  aborta se a dobra não existir — o que os `Contains` de tipo «NÃO pode declarar X» não viam: passavam
+  num banner vazio.
+- [x] `dobraDoEixo` deixa de receber um `fim` à mão e delimita-se por um **registo** de marcadores
+  (`marcadoresDeDobra`): acrescentar uma dobra passa a fechar automaticamente a anterior. O AOS-460
+  delimitava a sua com o sentinela `"\x00"`, o que a fazia ir até ao fim do texto e reporia a confusão
+  na dobra seguinte (BAIXO-3).
+- [x] `TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS` vigia o registo nos dois sentidos (dobra não
+  registada, marcador obsoleto). **Limite declarado:** só apanha dobras que sigam a convenção
+  «TECTO … (AOS-NNN):», que é a das duas que existem.
+
+### MÉDIO-1 — ramo sem guarda: reintrodução da forma do ALTO-1b, no ficheiro que a proíbe
+`case lim.trajMaxConnsPerReader > 0 && principalVerificavel:` — **sem `gateComposto`**, 25 linhas
+abaixo do `switch` do AOS-456 que a tem, com o comentário «a conjunção é explícita … era exactamente a
+forma do ALTO-1b». Nesse estado o banner anuncia «LIGADO sobre principal VERIFICADO … credencial FORTE
+verificada» num nó onde `admitSovereignRead` devolve principal **vazio** e **não há repartição
+nenhuma**.
+
+- [x] `&& gateComposto` acrescentado, com a razão nomeada no código.
+- [x] O caso que faltava na tabela (`verificavel SEM gate: nada esta composto`) — o gémeo do que a
+  tabela do AOS-456 tem. Medido: é o **único** dos cinco casos que detecta a remoção da guarda.
+
+### MÉDIO-2 — o aviso «par INERTE» não é alcançável, e foi contado como correcção entregue
+`ingressLimitsFromEnv` aborta o arranque em todos os estados que o disparam (14 casos fixados em
+`TestAOS459EnvFailClosedEORRACIOENTREOSDOIS`), e `ingressPostureBanner` tem **um** chamador de produção
+alimentado por essa leitura. Logo o texto nunca chega a um operador.
+
+- [x] O ramo **fica** — cinto-e-suspensórios para a composição in-process, que não passa pela validação
+  da env — e passa a declarar no comentário e no godoc do teste que **não** é protecção do operador. A
+  barreira que morde é o abort.
+
+### MÉDIO-3 / BAIXO-1 — o rollback do tecto GLOBAL não tinha sensor nenhum
+A hipótese do defeito simétrico **não se confirma**: o `defer libertar()` é registado antes do bloco
+global e cobre o seu `return`; e um pedido destinado a recusa global toma um lugar por-leitor que fica
+**confinado ao próprio principal** (medido pela revisão: 0/200 para um leitor terceiro, três corridas).
+
+Mas nenhum dos dois sentidos estava vigiado, e a lacuna é **anterior** ao AOS-460: a mutação que remove
+`h.trajConns.Add(-1)` do ramo de recusa global deixava a suite **inteira** do pacote verde, com uma
+fuga **permanente** — cada recusa retém um lugar e o tecto do nó esgota-se sem uma única ligação viva.
+
+- [x] `TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal` mede os dois sentidos num só cenário
+  (`global=3 / por-leitor=2`, o global cheio de leitores dentro da sua quota, 10 recusas globais de um
+  terceiro): a métrica `aos_trajectory_streams_active` tem de ficar em 3, e o leitor recusado tem de ser
+  **admitido** quando um lugar liberta. Medido, detecção **5/5** para cada mutação:
+
+  | mutação | detecta |
+  |---|---|
+  | remover `h.trajConns.Add(-1)` do ramo de recusa global | **5 de 5** |
+  | `defer libertar()` deixa de cobrir o ramo de recusa global | **5 de 5** |
+
+- [x] O godoc de `TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal` passa a dizer que **passa por
+  construção** desde o AOS-460, e porque se mantém (fixa a ordem pelo lado do efeito).
+- [x] O comentário de `aos_trajectory_streams_active` deixa de nomear um invariante sem sujeito.
+
+### BAIXO-5 — «12 streams vivos com o tecto a 1» viajava no banner de produção sem sensor
+A afirmação estava no commit, no ticket, no comentário do código **e no banner** que um operador lê. O
+eixo AOS-456 tem a gémea («60 submissões rotativas») fixada no arranque real; este não tinha nada.
+
+- [x] `TestAOS461ODEMOGRADEContornaSeRodandoOHeader` mede-a na rota: 12 principais distintos, 12
+  streams vivos com o tecto a 1 — **e o controlo** que a torna um sensor: o **mesmo** principal leva
+  429 ao segundo. Sem o controlo, um tecto simplesmente desligado passaria.
+
+### Residuais NÃO fechados
+- **Godoc sequestrados, a classe.** `WithControlRateLimit` ficou **sem documentação nenhuma** —
+  sequestrado pelo `WithReadRateLimit` do AOS-458, o commit imediatamente anterior, no mesmo ficheiro.
+  Reposto aqui (**quarta** ocorrência na sessão). Uma varredura AST encontra ~8 hijacks reais noutros
+  6 ficheiros do pacote; um sensor mecânico para a classe é **AOS-462**, por abrir — corrigir a
+  instância e não a classe garante uma quinta vez.
+- **`tectoDePendentes = 1000`** (`plan_claim.go`) continua sem repartição por chamador nem variável de
+  ambiente. Herdado do AOS-460, por abrir.
+- **Enumeração de tectos.** `maxInFlight=512` tem repartição **não composta por omissão**, e o
+  `http.Server` de produção não tem `LimitListener` nem `MaxHeaderBytes` — **não há tecto de ligações
+  aceites**, que é o tecto por baixo de todos os outros. Por abrir.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-462 — Godoc SEQUESTRADO: um sensor para a classe, não para a instância
+
+### Contexto
+Em Go, um bloco de comentário imediatamente antes de uma declaração (sem linha em branco) **é** o godoc
+dessa declaração. Inserir uma função entre um comentário e o símbolo que ele documenta transfere o doc
+para o símbolo errado e deixa o original **sem documentação nenhuma** — e `gofmt`, `go vet` e
+`staticcheck` não dizem nada, porque nada está sintacticamente errado.
+
+Aconteceu **quatro vezes na mesma sessão** em `packages/cmd/aos`, sempre igual e sempre corrigido só na
+instância: `WithCompletedRetention` (AOS-456a), `newReadGovernance` (AOS-456a), `WithMaxTrajectoryConns`
+e o doc de `handleTrajectory` (AOS-459), e `WithControlRateLimit` — sequestrado pelo `WithReadRateLimit`
+do AOS-458 e reposto no AOS-461. Corrigir a instância e não a classe garante uma quinta.
+
+Uma varredura AST do pacote encontra hijacks reais fora dos já corrigidos, em ~6 ficheiros
+(`promotion_api.go`, `posture_banner.go` ×3, `sovereignty.go`, `main.go` ×3, `broker_vault_env.go`). A
+varredura ingénua produz também falsos positivos que o ticket tem de eliminar: docs de **grupo** antes
+de blocos `var`/`const` de erros, `var _ = …` de asserção de interface, e prosa PT-PT que começa por
+maiúscula (`// O …`, `// Erros …`, `// Assegura …`).
+
+### Critérios de aceitação
+- [ ] Um sensor mecânico que falha quando a primeira palavra de um godoc é um **identificador declarado
+  no pacote** diferente do símbolo que documenta. Discriminar por «existe como símbolo» é o que separa
+  o hijack real da prosa; a heurística de maiúscula **não** basta (medido: 15 achados, ~7 falsos).
+- [ ] Decidido e justificado **onde vive**: teste Go no pacote (corre em `ci-test`, sem tocar em
+  `scripts/ci/`) ou gate próprio com baseline. Preferir o primeiro se cobrir o alcance necessário — o
+  `AGENTS.md` avisa que `scripts/ci/` é território de sessões concorrentes.
+- [ ] Os hijacks pré-existentes **corrigidos**, não baselinados, ou cada excepção com dono e razão.
+- [ ] O sensor prova-se com uma mutação: inserir uma função entre um comentário e o seu símbolo tem de
+  avermelhar.
+
+### Dependências
+Nenhuma. AOS-461 repôs a instância de `WithControlRateLimit`.
+
+### Estado
+**ABERTO.**
 
 ---
 
