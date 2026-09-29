@@ -152,6 +152,32 @@ Se o 456b se fizer, a mitigação para o seu residual **não vive no nó**: limi
 pré-autenticação por IP é trabalho do `edge` (nginx), que já termina TLS e já está no caminho. Vale
 decidir isso antes de escrever código no nó — pode tornar o 456b desnecessário.
 
+## 6-bis. DECISÃO TOMADA (2026-09-28), e o que o desenho não tinha visto
+
+Este documento pediu que a escolha fosse feita antes de código. Foi, e ficou assim:
+
+- **AOS-456a (concorrência) — FEITO** e mergeado, depois de três revisões adversariais.
+- **AOS-456b (taxa) — FECHADO como DECIDIDO-E-NÃO-FEITO.**
+
+**O que este desenho não tinha visto, e inverte a sua §6.** O desenho leu o rácio
+`recusar : verificar` como *o custo de atribuir taxa*. É também, e sobretudo, *o preço de admissão de
+um vector novo*: hoje o `bucket.allow()` corre na primeira linha do `handleSubmit` e a primeira
+`ed25519.Verify` ~150 linhas depois, pelo que **o balde limita quantas verificações um chamador não
+autenticado pode forçar**. E vale para as DUAS portas que verificam: o `POST /runs/{id}/resume` é
+classificado `planoControlo` e passa pelo `ctrlBucket` dedicado antes do handler (a barreira está no
+registo da rota, não no corpo — a primeira versão desta nota dava-a como ausente). Tecto agregado:
+128/s, ou ~0,67% de um core. A reordenação que o 456b exige
+**remove esse limitador**, e o «orçamento de verificação» da Opção A existiria para fechar um buraco
+que a própria mudança abriu.
+
+Medido de novo no contentor da decisão (e não reciclando os números desta análise): verificar 52,7 µs,
+recusar 30,2 ns, rácio **1742x**. E a justiça por-origem que o 456b queria **já existia no `edge`**:
+`deploy/server/nginx.conf`, `limit_req_zone $binary_remote_addr rate=16r/s` com burst 32, em
+produção — este desenho recomendou olhar para lá e não o fez.
+
+A razão completa, a fronteira não-coberta (taxa por-**principal**) e o gate que prende a ordem estão
+no ticket: `specs/EPIC-20_Prontidao_Agentica_Remediacao.md`, secção AOS-456b.
+
 ## 7. O que este desenho NÃO faz
 
 - **Não decide.** Nenhuma destas opções está aprovada. O 456a é o que recomendo; a escolha é do dono.

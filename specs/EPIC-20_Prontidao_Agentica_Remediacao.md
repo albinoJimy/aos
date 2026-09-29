@@ -1803,11 +1803,87 @@ O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO
 - [x] O teste do critério **não** passa com um balde que nunca reabastece: não há balde nenhum neste
       eixo. É um tecto de ocupação, e o que o torna não-vacuoso são as mutações acima.
 
-### Critérios de Aceitação — AOS-456b (TAXA), por fazer
-- [ ] Prova negativa de que o tráfego **não-atribuível** continua com tecto.
-- [ ] O custo de verificação criptográfica tem tecto **antes** de a identidade ser resolvida.
-- [ ] Decidido, **antes** de escrever código, se a mitigação pertence ao nó ou ao `edge` (o desenho
-      argumenta que pertence ao `edge`, e que este eixo pode ser desnecessário).
+### AOS-456b (TAXA) — ⛔ DECIDIDO: **NÃO SE FAZ NO NÓ** (2026-09-28)
+
+O primeiro critério deste eixo era uma **decisão**, não código: «decidido, antes de escrever código,
+se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo. A razão é medida.
+
+- [x] **Decidido.** A justiça em taxa por-origem pertence ao `edge` — e **já lá está, em produção**:
+      `deploy/server/nginx.conf` declara `limit_req_zone $binary_remote_addr rate=16r/s` com
+      `burst=32`, contra os 64/s + burst 128 globais do nó. O comentário ao lado já declara o alcance
+      («uma origem sozinha deixa de poder esgotar o orçamento de todas; quatro em simultâneo ainda
+      podem — NÃO fecha um flood distribuído»). Não havia nada a construir: havia a verificar se
+      estava lá, e estava.
+
+- [x] **O custo de verificação já tem tecto — é o próprio balde, e o 456b removia-o.** Este é o
+      achado que fecha o eixo, e inverte a leitura do desenho.
+
+      As **duas** portas que verificam credenciais põem um balde à frente — e é «as duas» de
+      propósito, pela doutrina que o próprio 456a aplicou à reserva de `run_id` («uma barreira que só
+      metade das portas respeita não é uma barreira»):
+
+      | porta | barreira | onde está |
+      |---|---|---|
+      | `POST /runs` | `h.bucket.allow()` na **primeira** linha; a 1.ª `ed25519.Verify` ~150 linhas depois | no handler |
+      | `POST /runs/{id}/resume` | `admitControl` (o `ctrlBucket` **dedicado**) antes de o handler correr | no **registo** da rota (`planos.go`, `planoControlo`) |
+
+      A segunda quase me escapou: a barreira está no **registo** da rota e não no corpo do handler,
+      pelo que ler `handleResume` não a mostra — a primeira versão desta análise dava-a como ausente.
+      São dois baldes **independentes**, logo o tecto agregado do vector é `128/s`, não `64/s`.
+      Medido em `BenchmarkAOS456BCustoDaVerificacao` (neste contentor, e **não** reciclando o número
+      do desenho):
+
+      | operação | custo |
+      |---|---|
+      | `ed25519.Verify`, assinatura **válida** | 53,6 µs |
+      | `ed25519.Verify`, assinatura **inválida** | 52,7 µs |
+      | recusar no balde, **sem** verificar | 30,2 ns |
+      | **rácio** | **1742x** |
+
+      Tecto actual do vector: `128/s × 52,7 µs` ≈ **6,7 ms/s de CPU = 0,67% de um core** (as duas
+      portas somadas). O custo é
+      idêntico para assinatura válida e inválida porque `ed25519.Verify` é de tempo constante — um
+      atacante não precisa de credenciais válidas, qualquer lixo bem-formado serve.
+
+      **O 456b exige inverter esta ordem** (a identidade tem de ser resolvida antes de o balde
+      decidir, ou não há a quem atribuir taxa). Isso **remove o limitador**, e o «orçamento de
+      verificação» que o desenho propunha existiria para fechar um buraco que a própria mudança
+      abriu. O desenho leu o rácio como *o custo de atribuir*; é também *o preço de admissão do
+      vector*.
+
+- [x] **Prova negativa, e é um gate.** `TestAOS456BOBaldeCorreANTESDaVerificacaoCriptografica`
+      (`packages/cmd/aos/aos456b_ordem_do_balde_test.go`) prende a ordem pela métrica **real**
+      (`aos_ingress_credential_denials_total`, em `/metrics`, que só sobe quando uma credencial é
+      efectivamente verificada e recusada): com o balde a 1 token e o relógio parado, o 1.º pedido
+      com credencial inválida dá **403** e o contador **sobe**; o 2.º dá **429** e o contador **não
+      sobe**. Verificado por mutação: mover o `bucket.allow()` para depois do gate soberano — que é
+      literalmente o que o 456b pedia — **avermelha** o gate, com a razão na mensagem de falha.
+
+      E um segundo caso, `TestAOS456BAAdmissaoDeCONTROLOPrecedeARotaDeRetoma`, cobre a **outra**
+      porta: com o `ctrlBucket` a 1 token, o 1.º `POST /runs/{id}/resume` corre a rota (qualquer erro
+      menos 429) e o 2.º leva **429** sem a rota correr. Sensor pelo **código**, e não pelo contador,
+      de propósito: não obriga o teste a compor um run realmente suspenso, o que mediria outra coisa.
+      Mutação: reclassificar a rota de `planoControlo` para `planoDados` ⇒ **vermelho**.
+
+### O que fica NÃO COBERTO, e é a fronteira honesta deste fecho
+O `edge` limita por **IP**, não por **principal**. Consequências, declaradas em vez de resolvidas:
+
+- Dois chamadores atrás do **mesmo NAT** partilham a quota de 16 r/s.
+- Um chamador com **muitos IPs** obtém 16 r/s por cada um.
+- Um **flood distribuído** não é fechado por nenhuma das camadas (o próprio `nginx.conf` di-lo).
+
+Fechar isto no nó exige a inversão, e a inversão custa o vector acima. **Se um dia a justiça em taxa
+por-principal for necessária, o caminho não é o 456b como desenhado:** é uma zona por-principal no
+`edge` (derivada do JWT/header quando existe, com fallback por IP), que atribui **sem** o nó ter de
+verificar antes de admitir. Isso é trabalho de `deploy/`, não de `packages/`, e abre-se como ticket
+próprio quando houver necessidade medida — não por simetria com o 456a.
+
+### Estado (AOS-456b)
+**FECHADO — DECIDIDO E NÃO FEITO.** Não é um deferimento por falta de tempo: é uma decisão de
+arquitectura com a medição que a sustenta e um gate que a protege. O eixo da **concorrência**
+(AOS-456a) está feito e mergeado; o da **taxa por-origem** vive no `edge` e está em produção; o da
+**taxa por-principal** fica declarado como não-coberto, com o caminho nomeado caso venha a ser
+preciso.
 
 ### Disciplina desta entrega, e onde ela falhou
 **Catorze mutações injectadas no código real, uma a uma.** As dez primeiras (o mecanismo, a
@@ -1898,7 +1974,8 @@ configuração do próprio teste.
   é confiado por configuração), declarada aqui porque não estava.
 
 ### Estado
-**AOS-456a FEITO** (2026-09-28), depois de DUAS revisões adversariais independentes. A primeira
+**AOS-456a FEITO** (2026-09-28), depois de DUAS revisões adversariais independentes. **AOS-456b
+FECHADO como DECIDIDO-E-NÃO-FEITO** no mesmo dia — ver a secção própria acima. A primeira
 encontrou 3 ALTO e 3 MÉDIO — dois contra afirmações que este ticket declarava provadas. A segunda
 encontrou **2 ALTO, 3 MÉDIO e 9 BAIXO**: a correcção do ALTO-1 estava **incompleta pela mesma razão**
 (predicado a descrever uma garantia que o código não dava), o teste escrito para a provar compunha o
