@@ -48,7 +48,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -518,6 +521,41 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	if h.node == nil || h.node.EventStore == nil {
 		writeError(w, http.StatusServiceUnavailable, "indisponivel")
 		return
+	}
+
+	// (2-ter) QUOTA DE PLANEAMENTO (AOS-466). O `aos-orq` decompõe cada pedido com o modelo ANTES de
+	// submeter os runs-filho, e esse gasto é pago e irreversível. Com a quota por principal composta,
+	// o pedido reserva a quantia de planeamento contra a quota de quem o submete; o desfecho de cada
+	// geração liquida-a pelo consumo que o drenador mediu (`handlePlanOutcome`).
+	//
+	// A ÚLTIMA COISA ANTES DO `Append`: depois dos tectos da fila e do selo do objectivo, para que
+	// nenhuma recusa deles prenda quota até ao fim do mês; antes do `Append`, porque um pedido que
+	// entra na fila sem reserva seria planeado de graça. O custo inverso declara-se — um `Append` que
+	// falhe depois de reservar deixa a reserva presa até ao fim do mês, a mais e nunca a menos.
+	//
+	// SÓ SOBRE PRINCIPAL VERIFICADO, e aqui é asserção: o `Bootstrap` não compõe a quota sem
+	// credencial forte ([ErrPrincipalQuotaUnverified]). Se o invariante se partir, recusa-se em vez
+	// de reservar contra um principal que o chamador escreveu — seria gastar a quota de outro.
+	if h.node.QuotaPorPrincipal != nil {
+		if h.readGov == nil || h.readGov.cred == nil {
+			h.logf("plan-ingress: RECUSADO — quota por principal composta sem credencial forte no gate (invariante do AOS-457 partido)")
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
+		if qerr := h.node.QuotaPorPrincipal.reservarPlaneamento(r.Context(), p.Principal, req.RunID); qerr != nil {
+			// Os números vão para o log do operador e não para o corpo, como no `POST /runs`.
+			var qe *quotaEsgotadaError
+			if errors.As(qerr, &qe) {
+				h.logf("plan-ingress: RECUSADO pela quota por principal run=%q: %v", req.RunID, qerr)
+				w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(qe.faltam.Seconds())), 10))
+				writeError(w, http.StatusTooManyRequests, "quota mensal de despesa do principal esgotada")
+				return
+			}
+			// FAIL-CLOSED: uma quota que não se consegue ler não admite planeamento às cegas.
+			h.logf("plan-ingress: quota por principal nao verificavel run=%q: %v", req.RunID, qerr)
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
 	}
 
 	// (3) O FACTO. A idempotency-key é (fila, pedido-deste-run): um segundo pedido para o mesmo

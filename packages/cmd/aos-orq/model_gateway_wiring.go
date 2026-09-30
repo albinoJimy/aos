@@ -162,6 +162,8 @@ type gatewayDecomposeModel struct {
 	region    string
 	board     string
 	principal string
+	// medidor conta o `usage` de cada chamada (AOS-466). nil fora do `consume`.
+	medidor *medidorDoPlaneamento
 }
 
 // Complete satisfaz [decompose.Model]: invoca o gateway com o prompt system+user e devolve
@@ -184,6 +186,9 @@ func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string
 		StepID:    stepID,
 		// Sem Tools: o decompositor quer texto JSON, não tool_calls.
 	})
+	// Conta-se ANTES de decidir o que fazer com a resposta: uma chamada que o modelo cobrou conta,
+	// quer o texto sirva quer não. Com erro não há `usage` em que confiar — NÃO MEDIDA.
+	m.medidor.registar(resp.Usage, err)
 	if err != nil {
 		// Deny do authn (falta model:invoke / token inválido) ou falha do gateway propaga
 		// fail-closed: o planeador não avança com um plano fantasma.
@@ -259,5 +264,6 @@ func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier au
 	if err != nil {
 		return nil, fmt.Errorf("compor o Model Gateway: %w", err)
 	}
-	return gatewayDecomposeModel{gw: gw, model: cfg.model, region: cfg.region, board: cfg.board, principal: principal}, nil
+	return gatewayDecomposeModel{gw: gw, model: cfg.model, region: cfg.region, board: cfg.board, principal: principal,
+		medidor: medidorDe(ctx)}, nil
 }

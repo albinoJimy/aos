@@ -162,6 +162,9 @@ type estadoDePedido struct {
 	resposta respostaDeEstadoDoPlano
 	titular  string
 	regiao   string
+	// reclamadas são as gerações que o nó entregou a um drenador (AOS-466): a liquidação final da
+	// quota de planeamento confere que cada uma tem parcela.
+	reclamadas []int
 }
 
 // estadoDoPedido projecta o estado de UM pedido a partir do log.
@@ -206,6 +209,7 @@ func estadoDoPedido(ctx context.Context, store EventStorePort, runID string, ago
 			if t, err := time.Parse(time.RFC3339Nano, ev.Ts); err == nil {
 				reclamadoEm[ger] = t
 			}
+			e.reclamadas = append(e.reclamadas, ger)
 			if ger > maiorGer {
 				maiorGer = ger
 			}

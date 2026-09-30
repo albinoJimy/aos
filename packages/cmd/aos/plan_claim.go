@@ -467,6 +467,19 @@ type pedidoDeDesfecho struct {
 	Classe      string `json:"classe"`
 	CodigoSaida int    `json:"codigo_saida,omitempty"`
 	Detalhe     string `json:"detalhe,omitempty"`
+	// Consumo é o que o planeamento desta geração gastou no modelo, medido pelo drenador (AOS-466).
+	// Ausente — um `aos-orq` anterior — vale como NÃO MEDIDO, e a reserva de planeamento não se
+	// liberta.
+	Consumo *consumoReportado `json:"consumo,omitempty"`
+}
+
+// consumoReportado é o consumo de planeamento de uma geração, como o drenador o declara. Os
+// `..._medidos` a falso dizem «não se sabe», que não é o mesmo que zero.
+type consumoReportado struct {
+	Tokens        int64 `json:"tokens"`
+	TokensMedidos bool  `json:"tokens_medidos"`
+	CostMicroUSD  int64 `json:"cost_micro_usd"`
+	CustoMedido   bool  `json:"custo_medido"`
 }
 
 // handlePlanOutcome regista o desfecho de UMA tentativa.
@@ -532,6 +545,23 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "run_id invalido")
 		return
 	}
+	if c := req.Consumo; c != nil && (c.Tokens < 0 || c.CostMicroUSD < 0) {
+		writeError(w, http.StatusBadRequest, "consumo invalido")
+		return
+	}
+
+	// QUOTA DE PLANEAMENTO (AOS-466): a parcela desta geração ANTES do desfecho. Se a parcela não se
+	// grava, o desfecho também não — e o drenador vê o 503. Na ordem inversa, um desfecho gravado
+	// sem parcela deixava uma geração que gastou fora da quota; nesta, o pior é a reclamação
+	// expirar e a geração seguinte correr, e a liquidação final vê a geração sem parcela e não
+	// liberta a reserva.
+	if h.node.QuotaPorPrincipal != nil {
+		if err := h.liquidarPlaneamento(r.Context(), req); err != nil {
+			h.logf("plan-claim: parcela de planeamento nao gravada run=%q geracao=%d: %v", req.RunID, req.Geracao, err)
+			writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
+			return
+		}
+	}
 
 	bruto, err := json.Marshal(desfechoPayload{
 		Versao:   planRequestVersao,
@@ -559,6 +589,29 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// liquidarPlaneamento grava a parcela de planeamento de uma geração contra a quota de quem
+// SUBMETEU o pedido — o principal do `planrequest.submitted`, nunca o do drenador que reporta.
+// Um pedido que o nó não conhece não reservou nada e não liquida nada; um sem titular também não
+// (o `registarPlaneamento` ignora o principal vazio).
+func (h *apiHandler) liquidarPlaneamento(ctx context.Context, req pedidoDeDesfecho) error {
+	estado, achado, err := estadoDoPedido(ctx, h.node.EventStore, req.RunID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !achado {
+		return nil
+	}
+	var c consumoDoPlaneamento
+	if req.Consumo != nil {
+		c = consumoDoPlaneamento{
+			Tokens: req.Consumo.Tokens, TokensMedidos: req.Consumo.TokensMedidos,
+			CostMicroUSD: req.Consumo.CostMicroUSD, CustoMedido: req.Consumo.CustoMedido,
+		}
+	}
+	return h.node.QuotaPorPrincipal.registarPlaneamento(ctx, estado.titular, req.RunID, req.Geracao, c,
+		req.Classe == DesfechoTerminal, estado.reclamadas)
 }
 
 // truncar limita o detalhe livre que o consumidor envia. O detalhe é diagnóstico, não contrato.

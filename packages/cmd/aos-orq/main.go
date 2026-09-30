@@ -266,7 +266,11 @@ func codigoDe(err error) int {
 // vive em substrato.go. O `inspect` abre para LEITURA (nunca pede posse); o `serve` abre
 // para ESCRITA, e é aí que a posse do ficheiro é (ou não) tomada.
 
-func cmdServe(args []string) error {
+func cmdServe(args []string) error { return cmdServeCom(args, nil) }
+
+// cmdServeCom é o `serve` com o medidor do consumo do modelo de planeamento (AOS-466), que o
+// `consume` passa para declarar ao nó o que a geração gastou. nil ⇒ não se mede (o `serve` manual).
+func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var sub substrato
 	sub.registarFlags(fs)
@@ -340,7 +344,7 @@ func cmdServe(args []string) error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx := comMedidor(context.Background(), medidor)
 	// AOS-441: com o executor de nós composto, o snapshot confere-se com o catálogo de tools do
 	// nó ANTES da posse — é pelos nomes dele que os runs dos nós vão pedir as tools. Um snapshot
 	// que diverge recusa aqui, com a divergência nomeada, sem reclamar o lease.

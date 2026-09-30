@@ -149,6 +149,9 @@ func bannerDoOrcamentoDoPlano(tecto budget.Amount) string {
 			"`aos` e debita o orcamento DELE. O travao de custo real e o AOS_BUDGET_MAX_TOKENS do NO, "+
 			"que reserva antes do turno e salda pelo consumo MEDIDO — e que e outra configuracao, "+
 			"noutro processo. Ajustar este tecto nao protege do custo do modelo. "+
+			"O consumo REAL do modelo de planeamento e medido (usage de cada chamada) e declarado ao no "+
+			"no desfecho de cada pedido do `consume`, que o conta na quota por principal (AOS-466) — "+
+			"fora desta arvore, e so quando a quota esta composta no no. "+
 			"Configuravel por AOS_ORQ_PLAN_BUDGET_MAX_TOKENS / AOS_ORQ_PLAN_BUDGET_MAX_COST_MICRO_USD.",
 		tecto.Tokens, tecto.CostMicroUSD, omissao)
 }
