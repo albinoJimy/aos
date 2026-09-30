@@ -7,11 +7,11 @@ package main
 // deste ticket o `aos-orq` não media nada: o [gatewayDecomposeModel] deitava fora o `usage` da
 // resposta, e o tecto `AOS_ORQ_PLAN_BUDGET_*` (AOS-434) soma estimativas declaradas.
 //
-// O QUE SE MEDE: `prompt_tokens + completion_tokens` de cada chamada ao modelo. Uma chamada que
-// falha, ou uma resposta sem `usage` (`prompt_tokens <= 0` — nenhum pedido real ao modelo tem um
-// prompt vazio), torna os tokens NÃO MEDIDOS: o nó não liberta a reserva sobre um consumo que não se
-// conhece. Os dólares NUNCA se medem aqui — a tabela de preços vive no nó —, excepto no caso exacto
-// de nenhuma chamada: zero chamadas custam zero.
+// O QUE SE MEDE: `prompt_tokens + completion_tokens` de cada chamada ao modelo (ou o `total_tokens`,
+// se for maior). Uma chamada que falha, ou uma resposta sem `usage` (`prompt_tokens <= 0` — nenhum
+// pedido real ao modelo tem um prompt vazio), torna os tokens NÃO MEDIDOS: o nó cobra por essa
+// geração o que se mediu mais a reserva. Os dólares NUNCA se medem aqui — a tabela de preços vive
+// no nó —, excepto no caso exacto de nenhuma chamada: zero chamadas custam zero.
 
 import (
 	"context"
@@ -51,7 +51,9 @@ func (m *medidorDoPlaneamento) registar(u port.Usage, err error) {
 		m.naoMedidas++
 		return
 	}
-	m.tokens += u.PromptTokens + u.CompletionTokens
+	// O `total_tokens` do provider, quando é maior do que a soma, é o que se cobra: uma resposta
+	// com `prompt_tokens` e sem `completion_tokens` não passa a custar só o prompt.
+	m.tokens += max(u.TotalTokens, u.PromptTokens+u.CompletionTokens)
 }
 
 // consumo é o que se declara ao nó. Um medidor nil não viu as chamadas, e por isso não sabe:

@@ -3185,21 +3185,21 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
   pedido já reservado no mês corrente ou no anterior não reserva de novo.
 - **Nó — liquidação por geração.** `plan_claim.go` `handlePlanOutcome` aceita um campo opcional
   `consumo {tokens, tokens_medidos, cost_micro_usd, custo_medido}` e grava uma **parcela** por geração
-  (`budget.quota.settled` com `geracao`, `final`, e o vínculo à reserva num campo próprio — uma réplica
-  antiga não o reconhece e continua a contar a reserva inteira, que é o lado seguro). O principal é o do
-  `planrequest.submitted` (`estadoDoPedido`), não o do drenador. **A parcela grava-se antes do
-  desfecho**: se falha, o desfecho também não se grava (503), e nunca fica uma geração contada no
-  pedido e ausente da quota. Consumo negativo é 400.
-- **Dobra.** Para uma chave de plano com parcelas, o gasto é `max(reserva, Σ parcelas)` enquanto o
-  pedido não é terminal; no terminal, `Σ parcelas` por dimensão **se todas as gerações foram medidas**,
-  senão `max(reserva, Σ)`. Campo `consumo` ausente (um `aos-orq` anterior) = não medido. Uma geração
-  que o nó ENTREGOU (reclamada) e cuja parcela não existe quando chega o terminal — o desfecho perdeu-se
-  e a reclamação expirou — torna o terminal não medido: pode ter gastado.
+  (`budget.quota.settled` com `geracao` e o vínculo à reserva num campo próprio — uma réplica antiga
+  não o reconhece e continua a contar a reserva inteira). O principal é o do `planrequest.submitted`
+  (`estadoDoPedido`), não o do drenador. **A parcela grava-se antes do desfecho**: se falha, o desfecho
+  também não se grava (503). **O fecho** (`budget.quota.settled` com `final` e `ate_geracao`, a maior
+  geração que o nó entregou) grava-se **só depois** de o desfecho terminal estar no log; se falha, 204 e
+  a reserva fica inteira. Consumo negativo é 400.
+- **Dobra.** Sobre as gerações 1..G (G = a maior de uma parcela ou do fecho): cada geração medida custa
+  o que se mediu; uma **não medida** custa o que se mediu **mais a reserva**; uma **sem parcela**
+  (entregue, desfecho perdido) custa **a reserva**. Sem fecho o pedido custa `max(reserva, Σ)`; com fecho,
+  `Σ`. Campo `consumo` ausente (um `aos-orq` anterior) = não medido.
 - **`aos-orq` — medição.** Um `medidorDoPlaneamento` por pedido, atravessado de `correrPedido` até ao
   `gatewayDecomposeModel`, soma `prompt_tokens + completion_tokens` do `usage` de cada chamada. Uma
   chamada que falha, ou uma resposta sem `usage` (`prompt_tokens <= 0`), marca os tokens como **não
   medidos**. O custo em dólares **nunca** é medido pelo `aos-orq` — a tabela de preços vive no nó —,
-  pelo que a dimensão em dólares fica sempre à reserva.
+  pelo que cada geração que chamou o modelo custa a reserva em dólares.
 
 ### Critérios de aceitação
 1. Com a quota composta e sem `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS`, o nó não arranca; com ela inválida,
@@ -3218,8 +3218,15 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
   travão do gasto por geração continua a ser o modelo e o `AOS_ORQ_PLAN_BUDGET_*` (estimativas).
 - **Re-planeamento sem tecto** — cada geração transitória planeia de novo, sem limite: AOS-467.
 - **O consumo é declarado pelo drenador.** Autenticado e em lista fechada (`AOS_PLAN_DRAINERS`, AOS-439),
-  mas o nó não o consegue verificar: um drenador comprometido pode declarar zero.
-- **Dólares nunca medidos no planeamento** — ficam sempre pela reserva.
+  mas o nó não o consegue verificar: um drenador comprometido pode declarar zero — ou um valor enorme,
+  que esgota o mês do titular (não há tecto superior ao consumo declarado).
+- **Dólares nunca medidos no planeamento** — cada geração que chamou o modelo custa a reserva em
+  dólares, mesmo que tenha custado mais.
+- **Depois de um `/dsar/erase` do titular**, o planeamento dos seus pedidos em curso deixa de contar (a
+  reserva apagou-se e as parcelas seguintes não a encontram). Nos runs a mesma falta tem o tecto por-run
+  como limite; aqui só o AOS-467 lho dará.
+- **Deploy rolante:** uma réplica anterior do nó conta cada pedido pela reserva, mesmo quando as parcelas
+  já passaram dela — pode admitir acima da quota enquanto convive com as novas.
 - **A reserva pertence ao mês do pedido.** O planeamento de um pedido que se arraste para lá do mês
   seguinte ao do pedido não encontra reserva e não conta (a mesma regra dos runs).
 - **Reservas presas a mais:** falha do `Append` do pedido depois de reservar; re-`POST` de um pedido
@@ -3233,16 +3240,32 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
 - **Ordem de deploy: o nó primeiro.** Um `aos-orq` anterior não envia `consumo` — a reserva fica
   inteira. Uma réplica anterior do nó não reserva o planeamento.
 
+### Revisão adversarial independente (2026-09-30)
+Sobre o commit `ea0270f`. Dois achados MÉDIOS, **os dois reproduzidos e os dois contagens a menos**, e
+os dois corrigidos:
+- **MÉDIO-1:** a dobra cobrava `max(reserva, Σ)` a qualquer geração não medida — com Σ já acima da
+  reserva, uma geração não medida somava zero, e cinco gerações de um `aos-orq` anterior custavam uma
+  reserva no total. Corrigido: não medida custa o medido **mais** a reserva; sem parcela, a reserva.
+- **MÉDIO-2:** a parcela marcada final gravava-se **antes** do desfecho; se o desfecho falhava, a reserva
+  estava libertada com o pedido vivo, e as gerações seguintes planeavam sem ela. Corrigido: o fecho é
+  um evento próprio, escrito **depois** do desfecho terminal, e a lacuna do meio conta mesmo sem fecho.
+- BAIXOS: a frase «dólares sempre pela reserva» era falsa com zero chamadas (corrigida); o medidor
+  ignorava o `total_tokens` (passa a usar o maior); apagamento DSAR, deploy rolante e consumo declarado
+  sem tecto superior ficam nos residuais.
+
 ### Validação
 - Testes: `packages/cmd/aos/aos466_quota_de_planeamento_test.go` (ambiente, partilha com os runs,
   dobra por geração, dólares, corrida com o apagamento, réplica anterior, as duas rotas) e
   `packages/cmd/aos-orq/aos466_consumo_do_planeamento_test.go` — incluindo **o binário real** a drenar um
   pedido com o **gateway vivo** contra um upstream falso que cobra 10+5 tokens: o desfecho que chega ao
   nó declara exactamente 15 medidos; o controlo com o fixture declara 0 medido.
-- **Mutações: 49 aplicadas, 47 mortas.** Sobrevivem duas, declaradas: (a) o apagamento não limpar as
-  parcelas é EQUIVALENTE — o filtro pelo vínculo à reserva, que outra mutação prova, já as exclui;
-  (b) a recusa por mandato do `consume` declarar «não medido» em vez de «zero medido» — falha para o
-  lado seguro (a reserva fica inteira) e matá-la exigia um ponta-a-ponta com mandato.
+- **Mutações, duas baterias.** A primeira (sobre `ea0270f`): 49 aplicadas, 47 mortas. A segunda (sobre a
+  dobra, o fecho e o handler reescritos depois da revisão): 22 aplicadas, 20 mortas — e uma guarda que
+  a mutação mostrou ser código morto saiu. Sobrevivem, declaradas: (a) o apagamento não limpar as
+  parcelas nem os fechos, e o handler não recusar um titular vazio, são EQUIVALENTES — o filtro pelo
+  vínculo à reserva e a guarda de principal vazio do `escreverNoPlano`, que outras mutações provam, já
+  os cobrem; (b) a recusa por mandato do `consume` declarar «não medido» em vez de «zero medido» — falha
+  para o lado seguro e matá-la exigia um ponta-a-ponta com mandato.
 - Gates: `build`, `lint`, `layer-lint`, `secrets`, `sast`, `rtm`, `ref-lint`, `event-catalog` verdes;
   suites `-race` dos dois módulos verdes; smoke do `run-aos` 10/10.
 

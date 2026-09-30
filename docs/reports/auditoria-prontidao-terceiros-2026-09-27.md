@@ -207,8 +207,9 @@ de abrir a terceiros — e é menos trabalho do que quase tudo o que já foi fei
 > último turno de cada run e o gasto de planeamento do `POST /plans`, que a quota não cobre.
 > **Actualização (2026-09-30): o planeamento passou a contar (AOS-466)** — cada pedido reserva
 > `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS` e liquida pelo consumo que o `aos-orq` mede. Fica declarado que
-> a reserva não trava uma geração (o excesso conta depois), que os dólares do planeamento ficam
-> sempre pela reserva, e que o número de gerações por pedido não tem tecto (AOS-467).
+> a reserva não trava uma geração (o excesso conta depois), que os dólares do planeamento não se
+> medem (cada geração custa a reserva em dólares), que o consumo é declarado pelo drenador, e que o
+> número de gerações por pedido não tem tecto (AOS-467).
 
 ### 3.3 Um único board, e o onboarding passa pelas chaves offline do operador
 

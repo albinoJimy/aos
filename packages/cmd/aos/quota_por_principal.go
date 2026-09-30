@@ -50,7 +50,8 @@ package main
 // `..._COST_MICRO_USD`) sob a chave `aos-internal/plan/<run_id>`, no mesmo stream e com os mesmos
 // tipos de evento — um tipo novo faria o `ler()` de uma réplica anterior negar tudo num deploy
 // rolante. Cada desfecho grava uma PARCELA (`budget.quota.settled` com `geracao`) com o consumo que
-// o drenador mediu; as parcelas somam-se, e ver [cobrancaDoPlano] para quando a reserva se liberta.
+// o drenador mediu; o desfecho terminal, DEPOIS de gravado, grava o FECHO (`final`). As parcelas
+// somam-se, e ver [cobrancaDoPlano] para o que cada geração custa e quando a reserva se liberta.
 
 import (
 	"context"
@@ -136,13 +137,17 @@ type quotaPayload struct {
 	// ÚLTIMA geração.
 	Geracao        int    `json:"geracao,omitempty"`
 	ReservaDoPlano uint64 `json:"reserva_do_plano,omitempty"`
-	// Final marca a parcela do desfecho TERMINAL: só aí a reserva pode ser libertada.
-	Final bool `json:"final,omitempty"`
-	// TokensNaoMedidos / CustoNaoMedido: o consumo desta geração não se conhece nessa dimensão (o
-	// drenador não o mediu, ou uma geração anterior ficou sem parcela). Um só que falte basta para a
-	// reserva não se libertar.
+	// TokensNaoMedidos / CustoNaoMedido: o consumo desta geração não se conhece por inteiro nessa
+	// dimensão (o drenador não o mediu, ou uma chamada falhou). Custa o que se mediu MAIS a reserva.
 	TokensNaoMedidos bool `json:"tokens_nao_medidos,omitempty"`
 	CustoNaoMedido   bool `json:"custo_nao_medido,omitempty"`
+
+	// Final marca o FECHO do pedido: não é uma parcela, é um evento próprio, escrito só DEPOIS de o
+	// desfecho terminal estar no log (revisão do AOS-466: escrita antes, uma falha do desfecho
+	// deixava a reserva libertada com o pedido ainda vivo). AteGeracao é a maior geração que o nó
+	// entregou a um drenador nesse momento: as que não têm parcela custam a reserva inteira.
+	Final      bool `json:"final,omitempty"`
+	AteGeracao int  `json:"ate_geracao,omitempty"`
 }
 
 // quotaPorPrincipal é a quota composta. nil ⇒ desligada.
@@ -225,8 +230,10 @@ func quotaStreamDe(principal, mes string) string {
 type estadoDaQuota struct {
 	reservas   map[string]quotaPayload // por run; Reserva = o seq do evento de reserva
 	liquidadas map[string]quotaPayload // por run; Reserva = o seq da reserva liquidada
-	// parcelas são as liquidações de planeamento (AOS-466), por chave e por geração.
+	// parcelas são as liquidações de planeamento (AOS-466), por chave e por geração; fechos, a marca
+	// de pedido terminado, por chave.
 	parcelas  map[string]map[int]quotaPayload
+	fechos    map[string]quotaPayload
 	ultimoSeq uint64
 }
 
@@ -235,8 +242,8 @@ type estadoDaQuota struct {
 func (e estadoDaQuota) gasto() budget.Amount {
 	var g budget.Amount
 	for chave, r := range e.reservas {
-		if ps := e.parcelasDe(chave, r.Reserva); len(ps) > 0 {
-			r = cobrancaDoPlano(r, ps)
+		if ps, fecho := e.parcelasDe(chave, r.Reserva); len(ps) > 0 || fecho != nil {
+			r = cobrancaDoPlano(r, ps, fecho)
 		} else if l, ok := e.liquidadas[chave]; ok && l.Reserva == r.Reserva {
 			r = l
 		}
@@ -246,43 +253,73 @@ func (e estadoDaQuota) gasto() budget.Amount {
 	return g
 }
 
-// parcelasDe devolve as parcelas de planeamento da chave que liquidam a reserva com esse seq. As de
-// uma reserva anterior a um apagamento não valem para a reserva nova.
-func (e estadoDaQuota) parcelasDe(chave string, reserva uint64) []quotaPayload {
-	var ps []quotaPayload
-	for _, p := range e.parcelas[chave] {
+// parcelasDe devolve as parcelas de planeamento da chave, por geração, e o fecho, que liquidam a
+// reserva com esse seq. As de uma reserva anterior a um apagamento não valem para a reserva nova.
+func (e estadoDaQuota) parcelasDe(chave string, reserva uint64) (map[int]quotaPayload, *quotaPayload) {
+	ps := map[int]quotaPayload{}
+	for g, p := range e.parcelas[chave] {
 		if p.ReservaDoPlano == reserva {
-			ps = append(ps, p)
+			ps[g] = p
 		}
 	}
-	return ps
+	var fecho *quotaPayload
+	if f, ok := e.fechos[chave]; ok && f.ReservaDoPlano == reserva {
+		fecho = &f
+	}
+	return ps, fecho
 }
 
-// cobrancaDoPlano é o que um pedido de plano custa à quota, dadas a reserva e as parcelas.
+// cobrancaDoPlano é o que um pedido de plano custa à quota, dadas a reserva, as parcelas e o fecho.
 //
-// Enquanto o pedido não é terminal custa o MAIOR entre a reserva e a soma: as gerações seguintes
-// ainda podem gastar, e a reserva é o que as cobre. No terminal custa a SOMA — liberta o resto —,
-// mas só na dimensão em que todas as gerações foram medidas. Uma geração não medida deixa a reserva
-// inteira: libertar sobre um consumo que não se conhece seria a quota a abrir sobre uma cegueira,
-// a mesma regra da liquidação dos runs.
-func cobrancaDoPlano(r quotaPayload, ps []quotaPayload) quotaPayload {
+// A SOMA percorre as gerações 1..G, onde G é a maior que se conhece (de uma parcela, ou a última
+// que o nó entregou, registada no fecho). Cada geração custa o que se mediu; uma geração NÃO MEDIDA
+// custa o que se mediu MAIS a reserva; uma geração SEM PARCELA — o desfecho perdeu-se, a reclamação
+// expirou — custa a reserva. A reserva é a única estimativa por geração que o nó tem.
+//
+// A primeira versão cobrava `max(reserva, Σ)` para qualquer geração não medida, e isso contava a
+// MENOS: com Σ já acima da reserva, uma geração não medida somava zero, e cinco gerações de um
+// `aos-orq` anterior custavam uma reserva no total (achado MÉDIO-1 da revisão adversarial).
+//
+// Enquanto o pedido não tem fecho custa o MAIOR entre a reserva e a soma: a geração em curso ainda
+// pode gastar. Com fecho custa a SOMA — liberta o que sobra da reserva.
+func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, fecho *quotaPayload) quotaPayload {
+	G := 0
+	for g := range ps {
+		G = max(G, g)
+	}
+	if fecho != nil {
+		G = max(G, fecho.AteGeracao)
+	}
+	// Todas as parcelas estão em 1..G: G é o máximo delas, e o `ler` só guarda gerações >= 1.
 	var soma quotaPayload
-	var final, tokensNaoMedidos, custoNaoMedido bool
 	for _, p := range ps {
 		soma.Tokens = somaSaturada(soma.Tokens, p.Tokens)
 		soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, p.CostMicroUSD)
-		final = final || p.Final
-		tokensNaoMedidos = tokensNaoMedidos || p.TokensNaoMedidos
-		custoNaoMedido = custoNaoMedido || p.CustoNaoMedido
+		if p.TokensNaoMedidos {
+			soma.Tokens = somaSaturada(soma.Tokens, r.Tokens)
+		}
+		if p.CustoNaoMedido {
+			soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, r.CostMicroUSD)
+		}
 	}
-	c := quotaPayload{Tokens: max(r.Tokens, soma.Tokens), CostMicroUSD: max(r.CostMicroUSD, soma.CostMicroUSD)}
-	if final && !tokensNaoMedidos {
-		c.Tokens = soma.Tokens
+	faltam := int64(G) - int64(len(ps))
+	soma.Tokens = somaSaturada(soma.Tokens, produtoSaturado(r.Tokens, faltam))
+	soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, produtoSaturado(r.CostMicroUSD, faltam))
+	if fecho != nil {
+		return soma
 	}
-	if final && !custoNaoMedido {
-		c.CostMicroUSD = soma.CostMicroUSD
+	return quotaPayload{Tokens: max(r.Tokens, soma.Tokens), CostMicroUSD: max(r.CostMicroUSD, soma.CostMicroUSD)}
+}
+
+// produtoSaturado multiplica sem dar a volta: a reserva de n gerações em falta.
+func produtoSaturado(a, n int64) int64 {
+	if a <= 0 || n <= 0 {
+		return 0
 	}
-	return c
+	if a > math.MaxInt64/n {
+		return math.MaxInt64
+	}
+	return a * n
 }
 
 // somaSaturada evita que um gasto enorme dê a volta para negativo e passe a caber na quota.
@@ -294,7 +331,7 @@ func somaSaturada(a, b int64) int64 {
 }
 
 func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuota, error) {
-	st := estadoDaQuota{reservas: map[string]quotaPayload{}, liquidadas: map[string]quotaPayload{}, parcelas: map[string]map[int]quotaPayload{}}
+	st := estadoDaQuota{reservas: map[string]quotaPayload{}, liquidadas: map[string]quotaPayload{}, parcelas: map[string]map[int]quotaPayload{}, fechos: map[string]quotaPayload{}}
 	evs, err := q.es.Read(ctx, stream, 1)
 	if errors.Is(err, eventstore.ErrStreamNotFound) {
 		return st, nil
@@ -309,6 +346,7 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 			st.reservas = map[string]quotaPayload{}
 			st.liquidadas = map[string]quotaPayload{}
 			st.parcelas = map[string]map[int]quotaPayload{}
+			st.fechos = map[string]quotaPayload{}
 			continue
 		case EventTypeQuotaReserved, EventTypeQuotaSettled:
 		default:
@@ -322,6 +360,8 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 		case ev.Type == EventTypeQuotaReserved:
 			p.Reserva = ev.Seq
 			st.reservas[p.RunID] = p
+		case p.Final:
+			st.fechos[p.RunID] = p
 		case p.Geracao > 0:
 			if st.parcelas[p.RunID] == nil {
 				st.parcelas[p.RunID] = map[int]quotaPayload{}
@@ -479,15 +519,47 @@ type consumoDoPlaneamento struct {
 // reserva de planeamento no mês corrente ou no anterior (AOS-466). Sem reserva em nenhum dos dois
 // não faz nada: o pedido entrou antes de a quota existir, ou a reserva já saiu da janela.
 //
-// `anteriores` são as outras gerações que o nó ENTREGOU ao drenador. Na parcela final, uma delas
-// sem parcela — um desfecho que não chegou ao nó, e cuja reclamação expirou — torna a parcela não
-// medida: essa geração pode ter gastado, e libertar a reserva sem a contar seria contar a menos.
-//
 // Idempotente por (chave, reserva, geração) — pela idempotency-key do `Append`: a repetição de um
-// desfecho, mesmo com outro consumo, não escreve uma segunda parcela. Devolve o erro de escrita: o desfecho não se regista
-// sem a parcela, para que uma geração nunca fique contada no pedido e ausente da quota.
-func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, runID string, geracao int, c consumoDoPlaneamento, final bool, anteriores []int) error {
-	if q == nil || principal == "" || geracao < 1 {
+// desfecho, mesmo com outro consumo, não escreve uma segunda parcela. Devolve o erro de escrita: o
+// desfecho não se regista sem a parcela, para que uma geração nunca fique contada no pedido e
+// ausente da quota.
+func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, runID string, geracao int, c consumoDoPlaneamento) error {
+	if geracao < 1 {
+		return nil
+	}
+	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{
+			RunID:            chaveDoPlano(runID),
+			Tokens:           max(c.Tokens, 0),
+			CostMicroUSD:     max(c.CostMicroUSD, 0),
+			Geracao:          geracao,
+			ReservaDoPlano:   reserva,
+			TokensNaoMedidos: !c.TokensMedidos,
+			CustoNaoMedido:   !c.CustoMedido,
+		}, fmt.Sprintf("%s:settled:%s:%d:%d", chaveDoPlano(runID), mes, reserva, geracao)
+	})
+}
+
+// fecharPlaneamento grava o FECHO do pedido runID: a partir dele a reserva liberta o que as parcelas
+// não gastaram. Só se chama DEPOIS de o desfecho terminal estar no log — é isso que garante que não
+// há gerações depois dele. `ateGeracao` é a maior geração que o nó entregou a um drenador: as que
+// não têm parcela custam a reserva inteira.
+func (q *quotaPorPrincipal) fecharPlaneamento(ctx context.Context, principal, runID string, ateGeracao int) error {
+	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{
+			RunID:          chaveDoPlano(runID),
+			Geracao:        ateGeracao,
+			ReservaDoPlano: reserva,
+			Final:          true,
+			AteGeracao:     ateGeracao,
+		}, fmt.Sprintf("%s:closed:%s:%d", chaveDoPlano(runID), mes, reserva)
+	})
+}
+
+// escreverNoPlano procura a reserva de planeamento de runID no mês corrente ou no anterior e grava
+// nesse stream o evento que `evento` constrói. Sem reserva, nada.
+func (q *quotaPorPrincipal) escreverNoPlano(ctx context.Context, principal, runID string, evento func(mes string, reserva uint64) (quotaPayload, string)) error {
+	if q == nil || principal == "" {
 		return nil
 	}
 	defer q.bloquear(principal)()
@@ -503,30 +575,8 @@ func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, 
 		if !reservado {
 			continue
 		}
-		feitas := map[int]bool{}
-		for _, p := range st.parcelasDe(chave, r.Reserva) {
-			feitas[p.Geracao] = true
-		}
-		parcela := quotaPayload{
-			RunID:            chave,
-			Tokens:           max(c.Tokens, 0),
-			CostMicroUSD:     max(c.CostMicroUSD, 0),
-			Geracao:          geracao,
-			ReservaDoPlano:   r.Reserva,
-			Final:            final,
-			TokensNaoMedidos: !c.TokensMedidos,
-			CustoNaoMedido:   !c.CustoMedido,
-		}
-		if final {
-			for _, g := range anteriores {
-				if g != geracao && !feitas[g] {
-					q.logf("quota (AOS-466): o pedido %q terminou sem a parcela da geracao %d — a reserva de planeamento nao se liberta", runID, g)
-					parcela.TokensNaoMedidos, parcela.CustoNaoMedido = true, true
-					break
-				}
-			}
-		}
-		payload, err := json.Marshal(parcela)
+		p, stepID := evento(mes, r.Reserva)
+		payload, err := json.Marshal(p)
 		if err != nil {
 			return err
 		}
@@ -534,7 +584,7 @@ func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, 
 			Type:     EventTypeQuotaSettled,
 			Payload:  payload,
 			RunID:    quotaRunID,
-			StepID:   fmt.Sprintf("%s:settled:%s:%d:%d", chave, mes, r.Reserva, geracao),
+			StepID:   stepID,
 			Producer: eventstore.Producer{NHIID: quotaNHI},
 		})
 		return err
@@ -707,6 +757,6 @@ func principalQuotaPostureBanner(q *quotaPorPrincipal) []string {
 	if q.limite.CostMicroUSD != integration.UnlimitedCostMicroUSD {
 		custo = fmt.Sprintf("%d micro-USD", q.limite.CostMicroUSD)
 	}
-	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao liquida pelo consumo que o drenador (aos-orq) mede e declara; so no desfecho terminal, e so com todas as geracoes medidas, a reserva se liberta. Os dolares do planeamento nunca sao medidos pelo aos-orq e ficam sempre pela reserva; uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido nao tem tecto (AOS-467). Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
+	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao conta o consumo que o drenador (aos-orq) mede e declara; uma geracao NAO MEDIDA (ou entregue sem desfecho) custa o que se mediu MAIS a reserva. So o fecho do pedido (desfecho terminal no log) liberta o que sobra da reserva. Os dolares nunca sao medidos pelo aos-orq: cada geracao que chamou o modelo custa a reserva em dolares. Uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido nao tem tecto (AOS-467); o consumo e DECLARADO pelo drenador, que o no nao verifica. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
 		q.limite.Tokens, custo, q.reserva.Tokens, q.reserva.CostMicroUSD, q.reservaDoPlano.Tokens, q.reservaDoPlano.CostMicroUSD)}
 }

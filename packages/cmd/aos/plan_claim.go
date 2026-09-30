@@ -550,13 +550,20 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// QUOTA DE PLANEAMENTO (AOS-466): a parcela desta geração ANTES do desfecho. Se a parcela não se
-	// grava, o desfecho também não — e o drenador vê o 503. Na ordem inversa, um desfecho gravado
-	// sem parcela deixava uma geração que gastou fora da quota; nesta, o pior é a reclamação
-	// expirar e a geração seguinte correr, e a liquidação final vê a geração sem parcela e não
-	// liberta a reserva.
+	// QUOTA DE PLANEAMENTO (AOS-466), em DOIS tempos à volta do desfecho.
+	//
+	// (a) A PARCELA desta geração ANTES do desfecho. Se não se grava, o desfecho também não — e o
+	// drenador vê o 503. Na ordem inversa, um desfecho gravado sem parcela deixava uma geração que
+	// gastou fora da quota; nesta, o pior é a reclamação expirar e a geração seguinte correr, e essa
+	// geração sem parcela custa a reserva inteira.
+	//
+	// (b) O FECHO só DEPOIS de o desfecho terminal estar no log. A primeira versão marcava a parcela
+	// como final ANTES do desfecho: se o desfecho falhava, a reserva estava libertada com o pedido
+	// vivo, e as gerações seguintes planeavam sem ela (achado MÉDIO-2 da revisão adversarial).
+	var plano *planeamentoDoPedido
 	if h.node.QuotaPorPrincipal != nil {
-		if err := h.liquidarPlaneamento(r.Context(), req); err != nil {
+		var err error
+		if plano, err = h.parcelaDePlaneamento(r.Context(), req); err != nil {
 			h.logf("plan-claim: parcela de planeamento nao gravada run=%q geracao=%d: %v", req.RunID, req.Geracao, err)
 			writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
 			return
@@ -588,20 +595,33 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
 		return
 	}
+	if plano != nil && req.Classe == DesfechoTerminal {
+		// O desfecho JÁ está no log: responder 503 aqui diria ao drenador que não está, e ele não
+		// avisaria o fim do plano. Um fecho que falha deixa a reserva inteira até ao fim do mês — a
+		// mais, nunca a menos — e fica no log do operador.
+		if err := h.node.QuotaPorPrincipal.fecharPlaneamento(r.Context(), plano.titular, req.RunID, plano.ateGeracao); err != nil {
+			h.logf("plan-claim: fecho do planeamento nao gravado run=%q — a reserva de planeamento fica inteira ate ao fim do mes: %v", req.RunID, err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// liquidarPlaneamento grava a parcela de planeamento de uma geração contra a quota de quem
-// SUBMETEU o pedido — o principal do `planrequest.submitted`, nunca o do drenador que reporta.
-// Um pedido que o nó não conhece não reservou nada e não liquida nada; um sem titular também não
-// (o `registarPlaneamento` ignora o principal vazio).
-func (h *apiHandler) liquidarPlaneamento(ctx context.Context, req pedidoDeDesfecho) error {
+// planeamentoDoPedido é o que o fecho precisa de saber sobre o pedido.
+type planeamentoDoPedido struct {
+	titular    string
+	ateGeracao int
+}
+
+// parcelaDePlaneamento grava a parcela de planeamento de uma geração contra a quota de quem
+// SUBMETEU o pedido — o principal do `planrequest.submitted`, nunca o do drenador que reporta. Um
+// pedido que o nó não conhece, ou sem titular, não reservou nada: nil, e não se liquida nada.
+func (h *apiHandler) parcelaDePlaneamento(ctx context.Context, req pedidoDeDesfecho) (*planeamentoDoPedido, error) {
 	estado, achado, err := estadoDoPedido(ctx, h.node.EventStore, req.RunID, time.Now().UTC())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !achado {
-		return nil
+	if !achado || estado.titular == "" {
+		return nil, nil // sem titular não houve reserva (o `POST /plans` só reserva com principal)
 	}
 	var c consumoDoPlaneamento
 	if req.Consumo != nil {
@@ -610,8 +630,14 @@ func (h *apiHandler) liquidarPlaneamento(ctx context.Context, req pedidoDeDesfec
 			CostMicroUSD: req.Consumo.CostMicroUSD, CustoMedido: req.Consumo.CustoMedido,
 		}
 	}
-	return h.node.QuotaPorPrincipal.registarPlaneamento(ctx, estado.titular, req.RunID, req.Geracao, c,
-		req.Classe == DesfechoTerminal, estado.reclamadas)
+	if err := h.node.QuotaPorPrincipal.registarPlaneamento(ctx, estado.titular, req.RunID, req.Geracao, c); err != nil {
+		return nil, err
+	}
+	plano := &planeamentoDoPedido{titular: estado.titular, ateGeracao: req.Geracao}
+	for _, g := range estado.reclamadas {
+		plano.ateGeracao = max(plano.ateGeracao, g)
+	}
+	return plano, nil
 }
 
 // truncar limita o detalhe livre que o consumidor envia. O detalhe é diagnóstico, não contrato.

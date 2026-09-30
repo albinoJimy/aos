@@ -38,6 +38,9 @@ func TestAOS466OMedidorSomaEMarcaONaoMedido(t *testing.T) {
 			m.registar(uso(10, 5), nil)
 			m.registar(port.Usage{}, errors.New("upstream"))
 		}, consumoDoPlaneamento{Tokens: 15}},
+		{"o total do provider vale quando e maior", func(m *medidorDoPlaneamento) {
+			m.registar(port.Usage{PromptTokens: 10, TotalTokens: 18}, nil)
+		}, consumoDoPlaneamento{Tokens: 18, TokensMedidos: true}},
 		{"resposta sem usage nao e medida", func(m *medidorDoPlaneamento) {
 			m.registar(uso(0, 0), nil)
 		}, consumoDoPlaneamento{}},

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -157,9 +158,7 @@ func TestAOS466UmPlanoEUmRunComOMesmoNomeNaoSeConfundem(t *testing.T) {
 		t.Fatalf("o plano e o run com o mesmo nome confundiram-se: gasto %d, esperava 140", g.Tokens)
 	}
 	// E a liquidação de um não liquida o outro.
-	if err := q.registarPlaneamento(ctx, "human:alice", "x", 1, medido(0), true, []int{1}); err != nil {
-		t.Fatal(err)
-	}
+	fechar(t, q, "x", 1, medido(0))
 	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
 		t.Fatalf("a parcela do plano liquidou o run: gasto %d, esperava 100", g.Tokens)
 	}
@@ -183,9 +182,7 @@ func TestAOS466OReservaDoMesAnteriorNaoSeRepete(t *testing.T) {
 		t.Fatalf("o re-POST no mes seguinte reservou de novo: gasto de outubro %d", g.Tokens)
 	}
 	// E a liquidação encontra a reserva no mês anterior.
-	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(7), true, []int{1}); err != nil {
-		t.Fatal(err)
-	}
+	fechar(t, q, "plano-1", 1, medido(7))
 	rel.ir(setembro)
 	if g := gastoDe(t, q, "human:alice"); g.Tokens != 7 {
 		t.Fatalf("a liquidacao de outubro devia valer contra a reserva de setembro: gasto %d, esperava 7", g.Tokens)
@@ -195,30 +192,36 @@ func TestAOS466OReservaDoMesAnteriorNaoSeRepete(t *testing.T) {
 // TestAOS466ALiquidacaoPorGeracao — quando a reserva se liberta, e quando não.
 func TestAOS466ALiquidacaoPorGeracao(t *testing.T) {
 	type parcela struct {
-		geracao    int
-		consumo    consumoDoPlaneamento
-		final      bool
-		anteriores []int
+		geracao int
+		consumo consumoDoPlaneamento
 	}
 	naoMedido := func(tokens int64) consumoDoPlaneamento {
 		return consumoDoPlaneamento{Tokens: tokens, CustoMedido: true}
 	}
+	// fecho: 0 ⇒ o pedido não terminou; n ⇒ terminou, e o nó tinha entregue até à geração n.
 	casos := []struct {
 		nome     string
 		parcelas []parcela
+		fecho    int
 		gasto    int64
 	}{
-		{"sem desfecho conta a reserva", nil, 100},
-		{"transitoria abaixo da reserva nao liberta", []parcela{{1, medido(30), false, nil}}, 100},
-		{"transitoria acima da reserva conta o excesso", []parcela{{1, medido(150), false, nil}}, 150},
-		{"terminal medida liberta o resto", []parcela{{1, medido(30), true, []int{1}}}, 30},
-		{"terminal medida acima da reserva", []parcela{{1, medido(170), true, []int{1}}}, 170},
-		{"as geracoes somam", []parcela{{1, medido(30), false, []int{1}}, {2, medido(40), true, []int{1, 2}}}, 70},
-		{"terminal nao medida nao liberta", []parcela{{1, naoMedido(30), true, []int{1}}}, 100},
-		{"uma geracao nao medida contamina o terminal", []parcela{{1, naoMedido(0), false, nil}, {2, medido(40), true, []int{1, 2}}}, 100},
-		{"geracao entregue sem parcela nao liberta", []parcela{{2, medido(40), true, []int{1, 2}}}, 100},
-		{"a mesma geracao duas vezes conta uma", []parcela{{1, medido(150), false, nil}, {1, medido(150), false, nil}}, 150},
-		{"consumo negativo nao desconta", []parcela{{1, medido(-500), true, []int{1}}}, 0},
+		{"sem desfecho conta a reserva", nil, 0, 100},
+		{"transitoria abaixo da reserva nao liberta", []parcela{{1, medido(30)}}, 0, 100},
+		{"transitoria acima da reserva conta o excesso", []parcela{{1, medido(150)}}, 0, 150},
+		{"terminal medida liberta o resto", []parcela{{1, medido(30)}}, 1, 30},
+		{"terminal medida acima da reserva", []parcela{{1, medido(170)}}, 1, 170},
+		{"as geracoes somam", []parcela{{1, medido(30)}, {2, medido(40)}}, 2, 70},
+		{"terminal nao medida custa o medido mais a reserva", []parcela{{1, naoMedido(30)}}, 1, 130},
+		{"uma geracao nao medida custa a reserva", []parcela{{1, naoMedido(0)}, {2, medido(40)}}, 2, 140},
+		{"geracao entregue sem parcela custa a reserva", []parcela{{2, medido(40)}}, 2, 140},
+		{"entregue depois da ultima parcela custa a reserva", []parcela{{1, medido(40)}}, 3, 240},
+		{"a mesma geracao duas vezes conta uma", []parcela{{1, medido(150)}, {1, medido(150)}}, 0, 150},
+		{"consumo negativo nao desconta", []parcela{{1, medido(-500)}}, 1, 0},
+		// Achado MÉDIO-1 da revisão: com Σ acima da reserva, uma geração não medida somava zero.
+		{"nao medida acima da reserva ainda soma", []parcela{{1, medido(500)}, {2, naoMedido(0)}}, 2, 600},
+		{"aos-orq anterior: cinco geracoes sem consumo", []parcela{{1, naoMedido(0)}, {2, naoMedido(0)}, {3, naoMedido(0)}, {4, naoMedido(0)}, {5, naoMedido(0)}}, 5, 500},
+		// Achado MÉDIO-2: sem fecho não se liberta, e a lacuna do meio conta mesmo com o pedido vivo.
+		{"lacuna com o pedido vivo", []parcela{{1, medido(10)}, {3, medido(5)}}, 0, 115},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -229,14 +232,31 @@ func TestAOS466ALiquidacaoPorGeracao(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, p := range c.parcelas {
-				if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", p.geracao, p.consumo, p.final, p.anteriores); err != nil {
+				if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", p.geracao, p.consumo); err != nil {
 					t.Fatalf("registar geracao %d: %v", p.geracao, err)
+				}
+			}
+			if c.fecho > 0 {
+				if err := q.fecharPlaneamento(ctx, "human:alice", "plano-1", c.fecho); err != nil {
+					t.Fatal(err)
 				}
 			}
 			if g := gastoDe(t, q, "human:alice"); g.Tokens != c.gasto {
 				t.Fatalf("gasto %d, esperava %d", g.Tokens, c.gasto)
 			}
 		})
+	}
+}
+
+// fechar regista a parcela de uma geração terminal e o fecho do pedido.
+func fechar(t *testing.T, q *quotaPorPrincipal, runID string, g int, c consumoDoPlaneamento) {
+	t.Helper()
+	ctx := context.Background()
+	if err := q.registarPlaneamento(ctx, "human:alice", runID, g, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.fecharPlaneamento(ctx, "human:alice", runID, g); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -261,9 +281,7 @@ func TestAOS466OsDolaresDoPlaneamentoFicamPelaReserva(t *testing.T) {
 				t.Fatal(err)
 			}
 			consumo := consumoDoPlaneamento{Tokens: 30, TokensMedidos: true, CustoMedido: c.custoMedido}
-			if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, consumo, true, []int{1}); err != nil {
-				t.Fatal(err)
-			}
+			fechar(t, q, "plano-1", 1, consumo)
 			g := gastoDe(t, q, "human:alice")
 			if g.Tokens != 30 || g.CostMicroUSD != c.custo {
 				t.Fatalf("gasto %+v, esperava 30 tokens e %d micro-USD", g, c.custo)
@@ -291,19 +309,43 @@ func TestAOS466UmaParcelaDeOutraReservaNaoVale(t *testing.T) {
 	if err := q.Shred("human:alice"); err != nil {
 		t.Fatal(err)
 	}
-	// A outra réplica leu antes do apagamento e escreve agora a parcela terminal da reserva antiga.
-	bruto, _ := json.Marshal(quotaPayload{RunID: chaveDoPlano("plano-1"), Tokens: 0, Geracao: 1, ReservaDoPlano: antiga, Final: true})
-	if _, err := es.Append(ctx, quotaStreamDe("human:alice", mesUTC(setembro)), eventstore.EventInput{
-		Type: EventTypeQuotaSettled, Payload: bruto, RunID: quotaRunID, StepID: "corrida",
-		Producer: eventstore.Producer{NHIID: quotaNHI},
-	}); err != nil {
-		t.Fatal(err)
+	// A outra réplica leu antes do apagamento e escreve agora, contra a reserva antiga, uma parcela
+	// medida e o fecho.
+	for i, p := range []quotaPayload{
+		{RunID: chaveDoPlano("plano-1"), Tokens: 500, Geracao: 2, ReservaDoPlano: antiga},
+		{RunID: chaveDoPlano("plano-1"), Geracao: 1, ReservaDoPlano: antiga, Final: true, AteGeracao: 1},
+	} {
+		bruto, _ := json.Marshal(p)
+		if _, err := es.Append(ctx, quotaStreamDe("human:alice", mesUTC(setembro)), eventstore.EventInput{
+			Type: EventTypeQuotaSettled, Payload: bruto, RunID: quotaRunID, StepID: "corrida-" + strconv.Itoa(i),
+			Producer: eventstore.Producer{NHIID: quotaNHI},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
 		t.Fatal(err)
 	}
+	// A geração 1 da reserva NOVA, ainda sem fecho: o pedido custa pelo menos a reserva. Se o fecho
+	// antigo valesse, custaria só estes 5; se a parcela antiga valesse, 500.
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(5)); err != nil {
+		t.Fatal(err)
+	}
 	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
-		t.Fatalf("a parcela da reserva antiga liquidou a nova: gasto %d, esperava 100", g.Tokens)
+		t.Fatalf("a parcela ou o fecho da reserva antiga valeram para a nova: gasto %d, esperava 100", g.Tokens)
+	}
+}
+
+// TestAOS466AReservaDeMuitasGeracoesEmFaltaNaoDaAVolta — a reserva vezes as gerações em falta
+// satura em vez de dar a volta para negativo (e caber na quota).
+func TestAOS466AReservaDeMuitasGeracoesEmFaltaNaoDaAVolta(t *testing.T) {
+	r := quotaPayload{Tokens: math.MaxInt64 / 2}
+	c := cobrancaDoPlano(r, map[int]quotaPayload{}, &quotaPayload{Final: true, AteGeracao: 3})
+	if c.Tokens != math.MaxInt64 {
+		t.Fatalf("tres geracoes em falta de MaxInt64/2 deviam saturar, deram %d", c.Tokens)
+	}
+	if produtoSaturado(7, 3) != 21 || produtoSaturado(7, 0) != 0 || produtoSaturado(0, 5) != 0 {
+		t.Fatal("produtoSaturado errado nos casos pequenos")
 	}
 }
 
@@ -317,9 +359,7 @@ func TestAOS466UmaReplicaAnteriorContaAReservaInteira(t *testing.T) {
 	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(5), true, []int{1}); err != nil {
-		t.Fatal(err)
-	}
+	fechar(t, q, "plano-1", 1, medido(5))
 	evs, err := q.es.Read(ctx, quotaStreamDe("human:alice", mesUTC(setembro)), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -483,8 +523,43 @@ func TestAOS466UmaGeracaoEntregueSemDesfechoNaoLiberta(t *testing.T) {
 	if r.codigo != http.StatusNoContent {
 		t.Fatalf("desfecho: %d %s", r.codigo, r.corpo)
 	}
-	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
-		t.Fatalf("a geracao 1 entregue e sem parcela ficou por contar: gasto %d, esperava a reserva (100)", g.Tokens)
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 140 {
+		t.Fatalf("a geracao 1 entregue e sem parcela ficou por contar: gasto %d, esperava 40 + a reserva (140)", g.Tokens)
+	}
+}
+
+// TestAOS466UmDesfechoAtrasadoContaAsGeracoesEntreguesDepois — o desfecho terminal da geração 1
+// chega DEPOIS de o nó ter entregue a geração 2 (o reporte demorou, a reclamação expirou). A geração
+// 2 está a planear e ainda não tem parcela: o fecho regista que o nó entregou até à 2, e ela custa a
+// reserva. A reclamação da geração 2 escreve-se directamente no log, porque o TTL real da reclamação
+// é de meia hora.
+func TestAOS466UmDesfechoAtrasadoContaAsGeracoesEntreguesDepois(t *testing.T) {
+	node, h, q := aos466No(t, 10_000, 100)
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-466"); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao: %d", rec.Code)
+	}
+	dren := map[string]string{HeaderReaderPrincipal: drenador466, HeaderReaderBoard: govBoard}
+	if rec := postReq(h, "/plans/claim", nil, dren); rec.Code != http.StatusOK {
+		t.Fatalf("reclamar: %d", rec.Code)
+	}
+	if _, err := node.EventStore.Append(context.Background(), planRequestStream, eventstore.EventInput{
+		Type:     EventTypePlanRequestClaimed,
+		Payload:  json.RawMessage(`{"v":"` + planRequestVersao + `","by":"` + drenador466 + `"}`),
+		RunID:    planRequestRunID,
+		StepID:   prefixoReclamo + "2-plano-466",
+		Producer: eventstore.Producer{NHIID: planIngressNHI},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := postReq(h, "/plans/outcome", map[string]any{
+		"run_id": "plano-466", "generation": 1, "classe": DesfechoTerminal,
+		"consumo": map[string]any{"tokens": 10, "tokens_medidos": true, "cost_micro_usd": 0, "custo_medido": true},
+	}, dren)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("desfecho: %d %s", rec.Code, rec.Body.String())
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 110 {
+		t.Fatalf("a geracao 2 entregue ficou por contar: gasto %d, esperava 10 + a reserva (110)", g.Tokens)
 	}
 }
 
@@ -569,6 +644,70 @@ func TestAOS466SemParcelaNaoHaDesfecho(t *testing.T) {
 	}
 	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
 		t.Fatalf("gasto %d, esperava a reserva inteira", g.Tokens)
+	}
+}
+
+// storeQueFalha466 falha os `Append` que o predicado escolhe, e delega o resto.
+type storeQueFalha466 struct {
+	EventStorePort
+	falha func(stream string, in eventstore.EventInput) bool
+}
+
+func (s *storeQueFalha466) Append(ctx context.Context, stream string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	if s.falha(stream, in) {
+		return eventstore.AppendResult{}, errors.New("falha injectada")
+	}
+	return s.EventStorePort.Append(ctx, stream, in, opts...)
+}
+
+// TestAOS466UmDesfechoQueFalhaNaoLibertaAReserva — achado MÉDIO-2 da revisão adversarial, pela rota:
+// a parcela grava-se, o desfecho terminal NÃO (o drenador vê 503, o pedido continua vivo). A reserva
+// não se pode libertar — a primeira versão marcava a parcela como final antes do desfecho, e o
+// gasto caía para o consumo desta geração com o pedido ainda a ser planeado.
+func TestAOS466UmDesfechoQueFalhaNaoLibertaAReserva(t *testing.T) {
+	node, h, q := aos466No(t, 10_000, 100)
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-466"); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao: %d", rec.Code)
+	}
+	node.EventStore = &storeQueFalha466{EventStorePort: node.EventStore, falha: func(stream string, in eventstore.EventInput) bool {
+		return stream == planRequestStream && in.Type == EventTypePlanRequestOutcome
+	}}
+	r := reclamarEReportar(t, h, map[string]any{
+		"run_id": "plano-466", "generation": 1, "classe": DesfechoTerminal,
+		"consumo": map[string]any{"tokens": 10, "tokens_medidos": true, "cost_micro_usd": 0, "custo_medido": true},
+	})
+	if r.codigo != http.StatusServiceUnavailable {
+		t.Fatalf("o desfecho falhado devia dar 503, veio %d %s", r.codigo, r.corpo)
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
+		t.Fatalf("a reserva libertou-se com o pedido vivo: gasto %d, esperava 100", g.Tokens)
+	}
+}
+
+// TestAOS466UmFechoQueFalhaDeixaAReservaInteira — o desfecho terminal está no log e o fecho da quota
+// falha: 204 (o drenador tem de avisar o fim do plano, que é verdade), e a reserva fica inteira — a
+// mais, nunca a menos.
+func TestAOS466UmFechoQueFalhaDeixaAReservaInteira(t *testing.T) {
+	node, h, q := aos466No(t, 10_000, 100)
+	q.es = &storeQueFalha466{EventStorePort: node.EventStore, falha: func(_ string, in eventstore.EventInput) bool {
+		return strings.Contains(in.StepID, ":closed:")
+	}}
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-466"); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao: %d", rec.Code)
+	}
+	r := reclamarEReportar(t, h, map[string]any{
+		"run_id": "plano-466", "generation": 1, "classe": DesfechoTerminal,
+		"consumo": map[string]any{"tokens": 10, "tokens_medidos": true, "cost_micro_usd": 0, "custo_medido": true},
+	})
+	if r.codigo != http.StatusNoContent {
+		t.Fatalf("o desfecho esta no log: 204, veio %d %s", r.codigo, r.corpo)
+	}
+	est, _, err := estadoDoPedido(context.Background(), node.EventStore, "plano-466", setembro)
+	if err != nil || est.resposta.Estado != EstadoPlanoTerminado {
+		t.Fatalf("o desfecho terminal devia estar no log: %+v %v", est.resposta, err)
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
+		t.Fatalf("sem fecho a reserva fica inteira: gasto %d, esperava 100", g.Tokens)
 	}
 }
 
