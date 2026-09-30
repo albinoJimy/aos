@@ -2385,8 +2385,8 @@ eixo AOS-456 tem a gémea («60 submissões rotativas») fixada no arranque real
 - **`tectoDePendentes = 1000`** (`plan_claim.go`) continua sem repartição por chamador nem variável de
   ambiente. Herdado do AOS-460; **fechado em AOS-464**.
 - **Enumeração de tectos.** `maxInFlight=512` tem repartição **não composta por omissão**, e o
-  `http.Server` de produção não tem `LimitListener` nem `MaxHeaderBytes` — **não há tecto de ligações
-  aceites**, que é o tecto por baixo de todos os outros. Por abrir.
+  `http.Server` de produção não tinha tecto de ligações aceites — **fechado em AOS-465**. A metade
+  sobre o `MaxHeaderBytes` estava exagerada: não definido, o Go aplica 1 MiB por omissão.
 
 ### Estado
 **FEITO** (2026-09-29).
@@ -2752,6 +2752,166 @@ sensor. Ambos fixados em `TestAOS464ContadoresDasRecusasEAMetricaNaoMentem` (5/5
   a terceira. Varrer campos à mão falhou **duas** vezes pela mesma forma (`tuned` no AOS-463,
   `planMaxPendingPerSubmitter` aqui — esta escapava ao guarda das dobras, mas a suite do pacote apanhava-a pelo teste do banner). Fica NOMEADO em vez de apagado: fechá-lo muda a assinatura de
   `ingressPostureBanner` e de todos os seus testes.
+
+### Estado
+**FEITO** (2026-09-30).
+
+---
+
+## AOS-465 — Tecto de ligações aceites no `http.Server`
+
+### Contexto
+Todos os outros tectos do nó actuam **depois** de uma ligação ser aceite. Sem este, cada ligação TCP
+custa um descritor e uma goroutine até os timeouts a fecharem, sem número máximo. Declarado como
+residual desde o AOS-460.
+
+### Quatro versões, três refutadas por revisão independente
+**Primeira — o `Accept` espera no tecto (semântica do `netutil.LimitListener`). ALTO.** Ligações que só
+seguram a vaga libertam-na ao ritmo dos timeouts, não do trabalho: keep-alive depois de um 404 60 s, h2
+com o preâmbulo e sem pedido 61 s, TCP sem bytes 5 s. **~17 ligações/s de uma só origem mantinham as
+1024 ocupadas**; com o tecto a 16 e 32 sockets ociosos o `/healthz` passou **0/4** (60/60 sem tecto),
+com a sonda de liveness que o README recomenda a reiniciar o pod. Sem tecto, o mesmo ataque tinha de
+esgotar os descritores. O banner dizia «ficam 768 para o plano de controlo»: falso com o nó exposto.
+
+**Segunda — despejar, classificando ESTADOS. ALTO outra vez.** Protegia «handler em curso sem corpo por
+ler» e «resposta que o servidor ainda não terminou». A revisão seguinte mediu três formas de segurar
+vagas nesses estados, todas à espera do CLIENTE: h2 com RST_STREAM a meio de um handler — o servidor
+declara `StateIdle` antes de o handler sair, o aviso era ignorado e a ligação ficava «em serviço» até ao
+IdleTimeout, **60 s, o mesmo custo do trinco original** (`/healthz` 0/10 durante 60 s); corpo anunciado
+a um 404, que o servidor drena depois do handler; h2 com a janela de controlo de fluxo a 0 e a resposta
+presa. As duas últimas 15 s cada, **sem autenticação e sem token**. E em h2 todo o pedido tem corpo, por
+isso um GET h2 — um stream SSE saudável incluído — contava como «à espera do corpo» e era despejável.
+Mais: mudar `r.Body` no pedido original mudava a decisão do servidor sobre o corpo por ler (um 404 a
+10 MB passava a esperar o ReadTimeout), e o embrulho do `ResponseWriter` escondia do `MaxBytesReader` o
+aviso que faz o servidor fechar a ligação depois do 413.
+
+**Terceira — o critério é ONDE O SERVIDOR ESTÁ BLOQUEADO.** Cada estado da segunda versão tinha uma
+variante em que a espera era, afinal, pelo cliente. Em vez de classificar estados, mede-se: uma ligação
+só está protegida enquanto um handler dela faz trabalho do servidor, isto é, não está dentro de uma
+leitura do corpo nem de uma escrita da resposta. As quatro formas novas foram sondadas uma a uma contra
+o servidor real (cada uma segura 3/3 vagas depois da graça e cai no escalão despejável; o `/healthz`
+responde em 2 ms). Para não cortar respostas acabadas de terminar, acrescentou-se uma graça de 250 ms,
+e o escalão mandava antes da graça.
+
+**Terceira — graça com precedência e SEM PRAZO. ALTO outra vez.** A mesma revisão, sobre a terceira
+versão, confirmou fechados todos os ataques anteriores e encontrou um novo, nascido da graça: uma
+ligação keep-alive a pedir a cada <250 ms fica sempre no escalão 1 imatura, e «o escalão manda antes da
+graça» impedia então todos os despejos do escalão 2. Com 1 escudo e 7 retentores, `/healthz` **0/28 em
+60 s, 0 despejos**, sem token; um poller legítimo a mais de 4 Hz faria de escudo sem o saber. Todas as
+vagas mantidas imaturas pelo mesmo meio também trancavam. Mais uma fuga: `defer t.Stop()` dentro do
+ciclo do `Accept` acumulava um temporizador por volta (+2,6 MB em 200 000 voltas).
+
+**Quarta — a graça com PRAZO por chegada.** A graça continua a mandar, mas só durante
+`GracaDeDespejo` contados a partir do momento em que a chegada vê a primeira candidata; esgotado, cede
+(maduras primeiro, depois imaturas, sempre por escalão). Esperar com todas as vagas a trabalhar não gasta
+prazo — contá-lo da chegada foi a primeira tentativa, e o teste do h2 servido apanhou-a a cortar uma
+resposta. As sondas da revisão contra esta versão: escudo + escalão 2 **49/49**, escudo h2 longo
+**49/49**, todas a renovar a graça **49/49**, primeiro `/healthz` aos 254 ms (o prazo); A1, A2(a),
+A2(b), M1 e M2 continuam fechados; a fuga de temporizadores desapareceu (−160 KB).
+
+### Critérios de aceitação
+- [x] Listener limitador em `ligacoes_aceites.go`, por baixo do TLS (conta ligações TCP). Escrito no
+  pacote porque `golang.org/x/net` não está no `go.mod` e o build de produção é offline.
+- [x] **Atingido o tecto, uma ligação nova DESPEJA outra**, por escalão: (1) sem handler e ociosa, ou
+  ainda sem pedido; (2) à espera do cliente — todos os handlers dentro de uma leitura do corpo ou de uma
+  escrita da resposta, ou nenhum handler e a resposta por terminar; (3) nenhuma: o `Accept` espera.
+  Dentro do escalão, a que espera há mais tempo. O escalão manda antes da graça.
+- [x] **Graça de 250 ms** (`GracaDeDespejo`) no estado actual antes de despejar. Em h2 o
+  `StateIdle` chega com a última trama ainda no buffer do servidor; sem a graça, um `Accept` acordado
+  por ele cortava a resposta (medido: `unexpected EOF` num pedido h2 acabado de servir).
+- [x] **A graça tem PRAZO por chegada**: no máximo `GracaDeDespejo` a partir da primeira candidata.
+  Uma ligação nova espera no máximo isso, salvo enquanto todas as vagas fazem trabalho do servidor.
+  O temporizador pára a cada volta do `Accept`.
+- [x] `StateIdle` limpa a marca de serviço mesmo com um handler ainda a correr (h2 com RST_STREAM).
+- [x] O pedido passado ao handler é uma cópia rasa; o `MaxBytesReader` recebe o `ResponseWriter`
+  original (`semVigia`). O embrulho da resposta implementa `Flush` (o SSE exige `http.Flusher`) e
+  `Unwrap` (o `ResponseController` do SSE).
+- [x] O `Accept` aceita primeiro e procura vaga depois: reservar antes obrigaria a despejar sem haver
+  quem quisesse a vaga, e com o tecto a 1 nenhuma ligação sobreviveria. Limite de descritores `n+1`.
+- [x] O `Close` do listener desbloqueia um `Accept` à espera de vaga e fecha a ligação que tem na mão.
+- [x] A vaga volta uma só vez (`sync.Once`), e a libertação nunca bloqueia. `CloseWrite` e `ReadFrom`
+  da ligação TCP repostos no embrulho.
+- [x] `AOS_API_MAX_CONNS` (default 1024), **estritamente maior** que `AOS_TRAJECTORY_MAX_CONNS`: um
+  stream SSE entre eventos está a trabalhar e é protegido. Validado sobre o par final do ambiente **e**
+  no `NewAPIServer` para a composição por opções (`ErrConnCeilingNotAboveSSE`, SSE sem tecto incluído).
+- [x] Banner declara o tecto, o critério, quantas vagas o SSE não toma, e o que o tecto NÃO contém.
+  Métricas `aos_api_connections_open`, `aos_api_connections_ceiling`, `aos_api_connections_evicted_total`.
+- [x] Regressão das três revisões contra o servidor real: mais de dois tectos cheios de ligações de dez
+  formas (TCP sem bytes, TLS sem pedido, keep-alive, cabeçalhos a pingar, corpo a pingar, h2 sem pedido,
+  corpo anunciado a um 404, h2 com RST_STREAM, h2 com janela 0 num 404 e no `/metrics`), e o `/healthz`
+  passa 4/4 sem nunca haver mais ligações do que o tecto; e um escudo a renovar a graça (um, e todas
+  as vagas), com o `/healthz` 4/4 em menos de um segundo cada.
+
+### Mutações medidas
+Trinta e duas mutações, três rodadas cada com `-race`: **96/96 detectadas**.
+
+| mutação | detectada por |
+|---|---|
+| sem despejo (o `Accept` volta a só esperar — a primeira versão) | ALTO, ligação servida, LRU, corpo lento, servidor real, ligação nova, escrita presa |
+| resposta por terminar no escalão 1 | resposta por terminar cede depois das ociosas |
+| nada protegido | ligação servida, corpo lento, vaga única, corpo lido, escrita presa, h2 servido |
+| ordem MAIS recentemente usada | LRU, ordem no escalão 2 |
+| sem o escalão «todos os handlers à espera do cliente» | corpo lento, escrita presa, ordem no escalão 2 |
+| escalão 2 com «algum handler» em vez de «todos» | stream h2 a trabalhar protege a ligação |
+| `NewAPIServer` sem `ligarAoServidor` | servidor real |
+| `Close` não acorda o `Accept` à espera | shutdown |
+| vaga devolvida a cada `Close` | ALTO, vaga única |
+| `StateIdle` não limpa a marca de serviço | ligação nova |
+| leitura do corpo não vigiada | corpo lento |
+| escrita da resposta não vigiada (`Write`) | escrita presa, ordem no escalão 2 |
+| `Flush` não vigiado | escrita presa (caminho do `Flush`) |
+| leitura que entra e não sai | corpo lento, corpo lido |
+| entrada em I/O sem marca de tempo | ordem no escalão 2 |
+| ordem do escalão 2 invertida | ordem no escalão 2 |
+| `soltar` sem tirar do mapa das vivas | o mapa esvazia |
+| embrulho sem `CloseWrite` | meio-fecho |
+| par com o SSE sem igualdade nem SSE sem tecto | par nas opções |
+| `StateActive` em vez de `StateIdle` | ligação servida, ligação nova |
+| `StateIdle` não acorda o `Accept` | ligação servida |
+| ligação nova sem marca (a mais antiga de todas) | ligação nova |
+| `MaxBytesReader` com o `ResponseWriter` embrulhado | 413 |
+| graça a 0 | h2 servido |
+| graça ignorada | h2 servido |
+| escalão 2 à frente de um escalão 1 ainda na graça | ALTO, ligação servida, LRU, servidor real, ligação nova |
+| sem temporizador de maturação | ALTO, ligação servida, LRU, corpo lento, servidor real |
+| pedido original mudado em vez de copiado | pedido original |
+| graça SEM prazo (a terceira versão) | graça não renovável por terceiros |
+| prazo contado da chegada e não da primeira candidata | h2 servido |
+| esgotado o prazo, o escudo imaturo antes das maduras do escalão 2 | graça não renovável (o escudo tem de sobreviver) |
+
+Ficam sem teste, e declara-se: a marca `despejada` (só importa com `Accept` concorrentes, que o
+`http.Server` não tem), o `Stop()` do temporizador a cada volta (a fuga foi medida pela revisão, não
+por um teste da suite), e a duração exacta do temporizador (só eficiência).
+
+Houve três surpresas durante estas versões, e todas mudaram o desenho:
+- O teste do h2 servido apanhou o corte da resposta por um despejo acordado pelo `StateIdle`, e daí
+  nasceu a graça.
+- Com a graça, uma candidata madura do escalão 2 passava à frente de uma do escalão 1 ainda na
+  graça; o teste do servidor real apanhou-o, e daí nasceu «o escalão manda antes da graça».
+- Contar o prazo da chegada deixava uma ligação que esperou segundos, com todas as vagas a
+  trabalhar, despejar sem graça a primeira resposta que acabasse; o teste do h2 servido apanhou-o.
+
+### Residuais
+- **Inundação volumétrica de ligações novas ou de pedidos.** Despejam-se umas às outras e às legítimas
+  ainda sem pedido; com todas as vagas mais novas do que a graça, a ligação nova espera o prazo e depois
+  pode despejar uma resposta legítima acabada de terminar. É do edge (`limit_conn`/`limit_req`).
+- **Trabalho legítimo dentro de handlers** protege a vaga; é limitado pelos tectos acima deste (taxa,
+  runs em curso, SSE), não por este.
+- **Com o escalão 2 como único**, uma ligação nova pode despejar uma escrita legítima em curso — só
+  depois da graça, e sempre a que espera há mais tempo.
+- **Custo:** cada leitura do corpo e cada escrita da resposta tomam o mutex do listener duas vezes, e
+  cada despejo percorre as ligações (medido pela revisão na segunda versão: 13,8 µs por despejo com
+  1024). Não medido sob carga real.
+- **Atrás do edge do compose**, o nginx tem `proxy_read_timeout 3600s` (pelo SSE). No único caso em
+  que o `Accept` espera, um pedido encaminhado pode esperar até esse prazo em vez de falhar depressa.
+- **Em h2 os streams multiplexam numa ligação**: o par com o SSE é um majorante, não uma igualdade.
+- **Descritores**: o runtime Go sobe o soft `RLIMIT_NOFILE` até ao hard no arranque, e o compose não
+  fixa `ulimit nofile`. O tecto só não morde antes dos descritores se o hard do deployment for perto
+  de 1024; não medido no deployment real.
+- **`aos_api_connections_evicted_total` pode contar a mais** quando o servidor fecha a ligação escolhida
+  ao mesmo tempo que o despejo.
+- Com todas as vagas a trabalhar, o plano de controlo espera como qualquer outra ligação — não há vaga
+  reservada.
 
 ### Estado
 **FEITO** (2026-09-30).

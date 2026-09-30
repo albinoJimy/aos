@@ -87,6 +87,9 @@ type ingressLimits struct {
 	// inútil.
 	planMaxPending             int
 	planMaxPendingPerSubmitter int
+	// apiMaxConns é o tecto de ligações abertas no listener da API (AOS-465), e tem de exceder o
+	// tecto de streams SSE: cada stream segura uma ligação durante minutos.
+	apiMaxConns int
 	// tuned diz se ALGUMA das variáveis foi definida. Vive AQUI (e não num parâmetro
 	// do banner) para que o texto do banner não possa divergir do que a leitura viu: a
 	// origem dos números e os números são o MESMO valor de retorno.
@@ -107,6 +110,7 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		maxInFlight:                DefaultMaxInFlight,
 		planMaxPending:             DefaultPlanMaxPending,
 		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		apiMaxConns:                DefaultMaxAcceptedConns,
 		readRatePerSec:             DefaultReadRatePerSec,
 		readBurst:                  DefaultReadRateBurst,
 		trajMaxConns:               DefaultMaxTrajectoryConns,
@@ -209,6 +213,23 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		}
 		lim.trajMaxConnsPerReader, lim.tuned = n, true
 	}
+	// TECTO DE LIGAÇÕES ACEITES (AOS-465), validado contra o tecto SSE sobre o PAR FINAL — lido depois
+	// dele, porque a validação depende do valor em vigor e não só do definido.
+	rawConns := strings.TrimSpace(os.Getenv("AOS_API_MAX_CONNS"))
+	if rawConns != "" {
+		n, err := strconv.Atoi(rawConns)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_API_MAX_CONNS=%q", ErrBadIngressLimits, rawConns)
+		}
+		lim.apiMaxConns, lim.tuned = n, true
+	}
+	if lim.apiMaxConns <= lim.trajMaxConns {
+		return ingressLimits{}, nil, fmt.Errorf("%w: AOS_API_MAX_CONNS=%d (%s) tem de ser ESTRITAMENTE MAIOR que AOS_TRAJECTORY_MAX_CONNS=%d (%s) — cada stream SSE segura uma ligacao, e sem folga os streams ocupam o listener inteiro, incluindo as ligacoes do plano de CONTROLO (/steer, /pause)",
+			ErrBadIngressLimits,
+			lim.apiMaxConns, origemDoLimite(rawConns),
+			lim.trajMaxConns, origemDoLimite(rawTraj))
+	}
+
 	// TECTO DA FILA DE PLANOS (AOS-464) — o global e a sua repartição por submissor.
 	//
 	// O global lê-se PRIMEIRO, porque a validação da repartição depende dele. Ler os dois na mesma
@@ -275,6 +296,7 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		WithMaxTrajectoryConnsPerReader(lim.trajMaxConnsPerReader),
 		WithPlanMaxPending(lim.planMaxPending),
 		WithPlanMaxPendingPerSubmitter(lim.planMaxPendingPerSubmitter),
+		WithMaxAcceptedConns(lim.apiMaxConns),
 	}, nil
 }
 
@@ -334,6 +356,16 @@ func dobraDoTectoDaFila(lim ingressLimits, gateComposto, principalVerificavel bo
 		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: LIGADA sobre principal VERIFICADO — cada submissor ocupa no maximo %d de %d pedidos por drenar; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. Exceder responde 429 (o chamador tem de drenar o que e dele) e NAO 503 (o no sem consumidor), e a reparticao e verificada ANTES do tecto global para que o diagnostico aponte a causa certa.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
 	}
 	return d
+}
+
+// dobraDasLigacoes declara o tecto de ligações aceites, o critério do despejo, e QUANTAS ligações os
+// streams SSE não conseguem tomar. É esse o número que importa ao operador: o plano de controlo
+// (/steer, /pause) disputa as mesmas vagas. E declara o que o tecto NÃO faz — duas revisões
+// adversariais mediram frases deste banner falsas («ficam N para o plano de controlo», «uma ligacao
+// que so segura a vaga nao as tira a um pedido novo»), e é a frase que o operador lê.
+func dobraDasLigacoes(lim ingressLimits) string {
+	return fmt.Sprintf(" TECTO DE LIGACOES ACEITES (AOS-465): %d ligacoes TCP abertas no listener; atingido, uma ligacao NOVA DESPEJA outra em vez de esperar, e so protege a vaga um handler a fazer trabalho do SERVIDOR — ler o corpo, escrever a resposta ou ter a resposta por terminar e esperar pelo CLIENTE e nao protege. Sai primeiro a ociosa ou sem pedido, depois a que espera pelo cliente ha mais tempo, em regra nenhuma antes de %s no estado actual; uma ligacao nova espera no maximo esse prazo desde que haja uma candidata, e so espera mais enquanto TODAS estiverem a trabalhar. Os streams SSE entre eventos estao a trabalhar e tomam no maximo %d; as outras %d servem o resto da API, incluindo o plano de CONTROLO. NAO contem uma inundacao volumetrica de ligacoes ou de pedidos, em que a ligacao nova pode despejar uma resposta acabada de terminar, nem o trabalho legitimo dentro de handlers (esse e dos tectos acima deste): isso e do edge (limit_conn).",
+		lim.apiMaxConns, GracaDeDespejo, lim.trajMaxConns, lim.apiMaxConns-lim.trajMaxConns)
 }
 
 // origemDoLimite diz se um valor veio da variável de ambiente ou do default do binário. Existe para
@@ -502,6 +534,6 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	return []string{
 		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id} e o resto do plano de DADOS) tem desde AOS-458 um balde de TAXA proprio (AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST) consumido no involucro da rota, e o stream SSE de trajectoria tem AINDA um tecto de LIGACOES em duas camadas (AOS_TRAJECTORY_MAX_CONNS global + AOS_TRAJECTORY_MAX_CONNS_PER_READER por leitor). O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
 			origem, lim.ratePerSec, lim.burst, lim.maxInFlight,
-			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)),
+			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)+dobraDasLigacoes(lim)),
 	}
 }
