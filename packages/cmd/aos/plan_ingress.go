@@ -356,15 +356,61 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	//
 	// **Isto custa uma varredura do stream por submissão**, e fica declarado: a projecção é
 	// linear no número de eventos da fila, como o molde das aprovações. Com o tecto em
-	// [tectoDePendentes] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
-	// os pendentes — a retenção do stream é resíduo declarado do AOS-423.
-	if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila); err != nil {
+	// [DefaultPlanMaxPending] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
+	// os pendentes — a retenção do stream é resíduo declarado do AOS-423, e a marca de água do
+	// AOS-429 é o que impede que o custo cresça com a idade do nó.
+	//
+	// DESDE O AOS-464 SÃO DUAS CAMADAS, uma projecção: o tecto GLOBAL do nó e a repartição por
+	// SUBMISSOR. As duas contagens saem da mesma leitura, pelo que a segunda camada não custa uma
+	// varredura a mais.
+	// A REPARTIÇÃO POR SUBMISSOR SÓ SE COMPÕE COM O GATE (AOS-464), e a razão é diferente da do
+	// eixo SSE: aqui o corpo do pedido NUNCA declara o principal ([planRequest] tem `run_id` e
+	// `objective` e mais nada), pelo que sem `readGov` o `p.Principal` fica VAZIO para TODOS os
+	// chamadores. Um tecto chaveado no vazio não seria contornável — seria um tecto GLOBAL mais
+	// apertado, a recusar a 125 em vez de 1000, anunciado como equidade. Não compor é a única
+	// leitura honesta, e o banner de arranque declara-a.
+	// O `h.readGov != nil` É CINTO-E-SUSPENSÓRIOS, e fica declarado como tal em vez de contado como
+	// coberto: sem `readGov` o `p.Principal` já é vazio, e [pendentesNaFila] devolve 0 para um
+	// submissor vazio, pelo que remover esta condição não muda comportamento nenhum hoje — medido, a
+	// mutação sobrevive aos quatro testes de rota deste eixo. A metade que se mede sozinha é a de
+	// dentro, em [TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal]. Esta vale se alguém vier
+	// a preencher o principal por outro caminho, e aí é a única barreira.
+	submissorImputavel := ""
+	if h.readGov != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+		submissorImputavel = p.Principal
+	}
+
+	total, doSubmissor, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila, submissorImputavel)
+	if err != nil {
 		h.logf("plan-ingress: tecto nao verificavel: %v", err)
 		writeError(w, http.StatusServiceUnavailable, "fila indisponivel")
 		return
-	} else if pendentes >= tectoDePendentes {
+	}
+
+	// A REPARTIÇÃO CORRE ANTES DO GLOBAL, e a razão é o DIAGNÓSTICO, não o custo — as duas
+	// contagens saem da MESMA projecção, já feita acima, logo nenhuma ordem poupa trabalho.
+	//
+	// Quando as duas condições são verdadeiras ao mesmo tempo (a fila está cheia E este submissor
+	// está acima da sua quota), o mais provável é que ele seja a CAUSA. Responder-lhe 503 — «o nó
+	// não tem quem drene» — ensina-lhe o contrário do que é verdade: manda-o procurar o consumidor
+	// quando o problema são os 900 pedidos dele. Na ordem inversa não se perde nada: um submissor
+	// DENTRO da sua quota continua a receber 503 quando a fila está cheia por causa de outros, que
+	// é a leitura certa para ele.
+	//
+	// O CÓDIGO É OUTRO, e a distinção é o conteúdo da correcção: **429** aqui, porque é o chamador
+	// que tem de esperar ou drenar o que é dele; **503** no global, porque é o nó que não tem quem
+	// drene e a espera certa é a de um operador. Um 503 por-submissor diria a um cliente saudável
+	// que o nó está em baixo.
+	if submissorImputavel != "" && doSubmissor >= h.cfg.planMaxPendingPerSubmitter {
+		h.logf("plan-ingress: RECUSADO por tecto DO SUBMISSOR — %q tem %d pedidos por drenar "+
+			"(tecto por-submissor %d, global %d, fila %d)", submissorImputavel, doSubmissor,
+			h.cfg.planMaxPendingPerSubmitter, h.cfg.planMaxPending, total)
+		writeError(w, http.StatusTooManyRequests, "quota de pedidos por drenar deste submissor atingida")
+		return
+	}
+	if total >= h.cfg.planMaxPending {
 		h.logf("plan-ingress: RECUSADO por tecto — %d pedidos por drenar (tecto %d); o consumidor "+
-			"nao esta a drenar a fila", pendentes, tectoDePendentes)
+			"nao esta a drenar a fila", total, h.cfg.planMaxPending)
 		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
 		return
 	}

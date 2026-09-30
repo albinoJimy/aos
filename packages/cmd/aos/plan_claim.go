@@ -115,13 +115,6 @@ const intervaloDeReverificacao = 10 * time.Minute
 // valor ficar abaixo. Custo: um consumidor que morra segura o pedido até uma hora.
 const ttlDaReclamacao = 60 * time.Minute
 
-// tectoDePendentes é o número máximo de pedidos por drenar.
-//
-// Atingido, o INGRESSO recusa pedidos NOVOS (ADR-030 §2.7). Não se descartam os antigos: um
-// pedido descartado em silêncio é a mesma classe de defeito que este eixo inteiro existe para
-// fechar. É alto de propósito — a intenção é travar um laço em fuga, não moldar carga.
-const tectoDePendentes = 1000
-
 // pedidoNaFila é o estado projectado de um pedido, reconstituído do log.
 type pedidoNaFila struct {
 	RunID     string
@@ -576,12 +569,29 @@ func truncar(s string, n int) string {
 	return s[:n]
 }
 
-// pendentesNaFila conta os pedidos por drenar. É o que o [tectoDePendentes] mede.
+// pendentesNaFila conta os pedidos por drenar: o TOTAL, e quantos são do `submissor` dado.
 //
 // A `marca` é opcional (nil ⇒ lê tudo) porque há um chamador — a métrica em `api.go` — que não
 // tem estado onde a guardar e para quem uma leitura completa ocasional não custa nada. Os dois
 // caminhos QUENTES (`POST /plans` e a reclamação) passam-na.
-func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua) (int, error) {
+//
+// # PORQUE É QUE A CONTAGEM POR SUBMISSOR SAI DAQUI, E NÃO DE UMA FUNÇÃO PRÓPRIA
+//
+// A mesma razão que [projectarFilaComMarca] declara para a marca de água: a definição de «está na
+// fila» estaria em dois sítios, e dois sítios derivam. Quem mudar a regra de filtragem muda as duas
+// contagens com ela, sem ter de se lembrar.
+//
+// E NÃO CUSTA NADA: a projecção já devolve a fila inteira, pelo que contar por submissor é uma
+// passagem sobre uma fatia que o tecto global limita. Não há mapa a manter, não há caminho de
+// libertação e não há TOCTOU — ao contrário do tecto por-chamador do `POST /runs` (AOS-456a), que
+// conta runs vivos em memória. Aqui a fonte de verdade é o log, e a contagem é derivada dele.
+//
+// Um `submissor` vazio devolve `doSubmissor == 0` e NUNCA a contagem dos pedidos sem principal:
+// sem gate soberano composto todos os pedidos ficam com o principal vazio (ver
+// [handlePlanRequest]), e contá-los como «de um submissor» faria o tecto por-submissor valer como
+// tecto global para todos os chamadores somados — mais apertado do que o global e anunciado como
+// equidade. O chamador é que decide não compor; esta função não adivinha.
+func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua, submissor string) (total, doSubmissor int, err error) {
 	var desde uint64
 	if marca != nil {
 		desde = marca.desde()
@@ -589,15 +599,22 @@ func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAg
 	eventos, err := store.Read(ctx, planRequestStream, desde)
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
-			return 0, nil
+			return 0, 0, nil
 		}
-		return 0, err
+		return 0, 0, err
 	}
 	fila, nova := projectarFilaComMarca(eventos, time.Now().UTC())
 	if marca != nil {
 		marca.avancar(nova)
 	}
-	return len(fila), nil
+	if submissor != "" {
+		for i := range fila {
+			if fila[i].Payload.Principal == submissor {
+				doSubmissor++
+			}
+		}
+	}
+	return len(fila), doSubmissor, nil
 }
 
 // filaReclamavel diz se a rota de reclamacao vai SERVIR, e existe para o banner de arranque o

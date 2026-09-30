@@ -2240,7 +2240,7 @@ O banner ganhou as três, no molde do AOS-456a, mais um ramo de aviso quando o p
 **`tectoDePendentes = 1000`** (`plan_claim.go`) é um **segundo** tecto de ocupação global, sem
 repartição por chamador, sem variável de ambiente, no mesmo plano de dados. Um submissor autenticado
 enche os 1000 e todos os outros levam **503** em `POST /plans`. O AOS-459 afirmou que `trajConns` era
-o único; não era. Fica por abrir.
+o único; não era. **Fechado em AOS-464.**
 
 ### Estado
 **FEITO** (2026-09-29).
@@ -2383,7 +2383,7 @@ eixo AOS-456 tem a gémea («60 submissões rotativas») fixada no arranque real
   6 ficheiros do pacote; um sensor mecânico para a classe é **AOS-462**, por abrir — corrigir a
   instância e não a classe garante uma quinta vez.
 - **`tectoDePendentes = 1000`** (`plan_claim.go`) continua sem repartição por chamador nem variável de
-  ambiente. Herdado do AOS-460, por abrir.
+  ambiente. Herdado do AOS-460; **fechado em AOS-464**.
 - **Enumeração de tectos.** `maxInFlight=512` tem repartição **não composta por omissão**, e o
   `http.Server` de produção não tem `LimitListener` nem `MaxHeaderBytes` — **não há tecto de ligações
   aceites**, que é o tecto por baixo de todos os outros. Por abrir.
@@ -2580,6 +2580,95 @@ falsas ou parciais em torno de um mecanismo correcto, que é o padrão desta ses
 
 ### Estado
 **FEITO** (2026-09-29).
+
+---
+
+## AOS-464 — A fila de pedidos de plano reparte-se por SUBMISSOR
+
+### Contexto
+`tectoDePendentes = 1000` (`plan_claim.go`) era uma constante do binário, **sem variável de ambiente**,
+que protegia o NÓ e não dizia nada sobre QUEM ocupa a fila: um submissor autenticado enfileirava os 1000
+e todos os outros levavam **503** em `POST /plans` até alguém drenar.
+
+Não é uma rajada que passa — é **ocupação que fica**: um pedido só sai da fila com desfecho terminal ou
+reclamação viva, e nenhum dos dois depende de quem submeteu. É o MESMO defeito que o AOS-456a fechou no
+`POST /runs`, um plano ao lado, e nenhuma das outras barreiras o cobria:
+
+| barreira | porque não fecha |
+|---|---|
+| balde de admissão | é **taxa**, e global entre chamadores: uma submissão custa um token e o pedido fica na fila horas |
+| tecto de runs em curso (AOS-456a) | conta runs **hospedados**, e esta rota não hospeda nenhum |
+| `edge` / `nginx.conf` | tem `limit_req` (taxa) e **não** `limit_conn` |
+
+Declarado como residual no AOS-460 e repetido no AOS-461 e no AOS-463; fecha aqui.
+
+### O que é DIFERENTE do eixo AOS-456/459, e importa
+A contagem **não vive em memória**: sai da projecção da fila, derivada do log. Não há mapa a manter, não
+há caminho de libertação e **não há TOCTOU** — as duas contagens saem da MESMA leitura, pelo que a
+segunda camada não custa uma varredura a mais. O que há em troca é uma atribuição **degenerada** quando o
+gate soberano não está composto (ver os critérios).
+
+### Critérios de aceitação
+- [x] `pendentesNaFila` devolve o total **e** a contagem do submissor dado. Numa só função, pela razão
+  que `plan_marca_de_agua.go` já declara para a marca de água: a definição de «está na fila» em dois
+  sítios deriva.
+- [x] Duas guardas em `handlePlanRequest`, **a repartição ANTES do global**. A ordem é pelo
+  **diagnóstico**, não pelo custo: quando as duas condições valem, o submissor acima da quota é a causa
+  provável, e responder-lhe 503 («o nó não tem quem drene») manda-o procurar o consumidor quando o
+  problema são os pedidos dele. Medido: a ordem trocada dá 503, e o teste da ordem avermelha.
+- [x] **Códigos distintos:** `429` no por-submissor (o chamador tem de drenar o que é dele), `503` no
+  global (o nó não tem consumidor, e a espera certa é a de um operador).
+- [x] `AOS_PLAN_MAX_PENDING` e `AOS_PLAN_MAX_PENDING_PER_SUBMITTER`, com o par validado **FINAL** — a
+  correcção do AOS-463 aplicada ao nascer em vez de paga em revisão. Três casos na tabela cobrem
+  exactamente a lacuna que o AOS-463 pagou (`global` definido, `porSubmissor` ausente).
+- [x] **A repartição NÃO se compõe sem gate soberano de leitura**, e a razão é mais forte do que nos
+  outros eixos: [planRequest] tem `run_id` e `objective` e mais nada, pelo que sem `readGov` o principal
+  fica **vazio para TODOS**. Um tecto chaveado no vazio não seria contornável — seria um tecto **global
+  mais apertado** (125 em vez de 1000), a recusar com 429 chamadores que não excederam nada e anunciado
+  como equidade.
+- [x] **QUATRO posturas no banner**, não três: «não configurada» e «configurada mas não composta» exigem
+  acções DIFERENTES do operador (definir a variável, ou compor o gate), e colapsá-las mandaria metade
+  deles editar o ficheiro errado. A dobra segue a convenção de nome e **está registada** em
+  `marcadoresDeDobra` — uma dobra fora da convenção é invisível ao guarda e fica engolida pela anterior,
+  que foi o achado BAIXO-3/MÉDIO-4 da 8.ª e 9.ª revisões.
+- [x] O «1000» em texto fixo **saiu** do banner do caminho do plano: os números vivem na linha do
+  ingresso, onde são lidos. Repeti-los em dois sítios é a forma de um deles ficar obsoleto em silêncio, e
+  este banner já tinha o 1000 fixo quando o tecto passou a ser afinável.
+- [x] `aos_plan_queue_ceiling` publica o valor **em vigor** e não o default; nova série
+  `aos_plan_queue_ceiling_per_submitter`, que vale **0** quando a repartição não está composta —
+  publicar o valor configurado aí faria o painel afirmar uma equidade que não existe.
+- [x] A constante `tectoDePendentes` foi **removida**, não mantida ao lado do novo default: duas
+  constantes com o mesmo valor divergem, e o compilador não se queixa de uma `const` de pacote que
+  ninguém usa — teria ficado dívida silenciosa no primeiro commit deste ticket.
+
+### Mutações medidas
+| mutação | detecta |
+|---|---|
+| a guarda por-submissor nunca dispara | **2 de 5** testes (3 corridas) |
+| ordem trocada (global antes da repartição) | 1 de 5 — o teste da ordem |
+| `pendentesNaFila` conta os SEM principal como «de um submissor» | 1 de 5 — **5/5 corridas** |
+| a validação do par volta para dentro do ramo | 2 casos da tabela, e só esses |
+| ramo VERIFICADO do banner sem `gateComposto` | 2 casos, e só esses |
+
+### O que os testes NÃO cobrem, medido e declarado
+O `h.readGov != nil` na atribuição é **cinto-e-suspensórios**: removê-lo sobrevive aos quatro testes de
+rota, porque sem `readGov` o `p.Principal` já é vazio e `pendentesNaFila` devolve 0 para submissor vazio.
+A protecção vive em dois sítios e os testes de rota só detectam a **conjunção** quebrada. A metade que se
+mede sozinha é a de dentro (`TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal`, 5/5). A de fora
+fica declarada no código como o que é: vale se alguém vier a preencher o principal por outro caminho.
+
+### Residuais declarados
+- **Origem dos valores no compose (herdado do AOS-463, não fechado aqui):** o
+  `docker-compose.prod.yml` exporta SEMPRE as duas variáveis (`:-1000`/`:-125`), como as ~30 outras,
+  pelo que `origemDoLimite` dirá «definida» sobre um número que o operador não escreveu. A correcção é
+  no padrão do ficheiro, para todas, e não para duas — fazê-lo só para estas deixaria o ficheiro
+  inconsistente **e** o residual aberto.
+- **O tecto global continua sem sensor directo** de que recusa a 1000: nenhum teste submetia até ao
+  limite antes deste ticket e nenhum o faz agora. O que se fixou é o comportamento com o tecto
+  BAIXADO pela opção; a leitura do valor por ambiente tem a sua própria tabela.
+
+### Estado
+**FEITO** (2026-09-30).
 
 ---
 

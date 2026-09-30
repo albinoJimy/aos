@@ -100,8 +100,8 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		// (AOS-458 — as leituras, que até lá não tinham tecto de taxa nenhum), e os dois tectos de
 		// streams SSE (AOS-459 — o global, que até lá não era afinável por ambiente, e a repartição
 		// por leitor).
-		if len(opts) != 5 {
-			t.Fatalf("esperava 5 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE), vieram %d", len(opts))
+		if len(opts) != 7 {
+			t.Fatalf("esperava 7 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE + os dois tectos da FILA DE PLANOS do AOS-464), vieram %d", len(opts))
 		}
 	})
 

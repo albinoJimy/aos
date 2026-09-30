@@ -1161,11 +1161,13 @@ func TestAOS456AOBannerDeclaraOQueOEIXONAODA(t *testing.T) {
 var marcadoresDeDobra = []string{
 	marcadorDobra456,
 	marcadorDobraSSE,
+	marcadorDobraFila,
 }
 
 const (
-	marcadorDobra456 = "TECTO POR-CHAMADOR (AOS-456)"
-	marcadorDobraSSE = "TECTO DE STREAMS SSE POR LEITOR (AOS-459)"
+	marcadorDobra456  = "TECTO POR-CHAMADOR (AOS-456)"
+	marcadorDobraSSE  = "TECTO DE STREAMS SSE POR LEITOR (AOS-459)"
+	marcadorDobraFila = "TECTO DA FILA DE PLANOS (AOS-464)"
 )
 
 // dobraDoEixo devolve a parte do banner que começa em `inicio` (um dos [marcadoresDeDobra]) e
@@ -1206,7 +1208,7 @@ func dobraDoEixo(t *testing.T, banner, inicio string) string {
 // VARRE TODAS AS COMBINAÇÕES DE POSTURA, e a primeira versão varria UMA (achado MÉDIO-4 da oitava
 // revisão adversarial). Varrer uma postura basta para as duas dobras de hoje — o marcador de cada uma
 // está nos quatro ramos do seu `switch` — e é **falso para uma dobra condicional**, que é a forma do
-// ramo INERTE que já existe. Medido pela revisão: uma dobra `TECTO DE Z (AOS-465):` emitida só quando
+// ramo INERTE que já existe. Medido pela revisão: uma dobra `TECTO DE Z (AOS-464):` emitida só quando
 // `!gateComposto` tem nome conforme e **escapava** à varredura, voltando a alargar a dobra anterior em
 // silêncio.
 //
