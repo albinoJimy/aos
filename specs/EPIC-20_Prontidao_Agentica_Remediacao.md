@@ -2765,36 +2765,78 @@ Todos os outros tectos do nó actuam **depois** de uma ligação ser aceite. Sem
 custa um descritor e uma goroutine até os timeouts a fecharem, sem número máximo. Declarado como
 residual desde o AOS-460.
 
+### A primeira versão tornava a negação MAIS barata (achado ALTO de revisão independente)
+A primeira versão tinha a semântica do `netutil.LimitListener`: atingido o tecto, o `Accept` **espera**.
+A revisão mediu o preço. Ligações que só seguram a vaga libertam-na ao ritmo dos timeouts, não do
+trabalho: keep-alive depois de um 404 segura-a 60 s, h2 com o preâmbulo e sem pedido 61 s, TCP sem
+bytes 5 s. **~17 ligações/s de uma só origem mantinham as 1024 ocupadas**, e com o tecto a 16 e 32
+sockets ociosos o `/healthz` passou **0/4** (60/60 sem tecto) — com a sonda de liveness que o README
+recomenda a reiniciar o pod. Sem tecto, o mesmo ataque tinha de esgotar os descritores do processo.
+O banner dizia «ficam 768 para o resto da API, incluindo o plano de controlo»: era falso com o nó
+exposto directamente.
+
 ### Critérios de aceitação
 - [x] Listener limitador em `ligacoes_aceites.go`, por baixo do TLS (conta ligações TCP). Escrito no
   pacote porque `golang.org/x/net` não está no `go.mod` e o build de produção é offline.
-- [x] Atingido o tecto, o `Accept` **espera** — não há 503, porque recusar exigiria aceitar primeiro.
-- [x] O `Close` do listener desbloqueia um `Accept` à espera de vaga: sem isso, um shutdown com o tecto
-  cheio penduraria o `Serve` até uma ligação libertar a vaga.
-- [x] A vaga volta uma só vez (`sync.Once`), e a libertação nunca bloqueia.
-- [x] `AOS_API_MAX_CONNS` (default 1024), validado **estritamente maior** que
-  `AOS_TRAJECTORY_MAX_CONNS` sobre o par final: cada stream SSE segura uma ligação, e sem folga os
-  streams ocupariam o listener inteiro, incluindo o plano de controlo.
-- [x] Banner declara o tecto e quantas ligações ficam para o resto da API; métricas
-  `aos_api_connections_open` e `aos_api_connections_ceiling`.
+- [x] **Atingido o tecto, uma ligação nova DESPEJA a mais antiga que não esteja a ser servida**, por
+  esta ordem: (1) sem handler em curso, a menos recentemente usada — ociosa, sem pedido, cabeçalhos a
+  pingar; (2) só se não houver: a que tem todos os handlers à espera do CORPO do cliente; (3) nenhuma:
+  o `Accept` espera. Ocupar uma vaga passa a exigir trabalho do servidor, que já tem tectos (taxa,
+  runs em curso, SSE).
+- [x] «Servida» acaba no `ConnState(StateIdle)` do servidor, **não** na saída do handler: o
+  `http.Server` escreve a resposta em buffer depois de o handler retornar, e um despejo nesse
+  intervalo cortava-a (apanhado pelo teste da ligação servida, `unexpected EOF`).
+- [x] O `Accept` aceita primeiro e procura vaga depois: reservar antes obrigaria a despejar sem haver
+  quem quisesse a vaga, e com o tecto a 1 nenhuma ligação sobreviveria. Limite de descritores `n+1`.
+- [x] O `Close` do listener desbloqueia um `Accept` à espera de vaga e fecha a ligação que tem na mão.
+- [x] A vaga volta uma só vez (`sync.Once`), e a libertação nunca bloqueia. `CloseWrite` e `ReadFrom`
+  da ligação TCP repostos no embrulho (sem o primeiro, o servidor em claro perdia o meio-fecho).
+- [x] `AOS_API_MAX_CONNS` (default 1024), **estritamente maior** que `AOS_TRAJECTORY_MAX_CONNS`: um
+  stream SSE está dentro de um handler e não se despeja. Validado sobre o par final do ambiente **e**
+  no `NewAPIServer` para a composição por opções (`ErrConnCeilingNotAboveSSE`, SSE sem tecto incluído).
+- [x] Banner declara o tecto, o despejo, quantas vagas o SSE não toma, e o que o tecto NÃO contém.
+  Métricas `aos_api_connections_open`, `aos_api_connections_ceiling`, `aos_api_connections_evicted_total`.
+- [x] Teste de regressão do ALTO contra o servidor real: dois tectos cheios de ligações de cinco
+  formas (TCP sem bytes, TLS sem pedido, keep-alive, cabeçalhos a pingar, corpo a pingar no
+  `POST /runs`), e o `/healthz` passa 4/4 sem nunca haver mais ligações do que o tecto.
 
-### Mutações medidas (5 corridas cada)
+### Mutações medidas
+Treze mutações, três rodadas cada com `-race`: **39/39 detectadas**.
+
 | mutação | detectada por |
 |---|---|
-| `Close` não desbloqueia o `Accept` à espera | teste do shutdown |
-| vaga devolvida a cada `Close` | teste da vaga única |
-| listener não embrulhado | teste do TLS, da métrica e do shutdown |
-| tecto de ligações pode igualar o SSE | teste do par de ambiente |
-| contador não sobe | quatro testes |
+| sem despejo (o `Accept` volta a só esperar — a primeira versão) | teste do ALTO, LRU, corpo lento, servidor real |
+| despeja ao sair do handler, antes do `StateIdle` | teste determinista da máquina de estados (o de ponta-a-ponta só o via com `-race`) |
+| despeja ligações em handlers | ligação servida, corpo lento, vaga única, servidor real |
+| ordem MAIS recentemente usada | LRU |
+| sem o segundo escalão (corpo lento) | corpo lento |
+| `NewAPIServer` sem `ligarAoServidor` | servidor real (sem ele todas parecem ociosas e o teste do ALTO continuaria verde) |
+| `Close` não acorda o `Accept` à espera | shutdown |
+| vaga devolvida a cada `Close` | ALTO, vaga única |
+| `StateIdle` não limpa a marca de serviço | LRU, máquina de estados |
+| corpo nunca vigiado | corpo lento |
+| embrulho sem `CloseWrite` | meio-fecho |
+| par com o SSE sem igualdade nem SSE sem tecto | par nas opções |
+| `StateActive` em vez de `StateIdle` | LRU |
 
-A primeira bateria foi morta pelo limite de tempo com uma mutação por restaurar na árvore; detectado
-antes de qualquer commit e restaurado. Revelou que o teste da vaga única **pendurava** em vez de falhar
-— a libertação bloqueava num canal vazio. Corrigido no mecanismo (libertação sem bloqueio) e no teste.
+A primeira bateria da primeira versão foi morta pelo limite de tempo com uma mutação por restaurar na
+árvore; detectado antes de qualquer commit. Nesta, a mutação da máquina de estados **sobreviveu** à
+primeira corrida sem `-race`, e foi isso que fez nascer o teste determinista.
 
 ### Residuais
-- **Não se sabe o limite de descritores do deployment**: o compose não fixa `ulimit nofile`. Com um
-  limite de 1024 o tecto por omissão esgotaria os descritores do processo antes de morder.
-- Atingido o tecto, o plano de controlo espera como qualquer outra ligação — não há vaga reservada.
+- **Inundação de ligações NOVAS.** Despejam-se umas às outras e às legítimas que ainda não enviaram o
+  pedido, por ordem de chegada. Uma legítima sobrevive enquanto a inundação não despejar as mais
+  antigas do que ela (com 1024 e 1000 ligações/s, perto de um segundo). Acima disso é volumétrico e
+  é do edge (`limit_conn`/`limit_req`).
+- **Atrás do edge do compose**, o nginx tem `proxy_read_timeout 3600s` (pelo SSE). No único caso em
+  que o `Accept` espera — todas as vagas em handlers —, um pedido encaminhado pode esperar até esse
+  prazo em vez de falhar depressa.
+- **Em h2 os streams multiplexam numa ligação**: o par com o SSE é um majorante, não uma igualdade.
+- **Descritores**: o runtime Go sobe o soft `RLIMIT_NOFILE` até ao hard no arranque, e o compose não
+  fixa `ulimit nofile`. O tecto só não morde antes dos descritores se o hard do deployment for perto
+  de 1024; não medido no deployment real.
+- Com todas as vagas em handlers, o plano de controlo espera como qualquer outra ligação — não há
+  vaga reservada.
 
 ### Estado
 **FEITO** (2026-09-30).
