@@ -2481,6 +2481,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		}
 		readCred = newOIDCReadCredential(v)
 	}
+	// A QUOTA POR PRINCIPAL SÓ SE COMPÕE SOBRE PRINCIPAL VERIFICADO (AOS-457). AQUI, assim que os
+	// quatro campos do predicado existem: antes do banner (que a anunciaria LIGADA e a seguir o nó
+	// abortava) e antes de o arranque se dar por concluído (a guarda de limpeza fecha os stores e
+	// larga a posse do WAL). O predicado é o PARTILHADO com o banner e o handler, sobre os mesmos
+	// campos que o nó vai levar — não uma cópia.
+	if principalQuota != nil && !principalDoRunEVerificavel(&Node{
+		WORM:                    worm,
+		SovereignReadRegions:    readRegions,
+		SovereignAuthority:      readAuthority,
+		SovereignReadCredential: readCred,
+	}) {
+		return nil, ErrPrincipalQuotaUnverified
+	}
 
 	// (7c) DSAR / CRYPTO-SHREDDING (AOS-172, Art. 17). COMPÕE o fluxo DSAR já existente
 	// (AOS-093) sobre: um vault de chaves de PII por-titular DEMO-GRADE (produção liga um KMS
@@ -3172,16 +3185,6 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
-	// A QUOTA POR PRINCIPAL SÓ SE COMPÕE SOBRE PRINCIPAL VERIFICADO (AOS-457). O predicado é o
-	// PARTILHADO com o banner e o handler, sobre os mesmos campos que o nó vai levar — não uma cópia.
-	if principalQuota != nil && !principalDoRunEVerificavel(&Node{
-		WORM:                    worm,
-		SovereignReadRegions:    readRegions,
-		SovereignAuthority:      readAuthority,
-		SovereignReadCredential: readCred,
-	}) {
-		return nil, ErrPrincipalQuotaUnverified
-	}
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,

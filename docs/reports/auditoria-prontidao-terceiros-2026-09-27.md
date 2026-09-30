@@ -200,6 +200,11 @@ de abrir a terceiros — e é menos trabalho do que quase tudo o que já foi fei
 > «menos trabalho do que quase tudo» não se confirmou: o agregado tinha de ser durável, atravessar
 > runs que nunca terminam, sobreviver a réplicas e ser apagável — ver o ticket em
 > `specs/EPIC-20_Prontidao_Agentica_Remediacao.md` para o desenho e os residuais.
+> A revisão adversarial da primeira versão encontrou um contorno que NÃO era da quota: o nó
+> re-executava um `run_id` com desfecho no log depois de o cache de terminados o esquecer, e os
+> turnos da re-execução eram deduplicados no ledger — invisíveis também para o **tecto por-run**, que
+> é anterior a esta auditoria. Corrigido na raiz no mesmo ticket. Ficam declarados: o transbordo do
+> último turno de cada run e o gasto de planeamento do `POST /plans`, que a quota não cobre.
 
 ### 3.3 Um único board, e o onboarding passa pelas chaves offline do operador
 

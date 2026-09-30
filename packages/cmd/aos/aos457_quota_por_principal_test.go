@@ -15,8 +15,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +26,7 @@ import (
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	"github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -742,5 +745,218 @@ func TestAOS457AOutraReplicaEntreALeituraEAEscrita(t *testing.T) {
 	}
 	if n := len(st.reservas); n != 1 {
 		t.Fatalf("%d reservas com quota para uma", n)
+	}
+}
+
+// TestAOS457UmRunTerminadoNaoVoltaAExecutar — o achado ALTO da revisão do AOS-457. O único travão à
+// re-execução de um run terminado era o cache `completed` do serviço: poda FIFO, vazio depois de um
+// restart. Passado ele, re-submeter o `run_id` voltava a chamar o modelo, e o gasto não era contado
+// nem pela quota (reserva idempotente por run) nem pelo tecto por-run (o ledger deduplica os turnos
+// por `(run_id, step)`). Medido: 20 re-submissões, 20 chamadas ao modelo, gasto contado 0.
+func TestAOS457UmRunTerminadoNaoVoltaAExecutar(t *testing.T) {
+	model := &countingModel{}
+	node := newTestNode(t, model)
+	t.Cleanup(func() { _ = node.Close() })
+	node.QuotaPorPrincipal = quotaDeTeste(node.EventStore, 1000, 100, &relogioDeQuota{t: setembro},
+		consumoDuravelParaOrcamento(newTurnLedgerBurndown(node.EventStore)))
+	ctx := context.Background()
+
+	// O relógio do lease AVANÇA a cada leitura: o lease de uma execução anterior está sempre expirado,
+	// e a única coisa que pode recusar a re-submissão é o desfecho. Com o relógio parado o lease
+	// ainda vivo recusava-a — e o teste passaria sem medir nada.
+	var tique atomic.Int64
+	leaseQueAnda := durable.ClockFunc(func() time.Time {
+		return time.Unix(1_700_000_000, 0).UTC().Add(time.Duration(tique.Add(1)) * 2 * time.Minute)
+	})
+	svc, err := NewNodeService(node, WithLeaseClock(leaseQueAnda), WithLeaseTTL(time.Minute), WithCompletedRetention(1))
+	if err != nil {
+		t.Fatalf("NewNodeService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Shutdown(ctx) })
+	for _, id := range []string{"run-x", "run-y"} { // run-y empurra run-x para fora do cache
+		if err := svc.Submit(ctx, svcGoal(id, "trabalho")); err != nil {
+			t.Fatalf("Submit %s: %v", id, err)
+		}
+		esperarRun(t, svc, id)
+	}
+	chamadas := atomic.LoadInt64(&model.calls)
+
+	if err := svc.Submit(ctx, svcGoal("run-x", "trabalho")); !errors.Is(err, ErrRunAlreadyCompleted) {
+		t.Fatalf("re-submeter um run com desfecho no log devia ser recusado como ja terminado, veio %v", err)
+	}
+	// E depois de um «restart»: um serviço novo, sem cache nenhum, sobre o mesmo nó.
+	depois, err := NewNodeService(node, WithLeaseClock(leaseQueAnda), WithLeaseTTL(time.Minute))
+	if err != nil {
+		t.Fatalf("NewNodeService: %v", err)
+	}
+	t.Cleanup(func() { _ = depois.Shutdown(ctx) })
+	if err := depois.Submit(ctx, svcGoal("run-y", "trabalho")); !errors.Is(err, ErrRunAlreadyCompleted) {
+		t.Fatalf("depois de um restart o run terminado voltou a ser admitido: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if n := atomic.LoadInt64(&model.calls); n != chamadas {
+		t.Fatalf("o modelo foi chamado %d vezes a mais — um run terminado voltou a executar", n-chamadas)
+	}
+}
+
+// TestAOS457OArranqueAbortadoNaoPrendeNemAnuncia — achados BAIXOS da revisão. A recusa por falta de
+// principal verificado corria DEPOIS de o arranque se dar por concluído: não fechava o Event Store
+// nem largava a posse do WAL (um segundo Bootstrap no mesmo processo e caminho falhava com «já
+// detido por outro processo»), e o banner já tinha anunciado a quota LIGADA.
+func TestAOS457OArranqueAbortadoNaoPrendeNemAnuncia(t *testing.T) {
+	limparAmbienteDaQuota(t)
+	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "1000")
+	caminho := filepath.Join(t.TempDir(), "eventos.wal")
+	cfg := tnBaseConfig()
+	cfg.EventStorePath = caminho
+	var banner strings.Builder
+	if node, err := Bootstrap(context.Background(), cfg, &banner); !errors.Is(err, ErrPrincipalQuotaUnverified) {
+		if node != nil {
+			_ = node.Close()
+		}
+		t.Fatalf("devia recusar arrancar, veio %v", err)
+	}
+	if strings.Contains(banner.String(), "quota por principal (AOS-457): LIGADA") {
+		t.Fatal("o banner anunciou a quota LIGADA num arranque que a seguir abortou por causa dela")
+	}
+	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "")
+	node, err := Bootstrap(context.Background(), cfg, io.Discard)
+	if err != nil {
+		t.Fatalf("o arranque abortado deixou o Event Store em %s preso: %v", caminho, err)
+	}
+	_ = node.Close()
+}
+
+// TestAOS457OBootstrapLiquidaPeloLedgerReal — achado ALTO da revisão: todos os testes ao nível do
+// serviço reescreviam a quota, e o do Bootstrap nunca liquidava. Trocar a fonte de consumo por nil
+// no Bootstrap (liquidar SEMPRE a zero — a quota a virar um tecto de runs em simultâneo) sobrevivia.
+// Aqui a quota é a que o Bootstrap compõe, e o run liquida pelo ledger de turnos real.
+func TestAOS457OBootstrapLiquidaPeloLedgerReal(t *testing.T) {
+	limparAmbienteDaQuota(t)
+	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "1000")
+	node := newSovOIDCNode(t, &countingModel{}, newSovTestIDP(t))
+	if node.QuotaPorPrincipal == nil {
+		t.Fatal("o Bootstrap nao compos a quota")
+	}
+	node.QuotaPorPrincipal.agora = (&relogioDeQuota{t: setembro}).agora
+	svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute))
+	if err != nil {
+		t.Fatalf("NewNodeService: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Shutdown(context.Background()) })
+	g := svcGoal("run-bootstrap", "trabalho")
+	if err := svc.Submit(context.Background(), g); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	esperarRun(t, svc, "run-bootstrap")
+	st, err := node.QuotaPorPrincipal.ler(context.Background(), quotaStreamDe(imputadoA(g), "202609"))
+	if err != nil {
+		t.Fatalf("ler: %v", err)
+	}
+	if l, ok := st.liquidadas["run-bootstrap"]; !ok || l.Tokens != 2 {
+		t.Fatalf("liquidacao %+v (ok=%v), o ledger do run diz 2 tokens", l, ok)
+	}
+}
+
+// TestAOS457ORunFilhoEImputadoAQuemPediuOPlano — um run-filho do `aos-orq` traz o drenador no
+// `NHIID` e o humano que pediu o plano no `RequestedBy`. A quota é de quem pediu: imputá-la ao
+// drenador juntava os planos de todos os humanos numa só quota.
+func TestAOS457ORunFilhoEImputadoAQuemPediuOPlano(t *testing.T) {
+	node := newTestNode(t, &countingModel{})
+	t.Cleanup(func() { _ = node.Close() })
+	svc := servicoComQuota(t, node, 1000, 100, &relogioDeQuota{t: setembro})
+	g := svcGoal("plano~no-1", "trabalho")
+	g.Principal.NHIID = "nhi:aos-orq"
+	g.Principal.RequestedBy = "human:quem-pediu"
+	if err := svc.Submit(context.Background(), g); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	esperarRun(t, svc, "plano~no-1")
+	ctx := context.Background()
+	st, err := node.QuotaPorPrincipal.ler(ctx, quotaStreamDe("human:quem-pediu", "202609"))
+	if err != nil || len(st.reservas) != 1 {
+		t.Fatalf("a reserva devia estar na quota de quem pediu o plano: %d reservas, err=%v", len(st.reservas), err)
+	}
+	if st, _ := node.QuotaPorPrincipal.ler(ctx, quotaStreamDe("nhi:aos-orq", "202609")); len(st.reservas) != 0 {
+		t.Fatal("o run-filho foi imputado ao drenador")
+	}
+}
+
+// storeEmConflito devolve `erro` em todos os Append; tentativas conta-os, e depoisPassa
+// deixa passar a partir dessa tentativa (0 ⇒ nunca).
+type storeEmConflito struct {
+	eventstore.EventStore
+	depoisPassa, tentativas int
+	erro                    error
+}
+
+func (s *storeEmConflito) Append(ctx context.Context, stream string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	s.tentativas++
+	if s.depoisPassa == 0 || s.tentativas < s.depoisPassa {
+		return eventstore.AppendResult{}, s.erro
+	}
+	return s.EventStore.Append(ctx, stream, in, opts...)
+}
+
+// TestAOS457OCicloDeConcorrenciaOptimista — as duas formas de conflito voltam a ler e a decidir; um
+// conflito que não acaba recusa a admissão em vez de a deixar passar sem reserva.
+func TestAOS457OCicloDeConcorrenciaOptimista(t *testing.T) {
+	ctx := context.Background()
+	rel := &relogioDeQuota{t: setembro}
+	for _, erro := range []error{eventstore.ErrSeqConflict, eventstore.ErrAppendOnlyViolation} {
+		s := &storeEmConflito{EventStore: novoStore(t), depoisPassa: 3, erro: erro}
+		if err := quotaDeTeste(s, 1000, 100, rel, consumoFixo(0)).reservar(ctx, "human:alice", "r1"); err != nil {
+			t.Fatalf("%v duas vezes e depois livre: devia reservar a 3a, veio %v", erro, err)
+		}
+	}
+	sempre := &storeEmConflito{EventStore: novoStore(t), erro: eventstore.ErrSeqConflict}
+	if err := quotaDeTeste(sempre, 1000, 100, rel, consumoFixo(0)).reservar(ctx, "human:alice", "r1"); !errors.Is(err, ErrPrincipalQuotaContention) {
+		t.Fatalf("conflito sem fim devia recusar com ErrPrincipalQuotaContention, veio %v", err)
+	}
+}
+
+// TestAOS457OApagamentoUsaORelogioDaQuota — a marca vai para o mês do relógio da QUOTA, não do
+// processo. Com o relógio noutro mês, uma marca pelo relógio de parede ia parar ao stream errado e a
+// quota não se repunha.
+func TestAOS457OApagamentoUsaORelogioDaQuota(t *testing.T) {
+	ctx := context.Background()
+	es := novoStore(t)
+	q := quotaDeTeste(es, 100, 100, &relogioDeQuota{t: time.Date(2031, 1, 15, 0, 0, 0, 0, time.UTC)}, consumoFixo(0))
+	if err := q.reservar(ctx, "human:alice", "r1"); err != nil {
+		t.Fatalf("reservar: %v", err)
+	}
+	if err := q.Shred("human:alice"); err != nil {
+		t.Fatalf("Shred: %v", err)
+	}
+	if err := q.reservar(ctx, "human:alice", "r2"); err != nil {
+		t.Fatalf("a marca nao foi para Janeiro de 2031: %v", err)
+	}
+}
+
+// TestAOS457DepoisDoApagamentoOMesmoRunReservaDeNovo — a revisão mediu que, depois de um apagamento,
+// re-reservar o mesmo run no mesmo mês era DEDUPLICADO pelo Event Store (mesmo StepID): sem erro,
+// sem evento, admitido sem reserva. E uma liquidação anterior ao apagamento não pode valer para a
+// reserva nova.
+func TestAOS457DepoisDoApagamentoOMesmoRunReservaDeNovo(t *testing.T) {
+	ctx := context.Background()
+	q := quotaDeTeste(novoStore(t), 100, 100, &relogioDeQuota{t: setembro}, consumoFixo(0))
+	if err := q.reservar(ctx, "human:alice", "r1"); err != nil {
+		t.Fatalf("reservar: %v", err)
+	}
+	q.liquidar(ctx, "human:alice", "r1") // liquida a 0
+	if err := q.Shred("human:alice"); err != nil {
+		t.Fatalf("Shred: %v", err)
+	}
+	if err := q.reservar(ctx, "human:alice", "r1"); err != nil {
+		t.Fatalf("re-reservar r1: %v", err)
+	}
+	st, err := q.ler(ctx, quotaStreamDe("human:alice", "202609"))
+	if err != nil {
+		t.Fatalf("ler: %v", err)
+	}
+	if g := st.gasto(); g.Tokens != 100 {
+		t.Fatalf("a reserva nova de r1 conta %d, esperava 100 — foi deduplicada ou a liquidacao antiga valeu para ela", g.Tokens)
 	}
 }

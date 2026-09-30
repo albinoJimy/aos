@@ -695,8 +695,8 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	}
 	if _, done := s.completed[runID]; done {
 		// Desfecho ainda retido: re-submissão recusada explicitamente (não re-executa nem
-		// sobrescreve o desfecho, nem finge que o lease é de outra réplica). Após a poda
-		// do desfecho o RunID volta a ser submetível.
+		// sobrescreve o desfecho, nem finge que o lease é de outra réplica). Após a poda do
+		// desfecho a recusa vem do log durável — ver (2-ter-bis) abaixo (AOS-457).
 		s.mu.Unlock()
 		return ErrRunAlreadyCompleted
 	}
@@ -752,8 +752,19 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	// run que está à espera de um humano — perdendo a trajectória e deixando o pendente e o
 	// grant órfãos. FAIL-CLOSED: uma leitura que falha recusa a admissão, em vez de admitir
 	// sobre um estado que não se conseguiu ler.
+	//
+	// (2-ter-bis) DESFECHO DURÁVEL (AOS-457). O mesmo raciocínio, para o fim do run: o
+	// `completed` acima também é um cache — com poda FIFO, vazio depois de um restart, e só
+	// desta réplica. Sem esta consulta, re-submeter um `run_id` cujo desfecho está no log
+	// RE-EXECUTAVA-O: o `claimRunning` é no-op fora de `ready`, o `Runtime.Run` voltava a chamar
+	// o modelo, e os `turn.recorded` da segunda execução eram deduplicados por `(run_id, step)` —
+	// o ledger não os via, pelo que nem o tecto por-run nem a quota por principal os contavam.
+	// Medido pela revisão do AOS-457: 20 re-submissões aceites, 20 chamadas ao modelo, gasto
+	// contado 0. É o defeito que o (2-bis) fechou para os runs pausados, agora para os terminados.
+	// A resposta é a do cache: [ErrRunAlreadyCompleted], que a API trata como re-submissão
+	// idempotente.
 	if !resuming {
-		susp, serr := s.suspendedDurably(ctx, runID)
+		st, susp, serr := s.suspensaoDuravel(ctx, runID)
 		if serr != nil {
 			s.unreserve(rs)
 			return fmt.Errorf("aos: ler o estado duravel do run %q: %w", runID, serr)
@@ -761,6 +772,10 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		if susp {
 			s.unreserve(rs)
 			return ErrRunSuspended
+		}
+		if desfechoDuravelRegistado(st) {
+			s.unreserve(rs)
+			return ErrRunAlreadyCompleted
 		}
 	}
 

@@ -10,7 +10,11 @@ package main
 //   - janela MENSAL UTC, que repõe às 00:00 UTC do dia 1;
 //   - tokens obrigatórios e micro-USD opcional, como o tecto por-run; nega se QUALQUER esgotou;
 //   - DURA: na admissão reserva-se o tecto POR-RUN inteiro; no fim do run liquida-se pelo consumo
-//     real e liberta-se o resto — N runs admitidos ao mesmo tempo nunca ultrapassam a quota;
+//     real e liberta-se o resto — N runs admitidos ao mesmo tempo não ultrapassam a quota pelo que
+//     RESERVAM. Podem ultrapassá-la pelo que GASTAM a mais: o último turno de um run pode passar o
+//     tecto por-run, porque a resposta só se mede depois de chegar (`integration/model_admission.go`,
+//     o caso R > E), e a liquidação conta o consumo real. O excesso possível é, no máximo, esse
+//     transbordo do último turno por run em curso — declarado, e medido pela revisão;
 //   - o `/dsar/erase` apaga o agregado, e isso repõe a quota (residual declarado).
 //
 // DURÁVEL NO EVENT STORE. Um stream por (principal, mês), sob o espaço reservado `aos-internal/`
@@ -111,6 +115,9 @@ type quotaPayload struct {
 	RunID        string `json:"run_id,omitempty"`
 	Tokens       int64  `json:"tokens,omitempty"`
 	CostMicroUSD int64  `json:"cost_micro_usd,omitempty"`
+	// Reserva é o `seq` da reserva que uma liquidação liquida. Uma liquidação de uma reserva
+	// anterior a um apagamento não pode valer para a reserva nova do mesmo run.
+	Reserva uint64 `json:"reserva,omitempty"`
 }
 
 // quotaPorPrincipal é a quota composta. nil ⇒ desligada.
@@ -121,9 +128,27 @@ type quotaPorPrincipal struct {
 	consumo integration.ConsumoDuravel
 	agora   func() time.Time
 	log     func(string, ...any)
-	// mu serializa as admissões deste processo. Entre réplicas a serialização é o
-	// `WithExpectedSeq` no stream do principal.
-	mu sync.Mutex
+	// porPrincipal serializa as operações de CADA principal neste processo (entre réplicas, o
+	// `WithExpectedSeq` no stream dele). Um mutex único para o nó serializava a admissão de todos
+	// os principais atrás do I/O de um — achado BAIXO da revisão.
+	mu           sync.Mutex
+	porPrincipal map[string]*sync.Mutex
+}
+
+// bloquear toma o mutex do principal e devolve a função que o larga.
+func (q *quotaPorPrincipal) bloquear(principal string) func() {
+	q.mu.Lock()
+	if q.porPrincipal == nil {
+		q.porPrincipal = map[string]*sync.Mutex{}
+	}
+	m, ok := q.porPrincipal[principal]
+	if !ok {
+		m = &sync.Mutex{}
+		q.porPrincipal[principal] = m
+	}
+	q.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // pseudonimoDoPrincipal devolve o identificador do principal no nome do stream. Um hash e não o
@@ -155,8 +180,8 @@ func quotaStreamDe(principal, mes string) string {
 
 // estadoDaQuota é o que um stream diz, depois da última marca de apagamento.
 type estadoDaQuota struct {
-	reservas   map[string]quotaPayload
-	liquidadas map[string]quotaPayload
+	reservas   map[string]quotaPayload // por run; Reserva = o seq do evento de reserva
+	liquidadas map[string]quotaPayload // por run; Reserva = o seq da reserva liquidada
 	ultimoSeq  uint64
 }
 
@@ -164,7 +189,7 @@ type estadoDaQuota struct {
 func (e estadoDaQuota) gasto() budget.Amount {
 	var g budget.Amount
 	for run, r := range e.reservas {
-		if l, ok := e.liquidadas[run]; ok {
+		if l, ok := e.liquidadas[run]; ok && l.Reserva == r.Reserva {
 			r = l
 		}
 		g.Tokens = somaSaturada(g.Tokens, r.Tokens)
@@ -206,6 +231,7 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 			return st, fmt.Errorf("%w: evento %d do stream %q", ErrPrincipalQuotaUnreadable, ev.Seq, stream)
 		}
 		if ev.Type == EventTypeQuotaReserved {
+			p.Reserva = ev.Seq
 			st.reservas[p.RunID] = p
 		} else {
 			st.liquidadas[p.RunID] = p
@@ -226,8 +252,7 @@ func (q *quotaPorPrincipal) reservar(ctx context.Context, principal, runID strin
 	if principal == "" {
 		return ErrPrincipalQuotaNoPrincipal
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.bloquear(principal)()
 	agora := q.agora()
 	mes := mesUTC(agora)
 	stream := quotaStreamDe(principal, mes)
@@ -248,10 +273,13 @@ func (q *quotaPorPrincipal) reservar(ctx context.Context, principal, runID strin
 			return &quotaEsgotadaError{gasto: gasto, limite: q.limite, reserva: q.reserva, repoe: repoe, faltam: repoe.Sub(agora)}
 		}
 		_, err = q.es.Append(ctx, stream, eventstore.EventInput{
-			Type:     EventTypeQuotaReserved,
-			Payload:  payload,
-			RunID:    quotaRunID,
-			StepID:   runID + ":reserved:" + mes,
+			Type:    EventTypeQuotaReserved,
+			Payload: payload,
+			RunID:   quotaRunID,
+			// O seq em que a reserva vai ser escrita torna o StepID único: depois de um apagamento, a
+			// reserva nova do mesmo run não pode ser deduplicada contra a antiga — seria admitida sem
+			// reserva nenhuma (medido pela revisão).
+			StepID:   fmt.Sprintf("%s:reserved:%s:%d", runID, mes, st.ultimoSeq+1),
 			Producer: eventstore.Producer{NHIID: quotaNHI},
 		}, eventstore.WithExpectedSeq(st.ultimoSeq))
 		// Outra réplica escreveu no stream entretanto: relê e decide de novo. O store em memória
@@ -274,8 +302,7 @@ func (q *quotaPorPrincipal) liquidar(ctx context.Context, principal, runID strin
 	if q == nil || principal == "" {
 		return
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.bloquear(principal)()
 	agora := q.agora()
 	for _, mes := range []string{mesUTC(agora), mesAnteriorUTC(agora)} {
 		stream := quotaStreamDe(principal, mes)
@@ -284,10 +311,11 @@ func (q *quotaPorPrincipal) liquidar(ctx context.Context, principal, runID strin
 			q.logf("quota (AOS-457): ler %q para liquidar o run %q falhou — a reserva fica inteira: %v", stream, runID, err)
 			return
 		}
-		if _, reservado := st.reservas[runID]; !reservado {
+		r, reservado := st.reservas[runID]
+		if !reservado {
 			continue
 		}
-		if _, ja := st.liquidadas[runID]; ja {
+		if l, ja := st.liquidadas[runID]; ja && l.Reserva == r.Reserva {
 			return
 		}
 		var usado budget.Amount
@@ -298,7 +326,7 @@ func (q *quotaPorPrincipal) liquidar(ctx context.Context, principal, runID strin
 				return
 			}
 		}
-		payload, err := json.Marshal(quotaPayload{RunID: runID, Tokens: usado.Tokens, CostMicroUSD: usado.CostMicroUSD})
+		payload, err := json.Marshal(quotaPayload{RunID: runID, Tokens: usado.Tokens, CostMicroUSD: usado.CostMicroUSD, Reserva: r.Reserva})
 		if err != nil {
 			return
 		}
@@ -306,7 +334,7 @@ func (q *quotaPorPrincipal) liquidar(ctx context.Context, principal, runID strin
 			Type:     EventTypeQuotaSettled,
 			Payload:  payload,
 			RunID:    quotaRunID,
-			StepID:   runID + ":settled:" + mes,
+			StepID:   fmt.Sprintf("%s:settled:%s:%d", runID, mes, r.Reserva),
 			Producer: eventstore.Producer{NHIID: quotaNHI},
 		}); err != nil {
 			q.logf("quota (AOS-457): liquidar o run %q falhou — a reserva fica inteira: %v", runID, err)
@@ -331,8 +359,7 @@ func (q *quotaPorPrincipal) Shred(subjectID string) error {
 	if q == nil || subjectID == "" {
 		return nil
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
+	defer q.bloquear(subjectID)()
 	_, err := q.es.Append(context.Background(), quotaStreamDe(subjectID, mesUTC(q.agora())), eventstore.EventInput{
 		Type:     EventTypeQuotaErased,
 		Payload:  json.RawMessage(`{}`),
@@ -445,6 +472,6 @@ func principalQuotaPostureBanner(q *quotaPorPrincipal) []string {
 	if q.limite.CostMicroUSD != integration.UnlimitedCostMicroUSD {
 		custo = fmt.Sprintf("%d micro-USD", q.limite.CostMicroUSD)
 	}
-	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
+	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. NAO cobre o gasto de PLANEAMENTO dos pedidos de POST /plans, que o aos-orq faz antes de submeter os runs-filho. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
 		q.limite.Tokens, custo, q.reserva.Tokens, q.reserva.CostMicroUSD)}
 }
