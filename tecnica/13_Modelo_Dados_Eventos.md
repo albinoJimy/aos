@@ -201,7 +201,7 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `admission.*` | 4 | `packages/control-plane/scheduler/admission.go` |
 | `approval.*` | 4 | `packages/integration/approval_store_durable.go` (ciclo de aprovação HITL durável, AOS-021: `granted`/`consumed`/`pending`/`expired`) |
 | `backpressure.*` | 5 | `packages/control-plane/scheduler/{queue,policy}.go` |
-| `budget.*` | 7 | `packages/control-plane/budget/events.go` (ciclo reserva/commit) e `packages/control-plane/scheduler/breaker.go` (circuit breaker) |
+| `budget.*` | 10 | `packages/control-plane/budget/events.go` (ciclo reserva/commit), `packages/control-plane/scheduler/breaker.go` (circuit breaker), `packages/cmd/aos/toolcall_consumo.go` (consumo durável de tool calls, AOS-287) e `packages/cmd/aos/quota_por_principal.go` (quota mensal por principal: reserva, liquidação e marca de apagamento, AOS-457) |
 | `control.*` | 3 | `packages/kernel/agent-runtime/control/steer_channel.go` |
 | `credential.*` | 2 | `packages/platform/broker/exchange.go` (`issued` da troca emitida; `denied` da negação server-side, AOS-339) |
 | `deadlock.*` | 2 | `packages/control-plane/orchestrator/contract/dag_events.go` |

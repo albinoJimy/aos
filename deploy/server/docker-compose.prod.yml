@@ -440,6 +440,12 @@ services:
       # Tecto em DÓLARES (micro-USD), opcional. Vazio ⇒ dólares são medidos e debitados mas
       # NUNCA negam; a decisão fica só na dimensão tokens.
       AOS_BUDGET_MAX_COST_MICRO_USD: "${AOS_BUDGET_MAX_COST_MICRO_USD:-}"
+      # AOS-457 — QUOTA DE DESPESA POR PRINCIPAL, mensal UTC. Vazio ⇒ sem quota (o unico tecto e o
+      # por-run acima: N runs x tecto). Definida, cada admissao RESERVA o tecto por-run inteiro e
+      # esgotada responde 429. Exige AOS_BUDGET_MAX_TOKENS, tem de ser >= a ele, e exige principal
+      # VERIFICADO (AOS_SOVEREIGN_OIDC_*) — sem ele o no recusa arrancar.
+      AOS_BUDGET_PRINCIPAL_MAX_TOKENS: "${AOS_BUDGET_PRINCIPAL_MAX_TOKENS:-}"
+      AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD: "${AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD:-}"
 
       # TLS terminado A MONTANTE pelo `edge`. O nó serve em claro SÓ na rede interna
       # do compose (`expose`, nunca `ports`) — é o que honra esta declaração.

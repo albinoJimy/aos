@@ -138,8 +138,16 @@ func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentr
 	}
 	sealed, err := gate.sealTerminal(context.Background(), res, runErr, panicked)
 	if err != nil {
+		// Sem desfecho durável a reserva da quota fica inteira (AOS-457): fail-closed.
 		s.log("selo do estado terminal do run %q FALHOU — o log duravel fica sem desfecho (indistinguivel de crash, F4): %v", rs.runID, err)
 		return
+	}
+	// AOS-457: o desfecho ficou no log — o run acabou de gastar, e a quota passa a valer pelo que
+	// ele gastou. Um no-op em `paused`/`waiting_on_human` não liquida: o run vai continuar. É o ÚNICO
+	// sítio do hostRun que liquida: sem desfecho durável (os dois ramos acima, defensivos e fora do
+	// caminho do Bootstrap, que compõe sempre a máquina de estados) a reserva fica até ao fim do mês.
+	if desfechoDuravelRegistado(sealed) {
+		s.liquidarQuota(rs.runID, rs.principal)
 	}
 	// O SELO PODE TER SIDO UM NO-OP SEM O DIZER. [runGate.sealTerminal] devolve
 	// `(estadoCorrente, nil)` quando a máquina não está em `running` — indistinguível, para

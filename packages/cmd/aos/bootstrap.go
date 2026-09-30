@@ -702,6 +702,9 @@ type Config struct {
 	// RetentionClock injecta o relógio do [audit.ExpirationJob] (a idade de cada registo é
 	// agora−CreatedAt). nil ⇒ time.Now. Uso interno/testes deterministas.
 	RetentionClock func() time.Time
+	// QuotaClock injecta o relógio da quota por principal (AOS-457): o mês UTC da janela. nil ⇒
+	// time.Now. Uso interno/testes deterministas.
+	QuotaClock func() time.Time
 
 	// --- Backup imutável + PITR do Event Store (AOS-101) -----------------------
 	//
@@ -1066,6 +1069,9 @@ type Node struct {
 	// ser observavel por um teste. Sem isto, «o no liga a fonte duravel ao orcamento» era uma
 	// afirmacao sem prova — e uma mutacao que removesse a ligacao passava despercebida.
 	orcamento *integration.RunBudget
+	// QuotaPorPrincipal é a quota de despesa mensal por principal (AOS-457). nil ⇒ por configurar.
+	// O [NodeService] reserva contra ela na admissão e liquida no fim do run.
+	QuotaPorPrincipal *quotaPorPrincipal
 	// ancora e a verificacao ancorada do WORM que PASSOU no arranque (nil se desligada ou se o
 	// arranque a recusou — nesse caso o no nem chega aqui, porque e fail-closed).
 	//
@@ -2327,6 +2333,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, ErrProgressBudgetUnwired
 	}
 	burndownSource := newTurnLedgerBurndown(es)
+	// (7-ante-ter) QUOTA DE DESPESA POR PRINCIPAL, MENSAL UTC (AOS-457). Reserva o tecto por-run
+	// acima na admissão e liquida pelo MESMO ledger de turnos que o burn-down lê. nil ⇒ por
+	// configurar. Fail-closed: mal configurada, ou incoerente com o tecto por-run, aborta. A exigência
+	// de principal verificado é validada mais abaixo, quando a soberania de leitura está composta.
+	principalQuota, err := principalQuotaFromEnv(runBudget, es, consumoDuravelParaOrcamento(burndownSource), cfg.QuotaClock, log)
+	if err != nil {
+		return nil, err
+	}
 	// (7-ante-quinquies) O TECTO POR-RUN DEIXA DE RECOMEÇAR A CADA HOSPEDAGEM (AOS-256).
 	//
 	// A árvore de orçamento vive em memória e o nó do run nascia, a cada hospedagem, com o tecto
@@ -2581,10 +2595,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// NÃO-nil, pelo que essa guarda não dispara. Quem salva é a guarda de RECEPTOR nil em
 		// [durable.StepLedger.ForgetSubject], que devolve 0. As duas existem porque protegem
 		// casos diferentes, e confundi-las é a armadilha clássica do nil tipado.
-		[]dsar.ShreddableKeyStore{
-			dsar.AuditStore("audit", dsarShredder),
-			dsar.StepLedgerStore("step-ledger", ledger),
-		},
+		storesDeApagamento(dsarShredder, ledger, principalQuota),
 		dsar.WithPartition("governance.dsar"),
 		dsar.WithShredConfirmer(confirmadorDeShredDe(dsarVault)),
 	)
@@ -2875,6 +2886,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range budgetPostureBanner(runBudget != nil) {
 		log("%s", line)
 	}
+	for _, line := range principalQuotaPostureBanner(principalQuota) {
+		log("%s", line)
+	}
 	// AOS-363: a postura da barreira control/data-plane sai do PREDICADO REAL do RM composto
 	// (Monitor.HasActiveTaintGate), nunca da intenção de config — a mesma disciplina de AOS-203.
 	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
@@ -3158,6 +3172,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
 	arranqueOK = true // ... nem larga a posse dos ficheiros (AOS-285/284): passa a ser do Node.Close.
+	// A QUOTA POR PRINCIPAL SÓ SE COMPÕE SOBRE PRINCIPAL VERIFICADO (AOS-457). O predicado é o
+	// PARTILHADO com o banner e o handler, sobre os mesmos campos que o nó vai levar — não uma cópia.
+	if principalQuota != nil && !principalDoRunEVerificavel(&Node{
+		WORM:                    worm,
+		SovereignReadRegions:    readRegions,
+		SovereignAuthority:      readAuthority,
+		SovereignReadCredential: readCred,
+	}) {
+		return nil, ErrPrincipalQuotaUnverified
+	}
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
@@ -3221,6 +3245,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		ownsWORM:       ownsWORM,
 		otlp:           otlpExp,
 		orcamento:      runBudget,
+		// AOS-457: nil quando por configurar.
+		QuotaPorPrincipal: principalQuota,
 	}, nil
 }
 

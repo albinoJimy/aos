@@ -2963,21 +2963,109 @@ Consequência de engenharia, não de produto (precedente AOS-464): a quota só s
 **verificado** (credencial forte). Sobre um principal forjável, uma quota de DESPESA seria negação
 dirigida — o atacante escreveria o nome da vítima e gastaria a quota dela.
 
+### Desenho
+- **Onde.** `packages/cmd/aos/quota_por_principal.go`. A reserva entra no `NodeService.submit`, depois
+  das guardas de estado e fora do mutex (é I/O), com `unreserve` a desfazer a reserva do `run_id` se a
+  quota recusar. É por aí que passam todas as admissões novas: o `POST /runs`, a CLI e os runs-filho do
+  `aos-orq` (imputados a quem pediu o plano, `RequestedBy`, e não ao drenador). A retoma e o
+  crash-resume **não** reservam: o run já reservou quando foi admitido.
+- **Durável.** Um stream por (principal, mês) sob `aos-internal/` (AOS-417):
+  `aos-internal/quota-<pseudónimo>-<AAAAMM>`, com `budget.quota.reserved`, `budget.quota.settled` e
+  `budget.quota.erased`. O gasto do mês é a soma, por run, da liquidação quando existe e da reserva
+  quando não. Entre réplicas, `WithExpectedSeq` no stream do principal.
+- **Liquidação.** Só quando o desfecho do run fica no log durável (`desfechoDuravelRegistado` no selo
+  do `hostRun`) e no abort por exaustão (`killed` sem re-hospedagem). O consumo vem do MESMO ledger de
+  turnos que o burn-down lê. Consumo ilegível (turnos sem `usage`) ⇒ a reserva fica inteira.
+- **A reserva pertence ao mês da admissão.** Resolve os runs que nunca terminam (suspensos, pausados,
+  órfãos): a reserva sai do cálculo quando o mês acaba, em vez de ficar presa para sempre.
+- **Porque não se cifra sob a KEK do titular** (desvio declarado do molde do AOS-429): o `OpenContent`
+  devolve o mesmo erro para «KEK destruída» e «vault em falha», e o `EnsureKey` cria uma KEK nova depois
+  de uma destruição. «Ilegível conta zero» abriria a quota numa falha do vault; «ilegível nega»
+  bloquearia até ao fim do mês um titular cuja KEK o varredor de retenção destruiu. E a cifra não
+  protegeria nada: os registos são pseudónimo, `run_id`, tokens e micro-USD — o que o `turn.recorded`
+  já guarda em claro. O apagamento é por **marca**; a leitura ignora o que vem antes dela.
+- **Principal verificado ou não arranca** (`ErrPrincipalQuotaUnverified`). Afasta-se do AOS-464, que
+  não compõe e declara: lá ficava um tecto global; aqui não ficaria nada, e uma quota configurada e não
+  composta deixaria o operador a julgar que a despesa tem tecto.
+
 ### Critérios de Aceitação
-- [ ] Janela e reposição **declaradas** (decisão do dono registada no ticket antes de implementar).
-- [ ] O agregado é **durável**: um restart do nó não repõe a quota consumida — provado por teste de
-      crash/retoma, não por inspecção.
-- [ ] Principal com quota esgotada é **negado na admissão** do run novo, com recusa atribuível.
-- [ ] O tecto por-run continua a valer de forma independente (os dois compõem-se; nenhum substitui
-      o outro).
-- [ ] O agregado por-principal é alcançável pelo `/dsar/erase` sem destruir a contabilidade dos
-      outros titulares (molde AOS-429).
-- [ ] `0` ou valor ilegível **aborta o arranque** (molde `ErrBadBudget`).
+- [x] Janela e reposição **declaradas** (decisão do dono registada acima, antes de implementar).
+- [x] O agregado é **durável**: um restart do nó não repõe a quota consumida — provado por
+      `TestAOS457ACrashARetomaNaoRepoemAQuota` (um run em curso quando o nó cai; o nó que arranca sobre
+      o mesmo Event Store continua a recusar) e `TestAOS457UmRestartNaoRepoeAQuota`.
+- [x] Principal com quota esgotada é **negado na admissão** do run novo, com recusa atribuível: `429`
+      com `Retry-After` até à reposição; os números vão para o log do operador, não para o corpo.
+- [x] O tecto por-run continua a valer de forma independente: a quota **reserva-o**, não o substitui, e
+      o arranque recusa uma quota menor do que ele (nenhum run caberia).
+- [x] O agregado é alcançável pelo `/dsar/erase` sem destruir a contabilidade dos outros titulares:
+      store `principal-quota` no fluxo DSAR, provado pelo fluxo REAL (`node.DSAR.Receive`). A marca só
+      toca o stream do titular.
+- [x] `0` ou valor ilegível **aborta o arranque** (`ErrBadPrincipalQuota`), e também: quota sem tecto
+      por-run, quota em dólares sem tecto por-run em dólares, quota menor do que o tecto por-run, quota
+      sem principal verificado.
+
+### Mutações medidas
+Vinte e quatro mutações, três rodadas cada com `-race`: **72/72 detectadas** (a Q12 depois da
+correcção do teste — ver abaixo).
+
+| mutação | detectada por |
+|---|---|
+| a admissão não reserva | serviço liquida pelo ledger, serviço recusa, 429, crash/retoma |
+| a retoma também reserva | serviço recusa e retoma isenta |
+| a recusa da quota não desfaz a reserva do `run_id` | serviço recusa (a re-submissão tem de ter a mesma recusa) |
+| quota macia (compara só o já gasto) | reserva dura, liquidação, consumo ilegível, principais, janela |
+| a liquidação não substitui a reserva | liquidação liberta o não usado |
+| consumo ilegível liquida como zero | consumo ilegível mantém a reserva |
+| a reserva não é idempotente por run | reserva idempotente |
+| a marca de apagamento não repõe | apagamento repõe, e o DSAR REAL pelo Bootstrap |
+| mês na hora local em vez de UTC | a janela é o mês UTC |
+| a liquidação só procura no mês corrente | o run liquida no mês em que reservou |
+| payload ilegível somado | registo ilegível nega |
+| sem escrita condicional entre réplicas | a outra réplica entre a leitura e a escrita |
+| o selo terminal não liquida | serviço liquida pelo ledger |
+| liquida mesmo sem desfecho durável | um run suspenso não liquida |
+| o abort por exaustão não liquida | o abort por exaustão liquida |
+| arranca sem principal verificado | sem principal verificado não arranca |
+| a quota não entra no fluxo DSAR | Bootstrap + DSAR real, nil tipado |
+| `ErrPrincipalQuotaExhausted` não é 429 | 429 com Retry-After |
+| sem `Retry-After` | 429 com Retry-After |
+| aceita quota menor do que o tecto por-run | o ambiente valida o par final |
+| o Bootstrap não põe a quota no nó | Bootstrap + DSAR real |
+| aceita quota em $ sem tecto por-run em $ | o ambiente valida o par final |
+| a dimensão de dólares não nega | a dimensão de dólares também nega |
+| tipo desconhecido no stream somado | registo ilegível nega |
+
+**O que as mutações ensinaram.** A primeira bateria (sem `-race`) deixou sobreviver 6 de 25, e cada
+uma era um buraco real: o teste da recusa olhava para `Outcome` e não via `s.runs`; nada testava que um
+run suspenso NÃO liquida nem que o abort liquida; nada testava a dimensão de dólares nem um tipo
+estranho no stream. A sexta era código MORTO: uma liquidação no ramo «sem máquina de estados» do
+selo terminal, que o `hostRun` nunca alcança (o selo só é registado com a máquina composta, e o
+Bootstrap compõe-na sempre) — foi retirada, e o teste que a «provava» partia de uma premissa falsa.
+Na segunda bateria (com `-race`) sobreviveu a escrita condicional entre réplicas: o teste com
+goroutines só apanhava a corrida quando o escalonamento a produzia. Foi substituído por um que injecta
+a escrita da outra réplica exactamente entre a leitura e a escrita — determinista, 3/3.
+
+Os gates `event-catalog` e `stream-names` foram provados não-vácuos sobre os ficheiros novos: uma
+família inexistente numa constante e um ponto no prefixo do stream avermelham-nos.
+
+### Residuais
+- **Metadados de uso em claro, e fora da retenção.** Os registos da quota não estão no `subjectOf` da
+  retenção e não expiram; o `/dsar/erase` marca o mês corrente e não toca os anteriores. O principal
+  aparece como pseudónimo (hash), que não é anonimização. É a mesma postura do `turn.recorded`, e é do
+  DPO validar.
+- **Reservas que ficam até ao fim do mês:** runs que nunca terminam (suspensos, pausados, órfãos); um
+  abort por exaustão depois de um restart (o balde de suspensos, de onde vem o principal, está vazio);
+  um selo terminal que falha; um consumo ilegível. Todos por excesso, nunca por defeito.
+- **O que um run gasta depois de mudar o mês conta no mês em que foi admitido.** Runs admitidos antes
+  de a quota existir não contam.
+- **A quota tem de caber pelo menos um tecto por-run**, e um principal com quota Q tem no máximo
+  ⌊Q / tecto⌋ runs em curso ao mesmo tempo — é o preço da quota dura, decidido pelo dono.
+- **Concorrência entre réplicas** medida só sobre o Event Store em memória; sobre o JetStream a mesma
+  semântica vem do `WithExpectedSeq`, não medida.
+- **Custo:** cada admissão lê o stream do mês do principal, O(runs dele nesse mês).
 
 ### Estado
-**ABERTO — BLOQUEADO por decisão de produto** (janela + reposição). Reservado por
-`sessoes.py reservar`. Dependência: AOS-456 não é pré-requisito; são eixos independentes
-(um limita frequência, o outro limita despesa).
+**FEITO** (2026-09-30).
 
 ---
 

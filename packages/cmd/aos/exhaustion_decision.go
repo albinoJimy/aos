@@ -363,6 +363,9 @@ func (h *apiHandler) handleExhaustionDecision(w http.ResponseWriter, r *http.Req
 	// deixá-lo lá faria o GET continuar a reportar `waiting_on_human` e o POST /resume
 	// re-hospedar um run terminado. Corre DEPOIS da transição durável — a verdade primeiro,
 	// o cache a seguir.
+	// AOS-457: o run terminou (`killed`) sem voltar a ser hospedado — liquida a quota ANTES de o
+	// balde de suspensos o esquecer, porque é dele que vem o principal.
+	h.svc.liquidarQuotaDoSuspenso(runID)
 	h.svc.esqueceSuspensao(runID)
 	// A pergunta sai da lista por DECISÃO, não por expiração. Uma falha aqui NÃO desfaz o
 	// abort (que está selado e materializado) e por isso NÃO vira erro para o cliente: o

@@ -764,6 +764,22 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		}
 	}
 
+	// (2-quater) QUOTA DE DESPESA POR PRINCIPAL (AOS-457). Reserva o tecto por-run inteiro contra a
+	// quota mensal do principal, no Event Store — por isso FORA do mutex, com a reserva em `s.runs` a
+	// segurar o `run_id` e `unreserve` a desfazê-la se falhar. Depois das guardas de estado, pela
+	// mesma razão do tecto por-chamador: um pedido recusado por elas não deve gastar quota.
+	//
+	// RETOMA ISENTA: o run já reservou quando foi admitido; reservar de novo na retoma contaria o
+	// mesmo run duas vezes. É também por isto que a reserva é idempotente por `run_id`.
+	//
+	// FAIL-CLOSED: uma leitura do registo da quota que falha recusa a admissão.
+	if !resuming && s.node != nil && s.node.QuotaPorPrincipal != nil {
+		if qerr := s.node.QuotaPorPrincipal.reservar(ctx, rs.principal, runID); qerr != nil {
+			s.unreserve(rs)
+			return qerr
+		}
+	}
+
 	// (3) POSSE por lease FORA do mutex (I/O no Event Store). Sem roubo: um lease vivo
 	// detido por outra réplica ⇒ (_, false, nil) ⇒ não hospeda.
 	lease, acquired, err := s.assigner.TryAcquire(ctx, runID)
@@ -1603,4 +1619,32 @@ func (s *NodeService) suspensosAgora() (int, int64) {
 		}
 	}
 	return len(s.suspended), maisAntigo
+}
+
+// liquidarQuota grava o consumo real do run contra a reserva da quota por principal (AOS-457).
+// Chamada só quando o desfecho do run ficou registado no log durável: um run suspenso, pausado ou
+// interrompido não terminou, e liquidá-lo libertaria a reserva de um run que ainda vai gastar.
+// No-op sem quota composta.
+func (s *NodeService) liquidarQuota(runID, principal string) {
+	if s == nil || s.node == nil || s.node.QuotaPorPrincipal == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.node.QuotaPorPrincipal.liquidar(ctx, principal, runID)
+}
+
+// liquidarQuotaDoSuspenso liquida um run suspenso que foi terminado sem voltar a ser hospedado (o
+// abort por exaustão, AOS-263). O principal vem do balde de suspensos; depois de um restart o
+// balde está vazio e a reserva fica até ao fim do mês — declarado no ticket.
+func (s *NodeService) liquidarQuotaDoSuspenso(runID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	rs, ok := s.suspended[runID]
+	s.mu.Unlock()
+	if ok {
+		s.liquidarQuota(runID, rs.principal)
+	}
 }
