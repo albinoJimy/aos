@@ -401,6 +401,29 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// que tem de esperar ou drenar o que é dele; **503** no global, porque é o nó que não tem quem
 	// drene e a espera certa é a de um operador. Um 503 por-submissor diria a um cliente saudável
 	// que o nó está em baixo.
+	//
+	// # O QUE ESTA DISTINÇÃO REVELA, E PORQUE SE ACEITA (AOS-464, decisão declarada)
+	//
+	// O ADR-030 §2.7 diz «com tecto atingido, o ingresso recusa pedidos novos» e NÃO fixa o código,
+	// pelo que o 429 não contradiz nenhuma decisão congelada. Mas a §2.1 — e o comentário acima, que
+	// é a razão de o tecto ser verificado DEPOIS da autorização — trata «a fila está cheia» como
+	// informação sobre o estado interno do nó.
+	//
+	// A DISTINGUIBILIDADE É NOVA, e é um bit: até ao AOS-464 um chamador recusado não sabia se a culpa
+	// era dele ou do nó; agora, ao receber 503 **dentro** da sua quota, infere que OUTROS encheram a
+	// fila. É informação agregada sobre a actividade de terceiros, e não existia.
+	//
+	// Aceita-se, e a razão não é conveniência: (1) revela-se só a um chamador AUTENTICADO, que já via
+	// a fila cheia pelo 503 antes deste ticket — o canal ganha um bit, não abre-se de novo; (2) o bit
+	// é exactamente o que torna o erro ACCIONÁVEL, e uma recusa sobre a qual o chamador não pode agir
+	// é a forma de defeito que este eixo inteiro existe para fechar; (3) não revela a EXISTÊNCIA de
+	// nenhum pedido nem de nenhum run — que é o que a §2.1 protege —, nem permite contar os pedidos de
+	// outro submissor: dá o agregado «cheia / não cheia», com a granularidade de um pedido por
+	// tentativa, que o balde de taxa já limita.
+	//
+	// Se o dono decidir que um bit é demais, a correcção é responder 503 nas DUAS camadas e manter a
+	// distinção só no log do operador — o diagnóstico perde-se para o cliente e mantém-se para quem
+	// opera. Fica escrito para que essa decisão seja possível sem reargumentar isto.
 	if submissorImputavel != "" && doSubmissor >= h.cfg.planMaxPendingPerSubmitter {
 		h.logf("plan-ingress: RECUSADO por tecto DO SUBMISSOR — %q tem %d pedidos por drenar "+
 			"(tecto por-submissor %d, global %d, fila %d)", submissorImputavel, doSubmissor,

@@ -2618,6 +2618,18 @@ gate soberano não está composto (ver os critérios).
   problema são os pedidos dele. Medido: a ordem trocada dá 503, e o teste da ordem avermelha.
 - [x] **Códigos distintos:** `429` no por-submissor (o chamador tem de drenar o que é dele), `503` no
   global (o nó não tem consumidor, e a espera certa é a de um operador).
+- [x] **A distinguibilidade que isto cria está DECLARADA, e é uma decisão em aberto para o dono.** O
+  ADR-030 §2.7 não fixa o código, logo o 429 não contradiz decisão congelada. Mas a §2.1 — e o
+  comentário que manda verificar o tecto DEPOIS da autorização — tratam «a fila está cheia» como
+  informação interna, e até aqui um chamador recusado não sabia se a culpa era dele ou do nó. Agora,
+  ao receber 503 **dentro** da quota, infere que OUTROS encheram a fila: **um bit novo** sobre
+  actividade de terceiros. Aceita-se porque (a) só um chamador autenticado o vê, e já via a fila cheia
+  antes; (b) é o bit que torna o erro accionável, e uma recusa sobre a qual o chamador não pode agir é
+  o defeito que este eixo fecha; (c) não revela a existência de pedido ou run nenhum, nem permite
+  contar os pedidos de outro submissor. **Se o dono decidir que um bit é demais**, a correcção está
+  escrita no código: 503 nas duas camadas, distinção só no log. Não é uma omissão a descobrir em
+  revisão — é uma escolha do implementador, posta por escrito para poder ser revertida sem
+  reargumentação.
 - [x] `AOS_PLAN_MAX_PENDING` e `AOS_PLAN_MAX_PENDING_PER_SUBMITTER`, com o par validado **FINAL** — a
   correcção do AOS-463 aplicada ao nascer em vez de paga em revisão. Três casos na tabela cobrem
   exactamente a lacuna que o AOS-463 pagou (`global` definido, `porSubmissor` ausente).
