@@ -1726,7 +1726,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			// vazio para todos), e publicar o valor configurado aí faria o painel afirmar uma
 			// equidade que não existe. Ver [handlePlanRequest].
 			porSubmissor := 0
-			if h.readGov != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+			if h.readGov != nil && h.readGov.cred != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
 				porSubmissor = h.cfg.planMaxPendingPerSubmitter
 			}
 			g("aos_plan_queue_ceiling_per_submitter", "Tecto de pedidos por drenar POR SUBMISSOR a partir do qual o ingresso recusa com 429; 0 = reparticao NAO composta.",

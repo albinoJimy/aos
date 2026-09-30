@@ -461,9 +461,13 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// de só com 1000 globais. Acontecia exactamente quando um cliente faz retry de rede. Achado MÉDIO-4
 	// de uma revisão adversarial independente.
 	//
-	// NÃO quebra a §2.1 do ADR-030: a indistinguibilidade novo/repetido mantém-se, porque o pedido novo
-	// e o repetido levam a MESMA resposta em cada estado — o que muda é que o repetido deixa de contar
-	// para uma quota que ele não faz crescer.
+	// A ISENÇÃO É SÓ PARA O PRÓPRIO SUBMISSOR, e a primeira versão isentava qualquer `run_id` pendente —
+	// um oráculo de existência cross-submissor e cross-região, medido pela revisão final (ADR-030 §2.1).
+	// Com o filtro, para quem sonda um `run_id` alheio, o pedido repetido e o novo levam a MESMA
+	// resposta; só o dono do pedido vê o seu próprio retry passar, e esse já sabe que o submeteu.
+	//
+	// LIMITE DECLARADO: a isenção cobre só a janela PENDENTE. Depois de reclamado o pedido sai da fila,
+	// e um retry com a quota cheia leva 429 embora o `Append` fosse dedup.
 	//
 	// O tecto GLOBAL mantém o padrão herdado do AOS-423 (recusa também o repetido): mexer nele é fora
 	// do escopo deste ticket, e está declarado nos residuais.

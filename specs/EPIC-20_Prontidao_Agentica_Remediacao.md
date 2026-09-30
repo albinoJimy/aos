@@ -2610,9 +2610,9 @@ varredura a mais.
 
 **MAS HÁ TOCTOU, e a primeira versão afirmava o contrário — «ao contrário do AOS-456a».** Era o inverso
 da verdade: o AOS-456a decide sob mutex, e aqui a leitura e o `Append` não estão serializados, pelo que
-este eixo tem a janela **mais larga** dos dois. Medido: quota 2 e 32 submissões concorrentes do mesmo
-submissor ⇒ 8 a 13 pendentes (5 corridas). O tecto GLOBAL tem a mesma forma e é dívida herdada do
-AOS-423 (tecto 2, 32 concorrentes ⇒ 8 a 11). **O limite real, e é o que se declara: a quota é imposta a
+este eixo tem a janela **mais larga** dos dois. O excesso sob rajada depende da carga — duas séries
+de 5 corridas deram gamas que não se sobrepõem — e por isso não se declara gama. O tecto GLOBAL tem a
+mesma forma e é dívida herdada do AOS-423. **O limite real, e é o que se declara: a quota é imposta a
 menos de `AOS_INGRESS_BURST`.** Com os defaults (quota 125, burst 128, 400 concorrentes) o excesso medido
 foi **3**, 5 corridas de 5 — 1,02×. Torna-se material para quem baixar a quota muito abaixo do burst.
 
@@ -2719,12 +2719,25 @@ A protecção vive em dois sítios e os testes de rota só detectam a **conjunç
 mede sozinha é a de dentro (`TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal`, 5/5). A de fora
 fica declarada no código como o que é: vale se alguém vier a preencher o principal por outro caminho.
 
+### ALTO da revisão final — a isenção da re-submissão era um oráculo de existência
+A primeira isenção (`!jaPendente`) valia para **qualquer** pedido pendente com aquele `run_id`. Com a
+quota cheia, um `run_id` pendente de **outra pessoa** respondia 201 e um inexistente 429 — cross-submissor
+e cross-região, **em produção** (a única postura em que a camada 429 existe), contra o ADR-030 §2.1 à
+letra. Corrigido: a isenção só vale para o **próprio** submissor. Fixado por
+`TestAOS464QuotaCheiaNaoEOraculoDeExistencia` (mutação detectada 5/5).
+
+Na mesma passagem: a série `aos_plan_queue_ceiling_per_submitter` tinha ficado com o predicado antigo e
+publicava o tecto em DEMO-GRADE, onde a repartição não existe; os dois contadores novos não tinham
+sensor. Ambos fixados em `TestAOS464ContadoresDasRecusasEAMetricaNaoMentem` (5/5 cada).
+
 ### Residuais declarados
 - **Origem dos valores no compose (herdado do AOS-463, não fechado aqui):** o
   `docker-compose.prod.yml` exporta SEMPRE as duas variáveis (`:-1000`/`:-125`), como as ~30 outras,
   pelo que `origemDoLimite` dirá «definida» sobre um número que o operador não escreveu. A correcção é
   no padrão do ficheiro, para todas, e não para duas — fazê-lo só para estas deixaria o ficheiro
   inconsistente **e** o residual aberto.
+- **A isenção da re-submissão cobre só a janela PENDENTE:** reclamado o pedido, um retry com a quota
+  cheia leva 429 embora o `Append` fosse dedup.
 - **O tecto global continua sem sensor directo** de que recusa a 1000: nenhum teste submetia até ao
   limite antes deste ticket e nenhum o faz agora. O que se fixou é o comportamento com o tecto
   BAIXADO pela opção; a leitura do valor por ambiente tem a sua própria tabela.
@@ -2737,7 +2750,7 @@ fica declarada no código como o que é: vale se alguém vier a preencher o prin
 - **O gatilho pré-registado do guarda das dobras disparou e NÃO foi honrado.** O registo dizia «vale a
   pena [declarar as dobras em forma de dados] quando houver uma terceira, não antes»; este ticket trouxe
   a terceira. Varrer campos à mão falhou **duas** vezes pela mesma forma (`tuned` no AOS-463,
-  `planMaxPendingPerSubmitter` aqui). Fica NOMEADO em vez de apagado: fechá-lo muda a assinatura de
+  `planMaxPendingPerSubmitter` aqui — esta escapava ao guarda das dobras, mas a suite do pacote apanhava-a pelo teste do banner). Fica NOMEADO em vez de apagado: fechá-lo muda a assinatura de
   `ingressPostureBanner` e de todos os seus testes.
 
 ### Estado

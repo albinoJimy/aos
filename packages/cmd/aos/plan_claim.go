@@ -593,9 +593,8 @@ func truncar(s string, n int) string {
 // AOS-456a» era o INVERSO da verdade — este eixo tem a janela MAIS larga dos dois. Achado MÉDIO-1 de
 // uma revisão adversarial independente.
 //
-// MEDIDO, 5 corridas cada. Com a quota a 2 e 32 submissões concorrentes do mesmo submissor: ficou com
-// 8 a 13 pendentes (4× a 6,5× a quota). O tecto GLOBAL tem a MESMA forma e a mesma janela — é dívida
-// herdada do AOS-423, não trazida por este ticket (tecto 2, 32 concorrentes: 8 a 11 pendentes).
+// O excesso sob rajada depende da carga (duas séries de 5 corridas deram gamas diferentes), pelo que
+// não se declara gama. O tecto GLOBAL tem a mesma janela — dívida herdada do AOS-423.
 //
 // O LIMITE REAL, e é este que se declara: **a quota é imposta a menos de `AOS_INGRESS_BURST`**. Uma
 // rajada concorrente admite até ao burst antes de a projecção seguinte a ver. Com os defaults de
@@ -603,9 +602,8 @@ func truncar(s string, n int) string {
 // 1,02× a quota. Torna-se material para quem baixar a quota muito abaixo do burst, e é isso que o
 // operador precisa de saber antes de a afinar.
 //
-// O `jaPendente` diz se o `runID` dado JÁ está na fila, e sai daqui pela mesma razão que a contagem:
-// a projecção já o tem em mão. Serve a guarda da re-submissão IDEMPOTENTE — ver [handlePlanRequest].
-// `runID` vazio ⇒ sempre `false`.
+// O `jaPendente` diz se o `runID` dado JÁ está na fila **submetido por este mesmo `submissor`**. Serve a
+// guarda da re-submissão IDEMPOTENTE — ver [handlePlanRequest]. `runID` ou `submissor` vazios ⇒ `false`.
 //
 // Um `submissor` vazio devolve `doSubmissor == 0` e NUNCA a contagem dos pedidos sem principal:
 // sem gate soberano composto todos os pedidos ficam com o principal vazio (ver
@@ -632,7 +630,11 @@ func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAg
 		if submissor != "" && fila[i].Payload.Principal == submissor {
 			doSubmissor++
 		}
-		if runID != "" && fila[i].RunID == runID {
+		// DO PRÓPRIO SUBMISSOR, e só dele. Sem este filtro a isenção era um ORÁCULO DE EXISTÊNCIA: com a
+		// quota cheia, um `run_id` pendente de OUTRA pessoa respondia 201 e um inexistente 429 — cross-
+		// submissor e cross-região, em produção, contra o ADR-030 §2.1. Um retry de rede traz o mesmo
+		// principal; quem re-submete o `run_id` de outro nunca devia estar isento.
+		if runID != "" && fila[i].RunID == runID && fila[i].Payload.Principal == submissor {
 			jaPendente = true
 		}
 	}

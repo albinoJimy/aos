@@ -17,7 +17,8 @@ package main
 // # O QUE É DIFERENTE DO EIXO AOS-456/459, E IMPORTA
 //
 // A contagem NÃO vive em memória: sai da projecção da fila, que é derivada do log. Não há mapa a
-// manter, não há caminho de libertação e não há TOCTOU — as duas contagens saem da MESMA leitura.
+// manter nem caminho de libertação, e as duas contagens saem da MESMA leitura. HÁ TOCTOU (leitura e
+// `Append` não serializados) — o limite real está em [pendentesNaFila].
 // O que há em troca é uma atribuição DEGENERADA quando o gate soberano não está composto: o corpo
 // do pedido nunca declara o principal, pelo que sem `readGov` ele fica **vazio para todos**. Um
 // tecto chaveado no vazio não seria contornável — seria um tecto GLOBAL mais apertado anunciado
@@ -475,4 +476,76 @@ func TestAOS464ReSubmissaoDoQueJaEstaNaFilaNaoGastaQuota(t *testing.T) {
 		t.Fatalf("a fila tem %d (alice %d), esperava %d — o retry acrescentou um pedido, logo a isencao "+
 			"da quota estaria a admitir trabalho novo", total, daAlice, quota)
 	}
+}
+
+// TestAOS464QuotaCheiaNaoEOraculoDeExistencia — com a quota cheia, sondar um `run_id` pendente de OUTRO
+// submissor e um inexistente tem de dar a MESMA resposta (ADR-030 §2.1). A primeira versão da isenção
+// de re-submissão dava 201 vs 429: um oráculo cross-submissor, medido pela revisão final.
+func TestAOS464QuotaCheiaNaoEOraculoDeExistencia(t *testing.T) {
+	_, h := aos464No(t, WithPlanMaxPending(20), WithPlanMaxPendingPerSubmitter(2))
+
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:vitima"), "run-da-vitima"); rec.Code != http.StatusCreated {
+		t.Fatalf("a vitima devia submeter, veio %d", rec.Code)
+	}
+	for i := 0; i < 2; i++ {
+		if rec := postPlanoComHeaders(t, h, aos464Headers("human:mallory"), "run-mallory-"+strconv.Itoa(i)); rec.Code != http.StatusCreated {
+			t.Fatalf("mallory %d devia submeter, veio %d", i+1, rec.Code)
+		}
+	}
+	pendente := postPlanoComHeaders(t, h, aos464Headers("human:mallory"), "run-da-vitima").Code
+	inexistente := postPlanoComHeaders(t, h, aos464Headers("human:mallory"), "run-que-nao-existe").Code
+	if pendente != inexistente {
+		t.Fatalf("ORACULO: com a quota cheia, o run PENDENTE de outro submissor deu %d e um inexistente %d — "+
+			"a isencao de re-submissao nao filtra pelo submissor", pendente, inexistente)
+	}
+	if pendente != http.StatusTooManyRequests {
+		t.Fatalf("as duas sondas deviam dar 429, deram %d", pendente)
+	}
+}
+
+// TestAOS464ContadoresDasRecusasEAMetricaNaoMentem — os contadores incrementam nos dois caminhos, e a
+// série do tecto por-submissor publica 0 quando a repartição não está composta (DEMO-GRADE).
+func TestAOS464ContadoresDasRecusasEAMetricaNaoMentem(t *testing.T) {
+	metrica := func(t *testing.T, h http.Handler, nome string) string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		for _, l := range strings.Split(rec.Body.String(), "\n") {
+			if strings.HasPrefix(l, nome+" ") {
+				return strings.TrimPrefix(l, nome+" ")
+			}
+		}
+		t.Fatalf("serie %s ausente de /metrics", nome)
+		return ""
+	}
+
+	t.Run("verificada: 429 e 503 contam cada um no seu contador", func(t *testing.T) {
+		_, h := aos464No(t, WithPlanMaxPending(3), WithPlanMaxPendingPerSubmitter(1))
+		postPlanoComHeaders(t, h, aos464Headers("human:a"), "c-a-0")
+		postPlanoComHeaders(t, h, aos464Headers("human:a"), "c-a-1") // 429
+		postPlanoComHeaders(t, h, aos464Headers("human:b"), "c-b-0")
+		postPlanoComHeaders(t, h, aos464Headers("human:c"), "c-c-0")
+		postPlanoComHeaders(t, h, aos464Headers("human:d"), "c-d-0") // 503
+		if v := metrica(t, h, "aos_plan_queue_refused_per_submitter_total"); v != "1" {
+			t.Fatalf("recusas por-submissor=%s, esperava 1", v)
+		}
+		if v := metrica(t, h, "aos_plan_queue_refused_total"); v != "1" {
+			t.Fatalf("recusas globais=%s, esperava 1", v)
+		}
+		if v := metrica(t, h, "aos_plan_queue_ceiling_per_submitter"); v != "1" {
+			t.Fatalf("tecto por-submissor publicado=%s, esperava 1 na postura verificada", v)
+		}
+	})
+
+	t.Run("demo-grade: a reparticao nao existe e a metrica publica 0", func(t *testing.T) {
+		node, _ := newAPINode(t, &countingModel{}, false)
+		t.Cleanup(func() { _ = node.Close() })
+		regions := govsov.NewRegistry(map[string]string{govBoard: govRegion, govBoardUS: govRegionUS})
+		_, h := newAPI(t, node, WithReadSovereignty(regions, node.WORM),
+			WithPlanMaxPending(20), WithPlanMaxPendingPerSubmitter(5), WithAPIClock(aos277Clock()))
+		if v := metrica(t, h, "aos_plan_queue_ceiling_per_submitter"); v != "0" {
+			t.Fatalf("em DEMO-GRADE a reparticao nao compoe e a serie publicou %s — o painel afirmaria uma "+
+				"equidade que nao existe", v)
+		}
+	})
 }
