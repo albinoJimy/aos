@@ -2949,6 +2949,20 @@ O orçamento por-run é composto **na admissão** e vive na árvore daquele run.
 Implementá-lo com uma janela inventada entregaria um tecto que ninguém pediu e que o DPO tem de
 avaliar.
 
+### Decisão do dono (2026-09-30)
+Registada antes de implementar, como o primeiro critério exige.
+
+| eixo | decisão | alternativas rejeitadas |
+|---|---|---|
+| **Janela** | **Mensal, UTC.** Repõe às 00:00 UTC do dia 1. | diária UTC (não limita o mês); deslizante 30 d / 24 h (cara de calcular, «quando volto a poder?» sem resposta simples) |
+| **Unidade** | **Tokens (obrigatório) e micro-USD (opcional)**, como o tecto por-run (AOS-257/260). Nega se QUALQUER das duas estiver esgotada. | só USD (cega se o canal de custo falhar); só tokens (ignora o preço do modelo) |
+| **Excesso** | **Dura.** Na admissão reserva-se o tecto POR-RUN inteiro contra a quota; no fim do run liquida-se pelo consumo real e liberta-se o resto. Nunca se ultrapassa a quota. | macia — comparar só o já gasto deixava N runs admitidos juntos ultrapassar a quota até N × o tecto por-run, que é o excesso que o ticket existe para conter |
+| **Art. 17** | **O `/dsar/erase` apaga o agregado, e isso repõe a quota.** Residual declarado. | manter um bloqueio pseudonimizado até ao fim da janela (posição jurídica que o DPO teria de validar); bloquear o ticket à espera do DPO |
+
+Consequência de engenharia, não de produto (precedente AOS-464): a quota só se compõe sobre principal
+**verificado** (credencial forte). Sobre um principal forjável, uma quota de DESPESA seria negação
+dirigida — o atacante escreveria o nome da vítima e gastaria a quota dela.
+
 ### Critérios de Aceitação
 - [ ] Janela e reposição **declaradas** (decisão do dono registada no ticket antes de implementar).
 - [ ] O agregado é **durável**: um restart do nó não repõe a quota consumida — provado por teste de
