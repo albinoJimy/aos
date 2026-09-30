@@ -73,6 +73,12 @@ func clearIngressEnv(t *testing.T) {
 	t.Setenv("AOS_INGRESS_READ_BURST", "")
 	t.Setenv("AOS_TRAJECTORY_MAX_CONNS", "")
 	t.Setenv("AOS_TRAJECTORY_MAX_CONNS_PER_READER", "")
+	// AOS-464: as duas da fila de planos, pela MESMA razão — e o commit que as acrescentou mudou as
+	// asserções que este helper protege (`len(opts)` 5→7, `tuned`) sem estender o helper. Medido: com
+	// `AOS_PLAN_MAX_PENDING` definida no ambiente do processo, este ficheiro falhava 5/5. E é o mesmo
+	// commit que passa a exportá-las SEMPRE no `docker-compose.prod.yml`.
+	t.Setenv("AOS_PLAN_MAX_PENDING", "")
+	t.Setenv("AOS_PLAN_MAX_PENDING_PER_SUBMITTER", "")
 }
 
 // ---------------------------------------------------------------------------

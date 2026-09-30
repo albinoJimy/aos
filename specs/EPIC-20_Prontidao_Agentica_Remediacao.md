@@ -2598,15 +2598,23 @@ reclamação viva, e nenhum dos dois depende de quem submeteu. É o MESMO defeit
 |---|---|
 | balde de admissão | é **taxa**, e global entre chamadores: uma submissão custa um token e o pedido fica na fila horas |
 | tecto de runs em curso (AOS-456a) | conta runs **hospedados**, e esta rota não hospeda nenhum |
+| balde de TAXA do plano de dados (AOS-458) | idem, e `POST /plans` atravessa-o como `planoDados` — **omitido da primeira enumeração deste ticket** |
 | `edge` / `nginx.conf` | tem `limit_req` (taxa) e **não** `limit_conn` |
 
 Declarado como residual no AOS-460 e repetido no AOS-461 e no AOS-463; fecha aqui.
 
 ### O que é DIFERENTE do eixo AOS-456/459, e importa
-A contagem **não vive em memória**: sai da projecção da fila, derivada do log. Não há mapa a manter, não
-há caminho de libertação e **não há TOCTOU** — as duas contagens saem da MESMA leitura, pelo que a
-segunda camada não custa uma varredura a mais. O que há em troca é uma atribuição **degenerada** quando o
-gate soberano não está composto (ver os critérios).
+A contagem **não vive em memória**: sai da projecção da fila, derivada do log. Não há mapa a manter nem
+caminho de libertação, e as duas contagens saem da MESMA leitura, pelo que a segunda camada não custa uma
+varredura a mais.
+
+**MAS HÁ TOCTOU, e a primeira versão afirmava o contrário — «ao contrário do AOS-456a».** Era o inverso
+da verdade: o AOS-456a decide sob mutex, e aqui a leitura e o `Append` não estão serializados, pelo que
+este eixo tem a janela **mais larga** dos dois. Medido: quota 2 e 32 submissões concorrentes do mesmo
+submissor ⇒ 8 a 13 pendentes (5 corridas). O tecto GLOBAL tem a mesma forma e é dívida herdada do
+AOS-423 (tecto 2, 32 concorrentes ⇒ 8 a 11). **O limite real, e é o que se declara: a quota é imposta a
+menos de `AOS_INGRESS_BURST`.** Com os defaults (quota 125, burst 128, 400 concorrentes) o excesso medido
+foi **3**, 5 corridas de 5 — 1,02×. Torna-se material para quem baixar a quota muito abaixo do burst.
 
 ### Critérios de aceitação
 - [x] `pendentesNaFila` devolve o total **e** a contagem do submissor dado. Numa só função, pela razão
@@ -2633,11 +2641,53 @@ gate soberano não está composto (ver os critérios).
 - [x] `AOS_PLAN_MAX_PENDING` e `AOS_PLAN_MAX_PENDING_PER_SUBMITTER`, com o par validado **FINAL** — a
   correcção do AOS-463 aplicada ao nascer em vez de paga em revisão. Três casos na tabela cobrem
   exactamente a lacuna que o AOS-463 pagou (`global` definido, `porSubmissor` ausente).
-- [x] **A repartição NÃO se compõe sem gate soberano de leitura**, e a razão é mais forte do que nos
-  outros eixos: [planRequest] tem `run_id` e `objective` e mais nada, pelo que sem `readGov` o principal
-  fica **vazio para TODOS**. Um tecto chaveado no vazio não seria contornável — seria um tecto **global
-  mais apertado** (125 em vez de 1000), a recusar com 429 chamadores que não excederam nada e anunciado
-  como equidade.
+- [x] **A repartição compõe-se SÓ sobre um principal INFORJÁVEL** (`readGov.cred != nil`), e é a única
+  das três dobras de tecto por-chamador que recusa a postura DEMO-GRADE. **Correcção de um ALTO que uma
+  revisão adversarial independente mediu na primeira versão deste ticket** — ver abaixo.
+- [x] Sem gate soberano nenhum também não compõe: [planRequest] tem `run_id` e `objective` e mais nada,
+  pelo que sem `readGov` o principal fica **vazio para TODOS**. Um tecto chaveado no vazio seria um tecto
+  **global mais apertado** (125 em vez de 1000), a recusar com 429 chamadores que não excederam nada.
+- [x] **A re-submissão de um `run_id` já pendente não gasta quota.** Não acrescenta nada à fila (o
+  `Append` é idempotente pela chave) e o banner promete «201 accepted IDEMPOTENTE»; recusá-la era um
+  falso negativo puro, alcançável a 125 por chamador e deterministicamente sozinho em vez de só com 1000
+  globais — exactamente no retry de rede de um cliente. Achado MÉDIO-4 da revisão.
+- [x] **Contadores para as duas recusas** (`aos_plan_queue_refused_total`,
+  `aos_plan_queue_refused_per_submitter_total`). A camada nova nascia só com log, duas linhas abaixo da
+  frase «uma guarda sem sensor é o defeito que o AOS-422 mediu». Achado BAIXO-6.
+
+### ALTO — a primeira versão entregava um trinco de NEGAÇÃO DIRIGIDA, não um tecto contornável
+Na postura DEMO-GRADE (gate composto, sem credencial forte — a que DEF-221 nomeia para
+dev/staging/self-hosted), o submissor vem do header `X-Aos-Reader`, que o chamador escreve. Nos eixos
+AOS-456a e AOS-459 isso deixa um atacante **evadir** o tecto dele: mau, mas limitado — obtém o que
+obteria sem tecto nenhum. **Aqui não precisava de evadir: escrevia o header da VÍTIMA e gastava a quota
+dela.**
+
+| medição | resultado |
+|---|---|
+| quota 5, global 20, 5 pedidos forjados | a vítima **fechada fora** do `POST /plans` com **15 de 20 lugares livres** |
+| defaults (125/1000) | 125 pedidos fecham-na com **875 livres**, `aos_plan_queue_pending` lê 12,5% — painel saudável |
+| sondagem pela fronteira 201/429 | dá a **contagem exacta** dos pendentes da vítima |
+
+**A diferença face aos gémeos é a DURABILIDADE:** no AOS-456a os lugares são runs em curso, que executam
+e libertam; no AOS-459 são ligações SSE, que o atacante tem de segurar. Aqui um pedido só sai da fila com
+desfecho terminal ou reclamação viva — a ocupação forjada é durável e **gratuita**, fire-and-forget até
+um operador drenar.
+
+Ou seja: **a variável que se liga PARA DAR EQUIDADE entregava um trinco de negação**. É a classe «tecto
+inerte anunciado como equidade» que o ciclo AOS-456→AOS-463 existe para fechar, com o sinal invertido — e
+declarar não bastava, porque sob abuso era **pior do que não existir**.
+
+- [x] **Fail-closed, e é o argumento deste ticket aplicado por inteiro.** Ele já recusava compor sobre um
+  principal VAZIO porque «um tecto chaveado no vazio valeria como tecto global mais apertado, anunciado
+  como equidade»; o mesmo vale para um principal FORJÁVEL, e aqui com consequência pior. A atribuição
+  exige `h.readGov.cred != nil`; na postura DEMO-GRADE o tecto global fica como única barreira.
+- [x] O predicado é o do **sítio de uso** (`h.readGov.cred`), não um predicado sobre o `*Node`: é a
+  credencial que esta decisão consulta que decide. Foi o achado MÉDIO-1 da sétima revisão, pago no SSE.
+- [x] Fixado por `TestAOS464DEMOGRADENaoCompoePorqueSeriaNegacaoDirigida`, com controlo de que o global
+  continua a morder. A mutação que volta a compor sobre o principal forjável é detectada **5/5**, e só
+  por esse teste.
+- [x] DEF-913 no registo declara a RECUSA (não dívida nela), e DEF-221 deixou de dizer que as três dobras
+  compõem sobre DEMO-GRADE — o que passara a ser falso.
 - [x] **QUATRO posturas no banner**, não três: «não configurada» e «configurada mas não composta» exigem
   acções DIFERENTES do operador (definir a variável, ou compor o gate), e colapsá-las mandaria metade
   deles editar o ficheiro errado. A dobra segue a convenção de nome e **está registada** em
@@ -2678,6 +2728,17 @@ fica declarada no código como o que é: vale se alguém vier a preencher o prin
 - **O tecto global continua sem sensor directo** de que recusa a 1000: nenhum teste submetia até ao
   limite antes deste ticket e nenhum o faz agora. O que se fixou é o comportamento com o tecto
   BAIXADO pela opção; a leitura do valor por ambiente tem a sua própria tabela.
+- **Não há como DESLIGAR a repartição por ambiente:** deixar `AOS_PLAN_MAX_PENDING_PER_SUBMITTER` por
+  definir dá o default 125, LIGADA, e `=0` é recusado. O ramo «NÃO CONFIGURADA» do banner é alcançável só
+  por `WithPlanMaxPendingPerSubmitter(0)`, que é seam de teste. Mesma fronteira do eixo SSE (prior art);
+  a tabela de env deste ticket descrevia-a ao contrário, copiada do AOS-456a onde o default é 0.
+- **O TOCTOU do tecto GLOBAL** (herdado do AOS-423) fica por fechar: serializar leitura e `Append`
+  exigiria um lock no caminho quente do `POST /plans`, que ninguém mediu.
+- **O gatilho pré-registado do guarda das dobras disparou e NÃO foi honrado.** O registo dizia «vale a
+  pena [declarar as dobras em forma de dados] quando houver uma terceira, não antes»; este ticket trouxe
+  a terceira. Varrer campos à mão falhou **duas** vezes pela mesma forma (`tuned` no AOS-463,
+  `planMaxPendingPerSubmitter` aqui). Fica NOMEADO em vez de apagado: fechá-lo muda a assinatura de
+  `ingressPostureBanner` e de todos os seus testes.
 
 ### Estado
 **FEITO** (2026-09-30).

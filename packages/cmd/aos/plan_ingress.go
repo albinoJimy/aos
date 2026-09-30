@@ -369,18 +369,47 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// chamadores. Um tecto chaveado no vazio não seria contornável — seria um tecto GLOBAL mais
 	// apertado, a recusar a 125 em vez de 1000, anunciado como equidade. Não compor é a única
 	// leitura honesta, e o banner de arranque declara-a.
-	// O `h.readGov != nil` É CINTO-E-SUSPENSÓRIOS, e fica declarado como tal em vez de contado como
-	// coberto: sem `readGov` o `p.Principal` já é vazio, e [pendentesNaFila] devolve 0 para um
-	// submissor vazio, pelo que remover esta condição não muda comportamento nenhum hoje — medido, a
-	// mutação sobrevive aos quatro testes de rota deste eixo. A metade que se mede sozinha é a de
-	// dentro, em [TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal]. Esta vale se alguém vier
-	// a preencher o principal por outro caminho, e aí é a única barreira.
+	// EXIGE-SE UM PRINCIPAL INFORJÁVEL (`h.readGov.cred != nil`), e não só um gate composto. É a
+	// correcção de um ALTO que uma revisão adversarial independente mediu, e inverte a postura que a
+	// primeira versão deste ticket tinha.
+	//
+	// # PORQUE É QUE A POSTURA DEMO-GRADE NÃO PODE COMPOR ESTE TECTO
+	//
+	// Com o gate composto e SEM credencial forte, o submissor vem do header `X-Aos-Reader`, que o
+	// CHAMADOR escreve. Nos eixos gémeos (AOS-456a, AOS-459) isso deixa um atacante EVADIR o tecto
+	// dele — mau, mas limitado: ele obtém o que obteria sem tecto nenhum.
+	//
+	// AQUI É PIOR, E É QUALITATIVAMENTE OUTRO. O atacante não precisa de evadir a quota dele: escreve
+	// o header da VÍTIMA e gasta a dela. MEDIDO: com a quota a 5 e o global a 20, **5 pedidos
+	// forjados fecham uma vítima nomeada fora do `POST /plans` com 15 dos 20 lugares livres**; com os
+	// defaults, 125 pedidos fecham-na com 875 livres, e `aos_plan_queue_pending` lê 125/1000 — um
+	// painel saudável. A fronteira 201/429 conta-lhe também os pendentes exactos da vítima.
+	//
+	// A diferença face aos gémeos é a DURABILIDADE: no AOS-456a os lugares são runs em curso, que
+	// executam e libertam; no AOS-459 são ligações SSE, que o atacante tem de segurar. Aqui um pedido
+	// só sai da fila com desfecho terminal ou reclamação viva — a ocupação forjada é durável e
+	// GRÁTIS, fire-and-forget até um operador drenar.
+	//
+	// Ou seja: a variável que se liga PARA DAR EQUIDADE entregava um trinco de negação DIRIGIDA. É a
+	// classe «tecto inerte anunciado como equidade» que o ciclo AOS-456→AOS-463 existe para fechar,
+	// com o sinal invertido — e declarar não bastava, porque sob abuso era PIOR do que não existir.
+	//
+	// # É O ARGUMENTO DESTE TICKET APLICADO POR INTEIRO
+	//
+	// Ele já recusava compor sobre um principal VAZIO porque «um tecto chaveado no vazio valeria como
+	// tecto global mais apertado, anunciado como equidade». O mesmo raciocínio vale para um principal
+	// FORJÁVEL, e aqui com uma consequência pior. Recusar as duas posturas é a leitura consistente.
+	//
+	// O PREDICADO É O DO SÍTIO DE USO (`h.readGov.cred`), e não um predicado sobre o `*Node`: é a
+	// credencial que esta decisão realmente consulta que decide, não a que o nó por acaso tem. Foi o
+	// achado MÉDIO-1 da sétima revisão, pago no eixo SSE.
 	submissorImputavel := ""
-	if h.readGov != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+	if h.readGov != nil && h.readGov.cred != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
 		submissorImputavel = p.Principal
 	}
 
-	total, doSubmissor, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila, submissorImputavel)
+	total, doSubmissor, jaPendente, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila,
+		submissorImputavel, req.RunID)
 	if err != nil {
 		h.logf("plan-ingress: tecto nao verificavel: %v", err)
 		writeError(w, http.StatusServiceUnavailable, "fila indisponivel")
@@ -424,16 +453,32 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	// Se o dono decidir que um bit é demais, a correcção é responder 503 nas DUAS camadas e manter a
 	// distinção só no log do operador — o diagnóstico perde-se para o cliente e mantém-se para quem
 	// opera. Fica escrito para que essa decisão seja possível sem reargumentar isto.
-	if submissorImputavel != "" && doSubmissor >= h.cfg.planMaxPendingPerSubmitter {
+	// A RE-SUBMISSÃO DO QUE JÁ ESTÁ NA FILA NÃO GASTA QUOTA, e a primeira versão deste ticket gastava.
+	//
+	// Um pedido repetido para um `run_id` já pendente não acrescenta nada à fila — o `Append` é
+	// idempotente pela chave, e o banner promete «201 accepted IDEMPOTENTE». Recusá-lo por quota era um
+	// falso negativo puro, e pior: alcançável a 125 por chamador e deterministicamente sozinho, em vez
+	// de só com 1000 globais. Acontecia exactamente quando um cliente faz retry de rede. Achado MÉDIO-4
+	// de uma revisão adversarial independente.
+	//
+	// NÃO quebra a §2.1 do ADR-030: a indistinguibilidade novo/repetido mantém-se, porque o pedido novo
+	// e o repetido levam a MESMA resposta em cada estado — o que muda é que o repetido deixa de contar
+	// para uma quota que ele não faz crescer.
+	//
+	// O tecto GLOBAL mantém o padrão herdado do AOS-423 (recusa também o repetido): mexer nele é fora
+	// do escopo deste ticket, e está declarado nos residuais.
+	if submissorImputavel != "" && !jaPendente && doSubmissor >= h.cfg.planMaxPendingPerSubmitter {
 		h.logf("plan-ingress: RECUSADO por tecto DO SUBMISSOR — %q tem %d pedidos por drenar "+
 			"(tecto por-submissor %d, global %d, fila %d)", submissorImputavel, doSubmissor,
 			h.cfg.planMaxPendingPerSubmitter, h.cfg.planMaxPending, total)
+		h.recusasDaFilaPorSubmissor.Add(1)
 		writeError(w, http.StatusTooManyRequests, "quota de pedidos por drenar deste submissor atingida")
 		return
 	}
 	if total >= h.cfg.planMaxPending {
 		h.logf("plan-ingress: RECUSADO por tecto — %d pedidos por drenar (tecto %d); o consumidor "+
 			"nao esta a drenar a fila", total, h.cfg.planMaxPending)
+		h.recusasDaFilaGlobal.Add(1)
 		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
 		return
 	}

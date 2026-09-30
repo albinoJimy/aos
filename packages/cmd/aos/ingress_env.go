@@ -292,15 +292,27 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 }
 
 // dobraDoTectoDaFila declara o tecto de pedidos de plano por drenar e a sua REPARTIÇÃO por submissor,
-// com as TRÊS posturas que a atribuição tem — no molde dos eixos AOS-456 e AOS-459, e pela mesma
-// razão: um tecto sobre um valor que o chamador escolhe não é a mesma coisa que um tecto sobre uma
-// credencial verificada, e o operador tem de saber qual tem.
+// em QUATRO ramos — no molde dos eixos AOS-456 e AOS-459, e pela mesma razão: um tecto sobre um valor
+// que o chamador escolhe não é a mesma coisa que um tecto sobre uma credencial verificada, e o operador
+// tem de saber qual tem.
 //
-// A DO MEIO é a que o ciclo AOS-456→AOS-463 pagou cinco vezes: configurada e ligada sobre um principal
-// forjável, anunciada como equidade. Aqui a PRIMEIRA é pior do que forjável — é degenerada: sem gate
-// soberano o principal do pedido fica VAZIO para todos os chamadores (o corpo nunca o declara), pelo
-// que a repartição não se compõe de todo, em vez de valer como um tecto global mais apertado. Ver
-// [handlePlanRequest].
+// QUATRO, e não três: «não configurada» (a variável desligada) e «configurada mas não composta» (o gate
+// ausente, ou presente sem credencial forte) exigem acções DIFERENTES do operador — definir a variável,
+// compor o gate, ou compor o OIDC. Colapsá-las mandaria parte deles editar o ficheiro errado. O godoc
+// desta função dizia «TRÊS posturas» enquanto o teste e o ticket diziam QUATRO; era a mesma frase em
+// dois sítios com números diferentes.
+//
+// SÃO QUATRO RAMOS E SÓ UM COMPÕE, e é a diferença face aos eixos AOS-456a e AOS-459, que compõem
+// sobre um principal DEMO-GRADE. Aqui as duas posturas intermédias recusam compor, por razões
+// diferentes e ambas medidas:
+//
+//   - principal VAZIO (sem gate): um tecto chaveado no vazio valeria como tecto global mais apertado,
+//     anunciado como equidade — o corpo do pedido nunca declara o principal;
+//   - principal FORJÁVEL (gate sem credencial forte): pior do que contornável. Um atacante escreve o
+//     header da VÍTIMA e gasta a quota dela, com ocupação DURÁVEL e gratuita. Medido: 5 pedidos
+//     forjados fecham uma vítima com 15 de 20 lugares livres. Seria um trinco de negação dirigida
+//     anunciado como equidade. Ver [handlePlanRequest] para o porquê de a durabilidade ser o que
+//     distingue este eixo dos gémeos.
 //
 // A CONJUNÇÃO É EXPLÍCITA no ramo VERIFICADO pela razão que o AOS-461 pagou: hoje `principalVerificavel`
 // implica `gateComposto`, mas esta função não pode depender dessa implicação para estar certa.
@@ -317,7 +329,7 @@ func dobraDoTectoDaFila(lim ingressLimits, gateComposto, principalVerificavel bo
 	case !gateComposto:
 		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: CONFIGURADA (%d) mas NAO COMPOSTA — sem gate soberano de leitura o principal do pedido fica VAZIO para TODOS os chamadores (o corpo nunca o declara), nao ha a quem imputar, e a reparticao fica DESLIGADA em vez de degenerar num tecto global mais apertado. Defina AOS_BOARD_REGIONS (e o WORM).", lim.planMaxPendingPerSubmitter)
 	case !principalVerificavel:
-		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: LIGADA sobre principal DEMO-GRADE (%d de %d) — ATENCAO: sem credencial forte composta o submissor vem do header X-Aos-Reader, que o CHAMADOR escreve, pelo que este tecto CONTORNA-SE rodando o header. Vale contra rajada HONESTA ou cliente mal configurado; NAO vale contra abuso. Para o tornar inforjavel defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
+		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: CONFIGURADA (%d) e NAO COMPOSTA — o gate soberano esta composto mas SEM credencial forte, logo o submissor vem do header X-Aos-Reader que o CHAMADOR escreve. Este tecto NAO se compoe nessa postura, e a razao e mais forte do que «contorna-se»: um atacante escreveria o header da VITIMA e gastaria a quota DELA, fechando-a fora de POST /plans com o resto da fila LIVRE (medido: 5 pedidos forjados, 15 de 20 lugares livres), com ocupacao DURAVEL e gratuita — um pedido so sai da fila com desfecho terminal ou reclamacao viva. Ligar a reparticao aqui seria entregar um trinco de negacao DIRIGIDA em vez de equidade. O tecto global de %d continua a ser a unica barreira. Para a compor defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
 	default:
 		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: LIGADA sobre principal VERIFICADO — cada submissor ocupa no maximo %d de %d pedidos por drenar; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. Exceder responde 429 (o chamador tem de drenar o que e dele) e NAO 503 (o no sem consumidor), e a reparticao e verificada ANTES do tecto global para que o diagnostico aponte a causa certa.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
 	}

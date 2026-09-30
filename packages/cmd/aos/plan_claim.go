@@ -582,16 +582,37 @@ func truncar(s string, n int) string {
 // contagens com ela, sem ter de se lembrar.
 //
 // E NÃO CUSTA NADA: a projecção já devolve a fila inteira, pelo que contar por submissor é uma
-// passagem sobre uma fatia que o tecto global limita. Não há mapa a manter, não há caminho de
-// libertação e não há TOCTOU — ao contrário do tecto por-chamador do `POST /runs` (AOS-456a), que
-// conta runs vivos em memória. Aqui a fonte de verdade é o log, e a contagem é derivada dele.
+// passagem sobre uma fatia que o tecto global limita. Não há mapa a manter nem caminho de libertação —
+// ao contrário do tecto por-chamador do `POST /runs` (AOS-456a). Aqui a fonte de verdade é o log, e a
+// contagem é derivada dele.
+//
+// # MAS HÁ TOCTOU, E A PRIMEIRA VERSÃO DESTE TICKET AFIRMAVA O CONTRÁRIO
+//
+// A leitura e o `Append` NÃO estão serializados: entre contar e gravar, outra goroutine pode gravar.
+// O AOS-456a decide sob MUTEX no `submit`, pelo que a afirmação «não há TOCTOU, ao contrário do
+// AOS-456a» era o INVERSO da verdade — este eixo tem a janela MAIS larga dos dois. Achado MÉDIO-1 de
+// uma revisão adversarial independente.
+//
+// MEDIDO, 5 corridas cada. Com a quota a 2 e 32 submissões concorrentes do mesmo submissor: ficou com
+// 8 a 13 pendentes (4× a 6,5× a quota). O tecto GLOBAL tem a MESMA forma e a mesma janela — é dívida
+// herdada do AOS-423, não trazida por este ticket (tecto 2, 32 concorrentes: 8 a 11 pendentes).
+//
+// O LIMITE REAL, e é este que se declara: **a quota é imposta a menos de `AOS_INGRESS_BURST`**. Uma
+// rajada concorrente admite até ao burst antes de a projecção seguinte a ver. Com os defaults de
+// produção (quota 125, burst 128, 400 concorrentes) o excesso medido foi **3 em 5 corridas de 5** —
+// 1,02× a quota. Torna-se material para quem baixar a quota muito abaixo do burst, e é isso que o
+// operador precisa de saber antes de a afinar.
+//
+// O `jaPendente` diz se o `runID` dado JÁ está na fila, e sai daqui pela mesma razão que a contagem:
+// a projecção já o tem em mão. Serve a guarda da re-submissão IDEMPOTENTE — ver [handlePlanRequest].
+// `runID` vazio ⇒ sempre `false`.
 //
 // Um `submissor` vazio devolve `doSubmissor == 0` e NUNCA a contagem dos pedidos sem principal:
 // sem gate soberano composto todos os pedidos ficam com o principal vazio (ver
 // [handlePlanRequest]), e contá-los como «de um submissor» faria o tecto por-submissor valer como
 // tecto global para todos os chamadores somados — mais apertado do que o global e anunciado como
 // equidade. O chamador é que decide não compor; esta função não adivinha.
-func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua, submissor string) (total, doSubmissor int, err error) {
+func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua, submissor, runID string) (total, doSubmissor int, jaPendente bool, err error) {
 	var desde uint64
 	if marca != nil {
 		desde = marca.desde()
@@ -599,22 +620,23 @@ func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAg
 	eventos, err := store.Read(ctx, planRequestStream, desde)
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
-			return 0, 0, nil
+			return 0, 0, false, nil
 		}
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	fila, nova := projectarFilaComMarca(eventos, time.Now().UTC())
 	if marca != nil {
 		marca.avancar(nova)
 	}
-	if submissor != "" {
-		for i := range fila {
-			if fila[i].Payload.Principal == submissor {
-				doSubmissor++
-			}
+	for i := range fila {
+		if submissor != "" && fila[i].Payload.Principal == submissor {
+			doSubmissor++
+		}
+		if runID != "" && fila[i].RunID == runID {
+			jaPendente = true
 		}
 	}
-	return len(fila), doSubmissor, nil
+	return len(fila), doSubmissor, jaPendente, nil
 }
 
 // filaReclamavel diz se a rota de reclamacao vai SERVIR, e existe para o banner de arranque o

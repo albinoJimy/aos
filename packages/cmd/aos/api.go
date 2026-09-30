@@ -167,6 +167,12 @@ const (
 	// pedido só sai da fila com desfecho terminal ou reclamação viva, e nenhum dos dois depende de
 	// quem submeteu — logo não é uma rajada que passa, é ocupação que fica.
 	//
+	// AS BARREIRAS QUE ESTA ROTA JÁ ATRAVESSA, e nenhuma fecha a ocupação: o balde de submissão
+	// (taxa), o balde de TAXA do plano de dados (AOS-458, que `POST /plans` atravessa como
+	// `planoDados` — omitido da primeira enumeração deste ticket), o tecto de runs em curso (conta
+	// runs HOSPEDADOS, e esta rota não hospeda nenhum) e o `edge` (`limit_req`, taxa). As quatro são
+	// de TAXA ou de outro recurso: uma submissão custa um token e o pedido fica na fila horas.
+	//
 	// 125 reparte 8 submissores sobre o global de 1000, a mesma proporção que o eixo SSE usa
 	// (32/256). É folgado para um `aos-orq` real, que despacha por passagem e não enfileira centenas.
 	DefaultPlanMaxPendingPerSubmitter = 125
@@ -584,6 +590,12 @@ type apiHandler struct {
 	// contrato e isto é estado que se move; o handler é uma instância por servidor, criada em
 	// [NewAPIHandler], que é exactamente o âmbito certo. Ver `plan_marca_de_agua.go`.
 	marcaDaFila marcaDeAgua
+	// recusasDaFila* contam as recusas de POST /plans pelas DUAS camadas do tecto (AOS-464). Existem
+	// porque «uma guarda sem sensor é o defeito que o AOS-422 mediu» — a frase está duas linhas acima
+	// da métrica da fila, e a camada nova nascia só com log. Separadas, porque exigem acções
+	// diferentes: a global é o operador a procurar o consumidor, a do submissor é um chamador a drenar.
+	recusasDaFilaGlobal       atomic.Uint64
+	recusasDaFilaPorSubmissor atomic.Uint64
 	// O guard que serializa as passagens do [audit.ExpirationJob] vive em
 	// [NodeService.expireInFlight] — NÃO aqui. Mudou de sítio em AOS-267, quando o scheduler
 	// interno passou a conduzir a MESMA passagem: um guard no handler só excluiria as
@@ -1701,7 +1713,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_plan_queue_claimable", "Rota de reclamacao da fila de pedidos de plano a servir (1) ou a recusar 501 (0).",
 		"gauge", b01(h.readGov != nil), "")
 	if h.node != nil && h.node.EventStore != nil {
-		if pendentes, _, err := pendentesNaFila(r.Context(), h.node.EventStore, nil, ""); err == nil {
+		if pendentes, _, _, err := pendentesNaFila(r.Context(), h.node.EventStore, nil, "", ""); err == nil {
 			g("aos_plan_queue_pending", "Pedidos de plano por drenar (submetidos, sem desfecho terminal e sem reclamacao viva).",
 				"gauge", float64(pendentes), "")
 			// O TECTO EM VIGOR, e não a constante: desde o AOS-464 ele é afinável
@@ -1719,6 +1731,10 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			}
 			g("aos_plan_queue_ceiling_per_submitter", "Tecto de pedidos por drenar POR SUBMISSOR a partir do qual o ingresso recusa com 429; 0 = reparticao NAO composta.",
 				"gauge", float64(porSubmissor), "")
+			g("aos_plan_queue_refused_total", "Submissoes de plano RECUSADAS pelo tecto GLOBAL da fila (503). A subir significa que ninguem esta a drenar.",
+				"counter", float64(h.recusasDaFilaGlobal.Load()), "")
+			g("aos_plan_queue_refused_per_submitter_total", "Submissoes de plano RECUSADAS pela quota do SUBMISSOR (429). A subir com aos_plan_queue_pending BAIXO significa um chamador a enfileirar sem drenar, nao um no sem consumidor.",
+				"counter", float64(h.recusasDaFilaPorSubmissor.Load()), "")
 		}
 	}
 

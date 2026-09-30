@@ -1212,27 +1212,39 @@ func dobraDoEixo(t *testing.T, banner, inicio string) string {
 // `!gateComposto` tem nome conforme e **escapava** à varredura, voltando a alargar a dobra anterior em
 // silêncio.
 //
-// E `tuned` É O QUARTO EIXO, porque é um campo em que a função JÁ ramifica (a string `origem`, primeira
+// E `tuned` É UM DOS EIXOS, porque é um campo em que a função JÁ ramifica (a string `origem`, primeira
 // linha do corpo). A primeira versão desta varredura variava `gateComposto` e `principalVerificavel` e
 // deixava `tuned` a `false` nas três formas: uma dobra emitida só quando `lim.tuned` tinha nome conforme
-// e **escapava** — medido, 5/5 corridas, e o «limite declarado» nomeava só a convenção de nome, não
-// este. Achado MÉDIO-4 da nona revisão adversarial, e é a sexta enumeração parcial da sessão.
+// e **escapava** — medido, 5/5 corridas. Achado MÉDIO-4 da nona revisão.
+//
+// O MESMO ACONTECEU OUTRA VEZ no AOS-464, que fez a função ramificar em `planMaxPendingPerSubmitter` e
+// não estendeu esta tabela: uma dobra conforme condicional nesse campo escapava 5/5, e a suite inteira
+// do pacote com ela. Duas ocorrências da mesma forma dizem que varrer campos à mão não escala.
+//
+// O GATILHO PRÉ-REGISTADO DISPAROU, e o registo era este: «vale a pena quando houver uma terceira, não
+// antes». O AOS-464 trouxe a terceira dobra. **NÃO se fez** — e isso fica dito em vez de o gatilho
+// desaparecer em silêncio: fechar isto a sério é o banner declarar as suas próprias dobras em forma de
+// dados, em vez de as escrever em texto livre, o que muda a assinatura de `ingressPostureBanner` e de
+// todos os seus testes. Fica como residual NOMEADO do AOS-464, não como nota apagada.
 //
 // LIMITE QUE FICA, e é honesto: uma dobra cujo nome NÃO siga a convenção «TECTO … (AOS-NNN):», ou que
-// ramifique num campo de `lim` que esta tabela não varia, não é apanhada. Fechá-lo a sério exigiria que
-// o banner declarasse as suas próprias dobras em vez de as escrever em texto livre — vale a pena quando
-// houver uma terceira, não antes. O que se pode fazer agora, e se faz, é varrer todos os campos em que
-// a função ramifica HOJE.
+// ramifique num campo de `lim` que esta tabela não varia, não é apanhada. O que se faz agora é varrer
+// todos os campos em que a função ramifica HOJE — e a lição das duas ocorrências é que «hoje» envelhece.
 func TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS(t *testing.T) {
 	// AS FORMAS DE `lim` que mudam de RAMO em alguma dobra: tectos ligados, tectos desligados, e o par
 	// inerte (`por-leitor >= global`), que é o ramo condicional do banner.
+	//
+	// `planMaxPending*` ESTÃO AQUI porque o AOS-464 fez a função ramificar neles e NÃO estendeu esta
+	// tabela — medido, uma dobra conforme condicional em `planMaxPendingPerSubmitter` escapava 5/5, e
+	// a suite inteira do pacote também. É a reintrodução, numa dimensão nova, do achado MÉDIO-4 da
+	// nona revisão, que o godoc acima diz não querer pagar uma terceira vez.
 	formas := map[string]ingressLimits{
 		"tectos ligados": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
-			trajMaxConns: 8, trajMaxConnsPerReader: 2},
+			trajMaxConns: 8, trajMaxConnsPerReader: 2, planMaxPending: 8, planMaxPendingPerSubmitter: 2},
 		"tectos desligados": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 0,
-			trajMaxConns: 8, trajMaxConnsPerReader: 0},
+			trajMaxConns: 8, trajMaxConnsPerReader: 0, planMaxPending: 8, planMaxPendingPerSubmitter: 0},
 		"par INERTE": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
-			trajMaxConns: 4, trajMaxConnsPerReader: 4},
+			trajMaxConns: 4, trajMaxConnsPerReader: 4, planMaxPending: 4, planMaxPendingPerSubmitter: 4},
 	}
 	re := regexp.MustCompile(`TECTO [^:]*\(AOS-\d+\):`)
 	vistos := map[string]bool{}

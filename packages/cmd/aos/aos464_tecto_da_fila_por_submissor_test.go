@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 )
@@ -61,10 +62,67 @@ func aos464No(t *testing.T, opts ...APIOption) (*Node, http.Handler) {
 	t.Helper()
 	node, _ := newAPINode(t, &countingModel{}, false)
 	t.Cleanup(func() { _ = node.Close() })
-	regions := govsov.NewRegistry(map[string]string{govBoard: govRegion, govBoardUS: govRegionUS})
-	base := []APIOption{WithReadSovereignty(regions, node.WORM), WithAPIClock(aos277Clock())}
+	auth, err := NewSovereignRegionAuthority(context.Background(),
+		map[string]string{govBoard: govRegion, govBoardUS: govRegionUS}, node.WORM, time.Now)
+	if err != nil {
+		t.Fatalf("NewSovereignRegionAuthority: %v", err)
+	}
+	base := []APIOption{WithSovereignAuthority(auth, credDeHeaders{}, node.WORM), WithAPIClock(aos277Clock())}
 	_, h := newAPI(t, node, append(base, opts...)...)
 	return node, h
+}
+
+// TestAOS464DEMOGRADENaoCompoePorqueSeriaNegacaoDirigida — o ALTO que uma revisão adversarial
+// independente mediu, e a razão pela qual este eixo recusa a postura que os gémeos aceitam.
+//
+// Com o gate composto e SEM credencial forte, o submissor vem do header `X-Aos-Reader`, que o chamador
+// escreve. Nos eixos AOS-456a e AOS-459 isso deixa um atacante EVADIR o tecto dele — limitado: obtém o
+// que obteria sem tecto nenhum. Aqui ele não precisa de evadir: escreve o header da VÍTIMA e gasta a
+// quota dela, e a ocupação é DURÁVEL e gratuita (um pedido só sai com desfecho terminal ou reclamação
+// viva, e nenhum dos dois depende de quem submeteu).
+//
+// MEDIDO na primeira versão deste ticket: 5 pedidos forjados fechavam uma vítima nomeada fora do
+// `POST /plans` com **15 de 20 lugares globais LIVRES**, e a fronteira 201/429 contava-lhe os pendentes
+// exactos dela. Com os defaults, 125 pedidos e 875 lugares livres, com `aos_plan_queue_pending` a ler
+// 12,5% — um painel saudável. Este teste fixa que já não acontece; o CONTROLO fixa que o global morde.
+func TestAOS464DEMOGRADENaoCompoePorqueSeriaNegacaoDirigida(t *testing.T) {
+	const global, quota = 20, 5
+	node, _ := newAPINode(t, &countingModel{}, false)
+	t.Cleanup(func() { _ = node.Close() })
+	regions := govsov.NewRegistry(map[string]string{govBoard: govRegion, govBoardUS: govRegionUS})
+	// POSTURA DEMO-GRADE: gate composto, NENHUMA credencial forte (`readGov.cred == nil`).
+	_, h := newAPI(t, node, WithReadSovereignty(regions, node.WORM),
+		WithPlanMaxPending(global), WithPlanMaxPendingPerSubmitter(quota), WithAPIClock(aos277Clock()))
+
+	// O ATACANTE gasta a quota da vítima, rodando só o header.
+	for i := 0; i < quota; i++ {
+		if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "forjado-"+strconv.Itoa(i)); rec.Code != http.StatusCreated {
+			t.Fatalf("o pedido forjado %d devia ser aceite nesta postura (o tecto nao compoe), veio %d", i+1, rec.Code)
+		}
+	}
+	// A VÍTIMA tem de continuar a poder submeter.
+	rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "legitimo-da-alice")
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatalf("NEGACAO DIRIGIDA: %d pedidos forjados fecharam a vitima fora do POST /plans com %d de "+
+			"%d lugares globais LIVRES. A reparticao COMPOS-SE sobre um principal FORJAVEL, e nesta "+
+			"postura isso nao e um tecto contornavel — e um trinco de negacao dirigida, com ocupacao "+
+			"DURAVEL e gratuita. A correccao e exigir `readGov.cred != nil` na atribuicao",
+			quota, global-quota, global)
+	}
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a vitima devia ser admitida, veio %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// O CONTROLO: o tecto GLOBAL continua a ser a barreira nesta postura. Sem ele, o caso acima
+	// passaria por não haver tecto nenhum.
+	for i := quota + 1; i < global; i++ {
+		if r := postPlanoComHeaders(t, h, aos464Headers("human:bob"), "enche-"+strconv.Itoa(i)); r.Code != http.StatusCreated {
+			t.Fatalf("a submissao %d devia encher o global, veio %d", i+1, r.Code)
+		}
+	}
+	if r := postPlanoComHeaders(t, h, aos464Headers("human:bob"), "excede-o-global"); r.Code != http.StatusServiceUnavailable {
+		t.Fatalf("com o global cheio esperava 503, veio %d — sem reparticao o global TEM de morder", r.Code)
+	}
 }
 
 // TestAOS464UmSubmissorNaoOcupaAFilaDosOutros — O CRITÉRIO.
@@ -227,7 +285,7 @@ func TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal(t *testing.T) {
 		}
 	}
 
-	total, doSubmissor, err := pendentesNaFila(context.Background(), node.EventStore, nil, "")
+	total, doSubmissor, _, err := pendentesNaFila(context.Background(), node.EventStore, nil, "", "")
 	if err != nil {
 		t.Fatalf("pendentesNaFila: %v", err)
 	}
@@ -254,7 +312,7 @@ func TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal(t *testing.T) {
 			t.Fatalf("a %da de alice devia dar 201, veio %d", i+1, rec.Code)
 		}
 	}
-	if _, daAlice, err := pendentesNaFila(context.Background(), node2.EventStore, nil, "human:alice"); err != nil || daAlice != 3 {
+	if _, daAlice, _, err := pendentesNaFila(context.Background(), node2.EventStore, nil, "human:alice", ""); err != nil || daAlice != 3 {
 		t.Fatalf("a contagem de alice deu %d (err=%v), esperava 3 — a funcao nao esta a contar por "+
 			"submissor, e o caso do vazio acima passaria por ela devolver sempre 0", daAlice, err)
 	}
@@ -289,7 +347,13 @@ func TestAOS464EnvFailClosedEOPARFINAL(t *testing.T) {
 		{"0", "", false, "global zero NAO desliga: abriria a fila a um laco em fuga"},
 		{"-1", "", false, "global negativo"},
 		{"abc", "", false, "global ilegivel"},
-		{"", "0", false, "por-submissor zero pela ENV: quem quer desligar deixa-a POR DEFINIR"},
+		// A JUSTIFICACAO ANTERIOR ERA FALSA, copiada do AOS-456a (onde o default e 0): «quem quer
+		// desligar deixa-a POR DEFINIR». Deixa-la por definir da o DEFAULT 125, LIGADA. Consequencia
+		// declarada: NAO HA COMO DESLIGAR a reparticao por ambiente, e o ramo «NAO CONFIGURADA» do
+		// banner e alcancavel so por `WithPlanMaxPendingPerSubmitter(0)`, que e seam de teste. E a
+		// mesma fronteira do eixo SSE (prior art), aqui escrita ao contrario. Achado BAIXO-3 de uma
+		// revisao adversarial.
+		{"", "0", false, "por-submissor zero: recusa-se em vez de desligar, e desligar por ambiente NAO e possivel"},
 		{"", "-1", false, "por-submissor negativo"},
 		{"", "2.5", false, "nao-inteiro: um tecto de pedidos e um inteiro"},
 	}
@@ -336,13 +400,19 @@ func TestAOS464OBannerDeclaraAsQUATROPosturasDaFila(t *testing.T) {
 	}{
 		{"nao configurada", base, true, true,
 			[]string{"NAO CONFIGURADA", "AOS_PLAN_MAX_PENDING_PER_SUBMITTER", "800"},
-			[]string{"LIGADA sobre"}},
+			[]string{"LIGADA sobre", "negacao DIRIGIDA"}},
 		{"configurada mas SEM gate: principal vazio", comReparticao(), false, false,
 			[]string{"CONFIGURADA (100)", "NAO COMPOSTA", "VAZIO", "AOS_BOARD_REGIONS"},
 			[]string{"LIGADA sobre", "degenerar num tecto global mais apertado.Defina"}},
-		{"LIGADA sobre principal DEMO-GRADE", comReparticao(), true, false,
-			[]string{"DEMO-GRADE", "X-Aos-Reader", "CONTORNA-SE", "NAO vale contra abuso"},
-			[]string{"VERIFICADO"}},
+		// A POSTURA DEMO-GRADE **NÃO COMPÕE**, e é a diferença face aos eixos AOS-456a e AOS-459, que
+		// compõem sobre um principal forjável. A razão está medida em
+		// [TestAOS464DEMOGRADENaoCompoePorqueSeriaNegacaoDirigida]: aqui um atacante escreveria o header
+		// da vítima e gastaria a quota dela, com ocupação durável. A dobra tem de dizer que NÃO se
+		// compõe e porquê, e NÃO pode dizer «contorna-se» — que leria como «não é pior do que nada».
+		{"gate composto SEM credencial forte: NAO compoe", comReparticao(), true, false,
+			[]string{"CONFIGURADA (100)", "NAO COMPOSTA", "X-Aos-Reader", "negacao DIRIGIDA",
+				"DURAVEL", "AOS_SOVEREIGN_OIDC_ISSUER"},
+			[]string{"LIGADA sobre", "VERIFICADO", "CONTORNA-SE"}},
 		{"LIGADA sobre principal VERIFICADO", comReparticao(), true, true,
 			[]string{"VERIFICADO", "credencial FORTE", "429", "ANTES do tecto global"},
 			[]string{"DEMO-GRADE", "CONTORNA-SE"}},
@@ -368,5 +438,41 @@ func TestAOS464OBannerDeclaraAsQUATROPosturasDaFila(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAOS464ReSubmissaoDoQueJaEstaNaFilaNaoGastaQuota — o falso negativo que a primeira versão tinha.
+//
+// Um pedido repetido para um `run_id` já pendente não acrescenta nada à fila, e o banner promete «201
+// accepted IDEMPOTENTE». Recusá-lo por quota era um falso negativo puro — e acontecia exactamente
+// quando um cliente faz retry de rede, a 125 por chamador em vez de a 1000 globais.
+func TestAOS464ReSubmissaoDoQueJaEstaNaFilaNaoGastaQuota(t *testing.T) {
+	const quota = 2
+	node, h := aos464No(t, WithPlanMaxPending(20), WithPlanMaxPendingPerSubmitter(quota))
+
+	for i := 0; i < quota; i++ {
+		if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-retry-"+strconv.Itoa(i)); rec.Code != http.StatusCreated {
+			t.Fatalf("a %da devia dar 201, veio %d", i+1, rec.Code)
+		}
+	}
+	// A QUOTA ESTÁ CHEIA: um run NOVO tem de levar 429.
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-retry-novo"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("um run NOVO com a quota cheia devia dar 429, veio %d — o cenario deixou de medir", rec.Code)
+	}
+	// O RETRY de um run JÁ PENDENTE tem de dar 201 idempotente.
+	rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-retry-0")
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("a re-submissao de um run JA PENDENTE devia dar 201 idempotente, veio %d (%s) — e um "+
+			"falso negativo: nao acrescenta nada a fila, e acontece quando um cliente faz retry de rede",
+			rec.Code, rec.Body.String())
+	}
+	// E a fila NÃO cresceu com o retry.
+	total, daAlice, _, err := pendentesNaFila(context.Background(), node.EventStore, nil, "human:alice", "")
+	if err != nil {
+		t.Fatalf("pendentesNaFila: %v", err)
+	}
+	if total != quota || daAlice != quota {
+		t.Fatalf("a fila tem %d (alice %d), esperava %d — o retry acrescentou um pedido, logo a isencao "+
+			"da quota estaria a admitir trabalho novo", total, daAlice, quota)
 	}
 }
