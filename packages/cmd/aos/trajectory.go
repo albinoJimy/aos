@@ -203,13 +203,42 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 	//   - e um pedido destinado a ser RECUSADO pela repartição TOMAVA primeiro um lugar global, só
 	//     o devolvendo à saída. Enquanto está em voo, ocupa-o.
 	//
-	// MEDIDO na rota real, com `global=2`, `por-leitor=1` e alice presa a UM stream: 32 recusas
-	// concorrentes dela faziam bob levar 429 do tecto GLOBAL em 54–78 de 200 pedidos (27–39%),
-	// contra 1–2 sem a rajada. Trocada a ordem: 0 em 200, três corridas.
+	// MEDIDO na rota real, com `global=2`, `por-leitor=1` e alice presa a UM stream, 32 recusas
+	// concorrentes dela (cinco corridas por ordem, as DUAS categorias de 429 separadas):
+	//
+	//	ordem                429 pelo tecto GLOBAL   429 pelo tecto DE BOB
+	//	AOS-459 (antiga)     34–75                   0
+	//	esta                 0                       29–59
+	//
+	// A LARGURA É A UNIÃO DE DUAS SÉRIES de cinco corridas no mesmo contentor sob carga diferente
+	// (34–52/29–42 numa, 51–75/51–59 noutra). São contagens sob contenção e deslocam-se ~10 pontos
+	// percentuais entre séries; o que reproduz 5/5 nas duas séries e nas duas ordens é a FORMA — qual
+	// das colunas vai a zero. O AOS-463 alargou a tabela do teste e deixou esta estreita e sem a
+	// condição: a versão em PRODUÇÃO ficou a ser a menos honesta das duas (achado MÉDIO-6 da nona
+	// revisão, que é o mesmo defeito que o AOS-461 se propôs a fechar).
 	//
 	// É a mesma assimetria que o AOS-456a declara e cumpre — «exceder responde 429 SEM ocupar lugar
 	// nenhum» —, que o AOS-459 dizia replicar e não replicava. Uma recusa por-leitor passa a não
-	// tocar no contador global de todo, e não há rollback a fazer.
+	// tocar no contador global de todo.
+	//
+	// O QUE ISTO NÃO PROMETE (correcção do AOS-461: o AOS-460 escrevia só «Trocada a ordem: 0 em
+	// 200», o que convidava a ler «bob deixa de ser negado»). A categoria que a ordem move vai a
+	// zero — e é negação por razão ERRADA, o nó cheio de pedidos destinados a recusa. O que sobra é
+	// bob a colidir com o SEU PRÓPRIO tecto de UM: sob contenção o pedido N+1 dele chega antes de o
+	// lugar do N ser libertado. É recusa por razão CERTA, confinada ao próprio principal, e é
+	// artefacto do tecto a 1 — medido na mesma rajada com a proporção sã, `global=16/por-leitor=8` e
+	// `global=64/por-leitor=32` (o default é 32) dão **zero de qualquer categoria**. Nessa proporção
+	// as duas ordens empatam: a ordem só é observável quando a folga global é de UM lugar.
+	//
+	// # O ROLLBACK, e em que sentido
+	//
+	// «Não há rollback a fazer» é verdade num só sentido, e o AOS-460 declarava só esse. Uma recusa
+	// por-leitor não toca no contador global — nada a devolver. Mas uma recusa GLOBAL **toca** no mapa
+	// por-leitor (a reserva já aconteceu) e no próprio contador, e os dois têm de voltar: o
+	// `defer libertar()` acima cobre o `return` do bloco global, e o `trajConns.Add(-1)` explícito
+	// desfaz o incremento. Nenhum dos dois tinha sensor até [TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal]
+	// (achados BAIXO-1 e MÉDIO-3 da sétima revisão); a mutação que remove o `Add(-1)` passava a suite
+	// inteira do pacote.
 	//
 	// # A ATRIBUIÇÃO, e as DUAS posturas legadas que a primeira versão colapsou numa
 	//

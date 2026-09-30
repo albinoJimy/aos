@@ -25,6 +25,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -461,7 +463,7 @@ func TestAOS456ABannerDistingueAsTRESPosturas(t *testing.T) {
 			// tornava estas asserções mais fracas do que pareciam: qualquer ocorrência em qualquer
 			// parte do banner as satisfazia.
 			txt := dobraDoEixo(t, strings.Join(ingressPostureBanner(c.lim, c.gate, c.verificav), "\n"),
-				"TECTO POR-CHAMADOR (AOS-456)", "TECTO DE STREAMS SSE POR LEITOR")
+				marcadorDobra456)
 			for _, ex := range c.exige {
 				if !strings.Contains(txt, ex) {
 					t.Errorf("banner NAO declara %q\n--- banner ---\n%s", ex, txt)
@@ -769,7 +771,7 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 	// banner. A porta vem de [portaLivreLoopback] porque `serveAPI` recebe um endereço e não um
 	// listener — sem isso o teste leria o texto sem poder MEDIR o comportamento, que foi
 	// exactamente a lacuna que deixou a mutação N1 sobreviver.
-	arrancarMedirELerBanner := func(t *testing.T, node *Node, medir func(t *testing.T, addr string)) string {
+	arrancarMedirELerDobra456 := func(t *testing.T, node *Node, medir func(t *testing.T, addr string)) string {
 		t.Helper()
 		addr := portaLivreLoopback(t)
 		var out syncBuf
@@ -791,7 +793,16 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("serveAPI nao encerrou apos cancelamento do ctx")
 		}
-		return out.String()
+		// A DOBRA DESTE EIXO, e não a saída inteira — sem isto as asserções dos cinco casos abaixo
+		// podem ser satisfeitas por vocabulário de OUTRA dobra do banner, e foi o que aconteceu: a
+		// dobra do SSE (AOS-459/460) usa «NAO COMPOSTO», «DEMO-GRADE» e «LIGADO sobre principal
+		// VERIFICADO» exactamente como esta, e passou a satisfazer quatro dos cinco casos por si só.
+		// Medido pela sétima revisão adversarial, com a dobra AOS-456 inteira neutralizada: detecção
+		// 5/5 antes do AOS-459/460, **1/5 depois**. Isto é o AOS-461 a repor o sensor.
+		//
+		// [dobraDoEixo] também aborta se a dobra não existir de todo, o que os `strings.Contains` de
+		// tipo «NÃO pode declarar X» não conseguiam ver: passavam num banner vazio.
+		return dobraDoEixo(t, out.String(), marcadorDobra456)
 	}
 
 	// (A) NÓ LEGADO (sem gate soberano) com a variável DEFINIDA. O tecto NÃO se compõe, e o banner
@@ -816,7 +827,7 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		// `principal_nhi` do corpo TÊM de passar. Se a condição de composição perder o
 		// `gateComposto` (mutação N1), a segunda leva 429 e este caso avermelha — que é o que o
 		// texto do banner sozinho não conseguia ver.
-		banner := arrancarMedirELerBanner(t, node, func(t *testing.T, base string) {
+		banner := arrancarMedirELerDobra456(t, node, func(t *testing.T, base string) {
 			for i := 0; i < 2; i++ {
 				corpo, _ := json.Marshal(map[string]any{
 					"run_id": fmt.Sprintf("legado-%02d", i), "objective": "x",
@@ -874,7 +885,7 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		// submissão do mesmo `X-Aos-Reader` TEM de levar 429. (Que o header ROTATIVO passe é a
 		// fronteira desta postura, medida no caso (F) abaixo — aqui prova-se que o mecanismo está
 		// LIGADO, não que é inforjável.)
-		banner := arrancarMedirELerBanner(t, node, func(t *testing.T, base string) {
+		banner := arrancarMedirELerDobra456(t, node, func(t *testing.T, base string) {
 			cred := credencialDeTeste(t, node)
 			admitidas, recusadas := 0, 0
 			for i := 0; i < 8; i++ {
@@ -942,7 +953,7 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		node.SovereignReadRegions = auth.Registry() // como o Bootstrap o faz (bootstrap.go:2457)
 		node.SovereignReadCredential = credencialDeLeituraInerte{}
 
-		banner := arrancarMedirELerBanner(t, node, nil)
+		banner := arrancarMedirELerDobra456(t, node, nil)
 		if !strings.Contains(banner, "LIGADO sobre principal VERIFICADO") {
 			t.Fatalf("com autoridade E credencial forte o banner devia declarar VERIFICADO; saiu:\n%s", banner)
 		}
@@ -979,7 +990,7 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 				"(NewAPIHandler passa nil no ramo do registo) — o principal vem do header, e um tecto " +
 				"sobre um header contorna-se rodando-o")
 		}
-		banner := arrancarMedirELerBanner(t, node, nil)
+		banner := arrancarMedirELerDobra456(t, node, nil)
 		if strings.Contains(banner, "LIGADO sobre principal VERIFICADO") {
 			t.Fatalf("banner declara VERIFICADO sobre um principal que vem do HEADER; saiu:\n%s", banner)
 		}
@@ -996,7 +1007,7 @@ func TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL(t *testing.T) {
 		node.SovereignReadRegions = govsov.NewRegistry(map[string]string{"board:demo": "eu"})
 		node.SovereignReadCredential = credencialDeLeituraInerte{}
 
-		banner := arrancarMedirELerBanner(t, node, nil)
+		banner := arrancarMedirELerDobra456(t, node, nil)
 		if !strings.Contains(banner, "NAO CONFIGURADO") {
 			t.Fatalf("sem a variavel o banner devia declarar NAO CONFIGURADO; saiu:\n%s", banner)
 		}
@@ -1136,18 +1147,125 @@ func TestAOS456AOBannerDeclaraOQueOEIXONAODA(t *testing.T) {
 	}
 }
 
-// dobraDoEixo devolve a parte do banner que começa em `inicio` e termina antes de `fim` (ou no fim
-// do texto). Existe porque o banner de ingresso acumula dobras de eixos diferentes com vocabulário
-// partilhado, e uma asserção sobre o texto inteiro não distingue qual eixo a satisfez.
-func dobraDoEixo(t *testing.T, banner, inicio, fim string) string {
+// marcadoresDeDobra é o REGISTO das dobras por-eixo do banner de ingresso, e existe para que
+// acrescentar uma dobra passe a delimitar automaticamente a anterior.
+//
+// O AOS-460 delimitava a dobra do SSE com um sentinela (`"\x00"`), o que a fazia ir até ao fim do
+// texto: a dobra seguinte que alguém acrescentasse ficava DENTRO dela e repunha exactamente a
+// confusão de vocabulário que o AOS-460 diagnosticou (achado BAIXO-3 da sétima revisão). Com o
+// registo, [dobraDoEixo] fecha cada dobra no próximo marcador registado que apareça depois dela.
+//
+// LIMITE DECLARADO: quem acrescentar uma dobra e NÃO a registar aqui volta a alargar a anterior. É
+// isso que [TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS] vigia — e vigia-o só para dobras que
+// seguem a convenção de nome «TECTO … (AOS-NNN):», que é a das duas que existem.
+var marcadoresDeDobra = []string{
+	marcadorDobra456,
+	marcadorDobraSSE,
+}
+
+const (
+	marcadorDobra456 = "TECTO POR-CHAMADOR (AOS-456)"
+	marcadorDobraSSE = "TECTO DE STREAMS SSE POR LEITOR (AOS-459)"
+)
+
+// dobraDoEixo devolve a parte do banner que começa em `inicio` (um dos [marcadoresDeDobra]) e
+// termina no próximo marcador registado, ou no fim do texto se `inicio` for a última dobra.
+//
+// Existe porque o banner de ingresso acumula dobras de eixos diferentes com vocabulário partilhado
+// («NAO COMPOSTO», «DEMO-GRADE», «LIGADO sobre principal VERIFICADO»), e uma asserção sobre o texto
+// inteiro não distingue qual eixo a satisfez — nem a satisfaz o eixo certo: foi assim que a dobra do
+// SSE, acrescentada pelo AOS-459/460, desarmou quatro asserções do sensor de arranque real do
+// AOS-456a (5/5 → 1/5 de detecção, medido pela sétima revisão adversarial).
+func dobraDoEixo(t *testing.T, banner, inicio string) string {
 	t.Helper()
+	if !slices.Contains(marcadoresDeDobra, inicio) {
+		t.Fatalf("a dobra %q nao esta em marcadoresDeDobra — sem registo nao ha como fecha-la, e a "+
+			"dobra ANTERIOR passaria a engoli-la", inicio)
+	}
 	i := strings.Index(banner, inicio)
 	if i < 0 {
 		t.Fatalf("o banner NAO tem a dobra %q — a assercao seguinte nao mediria o eixo certo:\n%s", inicio, banner)
 	}
-	resto := banner[i:]
-	if j := strings.Index(resto, fim); j > 0 {
-		resto = resto[:j]
+	resto := banner[i+len(inicio):]
+	fim := len(resto)
+	for _, m := range marcadoresDeDobra {
+		if m == inicio {
+			continue
+		}
+		if j := strings.Index(resto, m); j >= 0 && j < fim {
+			fim = j
+		}
 	}
-	return resto
+	return inicio + resto[:fim]
+}
+
+// TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS — sem isto, [marcadoresDeDobra] é uma lista que
+// envelhece em silêncio: a dobra nova fica de fora, a anterior volta a ir até ao fim do texto, e as
+// asserções sobre ela voltam a poder ser satisfeitas por vocabulário de outro eixo.
+//
+// VARRE TODAS AS COMBINAÇÕES DE POSTURA, e a primeira versão varria UMA (achado MÉDIO-4 da oitava
+// revisão adversarial). Varrer uma postura basta para as duas dobras de hoje — o marcador de cada uma
+// está nos quatro ramos do seu `switch` — e é **falso para uma dobra condicional**, que é a forma do
+// ramo INERTE que já existe. Medido pela revisão: uma dobra `TECTO DE Z (AOS-465):` emitida só quando
+// `!gateComposto` tem nome conforme e **escapava** à varredura, voltando a alargar a dobra anterior em
+// silêncio.
+//
+// E `tuned` É O QUARTO EIXO, porque é um campo em que a função JÁ ramifica (a string `origem`, primeira
+// linha do corpo). A primeira versão desta varredura variava `gateComposto` e `principalVerificavel` e
+// deixava `tuned` a `false` nas três formas: uma dobra emitida só quando `lim.tuned` tinha nome conforme
+// e **escapava** — medido, 5/5 corridas, e o «limite declarado» nomeava só a convenção de nome, não
+// este. Achado MÉDIO-4 da nona revisão adversarial, e é a sexta enumeração parcial da sessão.
+//
+// LIMITE QUE FICA, e é honesto: uma dobra cujo nome NÃO siga a convenção «TECTO … (AOS-NNN):», ou que
+// ramifique num campo de `lim` que esta tabela não varia, não é apanhada. Fechá-lo a sério exigiria que
+// o banner declarasse as suas próprias dobras em vez de as escrever em texto livre — vale a pena quando
+// houver uma terceira, não antes. O que se pode fazer agora, e se faz, é varrer todos os campos em que
+// a função ramifica HOJE.
+func TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS(t *testing.T) {
+	// AS FORMAS DE `lim` que mudam de RAMO em alguma dobra: tectos ligados, tectos desligados, e o par
+	// inerte (`por-leitor >= global`), que é o ramo condicional do banner.
+	formas := map[string]ingressLimits{
+		"tectos ligados": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
+			trajMaxConns: 8, trajMaxConnsPerReader: 2},
+		"tectos desligados": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 0,
+			trajMaxConns: 8, trajMaxConnsPerReader: 0},
+		"par INERTE": {ratePerSec: 1, burst: 1, maxInFlight: 8, inFlightPerCaller: 2,
+			trajMaxConns: 4, trajMaxConnsPerReader: 4},
+	}
+	re := regexp.MustCompile(`TECTO [^:]*\(AOS-\d+\):`)
+	vistos := map[string]bool{}
+	for nomeForma, limBase := range formas {
+		for _, afinado := range []bool{false, true} {
+			for _, gate := range []bool{false, true} {
+				for _, verif := range []bool{false, true} {
+					lim := limBase
+					lim.tuned = afinado
+					banner := strings.Join(ingressPostureBanner(lim, gate, verif), "\n")
+					achados := re.FindAllString(banner, -1)
+					if len(achados) == 0 {
+						t.Fatalf("%s/tuned=%v/gate=%v/verif=%v: nenhum marcador de dobra no banner — a "+
+							"varredura deixou de medir o que quer que fosse", nomeForma, afinado, gate, verif)
+					}
+					for _, a := range achados {
+						nome := strings.TrimSuffix(a, ":")
+						vistos[nome] = true
+						if !slices.Contains(marcadoresDeDobra, nome) {
+							t.Errorf("%s/tuned=%v/gate=%v/verif=%v: a dobra %q aparece no banner e NAO "+
+								"esta em marcadoresDeDobra: dobraDoEixo nao a consegue fechar, e a dobra "+
+								"anterior a esta engole-a — registe-a",
+								nomeForma, afinado, gate, verif, nome)
+						}
+					}
+				}
+			}
+		}
+	}
+	// E o inverso: um marcador registado que já não apareça em NENHUMA postura deixa dobraDoEixo a
+	// delimitar por um texto morto, e a dobra anterior a ir longe demais outra vez.
+	for _, m := range marcadoresDeDobra {
+		if !vistos[m] {
+			t.Errorf("o marcador registado %q NAO aparece em nenhuma das %d posturas varridas — "+
+				"registo obsoleto", m, len(formas)*8)
+		}
+	}
 }

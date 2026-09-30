@@ -210,48 +210,8 @@ var ErrBadRatifiers = errors.New("aos: AOS_RATIFIERS invalida (esperado \"princi
 // tenha DECIDIDO — fail-closed.
 var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminacao TLS do ingresso — defina AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH (TLS no no) OU DECLARE terminacao a montante com AOS_TLS_EXTERNAL_TERMINATION=1; a producao nao serve API/SSE/DSAR em texto-claro sem decisao explicita")
 
-// ErrProductionNeedsDurableKEK — sob AOS_MODE=production COM substrato durável (AOS_WORM_PATH
-// e/ou AOS_DURABLE_EXECUTION), a custódia da KEK por-titular NÃO pode ser o vault in-memory de
-// referência (AOS-215/AOS-216). É a SIMÉTRICA de ErrDurableExecutionNeedsDurableSubstrate: aquela
-// exige que o SUBSTRATO seja durável; esta exige que a CHAVE que o decifra seja igualmente
-// durável. Sem AOS_DSAR_VAULT_ADDR, o read-path soberano sela conteúdo sensível (D6) e a captura
-// de não-determinismo sob uma KEK que evapora no restart — o conteúdo cifrado fica PERMANENTEMENTE
-// indecifrável (over-erasure silenciosa) e o legal hold deixa de preservar o que a lei manda reter.
-// Ao contrário das outras colunas de produção, a KEK-em-memória só AVISAVA; agora RECUSA. O modo
-// de referência (sem AOS_MODE=production) mantém a KEK-em-memória demo-grade.
-// ErrProductionNeedsShredConfirmation — sob AOS_MODE=production, uma custódia de KEK INJECTADA
-// por [Config.DSARVault] que NÃO implemente a porta de confirmação de crypto-shred é RECUSADA no
-// arranque (AOS-328).
-//
-// O QUE ISTO FECHA. Sem confirmador, o fluxo DSAR sela `dsar.key_destroyed` SEM PERGUNTAR — a
-// cadeia afirma uma irrecuperabilidade que ninguém verificou. Hoje isso é correcto para as duas
-// custódias que existem: o `InMemoryKeyVault` não implementa a porta porque o seu `Delete` é um
-// `delete()` num mapa e não pode falhar; o Vault Transit implementa-a. O risco é a TERCEIRA — um
-// KMS de terceiros que POSSA falhar a destruir e não implemente a porta reabre, pela via da
-// omissão, o defeito exacto que a porta foi criada para fechar.
-//
-// A ESCOLHA FOI RECUSAR, NÃO AVISAR, e a razão é que o banner já avisava. O AOS-322 pôs no
-// arranque a linha «NAO ARMADA, e NAO E CORRECTO» para este caso — e declarar não é impor. O
-// ticket que gerou esta guarda diz-o à letra: «nada obriga essa escolha a ser consciente».
-//
-// O ESCAPE É UMA DECLARAÇÃO, não um silêncio: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1 afirma que
-// a custódia destrói incondicionalmente. Quem o define assume-o por escrito, no molde de
-// AOS_TLS_EXTERNAL_TERMINATION. Sem essa declaração o arranque recusa.
-//
-// SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA: o vault de referência continua a compor sem
-// declaração nenhuma, porque transformar o modo de desenvolvimento numa configuração cerimoniosa
-// é o custo que este ticket proíbe explicitamente.
 var ErrProductionNeedsShredConfirmation = errors.New("aos: AOS_MODE=production com custodia de KEK INJECTADA (Config.DSARVault) exige que ela implemente a porta de confirmacao de crypto-shred — sem ela o fluxo DSAR sela key_destroyed SEM VERIFICAR, afirmando uma irrecuperabilidade que ninguem confirmou. Se a custodia destroi INCONDICIONALMENTE (o Delete nao pode falhar), DECLARE-O com AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1")
 
-// ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
-// configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
-// negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
-// escalado com fidelidade (o log durável NÃO guarda os inputs das tool calls — só a
-// captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
-// mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
-// ErrBadEventStoreReplicas — AOS_EVENTSTORE_NATS_REPLICAS presente mas nao e um inteiro
-// positivo. Fail-closed: um factor de replicacao invalido nao pode degradar para R1 em
-// silencio, porque o no anunciaria substrato replicado sobre um stream sem replicas.
 var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem de ser um inteiro positivo (3 ou 5; 1 e so dev)")
 
 // ErrProductionNeedsDurableSubstrate — sob AOS_MODE=production o Event Store TEM de ser durável
@@ -277,6 +237,15 @@ var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem
 // ouvir «falta o Event Store» quando faltam os dois.
 var ErrProductionNeedsDurableSubstrate = errors.New("aos: AOS_MODE=production exige um Event Store DURAVEL — defina AOS_EVENTSTORE_NATS (ex.: aos-es-0:4222) ou AOS_EVENTSTORE_PATH (ex.: /var/lib/aos/events.wal). Sobre o store in-memory de referencia o stream identity.nhi.revoked morre com o processo: um NHI revogado volta a ser ACEITE ao primeiro restart, em silencio, enquanto o banner anuncia revogacao")
 
+// ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
+// configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
+// negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
+// escalado com fidelidade (o log durável NÃO guarda os inputs das tool calls — só a
+// captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
+// mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
+// ErrBadEventStoreReplicas — AOS_EVENTSTORE_NATS_REPLICAS presente mas nao e um inteiro
+// positivo. Fail-closed: um factor de replicacao invalido nao pode degradar para R1 em
+// silencio, porque o no anunciaria substrato replicado sobre um stream sem replicas.
 var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
 
 // ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
@@ -319,6 +288,37 @@ var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com
 // explícito `fake` continua a compor — é o que o smoke e as demos usam.
 var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois devolvem ErrDriverUnavailable e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
 
+// ErrProductionNeedsDurableKEK — sob AOS_MODE=production COM substrato durável (AOS_WORM_PATH
+// e/ou AOS_DURABLE_EXECUTION), a custódia da KEK por-titular NÃO pode ser o vault in-memory de
+// referência (AOS-215/AOS-216). É a SIMÉTRICA de ErrDurableExecutionNeedsDurableSubstrate: aquela
+// exige que o SUBSTRATO seja durável; esta exige que a CHAVE que o decifra seja igualmente
+// durável. Sem AOS_DSAR_VAULT_ADDR, o read-path soberano sela conteúdo sensível (D6) e a captura
+// de não-determinismo sob uma KEK que evapora no restart — o conteúdo cifrado fica PERMANENTEMENTE
+// indecifrável (over-erasure silenciosa) e o legal hold deixa de preservar o que a lei manda reter.
+// Ao contrário das outras colunas de produção, a KEK-em-memória só AVISAVA; agora RECUSA. O modo
+// de referência (sem AOS_MODE=production) mantém a KEK-em-memória demo-grade.
+// ErrProductionNeedsShredConfirmation — sob AOS_MODE=production, uma custódia de KEK INJECTADA
+// por [Config.DSARVault] que NÃO implemente a porta de confirmação de crypto-shred é RECUSADA no
+// arranque (AOS-328).
+//
+// O QUE ISTO FECHA. Sem confirmador, o fluxo DSAR sela `dsar.key_destroyed` SEM PERGUNTAR — a
+// cadeia afirma uma irrecuperabilidade que ninguém verificou. Hoje isso é correcto para as duas
+// custódias que existem: o `InMemoryKeyVault` não implementa a porta porque o seu `Delete` é um
+// `delete()` num mapa e não pode falhar; o Vault Transit implementa-a. O risco é a TERCEIRA — um
+// KMS de terceiros que POSSA falhar a destruir e não implemente a porta reabre, pela via da
+// omissão, o defeito exacto que a porta foi criada para fechar.
+//
+// A ESCOLHA FOI RECUSAR, NÃO AVISAR, e a razão é que o banner já avisava. O AOS-322 pôs no
+// arranque a linha «NAO ARMADA, e NAO E CORRECTO» para este caso — e declarar não é impor. O
+// ticket que gerou esta guarda diz-o à letra: «nada obriga essa escolha a ser consciente».
+//
+// O ESCAPE É UMA DECLARAÇÃO, não um silêncio: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1 afirma que
+// a custódia destrói incondicionalmente. Quem o define assume-o por escrito, no molde de
+// AOS_TLS_EXTERNAL_TERMINATION. Sem essa declaração o arranque recusa.
+//
+// SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA: o vault de referência continua a compor sem
+// declaração nenhuma, porque transformar o modo de desenvolvimento numa configuração cerimoniosa
+// é o custo que este ticket proíbe explicitamente.
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
 
 // ErrProductionNeedsDurableWORM — sob AOS_MODE=production o trilho de auditoria WORM NÃO pode ser o
@@ -1970,24 +1970,6 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 	return rc, nil
 }
 
-// ErrBadVaultDSAR — a custódia externa da KEK em HashiCorp Vault (AOS-215/AOS-216) está pedida
-// (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
-// do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
-// vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
-// ErrBadAttestationCredential — o ficheiro de credencial do verificador de attestation remoto
-// (AOS_ATTESTATION_VERIFIER_TOKEN_PATH ou AOS_ATTESTATION_VERIFIER_BASIC_PATH) é ilegível ou
-// está VAZIO.
-//
-// O CAMINHO DA ATTESTATION ERA O OUTLIER (AOS-338). Os dois Vaults abortam num ficheiro de
-// credencial vazio (ver [ErrBadVaultDSAR] e `ErrBadBrokerVault`); este lia-o, aparava, e seguia
-// com a credencial a vazio — ou seja, com o verificador a falar SEM autenticação nenhuma, e sem
-// nada no arranque a dizê-lo. Um operador que monta um ficheiro está a declarar que quer
-// autenticação; um ficheiro em branco é um erro de montagem, não uma escolha.
-//
-// Fecha-o também porque o banner passa a declarar QUAL o esquema composto: um ficheiro vazio
-// tornaria essa declaração dependente de um estado que ninguém pediu.
-//
-// Ecoa o CAMINHO e o nome da variável, NUNCA o conteúdo.
 var ErrBadAttestationCredential = errors.New("aos: credencial do verificador de attestation ilegivel ou vazia (ficheiro montado; material privado NUNCA por variavel de ambiente)")
 
 // lerCredencialMontada lê uma credencial de FICHEIRO MONTADO no molde dos dois Vaults: lê,
@@ -2048,6 +2030,24 @@ func classeDeFalhaDeLeitura(err error) string {
 	}
 }
 
+// ErrBadVaultDSAR — a custódia externa da KEK em HashiCorp Vault (AOS-215/AOS-216) está pedida
+// (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
+// do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
+// vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
+// ErrBadAttestationCredential — o ficheiro de credencial do verificador de attestation remoto
+// (AOS_ATTESTATION_VERIFIER_TOKEN_PATH ou AOS_ATTESTATION_VERIFIER_BASIC_PATH) é ilegível ou
+// está VAZIO.
+//
+// O CAMINHO DA ATTESTATION ERA O OUTLIER (AOS-338). Os dois Vaults abortam num ficheiro de
+// credencial vazio (ver [ErrBadVaultDSAR] e `ErrBadBrokerVault`); este lia-o, aparava, e seguia
+// com a credencial a vazio — ou seja, com o verificador a falar SEM autenticação nenhuma, e sem
+// nada no arranque a dizê-lo. Um operador que monta um ficheiro está a declarar que quer
+// autenticação; um ficheiro em branco é um erro de montagem, não uma escolha.
+//
+// Fecha-o também porque o banner passa a declarar QUAL o esquema composto: um ficheiro vazio
+// tornaria essa declaração dependente de um estado que ninguém pediu.
+//
+// Ecoa o CAMINHO e o nome da variável, NUNCA o conteúdo.
 var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
 // ErrInsecureVaultDSARAddr — AOS_DSAR_VAULT_ADDR com transporte inseguro (AOS-249, achado F6).
