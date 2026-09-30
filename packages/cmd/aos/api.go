@@ -176,6 +176,11 @@ const (
 	// 125 reparte 8 submissores sobre o global de 1000, a mesma proporção que o eixo SSE usa
 	// (32/256). É folgado para um `aos-orq` real, que despacha por passagem e não enfileira centenas.
 	DefaultPlanMaxPendingPerSubmitter = 125
+	// DefaultMaxAcceptedConns é o tecto de ligações TCP abertas ao mesmo tempo no listener da API
+	// (AOS-465). Tem de ficar ACIMA de [DefaultMaxTrajectoryConns]: cada stream SSE segura uma
+	// ligação durante minutos, e sem folga os streams ocupariam o listener inteiro — incluindo as
+	// ligações do plano de CONTROLO (/steer, /pause). 1024 deixa 768 para o resto da API.
+	DefaultMaxAcceptedConns = 1024
 )
 
 // Erros da API (fail-closed).
@@ -288,9 +293,13 @@ type apiConfig struct {
 	// leitura: sem ele o principal do pedido fica VAZIO para todos, e um tecto chaveado no vazio
 	// valeria como tecto global mais apertado — ver [handlePlanRequest].
 	planMaxPendingPerSubmitter int
-	serverWriteTO              time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
-	now                        func() time.Time
-	logw                       io.Writer
+	// maxAcceptedConns é o tecto de ligações abertas no listener (AOS-465); ligacoes é o contador
+	// partilhado entre o listener e a métrica.
+	maxAcceptedConns int
+	ligacoes         *ligacoesAceites
+	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
+	now              func() time.Time
+	logw             io.Writer
 	// --- Terminação TLS do ingresso (AOS-209) --------------------------------
 	// tlsCertPath/tlsKeyPath apontam para o certificado e a CHAVE PRIVADA montados por
 	// ficheiro (padrão AOS_ISSUER_KEY_PATH: material privado NUNCA por variável de ambiente).
@@ -425,6 +434,21 @@ func WithTrajectoryWriteTimeout(d time.Duration) APIOption {
 // de arranque declara-o quando acontece, em vez de se calar.
 func WithMaxTrajectoryConnsPerReader(n int) APIOption {
 	return func(c *apiConfig) { c.trajMaxConnsPerReader = n }
+}
+
+// WithMaxAcceptedConns afina o tecto de ligações abertas no listener da API (AOS-465). <= 0 mantém o
+// default: NENHUM valor desliga este tecto.
+func WithMaxAcceptedConns(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.maxAcceptedConns = n
+		}
+	}
+}
+
+// withLigacoesAceites liga o contador partilhado. Não é exportada: quem a compõe é [NewAPIServer].
+func withLigacoesAceites(l *ligacoesAceites) APIOption {
+	return func(c *apiConfig) { c.ligacoes = l }
 }
 
 // WithPlanMaxPending afina o tecto de pedidos de plano por drenar (default [DefaultPlanMaxPending]).
@@ -627,6 +651,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		trajMaxConnsPerReader:      DefaultMaxTrajectoryConnsPerReader,
 		planMaxPending:             DefaultPlanMaxPending,
 		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		maxAcceptedConns:           DefaultMaxAcceptedConns,
 		now:                        time.Now,
 	}
 	for _, o := range opts {
@@ -1738,6 +1763,15 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// LIGAÇÕES ACEITES (AOS-465). O tecto sem esta série seria uma guarda sem sensor: o operador só
+	// daria por ele quando os clientes começassem a esperar na fila de backlog do kernel.
+	if h.cfg.ligacoes != nil {
+		g("aos_api_connections_open", "Ligacoes TCP abertas no listener da API nesta replica. Perto de aos_api_connections_ceiling, ligacoes novas ESPERAM na fila de backlog do kernel.",
+			"gauge", float64(h.cfg.ligacoes.abertas.Load()), "")
+		g("aos_api_connections_ceiling", "Tecto de ligacoes abertas no listener da API (AOS_API_MAX_CONNS).",
+			"gauge", float64(h.cfg.maxAcceptedConns), "")
+	}
+
 	// Runtime Go (USE): saturação de recursos do processo.
 	g("aos_goroutines", "Goroutines em execucao.", "gauge", float64(runtime.NumGoroutine()), "")
 	var ms runtime.MemStats
@@ -2776,6 +2810,9 @@ type APIServer struct {
 	// listener verifica o certificado de cliente (VerifyClientCertIfGiven) e os handlers de
 	// controlo recusam sem cadeia verificada. Exposto para diagnóstico/banner.
 	controlMTLS bool
+	// maxLigacoes / ligacoes: o tecto do listener e o contador partilhado com a métrica (AOS-465).
+	maxLigacoes int
+	ligacoes    *ligacoesAceites
 }
 
 // NewAPIServer compõe o handler ([NewAPIHandler]) e um http.Server com timeouts endurecidos.
@@ -2783,11 +2820,14 @@ type APIServer struct {
 // dos ficheiros montados e monta uma [tls.Config] ENDURECIDA — fail-closed: um par inválido ou
 // uma config TLS incompleta abortam ([ErrBadTLSKeyPair]/[ErrIncompleteTLSConfig]).
 func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, error) {
+	// O contador nasce AQUI, antes do handler, para o listener e a métrica apontarem para o mesmo.
+	ligacoes := &ligacoesAceites{}
+	opts = append(append([]APIOption{}, opts...), withLigacoesAceites(ligacoes))
 	handler, err := NewAPIHandler(svc, node, opts...)
 	if err != nil {
 		return nil, err
 	}
-	var cfg apiConfig
+	cfg := apiConfig{maxAcceptedConns: DefaultMaxAcceptedConns}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -2850,6 +2890,8 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 		tlsEnabled:  tlsEnabled,
 		externalTLS: externalTLS,
 		controlMTLS: controlMTLS,
+		maxLigacoes: cfg.maxAcceptedConns,
+		ligacoes:    ligacoes,
 	}, nil
 }
 
@@ -3007,7 +3049,16 @@ func (s *APIServer) listen(addr string) (net.Listener, error) {
 			addr, err)
 		return nil, err
 	}
-	return net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	// TECTO DE LIGAÇÕES ACEITES (AOS-465). Embrulha o listener TCP e fica POR BAIXO do TLS, que o
+	// `ServeTLS` põe por cima: conta ligações TCP, não sessões TLS.
+	if s.maxLigacoes > 0 {
+		ln = limitarLigacoes(ln, s.maxLigacoes, s.ligacoes)
+	}
+	return ln, nil
 }
 
 // Shutdown encerra o http.Server graciosamente.

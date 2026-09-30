@@ -398,6 +398,9 @@ services:
       # operador nao as escreveu — e a mensagem de recusa do par inerte dira «(definida)» sobre um
       # numero que ele nao pos em sitio nenhum. E o residual que o AOS-463 declarou; a correccao e no
       # padrao deste ficheiro, para as ~30 variaveis, e nao para duas.
+      # AOS-465 — tecto de ligacoes TCP abertas no listener. Tem de exceder AOS_TRAJECTORY_MAX_CONNS:
+      # cada stream SSE segura uma ligacao, e sem folga o plano de controlo fica sem vaga.
+      AOS_API_MAX_CONNS: "${AOS_API_MAX_CONNS:-1024}"
       AOS_PLAN_MAX_PENDING: "${AOS_PLAN_MAX_PENDING:-1000}"
       AOS_PLAN_MAX_PENDING_PER_SUBMITTER: "${AOS_PLAN_MAX_PENDING_PER_SUBMITTER:-125}"
       # AOS-458 — admission de TAXA do plano de DADOS inteiro, as LEITURAS incluídas. Até esse

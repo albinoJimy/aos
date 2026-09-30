@@ -2385,8 +2385,8 @@ eixo AOS-456 tem a gémea («60 submissões rotativas») fixada no arranque real
 - **`tectoDePendentes = 1000`** (`plan_claim.go`) continua sem repartição por chamador nem variável de
   ambiente. Herdado do AOS-460; **fechado em AOS-464**.
 - **Enumeração de tectos.** `maxInFlight=512` tem repartição **não composta por omissão**, e o
-  `http.Server` de produção não tem `LimitListener` nem `MaxHeaderBytes` — **não há tecto de ligações
-  aceites**, que é o tecto por baixo de todos os outros. Por abrir.
+  `http.Server` de produção não tinha tecto de ligações aceites — **fechado em AOS-465**. A metade
+  sobre o `MaxHeaderBytes` estava exagerada: não definido, o Go aplica 1 MiB por omissão.
 
 ### Estado
 **FEITO** (2026-09-29).
@@ -2752,6 +2752,49 @@ sensor. Ambos fixados em `TestAOS464ContadoresDasRecusasEAMetricaNaoMentem` (5/5
   a terceira. Varrer campos à mão falhou **duas** vezes pela mesma forma (`tuned` no AOS-463,
   `planMaxPendingPerSubmitter` aqui — esta escapava ao guarda das dobras, mas a suite do pacote apanhava-a pelo teste do banner). Fica NOMEADO em vez de apagado: fechá-lo muda a assinatura de
   `ingressPostureBanner` e de todos os seus testes.
+
+### Estado
+**FEITO** (2026-09-30).
+
+---
+
+## AOS-465 — Tecto de ligações aceites no `http.Server`
+
+### Contexto
+Todos os outros tectos do nó actuam **depois** de uma ligação ser aceite. Sem este, cada ligação TCP
+custa um descritor e uma goroutine até os timeouts a fecharem, sem número máximo. Declarado como
+residual desde o AOS-460.
+
+### Critérios de aceitação
+- [x] Listener limitador em `ligacoes_aceites.go`, por baixo do TLS (conta ligações TCP). Escrito no
+  pacote porque `golang.org/x/net` não está no `go.mod` e o build de produção é offline.
+- [x] Atingido o tecto, o `Accept` **espera** — não há 503, porque recusar exigiria aceitar primeiro.
+- [x] O `Close` do listener desbloqueia um `Accept` à espera de vaga: sem isso, um shutdown com o tecto
+  cheio penduraria o `Serve` até uma ligação libertar a vaga.
+- [x] A vaga volta uma só vez (`sync.Once`), e a libertação nunca bloqueia.
+- [x] `AOS_API_MAX_CONNS` (default 1024), validado **estritamente maior** que
+  `AOS_TRAJECTORY_MAX_CONNS` sobre o par final: cada stream SSE segura uma ligação, e sem folga os
+  streams ocupariam o listener inteiro, incluindo o plano de controlo.
+- [x] Banner declara o tecto e quantas ligações ficam para o resto da API; métricas
+  `aos_api_connections_open` e `aos_api_connections_ceiling`.
+
+### Mutações medidas (5 corridas cada)
+| mutação | detectada por |
+|---|---|
+| `Close` não desbloqueia o `Accept` à espera | teste do shutdown |
+| vaga devolvida a cada `Close` | teste da vaga única |
+| listener não embrulhado | teste do TLS, da métrica e do shutdown |
+| tecto de ligações pode igualar o SSE | teste do par de ambiente |
+| contador não sobe | quatro testes |
+
+A primeira bateria foi morta pelo limite de tempo com uma mutação por restaurar na árvore; detectado
+antes de qualquer commit e restaurado. Revelou que o teste da vaga única **pendurava** em vez de falhar
+— a libertação bloqueava num canal vazio. Corrigido no mecanismo (libertação sem bloqueio) e no teste.
+
+### Residuais
+- **Não se sabe o limite de descritores do deployment**: o compose não fixa `ulimit nofile`. Com um
+  limite de 1024 o tecto por omissão esgotaria os descritores do processo antes de morder.
+- Atingido o tecto, o plano de controlo espera como qualquer outra ligação — não há vaga reservada.
 
 ### Estado
 **FEITO** (2026-09-30).
