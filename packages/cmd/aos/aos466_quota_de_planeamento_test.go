@@ -13,6 +13,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -707,6 +708,87 @@ func TestAOS466AQuotaIlegivelDeUmTitularNaoFechaAFilaAosOutros(t *testing.T) {
 	est, _, err := estadoDoPedido(context.Background(), node.EventStore, "plano-alice", setembro)
 	if err != nil || len(est.reclamadas) != 0 {
 		t.Fatalf("o pedido de alice foi entregue sem entrega na quota: %v %v", est.reclamadas, err)
+	}
+}
+
+// TestAOS466UmaReofertaSoSeEntregaComQuota — decisão do dono depois da terceira revisão: a geração
+// 1 está coberta pela reserva do `POST /plans` e entrega-se sempre; da 2 em diante a entrega exige
+// quota do mês corrente para mais uma reserva. A repetição de uma entrega já feita passa.
+func TestAOS466UmaReofertaSoSeEntregaComQuota(t *testing.T) {
+	ctx := context.Background()
+	rel := &relogioDeQuota{t: setembro}
+	q := quotaComPlaneamento(novoStore(t), 300, 100, 100, rel)
+	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2); err != nil {
+		t.Fatalf("200 + 100 <= 300: a geracao 2 entrega-se: %v", err)
+	}
+	if err := q.reservar(ctx, "human:alice", "run-a"); err != nil {
+		t.Fatal(err)
+	}
+	// Gasto 300 (pedido 200 + run 100): nada cabe.
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 3); !errors.Is(err, ErrPrincipalQuotaExhausted) {
+		t.Fatalf("a geracao 3 sem quota nao se entrega, veio %v", err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2); err != nil {
+		t.Fatalf("repetir a entrega ja feita da geracao 2 passa: %v", err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1); err != nil {
+		t.Fatalf("a geracao 1 esta coberta pela reserva do pedido e entrega-se sempre: %v", err)
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 300 {
+		t.Fatalf("a recusa escreveu uma entrega: gasto %d, esperava 300", g.Tokens)
+	}
+}
+
+// TestAOS466UmaReofertaSemQuotaFicaPendente — pela rota: a geração 2 esgota a quota; a re-oferta da
+// 3 não se entrega (o drenador recebe o pedido de outro titular), e volta a entregar-se quando a quota
+// repõe no mês seguinte.
+func TestAOS466UmaReofertaSemQuotaFicaPendente(t *testing.T) {
+	node, h, q := aos466No(t, 700, 100)
+	rel := &relogioDeQuota{t: setembro}
+	q.agora = rel.agora
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-alice"); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao de alice: %d", rec.Code)
+	}
+	dren := map[string]string{HeaderReaderPrincipal: drenador466, HeaderReaderBoard: govBoard}
+	transitorio := func(g int, tokens int64) {
+		t.Helper()
+		rec := postReq(h, "/plans/claim", nil, dren)
+		var p respostaDeReclamo
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil || p.RunID != "plano-alice" || p.Geracao != g {
+			t.Fatalf("esperava entregar plano-alice na geracao %d: %d %s", g, rec.Code, rec.Body.String())
+		}
+		if rec := postReq(h, "/plans/outcome", map[string]any{"run_id": "plano-alice", "generation": g, "classe": DesfechoTransitorio,
+			"consumo": map[string]any{"tokens": tokens, "tokens_medidos": true, "cost_micro_usd": 0, "custo_medido": true}}, dren); rec.Code != http.StatusNoContent {
+			t.Fatalf("desfecho %d: %d", g, rec.Code)
+		}
+	}
+	transitorio(1, 500) // gasto 500
+	transitorio(2, 300) // 500 + 100 <= 700 entregou; gasto 800 > 700
+
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:bob"), "plano-bob"); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao de bob: %d", rec.Code)
+	}
+	rec := postReq(h, "/plans/claim", nil, dren)
+	var p respostaDeReclamo
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil || p.RunID != "plano-bob" {
+		t.Fatalf("a re-oferta de alice sem quota nao se entrega, e bob e servido: %d %s", rec.Code, rec.Body.String())
+	}
+	est, _, err := estadoDoPedido(context.Background(), node.EventStore, "plano-alice", setembro)
+	if err != nil || est.resposta.Estado == EstadoPlanoTerminado || slices.Contains(est.reclamadas, 3) {
+		t.Fatalf("o pedido de alice fica pendente, sem a geracao 3: %+v %v %v", est.resposta, est.reclamadas, err)
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 800 {
+		t.Fatalf("a recusa mexeu na quota: gasto %d, esperava 800", g.Tokens)
+	}
+
+	// A quota repõe no mês seguinte: a re-oferta volta a entregar-se, e conta no mês do pedido.
+	rel.ir(setembro.AddDate(0, 1, 0))
+	rec = postReq(h, "/plans/claim", nil, dren)
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil || p.RunID != "plano-alice" || p.Geracao != 3 {
+		t.Fatalf("com a quota reposta a geracao 3 entrega-se: %d %s", rec.Code, rec.Body.String())
 	}
 }
 

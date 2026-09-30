@@ -538,7 +538,7 @@ func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, 
 	if geracao < 1 {
 		return nil
 	}
-	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
+	return q.escreverNoPlano(ctx, principal, runID, nil, func(mes string, reserva uint64) (quotaPayload, string) {
 		return quotaPayload{
 			RunID:            chaveDoPlano(runID),
 			Tokens:           max(c.Tokens, 0),
@@ -554,13 +554,42 @@ func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, 
 // registarEntrega grava que o nó ENTREGOU a geração `geracao` do pedido runID a um drenador. Chama-a
 // a reclamação, ANTES de a escrever: se falha, a reclamação também não se faz. Idempotente por
 // (chave, reserva, geração).
+//
+// UMA GERAÇÃO NOVA SÓ SE ENTREGA COM QUOTA PARA ELA (decisão do dono, depois da terceira revisão).
+// A geração 1 já está coberta pela reserva do `POST /plans`; a partir da 2 — uma re-oferta — a
+// entrega exige que a quota do mês CORRENTE do titular tenha lugar para mais uma reserva. Sem isso
+// devolve um [quotaEsgotadaError], e a reclamação salta o pedido, que fica pendente até haver quota.
+// Contar sem travar deixava um principal esgotado continuar a planear, que é o que o ticket fecha.
+// A repetição de uma entrega já feita (a reclamação falhou depois dela) passa sem verificar.
 func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runID string, geracao int) error {
 	if geracao < 1 {
 		return nil
 	}
-	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
-		return quotaPayload{RunID: chaveDoPlano(runID), Geracao: geracao, ReservaDoPlano: reserva, Entregue: true},
-			fmt.Sprintf("%s:delivered:%s:%d:%d", chaveDoPlano(runID), mes, reserva, geracao)
+	chave := chaveDoPlano(runID)
+	verificar := func(st estadoDaQuota, mes string, reserva uint64) error {
+		if geracao < 2 {
+			return nil
+		}
+		if e, ja := st.entregas[chave][geracao]; ja && e.ReservaDoPlano == reserva {
+			return nil
+		}
+		agora := q.agora()
+		corrente := st
+		if mes != mesUTC(agora) {
+			var err error
+			if corrente, err = q.ler(ctx, quotaStreamDe(principal, mesUTC(agora))); err != nil {
+				return err
+			}
+		}
+		if gasto := corrente.gasto(); q.excede(gasto, q.reservaDoPlano) {
+			repoe := proximoMesUTC(agora)
+			return &quotaEsgotadaError{gasto: gasto, limite: q.limite, reserva: q.reservaDoPlano, repoe: repoe, faltam: repoe.Sub(agora)}
+		}
+		return nil
+	}
+	return q.escreverNoPlano(ctx, principal, runID, verificar, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{RunID: chave, Geracao: geracao, ReservaDoPlano: reserva, Entregue: true},
+			fmt.Sprintf("%s:delivered:%s:%d:%d", chave, mes, reserva, geracao)
 	})
 }
 
@@ -568,15 +597,16 @@ func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runI
 // não gastaram. Só se chama DEPOIS de o desfecho terminal ficar no log — é isso que garante que não
 // há gerações depois dele.
 func (q *quotaPorPrincipal) fecharPlaneamento(ctx context.Context, principal, runID string) error {
-	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
+	return q.escreverNoPlano(ctx, principal, runID, nil, func(mes string, reserva uint64) (quotaPayload, string) {
 		return quotaPayload{RunID: chaveDoPlano(runID), ReservaDoPlano: reserva, Final: true},
 			fmt.Sprintf("%s:closed:%s:%d", chaveDoPlano(runID), mes, reserva)
 	})
 }
 
 // escreverNoPlano procura a reserva de planeamento de runID no mês corrente ou no anterior e grava
-// nesse stream o evento que `evento` constrói. Sem reserva, nada.
-func (q *quotaPorPrincipal) escreverNoPlano(ctx context.Context, principal, runID string, evento func(mes string, reserva uint64) (quotaPayload, string)) error {
+// nesse stream o evento que `evento` constrói. Sem reserva, nada. `verificar`, quando não é nil,
+// corre sob o mesmo lock, sobre o estado desse stream, e um erro dele impede a escrita.
+func (q *quotaPorPrincipal) escreverNoPlano(ctx context.Context, principal, runID string, verificar func(st estadoDaQuota, mes string, reserva uint64) error, evento func(mes string, reserva uint64) (quotaPayload, string)) error {
 	if q == nil || principal == "" {
 		return nil
 	}
@@ -592,6 +622,11 @@ func (q *quotaPorPrincipal) escreverNoPlano(ctx context.Context, principal, runI
 		r, reservado := st.reservas[chave]
 		if !reservado {
 			continue
+		}
+		if verificar != nil {
+			if err := verificar(st, mes, r.Reserva); err != nil {
+				return err
+			}
 		}
 		p, stepID := evento(mes, r.Reserva)
 		payload, err := json.Marshal(p)
@@ -775,6 +810,6 @@ func principalQuotaPostureBanner(q *quotaPorPrincipal) []string {
 	if q.limite.CostMicroUSD != integration.UnlimitedCostMicroUSD {
 		custo = fmt.Sprintf("%d micro-USD", q.limite.CostMicroUSD)
 	}
-	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao conta o consumo que o drenador (aos-orq) mede e declara; uma geracao NAO MEDIDA (ou entregue sem desfecho) custa o que se mediu MAIS a reserva. So o fecho do pedido (desfecho terminal no log) liberta o que sobra da reserva. Os dolares nunca sao medidos pelo aos-orq: cada geracao que chamou o modelo custa a reserva em dolares. Uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido nao tem tecto (AOS-467); o consumo e DECLARADO pelo drenador, que o no nao verifica. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
+	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao conta o consumo que o drenador (aos-orq) mede e declara; uma geracao NAO MEDIDA (ou entregue sem desfecho) custa o que se mediu MAIS a reserva. So o fecho do pedido (desfecho terminal no log) liberta o que sobra da reserva. Uma RE-OFERTA (geracao >= 2) so se entrega com quota do mes corrente para mais uma reserva; sem ela o pedido fica pendente ate haver (tambem a re-verificacao de um plano a espera de humano). Os dolares nunca sao medidos pelo aos-orq: cada geracao que chamou o modelo custa a reserva em dolares. Uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido nao tem tecto (AOS-467); o consumo e DECLARADO pelo drenador, que o no nao verifica. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
 		q.limite.Tokens, custo, q.reserva.Tokens, q.reserva.CostMicroUSD, q.reservaDoPlano.Tokens, q.reservaDoPlano.CostMicroUSD)}
 }

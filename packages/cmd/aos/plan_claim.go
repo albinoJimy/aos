@@ -443,10 +443,15 @@ func (h *apiHandler) reclamarUm(ctx context.Context, reclamante readerIdentity) 
 		//
 		// Um stream de quota ILEGÍVEL é de UM titular: esse pedido fica por entregar e a reclamação
 		// segue para o próximo — sem isto, o registo estragado de um titular fechava a fila a todos.
-		// Qualquer outra falha é do substrato, e é a reclamação inteira que não se faz (503).
+		// Uma quota ESGOTADA também é só dele: uma re-oferta não se entrega sem quota para mais uma
+		// geração (decisão do dono), e o pedido fica pendente até haver. Qualquer outra falha é do
+		// substrato, e é a reclamação inteira que não se faz (503).
 		if h.node.QuotaPorPrincipal != nil {
 			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao); errors.Is(err, ErrPrincipalQuotaUnreadable) {
 				h.logf("plan-claim: pedido %q NAO entregue — a quota do titular e ilegivel: %v", p.RunID, err)
+				continue
+			} else if errors.Is(err, ErrPrincipalQuotaExhausted) {
+				h.logf("plan-claim: pedido %q geracao %d NAO entregue — %v", p.RunID, p.Geracao, err)
 				continue
 			} else if err != nil {
 				return nil, fmt.Errorf("quota: entrega de %q geracao %d: %w", p.RunID, p.Geracao, err)
