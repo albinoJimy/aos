@@ -193,6 +193,19 @@ sem malícia necessária.
 que não seja o dono. Num sistema que chama um modelo pago, isto é o risco financeiro mais directo
 de abrir a terceiros — e é menos trabalho do que quase tudo o que já foi feito.
 
+> **Estado (2026-09-30): FECHADO pelo AOS-457**, com decisão do dono sobre a janela e a reposição
+> (mensal UTC; tokens e micro-USD; quota DURA, com reserva do tecto por-run na admissão; o
+> `/dsar/erase` repõe-na). Variáveis `AOS_BUDGET_PRINCIPAL_MAX_TOKENS` e
+> `AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD`; só arranca com principal verificado. A estimativa
+> «menos trabalho do que quase tudo» não se confirmou: o agregado tinha de ser durável, atravessar
+> runs que nunca terminam, sobreviver a réplicas e ser apagável — ver o ticket em
+> `specs/EPIC-20_Prontidao_Agentica_Remediacao.md` para o desenho e os residuais.
+> A revisão adversarial da primeira versão encontrou um contorno que NÃO era da quota: o nó
+> re-executava um `run_id` com desfecho no log depois de o cache de terminados o esquecer, e os
+> turnos da re-execução eram deduplicados no ledger — invisíveis também para o **tecto por-run**, que
+> é anterior a esta auditoria. Corrigido na raiz no mesmo ticket. Ficam declarados: o transbordo do
+> último turno de cada run e o gasto de planeamento do `POST /plans`, que a quota não cobre.
+
 ### 3.3 Um único board, e o onboarding passa pelas chaves offline do operador
 
 `AOS_BOARD_REGIONS=board:prod=eu-west` — **um board só**. O read-path soberano por-leitor está
@@ -314,7 +327,7 @@ dono, e poder gastar a factura do modelo toda sem tecto.
 | # | O que | Natureza | Esforço |
 |---|---|---|---|
 | 1 | `LICENSE` na raiz | decisão + ficheiro | minutos |
-| 2 | Orçamento **por-principal** (não só por-run) | código, 1–2 tickets | pequeno |
+| 2 | Orçamento **por-principal** (não só por-run) — **feito, AOS-457** | código, 1–2 tickets | pequeno (na prática, médio) |
 | 3 | Rate-limit **por-chamador** (balde por `sub`) | código, 1 ticket | pequeno |
 | 4 | Host próprio, fora do k8s moribundo | dinheiro + horas | pequeno–médio |
 | 5 | *Getting started* de utilizador (submeter, observar, aprovar) | documentação | pequeno |

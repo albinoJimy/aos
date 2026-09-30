@@ -695,8 +695,8 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	}
 	if _, done := s.completed[runID]; done {
 		// Desfecho ainda retido: re-submissão recusada explicitamente (não re-executa nem
-		// sobrescreve o desfecho, nem finge que o lease é de outra réplica). Após a poda
-		// do desfecho o RunID volta a ser submetível.
+		// sobrescreve o desfecho, nem finge que o lease é de outra réplica). Após a poda do
+		// desfecho a recusa vem do log durável — ver (2-ter-bis) abaixo (AOS-457).
 		s.mu.Unlock()
 		return ErrRunAlreadyCompleted
 	}
@@ -752,8 +752,19 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	// run que está à espera de um humano — perdendo a trajectória e deixando o pendente e o
 	// grant órfãos. FAIL-CLOSED: uma leitura que falha recusa a admissão, em vez de admitir
 	// sobre um estado que não se conseguiu ler.
+	//
+	// (2-ter-bis) DESFECHO DURÁVEL (AOS-457). O mesmo raciocínio, para o fim do run: o
+	// `completed` acima também é um cache — com poda FIFO, vazio depois de um restart, e só
+	// desta réplica. Sem esta consulta, re-submeter um `run_id` cujo desfecho está no log
+	// RE-EXECUTAVA-O: o `claimRunning` é no-op fora de `ready`, o `Runtime.Run` voltava a chamar
+	// o modelo, e os `turn.recorded` da segunda execução eram deduplicados por `(run_id, step)` —
+	// o ledger não os via, pelo que nem o tecto por-run nem a quota por principal os contavam.
+	// Medido pela revisão do AOS-457: 20 re-submissões aceites, 20 chamadas ao modelo, gasto
+	// contado 0. É o defeito que o (2-bis) fechou para os runs pausados, agora para os terminados.
+	// A resposta é a do cache: [ErrRunAlreadyCompleted], que a API trata como re-submissão
+	// idempotente.
 	if !resuming {
-		susp, serr := s.suspendedDurably(ctx, runID)
+		st, susp, serr := s.suspensaoDuravel(ctx, runID)
 		if serr != nil {
 			s.unreserve(rs)
 			return fmt.Errorf("aos: ler o estado duravel do run %q: %w", runID, serr)
@@ -761,6 +772,26 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		if susp {
 			s.unreserve(rs)
 			return ErrRunSuspended
+		}
+		if desfechoDuravelRegistado(st) {
+			s.unreserve(rs)
+			return &desfechoDuravelError{runID: runID, estado: st}
+		}
+	}
+
+	// (2-quater) QUOTA DE DESPESA POR PRINCIPAL (AOS-457). Reserva o tecto por-run inteiro contra a
+	// quota mensal do principal, no Event Store — por isso FORA do mutex, com a reserva em `s.runs` a
+	// segurar o `run_id` e `unreserve` a desfazê-la se falhar. Depois das guardas de estado, pela
+	// mesma razão do tecto por-chamador: um pedido recusado por elas não deve gastar quota.
+	//
+	// RETOMA ISENTA: o run já reservou quando foi admitido; reservar de novo na retoma contaria o
+	// mesmo run duas vezes. É também por isto que a reserva é idempotente por `run_id`.
+	//
+	// FAIL-CLOSED: uma leitura do registo da quota que falha recusa a admissão.
+	if !resuming && s.node != nil && s.node.QuotaPorPrincipal != nil {
+		if qerr := s.node.QuotaPorPrincipal.reservar(ctx, rs.principal, runID); qerr != nil {
+			s.unreserve(rs)
+			return qerr
 		}
 	}
 
@@ -1075,7 +1106,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// Este caminho é o do prompt de exaustão DESARMADO: com ele armado o run não chega aqui
 	// assim — foi suspenso e o sinal viaja no `err`, absorvido mais abaixo.
 	if res.BudgetExhausted {
-		s.log("run %q PAROU por ORCAMENTO ESGOTADO (AOS-260) ao fim de %d turnos completos — %s. Estado duravel: timed_out (%s), NAO failed: um tecto defensivo atingido nao e uma falha recuperavel por compensacao. Para o run prosseguir e preciso levantar o tecto (AOS_BUDGET_MAX_TOKENS / AOS_BUDGET_MAX_COST_MICRO_USD) e re-submeter",
+		s.log("run %q PAROU por ORCAMENTO ESGOTADO (AOS-260) ao fim de %d turnos completos — %s. Estado duravel: timed_out (%s), NAO failed: um tecto defensivo atingido nao e uma falha recuperavel por compensacao. Para o trabalho prosseguir e preciso levantar o tecto (AOS_BUDGET_MAX_TOKENS / AOS_BUDGET_MAX_COST_MICRO_USD) e submete-lo com um run_id NOVO: este tem desfecho no log e a re-submissao do mesmo id e recusada (AOS-457)",
 			rs.runID, res.Turns, res.BudgetExhaustionReason, reasonBudgetExhausted)
 	}
 
@@ -1604,3 +1635,46 @@ func (s *NodeService) suspensosAgora() (int, int64) {
 	}
 	return len(s.suspended), maisAntigo
 }
+
+// liquidarQuota grava o consumo real do run contra a reserva da quota por principal (AOS-457).
+// Chamada só quando o desfecho do run ficou registado no log durável: um run suspenso, pausado ou
+// interrompido não terminou, e liquidá-lo libertaria a reserva de um run que ainda vai gastar.
+// No-op sem quota composta.
+func (s *NodeService) liquidarQuota(runID, principal string) {
+	if s == nil || s.node == nil || s.node.QuotaPorPrincipal == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.node.QuotaPorPrincipal.liquidar(ctx, principal, runID)
+}
+
+// liquidarQuotaDoSuspenso liquida um run suspenso que foi terminado sem voltar a ser hospedado (o
+// abort por exaustão, AOS-263). O principal vem do balde de suspensos; depois de um restart o
+// balde está vazio e a reserva fica até ao fim do mês — declarado no ticket.
+func (s *NodeService) liquidarQuotaDoSuspenso(runID string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	rs, ok := s.suspended[runID]
+	s.mu.Unlock()
+	if ok {
+		s.liquidarQuota(runID, rs.principal)
+	}
+}
+
+// desfechoDuravelError é a recusa de re-submeter um run cujo desfecho está no LOG (AOS-457). É um
+// [ErrRunAlreadyCompleted] — a API trata-o como re-submissão idempotente —, mas com a mensagem certa:
+// a do cache fala de «desfecho retido nesta réplica», que aqui seria falso, e o operador precisa de
+// saber que voltar a correr o trabalho exige um `run_id` novo.
+type desfechoDuravelError struct {
+	runID  string
+	estado state.State
+}
+
+func (e *desfechoDuravelError) Error() string {
+	return fmt.Sprintf("aos: run %q ja terminado (desfecho %q registado no log duravel) — re-submissao recusada; para voltar a correr o trabalho submeta-o com um run_id NOVO", e.runID, e.estado)
+}
+
+func (e *desfechoDuravelError) Unwrap() error { return ErrRunAlreadyCompleted }

@@ -53,10 +53,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1124,6 +1126,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 			return
 		}
+		// QUOTA POR PRINCIPAL (AOS-457): 429 com Retry-After até à reposição (00:00 UTC do dia 1).
+		// Os números da recusa vão para o log do operador e NÃO para o corpo: dizem quanto um
+		// principal gastou, e o corpo desta rota é uniforme de propósito.
+		var qe *quotaEsgotadaError
+		if errors.As(err, &qe) {
+			h.svc.log("POST /runs %q recusado pela quota por principal: %v", req.RunID, err)
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(qe.faltam.Seconds())), 10))
+		}
 		writeError(w, submitErrorStatus(err), "submissao recusada")
 		return
 	}
@@ -1158,6 +1168,9 @@ func submitErrorStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrServiceShuttingDown):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrPrincipalQuotaExhausted):
+		// 429: recusa por quota, não erro do pedido nem avaria do nó (AOS-457).
+		return http.StatusTooManyRequests
 	case errors.Is(err, ErrCallerInFlightCeiling):
 		// 429 como o tecto GLOBAL, e pela mesma razão: é uma recusa por saturação, não um erro
 		// do pedido. O corpo é uniforme; o log do operador nomeia qual dos dois tectos mordeu.
