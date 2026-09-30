@@ -358,14 +358,14 @@ func dobraDoTectoDaFila(lim ingressLimits, gateComposto, principalVerificavel bo
 	return d
 }
 
-// dobraDasLigacoes declara o tecto de ligações aceites, o que acontece quando é atingido, e QUANTAS
-// ligações os streams SSE não conseguem tomar. É esse o número que importa ao operador: o plano de
-// controlo (/steer, /pause) disputa as mesmas vagas. E declara o que o tecto NÃO faz — a revisão
-// adversarial da primeira versão mediu que uma frase como «ficam N para o plano de controlo» era
-// falsa com o nó exposto directamente, e é a frase do banner que o operador lê.
+// dobraDasLigacoes declara o tecto de ligações aceites, o critério do despejo, e QUANTAS ligações os
+// streams SSE não conseguem tomar. É esse o número que importa ao operador: o plano de controlo
+// (/steer, /pause) disputa as mesmas vagas. E declara o que o tecto NÃO faz — duas revisões
+// adversariais mediram frases deste banner falsas («ficam N para o plano de controlo», «uma ligacao
+// que so segura a vaga nao as tira a um pedido novo»), e é a frase que o operador lê.
 func dobraDasLigacoes(lim ingressLimits) string {
-	return fmt.Sprintf(" TECTO DE LIGACOES ACEITES (AOS-465): %d ligacoes TCP abertas no listener; atingido, uma ligacao NOVA DESPEJA a mais antiga que nao esteja a ser servida (ociosa, ainda sem pedido, ou a pingar cabecalhos ou corpo) e so ESPERA se todas estiverem dentro de handlers. Os streams SSE, que nao se despejam, tomam no maximo %d; as outras %d servem o resto da API, incluindo o plano de CONTROLO, e uma ligacao que so segura a vaga nao as tira a um pedido novo. NAO contem uma inundacao de ligacoes NOVAS, que se despejam umas as outras e as legitimas ainda sem pedido: isso e do edge (limit_conn).",
-		lim.apiMaxConns, lim.trajMaxConns, lim.apiMaxConns-lim.trajMaxConns)
+	return fmt.Sprintf(" TECTO DE LIGACOES ACEITES (AOS-465): %d ligacoes TCP abertas no listener; atingido, uma ligacao NOVA DESPEJA outra em vez de esperar, e so protege a vaga um handler a fazer trabalho do SERVIDOR — ler o corpo, escrever a resposta ou ter a resposta por terminar e esperar pelo CLIENTE e nao protege. Sai primeiro a ociosa ou sem pedido, depois a que espera pelo cliente ha mais tempo, nenhuma antes de %s no estado actual; so ESPERA se todas estiverem a trabalhar. Os streams SSE entre eventos estao a trabalhar e tomam no maximo %d; as outras %d servem o resto da API, incluindo o plano de CONTROLO. NAO contem uma inundacao de ligacoes NOVAS nem o trabalho legitimo dentro de handlers (esse e dos tectos acima deste): isso e do edge (limit_conn).",
+		lim.apiMaxConns, GracaDeDespejo, lim.trajMaxConns, lim.apiMaxConns-lim.trajMaxConns)
 }
 
 // origemDoLimite diz se um valor veio da variável de ambiente ou do default do binário. Existe para

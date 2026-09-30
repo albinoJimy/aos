@@ -177,10 +177,10 @@ const (
 	// (32/256). É folgado para um `aos-orq` real, que despacha por passagem e não enfileira centenas.
 	DefaultPlanMaxPendingPerSubmitter = 125
 	// DefaultMaxAcceptedConns é o tecto de ligações TCP abertas ao mesmo tempo no listener da API
-	// (AOS-465). Atingido, uma ligação nova DESPEJA a mais antiga que não esteja a ser servida (ver
-	// ligacoes_aceites.go). Tem de ficar ACIMA de [DefaultMaxTrajectoryConns]: um stream SSE está
-	// DENTRO de um handler e não é despejável, e sem folga os streams ocupariam o listener inteiro —
-	// incluindo as ligações do plano de CONTROLO (/steer, /pause).
+	// (AOS-465). Atingido, uma ligação nova DESPEJA outra (ver ligacoes_aceites.go). Tem de ficar
+	// ACIMA de [DefaultMaxTrajectoryConns]: um stream SSE entre eventos está a trabalhar e não é
+	// despejável, e sem folga os streams ocupariam o listener inteiro — incluindo as ligações do plano
+	// de CONTROLO (/steer, /pause).
 	DefaultMaxAcceptedConns = 1024
 )
 
@@ -219,8 +219,8 @@ var (
 	// degradar em silêncio para texto-claro.
 	ErrIncompleteTLSConfig = errors.New("aos/api: config TLS incompleta — AOS_TLS_CERT_PATH e AOS_TLS_KEY_PATH sao AMBOS obrigatorios para terminar TLS no no (definir so um aborta em vez de servir em claro)")
 	// ErrConnCeilingNotAboveSSE — o tecto de ligações aceites (AOS-465) não fica ESTRITAMENTE acima
-	// do tecto de streams SSE, ou o SSE está sem tecto. Um stream SSE ocupa uma ligação dentro de um
-	// handler, que o despejo não toca: sem folga, os streams fechariam o listener a tudo o resto. A
+	// do tecto de streams SSE, ou o SSE está sem tecto. Um stream SSE entre eventos está a trabalhar,
+	// e o despejo não o toca: sem folga, os streams fechariam o listener a tudo o resto. A
 	// leitura do ambiente já recusa o par; esta guarda cobre a composição por opções.
 	ErrConnCeilingNotAboveSSE = errors.New("aos/api: o tecto de ligacoes aceites (AOS_API_MAX_CONNS) tem de ser ESTRITAMENTE maior que o tecto de streams SSE (AOS_TRAJECTORY_MAX_CONNS), e o SSE tem de ter tecto — os streams SSE nao sao despejaveis e ocupariam o listener inteiro")
 	// ErrBadControlMTLSCA — AOS_CONTROL_MTLS_CA_PATH presente mas o bundle de CA de cliente
@@ -1772,7 +1772,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// LIGAÇÕES ACEITES (AOS-465). O tecto sem estas séries seria uma guarda sem sensor: o operador só
 	// daria por ele quando os clientes começassem a ver ligações despejadas ou a esperar.
 	if h.cfg.ligacoes != nil {
-		g("aos_api_connections_open", "Ligacoes TCP abertas no listener da API nesta replica. No tecto, cada ligacao nova DESPEJA a mais antiga que nao esteja a ser servida; so espera se todas estiverem em handlers.",
+		g("aos_api_connections_open", "Ligacoes TCP abertas no listener da API nesta replica. No tecto, cada ligacao nova DESPEJA a que espera pelo cliente ha mais tempo; so espera se todas estiverem a fazer trabalho do servidor.",
 			"gauge", float64(h.cfg.ligacoes.abertas.Load()), "")
 		g("aos_api_connections_evicted_total", "Ligacoes DESPEJADAS pelo tecto de ligacoes aceites para dar lugar a uma nova. A subir depressa com poucos pedidos servidos e sinal de ligacoes a segurar vagas sem as usar.",
 			"counter", float64(h.cfg.ligacoes.despejadas.Load()), "")
@@ -2708,7 +2708,7 @@ func (h *apiHandler) admitControlMTLS(w http.ResponseWriter, r *http.Request) bo
 // (status, ok): ok=false com 413 quando o corpo excede o limite (achado nº5), ou 400 num
 // JSON malformado. O corpo limitado protege o ingresso de ser vector de exaustão.
 func (h *apiHandler) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (int, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.maxBodyBytes)
+	r.Body = http.MaxBytesReader(semVigia(w), r.Body, h.cfg.maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {

@@ -498,7 +498,7 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req pedidoDeDesfecho
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(semVigia(w), r.Body, 8<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "corpo invalido")
 		return
 	}

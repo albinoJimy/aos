@@ -8,31 +8,57 @@ package main
 //
 // Escreve-se aqui em vez de usar `golang.org/x/net/netutil.LimitListener` porque essa dependência não
 // está no `go.mod` e o build de produção é offline (`GOPROXY=off`). E a semântica NÃO é a mesma, de
-// propósito — ver abaixo.
+// propósito.
 //
-// ATINGIDO O TECTO, UMA LIGAÇÃO NOVA DESPEJA A MAIS ANTIGA QUE NÃO ESTEJA A SER SERVIDA. A primeira
-// versão (a do `LimitListener`) fazia o `Accept` esperar, e a revisão adversarial mediu o preço:
-// um tecto que espera é um trinco barato. Uma ligação keep-alive depois de um 404 segura a vaga 60 s
-// (IdleTimeout), uma ligação h2 com o preâmbulo e SEM pedido segura-a 61 s, e ~17 ligações/s de UMA
-// origem mantinham as 1024 ocupadas — com o `/healthz` a falhar 0/4, e a sonda de liveness que o
-// README recomenda a reiniciar o pod. Sem tecto nenhum, o mesmo ataque precisava de esgotar os
-// descritores do processo. O tecto tinha tornado a negação MAIS barata.
+// UM TECTO QUE ESPERA É UM TRINCO BARATO. A primeira versão fazia o `Accept` esperar no tecto, e a
+// revisão adversarial mediu o preço: uma ligação keep-alive depois de um 404 segura a vaga 60 s, uma
+// h2 com o preâmbulo e sem pedido 61 s, e ~17 ligações/s de UMA origem mantinham as 1024 ocupadas com
+// o `/healthz` a falhar. Sem tecto nenhum, o mesmo ataque precisava de esgotar os descritores.
 //
-// Ocupar uma vaga passa a exigir estar DENTRO de um handler a fazer trabalho do lado do servidor, e
-// esse trabalho já tem os seus tectos (taxa, runs em curso, streams SSE — este último validado
-// estritamente abaixo deste). A ordem de despejo é:
+// A SEGUNDA VERSÃO CLASSIFICAVA ESTADOS, E CADA ESTADO TINHA UMA VARIANTE. Protegia «ligações com
+// handler em curso sem corpo por ler» e «ligações cuja resposta o servidor ainda não terminou». A
+// revisão seguinte mediu três formas de segurar vagas em estados protegidos, todas à espera do
+// CLIENTE: h2 com RST_STREAM a meio de um handler (a ligação ficava «em serviço» 60 s), o descarte do
+// corpo que o servidor faz DEPOIS de o handler sair (15 s), e h2 com janela de controlo de fluxo a 0,
+// com a escrita da resposta presa (15 s). E em h2 todo o pedido tem corpo, por isso até um stream SSE
+// saudável era despejável.
 //
-//  1. a ligação SEM handler em curso menos recentemente usada — keep-alive ociosa, h2 sem streams,
-//     TCP ou TLS ainda sem pedido, cabeçalhos a pingar (slowloris);
-//  2. só se não houver nenhuma: a ligação cujos handlers estão TODOS à espera do CORPO do cliente
-//     (corpo lento), outra vez a menos recentemente usada;
-//  3. nenhuma das duas: o `Accept` espera por uma vaga, e é o único caso em que espera.
+// O CRITÉRIO PASSOU A SER ONDE O SERVIDOR ESTÁ BLOQUEADO, não em que estado a ligação está. Uma
+// ligação só está protegida enquanto um handler dela faz trabalho do SERVIDOR — isto é, não está
+// dentro de uma leitura do corpo nem de uma escrita da resposta, que é quando espera pelo cliente.
+// Com o tecto atingido, uma ligação nova despeja:
 //
-// O que isto NÃO fecha, e declara-se: uma inundação de ligações NOVAS despeja-se a si própria e às
-// ligações legítimas que ainda não enviaram o pedido, por ordem de chegada. Uma ligação legítima
-// sobrevive enquanto a inundação não despejar as mais antigas do que ela — com o tecto por omissão e
-// 1000 ligações/s, perto de um segundo, o que chega para o handshake e o pedido. Acima disso é
-// inundação volumétrica, e isso é do edge (`limit_conn`/`limit_req`), não de um tecto num processo.
+//  1. a ligação sem handler e declarada ociosa pelo servidor (`StateIdle`), ou ainda sem pedido —
+//     keep-alive, h2 sem streams, TCP ou TLS sem bytes, cabeçalhos a pingar;
+//  2. só se não houver nenhuma: a ligação em que o servidor espera pelo cliente — todos os handlers
+//     dentro de uma leitura do corpo ou de uma escrita da resposta, ou nenhum handler mas a resposta
+//     por terminar (descarte do corpo, escrita presa no controlo de fluxo);
+//  3. nenhuma das duas: o `Accept` espera, e é o único caso em que espera.
+//
+// Dentro de cada escalão sai a que está À ESPERA HÁ MAIS TEMPO: o relógio lógico `ultimoUso` avança
+// quando a ligação chega, fica ociosa, entra numa leitura ou escrita, ou sai do handler. Uma escrita
+// legítima para um cliente que lê dura microssegundos e é sempre a mais recente; uma escrita presa
+// por um cliente que não lê fica cada vez mais antiga.
+//
+// E NENHUMA LIGAÇÃO SE DESPEJA ANTES DE ESTAR NO ESTADO ACTUAL HÁ [GracaDeDespejo]. Em h2 o
+// `StateIdle` chega quando o stream fecha, com a última trama ainda no buffer do servidor e não no
+// socket; um despejo nesse instante cortava a resposta (medido: `unexpected EOF` num pedido h2 que o
+// servidor tinha acabado de servir). Em h1 o análogo é o RST de um fecho com dados do cliente por ler,
+// que é a razão do `rstAvoidanceDelay` do próprio `net/http`. As ligações que os ataques medidos
+// usam estão no mesmo estado há segundos; uma resposta legítima acabada, ou uma ligação acabada de
+// chegar, fica protegida durante a graça. O preço: com TODAS as vagas em estados mais novos do que a
+// graça — mais de ~4000 ligações novas/s com o tecto por omissão, volumétrico —, o `Accept` espera
+// que a mais antiga amadureça em vez de despejar.
+//
+// O que isto NÃO fecha, e declara-se:
+//   - uma inundação de ligações NOVAS despeja-se a si própria e às legítimas ainda sem pedido, por
+//     ordem de chegada. Acima de centenas por segundo é volumétrico e é do edge (`limit_conn`);
+//   - com o segundo escalão a ser o único, uma ligação nova pode despejar uma legítima a meio de uma
+//     escrita, ou no intervalo entre o handler sair e a resposta terminar. Só acontece com todas as
+//     vagas ocupadas por ligações à espera do cliente, e a escolhida é sempre a que espera há mais
+//     tempo;
+//   - ocupar uma vaga protegida exige trabalho do servidor dentro de um handler, e isso é limitado
+//     pelos tectos acima deste (taxa, runs em curso, SSE), não por este.
 //
 // O `Accept` aceita PRIMEIRO e procura vaga DEPOIS. Ao contrário, reservar a vaga antes de aceitar
 // obrigaria a despejar uma ligação antes de haver quem a quisesse, e com o tecto a 1 nenhuma ligação
@@ -47,7 +73,13 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// GracaDeDespejo é quanto tempo uma ligação tem de estar no estado actual antes de poder ser
+// despejada (ver o cabeçalho do ficheiro). Cobre com folga o flush de uma resposta que acabou de
+// terminar; é muito menor do que o tempo que os ataques medidos seguram uma vaga (5 a 60 s).
+const GracaDeDespejo = 250 * time.Millisecond
 
 // ligacoesAceites é partilhado entre o listener (que o preenche) e a métrica (que o lê). Nasce em
 // [NewAPIServer], antes do handler, para os dois apontarem para o MESMO contador.
@@ -57,8 +89,8 @@ type ligacoesAceites struct {
 }
 
 // limitarLigacoes embrulha `ln` para manter no máximo `n` ligações abertas ao mesmo tempo. O despejo
-// só vê que uma ligação está a ser servida se o `http.Server` estiver ligado por [ligarAoServidor];
-// sem isso, todas parecem ociosas e o tecto despeja por ordem de uso.
+// só vê o que cada ligação está a fazer se o `http.Server` estiver ligado por [ligarAoServidor]; sem
+// isso, todas parecem ociosas e o tecto despeja por ordem de chegada.
 func limitarLigacoes(ln net.Listener, n int, contador *ligacoesAceites) net.Listener {
 	return &listenerLimitado{
 		Listener: ln,
@@ -66,6 +98,8 @@ func limitarLigacoes(ln net.Listener, n int, contador *ligacoesAceites) net.List
 		fechado:  make(chan struct{}),
 		livre:    make(chan struct{}, 1),
 		contador: contador,
+		graca:    GracaDeDespejo,
+		agora:    time.Now,
 		vivas:    make(map[*ligacaoLimitada]struct{}, n),
 	}
 }
@@ -75,18 +109,19 @@ type listenerLimitado struct {
 	vagas    chan struct{}
 	fechado  chan struct{}
 	fecharUm sync.Once
-	// livre acorda um `Accept` à espera quando uma ligação SAI de um handler e pode ter passado a ser
-	// despejável. Capacidade 1 e envio sem bloqueio: basta um aviso pendente.
+	// livre acorda um `Accept` à espera quando uma ligação fica ociosa. Capacidade 1 e envio sem
+	// bloqueio: basta um aviso pendente.
 	livre    chan struct{}
 	contador *ligacoesAceites
+	graca    time.Duration
+	agora    func() time.Time
 
 	// mu protege `vivas`, `relogio` e os campos de estado de cada [ligacaoLimitada]. É um só mutex
-	// para a decisão de despejo e a entrada num handler serem atómicas uma em relação à outra: sem
-	// isso, uma ligação escolhida como ociosa podia entrar num handler antes de ser fechada.
+	// para a decisão de despejo e as transições de estado serem atómicas umas em relação às outras.
 	mu    sync.Mutex
 	vivas map[*ligacaoLimitada]struct{}
-	// relogio é lógico, não de parede: só ordena «menos recentemente usada», e um contador não
-	// depende do relógio do sistema nem empata.
+	// relogio é lógico, não de parede: só ordena «à espera há mais tempo», e um contador não depende
+	// do relógio do sistema nem empata.
 	relogio uint64
 }
 
@@ -94,6 +129,11 @@ type listenerLimitado struct {
 // cabeçalho do ficheiro). Se o listener for fechado enquanto espera, fecha a ligação que tem na mão
 // e devolve [net.ErrClosed]: sem isto, um shutdown com todas as vagas em handlers penduraria o
 // `Serve`, porque o `Close` do listener interior não acorda quem espera no semáforo.
+//
+// NÃO É ACORDADO quando um handler sai ou entra numa escrita — só quando uma ligação fica ociosa ou
+// fecha. Acordar à saída do handler despejaria respostas legítimas no intervalo antes de terminarem
+// (medido: `unexpected EOF`); acordar à entrada de uma escrita despejaria streams SSE a meio de um
+// evento. Uma ligação nova que CHEGA avalia tudo de novo.
 func (l *listenerLimitado) Accept() (net.Conn, error) {
 	c, err := l.Listener.Accept()
 	if err != nil {
@@ -107,13 +147,22 @@ func (l *listenerLimitado) Accept() (net.Conn, error) {
 		}
 		// O Close do despejado devolve a vaga ANTES de retornar, e o ciclo volta a tentá-la. Se outro
 		// chamador de `Accept` a levar primeiro, despeja-se outra.
-		if l.despejarUma() {
+		despejou, amadurece := l.despejarUma()
+		if despejou {
 			continue
+		}
+		// Sem candidata madura: acorda quando a primeira amadurecer, se houver alguma a caminho.
+		var relogio <-chan time.Time
+		if amadurece > 0 {
+			t := time.NewTimer(amadurece)
+			relogio = t.C
+			defer t.Stop()
 		}
 		select {
 		case l.vagas <- struct{}{}:
 			return l.registar(c), nil
 		case <-l.livre:
+		case <-relogio:
 		case <-l.fechado:
 			_ = c.Close()
 			return nil, net.ErrClosed
@@ -126,11 +175,18 @@ func (l *listenerLimitado) Close() error {
 	return l.Listener.Close()
 }
 
+// marcar avança o relógio lógico da ligação e regista quando entrou no estado actual. Chamar com
+// l.mu tomado.
+func (l *listenerLimitado) marcar(lc *ligacaoLimitada) {
+	lc.ultimoUso = l.relogio
+	l.relogio++
+	lc.desde = l.agora()
+}
+
 func (l *listenerLimitado) registar(c net.Conn) *ligacaoLimitada {
 	lc := &ligacaoLimitada{Conn: c, l: l}
 	l.mu.Lock()
-	lc.ultimoUso = l.relogio
-	l.relogio++
+	l.marcar(lc)
 	l.vivas[lc] = struct{}{}
 	l.mu.Unlock()
 	if l.contador != nil {
@@ -139,86 +195,110 @@ func (l *listenerLimitado) registar(c net.Conn) *ligacaoLimitada {
 	return lc
 }
 
+// escalao classifica uma ligação para o despejo: 1 e 2 como no cabeçalho do ficheiro, 0 protegida.
+// Chamar com l.mu tomado.
+func (lc *ligacaoLimitada) escalao() int {
+	switch {
+	case lc.handlers == 0 && !lc.emServico:
+		return 1
+	case lc.handlers == 0: // handler saiu, resposta por terminar
+		return 2
+	case lc.emIO == lc.handlers: // todos os handlers à espera do cliente
+		return 2
+	}
+	return 0
+}
+
 // despejarUma fecha a ligação escolhida pela ordem do cabeçalho e diz se fechou alguma.
-func (l *listenerLimitado) despejarUma() bool {
+//
+// O ESCALÃO MANDA ANTES DA GRAÇA. Se o escalão 1 tem candidatas mas nenhuma madura, espera-se que a
+// primeira amadureça em vez de despejar uma madura do escalão 2: a do escalão 2 pode estar a meio de
+// uma escrita legítima, e uma ociosa amadurece em no máximo [GracaDeDespejo]. Se não fechou nenhuma,
+// diz quanto falta para a primeira candidata do escalão escolhido amadurecer (0 se não há nenhuma).
+func (l *listenerLimitado) despejarUma() (bool, time.Duration) {
 	l.mu.Lock()
-	var ociosa, aEsperarCorpo *ligacaoLimitada
+	var madura [3]*ligacaoLimitada
+	var existe [3]bool
+	var amadurece [3]time.Duration
+	agora := l.agora()
 	for lc := range l.vivas {
-		switch {
-		case lc.despejada:
-		case lc.handlers == 0 && !lc.emServico:
-			if ociosa == nil || lc.ultimoUso < ociosa.ultimoUso {
-				ociosa = lc
+		if lc.despejada {
+			continue
+		}
+		e := lc.escalao()
+		if e == 0 {
+			continue
+		}
+		existe[e] = true
+		if falta := l.graca - agora.Sub(lc.desde); falta > 0 {
+			if amadurece[e] == 0 || falta < amadurece[e] {
+				amadurece[e] = falta
 			}
-		case lc.handlers > 0 && lc.handlers == lc.aEsperarCorpo:
-			if aEsperarCorpo == nil || lc.ultimoUso < aEsperarCorpo.ultimoUso {
-				aEsperarCorpo = lc
-			}
+			continue
+		}
+		if madura[e] == nil || lc.ultimoUso < madura[e].ultimoUso {
+			madura[e] = lc
 		}
 	}
-	alvo := ociosa
-	if alvo == nil {
-		alvo = aEsperarCorpo
+	e := 2
+	if existe[1] {
+		e = 1
 	}
+	alvo := madura[e]
 	if alvo != nil {
 		alvo.despejada = true
 	}
 	l.mu.Unlock()
 	if alvo == nil {
-		return false
+		return false, amadurece[e]
 	}
 	// Fora do mutex: o Close chama `soltar`, que o toma.
 	_ = alvo.Close()
 	if l.contador != nil {
 		l.contador.despejadas.Add(1)
 	}
-	return true
+	return true, 0
 }
 
-// entrar / corpoLido / sair / ociosa acompanham o que cada ligação está a fazer. Os três primeiros
-// vêm do handler de [ligarAoServidor]; uma ligação h2 pode ter vários handlers ao mesmo tempo, daí
-// contadores. O último vem do `ConnState` do servidor.
-//
-// SAIR DO HANDLER NÃO É FICAR OCIOSA. O `http.Server` escreve a resposta que ficou no buffer DEPOIS de
-// o handler retornar, e um despejo nesse intervalo cortava-a — o teste da ligação servida apanhou-o
-// com um `unexpected EOF`. Por isso `emServico` só baixa quando o servidor declara a ligação
-// `StateIdle`, que em h1 vem depois de a resposta terminar e em h2 quando não resta nenhum stream.
-func (l *listenerLimitado) entrar(lc *ligacaoLimitada, comCorpo bool) {
+// entrar / sair acompanham os handlers em curso (uma ligação h2 pode ter vários), entrarIO / sairIO
+// o tempo que cada um passa bloqueado no cliente, e ociosa o `StateIdle` do servidor.
+func (l *listenerLimitado) entrar(lc *ligacaoLimitada) {
 	l.mu.Lock()
 	lc.handlers++
 	lc.emServico = true
-	if comCorpo {
-		lc.aEsperarCorpo++
-	}
-	l.mu.Unlock()
-}
-
-func (l *listenerLimitado) corpoLido(lc *ligacaoLimitada) {
-	l.mu.Lock()
-	lc.aEsperarCorpo--
 	l.mu.Unlock()
 }
 
 func (l *listenerLimitado) sair(lc *ligacaoLimitada) {
 	l.mu.Lock()
 	lc.handlers--
+	l.marcar(lc)
 	l.mu.Unlock()
-	// Pode ter deixado só handlers à espera de corpo: despejável no segundo escalão.
-	l.avisarLivre()
 }
 
+func (l *listenerLimitado) entrarIO(lc *ligacaoLimitada) {
+	l.mu.Lock()
+	lc.emIO++
+	l.marcar(lc)
+	l.mu.Unlock()
+}
+
+func (l *listenerLimitado) sairIO(lc *ligacaoLimitada) {
+	l.mu.Lock()
+	lc.emIO--
+	l.mu.Unlock()
+}
+
+// ociosa limpa a marca de serviço SEM olhar para os handlers. Em h1 o `StateIdle` só chega depois de
+// a resposta terminar, sem handler nenhum. Em h2 chega quando não resta nenhum stream aberto — e pode
+// chegar ANTES de o handler de um stream cancelado (RST_STREAM) sair. A versão anterior ignorava o
+// aviso nesse caso e a ligação ficava «em serviço» até ao IdleTimeout (medido: 60 s por ligação, o
+// mesmo custo do trinco original). O handler que ainda corre continua a contar em `handlers`.
 func (l *listenerLimitado) ociosa(lc *ligacaoLimitada) {
 	l.mu.Lock()
-	if lc.handlers == 0 {
-		lc.emServico = false
-		lc.ultimoUso = l.relogio
-		l.relogio++
-	}
+	lc.emServico = false
+	l.marcar(lc)
 	l.mu.Unlock()
-	l.avisarLivre()
-}
-
-func (l *listenerLimitado) avisarLivre() {
 	select {
 	case l.livre <- struct{}{}:
 	default:
@@ -234,11 +314,12 @@ type ligacaoLimitada struct {
 	soltarUm sync.Once
 
 	// Protegidos por l.mu.
-	handlers      int
-	aEsperarCorpo int
-	emServico     bool
-	ultimoUso     uint64
-	despejada     bool
+	handlers  int
+	emIO      int
+	emServico bool
+	ultimoUso uint64
+	desde     time.Time
+	despejada bool
 }
 
 func (c *ligacaoLimitada) Close() error {
@@ -291,8 +372,13 @@ func ligacaoDe(c net.Conn) *ligacaoLimitada {
 }
 
 // ligarAoServidor liga o `http.Server` ao tecto: o `ConnContext` guarda a ligação limitada no
-// contexto de cada pedido, e o handler embrulhado marca-a como servida enquanto corre. É o que
-// separa «ligação ocupada a trabalhar» de «ligação a segurar uma vaga».
+// contexto de cada pedido, o `ConnState` avisa quando fica ociosa, e o handler embrulhado conta os
+// handlers em curso e o tempo que cada um passa bloqueado no cliente.
+//
+// O PEDIDO É UMA CÓPIA RASA. Mudar `r.Body` no pedido original mudaria também o que o `http.Server`
+// guarda dele, e a decisão de descartar ou fechar depois do handler olha para o tipo desse corpo: a
+// revisão mediu um 404 a um corpo de 10 MB que o servidor fechava de imediato passar a esperar o
+// ReadTimeout inteiro.
 func ligarAoServidor(srv *http.Server) {
 	srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
 		if lc := ligacaoDe(c); lc != nil {
@@ -318,38 +404,61 @@ func ligarAoServidor(srv *http.Server) {
 			seguinte.ServeHTTP(w, r)
 			return
 		}
-		comCorpo := r.Body != nil && r.Body != http.NoBody
-		lc.l.entrar(lc, comCorpo)
+		lc.l.entrar(lc)
 		defer lc.l.sair(lc)
-		if comCorpo {
-			cv := &corpoVigiado{ReadCloser: r.Body, fim: func() { lc.l.corpoLido(lc) }}
-			// Um handler que não lê o corpo até ao fim também deixa de esperar por ele quando sai.
-			defer cv.terminar()
-			r.Body = cv
+		copia := r.WithContext(r.Context())
+		if r.Body != nil {
+			copia.Body = &corpoVigiado{ReadCloser: r.Body, lc: lc}
 		}
-		seguinte.ServeHTTP(w, r)
+		seguinte.ServeHTTP(&respostaVigiada{ResponseWriter: w, lc: lc}, copia)
 	})
 }
 
-// corpoVigiado avisa uma vez quando o corpo do pedido acabou: fim, erro ou fecho.
+// corpoVigiado marca o handler como bloqueado no cliente enquanto está DENTRO de uma leitura.
 type corpoVigiado struct {
 	io.ReadCloser
-	fim func()
-	um  sync.Once
+	lc *ligacaoLimitada
 }
 
 func (b *corpoVigiado) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
-	if err != nil {
-		b.terminar()
+	b.lc.l.entrarIO(b.lc)
+	defer b.lc.l.sairIO(b.lc)
+	return b.ReadCloser.Read(p)
+}
+
+// respostaVigiada faz o mesmo para a escrita da resposta: um cliente que não lê (janela TCP cheia, ou
+// janela h2 a 0) deixa o handler preso aqui até ao WriteTimeout. `Flush` existe porque o SSE exige
+// `http.Flusher`; `Unwrap` porque o `http.ResponseController` do SSE precisa de chegar ao original
+// para o `SetWriteDeadline`.
+type respostaVigiada struct {
+	http.ResponseWriter
+	lc *ligacaoLimitada
+}
+
+func (w *respostaVigiada) Write(p []byte) (int, error) {
+	w.lc.l.entrarIO(w.lc)
+	defer w.lc.l.sairIO(w.lc)
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *respostaVigiada) FlushError() error {
+	w.lc.l.entrarIO(w.lc)
+	defer w.lc.l.sairIO(w.lc)
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *respostaVigiada) Flush() { _ = w.FlushError() }
+
+func (w *respostaVigiada) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// semVigia devolve o `ResponseWriter` do servidor por baixo do embrulho, para o [http.MaxBytesReader].
+// Ele avisa o servidor de que o limite do corpo foi atingido por um método NÃO exportado do
+// `ResponseWriter` original, sem desembrulhar: com o embrulho, o servidor deixava de fechar a ligação
+// depois do 413 e tentava drenar o resto do corpo. Quem chama o `MaxBytesReader` tem de passar por
+// aqui — e o `TestAOS465O413ContinuaAFecharALigacao` mede-o.
+func semVigia(w http.ResponseWriter) http.ResponseWriter {
+	if v, ok := w.(*respostaVigiada); ok {
+		return v.ResponseWriter
 	}
-	return n, err
+	return w
 }
-
-func (b *corpoVigiado) Close() error {
-	err := b.ReadCloser.Close()
-	b.terminar()
-	return err
-}
-
-func (b *corpoVigiado) terminar() { b.um.Do(b.fim) }
