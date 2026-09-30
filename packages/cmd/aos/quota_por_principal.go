@@ -132,23 +132,39 @@ type quotaPorPrincipal struct {
 	// `WithExpectedSeq` no stream dele). Um mutex único para o nó serializava a admissão de todos
 	// os principais atrás do I/O de um — achado BAIXO da revisão.
 	mu           sync.Mutex
-	porPrincipal map[string]*sync.Mutex
+	porPrincipal map[string]*mutexDoPrincipal
+}
+
+// mutexDoPrincipal conta quem o tem ou espera por ele, para sair do mapa quando ninguém o usa: sem
+// isso o mapa guardava um mutex por principal visto enquanto o processo vivesse.
+type mutexDoPrincipal struct {
+	sync.Mutex
+	uso int
 }
 
 // bloquear toma o mutex do principal e devolve a função que o larga.
 func (q *quotaPorPrincipal) bloquear(principal string) func() {
 	q.mu.Lock()
 	if q.porPrincipal == nil {
-		q.porPrincipal = map[string]*sync.Mutex{}
+		q.porPrincipal = map[string]*mutexDoPrincipal{}
 	}
 	m, ok := q.porPrincipal[principal]
 	if !ok {
-		m = &sync.Mutex{}
+		m = &mutexDoPrincipal{}
 		q.porPrincipal[principal] = m
 	}
+	m.uso++
 	q.mu.Unlock()
 	m.Lock()
-	return m.Unlock
+	return func() {
+		m.Unlock()
+		q.mu.Lock()
+		m.uso--
+		if m.uso == 0 {
+			delete(q.porPrincipal, principal)
+		}
+		q.mu.Unlock()
+	}
 }
 
 // pseudonimoDoPrincipal devolve o identificador do principal no nome do stream. Um hash e não o

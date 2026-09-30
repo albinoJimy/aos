@@ -3032,8 +3032,27 @@ Recusou fechar o ticket. O que encontrou, e o que lhe aconteceu:
 - **BAIXO — um mutex para o nó inteiro** serializava todos os principais atrás do I/O de um. Passou a
   um por principal.
 
+### Re-revisão (sobre `cd8bc5a`)
+Confirmou fechados, por medição, os três contornos (poda: 0 re-submissões aceites, eram 20; restart: 0
+chamadas ao modelo; o agravante depois do apagamento) e não encontrou formas novas de admitir sem
+reserva nem de imputar gasto a outro principal. Correu as suites de `cmd/aos-orq`, `integration`,
+`qa/*`, `security-tests` e `control-plane/runlifecycle`: verdes. Dois efeitos colaterais da recusa de
+runs terminados, ambos corrigidos:
+- **`failed` sem sensor:** a mutação para `state.IsTerminal` reabria o contorno para runs falhados e
+  passava a suite inteira. O teste passou a cobrir os dois desfechos.
+- **A recuperação documentada deixou de funcionar em silêncio.** O log de orçamento esgotado mandava
+  «levantar o tecto e re-submeter»; levantar o tecto exige um restart, e re-submeter o mesmo `run_id`
+  passou a ser recusado — com 201 no modo legado, sem executar nada. A recusa é a semântica certa; o
+  que estava errado era a instrução. O log passou a dizer «submetê-lo com um run_id NOVO», e a recusa
+  vinda do log tem erro próprio (`desfechoDuravelError`, que continua a ser um
+  `ErrRunAlreadyCompleted` para a API) em vez da mensagem do cache, que falava de «desfecho retido
+  nesta réplica».
+
 ### Mutações medidas
-Trinta e uma mutações, três rodadas cada com `-race`: **93/93 detectadas**.
+Trinta e uma mutações, três rodadas cada com `-race`: **93/93 detectadas**. Mais três depois da
+re-revisão, cada uma detectada: o predicado `state.IsTerminal` em vez de `desfechoDuravelRegistado`
+(deixa `failed` re-executável — sobrevivia à suite inteira), a recusa vinda do log com a mensagem do
+cache, e o mapa de mutexes sem poda.
 
 | mutação | detectada por |
 |---|---|
@@ -3068,11 +3087,15 @@ Trinta e uma mutações, três rodadas cada com `-race`: **93/93 detectadas**.
 | **o ciclo não trata `ErrSeqConflict`** (o do JetStream) | ciclo de concorrência optimista |
 | **o apagamento usa o relógio de parede** | o apagamento usa o relógio da quota |
 | **reserva com `StepID` sem o `seq`** | depois do apagamento o mesmo run reserva de novo |
+| **um run `failed` volta a executar** (`IsTerminal` em vez de `desfechoDuravelRegistado`) | um run terminado não volta a executar, caso `failed` |
+| **a recusa do log com a mensagem do cache** | um run terminado não volta a executar |
+| **o mapa de mutexes por principal sem poda** | o mapa dos mutexes esvazia |
 
 A negrito, as sete que a revisão encontrou vivas ou que cobrem as suas correcções. Sem teste próprio,
-declaradas: a correspondência `Reserva` na soma do gasto (redundante
-com a limpeza dos mapas na marca de apagamento), a guarda contra uma liquidação duplicada (o Event Store
-deduplica-a pela chave), e o mutex por principal (desempenho, não correcção).
+declaradas: a correspondência `Reserva` na soma do gasto e na guarda de liquidação já feita — a spec
+dizia-a redundante com a limpeza dos mapas na marca de apagamento, e a re-revisão mostrou que não é:
+protege de uma liquidação de OUTRA réplica que leu antes do apagamento e escreve depois da reserva nova
+(corrida estreita, inferida, não medida); e o mutex por principal (desempenho, não correcção).
 
 **O que as mutações ensinaram.** A primeira bateria (sem `-race`) deixou sobreviver 6 de 25, e cada
 uma era um buraco real: o teste da recusa olhava para `Outcome` e não via `s.runs`; nada testava que
@@ -3112,6 +3135,17 @@ família inexistente numa constante e um ponto no prefixo do stream avermelham-n
   reserva e a hospedagem, falha de ingestão do objectivo.
 - **Um run retomado dois meses depois da admissão** não encontra a sua reserva (só se procura no mês
   corrente e no anterior) e não liquida; o que gasta nesse mês não conta. A retoma exige um humano.
+- **Re-submeter um `run_id` com desfecho no log é recusado** (201 idempotente no modo legado, 409 no
+  soberano), e isso muda um comportamento antes documentado («após a poda o RunID volta a ser
+  submetível»), que re-executava o run às cegas. Voltar a correr o trabalho exige um `run_id` novo.
+- **Estados ainda re-executáveis por re-submissão**, anteriores a este ticket: `ready` depois da saga
+  (`compensating → ready`, hoje inalcançável — o registo de compensações está vazio) e um `running`
+  órfão depois de um selo terminal que falhou. Nos dois a reserva é idempotente e a re-execução repete
+  turnos que o ledger deduplica.
+- **O `aos-orq`** trata o 409 de um filho re-submetido como erro de execução do nó
+  (`errRunFilhoJaExiste`), na janela «Submit feito, `MarkRunning` falhou». Antes deste ticket, depois
+  de uma poda ou restart, esse caso dava 201 e re-executava o filho; agora é um erro explícito. Dívida
+  anterior, não regressão.
 - **O `/dsar/erase` só aceita um `subject_id` que passe o `validPseudonym`**: um principal OIDC com
   `|` ou `@` não consegue repor a quota por HTTP. Limitação anterior (vale também para a KEK).
 

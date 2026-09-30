@@ -748,54 +748,103 @@ func TestAOS457AOutraReplicaEntreALeituraEAEscrita(t *testing.T) {
 	}
 }
 
+// modeloQueFalha conta as chamadas e falha sempre: o run sela `failed`.
+type modeloQueFalha struct{ calls int64 }
+
+func (m *modeloQueFalha) Call(context.Context, agentruntime.PromptView) (agentruntime.ModelResponse, error) {
+	atomic.AddInt64(&m.calls, 1)
+	return agentruntime.ModelResponse{}, errors.New("modelo em baixo (teste)")
+}
+
 // TestAOS457UmRunTerminadoNaoVoltaAExecutar — o achado ALTO da revisão do AOS-457. O único travão à
 // re-execução de um run terminado era o cache `completed` do serviço: poda FIFO, vazio depois de um
 // restart. Passado ele, re-submeter o `run_id` voltava a chamar o modelo, e o gasto não era contado
 // nem pela quota (reserva idempotente por run) nem pelo tecto por-run (o ledger deduplica os turnos
 // por `(run_id, step)`). Medido: 20 re-submissões, 20 chamadas ao modelo, gasto contado 0.
+//
+// DOIS desfechos, porque a re-revisão mediu que só `complete` tinha sensor: trocar o predicado por
+// `state.IsTerminal` — que deixa `failed` de fora — reabria o contorno para runs falhados e passava a
+// suite inteira.
 func TestAOS457UmRunTerminadoNaoVoltaAExecutar(t *testing.T) {
-	model := &countingModel{}
-	node := newTestNode(t, model)
-	t.Cleanup(func() { _ = node.Close() })
-	node.QuotaPorPrincipal = quotaDeTeste(node.EventStore, 1000, 100, &relogioDeQuota{t: setembro},
-		consumoDuravelParaOrcamento(newTurnLedgerBurndown(node.EventStore)))
+	type caso struct {
+		nome   string
+		modelo agentruntime.ModelClient
+		conta  func() int64
+	}
+	ok, falha := &countingModel{}, &modeloQueFalha{}
+	casos := []caso{
+		{"complete", ok, func() int64 { return atomic.LoadInt64(&ok.calls) }},
+		{"failed", falha, func() int64 { return atomic.LoadInt64(&falha.calls) }},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			node := newTestNode(t, c.modelo)
+			t.Cleanup(func() { _ = node.Close() })
+			node.QuotaPorPrincipal = quotaDeTeste(node.EventStore, 1000, 100, &relogioDeQuota{t: setembro},
+				consumoDuravelParaOrcamento(newTurnLedgerBurndown(node.EventStore)))
+			ctx := context.Background()
+
+			// O relógio do lease AVANÇA a cada leitura: o lease de uma execução anterior está sempre
+			// expirado, e a única coisa que pode recusar a re-submissão é o desfecho. Com o relógio
+			// parado o lease ainda vivo recusava-a — e o teste passaria sem medir nada.
+			var tique atomic.Int64
+			leaseQueAnda := durable.ClockFunc(func() time.Time {
+				return time.Unix(1_700_000_000, 0).UTC().Add(time.Duration(tique.Add(1)) * 2 * time.Minute)
+			})
+			svc, err := NewNodeService(node, WithLeaseClock(leaseQueAnda), WithLeaseTTL(time.Minute), WithCompletedRetention(1))
+			if err != nil {
+				t.Fatalf("NewNodeService: %v", err)
+			}
+			t.Cleanup(func() { _ = svc.Shutdown(ctx) })
+			for _, id := range []string{"run-x", "run-y"} { // run-y empurra run-x para fora do cache
+				if err := svc.Submit(ctx, svcGoal(id, "trabalho")); err != nil {
+					t.Fatalf("Submit %s: %v", id, err)
+				}
+				esperarRun(t, svc, id)
+			}
+			chamadas := c.conta()
+
+			err = svc.Submit(ctx, svcGoal("run-x", "trabalho"))
+			if !errors.Is(err, ErrRunAlreadyCompleted) {
+				t.Fatalf("re-submeter um run com desfecho no log devia ser recusado como ja terminado, veio %v", err)
+			}
+			// A recusa vinda do LOG diz de onde vem e o que fazer — a do cache fala de «desfecho retido
+			// nesta replica», que aqui seria falso (achado MÉDIO da re-revisão).
+			if msg := err.Error(); !strings.Contains(msg, "log duravel") || !strings.Contains(msg, "run_id NOVO") {
+				t.Fatalf("a mensagem da recusa nao diz que vem do log nem que e preciso um run_id novo: %s", msg)
+			}
+			// E depois de um «restart»: um serviço novo, sem cache nenhum, sobre o mesmo nó.
+			depois, err := NewNodeService(node, WithLeaseClock(leaseQueAnda), WithLeaseTTL(time.Minute))
+			if err != nil {
+				t.Fatalf("NewNodeService: %v", err)
+			}
+			t.Cleanup(func() { _ = depois.Shutdown(ctx) })
+			if err := depois.Submit(ctx, svcGoal("run-y", "trabalho")); !errors.Is(err, ErrRunAlreadyCompleted) {
+				t.Fatalf("depois de um restart o run terminado voltou a ser admitido: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+			if n := c.conta(); n != chamadas {
+				t.Fatalf("o modelo foi chamado %d vezes a mais — um run terminado (%s) voltou a executar", n-chamadas, c.nome)
+			}
+		})
+	}
+}
+
+// TestAOS457OMapaDosMutexesEsvazia — um mutex por principal, mas só enquanto alguém o usa: sem a
+// poda, o mapa guardava um por cada principal visto enquanto o processo vivesse.
+func TestAOS457OMapaDosMutexesEsvazia(t *testing.T) {
 	ctx := context.Background()
-
-	// O relógio do lease AVANÇA a cada leitura: o lease de uma execução anterior está sempre expirado,
-	// e a única coisa que pode recusar a re-submissão é o desfecho. Com o relógio parado o lease
-	// ainda vivo recusava-a — e o teste passaria sem medir nada.
-	var tique atomic.Int64
-	leaseQueAnda := durable.ClockFunc(func() time.Time {
-		return time.Unix(1_700_000_000, 0).UTC().Add(time.Duration(tique.Add(1)) * 2 * time.Minute)
-	})
-	svc, err := NewNodeService(node, WithLeaseClock(leaseQueAnda), WithLeaseTTL(time.Minute), WithCompletedRetention(1))
-	if err != nil {
-		t.Fatalf("NewNodeService: %v", err)
-	}
-	t.Cleanup(func() { _ = svc.Shutdown(ctx) })
-	for _, id := range []string{"run-x", "run-y"} { // run-y empurra run-x para fora do cache
-		if err := svc.Submit(ctx, svcGoal(id, "trabalho")); err != nil {
-			t.Fatalf("Submit %s: %v", id, err)
+	q := quotaDeTeste(novoStore(t), 1000, 100, &relogioDeQuota{t: setembro}, consumoFixo(0))
+	for i := 0; i < 20; i++ {
+		if err := q.reservar(ctx, fmt.Sprintf("human:p%02d", i), "r"); err != nil {
+			t.Fatalf("reservar: %v", err)
 		}
-		esperarRun(t, svc, id)
 	}
-	chamadas := atomic.LoadInt64(&model.calls)
-
-	if err := svc.Submit(ctx, svcGoal("run-x", "trabalho")); !errors.Is(err, ErrRunAlreadyCompleted) {
-		t.Fatalf("re-submeter um run com desfecho no log devia ser recusado como ja terminado, veio %v", err)
-	}
-	// E depois de um «restart»: um serviço novo, sem cache nenhum, sobre o mesmo nó.
-	depois, err := NewNodeService(node, WithLeaseClock(leaseQueAnda), WithLeaseTTL(time.Minute))
-	if err != nil {
-		t.Fatalf("NewNodeService: %v", err)
-	}
-	t.Cleanup(func() { _ = depois.Shutdown(ctx) })
-	if err := depois.Submit(ctx, svcGoal("run-y", "trabalho")); !errors.Is(err, ErrRunAlreadyCompleted) {
-		t.Fatalf("depois de um restart o run terminado voltou a ser admitido: %v", err)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if n := atomic.LoadInt64(&model.calls); n != chamadas {
-		t.Fatalf("o modelo foi chamado %d vezes a mais — um run terminado voltou a executar", n-chamadas)
+	q.mu.Lock()
+	n := len(q.porPrincipal)
+	q.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("o mapa dos mutexes tem %d entradas sem ninguem a usa-las", n)
 	}
 }
 

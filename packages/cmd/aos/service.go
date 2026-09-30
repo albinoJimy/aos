@@ -775,7 +775,7 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		}
 		if desfechoDuravelRegistado(st) {
 			s.unreserve(rs)
-			return ErrRunAlreadyCompleted
+			return &desfechoDuravelError{runID: runID, estado: st}
 		}
 	}
 
@@ -1106,7 +1106,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// Este caminho é o do prompt de exaustão DESARMADO: com ele armado o run não chega aqui
 	// assim — foi suspenso e o sinal viaja no `err`, absorvido mais abaixo.
 	if res.BudgetExhausted {
-		s.log("run %q PAROU por ORCAMENTO ESGOTADO (AOS-260) ao fim de %d turnos completos — %s. Estado duravel: timed_out (%s), NAO failed: um tecto defensivo atingido nao e uma falha recuperavel por compensacao. Para o run prosseguir e preciso levantar o tecto (AOS_BUDGET_MAX_TOKENS / AOS_BUDGET_MAX_COST_MICRO_USD) e re-submeter",
+		s.log("run %q PAROU por ORCAMENTO ESGOTADO (AOS-260) ao fim de %d turnos completos — %s. Estado duravel: timed_out (%s), NAO failed: um tecto defensivo atingido nao e uma falha recuperavel por compensacao. Para o trabalho prosseguir e preciso levantar o tecto (AOS_BUDGET_MAX_TOKENS / AOS_BUDGET_MAX_COST_MICRO_USD) e submete-lo com um run_id NOVO: este tem desfecho no log e a re-submissao do mesmo id e recusada (AOS-457)",
 			rs.runID, res.Turns, res.BudgetExhaustionReason, reasonBudgetExhausted)
 	}
 
@@ -1663,3 +1663,18 @@ func (s *NodeService) liquidarQuotaDoSuspenso(runID string) {
 		s.liquidarQuota(runID, rs.principal)
 	}
 }
+
+// desfechoDuravelError é a recusa de re-submeter um run cujo desfecho está no LOG (AOS-457). É um
+// [ErrRunAlreadyCompleted] — a API trata-o como re-submissão idempotente —, mas com a mensagem certa:
+// a do cache fala de «desfecho retido nesta réplica», que aqui seria falso, e o operador precisa de
+// saber que voltar a correr o trabalho exige um `run_id` novo.
+type desfechoDuravelError struct {
+	runID  string
+	estado state.State
+}
+
+func (e *desfechoDuravelError) Error() string {
+	return fmt.Sprintf("aos: run %q ja terminado (desfecho %q registado no log duravel) — re-submissao recusada; para voltar a correr o trabalho submeta-o com um run_id NOVO", e.runID, e.estado)
+}
+
+func (e *desfechoDuravelError) Unwrap() error { return ErrRunAlreadyCompleted }
