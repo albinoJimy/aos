@@ -1772,7 +1772,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// LIGAÇÕES ACEITES (AOS-465). O tecto sem estas séries seria uma guarda sem sensor: o operador só
 	// daria por ele quando os clientes começassem a ver ligações despejadas ou a esperar.
 	if h.cfg.ligacoes != nil {
-		g("aos_api_connections_open", "Ligacoes TCP abertas no listener da API nesta replica. No tecto, cada ligacao nova DESPEJA a que espera pelo cliente ha mais tempo; so espera se todas estiverem a fazer trabalho do servidor.",
+		g("aos_api_connections_open", "Ligacoes TCP abertas no listener da API nesta replica. No tecto, cada ligacao nova DESPEJA a que espera pelo cliente ha mais tempo, esperando no maximo 250 ms por uma candidata madura; so espera mais enquanto todas estiverem a fazer trabalho do servidor.",
 			"gauge", float64(h.cfg.ligacoes.abertas.Load()), "")
 		g("aos_api_connections_evicted_total", "Ligacoes DESPEJADAS pelo tecto de ligacoes aceites para dar lugar a uma nova. A subir depressa com poucos pedidos servidos e sinal de ligacoes a segurar vagas sem as usar.",
 			"counter", float64(h.cfg.ligacoes.despejadas.Load()), "")

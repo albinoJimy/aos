@@ -40,15 +40,17 @@ package main
 // legítima para um cliente que lê dura microssegundos e é sempre a mais recente; uma escrita presa
 // por um cliente que não lê fica cada vez mais antiga.
 //
-// E NENHUMA LIGAÇÃO SE DESPEJA ANTES DE ESTAR NO ESTADO ACTUAL HÁ [GracaDeDespejo]. Em h2 o
+// E NENHUMA LIGAÇÃO SE DESPEJA ANTES DE ESTAR NO ESTADO ACTUAL HÁ [GracaDeDespejo] — dentro do
+// PRAZO de cada chegada, que é essa mesma graça (ver [listenerLimitado.despejarUma]). Em h2 o
 // `StateIdle` chega quando o stream fecha, com a última trama ainda no buffer do servidor e não no
 // socket; um despejo nesse instante cortava a resposta (medido: `unexpected EOF` num pedido h2 que o
 // servidor tinha acabado de servir). Em h1 o análogo é o RST de um fecho com dados do cliente por ler,
 // que é a razão do `rstAvoidanceDelay` do próprio `net/http`. As ligações que os ataques medidos
 // usam estão no mesmo estado há segundos; uma resposta legítima acabada, ou uma ligação acabada de
-// chegar, fica protegida durante a graça. O preço: com TODAS as vagas em estados mais novos do que a
-// graça — mais de ~4000 ligações novas/s com o tecto por omissão, volumétrico —, o `Accept` espera
-// que a mais antiga amadureça em vez de despejar.
+// chegar, fica protegida durante a graça. Esgotado o prazo da chegada, a graça cede: uma ligação nova
+// nunca espera mais do que ela, salvo com TODAS as vagas a fazer trabalho do servidor. O preço é que,
+// com todas as vagas mais novas do que a graça (inundação volumétrica), a ligação nova pode despejar
+// uma resposta acabada de terminar.
 //
 // O que isto NÃO fecha, e declara-se:
 //   - uma inundação de ligações NOVAS despeja-se a si própria e às legítimas ainda sem pedido, por
@@ -139,6 +141,11 @@ func (l *listenerLimitado) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// O PRAZO conta a partir da primeira vez que há uma candidata, não da chegada. Esperar com todas
+	// as vagas a trabalhar é espera legítima e não gasta prazo; contá-lo da chegada deixava uma ligação
+	// que esperou segundos despejar sem graça a primeira resposta que acabasse (medido: um pedido h2
+	// cortado com `unexpected EOF`).
+	var prazoDesde time.Time
 	for {
 		select {
 		case l.vagas <- struct{}{}:
@@ -147,26 +154,50 @@ func (l *listenerLimitado) Accept() (net.Conn, error) {
 		}
 		// O Close do despejado devolve a vaga ANTES de retornar, e o ciclo volta a tentá-la. Se outro
 		// chamador de `Accept` a levar primeiro, despeja-se outra.
-		despejou, amadurece := l.despejarUma()
+		var esperou time.Duration
+		if !prazoDesde.IsZero() {
+			esperou = l.agora().Sub(prazoDesde)
+		}
+		despejou, amadurece := l.despejarUma(!prazoDesde.IsZero() && esperou >= l.graca)
 		if despejou {
 			continue
 		}
-		// Sem candidata madura: acorda quando a primeira amadurecer, se houver alguma a caminho.
+		if amadurece > 0 && prazoDesde.IsZero() {
+			prazoDesde = l.agora()
+			esperou = 0
+		}
+		// Sem candidata madura: acorda quando a primeira amadurecer ou quando o PRAZO desta chegada
+		// acabar, o que vier primeiro. Sem candidatas nenhumas (todas a trabalhar), só `livre` ou uma
+		// vaga a acordam.
+		var t *time.Timer
 		var relogio <-chan time.Time
 		if amadurece > 0 {
-			t := time.NewTimer(amadurece)
+			if prazo := l.graca - esperou; prazo < amadurece {
+				amadurece = prazo
+			}
+			t = time.NewTimer(amadurece)
 			relogio = t.C
-			defer t.Stop()
 		}
+		// Parado a cada volta e não num `defer`: dentro do `for`, um `defer` acumulava um temporizador
+		// por cada `StateIdle` enquanto este `Accept` esperasse (medido: +2,6 MB em 200 000 voltas).
 		select {
 		case l.vagas <- struct{}{}:
+			pararRelogio(t)
 			return l.registar(c), nil
 		case <-l.livre:
 		case <-relogio:
 		case <-l.fechado:
+			pararRelogio(t)
 			_ = c.Close()
 			return nil, net.ErrClosed
 		}
+		pararRelogio(t)
+	}
+}
+
+func pararRelogio(t *time.Timer) {
+	if t != nil {
+		t.Stop()
 	}
 }
 
@@ -211,14 +242,23 @@ func (lc *ligacaoLimitada) escalao() int {
 
 // despejarUma fecha a ligação escolhida pela ordem do cabeçalho e diz se fechou alguma.
 //
-// O ESCALÃO MANDA ANTES DA GRAÇA. Se o escalão 1 tem candidatas mas nenhuma madura, espera-se que a
-// primeira amadureça em vez de despejar uma madura do escalão 2: a do escalão 2 pode estar a meio de
-// uma escrita legítima, e uma ociosa amadurece em no máximo [GracaDeDespejo]. Se não fechou nenhuma,
-// diz quanto falta para a primeira candidata do escalão escolhido amadurecer (0 se não há nenhuma).
-func (l *listenerLimitado) despejarUma() (bool, time.Duration) {
+// DENTRO DO PRAZO da chegada que a chamou (`prazoEsgotado` falso), o escalão manda antes da graça: se o
+// escalão 1 tem candidatas mas nenhuma madura, espera-se que a primeira amadureça em vez de despejar
+// uma madura do escalão 2, que pode estar a meio de uma escrita legítima.
+//
+// ESGOTADO O PRAZO, a graça deixa de mandar: primeiro as maduras (escalão 1, depois 2), depois as
+// imaturas (idem). Sem este limite, a graça era renovável por TERCEIROS — a revisão mediu uma só
+// ligação keep-alive a pedir a cada 150 ms a manter-se no escalão 1 imatura para sempre, e com isso a
+// impedir todos os despejos do escalão 2: `/healthz` 0/28 em 60 s, 0 despejos, sem token. E todas as
+// vagas mantidas imaturas pelo mesmo meio trancavam também. Com o prazo, uma ligação nova espera no
+// máximo [GracaDeDespejo] a partir do momento em que há uma candidata — isto é, salvo enquanto TODAS
+// as vagas estiverem a fazer trabalho do servidor.
+//
+// Se não fechou nenhuma, diz quanto falta para a primeira candidata do escalão escolhido amadurecer
+// (0 se não há candidatas).
+func (l *listenerLimitado) despejarUma(prazoEsgotado bool) (bool, time.Duration) {
 	l.mu.Lock()
-	var madura [3]*ligacaoLimitada
-	var existe [3]bool
+	var madura, imatura [3]*ligacaoLimitada
 	var amadurece [3]time.Duration
 	agora := l.agora()
 	for lc := range l.vivas {
@@ -229,10 +269,12 @@ func (l *listenerLimitado) despejarUma() (bool, time.Duration) {
 		if e == 0 {
 			continue
 		}
-		existe[e] = true
 		if falta := l.graca - agora.Sub(lc.desde); falta > 0 {
 			if amadurece[e] == 0 || falta < amadurece[e] {
 				amadurece[e] = falta
+			}
+			if imatura[e] == nil || lc.ultimoUso < imatura[e].ultimoUso {
+				imatura[e] = lc
 			}
 			continue
 		}
@@ -240,11 +282,21 @@ func (l *listenerLimitado) despejarUma() (bool, time.Duration) {
 			madura[e] = lc
 		}
 	}
+	var alvo *ligacaoLimitada
 	e := 2
-	if existe[1] {
+	if madura[1] != nil || imatura[1] != nil {
 		e = 1
 	}
-	alvo := madura[e]
+	if prazoEsgotado {
+		for _, c := range []*ligacaoLimitada{madura[1], madura[2], imatura[1], imatura[2]} {
+			if c != nil {
+				alvo = c
+				break
+			}
+		}
+	} else {
+		alvo = madura[e]
+	}
 	if alvo != nil {
 		alvo.despejada = true
 	}
