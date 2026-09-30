@@ -49,9 +49,10 @@ package main
 // modelo antes de submeter os runs-filho. O pedido reserva `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS` (e
 // `..._COST_MICRO_USD`) sob a chave `aos-internal/plan/<run_id>`, no mesmo stream e com os mesmos
 // tipos de evento — um tipo novo faria o `ler()` de uma réplica anterior negar tudo num deploy
-// rolante. Cada desfecho grava uma PARCELA (`budget.quota.settled` com `geracao`) com o consumo que
-// o drenador mediu; o desfecho terminal, DEPOIS de gravado, grava o FECHO (`final`). As parcelas
-// somam-se, e ver [cobrancaDoPlano] para o que cada geração custa e quando a reserva se liberta.
+// rolante. Cada reclamação grava a ENTREGA da geração (`entregue`) antes de a entregar; cada
+// desfecho grava uma PARCELA (`geracao`) com o consumo que o drenador mediu; o desfecho terminal,
+// DEPOIS de gravado, grava o FECHO (`final`). Ver [cobrancaDoPlano] para o que cada geração custa e
+// quando a reserva se liberta.
 
 import (
 	"context"
@@ -142,12 +143,14 @@ type quotaPayload struct {
 	TokensNaoMedidos bool `json:"tokens_nao_medidos,omitempty"`
 	CustoNaoMedido   bool `json:"custo_nao_medido,omitempty"`
 
-	// Final marca o FECHO do pedido: não é uma parcela, é um evento próprio, escrito só DEPOIS de o
-	// desfecho terminal estar no log (revisão do AOS-466: escrita antes, uma falha do desfecho
-	// deixava a reserva libertada com o pedido ainda vivo). AteGeracao é a maior geração que o nó
-	// entregou a um drenador nesse momento: as que não têm parcela custam a reserva inteira.
-	Final      bool `json:"final,omitempty"`
-	AteGeracao int  `json:"ate_geracao,omitempty"`
+	// Entregue marca a ENTREGA da geração `Geracao` a um drenador, escrita pelo nó na reclamação,
+	// ANTES de o drenador a receber. É por ela que a quota conhece a geração em curso — e a que se
+	// perdeu — sem depender de uma parcela que pode nunca chegar (achado MÉDIO da re-revisão).
+	Entregue bool `json:"entregue,omitempty"`
+	// Final marca o FECHO do pedido: um evento próprio, escrito só DEPOIS de o desfecho terminal
+	// ficar no log (revisão do AOS-466: escrito antes, uma falha do desfecho deixava a reserva
+	// libertada com o pedido ainda vivo).
+	Final bool `json:"final,omitempty"`
 }
 
 // quotaPorPrincipal é a quota composta. nil ⇒ desligada.
@@ -230,9 +233,10 @@ func quotaStreamDe(principal, mes string) string {
 type estadoDaQuota struct {
 	reservas   map[string]quotaPayload // por run; Reserva = o seq do evento de reserva
 	liquidadas map[string]quotaPayload // por run; Reserva = o seq da reserva liquidada
-	// parcelas são as liquidações de planeamento (AOS-466), por chave e por geração; fechos, a marca
-	// de pedido terminado, por chave.
+	// parcelas são as liquidações de planeamento (AOS-466), por chave e por geração; entregas, as
+	// gerações que o nó entregou; fechos, a marca de pedido terminado, por chave.
 	parcelas  map[string]map[int]quotaPayload
+	entregas  map[string]map[int]quotaPayload
 	fechos    map[string]quotaPayload
 	ultimoSeq uint64
 }
@@ -242,8 +246,8 @@ type estadoDaQuota struct {
 func (e estadoDaQuota) gasto() budget.Amount {
 	var g budget.Amount
 	for chave, r := range e.reservas {
-		if ps, fecho := e.parcelasDe(chave, r.Reserva); len(ps) > 0 || fecho != nil {
-			r = cobrancaDoPlano(r, ps, fecho)
+		if ps, entregue, fechado := e.planoDe(chave, r.Reserva); len(ps) > 0 || entregue > 0 || fechado {
+			r = cobrancaDoPlano(r, ps, entregue, fechado)
 		} else if l, ok := e.liquidadas[chave]; ok && l.Reserva == r.Reserva {
 			r = l
 		}
@@ -253,44 +257,45 @@ func (e estadoDaQuota) gasto() budget.Amount {
 	return g
 }
 
-// parcelasDe devolve as parcelas de planeamento da chave, por geração, e o fecho, que liquidam a
-// reserva com esse seq. As de uma reserva anterior a um apagamento não valem para a reserva nova.
-func (e estadoDaQuota) parcelasDe(chave string, reserva uint64) (map[int]quotaPayload, *quotaPayload) {
-	ps := map[int]quotaPayload{}
+// planoDe devolve, da chave de um pedido e para a reserva com esse seq: as parcelas por geração, a
+// maior geração entregue, e se o pedido tem fecho. O que pertence a uma reserva anterior a um
+// apagamento não vale para a reserva nova.
+func (e estadoDaQuota) planoDe(chave string, reserva uint64) (ps map[int]quotaPayload, entregue int, fechado bool) {
+	ps = map[int]quotaPayload{}
 	for g, p := range e.parcelas[chave] {
 		if p.ReservaDoPlano == reserva {
 			ps[g] = p
 		}
 	}
-	var fecho *quotaPayload
-	if f, ok := e.fechos[chave]; ok && f.ReservaDoPlano == reserva {
-		fecho = &f
+	for g, p := range e.entregas[chave] {
+		if p.ReservaDoPlano == reserva {
+			entregue = max(entregue, g)
+		}
 	}
-	return ps, fecho
+	f, ok := e.fechos[chave]
+	return ps, entregue, ok && f.ReservaDoPlano == reserva
 }
 
-// cobrancaDoPlano é o que um pedido de plano custa à quota, dadas a reserva, as parcelas e o fecho.
+// cobrancaDoPlano é o que um pedido de plano custa à quota, dadas a reserva, as parcelas, a maior
+// geração entregue e o fecho.
 //
-// A SOMA percorre as gerações 1..G, onde G é a maior que se conhece (de uma parcela, ou a última
-// que o nó entregou, registada no fecho). Cada geração custa o que se mediu; uma geração NÃO MEDIDA
-// custa o que se mediu MAIS a reserva; uma geração SEM PARCELA — o desfecho perdeu-se, a reclamação
-// expirou — custa a reserva. A reserva é a única estimativa por geração que o nó tem.
+// A SOMA percorre as gerações 1..G, onde G é a maior que se conhece — entregue pelo nó, ou com
+// parcela. Cada geração custa o que se mediu; uma geração NÃO MEDIDA custa o que se mediu MAIS a
+// reserva; uma geração SEM PARCELA — a que está a correr, ou uma cujo desfecho se perdeu — custa a
+// reserva. A reserva é a única estimativa por geração que o nó tem.
 //
-// A primeira versão cobrava `max(reserva, Σ)` para qualquer geração não medida, e isso contava a
-// MENOS: com Σ já acima da reserva, uma geração não medida somava zero, e cinco gerações de um
-// `aos-orq` anterior custavam uma reserva no total (achado MÉDIO-1 da revisão adversarial).
+// DUAS REVISÕES ADVERSARIAIS mediram versões anteriores a contar a MENOS: `max(reserva, Σ)` para uma
+// geração não medida somava zero com Σ acima da reserva; e, sem as entregas, a geração em curso só
+// entrava em G quando a sua parcela chegasse — com Σ acima da reserva, corria sem reserva nenhuma.
 //
-// Enquanto o pedido não tem fecho custa o MAIOR entre a reserva e a soma: a geração em curso ainda
-// pode gastar. Com fecho custa a SOMA — liberta o que sobra da reserva.
-func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, fecho *quotaPayload) quotaPayload {
-	G := 0
+// Antes da primeira entrega o pedido custa a reserva. Sem fecho custa o MAIOR entre a reserva e a
+// soma; com fecho custa a SOMA — liberta o que sobra.
+func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, entregue int, fechado bool) quotaPayload {
+	G := entregue
 	for g := range ps {
 		G = max(G, g)
 	}
-	if fecho != nil {
-		G = max(G, fecho.AteGeracao)
-	}
-	// Todas as parcelas estão em 1..G: G é o máximo delas, e o `ler` só guarda gerações >= 1.
+	// Todas as parcelas estão em 1..G: G é pelo menos o máximo delas, e o `ler` só guarda gerações >= 1.
 	var soma quotaPayload
 	for _, p := range ps {
 		soma.Tokens = somaSaturada(soma.Tokens, p.Tokens)
@@ -305,7 +310,7 @@ func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, fecho *quotaPayloa
 	faltam := int64(G) - int64(len(ps))
 	soma.Tokens = somaSaturada(soma.Tokens, produtoSaturado(r.Tokens, faltam))
 	soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, produtoSaturado(r.CostMicroUSD, faltam))
-	if fecho != nil {
+	if fechado {
 		return soma
 	}
 	return quotaPayload{Tokens: max(r.Tokens, soma.Tokens), CostMicroUSD: max(r.CostMicroUSD, soma.CostMicroUSD)}
@@ -331,7 +336,7 @@ func somaSaturada(a, b int64) int64 {
 }
 
 func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuota, error) {
-	st := estadoDaQuota{reservas: map[string]quotaPayload{}, liquidadas: map[string]quotaPayload{}, parcelas: map[string]map[int]quotaPayload{}, fechos: map[string]quotaPayload{}}
+	st := estadoDaQuota{reservas: map[string]quotaPayload{}, liquidadas: map[string]quotaPayload{}, parcelas: map[string]map[int]quotaPayload{}, entregas: map[string]map[int]quotaPayload{}, fechos: map[string]quotaPayload{}}
 	evs, err := q.es.Read(ctx, stream, 1)
 	if errors.Is(err, eventstore.ErrStreamNotFound) {
 		return st, nil
@@ -346,6 +351,7 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 			st.reservas = map[string]quotaPayload{}
 			st.liquidadas = map[string]quotaPayload{}
 			st.parcelas = map[string]map[int]quotaPayload{}
+			st.entregas = map[string]map[int]quotaPayload{}
 			st.fechos = map[string]quotaPayload{}
 			continue
 		case EventTypeQuotaReserved, EventTypeQuotaSettled:
@@ -362,6 +368,11 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 			st.reservas[p.RunID] = p
 		case p.Final:
 			st.fechos[p.RunID] = p
+		case p.Entregue && p.Geracao > 0:
+			if st.entregas[p.RunID] == nil {
+				st.entregas[p.RunID] = map[int]quotaPayload{}
+			}
+			st.entregas[p.RunID][p.Geracao] = p
 		case p.Geracao > 0:
 			if st.parcelas[p.RunID] == nil {
 				st.parcelas[p.RunID] = map[int]quotaPayload{}
@@ -540,19 +551,26 @@ func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, 
 	})
 }
 
-// fecharPlaneamento grava o FECHO do pedido runID: a partir dele a reserva liberta o que as parcelas
-// não gastaram. Só se chama DEPOIS de o desfecho terminal estar no log — é isso que garante que não
-// há gerações depois dele. `ateGeracao` é a maior geração que o nó entregou a um drenador: as que
-// não têm parcela custam a reserva inteira.
-func (q *quotaPorPrincipal) fecharPlaneamento(ctx context.Context, principal, runID string, ateGeracao int) error {
+// registarEntrega grava que o nó ENTREGOU a geração `geracao` do pedido runID a um drenador. Chama-a
+// a reclamação, ANTES de a escrever: se falha, a reclamação também não se faz. Idempotente por
+// (chave, reserva, geração).
+func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runID string, geracao int) error {
+	if geracao < 1 {
+		return nil
+	}
 	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
-		return quotaPayload{
-			RunID:          chaveDoPlano(runID),
-			Geracao:        ateGeracao,
-			ReservaDoPlano: reserva,
-			Final:          true,
-			AteGeracao:     ateGeracao,
-		}, fmt.Sprintf("%s:closed:%s:%d", chaveDoPlano(runID), mes, reserva)
+		return quotaPayload{RunID: chaveDoPlano(runID), Geracao: geracao, ReservaDoPlano: reserva, Entregue: true},
+			fmt.Sprintf("%s:delivered:%s:%d:%d", chaveDoPlano(runID), mes, reserva, geracao)
+	})
+}
+
+// fecharPlaneamento grava o FECHO do pedido runID: a partir dele a reserva liberta o que as parcelas
+// não gastaram. Só se chama DEPOIS de o desfecho terminal ficar no log — é isso que garante que não
+// há gerações depois dele.
+func (q *quotaPorPrincipal) fecharPlaneamento(ctx context.Context, principal, runID string) error {
+	return q.escreverNoPlano(ctx, principal, runID, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{RunID: chaveDoPlano(runID), ReservaDoPlano: reserva, Final: true},
+			fmt.Sprintf("%s:closed:%s:%d", chaveDoPlano(runID), mes, reserva)
 	})
 }
 

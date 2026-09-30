@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -435,6 +436,22 @@ func (h *apiHandler) reclamarUm(ctx context.Context, reclamante readerIdentity) 
 		if p.Payload.Region != "" && reclamante.region != "" && p.Payload.Region != reclamante.region {
 			continue
 		}
+		// QUOTA DE PLANEAMENTO (AOS-466): a entrega fica na quota do titular ANTES da reclamação.
+		// Desde aqui a geração custa a reserva até o seu desfecho trazer a parcela — é o que cobre a
+		// geração que está a correr, e a que se perder. Se falha, não se entrega: uma geração que
+		// planeasse sem constar da quota seria planeamento de graça.
+		//
+		// Um stream de quota ILEGÍVEL é de UM titular: esse pedido fica por entregar e a reclamação
+		// segue para o próximo — sem isto, o registo estragado de um titular fechava a fila a todos.
+		// Qualquer outra falha é do substrato, e é a reclamação inteira que não se faz (503).
+		if h.node.QuotaPorPrincipal != nil {
+			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao); errors.Is(err, ErrPrincipalQuotaUnreadable) {
+				h.logf("plan-claim: pedido %q NAO entregue — a quota do titular e ilegivel: %v", p.RunID, err)
+				continue
+			} else if err != nil {
+				return nil, fmt.Errorf("quota: entrega de %q geracao %d: %w", p.RunID, p.Geracao, err)
+			}
+		}
 		res, err := h.node.EventStore.Append(ctx, planRequestStream, eventstore.EventInput{
 			Type:     EventTypePlanRequestClaimed,
 			Payload:  json.RawMessage(`{"v":"` + planRequestVersao + `","by":` + comoJSON(reclamante.principal) + `}`),
@@ -563,7 +580,10 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 	var plano *planeamentoDoPedido
 	if h.node.QuotaPorPrincipal != nil {
 		var err error
-		if plano, err = h.parcelaDePlaneamento(r.Context(), req); err != nil {
+		if plano, err = h.parcelaDePlaneamento(r.Context(), req); errors.Is(err, errGeracaoNaoEntregue) {
+			writeError(w, http.StatusBadRequest, "geracao nao entregue")
+			return
+		} else if err != nil {
 			h.logf("plan-claim: parcela de planeamento nao gravada run=%q geracao=%d: %v", req.RunID, req.Geracao, err)
 			writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
 			return
@@ -584,22 +604,26 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 	// Idempotente por (run_id, geração): reportar o mesmo desfecho duas vezes é a mesma
 	// escrita, e o `StatusDuplicate` cai no mesmo caminho de sucesso. Um consumidor que reporte
 	// e morra antes de ler a resposta pode repetir sem consequência.
-	if _, err := h.node.EventStore.Append(r.Context(), planRequestStream, eventstore.EventInput{
+	res, err := h.node.EventStore.Append(r.Context(), planRequestStream, eventstore.EventInput{
 		Type:     EventTypePlanRequestOutcome,
 		Payload:  bruto,
 		RunID:    planRequestRunID,
 		StepID:   prefixoDesfecho + strconv.Itoa(req.Geracao) + "-" + req.RunID,
 		Producer: eventstore.Producer{NHIID: planIngressNHI},
-	}); err != nil {
+	})
+	if err != nil {
 		h.logf("plan-claim: desfecho nao gravado run=%q geracao=%d: %v", req.RunID, req.Geracao, err)
 		writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
 		return
 	}
-	if plano != nil && req.Classe == DesfechoTerminal {
+	// O FECHO SÓ COM UM DESFECHO TERMINAL QUE ESTA ESCRITA GRAVOU. Um duplicado quer dizer que a
+	// geração já tinha desfecho — possivelmente outro, e não terminal: fechar pela classe do pedido
+	// repetido libertava a reserva de um pedido que o log diz vivo (achado da re-revisão).
+	if plano != nil && req.Classe == DesfechoTerminal && res.Status != eventstore.StatusDuplicate {
 		// O desfecho JÁ está no log: responder 503 aqui diria ao drenador que não está, e ele não
 		// avisaria o fim do plano. Um fecho que falha deixa a reserva inteira até ao fim do mês — a
 		// mais, nunca a menos — e fica no log do operador.
-		if err := h.node.QuotaPorPrincipal.fecharPlaneamento(r.Context(), plano.titular, req.RunID, plano.ateGeracao); err != nil {
+		if err := h.node.QuotaPorPrincipal.fecharPlaneamento(r.Context(), plano.titular, req.RunID); err != nil {
 			h.logf("plan-claim: fecho do planeamento nao gravado run=%q — a reserva de planeamento fica inteira ate ao fim do mes: %v", req.RunID, err)
 		}
 	}
@@ -608,9 +632,13 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 
 // planeamentoDoPedido é o que o fecho precisa de saber sobre o pedido.
 type planeamentoDoPedido struct {
-	titular    string
-	ateGeracao int
+	titular string
 }
+
+// errGeracaoNaoEntregue — o desfecho nomeia uma geração que o nó nunca entregou. Com a quota
+// composta recusa-se (400): cada geração entregue custa a reserva até ter parcela, e uma geração
+// arbitrária — 10⁹ — negaria o mês do titular (achado da re-revisão).
+var errGeracaoNaoEntregue = errors.New("geracao nao entregue")
 
 // parcelaDePlaneamento grava a parcela de planeamento de uma geração contra a quota de quem
 // SUBMETEU o pedido — o principal do `planrequest.submitted`, nunca o do drenador que reporta. Um
@@ -623,6 +651,9 @@ func (h *apiHandler) parcelaDePlaneamento(ctx context.Context, req pedidoDeDesfe
 	if !achado || estado.titular == "" {
 		return nil, nil // sem titular não houve reserva (o `POST /plans` só reserva com principal)
 	}
+	if !slices.Contains(estado.reclamadas, req.Geracao) {
+		return nil, errGeracaoNaoEntregue
+	}
 	var c consumoDoPlaneamento
 	if req.Consumo != nil {
 		c = consumoDoPlaneamento{
@@ -633,11 +664,7 @@ func (h *apiHandler) parcelaDePlaneamento(ctx context.Context, req pedidoDeDesfe
 	if err := h.node.QuotaPorPrincipal.registarPlaneamento(ctx, estado.titular, req.RunID, req.Geracao, c); err != nil {
 		return nil, err
 	}
-	plano := &planeamentoDoPedido{titular: estado.titular, ateGeracao: req.Geracao}
-	for _, g := range estado.reclamadas {
-		plano.ateGeracao = max(plano.ateGeracao, g)
-	}
-	return plano, nil
+	return &planeamentoDoPedido{titular: estado.titular}, nil
 }
 
 // truncar limita o detalhe livre que o consumidor envia. O detalhe é diagnóstico, não contrato.

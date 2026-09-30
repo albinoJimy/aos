@@ -3188,13 +3188,14 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
   (`budget.quota.settled` com `geracao` e o vínculo à reserva num campo próprio — uma réplica antiga
   não o reconhece e continua a contar a reserva inteira). O principal é o do `planrequest.submitted`
   (`estadoDoPedido`), não o do drenador. **A parcela grava-se antes do desfecho**: se falha, o desfecho
-  também não se grava (503). **O fecho** (`budget.quota.settled` com `final` e `ate_geracao`, a maior
-  geração que o nó entregou) grava-se **só depois** de o desfecho terminal estar no log; se falha, 204 e
-  a reserva fica inteira. Consumo negativo é 400.
-- **Dobra.** Sobre as gerações 1..G (G = a maior de uma parcela ou do fecho): cada geração medida custa
+  também não se grava (503). **A entrega** (`entregue`) grava-se na reclamação, antes de a escrever: se
+  falha, não se entrega (503). **O fecho** (`final`) grava-se **só depois** de o desfecho terminal ficar
+  no log **por esta escrita** (um desfecho duplicado não fecha); se falha, 204 e a reserva fica inteira.
+  Com a quota composta, um desfecho de uma geração que o nó não entregou é 400. Consumo negativo é 400.
+- **Dobra.** Sobre as gerações 1..G (G = a maior entregue ou com parcela): cada geração medida custa
   o que se mediu; uma **não medida** custa o que se mediu **mais a reserva**; uma **sem parcela**
-  (entregue, desfecho perdido) custa **a reserva**. Sem fecho o pedido custa `max(reserva, Σ)`; com fecho,
-  `Σ`. Campo `consumo` ausente (um `aos-orq` anterior) = não medido.
+  (a que está a correr, ou cujo desfecho se perdeu) custa **a reserva**. Sem fecho o pedido custa
+  `max(reserva, Σ)`; com fecho, `Σ`. Campo `consumo` ausente (um `aos-orq` anterior) = não medido.
 - **`aos-orq` — medição.** Um `medidorDoPlaneamento` por pedido, atravessado de `correrPedido` até ao
   `gatewayDecomposeModel`, soma `prompt_tokens + completion_tokens` do `usage` de cada chamada. Uma
   chamada que falha, ou uma resposta sem `usage` (`prompt_tokens <= 0`), marca os tokens como **não
@@ -3234,7 +3235,11 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
   um pedido **alheio** — quem re-submete paga a sua própria reserva, que nunca liquida (a liquidação vai
   para o titular do pedido). Sempre a mais, e sempre na quota de quem fez o pedido que não conta.
 - **Custo:** com a quota composta, cada `POST /plans/outcome` lê o stream da fila desde o início
-  (`estadoDoPedido`) para saber o titular e as gerações entregues — O(histórico da fila).
+  (`estadoDoPedido`) para saber o titular e as gerações entregues — O(histórico da fila); e cada
+  `POST /plans/claim` lê e escreve o stream da quota do titular (a entrega).
+- **Uma quota ilegível fecha a fila desse titular** (e só dele): sem a entrega gravada os seus pedidos
+  não se entregam, e a reclamação segue para os dos outros. Uma falha do substrato fecha a reclamação
+  inteira (503).
 - **Pedidos submetidos antes da quota** (ou por uma réplica anterior) não têm reserva: o seu
   planeamento não conta, e o nó não recusa reclamá-los.
 - **Ordem de deploy: o nó primeiro.** Um `aos-orq` anterior não envia `consumo` — a reserva fica
@@ -3253,6 +3258,16 @@ os dois corrigidos:
   ignorava o `total_tokens` (passa a usar o maior); apagamento DSAR, deploy rolante e consumo declarado
   sem tecto superior ficam nos residuais.
 
+**Re-revisão sobre `8340bda`:** os dois MÉDIOS confirmados fechados (repros: 600/500; 100 e depois 115).
+Um MÉDIO novo, reproduzido, e corrigido: **sem fecho, a geração em curso não tinha reserva** assim que a
+soma medida passava a reserva — G só se conhecia pelas parcelas, e a geração a correr não tem parcela.
+Corrigido na raiz: o nó grava a **entrega** de cada geração na quota, na reclamação e antes dela; a
+geração entregue custa a reserva até a sua parcela chegar. Isto fecha também o BAIXO de uma reclamação
+que escapava ao fecho numa corrida. BAIXOS corrigidos: um desfecho **duplicado** com outra classe
+fechava a quota de um pedido vivo (agora só fecha o desfecho que esta escrita gravou); uma geração
+**nunca entregue** (10⁹) negava o mês do titular (agora 400). O BAIXO sobre réplicas `ea0270f` não se
+aplica: esse commit nunca saiu do ramo.
+
 ### Validação
 - Testes: `packages/cmd/aos/aos466_quota_de_planeamento_test.go` (ambiente, partilha com os runs,
   dobra por geração, dólares, corrida com o apagamento, réplica anterior, as duas rotas) e
@@ -3261,7 +3276,9 @@ os dois corrigidos:
   nó declara exactamente 15 medidos; o controlo com o fixture declara 0 medido.
 - **Mutações, duas baterias.** A primeira (sobre `ea0270f`): 49 aplicadas, 47 mortas. A segunda (sobre a
   dobra, o fecho e o handler reescritos depois da revisão): 22 aplicadas, 20 mortas — e uma guarda que
-  a mutação mostrou ser código morto saiu. Sobrevivem, declaradas: (a) o apagamento não limpar as
+  a mutação mostrou ser código morto saiu. A terceira (sobre as entregas, a validação da geração e o
+  fecho só com escrita nova, depois da re-revisão): 19 aplicadas, 18 mortas; a sobrevivente (o
+  apagamento não limpar as entregas) é equivalente pelo filtro do vínculo à reserva, que outra mata. Sobrevivem, declaradas: (a) o apagamento não limpar as
   parcelas nem os fechos, e o handler não recusar um titular vazio, são EQUIVALENTES — o filtro pelo
   vínculo à reserva e a guarda de principal vazio do `escreverNoPlano`, que outras mutações provam, já
   os cobrem; (b) a recusa por mandato do `consume` declarar «não medido» em vez de «zero medido» — falha
