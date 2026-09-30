@@ -115,13 +115,6 @@ const intervaloDeReverificacao = 10 * time.Minute
 // valor ficar abaixo. Custo: um consumidor que morra segura o pedido até uma hora.
 const ttlDaReclamacao = 60 * time.Minute
 
-// tectoDePendentes é o número máximo de pedidos por drenar.
-//
-// Atingido, o INGRESSO recusa pedidos NOVOS (ADR-030 §2.7). Não se descartam os antigos: um
-// pedido descartado em silêncio é a mesma classe de defeito que este eixo inteiro existe para
-// fechar. É alto de propósito — a intenção é travar um laço em fuga, não moldar carga.
-const tectoDePendentes = 1000
-
 // pedidoNaFila é o estado projectado de um pedido, reconstituído do log.
 type pedidoNaFila struct {
 	RunID     string
@@ -576,12 +569,48 @@ func truncar(s string, n int) string {
 	return s[:n]
 }
 
-// pendentesNaFila conta os pedidos por drenar. É o que o [tectoDePendentes] mede.
+// pendentesNaFila conta os pedidos por drenar: o TOTAL, e quantos são do `submissor` dado.
 //
 // A `marca` é opcional (nil ⇒ lê tudo) porque há um chamador — a métrica em `api.go` — que não
 // tem estado onde a guardar e para quem uma leitura completa ocasional não custa nada. Os dois
 // caminhos QUENTES (`POST /plans` e a reclamação) passam-na.
-func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua) (int, error) {
+//
+// # PORQUE É QUE A CONTAGEM POR SUBMISSOR SAI DAQUI, E NÃO DE UMA FUNÇÃO PRÓPRIA
+//
+// A mesma razão que [projectarFilaComMarca] declara para a marca de água: a definição de «está na
+// fila» estaria em dois sítios, e dois sítios derivam. Quem mudar a regra de filtragem muda as duas
+// contagens com ela, sem ter de se lembrar.
+//
+// E NÃO CUSTA NADA: a projecção já devolve a fila inteira, pelo que contar por submissor é uma
+// passagem sobre uma fatia que o tecto global limita. Não há mapa a manter nem caminho de libertação —
+// ao contrário do tecto por-chamador do `POST /runs` (AOS-456a). Aqui a fonte de verdade é o log, e a
+// contagem é derivada dele.
+//
+// # MAS HÁ TOCTOU, E A PRIMEIRA VERSÃO DESTE TICKET AFIRMAVA O CONTRÁRIO
+//
+// A leitura e o `Append` NÃO estão serializados: entre contar e gravar, outra goroutine pode gravar.
+// O AOS-456a decide sob MUTEX no `submit`, pelo que a afirmação «não há TOCTOU, ao contrário do
+// AOS-456a» era o INVERSO da verdade — este eixo tem a janela MAIS larga dos dois. Achado MÉDIO-1 de
+// uma revisão adversarial independente.
+//
+// O excesso sob rajada depende da carga (duas séries de 5 corridas deram gamas diferentes), pelo que
+// não se declara gama. O tecto GLOBAL tem a mesma janela — dívida herdada do AOS-423.
+//
+// O LIMITE REAL, e é este que se declara: **a quota é imposta a menos de `AOS_INGRESS_BURST`**. Uma
+// rajada concorrente admite até ao burst antes de a projecção seguinte a ver. Com os defaults de
+// produção (quota 125, burst 128, 400 concorrentes) o excesso medido foi **3 em 5 corridas de 5** —
+// 1,02× a quota. Torna-se material para quem baixar a quota muito abaixo do burst, e é isso que o
+// operador precisa de saber antes de a afinar.
+//
+// O `jaPendente` diz se o `runID` dado JÁ está na fila **submetido por este mesmo `submissor`**. Serve a
+// guarda da re-submissão IDEMPOTENTE — ver [handlePlanRequest]. `runID` ou `submissor` vazios ⇒ `false`.
+//
+// Um `submissor` vazio devolve `doSubmissor == 0` e NUNCA a contagem dos pedidos sem principal:
+// sem gate soberano composto todos os pedidos ficam com o principal vazio (ver
+// [handlePlanRequest]), e contá-los como «de um submissor» faria o tecto por-submissor valer como
+// tecto global para todos os chamadores somados — mais apertado do que o global e anunciado como
+// equidade. O chamador é que decide não compor; esta função não adivinha.
+func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAgua, submissor, runID string) (total, doSubmissor int, jaPendente bool, err error) {
 	var desde uint64
 	if marca != nil {
 		desde = marca.desde()
@@ -589,15 +618,27 @@ func pendentesNaFila(ctx context.Context, store EventStorePort, marca *marcaDeAg
 	eventos, err := store.Read(ctx, planRequestStream, desde)
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
-			return 0, nil
+			return 0, 0, false, nil
 		}
-		return 0, err
+		return 0, 0, false, err
 	}
 	fila, nova := projectarFilaComMarca(eventos, time.Now().UTC())
 	if marca != nil {
 		marca.avancar(nova)
 	}
-	return len(fila), nil
+	for i := range fila {
+		if submissor != "" && fila[i].Payload.Principal == submissor {
+			doSubmissor++
+		}
+		// DO PRÓPRIO SUBMISSOR, e só dele. Sem este filtro a isenção era um ORÁCULO DE EXISTÊNCIA: com a
+		// quota cheia, um `run_id` pendente de OUTRA pessoa respondia 201 e um inexistente 429 — cross-
+		// submissor e cross-região, em produção, contra o ADR-030 §2.1. Um retry de rede traz o mesmo
+		// principal; quem re-submete o `run_id` de outro nunca devia estar isento.
+		if runID != "" && fila[i].RunID == runID && fila[i].Payload.Principal == submissor {
+			jaPendente = true
+		}
+	}
+	return len(fila), doSubmissor, jaPendente, nil
 }
 
 // filaReclamavel diz se a rota de reclamacao vai SERVIR, e existe para o banner de arranque o

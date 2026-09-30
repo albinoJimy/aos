@@ -356,15 +356,133 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 	//
 	// **Isto custa uma varredura do stream por submissão**, e fica declarado: a projecção é
 	// linear no número de eventos da fila, como o molde das aprovações. Com o tecto em
-	// [tectoDePendentes] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
-	// os pendentes — a retenção do stream é resíduo declarado do AOS-423.
-	if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila); err != nil {
+	// [DefaultPlanMaxPending] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
+	// os pendentes — a retenção do stream é resíduo declarado do AOS-423, e a marca de água do
+	// AOS-429 é o que impede que o custo cresça com a idade do nó.
+	//
+	// DESDE O AOS-464 SÃO DUAS CAMADAS, uma projecção: o tecto GLOBAL do nó e a repartição por
+	// SUBMISSOR. As duas contagens saem da mesma leitura, pelo que a segunda camada não custa uma
+	// varredura a mais.
+	// A REPARTIÇÃO POR SUBMISSOR SÓ SE COMPÕE COM O GATE (AOS-464), e a razão é diferente da do
+	// eixo SSE: aqui o corpo do pedido NUNCA declara o principal ([planRequest] tem `run_id` e
+	// `objective` e mais nada), pelo que sem `readGov` o `p.Principal` fica VAZIO para TODOS os
+	// chamadores. Um tecto chaveado no vazio não seria contornável — seria um tecto GLOBAL mais
+	// apertado, a recusar a 125 em vez de 1000, anunciado como equidade. Não compor é a única
+	// leitura honesta, e o banner de arranque declara-a.
+	// EXIGE-SE UM PRINCIPAL INFORJÁVEL (`h.readGov.cred != nil`), e não só um gate composto. É a
+	// correcção de um ALTO que uma revisão adversarial independente mediu, e inverte a postura que a
+	// primeira versão deste ticket tinha.
+	//
+	// # PORQUE É QUE A POSTURA DEMO-GRADE NÃO PODE COMPOR ESTE TECTO
+	//
+	// Com o gate composto e SEM credencial forte, o submissor vem do header `X-Aos-Reader`, que o
+	// CHAMADOR escreve. Nos eixos gémeos (AOS-456a, AOS-459) isso deixa um atacante EVADIR o tecto
+	// dele — mau, mas limitado: ele obtém o que obteria sem tecto nenhum.
+	//
+	// AQUI É PIOR, E É QUALITATIVAMENTE OUTRO. O atacante não precisa de evadir a quota dele: escreve
+	// o header da VÍTIMA e gasta a dela. MEDIDO: com a quota a 5 e o global a 20, **5 pedidos
+	// forjados fecham uma vítima nomeada fora do `POST /plans` com 15 dos 20 lugares livres**; com os
+	// defaults, 125 pedidos fecham-na com 875 livres, e `aos_plan_queue_pending` lê 125/1000 — um
+	// painel saudável. A fronteira 201/429 conta-lhe também os pendentes exactos da vítima.
+	//
+	// A diferença face aos gémeos é a DURABILIDADE: no AOS-456a os lugares são runs em curso, que
+	// executam e libertam; no AOS-459 são ligações SSE, que o atacante tem de segurar. Aqui um pedido
+	// só sai da fila com desfecho terminal ou reclamação viva — a ocupação forjada é durável e
+	// GRÁTIS, fire-and-forget até um operador drenar.
+	//
+	// Ou seja: a variável que se liga PARA DAR EQUIDADE entregava um trinco de negação DIRIGIDA. É a
+	// classe «tecto inerte anunciado como equidade» que o ciclo AOS-456→AOS-463 existe para fechar,
+	// com o sinal invertido — e declarar não bastava, porque sob abuso era PIOR do que não existir.
+	//
+	// # É O ARGUMENTO DESTE TICKET APLICADO POR INTEIRO
+	//
+	// Ele já recusava compor sobre um principal VAZIO porque «um tecto chaveado no vazio valeria como
+	// tecto global mais apertado, anunciado como equidade». O mesmo raciocínio vale para um principal
+	// FORJÁVEL, e aqui com uma consequência pior. Recusar as duas posturas é a leitura consistente.
+	//
+	// O PREDICADO É O DO SÍTIO DE USO (`h.readGov.cred`), e não um predicado sobre o `*Node`: é a
+	// credencial que esta decisão realmente consulta que decide, não a que o nó por acaso tem. Foi o
+	// achado MÉDIO-1 da sétima revisão, pago no eixo SSE.
+	submissorImputavel := ""
+	if h.readGov != nil && h.readGov.cred != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+		submissorImputavel = p.Principal
+	}
+
+	total, doSubmissor, jaPendente, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila,
+		submissorImputavel, req.RunID)
+	if err != nil {
 		h.logf("plan-ingress: tecto nao verificavel: %v", err)
 		writeError(w, http.StatusServiceUnavailable, "fila indisponivel")
 		return
-	} else if pendentes >= tectoDePendentes {
+	}
+
+	// A REPARTIÇÃO CORRE ANTES DO GLOBAL, e a razão é o DIAGNÓSTICO, não o custo — as duas
+	// contagens saem da MESMA projecção, já feita acima, logo nenhuma ordem poupa trabalho.
+	//
+	// Quando as duas condições são verdadeiras ao mesmo tempo (a fila está cheia E este submissor
+	// está acima da sua quota), o mais provável é que ele seja a CAUSA. Responder-lhe 503 — «o nó
+	// não tem quem drene» — ensina-lhe o contrário do que é verdade: manda-o procurar o consumidor
+	// quando o problema são os 900 pedidos dele. Na ordem inversa não se perde nada: um submissor
+	// DENTRO da sua quota continua a receber 503 quando a fila está cheia por causa de outros, que
+	// é a leitura certa para ele.
+	//
+	// O CÓDIGO É OUTRO, e a distinção é o conteúdo da correcção: **429** aqui, porque é o chamador
+	// que tem de esperar ou drenar o que é dele; **503** no global, porque é o nó que não tem quem
+	// drene e a espera certa é a de um operador. Um 503 por-submissor diria a um cliente saudável
+	// que o nó está em baixo.
+	//
+	// # O QUE ESTA DISTINÇÃO REVELA, E PORQUE SE ACEITA (AOS-464, decisão declarada)
+	//
+	// O ADR-030 §2.7 diz «com tecto atingido, o ingresso recusa pedidos novos» e NÃO fixa o código,
+	// pelo que o 429 não contradiz nenhuma decisão congelada. Mas a §2.1 — e o comentário acima, que
+	// é a razão de o tecto ser verificado DEPOIS da autorização — trata «a fila está cheia» como
+	// informação sobre o estado interno do nó.
+	//
+	// A DISTINGUIBILIDADE É NOVA, e é um bit: até ao AOS-464 um chamador recusado não sabia se a culpa
+	// era dele ou do nó; agora, ao receber 503 **dentro** da sua quota, infere que OUTROS encheram a
+	// fila. É informação agregada sobre a actividade de terceiros, e não existia.
+	//
+	// Aceita-se, e a razão não é conveniência: (1) revela-se só a um chamador AUTENTICADO, que já via
+	// a fila cheia pelo 503 antes deste ticket — o canal ganha um bit, não abre-se de novo; (2) o bit
+	// é exactamente o que torna o erro ACCIONÁVEL, e uma recusa sobre a qual o chamador não pode agir
+	// é a forma de defeito que este eixo inteiro existe para fechar; (3) não revela a EXISTÊNCIA de
+	// nenhum pedido nem de nenhum run — que é o que a §2.1 protege —, nem permite contar os pedidos de
+	// outro submissor: dá o agregado «cheia / não cheia», com a granularidade de um pedido por
+	// tentativa, que o balde de taxa já limita.
+	//
+	// Se o dono decidir que um bit é demais, a correcção é responder 503 nas DUAS camadas e manter a
+	// distinção só no log do operador — o diagnóstico perde-se para o cliente e mantém-se para quem
+	// opera. Fica escrito para que essa decisão seja possível sem reargumentar isto.
+	// A RE-SUBMISSÃO DO QUE JÁ ESTÁ NA FILA NÃO GASTA QUOTA, e a primeira versão deste ticket gastava.
+	//
+	// Um pedido repetido para um `run_id` já pendente não acrescenta nada à fila — o `Append` é
+	// idempotente pela chave, e o banner promete «201 accepted IDEMPOTENTE». Recusá-lo por quota era um
+	// falso negativo puro, e pior: alcançável a 125 por chamador e deterministicamente sozinho, em vez
+	// de só com 1000 globais. Acontecia exactamente quando um cliente faz retry de rede. Achado MÉDIO-4
+	// de uma revisão adversarial independente.
+	//
+	// A ISENÇÃO É SÓ PARA O PRÓPRIO SUBMISSOR, e a primeira versão isentava qualquer `run_id` pendente —
+	// um oráculo de existência cross-submissor e cross-região, medido pela revisão final (ADR-030 §2.1).
+	// Com o filtro, para quem sonda um `run_id` alheio, o pedido repetido e o novo levam a MESMA
+	// resposta; só o dono do pedido vê o seu próprio retry passar, e esse já sabe que o submeteu.
+	//
+	// LIMITE DECLARADO: a isenção cobre só a janela PENDENTE. Depois de reclamado o pedido sai da fila,
+	// e um retry com a quota cheia leva 429 embora o `Append` fosse dedup.
+	//
+	// O tecto GLOBAL mantém o padrão herdado do AOS-423 (recusa também o repetido): mexer nele é fora
+	// do escopo deste ticket, e está declarado nos residuais.
+	if submissorImputavel != "" && !jaPendente && doSubmissor >= h.cfg.planMaxPendingPerSubmitter {
+		h.logf("plan-ingress: RECUSADO por tecto DO SUBMISSOR — %q tem %d pedidos por drenar "+
+			"(tecto por-submissor %d, global %d, fila %d)", submissorImputavel, doSubmissor,
+			h.cfg.planMaxPendingPerSubmitter, h.cfg.planMaxPending, total)
+		h.recusasDaFilaPorSubmissor.Add(1)
+		writeError(w, http.StatusTooManyRequests, "quota de pedidos por drenar deste submissor atingida")
+		return
+	}
+	if total >= h.cfg.planMaxPending {
 		h.logf("plan-ingress: RECUSADO por tecto — %d pedidos por drenar (tecto %d); o consumidor "+
-			"nao esta a drenar a fila", pendentes, tectoDePendentes)
+			"nao esta a drenar a fila", total, h.cfg.planMaxPending)
+		h.recusasDaFilaGlobal.Add(1)
 		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
 		return
 	}

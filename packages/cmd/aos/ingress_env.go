@@ -80,6 +80,13 @@ type ingressLimits struct {
 	// de OCUPAÇÃO: as isenções (suspenso, retoma) compõem-se e um submissor pode ter mais runs vivos
 	// do que este número. 0 ⇒ NÃO COMPOSTO, e o banner declara-o.
 	inFlightPerCaller int
+	// planMaxPending / planMaxPendingPerSubmitter são o tecto de pedidos de plano por drenar e a sua
+	// REPARTIÇÃO por submissor (AOS-464). O global existia como uma constante de `plan_claim.go` e não
+	// era afinável — a mesma lacuna que o eixo SSE tinha, fechada pela mesma razão: validar «o
+	// por-submissor é estritamente menor que o global» sem poder configurar o global deixaria o par
+	// inútil.
+	planMaxPending             int
+	planMaxPendingPerSubmitter int
 	// tuned diz se ALGUMA das variáveis foi definida. Vive AQUI (e não num parâmetro
 	// do banner) para que o texto do banner não possa divergir do que a leitura viu: a
 	// origem dos números e os números são o MESMO valor de retorno.
@@ -95,13 +102,15 @@ type ingressLimits struct {
 // RAW, não o nome.
 func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 	lim := ingressLimits{
-		ratePerSec:            DefaultRatePerSec,
-		burst:                 DefaultRateBurst,
-		maxInFlight:           DefaultMaxInFlight,
-		readRatePerSec:        DefaultReadRatePerSec,
-		readBurst:             DefaultReadRateBurst,
-		trajMaxConns:          DefaultMaxTrajectoryConns,
-		trajMaxConnsPerReader: DefaultMaxTrajectoryConnsPerReader,
+		ratePerSec:                 DefaultRatePerSec,
+		burst:                      DefaultRateBurst,
+		maxInFlight:                DefaultMaxInFlight,
+		planMaxPending:             DefaultPlanMaxPending,
+		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		readRatePerSec:             DefaultReadRatePerSec,
+		readBurst:                  DefaultReadRateBurst,
+		trajMaxConns:               DefaultMaxTrajectoryConns,
+		trajMaxConnsPerReader:      DefaultMaxTrajectoryConnsPerReader,
 	}
 
 	rawRate := strings.TrimSpace(os.Getenv("AOS_INGRESS_RATE"))
@@ -200,6 +209,38 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		}
 		lim.trajMaxConnsPerReader, lim.tuned = n, true
 	}
+	// TECTO DA FILA DE PLANOS (AOS-464) — o global e a sua repartição por submissor.
+	//
+	// O global lê-se PRIMEIRO, porque a validação da repartição depende dele. Ler os dois na mesma
+	// função (e não em `plan_ingress.go`) é o que mantém o banner e a postura ligada derivados do
+	// MESMO valor de retorno.
+	rawPlan := strings.TrimSpace(os.Getenv("AOS_PLAN_MAX_PENDING"))
+	if rawPlan != "" {
+		n, err := strconv.Atoi(rawPlan)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_PLAN_MAX_PENDING=%q", ErrBadIngressLimits, rawPlan)
+		}
+		lim.planMaxPending, lim.tuned = n, true
+	}
+	rawPlanPer := strings.TrimSpace(os.Getenv("AOS_PLAN_MAX_PENDING_PER_SUBMITTER"))
+	if rawPlanPer != "" {
+		n, err := strconv.Atoi(rawPlanPer)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_PLAN_MAX_PENDING_PER_SUBMITTER=%q", ErrBadIngressLimits, rawPlanPer)
+		}
+		lim.planMaxPendingPerSubmitter, lim.tuned = n, true
+	}
+	// O PAR FINAL, fora dos dois ramos — é literalmente a correcção do AOS-463, aplicada ao nascer
+	// deste eixo em vez de paga em revisão adversarial. Se esta comparação vivesse dentro do ramo do
+	// por-submissor, baixar só `AOS_PLAN_MAX_PENDING` para `<= 125` deixaria a repartição INERTE em
+	// silêncio, e um submissor voltaria a poder ocupar a fila toda.
+	if lim.planMaxPendingPerSubmitter >= lim.planMaxPending {
+		return ingressLimits{}, nil, fmt.Errorf("%w: AOS_PLAN_MAX_PENDING_PER_SUBMITTER=%d (%s) tem de ser ESTRITAMENTE MENOR que AOS_PLAN_MAX_PENDING=%d (%s) — igual ou acima o tecto global corta primeiro e a reparticao por submissor NUNCA dispara, logo um submissor ocupa a fila toda e nega POST /plans aos outros (tecto inerte anunciado como equidade)",
+			ErrBadIngressLimits,
+			lim.planMaxPendingPerSubmitter, origemDoLimite(rawPlanPer),
+			lim.planMaxPending, origemDoLimite(rawPlan))
+	}
+
 	// ESTRITAMENTE MENOR, VALIDADO SOBRE O PAR FINAL — e a validação está aqui FORA dos dois ramos
 	// por causa de um fail-open medido (AOS-463).
 	//
@@ -232,6 +273,8 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		WithReadRateLimit(lim.readRatePerSec, lim.readBurst),
 		WithMaxTrajectoryConns(lim.trajMaxConns),
 		WithMaxTrajectoryConnsPerReader(lim.trajMaxConnsPerReader),
+		WithPlanMaxPending(lim.planMaxPending),
+		WithPlanMaxPendingPerSubmitter(lim.planMaxPendingPerSubmitter),
 	}, nil
 }
 
@@ -246,6 +289,51 @@ func parsePositiveFloat(raw string, min float64) (float64, bool) {
 		return 0, false
 	}
 	return v, true
+}
+
+// dobraDoTectoDaFila declara o tecto de pedidos de plano por drenar e a sua REPARTIÇÃO por submissor,
+// em QUATRO ramos — no molde dos eixos AOS-456 e AOS-459, e pela mesma razão: um tecto sobre um valor
+// que o chamador escolhe não é a mesma coisa que um tecto sobre uma credencial verificada, e o operador
+// tem de saber qual tem.
+//
+// QUATRO, e não três: «não configurada» (a variável desligada) e «configurada mas não composta» (o gate
+// ausente, ou presente sem credencial forte) exigem acções DIFERENTES do operador — definir a variável,
+// compor o gate, ou compor o OIDC. Colapsá-las mandaria parte deles editar o ficheiro errado. O godoc
+// desta função dizia «TRÊS posturas» enquanto o teste e o ticket diziam QUATRO; era a mesma frase em
+// dois sítios com números diferentes.
+//
+// SÃO QUATRO RAMOS E SÓ UM COMPÕE, e é a diferença face aos eixos AOS-456a e AOS-459, que compõem
+// sobre um principal DEMO-GRADE. Aqui as duas posturas intermédias recusam compor, por razões
+// diferentes e ambas medidas:
+//
+//   - principal VAZIO (sem gate): um tecto chaveado no vazio valeria como tecto global mais apertado,
+//     anunciado como equidade — o corpo do pedido nunca declara o principal;
+//   - principal FORJÁVEL (gate sem credencial forte): pior do que contornável. Um atacante escreve o
+//     header da VÍTIMA e gasta a quota dela, com ocupação DURÁVEL e gratuita. Medido: 5 pedidos
+//     forjados fecham uma vítima com 15 de 20 lugares livres. Seria um trinco de negação dirigida
+//     anunciado como equidade. Ver [handlePlanRequest] para o porquê de a durabilidade ser o que
+//     distingue este eixo dos gémeos.
+//
+// A CONJUNÇÃO É EXPLÍCITA no ramo VERIFICADO pela razão que o AOS-461 pagou: hoje `principalVerificavel`
+// implica `gateComposto`, mas esta função não pode depender dessa implicação para estar certa.
+//
+// O NOME DA DOBRA SEGUE A CONVENÇÃO «TECTO … (AOS-NNN):» de propósito, e está registado em
+// `marcadoresDeDobra`: uma dobra fora da convenção é invisível ao guarda que vigia o registo e fica
+// engolida pela dobra anterior — foi o achado BAIXO-3/MÉDIO-4 da oitava e nona revisões, e
+// reintroduzi-lo aqui seria pagá-lo uma terceira vez.
+func dobraDoTectoDaFila(lim ingressLimits, gateComposto, principalVerificavel bool) string {
+	d := fmt.Sprintf(" TECTO DA FILA DE PLANOS (AOS-464): %d pedidos por drenar; atingido, POST /plans RECUSA pedidos novos com 503 e NUNCA descarta os antigos (AOS-423, ADR-030 2.7).", lim.planMaxPending)
+	switch {
+	case lim.planMaxPendingPerSubmitter <= 0:
+		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: NAO CONFIGURADA — AOS_PLAN_MAX_PENDING_PER_SUBMITTER desligada (<=0), logo o tecto e SO global e UM submissor autenticado enfileira os %d e nega POST /plans a todos os outros ate alguem drenar.", lim.planMaxPending)
+	case !gateComposto:
+		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: CONFIGURADA (%d) mas NAO COMPOSTA — sem gate soberano de leitura o principal do pedido fica VAZIO para TODOS os chamadores (o corpo nunca o declara), nao ha a quem imputar, e a reparticao fica DESLIGADA em vez de degenerar num tecto global mais apertado. Defina AOS_BOARD_REGIONS (e o WORM).", lim.planMaxPendingPerSubmitter)
+	case !principalVerificavel:
+		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: CONFIGURADA (%d) e NAO COMPOSTA — o gate soberano esta composto mas SEM credencial forte, logo o submissor vem do header X-Aos-Reader que o CHAMADOR escreve. Este tecto NAO se compoe nessa postura, e a razao e mais forte do que «contorna-se»: um atacante escreveria o header da VITIMA e gastaria a quota DELA, fechando-a fora de POST /plans com o resto da fila LIVRE (medido: 5 pedidos forjados, 15 de 20 lugares livres), com ocupacao DURAVEL e gratuita — um pedido so sai da fila com desfecho terminal ou reclamacao viva. Ligar a reparticao aqui seria entregar um trinco de negacao DIRIGIDA em vez de equidade. O tecto global de %d continua a ser a unica barreira. Para a compor defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
+	default:
+		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: LIGADA sobre principal VERIFICADO — cada submissor ocupa no maximo %d de %d pedidos por drenar; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. Exceder responde 429 (o chamador tem de drenar o que e dele) e NAO 503 (o no sem consumidor), e a reparticao e verificada ANTES do tecto global para que o diagnostico aponte a causa certa.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
+	}
+	return d
 }
 
 // origemDoLimite diz se um valor veio da variável de ambiente ou do default do binário. Existe para
@@ -413,6 +501,7 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 
 	return []string{
 		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id} e o resto do plano de DADOS) tem desde AOS-458 um balde de TAXA proprio (AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST) consumido no involucro da rota, e o stream SSE de trajectoria tem AINDA um tecto de LIGACOES em duas camadas (AOS_TRAJECTORY_MAX_CONNS global + AOS_TRAJECTORY_MAX_CONNS_PER_READER por leitor). O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
-			origem, lim.ratePerSec, lim.burst, lim.maxInFlight, porChamador+porLeitorSSE),
+			origem, lim.ratePerSec, lim.burst, lim.maxInFlight,
+			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)),
 	}
 }

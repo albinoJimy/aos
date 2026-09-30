@@ -382,6 +382,24 @@ services:
       # global corta primeiro e a reparticao nunca dispara).
       AOS_TRAJECTORY_MAX_CONNS: "${AOS_TRAJECTORY_MAX_CONNS:-256}"
       AOS_TRAJECTORY_MAX_CONNS_PER_READER: "${AOS_TRAJECTORY_MAX_CONNS_PER_READER:-32}"
+      # AOS-464 — tecto de pedidos de plano por drenar e a sua REPARTICAO por submissor. Mesmo defeito
+      # e mesma forma do bloco acima, um plano ao lado: o global protege o no e um submissor
+      # autenticado enfileira os 1000 e nega POST /plans a todos os outros ate alguem drenar. Um
+      # pedido so sai da fila com desfecho terminal ou reclamacao viva, e nenhum dos dois depende de
+      # quem submeteu — e ocupacao, nao taxa. O por-submissor tem de ser ESTRITAMENTE MENOR que o
+      # global, e o par e validado FINAL (baixar so o global para <=125 ABORTA o arranque).
+      #
+      # A REPARTICAO NAO SE COMPOE sem gate soberano de leitura: sem ele o principal do pedido fica
+      # VAZIO para todos e nao ha a quem imputar. Confirme na linha de ingresso do banner de arranque
+      # e na serie aos_plan_queue_ceiling_per_submitter (0 = nao composta).
+      #
+      # NOTA DE ORIGEM, herdada e nao fechada aqui: como TODAS as variaveis deste ficheiro, estas sao
+      # exportadas SEMPRE (com `:-default`), pelo que o no as ve como «definidas» mesmo quando o
+      # operador nao as escreveu — e a mensagem de recusa do par inerte dira «(definida)» sobre um
+      # numero que ele nao pos em sitio nenhum. E o residual que o AOS-463 declarou; a correccao e no
+      # padrao deste ficheiro, para as ~30 variaveis, e nao para duas.
+      AOS_PLAN_MAX_PENDING: "${AOS_PLAN_MAX_PENDING:-1000}"
+      AOS_PLAN_MAX_PENDING_PER_SUBMITTER: "${AOS_PLAN_MAX_PENDING_PER_SUBMITTER:-125}"
       # AOS-458 — admission de TAXA do plano de DADOS inteiro, as LEITURAS incluídas. Até esse
       # ticket as sete rotas de leitura que chamam `readGovernance.authorize` não tinham tecto de
       # taxa nenhum, e em produção esse authorize verifica um JWS (RS256 ~42us, ES256 ~91us): um

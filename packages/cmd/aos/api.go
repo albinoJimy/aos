@@ -136,6 +136,46 @@ const (
 	// 32 reparte 8 leitores sobre o global de 256 e é folgado para um cliente real: uma UI observa
 	// um punhado de runs ao mesmo tempo, não trinta.
 	DefaultMaxTrajectoryConnsPerReader = 32
+	// DefaultPlanMaxPending é o tecto por omissão de pedidos de plano por drenar. Era a constante
+	// `tectoDePendentes` em `plan_claim.go`, sem variável de ambiente, até ao AOS-464; o valor em
+	// vigor vem agora de [apiConfig.planMaxPending], afinável por `AOS_PLAN_MAX_PENDING`.
+	//
+	// A CONSTANTE ANTIGA FOI REMOVIDA em vez de mantida ao lado desta: duas constantes com o mesmo
+	// valor e o mesmo significado divergem, e o compilador não se queixa de uma `const` de pacote que
+	// ninguém usa — teria ficado dívida silenciosa no primeiro commit deste ticket.
+	// Atingido, o INGRESSO recusa pedidos NOVOS (ADR-030 §2.7). Não se descartam os antigos: um
+	// pedido descartado em silêncio é a mesma classe de defeito que este eixo inteiro existe para
+	// fechar. É alto de propósito — a intenção é travar um laço em fuga, não moldar carga.
+	//
+	// # PORQUE É QUE UM TECTO GLOBAL SOZINHO NÃO CHEGA (AOS-464)
+	//
+	// Ele protege o NÓ e não diz nada sobre QUEM ocupa a fila: um submissor autenticado enfileira 1000
+	// pedidos e todos os outros levam **503** em `POST /plans` até alguém drenar. Não é uma rajada que
+	// passa — é ocupação que fica, porque um pedido só sai da fila com um desfecho terminal ou uma
+	// reclamação viva, e nenhum dos dois depende de quem submeteu.
+	//
+	// É o MESMO defeito que o AOS-456a fechou no `POST /runs`, um plano ao lado, e nenhuma das outras
+	// barreiras o cobre: o balde de admissão é de TAXA e global entre chamadores (uma submissão custa um
+	// token e o pedido fica na fila durante horas), o tecto de runs em curso conta runs HOSPEDADOS e esta
+	// rota não hospeda nenhum, e o `edge` tem `limit_req` e não `limit_conn`. A repartição é
+	// [apiConfig.planMaxPendingPerSubmitter].
+	DefaultPlanMaxPending = 1000
+	// DefaultPlanMaxPendingPerSubmitter reparte o tecto acima POR SUBMISSOR (AOS-464).
+	//
+	// PORQUE EXISTE. O tecto global é anti-laço-em-fuga do NÓ e não diz nada sobre equidade: um
+	// submissor autenticado enfileira os 1000 e todos os outros levam **503** até alguém drenar. Um
+	// pedido só sai da fila com desfecho terminal ou reclamação viva, e nenhum dos dois depende de
+	// quem submeteu — logo não é uma rajada que passa, é ocupação que fica.
+	//
+	// AS BARREIRAS QUE ESTA ROTA JÁ ATRAVESSA, e nenhuma fecha a ocupação: o balde de submissão
+	// (taxa), o balde de TAXA do plano de dados (AOS-458, que `POST /plans` atravessa como
+	// `planoDados` — omitido da primeira enumeração deste ticket), o tecto de runs em curso (conta
+	// runs HOSPEDADOS, e esta rota não hospeda nenhum) e o `edge` (`limit_req`, taxa). As quatro são
+	// de TAXA ou de outro recurso: uma submissão custa um token e o pedido fica na fila horas.
+	//
+	// 125 reparte 8 submissores sobre o global de 1000, a mesma proporção que o eixo SSE usa
+	// (32/256). É folgado para um `aos-orq` real, que despacha por passagem e não enfileira centenas.
+	DefaultPlanMaxPendingPerSubmitter = 125
 )
 
 // Erros da API (fail-closed).
@@ -241,9 +281,16 @@ type apiConfig struct {
 	// trajMaxConnsPerReader reparte o tecto acima por LEITOR (AOS-459). <= 0 desliga a repartição,
 	// e aí o global volta a ser a única barreira — com o residual que o AOS-459 fecha.
 	trajMaxConnsPerReader int
-	serverWriteTO         time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
-	now                   func() time.Time
-	logw                  io.Writer
+	// planMaxPending é o tecto de pedidos de plano por drenar (AOS-423, afinável desde AOS-464).
+	planMaxPending int
+	// planMaxPendingPerSubmitter reparte o tecto acima por SUBMISSOR (AOS-464). <= 0 desliga a
+	// repartição, e aí o global volta a ser a única barreira. NÃO se compõe sem gate soberano de
+	// leitura: sem ele o principal do pedido fica VAZIO para todos, e um tecto chaveado no vazio
+	// valeria como tecto global mais apertado — ver [handlePlanRequest].
+	planMaxPendingPerSubmitter int
+	serverWriteTO              time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
+	now                        func() time.Time
+	logw                       io.Writer
 	// --- Terminação TLS do ingresso (AOS-209) --------------------------------
 	// tlsCertPath/tlsKeyPath apontam para o certificado e a CHAVE PRIVADA montados por
 	// ficheiro (padrão AOS_ISSUER_KEY_PATH: material privado NUNCA por variável de ambiente).
@@ -378,6 +425,23 @@ func WithTrajectoryWriteTimeout(d time.Duration) APIOption {
 // de arranque declara-o quando acontece, em vez de se calar.
 func WithMaxTrajectoryConnsPerReader(n int) APIOption {
 	return func(c *apiConfig) { c.trajMaxConnsPerReader = n }
+}
+
+// WithPlanMaxPending afina o tecto de pedidos de plano por drenar (default [DefaultPlanMaxPending]).
+// <= 0 mantém o default: NENHUM valor desliga este tecto, porque desligá-lo abriria a fila a um laço
+// em fuga — é a mesma armadilha que `AOS_INGRESS_MAX_INFLIGHT=0` fecha.
+func WithPlanMaxPending(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.planMaxPending = n
+		}
+	}
+}
+
+// WithPlanMaxPendingPerSubmitter afina a repartição do tecto acima por SUBMISSOR (AOS-464).
+// <= 0 desliga a repartição e deixa o global como única barreira.
+func WithPlanMaxPendingPerSubmitter(n int) APIOption {
+	return func(c *apiConfig) { c.planMaxPendingPerSubmitter = n }
 }
 
 // WithMaxTrajectoryConns define o tecto de streams SSE de trajectória concorrentes por-nó
@@ -526,6 +590,12 @@ type apiHandler struct {
 	// contrato e isto é estado que se move; o handler é uma instância por servidor, criada em
 	// [NewAPIHandler], que é exactamente o âmbito certo. Ver `plan_marca_de_agua.go`.
 	marcaDaFila marcaDeAgua
+	// recusasDaFila* contam as recusas de POST /plans pelas DUAS camadas do tecto (AOS-464). Existem
+	// porque «uma guarda sem sensor é o defeito que o AOS-422 mediu» — a frase está duas linhas acima
+	// da métrica da fila, e a camada nova nascia só com log. Separadas, porque exigem acções
+	// diferentes: a global é o operador a procurar o consumidor, a do submissor é um chamador a drenar.
+	recusasDaFilaGlobal       atomic.Uint64
+	recusasDaFilaPorSubmissor atomic.Uint64
 	// O guard que serializa as passagens do [audit.ExpirationJob] vive em
 	// [NodeService.expireInFlight] — NÃO aqui. Mudou de sítio em AOS-267, quando o scheduler
 	// interno passou a conduzir a MESMA passagem: um guard no handler só excluiria as
@@ -543,19 +613,21 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		return nil, ErrNilNode
 	}
 	cfg := apiConfig{
-		maxBodyBytes:          DefaultMaxBodyBytes,
-		rateBurst:             DefaultRateBurst,
-		ratePerSec:            DefaultRatePerSec,
-		ctrlRateBurst:         DefaultRateBurst,
-		ctrlRatePerSec:        DefaultRatePerSec,
-		readRateBurst:         DefaultReadRateBurst,
-		readRatePerSec:        DefaultReadRatePerSec,
-		maxInFlight:           DefaultMaxInFlight,
-		maxTurnsCeiling:       agentruntime.DefaultMaxTurns,
-		trajWriteTimeout:      DefaultTrajectoryWriteTimeout,
-		trajMaxConns:          DefaultMaxTrajectoryConns,
-		trajMaxConnsPerReader: DefaultMaxTrajectoryConnsPerReader,
-		now:                   time.Now,
+		maxBodyBytes:               DefaultMaxBodyBytes,
+		rateBurst:                  DefaultRateBurst,
+		ratePerSec:                 DefaultRatePerSec,
+		ctrlRateBurst:              DefaultRateBurst,
+		ctrlRatePerSec:             DefaultRatePerSec,
+		readRateBurst:              DefaultReadRateBurst,
+		readRatePerSec:             DefaultReadRatePerSec,
+		maxInFlight:                DefaultMaxInFlight,
+		maxTurnsCeiling:            agentruntime.DefaultMaxTurns,
+		trajWriteTimeout:           DefaultTrajectoryWriteTimeout,
+		trajMaxConns:               DefaultMaxTrajectoryConns,
+		trajMaxConnsPerReader:      DefaultMaxTrajectoryConnsPerReader,
+		planMaxPending:             DefaultPlanMaxPending,
+		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		now:                        time.Now,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -1621,7 +1693,8 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// FILA DE PEDIDOS DE PLANO (AOS-423) — «alguém está a drenar?»
 	//
-	// O tecto de pendentes recusa submissões a partir de [tectoDePendentes], e uma guarda sem
+	// O tecto de pendentes recusa submissões a partir de [DefaultPlanMaxPending] (ou do valor
+	// afinado), e uma guarda sem
 	// sensor é o defeito que o AOS-422 mediu: o operador descobre o problema quando o ingresso
 	// começa a devolver 503, e não antes. Estas duas séries dão-lhe a curva.
 	//
@@ -1640,11 +1713,28 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	g("aos_plan_queue_claimable", "Rota de reclamacao da fila de pedidos de plano a servir (1) ou a recusar 501 (0).",
 		"gauge", b01(h.readGov != nil), "")
 	if h.node != nil && h.node.EventStore != nil {
-		if pendentes, err := pendentesNaFila(r.Context(), h.node.EventStore, nil); err == nil {
+		if pendentes, _, _, err := pendentesNaFila(r.Context(), h.node.EventStore, nil, "", ""); err == nil {
 			g("aos_plan_queue_pending", "Pedidos de plano por drenar (submetidos, sem desfecho terminal e sem reclamacao viva).",
 				"gauge", float64(pendentes), "")
-			g("aos_plan_queue_ceiling", "Tecto a partir do qual o ingresso recusa pedidos novos.",
-				"gauge", float64(tectoDePendentes), "")
+			// O TECTO EM VIGOR, e não a constante: desde o AOS-464 ele é afinável
+			// (`AOS_PLAN_MAX_PENDING`), e publicar o default sobre um nó afinado faria o operador
+			// comparar a curva com um limite que o nó dele não tem.
+			g("aos_plan_queue_ceiling", "Tecto a partir do qual o ingresso recusa pedidos novos com 503.",
+				"gauge", float64(h.cfg.planMaxPending), "")
+			// A REPARTIÇÃO, e 0 quando NÃO está em vigor — que é o que o operador precisa de
+			// distinguir. Sem gate soberano de leitura ela não se compõe (o principal do pedido fica
+			// vazio para todos), e publicar o valor configurado aí faria o painel afirmar uma
+			// equidade que não existe. Ver [handlePlanRequest].
+			porSubmissor := 0
+			if h.readGov != nil && h.readGov.cred != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+				porSubmissor = h.cfg.planMaxPendingPerSubmitter
+			}
+			g("aos_plan_queue_ceiling_per_submitter", "Tecto de pedidos por drenar POR SUBMISSOR a partir do qual o ingresso recusa com 429; 0 = reparticao NAO composta.",
+				"gauge", float64(porSubmissor), "")
+			g("aos_plan_queue_refused_total", "Submissoes de plano RECUSADAS pelo tecto GLOBAL da fila (503). A subir significa que ninguem esta a drenar.",
+				"counter", float64(h.recusasDaFilaGlobal.Load()), "")
+			g("aos_plan_queue_refused_per_submitter_total", "Submissoes de plano RECUSADAS pela quota do SUBMISSOR (429). A subir com aos_plan_queue_pending BAIXO significa um chamador a enfileirar sem drenar, nao um no sem consumidor.",
+				"counter", float64(h.recusasDaFilaPorSubmissor.Load()), "")
 		}
 	}
 
