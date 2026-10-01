@@ -7368,3 +7368,136 @@ módulo mais lento, `cmd/aos-orq`, fecha em ~25 s já com a compilação, e o jo
 
 **FECHADO.** O gate `nats` falha fechado quando um pacote aborta. Isto foi provado ao vivo
 (rc=1 no timeout do `cmd/aos-orq`), pelo self-test §Y e no CI do PR #389, que ficou verde.
+
+---
+
+## AOS-471 — O gate `nats` com o CLI `docker` e sem daemon morre por `AOS_NATS_URL: unbound variable`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade, com o AOS-431, o AOS-452 e o AOS-455; o eixo é a infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (CI) |
+| Prioridade | P2: o gate já falhava fechado, mas com o diagnóstico no sítio errado |
+| Estimativa | S |
+| Dependências | AOS-431 (o gate `nats`, FECHADO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/nats.sh`, `scripts/ci/nats-levantar.sh`, `scripts/ci/nats-cluster.sh`, `scripts/ci/selftest.sh` §NX, `CONTRIBUTING.md` §«Etapas saltadas — `SKIP_DOCKER` e afins» |
+
+### Contexto
+
+Encontrado ao fazer o AOS-455, e reproduzido a 2026-10-01 numa máquina com o CLI `docker` e
+**sem daemon**, sem alteração de código nenhuma:
+
+```text
+== GATE: nats · cluster JetStream de 4 nós (3 no board + 1 fora, para a fronteira soberana) ==
+failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+scripts/ci/nats.sh: line 138: AOS_NATS_URL: unbound variable
+```
+
+Rc 1. Há dois defeitos, um em cima do outro:
+
+1. **O «sem docker» só via o CLI.** O `nats.sh` decidia saltar com `command -v docker`. Um CLI
+   sem daemon passava essa porta e ia levantar o cluster.
+2. **O código de saída do `up` perdia-se.** O gate fazia
+   `if ! eval "$(bash nats-cluster.sh up)"`. O código da substituição de comando não chega ao
+   `if`: o que conta é o do `eval`, e o `eval` de uma string vazia sai 0. O ramo
+   «o cluster não subiu» era inalcançável. O gate seguia sem `AOS_NATS_URL` e morria no
+   primeiro uso, por `set -u`.
+
+Falhava fechado, mas por acaso, e o diagnóstico apontava para uma variável em vez do cluster.
+
+### Objectivo
+
+Separar as duas avarias e dar a cada uma o seu destino, sem que nenhuma vire verde em silêncio:
+
+- **Docker inutilizável** (sem o CLI, ou com o CLI e o daemon inacessível) é uma propriedade do
+  posto e não do código. Localmente segue o caminho do «sem CLI»: salto declarado.
+- **Docker utilizável e um cluster que não sobe** é avaria a sério (imagem, portas, Raft, nkey).
+  É sempre vermelho, e o diagnóstico nomeia o `nats-cluster.sh`.
+
+### A decisão, e porque é que em CI não se salta
+
+A política do projecto para contentores em falta é o salto declarado (`gate_skip`,
+`AOS_SKIPPED_STEP`; `CONTRIBUTING.md` §«Etapas saltadas»). Localmente, um daemon parado é o
+mesmo caso que um CLI ausente, e segue o mesmo caminho.
+
+**Em CI (`CI` ou `GITHUB_ACTIONS` definidos) é vermelho**, para os dois casos:
+
+- O job `nats` existe só para exercitar o substrato replicado real, e é required check. O
+  agregador `gates` lê `success` e não lê o `AOS_SKIPPED_STEP`: «registar não é impedir»
+  (AGENTS.md §4). Um runner sem docker utilizável sairia verde sem ter medido nada.
+- Os outros escapes já não são honrados em CI: o `AOS_GATE_FLOOR_OVERRIDE` («a CI não desce
+  pisos»), o desvio de raiz do `gate_path` e o `AOS_ALLOW_PARTIAL_DELIVERY` do `package.sh`.
+- Antes deste ticket, o daemon parado em CI já era vermelho, ainda que por acaso. Passar a
+  saltar convertia esse vermelho num verde.
+
+Isto também muda o «sem CLI» em CI, de salto para vermelho. No `ubuntu-latest` o CLI existe
+sempre, pelo que nada muda no CI de hoje. Num runner próprio sem docker, o required check
+deixa de ficar verde sem ter medido nada. Deixar os dois casos com destinos diferentes em CI
+não teria razão que o justificasse.
+
+### Critérios de Aceitação
+
+- [x] **O defeito está reproduzido**, com a mensagem de antes. — *Ver «Contexto»: rc 1 e
+      `AOS_NATS_URL: unbound variable`, nesta máquina (CLI docker, sem daemon).*
+- [x] **Localmente, com o CLI e sem daemon, o gate salta DECLARADO**, com o motivo e a garantia
+      por verificar redeclarados no veredicto, e sai 0, como o «sem CLI». — *`nats_docker_utilizavel`
+      (`nats-levantar.sh`) sonda com `docker info`, a sonda do `isolation-live.sh`. Medido aqui:
+      `SALTADO: nats — daemon docker inacessível (docker info: failed to connect to the docker
+      API at unix:///var/run/docker.sock; …)` e
+      `AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível …) -> POR VERIFICAR: o substrato
+      replicado real NÃO foi exercitado; …`, rc 0. Self-test NX1.*
+- [x] **Em CI, docker inutilizável é VERMELHO** e diz porquê. — *Medido aqui com `CI=1`:
+      `FAIL nats: daemon docker inacessível (…) — a CI não salta o substrato replicado real`,
+      rc 1. Self-test NX2.*
+- [x] **Com o docker utilizável, um cluster que não sobe é VERMELHO** e nomeia o
+      `nats-cluster.sh` e o código com que saiu. Nunca é salto nem variável por definir. —
+      *`nats_levantar` verifica o código e a saída do `up` ANTES do `eval`:
+      `FAIL nats: o cluster NÃO subiu — \`nats-cluster.sh up\` saiu 1 com o docker utilizável
+      (o motivo está nas linhas acima)`. Self-test NX3, com um `docker` cujo `info` responde e
+      cujo `network create` é recusado.*
+- [x] **Depois do `eval`, sem `AOS_NATS_URL`, é vermelho com mensagem própria.** Um `up` que
+      saia 0 sem imprimir o env é um cluster que ninguém sabe onde está. — *Self-test NX4.*
+- [x] **O caminho feliz não muda.** — *Self-test NX5: sobre o `nats-cluster.sh` REAL, com um
+      `docker` em que tudo responde, a sonda aceita e o `nats_levantar` exporta
+      `AOS_NATS_URL=127.0.0.1:14225,127.0.0.1:14226,127.0.0.1:14227`.*
+- [x] **Cada caso do self-test morde** (verificação de mutação, cada mutante numa cópia de
+      `scripts/ci` fora do repo, só a §NX corrida). — *Sem a sonda do daemon: NX1 e NX2
+      vermelhos. Sem o ramo de CI: NX2 vermelho. Com o rc do `up` ignorado: NX3 vermelho, porque
+      a mensagem passa a ser a do AOS_NATS_URL. Sem exigir o AOS_NATS_URL: NX4 vermelho. Sem o
+      `eval`: NX5 vermelho. Com a sonda a recusar sempre: NX1, NX2, NX3 e NX5 vermelhos. Com o
+      `nats.sh` da base (`54d36e2`): NX1, NX2 e NX3 vermelhos, NX1 e NX3 por «unbound
+      variable».*
+
+### Entrega
+
+- `scripts/ci/nats-levantar.sh` (novo, biblioteca): `nats_docker_utilizavel` (CLI e daemon,
+  com o motivo) e `nats_levantar` (código e saída do `up` antes do `eval`, `AOS_NATS_URL`
+  depois). Fica à parte do `nats.sh` pela razão do `gotest-pacotes.sh`: para que o self-test
+  exercite o mesmo código.
+- `scripts/ci/nats.sh`: usa as duas. Docker inutilizável dá salto declarado localmente e
+  vermelho em CI. O `trap` do `down` passa para ANTES do `up`: um `up` que morra a meio
+  (meta-leader por eleger, nkey por gerar) já não deixa contentores de pé.
+- `scripts/ci/selftest.sh` §NX1–NX5. Os `docker` de brincar e o estado do cluster ficam em
+  `mktemp -d`. NX1–NX3 correm o `nats.sh` inteiro, e saem todos antes das suites.
+- `CONTRIBUTING.md`: a nota do gate `nats` diz o que é «docker utilizável» e que em CI não se
+  salta.
+
+### Fora de âmbito, declarado
+
+- **Uma sonda `docker info` contra um daemon pendurado** (não ausente) pode demorar. Não há
+  `timeout` à volta, tal como no `isolation-live.sh`. Não foi medido.
+- **O caminho feliz do `nats.sh` inteiro** não corre no self-test: correria as suites contra um
+  cluster que não existe. O NX5 prova a função que o gate chama, e o NX3 prova que o gate a
+  chama.
+
+### Estado
+
+**FEITO** (2026-10-01). Reproduzido e corrigido nesta máquina (CLI docker, sem daemon), com
+self-test §NX e verificação de mutação. O comportamento no job `nats` do CI (docker com daemon)
+não foi observado aqui: confirma-se no PR.

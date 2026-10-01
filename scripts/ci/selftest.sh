@@ -39,6 +39,9 @@
 #      as directivas go/toolchain máximas e sem replace; o compilar avermelha um
 #      workspace que não compila e ignora um go.work.sum desnecessário; o build.sh
 #      leva o vermelho ao rc; e os gates correm com GOWORK=off (AOS-387).
+#  NX) o gate nats com o CLI docker e SEM daemon salta DECLARADO (vermelho em CI), e com
+#      o daemon a responder um cluster que não sobe avermelha a nomear o
+#      nats-cluster.sh — nunca «AOS_NATS_URL: unbound variable» (AOS-471).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -177,6 +180,8 @@ GOTEST_TMP=""
 MENCAO_TMP=""
 # §GW monta uma árvore sintética FORA do repo: não muta a árvore.
 GOWORK_TMP=""
+# §NX põe os seus `docker` de brincar e o estado do cluster FORA do repo: não muta a árvore.
+NX_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -189,6 +194,7 @@ cleanup() {
   rm -rf "$GOTEST_TMP"
   rm -rf "$MENCAO_TMP"
   rm -rf "$GOWORK_TMP"
+  rm -rf "$NX_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
@@ -2236,6 +2242,117 @@ case "$linha" in
   *) bad "Z10: uma directiva entre crases duplas abriu um trecho real: «$linha»" ;;
 esac
 rm -rf "$MENCAO_TMP"; MENCAO_TMP=""
+
+# ============================================================================
+# NX) nats.sh: docker sem daemon SALTA declarado; cluster que não sobe AVERMELHA (AOS-471)
+# ============================================================================
+log_gate "self-test NX · nats.sh: docker sem daemon salta declarado (vermelho em CI), cluster que não sobe avermelha a nomeá-lo (AOS-471)"
+# O nats.sh fazia `if ! eval "$(bash nats-cluster.sh up)"`: o código do `up` perdia-se dentro
+# do `eval` e, com o CLI `docker` presente e SEM daemon, o gate morria mais abaixo com
+# «AOS_NATS_URL: unbound variable» — fail-closed por acaso, com o diagnóstico no sítio errado.
+#
+# NX1–NX3 correm o nats.sh INTEIRO com um `docker` de brincar à frente no PATH: os três casos
+# saem antes das suites, pelo que nada de Go corre sobre um cluster que não existe. NX4–NX5
+# exercitam o `nats_levantar` — a função que o gate chama — sobre o `nats-cluster.sh` REAL: o
+# caminho feliz não pode correr pelo gate inteiro sem cluster (correria as suites). O estado do
+# cluster vai para $NX_TMP: o `down` do `trap` do gate não toca no de uma execução verdadeira.
+source "$CI_DIR/nats-levantar.sh"
+NX_TMP="$(mktemp -d)"
+
+# nx_shim <nome> <corpo> — um `docker` de brincar em $NX_TMP/<nome>/docker.
+nx_shim() {
+  mkdir -p "$NX_TMP/$1"
+  printf '#!/usr/bin/env bash\n%s\n' "$2" > "$NX_TMP/$1/docker"
+  chmod +x "$NX_TMP/$1/docker"
+}
+# O CLI existe, o daemon não: `info` falha como falha o verdadeiro.
+nx_shim semdaemon 'case "$1" in
+  info) echo "Client: shim"; echo "failed to connect to the docker API at unix:///nx-shim.sock" >&2; exit 1 ;;
+  *) echo "nx-shim: sem daemon" >&2; exit 1 ;;
+esac'
+# O daemon responde, e o cluster não sobe: a rede do cluster é recusada.
+nx_shim semrede 'case "$1 ${2:-}" in
+  "network create") echo "nx-shim: network create recusado" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac'
+# Tudo responde, e o meta-leader está eleito à primeira.
+nx_shim tudo 'case "$1" in
+  exec) printf "%s\n" "{\"meta_cluster\":{\"leader\":\"nx-1\"}}" ;;
+  *) exit 0 ;;
+esac'
+
+# nx_gate <shim> [VAR=valor …] — o nats.sh inteiro com o shim no PATH e SEM os marcadores de CI
+#   do runner (o job `selftest` corre com CI=true), salvo se passados. Saída em NX_OUT, código
+#   em NX_RC.
+nx_gate() {
+  local shim="$1"; shift
+  NX_RC=0
+  NX_OUT="$(env -u CI -u GITHUB_ACTIONS PATH="$NX_TMP/$shim:$PATH" \
+    AOS_NATS_STATE_DIR="$NX_TMP/estado" AOS_NATS_AUTH=0 "$@" \
+    bash "$CI_DIR/nats.sh" 2>&1)" || NX_RC=$?
+}
+
+# NX1 — CLI sem daemon, localmente: SALTO DECLARADO, como o «sem CLI» — e redeclarado no fim.
+nx_gate semdaemon
+case "$NX_OUT" in
+  *"unbound variable"*)
+    bad "NX1: CLI sem daemon ainda morre por variável por definir (rc=$NX_RC) — o diagnóstico aponta para o sítio errado" ;;
+  *"SALTADO: nats — daemon docker inacessível"*"AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível"*)
+    if [ "$NX_RC" -eq 0 ]; then
+      pass "NX1: CLI sem daemon salta DECLARADO, com o motivo e a garantia por verificar no veredicto"
+    else
+      bad "NX1: CLI sem daemon declarou o salto mas saiu $NX_RC — o «sem CLI» sai 0"
+    fi ;;
+  *) bad "NX1: CLI sem daemon não saltou declarado (rc=$NX_RC): $(printf '%s' "$NX_OUT" | tail -2 | tr '\n' ' ')" ;;
+esac
+
+# NX2 — o mesmo em CI: VERMELHO. O agregador `gates` lê `success`, não o AOS_SKIPPED_STEP.
+nx_gate semdaemon CI=1
+if [ "$NX_RC" -ne 0 ] && [[ "$NX_OUT" == *"daemon docker inacessível"*"a CI não salta o substrato replicado real"* ]]; then
+  pass "NX2: em CI, docker sem daemon avermelha (rc=$NX_RC) a dizer porquê — não vira verde por salto"
+else
+  bad "NX2: em CI, docker sem daemon não avermelhou com a recusa nomeada (rc=$NX_RC) — com rc=0 o required check ficava verde sem medir"
+fi
+
+# NX3 — daemon a responder e cluster que não sobe: VERMELHO a nomear o nats-cluster.sh e o
+# código com que saiu. Nunca salto, nunca a variável por definir.
+nx_gate semrede
+if [ "$NX_RC" -eq 0 ]; then
+  bad "NX3: o cluster não subiu com o docker utilizável e o gate saiu VERDE"
+elif [[ "$NX_OUT" == *"SALTADO"* ]]; then
+  bad "NX3: um cluster que não sobe com o docker utilizável foi tratado como salto (rc=$NX_RC)"
+elif [[ "$NX_OUT" == *"unbound variable"* ]]; then
+  bad "NX3: o cluster não subiu e o gate morreu por variável por definir (rc=$NX_RC)"
+elif [[ "$NX_OUT" == *"nx-shim: network create recusado"*"o cluster NÃO subiu — \`nats-cluster.sh up\` saiu 1 com o docker utilizável"* ]]; then
+  pass "NX3: docker utilizável e cluster que não sobe avermelha (rc=$NX_RC), nomeia o nats-cluster.sh e mostra o motivo dele"
+else
+  bad "NX3: o cluster não subiu e o vermelho não o nomeia (rc=$NX_RC): $(printf '%s' "$NX_OUT" | tail -2 | tr '\n' ' ')"
+fi
+
+# NX4 — um `up` que sai 0 SEM imprimir o env é vermelho pelo AOS_NATS_URL, e não verde.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$NX_TMP/up-mudo.sh"
+nx_rc=0
+nx_out="$( unset AOS_NATS_URL; nats_levantar "$NX_TMP/up-mudo.sh" 2>&1 )" || nx_rc=$?
+if [ "$nx_rc" -ne 0 ] && [[ "$nx_out" == *"saiu 0 sem exportar AOS_NATS_URL"* ]]; then
+  pass "NX4: um up que sai 0 sem dizer onde está o cluster é recusado pelo AOS_NATS_URL"
+else
+  bad "NX4: um up mudo foi aceite ou recusado sem nomear o AOS_NATS_URL (rc=$nx_rc)"
+fi
+
+# NX5 — CAMINHO FELIZ, sobre o nats-cluster.sh REAL: com tudo a responder, a sonda aceita o
+# docker e o `nats_levantar` exporta o AOS_NATS_URL dos três nós do board.
+nx_rc=0
+nx_out="$( unset AOS_NATS_URL
+  export PATH="$NX_TMP/tudo:$PATH" AOS_NATS_STATE_DIR="$NX_TMP/estado" AOS_NATS_AUTH=0 AOS_NATS_PORT_BASE=14225
+  nats_docker_utilizavel || { echo "SONDA: $NATS_DOCKER_MOTIVO"; exit 1; }
+  nats_levantar "$CI_DIR/nats-cluster.sh" >/dev/null 2>&1 || exit 2
+  printf 'URL=%s' "$AOS_NATS_URL" )" || nx_rc=$?
+if [ "$nx_rc" -eq 0 ] && [ "$nx_out" = "URL=127.0.0.1:14225,127.0.0.1:14226,127.0.0.1:14227" ]; then
+  pass "NX5: controlo — com o docker a responder, o cluster sobe e o AOS_NATS_URL chega ao gate"
+else
+  bad "NX5: o caminho feliz partiu-se (rc=$nx_rc): $nx_out"
+fi
+rm -rf "$NX_TMP"; NX_TMP=""
 
 
 # ============================================================================

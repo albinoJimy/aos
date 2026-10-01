@@ -259,8 +259,13 @@ transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de me
 
 > **O gate `nats` levanta Docker e demora.** Entrou em AOS-431 e corre um cluster JetStream de
 > quatro nós para exercitar as suites que, sem ele, SALTAM — eram 45, em 13 ficheiros. Sem
-> Docker ele **salta e declara-o** (`AOS_SKIPPED_STEP`), como os outros gates que dependem de
-> contentores; o que não faz é ficar verde em silêncio. Para o correr sozinho: `make ci-nats`.
+> Docker **utilizável** — sem o CLI, ou com o CLI e o daemon inacessível (`docker info` falha,
+> AOS-471) — ele **salta e declara-o** (`AOS_SKIPPED_STEP`), como os outros gates que dependem
+> de contentores; o que não faz é ficar verde em silêncio. **Em CI não salta**: com `CI` ou
+> `GITHUB_ACTIONS` definidos é vermelho, porque o job `nats` é required check e o agregador lê
+> `success`, não o `AOS_SKIPPED_STEP`. Com o daemon a responder, um cluster que não sobe é
+> sempre vermelho, a nomear o `nats-cluster.sh` e o código com que saiu. Para o correr
+> sozinho: `make ci-nats`.
 > Para levantar só o cluster e trabalhar contra ele:
 > `eval "$(bash scripts/ci/nats-cluster.sh up)"`, e `bash scripts/ci/nats-cluster.sh down` no
 > fim.

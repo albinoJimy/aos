@@ -59,6 +59,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/gotest-pacotes.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/nats-levantar.sh"
 setup_env
 
 CLUSTER="$(dirname "${BASH_SOURCE[0]}")/nats-cluster.sh"
@@ -116,24 +117,36 @@ esac
 # =============================================================================================
 log_gate "nats · cluster JetStream de 4 nós (3 no board + 1 fora, para a fronteira soberana)"
 
-if ! command -v docker >/dev/null 2>&1; then
-  # SEM DOCKER SALTA-SE, E DECLARA-SE. É a mesma política dos outros gates que dependem de
+if ! nats_docker_utilizavel; then
+  # DOCKER INUTILIZÁVEL — CLI ausente OU daemon inacessível (AOS-471; até aqui só se via o CLI,
+  # e um CLI sem daemon morria mais abaixo por `AOS_NATS_URL: unbound variable`).
+  if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+    # EM CI NÃO SE SALTA. O job `nats` existe só para exercitar o substrato replicado real, e é
+    # required check: o agregador `gates` lê `success` e não lê o AOS_SKIPPED_STEP. Um runner
+    # sem docker utilizável sairia verde sem ter medido nada — registar não é impedir. É a regra
+    # dos outros escapes que a CI não honra (pisos, desvio de raiz, entrega parcial).
+    log_fail "nats: $NATS_DOCKER_MOTIVO — a CI não salta o substrato replicado real"
+    log_fail "     o job \`nats\` existe para o exercitar; um verde sem cluster seria um verde que não mediu nada"
+    exit 1
+  fi
+  # LOCALMENTE SALTA-SE, E DECLARA-SE. É a mesma política dos outros gates que dependem de
   # contentores (`SKIP_DOCKER`): registar não é impedir, e o veredicto final redeclara-o.
-  gate_skip "nats" "docker não disponível" \
+  gate_skip "nats" "$NATS_DOCKER_MOTIVO" \
     "o substrato replicado real NÃO foi exercitado; tudo o que o repositório afirma sobre JetStream continua por confirmar nesta execução"
   gate_skip_report || true
   exit 0
 fi
 
-if ! eval "$(bash "$CLUSTER" up)"; then
-  log_fail "nats: o cluster não subiu"
-  exit 1
-fi
-# O `trap` derruba SEMPRE — incluindo em falha. Um cluster deixado de pé num runner partilhado
-# rouba as portas ao job seguinte, e localmente confunde a execução seguinte com streams de
-# uma anterior (foi exactamente assim que um `subjects overlap` apareceu durante o AOS-431 e
-# custou um diagnóstico a apontar para o sítio errado).
+# O `trap` derruba SEMPRE — incluindo em falha, e por isso vem ANTES do `up`: um `up` que morra
+# a meio (meta-leader por eleger, nkey por gerar) deixa contentores de pé. Um cluster deixado de
+# pé num runner partilhado rouba as portas ao job seguinte, e localmente confunde a execução
+# seguinte com streams de uma anterior (foi exactamente assim que um `subjects overlap` apareceu
+# durante o AOS-431 e custou um diagnóstico a apontar para o sítio errado).
 trap 'bash "$CLUSTER" down >/dev/null 2>&1 || true' EXIT
+
+# Docker utilizável e o cluster não sobe: VERMELHO, e o diagnóstico nomeia o `nats-cluster.sh`
+# (`nats_levantar` verifica o código e a saída do `up` ANTES do `eval`, e o AOS_NATS_URL depois).
+nats_levantar "$CLUSTER" || exit 1
 
 log_ok "nats: cluster de pé — AOS_NATS_URL=$AOS_NATS_URL"
 
