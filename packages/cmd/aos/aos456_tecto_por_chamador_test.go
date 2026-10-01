@@ -1178,6 +1178,7 @@ var marcadoresDeDobra = []string{
 	marcadorDobra456,
 	marcadorDobraSSE,
 	marcadorDobraFila,
+	marcadorDobraGeracoes,
 	marcadorDobraLigacoes,
 }
 
@@ -1185,6 +1186,7 @@ const (
 	marcadorDobra456      = "TECTO POR-CHAMADOR (AOS-456)"
 	marcadorDobraSSE      = "TECTO DE STREAMS SSE POR LEITOR (AOS-459)"
 	marcadorDobraFila     = "TECTO DA FILA DE PLANOS (AOS-464)"
+	marcadorDobraGeracoes = "TECTO DE GERACOES POR PEDIDO (AOS-467)"
 	marcadorDobraLigacoes = "TECTO DE LIGACOES ACEITES (AOS-465)"
 )
 

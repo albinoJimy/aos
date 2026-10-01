@@ -81,6 +81,8 @@ func clearIngressEnv(t *testing.T) {
 	t.Setenv("AOS_PLAN_MAX_PENDING_PER_SUBMITTER", "")
 	// AOS-465: pela mesma razão, e à nascença em vez de em revisão.
 	t.Setenv("AOS_API_MAX_CONNS", "")
+	// AOS-467: idem — o compose exporta-a sempre (default 5).
+	t.Setenv("AOS_PLAN_MAX_GENERATIONS", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -108,8 +110,8 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		// (AOS-458 — as leituras, que até lá não tinham tecto de taxa nenhum), e os dois tectos de
 		// streams SSE (AOS-459 — o global, que até lá não era afinável por ambiente, e a repartição
 		// por leitor).
-		if len(opts) != 8 {
-			t.Fatalf("esperava 8 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE + os dois tectos da FILA DE PLANOS do AOS-464 + o tecto de LIGACOES do AOS-465), vieram %d", len(opts))
+		if len(opts) != 9 {
+			t.Fatalf("esperava 9 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE + os dois tectos da FILA DE PLANOS do AOS-464 + o tecto de GERACOES do AOS-467 + o tecto de LIGACOES do AOS-465), vieram %d", len(opts))
 		}
 	})
 

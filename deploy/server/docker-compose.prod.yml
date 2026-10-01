@@ -404,6 +404,9 @@ services:
       AOS_API_MAX_CONNS: "${AOS_API_MAX_CONNS:-1024}"
       AOS_PLAN_MAX_PENDING: "${AOS_PLAN_MAX_PENDING:-1000}"
       AOS_PLAN_MAX_PENDING_PER_SUBMITTER: "${AOS_PLAN_MAX_PENDING_PER_SUBMITTER:-125}"
+      # AOS-467 — tecto de geracoes de planeamento por pedido (default 5). A geracao que o passa e
+      # entregue marcada e o aos-orq fecha o pedido com a saida 12. Deploy: o aos-orq antes do no.
+      AOS_PLAN_MAX_GENERATIONS: "${AOS_PLAN_MAX_GENERATIONS:-5}"
       # AOS-458 — admission de TAXA do plano de DADOS inteiro, as LEITURAS incluídas. Até esse
       # ticket as sete rotas de leitura que chamam `readGovernance.authorize` não tinham tecto de
       # taxa nenhum, e em produção esse authorize verifica um JWS (RS256 ~42us, ES256 ~91us): um

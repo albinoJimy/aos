@@ -266,6 +266,11 @@ printf 'aviso: run=plan-p11 geracao=1 classe=terminal codigo=11\n' > "${OUTBOX}"
 avisar
 exige "o 11: «submissor fora do mandato», título próprio, prioridade high" bash -c 'grep -qF "CORPO Plano $2: terminal, código 11 (submissor fora do mandato)." "$1" && grep -qF "H Title: AOS: plano fora do mandato (codigo 11)" "$1" && grep -qF "H Priority: high" "$1"' _ "${STUB_DIR}/ntfy.log" "$(pseudo plan-p11)"
 
+echo "── 4. o código 12 tem rótulo próprio (AOS-467)"
+printf 'aviso: run=plan-p12 geracao=6 classe=terminal codigo=12\n' > "${OUTBOX}"
+avisar
+exige "o 12: «gerações esgotadas», título próprio, prioridade high" bash -c 'grep -qF "CORPO Plano $2: terminal, código 12 (gerações esgotadas)." "$1" && grep -qF "H Title: AOS: plano fechado, geracoes esgotadas (codigo 12)" "$1" && grep -qF "H Priority: high" "$1"' _ "${STUB_DIR}/ntfy.log" "$(pseudo plan-p12)"
+
 echo "── 5. espaços Unicode no run_id casam em qualquer locale"
 RU=$'plan-u\xe3\x80\x80x\xe2\x80\xa8y'   # U+3000 e U+2028, que o ValidarStreamID aceita
 consume 0 "aviso: run=${RU} geracao=1 classe=terminal codigo=0"

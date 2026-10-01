@@ -483,6 +483,10 @@ type pedidoReclamado struct {
 	// RequestedBy é quem submeteu o pedido (AOS-439), para o `consume` o confrontar com o seu
 	// mandato ANTES de planear ([requerenteForaDoMandato]). Vazio num nó anterior ou sem gate.
 	RequestedBy string `json:"requested_by"`
+	// GeracoesEsgotadas — o nó entrega esta geração só para o pedido ser FECHADO: passou o tecto de
+	// gerações de planeamento (AOS-467). O `consume` fecha-o com [exitGeracoesEsgotadas] sem planear.
+	// Falso num nó anterior.
+	GeracoesEsgotadas bool `json:"generations_exhausted"`
 }
 
 // ReclamarPedido pede ao nó UM pedido de plano pendente, reclamando-o.

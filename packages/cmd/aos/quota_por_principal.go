@@ -561,13 +561,16 @@ func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, 
 // devolve um [quotaEsgotadaError], e a reclamação salta o pedido, que fica pendente até haver quota.
 // Contar sem travar deixava um principal esgotado continuar a planear, que é o que o ticket fecha.
 // A repetição de uma entrega já feita (a reclamação falhou depois dela) passa sem verificar.
-func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runID string, geracao int) error {
+//
+// `verificarQuota` a falso é a entrega de FECHO do tecto de gerações (AOS-467): não planeia, e
+// exigir-lhe quota deixaria pendente, até à reposição, um pedido que só falta fechar.
+func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runID string, geracao int, verificarQuota bool) error {
 	if geracao < 1 {
 		return nil
 	}
 	chave := chaveDoPlano(runID)
 	verificar := func(st estadoDaQuota, mes string, reserva uint64) error {
-		if geracao < 2 {
+		if geracao < 2 || !verificarQuota {
 			return nil
 		}
 		if e, ja := st.entregas[chave][geracao]; ja && e.ReservaDoPlano == reserva {
@@ -810,6 +813,6 @@ func principalQuotaPostureBanner(q *quotaPorPrincipal) []string {
 	if q.limite.CostMicroUSD != integration.UnlimitedCostMicroUSD {
 		custo = fmt.Sprintf("%d micro-USD", q.limite.CostMicroUSD)
 	}
-	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao conta o consumo que o drenador (aos-orq) mede e declara; uma geracao NAO MEDIDA (ou entregue sem desfecho) custa o que se mediu MAIS a reserva. So o fecho do pedido (desfecho terminal no log) liberta o que sobra da reserva. Uma RE-OFERTA (geracao >= 2) so se entrega com quota do mes corrente para mais uma reserva; sem ela o pedido fica pendente ate haver (tambem a re-verificacao de um plano a espera de humano). Os dolares nunca sao medidos pelo aos-orq: cada geracao que chamou o modelo custa a reserva em dolares. Uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido nao tem tecto (AOS-467); o consumo e DECLARADO pelo drenador, que o no nao verifica. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
+	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao conta o consumo que o drenador (aos-orq) mede e declara; uma geracao NAO MEDIDA (ou entregue sem desfecho) custa o que se mediu MAIS a reserva. So o fecho do pedido (desfecho terminal no log) liberta o que sobra da reserva. Uma RE-OFERTA (geracao >= 2) so se entrega com quota do mes corrente para mais uma reserva; sem ela o pedido fica pendente ate haver (tambem a re-verificacao de um plano a espera de humano). Os dolares nunca sao medidos pelo aos-orq: cada geracao que chamou o modelo custa a reserva em dolares. Uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido tem o tecto AOS_PLAN_MAX_GENERATIONS (AOS-467), e a geracao que o passa fecha o pedido sem planear; o consumo e DECLARADO pelo drenador, que o no nao verifica. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
 		q.limite.Tokens, custo, q.reserva.Tokens, q.reserva.CostMicroUSD, q.reservaDoPlano.Tokens, q.reservaDoPlano.CostMicroUSD)}
 }

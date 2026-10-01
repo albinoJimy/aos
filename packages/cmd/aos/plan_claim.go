@@ -123,6 +123,12 @@ type pedidoNaFila struct {
 	Seq       uint64 // do facto de submissão — é a ordem de chegada
 	Geracao   int    // a PRÓXIMA geração livre de reclamação
 	Terminado bool
+	// GeracoesContadas é quantas das gerações 1..Geracao contam para o tecto do AOS-467: todas menos
+	// as que seguem uma geração acabada à espera de humano (as re-verificações).
+	GeracoesContadas int
+	// Esgotado marca a geração que passa o tecto: entrega-se para o drenador FECHAR o pedido, não
+	// para planear. Decide-o a reclamação, que conhece o tecto — a projecção não conhece.
+	Esgotado bool
 }
 
 // projectarFila reconstitui o estado da fila a partir do log.
@@ -268,6 +274,16 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 			}
 		}
 		e.p.Geracao = e.maiorGeracao + 1
+		// GERAÇÕES QUE CONTAM PARA O TECTO (AOS-467): todas menos as que seguem um `aguarda_humano`.
+		// Desconta-se pelo MAPA dos desfechos e não por um laço de 1 até à geração: um desfecho
+		// reportado para uma geração arbitrária (10⁹) faria da projecção um laço de mil milhões.
+		reverificacoes := 0
+		for g, classe := range e.desfechoDe {
+			if classe == DesfechoAguardaHumano && g >= 1 && g < e.p.Geracao {
+				reverificacoes++
+			}
+		}
+		e.p.GeracoesContadas = e.p.Geracao - reverificacoes
 		fora = append(fora, e.p)
 	}
 	// Ordem de CHEGADA. Sem isto, um pedido azarado podia ficar para trás indefinidamente.
@@ -320,6 +336,9 @@ type respostaDeReclamo struct {
 	// humano não autorizou. Não revela nada novo a quem o recebe: o drenador já recebe o objectivo
 	// decifrado, e o `requested_by` é o que o nó derivará do mesmo pedido no `POST /runs`.
 	RequestedBy string `json:"requested_by,omitempty"`
+	// GeracoesEsgotadas marca a geração que passou o tecto de gerações (AOS-467): o drenador fecha o
+	// pedido com a saída 12, SEM planear. Um drenador anterior ignora o campo e planeia.
+	GeracoesEsgotadas bool `json:"generations_exhausted,omitempty"`
 }
 
 // handlePlanClaim reclama UM pedido pendente e devolve-o.
@@ -374,6 +393,15 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		// A forma do wire não muda: o consumidor recebe `objective` em claro, como sempre, pelo
 		// canal que o gate soberano já autenticou. É por isto que ele nunca precisa da chave.
 		objetivo, errAbrir := abrirObjetivo(h.node, pedido.Payload)
+		// UM PEDIDO ESGOTADO ENTREGA-SE MESMO ILEGÍVEL (AOS-467): o drenador fecha-o sem planear, e
+		// não precisa do objectivo. É o que fecha, por fim, o pedido de objectivo ilegível do
+		// AOS-442 — re-reclamado a cada expiração, as suas gerações contam, e ao passar o tecto
+		// entrega-se para fechar em vez de voltar à fila para sempre.
+		if errAbrir != nil && pedido.Esgotado {
+			h.logf("plan-claim: pedido %q geracao %d ESGOTADO e de objectivo ilegivel — entregue sem objectivo, para fechar: %v",
+				pedido.RunID, pedido.Geracao, errAbrir)
+			objetivo, errAbrir = "", nil
+		}
 		if errAbrir != nil {
 			// A CAUSA MAIS PROVÁVEL É LEGÍTIMA, e é o Art. 17 a funcionar: a KEK do titular foi
 			// destruída por um `/dsar/erase` e o pedido deixou de ser executável.
@@ -398,6 +426,8 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 			Geracao:   pedido.Geracao,
 			// AOS-439: o submissor, para o drenador o confrontar com o seu mandato antes de planear.
 			RequestedBy: pedido.Payload.Principal,
+			// AOS-467: a geração passou o tecto — o drenador fecha o pedido (saída 12) sem planear.
+			GeracoesEsgotadas: pedido.Esgotado,
 		})
 		return
 	}
@@ -446,8 +476,12 @@ func (h *apiHandler) reclamarUm(ctx context.Context, reclamante readerIdentity) 
 		// Uma quota ESGOTADA também é só dele: uma re-oferta não se entrega sem quota para mais uma
 		// geração (decisão do dono), e o pedido fica pendente até haver. Qualquer outra falha é do
 		// substrato, e é a reclamação inteira que não se faz (503).
+		// O TECTO DE GERAÇÕES (AOS-467): a geração que o passa entrega-se MARCADA, para o drenador
+		// fechar o pedido sem planear. Não verifica quota — não planeia —, e é por isso que tem de
+		// ser decidido AQUI, antes da entrega: depois, a quota esgotada já a teria deixado pendente.
+		p.Esgotado = h.cfg.planMaxGenerations > 0 && p.GeracoesContadas > h.cfg.planMaxGenerations
 		if h.node.QuotaPorPrincipal != nil {
-			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao); errors.Is(err, ErrPrincipalQuotaUnreadable) {
+			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao, !p.Esgotado); errors.Is(err, ErrPrincipalQuotaUnreadable) {
 				h.logf("plan-claim: pedido %q NAO entregue — a quota do titular e ilegivel: %v", p.RunID, err)
 				continue
 			} else if errors.Is(err, ErrPrincipalQuotaExhausted) {

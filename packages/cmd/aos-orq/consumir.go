@@ -65,18 +65,21 @@ const maxPedidosPorDrenagem = 16
 //	10 exitDocumentoRecusado   TERMINAL     documento/snapshot recusado; determinista (AOS-442)
 //	11 exitRequerenteForaDoMandato TERMINAL o submissor não consta dos requesters do mandato;
 //	                                        determinista até o humano re-assinar (AOS-439)
+//	12 exitGeracoesEsgotadas   TERMINAL     o nó marcou a geração como a que passa o tecto de
+//	                                        gerações do pedido; fecha-se sem planear (AOS-467)
 //	0 (sem erro)               TERMINAL     o plano correu
 //	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
 //
 // O GENÉRICO É TRANSITÓRIO, e é a escolha menos óbvia. Um erro que não soubemos classificar pode
 // ser uma configuração má (que se repetirá) ou uma falha de rede (que não). Tratá-lo como
 // terminal PERDE o pedido em silêncio, que é o defeito que este eixo existe para fechar; tratá-lo
-// como transitório devolve-o à fila, onde fica visível e contável. O tecto de pendentes é o que
-// impede isso de virar um laço infinito — e é a razão pela qual o tecto recusa em vez de
-// descartar.
+// como transitório devolve-o à fila, onde fica visível e contável. O que impede isso de virar um
+// laço infinito é o tecto de GERAÇÕES do nó (AOS-467): a geração que o passa chega marcada e fecha
+// com [exitGeracoesEsgotadas]. Até ao AOS-467 este comentário atribuía esse papel ao tecto de
+// pendentes, que não o tem — limita quantos pedidos esperam, não quantas vezes um deles re-planeia.
 func classeDoDesfecho(codigo int) string {
 	switch codigo {
-	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato:
+	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato, exitGeracoesEsgotadas:
 		return "terminal"
 	case exitPendenteDeAprovacao:
 		return "aguarda_humano"
@@ -213,6 +216,28 @@ func cmdConsume(args []string) (err error) {
 		// liquida a reserva de planeamento contra a quota de quem submeteu o pedido. Um por pedido,
 		// mesmo nos desfechos sem `serve`: zero chamadas é zero medido.
 		medidor := &medidorDoPlaneamento{}
+
+		// AOS-467: a geração que passa o tecto de gerações fecha JÁ — sem `serve`, sem modelo. Quem
+		// decidiu foi o nó, que numera as gerações; aqui escreve-se o desfecho, como em todos os
+		// outros casos. O documento de uma geração anterior apaga-se: o pedido acabou.
+		if pedido.GeracoesEsgotadas {
+			consumidos++
+			resumo := resumoDoPedido{origem: origemSemServe, geracao: pedido.Geracao, nos: -1,
+				duracao: time.Since(inicio), erro: "geracoes_esgotadas"}
+			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitGeracoesEsgotadas, resumo.linha())
+			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
+				exitGeracoesEsgotadas, detalheDoDesfecho(resumo), medidor.consumo()); err != nil {
+				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
+					"fila quando a reclamacao expirar\n", pedido.RunID, err)
+				metricas.registarDesfecho(resumo, "terminal", exitGeracoesEsgotadas, false)
+				continue
+			}
+			metricas.registarDesfecho(resumo, "terminal", exitGeracoesEsgotadas, true)
+			if doc, err := caminhoDoDocumento(pasta, pedido.RunID); err == nil {
+				apagarDocumentoDoPlano(doc)
+			}
+			continue
+		}
 
 		// AOS-439: um submissor que o mandato não nomeia fecha JÁ — sem `serve`, sem decomposição,
 		// sem o modelo a correr com o NHI do mandato por quem o humano não autorizou.
