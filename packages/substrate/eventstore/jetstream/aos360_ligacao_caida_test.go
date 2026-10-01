@@ -68,6 +68,14 @@ func ligacaoQueCai(t *testing.T) (*natsjs.Conn, func()) {
 		if _, err := br.ReadString('\n'); err != nil { // CONNECT
 			return
 		}
+		// O handshake termina num PING à espera do PONG (AOS-470): é o que prova ao cliente
+		// que o CONNECT foi aceite.
+		if _, err := br.ReadString('\n'); err != nil { // PING
+			return
+		}
+		if _, err := io.WriteString(c, "PONG\r\n"); err != nil {
+			return
+		}
 		close(pronto)
 		_, _ = io.Copy(io.Discard, br) // o servidor ouve e não responde, até ser derrubado
 	}()
