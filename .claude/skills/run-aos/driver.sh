@@ -11,6 +11,12 @@
 # Uso: bash .claude/skills/run-aos/driver.sh <comando> [args]
 set -uo pipefail
 
+# O driver compila e testa no MESMO modo de resolução que os gates: GOWORK=off (AOS-387). Há um
+# go.work na raiz e o Go descobre-o sozinho; em modo workspace o `test` por omissão
+# (packages/cmd/aos) avermelharia num teste que compila o issuer com GOFLAGS=-mod=mod, que o
+# workspace recusa. Ver scripts/ci/lib.sh (setup_env) e tecnica/11 §8.1.
+export GOWORK=off
+
 # --- localização -----------------------------------------------------------------------------
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"

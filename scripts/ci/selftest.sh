@@ -35,6 +35,8 @@
 #      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
 #      ref-lint nem entra na §4; directivas mal formadas falham fechado, e o que está
 #      em código (cercas, crases simples ou múltiplas) não é directiva (AOS-318).
+#  GW) um módulo em packages/ sem `use` no go.work avermelha a verificação do
+#      workspace que o gate build corre (AOS-387).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -171,6 +173,8 @@ RTM_GEN_SHA_INICIO="$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py
 GOTEST_TMP=""
 # §Z trabalha sobre uma cópia do corpus (como §S4): não muta a árvore.
 MENCAO_TMP=""
+# §GW monta uma árvore sintética FORA do repo: não muta a árvore.
+GOWORK_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -182,6 +186,7 @@ cleanup() {
   rm -rf "$RTM_SANDBOX"
   rm -rf "$GOTEST_TMP"
   rm -rf "$MENCAO_TMP"
+  rm -rf "$GOWORK_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
@@ -1818,6 +1823,72 @@ for y8v in 9 10.5; do
   fi
 done
 rm -rf "$GOTEST_TMP"; GOTEST_TMP=""
+
+# ============================================================================
+# GW) módulo sem `use` no go.work avermelha a verificação do workspace (AOS-387)
+# ============================================================================
+log_gate "self-test GW · módulo de packages/ sem \`use\` no go.work avermelha o gate build (AOS-387)"
+# Os gates correm com GOWORK=off (setup_env), pelo que NADA na CI usa o go.work — e um ficheiro
+# que nada usa apodrece em silêncio. A verificação do gowork.sh é a única coisa que o impede.
+# Árvore sintética fora do repo (dois módulos), com o go.work gerado pelo MESMO gerador.
+GOWORK_TMP="$(mktemp -d)"
+GOWORK_SH="$CI_DIR/gowork.sh"
+gw_modulo() { mkdir -p "$GOWORK_TMP/packages/$1"; printf 'module aos-selftest/%s\n\ngo 1.24\n' "$1" > "$GOWORK_TMP/packages/$1/go.mod"; }
+gw_modulo a; gw_modulo b
+
+# GW1 — controlo: o go.work recém-gerado passa. Sem isto, GW2–GW4 podiam ser vermelhos por
+# qualquer razão (ex.: o verificador nunca passar).
+if bash "$GOWORK_SH" gerar --root "$GOWORK_TMP" >/dev/null 2>&1 \
+   && bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" >/dev/null 2>&1; then
+  pass "GW1: controlo — um go.work que cobre os módulos passa a verificação"
+else
+  bad "GW1: o go.work gerado pelo próprio gerador foi recusado — o verificador está sempre vermelho"
+fi
+
+# GW2 — o caso que o AC nomeia: módulo novo em packages/ sem `use`.
+gw_modulo c
+if out="$(bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" 2>&1)"; then
+  bad "GW2: um módulo em packages/ sem \`use\` passou a verificação do go.work"
+else
+  case "$out" in
+    *"SEM \`use\`"*"./packages/c"*) pass "GW2: módulo sem \`use\` (./packages/c) avermelha, e o diagnóstico nomeia-o" ;;
+    *) bad "GW2: avermelhou mas sem nomear ./packages/c como módulo sem \`use\`: $out" ;;
+  esac
+fi
+
+# GW3 — o simétrico: um `use` que já não é módulo (removido/movido) também avermelha.
+rm -rf "$GOWORK_TMP/packages/c"
+rm -f "$GOWORK_TMP/packages/b/go.mod"
+if out="$(bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" 2>&1)"; then
+  bad "GW3: um \`use\` de um directório sem go.mod passou a verificação"
+else
+  case "$out" in
+    *"NÃO é um módulo"*"./packages/b"*) pass "GW3: \`use\` órfão (./packages/b) avermelha" ;;
+    *) bad "GW3: avermelhou mas sem nomear o \`use\` órfão ./packages/b: $out" ;;
+  esac
+fi
+
+# GW4 — go.work ausente é vermelho, não «nada a verificar».
+rm -f "$GOWORK_TMP/go.work"
+if bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" >/dev/null 2>&1; then
+  bad "GW4: sem go.work a verificação passou — apagar o ficheiro desligava o controlo"
+else
+  pass "GW4: go.work ausente avermelha a verificação"
+fi
+
+# GW5 — O GATE USA-A. GW1–GW4 provam o verificador; isto prova que o build.sh o corre e que o
+# vermelho dele chega ao rc do gate. Sem isto, tirar a chamada do build.sh deixava GW1–GW4
+# verdes e o go.work outra vez sem guarda.
+if ! grep -qE '^if bash "\$CI_DIR/gowork\.sh" verificar; then$' "$CI_DIR/build.sh"; then
+  bad "GW5: o build.sh não corre \`gowork.sh verificar\`"
+elif ! awk '/^if bash "\$CI_DIR\/gowork\.sh" verificar; then$/{d=1} d&&/^else$/{e=1} e&&/rc=1/{ok=1} d&&/^fi$/{exit} END{exit !ok}' "$CI_DIR/build.sh"; then
+  bad "GW5: o build.sh corre a verificação do go.work mas o vermelho dela não chega ao rc"
+elif ! grep -qE 'gowork\.sh" compilar \|\| rc=1' "$CI_DIR/build.sh"; then
+  bad "GW5: o build.sh não compila o workspace (gowork.sh compilar) com o rc guardado"
+else
+  pass "GW5: o build.sh corre a verificação e o build do workspace, e o vermelho chega ao rc"
+fi
+rm -rf "$GOWORK_TMP"; GOWORK_TMP=""
 
 
 # ============================================================================

@@ -496,6 +496,23 @@ setup_env() {
     fi
   fi
 
+  # OS GATES RESOLVEM COMO ANTES DO go.work — pelas `replace` de cada go.mod (AOS-387).
+  #
+  # Há um go.work na raiz (scripts/ci/gowork.sh) e o Go descobre-o sozinho a partir de qualquer
+  # directório abaixo dela. Sem esta linha, todos os gates passariam a correr em modo workspace
+  # só por o ficheiro existir. É forçado, e não um default sobreponível, porque o modo workspace
+  # MUDA o que os gates medem — medido a 2026-10-01:
+  #   - `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` (packages/cmd/aos) compila o
+  #     issuer com `GOFLAGS=-mod=mod`, que o modo workspace recusa («-mod may only be set to
+  #     readonly or vendor when in workspace mode») — o gate test avermelhava;
+  #   - o self-test A injecta um módulo em packages/ sem `use`: em modo workspace o `go test`
+  #     dele falha por não estar no workspace, e o «vermelho» do A2 deixava de provar o que diz;
+  #   - os módulos fora de packages/ (scripts/ci/attest, deploy/*) não estão no workspace e nem
+  #     compilariam; e o `go list -m all` do sbom.sh passaria a listar o grafo dos 49 módulos.
+  # O go.work é para quem desenvolve (gopls, `go work use`, um build que atravessa tudo); o
+  # build.sh prova à parte, e explicitamente, que ele cobre a árvore e compila offline.
+  export GOWORK=off
+
   local gobin; gobin="$(go env GOPATH)/bin"
   case ":$PATH:" in *":$gobin:"*) ;; *) PATH="$gobin:$PATH";; esac
   # DIRECTÓRIO DO ARNÊS. É onde [ensure_python] põe o shim que ele próprio provisiona —

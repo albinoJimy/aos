@@ -1125,26 +1125,41 @@ gates e do nó, e decidir/registar a política de coexistência com as `replace`
 
 ### Critérios de Aceitação
 
-- [ ] Existe um `go.work` na raiz cujo conjunto `use` é exactamente o output de
+- [x] Existe um `go.work` na raiz cujo conjunto `use` é exactamente o output de
       `find packages -name go.mod -printf '%h\n'` (verificável por script; módulo novo sem `use` avermelha)
-- [ ] Decisão registada em `tecnica/11` (ou ADR curto): (a) `replace` committadas mantêm-se — ou
+      — gerado por `scripts/ci/gowork.sh gerar` (49 `use`, `go 1.25`, `toolchain go1.25.13`);
+      `gowork.sh verificar` rc=0. Negativo na árvore real: dois módulos descartáveis sem `use` →
+      `verificar` rc=1 e `build.sh` rc=1, nomeando-os. Durável: self-test Z1–Z5 (verde em `selftest.sh` rc=0)
+- [x] Decisão registada em `tecnica/11` (ou ADR curto): (a) `replace` committadas mantêm-se — ou
       removem-se, com racional; (b) `go.work`/`go.work.sum` committados ou `.gitignore`d, com racional
-- [ ] `build`, `lint`, `layer-lint`, `test` (`-race` + pisos de cobertura), `dormencia`,
+      — `tecnica/11` §8.1: (a) mantêm-se; (b) `go.work` committado, `go.work.sum` desnecessário (medido)
+      e NÃO ignorado
+- [x] `build`, `lint`, `layer-lint`, `test` (`-race` + pisos de cobertura), `dormencia`,
       `integration`, `apex` e `selftest` ficam verdes no estado em que a CI os corre (com `GOWORK`
-      ligado ou `off`, documentado)
-- [ ] As fronteiras nó↔ORQ/SCH continuam impostas: testes de fronteira (`TestBoundary_NodeDoesNotImport…`)
-      e `layer-lint` provam que o grafo de imports não mudou
-- [ ] Regra zero-dep/offline mantém-se: `cache-prime`/build offline reproduz sem rede
-- [ ] `bash .claude/skills/run-aos/driver.sh smoke` passa
-- [ ] Controlo positivo: integrar um módulo novo passa a exigir só `go work use ./…` e zero edições de
-      `replace` noutros `go.mod`
+      ligado ou `off`, documentado) — `GOWORK=off` forçado em `setup_env`; todos rc=0 (ver Entrega)
+- [x] As fronteiras nó↔ORQ/SCH continuam impostas: testes de fronteira (`TestBoundary_NodeDoesNotImport…`)
+      e `layer-lint` provam que o grafo de imports não mudou — `layer-lint` rc=0; os 6 `TestBoundary_*`
+      PASS em `GOWORK=off` e em modo workspace; grafo `go list -test -deps` dos 49 módulos idêntico nos
+      dois modos (8254 arestas, mesmo sha256); nenhum `.go` nem `go.mod` tocado
+- [x] Regra zero-dep/offline mantém-se: `cache-prime`/build offline reproduz sem rede — `GOMODCACHE`
+      frio → `cache-prime.sh` rc=0 → `GOPROXY=off build.sh` rc=0, incluindo o build do workspace; não
+      nasce `go.work.sum`
+- [x] `bash .claude/skills/run-aos/driver.sh smoke` passa — SMOKE VERDE 10/10, rc=0
+- [~] Controlo positivo: integrar um módulo novo passa a exigir só `go work use ./…` e zero edições de
+      `replace` noutros `go.mod` — **cumpre-se em modo workspace, não no modo da CI.** Com dois
+      módulos descartáveis (`zzprobe` importa RM + eventstore; `zzconsumer` importa `zzprobe`), ambos
+      com `go.mod` só de `module`+`go`: `go work use` → `verificar` rc=0, `compilar` rc=0, sha dos
+      `go.mod` existentes inalterado. Mas a CI corre com `GOWORK=off` (decisão (a)), e aí o mesmo módulo
+      falha (`no required module provides package …/zzprobe`): o `go.mod` do módulo novo continua a
+      precisar de `require`+`replace`. Fechar isto exige a CI em modo workspace, bloqueada por um `.go`
+      (ver Entrega)
 
 ### Definition of Done
 
-- [ ] AC satisfeitos, um a um, com evidência nomeada
-- [ ] Decisão de coexistência (`replace`) e de commit (`go.work`) registada e fundamentada
-- [ ] Suite completa de gates verde + smoke; grafo de imports provado inalterado
-- [ ] `tecnica/11` actualizado; RTM regenerada se algum estado/ADR mudar; sem `.go` tocado
+- [~] AC satisfeitos, um a um, com evidência nomeada — seis de sete; o AC7 é parcial
+- [x] Decisão de coexistência (`replace`) e de commit (`go.work`) registada e fundamentada
+- [x] Suite completa de gates verde + smoke; grafo de imports provado inalterado
+- [x] `tecnica/11` actualizado; RTM regenerada se algum estado/ADR mudar; sem `.go` tocado
 
 ### Handoff para Claude Code
 
@@ -1189,9 +1204,97 @@ Sequência recomendada (ambiente com rede): gerar `go.work` (os 53 `use`) → `g
 `go mod tidy` por módulo até o grafo fechar → gerar e committar `go.work.sum` → remover as 397
 `replace` → validar a suite completa OFFLINE (`GOPROXY=off`) + smoke → revisão adversarial.
 
+### Entrega (2026-10-01)
+
+**Modo da CI: `GOWORK=off`, forçado em `setup_env`.** O Go descobre o `go.work` sozinho a partir
+de qualquer directório abaixo da raiz, pelo que, sem isto, todos os gates passariam a correr em
+modo workspace só por o ficheiro existir. O modo workspace foi medido e recusado como modo da CI,
+porque muda o que os gates medem:
+- `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` compila o issuer num subprocesso com
+  `GOFLAGS=-mod=mod`. O workspace recusa-o («-mod may only be set to readonly or vendor when in
+  workspace mode»), e o gate `test` avermelha. Corrigir o teste é uma alteração a `.go`, fora de escopo;
+- o self-test A2 deixaria de provar o que diz: em modo workspace até um teste verde falha num módulo
+  sem `use` (`directory prefix . does not contain modules listed in go.work`);
+- `scripts/ci/attest` e os módulos de `deploy/` deixam de compilar, e o `go list -m all` do `sbom.sh`
+  passa de 4 para 57 módulos.
+
+O driver do run-aos exporta a mesma `GOWORK=off`. O seu `test` por omissão (`packages/cmd/aos`)
+cairia no mesmo teste.
+
+**O que guarda o `go.work`, já que a CI não o usa.** `scripts/ci/gowork.sh` tem três modos:
+- `gerar` escreve o ficheiro;
+- `verificar` exige:
+  - o conjunto `use` igual ao dos `go.mod` de `packages/`, lido pelo parser do Go;
+  - `go` igual à maior directiva dos módulos;
+  - `toolchain` igual ao `FROM golang:` da imagem de produção;
+  - nenhum `replace` no ficheiro;
+- `compilar` faz um único `go build` sobre os 49 módulos em modo workspace, com `GOPROXY=off` e
+  `-mod=readonly`, e avermelha se aparecer um `go.work.sum` por versionar.
+
+O `build.sh` corre `verificar` e `compilar` depois do ciclo por-módulo. O self-test Z prova numa
+árvore sintética, fora do repo:
+- Z1, o controlo: o ficheiro gerado passa;
+- Z2: um módulo sem `use` avermelha, e o diagnóstico nomeia-o;
+- Z3: um `use` órfão avermelha;
+- Z4: um `go.work` ausente avermelha;
+- Z5: o `build.sh` faz a chamada e o vermelho chega ao rc.
+
+O predicado do Z5 foi mutado três vezes (sem a chamada, com o rc engolido, com o `compilar`
+engolido), e morde nas três.
+
+**Medições que corrigem os pré-requisitos de 2026-09-09.** A tentativa revertida previa um
+`go.work.sum` obrigatório e rede para o gerar. Isso valia para o caminho que removia as `replace`.
+Com elas mantidas:
+- o workspace resolve offline sem `go.work.sum`;
+- as dependências externas têm a mesma versão em todos os módulos;
+- os checksums já estão nos `go.sum` dos módulos.
+
+O `use` cobre os 49 módulos de `packages/`, como diz o AC1, e não os 53 da nota de pré-requisitos.
+Os quatro de fora (`scripts/ci/attest` e os três de `deploy/`) só são compilados com `GOWORK=off`
+ou em Docker, que copia só `packages/`.
+
+Exit codes, todos na árvore final:
+
+| Comando | rc |
+|---|---|
+| `build.sh` | 0 |
+| `lint.sh` | 0 |
+| `layer-lint.sh` | 0 |
+| `test.sh` (pisos de cobertura cumpridos) | 0 |
+| `dormencia.sh` | 0 |
+| `integration.sh` | 0 |
+| `apex.sh` | 0 |
+| `rtm.sh` | 0 |
+| `ref-lint.sh` | 0 |
+| `toolchain-lint.sh` | 0 |
+| `selftest.sh`, corrido sozinho | 0 |
+| `driver.sh smoke` (10/10) | 0 |
+| `cache-prime.sh` sobre `GOMODCACHE` frio, depois `GOPROXY=off build.sh` | 0 / 0 |
+
+**Por fazer: o AC7 em modo CI.** Para a CI correr em modo workspace, primeiro há que tirar o
+`GOFLAGS=-mod=mod` do `buildAOSIssuer`, em `packages/cmd/aos/devharness_test.go`. Isso é um ticket
+novo, porque toca `.go`. Depois disso ainda faltaria decidir:
+- o self-test A;
+- o `sbom.sh`;
+- o `use` dos módulos de fora de `packages/`.
+
+Ficheiros:
+- `go.work`, gerado;
+- `scripts/ci/gowork.sh`, novo;
+- `scripts/ci/lib.sh` (`GOWORK=off`);
+- `scripts/ci/build.sh`;
+- `scripts/ci/selftest.sh` (§Z);
+- `.claude/skills/run-aos/driver.sh` e `.claude/skills/run-aos/SKILL.md`;
+- `tecnica/11_Convencoes_Engenharia_Evolucao.md` §8.1.
+
+Nenhum `.go` nem `go.mod` foi tocado.
+
 ### Estado
 
-**POR IMPLEMENTAR.**
+**PARCIAL** (2026-10-01). O `go.work` está gerado, versionado e guardado pelo gate `build`. As
+decisões estão em `tecnica/11` §8.1. A suite, o smoke e a prova offline estão verdes, e o grafo de
+imports está provado inalterado. O AC7 só se cumpre em modo workspace: a CI fica em `GOWORK=off`
+até um ticket novo corrigir o `-mod=mod` do teste do devharness.
 
 ---
 
@@ -1211,6 +1314,7 @@ Sequência recomendada (ambiente com rede): gerar `go.work` (os 53 `use`) → `g
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial (GO-CONDICIONAL). Materializa PR-0 (dívida de backend) a partir do painel adversarial `wsuca4fcl` sobre a base de código real. Reformula a dívida: cadeia linear (tip AOS-128, 41 módulos), sem merge; resgate dos seams uncommitted (AOS-144, feito); reconciliação dos 2 `integration`; enforcement de produção (kernel `Call.Credential`, `NewProductionSecure`, cadeia real de hooks, espinha de token condicional a D4). 19 tickets AOS-144–162. Estimativas de PR-0.a condicionais ao build-spike AOS-145. | Equipa AOS |
 | 1.1 | Setembro 2026 | Adenda pós-emissão: +1 ticket de tooling (AOS-387 — workspace go.work) do achado OE-2 da auditoria global. Fora do âmbito de PR-0 (os 19 tickets AOS-144–162 mantêm-se). | Equipa AOS |
+| 1.2 | Outubro 2026 | AOS-387 entregue PARCIAL: `go.work` gerado e guardado no gate `build`, CI com `GOWORK=off`, decisões em `tecnica/11` §8.1; AC7 só em modo workspace. | Equipa AOS |
 
 ---
 

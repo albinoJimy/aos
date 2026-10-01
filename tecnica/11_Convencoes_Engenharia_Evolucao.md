@@ -4,7 +4,7 @@
 |---|---|
 | Produto | AOS — Agentic OS de Referência |
 | Documento | Convenções de Engenharia e Evolução — Manutenção Evolutiva do AOS |
-| Versão | 1.0 |
+| Versão | 1.1 |
 | Data | Julho de 2026 |
 | Classificação | Documento de Referência — Aberto |
 | Documento-fonte | `_FONTE_agentic-os-ideal.md` |
@@ -168,6 +168,28 @@ Esta abstracção estende à memória a mesma disciplina de contrato de porta do
 - **Efeitos externos apenas via activities** idempotentes e mediadas pelo Reference Monitor — nenhum caminho de código chama tools directamente (ADR-002).
 - **Versionamento e assinatura** de todo o artefacto publicado; changelog no audit trail.
 
+### 8.1 Workspace `go.work` e resolução inter-módulo (AOS-387)
+
+O monorepo tem 49 módulos Go em `packages/` (mais `scripts/ci/attest` e três em `deploy/`), ligados por directivas `replace` path-local escritas em cada `go.mod`. Desde AOS-387 existe também um `go.work` na raiz, com **uma directiva `use` por módulo de `packages/`** — o conjunto exacto de `find packages -name go.mod -printf '%h\n'`. Regras e decisões:
+
+**Geração e guarda.** O `go.work` é gerado por `bash scripts/ci/gowork.sh gerar` e não se edita à mão. O gate `build` corre `gowork.sh verificar` (o conjunto `use` é exactamente o dos `go.mod` de `packages/`, nem a mais nem a menos; directiva `go` = a maior dos módulos; `toolchain` = a da imagem de produção, `FROM golang:` do `deploy/node/Dockerfile`; nenhum `replace` no workspace) e `gowork.sh compilar` (um único `go build` sobre os 49 módulos, em modo workspace, com `GOPROXY=off` e `-mod=readonly`). **Um módulo novo em `packages/` sem `use` avermelha o gate `build`**; o self-test Z prova-o, nos dois sentidos, numa árvore sintética.
+
+**Modo da CI: `GOWORK=off`.** `setup_env` (`scripts/ci/lib.sh`) exporta `GOWORK=off`, forçado e não sobreponível; o driver do run-aos faz o mesmo. Os gates resolvem, portanto, exactamente como antes do `go.work`: pelas `replace` de cada módulo. A alternativa — a CI em modo workspace — foi medida a 2026-10-01 e recusada, porque muda o que os gates medem:
+
+- `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` (`packages/cmd/aos`) compila o `aos-issuer` num subprocesso com `GOFLAGS=-mod=mod`, que o modo workspace recusa (`-mod may only be set to readonly or vendor when in workspace mode`). O gate `test` ficava vermelho, e corrigir o teste é uma alteração a `.go`, fora do escopo de um ticket de tooling;
+- o self-test A injecta um módulo em `packages/` sem `use`: em modo workspace até um teste **verde** falha (`directory prefix . does not contain modules listed in go.work`), pelo que o vermelho do A2 deixava de provar o que diz;
+- os módulos fora de `packages/` deixam de compilar (`current directory is contained in a module that is not one of the workspace modules`), e o `go list -m all` do `sbom.sh` passa de 4 para 57 módulos no `aos-attestation`.
+
+**Decisão (a) — as `replace` committadas mantêm-se.** São a resolução que a CI, o `cache-prime`, o `sbom.sh` e a imagem de produção usam: o `deploy/node/Dockerfile` copia só `packages/` (o `go.work` nem entra no contexto) e compila módulo a módulo com `GOPROXY=off`. Removê-las obrigaria a CI a correr em modo workspace, o que é hoje impossível pelas razões acima, e a tentativa de 2026-09-09 mostrou que a sua remoção expõe inconsistências `require`↔`import` que o mundo-`replace` mascarava. O `go.work` **coexiste** com elas; não as substitui.
+
+**Decisão (b) — o `go.work` é committado; o `go.work.sum` não existe, e não é ignorado.** Committa-se o `go.work` porque é o que dá ao gopls uma vista única dos 49 módulos, um build que atravessa todos e a integração de um módulo novo por `go work use`; e porque só committado é que o gate o pode verificar. A ressalva habitual do Go — um `go.work` committado faz quem desenvolve resolver de forma diferente da dos consumidores do módulo — fica neutralizada pela `GOWORK=off` da CI: o que a CI testa é, exactamente, a resolução standalone de cada módulo. O `go.work.sum` não é necessário: medido, o build do workspace com `GOPROXY=off` e `-mod=readonly` não o gera, porque todas as dependências externas (`cedar-go` v1.8.0, `golang.org/x/exp`, `fxamacker/cbor/v2`, `x448/float16`) têm a mesma versão em todos os módulos e os checksums já estão nos `go.sum` deles. **Não** vai para o `.gitignore`: se um dia for preciso, o `gowork.sh compilar` avermelha (checksum pedido à rede com `GOPROXY=off`, ou `go.work.sum` por versionar) e o ficheiro tem então de ser committado — ignorá-lo tornaria o workspace irreproduzível offline.
+
+**Âmbito do `use`.** Só `packages/`. `scripts/ci/attest`, `deploy/node/healthprobe`, `deploy/node/dev-hardened/firecracker` e `deploy/server/gvisor` ficam fora: são compilados apenas por scripts que chamam `setup_env` (logo com `GOWORK=off`) ou por builds Docker que não copiam o `go.work`. Quem os compilar à mão a partir da árvore prefixa `GOWORK=off`.
+
+**Integrar um módulo novo.** Em modo workspace basta `go work use ./packages/<novo>` (ou `gowork.sh gerar`): o módulo resolve os outros 49 sem `require` nem `replace`, e nenhum outro `go.mod` é editado. **Custo residual da decisão (a):** como a CI corre com `GOWORK=off`, o `go.mod` do próprio módulo novo continua a precisar de `require` + `replace` para o seu fecho transitivo local, e um módulo existente que o passe a importar precisa de uma `replace` para ele. Eliminar esse custo exige a CI em modo workspace, o que depende de corrigir primeiro o `GOFLAGS=-mod=mod` do teste acima.
+
+**Uso local.** Com o workspace activo, `go build ./...` num módulo e `go build $(go list -m | sed 's#$#/...#')` a partir da raiz compilam no mesmo modo da verificação do gate. Para testar como a CI, prefixa-se `GOWORK=off` (ou usa-se `bash .claude/skills/run-aos/driver.sh test <módulo>`).
+
 ---
 
 ## 9. Vista de qualidade
@@ -231,3 +253,4 @@ A ratificação humana assinada (não-repúdio), o changelog no audit trail hash
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | Outubro 2026 | §8.1 — workspace `go.work` (AOS-387): geração e guarda no gate `build`, CI com `GOWORK=off`, decisões (a) `replace` mantêm-se e (b) `go.work` committado, `go.work.sum` desnecessário e não ignorado | Equipa AOS |
