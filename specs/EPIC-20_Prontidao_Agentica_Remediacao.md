@@ -3369,10 +3369,21 @@ próprio, e a quantia reservada pelo AOS-466 liquida.
   controlo), a isenção de toda a marcada, e `plano_validado` declarado pelo binário real numa saída 8.
   Terceira bateria: 13 aplicadas, 12 mortas à primeira. A sobrevivente (a classe deixar de ser
   verificada) levou ao caso «transitório com código 12» no teste, e morre depois dele.
+- Depois da quarta revisão: a entrega normal prevalece sobre a de fecho da mesma geração, nas duas
+  ordens (`TestAOS467AEntregaNormalPrevaleceSobreADeFecho`), e a de fecho não dispensa a quota da normal
+  (`TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal`). Quarta bateria: 3 aplicadas (o `step_id`
+  comum, a prevalência no `ler`, a dispensa na verificação), 3 mortas.
 - Suites `-race` dos dois módulos verdes. Gates `build`, `lint`, `layer-lint`, `secrets`, `sast`,
   `rtm`, `ref-lint` e `event-catalog` verdes. Smoke do `run-aos` 10/10.
 
 ### Residuais declarados
+- **Duas mortes seguidas do drenador fecham um plano validado mais cedo** (BAIXO da quarta revisão,
+  confirmado pela leitura de `plan_claim.go`, não reproduzido pela rota). Depois de uma geração que
+  validou o plano, a primeira expirada sem desfecho não conta; a segunda e as seguintes contam, porque
+  o nó não sabe se uma expirada chamou o modelo. Mortes repetidas aproximam o pedido do tecto, e ele
+  pode fechar com 12 um plano aprovado. É o lado fail-closed: contar a menos deixava decomposições sem
+  tecto. A saída é a de qualquer 12, com aviso e nova submissão; os runs-filho já lançados ficam órfãos,
+  como depois de qualquer fecho.
 - **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, corre um `serve`
   sem objectivo (zero nós) e reporta sucesso — o nó recusa-o (400). A reclamação expira (60 min) e a
   geração volta marcada até ele ser actualizado. As suas gerações não declaradas contam todas — incluindo
@@ -3449,8 +3460,20 @@ confirmados fechados.
 - **BAIXOS.** O custo da leitura por desfecho, o `plano_validado` declarado pelo drenador e o 12
   atrasado ficam declarados nos residuais.
 
+**Quarta passagem, sobre `444c894`:** os dois MÉDIOS da terceira confirmados fechados. O revisor não
+encontrou contagem a menos explorável, nem caminho para passar o tecto sem limite.
+- **BAIXO, por raciocínio.** A marca `de_fecho` na quota é escrita antes do `Append` da reclamação. Se
+  esse `Append` falhasse, ou se ganhasse uma réplica com outro tecto, a geração planeava sem marca. A
+  quota continuava a vê-la de fecho, e ela não custava nada se o drenador morresse sem parcela.
+  - **Pior do que o achado dizia:** as duas marcas tinham o mesmo `step_id`, e a normal, escrita
+    depois, era deduplicada.
+  - **Corrigido:** as duas marcas têm `step_id` distintos, e no `ler` a normal prevalece. A marca de
+    fecho também não dispensa a verificação de quota da normal.
+- **BAIXO.** Duas mortes seguidas do drenador fecham um plano validado: fica declarado nos residuais.
+
 ### Estado
-**EM REVISÃO** (2026-10-01).
+**FEITO** (2026-10-01). Quatro passagens de revisão adversarial independente, sem achados ALTO ou
+MÉDIO em aberto. Os residuais estão acima.
 
 ---
 

@@ -1028,3 +1028,53 @@ func TestAOS467AsEntregasDeFechoNaoCustam(t *testing.T) {
 		t.Fatalf("as entregas de fecho nao custam: gasto %d, esperava 30", g.Tokens)
 	}
 }
+
+// TestAOS467AEntregaNormalPrevaleceSobreADeFecho — quarta revisão: a mesma geração entregue de fecho
+// (uma reclamação que falhou depois da marca, ou uma réplica com tecto mais baixo) e entregue normal
+// (a reclamação que ganhou, que planeia). Em qualquer ordem, a geração custa a reserva até à parcela:
+// a de fecho não pode apagar a que planeia.
+func TestAOS467AEntregaNormalPrevaleceSobreADeFecho(t *testing.T) {
+	for _, ordem := range [][]bool{{false, true}, {true, false}} {
+		ctx := context.Background()
+		q := quotaComPlaneamento(novoStore(t), 10_000, 100, 100, &relogioDeQuota{t: setembro})
+		if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(30)); err != nil {
+			t.Fatal(err)
+		}
+		for _, verificar := range ordem {
+			if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, verificar); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if g := gastoDe(t, q, "human:alice"); g.Tokens != 130 {
+			t.Fatalf("ordem %v: a geracao 2 planeou e nao tem parcela — custa 30 + 100, veio %d", ordem, g.Tokens)
+		}
+	}
+}
+
+// TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal — a marca de fecho de uma geração não serve de
+// «já entregue» à entrega normal da mesma geração: essa planeia, e sem quota não se entrega.
+func TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal(t *testing.T) {
+	ctx := context.Background()
+	q := quotaComPlaneamento(novoStore(t), 150, 100, 100, &relogioDeQuota{t: setembro})
+	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(30)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, false); err != nil {
+		t.Fatalf("a entrega de fecho nao verifica quota: %v", err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, true); !errors.Is(err, ErrPrincipalQuotaExhausted) {
+		t.Fatalf("a entrega normal da geracao 2 passou sem quota: %v", err)
+	}
+}

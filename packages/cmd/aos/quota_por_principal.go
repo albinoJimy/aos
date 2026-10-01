@@ -388,6 +388,13 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 			if st.entregas[p.RunID] == nil {
 				st.entregas[p.RunID] = map[int]quotaPayload{}
 			}
+			// A entrega NORMAL prevalece sobre a de fecho da mesma geração (quarta revisão do AOS-467):
+			// as duas só coexistem quando duas réplicas com tectos diferentes, ou uma reclamação que
+			// falhou depois da marca, decidiram a mesma geração de maneiras diferentes — e a que planeia
+			// é a que tem de custar.
+			if ant, ja := st.entregas[p.RunID][p.Geracao]; ja && ant.ReservaDoPlano == p.ReservaDoPlano && !ant.DeFecho {
+				p.DeFecho = false
+			}
 			st.entregas[p.RunID][p.Geracao] = p
 		case p.Geracao > 0:
 			if st.parcelas[p.RunID] == nil {
@@ -589,7 +596,8 @@ func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runI
 		if geracao < 2 || !verificarQuota {
 			return nil
 		}
-		if e, ja := st.entregas[chave][geracao]; ja && e.ReservaDoPlano == reserva {
+		// Uma entrega anterior DE FECHO não dispensa a verificação: esta planeia, aquela não.
+		if e, ja := st.entregas[chave][geracao]; ja && e.ReservaDoPlano == reserva && !e.DeFecho {
 			return nil
 		}
 		agora := q.agora()
@@ -606,9 +614,17 @@ func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runI
 		}
 		return nil
 	}
+	// O step_id DISTINGUE a entrega de fecho da normal. Com um só, a marca de fecho escrita por uma
+	// reclamação que depois falhou (ou por uma réplica com outro tecto) deduplicava a marca normal
+	// da reclamação que ganhou, e uma geração que planeou ficava a não custar nada se o drenador
+	// morresse sem parcela (achado BAIXO da quarta revisão).
+	rotulo := "delivered"
+	if !verificarQuota {
+		rotulo = "delivered-to-close"
+	}
 	return q.escreverNoPlano(ctx, principal, runID, verificar, func(mes string, reserva uint64) (quotaPayload, string) {
 		return quotaPayload{RunID: chave, Geracao: geracao, ReservaDoPlano: reserva, Entregue: true, DeFecho: !verificarQuota},
-			fmt.Sprintf("%s:delivered:%s:%d:%d", chave, mes, reserva, geracao)
+			fmt.Sprintf("%s:%s:%s:%d:%d", chave, rotulo, mes, reserva, geracao)
 	})
 }
 
