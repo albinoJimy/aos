@@ -815,10 +815,12 @@ até ao fim do plano.
 
   **A transição do AOS-409, pela ordem** (o mesmo ritual do AOS-441):
 
-  1. **Antes do release, drene e decida os planos pendentes.** A mutação entra no digest do
-     conteúdo do snapshot que o `plan.validated` sela — e o digest muda para TODOS os snapshots,
-     mesmo os que não mudem de eixo, porque a forma do digest ganhou um campo. Um plano validado ou
-     pendente sob a versão anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
+  1. **Antes do release, drene os planos ATÉ À CONCLUSÃO** — nenhum pendente por decidir e nenhum
+     `plan.validated` com run por terminar; decidir não chega, porque um plano aprovado volta a
+     passar pelo `exigirSnapshotSelado` ao materializar. A mutação entra no digest do conteúdo do
+     snapshot que o `plan.validated` sela — e o digest muda para TODOS os snapshots, mesmo os que não
+     mudem de eixo, porque a forma do digest ganhou um campo. Um plano validado, aprovado ou pendente
+     sob a versão anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
   2. **No release, actualize os dois lados juntos:** o `tools.json` do nó (já traz `"mutation":
      "none"`) com a imagem nova do `aos`, e o `orq/snapshot.json` com `"mutation": "none"` no
      `doc_read`. Um `aos-orq` novo contra um nó anterior ao AOS-409 recusa arrancar (o nó não diz a

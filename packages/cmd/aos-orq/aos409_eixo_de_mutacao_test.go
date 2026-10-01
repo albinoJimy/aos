@@ -197,3 +197,28 @@ func TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado(t *testing.T) {
 		t.Fatalf("a recusa tinha de ser a do snapshot selado:\n%s", r.stderr)
 	}
 }
+
+// TestAOS409MutacaoUnknownExplicitaContaComoMutador — um `"mutation":"unknown"` ESCRITO no
+// snapshot é o valor-zero dito em voz alta: carrega, fica `MutationUnknown` e o oráculo trata a
+// tool como de EFEITO. Sem este caso, um carregador que normalizasse `unknown` para `none` passava
+// toda a suite (medido na revisão adversarial do AOS-409) — e sem `AOS_ORQ_NODE_URL` não há
+// conferência com o nó que o apanhasse.
+func TestAOS409MutacaoUnknownExplicitaContaComoMutador(t *testing.T) {
+	p := escreverTmp(t, `{
+  "hash": "sha256:s",
+  "tools": [
+    {"name":"doc_read","version":"1.0.0","digest":"sha256:a","admissible":true,
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"unknown"}
+  ]
+}`)
+	snap, err := carregarSnapshot(p)
+	if err != nil {
+		t.Fatalf("carregarSnapshot: %v", err)
+	}
+	if got := snap.Tools[0].Mutation; got != planvalidate.MutationUnknown {
+		t.Fatalf("mutation = %v, quer unknown — o carregador não pode baixar o valor declarado", got)
+	}
+	if !snap.EffectOracle()(toolRef("doc_read", "1.0.0", "sha256:a")) {
+		t.Fatal("uma tool com mutação `unknown` saiu SEM efeito — o valor por declarar tem de contar como mutador")
+	}
+}

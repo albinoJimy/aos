@@ -161,8 +161,9 @@ func TestVerifierWithoutSubjectRejected(t *testing.T) {
 	}
 }
 
-// TestVerifierEffectToolRejected — (V3) READ-ONLY POR CONSTRUÇÃO, nos DOIS eixos que
-// definem «efeito», mais o caso fail-closed da capability por classificar.
+// TestVerifierEffectToolRejected — (V3) READ-ONLY POR CONSTRUÇÃO, nos TRÊS eixos que
+// definem «efeito» (reversibilidade, egress e, desde AOS-409, mutação), mais o caso
+// fail-closed da capability por classificar.
 //
 // FALHA-ANTES: um verificador com uma tool de escrita passava a admissão, o humano
 // aprovava no gate um organigrama em que o revisor podia mexer no que revia, e a

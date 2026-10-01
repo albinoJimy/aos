@@ -22,12 +22,18 @@ func (p fixedPricer) Price(node plan.Node, _ plan.PlannerMeta) budget.Amount {
 
 // dangerCap é uma capability PINADA com efeito IRREVERSÍVEL (o eixo que força
 // `danger` no classificador, independentemente do egress/sensibilidade).
+//
+// Declara `MutationNone` de propósito (AOS-409): sem ele, o valor-zero `MutationUnknown`
+// conta como mutador e o R1 forçaria `danger` sozinho — os testes que usam este fixture
+// deixariam de provar o eixo IRREVERSÍVEL isolado, e retirar o termo `IsIrreversible()` do
+// `deriveNodeAction` passaria verde (medido na revisão adversarial do AOS-409).
 func dangerCap(name string) Capability {
 	return Capability{
 		Name: name, Version: "1.0.0", Digest: "sha256:" + name, Admissible: true,
 		Sensitivity:   risk.SensitivityInternal,
 		Egress:        risk.EgressNone,
 		Reversibility: risk.Irreversible,
+		Mutation:      MutationNone,
 	}
 }
 

@@ -1297,14 +1297,31 @@ Registo verbatim da decisão do dono, tomada sobre a *discovery* desta sessão:
 | nó: o vazio serve `none` | `TestAOS409CatalogoDeProducaoServeAMutacao/sem_o_campo` |
 | nó: `write_arg` com `none` passa | `TestAOS409WriteArgComMutacaoNoneAborta` |
 
+As 9 linhas somam 11 porque a da conferência conta 3 subtestes.
+
+**Revisão adversarial independente (2026-10-01), sobre a entrega integrada.** Sem ALTO; nenhum
+caminho de produção leva uma tool mutadora a `safe` sem a declarar `none` à mão (o resíduo 1). Dois
+mutantes que a entrega não tentou SOBREVIVIAM, e a afirmação «nenhum teste foi enfraquecido» era
+falsa para o primeiro:
+
+| Mutação | Antes | Corrigido por |
+|---|---|---|
+| `deriveNodeAction` sem o termo `IsIrreversible()` | sobrevivia: o fixture `dangerCap` (`planvalidate/resources_test.go`) ficou sem `Mutation`, o valor-zero conta como mutador e o R1 forçava `danger` sozinho — o eixo irreversível deixou de ter teste isolado | `dangerCap` declara `MutationNone`; `TestNoIrreversivelClassificadoDanger` e `TestDowngradeDeRiskClassEIgnorado` voltam a matá-lo |
+| carregador normaliza `"mutation":"unknown"` para `none` | sobrevivia a todo o `cmd/aos-orq` (sem `AOS_ORQ_NODE_URL` não há conferência que o apanhe) | `TestAOS409MutacaoUnknownExplicitaContaComoMutador` |
+
+O resíduo 2 foi completado com o `DualControlRequired` do cartão, e o passo 1 do ritual passou de
+«drenar e decidir» a «drenar até à conclusão».
+
 ### Entrega — transição declarada e ritual de release
 
 A primeira release com o AOS-409 muda a forma do snapshot e a do digest. Pela ordem (o mesmo ritual
 do AOS-441, descrito em `deploy/server/README.md` §executor de nós):
 
-1. **Antes do release, drenar e decidir os planos pendentes.** A forma do `digestDoSnapshot` ganhou
-   um campo, pelo que o digest muda para TODOS os snapshots; um plano validado ou pendente sob a
-   versão anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
+1. **Antes do release, drenar os planos ATÉ À CONCLUSÃO** — nenhum pendente por decidir e nenhum
+   `plan.validated` com run por terminar. Decidir não chega: um plano já aprovado passa outra vez
+   pelo `exigirSnapshotSelado` ao materializar. A forma do `digestDoSnapshot` ganhou um campo, pelo
+   que o digest muda para TODOS os snapshots; um plano validado, aprovado ou pendente sob a versão
+   anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
 2. **No release, os dois lados juntos, o nó primeiro:** a imagem nova do `aos` com o `tools.json`
    que já traz `"mutation":"none"` no `doc_read`, e o `orq/snapshot.json` do operador com
    `"mutation":"none"` no `doc_read`. Um `aos-orq` novo contra um nó anterior ao AOS-409 recusa
@@ -1319,7 +1336,12 @@ do AOS-441, descrito em `deploy/server/README.md` §executor de nós):
    diz a verdade sobre o que a tool faz — é configuração trusted do operador, como o `egress` e a
    `reversibility`. A atestação dos eixos pertence ao REG (DEF-812).
 2. **R1 é conservador de propósito.** Uma escrita desfazível chega ao cartão marcada irreversível
-   (`Irreversible: true`), porque a mutação entra no classificador por essa porta. Distinguir
+   (`Irreversible: true`), porque a mutação entra no classificador por essa porta — e, com ela,
+   `DualControlRequired: true` (`approval-card/card.go`, que o deriva do mesmo bool) e
+   `aggregate_irreversible` no PlanCard: o humano lê «dual-control exigido» para uma escrita que se
+   desfaz. O exagero fica no cartão: o `aos-orq` não liga o dual-control por efeito, e o bool não
+   alimenta compensação, retry, idempotência nem a reversibilidade que o RM lê do `tools.json` em
+   runtime. Distinguir
    «escreve com undo» de «não se desfaz» no cartão exigiria um eixo no `risk.Classify` — uma emenda
    ao ADR-013, fora deste ticket.
 3. **Sem verificação em produção nesta entrega.** O ritual de release está escrito; a primeira
