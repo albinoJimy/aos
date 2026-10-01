@@ -71,6 +71,8 @@ func dispatch(args []string, w io.Writer) error {
 		return cmdExhaustionDecision(args[1:], exhaustionOptionContinue, w)
 	case "operator-pubkey":
 		return cmdOperatorPubKey(args[1:], w)
+	case "nats-nkey":
+		return cmdNATSNKey(args[1:], stdinDoProcesso, w)
 	case "wal-count":
 		return cmdWALCount(args[1:], w)
 	case "wal-summary":
@@ -81,7 +83,7 @@ func dispatch(args []string, w io.Writer) error {
 		printUsage(w)
 		return nil
 	default:
-		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|continue|abort|operator-pubkey|wal-count|wal-summary|audit-trail|help)", args[0])
+		return fmt.Errorf("aos: subcomando desconhecido %q (use: serve|run|observe|steer|pause|continue|abort|operator-pubkey|nats-nkey|wal-count|wal-summary|audit-trail|help)", args[0])
 	}
 }
 
@@ -106,6 +108,10 @@ uso: aos <subcomando> [flags]
                                             (responde a um prompt de exaustao de orcamento: PARA o run,
                                              assinado; --step-id e o passo em pending_exhaustion de GET /runs/{id})
   operator-pubkey --key FICHEIRO            (imprime a PUBKEY hex da seed do operador, para AOS_OPERATORS)
+  nats-nkey gerar                          (imprime uma SEED nkey nova para AOS_EVENTSTORE_NATS_NKEY_FILE;
+                                             redirija-a para um ficheiro 0400 — AOS-470)
+  nats-nkey publica [--key FICHEIRO]       (imprime a chave PUBLICA da seed — do ficheiro ou do stdin —
+                                             para a linha «cliente» do cluster.conf de deploy/nats)
   wal-count --path WAL --run ID [--turns]   (diagnostico read-only de durabilidade do Event Store)
   wal-summary --path WAL                    (diagnostico read-only: que tipos de evento ha no WAL e
                                              quantos; AGREGADO — nunca nomeia streams, porque os

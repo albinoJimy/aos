@@ -49,7 +49,7 @@ func TestAOS432_LeaseSobreStreamFrescoNegaPeloLease(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-arranque
-			st, err := jetstream.Abrir(addr, jetstream.ComNomeDeStream(stream))
+			st, err := jetstream.Abrir(addr, CredencialNATSDeTeste(t), jetstream.ComNomeDeStream(stream))
 			if err != nil {
 				errs[i] = err
 				return
@@ -100,7 +100,7 @@ func TestAOS432_503VerdadeiroNaoEPosseNegada(t *testing.T) {
 	suf := sufixoDeStream(t)
 	stream := "AOS432N_" + suf
 
-	dono, err := jetstream.Abrir(addr, jetstream.ComNomeDeStream(stream))
+	dono, err := jetstream.Abrir(addr, CredencialNATSDeTeste(t), jetstream.ComNomeDeStream(stream))
 	if err != nil {
 		t.Fatalf("abrir o stream: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestAOS432_503VerdadeiroNaoEPosseNegada(t *testing.T) {
 
 	// O mesmo stream, mas com um prefixo que o stream NÃO captura — e sem o criar, para
 	// que nada do lado do cliente o faça existir.
-	orfao, err := jetstream.Abrir(addr, jetstream.ComNomeDeStream(stream), jetstream.SemCriarStream(),
+	orfao, err := jetstream.Abrir(addr, CredencialNATSDeTeste(t), jetstream.ComNomeDeStream(stream), jetstream.SemCriarStream(),
 		jetstream.ComPrefixoDeSubject("aos.es.aos432-orfao-"+suf))
 	if err != nil {
 		t.Fatalf("abrir o store órfão: %v", err)

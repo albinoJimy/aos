@@ -77,14 +77,14 @@ func TestAC4_EscritasConfirmadasSobrevivemAMorteDeUmNo(t *testing.T) {
 
 	nome := "AC4_" + sufixo(t)
 	abrir := func() (*jetstream.Store, error) {
-		return jetstream.Abrir(addr,
+		return jetstream.Abrir(addr, jetstream.CredencialDeTeste(t),
 			jetstream.ComNomeDeStream(nome),
 			jetstream.ComReplicas(3),
 			jetstream.ComPrazo(20*time.Second),
 			jetstream.SemCriarStream())
 	}
 
-	criador, err := jetstream.Abrir(addr,
+	criador, err := jetstream.Abrir(addr, jetstream.CredencialDeTeste(t),
 		jetstream.ComNomeDeStream(nome), jetstream.ComReplicas(3), jetstream.ComPrazo(20*time.Second))
 	if err != nil {
 		t.Fatalf("criar stream R3: %v", err)

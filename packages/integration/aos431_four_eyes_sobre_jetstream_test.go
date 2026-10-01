@@ -83,7 +83,7 @@ func TestAOS431_FourEyesSobreJetStream_UsoUnicoSobrevive(t *testing.T) {
 
 	abrir := func() *jetstream.Store {
 		t.Helper()
-		st, err := jetstream.Abrir(addr, jetstream.ComNomeDeStream(nome))
+		st, err := jetstream.Abrir(addr, CredencialNATSDeTeste(t), jetstream.ComNomeDeStream(nome))
 		if err != nil {
 			t.Fatalf("abrir JetStream %q: %v", nome, err)
 		}
@@ -147,7 +147,7 @@ func TestAOS431_SubjectDeRecusaNomeLegadoContraNATSReal(t *testing.T) {
 	ctx := context.Background()
 
 	nome := "AOS431LEGADO_" + sufixoDeStream(t)
-	st, err := jetstream.Abrir(addr, jetstream.ComNomeDeStream(nome))
+	st, err := jetstream.Abrir(addr, CredencialNATSDeTeste(t), jetstream.ComNomeDeStream(nome))
 	if err != nil {
 		t.Fatalf("abrir JetStream %q: %v", nome, err)
 	}

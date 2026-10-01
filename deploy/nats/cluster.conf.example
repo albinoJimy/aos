@@ -1,7 +1,8 @@
 # cluster.conf — especificação do cluster NATS JetStream de produção (AOS-469).
 #
 # UM ficheiro descreve o cluster inteiro e é IGUAL em todos os hosts: copia-o para
-# /etc/aos-nats/cluster.conf em cada um. Só leva material PÚBLICO (IPs e chaves públicas WG).
+# /etc/aos-nats/cluster.conf em cada um. Só leva material PÚBLICO (IPs, chaves públicas WG e
+# chaves públicas nkey dos clientes).
 # Formato: `CHAVE=valor`, ou linhas `host …` / `no …` separadas por espaços. `#` comenta.
 
 # Região NUA (sem «region:»). Tem de ser a de AOS_BOARD_REGIONS do nó (board:prod=eu-west).
@@ -34,3 +35,11 @@ host hetzner 78.46.209.230 10.77.0.2 SUBSTITUIR_PELA_CHAVE_PUBLICA_DO_HETZNER=
 no aos-es-0 contabo 4222 6222 8222
 no aos-es-1 contabo 4223 6223 8223
 no aos-es-2 hetzner 4222 6222 8222
+
+# cliente <nome> <nkey-pública-U…>   (AOS-470 — pelo menos UM; sem ele o `gerar` recusa)
+#   Os únicos que se ligam ao cluster. A SEED fica no host do cliente; aqui só a pública:
+#     (umask 077; docker run --rm "$AOS_IMAGE" nats-nkey gerar > /opt/aos/secrets/aos-nats.nk)
+#     docker run --rm -i "$AOS_IMAGE" nats-nkey publica < /opt/aos/secrets/aos-nats.nk
+#   Um nó `aos` e o `aos-orq` do mesmo host podem partilhar a seed; nós em hosts diferentes
+#   levam uma cada, para que revogar um (apagar a linha e reaplicar) não derrube os outros.
+cliente aos-contabo SUBSTITUIR_PELA_NKEY_PUBLICA_DO_NO_AOS

@@ -1283,6 +1283,45 @@ O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recol
 
 ---
 
+## AOS-470 — O cliente NATS do Event Store autentica-se por nkey, e o cluster de produção exige-o
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-469 (cluster de produção), AOS-431 (cluster de CI) |
+| Bloqueia | apontar o nó `aos` ao cluster de produção |
+| Responsável sugerido | Segurança / SRE |
+| Documentos de referência | `packages/substrate/eventstore/natsjs/nkey.go`, `packages/substrate/eventstore/natsjs/conn.go`, `deploy/nats/README.md` («Autenticação dos clientes»), `scripts/ci/nats-cluster.sh`, ADR-017 |
+
+**Contexto.** O cliente `natsjs` enviava `CONNECT` com `"tls_required":false` e nenhuma credencial. O cluster do AOS-469 mitigava isto só na rede: túnel WireGuard, bind no IP do túnel e firewall por sub-rede. Quem alcançasse a porta de cliente (qualquer contentor da sub-rede Docker permitida, ou root num dos hosts) escrevia no log de produção.
+
+**Objectivo.** Autenticar o cliente por nkey (assinatura ed25519 do nonce do INFO, só biblioteca padrão, ADR-017) e ligar `authorization` nos servidores gerados por `deploy/nats/aos-nats.sh`.
+
+**Critérios de Aceitação**
+- [x] `natsjs` lê uma seed nkey de utilizador (base32, prefixo, CRC-16/XMODEM), assina o nonce e envia `nkey`+`sig` no `CONNECT`. A seed nunca sai no fio. O handshake passa a terminar em `PING`/`PONG`: uma recusa do servidor chega ao `Connect` como `ErrAutenticacao`, em vez de uma ligação «aceite» que morre depois e reconecta para sempre. O cliente também recusa por conta própria quando o servidor exige credencial e não há nenhuma, e quando há credencial e o servidor não a pede (servidor sem `authorization`).
+- [x] `AOS_EVENTSTORE_NATS_NKEY_FILE` (caminho de ficheiro montado, nunca o valor) no nó, e `--nats-nkey-file` no `aos-orq`. Sob `AOS_MODE=production`, `AOS_EVENTSTORE_NATS` sem credencial **recusa o arranque** (`ErrProductionNeedsNATSCredential`). Uma seed ilegível, inválida ou com bits `o+rwx` aborta o arranque e nunca degrada para uma ligação anónima.
+- [x] `aos nats-nkey gerar|publica` gera a credencial com a imagem do nó (não é preciso o `nk` da NATS no host).
+- [x] `aos-nats.sh` exige pelo menos uma linha `cliente <nome> <U…>` e gera `authorization { users = [ {nkey: …} ] }` em cada servidor. Recusa uma seed colada no lugar da pública. A config gerada é aceite pelo `nats-server -t` 2.10, que rejeita a mesma chave com um carácter trocado. O `provar` passa a autenticar-se.
+- [x] `scripts/ci/nats-cluster.sh` levanta o cluster de CI **com** `authorization` por omissão e exporta `AOS_NATS_NKEY_FILE`. Contra ele, o servidor recusa o `CONNECT` anónimo pré-AOS-470 byte a byte (`Authorization Violation`) e recusa uma nkey não declarada. Com a credencial, a suite `jetstream` passa, e os quatro módulos do gate `nats` correm sem nenhuma falha (eventstore 90, integration 292, cmd/aos 1313, aos-orq 190 PASS). Medido num posto Windows: o veredicto local fica vermelho só por três skips de Linux pré-existentes (AOS-453, AOS-445 e AOS-450), que no CI não saltam.
+- [ ] Aplicado em produção: as linhas `cliente` no `cluster.conf` dos dois hosts, reaplicado, e o `provar` autenticado OK. Depende de o AOS-469 estar aplicado.
+
+**Decisões.**
+- **nkey, e não TLS mútuo nem utilizador/palavra-passe.** Com nkey o servidor guarda só a chave pública e o segredo não atravessa o fio. Com palavra-passe ou token, o segredo viajaria em claro (o cliente não fala TLS) e ficaria em claro na config do servidor. O mTLS exigiria uma CA e a rotação de certificados para proteger um troço que já vai cifrado pelo túnel.
+- **Sem `cluster.authorization` nas rotas.** O único caminho até elas é o túnel, cujos pares são autenticados pela chave WireGuard. Uma palavra-passe de rota viveria em claro no `cluster.conf`, o ficheiro que se copia entre hosts. Fica documentado em `deploy/nats/README.md`.
+
+**Fora de âmbito.** Permissões por cliente (subjects): exigem medir o conjunto exacto contra o cluster. TLS no cliente.
+
+**Residual declarado.** Root no host do nó lê a seed, porque é o nó. Root num host NATS administra o servidor. Sem TLS, quem estiver no caminho de uma sessão já aberta pode injectar comandos nela, e esse caminho é o túnel.
+
+**Estado.** **EM CURSO**: entregue e verificado contra o cluster de CI autorizado, por aplicar em produção.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1306,3 +1345,4 @@ O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recol
 | 1.6 | 2026-09-26 | AOS-451 verificado em produção: o `aos-gvisor-1` recriado corre com o `docker-init` no PID 1 e os 15 zombies desapareceram. | Equipa AOS |
 | 1.7 | 2026-09-26 | AOS-101: retoma do manifesto do exportador (porta do PR #206) com duas rondas de revisão adversarial; +AOS-453 (custódia de KEK que sela segmentos do backup), que bloqueia ligar o exportador em produção. | Equipa AOS |
 | 1.8 | 2026-10-01 | +AOS-469 (cluster NATS JetStream de produção Contabo+Hetzner por WireGuard): substrato do `AOS_EVENTSTORE_NATS`, verificado com a suite do adaptador; o nó continua no WAL. | Equipa AOS |
+| 1.9 | 2026-10-01 | +AOS-470 (o cliente NATS autentica-se por nkey; `authorization` no cluster de produção e no de CI; produção recusa `AOS_EVENTSTORE_NATS` sem credencial). | Equipa AOS |

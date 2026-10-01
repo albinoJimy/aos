@@ -74,6 +74,7 @@ import (
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/eventstore/jetstream"
+	"github.com/aos-ref/substrate/eventstore/natsjs"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 	"github.com/aos-ref/substrate/redaction"
 )
@@ -607,6 +608,11 @@ type Config struct {
 	// EventStoreNATSReplicas é o factor de replicação do stream (3 ou 5; 1 é só dev).
 	// Zero usa o padrão. Só é consultado com EventStoreNATS != "".
 	EventStoreNATSReplicas int
+	// EventStoreNATSNKeyFile é o CAMINHO da seed nkey de utilizador com que o nó se autentica
+	// no cluster (AOS-470). Vazio ⇒ ligação anónima, que só um cluster sem `authorization`
+	// aceita — e que AOS_MODE=production recusa ([ErrProductionNeedsNATSCredential]). Só é
+	// consultado com EventStoreNATS != "".
+	EventStoreNATSNKeyFile string
 	// WORM é o audit.Store tamper-evident único do RM. Precedência análoga: se != nil,
 	// usa-o; senão, se WORMPath != "", ABRE um WORM DURÁVEL (audit.OpenFileStore —
 	// mesma mecânica; a hash-chain sobrevive ao restart E é RE-ENCADEADA e verificada no
@@ -1326,6 +1332,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			}
 			if cfg.EventStoreNATSReplicas > 0 {
 				opts = append(opts, jetstream.ComReplicas(cfg.EventStoreNATSReplicas))
+			}
+			if cfg.EventStoreNATSNKeyFile != "" {
+				cred, err := natsjs.LerNKeyFicheiro(cfg.EventStoreNATSNKeyFile)
+				if err != nil {
+					return nil, fmt.Errorf("aos: credencial do event store replicado (AOS-470): %w", err)
+				}
+				opts = append(opts, jetstream.ComCredencial(cred))
 			}
 			created, err := jetstream.Abrir(cfg.EventStoreNATS, opts...)
 			if err != nil {

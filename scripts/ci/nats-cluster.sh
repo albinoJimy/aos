@@ -35,6 +35,17 @@
 #     bash scripts/ci/nats-cluster.sh env     # só imprime as variáveis (cluster já de pé)
 #     bash scripts/ci/nats-cluster.sh restore # reergue nós derrubados e espera pelo cluster
 #
+# # O CLUSTER EXIGE AUTENTICAÇÃO, COMO O DE PRODUÇÃO (AOS-470)
+#
+# Os nós arrancam com `authorization { users = [ {nkey: U…} ] }`: um cliente sem credencial é
+# recusado pelo servidor. A seed é gerada no `up` por `aos nats-nkey gerar` — o mesmo código
+# que gera a do nó de produção — e exportada como `AOS_NATS_NKEY_FILE`, que os testes passam a
+# `jetstream.ComCredencial` (ou a `AOS_EVENTSTORE_NATS_NKEY_FILE`, para o nó). Medir as suites
+# contra um cluster ANÓNIMO seria medir um substrato que a produção deixou de ter.
+#
+# `AOS_NATS_AUTH=0` levanta-o sem autorização — só para bisectar uma regressão até antes do
+# AOS-470; o gate `nats` não o usa.
+#
 # Em CI:  eval "$(bash scripts/ci/nats-cluster.sh up)"
 set -euo pipefail
 
@@ -61,6 +72,12 @@ REGIAO_OUTRA="${AOS_NATS_REGION_OUTRA:-us-east}"
 # Portas no host. Os três primeiros nós são da região do board; o quarto é o forasteiro.
 PORTA_BASE="${AOS_NATS_PORT_BASE:-14225}"
 
+AUTENTICAR="${AOS_NATS_AUTH:-1}"
+# A seed vive FORA da árvore do repositório (um `git add -A` não a apanha) e num caminho
+# estável entre `up`, `env` e `restore`, que são processos diferentes.
+DIR_ESTADO="${AOS_NATS_STATE_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/${PREFIXO:-aos-ci-nats}-estado}"
+SEED="$DIR_ESTADO/cliente.nk"
+
 # O Git Bash no Windows converte argumentos que PARECEM caminhos POSIX em caminhos Windows
 # antes de o docker os ver — e `--entrypoint /bin/sh` chega ao daemon como
 # `C:/Program Files/Git/usr/bin/sh`, que não existe dentro do contentor. Desligar a conversão
@@ -71,6 +88,32 @@ export MSYS_NO_PATHCONV=1
 log() { printf '%s\n' "$*" >&2; }
 
 nome_do_no() { printf '%s-%s' "$PREFIXO" "$1"; }
+
+# caminho_para_o_go converte um caminho do Git Bash (/tmp/…) para a forma que um binário Windows
+# abre (C:/…). Inerte em Linux, onde o `cygpath` não existe.
+caminho_para_o_go() {
+	if command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
+}
+
+# aos_nkey corre o subcomando `nats-nkey` do binário do nó a partir da fonte. É o MESMO código
+# que gera a credencial de produção: uma seed que ele produza e que o servidor aceite é a
+# prova de que a codificação nkey (natsjs/nkey.go) é a da NATS.
+aos_nkey() {
+	(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/cmd/aos" && go run . nats-nkey "$@")
+}
+
+# chave_publica gera a seed (se ainda não houver) e imprime a chave pública correspondente.
+chave_publica() {
+	mkdir -p "$DIR_ESTADO"
+	chmod 700 "$DIR_ESTADO"
+	if [ ! -s "$SEED" ]; then
+		(umask 077 && aos_nkey gerar >"$SEED.tmp" && mv "$SEED.tmp" "$SEED") || {
+			log "FAIL nats-cluster: não foi possível gerar a seed nkey (go run packages/cmd/aos nats-nkey gerar)"
+			return 1
+		}
+	fi
+	aos_nkey publica --key "$(caminho_para_o_go "$SEED")"
+}
 
 # regiao_do_no devolve a região que o nó N anuncia. Os nós 1..3 são do board; o 4 é de fora.
 regiao_do_no() {
@@ -165,6 +208,14 @@ imprimir_env() {
 	# reerguer os contentores não é o mesmo que ter cluster: o `docker start` devolve
 	# imediatamente e o stream R3 seguinte ainda apanharia o cluster sem meta-leader.
 	printf 'export AOS_RESTORE_CMD="%s"\n' "bash $(caminho_deste_script) restore"
+	# A CREDENCIAL do cluster autorizado (AOS-470). Sem autorização a variável sai VAZIA, e não
+	# ausente: um valor herdado de um `up` anterior faria os testes apresentar uma seed a um
+	# cluster que não a pede — que o cliente recusa fail-closed.
+	if [ "$AUTENTICAR" = 1 ]; then
+		printf 'export AOS_NATS_NKEY_FILE="%s"\n' "$(caminho_para_o_go "$SEED")"
+	else
+		printf 'export AOS_NATS_NKEY_FILE=""\n'
+	fi
 }
 
 levantar() {
@@ -172,6 +223,16 @@ levantar() {
 
 	derrubar
 	docker network create "$REDE" >/dev/null
+
+	local autorizacao="" pub
+	if [ "$AUTENTICAR" = 1 ]; then
+		pub="$(chave_publica)" || exit 1
+		case "$pub" in
+		U*) ;;
+		*) log "FAIL nats-cluster: chave pública inesperada: '$pub'"; exit 1 ;;
+		esac
+		autorizacao="authorization { users = [ { nkey: $pub } ] }"
+	fi
 
 	# As rotas nomeiam os QUATRO nós. Um nó que não esteja na lista de rotas não entra no
 	# meta-group do Raft e a sua tag nunca é elegível para `placement` — o que faria o teste
@@ -196,6 +257,7 @@ levantar() {
 			"$IMAGEM" -c "
 				mkdir -p /etc/nats /data
 				printf 'server_tags: [\"region:%s\"]\n' '$(regiao_do_no "$i")' > /etc/nats/aos-soberania.conf
+				printf '%s\n' '$autorizacao' >> /etc/nats/aos-soberania.conf
 				exec nats-server \
 					-c /etc/nats/aos-soberania.conf \
 					-js -sd /data -p 4222 -m 8222 \
@@ -211,7 +273,11 @@ levantar() {
 		docker logs "$(nome_do_no 1)" 2>&1 | tail -20 >&2
 		exit 1
 	fi
-	log "OK   nats-cluster: 4 nós de pé ($REGIAO ×3, $REGIAO_OUTRA ×1), meta-leader eleito"
+	if [ "$AUTENTICAR" = 1 ]; then
+		log "OK   nats-cluster: 4 nós de pé ($REGIAO ×3, $REGIAO_OUTRA ×1), meta-leader eleito, authorization por nkey"
+	else
+		log "OK   nats-cluster: 4 nós de pé ($REGIAO ×3, $REGIAO_OUTRA ×1), meta-leader eleito — SEM authorization (AOS_NATS_AUTH=0)"
+	fi
 	imprimir_env
 }
 
@@ -234,7 +300,7 @@ restaurar() {
 
 case "${1:-up}" in
 up) levantar ;;
-down) derrubar; log "OK   nats-cluster: derrubado" ;;
+down) derrubar; rm -rf "$DIR_ESTADO"; log "OK   nats-cluster: derrubado" ;;
 env) imprimir_env ;;
 restore) restaurar ;;
 *)

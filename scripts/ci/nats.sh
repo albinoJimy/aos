@@ -145,7 +145,7 @@ skips_legitimos=(
 
 # SKIPS QUE SÓ EXISTEM FORA DE LINUX, e que em CI NÃO acontecem.
 #
-# Estes três medem bits POSIX de um ficheiro de segredo, e saltam em Windows porque lá os bits
+# Estes medem bits POSIX de um ficheiro de segredo, e saltam em Windows porque lá os bits
 # não são significativos — o alvo é o contentor Linux. Aceitá-los INCONDICIONALMENTE seria
 # abrir um buraco permanente: se amanhã saltassem no runner, o gate calava-se. São aceites
 # apenas quando o host NÃO é Linux, que é a condição que os faz saltar.
@@ -153,6 +153,8 @@ skips_so_fora_de_linux=(
   "TestAOS416_NHIIlegivelRecusaNoArranque"
   "TestAOS416_OModoDaConvencaoNaoERecusado"
   "TestAOS416_SegredoIlegivelRecusaNoArranque"
+  "TestNKey_FicheiroAcessivelAOutrosERecusado"  # AOS-470: modo da seed nkey do cluster
+  "TestAOS453_Env_SeedLegivelPorOutrosERecusada"  # AOS-453: faltava; medido no gate local Windows
 )
 em_linux=0
 [ "$(uname -s 2>/dev/null)" = "Linux" ] && em_linux=1

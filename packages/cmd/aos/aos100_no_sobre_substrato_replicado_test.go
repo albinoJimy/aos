@@ -50,6 +50,9 @@ func configReplicada(t *testing.T, addr, stream, wormDir string) Config {
 	cfg.EventStoreNATS = addr
 	cfg.EventStoreNATSStream = stream
 	cfg.EventStoreNATSReplicas = 3
+	// Com o cluster de CI autorizado (AOS-470) o nó apresenta a mesma credencial que um nó de
+	// produção; sem a variável a ligação é anónima, e um cluster com authorization recusa-a.
+	cfg.EventStoreNATSNKeyFile = os.Getenv("AOS_NATS_NKEY_FILE")
 	cfg.WORMPath = filepath.Join(wormDir, "worm.wal")
 	return cfg
 }
