@@ -23,15 +23,15 @@ instala hoje.
 
 Este epic cobre só os que são **activos**: alcançáveis pela superfície HTTP do nó `aos` tal como
 é entregue, com o mecanismo de autorização, selagem ou observabilidade que devia cobri-los
-ausente ou a mentir sobre o que faz. Dezassete tickets, cinco eixos:
+ausente ou a mentir sobre o que faz. Dezanove tickets, cinco eixos:
 
 | Eixo | Tickets |
 |---|---|
 | Governação da autonomia (`/autonomy`) | AOS-305, AOS-306, AOS-307 |
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
-| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319, AOS-472, AOS-473 |
-| Integridade das ferramentas de gate | AOS-316 |
+| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319, AOS-472, AOS-473, AOS-475 |
+| Integridade das ferramentas de gate | AOS-316, AOS-474 |
 | Semântica da extracção (por abrir) | AOS-318 |
 
 > **AOS-312 não vem da §3.** Os sete primeiros são achados activos do documento-fonte; o oitavo
@@ -66,6 +66,8 @@ ausente ou a mentir sobre o que faz. Dezassete tickets, cinco eixos:
 | **P2** | AOS-319 | Contagens e extremos de intervalo gerados sem derivação; sem efeito no binário |
 | **P2** | AOS-472 | Resíduo do AOS-318: uma cerca solta desloca pares (ticket, ADR) sem gate que o veja; sem efeito no binário |
 | **P2** | AOS-473 | Resíduo do AOS-318: pares que o corpus declara restrições contados como entregas; sem efeito no binário |
+| **P2** | AOS-474 | O veredicto do `run.sh` dizia «todos verdes» com etapas saltadas; sem efeito no binário |
+| **P2** | AOS-475 | Nenhum gate compara os pares (ticket, ADR) com os do merge-base; sem efeito no binário |
 
 ### 0.2 Tabela-resumo
 
@@ -88,6 +90,8 @@ ausente ou a mentir sobre o que faz. Dezassete tickets, cinco eixos:
 | AOS-319 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
 | AOS-472 | Uma linha de prosa começada por três crases ou três tis desloca pares (ticket, ADR) sem que nenhum gate dê por isso | P2 | **FEITO** |
 | AOS-473 | Pares (ticket, ADR) que o próprio corpus declara restrições contavam como entregas, e uma emenda declarada não contava | P2 | **FEITO** |
+| AOS-474 | O veredicto do `run.sh` diz «TODOS OS GATES VERDES» com um gate que saltou etapas | P2 | **FEITO** |
+| AOS-475 | Nenhum gate compara os pares (ticket, ADR) de um commit com os do merge-base | P2 | ABERTO |
 
 ---
 
@@ -1474,3 +1478,63 @@ correu, e nunca diz «todos verdes» se alguma saltou.
 
 **FEITO** (2026-10-01). Reproduzido e corrigido nesta máquina, com o self-test §RUN e
 verificação de mutação. Um `make ci` completo num posto com docker não foi corrido aqui.
+
+---
+
+## AOS-475 — Nenhum gate compara os pares (ticket, ADR) de um commit com os do merge-base
+
+### Contexto
+
+Resíduo 3 do AOS-318 na sua forma geral, e resíduo 2 do AOS-472. O `rtm.sh` compara a RTM com a
+regeneração a partir do corpus **do mesmo commit**: se o corpus é mal lido, as duas concordam no
+erro. O AOS-472 fechou as causas conhecidas que vêm de cercas e comentários HTML, e localiza-as no
+próprio commit; não fecha as que não vêm daí — um cabeçalho de ticket mal escrito, um terminador
+alterado num só dos dois leitores (`fim_do_bloco` continua duplicado, resíduo 2 do AOS-318), uma
+mudança na regra de extracção que desloque pares longe do que o autor tocou.
+
+A linha de base para os apanhar **já existe e já é versionada**: é a §4 de
+`tecnica/16_Rastreabilidade_RTM.md`, que todo o ticket que cite um ADR regenera. O que falta é
+compará-la com a do commit de partida, e uma diferença de pares localiza-se sozinha — diz que
+(ticket, ADR) entrou ou saiu.
+
+### Proposta — a variante barata
+
+Em CI, no job `rtm`: extrair o conjunto de pares no merge-base e no HEAD, com os leitores do HEAD,
+e **recusar a mudança de um par cujo ticket não tenha o bloco no diff**. Um ticket que o autor
+editou pode mudar os seus pares; um que ninguém tocou, não.
+
+Apanharia: um ticket que absorve o seguinte por um terminador perdido (o par muda no ticket
+**não** tocado); um terminador divergente entre os leitores; uma mudança à regra de extracção sem
+declaração; e as linhas soltas que o AOS-472 declara fora do seu alcance, quando o efeito sai do
+ticket editado. **Não** apanharia um ticket que muda os seus próprios pares por acidente — o caso
+da revisão do AOS-472, um `<!--` solto na prosa do AOS-417 a tirar-lhe o ADR que ele implementa,
+fica todo dentro do bloco editado. Para esse continua a guarda do AOS-472.
+
+### Decisões a tomar primeiro
+
+1. **Histórico em CI.** O job `rtm` faz checkout raso; só o `secrets` tem `fetch-depth: 0`
+   (`.github/workflows/ci.yml`). Passar o `rtm` a histórico completo, ou buscar só o merge-base.
+2. **Leitores de que commit.** Os do HEAD sobre os dois corpora (mede o efeito do corpus) ou cada
+   commit com os seus (mede também o efeito da regra). A primeira isola a pergunta; a segunda
+   apanha a mudança de regra, mas pede o escape do ponto 3.
+3. **Escape declarado** para um commit que mude de propósito a regra de extracção e desloque pares
+   por todo o corpus (foi o caso do AOS-473: 21 pares em seis tickets). Sem ele, o gate vermelha a
+   própria correcção; com ele em excesso, volta a ser fail-open.
+4. **Sem merge-base** (corrida local, ramo órfão): vermelho em CI, nunca verde por omissão.
+
+### Critérios de Aceitação
+
+- [ ] Um script (Python stdlib, no molde dos gates de `scripts/ci/`) extrai os pares no merge-base
+      e no HEAD e lista cada (ticket, ADR) que entrou ou saiu
+- [ ] Uma mudança de par num ticket cujo bloco não esteja no diff avermelha o gate, com o ticket, o
+      ADR e o sentido na mensagem
+- [ ] O escape do ponto 3 está decidido, escrito e provado nos dois sentidos
+- [ ] Sem merge-base, o gate fica vermelho em CI
+- [ ] `selftest.sh`: uma deslocação num ticket não tocado fica vermelha; uma mudança de pares no
+      ticket editado fica verde; uma mudança de regra sem escape fica vermelha
+
+### Estado
+
+**ABERTO** (2026-10-01). P2.
+
+---
