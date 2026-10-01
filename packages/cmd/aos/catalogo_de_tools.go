@@ -17,7 +17,8 @@ package main
 // # O que se serve, e porque é isto e não mais
 //
 // Por tool: o NOME (o `ToolID` que a lista-branca compara), a VERSÃO e o DIGEST do contrato, e os
-// DOIS eixos de risco que o manifesto do nó declara — `egress` e `reversibility`.
+// TRÊS eixos de risco que o manifesto do nó declara — `egress`, `reversibility` e `mutation`
+// (AOS-409).
 //
 // O DIGEST É UM PIN DO CONTRATO, NÃO PROVA DE REGISTO ASSINADO. Calcula-se pela MESMA fórmula que
 // o registo assinado usaria (`AOS_MODEL_TOOLS_REGISTER`, modelcatalog.go — um teste amarra os
@@ -30,7 +31,7 @@ package main
 // Os eixos saem FAIL-CLOSED, na convenção do `aos-orq`: um `egress` que o manifesto não declara é
 // `unknown` (o registo trata-o como `none` para o digest, mas o catálogo não afirma o que ninguém
 // declarou); uma `reversibility` que não seja «reversible» é `irreversible` (a semântica do nó —
-// ver [modelToolSpec]).
+// ver [modelToolSpec]); uma `mutation` que não seja «none» é `mutates` (AOS-409, [validateMutation]).
 //
 // NÃO se serve a SENSIBILIDADE, porque o manifesto do nó não a declara, e inventá-la aqui seria
 // fabricar um eixo de risco que o classificador consumiria como facto.
@@ -71,6 +72,9 @@ type entradaDoCatalogo struct {
 	Digest        string `json:"digest"`
 	Egress        string `json:"egress"`
 	Reversibility string `json:"reversibility"`
+	// Mutation é "none" ou "mutates" — nunca vazio (AOS-409). Um consumidor que o receba vazio
+	// está a falar com um nó anterior ao AOS-409, e conta-o como mutador.
+	Mutation string `json:"mutation"`
 }
 
 // respostaDoCatalogo é o corpo de `GET /tools`. `tools` está SEMPRE presente — vazio quando o nó
@@ -129,6 +133,10 @@ func catalogoDeToolsDoAmbiente() ([]entradaDoCatalogo, error) {
 		if rev != "reversible" {
 			rev = "irreversible"
 		}
+		mut, err := validateMutation(s)
+		if err != nil {
+			return nil, fmt.Errorf("catalogo de tools (AOS-409): tool %q: %w", name, err)
+		}
 		// Egress NÃO declarado ⇒ `unknown`, e não o `none` que o contrato usa para o digest: o
 		// catálogo é lido como facto de risco, e um eixo que ninguém declarou é o pior caso.
 		egress := string(contrato.Egress)
@@ -141,6 +149,7 @@ func catalogoDeToolsDoAmbiente() ([]entradaDoCatalogo, error) {
 			Digest:        digest.SHA256Digester{}.Digest(domain.KindTool, contrato),
 			Egress:        egress,
 			Reversibility: rev,
+			Mutation:      mut,
 		})
 	}
 	sort.Slice(cat, func(i, j int) bool { return cat[i].Name < cat[j].Name })

@@ -50,6 +50,7 @@ func snapshotPinado() planvalidate.Snapshot {
 				Sensitivity:   risk.SensitivityPublic,
 				Egress:        risk.EgressNone,
 				Reversibility: risk.Reversible,
+				Mutation:      planvalidate.MutationNone,
 			},
 			{
 				Name: "http.post", Version: "2.0.0", Digest: "sha256:bbb",
@@ -57,6 +58,7 @@ func snapshotPinado() planvalidate.Snapshot {
 				Sensitivity:   risk.SensitivityPublic,
 				Egress:        risk.EgressExternal,
 				Reversibility: risk.Reversible,
+				Mutation:      planvalidate.MutationNone,
 			},
 		},
 	}

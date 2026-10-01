@@ -22,9 +22,9 @@ const aos408SnapshotBenigno = `{
   "hash": "sha256:snap-benigno",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"},
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"},
     {"name":"http.post","version":"2.0.0","digest":"sha256:bbb","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"}
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"}
   ]
 }`
 
@@ -187,9 +187,9 @@ const aos408SnapshotComGray = `{
   "hash": "sha256:snap-gray",
   "tools": [
     {"name":"http.get","version":"1.0.0","digest":"sha256:ggg","admissible":true,
-     "sensitivity":"internal","egress":"internal","reversibility":"reversible"},
+     "sensitivity":"internal","egress":"internal","reversibility":"reversible","mutation":"none"},
     {"name":"http.post","version":"2.0.0","digest":"sha256:bbb","admissible":true,
-     "sensitivity":"sensitive","egress":"external","reversibility":"irreversible"}
+     "sensitivity":"sensitive","egress":"external","reversibility":"irreversible","mutation":"mutates"}
   ]
 }`
 
@@ -395,9 +395,9 @@ const aos408SnapshotComRotuloCopiado = `{
   "hash": "sha256:snap-aos408",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"},
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"},
     {"name":"http.post","version":"2.0.0","digest":"sha256:bbb","admissible":true,
-     "sensitivity":"internal","egress":"internal","reversibility":"reversible"}
+     "sensitivity":"internal","egress":"internal","reversibility":"reversible","mutation":"none"}
   ]
 }`
 

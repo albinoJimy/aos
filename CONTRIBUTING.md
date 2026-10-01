@@ -14,7 +14,9 @@ bash scripts/ci/run.sh
 ```
 
 Corre, por ordem canónica, `secrets → build → lint → test → replay → sast → sca → policy-test`
-e termina com `exit != 0` se qualquer gate falhar. Provar que as falhas **são
+e termina com `exit != 0` se qualquer gate falhar — `1` se algum falhou, `3` («VERDE
+PARCIAL») se nenhum falhou mas alguma etapa foi saltada (ver «O mesmo no agregador», abaixo).
+Provar que as falhas **são
 bloqueadas**:
 
 ```bash
@@ -228,6 +230,30 @@ Complementarmente, o registo fica **máquina-legível** ao lado do artefacto em
 para que um marcador obsoleto não seja um falso-positivo). Quem publica condiciona por
 `[ -e … ]` em vez de ler o log.
 
+#### O mesmo no agregador — `make ci` / `run.sh` (AOS-474)
+
+Até ao AOS-474, o `run.sh` dizia «RESULTADO: TODOS OS GATES VERDES» com um gate que tinha
+saltado uma etapa. O `AOS_SKIPPED_STEP` do gate ficava a meio do output, e o veredicto não o
+repetia. Medido com `env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats`, num posto com o
+CLI docker e sem daemon: saía `0`.
+
+Agora cada `gate_skip` (`lib.sh`) anexa-se também ao registo do `run.sh`
+(`AOS_RUN_SKIP_LEDGER`, um ficheiro por gate, herdado pelos processos netos). O veredicto final
+redeclara todas as etapas saltadas, com o gate, como `AOS_SKIPPED_STEP  [<gate>] …`. Os
+códigos de saída são os do `package.sh`:
+
+| Saída | Significa |
+|---|---|
+| `0` | `TODOS OS GATES VERDES`: nenhum gate falhou e **nenhuma etapa foi saltada**. |
+| `1` | `PIPELINE VERMELHO`: pelo menos um gate falhou. Ganha a qualquer salto. |
+| `3` | `VERDE PARCIAL`: nada falhou, mas alguma etapa **não correu**. |
+
+O `3` é deliberado e morde o `make`: `make ci` acaba em erro, e o `make ci-all` não chega aos
+self-tests. Num posto sem docker isso acontece sempre, porque o `nats` salta. É o
+comportamento pretendido: esse posto não verificou o substrato replicado. Para correr os
+self-tests à parte: `make ci-selftest`. A CI não chama o `run.sh` (cada job corre o seu gate),
+pelo que nada muda lá.
+
 Aceitar o verde parcial é possível — `AOS_ALLOW_PARTIAL_DELIVERY=1` força a saída `0` — com
 o **mesmo modelo do escape hatch dos pisos**: imprime `AOS_PARTIAL_ACCEPTED` no output e é
 **recusado em CI**. A CI não publica entrega por verificar.
@@ -259,8 +285,17 @@ transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de me
 
 > **O gate `nats` levanta Docker e demora.** Entrou em AOS-431 e corre um cluster JetStream de
 > quatro nós para exercitar as suites que, sem ele, SALTAM — eram 45, em 13 ficheiros. Sem
-> Docker ele **salta e declara-o** (`AOS_SKIPPED_STEP`), como os outros gates que dependem de
-> contentores; o que não faz é ficar verde em silêncio. Para o correr sozinho: `make ci-nats`.
+> Docker **utilizável** — sem o CLI, ou com o CLI e o daemon inacessível (`docker info` falha,
+> AOS-471) — ele **salta e declara-o** (`AOS_SKIPPED_STEP`), como os outros gates que dependem
+> de contentores; o que não faz é ficar verde em silêncio. **Em CI não salta**: com `CI` ou
+> `GITHUB_ACTIONS` definidos é vermelho, porque o job `nats` é required check e o agregador lê
+> `success`, não o `AOS_SKIPPED_STEP`. «Definido» é «não vazio»: **`CI=false` conta como CI**,
+> a mesma regra fail-closed do `lib.sh` e do `package.sh`. Para o salto local, apaga-se a
+> variável (`env -u CI -u GITHUB_ACTIONS …`), não se nega. A sonda do daemon (`docker info`)
+> tem prazo de 30 s onde houver `timeout`, e um daemon que não responde nesse prazo conta
+> como inutilizável. Com o daemon a responder, um cluster que não sobe é
+> sempre vermelho, a nomear o `nats-cluster.sh` e o código com que saiu. Para o correr
+> sozinho: `make ci-nats`.
 > Para levantar só o cluster e trabalhar contra ele:
 > `eval "$(bash scripts/ci/nats-cluster.sh up)"`, e `bash scripts/ci/nats-cluster.sh down` no
 > fim.

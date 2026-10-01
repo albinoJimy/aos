@@ -35,10 +35,22 @@
 #      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
 #      ref-lint nem entra na §4; directivas mal formadas falham fechado, e o que está
 #      em código (cercas, crases simples ou múltiplas) não é directiva (AOS-318).
+#  RTMX) uma cerca de código ou um comentário HTML que atravesse a fronteira de um
+#      ticket — três tis ou três crases soltos numa linha de prosa, uma cerca por fechar
+#      no fim do bloco, uma abertura do mesmo tipo dentro de outra, duas linhas soltas à
+#      volta de um cabeçalho de ticket, ou um `<!--` solto que esconde cabeçalhos —
+#      avermelha o rtm e o ref-lint; cercas legítimas não (AOS-472).
 #  GW) o go.work cobre exactamente os módulos de packages/ (aninhados incluídos), com
 #      as directivas go/toolchain máximas e sem replace; o compilar avermelha um
 #      workspace que não compila e ignora um go.work.sum desnecessário; o build.sh
 #      leva o vermelho ao rc; e os gates correm com GOWORK=off (AOS-387).
+#  NX) o gate nats com o CLI docker e SEM daemon salta DECLARADO (vermelho em CI), e com
+#      o daemon a responder um cluster que não sobe avermelha a nomear o
+#      nats-cluster.sh — nunca «AOS_NATS_URL: unbound variable» (AOS-471); um env herdado
+#      não passa por cluster de pé, e um `up` que morre a meio não deixa nós de pé.
+#  RUN) o veredicto do run.sh redeclara as etapas que um gate saltou (também as de um
+#      processo neto) e não diz «TODOS OS GATES VERDES»: sai 3, VERDE PARCIAL; um gate
+#      vermelho ganha ao salto (AOS-474).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -177,6 +189,12 @@ GOTEST_TMP=""
 MENCAO_TMP=""
 # §GW monta uma árvore sintética FORA do repo: não muta a árvore.
 GOWORK_TMP=""
+# §NX põe os seus `docker` de brincar e o estado do cluster FORA do repo: não muta a árvore.
+NX_TMP=""
+# §RTMX trabalha sobre uma cópia do corpus (como §Z): não muta a árvore.
+RTMX_TMP=""
+# §RUN corre uma CÓPIA do run.sh e do lib.sh com gates sintéticos FORA do repo: não muta a árvore.
+RUN_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -189,9 +207,17 @@ cleanup() {
   rm -rf "$GOTEST_TMP"
   rm -rf "$MENCAO_TMP"
   rm -rf "$GOWORK_TMP"
+  rm -rf "$NX_TMP"
+  rm -rf "$RTMX_TMP"
+  rm -rf "$RUN_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
+
+# Os saltos que estes subtestes PROVOCAM (o §NX faz o nats.sh saltar de propósito) não são
+# saltos desta execução: se a suite correr debaixo do `run.sh`, não podem ir parar ao registo
+# dele e pintar um VERDE PARCIAL que nada deixou por verificar (AOS-474).
+unset AOS_RUN_SKIP_LEDGER
 
 # ============================================================================
 # A) lint e test bloqueiam um "PR mau" (módulo isolado, injectado e removido)
@@ -2236,6 +2262,439 @@ case "$linha" in
   *) bad "Z10: uma directiva entre crases duplas abriu um trecho real: «$linha»" ;;
 esac
 rm -rf "$MENCAO_TMP"; MENCAO_TMP=""
+
+# ============================================================================
+# NX) nats.sh: docker sem daemon SALTA declarado; cluster que não sobe AVERMELHA (AOS-471)
+# ============================================================================
+log_gate "self-test NX · nats.sh: docker sem daemon salta declarado (vermelho em CI), cluster que não sobe avermelha a nomeá-lo (AOS-471)"
+# O nats.sh fazia `if ! eval "$(bash nats-cluster.sh up)"`: o código do `up` perdia-se dentro
+# do `eval` e, com o CLI `docker` presente e SEM daemon, o gate morria mais abaixo com
+# «AOS_NATS_URL: unbound variable» — fail-closed por acaso, com o diagnóstico no sítio errado.
+#
+# NX1–NX3 e NX6–NX8 correm o nats.sh INTEIRO com um `docker` de brincar à frente no PATH: todos
+# saem antes das suites, pelo que nada de Go corre sobre um cluster que não existe. NX4–NX5
+# exercitam o `nats_levantar` — a função que o gate chama — sobre o `nats-cluster.sh` REAL: o
+# caminho feliz não pode correr pelo gate inteiro sem cluster (correria as suites). O estado do
+# cluster vai para $NX_TMP: o `down` do `trap` do gate não toca no de uma execução verdadeira.
+# NX4b/NX4c, NX6, NX7, NX8 e as variantes do NX2 vieram da revisão adversarial do AOS-471: cada
+# um fecha um mutante que sobrevivia aos outros.
+source "$CI_DIR/nats-levantar.sh"
+NX_TMP="$(mktemp -d)"
+
+# nx_shim <nome> <corpo> — um `docker` de brincar em $NX_TMP/<nome>/docker.
+nx_shim() {
+  mkdir -p "$NX_TMP/$1"
+  printf '#!/usr/bin/env bash\n%s\n' "$2" > "$NX_TMP/$1/docker"
+  chmod +x "$NX_TMP/$1/docker"
+}
+# O CLI existe, o daemon não: `info` falha como falha o verdadeiro.
+nx_shim semdaemon 'case "$1" in
+  info) echo "Client: shim"; echo "failed to connect to the docker API at unix:///nx-shim.sock" >&2; exit 1 ;;
+  *) echo "nx-shim: sem daemon" >&2; exit 1 ;;
+esac'
+# O daemon responde, e o cluster não sobe: a rede do cluster é recusada.
+nx_shim semrede 'case "$1 ${2:-}" in
+  "network create") echo "nx-shim: network create recusado" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac'
+# Tudo responde, e o meta-leader está eleito à primeira.
+nx_shim tudo 'case "$1" in
+  exec) printf "%s\n" "{\"meta_cluster\":{\"leader\":\"nx-1\"}}" ;;
+  *) exit 0 ;;
+esac'
+
+# nx_gate <shim> [VAR=valor …] — o nats.sh inteiro com o shim no PATH e SEM os marcadores de CI
+#   do runner (o job `selftest` corre com CI=true), salvo se passados. Saída em NX_OUT, código
+#   em NX_RC.
+nx_gate() {
+  local shim="$1"; shift
+  NX_RC=0
+  NX_OUT="$(env -u CI -u GITHUB_ACTIONS PATH="$NX_TMP/$shim:$PATH" \
+    AOS_NATS_STATE_DIR="$NX_TMP/estado" AOS_NATS_AUTH=0 "$@" \
+    bash "$CI_DIR/nats.sh" 2>&1)" || NX_RC=$?
+}
+
+# NX1 — CLI sem daemon, localmente: SALTO DECLARADO, como o «sem CLI» — e redeclarado no fim.
+nx_gate semdaemon
+case "$NX_OUT" in
+  *"unbound variable"*)
+    bad "NX1: CLI sem daemon ainda morre por variável por definir (rc=$NX_RC) — o diagnóstico aponta para o sítio errado" ;;
+  *"SALTADO: nats — daemon docker inacessível"*"AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível"*)
+    if [ "$NX_RC" -eq 0 ]; then
+      pass "NX1: CLI sem daemon salta DECLARADO, com o motivo e a garantia por verificar no veredicto"
+    else
+      bad "NX1: CLI sem daemon declarou o salto mas saiu $NX_RC — o «sem CLI» sai 0"
+    fi ;;
+  *) bad "NX1: CLI sem daemon não saltou declarado (rc=$NX_RC): $(printf '%s' "$NX_OUT" | tail -2 | tr '\n' ' ')" ;;
+esac
+
+# NX2 — o mesmo em CI: VERMELHO. O agregador `gates` lê `success`, não o AOS_SKIPPED_STEP.
+# Três marcadores: CI=1; SÓ o GITHUB_ACTIONS=true (um gate que lesse só `${CI:-}` passava o
+# primeiro); e CI=false, que CONTA como CI — a regra é «definido e não vazio», a do lib.sh e do
+# package.sh, e fail-closed: quem quer o salto local apaga a variável, não a nega.
+for nx_marca in CI=1 GITHUB_ACTIONS=true CI=false; do
+  nx_gate semdaemon "$nx_marca"
+  if [ "$NX_RC" -ne 0 ] && [[ "$NX_OUT" == *"daemon docker inacessível"*"a CI não salta o substrato replicado real"* ]]; then
+    pass "NX2: com $nx_marca, docker sem daemon avermelha (rc=$NX_RC) a dizer porquê — não vira verde por salto"
+  else
+    bad "NX2: com $nx_marca, docker sem daemon não avermelhou com a recusa nomeada (rc=$NX_RC) — com rc=0 o required check ficava verde sem medir"
+  fi
+done
+
+# NX3 — daemon a responder e cluster que não sobe: VERMELHO a nomear o nats-cluster.sh e o
+# código com que saiu. Nunca salto, nunca a variável por definir.
+nx_gate semrede
+if [ "$NX_RC" -eq 0 ]; then
+  bad "NX3: o cluster não subiu com o docker utilizável e o gate saiu VERDE"
+elif [[ "$NX_OUT" == *"SALTADO"* ]]; then
+  bad "NX3: um cluster que não sobe com o docker utilizável foi tratado como salto (rc=$NX_RC)"
+elif [[ "$NX_OUT" == *"unbound variable"* ]]; then
+  bad "NX3: o cluster não subiu e o gate morreu por variável por definir (rc=$NX_RC)"
+elif [[ "$NX_OUT" == *"nx-shim: network create recusado"*"o cluster NÃO subiu — \`nats-cluster.sh up\` saiu 1 com o docker utilizável"* ]]; then
+  pass "NX3: docker utilizável e cluster que não sobe avermelha (rc=$NX_RC), nomeia o nats-cluster.sh e mostra o motivo dele"
+else
+  bad "NX3: o cluster não subiu e o vermelho não o nomeia (rc=$NX_RC): $(printf '%s' "$NX_OUT" | tail -2 | tr '\n' ' ')"
+fi
+
+# NX4 — um `up` que sai 0 SEM imprimir o env é vermelho pelo AOS_NATS_URL, e não verde.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$NX_TMP/up-mudo.sh"
+nx_rc=0
+nx_out="$( unset AOS_NATS_URL; nats_levantar "$NX_TMP/up-mudo.sh" 2>&1 )" || nx_rc=$?
+if [ "$nx_rc" -ne 0 ] && [[ "$nx_out" == *"saiu 0 sem exportar AOS_NATS_URL"* ]]; then
+  pass "NX4: um up que sai 0 sem dizer onde está o cluster é recusado pelo AOS_NATS_URL"
+else
+  bad "NX4: um up mudo foi aceite ou recusado sem nomear o AOS_NATS_URL (rc=$nx_rc)"
+fi
+# NX4b — o MESMO up mudo com um AOS_NATS_URL HERDADO (o CONTRIBUTING ensina a fazer o `eval` do
+# `up` na própria shell). Antes da revisão, o gate dizia «cluster de pé» com o endereço velho.
+nx_rc=0
+nx_out="$( export AOS_NATS_URL="nats://nx-velho:4222"; nats_levantar "$NX_TMP/up-mudo.sh" 2>&1 )" || nx_rc=$?
+if [ "$nx_rc" -ne 0 ] && [[ "$nx_out" == *"saiu 0 sem exportar AOS_NATS_URL"* ]]; then
+  pass "NX4b: um AOS_NATS_URL herdado não passa por cluster de pé quando o up é mudo"
+else
+  bad "NX4b: com AOS_NATS_URL herdado, um up mudo foi aceite (rc=$nx_rc) — o gate mediria o cluster de outra sessão"
+fi
+# NX4c — e as outras variáveis que o `up` exporta também não sobrevivem do env herdado: um `up`
+# que só imprima o URL não pode deixar ao gate o AOS_KILL_CMD de outro cluster.
+printf '%s\n' '#!/usr/bin/env bash' \
+  "printf 'export AOS_NATS_URL=\"%s\"\\n' 127.0.0.1:1" \
+  "if false; then printf 'export AOS_KILL_CMD=\"%s\"\\n' nunca; fi" > "$NX_TMP/up-parcial.sh"
+nx_rc=0
+nx_out="$( export AOS_KILL_CMD="docker stop nx-velho"; nats_levantar "$NX_TMP/up-parcial.sh" >/dev/null 2>&1 || exit 1
+  printf 'URL=%s KILL=%s' "$AOS_NATS_URL" "${AOS_KILL_CMD-<apagado>}" )" || nx_rc=$?
+if [ "$nx_rc" -eq 0 ] && [ "$nx_out" = "URL=127.0.0.1:1 KILL=<apagado>" ]; then
+  pass "NX4c: as variáveis que o up exporta apagam-se antes do eval — nenhuma herdada sobrevive"
+else
+  bad "NX4c: uma variável do up herdada sobreviveu ao nats_levantar (rc=$nx_rc): $nx_out"
+fi
+
+# NX5 — CAMINHO FELIZ, sobre o nats-cluster.sh REAL: com tudo a responder, a sonda aceita o
+# docker e o `nats_levantar` exporta o AOS_NATS_URL dos três nós do board.
+nx_rc=0
+nx_out="$( unset AOS_NATS_URL
+  export PATH="$NX_TMP/tudo:$PATH" AOS_NATS_STATE_DIR="$NX_TMP/estado" AOS_NATS_AUTH=0 AOS_NATS_PORT_BASE=14225
+  nats_docker_utilizavel || { echo "SONDA: $NATS_DOCKER_MOTIVO"; exit 1; }
+  nats_levantar "$CI_DIR/nats-cluster.sh" >/dev/null 2>&1 || exit 2
+  printf 'URL=%s' "$AOS_NATS_URL" )" || nx_rc=$?
+if [ "$nx_rc" -eq 0 ] && [ "$nx_out" = "URL=127.0.0.1:14225,127.0.0.1:14226,127.0.0.1:14227" ]; then
+  pass "NX5: controlo — com o docker a responder, o cluster sobe e o AOS_NATS_URL chega ao gate"
+else
+  bad "NX5: o caminho feliz partiu-se (rc=$nx_rc): $nx_out"
+fi
+
+# NX6 — UM `up` QUE MORRE A MEIO NÃO DEIXA CONTENTORES DE PÉ. O `up` lança os quatro nós e o
+# meta-leader nunca é eleito (o `exec` não responde; o `sleep` é instantâneo para a espera de
+# 90 s não custar 90 s). Com o código do `up` verificado, o `exit 1` sai logo — e se o `trap`
+# do `down` viesse depois do `nats_levantar`, ou não existisse, ninguém derrubava os nós. Exige
+# um `docker rm -f` DEPOIS do último `docker run`, e o gate vermelho.
+nx_shim semlider "echo \"docker \$*\" >> \"$NX_TMP/semlider.log\"
+exit 0"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$NX_TMP/semlider/sleep"; chmod +x "$NX_TMP/semlider/sleep"
+: > "$NX_TMP/semlider.log"
+nx_gate semlider
+nx_ultimo_run="$(grep -n '^docker run ' "$NX_TMP/semlider.log" | tail -1 | cut -d: -f1)"
+nx_rm_depois="$(awk -v n="${nx_ultimo_run:-0}" 'NR>n && /^docker rm -f /{c++} END{print c+0}' "$NX_TMP/semlider.log")"
+if [ -z "$nx_ultimo_run" ]; then
+  bad "NX6: o up não chegou a lançar contentores — o caso não exercita o que diz (rc=$NX_RC)"
+elif [ "$NX_RC" -eq 0 ]; then
+  bad "NX6: o meta-leader não foi eleito e o gate saiu VERDE"
+elif [ "$nx_rm_depois" -lt 4 ]; then
+  bad "NX6: o up morreu depois de lançar os nós e só $nx_rm_depois dos 4 foram derrubados — o trap do down não cobre a falha do up"
+else
+  pass "NX6: um up que morre depois de lançar os nós avermelha (rc=$NX_RC) e o trap derruba os 4"
+fi
+
+# NX7 — O MOTIVO É A LINHA DO ERRO, não a última: um `WARNING:` depois do erro tomava-lhe o
+# lugar no motivo do salto. E um `|` no erro não parte os campos do AOS_SKIPPED_STEP.
+nx_shim avisodepois 'case "$1" in
+  info) echo "Client: shim"
+        echo "Cannot connect to the Docker daemon at unix:///nx.sock | nx. Is the docker daemon running?" >&2
+        echo "WARNING: nx-shim aviso depois do erro" >&2
+        echo "" >&2; exit 1 ;;
+  *) exit 1 ;;
+esac'
+nx_gate avisodepois
+if [ "$NX_RC" -eq 0 ] && [[ "$NX_OUT" == *"AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível (docker info: Cannot connect to the Docker daemon at unix:///nx.sock / nx. Is the docker daemon running?))"* ]] \
+   && [[ "$NX_OUT" != *"docker info: WARNING"* ]]; then
+  pass "NX7: o motivo do salto é a linha do erro, não o WARNING que vem depois, e o | não parte os campos"
+else
+  bad "NX7: o motivo do salto não é a linha do erro (rc=$NX_RC): $(printf '%s' "$NX_OUT" | grep 'AOS_SKIPPED_STEP ' | head -1)"
+fi
+
+# NX8 — UM DAEMON PENDURADO É DOCKER INUTILIZÁVEL. O `timeout` de brincar sai 124 como o
+# verdadeiro ao esgotar o prazo; o `docker` diria que sim. Fail-closed: salta declarado
+# (localmente) a dizer que não respondeu, e nunca segue para o `up`.
+nx_shim pendurado 'exit 0'
+printf '#!/usr/bin/env bash\nexit 124\n' > "$NX_TMP/pendurado/timeout"; chmod +x "$NX_TMP/pendurado/timeout"
+nx_gate pendurado
+if [ "$NX_RC" -eq 0 ] && [[ "$NX_OUT" == *"SALTADO: nats — daemon docker inacessível (docker info: sem resposta em ${NATS_DOCKER_SONDA_S}s (timeout))"* ]] \
+   && [[ "$NX_OUT" != *"cluster de pé"* ]] && [[ "$NX_OUT" != *"NÃO subiu"* ]]; then
+  pass "NX8: um docker info que esgota o prazo é docker inutilizável — salto declarado, sem subir o cluster"
+else
+  bad "NX8: um daemon pendurado não foi tratado como inutilizável (rc=$NX_RC): $(printf '%s' "$NX_OUT" | tail -2 | tr '\n' ' ')"
+fi
+rm -rf "$NX_TMP"; NX_TMP=""
+
+
+# ============================================================================
+# RTMX) nem uma cerca nem um comentário atravessam a fronteira de um ticket (AOS-472)
+# ============================================================================
+# O defeito: nenhum gate compara o conjunto de pares (ticket, ADR) de um commit com o
+# do anterior, e a detecção de cercas segue o CommonMark — uma linha de PROSA que comece
+# por ``` ou ~~~ abre uma cerca que só fecha numa linha do mesmo carácter. O que fica lá
+# dentro deixa de ser directiva e os `#` deixam de terminar blocos: um ticket absorve o
+# seguinte, ou uma menção volta a implementação, e a RTM regenerada fica sincronizada
+# com o corpus mal lido — `rtm.sh` verde. Quase entrou num commit do AOS-318.
+#
+# A guarda é `adr_citacoes.verificar_cercas`, chamada pelos DOIS leitores sobre cada
+# EPIC antes de a ler. Cada caso exige o vermelho dos dois PELO MOTIVO CERTO (a mensagem
+# da condição que o apanha), para que desligar uma condição não se esconda atrás de outra.
+#
+# Sandbox própria (corpus copiado), no molde de §Z: a árvore real NÃO é tocada. Os dois
+# tickets sintéticos são os seguintes ao maior do backlog — derivados, como em §Z.
+log_gate "self-test RTMX · nem uma cerca nem um comentário atravessam a fronteira de um ticket (AOS-472)"
+RTMX_TMP="$(mktemp -d)"
+mkdir -p "$RTMX_TMP/docs"
+cp -r "$REPO_ROOT/specs"    "$RTMX_TMP/specs"
+cp -r "$REPO_ROOT/tecnica"  "$RTMX_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$RTMX_TMP/docs/adr"
+cp    "$REPO_ROOT/_BRIEF.md" "$RTMX_TMP/_BRIEF.md"
+RTMX_EPIC="$RTMX_TMP/specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md"
+RTMX_EPIC_BAK="$RTMX_TMP/epic.bak"
+cp "$RTMX_EPIC" "$RTMX_EPIC_BAK"
+RTMX_A="$(grep -ohE 'AOS-[0-9]{3}' "$RTMX_TMP"/specs/EPIC-*.md | sort -u | tail -1 \
+  | awk -F- '{ printf "AOS-%03d", $2 + 1 }')"
+RTMX_B="$(printf '%s' "$RTMX_A" | awk -F- '{ printf "AOS-%03d", $2 + 1 }')"
+# Acrescenta à EPIC da cópia o ticket $RTMX_A com o corpo $1 e, se $2 não for vazio, o
+# ticket $RTMX_B a seguir, com o corpo $2 — é o que põe a cerca de $1 NO MEIO do ficheiro.
+rtmx_tickets() {
+  cp "$RTMX_EPIC_BAK" "$RTMX_EPIC"
+  printf '\n---\n\n## %s — Sonda do self-test RTMX\n\n%s\n' "$RTMX_A" "$1" >> "$RTMX_EPIC"
+  if [ -n "$2" ]; then
+    printf '\n---\n\n## %s — Sonda seguinte do self-test RTMX\n\n%s\n' "$RTMX_B" "$2" >> "$RTMX_EPIC"
+  fi
+}
+# Os DOIS leitores, sobre a cópia: `rtm-regenerate.py` em escrita (a §4 da cópia não
+# acompanha os tickets novos, e `--check` daria vermelho por isso) e `ref-lint.py`.
+# 0 se ambos ficaram VERMELHOS com a mensagem $1.
+rtmx_ambos_recusam() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTMX_TMP" python3 "$CI_DIR/rtm-regenerate.py" 2>&1)" && rc=0 || rc=$?
+  { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q -- "$1"; } || return 1
+  out="$(AOS_REFLINT_ROOT="$RTMX_TMP" python3 "$CI_DIR/ref-lint.py" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q -- "$1"
+}
+# 0 se ambos ficaram VERDES.
+rtmx_ambos_aceitam() {
+  AOS_RTM_ROOT="$RTMX_TMP" python3 "$CI_DIR/rtm-regenerate.py" >/dev/null 2>&1 \
+    && AOS_REFLINT_ROOT="$RTMX_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1
+}
+RTMX_B_CORPO="Implementa o ADR-001, que o leitor tem de atribuir ao $RTMX_B e não ao $RTMX_A."
+
+# RTMX1 — três TIS soltos no início de uma linha de prosa. Abrem uma cerca de tis que
+# nenhuma linha do corpus fecha: o $RTMX_B deixava de ter fronteira.
+rtmx_tickets $'Implementa o ADR-002.\n~~~ três tis no início de uma linha de prosa abrem uma cerca.\nMais prosa.' "$RTMX_B_CORPO"
+if rtmx_ambos_recusam "contém o cabeçalho de $RTMX_B"; then
+  pass "RTMX1: rtm e ref-lint recusam uma linha de prosa começada por ~~~ que atravessa o $RTMX_B"
+else
+  bad "RTMX1: uma linha solta de ~~~ passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX2 — o mesmo com três CRASES soltas seguidas de texto (info string sem crases: é
+# abertura de cerca, não código em linha).
+rtmx_tickets $'Implementa o ADR-002.\n``` três crases no início de uma linha de prosa abrem uma cerca.\nMais prosa.' "$RTMX_B_CORPO"
+if rtmx_ambos_recusam "contém o cabeçalho de $RTMX_B"; then
+  pass "RTMX2: rtm e ref-lint recusam uma linha de prosa começada por \`\`\` que atravessa o $RTMX_B"
+else
+  bad "RTMX2: uma linha solta de \`\`\` passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX3 — uma cerca por fechar no FIM do bloco: o $RTMX_A é o último ticket do ficheiro,
+# não há cabeçalho que ela atravesse, e só a condição «toda a cerca fecha» a apanha.
+rtmx_tickets $'Implementa o ADR-002.\n\n```bash\necho "o fecho ficou por escrever"' ""
+if rtmx_ambos_recusam "nunca fecha"; then
+  pass "RTMX3: rtm e ref-lint recusam uma cerca aberta no fim do último bloco"
+else
+  bad "RTMX3: uma cerca por fechar no fim do bloco passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX4 — uma linha solta de crases seguida, NO MESMO BLOCO, de uma cerca legítima: a
+# solta emparelha com o fecho da legítima, fica fechada sem atravessar cabeçalho nenhum
+# e esconde como código o trecho de menção entre as duas — o ADR-003 voltava a
+# implementação em silêncio. Só a condição 3 (abertura do mesmo tipo lá dentro) a apanha.
+rtmx_tickets $'Implementa o ADR-002.\n``` três crases soltas.\n<!-- rtm: menção -->O ADR-003 é só restrição.<!-- /rtm: menção -->\n\n```bash\necho ola\n```' "$RTMX_B_CORPO"
+if rtmx_ambos_recusam "dessincronizada"; then
+  pass "RTMX4: rtm e ref-lint recusam uma cerca solta que emparelha com a legítima seguinte"
+else
+  bad "RTMX4: uma cerca solta emparelhada com a legítima passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX5 — CONTROLO POSITIVO: cercas legítimas e fechadas no meio do ficheiro — uma de
+# bash com `# comentário`, uma de tis, e uma de quatro crases a mostrar uma de três com
+# info string (a forma certa de aninhar) — e código em linha começado por três crases.
+# Os dois leitores ficam verdes: a guarda distingue, não recusa toda a cerca.
+rtmx_tickets $'Implementa o ADR-002.\n\n```bash\n# comentário de bash, não cabeçalho\necho ola\n```\n\n~~~\nADR-003 em código\n~~~\n\n````md\n```bash\necho aninhado\n```\n````\n\n```x``` é código em linha.' "$RTMX_B_CORPO"
+if rtmx_ambos_aceitam; then
+  pass "RTMX5: controlo — cercas legítimas e fechadas deixam os dois leitores verdes"
+else
+  bad "RTMX5: cercas legítimas avermelharam um dos dois leitores — RTMX1..4 não provariam nada"
+fi
+
+# RTMX6 — um `<!--` SOLTO na prosa (revisão adversarial de 26eae41). A varredura do ficheiro
+# inteiro lê-o como comentário até ao `-->` seguinte — o de um marcador de menção vinte
+# linhas abaixo, no mesmo ticket — e esconde lá dentro a cerca de YAML do AOS-417: a
+# máscara deixa de a cobrir, um `# comentário` dela termina o bloco a meio, e o AOS-417
+# perdia o ADR-028 que implementa com os dois gates verdes. A sonda é a frase exacta da
+# revisão, injectada na cópia da EPIC-19 pela linha que a precede (não por número).
+cp "$RTMX_EPIC_BAK" "$RTMX_EPIC"
+RTMX_E19="$RTMX_TMP/specs/EPIC-19_Planeador_Meta_Orquestracao.md"
+cp "$RTMX_E19" "$RTMX_TMP/e19.bak"
+RTMX6_LINHA='`aos-orq` é só CLI, e o compose exclui-o deliberadamente do arranque:'
+perl -pi -e 's/^\Q'"$RTMX6_LINHA"'\E$/$& Um comentário HTML abre-se com <!-- e fecha mais tarde./' "$RTMX_E19"
+if ! grep -qF 'abre-se com <!-- e fecha mais tarde.' "$RTMX_E19"; then
+  bad "RTMX6: a sonda não entrou na cópia da EPIC-19 — a linha-âncora mudou, e o subteste mediria o vazio"
+elif rtmx_ambos_recusam "que os leitores tomam por fim de bloco"; then
+  pass "RTMX6: rtm e ref-lint recusam um <!-- solto que esconde a cerca e corta o AOS-417 a meio"
+else
+  bad "RTMX6: um <!-- solto na prosa do AOS-417 passou num dos dois gates (ou pelo motivo errado)"
+fi
+cp "$RTMX_TMP/e19.bak" "$RTMX_E19"
+
+# RTMX7 — duas linhas soltas de crases, uma em cada ticket, à volta do cabeçalho do
+# segundo: a segunda é um fecho válido, pelo que a cerca FECHA e não contém abertura do
+# mesmo tipo. Só a condição 2 (cabeçalho de ticket lá dentro) a apanha.
+rtmx_tickets $'Implementa o ADR-002.\n``` três crases soltas.\nMais prosa.' $'```\nImplementa o ADR-001.'
+if rtmx_ambos_recusam "contém o cabeçalho de $RTMX_B"; then
+  pass "RTMX7: rtm e ref-lint recusam uma cerca fechada que atravessa o cabeçalho do $RTMX_B"
+else
+  bad "RTMX7: duas linhas soltas à volta de um cabeçalho de ticket passaram num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX8 — um `<!--` solto no ÚLTIMO ticket do ficheiro, sem `-->` depois: o comentário
+# corre até ao fim e engole a prosa de cauda. Não há cabeçalho que atravesse nem cabeçalho
+# lá dentro; só a condição 1 aplicada a comentários o apanha.
+rtmx_tickets $'Implementa o ADR-002.\n\nUm comentário HTML abre-se com <!-- e aqui nunca fecha.' ""
+if rtmx_ambos_recusam "nunca fecha («-->»)"; then
+  pass "RTMX8: rtm e ref-lint recusam um <!-- solto que corre até ao fim do ficheiro"
+else
+  bad "RTMX8: um <!-- sem fecho no último bloco passou num dos dois gates (ou pelo motivo errado)"
+fi
+rm -rf "$RTMX_TMP"; RTMX_TMP=""
+
+# ============================================================================
+# RUN) o veredicto do run.sh redeclara os saltos e não diz «todos verdes» (AOS-474)
+# ============================================================================
+log_gate "self-test RUN · o run.sh redeclara as etapas saltadas e não diz «TODOS OS GATES VERDES» (AOS-474)"
+# Medido a 2026-10-01: `env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats`, com o CLI
+# docker e sem daemon, saía 0 com «RESULTADO: TODOS OS GATES VERDES»; o AOS_SKIPPED_STEP do
+# nats.sh ficava a meio do output e o veredicto não o repetia. Valia para QUALQUER gate que salte.
+#
+# RUN1–RUN5 correm uma CÓPIA do run.sh e do lib.sh reais (copiados agora, logo o código é o
+# desta árvore) com gates sintéticos ao lado; o run.sh resolve os gates pelo seu próprio
+# directório. RUN6 corre o run.sh REAL sobre o gate nats, com um `docker` sem daemon no PATH.
+RUN_TMP="$(mktemp -d)"
+mkdir -p "$RUN_TMP/scripts/ci"
+cp "$CI_DIR/run.sh" "$CI_DIR/lib.sh" "$RUN_TMP/scripts/ci/"
+run_gate() { # <nome> <corpo depois do source do lib.sh>
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nsource "$(dirname "${BASH_SOURCE[0]}")/lib.sh"\n%s\n' "$2" \
+    > "$RUN_TMP/scripts/ci/$1.sh"
+}
+run_gate verde 'log_ok "verde: nada saltado"; gate_skip_report || true; exit 0'
+run_gate salta 'gate_skip "etapa-sonda" "motivo-sonda" "garantia-sonda"; gate_skip_report || true; exit 0'
+run_gate vermelho 'log_fail "vermelho de propósito"; exit 1'
+# O salto acontece num processo NETO, como o sbom.sh debaixo do package.sh: o array do filho
+# nunca o vê, e o filho não chama gate_skip nenhum.
+run_gate neto-salta 'gate_skip "etapa-neta" "motivo-neto" "garantia-neta"; exit 0'
+run_gate avo 'bash "$(dirname "${BASH_SOURCE[0]}")/neto-salta.sh"; log_ok "avo: o filho não saltou nada"; exit 0'
+run_corre() { # <gates…> — saída em RUN_OUT, código em RUN_RC
+  RUN_RC=0
+  RUN_OUT="$(env -u CI -u GITHUB_ACTIONS bash "$RUN_TMP/scripts/ci/run.sh" "$@" 2>&1)" || RUN_RC=$?
+}
+run_fim() { printf '%s' "$RUN_OUT" | tail -3 | tr '\n' ' '; }
+
+# RUN1 — um gate que salta: VERDE PARCIAL, saída 3, o salto redeclarado no veredicto com o gate.
+run_corre verde salta
+if [ "$RUN_RC" -ne 3 ]; then
+  bad "RUN1: um gate saltou e o run.sh saiu $RUN_RC (esperado 3, VERDE PARCIAL): $(run_fim)"
+elif [[ "$RUN_OUT" == *"TODOS OS GATES VERDES"* ]]; then
+  bad "RUN1: um gate saltou e o run.sh disse TODOS OS GATES VERDES"
+elif [[ "$(printf '%s' "$RUN_OUT" | sed -n '/RESUMO DOS GATES/,$p')" != *"AOS_SKIPPED_STEP  [salta] etapa-sonda (motivo: motivo-sonda) -> POR VERIFICAR: garantia-sonda"*"RESULTADO: VERDE PARCIAL"* ]]; then
+  bad "RUN1: o veredicto final não redeclara o salto do gate «salta»: $(run_fim)"
+else
+  pass "RUN1: um gate que salta dá VERDE PARCIAL (rc=3) e o veredicto redeclara a etapa, o motivo e a garantia"
+fi
+
+# RUN2 — controlo: sem saltos, verde a sério, e a ausência de saltos é ela própria afirmada.
+run_corre verde
+if [ "$RUN_RC" -eq 0 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEPS none"*"RESULTADO: TODOS OS GATES VERDES"* ]]; then
+  pass "RUN2: controlo — sem saltos, TODOS OS GATES VERDES (rc=0) com AOS_SKIPPED_STEPS none"
+else
+  bad "RUN2: um gate verde sem saltos não deu verde (rc=$RUN_RC): $(run_fim)"
+fi
+
+# RUN3 — um vermelho ganha ao salto (saída 1), e o salto continua redeclarado.
+run_corre salta vermelho
+if [ "$RUN_RC" -eq 1 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEP  [salta] etapa-sonda"*"PIPELINE VERMELHO"* ]]; then
+  pass "RUN3: um gate vermelho ganha ao salto (rc=1), e o salto continua redeclarado"
+else
+  bad "RUN3: com um gate vermelho e um que salta, o run.sh saiu $RUN_RC ou calou o salto: $(run_fim)"
+fi
+
+# RUN4 — o salto de um processo NETO chega ao veredicto.
+run_corre avo
+if [ "$RUN_RC" -eq 3 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEP  [avo] etapa-neta (motivo: motivo-neto)"* ]]; then
+  pass "RUN4: o salto de um processo neto chega ao veredicto do run.sh (rc=3)"
+else
+  bad "RUN4: um salto num processo neto perdeu-se na fronteira de processo (rc=$RUN_RC): $(run_fim)"
+fi
+
+# RUN5 — saltos de VÁRIOS gates somam-se, cada um com o seu gate; a MESMA etapa declarada duas
+# vezes pelo mesmo gate (o neto que a regista e o filho que a reabsorve, como o package.sh faz ao
+# sbom.sh) conta uma vez.
+run_gate duplo 'gate_skip "etapa-dupla" "motivo-duplo" "garantia-dupla"; gate_skip "etapa-dupla" "motivo-duplo" "garantia-dupla"; exit 0'
+run_corre salta avo duplo
+if [ "$RUN_RC" -eq 3 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEPS 3 etapa(s)"* ]] \
+   && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEP  [salta] etapa-sonda"*"AOS_SKIPPED_STEP  [avo] etapa-neta"*"AOS_SKIPPED_STEP  [duplo] etapa-dupla"* ]] \
+   && [ "$(printf '%s' "$RUN_OUT" | grep -c 'AOS_SKIPPED_STEP  \[duplo\]')" -eq 1 ]; then
+  pass "RUN5: os saltos de três gates somam-se (3), cada um com o seu gate, e o repetido conta uma vez"
+else
+  bad "RUN5: os saltos de vários gates não se somaram, ou o repetido contou duas vezes (rc=$RUN_RC): $(printf '%s' "$RUN_OUT" | grep 'AOS_SKIPPED_STEP' | tr '\n' ' ')"
+fi
+
+# RUN6 — O CASO MEDIDO, com o run.sh e o nats.sh REAIS: CLI docker sem daemon, fora de CI.
+mkdir -p "$RUN_TMP/semdaemon"
+printf '#!/usr/bin/env bash\n[ "$1" = info ] && echo "failed to connect to the docker API at unix:///run-shim.sock" >&2\nexit 1\n' \
+  > "$RUN_TMP/semdaemon/docker"
+chmod +x "$RUN_TMP/semdaemon/docker"
+RUN_RC=0
+RUN_OUT="$(env -u CI -u GITHUB_ACTIONS PATH="$RUN_TMP/semdaemon:$PATH" bash "$CI_DIR/run.sh" nats 2>&1)" || RUN_RC=$?
+if [ "$RUN_RC" -eq 3 ] && [[ "$RUN_OUT" != *"TODOS OS GATES VERDES"* ]] \
+   && [[ "$(printf '%s' "$RUN_OUT" | sed -n '/RESUMO DOS GATES/,$p')" == *"AOS_SKIPPED_STEP  [nats] nats (motivo: daemon docker inacessível"*"RESULTADO: VERDE PARCIAL"* ]]; then
+  pass "RUN6: run.sh nats sem daemon é VERDE PARCIAL (rc=3) e redeclara o salto do nats no veredicto"
+else
+  bad "RUN6: run.sh nats sem daemon não deu VERDE PARCIAL com o salto redeclarado (rc=$RUN_RC): $(run_fim)"
+fi
+rm -rf "$RUN_TMP"; RUN_TMP=""
 
 
 # ============================================================================

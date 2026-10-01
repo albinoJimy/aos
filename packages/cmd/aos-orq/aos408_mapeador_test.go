@@ -31,12 +31,12 @@ func aos408Snapshot() planvalidate.Snapshot {
 			{
 				Name: "fs.read", Version: "1.0.0", Digest: "sha256:read", Admissible: true,
 				Sensitivity: risk.SensitivityPublic, Egress: risk.EgressNone,
-				Reversibility: risk.Reversible,
+				Reversibility: risk.Reversible, Mutation: planvalidate.MutationNone,
 			},
 			{
 				Name: "http.post", Version: "1.0.0", Digest: "sha256:post", Admissible: true,
 				Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressExternal,
-				Reversibility: risk.Irreversible,
+				Reversibility: risk.Irreversible, Mutation: planvalidate.MutationMutates,
 			},
 		},
 	}

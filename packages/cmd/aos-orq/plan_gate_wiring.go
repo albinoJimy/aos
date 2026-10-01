@@ -94,7 +94,9 @@ func exigirSnapshotDoPlano(doc plan.PlanDocument, snap planvalidate.Snapshot) er
 }
 
 // digestDoSnapshot é o digest do CONTEÚDO do snapshot: cada capability com o seu nome, versão,
-// digest, admissibilidade e os TRÊS eixos de risco, por ordem canónica (nome, versão).
+// digest, admissibilidade e os QUATRO eixos de risco — sensibilidade, egress, reversibilidade e
+// mutação (AOS-409) —, por ordem canónica (nome, versão). Um eixo que ficasse de fora reabria o
+// buraco A1 do AOS-408: um snapshot com a mutação trocada passava pelo selo do plano.
 //
 // Existe porque o `hash` do snapshot é um rótulo que o ficheiro declara sobre si mesmo — copiá-lo
 // para um snapshot com eixos benignos passava qualquer comparação por rótulo, e com isso o risco
@@ -110,9 +112,9 @@ func digestDoSnapshot(snap planvalidate.Snapshot) string {
 	})
 	h := sha256.New()
 	for _, t := range tools {
-		fmt.Fprintf(h, "%q|%q|%q|%t|%t|%d|%d|%d\n",
+		fmt.Fprintf(h, "%q|%q|%q|%t|%t|%d|%d|%d|%d\n",
 			t.Name, t.Version, t.Digest, t.Deprecated, t.Admissible,
-			int(t.Sensitivity), int(t.Egress), int(t.Reversibility))
+			int(t.Sensitivity), int(t.Egress), int(t.Reversibility), int(t.Mutation))
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }

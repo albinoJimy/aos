@@ -57,7 +57,7 @@ const (
 	// pelo que o veredicto certifica trabalho que o próprio verificador comissionou.
 	ReasonVerifierSelfSubtree Reason = "verifier_self_subtree"
 	// ReasonVerifierEffectTool — «read-only por construção»: um nó verificador pina
-	// uma tool DE EFEITO (egress ≠ none ou irreversível — ver [IsEffectTool]).
+	// uma tool DE EFEITO (egress ≠ none, irreversível ou mutadora — ver [IsEffectTool]).
 	ReasonVerifierEffectTool Reason = "verifier_effect_tool"
 	// ReasonVerifierCommissionsWork — (V4) algum nó declara o verificador em
 	// `depends_on`: o verificador encabeçaria uma sub-árvore de delegação (o «spawn»

@@ -121,14 +121,18 @@ func TestConsumesOverConditionalEdgeAccepted(t *testing.T) {
 // RM — depois do spawn, depois dos tokens, e com o operador a ver uma negação sem
 // perceber que o organigrama a garantia desde o início.
 func TestConsumesTaintIncompatibleWithAuthority(t *testing.T) {
-	// Os DOIS eixos de «privilegiado», provados em separado: fala para fora, e não se
-	// desfaz. É o mesmo critério de [IsEffectTool] — uma definição, duas perguntas.
+	// Os TRÊS eixos de «privilegiado», provados em separado: fala para fora, não se
+	// desfaz, altera estado (AOS-409). É o mesmo critério de [IsEffectTool] — uma
+	// definição, duas perguntas.
 	for _, tc := range []struct {
 		name string
 		tool plan.ToolRef
 	}{
 		{"egress externo", egressTool()},
 		{"irreversível", effectTool()},
+		// AOS-409: o terceiro eixo — um consumidor com autoridade de ESCRITA é privilegiado
+		// mesmo sem egress e com undo (antes contava como leitor, DEF-275).
+		{"mutador", mutatorTool()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			doc := payloadDoc([]plan.PayloadEdge{{From: "src", Output: "resumo", Type: plan.PayloadSummary}},

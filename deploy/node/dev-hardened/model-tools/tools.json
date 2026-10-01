@@ -14,7 +14,8 @@
     "resource_type": "http",
     "resource_value": "https://api.example.com/results",
     "resource_region": "eu-west",
-    "egress": "external"
+    "egress": "external",
+    "mutation": "mutates"
   },
   {
     "name": "doc_read",
@@ -31,6 +32,7 @@
     "resource_value": "doc://{doc_id}",
     "resource_region": "eu-west",
     "egress": "none",
+    "mutation": "none",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
   }
 ]

@@ -1192,15 +1192,168 @@ que não seja o documento do plano.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão registada sobre a FONTE do eixo (campo do snapshot pinado vs. classificação do REG) e
+- [x] Decisão registada sobre a FONTE do eixo (campo do snapshot pinado vs. classificação do REG) e
       sobre a omissão para snapshots existentes — fail-closed (todo o catálogo passa a «mutador») ou
       transição declarada. Uma decisão fail-closed pode impedir planos de quem já corre.
-- [ ] `IsEffectTool` com o 4.º eixo e teste sobre o CATÁLOGO, não sobre literal de teste.
-- [ ] DEF-275 fecha com evidência.
+      **Feito:** decisão do dono de 2026-10-01, registada abaixo em *Entrega — registo da decisão*
+      (fonte e omissão: opção 2, campo OBRIGATÓRIO no snapshot pinado, sem default no ficheiro,
+      conferido com o catálogo do nó; risco: R1), com a transição declarada e o ritual de release.
+- [x] `IsEffectTool` com o 4.º eixo e teste sobre o CATÁLOGO, não sobre literal de teste.
+      **Feito:** `IsEffectTool` = `egress ≠ none ∨ irreversível ∨ Mutation.Mutates()`.
+      `TestAOS409IsEffectToolSobreOCatalogoDeProducao` (`packages/cmd/aos-orq`) lê o manifesto de
+      produção `deploy/server/model-tools/tools.json` pelo MESMO caminho relativo do AOS-441, traduz
+      os eixos que o nó declara pelas tabelas da carga/conferência e corre `planvalidate.IsEffectTool`:
+      o `doc_read` de produção, que é `egress none` + `reversible`, sai SEM efeito porque declara
+      `"mutation":"none"`, e o MESMO manifesto sem o campo, ou com `"mutates"`, sai DE efeito. A
+      metade do nó — o que `GET /tools` serve desse manifesto (`none`; `mutates` sem o campo) — é
+      `TestAOS409CatalogoDeProducaoServeAMutacao` (`packages/cmd/aos`). O critério não corre no
+      módulo do nó porque o nó não pode depender do módulo do orquestrador, nem em teste via go.mod
+      (ADR-018, AOS-164b).
+- [x] DEF-275 fecha com evidência. **Feito:** linha do registo em `FECHADO-RESIDUAL` (o único
+      estado de fecho do vocabulário do gate `deferrals`), com o commit `71b2064` e os testes.
+
+### Entrega — registo da decisão (dono, 2026-10-01)
+
+Registo verbatim da decisão do dono, tomada sobre a *discovery* desta sessão:
+
+- **FONTE e OMISSÃO = Opção 2:** um campo `mutation` **OBRIGATÓRIO** por tool no ficheiro do
+  snapshot pinado. Ausente é **ERRO DE CARGA** que nomeia a tool; **não há default implícito** no
+  ficheiro.
+  - Em Go, um enum fail-closed cujo valor-zero é `unknown`, tratado como mutador. Cobre os literais
+    Go e o `resolveCaps` (`planvalidate/resources.go`, a capability de eixos-zero de uma tool não
+    resolvida).
+  - Conferido com o catálogo do nó (AOS-441): o snapshot NÃO pode declarar MENOS mutação do que o nó.
+  - Transição declarada: o operador acrescenta `"mutation":"none"` à única tool de produção
+    (`doc_read`). Os planos pendentes drenam-se antes do release — o mesmo ritual do AOS-441.
+- **RISCO = R1:** uma tool mutadora é tratada como `Irreversible` em `planvalidate.deriveNodeAction`.
+  **Não** se toca no `risk.Classify` do kernel — fazê-lo emendaria o ADR-013. Tudo o que escreve
+  passa a `danger`, com cartão humano.
+
+### Entrega — o que mudou
+
+- **`planvalidate`** (`capabilities.go`): `Capability.Mutation` e o tipo `Mutation`
+  (`MutationUnknown`=0 ⇒ mutador, `MutationNone`, `MutationMutates`; `Mutates()` é verdadeiro para
+  tudo o que não seja `MutationNone`). `IsEffectTool` (verifier.go) lê o 4.º eixo — e com ele as
+  três superfícies que o consomem: (V3) `checkVerifierAuthority`, (P4) `privilegedAuthority` e o
+  `Snapshot.EffectOracle()` do materializador. `deriveNodeAction` (risk.go) projecta um mutador no
+  classificador como irreversível (R1). O doc de `IsEffectTool` deixou de declarar a invariante do
+  REG como suposição: passou a dizer de onde o eixo vem.
+- **`aos-orq`** (`snapshot.go`): `mutation` obrigatório na carga (`ErrMutacaoEmFalta`, com a tool
+  nomeada; vocabulário `none|mutates|unknown`, um nome desconhecido é erro); a conferência com o nó
+  ganha a regra «o snapshot não declara menos mutação do que o nó» — e um nó que NÃO serve o campo
+  (anterior ao AOS-409) conta como mutador. `digestDoSnapshot` (plan_gate_wiring.go) passa a
+  incluir o eixo: sem isso, o buraco A1 do AOS-408 reabria (um snapshot com a mutação trocada
+  passava pelo selo). Os banners do `serve` e do `consume` nomeiam o eixo conferido.
+- **Nó** (`modeltools.go`, `catalogo_de_tools.go`): `modelToolSpec.Mutation` (só `none` é leitura;
+  o vazio vale `mutates`, como a reversibilidade; um valor fora do vocabulário aborta o arranque —
+  `ErrBadMutation`), servido em `GET /tools` sempre como `none` ou `mutates`.
+  **Piso do `sandbox.write_arg` — decidido e justificado:** `"mutation":"none"` numa tool com
+  `write_arg` **aborta o arranque**, em vez de ser promovido em silêncio a `mutates`. O `write_arg` é
+  o binding TRUSTED cujo valor o sandbox escreve no recurso (`ToolCall.Write`) — um facto
+  estrutural da configuração, não uma lista de nomes de tools (tecnica/18 §3.3.2 recusa a
+  *allowlist* mágica) nem uma segunda taxonomia. Promover em silêncio daria a postura certa pela
+  razão errada (a mesma regra do `validateReversibility`). A regra inversa não existe: a ausência de
+  `write_arg` não prova leitura.
+- **Manifestos:** `deploy/server/model-tools/tools.json` ganha `"mutation":"none"` no `doc_read`; o
+  dos demos `deploy/node/dev-hardened/` também (`none` no `doc_read`, `mutates` no `web_post`).
+- **Documentos:** `deploy/server/README.md` (exemplo do snapshot de produção, conferência e ritual
+  de release), `docs/testing/e2e-pegadas-visao-19.md` (passo 15), `tecnica/18` §3.3.2 e §3.3.3
+  (o critério e a «uma definição, duas perguntas») com a linha 1.6 do histórico.
+- **Fixtures:** todos os snapshots de teste passam a declarar `mutation`, **mantendo a intenção
+  original de cada teste**: uma tool modelada como leitura (ou como egress reversível, para isolar
+  o eixo de egress) declara `"none"` EXPLICITAMENTE; uma irreversível declara `"mutates"`. Nenhum
+  teste foi enfraquecido — os que provam um eixo isolado (irreversível, egress) passaram a declarar
+  `none` precisamente para que a mutação desconhecida não lhes mascare o eixo.
+
+### Entrega — evidência
+
+| Propriedade | Teste |
+|---|---|
+| `IsEffectTool` sobre o catálogo de produção | `TestAOS409IsEffectToolSobreOCatalogoDeProducao` (`cmd/aos-orq`) e, do lado do nó, `TestAOS409CatalogoDeProducaoServeAMutacao` (`cmd/aos`) |
+| Critério em tabela (escrita com undo, valor-zero, fora do enum) | `TestIsEffectToolCriterion` (`planvalidate`) |
+| (V3) verificador que pina um mutador ⇒ `verifier_effect_tool` | `TestVerifierEffectToolRejected/mutacao` |
+| (P4) consumidor mutador é privilegiado ⇒ `consumes_taint_authority` | `TestConsumesTaintIncompatibleWithAuthority/mutador` |
+| Risco R1 por `ResolveRisks`: mutador `EgressNone`+`Reversible` ⇒ `danger`, não auto-aprovável | `TestMutadorReversivelSemEgressDerivaDanger`, `TestMutacaoPorDeclararDerivaDanger`, `TestLeituraDeclaradaContinuaSafe` |
+| … e no cartão do gate (`planoParaGate`), a partir do ficheiro | `TestAOS409EscritaChegaAoCartaoComoDanger` (`cmd/aos-orq`) |
+| Carga: `mutation` ausente/vazia ⇒ erro que nomeia a tool | `TestSnapshot_MutacaoAusenteEErroQueNomeiaATool` |
+| Carga: nome desconhecido ⇒ erro | `TestSnapshot_EixoDesconhecidoERecusado/mutation` |
+| Conferência: snapshot `none` vs nó `mutates`/vazio/`unknown` ⇒ recusa | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation*` |
+| Digest: mudar só a mutação muda o `snapshot_digest` | `TestAOS409DigestMudaSoComAMutacao` (unidade) e `TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado` (binário: `nao e o selado`) |
+| Nó: vocabulário e contradição com `write_arg` | `TestAOS409MutacaoForaDoVocabularioAborta`, `TestAOS409WriteArgComMutacaoNoneAborta` |
+| Forma do fio de `GET /tools` | `TestAOS441GetToolsServeOCatalogoComAFormaDoFio` |
+
+**Mutation-check** (cada peça central retirada, um teste avermelha; repostas e verdes depois) —
+11 mutantes, 11 mortos:
+
+| Mutação | Morta por |
+|---|---|
+| `IsEffectTool` sem o termo `c.Mutation.Mutates()` | `TestVerifierEffectToolRejected/mutacao`, `TestConsumesTaintIncompatibleWithAuthority/mutador`, e sobre o catálogo `TestAOS409IsEffectToolSobreOCatalogoDeProducao/{sem_o_campo,mutates}` |
+| `deriveNodeAction` sem R1 | `TestMutadorReversivelSemEgressDerivaDanger`, `TestMutacaoPorDeclararDerivaDanger`, `TestAOS409EscritaChegaAoCartaoComoDanger` |
+| `Mutates()` fail-open no valor-zero (`== MutationMutates`) | `TestIsEffectToolCriterion/mutacao_por_declarar…`, `…/mutacao_fora_do_enum…`, `TestMutacaoPorDeclararDerivaDanger` |
+| `digestDoSnapshot` sem o campo | `TestAOS409DigestMudaSoComAMutacao`, `TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado` |
+| carga sem a verificação obrigatória | `TestSnapshot_MutacaoAusenteEErroQueNomeiaATool/{ausente,vazia,so-na-outra}` |
+| conferência sem a regra de mutação | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation*` (3) |
+| conferência: nó sem o campo deixa de ser mutador | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation-ausente-no-no` |
+| nó: o vazio serve `none` | `TestAOS409CatalogoDeProducaoServeAMutacao/sem_o_campo` |
+| nó: `write_arg` com `none` passa | `TestAOS409WriteArgComMutacaoNoneAborta` |
+
+As 9 linhas somam 11 porque a da conferência conta 3 subtestes.
+
+**Revisão adversarial independente (2026-10-01), sobre a entrega integrada.** Sem ALTO; nenhum
+caminho de produção leva uma tool mutadora a `safe` sem a declarar `none` à mão (o resíduo 1). Dois
+mutantes que a entrega não tentou SOBREVIVIAM, e a afirmação «nenhum teste foi enfraquecido» era
+falsa para o primeiro:
+
+| Mutação | Antes | Corrigido por |
+|---|---|---|
+| `deriveNodeAction` sem o termo `IsIrreversible()` | sobrevivia: o fixture `dangerCap` (`planvalidate/resources_test.go`) ficou sem `Mutation`, o valor-zero conta como mutador e o R1 forçava `danger` sozinho — o eixo irreversível deixou de ter teste isolado | `dangerCap` declara `MutationNone`; `TestNoIrreversivelClassificadoDanger` e `TestDowngradeDeRiskClassEIgnorado` voltam a matá-lo |
+| carregador normaliza `"mutation":"unknown"` para `none` | sobrevivia a todo o `cmd/aos-orq` (sem `AOS_ORQ_NODE_URL` não há conferência que o apanhe) | `TestAOS409MutacaoUnknownExplicitaContaComoMutador` |
+
+O resíduo 2 foi completado com o `DualControlRequired` do cartão, e o passo 1 do ritual passou de
+«drenar e decidir» a «drenar até à conclusão».
+
+### Entrega — transição declarada e ritual de release
+
+A primeira release com o AOS-409 muda a forma do snapshot e a do digest. Pela ordem (o mesmo ritual
+do AOS-441, descrito em `deploy/server/README.md` §executor de nós):
+
+1. **Antes do release, drenar os planos ATÉ À CONCLUSÃO** — nenhum pendente por decidir e nenhum
+   `plan.validated` com run por terminar. Decidir não chega: um plano já aprovado passa outra vez
+   pelo `exigirSnapshotSelado` ao materializar. A forma do `digestDoSnapshot` ganhou um campo, pelo
+   que o digest muda para TODOS os snapshots; um plano validado, aprovado ou pendente sob a versão
+   anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
+2. **No release, os dois lados juntos, o nó primeiro:** a imagem nova do `aos` com o `tools.json`
+   que já traz `"mutation":"none"` no `doc_read`, e o `orq/snapshot.json` do operador com
+   `"mutation":"none"` no `doc_read`. Um `aos-orq` novo contra um nó anterior ao AOS-409 recusa
+   arrancar (o nó não serve o eixo ⇒ mutador ⇒ o `none` do snapshot é «menos risco»).
+3. **Depois do deploy, a drenagem recusa em cada tick** até o `orq/snapshot.json` ter o campo; a
+   recusa nomeia a tool. Nenhum pedido se perde.
+
+### Resíduos declarados
+
+1. **A mutação continua declarada à mão nos dois lados.** O nó declara-a no manifesto e o snapshot
+   no ficheiro; a conferência garante que o snapshot não diz MENOS, mas nada prova que o manifesto
+   diz a verdade sobre o que a tool faz — é configuração trusted do operador, como o `egress` e a
+   `reversibility`. A atestação dos eixos pertence ao REG (DEF-812).
+2. **R1 é conservador de propósito.** Uma escrita desfazível chega ao cartão marcada irreversível
+   (`Irreversible: true`), porque a mutação entra no classificador por essa porta — e, com ela,
+   `DualControlRequired: true` (`approval-card/card.go`, que o deriva do mesmo bool) e
+   `aggregate_irreversible` no PlanCard: o humano lê «dual-control exigido» para uma escrita que se
+   desfaz. O exagero fica no cartão: o `aos-orq` não liga o dual-control por efeito, e o bool não
+   alimenta compensação, retry, idempotência nem a reversibilidade que o RM lê do `tools.json` em
+   runtime. Distinguir
+   «escreve com undo» de «não se desfaz» no cartão exigiria um eixo no `risk.Classify` — uma emenda
+   ao ADR-013, fora deste ticket.
+3. **Sem verificação em produção nesta entrega.** O ritual de release está escrito; a primeira
+   release que o execute regista aqui a evidência (recusa antes da correcção, «conferida(s)»
+   depois).
 
 ### Estado
 
-**POR FAZER.**
+**FEITO** (2026-10-01), commit `71b2064`. Gates locais verdes: `build`, `lint`, `layer-lint`,
+`test` (com `-race`), `apex`, `policy-test`, `security`, `rtm`, `ref-lint`, `deferrals`,
+`estado-citado`, e o smoke do `run-aos` (10/10). A verificação em produção fica para a primeira
+release (resíduo 3).
 
 ---
 
@@ -2322,12 +2475,14 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 
 ## AOS-417 — Por onde entra um objectivo no caminho do plano: o orquestrador não tem superfície de rede
 
+<!-- rtm: menção -->
 <!-- Este ticket IMPLEMENTA o ADR-028 (o seu próprio), e por isso o marcador
      `rtm: adrs-mencionados` SAIU: enquanto lá esteve, o ref-lint tratava TODAS as citações do
      bloco como menções, e o ADR-028 ficaria sem ticket implementador — gate vermelho. O preço
      de o tirar é que o ADR-018, o ADR-023 e o ADR-027, que aqui são RESTRIÇÕES e não entregas,
      passam a contar como implementados por este ticket na RTM. Fica dito porque o parser é
-     textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. -->
+     textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -2337,10 +2492,10 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 | Tipo | decisão de arquitectura (ADR) + implementação |
 | Prioridade | P1 |
 | Estimativa | L |
-| Dependências | ADR-018, ADR-023, ADR-027 (restrições, não pré-requisitos) |
+| Dependências | <!-- rtm: menção -->ADR-018, ADR-023, ADR-027<!-- /rtm: menção --> (restrições, não pré-requisitos) |
 | Bloqueia | AOS-133 (BFF) e, por arrasto, todo o EPIC-13; qualquer uso do caminho do plano sem operador |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `packages/cmd/aos-orq/main.go` (subcomandos `serve|inspect|plans|decide`), `packages/cmd/aos/planos.go` (a tabela de rotas do nó), `docs/adr/ADR-023-*.md`, `docs/adr/ADR-018-*.md` |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `packages/cmd/aos-orq/main.go` (subcomandos `serve|inspect|plans|decide`), `packages/cmd/aos/planos.go` (a tabela de rotas do nó), <!-- rtm: menção -->`docs/adr/ADR-023-*.md`, `docs/adr/ADR-018-*.md`<!-- /rtm: menção --> |
 
 ### Contexto
 
@@ -2389,17 +2544,17 @@ Um objectivo submetido por um utilizador autenticado desencadeia uma corrida do 
 ### Porque é que isto é um ADR e não só um ticket
 
 A frase «um `serve` possui um run e termina, não é um daemon» não é um acaso de operação: é o
-**ADR-023** a manifestar-se — a autoridade sobre o ciclo de vida de um run é o LEASE, e um
+**<!-- rtm: menção -->ADR-023<!-- /rtm: menção -->** a manifestar-se — a autoridade sobre o ciclo de vida de um run é o LEASE, e um
 processo que o detém não é partilhável. Dar ingresso de rede ao caminho do plano obriga a decidir
-coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se decidem em código:
+coisas que o <!-- rtm: menção -->ADR-023 e o ADR-018<!-- /rtm: menção --> hoje respondem por omissão, e que não se decidem em código:
 
 - **Quem detém o lease** quando o pedido chega por rede — o processo que atende, ou um trabalhador
   que ele desencadeia?
 - **O que acontece a um segundo pedido** para um run que já tem posse: recusa (o actual código 3),
   fila, ou coalescência?
-- **Onde vive o ingresso** — no nó `aos`, que o ADR-018 declara única autoridade do ciclo de vida
+- **Onde vive o ingresso** — no nó `aos`, que o <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> declara única autoridade do ciclo de vida
   e que o `layer-lint` impede de importar o orquestrador; ou num serviço próprio que fala com o nó
-  como o executor já fala (ADR-027)?
+  como o executor já fala (<!-- rtm: menção -->ADR-027<!-- /rtm: menção -->)?
 - **O modelo de execução**: daemon que aceita e executa, ou ingresso que só ENFILEIRA e um
   trabalhador consome? A segunda preserva melhor «um `serve` possui um run», mas introduz uma fila
   durável que hoje não existe.
@@ -2418,7 +2573,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ### Critérios de aceitação
 
-- [x] Um **ADR novo** regista a decisão, cita o ADR-018/023/027 e diz explicitamente o que
+- [x] Um **ADR novo** regista a decisão, cita o <!-- rtm: menção -->ADR-018/023/027<!-- /rtm: menção --> e diz explicitamente o que
       SUPERA ou EMENDA da nota «não é um daemon» — ou porque não a contradiz.
       *(ADR-028, aceite 2026-09-21. Não emenda nada: o ingresso enfileira e não executa, pelo
       que um `serve` continua a possuir um run e a terminar.)*
@@ -2448,7 +2603,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 - [x] O `layer-lint` continua verde: se a opção for (a), o nó **não** importa o orquestrador.
       *(A opção foi (a). Dos pacotes do repositório, o `plan_ingress.go` importa apenas
       `substrate/eventstore` (mais `encoding/json`, `net/http` e `strings` da stdlib); o
-      guard-test de fronteira do ADR-018 não foi tocado. Medido com `go list -deps` sobre
+      guard-test de fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> não foi tocado. Medido com `go list -deps` sobre
       `packages/cmd/aos`: zero `orchestrator`/`scheduler`, directo ou transitivo. E há prova pelo COMPORTAMENTO, não só
       pelos imports: `TestAOS417IngressoNaoHospedaORun` falha se a rota hospedar o run.)*
 - [x] O banner de arranque declara a postura do ingresso, como o resto do sistema já faz.
@@ -2482,7 +2637,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 | Risco | Mitigação |
 |---|---|
-| Um ingresso que aceite e execute no mesmo processo ressuscita o problema de dois escritores que o ADR-023 fechou | O ADR tem de responder «quem detém o lease» antes de existir código |
+| Um ingresso que aceite e execute no mesmo processo ressuscita o problema de dois escritores que o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> fechou | O ADR tem de responder «quem detém o lease» antes de existir código |
 | Duplicar autenticação e admissão num serviço próprio abre uma segunda superfície com postura diferente da do nó | Se for a opção (b), reaproveitar a mesma admissão e o mesmo edge, e prová-lo com teste |
 | O ingresso torna trivial disparar corridas, e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele |
 
@@ -2490,6 +2645,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ## AOS-427 — A cunhagem do NHI do run é manual, e é o que separa «funciona» de «funciona sem ninguém no terminal»
 
+<!-- rtm: menção -->
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa a condição exacta:
      «a decisão (1) é de ARQUITECTURA e vai exigir ADR próprio — quando existir, este marcador
      sai». O ADR-032 existe, e regista as QUATRO decisões.
@@ -2498,7 +2654,8 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
      declaradas no próprio ADR §5 como por construir. O preço de tirar o marcador é o mesmo que o
      AOS-430 pagou pelo ADR-031 e o AOS-424 pelo ADR-029: o ADR-003, o ADR-006, o ADR-016 e o
      ADR-027, que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este
-     ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. -->
+     ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -2511,7 +2668,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 | Dependências | AOS-423 (o consumidor, FECHADO); EPIC-16 Frente 2 (custódia por `crypto.Signer`, contrato entregue) |
 | Bloqueia | O critério «uma corrida desencadeada por rede, sem ninguém no terminal» do AOS-417 e do AOS-423 |
 | Responsável sugerido | Responsável de Segurança |
-| Documentos de referência | `packages/cmd/aos-issuer/main.go` (`mint`), `packages/cmd/aos-orq/node_client.go` (o consumo), `packages/platform/identity/issuer.go`, `deploy/server/README.md` §custódia, `docs/adr/ADR-006-credential-broker-jit.md`, `docs/adr/ADR-027`, `docs/adr/ADR-028` §resíduos |
+| Documentos de referência | `packages/cmd/aos-issuer/main.go` (`mint`), `packages/cmd/aos-orq/node_client.go` (o consumo), `packages/platform/identity/issuer.go`, `deploy/server/README.md` §custódia, <!-- rtm: menção -->`docs/adr/ADR-006-credential-broker-jit.md`, `docs/adr/ADR-027`<!-- /rtm: menção -->, `docs/adr/ADR-028` §resíduos |
 
 ### Contexto
 
@@ -2548,17 +2705,17 @@ reabre sem ADR de supersessão**:
   «se a privada vivesse no servidor, quem o comprometesse mintaria a sua própria identidade».
 - ❌ **Fazer o nó confiar em `iss:aos-orq`.** O `aos-orq` **já cunha** identidades em runtime, com
   um emissor ed25519 efémero por processo (`planner_wiring.go:254-294`) — mas essa confiança é
-  auto-referencial e confinada ao seu Model Gateway interno. O ADR-027 §2.2 rejeita explicitamente
+  auto-referencial e confinada ao seu Model Gateway interno. O <!-- rtm: menção -->ADR-027<!-- /rtm: menção --> §2.2 rejeita explicitamente
   estendê-la ao nó: «daria ao orquestrador o poder de cunhar qualquer autoridade para o nó e
-  desfazia a separação de domínios de confiança (ADR-006)».
-- ❌ **Assinar em nome do humano sem hardware do humano** (ADR-006 invariante 6, ADR-016 §1).
+  desfazia a separação de domínios de confiança (<!-- rtm: menção -->ADR-006<!-- /rtm: menção -->)».
+- ❌ **Assinar em nome do humano sem hardware do humano** (<!-- rtm: menção -->ADR-006 invariante 6, ADR-016 §1<!-- /rtm: menção -->).
 - ❌ **Compor o `integration.IssuerAuthority` no nó.** Tem `MintForAssertion`, mas só é composto no
   ramo NÃO-endurecido (`bootstrap.go:1690-1698`), e a produção proíbe esse ramo
   (`main.go:672-674`).
 
-### O que o ADR-006 AUTORIZA, e que é a porta aberta
+### O que o <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> AUTORIZA, e que é a porta aberta
 
-O ADR-006 §2 invariante 2 pede exactamente isto para NHIs de agente: **«JIT com TTL curto. A
+O <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> §2 invariante 2 pede exactamente isto para NHIs de agente: **«JIT com TTL curto. A
 credencial é obtida no momento em que é precisa (não pré-provisionada), guardada num cache de vida
 curta, renovada antes de expirar.»** O que ele proíbe é assinar pelo humano e o agente ver segredo
 downstream — não colide com renovar o NHI de um run.
@@ -2571,15 +2728,15 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 ### Decisões a tomar primeiro (do dono)
 
 1. **ONDE vive a autoridade de emissão.** Um emissor externo ao nó E ao `aos-orq`, com
-   `crypto.Signer` sobre Vault/HSM, é o desenho que o ADR-006 pede e de que o `aos-issuer
+   `crypto.Signer` sobre Vault/HSM, é o desenho que o <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> pede e de que o `aos-issuer
    --vault-addr` já é meia implementação. Mas é um processo novo em produção, com o seu ciclo de
    vida, a sua rede e o seu próprio problema de arranque. **Exige ADR.**
 2. **Qual é a PROVA que autoriza uma cunhagem sem humano presente.** Hoje a raiz é um ID-token
    OIDC verificado (`--assertion`), e o humano sai do `sub` da prova. Sem browser, de onde vem a
    prova? Um `client_credentials` do próprio serviço não tem `sub` humano — e a cadeia
-   `on-behalf-of` do ADR-003 exige raiz humana. **Ou se relaxa isso (e é decisão de segurança), ou
+   `on-behalf-of` do <!-- rtm: menção -->ADR-003<!-- /rtm: menção --> exige raiz humana. **Ou se relaxa isso (e é decisão de segurança), ou
    a raiz passa a ser uma delegação de longa duração assinada uma vez por um humano.**
-3. **A renovação a meio de um plano.** O ADR-027 fixa que «a validade do NHI é o tecto de duração
+3. **A renovação a meio de um plano.** O <!-- rtm: menção -->ADR-027<!-- /rtm: menção --> fixa que «a validade do NHI é o tecto de duração
    de um plano» e deixa a renovação como resíduo. Com renovação, esse tecto cai — o que é bom para
    planos longos e mau para o raio de acção de uma credencial comprometida.
 4. **Tecto máximo de TTL.** Não existe nenhum na biblioteca (`identity/issuer.go`): o valor é o que
@@ -2627,7 +2784,7 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 |---|---|
 | Automatizar a cunhagem remove o atrito humano que hoje limita o raio de acção de uma credencial | Decisão (4): tecto máximo de TTL imposto na biblioteca, não na receita |
 | Um emissor externo novo torna-se um ponto único de falha do caminho do plano | O consumo é por ficheiro relido (`node_client.go:316`): uma credencial válida em disco sobrevive à indisponibilidade do emissor até expirar |
-| A prova sem humano relaxa a cadeia `on-behalf-of` do ADR-003 sem que ninguém o note | Decisão (2) tem de ser escrita como decisão de SEGURANÇA, com o que se perde |
+| A prova sem humano relaxa a cadeia `on-behalf-of` do <!-- rtm: menção -->ADR-003<!-- /rtm: menção --> sem que ninguém o note | Decisão (2) tem de ser escrita como decisão de SEGURANÇA, com o que se perde |
 
 ### Estado
 
@@ -2719,7 +2876,7 @@ biblioteca, renova-a o humano assinando outro).
    fila (o AOS-430 mediu que nada a drena) e o sensor. É a entrega operacional seguinte (ticket por abrir).
 2. **Não há gate que prove que a chave do HUMANO está fora do servidor.** Com o ADR-033 é essa a
    chave que tem de estar fora; a do emissor está no Vault por decisão.
-3. **A chave do humano é uma seed em ficheiro**, não hardware (ADR-016 §1 na forma, não no
+3. **A chave do humano é uma seed em ficheiro**, não hardware (<!-- rtm: menção -->ADR-016<!-- /rtm: menção --> §1 na forma, não no
    espírito). Não existe no repositório via de assinatura por hardware.
 4. **Uma cunhagem que nunca é usada não deixa rasto** — o `mint-mandated` corre sem Event Store,
    logo não há `identity.nhi.issued`. O ADR-033 §5 aceita-o: um token só age quando chega ao nó,
@@ -3064,6 +3221,7 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
 
 ## AOS-430 — Quem submete um plano não tem por onde ver o desfecho: o run de topo vive noutro Event Store
 
+<!-- rtm: menção -->
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa que saísse: dizia
      que «a decisão (1) é de fronteira entre dois processos e vai exigir ADR». Exigiu, e o
      ADR-031 é dele.
@@ -3072,7 +3230,8 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
      pelo ADR-029 e o AOS-417 pelo ADR-028: o ADR-016, o ADR-018, o ADR-027 e o ADR-030, que aqui
      são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket na RTM.
      Fica dito porque o parser é textual e o marcador é tudo-ou-nada — não há forma de separar os
-     dois papéis dentro do mesmo bloco. -->
+     dois papéis dentro do mesmo bloco. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -3090,7 +3249,7 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
 ### Contexto
 
 O AOS-423 deixou a pergunta (5) por confirmar: **se o `run_id` de topo chega a ser um run
-legível.** A hipótese registada era que o id de topo «pode nunca existir como run», por o ADR-027
+legível.** A hipótese registada era que o id de topo «pode nunca existir como run», por o <!-- rtm: menção -->ADR-027<!-- /rtm: menção -->
 materializar nós como `<run>~<nó>`.
 
 **A hipótese estava errada na causa, e a causa real é mais funda.**
@@ -3120,11 +3279,11 @@ não é a de produção hoje.
    (a) o nó expõe o estado do plano, lendo-o de onde? não o tem;
    (b) o `aos-orq` ganha superfície de rede — o que o AOS-417 evitou de propósito, e que o ADR-028
    rejeitou («uma segunda superfície com postura diferente da do nó é exactamente o modo de falha
-   que o ADR-016 vem fechar»);
+   que o <!-- rtm: menção -->ADR-016<!-- /rtm: menção --> vem fechar»);
    (c) o `aos-orq` reporta o estado ao nó pela rota que já usa, e o nó serve-o — simétrico ao
    `POST /plans/outcome` que o AOS-423 criou.
 2. **Substrato partilhado resolve isto por acidente?** Se os dois processos passarem a partilhar
-   JetStream (a saída que o ADR-030 §3 deixou como destino), o topo fica legível sem superfície
+   JetStream (a saída que o <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §3 deixou como destino), o topo fica legível sem superfície
    nova. Mas isso é o AOS-431/infra e uma migração de produção.
 
 ### Critérios de Aceitação
@@ -3136,7 +3295,7 @@ não é a de produção hoje.
       uma — incluindo o substrato partilhado, rejeitado **para já** e não em princípio.
 - [x] `GET /plans/{id}`, e **não reabre a não-oracularidade**: a fronteira é a titularidade, e as
       três recusas (não existe / não é teu / outra região) dão o MESMO 404, com corpo comparado
-      byte-a-byte no teste. O ADR-030 §2.1 diz «não revelar a quem NÃO PODE AGIR sobre o
+      byte-a-byte no teste. O <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §2.1 diz «não revelar a quem NÃO PODE AGIR sobre o
       recurso», e quem submeteu pode — foi ele que o criou.
 
 ### Fora de âmbito, declarado
@@ -3158,12 +3317,12 @@ Logo o AOS-430 é **só read-path**. Não se tocou no `aos-orq`.
 
 ### A objecção que quase parou isto, e a leitura que a resolve
 
-Uma rota de leitura de plano parece ser exactamente o oráculo que o ADR-030 §2.1 fecha — a fila
+Uma rota de leitura de plano parece ser exactamente o oráculo que o <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §2.1 fecha — a fila
 não é enumerável *por construção*, e é essa premissa que sustenta o `201` a uma colisão e o `204`
 indistinguível entre «vazia» e «outra região».
 
 A regra, lida à letra, é outra: «não revela a EXISTÊNCIA de um recurso **a quem não pode agir
-sobre ele**». Quem submeteu pode — criou-o e escolheu-lhe o `run_id`. **Isto aplica o ADR-030;
+sobre ele**». Quem submeteu pode — criou-o e escolheu-lhe o `run_id`. **Isto aplica o <!-- rtm: menção -->ADR-030<!-- /rtm: menção -->;
 não o emenda.** O ADR-031 regista-o.
 
 ### O `Principal` ganhou o primeiro leitor
@@ -4607,6 +4766,7 @@ caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria 
 ---
 ## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
 
+<!-- rtm: menção -->
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o próprio comentário anterior previa que saísse:
      dizia que «se a decisão (1) for aceite, abre-se ADR próprio e este marcador sai». Foi
      aceite, e o ADR-029 é dele.
@@ -4614,7 +4774,8 @@ caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria 
      Este ticket IMPLEMENTA o ADR-029. O preço de tirar o marcador é que o ADR-001 e o ADR-007,
      que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket
      na RTM. Fica dito porque o parser é textual e o marcador é tudo-ou-nada: não há forma de
-     separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. -->
+     separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -4893,7 +5054,7 @@ esse run **já está partido hoje**; sobre WAL funciona. Validar no `POST /runs`
 quem corre sobre WAL, que é o que corre em produção.
 
 Não se resolveu em silêncio, e não é escolha de quem escreve o handler: os dois invariantes estão
-REGISTADOS, um pelo AOS-231 e outro pelo ADR-007.
+REGISTADOS, um pelo AOS-231 e outro pelo <!-- rtm: menção -->ADR-007<!-- /rtm: menção -->.
 
 **Recomendação registada:** tornar o `node_id` **stream-safe por construção** — apertar o
 `ValidNodeID` para excluir `.` e `:` — e só então ligar a guarda ao `POST /runs`. É a tese do
@@ -4948,6 +5109,7 @@ um valor «sujo» continua invisível.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 
+<!-- rtm: menção -->
 <!-- O MARCADOR `rtm: adrs-mencionados` SAIU, e o comentario anterior previa que saisse: dizia
      que «se vier a exigir decisao nova — e a pergunta (1) abaixo pode exigi-la — abre-se ADR
      proprio e este marcador sai». A decisao (1) exigiu, e o ADR-030 e dele.
@@ -4955,7 +5117,8 @@ um valor «sujo» continua invisível.
      O preco de tirar o marcador e que o ADR-018, o ADR-023 e o ADR-028, que aqui sao RESTRICOES
      e nao entregas, passam a contar como implementados por este ticket na RTM. Fica dito porque
      o parser e textual e o marcador e tudo-ou-nada: nao ha forma de separar os dois papeis no
-     mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. -->
+     mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. *(Desde AOS-473: as restrições estão em trecho de menção, fora da §4 — excepto o ADR-028, que aqui é restrição e entrega e por isso fica implementado.)* -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -5001,8 +5164,8 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
 - **Não se inventa substrato de fila.** O Event Store é a fila e o consumo-uma-só-vez segue o
   molde do `approval_store_durable` (claim-before-read por `Append` com idempotency-key,
   `StatusDuplicate` como primitivo de arbitragem). Não um broker novo, não um estado paralelo
-  (que o ADR-018 §4 proíbe).
-- **Quem arbitra entre dois consumidores continua a ser o LEASE** (ADR-023). O ingresso não
+  (que o <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> §4 proíbe).
+- **Quem arbitra entre dois consumidores continua a ser o LEASE** (<!-- rtm: menção -->ADR-023<!-- /rtm: menção -->). O ingresso não
   introduziu uma segunda autoridade, e o consumidor também não pode introduzir.
 
 ### Decisões a tomar primeiro (do dono)
@@ -5016,17 +5179,17 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
      escala para além de um consumidor.
    - **(b) Consumidor DENTRO do processo do nó.** Elimina o problema da tranca — quem já tem o
      `LockWAL` é o nó — e reaproveita os laços que o nó já tem (molde do `backup_scheduler.go`).
-     **Mas põe o nó a invocar o `aos-orq`**, e isso toca a fronteira do ADR-018 de frente: o nó
+     **Mas põe o nó a invocar o `aos-orq`**, e isso toca a fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> de frente: o nó
      deixaria de apenas CONHECER a existência do caminho do plano para o DESENCADEAR. Exigiria ADR
      de emenda, e não é óbvio que deva ser aceite.
    - **(c) Rota de leitura/reclamação no nó, consumida pelo `aos-orq` por HTTP.** O canal
      `aos-orq`→nó já existe (`node_client.go`, credencial NHI + Bearer OIDC). Mantém a fronteira
-     do ADR-018 (o nó continua a não correr o plano) e não exige infraestrutura nova. Custo: uma
+     do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> (o nó continua a não correr o plano) e não exige infraestrutura nova. Custo: uma
      rota que EXPÕE a fila, com tudo o que o ADR-016 e a revisão do AOS-417 obrigam a pensar — e
      foi deliberadamente fechada por essa razão.
 
    **Recomendação registada: (c)**, e a razão é que preserva as duas fronteiras que custaram mais a
-   estabelecer — o nó não corre o plano (ADR-018) e a posse continua a ser o lease (ADR-023) — sem
+   estabelecer — o nó não corre o plano <!-- rtm: menção -->(ADR-018)<!-- /rtm: menção --> e a posse continua a ser o lease <!-- rtm: menção -->(ADR-023)<!-- /rtm: menção --> — sem
    pedir uma migração de substrato em produção. **Mas exige ADR**, porque abre uma superfície de
    leitura que o AOS-417 fechou de propósito, e a não-oracularidade tem de ser reargumentada para
    um consumidor autenticado (que é caso diferente do chamador anónimo que o ADR-016 considerou).
@@ -5070,7 +5233,7 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
       estado paralelo. **Com uma diferença deliberada:** o molde reclama ANTES de ler e queima o
       item se o processo morrer — lado seguro para um grant humano, lado ERRADO para um pedido de
       plano. Daí a GERAÇÃO, que é o padrão de re-encarnação do mesmo ficheiro.
-- [x] O `layer-lint` continua verde e o guard-test de fronteira do ADR-018 não mudou: o nó não
+- [x] O `layer-lint` continua verde e o guard-test de fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> não mudou: o nó não
       importa o orquestrador, e o consumidor fala HTTP.
 - [x] Um pedido cujo `serve` falhe tem o desfecho decidido, com teste que distingue TRANSITÓRIA
       (3/4/5/8 — volta à fila já), PERMANENTE (7/9 — não volta) e AGUARDA-HUMANO (6 — nem uma
@@ -5109,7 +5272,7 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
 
 | Risco | Mitigação |
 |---|---|
-| Um trabalhador de longa duração ressuscita, por outra via, o problema de dois escritores que o ADR-023 fechou | A arbitragem tem de continuar a ser o LEASE, e o teste de dois consumidores é o que o prova. Se a forma escolhida em (1) exigir mais, abre-se ADR |
+| Um trabalhador de longa duração ressuscita, por outra via, o problema de dois escritores que o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> fechou | A arbitragem tem de continuar a ser o LEASE, e o teste de dois consumidores é o que o prova. Se a forma escolhida em (1) exigir mais, abre-se ADR |
 | O consumo reclama o facto e o processo morre antes de o `serve` arrancar: o pedido fica reclamado e por correr | É o modo de falha central deste ticket. O claim tem de ser recuperável — ou o desfecho tem de ser um facto próprio, não a ausência de um |
 | Retentar uma recusa determinista (plano rejeitado pela AOS-231) num laço infinito | Decisão (4): distinguir transitório de permanente pelos códigos de saída, e prová-lo com teste |
 | Um consumidor torna trivial disparar corridas e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele — o mesmo risco que o AOS-417 registou e que o ingresso sozinho não exercitava |
@@ -5145,8 +5308,8 @@ dá-lhe casa e os dois sítios passam a apontar para ela.
 
 ### A decisão (1), e o que a postura custou
 
-Escolheu-se **(c)**: rota de reclamação no nó, consumida pelo `aos-orq` por HTTP. Preserva o
-ADR-018 (o nó não corre o plano) e o ADR-023 (a posse é o lease) sem pedir uma migração de
+Escolheu-se **(c)**: rota de reclamação no nó, consumida pelo `aos-orq` por HTTP. Preserva o<!-- rtm: menção -->
+ADR-018<!-- /rtm: menção --> (o nó não corre o plano) e o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> (a posse é o lease) sem pedir uma migração de
 substrato.
 
 A postura é `planoDados` + Bearer OIDC + gate soberano, pelo **precedente medido** do `POST /runs`
@@ -6055,12 +6218,13 @@ exemplo de recusa em `deploy/server/README.md` foi actualizado.
 
 ## AOS-442 — A retoma de um plano aprovado decompõe de novo e é recusada; um plano à espera de humano nunca é retomado
 
-<!-- rtm: adrs-mencionados -->
+<!-- rtm: menção -->
 <!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
      não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25).
      EXCEPÇÃO DECLARADA: este ticket EMENDA o ADR-030 §2.6, e a emenda está registada no próprio
      ADR, que o nomeia. O marcador fica porque o parser da RTM é tudo-ou-nada, e os restantes
-     (ADR-005, ADR-018, ADR-031) são de facto só menção. -->
+     (ADR-005, ADR-018, ADR-031) são de facto só menção. *(Desde AOS-473: o marcador de bloco saiu; estas menções estão em trechos, e a emenda do ADR-030 conta como implementação.)* -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -6089,7 +6253,7 @@ pedido** — fica aprovado e parado.
 
 Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estaciona; não fecha).
 
-- **Onde vive o documento aprovado.** Fora do log, como sempre (ADR-005): o `serve` escreve-o por
+- **Onde vive o documento aprovado.** Fora do log, como sempre (<!-- rtm: menção -->ADR-005<!-- /rtm: menção -->): o `serve` escreve-o por
   `--plan-out` quando o plano é VALIDADO — pendente ou aprovado, e não só pendente como até aqui — e
   **antes** de apensar os factos (`gatearPlano`), para que nunca haja `plan.validated` sem documento.
   A escrita é atómica (temporário, `fsync`, `rename`). O `consume` dá a cada pedido um ficheiro
@@ -6110,7 +6274,7 @@ Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estacion
   fila para sempre.
 - **O `aguarda_humano` no nó** (`plan_claim.go`): estaciona e é re-oferecido de 10 em 10 min
   (`intervaloDeReverificacao`) numa geração nova; só `terminal` fecha; não conta para a marca de
-  água. O nó continua a não saber o que é uma decisão (ADR-018): quem re-verifica é o `consume`,
+  água. O nó continua a não saber o que é uma decisão (<!-- rtm: menção -->ADR-018<!-- /rtm: menção -->): quem re-verifica é o `consume`,
   pelo documento, sem modelo e sem gastar o `--max`. O `GET /plans/{id}` passou a escolher o
   desfecho terminal de maior geração (antes dependia da ordem de um mapa).
 - **O prazo do pendente** (24 h) passa a ser imposto pelo `consume` e pelo `serve` (saída `7`),
@@ -6165,7 +6329,7 @@ Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estacion
    `TestAOS408_AprovacaoDeOutroOrganigramaNaoServe`). O `consume` não o exerce: nunca decompõe um
    run já validado. Fechá-lo muda um teste de aceitação do AOS-408 e fica para decisão.
 8. **A RTM não liga a emenda do ADR-030 a este ticket:** o marcador `adrs-mencionados` do bloco é
-   tudo-ou-nada, e os outros ADR citados são só menção. O próprio ADR nomeia o AOS-442.
+   tudo-ou-nada, e os outros ADR citados são só menção. O próprio ADR nomeia o AOS-442. *(Ligada pelo AOS-473: o marcador de bloco deu lugar a trechos de menção, e a emenda passa a contar como implementação.)*
 9. **Os pedidos `aguarda_humano` de ANTES desta release voltam à fila.** Deixaram de contar como
    terminados, e a marca de água é recomputada no arranque do nó: são re-oferecidos depois do
    intervalo e, como foram validados sem documento guardado, fecham com `7` sem correr o `serve`
@@ -7368,3 +7532,199 @@ módulo mais lento, `cmd/aos-orq`, fecha em ~25 s já com a compilação, e o jo
 
 **FECHADO.** O gate `nats` falha fechado quando um pacote aborta. Isto foi provado ao vivo
 (rc=1 no timeout do `cmd/aos-orq`), pelo self-test §Y e no CI do PR #389, que ficou verde.
+
+---
+
+## AOS-471 — O gate `nats` com o CLI `docker` e sem daemon morre por `AOS_NATS_URL: unbound variable`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade, com o AOS-431, o AOS-452 e o AOS-455; o eixo é a infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (CI) |
+| Prioridade | P2: o gate já falhava fechado, mas com o diagnóstico no sítio errado |
+| Estimativa | S |
+| Dependências | AOS-431 (o gate `nats`, FECHADO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/nats.sh`, `scripts/ci/nats-levantar.sh`, `scripts/ci/nats-cluster.sh`, `scripts/ci/selftest.sh` §NX, `CONTRIBUTING.md` §«Etapas saltadas — `SKIP_DOCKER` e afins» |
+
+### Contexto
+
+Encontrado ao fazer o AOS-455, e reproduzido a 2026-10-01 numa máquina com o CLI `docker` e
+**sem daemon**, sem alteração de código nenhuma:
+
+```text
+== GATE: nats · cluster JetStream de 4 nós (3 no board + 1 fora, para a fronteira soberana) ==
+failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+scripts/ci/nats.sh: line 138: AOS_NATS_URL: unbound variable
+```
+
+Rc 1. Há dois defeitos, um em cima do outro:
+
+1. **O «sem docker» só via o CLI.** O `nats.sh` decidia saltar com `command -v docker`. Um CLI
+   sem daemon passava essa porta e ia levantar o cluster.
+2. **O código de saída do `up` perdia-se.** O gate fazia
+   `if ! eval "$(bash nats-cluster.sh up)"`. O código da substituição de comando não chega ao
+   `if`: o que conta é o do `eval`, e o `eval` de uma string vazia sai 0. O ramo
+   «o cluster não subiu» era inalcançável. O gate seguia sem `AOS_NATS_URL` e morria no
+   primeiro uso, por `set -u`.
+
+Falhava fechado, mas por acaso, e o diagnóstico apontava para uma variável em vez do cluster.
+
+### Objectivo
+
+Separar as duas avarias e dar a cada uma o seu destino, sem que nenhuma vire verde em silêncio:
+
+- **Docker inutilizável** (sem o CLI, ou com o CLI e o daemon inacessível) é uma propriedade do
+  posto e não do código. Localmente segue o caminho do «sem CLI»: salto declarado.
+- **Docker utilizável e um cluster que não sobe** é avaria a sério (imagem, portas, Raft, nkey).
+  É sempre vermelho, e o diagnóstico nomeia o `nats-cluster.sh`.
+
+### A decisão, e porque é que em CI não se salta
+
+A política do projecto para contentores em falta é o salto declarado (`gate_skip`,
+`AOS_SKIPPED_STEP`; `CONTRIBUTING.md` §«Etapas saltadas»). Localmente, um daemon parado é o
+mesmo caso que um CLI ausente, e segue o mesmo caminho.
+
+**Em CI (`CI` ou `GITHUB_ACTIONS` definidos) é vermelho**, para os dois casos:
+
+- O job `nats` existe só para exercitar o substrato replicado real, e é required check. O
+  agregador `gates` lê `success` e não lê o `AOS_SKIPPED_STEP`: «registar não é impedir»
+  (AGENTS.md §4). Um runner sem docker utilizável sairia verde sem ter medido nada.
+- Os outros escapes já não são honrados em CI: o `AOS_GATE_FLOOR_OVERRIDE` («a CI não desce
+  pisos»), o desvio de raiz do `gate_path` e o `AOS_ALLOW_PARTIAL_DELIVERY` do `package.sh`.
+- Antes deste ticket, o daemon parado em CI já era vermelho, ainda que por acaso. Passar a
+  saltar convertia esse vermelho num verde.
+
+Isto também muda o «sem CLI» em CI, de salto para vermelho. No `ubuntu-latest` o CLI existe
+sempre, pelo que nada muda no CI de hoje. Num runner próprio sem docker, o required check
+deixa de ficar verde sem ter medido nada. Deixar os dois casos com destinos diferentes em CI
+não teria razão que o justificasse.
+
+### Critérios de Aceitação
+
+- [x] **O defeito está reproduzido**, com a mensagem de antes. — *Ver «Contexto»: rc 1 e
+      `AOS_NATS_URL: unbound variable`, nesta máquina (CLI docker, sem daemon).*
+- [x] **Localmente, com o CLI e sem daemon, o gate salta DECLARADO**, com o motivo e a garantia
+      por verificar redeclarados no veredicto, e sai 0, como o «sem CLI». — *`nats_docker_utilizavel`
+      (`nats-levantar.sh`) sonda com `docker info`, a sonda do `isolation-live.sh`. Medido aqui:
+      `SALTADO: nats — daemon docker inacessível (docker info: failed to connect to the docker
+      API at unix:///var/run/docker.sock; …)` e
+      `AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível …) -> POR VERIFICAR: o substrato
+      replicado real NÃO foi exercitado; …`, rc 0. Self-test NX1.*
+- [x] **Em CI, docker inutilizável é VERMELHO** e diz porquê. — *Medido aqui com `CI=1`:
+      `FAIL nats: daemon docker inacessível (…) — a CI não salta o substrato replicado real`,
+      rc 1. Self-test NX2.*
+- [x] **Com o docker utilizável, um cluster que não sobe é VERMELHO** e nomeia o
+      `nats-cluster.sh` e o código com que saiu. Nunca é salto nem variável por definir. —
+      *`nats_levantar` verifica o código e a saída do `up` ANTES do `eval`:
+      `FAIL nats: o cluster NÃO subiu — \`nats-cluster.sh up\` saiu 1 com o docker utilizável
+      (o motivo está nas linhas acima)`. Self-test NX3, com um `docker` cujo `info` responde e
+      cujo `network create` é recusado.*
+- [x] **Depois do `eval`, sem `AOS_NATS_URL`, é vermelho com mensagem própria.** Um `up` que
+      saia 0 sem imprimir o env é um cluster que ninguém sabe onde está. — *Self-test NX4. Na
+      versão revista (`91c6087`) isto só valia com o env LIMPO: o NX4 fazia `unset
+      AOS_NATS_URL` e escondia que um URL herdado da shell satisfazia a verificação (ver
+      «Revisão adversarial»). Agora o `nats_levantar` apaga o AOS_NATS_URL e as variáveis que o
+      `up` exporta ANTES do `eval`. O NX4b (URL herdado, `up` mudo) e o NX4c (outra variável
+      herdada, `up` parcial) provam-no.*
+- [x] **Um `up` que morre a meio não deixa contentores de pé.** — *A limpeza já existia na base,
+      mas só porque o rc do `up` se perdia e o gate seguia até ao `trap`. Com o rc verificado,
+      o `exit 1` sai antes da linha onde o `trap` estava. Por isso o `trap` passa para antes do
+      `up`: isto PRESERVA a limpeza, não a corrige. Self-test NX6: o `nats.sh` inteiro, com um
+      `docker` que regista as chamadas e um meta-leader que nunca é eleito. Exige os 4
+      `docker rm -f` depois do último `docker run`.*
+- [x] **O motivo do salto é o erro, e a sonda não pendura.** — *O motivo é a primeira linha
+      que fala de error/cannot/failed/permission e, sem nenhuma, a última não vazia (NX7: um
+      `WARNING:` impresso depois do erro tomava-lhe o lugar). A sonda corre com
+      `timeout 30` onde o houver, e o prazo esgotado conta como docker inutilizável, sem
+      subir o cluster (NX8, com um `timeout` de brincar que sai 124).*
+- [x] **Os três marcadores de CI avermelham:** `CI=1`, só `GITHUB_ACTIONS=true`, e `CI=false`
+      (conta como CI: «definido» é «não vazio», a regra do `lib.sh` e do `package.sh`). —
+      *NX2 com as três variantes. Um gate que lesse só `${CI:-}` passava a primeira.*
+- [x] **O caminho feliz não muda.** — *Self-test NX5: sobre o `nats-cluster.sh` REAL, com um
+      `docker` em que tudo responde, a sonda aceita e o `nats_levantar` exporta
+      `AOS_NATS_URL=127.0.0.1:14225,127.0.0.1:14226,127.0.0.1:14227`.*
+- [x] **Cada caso do self-test morde** (verificação de mutação, cada mutante numa cópia de
+      `scripts/ci` fora do repo, só a §NX corrida). — *Primeira ronda (`91c6087`): sem a sonda
+      do daemon, NX1 e NX2 vermelhos; sem o ramo de CI, NX2; com o rc do `up` ignorado, NX3,
+      porque a mensagem passa a ser a do AOS_NATS_URL; sem exigir o AOS_NATS_URL, NX4; sem o
+      `eval`, NX5; com a sonda a recusar sempre, NX1, NX2, NX3 e NX5; com o `nats.sh` da base
+      (`54d36e2`), NX1, NX2 e NX3, NX1 e NX3 por «unbound variable». A afirmação era
+      **parcialmente falsa**: a revisão mostrou mutantes que sobreviviam a toda a §NX (o `trap`
+      depois do `nats_levantar`, o `trap` removido, ler só `${CI:-}`).*
+
+      *Segunda ronda, sobre a versão corrigida. Cada mutante faz avermelhar pelo menos um caso:*
+
+      | Mutante | Casos que avermelham |
+      |---|---|
+      | `trap` depois do `nats_levantar` | NX6 |
+      | `trap` removido | NX6 |
+      | só `${CI:-}` | NX2 com `GITHUB_ACTIONS=true` |
+      | `CI=false` não conta | NX2 com `CI=false` |
+      | sem o `unset AOS_NATS_URL` | NX4b |
+      | sem o `unset` das outras variáveis | NX4c |
+      | motivo pela última linha | NX7 |
+      | sonda sem prazo | NX8 |
+      | 124 contado como vivo | NX8 |
+      | sem a sonda do daemon | NX1, NX2 ×3, NX7, NX8 |
+      | rc do `up` ignorado | NX3 |
+      | sem exigir o URL | NX4, NX4b |
+      | sem `eval` | NX4c, NX5 |
+
+### Entrega
+
+- `scripts/ci/nats-levantar.sh` (novo, biblioteca): `nats_docker_utilizavel` (CLI e daemon,
+  com o motivo) e `nats_levantar` (código e saída do `up` antes do `eval`, `AOS_NATS_URL`
+  depois). Fica à parte do `nats.sh` pela razão do `gotest-pacotes.sh`: para que o self-test
+  exercite o mesmo código.
+- `scripts/ci/nats.sh`: usa as duas. Docker inutilizável dá salto declarado localmente e
+  vermelho em CI. O `trap` do `down` passa para ANTES do `up`. Isso preserva a limpeza que a
+  base fazia por acaso: com o rc verificado, um `up` que morra a meio (meta-leader por eleger,
+  nkey por gerar) sairia antes de o `trap` existir.
+- `scripts/ci/selftest.sh` §NX1–NX8 (NX4b, NX4c e as três variantes do NX2 incluídas). Os
+  `docker` de brincar e o estado do cluster ficam em `mktemp -d`. NX1–NX3 e NX6–NX8 correm o
+  `nats.sh` inteiro, e saem todos antes das suites.
+- `CONTRIBUTING.md`: a nota do gate `nats` diz o que é «docker utilizável» e que em CI não se
+  salta.
+
+### Fora de âmbito, declarado
+
+- **Sem `timeout` no posto, a sonda `docker info` não tem prazo**: um daemon pendurado
+  continua a pendurar o gate local. Onde o há (Linux, Git Bash), o prazo é de 30 s. O macOS
+  de origem não traz `timeout`.
+- **O caminho feliz do `nats.sh` inteiro** não corre no self-test: correria as suites contra um
+  cluster que não existe. O NX5 prova a função que o gate chama, e o NX3 prova que o gate a
+  chama.
+
+### Revisão adversarial independente (2026-10-01), sobre 91c6087 (integrado como d884ad3)
+
+Não houve achados ALTO. Houve 3 MÉDIO e 5 BAIXO, e todos foram corrigidos num commit próprio
+sobre o ramo de integração:
+
+- **M1 (reproduzido).** Mover o `trap` para antes do `up` era correcto e NECESSÁRIO, mas nenhum
+  self-test o protegia: com o `trap` depois do `nats_levantar`, ou sem `trap`, o NX1–NX5
+  continuava verde. → NX6.
+- **M2 (reproduzido).** A verificação «saiu 0 sem AOS_NATS_URL» lia o ENV. Com um URL herdado e
+  um `up` mudo, o gate imprimiu «cluster de pé — AOS_NATS_URL=nats://stale:4222». O NX4
+  escondia-o com `unset`. → apaga-se o env herdado antes do `eval`; NX4b e NX4c.
+- **M3.** É pré-existente e transversal: o `run.sh` não redeclara as etapas saltadas no
+  veredicto final. → ticket próprio, o AOS-474.
+- **B1.** O texto dizia que mover o `trap` «corrigia» a limpeza. A base também limpava, por
+  acaso, e o movimento preserva-a. → corrigido acima.
+- **B2.** `CI=false` conta como CI, e isso não estava escrito. → `CONTRIBUTING.md`, e NX2
+  com `CI=false`.
+- **B3.** Um mutante que lesse só `${CI:-}` sobrevivia. → NX2 com só `GITHUB_ACTIONS=true`.
+- **B4.** O motivo era a última linha do stderr, e um `WARNING:` final substituía o erro. →
+  `nats_linha_de_erro`; NX7.
+- **B5.** A sonda não tinha prazo. → `timeout 30` onde o houver; NX8.
+
+### Estado
+
+**FEITO** (2026-10-01), com as correcções da revisão. Reproduzido e corrigido nesta máquina (CLI docker, sem daemon), com
+self-test §NX e verificação de mutação. O comportamento no job `nats` do CI (docker com daemon)
+não foi observado aqui: confirma-se no PR.

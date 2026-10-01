@@ -61,7 +61,14 @@ type modelToolSpec struct {
 	//
 	// Era a peça em falta: o registry sabia dizer "isto não sai da máquina" e não sabia dizer
 	// "isto não altera nada", e por isso a taxonomia de autonomia L0–L5 tinha dois estados.
-	Reversibility    string   `json:"reversibility"`
+	Reversibility string `json:"reversibility"`
+	// Mutation DECLARA se a tool altera estado (AOS-409): só "none" conta como leitura, e o
+	// vazio vale MUTADOR — a mesma forma da reversibilidade. Não muda a decisão do RM nem o
+	// digest do contrato: é servido no catálogo (`GET /tools`), onde o `aos-orq` o confere com o
+	// eixo de mutação do snapshot pinado (o snapshot não pode declarar menos mutação do que o
+	// nó). Um `sandbox.write_arg` é o binding trusted que ESCREVE no recurso, e por isso uma tool
+	// que o tenha e declare "none" aborta o arranque — ver [validateMutation].
+	Mutation         string   `json:"mutation"`
 	Egress           string   `json:"egress"`
 	CredentialScopes []string `json:"credential_scopes"`
 	// Sandbox, quando presente, LIGA a tool à execução mediada em sandbox (AOS-005/AOS-064):
@@ -141,6 +148,9 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 		}
 		if err := validateResourceBinding(s); err != nil {
 			return nil, fmt.Errorf("%w: tool %q: %v", ErrBadModelTools, strings.TrimSpace(s.Name), err)
+		}
+		if _, err := validateMutation(s); err != nil {
+			return nil, fmt.Errorf("tool %q: %w", strings.TrimSpace(s.Name), err)
 		}
 	}
 	return specs, nil
@@ -394,5 +404,39 @@ func validateReversibility(s string) (string, error) {
 		return v, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrBadReversibility, s)
+	}
+}
+
+// ErrBadMutation — `mutation` no registry fora do vocabulário, ou a contradizer o binding de
+// sandbox (AOS-409).
+var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (esperado \"none\", \"mutates\" ou ausente; \"none\" e incompativel com sandbox.write_arg)")
+
+// validateMutation valida o eixo de MUTAÇÃO DECLARADO de uma tool (AOS-409) e devolve-o
+// normalizado: "none" ou "mutates" — o AUSENTE vale "mutates".
+//
+// FAIL-CLOSED nas mesmas duas direcções de [validateReversibility]: não declarar nunca é lido
+// como leitura, e um valor fora do vocabulário aborta o arranque em vez de cair no silêncio.
+//
+// E uma terceira, própria deste eixo: "none" numa tool com `sandbox.write_arg` é uma
+// CONTRADIÇÃO e aborta. O `write_arg` é o binding TRUSTED cujo valor o sandbox escreve no
+// recurso (`ToolCall.Write`) — é o único facto estrutural que o nó tem sobre a escrita, e não
+// uma lista de nomes de tools. Promovê-lo em silêncio a "mutates" daria a postura certa pela
+// razão errada, e o operador continuaria a julgar que declarou uma leitura; recusar diz-lhe
+// qual das duas declarações está errada. A ausência de `write_arg` NÃO prova leitura — um
+// `command` fixo pode escrever sem argumento — e por isso não há a regra inversa.
+func validateMutation(s modelToolSpec) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(s.Mutation))
+	switch v {
+	case "":
+		return "mutates", nil
+	case "mutates":
+		return v, nil
+	case "none":
+		if s.Sandbox != nil && strings.TrimSpace(s.Sandbox.WriteArg) != "" {
+			return "", fmt.Errorf("%w: declara \"none\" mas o sandbox escreve o argumento %q", ErrBadMutation, strings.TrimSpace(s.Sandbox.WriteArg))
+		}
+		return v, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrBadMutation, s.Mutation)
 	}
 }
