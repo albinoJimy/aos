@@ -77,7 +77,11 @@ func ligacaoQueCai(t *testing.T) (*natsjs.Conn, func()) {
 		t.Fatalf("ligar ao servidor falso: %v", err)
 	}
 	t.Cleanup(func() { _ = cn.Close() })
-	<-pronto
+	select {
+	case <-pronto:
+	case <-time.After(5 * time.Second):
+		t.Fatal("o servidor falso não recebeu o CONNECT em 5 s — o handshake não aconteceu")
+	}
 
 	derrubar := func() {
 		t.Helper()

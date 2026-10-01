@@ -90,7 +90,7 @@ foi dado por satisfeito sem evidência nomeada.
 
 | Critério | Porquê |
 |---|---|
-| AOS-345 AC2 · AC3 | Exigem cluster NATS, que este ambiente não tem. O teste existe e SALTA; a aritmética da janela é coberta por testes que CORREM, com controlo positivo |
+| AOS-345 AC2 · AC3 | Exigem cluster NATS, que este ambiente não tem. O teste existe e SALTA; a aritmética da janela é coberta por testes que CORREM, com controlo positivo. *Verificados depois contra cluster (2026-10-01, AOS-360): ver os critérios* |
 | AOS-352 AC5 | **Não aplicável** — `Streams()` não está declarada em `tecnica/12` |
 | AOS-358 AC1 | O gate existe e o caminho de SALTO foi corrido; o caminho REAL exige Linux com docker privilegiado |
 
@@ -270,7 +270,7 @@ O código está certo nos três casos; o que falta é o sensor. A causa estrutur
 (`packages/substrate/eventstore/jetstream/store.go:34`), não uma interface — sem isso, `lerLote` e o
 ramo «ligação viva que caiu» de `Ligada()` são infalsificáveis in-process. Fica em **AOS-360**.
 
-> **Corrigido (2026-10-01, AOS-360, sobre `da3e917`).** «Infalsificáveis in-process» era verdade para
+> **Corrigido (2026-10-01, AOS-360, commit `b9690b6`).** «Infalsificáveis in-process» era verdade para
 > o `lerLote` e falso para `Ligada()`. O ramo da ligação que caiu alcança-se com um servidor NATS falso
 > que faz o handshake e fecha a socket, sem costura nova. Desde o AOS-431, o `lerLote` corre contra um
 > cluster no job `nats`, que é obrigatório, e aí a regra antiga avermelha. Medições no AOS-360.
@@ -430,9 +430,14 @@ A correcção está ao alcance da mão: `natsjs.Msg` tem campo `Reply` (`natsjs/
         (5000 eventos, 3 lotes, `quantos` = [2048, 2048, 904]) sobre um log falso onde o seq do
         subject é deliberadamente maior do que o do lote, mais o controlo positivo
         `TestJanela_AvancoPeloFimDoLogMorreNoSegundoLote`. **NÃO VERIFICADO contra cluster real.**
+      · **Verificado depois (2026-10-01, AOS-360):** desde o AOS-431 o teste CORRE no job `nats`
+        (obrigatório), e o `nats.sh` exige-o por nome. Contra um cluster local de 4 nós passa em
+        ~1,6 s, e com a regra antiga avermelha («parou em 0 de 64 eventos ao fim de 30s»). Fica
+        `[~]` pela letra do critério, mas a razão escrita acima — «não verificado» — deixou de valer.
 - [~] Um teste que prove que o stream continua **escrevível** depois desse volume (o caminho
       `hidratar` → `Append`)
       · passo (3) do mesmo teste, com handle novo (cache fria). Exige cluster. **NÃO VERIFICADO.**
+      · **Verificado depois (2026-10-01, AOS-360):** o mesmo teste, contra cluster, passa o passo (3).
 - [x] O comentário de `store.go:560-561` passa a descrever o que o código faz
 - [x] `AOS_NATS_URL` documentado como pré-requisito do teste, no molde de `conformidade_test.go:21`
 
@@ -884,7 +889,7 @@ excepção está declarada no código, `eventstore/durable.go` em `appendLote` e
 o que a contém é o envenenamento, que recusa tudo e põe `Healthy()` a falso). Mutação verificada: com
 a escrita desligada, o restauro evapora no reinício (`E_STREAM_NOT_FOUND`).
 
-> **Corrigido (2026-10-01, AOS-361 (c), sobre `da3e917`).** O texto dizia «um restauro que devolve
+> **Corrigido (2026-10-01, AOS-361 (c), commit `7a5bf6e`).** O texto dizia «um restauro que devolve
 > erro não deixa meio lote durável», sem a excepção que o próprio código declara. A excepção é um
 > **residual** deste ticket, não uma regressão: o código já era honesto, a spec não.
 
@@ -1041,7 +1046,7 @@ removem a rede por inteiro** (`orchestrator/main.go:113-125` sem `network-interf
 - [x] `DEF-701` é corrigida ou fechada, conforme o que o código sustenta hoje
 - [x] O texto de `deploy/node/README.md:147` deixa de descrever o estado antigo — as duas variáveis
       de URL **já** constam da mesma tabela (`:149`, `:150`), e é só a linha do driver que as ignora
-      > **Corrigido (2026-10-01, AOS-361 (a), sobre `da3e917`).** Este critério foi marcado `[x]` sem
+      > **Corrigido (2026-10-01, AOS-361 (a), commit `7a5bf6e`).** Este critério foi marcado `[x]` sem
       > ser verdade: o merge deste ticket **não tocou** `deploy/node/README.md`, e a linha continuava a
       > dizer que `firecracker`/`gvisor` «exigem KVM/`runsc` no host» e «Ausente ⇒ `fake`», sem a recusa
       > de produção do AOS-344. Passou a ser verdade com o AOS-361, que reescreveu a linha (hoje a do
@@ -1165,13 +1170,13 @@ fidelidade demonstrada, e o contrato não é a fronteira».
 `scripts/ci/isolation-live.sh` (gate opcional, salta RUIDOSAMENTE e corre na mesma o contrafactual)
 e `scripts/ci/dormencia.sh` (nomeia os **pacotes** cujos testes exigem `AOS_NATS_URL` — hoje 5 — e
 EXIGE que as suites atrás de build tag COMPILEM; **não conta testes**, a contagem é do `nats.sh`, na
-execução, desde o AOS-431).
+execução, desde o AOS-431). O segundo foi provado a avermelhar: com um símbolo inexistente na suite
+`gvlive`, «packages/security-tests NÃO compila com -tags gvlive».
 
-> **Corrigido (2026-10-01, AOS-361 (d), sobre `da3e917`).** O texto dizia «nomeia as 45 suites»: errado
-> no número e na unidade. Na revisão o gate nomeava 8 ficheiros e contava ~46 testes, e testes não são
-> suites. O AOS-431 mudou-o depois para nomear pacotes sem contar, porque o `grep` não apanha os testes
-> que saltam por um helper partilhado. O segundo foi provado a avermelhar: com um símbolo inexistente na
-suite `gvlive`, «packages/security-tests NÃO compila com -tags gvlive».
+> **Corrigido (2026-10-01, AOS-361 (d), commit `7a5bf6e`).** O texto dizia «nomeia as 45 suites»:
+> errado no número e na unidade. Na revisão o gate nomeava 8 ficheiros e contava ~46 testes, e testes
+> não são suites. O AOS-431 mudou-o depois para nomear pacotes sem contar, porque o `grep` não apanha
+> os testes que saltam por um helper partilhado.
 
 ---
 
@@ -1356,7 +1361,7 @@ exercitá-lo sem cluster — é cobertura da **aritmética** da paginação, nã
 
 ### Critérios de Aceitação
 
-- [x] Existe uma costura que torne `lerLote` e o ramo «ligação caiu» de `Ligada()` falsificáveis
+- [~] Existe uma costura que torne `lerLote` e o ramo «ligação caiu» de `Ligada()` falsificáveis
       in-process — uma interface mínima sobre o que o `Store` usa do `Conn`, ou equivalente
       *(parcial e declarado: `Ligada()` sim, por um servidor falso; o `lerLote` pelo cluster do job
       `nats`, ver a Entrega)*
@@ -1410,8 +1415,11 @@ Ficheiros e o que fazem:
 
 ### Estado
 
-**FEITO** (2026-10-01). P1. Alcance: arnês, sem alteração de comportamento de produção. Desvio
-declarado no AC1 para o `lerLote`: o sensor é o job `nats`, e não uma costura in-process.
+**FEITO** (2026-10-01), com o AC1 `[~]`. P1. Alcance: arnês, sem alteração de comportamento de
+produção. Desvio declarado no AC1 para o `lerLote`: o sensor é o job `nats`, e não uma costura
+in-process. Desde a revisão adversarial, o `nats.sh` exige esse teste por nome
+(`sensores_obrigatorios`): renomeá-lo ou apagá-lo avermelha o gate, e o piso de `total_pass` não o
+apanhava.
 
 ---
 
@@ -1454,8 +1462,8 @@ transporte como fronteira imposta.
 
 - [x] `deploy/node/README.md:147` passa a descrever a postura real, incluindo a recusa de produção do
       AOS-344, e deixa de contradizer `:149`/`:150`
-- [x] O critério de `specs/EPIC-24:951-952` deixa de estar marcado `[x]` enquanto não for verdade —
-      passou a sê-lo com este ticket, e fica com a nota de correcção que o diz
+- [x] O critério de `specs/EPIC-24:951-952` deixa de estar marcado `[x]` enquanto não for verdade
+      · passou a ser verdade com este ticket, e ficou `[x]` com a nota de correcção que o diz
 - [x] As cinco declarações são corrigidas, com a nota de data e commit que `tecnica/14` §5.2 usa como
       método
 - [x] `driver.go:25,28` deixa de chamar «skeleton» aos drivers que têm executor remoto
@@ -1469,18 +1477,52 @@ transporte como fronteira imposta.
     (`ErrProductionNeedsSandboxDriver`);
   - o critério do AOS-356 fica `[x]` com nota de correcção, porque agora é verdade.
   - O comentário de `cmd/aos/sandboxwiring.go` repetia a mesma frase e foi corrigido também.
-- **Achado novo, da mesma classe, corrigido no mesmo commit.** Sem executor, o `gvisor` falha com
-  `ErrGVisorExecutorUnset` e não com `ErrDriverUnavailable`. O nome errado estava em três sítios, todos
-  corrigidos:
-  - na linha do driver;
-  - na linha do `AOS_SANDBOX_GVISOR_URL`;
-  - no comentário de `sandboxwiring.go`.
+- **Achado novo, da mesma classe.** Sem executor, o `gvisor` falha com `ErrGVisorExecutorUnset`, e não
+  com `ErrDriverUnavailable`.
+  - O primeiro commit (`7a5bf6e`) corrigiu-o em três sítios:
+    - a linha do driver;
+    - a linha do `AOS_SANDBOX_GVISOR_URL`;
+    - o comentário de `sandboxwiring.go`.
+  - E escreveu aqui que eram «todos». **Era falso**, e foi a revisão adversarial que o mostrou: a
+    mesma afirmação vivia em mais sete sítios, todos corrigidos no segundo commit:
+    - `cmd/aos/main.go`, no comentário e na **mensagem** do `ErrProductionNeedsSandboxDriver`, que é a
+      que o operador lê no arranque;
+    - `tecnica/17` (duas linhas);
+    - DEF-701;
+    - `tecnica/07`;
+    - `deploy/server/README.md`;
+    - o comentário de `aos344_sandbox_driver_test.go`.
+  - Ficam sem correcção, por serem **registos datados** e não declarações de estado:
+    - as frases no pretérito («devolvia») de `gvisorexecutor.go`, `deploy/server/README.md:319` e
+      EPIC-25;
+    - o relatório de auditoria `analises/12`.
 - **(b)** `substrate/sandbox/driver.go`: os dois drivers reais deixam de se chamar «skeleton». Cada
   comentário nomeia o executor injectado e o erro fail-closed sem ele.
-- **(c)** O estado do AOS-353 declara a excepção do WAL envenenado.
+  - Depois da revisão alinharam-se também:
+    - `sandbox/doc.go`, que é a documentação do pacote;
+    - os doc-comments dos tipos e construtores em `driver_firecracker.go`/`driver_gvisor.go`;
+    - `tecnica/07`.
+  - **Fica** «skeleton» nos comentários internos que descrevem o adaptador Go como não fazendo
+    verificação de escape («o skeleton NÃO faz…»): é verdade sobre o tipo, que delega no executor.
+- **(c)** O estado do AOS-353 declara a excepção do WAL envenenado. O preâmbulo de
+  `appendLote` em `durable.go` repetia a frase sem a excepção, e foi alinhado.
 - **(d)** O estado do AOS-358 diz o que o gate `dormencia` faz hoje: nomeia os pacotes, não conta testes.
 - **(e)** `security-tests/isolation_live_test.go`: o `not_proved` ganha
-  `P2_com_executor_inalcancavel`.
+  `P2_com_executor_inalcancavel`. O cabeçalho N4 de `scripts/ci/isolation-live.sh` diz o mesmo.
+
+**Revisão adversarial independente (2026-10-01), sobre `b9690b6`.**
+- **ALTO, reproduzido:** a afirmação de completude acima. Corrigida.
+- **MÉDIO:**
+  - o AC1 do AOS-360 estava `[x]` sendo parcial, e passou a `[~]`;
+  - «skeleton» sobrevivia no pacote, e foi alinhado;
+  - os `[~]` do AOS-345 contradiziam a verificação contra cluster, e ganharam a nota.
+- **BAIXO:**
+  - o `nats.sh` passou a exigir por nome o sensor do `lerLote`;
+  - a fixture `erroDesligadoTraduzido` tinha uma camada de embrulho inventada, retirada;
+  - uma frase do AOS-358 tinha perdido o antecedente, e foi reposta;
+  - o handshake do servidor falso não tinha prazo, e passou a ter;
+  - as notas citavam a base e não o commit;
+  - o cabeçalho do `isolation-live.sh` e o preâmbulo do `durable.go` foram alinhados.
 
 ### Estado
 

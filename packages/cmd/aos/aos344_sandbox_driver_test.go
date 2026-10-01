@@ -4,7 +4,7 @@ package main
 //
 // O achado não é escape de sandbox: o driver de referência não corre processos. É que, dos três
 // drivers, era o único que falhava ABERTO. `firecracker` e `gvisor` sem executor provisionado
-// devolvem `ErrDriverUnavailable` e a chamada morre no caminho de recusa; o de referência sucede
+// falham (`ErrDriverUnavailable` / `ErrGVisorExecutorUnset`) e a chamada morre no caminho de recusa; o de referência sucede
 // em silêncio, e o resultado — que nenhuma fronteira ao nível do kernel produziu — é selado na
 // hash-chain WORM como se fosse um efeito real.
 //

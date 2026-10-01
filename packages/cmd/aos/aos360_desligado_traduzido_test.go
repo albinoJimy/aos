@@ -20,13 +20,12 @@ import (
 	"github.com/aos-ref/substrate/eventstore/natsjs"
 )
 
-// erroDesligadoTraduzido é o erro que `jetstream.Store.Read` devolve com o cliente sem socket:
-// a causa do caminho de leitura, embrulhada no sentinela canónico. A forma vem de
+// erroDesligadoTraduzido tem a forma do erro que `jetstream.Store.Read` devolve com o cliente sem
+// socket: o sentinela canónico a embrulhar a causa do substrato. A forma vem de
 // `indisponibilidadeTransitoria` (`substrate/eventstore/jetstream/store.go`), e o
 // `TestAOS360_AsQuatroPortasTraduzemADesligacao` desse pacote prova que é ela que sai das
 // quatro portas.
-var erroDesligadoTraduzido = fmt.Errorf("%w: %w", eventstore.ErrNoQuorum,
-	fmt.Errorf("jetstream: leitura de %q: %w", "aos.es.run-1", natsjs.ErrDesligado))
+var erroDesligadoTraduzido = fmt.Errorf("%w: %w", eventstore.ErrNoQuorum, natsjs.ErrDesligado)
 
 // TestAOS360_ODesligadoTraduzidoETransitorioNoBurndown — o burn-down tolera a desligação do
 // substrato replicado como tolera a perda de quórum, e ao passar da tolerância o erro que mata

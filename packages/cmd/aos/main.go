@@ -271,8 +271,8 @@ var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com
 // O QUE ISTO FECHA, E PORQUE NÃO É «ESCAPE DE SANDBOX». O driver de referência não corre
 // processos — é um VFS in-process que impõe as invariantes de isolamento fail-closed. O defeito
 // é outro, e é de POSTURA: dos três drivers, é o único que falha ABERTO. `firecracker` e
-// `gvisor` sem executor provisionado devolvem `ErrDriverUnavailable` e a chamada morre no
-// caminho de recusa; o de referência sucede em silêncio, e o resultado — que nenhuma fronteira
+// `gvisor` sem executor provisionado falham (`ErrDriverUnavailable` e `ErrGVisorExecutorUnset`,
+// respectivamente) e a chamada morre no caminho de recusa; o de referência sucede em silêncio, e o resultado — que nenhuma fronteira
 // ao nível do kernel produziu — é selado na hash-chain WORM como se fosse um efeito real. O
 // alinhamento é fazê-lo falhar fechado onde os outros dois já falham.
 //
@@ -286,7 +286,7 @@ var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com
 //
 // FORA DE PRODUÇÃO NADA MUDA: o default continua a ser o driver de referência e o valor
 // explícito `fake` continua a compor — é o que o smoke e as demos usam.
-var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois devolvem ErrDriverUnavailable e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
+var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois falham (ErrDriverUnavailable no firecracker, ErrGVisorExecutorUnset no gvisor) e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
 
 // ErrProductionNeedsDurableKEK — sob AOS_MODE=production COM substrato durável (AOS_WORM_PATH
 // e/ou AOS_DURABLE_EXECUTION), a custódia da KEK por-titular NÃO pode ser o vault in-memory de

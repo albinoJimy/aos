@@ -173,6 +173,15 @@ em_linux=0
 # baselines que ninguém revisita.
 falhas_conhecidas=()
 
+# SENSORES OBRIGATÓRIOS, POR NOME (AOS-360). Há correcções cuja ÚNICA prova de que lá estão é um
+# teste que só este gate corre: a paginação do `lerLote` (AOS-345) não se falsifica in-process,
+# e é `TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel` que avermelha com a regra antiga. O
+# piso de `total_pass` não a protege — apagar ou renomear o teste deixava o gate verde com 59
+# outros. Cada entrada é `modulo|NomeDoTeste`, e o teste tem de aparecer como `--- PASS`.
+sensores_obrigatorios=(
+  "packages/substrate/eventstore|TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel"
+)
+
 total_pass=0
 total_fail=0
 total_skip=0
@@ -291,6 +300,15 @@ for entrada in "${modulos_nats[@]}"; do
       rc=1
     fi
   fi
+
+  for sensor in "${sensores_obrigatorios[@]}"; do
+    [ "${sensor%%|*}" = "$modulo" ] || continue
+    nome_sensor="${sensor##*|}"
+    if ! grep -qE "^--- PASS: ${nome_sensor} " "$saida"; then
+      log_fail "nats: $modulo — o sensor obrigatório $nome_sensor NÃO passou (falhou, saltou, ou foi renomeado/removido)"
+      rc=1
+    fi
+  done
 
   rm -f "$saida"
 done

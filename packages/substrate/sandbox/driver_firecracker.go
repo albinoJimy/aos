@@ -18,9 +18,9 @@ type GuestExecutor interface {
 	RunInGuest(ctx context.Context, inst Instance, call ToolCall) (stdout []byte, artifacts []Artifact, exitCode int, err error)
 }
 
-// FirecrackerDriver é o skeleton do driver Firecracker (microVM, ADR-004). Neste
-// ambiente (Windows, sem KVM) documenta a integração real e é fail-closed sem um
-// [GuestExecutor] injectado.
+// FirecrackerDriver é o driver Firecracker (microVM, ADR-004). Não arranca a microVM
+// ele próprio: delega no [GuestExecutor] injectado (no nó, o orchestrator externo de
+// `AOS_SANDBOX_FIRECRACKER_URL`) e é fail-closed sem ele ([ErrDriverUnavailable]).
 //
 // # Integração real (documentação, não executada aqui)
 //
@@ -51,7 +51,7 @@ func WithFirecrackerExecutor(e GuestExecutor) FirecrackerOption {
 	return func(d *FirecrackerDriver) { d.exec = e }
 }
 
-// NewFirecrackerDriver constrói o skeleton Firecracker.
+// NewFirecrackerDriver constrói o driver Firecracker.
 func NewFirecrackerDriver(opts ...FirecrackerOption) *FirecrackerDriver {
 	d := &FirecrackerDriver{}
 	for _, o := range opts {
