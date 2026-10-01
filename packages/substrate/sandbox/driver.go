@@ -22,10 +22,14 @@ type DriverKind string
 
 const (
 	// DriverFirecracker — microVM Firecracker (fronteira de virtualização de
-	// hardware, mais forte). Skeleton documentado neste ambiente.
+	// hardware, mais forte). Executa no [GuestExecutor] injectado
+	// ([WithFirecrackerExecutor]) — no nó, um orchestrator EXTERNO; sem ele, fail-closed
+	// ([ErrDriverUnavailable]).
 	DriverFirecracker DriverKind = "firecracker"
 	// DriverGVisor — sandbox gVisor (interceptação de syscalls em espaço de
-	// utilizador, mais leve). Skeleton documentado neste ambiente.
+	// utilizador, mais leve). Executa no [GuestExecutor] injectado
+	// ([WithGVisorExecutor]) — no nó, um componente EXTERNO; sem ele, fail-closed
+	// ([ErrGVisorExecutorUnset]).
 	DriverGVisor DriverKind = "gvisor"
 	// DriverFake — driver de referência determinista in-process (testes). Modela
 	// o jail e impõe as invariantes de isolamento; NUNCA usar em produção.

@@ -1633,7 +1633,7 @@ configuração, e este envelheceu em menos de um dia.
 `2ca2d5c`) — e é por isso que valia a pena escrevê-la aqui. Enumerar portas *empiricamente* só
 encontra as que **negam**: esta não negava. `AOS_SANDBOX_DRIVER` vazia elegia o driver
 `fake` em silêncio, e o `fake` é o único dos três que falha **aberto** — `firecracker` e `gvisor`
-sem executor devolvem `ErrDriverUnavailable` e a chamada morre no caminho de recusa, enquanto o
+sem executor falham (`ErrDriverUnavailable` no `firecracker`, `ErrGVisorExecutorUnset` no `gvisor`) e a chamada morre no caminho de recusa, enquanto o
 `fake` sucede e o resultado, que nenhuma fronteira ao nível do kernel produziu, é selado na
 hash-chain WORM como se fosse um efeito real. É **condicional**: só exigida quando o catálogo de
 `AOS_MODEL_TOOLS` traz pelo menos uma tool com bloco `sandbox` — que é o caso do catálogo

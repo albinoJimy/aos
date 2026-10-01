@@ -238,9 +238,9 @@ func (spanDeTesteRastreador) Iniciar(ctx context.Context, _ string) (context.Con
 // a crença que o ticket remove: um cliente desligado devolve [natsjs.ErrDesligado] a todas
 // as escritas sem elas saírem, e a prontidão tem de o dizer.
 //
-// O ramo POSITIVO — ligação viva ⇒ Healthy — não é construível daqui: exige um socket, e
-// os campos de [natsjs.Conn] são privados ao seu pacote. Vive na suite com cluster
-// (`conformidade_test.go`, sob `AOS_NATS_URL`), e fica declarado que aqui NÃO é medido.
+// O ramo POSITIVO — ligação viva ⇒ Healthy — e o da ligação que CAI estão em
+// `aos360_ligacao_caida_test.go`, sobre um servidor NATS falso: bastava uma socket, e não um
+// cluster (AOS-360 corrigiu a afirmação, que aqui dizia o contrário).
 func TestAcessores_RefletemAConfiguracao(t *testing.T) {
 	s := &Store{regiao: "eu-west", board: "b1", streams: map[string]*estado{}, subs: map[string]*subscricao{}}
 	if s.Region() != "eu-west" || s.SovereigntyBoard() != "b1" {

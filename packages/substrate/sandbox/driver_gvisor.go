@@ -6,9 +6,10 @@ import (
 	"sync/atomic"
 )
 
-// GVisorDriver é o skeleton do driver gVisor (sandbox de espaço de utilizador que
-// intercepta syscalls, ADR-004). Neste ambiente documenta a integração real e é
-// fail-closed sem um [GuestExecutor] injectado. O contrato create → exec → destroy
+// GVisorDriver é o driver gVisor (sandbox de espaço de utilizador que intercepta
+// syscalls, ADR-004). Não corre o runsc ele próprio: delega no [GuestExecutor]
+// injectado (no nó, o componente externo de `AOS_SANDBOX_GVISOR_URL`) e é fail-closed
+// sem ele ([ErrGVisorExecutorUnset]). O contrato create → exec → destroy
 // e o [ExecResult] (untrusted) são IDÊNTICOS aos do Firecracker e do fake.
 //
 // # Integração real (documentação, não executada aqui)
@@ -35,7 +36,7 @@ func WithGVisorExecutor(e GuestExecutor) GVisorOption {
 	return func(d *GVisorDriver) { d.exec = e }
 }
 
-// NewGVisorDriver constrói o skeleton gVisor.
+// NewGVisorDriver constrói o driver gVisor.
 func NewGVisorDriver(opts ...GVisorOption) *GVisorDriver {
 	d := &GVisorDriver{}
 	for _, o := range opts {
