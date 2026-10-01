@@ -7560,7 +7560,7 @@ sobre o ramo de integração:
   um `up` mudo, o gate imprimiu «cluster de pé — AOS_NATS_URL=nats://stale:4222». O NX4
   escondia-o com `unset`. → apaga-se o env herdado antes do `eval`; NX4b e NX4c.
 - **M3.** É pré-existente e transversal: o `run.sh` não redeclara as etapas saltadas no
-  veredicto final. → ticket próprio, aberto a seguir.
+  veredicto final. → ticket próprio, o AOS-474.
 - **B1.** O texto dizia que mover o `trap` «corrigia» a limpeza. A base também limpava, por
   acaso, e o movimento preserva-a. → corrigido acima.
 - **B2.** `CI=false` conta como CI, e isso não estava escrito. → `CONTRIBUTING.md`, e NX2

@@ -1345,3 +1345,132 @@ e AOS-442), `specs/EPIC-25_Remediacao_Auditoria_GOV_OBS.md` (estado do AOS-380),
 `tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada).
 
 ---
+
+## AOS-474 — O veredicto do `run.sh` diz «TODOS OS GATES VERDES» com um gate que saltou etapas
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-22 (por proximidade, com o AOS-316 e o AOS-472: o eixo são os gates e o seu veredicto) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (CI) |
+| Prioridade | P2: falso-verde no veredicto local (`make ci`); a CI não chama o `run.sh` |
+| Estimativa | S |
+| Dependências | AOS-199 (o registo de etapas saltadas, `gate_skip`), AOS-471 (o salto do gate `nats` sem daemon) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/run.sh`, `scripts/ci/lib.sh` (`gate_skip`), `scripts/ci/package.sh` (saída `3`), `scripts/ci/selftest.sh` §RUN, `CONTRIBUTING.md` §«Registar não é impedir» |
+
+### Contexto
+
+Achado M3 da revisão adversarial independente do AOS-471 (2026-10-01). É pré-existente e vale
+para todos os gates. Reproduzido aqui, com o CLI docker e sem daemon:
+
+```text
+$ env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats
+   AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível (…)) -> POR VERIFICAR: o substrato replicado real NÃO foi exercitado; …
+
+================ RESUMO DOS GATES ================
+  PASS  nats           0s
+  RESULTADO: TODOS OS GATES VERDES
+```
+
+Rc 0. Antes do AOS-471, o mesmo posto dava `FAIL` e «PIPELINE VERMELHO», mas pela razão errada
+(`AOS_NATS_URL: unbound variable`). Corrigido o gate, o salto declarado apareceu, e o
+agregador transformou-o num verde completo.
+
+O `AGENTS.md` diz que «uma etapa saltada é sempre redeclarada no veredicto». O
+`CONTRIBUTING.md` diz que «uma etapa que não corre e não aparece no veredicto é um
+falso-verde». O `package.sh` cumpria isto desde o AOS-199, e o `run.sh` nunca o cumpriu.
+
+**A causa** é uma fronteira de processo, a mesma que o `package.sh` já tinha fechado para os
+filhos dele. O `gate_skip` regista num array da shell do gate, e o `run.sh` corre cada gate
+como processo filho e só lê o código de saída. Um gate que salta sai 0, como deve, e o
+`run.sh` não tinha por onde saber que houve salto.
+
+### Objectivo
+
+O veredicto do `run.sh` recolhe e redeclara todas as etapas saltadas, de todos os gates que
+correu, e nunca diz «todos verdes» se alguma saltou.
+
+### A decisão de desenho
+
+- **O canal é um ficheiro, e não o stdout.** O `gate_skip` (lib.sh) anexa-se a
+  `AOS_RUN_SKIP_LEDGER` quando a variável está definida, e o `run.sh` define-a com um ficheiro
+  por gate. Herda-se pelo env, e por isso apanha também os saltos de processos netos (um gate
+  que chame outro script). É o molde do `AOS_SKIP_SINK` do `package.sh`, generalizado ao
+  `gate_skip`. Ler o `AOS_SKIPPED_STEP` do stdout dependeria de cada gate chamar o
+  `gate_skip_report`, e obrigaria a meter um `tee` entre o gate e o terminal.
+- **A saída é a do `package.sh`, que já está documentada:** `0` é verde, `1` é vermelho
+  (ganha a qualquer salto), e `3` é VERDE PARCIAL.
+- **Quem chama o `run.sh`, verificado por pesquisa no repo:** o `Makefile` (`ci`, e o `ci-all`
+  por dependência), o `CONTRIBUTING.md` e um relatório em `docs/reports/` que o cita como
+  comando. Nenhum job do `.github/workflows/ci.yml` o chama, porque cada job corre o seu gate.
+  Nenhum ficheiro faz parse do «TODOS OS GATES VERDES».
+- **Consequência aceite:** `make ci` sai em erro num VERDE PARCIAL, e o `make ci-all` não
+  chega aos self-tests. Num posto sem docker isso acontece sempre. É o comportamento pedido:
+  um verde parcial lido como verde completo é exactamente o defeito. Os self-tests correm à
+  parte com `make ci-selftest`. Não se acrescentou escape do tipo `AOS_ALLOW_PARTIAL_DELIVERY`:
+  ninguém o pediu, e cada escape é uma porta a guardar.
+- **Saltos repetidos contam uma vez.** O `package.sh` reabsorve os saltos do `sbom.sh`, e com o
+  env herdado o neto e o filho registam a mesma etapa.
+- **O `selftest.sh` apaga o `AOS_RUN_SKIP_LEDGER` herdado.** Os saltos que os subtestes
+  provocam de propósito, como os do §NX, não são saltos dessa execução. Medido: sem o
+  `unset`, a §NX corrida com o registo definido escreveu nele 3 saltos.
+
+### Critérios de Aceitação
+
+- [x] **O defeito está reproduzido.** — *Ver «Contexto»: rc 0 e «TODOS OS GATES VERDES», a
+      2026-10-01, sobre `5ede7af`.*
+- [x] **O veredicto final redeclara todas as etapas saltadas**, com o gate, a etapa, o motivo e
+      a garantia por verificar, e **não** imprime «TODOS OS GATES VERDES» quando algo saltou.
+      — *Medido, `env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats`: `PARCIAL nats`,
+      `AOS_SKIPPED_STEP  [nats] nats (motivo: daemon docker inacessível (…)) -> POR VERIFICAR:
+      …`, `RESULTADO: VERDE PARCIAL — nenhum gate falhou, mas 1 etapa(s) NÃO correram`, rc 3.
+      Self-tests RUN1 e RUN6.*
+- [x] **A saída distingue os três estados**: `0` verde, `1` vermelho (ganha ao salto), `3`
+      VERDE PARCIAL. A ausência de saltos é ela própria afirmada (`AOS_SKIPPED_STEPS none`). —
+      *RUN1 (3), RUN2 (0 com `none`), RUN3 (1, com o salto ainda redeclarado).*
+- [x] **Um salto num processo neto chega ao veredicto.** — *RUN4: o gate chama outro script,
+      que salta, e não chama `gate_skip` nenhum.*
+- [x] **Saltos de vários gates somam-se, e um repetido conta uma vez.** — *RUN5.*
+- [x] **Cada caso do self-test morde.** Cada mutante numa cópia de `scripts/ci` fora do repo,
+      só a §RUN corrida, e cada um faz avermelhar pelo menos um caso:
+
+      | Mutante | Casos que avermelham |
+      |---|---|
+      | `gate_skip` não regista | RUN1, RUN3, RUN4, RUN5, RUN6 |
+      | o `run.sh` não passa o registo | RUN1, RUN3, RUN4, RUN5, RUN6 |
+      | VERDE PARCIAL sai 0 | RUN1, RUN4, RUN5, RUN6 |
+      | VERDE PARCIAL diz «todos verdes» | RUN1, RUN4, RUN5, RUN6 |
+      | o salto ganha ao vermelho | RUN3 |
+      | sem a redeclaração `AOS_SKIPPED_STEP  [gate]` | RUN1, RUN3, RUN4, RUN5, RUN6 |
+      | só a última linha do registo | RUN5 |
+      | sem deduplicação | RUN5 |
+
+### Entrega
+
+- `scripts/ci/lib.sh`: o `gate_skip` anexa-se a `AOS_RUN_SKIP_LEDGER` quando está definido.
+- `scripts/ci/run.sh`: um registo por gate (`mktemp -d`, limpo no `trap`), o estado `PARCIAL`
+  no resumo, a redeclaração no veredicto, e a saída `3`.
+- `scripts/ci/selftest.sh` §RUN1–RUN6. RUN1–RUN5 correm uma cópia do `run.sh` e do `lib.sh`
+  desta árvore com gates sintéticos. RUN6 corre o `run.sh` e o `nats.sh` reais, com um
+  `docker` sem daemon. A suite também apaga o `AOS_RUN_SKIP_LEDGER` herdado.
+- `CONTRIBUTING.md`: a tabela de saídas do agregador e o efeito no `make ci`/`ci-all`.
+
+### Fora de âmbito, declarado
+
+- **Um gate que salte sem `gate_skip`** (com um `log_warn` solto, por exemplo) continua
+  invisível ao veredicto. Hoje, todos os que saltam usam o `gate_skip`: `nats`,
+  `isolation-live`, `package`, `sbom`, `sign` e `verify-attestation` (pesquisa por texto em
+  `scripts/ci/`). Não há gate que imponha esta regra.
+- **O agregador `gates` do `ci.yml`** lê o `success` de cada job e não o `AOS_SKIPPED_STEP`. Em
+  CI, o `nats` já não salta (AOS-471). Os outros que podem saltar (`isolation-live`, `package`, `sbom`, `sign`,
+  `verify-attestation`) não estão na lista REQUIRED-CHECKS do `ci.yml`.
+
+### Estado
+
+**FEITO** (2026-10-01). Reproduzido e corrigido nesta máquina, com o self-test §RUN e
+verificação de mutação. Um `make ci` completo num posto com docker não foi corrido aqui.

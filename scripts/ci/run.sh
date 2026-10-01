@@ -21,6 +21,16 @@
 # com exit != 0 se QUALQUER um falhar. SEM '|| true' / 'set +e' / 'continue-on-error'
 # a mascarar — cada gate é um processo cujo código de saída é avaliado e agregado.
 #
+# VERDE PARCIAL (AOS-474). Um gate que SALTA uma etapa (`gate_skip`, lib.sh) sai 0 e declara-o
+# no próprio output — e o veredicto daqui dizia «TODOS OS GATES VERDES», com o
+# AOS_SKIPPED_STEP perdido a meio. Cada gate corre agora com AOS_RUN_SKIP_LEDGER a apontar para
+# um ficheiro seu; o veredicto REDECLARA todas as etapas saltadas, com o gate, o motivo e a
+# garantia por verificar, e nunca diz «todos verdes» se alguma saltou. Saídas, as do
+# `package.sh` (CONTRIBUTING §«Registar não é impedir»):
+#   0  verde: nenhum gate falhou e nenhuma etapa foi saltada;
+#   1  vermelho: pelo menos um gate falhou (ganha a qualquer salto);
+#   3  VERDE PARCIAL: nada falhou, mas alguma etapa NÃO correu.
+#
 # Uso:
 #   scripts/ci/run.sh              # todos os gates
 #   scripts/ci/run.sh build lint   # apenas os gates indicados
@@ -44,6 +54,10 @@ declare -A RESULT
 overall=0
 start_all=$(date +%s)
 
+# Um ficheiro de saltos por gate, FORA do repo; o `trap` limpa-o. O nome do gate é a chave.
+SKIP_DIR="$(mktemp -d)"
+trap 'rm -rf "$SKIP_DIR"' EXIT
+
 for gate in "${GATES[@]}"; do
   script="$CI_DIR/$gate.sh"
   if [ ! -f "$script" ]; then
@@ -53,8 +67,14 @@ for gate in "${GATES[@]}"; do
     continue
   fi
   t0=$(date +%s)
-  if bash "$script"; then
-    RESULT["$gate"]="PASS"
+  ledger="$SKIP_DIR/$gate.tsv"
+  : > "$ledger"
+  if AOS_RUN_SKIP_LEDGER="$ledger" bash "$script"; then
+    if [ -s "$ledger" ]; then
+      RESULT["$gate"]="PARCIAL"
+    else
+      RESULT["$gate"]="PASS"
+    fi
   else
     RESULT["$gate"]="FAIL"
     overall=1
@@ -70,6 +90,8 @@ for gate in "${GATES[@]}"; do
   r="${RESULT[$gate]:-?}"; dt="${RESULT[$gate.t]:-}"
   if [ "$r" = "PASS" ]; then
     printf '  %sPASS%s  %-14s %s\n' "$C_GRN" "$C_RST" "$gate" "$dt"
+  elif [ "$r" = "PARCIAL" ]; then
+    printf '  %sPARCIAL%s %-12s %s (saltou etapas — ver abaixo)\n' "$C_YEL" "$C_RST" "$gate" "$dt"
   else
     printf '  %sFAIL%s  %-14s %s\n' "$C_RED" "$C_RST" "$gate" "$dt"
   fi
@@ -77,9 +99,32 @@ done
 printf '  %s-----------------------------------------------%s\n' "$C_BLD" "$C_RST"
 printf '  tempo total: %ss\n' "$(( end_all - start_all ))"
 
-if [ "$overall" -eq 0 ]; then
-  printf '%s  RESULTADO: TODOS OS GATES VERDES%s\n' "$C_GRN$C_BLD" "$C_RST"
+# REDECLARAÇÃO DOS SALTOS, de TODOS os gates corridos — também dos que falharam: um vermelho não
+# torna verificado o que não correu. A mesma etapa declarada duas vezes (um neto que a regista e
+# o filho que a reabsorve, como o package.sh faz ao sbom.sh) conta uma vez.
+saltos="$(for gate in "${GATES[@]}"; do
+  [ -f "$SKIP_DIR/$gate.tsv" ] || continue
+  awk -F'\t' -v g="$gate" '$1 != "" {print g "\t" $0}' "$SKIP_DIR/$gate.tsv"
+done | awk '!visto[$0]++')"
+n_saltos=0
+[ -n "$saltos" ] && n_saltos="$(printf '%s\n' "$saltos" | wc -l | tr -d ' ')"
+if [ "$n_saltos" -eq 0 ]; then
+  printf '   AOS_SKIPPED_STEPS none\n'
 else
+  printf '   %sAOS_SKIPPED_STEPS %s etapa(s) NÃO verificada(s) nesta execução:%s\n' "$C_YEL" "$n_saltos" "$C_RST"
+  while IFS=$'\t' read -r g etapa motivo garantia; do
+    printf '   %sAOS_SKIPPED_STEP  [%s] %s (motivo: %s) -> POR VERIFICAR: %s%s\n' \
+      "$C_YEL" "$g" "$etapa" "$motivo" "$garantia" "$C_RST"
+  done <<< "$saltos"
+fi
+
+if [ "$overall" -ne 0 ]; then
   printf '%s  RESULTADO: PIPELINE VERMELHO (fail-closed)%s\n' "$C_RED$C_BLD" "$C_RST"
+elif [ "$n_saltos" -gt 0 ]; then
+  printf '%s  RESULTADO: VERDE PARCIAL — nenhum gate falhou, mas %s etapa(s) NÃO correram (acima).%s\n' "$C_YEL$C_BLD" "$n_saltos" "$C_RST"
+  printf '%s           Isto NÃO é «todos os gates verdes»; não o cite como prova de pipeline verde.%s\n' "$C_YEL" "$C_RST"
+  overall=3
+else
+  printf '%s  RESULTADO: TODOS OS GATES VERDES%s\n' "$C_GRN$C_BLD" "$C_RST"
 fi
 exit "$overall"

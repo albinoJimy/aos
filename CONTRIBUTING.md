@@ -14,7 +14,9 @@ bash scripts/ci/run.sh
 ```
 
 Corre, por ordem canónica, `secrets → build → lint → test → replay → sast → sca → policy-test`
-e termina com `exit != 0` se qualquer gate falhar. Provar que as falhas **são
+e termina com `exit != 0` se qualquer gate falhar — `1` se algum falhou, `3` («VERDE
+PARCIAL») se nenhum falhou mas alguma etapa foi saltada (ver «O mesmo no agregador», abaixo).
+Provar que as falhas **são
 bloqueadas**:
 
 ```bash
@@ -227,6 +229,30 @@ Complementarmente, o registo fica **máquina-legível** ao lado do artefacto em
 `deploy/node/build/SKIPPED.txt` (presente **sse** houve skips; removido quando não houve,
 para que um marcador obsoleto não seja um falso-positivo). Quem publica condiciona por
 `[ -e … ]` em vez de ler o log.
+
+#### O mesmo no agregador — `make ci` / `run.sh` (AOS-474)
+
+Até ao AOS-474, o `run.sh` dizia «RESULTADO: TODOS OS GATES VERDES» com um gate que tinha
+saltado uma etapa. O `AOS_SKIPPED_STEP` do gate ficava a meio do output, e o veredicto não o
+repetia. Medido com `env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats`, num posto com o
+CLI docker e sem daemon: saía `0`.
+
+Agora cada `gate_skip` (`lib.sh`) anexa-se também ao registo do `run.sh`
+(`AOS_RUN_SKIP_LEDGER`, um ficheiro por gate, herdado pelos processos netos). O veredicto final
+redeclara todas as etapas saltadas, com o gate, como `AOS_SKIPPED_STEP  [<gate>] …`. Os
+códigos de saída são os do `package.sh`:
+
+| Saída | Significa |
+|---|---|
+| `0` | `TODOS OS GATES VERDES`: nenhum gate falhou e **nenhuma etapa foi saltada**. |
+| `1` | `PIPELINE VERMELHO`: pelo menos um gate falhou. Ganha a qualquer salto. |
+| `3` | `VERDE PARCIAL`: nada falhou, mas alguma etapa **não correu**. |
+
+O `3` é deliberado e morde o `make`: `make ci` acaba em erro, e o `make ci-all` não chega aos
+self-tests. Num posto sem docker isso acontece sempre, porque o `nats` salta. É o
+comportamento pretendido: esse posto não verificou o substrato replicado. Para correr os
+self-tests à parte: `make ci-selftest`. A CI não chama o `run.sh` (cada job corre o seu gate),
+pelo que nada muda lá.
 
 Aceitar o verde parcial é possível — `AOS_ALLOW_PARTIAL_DELIVERY=1` força a saída `0` — com
 o **mesmo modelo do escape hatch dos pisos**: imprime `AOS_PARTIAL_ACCEPTED` no output e é

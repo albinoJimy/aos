@@ -47,6 +47,9 @@
 #      o daemon a responder um cluster que não sobe avermelha a nomear o
 #      nats-cluster.sh — nunca «AOS_NATS_URL: unbound variable» (AOS-471); um env herdado
 #      não passa por cluster de pé, e um `up` que morre a meio não deixa nós de pé.
+#  RUN) o veredicto do run.sh redeclara as etapas que um gate saltou (também as de um
+#      processo neto) e não diz «TODOS OS GATES VERDES»: sai 3, VERDE PARCIAL; um gate
+#      vermelho ganha ao salto (AOS-474).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -189,6 +192,8 @@ GOWORK_TMP=""
 NX_TMP=""
 # §RTMX trabalha sobre uma cópia do corpus (como §Z): não muta a árvore.
 RTMX_TMP=""
+# §RUN corre uma CÓPIA do run.sh e do lib.sh com gates sintéticos FORA do repo: não muta a árvore.
+RUN_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -203,9 +208,15 @@ cleanup() {
   rm -rf "$GOWORK_TMP"
   rm -rf "$NX_TMP"
   rm -rf "$RTMX_TMP"
+  rm -rf "$RUN_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
+
+# Os saltos que estes subtestes PROVOCAM (o §NX faz o nats.sh saltar de propósito) não são
+# saltos desta execução: se a suite correr debaixo do `run.sh`, não podem ir parar ao registo
+# dele e pintar um VERDE PARCIAL que nada deixou por verificar (AOS-474).
+unset AOS_RUN_SKIP_LEDGER
 
 # ============================================================================
 # A) lint e test bloqueiam um "PR mau" (módulo isolado, injectado e removido)
@@ -2548,6 +2559,101 @@ else
   bad "RTMX5: cercas legítimas avermelharam um dos dois leitores — RTMX1..4 não provariam nada"
 fi
 rm -rf "$RTMX_TMP"; RTMX_TMP=""
+
+# ============================================================================
+# RUN) o veredicto do run.sh redeclara os saltos e não diz «todos verdes» (AOS-474)
+# ============================================================================
+log_gate "self-test RUN · o run.sh redeclara as etapas saltadas e não diz «TODOS OS GATES VERDES» (AOS-474)"
+# Medido a 2026-10-01: `env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats`, com o CLI
+# docker e sem daemon, saía 0 com «RESULTADO: TODOS OS GATES VERDES»; o AOS_SKIPPED_STEP do
+# nats.sh ficava a meio do output e o veredicto não o repetia. Valia para QUALQUER gate que salte.
+#
+# RUN1–RUN5 correm uma CÓPIA do run.sh e do lib.sh reais (copiados agora, logo o código é o
+# desta árvore) com gates sintéticos ao lado; o run.sh resolve os gates pelo seu próprio
+# directório. RUN6 corre o run.sh REAL sobre o gate nats, com um `docker` sem daemon no PATH.
+RUN_TMP="$(mktemp -d)"
+mkdir -p "$RUN_TMP/scripts/ci"
+cp "$CI_DIR/run.sh" "$CI_DIR/lib.sh" "$RUN_TMP/scripts/ci/"
+run_gate() { # <nome> <corpo depois do source do lib.sh>
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nsource "$(dirname "${BASH_SOURCE[0]}")/lib.sh"\n%s\n' "$2" \
+    > "$RUN_TMP/scripts/ci/$1.sh"
+}
+run_gate verde 'log_ok "verde: nada saltado"; gate_skip_report || true; exit 0'
+run_gate salta 'gate_skip "etapa-sonda" "motivo-sonda" "garantia-sonda"; gate_skip_report || true; exit 0'
+run_gate vermelho 'log_fail "vermelho de propósito"; exit 1'
+# O salto acontece num processo NETO, como o sbom.sh debaixo do package.sh: o array do filho
+# nunca o vê, e o filho não chama gate_skip nenhum.
+run_gate neto-salta 'gate_skip "etapa-neta" "motivo-neto" "garantia-neta"; exit 0'
+run_gate avo 'bash "$(dirname "${BASH_SOURCE[0]}")/neto-salta.sh"; log_ok "avo: o filho não saltou nada"; exit 0'
+run_corre() { # <gates…> — saída em RUN_OUT, código em RUN_RC
+  RUN_RC=0
+  RUN_OUT="$(env -u CI -u GITHUB_ACTIONS bash "$RUN_TMP/scripts/ci/run.sh" "$@" 2>&1)" || RUN_RC=$?
+}
+run_fim() { printf '%s' "$RUN_OUT" | tail -3 | tr '\n' ' '; }
+
+# RUN1 — um gate que salta: VERDE PARCIAL, saída 3, o salto redeclarado no veredicto com o gate.
+run_corre verde salta
+if [ "$RUN_RC" -ne 3 ]; then
+  bad "RUN1: um gate saltou e o run.sh saiu $RUN_RC (esperado 3, VERDE PARCIAL): $(run_fim)"
+elif [[ "$RUN_OUT" == *"TODOS OS GATES VERDES"* ]]; then
+  bad "RUN1: um gate saltou e o run.sh disse TODOS OS GATES VERDES"
+elif [[ "$(printf '%s' "$RUN_OUT" | sed -n '/RESUMO DOS GATES/,$p')" != *"AOS_SKIPPED_STEP  [salta] etapa-sonda (motivo: motivo-sonda) -> POR VERIFICAR: garantia-sonda"*"RESULTADO: VERDE PARCIAL"* ]]; then
+  bad "RUN1: o veredicto final não redeclara o salto do gate «salta»: $(run_fim)"
+else
+  pass "RUN1: um gate que salta dá VERDE PARCIAL (rc=3) e o veredicto redeclara a etapa, o motivo e a garantia"
+fi
+
+# RUN2 — controlo: sem saltos, verde a sério, e a ausência de saltos é ela própria afirmada.
+run_corre verde
+if [ "$RUN_RC" -eq 0 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEPS none"*"RESULTADO: TODOS OS GATES VERDES"* ]]; then
+  pass "RUN2: controlo — sem saltos, TODOS OS GATES VERDES (rc=0) com AOS_SKIPPED_STEPS none"
+else
+  bad "RUN2: um gate verde sem saltos não deu verde (rc=$RUN_RC): $(run_fim)"
+fi
+
+# RUN3 — um vermelho ganha ao salto (saída 1), e o salto continua redeclarado.
+run_corre salta vermelho
+if [ "$RUN_RC" -eq 1 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEP  [salta] etapa-sonda"*"PIPELINE VERMELHO"* ]]; then
+  pass "RUN3: um gate vermelho ganha ao salto (rc=1), e o salto continua redeclarado"
+else
+  bad "RUN3: com um gate vermelho e um que salta, o run.sh saiu $RUN_RC ou calou o salto: $(run_fim)"
+fi
+
+# RUN4 — o salto de um processo NETO chega ao veredicto.
+run_corre avo
+if [ "$RUN_RC" -eq 3 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEP  [avo] etapa-neta (motivo: motivo-neto)"* ]]; then
+  pass "RUN4: o salto de um processo neto chega ao veredicto do run.sh (rc=3)"
+else
+  bad "RUN4: um salto num processo neto perdeu-se na fronteira de processo (rc=$RUN_RC): $(run_fim)"
+fi
+
+# RUN5 — saltos de VÁRIOS gates somam-se, cada um com o seu gate; a MESMA etapa declarada duas
+# vezes pelo mesmo gate (o neto que a regista e o filho que a reabsorve, como o package.sh faz ao
+# sbom.sh) conta uma vez.
+run_gate duplo 'gate_skip "etapa-dupla" "motivo-duplo" "garantia-dupla"; gate_skip "etapa-dupla" "motivo-duplo" "garantia-dupla"; exit 0'
+run_corre salta avo duplo
+if [ "$RUN_RC" -eq 3 ] && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEPS 3 etapa(s)"* ]] \
+   && [[ "$RUN_OUT" == *"AOS_SKIPPED_STEP  [salta] etapa-sonda"*"AOS_SKIPPED_STEP  [avo] etapa-neta"*"AOS_SKIPPED_STEP  [duplo] etapa-dupla"* ]] \
+   && [ "$(printf '%s' "$RUN_OUT" | grep -c 'AOS_SKIPPED_STEP  \[duplo\]')" -eq 1 ]; then
+  pass "RUN5: os saltos de três gates somam-se (3), cada um com o seu gate, e o repetido conta uma vez"
+else
+  bad "RUN5: os saltos de vários gates não se somaram, ou o repetido contou duas vezes (rc=$RUN_RC): $(printf '%s' "$RUN_OUT" | grep 'AOS_SKIPPED_STEP' | tr '\n' ' ')"
+fi
+
+# RUN6 — O CASO MEDIDO, com o run.sh e o nats.sh REAIS: CLI docker sem daemon, fora de CI.
+mkdir -p "$RUN_TMP/semdaemon"
+printf '#!/usr/bin/env bash\n[ "$1" = info ] && echo "failed to connect to the docker API at unix:///run-shim.sock" >&2\nexit 1\n' \
+  > "$RUN_TMP/semdaemon/docker"
+chmod +x "$RUN_TMP/semdaemon/docker"
+RUN_RC=0
+RUN_OUT="$(env -u CI -u GITHUB_ACTIONS PATH="$RUN_TMP/semdaemon:$PATH" bash "$CI_DIR/run.sh" nats 2>&1)" || RUN_RC=$?
+if [ "$RUN_RC" -eq 3 ] && [[ "$RUN_OUT" != *"TODOS OS GATES VERDES"* ]] \
+   && [[ "$(printf '%s' "$RUN_OUT" | sed -n '/RESUMO DOS GATES/,$p')" == *"AOS_SKIPPED_STEP  [nats] nats (motivo: daemon docker inacessível"*"RESULTADO: VERDE PARCIAL"* ]]; then
+  pass "RUN6: run.sh nats sem daemon é VERDE PARCIAL (rc=3) e redeclara o salto do nats no veredicto"
+else
+  bad "RUN6: run.sh nats sem daemon não deu VERDE PARCIAL com o salto redeclarado (rc=$RUN_RC): $(run_fim)"
+fi
+rm -rf "$RUN_TMP"; RUN_TMP=""
 
 
 # ============================================================================

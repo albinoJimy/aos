@@ -340,10 +340,20 @@ EOF
 GATE_SKIPPED=()
 
 # gate_skip <etapa> <motivo> <garantia por verificar>
+#
+# O REGISTO TAMBÉM ATRAVESSA PARA O `run.sh` (AOS-474). O array é por processo, e o `run.sh`
+# corre cada gate num processo filho: o veredicto agregado dizia «TODOS OS GATES VERDES» com
+# um gate que tinha saltado — o AOS_SKIPPED_STEP ficava a meio do output. Com
+# AOS_RUN_SKIP_LEDGER definido (o `run.sh` define-o, um ficheiro por gate), cada salto anexa-se
+# lá também, incluindo os dos netos (o env herda-se). Sem `|| true`: um registo que não se
+# consegue escrever mata o gate sob `set -e` (vermelho) em vez de o deixar verde em silêncio.
 gate_skip() {
   GATE_SKIPPED+=("$1|$2|$3")
   log_warn "SALTADO: $1 — $2"
   log_warn "         garantia POR VERIFICAR: $3"
+  if [ -n "${AOS_RUN_SKIP_LEDGER:-}" ]; then
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$AOS_RUN_SKIP_LEDGER"
+  fi
 }
 
 # gate_skip_report — redeclara, no fim, tudo o que foi saltado (0 se nada saltou).
