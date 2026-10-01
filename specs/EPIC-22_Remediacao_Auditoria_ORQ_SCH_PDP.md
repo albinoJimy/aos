@@ -23,14 +23,14 @@ instala hoje.
 
 Este epic cobre só os que são **activos**: alcançáveis pela superfície HTTP do nó `aos` tal como
 é entregue, com o mecanismo de autorização, selagem ou observabilidade que devia cobri-los
-ausente ou a mentir sobre o que faz. Dezasseis tickets, cinco eixos:
+ausente ou a mentir sobre o que faz. Dezassete tickets, cinco eixos:
 
 | Eixo | Tickets |
 |---|---|
 | Governação da autonomia (`/autonomy`) | AOS-305, AOS-306, AOS-307 |
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
-| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319, AOS-472 |
+| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319, AOS-472, AOS-473 |
 | Integridade das ferramentas de gate | AOS-316 |
 | Semântica da extracção (por abrir) | AOS-318 |
 
@@ -65,6 +65,7 @@ ausente ou a mentir sobre o que faz. Dezasseis tickets, cinco eixos:
 | **P2** | AOS-317, AOS-318 | Canon fechado com literal em vez de derivado; ADR mencionado a contar como implementado |
 | **P2** | AOS-319 | Contagens e extremos de intervalo gerados sem derivação; sem efeito no binário |
 | **P2** | AOS-472 | Resíduo do AOS-318: uma cerca solta desloca pares (ticket, ADR) sem gate que o veja; sem efeito no binário |
+| **P2** | AOS-473 | Resíduo do AOS-318: pares que o corpus declara restrições contados como entregas; sem efeito no binário |
 
 ### 0.2 Tabela-resumo
 
@@ -86,6 +87,7 @@ ausente ou a mentir sobre o que faz. Dezasseis tickets, cinco eixos:
 | AOS-318 | Um ticket não pode mencionar um ADR sem alegar que o implementa | P2 | ABERTO |
 | AOS-319 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
 | AOS-472 | Uma linha de prosa começada por três crases ou três tis desloca pares (ticket, ADR) sem que nenhum gate dê por isso | P2 | **FEITO** |
+| AOS-473 | Pares (ticket, ADR) que o próprio corpus declara restrições contavam como entregas, e uma emenda declarada não contava | P2 | **FEITO** |
 
 ---
 
@@ -1228,5 +1230,118 @@ descontínua — a RTM desta entrega é a do backlog depois de os dois se juntar
 `scripts/ci/adr_citacoes.py` (`verificar_cercas`), `scripts/ci/rtm-regenerate.py`,
 `scripts/ci/ref-lint.py`, `scripts/ci/selftest.sh` (§RTMX1–RTMX5), `tecnica/16_Rastreabilidade_RTM.md`
 (§4 regenerada: uma frase no parágrafo «Citar não é alegar»).
+
+---
+
+## AOS-473 — Pares (ticket, ADR) que o próprio corpus declara restrições contavam como entregas, e uma emenda declarada não contava
+
+<!-- rtm: adrs-mencionados -->
+
+### Contexto
+
+Resíduo 1 do AOS-318. Antes do trecho de menção, o marcador de bloco era tudo-ou-nada, e cinco
+blocos da EPIC-19 que implementam um ADR próprio tiveram de escolher entre perder essa cobertura e
+inventar a das restrições que só citam. Escolheram a segunda, e escreveram-no num comentário no topo
+do bloco — 16 pares ao todo:
+
+| Bloco | Implementa | Declara restrições, contadas como entregas |
+|---|---|---|
+| AOS-417 | ADR-028 | ADR-018, ADR-023, ADR-027 |
+| AOS-423 | ADR-030 | ADR-018, ADR-023, ADR-028 |
+| AOS-424 | ADR-029 | ADR-001, ADR-007 |
+| AOS-427 | ADR-032 | ADR-003, ADR-006, ADR-016, ADR-027 |
+| AOS-430 | ADR-031 | ADR-016, ADR-018, ADR-027, ADR-030 |
+
+O AOS-442 regista o caso inverso: emenda o ADR-030 §2.6 (o `aguarda_humano` estaciona) e manteve o
+marcador de bloco porque as outras três citações (ADR-005, ADR-018, ADR-031) são só menção — pelo que
+a §4 não lhe ligava a emenda, e o resíduo 8 do bloco di-lo. O AOS-318 previu que migrar os seis
+blocos deslocava exactamente 17 pares, 16 a sair e 1 a entrar.
+
+### Critérios de Aceitação
+
+- [x] As restrições declaradas nos cinco blocos ficam dentro do trecho de menção
+      (`<!-- rtm: menção -->` … `<!-- /rtm: menção -->`) e saem da §4 — **15 dos 16**: o par
+      (AOS-423, ADR-028) é restrição **e** entrega, e fica, pela regra deste ticket (abaixo)
+- [x] A emenda do AOS-442 ao ADR-030 conta como implementação: o marcador de bloco sai, as três
+      menções e o comentário que as declara ficam em trechos, e a frase da emenda («Decisão registada
+      como emenda ao ADR-030 §2.6») fica fora
+- [x] O conjunto de pares foi extraído antes e depois pelos dois leitores, e a diferença é a que se
+      lista em «Entrega»: **20 saem, 1 entra** — não os 17 previstos; o desvio está explicado par a
+      par. Os dois leitores continuam a dar o mesmo conjunto, e tudo o que saiu da tabela está agora
+      nas menções
+- [x] Só se tocou nos trechos: o texto **visível** da EPIC-19, renderizado em CommonMark com tabelas
+      antes e depois, é o mesmo palavra a palavra, com uma excepção acrescentada — a nota de fecho no
+      resíduo 8 do AOS-442, que de outro modo afirmaria uma coisa que deixou de ser verdade
+- [x] O estado do AOS-380 na EPIC-25 deixa de abrir com «DECIDIDO» e passa a **FEITO** (2026-09-08),
+      com o histórico intacto; `estado-citado.sh` verde (nenhum `BLOQUEADOR` cita o AOS-380, e o
+      lexema passa de abstenção a fechado)
+
+### Entrega
+
+**Diferença medida no conjunto de pares (ticket, ADR) da §4**: 445 → 426 implementados, 78 → 97
+menções (111 contando as 14 deste próprio bloco, todas sob o marcador de bloco).
+
+| Saem da §4 | Porquê |
+|---|---|
+| AOS-417 × ADR-018, ADR-023, ADR-027 | declarados restrições no bloco |
+| AOS-423 × ADR-018, ADR-023 | declarados restrições no bloco |
+| AOS-424 × ADR-001, ADR-007 | declarados restrições no bloco |
+| AOS-427 × ADR-003, ADR-006, ADR-016, ADR-027 | declarados restrições no bloco |
+| AOS-430 × ADR-016, ADR-018, ADR-027, ADR-030 | declarados restrições no bloco |
+| AOS-423 × ADR-029, AOS-424 × ADR-028, AOS-427 × ADR-029, AOS-427 × ADR-031, AOS-430 × ADR-029 | **não previstos** — ver abaixo |
+
+| Entra na §4 | Porquê |
+|---|---|
+| AOS-442 × ADR-030 | a emenda §2.6, declarada no bloco e no próprio ADR |
+
+**Os cinco pares não previstos.** A declaração das restrições vive num comentário HTML no topo de
+cada bloco, e o comentário cita os ADR a que se refere. Um trecho de menção não pode abrir **dentro**
+de um comentário — o `<!--` interior é texto, e o comentário fecha no primeiro `-->` —, pelo que a
+única forma de tirar da coluna as restrições que o comentário nomeia é envolvê-lo inteiro. Com ele
+saem os ADR que o comentário cita **como precedente** («o mesmo preço que o AOS-424 pagou pelo
+ADR-029»), e que no bloco não aparecem em mais lado nenhum. São atribuições falsas da mesma espécie —
+o ADR de outro ticket, citado como exemplo —, mas não estavam declaradas, e por isso ficam ditas. A
+alternativa que as manteria era partir cada comentário em dois à volta da frase das restrições:
+mexia na forma de seis comentários para preservar cinco atribuições que nenhum leitor sustentaria, e
+não se fez.
+
+**O par que fica: AOS-423 × ADR-028.** O comentário do bloco declara-o restrição, e em parte é — a
+secção «O que o ADR-028 §2.2 JÁ decidiu, e que este ticket NÃO reabre». Mas o AOS-423 é também o
+consumidor que o ADR-028 §2.2 decidiu e não construiu, toma a decisão de tecto e retenção que o
+ADR-028 §4 atribui «ao ticket de implementação», e corrigiu o texto do próprio ADR-028 (a nota
+«CORRECÇÃO DE ATRIBUIÇÃO (AOS-423)» no ADR). Restrição **e** entrega: pela regra deste ticket,
+fica como estava.
+
+**Como se marcou.** Cada ocorrência das restrições declaradas, em cada um dos cinco blocos, foi lida
+no seu contexto e envolvida no trecho mais curto que a contém — o código, ou o código com a sua
+pontuação —, nunca uma frase. Os comentários de declaração, com o marcador numa linha sua antes e
+depois: colado ao `<!--`, a linha passava a começar por um comentário que fecha nela própria, o bloco
+HTML do CommonMark acabava ali, e o resto do comentário passava a aparecer como texto. Pela mesma
+razão, duas ocorrências no início de uma linha de prosa abrem o trecho dentro do negrito ou no fim da
+linha anterior. Na EPIC-19: 45 trechos de menção — 38 em linha, 6 à volta dos comentários de
+declaração e 1 a atravessar uma quebra de linha —, o marcador de bloco do AOS-442 retirado e a
+nota no resíduo 8 do mesmo bloco; nenhuma outra palavra de prosa mudou.
+
+Gates: `rtm.sh`, `ref-lint.sh` (35 ADRs com cobertura — nenhum ficou sem implementador),
+`estado-citado.sh` e `lint.sh` verdes; `selftest.sh` completo, a correr sozinho, verde (130 subtestes).
+Medidos, como os do AOS-472, com o AOS-471 do ramo paralelo presente.
+
+**Resíduos declarados.**
+
+1. **Os comentários de declaração continuam a dizer que as restrições «passam a contar como
+   implementados»**, e que «não há forma de separar os dois papéis». Ficaram como estavam — a regra
+   era não reescrever prosa —, e lêem-se agora como o registo do porquê, não como o estado.
+2. **Pares de menção que o corpus não declara ficam na §4** — por exemplo AOS-430 × ADR-028 («que o
+   ADR-028 rejeitou») ou AOS-427 × ADR-028 (só na linha dos documentos de referência). O critério
+   deste ticket foi a declaração do próprio bloco; o mecanismo continua opt-in, e o resto espera
+   quem releia cada bloco.
+
+### Estado
+
+**FEITO** (2026-10-01). P2.
+
+`specs/EPIC-19_Planeador_Meta_Orquestracao.md` (blocos de AOS-417, AOS-423, AOS-424, AOS-427, AOS-430
+e AOS-442), `specs/EPIC-25_Remediacao_Auditoria_GOV_OBS.md` (estado do AOS-380),
+`tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada).
 
 ---

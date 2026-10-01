@@ -2322,12 +2322,14 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 
 ## AOS-417 — Por onde entra um objectivo no caminho do plano: o orquestrador não tem superfície de rede
 
+<!-- rtm: menção -->
 <!-- Este ticket IMPLEMENTA o ADR-028 (o seu próprio), e por isso o marcador
      `rtm: adrs-mencionados` SAIU: enquanto lá esteve, o ref-lint tratava TODAS as citações do
      bloco como menções, e o ADR-028 ficaria sem ticket implementador — gate vermelho. O preço
      de o tirar é que o ADR-018, o ADR-023 e o ADR-027, que aqui são RESTRIÇÕES e não entregas,
      passam a contar como implementados por este ticket na RTM. Fica dito porque o parser é
      textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -2337,10 +2339,10 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
 | Tipo | decisão de arquitectura (ADR) + implementação |
 | Prioridade | P1 |
 | Estimativa | L |
-| Dependências | ADR-018, ADR-023, ADR-027 (restrições, não pré-requisitos) |
+| Dependências | <!-- rtm: menção -->ADR-018, ADR-023, ADR-027<!-- /rtm: menção --> (restrições, não pré-requisitos) |
 | Bloqueia | AOS-133 (BFF) e, por arrasto, todo o EPIC-13; qualquer uso do caminho do plano sem operador |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `packages/cmd/aos-orq/main.go` (subcomandos `serve|inspect|plans|decide`), `packages/cmd/aos/planos.go` (a tabela de rotas do nó), `docs/adr/ADR-023-*.md`, `docs/adr/ADR-018-*.md` |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `packages/cmd/aos-orq/main.go` (subcomandos `serve|inspect|plans|decide`), `packages/cmd/aos/planos.go` (a tabela de rotas do nó), <!-- rtm: menção -->`docs/adr/ADR-023-*.md`, `docs/adr/ADR-018-*.md`<!-- /rtm: menção --> |
 
 ### Contexto
 
@@ -2389,17 +2391,17 @@ Um objectivo submetido por um utilizador autenticado desencadeia uma corrida do 
 ### Porque é que isto é um ADR e não só um ticket
 
 A frase «um `serve` possui um run e termina, não é um daemon» não é um acaso de operação: é o
-**ADR-023** a manifestar-se — a autoridade sobre o ciclo de vida de um run é o LEASE, e um
+**<!-- rtm: menção -->ADR-023<!-- /rtm: menção -->** a manifestar-se — a autoridade sobre o ciclo de vida de um run é o LEASE, e um
 processo que o detém não é partilhável. Dar ingresso de rede ao caminho do plano obriga a decidir
-coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se decidem em código:
+coisas que o <!-- rtm: menção -->ADR-023 e o ADR-018<!-- /rtm: menção --> hoje respondem por omissão, e que não se decidem em código:
 
 - **Quem detém o lease** quando o pedido chega por rede — o processo que atende, ou um trabalhador
   que ele desencadeia?
 - **O que acontece a um segundo pedido** para um run que já tem posse: recusa (o actual código 3),
   fila, ou coalescência?
-- **Onde vive o ingresso** — no nó `aos`, que o ADR-018 declara única autoridade do ciclo de vida
+- **Onde vive o ingresso** — no nó `aos`, que o <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> declara única autoridade do ciclo de vida
   e que o `layer-lint` impede de importar o orquestrador; ou num serviço próprio que fala com o nó
-  como o executor já fala (ADR-027)?
+  como o executor já fala (<!-- rtm: menção -->ADR-027<!-- /rtm: menção -->)?
 - **O modelo de execução**: daemon que aceita e executa, ou ingresso que só ENFILEIRA e um
   trabalhador consome? A segunda preserva melhor «um `serve` possui um run», mas introduz uma fila
   durável que hoje não existe.
@@ -2418,7 +2420,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ### Critérios de aceitação
 
-- [x] Um **ADR novo** regista a decisão, cita o ADR-018/023/027 e diz explicitamente o que
+- [x] Um **ADR novo** regista a decisão, cita o <!-- rtm: menção -->ADR-018/023/027<!-- /rtm: menção --> e diz explicitamente o que
       SUPERA ou EMENDA da nota «não é um daemon» — ou porque não a contradiz.
       *(ADR-028, aceite 2026-09-21. Não emenda nada: o ingresso enfileira e não executa, pelo
       que um `serve` continua a possuir um run e a terminar.)*
@@ -2448,7 +2450,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 - [x] O `layer-lint` continua verde: se a opção for (a), o nó **não** importa o orquestrador.
       *(A opção foi (a). Dos pacotes do repositório, o `plan_ingress.go` importa apenas
       `substrate/eventstore` (mais `encoding/json`, `net/http` e `strings` da stdlib); o
-      guard-test de fronteira do ADR-018 não foi tocado. Medido com `go list -deps` sobre
+      guard-test de fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> não foi tocado. Medido com `go list -deps` sobre
       `packages/cmd/aos`: zero `orchestrator`/`scheduler`, directo ou transitivo. E há prova pelo COMPORTAMENTO, não só
       pelos imports: `TestAOS417IngressoNaoHospedaORun` falha se a rota hospedar o run.)*
 - [x] O banner de arranque declara a postura do ingresso, como o resto do sistema já faz.
@@ -2482,7 +2484,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 | Risco | Mitigação |
 |---|---|
-| Um ingresso que aceite e execute no mesmo processo ressuscita o problema de dois escritores que o ADR-023 fechou | O ADR tem de responder «quem detém o lease» antes de existir código |
+| Um ingresso que aceite e execute no mesmo processo ressuscita o problema de dois escritores que o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> fechou | O ADR tem de responder «quem detém o lease» antes de existir código |
 | Duplicar autenticação e admissão num serviço próprio abre uma segunda superfície com postura diferente da do nó | Se for a opção (b), reaproveitar a mesma admissão e o mesmo edge, e prová-lo com teste |
 | O ingresso torna trivial disparar corridas, e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele |
 
@@ -2490,6 +2492,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 
 ## AOS-427 — A cunhagem do NHI do run é manual, e é o que separa «funciona» de «funciona sem ninguém no terminal»
 
+<!-- rtm: menção -->
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa a condição exacta:
      «a decisão (1) é de ARQUITECTURA e vai exigir ADR próprio — quando existir, este marcador
      sai». O ADR-032 existe, e regista as QUATRO decisões.
@@ -2499,6 +2502,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
      AOS-430 pagou pelo ADR-031 e o AOS-424 pelo ADR-029: o ADR-003, o ADR-006, o ADR-016 e o
      ADR-027, que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este
      ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -2511,7 +2515,7 @@ coisas que o ADR-023 e o ADR-018 hoje respondem por omissão, e que não se deci
 | Dependências | AOS-423 (o consumidor, FECHADO); EPIC-16 Frente 2 (custódia por `crypto.Signer`, contrato entregue) |
 | Bloqueia | O critério «uma corrida desencadeada por rede, sem ninguém no terminal» do AOS-417 e do AOS-423 |
 | Responsável sugerido | Responsável de Segurança |
-| Documentos de referência | `packages/cmd/aos-issuer/main.go` (`mint`), `packages/cmd/aos-orq/node_client.go` (o consumo), `packages/platform/identity/issuer.go`, `deploy/server/README.md` §custódia, `docs/adr/ADR-006-credential-broker-jit.md`, `docs/adr/ADR-027`, `docs/adr/ADR-028` §resíduos |
+| Documentos de referência | `packages/cmd/aos-issuer/main.go` (`mint`), `packages/cmd/aos-orq/node_client.go` (o consumo), `packages/platform/identity/issuer.go`, `deploy/server/README.md` §custódia, <!-- rtm: menção -->`docs/adr/ADR-006-credential-broker-jit.md`, `docs/adr/ADR-027`<!-- /rtm: menção -->, `docs/adr/ADR-028` §resíduos |
 
 ### Contexto
 
@@ -2548,17 +2552,17 @@ reabre sem ADR de supersessão**:
   «se a privada vivesse no servidor, quem o comprometesse mintaria a sua própria identidade».
 - ❌ **Fazer o nó confiar em `iss:aos-orq`.** O `aos-orq` **já cunha** identidades em runtime, com
   um emissor ed25519 efémero por processo (`planner_wiring.go:254-294`) — mas essa confiança é
-  auto-referencial e confinada ao seu Model Gateway interno. O ADR-027 §2.2 rejeita explicitamente
+  auto-referencial e confinada ao seu Model Gateway interno. O <!-- rtm: menção -->ADR-027<!-- /rtm: menção --> §2.2 rejeita explicitamente
   estendê-la ao nó: «daria ao orquestrador o poder de cunhar qualquer autoridade para o nó e
-  desfazia a separação de domínios de confiança (ADR-006)».
-- ❌ **Assinar em nome do humano sem hardware do humano** (ADR-006 invariante 6, ADR-016 §1).
+  desfazia a separação de domínios de confiança (<!-- rtm: menção -->ADR-006<!-- /rtm: menção -->)».
+- ❌ **Assinar em nome do humano sem hardware do humano** (<!-- rtm: menção -->ADR-006 invariante 6, ADR-016 §1<!-- /rtm: menção -->).
 - ❌ **Compor o `integration.IssuerAuthority` no nó.** Tem `MintForAssertion`, mas só é composto no
   ramo NÃO-endurecido (`bootstrap.go:1690-1698`), e a produção proíbe esse ramo
   (`main.go:672-674`).
 
-### O que o ADR-006 AUTORIZA, e que é a porta aberta
+### O que o <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> AUTORIZA, e que é a porta aberta
 
-O ADR-006 §2 invariante 2 pede exactamente isto para NHIs de agente: **«JIT com TTL curto. A
+O <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> §2 invariante 2 pede exactamente isto para NHIs de agente: **«JIT com TTL curto. A
 credencial é obtida no momento em que é precisa (não pré-provisionada), guardada num cache de vida
 curta, renovada antes de expirar.»** O que ele proíbe é assinar pelo humano e o agente ver segredo
 downstream — não colide com renovar o NHI de um run.
@@ -2571,15 +2575,15 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 ### Decisões a tomar primeiro (do dono)
 
 1. **ONDE vive a autoridade de emissão.** Um emissor externo ao nó E ao `aos-orq`, com
-   `crypto.Signer` sobre Vault/HSM, é o desenho que o ADR-006 pede e de que o `aos-issuer
+   `crypto.Signer` sobre Vault/HSM, é o desenho que o <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> pede e de que o `aos-issuer
    --vault-addr` já é meia implementação. Mas é um processo novo em produção, com o seu ciclo de
    vida, a sua rede e o seu próprio problema de arranque. **Exige ADR.**
 2. **Qual é a PROVA que autoriza uma cunhagem sem humano presente.** Hoje a raiz é um ID-token
    OIDC verificado (`--assertion`), e o humano sai do `sub` da prova. Sem browser, de onde vem a
    prova? Um `client_credentials` do próprio serviço não tem `sub` humano — e a cadeia
-   `on-behalf-of` do ADR-003 exige raiz humana. **Ou se relaxa isso (e é decisão de segurança), ou
+   `on-behalf-of` do <!-- rtm: menção -->ADR-003<!-- /rtm: menção --> exige raiz humana. **Ou se relaxa isso (e é decisão de segurança), ou
    a raiz passa a ser uma delegação de longa duração assinada uma vez por um humano.**
-3. **A renovação a meio de um plano.** O ADR-027 fixa que «a validade do NHI é o tecto de duração
+3. **A renovação a meio de um plano.** O <!-- rtm: menção -->ADR-027<!-- /rtm: menção --> fixa que «a validade do NHI é o tecto de duração
    de um plano» e deixa a renovação como resíduo. Com renovação, esse tecto cai — o que é bom para
    planos longos e mau para o raio de acção de uma credencial comprometida.
 4. **Tecto máximo de TTL.** Não existe nenhum na biblioteca (`identity/issuer.go`): o valor é o que
@@ -2627,7 +2631,7 @@ E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
 |---|---|
 | Automatizar a cunhagem remove o atrito humano que hoje limita o raio de acção de uma credencial | Decisão (4): tecto máximo de TTL imposto na biblioteca, não na receita |
 | Um emissor externo novo torna-se um ponto único de falha do caminho do plano | O consumo é por ficheiro relido (`node_client.go:316`): uma credencial válida em disco sobrevive à indisponibilidade do emissor até expirar |
-| A prova sem humano relaxa a cadeia `on-behalf-of` do ADR-003 sem que ninguém o note | Decisão (2) tem de ser escrita como decisão de SEGURANÇA, com o que se perde |
+| A prova sem humano relaxa a cadeia `on-behalf-of` do <!-- rtm: menção -->ADR-003<!-- /rtm: menção --> sem que ninguém o note | Decisão (2) tem de ser escrita como decisão de SEGURANÇA, com o que se perde |
 
 ### Estado
 
@@ -2719,7 +2723,7 @@ biblioteca, renova-a o humano assinando outro).
    fila (o AOS-430 mediu que nada a drena) e o sensor. É a entrega operacional seguinte (ticket por abrir).
 2. **Não há gate que prove que a chave do HUMANO está fora do servidor.** Com o ADR-033 é essa a
    chave que tem de estar fora; a do emissor está no Vault por decisão.
-3. **A chave do humano é uma seed em ficheiro**, não hardware (ADR-016 §1 na forma, não no
+3. **A chave do humano é uma seed em ficheiro**, não hardware (<!-- rtm: menção -->ADR-016<!-- /rtm: menção --> §1 na forma, não no
    espírito). Não existe no repositório via de assinatura por hardware.
 4. **Uma cunhagem que nunca é usada não deixa rasto** — o `mint-mandated` corre sem Event Store,
    logo não há `identity.nhi.issued`. O ADR-033 §5 aceita-o: um token só age quando chega ao nó,
@@ -3064,6 +3068,7 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
 
 ## AOS-430 — Quem submete um plano não tem por onde ver o desfecho: o run de topo vive noutro Event Store
 
+<!-- rtm: menção -->
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa que saísse: dizia
      que «a decisão (1) é de fronteira entre dois processos e vai exigir ADR». Exigiu, e o
      ADR-031 é dele.
@@ -3073,6 +3078,7 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
      são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket na RTM.
      Fica dito porque o parser é textual e o marcador é tudo-ou-nada — não há forma de separar os
      dois papéis dentro do mesmo bloco. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -3090,7 +3096,7 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
 ### Contexto
 
 O AOS-423 deixou a pergunta (5) por confirmar: **se o `run_id` de topo chega a ser um run
-legível.** A hipótese registada era que o id de topo «pode nunca existir como run», por o ADR-027
+legível.** A hipótese registada era que o id de topo «pode nunca existir como run», por o <!-- rtm: menção -->ADR-027<!-- /rtm: menção -->
 materializar nós como `<run>~<nó>`.
 
 **A hipótese estava errada na causa, e a causa real é mais funda.**
@@ -3120,11 +3126,11 @@ não é a de produção hoje.
    (a) o nó expõe o estado do plano, lendo-o de onde? não o tem;
    (b) o `aos-orq` ganha superfície de rede — o que o AOS-417 evitou de propósito, e que o ADR-028
    rejeitou («uma segunda superfície com postura diferente da do nó é exactamente o modo de falha
-   que o ADR-016 vem fechar»);
+   que o <!-- rtm: menção -->ADR-016<!-- /rtm: menção --> vem fechar»);
    (c) o `aos-orq` reporta o estado ao nó pela rota que já usa, e o nó serve-o — simétrico ao
    `POST /plans/outcome` que o AOS-423 criou.
 2. **Substrato partilhado resolve isto por acidente?** Se os dois processos passarem a partilhar
-   JetStream (a saída que o ADR-030 §3 deixou como destino), o topo fica legível sem superfície
+   JetStream (a saída que o <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §3 deixou como destino), o topo fica legível sem superfície
    nova. Mas isso é o AOS-431/infra e uma migração de produção.
 
 ### Critérios de Aceitação
@@ -3136,7 +3142,7 @@ não é a de produção hoje.
       uma — incluindo o substrato partilhado, rejeitado **para já** e não em princípio.
 - [x] `GET /plans/{id}`, e **não reabre a não-oracularidade**: a fronteira é a titularidade, e as
       três recusas (não existe / não é teu / outra região) dão o MESMO 404, com corpo comparado
-      byte-a-byte no teste. O ADR-030 §2.1 diz «não revelar a quem NÃO PODE AGIR sobre o
+      byte-a-byte no teste. O <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §2.1 diz «não revelar a quem NÃO PODE AGIR sobre o
       recurso», e quem submeteu pode — foi ele que o criou.
 
 ### Fora de âmbito, declarado
@@ -3158,12 +3164,12 @@ Logo o AOS-430 é **só read-path**. Não se tocou no `aos-orq`.
 
 ### A objecção que quase parou isto, e a leitura que a resolve
 
-Uma rota de leitura de plano parece ser exactamente o oráculo que o ADR-030 §2.1 fecha — a fila
+Uma rota de leitura de plano parece ser exactamente o oráculo que o <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §2.1 fecha — a fila
 não é enumerável *por construção*, e é essa premissa que sustenta o `201` a uma colisão e o `204`
 indistinguível entre «vazia» e «outra região».
 
 A regra, lida à letra, é outra: «não revela a EXISTÊNCIA de um recurso **a quem não pode agir
-sobre ele**». Quem submeteu pode — criou-o e escolheu-lhe o `run_id`. **Isto aplica o ADR-030;
+sobre ele**». Quem submeteu pode — criou-o e escolheu-lhe o `run_id`. **Isto aplica o <!-- rtm: menção -->ADR-030<!-- /rtm: menção -->;
 não o emenda.** O ADR-031 regista-o.
 
 ### O `Principal` ganhou o primeiro leitor
@@ -4607,6 +4613,7 @@ caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria 
 ---
 ## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
 
+<!-- rtm: menção -->
 <!-- O marcador `rtm: adrs-mencionados` SAIU, e o próprio comentário anterior previa que saísse:
      dizia que «se a decisão (1) for aceite, abre-se ADR próprio e este marcador sai». Foi
      aceite, e o ADR-029 é dele.
@@ -4615,6 +4622,7 @@ caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria 
      que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket
      na RTM. Fica dito porque o parser é textual e o marcador é tudo-ou-nada: não há forma de
      separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -4893,7 +4901,7 @@ esse run **já está partido hoje**; sobre WAL funciona. Validar no `POST /runs`
 quem corre sobre WAL, que é o que corre em produção.
 
 Não se resolveu em silêncio, e não é escolha de quem escreve o handler: os dois invariantes estão
-REGISTADOS, um pelo AOS-231 e outro pelo ADR-007.
+REGISTADOS, um pelo AOS-231 e outro pelo <!-- rtm: menção -->ADR-007<!-- /rtm: menção -->.
 
 **Recomendação registada:** tornar o `node_id` **stream-safe por construção** — apertar o
 `ValidNodeID` para excluir `.` e `:` — e só então ligar a guarda ao `POST /runs`. É a tese do
@@ -4948,6 +4956,7 @@ um valor «sujo» continua invisível.
 
 ## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
 
+<!-- rtm: menção -->
 <!-- O MARCADOR `rtm: adrs-mencionados` SAIU, e o comentario anterior previa que saisse: dizia
      que «se vier a exigir decisao nova — e a pergunta (1) abaixo pode exigi-la — abre-se ADR
      proprio e este marcador sai». A decisao (1) exigiu, e o ADR-030 e dele.
@@ -4956,6 +4965,7 @@ um valor «sujo» continua invisível.
      e nao entregas, passam a contar como implementados por este ticket na RTM. Fica dito porque
      o parser e textual e o marcador e tudo-ou-nada: nao ha forma de separar os dois papeis no
      mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -5001,8 +5011,8 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
 - **Não se inventa substrato de fila.** O Event Store é a fila e o consumo-uma-só-vez segue o
   molde do `approval_store_durable` (claim-before-read por `Append` com idempotency-key,
   `StatusDuplicate` como primitivo de arbitragem). Não um broker novo, não um estado paralelo
-  (que o ADR-018 §4 proíbe).
-- **Quem arbitra entre dois consumidores continua a ser o LEASE** (ADR-023). O ingresso não
+  (que o <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> §4 proíbe).
+- **Quem arbitra entre dois consumidores continua a ser o LEASE** (<!-- rtm: menção -->ADR-023<!-- /rtm: menção -->). O ingresso não
   introduziu uma segunda autoridade, e o consumidor também não pode introduzir.
 
 ### Decisões a tomar primeiro (do dono)
@@ -5016,17 +5026,17 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
      escala para além de um consumidor.
    - **(b) Consumidor DENTRO do processo do nó.** Elimina o problema da tranca — quem já tem o
      `LockWAL` é o nó — e reaproveita os laços que o nó já tem (molde do `backup_scheduler.go`).
-     **Mas põe o nó a invocar o `aos-orq`**, e isso toca a fronteira do ADR-018 de frente: o nó
+     **Mas põe o nó a invocar o `aos-orq`**, e isso toca a fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> de frente: o nó
      deixaria de apenas CONHECER a existência do caminho do plano para o DESENCADEAR. Exigiria ADR
      de emenda, e não é óbvio que deva ser aceite.
    - **(c) Rota de leitura/reclamação no nó, consumida pelo `aos-orq` por HTTP.** O canal
      `aos-orq`→nó já existe (`node_client.go`, credencial NHI + Bearer OIDC). Mantém a fronteira
-     do ADR-018 (o nó continua a não correr o plano) e não exige infraestrutura nova. Custo: uma
+     do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> (o nó continua a não correr o plano) e não exige infraestrutura nova. Custo: uma
      rota que EXPÕE a fila, com tudo o que o ADR-016 e a revisão do AOS-417 obrigam a pensar — e
      foi deliberadamente fechada por essa razão.
 
    **Recomendação registada: (c)**, e a razão é que preserva as duas fronteiras que custaram mais a
-   estabelecer — o nó não corre o plano (ADR-018) e a posse continua a ser o lease (ADR-023) — sem
+   estabelecer — o nó não corre o plano <!-- rtm: menção -->(ADR-018)<!-- /rtm: menção --> e a posse continua a ser o lease <!-- rtm: menção -->(ADR-023)<!-- /rtm: menção --> — sem
    pedir uma migração de substrato em produção. **Mas exige ADR**, porque abre uma superfície de
    leitura que o AOS-417 fechou de propósito, e a não-oracularidade tem de ser reargumentada para
    um consumidor autenticado (que é caso diferente do chamador anónimo que o ADR-016 considerou).
@@ -5070,7 +5080,7 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
       estado paralelo. **Com uma diferença deliberada:** o molde reclama ANTES de ler e queima o
       item se o processo morrer — lado seguro para um grant humano, lado ERRADO para um pedido de
       plano. Daí a GERAÇÃO, que é o padrão de re-encarnação do mesmo ficheiro.
-- [x] O `layer-lint` continua verde e o guard-test de fronteira do ADR-018 não mudou: o nó não
+- [x] O `layer-lint` continua verde e o guard-test de fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> não mudou: o nó não
       importa o orquestrador, e o consumidor fala HTTP.
 - [x] Um pedido cujo `serve` falhe tem o desfecho decidido, com teste que distingue TRANSITÓRIA
       (3/4/5/8 — volta à fila já), PERMANENTE (7/9 — não volta) e AGUARDA-HUMANO (6 — nem uma
@@ -5109,7 +5119,7 @@ uma só vez, e o desfecho fica ao alcance de quem o submeteu.
 
 | Risco | Mitigação |
 |---|---|
-| Um trabalhador de longa duração ressuscita, por outra via, o problema de dois escritores que o ADR-023 fechou | A arbitragem tem de continuar a ser o LEASE, e o teste de dois consumidores é o que o prova. Se a forma escolhida em (1) exigir mais, abre-se ADR |
+| Um trabalhador de longa duração ressuscita, por outra via, o problema de dois escritores que o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> fechou | A arbitragem tem de continuar a ser o LEASE, e o teste de dois consumidores é o que o prova. Se a forma escolhida em (1) exigir mais, abre-se ADR |
 | O consumo reclama o facto e o processo morre antes de o `serve` arrancar: o pedido fica reclamado e por correr | É o modo de falha central deste ticket. O claim tem de ser recuperável — ou o desfecho tem de ser um facto próprio, não a ausência de um |
 | Retentar uma recusa determinista (plano rejeitado pela AOS-231) num laço infinito | Decisão (4): distinguir transitório de permanente pelos códigos de saída, e prová-lo com teste |
 | Um consumidor torna trivial disparar corridas e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele — o mesmo risco que o AOS-417 registou e que o ingresso sozinho não exercitava |
@@ -5145,8 +5155,8 @@ dá-lhe casa e os dois sítios passam a apontar para ela.
 
 ### A decisão (1), e o que a postura custou
 
-Escolheu-se **(c)**: rota de reclamação no nó, consumida pelo `aos-orq` por HTTP. Preserva o
-ADR-018 (o nó não corre o plano) e o ADR-023 (a posse é o lease) sem pedir uma migração de
+Escolheu-se **(c)**: rota de reclamação no nó, consumida pelo `aos-orq` por HTTP. Preserva o<!-- rtm: menção -->
+ADR-018<!-- /rtm: menção --> (o nó não corre o plano) e o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> (a posse é o lease) sem pedir uma migração de
 substrato.
 
 A postura é `planoDados` + Bearer OIDC + gate soberano, pelo **precedente medido** do `POST /runs`
@@ -6055,12 +6065,13 @@ exemplo de recusa em `deploy/server/README.md` foi actualizado.
 
 ## AOS-442 — A retoma de um plano aprovado decompõe de novo e é recusada; um plano à espera de humano nunca é retomado
 
-<!-- rtm: adrs-mencionados -->
+<!-- rtm: menção -->
 <!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
      não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25).
      EXCEPÇÃO DECLARADA: este ticket EMENDA o ADR-030 §2.6, e a emenda está registada no próprio
      ADR, que o nomeia. O marcador fica porque o parser da RTM é tudo-ou-nada, e os restantes
      (ADR-005, ADR-018, ADR-031) são de facto só menção. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -6089,7 +6100,7 @@ pedido** — fica aprovado e parado.
 
 Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estaciona; não fecha).
 
-- **Onde vive o documento aprovado.** Fora do log, como sempre (ADR-005): o `serve` escreve-o por
+- **Onde vive o documento aprovado.** Fora do log, como sempre (<!-- rtm: menção -->ADR-005<!-- /rtm: menção -->): o `serve` escreve-o por
   `--plan-out` quando o plano é VALIDADO — pendente ou aprovado, e não só pendente como até aqui — e
   **antes** de apensar os factos (`gatearPlano`), para que nunca haja `plan.validated` sem documento.
   A escrita é atómica (temporário, `fsync`, `rename`). O `consume` dá a cada pedido um ficheiro
@@ -6110,7 +6121,7 @@ Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estacion
   fila para sempre.
 - **O `aguarda_humano` no nó** (`plan_claim.go`): estaciona e é re-oferecido de 10 em 10 min
   (`intervaloDeReverificacao`) numa geração nova; só `terminal` fecha; não conta para a marca de
-  água. O nó continua a não saber o que é uma decisão (ADR-018): quem re-verifica é o `consume`,
+  água. O nó continua a não saber o que é uma decisão (<!-- rtm: menção -->ADR-018<!-- /rtm: menção -->): quem re-verifica é o `consume`,
   pelo documento, sem modelo e sem gastar o `--max`. O `GET /plans/{id}` passou a escolher o
   desfecho terminal de maior geração (antes dependia da ordem de um mapa).
 - **O prazo do pendente** (24 h) passa a ser imposto pelo `consume` e pelo `serve` (saída `7`),
@@ -6165,7 +6176,7 @@ Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estacion
    `TestAOS408_AprovacaoDeOutroOrganigramaNaoServe`). O `consume` não o exerce: nunca decompõe um
    run já validado. Fechá-lo muda um teste de aceitação do AOS-408 e fica para decisão.
 8. **A RTM não liga a emenda do ADR-030 a este ticket:** o marcador `adrs-mencionados` do bloco é
-   tudo-ou-nada, e os outros ADR citados são só menção. O próprio ADR nomeia o AOS-442.
+   tudo-ou-nada, e os outros ADR citados são só menção. O próprio ADR nomeia o AOS-442. *(Ligada pelo AOS-473: o marcador de bloco deu lugar a trechos de menção, e a emenda passa a contar como implementação.)*
 9. **Os pedidos `aguarda_humano` de ANTES desta release voltam à fila.** Deixaram de contar como
    terminados, e a marca de água é recomputada no arranque do nó: são re-oferecidos depois do
    intervalo e, como foram validados sem documento guardado, fecham com `7` sem correr o `serve`
