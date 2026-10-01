@@ -32,6 +32,7 @@
 #   código 0        «ok»         prioridade default
 #   código 7        «recusado»   prioridade high   (houve decisão e foi NÃO — ou um pendente fora do prazo)
 #   código 11       «submissor fora do mandato»  prioridade high  (AOS-439; o texto não leva o submissor)
+#   código 12       «gerações esgotadas»         prioridade high  (AOS-467; ver o log da drenagem)
 #   outro código    «falhou»     prioridade high
 #
 # O TÓPICO É OUTRO: ${TOPICO_FILE}, separado do dos alertas de infraestrutura (secrets/ntfy-topico),
@@ -210,6 +211,11 @@ for (( i = 0; i < K; i++ )); do
       # AOS-439: o submissor não consta dos requesters do mandato. O texto NÃO leva o submissor (é
       # um sub do IdP, dado pessoal): quem é, vê-se no GET /plans/{id} e no log da drenagem.
       11) rotulo="submissor fora do mandato"; prio=high; tags="no_entry"; titulo="AOS: plano fora do mandato (codigo 11)" ;;
+      # AOS-467: o pedido passou o tecto de gerações de planeamento (AOS_PLAN_MAX_GENERATIONS) e
+      # fechou sem planear. As causas são duas, e o aviso não as distingue: a decomposição falhou de
+      # forma transitória vezes de mais, ou o objectivo deixou de se poder abrir (tipicamente um
+      # /dsar/erase do titular). Ver o log da drenagem e o GET /plans/{id}.
+      12) rotulo="gerações esgotadas"; prio=high; tags="x"; titulo="AOS: plano fechado, geracoes esgotadas (codigo 12)" ;;
       *) rotulo="falhou";   prio=high;    tags="x";                titulo="AOS: plano falhou (codigo ${codigo})" ;;
     esac
     if notificar "${titulo}" "${prio}" "${tags}" "Plano ${p}: terminal, código ${codigo} (${rotulo})."; then

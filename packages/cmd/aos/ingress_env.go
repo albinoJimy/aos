@@ -87,6 +87,8 @@ type ingressLimits struct {
 	// inútil.
 	planMaxPending             int
 	planMaxPendingPerSubmitter int
+	// planMaxGenerations é o tecto de gerações de planeamento por pedido (AOS-467).
+	planMaxGenerations int
 	// apiMaxConns é o tecto de ligações abertas no listener da API (AOS-465), e tem de exceder o
 	// tecto de streams SSE: cada stream segura uma ligação durante minutos.
 	apiMaxConns int
@@ -110,6 +112,7 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		maxInFlight:                DefaultMaxInFlight,
 		planMaxPending:             DefaultPlanMaxPending,
 		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		planMaxGenerations:         DefaultPlanMaxGenerations,
 		apiMaxConns:                DefaultMaxAcceptedConns,
 		readRatePerSec:             DefaultReadRatePerSec,
 		readBurst:                  DefaultReadRateBurst,
@@ -251,6 +254,16 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		}
 		lim.planMaxPendingPerSubmitter, lim.tuned = n, true
 	}
+	// TECTO DE GERAÇÕES POR PEDIDO (AOS-467). 0 não desliga — abortaria nada: deixar por definir
+	// é o default. Um pedido cuja decomposição falha sempre de forma transitória re-planeava sem fim.
+	rawGer := strings.TrimSpace(os.Getenv("AOS_PLAN_MAX_GENERATIONS"))
+	if rawGer != "" {
+		n, err := strconv.Atoi(rawGer)
+		if err != nil || n <= 0 {
+			return ingressLimits{}, nil, fmt.Errorf("%w: AOS_PLAN_MAX_GENERATIONS=%q (inteiro > 0; por definir usa %d)", ErrBadIngressLimits, rawGer, DefaultPlanMaxGenerations)
+		}
+		lim.planMaxGenerations, lim.tuned = n, true
+	}
 	// O PAR FINAL, fora dos dois ramos — é literalmente a correcção do AOS-463, aplicada ao nascer
 	// deste eixo em vez de paga em revisão adversarial. Se esta comparação vivesse dentro do ramo do
 	// por-submissor, baixar só `AOS_PLAN_MAX_PENDING` para `<= 125` deixaria a repartição INERTE em
@@ -296,6 +309,7 @@ func ingressLimitsFromEnv() (ingressLimits, []APIOption, error) {
 		WithMaxTrajectoryConnsPerReader(lim.trajMaxConnsPerReader),
 		WithPlanMaxPending(lim.planMaxPending),
 		WithPlanMaxPendingPerSubmitter(lim.planMaxPendingPerSubmitter),
+		WithPlanMaxGenerations(lim.planMaxGenerations),
 		WithMaxAcceptedConns(lim.apiMaxConns),
 	}, nil
 }
@@ -356,6 +370,12 @@ func dobraDoTectoDaFila(lim ingressLimits, gateComposto, principalVerificavel bo
 		d += fmt.Sprintf(" REPARTICAO POR SUBMISSOR: LIGADA sobre principal VERIFICADO — cada submissor ocupa no maximo %d de %d pedidos por drenar; a atribuicao vem de credencial FORTE verificada (OIDC), logo nao e forjavel. Exceder responde 429 (o chamador tem de drenar o que e dele) e NAO 503 (o no sem consumidor), e a reparticao e verificada ANTES do tecto global para que o diagnostico aponte a causa certa.", lim.planMaxPendingPerSubmitter, lim.planMaxPending)
 	}
 	return d
+}
+
+// dobraDasGeracoes declara o tecto de gerações de planeamento por pedido (AOS-467), e o que ele NÃO
+// conta. O nome segue a convenção «TECTO … (AOS-NNN):» e está em `marcadoresDeDobra`.
+func dobraDasGeracoes(lim ingressLimits) string {
+	return fmt.Sprintf(" TECTO DE GERACOES POR PEDIDO (AOS-467): %d geracoes de planeamento por pedido de POST /plans (AOS_PLAN_MAX_GENERATIONS). Conta as geracoes que CHAMARAM O MODELO (o drenador declara-o no desfecho, chamou_modelo); as retomas de um plano ja aprovado (saida 8, pelo documento) e as re-verificacoes de um plano a espera de humano nao contam. Uma geracao sem declaracao (reclamacao expirada, aos-orq anterior, a geracao a oferecer) conta, excepto se a anterior acabou a espera de humano, declarou o plano VALIDADO (plano_validado: a seguinte retoma pelo documento) ou expirou sem desfecho (pode ter validado). A geracao que passa o tecto e entregue MARCADA, SEM o objectivo, sem exigir nem gastar a quota do AOS-466, e so fecha com o desfecho terminal 12, que o aos-orq escreve SEM planear; qualquer outro desfecho dela e recusado (400). Um aos-orq anterior ao AOS-467 ignora a marca e o seu desfecho e recusado: a reclamacao expira e a geracao volta marcada ate ele ser actualizado.", lim.planMaxGenerations)
 }
 
 // dobraDasLigacoes declara o tecto de ligações aceites, o critério do despejo, e QUANTAS ligações os
@@ -534,6 +554,6 @@ func ingressPostureBanner(lim ingressLimits, gateComposto, principalVerificavel 
 	return []string{
 		fmt.Sprintf("ingresso / admission (AOS-166/AOS-277/AOS-458): LIGADO e %s — POST /runs admite %.4g pedido(s)/segundo com burst de %.4g e no maximo %d run(s) EM CURSO nesta replica; exceder qualquer um responde 429. ALCANCE: cobre POST /runs e SO — o plano de CONTROLO (/steer,/pause,/approve,/resume) tem um balde DEDICADO que estas variaveis NAO afinam, as leituras (GET /runs/{id} e o resto do plano de DADOS) tem desde AOS-458 um balde de TAXA proprio (AOS_INGRESS_READ_RATE/AOS_INGRESS_READ_BURST) consumido no involucro da rota, e o stream SSE de trajectoria tem AINDA um tecto de LIGACOES em duas camadas (AOS_TRAJECTORY_MAX_CONNS global + AOS_TRAJECTORY_MAX_CONNS_PER_READER por leitor). O balde e POR-PROCESSO, em memoria e GLOBAL entre chamadores: NAO e por-IP nem por-principal (um so cliente ruidoso pode esgota-lo para todos) e N replicas valem N vezes este limite — nao ha limite de admissao agregado no cluster. O tecto de in-flight conta os runs REGISTADOS no loop de servico: um run SUSPENSO a espera de aval humano SAI dessa contagem e NAO ocupa lugar, e a RETOMA (/resume) re-hospeda SEM consultar o tecto. O 429 nao leva Retry-After.%s",
 			origem, lim.ratePerSec, lim.burst, lim.maxInFlight,
-			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)+dobraDasLigacoes(lim)),
+			porChamador+porLeitorSSE+dobraDoTectoDaFila(lim, gateComposto, principalVerificavel)+dobraDasGeracoes(lim)+dobraDasLigacoes(lim)),
 	}
 }

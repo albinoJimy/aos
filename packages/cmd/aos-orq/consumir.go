@@ -65,18 +65,21 @@ const maxPedidosPorDrenagem = 16
 //	10 exitDocumentoRecusado   TERMINAL     documento/snapshot recusado; determinista (AOS-442)
 //	11 exitRequerenteForaDoMandato TERMINAL o submissor não consta dos requesters do mandato;
 //	                                        determinista até o humano re-assinar (AOS-439)
+//	12 exitGeracoesEsgotadas   TERMINAL     o nó marcou a geração como a que passa o tecto de
+//	                                        gerações do pedido; fecha-se sem planear (AOS-467)
 //	0 (sem erro)               TERMINAL     o plano correu
 //	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
 //
 // O GENÉRICO É TRANSITÓRIO, e é a escolha menos óbvia. Um erro que não soubemos classificar pode
 // ser uma configuração má (que se repetirá) ou uma falha de rede (que não). Tratá-lo como
 // terminal PERDE o pedido em silêncio, que é o defeito que este eixo existe para fechar; tratá-lo
-// como transitório devolve-o à fila, onde fica visível e contável. O tecto de pendentes é o que
-// impede isso de virar um laço infinito — e é a razão pela qual o tecto recusa em vez de
-// descartar.
+// como transitório devolve-o à fila, onde fica visível e contável. O que impede isso de virar um
+// laço infinito é o tecto de GERAÇÕES do nó (AOS-467): a geração que o passa chega marcada e fecha
+// com [exitGeracoesEsgotadas]. Até ao AOS-467 este comentário atribuía esse papel ao tecto de
+// pendentes, que não o tem — limita quantos pedidos esperam, não quantas vezes um deles re-planeia.
 func classeDoDesfecho(codigo int) string {
 	switch codigo {
-	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato:
+	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato, exitGeracoesEsgotadas:
 		return "terminal"
 	case exitPendenteDeAprovacao:
 		return "aguarda_humano"
@@ -214,6 +217,28 @@ func cmdConsume(args []string) (err error) {
 		// mesmo nos desfechos sem `serve`: zero chamadas é zero medido.
 		medidor := &medidorDoPlaneamento{}
 
+		// AOS-467: a geração que passa o tecto de gerações fecha JÁ — sem `serve`, sem modelo. Quem
+		// decidiu foi o nó, que numera as gerações; aqui escreve-se o desfecho, como em todos os
+		// outros casos. O documento de uma geração anterior apaga-se: o pedido acabou.
+		if pedido.GeracoesEsgotadas {
+			consumidos++
+			resumo := resumoDoPedido{origem: origemSemServe, geracao: pedido.Geracao, nos: -1,
+				duracao: time.Since(inicio), erro: "geracoes_esgotadas"}
+			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitGeracoesEsgotadas, resumo.linha())
+			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
+				exitGeracoesEsgotadas, detalheDoDesfecho(resumo), declarar(medidor, nil)); err != nil {
+				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
+					"fila quando a reclamacao expirar\n", pedido.RunID, err)
+				metricas.registarDesfecho(resumo, "terminal", exitGeracoesEsgotadas, false)
+				continue
+			}
+			metricas.registarDesfecho(resumo, "terminal", exitGeracoesEsgotadas, true)
+			if doc, err := caminhoDoDocumento(pasta, pedido.RunID); err == nil {
+				apagarDocumentoDoPlano(doc)
+			}
+			continue
+		}
+
 		// AOS-439: um submissor que o mandato não nomeia fecha JÁ — sem `serve`, sem decomposição,
 		// sem o modelo a correr com o NHI do mandato por quem o humano não autorizou.
 		if requerenteForaDoMandato(mandato, pedido) {
@@ -222,7 +247,7 @@ func cmdConsume(args []string) (err error) {
 				duracao: time.Since(inicio), erro: "requerente_fora_do_mandato"}
 			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitRequerenteForaDoMandato, resumo.linha())
 			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
-				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo), medidor.consumo()); err != nil {
+				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo), declarar(medidor, nil)); err != nil {
 				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
 					"fila quando a reclamacao expirar\n", pedido.RunID, err)
 				metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, false)
@@ -276,7 +301,8 @@ func cmdConsume(args []string) (err error) {
 		// O DESFECHO REPORTA-SE SEMPRE, mesmo quando o `serve` falhou. Não reportar deixa o
 		// pedido preso até ao TTL da reclamação — meia hora de silêncio por uma falha que já
 		// conhecemos.
-		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe, medidor.consumo()); err != nil {
+		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe,
+			declarar(medidor, planoValidadoDepois(sub, pedido.RunID, classe))); err != nil {
 			// Falhar a reportar NÃO é fatal para os pedidos seguintes: o TTL recupera este.
 			// Mas é ruidoso de propósito — um consumidor que não consegue reportar está a
 			// trabalhar às cegas.
@@ -308,7 +334,40 @@ func cmdConsume(args []string) (err error) {
 // reportadorDeDesfecho é a metade do cliente do nó que [reportarEAvisar] usa — existe para o teste
 // do AOS-445 poder provar a ORDEM (reporte, depois aviso) sem levantar um nó.
 type reportadorDeDesfecho interface {
-	ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error
+	ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, d declaracaoDaGeracao) error
+}
+
+// declaracaoDaGeracao é o que o desfecho declara sobre a geração, além da classe e do código: o
+// consumo do modelo (AOS-466) e o que o tecto de gerações do nó precisa de saber (AOS-467).
+type declaracaoDaGeracao struct {
+	Consumo      consumoDoPlaneamento
+	ChamouModelo bool
+	// PlanoValidado — depois desta geração o log do run tem `plan.validated`: a seguinte retoma pelo
+	// documento e não chama o modelo. nil quando não se soube (o nó usa então a regra conservadora).
+	PlanoValidado *bool
+}
+
+func declarar(m *medidorDoPlaneamento, planoValidado *bool) declaracaoDaGeracao {
+	return declaracaoDaGeracao{Consumo: m.consumo(), ChamouModelo: m.chamouModelo(), PlanoValidado: planoValidado}
+}
+
+// planoValidadoDepois lê, depois da geração, se o plano do run ficou validado (AOS-467). Num desfecho
+// terminal não interessa — não há geração seguinte. Uma leitura que falha não declara nada: o nó
+// conta a geração seguinte, o lado que fecha mais cedo.
+//
+// É isto que impede o tecto de fechar um plano aprovado e longo cuja decomposição foi a de número
+// «tecto»: a primeira retoma dele, pelo documento, não chama o modelo e não pode contar (achado ALTO
+// da segunda revisão adversarial).
+func planoValidadoDepois(sub substrato, runID, classe string) *bool {
+	if classe == "terminal" {
+		return nil
+	}
+	estado, err := lerEstadoDoPlano(sub, runID+"-plan")
+	if err != nil {
+		return nil
+	}
+	v := estado.Validated()
+	return &v
 }
 
 // prefixoDoAviso abre a linha que o `drenar-planos.sh` recolhe para o outbox dos avisos (AOS-445).
@@ -333,8 +392,8 @@ func linhaDoAviso(runID string, geracao int, classe string, codigo int) string {
 // geração seguinte terá o seu desfecho — avisar já seria anunciar um fim que o nó não conhece, e
 // possivelmente dois fins para o mesmo plano. Os desfechos que não são terminais (transitório, à
 // espera de humano) não avisam: o plano ainda não acabou.
-func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error {
-	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe, consumo); err != nil {
+func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string, d declaracaoDaGeracao) error {
+	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe, d); err != nil {
 		return err
 	}
 	if classe == "terminal" {

@@ -238,7 +238,7 @@ func TestAOS466ALiquidacaoPorGeracao(t *testing.T) {
 				t.Fatal(err)
 			}
 			for g := 1; g <= c.entregues; g++ {
-				if err := q.registarEntrega(ctx, "human:alice", "plano-1", g); err != nil {
+				if err := q.registarEntrega(ctx, "human:alice", "plano-1", g, true); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -263,7 +263,7 @@ func TestAOS466ALiquidacaoPorGeracao(t *testing.T) {
 func fechar(t *testing.T, q *quotaPorPrincipal, runID string, g int, c consumoDoPlaneamento) {
 	t.Helper()
 	ctx := context.Background()
-	if err := q.registarEntrega(ctx, "human:alice", runID, g); err != nil {
+	if err := q.registarEntrega(ctx, "human:alice", runID, g, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := q.registarPlaneamento(ctx, "human:alice", runID, g, c); err != nil {
@@ -356,7 +356,7 @@ func TestAOS466UmaParcelaDeOutraReservaNaoVale(t *testing.T) {
 // satura em vez de dar a volta para negativo (e caber na quota).
 func TestAOS466AReservaDeMuitasGeracoesEmFaltaNaoDaAVolta(t *testing.T) {
 	r := quotaPayload{Tokens: math.MaxInt64 / 2}
-	c := cobrancaDoPlano(r, map[int]quotaPayload{}, 3, true)
+	c := cobrancaDoPlano(r, map[int]quotaPayload{}, 3, nil, true)
 	if c.Tokens != math.MaxInt64 {
 		t.Fatalf("tres geracoes em falta de MaxInt64/2 deviam saturar, deram %d", c.Tokens)
 	}
@@ -554,7 +554,7 @@ func TestAOS466UmaGeracaoEntregueSemDesfechoNaoLiberta(t *testing.T) {
 // sem esperar o TTL real (meia hora) da reclamação anterior.
 func entregarAMao(t *testing.T, node *Node, q *quotaPorPrincipal, runID string, g int) {
 	t.Helper()
-	if err := q.registarEntrega(context.Background(), "human:alice", runID, g); err != nil {
+	if err := q.registarEntrega(context.Background(), "human:alice", runID, g, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := node.EventStore.Append(context.Background(), planRequestStream, eventstore.EventInput{
@@ -721,20 +721,20 @@ func TestAOS466UmaReofertaSoSeEntregaComQuota(t *testing.T) {
 	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2); err != nil {
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, true); err != nil {
 		t.Fatalf("200 + 100 <= 300: a geracao 2 entrega-se: %v", err)
 	}
 	if err := q.reservar(ctx, "human:alice", "run-a"); err != nil {
 		t.Fatal(err)
 	}
 	// Gasto 300 (pedido 200 + run 100): nada cabe.
-	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 3); !errors.Is(err, ErrPrincipalQuotaExhausted) {
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 3, true); !errors.Is(err, ErrPrincipalQuotaExhausted) {
 		t.Fatalf("a geracao 3 sem quota nao se entrega, veio %v", err)
 	}
-	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2); err != nil {
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, true); err != nil {
 		t.Fatalf("repetir a entrega ja feita da geracao 2 passa: %v", err)
 	}
-	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1); err != nil {
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
 		t.Fatalf("a geracao 1 esta coberta pela reserva do pedido e entrega-se sempre: %v", err)
 	}
 	if g := gastoDe(t, q, "human:alice"); g.Tokens != 300 {
@@ -991,5 +991,90 @@ func TestAOS466OBannerDizOQueContaEOQueNao(t *testing.T) {
 		if !strings.Contains(b, deve) {
 			t.Fatalf("o banner nao diz %q:\n%s", deve, b)
 		}
+	}
+}
+
+// TestAOS467AsEntregasDeFechoNaoCustam — o achado MÉDIO da terceira revisão do AOS-467: cada re-entrega
+// de uma geração marcada (a reclamação expira, a geração volta) era uma geração sem parcela e custava a
+// reserva para sempre, mesmo depois do fecho. A entrega de fecho não planeia e não custa.
+func TestAOS467AsEntregasDeFechoNaoCustam(t *testing.T) {
+	ctx := context.Background()
+	q := quotaComPlaneamento(novoStore(t), 10_000, 100, 100, &relogioDeQuota{t: setembro})
+	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(30)); err != nil {
+		t.Fatal(err)
+	}
+	// A 2, a 3 e a 4 são entregas de FECHO (marcadas) que expiraram sem desfecho; a 4 fecha com 12.
+	for g := 2; g <= 4; g++ {
+		if err := q.registarEntrega(ctx, "human:alice", "plano-1", g, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
+		t.Fatalf("antes do fecho o pedido custa max(reserva, 30): %d, esperava 100", g.Tokens)
+	}
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 4, medido(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.fecharPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 30 {
+		t.Fatalf("as entregas de fecho nao custam: gasto %d, esperava 30", g.Tokens)
+	}
+}
+
+// TestAOS467AEntregaNormalPrevaleceSobreADeFecho — quarta revisão: a mesma geração entregue de fecho
+// (uma reclamação que falhou depois da marca, ou uma réplica com tecto mais baixo) e entregue normal
+// (a reclamação que ganhou, que planeia). Em qualquer ordem, a geração custa a reserva até à parcela:
+// a de fecho não pode apagar a que planeia.
+func TestAOS467AEntregaNormalPrevaleceSobreADeFecho(t *testing.T) {
+	for _, ordem := range [][]bool{{false, true}, {true, false}} {
+		ctx := context.Background()
+		q := quotaComPlaneamento(novoStore(t), 10_000, 100, 100, &relogioDeQuota{t: setembro})
+		if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(30)); err != nil {
+			t.Fatal(err)
+		}
+		for _, verificar := range ordem {
+			if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, verificar); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if g := gastoDe(t, q, "human:alice"); g.Tokens != 130 {
+			t.Fatalf("ordem %v: a geracao 2 planeou e nao tem parcela — custa 30 + 100, veio %d", ordem, g.Tokens)
+		}
+	}
+}
+
+// TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal — a marca de fecho de uma geração não serve de
+// «já entregue» à entrega normal da mesma geração: essa planeia, e sem quota não se entrega.
+func TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal(t *testing.T) {
+	ctx := context.Background()
+	q := quotaComPlaneamento(novoStore(t), 150, 100, 100, &relogioDeQuota{t: setembro})
+	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(30)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, false); err != nil {
+		t.Fatalf("a entrega de fecho nao verifica quota: %v", err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 2, true); !errors.Is(err, ErrPrincipalQuotaExhausted) {
+		t.Fatalf("a entrega normal da geracao 2 passou sem quota: %v", err)
 	}
 }

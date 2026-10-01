@@ -483,6 +483,10 @@ type pedidoReclamado struct {
 	// RequestedBy é quem submeteu o pedido (AOS-439), para o `consume` o confrontar com o seu
 	// mandato ANTES de planear ([requerenteForaDoMandato]). Vazio num nó anterior ou sem gate.
 	RequestedBy string `json:"requested_by"`
+	// GeracoesEsgotadas — o nó entrega esta geração só para o pedido ser FECHADO: passou o tecto de
+	// gerações de planeamento (AOS-467). O `consume` fecha-o com [exitGeracoesEsgotadas] sem planear.
+	// Falso num nó anterior.
+	GeracoesEsgotadas bool `json:"generations_exhausted"`
 }
 
 // ReclamarPedido pede ao nó UM pedido de plano pendente, reclamando-o.
@@ -534,15 +538,23 @@ func (c *nodeClient) ReclamarPedido(ctx context.Context) (pedidoReclamado, bool,
 //
 // O `consumo` é o que o planeamento desta geração gastou no modelo (AOS-466): o nó liquida por ele
 // a reserva de planeamento do submissor. Um nó anterior ao AOS-466 ignora o campo.
-func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error {
-	corpo, err := json.Marshal(map[string]any{
-		"run_id":       runID,
-		"generation":   geracao,
-		"classe":       classe,
-		"codigo_saida": codigo,
-		"detalhe":      detalhe,
-		"consumo":      consumo,
-	})
+//
+// `chamou_modelo` e `plano_validado` são o que o tecto de gerações do nó conta (AOS-467). Um nó
+// anterior ignora os campos.
+func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, d declaracaoDaGeracao) error {
+	campos := map[string]any{
+		"run_id":        runID,
+		"generation":    geracao,
+		"classe":        classe,
+		"codigo_saida":  codigo,
+		"detalhe":       detalhe,
+		"consumo":       d.Consumo,
+		"chamou_modelo": d.ChamouModelo,
+	}
+	if d.PlanoValidado != nil {
+		campos["plano_validado"] = *d.PlanoValidado
+	}
+	corpo, err := json.Marshal(campos)
 	if err != nil {
 		return err
 	}

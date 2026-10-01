@@ -113,6 +113,12 @@ const (
 	// TERMINAL: retentá-lo seria um laço. Só sai de um `serve` com o vínculo ao pedido
 	// (`--plan-request-generation`), porque é só aí que o nó distingue esta recusa das outras.
 	exitRequerenteForaDoMandato = 11
+	// exitGeracoesEsgotadas — o nó entregou a geração que passa o tecto de gerações de planeamento
+	// do pedido (AOS-467, `generations_exhausted`). Não sai de um `serve`: o `consume` fecha o pedido
+	// SEM planear. TERMINAL por definição — o tecto existe para que um pedido que falha sempre de
+	// forma transitória deixe de re-planear. Quem DECIDE é o nó, que numera as gerações; quem
+	// escreve o desfecho é o consumidor, como em todos os outros (ADR-030).
+	exitGeracoesEsgotadas = 12
 )
 
 func main() {
@@ -170,7 +176,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
 Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
 capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista · 11 SUBMISSOR do pedido fora dos requesters do mandato — determinista
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista · 11 SUBMISSOR do pedido fora dos requesters do mandato — determinista · 12 GERACOES de planeamento do pedido esgotadas (AOS-467) — o no decide, o consume fecha sem planear
 `)
 }
 

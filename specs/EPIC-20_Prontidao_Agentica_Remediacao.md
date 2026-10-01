@@ -3254,8 +3254,9 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
   não entregar sem quota.
 - **Pedidos submetidos antes da quota** (ou por uma réplica anterior) não têm reserva: o seu
   planeamento não conta, e o nó não recusa reclamá-los.
-- **Ordem de deploy: o nó primeiro.** Um `aos-orq` anterior não envia `consumo` — a reserva fica
-  inteira. Uma réplica anterior do nó não reserva o planeamento.
+- **Ordem de deploy: qualquer uma é segura para este ticket** — um `aos-orq` anterior não envia
+  `consumo` (a reserva fica inteira); um nó anterior ignora-o. O AOS-467 pede o `aos-orq` primeiro, e é
+  essa a ordem a seguir. Uma réplica anterior do nó não reserva o planeamento.
 
 ### Revisão adversarial independente (2026-09-30)
 Sobre o commit `ea0270f`. Dois achados MÉDIOS, **os dois reproduzidos e os dois contagens a menos**, e
@@ -3324,8 +3325,155 @@ depois de planear gasta até a quota do principal acabar.
 Um tecto declarado de gerações por pedido, a partir do qual o pedido passa a terminal com um código
 próprio, e a quantia reservada pelo AOS-466 liquida.
 
+### Decisão do dono (2026-10-01)
+| eixo | decisão | alternativas rejeitadas |
+|---|---|---|
+| **Onde** | **O nó decide, o `aos-orq` fecha.** O nó — que numera as gerações e vê as que nenhum drenador viu (reclamação expirada, quota esgotada) — entrega a geração que passa o tecto marcada `generations_exhausted`; o `aos-orq` fecha-a como terminal com a saída **12**, SEM `serve` (o molde da saída 11). Só o consumidor escreve desfechos (ADR-030, ADR-018). | o nó fecha sozinho (o nó passaria a escrever desfechos com códigos que não conhece, contra o ADR-030); só no `aos-orq` (não vê o que o nó não entrega; um `aos-orq` anterior ficava sem tecto) |
+| **O que conta** (revisto depois da revisão adversarial) | **As gerações que chamaram o modelo**: o `aos-orq` declara-o no desfecho (`chamou_modelo`). As retomas de um plano já aprovado (saída 8, pelo documento) e as re-verificações não contam. Uma geração sem declaração (reclamação expirada, `aos-orq` anterior) conta, excepto se a anterior acabou em `aguarda_humano`. | a decisão inicial, «cada geração cuja anterior não terminou em `aguarda_humano`» — fechava um plano aprovado e longo (cada retoma pela saída 8 contava); excluir só a saída 8 (as falhas de posse/rede durante a execução continuariam a contar); todas as gerações |
+| **Valor** | **5**, por `AOS_PLAN_MAX_GENERATIONS` (inteiro > 0; 0 ou ilegível aborta o arranque). Com até 3 tentativas do planeador por geração, no máximo ~15 chamadas ao modelo por pedido. | 3 (fecha cedo com duas falhas de infraestrutura); 10 |
+
+### Desenho
+- **Nó — contagem.** A projecção da fila (`projectarComTerminados`, função pura) conta as gerações
+  1..N pela regra acima, descontando pelos mapas dos desfechos (sem laço até à geração).
+- **Nó — reclamação.** Se a contagem passa o tecto, a geração entrega-se **marcada**
+  (`generations_exhausted`) e **sem o objectivo** — não se decifra. Só a primeira marcada dispensa a
+  quota do AOS-466. O fecho de um pedido de objectivo ilegível (AOS-442), que antes ficava a ser
+  re-reclamado de hora a hora para sempre, passa a acontecer por esta via.
+- **`aos-orq`.** Cada desfecho declara `chamou_modelo` (o medidor do AOS-466 viu chamadas). Uma
+  reclamação marcada fecha logo: desfecho terminal com a saída 12 (`exitGeracoesEsgotadas`), consumo
+  zero medido, aviso (AOS-445) e apagamento do documento do plano.
+- **ADR-030** emendado na §2.6 (a saída 12 é «permanente»).
+
+### Validação
+- Testes: `packages/cmd/aos/aos467_tecto_de_geracoes_test.go`, que cobre:
+  - o ambiente (default 5; `0`, negativo e ilegível abortam);
+  - o que conta, na projecção pura: as re-verificações não contam, o transitório e a reclamação
+    expirada contam;
+  - uma geração de 2³¹ sem laço;
+  - pela rota: a 3.ª geração marcada com o tecto a 2, o fecho com 12 e não voltar a oferecer; o
+    default 5; a entrega de fecho com a quota esgotada; o ilegível que fecha pelo tecto, e o
+    controlo abaixo dele.
+- Testes: `packages/cmd/aos-orq/aos467_geracoes_esgotadas_test.go`, que cobre:
+  - com o binário real: a geração marcada fecha com 12 sem `serve`, avisa, apaga o documento e
+    declara consumo zero medido; o controlo sem a marca planeia;
+  - o nome `generations_exhausted` escrito à mão dos dois lados.
+- Mutações: 18 aplicadas, 17 mortas na primeira passagem. A sobrevivente (a tag JSON mudada nas duas
+  pontas) levou aos testes de contrato com o nome literal, e morre depois deles (e a do nó também).
+- Depois da revisão: os testes da regra declarada (`TestAOS467ContamAsQueChamaramOModelo`), do plano
+  longo pela rota (`TestAOS467UmPlanoLongoNaoEFechadoPeloTecto`, dez retomas com o tecto a 2), da marcada
+  sem objectivo e da isenção só da primeira; no `aos-orq`, `chamou_modelo` verdadeiro com o gateway vivo
+  e falso com o fixture e no fecho. Segunda bateria: 14 aplicadas, 14 mortas.
+- Depois da segunda revisão: os cenários A, A' e B da projecção e da rota
+  (`TestAOS467ODecompostoNaUltimaNaoEFechado`, `TestAOS467ComOTectoA1UmPlanoLongoNaoEFechado`), a
+  recusa de tudo o que não seja o terminal 12 numa marcada (`TestAOS467AMarcadaSoFechaCom12`, mais o
+  controlo), a isenção de toda a marcada, e `plano_validado` declarado pelo binário real numa saída 8.
+  Terceira bateria: 13 aplicadas, 12 mortas à primeira. A sobrevivente (a classe deixar de ser
+  verificada) levou ao caso «transitório com código 12» no teste, e morre depois dele.
+- Depois da quarta revisão: a entrega normal prevalece sobre a de fecho da mesma geração, nas duas
+  ordens (`TestAOS467AEntregaNormalPrevaleceSobreADeFecho`), e a de fecho não dispensa a quota da normal
+  (`TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal`). Quarta bateria: 3 aplicadas (o `step_id`
+  comum, a prevalência no `ler`, a dispensa na verificação), 3 mortas.
+- Suites `-race` dos dois módulos verdes. Gates `build`, `lint`, `layer-lint`, `secrets`, `sast`,
+  `rtm`, `ref-lint` e `event-catalog` verdes. Smoke do `run-aos` 10/10.
+
+### Residuais declarados
+- **Duas mortes seguidas do drenador fecham um plano validado mais cedo** (BAIXO da quarta revisão,
+  confirmado pela leitura de `plan_claim.go`, não reproduzido pela rota). Depois de uma geração que
+  validou o plano, a primeira expirada sem desfecho não conta; a segunda e as seguintes contam, porque
+  o nó não sabe se uma expirada chamou o modelo. Mortes repetidas aproximam o pedido do tecto, e ele
+  pode fechar com 12 um plano aprovado. É o lado fail-closed: contar a menos deixava decomposições sem
+  tecto. A saída é a de qualquer 12, com aviso e nova submissão; os runs-filho já lançados ficam órfãos,
+  como depois de qualquer fecho.
+- **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, corre um `serve`
+  sem objectivo (zero nós) e reporta sucesso — o nó recusa-o (400). A reclamação expira (60 min) e a
+  geração volta marcada até ele ser actualizado. As suas gerações não declaradas contam todas — incluindo
+  as retomas de um plano longo, que esse `aos-orq` pode ver marcadas.
+- **Um transitório que falha ANTES do modelo não tem tecto** (credencial do modelo ilegível, erro a
+  compor o gateway, posse, WAL): declara `chamou_modelo: false` e nunca conta. Não custa modelo, mas
+  re-oferece-se a cada drenagem e faz crescer o log da fila. É a regra decidida («só as que chamaram o
+  modelo»), e fica dito.
+- **Réplicas mistas do nó:** uma réplica anterior reconstrói o desfecho sem `chamou_modelo`/
+  `plano_validado`; as gerações reportadas a ela contam pela regra conservadora.
+- **O fixture do decompositor** (`--decompose-fixture`, não-produção) declara `chamou_modelo: false` e
+  nunca conta.
+- **Depois de uma morte do drenador**, a geração seguinte não conta como provisória (pode ser uma retoma
+  de um plano que a expirada validou): um pedido pode decompor uma vez para lá do tecto antes de ser
+  marcado. A expirada conta por si.
+- **`plano_validado` também é declarado pelo drenador**, como `chamou_modelo`: cada declaração desconta
+  no máximo a geração seguinte não declarada, e a declaração da própria geração vence.
+- **Custo:** cada `POST /plans/outcome` lê o stream da fila desde o início (a marca de cada geração e a
+  quota), agora em todos os nós e não só com a quota composta — O(histórico da fila) por desfecho, e um
+  503 novo quando essa leitura falha.
+- **Um 12 atrasado** de uma marcada cuja reclamação expirou, depois de outra marcada já ter fechado,
+  é aceite também: dois avisos para o mesmo plano (o fecho da quota é idempotente) — o padrão de antes.
+- **`chamou_modelo` é declarado pelo drenador**, como o consumo do AOS-466: um drenador comprometido
+  pode declarar «não chamou» e contornar o tecto.
+- **O consumo é declarado pelo drenador** (AOS-466), e o desfecho também: um drenador que não feche a
+  geração marcada (ou que a reporte transitória) deixa-a voltar, marcada outra vez, até à reclamação
+  seguinte.
+- **A geração de fecho custa a reserva de planeamento** (AOS-466) até chegar a sua parcela de consumo
+  zero, e o fecho liberta o resto.
+- **Uma geração reportada para um número arbitrário** (sem a quota composta, o nó aceita qualquer
+  geração ≥ 1 no desfecho) conta-a toda para o tecto: o pedido fecha na reclamação seguinte. Um drenador
+  já podia fechar o pedido com um desfecho terminal; não é um poder novo.
+
+### Revisão adversarial independente (2026-10-01)
+Sobre `33e2cd4`:
+- **ALTO, reproduzido.** Um plano saudável e longo, já aprovado, era fechado pelo tecto: cada retoma
+  pela saída 8 (o caminho feliz de um plano mais longo do que o `--plan-timeout`) contava. Com os
+  defaults, mais de ~3h20 de execução, e os runs-filho ficavam órfãos.
+  - **Corrigido** com a decisão do dono acima: contam as gerações que chamaram o modelo.
+- **MÉDIO, reproduzido.** Com um `aos-orq` anterior, cada geração marcada era entregue sem quota, ele
+  planeava e reportava transitório, e a quota deixava de travar.
+  - **Corrigido** de duas maneiras: a marcada vai sem objectivo (não há o que decompor), e só a
+    primeira dispensa a quota.
+- **BAIXOS:**
+  - o banner e o README diziam que o objectivo não se abria, e abria-se: corrigido, agora não se abre;
+  - o aviso atribuía o 12 só a falhas de decomposição, quando também o fecha o objectivo ilegível:
+    corrigido;
+  - as duas ordens de deploy contradiziam-se (AOS-466 contra AOS-467): unificadas;
+  - uma frase do ADR era imprecisa: corrigida.
+
+**Segunda passagem, sobre `21fbf08`:** o MÉDIO e os BAIXOS da primeira confirmados fechados.
+- **ALTO residual, reproduzido.** A geração a oferecer contava sempre como provisória: se a
+  decomposição que vingou fosse a de número «tecto», a primeira retoma do plano aprovado saía marcada
+  (e com o tecto a 1, qualquer plano mais longo do que o `--plan-timeout`).
+  - **Corrigido:** o `aos-orq` declara `plano_validado` (lê o log do run depois da geração), e uma
+    geração não declarada que segue um plano validado não conta.
+- **MÉDIO, reproduzido.** Um `aos-orq` anterior, com a geração marcada sem objectivo, fechava como
+  SUCESSO (código 0, zero nós).
+  - **Corrigido:** a marca fica na reclamação e o nó recusa qualquer desfecho dela que não seja o 12.
+- **MÉDIO.** Uma marcada cuja reclamação expirava passava a exigir quota.
+  - **Corrigido:** com a recusa acima, uma marcada só se repete por expiração, e todas ficam isentas.
+- **MÉDIO e BAIXOS.** Os transitórios antes do modelo sem tecto, as réplicas mistas e o fixture ficam
+  declarados nos residuais.
+
+**Terceira passagem, sobre `b00a119`:** o ALTO residual (cenários A, A', B) e os dois MÉDIOS
+confirmados fechados.
+- **MÉDIO, reproduzido.** Cada re-entrega de uma marcada (reclamação expirada) era uma geração sem
+  parcela e custava a reserva para sempre, mesmo depois do fecho (medido: 800 de gasto final num pedido
+  a que só faltava fechar).
+  - **Corrigido:** a entrega de fecho fica marcada `de_fecho` na quota e não custa.
+- **MÉDIO, reproduzido.** Um drenador que morre na geração que validou deixava-a sem declaração, e a
+  seguinte (uma retoma) contava como provisória e saía marcada.
+  - **Corrigido:** a geração a oferecer não conta como provisória depois de uma expirada sem desfecho.
+- **BAIXOS.** O custo da leitura por desfecho, o `plano_validado` declarado pelo drenador e o 12
+  atrasado ficam declarados nos residuais.
+
+**Quarta passagem, sobre `444c894`:** os dois MÉDIOS da terceira confirmados fechados. O revisor não
+encontrou contagem a menos explorável, nem caminho para passar o tecto sem limite.
+- **BAIXO, por raciocínio.** A marca `de_fecho` na quota é escrita antes do `Append` da reclamação. Se
+  esse `Append` falhasse, ou se ganhasse uma réplica com outro tecto, a geração planeava sem marca. A
+  quota continuava a vê-la de fecho, e ela não custava nada se o drenador morresse sem parcela.
+  - **Pior do que o achado dizia:** as duas marcas tinham o mesmo `step_id`, e a normal, escrita
+    depois, era deduplicada.
+  - **Corrigido:** as duas marcas têm `step_id` distintos, e no `ler` a normal prevalece. A marca de
+    fecho também não dispensa a verificação de quota da normal.
+- **BAIXO.** Duas mortes seguidas do drenador fecham um plano validado: fica declarado nos residuais.
+
 ### Estado
-**POR DECIDIR** — o valor do tecto e se é do nó ou do `aos-orq` são decisão do dono.
+**FEITO** (2026-10-01). Quatro passagens de revisão adversarial independente, sem achados ALTO ou
+MÉDIO em aberto. Os residuais estão acima.
 
 ---
 

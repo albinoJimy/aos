@@ -972,8 +972,11 @@ do servidor é só o **id pseudonimizado** (os 12 primeiros hex de `HMAC-SHA256(
 a chave em `secrets/aviso-planos-hmac.key` — um `sha256` sem chave de um id previsível inverte-se
 por dicionário, e é o prefixo do documento do plano no volume), a classe e o código: nunca o `run_id` (escolhe-o quem submete), o objectivo, o resultado ou o tipo do erro. O `0`
 vai com prioridade *default*; qualquer outro com *high*; o `7` aparece como «recusado» (houve decisão
-e foi não — ou um pendente fora do prazo). Os planos à espera de humano e os transitórios **não**
-avisam: ainda não acabaram.
+e foi não — ou um pendente fora do prazo), o `11` como «submissor fora do mandato» e o `12` como
+«gerações esgotadas» (AOS-467: o pedido passou o tecto `AOS_PLAN_MAX_GENERATIONS` do nó e fechou sem
+planear — ou a decomposição falhou de forma transitória vezes de mais, ou o objectivo deixou de se
+poder abrir, tipicamente depois de um `/dsar/erase` do titular; o log da drenagem distingue-os, o
+aviso não; re-submeter exige um `run_id` novo). Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
 
 | Peça | O que faz |
 |---|---|

@@ -209,7 +209,8 @@ de abrir a terceiros — e é menos trabalho do que quase tudo o que já foi fei
 > `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS` e liquida pelo consumo que o `aos-orq` mede. Fica declarado que
 > a reserva não trava uma geração (o excesso conta depois), que os dólares do planeamento não se
 > medem (cada geração custa a reserva em dólares), que o consumo é declarado pelo drenador, e que o
-> número de gerações por pedido não tem tecto (AOS-467).
+> número de gerações por pedido não tinha tecto — fechado pelo AOS-467 (`AOS_PLAN_MAX_GENERATIONS`,
+> default 5; a geração que o passa fecha o pedido sem planear).
 
 ### 3.3 Um único board, e o onboarding passa pelas chaves offline do operador
 

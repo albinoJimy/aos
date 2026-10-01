@@ -128,6 +128,7 @@ reclamada na geração seguinte.
 ### 2.6 Desfecho: transitório e permanente NÃO se tratam igual
 
 > **Emendado por AOS-442 — ver [Emenda](#emenda-aos-442--o-aguarda_humano-estaciona-e-é-re-oferecido-não-fecha-o-pedido).**
+> **Emendado por AOS-467 — ver [Emenda](#emenda-aos-467--o-tecto-de-gerações-o-nó-decide-o-consumidor-fecha) (saída `12`, permanente).**
 > A linha «nem um nem outro» da tabela fica como registo da decisão original; a implementação
 > tratava-a como terminal, e um plano aprovado depois da decisão humana nunca mais corria.
 
@@ -231,6 +232,45 @@ humana à disponibilidade do nó, exigia uma rota e um tipo de facto novos, e um
 deixava o pedido parado sem forma de a repetir (o `decide` recusa uma segunda decisão). (b) O
 `serve --goal` descobrir sozinho o documento guardado: mudava o sentido do `--plan-out` (de escrita
 para leitura) e o do `--goal` repetido, que é caminho testado (AOS-408, AOS-415).
+
+## Emenda (AOS-467) — o tecto de gerações: o nó decide, o consumidor fecha
+
+**Decidido pelo dono (2026-10-01).** O transitório «volta à fila na geração seguinte» (§2.6) não
+tinha limite: um pedido cuja decomposição falha sempre de forma transitória (saídas 1 e 4 antes do
+`plan.validated`) re-planeava sem fim, e cada geração chama o modelo até 3 vezes. A §2.6 dizia que
+confundir transitório com permanente dá «um laço a retentar para sempre»; sem tecto, um transitório
+que nunca passa É esse laço.
+
+1. **O nó conta e decide.** Contam as gerações que **chamaram o modelo**: o consumidor declara-o no
+   desfecho (`chamou_modelo`). As retomas de um plano já aprovado (saída 8, pelo documento) e as
+   re-verificações de um plano à espera de humano (§Emenda AOS-442) não contam — a primeira versão
+   contava as retomas, e uma revisão adversarial mediu um plano saudável e longo fechado pelo tecto.
+   Uma geração **sem declaração** (reclamação expirada, consumidor anterior, a geração a oferecer)
+   conta, excepto se a anterior acabou em `aguarda_humano` ou declarou o plano validado
+   (`plano_validado`) — a segunda revisão mediu a primeira retoma de um plano cuja decomposição foi a
+   de número «tecto» a sair marcada. Passado o tecto (`AOS_PLAN_MAX_GENERATIONS`, default 5), a
+   reclamação entrega a geração **marcada** (`generations_exhausted`). Decide-o o nó porque só ele
+   numera as gerações e vê as que nenhum consumidor reportou (reclamações expiradas).
+2. **O consumidor fecha.** O `aos-orq` fecha uma reclamação marcada como **terminal** com a saída
+   **`12`**, sem `serve`. O princípio desta decisão mantém-se: **só o consumidor escreve desfechos**,
+   e o nó continua a não conhecer os códigos do `serve` (ADR-018). A tabela da §2.6 ganha uma linha:
+
+   | Classe | Códigos | Tratamento |
+   |---|---|---|
+   | **Permanente** | 12 (gerações esgotadas, AOS-467) | facto de desfecho terminal, escrito pelo consumidor sem planear |
+
+3. **A entrega de fecho não leva o objectivo nem exige quota, e só fecha com o 12.** Não se decifra
+   o objectivo — o consumidor não o usa —, o que fecha, por fim, o resíduo da §4 sobre o pedido de
+   objectivo ilegível re-reclamado para sempre. A marca fica no facto da reclamação (`esgotada`), e o
+   nó **recusa** qualquer desfecho de uma geração marcada que não seja o terminal `12`: é o único código
+   do consumidor que o nó conhece, e conhece-o porque é o protocolo desta marca. Sem isto, um consumidor
+   anterior corria um `serve` sem objectivo e reportava SUCESSO com zero nós. Com isto, uma marcada só
+   se repete quando a reclamação anterior expira, e por isso nenhuma exige quota.
+4. **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca e o seu
+   desfecho é recusado: a reclamação expira e a geração volta marcada até ele ser actualizado. Um nó
+   anterior não marca nada, e o `aos-orq` novo comporta-se como antes.
+
+O ADR-031 não é emendado: o pedido fechado aparece como `terminal` com `exit_code` 12.
 
 ## 3. Alternativas consideradas
 

@@ -162,6 +162,12 @@ const (
 	// rota não hospeda nenhum, e o `edge` tem `limit_req` e não `limit_conn`. A repartição é
 	// [apiConfig.planMaxPendingPerSubmitter].
 	DefaultPlanMaxPending = 1000
+	// DefaultPlanMaxGenerations é o tecto de gerações de planeamento por pedido (AOS-467, decisão
+	// do dono). Conta-se cada geração cuja anterior não acabou à espera de humano: as re-ofertas
+	// depois de um desfecho transitório ou de uma reclamação expirada. Com até 3 tentativas do
+	// planeador por geração, são no máximo ~15 chamadas ao modelo por pedido. A geração que passa o
+	// tecto entrega-se marcada, e o `aos-orq` fecha o pedido com a saída 12 sem planear.
+	DefaultPlanMaxGenerations = 5
 	// DefaultPlanMaxPendingPerSubmitter reparte o tecto acima POR SUBMISSOR (AOS-464).
 	//
 	// PORQUE EXISTE. O tecto global é anti-laço-em-fuga do NÓ e não diz nada sobre equidade: um
@@ -301,6 +307,8 @@ type apiConfig struct {
 	// leitura: sem ele o principal do pedido fica VAZIO para todos, e um tecto chaveado no vazio
 	// valeria como tecto global mais apertado — ver [handlePlanRequest].
 	planMaxPendingPerSubmitter int
+	// planMaxGenerations é o tecto de gerações de planeamento por pedido (AOS-467).
+	planMaxGenerations int
 	// maxAcceptedConns é o tecto de ligações abertas no listener (AOS-465); ligacoes é o contador
 	// partilhado entre o listener e a métrica.
 	maxAcceptedConns int
@@ -466,6 +474,18 @@ func WithPlanMaxPending(n int) APIOption {
 	return func(c *apiConfig) {
 		if n > 0 {
 			c.planMaxPending = n
+		}
+	}
+}
+
+// WithPlanMaxGenerations afina o tecto de gerações de planeamento por pedido (default
+// [DefaultPlanMaxGenerations], AOS-467). <= 0 mantém o default: nenhum valor desliga o tecto, pela
+// mesma razão do [WithPlanMaxPending] — sem ele, um pedido cuja decomposição falha sempre de forma
+// transitória re-planeia sem fim.
+func WithPlanMaxGenerations(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.planMaxGenerations = n
 		}
 	}
 }
@@ -659,6 +679,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		trajMaxConnsPerReader:      DefaultMaxTrajectoryConnsPerReader,
 		planMaxPending:             DefaultPlanMaxPending,
 		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		planMaxGenerations:         DefaultPlanMaxGenerations,
 		maxAcceptedConns:           DefaultMaxAcceptedConns,
 		now:                        time.Now,
 	}

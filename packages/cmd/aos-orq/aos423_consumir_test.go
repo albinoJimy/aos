@@ -28,6 +28,8 @@ func TestAOS423ClasseDeCadaCodigoDeSaida(t *testing.T) {
 		{exitDecisaoRecusada, "exitDecisaoRecusada", "terminal", "houve decisao e foi NAO; caso fechado"},
 		{exitPlanoRecusado, "exitPlanoRecusado", "terminal", "o planeador esgotou tentativas"},
 		{exitDocumentoRecusado, "exitDocumentoRecusado", "terminal", "documento/snapshot recusado; apresentá-lo outra vez dá o mesmo (AOS-442)"},
+		{exitRequerenteForaDoMandato, "exitRequerenteForaDoMandato", "terminal", "o submissor nao consta do mandato (AOS-439)"},
+		{exitGeracoesEsgotadas, "exitGeracoesEsgotadas", "terminal", "o no marcou a geracao que passa o tecto; retentar e o laco que o tecto fecha (AOS-467)"},
 	}
 	for _, c := range casos {
 		if got := classeDoDesfecho(c.codigo); got != c.classe {
@@ -41,8 +43,8 @@ func TestAOS423ClasseDeCadaCodigoDeSaida(t *testing.T) {
 //
 // Um erro que não soubemos classificar pode ser configuração má (repete-se) ou rede (não).
 // Tratá-lo como terminal PERDE o pedido em silêncio, que é o defeito que este eixo existe para
-// fechar; tratá-lo como transitório devolve-o à fila, onde fica visível e contável. O tecto de
-// pendentes é o que impede isso de virar um laço infinito.
+// fechar; tratá-lo como transitório devolve-o à fila, onde fica visível e contável. O que impede isso
+// de virar um laço infinito é o tecto de gerações do nó (AOS-467), e não o de pendentes.
 func TestAOS423CodigoDesconhecidoEeTransitorio(t *testing.T) {
 	for _, codigo := range []int{exitErro, 42, 255, -1} {
 		if got := classeDoDesfecho(codigo); got != "transitorio" {
@@ -62,7 +64,8 @@ func TestAOS423VocabularioDeClassesCasaComONo(t *testing.T) {
 	// concordam. Se o nó mudar o vocabulário, isto tem de ficar vermelho.
 	doNo := map[string]bool{"transitorio": true, "terminal": true, "aguarda_humano": true}
 	for _, codigo := range []int{exitOK, exitErro, exitPosseNegada, exitFenced, exitWALDetido,
-		exitPendenteDeAprovacao, exitDecisaoRecusada, exitNosEmVoo, exitPlanoRecusado, exitDocumentoRecusado} {
+		exitPendenteDeAprovacao, exitDecisaoRecusada, exitNosEmVoo, exitPlanoRecusado, exitDocumentoRecusado,
+		exitRequerenteForaDoMandato, exitGeracoesEsgotadas} {
 		if c := classeDoDesfecho(codigo); !doNo[c] {
 			t.Errorf("o codigo %d produz a classe %q, que o no NAO aceita (400): o desfecho nunca "+
 				"seria registado e o pedido ficava preso ate ao TTL", codigo, c)

@@ -165,6 +165,9 @@ type estadoDePedido struct {
 	// reclamadas são as gerações que o nó entregou a um drenador (AOS-466): um desfecho só liquida
 	// planeamento de uma geração entregue.
 	reclamadas []int
+	// marcadas são as gerações entregues MARCADAS pelo tecto de gerações (AOS-467): o seu desfecho só
+	// se aceita como o terminal 12.
+	marcadas map[int]bool
 }
 
 // estadoDoPedido projecta o estado de UM pedido a partir do log.
@@ -210,6 +213,15 @@ func estadoDoPedido(ctx context.Context, store EventStorePort, runID string, ago
 				reclamadoEm[ger] = t
 			}
 			e.reclamadas = append(e.reclamadas, ger)
+			var c struct {
+				Esgotada bool `json:"esgotada"`
+			}
+			if json.Unmarshal(ev.Payload, &c) == nil && c.Esgotada {
+				if e.marcadas == nil {
+					e.marcadas = map[int]bool{}
+				}
+				e.marcadas[ger] = true
+			}
 			if ger > maiorGer {
 				maiorGer = ger
 			}
