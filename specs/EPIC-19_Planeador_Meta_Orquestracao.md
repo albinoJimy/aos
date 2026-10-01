@@ -1210,7 +1210,7 @@ que não seja o documento do plano.
       módulo do nó porque o nó não pode depender do módulo do orquestrador, nem em teste via go.mod
       (ADR-018, AOS-164b).
 - [x] DEF-275 fecha com evidência. **Feito:** linha do registo em `FECHADO-RESIDUAL` (o único
-      estado de fecho do vocabulário do gate `deferrals`), com o commit e os testes.
+      estado de fecho do vocabulário do gate `deferrals`), com o commit `71b2064` e os testes.
 
 ### Entrega — registo da decisão (dono, 2026-10-01)
 
@@ -1328,7 +1328,10 @@ do AOS-441, descrito em `deploy/server/README.md` §executor de nós):
 
 ### Estado
 
-**FEITO** (2026-10-01).
+**FEITO** (2026-10-01), commit `71b2064`. Gates locais verdes: `build`, `lint`, `layer-lint`,
+`test` (com `-race`), `apex`, `policy-test`, `security`, `rtm`, `ref-lint`, `deferrals`,
+`estado-citado`, e o smoke do `run-aos` (10/10). A verificação em produção fica para a primeira
+release (resíduo 3).
 
 ---
 
