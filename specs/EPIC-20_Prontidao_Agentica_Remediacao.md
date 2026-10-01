@@ -3343,8 +3343,21 @@ corrida da suite completa do módulo. O caminho do tecto por-chamador não é to
 O primeiro run-filho fica em curso durante o teste inteiro (um modelo que bloqueia até o teste o
 soltar), para o controlo medir o tecto e não a velocidade do run.
 
+### Feito
+O modelo do teste passou a ser o `aos277BlockingModel`: os runs-filho ficam em curso até o
+`t.Cleanup` os soltar (antes do `Shutdown` do serviço e do `Close` do nó). Mantém-se o `submit` real
+do primeiro run, porque é a imputação dele ao `RequestedBy` que o teste prova — injectar um `runState`
+à mão, como o `TestAOS456ARetomaEIsenta`, saltá-la-ia.
+
+### Validação
+- **Antes:** 18/300 falhas na base `71dba54` (duas corridas concorrentes de `-count=150 -race`).
+  **Depois:** 0/300, nas mesmas condições.
+- O teste continua a morder: imputar ao chamador em vez de ao `RequestedBy` faz falhar o caso (1)
+  (3/3); desligar o tecto por-chamador faz falhar o controlo (2).
+- Suite `-race` do módulo `cmd/aos` verde; `lint` e `secrets` verdes.
+
 ### Estado
-**POR FAZER.**
+**FEITO** (2026-10-01).
 
 ---
 
