@@ -502,13 +502,14 @@ setup_env() {
   # directório abaixo dela. Sem esta linha, todos os gates passariam a correr em modo workspace
   # só por o ficheiro existir. É forçado, e não um default sobreponível, porque o modo workspace
   # MUDA o que os gates medem — medido a 2026-10-01:
-  #   - `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` (packages/cmd/aos) compila o
-  #     issuer com `GOFLAGS=-mod=mod`, que o modo workspace recusa («-mod may only be set to
-  #     readonly or vendor when in workspace mode») — o gate test avermelhava;
+  #   (o `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` também avermelhava — compila o
+  #   issuer com `GOFLAGS=-mod=mod`, que o workspace recusa —, mas esse subprocesso passou a fixar
+  #   `GOWORK=off` ele próprio: os 49 módulos passam em modo workspace. Restam os três abaixo.)
   #   - o self-test A injecta um módulo em packages/ sem `use`: em modo workspace o `go test`
   #     dele falha por não estar no workspace, e o «vermelho» do A2 deixava de provar o que diz;
-  #   - os módulos fora de packages/ (scripts/ci/attest, deploy/*) não estão no workspace e nem
-  #     compilariam; e o `go list -m all` do sbom.sh passaria a listar o grafo dos 49 módulos.
+  #   - os módulos fora de packages/ (scripts/ci/attest, que o build/test correm sempre, e
+  #     deploy/*) não estão no workspace e nem compilariam;
+  #   - o `go list -m all` do sbom.sh passaria a listar o grafo do workspace (4 -> 57 módulos).
   # O go.work é para quem desenvolve (gopls, `go work use`, um build que atravessa tudo); o
   # build.sh prova à parte, e explicitamente, que ele cobre a árvore e compila offline.
   export GOWORK=off

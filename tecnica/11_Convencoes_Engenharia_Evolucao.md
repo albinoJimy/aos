@@ -174,11 +174,13 @@ O monorepo tem 49 módulos Go em `packages/` (mais `scripts/ci/attest` e três e
 
 **Geração e guarda.** O `go.work` é gerado por `bash scripts/ci/gowork.sh gerar` e não se edita à mão. O gate `build` corre `gowork.sh verificar` (o conjunto `use` é exactamente o dos `go.mod` de `packages/`, nem a mais nem a menos; directiva `go` = a maior dos módulos; `toolchain` = a da imagem de produção, `FROM golang:` do `deploy/node/Dockerfile`; nenhum `replace` no workspace) e `gowork.sh compilar` (um único `go build` sobre os 49 módulos, em modo workspace, com `GOPROXY=off` e `-mod=readonly`). **Um módulo novo em `packages/` sem `use` avermelha o gate `build`**; o self-test Z prova-o, nos dois sentidos, numa árvore sintética.
 
-**Modo da CI: `GOWORK=off`.** `setup_env` (`scripts/ci/lib.sh`) exporta `GOWORK=off`, forçado e não sobreponível; o driver do run-aos faz o mesmo. Os gates resolvem, portanto, exactamente como antes do `go.work`: pelas `replace` de cada módulo. A alternativa — a CI em modo workspace — foi medida a 2026-10-01 e recusada, porque muda o que os gates medem:
+**Modo da CI: `GOWORK=off`.** `setup_env` (`scripts/ci/lib.sh`) exporta `GOWORK=off`, forçado e não sobreponível. Os gates resolvem, portanto, exactamente como antes do `go.work`: pelas `replace` de cada módulo. A alternativa — a CI em modo workspace — foi medida a 2026-10-01 e recusada, porque muda o que os gates medem:
 
-- `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` (`packages/cmd/aos`) compila o `aos-issuer` num subprocesso com `GOFLAGS=-mod=mod`, que o modo workspace recusa (`-mod may only be set to readonly or vendor when in workspace mode`). O gate `test` ficava vermelho, e corrigir o teste é uma alteração a `.go`, fora do escopo de um ticket de tooling;
 - o self-test A injecta um módulo em `packages/` sem `use`: em modo workspace até um teste **verde** falha (`directory prefix . does not contain modules listed in go.work`), pelo que o vermelho do A2 deixava de provar o que diz;
-- os módulos fora de `packages/` deixam de compilar (`current directory is contained in a module that is not one of the workspace modules`), e o `go list -m all` do `sbom.sh` passa de 4 para 57 módulos no `aos-attestation`.
+- os módulos fora de `packages/` deixam de compilar (`current directory is contained in a module that is not one of the workspace modules`) — e o `scripts/ci/attest` entra sempre no build e no test;
+- o `go list -m all` do `sbom.sh` passa de 4 para 57 módulos no `aos-attestation`, ou seja, o SBOM deixaria de descrever o módulo.
+
+(Havia um quarto motivo: `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` avermelhava em modo workspace. Deixou de existir — ver «Uso local».)
 
 **Decisão (a) — as `replace` committadas mantêm-se.** São a resolução que a CI, o `cache-prime`, o `sbom.sh` e a imagem de produção usam: o `deploy/node/Dockerfile` copia só `packages/` (o `go.work` nem entra no contexto) e compila módulo a módulo com `GOPROXY=off`. Removê-las obrigaria a CI a correr em modo workspace, o que é hoje impossível pelas razões acima, e a tentativa de 2026-09-09 mostrou que a sua remoção expõe inconsistências `require`↔`import` que o mundo-`replace` mascarava. O `go.work` **coexiste** com elas; não as substitui.
 
@@ -186,9 +188,9 @@ O monorepo tem 49 módulos Go em `packages/` (mais `scripts/ci/attest` e três e
 
 **Âmbito do `use`.** Só `packages/`. `scripts/ci/attest`, `deploy/node/healthprobe`, `deploy/node/dev-hardened/firecracker` e `deploy/server/gvisor` ficam fora: são compilados apenas por scripts que chamam `setup_env` (logo com `GOWORK=off`) ou por builds Docker que não copiam o `go.work`. Quem os compilar à mão a partir da árvore prefixa `GOWORK=off`.
 
-**Integrar um módulo novo.** Em modo workspace basta `go work use ./packages/<novo>` (ou `gowork.sh gerar`): o módulo resolve os outros 49 sem `require` nem `replace`, e nenhum outro `go.mod` é editado. **Custo residual da decisão (a):** como a CI corre com `GOWORK=off`, o `go.mod` do próprio módulo novo continua a precisar de `require` + `replace` para o seu fecho transitivo local, e um módulo existente que o passe a importar precisa de uma `replace` para ele. Eliminar esse custo exige a CI em modo workspace, o que depende de corrigir primeiro o `GOFLAGS=-mod=mod` do teste acima.
+**Integrar um módulo novo.** Em modo workspace basta `go work use ./packages/<novo>` (ou `gowork.sh gerar`): o módulo resolve os outros 49 sem `require` nem `replace`, e nenhum outro `go.mod` é editado. **Custo residual da decisão (a):** como a CI corre com `GOWORK=off`, o `go.mod` do próprio módulo novo continua a precisar de `require` + `replace` para o seu fecho transitivo local, e um módulo existente que o passe a importar precisa de uma `replace` para ele. Eliminar esse custo exige a CI em modo workspace, e o que ainda o impede são os três pontos acima: o self-test A2, a contagem de módulos do `sbom.sh` e os módulos fora de `packages/`.
 
-**Uso local.** Com o workspace activo, `go build ./...` num módulo e `go build $(go list -m | sed 's#$#/...#')` a partir da raiz compilam no mesmo modo da verificação do gate. Para testar como a CI, prefixa-se `GOWORK=off` (ou usa-se `bash .claude/skills/run-aos/driver.sh test <módulo>`).
+**Uso local.** `go build`/`go test` simples, num módulo de `packages/`, correm em modo workspace e são verdes: medido a 2026-10-01, as suites dos 49 módulos passam assim. O único teste que o modo workspace avermelhava — `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary`, cujo subprocesso compila o `aos-issuer` com `GOFLAGS=-mod=mod`, que o workspace recusa — fixa agora `GOWORK=off` nesse subprocesso: o issuer compila-se como módulo standalone, pelas suas próprias `replace`. A partir da raiz, `go build $(go list -m | sed 's#$#/...#')` compila os 49 de uma vez, no mesmo modo da verificação do gate.
 
 ---
 
@@ -253,4 +255,4 @@ A ratificação humana assinada (não-repúdio), o changelog no audit trail hash
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
-| 1.1 | Outubro 2026 | §8.1 — workspace `go.work` (AOS-387): geração e guarda no gate `build`, CI com `GOWORK=off`, decisões (a) `replace` mantêm-se e (b) `go.work` committado, `go.work.sum` desnecessário e não ignorado | Equipa AOS |
+| 1.1 | Outubro 2026 | §8.1 — workspace `go.work` (AOS-387): geração e guarda no gate `build`, CI com `GOWORK=off`, decisões (a) `replace` mantêm-se e (b) `go.work` committado, `go.work.sum` desnecessário e não ignorado; `go test` simples verde em modo workspace (subprocesso do devharness com `GOWORK=off`) | Equipa AOS |

@@ -556,7 +556,10 @@ func buildAOSIssuer(t *testing.T) string {
 	}
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	cmd.Dir = "../aos-issuer" // cwd de `go test` = packages/cmd/aos ⇒ ../aos-issuer = o módulo do issuer
-	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod")
+	// GOWORK=off (AOS-387): o issuer compila-se como módulo standalone, pelas suas próprias
+	// `replace`, e o modo workspace (o go.work da raiz) proíbe -mod=mod — sem isto o teste
+	// avermelhava a quem corresse `go test` com o workspace activo.
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compilar aos-issuer: %v\n%s", err, out)
 	}
