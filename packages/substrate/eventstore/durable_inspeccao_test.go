@@ -158,3 +158,35 @@ func TestAOS347_InspeccaoRecusaIngestStream(t *testing.T) {
 		t.Fatalf("IngestStream do inspector = %v, quero ErrReadOnly", err)
 	}
 }
+
+// TestAOS362_InspeccaoNaoSeDizPronta — AOS-362 (b): um store de inspecção recusa TODAS as
+// escritas, e por isso não pode dizer-se pronto. Antes, [OpenReadOnly] deixava `wal == nil`, que
+// [wal.aceitaEscritas] lê como o store in-memory, e `Healthy()` devolvia true sobre um store que
+// devolve [ErrReadOnly] a qualquer `Append` — o modo de falha do AOS-350 numa porta nova.
+// O controlo é o mesmo ficheiro aberto para escrita, depois de a inspecção o largar.
+func TestAOS362_InspeccaoNaoSeDizPronta(t *testing.T) {
+	path, _ := escreveCinco(t)
+	inspector, err := OpenReadOnly(path, WithReplicas(1), WithQuorum(1))
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	if _, err := inspector.Append(t.Context(), "run-A", EventInput{Type: "aos362.facto"}); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("o controlo da premissa falhou: o Append do inspector = %v, quero ErrReadOnly", err)
+	}
+	if inspector.Healthy() {
+		t.Fatal("Healthy() true num store que recusa todas as escritas com ErrReadOnly — um /readyz " +
+			"ligado a ele ficava verde sobre um substrato que não escreve (AOS-362 b)")
+	}
+	if err := inspector.Close(); err != nil {
+		t.Fatalf("Close do inspector: %v", err)
+	}
+
+	escritor, err := Open(path, WithReplicas(1), WithQuorum(1))
+	if err != nil {
+		t.Fatalf("Open para escrita: %v", err)
+	}
+	defer escritor.Close()
+	if !escritor.Healthy() {
+		t.Fatal("o mesmo ficheiro aberto para escrita devia estar pronto — o controlo não vale")
+	}
+}

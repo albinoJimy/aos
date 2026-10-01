@@ -541,8 +541,16 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]Ev
 // substrato aceita I/O», não uma medida de saúde do cluster (essa é observabilidade,
 // não a condição de drain). Um WAL que recusa escritas não é degradação de quórum — é
 // o substrato a estar morto, que é precisamente a condição de drain.
+//
+// # AOS-362 (b) — O STORE DE INSPECÇÃO TAMBÉM NÃO ACEITA ESCRITAS
+//
+// [OpenReadOnly] (AOS-347) deixa `wal == nil`, e [wal.aceitaEscritas] lê um WAL nil como
+// o store in-memory, que aceita escritas. Um store só-leitura dizia-se pronto e recusava
+// TODAS as escritas com [ErrReadOnly] — o modo de falha do AOS-350 numa porta nova. Hoje
+// nenhum caminho composto liga um store só-leitura ao `/readyz`; isto fecha-o antes que
+// algum ligue.
 func (s *Store) Healthy() bool {
-	if s.closed.Load() {
+	if s.closed.Load() || s.soLeitura {
 		return false
 	}
 	return s.wal.aceitaEscritas()

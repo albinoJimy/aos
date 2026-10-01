@@ -52,6 +52,36 @@ func seccompEnforcementFor(kind DriverKind) SeccompEnforcement {
 	return SeccompEnforcedByNone
 }
 
+// ExecutionBoundary diz, no evento selado, ONDE uma execução correu (AOS-362 d).
+type ExecutionBoundary string
+
+const (
+	// BoundaryInProcessReference — o modelo de referência in-process ([DriverFake]): impõe
+	// as invariantes do jail, mas a sua fronteira é o PROCESSO do nó, e o resultado não foi
+	// produzido por nenhuma fronteira ao nível do kernel.
+	BoundaryInProcessReference ExecutionBoundary = "in_process_reference"
+	// BoundaryGuestExecutor — a execução foi delegada no [GuestExecutor] injectado (no nó,
+	// o componente externo do Firecracker ou do gVisor).
+	BoundaryGuestExecutor ExecutionBoundary = "guest_executor"
+	// BoundaryUndeclared — um driver que esta tabela não conhece. Não se presume nenhuma
+	// das duas.
+	BoundaryUndeclared ExecutionBoundary = "undeclared"
+)
+
+// executionBoundaryFor é a única fonte da fronteira declarada por driver. Até ao AOS-362
+// um nó de desenvolvimento selava resultados do [DriverFake] no WORM sem nada no evento
+// que os distinguisse de um efeito real, ao contrário do que o AOS-351 fez para o seccomp.
+func executionBoundaryFor(kind DriverKind) ExecutionBoundary {
+	switch kind {
+	case DriverFake:
+		return BoundaryInProcessReference
+	case DriverFirecracker, DriverGVisor:
+		return BoundaryGuestExecutor
+	default:
+		return BoundaryUndeclared
+	}
+}
+
 // Isolation descreve — e o [Launcher] IMPÕE fail-closed — as propriedades de
 // isolamento ao nível do kernel da microVM (ADR-004). Em AOS-064 o foco é
 // processo/FS/kernel; rede é AOS-067, overlay/seccomp é AOS-066.

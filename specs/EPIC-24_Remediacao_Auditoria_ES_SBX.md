@@ -1565,15 +1565,53 @@ o seccomp. O epic declara-o («Fora de produção nada muda»); o que não exist
 
 ### Critérios de Aceitação
 
-- [ ] A tabela `seccompEnforcementFor` ganha um confronto com a realidade — um teste que falhe se um
+- [x] A tabela `seccompEnforcementFor` ganha um confronto com a realidade — um teste que falhe se um
       driver passar a ler `spec.Seccomp` sem a tabela ser actualizada
-- [ ] `Healthy()` de um store aberto em só-leitura reflecte que ele recusa escritas, ou o caso fica
+- [x] `Healthy()` de um store aberto em só-leitura reflecte que ele recusa escritas, ou o caso fica
       declarado onde o AOS-350 declarou os outros
-- [ ] `AttrSeccompEnforcedBy` é posto no span antes de qualquer saída que possa terminar com hash nu
-- [ ] O evento de ciclo de vida do driver `fake` leva qualificação equivalente à do seccomp, ou a
+- [x] `AttrSeccompEnforcedBy` é posto no span antes de qualquer saída que possa terminar com hash nu
+- [x] O evento de ciclo de vida do driver `fake` leva qualificação equivalente à do seccomp, ou a
       assimetria ganha eixo próprio
+
+### Entrega (2026-10-01)
+
+- **(a)** `sandbox/aos362_inversoes_test.go`, `TestAOS362_ATabelaDoSeccompConfrontaOsDrivers`. O
+  confronto é estrutural (AST): em cada `driver_*.go`, o `Kind()` declara o driver, e o ficheiro ou
+  lê `.Seccomp` ou não. Ler tem de equivaler a a tabela dizer `driver`. Um ficheiro de driver cujo
+  `Kind()` a tabela não reconheça também avermelha.
+  - **Limite:** o teste vê a LEITURA de `Spec.Seccomp` no ficheiro do driver. Um driver que a
+    delegasse noutro ficheiro, ou passasse o perfil por outro caminho, escapar-lhe-ia.
+- **(b)** `eventstore/store.go`: `Healthy()` devolve `false` com `soLeitura`. O contrato já dizia
+  «true enquanto o store ACEITA ESCRITAS», e um store de inspecção nunca aceita. O teste é
+  `TestAOS362_InspeccaoNaoSeDizPronta`, com o controlo do mesmo ficheiro aberto para escrita.
+  Nenhum consumidor composto lia o `Healthy()` de um store só-leitura (`wal inspect`, `wal summary`,
+  `aos-orq inspect`).
+- **(c)** `sandbox/lifecycle.go`: a qualificação entra no span junto do hash, derivada do driver
+  configurado, e é reafirmada depois do `Create` a partir da instância real. O teste é
+  `TestAOS362_UmCreateFalhadoNaoDeixaOHashNu`: um Firecracker sem executor falha no `Create`.
+- **(d)** Os três eventos do ciclo de vida ganham `execution_boundary`.
+  - Valores:
+    - `in_process_reference` para o `fake`;
+    - `guest_executor` para Firecracker e gVisor;
+    - `undeclared` para um driver desconhecido.
+  - É derivado do driver **no sink** (`executionBoundaryFor`), por construção, como o
+    `seccomp_enforced_by`. Documentado em `tecnica/07`.
+  - É um campo aditivo no payload selado: nenhum consumidor nem golden file compara o payload
+    byte a byte.
+  - O teste é `TestAOS362_OEventoDizOndeAExecucaoCorreu`.
+  - **O que isto NÃO faz:** não impede o `fake` de selar fora de produção. Torna-o visível no
+    evento, que era o que faltava.
+- **Mutação:** 7 aplicadas, 7 mortas.
+  - o gVisor passar a ler `Spec.Seccomp`;
+  - a tabela dizer que o Firecracker impõe;
+  - a qualificação provisória removida;
+  - o `fake` declarado `guest_executor`;
+  - o sink sem a fronteira;
+  - o desconhecido presumido `guest_executor`;
+  - `Healthy()` sem `soLeitura`.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P2. Alcance: latente nos quatro casos. Nenhum é alcançável no deployment
-sancionado hoje; todos se tornam alcançáveis com uma mudança de composição plausível.
+**FEITO** (2026-10-01). P2. Alcance: latente nos quatro casos. Muda o comportamento em dois
+pontos, ambos no sentido fail-closed: `Healthy()` de um store só-leitura passa a falso, e o
+payload selado ganha `execution_boundary`.
