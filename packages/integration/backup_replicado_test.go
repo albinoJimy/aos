@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aos-ref/integration"
 	"github.com/aos-ref/platform/backup"
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/eventstore/jetstream"
@@ -62,7 +63,7 @@ const regiaoDoCluster = "eu-west"
 func abrirReplicado(t *testing.T, addr, marca string) *jetstream.Store {
 	t.Helper()
 	s := marcaAleatoria(t)
-	st, err := jetstream.Abrir(addr,
+	st, err := jetstream.Abrir(addr, integration.CredencialNATSDeTeste(t),
 		jetstream.ComNomeDeStream("AOSAPX_"+marca+"_"+s),
 		jetstream.ComPrefixoDeSubject("aosapx."+marca+"."+s),
 		jetstream.ComPrazo(20*time.Second),

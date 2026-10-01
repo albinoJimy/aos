@@ -49,7 +49,7 @@ func servidor(t *testing.T) string {
 
 func ligar(t *testing.T, addr string) *natsjs.Conn {
 	t.Helper()
-	cn, err := natsjs.Connect(addr, prazo)
+	cn, err := natsjs.ConnectServersCom([]string{addr}, prazo, credencial(t))
 	if err != nil {
 		t.Fatalf("ligar a %s: %v", addr, err)
 	}

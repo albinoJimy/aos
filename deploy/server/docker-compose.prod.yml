@@ -154,6 +154,15 @@ services:
       # AC5 do AOS-100 — fronteira regional. Vazia deixa a soberania DORMENTE; com
       # AOS_BOARD_REGIONS declarado passa a ser OBRIGATORIA (o no recusa arrancar).
       AOS_EVENTSTORE_NATS_REGION: "${AOS_EVENTSTORE_NATS_REGION:-}"
+      # AOS-470 — CREDENCIAL do nó no cluster: o CAMINHO, dentro do contentor, da seed nkey (nunca
+      # a seed no .env). Sob AOS_MODE=production, AOS_EVENTSTORE_NATS sem ela RECUSA o arranque.
+      # Ao ligar o NATS, acrescenta em `volumes:` o bind do ficheiro — não está lá por omissão
+      # porque um bind de ficheiro inexistente faz o Docker criar um DIRECTORIO no host:
+      #   - ./secrets/aos-nats.nk:/run/aos/aos-nats.nk:ro      (e aqui: /run/aos/aos-nats.nk)
+      # O ficheiro tem de ser legível pelo uid 65532 e por mais ninguém (o nó recusa o+rwx):
+      #   chown 65532:65532 secrets/aos-nats.nk && chmod 0400 secrets/aos-nats.nk
+      # Geração e chave pública para o cluster.conf: deploy/nats/README.md, «Autenticação».
+      AOS_EVENTSTORE_NATS_NKEY_FILE: "${AOS_EVENTSTORE_NATS_NKEY_FILE:-}"
       AOS_EVENTSTORE_PATH: "/var/lib/aos/events.wal"
       AOS_WORM_PATH: "/var/lib/aos/worm.wal"
       # AOS-436 — REGISTO DE APAGAMENTOS. Cada destruição de KEK CONFIRMADA pelo Vault acrescenta

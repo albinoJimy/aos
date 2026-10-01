@@ -7,22 +7,38 @@
 #   sudo bash aos-nats.sh chave                          # 1x por host: gera a chave WG, imprime a pública
 #   sudo bash aos-nats.sh aplicar /etc/aos-nats/cluster.conf <host>   # WireGuard + firewall + nats-server
 #        bash aos-nats.sh estado  /etc/aos-nats/cluster.conf <host>   # túnel, rotas, meta-leader, URL do cliente
-#        bash aos-nats.sh provar  /etc/aos-nats/cluster.conf <host>   # cria e apaga um stream R3 com a placement do AOS
+#        bash aos-nats.sh provar  /etc/aos-nats/cluster.conf <host> <seed>   # cria e apaga um stream R3, autenticado
 #        bash aos-nats.sh gerar   <cluster.conf> <host> <dir>          # só escreve ficheiros (sem root, sem efeitos)
 #
 # # PORQUE HÁ UM TÚNEL, E PORQUE O NATS SÓ ESCUTA NELE
 #
-# O cliente do AOS (`packages/substrate/eventstore/natsjs`) fala NATS em TCP simples:
-# `"tls_required":false` e CONNECT sem utilizador, palavra-passe, token nem nkey. Quem chegar
-# à porta de cliente escreve no log de produção. Por isso:
+# O cliente do AOS (`packages/substrate/eventstore/natsjs`) fala NATS em TCP simples
+# (`"tls_required":false`). Desde o AOS-470 autentica-se por nkey — mas a autenticação prova
+# QUEM abriu a sessão, não protege o que corre dentro dela contra quem esteja no caminho. Por isso
+# a rede continua a ser a primeira fronteira:
 #   - o tráfego entre hosts (rotas Raft E cliente) atravessa o WireGuard, cifrado e com par
 #     autenticado pela chave — nunca a internet pública em claro;
 #   - cada nats-server escuta SÓ no IP WireGuard do seu host: a porta não existe no IP público;
 #   - as regras do firewall vêm e vão com a interface (PostUp/PostDown): dentro do túnel só os
 #     pares; a partir de contentores locais só a sub-rede Docker declarada (a do nó `aos`).
 #     Os contentores órfãos e os pods do cluster k8s vizinho no mesmo host NÃO chegam lá.
-# O que isto NÃO fecha: root num dos hosts escreve no log. Fechar isso é autenticação no
-# cliente `natsjs`, que é código e não infraestrutura (ver README, «O que fica por fazer»).
+#
+# # AUTENTICAÇÃO DOS CLIENTES (AOS-470)
+#
+# Cada servidor arranca com `authorization { users = [ {nkey: U…}, … ] }`, uma entrada por linha
+# `cliente` do cluster.conf. Sem pelo menos uma, o `gerar` RECUSA: um cluster de produção sem
+# authorization aceita qualquer CONNECT, e o nó `aos` (com credencial) recusaria ligar-se-lhe.
+# O servidor guarda só a chave PÚBLICA; a seed fica no host do cliente e nunca passa pelo fio
+# (o cliente assina o nonce do INFO). Gerar no host do nó, com a imagem do nó:
+#
+#   (umask 077; docker run --rm "$AOS_IMAGE" nats-nkey gerar > /opt/aos/secrets/aos-nats.nk)
+#   docker run --rm -i "$AOS_IMAGE" nats-nkey publica < /opt/aos/secrets/aos-nats.nk   # → linha `cliente`
+#
+# O que isto ainda NÃO fecha: root no host do nó lê a seed (é o nó); root num host NATS
+# administra o servidor. A autenticação estreita «quem alcança a porta» para «quem tem a seed».
+# As ROTAS entre servidores não levam `cluster.authorization`: o único caminho até elas é o
+# túnel, cujos pares já são autenticados pela chave WireGuard — e uma palavra-passe de rota
+# viveria em claro no cluster.conf, que é o ficheiro que se copia entre hosts sem cuidado.
 #
 # # A CHAVE PRIVADA NUNCA SAI DO HOST
 #
@@ -51,6 +67,7 @@ log() { printf '%s\n' "$*" >&2; }
 REGIAO="" REDE_WG="" PORTA_WG="" IMAGEM="" IMAGEM_BOX="" NOME_CLUSTER="" MAX_FILE_STORE=""
 declare -a H_NOME=() H_PUB=() H_WG=() H_CHAVE=() H_DOCKER=()
 declare -a N_NOME=() N_HOST=() N_CLI=() N_ROTA=() N_MON=()
+declare -a C_NOME=() C_NKEY=()
 
 # Octetos sem zeros à esquerda: «010» seria octal dentro de $(( )) em ip_para_int.
 eh_ipv4() {
@@ -93,6 +110,7 @@ ler_spec() {
 	REGIAO="" REDE_WG="" PORTA_WG="" IMAGEM="" IMAGEM_BOX="" NOME_CLUSTER="" MAX_FILE_STORE=""
 	H_NOME=() H_PUB=() H_WG=() H_CHAVE=() H_DOCKER=()
 	N_NOME=() N_HOST=() N_CLI=() N_ROTA=() N_MON=()
+	C_NOME=() C_NKEY=()
 	while IFS= read -r linha || [ -n "$linha" ]; do
 		n=$((n + 1))
 		linha="${linha%%#*}"
@@ -106,6 +124,13 @@ ler_spec() {
 		IMAGEM_BOX=*) IMAGEM_BOX="${linha#*=}" ;;
 		NOME_CLUSTER=*) NOME_CLUSTER="${linha#*=}" ;;
 		MAX_FILE_STORE=*) MAX_FILE_STORE="${linha#*=}" ;;
+		cliente\ *)
+			read -r tipo resto <<<"$linha"
+			# shellcheck disable=SC2086 # a separação por espaços é o formato
+			set -- $resto
+			[ $# -eq 2 ] || die "$spec:$n: 'cliente' leva 2 campos: <nome> <nkey-publica-U…>"
+			C_NOME+=("$1"); C_NKEY+=("$2")
+			;;
 		host\ * | no\ *)
 			read -r tipo resto <<<"$linha"
 			# shellcheck disable=SC2086 # a separação por espaços é o formato
@@ -188,7 +213,26 @@ validar_spec() {
 		for i in "${!N_NOME[@]}"; do [ "${N_HOST[$i]}" = "$h" ] && tem=1; done
 		[ "$tem" -eq 1 ] || die "$spec: host '$h' não corre nenhum nó — retira-o, ou é um par WG sem razão de existir"
 	done
+	validar_clientes "$spec"
 	avisar_dominio_de_falha
+}
+
+# validar_clientes exige pelo menos um cliente autenticado, e chaves PÚBLICAS de utilizador.
+validar_clientes() {
+	local spec="$1" i j
+	[ "${#C_NOME[@]}" -ge 1 ] || die "$spec: nenhum 'cliente' declarado — sem authorization qualquer um que alcance a porta escreve no log de produção (AOS-470). Gera a credencial do nó com 'aos nats-nkey gerar' e declara a pública numa linha 'cliente'"
+	for i in "${!C_NOME[@]}"; do
+		[[ "${C_NOME[$i]}" =~ ^[a-z0-9-]+$ ]] || die "$spec: nome de cliente inválido: '${C_NOME[$i]}'"
+		case "${C_NKEY[$i]}" in
+		SU*) die "$spec: cliente ${C_NOME[$i]}: isso é a SEED (segredo do cliente), não a chave pública — retira-a já deste ficheiro e gera outra: este ficheiro é copiado entre hosts" ;;
+		esac
+		[[ "${C_NKEY[$i]}" =~ ^U[A-Z2-7]{55}$ ]] || die "$spec: cliente ${C_NOME[$i]}: nkey pública de utilizador inválida ('${C_NKEY[$i]}') — cola a saída de 'aos nats-nkey publica'"
+		for j in "${!C_NOME[@]}"; do
+			[ "$i" -lt "$j" ] || continue
+			[ "${C_NOME[$i]}" != "${C_NOME[$j]}" ] || die "$spec: cliente repetido: ${C_NOME[$i]}"
+			[ "${C_NKEY[$i]}" != "${C_NKEY[$j]}" ] || die "$spec: a mesma nkey em ${C_NOME[$i]} e ${C_NOME[$j]}"
+		done
+	done
 }
 
 # avisar_dominio_de_falha diz em voz alta o que a topologia aguenta. Não recusa: com dois
@@ -222,20 +266,30 @@ portas_do_host() {
 ip_wg_do_no() { local hi; hi=$(indice_do_host "${N_HOST[$1]}"); printf '%s' "${H_WG[$hi]}"; }
 
 gerar_conf_no() {
-	local i="$1" ip j rotas=""
+	local i="$1" ip j rotas="" utilizadores=""
 	ip=$(ip_wg_do_no "$i")
 	for j in "${!N_NOME[@]}"; do
 		[ "$j" = "$i" ] && continue
 		rotas+="    nats-route://$(ip_wg_do_no "$j"):${N_ROTA[$j]}"$'\n'
 	done
+	for j in "${!C_NOME[@]}"; do
+		utilizadores+="    { nkey: ${C_NKEY[$j]} }  # ${C_NOME[$j]}"$'\n'
+	done
 	cat <<EOF
 # Gerado por deploy/nats/aos-nats.sh (AOS-469) — NÃO editar à mão; muda o cluster.conf e reaplica.
 server_name: ${N_NOME[$i]}
 
-# Só o IP WireGuard: o cliente do AOS não tem TLS nem autenticação (natsjs), e a porta não
-# pode existir no IP público.
+# Só o IP WireGuard: o cliente do AOS não fala TLS (natsjs), e a porta não pode existir no IP
+# público.
 listen: ${ip}:${N_CLI[$i]}
 http: ${ip}:${N_MON[$i]}
+
+# Só clientes com nkey declarada (AOS-470). O servidor guarda as chaves PÚBLICAS; um CONNECT
+# anónimo ou com outra chave recebe 'Authorization Violation'.
+authorization {
+  users = [
+${utilizadores}  ]
+}
 
 # Elegibilidade para a placement do stream (ADR-011, AOS-100 AC5).
 server_tags: ["${PREFIXO_TAG_REGIAO}${REGIAO}"]
@@ -452,7 +506,7 @@ cmd_aplicar() {
 	log ""
 	log "aplicado. Quando TODOS os hosts estiverem aplicados:"
 	log "  bash $0 estado $DIR_SISTEMA/cluster.conf.aplicado $h"
-	log "  bash $0 provar $DIR_SISTEMA/cluster.conf.aplicado $h"
+	log "  bash $0 provar $DIR_SISTEMA/cluster.conf.aplicado $h <seed de um cliente declarado>"
 }
 
 cmd_estado() {
@@ -498,18 +552,21 @@ cmd_estado() {
 	echo "  AOS_EVENTSTORE_NATS=$(url_cliente)"
 	echo "  AOS_EVENTSTORE_NATS_REGION=$REGIAO"
 	echo "  AOS_EVENTSTORE_NATS_REPLICAS=${#N_NOME[@]}"
+	echo "  AOS_EVENTSTORE_NATS_NKEY_FILE=<caminho da seed no contentor; a pública numa linha 'cliente'>"
+	echo "== clientes autorizados: ${C_NOME[*]}"
 	[ "$falhas" -eq 0 ]
 }
 
 cmd_provar() {
-	[ $# -eq 2 ] || die "uso: provar <cluster.conf> <host>"
-	local h="$2" stream
+	[ $# -eq 3 ] || die "uso: provar <cluster.conf> <host> <ficheiro-da-seed> — o cluster exige autenticação (AOS-470); usa a seed de um 'cliente' declarado"
+	local h="$2" seed="$3" stream
 	ler_spec "$1"
 	indice_do_host "$h" >/dev/null || die "host '$h' não está no cluster.conf"
+	[ -r "$seed" ] || die "seed ilegível: $seed"
 	stream="AOS_469_PROVA_$(date +%s)"
 	local srv
 	srv="nats://$(url_cliente | sed 's/,/,nats:\/\//g')"
-	nbox() { docker run --rm --network host "$IMAGEM_BOX" nats --server "$srv" "$@"; }
+	nbox() { docker run --rm --network host -v "$seed:/run/aos-nats.nk:ro" "$IMAGEM_BOX" nats --server "$srv" --nkey /run/aos-nats.nk "$@"; }
 	log "a criar $stream: R${#N_NOME[@]}, placement tag ${PREFIXO_TAG_REGIAO}${REGIAO} (a mesma forma que o AOS pede)…"
 	nbox stream add "$stream" --subjects "aos469.prova.$stream" --storage file \
 		--replicas "${#N_NOME[@]}" --tag "${PREFIXO_TAG_REGIAO}${REGIAO}" --max-age 1h --defaults >/dev/null

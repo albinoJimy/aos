@@ -412,7 +412,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 	const total = janelaDeLeitura + 64
 	const streamID = "run-janela"
 
-	semear, err := Abrir(addr,
+	semear, err := Abrir(addr, CredencialDeTeste(t),
 		ComNomeDeStream(nome),
 		ComPrefixoDeSubject(prefixo),
 		ComReplicas(3),
@@ -437,7 +437,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 
 	// (1) Leitura por um handle NOVO: cache fria, hidratação completa pelo caminho
 	// público. Com o defeito, isto morria no prazo do segundo lote.
-	leitor, err := Abrir(addr,
+	leitor, err := Abrir(addr, CredencialDeTeste(t),
 		ComNomeDeStream(nome),
 		ComPrefixoDeSubject(prefixo),
 		SemCriarStream(),
@@ -486,7 +486,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 
 	// (3) E o stream continua ESCREVÍVEL. Handle novo outra vez: o Append passa por
 	// `hidratar`, que é onde o defeito o matava.
-	escritor, err := Abrir(addr,
+	escritor, err := Abrir(addr, CredencialDeTeste(t),
 		ComNomeDeStream(nome),
 		ComPrefixoDeSubject(prefixo),
 		SemCriarStream(),

@@ -73,7 +73,7 @@ func storeJetStream(b *testing.B) (eventstore.EventStore, func()) {
 		b.Skipf("sem cluster: define %s", envServidor)
 	}
 	nome := "BENCH_" + sufixoBench(b)
-	st, err := jetstream.Abrir(addr,
+	st, err := jetstream.Abrir(addr, jetstream.CredencialDeTeste(b),
 		jetstream.ComNomeDeStream(nome),
 		jetstream.ComReplicas(3),
 		jetstream.ComPrazo(30*time.Second))

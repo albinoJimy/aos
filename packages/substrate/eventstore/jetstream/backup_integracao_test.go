@@ -22,7 +22,7 @@ func abrirBackup(t *testing.T, addr, marca string) (*jetstream.Store, string, st
 	t.Helper()
 	s := sufixo(t)
 	nome, prefixo := "AOSBKP_"+marca+"_"+s, "aosbkp."+marca+"."+s
-	st, err := jetstream.Abrir(addr,
+	st, err := jetstream.Abrir(addr, jetstream.CredencialDeTeste(t),
 		jetstream.ComNomeDeStream(nome),
 		jetstream.ComPrefixoDeSubject(prefixo),
 		jetstream.ComPrazo(prazo),
@@ -320,7 +320,7 @@ func TestAOS101_StreamHeadPerguntaAoServidorENaoAVistaLocal(t *testing.T) {
 	semear(t, a, stream, 4)
 
 	// Um SEGUNDO handle, ligação independente, sobre o MESMO stream físico.
-	b, err := jetstream.Abrir(addr,
+	b, err := jetstream.Abrir(addr, jetstream.CredencialDeTeste(t),
 		jetstream.ComNomeDeStream(nome),
 		jetstream.ComPrefixoDeSubject(prefixo),
 		jetstream.ComPrazo(prazo),

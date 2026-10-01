@@ -212,6 +212,19 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 
 var ErrProductionNeedsShredConfirmation = errors.New("aos: AOS_MODE=production com custodia de KEK INJECTADA (Config.DSARVault) exige que ela implemente a porta de confirmacao de crypto-shred — sem ela o fluxo DSAR sela key_destroyed SEM VERIFICAR, afirmando uma irrecuperabilidade que ninguem confirmou. Se a custodia destroi INCONDICIONALMENTE (o Delete nao pode falhar), DECLARE-O com AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1")
 
+// ErrProductionNeedsNATSCredential — sob AOS_MODE=production com o Event Store REPLICADO
+// (AOS_EVENTSTORE_NATS), a ligação ao cluster TEM de ser autenticada (AOS-470). Sem credencial
+// o CONNECT é anónimo, e quem alcança a porta de cliente do NATS escreve no log de produção —
+// a fonte de verdade dos runs, da revogação de NHI e das aprovações. A rede (WireGuard, bind no
+// IP do túnel, firewall por sub-rede, deploy/nats) estreita QUEM alcança a porta; não diz QUEM
+// está do outro lado. Material privado por FICHEIRO montado, nunca por variável de ambiente.
+var ErrProductionNeedsNATSCredential = errors.New("aos: AOS_MODE=production com AOS_EVENTSTORE_NATS exige AOS_EVENTSTORE_NATS_NKEY_FILE — sem credencial a ligacao ao cluster e anonima e quem alcanca a porta de cliente do NATS escreve no log de producao; a seed nkey vem de FICHEIRO montado (aos nats-nkey gerar), NUNCA de variavel de ambiente")
+
+// ErrEventStoreNATSCredentialWithoutNATS — AOS_EVENTSTORE_NATS_NKEY_FILE definido sem
+// AOS_EVENTSTORE_NATS. Uma credencial que nada usa é configuração que mente: o operador
+// julga o substrato autenticado e ele nem sequer é o replicado.
+var ErrEventStoreNATSCredentialWithoutNATS = errors.New("aos: AOS_EVENTSTORE_NATS_NKEY_FILE so faz sentido com AOS_EVENTSTORE_NATS — o Event Store local (AOS_EVENTSTORE_PATH) nao tem porta de rede a autenticar")
+
 var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem de ser um inteiro positivo (3 ou 5; 1 e so dev)")
 
 // ErrProductionNeedsDurableSubstrate — sob AOS_MODE=production o Event Store TEM de ser durável
@@ -590,6 +603,13 @@ func nodeConfigFromEnv() (Config, error) {
 		}
 		eventStoreNATSReplicas = n
 	}
+	// CREDENCIAL DO CLUSTER (AOS-470): o CAMINHO da seed nkey, nunca o valor. A seed é lida e
+	// validada no Bootstrap, ao abrir o substrato — um ficheiro ilegível, com modo aberto a outros
+	// ou com material que não é seed de utilizador aborta o arranque ali.
+	eventStoreNATSNKeyFile := strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_NKEY_FILE"))
+	if eventStoreNATSNKeyFile != "" && eventStoreNATS == "" {
+		return Config{}, ErrEventStoreNATSCredentialWithoutNATS
+	}
 	if durableExecution && eventStorePath == "" && eventStoreNATS == "" {
 		return Config{}, fmt.Errorf("%w (defina AOS_EVENTSTORE_NATS, ex.: aos-es-0:4222, ou AOS_EVENTSTORE_PATH, ex.: /var/lib/aos/events.wal)", ErrDurableExecutionNeedsDurableSubstrate)
 	}
@@ -778,6 +798,7 @@ func nodeConfigFromEnv() (Config, error) {
 		EventStoreNATSStream:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_STREAM")),
 		EventStoreNATSRegion:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_REGION")),
 		EventStoreNATSReplicas: eventStoreNATSReplicas,
+		EventStoreNATSNKeyFile: eventStoreNATSNKeyFile,
 		WORMPath:               strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
 		// EXECUÇÃO DURÁVEL (AOS-180) por ambiente (AOS_DURABLE_EXECUTION — AOS-191): liga o
 		// checkpointer, o capturer de não-determinismo e o step-ledger sobre o Event Store
@@ -1002,6 +1023,13 @@ func nodeConfigFromEnv() (Config, error) {
 	// durabilidade incondicionais que fecham o bloco; a do WORM (AOS-365) segue-se logo abaixo.
 	if production && eventStorePath == "" && eventStoreNATS == "" {
 		return Config{}, ErrProductionNeedsDurableSubstrate
+	}
+
+	// FAIL-CLOSED de produção (AOS-470) — o Event Store REPLICADO não aceita escritas anónimas.
+	// Ver [ErrProductionNeedsNATSCredential]. Condicional ao substrato NATS: o WAL local é um
+	// ficheiro do volume do nó e não tem porta de rede a autenticar.
+	if production && eventStoreNATS != "" && cfg.EventStoreNATSNKeyFile == "" {
+		return Config{}, ErrProductionNeedsNATSCredential
 	}
 
 	// FAIL-CLOSED de produção (AOS-365) — o TRILHO WORM tem de sobreviver a um restart, tal como o

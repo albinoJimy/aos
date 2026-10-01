@@ -69,7 +69,7 @@ type resultado struct {
 // correr executa o binário como processo separado e devolve o desfecho.
 func correr(t *testing.T, bin string, args ...string) resultado {
 	t.Helper()
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(bin, comCredencialNATS(args)...)
 	var out, errb strings.Builder
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -610,4 +610,23 @@ func TestGuardDoWAL_SegundoEscritorERecusadoDeterministicamente(t *testing.T) {
 		t.Fatalf("`serve` depois de a posse ser largada saiu %d, quer 0 — o guard tem de ser uma porta, não um muro.\nstderr:\n%s",
 			r.code, r.stderr)
 	}
+}
+
+// comCredencialNATS acrescenta `--nats-nkey-file` a uma invocação com `--nats` quando o cluster
+// de teste é o AUTORIZADO de scripts/ci/nats-cluster.sh (AOS_NATS_NKEY_FILE, AOS-470). Fica num
+// só sítio para que nenhum teste multiprocesso se ligue anónimo por esquecimento — o que, contra
+// o cluster autorizado, falharia com um erro de autenticação a apontar para o sítio errado.
+func comCredencialNATS(args []string) []string {
+	seed := os.Getenv("AOS_NATS_NKEY_FILE")
+	if seed == "" {
+		return args
+	}
+	for i, a := range args {
+		if a == "--nats" && i+1 < len(args) {
+			out := append([]string{}, args[:i+2]...)
+			out = append(out, "--nats-nkey-file", seed)
+			return append(out, args[i+2:]...)
+		}
+	}
+	return args
 }

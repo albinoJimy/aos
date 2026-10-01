@@ -24,9 +24,11 @@ inteiro ([`cluster.conf.example`](cluster.conf.example)).
 
 ### Porquê o túnel, e porque o NATS só escuta nele
 
-O cliente do AOS (`packages/substrate/eventstore/natsjs`) fala NATS em TCP simples: o CONNECT
-leva `"tls_required":false` e nenhuma credencial. **Quem chega à porta de cliente escreve no log
-de produção.** Daí resultam três regras:
+O cliente do AOS (`packages/substrate/eventstore/natsjs`) fala NATS em TCP simples
+(`"tls_required":false`). Desde o AOS-470 autentica-se por nkey (ver [«Autenticação dos
+clientes»](#autenticação-dos-clientes-aos-470)), mas a assinatura prova **quem abriu** a sessão, não
+protege o que corre dentro dela contra quem esteja no caminho. A rede continua a ser a primeira
+fronteira, e daí resultam três regras:
 
 - **Todo o tráfego entre hosts passa pelo WireGuard**, tanto o Raft das rotas como o do cliente.
   Vai cifrado e cada par é autenticado pela sua chave. Nada atravessa a internet pública em claro.
@@ -39,8 +41,48 @@ de produção.** Daí resultam três regras:
   tráfego com destino ao IP WG ou que passa pela interface `aos-es`. As portas do k8s
   (6443, 10250, 2379/2380, 8472/udp) **não são afectadas**.
 
-**O que isto não fecha:** quem tem root num dos hosts consegue escrever no log. Fechar isso exige
-autenticação no cliente `natsjs` (nkey ou TLS mútuo), e isso é código. Ver «O que fica por fazer».
+### Autenticação dos clientes (AOS-470)
+
+Cada servidor arranca com `authorization { users = [ {nkey: U…}, … ] }`, uma entrada por linha
+`cliente` do `cluster.conf`. Um CONNECT anónimo, ou com uma chave que não esteja lá, recebe
+`Authorization Violation`. O script **recusa** gerar um cluster sem nenhum `cliente`.
+
+Com nkey, o segredo **nunca atravessa o fio**: o servidor manda um nonce no INFO, o cliente
+devolve a assinatura ed25519 dele e a chave pública. O servidor só guarda a pública, e por isso o
+`cluster.conf` continua a levar só material público. O cliente é código próprio, sem
+dependências (ADR-017). A codificação foi provada contra um `nats-server` real: o servidor aceita
+a chave, recusa-a com um carácter trocado e recusa uma chave que não declarou.
+
+A seed gera-se **no host do nó**, com a imagem do nó (não é preciso o `nk` da NATS):
+
+```bash
+(umask 077; docker run --rm "$AOS_IMAGE" nats-nkey gerar > /opt/aos/secrets/aos-nats.nk)
+sudo chown 65532:65532 /opt/aos/secrets/aos-nats.nk && sudo chmod 0400 /opt/aos/secrets/aos-nats.nk
+sudo cat /opt/aos/secrets/aos-nats.nk | docker run --rm -i "$AOS_IMAGE" nats-nkey publica
+#   → U…   vai para a linha `cliente aos-contabo U…` do cluster.conf
+```
+
+No nó: `AOS_EVENTSTORE_NATS_NKEY_FILE=/run/aos/aos-nats.nk` e o bind
+`./secrets/aos-nats.nk:/run/aos/aos-nats.nk:ro` (ver o comentário em
+`deploy/server/docker-compose.prod.yml`). No `aos-orq`: `--nats-nkey-file`. Sob
+`AOS_MODE=production`, `AOS_EVENTSTORE_NATS` sem credencial **recusa o arranque**, e o nó também
+recusa uma seed com bits para «outros» (`o+rwx`).
+
+**Revogar** um cliente é apagar a linha dele e reaplicar em cada host. **Rodar** a chave do nó é
+acrescentar a nova linha, reaplicar, trocar a seed no nó e só depois apagar a antiga.
+
+**O que isto ainda não fecha:**
+
+- **Root no host do nó lê a seed.** É o nó. A autenticação estreita «quem alcança a porta» para
+  «quem tem a seed». Os contentores órfãos, os pods do k8s e o resto da sub-rede Docker deixam de
+  conseguir escrever, mesmo que o firewall os deixe passar.
+- **Root num host NATS administra o servidor.** Pode mudar a `authorization` e reiniciar.
+- **As rotas entre servidores não levam `cluster.authorization`.** O único caminho até elas é o
+  túnel, cujos pares já estão autenticados pela chave WireGuard. Uma palavra-passe de rota teria de
+  viver em claro no `cluster.conf`, o ficheiro que se copia entre hosts sem cuidado. Seria trocar
+  uma autenticação forte por uma fraca no mesmo troço.
+- **Sem TLS**, quem estiver no caminho de uma sessão já aberta pode injectar comandos nela. Esse
+  caminho é o túnel.
 
 A chave privada WireGuard **nunca sai do host onde nasceu**. Fica em
 `/etc/wireguard/aos-es.key` (0600) e é carregada no `PostUp` com `wg set … private-key`. O
@@ -91,8 +133,9 @@ ssh armando@78.46.209.230 'sudo bash aos-nats.sh chave'
 
 ### 2. O `cluster.conf` (uma vez, na tua máquina)
 
-Copia o `cluster.conf.example` e cola as duas chaves públicas. A sub-rede do nó `aos` obtém-se
-no Contabo:
+Copia o `cluster.conf.example`, cola as duas chaves públicas WG e a chave pública nkey de cada
+cliente (ver [«Autenticação dos clientes»](#autenticação-dos-clientes-aos-470)). A sub-rede do nó
+`aos` obtém-se no Contabo:
 
 ```bash
 docker network inspect aos_default -f '{{(index .IPAM.Config 0).Subnet}}'
@@ -104,7 +147,8 @@ nó `aos` não chega ao NATS. Se for larga demais, o firewall deixa entrar conte
 
 O script recusa uma especificação mal formada antes de mexer em seja o que for: um número de
 nós diferente de 3 ou 5, uma imagem sem digest, um IP fora da `REDE_WG`, portas repetidas no
-mesmo host, uma chave WG inválida ou uma região com o prefixo `region:`.
+mesmo host, uma chave WG inválida, uma região com o prefixo `region:`, nenhum `cliente`, ou
+uma linha `cliente` com a SEED em vez da chave pública.
 
 ### 3. Aplicar (em cada host, com o MESMO ficheiro)
 
@@ -127,8 +171,9 @@ sudo bash aos-nats.sh estado /etc/aos-nats/cluster.conf contabo
 #   == túnel           handshake com cada par
 #   == nós deste host  saudável, pares=2/2, meta-leader=…
 #   == para o nó aos   AOS_EVENTSTORE_NATS=10.77.0.1:4222,10.77.0.1:4223,10.77.0.2:4222 …
-bash aos-nats.sh provar /etc/aos-nats/cluster.conf hetzner
-#   cria um stream R3 com placement region:eu-west, publica, confirma réplicas em dia, apaga
+sudo bash aos-nats.sh provar /etc/aos-nats/cluster.conf contabo /opt/aos/secrets/aos-nats.nk
+#   autenticado com a seed de um cliente declarado: cria um stream R3 com placement
+#   region:eu-west, publica, confirma réplicas em dia, apaga
 ```
 
 O `estado` sai com `≠0` se faltar o túnel, um handshake, a saúde de um nó ou o meta-leader.
@@ -155,11 +200,15 @@ resposta:
    procedimento de operador para migrar produção.
 3. **O WORM continua local.** O `worm.wal` não é replicado (AOS-325). O cluster protege o log dos
    runs, não a cadeia de auditoria.
+4. **A credencial do nó** (AOS-470). Sob `AOS_MODE=production` o nó recusa arrancar com
+   `AOS_EVENTSTORE_NATS` e sem `AOS_EVENTSTORE_NATS_NKEY_FILE`. Gera a seed, declara a pública
+   numa linha `cliente`, reaplica o cluster **antes** de mudar o `.env` — senão o nó encontra um
+   servidor que não o conhece e recusa. Ver [«Autenticação dos clientes»](#autenticação-dos-clientes-aos-470).
 
 ## O que fica por fazer
 
-- **Autenticação no cliente `natsjs`.** Hoje a segurança do log depende só da rede (túnel,
-  bind, firewall). Com nkey ou TLS mútuo no cliente, podiam ligar-se `authorization` e
-  `cluster.authorization` nos servidores.
+- **Permissões por cliente.** Hoje um cliente autenticado pode publicar em qualquer subject. O
+  `aos` precisa da API JetStream, dos subjects do stream e de `_INBOX.>`. Restringir a isso exige
+  medir o conjunto exacto contra o cluster, sem o adivinhar.
 - **Um terceiro host**, pelas razões da tabela acima.
 - **Medir o atraso real** da réplica do Hetzner sob carga de produção.

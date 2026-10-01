@@ -4,10 +4,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/eventstore/jetstream"
+	"github.com/aos-ref/substrate/eventstore/natsjs"
 )
 
 // substrato.go — de onde vem o Event Store deste processo (AOS-100).
@@ -35,6 +38,7 @@ type substrato struct {
 	stream   string
 	regiao   string
 	replicas int
+	nkey     string // caminho da seed nkey do cluster (AOS-470)
 }
 
 // registarFlags declara as flags de substrato num FlagSet.
@@ -44,6 +48,7 @@ func (s *substrato) registarFlags(fs *flag.FlagSet) {
 	fs.StringVar(&s.stream, "nats-stream", "", "nome do stream JetStream (só com --nats; vazio usa o padrão)")
 	fs.IntVar(&s.replicas, "nats-replicas", 0, "factor de replicação do stream (só com --nats; vazio usa 3)")
 	fs.StringVar(&s.regiao, "nats-region", "", "região da fronteira de soberania do board (só com --nats; vazio deixa a fronteira dormente — ADR-011)")
+	fs.StringVar(&s.nkey, "nats-nkey-file", "", "ficheiro com a seed nkey (SU…) com que o processo se autentica no cluster (só com --nats; AOS-470). Sob AOS_MODE=production é obrigatório")
 }
 
 // comoFlags devolve as flags que reproduzem ESTE substrato noutra invocação.
@@ -70,8 +75,15 @@ func (s substrato) comoFlags() []string {
 	if s.regiao != "" {
 		out = append(out, "--nats-region", s.regiao)
 	}
+	if s.nkey != "" {
+		out = append(out, "--nats-nkey-file", s.nkey)
+	}
 	return out
 }
+
+// errProducaoSemCredencialNATS — sob AOS_MODE=production o processo não se liga ao cluster por
+// CONNECT anónimo (AOS-470): quem alcança a porta de cliente escreveria no mesmo log.
+var errProducaoSemCredencialNATS = errors.New("AOS_MODE=production com --nats exige --nats-nkey-file — sem credencial a ligacao ao cluster e anonima e quem alcanca a porta de cliente do NATS escreve no log de producao")
 
 var errSubstratoAmbiguo = errors.New("--wal e --nats são EXCLUSIVOS: um é o store de referência sobre ficheiro (posse sequencial), o outro é o replicado que arbitra entre processos. Aceitar ambos daria um processo a anunciar coordenação distribuída enquanto trancava um ficheiro local")
 
@@ -81,8 +93,8 @@ func (s substrato) validar() error {
 		return errors.New("indique --wal FICHEIRO ou --nats HOST:PORTA (o Event Store é o único canal de coordenação)")
 	case s.wal != "" && s.nats != "":
 		return errSubstratoAmbiguo
-	case s.nats == "" && (s.stream != "" || s.replicas != 0 || s.regiao != ""):
-		return errors.New("--nats-stream/--nats-replicas/--nats-region só fazem sentido com --nats")
+	case s.nats == "" && (s.stream != "" || s.replicas != 0 || s.regiao != "" || s.nkey != ""):
+		return errors.New("--nats-stream/--nats-replicas/--nats-region/--nats-nkey-file só fazem sentido com --nats")
 	case s.replicas < 0:
 		return errors.New("--nats-replicas tem de ser um inteiro positivo (3 ou 5; 1 é só dev)")
 	}
@@ -215,6 +227,18 @@ func (s substrato) abrirReplicado(soLeitura bool) (eventstore.EventStore, func()
 	}
 	if s.replicas > 0 {
 		opts = append(opts, jetstream.ComReplicas(s.replicas))
+	}
+	// AOS-470: o mesmo fail-closed do nó (ErrProductionNeedsNATSCredential). Vive aqui, e não em
+	// validar(), porque é o único sítio que abre a ligação — e a leitura (inspect) também a abre.
+	switch {
+	case s.nkey != "":
+		cred, err := natsjs.LerNKeyFicheiro(s.nkey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("credencial do event store replicado (AOS-470): %w", err)
+		}
+		opts = append(opts, jetstream.ComCredencial(cred))
+	case strings.TrimSpace(os.Getenv("AOS_MODE")) == "production":
+		return nil, nil, errProducaoSemCredencialNATS
 	}
 	store, err := jetstream.Abrir(s.nats, opts...)
 	if err != nil {

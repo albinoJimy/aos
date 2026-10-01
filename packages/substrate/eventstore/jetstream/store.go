@@ -75,6 +75,7 @@ type config struct {
 	regiao    string
 	board     string
 	fronteira bool
+	cred      *natsjs.NKey
 	obs       eventstore.Observer
 	rastro    eventstore.Rastreador
 	now       func() time.Time
@@ -94,6 +95,11 @@ func ComPrazo(d time.Duration) Option { return func(c *config) { c.prazo = d } }
 
 // ComReplicas fixa o factor de replicação do stream (3 ou 5; 1 é só dev).
 func ComReplicas(n int) Option { return func(c *config) { c.replicas = n } }
+
+// ComCredencial autentica a ligação ao cluster com uma nkey de utilizador (AOS-470). Sem ela a
+// ligação é anónima — o que só serve um cluster sem `authorization` (dev, CI antigo). Ver
+// [natsjs.NKey] para o que a autenticação fecha e o que não fecha.
+func ComCredencial(k *natsjs.NKey) Option { return func(c *config) { c.cred = k } }
 
 // SemCriarStream assume que o stream já existe e não tenta criá-lo.
 func SemCriarStream() Option { return func(c *config) { c.criar = false } }
@@ -135,7 +141,7 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 	// 2026-09-01 tornou concreta: com um só, a morte desse nó deixa o cliente a tentar
 	// sempre o mesmo. O AC1 diz que a perda de uma réplica não interrompe escritas — com
 	// um endereço só, isso é verdade apenas se o nó morto não for o nosso.
-	cn, err := natsjs.ConnectServers(enderecos(addr), cfg.prazo)
+	cn, err := natsjs.ConnectServersCom(enderecos(addr), cfg.prazo, cfg.cred)
 	if err != nil {
 		return nil, err
 	}

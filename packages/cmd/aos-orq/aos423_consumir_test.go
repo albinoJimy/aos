@@ -117,9 +117,9 @@ func TestAOS423SubstratoAtravessaIntacto(t *testing.T) {
 // como flag, e esquecer de o devolver aqui — nessa altura o `consume` invoca o `serve` sem ele e
 // nada avisa.
 func TestAOS423ComoFlagsCobreTodasAsFlagsDoSubstrato(t *testing.T) {
-	cheio := substrato{wal: "w", nats: "n", stream: "s", replicas: 9, regiao: "r"}
+	cheio := substrato{wal: "w", nats: "n", stream: "s", replicas: 9, regiao: "r", nkey: "k"}
 	got := strings.Join(cheio.comoFlags(), " ")
-	for _, flag := range []string{"--wal", "--nats", "--nats-stream", "--nats-replicas", "--nats-region"} {
+	for _, flag := range []string{"--wal", "--nats", "--nats-stream", "--nats-replicas", "--nats-region", "--nats-nkey-file"} {
 		if !strings.Contains(got, flag) {
 			t.Errorf("comoFlags() nao devolve %s.\n"+
 				"Se acrescentou um campo ao substrato e o registou em registarFlags, devolva-o\n"+

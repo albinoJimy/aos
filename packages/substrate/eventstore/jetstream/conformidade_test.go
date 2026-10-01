@@ -73,7 +73,7 @@ func substratoJetStream(t *testing.T, addr string) conformance.Substrate {
 			if i > 0 {
 				opts = append(opts, jetstream.SemCriarStream())
 			}
-			st, err := jetstream.Abrir(addr, opts...)
+			st, err := jetstream.Abrir(addr, append([]jetstream.Option{jetstream.CredencialDeTeste(t)}, opts...)...)
 			if err != nil {
 				release()
 				return nil, func() {}, err

@@ -38,6 +38,8 @@
 //     Event Store é, precisamente por causa do CAS.
 //   - SEM consumidores push duráveis. O transporte push do AC2 do AOS-100 não foi
 //     medido (ver §5 do relatório) e não se constrói aqui às cegas.
-//   - SEM autenticação. O cluster de referência corre em rede fechada; credenciais são
-//     do Broker/Vault (ADR-006) e entram quando houver um deployment que as exija.
+//   - SEM TLS. Autenticação SÓ por nkey (AOS-470, [NKey]): o servidor manda um nonce no
+//     INFO e o cliente devolve a assinatura ed25519 dele; a seed nunca vai no fio. A
+//     assinatura prova quem abriu a sessão, não protege o que corre dentro dela contra quem
+//     esteja no caminho — esse troço é o túnel de deploy/nats.
 package natsjs
