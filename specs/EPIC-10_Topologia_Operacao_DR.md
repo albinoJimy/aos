@@ -1251,6 +1251,38 @@ O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recol
 
 ---
 
+## AOS-469 — Cluster NATS JetStream de produção entre o Contabo e o Hetzner, por túnel WireGuard
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-100 (adaptador JetStream e soberania), AOS-431 (receita do cluster de CI) |
+| Bloqueia | — |
+| Responsável sugerido | SRE |
+| Documentos de referência | `deploy/nats/README.md`, `deploy/nats/aos-nats.sh`, `infra/modules/eventstore/main.tf`, `packages/substrate/eventstore/natsjs/conn.go` |
+
+**Contexto.** Há um segundo servidor (Hetzner, `78.46.209.230`) para o Event Store replicado. O stream do AOS é R3, com placement `region:<regiao>`, e o cliente `natsjs` liga-se em TCP sem TLS e sem credenciais. Logo, quem chegar à porta de cliente escreve no log. Um cluster entre dois fornecedores não pode, por isso, expor o NATS nem fazer as rotas atravessar a internet em claro.
+
+**Objectivo.** Ter o substrato pronto para `AOS_EVENTSTORE_NATS` em produção: três `nats-server` (dois no Contabo e um no Hetzner), com o tráfego entre hosts cifrado e as portas NATS fechadas a tudo o que não seja o nó `aos` e os pares.
+
+**Critérios de Aceitação**
+- [x] `deploy/nats/aos-nats.sh` gera, a partir de um único `cluster.conf`, a parte de cada host: o WireGuard com o firewall no `PostUp`/`PostDown`, a config de cada `nats-server` (bind só no IP WG, `server_tags` `region:`) e o compose. Recusa uma especificação inválida (nº de nós ≠ 3/5, imagem sem digest, IP fora da rede WG, portas repetidas, chave inválida, região com prefixo).
+- [x] A chave privada WG nasce no host e não aparece em nenhum ficheiro gerado. O `aplicar` recusa correr num host cuja chave não é a declarada.
+- [x] Verificado com as configs geradas, num cluster local com os IPs WG: a suite do adaptador `jetstream` passa com `AOS_NATS_URL` apontado a ele, incluindo `TestAC4_*` (80/80 escritas confirmadas sobrevivem à morte do nó do Hetzner), `TestReconexao_*` e `TestSoberania_*`. O `provar` cria e apaga um stream R3 com placement `region:eu-west`.
+- [x] O limite da topologia 2+1 está medido e documentado: sem os dois nós do Contabo, o JetStream fica indisponível (10008).
+- [ ] Aplicado nos dois servidores reais, com o `estado` verde e o `provar` OK. Requer acesso SSH aos hosts, que a sessão de implementação não tinha.
+
+**Fora de âmbito.** Apontar o nó `aos` ao cluster: falta o backup do log replicado (o `backup.sh` recusa), a migração do `events.wal` existente, e o WORM continua local. Também fica de fora a autenticação no cliente `natsjs` e um terceiro host.
+
+**Estado.** **EM CURSO**: entregue e verificado localmente, por aplicar em produção.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1273,3 +1305,4 @@ O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recol
 | 1.5 | 2026-09-26 | +AOS-451 (o executor gVisor de produção acumula zombies): `init: true` no serviço `gvisor`, com sensor que avermelha se a linha sair. | Equipa AOS |
 | 1.6 | 2026-09-26 | AOS-451 verificado em produção: o `aos-gvisor-1` recriado corre com o `docker-init` no PID 1 e os 15 zombies desapareceram. | Equipa AOS |
 | 1.7 | 2026-09-26 | AOS-101: retoma do manifesto do exportador (porta do PR #206) com duas rondas de revisão adversarial; +AOS-453 (custódia de KEK que sela segmentos do backup), que bloqueia ligar o exportador em produção. | Equipa AOS |
+| 1.8 | 2026-10-01 | +AOS-469 (cluster NATS JetStream de produção Contabo+Hetzner por WireGuard): substrato do `AOS_EVENTSTORE_NATS`, verificado com a suite do adaptador; o nó continua no WAL. | Equipa AOS |
