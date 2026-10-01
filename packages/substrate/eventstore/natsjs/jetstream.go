@@ -454,6 +454,10 @@ type Placement struct {
 // volta, um nó com fronteira declarada poderia ligar-se a um stream SEM colocação e
 // julgar-se soberano — a falha mais silenciosa possível, porque tudo funciona.
 type StreamConfigLida struct {
+	// Subjects que o stream captura. O Event Store pergunta-os quando não criou o stream e
+	// recebe um 503: só um subject capturado faz desse 503 a janela de um stream ainda não
+	// servido (AOS-455), e não «ninguém vai servir isto».
+	Subjects    []string   `json:"subjects"`
 	NumReplicas int        `json:"num_replicas"`
 	Placement   *Placement `json:"placement"`
 	DenyDelete  bool       `json:"deny_delete"`

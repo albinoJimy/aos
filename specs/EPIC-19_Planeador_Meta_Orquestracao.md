@@ -3796,16 +3796,31 @@ Fechar a janela para que a recusa por lease seja SEMPRE distinguível de uma ava
 e o gate `nats` deixe de flakear.
 
 ### Critérios de Aceitação
-- [ ] O diagnóstico está PROVADO e não suposto: existe uma reprodução determinista da janela — por
+- [x] O diagnóstico está PROVADO e não suposto: existe uma reprodução determinista da janela — por
       exemplo com o líder do stream derrubado entre o `Abrir` e o primeiro CAS — que mostra o
-      código de saída errado antes da correcção.
-- [ ] Um 503 `no_responders` no primeiro CAS sobre um stream fresco **não** se confunde com «o lease
+      código de saída errado antes da correcção. — *A hipótese estava meio certa: a janela tem
+      DUAS formas, e a que dominava localmente não era o 503. Ver «A medição» e «A reprodução
+      determinista», abaixo: `TestAOS455_PerdedorComINFOCaladoSaiPelaPosse` e
+      `TestAOS455_PerdedorCom503NoPrimeiroCASSaiPelaPosse` correm o `cmdServe` real do perdedor
+      contra um JetStream de brincar e saíam `1` (`exitErro`) antes da correcção; saem `3`.*
+- [x] Um 503 `no_responders` no primeiro CAS sobre um stream fresco **não** se confunde com «o lease
       é de outro»: ou se retenta até o interesse estar instalado, ou sai com um erro de transporte
-      próprio, nomeado e distinto de `ErrLeaseHeld`.
-- [ ] O gate `nats` corre os dois testes afectados N vezes seguidas sem falhar.
-- [ ] `falhas_conhecidas` do `nats.sh` continua **VAZIA** — este defeito fecha-se, não se declara.
-- [ ] O gate publica o output da asserção (ver Detalhes Técnicos): sem isso, o próximo vermelho
-      volta a diagnosticar-se por hipótese.
+      próprio, nomeado e distinto de `ErrLeaseHeld`. — *As duas coisas: o `Append` re-tenta o 503
+      de um subject que o stream captura, dentro do prazo da operação; esgotado, sai
+      `ErrNoQuorum` + `jetstream.ErrStreamNaoServe`, com o 503 na cadeia. O 503 de um subject que
+      nenhum stream captura continua a subir na hora e tal qual
+      (`TestAOS432_503VerdadeiroNaoEPosseNegada` verde sobre o cluster).*
+- [x] O gate `nats` corre os dois testes afectados N vezes seguidas sem falhar. — *Bloco (1b) do
+      `nats.sh`: os dois, mais o `TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal`,
+      `NATS_REPETICOES` vezes seguidas (default e piso 10). Contra um cluster local de 4 nós:
+      antes da correcção 46/50 em cada um dos dois testes de disputa; depois, 200/200 em cada um
+      dos três, e 10/10 × 3 no próprio gate. O verde no CI (docker) confirma-se no PR.*
+- [x] `falhas_conhecidas` do `nats.sh` continua **VAZIA** — este defeito fecha-se, não se declara.
+- [x] O gate publica o output da asserção (ver Detalhes Técnicos): sem isso, o próximo vermelho
+      volta a diagnosticar-se por hipótese. — *`gotest_saida_do_teste` (`gotest-pacotes.sh`)
+      imprime as linhas do teste que falhou — `-v` e sem `-v` — no ramo do teste novo a falhar,
+      na passagem da cobertura e no bloco de repetição. Self-test Y7 (avermelha com o `grep -A8`
+      antigo, medido).*
 
 ### Detalhes Técnicos
 - Componentes: ES (`substrate/eventstore/jetstream`), ORQ (`cmd/aos-orq`), `durable`.
@@ -3819,8 +3834,10 @@ e o gate `nats` deixe de flakear.
 - Repetição: os dois testes afectados, N corridas sem falha.
 
 ### Definition of Done
-- [ ] Critérios de Aceitação satisfeitos e demonstráveis.
-- [ ] Gate `nats` verde em corridas consecutivas, sem entradas novas em `falhas_conhecidas`.
+- [x] Critérios de Aceitação satisfeitos e demonstráveis.
+- [~] Gate `nats` verde em corridas consecutivas, sem entradas novas em `falhas_conhecidas`. —
+      *Verde contra o cluster local (o `nats.sh` deste ramo, só com o cluster trocado por processos
+      nativos); `falhas_conhecidas` vazia. As corridas consecutivas no CI são as do PR.*
 
 ### Handoff para Claude Code
 ```text
@@ -3832,11 +3849,111 @@ antes de a fechar. Não declares o flake em falhas_conhecidas. Segue _BRIEF.md.
 Não expandas escopo.
 ```
 
+### A medição
+
+O output da asserção nunca tinha chegado ao log, por isso a primeira coisa foi ir buscá-lo: os
+logs das tentativas vermelhas do run 36330671442 mostram o `TestAOS432_…` a falhar em **0,14 s**
+(o log não traz a asserção — é o defeito do critério 5) e o `TestIntegracao_Dedup…` com
+`integracao_test.go:150: A.Publish: natsjs: ninguém serve este subject (503)`. Depois, contra um
+cluster local com a receita do `nats-cluster.sh` (4 nós `nats-server` v2.10.22 nativos, R3,
+`server_tags`, autorização por nkey), sem alteração de código:
+
+| Experiência | Resultado |
+|---|---|
+| Os três testes afectados, 50× cada | `TestAOS432_Lease…` 46/50; `TestAOS100_NServe…` 46/50 (5 processos a sair `1`); `Dedup…` 50/50 |
+| A asserção dessas 8 falhas | **Todas** «`jetstream: esperar pelo líder do stream …: natsjs: indeterminado — … sem resposta dentro do prazo ($JS.API.STREAM.INFO…, 9.99s)`» — e nenhuma com 503 |
+| 4 ligações criam o mesmo stream e fazem `STREAM.INFO` com prazo de 500 ms (100×) | **32 de 400 INFO sem resposta nenhuma**; o INFO seguinte respondeu em 1–2 ms |
+| 4 ligações criam, esperam até o INFO anunciar líder, e publicam com CAS 0 (100×) | 2 iterações com um **503 depois de o INFO anunciar líder** (numa, o cliente estava no próprio nó líder) |
+| 1 ligação cria e publica logo (100×) | 1 com 503 no primeiro PUB, curado na publicação seguinte (2 ms) |
+
+A janela tem **duas formas**, e as duas têm linha no servidor (nats-server v2.10.22):
+
+1. **O INFO calado.** `jsStreamInfoRequest` só responde se for o líder do stream ou, num grupo
+   novo, o membro preferido já com o nó Raft criado; caso contrário `if bail { return }` — sem
+   resposta. O `esperarLider` do AOS-432 entregava a cada consulta o prazo que restava (todo, à
+   primeira): um INFO calado gastava os 10 s, o `Abrir` falhava, e o perdedor saía `1`. **Era esta
+   a forma dominante localmente** (8 de 8 falhas), e a que a hipótese do ticket não previa.
+2. **O 503 com líder anunciado.** `switchState(Leader)` põe o Raft em líder — e
+   `isStreamLeader`/o INFO dizem-no logo — mas os subjects só são subscritos quando a goroutine do
+   stream consome a mudança (`processStreamLeaderChange` → `setLeader` → `subscribeToStream`).
+   Uma publicação nesse intervalo recebe 503; o `Claim` devolvia-o cru e o perdedor saía `1`. Era
+   a forma do CI (o 503 do `Dedup…`, e a falha de 0,14 s, curta demais para um prazo de INFO).
+   É o resíduo que o AOS-432 tinha declarado como «não excluído».
+
+### A reprodução determinista
+
+Antes de qualquer correcção, e vermelhas sem ela:
+
+- `cmd/aos-orq/aos455_janela_do_primeiro_cas_test.go` — um JetStream de brincar (só o que o
+  `serve` usa até ao `Claim`) com as janelas accionadas por contagem na ligação do perdedor. O
+  vencedor reclama pelo `LeaseManager` real; o perdedor é o `cmdServe` real e o código é o do
+  `codigoDe`. **Antes:** `TestAOS455_PerdedorComINFOCaladoSaiPelaPosse` → «o perdedor saiu 1,
+  quer 3 (…) sem resposta dentro do prazo ($JS.API.STREAM.INFO.AOS455_INFO, 9.999999891s)» — a
+  mesma mensagem do cluster; `TestAOS455_PerdedorCom503NoPrimeiroCASSaiPelaPosse` → «o perdedor
+  saiu 1, quer 3: posse do run …: natsjs: ninguém serve este subject (503)». O **controlo** sem
+  janela sai `3` antes e depois — o servidor de brincar não é a causa.
+- `jetstream/aos455_janela_test.go` — o mesmo, uma camada abaixo: `Abrir` com o 1.º INFO calado
+  falhava ao fim do prazo; `Append` com um 503 de janela devolvia o 503 cru.
+
+### Entrega
+
+- **`jetstream/lider.go`** — `esperarLider` dá a cada consulta `min(consultaLiderInicial, resta)`
+  (250 ms, dobrando a cada consulta sem resposta). Um INFO calado (`natsjs.ErrTimeout`) é «ainda
+  ninguém responde» e pergunta-se de novo dentro do MESMO orçamento; qualquer outro erro sobe tal
+  qual, como no AOS-432. Esgotado, `ErrNoQuorum` + `ErrStreamSemLider` — já não «indeterminado —
+  a escrita pode ter sido aplicada», que sobre um INFO (uma leitura) era falso.
+- **`jetstream/janela.go`** (`publicarCAS`, usada pelo `Append` e pelo `IngestStream`) — um 503
+  num subject que o stream captura é a janela: re-tenta-se a MESMA publicação (mesmo CAS, mesmo
+  `Nats-Msg-Id`; um 503 é o servidor a dizer que ninguém a recebeu), com espera de 5 ms a dobrar
+  até 100 ms, dentro do prazo da operação e obedecendo ao `ctx`. Esgotado:
+  `ErrNoQuorum` + **`ErrStreamNaoServe`** + o 503 na cadeia. «Captura» sabe-se sem perguntar
+  quando o Store criou o stream; com `SemCriarStream` lê-se o `config.subjects` armazenado
+  (`natsjs.StreamConfigLida.Subjects`, campo novo). O 503 de um subject fora do stream sobe na
+  hora.
+- **`natsjs/integracao_test.go`** — `esperarQueSirva`: antes de medir, os testes do cliente cru
+  esperam até o stream servir, com uma sonda de CAS impossível (`1<<62`) que o servidor recusa e
+  que não deixa rasto — `TestIntegracao_RecusaNaoDeixaRasto` continua a medir `Messages == 1`.
+- **`scripts/ci/gotest-pacotes.sh`** — `gotest_saida_do_teste`: as linhas de um teste (cabeçalho,
+  `t.Logf`/`t.Errorf`, veredicto, subtestes), com `-v` e sem ele, com corte declarado.
+- **`scripts/ci/nats.sh`** — usa-a no teste novo a falhar e na passagem da cobertura (critério
+  5); bloco (1b) repete os três sensores `NATS_REPETICOES` vezes (critério 3);
+  `falhas_conhecidas` intacta e vazia. `CONTRIBUTING.md` ganha a linha do `NATS_REPETICOES`.
+- **`scripts/ci/selftest.sh`** — Y7 (o log mostra a asserção; vermelho com o `grep -A8` antigo,
+  medido) e Y8 (a repetição não se desliga em silêncio).
+
+**Contra-provas por mutação** (núcleo revertido, testes deterministas, restaurado sem commit):
+(M1) consulta volta a receber o que resta e o silêncio volta a subir → 4 testes do `jetstream` e
+o `TestAOS455_PerdedorComINFOCalado…` vermelhos, este com «saiu 1, quer 3»; (M2) o `Append` volta
+a publicar sem `publicarCAS` → 4 do `jetstream` e o `TestAOS455_PerdedorCom503…` vermelhos;
+(M3) todo o 503 passa a «janela» → `TestAOS455_503DeUmSubjectQueOStreamNaoCaptura…` vermelho;
+(M4) a janela esgotada devolve o 503 cru → `TestAOS455_JanelaQueNaoFecha…` e
+`…ContextoCancelado…` vermelhos.
+
+**Repetição contra o cluster local** (depois da correcção): `TestAOS432_Lease…` 200/200,
+`TestAOS100_NServe…` 200/200, `Dedup…` 200/200; o `nats.sh` deste ramo, só com o cluster trocado
+por processos nativos: os quatro módulos verdes, (1b) 10/10 × 3, cobertura do `eventstore` 80,4%.
+O único vermelho dessa corrida foram 3 skips do `cmd/aos-orq` por o posto correr como **root**
+(«como root nenhum modo torna um ficheiro ilegível») — condição do posto, não do CI.
+
+### Resíduos declarados
+
+1. **Não verificado no CI.** Tudo o que está acima correu contra `nats-server` v2.10.22 nativo; o
+   CI usa a imagem `nats:2.10-alpine`, cuja tag flutua dentro da 2.10. A linha do servidor citada
+   para cada forma é da v2.10.22.
+2. **A leitura numa re-eleição continua sem tolerância.** Num stream EXISTENTE cujo líder cai, o
+   `hidratar` (INFO/MSG.GET) pode ficar sem resposta antes de o CAS chegar a ser tentado; este
+   ticket cobre a publicação e a espera do `Abrir`, não a leitura. O efeito é o de sempre: erro
+   de transporte, código `1`, nunca posse negada.
+3. **Um stream apagado por baixo de um Store que o criou** é tratado como janela: re-tenta-se até
+   ao prazo e sai `ErrNoQuorum` + `ErrStreamNaoServe` + o 503 — indisponibilidade com a causa na
+   cadeia, ao fim do prazo em vez de na hora.
+
 ### Estado
 
-**ABERTO** (2026-09-27). Aberto a partir da análise do vermelho do gate `nats` no PR #396, que
-mediu o flake em árvores idênticas e excluiu o commit desse PR como causa; a terceira ocorrência
-veio no PR #399.
+**FEITO** (2026-10-01). Aberto a 2026-09-27 a partir da análise do vermelho do gate `nats` no PR
+#396; a terceira ocorrência veio no PR #399. Diagnóstico medido e reproduzido de forma determinista,
+correcção na publicação e na espera do `Abrir`, gate com a asserção no log e com a repetição dos
+sensores. O verde em corridas consecutivas no CI (docker) é o do PR — não foi observado aqui.
 
 ---
 

@@ -87,6 +87,40 @@ gotest_pacotes_inexplicados() {
   return 1
 }
 
+# gotest_saida_do_teste <saida> <NomeDoTeste> [max_linhas]
+#   Imprime TODAS as linhas que pertencem a um teste (e aos seus subtestes): o cabeçalho, o que
+#   ele escreveu por `t.Logf`/`t.Errorf`/`t.Fatalf`, e a linha do veredicto. É o que o log do
+#   gate tem de mostrar quando um teste falha (AOS-455).
+#
+#   O DEFEITO QUE FECHA. O gate imprimia `grep -A8` a partir do `--- FAIL`. Em `go test -v` as
+#   linhas da asserção saem ANTES dessa linha — depois do `=== RUN`/`=== CONT`/`=== NAME` do
+#   teste — e o ficheiro completo é um `mktemp` que não é publicado. Em três vermelhos do gate
+#   `nats` (AOS-455) ninguém viu as contagens: o log mostrava o `--- FAIL` e os `--- PASS` dos
+#   testes SEGUINTES, que é ruído. Sem `-v` (a passagem da cobertura) as linhas saem DEPOIS do
+#   `--- FAIL`; a mesma regra serve os dois formatos.
+#
+#   A regra: cada linha pertence ao último teste anunciado por um cabeçalho `=== …` ou por uma
+#   linha de veredicto `--- …`; uma linha de pacote (`FAIL`, `ok`, `PASS`, `exit status`) não
+#   pertence a teste nenhum. Testes paralelos intercalam, mas o `go test -v` re-anuncia o dono
+#   (`=== CONT`/`=== NAME`) antes de cada bloco de output — e é isso que a regra segue.
+#   `max_linhas` (omissão 150) limita um teste que despeje stdout de processos; o corte é
+#   declarado, nunca silencioso.
+gotest_saida_do_teste() {
+  local saida="$1" nome="$2" max="${3:-150}"
+  awk -v nome="$nome" -v max="$max" '
+    function deste(t) { return t == nome || index(t, nome "/") == 1 }
+    function mostra(l) { n++; if (n <= max) print l }
+    /^=== (RUN|CONT|PAUSE|NAME)[[:space:]]/ { dono = $3; if (deste(dono)) mostra($0); next }
+    /^[[:space:]]*--- (FAIL|PASS|SKIP): / {
+      t = $0; sub(/^[[:space:]]*--- (FAIL|PASS|SKIP): /, "", t); sub(/ .*/, "", t)
+      dono = t; if (deste(dono)) mostra($0); next
+    }
+    /^(FAIL|PASS|ok  |\?   |exit status )/ { dono = ""; next }
+    deste(dono) { mostra($0) }
+    END { if (n > max) printf "       … %d linha(s) do teste %s cortadas (max_linhas=%d)\n", n - max, nome, max }
+  ' "$saida"
+}
+
 # gotest_pacotes_diagnostico <saida>
 #   As linhas que dizem PORQUÊ, para o log do gate: a mensagem do panic, os testes que estavam
 #   a correr quando o timeout disparou, e os erros de compilação. Sem isto o gate dizia «vermelho»

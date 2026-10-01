@@ -2,6 +2,7 @@ package jetstream
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -62,13 +63,21 @@ func TestAOS432_LiderJaPresenteNaoEspera(t *testing.T) {
 // TestAOS432_CadaConsultaRecebeOPrazoQueResta — o prazo é UM orçamento. Uma consulta lenta
 // gasta dele, e a seguinte só pode usar o que sobra; sem isto a espera podia durar ~2× o
 // prazo (e o Abrir ~4×), porque cada INFO levava o prazo inteiro.
+//
+// AOS-455: cada consulta recebe o MENOR entre o prazo de uma consulta
+// ([consultaLiderInicial], que só cresce quando uma consulta fica sem resposta) e o que resta.
+// Até lá recebia o que restava — tudo, à primeira — e um INFO calado gastava o orçamento
+// inteiro. O que este teste fixa continua a ser o mesmo: nenhuma consulta recebe mais do que
+// resta, e a espera não passa do prazo.
 func TestAOS432_CadaConsultaRecebeOPrazoQueResta(t *testing.T) {
 	r := novoRelogio()
 	const prazo = time.Second
 	inicio := r.agora()
-	var recebidos []time.Duration
-	err := esperarLider("S", func(resta time.Duration) (string, error) {
-		recebidos = append(recebidos, resta)
+	limite := inicio.Add(prazo)
+	var recebidos, restavam []time.Duration
+	err := esperarLider("S", func(d time.Duration) (string, error) {
+		recebidos = append(recebidos, d)
+		restavam = append(restavam, limite.Sub(r.agora()))
 		r.t = r.t.Add(300 * time.Millisecond) // cada INFO demora 300 ms
 		return "", nil
 	}, prazo, r.agora, r.dormir)
@@ -78,13 +87,14 @@ func TestAOS432_CadaConsultaRecebeOPrazoQueResta(t *testing.T) {
 	if len(recebidos) < 2 {
 		t.Fatalf("consultas = %d, quer pelo menos 2", len(recebidos))
 	}
-	if recebidos[0] != prazo {
-		t.Fatalf("1.ª consulta recebeu %s, quer o prazo inteiro %s", recebidos[0], prazo)
-	}
-	for i := 1; i < len(recebidos); i++ {
-		if recebidos[i] >= recebidos[i-1] {
-			t.Fatalf("consulta %d recebeu %s, não menos do que a anterior (%s): %v", i, recebidos[i], recebidos[i-1], recebidos)
+	for i := range recebidos {
+		if quer := min(consultaLiderInicial, restavam[i]); recebidos[i] != quer {
+			t.Fatalf("consulta %d recebeu %s, quer %s (o menor entre o prazo de uma consulta e o que restava, %s): %v",
+				i, recebidos[i], quer, restavam[i], recebidos)
 		}
+	}
+	if ultimo := recebidos[len(recebidos)-1]; ultimo >= consultaLiderInicial {
+		t.Fatalf("a última consulta recebeu %s — o que restava não a cortou: %v", ultimo, recebidos)
 	}
 	if gasto := r.agora().Sub(inicio); gasto > prazo+300*time.Millisecond {
 		t.Fatalf("a espera gastou %s com prazo %s — o orçamento não é partilhado", gasto, prazo)
@@ -135,5 +145,54 @@ func TestAOS432_ErroDaConsultaSobeSemRetentar(t *testing.T) {
 	}
 	if consultas != 1 {
 		t.Fatalf("consultas = %d, quer 1 — um erro não se re-tenta às cegas", consultas)
+	}
+}
+
+// errSilencio é o erro que um INFO sem resposta devolve — o mesmo embrulho de [natsjs.Conn.Request].
+var errSilencio = fmt.Errorf("%w: %w ($JS.API.STREAM.INFO.S)", natsjs.ErrIndeterminate, natsjs.ErrTimeout)
+
+// TestAOS455_ConsultaSemRespostaReperguntaComODobro — o servidor não responde ao INFO
+// enquanto o grupo R3 se forma (AOS-455). A consulta calada NÃO é um erro que sobe, nem gasta o
+// orçamento inteiro: a 1.ª recebe [consultaLiderInicial], cada uma sem resposta dobra a
+// seguinte, e o líder anunciado à 3.ª devolve.
+func TestAOS455_ConsultaSemRespostaReperguntaComODobro(t *testing.T) {
+	r := novoRelogio()
+	var recebidos []time.Duration
+	err := esperarLider("S", func(d time.Duration) (string, error) {
+		recebidos = append(recebidos, d)
+		r.t = r.t.Add(d) // um INFO calado gasta o seu prazo, e só esse
+		if len(recebidos) < 3 {
+			return "", errSilencio
+		}
+		return "aos-2", nil
+	}, 10*time.Second, r.agora, r.dormir)
+	if err != nil {
+		t.Fatalf("com o líder anunciado à 3.ª consulta (as duas primeiras caladas): %v", err)
+	}
+	quer := []time.Duration{consultaLiderInicial, 2 * consultaLiderInicial, 4 * consultaLiderInicial}
+	if len(recebidos) != 3 || recebidos[0] != quer[0] || recebidos[1] != quer[1] || recebidos[2] != quer[2] {
+		t.Fatalf("prazos das consultas = %v, quer %v", recebidos, quer)
+	}
+}
+
+// TestAOS455_SilencioAtePrazoEsgotadoEIndisponibilidade — um grupo que nunca responde gasta o
+// orçamento, e só ele, e sai como o grupo sem líder: ErrNoQuorum + ErrStreamSemLider, sem o
+// «indeterminado — a escrita pode ter sido aplicada» de um INFO (que é uma LEITURA).
+func TestAOS455_SilencioAtePrazoEsgotadoEIndisponibilidade(t *testing.T) {
+	r := novoRelogio()
+	inicio := r.agora()
+	const prazo = 2 * time.Second
+	err := esperarLider("S", func(d time.Duration) (string, error) {
+		r.t = r.t.Add(d)
+		return "", errSilencio
+	}, prazo, r.agora, r.dormir)
+	if !errors.Is(err, eventstore.ErrNoQuorum) || !errors.Is(err, ErrStreamSemLider) {
+		t.Fatalf("silêncio até ao fim: err=%v — quer ErrNoQuorum E ErrStreamSemLider", err)
+	}
+	if errors.Is(err, natsjs.ErrIndeterminate) {
+		t.Fatalf("um INFO calado saiu como escrita indeterminada: %v", err)
+	}
+	if gasto := r.agora().Sub(inicio); gasto != prazo {
+		t.Fatalf("desistiu ao fim de %s, quer exactamente o prazo %s", gasto, prazo)
 	}
 }

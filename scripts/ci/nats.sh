@@ -30,6 +30,10 @@
 #      SEM escrever as linhas que a contagem por nome lê — e o gate saía verde por baixo de
 #      uma tabela que dizia «(vermelho)». O veredicto de cada pacote vem agora da linha com que
 #      o `go test` o fecha (`gotest-pacotes.sh`), e um aborto nunca é «falha declarada».
+#   G5 Os sensores da janela do stream fresco passam NATS_REPETICOES vezes SEGUIDAS (AOS-455,
+#      bloco 1b) — uma janela que falha 8% das vezes passa quase sempre numa corrida só.
+#   G6 Um teste que falha deixa no log a SUA asserção, e não só o `--- FAIL` (AOS-455): sem ela
+#      o próximo vermelho volta a diagnosticar-se por hipótese.
 #
 # ─── O QUE ESTE GATE TOLERA, E PORQUÊ ──────────────────────────────────────────────────────
 #
@@ -88,6 +92,15 @@ gate_threshold EVENTSTORE_COVERAGE_MIN 75 0 100 "%" always || exit 1
 # 167 em ~25 s no CI: ali é preciso subir (NATS_GO_TEST_TIMEOUT=60 make ci-nats). No CI fica o
 # default, bem abaixo do `timeout-minutes` do job, que mata sem dizer que teste estava pendurado.
 gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m" always || exit 1
+
+# QUANTAS VEZES SEGUIDAS correm os sensores da janela do stream fresco (AOS-455, bloco 1b).
+#
+# Piso = default, como os limiares de qualidade: o número É a barra. Medido antes da correcção,
+# cada um dos dois testes de disputa do lease falhava 4 vezes em 50 (8%); com 10 seguidas, uma
+# janela desse tamanho escapa por acaso em ~43% das execuções, e com 5 em ~66% — abaixo de 10 o
+# sensor passa a ser decorativo. Custo medido (cluster local, 150 corridas): ~2 s por repetição
+# nos três testes juntos — ~20 s ao default.
+gate_threshold NATS_REPETICOES 10 10 200 "" always || exit 1
 
 # =============================================================================================
 # (0) O CLUSTER
@@ -237,7 +250,10 @@ for entrada in "${modulos_nats[@]}"; do
       total_fail_conhecida=$((total_fail_conhecida + 1))
     else
       log_fail "nats: $modulo — teste NOVO a falhar sobre substrato real: $nome_teste"
-      grep -A8 "^--- FAIL: $nome_teste" "$saida" | head -12 || true
+      # A ASSERÇÃO, E NÃO SÓ O VEREDICTO (AOS-455). Era `grep -A8` a partir do `--- FAIL`, e em
+      # `go test -v` o `t.Errorf`/`t.Logf` sai ANTES dessa linha: três vermelhos seguidos sem
+      # ninguém ver as contagens. Ver `gotest_saida_do_teste` (gotest-pacotes.sh).
+      gotest_saida_do_teste "$saida" "$nome_teste" | sed 's/^/       /' || true
       rc=1
     fi
   done <<< "$falhadas"
@@ -316,6 +332,47 @@ for entrada in "${modulos_nats[@]}"; do
 done
 
 # =============================================================================================
+# (1b) REPETIÇÃO: OS SENSORES DA JANELA DO STREAM FRESCO, N VEZES SEGUIDAS (AOS-455)
+# =============================================================================================
+#
+# Os três testes abaixo são os que flakearam no CI sobre árvores IDÊNTICAS (o mesmo SHA de
+# árvore verde num run e vermelho no seguinte), todos pela janela entre o `STREAM.CREATE` e o
+# stream servido: um INFO a que o servidor não responde enquanto o grupo R3 se forma, e um 503
+# no primeiro PUB depois de o INFO já anunciar líder. Medido antes da correcção, contra um
+# cluster local de 4 nós: 4 falhas em 50 em cada um dos dois testes de disputa do lease.
+#
+# Uma corrida só, a 4–8%, passa quase sempre — e foi assim que a janela sobreviveu ao AOS-432.
+# Repeti-los N vezes seguidas é o que dá a este gate poder para a ver reabrir: a 8% por
+# corrida, 10 seguidas verdes acontecem por acaso em menos de metade das vezes. Correm DEPOIS
+# do restauro, para que uma falha aqui seja da janela e não de um nó que outro teste derrubou.
+bash "$CLUSTER" restore >/dev/null 2>&1 || true
+log_gate "nats · repetição dos sensores da janela do stream fresco (${NATS_REPETICOES}× seguidas, AOS-455)"
+repeticoes=(
+  "packages/integration|./|TestAOS432_LeaseSobreStreamFrescoNegaPeloLease"
+  "packages/cmd/aos-orq|./|TestAOS100_NServeEmParaleloSobreOSubstratoReplicado"
+  "packages/substrate/eventstore|./natsjs/|TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal"
+)
+for entrada in "${repeticoes[@]}"; do
+  IFS='|' read -r modulo alvo nome_teste <<< "$entrada"
+  saida="$(mktemp)"
+  rc_go=0
+  (cd "$REPO_ROOT/$modulo" && go test "$alvo" -run "^${nome_teste}\$" -count="$NATS_REPETICOES" -v \
+    -timeout="${NATS_GO_TEST_TIMEOUT}m") >"$saida" 2>&1 || rc_go=$?
+  n_pass="$(grep -c "^--- PASS: ${nome_teste} " "$saida" || true)"
+  n_fail="$(grep -c "^--- FAIL: ${nome_teste} " "$saida" || true)"
+  printf '   %-58s PASS=%s/%s FAIL=%s\n' "$nome_teste" "$n_pass" "$NATS_REPETICOES" "$n_fail"
+  # Exige-se N PASSES, e não «zero FAIL»: um teste que SALTA, ou que deixou de existir com este
+  # nome, passaria «zero FAIL» sem ter medido nada.
+  if [ "$rc_go" -ne 0 ] || [ "$n_pass" -ne "$NATS_REPETICOES" ]; then
+    log_fail "nats: $modulo — $nome_teste passou $n_pass de $NATS_REPETICOES vezes seguidas (rc=$rc_go): a janela do stream fresco reabriu, ou o sensor deixou de correr"
+    gotest_saida_do_teste "$saida" "$nome_teste" | grep -vE '^(=== (RUN|PAUSE|CONT|NAME)|--- PASS)' | sed 's/^/       /' || true
+    gotest_pacotes_diagnostico "$saida"
+    rc=1
+  fi
+  rm -f "$saida"
+done
+
+# =============================================================================================
 # (2) COBERTURA DO `substrate/eventstore`, MEDIDA COM O CLUSTER
 # =============================================================================================
 log_gate "nats · cobertura do substrate/eventstore (piso ${EVENTSTORE_COVERAGE_MIN}%, so mensuravel com cluster)"
@@ -345,7 +402,12 @@ else
   # FAIL-CLOSED. Uma medição que não corre não é uma medição que passa — seria o caminho
   # exacto pelo qual um gate de cobertura fica verde sem medir nada.
   log_fail "eventstore: a medicao de cobertura NAO correu; sem numero nao ha veredicto"
-  grep -E "^(FAIL|---|panic: |.*\.go:[0-9]+:)" "$cov_log" | head -12
+  grep -E "^(FAIL|panic: )" "$cov_log" | head -12 || true
+  # O output de CADA teste que falhou, inteiro (AOS-455) — e não as primeiras 12 linhas que
+  # casassem com `.go:NN:`, que num pacote com vários vermelhos cortava a asserção a meio.
+  grep '^--- FAIL' "$cov_log" | sed -E 's/^--- FAIL: ([^ ]+).*/\1/' | sort -u | while IFS= read -r nome_teste; do
+    gotest_saida_do_teste "$cov_log" "$nome_teste" | sed 's/^/       /'
+  done || true
   rc=1
 fi
 rm -f "$cov_out" "$cov_log"

@@ -1633,7 +1633,7 @@ rm -f "$PT_EMPTY" "$PT_FIX"
 # ============================================================================
 # Y) um pacote que ABORTA avermelha o gate nats (AOS-452)
 # ============================================================================
-log_gate "self-test Y · pacote com panic/timeout/build failed avermelha o gate nats (AOS-452)"
+log_gate "self-test Y · pacote com panic/timeout/build failed avermelha o gate nats (AOS-452), e o log mostra a asserção (AOS-455)"
 # O gate nats contava falhas pelas linhas `--- FAIL`, e o rc do `go test` só pintava a tabela.
 # Um timeout (`panic: test timed out`), um `[build failed]` ou um `os.Exit` num `TestMain` não
 # escrevem `--- FAIL` nenhum — medido a 2026-09-26: o `cmd/aos-orq` rebentou aos 10 min, a
@@ -1745,6 +1745,33 @@ else
     *"VIOLAÇÃO DE PISO"*) pass "Y6: NATS_GO_TEST_TIMEOUT=0 é recusado por VIOLAÇÃO DE PISO, antes do cluster" ;;
     *) bad "Y6: NATS_GO_TEST_TIMEOUT=0 avermelhou mas não por VIOLAÇÃO DE PISO — a recusa não é a do piso" ;;
   esac
+fi
+
+# Y7 — O LOG MOSTRA A ASSERÇÃO (AOS-455). Em `go test -v` o `t.Fatal` sai ANTES do `--- FAIL`,
+# e o gate imprimia `grep -A8` a partir do `--- FAIL`: três vermelhos sem ninguém ver o que a
+# asserção dizia. Sobre a saída REAL do módulo `fal` (Y5), corrida com os flags do gate.
+if grep -A8 '^--- FAIL: TestFalha' "$GOTEST_TMP/fal.out" | grep -q 'falha limpa'; then
+  bad "Y7: o grep -A8 antigo já mostra a asserção — o caso deixou de reproduzir o defeito medido"
+elif ! gotest_saida_do_teste "$GOTEST_TMP/fal.out" TestFalha | grep -q 'falha limpa'; then
+  bad "Y7: gotest_saida_do_teste não mostra a linha do t.Fatal do teste que falhou"
+elif gotest_saida_do_teste "$GOTEST_TMP/fal.out" TestFalha | grep -q 'TestBoa'; then
+  bad "Y7: gotest_saida_do_teste mistura linhas de outro teste (TestBoa) nas do TestFalha"
+elif ! grep -qE '^[[:space:]]*gotest_saida_do_teste "\$saida" "\$nome_teste"' "$NATS_SH"; then
+  bad "Y7: o nats.sh não imprime a saída do teste NOVO a falhar com gotest_saida_do_teste"
+else
+  pass "Y7: o log do gate nats mostra a asserção do teste que falhou, e só a dele"
+fi
+
+# Y8 — A REPETIÇÃO DOS SENSORES DA JANELA (AOS-455) não se desliga em silêncio: o número passa
+# por gate_threshold com piso 10, e os três sensores estão na lista que o bloco (1b) corre.
+if ! grep -qE '^gate_threshold NATS_REPETICOES 10 10 [0-9]+ "" always \|\| exit 1$' "$NATS_SH"; then
+  bad "Y8: NATS_REPETICOES não passa por gate_threshold com default e piso 10"
+elif ! awk '/^repeticoes=\(/{d=1} d&&/TestAOS432_LeaseSobreStreamFrescoNegaPeloLease/{a=1} d&&/TestAOS100_NServeEmParaleloSobreOSubstratoReplicado/{b=1} d&&/TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal/{c=1} d&&/^\)/{exit} END{exit !(a&&b&&c)}' "$NATS_SH"; then
+  bad "Y8: um dos três sensores da janela saiu da lista de repetição do nats.sh"
+elif ! grep -qE -- '-count="\$NATS_REPETICOES"' "$NATS_SH"; then
+  bad "Y8: o bloco de repetição do nats.sh não corre os sensores com -count=\$NATS_REPETICOES"
+else
+  pass "Y8: o nats.sh repete os três sensores da janela NATS_REPETICOES (≥ 10) vezes seguidas"
 fi
 rm -rf "$GOTEST_TMP"; GOTEST_TMP=""
 
