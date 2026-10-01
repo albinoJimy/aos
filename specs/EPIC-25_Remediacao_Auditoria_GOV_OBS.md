@@ -2199,7 +2199,7 @@ citar sem escolher não é.
 
 ### Estado
 
-**FEITO** (2026-09-08). Decidido pela **Via A (materializar)**, na mesma data. O dono escolheu materializar o ADR-014 (não a emenda à
+**DECIDIDO — Via A (materializar), 2026-09-08.** O dono escolheu materializar o ADR-014 (não a emenda à
 Carta), e reconciliar `tecnica/14` nomeando `DEF-908` e declarando a metade não-composta. Sem edição da
 Carta (owner-only) — a decisão fica registada pela via dos ADR, que é o mecanismo próprio para uma
 decisão de arquitectura, e não pela §7 da Carta.

@@ -32,7 +32,7 @@ ausente ou a mentir sobre o que faz. Dezanove tickets, cinco eixos:
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
 | Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319, AOS-472, AOS-473, AOS-475 |
 | Integridade das ferramentas de gate | AOS-316, AOS-474 |
-| Semântica da extracção (por abrir) | AOS-318 |
+| Semântica da extracção | AOS-318 (feito) |
 
 > **AOS-312 não vem da §3.** Os sete primeiros são achados activos do documento-fonte; o oitavo
 > vem da **§5** (o meta-achado sobre asserções que nenhum gate lê) e nasceu do acto de remediar
@@ -86,7 +86,7 @@ ausente ou a mentir sobre o que faz. Dezanove tickets, cinco eixos:
 | AOS-315 | A coluna de documentos técnicos da §4 resolvia-se pela amplitude do conjunto, não por ticket | P2 | **ENTREGUE** |
 | AOS-316 | O `selftest.sh` muta ficheiros do repositório sem exclusão mútua, e dois runs corrompem-se um ao outro | P2 | **ENTREGUE** |
 | AOS-317 | O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia | P2 | **ENTREGUE** |
-| AOS-318 | Um ticket não pode mencionar um ADR sem alegar que o implementa | P2 | ABERTO |
+| AOS-318 | Um ticket não pode mencionar um ADR sem alegar que o implementa | P2 | **FEITO** |
 | AOS-319 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
 | AOS-472 | Uma linha de prosa começada por três crases ou três tis desloca pares (ticket, ADR) sem que nenhum gate dê por isso | P2 | **FEITO** |
 | AOS-473 | Pares (ticket, ADR) que o próprio corpus declara restrições contavam como entregas, e uma emenda declarada não contava | P2 | **FEITO** |
@@ -1017,7 +1017,9 @@ encadeadas aceites → §Z8 vermelho. Gates verdes; `selftest.sh` completo verde
 1. **Os 16 pares que o corpus declara falsos continuam na §4**, e a emenda do AOS-442 continua sem
    ligação. Migrá-los é marcar o trecho das restrições em seis blocos da EPIC-19 — trabalho
    mecânico, mas de outros tickets, e por isso fora deste. Desloca exactamente 17 pares (16 saem,
-   1 entra) e merece ticket próprio.
+   1 entra) e merece ticket próprio. *(Fechado pelo AOS-473, com outra conta: saíram 15 dos 16 — um
+   par do AOS-423 é restrição e entrega, e fica —, mais 5 pares que os comentários de declaração
+   citam como precedente; a emenda do AOS-442 entrou.)*
 2. **O terminador do bloco continua duplicado** entre os dois leitores (`fim_do_bloco`). A
    classificação e a detecção de cercas passaram a ser partilhadas; o terminador não, e o
    comentário «muda o outro no mesmo commit» continua a ser a única guarda dessa metade.
@@ -1025,7 +1027,8 @@ encadeadas aceites → §Z8 vermelho. Gates verdes; `selftest.sh` completo verde
    linha de prosa que comece por três tis ou três crases abre, com toda a razão, uma cerca até ao
    fim do ficheiro, e desloca pares sem que `rtm.sh` dê por isso — regenerada, a RTM fica
    sincronizada com o corpus errado. Aconteceu ao escrever a nota da revisão acima, e só a
-   comparação manual dos 445 pares o apanhou antes do commit.
+   comparação manual dos 445 pares o apanhou antes do commit. *(A causa das cercas e dos
+   comentários fechou-a o AOS-472; o comparador entre commits é o AOS-475.)*
 
 ### Estado
 
@@ -1330,10 +1333,12 @@ blocos deslocava exactamente 17 pares, 16 a sair e 1 a entrar.
       nas menções
 - [x] Só se tocou nos trechos: o texto **visível** da EPIC-19, renderizado em CommonMark com tabelas
       antes e depois, é o mesmo palavra a palavra, com uma excepção acrescentada — a nota de fecho no
-      resíduo 8 do AOS-442, que de outro modo afirmaria uma coisa que deixou de ser verdade
-- [x] O estado do AOS-380 na EPIC-25 deixa de abrir com «DECIDIDO» e passa a **FEITO** (2026-09-08),
-      com o histórico intacto; `estado-citado.sh` verde (nenhum `BLOQUEADOR` cita o AOS-380, e o
-      lexema passa de abstenção a fechado)
+      resíduo 8 do AOS-442, que de outro modo afirmaria uma coisa que deixou de ser verdade. Na
+      revisão juntaram-se notas, invisíveis, dentro dos seis comentários de declaração (abaixo)
+- [x] ~~O estado do AOS-380 na EPIC-25 deixa de abrir com «DECIDIDO» e passa a **FEITO**~~ —
+      **revertido na revisão**: o AOS-380 tem 0 de 8 caixas marcadas e o critério da Carta
+      declaradamente por cumprir; «DECIDIDO» descreve-o melhor, e a mudança estava fora do âmbito
+      deste ticket e sem efeito observável no `estado-citado`
 
 ### Entrega
 
@@ -1381,6 +1386,12 @@ linha anterior. Na EPIC-19: 45 trechos de menção — 38 em linha, 6 à volta d
 declaração e 1 a atravessar uma quebra de linha —, o marcador de bloco do AOS-442 retirado e a
 nota no resíduo 8 do mesmo bloco; nenhuma outra palavra de prosa mudou.
 
+**Efeito na cobertura**, medido na §4 regenerada contra a de antes deste ticket: o ADR-029 passa
+de 4 implementadores a **1** (AOS-424) e entra na lista de sub-cobertura (≤ 3); o ADR-031 passa de 2
+a **1** (AOS-430), e já lá estava. Os restantes descem sem mudar de lado do limiar: ADR-001 26 → 25,
+ADR-003 13 → 12, ADR-006 e ADR-007 19 → 18, ADR-016 16 → 14, ADR-018 17 → 14, ADR-023 12 → 10,
+ADR-027 7 → 4, ADR-028 7 → 6; o ADR-030 fica em 4 (sai o AOS-430, entra o AOS-442). Nenhum fica a 0.
+
 Gates: `rtm.sh`, `ref-lint.sh` (35 ADRs com cobertura — nenhum ficou sem implementador),
 `estado-citado.sh` e `lint.sh` verdes; `selftest.sh` completo, a correr sozinho, verde (130 subtestes).
 Medidos, como os do AOS-472, com o AOS-471 do ramo paralelo presente.
@@ -1395,13 +1406,33 @@ Medidos, como os do AOS-472, com o AOS-471 do ramo paralelo presente.
    deste ticket foi a declaração do próprio bloco; o mecanismo continua opt-in, e o resto espera
    quem releia cada bloco.
 
+**Revisão adversarial independente (2026-10-01), sobre 15516ee.** Os dados confirmados par a par
+(20 saem, 1 entra, 426 nos dois leitores); três correcções nesta metade, num commit por cima:
+
+- **O AOS-380 voltou a «DECIDIDO»** (médio): a passagem a FEITO estava fora do âmbito, contra o
+  próprio bloco (0 de 8 caixas, o critério da Carta por cumprir) e sem efeito no `estado-citado`.
+- **Nove afirmações tinham ficado falsas** (médio): os seis comentários de declaração da EPIC-19
+  continuavam a dizer que as restrições «passam a contar como implementados», que «não há forma
+  de separar os dois papéis» e, no AOS-442, que «o marcador fica»; e na EPIC-22 o resíduo 1 do
+  AOS-318, a linha da tabela 0.2 (AOS-318 «ABERTO») e a do eixo («por abrir»). Cada comentário
+  ganhou, antes do seu `-->`, uma nota «Desde AOS-473» com o que é verdade para esse bloco — dentro
+  do comentário, porque é aí que a afirmação vive, e dentro do trecho, pelo que não move pares;
+  as linhas da EPIC-22 passaram ao estado real (o AOS-318 está FEITO e fundido). O resíduo 1 desta
+  entrega deixa, por isso, de valer para os comentários.
+- **O efeito na cobertura não estava dito** (menor): acima.
+
+Gates da segunda passagem, sobre 45ff27d: `rtm.sh`, `ref-lint.sh`, `estado-citado.sh`, `deferrals.sh` e
+`lint.sh` verdes; `selftest.sh` completo, a correr sozinho, verde (151 subtestes). Os pares não
+mudam com as notas: 426 implementados e 111 menções, antes e depois, iguais nos dois leitores; e o
+texto visível da EPIC-19 renderizada também não.
+
 ### Estado
 
 **FEITO** (2026-10-01). P2.
 
 `specs/EPIC-19_Planeador_Meta_Orquestracao.md` (blocos de AOS-417, AOS-423, AOS-424, AOS-427, AOS-430
-e AOS-442), `specs/EPIC-25_Remediacao_Auditoria_GOV_OBS.md` (estado do AOS-380),
-`tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada).
+e AOS-442), `specs/EPIC-25_Remediacao_Auditoria_GOV_OBS.md` (estado do AOS-380 — revertido na
+revisão), `tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada).
 
 ---
 

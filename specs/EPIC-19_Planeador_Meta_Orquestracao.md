@@ -2459,7 +2459,7 @@ se um restauro repõe um modo que o contentor não lê. E, da mesma release, o *
      bloco como menções, e o ADR-028 ficaria sem ticket implementador — gate vermelho. O preço
      de o tirar é que o ADR-018, o ADR-023 e o ADR-027, que aqui são RESTRIÇÕES e não entregas,
      passam a contar como implementados por este ticket na RTM. Fica dito porque o parser é
-     textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. -->
+     textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
@@ -2632,7 +2632,7 @@ coisas que o <!-- rtm: menção -->ADR-023 e o ADR-018<!-- /rtm: menção --> ho
      declaradas no próprio ADR §5 como por construir. O preço de tirar o marcador é o mesmo que o
      AOS-430 pagou pelo ADR-031 e o AOS-424 pelo ADR-029: o ADR-003, o ADR-006, o ADR-016 e o
      ADR-027, que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este
-     ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. -->
+     ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
@@ -3208,7 +3208,7 @@ teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
      pelo ADR-029 e o AOS-417 pelo ADR-028: o ADR-016, o ADR-018, o ADR-027 e o ADR-030, que aqui
      são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket na RTM.
      Fica dito porque o parser é textual e o marcador é tudo-ou-nada — não há forma de separar os
-     dois papéis dentro do mesmo bloco. -->
+     dois papéis dentro do mesmo bloco. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
@@ -4752,7 +4752,7 @@ caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria 
      Este ticket IMPLEMENTA o ADR-029. O preço de tirar o marcador é que o ADR-001 e o ADR-007,
      que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket
      na RTM. Fica dito porque o parser é textual e o marcador é tudo-ou-nada: não há forma de
-     separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. -->
+     separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
@@ -5095,7 +5095,7 @@ um valor «sujo» continua invisível.
      O preco de tirar o marcador e que o ADR-018, o ADR-023 e o ADR-028, que aqui sao RESTRICOES
      e nao entregas, passam a contar como implementados por este ticket na RTM. Fica dito porque
      o parser e textual e o marcador e tudo-ou-nada: nao ha forma de separar os dois papeis no
-     mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. -->
+     mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. *(Desde AOS-473: as restrições estão em trecho de menção, fora da §4 — excepto o ADR-028, que aqui é restrição e entrega e por isso fica implementado.)* -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
@@ -6201,7 +6201,7 @@ exemplo de recusa em `deploy/server/README.md` foi actualizado.
      não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25).
      EXCEPÇÃO DECLARADA: este ticket EMENDA o ADR-030 §2.6, e a emenda está registada no próprio
      ADR, que o nomeia. O marcador fica porque o parser da RTM é tudo-ou-nada, e os restantes
-     (ADR-005, ADR-018, ADR-031) são de facto só menção. -->
+     (ADR-005, ADR-018, ADR-031) são de facto só menção. *(Desde AOS-473: o marcador de bloco saiu; estas menções estão em trechos, e a emenda do ADR-030 conta como implementação.)* -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
