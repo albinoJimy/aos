@@ -1750,29 +1750,73 @@ fi
 # Y7 — O LOG MOSTRA A ASSERÇÃO (AOS-455). Em `go test -v` o `t.Fatal` sai ANTES do `--- FAIL`,
 # e o gate imprimia `grep -A8` a partir do `--- FAIL`: três vermelhos sem ninguém ver o que a
 # asserção dizia. Sobre a saída REAL do módulo `fal` (Y5), corrida com os flags do gate.
+#
+# y_chama_no_ramo <abre> <chamada> — no nats.sh, dentro do ramo que abre na linha que casa com
+# <abre> e fecha no `rc=1` seguinte, há uma linha de CÓDIGO (não comentário) que casa com
+# <chamada>. Um por sítio de chamada: a revisão do AOS-455 mostrou que um só grep pelo padrão
+# da chamada ficava verde com ela retirada do ramo do teste NOVO (casava a do bloco 1b).
+y_chama_no_ramo() {
+  awk -v abre="$1" -v chamada="$2" '$0 ~ abre {d=1} d && $0 ~ chamada {ok=1} d && /^[[:space:]]*rc=1$/ {exit} END {exit !ok}' "$NATS_SH"
+}
 if grep -A8 '^--- FAIL: TestFalha' "$GOTEST_TMP/fal.out" | grep -q 'falha limpa'; then
   bad "Y7: o grep -A8 antigo já mostra a asserção — o caso deixou de reproduzir o defeito medido"
 elif ! gotest_saida_do_teste "$GOTEST_TMP/fal.out" TestFalha | grep -q 'falha limpa'; then
   bad "Y7: gotest_saida_do_teste não mostra a linha do t.Fatal do teste que falhou"
 elif gotest_saida_do_teste "$GOTEST_TMP/fal.out" TestFalha | grep -q 'TestBoa'; then
   bad "Y7: gotest_saida_do_teste mistura linhas de outro teste (TestBoa) nas do TestFalha"
-elif ! grep -qE '^[[:space:]]*gotest_saida_do_teste "\$saida" "\$nome_teste"' "$NATS_SH"; then
-  bad "Y7: o nats.sh não imprime a saída do teste NOVO a falhar com gotest_saida_do_teste"
+elif ! y_chama_no_ramo 'teste NOVO a falhar sobre substrato real' '^[[:space:]]*gotest_saida_do_teste "[$]saida" "[$]nome_teste"'; then
+  bad "Y7: o ramo do teste NOVO a falhar do nats.sh não imprime a asserção (gotest_saida_do_teste)"
+elif ! y_chama_no_ramo 'a medicao de cobertura NAO correu' '^[[:space:]]*gotest_saida_do_teste "[$]cov_log" "[$]nome_teste"'; then
+  bad "Y7: o ramo da cobertura que não correu do nats.sh não imprime a asserção (gotest_saida_do_teste)"
+elif ! y_chama_no_ramo 'vezes seguidas [(]rc=' '^[[:space:]]*gotest_saida_do_teste "[$]saida" "[$]nome_teste"'; then
+  bad "Y7: o ramo da repetição (1b) do nats.sh não imprime a asserção (gotest_saida_do_teste)"
 else
-  pass "Y7: o log do gate nats mostra a asserção do teste que falhou, e só a dele"
+  pass "Y7: os três ramos vermelhos do gate nats mostram a asserção do teste que falhou, e só a dele"
 fi
 
-# Y8 — A REPETIÇÃO DOS SENSORES DA JANELA (AOS-455) não se desliga em silêncio: o número passa
-# por gate_threshold com piso 10, e os três sensores estão na lista que o bloco (1b) corre.
+# Y7b — COM `-count=N`, SÓ A REPETIÇÃO QUE FALHOU, E A ASSERÇÃO SOBREVIVE AO CORTE. O bloco (1b)
+# corre cada sensor N vezes; a revisão do AOS-455 mediu que o corte de 150 linhas se aplicava
+# ANTES de se tirarem as repetições verdes, e a asserção de uma repetição tardia caía fora.
+y_modulo rep
+printf 'package rep\n\nimport "testing"\n\nvar n int\n\nfunc TestRep(t *testing.T) {\n\tn++\n\tfor i := 0; i < 200; i++ {\n\t\tt.Logf("ruido da execucao %%d", n)\n\t}\n\tif n == 3 {\n\t\tt.Fatalf("ASSERCAO da execucao %%d", n)\n\t}\n}\n' > "$GOTEST_TMP/rep/p_test.go"
+(cd "$GOTEST_TMP/rep" && go test ./... -count=4 -v) > "$GOTEST_TMP/rep.out" 2>&1 || true
+y7b="$(gotest_saida_do_teste "$GOTEST_TMP/rep.out" TestRep)"
+if ! grep -q '^--- FAIL: TestRep ' "$GOTEST_TMP/rep.out"; then
+  bad "Y7b: o módulo de controlo não falhou à 3.ª repetição — o caso não reproduz nada"
+elif ! printf '%s\n' "$y7b" | grep -q 'ASSERCAO da execucao 3'; then
+  bad "Y7b: com -count=4 a asserção da repetição que falhou não chegou ao log"
+elif printf '%s\n' "$y7b" | grep -qE 'ruido da execucao [124]'; then
+  bad "Y7b: com -count=4 o log traz as repetições que PASSARAM (ruído que empurra a asserção para o corte)"
+else
+  pass "Y7b: com -count=N só a repetição que falhou chega ao log, e a asserção dela sobrevive ao corte"
+fi
+
+# Y8 — A REPETIÇÃO DOS SENSORES DA JANELA (AOS-455) não se desliga em silêncio. Estrutura: o
+# número passa por gate_threshold com piso 10, os três sensores estão na lista, correm com
+# -count=$NATS_REPETICOES, e o veredicto do bloco AVERMELHA (rc=1) — a revisão do AOS-455 trocou
+# esse `if` por `if false` e as verificações de texto continuaram verdes. Comportamento: 9 e
+# 10.5 são RECUSADOS por violação de piso, antes do cluster.
 if ! grep -qE '^gate_threshold NATS_REPETICOES 10 10 [0-9]+ "" always \|\| exit 1$' "$NATS_SH"; then
   bad "Y8: NATS_REPETICOES não passa por gate_threshold com default e piso 10"
 elif ! awk '/^repeticoes=\(/{d=1} d&&/TestAOS432_LeaseSobreStreamFrescoNegaPeloLease/{a=1} d&&/TestAOS100_NServeEmParaleloSobreOSubstratoReplicado/{b=1} d&&/TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal/{c=1} d&&/^\)/{exit} END{exit !(a&&b&&c)}' "$NATS_SH"; then
   bad "Y8: um dos três sensores da janela saiu da lista de repetição do nats.sh"
 elif ! grep -qE -- '-count="\$NATS_REPETICOES"' "$NATS_SH"; then
   bad "Y8: o bloco de repetição do nats.sh não corre os sensores com -count=\$NATS_REPETICOES"
+elif ! awk '/^repeticoes=\(/{d=1} d && /^[[:space:]]*if \[ "[$]rc_go" -ne 0 \] [|][|] \[ "[$]n_pass" -ne "[$]NATS_REPETICOES" \]; then$/ {v=1} v && /^[[:space:]]*rc=1$/ {ok=1} d && /^done$/ {exit} END {exit !ok}' "$NATS_SH"; then
+  bad "Y8: o veredicto do bloco de repetição não avermelha (rc=1) quando o rc ou as N passagens falham"
 else
-  pass "Y8: o nats.sh repete os três sensores da janela NATS_REPETICOES (≥ 10) vezes seguidas"
+  pass "Y8: o nats.sh repete os três sensores da janela NATS_REPETICOES (≥ 10) vezes, e o bloco avermelha"
 fi
+for y8v in 9 10.5; do
+  if out="$( AOS_GATE_FLOOR_OVERRIDE="" NATS_REPETICOES="$y8v" bash "$NATS_SH" 2>&1 )"; then
+    bad "Y8: NATS_REPETICOES=$y8v foi aceite"
+  else
+    case "$out" in
+      *"VIOLAÇÃO DE PISO"*) pass "Y8: NATS_REPETICOES=$y8v é recusado por VIOLAÇÃO DE PISO, antes do cluster" ;;
+      *) bad "Y8: NATS_REPETICOES=$y8v avermelhou mas não por VIOLAÇÃO DE PISO" ;;
+    esac
+  fi
+done
 rm -rf "$GOTEST_TMP"; GOTEST_TMP=""
 
 

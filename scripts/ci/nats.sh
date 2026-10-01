@@ -101,6 +101,15 @@ gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m" always || exit 1
 # sensor passa a ser decorativo. Custo medido (cluster local, 150 corridas): ~2 s por repetição
 # nos três testes juntos — ~20 s ao default.
 gate_threshold NATS_REPETICOES 10 10 200 "" always || exit 1
+# É uma CONTAGEM: o `gate_threshold` aceita decimais (os outros limiares são percentagens e
+# fracções), e `10.5` passava o piso para só rebentar no `-count=10.5` do `go test`, já com o
+# cluster de pé. Recusa-se aqui, com o diagnóstico de configuração (revisão do AOS-455).
+case "$NATS_REPETICOES" in
+  '' | *[!0-9]*)
+    log_fail "VIOLAÇÃO DE PISO (configuração inválida): NATS_REPETICOES='${NATS_REPETICOES}' não é um inteiro — é uma contagem de corridas."
+    exit 1
+    ;;
+esac
 
 # =============================================================================================
 # (0) O CLUSTER
@@ -365,7 +374,8 @@ for entrada in "${repeticoes[@]}"; do
   # nome, passaria «zero FAIL» sem ter medido nada.
   if [ "$rc_go" -ne 0 ] || [ "$n_pass" -ne "$NATS_REPETICOES" ]; then
     log_fail "nats: $modulo — $nome_teste passou $n_pass de $NATS_REPETICOES vezes seguidas (rc=$rc_go): a janela do stream fresco reabriu, ou o sensor deixou de correr"
-    gotest_saida_do_teste "$saida" "$nome_teste" | grep -vE '^(=== (RUN|PAUSE|CONT|NAME)|--- PASS)' | sed 's/^/       /' || true
+    # Só as repetições que NÃO passaram, e o corte conta depois da escolha (gotest-pacotes.sh).
+    gotest_saida_do_teste "$saida" "$nome_teste" | sed 's/^/       /' || true
     gotest_pacotes_diagnostico "$saida"
     rc=1
   fi

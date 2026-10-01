@@ -196,3 +196,28 @@ func TestAOS455_SilencioAtePrazoEsgotadoEIndisponibilidade(t *testing.T) {
 		t.Fatalf("desistiu ao fim de %s, quer exactamente o prazo %s", gasto, prazo)
 	}
 }
+
+// TestAOS455_IndeterminadoSemTimeoutSobeSemRetentar — só o SILÊNCIO ([natsjs.ErrTimeout]) é
+// re-perguntado. Um [natsjs.ErrIndeterminate] por outra razão — a ligação fechou com o pedido
+// em voo — não é o grupo a formar-se: sobe à primeira, com a causa. Sem este caso, tratar todo
+// o indeterminado como silêncio passava os outros testes (revisão do AOS-455) e escondia uma
+// ligação perdida atrás do prazo inteiro.
+func TestAOS455_IndeterminadoSemTimeoutSobeSemRetentar(t *testing.T) {
+	r := novoRelogio()
+	fechada := fmt.Errorf("%w: %w", natsjs.ErrIndeterminate, natsjs.ErrClosed)
+	consultas := 0
+	err := esperarLider("S", func(d time.Duration) (string, error) {
+		consultas++
+		r.t = r.t.Add(d)
+		return "", fechada
+	}, 10*time.Second, r.agora, r.dormir)
+	if !errors.Is(err, natsjs.ErrClosed) {
+		t.Fatalf("a causa perdeu-se: %v", err)
+	}
+	if errors.Is(err, ErrStreamSemLider) {
+		t.Fatalf("uma ligação fechada foi reportada como falta de líder: %v", err)
+	}
+	if consultas != 1 {
+		t.Fatalf("consultas = %d, quer 1 — um indeterminado que não é silêncio não se re-pergunta", consultas)
+	}
+}

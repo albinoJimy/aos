@@ -178,6 +178,12 @@ func TestAOS455_ComStreamAlheioQueCapturaOSubjectReTenta(t *testing.T) {
 
 // TestAOS455_ContextoCanceladoInterrompeAJanela — a espera da janela obedece ao ctx: um
 // chamador que desiste não fica preso ao prazo do store.
+//
+// O ctx é CANCELADO, e não um WithTimeout: com um prazo no ctx, o `prazoDe` alinha o limite da
+// janela com ele, a janela esgota-se sozinha no mesmo instante, e o teste passava sem o ramo do
+// `ctx.Done()` — a revisão do AOS-455 trocou-o por um canal que nunca fica pronto e a versão
+// anterior continuou verde. Aqui o prazo do store é 10 s e o cancelamento vem aos 200 ms: só o
+// ramo do ctx devolve antes de 1 s, e com `context.Canceled` em vez do erro da janela esgotada.
 func TestAOS455_ContextoCanceladoInterrompeAJanela(t *testing.T) {
 	s := arrancarServidorEleicao(t, 0)
 	s.configurar(func(s *servidorEleicao) { s.pub503 = -1 })
@@ -187,18 +193,43 @@ func TestAOS455_ContextoCanceladoInterrompeAJanela(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	ctx, cancelar := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancelar := context.WithCancel(context.Background())
 	defer cancelar()
+	time.AfterFunc(200*time.Millisecond, cancelar)
 	inicio := time.Now()
 	_, err = st.Append(ctx, "run-455", eventstore.EventInput{Type: "x", Payload: []byte(`{}`)})
-	if err == nil {
-		t.Fatal("Append sobre um stream que nunca serve devolveu sucesso")
+	gasto := time.Since(inicio)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Append com o ctx cancelado aos 200 ms = %v — quer context.Canceled", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrStreamNaoServe) {
-		t.Fatalf("Append com ctx de 300 ms = %v — quer o prazo do ctx", err)
+	if errors.Is(err, ErrStreamNaoServe) {
+		t.Fatalf("o cancelamento saiu como janela esgotada — o ramo do ctx não interrompeu: %v", err)
 	}
-	if gasto := time.Since(inicio); gasto > 2*time.Second {
-		t.Fatalf("a janela ignorou o ctx: %s", gasto)
+	if gasto >= time.Second {
+		t.Fatalf("a janela ignorou o ctx cancelado: devolveu ao fim de %s (prazo do store 10 s)", gasto)
+	}
+}
+
+// TestAOS455_RestauroAtravessaAJanela — o `IngestStream` (restauro de backup) escreve com o
+// mesmo CAS do `Append`, num stream que acabou de ser criado — é o caso mais provável de todos
+// de cair na janela. Um 503 de janela não pode abortar o restauro.
+func TestAOS455_RestauroAtravessaAJanela(t *testing.T) {
+	s := arrancarServidorEleicao(t, 0)
+	s.configurar(func(s *servidorEleicao) { s.pub503 = 1 })
+	st, err := Abrir(s.ln.Addr().String(), ComNomeDeStream("AOS455FAKE"), ComPrazo(3*time.Second))
+	if err != nil {
+		t.Fatalf("Abrir: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ev := eventstore.NewEvent("run-455", 1, eventstore.EventInput{
+		Type: "x", Payload: []byte(`{}`), RunID: "run-455", StepID: "p-1",
+	}, time.Unix(1_790_000_000, 0))
+	if err := st.IngestStream(context.Background(), "run-455", []eventstore.Event{ev}); err != nil {
+		t.Fatalf("IngestStream com um 503 de janela no primeiro CAS: %v — o restauro abortou na janela", err)
+	}
+	if n := s.publicacoes(); n != 2 {
+		t.Fatalf("publicações = %d, quer 2 (a do 503 + a aceite)", n)
 	}
 }
 

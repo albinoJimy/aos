@@ -88,9 +88,9 @@ gotest_pacotes_inexplicados() {
 }
 
 # gotest_saida_do_teste <saida> <NomeDoTeste> [max_linhas]
-#   Imprime TODAS as linhas que pertencem a um teste (e aos seus subtestes): o cabeçalho, o que
-#   ele escreveu por `t.Logf`/`t.Errorf`/`t.Fatalf`, e a linha do veredicto. É o que o log do
-#   gate tem de mostrar quando um teste falha (AOS-455).
+#   Imprime as linhas das execuções de um teste que NÃO passaram (e dos seus subtestes): o
+#   cabeçalho, o que ele escreveu por `t.Logf`/`t.Errorf`/`t.Fatalf`, e a linha do veredicto. É
+#   o que o log do gate tem de mostrar quando um teste falha (AOS-455).
 #
 #   O DEFEITO QUE FECHA. O gate imprimia `grep -A8` a partir do `--- FAIL`. Em `go test -v` as
 #   linhas da asserção saem ANTES dessa linha — depois do `=== RUN`/`=== CONT`/`=== NAME` do
@@ -103,21 +103,58 @@ gotest_pacotes_inexplicados() {
 #   linha de veredicto `--- …`; uma linha de pacote (`FAIL`, `ok`, `PASS`, `exit status`) não
 #   pertence a teste nenhum. Testes paralelos intercalam, mas o `go test -v` re-anuncia o dono
 #   (`=== CONT`/`=== NAME`) antes de cada bloco de output — e é isso que a regra segue.
-#   `max_linhas` (omissão 150) limita um teste que despeje stdout de processos; o corte é
-#   declarado, nunca silencioso.
+#
+#   POR EXECUÇÃO, e só as que não passaram. Com `-count=N` (o bloco de repetição do `nats.sh`) o
+#   mesmo nome corre N vezes; cada `=== RUN <nome>` abre uma execução, e com `-v` o veredicto
+#   fecha-a. Imprimem-se as execuções com `--- FAIL`, com `--- SKIP` ou SEM veredicto (o binário
+#   abortou a meio dela); as que passaram são ruído — e era esse ruído que, cortado ANTES de se
+#   filtrar, podia empurrar a asserção de uma repetição tardia para fora do log (revisão do
+#   AOS-455). `max_linhas` (omissão 150) conta só o que se imprime; acima dele corta-se o MEIO
+#   (ficam o cabeçalho e o fim, onde estão o `t.Fatalf` e o veredicto), e o corte é declarado.
+#
+#   LIMITE CONHECIDO: o stdout CRU de um teste (`fmt.Println`, e não `t.Log`) não traz o nome
+#   dele, e o `go test -v` não o re-anuncia; num teste paralelo fica atribuído ao último teste
+#   anunciado — o outro. As asserções (`t.Errorf`/`t.Fatalf`) e o `t.Logf` não têm este limite.
 gotest_saida_do_teste() {
   local saida="$1" nome="$2" max="${3:-150}"
   awk -v nome="$nome" -v max="$max" '
     function deste(t) { return t == nome || index(t, nome "/") == 1 }
-    function mostra(l) { n++; if (n <= max) print l }
-    /^=== (RUN|CONT|PAUSE|NAME)[[:space:]]/ { dono = $3; if (deste(dono)) mostra($0); next }
+    function guarda(l) { seg[++nl] = l }
+    function fecha(   i) {
+      if (nl > 0 && veredicto != "PASS")
+        for (i = 1; i <= nl; i++) out[++n] = seg[i]
+      nl = 0; veredicto = ""
+    }
+    /^=== (RUN|CONT|PAUSE|NAME)[[:space:]]/ {
+      dono = $3
+      if ($2 == "RUN" && dono == nome) fecha()
+      if (deste(dono)) guarda($0)
+      next
+    }
     /^[[:space:]]*--- (FAIL|PASS|SKIP): / {
       t = $0; sub(/^[[:space:]]*--- (FAIL|PASS|SKIP): /, "", t); sub(/ .*/, "", t)
-      dono = t; if (deste(dono)) mostra($0); next
+      dono = t
+      if (t == nome && $0 ~ /^---/) {
+        # Sem `-v` o veredicto ABRE a execução (as linhas vêm depois dele): um segundo veredicto
+        # de topo sem `=== RUN` entre os dois é uma execução nova.
+        if (veredicto != "") fecha()
+        veredicto = $2; sub(/:$/, "", veredicto)
+      }
+      if (deste(dono)) guarda($0)
+      next
     }
     /^(FAIL|PASS|ok  |\?   |exit status )/ { dono = ""; next }
-    deste(dono) { mostra($0) }
-    END { if (n > max) printf "       … %d linha(s) do teste %s cortadas (max_linhas=%d)\n", n - max, nome, max }
+    deste(dono) { guarda($0) }
+    END {
+      fecha()
+      if (n <= max) { for (i = 1; i <= n; i++) print out[i]; exit }
+      # Corta-se o MEIO: o cabeçalho fica, e o fim também — é lá que estão o `t.Fatalf` e o
+      # veredicto da execução que falhou.
+      cab = int(max / 2); cauda = max - cab
+      for (i = 1; i <= cab; i++) print out[i]
+      printf "       … %d linha(s) do teste %s cortadas aqui (max_linhas=%d)\n", n - max, nome, max
+      for (i = n - cauda + 1; i <= n; i++) print out[i]
+    }
   ' "$saida"
 }
 
