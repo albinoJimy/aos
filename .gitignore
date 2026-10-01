@@ -46,6 +46,12 @@ __pycache__/
 # --- Go ---
 bin/
 vendor/
+# go.work.sum (AOS-387): DERIVADO do module cache. Em modo workspace o Go escreve-o sozinho em
+# comandos de rotina (`go list -m all`, `go mod download`, até um build), e um build offline com
+# o cache aquecido nunca precisa dele. O `go.work` (esse sim versionado) fica de fora desta
+# regra. Se um dia o workspace deixar de compilar SEM ele, o `gowork.sh compilar` avermelha e a
+# decisão (b) de tecnica/11 §8.1 é revista.
+/go.work.sum
 # Binários compilados de comandos (go build ./... em packages/cmd/*) — nunca versionar.
 #
 # ESTA LISTA É UMA ENUMERAÇÃO, e o git não tem padrão para «ficheiro com o nome do

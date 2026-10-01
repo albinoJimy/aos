@@ -31,6 +31,14 @@
 #      sobre resíduo de um run morto sem trap (AOS-316).
 #   Y) um pacote que aborta (panic, timeout, build failed, os.Exit) avermelha o
 #      gate nats mesmo sem `--- FAIL` que o conte (AOS-452).
+#   Z) um ADR citado só como MENÇÃO (trecho `rtm: menção` ou bloco
+#      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
+#      ref-lint nem entra na §4; directivas mal formadas falham fechado, e o que está
+#      em código (cercas, crases simples ou múltiplas) não é directiva (AOS-318).
+#  GW) o go.work cobre exactamente os módulos de packages/ (aninhados incluídos), com
+#      as directivas go/toolchain máximas e sem replace; o compilar avermelha um
+#      workspace que não compila e ignora um go.work.sum desnecessário; o build.sh
+#      leva o vermelho ao rc; e os gates correm com GOWORK=off (AOS-387).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -165,6 +173,10 @@ RTM_GEN_BAK=""
 RTM_GEN_SHA_INICIO="$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")"
 # §Y monta os seus módulos sintéticos FORA do repo (como §L): não muta a árvore.
 GOTEST_TMP=""
+# §Z trabalha sobre uma cópia do corpus (como §S4): não muta a árvore.
+MENCAO_TMP=""
+# §GW monta uma árvore sintética FORA do repo: não muta a árvore.
+GOWORK_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -175,6 +187,8 @@ cleanup() {
   rm -rf "$EC_TMP"
   rm -rf "$RTM_SANDBOX"
   rm -rf "$GOTEST_TMP"
+  rm -rf "$MENCAO_TMP"
+  rm -rf "$GOWORK_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
@@ -1195,6 +1209,8 @@ cp "$RTM_GEN" "$RTM_GEN_BAK"
 # para a sandbox: sem isto o gerador copiado morre em ModuleNotFoundError, e §R/§S
 # ficavam vermelhos por falta de modulo em vez de pela asercao que provam.
 cp "$CI_DIR/adr_register.py" "$RTM_SANDBOX/adr_register.py"
+# Idem para `adr_citacoes` (AOS-318), a regra menção/implementação que o gerador importa.
+cp "$CI_DIR/adr_citacoes.py" "$RTM_SANDBOX/adr_citacoes.py"
 # Registo da sandbox: e a FONTE do canon, e §T muta-o. Caminho proprio para nao
 # haver duvida sobre qual copia esta a ser lida.
 RTM_SANDBOX_REG="$RTM_SANDBOX/root/docs/adr/README.md"
@@ -1624,7 +1640,7 @@ rm -f "$PT_EMPTY" "$PT_FIX"
 # ============================================================================
 # Y) um pacote que ABORTA avermelha o gate nats (AOS-452)
 # ============================================================================
-log_gate "self-test Y · pacote com panic/timeout/build failed avermelha o gate nats (AOS-452)"
+log_gate "self-test Y · pacote com panic/timeout/build failed avermelha o gate nats (AOS-452), e o log mostra a asserção (AOS-455)"
 # O gate nats contava falhas pelas linhas `--- FAIL`, e o rc do `go test` só pintava a tabela.
 # Um timeout (`panic: test timed out`), um `[build failed]` ou um `os.Exit` num `TestMain` não
 # escrevem `--- FAIL` nenhum — medido a 2026-09-26: o `cmd/aos-orq` rebentou aos 10 min, a
@@ -1737,7 +1753,489 @@ else
     *) bad "Y6: NATS_GO_TEST_TIMEOUT=0 avermelhou mas não por VIOLAÇÃO DE PISO — a recusa não é a do piso" ;;
   esac
 fi
+
+# Y7 — O LOG MOSTRA A ASSERÇÃO (AOS-455). Em `go test -v` o `t.Fatal` sai ANTES do `--- FAIL`,
+# e o gate imprimia `grep -A8` a partir do `--- FAIL`: três vermelhos sem ninguém ver o que a
+# asserção dizia. Sobre a saída REAL do módulo `fal` (Y5), corrida com os flags do gate.
+#
+# y_chama_no_ramo <abre> <chamada> — no nats.sh, dentro do ramo que abre na linha que casa com
+# <abre> e fecha no `rc=1` seguinte, há uma linha de CÓDIGO (não comentário) que casa com
+# <chamada>. Um por sítio de chamada: a revisão do AOS-455 mostrou que um só grep pelo padrão
+# da chamada ficava verde com ela retirada do ramo do teste NOVO (casava a do bloco 1b).
+y_chama_no_ramo() {
+  awk -v abre="$1" -v chamada="$2" '$0 ~ abre {d=1} d && $0 ~ chamada {ok=1} d && /^[[:space:]]*rc=1$/ {exit} END {exit !ok}' "$NATS_SH"
+}
+if grep -A8 '^--- FAIL: TestFalha' "$GOTEST_TMP/fal.out" | grep -q 'falha limpa'; then
+  bad "Y7: o grep -A8 antigo já mostra a asserção — o caso deixou de reproduzir o defeito medido"
+elif ! gotest_saida_do_teste "$GOTEST_TMP/fal.out" TestFalha | grep -q 'falha limpa'; then
+  bad "Y7: gotest_saida_do_teste não mostra a linha do t.Fatal do teste que falhou"
+elif gotest_saida_do_teste "$GOTEST_TMP/fal.out" TestFalha | grep -q 'TestBoa'; then
+  bad "Y7: gotest_saida_do_teste mistura linhas de outro teste (TestBoa) nas do TestFalha"
+elif ! y_chama_no_ramo 'teste NOVO a falhar sobre substrato real' '^[[:space:]]*gotest_saida_do_teste "[$]saida" "[$]nome_teste"'; then
+  bad "Y7: o ramo do teste NOVO a falhar do nats.sh não imprime a asserção (gotest_saida_do_teste)"
+elif ! y_chama_no_ramo 'a medicao de cobertura NAO correu' '^[[:space:]]*gotest_saida_do_teste "[$]cov_log" "[$]nome_teste"'; then
+  bad "Y7: o ramo da cobertura que não correu do nats.sh não imprime a asserção (gotest_saida_do_teste)"
+elif ! y_chama_no_ramo 'vezes seguidas [(]rc=' '^[[:space:]]*gotest_saida_do_teste "[$]saida" "[$]nome_teste"'; then
+  bad "Y7: o ramo da repetição (1b) do nats.sh não imprime a asserção (gotest_saida_do_teste)"
+else
+  pass "Y7: os três ramos vermelhos do gate nats mostram a asserção do teste que falhou, e só a dele"
+fi
+
+# Y7b — COM `-count=N`, SÓ A REPETIÇÃO QUE FALHOU, E A ASSERÇÃO SOBREVIVE AO CORTE. O bloco (1b)
+# corre cada sensor N vezes; a revisão do AOS-455 mediu que o corte de 150 linhas se aplicava
+# ANTES de se tirarem as repetições verdes, e a asserção de uma repetição tardia caía fora.
+y_modulo rep
+printf 'package rep\n\nimport "testing"\n\nvar n int\n\nfunc TestRep(t *testing.T) {\n\tn++\n\tfor i := 0; i < 200; i++ {\n\t\tt.Logf("ruido da execucao %%d", n)\n\t}\n\tif n == 3 {\n\t\tt.Fatalf("ASSERCAO da execucao %%d", n)\n\t}\n}\n' > "$GOTEST_TMP/rep/p_test.go"
+(cd "$GOTEST_TMP/rep" && go test ./... -count=4 -v) > "$GOTEST_TMP/rep.out" 2>&1 || true
+y7b="$(gotest_saida_do_teste "$GOTEST_TMP/rep.out" TestRep)"
+if ! grep -q '^--- FAIL: TestRep ' "$GOTEST_TMP/rep.out"; then
+  bad "Y7b: o módulo de controlo não falhou à 3.ª repetição — o caso não reproduz nada"
+elif ! printf '%s\n' "$y7b" | grep -q 'ASSERCAO da execucao 3'; then
+  bad "Y7b: com -count=4 a asserção da repetição que falhou não chegou ao log"
+elif printf '%s\n' "$y7b" | grep -qE 'ruido da execucao [124]'; then
+  bad "Y7b: com -count=4 o log traz as repetições que PASSARAM (ruído que empurra a asserção para o corte)"
+else
+  pass "Y7b: com -count=N só a repetição que falhou chega ao log, e a asserção dela sobrevive ao corte"
+fi
+
+# Y8 — A REPETIÇÃO DOS SENSORES DA JANELA (AOS-455) não se desliga em silêncio. Estrutura: o
+# número passa por gate_threshold com piso 10, os três sensores estão na lista, correm com
+# -count=$NATS_REPETICOES, e o veredicto do bloco AVERMELHA (rc=1) — a revisão do AOS-455 trocou
+# esse `if` por `if false` e as verificações de texto continuaram verdes. Comportamento: 9 e
+# 10.5 são RECUSADOS por violação de piso, antes do cluster.
+if ! grep -qE '^gate_threshold NATS_REPETICOES 10 10 [0-9]+ "" always \|\| exit 1$' "$NATS_SH"; then
+  bad "Y8: NATS_REPETICOES não passa por gate_threshold com default e piso 10"
+elif ! awk '/^repeticoes=\(/{d=1} d&&/TestAOS432_LeaseSobreStreamFrescoNegaPeloLease/{a=1} d&&/TestAOS100_NServeEmParaleloSobreOSubstratoReplicado/{b=1} d&&/TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal/{c=1} d&&/^\)/{exit} END{exit !(a&&b&&c)}' "$NATS_SH"; then
+  bad "Y8: um dos três sensores da janela saiu da lista de repetição do nats.sh"
+elif ! grep -qE -- '-count="\$NATS_REPETICOES"' "$NATS_SH"; then
+  bad "Y8: o bloco de repetição do nats.sh não corre os sensores com -count=\$NATS_REPETICOES"
+elif ! awk '/^repeticoes=\(/{d=1} d && /^[[:space:]]*if \[ "[$]rc_go" -ne 0 \] [|][|] \[ "[$]n_pass" -ne "[$]NATS_REPETICOES" \]; then$/ {v=1} v && /^[[:space:]]*rc=1$/ {ok=1} d && /^done$/ {exit} END {exit !ok}' "$NATS_SH"; then
+  bad "Y8: o veredicto do bloco de repetição não avermelha (rc=1) quando o rc ou as N passagens falham"
+else
+  pass "Y8: o nats.sh repete os três sensores da janela NATS_REPETICOES (≥ 10) vezes, e o bloco avermelha"
+fi
+for y8v in 9 10.5; do
+  if out="$( AOS_GATE_FLOOR_OVERRIDE="" NATS_REPETICOES="$y8v" bash "$NATS_SH" 2>&1 )"; then
+    bad "Y8: NATS_REPETICOES=$y8v foi aceite"
+  else
+    case "$out" in
+      *"VIOLAÇÃO DE PISO"*) pass "Y8: NATS_REPETICOES=$y8v é recusado por VIOLAÇÃO DE PISO, antes do cluster" ;;
+      *) bad "Y8: NATS_REPETICOES=$y8v avermelhou mas não por VIOLAÇÃO DE PISO" ;;
+    esac
+  fi
+done
 rm -rf "$GOTEST_TMP"; GOTEST_TMP=""
+
+# ============================================================================
+# GW) o go.work e a sua guarda (AOS-387)
+# ============================================================================
+log_gate "self-test GW · o go.work cobre a árvore, a guarda morde, e os gates correm com GOWORK=off (AOS-387)"
+# Os gates correm com GOWORK=off (lib.sh), pelo que NADA na CI usa o go.work — e um ficheiro que
+# nada usa apodrece em silêncio. O gowork.sh (verificar + compilar, chamados pelo build.sh) é a
+# única guarda. Cada caso abaixo mata uma mutação concreta dessa guarda; a lista de mutações e o
+# resultado de cada uma estão na Entrega do AOS-387.
+# Árvore sintética fora do repo, com o go.work gerado pelo MESMO gerador:
+#   a, b     — módulos go 1.24, só stdlib;
+#   t        — go 1.25 + toolchain go1.25.13 (é o que fixa as directivas máximas);
+#   n/x/y    — módulo ANINHADO (profundidade 4), que um `find -maxdepth` deixaria de ver.
+GOWORK_TMP="$(mktemp -d)"
+GOWORK_SH="$CI_DIR/gowork.sh"
+gw_modulo() {
+  mkdir -p "$GOWORK_TMP/packages/$1"
+  printf 'module aos-selftest/%s\n\ngo %s\n' "$1" "${2:-1.24}" > "$GOWORK_TMP/packages/$1/go.mod"
+  [ -n "${3:-}" ] && printf '\ntoolchain %s\n' "$3" >> "$GOWORK_TMP/packages/$1/go.mod"
+  printf 'package m\n\nfunc F() int { return 1 }\n' > "$GOWORK_TMP/packages/$1/m.go"
+}
+gw_modulo a; gw_modulo b; gw_modulo t 1.25 go1.25.13; gw_modulo n/x/y
+# gw_verificar_vermelho <id> <padrão do diagnóstico> <descrição> — exige verificar VERMELHO, e
+# pela razão certa (um vermelho por outra razão não mata a mutação que o caso nomeia).
+gw_verificar_vermelho() {
+  local id="$1" causa="$2" desc="$3" out
+  if out="$(bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" 2>&1)"; then
+    bad "$id: $desc passou a verificação do go.work"
+  else
+    case "$out" in
+      *$causa*) pass "$id: $desc avermelha, com o diagnóstico certo" ;;
+      *) bad "$id: $desc avermelhou mas sem o diagnóstico «$causa»: $out" ;;
+    esac
+  fi
+}
+gw_regerar() { bash "$GOWORK_SH" gerar --root "$GOWORK_TMP" >/dev/null 2>&1; }
+gw_edit() { ( cd "$GOWORK_TMP" && GOWORK=off go work edit "$@" go.work ); }
+
+# GW1 — controlo: o go.work recém-gerado passa, e tem o que tem de ter (incluindo o aninhado e
+# as directivas máximas). Sem isto, os vermelhos abaixo podiam sê-lo por qualquer razão.
+if gw_regerar && bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" >/dev/null 2>&1 \
+   && grep -qx $'\t./packages/n/x/y' "$GOWORK_TMP/go.work" \
+   && grep -qx 'go 1.25' "$GOWORK_TMP/go.work" && grep -qx 'toolchain go1.25.13' "$GOWORK_TMP/go.work"; then
+  pass "GW1: controlo — o go.work gerado (com o módulo aninhado, go 1.25, toolchain go1.25.13) passa a verificação"
+else
+  bad "GW1: o go.work gerado pelo próprio gerador foi recusado, ou não tem o módulo aninhado / as directivas máximas"
+fi
+
+# GW2 — o caso que o AC nomeia: módulo novo em packages/ sem `use`.
+gw_modulo c
+gw_verificar_vermelho GW2 "SEM \`use\`*./packages/c" "um módulo em packages/ sem \`use\` (./packages/c)"
+rm -rf "$GOWORK_TMP/packages/c"
+
+# GW3 — o mesmo, ANINHADO (profundidade 5): mata um `find -maxdepth` no verificador.
+gw_modulo n/x/z/w
+gw_verificar_vermelho GW3 "SEM \`use\`*./packages/n/x/z/w" "um módulo aninhado sem \`use\` (./packages/n/x/z/w)"
+rm -rf "$GOWORK_TMP/packages/n/x/z"
+
+# GW4 — o simétrico: um `use` que já não é módulo (removido/movido).
+mv "$GOWORK_TMP/packages/b/go.mod" "$GOWORK_TMP/b.go.mod"
+gw_verificar_vermelho GW4 "NÃO é um módulo*./packages/b" "um \`use\` órfão (./packages/b)"
+mv "$GOWORK_TMP/b.go.mod" "$GOWORK_TMP/packages/b/go.mod"
+
+# GW5 — directiva go errada (acima e abaixo da maior dos módulos).
+gw_edit -go=1.26
+gw_verificar_vermelho GW5a "directiva go do go.work é '1.26'" "go 1.26 (acima da maior dos módulos)"
+gw_edit -go=1.24
+gw_verificar_vermelho GW5b "directiva go do go.work é '1.24'" "go 1.24 (abaixo da maior dos módulos)"
+gw_regerar
+
+# GW6 — directiva toolchain errada, e ausente.
+gw_edit -toolchain=go1.25.12
+gw_verificar_vermelho GW6a "directiva toolchain do go.work é 'go1.25.12'" "toolchain go1.25.12 (não é a maior dos módulos)"
+gw_edit -toolchain=none
+gw_verificar_vermelho GW6b "directiva toolchain do go.work é '<nenhuma>'" "go.work sem toolchain (os cmd/* perdiam a sua)"
+gw_regerar
+
+# GW7 — `replace` no workspace.
+gw_edit -replace=aos-selftest/a=./packages/b
+gw_verificar_vermelho GW7 "tem \`replace\`" "um \`replace\` no go.work"
+gw_regerar
+
+# GW8 — go.work ausente é vermelho, não «nada a verificar».
+mv "$GOWORK_TMP/go.work" "$GOWORK_TMP/go.work.fora"
+gw_verificar_vermelho GW8 "não existe" "go.work ausente"
+mv "$GOWORK_TMP/go.work.fora" "$GOWORK_TMP/go.work"
+
+# GW9 — compilar: controlo verde, e VERMELHO quando o workspace não compila (mata um
+# `compilar` que sai sempre 0).
+if bash "$GOWORK_SH" compilar --root "$GOWORK_TMP" >/dev/null 2>&1; then
+  pass "GW9a: controlo — o workspace sintético compila offline"
+else
+  bad "GW9a: o workspace sintético (só stdlib) não compilou — o compilar está sempre vermelho"
+fi
+cp "$GOWORK_TMP/packages/a/m.go" "$GOWORK_TMP/a.m.go"
+printf 'package m\n\nfunc F() int { return "nao compila" }\n' > "$GOWORK_TMP/packages/a/m.go"
+if out="$(bash "$GOWORK_SH" compilar --root "$GOWORK_TMP" 2>&1)"; then
+  bad "GW9b: um workspace que não compila passou o \`gowork.sh compilar\`"
+else
+  case "$out" in
+    *"não compila offline"*) pass "GW9b: um workspace que não compila avermelha o compilar" ;;
+    *) bad "GW9b: o compilar avermelhou mas sem «não compila offline»: $out" ;;
+  esac
+fi
+
+# GW10 — go.work.sum: a guarda prova NECESSIDADE, não presença (achado ALTO-1 da revisão).
+# (a) um go.work.sum local por versionar, num workspace que compila sem ele: VERDE, com aviso,
+#     e o ficheiro reposto byte-a-byte (o gate não apaga o que é do programador);
+# (b) o mesmo go.work.sum num workspace que NÃO compila: vermelho pela razão real, nunca
+#     «versione-o», e o ficheiro reposto.
+# O ramo «o workspace só compila COM o go.work.sum» não é construível: medido, com o módulo no
+# cache, o Go compila offline sem go.sum nem go.work.sum e escreve-o ele próprio.
+printf 'exemplo.invalido/modulo v0.0.0/go.mod h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n' > "$GOWORK_TMP/go.work.sum"
+GW_SOMA_SHA="$(sha256sum "$GOWORK_TMP/go.work.sum" | awk '{print $1}')"
+gw_soma_intacta() { [ -f "$GOWORK_TMP/go.work.sum" ] && [ "$(sha256sum "$GOWORK_TMP/go.work.sum" | awk '{print $1}')" = "$GW_SOMA_SHA" ]; }
+if out="$(bash "$GOWORK_SH" compilar --root "$GOWORK_TMP" 2>&1)"; then
+  bad "GW10b: com o workspace a não compilar e um go.work.sum local, o compilar passou"
+else
+  case "$out" in
+    *"versione"*) bad "GW10b: o compilar mandou versionar o go.work.sum quando o defeito é outro: $out" ;;
+    *"não compila offline"*) if gw_soma_intacta; then pass "GW10b: workspace que não compila avermelha pela razão real, e o go.work.sum local fica intacto"; else bad "GW10b: o go.work.sum local não foi reposto byte-a-byte"; fi ;;
+    *) bad "GW10b: vermelho sem «não compila offline»: $out" ;;
+  esac
+fi
+cp "$GOWORK_TMP/a.m.go" "$GOWORK_TMP/packages/a/m.go"
+if out="$(bash "$GOWORK_SH" compilar --root "$GOWORK_TMP" 2>&1)"; then
+  case "$out" in
+    *"não é preciso"*) if gw_soma_intacta; then pass "GW10a: go.work.sum local desnecessário — verde, com aviso, e reposto intacto"; else bad "GW10a: verde, mas o go.work.sum local não foi reposto byte-a-byte"; fi ;;
+    *) bad "GW10a: verde, mas sem o aviso de que o go.work.sum local não é preciso: $out" ;;
+  esac
+else
+  bad "GW10a: um go.work.sum local desnecessário avermelhou o compilar (o vermelho do achado ALTO-1): $out"
+fi
+
+# GW11 — O GATE USA-A. GW1–GW10 provam o gowork.sh; isto prova que o build.sh o corre, que o
+# vermelho dele chega ao rc, e que nada depois o desfaz até ao `exit "$rc"`.
+BUILD_SH="$CI_DIR/build.sh"
+if ! grep -qE '^if bash "\$CI_DIR/gowork\.sh" verificar; then$' "$BUILD_SH"; then
+  bad "GW11: o build.sh não corre \`gowork.sh verificar\`"
+elif ! awk '/^if bash "\$CI_DIR\/gowork\.sh" verificar; then$/{d=1} d&&/^else$/{e=1} e&&/rc=1/{ok=1} d&&/^fi$/{exit} END{exit !ok}' "$BUILD_SH"; then
+  bad "GW11: o build.sh corre a verificação do go.work mas o vermelho dela não chega ao rc"
+elif ! grep -qE '^  bash "\$CI_DIR/gowork\.sh" compilar \|\| rc=1$' "$BUILD_SH"; then
+  bad "GW11: o build.sh não compila o workspace (gowork.sh compilar) com o rc guardado"
+elif ! [ "$(grep -v '^[[:space:]]*$' "$BUILD_SH" | tail -n 1)" = 'exit "$rc"' ]; then
+  bad "GW11: a última instrução do build.sh não é \`exit \"\$rc\"\`"
+elif awk '/gowork\.sh" verificar/{d=1} d&&/(^|[^_[:alnum:]])rc=0([^[:alnum:]]|$)|exit 0/{f=1} END{exit !f}' "$BUILD_SH"; then
+  bad "GW11: o build.sh repõe rc=0 (ou sai 0) depois da guarda do go.work — o vermelho dela perde-se"
+else
+  pass "GW11: o build.sh corre verificar e compilar, o vermelho chega ao rc e sai por \`exit \"\$rc\"\`"
+fi
+
+# GW12 — os gates correm com GOWORK=off (achado MÉDIO-1 da revisão). O layer-lint corria
+# `go list` sem nunca chamar o setup_env — em modo workspace, em silêncio.
+# (a) estático: o export está ao nível de topo do lib.sh (não dentro de uma função que um gate
+#     pode não chamar), e todo o script de scripts/ci que invoca `go` carrega o lib.sh ou fixa
+#     GOWORK=off ele próprio (o gotest-pacotes.sh é biblioteca: quem o carrega carrega o lib.sh);
+if ! grep -qx 'export GOWORK=off' "$CI_DIR/lib.sh"; then
+  bad "GW12a: o lib.sh não exporta GOWORK=off ao nível de topo"
+else
+  GW_SEM=""
+  for f in "$CI_DIR"/*.sh; do
+    grep -qE '(^|[^[:alnum:]_./-])go (build|test|list|vet|run|mod|install|env|work|tool|clean)([^[:alnum:]_-]|$)' "$f" || continue
+    case "$(basename "$f")" in
+      lib.sh) continue ;;
+      gotest-pacotes.sh)
+        for u in $(grep -l 'gotest-pacotes\.sh' "$CI_DIR"/*.sh); do
+          [ "$(basename "$u")" = gotest-pacotes.sh ] && continue
+          grep -q 'lib\.sh' "$u" || GW_SEM="$GW_SEM $(basename "$u")(carrega gotest-pacotes.sh sem lib.sh)"
+        done
+        continue ;;
+    esac
+    grep -qE 'source .*lib\.sh|GOWORK=off' "$f" || GW_SEM="$GW_SEM $(basename "$f")"
+  done
+  if [ -n "$GW_SEM" ]; then
+    bad "GW12a: script(s) de scripts/ci invocam go sem carregar o lib.sh nem fixar GOWORK=off:$GW_SEM"
+  else
+    pass "GW12a: GOWORK=off é exportado ao carregar o lib.sh, e todo o script que invoca go o carrega (ou fixa GOWORK=off)"
+  fi
+fi
+# (b) dinâmico: um `go` sombra à frente no PATH regista o GOWORK de cada invocação durante um
+#     gate REAL (o layer-lint, o que escapava), corrido com o GOWORK do ambiente APAGADO — senão
+#     herdava o off desta suite e a prova seria vacuosa.
+GW_SOMBRA="$GOWORK_TMP/sombra"; mkdir -p "$GW_SOMBRA"
+GW_REAL_GO="$(command -v go)"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${GOWORK-<por-definir>}" >> "%s/registo"\nexec "%s" "$@"\n' \
+  "$GW_SOMBRA" "$GW_REAL_GO" > "$GW_SOMBRA/go"
+chmod +x "$GW_SOMBRA/go"
+env -u GOWORK PATH="$GW_SOMBRA:$PATH" bash "$CI_DIR/layer-lint.sh" >/dev/null 2>&1 || true
+GW_N="$(wc -l < "$GW_SOMBRA/registo" 2>/dev/null || echo 0)"
+GW_NAO_OFF="$(grep -vcx 'off' "$GW_SOMBRA/registo" 2>/dev/null || true)"
+if [ "${GW_N:-0}" -lt 1 ]; then
+  bad "GW12b: o go sombra não registou nenhuma invocação do layer-lint — a prova seria vacuosa"
+elif [ "${GW_NAO_OFF:-0}" -ne 0 ]; then
+  bad "GW12b: o layer-lint invocou go ${GW_NAO_OFF}x com GOWORK != off (de $GW_N invocações)"
+else
+  pass "GW12b: as $GW_N invocações de go do layer-lint, com o GOWORK do ambiente apagado, correram com GOWORK=off"
+fi
+# GW13 — o cache-prime aquece o grafo do WORKSPACE (achado MÉDIO-2 da revisão). Com um módulo a
+# fixar outra versão externa, o grafo do workspace pede go.mod que nenhum grafo individual pede
+# (medido: `go-cmp v0.7.0`), e o `compilar` offline cai depois de um cache-prime verde. A prova
+# dinâmica exige rede (descarregar a segunda versão) e está na Entrega do AOS-387; aqui prende-se
+# o passo que a fecha.
+if grep -B2 -E '^  if ! \( cd "\$REPO_ROOT" && GOWORK="\$REPO_ROOT/go\.work" go mod download \); then$' "$CI_DIR/cache-prime.sh" \
+     | grep -qx 'if \[ -f "\$REPO_ROOT/go\.work" \]; then' \
+   && awk '/GOWORK="\$REPO_ROOT\/go\.work" go mod download/{d=1} d&&/rc=1/{ok=1} d&&/^fi$/{exit} END{exit !ok}' "$CI_DIR/cache-prime.sh"; then
+  pass "GW13: o cache-prime descarrega também o grafo do workspace, e a falha chega ao rc"
+else
+  bad "GW13: o cache-prime não aquece o grafo do workspace (ou engole a falha) — offline cai com versões externas divergentes"
+fi
+rm -rf "$GOWORK_TMP"; GOWORK_TMP=""
+
+
+# ============================================================================
+# Z) uma MENÇÃO de ADR não conta como implementação (AOS-318)
+# ============================================================================
+# O defeito real: cada `ADR-NNN` no bloco de um ticket era uma alegação de que o
+# ticket o implementa, e o marcador de AOS-313 era tudo-ou-nada — AOS-417, 423,
+# 424, 427 e 430 escreveram por extenso que, para não perderem a cobertura do ADR
+# que entregam, tinham de «implementar» também as restrições que só citam. A
+# invariante que isto protege é a da verificação 2 do `ref-lint`: «todo o ADR do
+# canon tem >= 1 ticket implementador». Uma menção não pode satisfazê-la.
+#
+# Sandbox própria (corpus copiado), no molde de §S4: a árvore real NÃO é tocada.
+# Acrescenta-se ao registo da cópia o ADR SEGUINTE ao último — derivado, não
+# escrito, para a sonda não envelhecer no dia em que esse código passar a existir
+# (a lição de §S2) — e um ticket sintético que o cita de três maneiras.
+log_gate "self-test Z · uma menção de ADR não satisfaz «>= 1 ticket implementador» (AOS-318)"
+MENCAO_TMP="$(mktemp -d)"
+mkdir -p "$MENCAO_TMP/docs"
+cp -r "$REPO_ROOT/specs"    "$MENCAO_TMP/specs"
+cp -r "$REPO_ROOT/tecnica"  "$MENCAO_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$MENCAO_TMP/docs/adr"
+cp    "$REPO_ROOT/_BRIEF.md" "$MENCAO_TMP/_BRIEF.md"
+MENCAO_EPIC="$MENCAO_TMP/specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md"
+MENCAO_EPIC_BAK="$MENCAO_TMP/epic.bak"
+cp "$MENCAO_EPIC" "$MENCAO_EPIC_BAK"
+SONDA_ADR="$(cd "$CI_DIR" && python3 -c 'import sys, adr_register
+from pathlib import Path
+print("ADR-%03d" % (len(adr_register.adr_codes(Path(sys.argv[1]))) + 1))' "$REPO_ROOT")"
+# A linha do registo vai logo a seguir à última `| ADR-NNN |` da cópia.
+perl -0pi -e "s/((?:^\| ADR-\d{3} \|[^\n]*\n)+)/\$1| $SONDA_ADR | Sonda do self-test Z | **Proposto** | — |\n/m" \
+  "$MENCAO_TMP/docs/adr/README.md"
+if ! grep -q "^| $SONDA_ADR |" "$MENCAO_TMP/docs/adr/README.md"; then
+  bad "Z0: a sonda $SONDA_ADR não entrou no registo da cópia — Z1..Z10 estariam a medir o vazio"
+fi
+# O glossário da RTM afirma o extremo do canon à mão, e `assert_numeric_claims` guarda-o:
+# acompanha-se a sonda, como faria quem materializasse um ADR novo. Sem isto a
+# regeneração da cópia falhava por esse número, e Z1/Z3/Z6 mediam outra coisa.
+perl -pi -e "s/(canon que os gates lêem é \\*\\*ADR-001…)\\d{3}/\${1}${SONDA_ADR#ADR-}/" \
+  "$MENCAO_TMP/tecnica/16_Rastreabilidade_RTM.md"
+
+# O ticket sintético é o SEGUINTE ao maior do backlog, também derivado: o gerador exige
+# a gama de tickets contígua, e um AOS-999 fixo avermelhava-o por isso — pelo motivo
+# errado. O maior citado é o maior existente, porque o ref-lint recusa citações órfãs.
+SONDA_AOS="$(grep -ohE 'AOS-[0-9]{3}' "$MENCAO_TMP"/specs/EPIC-*.md | sort -u | tail -1 \
+  | awk -F- '{ printf "AOS-%03d", $2 + 1 }')"
+# Acrescenta à EPIC da cópia o ticket $SONDA_AOS com o corpo $1.
+mencao_ticket() {
+  cp "$MENCAO_EPIC_BAK" "$MENCAO_EPIC"
+  printf '\n---\n\n## %s — Sonda do self-test Z\n\n%s\n' "$SONDA_AOS" "$1" >> "$MENCAO_EPIC"
+}
+# ref-lint sobre a cópia: devolve 0 se ficou VERMELHO e a saída contiver $1.
+reflint_bloqueou_com() {
+  local out rc
+  out="$(AOS_REFLINT_ROOT="$MENCAO_TMP" python3 "$CI_DIR/ref-lint.py" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q "$1"
+}
+# ref-lint sobre a cópia: devolve 0 se ficou VERMELHO por a SONDA estar na lista «sem ticket
+# implementador» — a mesma entrada, não a mensagem num sítio e o código noutro (o código
+# aparece também nos erros de citação, e casar os dois em separado provava menos do que diz).
+reflint_sonda_sem_implementador() {
+  local out rc
+  out="$(AOS_REFLINT_ROOT="$MENCAO_TMP" python3 "$CI_DIR/ref-lint.py" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s\n' "$out" | sed -n '/sem ticket implementador/,/^[^ ]/p' | grep -qx "  - $SONDA_ADR"
+}
+# Os DOIS leitores recusam o corpo actual com a mensagem $1.
+ambos_recusam() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "$1" && reflint_bloqueou_com "$1"
+}
+# rtm-regenerate (escrita) sobre a cópia: devolve a linha da §4 da sonda.
+mencao_linha_s4() {
+  AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" >/dev/null 2>&1 || return 1
+  grep "^| \*\*$SONDA_ADR\*\* |" "$MENCAO_TMP/tecnica/16_Rastreabilidade_RTM.md"
+}
+
+# Z1 — a sonda citada SÓ dentro de um trecho de menção: o ref-lint tem de a dar
+# como ADR sem implementador, e a §4 tem de lhe pôr 0 tickets.
+mencao_ticket "Restrição: <!-- rtm: menção -->este ticket respeita o $SONDA_ADR, não o entrega.<!-- /rtm: menção -->"
+if reflint_sonda_sem_implementador; then
+  pass "Z1: o ref-lint recusou o $SONDA_ADR citado só num trecho de menção como cobertura"
+else
+  bad "Z1: o ref-lint aceitou uma MENÇÃO como ticket implementador do $SONDA_ADR"
+fi
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 0 | — |"*) pass "Z1: a §4 regenerada dá 0 implementadores ao $SONDA_ADR só mencionado" ;;
+  *) bad "Z1: a §4 regenerada não dá 0 implementadores ao $SONDA_ADR só mencionado: «$linha»" ;;
+esac
+
+# Z2 — a mesma recusa com o marcador de BLOCO (AOS-313), que até aqui não tinha prova.
+mencao_ticket "<!-- rtm: adrs-mencionados -->
+Fala do $SONDA_ADR sem o implementar."
+if reflint_sonda_sem_implementador; then
+  pass "Z2: o ref-lint recusou o $SONDA_ADR num bloco marcado adrs-mencionados como cobertura"
+else
+  bad "Z2: o ref-lint aceitou o marcador de bloco como implementação do $SONDA_ADR"
+fi
+
+# Z3 — CONTROLO POSITIVO, e o caso que o marcador de bloco não sabia exprimir: o
+# MESMO bloco implementa a sonda (fora do trecho) e menciona-a com o ADR-001 (dentro).
+# Tem de ficar verde, com $SONDA_AOS como implementador da sonda e NÃO do ADR-001.
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção -->Restrições: $SONDA_ADR e ADR-001.<!-- /rtm: menção -->"
+if AOS_REFLINT_ROOT="$MENCAO_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  pass "Z3: controlo — com a sonda citada FORA do trecho, o ref-lint fica verde (distingue, não recusa tudo)"
+else
+  bad "Z3: o ref-lint ficou vermelho com a sonda implementada fora do trecho — Z1/Z2 não provariam nada"
+fi
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 1 | $SONDA_AOS |"*) pass "Z3: a §4 regenerada dá o $SONDA_AOS como implementador do $SONDA_ADR" ;;
+  *) bad "Z3: a §4 regenerada não dá o $SONDA_AOS como implementador do $SONDA_ADR: «$linha»" ;;
+esac
+if [ -z "$linha" ]; then
+  bad "Z3: a §4 não foi regenerada — a ausência do ADR-001 não provaria nada"
+elif grep "^| \*\*ADR-001\*\* |" "$MENCAO_TMP/tecnica/16_Rastreabilidade_RTM.md" | grep -q "$SONDA_AOS"; then
+  bad "Z3: o ADR-001, citado só dentro do trecho, entrou na §4 como implementado pelo $SONDA_AOS"
+else
+  pass "Z3: o ADR-001, citado só dentro do trecho, ficou fora da §4 no mesmo bloco que implementa a sonda"
+fi
+
+# Z4/Z5 — FAIL-CLOSED: um marcador mal escrito que fosse ignorado devolvia o ADR à
+# coluna de implementadores em silêncio. Os DOIS leitores têm de recusar.
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção -->Restrição: ADR-001."
+if ambos_recusam "nunca fechado"; then
+  pass "Z4: rtm e ref-lint recusam um trecho de menção aberto e nunca fechado"
+else
+  bad "Z4: um trecho de menção por fechar passou num dos dois gates"
+fi
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: mencionado -->Restrição: ADR-001.<!-- /rtm: mencionado -->"
+if ambos_recusam "directiva desconhecida"; then
+  pass "Z5: rtm e ref-lint recusam uma directiva rtm: desconhecida (gralha não volta a alegar)"
+else
+  bad "Z5: uma directiva rtm: desconhecida passou num dos dois gates"
+fi
+
+# Z6 — uma directiva DENTRO de código é texto, não directiva (CommonMark): um ticket
+# pode documentar o mecanismo sem o accionar. Sem isto, o próprio AOS-318 abria um
+# trecho ao descrevê-lo.
+mencao_ticket 'Implementa o '"$SONDA_ADR"'. Documenta `<!-- rtm: menção -->` sem o abrir.'
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 1 | $SONDA_AOS |"*) pass "Z6: uma directiva entre crases não abre trecho nem retira a implementação" ;;
+  *) bad "Z6: uma directiva entre crases foi lida como directiva: «$linha»" ;;
+esac
+
+# Z7 — a revisão adversarial de 50ef14d: o reconhecedor exigia `rtm:` minúsculo colado,
+# e `RTM:` ou `rtm :` eram PROSA — o trecho não abria, a menção voltava a implementação e
+# os dois gates ficavam verdes. Todo o comentário que comece por `rtm` é candidato, e uma
+# candidata que não seja canónica é erro.
+for variante in "RTM: menção" "rtm : menção"; do
+  mencao_ticket "Restrição: <!-- $variante -->o $SONDA_ADR<!-- /$variante -->."
+  if ambos_recusam "directiva desconhecida"; then
+    pass "Z7: rtm e ref-lint recusam «<!-- $variante -->» em vez de o lerem como prosa"
+  else
+    bad "Z7: «<!-- $variante -->» passou num dos dois gates — a menção volta a ser implementação em silêncio"
+  fi
+done
+
+# Z8 — o desequilíbrio nos dois sentidos que Z4 não cobre: fecho sem abertura e aberturas
+# encadeadas.
+mencao_ticket "Implementa o $SONDA_ADR. ADR-001<!-- /rtm: menção -->."
+if ambos_recusam "nunca abriu"; then
+  pass "Z8: rtm e ref-lint recusam um fecho de trecho sem abertura"
+else
+  bad "Z8: um fecho de trecho sem abertura passou num dos dois gates"
+fi
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção --><!-- rtm: menção -->ADR-001<!-- /rtm: menção --><!-- /rtm: menção -->"
+if ambos_recusam "ainda por fechar"; then
+  pass "Z8: rtm e ref-lint recusam um trecho aberto dentro de outro"
+else
+  bad "Z8: dois trechos encadeados passaram num dos dois gates"
+fi
+
+# Z9 — CERCAS. A detecção antiga alternava em qualquer linha começada por ``` ou ~~~: uma
+# cerca de quatro crases a mostrar uma de três, ~~~ dentro de ```, ou ```x``` (código em
+# linha, não cerca) invertiam o estado e escondiam como «código» a directiva real que vinha
+# depois. A sonda só está no trecho, a seguir à cerca: tem de ficar sem implementador.
+for z9 in $'````md\n```\n````\n' $'```\n~~~\n```\n' $'```x``` é código em linha.\n'; do
+  mencao_ticket "${z9}<!-- rtm: menção -->O $SONDA_ADR é restrição.<!-- /rtm: menção -->"
+  rot="$(printf '%s' "$z9" | head -1)"
+  if reflint_sonda_sem_implementador; then
+    pass "Z9: depois de «$rot…», a directiva real é lida e a sonda fica sem implementador"
+  else
+    bad "Z9: depois de «$rot…», a directiva real foi tomada por código — a menção virou implementação"
+  fi
+done
+
+# Z10 — CÓDIGO EM LINHA com mais de uma crase. O reconhecedor antigo só conhecia `…`, pelo
+# que ``<!-- rtm: menção -->`` — código, a documentar a sintaxe — abria um trecho REAL, e o
+# que vinha a seguir deixava de alegar implementação.
+mencao_ticket 'Documenta ``<!-- rtm: menção -->`` — o '"$SONDA_ADR"' é implementado aqui — e ``<!-- /rtm: menção -->``.'
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 1 | $SONDA_AOS |"*) pass "Z10: uma directiva entre crases duplas é texto, e a sonda continua implementada" ;;
+  *) bad "Z10: uma directiva entre crases duplas abriu um trecho real: «$linha»" ;;
+esac
+rm -rf "$MENCAO_TMP"; MENCAO_TMP=""
 
 
 # ============================================================================

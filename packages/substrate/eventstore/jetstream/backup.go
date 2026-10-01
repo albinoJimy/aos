@@ -194,7 +194,7 @@ func (s *Store) IngestStream(ctx context.Context, streamID string, events []even
 		if ev.IdempotencyKey != "" {
 			h[natsjs.HdrMsgID] = streamID + "|" + ev.IdempotencyKey
 		}
-		ack, errP := s.cn.PublishExpectingSeq(subject, st.jsSeq, h, corpo, prazo)
+		ack, errP := s.publicarCAS(ctx, subject, st.jsSeq, h, corpo, prazo) // AOS-455: a janela, como no Append
 		switch {
 		case errP == nil && ack.Duplicate:
 			// O servidor deduplicou dentro da janela: este evento já tinha sido escrito por

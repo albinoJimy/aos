@@ -91,6 +91,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adr_register  # noqa: E402  (depende do sys.path acima)
+import adr_citacoes  # noqa: E402  (idem; AOS-318)
 
 # Raiz do corpus. Sobreponível por env APENAS para o self-test (§P2) poder provar
 # ponta-a-ponta, sobre uma CÓPIA do corpus, que uma troca de título fica vermelha
@@ -126,32 +127,33 @@ RE_TICKET_HEADING = re.compile(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", re.M
 # ---------------------------------------------------------------------------
 # DELIMITAÇÃO DO BLOCO DE UM TICKET — GÉMEA de `scripts/ci/rtm-regenerate.py`.
 #
-# Duas cópias de propósito (os dois scripts não partilham módulo), e o invariante está declarado no
-# comentário de `RE_ADRS_MENCIONADOS` do gémeo: «os dois leitores do corpus nunca discordem sobre o
-# que um ticket implementa». Corrigir um sem o outro quebra-o — foi o que aconteceu a 2026-09-27, e
-# mediu-se: 6 dos 35 ADRs ficaram com atribuição divergente entre os dois leitores, com o `ref-lint`
-# a ser o mais LARGO dos dois. Isso é fail-open na própria afirmação de cobertura: um ADR cuja única
-# atribuição venha de prosa de cauda aparecia com 0 tickets na RTM e o `ref-lint` ficava verde.
+# Duas cópias de propósito do TERMINADOR (`fim_do_bloco`); a detecção de cercas e a classificação
+# menção/implementação já são partilhadas, em `adr_citacoes.py` (AOS-318), onde o invariante está
+# declarado: «os dois leitores do corpus nunca discordem sobre o que um ticket implementa».
+# Corrigir um sem o outro quebra-o — foi o que aconteceu a 2026-09-27, e mediu-se: 6 dos 35 ADRs
+# ficaram com atribuição divergente entre os dois leitores, com o `ref-lint` a ser o mais LARGO
+# dos dois. Isso é fail-open na própria afirmação de cobertura: um ADR cuja única atribuição venha
+# de prosa de cauda aparecia com 0 tickets na RTM e o `ref-lint` ficava verde.
 #
 # A razão de cada parte do terminador está no comentário do gémeo. Se mudares um, muda o outro NO
 # MESMO COMMIT.
 # ---------------------------------------------------------------------------
 
-_RE_FENCE = re.compile(r"^[ \t]*(```|~~~)", re.MULTILINE)
-
-
 def mascarar_fences(text: str) -> str:
-    """Neutraliza os `#` dentro de blocos de código cercados, preservando o COMPRIMENTO do texto
-    (os offsets de quem chama continuam válidos sobre o original)."""
-    linhas = text.split("\n")
-    dentro = False
-    for i, ln in enumerate(linhas):
-        if _RE_FENCE.match(ln):
-            dentro = not dentro
-            continue
-        if dentro and "#" in ln:
-            linhas[i] = ln.replace("#", ".")
-    return "\n".join(linhas)
+    """Devolve `text` com o MESMO comprimento, tendo neutralizado os `#` dentro de blocos de
+    código cercados. Um `# comentário` de bash deixa de se ler como cabeçalho Markdown.
+
+    As cercas vêm de `adr_citacoes.blocos_cercados` (AOS-318), a mesma detecção que separa
+    directivas de código: a abertura lembra o carácter e o comprimento e só fecha com o mesmo
+    carácter e comprimento ≥, com ≤ 3 espaços de indentação. A versão anterior alternava em
+    QUALQUER linha começada por ``` ou ~~~, pelo que uma cerca de quatro crases a mostrar uma de
+    três, ou ~~~ dentro de ```, invertia o estado e deixava o resto do ficheiro do lado errado."""
+    chars = list(text)
+    for ini, fim in adr_citacoes.blocos_cercados(text):
+        for i in range(ini, fim):
+            if chars[i] == "#":
+                chars[i] = "."
+    return "".join(chars)
 
 
 def fim_do_bloco(texto_mascarado: str, start: int, nivel: int) -> int:
@@ -215,15 +217,12 @@ def titles_agree(cited: str, reference_tokens: set) -> bool:
     return False
 
 
-# Marcador opcional, escrito no bloco de um ticket: declara que os códigos
-# ADR-NNN que ele cita são MENÇÃO — o ticket FALA sobre eles — e não
-# implementação. Sem isto, um ticket sobre a própria rastreabilidade, que tem
-# de nomear os ADRs de que fala, entra na matriz §4 como implementador deles: a
-# matriz passaria a afirmar precisamente o que este epic existe para impedir.
-# Primeiro utilizador: AOS-313 (que discute ADR-003, ADR-014 e ADR-020…023 sem
-# realizar nenhum). `ref-lint.py` honra o mesmo marcador, para que os dois
-# leitores do corpus nunca discordem sobre o que um ticket implementa.
-RE_ADRS_MENCIONADOS = re.compile(r"<!--\s*rtm:\s*adrs-mencionados\s*-->")
+# MENÇÃO vs IMPLEMENTAÇÃO (AOS-313, AOS-318). Um ADR citado só como menção — pelo
+# marcador de bloco `<!-- rtm: adrs-mencionados -->` ou dentro de um trecho
+# `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` — NÃO conta para a verificação 2:
+# senão a invariante «≥ 1 ticket implementador» seria satisfeita por quem só fala
+# da decisão. A regra é a de `adr_citacoes.py`, a mesma que o `rtm-regenerate.py`
+# usa para a §4.
 
 
 def _read(path: Path) -> str:
@@ -244,11 +243,11 @@ def extract_backlog() -> dict:
             start = m.end()
             fim = fim_do_bloco(mascarado, start, nivel)
             block = text[start : start + fim] if fim >= 0 else text[start:]
-            adrs = (
-                set()
-                if RE_ADRS_MENCIONADOS.search(block)
-                else set(re.findall(r"ADR-\d{3}", block))
-            )
+            try:
+                adrs, _mencoes = adr_citacoes.classificar(block, f"{epic_file.name} {aos}")
+            except adr_citacoes.CitacaoError as exc:
+                print(f"ERRO: {exc}")
+                sys.exit(1)
             entry = tickets.setdefault(aos, {"adrs": set(), "file": epic_file, "titles": []})
             entry["adrs"] = adrs
             entry["file"] = epic_file

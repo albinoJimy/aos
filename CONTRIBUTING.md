@@ -29,7 +29,7 @@ Correr um gate isolado: `make ci-secrets | ci-build | ci-lint | ci-test | ci-rep
 
 | Ferramenta | Versão | Notas |
 |---|---|---|
-| **Go** | 1.24 | módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
+| **Go** | 1.25.13 | a da imagem de produção (`FROM golang:` do `deploy/node/Dockerfile`); os gates fixam-na por `GOTOOLCHAIN` e o `toolchain-lint` guarda-o. Módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
 | **gcc** | qualquer | exigido pelo `go test -race` (CGO). Windows: mingw do scoop; Linux: gcc do sistema |
 | **bash** | 4+ | Git Bash em Windows |
 | staticcheck / gosec / govulncheck | pinadas | **auto-instaladas** por `go install` (idempotente) em `$(go env GOPATH)/bin`; nunca committadas |
@@ -38,11 +38,29 @@ Pins das ferramentas em `scripts/ci/lib.sh` (`*_PIN`). Em Windows, o runner
 acrescenta ao `PATH` o mingw/shims do scoop e o `bin` do GOPATH, e força
 `CGO_ENABLED=1` — não é preciso configuração manual.
 
+### Workspace `go.work` (AOS-387)
+
+Há um `go.work` na raiz, gerado por `bash scripts/ci/gowork.sh gerar`, com um `use` por módulo
+de `packages/`. Quem corre `go` à mão num módulo de `packages/` usa-o; **os gates não**, porque o
+`lib.sh` exporta `GOWORK=off` ao ser carregado. Detalhe e decisões em `tecnica/11` §8.1. Três
+casos pedem `GOWORK=off` à mão:
+
+- **worktree com base anterior ao `go.work`, dentro de uma árvore que já o tem** (o caso de
+  `.claude/worktrees/`): o Go encontra o `go.work` do checkout de fora e recusa os módulos do
+  worktree (`directory prefix . does not contain modules listed in go.work`). `export GOWORK=off`
+  nessa sessão, ou rebase sobre uma base que já traga o `go.work`;
+- **Go local < 1.25 com `GOTOOLCHAIN=local`**: o workspace pede `go 1.25` (os `cmd/*` já o pedem);
+- **módulos fora de `packages/`** (`scripts/ci/attest`, `deploy/**`): não estão no workspace.
+
+Módulo novo em `packages/`: `go work use ./packages/<novo>` (ou `gowork.sh gerar`) no mesmo
+commit, senão o gate `build` avermelha. O `go.work.sum` está no `.gitignore` (é derivado do
+cache; ver `tecnica/11` §8.1, decisão (b)).
+
 ## Os gates
 
 | # | Gate | Script | O que valida | Bloqueia |
 |---|---|---|---|---|
-| 1 | build | `build.sh` | `go build ./...` em cada módulo | merge |
+| 1 | build | `build.sh` | `go build ./...` em cada módulo **+ guarda do `go.work`** (`gowork.sh verificar` e `compilar`, AOS-387) | merge |
 | 2 | lint | `lint.sh` | `gofmt -l`, `go vet`, `staticcheck` **+ arch-lint AOS-003** (proibição de despacho directo) | merge |
 | 2b | ref-lint | `ref-lint.sh` | referências cruzadas do corpus (AOS-186): todo o `AOS-NNN` citado existe no backlog; todo o `ADR-NNN` citado existe no catálogo; cada ADR canónico tem ≥ 1 ticket implementador. Só precisa de **Python 3** | merge |
 | 2c | rtm | `rtm.sh` | sincronia da matriz de rastreabilidade `tecnica/16` com o corpus (AOS-186), via `rtm-regenerate.py --check`. Só precisa de **Python 3** | merge |
@@ -80,6 +98,7 @@ verde sem exercitar nada; um gate cujo limiar se pode zerar em silêncio não é
 | `REGISTRY_COVERAGE_MIN` | 80 | **80** | 0–100 (%) | `supplychain.sh` | «Igual ao limiar do kernel» (§4). |
 | `EVAL_PASS_RATE_MIN` | 0.90 | **0.90** | 0–1 (**fracção**) | `evalgate.sh` | ADR-012 / AOS-114 fixam o alvo de eval-pass-rate em ≥ 90%. É o gate de *admission control*: abaixo do alvo, promover é admitir regressão comportamental. |
 | `NATS_GO_TEST_TIMEOUT` | 5 | **1** | 1–60 (**minutos**) | `nats.sh` | Não é uma barra de qualidade, é um limite de tempo (AOS-452). `0` é «sem timeout» para o `go test`, e é isso que o piso recusa. O default é mais de 10× o módulo mais lento medido no CI (~25 s). O máximo existe para postos lentos: em Windows o `cmd/aos-orq` passou só 17 testes em 5 min. |
+| `NATS_REPETICOES` | 10 | **10** | 10–200 (corridas) | `nats.sh` | Quantas vezes seguidas o gate corre os três sensores da janela do stream fresco (AOS-455). Antes da correcção os dois testes de disputa do lease falhavam 4 em 50 (8%): com 10 seguidas essa janela ainda escapa por acaso em ~43% das execuções, com 5 em ~66%. Abaixo de 10 o sensor é decorativo. |
 
 **Piso = default é deliberado.** O default **é** o compromisso documentado; um piso mais
 baixo seria uma segunda barra, não documentada, a autorizar em silêncio exactamente o que

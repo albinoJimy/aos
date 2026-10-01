@@ -18,6 +18,31 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$CI_DIR/../.." && pwd)"
 BASELINE_DIR="$CI_DIR/baseline"
 
+# --- OS GATES RESOLVEM COMO ANTES DO go.work (AOS-387) --------------------------
+# Pelas `replace` de cada go.mod. Há um go.work na raiz (scripts/ci/gowork.sh) e o Go descobre-o
+# sozinho a partir de qualquer directório abaixo dela: sem esta linha, os gates passariam a correr
+# em modo workspace só por o ficheiro existir.
+#
+# PORQUE AQUI, AO CARREGAR, E NÃO DENTRO DO setup_env (onde esteve, e era um buraco). Nem todos
+# os gates chamam setup_env — o layer-lint corre `go list` sem nunca o chamar, e o run.sh também
+# não — e esses corriam em modo workspace em silêncio. Todo o gate carrega este ficheiro; é o
+# único ponto que os cobre a todos. O self-test GW prova-o com um `go` sombra no PATH que regista
+# o GOWORK de cada invocação.
+#
+# É forçado, e não um default sobreponível, porque o modo workspace MUDA o que os gates medem —
+# medido a 2026-10-01:
+#   - o self-test A injecta um módulo em packages/ sem `use`: em modo workspace o `go test`
+#     dele falha por não estar no workspace, e o «vermelho» do A2 deixava de provar o que diz;
+#   - os módulos fora de packages/ (scripts/ci/attest, que o build/test correm sempre, e
+#     deploy/*) não estão no workspace e nem compilariam;
+#   - o `go list -m -json all` do sbom.sh, em packages/platform/attestation, passaria de 3 para
+#     57 módulos: o SBOM descreveria o workspace, não o módulo.
+# Cada um teria remédio local (um GOWORK=off naquele passo); o que fica verdade é que a CI testa a
+# resolução standalone de cada módulo, a mesma da imagem de produção. O go.work é para quem
+# desenvolve (gopls, `go work use`, um build que atravessa tudo); o build.sh prova à parte, e
+# explicitamente, que ele cobre a árvore e compila offline.
+export GOWORK=off
+
 # --- Cores (desligadas se não houver TTY ou se NO_COLOR) ----------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'

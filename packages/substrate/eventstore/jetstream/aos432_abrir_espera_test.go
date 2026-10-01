@@ -9,6 +9,7 @@ package jetstream
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +23,9 @@ import (
 	"github.com/aos-ref/substrate/eventstore"
 )
 
-// servidorEleicao é um NATS de brincar que só conhece o que o `Abrir` pede.
+// servidorEleicao é um NATS de brincar que só conhece o que o `Abrir` pede — e, desde o
+// AOS-455, o primeiro `Append` de um stream vazio: o INFO com `subjects_filter` (stream vazio)
+// e a publicação com CAS.
 type servidorEleicao struct {
 	ln       net.Listener
 	semLider int // quantos INFO respondem sem líder (-1 = sempre)
@@ -30,6 +33,34 @@ type servidorEleicao struct {
 	mu     sync.Mutex
 	infos  int
 	creats int
+
+	// AOS-455 — as duas formas da janela que o cluster real mostrou (medidas, ver o ticket).
+	//
+	// silencioInfo: quantos INFO ficam SEM RESPOSTA nenhuma. É o que o servidor faz a um
+	// `STREAM.INFO` enquanto o grupo R3 de um stream acabado de criar ainda não tem quem
+	// responda (nats-server 2.10.22, `jsStreamInfoRequest`: `if bail { return }`).
+	silencioInfo int
+	// pub503: quantas publicações num subject de stream recebem 503 — o líder já é anunciado
+	// pelo INFO, mas ainda não subscreveu os subjects (`setLeader` corre DEPOIS de o Raft já
+	// se dizer líder). -1 = sempre. Depois disso a publicação é aceite (`seq` crescente).
+	pub503 int
+	// subjects é o `config.subjects` que o INFO devolve (nil = o do prefixo por omissão
+	// não é anunciado; o Store só o consulta quando não criou o stream).
+	subjects []string
+	pubs     int
+}
+
+// configurar altera os botões do servidor sob o lock (o servir corre noutra goroutine).
+func (s *servidorEleicao) configurar(f func(*servidorEleicao)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f(s)
+}
+
+func (s *servidorEleicao) publicacoes() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pubs
 }
 
 func arrancarServidorEleicao(t *testing.T, semLider int) *servidorEleicao {
@@ -89,7 +120,14 @@ func (s *servidorEleicao) servir(c net.Conn) {
 			}
 			subj, reply := campos[1], campos[2]
 			corpo := s.responder(subj)
-			if sid, ok := subs[reply]; ok && corpo != "" {
+			sid, ok := subs[reply]
+			switch {
+			case !ok || corpo == "":
+				// silêncio: nenhuma resposta, como o servidor real durante a eleição
+			case corpo == respostaNinguemServe:
+				const bloco = "NATS/1.0 503\r\n\r\n"
+				_, _ = fmt.Fprintf(c, "HMSG %s %s %d %d\r\n%s\r\n", reply, sid, len(bloco), len(bloco), bloco)
+			default:
 				_, _ = fmt.Fprintf(c, "MSG %s %s %d\r\n%s\r\n", reply, sid, len(corpo), corpo)
 			}
 		}
@@ -105,13 +143,29 @@ func (s *servidorEleicao) responder(subj string) string {
 		return `{"type":"io.nats.jetstream.api.v1.stream_create_response","config":{"name":"X"}}`
 	case strings.HasPrefix(subj, "$JS.API.STREAM.INFO."):
 		s.infos++
-		if s.semLider < 0 || s.infos <= s.semLider {
-			return `{"type":"io.nats.jetstream.api.v1.stream_info_response","cluster":{"name":"c","leader":""}}`
+		if s.infos <= s.silencioInfo {
+			return ""
 		}
-		return `{"type":"io.nats.jetstream.api.v1.stream_info_response","cluster":{"name":"c","leader":"NFAKE"}}`
+		lider := "NFAKE"
+		if s.semLider < 0 || s.infos-s.silencioInfo <= s.semLider {
+			lider = ""
+		}
+		cfg, _ := json.Marshal(map[string]any{"subjects": s.subjects, "num_replicas": 3})
+		return `{"type":"io.nats.jetstream.api.v1.stream_info_response","config":` + string(cfg) +
+			`,"state":{"subjects":{}},"cluster":{"name":"c","leader":"` + lider + `"}}`
+	case strings.HasPrefix(subj, "$JS."):
+		return ""
+	default: // publicação num subject de stream
+		s.pubs++
+		if s.pub503 < 0 || s.pubs <= s.pub503 {
+			return respostaNinguemServe
+		}
+		return fmt.Sprintf(`{"stream":"X","seq":%d}`, s.pubs-max(s.pub503, 0))
 	}
-	return ""
 }
+
+// respostaNinguemServe marca, no servidor de brincar, a resposta de estado 503 (no responders).
+const respostaNinguemServe = "\x00503"
 
 // TestAOS432_AbrirNaoDevolveAntesDeHaverLider — o `Abrir` só devolve o Store depois de o
 // INFO anunciar líder. Sem a chamada ao esperarLider, o INFO nunca seria pedido (0) e o

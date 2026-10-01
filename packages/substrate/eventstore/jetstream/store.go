@@ -45,6 +45,11 @@ type Store struct {
 	rastro  eventstore.Rastreador
 	now     func() time.Time
 
+	// capturaPropria: o stream foi criado (ou confirmado idêntico) por este Store no [Abrir],
+	// logo captura `<prefixo>.>` — um 503 num subject nosso é a janela, não um subject órfão.
+	// Ver [Store.servidoEmBreve] (AOS-455).
+	capturaPropria bool
+
 	mu      sync.Mutex
 	streams map[string]*estado
 	subs    map[string]*subscricao
@@ -179,8 +184,8 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		// AOS-432: o CREATE responde antes de o grupo R3 eleger líder, e até lá toda a
 		// publicação recebe 503. Ver lider.go para a medição e para porque é que a
 		// correcção é aqui e não no mapeamento do 503.
-		if err := esperarLider(cfg.stream, func(resta time.Duration) (string, error) {
-			c, err := cn.ColocacaoDoStream(cfg.stream, resta)
+		if err := esperarLider(cfg.stream, func(d time.Duration) (string, error) {
+			c, err := cn.ColocacaoDoStream(cfg.stream, d)
 			return c.Lider, err
 		}, cfg.prazo, time.Now, time.Sleep); err != nil {
 			_ = cn.Close()
@@ -223,17 +228,18 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		}
 	}
 	return &Store{
-		cn:      cn,
-		stream:  cfg.stream,
-		prefixo: cfg.prefixo,
-		prazo:   cfg.prazo,
-		now:     cfg.now,
-		regiao:  regiao,
-		board:   cfg.board,
-		obs:     cfg.obs,
-		rastro:  cfg.rastro,
-		streams: map[string]*estado{},
-		subs:    map[string]*subscricao{},
+		cn:             cn,
+		capturaPropria: cfg.criar,
+		stream:         cfg.stream,
+		prefixo:        cfg.prefixo,
+		prazo:          cfg.prazo,
+		now:            cfg.now,
+		regiao:         regiao,
+		board:          cfg.board,
+		obs:            cfg.obs,
+		rastro:         cfg.rastro,
+		streams:        map[string]*estado{},
+		subs:           map[string]*subscricao{},
 	}, nil
 }
 
@@ -375,7 +381,9 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 			// Rede de segurança para retries imediatos; a garantia é o índice derivado.
 			h[natsjs.HdrMsgID] = streamID + "|" + eventstore.IdempotencyKey(in.RunID, in.StepID)
 		}
-		ack, err := s.cn.PublishExpectingSeq(subject, st.jsSeq, h, corpo, prazo)
+		// AOS-455: um 503 de janela (stream ainda não servido) é atravessado aqui, dentro do
+		// prazo; o que sai daqui nunca é esse 503 confundido com um conflito.
+		ack, err := s.publicarCAS(ctx, subject, st.jsSeq, h, corpo, prazo)
 
 		switch {
 		case err == nil && ack.Duplicate:

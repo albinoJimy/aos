@@ -98,8 +98,10 @@ caminho_para_o_go() {
 # aos_nkey corre o subcomando `nats-nkey` do binário do nó a partir da fonte. É o MESMO código
 # que gera a credencial de produção: uma seed que ele produza e que o servidor aceite é a
 # prova de que a codificação nkey (natsjs/nkey.go) é a da NATS.
+# GOWORK=off (AOS-387): este script não carrega lib.sh, e compila como os gates — pelas
+# `replace` do módulo, não pelo go.work da raiz.
 aos_nkey() {
-	(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/cmd/aos" && go run . nats-nkey "$@")
+	(cd "$(dirname "${BASH_SOURCE[0]}")/../../packages/cmd/aos" && GOWORK=off go run . nats-nkey "$@")
 }
 
 # chave_publica gera a seed (se ainda não houver) e imprime a chave pública correspondente.

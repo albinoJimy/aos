@@ -66,6 +66,42 @@ func sufixo(t *testing.T) string {
 	return hex.EncodeToString(b[:])
 }
 
+// esperarQueSirva bloqueia até o stream SERVIR os seus subjects — sem escrever nada nele.
+//
+// # Porque o CREATE não chega (AOS-455)
+//
+// O CREATE de um stream R3 pode responder antes de algum servidor estar a SERVIR os subjects:
+// no nats-server 2.10.22 o Raft diz-se líder antes de o stream subscrever, e uma publicação
+// nesse intervalo recebe 503. Foi assim que `TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal`
+// falhou no CI (PR #399, `A.Publish: natsjs: ninguém serve este subject (503)`), num teste
+// que mede a deduplicação e não a janela. O Event Store atravessa a janela no `Append`
+// (jetstream/janela.go); estes testes falam com o cliente cru e têm de a atravessar eles.
+//
+// # Porque a sonda não deixa rasto
+//
+// Publica num subject PRÓPRIO do stream com um CAS impossível (`Nats-Expected-Last-Subject-
+// Sequence` = 1<<62 num subject vazio). Quem serve o stream RECUSA-A (10071) e nada fica no log
+// — é a garantia que `TestIntegracao_RecusaNaoDeixaRasto` mede, e que esse teste continua a
+// medir com a sonda feita. Um 503 é «ainda ninguém serve»: espera-se e repete-se, dentro do prazo.
+func esperarQueSirva(t *testing.T, cn *natsjs.Conn, sonda string) {
+	t.Helper()
+	limite := time.Now().Add(prazo)
+	for {
+		ack, err := cn.PublishExpectingSeq(sonda, 1<<62, nil, []byte(`{"sonda":"aos455"}`), prazo)
+		switch {
+		case errors.Is(err, natsjs.ErrWrongLastSeq):
+			return // quem serve o stream recebeu a sonda e recusou-a: está a servir
+		case err == nil:
+			t.Fatalf("a sonda com CAS impossível foi ESCRITA (seq=%d) — o CAS por subject não está a ser aplicado", ack.Seq)
+		case !errors.Is(err, natsjs.ErrNoResponders):
+			t.Fatalf("sonda de serviço em %s: %v", sonda, err)
+		case time.Now().After(limite):
+			t.Fatalf("o stream de %s não passou a ser servido em %s: %v", sonda, prazo, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // TestIntegracao_CASArbitraEntreDuasLigacoes é a medição do AC1 do AOS-100 a partir do
 // código do AOS — e não do CLI, como na primeira medição.
 //
@@ -90,6 +126,7 @@ func TestIntegracao_CASArbitraEntreDuasLigacoes(t *testing.T) {
 	}, prazo); err != nil {
 		t.Fatalf("criar stream R3: %v", err)
 	}
+	esperarQueSirva(t, a, "aoscas."+s+".sonda")
 
 	primeiro, err := a.PublishExpectingSeq(subject, 0, nil, []byte(`{"escritor":"a"}`), prazo)
 	if err != nil {
@@ -143,6 +180,7 @@ func TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal(t *testing.T) {
 	}, prazo); err != nil {
 		t.Fatalf("criar stream R3: %v", err)
 	}
+	esperarQueSirva(t, a, "aosdup."+s+".sonda")
 
 	chave := natsjs.Header{natsjs.HdrMsgID: "run-" + s + ":passo-1"}
 	primeiro, err := a.Publish(subject, chave, []byte(`{"n":1}`), prazo)
@@ -179,6 +217,7 @@ func criarStreamR3(t *testing.T, cn *natsjs.Conn, prefixo string, janela time.Du
 	}, prazo); err != nil {
 		t.Fatalf("criar stream R3 %q: %v", stream, err)
 	}
+	esperarQueSirva(t, cn, prefixo+"."+s+".sonda")
 	return stream, strings.ToLower(subject)
 }
 
