@@ -35,10 +35,11 @@
 #      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
 #      ref-lint nem entra na §4; directivas mal formadas falham fechado, e o que está
 #      em código (cercas, crases simples ou múltiplas) não é directiva (AOS-318).
-#  RTMX) uma cerca de código que atravesse a fronteira de um ticket — três tis ou três
-#      crases soltos numa linha de prosa, uma cerca por fechar no fim do bloco, ou uma
-#      abertura do mesmo tipo dentro de outra — avermelha o rtm e o ref-lint; cercas
-#      legítimas não (AOS-472).
+#  RTMX) uma cerca de código ou um comentário HTML que atravesse a fronteira de um
+#      ticket — três tis ou três crases soltos numa linha de prosa, uma cerca por fechar
+#      no fim do bloco, uma abertura do mesmo tipo dentro de outra, duas linhas soltas à
+#      volta de um cabeçalho de ticket, ou um `<!--` solto que esconde cabeçalhos —
+#      avermelha o rtm e o ref-lint; cercas legítimas não (AOS-472).
 #  GW) o go.work cobre exactamente os módulos de packages/ (aninhados incluídos), com
 #      as directivas go/toolchain máximas e sem replace; o compilar avermelha um
 #      workspace que não compila e ignora um go.work.sum desnecessário; o build.sh
@@ -2456,7 +2457,7 @@ rm -rf "$NX_TMP"; NX_TMP=""
 
 
 # ============================================================================
-# RTMX) uma cerca de código não atravessa a fronteira de um ticket (AOS-472)
+# RTMX) nem uma cerca nem um comentário atravessam a fronteira de um ticket (AOS-472)
 # ============================================================================
 # O defeito: nenhum gate compara o conjunto de pares (ticket, ADR) de um commit com o
 # do anterior, e a detecção de cercas segue o CommonMark — uma linha de PROSA que comece
@@ -2471,7 +2472,7 @@ rm -rf "$NX_TMP"; NX_TMP=""
 #
 # Sandbox própria (corpus copiado), no molde de §Z: a árvore real NÃO é tocada. Os dois
 # tickets sintéticos são os seguintes ao maior do backlog — derivados, como em §Z.
-log_gate "self-test RTMX · uma cerca de código não atravessa a fronteira de um ticket (AOS-472)"
+log_gate "self-test RTMX · nem uma cerca nem um comentário atravessam a fronteira de um ticket (AOS-472)"
 RTMX_TMP="$(mktemp -d)"
 mkdir -p "$RTMX_TMP/docs"
 cp -r "$REPO_ROOT/specs"    "$RTMX_TMP/specs"
@@ -2513,7 +2514,7 @@ RTMX_B_CORPO="Implementa o ADR-001, que o leitor tem de atribuir ao $RTMX_B e n�
 # RTMX1 — três TIS soltos no início de uma linha de prosa. Abrem uma cerca de tis que
 # nenhuma linha do corpus fecha: o $RTMX_B deixava de ter fronteira.
 rtmx_tickets $'Implementa o ADR-002.\n~~~ três tis no início de uma linha de prosa abrem uma cerca.\nMais prosa.' "$RTMX_B_CORPO"
-if rtmx_ambos_recusam "atravessa o cabeçalho de $RTMX_B"; then
+if rtmx_ambos_recusam "contém o cabeçalho de $RTMX_B"; then
   pass "RTMX1: rtm e ref-lint recusam uma linha de prosa começada por ~~~ que atravessa o $RTMX_B"
 else
   bad "RTMX1: uma linha solta de ~~~ passou num dos dois gates (ou pelo motivo errado)"
@@ -2522,7 +2523,7 @@ fi
 # RTMX2 — o mesmo com três CRASES soltas seguidas de texto (info string sem crases: é
 # abertura de cerca, não código em linha).
 rtmx_tickets $'Implementa o ADR-002.\n``` três crases no início de uma linha de prosa abrem uma cerca.\nMais prosa.' "$RTMX_B_CORPO"
-if rtmx_ambos_recusam "atravessa o cabeçalho de $RTMX_B"; then
+if rtmx_ambos_recusam "contém o cabeçalho de $RTMX_B"; then
   pass "RTMX2: rtm e ref-lint recusam uma linha de prosa começada por \`\`\` que atravessa o $RTMX_B"
 else
   bad "RTMX2: uma linha solta de \`\`\` passou num dos dois gates (ou pelo motivo errado)"
@@ -2557,6 +2558,46 @@ if rtmx_ambos_aceitam; then
   pass "RTMX5: controlo — cercas legítimas e fechadas deixam os dois leitores verdes"
 else
   bad "RTMX5: cercas legítimas avermelharam um dos dois leitores — RTMX1..4 não provariam nada"
+fi
+
+# RTMX6 — um `<!--` SOLTO na prosa (revisão adversarial de 26eae41). A varredura do ficheiro
+# inteiro lê-o como comentário até ao `-->` seguinte — o de um marcador de menção vinte
+# linhas abaixo, no mesmo ticket — e esconde lá dentro a cerca de YAML do AOS-417: a
+# máscara deixa de a cobrir, um `# comentário` dela termina o bloco a meio, e o AOS-417
+# perdia o ADR-028 que implementa com os dois gates verdes. A sonda é a frase exacta da
+# revisão, injectada na cópia da EPIC-19 pela linha que a precede (não por número).
+cp "$RTMX_EPIC_BAK" "$RTMX_EPIC"
+RTMX_E19="$RTMX_TMP/specs/EPIC-19_Planeador_Meta_Orquestracao.md"
+cp "$RTMX_E19" "$RTMX_TMP/e19.bak"
+RTMX6_LINHA='`aos-orq` é só CLI, e o compose exclui-o deliberadamente do arranque:'
+perl -pi -e 's/^\Q'"$RTMX6_LINHA"'\E$/$& Um comentário HTML abre-se com <!-- e fecha mais tarde./' "$RTMX_E19"
+if ! grep -qF 'abre-se com <!-- e fecha mais tarde.' "$RTMX_E19"; then
+  bad "RTMX6: a sonda não entrou na cópia da EPIC-19 — a linha-âncora mudou, e o subteste mediria o vazio"
+elif rtmx_ambos_recusam "que os leitores tomam por fim de bloco"; then
+  pass "RTMX6: rtm e ref-lint recusam um <!-- solto que esconde a cerca e corta o AOS-417 a meio"
+else
+  bad "RTMX6: um <!-- solto na prosa do AOS-417 passou num dos dois gates (ou pelo motivo errado)"
+fi
+cp "$RTMX_TMP/e19.bak" "$RTMX_E19"
+
+# RTMX7 — duas linhas soltas de crases, uma em cada ticket, à volta do cabeçalho do
+# segundo: a segunda é um fecho válido, pelo que a cerca FECHA e não contém abertura do
+# mesmo tipo. Só a condição 2 (cabeçalho de ticket lá dentro) a apanha.
+rtmx_tickets $'Implementa o ADR-002.\n``` três crases soltas.\nMais prosa.' $'```\nImplementa o ADR-001.'
+if rtmx_ambos_recusam "contém o cabeçalho de $RTMX_B"; then
+  pass "RTMX7: rtm e ref-lint recusam uma cerca fechada que atravessa o cabeçalho do $RTMX_B"
+else
+  bad "RTMX7: duas linhas soltas à volta de um cabeçalho de ticket passaram num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX8 — um `<!--` solto no ÚLTIMO ticket do ficheiro, sem `-->` depois: o comentário
+# corre até ao fim e engole a prosa de cauda. Não há cabeçalho que atravesse nem cabeçalho
+# lá dentro; só a condição 1 aplicada a comentários o apanha.
+rtmx_tickets $'Implementa o ADR-002.\n\nUm comentário HTML abre-se com <!-- e aqui nunca fecha.' ""
+if rtmx_ambos_recusam "nunca fecha («-->»)"; then
+  pass "RTMX8: rtm e ref-lint recusam um <!-- solto que corre até ao fim do ficheiro"
+else
+  bad "RTMX8: um <!-- sem fecho no último bloco passou num dos dois gates (ou pelo motivo errado)"
 fi
 rm -rf "$RTMX_TMP"; RTMX_TMP=""
 

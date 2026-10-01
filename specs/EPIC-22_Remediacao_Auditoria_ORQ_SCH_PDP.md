@@ -1147,22 +1147,26 @@ trecho de menção voltar à coluna de implementadores. Nos dois casos a regener
 ### Critérios de Aceitação
 
 - [x] Existe uma guarda barata e fail-closed, e a invariante que impõe está escolhida e justificada
-      — **uma cerca nunca atravessa a fronteira de um ticket**, verificada sobre cada
-      `specs/EPIC-*.md` inteiro por `adr_citacoes.verificar_cercas`, em três condições: (1) toda a
-      cerca fecha; (2) nenhuma cerca contém um cabeçalho `## AOS-NNN —` ou `### AOS-NNN —`;
-      (3) nenhuma cerca contém uma linha que, fora dela, abriria uma cerca do mesmo carácter, com
-      comprimento igual ou maior e info string. Justificação em «Entrega»
+      — **nem uma cerca nem um comentário HTML atravessam a fronteira de um ticket**, verificada
+      sobre cada `specs/EPIC-*.md` inteiro por `adr_citacoes.verificar_cercas`, em três condições:
+      (1) toda a cerca e todo o comentário fecham; (2) nenhum contém um cabeçalho `## AOS-NNN —` ou
+      `### AOS-NNN —` — e um comentário, nenhum cabeçalho de nível 1 a 3; (3) nenhuma cerca contém
+      uma linha que, fora dela, abriria uma cerca do mesmo carácter, com comprimento igual ou maior
+      e info string. Justificação em «Entrega»; os comentários entraram na revisão (abaixo)
 - [x] É erro nos **dois** leitores, pela mesma função: `rtm-regenerate.py` e `ref-lint.py` chamam-na
       sobre o texto de cada EPIC antes de delimitar blocos, e a mensagem diz o ficheiro, a linha da
       abertura e a condição violada
-- [x] Verde no corpus de hoje — 212 cercas em 25 ficheiros `specs/EPIC-*.md`, zero violações das
+- [x] Verde no corpus de hoje — 214 cercas e 173 comentários em 25 ficheiros `specs/EPIC-*.md`
+      (212 cercas na primeira passagem; o AOS-471 e o AOS-474 acrescentaram uma cada), zero violações das
       três condições; o conjunto de pares (ticket, ADR) sai idêntico, 445 implementados e 78 menções
       antes e depois, `cmp` das listas ordenadas sem diferenças, e igual entre os dois leitores
 - [x] `selftest.sh` §RTMX, sobre uma cópia do corpus: três tis soltos (RTMX1), três crases soltas
       (RTMX2), uma cerca por fechar no fim do último bloco (RTMX3), uma linha solta que emparelha com
       a cerca legítima seguinte do mesmo bloco (RTMX4) — cada uma a avermelhar os dois leitores
       **pela condição que a apanha** — e o controlo positivo (RTMX5): cercas legítimas, de crases, de
-      tis e de quatro crases a mostrar três, ficam verdes nos dois
+      tis e de quatro crases a mostrar três, ficam verdes nos dois. Da revisão: um `<!--` solto que
+      esconde a cerca do AOS-417 (RTMX6), duas linhas soltas à volta de um cabeçalho de ticket, que
+      só a condição (2) apanha (RTMX7), e um `<!--` sem fecho no último bloco (RTMX8)
 - [x] Cada caso foi verificado por mutação (abaixo)
 
 ### Entrega
@@ -1188,15 +1192,18 @@ dentro de uma cerca do mesmo carácter cuja abertura não seja mais comprida só
 estar fora de código. Aninhar cercas de propósito faz-se com uma abertura mais comprida ou do outro
 carácter, e isso continua permitido.
 
-**Alternativa recusada: comparar o conjunto de pares entre commits.** É o que o resíduo nomeia, e
-apanharia qualquer deslocação, não só as de cercas. Recusada por custo, não por princípio: seria uma
-linha de base versionada que **todo** o ticket que cite um ADR teria de actualizar (o mesmo ficheiro
-tocado por todas as sessões paralelas, que é o conflito que `sessoes.py` existe para evitar), e um
-vermelho sem localização — diria que o conjunto mudou, não onde nem porquê. A guarda escolhida
-localiza (ficheiro, linha, condição) e não pede manutenção. O que ela não cobre fica declarado
-abaixo.
+**Alternativa adiada, não recusada: comparar o conjunto de pares entre commits.** É o que o
+resíduo nomeia, e apanharia qualquer deslocação, não só as de cercas. A primeira versão deste
+parágrafo recusava-a por dois motivos, e os dois estavam errados (revisão abaixo): a linha de base
+versionada **já existe** — é a §4 de `tecnica/16`, que todo o ticket que cite um ADR já regenera —, e
+uma diferença de pares localiza-se sozinha, porque diz que (ticket, ADR) mudou. O que é verdade é
+que essa comparação não serve **dentro** do `rtm.sh`, que compara a RTM com o corpus do mesmo commit;
+tem de olhar para o commit anterior. A variante barata ficou escrita como **AOS-475**: em CI, com o
+histórico completo, extrair os pares no merge-base e no HEAD e recusar uma mudança de pares num
+ticket cujo bloco não esteja no diff. Esta guarda fica pela razão que continua certa: localiza a
+causa (ficheiro, linha, condição) no próprio commit que a introduz, sem depender de histórico.
 
-**Medido.** Sobre o corpus de hoje: 212 cercas em 25 ficheiros, todas fechadas, nenhuma com um
+**Medido.** Sobre o corpus de hoje: 214 cercas em 25 ficheiros, todas fechadas, nenhuma com um
 cabeçalho de ticket, nenhuma com uma abertura do mesmo tipo. A única com cabeçalhos ATX lá dentro
 (EPIC-19, um `# comentário` de bash) tem-nos de nível 1 — o caso que a máscara existe para servir.
 O conjunto de pares, extraído pelos dois leitores antes e depois: 445 implementados e 78 menções,
@@ -1221,18 +1228,66 @@ descontínua — a RTM desta entrega é a do backlog depois de os dois se juntar
 
 **Resíduos declarados.**
 
-1. **Duas linhas soltas que emparelhem uma com a outra dentro do mesmo ticket** são, para qualquer
-   leitor de Markdown, uma cerca legítima, e a guarda não as distingue.
-2. **Uma deslocação de pares que não venha de uma cerca continua invisível** — um cabeçalho de
-   ticket mal escrito, um terminador alterado num só dos leitores. O comparador entre commits
-   recusado acima apanhá-la-ia; fica por fazer, com o custo dito.
+1. **Uma linha solta que emparelhe com a linha seguinte do mesmo carácter, no mesmo ticket,
+   quando essa segunda linha não tem info string** (é um fecho válido) — é, para qualquer leitor de
+   Markdown, uma cerca legítima, e a guarda não a distingue. Se a segunda tiver info string, a
+   condição (3) apanha-a; a primeira versão deste resíduo descrevia o buraco mais largo do que é.
+   O mesmo para um `<!--` solto cujo `-->` seguinte esteja no mesmo ticket sem cabeçalho entre os
+   dois: é um comentário legítimo.
+2. **Uma deslocação de pares que não venha de uma cerca nem de um comentário continua invisível**
+   — um cabeçalho de ticket mal escrito, um terminador alterado num só dos leitores. É o que o
+   AOS-475 existe para apanhar.
+3. **Falsos vermelhos da condição (3), do lado fechado:** uma cerca que mostre como texto uma linha
+   começada pela sua própria marca com info string — três crases `text` com «```bash não fecha» lá
+   dentro, `~~~` com «~~~ nota», `~~~~` com «~~~~python». Reescreve-se com uma abertura mais
+   comprida ou com o outro carácter. E um cabeçalho de ticket dado como exemplo dentro de uma cerca
+   (```` ```markdown ```` com `## AOS-123 — Exemplo`) é recusado pela condição (2): de propósito,
+   porque os leitores contá-lo-iam como ticket fantasma — a mensagem passou a dizê-lo.
+
+**Revisão adversarial independente (2026-10-01), sobre 26eae41.** Uma falha média reproduzida e
+quatro menores nesta metade, fechadas num commit por cima:
+
+- **Um `<!--` solto na prosa escondia uma cerca** (médio, reproduzido). A varredura do ficheiro
+  inteiro lê-o como comentário até ao `-->` seguinte. Com a sonda da revisão («Um comentário HTML
+  abre-se com <!-- e fecha mais tarde.» na prosa do AOS-417), esse `-->` era o de um marcador de
+  menção vinte linhas abaixo, no mesmo ticket; a cerca de YAML entre os dois deixava de ser
+  mascarada, um `# comentário` dela terminava o bloco a meio, e o AOS-417 perdia
+  o ADR que implementa — com o `rtm --check` (depois de regenerar) e o `ref-lint` verdes. A correcção sugerida,
+  aplicar as condições (1) e (2) aos comentários, entrou, mas **não apanhava a sonda**: o comentário
+  fecha e não atravessa cabeçalho de ticket nenhum. O que a apanha é a extensão da (2) aos
+  comentários: nenhum cabeçalho de nível 1 a 3 lá dentro, porque a máscara de que o terminador
+  dos leitores depende só cobre cercas, e um cabeçalho dentro de um comentário é ao mesmo tempo
+  fim de bloco para o leitor e texto escondido para o CommonMark. 173 comentários no corpus, zero
+  sem fecho, zero a atravessar, zero com cabeçalho. §RTMX6 (a sonda exacta), §RTMX8 (sem fecho).
+- A condição (2) não tinha sonda isolada — §RTMX1/2 são apanhadas também pela (1). §RTMX7: duas
+  linhas soltas à volta de um cabeçalho de ticket, a segunda um fecho válido; só a (2) a vê.
+- A recusa do comparador entre commits estava mal argumentada (acima, reescrita), e o resíduo 1
+  descrevia o buraco mais largo do que é (acima, corrigido).
+- «212 cercas» passou a 213 com o AOS-471 e a 214 com o AOS-474; os falsos vermelhos da condição (3) e a mensagem
+  enganadora da (2) para um exemplo dentro de cerca não estavam declarados (resíduo 3).
+
+Mutação da segunda passagem, cada uma revertida e o hash confirmado:
+
+| Mutação | Subtestes vermelhos |
+|---|---|
+| `rtm-regenerate.py` ou `ref-lint.py` sem a chamada | RTMX1–RTMX4, RTMX6–RTMX8 |
+| condição (1) desligada nas cercas | RTMX3 |
+| condição (1) desligada nos comentários | RTMX8 |
+| condição (2) desligada | RTMX7 (e RTMX1/2, pelo motivo errado) |
+| condição (3) desligada | RTMX4 |
+| cabeçalho dentro de comentário aceite | RTMX6 |
+| guarda estrita (toda a cerca é erro) | RTMX5, e o corpus real |
+
+Gates da segunda passagem, sobre 45ff27d: `rtm.sh`, `ref-lint.sh`, `estado-citado.sh`, `deferrals.sh` e
+`lint.sh` verdes; `selftest.sh` completo, a correr sozinho, verde (151 subtestes, §RTMX1–RTMX8
+incluídos). O conjunto de pares sai idêntico: 426 implementados, 111 menções.
 
 ### Estado
 
 **FEITO** (2026-10-01). P2.
 
 `scripts/ci/adr_citacoes.py` (`verificar_cercas`), `scripts/ci/rtm-regenerate.py`,
-`scripts/ci/ref-lint.py`, `scripts/ci/selftest.sh` (§RTMX1–RTMX5), `tecnica/16_Rastreabilidade_RTM.md`
+`scripts/ci/ref-lint.py`, `scripts/ci/selftest.sh` (§RTMX1–RTMX8), `tecnica/16_Rastreabilidade_RTM.md`
 (§4 regenerada: uma frase no parágrafo «Citar não é alegar»).
 
 ---

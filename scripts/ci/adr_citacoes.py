@@ -80,8 +80,8 @@ cópias desta regra envelheceriam em separado (o mesmo raciocínio de
 `adr_register.py`). Também lhes dá `blocos_cercados`, a mesma detecção de cercas
 de que dependem para delimitar o bloco de um ticket (`mascarar_fences`), e
 `verificar_cercas` (AOS-472), que os dois chamam sobre cada `specs/EPIC-*.md` antes
-de o ler: uma cerca que não feche, que atravesse o cabeçalho de outro ticket ou que
-contenha uma abertura do seu próprio tipo é ERRO, porque desloca pares (ticket, ADR)
+de o ler: uma cerca ou um comentário HTML que não feche, ou que atravesse o cabeçalho de
+outro ticket, e uma cerca que contenha uma abertura do seu próprio tipo, são ERRO, porque desloca pares (ticket, ADR)
 sem que a RTM regenerada deixe de bater com o corpus — nenhum gate compara o
 conjunto de pares de um commit com o do anterior.
 """
@@ -191,26 +191,44 @@ def blocos_cercados(texto: str) -> list:
 
 # Cabeçalho de ticket, tal como os dois leitores o procuram — sobre o texto CRU, não mascarado.
 _RE_CABECALHO_TICKET = re.compile(r"^#{2,3} (AOS-\d{3})\s*[-–—]", re.MULTILINE)
+# Qualquer linha que o `fim_do_bloco` dos leitores possa tomar por terminador (níveis 1-3,
+# espaço ou tab): dentro de um comentário HTML não é mascarada, e o bloco acabava lá dentro.
+_RE_CABECALHO_BLOCO = re.compile(r"\n(#{1,3}[ \t][^\n]*)")
 
 
 def verificar_cercas(texto: str, onde: str) -> None:
     """
-    Guarda de AOS-472: levanta `CitacaoError` se uma cerca de `texto` (um `specs/EPIC-*.md`
-    inteiro) puder estar a deslocar pares (ticket, ADR) sem que nenhum gate dê por isso.
+    Guarda de AOS-472: levanta `CitacaoError` se uma cerca ou um comentário HTML de `texto` (um
+    `specs/EPIC-*.md` inteiro) puder estar a deslocar pares (ticket, ADR) sem que nenhum gate dê
+    por isso.
 
     Uma linha de prosa que comece por três crases ou três tis abre, pelo CommonMark, uma
-    cerca que só fecha numa linha do mesmo carácter. Tudo o que fica lá dentro deixa de ser
-    lido como directiva, e os `#` lá dentro deixam de terminar blocos — um ticket absorve o
-    seguinte, ou uma menção volta a implementação. A RTM regenerada fica sincronizada com o
-    corpus mal lido, e o `rtm.sh` verde. A invariante que se impõe é a de que **uma cerca
-    nunca atravessa a fronteira de um ticket**, em três condições, todas medidas a zero no
-    corpus de 2026-10-01 (212 cercas):
+    cerca que só fecha numa linha do mesmo carácter; um `<!--` solto na prosa abre um
+    comentário que só fecha no `-->` seguinte, onde quer que esteja. Tudo o que fica lá dentro
+    deixa de ser lido como directiva, e os `#` de uma cerca que lá estivesse deixam de ser
+    mascarados (ou, ao contrário, os de prosa passam a sê-lo) — um ticket absorve o seguinte,
+    perde o seu próprio fim, ou uma menção volta a implementação. A RTM regenerada fica
+    sincronizada com o corpus mal lido, e o `rtm.sh` verde. A invariante que se impõe é a de
+    que **nem uma cerca nem um comentário atravessam a fronteira de um ticket**, em três
+    condições, todas medidas a zero no corpus de 2026-10-01 (214 cercas e 173 comentários em
+    25 ficheiros):
 
-      1. toda a cerca fecha — sem linha de fecho, corre até ao fim do ficheiro e engole a
-         fronteira de todos os tickets que se lhe seguem (ou, no último, a prosa de cauda);
-      2. nenhuma cerca contém um cabeçalho `## AOS-NNN —` / `### AOS-NNN —`: os leitores
-         acham os cabeçalhos no texto cru e os terminadores no mascarado, pelo que essa
-         linha seria ao mesmo tempo um ticket novo e não-fronteira do anterior;
+      1. toda a cerca e todo o comentário fecham — sem fecho, correm até ao fim do ficheiro e
+         engolem a fronteira de todos os tickets que se lhes seguem (ou, no último, a prosa de
+         cauda);
+      2. nenhuma cerca e nenhum comentário contêm um cabeçalho `## AOS-NNN —` /
+         `### AOS-NNN —`: os leitores acham os cabeçalhos no texto cru e os terminadores no
+         mascarado, pelo que essa linha seria ao mesmo tempo um ticket novo e não-fronteira do
+         anterior. Também recusa, de propósito, um cabeçalho de ticket dado como EXEMPLO dentro
+         de uma cerca: os leitores contá-lo-iam como ticket fantasma;
+         Num comentário, a condição vai mais longe: nenhum cabeçalho ATX de nível 1-3, de
+         ticket ou não. A máscara de que o terminador dos leitores depende só cobre cercas, pelo
+         que um cabeçalho dentro de um comentário é, para o leitor, o fim do bloco — e para o
+         CommonMark, texto escondido. Foi assim que um `<!--` solto na prosa do AOS-417, a
+         fechar no `-->` de um marcador vinte linhas abaixo, escondia uma cerca de YAML cujos
+         `# comentário` passavam a terminar o bloco a meio, e o AOS-417 perdia o ADR que
+         implementa sem nenhum gate ficar vermelho (medido: 0 cabeçalhos em comentários no
+         corpus de hoje);
       3. nenhuma cerca contém uma linha que, fora dela, ABRIRIA uma cerca do mesmo carácter
          (comprimento ≥ ao da abertura e com info string — «```bash» dentro de uma cerca de
          três crases). É o sinal de dessincronização: o autor julgava estar fora de código.
@@ -218,10 +236,19 @@ def verificar_cercas(texto: str, onde: str) -> None:
          crases à volta de três) ou com o outro carácter, e isso continua permitido. Sem
          esta condição, uma linha solta de três crases emparelhava com o fecho da cerca
          legítima seguinte do mesmo bloco, ficava fechada sem atravessar nada, e escondia
-         como código as directivas que houvesse entre as duas.
+         como código as directivas que houvesse entre as duas. Só se aplica a cercas: um
+         comentário não tem «abertura do mesmo tipo» que o denuncie.
 
-    O que fica de fora, declarado: duas linhas soltas que emparelhem uma com a outra dentro do
-    mesmo ticket são, para qualquer leitor, uma cerca legítima.
+    O que fica de fora, declarado:
+      - uma linha solta que emparelhe com a linha seguinte do mesmo carácter, no mesmo ticket,
+        quando essa segunda linha NÃO tem info string (é um fecho válido): para qualquer leitor
+        é uma cerca legítima. Se a segunda tiver info string, a condição 3 apanha-a;
+      - um `<!--` solto cujo `-->` seguinte esteja no mesmo ticket — é um comentário legítimo
+        para qualquer leitor de Markdown;
+      - falsos vermelhos da condição 3, que erram para o lado fechado: uma cerca que mostre,
+        como texto, uma linha começada pela sua própria marca com info string (```` ```text ````
+        com «```bash não fecha» lá dentro; `~~~` com «~~~ nota»; `~~~~` com «~~~~python»).
+        Reescreve-se com uma abertura mais comprida ou com o outro carácter.
     """
     cabecalhos = [(m.start(), m.group(1)) for m in _RE_CABECALHO_TICKET.finditer(texto)]
     problemas = []
@@ -229,17 +256,23 @@ def verificar_cercas(texto: str, onde: str) -> None:
     def linha(pos: int) -> int:
         return texto.count("\n", 0, pos) + 1
 
-    for ini, fim, fechou in _varrer(texto)[0]:
-        fl = _fim_da_linha(texto, ini)
-        marca = _RE_ABRE_CERCA.fullmatch(texto, ini, fl).group(1)
-        rotulo = "a cerca «%s» aberta na linha %d" % (marca, linha(ini))
+    def atravessa(rotulo: str, ini: int, fim: int, o_que: str) -> None:
         dentro = [(p, aos) for p, aos in cabecalhos if ini < p < fim]
         if dentro:
             p, aos = dentro[0]
             problemas.append(
-                "%s atravessa o cabeçalho de %s (linha %d) — os dois tickets deixam de ter "
-                "fronteira" % (rotulo, aos, linha(p))
+                "%s contém o cabeçalho de %s (linha %d) — %s, e um cabeçalho de ticket lá "
+                "dentro é recusado: ou o fecho faltou antes dele (os dois tickets deixam de ter "
+                "fronteira), ou é um exemplo, que os leitores contariam como ticket fantasma"
+                % (rotulo, aos, linha(p), o_que)
             )
+
+    varridas, comentarios = _varrer(texto)
+    for ini, fim, fechou in varridas:
+        fl = _fim_da_linha(texto, ini)
+        marca = _RE_ABRE_CERCA.fullmatch(texto, ini, fl).group(1)
+        rotulo = "a cerca «%s» aberta na linha %d" % (marca, linha(ini))
+        atravessa(rotulo, ini, fim, "um bloco de código não atravessa tickets")
         if not fechou:
             problemas.append(
                 "%s nunca fecha e corre até ao fim do ficheiro" % rotulo
@@ -258,11 +291,27 @@ def verificar_cercas(texto: str, onde: str) -> None:
                 )
                 break
             p = f + 1
+    for ini, fim in comentarios:
+        rotulo = "o comentário HTML «<!--» aberto na linha %d" % linha(ini)
+        n_antes = len(problemas)
+        atravessa(rotulo, ini, fim, "um comentário não atravessa tickets")
+        cab = _RE_CABECALHO_BLOCO.search(texto, ini, fim)
+        if cab and len(problemas) == n_antes:
+            problemas.append(
+                "%s contém na linha %d o cabeçalho «%s», que os leitores tomam por fim de bloco "
+                "(a máscara só cobre cercas) — o comentário e o bloco discordam sobre onde está "
+                "a fronteira" % (rotulo, linha(cab.start() + 1), cab.group(1).strip()[:60])
+            )
+        if not texto.endswith("-->", 0, fim):
+            problemas.append(
+                "%s nunca fecha («-->») e corre até ao fim do ficheiro" % rotulo
+            )
     if problemas:
         raise CitacaoError(
-            "%s: cerca de código atravessa a fronteira de um ticket (AOS-472) — %s. Uma "
-            "linha de prosa que comece por ``` ou ~~~ abre uma cerca pelo CommonMark; "
-            "reescreva-a ou feche a cerca dentro do mesmo ticket"
+            "%s: cerca de código ou comentário HTML atravessa a fronteira de um ticket "
+            "(AOS-472) — %s. Uma linha de prosa que comece por ``` ou ~~~ abre uma cerca, e um "
+            "«<!--» solto abre um comentário até ao «-->» seguinte; reescreva-os (entre crases, "
+            "por exemplo) ou feche-os dentro do mesmo ticket"
             % (onde, "; ".join(problemas))
         )
 
