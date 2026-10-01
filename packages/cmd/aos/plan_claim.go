@@ -162,6 +162,9 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 		reclamadoEm  map[int]time.Time
 		desfechoDe   map[int]string
 		desfechoEm   map[int]time.Time
+		// chamouModelo é o que cada desfecho DECLAROU sobre a sua geração (AOS-467); ausente ⇒ não
+		// declarou.
+		chamouModelo map[int]bool
 	}
 	porRun := map[string]*estado{}
 	ordem := []string{}
@@ -169,7 +172,7 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 	garantir := func(runID string) *estado {
 		e, ok := porRun[runID]
 		if !ok {
-			e = &estado{reclamadoEm: map[int]time.Time{}, desfechoDe: map[int]string{}, desfechoEm: map[int]time.Time{}}
+			e = &estado{reclamadoEm: map[int]time.Time{}, desfechoDe: map[int]string{}, desfechoEm: map[int]time.Time{}, chamouModelo: map[int]bool{}}
 			e.p.RunID = runID
 			porRun[runID] = e
 			ordem = append(ordem, runID)
@@ -216,6 +219,9 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 				continue
 			}
 			e.desfechoDe[ger] = d.Classe
+			if d.ChamouModelo != nil {
+				e.chamouModelo[ger] = *d.ChamouModelo
+			}
 			if t, err := time.Parse(time.RFC3339Nano, ev.Ts); err == nil {
 				e.desfechoEm[ger] = t
 			}
@@ -274,16 +280,29 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 			}
 		}
 		e.p.Geracao = e.maiorGeracao + 1
-		// GERAÇÕES QUE CONTAM PARA O TECTO (AOS-467): todas menos as que seguem um `aguarda_humano`.
-		// Desconta-se pelo MAPA dos desfechos e não por um laço de 1 até à geração: um desfecho
-		// reportado para uma geração arbitrária (10⁹) faria da projecção um laço de mil milhões.
-		reverificacoes := 0
-		for g, classe := range e.desfechoDe {
-			if classe == DesfechoAguardaHumano && g >= 1 && g < e.p.Geracao {
-				reverificacoes++
+		// GERAÇÕES QUE CONTAM PARA O TECTO (AOS-467): as que CHAMARAM O MODELO (decisão do dono,
+		// depois da revisão adversarial: a regra «todas menos as re-verificações» fechava um plano
+		// aprovado e longo, cujas retomas pela saída 8 correm pelo documento sem modelo).
+		//
+		//   - declarada pelo drenador (`chamou_modelo`): conta se chamou;
+		//   - NÃO declarada (reclamação expirada, drenador anterior, a geração a oferecer): regra
+		//     conservadora — conta, excepto se a anterior acabou à espera de humano (re-verificação).
+		//
+		// Desconta-se pelos MAPAS e não por um laço de 1 até à geração: um desfecho reportado para uma
+		// geração arbitrária (10⁹) faria da projecção um laço de mil milhões.
+		naoContam := 0
+		for g, chamou := range e.chamouModelo {
+			if !chamou && g >= 1 && g < e.p.Geracao {
+				naoContam++
 			}
 		}
-		e.p.GeracoesContadas = e.p.Geracao - reverificacoes
+		for g, classe := range e.desfechoDe {
+			seguinte := g + 1
+			if _, declarada := e.chamouModelo[seguinte]; classe == DesfechoAguardaHumano && g >= 1 && seguinte <= e.p.Geracao && !declarada {
+				naoContam++
+			}
+		}
+		e.p.GeracoesContadas = e.p.Geracao - naoContam
 		fora = append(fora, e.p)
 	}
 	// Ordem de CHEGADA. Sem isto, um pedido azarado podia ficar para trás indefinidamente.
@@ -321,6 +340,11 @@ type desfechoPayload struct {
 	Classe   string `json:"classe"`
 	CodigoDe int    `json:"codigo_saida,omitempty"`
 	Detalhe  string `json:"detalhe,omitempty"`
+	// ChamouModelo é o que o drenador declara: esta geração chamou o modelo (AOS-467). nil quando não
+	// declarou (um drenador anterior) — e aí a projecção usa a regra conservadora. É o que separa a
+	// geração que DECOMPÔS (o custo que o tecto limita) da retoma de um plano já aprovado, que corre
+	// pelo documento sem modelo e não pode contar: um plano longo seria fechado pelo tecto.
+	ChamouModelo *bool `json:"chamou_modelo,omitempty"`
 }
 
 // respostaDeReclamo é o que a rota devolve quando há trabalho.
@@ -392,15 +416,16 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		//
 		// A forma do wire não muda: o consumidor recebe `objective` em claro, como sempre, pelo
 		// canal que o gate soberano já autenticou. É por isto que ele nunca precisa da chave.
-		objetivo, errAbrir := abrirObjetivo(h.node, pedido.Payload)
-		// UM PEDIDO ESGOTADO ENTREGA-SE MESMO ILEGÍVEL (AOS-467): o drenador fecha-o sem planear, e
-		// não precisa do objectivo. É o que fecha, por fim, o pedido de objectivo ilegível do
-		// AOS-442 — re-reclamado a cada expiração, as suas gerações contam, e ao passar o tecto
-		// entrega-se para fechar em vez de voltar à fila para sempre.
-		if errAbrir != nil && pedido.Esgotado {
-			h.logf("plan-claim: pedido %q geracao %d ESGOTADO e de objectivo ilegivel — entregue sem objectivo, para fechar: %v",
-				pedido.RunID, pedido.Geracao, errAbrir)
-			objetivo, errAbrir = "", nil
+		//
+		// UM PEDIDO ESGOTADO ENTREGA-SE SEM OBJECTIVO (AOS-467): o drenador fecha-o sem planear e não
+		// precisa dele. Não se decifra — o objectivo do titular não sai em claro sem necessidade —, e
+		// isso tem dois efeitos medidos pela revisão: um `aos-orq` anterior, que ignora a marca, não
+		// tem o que decompor e não chama o modelo; e o pedido de objectivo ILEGÍVEL do AOS-442,
+		// re-reclamado a cada expiração para sempre, entrega-se para fechar ao passar o tecto.
+		var objetivo string
+		var errAbrir error
+		if !pedido.Esgotado {
+			objetivo, errAbrir = abrirObjetivo(h.node, pedido.Payload)
 		}
 		if errAbrir != nil {
 			// A CAUSA MAIS PROVÁVEL É LEGÍTIMA, e é o Art. 17 a funcionar: a KEK do titular foi
@@ -437,6 +462,14 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// verificarQuotaNaEntrega decide se a entrega de uma geração exige quota (AOS-466/467). Só a
+// PRIMEIRA geração marcada fica isenta: é a de fecho, e não planeia. Uma segunda marcada só existe se
+// o drenador não fechou a primeira (um `aos-orq` anterior ignora a marca e planeia) — e aí a quota
+// volta a ser o travão, em vez de cada repetição passar de graça (achado da revisão adversarial).
+func verificarQuotaNaEntrega(p pedidoNaFila, tecto int) bool {
+	return !p.Esgotado || p.GeracoesContadas > tecto+1
 }
 
 // maxIlegiveisPorReclamacao limita quantos pedidos ilegíveis uma reclamação salta antes de
@@ -481,7 +514,7 @@ func (h *apiHandler) reclamarUm(ctx context.Context, reclamante readerIdentity) 
 		// ser decidido AQUI, antes da entrega: depois, a quota esgotada já a teria deixado pendente.
 		p.Esgotado = h.cfg.planMaxGenerations > 0 && p.GeracoesContadas > h.cfg.planMaxGenerations
 		if h.node.QuotaPorPrincipal != nil {
-			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao, !p.Esgotado); errors.Is(err, ErrPrincipalQuotaUnreadable) {
+			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao, verificarQuotaNaEntrega(p, h.cfg.planMaxGenerations)); errors.Is(err, ErrPrincipalQuotaUnreadable) {
 				h.logf("plan-claim: pedido %q NAO entregue — a quota do titular e ilegivel: %v", p.RunID, err)
 				continue
 			} else if errors.Is(err, ErrPrincipalQuotaExhausted) {
@@ -527,6 +560,8 @@ type pedidoDeDesfecho struct {
 	// Ausente — um `aos-orq` anterior — vale como NÃO MEDIDO, e a reserva de planeamento não se
 	// liberta.
 	Consumo *consumoReportado `json:"consumo,omitempty"`
+	// ChamouModelo — esta geração chamou o modelo (AOS-467). Ausente num drenador anterior.
+	ChamouModelo *bool `json:"chamou_modelo,omitempty"`
 }
 
 // consumoReportado é o consumo de planeamento de uma geração, como o drenador o declara. Os
@@ -635,6 +670,8 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		Classe:   req.Classe,
 		CodigoDe: req.CodigoSaida,
 		Detalhe:  truncar(req.Detalhe, 512),
+		// AOS-467: o que o tecto de gerações conta.
+		ChamouModelo: req.ChamouModelo,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "erro interno")

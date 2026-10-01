@@ -54,6 +54,9 @@ func TestAOS467OCodigo12NaoCorreServeEFecha(t *testing.T) {
 	if c["tokens"] != float64(0) || c["tokens_medidos"] != true || c["custo_medido"] != true {
 		t.Fatalf("o fecho nao chama o modelo: consumo zero medido, veio %v", c)
 	}
+	if espiao.desfechos[0]["chamou_modelo"] != false {
+		t.Fatalf("o fecho nao chama o modelo: chamou_modelo=%v", espiao.desfechos[0]["chamou_modelo"])
+	}
 	if !strings.HasSuffix(espiao.desfechos[0]["detalhe"].(string), "erro=geracoes_esgotadas") {
 		t.Fatalf("o detalhe tem de dizer porque fechou: %v", espiao.desfechos[0]["detalhe"])
 	}

@@ -72,6 +72,18 @@ func (m *medidorDoPlaneamento) consumo() consumoDoPlaneamento {
 	}
 }
 
+// chamouModelo diz se ESTA geração chamou o modelo (AOS-467): é o que o tecto de gerações do nó
+// conta. Um medidor nil não sabe — e diz que chamou, o lado que fecha mais cedo e nunca deixa uma
+// geração cara passar sem contar.
+func (m *medidorDoPlaneamento) chamouModelo() bool {
+	if m == nil {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.chamadas > 0
+}
+
 // chaveDoMedidor transporta o medidor do `consume` até à composição do modelo, atravessando o
 // `serve` in-process. Só se LÊ na composição ([construirModeloGateway]), que o guarda num campo: a
 // contagem nunca depende de o planeador propagar o ctx até ao modelo.

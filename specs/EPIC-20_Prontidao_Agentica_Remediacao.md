@@ -3254,8 +3254,9 @@ AOS-457: reserva na admissão, liquidação pelo consumo real.
   não entregar sem quota.
 - **Pedidos submetidos antes da quota** (ou por uma réplica anterior) não têm reserva: o seu
   planeamento não conta, e o nó não recusa reclamá-los.
-- **Ordem de deploy: o nó primeiro.** Um `aos-orq` anterior não envia `consumo` — a reserva fica
-  inteira. Uma réplica anterior do nó não reserva o planeamento.
+- **Ordem de deploy: qualquer uma é segura para este ticket** — um `aos-orq` anterior não envia
+  `consumo` (a reserva fica inteira); um nó anterior ignora-o. O AOS-467 pede o `aos-orq` primeiro, e é
+  essa a ordem a seguir. Uma réplica anterior do nó não reserva o planeamento.
 
 ### Revisão adversarial independente (2026-09-30)
 Sobre o commit `ea0270f`. Dois achados MÉDIOS, **os dois reproduzidos e os dois contagens a menos**, e
@@ -3328,18 +3329,19 @@ próprio, e a quantia reservada pelo AOS-466 liquida.
 | eixo | decisão | alternativas rejeitadas |
 |---|---|---|
 | **Onde** | **O nó decide, o `aos-orq` fecha.** O nó — que numera as gerações e vê as que nenhum drenador viu (reclamação expirada, quota esgotada) — entrega a geração que passa o tecto marcada `generations_exhausted`; o `aos-orq` fecha-a como terminal com a saída **12**, SEM `serve` (o molde da saída 11). Só o consumidor escreve desfechos (ADR-030, ADR-018). | o nó fecha sozinho (o nó passaria a escrever desfechos com códigos que não conhece, contra o ADR-030); só no `aos-orq` (não vê o que o nó não entrega; um `aos-orq` anterior ficava sem tecto) |
-| **O que conta** | **Cada geração cuja anterior não terminou em `aguarda_humano`** — re-ofertas depois de um transitório e de uma reclamação expirada. As re-verificações de um plano à espera de humano (de 10 em 10 min, ~144/dia) não contam: esse caso tem o prazo de 24 h do `aos-orq`. | todas as gerações (um plano à espera de humano morreria ao fim de N×10 min) |
+| **O que conta** (revisto depois da revisão adversarial) | **As gerações que chamaram o modelo**: o `aos-orq` declara-o no desfecho (`chamou_modelo`). As retomas de um plano já aprovado (saída 8, pelo documento) e as re-verificações não contam. Uma geração sem declaração (reclamação expirada, `aos-orq` anterior) conta, excepto se a anterior acabou em `aguarda_humano`. | a decisão inicial, «cada geração cuja anterior não terminou em `aguarda_humano`» — fechava um plano aprovado e longo (cada retoma pela saída 8 contava); excluir só a saída 8 (as falhas de posse/rede durante a execução continuariam a contar); todas as gerações |
 | **Valor** | **5**, por `AOS_PLAN_MAX_GENERATIONS` (inteiro > 0; 0 ou ilegível aborta o arranque). Com até 3 tentativas do planeador por geração, no máximo ~15 chamadas ao modelo por pedido. | 3 (fecha cedo com duas falhas de infraestrutura); 10 |
 
 ### Desenho
-- **Nó — contagem.** A projecção da fila (`projectarComTerminados`, função pura) conta, para a
-  geração a oferecer, as gerações 1..N em que a anterior não acabou em `aguarda_humano`.
+- **Nó — contagem.** A projecção da fila (`projectarComTerminados`, função pura) conta as gerações
+  1..N pela regra acima, descontando pelos mapas dos desfechos (sem laço até à geração).
 - **Nó — reclamação.** Se a contagem passa o tecto, a geração entrega-se **marcada**
-  (`generations_exhausted`), sem verificar quota (não planeia) e sem precisar de abrir o objectivo
-  (não o usa). O fecho de um pedido de objectivo ilegível (AOS-442), que antes ficava a ser
+  (`generations_exhausted`) e **sem o objectivo** — não se decifra. Só a primeira marcada dispensa a
+  quota do AOS-466. O fecho de um pedido de objectivo ilegível (AOS-442), que antes ficava a ser
   re-reclamado de hora a hora para sempre, passa a acontecer por esta via.
-- **`aos-orq`.** Uma reclamação marcada fecha logo: desfecho terminal com a saída 12
-  (`exitGeracoesEsgotadas`), consumo zero medido, aviso (AOS-445) e apagamento do documento do plano.
+- **`aos-orq`.** Cada desfecho declara `chamou_modelo` (o medidor do AOS-466 viu chamadas). Uma
+  reclamação marcada fecha logo: desfecho terminal com a saída 12 (`exitGeracoesEsgotadas`), consumo
+  zero medido, aviso (AOS-445) e apagamento do documento do plano.
 - **ADR-030** emendado na §2.6 (a saída 12 é «permanente»).
 
 ### Validação
@@ -3357,13 +3359,21 @@ próprio, e a quantia reservada pelo AOS-466 liquida.
   - o nome `generations_exhausted` escrito à mão dos dois lados.
 - Mutações: 18 aplicadas, 17 mortas na primeira passagem. A sobrevivente (a tag JSON mudada nas duas
   pontas) levou aos testes de contrato com o nome literal, e morre depois deles (e a do nó também).
+- Depois da revisão: os testes da regra declarada (`TestAOS467ContamAsQueChamaramOModelo`), do plano
+  longo pela rota (`TestAOS467UmPlanoLongoNaoEFechadoPeloTecto`, dez retomas com o tecto a 2), da marcada
+  sem objectivo e da isenção só da primeira; no `aos-orq`, `chamou_modelo` verdadeiro com o gateway vivo
+  e falso com o fixture e no fecho. Segunda bateria: 14 aplicadas, 14 mortas.
 - Suites `-race` dos dois módulos verdes. Gates `build`, `lint`, `layer-lint`, `secrets`, `sast`,
   `rtm`, `ref-lint` e `event-catalog` verdes. Smoke do `run-aos` 10/10.
 
 ### Residuais declarados
-- **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca e planeia na mesma.
-  Com um pedido de objectivo ilegível, recebe a geração marcada sem objectivo, falha antes de chamar o
-  modelo e volta à fila: re-reclama a cada drenagem até o `aos-orq` ser actualizado.
+- **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, recebe a geração
+  sem objectivo, não tem o que decompor e reporta (sem `chamou_modelo`); a geração seguinte volta
+  marcada e precisa de quota. Não chama o modelo, mas re-reclama a cada drenagem até ser actualizado, e
+  as suas gerações não declaradas contam todas — incluindo as retomas de um plano longo, que esse
+  `aos-orq` pode ver fechadas pelo tecto.
+- **`chamou_modelo` é declarado pelo drenador**, como o consumo do AOS-466: um drenador comprometido
+  pode declarar «não chamou» e contornar o tecto.
 - **O consumo é declarado pelo drenador** (AOS-466), e o desfecho também: um drenador que não feche a
   geração marcada (ou que a reporte transitória) deixa-a voltar, marcada outra vez, até à reclamação
   seguinte.
@@ -3372,6 +3382,23 @@ próprio, e a quantia reservada pelo AOS-466 liquida.
 - **Uma geração reportada para um número arbitrário** (sem a quota composta, o nó aceita qualquer
   geração ≥ 1 no desfecho) conta-a toda para o tecto: o pedido fecha na reclamação seguinte. Um drenador
   já podia fechar o pedido com um desfecho terminal; não é um poder novo.
+
+### Revisão adversarial independente (2026-10-01)
+Sobre `33e2cd4`:
+- **ALTO, reproduzido.** Um plano saudável e longo, já aprovado, era fechado pelo tecto: cada retoma
+  pela saída 8 (o caminho feliz de um plano mais longo do que o `--plan-timeout`) contava. Com os
+  defaults, mais de ~3h20 de execução, e os runs-filho ficavam órfãos.
+  - **Corrigido** com a decisão do dono acima: contam as gerações que chamaram o modelo.
+- **MÉDIO, reproduzido.** Com um `aos-orq` anterior, cada geração marcada era entregue sem quota, ele
+  planeava e reportava transitório, e a quota deixava de travar.
+  - **Corrigido** de duas maneiras: a marcada vai sem objectivo (não há o que decompor), e só a
+    primeira dispensa a quota.
+- **BAIXOS:**
+  - o banner e o README diziam que o objectivo não se abria, e abria-se: corrigido, agora não se abre;
+  - o aviso atribuía o 12 só a falhas de decomposição, quando também o fecha o objectivo ilegível:
+    corrigido;
+  - as duas ordens de deploy contradiziam-se (AOS-466 contra AOS-467): unificadas;
+  - uma frase do ADR era imprecisa: corrigida.
 
 ### Estado
 **EM REVISÃO** (2026-10-01).

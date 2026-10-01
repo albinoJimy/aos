@@ -14,6 +14,7 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -285,5 +286,143 @@ func TestAOS467AEntregaDeFechoNaoExigeQuota(t *testing.T) {
 	var p respostaDeReclamo
 	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil || p.Geracao != 2 || !p.GeracoesEsgotadas {
 		t.Fatalf("a geracao de fecho entrega-se com a quota esgotada, marcada: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// evDesfechoDeclarado é um desfecho que declara se a sua geração chamou o modelo.
+func evDesfechoDeclarado(seq uint64, runID string, ger int, classe string, chamou bool, quando time.Time) eventstore.Event {
+	p, _ := json.Marshal(desfechoPayload{Versao: "1.0", RunID: runID, Classe: classe, ChamouModelo: &chamou})
+	return eventstore.Event{
+		Seq: seq, Type: EventTypePlanRequestOutcome,
+		StepID: prefixoDesfecho + strconv.Itoa(ger) + "-" + runID, Payload: p,
+		Ts: quando.Format(time.RFC3339Nano),
+	}
+}
+
+// TestAOS467ContamAsQueChamaramOModelo — a regra decidida depois da revisão adversarial: conta a
+// geração que DECLAROU ter chamado o modelo; a que declarou não ter chamado não conta; a que não
+// declarou (drenador anterior, reclamação expirada, a geração a oferecer) usa a regra conservadora.
+func TestAOS467ContamAsQueChamaramOModelo(t *testing.T) {
+	agora := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	antes := agora.Add(-2 * time.Hour)
+	casos := []struct {
+		nome     string
+		eventos  []eventstore.Event
+		geracao  int
+		contadas int
+	}{
+		// O ACHADO ALTO: um plano aprovado e longo — cada retoma pela saída 8 corre pelo documento.
+		{"retomas pelo documento nao contam", []eventstore.Event{
+			evSubmetido(1, "p", ""),
+			evDesfechoDeclarado(2, "p", 1, DesfechoTransitorio, true, antes), // decompôs, saída 8
+			evDesfechoDeclarado(3, "p", 2, DesfechoTransitorio, false, antes),
+			evDesfechoDeclarado(4, "p", 3, DesfechoTransitorio, false, antes),
+			evDesfechoDeclarado(5, "p", 4, DesfechoTransitorio, false, antes),
+			evDesfechoDeclarado(6, "p", 5, DesfechoTransitorio, false, antes),
+			evDesfechoDeclarado(7, "p", 6, DesfechoTransitorio, false, antes),
+		}, 7, 2},
+		{"decomposicoes que falham contam todas", []eventstore.Event{
+			evSubmetido(1, "p", ""),
+			evDesfechoDeclarado(2, "p", 1, DesfechoTransitorio, true, antes),
+			evDesfechoDeclarado(3, "p", 2, DesfechoTransitorio, true, antes),
+			evDesfechoDeclarado(4, "p", 3, DesfechoTransitorio, true, antes),
+		}, 4, 4},
+		{"declarada vence a regra conservadora apos aguarda", []eventstore.Event{
+			evSubmetido(1, "p", ""),
+			evDesfechoDeclarado(2, "p", 1, DesfechoAguardaHumano, true, antes),
+			evDesfechoDeclarado(3, "p", 2, DesfechoTransitorio, true, antes), // re-decompôs
+		}, 3, 3},
+		{"nao declarada apos aguarda nao conta", []eventstore.Event{
+			evSubmetido(1, "p", ""),
+			evDesfechoDeclarado(2, "p", 1, DesfechoAguardaHumano, true, antes),
+			evDesfechoEm(3, "p", 2, DesfechoAguardaHumano, antes), // drenador anterior
+		}, 3, 1},
+		{"reclamacao expirada conta", []eventstore.Event{
+			evSubmetido(1, "p", ""),
+			evDesfechoDeclarado(2, "p", 1, DesfechoTransitorio, false, antes),
+			evReclamado(3, "p", 2, antes),
+		}, 3, 2},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			fila := projectarFila(c.eventos, agora)
+			if len(fila) != 1 || fila[0].Geracao != c.geracao || fila[0].GeracoesContadas != c.contadas {
+				t.Fatalf("esperava geracao %d com %d contadas, veio %+v", c.geracao, c.contadas, fila)
+			}
+		})
+	}
+}
+
+func reportarDeclarado(t *testing.T, h http.Handler, runID string, g int, classe string, codigo int, chamou bool) {
+	t.Helper()
+	rec := postReq(h, "/plans/outcome", map[string]any{"run_id": runID, "generation": g, "classe": classe,
+		"codigo_saida": codigo, "chamou_modelo": chamou}, euReaderHeaders())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("desfecho %d: %d %s", g, rec.Code, rec.Body.String())
+	}
+}
+
+// TestAOS467UmPlanoLongoNaoEFechadoPeloTecto — o achado ALTO da revisão, pela rota: com o tecto a 2,
+// um plano que decompôs uma vez e depois retoma pelo documento (saída 8, sem modelo) dez vezes nunca
+// é marcado. O nome do campo vai escrito à mão: é o que o `aos-orq` envia.
+func TestAOS467UmPlanoLongoNaoEFechadoPeloTecto(t *testing.T) {
+	_, h := noComFilaETecto(t, 2)
+	if rec := postReq(h, "/plans", map[string]any{"run_id": "plano-longo", "objective": "o"}, euReaderHeaders()); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao: %d", rec.Code)
+	}
+	for g := 1; g <= 10; g++ {
+		p := reclamar467(t, h)
+		if p.Geracao != g || p.GeracoesEsgotadas {
+			t.Fatalf("a geracao %d de um plano em execucao nao pode ser marcada: %+v", g, p)
+		}
+		reportarDeclarado(t, h, "plano-longo", g, DesfechoTransitorio, 8, g == 1)
+	}
+}
+
+// TestAOS467AGeracaoMarcadaNaoLevaOObjectivo — o drenador fecha sem planear e não precisa dele; não
+// se decifra, e um `aos-orq` anterior que ignore a marca não tem o que decompor.
+func TestAOS467AGeracaoMarcadaNaoLevaOObjectivo(t *testing.T) {
+	_, h := noComFilaETecto(t, 1)
+	if rec := postReq(h, "/plans", map[string]any{"run_id": "plano-467", "objective": "segredo do titular"}, euReaderHeaders()); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao: %d", rec.Code)
+	}
+	if p := reclamar467(t, h); p.Objective != "segredo do titular" {
+		t.Fatalf("a geracao 1 planeia e leva o objectivo: %+v", p)
+	}
+	reportarDeclarado(t, h, "plano-467", 1, DesfechoTransitorio, 1, true)
+	p := reclamar467(t, h)
+	if !p.GeracoesEsgotadas || p.Objective != "" {
+		t.Fatalf("a geracao marcada vai sem objectivo: %+v", p)
+	}
+}
+
+// TestAOS467SoAPrimeiraMarcadaEIsentaDeQuota — o achado MÉDIO da revisão: um `aos-orq` anterior
+// ignora a marca e reporta transitório, e cada geração marcada seguinte passava sem quota. Agora só a
+// primeira (a de fecho) é isenta; a repetição precisa de quota, e com ela esgotada fica pendente.
+func TestAOS467SoAPrimeiraMarcadaEIsentaDeQuota(t *testing.T) {
+	node, h := aos464No(t, WithPlanMaxGenerations(1))
+	node.PlanDrainers = map[string]bool{drenador466: true}
+	q := quotaComPlaneamento(node.EventStore, 150, 100, 100, &relogioDeQuota{t: setembro})
+	node.QuotaPorPrincipal = q
+	if rec := postPlanoComHeaders(t, h, aos464Headers("human:alice"), "plano-467"); rec.Code != http.StatusCreated {
+		t.Fatalf("submissao: %d", rec.Code)
+	}
+	dren := map[string]string{HeaderReaderPrincipal: drenador466, HeaderReaderBoard: govBoard}
+	consumo := map[string]any{"tokens": 500, "tokens_medidos": true, "cost_micro_usd": 0, "custo_medido": true}
+	if r := reclamarEReportar(t, h, map[string]any{"run_id": "plano-467", "generation": 1, "classe": DesfechoTransitorio, "consumo": consumo}); r.codigo != http.StatusNoContent {
+		t.Fatalf("g1: %d", r.codigo)
+	}
+	// A 2 é a primeira marcada: entrega-se com a quota esgotada.
+	rec := postReq(h, "/plans/claim", nil, dren)
+	var p respostaDeReclamo
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &p) != nil || p.Geracao != 2 || !p.GeracoesEsgotadas {
+		t.Fatalf("a primeira marcada entrega-se sem quota: %d %s", rec.Code, rec.Body.String())
+	}
+	// Um drenador anterior ignora a marca, planeia e reporta transitório, sem declarar nada.
+	if rec := postReq(h, "/plans/outcome", map[string]any{"run_id": "plano-467", "generation": 2, "classe": DesfechoTransitorio, "consumo": consumo}, dren); rec.Code != http.StatusNoContent {
+		t.Fatalf("g2: %d", rec.Code)
+	}
+	if rec := postReq(h, "/plans/claim", nil, dren); rec.Code != http.StatusNoContent {
+		t.Fatalf("a segunda marcada precisa de quota, e esta esgotada: fica pendente (204), veio %d %s", rec.Code, rec.Body.String())
 	}
 }

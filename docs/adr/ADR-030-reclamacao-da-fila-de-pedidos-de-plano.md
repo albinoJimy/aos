@@ -241,12 +241,14 @@ tinha limite: um pedido cuja decomposição falha sempre de forma transitória (
 confundir transitório com permanente dá «um laço a retentar para sempre»; sem tecto, um transitório
 que nunca passa É esse laço.
 
-1. **O nó conta e decide.** A projecção da fila conta, para a geração a oferecer, as gerações em que
-   a anterior **não** acabou em `aguarda_humano` — as re-verificações de um plano à espera de humano
-   (§Emenda AOS-442) não contam, porque têm o seu próprio prazo. Passado o tecto
-   (`AOS_PLAN_MAX_GENERATIONS`, default 5), a reclamação entrega a geração **marcada**
-   (`generations_exhausted`). Decide-o o nó porque só ele numera as gerações e vê as que nenhum
-   consumidor viu (reclamação expirada, quota esgotada do AOS-466).
+1. **O nó conta e decide.** Contam as gerações que **chamaram o modelo**: o consumidor declara-o no
+   desfecho (`chamou_modelo`). As retomas de um plano já aprovado (saída 8, pelo documento) e as
+   re-verificações de um plano à espera de humano (§Emenda AOS-442) não contam — a primeira versão
+   contava as retomas, e uma revisão adversarial mediu um plano saudável e longo fechado pelo tecto.
+   Uma geração **sem declaração** (reclamação expirada, consumidor anterior) conta, excepto se a
+   anterior acabou em `aguarda_humano`. Passado o tecto (`AOS_PLAN_MAX_GENERATIONS`, default 5), a
+   reclamação entrega a geração **marcada** (`generations_exhausted`). Decide-o o nó porque só ele
+   numera as gerações e vê as que nenhum consumidor reportou (reclamações expiradas).
 2. **O consumidor fecha.** O `aos-orq` fecha uma reclamação marcada como **terminal** com a saída
    **`12`**, sem `serve`. O princípio desta decisão mantém-se: **só o consumidor escreve desfechos**,
    e o nó continua a não conhecer os códigos do `serve` (ADR-018). A tabela da §2.6 ganha uma linha:
@@ -255,12 +257,14 @@ que nunca passa É esse laço.
    |---|---|---|
    | **Permanente** | 12 (gerações esgotadas, AOS-467) | facto de desfecho terminal, escrito pelo consumidor sem planear |
 
-3. **A entrega de fecho não exige quota nem objectivo.** Não planeia, e por isso não verifica a quota
-   do AOS-466; e entrega-se mesmo com o objectivo ilegível, o que fecha, por fim, o resíduo da §4 sobre
-   o pedido de objectivo ilegível re-reclamado para sempre: as suas gerações (reclamações expiradas)
-   contam, e ao passar o tecto ele entrega-se para fechar.
-4. **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca e planeia na
-   mesma; um nó anterior não marca nada, e o `aos-orq` novo comporta-se como antes.
+3. **A entrega de fecho não leva o objectivo, e a primeira não exige quota.** Não se decifra o
+   objectivo — o consumidor não o usa —, o que fecha, por fim, o resíduo da §4 sobre o pedido de
+   objectivo ilegível re-reclamado para sempre: as suas gerações (reclamações expiradas) contam, e ao
+   passar o tecto ele entrega-se para fechar. Só a **primeira** geração marcada dispensa a quota do
+   AOS-466; uma segunda só existe se o consumidor não fechou, e aí a quota volta a travar.
+4. **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, mas sem o
+   objectivo não tem o que decompor; um nó anterior não marca nada, e o `aos-orq` novo comporta-se como
+   antes.
 
 O ADR-031 não é emendado: o pedido fechado aparece como `terminal` com `exit_code` 12.
 

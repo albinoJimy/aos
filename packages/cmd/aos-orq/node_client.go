@@ -538,14 +538,18 @@ func (c *nodeClient) ReclamarPedido(ctx context.Context) (pedidoReclamado, bool,
 //
 // O `consumo` é o que o planeamento desta geração gastou no modelo (AOS-466): o nó liquida por ele
 // a reserva de planeamento do submissor. Um nó anterior ao AOS-466 ignora o campo.
-func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error {
+//
+// `chamouModelo` diz se esta geração chamou o modelo (AOS-467): é o que o tecto de gerações do nó
+// conta. Um nó anterior ignora o campo.
+func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento, chamouModelo bool) error {
 	corpo, err := json.Marshal(map[string]any{
-		"run_id":       runID,
-		"generation":   geracao,
-		"classe":       classe,
-		"codigo_saida": codigo,
-		"detalhe":      detalhe,
-		"consumo":      consumo,
+		"run_id":        runID,
+		"generation":    geracao,
+		"classe":        classe,
+		"codigo_saida":  codigo,
+		"detalhe":       detalhe,
+		"consumo":       consumo,
+		"chamou_modelo": chamouModelo,
 	})
 	if err != nil {
 		return err

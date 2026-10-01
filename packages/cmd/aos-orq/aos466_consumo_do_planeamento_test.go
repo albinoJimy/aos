@@ -131,7 +131,7 @@ func TestAOS466ODesfechoLevaOConsumoComOsNomesQueONoLe(t *testing.T) {
 	c := aos413ClienteDoAmbiente(t, srv.URL)
 
 	err := c.ReportarDesfecho(context.Background(), "plano-466", 2, "terminal", 0, "resumo",
-		consumoDoPlaneamento{Tokens: 42, TokensMedidos: true, CostMicroUSD: 0, CustoMedido: false})
+		consumoDoPlaneamento{Tokens: 42, TokensMedidos: true, CostMicroUSD: 0, CustoMedido: false}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +146,10 @@ func TestAOS466ODesfechoLevaOConsumoComOsNomesQueONoLe(t *testing.T) {
 		if consumo[k] != v {
 			t.Fatalf("consumo.%s = %v, esperava %v (corpo %v)", k, consumo[k], v, consumo)
 		}
+	}
+	// AOS-467: o nome do campo que o tecto de gerações do nó conta, também escrito à mão.
+	if corpo["chamou_modelo"] != true {
+		t.Fatalf("o desfecho tem de levar `chamou_modelo` (AOS-467): %v", corpo)
 	}
 }
 
@@ -202,6 +206,12 @@ func TestAOS466ComOBinarioReal(t *testing.T) {
 		if c["custo_medido"] != false {
 			t.Fatalf("com chamadas ao modelo os dolares nao se medem aqui: %v", c)
 		}
+		espiao.mu.Lock()
+		chamou := espiao.desfechos[0]["chamou_modelo"]
+		espiao.mu.Unlock()
+		if chamou != true {
+			t.Fatalf("a geracao que decompos com o gateway vivo declara chamou_modelo=true (AOS-467), veio %v", chamou)
+		}
 	})
 
 	t.Run("controlo: fixture sem modelo", func(t *testing.T) {
@@ -215,6 +225,12 @@ func TestAOS466ComOBinarioReal(t *testing.T) {
 		c := consumoDe(t, espiao)
 		if c["tokens"] != float64(0) || c["tokens_medidos"] != true || c["custo_medido"] != true {
 			t.Fatalf("sem chamadas ao modelo o consumo e zero medido: %v", c)
+		}
+		espiao.mu.Lock()
+		chamou := espiao.desfechos[0]["chamou_modelo"]
+		espiao.mu.Unlock()
+		if chamou != false {
+			t.Fatalf("sem chamadas ao modelo a geracao nao conta para o tecto (AOS-467): chamou_modelo=%v", chamou)
 		}
 	})
 }
