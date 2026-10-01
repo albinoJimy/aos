@@ -196,6 +196,10 @@ func (l *Launcher) run(ctx context.Context, req ExecRequest) (ExecResult, error)
 	span.SetAttribute(AttrRootFSReadOnly, l.isolation.RootFSReadOnly)
 	span.SetAttribute(AttrSeccompHash, seccompHash)
 	span.SetAttribute(AttrSeccompVersion, seccompVersion)
+	// AOS-362 (c): o hash nunca fica NU no span, nem quando o Create falha e a função sai
+	// antes de a instância existir. A qualificação provisória vem do driver CONFIGURADO, e é
+	// reafirmada depois do Create a partir do que REALMENTE criou a instância.
+	span.SetAttribute(AttrSeccompEnforcedBy, string(seccompEnforcementFor(l.driver.Kind())))
 	if imageVersion != "" {
 		span.SetAttribute(AttrImageVersion, string(imageVersion))
 	}
