@@ -28,7 +28,7 @@ type reportadorFalso struct {
 	outNoReporte string
 }
 
-func (r *reportadorFalso) ReportarDesfecho(_ context.Context, _ string, _ int, _ string, _ int, _ string, _ consumoDoPlaneamento, _ bool) error {
+func (r *reportadorFalso) ReportarDesfecho(_ context.Context, _ string, _ int, _ string, _ int, _ string, _ declaracaoDaGeracao) error {
 	r.chamadas++
 	r.outNoReporte = r.out.String()
 	return r.falha
@@ -52,7 +52,7 @@ func TestAOS445AvisoSoDepoisDoReporte(t *testing.T) {
 		t.Run(c.nome, func(t *testing.T) {
 			var out bytes.Buffer
 			rep := &reportadorFalso{out: &out, falha: c.falha}
-			err := reportarEAvisar(context.Background(), rep, &out, "plan-445", 2, c.classe, c.codigo, "resumo: …", &medidorDoPlaneamento{})
+			err := reportarEAvisar(context.Background(), rep, &out, "plan-445", 2, c.classe, c.codigo, "resumo: …", declaracaoDaGeracao{})
 			if !errors.Is(err, c.falha) {
 				t.Fatalf("erro %v, quer %v", err, c.falha)
 			}

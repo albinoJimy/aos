@@ -3363,15 +3363,28 @@ próprio, e a quantia reservada pelo AOS-466 liquida.
   longo pela rota (`TestAOS467UmPlanoLongoNaoEFechadoPeloTecto`, dez retomas com o tecto a 2), da marcada
   sem objectivo e da isenção só da primeira; no `aos-orq`, `chamou_modelo` verdadeiro com o gateway vivo
   e falso com o fixture e no fecho. Segunda bateria: 14 aplicadas, 14 mortas.
+- Depois da segunda revisão: os cenários A, A' e B da projecção e da rota
+  (`TestAOS467ODecompostoNaUltimaNaoEFechado`, `TestAOS467ComOTectoA1UmPlanoLongoNaoEFechado`), a
+  recusa de tudo o que não seja o terminal 12 numa marcada (`TestAOS467AMarcadaSoFechaCom12`, mais o
+  controlo), a isenção de toda a marcada, e `plano_validado` declarado pelo binário real numa saída 8.
+  Terceira bateria: 13 aplicadas, 12 mortas à primeira. A sobrevivente (a classe deixar de ser
+  verificada) levou ao caso «transitório com código 12» no teste, e morre depois dele.
 - Suites `-race` dos dois módulos verdes. Gates `build`, `lint`, `layer-lint`, `secrets`, `sast`,
   `rtm`, `ref-lint` e `event-catalog` verdes. Smoke do `run-aos` 10/10.
 
 ### Residuais declarados
-- **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, recebe a geração
-  sem objectivo, não tem o que decompor e reporta (sem `chamou_modelo`); a geração seguinte volta
-  marcada e precisa de quota. Não chama o modelo, mas re-reclama a cada drenagem até ser actualizado, e
-  as suas gerações não declaradas contam todas — incluindo as retomas de um plano longo, que esse
-  `aos-orq` pode ver fechadas pelo tecto.
+- **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, corre um `serve`
+  sem objectivo (zero nós) e reporta sucesso — o nó recusa-o (400). A reclamação expira (60 min) e a
+  geração volta marcada até ele ser actualizado. As suas gerações não declaradas contam todas — incluindo
+  as retomas de um plano longo, que esse `aos-orq` pode ver marcadas.
+- **Um transitório que falha ANTES do modelo não tem tecto** (credencial do modelo ilegível, erro a
+  compor o gateway, posse, WAL): declara `chamou_modelo: false` e nunca conta. Não custa modelo, mas
+  re-oferece-se a cada drenagem e faz crescer o log da fila. É a regra decidida («só as que chamaram o
+  modelo»), e fica dito.
+- **Réplicas mistas do nó:** uma réplica anterior reconstrói o desfecho sem `chamou_modelo`/
+  `plano_validado`; as gerações reportadas a ela contam pela regra conservadora.
+- **O fixture do decompositor** (`--decompose-fixture`, não-produção) declara `chamou_modelo: false` e
+  nunca conta.
 - **`chamou_modelo` é declarado pelo drenador**, como o consumo do AOS-466: um drenador comprometido
   pode declarar «não chamou» e contornar o tecto.
 - **O consumo é declarado pelo drenador** (AOS-466), e o desfecho também: um drenador que não feche a
@@ -3399,6 +3412,20 @@ Sobre `33e2cd4`:
     corrigido;
   - as duas ordens de deploy contradiziam-se (AOS-466 contra AOS-467): unificadas;
   - uma frase do ADR era imprecisa: corrigida.
+
+**Segunda passagem, sobre `21fbf08`:** o MÉDIO e os BAIXOS da primeira confirmados fechados.
+- **ALTO residual, reproduzido.** A geração a oferecer contava sempre como provisória: se a
+  decomposição que vingou fosse a de número «tecto», a primeira retoma do plano aprovado saía marcada
+  (e com o tecto a 1, qualquer plano mais longo do que o `--plan-timeout`).
+  - **Corrigido:** o `aos-orq` declara `plano_validado` (lê o log do run depois da geração), e uma
+    geração não declarada que segue um plano validado não conta.
+- **MÉDIO, reproduzido.** Um `aos-orq` anterior, com a geração marcada sem objectivo, fechava como
+  SUCESSO (código 0, zero nós).
+  - **Corrigido:** a marca fica na reclamação e o nó recusa qualquer desfecho dela que não seja o 12.
+- **MÉDIO.** Uma marcada cuja reclamação expirava passava a exigir quota.
+  - **Corrigido:** com a recusa acima, uma marcada só se repete por expiração, e todas ficam isentas.
+- **MÉDIO e BAIXOS.** Os transitórios antes do modelo sem tecto, as réplicas mistas e o fixture ficam
+  declarados nos residuais.
 
 ### Estado
 **EM REVISÃO** (2026-10-01).

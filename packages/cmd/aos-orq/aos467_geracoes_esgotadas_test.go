@@ -100,3 +100,30 @@ func TestAOS467AMarcaVemComONomeQueONoEscreve(t *testing.T) {
 		t.Fatalf("a marca do no nao chegou ao consume: %+v", p)
 	}
 }
+
+// TestAOS467ARetomaDeclaraOPlanoValidado — com o binário real: uma geração que decompõe (fixture) e
+// acaba com nós em voo (saída 8) declara `plano_validado: true` — a seguinte retoma pelo documento e
+// não chama o modelo, e o nó não a conta para o tecto. Sem isto, a primeira retoma de um plano cuja
+// decomposição foi a de número «tecto» saía marcada (achado ALTO da segunda revisão).
+func TestAOS467ARetomaDeclaraOPlanoValidado(t *testing.T) {
+	bin := construir(t)
+	no := &aos442No{nuncaAcaba: true}
+	a := novoAmbiente442(t, bin, no)
+	espiao := &aos443Espiao{}
+	frente := espiao.servidor(t, strings.TrimPrefix(a.env[0], "AOS_ORQ_NODE_URL="))
+	a.env[0] = "AOS_ORQ_NODE_URL=" + frente.URL
+	no.oferecer(pedidoReclamado{RunID: "plan-aos467-longo", Objective: "o", Geracao: 1})
+	a.consumir(t, planoFixtureDuasFolhasComSnapshotAOS408, "--plan-timeout", "300ms")
+	espiao.mu.Lock()
+	defer espiao.mu.Unlock()
+	if len(espiao.desfechos) != 1 {
+		t.Fatalf("esperava 1 desfecho, vieram %d", len(espiao.desfechos))
+	}
+	d := espiao.desfechos[0]
+	if d["classe"] != "transitorio" || d["codigo_saida"] != float64(exitNosEmVoo) {
+		t.Fatalf("o cenario exige a saida 8: %v", d)
+	}
+	if d["plano_validado"] != true {
+		t.Fatalf("depois de validar o plano a geracao declara plano_validado=true: %v", d)
+	}
+}

@@ -245,8 +245,10 @@ que nunca passa É esse laço.
    desfecho (`chamou_modelo`). As retomas de um plano já aprovado (saída 8, pelo documento) e as
    re-verificações de um plano à espera de humano (§Emenda AOS-442) não contam — a primeira versão
    contava as retomas, e uma revisão adversarial mediu um plano saudável e longo fechado pelo tecto.
-   Uma geração **sem declaração** (reclamação expirada, consumidor anterior) conta, excepto se a
-   anterior acabou em `aguarda_humano`. Passado o tecto (`AOS_PLAN_MAX_GENERATIONS`, default 5), a
+   Uma geração **sem declaração** (reclamação expirada, consumidor anterior, a geração a oferecer)
+   conta, excepto se a anterior acabou em `aguarda_humano` ou declarou o plano validado
+   (`plano_validado`) — a segunda revisão mediu a primeira retoma de um plano cuja decomposição foi a
+   de número «tecto» a sair marcada. Passado o tecto (`AOS_PLAN_MAX_GENERATIONS`, default 5), a
    reclamação entrega a geração **marcada** (`generations_exhausted`). Decide-o o nó porque só ele
    numera as gerações e vê as que nenhum consumidor reportou (reclamações expiradas).
 2. **O consumidor fecha.** O `aos-orq` fecha uma reclamação marcada como **terminal** com a saída
@@ -257,14 +259,16 @@ que nunca passa É esse laço.
    |---|---|---|
    | **Permanente** | 12 (gerações esgotadas, AOS-467) | facto de desfecho terminal, escrito pelo consumidor sem planear |
 
-3. **A entrega de fecho não leva o objectivo, e a primeira não exige quota.** Não se decifra o
-   objectivo — o consumidor não o usa —, o que fecha, por fim, o resíduo da §4 sobre o pedido de
-   objectivo ilegível re-reclamado para sempre: as suas gerações (reclamações expiradas) contam, e ao
-   passar o tecto ele entrega-se para fechar. Só a **primeira** geração marcada dispensa a quota do
-   AOS-466; uma segunda só existe se o consumidor não fechou, e aí a quota volta a travar.
-4. **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, mas sem o
-   objectivo não tem o que decompor; um nó anterior não marca nada, e o `aos-orq` novo comporta-se como
-   antes.
+3. **A entrega de fecho não leva o objectivo nem exige quota, e só fecha com o 12.** Não se decifra
+   o objectivo — o consumidor não o usa —, o que fecha, por fim, o resíduo da §4 sobre o pedido de
+   objectivo ilegível re-reclamado para sempre. A marca fica no facto da reclamação (`esgotada`), e o
+   nó **recusa** qualquer desfecho de uma geração marcada que não seja o terminal `12`: é o único código
+   do consumidor que o nó conhece, e conhece-o porque é o protocolo desta marca. Sem isto, um consumidor
+   anterior corria um `serve` sem objectivo e reportava SUCESSO com zero nós. Com isto, uma marcada só
+   se repete quando a reclamação anterior expira, e por isso nenhuma exige quota.
+4. **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca e o seu
+   desfecho é recusado: a reclamação expira e a geração volta marcada até ele ser actualizado. Um nó
+   anterior não marca nada, e o `aos-orq` novo comporta-se como antes.
 
 O ADR-031 não é emendado: o pedido fechado aparece como `terminal` com `exit_code` 12.
 

@@ -111,6 +111,7 @@ func TestAOS466OModeloContaCadaChamada(t *testing.T) {
 // os nomes das mesmas tags não provaria que as duas pontas concordam. O nó lê `consumo.tokens`,
 // `consumo.tokens_medidos`, `consumo.cost_micro_usd` e `consumo.custo_medido` (plan_claim.go).
 func TestAOS466ODesfechoLevaOConsumoComOsNomesQueONoLe(t *testing.T) {
+	verdade := true
 	var (
 		mu    sync.Mutex
 		corpo map[string]any
@@ -131,7 +132,8 @@ func TestAOS466ODesfechoLevaOConsumoComOsNomesQueONoLe(t *testing.T) {
 	c := aos413ClienteDoAmbiente(t, srv.URL)
 
 	err := c.ReportarDesfecho(context.Background(), "plano-466", 2, "terminal", 0, "resumo",
-		consumoDoPlaneamento{Tokens: 42, TokensMedidos: true, CostMicroUSD: 0, CustoMedido: false}, true)
+		declaracaoDaGeracao{Consumo: consumoDoPlaneamento{Tokens: 42, TokensMedidos: true, CostMicroUSD: 0, CustoMedido: false},
+			ChamouModelo: true, PlanoValidado: &verdade})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,9 +149,9 @@ func TestAOS466ODesfechoLevaOConsumoComOsNomesQueONoLe(t *testing.T) {
 			t.Fatalf("consumo.%s = %v, esperava %v (corpo %v)", k, consumo[k], v, consumo)
 		}
 	}
-	// AOS-467: o nome do campo que o tecto de gerações do nó conta, também escrito à mão.
-	if corpo["chamou_modelo"] != true {
-		t.Fatalf("o desfecho tem de levar `chamou_modelo` (AOS-467): %v", corpo)
+	// AOS-467: os nomes dos campos que o tecto de gerações do nó conta, também escritos à mão.
+	if corpo["chamou_modelo"] != true || corpo["plano_validado"] != true {
+		t.Fatalf("o desfecho tem de levar `chamou_modelo` e `plano_validado` (AOS-467): %v", corpo)
 	}
 }
 
