@@ -703,14 +703,30 @@ func TestAOS456APredicadoDeComposicaoCOINCIDEComOGateReal(t *testing.T) {
 // ticket existe para fechar. Foi um dos achados medidos na revisão da tentativa 1.
 //
 // A imputação vai ao `RequestedBy`, que é DERIVADO PELO NÓ (AOS-439) e não um campo de corpo.
+//
+// OS RUNS FICAM EM CURSO ATÉ O TESTE OS SOLTAR (AOS-468). Com o `countingModel`, o run-filho de alice
+// (`MaxTurns: 1`) corria a sério e podia TERMINAR antes do controlo (2), libertando o lugar: o
+// controlo via `nil` e o teste falhava pela velocidade do run, não pelo tecto. Medido sob contenção:
+// 10/300 na base 8538ca2 e 18/300 em 71dba54. O modelo bloqueado mantém o primeiro run a passar pelo
+// `submit` real — é a imputação dele ao `RequestedBy` que o teste prova, e injectar um `runState` à
+// mão (o molde do [TestAOS456ARetomaEIsenta]) saltá-la-ia.
 func TestAOS456ARunFilhoEImputadoAQuemPediuOPlano(t *testing.T) {
-	node, _ := newAPINode(t, &countingModel{}, false)
+	modelo := &aos277BlockingModel{entered: make(chan struct{}, 4), release: make(chan struct{})}
+	node, _ := newAPINode(t, modelo, false)
 	t.Cleanup(func() { _ = node.Close() })
 	svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute),
 		WithInFlightPerCaller(1))
 	if err != nil {
 		t.Fatalf("NewNodeService: %v", err)
 	}
+	// Registado DEPOIS do `node.Close`, corre ANTES dele (os cleanups são LIFO): solta os runs
+	// presos e espera que o serviço os largue antes de o nó fechar.
+	t.Cleanup(func() {
+		modelo.releaseAll()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = svc.Shutdown(ctx)
+	})
 
 	// Um run-filho JÁ em curso, submetido pelo drenador em nome de ALICE.
 	filhoDaAlice := agentruntime.Goal{RunID: "plano-a~no1", Objective: "x", MaxTurns: 1}
