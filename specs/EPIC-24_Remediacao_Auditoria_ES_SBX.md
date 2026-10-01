@@ -270,6 +270,11 @@ O código está certo nos três casos; o que falta é o sensor. A causa estrutur
 (`packages/substrate/eventstore/jetstream/store.go:34`), não uma interface — sem isso, `lerLote` e o
 ramo «ligação viva que caiu» de `Ligada()` são infalsificáveis in-process. Fica em **AOS-360**.
 
+> **Corrigido (2026-10-01, AOS-360, sobre `da3e917`).** «Infalsificáveis in-process» era verdade para
+> o `lerLote` e falso para `Ligada()`. O ramo da ligação que caiu alcança-se com um servidor NATS falso
+> que faz o handshake e fecha a socket, sem costura nova. Desde o AOS-431, o `lerLote` corre contra um
+> cluster no job `nats`, que é obrigatório, e aí a regra antiga avermelha. Medições no AOS-360.
+
 O epic apresentava a extracção do laço para `lerEmLotes` como mitigação do salto sem cluster. É
 cobertura da **aritmética**, não da **correcção**.
 
@@ -1351,19 +1356,62 @@ exercitá-lo sem cluster — é cobertura da **aritmética** da paginação, nã
 
 ### Critérios de Aceitação
 
-- [ ] Existe uma costura que torne `lerLote` e o ramo «ligação caiu» de `Ligada()` falsificáveis
+- [x] Existe uma costura que torne `lerLote` e o ramo «ligação caiu» de `Ligada()` falsificáveis
       in-process — uma interface mínima sobre o que o `Store` usa do `Conn`, ou equivalente
-- [ ] Cada uma das três mutações da tabela acima **avermelha** a suite; a prova de mutação fica
+      *(parcial e declarado: `Ligada()` sim, por um servidor falso; o `lerLote` pelo cluster do job
+      `nats`, ver a Entrega)*
+- [x] Cada uma das três mutações da tabela acima **avermelha** a suite; a prova de mutação fica
       registada, no molde do que o EPIC-23 §0.3 fez
-- [ ] `ObserveProgress` é exercitado com a forma **traduzida** do erro, não com `ErrNoQuorum` cru
-- [ ] `streamSetupErrorStatus` (`packages/cmd/aos/trajectory.go:379`) ganha teste — hoje não é
+- [x] `ObserveProgress` é exercitado com a forma **traduzida** do erro, não com `ErrNoQuorum` cru
+- [x] `streamSetupErrorStatus` (`packages/cmd/aos/trajectory.go:379`) ganha teste — hoje não é
       referido por nenhum `_test.go`, e o AC3 do AOS-354 foi dado por cumprido só pelo código
-- [ ] A razão pela qual estes caminhos exigiam cluster fica escrita onde um leitor a procure
+- [x] A razão pela qual estes caminhos exigiam cluster fica escrita onde um leitor a procure
+
+### Entrega (2026-10-01)
+
+**A premissa do AC1 foi medida, e só se sustenta para um dos três caminhos.**
+- Desde o AOS-431, que é posterior a este ticket, o job `nats` corre a suite do `jetstream` contra um
+  cluster de 4 nós, e esse job está no `needs` do `gates`.
+- Medido com um cluster local de 4 nós (`nats-server` 2.10.22 nativo, a mesma topologia de
+  `scripts/ci/nats-cluster.sh`).
+
+| Mutação | Sem cluster | Com cluster, antes do AOS-360 | Depois do AOS-360 |
+|---|---|---|---|
+| Regra antiga em `lerLote`: avançar pelo `UltimoSeqDoSubject` (AOS-345) | `ok` | **FAIL** — `TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel` pára em 0 de 64 no segundo lote | inalterado: morre no job `nats` |
+| `natsjs.Conn.Ligada()` → `return true` (AOS-350) | `ok` | **`ok`** — os testes de cluster só verificam o caso positivo | **morta in-process** |
+| `Store.Healthy()` → `true` (controlo) | já era morta, mas só pelo ramo SEM cliente (`TestAcessores_RefletemAConfiguracao`) | — | morta também pelo ramo da ligação que cai |
+| Sem tradução no `Append` / `Read` / `Subscribe` / `Streams` (AOS-354), uma a uma | `ok` | — | **4 mortas in-process**, cada uma no subteste da sua porta |
+| `streamSetupErrorStatus` sem `ErrNoQuorum`, ou por igualdade | `ok` | — | **2 mortas** |
+| `burndownTransitorio` por igualdade | já era morta pelos testes do AOS-262/354: o nó embrulha o erro antes de o classificar | — | morta também pelo teste novo |
+
+**A «costura» do AC1 já existia, e era a rede.** O cliente fala o protocolo NATS sobre um
+`net.Conn`, e para o pôr desligado basta um servidor falso que faça o handshake e feche a socket.
+Daí em diante, `Ligada()` é falso e toda a operação devolve `natsjs.ErrDesligado` sem sair. Não se
+introduziu a interface de ~20 métodos sobre o `*natsjs.Conn`.
+
+**Para o `lerLote` o servidor falso não chega,** porque teria de imitar a API do JetStream
+(consumidor efémero, entrega push com `$JS.ACK…`). Fica com o sensor de cluster que já o mata.
+
+**Desvio declarado do AC1:** para o `lerLote`, a «costura in-process» não existe. O que o AC
+pretendia, uma mutação que avermelhe a CI, cumpre-se num check obrigatório, medido acima.
+
+Ficheiros e o que fazem:
+- `substrate/eventstore/jetstream/aos360_ligacao_caida_test.go`:
+  - `TestAOS360_HealthyCaiComALigacao`;
+  - `TestAOS360_AsQuatroPortasTraduzemADesligacao`.
+- `cmd/aos/aos360_desligado_traduzido_test.go`:
+  - o `ObserveProgress` alimentado com a forma TRADUZIDA (`ErrNoQuorum` a embrulhar
+    `ErrDesligado`): tolera N fronteiras e, à N+1, o erro fatal nomeia as duas causas;
+  - `TestAOS360_StreamSetupErrorStatus`, a primeira referência de teste a essa função.
+- `cmd/aos/aos262_progress_warning_test.go`: o `storeInstavel` ganha o campo `erro`.
+- **A razão (AC5) fica escrita** no cabeçalho do teste novo, no campo `Store.cn` e em `logica_test.go`.
+  Este último afirmava que o ramo positivo de `Healthy()` não era construível sem cluster, e foi
+  corrigido.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: arnês. Não altera comportamento de produção — altera o que a CI
-consegue defender.
+**FEITO** (2026-10-01). P1. Alcance: arnês, sem alteração de comportamento de produção. Desvio
+declarado no AC1 para o `lerLote`: o sensor é o job `nats`, e não uma costura in-process.
 
 ---
 

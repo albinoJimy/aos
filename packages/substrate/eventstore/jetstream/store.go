@@ -31,6 +31,10 @@ const (
 
 // Store implementa [eventstore.EventStore] sobre JetStream.
 type Store struct {
+	// cn é CONCRETO, sem interface, e não precisa de uma para os caminhos de falha da ligação:
+	// um servidor NATS falso que faz o handshake e fecha a socket põe-no no estado desligado
+	// in-process (`aos360_ligacao_caida_test.go`). O que exige o JetStream a sério — a
+	// paginação do `lerLote` — corre contra o cluster do job `nats` (AOS-360).
 	cn      *natsjs.Conn
 	stream  string
 	prefixo string
