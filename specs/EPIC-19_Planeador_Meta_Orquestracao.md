@@ -7473,17 +7473,55 @@ não teria razão que o justificasse.
       (o motivo está nas linhas acima)`. Self-test NX3, com um `docker` cujo `info` responde e
       cujo `network create` é recusado.*
 - [x] **Depois do `eval`, sem `AOS_NATS_URL`, é vermelho com mensagem própria.** Um `up` que
-      saia 0 sem imprimir o env é um cluster que ninguém sabe onde está. — *Self-test NX4.*
+      saia 0 sem imprimir o env é um cluster que ninguém sabe onde está. — *Self-test NX4. Na
+      versão revista (`91c6087`) isto só valia com o env LIMPO: o NX4 fazia `unset
+      AOS_NATS_URL` e escondia que um URL herdado da shell satisfazia a verificação (ver
+      «Revisão adversarial»). Agora o `nats_levantar` apaga o AOS_NATS_URL e as variáveis que o
+      `up` exporta ANTES do `eval`. O NX4b (URL herdado, `up` mudo) e o NX4c (outra variável
+      herdada, `up` parcial) provam-no.*
+- [x] **Um `up` que morre a meio não deixa contentores de pé.** — *A limpeza já existia na base,
+      mas só porque o rc do `up` se perdia e o gate seguia até ao `trap`. Com o rc verificado,
+      o `exit 1` sai antes da linha onde o `trap` estava. Por isso o `trap` passa para antes do
+      `up`: isto PRESERVA a limpeza, não a corrige. Self-test NX6: o `nats.sh` inteiro, com um
+      `docker` que regista as chamadas e um meta-leader que nunca é eleito. Exige os 4
+      `docker rm -f` depois do último `docker run`.*
+- [x] **O motivo do salto é o erro, e a sonda não pendura.** — *O motivo é a primeira linha
+      que fala de error/cannot/failed/permission e, sem nenhuma, a última não vazia (NX7: um
+      `WARNING:` impresso depois do erro tomava-lhe o lugar). A sonda corre com
+      `timeout 30` onde o houver, e o prazo esgotado conta como docker inutilizável, sem
+      subir o cluster (NX8, com um `timeout` de brincar que sai 124).*
+- [x] **Os três marcadores de CI avermelham:** `CI=1`, só `GITHUB_ACTIONS=true`, e `CI=false`
+      (conta como CI: «definido» é «não vazio», a regra do `lib.sh` e do `package.sh`). —
+      *NX2 com as três variantes. Um gate que lesse só `${CI:-}` passava a primeira.*
 - [x] **O caminho feliz não muda.** — *Self-test NX5: sobre o `nats-cluster.sh` REAL, com um
       `docker` em que tudo responde, a sonda aceita e o `nats_levantar` exporta
       `AOS_NATS_URL=127.0.0.1:14225,127.0.0.1:14226,127.0.0.1:14227`.*
 - [x] **Cada caso do self-test morde** (verificação de mutação, cada mutante numa cópia de
-      `scripts/ci` fora do repo, só a §NX corrida). — *Sem a sonda do daemon: NX1 e NX2
-      vermelhos. Sem o ramo de CI: NX2 vermelho. Com o rc do `up` ignorado: NX3 vermelho, porque
-      a mensagem passa a ser a do AOS_NATS_URL. Sem exigir o AOS_NATS_URL: NX4 vermelho. Sem o
-      `eval`: NX5 vermelho. Com a sonda a recusar sempre: NX1, NX2, NX3 e NX5 vermelhos. Com o
-      `nats.sh` da base (`54d36e2`): NX1, NX2 e NX3 vermelhos, NX1 e NX3 por «unbound
-      variable».*
+      `scripts/ci` fora do repo, só a §NX corrida). — *Primeira ronda (`91c6087`): sem a sonda
+      do daemon, NX1 e NX2 vermelhos; sem o ramo de CI, NX2; com o rc do `up` ignorado, NX3,
+      porque a mensagem passa a ser a do AOS_NATS_URL; sem exigir o AOS_NATS_URL, NX4; sem o
+      `eval`, NX5; com a sonda a recusar sempre, NX1, NX2, NX3 e NX5; com o `nats.sh` da base
+      (`54d36e2`), NX1, NX2 e NX3, NX1 e NX3 por «unbound variable». A afirmação era
+      **parcialmente falsa**: a revisão mostrou mutantes que sobreviviam a toda a §NX (o `trap`
+      depois do `nats_levantar`, o `trap` removido, ler só `${CI:-}`).*
+
+      *Segunda ronda, sobre a versão corrigida. Cada mutante faz avermelhar pelo menos um caso:*
+
+      | Mutante | Casos que avermelham |
+      |---|---|
+      | `trap` depois do `nats_levantar` | NX6 |
+      | `trap` removido | NX6 |
+      | só `${CI:-}` | NX2 com `GITHUB_ACTIONS=true` |
+      | `CI=false` não conta | NX2 com `CI=false` |
+      | sem o `unset AOS_NATS_URL` | NX4b |
+      | sem o `unset` das outras variáveis | NX4c |
+      | motivo pela última linha | NX7 |
+      | sonda sem prazo | NX8 |
+      | 124 contado como vivo | NX8 |
+      | sem a sonda do daemon | NX1, NX2 ×3, NX7, NX8 |
+      | rc do `up` ignorado | NX3 |
+      | sem exigir o URL | NX4, NX4b |
+      | sem `eval` | NX4c, NX5 |
 
 ### Entrega
 
@@ -7492,23 +7530,48 @@ não teria razão que o justificasse.
   depois). Fica à parte do `nats.sh` pela razão do `gotest-pacotes.sh`: para que o self-test
   exercite o mesmo código.
 - `scripts/ci/nats.sh`: usa as duas. Docker inutilizável dá salto declarado localmente e
-  vermelho em CI. O `trap` do `down` passa para ANTES do `up`: um `up` que morra a meio
-  (meta-leader por eleger, nkey por gerar) já não deixa contentores de pé.
-- `scripts/ci/selftest.sh` §NX1–NX5. Os `docker` de brincar e o estado do cluster ficam em
-  `mktemp -d`. NX1–NX3 correm o `nats.sh` inteiro, e saem todos antes das suites.
+  vermelho em CI. O `trap` do `down` passa para ANTES do `up`. Isso preserva a limpeza que a
+  base fazia por acaso: com o rc verificado, um `up` que morra a meio (meta-leader por eleger,
+  nkey por gerar) sairia antes de o `trap` existir.
+- `scripts/ci/selftest.sh` §NX1–NX8 (NX4b, NX4c e as três variantes do NX2 incluídas). Os
+  `docker` de brincar e o estado do cluster ficam em `mktemp -d`. NX1–NX3 e NX6–NX8 correm o
+  `nats.sh` inteiro, e saem todos antes das suites.
 - `CONTRIBUTING.md`: a nota do gate `nats` diz o que é «docker utilizável» e que em CI não se
   salta.
 
 ### Fora de âmbito, declarado
 
-- **Uma sonda `docker info` contra um daemon pendurado** (não ausente) pode demorar. Não há
-  `timeout` à volta, tal como no `isolation-live.sh`. Não foi medido.
+- **Sem `timeout` no posto, a sonda `docker info` não tem prazo**: um daemon pendurado
+  continua a pendurar o gate local. Onde o há (Linux, Git Bash), o prazo é de 30 s. O macOS
+  de origem não traz `timeout`.
 - **O caminho feliz do `nats.sh` inteiro** não corre no self-test: correria as suites contra um
   cluster que não existe. O NX5 prova a função que o gate chama, e o NX3 prova que o gate a
   chama.
 
+### Revisão adversarial independente (2026-10-01), sobre 91c6087 (integrado como d884ad3)
+
+Não houve achados ALTO. Houve 3 MÉDIO e 5 BAIXO, e todos foram corrigidos num commit próprio
+sobre o ramo de integração:
+
+- **M1 (reproduzido).** Mover o `trap` para antes do `up` era correcto e NECESSÁRIO, mas nenhum
+  self-test o protegia: com o `trap` depois do `nats_levantar`, ou sem `trap`, o NX1–NX5
+  continuava verde. → NX6.
+- **M2 (reproduzido).** A verificação «saiu 0 sem AOS_NATS_URL» lia o ENV. Com um URL herdado e
+  um `up` mudo, o gate imprimiu «cluster de pé — AOS_NATS_URL=nats://stale:4222». O NX4
+  escondia-o com `unset`. → apaga-se o env herdado antes do `eval`; NX4b e NX4c.
+- **M3.** É pré-existente e transversal: o `run.sh` não redeclara as etapas saltadas no
+  veredicto final. → ticket próprio, aberto a seguir.
+- **B1.** O texto dizia que mover o `trap` «corrigia» a limpeza. A base também limpava, por
+  acaso, e o movimento preserva-a. → corrigido acima.
+- **B2.** `CI=false` conta como CI, e isso não estava escrito. → `CONTRIBUTING.md`, e NX2
+  com `CI=false`.
+- **B3.** Um mutante que lesse só `${CI:-}` sobrevivia. → NX2 com só `GITHUB_ACTIONS=true`.
+- **B4.** O motivo era a última linha do stderr, e um `WARNING:` final substituía o erro. →
+  `nats_linha_de_erro`; NX7.
+- **B5.** A sonda não tinha prazo. → `timeout 30` onde o houver; NX8.
+
 ### Estado
 
-**FEITO** (2026-10-01). Reproduzido e corrigido nesta máquina (CLI docker, sem daemon), com
+**FEITO** (2026-10-01), com as correcções da revisão. Reproduzido e corrigido nesta máquina (CLI docker, sem daemon), com
 self-test §NX e verificação de mutação. O comportamento no job `nats` do CI (docker com daemon)
 não foi observado aqui: confirma-se no PR.

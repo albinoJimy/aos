@@ -45,7 +45,8 @@
 #      leva o vermelho ao rc; e os gates correm com GOWORK=off (AOS-387).
 #  NX) o gate nats com o CLI docker e SEM daemon salta DECLARADO (vermelho em CI), e com
 #      o daemon a responder um cluster que não sobe avermelha a nomear o
-#      nats-cluster.sh — nunca «AOS_NATS_URL: unbound variable» (AOS-471).
+#      nats-cluster.sh — nunca «AOS_NATS_URL: unbound variable» (AOS-471); um env herdado
+#      não passa por cluster de pé, e um `up` que morre a meio não deixa nós de pé.
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -2258,11 +2259,13 @@ log_gate "self-test NX · nats.sh: docker sem daemon salta declarado (vermelho e
 # do `eval` e, com o CLI `docker` presente e SEM daemon, o gate morria mais abaixo com
 # «AOS_NATS_URL: unbound variable» — fail-closed por acaso, com o diagnóstico no sítio errado.
 #
-# NX1–NX3 correm o nats.sh INTEIRO com um `docker` de brincar à frente no PATH: os três casos
+# NX1–NX3 e NX6–NX8 correm o nats.sh INTEIRO com um `docker` de brincar à frente no PATH: todos
 # saem antes das suites, pelo que nada de Go corre sobre um cluster que não existe. NX4–NX5
 # exercitam o `nats_levantar` — a função que o gate chama — sobre o `nats-cluster.sh` REAL: o
 # caminho feliz não pode correr pelo gate inteiro sem cluster (correria as suites). O estado do
 # cluster vai para $NX_TMP: o `down` do `trap` do gate não toca no de uma execução verdadeira.
+# NX4b/NX4c, NX6, NX7, NX8 e as variantes do NX2 vieram da revisão adversarial do AOS-471: cada
+# um fecha um mutante que sobrevivia aos outros.
 source "$CI_DIR/nats-levantar.sh"
 NX_TMP="$(mktemp -d)"
 
@@ -2314,12 +2317,17 @@ case "$NX_OUT" in
 esac
 
 # NX2 — o mesmo em CI: VERMELHO. O agregador `gates` lê `success`, não o AOS_SKIPPED_STEP.
-nx_gate semdaemon CI=1
-if [ "$NX_RC" -ne 0 ] && [[ "$NX_OUT" == *"daemon docker inacessível"*"a CI não salta o substrato replicado real"* ]]; then
-  pass "NX2: em CI, docker sem daemon avermelha (rc=$NX_RC) a dizer porquê — não vira verde por salto"
-else
-  bad "NX2: em CI, docker sem daemon não avermelhou com a recusa nomeada (rc=$NX_RC) — com rc=0 o required check ficava verde sem medir"
-fi
+# Três marcadores: CI=1; SÓ o GITHUB_ACTIONS=true (um gate que lesse só `${CI:-}` passava o
+# primeiro); e CI=false, que CONTA como CI — a regra é «definido e não vazio», a do lib.sh e do
+# package.sh, e fail-closed: quem quer o salto local apaga a variável, não a nega.
+for nx_marca in CI=1 GITHUB_ACTIONS=true CI=false; do
+  nx_gate semdaemon "$nx_marca"
+  if [ "$NX_RC" -ne 0 ] && [[ "$NX_OUT" == *"daemon docker inacessível"*"a CI não salta o substrato replicado real"* ]]; then
+    pass "NX2: com $nx_marca, docker sem daemon avermelha (rc=$NX_RC) a dizer porquê — não vira verde por salto"
+  else
+    bad "NX2: com $nx_marca, docker sem daemon não avermelhou com a recusa nomeada (rc=$NX_RC) — com rc=0 o required check ficava verde sem medir"
+  fi
+done
 
 # NX3 — daemon a responder e cluster que não sobe: VERMELHO a nomear o nats-cluster.sh e o
 # código com que saiu. Nunca salto, nunca a variável por definir.
@@ -2345,6 +2353,28 @@ if [ "$nx_rc" -ne 0 ] && [[ "$nx_out" == *"saiu 0 sem exportar AOS_NATS_URL"* ]]
 else
   bad "NX4: um up mudo foi aceite ou recusado sem nomear o AOS_NATS_URL (rc=$nx_rc)"
 fi
+# NX4b — o MESMO up mudo com um AOS_NATS_URL HERDADO (o CONTRIBUTING ensina a fazer o `eval` do
+# `up` na própria shell). Antes da revisão, o gate dizia «cluster de pé» com o endereço velho.
+nx_rc=0
+nx_out="$( export AOS_NATS_URL="nats://nx-velho:4222"; nats_levantar "$NX_TMP/up-mudo.sh" 2>&1 )" || nx_rc=$?
+if [ "$nx_rc" -ne 0 ] && [[ "$nx_out" == *"saiu 0 sem exportar AOS_NATS_URL"* ]]; then
+  pass "NX4b: um AOS_NATS_URL herdado não passa por cluster de pé quando o up é mudo"
+else
+  bad "NX4b: com AOS_NATS_URL herdado, um up mudo foi aceite (rc=$nx_rc) — o gate mediria o cluster de outra sessão"
+fi
+# NX4c — e as outras variáveis que o `up` exporta também não sobrevivem do env herdado: um `up`
+# que só imprima o URL não pode deixar ao gate o AOS_KILL_CMD de outro cluster.
+printf '%s\n' '#!/usr/bin/env bash' \
+  "printf 'export AOS_NATS_URL=\"%s\"\\n' 127.0.0.1:1" \
+  "if false; then printf 'export AOS_KILL_CMD=\"%s\"\\n' nunca; fi" > "$NX_TMP/up-parcial.sh"
+nx_rc=0
+nx_out="$( export AOS_KILL_CMD="docker stop nx-velho"; nats_levantar "$NX_TMP/up-parcial.sh" >/dev/null 2>&1 || exit 1
+  printf 'URL=%s KILL=%s' "$AOS_NATS_URL" "${AOS_KILL_CMD-<apagado>}" )" || nx_rc=$?
+if [ "$nx_rc" -eq 0 ] && [ "$nx_out" = "URL=127.0.0.1:1 KILL=<apagado>" ]; then
+  pass "NX4c: as variáveis que o up exporta apagam-se antes do eval — nenhuma herdada sobrevive"
+else
+  bad "NX4c: uma variável do up herdada sobreviveu ao nats_levantar (rc=$nx_rc): $nx_out"
+fi
 
 # NX5 — CAMINHO FELIZ, sobre o nats-cluster.sh REAL: com tudo a responder, a sonda aceita o
 # docker e o `nats_levantar` exporta o AOS_NATS_URL dos três nós do board.
@@ -2358,6 +2388,58 @@ if [ "$nx_rc" -eq 0 ] && [ "$nx_out" = "URL=127.0.0.1:14225,127.0.0.1:14226,127.
   pass "NX5: controlo — com o docker a responder, o cluster sobe e o AOS_NATS_URL chega ao gate"
 else
   bad "NX5: o caminho feliz partiu-se (rc=$nx_rc): $nx_out"
+fi
+
+# NX6 — UM `up` QUE MORRE A MEIO NÃO DEIXA CONTENTORES DE PÉ. O `up` lança os quatro nós e o
+# meta-leader nunca é eleito (o `exec` não responde; o `sleep` é instantâneo para a espera de
+# 90 s não custar 90 s). Com o código do `up` verificado, o `exit 1` sai logo — e se o `trap`
+# do `down` viesse depois do `nats_levantar`, ou não existisse, ninguém derrubava os nós. Exige
+# um `docker rm -f` DEPOIS do último `docker run`, e o gate vermelho.
+nx_shim semlider "echo \"docker \$*\" >> \"$NX_TMP/semlider.log\"
+exit 0"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$NX_TMP/semlider/sleep"; chmod +x "$NX_TMP/semlider/sleep"
+: > "$NX_TMP/semlider.log"
+nx_gate semlider
+nx_ultimo_run="$(grep -n '^docker run ' "$NX_TMP/semlider.log" | tail -1 | cut -d: -f1)"
+nx_rm_depois="$(awk -v n="${nx_ultimo_run:-0}" 'NR>n && /^docker rm -f /{c++} END{print c+0}' "$NX_TMP/semlider.log")"
+if [ -z "$nx_ultimo_run" ]; then
+  bad "NX6: o up não chegou a lançar contentores — o caso não exercita o que diz (rc=$NX_RC)"
+elif [ "$NX_RC" -eq 0 ]; then
+  bad "NX6: o meta-leader não foi eleito e o gate saiu VERDE"
+elif [ "$nx_rm_depois" -lt 4 ]; then
+  bad "NX6: o up morreu depois de lançar os nós e só $nx_rm_depois dos 4 foram derrubados — o trap do down não cobre a falha do up"
+else
+  pass "NX6: um up que morre depois de lançar os nós avermelha (rc=$NX_RC) e o trap derruba os 4"
+fi
+
+# NX7 — O MOTIVO É A LINHA DO ERRO, não a última: um `WARNING:` depois do erro tomava-lhe o
+# lugar no motivo do salto. E um `|` no erro não parte os campos do AOS_SKIPPED_STEP.
+nx_shim avisodepois 'case "$1" in
+  info) echo "Client: shim"
+        echo "Cannot connect to the Docker daemon at unix:///nx.sock | nx. Is the docker daemon running?" >&2
+        echo "WARNING: nx-shim aviso depois do erro" >&2
+        echo "" >&2; exit 1 ;;
+  *) exit 1 ;;
+esac'
+nx_gate avisodepois
+if [ "$NX_RC" -eq 0 ] && [[ "$NX_OUT" == *"AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível (docker info: Cannot connect to the Docker daemon at unix:///nx.sock / nx. Is the docker daemon running?))"* ]] \
+   && [[ "$NX_OUT" != *"docker info: WARNING"* ]]; then
+  pass "NX7: o motivo do salto é a linha do erro, não o WARNING que vem depois, e o | não parte os campos"
+else
+  bad "NX7: o motivo do salto não é a linha do erro (rc=$NX_RC): $(printf '%s' "$NX_OUT" | grep 'AOS_SKIPPED_STEP ' | head -1)"
+fi
+
+# NX8 — UM DAEMON PENDURADO É DOCKER INUTILIZÁVEL. O `timeout` de brincar sai 124 como o
+# verdadeiro ao esgotar o prazo; o `docker` diria que sim. Fail-closed: salta declarado
+# (localmente) a dizer que não respondeu, e nunca segue para o `up`.
+nx_shim pendurado 'exit 0'
+printf '#!/usr/bin/env bash\nexit 124\n' > "$NX_TMP/pendurado/timeout"; chmod +x "$NX_TMP/pendurado/timeout"
+nx_gate pendurado
+if [ "$NX_RC" -eq 0 ] && [[ "$NX_OUT" == *"SALTADO: nats — daemon docker inacessível (docker info: sem resposta em ${NATS_DOCKER_SONDA_S}s (timeout))"* ]] \
+   && [[ "$NX_OUT" != *"cluster de pé"* ]] && [[ "$NX_OUT" != *"NÃO subiu"* ]]; then
+  pass "NX8: um docker info que esgota o prazo é docker inutilizável — salto declarado, sem subir o cluster"
+else
+  bad "NX8: um daemon pendurado não foi tratado como inutilizável (rc=$NX_RC): $(printf '%s' "$NX_OUT" | tail -2 | tr '\n' ' ')"
 fi
 rm -rf "$NX_TMP"; NX_TMP=""
 
