@@ -78,7 +78,12 @@ Este módulo é importado por `rtm-regenerate.py` E por `ref-lint.py`: os dois
 leitores do corpus não podem discordar sobre o que um ticket implementa, e duas
 cópias desta regra envelheceriam em separado (o mesmo raciocínio de
 `adr_register.py`). Também lhes dá `blocos_cercados`, a mesma detecção de cercas
-de que dependem para delimitar o bloco de um ticket (`mascarar_fences`).
+de que dependem para delimitar o bloco de um ticket (`mascarar_fences`), e
+`verificar_cercas` (AOS-472), que os dois chamam sobre cada `specs/EPIC-*.md` antes
+de o ler: uma cerca que não feche, que atravesse o cabeçalho de outro ticket ou que
+contenha uma abertura do seu próprio tipo é ERRO, porque desloca pares (ticket, ADR)
+sem que a RTM regenerada deixe de bater com o corpus — nenhum gate compara o
+conjunto de pares de um commit com o do anterior.
 """
 
 import re
@@ -110,8 +115,9 @@ def _fim_da_linha(texto: str, pos: int) -> int:
 
 
 def _cerca_em(texto: str, pos: int):
-    """Se a linha que começa em `pos` abre um bloco cercado, devolve `(pos, fim)`, com `fim`
-    no fim da linha de fecho (ou do texto). Senão, None."""
+    """Se a linha que começa em `pos` abre um bloco cercado, devolve `(pos, fim, fechou)`, com
+    `fim` no fim da linha de fecho (ou do texto) e `fechou` falso quando não há linha de fecho
+    e a cerca corre até ao fim do texto. Senão, None."""
     fl = _fim_da_linha(texto, pos)
     m = _RE_ABRE_CERCA.fullmatch(texto, pos, fl)
     if not m:
@@ -124,11 +130,11 @@ def _cerca_em(texto: str, pos: int):
     while p <= len(texto):
         f = _fim_da_linha(texto, p)
         if fecho.fullmatch(texto, p, f):
-            return (pos, f)
+            return (pos, f, True)
         if f >= len(texto):
             break
         p = f + 1
-    return (pos, len(texto))
+    return (pos, len(texto), False)
 
 
 def _interrompe_paragrafo(conteudo: str) -> bool:
@@ -141,7 +147,7 @@ def _interrompe_paragrafo(conteudo: str) -> bool:
 
 def _varrer(texto: str):
     """Uma passagem da esquerda para a direita. Devolve `(cercas, comentarios)`:
-    `cercas` = [(ini, fim)] dos blocos cercados; `comentarios` = [(ini, fim)] dos
+    `cercas` = [(ini, fim, fechou)] dos blocos cercados; `comentarios` = [(ini, fim)] dos
     comentários HTML FORA de código (`ini` no `<`, `fim` depois do `-->`)."""
     n = len(texto)
     cercas, comentarios = [], []
@@ -180,7 +186,85 @@ def _varrer(texto: str):
 
 def blocos_cercados(texto: str) -> list:
     """[(ini, fim)] dos blocos de código cercados de `texto`, pelas regras acima."""
-    return _varrer(texto)[0]
+    return [(ini, fim) for ini, fim, _ in _varrer(texto)[0]]
+
+
+# Cabeçalho de ticket, tal como os dois leitores o procuram — sobre o texto CRU, não mascarado.
+_RE_CABECALHO_TICKET = re.compile(r"^#{2,3} (AOS-\d{3})\s*[-–—]", re.MULTILINE)
+
+
+def verificar_cercas(texto: str, onde: str) -> None:
+    """
+    Guarda de AOS-472: levanta `CitacaoError` se uma cerca de `texto` (um `specs/EPIC-*.md`
+    inteiro) puder estar a deslocar pares (ticket, ADR) sem que nenhum gate dê por isso.
+
+    Uma linha de prosa que comece por três crases ou três tis abre, pelo CommonMark, uma
+    cerca que só fecha numa linha do mesmo carácter. Tudo o que fica lá dentro deixa de ser
+    lido como directiva, e os `#` lá dentro deixam de terminar blocos — um ticket absorve o
+    seguinte, ou uma menção volta a implementação. A RTM regenerada fica sincronizada com o
+    corpus mal lido, e o `rtm.sh` verde. A invariante que se impõe é a de que **uma cerca
+    nunca atravessa a fronteira de um ticket**, em três condições, todas medidas a zero no
+    corpus de 2026-10-01 (212 cercas):
+
+      1. toda a cerca fecha — sem linha de fecho, corre até ao fim do ficheiro e engole a
+         fronteira de todos os tickets que se lhe seguem (ou, no último, a prosa de cauda);
+      2. nenhuma cerca contém um cabeçalho `## AOS-NNN —` / `### AOS-NNN —`: os leitores
+         acham os cabeçalhos no texto cru e os terminadores no mascarado, pelo que essa
+         linha seria ao mesmo tempo um ticket novo e não-fronteira do anterior;
+      3. nenhuma cerca contém uma linha que, fora dela, ABRIRIA uma cerca do mesmo carácter
+         (comprimento ≥ ao da abertura e com info string — «```bash» dentro de uma cerca de
+         três crases). É o sinal de dessincronização: o autor julgava estar fora de código.
+         Mostrar uma cerca dentro de outra faz-se com uma abertura mais comprida (quatro
+         crases à volta de três) ou com o outro carácter, e isso continua permitido. Sem
+         esta condição, uma linha solta de três crases emparelhava com o fecho da cerca
+         legítima seguinte do mesmo bloco, ficava fechada sem atravessar nada, e escondia
+         como código as directivas que houvesse entre as duas.
+
+    O que fica de fora, declarado: duas linhas soltas que emparelhem uma com a outra dentro do
+    mesmo ticket são, para qualquer leitor, uma cerca legítima.
+    """
+    cabecalhos = [(m.start(), m.group(1)) for m in _RE_CABECALHO_TICKET.finditer(texto)]
+    problemas = []
+
+    def linha(pos: int) -> int:
+        return texto.count("\n", 0, pos) + 1
+
+    for ini, fim, fechou in _varrer(texto)[0]:
+        fl = _fim_da_linha(texto, ini)
+        marca = _RE_ABRE_CERCA.fullmatch(texto, ini, fl).group(1)
+        rotulo = "a cerca «%s» aberta na linha %d" % (marca, linha(ini))
+        dentro = [(p, aos) for p, aos in cabecalhos if ini < p < fim]
+        if dentro:
+            p, aos = dentro[0]
+            problemas.append(
+                "%s atravessa o cabeçalho de %s (linha %d) — os dois tickets deixam de ter "
+                "fronteira" % (rotulo, aos, linha(p))
+            )
+        if not fechou:
+            problemas.append(
+                "%s nunca fecha e corre até ao fim do ficheiro" % rotulo
+            )
+        abre_igual = re.compile(r" {0,3}%s{%d,}(.*)" % (re.escape(marca[0]), len(marca)))
+        fim_interior = fim if not fechou else texto.rfind("\n", ini, fim)
+        p = fl + 1
+        while p < fim_interior:
+            f = min(_fim_da_linha(texto, p), fim_interior)
+            m = abre_igual.fullmatch(texto, p, f)
+            if m and m.group(1).strip() and not (marca[0] == "`" and "`" in m.group(1)):
+                problemas.append(
+                    "%s contém na linha %d uma abertura do mesmo tipo («%s») — a cerca está "
+                    "dessincronizada: uma linha solta abriu-a antes do tempo"
+                    % (rotulo, linha(p), texto[p:f].strip())
+                )
+                break
+            p = f + 1
+    if problemas:
+        raise CitacaoError(
+            "%s: cerca de código atravessa a fronteira de um ticket (AOS-472) — %s. Uma "
+            "linha de prosa que comece por ``` ou ~~~ abre uma cerca pelo CommonMark; "
+            "reescreva-a ou feche a cerca dentro do mesmo ticket"
+            % (onde, "; ".join(problemas))
+        )
 
 
 def classificar(bloco: str, onde: str = "bloco") -> tuple:

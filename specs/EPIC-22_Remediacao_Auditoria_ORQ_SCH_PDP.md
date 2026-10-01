@@ -23,14 +23,14 @@ instala hoje.
 
 Este epic cobre só os que são **activos**: alcançáveis pela superfície HTTP do nó `aos` tal como
 é entregue, com o mecanismo de autorização, selagem ou observabilidade que devia cobri-los
-ausente ou a mentir sobre o que faz. Quinze tickets, cinco eixos:
+ausente ou a mentir sobre o que faz. Dezasseis tickets, cinco eixos:
 
 | Eixo | Tickets |
 |---|---|
 | Governação da autonomia (`/autonomy`) | AOS-305, AOS-306, AOS-307 |
 | Cerimónia de quatro-olhos (`/challenge`, `/approve`) | AOS-308, AOS-309 |
 | Rastreabilidade da política (PDP) | AOS-310, AOS-311 |
-| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319 |
+| Rastreabilidade do corpus (RTM) | AOS-312, AOS-313, AOS-314, AOS-315, AOS-317, AOS-318, AOS-319, AOS-472 |
 | Integridade das ferramentas de gate | AOS-316 |
 | Semântica da extracção (por abrir) | AOS-318 |
 
@@ -64,6 +64,7 @@ ausente ou a mentir sobre o que faz. Quinze tickets, cinco eixos:
 | **P2** | AOS-316 | A suite que prova os gates corrompe trabalho em curso quando concorrente; sem efeito no binário |
 | **P2** | AOS-317, AOS-318 | Canon fechado com literal em vez de derivado; ADR mencionado a contar como implementado |
 | **P2** | AOS-319 | Contagens e extremos de intervalo gerados sem derivação; sem efeito no binário |
+| **P2** | AOS-472 | Resíduo do AOS-318: uma cerca solta desloca pares (ticket, ADR) sem gate que o veja; sem efeito no binário |
 
 ### 0.2 Tabela-resumo
 
@@ -84,6 +85,7 @@ ausente ou a mentir sobre o que faz. Quinze tickets, cinco eixos:
 | AOS-317 | O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia | P2 | **ENTREGUE** |
 | AOS-318 | Um ticket não pode mencionar um ADR sem alegar que o implementa | P2 | ABERTO |
 | AOS-319 | A RTM escrevia à mão contagens e extremos de intervalo que as suas próprias tabelas contradiziam | P2 | **ENTREGUE** |
+| AOS-472 | Uma linha de prosa começada por três crases ou três tis desloca pares (ticket, ADR) sem que nenhum gate dê por isso | P2 | **FEITO** |
 
 ---
 
@@ -1108,5 +1110,123 @@ ratificados» de `:16` são um subconjunto **declarado** e continuam defensávei
 foi a enumeração das propostas e os totais, não aquele número. Nenhum destes ficheiros é gerado nem
 lido por gate nenhum, pelo que fechá-los exige decidir primeiro se passam a ser gerados ou se saem
 do corpus — decisão própria, fora deste ticket.
+
+---
+
+## AOS-472 — Uma linha de prosa começada por três crases ou três tis desloca pares (ticket, ADR) sem que nenhum gate dê por isso
+
+### Contexto
+
+Resíduo 3 do AOS-318. Desde esse ticket, a detecção de cercas que os dois leitores do corpus
+partilham (`adr_citacoes.py`, importado por `rtm-regenerate.py` e `ref-lint.py`) segue o CommonMark:
+uma linha que comece, com até três espaços, por três ou mais crases ou tis abre uma cerca que só
+fecha numa linha do mesmo carácter e de comprimento igual ou maior. É a regra certa — e é por ser a
+regra certa que uma linha de **prosa** com esse começo abre, com toda a razão, uma cerca que corre
+até ao fim do ficheiro. O que fica lá dentro deixa de ser directiva (um trecho de menção volta a
+alegar implementação) e os `#` lá dentro deixam de terminar blocos (um ticket absorve os seguintes,
+com os ADRs que eles citam).
+
+Nenhum gate o vê. O `rtm.sh` compara a RTM com a regeneração a partir do corpus: com o corpus mal
+lido, as duas concordam no erro. O `ref-lint` exige «≥ 1 ticket implementador», que um par a mais
+satisfaz e que um par deslocado raramente quebra. E nenhum gate compara o conjunto de pares de um
+commit com o do anterior. Aconteceu ao escrever a nota da revisão do AOS-318, e só a comparação
+manual dos 445 pares o apanhou antes do commit.
+
+**Medido antes de corrigido**, com a guarda desligada, sobre uma cópia do corpus a que se
+acrescentam dois tickets sintéticos seguidos (os cenários de §RTMX1 e §RTMX4 abaixo): três tis
+soltos numa linha de prosa do primeiro fazem-no implementar o ADR que só o segundo cita; três
+crases soltas, seguidas no mesmo bloco de uma cerca legítima de bash, fazem um ADR declarado num
+trecho de menção voltar à coluna de implementadores. Nos dois casos a regeneração fica verde.
+
+### Critérios de Aceitação
+
+- [x] Existe uma guarda barata e fail-closed, e a invariante que impõe está escolhida e justificada
+      — **uma cerca nunca atravessa a fronteira de um ticket**, verificada sobre cada
+      `specs/EPIC-*.md` inteiro por `adr_citacoes.verificar_cercas`, em três condições: (1) toda a
+      cerca fecha; (2) nenhuma cerca contém um cabeçalho `## AOS-NNN —` ou `### AOS-NNN —`;
+      (3) nenhuma cerca contém uma linha que, fora dela, abriria uma cerca do mesmo carácter, com
+      comprimento igual ou maior e info string. Justificação em «Entrega»
+- [x] É erro nos **dois** leitores, pela mesma função: `rtm-regenerate.py` e `ref-lint.py` chamam-na
+      sobre o texto de cada EPIC antes de delimitar blocos, e a mensagem diz o ficheiro, a linha da
+      abertura e a condição violada
+- [x] Verde no corpus de hoje — 212 cercas em 25 ficheiros `specs/EPIC-*.md`, zero violações das
+      três condições; o conjunto de pares (ticket, ADR) sai idêntico, 445 implementados e 78 menções
+      antes e depois, `cmp` das listas ordenadas sem diferenças, e igual entre os dois leitores
+- [x] `selftest.sh` §RTMX, sobre uma cópia do corpus: três tis soltos (RTMX1), três crases soltas
+      (RTMX2), uma cerca por fechar no fim do último bloco (RTMX3), uma linha solta que emparelha com
+      a cerca legítima seguinte do mesmo bloco (RTMX4) — cada uma a avermelhar os dois leitores
+      **pela condição que a apanha** — e o controlo positivo (RTMX5): cercas legítimas, de crases, de
+      tis e de quatro crases a mostrar três, ficam verdes nos dois
+- [x] Cada caso foi verificado por mutação (abaixo)
+
+### Entrega
+
+**A invariante.** O candidato do enunciado — «uma cerca ainda aberta no fim de um bloco de ticket,
+ou a atravessar um cabeçalho `## AOS-`, é erro» — ficou, com uma precisão e um acrescento.
+
+A precisão: o fim de um bloco é calculado sobre o texto **mascarado**, em que os `#` dentro de cercas
+já não contam; uma cerca nunca está, portanto, aberta no fim do bloco que os leitores recortam — o
+recorte estende-se até ela fechar. «Aberta no fim do bloco» só é observável ao nível do ficheiro, e
+desdobra-se nas condições (1) e (2): sem fecho, a cerca corre até ao fim do ficheiro; com fecho
+depois do cabeçalho seguinte, os leitores acham esse cabeçalho no texto **cru** (é um ticket novo)
+e não o acham no mascarado (não é fronteira do anterior) — a mesma linha lida de duas maneiras.
+Verificar uma vez por ficheiro, e não por bloco, é o que torna as duas condições baratas e
+independentes do terminador, que continua duplicado entre os leitores (resíduo 2 do AOS-318).
+
+O acrescento é a condição (3), e é a que o candidato não apanhava: uma linha solta de três crases
+seguida, **no mesmo bloco**, de uma cerca legítima de bash emparelha com o fecho dessa cerca. Fica
+fechada, não atravessa cabeçalho nenhum, e esconde como código o que houver entre as duas — no
+cenário medido, um trecho de menção inteiro, cujo ADR volta à §4 em silêncio. O sinal é inequívoco:
+a abertura legítima (três crases e info string) fica **dentro** da cerca solta, e uma linha dessas
+dentro de uma cerca do mesmo carácter cuja abertura não seja mais comprida só existe quando o autor julgava
+estar fora de código. Aninhar cercas de propósito faz-se com uma abertura mais comprida ou do outro
+carácter, e isso continua permitido.
+
+**Alternativa recusada: comparar o conjunto de pares entre commits.** É o que o resíduo nomeia, e
+apanharia qualquer deslocação, não só as de cercas. Recusada por custo, não por princípio: seria uma
+linha de base versionada que **todo** o ticket que cite um ADR teria de actualizar (o mesmo ficheiro
+tocado por todas as sessões paralelas, que é o conflito que `sessoes.py` existe para evitar), e um
+vermelho sem localização — diria que o conjunto mudou, não onde nem porquê. A guarda escolhida
+localiza (ficheiro, linha, condição) e não pede manutenção. O que ela não cobre fica declarado
+abaixo.
+
+**Medido.** Sobre o corpus de hoje: 212 cercas em 25 ficheiros, todas fechadas, nenhuma com um
+cabeçalho de ticket, nenhuma com uma abertura do mesmo tipo. A única com cabeçalhos ATX lá dentro
+(EPIC-19, um `# comentário` de bash) tem-nos de nível 1 — o caso que a máscara existe para servir.
+O conjunto de pares, extraído pelos dois leitores antes e depois: 445 implementados e 78 menções,
+idênticos par a par.
+
+**Mutação**, cada uma aplicada, corrida contra §RTMX isolada, revertida e com o hash do ficheiro
+confirmado igual ao de antes:
+
+| Mutação | Subtestes vermelhos |
+|---|---|
+| `rtm-regenerate.py` sem a chamada | RTMX1, RTMX2, RTMX3, RTMX4 |
+| `ref-lint.py` sem a chamada | RTMX1, RTMX2, RTMX3, RTMX4 |
+| condição (1) desligada | RTMX3 |
+| condição (2) desligada | RTMX1, RTMX2 — os leitores continuam vermelhos pela condição (1), mas pelo motivo errado, e o subteste exige o motivo |
+| condição (3) desligada | RTMX4 |
+| guarda estrita (toda a cerca é erro) | RTMX5, e o corpus real |
+
+Gates: `rtm.sh`, `ref-lint.sh`, `estado-citado.sh` e `lint.sh` verdes; `selftest.sh` completo, a
+correr sozinho, verde (130 subtestes, §RTMX1–RTMX5 incluídos). Medidos com o AOS-471 presente: o
+número foi reservado para um ramo paralelo, e sem ele o gerador recusa, com razão, a gama
+descontínua — a RTM desta entrega é a do backlog depois de os dois se juntarem.
+
+**Resíduos declarados.**
+
+1. **Duas linhas soltas que emparelhem uma com a outra dentro do mesmo ticket** são, para qualquer
+   leitor de Markdown, uma cerca legítima, e a guarda não as distingue.
+2. **Uma deslocação de pares que não venha de uma cerca continua invisível** — um cabeçalho de
+   ticket mal escrito, um terminador alterado num só dos leitores. O comparador entre commits
+   recusado acima apanhá-la-ia; fica por fazer, com o custo dito.
+
+### Estado
+
+**FEITO** (2026-10-01). P2.
+
+`scripts/ci/adr_citacoes.py` (`verificar_cercas`), `scripts/ci/rtm-regenerate.py`,
+`scripts/ci/ref-lint.py`, `scripts/ci/selftest.sh` (§RTMX1–RTMX5), `tecnica/16_Rastreabilidade_RTM.md`
+(§4 regenerada: uma frase no parágrafo «Citar não é alegar»).
 
 ---

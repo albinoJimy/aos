@@ -380,6 +380,14 @@ def extract_all_tickets() -> dict:
                 tickets[aos]["title"] = title  # título da tabela é mais limpo
 
         # 2. Secções detalhadas (fonte primária para ADRs)
+        # Antes de delimitar blocos: uma cerca que atravesse a fronteira de um ticket desloca
+        # pares sem que a RTM regenerada deixe de bater com o corpus (AOS-472). O `ref-lint`
+        # faz a mesma chamada, no mesmo sítio.
+        try:
+            adr_citacoes.verificar_cercas(text, epic_file.name)
+        except adr_citacoes.CitacaoError as exc:
+            sys.stderr.write(f"ERRO: {exc}\n")
+            sys.exit(1)
         mascarado = mascarar_fences(text)
         for m in re.finditer(r"^(#{2,3}) (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
             nivel = len(m.group(1))
@@ -751,7 +759,7 @@ def generate_section4(rows: list) -> str:
         "",
         "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
         "",
-        "**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. As duas formas escrevem-se exactamente assim, em minúsculas e com dois-pontos — não há grafia alternativa (`mencao` sem acento, `RTM:`, `rtm :` são erro) — e dentro de código (crases ou bloco cercado) são texto, não directiva. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; qualquer comentário que comece por `rtm` e não seja uma das formas, ou um trecho desequilibrado, avermelha os dois gates. "
+        "**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. As duas formas escrevem-se exactamente assim, em minúsculas e com dois-pontos — não há grafia alternativa (`mencao` sem acento, `RTM:`, `rtm :` são erro) — e dentro de código (crases ou bloco cercado) são texto, não directiva. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; qualquer comentário que comece por `rtm` e não seja uma das formas, ou um trecho desequilibrado, avermelha os dois gates. Também os avermelha uma cerca de código que não feche, que atravesse o cabeçalho de outro ticket ou que contenha uma abertura do seu próprio tipo (AOS-472): uma linha de prosa começada por três crases ou três tis abre uma cerca, e o que fica lá dentro deixa de ser directiva e de delimitar blocos. "
         + f"Hoje {sum(len(r['mencoes']) for r in rows)} par(es) (ticket, ADR) do canon ficam fora da tabela por serem só menção, em {len([r for r in rows if r['mencoes']])} ADR(s). A regra está em `scripts/ci/adr_citacoes.py`.",
         "",
         "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",

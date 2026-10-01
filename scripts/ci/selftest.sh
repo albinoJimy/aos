@@ -35,6 +35,10 @@
 #      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
 #      ref-lint nem entra na §4; directivas mal formadas falham fechado, e o que está
 #      em código (cercas, crases simples ou múltiplas) não é directiva (AOS-318).
+#  RTMX) uma cerca de código que atravesse a fronteira de um ticket — três tis ou três
+#      crases soltos numa linha de prosa, uma cerca por fechar no fim do bloco, ou uma
+#      abertura do mesmo tipo dentro de outra — avermelha o rtm e o ref-lint; cercas
+#      legítimas não (AOS-472).
 #  GW) o go.work cobre exactamente os módulos de packages/ (aninhados incluídos), com
 #      as directivas go/toolchain máximas e sem replace; o compilar avermelha um
 #      workspace que não compila e ignora um go.work.sum desnecessário; o build.sh
@@ -182,6 +186,8 @@ MENCAO_TMP=""
 GOWORK_TMP=""
 # §NX põe os seus `docker` de brincar e o estado do cluster FORA do repo: não muta a árvore.
 NX_TMP=""
+# §RTMX trabalha sobre uma cópia do corpus (como §Z): não muta a árvore.
+RTMX_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -195,6 +201,7 @@ cleanup() {
   rm -rf "$MENCAO_TMP"
   rm -rf "$GOWORK_TMP"
   rm -rf "$NX_TMP"
+  rm -rf "$RTMX_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
@@ -2353,6 +2360,112 @@ else
   bad "NX5: o caminho feliz partiu-se (rc=$nx_rc): $nx_out"
 fi
 rm -rf "$NX_TMP"; NX_TMP=""
+
+
+# ============================================================================
+# RTMX) uma cerca de código não atravessa a fronteira de um ticket (AOS-472)
+# ============================================================================
+# O defeito: nenhum gate compara o conjunto de pares (ticket, ADR) de um commit com o
+# do anterior, e a detecção de cercas segue o CommonMark — uma linha de PROSA que comece
+# por ``` ou ~~~ abre uma cerca que só fecha numa linha do mesmo carácter. O que fica lá
+# dentro deixa de ser directiva e os `#` deixam de terminar blocos: um ticket absorve o
+# seguinte, ou uma menção volta a implementação, e a RTM regenerada fica sincronizada
+# com o corpus mal lido — `rtm.sh` verde. Quase entrou num commit do AOS-318.
+#
+# A guarda é `adr_citacoes.verificar_cercas`, chamada pelos DOIS leitores sobre cada
+# EPIC antes de a ler. Cada caso exige o vermelho dos dois PELO MOTIVO CERTO (a mensagem
+# da condição que o apanha), para que desligar uma condição não se esconda atrás de outra.
+#
+# Sandbox própria (corpus copiado), no molde de §Z: a árvore real NÃO é tocada. Os dois
+# tickets sintéticos são os seguintes ao maior do backlog — derivados, como em §Z.
+log_gate "self-test RTMX · uma cerca de código não atravessa a fronteira de um ticket (AOS-472)"
+RTMX_TMP="$(mktemp -d)"
+mkdir -p "$RTMX_TMP/docs"
+cp -r "$REPO_ROOT/specs"    "$RTMX_TMP/specs"
+cp -r "$REPO_ROOT/tecnica"  "$RTMX_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$RTMX_TMP/docs/adr"
+cp    "$REPO_ROOT/_BRIEF.md" "$RTMX_TMP/_BRIEF.md"
+RTMX_EPIC="$RTMX_TMP/specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md"
+RTMX_EPIC_BAK="$RTMX_TMP/epic.bak"
+cp "$RTMX_EPIC" "$RTMX_EPIC_BAK"
+RTMX_A="$(grep -ohE 'AOS-[0-9]{3}' "$RTMX_TMP"/specs/EPIC-*.md | sort -u | tail -1 \
+  | awk -F- '{ printf "AOS-%03d", $2 + 1 }')"
+RTMX_B="$(printf '%s' "$RTMX_A" | awk -F- '{ printf "AOS-%03d", $2 + 1 }')"
+# Acrescenta à EPIC da cópia o ticket $RTMX_A com o corpo $1 e, se $2 não for vazio, o
+# ticket $RTMX_B a seguir, com o corpo $2 — é o que põe a cerca de $1 NO MEIO do ficheiro.
+rtmx_tickets() {
+  cp "$RTMX_EPIC_BAK" "$RTMX_EPIC"
+  printf '\n---\n\n## %s — Sonda do self-test RTMX\n\n%s\n' "$RTMX_A" "$1" >> "$RTMX_EPIC"
+  if [ -n "$2" ]; then
+    printf '\n---\n\n## %s — Sonda seguinte do self-test RTMX\n\n%s\n' "$RTMX_B" "$2" >> "$RTMX_EPIC"
+  fi
+}
+# Os DOIS leitores, sobre a cópia: `rtm-regenerate.py` em escrita (a §4 da cópia não
+# acompanha os tickets novos, e `--check` daria vermelho por isso) e `ref-lint.py`.
+# 0 se ambos ficaram VERMELHOS com a mensagem $1.
+rtmx_ambos_recusam() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$RTMX_TMP" python3 "$CI_DIR/rtm-regenerate.py" 2>&1)" && rc=0 || rc=$?
+  { [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q -- "$1"; } || return 1
+  out="$(AOS_REFLINT_ROOT="$RTMX_TMP" python3 "$CI_DIR/ref-lint.py" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q -- "$1"
+}
+# 0 se ambos ficaram VERDES.
+rtmx_ambos_aceitam() {
+  AOS_RTM_ROOT="$RTMX_TMP" python3 "$CI_DIR/rtm-regenerate.py" >/dev/null 2>&1 \
+    && AOS_REFLINT_ROOT="$RTMX_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1
+}
+RTMX_B_CORPO="Implementa o ADR-001, que o leitor tem de atribuir ao $RTMX_B e não ao $RTMX_A."
+
+# RTMX1 — três TIS soltos no início de uma linha de prosa. Abrem uma cerca de tis que
+# nenhuma linha do corpus fecha: o $RTMX_B deixava de ter fronteira.
+rtmx_tickets $'Implementa o ADR-002.\n~~~ três tis no início de uma linha de prosa abrem uma cerca.\nMais prosa.' "$RTMX_B_CORPO"
+if rtmx_ambos_recusam "atravessa o cabeçalho de $RTMX_B"; then
+  pass "RTMX1: rtm e ref-lint recusam uma linha de prosa começada por ~~~ que atravessa o $RTMX_B"
+else
+  bad "RTMX1: uma linha solta de ~~~ passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX2 — o mesmo com três CRASES soltas seguidas de texto (info string sem crases: é
+# abertura de cerca, não código em linha).
+rtmx_tickets $'Implementa o ADR-002.\n``` três crases no início de uma linha de prosa abrem uma cerca.\nMais prosa.' "$RTMX_B_CORPO"
+if rtmx_ambos_recusam "atravessa o cabeçalho de $RTMX_B"; then
+  pass "RTMX2: rtm e ref-lint recusam uma linha de prosa começada por \`\`\` que atravessa o $RTMX_B"
+else
+  bad "RTMX2: uma linha solta de \`\`\` passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX3 — uma cerca por fechar no FIM do bloco: o $RTMX_A é o último ticket do ficheiro,
+# não há cabeçalho que ela atravesse, e só a condição «toda a cerca fecha» a apanha.
+rtmx_tickets $'Implementa o ADR-002.\n\n```bash\necho "o fecho ficou por escrever"' ""
+if rtmx_ambos_recusam "nunca fecha"; then
+  pass "RTMX3: rtm e ref-lint recusam uma cerca aberta no fim do último bloco"
+else
+  bad "RTMX3: uma cerca por fechar no fim do bloco passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX4 — uma linha solta de crases seguida, NO MESMO BLOCO, de uma cerca legítima: a
+# solta emparelha com o fecho da legítima, fica fechada sem atravessar cabeçalho nenhum
+# e esconde como código o trecho de menção entre as duas — o ADR-003 voltava a
+# implementação em silêncio. Só a condição 3 (abertura do mesmo tipo lá dentro) a apanha.
+rtmx_tickets $'Implementa o ADR-002.\n``` três crases soltas.\n<!-- rtm: menção -->O ADR-003 é só restrição.<!-- /rtm: menção -->\n\n```bash\necho ola\n```' "$RTMX_B_CORPO"
+if rtmx_ambos_recusam "dessincronizada"; then
+  pass "RTMX4: rtm e ref-lint recusam uma cerca solta que emparelha com a legítima seguinte"
+else
+  bad "RTMX4: uma cerca solta emparelhada com a legítima passou num dos dois gates (ou pelo motivo errado)"
+fi
+
+# RTMX5 — CONTROLO POSITIVO: cercas legítimas e fechadas no meio do ficheiro — uma de
+# bash com `# comentário`, uma de tis, e uma de quatro crases a mostrar uma de três com
+# info string (a forma certa de aninhar) — e código em linha começado por três crases.
+# Os dois leitores ficam verdes: a guarda distingue, não recusa toda a cerca.
+rtmx_tickets $'Implementa o ADR-002.\n\n```bash\n# comentário de bash, não cabeçalho\necho ola\n```\n\n~~~\nADR-003 em código\n~~~\n\n````md\n```bash\necho aninhado\n```\n````\n\n```x``` é código em linha.' "$RTMX_B_CORPO"
+if rtmx_ambos_aceitam; then
+  pass "RTMX5: controlo — cercas legítimas e fechadas deixam os dois leitores verdes"
+else
+  bad "RTMX5: cercas legítimas avermelharam um dos dois leitores — RTMX1..4 não provariam nada"
+fi
+rm -rf "$RTMX_TMP"; RTMX_TMP=""
 
 
 # ============================================================================

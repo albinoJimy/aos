@@ -236,6 +236,12 @@ def extract_backlog() -> dict:
         text = _read(epic_file)
 
         # Secções detalhadas (fonte primária para ADRs)
+        # A guarda de cercas de AOS-472, a mesma chamada que o `rtm-regenerate.py` faz.
+        try:
+            adr_citacoes.verificar_cercas(text, epic_file.name)
+        except adr_citacoes.CitacaoError as exc:
+            print(f"ERRO: {exc}")
+            sys.exit(1)
         mascarado = mascarar_fences(text)
         for m in re.finditer(r"^(#{2,3}) (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
             nivel = len(m.group(1))
