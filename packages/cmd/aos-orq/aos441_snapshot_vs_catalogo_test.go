@@ -26,15 +26,15 @@ import (
 // [aos408SnapshotComPerigo]. A versão do `http.post` é 1.0.0 e a do snapshot 2.0.0 de propósito:
 // o manifesto do nó não versiona tools, e a versão não entra na comparação.
 const aos441CatalogoDoSnapshotComPerigo = `{"tools":[
-  {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","egress":"none","reversibility":"reversible"},
-  {"name":"http.post","version":"1.0.0","digest":"sha256:bbb","egress":"external","reversibility":"irreversible"}
+  {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","egress":"none","reversibility":"reversible","mutation":"none"},
+  {"name":"http.post","version":"1.0.0","digest":"sha256:bbb","egress":"external","reversibility":"irreversible","mutation":"mutates"}
 ]}`
 
 // aos441CatalogoRenomeado é o catálogo de PRODUÇÃO na forma que o nó lhe dá: a tool de leitura
 // chama-se `doc_read`. O resto é igual — só o nome mudou.
 const aos441CatalogoRenomeado = `{"tools":[
-  {"name":"doc_read","version":"1.0.0","digest":"sha256:aaa","egress":"none","reversibility":"reversible"},
-  {"name":"http.post","version":"1.0.0","digest":"sha256:bbb","egress":"external","reversibility":"irreversible"}
+  {"name":"doc_read","version":"1.0.0","digest":"sha256:aaa","egress":"none","reversibility":"reversible","mutation":"none"},
+  {"name":"http.post","version":"1.0.0","digest":"sha256:bbb","egress":"external","reversibility":"irreversible","mutation":"mutates"}
 ]}`
 
 func aos441Snapshot(t *testing.T) planvalidate.Snapshot {
@@ -48,8 +48,8 @@ func aos441Snapshot(t *testing.T) planvalidate.Snapshot {
 
 func aos441Catalogo() []toolDoNo {
 	return []toolDoNo{
-		{Name: "fs.read", Version: "1.0.0", Digest: "sha256:aaa", Egress: "none", Reversibility: "reversible"},
-		{Name: "http.post", Version: "1.0.0", Digest: "sha256:bbb", Egress: "external", Reversibility: "irreversible"},
+		{Name: "fs.read", Version: "1.0.0", Digest: "sha256:aaa", Egress: "none", Reversibility: "reversible", Mutation: "none"},
+		{Name: "http.post", Version: "1.0.0", Digest: "sha256:bbb", Egress: "external", Reversibility: "irreversible", Mutation: "mutates"},
 	}
 }
 
@@ -94,6 +94,11 @@ func TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha(t *testing.T) {
 	casos := map[string]func(c []toolDoNo){
 		"egress":        func(c []toolDoNo) { c[0].Egress = "external" },
 		"reversibility": func(c []toolDoNo) { c[0].Reversibility = "irreversible" },
+		// AOS-409: o snapshot declara `fs.read` com mutation `none`; um nó que a diz mutadora — ou
+		// que não diz nada, por ser anterior ao AOS-409 — recusa-o.
+		"mutation":                   func(c []toolDoNo) { c[0].Mutation = "mutates" },
+		"mutation-ausente-no-no":     func(c []toolDoNo) { c[0].Mutation = "" },
+		"mutation-unknown-explicita": func(c []toolDoNo) { c[0].Mutation = "unknown" },
 	}
 	for nome, mudar := range casos {
 		t.Run(nome, func(t *testing.T) {
@@ -113,6 +118,7 @@ func TestAOS441SnapshotMaisConservadorPassa(t *testing.T) {
 	cat := aos441Catalogo()
 	cat[1].Egress = "none"
 	cat[1].Reversibility = "reversible"
+	cat[1].Mutation = "none" // o snapshot diz `mutates`: mais conservador, legítimo (AOS-409)
 	if err := compararSnapshotComCatalogo(aos441Snapshot(t), cat); err != nil {
 		t.Fatalf("um snapshot mais conservador do que o nó tinha de passar: %v", err)
 	}
@@ -123,9 +129,11 @@ func TestAOS441EixoDoNoDesconhecidoAvermelha(t *testing.T) {
 	cat := aos441Catalogo()
 	cat[0].Egress = "lá-fora"
 	cat[1].Reversibility = ""
+	cat[1].Mutation = "talvez" // AOS-409
 	err := compararSnapshotComCatalogo(aos441Snapshot(t), cat)
-	if !errors.Is(err, ErrSnapshotDivergeDoNo) || !strings.Contains(err.Error(), "2 divergência(s)") {
-		t.Fatalf("dois eixos ilegíveis tinham de dar duas divergências: %v", err)
+	if !errors.Is(err, ErrSnapshotDivergeDoNo) || !strings.Contains(err.Error(), "3 divergência(s)") ||
+		!strings.Contains(err.Error(), `o nó declara mutation "talvez"`) {
+		t.Fatalf("três eixos ilegíveis tinham de dar três divergências: %v", err)
 	}
 }
 

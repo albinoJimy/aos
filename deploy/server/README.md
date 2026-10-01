@@ -763,8 +763,8 @@ até ao fim do plano.
   Com `AOS_ORQ_NODE_URL` definido, o `consume` e o `serve` lêem o catálogo do nó (`GET /tools`, com
   o mesmo Bearer das outras rotas) e **recusam arrancar** — antes de reclamar um pedido ou de tomar
   posse do run — se o snapshot nomear uma tool que o nó não tem, com um `digest` diferente do dele,
-  ou com `egress`/`reversibility` **menos arriscados** do que o nó declara (mais conservador é
-  aceite). A recusa nomeia cada divergência e lista as tools do nó com o digest a copiar, p. ex.
+  ou com `egress`/`reversibility`/`mutation` **menos arriscados** do que o nó declara (mais
+  conservador é aceite). A recusa nomeia cada divergência e lista as tools do nó com o digest a copiar, p. ex.
   `tool "fs.read" não existe no nó (o nó tem: doc_read sha256:…)` — o catálogo de produção só oferece
   `doc_read` desde 2026-09-26 (o `web_post` saiu por decisão do dono, ADR-034 §2.7). Quando bate,
   o registo diz `snapshot: N tool(s) conferida(s) com o catálogo do nó`. O que o nó **não** declara
@@ -789,7 +789,42 @@ até ao fim do plano.
      também nenhum corre, e o `alerta-nhi.sh` acaba por avisar que a fila está parada.
   3. **Os digests reais tiram-se da própria recusa**, que lista as tools do nó com o digest, ou
      do `GET /tools` do nó, com o Bearer do `aos-reader`. Corrija nomes e digests, e confirme que
-     `egress`/`reversibility` não ficam abaixo do que o nó declara.
+     `egress`/`reversibility`/`mutation` não ficam abaixo do que o nó declara.
+
+- **Cada tool do snapshot declara `mutation` — campo OBRIGATÓRIO desde o AOS-409.** É o quarto
+  eixo: «a tool altera estado?». `none` só para quem não altera estado nenhum; `mutates` (ou
+  `unknown`) conta como **de efeito** — um verificador não a pode pinar, um consumidor com ela é
+  privilegiado para a regra de taint — e o nó que a usa deriva **`danger`**, com cartão humano.
+  **Não há default:** um snapshot sem o campo é recusado na carga, com a tool nomeada
+  (``capability #0 (doc_read): aos-orq: capability sem o campo obrigatorio `mutation` ``). O
+  snapshot de produção, com a única tool do nó, fica assim:
+
+  ```json
+  {"hash": "sha256:<o seu rótulo>", "tools": [
+    {"name": "doc_read", "version": "1.0.0", "digest": "sha256:<o do GET /tools>", "admissible": true,
+     "sensitivity": "public", "egress": "none", "reversibility": "reversible", "mutation": "none"}
+  ]}
+  ```
+
+  O nó declara o mesmo eixo no `AOS_MODEL_TOOLS` (`"mutation": "none"` no `doc_read` do
+  `deploy/server/model-tools/tools.json`) e serve-o no `GET /tools`; o snapshot **não pode declarar
+  menos mutação do que o nó**. Um nó sem o campo serve `mutates` — o vazio é mutador, como na
+  reversibilidade —, e um nó **anterior ao AOS-409** não serve o campo de todo, o que o `aos-orq`
+  também lê como mutador. Uma tool com `sandbox.write_arg` que declare `"mutation": "none"` faz o
+  **nó** recusar arrancar: o binding que escreve contradiz a declaração.
+
+  **A transição do AOS-409, pela ordem** (o mesmo ritual do AOS-441):
+
+  1. **Antes do release, drene e decida os planos pendentes.** A mutação entra no digest do
+     conteúdo do snapshot que o `plan.validated` sela — e o digest muda para TODOS os snapshots,
+     mesmo os que não mudem de eixo, porque a forma do digest ganhou um campo. Um plano validado ou
+     pendente sob a versão anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
+  2. **No release, actualize os dois lados juntos:** o `tools.json` do nó (já traz `"mutation":
+     "none"`) com a imagem nova do `aos`, e o `orq/snapshot.json` com `"mutation": "none"` no
+     `doc_read`. Um `aos-orq` novo contra um nó anterior ao AOS-409 recusa arrancar (o nó não diz a
+     mutação ⇒ mutador ⇒ o `none` do snapshot é «menos risco»): actualize o nó **primeiro**.
+  3. **Depois do deploy, a drenagem recusa em cada tick** até o `orq/snapshot.json` ter o campo — a
+     recusa nomeia a tool. Nenhum pedido se perde; nenhum corre até à correcção.
 - **O NHI do run é cunhado por si**, com o `aos-issuer`, na sua máquina: as tools do plano,
   `model:invoke` e o board (o `-Cunhar` do `get-id-token.ps1` copia o board do IdP). A validade
   (45 min) é o tecto de duração do plano. Copie-o para `/opt/aos/orq/nhi-run.jwt` e **apague-o no

@@ -416,15 +416,18 @@ func (c *nodeClient) Status(ctx context.Context, runID string) (estadoDoRun, boo
 
 // toolDoNo é UMA tool do catálogo do nó (`GET /tools`, AOS-441): o nome que a lista-branca
 // compara, a versão e o digest do contrato (um pin do contrato — schema, scopes, egress — pela
-// fórmula do registo do nó, não prova de que algo foi assinado), e os dois eixos de risco que o
+// fórmula do registo do nó, não prova de que algo foi assinado), e os três eixos de risco que o
 // manifesto do nó declara, já normalizados fail-closed por ele (`egress` não declarado ⇒
-// `unknown`; `reversibility` que não seja «reversible» ⇒ `irreversible`).
+// `unknown`; `reversibility` que não seja «reversible» ⇒ `irreversible`; `mutation` que não seja
+// «none» ⇒ `mutates`, AOS-409). Um nó anterior ao AOS-409 não serve `mutation`: o campo chega
+// VAZIO (não se recusam campos em falta) e a conferência trata-o como mutador.
 type toolDoNo struct {
 	Name          string `json:"name"`
 	Version       string `json:"version"`
 	Digest        string `json:"digest"`
 	Egress        string `json:"egress"`
 	Reversibility string `json:"reversibility"`
+	Mutation      string `json:"mutation"`
 }
 
 // CatalogoDeTools lê o catálogo de tools do nó — as tools que ele oferece ao modelo.

@@ -362,7 +362,7 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 			return err
 		}
 		conferido = snapshotConferido{snap: snapConferido, ok: true}
-		fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
+		fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility, mutation) — AOS-441, AOS-409\n", len(snapConferido.Tools))
 	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).

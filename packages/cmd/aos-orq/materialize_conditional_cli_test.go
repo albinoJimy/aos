@@ -11,7 +11,7 @@ const snapshotCondicional = `{
   "hash": "sha256:snap-cond",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"}
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"}
   ]
 }`
 

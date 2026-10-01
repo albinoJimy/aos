@@ -1192,15 +1192,143 @@ que não seja o documento do plano.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão registada sobre a FONTE do eixo (campo do snapshot pinado vs. classificação do REG) e
+- [x] Decisão registada sobre a FONTE do eixo (campo do snapshot pinado vs. classificação do REG) e
       sobre a omissão para snapshots existentes — fail-closed (todo o catálogo passa a «mutador») ou
       transição declarada. Uma decisão fail-closed pode impedir planos de quem já corre.
-- [ ] `IsEffectTool` com o 4.º eixo e teste sobre o CATÁLOGO, não sobre literal de teste.
-- [ ] DEF-275 fecha com evidência.
+      **Feito:** decisão do dono de 2026-10-01, registada abaixo em *Entrega — registo da decisão*
+      (fonte e omissão: opção 2, campo OBRIGATÓRIO no snapshot pinado, sem default no ficheiro,
+      conferido com o catálogo do nó; risco: R1), com a transição declarada e o ritual de release.
+- [x] `IsEffectTool` com o 4.º eixo e teste sobre o CATÁLOGO, não sobre literal de teste.
+      **Feito:** `IsEffectTool` = `egress ≠ none ∨ irreversível ∨ Mutation.Mutates()`.
+      `TestAOS409IsEffectToolSobreOCatalogoDeProducao` (`packages/cmd/aos-orq`) lê o manifesto de
+      produção `deploy/server/model-tools/tools.json` pelo MESMO caminho relativo do AOS-441, traduz
+      os eixos que o nó declara pelas tabelas da carga/conferência e corre `planvalidate.IsEffectTool`:
+      o `doc_read` de produção, que é `egress none` + `reversible`, sai SEM efeito porque declara
+      `"mutation":"none"`, e o MESMO manifesto sem o campo, ou com `"mutates"`, sai DE efeito. A
+      metade do nó — o que `GET /tools` serve desse manifesto (`none`; `mutates` sem o campo) — é
+      `TestAOS409CatalogoDeProducaoServeAMutacao` (`packages/cmd/aos`). O critério não corre no
+      módulo do nó porque o nó não pode depender do módulo do orquestrador, nem em teste via go.mod
+      (ADR-018, AOS-164b).
+- [x] DEF-275 fecha com evidência. **Feito:** linha do registo em `FECHADO-RESIDUAL` (o único
+      estado de fecho do vocabulário do gate `deferrals`), com o commit e os testes.
+
+### Entrega — registo da decisão (dono, 2026-10-01)
+
+Registo verbatim da decisão do dono, tomada sobre a *discovery* desta sessão:
+
+- **FONTE e OMISSÃO = Opção 2:** um campo `mutation` **OBRIGATÓRIO** por tool no ficheiro do
+  snapshot pinado. Ausente é **ERRO DE CARGA** que nomeia a tool; **não há default implícito** no
+  ficheiro.
+  - Em Go, um enum fail-closed cujo valor-zero é `unknown`, tratado como mutador. Cobre os literais
+    Go e o `resolveCaps` (`planvalidate/resources.go`, a capability de eixos-zero de uma tool não
+    resolvida).
+  - Conferido com o catálogo do nó (AOS-441): o snapshot NÃO pode declarar MENOS mutação do que o nó.
+  - Transição declarada: o operador acrescenta `"mutation":"none"` à única tool de produção
+    (`doc_read`). Os planos pendentes drenam-se antes do release — o mesmo ritual do AOS-441.
+- **RISCO = R1:** uma tool mutadora é tratada como `Irreversible` em `planvalidate.deriveNodeAction`.
+  **Não** se toca no `risk.Classify` do kernel — fazê-lo emendaria o ADR-013. Tudo o que escreve
+  passa a `danger`, com cartão humano.
+
+### Entrega — o que mudou
+
+- **`planvalidate`** (`capabilities.go`): `Capability.Mutation` e o tipo `Mutation`
+  (`MutationUnknown`=0 ⇒ mutador, `MutationNone`, `MutationMutates`; `Mutates()` é verdadeiro para
+  tudo o que não seja `MutationNone`). `IsEffectTool` (verifier.go) lê o 4.º eixo — e com ele as
+  três superfícies que o consomem: (V3) `checkVerifierAuthority`, (P4) `privilegedAuthority` e o
+  `Snapshot.EffectOracle()` do materializador. `deriveNodeAction` (risk.go) projecta um mutador no
+  classificador como irreversível (R1). O doc de `IsEffectTool` deixou de declarar a invariante do
+  REG como suposição: passou a dizer de onde o eixo vem.
+- **`aos-orq`** (`snapshot.go`): `mutation` obrigatório na carga (`ErrMutacaoEmFalta`, com a tool
+  nomeada; vocabulário `none|mutates|unknown`, um nome desconhecido é erro); a conferência com o nó
+  ganha a regra «o snapshot não declara menos mutação do que o nó» — e um nó que NÃO serve o campo
+  (anterior ao AOS-409) conta como mutador. `digestDoSnapshot` (plan_gate_wiring.go) passa a
+  incluir o eixo: sem isso, o buraco A1 do AOS-408 reabria (um snapshot com a mutação trocada
+  passava pelo selo). Os banners do `serve` e do `consume` nomeiam o eixo conferido.
+- **Nó** (`modeltools.go`, `catalogo_de_tools.go`): `modelToolSpec.Mutation` (só `none` é leitura;
+  o vazio vale `mutates`, como a reversibilidade; um valor fora do vocabulário aborta o arranque —
+  `ErrBadMutation`), servido em `GET /tools` sempre como `none` ou `mutates`.
+  **Piso do `sandbox.write_arg` — decidido e justificado:** `"mutation":"none"` numa tool com
+  `write_arg` **aborta o arranque**, em vez de ser promovido em silêncio a `mutates`. O `write_arg` é
+  o binding TRUSTED cujo valor o sandbox escreve no recurso (`ToolCall.Write`) — um facto
+  estrutural da configuração, não uma lista de nomes de tools (tecnica/18 §3.3.2 recusa a
+  *allowlist* mágica) nem uma segunda taxonomia. Promover em silêncio daria a postura certa pela
+  razão errada (a mesma regra do `validateReversibility`). A regra inversa não existe: a ausência de
+  `write_arg` não prova leitura.
+- **Manifestos:** `deploy/server/model-tools/tools.json` ganha `"mutation":"none"` no `doc_read`; o
+  dos demos `deploy/node/dev-hardened/` também (`none` no `doc_read`, `mutates` no `web_post`).
+- **Documentos:** `deploy/server/README.md` (exemplo do snapshot de produção, conferência e ritual
+  de release), `docs/testing/e2e-pegadas-visao-19.md` (passo 15), `tecnica/18` §3.3.2 e §3.3.3
+  (o critério e a «uma definição, duas perguntas») com a linha 1.6 do histórico.
+- **Fixtures:** todos os snapshots de teste passam a declarar `mutation`, **mantendo a intenção
+  original de cada teste**: uma tool modelada como leitura (ou como egress reversível, para isolar
+  o eixo de egress) declara `"none"` EXPLICITAMENTE; uma irreversível declara `"mutates"`. Nenhum
+  teste foi enfraquecido — os que provam um eixo isolado (irreversível, egress) passaram a declarar
+  `none` precisamente para que a mutação desconhecida não lhes mascare o eixo.
+
+### Entrega — evidência
+
+| Propriedade | Teste |
+|---|---|
+| `IsEffectTool` sobre o catálogo de produção | `TestAOS409IsEffectToolSobreOCatalogoDeProducao` (`cmd/aos-orq`) e, do lado do nó, `TestAOS409CatalogoDeProducaoServeAMutacao` (`cmd/aos`) |
+| Critério em tabela (escrita com undo, valor-zero, fora do enum) | `TestIsEffectToolCriterion` (`planvalidate`) |
+| (V3) verificador que pina um mutador ⇒ `verifier_effect_tool` | `TestVerifierEffectToolRejected/mutacao` |
+| (P4) consumidor mutador é privilegiado ⇒ `consumes_taint_authority` | `TestConsumesTaintIncompatibleWithAuthority/mutador` |
+| Risco R1 por `ResolveRisks`: mutador `EgressNone`+`Reversible` ⇒ `danger`, não auto-aprovável | `TestMutadorReversivelSemEgressDerivaDanger`, `TestMutacaoPorDeclararDerivaDanger`, `TestLeituraDeclaradaContinuaSafe` |
+| … e no cartão do gate (`planoParaGate`), a partir do ficheiro | `TestAOS409EscritaChegaAoCartaoComoDanger` (`cmd/aos-orq`) |
+| Carga: `mutation` ausente/vazia ⇒ erro que nomeia a tool | `TestSnapshot_MutacaoAusenteEErroQueNomeiaATool` |
+| Carga: nome desconhecido ⇒ erro | `TestSnapshot_EixoDesconhecidoERecusado/mutation` |
+| Conferência: snapshot `none` vs nó `mutates`/vazio/`unknown` ⇒ recusa | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation*` |
+| Digest: mudar só a mutação muda o `snapshot_digest` | `TestAOS409DigestMudaSoComAMutacao` (unidade) e `TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado` (binário: `nao e o selado`) |
+| Nó: vocabulário e contradição com `write_arg` | `TestAOS409MutacaoForaDoVocabularioAborta`, `TestAOS409WriteArgComMutacaoNoneAborta` |
+| Forma do fio de `GET /tools` | `TestAOS441GetToolsServeOCatalogoComAFormaDoFio` |
+
+**Mutation-check** (cada peça central retirada, um teste avermelha; repostas e verdes depois) —
+11 mutantes, 11 mortos:
+
+| Mutação | Morta por |
+|---|---|
+| `IsEffectTool` sem o termo `c.Mutation.Mutates()` | `TestVerifierEffectToolRejected/mutacao`, `TestConsumesTaintIncompatibleWithAuthority/mutador`, e sobre o catálogo `TestAOS409IsEffectToolSobreOCatalogoDeProducao/{sem_o_campo,mutates}` |
+| `deriveNodeAction` sem R1 | `TestMutadorReversivelSemEgressDerivaDanger`, `TestMutacaoPorDeclararDerivaDanger`, `TestAOS409EscritaChegaAoCartaoComoDanger` |
+| `Mutates()` fail-open no valor-zero (`== MutationMutates`) | `TestIsEffectToolCriterion/mutacao_por_declarar…`, `…/mutacao_fora_do_enum…`, `TestMutacaoPorDeclararDerivaDanger` |
+| `digestDoSnapshot` sem o campo | `TestAOS409DigestMudaSoComAMutacao`, `TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado` |
+| carga sem a verificação obrigatória | `TestSnapshot_MutacaoAusenteEErroQueNomeiaATool/{ausente,vazia,so-na-outra}` |
+| conferência sem a regra de mutação | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation*` (3) |
+| conferência: nó sem o campo deixa de ser mutador | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation-ausente-no-no` |
+| nó: o vazio serve `none` | `TestAOS409CatalogoDeProducaoServeAMutacao/sem_o_campo` |
+| nó: `write_arg` com `none` passa | `TestAOS409WriteArgComMutacaoNoneAborta` |
+
+### Entrega — transição declarada e ritual de release
+
+A primeira release com o AOS-409 muda a forma do snapshot e a do digest. Pela ordem (o mesmo ritual
+do AOS-441, descrito em `deploy/server/README.md` §executor de nós):
+
+1. **Antes do release, drenar e decidir os planos pendentes.** A forma do `digestDoSnapshot` ganhou
+   um campo, pelo que o digest muda para TODOS os snapshots; um plano validado ou pendente sob a
+   versão anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
+2. **No release, os dois lados juntos, o nó primeiro:** a imagem nova do `aos` com o `tools.json`
+   que já traz `"mutation":"none"` no `doc_read`, e o `orq/snapshot.json` do operador com
+   `"mutation":"none"` no `doc_read`. Um `aos-orq` novo contra um nó anterior ao AOS-409 recusa
+   arrancar (o nó não serve o eixo ⇒ mutador ⇒ o `none` do snapshot é «menos risco»).
+3. **Depois do deploy, a drenagem recusa em cada tick** até o `orq/snapshot.json` ter o campo; a
+   recusa nomeia a tool. Nenhum pedido se perde.
+
+### Resíduos declarados
+
+1. **A mutação continua declarada à mão nos dois lados.** O nó declara-a no manifesto e o snapshot
+   no ficheiro; a conferência garante que o snapshot não diz MENOS, mas nada prova que o manifesto
+   diz a verdade sobre o que a tool faz — é configuração trusted do operador, como o `egress` e a
+   `reversibility`. A atestação dos eixos pertence ao REG (DEF-812).
+2. **R1 é conservador de propósito.** Uma escrita desfazível chega ao cartão marcada irreversível
+   (`Irreversible: true`), porque a mutação entra no classificador por essa porta. Distinguir
+   «escreve com undo» de «não se desfaz» no cartão exigiria um eixo no `risk.Classify` — uma emenda
+   ao ADR-013, fora deste ticket.
+3. **Sem verificação em produção nesta entrega.** O ritual de release está escrito; a primeira
+   release que o execute regista aqui a evidência (recusa antes da correcção, «conferida(s)»
+   depois).
 
 ### Estado
 
-**POR FAZER.**
+**FEITO** (2026-10-01).
 
 ---
 

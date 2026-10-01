@@ -53,7 +53,7 @@ func advSnapshot() planvalidate.Snapshot {
 		Hash: capHash,
 		Tools: []planvalidate.Capability{
 			{Name: "search", Version: "1.0.0", Digest: "sha256:search", Admissible: true,
-				Sensitivity: risk.SensitivityPublic, Egress: risk.EgressNone, Reversibility: risk.Reversible},
+				Sensitivity: risk.SensitivityPublic, Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: planvalidate.MutationNone},
 			{Name: "blocked", Version: "1.0.0", Digest: "sha256:blocked", Admissible: false},
 			{Name: "delete", Version: "1.0.0", Digest: "sha256:delete", Admissible: true,
 				Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressExternal, Reversibility: risk.Irreversible},

@@ -180,7 +180,7 @@ func cmdConsume(args []string) (err error) {
 		return err
 	}
 	// A mesma linha do `serve`: é por ela que o registo da drenagem prova que a conferência correu.
-	fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility) — AOS-441\n", len(snapConferido.Tools))
+	fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility, mutation) — AOS-441, AOS-409\n", len(snapConferido.Tools))
 	consumidos, reverificados := 0, 0
 	for consumidos < *maxPedidos && reverificados < maxReverificacoesPorDrenagem {
 		// AOS-439: o mandato relê-se a cada pedido (o dono re-assina-o por cima), e ANTES de

@@ -38,6 +38,7 @@ func safeCap(name string) Capability {
 		Sensitivity:   risk.SensitivityPublic,
 		Egress:        risk.EgressNone,
 		Reversibility: risk.Reversible,
+		Mutation:      MutationNone,
 	}
 }
 
@@ -49,6 +50,7 @@ func exfilCap(name string) Capability {
 		Sensitivity:   risk.SensitivitySensitive,
 		Egress:        risk.EgressExternal,
 		Reversibility: risk.Reversible,
+		Mutation:      MutationNone,
 	}
 }
 

@@ -809,13 +809,18 @@ cat > $E2E/orq/snapshot.json <<'EOF'
   "hash": "sha256:snap-e2e",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"},
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"},
     {"name":"http.post","version":"2.0.0","digest":"sha256:bbb","admissible":true,
-     "sensitivity":"public","egress":"external","reversibility":"reversible"}
+     "sensitivity":"public","egress":"external","reversibility":"reversible","mutation":"mutates"}
   ]
 }
 EOF
 ```
+
+> **`mutation` é obrigatório por tool (AOS-409).** Sem ele o `aos-orq` recusa carregar o snapshot e
+> nomeia a tool (`capability sem o campo obrigatorio` … `mutation`). `none` só para quem não altera
+> estado nenhum; uma tool `mutates` (ou `unknown`) conta como de efeito — um verificador não a pode
+> pinar — e o nó que a usa deriva `danger`, com cartão humano.
 
 ```bash
 cat > $E2E/orq/plano.json <<'EOF'

@@ -44,8 +44,23 @@ import (
 // veria um verificador sem autoridade sem perceber porquê.
 //
 // Por isso os eixos entram por NOME e um nome desconhecido é ERRO, não um default.
-// O único default admitido é a AUSÊNCIA do campo, que resolve para o valor
-// fail-closed — a mesma direcção que o resto do sistema, mas agora deliberada.
+// Nos três eixos do classificador o único default admitido é a AUSÊNCIA do campo, que
+// resolve para o valor fail-closed — a mesma direcção que o resto do sistema, mas agora
+// deliberada.
+//
+// # O eixo de MUTAÇÃO é OBRIGATÓRIO (AOS-409)
+//
+// O quarto eixo — `mutation`, «a tool altera estado?» — NÃO tem default no ficheiro: uma
+// tool sem `mutation` é ERRO DE CARGA que nomeia a tool. A assimetria é deliberada. Nos
+// três eixos antigos a ausência já existia nos snapshots em circulação e o default
+// fail-closed foi a forma de não os partir; o eixo novo entra num formato cujo único
+// snapshot de produção é migrado no mesmo release (transição declarada no AOS-409), e um
+// default — mesmo fail-closed — deixaria o operador sem saber que a leitura que pinou
+// passou a pedir humano. Um erro que nomeia a tool diz-lhe exactamente o que declarar.
+//
+// Em Go o eixo continua fail-closed pelo tipo (`planvalidate.MutationUnknown`, o
+// valor-zero, conta como mutador): é o que cobre os literais e a capability fabricada
+// para uma tool não resolvida.
 
 // capabilityJSON é a forma de ficheiro de uma capability pinada.
 type capabilityJSON struct {
@@ -58,6 +73,9 @@ type capabilityJSON struct {
 	Sensitivity   string `json:"sensitivity,omitempty"`
 	Egress        string `json:"egress,omitempty"`
 	Reversibility string `json:"reversibility,omitempty"`
+	// Mutation é OBRIGATÓRIO (AOS-409): ausente ⇒ erro de carga que nomeia a tool. Sem
+	// `omitempty` de propósito — o campo não tem forma «por omissão».
+	Mutation string `json:"mutation"`
 }
 
 // snapshotJSON é a forma de ficheiro do snapshot pinado.
@@ -87,11 +105,23 @@ var (
 		"reversible":   risk.Reversible,
 		"irreversible": risk.Irreversible,
 	}
+	// mutacoes é o vocabulário do 4.º eixo (AOS-409), o MESMO que o catálogo do nó serve
+	// (`GET /tools`). `unknown` existe por nome, como nos outros eixos, e conta como mutador.
+	mutacoes = map[string]planvalidate.Mutation{
+		"unknown": planvalidate.MutationUnknown,
+		"none":    planvalidate.MutationNone,
+		"mutates": planvalidate.MutationMutates,
+	}
 )
 
+// ErrMutacaoEmFalta — uma capability do snapshot pinado não declara `mutation` (AOS-409). O
+// eixo é obrigatório: não há default no ficheiro, nem fail-closed — ver o cabeçalho.
+var ErrMutacaoEmFalta = errors.New("aos-orq: capability sem o campo obrigatorio `mutation` (none|mutates|unknown) — AOS-409")
+
 // carregarSnapshot lê e valida o snapshot pinado. Fail-closed em tudo: ficheiro
-// ilegível, JSON com campos desconhecidos, eixo de risco por nome desconhecido, ou
-// snapshot sem capabilities — nenhum resolve para um default silencioso.
+// ilegível, JSON com campos desconhecidos, eixo de risco por nome desconhecido, uma
+// capability sem `mutation` (AOS-409), ou snapshot sem capabilities — nenhum resolve
+// para um default silencioso.
 func carregarSnapshot(path string) (planvalidate.Snapshot, error) {
 	var vazio planvalidate.Snapshot
 	raw, err := os.ReadFile(path)
@@ -124,10 +154,21 @@ func carregarSnapshot(path string) (planvalidate.Snapshot, error) {
 		if err != nil {
 			return vazio, fmt.Errorf("capability #%d (%s): %w", i, c.Name, err)
 		}
+		// AOS-409: obrigatório. O vazio NÃO passa pelo [resolverEixo] — lá o vazio é o
+		// default fail-closed, e aqui não há default.
+		if c.Mutation == "" {
+			return vazio, fmt.Errorf("snapshot de capabilities %q: capability #%d (%s): %w — declare \"mutation\":\"none\" só se a tool não altera estado nenhum",
+				path, i, c.Name, ErrMutacaoEmFalta)
+		}
+		mut, err := resolverEixo("mutation", c.Mutation, mutacoes, planvalidate.MutationUnknown)
+		if err != nil {
+			return vazio, fmt.Errorf("capability #%d (%s): %w", i, c.Name, err)
+		}
 		snap.Tools = append(snap.Tools, planvalidate.Capability{
 			Name: c.Name, Version: c.Version, Digest: c.Digest,
 			Deprecated: c.Deprecated, Admissible: c.Admissible,
 			Sensitivity: sens, Egress: eg, Reversibility: rev,
+			Mutation: mut,
 		})
 	}
 	return snap, nil
@@ -206,10 +247,12 @@ func conferirSnapshotComONo(ctx context.Context, cli leitorDoCatalogo, path stri
 //     que o nó não tem deixa o nó do plano sem nenhuma tool utilizável (o caso `fs.read`);
 //  2. o DIGEST é o do contrato que o nó oferece — a referência pinada é nome+versão+digest
 //     (tecnica/18 §3.3) e um digest que o nó não reconhece não pina nada (o `sha256:aaa`);
-//  3. os eixos que o nó DECLARA (`egress`, `reversibility`) não são MENOS arriscados no snapshot.
-//     O snapshot pode ser mais conservador do que o nó; nunca menos, porque é dele que sai a
-//     classe de risco que decide a aprovação automática. A reversibilidade não entra no digest do
-//     contrato, e é por isso que se compara à parte.
+//  3. os eixos que o nó DECLARA (`egress`, `reversibility`, `mutation`) não são MENOS arriscados
+//     no snapshot. O snapshot pode ser mais conservador do que o nó; nunca menos, porque é dele
+//     que sai a classe de risco que decide a aprovação automática. A reversibilidade e a mutação
+//     não entram no digest do contrato, e é por isso que se comparam à parte. Para a mutação
+//     (AOS-409): o snapshot só pode dizer `none` se o nó disser `none`; um nó que diz `mutates`,
+//     ou que NÃO diz nada (um nó anterior ao AOS-409), é um mutador.
 //
 // A VERSÃO não se compara: o manifesto do nó não versiona tools (o registo pina todas em 1.0.0),
 // pelo que uma diferença de versão não diria nada sobre a tool. A SENSIBILIDADE também não: o nó
@@ -257,6 +300,17 @@ func compararSnapshotComCatalogo(snap planvalidate.Snapshot, cat []toolDoNo) err
 			divergencias = append(divergencias, fmt.Sprintf("tool %q: o nó declara reversibility %q, que este aos-orq não reconhece", c.Name, t.Reversibility))
 		} else if !c.Reversibility.IsIrreversible() && rev.IsIrreversible() {
 			divergencias = append(divergencias, fmt.Sprintf("tool %q: o snapshot declara %q e o nó %q — o snapshot não pode declarar menos risco do que o nó", c.Name, c.Reversibility.String(), t.Reversibility))
+		}
+		// AOS-409. O vazio do nó é um nó anterior ao AOS-409 (o cliente não recusa campos
+		// em falta): vale `unknown`, que é mutador — o snapshot não pode então dizer `none`.
+		mutDoNo := t.Mutation
+		if mutDoNo == "" {
+			mutDoNo = "unknown"
+		}
+		if mut, ok := mutacoes[mutDoNo]; !ok {
+			divergencias = append(divergencias, fmt.Sprintf("tool %q: o nó declara mutation %q, que este aos-orq não reconhece", c.Name, t.Mutation))
+		} else if !c.Mutation.Mutates() && mut.Mutates() {
+			divergencias = append(divergencias, fmt.Sprintf("tool %q: o snapshot declara mutation %q e o nó %q — o snapshot não pode declarar menos risco do que o nó (mutação, AOS-409)", c.Name, c.Mutation.String(), mutDoNo))
 		}
 	}
 	if len(divergencias) == 0 {

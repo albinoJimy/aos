@@ -75,6 +75,14 @@ func canonicalSensitivity(level int) risk.Sensitivity {
 // O taint é [taint.Trusted]: a derivação reflecte a propriedade INERENTE (pinada,
 // trusted) das ferramentas, não a untrustedness do documento — essa é tratada por
 // [elevateOnly] (o rótulo do LLM nunca baixa o piso). Puro.
+//
+// MUTAÇÃO ⇒ IRREVERSÍVEL NO CLASSIFICADOR (AOS-409, decisão R1). O classificador SA-ROC
+// ([risk.Classify], ADR-013) tem três eixos e NÃO ganha um quarto — mexer-lhe seria
+// emendar o ADR-013. A mutação entra AQUI, na projecção para o classificador: uma tool
+// cujo [Capability.Mutation] muta (incluindo o valor-zero desconhecido) é apresentada
+// ao classificador como irreversível, e por isso todo o nó que escreve deriva `danger`
+// e chega ao humano com approval-card. É conservador de propósito: «desfazível» é uma
+// promessa sobre o undo da tool, e um plano não deve escrever sem que alguém o veja.
 func deriveNodeAction(caps []Capability) risk.Action {
 	sensLevel := risk.SensitivityPublic.Level()
 	egRank := egressRank(risk.EgressNone)
@@ -86,7 +94,7 @@ func deriveNodeAction(caps []Capability) risk.Action {
 		if r := egressRank(c.Egress); r > egRank {
 			egRank = r
 		}
-		if c.Reversibility.IsIrreversible() {
+		if c.Reversibility.IsIrreversible() || c.Mutation.Mutates() {
 			irreversible = true
 		}
 	}

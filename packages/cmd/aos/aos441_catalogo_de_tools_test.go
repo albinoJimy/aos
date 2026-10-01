@@ -74,8 +74,8 @@ func TestAOS441CatalogoServeOsNomesDoManifesto(t *testing.T) {
 	if !ok {
 		t.Fatalf("o manifesto de produção nomeia `doc_read` e o catálogo não o tem: %+v", cat)
 	}
-	if doc.Egress != "none" || doc.Reversibility != "reversible" || doc.Version != "1.0.0" {
-		t.Errorf("doc_read: %+v — esperado egress none, reversible, 1.0.0", doc)
+	if doc.Egress != "none" || doc.Reversibility != "reversible" || doc.Mutation != "none" || doc.Version != "1.0.0" {
+		t.Errorf("doc_read: %+v — esperado egress none, reversible, mutation none, 1.0.0", doc)
 	}
 	// Decisão do dono (2026-09-26, ADR-034 §2.7): o catálogo de produção só tem `doc_read`.
 	if len(cat) != 1 {
@@ -237,7 +237,7 @@ func TestAOS441ServeAPIServeOCatalogo(t *testing.T) {
 // ler, e o cliente recusa — mas o teste tem de avermelhar deste lado primeiro.
 func TestAOS441GetToolsServeOCatalogoComAFormaDoFio(t *testing.T) {
 	node := newTestNode(t, &countingModel{})
-	cat := []entradaDoCatalogo{{Name: "doc_read", Version: "1.0.0", Digest: "sha256:d", Egress: "none", Reversibility: "reversible"}}
+	cat := []entradaDoCatalogo{{Name: "doc_read", Version: "1.0.0", Digest: "sha256:d", Egress: "none", Reversibility: "reversible", Mutation: "none"}}
 	_, h := newAPI(t, node, WithToolCatalog(cat))
 
 	rec := getReq(h, "/tools", nil)
@@ -250,6 +250,7 @@ func TestAOS441GetToolsServeOCatalogoComAFormaDoFio(t *testing.T) {
 	}
 	quer := map[string][]map[string]any{"tools": {{
 		"name": "doc_read", "version": "1.0.0", "digest": "sha256:d", "egress": "none", "reversibility": "reversible",
+		"mutation": "none", // AOS-409 — o terceiro eixo que o `aos-orq` confere
 	}}}
 	if !reflect.DeepEqual(bruto, quer) {
 		t.Fatalf("forma do fio:\n veio %v\n quer %v", bruto, quer)

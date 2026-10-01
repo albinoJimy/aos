@@ -11,6 +11,7 @@
     },
     "capability": "cap:fs.read",
     "reversibility": "reversible",
+    "mutation": "none",
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
     "resource_region": "eu-west",

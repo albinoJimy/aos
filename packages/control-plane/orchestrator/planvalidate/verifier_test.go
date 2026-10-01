@@ -34,6 +34,13 @@ func egressTool() plan.ToolRef {
 	return plan.ToolRef{Name: "post", Version: "1.0.0", Digest: "sha256:post"}
 }
 
+// mutatorTool tem efeito pelo TERCEIRO eixo (AOS-409): sem egress e reversível, mas
+// ALTERA ESTADO — a escrita local com undo que, antes do eixo de mutação, passava por
+// leitura (DEF-275).
+func mutatorTool() plan.ToolRef {
+	return plan.ToolRef{Name: "edit", Version: "1.0.0", Digest: "sha256:edit"}
+}
+
 // verifierSnapshot estende o snapshot base com os três eixos explícitos de que a
 // regra (V3) depende. `search` fica com os eixos do base (valores-zero) de propósito:
 // é a prova de que uma capability POR CLASSIFICAR conta como de efeito (fail-closed
@@ -42,11 +49,13 @@ func verifierSnapshot() Snapshot {
 	s := baseSnapshot()
 	s.Tools = append(s.Tools,
 		Capability{Name: "inspect", Version: "1.0.0", Digest: "sha256:inspect", Admissible: true,
-			Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressNone, Reversibility: risk.Reversible},
+			Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: MutationNone},
 		Capability{Name: "write", Version: "1.0.0", Digest: "sha256:write", Admissible: true,
-			Sensitivity: risk.SensitivityInternal, Egress: risk.EgressNone, Reversibility: risk.Irreversible},
+			Sensitivity: risk.SensitivityInternal, Egress: risk.EgressNone, Reversibility: risk.Irreversible, Mutation: MutationNone},
 		Capability{Name: "post", Version: "1.0.0", Digest: "sha256:post", Admissible: true,
-			Sensitivity: risk.SensitivityPublic, Egress: risk.EgressExternal, Reversibility: risk.Reversible},
+			Sensitivity: risk.SensitivityPublic, Egress: risk.EgressExternal, Reversibility: risk.Reversible, Mutation: MutationNone},
+		Capability{Name: "edit", Version: "1.0.0", Digest: "sha256:edit", Admissible: true,
+			Sensitivity: risk.SensitivityPublic, Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: MutationMutates},
 	)
 	return s
 }
@@ -165,6 +174,8 @@ func TestVerifierEffectToolRejected(t *testing.T) {
 	}{
 		{"irreversivel", effectTool()},
 		{"egress", egressTool()},
+		// AOS-409: sem egress e reversível, mas muta — o caso que o DEF-275 deixava passar.
+		{"mutacao", mutatorTool()},
 		// `search` está no snapshot base SEM eixos declarados (valores-zero): conta
 		// como de efeito pelo tipo, sem uma linha de código para isso.
 		{"por-classificar", searchTool()},
@@ -200,19 +211,23 @@ func TestVerifierRoleIsCaseSensitive(t *testing.T) {
 }
 
 // TestIsEffectToolCriterion — o CRITÉRIO declarado, em tabela: efeito ⇔ egress ≠ none
-// OU irreversível. Inclui os valores-zero de cada eixo, que são o lado fail-closed.
+// OU irreversível OU mutador (AOS-409). Inclui os valores-zero de cada eixo, que são o lado fail-closed.
 func TestIsEffectToolCriterion(t *testing.T) {
 	cases := []struct {
 		name string
 		cap  Capability
 		want bool
 	}{
-		{"leitura local reversivel", Capability{Egress: risk.EgressNone, Reversibility: risk.Reversible}, false},
-		{"leitura sensivel continua read-only", Capability{Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressNone, Reversibility: risk.Reversible}, false},
-		{"irreversivel", Capability{Egress: risk.EgressNone, Reversibility: risk.Irreversible}, true},
-		{"egress interno tambem conta", Capability{Egress: risk.EgressInternal, Reversibility: risk.Reversible}, true},
-		{"egress externo", Capability{Egress: risk.EgressExternal, Reversibility: risk.Reversible}, true},
+		{"leitura local reversivel", Capability{Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: MutationNone}, false},
+		{"leitura sensivel continua read-only", Capability{Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: MutationNone}, false},
+		{"irreversivel", Capability{Egress: risk.EgressNone, Reversibility: risk.Irreversible, Mutation: MutationNone}, true},
+		{"egress interno tambem conta", Capability{Egress: risk.EgressInternal, Reversibility: risk.Reversible, Mutation: MutationNone}, true},
+		{"egress externo", Capability{Egress: risk.EgressExternal, Reversibility: risk.Reversible, Mutation: MutationNone}, true},
 		{"eixos por classificar (valores-zero)", Capability{}, true},
+		// AOS-409 — o 4.º eixo. Uma escrita local com undo NÃO é uma leitura (DEF-275).
+		{"escrita local reversivel", Capability{Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: MutationMutates}, true},
+		{"mutacao por declarar (valor-zero) conta como mutador", Capability{Egress: risk.EgressNone, Reversibility: risk.Reversible}, true},
+		{"mutacao fora do enum conta como mutador", Capability{Egress: risk.EgressNone, Reversibility: risk.Reversible, Mutation: Mutation(99)}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

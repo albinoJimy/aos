@@ -18,9 +18,9 @@ const snapshotDuasTools = `{
   "hash": "sha256:snap-goal",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"},
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"},
     {"name":"http.post","version":"2.0.0","digest":"sha256:bbb","admissible":true,
-     "sensitivity":"public","egress":"external","reversibility":"reversible"}
+     "sensitivity":"public","egress":"external","reversibility":"reversible","mutation":"none"}
   ]
 }`
 

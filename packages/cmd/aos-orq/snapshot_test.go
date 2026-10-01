@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/aos-ref/control-plane/orchestrator/plan"
+	"github.com/aos-ref/control-plane/orchestrator/planvalidate"
 	"github.com/aos-ref/kernel/reference-monitor/risk"
 )
 
@@ -46,9 +48,9 @@ func TestSnapshot_EixosPorNomeTraduzem(t *testing.T) {
   "hash": "sha256:s",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:a","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"},
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"},
     {"name":"db.delete","version":"1.0.0","digest":"sha256:b","admissible":true,
-     "sensitivity":"sensitive","egress":"internal","reversibility":"irreversible"}
+     "sensitivity":"sensitive","egress":"internal","reversibility":"irreversible","mutation":"mutates"}
   ]
 }`)
 	snap, err := carregarSnapshot(p)
@@ -64,6 +66,10 @@ func TestSnapshot_EixosPorNomeTraduzem(t *testing.T) {
 	}
 	if b.Sensitivity != risk.SensitivitySensitive || b.Egress != risk.EgressInternal || b.Reversibility != risk.Irreversible {
 		t.Fatalf("eixos de db.delete = (%v,%v,%v), quer (sensitive,internal,irreversible)", b.Sensitivity, b.Egress, b.Reversibility)
+	}
+	// AOS-409 — o 4.º eixo chega ao enum.
+	if a.Mutation != planvalidate.MutationNone || b.Mutation != planvalidate.MutationMutates {
+		t.Fatalf("mutation de fs.read/db.delete = (%v,%v), quer (none,mutates)", a.Mutation, b.Mutation)
 	}
 
 	// A CONSEQUÊNCIA: o oráculo derivado classifica-as como o `IsEffectTool` manda.
@@ -88,9 +94,10 @@ func TestSnapshot_EixosPorNomeTraduzem(t *testing.T) {
 
 func TestSnapshot_EixoDesconhecidoERecusado(t *testing.T) {
 	casos := map[string]string{
-		"sensitivity":   `"sensitivity":"publico"`,
-		"egress":        `"egress":"nenhum"`,
-		"reversibility": `"reversibility":"reversivel"`,
+		"sensitivity":   `"sensitivity":"publico","mutation":"none"`,
+		"egress":        `"egress":"nenhum","mutation":"none"`,
+		"reversibility": `"reversibility":"reversivel","mutation":"none"`,
+		"mutation":      `"mutation":"nenhuma"`,
 	}
 	for eixo, campo := range casos {
 		t.Run(eixo, func(t *testing.T) {
@@ -128,13 +135,15 @@ func TestSnapshot_CampoDesconhecidoERecusado(t *testing.T) {
 // ---------------------------------------------------------------------------
 // TESTE — a AUSÊNCIA de um eixo resolve para o valor fail-closed, deliberadamente.
 //
-// É o único default admitido, e a direcção é a segura: uma capability por classificar
-// conta como perigosa. O teste existe para que a diferença entre «ausente» (default
-// declarado) e «inválido» (erro) seja uma propriedade e não uma impressão.
+// É o único default admitido NOS TRÊS EIXOS DO CLASSIFICADOR, e a direcção é a segura: uma
+// capability por classificar conta como perigosa. O teste existe para que a diferença entre
+// «ausente» (default declarado) e «inválido» (erro) seja uma propriedade e não uma impressão. A
+// mutação vai declarada `none` de propósito: assim são os três eixos ausentes, sozinhos, que
+// tornam a tool de efeito. (A mutação ausente é ERRO — ver o teste seguinte.)
 // ---------------------------------------------------------------------------
 
 func TestSnapshot_EixoAusenteEFailClosed(t *testing.T) {
-	p := escreverTmp(t, `{"hash":"h","tools":[{"name":"t","version":"1","digest":"d","admissible":true}]}`)
+	p := escreverTmp(t, `{"hash":"h","tools":[{"name":"t","version":"1","digest":"d","admissible":true,"mutation":"none"}]}`)
 	snap, err := carregarSnapshot(p)
 	if err != nil {
 		t.Fatalf("carregarSnapshot: %v", err)
@@ -146,6 +155,39 @@ func TestSnapshot_EixoAusenteEFailClosed(t *testing.T) {
 	// E a consequência: uma capability por classificar é tratada como DE EFEITO.
 	if !snap.EffectOracle()(toolRef("t", "1", "d")) {
 		t.Error("uma capability SEM eixos declarados foi classificada como SEM efeito — o fail-closed inverteu-se")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TESTE — a MUTAÇÃO AUSENTE é ERRO DE CARGA que nomeia a tool (AOS-409).
+//
+// É a assimetria deliberada face aos três eixos do classificador: o eixo de mutação não tem
+// default no ficheiro. FALHA-ANTES: um snapshot sem o campo carregava, a tool ficava
+// `MutationUnknown` (mutador) e o operador via o seu `doc_read` passar a pedir humano sem
+// perceber porquê — ou, sem o eixo, via uma escrita passar por leitura.
+// ---------------------------------------------------------------------------
+
+func TestSnapshot_MutacaoAusenteEErroQueNomeiaATool(t *testing.T) {
+	for nome, campo := range map[string]string{
+		"ausente":     ``,
+		"vazia":       `,"mutation":""`,
+		"so-na-outra": `,"mutation":"none"},{"name":"doc_write","version":"1","digest":"e","admissible":true`,
+	} {
+		t.Run(nome, func(t *testing.T) {
+			p := escreverTmp(t, `{"hash":"h","tools":[{"name":"doc_read","version":"1","digest":"d","admissible":true,`+
+				`"sensitivity":"public","egress":"none","reversibility":"reversible"`+campo+`}]}`)
+			_, err := carregarSnapshot(p)
+			if !errors.Is(err, ErrMutacaoEmFalta) {
+				t.Fatalf("uma capability sem `mutation` tinha de dar ErrMutacaoEmFalta, veio %v", err)
+			}
+			falta := "doc_read"
+			if nome == "so-na-outra" {
+				falta = "doc_write"
+			}
+			if !strings.Contains(err.Error(), "("+falta+")") {
+				t.Fatalf("o erro tem de nomear a tool sem o campo (%s): %v", falta, err)
+			}
+		})
 	}
 }
 

@@ -198,8 +198,8 @@ func TestAOS412_AprovacaoReutilizadaExigeOSnapshotSelado(t *testing.T) {
 
 	benigno := filepath.Join(dir, "snap-benigno.json")
 	escrever(t, benigno, strings.Replace(aos408SnapshotComPerigo,
-		`"sensitivity":"sensitive","egress":"external","reversibility":"irreversible"`,
-		`"sensitivity":"public","egress":"none","reversibility":"reversible"`, 1))
+		`"sensitivity":"sensitive","egress":"external","reversibility":"irreversible","mutation":"mutates"`,
+		`"sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"`, 1))
 
 	r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--plan-doc", doc, "--snapshot", benigno, "--worker", "p2")
 	if r.code == exitOK || strings.Contains(r.stdout, "materializado:") {

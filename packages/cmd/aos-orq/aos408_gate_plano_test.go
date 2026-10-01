@@ -24,9 +24,9 @@ const aos408SnapshotComPerigo = `{
   "hash": "sha256:snap-aos408",
   "tools": [
     {"name":"fs.read","version":"1.0.0","digest":"sha256:aaa","admissible":true,
-     "sensitivity":"public","egress":"none","reversibility":"reversible"},
+     "sensitivity":"public","egress":"none","reversibility":"reversible","mutation":"none"},
     {"name":"http.post","version":"2.0.0","digest":"sha256:bbb","admissible":true,
-     "sensitivity":"sensitive","egress":"external","reversibility":"irreversible"}
+     "sensitivity":"sensitive","egress":"external","reversibility":"irreversible","mutation":"mutates"}
   ]
 }`
 
