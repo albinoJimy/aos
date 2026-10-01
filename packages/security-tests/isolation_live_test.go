@@ -279,6 +279,12 @@ func TestIsolationLive_Report(t *testing.T) {
 			"ausencia_de_socket_do_host",
 			"atribuicao_da_recusa_de_P2_ao_gvisor (o guest valida o path ele proprio, antes de " +
 				"qualquer syscall interceptavel — substituir runsc por exec cru mantem P2 verde)",
+			// AOS-361 (e): a condição fail-closed de P2 trata QUALQUER erro como recusa,
+			// incluindo um de transporte. P2 sozinho não distingue «fronteira imposta» de
+			// «executor inalcançável»; quem o distingue é o cenário positivo e a verificação
+			// deste relatório, que avermelham sem executor.
+			"P2_com_executor_inalcancavel (um erro de transporte conta como recusa e P2 fica " +
+				"verde; o seed_read_positivo e a verificacao do relatorio e que avermelham)",
 		},
 		ContractGate: "security.sh (AOS-075) — contrato sobre FakeDriver, NAO a fronteira",
 		Pass:         pass,

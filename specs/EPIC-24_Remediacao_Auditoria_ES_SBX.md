@@ -253,7 +253,7 @@ mais informativo não é a contagem — é que **três correcções podem ser re
 | # | Achado | Ticket | Estado |
 |---|---|---|---|
 | V1 | **`aos-orq inspect` continua a abrir o WAL para escrita.** A varredura das vias de leitura do AOS-347 migrou as três do `aos` para `OpenReadOnly` e esqueceu a via de leitura do `aos-orq` (`substrato.abrirParaLeitura`). Medido na composição com o residual declarado do AOS-346: um comando de **leitura** apagou um evento confirmado (924 → 616 bytes) e envenenou o WAL de um escritor vivo | **AOS-359** | **fechado e verificado em produção** (`v0.1.27`, 2026-09-20) |
-| V2 | **Um critério do AOS-356 está marcado `[x]` sobre um ficheiro que o epic nunca tocou.** `deploy/node/README.md` não aparece no `git log` do merge; a linha `:147` continua a dizer «Ausente ⇒ `fake`» e «exigem KVM/`runsc` no host», contradizendo `:149`/`:150` da mesma tabela | **AOS-361** | por abrir |
+| V2 | **Um critério do AOS-356 está marcado `[x]` sobre um ficheiro que o epic nunca tocou.** `deploy/node/README.md` não aparece no `git log` do merge; a linha `:147` continua a dizer «Ausente ⇒ `fake`» e «exigem KVM/`runsc` no host», contradizendo `:149`/`:150` da mesma tabela | **AOS-361** | feito (2026-10-01) |
 
 #### As três mutações que a CI não apanha
 
@@ -873,8 +873,15 @@ não persiste.
 ### Estado
 
 **IMPLEMENTADO** (2026-09-06). A persistência é em LOTE (`wal.appendLote`, com reposição ao nível do
-lote): um restauro que devolve erro não deixa meio lote durável. Mutação verificada: com a escrita
-desligada, o restauro evapora no reinício (`E_STREAM_NOT_FOUND`).
+lote): um restauro que devolve erro repõe o ficheiro ao tamanho de antes do lote — **excepto com o WAL
+envenenado**, em que um **prefixo** do lote pode ficar durável e reaparece no `Open` seguinte (a
+excepção está declarada no código, `eventstore/durable.go` em `appendLote` e `eventstore/backup.go`;
+o que a contém é o envenenamento, que recusa tudo e põe `Healthy()` a falso). Mutação verificada: com
+a escrita desligada, o restauro evapora no reinício (`E_STREAM_NOT_FOUND`).
+
+> **Corrigido (2026-10-01, AOS-361 (c), sobre `da3e917`).** O texto dizia «um restauro que devolve
+> erro não deixa meio lote durável», sem a excepção que o próprio código declara. A excepção é um
+> **residual** deste ticket, não uma regressão: o código já era honesto, a spec não.
 
 ---
 
@@ -1029,6 +1036,14 @@ removem a rede por inteiro** (`orchestrator/main.go:113-125` sem `network-interf
 - [x] `DEF-701` é corrigida ou fechada, conforme o que o código sustenta hoje
 - [x] O texto de `deploy/node/README.md:147` deixa de descrever o estado antigo — as duas variáveis
       de URL **já** constam da mesma tabela (`:149`, `:150`), e é só a linha do driver que as ignora
+      > **Corrigido (2026-10-01, AOS-361 (a), sobre `da3e917`).** Este critério foi marcado `[x]` sem
+      > ser verdade: o merge deste ticket **não tocou** `deploy/node/README.md`, e a linha continuava a
+      > dizer que `firecracker`/`gvisor` «exigem KVM/`runsc` no host» e «Ausente ⇒ `fake`», sem a recusa
+      > de produção do AOS-344. Passou a ser verdade com o AOS-361, que reescreveu a linha (hoje a do
+      > `AOS_SANDBOX_DRIVER`, na tabela de variáveis): o KVM e o `runsc` são do componente externo, e o
+      > `fake` só é o default fora de produção. A mesma revisão encontrou o nome do erro trocado — sem
+      > executor, o `gvisor` falha com `ErrGVisorExecutorUnset` e não com `ErrDriverUnavailable` — na
+      > linha do driver e na do `AOS_SANDBOX_GVISOR_URL`, e corrigiu-o nas duas.
 - [x] Fica registado que o desenho escolhido é **remoção** de rede e não filtragem, para que o
       condicional de `network/doc.go:61-63` não volte a ser lido como plano em vigor
 
@@ -1143,8 +1158,14 @@ fidelidade demonstrada, e o contrato não é a fronteira».
 
 **IMPLEMENTADO** (2026-09-06), com o caminho real por correr neste ambiente. Dois artefactos:
 `scripts/ci/isolation-live.sh` (gate opcional, salta RUIDOSAMENTE e corre na mesma o contrafactual)
-e `scripts/ci/dormencia.sh` (nomeia as 45 suites que exigem `AOS_NATS_URL` e EXIGE que as suites
-atrás de build tag COMPILEM). O segundo foi provado a avermelhar: com um símbolo inexistente na
+e `scripts/ci/dormencia.sh` (nomeia os **pacotes** cujos testes exigem `AOS_NATS_URL` — hoje 5 — e
+EXIGE que as suites atrás de build tag COMPILEM; **não conta testes**, a contagem é do `nats.sh`, na
+execução, desde o AOS-431).
+
+> **Corrigido (2026-10-01, AOS-361 (d), sobre `da3e917`).** O texto dizia «nomeia as 45 suites»: errado
+> no número e na unidade. Na revisão o gate nomeava 8 ficheiros e contava ~46 testes, e testes não são
+> suites. O AOS-431 mudou-o depois para nomear pacotes sem contar, porque o `grep` não apanha os testes
+> que saltam por um helper partilhado. O segundo foi provado a avermelhar: com um símbolo inexistente na
 suite `gvlive`, «packages/security-tests NÃO compila com -tags gvlive».
 
 ---
@@ -1383,18 +1404,40 @@ transporte como fronteira imposta.
 
 ### Critérios de Aceitação
 
-- [ ] `deploy/node/README.md:147` passa a descrever a postura real, incluindo a recusa de produção do
+- [x] `deploy/node/README.md:147` passa a descrever a postura real, incluindo a recusa de produção do
       AOS-344, e deixa de contradizer `:149`/`:150`
-- [ ] O critério de `specs/EPIC-24:951-952` deixa de estar marcado `[x]` enquanto não for verdade
-- [ ] As cinco declarações são corrigidas, com a nota de data e commit que `tecnica/14` §5.2 usa como
+- [x] O critério de `specs/EPIC-24:951-952` deixa de estar marcado `[x]` enquanto não for verdade —
+      passou a sê-lo com este ticket, e fica com a nota de correcção que o diz
+- [x] As cinco declarações são corrigidas, com a nota de data e commit que `tecnica/14` §5.2 usa como
       método
-- [ ] `driver.go:25,28` deixa de chamar «skeleton» aos drivers que têm executor remoto
-- [ ] O `not_proved` do `isolation-live` nomeia o comportamento de P2 com executor inalcançável
+- [x] `driver.go:25,28` deixa de chamar «skeleton» aos drivers que têm executor remoto
+- [x] O `not_proved` do `isolation-live` nomeia o comportamento de P2 com executor inalcançável
+
+### Entrega (2026-10-01)
+
+- **(a)** `deploy/node/README.md`, linha do `AOS_SANDBOX_DRIVER`, reescrita:
+  - o KVM e o `runsc` são exigência do componente externo, e não do nó;
+  - o `fake` só é o default fora de produção, e em produção o arranque aborta
+    (`ErrProductionNeedsSandboxDriver`);
+  - o critério do AOS-356 fica `[x]` com nota de correcção, porque agora é verdade.
+  - O comentário de `cmd/aos/sandboxwiring.go` repetia a mesma frase e foi corrigido também.
+- **Achado novo, da mesma classe, corrigido no mesmo commit.** Sem executor, o `gvisor` falha com
+  `ErrGVisorExecutorUnset` e não com `ErrDriverUnavailable`. O nome errado estava em três sítios, todos
+  corrigidos:
+  - na linha do driver;
+  - na linha do `AOS_SANDBOX_GVISOR_URL`;
+  - no comentário de `sandboxwiring.go`.
+- **(b)** `substrate/sandbox/driver.go`: os dois drivers reais deixam de se chamar «skeleton». Cada
+  comentário nomeia o executor injectado e o erro fail-closed sem ele.
+- **(c)** O estado do AOS-353 declara a excepção do WAL envenenado.
+- **(d)** O estado do AOS-358 diz o que o gate `dormencia` faz hoje: nomeia os pacotes, não conta testes.
+- **(e)** `security-tests/isolation_live_test.go`: o `not_proved` ganha
+  `P2_com_executor_inalcancavel`.
 
 ### Estado
 
-**POR IMPLEMENTAR.** P1. Alcance: documental, mas a alínea (a) é um critério dado por cumprido sem o
-ser — é a classe que o `DEF-814` nomeia, cometida dentro da remediação que a nomeia.
+**FEITO** (2026-10-01). Alcance documental, mais um comentário de código e uma entrada do relatório do
+`isolation-live`. O comportamento de produção não muda.
 
 ---
 

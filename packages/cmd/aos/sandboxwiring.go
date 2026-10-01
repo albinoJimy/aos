@@ -119,9 +119,10 @@ func registerSandboxLaunchers(sec *integration.SecuredRuntime, es EventStorePort
 	}
 	// Driver: AOS_SANDBOX_DRIVER ∈ {fake,firecracker,gvisor}; fora de produção o default é
 	// "fake" (jail funcional in-process — FS overlay read-only, seccomp default-deny, escape
-	// bloqueado). firecracker/gvisor exigem KVM/runsc no host: sem eles NewMediatedLauncher
-	// constrói na mesma, mas a execução devolve ErrDriverUnavailable (o caminho de produção
-	// fica WIRED, só falta o host).
+	// bloqueado), e em produção o "fake" é recusado (AOS-344, ver [sandboxDriverKind]).
+	// firecracker/gvisor executam num componente EXTERNO (AOS_SANDBOX_*_URL): o KVM e o runsc
+	// são do host desse componente, não do nó. Sem a URL NewMediatedLauncher constrói na mesma,
+	// mas a execução falha (ErrDriverUnavailable no firecracker, ErrGVisorExecutorUnset no gvisor).
 	kind, err := sandboxDriverKind(os.Getenv("AOS_SANDBOX_DRIVER"), production)
 	if err != nil {
 		return err
