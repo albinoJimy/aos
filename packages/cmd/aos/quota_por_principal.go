@@ -147,6 +147,11 @@ type quotaPayload struct {
 	// ANTES de o drenador a receber. É por ela que a quota conhece a geração em curso — e a que se
 	// perdeu — sem depender de uma parcela que pode nunca chegar (achado MÉDIO da re-revisão).
 	Entregue bool `json:"entregue,omitempty"`
+	// DeFecho marca a entrega de uma geração MARCADA pelo tecto de gerações (AOS-467): não planeia, e
+	// não custa — a cobrança não a conta como geração sem parcela. Sem isto, cada re-entrega de uma
+	// marcada (a reclamação expira, a geração volta) custava a reserva para sempre (achado MÉDIO da
+	// terceira revisão).
+	DeFecho bool `json:"de_fecho,omitempty"`
 	// Final marca o FECHO do pedido: um evento próprio, escrito só DEPOIS de o desfecho terminal
 	// ficar no log (revisão do AOS-466: escrito antes, uma falha do desfecho deixava a reserva
 	// libertada com o pedido ainda vivo).
@@ -246,8 +251,8 @@ type estadoDaQuota struct {
 func (e estadoDaQuota) gasto() budget.Amount {
 	var g budget.Amount
 	for chave, r := range e.reservas {
-		if ps, entregue, fechado := e.planoDe(chave, r.Reserva); len(ps) > 0 || entregue > 0 || fechado {
-			r = cobrancaDoPlano(r, ps, entregue, fechado)
+		if ps, entregue, deFecho, fechado := e.planoDe(chave, r.Reserva); len(ps) > 0 || entregue > 0 || fechado {
+			r = cobrancaDoPlano(r, ps, entregue, deFecho, fechado)
 		} else if l, ok := e.liquidadas[chave]; ok && l.Reserva == r.Reserva {
 			r = l
 		}
@@ -260,20 +265,24 @@ func (e estadoDaQuota) gasto() budget.Amount {
 // planoDe devolve, da chave de um pedido e para a reserva com esse seq: as parcelas por geração, a
 // maior geração entregue, e se o pedido tem fecho. O que pertence a uma reserva anterior a um
 // apagamento não vale para a reserva nova.
-func (e estadoDaQuota) planoDe(chave string, reserva uint64) (ps map[int]quotaPayload, entregue int, fechado bool) {
+func (e estadoDaQuota) planoDe(chave string, reserva uint64) (ps map[int]quotaPayload, entregue int, deFecho map[int]bool, fechado bool) {
 	ps = map[int]quotaPayload{}
 	for g, p := range e.parcelas[chave] {
 		if p.ReservaDoPlano == reserva {
 			ps[g] = p
 		}
 	}
+	deFecho = map[int]bool{}
 	for g, p := range e.entregas[chave] {
 		if p.ReservaDoPlano == reserva {
 			entregue = max(entregue, g)
+			if p.DeFecho {
+				deFecho[g] = true
+			}
 		}
 	}
 	f, ok := e.fechos[chave]
-	return ps, entregue, ok && f.ReservaDoPlano == reserva
+	return ps, entregue, deFecho, ok && f.ReservaDoPlano == reserva
 }
 
 // cobrancaDoPlano é o que um pedido de plano custa à quota, dadas a reserva, as parcelas, a maior
@@ -290,7 +299,9 @@ func (e estadoDaQuota) planoDe(chave string, reserva uint64) (ps map[int]quotaPa
 //
 // Antes da primeira entrega o pedido custa a reserva. Sem fecho custa o MAIOR entre a reserva e a
 // soma; com fecho custa a SOMA — liberta o que sobra.
-func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, entregue int, fechado bool) quotaPayload {
+//
+// Uma geração entregue DE FECHO (AOS-467) sem parcela não custa: não planeia.
+func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, entregue int, deFecho map[int]bool, fechado bool) quotaPayload {
 	G := entregue
 	for g := range ps {
 		G = max(G, g)
@@ -308,6 +319,11 @@ func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, entregue int, fech
 		}
 	}
 	faltam := int64(G) - int64(len(ps))
+	for g := range deFecho {
+		if _, temParcela := ps[g]; !temParcela && g <= G {
+			faltam--
+		}
+	}
 	soma.Tokens = somaSaturada(soma.Tokens, produtoSaturado(r.Tokens, faltam))
 	soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, produtoSaturado(r.CostMicroUSD, faltam))
 	if fechado {
@@ -591,7 +607,7 @@ func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runI
 		return nil
 	}
 	return q.escreverNoPlano(ctx, principal, runID, verificar, func(mes string, reserva uint64) (quotaPayload, string) {
-		return quotaPayload{RunID: chave, Geracao: geracao, ReservaDoPlano: reserva, Entregue: true},
+		return quotaPayload{RunID: chave, Geracao: geracao, ReservaDoPlano: reserva, Entregue: true, DeFecho: !verificarQuota},
 			fmt.Sprintf("%s:delivered:%s:%d:%d", chave, mes, reserva, geracao)
 	})
 }

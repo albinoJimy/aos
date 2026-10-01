@@ -75,9 +75,11 @@ func TestAOS467OQueContaParaOTecto(t *testing.T) {
 			evReclamado(2, "p", 1, antes), evDesfechoEm(3, "p", 1, DesfechoTransitorio, antes),
 			evReclamado(4, "p", 2, antes), evDesfechoEm(5, "p", 2, DesfechoTransitorio, antes),
 		}, 3, 3},
-		{"reclamacao expirada conta", []eventstore.Event{
+		// A expirada conta por si; a seguinte NÃO conta como provisória (pode ser uma retoma de um plano
+		// que a expirada validou — cenário D da terceira revisão).
+		{"reclamacao expirada conta e a seguinte nao e provisoria", []eventstore.Event{
 			evSubmetido(1, "p", ""), evReclamado(2, "p", 1, antes),
-		}, 2, 2},
+		}, 2, 1},
 		{"re-verificacao nao conta", []eventstore.Event{
 			evSubmetido(1, "p", ""),
 			evReclamado(2, "p", 1, antes), evDesfechoEm(3, "p", 1, DesfechoAguardaHumano, antes),
@@ -337,11 +339,11 @@ func TestAOS467ContamAsQueChamaramOModelo(t *testing.T) {
 			evDesfechoDeclarado(2, "p", 1, DesfechoAguardaHumano, true, antes),
 			evDesfechoEm(3, "p", 2, DesfechoAguardaHumano, antes), // drenador anterior
 		}, 3, 1},
-		{"reclamacao expirada conta", []eventstore.Event{
+		{"reclamacao expirada conta e a seguinte nao e provisoria", []eventstore.Event{
 			evSubmetido(1, "p", ""),
 			evDesfechoDeclarado(2, "p", 1, DesfechoTransitorio, false, antes),
 			evReclamado(3, "p", 2, antes),
-		}, 3, 2},
+		}, 3, 1},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -524,5 +526,25 @@ func TestAOS467TodaAMarcadaEIsentaDeQuota(t *testing.T) {
 	}
 	if !verificarQuotaNaEntrega(pedidoNaFila{GeracoesContadas: 3}) {
 		t.Fatal("uma geracao nao marcada exige quota")
+	}
+}
+
+// TestAOS467ODrenadorQueMorreNaGeracaoQueValidouNaoFechaOPlano — o cenário D da terceira revisão: as
+// gerações 1–4 decompõem e falham; a 5 decompõe, valida, corre, e o drenador morre antes de reportar.
+// A 6 é uma retoma pelo documento; contá-la como provisória fechava um plano saudável.
+func TestAOS467ODrenadorQueMorreNaGeracaoQueValidouNaoFechaOPlano(t *testing.T) {
+	agora := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	antes := agora.Add(-2 * time.Hour)
+	ev := []eventstore.Event{evSubmetido(1, "p", "")}
+	for g := 1; g <= 4; g++ {
+		ev = append(ev, evDesfechoValidado(uint64(1+g), "p", g, DesfechoTransitorio, true, false, antes))
+	}
+	ev = append(ev, evReclamado(6, "p", 5, antes)) // morreu sem reportar
+	fila := projectarFila(ev, agora)
+	if len(fila) != 1 || fila[0].Geracao != 6 || fila[0].GeracoesContadas != 5 {
+		t.Fatalf("a 6 nao e provisoria depois de uma expirada: %+v", fila)
+	}
+	if verificar := fila[0].GeracoesContadas > 5; verificar {
+		t.Fatal("com o tecto a 5 a geracao 6 nao pode sair marcada")
 	}
 }

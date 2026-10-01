@@ -304,6 +304,14 @@ func projectarComTerminados(eventos []eventstore.Event, agora time.Time) ([]pedi
 				naoContam++
 			}
 		}
+		// A GERAÇÃO A OFERECER só conta como provisória se a anterior TEM desfecho: uma anterior que
+		// expirou sem desfecho (o drenador morreu a meio) pode ter validado o plano, e a seguinte ser
+		// uma retoma pelo documento — contá-la fechava um plano saudável (cenário D da terceira
+		// revisão). A expirada conta por si; o custo é que, depois de uma morte, um pedido pode
+		// decompor uma vez para lá do tecto antes de ser marcado.
+		if _, houve := e.desfechoDe[e.maiorGeracao]; !houve && e.maiorGeracao >= 1 {
+			naoContam++
+		}
 		for g, classe := range e.desfechoDe {
 			seguinte := g + 1
 			semModelo := classe == DesfechoAguardaHumano || e.planoValidado[g]

@@ -3385,6 +3385,16 @@ próprio, e a quantia reservada pelo AOS-466 liquida.
   `plano_validado`; as gerações reportadas a ela contam pela regra conservadora.
 - **O fixture do decompositor** (`--decompose-fixture`, não-produção) declara `chamou_modelo: false` e
   nunca conta.
+- **Depois de uma morte do drenador**, a geração seguinte não conta como provisória (pode ser uma retoma
+  de um plano que a expirada validou): um pedido pode decompor uma vez para lá do tecto antes de ser
+  marcado. A expirada conta por si.
+- **`plano_validado` também é declarado pelo drenador**, como `chamou_modelo`: cada declaração desconta
+  no máximo a geração seguinte não declarada, e a declaração da própria geração vence.
+- **Custo:** cada `POST /plans/outcome` lê o stream da fila desde o início (a marca de cada geração e a
+  quota), agora em todos os nós e não só com a quota composta — O(histórico da fila) por desfecho, e um
+  503 novo quando essa leitura falha.
+- **Um 12 atrasado** de uma marcada cuja reclamação expirou, depois de outra marcada já ter fechado,
+  é aceite também: dois avisos para o mesmo plano (o fecho da quota é idempotente) — o padrão de antes.
 - **`chamou_modelo` é declarado pelo drenador**, como o consumo do AOS-466: um drenador comprometido
   pode declarar «não chamou» e contornar o tecto.
 - **O consumo é declarado pelo drenador** (AOS-466), e o desfecho também: um drenador que não feche a
@@ -3426,6 +3436,18 @@ Sobre `33e2cd4`:
   - **Corrigido:** com a recusa acima, uma marcada só se repete por expiração, e todas ficam isentas.
 - **MÉDIO e BAIXOS.** Os transitórios antes do modelo sem tecto, as réplicas mistas e o fixture ficam
   declarados nos residuais.
+
+**Terceira passagem, sobre `b00a119`:** o ALTO residual (cenários A, A', B) e os dois MÉDIOS
+confirmados fechados.
+- **MÉDIO, reproduzido.** Cada re-entrega de uma marcada (reclamação expirada) era uma geração sem
+  parcela e custava a reserva para sempre, mesmo depois do fecho (medido: 800 de gasto final num pedido
+  a que só faltava fechar).
+  - **Corrigido:** a entrega de fecho fica marcada `de_fecho` na quota e não custa.
+- **MÉDIO, reproduzido.** Um drenador que morre na geração que validou deixava-a sem declaração, e a
+  seguinte (uma retoma) contava como provisória e saía marcada.
+  - **Corrigido:** a geração a oferecer não conta como provisória depois de uma expirada sem desfecho.
+- **BAIXOS.** O custo da leitura por desfecho, o `plano_validado` declarado pelo drenador e o 12
+  atrasado ficam declarados nos residuais.
 
 ### Estado
 **EM REVISÃO** (2026-10-01).

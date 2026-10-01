@@ -356,7 +356,7 @@ func TestAOS466UmaParcelaDeOutraReservaNaoVale(t *testing.T) {
 // satura em vez de dar a volta para negativo (e caber na quota).
 func TestAOS466AReservaDeMuitasGeracoesEmFaltaNaoDaAVolta(t *testing.T) {
 	r := quotaPayload{Tokens: math.MaxInt64 / 2}
-	c := cobrancaDoPlano(r, map[int]quotaPayload{}, 3, true)
+	c := cobrancaDoPlano(r, map[int]quotaPayload{}, 3, nil, true)
 	if c.Tokens != math.MaxInt64 {
 		t.Fatalf("tres geracoes em falta de MaxInt64/2 deviam saturar, deram %d", c.Tokens)
 	}
@@ -991,5 +991,40 @@ func TestAOS466OBannerDizOQueContaEOQueNao(t *testing.T) {
 		if !strings.Contains(b, deve) {
 			t.Fatalf("o banner nao diz %q:\n%s", deve, b)
 		}
+	}
+}
+
+// TestAOS467AsEntregasDeFechoNaoCustam — o achado MÉDIO da terceira revisão do AOS-467: cada re-entrega
+// de uma geração marcada (a reclamação expira, a geração volta) era uma geração sem parcela e custava a
+// reserva para sempre, mesmo depois do fecho. A entrega de fecho não planeia e não custa.
+func TestAOS467AsEntregasDeFechoNaoCustam(t *testing.T) {
+	ctx := context.Background()
+	q := quotaComPlaneamento(novoStore(t), 10_000, 100, 100, &relogioDeQuota{t: setembro})
+	if err := q.reservarPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarEntrega(ctx, "human:alice", "plano-1", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 1, medido(30)); err != nil {
+		t.Fatal(err)
+	}
+	// A 2, a 3 e a 4 são entregas de FECHO (marcadas) que expiraram sem desfecho; a 4 fecha com 12.
+	for g := 2; g <= 4; g++ {
+		if err := q.registarEntrega(ctx, "human:alice", "plano-1", g, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 100 {
+		t.Fatalf("antes do fecho o pedido custa max(reserva, 30): %d, esperava 100", g.Tokens)
+	}
+	if err := q.registarPlaneamento(ctx, "human:alice", "plano-1", 4, medido(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.fecharPlaneamento(ctx, "human:alice", "plano-1"); err != nil {
+		t.Fatal(err)
+	}
+	if g := gastoDe(t, q, "human:alice"); g.Tokens != 30 {
+		t.Fatalf("as entregas de fecho nao custam: gasto %d, esperava 30", g.Tokens)
 	}
 }
