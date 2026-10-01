@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -435,6 +436,27 @@ func (h *apiHandler) reclamarUm(ctx context.Context, reclamante readerIdentity) 
 		if p.Payload.Region != "" && reclamante.region != "" && p.Payload.Region != reclamante.region {
 			continue
 		}
+		// QUOTA DE PLANEAMENTO (AOS-466): a entrega fica na quota do titular ANTES da reclamação.
+		// Desde aqui a geração custa a reserva até o seu desfecho trazer a parcela — é o que cobre a
+		// geração que está a correr, e a que se perder. Se falha, não se entrega: uma geração que
+		// planeasse sem constar da quota seria planeamento de graça.
+		//
+		// Um stream de quota ILEGÍVEL é de UM titular: esse pedido fica por entregar e a reclamação
+		// segue para o próximo — sem isto, o registo estragado de um titular fechava a fila a todos.
+		// Uma quota ESGOTADA também é só dele: uma re-oferta não se entrega sem quota para mais uma
+		// geração (decisão do dono), e o pedido fica pendente até haver. Qualquer outra falha é do
+		// substrato, e é a reclamação inteira que não se faz (503).
+		if h.node.QuotaPorPrincipal != nil {
+			if err := h.node.QuotaPorPrincipal.registarEntrega(ctx, p.Payload.Principal, p.RunID, p.Geracao); errors.Is(err, ErrPrincipalQuotaUnreadable) {
+				h.logf("plan-claim: pedido %q NAO entregue — a quota do titular e ilegivel: %v", p.RunID, err)
+				continue
+			} else if errors.Is(err, ErrPrincipalQuotaExhausted) {
+				h.logf("plan-claim: pedido %q geracao %d NAO entregue — %v", p.RunID, p.Geracao, err)
+				continue
+			} else if err != nil {
+				return nil, fmt.Errorf("quota: entrega de %q geracao %d: %w", p.RunID, p.Geracao, err)
+			}
+		}
 		res, err := h.node.EventStore.Append(ctx, planRequestStream, eventstore.EventInput{
 			Type:     EventTypePlanRequestClaimed,
 			Payload:  json.RawMessage(`{"v":"` + planRequestVersao + `","by":` + comoJSON(reclamante.principal) + `}`),
@@ -467,6 +489,19 @@ type pedidoDeDesfecho struct {
 	Classe      string `json:"classe"`
 	CodigoSaida int    `json:"codigo_saida,omitempty"`
 	Detalhe     string `json:"detalhe,omitempty"`
+	// Consumo é o que o planeamento desta geração gastou no modelo, medido pelo drenador (AOS-466).
+	// Ausente — um `aos-orq` anterior — vale como NÃO MEDIDO, e a reserva de planeamento não se
+	// liberta.
+	Consumo *consumoReportado `json:"consumo,omitempty"`
+}
+
+// consumoReportado é o consumo de planeamento de uma geração, como o drenador o declara. Os
+// `..._medidos` a falso dizem «não se sabe», que não é o mesmo que zero.
+type consumoReportado struct {
+	Tokens        int64 `json:"tokens"`
+	TokensMedidos bool  `json:"tokens_medidos"`
+	CostMicroUSD  int64 `json:"cost_micro_usd"`
+	CustoMedido   bool  `json:"custo_medido"`
 }
 
 // handlePlanOutcome regista o desfecho de UMA tentativa.
@@ -532,6 +567,33 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "run_id invalido")
 		return
 	}
+	if c := req.Consumo; c != nil && (c.Tokens < 0 || c.CostMicroUSD < 0) {
+		writeError(w, http.StatusBadRequest, "consumo invalido")
+		return
+	}
+
+	// QUOTA DE PLANEAMENTO (AOS-466), em DOIS tempos à volta do desfecho.
+	//
+	// (a) A PARCELA desta geração ANTES do desfecho. Se não se grava, o desfecho também não — e o
+	// drenador vê o 503. Na ordem inversa, um desfecho gravado sem parcela deixava uma geração que
+	// gastou fora da quota; nesta, o pior é a reclamação expirar e a geração seguinte correr, e essa
+	// geração sem parcela custa a reserva inteira.
+	//
+	// (b) O FECHO só DEPOIS de o desfecho terminal estar no log. A primeira versão marcava a parcela
+	// como final ANTES do desfecho: se o desfecho falhava, a reserva estava libertada com o pedido
+	// vivo, e as gerações seguintes planeavam sem ela (achado MÉDIO-2 da revisão adversarial).
+	var plano *planeamentoDoPedido
+	if h.node.QuotaPorPrincipal != nil {
+		var err error
+		if plano, err = h.parcelaDePlaneamento(r.Context(), req); errors.Is(err, errGeracaoNaoEntregue) {
+			writeError(w, http.StatusBadRequest, "geracao nao entregue")
+			return
+		} else if err != nil {
+			h.logf("plan-claim: parcela de planeamento nao gravada run=%q geracao=%d: %v", req.RunID, req.Geracao, err)
+			writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
+			return
+		}
+	}
 
 	bruto, err := json.Marshal(desfechoPayload{
 		Versao:   planRequestVersao,
@@ -547,18 +609,67 @@ func (h *apiHandler) handlePlanOutcome(w http.ResponseWriter, r *http.Request) {
 	// Idempotente por (run_id, geração): reportar o mesmo desfecho duas vezes é a mesma
 	// escrita, e o `StatusDuplicate` cai no mesmo caminho de sucesso. Um consumidor que reporte
 	// e morra antes de ler a resposta pode repetir sem consequência.
-	if _, err := h.node.EventStore.Append(r.Context(), planRequestStream, eventstore.EventInput{
+	res, err := h.node.EventStore.Append(r.Context(), planRequestStream, eventstore.EventInput{
 		Type:     EventTypePlanRequestOutcome,
 		Payload:  bruto,
 		RunID:    planRequestRunID,
 		StepID:   prefixoDesfecho + strconv.Itoa(req.Geracao) + "-" + req.RunID,
 		Producer: eventstore.Producer{NHIID: planIngressNHI},
-	}); err != nil {
+	})
+	if err != nil {
 		h.logf("plan-claim: desfecho nao gravado run=%q geracao=%d: %v", req.RunID, req.Geracao, err)
 		writeError(w, http.StatusServiceUnavailable, "desfecho nao registado")
 		return
 	}
+	// O FECHO SÓ COM UM DESFECHO TERMINAL QUE ESTA ESCRITA GRAVOU. Um duplicado quer dizer que a
+	// geração já tinha desfecho — possivelmente outro, e não terminal: fechar pela classe do pedido
+	// repetido libertava a reserva de um pedido que o log diz vivo (achado da re-revisão).
+	if plano != nil && req.Classe == DesfechoTerminal && res.Status != eventstore.StatusDuplicate {
+		// O desfecho JÁ está no log: responder 503 aqui diria ao drenador que não está, e ele não
+		// avisaria o fim do plano. Um fecho que falha deixa a reserva inteira até ao fim do mês — a
+		// mais, nunca a menos — e fica no log do operador.
+		if err := h.node.QuotaPorPrincipal.fecharPlaneamento(r.Context(), plano.titular, req.RunID); err != nil {
+			h.logf("plan-claim: fecho do planeamento nao gravado run=%q — a reserva de planeamento fica inteira ate ao fim do mes: %v", req.RunID, err)
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// planeamentoDoPedido é o que o fecho precisa de saber sobre o pedido.
+type planeamentoDoPedido struct {
+	titular string
+}
+
+// errGeracaoNaoEntregue — o desfecho nomeia uma geração que o nó nunca entregou. Com a quota
+// composta recusa-se (400): cada geração entregue custa a reserva até ter parcela, e uma geração
+// arbitrária — 10⁹ — negaria o mês do titular (achado da re-revisão).
+var errGeracaoNaoEntregue = errors.New("geracao nao entregue")
+
+// parcelaDePlaneamento grava a parcela de planeamento de uma geração contra a quota de quem
+// SUBMETEU o pedido — o principal do `planrequest.submitted`, nunca o do drenador que reporta. Um
+// pedido que o nó não conhece, ou sem titular, não reservou nada: nil, e não se liquida nada.
+func (h *apiHandler) parcelaDePlaneamento(ctx context.Context, req pedidoDeDesfecho) (*planeamentoDoPedido, error) {
+	estado, achado, err := estadoDoPedido(ctx, h.node.EventStore, req.RunID, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if !achado || estado.titular == "" {
+		return nil, nil // sem titular não houve reserva (o `POST /plans` só reserva com principal)
+	}
+	if !slices.Contains(estado.reclamadas, req.Geracao) {
+		return nil, errGeracaoNaoEntregue
+	}
+	var c consumoDoPlaneamento
+	if req.Consumo != nil {
+		c = consumoDoPlaneamento{
+			Tokens: req.Consumo.Tokens, TokensMedidos: req.Consumo.TokensMedidos,
+			CostMicroUSD: req.Consumo.CostMicroUSD, CustoMedido: req.Consumo.CustoMedido,
+		}
+	}
+	if err := h.node.QuotaPorPrincipal.registarPlaneamento(ctx, estado.titular, req.RunID, req.Geracao, c); err != nil {
+		return nil, err
+	}
+	return &planeamentoDoPedido{titular: estado.titular}, nil
 }
 
 // truncar limita o detalhe livre que o consumidor envia. O detalhe é diagnóstico, não contrato.

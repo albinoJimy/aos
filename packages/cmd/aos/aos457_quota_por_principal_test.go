@@ -455,6 +455,7 @@ func TestAOS457O429TrazRetryAfter(t *testing.T) {
 func limparAmbienteDaQuota(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{"AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD",
+		"AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD",
 		"AOS_BUDGET_MAX_TOKENS", "AOS_BUDGET_MAX_COST_MICRO_USD"} {
 		t.Setenv(k, "")
 	}
@@ -490,6 +491,14 @@ func TestAOS457OAmbienteValidaOParFinal(t *testing.T) {
 			t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD", c.quotaCusto)
 			t.Setenv("AOS_BUDGET_MAX_TOKENS", c.run)
 			t.Setenv("AOS_BUDGET_MAX_COST_MICRO_USD", c.runCusto)
+			// A reserva de planeamento (AOS-466) é obrigatória com a quota; os seus casos estão no
+			// TestAOS466OAmbienteDaReservaDePlaneamento.
+			if c.quota != "" {
+				t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "10")
+				if c.quotaCusto != "" {
+					t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD", "10")
+				}
+			}
 			rb, err := budgetFromEnv()
 			if err != nil {
 				t.Fatalf("budgetFromEnv: %v", err)
@@ -517,6 +526,7 @@ func TestAOS457SemPrincipalVerificadoNaoArranca(t *testing.T) {
 	limparAmbienteDaQuota(t)
 	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
 	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "1000")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "10")
 	for nome, cfg := range map[string]Config{
 		"sem gate soberano": tnBaseConfig(),
 		"gate sem credencial forte": func() Config {
@@ -544,6 +554,7 @@ func TestAOS457OBootstrapCompoeEOApagamentoChegaAQuota(t *testing.T) {
 	limparAmbienteDaQuota(t)
 	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
 	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "100")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "10")
 	idp := newSovTestIDP(t)
 	node := newSovOIDCNode(t, &countingModel{}, idp)
 	q := node.QuotaPorPrincipal
@@ -856,6 +867,7 @@ func TestAOS457OArranqueAbortadoNaoPrendeNemAnuncia(t *testing.T) {
 	limparAmbienteDaQuota(t)
 	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
 	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "1000")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "10")
 	caminho := filepath.Join(t.TempDir(), "eventos.wal")
 	cfg := tnBaseConfig()
 	cfg.EventStorePath = caminho
@@ -870,6 +882,7 @@ func TestAOS457OArranqueAbortadoNaoPrendeNemAnuncia(t *testing.T) {
 		t.Fatal("o banner anunciou a quota LIGADA num arranque que a seguir abortou por causa dela")
 	}
 	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "")
 	node, err := Bootstrap(context.Background(), cfg, io.Discard)
 	if err != nil {
 		t.Fatalf("o arranque abortado deixou o Event Store em %s preso: %v", caminho, err)
@@ -885,6 +898,7 @@ func TestAOS457OBootstrapLiquidaPeloLedgerReal(t *testing.T) {
 	limparAmbienteDaQuota(t)
 	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
 	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "1000")
+	t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "10")
 	node := newSovOIDCNode(t, &countingModel{}, newSovTestIDP(t))
 	if node.QuotaPorPrincipal == nil {
 		t.Fatal("o Bootstrap nao compos a quota")

@@ -446,6 +446,11 @@ services:
       # VERIFICADO (AOS_SOVEREIGN_OIDC_*) — sem ele o no recusa arrancar.
       AOS_BUDGET_PRINCIPAL_MAX_TOKENS: "${AOS_BUDGET_PRINCIPAL_MAX_TOKENS:-}"
       AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD: "${AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD:-}"
+      # AOS-466 — RESERVA DE PLANEAMENTO por pedido de POST /plans. OBRIGATORIA com a quota acima
+      # (sem ela o no recusa arrancar), proibida sem ela; a de dolares idem com a quota em dolares.
+      # Cada desfecho liquida-a pelo consumo que o aos-orq mede. Deploy: o no antes do aos-orq.
+      AOS_BUDGET_PRINCIPAL_PLAN_TOKENS: "${AOS_BUDGET_PRINCIPAL_PLAN_TOKENS:-}"
+      AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD: "${AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD:-}"
 
       # TLS terminado A MONTANTE pelo `edge`. O nó serve em claro SÓ na rede interna
       # do compose (`expose`, nunca `ports`) — é o que honra esta declaração.

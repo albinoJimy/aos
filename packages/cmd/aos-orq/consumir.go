@@ -209,6 +209,10 @@ func cmdConsume(args []string) (err error) {
 		metricas.registarReclamacao(pedido.Geracao)
 		tratados++
 		inicio := time.Now()
+		// AOS-466: o consumo do modelo DESTA geração, declarado ao nó no desfecho — é por ele que o nó
+		// liquida a reserva de planeamento contra a quota de quem submeteu o pedido. Um por pedido,
+		// mesmo nos desfechos sem `serve`: zero chamadas é zero medido.
+		medidor := &medidorDoPlaneamento{}
 
 		// AOS-439: um submissor que o mandato não nomeia fecha JÁ — sem `serve`, sem decomposição,
 		// sem o modelo a correr com o NHI do mandato por quem o humano não autorizou.
@@ -218,7 +222,7 @@ func cmdConsume(args []string) (err error) {
 				duracao: time.Since(inicio), erro: "requerente_fora_do_mandato"}
 			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitRequerenteForaDoMandato, resumo.linha())
 			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
-				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo)); err != nil {
+				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo), medidor.consumo()); err != nil {
 				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
 					"fila quando a reclamacao expirar\n", pedido.RunID, err)
 				metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, false)
@@ -236,7 +240,7 @@ func cmdConsume(args []string) (err error) {
 		serveCorreu := erroDoServe == nil
 		if serveCorreu {
 			fmt.Printf("origem do plano: run=%s %s\n", pedido.RunID, origem.descrever())
-			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem)
+			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem, medidor)
 		}
 		codigo, classe, tipo := desfechoDoServe(erroDoServe)
 		// AOS-443: o resumo vai TAMBÉM em sucesso — antes, o `detail` só existia com erro, e
@@ -272,7 +276,7 @@ func cmdConsume(args []string) (err error) {
 		// O DESFECHO REPORTA-SE SEMPRE, mesmo quando o `serve` falhou. Não reportar deixa o
 		// pedido preso até ao TTL da reclamação — meia hora de silêncio por uma falha que já
 		// conhecemos.
-		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe); err != nil {
+		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe, medidor.consumo()); err != nil {
 			// Falhar a reportar NÃO é fatal para os pedidos seguintes: o TTL recupera este.
 			// Mas é ruidoso de propósito — um consumidor que não consegue reportar está a
 			// trabalhar às cegas.
@@ -304,7 +308,7 @@ func cmdConsume(args []string) (err error) {
 // reportadorDeDesfecho é a metade do cliente do nó que [reportarEAvisar] usa — existe para o teste
 // do AOS-445 poder provar a ORDEM (reporte, depois aviso) sem levantar um nó.
 type reportadorDeDesfecho interface {
-	ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string) error
+	ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error
 }
 
 // prefixoDoAviso abre a linha que o `drenar-planos.sh` recolhe para o outbox dos avisos (AOS-445).
@@ -329,8 +333,8 @@ func linhaDoAviso(runID string, geracao int, classe string, codigo int) string {
 // geração seguinte terá o seu desfecho — avisar já seria anunciar um fim que o nó não conhece, e
 // possivelmente dois fins para o mesmo plano. Os desfechos que não são terminais (transitório, à
 // espera de humano) não avisam: o plano ainda não acabou.
-func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string) error {
-	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe); err != nil {
+func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error {
+	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe, consumo); err != nil {
 		return err
 	}
 	if classe == "terminal" {
@@ -372,8 +376,8 @@ func (o origemDoPlano) descrever() string {
 // governada, gate de aprovação, executor de nós. Um caminho paralelo seria um segundo sítio onde
 // a governação podia divergir, que é a forma de defeito que o AOS-424 e o AOS-425 passaram a
 // série inteira a encontrar.
-func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string, origem origemDoPlano) error {
-	return cmdServe(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker, origem))
+func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string, origem origemDoPlano, medidor *medidorDoPlaneamento) error {
+	return cmdServeCom(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker, origem), medidor)
 }
 
 // desfechoDoServe traduz o retorno do `serve` no que se reporta ao nó: código, classe e o tipo do

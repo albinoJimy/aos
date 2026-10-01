@@ -3130,7 +3130,7 @@ família inexistente numa constante e um ponto no prefixo do stream avermelham-n
 - **O planeamento dos pedidos de plano não conta.** O `aos-orq` decompõe cada `POST /plans` com o
   modelo antes de submeter os runs-filho, e o `POST /plans` não consulta a quota: um principal
   esgotado continua a gastar tokens de planeamento, limitado só pelo tecto de concorrência da fila
-  (AOS-464). Eixo por abrir.
+  (AOS-464). Eixo por abrir — fechado pelo AOS-466.
 - **Reservas presas até ao fim do mês, a mais:** falha do lease depois de reservar, shutdown entre a
   reserva e a hospedagem, falha de ingestão do objectivo.
 - **Um run retomado dois meses depois da admissão** não encontra a sua reserva (só se procura no mês
@@ -3151,6 +3151,200 @@ família inexistente numa constante e um ponto no prefixo do stream avermelham-n
 
 ### Estado
 **FEITO** (2026-09-30).
+
+---
+
+## AOS-466 — O gasto de PLANEAMENTO do `POST /plans` conta na quota por principal
+
+### Contexto
+O AOS-457 fechou a despesa dos RUNS por principal e declarou um eixo por abrir: o `aos-orq` decompõe
+cada `POST /plans` com o modelo **antes** de submeter os runs-filho, e o `POST /plans` não consultava
+a quota. Um principal esgotado continuava a gastar tokens de planeamento — pagos, irreversíveis —
+limitado só pelo tecto de concorrência da fila (AOS-464). E o `aos-orq` nem media esse gasto: o
+`gatewayDecomposeModel.Complete` deitava fora o `usage` da resposta, e o tecto
+`AOS_ORQ_PLAN_BUDGET_*` (AOS-434) soma **estimativas declaradas**, não consumo real.
+
+### Objectivo
+O planeamento de um pedido conta na quota mensal do principal que o submeteu, com a mesma forma do
+AOS-457: reserva na admissão, liquidação pelo consumo real.
+
+### Decisão do dono (2026-09-30)
+| eixo | decisão | alternativas rejeitadas |
+|---|---|---|
+| **Mecanismo** | **Reservar e liquidar.** O `POST /plans` reserva uma quantia de planeamento contra a quota; o `aos-orq` mede o consumo real do modelo e reporta-o no `POST /plans/outcome`; o nó liquida. | só recusar o pedido com a quota esgotada (não conta o que se gasta); só contar depois (não trava N pedidos simultâneos) |
+| **Quantia reservada** | **Variável própria** do nó, `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS` (e `AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD` quando a quota tem dólares). **Obrigatória com a quota composta; sem ela o arranque aborta.** | reservar o tecto por-run (acopla duas grandezas diferentes); reservar o `AOS_ORQ_PLAN_BUDGET_*` (é de outro processo, e é de estimativas) |
+| **Re-planeamento ilimitado** | **Fora deste ticket** — AOS-467. | tecto de gerações aqui (alarga o escopo) |
+| **Re-oferta com a quota esgotada** (decidido depois da terceira revisão) | **Não entregar**: da geração 2 em diante, a reclamação salta o pedido enquanto a quota do mês corrente do titular não tiver lugar para mais uma reserva; o pedido fica pendente e volta a ser oferecido quando houver. Não mata o plano. | fechar o pedido com um desfecho terminal (o plano morreria); deixar para o AOS-467 (contava sem travar) |
+
+### Desenho
+- **Nó — reserva.** `plan_ingress.go`: a última coisa antes do `Append` (depois dos tectos da fila e
+  do selo do objectivo, para que nenhuma recusa deles prenda quota), com a quota
+  composta, `reservarPlaneamento(principal, run_id)` sob a chave `aos-internal/plan/<run_id>` no
+  stream da quota do principal (a mesma família de eventos, `budget.quota.reserved`: um tipo novo faria
+  o `ler()` de uma réplica antiga negar tudo durante um deploy rolante). A chave vive no espaço
+  reservado, que nenhum `run_id` pode nomear. Esgotada ⇒ **429** com `Retry-After`. Idempotente: um
+  pedido já reservado no mês corrente ou no anterior não reserva de novo.
+- **Nó — liquidação por geração.** `plan_claim.go` `handlePlanOutcome` aceita um campo opcional
+  `consumo {tokens, tokens_medidos, cost_micro_usd, custo_medido}` e grava uma **parcela** por geração
+  (`budget.quota.settled` com `geracao` e o vínculo à reserva num campo próprio — uma réplica antiga
+  não o reconhece e continua a contar a reserva inteira). O principal é o do `planrequest.submitted`
+  (`estadoDoPedido`), não o do drenador. **A parcela grava-se antes do desfecho**: se falha, o desfecho
+  também não se grava (503). **A entrega** (`entregue`) grava-se na reclamação, antes de a escrever: se
+  falha, não se entrega (503). **O fecho** (`final`) grava-se **só depois** de o desfecho terminal ficar
+  no log **por esta escrita** (um desfecho duplicado não fecha); se falha, 204 e a reserva fica inteira.
+  Com a quota composta, um desfecho de uma geração que o nó não entregou é 400. Consumo negativo é 400.
+  **Uma re-oferta (geração ≥ 2) só se entrega com quota** do mês corrente para mais uma reserva; sem
+  ela a reclamação salta o pedido (fica pendente) e segue para o próximo.
+- **Dobra.** Sobre as gerações 1..G (G = a maior entregue ou com parcela): cada geração medida custa
+  o que se mediu; uma **não medida** custa o que se mediu **mais a reserva**; uma **sem parcela**
+  (a que está a correr, ou cujo desfecho se perdeu) custa **a reserva**. Sem fecho o pedido custa
+  `max(reserva, Σ)`; com fecho, `Σ`. Campo `consumo` ausente (um `aos-orq` anterior) = não medido.
+- **`aos-orq` — medição.** Um `medidorDoPlaneamento` por pedido, atravessado de `correrPedido` até ao
+  `gatewayDecomposeModel`, soma `prompt_tokens + completion_tokens` do `usage` de cada chamada. Uma
+  chamada que falha, ou uma resposta sem `usage` (`prompt_tokens <= 0`), marca os tokens como **não
+  medidos**. O custo em dólares **nunca** é medido pelo `aos-orq` — a tabela de preços vive no nó —,
+  pelo que cada geração que chamou o modelo custa a reserva em dólares.
+
+### Critérios de aceitação
+1. Com a quota composta e sem `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS`, o nó não arranca; com ela inválida,
+   maior do que a quota, ou com dólares desalinhados, também não.
+2. Um `POST /plans` de um principal sem quota para a reserva de planeamento responde 429 com
+   `Retry-After`, e nada entra na fila.
+3. A reserva de planeamento conta contra a admissão de runs do mesmo principal, e o inverso.
+4. Um desfecho terminal com consumo medido liquida pelo consumo real e liberta o resto; um desfecho não
+   medido, ou transitório, não liberta nada; gerações somam.
+5. O `aos-orq` reporta o consumo medido do modelo de planeamento em cada desfecho.
+6. O banner da quota deixa de dizer que o planeamento não conta, e diz o que continua a não contar.
+
+### Residuais declarados
+- **A reserva não limita o gasto de uma geração.** O `aos-orq` não conhece a quantia reservada; uma
+  geração pode gastar mais (até 3 chamadas ao modelo por `serve`), e o excesso conta **depois**. O
+  travão do gasto por geração continua a ser o modelo e o `AOS_ORQ_PLAN_BUDGET_*` (estimativas).
+- **Re-planeamento sem tecto** — cada geração transitória planeia de novo, sem limite: AOS-467.
+- **O consumo é declarado pelo drenador.** Autenticado e em lista fechada (`AOS_PLAN_DRAINERS`, AOS-439),
+  mas o nó não o consegue verificar: um drenador comprometido pode declarar zero — ou um valor enorme,
+  que esgota o mês do titular (não há tecto superior ao consumo declarado).
+- **Dólares nunca medidos no planeamento** — cada geração que chamou o modelo custa a reserva em
+  dólares, mesmo que tenha custado mais.
+- **Depois de um `/dsar/erase` do titular**, o planeamento dos seus pedidos em curso deixa de contar (a
+  reserva apagou-se e as parcelas seguintes não a encontram). Nos runs a mesma falta tem o tecto por-run
+  como limite; aqui só o AOS-467 lho dará.
+- **Deploy rolante:** uma réplica anterior do nó conta cada pedido pela reserva, mesmo quando as parcelas
+  já passaram dela — pode admitir acima da quota enquanto convive com as novas.
+- **A reserva pertence ao mês do pedido.** O planeamento de um pedido que se arraste para lá do mês
+  seguinte ao do pedido não encontra reserva e não conta (a mesma regra dos runs).
+- **Reservas presas a mais:** falha do `Append` do pedido depois de reservar; re-`POST` de um pedido
+  já terminado há dois meses ou mais (o `Append` deduplica e ninguém liquida); re-`POST` do `run_id` de
+  um pedido **alheio** — quem re-submete paga a sua própria reserva, que nunca liquida (a liquidação vai
+  para o titular do pedido). Sempre a mais, e sempre na quota de quem fez o pedido que não conta.
+- **Custo:** com a quota composta, cada `POST /plans/outcome` lê o stream da fila desde o início
+  (`estadoDoPedido`) para saber o titular e as gerações entregues — O(histórico da fila); e cada
+  `POST /plans/claim` lê e escreve o stream da quota do titular (a entrega).
+- **Uma quota ilegível ou esgotada fecha a fila desse titular** (e só dele): os seus pedidos não se
+  entregam e a reclamação segue para os dos outros. Mas esses pedidos continuam pendentes — contam para
+  o tecto global da fila (`planMaxPending`), seguram a marca de água da projecção (o custo dela cresce
+  para todos) e cada reclamação volta a verificá-los. Uma falha do substrato no stream de um titular
+  fecha a reclamação inteira (503), e repete-se enquanto o pedido dele estiver à cabeça da fila.
+- **A re-verificação de um plano à espera de humano também espera por quota** (é uma geração nova). E,
+  com um `aos-orq` anterior a este ticket, cada re-verificação (de 10 em 10 minutos) chega sem consumo e
+  custa a reserva — um humano que demore esgota o mês do titular, e a partir daí as re-verificações
+  param até à reposição. Com o `aos-orq` novo custam zero.
+- **Um pedido com o objectivo ilegível** (custódia partida) é re-reclamado a cada TTL da reclamação sem
+  desfecho, e cada entrega custa a reserva — a mais, só ao titular afectado, e limitado pela decisão de
+  não entregar sem quota.
+- **Pedidos submetidos antes da quota** (ou por uma réplica anterior) não têm reserva: o seu
+  planeamento não conta, e o nó não recusa reclamá-los.
+- **Ordem de deploy: o nó primeiro.** Um `aos-orq` anterior não envia `consumo` — a reserva fica
+  inteira. Uma réplica anterior do nó não reserva o planeamento.
+
+### Revisão adversarial independente (2026-09-30)
+Sobre o commit `ea0270f`. Dois achados MÉDIOS, **os dois reproduzidos e os dois contagens a menos**, e
+os dois corrigidos:
+- **MÉDIO-1:** a dobra cobrava `max(reserva, Σ)` a qualquer geração não medida — com Σ já acima da
+  reserva, uma geração não medida somava zero, e cinco gerações de um `aos-orq` anterior custavam uma
+  reserva no total. Corrigido: não medida custa o medido **mais** a reserva; sem parcela, a reserva.
+- **MÉDIO-2:** a parcela marcada final gravava-se **antes** do desfecho; se o desfecho falhava, a reserva
+  estava libertada com o pedido vivo, e as gerações seguintes planeavam sem ela. Corrigido: o fecho é
+  um evento próprio, escrito **depois** do desfecho terminal, e a lacuna do meio conta mesmo sem fecho.
+- BAIXOS: a frase «dólares sempre pela reserva» era falsa com zero chamadas (corrigida); o medidor
+  ignorava o `total_tokens` (passa a usar o maior); apagamento DSAR, deploy rolante e consumo declarado
+  sem tecto superior ficam nos residuais.
+
+**Re-revisão sobre `8340bda`:** os dois MÉDIOS confirmados fechados (repros: 600/500; 100 e depois 115).
+Um MÉDIO novo, reproduzido, e corrigido: **sem fecho, a geração em curso não tinha reserva** assim que a
+soma medida passava a reserva — G só se conhecia pelas parcelas, e a geração a correr não tem parcela.
+Corrigido na raiz: o nó grava a **entrega** de cada geração na quota, na reclamação e antes dela; a
+geração entregue custa a reserva até a sua parcela chegar. Isto fecha também o BAIXO de uma reclamação
+que escapava ao fecho numa corrida. BAIXOS corrigidos: um desfecho **duplicado** com outra classe
+fechava a quota de um pedido vivo (agora só fecha o desfecho que esta escrita gravou); uma geração
+**nunca entregue** (10⁹) negava o mês do titular (agora 400). O BAIXO sobre réplicas `ea0270f` não se
+aplica: esse commit nunca saiu do ramo.
+
+**Terceira passagem sobre `9c55e2c`:** os quatro achados anteriores confirmados fechados (três
+reproduzidos pela rota). Um MÉDIO, reproduzido: **um principal esgotado continuava a receber gerações
+novas** — contava, mas não travava. É decisão de produto, e o dono decidiu **não entregar** (tabela de
+decisões acima); implementado e provado pela rota (a re-oferta fica pendente, outro titular é servido,
+e a geração volta a entregar-se quando a quota repõe). Os BAIXOS contam a mais e ficam declarados nos
+residuais.
+
+### Validação
+- Testes: `packages/cmd/aos/aos466_quota_de_planeamento_test.go` (ambiente, partilha com os runs,
+  dobra por geração, dólares, corrida com o apagamento, réplica anterior, as duas rotas) e
+  `packages/cmd/aos-orq/aos466_consumo_do_planeamento_test.go` — incluindo **o binário real** a drenar um
+  pedido com o **gateway vivo** contra um upstream falso que cobra 10+5 tokens: o desfecho que chega ao
+  nó declara exactamente 15 medidos; o controlo com o fixture declara 0 medido.
+- **Mutações, duas baterias.** A primeira (sobre `ea0270f`): 49 aplicadas, 47 mortas. A segunda (sobre a
+  dobra, o fecho e o handler reescritos depois da revisão): 22 aplicadas, 20 mortas — e uma guarda que
+  a mutação mostrou ser código morto saiu. A terceira (sobre as entregas, a validação da geração e o
+  fecho só com escrita nova, depois da re-revisão): 19 aplicadas, 18 mortas; a sobrevivente (o
+  apagamento não limpar as entregas) é equivalente pelo filtro do vínculo à reserva, que outra mata. A
+  verificação da quota na entrega (decisão do dono): 6 aplicadas, 6 mortas. Sobrevivem, declaradas: (a) o apagamento não limpar as
+  parcelas nem os fechos, e o handler não recusar um titular vazio, são EQUIVALENTES — o filtro pelo
+  vínculo à reserva e a guarda de principal vazio do `escreverNoPlano`, que outras mutações provam, já
+  os cobrem; (b) a recusa por mandato do `consume` declarar «não medido» em vez de «zero medido» — falha
+  para o lado seguro e matá-la exigia um ponta-a-ponta com mandato.
+- Gates: `build`, `lint`, `layer-lint`, `secrets`, `sast`, `rtm`, `ref-lint`, `event-catalog` verdes;
+  suites `-race` dos dois módulos verdes; smoke do `run-aos` 10/10.
+
+### Estado
+**FEITO** (2026-09-30), com os residuais acima. Três passagens de revisão adversarial independente; a
+última não encontrou contagem a menos, e a lacuna que apontou foi decidida pelo dono e implementada.
+
+---
+
+## AOS-467 — Tecto de gerações de planeamento por pedido
+
+### Contexto
+Um pedido de plano cujo `serve` falha com classe **transitória** volta à fila e é re-planeado na
+geração seguinte, sem limite (AOS-442). Cada geração chama o modelo de novo. Com o AOS-466 o gasto
+conta na quota do principal, mas continua ilimitado em número de gerações: um pedido que falhe sempre
+depois de planear gasta até a quota do principal acabar.
+
+### Objectivo
+Um tecto declarado de gerações por pedido, a partir do qual o pedido passa a terminal com um código
+próprio, e a quantia reservada pelo AOS-466 liquida.
+
+### Estado
+**POR DECIDIR** — o valor do tecto e se é do nó ou do `aos-orq` são decisão do dono.
+
+---
+
+## AOS-468 — `TestAOS456ARunFilhoEImputadoAQuemPediuOPlano` depende do relógio
+
+### Contexto
+Encontrado durante o AOS-466, fora do seu escopo. O CONTROLO (2) do teste espera que o segundo
+run-filho de alice bata no tecto por-chamador (1), mas o primeiro run-filho dela (`MaxTurns: 1` sobre
+o `countingModel`) corre a sério em paralelo e pode **terminar antes** do controlo, libertando o
+lugar — o controlo vê `nil` e o teste falha. Medido sob contenção (duas corridas concorrentes de
+`-count=300 -race`): **10/300 falhas na base 8538ca2**, 20/300 na árvore do AOS-466; 1 falha numa
+corrida da suite completa do módulo. O caminho do tecto por-chamador não é tocado pelo AOS-466.
+
+### Objectivo
+O primeiro run-filho fica em curso durante o teste inteiro (um modelo que bloqueia até o teste o
+soltar), para o controlo medir o tecto e não a velocidade do run.
+
+### Estado
+**POR FAZER.**
 
 ---
 

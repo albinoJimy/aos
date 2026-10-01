@@ -531,13 +531,17 @@ func (c *nodeClient) ReclamarPedido(ctx context.Context) (pedidoReclamado, bool,
 //
 // É o que distingue «volta à fila já» de «não volta nunca». Sem isto o pedido fica preso até a
 // reclamação expirar — meia hora de silêncio por uma falha conhecida no primeiro segundo.
-func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string) error {
+//
+// O `consumo` é o que o planeamento desta geração gastou no modelo (AOS-466): o nó liquida por ele
+// a reserva de planeamento do submissor. Um nó anterior ao AOS-466 ignora o campo.
+func (c *nodeClient) ReportarDesfecho(ctx context.Context, runID string, geracao int, classe string, codigo int, detalhe string, consumo consumoDoPlaneamento) error {
 	corpo, err := json.Marshal(map[string]any{
 		"run_id":       runID,
 		"generation":   geracao,
 		"classe":       classe,
 		"codigo_saida": codigo,
 		"detalhe":      detalhe,
+		"consumo":      consumo,
 	})
 	if err != nil {
 		return err

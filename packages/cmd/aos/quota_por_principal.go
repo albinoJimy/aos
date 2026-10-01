@@ -44,6 +44,15 @@ package main
 // ([ErrPrincipalQuotaUnverified]) — ao contrário do AOS-464, que não compõe e declara, porque lá
 // ficava um tecto global e aqui não fica nada: uma quota anunciada e não composta deixaria o
 // operador a julgar que a despesa tem tecto.
+//
+// O PLANEAMENTO TAMBÉM CONTA (AOS-466). O `aos-orq` decompõe cada pedido de `POST /plans` com o
+// modelo antes de submeter os runs-filho. O pedido reserva `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS` (e
+// `..._COST_MICRO_USD`) sob a chave `aos-internal/plan/<run_id>`, no mesmo stream e com os mesmos
+// tipos de evento — um tipo novo faria o `ler()` de uma réplica anterior negar tudo num deploy
+// rolante. Cada reclamação grava a ENTREGA da geração (`entregue`) antes de a entregar; cada
+// desfecho grava uma PARCELA (`geracao`) com o consumo que o drenador mediu; o desfecho terminal,
+// DEPOIS de gravado, grava o FECHO (`final`). Ver [cobrancaDoPlano] para o que cada geração custa e
+// quando a reserva se liberta.
 
 import (
 	"context"
@@ -118,6 +127,30 @@ type quotaPayload struct {
 	// Reserva é o `seq` da reserva que uma liquidação liquida. Uma liquidação de uma reserva
 	// anterior a um apagamento não pode valer para a reserva nova do mesmo run.
 	Reserva uint64 `json:"reserva,omitempty"`
+
+	// PARCELA DE PLANEAMENTO (AOS-466). Uma liquidação com Geracao > 0 é o consumo de UMA geração
+	// de planeamento de um pedido de `POST /plans`, e soma-se às outras em vez de as substituir.
+	//
+	// O VÍNCULO À RESERVA VIVE NOUTRO CAMPO, de propósito: com `Reserva` a zero, uma réplica
+	// anterior a este ticket não reconhece a parcela como liquidação da reserva (compara `Reserva`
+	// com o seq) e continua a contar a reserva inteira — o lado seguro num deploy rolante. Se a
+	// parcela usasse `Reserva`, a réplica antiga lê-la-ia como a liquidação final e contaria só a
+	// ÚLTIMA geração.
+	Geracao        int    `json:"geracao,omitempty"`
+	ReservaDoPlano uint64 `json:"reserva_do_plano,omitempty"`
+	// TokensNaoMedidos / CustoNaoMedido: o consumo desta geração não se conhece por inteiro nessa
+	// dimensão (o drenador não o mediu, ou uma chamada falhou). Custa o que se mediu MAIS a reserva.
+	TokensNaoMedidos bool `json:"tokens_nao_medidos,omitempty"`
+	CustoNaoMedido   bool `json:"custo_nao_medido,omitempty"`
+
+	// Entregue marca a ENTREGA da geração `Geracao` a um drenador, escrita pelo nó na reclamação,
+	// ANTES de o drenador a receber. É por ela que a quota conhece a geração em curso — e a que se
+	// perdeu — sem depender de uma parcela que pode nunca chegar (achado MÉDIO da re-revisão).
+	Entregue bool `json:"entregue,omitempty"`
+	// Final marca o FECHO do pedido: um evento próprio, escrito só DEPOIS de o desfecho terminal
+	// ficar no log (revisão do AOS-466: escrito antes, uma falha do desfecho deixava a reserva
+	// libertada com o pedido ainda vivo).
+	Final bool `json:"final,omitempty"`
 }
 
 // quotaPorPrincipal é a quota composta. nil ⇒ desligada.
@@ -125,9 +158,11 @@ type quotaPorPrincipal struct {
 	es      eventstore.EventStore
 	limite  budget.Amount // CostMicroUSD = integration.UnlimitedCostMicroUSD sem tecto em $
 	reserva budget.Amount // o tecto por-run, reservado por admissão
-	consumo integration.ConsumoDuravel
-	agora   func() time.Time
-	log     func(string, ...any)
+	// reservaDoPlano é a quantia reservada por pedido de `POST /plans` (AOS-466).
+	reservaDoPlano budget.Amount
+	consumo        integration.ConsumoDuravel
+	agora          func() time.Time
+	log            func(string, ...any)
 	// porPrincipal serializa as operações de CADA principal neste processo (entre réplicas, o
 	// `WithExpectedSeq` no stream dele). Um mutex único para o nó serializava a admissão de todos
 	// os principais atrás do I/O de um — achado BAIXO da revisão.
@@ -198,20 +233,98 @@ func quotaStreamDe(principal, mes string) string {
 type estadoDaQuota struct {
 	reservas   map[string]quotaPayload // por run; Reserva = o seq do evento de reserva
 	liquidadas map[string]quotaPayload // por run; Reserva = o seq da reserva liquidada
-	ultimoSeq  uint64
+	// parcelas são as liquidações de planeamento (AOS-466), por chave e por geração; entregas, as
+	// gerações que o nó entregou; fechos, a marca de pedido terminado, por chave.
+	parcelas  map[string]map[int]quotaPayload
+	entregas  map[string]map[int]quotaPayload
+	fechos    map[string]quotaPayload
+	ultimoSeq uint64
 }
 
-// gasto soma, por run, a liquidação quando existe e a reserva quando não.
+// gasto soma, por chave, o que cada reserva custa: a liquidação quando existe, as parcelas de
+// planeamento quando as há, e a reserva quando não.
 func (e estadoDaQuota) gasto() budget.Amount {
 	var g budget.Amount
-	for run, r := range e.reservas {
-		if l, ok := e.liquidadas[run]; ok && l.Reserva == r.Reserva {
+	for chave, r := range e.reservas {
+		if ps, entregue, fechado := e.planoDe(chave, r.Reserva); len(ps) > 0 || entregue > 0 || fechado {
+			r = cobrancaDoPlano(r, ps, entregue, fechado)
+		} else if l, ok := e.liquidadas[chave]; ok && l.Reserva == r.Reserva {
 			r = l
 		}
 		g.Tokens = somaSaturada(g.Tokens, r.Tokens)
 		g.CostMicroUSD = somaSaturada(g.CostMicroUSD, r.CostMicroUSD)
 	}
 	return g
+}
+
+// planoDe devolve, da chave de um pedido e para a reserva com esse seq: as parcelas por geração, a
+// maior geração entregue, e se o pedido tem fecho. O que pertence a uma reserva anterior a um
+// apagamento não vale para a reserva nova.
+func (e estadoDaQuota) planoDe(chave string, reserva uint64) (ps map[int]quotaPayload, entregue int, fechado bool) {
+	ps = map[int]quotaPayload{}
+	for g, p := range e.parcelas[chave] {
+		if p.ReservaDoPlano == reserva {
+			ps[g] = p
+		}
+	}
+	for g, p := range e.entregas[chave] {
+		if p.ReservaDoPlano == reserva {
+			entregue = max(entregue, g)
+		}
+	}
+	f, ok := e.fechos[chave]
+	return ps, entregue, ok && f.ReservaDoPlano == reserva
+}
+
+// cobrancaDoPlano é o que um pedido de plano custa à quota, dadas a reserva, as parcelas, a maior
+// geração entregue e o fecho.
+//
+// A SOMA percorre as gerações 1..G, onde G é a maior que se conhece — entregue pelo nó, ou com
+// parcela. Cada geração custa o que se mediu; uma geração NÃO MEDIDA custa o que se mediu MAIS a
+// reserva; uma geração SEM PARCELA — a que está a correr, ou uma cujo desfecho se perdeu — custa a
+// reserva. A reserva é a única estimativa por geração que o nó tem.
+//
+// DUAS REVISÕES ADVERSARIAIS mediram versões anteriores a contar a MENOS: `max(reserva, Σ)` para uma
+// geração não medida somava zero com Σ acima da reserva; e, sem as entregas, a geração em curso só
+// entrava em G quando a sua parcela chegasse — com Σ acima da reserva, corria sem reserva nenhuma.
+//
+// Antes da primeira entrega o pedido custa a reserva. Sem fecho custa o MAIOR entre a reserva e a
+// soma; com fecho custa a SOMA — liberta o que sobra.
+func cobrancaDoPlano(r quotaPayload, ps map[int]quotaPayload, entregue int, fechado bool) quotaPayload {
+	G := entregue
+	for g := range ps {
+		G = max(G, g)
+	}
+	// Todas as parcelas estão em 1..G: G é pelo menos o máximo delas, e o `ler` só guarda gerações >= 1.
+	var soma quotaPayload
+	for _, p := range ps {
+		soma.Tokens = somaSaturada(soma.Tokens, p.Tokens)
+		soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, p.CostMicroUSD)
+		if p.TokensNaoMedidos {
+			soma.Tokens = somaSaturada(soma.Tokens, r.Tokens)
+		}
+		if p.CustoNaoMedido {
+			soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, r.CostMicroUSD)
+		}
+	}
+	faltam := int64(G) - int64(len(ps))
+	soma.Tokens = somaSaturada(soma.Tokens, produtoSaturado(r.Tokens, faltam))
+	soma.CostMicroUSD = somaSaturada(soma.CostMicroUSD, produtoSaturado(r.CostMicroUSD, faltam))
+	if fechado {
+		return soma
+	}
+	return quotaPayload{Tokens: max(r.Tokens, soma.Tokens), CostMicroUSD: max(r.CostMicroUSD, soma.CostMicroUSD)}
+}
+
+// produtoSaturado multiplica sem dar a volta: a reserva de n gerações em falta.
+func produtoSaturado(a, n int64) int64 {
+	if a <= 0 || n <= 0 {
+		return 0
+	}
+	if a > math.MaxInt64/n {
+		return math.MaxInt64
+	}
+	return a * n
 }
 
 // somaSaturada evita que um gasto enorme dê a volta para negativo e passe a caber na quota.
@@ -223,7 +336,7 @@ func somaSaturada(a, b int64) int64 {
 }
 
 func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuota, error) {
-	st := estadoDaQuota{reservas: map[string]quotaPayload{}, liquidadas: map[string]quotaPayload{}}
+	st := estadoDaQuota{reservas: map[string]quotaPayload{}, liquidadas: map[string]quotaPayload{}, parcelas: map[string]map[int]quotaPayload{}, entregas: map[string]map[int]quotaPayload{}, fechos: map[string]quotaPayload{}}
 	evs, err := q.es.Read(ctx, stream, 1)
 	if errors.Is(err, eventstore.ErrStreamNotFound) {
 		return st, nil
@@ -237,6 +350,9 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 		case EventTypeQuotaErased:
 			st.reservas = map[string]quotaPayload{}
 			st.liquidadas = map[string]quotaPayload{}
+			st.parcelas = map[string]map[int]quotaPayload{}
+			st.entregas = map[string]map[int]quotaPayload{}
+			st.fechos = map[string]quotaPayload{}
 			continue
 		case EventTypeQuotaReserved, EventTypeQuotaSettled:
 		default:
@@ -246,10 +362,23 @@ func (q *quotaPorPrincipal) ler(ctx context.Context, stream string) (estadoDaQuo
 		if err := json.Unmarshal(ev.Payload, &p); err != nil || p.RunID == "" {
 			return st, fmt.Errorf("%w: evento %d do stream %q", ErrPrincipalQuotaUnreadable, ev.Seq, stream)
 		}
-		if ev.Type == EventTypeQuotaReserved {
+		switch {
+		case ev.Type == EventTypeQuotaReserved:
 			p.Reserva = ev.Seq
 			st.reservas[p.RunID] = p
-		} else {
+		case p.Final:
+			st.fechos[p.RunID] = p
+		case p.Entregue && p.Geracao > 0:
+			if st.entregas[p.RunID] == nil {
+				st.entregas[p.RunID] = map[int]quotaPayload{}
+			}
+			st.entregas[p.RunID][p.Geracao] = p
+		case p.Geracao > 0:
+			if st.parcelas[p.RunID] == nil {
+				st.parcelas[p.RunID] = map[int]quotaPayload{}
+			}
+			st.parcelas[p.RunID][p.Geracao] = p
+		default:
 			st.liquidadas[p.RunID] = p
 		}
 	}
@@ -265,6 +394,26 @@ func (q *quotaPorPrincipal) excede(gasto, mais budget.Amount) bool {
 // reservar reserva o tecto por-run de runID contra a quota do principal, no mês corrente.
 // Idempotente por run: um run já reservado neste mês passa sem nova reserva.
 func (q *quotaPorPrincipal) reservar(ctx context.Context, principal, runID string) error {
+	return q.reservarQuantia(ctx, principal, runID, q.reserva, false)
+}
+
+// chaveDoPlano é a chave sob a qual o planeamento de um pedido de `POST /plans` reserva (AOS-466).
+// Vive no espaço reservado (AOS-417), que o `POST /runs` e o `POST /plans` recusam como `run_id`:
+// nenhum run pode ter a mesma chave que o planeamento de um pedido.
+func chaveDoPlano(runID string) string { return streamsReservados + "plan/" + runID }
+
+// reservarPlaneamento reserva a quantia de planeamento de um pedido de `POST /plans` (AOS-466).
+//
+// Idempotente no mês corrente E no anterior: um re-`POST` do mesmo pedido no mês seguinte não
+// reserva de novo — o `Append` do pedido deduplica, ninguém voltaria a planear, e a reserva nova
+// ficaria presa até ao fim do mês.
+func (q *quotaPorPrincipal) reservarPlaneamento(ctx context.Context, principal, runID string) error {
+	return q.reservarQuantia(ctx, principal, chaveDoPlano(runID), q.reservaDoPlano, true)
+}
+
+// reservarQuantia reserva `quantia` sob `chave` contra a quota do principal, no mês corrente.
+// Idempotente por chave no mês corrente e, com `tambemMesAnterior`, no anterior.
+func (q *quotaPorPrincipal) reservarQuantia(ctx context.Context, principal, chave string, quantia budget.Amount, tambemMesAnterior bool) error {
 	if principal == "" {
 		return ErrPrincipalQuotaNoPrincipal
 	}
@@ -272,7 +421,16 @@ func (q *quotaPorPrincipal) reservar(ctx context.Context, principal, runID strin
 	agora := q.agora()
 	mes := mesUTC(agora)
 	stream := quotaStreamDe(principal, mes)
-	payload, err := json.Marshal(quotaPayload{RunID: runID, Tokens: q.reserva.Tokens, CostMicroUSD: q.reserva.CostMicroUSD})
+	if tambemMesAnterior {
+		anterior, err := q.ler(ctx, quotaStreamDe(principal, mesAnteriorUTC(agora)))
+		if err != nil {
+			return err
+		}
+		if _, ja := anterior.reservas[chave]; ja {
+			return nil
+		}
+	}
+	payload, err := json.Marshal(quotaPayload{RunID: chave, Tokens: quantia.Tokens, CostMicroUSD: quantia.CostMicroUSD})
 	if err != nil {
 		return err
 	}
@@ -281,12 +439,12 @@ func (q *quotaPorPrincipal) reservar(ctx context.Context, principal, runID strin
 		if err != nil {
 			return err
 		}
-		if _, ja := st.reservas[runID]; ja {
+		if _, ja := st.reservas[chave]; ja {
 			return nil
 		}
-		if gasto := st.gasto(); q.excede(gasto, q.reserva) {
+		if gasto := st.gasto(); q.excede(gasto, quantia) {
 			repoe := proximoMesUTC(agora)
-			return &quotaEsgotadaError{gasto: gasto, limite: q.limite, reserva: q.reserva, repoe: repoe, faltam: repoe.Sub(agora)}
+			return &quotaEsgotadaError{gasto: gasto, limite: q.limite, reserva: quantia, repoe: repoe, faltam: repoe.Sub(agora)}
 		}
 		_, err = q.es.Append(ctx, stream, eventstore.EventInput{
 			Type:    EventTypeQuotaReserved,
@@ -295,7 +453,7 @@ func (q *quotaPorPrincipal) reservar(ctx context.Context, principal, runID strin
 			// O seq em que a reserva vai ser escrita torna o StepID único: depois de um apagamento, a
 			// reserva nova do mesmo run não pode ser deduplicada contra a antiga — seria admitida sem
 			// reserva nenhuma (medido pela revisão).
-			StepID:   fmt.Sprintf("%s:reserved:%s:%d", runID, mes, st.ultimoSeq+1),
+			StepID:   fmt.Sprintf("%s:reserved:%s:%d", chave, mes, st.ultimoSeq+1),
 			Producer: eventstore.Producer{NHIID: quotaNHI},
 		}, eventstore.WithExpectedSeq(st.ultimoSeq))
 		// Outra réplica escreveu no stream entretanto: relê e decide de novo. O store em memória
@@ -359,6 +517,134 @@ func (q *quotaPorPrincipal) liquidar(ctx context.Context, principal, runID strin
 	}
 }
 
+// consumoDoPlaneamento é o que o drenador declara ter gasto numa geração de planeamento (AOS-466).
+// Os `...Medido` a falso dizem «não se sabe», que é diferente de «zero».
+type consumoDoPlaneamento struct {
+	Tokens        int64
+	TokensMedidos bool
+	CostMicroUSD  int64
+	CustoMedido   bool
+}
+
+// registarPlaneamento grava a parcela de UMA geração de planeamento do pedido runID, contra a
+// reserva de planeamento no mês corrente ou no anterior (AOS-466). Sem reserva em nenhum dos dois
+// não faz nada: o pedido entrou antes de a quota existir, ou a reserva já saiu da janela.
+//
+// Idempotente por (chave, reserva, geração) — pela idempotency-key do `Append`: a repetição de um
+// desfecho, mesmo com outro consumo, não escreve uma segunda parcela. Devolve o erro de escrita: o
+// desfecho não se regista sem a parcela, para que uma geração nunca fique contada no pedido e
+// ausente da quota.
+func (q *quotaPorPrincipal) registarPlaneamento(ctx context.Context, principal, runID string, geracao int, c consumoDoPlaneamento) error {
+	if geracao < 1 {
+		return nil
+	}
+	return q.escreverNoPlano(ctx, principal, runID, nil, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{
+			RunID:            chaveDoPlano(runID),
+			Tokens:           max(c.Tokens, 0),
+			CostMicroUSD:     max(c.CostMicroUSD, 0),
+			Geracao:          geracao,
+			ReservaDoPlano:   reserva,
+			TokensNaoMedidos: !c.TokensMedidos,
+			CustoNaoMedido:   !c.CustoMedido,
+		}, fmt.Sprintf("%s:settled:%s:%d:%d", chaveDoPlano(runID), mes, reserva, geracao)
+	})
+}
+
+// registarEntrega grava que o nó ENTREGOU a geração `geracao` do pedido runID a um drenador. Chama-a
+// a reclamação, ANTES de a escrever: se falha, a reclamação também não se faz. Idempotente por
+// (chave, reserva, geração).
+//
+// UMA GERAÇÃO NOVA SÓ SE ENTREGA COM QUOTA PARA ELA (decisão do dono, depois da terceira revisão).
+// A geração 1 já está coberta pela reserva do `POST /plans`; a partir da 2 — uma re-oferta — a
+// entrega exige que a quota do mês CORRENTE do titular tenha lugar para mais uma reserva. Sem isso
+// devolve um [quotaEsgotadaError], e a reclamação salta o pedido, que fica pendente até haver quota.
+// Contar sem travar deixava um principal esgotado continuar a planear, que é o que o ticket fecha.
+// A repetição de uma entrega já feita (a reclamação falhou depois dela) passa sem verificar.
+func (q *quotaPorPrincipal) registarEntrega(ctx context.Context, principal, runID string, geracao int) error {
+	if geracao < 1 {
+		return nil
+	}
+	chave := chaveDoPlano(runID)
+	verificar := func(st estadoDaQuota, mes string, reserva uint64) error {
+		if geracao < 2 {
+			return nil
+		}
+		if e, ja := st.entregas[chave][geracao]; ja && e.ReservaDoPlano == reserva {
+			return nil
+		}
+		agora := q.agora()
+		corrente := st
+		if mes != mesUTC(agora) {
+			var err error
+			if corrente, err = q.ler(ctx, quotaStreamDe(principal, mesUTC(agora))); err != nil {
+				return err
+			}
+		}
+		if gasto := corrente.gasto(); q.excede(gasto, q.reservaDoPlano) {
+			repoe := proximoMesUTC(agora)
+			return &quotaEsgotadaError{gasto: gasto, limite: q.limite, reserva: q.reservaDoPlano, repoe: repoe, faltam: repoe.Sub(agora)}
+		}
+		return nil
+	}
+	return q.escreverNoPlano(ctx, principal, runID, verificar, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{RunID: chave, Geracao: geracao, ReservaDoPlano: reserva, Entregue: true},
+			fmt.Sprintf("%s:delivered:%s:%d:%d", chave, mes, reserva, geracao)
+	})
+}
+
+// fecharPlaneamento grava o FECHO do pedido runID: a partir dele a reserva liberta o que as parcelas
+// não gastaram. Só se chama DEPOIS de o desfecho terminal ficar no log — é isso que garante que não
+// há gerações depois dele.
+func (q *quotaPorPrincipal) fecharPlaneamento(ctx context.Context, principal, runID string) error {
+	return q.escreverNoPlano(ctx, principal, runID, nil, func(mes string, reserva uint64) (quotaPayload, string) {
+		return quotaPayload{RunID: chaveDoPlano(runID), ReservaDoPlano: reserva, Final: true},
+			fmt.Sprintf("%s:closed:%s:%d", chaveDoPlano(runID), mes, reserva)
+	})
+}
+
+// escreverNoPlano procura a reserva de planeamento de runID no mês corrente ou no anterior e grava
+// nesse stream o evento que `evento` constrói. Sem reserva, nada. `verificar`, quando não é nil,
+// corre sob o mesmo lock, sobre o estado desse stream, e um erro dele impede a escrita.
+func (q *quotaPorPrincipal) escreverNoPlano(ctx context.Context, principal, runID string, verificar func(st estadoDaQuota, mes string, reserva uint64) error, evento func(mes string, reserva uint64) (quotaPayload, string)) error {
+	if q == nil || principal == "" {
+		return nil
+	}
+	defer q.bloquear(principal)()
+	chave := chaveDoPlano(runID)
+	agora := q.agora()
+	for _, mes := range []string{mesUTC(agora), mesAnteriorUTC(agora)} {
+		stream := quotaStreamDe(principal, mes)
+		st, err := q.ler(ctx, stream)
+		if err != nil {
+			return err
+		}
+		r, reservado := st.reservas[chave]
+		if !reservado {
+			continue
+		}
+		if verificar != nil {
+			if err := verificar(st, mes, r.Reserva); err != nil {
+				return err
+			}
+		}
+		p, stepID := evento(mes, r.Reserva)
+		payload, err := json.Marshal(p)
+		if err != nil {
+			return err
+		}
+		_, err = q.es.Append(ctx, stream, eventstore.EventInput{
+			Type:     EventTypeQuotaSettled,
+			Payload:  payload,
+			RunID:    quotaRunID,
+			StepID:   stepID,
+			Producer: eventstore.Producer{NHIID: quotaNHI},
+		})
+		return err
+	}
+	return nil
+}
+
 func (q *quotaPorPrincipal) logf(format string, args ...any) {
 	if q.log != nil {
 		q.log(format, args...)
@@ -393,7 +679,7 @@ type quotaEsgotadaError struct {
 }
 
 func (e *quotaEsgotadaError) Error() string {
-	return fmt.Sprintf("%v: gasto %d tokens / %d micro-USD, reserva por run %d tokens / %d micro-USD, quota %d tokens / %d micro-USD; repoe em %s",
+	return fmt.Sprintf("%v: gasto %d tokens / %d micro-USD, reserva pedida %d tokens / %d micro-USD, quota %d tokens / %d micro-USD; repoe em %s",
 		ErrPrincipalQuotaExhausted, e.gasto.Tokens, e.gasto.CostMicroUSD, e.reserva.Tokens, e.reserva.CostMicroUSD,
 		e.limite.Tokens, e.limite.CostMicroUSD, e.repoe.Format(time.RFC3339))
 }
@@ -413,6 +699,11 @@ var (
 	// ErrPrincipalQuotaBelowRunBudget — o tecto por-run é maior do que a quota numa das dimensões:
 	// nenhuma reserva caberia, e o nó recusaria todos os runs. Validado sobre o PAR final.
 	ErrPrincipalQuotaBelowRunBudget = errors.New("aos: a quota por principal e MENOR do que o tecto por-run — nenhum run caberia na quota e todos seriam recusados. A quota tem de ser >= AOS_BUDGET_MAX_TOKENS (e >= AOS_BUDGET_MAX_COST_MICRO_USD em dolares)")
+	// ErrBadPrincipalPlanQuota — a reserva de planeamento (AOS-466) falta ou é inválida.
+	// AOS_BUDGET_PRINCIPAL_PLAN_TOKENS é OBRIGATÓRIA com a quota composta (decisão do dono): sem ela
+	// o planeamento dos pedidos de `POST /plans` não teria o que reservar. Definida SEM a quota
+	// também aborta — seria uma variável inerte, anunciada na config e sem efeito.
+	ErrBadPrincipalPlanQuota = errors.New("aos: reserva de planeamento da quota por principal mal configurada (AOS-466) — com AOS_BUDGET_PRINCIPAL_MAX_TOKENS definida, AOS_BUDGET_PRINCIPAL_PLAN_TOKENS e OBRIGATORIA: um inteiro > 0 e <= a quota (tokens reservados por cada pedido de POST /plans, liquidados pelo consumo real do planeamento); com AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD definida, AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD tambem, > 0 e <= a quota em dolares. Nenhuma das duas se define sem a quota correspondente")
 	// ErrPrincipalQuotaUnverified — a quota está configurada e o principal dos runs não vem de
 	// credencial forte verificada. Ver o cabeçalho do ficheiro para porque é fatal e não declarado.
 	ErrPrincipalQuotaUnverified = errors.New("aos: a quota por principal exige principal VERIFICADO — sem credencial forte o principal vem de um header que o chamador escreve, e um atacante gastaria a quota de outro principal escrevendo o nome dele. Defina AOS_SOVEREIGN_OIDC_ISSUER+AOS_SOVEREIGN_OIDC_AUDIENCE (com AOS_BOARD_REGIONS), ou deixe AOS_BUDGET_PRINCIPAL_MAX_TOKENS por definir")
@@ -423,9 +714,14 @@ var (
 func principalQuotaFromEnv(rb *integration.RunBudget, es eventstore.EventStore, consumo integration.ConsumoDuravel, agora func() time.Time, log func(string, ...any)) (*quotaPorPrincipal, error) {
 	raw := strings.TrimSpace(os.Getenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS"))
 	rawCost := strings.TrimSpace(os.Getenv("AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD"))
+	rawPlan := strings.TrimSpace(os.Getenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS"))
+	rawPlanCost := strings.TrimSpace(os.Getenv("AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD"))
 	if raw == "" {
 		if rawCost != "" {
 			return nil, fmt.Errorf("%w: AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD=%q sem AOS_BUDGET_PRINCIPAL_MAX_TOKENS", ErrBadPrincipalQuota, rawCost)
+		}
+		if rawPlan != "" || rawPlanCost != "" {
+			return nil, fmt.Errorf("%w: AOS_BUDGET_PRINCIPAL_PLAN_* definida sem AOS_BUDGET_PRINCIPAL_MAX_TOKENS", ErrBadPrincipalPlanQuota)
 		}
 		return nil, nil
 	}
@@ -456,10 +752,36 @@ func principalQuotaFromEnv(rb *integration.RunBudget, es eventstore.EventStore, 
 		return nil, fmt.Errorf("%w: por-run %d tokens / %d micro-USD, quota %d tokens / %d micro-USD",
 			ErrPrincipalQuotaBelowRunBudget, reserva.Tokens, reserva.CostMicroUSD, limite.Tokens, limite.CostMicroUSD)
 	}
+	reservaDoPlano, err := reservaDoPlanoDoAmbiente(rawPlan, rawPlanCost, rawCost != "", limite)
+	if err != nil {
+		return nil, err
+	}
 	if agora == nil {
 		agora = time.Now
 	}
-	return &quotaPorPrincipal{es: es, limite: limite, reserva: reserva, consumo: consumo, agora: agora, log: log}, nil
+	return &quotaPorPrincipal{es: es, limite: limite, reserva: reserva, reservaDoPlano: reservaDoPlano, consumo: consumo, agora: agora, log: log}, nil
+}
+
+// reservaDoPlanoDoAmbiente valida a reserva de planeamento (AOS-466) contra a quota já composta.
+// Recebe os valores JÁ LIDOS: os `os.Getenv` ficam literais no chamador (gate env-surface).
+func reservaDoPlanoDoAmbiente(rawPlan, rawPlanCost string, quotaEmDolares bool, limite budget.Amount) (budget.Amount, error) {
+	tokens, err := strconv.ParseInt(rawPlan, 10, 64)
+	if rawPlan == "" || err != nil || tokens <= 0 || tokens > limite.Tokens {
+		return budget.Amount{}, fmt.Errorf("%w: AOS_BUDGET_PRINCIPAL_PLAN_TOKENS=%q (quota %d tokens)", ErrBadPrincipalPlanQuota, rawPlan, limite.Tokens)
+	}
+	r := budget.Amount{Tokens: tokens}
+	if !quotaEmDolares {
+		if rawPlanCost != "" {
+			return budget.Amount{}, fmt.Errorf("%w: AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD=%q sem AOS_BUDGET_PRINCIPAL_MAX_COST_MICRO_USD", ErrBadPrincipalPlanQuota, rawPlanCost)
+		}
+		return r, nil
+	}
+	custo, err := strconv.ParseInt(rawPlanCost, 10, 64)
+	if rawPlanCost == "" || err != nil || custo <= 0 || custo > limite.CostMicroUSD {
+		return budget.Amount{}, fmt.Errorf("%w: AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD=%q (quota %d micro-USD)", ErrBadPrincipalPlanQuota, rawPlanCost, limite.CostMicroUSD)
+	}
+	r.CostMicroUSD = custo
+	return r, nil
 }
 
 // storesDeApagamento compõe a lista de stores do fluxo DSAR. A quota só entra quando composta: um
@@ -488,6 +810,6 @@ func principalQuotaPostureBanner(q *quotaPorPrincipal) []string {
 	if q.limite.CostMicroUSD != integration.UnlimitedCostMicroUSD {
 		custo = fmt.Sprintf("%d micro-USD", q.limite.CostMicroUSD)
 	}
-	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. NAO cobre o gasto de PLANEAMENTO dos pedidos de POST /plans, que o aos-orq faz antes de submeter os runs-filho. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
-		q.limite.Tokens, custo, q.reserva.Tokens, q.reserva.CostMicroUSD)}
+	return []string{fmt.Sprintf("quota por principal (AOS-457): LIGADA sobre principal VERIFICADO — %d tokens e %s por principal por mes UTC (repoe as 00:00 UTC do dia 1). DURA: cada admissao RESERVA o tecto por-run inteiro (%d tokens / %d micro-USD) e so liquida pelo consumo real quando o desfecho do run fica no log duravel; esgotada, POST /runs responde 429 com Retry-After ate a reposicao. Nao se ultrapassa pelo que se RESERVA; pode ultrapassar-se pelo transbordo do ULTIMO turno de cada run em curso acima do tecto por-run (a resposta so se mede depois de chegar), que a liquidacao conta. O PLANEAMENTO dos pedidos de POST /plans conta (AOS-466): cada pedido RESERVA %d tokens / %d micro-USD e cada geracao conta o consumo que o drenador (aos-orq) mede e declara; uma geracao NAO MEDIDA (ou entregue sem desfecho) custa o que se mediu MAIS a reserva. So o fecho do pedido (desfecho terminal no log) liberta o que sobra da reserva. Uma RE-OFERTA (geracao >= 2) so se entrega com quota do mes corrente para mais uma reserva; sem ela o pedido fica pendente ate haver (tambem a re-verificacao de um plano a espera de humano). Os dolares nunca sao medidos pelo aos-orq: cada geracao que chamou o modelo custa a reserva em dolares. Uma geracao pode gastar mais do que a reserva, e o excesso conta depois; o numero de geracoes por pedido nao tem tecto (AOS-467); o consumo e DECLARADO pelo drenador, que o no nao verifica. Um run_id com desfecho no log nao volta a executar (re-submissao idempotente). A reserva pertence ao mes da ADMISSAO: um run que nunca termina (suspenso, pausado, orfao) segura-a ate o mes acabar. DURAVEL no Event Store (aos-internal/quota-<pseudonimo>-<AAAAMM>), um restart nao a repoe. O /dsar/erase grava uma marca que a REPOE (decisao do dono); os registos sao metadados de uso em claro, como o turn.recorded, e o principal aparece como pseudonimo (hash), nao anonimizado",
+		q.limite.Tokens, custo, q.reserva.Tokens, q.reserva.CostMicroUSD, q.reservaDoPlano.Tokens, q.reservaDoPlano.CostMicroUSD)}
 }
