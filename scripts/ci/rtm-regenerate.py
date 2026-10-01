@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adr_register  # noqa: E402  (depende do sys.path acima)
+import adr_citacoes  # noqa: E402  (idem; AOS-318)
 
 # Raiz do corpus. Sobreponível por ambiente APENAS para o self-test (§R/§S)
 # poder injectar falhas numa CÓPIA em vez de mutar a árvore real — o job de CI
@@ -93,22 +94,20 @@ NFR_MANUAL_TICKETS = {
 }
 
 
-# Marcador opcional, escrito no bloco de um ticket: declara que os códigos
-# ADR-NNN que ele cita são MENÇÃO — o ticket FALA sobre eles — e não
-# implementação. Sem isto, um ticket sobre a própria rastreabilidade, que tem
-# de nomear os ADRs de que fala, entra na matriz §4 como implementador deles: a
-# matriz passaria a afirmar precisamente o que este epic existe para impedir.
-# Primeiro utilizador: AOS-313 (que discute ADR-003, ADR-014 e ADR-020…023 sem
-# realizar nenhum). `ref-lint.py` honra o mesmo marcador, para que os dois
-# leitores do corpus nunca discordem sobre o que um ticket implementa.
-RE_ADRS_MENCIONADOS = re.compile(r"<!--\s*rtm:\s*adrs-mencionados\s*-->")
+# MENÇÃO vs IMPLEMENTAÇÃO. Um ticket que cita um ADR para o discutir, delimitar
+# âmbito ou nomeá-lo como restrição não o implementa. Primeiro com o marcador de
+# bloco `<!-- rtm: adrs-mencionados -->` (AOS-313, tudo-ou-nada) e, desde AOS-318,
+# também com o trecho `<!-- rtm: menção -->` … `<!-- /rtm: menção -->`, que separa
+# os dois papéis no MESMO bloco. A regra vive em `adr_citacoes.py`, importada por
+# este ficheiro E por `ref-lint.py`, para que os dois leitores do corpus nunca
+# discordem sobre o que um ticket implementa.
 
 # ---------------------------------------------------------------------------
 # DELIMITAÇÃO DO BLOCO DE UM TICKET — partilhada em ESPÍRITO com o gémeo.
 #
 # Este código existe em DUAS cópias, `scripts/ci/rtm-regenerate.py` e
 # `scripts/ci/ref-lint.py`, porque os dois leem o mesmo corpus e o comentário de
-# `RE_ADRS_MENCIONADOS` declara o invariante: «os dois leitores do corpus nunca discordem sobre o
+# `adr_citacoes.py` declara o invariante: «os dois leitores do corpus nunca discordem sobre o
 # que um ticket implementa». Uma correcção aqui SEM a gémea quebra esse invariante — foi o que
 # aconteceu a 2026-09-27, e mediu-se: 6 dos 35 ADRs passaram a ter atribuição divergente entre os
 # dois leitores. Se mudares um, muda o outro NO MESMO COMMIT.
@@ -405,20 +404,25 @@ def extract_all_tickets() -> dict:
             # os ADRs do corpo — que é a regressão simétrica, e pior.
             fim = fim_do_bloco(mascarado, start, nivel)
             block = text[start : start + fim] if fim >= 0 else text[start:]
-            adrs = (
-                set()
-                if RE_ADRS_MENCIONADOS.search(block)
-                else set(re.findall(r"ADR-\d{3}", block))
-            )
+            # `adrs` é o que o ticket IMPLEMENTA — a única coisa que a §4 e a cobertura
+            # contam; `mencoes` é o que cita só como menção (AOS-318).
+            try:
+                adrs, mencoes = adr_citacoes.classificar(block, f"{epic_file.name} {aos}")
+            except adr_citacoes.CitacaoError as exc:
+                sys.stderr.write(f"ERRO: {exc}\n")
+                sys.exit(1)
             if aos not in tickets:
                 tickets[aos] = {
                     "epic": epic,
                     "title": title,
                     "adrs": adrs,
+                    "mencoes": mencoes,
                     "file": epic_file,
                 }
             else:
                 tickets[aos]["adrs"] |= adrs
+                tickets[aos].setdefault("mencoes", set())
+                tickets[aos]["mencoes"] |= mencoes
                 if title:
                     tickets[aos]["title"] = title
     return tickets
@@ -427,9 +431,15 @@ def extract_all_tickets() -> dict:
 def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
     """Devolve lista de dicts com colunas da tabela §4."""
     adr_to_tickets = defaultdict(list)
+    adr_to_mencoes = defaultdict(list)
     for aos, info in tickets.items():
         for adr in info["adrs"]:
             adr_to_tickets[adr].append(aos)
+        # Só menção, e em NENHUM bloco do ticket implementação (AOS-318): fica fora
+        # da coluna e da contagem, mas conta-se, para que o efeito do mecanismo seja
+        # visível na própria matriz em vez de presumido.
+        for adr in info.get("mencoes", set()) - info["adrs"]:
+            adr_to_mencoes[adr].append(aos)
     rows = []
     for entry in ADR_REGISTER:
         tickets_for = sorted(set(adr_to_tickets.get(entry.code, [])))
@@ -444,6 +454,7 @@ def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
             "state": entry.state,
             "count": len(tickets_for),
             "tickets": tickets_for,
+            "mencoes": sorted(set(adr_to_mencoes.get(entry.code, []))),
             "docs": docs,
         })
     return rows
@@ -736,9 +747,12 @@ def generate_section4(rows: list) -> str:
     lines = [
         "## 4. Matriz ADR × ticket",
         "",
-        f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
+        f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente fora de menção declarada (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
         "",
         "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
+        "",
+        "**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; uma directiva `rtm:` desconhecida ou um trecho por fechar avermelham os dois gates. "
+        + f"Hoje {sum(len(r['mencoes']) for r in rows)} par(es) (ticket, ADR) do canon ficam fora da tabela por serem só menção, em {len([r for r in rows if r['mencoes']])} ADR(s). A regra está em `scripts/ci/adr_citacoes.py`.",
         "",
         "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
         "|---|---|---|---|---|---|",

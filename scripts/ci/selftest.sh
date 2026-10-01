@@ -31,6 +31,9 @@
 #      sobre resíduo de um run morto sem trap (AOS-316).
 #   Y) um pacote que aborta (panic, timeout, build failed, os.Exit) avermelha o
 #      gate nats mesmo sem `--- FAIL` que o conte (AOS-452).
+#   Z) um ADR citado só como MENÇÃO (trecho `rtm: menção` ou bloco
+#      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
+#      ref-lint nem entra na §4; directivas mal formadas falham fechado (AOS-318).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -165,6 +168,8 @@ RTM_GEN_BAK=""
 RTM_GEN_SHA_INICIO="$(git -C "$REPO_ROOT" hash-object "$CI_DIR/rtm-regenerate.py")"
 # §Y monta os seus módulos sintéticos FORA do repo (como §L): não muta a árvore.
 GOTEST_TMP=""
+# §Z trabalha sobre uma cópia do corpus (como §S4): não muta a árvore.
+MENCAO_TMP=""
 cleanup() {
   rm -rf "$BAD_MOD"
   # Restaura sempre a assinatura committada byte-a-byte (sem rasto).
@@ -175,6 +180,7 @@ cleanup() {
   rm -rf "$EC_TMP"
   rm -rf "$RTM_SANDBOX"
   rm -rf "$GOTEST_TMP"
+  rm -rf "$MENCAO_TMP"
   libertar_lock
 }
 trap cleanup EXIT INT TERM
@@ -1195,6 +1201,8 @@ cp "$RTM_GEN" "$RTM_GEN_BAK"
 # para a sandbox: sem isto o gerador copiado morre em ModuleNotFoundError, e §R/§S
 # ficavam vermelhos por falta de modulo em vez de pela asercao que provam.
 cp "$CI_DIR/adr_register.py" "$RTM_SANDBOX/adr_register.py"
+# Idem para `adr_citacoes` (AOS-318), a regra menção/implementação que o gerador importa.
+cp "$CI_DIR/adr_citacoes.py" "$RTM_SANDBOX/adr_citacoes.py"
 # Registo da sandbox: e a FONTE do canon, e §T muta-o. Caminho proprio para nao
 # haver duvida sobre qual copia esta a ser lida.
 RTM_SANDBOX_REG="$RTM_SANDBOX/root/docs/adr/README.md"
@@ -1738,6 +1746,144 @@ else
   esac
 fi
 rm -rf "$GOTEST_TMP"; GOTEST_TMP=""
+
+
+# ============================================================================
+# Z) uma MENÇÃO de ADR não conta como implementação (AOS-318)
+# ============================================================================
+# O defeito real: cada `ADR-NNN` no bloco de um ticket era uma alegação de que o
+# ticket o implementa, e o marcador de AOS-313 era tudo-ou-nada — AOS-417, 423,
+# 424, 427 e 430 escreveram por extenso que, para não perderem a cobertura do ADR
+# que entregam, tinham de «implementar» também as restrições que só citam. A
+# invariante que isto protege é a da verificação 2 do `ref-lint`: «todo o ADR do
+# canon tem >= 1 ticket implementador». Uma menção não pode satisfazê-la.
+#
+# Sandbox própria (corpus copiado), no molde de §S4: a árvore real NÃO é tocada.
+# Acrescenta-se ao registo da cópia o ADR SEGUINTE ao último — derivado, não
+# escrito, para a sonda não envelhecer no dia em que esse código passar a existir
+# (a lição de §S2) — e um ticket sintético que o cita de três maneiras.
+log_gate "self-test Z · uma menção de ADR não satisfaz «>= 1 ticket implementador» (AOS-318)"
+MENCAO_TMP="$(mktemp -d)"
+mkdir -p "$MENCAO_TMP/docs"
+cp -r "$REPO_ROOT/specs"    "$MENCAO_TMP/specs"
+cp -r "$REPO_ROOT/tecnica"  "$MENCAO_TMP/tecnica"
+cp -r "$REPO_ROOT/docs/adr" "$MENCAO_TMP/docs/adr"
+cp    "$REPO_ROOT/_BRIEF.md" "$MENCAO_TMP/_BRIEF.md"
+MENCAO_EPIC="$MENCAO_TMP/specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md"
+MENCAO_EPIC_BAK="$MENCAO_TMP/epic.bak"
+cp "$MENCAO_EPIC" "$MENCAO_EPIC_BAK"
+SONDA_ADR="$(cd "$CI_DIR" && python3 -c 'import sys, adr_register
+from pathlib import Path
+print("ADR-%03d" % (len(adr_register.adr_codes(Path(sys.argv[1]))) + 1))' "$REPO_ROOT")"
+# A linha do registo vai logo a seguir à última `| ADR-NNN |` da cópia.
+perl -0pi -e "s/((?:^\| ADR-\d{3} \|[^\n]*\n)+)/\$1| $SONDA_ADR | Sonda do self-test Z | **Proposto** | — |\n/m" \
+  "$MENCAO_TMP/docs/adr/README.md"
+if ! grep -q "^| $SONDA_ADR |" "$MENCAO_TMP/docs/adr/README.md"; then
+  bad "Z0: a sonda $SONDA_ADR não entrou no registo da cópia — Z1..Z6 estariam a medir o vazio"
+fi
+# O glossário da RTM afirma o extremo do canon à mão, e `assert_numeric_claims` guarda-o:
+# acompanha-se a sonda, como faria quem materializasse um ADR novo. Sem isto a
+# regeneração da cópia falhava por esse número, e Z1/Z3/Z6 mediam outra coisa.
+perl -pi -e "s/(canon que os gates lêem é \\*\\*ADR-001…)\\d{3}/\${1}${SONDA_ADR#ADR-}/" \
+  "$MENCAO_TMP/tecnica/16_Rastreabilidade_RTM.md"
+
+# O ticket sintético é o SEGUINTE ao maior do backlog, também derivado: o gerador exige
+# a gama de tickets contígua, e um AOS-999 fixo avermelhava-o por isso — pelo motivo
+# errado. O maior citado é o maior existente, porque o ref-lint recusa citações órfãs.
+SONDA_AOS="$(grep -ohE 'AOS-[0-9]{3}' "$MENCAO_TMP"/specs/EPIC-*.md | sort -u | tail -1 \
+  | awk -F- '{ printf "AOS-%03d", $2 + 1 }')"
+# Acrescenta à EPIC da cópia o ticket $SONDA_AOS com o corpo $1.
+mencao_ticket() {
+  cp "$MENCAO_EPIC_BAK" "$MENCAO_EPIC"
+  printf '\n---\n\n## %s — Sonda do self-test Z\n\n%s\n' "$SONDA_AOS" "$1" >> "$MENCAO_EPIC"
+}
+# ref-lint sobre a cópia: devolve 0 se ficou VERMELHO e a saída contiver $1.
+reflint_bloqueou_com() {
+  local out rc
+  out="$(AOS_REFLINT_ROOT="$MENCAO_TMP" python3 "$CI_DIR/ref-lint.py" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s' "$out" | grep -q "$1"
+}
+# rtm-regenerate (escrita) sobre a cópia: devolve a linha da §4 da sonda.
+mencao_linha_s4() {
+  AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" >/dev/null 2>&1 || return 1
+  grep "^| \*\*$SONDA_ADR\*\* |" "$MENCAO_TMP/tecnica/16_Rastreabilidade_RTM.md"
+}
+
+# Z1 — a sonda citada SÓ dentro de um trecho de menção: o ref-lint tem de a dar
+# como ADR sem implementador, e a §4 tem de lhe pôr 0 tickets.
+mencao_ticket "Restrição: <!-- rtm: menção -->este ticket respeita o $SONDA_ADR, não o entrega.<!-- /rtm: menção -->"
+if reflint_bloqueou_com "sem ticket implementador" && reflint_bloqueou_com "$SONDA_ADR"; then
+  pass "Z1: o ref-lint recusou o $SONDA_ADR citado só num trecho de menção como cobertura"
+else
+  bad "Z1: o ref-lint aceitou uma MENÇÃO como ticket implementador do $SONDA_ADR"
+fi
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 0 | — |"*) pass "Z1: a §4 regenerada dá 0 implementadores ao $SONDA_ADR só mencionado" ;;
+  *) bad "Z1: a §4 regenerada não dá 0 implementadores ao $SONDA_ADR só mencionado: «$linha»" ;;
+esac
+
+# Z2 — a mesma recusa com o marcador de BLOCO (AOS-313), que até aqui não tinha prova.
+mencao_ticket "<!-- rtm: adrs-mencionados -->
+Fala do $SONDA_ADR sem o implementar."
+if reflint_bloqueou_com "sem ticket implementador" && reflint_bloqueou_com "$SONDA_ADR"; then
+  pass "Z2: o ref-lint recusou o $SONDA_ADR num bloco marcado adrs-mencionados como cobertura"
+else
+  bad "Z2: o ref-lint aceitou o marcador de bloco como implementação do $SONDA_ADR"
+fi
+
+# Z3 — CONTROLO POSITIVO, e o caso que o marcador de bloco não sabia exprimir: o
+# MESMO bloco implementa a sonda (fora do trecho) e menciona-a com o ADR-001 (dentro).
+# Tem de ficar verde, com $SONDA_AOS como implementador da sonda e NÃO do ADR-001.
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção -->Restrições: $SONDA_ADR e ADR-001.<!-- /rtm: menção -->"
+if AOS_REFLINT_ROOT="$MENCAO_TMP" python3 "$CI_DIR/ref-lint.py" >/dev/null 2>&1; then
+  pass "Z3: controlo — com a sonda citada FORA do trecho, o ref-lint fica verde (distingue, não recusa tudo)"
+else
+  bad "Z3: o ref-lint ficou vermelho com a sonda implementada fora do trecho — Z1/Z2 não provariam nada"
+fi
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 1 | $SONDA_AOS |"*) pass "Z3: a §4 regenerada dá o $SONDA_AOS como implementador do $SONDA_ADR" ;;
+  *) bad "Z3: a §4 regenerada não dá o $SONDA_AOS como implementador do $SONDA_ADR: «$linha»" ;;
+esac
+if [ -z "$linha" ]; then
+  bad "Z3: a §4 não foi regenerada — a ausência do ADR-001 não provaria nada"
+elif grep "^| \*\*ADR-001\*\* |" "$MENCAO_TMP/tecnica/16_Rastreabilidade_RTM.md" | grep -q "$SONDA_AOS"; then
+  bad "Z3: o ADR-001, citado só dentro do trecho, entrou na §4 como implementado pelo $SONDA_AOS"
+else
+  pass "Z3: o ADR-001, citado só dentro do trecho, ficou fora da §4 no mesmo bloco que implementa a sonda"
+fi
+
+# Z4/Z5 — FAIL-CLOSED: um marcador mal escrito que fosse ignorado devolvia o ADR à
+# coluna de implementadores em silêncio. Os DOIS leitores têm de recusar.
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção -->Restrição: ADR-001."
+z_rtm_out="$(AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" --check 2>&1)" && z_rc=0 || z_rc=$?
+if [ "$z_rc" -ne 0 ] && printf '%s' "$z_rtm_out" | grep -q "nunca fechado" \
+   && reflint_bloqueou_com "nunca fechado"; then
+  pass "Z4: rtm e ref-lint recusam um trecho de menção aberto e nunca fechado"
+else
+  bad "Z4: um trecho de menção por fechar passou num dos dois gates (rtm rc=$z_rc)"
+fi
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: mencionado -->Restrição: ADR-001.<!-- /rtm: mencionado -->"
+z_rtm_out="$(AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" --check 2>&1)" && z_rc=0 || z_rc=$?
+if [ "$z_rc" -ne 0 ] && printf '%s' "$z_rtm_out" | grep -q "directiva desconhecida" \
+   && reflint_bloqueou_com "directiva desconhecida"; then
+  pass "Z5: rtm e ref-lint recusam uma directiva rtm: desconhecida (gralha não volta a alegar)"
+else
+  bad "Z5: uma directiva rtm: desconhecida passou num dos dois gates (rtm rc=$z_rc)"
+fi
+
+# Z6 — uma directiva DENTRO de código é texto, não directiva (CommonMark): um ticket
+# pode documentar o mecanismo sem o accionar. Sem isto, o próprio AOS-318 abria um
+# trecho ao descrevê-lo.
+mencao_ticket 'Implementa o '"$SONDA_ADR"'. Documenta `<!-- rtm: menção -->` sem o abrir.'
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 1 | $SONDA_AOS |"*) pass "Z6: uma directiva entre crases não abre trecho nem retira a implementação" ;;
+  *) bad "Z6: uma directiva entre crases foi lida como directiva: «$linha»" ;;
+esac
+rm -rf "$MENCAO_TMP"; MENCAO_TMP=""
 
 
 # ============================================================================

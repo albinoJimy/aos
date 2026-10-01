@@ -96,9 +96,11 @@ Derivados dos *drivers* canónicos (`_BRIEF` §4 / `specs/00` §7) e dos KPIs/SL
 
 ## 4. Matriz ADR × ticket
 
-Para cada ADR-001…035, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
+Para cada ADR-001…035, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente fora de menção declarada (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.
 
 A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).
+
+**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; uma directiva `rtm:` desconhecida ou um trecho por fechar avermelham os dois gates. Hoje 78 par(es) (ticket, ADR) do canon ficam fora da tabela por serem só menção, em 25 ADR(s). A regra está em `scripts/ci/adr_citacoes.py`.
 
 | ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |
 |---|---|---|---|---|---|

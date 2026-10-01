@@ -792,10 +792,11 @@ correr sobre um `git worktree` descartável, e isso é decisão de âmbito das f
 
 ## AOS-317 — O canon de ADRs fechou-se com um literal novo; a fonte continua sem quem a leia
 
-> **Nota de notação.** Neste bloco os ADRs são referidos por «ADR n.º NN». O extractor da §4
-> lê **qualquer** `ADR-NNN` dentro do bloco de um ticket como «este ticket implementa aquela
-> decisão», e este não implementa nenhuma — fala delas. Escrito com os códigos, inscrevia-se
-> nas linhas do n.º 1 e do n.º 14 da matriz que veio arrumar. É o AOS-318.
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket não implementa nenhum ADR: fala do REGISTO deles. Até AOS-318 escrevia os
+     números por extenso para não se inscrever na §4 da RTM como implementador do ADR-001 e do
+     ADR-014; voltou aos códigos canónicos sob o marcador de bloco acima, que é a forma certa
+     para um bloco que só menciona (AOS-318). -->
 
 ### Contexto
 
@@ -805,10 +806,10 @@ nos dois ficheiros onde a constante vive — `scripts/ci/rtm-regenerate.py:35` e
 
 O que produziu o defeito não foi o valor `20`: foi um literal escrito à mão, duplicado em
 dois leitores do corpus, que ninguém compara com a fonte que o devia fixar. Isso continua
-inteiro depois de AOS-314. No dia em que entrar o n.º 24 no registo, o canon volta a ficar
+inteiro depois de AOS-314. No dia em que entrar o ADR-024 no registo, o canon volta a ficar
 curto, **nos mesmos dois sítios**, e nada o dirá — o `ref-lint` deixa outra vez de exigir
 ticket implementador ao ADR novo, e fica verde por não olhar. Foi exactamente assim que o
-n.º 19 sobreviveu a quatro decisões.
+canon parado no ADR-019 sobreviveu a quatro decisões.
 
 O corpus tem três listas de ADRs e elas divergem por natureza, não por descuido:
 `_BRIEF` §3 fixa o enunciado do núcleo fundacional; `specs/00` §11 é referência de
@@ -870,9 +871,10 @@ entrada na coluna «tickets que o implementam». Não há forma de citar uma dec
 discutir, para delimitar âmbito, ou para explicar um defeito — a citação *é* a alegação.
 
 Descoberto ao escrever o AOS-317, e por ele: o bloco mencionava duas decisões em prosa
-(«o catálogo pára no n.º 14», «códigos contíguos a partir do n.º 1») e inscreveu-se como
-implementador de ambas, na matriz que o próprio ticket existe para arrumar. Está contornado
-com notação («ADR n.º NN»), o que resolve um caso e não a classe.
+(<!-- rtm: menção -->«o catálogo pára no ADR-014», «códigos contíguos a partir do ADR-001»<!-- /rtm: menção -->)
+e inscreveu-se como implementador de ambas, na matriz que o próprio ticket existe para
+arrumar. Ficou contornado escrevendo os números por extenso em vez dos códigos, o que
+resolvia um caso e não a classe.
 
 **Medido antes de aberto**, para que não se confunda armadilha com dívida: 357 pares
 (ticket, ADR) na §4; uma heurística sobre marcadores de delimitação, negação e remissão
@@ -887,22 +889,100 @@ corpus precisou disso.
 
 ### Critérios de Aceitação
 
-- [ ] Existe forma de **mencionar** um ADR num bloco de ticket sem entrar na coluna de
+- [x] Existe forma de **mencionar** um ADR num bloco de ticket sem entrar na coluna de
       implementadores, e a §4 documenta-a onde o leitor da matriz a encontre
-- [ ] O `rtm-regenerate.py` distingue as duas coisas na extracção, e o `ref-lint` não conta
+      — duas formas: o bloco inteiro (`<!-- rtm: adrs-mencionados -->`, que já existia desde
+      AOS-313) e, novo, o trecho (`<!-- rtm: menção -->` … `<!-- /rtm: menção -->`), que separa
+      menção de implementação **no mesmo bloco**. A §4 de `tecnica/16` abre com o parágrafo
+      «Citar não é alegar», logo acima da tabela, com a sintaxe, o efeito e a contagem viva
+- [x] O `rtm-regenerate.py` distingue as duas coisas na extracção, e o `ref-lint` não conta
       uma menção como cobertura de ADR (senão a invariante «≥ 1 ticket implementador» passa
       a ser satisfeita por quem só fala da decisão)
-- [ ] A escolha do mecanismo fica registada com o custo de migração à frente: um marcador
+      — `adr_citacoes.classificar()` devolve `(implementa, mencionados)` e é a ÚNICA regra, importada
+      pelos dois leitores; o gerador guarda as menções à parte (`mencoes`) e conta-as na §4
+      (78 pares em 25 ADRs, à data), o `ref-lint` só lê `implementa`. Prova negativa: `selftest.sh` §Z1
+      (só no trecho) e §Z2 (bloco marcado) — o `ref-lint` fica vermelho com «sem ticket
+      implementador» para um ADR só mencionado; §Z3 é o controlo positivo
+- [x] A escolha do mecanismo fica registada com o custo de migração à frente: um marcador
       inline, semântica por secção do bloco, ou um campo explícito a substituir a extracção
       textual — as duas últimas deslocam pares existentes, e os 357 de hoje são a linha de
       base de não-regressão
-- [ ] Os blocos de AOS-317 e AOS-318 largam a notação «ADR n.º NN» e voltam aos códigos
+      — registada em «Entrega» abaixo e no cabeçalho de `scripts/ci/adr_citacoes.py`, medida sobre a
+      linha de base de **hoje**, que já não é 357 mas **445** pares: inline 0, por secção 332,
+      campo explícito 214. O conjunto dos 445 pares sai **idêntico** da mudança
+- [x] Os blocos de AOS-317 e AOS-318 largam a notação «ADR n.º NN» e voltam aos códigos
       canónicos — é o teste de aceitação mais honesto que estes dois blocos podem ter
+      — AOS-317 sob o marcador de bloco (não implementa nenhum ADR), AOS-318 com o trecho; nenhum
+      dos dois entra na §4. A única ocorrência que resta da notação é o texto deste critério, que
+      a nomeia
+
+### Entrega
+
+**O ticket estava meio feito antes de ser aberto, e o Contexto acima não o sabia.** O marcador de
+bloco `<!-- rtm: adrs-mencionados -->` existe desde AOS-313, honrado pelos dois leitores, e 36
+blocos já o usavam. Faltava-lhe o que o título deste ticket pede: é **tudo-ou-nada**. Um ticket
+que implementa um ADR e precisa de nomear outro como restrição tinha de escolher entre perder a
+cobertura do primeiro ou inventar a do segundo — e o corpus escolheu a segunda, **por escrito**,
+seis vezes: AOS-417, AOS-423, AOS-424, AOS-427 e AOS-430 declaram nos seus comentários 16 pares
+(ticket, ADR) de restrições contadas como entregas; AOS-442 declara o caso inverso, uma emenda que
+a §4 não lhe liga. A afirmação «zero atribuições falsas» do Contexto foi medida a 357 pares, antes
+de esses blocos existirem; hoje não é verdade, e são os próprios blocos a dizê-lo.
+
+**Mecanismo escolhido: marcador inline, ao nível do trecho, aditivo ao de bloco.**
+
+| Opção | Pares deslocados (de 445) | Porquê |
+|---|---|---|
+| Marcador inline (escolhido) | **0** | Nenhum bloco o usa até alguém o escrever; o marcador de bloco mantém o significado |
+| Semântica por secção (só os Critérios de Aceitação alegam) | 332 | Só 113 pares têm o ADR nos CA; o resto vive na tabela de campos, no Contexto e no Estado |
+| Campo explícito (a linha `Documentos de referência`/`relacionados` como fonte única) | 214 | Só 231 pares têm o ADR nesse campo; não existe nenhum campo `ADRs` no corpus |
+
+O custo do inline é o oposto do das outras duas: é **opt-in**. As atribuições falsas que já estão
+escritas ficam até alguém reler o bloco e marcar o trecho — é o resíduo 1.
+
+**O que ficou construído.**
+
+- `scripts/ci/adr_citacoes.py` (novo): `classificar(bloco) -> (implementa, mencionados)`. Um ADR
+  citado também **fora** do trecho continua implementado. Falha **fechado**: directiva `rtm:`
+  desconhecida, trecho aberto sem fecho, fecho sem abertura ou aberturas encadeadas são erro nos
+  dois gates — uma gralha ignorada devolvia o ADR à coluna em silêncio. Directivas **dentro de
+  código** (crases, blocos cercados) são texto, como no CommonMark: é o que deixa este ticket
+  documentar o mecanismo sem o accionar.
+- `rtm-regenerate.py` e `ref-lint.py` deixam de ter cada um a sua cópia da regra e importam o
+  módulo (o molde de `adr_register.py`, AOS-317). O gerador guarda as menções em `mencoes`; a §4
+  ganha o parágrafo «Citar não é alegar» e a contagem viva dos pares que ficam de fora.
+- `selftest.sh` §Z1–Z6, sobre uma **cópia** do corpus a que se acrescenta o ADR e o ticket seguintes
+  aos maiores — derivados, para a sonda não envelhecer no dia em que esses códigos existirem.
+
+**Não-regressão, medida.** O conjunto (ticket, ADR) extraído antes e depois é o mesmo, par a par:
+445 → 445, `cmp` das duas listas ordenadas sem diferenças. A diff de `tecnica/16` reduz-se ao
+parágrafo novo da §4 e às quatro palavras «fora de menção declarada» na frase que o precede.
+
+**Mutação.** Trocar, no gerador, a classificação pela extracção textual antiga avermelha o
+`rtm.sh` contra a árvore real (os 78 pares de menção voltavam à tabela) e §Z1, §Z3, §Z4 e §Z5;
+desligar só o trecho em `adr_citacoes.py` avermelha §Z1 (nos dois leitores) e §Z3; deixar de
+mascarar o código avermelha §Z6 — e só ele, porque a árvore real continua verde: é o subteste que
+segura essa propriedade. Restaurados, verdes, com o hash dos dois ficheiros igual ao de antes.
+
+Gates: `rtm.sh`, `ref-lint.sh`, `estado-citado.sh` e `lint.sh` verdes; `selftest.sh` completo
+verde (94 subtestes, §Z1–Z6 incluídos).
+
+**Resíduos declarados.**
+
+1. **Os 16 pares que o corpus declara falsos continuam na §4**, e a emenda do AOS-442 continua sem
+   ligação. Migrá-los é marcar o trecho das restrições em seis blocos da EPIC-19 — trabalho
+   mecânico, mas de outros tickets, e por isso fora deste. Desloca exactamente 17 pares (16 saem,
+   1 entra) e merece ticket próprio.
+2. **A delimitação do bloco continua duplicada** entre os dois leitores (`fim_do_bloco`,
+   `mascarar_fences`). A classificação passou a ser partilhada; o terminador não, e o comentário
+   «muda o outro no mesmo commit» continua a ser a única guarda dessa metade.
 
 ### Estado
 
-**ABERTO.** P2. Latente: sem dívida acumulada, com armadilha activa para quem escrever a
-seguir.
+**FEITO** (2026-10-01). P2.
+
+`scripts/ci/adr_citacoes.py` (novo), `scripts/ci/rtm-regenerate.py`, `scripts/ci/ref-lint.py`,
+`scripts/ci/selftest.sh` (§Z), `tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada),
+`specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md` (blocos de AOS-317 e AOS-318).
 
 ---
 
