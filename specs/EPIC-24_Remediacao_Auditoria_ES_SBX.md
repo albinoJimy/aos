@@ -1575,17 +1575,30 @@ o seccomp. O epic declara-o («Fora de produção nada muda»); o que não exist
 
 ### Entrega (2026-10-01)
 
-- **(a)** `sandbox/aos362_inversoes_test.go`, `TestAOS362_ATabelaDoSeccompConfrontaOsDrivers`. O
-  confronto é estrutural (AST): em cada `driver_*.go`, o `Kind()` declara o driver, e o ficheiro ou
-  lê `.Seccomp` ou não. Ler tem de equivaler a a tabela dizer `driver`. Um ficheiro de driver cujo
-  `Kind()` a tabela não reconheça também avermelha.
-  - **Limite:** o teste vê a LEITURA de `Spec.Seccomp` no ficheiro do driver. Um driver que a
-    delegasse noutro ficheiro, ou passasse o perfil por outro caminho, escapar-lhe-ia.
+- **(a)** Dois sensores.
+  - `sandbox/aos362_inversoes_test.go`, `TestAOS362_ATabelaDoSeccompConfrontaOsDrivers`, é um
+    confronto estrutural (AST) sobre **todos** os `.go` não-teste do pacote:
+    - um driver é um tipo com `Kind()`, e o `Kind()` tem de devolver uma constante conhecida;
+    - a leitura de `.Seccomp` atribui-se ao **receptor** do método onde aparece, e uma leitura numa
+      função livre avermelha, por não ser atribuível;
+    - ler tem de equivaler a a tabela dizer `driver`.
+  - `cmd/aos/aos362_wire_sem_seccomp_test.go`: o wire dos dois executores remotos (`fcExecInput`,
+    `gvExecInput`) não pode ter campo que mencione seccomp enquanto a tabela disser `none`.
+  - **Ler não é impor.** O par comportamental, que prova a imposição do `fake`, é
+    `TestWiring_SeccompDefaultDenyOnExecPath`. A mensagem do teste manda verificá-lo antes de mudar a
+    tabela.
+  - **Limite que fica:** um driver que passasse a `Spec` inteira a um executor dentro do pacote, sem
+    escrever `.Seccomp`, não é visto pelo teste AST. O executor real vive no `cmd/aos`, e esse wire
+    tem sensor.
 - **(b)** `eventstore/store.go`: `Healthy()` devolve `false` com `soLeitura`. O contrato já dizia
   «true enquanto o store ACEITA ESCRITAS», e um store de inspecção nunca aceita. O teste é
   `TestAOS362_InspeccaoNaoSeDizPronta`, com o controlo do mesmo ficheiro aberto para escrita.
-  Nenhum consumidor composto lia o `Healthy()` de um store só-leitura (`wal inspect`, `wal summary`,
-  `aos-orq inspect`).
+  Nenhum consumidor composto lia o `Healthy()` de um store só-leitura. Os leitores de `Healthy()`
+  são o `/readyz`, o gauge e o SLI, e todos lêem o `node.EventStore`, aberto com `Open`. Os
+  chamadores de `OpenReadOnly` são outros:
+  - `wal inspect` e `wal summary`, no `cmd/aos`;
+  - `abrirParaLeitura`, no `aos-orq`, usado por `inspect`, `plans` e `lerEstadoDoPlano`.
+  Este último devolve a interface `eventstore.EventStore`, que nem tem `Healthy`.
 - **(c)** `sandbox/lifecycle.go`: a qualificação entra no span junto do hash, derivada do driver
   configurado, e é reafirmada depois do `Create` a partir da instância real. O teste é
   `TestAOS362_UmCreateFalhadoNaoDeixaOHashNu`: um Firecracker sem executor falha no `Create`.
@@ -1594,24 +1607,54 @@ o seccomp. O epic declara-o («Fora de produção nada muda»); o que não exist
     - `in_process_reference` para o `fake`;
     - `guest_executor` para Firecracker e gVisor;
     - `undeclared` para um driver desconhecido.
-  - É derivado do driver **no sink** (`executionBoundaryFor`), por construção, como o
-    `seccomp_enforced_by`. Documentado em `tecnica/07`.
+  - É derivado do driver **no sink** (`executionBoundaryFor`), por construção. Ao contrário do
+    `seccomp_enforced_by`, que o `Launcher` deriva e o sink só força a `none` se vier vazio. A
+    mensagem do commit `b2a01ca` diz «como o seccomp_enforced_by», e está errada nisso.
+  - Documentado em `tecnica/07` e no `deploy/server/README.md`.
   - É um campo aditivo no payload selado: nenhum consumidor nem golden file compara o payload
     byte a byte.
   - O teste é `TestAOS362_OEventoDizOndeAExecucaoCorreu`.
-  - **O que isto NÃO faz:** não impede o `fake` de selar fora de produção. Torna-o visível no
-    evento, que era o que faltava.
-- **Mutação:** 7 aplicadas, 7 mortas.
-  - o gVisor passar a ler `Spec.Seccomp`;
-  - a tabela dizer que o Firecracker impõe;
-  - a qualificação provisória removida;
-  - o `fake` declarado `guest_executor`;
-  - o sink sem a fronteira;
-  - o desconhecido presumido `guest_executor`;
-  - `Healthy()` sem `soLeitura`.
+  - **O que isto NÃO faz:**
+    - não impede o `fake` de selar fora de produção, apenas o torna visível no evento, que era o que
+      faltava;
+    - `guest_executor` atesta **delegação**, e não isolamento: um executor de teste é in-process.
+      Em produção os executores são HTTP remotos;
+    - o campo vai no evento e não no span, onde o `AttrDriver` já está;
+    - `undeclared` não é alcançável pelo `Launcher` hoje, porque os três drivers põem `Instance.Kind`.
+      É defensivo.
+- **Mutação:** 11 aplicadas, 11 mortas.
+  - Sete na primeira passagem:
+    - o gVisor passar a ler `Spec.Seccomp`;
+    - a tabela dizer que o Firecracker impõe;
+    - a qualificação provisória removida;
+    - o `fake` declarado `guest_executor`;
+    - o sink sem a fronteira;
+    - o desconhecido presumido `guest_executor`;
+    - `Healthy()` sem `soLeitura`.
+  - Quatro que a revisão mostrou sobreviverem à primeira versão dos testes:
+    - um driver novo fora de `driver_*.go` a ler `Spec.Seccomp`;
+    - um helper livre partilhado a ler `.Seccomp`, que antes era atribuído ao ficheiro errado;
+    - a qualificação provisória substituída pela constante `"none"`;
+    - o wire do gVisor a ganhar um campo `seccomp_profile`.
+
+**Revisão adversarial independente (2026-10-01), sobre `b2a01ca`.** Não houve achados ALTO.
+- **MÉDIO, reproduzido:** o teste AST tinha dois pontos cegos não declarados, um driver fora de
+  `driver_*.go` e o perfil no wire do executor. Corrigido acima.
+- **BAIXO:**
+  - ler foi tratado como impor;
+  - a atribuição por ficheiro errava num helper partilhado;
+  - a constante no lugar do provisório sobrevivia;
+  - a frase «como o seccomp_enforced_by» estava errada;
+  - a enumeração de (b) estava incompleta;
+  - um comentário dizia «duas leituras»;
+  - a semântica de `execution_boundary` não estava documentada para o operador;
+  - o Estado contava dois pontos de mudança e eram três.
+- Todos corrigidos.
 
 ### Estado
 
-**FEITO** (2026-10-01). P2. Alcance: latente nos quatro casos. Muda o comportamento em dois
-pontos, ambos no sentido fail-closed: `Healthy()` de um store só-leitura passa a falso, e o
-payload selado ganha `execution_boundary`.
+**FEITO** (2026-10-01). P2. Alcance: latente nos quatro casos. Muda o comportamento em três
+pontos, todos no sentido fail-closed:
+- `Healthy()` de um store só-leitura passa a falso;
+- o span de um `Create` falhado passa a levar a qualificação do seccomp;
+- o payload selado ganha `execution_boundary`.

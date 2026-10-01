@@ -20,12 +20,23 @@ import (
 // driver real passasse a ler [Spec.Seccomp] sem a tabela mudar, o evento SUBdeclarava (o defeito
 // do AOS-351 ao contrário), e o teste de manifesto continuava verde a exigir `none`.
 //
-// O confronto é estrutural: em cada `driver_*.go` do pacote, o tipo que implementa `Kind()`
-// declara o seu [DriverKind], e o ficheiro ou lê `.Seccomp` ou não. Ler ⇔ a tabela dizer
-// [SeccompEnforcedByDriver]. Um ficheiro de driver novo cujo `Kind()` não se reconheça avermelha
-// também: a tabela tem de o conhecer antes de o evento falar dele.
+// O confronto é estrutural, sobre TODOS os `.go` não-teste do pacote:
+//   - um DRIVER é um tipo com um método `Kind()`. O `Kind()` tem de devolver uma das constantes
+//     conhecidas, senão o teste avermelha, e um driver novo tem de entrar na tabela antes de os
+//     seus eventos falarem de seccomp;
+//   - a leitura de `.Seccomp` é atribuída ao RECEPTOR do método onde aparece. Uma leitura numa
+//     função livre não se consegue atribuir e avermelha também;
+//   - um driver que lê tem de ser um driver que a tabela diz impor, e vice-versa.
+//
+// LER NÃO É IMPOR. Este teste vê a leitura; quem prova a imposição é
+// `TestWiring_SeccompDefaultDenyOnExecPath` (`wiring_test.go`). Um vermelho aqui manda verificar se
+// o driver IMPÕE o perfil antes de mudar a tabela, e não mudá-la às cegas.
+//
+// LIMITE: o perfil pode chegar ao runtime sem `.Seccomp` aparecer no pacote, entregando a `Spec`
+// inteira ao [GuestExecutor]. O executor real vive no `cmd/aos`, fora daqui, e o wire dele tem
+// sensor próprio: `TestAOS362_OWireDosExecutoresNaoTransportaOPerfil`.
 func TestAOS362_ATabelaDoSeccompConfrontaOsDrivers(t *testing.T) {
-	ficheiros, err := filepath.Glob("driver_*.go")
+	ficheiros, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,52 +45,87 @@ func TestAOS362_ATabelaDoSeccompConfrontaOsDrivers(t *testing.T) {
 		"DriverFirecracker": DriverFirecracker,
 		"DriverGVisor":      DriverGVisor,
 	}
-	vistos := map[DriverKind]bool{}
+	receptor := func(fd *ast.FuncDecl) string {
+		if fd.Recv == nil || len(fd.Recv.List) == 0 {
+			return ""
+		}
+		tipo := fd.Recv.List[0].Type
+		if st, ok := tipo.(*ast.StarExpr); ok {
+			tipo = st.X
+		}
+		if id, ok := tipo.(*ast.Ident); ok {
+			return id.Name
+		}
+		return "?"
+	}
+	leSeccomp := func(n ast.Node) bool {
+		achou := false
+		ast.Inspect(n, func(x ast.Node) bool {
+			if sel, ok := x.(*ast.SelectorExpr); ok && sel.Sel.Name == "Seccomp" {
+				achou = true
+			}
+			return !achou
+		})
+		return achou
+	}
+	kindDe := map[string]DriverKind{} // tipo -> kind
+	leituras := map[string]bool{}     // tipo -> lê .Seccomp num dos seus métodos
 	for _, f := range ficheiros {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
-		fset := token.NewFileSet()
-		arq, err := parser.ParseFile(fset, f, nil, 0)
+		arq, err := parser.ParseFile(token.NewFileSet(), f, nil, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", f, err)
 		}
-		var kind DriverKind
-		leSeccomp := false
-		ast.Inspect(arq, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.FuncDecl:
-				if x.Recv != nil && x.Name.Name == "Kind" && x.Body != nil {
-					for _, st := range x.Body.List {
-						if ret, ok := st.(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
-							if id, ok := ret.Results[0].(*ast.Ident); ok {
-								kind = porNome[id.Name]
-							}
+		for _, d := range arq.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			tipo := receptor(fd)
+			if fd.Name.Name == "Kind" && tipo != "" {
+				var k DriverKind
+				if len(fd.Body.List) == 1 {
+					if ret, ok := fd.Body.List[0].(*ast.ReturnStmt); ok && len(ret.Results) == 1 {
+						if id, ok := ret.Results[0].(*ast.Ident); ok {
+							k = porNome[id.Name]
 						}
 					}
 				}
-			case *ast.SelectorExpr:
-				if x.Sel.Name == "Seccomp" {
-					leSeccomp = true
+				if k == "" {
+					t.Errorf("%s: %s.Kind() não devolve uma constante que a tabela conheça — um driver novo "+
+						"tem de entrar em seccompEnforcementFor (e aqui) antes de os seus eventos falarem de seccomp", f, tipo)
+					continue
 				}
+				kindDe[tipo] = k
 			}
-			return true
-		})
-		if kind == "" {
-			t.Errorf("%s: não declara um Kind() que esta tabela reconheça — um driver novo tem de entrar em "+
-				"seccompEnforcementFor (e aqui) antes de os seus eventos falarem de seccomp", f)
-			continue
-		}
-		vistos[kind] = true
-		impoe := seccompEnforcementFor(kind) == SeccompEnforcedByDriver
-		if leSeccomp != impoe {
-			t.Errorf("%s (%s): lê Spec.Seccomp=%v, mas a tabela diz seccomp_enforced_by=%q — o WORM sela uma "+
-				"afirmação que o driver não cumpre", f, kind, leSeccomp, seccompEnforcementFor(kind))
+			if !leSeccomp(fd.Body) {
+				continue
+			}
+			if tipo == "" {
+				t.Errorf("%s: a função livre %s lê .Seccomp — a leitura não se consegue atribuir a um driver; "+
+					"leve-a para um método do driver que a usa", f, fd.Name.Name)
+				continue
+			}
+			leituras[tipo] = true
 		}
 	}
 	for _, k := range []DriverKind{DriverFake, DriverFirecracker, DriverGVisor} {
-		if !vistos[k] {
-			t.Errorf("nenhum driver_*.go declara %q — o confronto não viu o driver", k)
+		visto := false
+		for _, kk := range kindDe {
+			visto = visto || kk == k
+		}
+		if !visto {
+			t.Errorf("nenhum tipo do pacote declara Kind() = %q — o confronto não viu o driver", k)
+		}
+	}
+	for tipo, k := range kindDe {
+		impoe := seccompEnforcementFor(k) == SeccompEnforcedByDriver
+		if leituras[tipo] != impoe {
+			t.Errorf("%s (%s): lê Spec.Seccomp=%v, mas a tabela diz seccomp_enforced_by=%q. Verifique se o "+
+				"driver IMPÕE o perfil (o par comportamental é TestWiring_SeccompDefaultDenyOnExecPath) "+
+				"antes de mudar a tabela", tipo, k, leituras[tipo], seccompEnforcementFor(k))
 		}
 	}
 }
@@ -87,33 +133,65 @@ func TestAOS362_ATabelaDoSeccompConfrontaOsDrivers(t *testing.T) {
 // TestAOS362_UmCreateFalhadoNaoDeixaOHashNu — AOS-362 (c). O hash do perfil entrava no span antes
 // do Create, e a qualificação só depois: um Create que falhasse terminava o span com o hash nu,
 // que é exactamente a leitura que o AOS-351 existe para impedir.
+//
+// Os dois casos têm valores provisórios DIFERENTES, para que uma constante no lugar da derivação
+// pelo driver configurado não passe.
 func TestAOS362_UmCreateFalhadoNaoDeixaOHashNu(t *testing.T) {
-	store := newStore(t)
-	rt := &recordingTracer{}
-	// Firecracker SEM executor: o Create falha com ErrDriverUnavailable.
-	launcher, err := NewLauncher(NewFirecrackerDriver(), WithEventSink(NewEventStoreSink(store)), WithTracer(rt))
-	if err != nil {
-		t.Fatalf("NewLauncher: %v", err)
+	casos := []struct {
+		nome   string
+		driver SandboxDriver
+		erro   error
+		quer   SeccompEnforcement
+	}{
+		// Firecracker SEM executor: o Create falha com ErrDriverUnavailable.
+		{"firecracker sem executor", NewFirecrackerDriver(), ErrDriverUnavailable, SeccompEnforcedByNone},
+		// Um driver do kind que IMPÕE o perfil, a falhar no Create.
+		{"driver que impoe, a falhar", driverQueFalhaNoCreate{kind: DriverFake}, errCreateDoTeste, SeccompEnforcedByDriver},
 	}
-	ml, err := NewMediatedLauncher(newPermitMonitor(store), launcher, "sandbox.exec")
-	if err != nil {
-		t.Fatalf("NewMediatedLauncher: %v", err)
-	}
-	req := ExecRequest{RunID: "run-362-c", StepID: "step-362", Call: ToolCall{ToolID: "t", Command: "echo"}}
-	if _, err := ml.Execute(context.Background(), defaultAuthz(), req); !errors.Is(err, ErrDriverUnavailable) {
-		t.Fatalf("o controlo da premissa falhou: Execute = %v, quero ErrDriverUnavailable do Create", err)
-	}
-	if _, ok := rt.attr(AttrSeccompHash); !ok {
-		t.Fatal("o span não tem o hash — o teste não está a medir o caminho do Create falhado")
-	}
-	v, ok := rt.attr(AttrSeccompEnforcedBy)
-	if !ok {
-		t.Fatal("o Create falhou e o span terminou com o hash do seccomp NU (AOS-362 c)")
-	}
-	if v.(string) != string(SeccompEnforcedByNone) {
-		t.Fatalf("AttrSeccompEnforcedBy = %v num firecracker, quero %q", v, SeccompEnforcedByNone)
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			store := newStore(t)
+			rt := &recordingTracer{}
+			launcher, err := NewLauncher(c.driver, WithEventSink(NewEventStoreSink(store)), WithTracer(rt))
+			if err != nil {
+				t.Fatalf("NewLauncher: %v", err)
+			}
+			ml, err := NewMediatedLauncher(newPermitMonitor(store), launcher, "sandbox.exec")
+			if err != nil {
+				t.Fatalf("NewMediatedLauncher: %v", err)
+			}
+			req := ExecRequest{RunID: "run-362-c", StepID: "step-362", Call: ToolCall{ToolID: "t", Command: "echo"}}
+			if _, err := ml.Execute(context.Background(), defaultAuthz(), req); !errors.Is(err, c.erro) {
+				t.Fatalf("o controlo da premissa falhou: Execute = %v, quero %v do Create", err, c.erro)
+			}
+			if _, ok := rt.attr(AttrSeccompHash); !ok {
+				t.Fatal("o span não tem o hash — o teste não está a medir o caminho do Create falhado")
+			}
+			v, ok := rt.attr(AttrSeccompEnforcedBy)
+			if !ok {
+				t.Fatal("o Create falhou e o span terminou com o hash do seccomp NU (AOS-362 c)")
+			}
+			if v.(string) != string(c.quer) {
+				t.Fatalf("AttrSeccompEnforcedBy = %v, quero %q — a qualificação provisória tem de vir do driver configurado", v, c.quer)
+			}
+		})
 	}
 }
+
+var errCreateDoTeste = errors.New("create falhado (teste)")
+
+// driverQueFalhaNoCreate é um driver de teste cujo Create falha sempre, com o Kind que o caso
+// pedir. Vive num ficheiro de teste, fora do confronto estrutural da tabela.
+type driverQueFalhaNoCreate struct{ kind DriverKind }
+
+func (d driverQueFalhaNoCreate) Create(context.Context, capability, Spec) (Instance, error) {
+	return Instance{}, errCreateDoTeste
+}
+func (d driverQueFalhaNoCreate) Exec(context.Context, capability, Instance, ExecRequest) (ExecResult, error) {
+	return ExecResult{}, errCreateDoTeste
+}
+func (d driverQueFalhaNoCreate) Destroy(context.Context, capability, Instance) error { return nil }
+func (d driverQueFalhaNoCreate) Kind() DriverKind                                    { return d.kind }
 
 // TestAOS362_OEventoDizOndeAExecucaoCorreu — AOS-362 (d). Um nó de desenvolvimento selava no
 // WORM resultados do driver de referência sem nada no evento que os distinguisse de um efeito

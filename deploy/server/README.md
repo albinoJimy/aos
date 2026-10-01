@@ -313,6 +313,13 @@ equivalentes:
 O `fake` não é um stub vazio: tem isolamento real. Mas a fronteira é o processo do nó, e é por
 isso que o repositório o proíbe em produção.
 
+> **Onde a execução correu, no evento selado (AOS-362).** Cada evento do ciclo de vida da
+> sandbox leva `execution_boundary`: `in_process_reference` quando correu no `fake`,
+> `guest_executor` quando foi delegada no executor injectado (aqui, o componente gVisor), e
+> `undeclared` para um driver que a tabela não conhece. Um resultado do `fake` selado no WORM de
+> um nó de desenvolvimento deixa assim de ser indistinguível de um efeito real. O campo atesta
+> **delegação**, não a força do isolamento: essa lê-se pelo `driver`.
+
 ### O componente
 
 O `GVisorDriver` já tinha a porta certa (`WithGVisorExecutor`) e ninguém a injectava — pelo que

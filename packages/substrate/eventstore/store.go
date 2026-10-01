@@ -516,7 +516,8 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]Ev
 // enquanto o store ACEITA ESCRITAS e false depois de [Store.Close] (o mesmo estado que
 // faz Append/Read devolverem [ErrClosed]) ou quando o WAL deixou de as aceitar.
 //
-// São duas leituras atómicas — não adquire stripes, nem s.mu, nem o mutex do WAL, não
+// São duas leituras atómicas e um bool imutável depois de abrir (`soLeitura`, AOS-362) —
+// não adquire stripes, nem s.mu, nem o mutex do WAL, não
 // aloca e não toca em réplicas — pelo que continua segura para ser chamada com a
 // frequência de um probe de orquestrador (/readyz) sem contender com o caminho de
 // escrita. O átomo do WAL ([wal.recusaEscritas]) existe exactamente para isso: ler o
