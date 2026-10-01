@@ -791,6 +791,88 @@ Commits Conventional (feat(AOS-118): ...), branch feature/AOS-118-dr-replay-e2e,
 
 ---
 
+## AOS-479 — O roteiro E2E de pegadas está desactualizado, e três dos seus achados têm resposta
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é documentação de teste. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-11 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | docs (teste) |
+| Prioridade | P3 |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | — |
+| Responsável sugerido | QA / Arquitecto de Plataforma |
+| Documentos de referência | `docs/testing/e2e-pegadas-visao-19.md`, `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md`, `packages/cmd/aos/control_seal.go`, `packages/cmd/aos/autonomy_route.go` |
+
+### Contexto
+
+O roteiro foi verificado a 2026-09-15 em `8e88f88`. Repetido a 2026-10-01 em `4ef35e0`, todos os
+passos passam, mas várias pegadas escritas já não coincidem com o que o binário devolve, e três
+achados que o roteiro deixou em aberto ficaram respondidos. Repetido outra vez no mesmo dia sobre
+`f7b23f3` (a base, 36 commits à frente), os passos 0–14 e 16–18 dão o mesmo, e o **passo 15 deixa
+de correr como está escrito**: o `snapshot.json` do roteiro é recusado com `capability sem o campo
+obrigatorio mutation (none|mutates|unknown) — AOS-409`, `exit=1`. Com `"mutation"` em cada tool,
+passa.
+
+**Pegadas que mudaram** (lista completa no relatório, §6): banner de 70 linhas; partição
+`trust-anchors` (AOS-446), que desloca as contagens dos passos 8, 10 e 11; `streams 11` e
+`ratification.nonce.consumed 7` no passo 7; reidratação de autonomia no passo 12; eventos
+`plan.proposed`/`validated`/`approved` e gate de plano composto no passo 15 (AOS-408); `exit=9` e
+`lease.released` no passo 16; e a armadilha do `MSYS_NO_PATHCONV=1` com `--key-file /c/…` no
+passo 14.
+
+**Achados do roteiro com resposta:**
+
+- **N.º 6** (`GET /runs/{id}` perde `final_text` e `turns`): a causa é o **restart**, não o DSAR.
+  Antes do restart o run apagado ainda os devolve; depois, perde-os também um run de um titular
+  que nunca foi apagado, e o `reconstruct` dele passa a 410. Com a custódia de referência a KEK
+  vive em memória (deferimento DEF-302, declarado no banner).
+- **N.º 7** (recusas sem selo no WORM): é decisão registada no código, não lacuna. O
+  `control_seal.go` diz que só se selam acções que surtiram efeito, para não dar a quem inunda o
+  canal um vector para inchar o trilho.
+- **Passo 6c**: um pedido L5 com uma só assinatura gasta o nonce antes de ser recusado. É
+  deliberado (`autonomy_route.go`) e o roteiro diz o contrário («sobe um por assinatura aceite»).
+
+**Limite que o roteiro declara e não exercita:** a truncatura da cauda do WORM. Sem âncora, passa:
+removido o último selo de uma cópia (40 → 39), o nó arrancou com `readyz=200`. A defesa é a
+âncora assinada (AOS-268, deferimento DEF-268), que o roteiro nunca arma.
+
+### Objectivo
+
+O roteiro volta a ser uma referência que se pode seguir e comparar linha a linha, e deixa de
+listar como dúvida o que já tem resposta.
+
+### Critérios de Aceitação
+
+- [ ] Roteiro re-executado sobre a base corrente, com as pegadas, as contagens e os códigos de
+      saída repostos, e o commit anotado no cabeçalho.
+- [ ] Achados n.º 6 e n.º 7 reescritos com a causa e a decisão, e a frase do passo 7 sobre os
+      nonces corrigida.
+- [ ] Passo 13 ganha o par de controlo da truncatura: sem âncora arranca (limite declarado), com a
+      âncora armada aborta. Se a âncora não se conseguir armar localmente, o passo diz porquê e
+      aponta o teste automático que cobre o caso.
+- [ ] Passo 13 ganha o controlo positivo: a mesma cópia **sem** adulteração arranca.
+- [ ] Passo 19 descreve a via de leitura em produção (cópia `:ro` dos WAL e análise local) e avisa
+      que o `grep -a -o` dentro do contentor subconta: 8 `tool.call.mediated` contra 52 no
+      ficheiro copiado.
+- [ ] Passo 14 passa a chave com caminho em forma Windows quando usa `MSYS_NO_PATHCONV=1`.
+- [ ] O `snapshot.json` do passo 15 declara `mutation` em cada tool (AOS-409).
+- [ ] A nota «o gate humano de plano não está composto neste binário» do passo 15 é retirada.
+
+### Fora de âmbito
+
+Corrigir os achados 1, 2 e 3 do relatório: têm ticket próprio (AOS-476, AOS-477, AOS-478).
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |

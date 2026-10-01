@@ -830,6 +830,80 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+## AOS-478 — O `producer` do envelope chega vazio na maioria dos eventos: a cadeia de delegação só existe na mediação
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: alinha o contrato do envelope com o que o ADR-003 já decidiu, ou declara por escrito onde não se aplica. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 (o envelope do Event Store e a cadeia de delegação, AOS-006) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (contrato vs. realidade) |
+| Prioridade | P2: a recondução ao humano existe, por `run_id`; o que não bate é o contrato escrito |
+| Estimativa | M |
+| Dependências | AOS-006 (cadeia de delegação), AOS-454 (envelope do evento de mediação na via durável) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §7 (achado 3), `tecnica/13_Modelo_Dados_Eventos.md` §3.1, `packages/substrate/eventstore/event.go` |
+
+### Contexto
+
+`tecnica/13_Modelo_Dados_Eventos.md` §3.1 define o campo: «`producer` — identidade NHI emissora,
+a sua `delegation_chain` on-behalf-of (termina num humano responsável) e o `scope` activo
+(ADR-003)». O `events.wal` de produção, lido inteiro a 2026-10-01 (cópia só-de-leitura,
+2026-08-15 → 2026-10-01), diz outra coisa. Sem contar os 55 263 `lease.renewed`, sobram 2 598
+eventos:
+
+| `producer` | Eventos | Tipos |
+|---|---|---|
+| `nhi_id` **e** `delegation_chain` | 63 | `tool.call.mediated` (52), `tool.call.denied` (11) |
+| só `nhi_id` | 553 | `turn.recorded` (184), `replay.captured` (181), `run.toolset.frozen` (93), `planrequest.*` (46), `ratification.nonce.consumed` (25), `foureyes.challenge.issued` (24) |
+| vazio | 1 982 | `step.checkpoint` (837), `run.state.transition` (202), `memory.record.written` (170), `run.resume.record` (168), `lease.claimed`/`released` (179), `sandbox.*` (282), `step.ledger.applied` (91), `approval.*` (48), `control.*` (5) |
+
+Há ainda uma incoerência dentro do mesmo run: em `turn.recorded` o `nhi_id` é o `sub` de quem
+submeteu, sem cadeia; no `tool.call.mediated` do mesmo passo é o agente (`agt-drenador`), com a
+cadeia `human → agente`.
+
+Localmente, com a credencial demo-grade por headers, a cadeia é `null` em todos os eventos.
+
+Nada disto impede a recondução: faz-se por `run_id`, até ao selo `gov.residency/<run>`, ao
+`planrequest.submitted` ou ao principal da mediação. Mas o contrato promete-a **por evento**, e
+quem escrever um leitor a confiar no `producer` engana-se em 76 % dos casos.
+
+### Objectivo
+
+O contrato e o registo passam a dizer o mesmo. Por tipo de evento, ou o `producer` vem
+preenchido, ou o contrato declara que esse tipo é emitido pelo próprio nó e como se chega ao
+responsável.
+
+### Critérios de Aceitação
+
+- [ ] `tecnica/13_Modelo_Dados_Eventos.md` ganha uma tabela por família de evento com o `producer`
+      esperado: preenchido com cadeia, só `nhi_id`, ou identidade do componente emissor.
+- [ ] Os eventos que resultam de um acto atribuível levam o seu autor: `control.pause` e
+      `control.steer` (o emissor já vem no payload, falta no envelope), `approval.*`,
+      `step.ledger.applied` e `sandbox.*` (o principal da tool call que os causou).
+- [ ] Os eventos de ciclo de vida emitidos pelo nó (`run.state.transition`, `step.checkpoint`,
+      `lease.*`) levam uma identidade de componente não-vazia, à semelhança do
+      `nhi:composition-root` de `run.toolset.frozen`, ou o contrato declara o vazio como válido
+      para eles. A decisão escreve-se no ticket.
+- [ ] `turn.recorded` e `tool.call.*` do mesmo passo identificam o mesmo principal, ou o contrato
+      explica a diferença.
+- [ ] Um teste percorre os tipos do catálogo e falha se um tipo que o contrato marca como
+      atribuível for emitido com `producer.nhi_id` vazio.
+- [ ] Retro-compatibilidade: os 57 861 eventos já gravados continuam legíveis e o replay não muda.
+
+### Fora de âmbito
+
+Assinar eventos no Event Store, e reescrever histórico.
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
