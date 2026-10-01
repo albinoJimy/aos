@@ -133,21 +133,21 @@ NFR_MANUAL_TICKETS = {
 # continuam válidos sobre o original.
 # ---------------------------------------------------------------------------
 
-_RE_FENCE = re.compile(r"^[ \t]*(```|~~~)", re.MULTILINE)
-
-
 def mascarar_fences(text: str) -> str:
     """Devolve `text` com o MESMO comprimento, tendo neutralizado os `#` dentro de blocos de
-    código cercados. Um `# comentário` de bash deixa de se ler como cabeçalho Markdown."""
-    linhas = text.split("\n")
-    dentro = False
-    for i, ln in enumerate(linhas):
-        if _RE_FENCE.match(ln):
-            dentro = not dentro
-            continue
-        if dentro and "#" in ln:
-            linhas[i] = ln.replace("#", ".")
-    return "\n".join(linhas)
+    código cercados. Um `# comentário` de bash deixa de se ler como cabeçalho Markdown.
+
+    As cercas vêm de `adr_citacoes.blocos_cercados` (AOS-318), a mesma detecção que separa
+    directivas de código: a abertura lembra o carácter e o comprimento e só fecha com o mesmo
+    carácter e comprimento ≥, com ≤ 3 espaços de indentação. A versão anterior alternava em
+    QUALQUER linha começada por ``` ou ~~~, pelo que uma cerca de quatro crases a mostrar uma de
+    três, ou ~~~ dentro de ```, invertia o estado e deixava o resto do ficheiro do lado errado."""
+    chars = list(text)
+    for ini, fim in adr_citacoes.blocos_cercados(text):
+        for i in range(ini, fim):
+            if chars[i] == "#":
+                chars[i] = "."
+    return "".join(chars)
 
 
 def fim_do_bloco(texto_mascarado: str, start: int, nivel: int) -> int:
@@ -751,7 +751,7 @@ def generate_section4(rows: list) -> str:
         "",
         "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
         "",
-        "**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; uma directiva `rtm:` desconhecida ou um trecho por fechar avermelham os dois gates. "
+        "**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. As duas formas escrevem-se exactamente assim, em minúsculas e com dois-pontos — não há grafia alternativa (`mencao` sem acento, `RTM:`, `rtm :` são erro) — e dentro de código (crases ou bloco cercado) são texto, não directiva. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; qualquer comentário que comece por `rtm` e não seja uma das formas, ou um trecho desequilibrado, avermelha os dois gates. "
         + f"Hoje {sum(len(r['mencoes']) for r in rows)} par(es) (ticket, ADR) do canon ficam fora da tabela por serem só menção, em {len([r for r in rows if r['mencoes']])} ADR(s). A regra está em `scripts/ci/adr_citacoes.py`.",
         "",
         "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",

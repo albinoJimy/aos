@@ -127,32 +127,33 @@ RE_TICKET_HEADING = re.compile(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", re.M
 # ---------------------------------------------------------------------------
 # DELIMITAÇÃO DO BLOCO DE UM TICKET — GÉMEA de `scripts/ci/rtm-regenerate.py`.
 #
-# Duas cópias de propósito (a delimitação do bloco não está num módulo partilhado — a classificação
-# menção/implementação, essa, está: `adr_citacoes.py`, AOS-318), e o invariante está declarado lá:
-# «os dois leitores do corpus nunca discordem sobre o que um ticket implementa». Corrigir um sem o
-# outro quebra-o — foi o que aconteceu a 2026-09-27, e mediu-se: 6 dos 35 ADRs ficaram com atribuição divergente entre os dois leitores, com o `ref-lint`
-# a ser o mais LARGO dos dois. Isso é fail-open na própria afirmação de cobertura: um ADR cuja única
-# atribuição venha de prosa de cauda aparecia com 0 tickets na RTM e o `ref-lint` ficava verde.
+# Duas cópias de propósito do TERMINADOR (`fim_do_bloco`); a detecção de cercas e a classificação
+# menção/implementação já são partilhadas, em `adr_citacoes.py` (AOS-318), onde o invariante está
+# declarado: «os dois leitores do corpus nunca discordem sobre o que um ticket implementa».
+# Corrigir um sem o outro quebra-o — foi o que aconteceu a 2026-09-27, e mediu-se: 6 dos 35 ADRs
+# ficaram com atribuição divergente entre os dois leitores, com o `ref-lint` a ser o mais LARGO
+# dos dois. Isso é fail-open na própria afirmação de cobertura: um ADR cuja única atribuição venha
+# de prosa de cauda aparecia com 0 tickets na RTM e o `ref-lint` ficava verde.
 #
 # A razão de cada parte do terminador está no comentário do gémeo. Se mudares um, muda o outro NO
 # MESMO COMMIT.
 # ---------------------------------------------------------------------------
 
-_RE_FENCE = re.compile(r"^[ \t]*(```|~~~)", re.MULTILINE)
-
-
 def mascarar_fences(text: str) -> str:
-    """Neutraliza os `#` dentro de blocos de código cercados, preservando o COMPRIMENTO do texto
-    (os offsets de quem chama continuam válidos sobre o original)."""
-    linhas = text.split("\n")
-    dentro = False
-    for i, ln in enumerate(linhas):
-        if _RE_FENCE.match(ln):
-            dentro = not dentro
-            continue
-        if dentro and "#" in ln:
-            linhas[i] = ln.replace("#", ".")
-    return "\n".join(linhas)
+    """Devolve `text` com o MESMO comprimento, tendo neutralizado os `#` dentro de blocos de
+    código cercados. Um `# comentário` de bash deixa de se ler como cabeçalho Markdown.
+
+    As cercas vêm de `adr_citacoes.blocos_cercados` (AOS-318), a mesma detecção que separa
+    directivas de código: a abertura lembra o carácter e o comprimento e só fecha com o mesmo
+    carácter e comprimento ≥, com ≤ 3 espaços de indentação. A versão anterior alternava em
+    QUALQUER linha começada por ``` ou ~~~, pelo que uma cerca de quatro crases a mostrar uma de
+    três, ou ~~~ dentro de ```, invertia o estado e deixava o resto do ficheiro do lado errado."""
+    chars = list(text)
+    for ini, fim in adr_citacoes.blocos_cercados(text):
+        for i in range(ini, fim):
+            if chars[i] == "#":
+                chars[i] = "."
+    return "".join(chars)
 
 
 def fim_do_bloco(texto_mascarado: str, start: int, nivel: int) -> int:

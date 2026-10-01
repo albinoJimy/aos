@@ -33,7 +33,8 @@
 #      gate nats mesmo sem `--- FAIL` que o conte (AOS-452).
 #   Z) um ADR citado só como MENÇÃO (trecho `rtm: menção` ou bloco
 #      `rtm: adrs-mencionados`) não satisfaz «>= 1 ticket implementador» no
-#      ref-lint nem entra na §4; directivas mal formadas falham fechado (AOS-318).
+#      ref-lint nem entra na §4; directivas mal formadas falham fechado, e o que está
+#      em código (cercas, crases simples ou múltiplas) não é directiva (AOS-318).
 #
 # ESTA SUITE MUTA A ÁRVORE DE TRABALHO. Injecta cada falha nos ficheiros reais e
 # restaura-os no `trap`. Não a corra concorrente com edições nem consigo própria:
@@ -1779,7 +1780,7 @@ print("ADR-%03d" % (len(adr_register.adr_codes(Path(sys.argv[1]))) + 1))' "$REPO
 perl -0pi -e "s/((?:^\| ADR-\d{3} \|[^\n]*\n)+)/\$1| $SONDA_ADR | Sonda do self-test Z | **Proposto** | — |\n/m" \
   "$MENCAO_TMP/docs/adr/README.md"
 if ! grep -q "^| $SONDA_ADR |" "$MENCAO_TMP/docs/adr/README.md"; then
-  bad "Z0: a sonda $SONDA_ADR não entrou no registo da cópia — Z1..Z6 estariam a medir o vazio"
+  bad "Z0: a sonda $SONDA_ADR não entrou no registo da cópia — Z1..Z10 estariam a medir o vazio"
 fi
 # O glossário da RTM afirma o extremo do canon à mão, e `assert_numeric_claims` guarda-o:
 # acompanha-se a sonda, como faria quem materializasse um ADR novo. Sem isto a
@@ -1804,6 +1805,21 @@ reflint_bloqueou_com() {
   [ "$rc" -ne 0 ] || return 1
   printf '%s' "$out" | grep -q "$1"
 }
+# ref-lint sobre a cópia: devolve 0 se ficou VERMELHO por a SONDA estar na lista «sem ticket
+# implementador» — a mesma entrada, não a mensagem num sítio e o código noutro (o código
+# aparece também nos erros de citação, e casar os dois em separado provava menos do que diz).
+reflint_sonda_sem_implementador() {
+  local out rc
+  out="$(AOS_REFLINT_ROOT="$MENCAO_TMP" python3 "$CI_DIR/ref-lint.py" 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] || return 1
+  printf '%s\n' "$out" | sed -n '/sem ticket implementador/,/^[^ ]/p' | grep -qx "  - $SONDA_ADR"
+}
+# Os DOIS leitores recusam o corpo actual com a mensagem $1.
+ambos_recusam() {
+  local out rc
+  out="$(AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" --check 2>&1)" && rc=0 || rc=$?
+  [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q "$1" && reflint_bloqueou_com "$1"
+}
 # rtm-regenerate (escrita) sobre a cópia: devolve a linha da §4 da sonda.
 mencao_linha_s4() {
   AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" >/dev/null 2>&1 || return 1
@@ -1813,7 +1829,7 @@ mencao_linha_s4() {
 # Z1 — a sonda citada SÓ dentro de um trecho de menção: o ref-lint tem de a dar
 # como ADR sem implementador, e a §4 tem de lhe pôr 0 tickets.
 mencao_ticket "Restrição: <!-- rtm: menção -->este ticket respeita o $SONDA_ADR, não o entrega.<!-- /rtm: menção -->"
-if reflint_bloqueou_com "sem ticket implementador" && reflint_bloqueou_com "$SONDA_ADR"; then
+if reflint_sonda_sem_implementador; then
   pass "Z1: o ref-lint recusou o $SONDA_ADR citado só num trecho de menção como cobertura"
 else
   bad "Z1: o ref-lint aceitou uma MENÇÃO como ticket implementador do $SONDA_ADR"
@@ -1827,7 +1843,7 @@ esac
 # Z2 — a mesma recusa com o marcador de BLOCO (AOS-313), que até aqui não tinha prova.
 mencao_ticket "<!-- rtm: adrs-mencionados -->
 Fala do $SONDA_ADR sem o implementar."
-if reflint_bloqueou_com "sem ticket implementador" && reflint_bloqueou_com "$SONDA_ADR"; then
+if reflint_sonda_sem_implementador; then
   pass "Z2: o ref-lint recusou o $SONDA_ADR num bloco marcado adrs-mencionados como cobertura"
 else
   bad "Z2: o ref-lint aceitou o marcador de bloco como implementação do $SONDA_ADR"
@@ -1858,20 +1874,16 @@ fi
 # Z4/Z5 — FAIL-CLOSED: um marcador mal escrito que fosse ignorado devolvia o ADR à
 # coluna de implementadores em silêncio. Os DOIS leitores têm de recusar.
 mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção -->Restrição: ADR-001."
-z_rtm_out="$(AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" --check 2>&1)" && z_rc=0 || z_rc=$?
-if [ "$z_rc" -ne 0 ] && printf '%s' "$z_rtm_out" | grep -q "nunca fechado" \
-   && reflint_bloqueou_com "nunca fechado"; then
+if ambos_recusam "nunca fechado"; then
   pass "Z4: rtm e ref-lint recusam um trecho de menção aberto e nunca fechado"
 else
-  bad "Z4: um trecho de menção por fechar passou num dos dois gates (rtm rc=$z_rc)"
+  bad "Z4: um trecho de menção por fechar passou num dos dois gates"
 fi
 mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: mencionado -->Restrição: ADR-001.<!-- /rtm: mencionado -->"
-z_rtm_out="$(AOS_RTM_ROOT="$MENCAO_TMP" python3 "$CI_DIR/rtm-regenerate.py" --check 2>&1)" && z_rc=0 || z_rc=$?
-if [ "$z_rc" -ne 0 ] && printf '%s' "$z_rtm_out" | grep -q "directiva desconhecida" \
-   && reflint_bloqueou_com "directiva desconhecida"; then
+if ambos_recusam "directiva desconhecida"; then
   pass "Z5: rtm e ref-lint recusam uma directiva rtm: desconhecida (gralha não volta a alegar)"
 else
-  bad "Z5: uma directiva rtm: desconhecida passou num dos dois gates (rtm rc=$z_rc)"
+  bad "Z5: uma directiva rtm: desconhecida passou num dos dois gates"
 fi
 
 # Z6 — uma directiva DENTRO de código é texto, não directiva (CommonMark): um ticket
@@ -1882,6 +1894,58 @@ linha="$(mencao_linha_s4 || true)"
 case "$linha" in
   *"| 1 | $SONDA_AOS |"*) pass "Z6: uma directiva entre crases não abre trecho nem retira a implementação" ;;
   *) bad "Z6: uma directiva entre crases foi lida como directiva: «$linha»" ;;
+esac
+
+# Z7 — a revisão adversarial de 50ef14d: o reconhecedor exigia `rtm:` minúsculo colado,
+# e `RTM:` ou `rtm :` eram PROSA — o trecho não abria, a menção voltava a implementação e
+# os dois gates ficavam verdes. Todo o comentário que comece por `rtm` é candidato, e uma
+# candidata que não seja canónica é erro.
+for variante in "RTM: menção" "rtm : menção"; do
+  mencao_ticket "Restrição: <!-- $variante -->o $SONDA_ADR<!-- /$variante -->."
+  if ambos_recusam "directiva desconhecida"; then
+    pass "Z7: rtm e ref-lint recusam «<!-- $variante -->» em vez de o lerem como prosa"
+  else
+    bad "Z7: «<!-- $variante -->» passou num dos dois gates — a menção volta a ser implementação em silêncio"
+  fi
+done
+
+# Z8 — o desequilíbrio nos dois sentidos que Z4 não cobre: fecho sem abertura e aberturas
+# encadeadas.
+mencao_ticket "Implementa o $SONDA_ADR. ADR-001<!-- /rtm: menção -->."
+if ambos_recusam "nunca abriu"; then
+  pass "Z8: rtm e ref-lint recusam um fecho de trecho sem abertura"
+else
+  bad "Z8: um fecho de trecho sem abertura passou num dos dois gates"
+fi
+mencao_ticket "Implementa o $SONDA_ADR. <!-- rtm: menção --><!-- rtm: menção -->ADR-001<!-- /rtm: menção --><!-- /rtm: menção -->"
+if ambos_recusam "ainda por fechar"; then
+  pass "Z8: rtm e ref-lint recusam um trecho aberto dentro de outro"
+else
+  bad "Z8: dois trechos encadeados passaram num dos dois gates"
+fi
+
+# Z9 — CERCAS. A detecção antiga alternava em qualquer linha começada por ``` ou ~~~: uma
+# cerca de quatro crases a mostrar uma de três, ~~~ dentro de ```, ou ```x``` (código em
+# linha, não cerca) invertiam o estado e escondiam como «código» a directiva real que vinha
+# depois. A sonda só está no trecho, a seguir à cerca: tem de ficar sem implementador.
+for z9 in $'````md\n```\n````\n' $'```\n~~~\n```\n' $'```x``` é código em linha.\n'; do
+  mencao_ticket "${z9}<!-- rtm: menção -->O $SONDA_ADR é restrição.<!-- /rtm: menção -->"
+  rot="$(printf '%s' "$z9" | head -1)"
+  if reflint_sonda_sem_implementador; then
+    pass "Z9: depois de «$rot…», a directiva real é lida e a sonda fica sem implementador"
+  else
+    bad "Z9: depois de «$rot…», a directiva real foi tomada por código — a menção virou implementação"
+  fi
+done
+
+# Z10 — CÓDIGO EM LINHA com mais de uma crase. O reconhecedor antigo só conhecia `…`, pelo
+# que ``<!-- rtm: menção -->`` — código, a documentar a sintaxe — abria um trecho REAL, e o
+# que vinha a seguir deixava de alegar implementação.
+mencao_ticket 'Documenta ``<!-- rtm: menção -->`` — o '"$SONDA_ADR"' é implementado aqui — e ``<!-- /rtm: menção -->``.'
+linha="$(mencao_linha_s4 || true)"
+case "$linha" in
+  *"| 1 | $SONDA_AOS |"*) pass "Z10: uma directiva entre crases duplas é texto, e a sonda continua implementada" ;;
+  *) bad "Z10: uma directiva entre crases duplas abriu um trecho real: «$linha»" ;;
 esac
 rm -rf "$MENCAO_TMP"; MENCAO_TMP=""
 

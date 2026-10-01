@@ -893,16 +893,16 @@ corpus precisou disso.
       implementadores, e a §4 documenta-a onde o leitor da matriz a encontre
       — duas formas: o bloco inteiro (`<!-- rtm: adrs-mencionados -->`, que já existia desde
       AOS-313) e, novo, o trecho (`<!-- rtm: menção -->` … `<!-- /rtm: menção -->`), que separa
-      menção de implementação **no mesmo bloco**. A §4 de `tecnica/16` abre com o parágrafo
-      «Citar não é alegar», logo acima da tabela, com a sintaxe, o efeito e a contagem viva
+      menção de implementação **no mesmo bloco**. A §4 de `tecnica/16` inclui, logo acima da
+      tabela, o parágrafo «Citar não é alegar», com a sintaxe exacta, o efeito e a contagem viva
 - [x] O `rtm-regenerate.py` distingue as duas coisas na extracção, e o `ref-lint` não conta
       uma menção como cobertura de ADR (senão a invariante «≥ 1 ticket implementador» passa
       a ser satisfeita por quem só fala da decisão)
       — `adr_citacoes.classificar()` devolve `(implementa, mencionados)` e é a ÚNICA regra, importada
       pelos dois leitores; o gerador guarda as menções à parte (`mencoes`) e conta-as na §4
-      (78 pares em 25 ADRs, à data), o `ref-lint` só lê `implementa`. Prova negativa: `selftest.sh` §Z1
-      (só no trecho) e §Z2 (bloco marcado) — o `ref-lint` fica vermelho com «sem ticket
-      implementador» para um ADR só mencionado; §Z3 é o controlo positivo
+      (78 pares em 25 ADRs, à data), o `ref-lint` só lê `implementa`. Prova negativa:
+      `selftest.sh` §Z1 (só no trecho) e §Z2 (bloco marcado) — o `ref-lint` fica vermelho com o
+      ADR só mencionado **na própria lista** «sem ticket implementador»; §Z3 é o controlo positivo
 - [x] A escolha do mecanismo fica registada com o custo de migração à frente: um marcador
       inline, semântica por secção do bloco, ou um campo explícito a substituir a extracção
       textual — as duas últimas deslocam pares existentes, e os 357 de hoje são a linha de
@@ -932,8 +932,8 @@ de esses blocos existirem; hoje não é verdade, e são os próprios blocos a di
 
 | Opção | Pares deslocados (de 445) | Porquê |
 |---|---|---|
-| Marcador inline (escolhido) | **0** | Nenhum bloco o usa até alguém o escrever; o marcador de bloco mantém o significado |
-| Semântica por secção (só os Critérios de Aceitação alegam) | 332 | Só 113 pares têm o ADR nos CA; o resto vive na tabela de campos, no Contexto e no Estado |
+| Marcador inline (escolhido) | **0** | Nenhum bloco o usa até alguém o escrever. O marcador de bloco mantém o significado, com uma diferença: escrito **entre crases** deixou de contar (em 2e218bf contava) — só o AOS-329 o tem assim, sem nenhum ADR no bloco, pelo que o efeito hoje é nulo |
+| Semântica por secção (só os Critérios de Aceitação alegam) | 332 | Só 113 pares têm o ADR nos CA; o resto vive na tabela de campos, no Contexto e no Estado. Método: secções com cabeçalho `### Critérios de Aceitação` (ou `####` num ticket `###`), sem distinguir maiúsculas, até ao cabeçalho seguinte. Contando também as 74 secções em negrito (`**Critérios de aceitação**`) até ao cabeçalho seguinte, seriam 170 nos CA e **275** deslocados — a revisão mediu 156/289 com outra fronteira; a ordem de grandeza, e a decisão, não mudam |
 | Campo explícito (a linha `Documentos de referência`/`relacionados` como fonte única) | 214 | Só 231 pares têm o ADR nesse campo; não existe nenhum campo `ADRs` no corpus |
 
 O custo do inline é o oposto do das outras duas: é **opt-in**. As atribuições falsas que já estão
@@ -942,29 +942,67 @@ escritas ficam até alguém reler o bloco e marcar o trecho — é o resíduo 1.
 **O que ficou construído.**
 
 - `scripts/ci/adr_citacoes.py` (novo): `classificar(bloco) -> (implementa, mencionados)`. Um ADR
-  citado também **fora** do trecho continua implementado. Falha **fechado**: directiva `rtm:`
-  desconhecida, trecho aberto sem fecho, fecho sem abertura ou aberturas encadeadas são erro nos
-  dois gates — uma gralha ignorada devolvia o ADR à coluna em silêncio. Directivas **dentro de
-  código** (crases, blocos cercados) são texto, como no CommonMark: é o que deixa este ticket
-  documentar o mecanismo sem o accionar.
+  citado também **fora** do trecho continua implementado. As formas escrevem-se exactamente assim
+  — sem alias: `mencao` sem acento é erro — e comparam-se depois de normalizar para NFC. Falha
+  **fechado**: todo o comentário que comece por `rtm` (sem distinguir maiúsculas, com ou sem
+  espaços ou dois-pontos) e não seja canónico, um trecho aberto sem fecho, um fecho sem abertura
+  ou aberturas encadeadas são erro nos dois gates — uma gralha ignorada devolvia o ADR à coluna em
+  silêncio. Directivas **dentro de código** são texto: é o que deixa este ticket documentar o
+  mecanismo sem o accionar. A varredura segue o CommonMark nas cercas (carácter e comprimento da
+  abertura, ≤ 3 espaços, info string sem crases), no código em linha de N crases e nos
+  comentários; as aproximações que restam (código indentado, cercas em itens de lista com 4+
+  espaços, crases escapadas) estão enumeradas no módulo, sem caso no corpus, e todas erram para o
+  lado de ler uma directiva — que, sozinha, falha fechado.
 - `rtm-regenerate.py` e `ref-lint.py` deixam de ter cada um a sua cópia da regra e importam o
-  módulo (o molde de `adr_register.py`, AOS-317). O gerador guarda as menções em `mencoes`; a §4
-  ganha o parágrafo «Citar não é alegar» e a contagem viva dos pares que ficam de fora.
-- `selftest.sh` §Z1–Z6, sobre uma **cópia** do corpus a que se acrescenta o ADR e o ticket seguintes
+  módulo (o molde de `adr_register.py`, AOS-317), e com ele a detecção de cercas de que o
+  `mascarar_fences` dos dois depende. O gerador guarda as menções em `mencoes`; a §4 ganha o
+  parágrafo «Citar não é alegar» e a contagem viva dos pares que ficam de fora.
+- `selftest.sh` §Z1–Z10, sobre uma **cópia** do corpus a que se acrescenta o ADR e o ticket seguintes
   aos maiores — derivados, para a sonda não envelhecer no dia em que esses códigos existirem.
 
 **Não-regressão, medida.** O conjunto (ticket, ADR) extraído antes e depois é o mesmo, par a par:
 445 → 445, `cmp` das duas listas ordenadas sem diferenças. A diff de `tecnica/16` reduz-se ao
 parágrafo novo da §4 e às quatro palavras «fora de menção declarada» na frase que o precede.
 
-**Mutação.** Trocar, no gerador, a classificação pela extracção textual antiga avermelha o
-`rtm.sh` contra a árvore real (os 78 pares de menção voltavam à tabela) e §Z1, §Z3, §Z4 e §Z5;
+**Mutação.** Trocar, no gerador, a classificação por `set(re.findall(r"ADR-\d{3}", block))` —
+extracção textual pura, **sem** o marcador de bloco, ou seja anterior a AOS-313 e não o código
+de 2e218bf, que já o honrava — avermelha o `rtm.sh` contra a árvore real (os 78 pares de menção
+voltavam à tabela; contra 2e218bf voltariam só os 6 dos blocos de AOS-317/318) e §Z1, §Z3, §Z4 e §Z5;
 desligar só o trecho em `adr_citacoes.py` avermelha §Z1 (nos dois leitores) e §Z3; deixar de
 mascarar o código avermelha §Z6 — e só ele, porque a árvore real continua verde: é o subteste que
 segura essa propriedade. Restaurados, verdes, com o hash dos dois ficheiros igual ao de antes.
 
 Gates: `rtm.sh`, `ref-lint.sh`, `estado-citado.sh` e `lint.sh` verdes; `selftest.sh` completo
-verde (94 subtestes, §Z1–Z6 incluídos).
+verde (94 subtestes, §Z1–Z6 incluídos; ver a revisão abaixo para a segunda passagem).
+
+**Revisão adversarial independente (2026-10-01), sobre 50ef14d.** Duas falhas abertas de severidade
+média e cinco menores, todas fechadas num commit por cima, sem reescrever o anterior:
+
+- **Reconhecedor de directivas estreito de mais** (médio, reproduzido): só `rtm:` minúsculo e
+  colado era directiva; `<!-- RTM: menção -->`, `<!-- rtm : menção -->`, `<!-- rtm menção -->` e
+  `<!--- rtm: menção --->` eram prosa, a menção voltava a implementação e os dois gates ficavam
+  verdes — o contrário do que o cabeçalho do módulo prometia. Agora todo o comentário que comece
+  por `rtm` é candidato, e não-canónico é erro. §Z7.
+- **Máscara de código divergente do CommonMark nos dois sentidos** (médio, reproduzido): as cercas
+  alternavam em qualquer linha começada por três crases ou três tis — uma cerca de quatro crases a
+  mostrar uma de três, tis dentro de uma cerca de crases, ou três crases a abrir código em linha
+  escondiam como código a directiva real seguinte — e o código em linha só conhecia uma crase
+  (uma directiva entre crases duplas abria um trecho real). O mesmo
+  defeito de cercas vivia no `mascarar_fences` anterior a este ticket. Uma só varredura em
+  `adr_citacoes.py` serve agora as duas coisas; contra o corpus de hoje dá **a mesma máscara nos
+  25 ficheiros e a mesma classificação nos 458 blocos** que a de 50ef14d. §Z9, §Z10.
+- Menores: o critério 1 dizia que a §4 «abre» com o parágrafo, e é o terceiro; a mutação não dizia
+  qual era; o método dos 332/113 não estava escrito; faltavam testes para fecho sem abertura,
+  aberturas encadeadas e cercas (§Z8, §Z9), e §Z1/§Z2 casavam a mensagem e o código em sítios
+  diferentes da saída (passam a exigir o ADR na própria lista); o alias `mencao` não estava
+  documentado (saiu: é erro), não havia normalização NFC (há), uma frase do módulo era agramatical
+  e uma linha do `ref-lint.py` tinha 150 colunas; e «o marcador de bloco mantém o significado»
+  omitia que, entre crases, deixou de contar.
+
+Mutação da segunda passagem, cada uma revertida e o hash do módulo confirmado: reconhecedor
+estreito de volta → §Z7 vermelho (as duas variantes); cercas a alternar em qualquer linha de três crases ou tis →
+§Z9 vermelho (os três casos); código em linha só de uma crase → §Z10 vermelho; aberturas
+encadeadas aceites → §Z8 vermelho. Gates verdes; `selftest.sh` completo verde, a correr sozinho (102 subtestes, §Z1–Z10 com 17).
 
 **Resíduos declarados.**
 
@@ -972,16 +1010,21 @@ verde (94 subtestes, §Z1–Z6 incluídos).
    ligação. Migrá-los é marcar o trecho das restrições em seis blocos da EPIC-19 — trabalho
    mecânico, mas de outros tickets, e por isso fora deste. Desloca exactamente 17 pares (16 saem,
    1 entra) e merece ticket próprio.
-2. **A delimitação do bloco continua duplicada** entre os dois leitores (`fim_do_bloco`,
-   `mascarar_fences`). A classificação passou a ser partilhada; o terminador não, e o comentário
-   «muda o outro no mesmo commit» continua a ser a única guarda dessa metade.
+2. **O terminador do bloco continua duplicado** entre os dois leitores (`fim_do_bloco`). A
+   classificação e a detecção de cercas passaram a ser partilhadas; o terminador não, e o
+   comentário «muda o outro no mesmo commit» continua a ser a única guarda dessa metade.
+3. **Nenhum gate compara o conjunto de pares (ticket, ADR) de um commit com o do anterior.** Uma
+   linha de prosa que comece por três tis ou três crases abre, com toda a razão, uma cerca até ao
+   fim do ficheiro, e desloca pares sem que `rtm.sh` dê por isso — regenerada, a RTM fica
+   sincronizada com o corpus errado. Aconteceu ao escrever a nota da revisão acima, e só a
+   comparação manual dos 445 pares o apanhou antes do commit.
 
 ### Estado
 
 **FEITO** (2026-10-01). P2.
 
 `scripts/ci/adr_citacoes.py` (novo), `scripts/ci/rtm-regenerate.py`, `scripts/ci/ref-lint.py`,
-`scripts/ci/selftest.sh` (§Z), `tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada),
+`scripts/ci/selftest.sh` (§Z1–Z10), `tecnica/16_Rastreabilidade_RTM.md` (§4 regenerada),
 `specs/EPIC-22_Remediacao_Auditoria_ORQ_SCH_PDP.md` (blocos de AOS-317 e AOS-318).
 
 ---
