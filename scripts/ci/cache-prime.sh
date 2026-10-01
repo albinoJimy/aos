@@ -32,6 +32,22 @@ while IFS= read -r mod; do
   fi
 done < <(discover_modules)
 
+# O GRAFO DO WORKSPACE TAMBÉM (AOS-387). O ciclo acima corre com GOWORK=off (lib.sh) e aquece
+# o grafo de CADA módulo. O workspace une os 49 grafos e o MVS escolhe a maior versão de cada
+# dependência — e enquanto as versões externas forem iguais em todos os módulos, isso não pede
+# nada novo. Basta UM módulo fixar outra versão (medido na revisão: um `golang.org/x/exp`
+# diferente) para o grafo do workspace precisar de go.mod que nenhum grafo individual pede
+# (`cedar-go` → `go-cmp v0.7.0`), e o `gowork.sh compilar` offline cair. Por isso o prime
+# descarrega também o grafo do workspace. Escreve um go.work.sum LOCAL (está no .gitignore): é
+# derivado do cache, não é preciso versioná-lo — ver tecnica/11 §8.1, decisão (b).
+if [ -f "$REPO_ROOT/go.work" ]; then
+  log_step "go mod download · grafo do workspace (go.work)"
+  if ! ( cd "$REPO_ROOT" && GOWORK="$REPO_ROOT/go.work" go mod download ); then
+    log_fail "go.work: download do grafo do workspace falhou (rede indisponível?)"
+    rc=1
+  fi
+fi
+
 if [ "$rc" -eq 0 ]; then
   log_ok "cache-prime: cache populado e verificado; os gates podem agora correr com GOPROXY=off num runner frio"
 else

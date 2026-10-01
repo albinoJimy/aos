@@ -36,6 +36,13 @@ analises/
 coverage/
 scripts/
 
+# --- Workspace Go (AOS-387) — nunca no contexto ---
+# Os builds de imagem compilam cada módulo pelas suas `replace` (standalone). Um go.work no
+# contexto poria o `go build` em modo workspace, com outro grafo e outro binário (medido no
+# deploy/node/dev-hardened/attestation, que faz `COPY . .`).
+go.work
+go.work.sum
+
 # --- Artefactos de build / caches / binários ---
 **/vendor/
 **/node_modules/

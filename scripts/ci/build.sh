@@ -16,11 +16,12 @@ while IFS= read -r mod; do
   fi
 done < <(discover_modules)
 
-# O go.work da raiz (AOS-387). Os builds acima correm com GOWORK=off (setup_env), como a CI
+# O go.work da raiz (AOS-387). Os builds acima correm com GOWORK=off (lib.sh), como a CI
 # sempre correu; estes dois passos são a única coisa que impede o workspace de apodrecer em
 # silêncio: (1) o conjunto `use` é exactamente o dos go.mod de packages/ — um módulo novo sem
 # `use` avermelha aqui —, e (2) o workspace compila inteiro, offline. Corre DEPOIS do ciclo
-# por-módulo, que é quem aquece o cache num runner frio.
+# por-módulo, que aquece o cache de cada módulo; o grafo do workspace aquece-o o próprio
+# `compilar` quando o run tem rede, ou o cache-prime quando não tem.
 if bash "$CI_DIR/gowork.sh" verificar; then
   bash "$CI_DIR/gowork.sh" compilar || rc=1
 else

@@ -2,6 +2,11 @@
 # binário do nó NUNCA pode importar (ADR-017). Build a partir da raiz do repo (contexto = repo root,
 # como o do nó), módulo próprio packages/cmd/aos-attestation.
 FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS build
+# GOWORK=off (AOS-387): o `COPY . .` traz a árvore inteira, e um go.work na raiz poria o build em
+# modo workspace — binário diferente do da resolução standalone (o `go version -m` perde o
+# `=> ../../platform/attestation`). O .dockerignore já exclui go.work/go.work.sum; isto fecha o
+# caso de um contexto que não o respeite.
+ENV GOWORK=off
 WORKDIR /src
 COPY . .
 WORKDIR /src/packages/cmd/aos-attestation

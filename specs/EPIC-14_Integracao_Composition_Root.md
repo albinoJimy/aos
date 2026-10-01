@@ -1127,24 +1127,27 @@ gates e do nó, e decidir/registar a política de coexistência com as `replace`
 
 - [x] Existe um `go.work` na raiz cujo conjunto `use` é exactamente o output de
       `find packages -name go.mod -printf '%h\n'` (verificável por script; módulo novo sem `use` avermelha)
-      — gerado por `scripts/ci/gowork.sh gerar` (49 `use`, `go 1.25`, `toolchain go1.25.13`);
-      `gowork.sh verificar` rc=0. Negativo na árvore real: dois módulos descartáveis sem `use` →
-      `verificar` rc=1 e `build.sh` rc=1, nomeando-os. Durável: self-test Z1–Z5 (verde em `selftest.sh` rc=0)
+      — gerado por `scripts/ci/gowork.sh gerar` (49 `use`, `go 1.25`, `toolchain go1.25.13`, as
+      directivas máximas dos módulos); `gowork.sh verificar` rc=0. Negativo na árvore real: dois
+      módulos descartáveis sem `use` → `verificar` rc=1 e `build.sh` rc=1, nomeando-os. Durável:
+      self-test GW1–GW13, e 17 mutações da guarda, todas mortas
 - [x] Decisão registada em `tecnica/11` (ou ADR curto): (a) `replace` committadas mantêm-se — ou
       removem-se, com racional; (b) `go.work`/`go.work.sum` committados ou `.gitignore`d, com racional
-      — `tecnica/11` §8.1: (a) mantêm-se; (b) `go.work` committado, `go.work.sum` desnecessário (medido)
-      e NÃO ignorado
+      — `tecnica/11` §8.1: (a) mantêm-se; (b) `go.work` committado, `go.work.sum` derivado do cache e
+      no `.gitignore` (revisto após a revisão adversarial; ver Entrega)
 - [x] `build`, `lint`, `layer-lint`, `test` (`-race` + pisos de cobertura), `dormencia`,
       `integration`, `apex` e `selftest` ficam verdes no estado em que a CI os corre (com `GOWORK`
-      ligado ou `off`, documentado) — `GOWORK=off` forçado em `setup_env`; todos rc=0 (ver Entrega)
+      ligado ou `off`, documentado) — `GOWORK=off` exportado ao CARREGAR o `lib.sh` (todo o gate;
+      provado pelo GW12 com um `go` sombra); exit codes na Entrega
 - [x] As fronteiras nó↔ORQ/SCH continuam impostas: testes de fronteira (`TestBoundary_NodeDoesNotImport…`)
       e `layer-lint` provam que o grafo de imports não mudou — `layer-lint` rc=0; os 6 `TestBoundary_*`
       PASS em `GOWORK=off` e em modo workspace; grafo `go list -test -deps` dos 49 módulos idêntico nos
       dois modos (8254 arestas, mesmo sha256); nenhum `go.mod` tocado, e o único `.go` tocado é uma
       linha de `_test.go` (desvio declarado na Entrega), que não entra no grafo de produção
 - [x] Regra zero-dep/offline mantém-se: `cache-prime`/build offline reproduz sem rede — `GOMODCACHE`
-      frio → `cache-prime.sh` rc=0 → `GOPROXY=off build.sh` rc=0, incluindo o build do workspace; não
-      nasce `go.work.sum`
+      frio → `cache-prime.sh` rc=0 → `GOPROXY=off build.sh` rc=0, incluindo o build do workspace. Com
+      versões externas DIVERGENTES entre módulos também (o `cache-prime` passou a aquecer o grafo do
+      workspace; ver Entrega)
 - [x] `bash .claude/skills/run-aos/driver.sh smoke` passa — SMOKE VERDE 10/10, rc=0
 - [~] Controlo positivo: integrar um módulo novo passa a exigir só `go work use ./…` e zero edições de
       `replace` noutros `go.mod` — **cumpre-se em modo workspace, não no modo da CI.** Com dois
@@ -1152,9 +1155,9 @@ gates e do nó, e decidir/registar a política de coexistência com as `replace`
       com `go.mod` só de `module`+`go`: `go work use` → `verificar` rc=0, `compilar` rc=0, sha dos
       `go.mod` existentes inalterado. Mas a CI corre com `GOWORK=off` (decisão (a)), e aí o mesmo módulo
       falha (`no required module provides package …/zzprobe`): o `go.mod` do módulo novo continua a
-      precisar de `require`+`replace`. Fechar isto exige a CI em modo workspace. O bloqueio do
-      devharness já caiu (os 49 módulos passam em modo workspace), mas restam três: o self-test A2, a
-      contagem de módulos do `sbom.sh` e os módulos fora de `packages/` (ver Entrega)
+      precisar de `require`+`replace`. Nenhum dos pontos que hoje separam a CI do modo workspace é
+      intransponível — cada um admite um `GOWORK=off` local —; o que fica verdade é que a CI não corre
+      em modo workspace, e mudá-lo é decisão nova (ver Entrega)
 
 ### Definition of Done
 
@@ -1209,127 +1212,206 @@ Sequência recomendada (ambiente com rede): gerar `go.work` (os 53 `use`) → `g
 
 ### Entrega (2026-10-01)
 
-**Modo da CI: `GOWORK=off`, forçado em `setup_env`.** O Go descobre o `go.work` sozinho a partir
-de qualquer directório abaixo da raiz, pelo que, sem isto, todos os gates passariam a correr em
-modo workspace só por o ficheiro existir. O modo workspace foi medido e recusado como modo da CI,
-porque muda o que os gates medem:
+**Modo da CI: `GOWORK=off`, exportado ao carregar o `scripts/ci/lib.sh`.** O Go descobre o
+`go.work` sozinho a partir de qualquer directório abaixo da raiz, pelo que, sem isto, todos os
+gates passariam a correr em modo workspace só por o ficheiro existir. O export está ao nível de
+topo do `lib.sh`, não no `setup_env`: na primeira entrega estava lá, e o `layer-lint`, que nunca
+chama o `setup_env`, corria em modo workspace (achado MÉDIO-1, abaixo). O modo workspace foi
+medido e recusado como modo da CI, porque mudaria o que três gates medem:
 - o self-test A2 deixaria de provar o que diz: em modo workspace até um teste verde falha num módulo
   sem `use` (`directory prefix . does not contain modules listed in go.work`);
-- `scripts/ci/attest` e os módulos de `deploy/` deixam de compilar, e o `go list -m all` do `sbom.sh`
-  passa de 4 para 57 módulos.
+- `scripts/ci/attest` e os módulos de `deploy/` deixam de compilar;
+- o `go list -m -json all` do `sbom.sh` passa de 3 para 57 módulos em `packages/platform/attestation`.
 
 **Desvio declarado ao «NÃO alteres ficheiros .go» do handoff.** A decisão é da sessão principal e
-toca uma linha de `_test.go`. Na primeira entrega (`84f2405`), um `go test` simples em
-`packages/cmd/aos`, com o `go.work` da raiz activo, avermelhava
-`TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary`. O `buildAOSIssuer` compila o issuer num
-subprocesso com `GOFLAGS=-mod=mod`, e o modo workspace recusa-o («-mod may only be set to readonly or
-vendor when in workspace mode»). Documentar «prefixe `GOWORK=off`» não é correcção de uma regressão
-de quem desenvolve.
+toca uma linha de `_test.go`. Na primeira entrega, um `go test` simples em `packages/cmd/aos`, com o
+`go.work` da raiz activo, avermelhava `TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary`. O
+`buildAOSIssuer` compila o issuer num subprocesso com `GOFLAGS=-mod=mod`, e o modo workspace
+recusa-o («-mod may only be set to readonly or vendor when in workspace mode»). A correcção
+acrescenta `"GOWORK=off"` ao ambiente desse subprocesso (`packages/cmd/aos/devharness_test.go`), com
+comentário: o issuer compila-se como módulo standalone, pelas suas próprias `replace`. Não toca
+código de produção nem o grafo de imports. O driver do run-aos voltou a ficar como na base.
 
-A correcção acrescenta `"GOWORK=off"` ao ambiente desse subprocesso
-(`packages/cmd/aos/devharness_test.go`), com comentário: o issuer compila-se como módulo standalone,
-pelas suas próprias `replace`. Não toca código de produção nem o grafo de imports.
-
-Com isso, o driver do run-aos deixou de precisar de `GOWORK=off` e voltou a não o exportar: compila e
-testa com o workspace activo, como quem corre `go` à mão.
+Os subprocessos de build de `aos399` (`buildAOSNode`) e de `cmd/aos-orq` (`dois_processos`)
+compilam em modo workspace para quem desenvolve, e o issuer com `GOWORK=off`. A inconsistência é
+deliberada: os dois primeiros não usam `-mod=mod`, passam nos dois modos, e o grafo é idêntico nos
+dois. Alinhá-los seria outro desvio a `.go` sem defeito que o justifique.
 
 **Suite completa em modo workspace** (`GOWORK` por definir, logo o `go.work` da raiz):
-`go test -count=1 ./...` em cada um dos 49 módulos dá **49/49 rc=0**, sem `-race`. Nenhum módulo
-falha só em modo workspace, e não nasce `go.work.sum`. O
-`TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary` corre e passa (`-v`) nos dois modos.
+`go test -count=1 ./...` em cada um dos 49 módulos, sem `-race`, dá **49/49 rc=0** (medido duas vezes, antes e depois desta revisão). Nenhum módulo
+falha só em modo workspace.
 
 **O que guarda o `go.work`, já que a CI não o usa.** `scripts/ci/gowork.sh` tem três modos:
 - `gerar` escreve o ficheiro;
 - `verificar` exige:
-  - o conjunto `use` igual ao dos `go.mod` de `packages/`, lido pelo parser do Go;
-  - `go` igual à maior directiva dos módulos;
-  - `toolchain` igual ao `FROM golang:` da imagem de produção;
-  - nenhum `replace` no ficheiro;
-- `compilar` faz um único `go build` sobre os 49 módulos em modo workspace, com `GOPROXY=off` e
-  `-mod=readonly`, e avermelha se aparecer um `go.work.sum` por versionar.
+  - o conjunto `use` igual ao dos `go.mod` de `packages/`, a qualquer profundidade, lido pelo parser do Go;
+  - `go` e `toolchain` iguais às maiores directivas dos módulos;
+  - nenhum `replace`;
+- `compilar` faz um único `go build` sobre os 49 módulos, em modo workspace e offline, e prova
+  NECESSIDADE do `go.work.sum`, não presença. Quando o run tem rede, aquece antes o grafo do
+  workspace.
 
-O `build.sh` corre `verificar` e `compilar` depois do ciclo por-módulo. O self-test Z prova numa
-árvore sintética, fora do repo:
-- Z1, o controlo: o ficheiro gerado passa;
-- Z2: um módulo sem `use` avermelha, e o diagnóstico nomeia-o;
-- Z3: um `use` órfão avermelha;
-- Z4: um `go.work` ausente avermelha;
-- Z5: o `build.sh` faz a chamada e o vermelho chega ao rc.
+O `build.sh` corre `verificar` e `compilar` depois do ciclo por-módulo.
 
-O predicado do Z5 foi mutado três vezes (sem a chamada, com o rc engolido, com o `compilar`
-engolido), e morde nas três.
+**Revisão adversarial independente (2026-10-01), sobre 3a5216d.** Um achado ALTO e seis MÉDIO,
+todos reproduzidos pelo revisor e todos corrigidos neste commit:
 
-**Medições que corrigem os pré-requisitos de 2026-09-09.** A tentativa revertida previa um
-`go.work.sum` obrigatório e rede para o gerar. Isso valia para o caminho que removia as `replace`.
-Com elas mantidas:
-- o workspace resolve offline sem `go.work.sum`;
-- as dependências externas têm a mesma versão em todos os módulos;
-- os checksums já estão nos `go.sum` dos módulos.
+- **ALTO-1, `go.work.sum` com diagnóstico falso.**
+  - *O defeito:* comandos de rotina em modo workspace criam um `go.work.sum` por versionar
+    (`go list -m all`, `go list -m -json all`, `go mod download`), mesmo com `GOPROXY=off` e
+    `-mod=readonly`. O `compilar` avermelhava então com «o workspace precisa de checksums…
+    versione-o», logo depois de compilar sem ele.
+  - *A medição:* com o módulo no cache, o Go compila offline em modo workspace sem `go.sum` nem
+    `go.work.sum`, e escreve-o ele próprio, mesmo com um cache sem tiles do sumdb. O
+    `go.work.sum` é derivado do cache, e o modo offline precisa do cache, não dele.
+  - *A correcção:*
+    - o `compilar` põe de lado um `go.work.sum` por versionar e compila offline sem ele;
+    - só avermelha se o workspace não compilar, e diz o que o build disse;
+    - avisa, e repõe-no byte-a-byte;
+    - apaga o que a própria sonda criar;
+    - o `go.work.sum` foi para o `.gitignore`;
+    - selftest GW10a e GW10b, os dois ramos;
+    - o ramo «só compila com ele» não é construível, pela medição acima.
+- **MÉDIO-1, gates em modo workspace.**
+  - *O defeito:* o `layer-lint.sh` e o `run.sh` carregam o `lib.sh` sem chamar o `setup_env`.
+  - *A auditoria:* todos os `scripts/ci/*.sh` com invocações de `go`, e os passos do `ci.yml`, onde
+    nenhum invoca `go` directamente. Os Python não invocam `go`.
+  - *A correcção:*
+    - `export GOWORK=off` ao nível de topo do `lib.sh`;
+    - `GOWORK=off` no `go run` do `nats-cluster.sh`, que não carrega o `lib.sh`;
+    - selftest GW12a (estático: export de topo, e todo o script que invoca `go` carrega o `lib.sh`);
+    - selftest GW12b (dinâmico: um `go` sombra no `PATH` regista o `GOWORK` das 49 invocações do
+      `layer-lint` real, corrido com o `GOWORK` do ambiente apagado, e todas dão `off`).
+- **MÉDIO-2, offline com versões divergentes.**
+  - *Reproduzido* num módulo-folha (`security-tests` com outro `golang.org/x/exp`), com cache frio:
+    - `cache-prime` antigo rc=0, depois `GOPROXY=off compilar` rc=1 (`github.com/google/go-cmp@v0.7.0:
+      module lookup disabled by GOPROXY=off`) e `build.sh` rc=1;
+    - com o `cache-prime` novo, que aquece o grafo do workspace: `compilar` rc=0 e `build.sh` rc=0
+      offline, e o `go.work.sum` de 15 linhas que o prime escreve não é preciso;
+    - no caso da CI do GitHub (com rede, sem `cache-prime`, cache frio), o `build.sh` dá rc=0: o
+      `compilar` aquece o grafo quando há rede.
+  - *Limite declarado:* a prova dinâmica exige descarregar uma segunda versão, ou seja, rede, pelo
+    que não é self-test. O GW13 prende o passo do `cache-prime`.
+- **MÉDIO-3, worktrees aninhados.** Um worktree em `.claude/worktrees/` com base anterior ao
+  `go.work`, dentro de um checkout que já o tem, herda o `go.work` de fora. `go test` e o
+  `layer-lint` dele falham (confirmado na árvore do revisor; com `GOWORK=off` lista os pacotes).
+  - *O que não se pode corrigir:* um commit novo não corrige o `lib.sh` antigo desse worktree.
+  - *A decisão:* manter o `go.work` committado. É transitório: um worktree com base que já o traga
+    encontra o seu próprio primeiro. Ignorar o `go.work` e gerá-lo a pedido seria pior: quem o
+    gerasse no checkout principal partiria TODOS os worktrees aninhados, para sempre, e o gate
+    deixaria de o poder verificar.
+  - *O remédio,* documentado em `CONTRIBUTING.md` e `tecnica/11` §8.1: `export GOWORK=off`, ou rebase.
+- **MÉDIO-4, imagens em modo workspace.**
+  - *O defeito:* o `deploy/node/dev-hardened/attestation/Dockerfile` faz `COPY . .`.
+  - *A correcção:* `go.work` e `go.work.sum` no `.dockerignore`, e `ENV GOWORK=off` nesse
+    Dockerfile. Os outros quatro Dockerfiles copiam só `packages/` ou o seu próprio directório.
+  - *Medido sem Docker, com o mesmo comando de build:*
+    - workspace activo: binário diferente;
+    - `GOWORK=off` sobre uma árvore com `go.work`: binário **idêntico** (`cmp`) ao de uma árvore
+      sem `go.work`.
+- **MÉDIO-5, directivas e toolchain.** `go 1.25` e `toolchain go1.25.13` são agora derivadas como o
+  MÁXIMO das directivas dos módulos (`cmd/aos`, `cmd/aos-issuer` e `cmd/aos-attestation` já pedem as
+  duas), em vez de lidas do Dockerfile.
+  - *A política,* verificada: a toolchain dos gates é go1.25.13 (`toolchain-lint`, `setup-go` da CI,
+    `FROM golang:` da imagem); o `AGENTS.md` diz 1.24, que é a directiva de linguagem dos outros 46
+    módulos. O `CONTRIBUTING.md` foi corrigido para 1.25.13.
+  - *O comentário falso* do `gowork.sh` foi corrigido: sem a linha `toolchain`, um Go 1.24 com
+    `auto` muda para go1.25.0, também pela rede.
+  - *A exigência, documentada:* Go local < 1.25 com `GOTOOLCHAIN=local` usa `GOWORK=off`.
+- **MÉDIO-6, cobertura do self-test.**
+  - *O self-test GW* tem agora 13 casos, sobre uma árvore sintética com módulo aninhado (profundidade 4).
+  - *17 mutações da guarda, todas mortas:*
+    - sem verificação de `replace`, de `toolchain`, da directiva `go`, de falta, de sobra;
+    - `compilar` sempre verde;
+    - `find -maxdepth 2`;
+    - `build.sh` com `rc=0` no fim, com `exit 0`, sem a chamada a `verificar`, a engolir o `compilar`;
+    - `lib.sh` sem o export de topo, ou com o export de volta dentro do `setup_env`;
+    - a guarda do `go.work.sum` de volta a «presença = vermelho», ou sem repor o ficheiro;
+    - `cache-prime` sem o grafo do workspace, ou a engolir a falha deste.
+- **BAIXO.**
+  - (1) A contagem do SBOM é 3→57, em `packages/platform/attestation`, que é o que o `sbom.sh` lista.
+  - (2) O `SKILL.md` diz «any module under `packages/`».
+  - (3) Ficou documentado que o `verificar` exige `use` para um `go.mod` sob `testdata/`/`vendor/`,
+    o mesmo critério do `discover_modules`.
+  - (4) O AC7 foi reescrito.
+  - (5) `aos399` e `dois_processos`: ficam como estão, ver acima.
+- **Rebase.** Os dois commits anteriores foram reaplicados sobre `258365a` (AOS-318). A secção do
+  self-test deste ticket, que também se chamava «§Z», passou a «§GW» (GW1…GW13), e a §Z do AOS-318
+  mantém-se.
+- **Fora deste ticket.** `TestAOS465DespejaAMenosRecentementeUsada` (`cmd/aos`), um teste de
+  tempo sobre o despejo LRU de ligações, falhou duas vezes nesta árvore sob `-race`: numa corrida
+  do `test.sh` (a seguinte passou) e em 1 de 40 corridas de `-count=40 -run TestAOS465` (a
+  repetição deu 0 em 40). Na base `258365a` deu 0 em 40, e 0 em 60 com o teste isolado: **não se
+  reproduziu na base.** Mesmo assim, não é atribuível a esta entrega. Em `packages/` a única
+  diferença para a base é a linha do `devharness_test.go`, que fixa o ambiente de um subprocesso
+  de outro teste, e esta entrega não altera o código nem o grafo que o teste exercita. Fica
+  registado como intermitente a vigiar, e não foi aberto ticket: sem reprodução determinística não
+  há defeito nomeável.
 
-O `use` cobre os 49 módulos de `packages/`, como diz o AC1, e não os 53 da nota de pré-requisitos.
-Os quatro de fora (`scripts/ci/attest` e os três de `deploy/`) só são compilados com `GOWORK=off`
-ou em Docker, que copia só `packages/`.
-
-Exit codes, todos na árvore final:
+Exit codes, na árvore final:
 
 | Comando | rc |
 |---|---|
 | `build.sh` | 0 |
 | `lint.sh` | 0 |
 | `layer-lint.sh` | 0 |
-| `test.sh` (pisos de cobertura cumpridos) | 0 |
+| `test.sh` (pisos de cobertura cumpridos) | 0 (uma corrida anterior deu 1, no `TestAOS465DespejaAMenosRecentementeUsada` intermitente, ver acima) |
 | `dormencia.sh` | 0 |
 | `integration.sh` | 0 |
 | `apex.sh` | 0 |
+| `toolchain-lint.sh` | 0 |
 | `rtm.sh` | 0 |
 | `ref-lint.sh` | 0 |
-| `toolchain-lint.sh` | 0 |
-| `selftest.sh`, corrido sozinho | 0 |
-| `driver.sh smoke` (10/10) | 0 |
-| `cache-prime.sh` sobre `GOMODCACHE` frio, depois `GOPROXY=off build.sh` | 0 / 0 |
+| `estado-citado.sh` | 0 |
+| `deferrals.sh` | 0 |
+| `secrets.sh` | 0 |
+| `selftest.sh`, corrido sozinho, depois de todas as edições | 0 |
+| `driver.sh smoke` (10/10, com o workspace activo) | 0 |
+| `go test -count=1 ./...` nos 49 módulos em modo workspace | 49/49 rc=0 |
+| `cache-prime.sh` sobre `GOMODCACHE` frio, depois `GOPROXY=off build.sh` e `compilar` | 0 / 0 / 0 |
+| mutações da guarda (§GW) | 17/17 mortas |
+| versões divergentes, `cache-prime` novo + `GOPROXY=off` `compilar` / `build.sh` | 0 / 0 (antigo: 1 / 1) |
+| versões divergentes, cache frio, com rede e sem `cache-prime` (o caso da CI do GitHub), `build.sh` | 0 |
 
-Depois do desvio declarado foram recorridos, com rc=0 em todos:
-- `build`, `lint` e `test`, este com os pisos de cobertura;
-- `rtm`, `ref-lint`, `estado-citado`, `deferrals`, `secrets` e `layer-lint`;
-- `dormencia`, `integration`, `apex` e `toolchain-lint`;
-- `selftest.sh`, sozinho;
-- `driver.sh smoke`, agora com o workspace activo.
+A primeira tentativa da prova offline caiu por timeout TLS do proxy ao descarregar a toolchain. Foi
+repetida e deu 0/0/0.
 
-Só a prova offline não foi recorrida: o desvio não muda dependências nem `go.mod`.
+**Por fazer: o AC7 em modo CI.** A CI não corre em modo workspace, e por isso um módulo novo continua
+a precisar das suas `replace` para os gates. Separam-na desse modo três pontos medidos:
+- o self-test A2;
+- a contagem de módulos do `sbom.sh`;
+- os módulos fora de `packages/`.
 
-**Por fazer: o AC7 em modo CI.** O bloqueio do devharness caiu. Para a CI correr em modo workspace
-faltam três coisas, todas medidas:
-- **self-test A2.** O A2 injecta `packages/_selftest_bad` sem `use`. Em modo workspace até um teste
-  verde falha nesse módulo (`directory prefix . does not contain modules listed in go.work`), pelo
-  que o vermelho do A2 deixaria de provar que o gate apanha um teste a falhar;
-- **`sbom.sh`.** `go list -m -json all` no `aos-attestation` passa de 4 para 57 módulos: o SBOM
-  passaria a descrever o workspace, não o módulo;
-- **módulos fora de `packages/`.** `scripts/ci/attest`, que o build/test correm sempre, e os três de
-  `deploy/` não estão no `use`, e em modo workspace não compilam (`current directory is contained in
-  a module that is not one of the workspace modules`). Pô-los no `use` contraria o AC1; deixá-los
-  fora obriga a `GOWORK=off` caso a caso.
-
-A CI não muda de modo nesta entrega.
+Nenhum é intransponível, porque cada um admite um `GOWORK=off` local. Mudar o modo da CI é uma
+decisão nova sobre o que a CI deve testar (a resolução standalone, que é a das imagens, ou a do
+workspace), não um passo deste ticket.
 
 Ficheiros:
 - `go.work`, gerado;
-- `scripts/ci/gowork.sh`, novo;
-- `scripts/ci/lib.sh` (`GOWORK=off`);
+- `scripts/ci/gowork.sh`;
+- `scripts/ci/lib.sh` (`GOWORK=off` ao carregar);
 - `scripts/ci/build.sh`;
-- `scripts/ci/selftest.sh` (§Z);
+- `scripts/ci/cache-prime.sh` (grafo do workspace);
+- `scripts/ci/nats-cluster.sh`;
+- `scripts/ci/selftest.sh` (§GW);
+- `.gitignore` (`/go.work.sum`);
+- `.dockerignore`;
+- `deploy/node/dev-hardened/attestation/Dockerfile`;
+- `CONTRIBUTING.md`;
 - `.claude/skills/run-aos/SKILL.md`;
 - `tecnica/11_Convencoes_Engenharia_Evolucao.md` §8.1;
 - `packages/cmd/aos/devharness_test.go`: uma linha mais o comentário, o desvio declarado.
 
-Nenhum `go.mod` nem código de produção foi tocado. O `driver.sh` voltou a ficar como estava na base.
+Nenhum `go.mod` nem código de produção foi tocado.
 
 ### Estado
 
-**PARCIAL** (2026-10-01). O `go.work` está gerado, versionado e guardado pelo gate `build`. As
-decisões estão em `tecnica/11` §8.1. A suite, o smoke e a prova offline estão verdes, e o grafo de
-imports está provado inalterado. Um `go test` simples é verde em modo workspace nos 49 módulos. O AC7
-só se cumpre em modo workspace: a CI fica em `GOWORK=off` enquanto o self-test A2, o `sbom.sh` e os
-módulos fora de `packages/` não forem resolvidos.
+**PARCIAL** (2026-10-01).
+- O `go.work` está gerado, versionado e guardado pelo gate `build`.
+- As decisões estão em `tecnica/11` §8.1; a (b) foi revista após a revisão adversarial.
+- A suite, o smoke, a prova offline (com versões divergentes incluídas) e a suite em modo workspace
+  estão verdes, e o grafo de imports está provado inalterado.
+- O AC7 só se cumpre em modo workspace: a CI fica em `GOWORK=off`.
 
 ---
 
@@ -1350,6 +1432,7 @@ módulos fora de `packages/` não forem resolvidos.
 | 1.0 | Julho 2026 | Emissão inicial (GO-CONDICIONAL). Materializa PR-0 (dívida de backend) a partir do painel adversarial `wsuca4fcl` sobre a base de código real. Reformula a dívida: cadeia linear (tip AOS-128, 41 módulos), sem merge; resgate dos seams uncommitted (AOS-144, feito); reconciliação dos 2 `integration`; enforcement de produção (kernel `Call.Credential`, `NewProductionSecure`, cadeia real de hooks, espinha de token condicional a D4). 19 tickets AOS-144–162. Estimativas de PR-0.a condicionais ao build-spike AOS-145. | Equipa AOS |
 | 1.1 | Setembro 2026 | Adenda pós-emissão: +1 ticket de tooling (AOS-387 — workspace go.work) do achado OE-2 da auditoria global. Fora do âmbito de PR-0 (os 19 tickets AOS-144–162 mantêm-se). | Equipa AOS |
 | 1.2 | Outubro 2026 | AOS-387 entregue PARCIAL: `go.work` gerado e guardado no gate `build`, CI com `GOWORK=off`, decisões em `tecnica/11` §8.1; AC7 só em modo workspace. Desvio declarado: `GOWORK=off` no subprocesso do devharness (uma linha de `_test.go`), e `go test` simples verde em modo workspace. | Equipa AOS |
+| 1.3 | Outubro 2026 | AOS-387, revisão adversarial sobre `3a5216d` (1 ALTO, 6 MÉDIO, 5 BAIXO) corrigida: `GOWORK=off` ao carregar o `lib.sh`, `go.work.sum` derivado e no `.gitignore`, `cache-prime` aquece o grafo do workspace, `.dockerignore`/`ENV GOWORK=off`, self-test §GW (13 casos, 17 mutações mortas). Continua PARCIAL (AC7). | Equipa AOS |
 
 ---
 

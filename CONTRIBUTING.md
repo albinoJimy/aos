@@ -29,7 +29,7 @@ Correr um gate isolado: `make ci-secrets | ci-build | ci-lint | ci-test | ci-rep
 
 | Ferramenta | Versão | Notas |
 |---|---|---|
-| **Go** | 1.24 | módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
+| **Go** | 1.25.13 | a da imagem de produção (`FROM golang:` do `deploy/node/Dockerfile`); os gates fixam-na por `GOTOOLCHAIN` e o `toolchain-lint` guarda-o. Módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
 | **gcc** | qualquer | exigido pelo `go test -race` (CGO). Windows: mingw do scoop; Linux: gcc do sistema |
 | **bash** | 4+ | Git Bash em Windows |
 | staticcheck / gosec / govulncheck | pinadas | **auto-instaladas** por `go install` (idempotente) em `$(go env GOPATH)/bin`; nunca committadas |
@@ -38,11 +38,29 @@ Pins das ferramentas em `scripts/ci/lib.sh` (`*_PIN`). Em Windows, o runner
 acrescenta ao `PATH` o mingw/shims do scoop e o `bin` do GOPATH, e força
 `CGO_ENABLED=1` — não é preciso configuração manual.
 
+### Workspace `go.work` (AOS-387)
+
+Há um `go.work` na raiz, gerado por `bash scripts/ci/gowork.sh gerar`, com um `use` por módulo
+de `packages/`. Quem corre `go` à mão num módulo de `packages/` usa-o; **os gates não**, porque o
+`lib.sh` exporta `GOWORK=off` ao ser carregado. Detalhe e decisões em `tecnica/11` §8.1. Três
+casos pedem `GOWORK=off` à mão:
+
+- **worktree com base anterior ao `go.work`, dentro de uma árvore que já o tem** (o caso de
+  `.claude/worktrees/`): o Go encontra o `go.work` do checkout de fora e recusa os módulos do
+  worktree (`directory prefix . does not contain modules listed in go.work`). `export GOWORK=off`
+  nessa sessão, ou rebase sobre uma base que já traga o `go.work`;
+- **Go local < 1.25 com `GOTOOLCHAIN=local`**: o workspace pede `go 1.25` (os `cmd/*` já o pedem);
+- **módulos fora de `packages/`** (`scripts/ci/attest`, `deploy/**`): não estão no workspace.
+
+Módulo novo em `packages/`: `go work use ./packages/<novo>` (ou `gowork.sh gerar`) no mesmo
+commit, senão o gate `build` avermelha. O `go.work.sum` está no `.gitignore` (é derivado do
+cache; ver `tecnica/11` §8.1, decisão (b)).
+
 ## Os gates
 
 | # | Gate | Script | O que valida | Bloqueia |
 |---|---|---|---|---|
-| 1 | build | `build.sh` | `go build ./...` em cada módulo | merge |
+| 1 | build | `build.sh` | `go build ./...` em cada módulo **+ guarda do `go.work`** (`gowork.sh verificar` e `compilar`, AOS-387) | merge |
 | 2 | lint | `lint.sh` | `gofmt -l`, `go vet`, `staticcheck` **+ arch-lint AOS-003** (proibição de despacho directo) | merge |
 | 2b | ref-lint | `ref-lint.sh` | referências cruzadas do corpus (AOS-186): todo o `AOS-NNN` citado existe no backlog; todo o `ADR-NNN` citado existe no catálogo; cada ADR canónico tem ≥ 1 ticket implementador. Só precisa de **Python 3** | merge |
 | 2c | rtm | `rtm.sh` | sincronia da matriz de rastreabilidade `tecnica/16` com o corpus (AOS-186), via `rtm-regenerate.py --check`. Só precisa de **Python 3** | merge |

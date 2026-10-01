@@ -1,6 +1,6 @@
 // go.work — GERADO por scripts/ci/gowork.sh (AOS-387). Não editar à mão a lista `use`:
 // `bash scripts/ci/gowork.sh gerar` (ou `go work use ./packages/<novo>`). Os gates correm
-// com GOWORK=off (lib.sh setup_env); ver tecnica/11 §8.1.
+// com GOWORK=off (lib.sh); ver tecnica/11 §8.1.
 
 go 1.25
 
