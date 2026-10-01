@@ -1484,9 +1484,9 @@ transporte como fronteira imposta.
     - a linha do `AOS_SANDBOX_GVISOR_URL`;
     - o comentário de `sandboxwiring.go`.
   - E escreveu aqui que eram «todos». **Era falso**, e foi a revisão adversarial que o mostrou: a
-    mesma afirmação vivia em mais sete sítios, todos corrigidos no segundo commit:
-    - `cmd/aos/main.go`, no comentário e na **mensagem** do `ErrProductionNeedsSandboxDriver`, que é a
-      que o operador lê no arranque;
+    mesma afirmação vivia em mais oito sítios, todos corrigidos no segundo commit (`6d65c1d`):
+    - `cmd/aos/main.go`, em dois sítios: o comentário, e a **mensagem** do
+      `ErrProductionNeedsSandboxDriver`, que é a que o operador lê no arranque;
     - `tecnica/17` (duas linhas);
     - DEF-701;
     - `tecnica/07`;
