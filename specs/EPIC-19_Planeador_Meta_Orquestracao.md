@@ -8234,3 +8234,175 @@ stream NATS. O runtime durável recusa-o (`durable: run_id/step_id não pode con
 ### Estado
 
 **ABERTO.**
+
+---
+
+## AOS-484 — Um plano termina `terminal` com código 0 sem cumprir o objectivo: o nó dependente corre sem os dados do anterior
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha a distância entre «todos os nós concluíram» e «o objectivo foi cumprido», usando o canal de dados que o ADR-027 §2.4 e o ADR-022 §2.3 já definem. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P1: quem submete um objectivo recebe `terminal`, `exit_code 0`, e metade do pedido não foi feita; nada no desfecho o distingue de um plano bem-sucedido |
+| Estimativa | M |
+| Dependências | AOS-413 (executor de nós), AOS-414 (canal `consumes` entre nós), AOS-415 (o veredicto da validação volta ao planeador), AOS-476 (arestas duráveis) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plannerprompt/artifact.go` (regra 7 do prompt 1.3.0), `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/plan_gate_wiring.go`, `docs/reports/e2e-plano-multi-no-prod-2026-10-02.md` |
+
+### Contexto
+
+Medido em produção a 2026-10-02 (imagem `sha256:afb6a95a…`, modelo vivo), no plano
+`plan-e2e-pegadas-1790956072`. Objectivo submetido por `POST /plans`:
+
+> Primeiro le o documento 'notes' com a tool doc_read. Depois, num passo separado que depende do
+> primeiro, resume em tres pontos o que foi lido.
+
+O planeador decompôs em `n1_read_notes` (papel, `doc_read`) e `n2_summarize` (folha, sem tools), e o
+log tem a aresta `task.edge.added n1_read_notes → n2_summarize`. O que aconteceu a seguir:
+
+1. **A aresta é só de ordem.** O `consume.wal` não tem nenhum `plan.payload_published` para este
+   plano: o planeador declarou `depends_on` sem `outputs`/`consumes`. A regra 7 do prompt 1.3.0 diz
+   para usar `outputs` e `consumes` «SO quando o objectivo os exige», e o modelo não os usou.
+2. **A validação estrutural aceitou** (`plan.validated`, 2 nós): uma dependência sem contrato de
+   dados é um plano válido.
+3. **O `n2` correu sem o que o `n1` leu.** O prompt do turno 1 do `n2` tem 294 tokens; o turno 2 do
+   `n1`, que já inclui o documento, tem 795. O objectivo do `n2` («resumir o conteúdo lido no nó
+   n1_read_notes») refere dados que nunca lhe chegaram.
+4. **O `n2` terminou `complete`** com este texto final: «Não foi possível ler o documento `notes`:
+   o acesso foi negado por allowlist (`E_TOOL_OUTSIDE_RUN_ALLOWLIST`)».
+5. **O plano terminou `terminal`, `exit_code 0`**: `planrequest.outcome` com `classe=terminal`, e a
+   métrica `aos_orq_consume_desfechos_total{classe="terminal",codigo="0"}` subiu de 7 para 8.
+
+O canal de dados existe e está provado em produção (AOS-414, `run-aos414-vivo-2`). Não foi usado
+porque nada obriga o planeador a declará-lo, e nada entre a conclusão do nó e o desfecho do plano
+olha para o que o nó produziu: «concluído» é o run ter chegado a `running→complete`.
+
+### Decisão a tomar primeiro (do dono)
+
+Onde se fecha a distância. As opções não se excluem:
+
+- **(A) Na validação.** Um nó com `depends_on` para um nó que não é `verifier`, sem nenhum
+  `consumes` desse nó, é recusado com diagnóstico, e a recusa volta ao planeador pelo laço do
+  AOS-415. Custa: uma aresta só de ordem pode ser legítima (dois efeitos que têm de acontecer por
+  ordem), e esses planos passam a precisar de uma forma de o declarar.
+- **(B) No prompt do planeador.** A regra 7 passa a dizer que um nó que precise do que outro
+  produziu declara `outputs` no produtor e `consumes` no consumidor. Custa pouco (MINOR do prompt),
+  mas é uma instrução ao modelo e não uma garantia.
+- **(C) No desfecho.** O plano deixa de reportar sucesso só por todos os nós terem concluído: o nó
+  declara falha por gramática fechada, como o veredicto do `verifier`, ou o plano exige um
+  `verifier` final. Custa: é a mudança maior, e toca no contrato do `planrequest.outcome`.
+
+A recomendação à partida é **(B)** com **(A)** como rede: (B) sozinha não garante nada, e (A)
+sozinha recusa sem ensinar o planeador a acertar à primeira.
+
+### Objectivo
+
+Um plano cujo nó depende do produto de outro entrega-lhe esse produto, e um plano em que um nó não
+fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
+
+### Critérios de Aceitação
+
+- [ ] Decisão (A)/(B)/(C) registada neste ticket, com o que fica de fora.
+- [ ] Teste pelo processo real que reproduz o plano medido (dois nós, `depends_on` sem `consumes`,
+      o segundo sem tools) e falha na base de hoje.
+- [ ] Com a decisão aplicada, o mesmo objectivo produz um plano em que o `n2` recebe o conteúdo do
+      `n1` pelo canal `inputs` (segmento `taint=untrusted` com proveniência), e o log tem o
+      `plan.payload_published` correspondente.
+- [ ] Se o prompt do planeador mudar, a versão sobe (SemVer) e os testes de decomposição fixam a
+      regra nova.
+- [ ] Se a validação mudar, o diagnóstico é estruturado (sem eco de conteúdo cru) e chega ao
+      planeador pelo laço do AOS-415; uma aresta só de ordem legítima continua a ter forma de passar.
+- [ ] A regra AOS-231 (`consumes_taint_authority`) continua a valer: um payload untrusted não
+      alimenta um consumidor com autoridade privilegiada.
+- [ ] Verificado em produção com o modelo vivo e o mesmo objectivo: o texto final do nó de resumo é
+      um resumo do documento.
+
+### Fora de âmbito
+
+- A separação de planos por handle (DEF-806, eixo AOS-069): o conteúdo continua a entrar inline no
+  tail, marcado untrusted.
+- A recusa da lista-branca que não deixa pegada (AOS-485) e as tools oferecidas fora da
+  lista-branca (AOS-486), achados do mesmo run.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-486 — O nó oferece ao modelo tools que a lista-branca do run nega
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: decide se o tool set oferecido a um run filho segue a lista-branca do nó do plano, com o impacto no prefixo cache-estável do ADR-009. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P3: falha fechada (a chamada é negada), mas gasta um turno e convida o modelo a um caminho que não pode seguir |
+| Estimativa | S |
+| Dependências | AOS-413 (lista-branca do run), AOS-485 (pegada da recusa) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/integration/freeze.go` (`ApplyFrozenToGoal`), `packages/kernel/agent-runtime/loop.go` (`Goal.Tools`, `Goal.AllowedTools`, manifesto do turno), `packages/cmd/aos/api.go` (`POST /runs`, campo `tools`) |
+
+### Contexto
+
+Medido em produção a 2026-10-02, no run `plan-e2e-pegadas-1790956072~n2_summarize`. O nó do plano
+não tem tools (`plan.materialized`: `{"node_id":"n2_summarize","kind":"leaf"}`), pelo que o run
+filho leva a lista-branca vazia. Mesmo assim:
+
+- o `run.toolset.frozen` do run tem `doc_read`, e o manifesto dos dois turnos lista
+  `tools: [{"name":"doc_read", …}]`;
+- no turno 1 o modelo pediu `doc_read` (`tool_calls_requested=1`), a chamada foi negada pela
+  lista-branca, e o turno custou 294 tokens de entrada e 161 de saída sem produzir nada.
+
+A causa está na composição: `ApplyFrozenToGoal` põe em `Goal.Tools` o tool set congelado **do nó
+`aos`** inteiro, e é dele que o loop constrói o prefixo do prompt e o manifesto. O campo `tools` do
+`POST /runs` só alimenta `Goal.AllowedTools`, que estreita a autoridade na altura da chamada e não
+o que é mostrado ao modelo.
+
+Não é um buraco de autoridade: a chamada não é despachada. É o modelo a ver uma tool que não pode
+usar, sem nada no prompt que lho diga.
+
+### Decisão a tomar primeiro (do dono)
+
+- **(A) Oferecer só o que a lista-branca permite.** O prefixo e o manifesto de um run filho passam
+  a listar as tools do nó do plano. Custa: o prefixo deixa de ser igual entre nós do mesmo plano
+  (ADR-009, cache), e o manifesto deixa de ser o tool set congelado inteiro; o replay tem de
+  reconstruir a mesma lista.
+- **(B) Manter a oferta e dizê-lo.** O tool set fica como está e o run ganha uma indicação trusted,
+  fora do prefixo, de quais tools pode chamar. Custa: depende de o modelo a respeitar.
+- **(C) Deixar como está** e documentar que a recusa é o comportamento esperado.
+
+A recomendação à partida é **(A)**, se a medição de cache o permitir: o que o modelo não vê, não
+pede.
+
+### Objectivo
+
+Um run filho de um plano não gasta turnos a pedir tools que o seu nó não tem.
+
+### Critérios de Aceitação
+
+- [ ] Decisão (A)/(B)/(C) registada, com o impacto medido no prefixo cache-estável.
+- [ ] Teste pelo nó real: um run com `tools: []` não oferece nenhuma tool ao modelo (ou, na opção
+      B, o prompt materializado diz quais pode chamar), e um run sem o campo `tools` continua
+      byte-idêntico ao de hoje.
+- [ ] O manifesto do turno e o replay continuam coerentes: o replay de um run filho reconstrói o
+      mesmo `prompt_hash`.
+- [ ] A lista-branca continua imposta na chamada (AOS-413): o que é oferecido não substitui a
+      recusa.
+
+### Fora de âmbito
+
+A pegada da recusa (AOS-485) e a entrega de dados entre nós (AOS-484).
+
+### Estado
+
+**ABERTO.**
