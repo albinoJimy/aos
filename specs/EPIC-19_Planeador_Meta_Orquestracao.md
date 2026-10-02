@@ -7857,8 +7857,11 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
 - [ ] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
       `planrequest.submitted`, ou um id equivalente), e o mesmo compromisso bate com o do pedido.
 - [ ] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id.
-- [ ] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
-      que falha se as duas constantes divergirem.
+- [x] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
+      que falha se as duas constantes divergirem. *Já cumprido pela segunda alternativa antes deste
+      ticket: `TestAOS439SeparadorDoRunFilhoCasaComOOrquestrador`
+      (`packages/cmd/aos/aos439_submissor_do_plano_test.go`) lê a constante do `aos-orq` da fonte e
+      falha se divergir. Verificado a 2026-10-02 contra a base.*
 - [ ] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
       `tecnica/13_Modelo_Dados_Eventos.md` (campo novo retro-compatível, leitores antigos não
       partem), e o gate `event-catalog` verde.

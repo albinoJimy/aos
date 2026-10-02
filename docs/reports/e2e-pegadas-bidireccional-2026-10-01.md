@@ -13,7 +13,7 @@
 
 A rastreabilidade fecha nos dois sentidos, com três buracos conhecidos e nenhum defeito que falhe aberto.
 
-- **Objectivo → registo:** os passos 0–18 do roteiro passam em `4ef35e0` e em `f7b23f3` (o passo 15, em `f7b23f3`, só depois de corrigir o `snapshot.json` do roteiro). Sequência sem buracos, chave `run_id:step_id` em todos os eventos, PII a zero no WAL e no WORM, recusas fail-closed com `exit=1`.
+- **Objectivo → registo:** os passos 0–18 do roteiro passam em `4ef35e0` e em `f7b23f3` (o passo 15, em `f7b23f3`, com o `snapshot.json` do roteiro dessa árvore, que já declara `mutation` — ver a correcção em §6). Sequência sem buracos, chave `run_id:step_id` em todos os eventos, PII a zero no WAL e no WORM, recusas fail-closed com `exit=1`.
 - **Registo → objectivo:** demonstrado a partir de um selo do WORM e de um evento do WAL, localmente e em produção. Em produção a cadeia vai de um `deny` selado até ao pedido de plano, e fecha num objectivo cifrado por titular.
 - **Os três buracos** têm ticket: as dependências do plano não ficam no log (AOS-476), o registo do plano não leva ao objectivo sem partir nomes (AOS-477), e a cadeia de delegação só existe nos eventos de mediação (AOS-478).
 - **Gates:** 26 de 28 verdes em `f7b23f3`. Os dois vermelhos eram defeitos dos próprios gates em Windows, corrigidos no AOS-480. Ficou um vermelho intermitente por explicar no gate `nats` (§5), e o `ci-selftest` local tem quatro casos vermelhos por investigar (§5).
@@ -164,7 +164,8 @@ O roteiro continua executável, mas várias pegadas escritas já não coincidem:
 - Passo 12: `4 alteracao(oes) de nivel RELIDA(S)` (eram 5) e duas linhas novas de reidratação.
 - Passo 15: o `aos-orq` passou a emitir `plan.proposed`, `plan.validated`, `plan.approved` e declara o gate de plano composto (AOS-408). A nota do roteiro «o gate humano de plano não está composto neste binário» está ultrapassada.
 - Passo 16: `exit=9` (era 1), mensagem `plano recusado pela validacao estrutural apos esgotar as tentativas`, e o WAL fica com `lease.claimed` + `lease.released`.
-- **Só em `f7b23f3`:** o passo 15 deixa de correr como está escrito. O `snapshot.json` do roteiro é recusado com `capability sem o campo obrigatorio mutation (none|mutates|unknown) — AOS-409`, `exit=1`, e o WAL fica só com a posse. Com `"mutation":"none"` em `fs.read` e `"mutates"` em `http.post`, o passo dá o mesmo que em `4ef35e0`. Tudo o resto (passos 0–14, 16–18) é igual nas duas corridas.
+- **Só em `f7b23f3`:** com o `snapshot.json` do roteiro de `4ef35e0`, o passo 15 é recusado com `capability sem o campo obrigatorio mutation (none|mutates|unknown) — AOS-409`, `exit=1`, e o WAL fica só com a posse. Com `"mutation":"none"` em `fs.read` e `"mutates"` em `http.post`, o passo dá o mesmo que em `4ef35e0`. Tudo o resto (passos 0–14, 16–18) é igual nas duas corridas.
+  *(Correcção, 2026-10-02: a primeira versão deste relatório dizia que o roteiro «deixa de correr como está escrito» em `f7b23f3`. É falso: o roteiro dessa árvore já declara `mutation` nas duas tools — o AOS-409 actualizou-o no mesmo commit, `71b2064` — e a recusa só aparece com o roteiro de `4ef35e0`. A conclusão operacional, «com `mutation` passa», mantém-se.)*
 - Passo 14 em Git Bash: com `MSYS_NO_PATHCONV=1`, um `--key-file /c/…` deixa de ser convertido e o `aos-issuer` falha com `The system cannot find the path specified`. Passar a chave com `cygpath -m`.
 
 ## 7. Achados

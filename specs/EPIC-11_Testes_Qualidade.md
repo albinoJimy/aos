@@ -813,10 +813,10 @@ Commits Conventional (feat(AOS-118): ...), branch feature/AOS-118-dr-replay-e2e,
 O roteiro foi verificado a 2026-09-15 em `8e88f88`. Repetido a 2026-10-01 em `4ef35e0`, todos os
 passos passam, mas várias pegadas escritas já não coincidem com o que o binário devolve, e três
 achados que o roteiro deixou em aberto ficaram respondidos. Repetido outra vez no mesmo dia sobre
-`f7b23f3` (a base, 36 commits à frente), os passos 0–14 e 16–18 dão o mesmo, e o **passo 15 deixa
-de correr como está escrito**: o `snapshot.json` do roteiro é recusado com `capability sem o campo
-obrigatorio mutation (none|mutates|unknown) — AOS-409`, `exit=1`. Com `"mutation"` em cada tool,
-passa.
+`f7b23f3` (a base, 36 commits à frente), os passos 0–14 e 16–18 dão o mesmo. O passo 15, corrido
+com o `snapshot.json` do roteiro de `4ef35e0`, é recusado com `capability sem o campo obrigatorio
+mutation (none|mutates|unknown) — AOS-409`, `exit=1`; com `"mutation"` em cada tool, passa. O
+roteiro de `f7b23f3` já declara `mutation` (o AOS-409 actualizou-o em `71b2064`).
 
 **Pegadas que mudaram** (lista completa no relatório, §6): banner de 70 linhas; partição
 `trust-anchors` (AOS-446), que desloca as contagens dos passos 8, 10 e 11; `streams 11` e
@@ -860,7 +860,9 @@ listar como dúvida o que já tem resposta.
       que o `grep -a -o` dentro do contentor subconta: 8 `tool.call.mediated` contra 52 no
       ficheiro copiado.
 - [ ] Passo 14 passa a chave com caminho em forma Windows quando usa `MSYS_NO_PATHCONV=1`.
-- [ ] O `snapshot.json` do passo 15 declara `mutation` em cada tool (AOS-409).
+- [x] O `snapshot.json` do passo 15 declara `mutation` em cada tool (AOS-409). *Já cumprido antes
+      deste ticket: o AOS-409 actualizou o roteiro em `71b2064` (`fs.read` `none`, `http.post`
+      `mutates`). Verificado a 2026-10-02 contra a base.*
 - [ ] A nota «o gate humano de plano não está composto neste binário» do passo 15 é retirada.
 
 ### Fora de âmbito
