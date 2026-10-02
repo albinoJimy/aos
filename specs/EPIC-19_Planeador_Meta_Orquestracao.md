@@ -1588,8 +1588,10 @@ um resultado legível.
   que convém conhecer antes de lhe pendurar execução.
 - O que é o «trabalho» de um nó sem skills: o `tecnica/18` declara como lacuna honesta que os nós só
   correm sobre tools registadas. O objectivo do nó é o prompt; as tools pinadas são o que pode fazer.
-- A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, DEF-913) toca no
-  mesmo `RebuildDAG`: coordenar a ordem.
+- A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, PR #300) toca no
+  mesmo `RebuildDAG`: coordenar a ordem. *(Corrigido pelo AOS-476: a citação dizia `DEF-913`, número
+  que o PR #300 usou e que no registo é o tecto da fila de planos do AOS-464. A emissão das arestas
+  entrou pelo AOS-476; a segunda metade do PR #300 foi re-medida lá e não deu deferimento.)*
 
 ### Fora de âmbito
 
@@ -7779,17 +7781,50 @@ DAG que o primeiro despachou.
 
 ### Critérios de Aceitação
 
-- [ ] A materialização emite um `task.edge.added` por aresta de entrada, depois dos nós e antes de
+- [x] A materialização emite um `task.edge.added` por aresta de entrada, depois dos nós e antes de
       `plan.materialized`, sob a posse do run (ADR-023). É admissão, não efeito (ADR-024).
-- [ ] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
-- [ ] No roteiro E2E, passo 15: `wal-summary` mostra `task.edge.added 1` e `inspect` devolve
+      *(Evidência: a porta `LeafAdmitter` ganhou `AdmitEdge`, na mesma porta que os nós; o
+      adaptador de produção é `GraphBuilder.AddEdge` do grafo que `Tenure.Graph` re-hidrata sob o
+      lease, pelo que a escrita passa pelo `FencedAppender`. Ordem provada em três sítios:
+      `TestAOS476_ArestasDepoisDosNosAntesDoMaterialized` (sequência
+      nós → arestas → `plan.materialized`, com `depends_on`, origem de `conditional_on` e
+      dependência duplicada), `TestAOS476_ArestasSobrevivemAoReplay` (Event Store real: a aresta
+      já está durável quando o `plan.materialized` é pedido) e
+      `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla` (posição no ficheiro WAL do binário
+      real, vias `--goal` e `--plan-doc`). `TestAOS476_ArestaRecusadaNaoApensaMaterialized`: se a
+      porta recusa a aresta, o `plan.materialized` não é apenso.)*
+- [x] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
+      *(Evidência: as arestas confirmam-se num DAG em memória antes da admissão global.
+      `TestAOS476_CicloAbortaSemNenhumNo` e `TestAOS476_OrigemForaDoPlanoAbortaSemNenhumNo`
+      (por `depends_on` e por `conditional_on`): `ErrInvalidRequest` com o sentinela do DAG
+      preservado, zero admissões, zero nós, zero `plan.materialized`.)*
+- [x] No roteiro E2E, passo 15: `wal-summary` mostra `task.edge.added 1` e `inspect` devolve
       `ordem=recolha,analise`.
-- [ ] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
+      *(Medido nesta base, com o snapshot e o plano do passo 15 tal e qual e os binários
+      compilados: `wal-summary` dá `task.edge.added 1` e `task.node.created 2`; `inspect` dá
+      `run=run-e2e-orq token_corrente=1 nos=2 ordem=recolha,analise`. O texto do passo 15 no
+      roteiro é actualizado pelo AOS-479, dono do ficheiro.)*
+- [x] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
       real, não só unitário.
-- [ ] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
+      *(Evidência: o `serve` passa a imprimir, na re-hidratação, `grafo re-hidratado: arestas=N
+      ordem=…`. `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla`: segundo processo, `token=2`,
+      `grafo re-hidratado: nos=2` e `grafo re-hidratado: arestas=1 ordem=recolha,analise`.
+      `TestAOS476_ArestasDoGrafoConta` impede que a contagem seja uma constante.)*
+- [x] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
       actual, que já tem o executor de nós (AOS-413) e a drenagem da fila. Se ainda for verdade,
       fica registada com um número de deferimento livre; se não for, diz-se com a medição.
-- [ ] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
+      *(Re-medida: **deixou de ser verdade**, e não há deferimento novo.
+      `TestAOS476_DonoSeguinteDespachaSoPelaRetoma`, três processos contra um nó `aos` falso: o
+      primeiro despacha `recolha` e sai 8 com ela em voo; o segundo, `serve` sem documento,
+      re-hidrata com a aresta e não despacha nada; o terceiro, `serve --plan-doc` (a via que o
+      `consume` usa numa retoma, AOS-442), diz `materializado (retoma, do log)`, despacha
+      `analise` e acaba com `execucao: analise=complete recolha=complete`. Medido também à mão sem
+      executor: um `serve --goal` repetido já não aborta com «nó já existe no grafo» — vai à
+      retoma e dá `nos_despachados=0`, porque `recolha` fica `running` sem ninguém que a execute,
+      que é o que o banner do AOS-413 declara. O `serve` sem documento não despacha por desenho:
+      o despacho precisa do `PlanDocument` e o log só leva o hash (ADR-005).)*
+- [x] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
+      *(Agora cita o PR #300, com nota de que `DEF-913` é o tecto da fila de planos do AOS-464.)*
 - [ ] Verificação em produção: depois do deploy, um plano com dois nós dependentes deixa
       `task.edge.added` no `consume.wal`. Contar no ficheiro copiado, não por `grep` no servidor.
 
@@ -7799,7 +7834,11 @@ O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipad
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-10-02): a
+materialização emite as arestas, um dono seguinte re-hidrata-as e o `serve` mostra-as. Falta o
+último critério, que exige um deploy e a cópia do `consume.wal` de produção. A segunda metade do
+PR #300 foi re-medida e não gera deferimento (ver o quinto critério). O ramo do PR #300 não foi
+fundido: a lógica foi portada para a base de hoje.
 
 ---
 
