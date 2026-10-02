@@ -1502,13 +1502,16 @@ A recusa acontece em `mediateToolCall`, antes da reescrita e da mediação (`loo
 no tail do prompt. O Reference Monitor nunca vê a chamada, e por isso não há evento, selo nem
 contador.
 
-Duas coisas não batem com o que está escrito:
+Duas coisas não batem:
 
-- O AOS-413 regista a decisão do ADR-027 como «o `POST /runs` ganha um campo `tools` como
-  lista-branca **imposta pelo RM**». Está imposta pelo loop, antes do RM.
-- As outras recusas de tool call deixam pegada: o WORM de produção tem 33 selos `deny`, e a recusa
-  por taint do run `plan-e2e-447-1790511800~n1` tem `tool.call.denied` e selo. Esta é a única
-  recusa de tool call que não se vê.
+- **O ADR-027 diz as duas coisas.** O §2.3 decide que o ciclo do runtime impõe a lista «antes da
+  mediação — uma tool fora dela é negada sem chegar ao Reference Monitor», e é o que o código faz.
+  O §4 fala da «sua imposição no RM», e o AOS-413 regista a decisão como «lista-branca **imposta
+  pelo RM**». Mudar o código é mudar o §2.3, e isso é uma emenda ao ADR.
+- **As outras recusas de tool call do RM deixam pegada:** o WORM de produção tem 33 selos `deny`, e
+  a recusa por taint do run `plan-e2e-447-1790511800~n1` tem `tool.call.denied` e selo. A da
+  lista-branca não se vê. (A recusa por reescrita falhada, `E_EFFECT_REWRITE`, tem a mesma forma e
+  fica fora deste ticket.)
 
 Hoje a única forma de saber que houve uma recusa é contar os `tool_calls_requested` de um turno e
 reparar que não há `tool.call.*` com esse `parent_step_id`. O texto do modelo que a nomeia está
@@ -1526,6 +1529,20 @@ cifrado por titular.
 A recomendação à partida é **(A)**. Selar ou não cada recusa é parte da decisão: um modelo que
 insista numa tool negada escreve um selo por turno, limitado pelo tecto de turnos do run.
 
+**Decidido pelo dono (2026-10-02): (A), com emenda ao ADR-027 §2.3.** A lista-branca passa a ser
+imposta dentro do Reference Monitor, logo a seguir à identidade (para o evento levar o principal
+verificado e a cadeia de delegação), e a recusa sai pelo caminho de todas as outras: evento, selo e
+contador. Uma tool fora da lista continua a não ser construída como efeito: a reescrita não corre
+para ela.
+
+Efeitos aceites com a decisão:
+
+- **Um selo por recusa**, limitado pelo tecto de turnos do run (e mais um por retoma do passo).
+- **A call negada passa a ser vista pelo disjuntor de no-progress** e a entrar no denominador da
+  taxa de override da autonomia (`autonomy_fiabilidade.go`), como qualquer outra recusa do RM.
+- **A recusa ocupa a chave `run_id:step_id` do sub-passo**, com a mesma classe de colisão que o
+  AOS-481 descreve para as outras decisões.
+
 ### Objectivo
 
 Uma tool call negada pela lista-branca do run fica no registo como qualquer outra recusa de tool
@@ -1533,15 +1550,22 @@ call: quem pediu, o quê, em que passo, e porque foi negada.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (A)/(B) registada; se for (A), o texto do AOS-413 e o do ADR-027 passam a descrever
-      o que o código faz.
+- [x] Decisão (A)/(B) registada. *(Ver «Decidido pelo dono», acima.)*
+- [ ] O ADR-027 §2.3 é emendado para dizer onde a lista é imposta, e o §4, o `docs/adr/README.md`
+      e o texto do AOS-413 ficam coerentes com ele.
+- [ ] A imposição não depende de a cadeia de hooks estar bem composta: um Reference Monitor sem o
+      hook nega na mesma uma tool fora da lista.
+- [ ] A lista chega igual pela via directa e pela via durável, e uma lista **vazia** não se
+      transforma em ausente pelo caminho (teste de paridade próprio, com `[]`).
 - [ ] A recusa grava `tool.call.denied` no stream do run com o código
       `E_TOOL_OUTSIDE_RUN_ALLOWLIST`, o `denied_by`, o principal com a cadeia de delegação, o
       `step_id` da chamada (`<passo>-tool-N`) e o `parent_step_id` do turno.
 - [ ] `aos_mediation_denials_total` conta-a.
-- [ ] O selo no WORM segue a decisão do dono, e fica dito no ticket se a recusa sela ou não.
-- [ ] Nada é despachado: os testes do AOS-413 (`TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista`,
-      `TestAOS413_ListaBrancaVaziaNegaTudo`) continuam verdes, e não há evento de sandbox.
+- [ ] A recusa sela no WORM, na partição do run, com o código, o `denied_by` e o principal.
+- [ ] Nada é despachado nem construído como efeito, e não há evento de sandbox. Os testes do
+      AOS-413 continuam a provar que a tool não executa; a asserção de
+      `TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista` que exigia que a call **não chegasse ao RM**
+      inverte-se (recusas +1, permits igual).
 - [ ] Replay: um log antigo, sem o evento, reconstrói o mesmo estado; um run novo com a recusa é
       reproduzido de forma determinista.
 - [ ] O catálogo de eventos e `tecnica/13` ficam coerentes com o produtor e o `step_id` da recusa.

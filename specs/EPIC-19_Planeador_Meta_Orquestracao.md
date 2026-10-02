@@ -8300,6 +8300,25 @@ Onde se fecha a distância. As opções não se excluem:
 A recomendação à partida é **(B)** com **(A)** como rede: (B) sozinha não garante nada, e (A)
 sozinha recusa sem ensinar o planeador a acertar à primeira.
 
+**Decidido pelo dono (2026-10-02): (B) e (C).**
+
+- **(B)** O prompt do planeador sobe para 1.4.0 com uma regra nova, aditiva: as regras 1 a 11 ficam
+  byte a byte iguais.
+- **(C)** Um plano com um nó `failed` deixa de terminar com código 0. O caso medido não é apanhado
+  por (C) sozinho — o `n2` terminou `complete` — e é (B) que o trata; (C) fecha os casos em que o
+  executor já sabe que o nó falhou e o plano saía verde na mesma.
+- **(A) não se faz**, e fica dito porquê, com o que a discovery mediu:
+  - colide com a regra AOS-231: um consumidor com tool de efeito não pode ter `consumes` de um
+    produtor que não seja `verifier` (`consumes_taint_authority`), e (A) exigia-lho;
+  - o ADR-022 §2.3 e o `tecnica/18` tratam `outputs`/`consumes` como opcionais e aditivos sobre
+    arestas de precedência; uma aresta só de ordem é um plano válido;
+  - partia cerca de 50 funções de teste e até 8 fixtures do golden-set do planeador, e um plano
+    pendente validado pela regra antiga passava a ser recusado depois do deploy.
+
+**Resíduo declarado:** (B) é uma instrução ao modelo. Um plano em que o planeador volte a declarar a
+dependência sem contrato de dados continua a ser admitido, e um nó que termine `complete` a dizer
+que não conseguiu continua a contar como concluído.
+
 ### Objectivo
 
 Um plano cujo nó depende do produto de outro entrega-lhe esse produto, e um plano em que um nó não
@@ -8307,16 +8326,22 @@ fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (A)/(B)/(C) registada neste ticket, com o que fica de fora.
-- [ ] Teste pelo processo real que reproduz o plano medido (dois nós, `depends_on` sem `consumes`,
-      o segundo sem tools) e falha na base de hoje.
-- [ ] Com a decisão aplicada, o mesmo objectivo produz um plano em que o `n2` recebe o conteúdo do
-      `n1` pelo canal `inputs` (segmento `taint=untrusted` com proveniência), e o log tem o
-      `plan.payload_published` correspondente.
-- [ ] Se o prompt do planeador mudar, a versão sobe (SemVer) e os testes de decomposição fixam a
-      regra nova.
-- [ ] Se a validação mudar, o diagnóstico é estruturado (sem eco de conteúdo cru) e chega ao
-      planeador pelo laço do AOS-415; uma aresta só de ordem legítima continua a ter forma de passar.
+- [x] Decisão (A)/(B)/(C) registada neste ticket, com o que fica de fora. *(Ver «Decidido pelo
+      dono», acima.)*
+- [ ] **(B)** O prompt do planeador sobe para 1.4.0 (MINOR, aditivo): uma regra nova diz que um nó
+      que precise do que outro produziu declara `outputs` no produtor e `consumes` no consumidor, e
+      o que o executor consegue transportar (um só output de forma aberta por nó). As regras 1 a 11
+      ficam byte a byte iguais, o template do 1.3.0 fica guardado com o seu fingerprint, e os testes
+      de decomposição fixam a regra nova.
+- [ ] **(B)** Teste pelo processo real: o plano de dois nós com o contrato declarado (o primeiro lê
+      com uma tool, o segundo sem tools consome) entrega ao segundo o conteúdo do primeiro pelo
+      canal `inputs`, e o log tem o `plan.payload_published` correspondente.
+- [ ] **(C)** Um plano em que um nó termina `failed` não sai com código 0: o `serve` devolve um
+      código próprio, o desfecho é `terminal` com um detalhe de nome estável, e os consumidores do
+      código (a drenagem, os avisos, o `GET /plans/<id>`, as métricas do `consume`) tratam-no sem
+      o confundir com sucesso nem com erro transitório.
+- [ ] **(C)** Um veredicto `fail` de um `verifier` que retém um ramo condicional continua a ser um
+      plano que correu bem: o ramo não tomado não é um nó falhado.
 - [ ] A regra AOS-231 (`consumes_taint_authority`) continua a valer: um payload untrusted não
       alimenta um consumidor com autoridade privilegiada.
 - [ ] Verificado em produção com o modelo vivo e o mesmo objectivo: o texto final do nó de resumo é
@@ -8363,10 +8388,18 @@ filho leva a lista-branca vazia. Mesmo assim:
 - no turno 1 o modelo pediu `doc_read` (`tool_calls_requested=1`), a chamada foi negada pela
   lista-branca, e o turno custou 294 tokens de entrada e 161 de saída sem produzir nada.
 
-A causa está na composição: `ApplyFrozenToGoal` põe em `Goal.Tools` o tool set congelado **do nó
-`aos`** inteiro, e é dele que o loop constrói o prefixo do prompt e o manifesto. O campo `tools` do
-`POST /runs` só alimenta `Goal.AllowedTools`, que estreita a autoridade na altura da chamada e não
-o que é mostrado ao modelo.
+A oferta chega ao modelo por **dois** caminhos, e nenhum olha para a lista-branca:
+
+1. **O schema de function-calling**, que é o que permite ao modelo emitir a tool call. Vem de
+   `AOS_MODEL_TOOLS`, fixado uma vez por nó no adaptador do gateway (`WithTools`, em
+   `packages/platform/model-gateway/runtime_adapter.go`), e não de `Goal.Tools`.
+2. **O bloco `TOOLSET` do prefixo e o manifesto do turno.** `ApplyFrozenToGoal` põe em `Goal.Tools`
+   o tool set congelado **do nó `aos`** inteiro, e é dele que o loop constrói o prefixo e o
+   manifesto.
+
+O campo `tools` do `POST /runs` só alimenta `Goal.AllowedTools`, que estreita a autoridade na altura
+da chamada e não o que é mostrado ao modelo. Filtrar só `Goal.Tools` não resolvia: o schema
+continuava no pedido.
 
 Não é um buraco de autoridade: a chamada não é despachada. É o modelo a ver uma tool que não pode
 usar, sem nada no prompt que lho diga.
@@ -8384,16 +8417,34 @@ usar, sem nada no prompt que lho diga.
 A recomendação à partida é **(A)**, se a medição de cache o permitir: o que o modelo não vê, não
 pede.
 
+**Decidido pelo dono (2026-10-02): (A), nos dois caminhos.** O adaptador do gateway envia só o
+schema das tools da lista-branca, e o prefixo e o manifesto do turno listam só essas. O tool set
+congelado, o evento `run.toolset.frozen`, a revalidação por chamada e o `GET /tools` ficam inteiros.
+
+O que isto custa, medido na discovery:
+
+- **Cache:** dentro de um run, nada (o filtro fixa-se no arranque). Entre runs, o prefixo passa a
+  variar com a lista-branca; o prefixo de um run filho é hoje uma linha de tool e o `system` vazio.
+- **Um run com lista-branca em voo durante o deploy** e retomado depois muda de prefixo a meio: os
+  turnos gravados antes levam o tool set inteiro, os seguintes o filtrado.
+- **O manifesto do turno deixa de ser igual ao tool set congelado** e passa a ser um subconjunto
+  dele; quem fizer replay usa o `manifest.tools` do `turn.recorded`.
+
 ### Objectivo
 
 Um run filho de um plano não gasta turnos a pedir tools que o seu nó não tem.
 
 ### Critérios de Aceitação
 
-- [ ] Decisão (A)/(B)/(C) registada, com o impacto medido no prefixo cache-estável.
-- [ ] Teste pelo nó real: um run com `tools: []` não oferece nenhuma tool ao modelo (ou, na opção
-      B, o prompt materializado diz quais pode chamar), e um run sem o campo `tools` continua
-      byte-idêntico ao de hoje.
+- [x] Decisão (A)/(B)/(C) registada, com o impacto medido no prefixo cache-estável. *(Ver
+      «Decidido pelo dono», acima.)*
+- [ ] Teste pelo nó real, **com o adaptador do gateway** (um modelo injectado contorna-o e não
+      prova a oferta): um run com `tools: []` não envia nenhum schema de tool ao modelo nem lista
+      nenhuma no prefixo e no manifesto; um run com uma lista envia só essas, pela ordem congelada;
+      e um run sem o campo `tools` continua byte-idêntico ao de hoje no pedido, no prefixo e no
+      manifesto.
+- [ ] A distinção entre lista ausente e lista vazia decide-se por `nil`, nunca por comprimento, em
+      todos os pontos novos; a retoma e o crash-resume reproduzem o mesmo filtro.
 - [ ] O manifesto do turno e o replay continuam coerentes: o replay de um run filho reconstrói o
       mesmo `prompt_hash`.
 - [ ] A lista-branca continua imposta na chamada (AOS-413): o que é oferecido não substitui a
