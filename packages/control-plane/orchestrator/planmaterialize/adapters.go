@@ -58,20 +58,77 @@ func NewGraphLeafAdmitter(g *orchestrator.GraphBuilder) LeafAdmitter {
 // (sem `plan.materialized` nada o pode ter despachado). Divergência ⇒ [ErrNodeDiverges],
 // fail-closed, sem escrever nada.
 func (a graphLeafAdmitter) AdmitLeaf(ctx context.Context, node LeafNode) error {
-	spec := orchestrator.NodeSpec{
-		TaskID: node.NodeID,
-		Task:   contract.TaskSpec{ToolID: node.ToolID, Capability: node.Capability},
+	if !a.g.DAG().Has(node.NodeID) {
+		return a.g.AddNode(ctx, especificacao(node))
 	}
-	dur, existe := a.g.DAG().Spec(node.NodeID)
-	if !existe {
-		return a.g.AddNode(ctx, spec)
-	}
+	// Segunda linha: o Materializer já confrontou o grafo inteiro antes de escrever
+	// ([graphLeafAdmitter.confrontarTopologia]); esta porta não confia em quem a chama.
+	return a.coincide(node)
+}
+
+// coincide confronta um nó já durável com o que o plano escreveria para ele: tudo o que o
+// `task.node.created` carrega (tool call, prioridade, identidade) e o estado, que tem de ser
+// ainda `ready`. Ver [graphLeafAdmitter.AdmitLeaf] e [graphLeafAdmitter.confrontarTopologia].
+func (a graphLeafAdmitter) coincide(node LeafNode) error {
+	spec := especificacao(node)
+	dur, _ := a.g.DAG().Spec(node.NodeID)
 	if !reflect.DeepEqual(dur, spec) {
-		return fmt.Errorf("%w: nó %q no grafo tem tool=%q capability=%q prioridade=%d nhi=%q; o plano admite tool=%q capability=%q prioridade=0 sem nhi",
+		return fmt.Errorf("%w: %q no grafo tem tool=%q capability=%q prioridade=%d nhi=%q; o plano admite tool=%q capability=%q prioridade=0 sem nhi",
 			ErrNodeDiverges, node.NodeID, dur.Task.ToolID, dur.Task.Capability, dur.Priority, dur.Agent.NHIID, spec.Task.ToolID, spec.Task.Capability)
 	}
 	if st, _ := a.g.DAG().State(node.NodeID); st != state.Ready {
-		return fmt.Errorf("%w: nó %q já está %q no grafo sem plano materializado", ErrNodeDiverges, node.NodeID, st)
+		return fmt.Errorf("%w: %q já está %q no grafo sem plano materializado", ErrNodeDiverges, node.NodeID, st)
+	}
+	return nil
+}
+
+// especificacao é o NodeSpec que a materialização escreve para um nó.
+func especificacao(node LeafNode) orchestrator.NodeSpec {
+	return orchestrator.NodeSpec{
+		TaskID: node.NodeID,
+		Task:   contract.TaskSpec{ToolID: node.ToolID, Capability: node.Capability},
+	}
+}
+
+// confrontarTopologia confronta o grafo re-hidratado da posse com o plano, ANTES de a
+// materialização escrever o que quer que seja (AOS-476, revisão B2). Num run novo o grafo está
+// vazio e não há nada a confrontar. Numa retoma, todo o nó durável tem de ser um nó do plano e
+// toda a aresta durável uma aresta do plano: sem `plan.materialized` nada mais as pode ter
+// escrito. Uma aresta a mais — invertida, por exemplo — faria a do plano fechar um ciclo no
+// `AddEdge`, depois dos nós e com um `task.edge.rejected_cycle` no log; aqui recusa-se sem
+// escrever, com [ErrEdgeDiverges].
+func (a graphLeafAdmitter) confrontarTopologia(nos []LeafNode, arestas []planEdge) error {
+	d := a.g.DAG()
+	if d.Len() == 0 {
+		return nil
+	}
+	doPlano := make(map[string]LeafNode, len(nos))
+	for _, n := range nos {
+		doPlano[n.NodeID] = n
+	}
+	duraveis, err := d.TopoOrder()
+	if err != nil {
+		return err
+	}
+	for _, id := range duraveis {
+		n, ok := doPlano[id]
+		if !ok {
+			return fmt.Errorf("%w: %q está no grafo e não é do plano", ErrNodeDiverges, id)
+		}
+		if err := a.coincide(n); err != nil {
+			return err
+		}
+	}
+	doPlanoAresta := make(map[planEdge]bool, len(arestas))
+	for _, e := range arestas {
+		doPlanoAresta[e] = true
+	}
+	for _, de := range duraveis {
+		for _, para := range duraveis {
+			if d.HasEdge(de, para) && !doPlanoAresta[planEdge{from: de, to: para}] {
+				return fmt.Errorf("%w: %s→%s está no grafo e o plano não a declara", ErrEdgeDiverges, de, para)
+			}
+		}
 	}
 	return nil
 }

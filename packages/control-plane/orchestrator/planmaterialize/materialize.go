@@ -34,11 +34,20 @@ var (
 	// ErrInvalidRequest — pedido de materialização malformado (run_id/plan_id vazio,
 	// documento sem nós, ou node_id vazio/duplicado).
 	ErrInvalidRequest = errors.New("planmaterialize: pedido de materialização inválido")
-	// ErrNodeDiverges — numa materialização RETOMADA (AOS-476), um nó do plano já está no
-	// grafo durável com outra especificação (tool call, prioridade, identidade) ou fora do
-	// estado `ready`. Fail-closed e DETERMINISTA: o log não muda, e apresentar o mesmo
-	// documento dá sempre o mesmo.
-	ErrNodeDiverges = errors.New("planmaterialize: nó já durável no grafo diverge do plano")
+	// ErrGraphDiverges — numa materialização RETOMADA (AOS-476), o grafo durável do run já
+	// tem nós ou arestas que não são os do plano. Fail-closed e DETERMINISTA: o log não muda,
+	// e apresentar o mesmo documento dá sempre o mesmo. Quem diverge é o GRAFO, não o
+	// documento — distinção que o operador precisa de ver para não ir trocar o documento.
+	// [ErrNodeDiverges] e [ErrEdgeDiverges] embrulham-no.
+	ErrGraphDiverges = errors.New("planmaterialize: o grafo durável do run diverge do plano")
+	// ErrNodeDiverges — um nó já durável não é o do plano: outra especificação (tool call,
+	// prioridade, identidade), fora do estado `ready`, ou um nó que o plano não tem.
+	ErrNodeDiverges = fmt.Errorf("%w: nó", ErrGraphDiverges)
+	// ErrEdgeDiverges — uma aresta já durável que o plano não declara (p.ex. invertida).
+	// Detectada ANTES de qualquer escrita: sem isto, a aresta do plano que a fecharia em ciclo
+	// só falhava no `GraphBuilder.AddEdge`, depois dos nós, com um `task.edge.rejected_cycle`
+	// no log.
+	ErrEdgeDiverges = fmt.Errorf("%w: aresta", ErrGraphDiverges)
 	// ErrNodeNotAdmitted — a admissão global (AOS-027/028) recusou um nó. Fail-closed:
 	// o plano APROVADO não materializa parcialmente — a recusa aborta antes de
 	// qualquer spawn/nó (nenhum efeito parcial).
@@ -309,6 +318,12 @@ type plannedNode struct {
 // planEdge é uma aresta de precedência do plano: `to` depende de `from`.
 type planEdge struct{ from, to string }
 
+// confrontoDaTopologia é a vista OPCIONAL de uma porta [LeafAdmitter] que conhece o grafo
+// durável do run. O adaptador de produção implementa-a; os duplos de teste sem grafo não.
+type confrontoDaTopologia interface {
+	confrontarTopologia(nos []LeafNode, arestas []planEdge) error
+}
+
 // planEdges deriva as arestas de entrada de cada nó — `depends_on` E as origens das
 // arestas condicionais, pela MESMA união que o validador AOS-231 admite no seu DAG
 // ([plan.Node.IncomingEdges]) — em ordem canónica (nós por node_id, origens ordenadas,
@@ -431,6 +446,34 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		planned = append(planned, plannedNode{node: n, kind: kind, caps: m.authorityForNode(n)})
 	}
 
+	// O que a FASE 2 escreverá por nó, calculado UMA vez e antes de qualquer escrita: é contra
+	// isto que uma retoma confronta os nós já duráveis.
+	leaves := make([]LeafNode, len(planned))
+	for i, p := range planned {
+		ln := LeafNode{
+			RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
+			Capabilities: p.caps,
+		}
+		if p.kind == plannerevents.SpawnLeaf {
+			if t, ok := m.primaryTool(p.node); ok {
+				ln.ToolID = t.Name
+				ln.Capability = m.mapper(t)
+			}
+		}
+		leaves[i] = ln
+	}
+
+	// RETOMA (AOS-476): se a porta conhece o grafo durável, confronta-o INTEIRO com o plano
+	// ANTES de qualquer escrita — cada nó durável tem de ser um nó do plano com a mesma
+	// especificação e ainda `ready`, cada aresta durável uma aresta do plano. Uma divergência
+	// aborta aqui, sem admissão global e sem nada no log. Confrontar nó a nó só na FASE 2 deixava
+	// escrito o nó que viesse antes do divergente na ordem canónica (medido na revisão).
+	if tc, ok := m.leaf.(confrontoDaTopologia); ok {
+		if err := tc.confrontarTopologia(leaves, edges); err != nil {
+			return empty, err
+		}
+	}
+
 	// FASE 1 — admissão global de TODOS os nós antes de qualquer efeito. Fail-closed.
 	for _, p := range planned {
 		v, err := m.admission.Admit(ctx, AdmitRequest{
@@ -459,17 +502,8 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 	// `plan.materialized.Nodes[].Tools` — é dali (uma só fonte de verdade) que o sink a
 	// reconstrói para o spawn do papel, com o orçamento estimado do documento.
 	matNodes := make([]plannerevents.MaterializedNode, 0, len(planned))
-	for _, p := range planned {
-		ln := LeafNode{
-			RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
-			Capabilities: p.caps,
-		}
-		if p.kind == plannerevents.SpawnLeaf {
-			if t, ok := m.primaryTool(p.node); ok {
-				ln.ToolID = t.Name
-				ln.Capability = m.mapper(t)
-			}
-		}
+	for i, p := range planned {
+		ln := leaves[i]
 		if err := m.leaf.AdmitLeaf(ctx, ln); err != nil {
 			return empty, fmt.Errorf("planmaterialize: admitir nó %q (%s): %w", p.node.NodeID, p.kind, err)
 		}

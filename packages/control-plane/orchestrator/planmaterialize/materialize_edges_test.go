@@ -10,6 +10,7 @@ import (
 	"github.com/aos-ref/control-plane/orchestrator/contract"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
 	"github.com/aos-ref/control-plane/orchestrator/plannerevents"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -367,5 +368,79 @@ func TestAOS476_RetomaComNoJaEmCursoRecusa(t *testing.T) {
 	}
 	if _, err := materializador(t, builderDoLog(t, es, "nhi:p2"), &fakeRecorder{}).Materialize(ctx, planoRecolhaAnalise()); !errors.Is(err, ErrNodeDiverges) {
 		t.Fatalf("nó já em curso devia dar ErrNodeDiverges, got %v", err)
+	}
+}
+
+// TestAOS476_RetomaSobreGrafoQueNaoEODoPlanoRecusa (revisão da ronda 2, B2 e B4): cada forma de
+// o grafo durável não ser o do plano recusa ANTES de escrever — nem nó, nem aresta, nem
+// `task.edge.rejected_cycle`, nem `plan.materialized`. Os três primeiros casos são campos que o
+// `task.node.created` transporta e que uma comparação só da tool deixaria passar; o quarto é um
+// estado terminal (não só `running`); os dois últimos são topologia que o plano não declara.
+func TestAOS476_RetomaSobreGrafoQueNaoEODoPlanoRecusa(t *testing.T) {
+	recolha := orchestrator.NodeSpec{TaskID: "recolha"} // papel do plano: sem tool
+	casos := []struct {
+		nome   string
+		quer   error
+		semear func(t *testing.T, g *orchestrator.GraphBuilder)
+	}{
+		{"prioridade", ErrNodeDiverges, func(t *testing.T, g *orchestrator.GraphBuilder) {
+			n := recolha
+			n.Priority = 7
+			deve(t, g.AddNode(context.Background(), n))
+		}},
+		{"identidade", ErrNodeDiverges, func(t *testing.T, g *orchestrator.GraphBuilder) {
+			n := recolha
+			n.Agent = contract.AgentIdentity{NHIID: "nhi:outro"}
+			deve(t, g.AddNode(context.Background(), n))
+		}},
+		{"capability", ErrNodeDiverges, func(t *testing.T, g *orchestrator.GraphBuilder) {
+			// a MESMA tool, com outra capability: a autoridade da folha não é a do plano.
+			n := orchestrator.NodeSpec{TaskID: "analise"}
+			n.Task.ToolID = "fs.read"
+			n.Task.Capability = "cap:tool:http.post"
+			deve(t, g.AddNode(context.Background(), n))
+		}},
+		{"terminal", ErrNodeDiverges, func(t *testing.T, g *orchestrator.GraphBuilder) {
+			deve(t, g.AddNode(context.Background(), recolha))
+			deve(t, g.MarkRunning(context.Background(), "recolha"))
+			deve(t, g.MarkTerminal(context.Background(), "recolha", state.Complete))
+		}},
+		{"no-a-mais", ErrNodeDiverges, func(t *testing.T, g *orchestrator.GraphBuilder) {
+			deve(t, g.AddNode(context.Background(), recolha))
+			deve(t, g.AddNode(context.Background(), orchestrator.NodeSpec{TaskID: "fantasma"}))
+		}},
+		{"aresta-invertida", ErrEdgeDiverges, func(t *testing.T, g *orchestrator.GraphBuilder) {
+			analise := orchestrator.NodeSpec{TaskID: "analise"}
+			analise.Task.ToolID = "fs.read"
+			analise.Task.Capability = DefaultCapabilityMapper(tool("fs.read"))
+			deve(t, g.AddNode(context.Background(), analise))
+			deve(t, g.AddNode(context.Background(), recolha))
+			deve(t, g.AddEdge(context.Background(), "analise", "recolha"))
+		}},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			es := novoES(t)
+			c.semear(t, builderDoLog(t, es, "nhi:p1"))
+			antes := contarTipos(t, es, "run-1")
+			rec := &fakeRecorder{}
+			_, err := materializador(t, builderDoLog(t, es, "nhi:p2"), rec).Materialize(context.Background(), planoRecolhaAnalise())
+			if !errors.Is(err, c.quer) || !errors.Is(err, ErrGraphDiverges) {
+				t.Fatalf("devia dar %v (e ErrGraphDiverges), got %v", c.quer, err)
+			}
+			if depois := contarTipos(t, es, "run-1"); !reflect.DeepEqual(antes, depois) {
+				t.Fatalf("a retoma recusada escreveu: antes=%v depois=%v", antes, depois)
+			}
+			if len(rec.payloads) != 0 {
+				t.Fatalf("plan.materialized apenso sobre um grafo divergente: %+v", rec.payloads)
+			}
+		})
+	}
+}
+
+func deve(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
 	}
 }

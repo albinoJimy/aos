@@ -400,23 +400,104 @@ func TestAOS476_MaterializacaoMortaComNoDivergenteRecusa(t *testing.T) {
 		p["tool_id"], p["capability"] = "http.post", "cap:tool:http.post"
 		r.env["payload"], _ = json.Marshal(p)
 	})
+	aos476RetomaRecusada(t, bin, wal, run, snap, doc, `"analise"`)
+}
+
+// aos476RetomaRecusada corre a retoma (`serve --plan-doc`) sobre um grafo que diverge do plano e
+// verifica, por processo: saída 10, o erro nomeia o GRAFO (não o documento) e o que diverge,
+// nada é escrito no log (nem `task.edge.rejected_cycle`), e a posse foi LARGADA — uma segunda
+// retoma, por outro trabalhador, recebe a mesma recusa e não 3 (lease vivo).
+func aos476RetomaRecusada(t *testing.T, bin, wal, run, snap, doc string, nomeia ...string) {
+	t.Helper()
 	antes, err := os.ReadFile(wal)
 	if err != nil {
 		t.Fatalf("ler o WAL: %v", err)
 	}
-
-	r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--plan-doc", doc, "--snapshot", snap,
-		"--worker", "p2", "--release")
-	if r.code != exitDocumentoRecusado || !strings.Contains(r.stderr, "diverge") || !strings.Contains(r.stderr, `"analise"`) {
-		t.Fatalf("um nó divergente tinha de ser recusado com %d e dizê-lo, saiu %d\n%s\n%s", exitDocumentoRecusado, r.code, r.stdout, r.stderr)
+	for i, w := range []string{"p2", "p3"} {
+		r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--plan-doc", doc, "--snapshot", snap, "--worker", w, "--release")
+		if r.code != exitDocumentoRecusado {
+			t.Fatalf("retoma %d sobre um grafo divergente tinha de sair %d (terminal, posse largada), saiu %d\n%s\n%s", i+1, exitDocumentoRecusado, r.code, r.stdout, r.stderr)
+		}
+		if !strings.Contains(r.stderr, "grafo do run DIVERGE") || strings.Contains(r.stderr, "documento do plano RECUSADO") {
+			t.Fatalf("o erro tem de nomear o GRAFO, não o documento:\n%s", r.stderr)
+		}
+		for _, n := range nomeia {
+			if !strings.Contains(r.stderr, n) {
+				t.Fatalf("o erro não nomeia %s:\n%s", n, r.stderr)
+			}
+		}
 	}
 	depois, err := os.ReadFile(wal)
 	if err != nil {
 		t.Fatalf("ler o WAL: %v", err)
 	}
-	for _, tipo := range []string{"task.node.created", "task.edge.added", "plan.materialized"} {
+	for _, tipo := range []string{"task.node.created", "task.edge.added", "task.edge.rejected_cycle", "plan.materialized"} {
 		if a, d := len(aos476Tipo(antes, tipo)), len(aos476Tipo(depois, tipo)); a != d {
 			t.Fatalf("a retoma recusada escreveu %s: %d → %d", tipo, a, d)
 		}
+	}
+}
+
+// TestAOS476_MaterializacaoMortaComArestaInvertidaRecusa (revisão da ronda 2, B2): o WAL tem os
+// dois nós e uma aresta que o plano NÃO declara — `analise → recolha`, a inversa —, sem
+// `plan.materialized`. Antes, a aresta do plano fechava o ciclo no `AddEdge`, depois de confirmar
+// os nós: saída 1 (transitória), um `task.edge.rejected_cycle` no log e o lease retido (o `serve`
+// seguinte saía 3 até ao TTL). Agora o grafo é confrontado com o plano antes de qualquer escrita.
+func TestAOS476_MaterializacaoMortaComArestaInvertidaRecusa(t *testing.T) {
+	bin := construir(t)
+	const run = "run-aos476-invertida"
+	wal, snap, doc := aos476PrimeiroDono(t, bin, run)
+	var guardar []aos476Registo
+	var largada *aos476Registo
+	for _, r := range aos476LerWAL(t, wal) {
+		switch {
+		case r.tipo == "lease.released" && largada == nil:
+			r := r
+			largada = &r
+		case largada != nil || r.tipo == "plan.materialized" || r.tipo == "task.node.state_changed":
+		case r.tipo == "task.edge.added":
+			// A MESMA aresta, invertida, com a chave de idempotência coerente.
+			var p map[string]any
+			_ = json.Unmarshal(r.env["payload"], &p)
+			p["from"], p["to"] = "analise", "recolha"
+			r.env["payload"], _ = json.Marshal(p)
+			r.env["step_id"], _ = json.Marshal("edge:analise>recolha")
+			r.env["idempotency_key"], _ = json.Marshal(run + ":edge:analise>recolha")
+			guardar = append(guardar, r)
+		default:
+			guardar = append(guardar, r)
+		}
+	}
+	if largada == nil {
+		t.Fatal("WAL sem lease.released")
+	}
+	aos476EscreverWAL(t, wal, append(guardar, *largada))
+	if insp := correr(t, bin, "inspect", "--wal", wal, "--run", run); !strings.Contains(insp.stdout, "ordem=analise,recolha") {
+		t.Fatalf("o WAL semeado não tem a aresta invertida:\n%s", insp.stdout)
+	}
+	aos476RetomaRecusada(t, bin, wal, run, snap, doc, "analise→recolha")
+}
+
+// TestAOS476_NodesComPlanDocRecusado (revisão da ronda 2, B1): `--nodes` admite nós sem plano e o
+// `--plan-doc` materializa por cima; com a materialização retomável, um nó do `--nodes` com o
+// nome de um papel do plano passava por ele. A combinação recusa-se antes da posse.
+func TestAOS476_NodesComPlanDocRecusado(t *testing.T) {
+	bin := construir(t)
+	dir := t.TempDir()
+	snap := filepath.Join(dir, "snapshot.json")
+	escrever(t, snap, aos476Snapshot)
+	doc := filepath.Join(dir, "plano.json")
+	escrever(t, doc, aos476Plano)
+	wal := filepath.Join(dir, "orq.wal")
+	r := correr(t, bin, "serve", "--wal", wal, "--run", "run-aos476-nodes", "--nodes", "recolha,fantasma",
+		"--plan-doc", doc, "--snapshot", snap, "--worker", "p1", "--release")
+	if r.code != exitErro || !strings.Contains(r.stderr, "--nodes e --plan-doc não se combinam") {
+		t.Fatalf("--nodes com --plan-doc tinha de ser recusado como erro de uso, saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	if strings.Contains(r.stdout, "posse:") {
+		t.Fatalf("a recusa tinha de vir antes da posse:\n%s", r.stdout)
+	}
+	if raw, err := os.ReadFile(wal); err == nil && len(aos476Tipo(raw, "task.node.created")) != 0 {
+		t.Fatal("a combinação recusada escreveu nós")
 	}
 }

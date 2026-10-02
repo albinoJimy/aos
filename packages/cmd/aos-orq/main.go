@@ -105,7 +105,9 @@ const (
 	// são aceitáveis, e voltar a apresentá-los dá sempre o mesmo (AOS-442): o documento não
 	// descodifica, não valida, não é o organigrama que o `plan.validated` do run ancora, ou o
 	// snapshot não é o declarado/selado. Tem código PRÓPRIO porque é DETERMINISTA: como `1`
-	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila.
+	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila. Partilha-o
+	// o grafo do run que diverge do plano numa materialização retomada (AOS-476), com rótulo
+	// próprio no `tipoDoErro`.
 	exitDocumentoRecusado = 10
 	// exitRequerenteForaDoMandato — o nó recusou o run de um nó do plano porque o SUBMISSOR do
 	// pedido não consta dos `requesters` do mandato da credencial (AOS-439). É DETERMINISTA — o
@@ -258,6 +260,7 @@ func codigoDe(err error) int {
 	case errors.Is(err, planner.ErrPlanRejected):
 		return exitPlanoRecusado
 	case errors.Is(err, errDocumentoDoPlanoRecusado),
+		errors.Is(err, errGrafoDoRunDiverge),
 		errors.Is(err, ErrSnapshotNaoCorresponde),
 		errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return exitDocumentoRecusado
@@ -321,6 +324,14 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	// Continua a cumprir a ordem que o AOS-413 fixou: tudo isto acontece ANTES da posse.
 	if *runID == "" {
 		return errors.New("--run é obrigatório")
+	}
+	// AOS-476 (revisão, B1): `--nodes` admite nós SEM plano — sem tool, sem gate — e o
+	// `--plan-doc` materializa o plano por cima. Desde que a materialização é retomável, um nó do
+	// `--nodes` com o nome de um papel do plano coincidia com ele e era aceite, e os restantes
+	// ficavam no grafo como se fossem do plano. São duas fontes de nós para o mesmo run: recusa-se
+	// a combinação antes da posse, como já se recusava com `--goal`.
+	if len(separar(*nodes)) > 0 && *planDoc != "" {
+		return errors.New("--nodes e --plan-doc não se combinam: com --plan-doc os nós são os do documento aprovado")
 	}
 	// AOS-413: o id do run filho é `<run>~<node_id>`; com um `~` no run a decomposição deixava de
 	// ser única e dois planos podiam dar o mesmo run filho.

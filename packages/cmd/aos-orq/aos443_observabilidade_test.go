@@ -66,6 +66,7 @@ func TestAOS443DetalheNaoLevaOTextoDoErro(t *testing.T) {
 		errNosEmVoo:                            "nos_em_voo",
 		planner.ErrPlanRejected:                "plano_recusado_pelo_planeador",
 		errDocumentoDoPlanoRecusado:            "documento_recusado",
+		errGrafoDoRunDiverge:                   "grafo_diverge",
 		ErrSnapshotNaoCorresponde:              "snapshot_nao_corresponde",
 		ErrSnapshotDiferenteDoSelado:           "snapshot_diferente_do_selado",
 		errors.New("sem sentinela " + pessoal): "generico",

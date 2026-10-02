@@ -413,12 +413,13 @@ func materializarEDespachar(ctx context.Context, ten *runlifecycle.Tenure, store
 			return fmt.Errorf("materialização falhou (%w) e a devolução das reservas também: %v", err, rerr)
 		}
 		// AOS-476: a materialização é RETOMÁVEL — uma tentativa anterior que morreu depois dos nós
-		// e antes do `plan.materialized` deixa nós no grafo que esta aceita se coincidirem. Se um
-		// NÃO coincide com o do documento, o log não muda e apresentar o mesmo documento dá sempre
-		// o mesmo: é a recusa DETERMINISTA do documento (10), não um `1` que o `consume` retentaria
-		// até esgotar as gerações.
-		if errors.Is(err, planmaterialize.ErrNodeDiverges) {
-			return fmt.Errorf("%w: o grafo do run já tem nós que não são os deste documento: %w", errDocumentoDoPlanoRecusado, err)
+		// e antes do `plan.materialized` deixa nós e arestas no grafo que esta aceita se forem os
+		// do plano. Se o grafo tem um nó ou uma aresta que não são, o log não muda e apresentar o
+		// mesmo documento dá sempre o mesmo: é TERMINAL (10, com a posse largada), não um `1` que o
+		// `consume` retentaria até esgotar as gerações. O sentinela é o do GRAFO, não o do
+		// documento: o documento está certo, e o operador não deve ir trocá-lo.
+		if errors.Is(err, planmaterialize.ErrGraphDiverges) {
+			return fmt.Errorf("%w: %w", errGrafoDoRunDiverge, err)
 		}
 		return fmt.Errorf("materialização: %w", err)
 	}
@@ -445,6 +446,12 @@ func despachar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle
 	}
 	return nil
 }
+
+// errGrafoDoRunDiverge — numa materialização retomada, o grafo durável do run tem nós ou
+// arestas que não são os do documento aprovado (AOS-476). DETERMINISTA: sai com o código do
+// documento recusado (10) e larga a posse, mas tem rótulo próprio (`grafo_diverge`) — quem
+// diverge é o log do run, e o remédio não é apresentar outro documento.
+var errGrafoDoRunDiverge = errors.New("grafo do run DIVERGE do plano aprovado")
 
 // materializadoNoLog devolve o facto `plan.materialized` do plano, se já existir (nil se não).
 func materializadoNoLog(ctx context.Context, store runlifecycle.EventStore, planID string) (*plannerevents.MaterializedPayload, error) {
