@@ -181,8 +181,15 @@ func WithLeaseClock(c Clock) LeaseOption {
 	}
 }
 
+// DefaultLeaseProducerNHI é a identidade de COMPONENTE gravada no envelope dos eventos
+// `lease.*` quando o compositor não dá outra ([WithLeaseProducer]). O lease é ciclo de vida
+// do próprio nó — nenhum humano nem agente o pede — e o envelope diz QUEM o emitiu em vez de
+// ficar vazio: um leitor do log não confunde «componente do nó» com «não sei» (AOS-478,
+// `tecnica/13_Modelo_Dados_Eventos.md` §3.1). O worker concreto vai no payload.
+const DefaultLeaseProducerNHI = "nhi:kernel/agent-runtime/lease"
+
 // WithLeaseProducer define a identidade emissora (NHI + cadeia de delegação) gravada
-// nos eventos de lease. Default: Producer zero (aceitável em teste).
+// nos eventos de lease. Default: [DefaultLeaseProducerNHI].
 func WithLeaseProducer(p eventstore.Producer) LeaseOption {
 	return func(m *LeaseManager) { m.producer = p }
 }
@@ -215,6 +222,9 @@ func NewLeaseManager(store EventStore, ttl time.Duration, opts ...LeaseOption) (
 	}
 	if m.clock == nil {
 		m.clock = systemClock{}
+	}
+	if m.producer.NHIID == "" {
+		m.producer.NHIID = DefaultLeaseProducerNHI
 	}
 	return m, nil
 }

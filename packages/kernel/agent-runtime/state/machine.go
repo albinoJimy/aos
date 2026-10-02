@@ -222,8 +222,15 @@ type Option func(*Machine)
 // WithClock injecta o relógio (default [systemClock]). Usar nos testes de timeout.
 func WithClock(c Clock) Option { return func(m *Machine) { m.clock = c } }
 
+// DefaultProducerNHI é a identidade de COMPONENTE gravada no envelope de
+// `run.state.transition` quando o compositor não dá outra. A transição é ciclo de vida do
+// run conduzido pelo nó; quem a CAUSOU (o sinal de controlo, a escalada, a decisão humana)
+// tem o seu próprio facto atribuído no mesmo stream (AOS-478,
+// `tecnica/13_Modelo_Dados_Eventos.md` §3.1). Um envelope vazio leria-se como «não sei».
+const DefaultProducerNHI = "nhi:kernel/agent-runtime/state-machine"
+
 // WithProducer define a identidade emissora (NHI + cadeia de delegação) gravada nos
-// eventos de transição. Default: Producer zero (aceitável em teste).
+// eventos de transição. Default: [DefaultProducerNHI].
 func WithProducer(p eventstore.Producer) Option { return func(m *Machine) { m.producer = p } }
 
 // WithTracer reusa a porta de observabilidade do Agent Runtime (AOS-013): abre um
@@ -301,6 +308,9 @@ func NewMachine(store EventStore, runID string, opts ...Option) (*Machine, error
 	}
 	if m.obs == nil {
 		m.obs = NopTransitionObserver{}
+	}
+	if m.producer.NHIID == "" {
+		m.producer.NHIID = DefaultProducerNHI
 	}
 	m.current = Ready
 	m.enteredAt = m.clock.Now()

@@ -1,6 +1,10 @@
 package agentruntime
 
-import "context"
+import (
+	"context"
+
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+)
 
 // ---------------------------------------------------------------------------
 // AOS-021 — EscalationSink (tool call escalada → espera por humano)
@@ -28,6 +32,10 @@ type PendingApproval struct {
 	// Preview é o digest canónico da call ([referencemonitor.ApprovalPreview]): o valor
 	// que cada perna de aprovação assina (WYSIWYS) e contra o qual o grant é verificado.
 	Preview []byte
+	// Principal é o principal da call ESCALADA, tal como o loop a apresentou ao RM — o
+	// mesmo que a preview amarra. Vai ao `producer` do envelope do pendente (AOS-478): a
+	// escalada é um acto do run, não do nó.
+	Principal referencemonitor.Principal
 }
 
 // EscalationSink recebe uma tool call ESCALADA pelo Reference Monitor (veredicto

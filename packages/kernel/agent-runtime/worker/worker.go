@@ -100,9 +100,14 @@ func WithTracer(t otelgenai.Tracer) WorkerOption {
 	}
 }
 
+// DefaultProducerNHI é a identidade de COMPONENTE gravada no envelope de
+// `worker.step.dispatched` quando o compositor não dá outra (AOS-478,
+// `tecnica/13_Modelo_Dados_Eventos.md` §3.1): nunca um envelope vazio.
+const DefaultProducerNHI = "nhi:kernel/agent-runtime/worker"
+
 // WithProducer define a identidade emissora (NHI + cadeia de delegação) gravada nos
-// marcadores de progresso fenced. Default: Producer zero (aceitável em teste; em
-// produção o worker injecta o principal para responsabilização, ADR-003).
+// marcadores de progresso fenced. Default: [DefaultProducerNHI]; em produção o worker
+// pode injectar o principal para responsabilização (ADR-003).
 func WithProducer(p eventstore.Producer) WorkerOption {
 	return func(w *Worker) { w.producer = p }
 }
@@ -223,6 +228,9 @@ func NewWorker(
 	}
 	if w.newTicker == nil {
 		w.newTicker = defaultTickerFactory
+	}
+	if w.producer.NHIID == "" {
+		w.producer.NHIID = DefaultProducerNHI
 	}
 	return w, nil
 }

@@ -121,6 +121,10 @@ func (a *EventStoreAdapter) Put(ctx context.Context, rec domain.Record) (domain.
 		Payload: payload,
 		RunID:   rec.Metadata.RunID,
 		StepID:  string(rec.Class) + ":put:" + rec.ID,
+		// AOS-478: o autor da escrita, como o tombstone de [EventStoreAdapter.Delete] e os
+		// restantes emissores de memória já faziam. Antes, o envelope vinha vazio e o autor só
+		// existia dentro do payload.
+		Producer: eventstore.Producer{NHIID: rec.Metadata.AgentID},
 	})
 	if err != nil {
 		span.SetAttribute(attrResult, "error")

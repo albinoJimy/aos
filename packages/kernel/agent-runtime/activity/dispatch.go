@@ -9,6 +9,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/saga"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -245,6 +246,11 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 	// um segundo digest com outra canonicalização divergiria do primeiro, e a divergência
 	// apareceria como recusa espúria numa retoma legítima.
 	fingerprint := otelgenai.CanonicalToolCallHash(act.ToolID, act.Input)
+	// AUTOR DO EFEITO → ENVELOPE DO LEDGER (AOS-478). O `step.ledger.applied` é causado por
+	// esta tool call e identifica o MESMO principal que o selo `tool.call.mediated` do passo:
+	// o que o RM resolveu do token verificado ([referencemonitor.Decision.Principal]), e não o
+	// que o loop apresentou. Só existe depois da mediação, daí a função lida pelo ledger no fim.
+	var autor eventstore.Producer
 	res, applied, err := d.ledger.Apply(ctx, key, func(ctx context.Context) (durable.Result, error) {
 		dec, mErr := d.rm.Mediate(ctx, act.toCall())
 		if mErr != nil {
@@ -262,6 +268,7 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 		if dec.ToolErr != nil {
 			return durable.Result{}, fmt.Errorf("%w: %w", ErrToolExecution, &ToolError{Err: dec.ToolErr})
 		}
+		autor = dec.Principal.EventProducer()
 		// Canal lateral: capta o custo MEDIDO do efeito que ACABOU de correr. Só aqui —
 		// nunca no durable.Result devolvido, que é o que o ledger grava e o replay relê.
 		effectCostMicroUSD = dec.CostMicroUSD
@@ -270,7 +277,7 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 			status = StatusOK
 		}
 		return durable.Result{Status: status, Payload: dec.Output}, nil
-	}, durable.WithActionFingerprint(fingerprint))
+	}, durable.WithActionFingerprint(fingerprint), durable.WithEffectProducer(func() eventstore.Producer { return autor }))
 	if err != nil {
 		if errors.Is(err, ErrMediationDenied) {
 			span.SetAttribute(AttrDecision, "denied")

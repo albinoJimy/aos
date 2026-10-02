@@ -105,7 +105,7 @@ Campos e o seu papel:
 | `seq` | integer ≥ 1 | Contador monotónico **gapless por stream**, atribuído pelo store (nunca pelo chamador). Base da ordem total (ADR-001). |
 | `type` | string | Nome canónico do facto. Catálogo em §3.3. |
 | `ts` | string RFC3339 | Relógio de parede, **observacional**, nunca fonte de ordenação. |
-| `producer` | objecto | Identidade NHI emissora, a sua `delegation_chain` *on-behalf-of* (termina num humano responsável) e o `scope` activo (ADR-003). |
+| `producer` | objecto | Identidade NHI emissora, a sua `delegation_chain` *on-behalf-of* (termina num humano responsável) e o `scope` activo (ADR-003). **Nunca vazio**, mas nem todo o tipo traz cadeia: o que cada tipo traz está na tabela «O `producer` por família de evento», logo abaixo. |
 | `payload` | qualquer JSON | Corpo do facto, com schema próprio por `type`. **Inline** neste reference impl (ver a nota de cifra abaixo). |
 | `schema_version` | string `MAJOR.MINOR` | Versão do schema do envelope/payload no registo (`"1.0"`; expand/contract, ADR-012). |
 | `run_id` | string | Correlação da trajectória. Componente da `idempotency_key`. |
@@ -114,6 +114,57 @@ Campos e o seu papel:
 | `idempotency_key` | string | `run_id + ":" + step_id`, atribuída pelo store. Garante *zero efeitos duplicados no retry* (ADR-001). |
 
 Um segundo append com a mesma `idempotency_key` devolve `status: "duplicate"` e o `seq` committed original, sem duplicar o efeito (contrato C2, `tecnica/12` §5). Os domínios de deduplicação por passo são namespaceados no `step_id` — turno (`run_id:step_id`), ledger (`run_id:ledger-…`), checkpoint (`run_id:ckpt-…`) e captura de replay (`run_id:cap-…`) — precisamente para não colidirem entre si na dedup global por chave.
+
+#### O `producer` por família de evento (AOS-478)
+
+A linha `producer` da tabela acima promete a cadeia de delegação **por evento**. Um WAL de produção lido inteiro a 2026-10-01 mostrou outra coisa: cadeia só em `tool.call.*`, só `nhi_id` em `turn.recorded`/`replay.captured`/`run.toolset.frozen`/`planrequest.*`, e `producer` **vazio** em `step.checkpoint`, `run.state.transition`, `memory.record.written`, `run.resume.record`, `lease.*`, `sandbox.*`, `step.ledger.applied`, `approval.*` e `control.*` (`docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §7, achado 3). A tabela abaixo é o contrato que substitui a promessa genérica: diz, por tipo, **o que** o `producer` traz e **como** se chega ao humano responsável.
+
+**Regra.** Nenhum tipo do envelope é emitido com `producer.nhi_id` vazio. Há três classes:
+
+- **`cadeia`** — o principal VERIFICADO pelo Reference Monitor a partir do token NHI: `nhi_id` = agente, `delegation_chain` = raiz `human:<id>` → agente, `scope` = autoridade do token. A recondução ao humano faz-se no próprio evento.
+- **`nhi_id`** — o autor do acto, sem cadeia: o principal do run como o nó o admitiu, o operador autenticado de um sinal de controlo, o aprovador. A cadeia, quando existe, lê-se no `tool.call.*` do mesmo `(run_id, step_id)`.
+- **`componente`** — a identidade do componente que emitiu um facto de ciclo de vida que ninguém pediu (`nhi:<camada>/<componente>`, à semelhança do `nhi:composition-root` de `run.toolset.frozen`). O responsável lê-se pelo `run_id`, no `turn.recorded` e no `tool.call.*` do run.
+
+A quarta linha da tabela, **`fora-do-envelope`**, não é uma classe de `producer`: são rótulos de `audit.AuditRecord` (§3.3, tabela (b)) que nunca chegam a um `EventInput` e cujo autor vai no `Principal` do registo WORM.
+
+| Tipo(s) | Classe | `producer.nhi_id` | Como se chega ao responsável |
+|---|---|---|---|
+| `tool.call.*` | `cadeia` | Agente do token verificado | No próprio evento. Excepção honesta: um `tool.call.denied` pelo hook de identidade grava o principal APRESENTADO (só `nhi_id`), porque não há cadeia verificada que gravar. |
+| `step.ledger.applied` | `cadeia` | O mesmo principal do `tool.call.mediated` do passo (`Decision.Principal`, lido pelo `activity.Dispatcher`) | No próprio evento. |
+| `sandbox.*` | `cadeia` | O mesmo principal do `tool.call.mediated` do passo (o RM anexa-o ao contexto do despacho, `referencemonitor.ContextWithMediatedPrincipal`) | No próprio evento. |
+| `identity.nhi.issued` | `cadeia` | Agente cunhado | No próprio evento (é o binding humano↔NHI do ADR-003). |
+| `turn.recorded`, `replay.captured` | `nhi_id` | Principal do run (`Goal.Principal.NHIID`) | Ver a nota «turno ↔ tool call» abaixo. |
+| `run.resume.record` | `nhi_id` | Principal do run | Idem. |
+| `approval.pending` | `nhi_id` | Principal da call escalada, tal como o run a apresentou (o que a preview amarra); `nhi:aos-node/exhaustion-prompt` no prompt de exaustão | O run (`payload.run_id`). |
+| `approval.consumed` | `nhi_id` | Principal da call que gastou a aprovação, tal como o run a apresentou (o `ApprovalGate` corre antes do hook de identidade) | O `tool.call.*` do mesmo passo. |
+| `approval.granted` | `nhi_id` | O primeiro aprovador verificado pela cerimónia four-eyes | A lista completa das pernas está em `payload.approvers`; o envelope tem um só `nhi_id`. |
+| `approval.decided` | `nhi_id` | O principal verificado que decidiu | No próprio evento e no selo WORM da decisão. |
+| `control.pause`, `control.steer`, `control.resume` | `nhi_id` | O emissor autenticado (o mesmo `emitter_id` do payload) | O operador pinado; o selo WORM `control:*` tem a atribuição. |
+| `memory.*` (excepto as migrações, linha própria) | `nhi_id` | Agente autor da escrita (`AgentID`, obrigatório no domínio) | O run (`run_id`). |
+| `credential.*` | `nhi_id` | Principal da troca (`scope` = capability) | O `tool.call.*` do passo. |
+| `registry.artifact.*` | `nhi_id` | Publicador do artefacto | Proveniência assinada do artefacto. |
+| `identity.nhi.revoked` | `nhi_id` | O `jti` revogado | O `identity.nhi.issued` do mesmo `jti`. |
+| `control.correction_consumed` | `componente` | `nhi:kernel/agent-runtime/steer-channel` | O `control.steer` que a correcção entregue fecha (`payload.emitter_id`). |
+| `run.state.transition` | `componente` | `nhi:kernel/agent-runtime/state-machine` | O facto que causou a transição (sinal de controlo, escalada, decisão) está no mesmo stream. |
+| `step.checkpoint` | `componente` | `nhi:kernel/agent-runtime/checkpointer` | O `turn.recorded` do mesmo passo. |
+| `lease.*` | `componente` | `nhi:kernel/agent-runtime/lease` | O worker concreto vai no payload; o run, por `run_id`. |
+| `worker.step.dispatched` | `componente` | `nhi:kernel/agent-runtime/worker` | Por `run_id`. |
+| `approval.expired` | `componente` | `nhi:integration/approval-expiry` | O `approval.pending` que expirou. |
+| `run.toolset.frozen` | `componente` | `nhi:composition-root` | Por `run_id`. |
+| `planrequest.*` | `componente` | `nhi:aos-node/plan-ingress` | O submissor vai no payload (cifrado por titular). |
+| `budget.*` | `componente` | `nhi:aos-node/quota`, `nhi:aos-node/budget-toolcall`, ou o injectado no `control-plane` | O principal imputado vai no payload. |
+| `ratification.*` | `componente` | `nhi:ratification-gate` | O selo WORM da ratificação. |
+| `foureyes.*` | `componente` | `nhi:foureyes-challenge-issuer` | O `approval.granted` da cerimónia. |
+| `memory.migration.*` | `componente` | `nhi:platform/memory/migrations` | Manutenção de schema, sem humano. |
+| `admission.*`, `backpressure.*`, `degradation.*`, `routing.*`, `scheduling.*`, `spawn.*` | `componente` | `nhi:control-plane/scheduler/…` (default de cada construtor) | Por `run_id`/`tree_id`. |
+| `plan.*`, `task.*`, `run.created`, `deadlock.*`, `subagent.*` | `componente` | `nhi:control-plane/orchestrator/…` ou o injectado pelo `aos-orq` | Pelo pedido de plano (`planrequest.submitted`). |
+| `autonomy.*`, `dsar.*`, `policy.*`, `retention.*`, `trust_anchors.*` | `fora-do-envelope` | — | `Principal` do registo WORM (§4). |
+
+**Turno ↔ tool call no mesmo passo — porque o principal difere, e porque fica assim.** Num run com credencial NHI real, o `turn.recorded` de um passo leva o principal do run (o `sub` de quem submeteu, ou o NHIID que o nó verificou na porta) e o `tool.call.*` do mesmo passo leva o agente do token, com a cadeia `human → agente`. São duas perguntas distintas e cada envelope responde à sua: o turno é o run a avançar em nome de quem o pediu; a tool call é o agente a agir sob a delegação que o RM acabou de verificar. Pôr no turno o principal da tool call exigiria verificar o token a cada turno, o que gastaria o `jti` (anti-replay de uso único) sem nenhum efeito a autorizar, ou então copiar para o envelope uma cadeia que ninguém verificou naquele momento. Fica assim: os dois correlacionam-se por `(run_id, step_id)`, e o agente da credencial verificada na porta também está no `Goal` (`Principal.AgentID`, AOS-440). Com a credencial demo-grade local não há cadeia em nenhum dos dois.
+
+**Ciclo de vida do nó com identidade de componente, e não vazio — a medição.** Mudar o envelope de `run.state.transition`, `step.checkpoint` e `lease.*` não toca no replay nem na idempotência: o motor de replay e o harness não lêem o `producer` (o `FinalStateHash` é o hash do tail, reconstruído dos payloads), a `idempotency_key` é `run_id:step_id` e a reconciliação dos duplicados compara só o payload. `scripts/ci/replay.sh` passa antes e depois. O custo é o comprimento da identidade (30 bytes em `lease.*`): nos 55 263 `lease.renewed` do WAL de produção, cerca de 1,7 MB. Ganha-se a regra fail-closed: um leitor nunca confunde «componente do nó» com «não sei».
+
+**Verificação.** `TestAOS478_ProducerPorFamilia` (`packages/cmd/aos/aos478_producer_por_familia_test.go`) lê esta tabela, percorre o catálogo de §3.3 com o critério do gate `event-catalog`, exige que cada tipo tenha linha aqui, corre um nó real (escalada, aprovação four-eyes, retoma, sandbox, pausa e steer) e falha se um evento emitido trouxer `producer.nhi_id` vazio, ou um `cadeia` sem `delegation_chain`. Os eventos já gravados com `producer` vazio continuam legíveis: o envelope não é validado na leitura, e o log não se reescreve.
 
 ### 3.1.1 Nomenclatura de `stream_id` — o que o valor PODE ser
 

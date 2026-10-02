@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -108,10 +109,11 @@ func (s *eventStoreApprovalStore) Put(ctx context.Context, g ApprovalGrant) erro
 		return err
 	}
 	res, err := s.store.Append(ctx, approvalStream, eventstore.EventInput{
-		Type:    approvalGrantedEventType,
-		Payload: body,
-		RunID:   approvalRunID,
-		StepID:  "grant-" + g.ID,
+		Type:     approvalGrantedEventType,
+		Payload:  body,
+		RunID:    approvalRunID,
+		StepID:   "grant-" + g.ID,
+		Producer: grantProducer(g),
 	})
 	if err != nil {
 		return err
@@ -153,6 +155,18 @@ func (s *eventStoreApprovalStore) Put(ctx context.Context, g ApprovalGrant) erro
 			ErrGrantIDReused, g.ID, persistido.Approvers, g.Approvers)
 	}
 	return nil
+}
+
+// grantProducer é o `producer` do envelope de `approval.granted` (AOS-478): o grant é um
+// acto dos HUMANOS que assinaram a cerimónia, e o envelope leva o primeiro deles — o que a
+// cerimónia verificou em primeiro lugar. A lista COMPLETA (as duas pernas do dual-control)
+// continua no payload (`approvers`), que é onde se lê quem destravou a acção; o envelope
+// tem um só `nhi_id` e não a pode transportar sem inventar um formato de identidade.
+func grantProducer(g ApprovalGrant) eventstore.Producer {
+	if len(g.Approvers) == 0 {
+		return eventstore.Producer{}
+	}
+	return eventstore.Producer{NHIID: g.Approvers[0]}
 }
 
 // mesmoGrant compara o que interessa para a idempotência: o efeito amarrado, quem autorizou, e a
@@ -199,6 +213,9 @@ func (s *eventStoreApprovalStore) Consume(ctx context.Context, id string) (Appro
 		Payload: json.RawMessage(`{"id":` + quoteJSON(id) + `}`),
 		RunID:   approvalRunID,
 		StepID:  "used-" + id,
+		// AOS-478: quem GASTOU a aprovação é o principal da tool call em mediação, que o
+		// [referencemonitor.ApprovalGate] anexa ao contexto antes de chamar o verificador.
+		Producer: referencemonitor.ProducerFromContext(ctx),
 	})
 	if err != nil {
 		return ApprovalGrant{}, false, err
@@ -315,6 +332,10 @@ const (
 	// varrimento passaria a anunciar «expirado sem decisao» sobre algo decidido.
 	approvalDecidedEventType = "approval.decided"
 )
+
+// ApprovalExpiryNHI é a identidade de COMPONENTE gravada no envelope de `approval.expired`
+// (AOS-478, `tecnica/13_Modelo_Dados_Eventos.md` §3.1).
+const ApprovalExpiryNHI = "nhi:integration/approval-expiry"
 
 // ---------------------------------------------------------------------------
 // AOS-263 — DISCRIMINADOR DE TIPO do pendente
@@ -481,6 +502,11 @@ type PendingRecord struct {
 	// computável, o pendente fica à espera de decisão explícita (fail-safe: nunca expira
 	// sozinho um pendente cuja idade não se sabe).
 	CreatedAt string `json:"created_at,omitempty"`
+	// Producer é o AUTOR do pendente, para o envelope de `approval.pending` (AOS-478): o
+	// principal do run cuja tool call escalou, ou o componente do nó que levantou a pergunta
+	// (prompt de exaustão). FORA do payload (`json:"-"`): o corpo continua byte-idêntico ao
+	// de antes, e um registo lido do log não o traz de volta por aqui — lê-se no envelope.
+	Producer eventstore.Producer `json:"-"`
 }
 
 // PendingApprovals é o registo durável de aprovações pendentes.
@@ -531,10 +557,11 @@ func (p *PendingApprovals) Put(ctx context.Context, rec PendingRecord) error {
 	}
 	ger := geracaoDe(events, kind, rec.RunID, rec.StepID)
 	res, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
-		Type:    approvalPendingEventType,
-		Payload: body,
-		RunID:   approvalRunID,
-		StepID:  chaveDeGeracao("pending-", kind, rec.RunID, rec.StepID, ger),
+		Type:     approvalPendingEventType,
+		Payload:  body,
+		RunID:    approvalRunID,
+		StepID:   chaveDeGeracao("pending-", kind, rec.RunID, rec.StepID, ger),
+		Producer: rec.Producer,
 	})
 	if err != nil {
 		return err
@@ -648,10 +675,13 @@ func (p *PendingApprovals) ExpireKind(ctx context.Context, kind PendingKind, run
 		return gerr
 	}
 	_, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
-		Type:    approvalExpiredEventType,
-		Payload: json.RawMessage(`{` + discriminador + `"run_id":` + quoteJSON(runID) + `,"step_id":` + quoteJSON(stepID) + `}`),
-		RunID:   approvalRunID,
-		StepID:  chaveDeGeracao("expired-", kind, runID, stepID, geracaoDe(eventosParaGeracao, kind, runID, stepID)),
+		// AOS-478: expirar é o TTL a passar sem decisão — ninguém o pede. O envelope leva a
+		// identidade do componente em vez de vir vazio.
+		Producer: eventstore.Producer{NHIID: ApprovalExpiryNHI},
+		Type:     approvalExpiredEventType,
+		Payload:  json.RawMessage(`{` + discriminador + `"run_id":` + quoteJSON(runID) + `,"step_id":` + quoteJSON(stepID) + `}`),
+		RunID:    approvalRunID,
+		StepID:   chaveDeGeracao("expired-", kind, runID, stepID, geracaoDe(eventosParaGeracao, kind, runID, stepID)),
 	})
 	return err
 }
@@ -688,7 +718,10 @@ func (p *PendingApprovals) Decide(ctx context.Context, kind PendingKind, runID, 
 		return gerr
 	}
 	_, err := p.store.Append(ctx, approvalStream, eventstore.EventInput{
-		Type: approvalDecidedEventType,
+		// AOS-478: a decisão é do principal VERIFICADO que respondeu — já no payload, agora
+		// também no envelope.
+		Producer: eventstore.Producer{NHIID: principal},
+		Type:     approvalDecidedEventType,
 		Payload: json.RawMessage(`{` + discriminador +
 			`"run_id":` + quoteJSON(runID) +
 			`,"step_id":` + quoteJSON(stepID) +

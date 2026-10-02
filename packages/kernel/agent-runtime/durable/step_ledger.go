@@ -431,14 +431,15 @@ func (l *StepLedger) Apply(ctx context.Context, key string, effect func(context.
 		close(call.done)
 	}()
 
-	res, applied, rec, err = l.runEffect(ctx, key, runID, stepID, keyHash, cfg.fingerprint, effect)
+	res, applied, rec, err = l.runEffect(ctx, key, runID, stepID, keyHash, cfg, effect)
 	return res, applied, err
 }
 
 // runEffect corre o effect e materializa o registo durável. Devolve o resultado,
 // se foi o líder a aplicar, e o registo CANÓNICO (o do vencedor, em caso de corrida
 // entre workers) para o single-flight publicar aos seguidores.
-func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash, fingerprint string, effect func(context.Context) (Result, error)) (Result, bool, ledgerRecord, error) {
+func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash string, cfg applyConfig, effect func(context.Context) (Result, error)) (Result, bool, ledgerRecord, error) {
+	fingerprint := cfg.fingerprint
 	// (2) corre o effect (efeito externo; propaga a key ao downstream).
 	res, err := effect(ctx)
 	if err != nil {
@@ -485,7 +486,7 @@ func (l *StepLedger) runEffect(ctx context.Context, key, runID, stepID, keyHash,
 		Payload:  payload,
 		RunID:    runID,
 		StepID:   ledgerStepPrefix + stepID,
-		Producer: l.producer,
+		Producer: l.producerFor(cfg),
 	})
 	if err != nil {
 		return Result{}, false, ledgerRecord{}, err
@@ -764,7 +765,11 @@ func decodeRecord(raw json.RawMessage) (ledgerRecord, error) {
 // chamadores que não a usam compilam e comportam-se como antes.
 type ApplyOption func(*applyConfig)
 
-type applyConfig struct{ fingerprint string }
+type applyConfig struct {
+	fingerprint string
+	// effectProducer é lido DEPOIS de o efeito correr — ver [WithEffectProducer].
+	effectProducer func() eventstore.Producer
+}
 
 func aplicarOpcoes(opts []ApplyOption) applyConfig {
 	var c applyConfig
@@ -788,6 +793,31 @@ func aplicarOpcoes(opts []ApplyOption) applyConfig {
 // camada abaixo — e a mesma resposta.
 func WithActionFingerprint(fp string) ApplyOption {
 	return func(c *applyConfig) { c.fingerprint = fp }
+}
+
+// WithEffectProducer declara QUEM causou o efeito deste Apply, para o envelope de
+// `step.ledger.applied` (AOS-478). É uma FUNÇÃO, e lida só depois de o efeito correr, porque
+// quem chama o ledger só conhece esse principal no fim: no Agent Runtime é o Reference
+// Monitor que o resolve do token verificado, dentro do efeito ([activity.Dispatcher]). Assim
+// o facto memorizado identifica o MESMO principal que o selo `tool.call.mediated` do passo.
+//
+// SÓ O ENVELOPE. Não é o titular da cifra — esse é [ContextWithTitular], e a ordem
+// deliberada de [StepLedger.titularOf] não muda: compor aqui uma identidade não pode fazer
+// o resultado ser cifrado sob a chave de outra pessoa. Vazio (ou sem opção) ⇒ o produtor de
+// composição ([WithProducer]), como antes.
+func WithEffectProducer(f func() eventstore.Producer) ApplyOption {
+	return func(c *applyConfig) { c.effectProducer = f }
+}
+
+// producerFor escolhe o `producer` do envelope de um registo aplicado: o de quem causou o
+// efeito quando declarado ([WithEffectProducer]), senão o da composição.
+func (l *StepLedger) producerFor(cfg applyConfig) eventstore.Producer {
+	if cfg.effectProducer != nil {
+		if p := cfg.effectProducer(); p.NHIID != "" {
+			return p
+		}
+	}
+	return l.producer
 }
 
 // ErrActionMismatch — a chave já tem uma entrada aplicada por uma acção DIFERENTE.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -225,6 +226,11 @@ func (s *eventStoreSink) RecordLifecycle(ctx context.Context, ev LifecycleEvent)
 		RunID:        ev.RunID,
 		StepID:       stepIDFor(ev.StepID, ev.Phase),
 		ParentStepID: ev.StepID,
+		// AOS-478: o ciclo de vida da sandbox é CAUSADO por uma tool call mediada, e o
+		// envelope identifica o mesmo principal que o `tool.call.mediated` do passo. O RM
+		// anexa-o ao contexto do despacho ([referencemonitor.ContextWithMediatedPrincipal]);
+		// o `destroyed` corre sob `context.WithoutCancel`, que preserva os valores.
+		Producer: referencemonitor.ProducerFromContext(ctx),
 	}
 	res, err := s.store.Append(ctx, ev.RunID, in)
 	if err != nil {

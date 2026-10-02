@@ -209,11 +209,9 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 		RunID:        rec.RunID,
 		StepID:       rec.StepID,
 		ParentStepID: rec.ParentStepID,
-		Producer: eventstore.Producer{
-			NHIID:           rec.Principal.NHIID,
-			DelegationChain: toStoreChain(rec.Principal.DelegationChain),
-			Scope:           rec.Principal.Authority,
-		},
+		// A projecção é partilhada com os factos que a call causa a jusante (AOS-478,
+		// [Principal.EventProducer]): o mesmo passo identifica o mesmo principal.
+		Producer: rec.Principal.EventProducer(),
 	}
 	res, err := s.store.Append(ctx, rec.RunID, in)
 	if err != nil {
@@ -304,6 +302,9 @@ func (s *eventStoreOutcomeSink) RecordOutcome(ctx context.Context, rec OutcomeRe
 		Payload: raw,
 		RunID:   rec.RunID,
 		StepID:  rec.StepID,
+		// AOS-478: o desfecho é da MESMA tool call que o selo `tool.call.mediated` do passo,
+		// e identifica o mesmo principal.
+		Producer: rec.Principal.EventProducer(),
 	})
 	return err
 }

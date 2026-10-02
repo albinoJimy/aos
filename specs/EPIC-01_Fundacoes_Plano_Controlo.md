@@ -879,20 +879,93 @@ responsável.
 
 ### Critérios de Aceitação
 
-- [ ] `tecnica/13_Modelo_Dados_Eventos.md` ganha uma tabela por família de evento com o `producer`
+- [x] `tecnica/13_Modelo_Dados_Eventos.md` ganha uma tabela por família de evento com o `producer`
       esperado: preenchido com cadeia, só `nhi_id`, ou identidade do componente emissor.
-- [ ] Os eventos que resultam de um acto atribuível levam o seu autor: `control.pause` e
+      — *§3.1, «O `producer` por família de evento (AOS-478)»: quatro classes (`cadeia`,
+      `nhi_id`, `componente`, e `fora-do-envelope` para os rótulos de audit), uma linha por
+      família ou tipo, com o `nhi_id` esperado e como se chega ao responsável. A regra escrita é
+      que nenhum tipo do envelope sai com `producer.nhi_id` vazio. É lida pelo teste do AC5, não
+      copiada para ele.*
+- [x] Os eventos que resultam de um acto atribuível levam o seu autor: `control.pause` e
       `control.steer` (o emissor já vem no payload, falta no envelope), `approval.*`,
       `step.ledger.applied` e `sandbox.*` (o principal da tool call que os causou).
-- [ ] Os eventos de ciclo de vida emitidos pelo nó (`run.state.transition`, `step.checkpoint`,
+      — *`control.pause`/`steer`/`resume` levam o emissor autenticado
+      (`SteerChannel.producerFor`). `step.ledger.applied` e `sandbox.*` levam o principal que o
+      RM resolveu do token: o RM devolve-o em `Decision.Principal` (o `activity.Dispatcher`
+      passa-o ao ledger por `durable.WithEffectProducer`, que é só envelope e não muda o titular
+      da cifra) e anexa-o ao contexto do despacho (`referencemonitor.ContextWithMediatedPrincipal`,
+      que o `EventStoreSink` da sandbox lê). Em `approval.*`: `pending` e `consumed` levam o
+      principal apresentado pelo run, `granted` o primeiro aprovador, `decided` quem decidiu e
+      `expired` a identidade de componente. De caminho, `tool.call.outcome`,
+      `memory.record.written`, `run.resume.record` e `memory.migration.*` também deixaram de
+      sair vazios.*
+- [x] Os eventos de ciclo de vida emitidos pelo nó (`run.state.transition`, `step.checkpoint`,
       `lease.*`) levam uma identidade de componente não-vazia, à semelhança do
       `nhi:composition-root` de `run.toolset.frozen`, ou o contrato declara o vazio como válido
       para eles. A decisão escreve-se no ticket.
-- [ ] `turn.recorded` e `tool.call.*` do mesmo passo identificam o mesmo principal, ou o contrato
+      — *Ver «Decisão do AC3» abaixo: identidade de componente.*
+- [x] `turn.recorded` e `tool.call.*` do mesmo passo identificam o mesmo principal, ou o contrato
       explica a diferença.
-- [ ] Um teste percorre os tipos do catálogo e falha se um tipo que o contrato marca como
+      — *O contrato explica a diferença (§3.1, «Turno ↔ tool call no mesmo passo»), e o teste
+      verifica as duas metades: o turno leva o principal do run e o selo da tool call o agente
+      verificado, com a cadeia que começa em `human:` e acaba no `nhi_id`.*
+- [x] Um teste percorre os tipos do catálogo e falha se um tipo que o contrato marca como
       atribuível for emitido com `producer.nhi_id` vazio.
-- [ ] Retro-compatibilidade: os 57 861 eventos já gravados continuam legíveis e o replay não muda.
+      — *`TestAOS478_ProducerPorFamilia` (`packages/cmd/aos/aos478_producer_por_familia_test.go`):
+      lê a tabela do contrato, extrai os 127 tipos do catálogo com a expressão do gate
+      `event-catalog` e exige linha para cada um; corre um nó real (dois ciclos escalada →
+      four-eyes → retoma, o segundo numa sandbox ligada pelo `registerSandboxLaunchers` de
+      produção, pausa e steer assinados, um pendente expirado pelo varrimento real) e verifica
+      cada evento do Event Store contra a classe. Exige ainda que 21 tipos tenham sido
+      exercitados, para o teste não passar sobre um conjunto vazio. Mutantes: 15 retiradas de
+      `producer`, uma por família corrigida, e as 15 avermelham o teste.*
+- [x] Retro-compatibilidade: os 57 861 eventos já gravados continuam legíveis e o replay não muda.
+      — *O envelope não é validado na leitura e nada reescreve o log. `bash scripts/ci/replay.sh`
+      verde antes e depois (fidelidade 100 %, 0 efeitos duplicados). Um log de transições
+      escrito com o envelope vazio reconstrói o mesmo estado e aceita a transição seguinte
+      (`TestAOS478_LogLegadoSemProducerReconstroi`). O WAL do smoke tirado ANTES da mudança foi
+      lido pelo binário novo: o nó arranca sobre ele, corre um run novo, e o mesmo ficheiro fica
+      com os eventos antigos de envelope vazio e os novos preenchidos.*
+
+### Decisão do AC3 — identidade de componente, não vazio
+
+`run.state.transition`, `step.checkpoint`, `lease.*` (e `worker.step.dispatched`, pelo mesmo
+critério) levam a identidade do componente que os emite:
+`nhi:kernel/agent-runtime/state-machine`, `nhi:kernel/agent-runtime/checkpointer`,
+`nhi:kernel/agent-runtime/lease`, `nhi:kernel/agent-runtime/worker`. É o default de cada
+construtor, aplicado quando o compositor não dá outra. Assim cobre o `aos`, o `aos-orq` e o
+`aos-demo` sem tocar no wiring de nenhum deles.
+
+O critério era: mede-se primeiro se mudar o envelope mexe no replay ou na idempotência, e só
+então se escolhe. A medição deu:
+
+- **Replay:** o motor (`kernel/agent-runtime/replay`) e o harness não lêem o `producer` (zero
+  referências fora do escritor da captura). O `FinalStateHash` é o hash do tail, reconstruído
+  dos payloads. `scripts/ci/replay.sh` está verde antes e depois, com fidelidade 100 % nos
+  três casos dourados e âncora de desfecho verificada. Os testes de domínio do harness que
+  usam `NewLeaseManager`/`NewMachine` com o default novo também passam.
+- **Idempotência:** a chave é `run_id:step_id`, atribuída pelo store (`envelope.go` só clona o
+  `producer`). A reconciliação dos duplicados em `state.Machine`, `SteerChannel` e no ledger
+  compara só o payload.
+- **Custo:** o comprimento da identidade, 30 bytes por evento de lease, cerca de 1,7 MB nos
+  55 263 `lease.renewed` do WAL de produção.
+
+Como é barato e não toca no replay, fica a identidade de componente, que é a regra
+fail-closed: um leitor do log nunca confunde «componente do nó» com «não sei». A excepção é o
+step-ledger, que NÃO ganhou default de componente. O seu `producer` de composição é o fallback
+do titular da cifra (`StepLedger.titularOf`), e um default ali faria o modo estrito selar sob a
+identidade do nó em vez de recusar (`ErrNoTitular`, AOS-245). Leva antes o autor do efeito, por
+opção de chamada (`TestAOS478_LedgerSemTitularContinuaARecusar`).
+
+### Achado fora de âmbito
+
+O `tool.call.outcome` partilha a chave `(run_id, step_id)` com o selo `tool.call.mediated` do
+passo, e o Event Store deduplica-o: nunca chega ao log. O mesmo acontece ao `mediated` de um
+passo aprovado, que colide com o `escalated` anterior. O WORM guarda os dois, mas o leitor de
+fiabilidade da promoção de autonomia (`cmd/aos/autonomy_fiabilidade.go`, AOS-090) lê o Event
+Store. Medido num teste descartável (um permit com os dois sinks deixa só `tool.call.mediated`
+no stream) e no cenário do AC5 (3 `escalated`, 0 `mediated`, 0 `outcome`). Fica por abrir
+ticket próprio. Este ticket corrigiu só o `producer` desses dois tipos.
 
 ### Fora de âmbito
 
@@ -900,7 +973,9 @@ Assinar eventos no Event Store, e reescrever histórico.
 
 ### Estado
 
-**ABERTO.**
+**FECHADO.** Os seis critérios `[x]`, com a evidência em cada um. Fica um achado para ticket
+próprio: o `tool.call.outcome` e o `mediated` pós-aprovação perdem-se na deduplicação do Event
+Store (ver acima).
 
 ---
 

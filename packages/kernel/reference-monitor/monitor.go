@@ -564,6 +564,7 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err er
 		Output:            out,
 		ToolErr:           toolErr,
 		CostMicroUSD:      costMicroUSD,
+		Principal:         call.Principal,
 		permit:            p,
 	}, nil
 }
@@ -590,7 +591,8 @@ func (m *Monitor) recordOutcome(ctx context.Context, call Call, toolErr error, s
 		Capability: call.Capability, Resource: call.Resource,
 		AgentClass: call.Principal.AgentClass,
 		Outcome:    res, ErrorKind: kind,
-		Latency: m.now().Sub(start),
+		Latency:   m.now().Sub(start),
+		Principal: call.Principal,
 	})
 }
 
@@ -734,6 +736,10 @@ func (m *Monitor) dispatch(ctx context.Context, p *Permit, call Call) ([]byte, i
 	if !ok {
 		return nil, 0, ErrToolNotRegistered
 	}
+	// O principal desta call acompanha o efeito (AOS-478): os factos que a tool grava a
+	// jusante — o ciclo de vida da sandbox — identificam-no no envelope. É atribuição, nunca
+	// autorização: ver [ContextWithMediatedPrincipal].
+	ctx = ContextWithMediatedPrincipal(ctx, call.Principal)
 	// Selector de campo (t.cost/t.fn), não uma [ToolFunc] em ident de âmbito: é o
 	// caminho SANCIONADO de execução (archlint reconhece dispatch), e o único.
 	if t.cost != nil {

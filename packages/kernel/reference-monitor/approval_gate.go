@@ -109,7 +109,12 @@ func (g ApprovalGate) Evaluate(ctx context.Context, call *Call) (HookResult, err
 	if g.verifier == nil || len(call.ApprovalEvidence) == 0 {
 		return allow, nil // nada a verificar ⇒ a call segue sem excepção
 	}
-	proof, err := g.verifier.VerifyApproval(ctx, call.ApprovalEvidence, ApprovalPreview(*call))
+	// O verificador CONSOME a aprovação (uso único) e grava esse facto: o principal da call
+	// vai com ele, para o envelope de `approval.consumed` identificar quem a gastou (AOS-478).
+	// O gate corre ANTES do hook de identidade (ver integration/secured.go), pelo que é o
+	// principal APRESENTADO pelo run — o mesmo que a preview amarra.
+	vctx := ContextWithMediatedPrincipal(ctx, call.Principal)
+	proof, err := g.verifier.VerifyApproval(vctx, call.ApprovalEvidence, ApprovalPreview(*call))
 	if err != nil {
 		// Evidência inválida/expirada/de outra acção: a call segue SEM aprovação. Não se
 		// nega aqui — se a capability for privilegiada, o TaintGate nega a jusante.
