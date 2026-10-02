@@ -7933,7 +7933,10 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
 ### Critérios de Aceitação
 
 - [x] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
-      o texto em claro: o objectivo é redigido na ingestão e selado por titular no pedido).
+      o texto em claro: o objectivo é selado por titular no pedido).
+      *(Correcção da revisão: o enunciado original dizia «redigido na ingestão», e é falso. O
+      `plan_ingress.go` guarda o texto cru, selado. É o certo: o drenador planeia sobre o texto
+      cru, e o compromisso é desse texto.)*
       O ticket decide se é um campo novo ou se o `plan_hash` já o cobre; neste segundo caso,
       escreve-se **onde** está o documento que permite verificá-lo. Hipótese por confirmar: o
       `plan_hash` cobre o campo `objective` do `PlanDocument`, mas o documento não está no log.
@@ -7953,13 +7956,26 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
       (`cmd/aos`), `TestAOS477ConsumeCitaOPedidoEOsFilhosDeclaramAOrigem` e
       `TestAOS477ConsumeRecusaUmObjectivoQueNaoEODoPedido` (`cmd/aos-orq`, processo real).*
 - [x] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id. — *Evento
-      novo `run.plan_origin` no stream do run filho, com `plan_request {stream, seq, run_id,
-      generation}`, `plan_id` e `node_id`. É escrito pelo nó (`cmd/aos/plan_origem.go`) depois
-      de o `POST /runs` hospedar o run, e só com o vínculo do AOS-439 verificado. O `plan_id` e o
-      `node_id` vêm do drenador, no `plan_request` do `POST /runs`. O nó confere-lhes a forma e
-      recusa com a 403 uniforme; não lhes confere a pertença ao plano, porque não conhece o
-      documento (ADR-018). Essa confere-se no WAL do `aos-orq`. Teste:
-      `TestAOS477RunFilhoDeclaraAOrigemNumCampo`.*
+      novo `run.plan_origin` no stream do run filho, com `plan_request {stream, run_id,
+      generation}`, `plan_id` e `node_id`. Não leva o `seq` da fila: ver «Decisão do B-2».
+      É escrito pelo nó (`cmd/aos/plan_origem.go`) só com o vínculo do AOS-439 verificado, e
+      **depois** de o `POST /runs` hospedar o run. `TestAOS477OrigemNaoEntraNumRunAlheio` prende
+      essa ordem. O contexto não é cancelável pelo cliente
+      (`TestAOS477OrigemGravaComOClienteDesligado`).
+      O `node_id` declarado é **conferido** contra o id do run: o run tem de ser
+      `<pedido>~<node_id escapado>`, com o escape do `aos-orq`. Os mesmos vectores estão nos dois
+      binários: `TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador` e
+      `TestAOS477ChildRunIDTemOsVectoresDoNo`. A gramática copiada de `plan.ValidNodeID` está
+      presa à fonte (`TestAOS477GramaticaDoNodeIDCasaComOPlano`).
+      O `plan_id` só se confere na forma: o nó não conhece o documento (ADR-018). **Todo o lado
+      do plano é atestado pelo drenador**, por isso quem audita tem de casar os dois lados antes de
+      aceitar o nó: `plan.proposed.request.run_id` igual a `run.plan_origin.plan_request.run_id`,
+      e o `request.seq` do plano igual ao `seq` do facto com esse `run_id`. Só depois procura o
+      `node_id` no `plan.materialized`. Sem isto, um drenador com a reclamação viva do pedido da
+      Alice podia declarar o plano do Bob, e passava sempre que esse plano tivesse um nó com o
+      mesmo id. Todas as recusas dão a 403 uniforme. Teste:
+      `TestAOS477RunFilhoDeclaraAOrigemNumCampo`, que usa a geração 2 e um `node_id` com `.`, e
+      cobre os casos de 129 bytes, `plan_id` com `.`, `node_id` de outro run e outro escape.*
 - [x] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
       que falha se as duas constantes divergirem. *Já cumprido pela segunda alternativa antes deste
       ticket: `TestAOS439SeparadorDoRunFilhoCasaComOOrquestrador`
@@ -7976,11 +7992,15 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
 - [x] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
       só campos, sem partir strings. — *`TestAOS477DoToolCallAoPedidoSoPorCampos` (`cmd/aos`):
       nó real com Event Store em disco e `aos-orq consume` compilado e corrido como processo. O
-      percurso é `tool.call.mediated.stream_id` → `run.plan_origin` →
-      `planrequest.submitted` no `seq` citado → `plan.proposed` no stream `plan_id` do WAL do
-      `aos-orq`, com o mesmo `request` e o mesmo compromisso → `plan.materialized` com o
-      `node_id`. Fecha no objectivo pelo HMAC, com a custódia do titular. O lado do plano lê-se
-      com structs locais por nome de campo, porque o nó não importa o orquestrador.*
+      percurso tem quatro passos, todos por igualdade de campo:
+      1. `tool.call.mediated.stream_id` → `run.plan_origin`;
+      2. → o `planrequest.submitted` cujo `payload.run_id` é o citado;
+      3. → `plan.proposed` no stream `plan_id` do WAL do `aos-orq`, com o mesmo `request.run_id`,
+         o `request.seq` igual ao do facto e o mesmo compromisso;
+      4. → só então o `plan.materialized` com o `node_id`.
+      O nó do plano tem um `.`, e por isso o escape do id atravessa os dois binários. Fecha no
+      objectivo pelo HMAC, com a custódia do titular. O lado do plano lê-se com structs locais por
+      nome de campo, porque o nó não importa o orquestrador.*
 - [ ] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso. — *O texto, com a
       saída medida localmente, foi entregue ao dono do roteiro (AOS-479). Este ticket não edita
       `docs/testing/e2e-pegadas-visao-19.md`.*
@@ -8012,7 +8032,13 @@ desenho:
   entrega o sal ao drenador pelo canal por onde já entrega o objectivo em claro. O `aos-orq`
   recalcula o compromisso e grava-o no `plan.proposed`, sem gravar o sal.
 - **`serve --goal` manual.** Não há pedido. O sal é tirado no `aos-orq` e sai **uma vez** no
-  stdout de quem lançou o comando, que é quem já tem o texto.
+  stdout de quem lançou o comando, que é quem já tem o texto. Se o run **já tem** `plan.proposed`
+  (o `--goal` repetido no mesmo run), não se tira sal novo: o passo é fixo e o log guarda só a
+  primeira proposta. A linha impressa nomeia o compromisso dessa primeira proposta
+  (`TestAOS477ServeRepetidoNaoImprimeSalQueNaoVerificaOLog`). Um sal novo não verificaria o log.
+- **Fila sem sal** (um pedido `v` 1.1, ou um nó anterior). Não há compromisso, e nenhum sal é
+  tirado nem impresso. Imprimi-lo poria no journal do drenador a chave de um compromisso sobre
+  um objectivo que o nó selou.
 - **Sem titular** (nó sem gate soberano). O objectivo já fica em claro no pedido, e o sal fica em
   claro ao lado dele.
 
@@ -8021,6 +8047,25 @@ sal verifica-o. Depois de um `/dsar/erase` o sal deixa de abrir e o compromisso 
 inverificável e não-ligável. Dois pedidos com o mesmo objectivo dão compromissos diferentes. No
 caminho manual, quem tiver o stdout do `serve` e o WAL pode atacar por dicionário: esse stdout
 já esteve ao lado do `--goal` em claro na linha de comandos.
+
+### Decisão do B-2 da revisão: o `run.plan_origin` cita o pedido pelo `run_id`, não pelo `seq`
+
+O run filho lê-se com autorização **por região** (`sovereignty.go`), e a trajectória serve todos
+os tipos de evento. O stream da fila é um só para o nó inteiro: todas as regiões, com pedidos,
+reclamações e desfechos no mesmo contador. Por isso o `seq` de um pedido revelava, a qualquer
+leitor da região, quanta actividade de fila houve no nó até ele. É um agregado sobre recursos de
+**outras** regiões, entregue a quem não pode agir sobre eles. É a classe que o ADR-030 §2.1 fecha,
+e vai além do bit que o AOS-464 aceitou, porque atravessa regiões.
+
+**Decisão:** o `run.plan_origin` deixa de levar o `seq`. Cita o pedido pelo `run_id`, um id
+equivalente que não conta nada: é único na fila, porque a idempotency-key do
+`planrequest.submitted` é `req-<run_id>`, de primeira escrita, e já está no prefixo do id do
+próprio run filho. A `generation` fica, porque é sobre este pedido.
+
+O `seq` continua no `plan.proposed` e cumpre o AOS-477 (AC2). Esse evento vive no WAL do
+`aos-orq`, que não é servido a leitores de runs. O AC6 continua a cumprir-se só por campos.
+**Pergunta ao dono**, se quiser ir mais longe: a `generation` diz a um leitor da região quantas
+vezes o pedido foi re-planeado. Tirá-la também é possível sem perder a travessia.
 
 ### Limites declarados
 
@@ -8034,6 +8079,15 @@ já esteve ao lado do `--goal` em claro na linha de comandos.
   plano cita o pedido sem compromisso.
 - **O `aos-orq` só manda `plan_id`/`node_id` a um nó que entregou `request_seq`.** Um nó anterior
   recusaria os campos com 400, porque o `POST /runs` usa `DisallowUnknownFields`.
+- **Um `node_id` com `:` produz um run filho que o runtime recusa.** É um defeito anterior a
+  este ticket. A gramática do plano admite `:`, e o `aos-orq` não o escapa, porque `:` é
+  representável num subject NATS. O runtime durável recusa um `run_id` com `:` («durable:
+  run_id/step_id não pode conter ':'»). O `POST /runs` responde 201 e o run falha logo. Medido
+  com um run `run-x~a:b`. Fica para ticket próprio.
+- **Comportamento do AOS-439, fora de âmbito.** Um run `<plano>~<nó>` criado antes por outra via
+  recebe a submissão do drenador como re-submissão idempotente (201). O drenador passa então a
+  tratar esse run alheio como o seu nó. A origem do AOS-477 não entra lá, mas o resto do vínculo
+  já não protege. Está descrito à parte para ticket.
 - **Medido localmente, não em produção.** Falta medir no `consume.wal` e no `events.wal` de
   produção depois do deploy.
 
