@@ -7888,25 +7888,110 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
 
 ### Critérios de Aceitação
 
-- [ ] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
+- [x] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
       o texto em claro: o objectivo é redigido na ingestão e selado por titular no pedido).
       O ticket decide se é um campo novo ou se o `plan_hash` já o cobre; neste segundo caso,
       escreve-se **onde** está o documento que permite verificá-lo. Hipótese por confirmar: o
       `plan_hash` cobre o campo `objective` do `PlanDocument`, mas o documento não está no log.
-- [ ] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
+      — *Campo novo, `objective_commitment`. A decisão e a prova estão em «Decisão do critério 1»,
+      abaixo. Testes: `TestAOS477OObjectivoDoDocumentoEDoModeloENaoDoPedido`
+      (`orchestrator/decompose`), `TestAOS477RecordProposedLevaOsCamposEOsImpoeNaForma`
+      (`orchestrator/plannerevents`) e `TestAOS477ServeManualComprometeOObjectivoSemOGravar`
+      (`cmd/aos-orq`, processo real). Este último confere o HMAC fora do binário e procura o
+      objectivo e o sal nos bytes do WAL, onde não estão.*
+- [x] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
       `planrequest.submitted`, ou um id equivalente), e o mesmo compromisso bate com o do pedido.
-- [ ] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id.
+      — *`plan.proposed.request = {stream, seq, run_id}`. A reclamação passa a entregar
+      `request_stream`, `request_seq`, `objective_commitment` e `objective_salt`. O `consume`
+      passa-os ao `serve`, que recalcula o compromisso sobre o objectivo recebido e recusa antes
+      da posse se não bater (`errObjectivoNaoEOdoPedido`, saída genérica e transitória, limitada
+      pelo tecto de gerações). Testes: `TestAOS477ReclamacaoEntregaOPedidoEOCompromisso`
+      (`cmd/aos`), `TestAOS477ConsumeCitaOPedidoEOsFilhosDeclaramAOrigem` e
+      `TestAOS477ConsumeRecusaUmObjectivoQueNaoEODoPedido` (`cmd/aos-orq`, processo real).*
+- [x] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id. — *Evento
+      novo `run.plan_origin` no stream do run filho, com `plan_request {stream, seq, run_id,
+      generation}`, `plan_id` e `node_id`. É escrito pelo nó (`cmd/aos/plan_origem.go`) depois
+      de o `POST /runs` hospedar o run, e só com o vínculo do AOS-439 verificado. O `plan_id` e o
+      `node_id` vêm do drenador, no `plan_request` do `POST /runs`. O nó confere-lhes a forma e
+      recusa com a 403 uniforme; não lhes confere a pertença ao plano, porque não conhece o
+      documento (ADR-018). Essa confere-se no WAL do `aos-orq`. Teste:
+      `TestAOS477RunFilhoDeclaraAOrigemNumCampo`.*
 - [x] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
       que falha se as duas constantes divergirem. *Já cumprido pela segunda alternativa antes deste
       ticket: `TestAOS439SeparadorDoRunFilhoCasaComOOrquestrador`
       (`packages/cmd/aos/aos439_submissor_do_plano_test.go`) lê a constante do `aos-orq` da fonte e
       falha se divergir. Verificado a 2026-10-02 contra a base.*
-- [ ] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
+- [x] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
       `tecnica/13_Modelo_Dados_Eventos.md` (campo novo retro-compatível, leitores antigos não
-      partem), e o gate `event-catalog` verde.
-- [ ] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
-      só campos, sem partir strings.
-- [ ] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso.
+      partem), e o gate `event-catalog` verde. — *Os dois campos são `omitempty`, e o domínio fica
+      `aos.planner.v1`, como o `snapshot_digest` do AOS-408. A regra ficou escrita na linha
+      `plan.*` de `tecnica/13` §3.3, que também regista o `run.plan_origin` e o payload 1.2 do
+      `planrequest.submitted`. `TestAOS477PropostaSemCamposNovosFicaComoEra` prova que um facto
+      sem os campos fica byte a byte igual. `TestAOS477LeitorAnteriorLeAPropostaNova` prova que a
+      struct anterior lê o novo. Gate `event-catalog` verde.*
+- [x] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
+      só campos, sem partir strings. — *`TestAOS477DoToolCallAoPedidoSoPorCampos` (`cmd/aos`):
+      nó real com Event Store em disco e `aos-orq consume` compilado e corrido como processo. O
+      percurso é `tool.call.mediated.stream_id` → `run.plan_origin` →
+      `planrequest.submitted` no `seq` citado → `plan.proposed` no stream `plan_id` do WAL do
+      `aos-orq`, com o mesmo `request` e o mesmo compromisso → `plan.materialized` com o
+      `node_id`. Fecha no objectivo pelo HMAC, com a custódia do titular. O lado do plano lê-se
+      com structs locais por nome de campo, porque o nó não importa o orquestrador.*
+- [ ] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso. — *O texto, com a
+      saída medida localmente, foi entregue ao dono do roteiro (AOS-479). Este ticket não edita
+      `docs/testing/e2e-pegadas-visao-19.md`.*
+
+### Decisão do critério 1: campo novo, e porquê
+
+**A hipótese confirma-se na letra e falha no que importa.** O `plan_hash` é o SHA-256 do
+`plan.Encode(doc)`, e o `PlanDocument` tem `objective`. Logo cobre esse campo, e mudá-lo muda o
+hash. Só que esse `objective` é **texto do modelo**. O `LLMDecomposer.Decompose`
+(`orchestrator/decompose/decompose.go`) carimba só o `planner_meta`, e o resto do documento é o
+que o modelo devolveu. No roteiro, o objectivo recebido é «recolher e analisar dados» e o
+documento diz «recolher e analisar». `TestAOS477OObjectivoDoDocumentoEDoModeloENaoDoPedido` mede
+isto. O `plan_hash` compromete-se, portanto, com a paráfrase do modelo. Um plano feito para um
+objectivo e rotulado com outro teria um hash igualmente válido. Além disso, o documento não está
+no log (ADR-005), e o ficheiro que o guarda (`--plan-out`) é opcional. A segunda condição da
+hipótese também se confirma.
+
+**A forma é um HMAC-SHA256 com sal por pedido.** Um SHA-256 do objectivo inverte-se por
+dicionário: «auditar o pipeline de faturas» adivinha-se. Ficaria além disso no log do plano para
+sempre, fora do alcance do crypto-shredding. É o argumento que o
+`deploy/server/avisar-planos.sh` já usa para o pseudónimo do run. O `prompt_hash` do turno não
+serve, porque é um compromisso do prompt materializado e não do objectivo cru (relatório de
+origem, §2). Também é determinístico: liga titulares que submetem o mesmo objectivo. O
+desenho:
+
+- **Fila.** Na ingestão, o nó tira 32 bytes aleatórios, grava `objective_commitment =
+  hmac-sha256:<hex>` em claro no `planrequest.submitted` e sela o sal sob a KEK do titular
+  (`objective_salt_sealed`), ao lado do objectivo. O payload passa a `v` 1.2. A reclamação
+  entrega o sal ao drenador pelo canal por onde já entrega o objectivo em claro. O `aos-orq`
+  recalcula o compromisso e grava-o no `plan.proposed`, sem gravar o sal.
+- **`serve --goal` manual.** Não há pedido. O sal é tirado no `aos-orq` e sai **uma vez** no
+  stdout de quem lançou o comando, que é quem já tem o texto.
+- **Sem titular** (nó sem gate soberano). O objectivo já fica em claro no pedido, e o sal fica em
+  claro ao lado dele.
+
+**Propriedades declaradas.** Quem tem só o log não inverte o compromisso. Quem tem o texto e o
+sal verifica-o. Depois de um `/dsar/erase` o sal deixa de abrir e o compromisso fica
+inverificável e não-ligável. Dois pedidos com o mesmo objectivo dão compromissos diferentes. No
+caminho manual, quem tiver o stdout do `serve` e o WAL pode atacar por dicionário: esse stdout
+já esteve ao lado do `--goal` em claro na linha de comandos.
+
+### Limites declarados
+
+- **A origem do run filho é gravada depois de o run ser hospedado.** Antes, um `run_id`
+  `<plano>~<nó>` criado por outra via receberia de um drenador legítimo uma declaração que não é
+  a sua. Uma falha a gravá-la não desfaz o run, que já corre: fica no log do operador, e esse run
+  volta a reconduzir-se por nome.
+- **Só o caminho da fila tem pedido.** Num `serve` manual com executor, os runs filhos não levam
+  vínculo e não declaram origem. O `plan.proposed` leva só o compromisso.
+- **Os pedidos anteriores (`v` 1.1) não têm compromisso.** A reclamação entrega-os sem ele, e o
+  plano cita o pedido sem compromisso.
+- **O `aos-orq` só manda `plan_id`/`node_id` a um nó que entregou `request_seq`.** Um nó anterior
+  recusaria os campos com 400, porque o `POST /runs` usa `DisallowUnknownFields`.
+- **Medido localmente, não em produção.** Falta medir no `consume.wal` e no `events.wal` de
+  produção depois do deploy.
 
 ### Fora de âmbito
 
@@ -7915,4 +8000,6 @@ por hash.
 
 ### Estado
 
-**ABERTO.**
+**ENTREGUE EM CÓDIGO, com seis dos sete critérios cumpridos.** O sétimo é a edição do passo 15
+do roteiro. O texto está escrito e cabe ao dono do roteiro (AOS-479) aplicá-lo. A verificação em
+produção fica por fazer depois do deploy.
