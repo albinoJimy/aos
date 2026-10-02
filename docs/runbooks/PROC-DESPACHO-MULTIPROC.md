@@ -38,7 +38,7 @@ N× aos-orq serve --nats <cluster-addr> --nats-stream <stream> --nats-replicas 3
 ## Arranque / paragem
 
 1. **Arranque**: iniciar N instâncias com a MESMA `--nats`/`--nats-stream` e `--nats-replicas 3`. Cada uma reclama os seus runs. Confirmar no arranque: banner de postura verde, região aceite, substrato replicado ligado.
-2. **Paragem graciosa**: parar uma réplica com o anúncio de largar a posse (`--release` no fim de um run, ou o shutdown que anuncia). A réplica seguinte assume o run **sem esperar o TTL** (posse sequencial — ver `TestAOS100_PosseSequencialContinuaAFuncionarNoReplicado`).
+2. **Paragem graciosa**: parar uma réplica com o anúncio de largar a posse (`--release` no fim de um run, ou o shutdown que anuncia). A réplica seguinte pode reclamar o run **sem esperar o TTL** (posse sequencial — ver `TestAOS100_PosseSequencialContinuaAFuncionarNoReplicado`). Reclamar não é retomar: só **despacha** se correr com o documento do plano (`consume` ou `serve --plan-doc`); um `serve` sem documento re-hidrata e pára, como na recuperação abaixo (DEF-817).
 3. **Escala**: acrescentar réplicas é seguro a qualquer momento (cada uma pega runs livres). Reduzir: parar graciosamente para o handoff ser imediato.
 
 ## Recuperação da morte de uma réplica

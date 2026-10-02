@@ -7801,18 +7801,26 @@ DAG que o primeiro despachou.
       no log, nem pelo seu `GraphBuilder` nem pela materialização.)*
 - [x] *(Acrescentado pela revisão adversarial, MÉDIO-1.)* Uma materialização que morre entre os nós
       e o `plan.materialized` retoma-se: um nó já durável que coincide com o do documento é aceite
-      sem reescrita, uma aresta já durável não é duplicada, e o `plan.materialized` é apenso; um nó
-      que diverge recusa, sem escrever nada.
+      sem reescrita, uma aresta já durável não é duplicada, e o `plan.materialized` é apenso; um
+      grafo que diverge do plano recusa, sem escrever nada.
       *(Evidência: antes, a retoma saía 1 com «nó já existe no grafo», que o `consume` retentava até
-      ao tecto de gerações — a classe é anterior, o AOS-476 alargava a janela. Agora o adaptador de
-      produção confronta o nó durável com o do plano (tool call, prioridade, identidade, estado
-      `ready`). Por processo real, com o WAL reescrito como na revisão (registos até aos nós +
-      `lease.released`): `TestAOS476_MaterializacaoMortaAMeioRetoma` (com os dois nós, e só com o
-      primeiro) — `arestas=0`, materializa, despacha, e o WAL fica com 2 nós, 1 aresta e 1
-      `plan.materialized`; `TestAOS476_MaterializacaoMortaComNoDivergenteRecusa` — `analise` com
-      outra tool ⇒ saída 10 (documento recusado, determinista) e nada escrito. Unitários:
+      ao tecto de gerações — a classe é anterior, o AOS-476 alargava a janela. Agora, antes de
+      qualquer escrita, o adaptador de produção confronta o grafo re-hidratado INTEIRO com o plano:
+      cada nó durável tem de ser um nó do plano com a mesma especificação (tool call, capability,
+      prioridade, identidade) e ainda `ready`, cada aresta durável uma aresta do plano. A recusa é
+      `errGrafoDoRunDiverge` — rótulo `grafo_diverge`, código 10, posse largada: quem diverge é o
+      grafo, não o documento. Por processo real, com o WAL reescrito como na revisão (registos até
+      aos nós + `lease.released`): `TestAOS476_MaterializacaoMortaAMeioRetoma` (com os dois nós, e
+      só com o primeiro) — `arestas=0`, materializa, despacha, e o WAL fica com 2 nós, 1 aresta e 1
+      `plan.materialized`; `TestAOS476_MaterializacaoMortaComNoDivergenteRecusa` (`analise` com
+      outra tool) e `TestAOS476_MaterializacaoMortaComArestaInvertidaRecusa` (aresta
+      `analise→recolha` a mais) — saída 10 duas vezes seguidas (a segunda prova que o lease foi
+      largado), o erro nomeia o grafo, e nada escrito, nem `task.edge.rejected_cycle`. Unitários:
       `TestAOS476_MaterializacaoRetomaDepoisDosNos`, `TestAOS476_RetomaComNoDivergenteRecusa`,
-      `TestAOS476_RetomaComNoJaEmCursoRecusa`.)*
+      `TestAOS476_RetomaComNoJaEmCursoRecusa` e `TestAOS476_RetomaSobreGrafoQueNaoEODoPlanoRecusa`
+      (prioridade, identidade, capability, estado terminal, nó a mais, aresta invertida).
+      `serve --nodes … --plan-doc …` é recusado antes da posse (`TestAOS476_NodesComPlanDocRecusado`):
+      eram duas fontes de nós para o mesmo run.)*
 - [x] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
       *(Evidência: as arestas confirmam-se num DAG em memória antes da admissão global.
       `TestAOS476_CicloAbortaSemNenhumNo` e `TestAOS476_OrigemForaDoPlanoAbortaSemNenhumNo`
@@ -7867,9 +7875,13 @@ O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipad
   documento, pelo que nada corre fora de ordem; o que fica errado, para sempre, é a topologia no
   log. A retoma da materialização deste ticket só actua sem `plan.materialized`, e não repõe
   arestas num run já materializado — fazê-lo seria outro ticket.
-- **A retoma confronta os nós do plano, não procura nós a mais.** Um nó no grafo que o documento
-  não tem, ou uma aresta durável que o documento não declara, não são detectados na retoma da
-  materialização. Sem `plan.materialized` nada os pode ter escrito pelo caminho normal.
+- **A retoma exige que o grafo durável seja um subconjunto exacto do plano.** Um nó ou uma aresta
+  que o plano não declara recusa a retoma com `grafo_diverge` (10), sem escrever. Isto também
+  apanha o que o `--nodes` deixava no grafo — a combinação `--nodes` + `--plan-doc` no mesmo
+  `serve` passou a ser recusada, mas um `serve --nodes` anterior sobre o mesmo run continua a
+  poder escrever nós sem plano, e a retoma que vier depois recusa em vez de os adoptar. O que a
+  retoma não sabe é **porque** o grafo diverge (log adulterado, `--nodes` anterior, outro
+  escritor): diz que diverge e qual o primeiro nó ou aresta, e o diagnóstico é do operador.
 - **O `task.edge.added` não distingue `depends_on` de `conditional_on`.** O despacho continua a
   ler o documento; despachar só a partir do grafo perderia a poda `branch_not_taken` (aviso em
   `planmaterialize/doc.go`).
@@ -7877,7 +7889,8 @@ O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipad
 ### Estado
 
 **IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-10-02), com a
-ronda de correcções da revisão adversarial (0 ALTO, 2 MÉDIO, 6 BAIXO, todos tratados): a
+ronda de correcções da revisão adversarial (0 ALTO, 2 MÉDIO, 6 BAIXO, todos tratados) e a da
+revisão desse delta (4 BAIXO e 3 mutantes sobreviventes, todos tratados): a
 materialização emite as arestas e é retomável depois de uma morte a meio, um dono seguinte
 re-hidrata-as e o `serve` mostra-as. Falta o último critério, que exige um deploy e a cópia do
 `consume.wal` de produção. A segunda metade do PR #300 foi re-medida e ficou registada como
