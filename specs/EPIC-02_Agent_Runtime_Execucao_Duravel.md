@@ -1543,6 +1543,34 @@ Efeitos aceites com a decisão:
 - **A recusa ocupa a chave `run_id:step_id` do sub-passo**, com a mesma classe de colisão que o
   AOS-481 descreve para as outras decisões.
 
+**Precisões medidas na implementação e na revisão adversarial (2026-10-02).** O que a decisão
+acima diz por alto, e o que o código faz de facto:
+
+- **O limite dos selos não é o tecto de turnos.** É turnos × tool calls por turno, e não há tecto
+  de calls por turno: um modelo que peça N tools negadas num turno escreve N selos, cada um com a
+  sua escrita durável no WORM. O limite real é o orçamento do run.
+- **O denominador da taxa de override passa a ser inflável por recusas garantidas.** A taxa é
+  escaladas ÷ decisões (`autonomy_fiabilidade.go`), e as recusas contam como decisões. Um run com
+  a lista vazia produz recusas certas, que baixam a taxa sem dizerem nada sobre a fiabilidade do
+  agente. Hoje não tem efeito: o AOS-481 deixa a promoção sem amostras de desfecho e ela nunca
+  dispara. Passa a ter quando o AOS-481 fechar, e tem de ser decidido aí.
+- **A colisão na chave não é a que o AOS-481 descrevia.** Os critérios dele só cobriam o
+  `outcome` e a escalada seguida de decisão. O caso novo é recusa → permit no mesmo `step_id`
+  (retoma sem captura, modelo re-interrogado que pede, na mesma posição, uma tool da lista): o
+  `tool.call.mediated` é engolido pelo `tool.call.denied` no Event Store, e o WORM fica certo.
+  Foi acrescentado aos critérios do AOS-481; não é resolvido aqui.
+- **A identidade decide antes da lista.** Uma tool fora da lista pedida com um token expirado, ou
+  com uma capability fora do escopo do token, sai `E_DENIED_BY_HOOK` com `denied_by=identity`, e
+  não com o código da lista. Antes deste ticket saía sempre com o código da lista. O modelo não
+  vê sempre o mesmo texto.
+- **O backstop não promete o código.** Num Reference Monitor sem o hook, a recusa vem no fim da
+  cadeia e sai com o código da lista só se nenhum hook anterior negar ou escalar primeiro. O que
+  o backstop garante é que a tool não executa.
+- **Na via durável o step-ledger respondia antes do RM.** Um passo já aplicado sem lista devolvia
+  o output memorizado a um despacho do mesmo passo com a lista a negá-lo — um permit sem
+  mediação, que este ticket teria introduzido (antes, o ciclo negava antes do dispatcher).
+  Corrigido: uma call fora da lista não entra no ledger e vai directamente ao RM.
+
 ### Objectivo
 
 Uma tool call negada pela lista-branca do run fica no registo como qualquer outra recusa de tool
@@ -1551,24 +1579,77 @@ call: quem pediu, o quê, em que passo, e porque foi negada.
 ### Critérios de Aceitação
 
 - [x] Decisão (A)/(B) registada. *(Ver «Decidido pelo dono», acima.)*
-- [ ] O ADR-027 §2.3 é emendado para dizer onde a lista é imposta, e o §4, o `docs/adr/README.md`
-      e o texto do AOS-413 ficam coerentes com ele.
-- [ ] A imposição não depende de a cadeia de hooks estar bem composta: um Reference Monitor sem o
-      hook nega na mesma uma tool fora da lista.
-- [ ] A lista chega igual pela via directa e pela via durável, e uma lista **vazia** não se
-      transforma em ausente pelo caminho (teste de paridade próprio, com `[]`).
-- [ ] A recusa grava `tool.call.denied` no stream do run com o código
+- [x] O ADR-027 §2.3 é emendado para dizer onde a lista é imposta, e o §4, o `docs/adr/README.md`
+      e o texto do AOS-413 ficam coerentes com ele. *(Evidência: emenda datada de 2026-10-02 no
+      §2.3 do ADR-027 e remissão no §4; linha do ADR-027 no `docs/adr/README.md` e RTM
+      regenerada; nota no AOS-413 (EPIC-19) a remeter para este ticket, sem reescrever a evidência
+      do ticket fechado.)*
+- [x] A imposição não depende de a cadeia de hooks estar bem composta: um Reference Monitor sem o
+      hook nega na mesma uma tool fora da lista. *(Evidência: backstop em `Monitor.evaluate`, com
+      o mesmo código e `denied_by` do `RunAllowlistGate`; `TestAOS485_BackstopNegaSemOGateNaCadeia`
+      (`DefaultHooks` e cadeia sem o gate), `TestAOS485_NilNaoRestringeEVaziaNegaTudo` e
+      `TestAOS485_ForaDaListaPrecedeAToolNaoRegistada`, em `packages/kernel/reference-monitor`.
+      No nó composto, retirar só o hook não deixa a tool executar; retirar o hook e o backstop
+      deixa — mutação sobre `TestAOS485_NoComposto_ListaVaziaNegaPelaListaEConta`. O canal por
+      onde o hook dá o código é fechado: `TestAOS485_CodigoDoHookEFechadoESoValeNaNegacao`.)*
+- [x] A lista chega igual pela via directa e pela via durável, e uma lista **vazia** não se
+      transforma em ausente pelo caminho (teste de paridade próprio, com `[]`). *(Evidência:
+      `TestAOS485_ListaVaziaChegaIgualPelasDuasVias`, com o controlo
+      `TestAOS485_SemListaEComAToolNaListaAsDuasViasPermitem`, e
+      `TestAOS485_DurableDispatcherNaoTransformaVaziaEmNil`, em `packages/integration`; a
+      auditoria campo a campo `TestAOS454_AuditoriaCampoACampoCallActivityCall` cobre o campo
+      novo. Mutação: sem a linha do `DurableDispatcher`, os três avermelham. No pacote
+      `activity`: `TestAOS485_ListaChegaAoCallTalComoFoiDespachada` (nil, `[]` e lista). O
+      step-ledger não responde por uma call fora da lista:
+      `TestAOS485_ForaDaListaNaoRecebeOResultadoMemorizado` (`activity`) e
+      `TestAOS485_PassoJaAplicadoNaoRespondePorUmaCallForaDaLista` (`integration`, pelo ciclo: o
+      output memorizado não chega ao modelo). A lista sobrevive à projecção Goal → registo de
+      retoma do nó: `TestAOS485_RegistoDeRetomaLevaAListaDoGoal` (`cmd/aos`).)*
+- [x] A recusa grava `tool.call.denied` no stream do run com o código
       `E_TOOL_OUTSIDE_RUN_ALLOWLIST`, o `denied_by`, o principal com a cadeia de delegação, o
-      `step_id` da chamada (`<passo>-tool-N`) e o `parent_step_id` do turno.
-- [ ] `aos_mediation_denials_total` conta-a.
-- [ ] A recusa sela no WORM, na partição do run, com o código, o `denied_by` e o principal.
-- [ ] Nada é despachado nem construído como efeito, e não há evento de sandbox. Os testes do
+      `step_id` da chamada (`<passo>-tool-N`) e o `parent_step_id` do turno. *(Evidência:
+      `TestAOS485_RecusaPelaListaFicaNoEventStoreNoWORMENoContador` (`packages/integration`, pelo
+      `NewSecuredRuntime` com o Event Store e o WORM do composition-root, nas duas vias de
+      despacho — a directa e a durável com `cfg.Ledger`; o principal declarado pelo run não tem
+      cadeia, pelo que a do evento vem do token verificado);
+      `TestAOS485_NoComposto_ListaVaziaNegaPelaListaEConta` (`cmd/aos`, nó com execução durável
+      e a tool no catálogo assinado, por `POST /runs`);
+      `TestAOS485_RecusaGravaToolCallDeniedNoStreamDoRun` (RM);
+      `TestAOS485_RecusaPelaListaDeixaEventoEContador` (ciclo do runtime).)*
+- [x] `aos_mediation_denials_total` conta-a. *(Evidência:
+      `TestAOS485_NoComposto_ListaVaziaNegaPelaListaEConta` lê a série do `/metrics` do nó antes
+      e depois do run: sobe 1, e `aos_mediation_permits_total` fica igual. O controlo
+      `TestAOS485_NoComposto_ToolNaListaExecuta` lê o contrário.)*
+- [x] A recusa sela no WORM, na partição do run, com o código, o `denied_by` e o principal.
+      *(Evidência: `TestAOS485_RecusaPelaListaFicaNoEventStoreNoWORMENoContador` lê a partição do
+      run no WORM do nó composto: um selo `deny` com o código, o `denied_by`, o `step_id`, o
+      `parent_step_id` e o principal com a cadeia.)*
+- [x] Nada é despachado nem construído como efeito, e não há evento de sandbox. Os testes do
       AOS-413 continuam a provar que a tool não executa; a asserção de
       `TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista` que exigia que a call **não chegasse ao RM**
-      inverte-se (recusas +1, permits igual).
-- [ ] Replay: um log antigo, sem o evento, reconstrói o mesmo estado; um run novo com a recusa é
-      reproduzido de forma determinista.
-- [ ] O catálogo de eventos e `tecnica/13` ficam coerentes com o produtor e o `step_id` da recusa.
+      inverte-se (recusas +1, permits igual). *(Evidência: os quatro testes de
+      `aos413_allowlist_test.go` passam sem alteração; `TestAOS485_ToolForaDaListaNaoEReescrita`
+      (a reescrita não corre para a tool fora da lista, com o controlo de que corre para a da
+      lista) e `TestAOS485_ReescritaNaoTiraAListaDaCall`; a asserção do teste do nó foi invertida
+      e passou a exigir também o `tool.call.denied` e a ausência de `tool.call.mediated`,
+      `tool.call.outcome` e `sandbox.*` no stream. A posição antes da revalidação mede-se no
+      WORM: a recusa não sela revalidação, e a mesma call sem lista sela —
+      `TestAOS485_SemListaAMesmaCallPassaACadeiaInteira`. Que é a LISTA a impedir, e não outro
+      gate: no nó composto com a tool no catálogo, `[]` não executa e `[counter]` executa
+      (`TestAOS485_NoComposto_ToolNaListaExecuta`) — o teste do AOS-413 não o provava, porque
+      ali a `echo` não está no catálogo e a revalidação negava-a de qualquer modo. Na via
+      durável não fica `step.ledger.applied`. Limite: o nó destes testes não tem bindings de
+      sandbox, pelo que a ausência de `sandbox.*` decorre de a tool não ser despachada, e não
+      foi medida num nó com sandbox composta.)*
+- [x] Replay: um log antigo, sem o evento, reconstrói o mesmo estado; um run novo com a recusa é
+      reproduzido de forma determinista. *(Evidência:
+      `TestAOS485_LogAntigoSemOEventoReconstroiOMesmoEstado` e
+      `TestAOS485_ReplayDeUmRunComRecusaPelaListaEFielEDeterminista` (com a âncora de autoridade
+      ligada), em `packages/kernel/agent-runtime/replay`; `scripts/ci/replay.sh` verde.)*
+- [x] O catálogo de eventos e `tecnica/13` ficam coerentes com o produtor e o `step_id` da recusa.
+      *(Evidência: `tecnica/13` §3.1, parágrafo «A recusa pela lista-branca do run»; o tipo
+      `tool.call.denied` já estava no catálogo, na classe `cadeia`, e não muda —
+      `scripts/ci/event-catalog.sh` verde.)*
 - [ ] Verificado em produção: um run filho com lista-branca vazia que peça uma tool deixa o
       `tool.call.denied` no `events.wal`.
 
@@ -1579,7 +1660,7 @@ call: quem pediu, o quê, em que passo, e porque foi negada.
 
 ### Estado
 
-**ABERTO.**
+**ABERTO.** Implementado; falta a verificação em produção.
 
 ---
 

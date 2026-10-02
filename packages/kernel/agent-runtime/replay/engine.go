@@ -44,7 +44,9 @@ type EventReader interface {
 }
 
 // TrajectorySpec são os inputs DETERMINÍSTICOS re-fornecidos ao replay para
-// re-materializar o prompt: o system prompt, o tool set CONGELADO (mesma ordem), o
+// re-materializar o prompt: o system prompt, o tool set que o run OFERECEU (mesma ordem
+// — o `manifest.tools` do `turn.recorded`; num run com lista-branca é o subconjunto que
+// ela admite e não o tool set congelado inteiro, AOS-486), o
 // objectivo e o memory_context que semeiam o tail. São código/configuração — NÃO
 // vivem no log (só os seus hashes) e é PRECISAMENTE alterá-los que simula a
 // "evolução de código" cujo efeito o replay detecta por divergência de hash.

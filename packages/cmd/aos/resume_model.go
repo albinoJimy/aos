@@ -23,6 +23,7 @@ import (
 	"context"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
 
 // replayPlanKey é a chave (tipo privado — nenhum pacote externo a forja) do plano de
@@ -74,6 +75,50 @@ func withModelCredential(ctx context.Context, credential string) context.Context
 func modelCredentialFromContext(ctx context.Context) string {
 	c, _ := ctx.Value(modelCredentialKey{}).(string)
 	return c
+}
+
+// runToolAllowlistKey é a chave (tipo privado) da lista-branca de tools do run no contexto
+// (AOS-486).
+type runToolAllowlistKey struct{}
+
+// runToolAllowlist é o VALOR dessa chave. A sua PRESENÇA no ctx é o indicador de «run
+// restrito» — e não a nil-ness de `tools`, que não sobrevive a uma cópia (`append` de uma lista
+// vazia sobre nil dá nil, e nil quer dizer «sem restrição»).
+type runToolAllowlist struct{ tools []string }
+
+// withRunToolAllowlist anexa a lista-branca do run ([agentruntime.Goal.AllowedTools]) ao ctx
+// por-run, para o adaptador do Model Gateway oferecer ao modelo só o schema das tools que o run
+// pode chamar (AOS-486). Viaja no MESMO runCtx que a credencial do modelo e o plano de replay, e
+// pela mesma razão: o adaptador é do nó e a lista é do run.
+//
+// A decisão é por `== nil`, NUNCA por comprimento: `nil` ⇒ ctx inalterado (o run não tem lista e
+// o pedido ao modelo fica como sempre foi); uma lista não-nil, MESMO VAZIA, anexa-se — vazia quer
+// dizer «nenhuma tool», não «todas». SOBREVIVE À RETOMA: o registo de retoma guarda a lista com
+// a distinção nil/vazia ([integration.ResumeRecord.AllowedTools]) e a re-submissão passa por aqui.
+func withRunToolAllowlist(ctx context.Context, allowed []string) context.Context {
+	if allowed == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runToolAllowlistKey{}, runToolAllowlist{tools: append([]string{}, allowed...)})
+}
+
+// runToolOfferFromContext é a função ligada ao adaptador do GW por
+// [modelgateway.WithToolOfferFromContext] (ver modelgatewaywiring.go). Sem lista no ctx devolve
+// (nil, false) — run sem restrição. Com ela, o predicado é [referencemonitor.RunAllowsTool], a
+// MESMA regra que o Reference Monitor impõe na chamada: o que se oferece e o que se admite não
+// podem divergir por terem duas definições.
+func runToolOfferFromContext(ctx context.Context) (func(string) bool, bool) {
+	v, ok := ctx.Value(runToolAllowlistKey{}).(runToolAllowlist)
+	if !ok {
+		return nil, false
+	}
+	lista := v.tools
+	if lista == nil {
+		// Inalcançável por [withRunToolAllowlist]; fica para que um valor construído à mão
+		// nunca chegue a RunAllowsTool como nil, que lá quer dizer «sem lista».
+		lista = []string{}
+	}
+	return func(nome string) bool { return referencemonitor.RunAllowsTool(lista, nome) }, true
 }
 
 // resumeAwareModelClient decora o [agentruntime.ModelClient] do nó: num turno COBERTO pelo

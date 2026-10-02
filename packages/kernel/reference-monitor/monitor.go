@@ -246,6 +246,8 @@ func (m *Monitor) Metrics() *Metrics { return &m.metrics }
 // Garantias (fail-closed, ADR-002 / contrato C1):
 //   - qualquer hook que devolva deny/escalate, erro ou panic → Decision Deny/
 //     Escalate, evento de negação gravado (best-effort), tool NÃO despachada;
+//   - tool fora da lista-branca do run ([Call.AllowedTools]) → Deny, com ou sem o
+//     [RunAllowlistGate] na cadeia (AOS-485);
 //   - tool não registada → Deny (default-deny);
 //   - no caminho de permit, o evento de mediação é gravado ANTES do despacho;
 //     se o registo falhar, a decisão degrada para Deny (auditoria fail-closed);
@@ -444,7 +446,9 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err er
 			// resolveu-o com um sufixo greppável no `Reason`. Mudar isto é mudar os três sítios
 			// acima E a semântica do tipo — por decisão escrita, não por simetria aparente com
 			// o ramo de baixo.
-			return m.fail(ctx, call, EffectDeny, CodeDeniedByHook, h.Name(), reason, nil, res.Metadata, start, policyVersion), nil
+			// O código é o do hook SÓ quando é um dos que [hookDenyCode] honra (AOS-485);
+			// senão o genérico, como sempre.
+			return m.fail(ctx, call, EffectDeny, hookDenyCode(res.Code), h.Name(), reason, nil, res.Metadata, start, policyVersion), nil
 		case res.Decision == HookEscalate:
 			reason := res.Reason
 			if reason == "" {
@@ -453,6 +457,18 @@ func (m *Monitor) evaluate(ctx context.Context, call Call) (dec Decision, err er
 			return m.fail(ctx, call, EffectEscalate, CodeEscalated, h.Name(), reason, res.Obligations, res.Metadata, start, policyVersion), nil
 		}
 		obligations = append(obligations, res.Obligations...)
+	}
+
+	// 1.5) LISTA-BRANCA DO RUN — backstop intrínseco (AOS-485). O [RunAllowlistGate] nega
+	//    cedo, logo a seguir à identidade, quando a cadeia o tem; este ramo garante que a
+	//    imposição NÃO DEPENDE de a cadeia estar bem composta. Um Monitor montado sem o gate
+	//    ([DefaultHooks], um [WithHooks] que o esqueceu) nega na mesma e deixa pegada. O que
+	//    o backstop garante é que a tool NÃO EXECUTA; o código não: está no FIM da cadeia, e
+	//    se um hook anterior negar ou escalar primeiro a decisão sai com o código desse hook
+	//    (e os hooks anteriores já correram). Vem ANTES do default-deny de tool não
+	//    registada: fora da lista é a razão mais estreita, e é a que o gate daria.
+	if !RunAllowsTool(call.AllowedTools, call.ToolID) {
+		return m.fail(ctx, call, EffectDeny, CodeToolOutsideRunAllowlist, RunAllowlistHookName, runAllowlistReason, nil, nil, start, policyVersion), nil
 	}
 
 	// 2) default-deny: a tool tem de estar registada para poder ser despachada.
@@ -614,8 +630,9 @@ func (m *Monitor) recordOutcome(ctx context.Context, call Call, toolErr error, s
 // que só corre no permit. Acrescentar obrigações ao REGISTO não pode, por construção, mudar o que
 // o nó deixa acontecer.
 //
-// E OBRIGAR A ESCOLHER NÃO É OBRIGAR A PREENCHER. Dos sete sítios que chamam esta função só a
-// ESCALADA passa obrigações; os outros seis passam `nil`, e passam-no por decisão. A justificação
+// E OBRIGAR A ESCOLHER NÃO É OBRIGAR A PREENCHER. Dos oito sítios que chamam esta função só a
+// ESCALADA e a obrigação que recusou passam obrigações; os outros passam `nil`, e passam-no por
+// decisão. A justificação
 // está escrita no ramo `HookDeny` de [Monitor.evaluate], que é onde a escolha é visível e onde
 // muda se algum dia mudar — não a deduzas deste parágrafo.
 //

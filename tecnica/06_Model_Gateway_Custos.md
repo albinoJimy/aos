@@ -335,6 +335,7 @@ Consequências operacionais impostas pelo GW:
 
 - **Tool set congelado por run.** Novas tools MCP só entram em *runs novos* — o que também serve o pinning de supply-chain (`tecnica/05`). Isto evita a mutação de schema a meio do run que invalidaria o prefixo.
 - **Prefixo byte-idêntico.** O GW rejeita ou sinaliza montagens que reordenem o prefixo entre turnos do mesmo run.
+- **Run com lista-branca de tools (AOS-486).** O que o run **oferece** ao modelo é o subconjunto do tool set congelado que a lista-branca do run admite: o bloco `TOOLSET` do prefixo, o `tools` do manifesto do turno e o schema de function-calling do pedido (este pela ordem de `AOS_MODEL_TOOLS`, os outros dois pela ordem congelada). O prefixo continua byte-idêntico **dentro** do run — o corte fixa-se no arranque e a retoma repete-o —, mas deixa de ser igual entre runs com listas diferentes, incluindo os nós de um mesmo plano. O tool set congelado, o evento `run.toolset.frozen` e a revalidação por chamada ficam com o conjunto inteiro, e um run sem lista não muda.
 - **Compressão fora da hot path.** A sumarização de contexto corre em checkpoints assíncronos, nunca no caminho crítico de invocação.
 - **Cache-hit-rate como SLI.** O GW mede o cache-hit-rate por run e por tenant e emite alerta quando cai abaixo de 80% — tornando visível a explosão de custo que de outro modo seria silenciosa. O manifesto por turno (hash do prompt materializado) preserva a estabilidade de cache *e* o replay fiel, sem contradição.
 

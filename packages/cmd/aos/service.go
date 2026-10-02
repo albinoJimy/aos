@@ -838,6 +838,12 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 	// authn nega atribuívelmente (sem principal forjado). Cobre a RETOMA — o Resume repovoa
 	// goal.Credential com a credencial fresca antes de re-submeter.
 	runCtx = withModelCredential(runCtx, goal.Credential)
+	// OFERTA DE TOOLS DO RUN (AOS-486). A lista-branca do run viaja no mesmo runCtx para o
+	// adaptador do gateway enviar ao modelo só o schema das tools que o run pode chamar. nil ⇒
+	// não anexa e o pedido fica como sempre foi; vazia anexa-se e não oferece nenhuma. Este é o
+	// ponto comum à submissão, à retoma e ao crash-resume, que chegam aqui com o goal do registo
+	// de retoma (e esse leva a lista).
+	runCtx = withRunToolAllowlist(runCtx, goal.AllowedTools)
 	s.mu.Lock()
 	if s.closed {
 		// Shutdown começou durante a aquisição do lease: aborta limpo (larga a posse

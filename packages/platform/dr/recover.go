@@ -82,8 +82,10 @@ type Recovery struct {
 	ExpectedHead uint64
 	// Target é o instante-alvo do PITR por stream (seq-alvo; nil ⇒ restaura por inteiro).
 	Target map[string]uint64
-	// Spec são os inputs DETERMINÍSTICOS re-fornecidos ao replay (system, tool set
-	// congelado, objectivo, memory_context, model/params/seed e assembly esperados)
+	// Spec são os inputs DETERMINÍSTICOS re-fornecidos ao replay (system, as tools que o
+	// run ofereceu — o `manifest.tools` do turno, que num run com lista-branca é um
+	// subconjunto do tool set congelado (AOS-486) —, objectivo, memory_context,
+	// model/params/seed e assembly esperados)
 	// para re-materializar e VERIFICAR o prompt de cada turno (AC3).
 	Spec replay.TrajectorySpec
 	// Audit são os inputs da verificação hash-chain do WORM pós-restauro (AC5).
