@@ -1104,12 +1104,12 @@ EOF
 cd $E2E/orq && ../bin/aos-orq serve --wal orq.wal --run run-e2e-orq --goal "recolher e analisar dados" --snapshot snapshot.json --decompose-fixture plano.json --worker p1 --release; echo "exit=$?"
 ```
 
-**Pegada** (as três linhas de postura vão encurtadas com `…`; o compromisso e o sal da primeira linha são aleatórios por corrida e vão como padrão):
+**Pegada** (as três linhas de postura vão encurtadas com `…`; o compromisso e o sal da linha `compromisso do objectivo` são aleatórios por corrida e vão como padrão):
 
 ```
 substrato: ficheiro orq.wal — NÃO arbitra entre processos (DEF-282); posse SEQUENCIAL, uma instância de cada vez
-compromisso do objectivo: hmac-sha256:<64 hex> sal=<64 hex> (gerado aqui e so aqui: com o objectivo e este sal verifica-se o plan.proposed; sem o sal o compromisso nao se inverte)
 posse: run=run-e2e-orq plano=run-e2e-orq-plan token=1 worker=p1
+compromisso do objectivo: hmac-sha256:<64 hex> sal=<64 hex> (gerado aqui e so aqui: com o objectivo e este sal verifica-se o plan.proposed; sem o sal o compromisso nao se inverte)
 gate de aprovacao de plano (AOS-408, AOS-236): COMPOSTO — nivel L4 (danger exige decisao humana; lacuna de capacidade tambem, mas NADA a abre neste binario hoje — contrato, nao facto). A decisao vem por fora, assinada, com chave PINADA e autoridade por classe (`aos-orq decide`); o pendente e um FACTO no log. 4-eyes FRACO neste caminho: … 
 executor de nos (AOS-413): NAO composto — o despacho marca os nos a correr e NADA os executa (defina AOS_ORQ_NODE_URL e o NHI do run em AOS_ORQ_NODE_CREDENTIAL_FILE)
 orcamento do plano (AOS-434): raiz da arvore com tecto de 1073741824 tokens / 1073741824 micro-USD (POR OMISSAO — nenhuma das duas variaveis esta definida). …
@@ -1196,7 +1196,7 @@ printf '%s' "recolher e analisar dados" | openssl dgst -sha256 -mac HMAC -macopt
 grep -c "recolher e analisar dados" orq.wal; grep -c "$SAL" orq.wal
 ```
 
-**Pegada** (o compromisso é o da linha do 15a):
+**Pegada** (o compromisso é o da linha do 15a, que sai depois da posse: o sal só se decide sob a posse):
 
 ```
 "objective_commitment":"hmac-sha256:<64 hex>"
