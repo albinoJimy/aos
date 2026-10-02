@@ -162,6 +162,27 @@ type dispatchSink struct {
 // `aos-orq`; o trabalho do nó corre no nó `aos` com o NHI do run cunhado pelo operador
 // (ADR-027), porque o nó só confia no seu emissor.
 func (s *dispatchSink) Dispatch(ctx context.Context, node plandispatch.Node) error {
+	// AOS-484 — O CONTRATO DE ENTRADA VERIFICA-SE ANTES DE QUALQUER EFEITO.
+	//
+	// Um nó elegível cujo `consumes` não se pode cumprir não corre. A poda do início da passagem
+	// fecha-o quando já o sabe; mas um nó atrás de um ramo condicional só fica elegível na passagem
+	// em que o despacho decide o ramo, depois da poda — e chega aqui. Verificava-se só em
+	// `submeter`, DEPOIS do `Spawn` de um papel: o nó ficava com a NHI filha cunhada, a fatia de
+	// orçamento reservada e um lugar de fan-out gasto, e o sink recusava a seguir, abortando a
+	// passagem. Agora o sink fecha o nó como `failed` pelo mesmo caminho durável da poda e devolve
+	// nil: o plano segue, e a passagem seguinte decide o que depende deste nó (um ramo de
+	// `terminal_state eq failed` sobre ele, por exemplo) como decidiria sobre qualquer falha.
+	//
+	// O lugar de concorrência que o despachante reservou para o nó devolve-se aqui: não há run a
+	// recolher que o liberte.
+	if s.exec != nil {
+		if c, falta := s.exec.contratoPorCumprir(node.NodeID); falta {
+			if err := s.exec.fecharSemPayload(ctx, node.NodeID, c); err != nil {
+				return err
+			}
+			return s.exec.headroom.Release(ctx)
+		}
+	}
 	if s.kinds[node.NodeID] == plannerevents.SpawnRole {
 		sr := orchestrator.SpawnRequest{
 			RunID:            s.runID,
@@ -328,7 +349,6 @@ func composeEDespachar(
 	}
 
 	total := 0
-	semPayloadSeguidas := 0 // AOS-484: recusas seguidas do sink por contrato de entrada por cumprir
 	for pass := 0; ex != nil || pass < dispatchMaxPasses; pass++ {
 		// AOS-414: fecha os consumidores cujo contrato já não pode ser cumprido ANTES de tomar os
 		// retratos desta passagem — senão o despacho ainda os vê elegíveis, o sink recusa e a
@@ -366,25 +386,9 @@ func composeEDespachar(
 			return fmt.Errorf("dispatcher (passagem %d): %w", pass, err)
 		}
 		res, err := d.Dispatch(ctx, p)
-		if ex != nil && errors.Is(err, ErrPayloadPerdido) {
-			// AOS-484: o despacho decidiu NESTA passagem que o ramo de um nó é tomado, e o nó
-			// não tem o payload que o seu `consumes` declara. A poda do início da passagem não
-			// o podia ter fechado — o ramo ainda estava por decidir, e um ramo por decidir não
-			// se fecha como `failed`. A decisão já é um facto no log: a passagem seguinte vê-a,
-			// a poda fecha o nó, e o plano segue. Abortar aqui era o defeito que o AOS-414
-			// fechou (o `serve` a sair com 1 e a repetir o mesmo erro em todas as retomas).
-			// Não há laço: a passagem seguinte fecha o nó antes de despachar. Se não o fechar —
-			// a poda e o despacho a discordarem sobre o mesmo nó —, a segunda recusa seguida
-			// aborta, como antes.
-			if semPayloadSeguidas++; semPayloadSeguidas < 2 {
-				fmt.Printf("  execucao: %v (fecha-se na passagem seguinte)\n", err)
-				continue
-			}
-		}
 		if err != nil {
 			return fmt.Errorf("despacho (passagem %d): %w", pass, err)
 		}
-		semPayloadSeguidas = 0
 		total += res.Dispatched
 		if ex == nil {
 			// Ponto fixo: uma passagem que não despacha nada. Sem executor, nenhum nó conclui e

@@ -386,8 +386,8 @@ func TestAOS484_VeredictoFailQueRetemRamoComConsumesPorCumprirSai0(t *testing.T)
 // tomado, o `n3` ia correr, e o que lhe falta é o `metrics` que ninguém mede (resíduo do AOS-414).
 //
 // Fixa também o caminho que a correcção do ramo retido abriu: a decisão «tomado» nasce na MESMA
-// passagem em que o nó fica elegível, depois da poda. O sink recusa o nó sem payload, e o `serve`
-// NÃO aborta com 1 (o defeito que o AOS-414 fechou) — a passagem seguinte fecha o nó.
+// passagem em que o nó fica elegível, depois da poda. É o SINK que fecha o nó sem payload, antes de
+// qualquer efeito, e o `serve` não aborta com 1 (o defeito que o AOS-414 fechou).
 func TestAOS484_MetricsNaoSeTransportaNemDeUmVerificador(t *testing.T) {
 	const run = "run-aos484-metrics-do-verificador"
 	f := &aos413No{saidaVerif: `{"outcome":"pass","reasons":["relatorio_valido"]}`}
@@ -419,6 +419,184 @@ func TestAOS484_MetricsNaoSeTransportaNemDeUmVerificador(t *testing.T) {
 	r2 := a.retomar(t)
 	if r2.code != exitNosFalhados || strings.Contains(r2.stdout, "ficou por cumprir") || strings.Contains(r2.stdout, "despacho: ") {
 		t.Fatalf("a retoma tinha de sair %d sem repetir nada; saiu %d\n%s\n%s", exitNosFalhados, r2.code, r2.stdout, r2.stderr)
+	}
+}
+
+// aos484PlanoRamoERecuperacaoSemPayload — a sonda da segunda revisão adversarial. O `n1` declara
+// DOIS outputs abertos (o executor não transporta nenhum); o `n3` é o ramo tomado pelo `pass` do
+// verificador e o `n4` é a recuperação do `n3` (`terminal_state eq failed`); os dois consomem o
+// `conteudo` do `n1`, que nunca chega. Cada um fica elegível na passagem em que o despacho lhe
+// decide o ramo — duas recusas por falta de payload em nós DIFERENTES, uma em cada passagem.
+const aos484PlanoRamoERecuperacaoSemPayload = `{
+  "plan_version": "1.2.0",
+  "objective": "ler, verificar, agir, e recuperar se agir falhar",
+  "budget_total": {"tokens": 200, "cost_micro_usd": 200},
+  "planner_meta": {"model":"fixture","prompt_version":"1.4.0","capabilities_hash":"sha256:snap-aos408"},
+  "nodes": [
+    {"node_id":"n1","role":"reader","objective":"ler o relatorio","depends_on":[],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "outputs":[{"name":"conteudo","type":"record","taint":"untrusted"},
+                {"name":"resumo","type":"summary","taint":"untrusted"}]},
+    {"node_id":"n2","role":"verifier","objective":"verificar a leitura","depends_on":["n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "outputs":[{"name":"decision","type":"verdict"}]},
+    {"node_id":"n3","role":"worker","objective":"agir sobre o conteudo","depends_on":["n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "conditional_on":[{"from":"n2","when":[{"subject":"verdict","op":"eq","enum":"pass"}]}],
+     "consumes":[{"from":"n1","output":"conteudo","type":"record"}]},
+    {"node_id":"n4","role":"worker","objective":"recuperar","depends_on":["n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "conditional_on":[{"from":"n3","when":[{"subject":"terminal_state","op":"eq","enum":"failed"}]}],
+     "consumes":[{"from":"n1","output":"conteudo","type":"record"}]}
+  ]
+}`
+
+// TestAOS484_DuasRecusasSeguidasEmNosDiferentesNaoAbortamOPlano — achado 1 da segunda revisão.
+//
+// FALHA-ANTES: a ronda 2 deixava o laço tolerar UMA recusa do sink por falta de payload e abortar
+// à segunda seguida. Aqui a segunda é de outro nó, num plano que estava a progredir: o `serve` saía
+// 1, não largava a posse, e a retoma imediata saía 3 até ao TTL. Agora é o sink que fecha o nó, e
+// o laço não tem caso especial nenhum.
+func TestAOS484_DuasRecusasSeguidasEmNosDiferentesNaoAbortamOPlano(t *testing.T) {
+	const run = "run-aos484-duas-recusas"
+	f := &aos413No{saidaVerif: `{"outcome":"pass","reasons":["leitura_valida"]}`}
+	a, r := aos484Arrancar(t, f, run, aos484PlanoRamoERecuperacaoSemPayload)
+	if r.code != exitNosFalhados {
+		t.Fatalf("n3 e n4 falham sem payload e o plano sai %d; saiu %d\n%s\n%s", exitNosFalhados, r.code, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "execucao: n1=complete n2=complete n3=failed n4=failed") {
+		t.Fatalf("n3 e n4 tinham de fechar failed:\n%s", r.stdout)
+	}
+	for _, no := range []string{"n3", "n4"} {
+		if strings.Count(r.stdout, "no "+no+" NAO corre — o contrato n1/conteudo ficou por cumprir") != 1 {
+			t.Fatalf("o %s tinha de ser fechado uma vez, com a razão visível:\n%s", no, r.stdout)
+		}
+	}
+	// O ramo de recuperação foi DECIDIDO sobre a falha do n3, como sobre qualquer falha.
+	if !strings.Contains(r.stdout, "despachado: plano="+run+"-plan") {
+		t.Fatalf("o serve tinha de chegar ao fim do despacho:\n%s", r.stdout)
+	}
+	if got := strings.Join(f.submetidos(), ","); got != run+"~n1,"+run+"~n2" {
+		t.Fatalf("só n1 e n2 podiam correr; correram %q", got)
+	}
+	// A posse foi largada, e a retoma imediata não sai 3 nem re-executa.
+	r2 := a.retomar(t)
+	if r2.code != exitNosFalhados {
+		t.Fatalf("a retoma imediata tinha de sair %d (posse largada, estado durável); saiu %d\n%s\n%s", exitNosFalhados, r2.code, r2.stdout, r2.stderr)
+	}
+	if strings.Contains(r2.stdout, "NAO corre") || strings.Contains(r2.stdout, "despacho: ") {
+		t.Fatalf("a retoma não fecha de novo nem despacha:\n%s", r2.stdout)
+	}
+}
+
+// aos484PlanoPapelSemPayload: o `n3` é um PAPEL (o `n5` depende dele) atrás do veredicto do `n2`,
+// e consome um output do `n1` que nunca é transportado (dois outputs abertos).
+const aos484PlanoPapelSemPayload = `{
+  "plan_version": "1.2.0",
+  "objective": "ler, verificar e delegar",
+  "budget_total": {"tokens": 200, "cost_micro_usd": 200},
+  "planner_meta": {"model":"fixture","prompt_version":"1.4.0","capabilities_hash":"sha256:snap-aos408"},
+  "nodes": [
+    {"node_id":"n1","role":"reader","objective":"ler o relatorio","depends_on":[],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "outputs":[{"name":"conteudo","type":"record","taint":"untrusted"},
+                {"name":"resumo","type":"summary","taint":"untrusted"}]},
+    {"node_id":"n2","role":"verifier","objective":"verificar a leitura","depends_on":["n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "outputs":[{"name":"decision","type":"verdict"}]},
+    {"node_id":"n3","role":"coordinator","objective":"delegar o trabalho","depends_on":["n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "conditional_on":[{"from":"n2","when":[{"subject":"verdict","op":"eq","enum":"pass"}]}],
+     "consumes":[{"from":"n1","output":"conteudo","type":"record"}]},
+    {"node_id":"n5","role":"worker","objective":"fazer o trabalho delegado","depends_on":["n3"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50}}
+  ]
+}`
+
+// TestAOS484_PapelSemPayloadNaoESpawnado — achado 2 da segunda revisão. Um PAPEL cujo contrato de
+// entrada não se cumpre não chega ao `Delegator.Spawn`: nenhuma NHI filha cunhada, nenhuma fatia de
+// orçamento reservada, nenhum lugar de fan-out gasto. FALHA-ANTES: o sink spawnava e só depois, ao
+// montar o pedido do run, dava pela falta.
+//
+// A NHI filha não deixa rasto durável neste binário (o Delegator do `aos-orq` não tem projecção no
+// Event Store), pelo que a prova é a linha que o sink imprime por cada spawn: está lá para o `n1`
+// (controlo de que os papéis são spawnados) e não está para o `n3`.
+func TestAOS484_PapelSemPayloadNaoESpawnado(t *testing.T) {
+	const run = "run-aos484-papel-sem-payload"
+	f := &aos413No{saidaVerif: `{"outcome":"pass","reasons":["leitura_valida"]}`}
+	_, r := aos484Arrancar(t, f, run, aos484PlanoPapelSemPayload)
+	if !strings.Contains(r.stdout, "no=n3 kind=role") || !strings.Contains(r.stdout, "despacho: papel n1 spawnado") {
+		t.Fatalf("pre-condicao: o n3 é um papel, e os papéis são spawnados (o n1 foi):\n%s", r.stdout)
+	}
+	if strings.Contains(r.stdout, "papel n3 spawnado") {
+		t.Fatalf("o papel sem o payload do seu consumes não pode ser spawnado:\n%s", r.stdout)
+	}
+	if !strings.Contains(r.stdout, "no n3 NAO corre — o contrato n1/conteudo ficou por cumprir") ||
+		!strings.Contains(r.stdout, "n3=failed") {
+		t.Fatalf("o n3 tinha de fechar failed, com a razão visível:\n%s", r.stdout)
+	}
+	if r.code != exitNosFalhados {
+		t.Fatalf("o plano sai %d; saiu %d\n%s\n%s", exitNosFalhados, r.code, r.stdout, r.stderr)
+	}
+	if got := strings.Join(f.submetidos(), ","); got != run+"~n1,"+run+"~n2" {
+		t.Fatalf("o n3 e o n5 não podiam correr; correram %q", got)
+	}
+}
+
+// aos484PlanoDescendenteRetido: o `n3` está atrás do veredicto do `n2`; o `n4` depende do `n3` e
+// consome do `n1` um `metrics`, que o executor nunca transporta. O `n4` não tem condição própria:
+// está retido só por descender de um ramo retido.
+const aos484PlanoDescendenteRetido = `{
+  "plan_version": "1.2.0",
+  "objective": "ler, verificar e, se passar, agir em dois passos",
+  "budget_total": {"tokens": 200, "cost_micro_usd": 200},
+  "planner_meta": {"model":"fixture","prompt_version":"1.4.0","capabilities_hash":"sha256:snap-aos408"},
+  "nodes": [
+    {"node_id":"n1","role":"reader","objective":"ler o relatorio","depends_on":[],
+     "tools":[{"name":"fs.read","version":"1.0.0","digest":"sha256:aaa"}],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "outputs":[{"name":"conteudo","type":"record","taint":"untrusted"},
+                {"name":"medidas","type":"metrics"}]},
+    {"node_id":"n2","role":"verifier","objective":"verificar a leitura","depends_on":["n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "outputs":[{"name":"decision","type":"verdict"}],
+     "consumes":[{"from":"n1","output":"conteudo","type":"record"}]},
+    {"node_id":"n3","role":"worker","objective":"preparar","depends_on":[],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "conditional_on":[{"from":"n2","when":[{"subject":"verdict","op":"eq","enum":"pass"}]}]},
+    {"node_id":"n4","role":"worker","objective":"agir sobre as medidas","depends_on":["n3","n1"],
+     "tools":[],
+     "budget_estimate":{"tokens":50,"cost_micro_usd":50},
+     "consumes":[{"from":"n1","output":"medidas","type":"metrics"}]}
+  ]
+}`
+
+// TestAOS484_DescendenteDeRamoRetidoNaoEFechado prende a PROPAGAÇÃO de `ramosRetidos` (achado 4 da
+// segunda revisão): sem ela, o `n4` — que não tem condição própria e cujo produtor `n1` concluiu sem
+// o `metrics` — era fechado `failed` pela poda, embora nunca fosse correr (o despacho poda-o como
+// descendente do ramo não tomado), e o plano saía 13.
+func TestAOS484_DescendenteDeRamoRetidoNaoEFechado(t *testing.T) {
+	const run = "run-aos484-descendente-retido"
+	f := &aos413No{saidaVerif: `{"outcome":"fail","reasons":["dados_sensiveis"]}`}
+	_, r := aos484Arrancar(t, f, run, aos484PlanoDescendenteRetido)
+	if r.code != exitOK {
+		t.Fatalf("o veredicto fail retém o ramo e a descendência: tinha de sair 0, saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "execucao: n1=complete n2=complete n3=ready n4=ready") {
+		t.Fatalf("o n3 e o n4 ficam ready — retidos, nem corridos nem fechados:\n%s", r.stdout)
+	}
+	if strings.Contains(r.stdout, "NAO corre") {
+		t.Fatalf("nenhum nó retido se fecha por falta de payload:\n%s", r.stdout)
 	}
 }
 

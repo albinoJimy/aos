@@ -8392,7 +8392,15 @@ fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
       dos consumidores sem payload corria antes da decisão de ramo e fechava o `n3` como `failed` —
       saída 13 num plano que antes do ticket saía 0. A poda (`podarSemPayload`, com `ramosRetidos`)
       passou a ler as decisões de ramo do log e só fecha um nó que ia mesmo correr; com essa
-      pergunta retirada, o teste sai 13. `TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco`
+      pergunta retirada, o teste sai 13. A retenção propaga-se à descendência:
+      `TestAOS484_DescendenteDeRamoRetidoNaoEFechado` (um nó sem condição própria, descendente do
+      ramo retido, que consome um `metrics`) sai 0 com `n3=ready n4=ready`, e sem a propagação sai
+      13. Um nó cujo ramo é decidido «tomado» na própria passagem é fechado pelo SINK, antes de
+      qualquer efeito: `TestAOS484_DuasRecusasSeguidasEmNosDiferentesNaoAbortamOPlano` (um ramo e a
+      sua recuperação, ambos sem payload, saem `failed`, o `serve` sai 13 e não 1, e a retoma
+      imediata sai 13 e não 3) e `TestAOS484_PapelSemPayloadNaoESpawnado` (um papel sem o payload
+      não chega ao `Delegator.Spawn`). Sem o fecho no sink, os dois primeiros saem 1 e o papel é
+      spawnado; com o `Spawn` antes da verificação, o papel é spawnado. `TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco`
       continua a exigir a saída 0 nos seis casos — `fail` e cinco formas ilegíveis — e passou a
       exigir que nenhum nó esteja `failed`: o verificador conclui (`complete`), e uma saída ilegível
       regista-se como veredicto `fail`, não fecha o nó como `failed`.)*

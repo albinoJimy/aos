@@ -462,15 +462,45 @@ func (e *executorDeNos) podarSemPayload(ctx context.Context) error {
 			if !ok || (pst != arstate.Complete && pst != arstate.Failed) {
 				continue // o produtor ainda pode publicar
 			}
-			fmt.Printf("  execucao: no %s NAO corre — o contrato %s/%s ficou por cumprir\n", id, c.From, c.Output)
-			if err := e.g.MarkRunning(ctx, id); err != nil {
-				return fmt.Errorf("marcar %q a correr para o fechar: %w", id, err)
-			}
-			if err := e.g.MarkTerminal(ctx, id, arstate.Failed); err != nil {
-				return fmt.Errorf("fechar %q sem payload: %w", id, err)
+			if err := e.fecharSemPayload(ctx, id, c); err != nil {
+				return err
 			}
 			break
 		}
+	}
+	return nil
+}
+
+// contratoPorCumprir devolve o primeiro `consumes` do nó cujo payload este processo não tem — e
+// por isso não pode entregar (AOS-484). É a mesma pergunta que o [entradasDe] faz ao montar o
+// pedido, feita ANTES de qualquer efeito: o sink chama-a antes do `Spawn` de um papel e antes de
+// submeter o run.
+func (e *executorDeNos) contratoPorCumprir(nodeID string) (plan.PayloadEdge, bool) {
+	n, ok := e.nos[nodeID]
+	if !ok {
+		return plan.PayloadEdge{}, false
+	}
+	for _, c := range n.Consumes {
+		if _, temos := e.payloads[chaveDePayload{no: c.From, output: c.Output}]; !temos {
+			return c, true
+		}
+	}
+	return plan.PayloadEdge{}, false
+}
+
+// fecharSemPayload fecha como `failed`, durável e sob a posse, um nó que não corre porque o
+// contrato `c` do seu `consumes` ficou por cumprir. É o ÚNICO caminho por onde isso acontece, e
+// têm-no dois chamadores: a poda do início da passagem ([podarSemPayload]) e o sink, quando o
+// despacho decide o ramo de um nó na mesma passagem em que ele fica elegível. As duas transições
+// são as do grafo (`MarkRunning` + `MarkTerminal`), pelo que uma retoma re-hidrata o nó já
+// `failed` e nenhum dos dois o volta a tocar — ambos só olham para nós `ready`.
+func (e *executorDeNos) fecharSemPayload(ctx context.Context, id string, c plan.PayloadEdge) error {
+	fmt.Printf("  execucao: no %s NAO corre — o contrato %s/%s ficou por cumprir\n", id, c.From, c.Output)
+	if err := e.g.MarkRunning(ctx, id); err != nil {
+		return fmt.Errorf("marcar %q a correr para o fechar: %w", id, err)
+	}
+	if err := e.g.MarkTerminal(ctx, id, arstate.Failed); err != nil {
+		return fmt.Errorf("fechar %q sem payload: %w", id, err)
 	}
 	return nil
 }
@@ -482,8 +512,8 @@ func (e *executorDeNos) podarSemPayload(ctx context.Context) error {
 //
 // A fonte é o FACTO `plan.branch_decided` do log, lido pela mesma porta que o despacho usa, e não
 // uma segunda avaliação das condições: quem decide o ramo continua a ser o despachante. Um ramo que
-// o despacho decida «tomado» nesta passagem só aparece aqui na seguinte — ver o laço em
-// `composeEDespachar`, que não aborta nesse caso.
+// o despacho decida «tomado» nesta passagem só aparece aqui na seguinte; um nó assim, sem o
+// payload, é fechado pelo sink (ver `dispatchSink.Dispatch`), antes de qualquer efeito.
 //
 // Um nó que já arrancou (a correr, concluído ou falhado) não está retido: o ramo dele foi tomado.
 // Um plano sem arestas condicionais não lê o log.
