@@ -16,7 +16,7 @@ A rastreabilidade fecha nos dois sentidos, com três buracos conhecidos e nenhum
 - **Objectivo → registo:** os passos 0–18 do roteiro passam em `4ef35e0` e em `f7b23f3` (o passo 15, em `f7b23f3`, só depois de corrigir o `snapshot.json` do roteiro). Sequência sem buracos, chave `run_id:step_id` em todos os eventos, PII a zero no WAL e no WORM, recusas fail-closed com `exit=1`.
 - **Registo → objectivo:** demonstrado a partir de um selo do WORM e de um evento do WAL, localmente e em produção. Em produção a cadeia vai de um `deny` selado até ao pedido de plano, e fecha num objectivo cifrado por titular.
 - **Os três buracos** têm ticket: as dependências do plano não ficam no log (AOS-476), o registo do plano não leva ao objectivo sem partir nomes (AOS-477), e a cadeia de delegação só existe nos eventos de mediação (AOS-478).
-- **Gates:** 26 de 28 verdes em `f7b23f3`. Os dois vermelhos eram defeitos dos próprios gates em Windows, corrigidos no AOS-480. Ficou um vermelho intermitente por explicar no gate `nats` (§5).
+- **Gates:** 26 de 28 verdes em `f7b23f3`. Os dois vermelhos eram defeitos dos próprios gates em Windows, corrigidos no AOS-480. Ficou um vermelho intermitente por explicar no gate `nats` (§5), e o `ci-selftest` local tem quatro casos vermelhos por investigar (§5).
 - **Mediação viva:** não foi exercida. Está coberta por system-test e por leitura de um run de produção de 2026-09-27.
 
 ## 2. Sentido directo: objectivo → registo
@@ -150,7 +150,7 @@ Corrida completa de `scripts/ci/run.sh` sobre `f7b23f3`, em Windows, com `NATS_G
 
 **Vermelho intermitente, por explicar.** Na repetição local do `nats`, `TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado` falhou uma vez (1936 PASS, 1 FAIL): dos três processos que disputam o lease sobre um stream acabado de criar, dois saíram com `stream not found (code=404 err_code=10059)` na espera pelo líder, em vez de serem negados pelo lease. Na corrida anterior, sobre o mesmo código, e no CI do #421, o teste passou. É a família da janela do stream fresco (AOS-432, AOS-455). Fica por investigar; não tem ticket.
 
-**`ci-selftest`:** estava a correr sobre `af63ab5` quando este relatório foi fechado. O resultado não está aqui. Da secção GW, corrida isolada com o caso novo GW14: 21 de 21.
+**`ci-selftest`** (corrido sozinho sobre `af63ab5`, em Windows): **vermelho, 150 casos verdes e 4 vermelhos.** Os quatro são da secção RTMX (AOS-472): RTMX1, RTMX2, RTMX7 e RTMX8, todos com «passou num dos dois gates (ou pelo motivo errado)». O caso novo GW14 (a/b/c) passou, e a árvore ficou limpa no fim. No CI, em Linux, o job `selftest` é obrigatório e ficou verde no #421 sobre o mesmo código, pelo que a suspeita é mais um defeito de gate específico de Windows. **Não foi investigado**: a causa não está medida.
 
 **Sentido vertical (ticket → epic → código → teste → gate):** é o que `rtm` e `ref-lint` verificam, e passaram. A RTM foi regenerada duas vezes neste trabalho (475 → 479 → 480 tickets) sem ganhar nenhum par ticket × ADR.
 
@@ -190,7 +190,7 @@ O roteiro continua executável, mas várias pegadas escritas já não coincidem:
 - **Correcção do steer em claro:** `control.steer` guarda `payload.correction` em texto no WAL. Não testei uma correcção com PII.
 - **Credencial do leitor demo-grade** e **KEK em memória**, como no roteiro.
 - **`aos-orq` multi-réplica com NATS** não foi exercido ao vivo; fica no gate `nats`.
-- **`ci-selftest`** sem resultado à data de fecho (§5).
+- **`ci-selftest`** vermelho em Windows por quatro casos RTMX, sem causa medida (§5).
 - **Achados 6, 8 e 11** ficam sem ticket.
 
 ## 9. Reprodução
