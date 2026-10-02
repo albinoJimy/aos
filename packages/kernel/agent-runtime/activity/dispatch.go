@@ -191,8 +191,41 @@ func (d *Dispatcher) dispatchReplay(key, keyHash string, span agentruntime.Span)
 	}, nil
 }
 
+// denyOutsideAllowlist medeia, FORA do ledger, uma call cuja tool está fora da lista-branca do
+// run (AOS-485). O RM nega-a por si — gate ou backstop — e deixa o evento, o selo e o contador.
+// Um permit aqui é o RM a não impor a lista (um [Mediator] que não é o RM de referência): a
+// tool já correu, mas o resultado NÃO é devolvido nem memorizado, e o erro é fatal ao loop —
+// fail-closed, em vez de entregar ao modelo o output de uma tool que o run não podia chamar.
+func (d *Dispatcher) denyOutsideAllowlist(ctx context.Context, act Activity, keyHash string, span agentruntime.Span) (Result, error) {
+	dec, err := d.rm.Mediate(ctx, act.toCall())
+	if err != nil {
+		span.SetAttribute(AttrDecision, "error")
+		return Result{}, err // cancelamento de contexto (fatal)
+	}
+	if dec.Effect == referencemonitor.EffectPermit {
+		span.SetAttribute(AttrDecision, "error")
+		return Result{}, ErrAllowlistNotEnforced
+	}
+	span.SetAttribute(AttrDecision, "denied")
+	d.obs.Denied(keyHash)
+	return Result{}, fmt.Errorf("%w: %w", ErrMediationDenied, &MediationDenial{
+		Effect: string(dec.Effect), Code: dec.Code, DeniedBy: dec.DeniedBy,
+	})
+}
+
 // dispatchNormal corre o fluxo completo: already-applied → mediação → memoização.
 func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyHash string, span agentruntime.Span) (Result, error) {
+	// LISTA-BRANCA DO RUN ANTES DO LEDGER (AOS-485). O already-applied do ledger corre ANTES da
+	// mediação — o Mediate vive dentro da closure do Apply — e a impressão da acção é
+	// (ToolID, Input), sem a lista. Uma call fora da lista cuja chave já tivesse sido aplicada
+	// (o mesmo passo, despachado antes sem lista ou com outra) recebia o output MEMORIZADO sem
+	// passar pelo RM: um permit sem mediação, sem recusa contada, e o output a chegar ao modelo.
+	// Antes do AOS-485 o ciclo negava antes do dispatcher e isto não acontecia. Por isso uma
+	// call fora da lista NÃO entra no Apply: vai directamente ao RM, que a nega com pegada, e
+	// nada é lido nem escrito no ledger.
+	if !referencemonitor.RunAllowsTool(act.AllowedTools, act.ToolID) {
+		return d.denyOutsideAllowlist(ctx, act, keyHash, span)
+	}
 	if act.Compensation != nil {
 		if d.registry == nil {
 			return Result{}, ErrNoRegistry

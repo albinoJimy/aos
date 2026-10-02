@@ -167,6 +167,22 @@ type Call struct {
 	// aprovação (o caso normal). Nunca é gravada no audit (pode conter material de
 	// credencial); só a atribuição resultante entra no registo.
 	ApprovalEvidence []byte
+	// AllowedTools é a LISTA-BRANCA de tools do run (AOS-413, ADR-027 §2.3), por nome (o
+	// `ToolID`). nil ⇒ sem restrição além do que o resto da cadeia decide; não-nil, MESMO
+	// VAZIA ⇒ só as listadas, e uma lista vazia nega todas. Quem a preenche é o Agent
+	// Runtime, a partir do goal do run — nunca o modelo. ESTREITA, nunca alarga: uma tool na
+	// lista continua sujeita a toda a mediação.
+	//
+	// É imposta AQUI DENTRO (AOS-485): pelo [RunAllowlistGate] quando a cadeia o tem e, em
+	// qualquer cadeia, pelo backstop de [Monitor.evaluate] — ver [RunAllowsTool].
+	//
+	// NÃO entra no fingerprint nem na [ApprovalPreview]: não descreve a acção, restringe-a. A
+	// mesma acção com outra lista é a mesma acção, e uma call fora da lista é negada antes de
+	// haver permit a ligar ou aprovação a casar.
+	//
+	// ARMADILHA: copiar este campo com `append([]string(nil), x...)` transforma a lista VAZIA
+	// em nil e ABRE todas as tools. Atribui-se o slice tal como veio.
+	AllowedTools []string
 
 	// humanApproved é a PROVA VERIFICADA de aprovação humana desta call. NÃO-EXPORTADO
 	// DE PROPÓSITO: só o [ApprovalGate] (deste pacote) a escreve, e só após verificação

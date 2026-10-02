@@ -439,7 +439,14 @@ func NewSecuredRuntime(cfg SecuredConfig) (*SecuredRuntime, error) {
 	}
 	hooks = append(hooks,
 		identity.NewIdentityCheck(verifier), // identity — resolve Call.Principal
-		revalHook,                           // revalidation (AOS-051)
+		// LISTA-BRANCA DO RUN (AOS-413, imposta aqui desde o AOS-485). Logo a seguir à
+		// identidade, para o `tool.call.denied` levar o principal que o token verificado
+		// resolveu e a cadeia de delegação; e antes da revalidação, da política e do
+		// orçamento, para uma call que vai ser negada não selar uma revalidação nem reservar
+		// orçamento. O RM tem um backstop com o mesmo código — este hook decide a POSIÇÃO da
+		// recusa, não a sua existência.
+		referencemonitor.NewRunAllowlistGate(),
+		revalHook, // revalidation (AOS-051)
 		// risk-classify ANOTA a classe SA-ROC e NUNCA decide. Tem de vir ANTES da política
 		// porque o oráculo de autonomia vive DENTRO dela e lê Context.RiskClass; sem esta
 		// anotação o overlay vê vazio, resolve para danger (fail-closed) e a taxonomia

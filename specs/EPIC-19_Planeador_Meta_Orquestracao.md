@@ -1536,6 +1536,12 @@ mas a escolha é do dono, e fica num ADR.
 campo `tools` como lista-branca imposta pelo RM; a validade do NHI (45 min) é o tecto de um plano por
 agora, com a renovação como resíduo declarado.
 
+> **Nota (2026-10-02, AOS-485).** À data do fecho deste ticket a lista era imposta no ciclo do
+> runtime, antes do Reference Monitor — é o que a evidência abaixo descreve («imposto antes da
+> mediação», «a call não chega ao RM»). O AOS-485 (EPIC-02) passou a imposição para dentro do RM,
+> com emenda ao ADR-027 §2.3: a tool continua a não executar, e a recusa passa a deixar
+> `tool.call.denied`, selo e contador.
+
 ### Objectivo
 
 Um organigrama aprovado executa até ao fim: cada folha faz o seu trabalho com as tools pinadas do seu

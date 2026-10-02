@@ -49,7 +49,9 @@ type Goal struct {
 	Tools []ToolSpec
 	// AllowedTools é a LISTA-BRANCA de tools (por nome, o `ToolID`) que este run pode chamar
 	// (AOS-413, ADR-027). nil ⇒ sem restrição além do token — o comportamento de sempre.
-	// Não-nil ⇒ uma tool call fora dela é NEGADA antes da mediação, sem despacho; e uma lista
+	// Não-nil ⇒ uma tool call fora dela é NEGADA pelo Reference Monitor, sem despacho, e a
+	// recusa fica no log como qualquer outra (AOS-485): o ciclo entrega a lista ao RM em
+	// cada call ([referencemonitor.Call.AllowedTools]) e é ele que a impõe. Uma lista
 	// não-nil VAZIA nega TODAS — é o caso de um nó do plano sem tools pinadas, que de outro
 	// modo herdaria as tools de todo o token do run. Existe
 	// para um run que é o trabalho de UM nó de um plano: o nó só pode usar as tools que o
@@ -207,8 +209,10 @@ type PlanInput struct {
 }
 
 // CodeToolOutsideRunAllowlist é o Code de Deny quando a tool call não está na lista-branca
-// [Goal.AllowedTools] do run (AOS-413). Como no [CodeEffectRewrite], nada é despachado.
-const CodeToolOutsideRunAllowlist = "E_TOOL_OUTSIDE_RUN_ALLOWLIST"
+// [Goal.AllowedTools] do run (AOS-413). Nada é despachado. É o MESMO símbolo do Reference
+// Monitor, que é quem nega desde o AOS-485 — não uma segunda cópia da string, para o código
+// que o modelo vê no tail não poder divergir do que fica no evento e no selo.
+const CodeToolOutsideRunAllowlist = referencemonitor.CodeToolOutsideRunAllowlist
 
 // WithCallRewriter injecta o [CallRewriter]. Default: nenhum (Call inalterada).
 func WithCallRewriter(r CallRewriter) Option { return func(rt *Runtime) { rt.callRewriter = r } }
@@ -871,6 +875,11 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			Reversibility: inv.Reversibility,
 		},
 		Input: inv.Input,
+		// LISTA-BRANCA DO RUN (AOS-413) — entregue ao RM, que a impõe (AOS-485). O slice vai
+		// TAL COMO ESTÁ no goal, sem cópia defensiva: `append([]string(nil), x...)` de uma
+		// lista vazia devolve nil, e nil é «sem restrição» — a cópia abria todas as tools ao
+		// nó do plano que não tem nenhuma.
+		AllowedTools: goal.AllowedTools,
 	}
 
 	// FORMA FINAL DO EFEITO (AOS-005/AOS-064) — a reescrita da Call corre AQUI, na
@@ -884,24 +893,16 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	// emitida e consumida, nunca casava com a acção (observado ao vivo). Fazê-la na
 	// construção elimina a divergência POR CONSTRUÇÃO.
 	//
-	// LISTA-BRANCA DO RUN (AOS-413) — antes da reescrita e da mediação: uma tool fora da
-	// lista não chega a ser construída como efeito. Materializa-se como Deny no tail, como a
-	// reescrita recusada, e não é fatal para o loop.
-	if !toolPermitidaNoRun(goal.AllowedTools, inv.ToolID) {
-		return toolOutcome{
-			Result: Untrusted(nil),
-			Denial: &ToolDenial{
-				Effect:   string(referencemonitor.EffectDeny),
-				Code:     CodeToolOutsideRunAllowlist,
-				DeniedBy: "run_tool_allowlist",
-			},
-			Call: call,
-		}, nil
-	}
-
+	// LISTA-BRANCA DO RUN (AOS-413) — quem NEGA é o Reference Monitor (AOS-485, emenda ao
+	// ADR-027 §2.3): a call segue para a mediação e a recusa sai de lá com evento, selo e
+	// contador, como todas as outras. O que fica AQUI é não construir como efeito uma tool
+	// que vai ser negada: para ela a reescrita NÃO corre, e a call chega ao RM tal como o
+	// modelo a pediu. Sem esta condição, args malformados numa tool proibida saíam
+	// `E_EFFECT_REWRITE` — a razão errada, e sem pegada nenhuma.
+	//
 	// Fail-closed: uma reescrita que falha (args malformados) NÃO despacha nada e
 	// materializa-se como Deny no tail — não é fatal para o loop.
-	if rt.callRewriter != nil {
+	if rt.callRewriter != nil && referencemonitor.RunAllowsTool(goal.AllowedTools, inv.ToolID) {
 		rc, rerr := rt.callRewriter(call)
 		if rerr != nil {
 			return toolOutcome{
@@ -915,6 +916,9 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			}, nil
 		}
 		call = rc
+		// A reescrita define o efeito, não a restrição: a lista é a do goal, qualquer que
+		// seja a Call que o rewriter devolveu.
+		call.AllowedTools = goal.AllowedTools
 	}
 
 	// EVIDÊNCIA DE APROVAÇÃO (AOS-021) — na RETOMA de uma acção escalada, é aqui que a
@@ -972,20 +976,6 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 		ToolErr: dec.ToolErr,
 		Call:    call,
 	}, nil
-}
-
-// toolPermitidaNoRun diz se a tool pode ser chamada neste run: sem lista-branca (nil), sim; com
-// ela — mesmo vazia —, só se o nome lá estiver.
-func toolPermitidaNoRun(permitidas []string, toolID string) bool {
-	if permitidas == nil {
-		return true
-	}
-	for _, t := range permitidas {
-		if t == toolID {
-			return true
-		}
-	}
-	return false
 }
 
 // annotateAgentSpan anota o span invoke_agent com o uso e custo agregados.

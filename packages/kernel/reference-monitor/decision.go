@@ -45,7 +45,30 @@ const (
 	// obrigação de tipo desconhecido). Fail-closed: uma obrigação que o PEP não
 	// sabe/consegue impor NÃO liberta o efeito (AOS-087, ADR-002).
 	CodeObligationUnsatisfied = "E_OBLIGATION_UNSATISFIED"
+	// CodeToolOutsideRunAllowlist — a tool não está na lista-branca do run
+	// ([Call.AllowedTools], AOS-413). Negada pelo [RunAllowlistGate] ou, numa cadeia sem
+	// ele, pelo backstop de [Monitor.evaluate] (AOS-485). Nada é despachado.
+	CodeToolOutsideRunAllowlist = "E_TOOL_OUTSIDE_RUN_ALLOWLIST"
 )
+
+// hookDenyCode devolve o código com que a NEGAÇÃO de um hook sai, dado o que ele pediu em
+// [HookResult.Code]. O canal é FECHADO: só é honrado um código que esteja nesta lista; qualquer
+// outro — vazio, inventado, ou um dos códigos do PRÓPRIO RM — sai [CodeDeniedByHook].
+//
+// Fechado por duas razões. Os códigos são contrato (um chamador ramifica por igualdade), e um
+// hook que escrevesse texto livre aqui abria o conjunto sem ninguém o decidir. E os códigos do
+// RM dizem coisas que só o RM sabe: um hook que pudesse sair [CodeAuditUnavailable] ou
+// [CodeToolNotRegistered] punha no trilho uma causa que não aconteceu.
+//
+// Acrescentar um código aqui é declará-lo acima E listá-lo neste switch.
+func hookDenyCode(pedido string) string {
+	switch pedido {
+	case CodeToolOutsideRunAllowlist:
+		return pedido
+	default:
+		return CodeDeniedByHook
+	}
+}
 
 // Obligation é uma obrigação que o PEP deve impor sobre uma decisão permit
 // (ex.: redigir PII, TTL, nível de audit). No AOS-003 os stubs não produzem

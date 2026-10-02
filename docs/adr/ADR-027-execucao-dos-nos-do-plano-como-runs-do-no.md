@@ -60,10 +60,49 @@ O nó continua a confiar num **só** emissor de NHI.
 ### 2.3 Restrição às tools do nó (decisão do dono)
 
 **O `POST /runs` ganha um campo `tools`**: a lista-branca dos nomes de tool que o run pode chamar.
-O ciclo do runtime impõe-na em cada tool call **antes** da mediação — uma tool fora dela é negada
-sem chegar ao Reference Monitor, que continua a decidir tudo o resto. O `aos-orq` envia as tools
-pinadas do nó no `plan.materialized` — as mesmas que o clamp da materialização decidiu. Sem isto, o
-clamp seria decorativo: o run teria as tools do run inteiro.
+O `aos-orq` envia as tools pinadas do nó no `plan.materialized` — as mesmas que o clamp da
+materialização decidiu. Sem isto, o clamp seria decorativo: o run teria as tools do run inteiro.
+
+- **Onde a lista é imposta (EMENDADO a 2026-10-02 pelo AOS-485, opção (A) do dono).** A versão
+  original deste ADR punha a imposição no ciclo do runtime, **antes** da mediação: uma tool fora
+  da lista era negada sem chegar ao Reference Monitor. A validação em produção mediu o custo: no
+  run `plan-e2e-pegadas-1790956072~n2_summarize` a call negada não deixou `tool.call.denied`, selo
+  no WORM nem contagem em `aos_mediation_denials_total`, e só se reconstituía por inferência. O §4
+  já dizia «a sua imposição no RM»; o texto e o código passam a dizer o mesmo. Agora:
+  - **a lista é imposta dentro do Reference Monitor.** O ciclo do runtime entrega-a em cada tool
+    call (`Call.AllowedTools`) e é o RM que nega, com o código `E_TOOL_OUTSIDE_RUN_ALLOWLIST` e
+    `denied_by=run_tool_allowlist`;
+  - **logo a seguir à identidade**, para o registo levar o principal do token verificado e a
+    cadeia de delegação, e antes da revalidação, da política e do orçamento, para uma call que vai
+    ser negada não selar uma revalidação nem reservar orçamento;
+  - **a identidade decide primeiro, e o texto que o modelo vê pode mudar por isso.** Antes da
+    emenda, uma tool fora da lista saía sempre com o código da lista, porque o ciclo negava antes
+    de qualquer hook. Agora, uma call que o hook de identidade nega — token expirado, credencial
+    em falta, capability fora do escopo do token — sai `E_DENIED_BY_HOOK` com
+    `denied_by=identity`, esteja a tool na lista ou não. O código da lista só aparece quando a
+    identidade passa. Nos dois casos nada executa e a recusa fica registada;
+  - **a recusa sai pelo caminho de todas as outras:** `tool.call.denied` no stream do run, selo no
+    WORM na partição do run e `aos_mediation_denials_total`;
+  - **a imposição não depende da composição da cadeia:** além do hook, o RM nega por si uma tool
+    fora da lista, pelo que um Reference Monitor montado sem o hook nega na mesma. Sem o hook a
+    recusa vem no fim da cadeia: sai com o código da lista só se nenhum hook anterior negar ou
+    escalar primeiro, e os hooks anteriores correm (uma revalidação pode ficar selada). O que não
+    muda é que a tool não executa;
+  - **uma tool fora da lista continua a não ser construída como efeito:** a reescrita da call
+    (args do modelo → pedido de sandbox) não corre para ela, e a call chega ao RM tal como o
+    modelo a pediu;
+  - **a lista atravessa a via durável sem cópia**, para a lista vazia não chegar ausente;
+  - **na via durável, uma call fora da lista não passa pelo step-ledger.** O ledger responde por
+    um passo já aplicado antes de o RM ser consultado, e a impressão da acção não inclui a lista:
+    um passo aplicado sem lista devolvia o output memorizado a um despacho posterior com a lista
+    a negá-lo. O dispatcher durável entrega essas calls directamente ao RM.
+  - **Efeitos aceites com a decisão:** um selo por recusa (uma escrita durável no WORM cada uma),
+    limitado por turnos × tool calls por turno — não há tecto de calls por turno, pelo que o
+    limite real é o orçamento do run e não o tecto de turnos — e mais um por retoma do passo; a
+    call negada passa a ser vista pelo disjuntor de no-progress e a entrar no denominador da taxa
+    de override da autonomia, como qualquer outra recusa do RM; e a recusa ocupa a chave
+    `run_id:step_id` do sub-passo no Event Store (AOS-481).
+  - **Fica por fazer:** deixar de oferecer ao modelo as tools que a lista nega (AOS-486).
 
 **Ausente e vazia não são o mesmo.** Ausente (`null`) ⇒ sem restrição além do token — os clientes
 actuais não mudam. Presente e vazia (`[]`) ⇒ nenhuma tool: é o nó do plano sem tools pinadas, que de
@@ -131,8 +170,9 @@ invocação retoma os nós `running`.
 ## 4. Consequências
 
 - **O nó `aos` muda**, mas só em identidade e em restrição de tools: o campo `tools` e a sua
-  imposição no RM. Nenhum import do orquestrador ou do scheduler — o `boundary_orq_sch_test.go`
-  continua a valer.
+  imposição no RM (§2.3, emendado pelo AOS-485: é o Reference Monitor que nega, e a recusa fica no
+  log, no WORM e no contador). Nenhum import do orquestrador ou do scheduler — o
+  `boundary_orq_sch_test.go` continua a valer.
 - O `aos-orq` ganha um cliente HTTP autenticado, dois ficheiros montados (NHI e segredo do cliente)
   e um laço de espera com prazo.
 - O trabalho de um nó continua limitado às tools registadas: sem skills, o objectivo do nó é o
