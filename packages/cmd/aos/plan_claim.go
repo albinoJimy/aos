@@ -383,6 +383,23 @@ type respostaDeReclamo struct {
 	// GeracoesEsgotadas marca a geração que passou o tecto de gerações (AOS-467): o drenador fecha o
 	// pedido com a saída 12, SEM planear. Um drenador anterior ignora o campo e planeia.
 	GeracoesEsgotadas bool `json:"generations_exhausted,omitempty"`
+	// AOS-477 — o que o drenador precisa para o registo do plano citar o pedido e comprometer-se
+	// com o objectivo recebido, sem nomes:
+	//
+	//   - `request_stream` + `request_seq`: o `planrequest.submitted` deste pedido, que o
+	//     `plan.proposed` passa a citar;
+	//   - `objective_commitment`: o compromisso gravado no pedido;
+	//   - `objective_salt`: o sal, em hex, para o drenador RECALCULAR o compromisso sobre o
+	//     objectivo que recebeu e o confrontar com o do pedido. Vai pelo mesmo canal que o
+	//     objectivo em claro: quem o recebe já tem o texto, e o sal não lhe dá mais nada. NÃO se
+	//     grava do outro lado — no log do plano fica só o compromisso.
+	//
+	// Vazios num pedido anterior ao AOS-477 (sem compromisso), e o compromisso e o sal também numa
+	// geração esgotada, que não planeia. Um drenador anterior ignora-os.
+	RequestStream       string `json:"request_stream,omitempty"`
+	RequestSeq          uint64 `json:"request_seq,omitempty"`
+	ObjectiveCommitment string `json:"objective_commitment,omitempty"`
+	ObjectiveSalt       string `json:"objective_salt,omitempty"`
 }
 
 // handlePlanClaim reclama UM pedido pendente e devolve-o.
@@ -442,10 +459,16 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		// isso tem dois efeitos medidos pela revisão: um `aos-orq` anterior, que ignora a marca, não
 		// tem o que decompor e não chama o modelo; e o pedido de objectivo ILEGÍVEL do AOS-442,
 		// re-reclamado a cada expiração para sempre, entrega-se para fechar ao passar o tecto.
-		var objetivo string
+		var objetivo, sal string
 		var errAbrir error
 		if !pedido.Esgotado {
 			objetivo, errAbrir = abrirObjetivo(h.node, pedido.Payload)
+			// AOS-477: o sal abre-se com o objectivo e sob o mesmo titular. Um sal que não abre
+			// quando o objectivo abriu é a mesma falha (KEK destruída a meio, ou um payload
+			// adulterado), e trata-se igual: salta-se o pedido.
+			if errAbrir == nil {
+				sal, errAbrir = abrirSal(h.node, pedido.Payload)
+			}
 		}
 		if errAbrir != nil {
 			// A CAUSA MAIS PROVÁVEL É LEGÍTIMA, e é o Art. 17 a funcionar: a KEK do titular foi
@@ -473,6 +496,11 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 			RequestedBy: pedido.Payload.Principal,
 			// AOS-467: a geração passou o tecto — o drenador fecha o pedido (saída 12) sem planear.
 			GeracoesEsgotadas: pedido.Esgotado,
+			// AOS-477: a referência ao pedido e o compromisso do objectivo (ver o tipo).
+			RequestStream:       planRequestStream,
+			RequestSeq:          pedido.Seq,
+			ObjectiveCommitment: compromissoEntregue(*pedido, sal),
+			ObjectiveSalt:       sal,
 		})
 		return
 	}
@@ -482,6 +510,17 @@ func (h *apiHandler) handlePlanClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// compromissoEntregue é o compromisso do pedido que a reclamação entrega: o gravado, e só
+// quando segue com o sal que o permite recalcular (AOS-477). Sem sal — uma geração esgotada, que
+// não planeia, ou um pedido anterior — não se entrega: um compromisso que o drenador não pode
+// conferir seria copiado para o plano como se tivesse sido.
+func compromissoEntregue(p pedidoNaFila, sal string) string {
+	if sal == "" {
+		return ""
+	}
+	return p.Payload.CompromissoDoObjetivo
 }
 
 // codigoDeGeracoesEsgotadas é a saída do `aos-orq` que fecha uma geração marcada (AOS-467,

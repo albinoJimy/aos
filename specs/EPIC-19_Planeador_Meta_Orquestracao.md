@@ -1588,8 +1588,12 @@ um resultado legível.
   que convém conhecer antes de lhe pendurar execução.
 - O que é o «trabalho» de um nó sem skills: o `tecnica/18` declara como lacuna honesta que os nós só
   correm sobre tools registadas. O objectivo do nó é o prompt; as tools pinadas são o que pode fazer.
-- A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, DEF-913) toca no
-  mesmo `RebuildDAG`: coordenar a ordem.
+- ~~A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, PR #300) toca no
+  mesmo `RebuildDAG`: coordenar a ordem.~~ **Resolvida pelo AOS-476:** a emissão das arestas entrou
+  pela materialização, portada do PR #300 para a base (o PR em si continua aberto; fechá-lo é decisão
+  do dono). A citação dizia `DEF-913`, número que o PR #300 usou e que no registo é o tecto da fila de
+  planos do AOS-464. A segunda metade do PR #300 foi re-medida no AOS-476 e ficou registada como
+  DEF-817 (um `serve` sem documento re-hidrata e não despacha).
 
 ### Fora de âmbito
 
@@ -7779,17 +7783,84 @@ DAG que o primeiro despachou.
 
 ### Critérios de Aceitação
 
-- [ ] A materialização emite um `task.edge.added` por aresta de entrada, depois dos nós e antes de
+- [x] A materialização emite um `task.edge.added` por aresta de entrada, depois dos nós e antes de
       `plan.materialized`, sob a posse do run (ADR-023). É admissão, não efeito (ADR-024).
-- [ ] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
-- [ ] No roteiro E2E, passo 15: `wal-summary` mostra `task.edge.added 1` e `inspect` devolve
+      *(Evidência: a porta `LeafAdmitter` ganhou `AdmitEdge`, na mesma porta que os nós; o
+      adaptador de produção é `GraphBuilder.AddEdge` do grafo que `Tenure.Graph` re-hidrata sob o
+      lease, pelo que a escrita passa pelo `FencedAppender`. Ordem provada em três sítios:
+      `TestAOS476_ArestasDepoisDosNosAntesDoMaterialized` (sequência
+      nós → arestas → `plan.materialized`, com `depends_on`, origem de `conditional_on` e
+      dependência duplicada), `TestAOS476_ArestasSobrevivemAoReplay` (Event Store real: a aresta
+      já está durável quando o `plan.materialized` é pedido) e
+      `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla` (posição no ficheiro WAL do binário
+      real, vias `--goal` e `--plan-doc`). `TestAOS476_ArestaRecusadaNaoApensaMaterialized`: se a
+      porta recusa a aresta, o `plan.materialized` não é apenso;
+      `TestAOS476_ArestaRecusadaPeloStorePropaga`: o adaptador de produção não engole a recusa do
+      store. Posse, por comportamento e não só pela guarda estática:
+      `TestAOS476_ArestaDeDonoSuperadoRecusada` (runlifecycle) — um dono superado não põe a aresta
+      no log, nem pelo seu `GraphBuilder` nem pela materialização.)*
+- [x] *(Acrescentado pela revisão adversarial, MÉDIO-1.)* Uma materialização que morre entre os nós
+      e o `plan.materialized` retoma-se: um nó já durável que coincide com o do documento é aceite
+      sem reescrita, uma aresta já durável não é duplicada, e o `plan.materialized` é apenso; um
+      grafo que diverge do plano recusa, sem escrever nada.
+      *(Evidência: antes, a retoma saía 1 com «nó já existe no grafo», que o `consume` retentava até
+      ao tecto de gerações — a classe é anterior, o AOS-476 alargava a janela. Agora, antes de
+      qualquer escrita, o adaptador de produção confronta o grafo re-hidratado INTEIRO com o plano:
+      cada nó durável tem de ser um nó do plano com a mesma especificação (tool call, capability,
+      prioridade, identidade) e ainda `ready`, cada aresta durável uma aresta do plano. A recusa é
+      `errGrafoDoRunDiverge` — rótulo `grafo_diverge`, código 10, posse largada: quem diverge é o
+      grafo, não o documento. Por processo real, com o WAL reescrito como na revisão (registos até
+      aos nós + `lease.released`): `TestAOS476_MaterializacaoMortaAMeioRetoma` (com os dois nós, e
+      só com o primeiro) — `arestas=0`, materializa, despacha, e o WAL fica com 2 nós, 1 aresta e 1
+      `plan.materialized`; `TestAOS476_MaterializacaoMortaComNoDivergenteRecusa` (`analise` com
+      outra tool) e `TestAOS476_MaterializacaoMortaComArestaInvertidaRecusa` (aresta
+      `analise→recolha` a mais) — saída 10 duas vezes seguidas (a segunda prova que o lease foi
+      largado), o erro nomeia o grafo, e nada escrito, nem `task.edge.rejected_cycle`. Unitários:
+      `TestAOS476_MaterializacaoRetomaDepoisDosNos`, `TestAOS476_RetomaComNoDivergenteRecusa`,
+      `TestAOS476_RetomaComNoJaEmCursoRecusa` e `TestAOS476_RetomaSobreGrafoQueNaoEODoPlanoRecusa`
+      (prioridade, identidade, capability, estado terminal, nó a mais, aresta invertida).
+      `serve --nodes … --plan-doc …` é recusado antes da posse (`TestAOS476_NodesComPlanDocRecusado`):
+      eram duas fontes de nós para o mesmo run.)*
+- [x] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
+      *(Evidência: as arestas confirmam-se num DAG em memória antes da admissão global.
+      `TestAOS476_CicloAbortaSemNenhumNo` e `TestAOS476_OrigemForaDoPlanoAbortaSemNenhumNo`
+      (por `depends_on` e por `conditional_on`): `ErrInvalidRequest` com o sentinela do DAG
+      preservado, zero admissões, zero nós, zero `plan.materialized`.)*
+- [x] No roteiro E2E, passo 15: `wal-summary` mostra `task.edge.added 1` e `inspect` devolve
       `ordem=recolha,analise`.
-- [ ] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
+      *(Medido nesta base, com o snapshot e o plano do passo 15 tal e qual e os binários
+      compilados: `wal-summary` dá `task.edge.added 1` e `task.node.created 2`; `inspect` dá
+      `run=run-e2e-orq token_corrente=1 nos=2 ordem=recolha,analise`. O passo 15 do roteiro
+      (15a–15c e o achado n.º 2) foi reescrito com esta pegada e re-corrido a partir dos blocos do
+      ficheiro final, já com o AOS-477 na árvore.)*
+- [x] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
       real, não só unitário.
-- [ ] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
+      *(Evidência: o `serve` passa a imprimir, na re-hidratação, `grafo re-hidratado: arestas=N
+      ordem=…`. `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla`: segundo processo, `token=2`,
+      `grafo re-hidratado: nos=2` e `grafo re-hidratado: arestas=1 ordem=recolha,analise`.
+      `TestAOS476_ArestasDoGrafoConta` impede que a contagem seja uma constante.)*
+- [x] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
       actual, que já tem o executor de nós (AOS-413) e a drenagem da fila. Se ainda for verdade,
       fica registada com um número de deferimento livre; se não for, diz-se com a medição.
-- [ ] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
+      *(Re-medida: **verdade só em parte, e registada como DEF-817.**
+      `TestAOS476_DonoSeguinteDespachaSoPelaRetoma`, três processos contra um nó `aos` falso: o
+      primeiro despacha `recolha` e sai 8 com ela em voo; o segundo, `serve` **sem documento**,
+      re-hidrata com a aresta e **não despacha nada**; o terceiro, `serve --plan-doc` (a via que o
+      `consume` usa numa retoma, AOS-442), diz `materializado (retoma, do log)`, despacha
+      `analise` e acaba com `execucao: analise=complete recolha=complete`. Para a retoma com
+      documento a afirmação do PR #300 deixou de ser verdade; para o `serve` sem documento continua
+      — o despacho precisa do `PlanDocument` e o log só leva o hash (ADR-005) — e é essa a via que o
+      runbook `PROC-DESPACHO-MULTIPROC` descrevia como recuperação automática da topologia
+      N× `serve --nats`. Fica em `docs/governance/REGISTO-Deferimentos.md` como **DEF-817**
+      (`POR ATRIBUIR`, ticket em falta descrito em N-DEF-817), e o runbook passou à versão 1.1.
+      Medido também à mão, sem executor: um `serve --goal` repetido já não aborta com «nó já existe
+      no grafo» — vai à retoma e dá `nos_despachados=0`, porque `recolha` fica `running` sem
+      ninguém que a execute, como o banner do AOS-413 declara. **Não verificado:** a morte por TTL
+      sobre `--nats` seguida de retoma noutra réplica, e a pasta `--plan-dir` partilhada entre
+      réplicas.)*
+- [x] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
+      *(Agora cita o PR #300, marca a lacuna como resolvida pelo AOS-476 e nota que `DEF-913` é o
+      tecto da fila de planos do AOS-464; a segunda metade do PR #300 é DEF-817.)*
 - [ ] Verificação em produção: depois do deploy, um plano com dois nós dependentes deixa
       `task.edge.added` no `consume.wal`. Contar no ficheiro copiado, não por `grep` no servidor.
 
@@ -7797,9 +7868,34 @@ DAG que o primeiro despachou.
 
 O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipado por aresta.
 
+### Residuais declarados
+
+- **Runs materializados antes desta correcção nunca recebem as arestas.** Não há migração: o grafo
+  e o `inspect` desses runs continuam a dizer que os nós são independentes. O despacho segue o
+  documento, pelo que nada corre fora de ordem; o que fica errado, para sempre, é a topologia no
+  log. A retoma da materialização deste ticket só actua sem `plan.materialized`, e não repõe
+  arestas num run já materializado — fazê-lo seria outro ticket.
+- **A retoma exige que o grafo durável seja um subconjunto exacto do plano.** Um nó ou uma aresta
+  que o plano não declara recusa a retoma com `grafo_diverge` (10), sem escrever. Isto também
+  apanha o que o `--nodes` deixava no grafo — a combinação `--nodes` + `--plan-doc` no mesmo
+  `serve` passou a ser recusada, mas um `serve --nodes` anterior sobre o mesmo run continua a
+  poder escrever nós sem plano, e a retoma que vier depois recusa em vez de os adoptar. O que a
+  retoma não sabe é **porque** o grafo diverge (log adulterado, `--nodes` anterior, outro
+  escritor): diz que diverge e qual o primeiro nó ou aresta, e o diagnóstico é do operador.
+- **O `task.edge.added` não distingue `depends_on` de `conditional_on`.** O despacho continua a
+  ler o documento; despachar só a partir do grafo perderia a poda `branch_not_taken` (aviso em
+  `planmaterialize/doc.go`).
+
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-10-02), com a
+ronda de correcções da revisão adversarial (0 ALTO, 2 MÉDIO, 6 BAIXO, todos tratados) e a da
+revisão desse delta (4 BAIXO e 3 mutantes sobreviventes, todos tratados): a
+materialização emite as arestas e é retomável depois de uma morte a meio, um dono seguinte
+re-hidrata-as e o `serve` mostra-as. Falta o último critério, que exige um deploy e a cópia do
+`consume.wal` de produção. A segunda metade do PR #300 foi re-medida e ficou registada como
+DEF-817 (ver o quinto critério). O ramo do PR #300 não foi fundido: a lógica foi portada para a
+base de hoje.
 
 ---
 
@@ -7849,27 +7945,291 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
 
 ### Critérios de Aceitação
 
-- [ ] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
-      o texto em claro: o objectivo é redigido na ingestão e selado por titular no pedido).
+- [x] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
+      o texto em claro: o objectivo é selado por titular no pedido).
+      *(Correcção da revisão: o enunciado original dizia «redigido na ingestão», e é falso. O
+      `plan_ingress.go` guarda o texto cru, selado. É o certo: o drenador planeia sobre o texto
+      cru, e o compromisso é desse texto.)*
       O ticket decide se é um campo novo ou se o `plan_hash` já o cobre; neste segundo caso,
       escreve-se **onde** está o documento que permite verificá-lo. Hipótese por confirmar: o
       `plan_hash` cobre o campo `objective` do `PlanDocument`, mas o documento não está no log.
-- [ ] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
+      — *Campo novo, `objective_commitment`. A decisão e a prova estão em «Decisão do critério 1»,
+      abaixo. Testes: `TestAOS477OObjectivoDoDocumentoEDoModeloENaoDoPedido`
+      (`orchestrator/decompose`), `TestAOS477RecordProposedLevaOsCamposEOsImpoeNaForma`
+      (`orchestrator/plannerevents`) e `TestAOS477ServeManualComprometeOObjectivoSemOGravar`
+      (`cmd/aos-orq`, processo real). Este último confere o HMAC fora do binário e procura o
+      objectivo e o sal nos bytes do WAL, onde não estão.*
+- [x] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
       `planrequest.submitted`, ou um id equivalente), e o mesmo compromisso bate com o do pedido.
-- [ ] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id.
-- [ ] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
-      que falha se as duas constantes divergirem.
-- [ ] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
+      — *`plan.proposed.request = {stream, seq, run_id}`. A reclamação passa a entregar
+      `request_stream`, `request_seq`, `objective_commitment` e `objective_salt`. O `consume`
+      passa-os ao `serve`, que recalcula o compromisso sobre o objectivo recebido e recusa antes
+      da posse se não bater (`errObjectivoNaoEOdoPedido`, saída genérica e transitória, limitada
+      pelo tecto de gerações). Testes: `TestAOS477ReclamacaoEntregaOPedidoEOCompromisso`
+      (`cmd/aos`), `TestAOS477ConsumeCitaOPedidoEOsFilhosDeclaramAOrigem` e
+      `TestAOS477ConsumeRecusaUmObjectivoQueNaoEODoPedido` (`cmd/aos-orq`, processo real).*
+- [x] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id. — *Evento
+      novo `run.plan_origin` no stream do run filho, com `plan_request {stream, run_id,
+      generation}`, `plan_id` e `node_id`. Não leva o `seq` da fila: ver «Decisão do B-2».
+      É escrito pelo nó (`cmd/aos/plan_origem.go`) só com o vínculo do AOS-439 verificado, e
+      **depois** de o `POST /runs` hospedar o run. `TestAOS477OrigemNaoEntraNumRunAlheio` prende
+      essa ordem. O contexto não é cancelável pelo cliente
+      (`TestAOS477OrigemGravaComOClienteDesligado`).
+      O `node_id` declarado é **conferido** contra o id do run: o run tem de ser
+      `<pedido>~<node_id escapado>`, com o escape do `aos-orq`. Os mesmos vectores estão nos dois
+      binários: `TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador` e
+      `TestAOS477ChildRunIDTemOsVectoresDoNo`. A gramática copiada de `plan.ValidNodeID` está
+      presa à fonte (`TestAOS477GramaticaDoNodeIDCasaComOPlano`).
+      O `plan_id` só se confere na forma: o nó não conhece o documento (ADR-018). **Todo o lado
+      do plano é atestado pelo drenador**, por isso quem audita tem de casar os dois lados antes de
+      aceitar o nó: `plan.proposed.request.run_id` igual a `run.plan_origin.plan_request.run_id`,
+      e o `request.seq` do plano igual ao `seq` do facto com esse `run_id`. Só depois procura o
+      `node_id` no `plan.materialized`. Sem isto, um drenador com a reclamação viva do pedido da
+      Alice podia declarar o plano do Bob, e passava sempre que esse plano tivesse um nó com o
+      mesmo id. Todas as recusas dão a 403 uniforme. Teste:
+      `TestAOS477RunFilhoDeclaraAOrigemNumCampo`, que usa a geração 2 e um `node_id` com `.`, e
+      cobre os casos de 129 bytes, `plan_id` com `.`, `node_id` de outro run e outro escape.*
+- [x] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
+      que falha se as duas constantes divergirem. *Já cumprido pela segunda alternativa antes deste
+      ticket: `TestAOS439SeparadorDoRunFilhoCasaComOOrquestrador`
+      (`packages/cmd/aos/aos439_submissor_do_plano_test.go`) lê a constante do `aos-orq` da fonte e
+      falha se divergir. Verificado a 2026-10-02 contra a base.*
+- [x] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
       `tecnica/13_Modelo_Dados_Eventos.md` (campo novo retro-compatível, leitores antigos não
-      partem), e o gate `event-catalog` verde.
-- [ ] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
-      só campos, sem partir strings.
-- [ ] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso.
+      partem), e o gate `event-catalog` verde. — *Os dois campos são `omitempty`, e o domínio fica
+      `aos.planner.v1`, como o `snapshot_digest` do AOS-408. A regra ficou escrita na linha
+      `plan.*` de `tecnica/13` §3.3, que também regista o `run.plan_origin` e o payload 1.2 do
+      `planrequest.submitted`. `TestAOS477PropostaSemCamposNovosFicaComoEra` prova que um facto
+      sem os campos fica byte a byte igual. `TestAOS477LeitorAnteriorLeAPropostaNova` prova que a
+      struct anterior lê o novo. Gate `event-catalog` verde.*
+- [x] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
+      só campos, sem partir strings. — *`TestAOS477DoToolCallAoPedidoSoPorCampos` (`cmd/aos`):
+      nó real com Event Store em disco e `aos-orq consume` compilado e corrido como processo. O
+      percurso tem quatro passos, todos por igualdade de campo:
+      1. `tool.call.mediated.stream_id` → `run.plan_origin`;
+      2. → o `planrequest.submitted` cujo `payload.run_id` é o citado;
+      3. → `plan.proposed` no stream `plan_id` do WAL do `aos-orq`, com o mesmo `request.run_id`,
+         o `request.seq` igual ao do facto e o mesmo compromisso;
+      4. → só então o `plan.materialized` com o `node_id`.
+      O nó do plano tem um `.`, e por isso o escape do id atravessa os dois binários. Fecha no
+      objectivo pelo HMAC, com a custódia do titular. O lado do plano lê-se com structs locais por
+      nome de campo, porque o nó não importa o orquestrador.*
+- [x] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso. — *Passo 15d de
+      `docs/testing/e2e-pegadas-visao-19.md`, aplicado na integração (2026-10-02). Os blocos do
+      passo 15 copiados do ficheiro foram corridos por ordem sobre a árvore integrada: o HMAC do
+      objectivo com o sal impresso no 15a dá o `objective_commitment` do log, objectivo e sal com 0
+      ocorrências no WAL, e o `serve --goal` repetido imprime a linha de retoma sem sal novo.*
+
+### Decisão do critério 1: campo novo, e porquê
+
+**A hipótese confirma-se na letra e falha no que importa.** O `plan_hash` é o SHA-256 do
+`plan.Encode(doc)`, e o `PlanDocument` tem `objective`. Logo cobre esse campo, e mudá-lo muda o
+hash. Só que esse `objective` é **texto do modelo**. O `LLMDecomposer.Decompose`
+(`orchestrator/decompose/decompose.go`) carimba só o `planner_meta`, e o resto do documento é o
+que o modelo devolveu. No roteiro, o objectivo recebido é «recolher e analisar dados» e o
+documento diz «recolher e analisar». `TestAOS477OObjectivoDoDocumentoEDoModeloENaoDoPedido` mede
+isto. O `plan_hash` compromete-se, portanto, com a paráfrase do modelo. Um plano feito para um
+objectivo e rotulado com outro teria um hash igualmente válido. Além disso, o documento não está
+no log (ADR-005), e o ficheiro que o guarda (`--plan-out`) é opcional. A segunda condição da
+hipótese também se confirma.
+
+**A forma é um HMAC-SHA256 com sal por pedido.** Um SHA-256 do objectivo inverte-se por
+dicionário: «auditar o pipeline de faturas» adivinha-se. Ficaria além disso no log do plano para
+sempre, fora do alcance do crypto-shredding. É o argumento que o
+`deploy/server/avisar-planos.sh` já usa para o pseudónimo do run. O `prompt_hash` do turno não
+serve, porque é um compromisso do prompt materializado e não do objectivo cru (relatório de
+origem, §2). Também é determinístico: liga titulares que submetem o mesmo objectivo. O
+desenho:
+
+- **Fila.** Na ingestão, o nó tira 32 bytes aleatórios, grava `objective_commitment =
+  hmac-sha256:<hex>` em claro no `planrequest.submitted` e sela o sal sob a KEK do titular
+  (`objective_salt_sealed`), ao lado do objectivo. O payload passa a `v` 1.2. A reclamação
+  entrega o sal ao drenador pelo canal por onde já entrega o objectivo em claro. O `aos-orq`
+  recalcula o compromisso e grava-o no `plan.proposed`, sem gravar o sal.
+- **`serve --goal` manual.** Não há pedido. O sal é tirado no `aos-orq` e sai **uma vez** no
+  stdout de quem lançou o comando, que é quem já tem o texto. Se o run **já tem** `plan.proposed`
+  (o `--goal` repetido no mesmo run), não se tira sal novo: o passo é fixo e o log guarda só a
+  primeira proposta. A linha impressa nomeia o compromisso dessa primeira proposta
+  (`TestAOS477ServeRepetidoNaoImprimeSalQueNaoVerificaOLog`). Um sal novo não verificaria o log.
+- **Fila sem sal** (um pedido `v` 1.1, ou um nó anterior). Não há compromisso, e nenhum sal é
+  tirado nem impresso. Imprimi-lo poria no journal do drenador a chave de um compromisso sobre
+  um objectivo que o nó selou.
+- **Sem titular** (nó sem gate soberano). O objectivo já fica em claro no pedido, e o sal fica em
+  claro ao lado dele.
+
+**Propriedades declaradas.** Quem tem só o log não inverte o compromisso. Quem tem o texto e o
+sal verifica-o. Depois de um `/dsar/erase` o sal deixa de abrir e o compromisso fica
+inverificável e não-ligável. Dois pedidos com o mesmo objectivo dão compromissos diferentes. No
+caminho manual, quem tiver o stdout do `serve` e o WAL pode atacar por dicionário: esse stdout
+já esteve ao lado do `--goal` em claro na linha de comandos.
+
+### Decisão do B-2 da revisão: o `run.plan_origin` cita o pedido pelo `run_id`, não pelo `seq`
+
+O run filho lê-se com autorização **por região** (`sovereignty.go`), e a trajectória serve todos
+os tipos de evento. O stream da fila é um só para o nó inteiro: todas as regiões, com pedidos,
+reclamações e desfechos no mesmo contador. Por isso o `seq` de um pedido revelava, a qualquer
+leitor da região, quanta actividade de fila houve no nó até ele. É um agregado sobre recursos de
+**outras** regiões, entregue a quem não pode agir sobre eles. É a classe que o ADR-030 §2.1 fecha,
+e vai além do bit que o AOS-464 aceitou, porque atravessa regiões.
+
+**Decisão:** o `run.plan_origin` deixa de levar o `seq`. Cita o pedido pelo `run_id`, um id
+equivalente que não conta nada: é único na fila, porque a idempotency-key do
+`planrequest.submitted` é `req-<run_id>`, de primeira escrita, e já está no prefixo do id do
+próprio run filho. A `generation` fica, porque é sobre este pedido.
+
+O `seq` continua no `plan.proposed` e cumpre o AOS-477 (AC2). Esse evento vive no WAL do
+`aos-orq`, que não é servido a leitores de runs. O AC6 continua a cumprir-se só por campos.
+**Pergunta ao dono**, se quiser ir mais longe: a `generation` diz a um leitor da região quantas
+vezes o pedido foi **reclamado** (cada reclamação é uma geração; o passo do `plan.proposed` é fixo,
+pelo que não é o número de planos). Tirá-la também é possível sem perder a travessia.
+
+### Limites declarados
+
+- **A leitura «já tem proposta?» do `serve --goal` é feita sob a posse** (revisão da ronda 2).
+  Um `serve` sem posse não imprime sal nenhum (`TestAOS477SemPosseNaoHaSalImpresso`). Fica uma
+  janela: um `serve` cuja posse é superada **depois** dessa leitura imprime um sal cuja proposta
+  nunca chega ao log. Esse `serve` sai pela recusa do fencing (saída 4), não com sucesso.
+- **O prazo da gravação da origem está testado.** `TestAOS477OrigemTemPrazoProprio` usa um store
+  pendurado e prova que o handler volta dentro do `controlSealTimeout`.
+- **A origem do run filho é gravada depois de o run ser hospedado.** Antes, um `run_id`
+  `<plano>~<nó>` criado por outra via receberia de um drenador legítimo uma declaração que não é
+  a sua. Uma falha a gravá-la não desfaz o run, que já corre: fica no log do operador, e esse run
+  volta a reconduzir-se por nome.
+- **Só o caminho da fila tem pedido.** Num `serve` manual com executor, os runs filhos não levam
+  vínculo e não declaram origem. O `plan.proposed` leva só o compromisso.
+- **Os pedidos anteriores (`v` 1.1) não têm compromisso.** A reclamação entrega-os sem ele, e o
+  plano cita o pedido sem compromisso.
+- **O `aos-orq` só manda `plan_id`/`node_id` a um nó que entregou `request_seq`.** Um nó anterior
+  recusaria os campos com 400, porque o `POST /runs` usa `DisallowUnknownFields`.
+- **Um `node_id` com `:` produz um run filho que o runtime recusa.** É um defeito anterior a
+  este ticket. A gramática do plano admite `:`, e o `aos-orq` não o escapa, porque `:` é
+  representável num subject NATS. O runtime durável recusa um `run_id` com `:` («durable:
+  run_id/step_id não pode conter ':'»). O `POST /runs` responde 201 e o run falha logo. Medido
+  com um run `run-x~a:b`. Fica para ticket próprio.
+- **Comportamento do AOS-439, fora de âmbito.** Um run `<plano>~<nó>` criado antes por outra via
+  recebe a submissão do drenador como re-submissão idempotente (201). O drenador passa então a
+  tratar esse run alheio como o seu nó. A origem do AOS-477 não entra lá, mas o resto do vínculo
+  já não protege. Está descrito à parte para ticket.
+- **Medido localmente, não em produção.** Falta medir no `consume.wal` e no `events.wal` de
+  produção depois do deploy.
 
 ### Fora de âmbito
 
 Juntar os dois ficheiros num só store, e ler o objectivo em claro. A ligação é por referência e
 por hash.
+
+### Estado
+
+**ENTREGUE EM CÓDIGO, com os sete critérios cumpridos — por verificar em produção.** O sétimo (passo
+15d do roteiro) foi aplicado na integração, a 2026-10-02, e corrido a partir do ficheiro. A
+verificação em produção fica por fazer depois do deploy. Achados fora de âmbito desta entrega,
+com ticket próprio: AOS-482 (o drenador adopta um run alheio criado antes dele) e AOS-483 (um
+`node_id` com `:` produz um run-filho que o runtime durável recusa).
+
+---
+
+## AOS-482 — O drenador adopta como seu um run-filho que outra credencial criou antes dele
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma lacuna do vínculo do AOS-439 dentro do que o ADR-030 já decidiu. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (segurança) |
+| Prioridade | P1: a saída de um run que ninguém do plano criou entra no plano como trabalho do nó, incluindo o veredicto de um verificador que decide ramos |
+| Estimativa | M |
+| Dependências | AOS-439 (submissor do plano derivado pelo nó), AOS-413 (executor de nós), AOS-477 (`run.plan_origin`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/api.go`, `packages/cmd/aos/submissor_do_plano.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos/plan_origem.go` |
+
+### Contexto
+
+Achado na revisão adversarial do AOS-477 (2026-10-02) e descrito pelo implementador; reproduzido
+por sonda (`TestAOS477OrigemNaoEntraNumRunAlheio` mede a resposta).
+
+**Cenário.** Alguém com uma credencial que pode criar runs — sem vínculo a nenhum pedido de plano —
+cria `<plano>~<nó>` antes do drenador. O `POST /runs` não reserva essa forma de id.
+
+**No nó.** Quando o drenador submete depois o mesmo `run_id` com o vínculo, o vínculo é verificado
+(`submissorDoPedido`, em `api.go`) mas não confere que o run ainda não exista. O `Submit` devolve
+«já existe» e `isIdempotentResubmit` responde **201 accepted** — de propósito, para não dar um
+oráculo de existência. O 409 só sai com credencial forte e residência selada coincidente.
+
+**No `aos-orq`.** `node_client.go` trata o 201 como run seu. O executor (`node_executor.go`:
+submeter, publicar as saídas, fechar) passa a sondar esse run alheio e aceita o `final_text` dele
+como trabalho do nó — publica os payloads e, num verificador, o veredicto que decide os ramos
+condicionais.
+
+**Impacto.** O run alheio corre sem o `requested_by` do pedido e sem a lista-branca de tools do nó,
+e a sua saída entra no plano como se fosse do nó. O AOS-477 só garante que a origem
+(`run.plan_origin`) não entra nesse stream: o run alheio fica **sem** origem, e isso é o sinal que
+hoje ninguém lê.
+
+### Objectivo
+
+Um run-filho só é tratado como nó do plano se foi criado pela submissão com vínculo, sem reabrir o
+oráculo de existência que o 201 idempotente fecha.
+
+### Critérios de Aceitação
+
+- [ ] O `POST /runs` **sem** vínculo recusa ids com a forma reservada `<plano>~<nó>` (o separador
+      do AOS-439), com a mesma resposta uniforme das outras recusas de forma.
+- [ ] O drenador só aceita como seu um run-filho que tenha o `run.plan_origin` gravado pela sua
+      própria submissão com vínculo (ou um sinal equivalente que o nó lhe devolva sem revelar a
+      existência de runs alheios). Na falta dele, o nó falha fechado, e o plano não usa a saída.
+- [ ] Teste: um run `<plano>~<nó>` criado antes por outra credencial não é adoptado — nem por
+      submissão sem vínculo (recusada) nem, se já existir de antes da correcção, pelo executor.
+- [ ] A resposta a quem não tem vínculo não distingue «existe» de «não existe» (o argumento do 201
+      idempotente mantém-se).
+- [ ] Runs-filho criados antes da correcção (sem `run.plan_origin`): declarar o que acontece numa
+      retoma.
+
+### Fora de âmbito
+
+Rever o 201 idempotente em geral.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-483 — Um `node_id` com `:` produz um run-filho que o runtime durável recusa
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: alinha duas gramáticas de identificadores. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P3: falha fechada (o run-filho falha logo), mas um plano válido não corre |
+| Estimativa | S |
+| Dependências | AOS-413 (executor de nós), AOS-439 (forma `<plano>~<nó>`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plan/` (`ValidNodeID`), `packages/cmd/aos-orq/node_executor.go`, `packages/kernel/agent-runtime/durable/` |
+
+### Contexto
+
+Achado na correcção do AOS-477 (2026-10-02). A gramática do plano (`plan.ValidNodeID`) admite `:`
+num `node_id`. O `aos-orq` não o escapa ao compor o id do run-filho, porque `:` é representável num
+stream NATS. O runtime durável recusa-o (`durable: run_id/step_id não pode conter ':'`), porque `:`
+é o separador da chave de idempotência `run_id:step_id`. Medido com um run `run-x~a:b`: o
+`POST /runs` responde 201 e o run falha logo.
+
+### Critérios de Aceitação
+
+- [ ] Ou a gramática do plano recusa `:` num `node_id` (com o validador estrutural, fail-closed,
+      antes de materializar), ou o `aos-orq` escapa-o no id do run-filho, e o nó (AOS-477) confere
+      a mesma forma escapada.
+- [ ] Teste por processo: um plano com um `node_id` com `:` ou é recusado na validação, ou o seu
+      run-filho corre até ao fim.
+- [ ] As três gramáticas (plano, escape do `aos-orq`, conferência do nó) ficam presas por teste.
 
 ### Estado
 

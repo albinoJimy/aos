@@ -7,18 +7,26 @@
 // do LLM. O plano é dados: aqui não se re-chama o modelo, não se re-valida grafo
 // (AOS-231) nem se re-deriva risco/orçamento (AOS-232) — assume-se já aprovado. O
 // que este pacote faz é DETERMINÍSTICO a partir do documento gravado (§3.6): o mesmo
-// documento produz a mesma sequência de efeitos (spawns/nós) e o mesmo
+// documento produz a mesma sequência de admissões (nós/arestas) e o mesmo
 // `plan.materialized`.
 //
-// TRÊS EFEITOS, POR NÓ (tecnica/18 §6.1, linha da tabela `plan.materialized`):
+// O QUE A MATERIALIZAÇÃO ESCREVE (tecnica/18 §6.1; ADR-024 — admissão, sem efeito):
 //
-//  1. um node_id FOLHA  → um nó-tarefa `task.node.created` (AOS-025), via a porta
-//     [LeafAdmitter] (o composition root liga-a a *orchestrator.GraphBuilder);
-//  2. um PAPEL-QUE-EXPANDE → um `Delegator.Spawn` (AOS-026), via a porta [Spawner]
-//     (ligada a *orchestrator.Delegator), com `tools[]` a VINCULAR o `Authority[]`
-//     da NHI filha (issuer_child) — a autoridade da filha é LIMITADA às tools do
-//     papel (ver [Materializer.authorityForNode] e a política de mapeamento em
-//     [CapabilityMapper]);
+//  1. cada node_id → um nó-tarefa PENDENTE `task.node.created` (AOS-025), via a porta
+//     [LeafAdmitter] (o composition root liga-a a *orchestrator.GraphBuilder): a folha
+//     com a sua tool call, o PAPEL-QUE-EXPANDE sem tool. O `Delegator.Spawn` do papel
+//     (AOS-026) é do despacho governado; `tools[]` continua a VINCULAR o `Authority[]`
+//     da NHI filha através da autoridade clampada calculada aqui (ver
+//     [Materializer.authorityForNode] e a política de mapeamento em [CapabilityMapper]);
+//  2. cada aresta de entrada de um nó (`depends_on` e origem de `conditional_on`) →
+//     `task.edge.added`, pela mesma porta, depois de todos os nós e antes de
+//     `plan.materialized` (AOS-476). É a fonte DURÁVEL das dependências — a topologia
+//     que um dono seguinte re-hidrata ([orchestrator.RebuildDAG] só repõe arestas a
+//     partir deste evento). AVISO: o `task.edge.added` une os dois canais — não diz se a
+//     aresta é `depends_on` ou `conditional_on`, nem guarda o predicado da condição ou o
+//     `risk_class`. Despachar só a partir do grafo trataria uma aresta condicional como
+//     dependência incondicional e perderia, em silêncio, a poda `branch_not_taken` do
+//     ADR-022 §2.1. O despacho lê o `PlanDocument` aprovado; o grafo serve a topologia;
 //  3. o resultado projecta-se em `plan.materialized` (constante EXISTENTE
 //     [plannerevents.EventMaterialized], via [MaterializeRecorder]).
 //

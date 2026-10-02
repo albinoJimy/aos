@@ -58,6 +58,11 @@ const separadorDoRunFilho = "~"
 type vinculoAoPedido struct {
 	RunID   string `json:"run_id"`
 	Geracao int    `json:"generation"`
+	// PlanID e NodeID são o plano e o nó de que o run é trabalho, DECLARADOS pelo drenador
+	// (AOS-477). Opcionais e juntos; o nó confere-lhes a forma e grava-os no `run.plan_origin` do
+	// run, sem os poder confrontar com o documento (ADR-018). Ver `plan_origem.go`.
+	PlanID string `json:"plan_id,omitempty"`
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // codigoRequerenteForaDoMandato é o código do corpo da recusa em que o vínculo PASSOU mas o
@@ -190,6 +195,12 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 	// gate soberano no ingresso) não se vincula — «qualquer região» não é uma fronteira.
 	if pedido.Region == "" || pedido.Region != chamador.region {
 		return recusa("regiao do pedido diferente da do chamador")
+	}
+	// (5) A origem DECLARADA (AOS-477): a forma, e o `node_id` tem de ser o do próprio `run_id`.
+	// Recusa-se com a mesma 403: um `plan_id`/`node_id` que não bate é um drenador a mandar o que
+	// não devia, e não há razão para lho distinguir.
+	if err := validarOrigemDeclarada(v, runID); err != nil {
+		return recusa(err.Error())
 	}
 	return pedido.Principal, nil
 }

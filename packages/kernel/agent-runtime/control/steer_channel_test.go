@@ -553,9 +553,11 @@ func TestRebuild_EmptyStreamAndCorruptLog(t *testing.T) {
 // HMACAuthenticator — a realização de referência da fronteira.
 // ---------------------------------------------------------------------------
 
-// TestWithProducer_EnvelopeIdentity verifica que a identidade do CANAL (Producer, NHI +
-// scope) é gravada no envelope dos eventos de controlo — o complemento, ao nível do
-// envelope, do não-repúdio do emissor no payload.
+// TestWithProducer_EnvelopeIdentity verifica as duas identidades do envelope dos eventos de
+// controlo (AOS-478). Um sinal de OPERADOR (pause/steer) é um acto atribuível e leva no
+// envelope o EMISSOR autenticado — o mesmo `emitter_id` do payload, que antes só lá estava.
+// A identidade do CANAL ([control.WithProducer]) fica para o que não tem emissor humano: o
+// consumo da correcção pelo loop.
 func TestWithProducer_EnvelopeIdentity(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
@@ -566,15 +568,60 @@ func TestWithProducer_EnvelopeIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := "run-producer"
-	if err := ch.Pause(ctx, runID, signed(t, a, runID, control.SignalPause, nil)); err != nil {
+	pausa := signed(t, a, runID, control.SignalPause, nil)
+	if err := ch.Pause(ctx, runID, pausa); err != nil {
+		t.Fatal(err)
+	}
+	correccao := []byte("corrige")
+	if err := ch.Steer(ctx, runID, correccao, signed(t, a, runID, control.SignalSteer, correccao)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ch.ConsumeCorrection(ctx, runID); err != nil {
 		t.Fatal(err)
 	}
 	events, err := st.Read(ctx, runID, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].Producer.NHIID != "nhi:steer-service" {
-		t.Fatalf("envelope producer = %+v, quer NHIID nhi:steer-service", events[0].Producer)
+	want := map[string]string{
+		control.EventTypeControlPause:              pausa.ID,
+		control.EventTypeControlSteer:              pausa.ID,
+		control.EventTypeControlCorrectionConsumed: "nhi:steer-service",
+	}
+	if len(events) != len(want) {
+		t.Fatalf("eventos = %d, quer %d", len(events), len(want))
+	}
+	for _, ev := range events {
+		if ev.Producer.NHIID != want[ev.Type] {
+			t.Errorf("%s: envelope producer = %+v, quer NHIID %q", ev.Type, ev.Producer, want[ev.Type])
+		}
+	}
+}
+
+// TestDefaultProducer_NuncaVazio: sem [control.WithProducer], o consumo da correcção leva a
+// identidade de componente do canal, nunca um envelope vazio (AOS-478).
+func TestDefaultProducer_NuncaVazio(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	a := authWith(t)
+	ch, err := control.NewChannel(st, a, control.WithClock(fixedClock()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID := "run-producer-default"
+	correccao := []byte("corrige")
+	if err := ch.Steer(ctx, runID, correccao, signed(t, a, runID, control.SignalSteer, correccao)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ch.ConsumeCorrection(ctx, runID); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.Read(ctx, runID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := events[len(events)-1]; got.Type != control.EventTypeControlCorrectionConsumed || got.Producer.NHIID != control.DefaultProducerNHI {
+		t.Fatalf("ultimo evento = %s producer=%+v, quer %s com %q", got.Type, got.Producer, control.EventTypeControlCorrectionConsumed, control.DefaultProducerNHI)
 	}
 }
 

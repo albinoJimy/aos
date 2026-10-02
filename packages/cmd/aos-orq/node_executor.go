@@ -75,6 +75,10 @@ type configDoExecutor struct {
 	// (AOS-439, `--plan-request-generation`). > 0 ⇒ cada run filho leva o vínculo ao pedido, e o nó
 	// deriva dele o submissor; 0 ⇒ `serve` manual, sem pedido.
 	geracaoDoPedido int
+	// declararOrigem (AOS-477): o vínculo leva também o plano e o nó, que o nó grava no
+	// `run.plan_origin` do run filho. Só com a reclamação de um nó que entregou a referência ao
+	// pedido (`request_seq`) — um nó anterior recusaria os campos com 400 (`DisallowUnknownFields`).
+	declararOrigem bool
 }
 
 // bannerDoExecutor declara no arranque se o trabalho dos nós é executado — e onde.
@@ -253,6 +257,8 @@ type executorDeNos struct {
 	headroom *boundedHeadroom
 	// geracaoDoPedido — ver [configDoExecutor.geracaoDoPedido] (AOS-439).
 	geracaoDoPedido int
+	// declararOrigem — ver [configDoExecutor.declararOrigem] (AOS-477).
+	declararOrigem bool
 	// emVoo são os nós cujo run foi submetido e ainda não foi recolhido.
 	emVoo map[string]struct{}
 	// sumidos marca desde quando um nó em voo responde 404, e agora dá o relógio.
@@ -363,6 +369,11 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	// deste chamador.
 	if e.geracaoDoPedido > 0 {
 		p.PlanRequest = &vinculoAoPedido{RunID: e.runID, Geracao: e.geracaoDoPedido}
+		// AOS-477: e de que plano e de que nó — num CAMPO, para o run filho o declarar sem que
+		// ninguém tenha de partir o id pelo `~`.
+		if e.declararOrigem {
+			p.PlanRequest.PlanID, p.PlanRequest.NodeID = e.rec.PlanID(), nodeID
+		}
 	}
 	if err := e.cli.Submit(ctx, p); err != nil {
 		return err

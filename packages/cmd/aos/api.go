@@ -926,6 +926,8 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		requestedBy       string
 		credDoRun         identity.Principal
 		credDoRunVerifica bool
+		// AOS-477: o vínculo ao pedido foi verificado — a condição para o run declarar a origem.
+		vinculoVerificado bool
 	)
 	// SEM GATE SOBERANO NÃO HÁ VÍNCULO (AOS-439). O vínculo exige um chamador autenticado — é ele
 	// que tem de ter a reclamação viva —, e um nó sem gate não autentica ninguém. Aceitar o campo
@@ -1027,7 +1029,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusForbidden, "nao autorizado")
 				return
 			}
-			requestedBy = rb
+			requestedBy, vinculoVerificado = rb, true
 		}
 		// AOS-439 — O MANDATO DA CREDENCIAL TEM DE NOMEAR O SUBMISSOR. Um mandato v2 só autoriza o
 		// emissor a agir pelos `requesters` que o humano assinou; um run sem submissor derivado,
@@ -1157,6 +1159,18 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, submitErrorStatus(err), "submissao recusada")
 		return
+	}
+	// AOS-477 — O RUN DECLARA A SUA ORIGEM, num campo. Só aqui: depois de ESTA chamada o ter
+	// hospedado (ver [declararOrigemDoRunFilho] para o porquê de não ser antes) e só com o vínculo
+	// verificado. Uma falha a gravar NÃO desfaz o run, que já corre: fica no log do operador, e o
+	// run fica sem a declaração — a recondução volta a ser por nome, como antes deste ticket.
+	//
+	// SOB UM CONTEXTO QUE O CLIENTE NÃO CANCELA, com prazo próprio (o molde do `control_seal.go`).
+	// Com o `r.Context()`, um cliente que desligasse ou esgotasse o prazo depois do `Submit` deixava
+	// o run sem origem — e o retry desse cliente cai na re-submissão idempotente, que não a volta a
+	// escrever.
+	if req.PlanRequest != nil && vinculoVerificado {
+		h.gravarOrigemDoRunFilho(r.Context(), req.RunID, *req.PlanRequest)
 	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }

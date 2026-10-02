@@ -134,6 +134,12 @@ type Decision struct {
 	// do ledger — assim replay/dedup, que não re-incorrem o efeito, emitem ZERO custo.
 	// Uma tool reporta-o via [Monitor.RegisterCosting]; via [Monitor.Register] é sempre 0.
 	CostMicroUSD int64
+	// Principal é o principal da call TAL COMO A CADEIA DE HOOKS O DEIXOU — no nó, o que o
+	// hook de identidade resolveu do token verificado (agente + cadeia raiz humana → agente).
+	// Só em permit. É ATRIBUIÇÃO, não autorização: serve a quem grava um facto causado por
+	// esta call — o step-ledger do Agent Runtime — para o envelope identificar o MESMO
+	// principal que o selo `tool.call.mediated` do passo (AOS-478).
+	Principal Principal
 
 	// permit é o token não-forjável emitido só em Permit (nil caso contrário).
 	// É não-exportado: código externo não o consegue construir nem inspeccionar,

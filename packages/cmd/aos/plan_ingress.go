@@ -47,6 +47,7 @@ package main
 // não se verifica no destino não é defesa em profundidade — é um efeito colateral por escrever.
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
@@ -225,7 +226,12 @@ const planRequestVersao = "1.0"
 //
 // A forma do WIRE não mudou: o consumidor continua a receber o objectivo em claro em
 // `respostaDeReclamo` e não sabe nada disto.
-const planRequestSubmittedVersao = "1.1"
+//
+// 1.2 (AOS-477): o payload passa a trazer `objective_commitment` e o sal com que foi calculado —
+// selado (`objective_salt_sealed`) quando o objectivo é selado, em claro (`objective_salt`) quando
+// o objectivo também está. Aditivo: um leitor 1.1 ignora os três campos, e um facto 1.1 lido por
+// este nó não tem compromisso (a reclamação entrega-o vazio). Ver `plan_origem.go`.
+const planRequestSubmittedVersao = "1.2"
 
 // planRequestPayload é o facto gravado — e é um CONTRATO, porque alguém noutro módulo o vai ler.
 //
@@ -248,9 +254,19 @@ type planRequestPayload struct {
 	// pelo mesmo `audit.SealContent` que sela o conteúdo dos runs. É o que põe o texto livre do
 	// utilizador dentro do alcance do crypto-shredding — ver `plan_objetivo_selado.go`.
 	ObjetivoSelado []byte `json:"objective_sealed,omitempty"`
-	Principal      string `json:"principal,omitempty"`
-	Board          string `json:"board,omitempty"`
-	Region         string `json:"region,omitempty"`
+	// CompromissoDoObjetivo é HMAC-SHA256(sal, objectivo) — o valor que o `aos-orq` recalcula
+	// sobre o objectivo que recebe e grava no `plan.proposed` (AOS-477). Em claro de propósito: é o
+	// campo por onde plano e pedido se casam sem decifrar nada, e sem o sal não se inverte.
+	CompromissoDoObjetivo string `json:"objective_commitment,omitempty"`
+	// SalSelado é o sal do compromisso, selado sob a KEK do titular como o objectivo — o
+	// `/dsar/erase` torna-o ilegível e, com ele, o compromisso inverificável.
+	SalSelado []byte `json:"objective_salt_sealed,omitempty"`
+	// Sal é o sal em claro, SÓ quando o objectivo também está em claro (sem titular). Os dois
+	// pares são mutuamente exclusivos como `objective`/`objective_sealed` — ver `selarObjetivo`.
+	Sal       string `json:"objective_salt,omitempty"`
+	Principal string `json:"principal,omitempty"`
+	Board     string `json:"board,omitempty"`
+	Region    string `json:"region,omitempty"`
 }
 
 // handlePlanRequest recebe um objectivo, grava o facto e devolve.
@@ -489,6 +505,18 @@ func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
 		return
 	}
+
+	// (2-bis-antes) O COMPROMISSO DO OBJECTIVO (AOS-477), calculado sobre o texto em claro ANTES
+	// de ele ser selado, com um sal novo por pedido. O sal segue o destino do objectivo no passo
+	// seguinte: selado com ele, ou em claro com ele. Ver `plan_origem.go`.
+	sal, errSal := novoSal()
+	if errSal != nil {
+		h.logf("plan-ingress: RECUSADO — %v", errSal)
+		writeError(w, http.StatusServiceUnavailable, "indisponivel")
+		return
+	}
+	p.CompromissoDoObjetivo = compromissoDoObjetivo(sal, p.Objective)
+	p.Sal = hex.EncodeToString(sal)
 
 	// (2-bis) CIFRA POR TITULAR (AOS-429). O objectivo é texto livre de uma pessoa; a partir
 	// daqui não volta a ser gravado em claro quando há titular sob o qual o selar. A decisão, o

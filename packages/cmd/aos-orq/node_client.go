@@ -86,6 +86,10 @@ type pedidoDeRun struct {
 type vinculoAoPedido struct {
 	RunID   string `json:"run_id"`
 	Geracao int    `json:"generation"`
+	// PlanID e NodeID (AOS-477): o plano e o nó de que o run é trabalho, que o nó grava no
+	// `run.plan_origin` do run filho. Omitidos quando vazios — um nó anterior recusa-os.
+	PlanID string `json:"plan_id,omitempty"`
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // errRequerenteForaDoMandato — o nó recusou o run porque o submissor do pedido não consta dos
@@ -490,6 +494,13 @@ type pedidoReclamado struct {
 	// gerações de planeamento (AOS-467). O `consume` fecha-o com [exitGeracoesEsgotadas] sem planear.
 	// Falso num nó anterior.
 	GeracoesEsgotadas bool `json:"generations_exhausted"`
+	// AOS-477: a referência ao `planrequest.submitted` e o compromisso do objectivo, com o sal
+	// para o recalcular. Vazios num nó anterior ou num pedido anterior. O sal NÃO se imprime nem
+	// se grava: no log do plano fica só o compromisso (ver compromisso_do_objectivo.go).
+	RequestStream       string `json:"request_stream"`
+	RequestSeq          uint64 `json:"request_seq"`
+	ObjectiveCommitment string `json:"objective_commitment"`
+	ObjectiveSalt       string `json:"objective_salt"`
 }
 
 // ReclamarPedido pede ao nó UM pedido de plano pendente, reclamando-o.

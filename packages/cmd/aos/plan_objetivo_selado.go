@@ -44,6 +44,7 @@ package main
 // `ErrProductionNeedsDurableKEK` recusa arrancar com substrato durável e custódia volátil.
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -83,6 +84,21 @@ func selarObjetivo(node *Node, p planRequestPayload) (planRequestPayload, error)
 		// de protecção de dados, e em silêncio. O chamador recusa o pedido.
 		return p, fmt.Errorf("selar objectivo do pedido: %w", err)
 	}
+	// O SAL DO COMPROMISSO (AOS-477) segue o objectivo: selado sob a MESMA KEK, e o claro sai. Um
+	// sal em claro ao lado do objectivo selado deixava quem lê o log inverter o compromisso por
+	// dicionário — a cifra do objectivo seria contornada pelo compromisso dele.
+	if p.Sal != "" {
+		sal, herr := hex.DecodeString(p.Sal)
+		if herr != nil {
+			return p, fmt.Errorf("sal do compromisso ilegivel: %w", herr)
+		}
+		salSelado, serr := audit.SealContent(node.DSARVault, titular, sal, nil)
+		if serr != nil {
+			return p, fmt.Errorf("selar o sal do compromisso: %w", serr)
+		}
+		p.SalSelado = salSelado
+		p.Sal = ""
+	}
 	p.ObjetivoSelado = selado
 	p.Objective = "" // o texto em claro NÃO acompanha o ciphertext
 	// LIGA TITULAR ↔ PARTIÇÃO. É isto que torna a fila alcançável pelo legal hold e pelo shred:
@@ -118,6 +134,25 @@ func abrirObjetivo(node *Node, p planRequestPayload) (string, error) {
 		return "", fmt.Errorf("%w: %v", errObjetivoIlegivel, err)
 	}
 	return string(claro), nil
+}
+
+// abrirSal devolve o sal do compromisso do objectivo (AOS-477), em hex, para entregar ao
+// drenador com o objectivo. Mesma regra de [abrirObjetivo]: em claro devolve-se; selado abre-se
+// sob o titular; selado sem custódia é erro. Um pedido anterior ao AOS-477 não tem sal — "" sem
+// erro, e a reclamação entrega-o sem compromisso.
+func abrirSal(node *Node, p planRequestPayload) (string, error) {
+	if len(p.SalSelado) == 0 {
+		return p.Sal, nil
+	}
+	titular := titularDoPedido(p)
+	if node == nil || node.DSARVault == nil || titular == "" {
+		return "", fmt.Errorf("%w: sal selado e o no nao tem custodia ou titular", errObjetivoIlegivel)
+	}
+	claro, err := audit.OpenContent(node.DSARVault, titular, p.SalSelado)
+	if err != nil {
+		return "", fmt.Errorf("%w: sal: %v", errObjetivoIlegivel, err)
+	}
+	return hex.EncodeToString(claro), nil
 }
 
 // objetivoDeclaradoEmClaro diz se este payload guarda o objectivo legível por quem leia o log.

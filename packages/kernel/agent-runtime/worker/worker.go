@@ -100,9 +100,14 @@ func WithTracer(t otelgenai.Tracer) WorkerOption {
 	}
 }
 
+// DefaultProducerNHI é a identidade de COMPONENTE gravada no envelope de
+// `worker.step.dispatched` quando o compositor não dá outra (AOS-478,
+// `tecnica/13_Modelo_Dados_Eventos.md` §3.1): nunca um envelope vazio.
+const DefaultProducerNHI = "nhi:kernel/agent-runtime/worker"
+
 // WithProducer define a identidade emissora (NHI + cadeia de delegação) gravada nos
-// marcadores de progresso fenced. Default: Producer zero (aceitável em teste; em
-// produção o worker injecta o principal para responsabilização, ADR-003).
+// marcadores de progresso fenced. Default: [DefaultProducerNHI]; em produção o worker
+// pode injectar o principal para responsabilização (ADR-003).
 func WithProducer(p eventstore.Producer) WorkerOption {
 	return func(w *Worker) { w.producer = p }
 }
@@ -223,6 +228,9 @@ func NewWorker(
 	}
 	if w.newTicker == nil {
 		w.newTicker = defaultTickerFactory
+	}
+	if w.producer.NHIID == "" {
+		w.producer.NHIID = DefaultProducerNHI
 	}
 	return w, nil
 }
@@ -375,6 +383,9 @@ func (w *Worker) executeStep(ctx context.Context, sess *runSession, turn int, st
 		span.SetAttribute(otelgenai.AttrErrorType, spanErrorType(err))
 		return err
 	}
+	// AUTOR DO EFEITO → ENVELOPE DO LEDGER (AOS-478): o principal que o RM resolveu, o mesmo
+	// do selo de mediação do passo. Só o envelope — o titular da cifra não muda.
+	var autor eventstore.Producer
 	_, applied, err := w.ledger.Apply(spanCtx, key, func(ec context.Context) (durable.Result, error) {
 		call := step.Call
 		call.RunID = sess.runID
@@ -393,8 +404,9 @@ func (w *Worker) executeStep(ctx context.Context, sess *runSession, turn int, st
 			// para o ledger não memorizar um resultado falhado.
 			return durable.Result{}, dec.ToolErr
 		}
+		autor = dec.Principal.EventProducer()
 		return durable.Result{Status: "ok", Payload: dec.Output}, nil
-	})
+	}, durable.WithEffectProducer(func() eventstore.Producer { return autor }))
 	if err != nil {
 		err = sess.wrapLoss(err) // uma perda de posse concorrente reporta-se como ErrLeaseLost
 		span.SetAttribute(otelgenai.AttrErrorType, spanErrorType(err))

@@ -149,6 +149,9 @@ func (r *ResumeRecords) Put(ctx context.Context, rec ResumeRecord) error {
 		Payload: payload,
 		RunID:   approvalRunID,
 		StepID:  "resume-" + rec.RunID,
+		// AOS-478: o registo reconstitui o run DESTE principal — o mesmo que o `turn.recorded`
+		// leva no envelope. Antes vinha vazio e o principal só existia dentro do corpo cifrado.
+		Producer: rec.Principal.EventProducer(),
 	})
 	return err
 }

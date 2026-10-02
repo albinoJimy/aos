@@ -348,6 +348,8 @@ type folhaIgnorada struct{}
 
 func (folhaIgnorada) AdmitLeaf(context.Context, planmaterialize.LeafNode) error { return nil }
 
+func (folhaIgnorada) AdmitEdge(context.Context, string, string) error { return nil }
+
 type gravadorEmMemoria struct {
 	ultimo plannerevents.MaterializedPayload
 }

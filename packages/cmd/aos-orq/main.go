@@ -105,7 +105,9 @@ const (
 	// são aceitáveis, e voltar a apresentá-los dá sempre o mesmo (AOS-442): o documento não
 	// descodifica, não valida, não é o organigrama que o `plan.validated` do run ancora, ou o
 	// snapshot não é o declarado/selado. Tem código PRÓPRIO porque é DETERMINISTA: como `1`
-	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila.
+	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila. Partilha-o
+	// o grafo do run que diverge do plano numa materialização retomada (AOS-476), com rótulo
+	// próprio no `tipoDoErro`.
 	exitDocumentoRecusado = 10
 	// exitRequerenteForaDoMandato — o nó recusou o run de um nó do plano porque o SUBMISSOR do
 	// pedido não consta dos `requesters` do mandato da credencial (AOS-439). É DETERMINISTA — o
@@ -258,6 +260,7 @@ func codigoDe(err error) int {
 	case errors.Is(err, planner.ErrPlanRejected):
 		return exitPlanoRecusado
 	case errors.Is(err, errDocumentoDoPlanoRecusado),
+		errors.Is(err, errGrafoDoRunDiverge),
 		errors.Is(err, ErrSnapshotNaoCorresponde),
 		errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return exitDocumentoRecusado
@@ -293,6 +296,12 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "com o executor de nós composto (AOS_ORQ_NODE_URL, AOS-413): quanto tempo o serve espera pelos runs dos nós; esgotado com nós em voo, sai com 8 e larga a posse. Abaixo da validade do NHI do run")
 	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "com o executor de nós composto: intervalo entre leituras do estado dos runs dos nós")
 	geracaoDoPedido := fs.Int("plan-request-generation", 0, "AOS-439: a geração da reclamação do PEDIDO DE PLANO que este serve trabalha (o `consume` passa-a). Com ela, cada run filho leva o vínculo `plan_request` ao nó, que deriva daí o submissor do plano; 0 ⇒ serve manual, sem pedido e sem submissor")
+	// AOS-477: o que o `plan.proposed` cita além do documento (ver compromisso_do_objectivo.go).
+	// O `consume` passa os quatro a partir da reclamação; um `serve --goal` manual nenhum.
+	seqDoPedido := fs.Uint64("plan-request-seq", 0, "AOS-477: o `seq` do `planrequest.submitted` no Event Store do nó (o `consume` passa-o); o `plan.proposed` cita-o e cada run filho declara o seu plano e nó")
+	filaDoPedido := fs.String("plan-request-stream", "", "AOS-477: o stream da fila no Event Store do nó (com --plan-request-seq)")
+	salDoObjectivo := fs.String("objective-salt", "", "AOS-477: o sal (hex, 32 bytes) do compromisso do objectivo, vindo do nó; sem ele, o `serve --goal` tira um e imprime-o")
+	compromissoDoPedido := fs.String("objective-commitment", "", "AOS-477: o compromisso gravado no pedido; o recalculado sobre o --goal tem de lhe ser igual")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -315,6 +324,14 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	// Continua a cumprir a ordem que o AOS-413 fixou: tudo isto acontece ANTES da posse.
 	if *runID == "" {
 		return errors.New("--run é obrigatório")
+	}
+	// AOS-476 (revisão, B1): `--nodes` admite nós SEM plano — sem tool, sem gate — e o
+	// `--plan-doc` materializa o plano por cima. Desde que a materialização é retomável, um nó do
+	// `--nodes` com o nome de um papel do plano coincidia com ele e era aceite, e os restantes
+	// ficavam no grafo como se fossem do plano. São duas fontes de nós para o mesmo run: recusa-se
+	// a combinação antes da posse, como já se recusava com `--goal`.
+	if len(separar(*nodes)) > 0 && *planDoc != "" {
+		return errors.New("--nodes e --plan-doc não se combinam: com --plan-doc os nós são os do documento aprovado")
 	}
 	// AOS-413: o id do run filho é `<run>~<node_id>`; com um `~` no run a decomposição deixava de
 	// ser única e dois planos podiam dar o mesmo run filho.
@@ -342,6 +359,12 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	// `--run` (o sufixo `-plan` é representável), mas um valor dado à mão não herda nada.
 	if err := eventstore.ValidarStreamID(planoID); err != nil {
 		return fmt.Errorf("--plan invalido: %w", err)
+	}
+	// AOS-477: o compromisso do objectivo e o pedido de origem resolvem-se ANTES da posse — um
+	// objectivo que não é o do pedido aborta sem reclamar o lease nem chamar o modelo.
+	origem, salImpresso, err := resolverOrigemNoLog(*goal, *salDoObjectivo, *compromissoDoPedido, *filaDoPedido, *seqDoPedido, *runID, *geracaoDoPedido > 0)
+	if err != nil {
+		return err
 	}
 	// AOS-413: o executor de nós resolve-se ANTES da posse — uma configuração incompleta aborta
 	// sem reclamar o lease, como o audit do gateway.
@@ -407,6 +430,27 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 		return fmt.Errorf("posse do run %q: %w", *runID, err)
 	}
 	fmt.Printf("posse: run=%s plano=%s token=%d worker=%s\n", ten.RunID(), planoID, ten.Token(), *worker)
+	// AOS-477 (B-1): um `serve --goal` repetido no mesmo run não tira sal novo — o `plan.proposed`
+	// tem passo fixo e o log guarda só a primeira proposta. A linha diz qual é.
+	//
+	// LÊ-SE DEPOIS DA POSSE (revisão da ronda 2, B-c). Antes dela, dois `serve --goal` concorrentes
+	// sobre substrato replicado liam os dois «sem proposta» e imprimiam os dois um sal — e só um
+	// fica no log. Sob a posse, quem escreveu antes já não a tem, e a proposta dele está no log.
+	// LIMITE: um `serve` cuja posse é superada DEPOIS desta leitura imprime um sal cuja proposta
+	// nunca chega ao log; esse `serve` sai pela recusa do fencing (saída 4), não com sucesso.
+	if salImpresso != "" {
+		anterior, ja, err := propostaJaRegistada(ctx, store, planoID)
+		if err != nil {
+			return err
+		}
+		if ja {
+			origem.compromisso, salImpresso = "", ""
+			fmt.Println(linhaDaPropostaAnterior(planoID, anterior))
+		}
+	}
+	if linha := linhaDoCompromisso(origem, salImpresso); linha != "" {
+		fmt.Println(linha)
+	}
 	// AOS-408: a postura do gate de plano declara-se quando ha plano para gatar (--goal ou
 	// --plan-doc). Um `serve --nodes` nao passa por gate nenhum e o banner nao se aplica.
 	if *goal != "" || *planDoc != "" {
@@ -449,7 +493,7 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	var exe *configDoExecutor
 	if cliDoNo != nil {
 		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
-			geracaoDoPedido: *geracaoDoPedido}
+			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse
@@ -460,6 +504,16 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 		return fmt.Errorf("re-hidratação do grafo: %w", err)
 	}
 	fmt.Printf("grafo re-hidratado: nos=%d\n", g.DAG().Len())
+	// AOS-476: a TOPOLOGIA re-hidratada, e não só a contagem de nós. As dependências do plano só
+	// chegam a um dono seguinte pelo `task.edge.added`; sem esta linha, um grafo re-hidratado
+	// SEM arestas (o defeito medido três vezes) era indistinguível, daqui, de um com elas.
+	if g.DAG().Len() > 0 {
+		ordem, err := g.TopoOrder()
+		if err != nil {
+			return fmt.Errorf("ordem do grafo re-hidratado: %w", err)
+		}
+		fmt.Printf("grafo re-hidratado: arestas=%d ordem=%s\n", arestasDoGrafo(g.DAG(), ordem), strings.Join(ordem, ","))
+	}
 
 	// (4-goal) PIPELINE goal→DAG (F2E-02, AOS-388): com --goal, é o Planner GOVERNADO que
 	// produz os nós — mediação RM, reserva CAS, NHI agent:planner e validação AOS-231
@@ -496,7 +550,7 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 		if linha := modelAuditPostureBanner(model == nil && gwCfg != nil, govAuditPath); linha != "" {
 			fmt.Println(linha)
 		}
-		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit, *planOut, exe); err != nil {
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit, *planOut, exe, origem); err != nil {
 			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
@@ -582,6 +636,21 @@ func cmdInspect(args []string) error {
 	}
 	fmt.Printf("run=%s token_corrente=%d nos=%d ordem=%s\n", *runID, tok.Value(), dag.Len(), strings.Join(ordem, ","))
 	return nil
+}
+
+// arestasDoGrafo conta as arestas de dependência do DAG (AOS-476). O DAG não expõe a lista; a
+// contagem faz-se pelos pares de nós da ordem topológica — quadrática no número de nós, que num
+// plano é limitado pelo tecto do planeador, e só corre uma vez, na re-hidratação.
+func arestasDoGrafo(d *orchestrator.DAG, nos []string) int {
+	n := 0
+	for _, de := range nos {
+		for _, para := range nos {
+			if d.HasEdge(de, para) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // separar parte uma lista separada por vírgulas, ignorando entradas vazias.

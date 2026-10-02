@@ -67,6 +67,9 @@ func (s *nodeEscalationSink) Escalate(ctx context.Context, p agentruntime.Pendin
 		// Âncora do TTL: é daqui que o varrimento periódico sabe que a espera excedeu os
 		// 15 minutos. Sem ela o pendente nunca expiraria sozinho (fail-safe).
 		CreatedAt: s.clock().UTC().Format(time.RFC3339Nano),
+		// AOS-478: a escalada é um acto do RUN — o envelope do pendente leva o principal da
+		// call escalada, o mesmo que a preview amarra e que o `approval.consumed` vai levar.
+		Producer: p.Principal.EventProducer(),
 	}); err != nil {
 		return fmt.Errorf("aos: registar aprovacao pendente: %w", err)
 	}

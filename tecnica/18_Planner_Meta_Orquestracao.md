@@ -306,7 +306,7 @@ O caso mais interessante é o plano que precisa de uma *capability* que o REG n�
 |---|---|---|
 | `plan.intake_classified` | ORQ | goal_id, classificação (meta-nível vs. tarefa simples), heurística aplicada |
 | `plan.planner_admitted` | ORQ | reserva de planeamento admitida para `agent:planner` (contexto, tabela de preços, factor de retry) |
-| `plan.proposed` | PLN | hash do PlanDocument, planner_meta (modelo, prompt_version, capabilities_hash) |
+| `plan.proposed` | PLN | hash do PlanDocument, planner_meta (modelo, prompt_version, capabilities_hash); opcionais (AOS-477): `objective_commitment` — HMAC-SHA256 com sal do objectivo **recebido**, nunca o texto (o `objective` do documento é do modelo, e o documento não está no log) — e `request` `{stream, seq, run_id}`, o `planrequest.submitted` de origem no caminho da fila |
 | `plan.validation_failed` | validador | regra violada, diagnóstico (sem eco de conteúdo sensível), tentativa n/N |
 | `plan.validated` | validador | hash, nº de nós, budget_total, tectos aplicados |
 | `plan.approved` / `plan.rejected` / `plan.edited` | gate AOS-121 | hash final, decisão assinada (hitl.Channel), diff estrutural da edição |

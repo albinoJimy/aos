@@ -999,7 +999,7 @@ NHI a caducar por cima dos planos a falhar, por exemplo).
 O mesmo resumo chega ao nó no `detail` do desfecho — **também em sucesso** —, e é o que o
 `GET /plans/{id}` passa a mostrar num plano terminado: `resumo: origem=… geracao=… nos=… duracao_s=…`,
 com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentinela
-(`nos_em_voo`, `decisao_recusada`, `documento_recusado`, `plano_recusado_pelo_planeador`, … ou
+(`nos_em_voo`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `plano_recusado_pelo_planeador`, … ou
 `generico`) e **nunca o texto do erro**, que pode citar conteúdo escrito pelo modelo. O texto de um
 `generico` vai só para o log da drenagem, para diagnóstico.
 

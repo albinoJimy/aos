@@ -176,6 +176,8 @@ type pedidoDeGate struct {
 	snap      planvalidate.Snapshot
 	tentativa int
 	planOut   string
+	// origem é o compromisso do objectivo e o pedido de origem (AOS-477) — zero no `--plan-doc`.
+	origem origemNoLog
 }
 
 // gatearPlano interpõe o gate de aprovação entre a validação e a materialização (AOS-408) e
@@ -248,6 +250,10 @@ func gatearPlano(ctx context.Context, p pedidoDeGate) (string, error) {
 			CapabilitiesHash: p.doc.PlannerMeta.CapabilitiesHash,
 		},
 		Attempt: p.tentativa,
+		// AOS-477: o compromisso do objectivo RECEBIDO e o pedido de origem. O passo é fixo, pelo
+		// que só a PRIMEIRA proposta do plano fica — a de quem decompôs o objectivo.
+		ObjectiveCommitment: p.origem.compromisso,
+		Request:             p.origem.pedido,
 	}); err != nil {
 		return "", fmt.Errorf("facto da proposta do plano: %w", err)
 	}

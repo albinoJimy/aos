@@ -584,6 +584,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 					ResourceType: out.Call.Resource.Type, ResourceValue: out.Call.Resource.Value,
 					ResourceRegion: out.Call.Resource.Region,
 					Preview:        referencemonitor.ApprovalPreview(out.Call),
+					Principal:      out.Call.Principal,
 				}
 				// A CAPTURA VEM PRIMEIRO: a retoma reproduz os turnos 1..N a partir das
 				// capturas. Sem capturar ESTE turno, o registo de retoma existe mas a
