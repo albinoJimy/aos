@@ -1467,6 +1467,28 @@ O 2 e o 3 só apareceram ao corrigir o 1 num worktree novo.
 - **Não corrido:** a suite `selftest.sh` completa e o `build.sh` completo nesta árvore. Em Linux o
   comportamento não muda (o `newline="\n"` é o que o modo texto já fazia); confirma-se no CI do PR.
 
+### Adenda — o gate `nats` tinha o mesmo género de defeito
+
+A corrida completa dos gates sobre `f7b23f3` em Windows acabou com dois vermelhos: o `build`
+(acima) e o `nats`. O `nats` passou 1937 testes sobre o cluster JetStream real, com 0 falhas, e
+avermelhou por dois saltos não declarados no `cmd/aos-orq`: `TestAOS445OutboxEAvisos` e
+`TestAOS450DeployEDrenagem`. Os dois saltam com `runtime.GOOS != "linux"` (o cenário usa
+`flock(1)` e `/proc`) e não estavam em `skips_so_fora_de_linux`, a lista que o `nats.sh` só
+aceita quando o host não é Linux. Entraram nela, cada um com o ticket que o criou. Em Linux a
+lista não se aplica: se um deles saltar no runner, o gate continua a avermelhar.
+
+**Validação da adenda:** gate `nats` completo corrido em Windows depois da alteração:
+`SKIP=8 (0 não declarados)`, com os dois testes impressos como «salta por desenho, declarado».
+
+**O gate saiu vermelho nessa corrida, por outra razão, e fica registado em vez de escondido.**
+`TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado` falhou (1936 PASS, 1 FAIL): dos três
+processos que disputam o lease sobre um stream acabado de criar, um ganhou e os outros dois
+saíram com `jetstream: esperar pelo líder do stream "ORQ392_…": stream not found (code=404
+err_code=10059)` em vez de serem negados pelo lease. Na corrida anterior, sobre a mesma árvore
+de código, o teste passou (203 PASS). Esta alteração só mexe na lista de saltos do `nats.sh`.
+É a família da janela do stream fresco (AOS-432, AOS-455), agora com 404 na espera pelo líder,
+e fica por investigar fora deste ticket.
+
 ### Estado
 
 **FEITO** (2026-10-02), a confirmar no CI do PR.
