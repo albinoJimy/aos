@@ -190,6 +190,11 @@ skips_so_fora_de_linux=(
   "TestAOS416_SegredoIlegivelRecusaNoArranque"
   "TestNKey_FicheiroAcessivelAOutrosERecusado"  # AOS-470: modo da seed nkey do cluster
   "TestAOS453_Env_SeedLegivelPorOutrosERecusada"  # AOS-453: faltava; medido no gate local Windows
+  # Os dois seguintes não medem bits POSIX: correm um cenário em bash que usa flock(1) e /proc, e
+  # o próprio teste salta com `runtime.GOOS != "linux"`. Faltavam (AOS-480, medido no gate local
+  # Windows a 2026-10-02: os únicos dois skips não declarados em 1937 PASS / 0 FAIL).
+  "TestAOS445OutboxEAvisos"    # AOS-445: flock(1)
+  "TestAOS450DeployEDrenagem"  # AOS-450: flock(1) e /proc
 )
 em_linux=0
 [ "$(uname -s 2>/dev/null)" = "Linux" ] && em_linux=1

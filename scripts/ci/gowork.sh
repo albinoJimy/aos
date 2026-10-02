@@ -98,14 +98,24 @@ verificar() {
     log_fail "gowork: o Go não consegue ler $WORK: $json"
     return 1
   fi
+  # O `python3` tem de ser o PROVISIONADO (AOS-480): num checkout limpo em Windows o `python3` do
+  # PATH é o atalho da Microsoft Store, que sai 49 com uma mensagem que nada diz sobre o go.work.
+  ensure_python || return 1
   local tmp; tmp="$(mktemp -d)"
+  # `newline="\n"` em TODAS as escritas (AOS-480). Em Windows o modo texto do Python troca `\n`
+  # por `\r\n`, e estes ficheiros são comparados a seguir com a saída de `find | sort`, que é LF:
+  # cada linha deixava de casar e o gate dava os 49 módulos como em falta E a mais, com o go.work
+  # certo. O self-test GW14 prende a forma.
   printf '%s' "$json" | python3 -c '
 import json, sys
 w = json.load(sys.stdin)
 d = sys.argv[1]
-open(d + "/use", "w").write("".join(u["DiskPath"] + "\n" for u in (w.get("Use") or [])))
-open(d + "/go", "w").write((w.get("Go") or "") + "\n")
-open(d + "/replace", "w").write("".join("%s\n" % r["Old"]["Path"] for r in (w.get("Replace") or [])))
+def escreve(nome, texto):
+    with open(d + "/" + nome, "w", newline="\n") as f:
+        f.write(texto)
+escreve("use", "".join(u["DiskPath"] + "\n" for u in (w.get("Use") or [])))
+escreve("go", (w.get("Go") or "") + "\n")
+escreve("replace", "".join("%s\n" % r["Old"]["Path"] for r in (w.get("Replace") or [])))
 ' "$tmp"
   # O `-json` do go1.25 não exporta a directiva toolchain; o `-print` devolve o ficheiro na forma
   # canónica do parser do Go, de onde ela se lê sem ambiguidade (comentários já não contam).
