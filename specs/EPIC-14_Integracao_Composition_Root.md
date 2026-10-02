@@ -1415,6 +1415,64 @@ Nenhum `go.mod` nem código de produção foi tocado.
 
 ---
 
+## AOS-480 — O gate `gowork` falha sempre em Windows, com o `go.work` certo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-14 (junto do AOS-387, que criou o gate) |
+| Tipo | fix (CI) |
+| Prioridade | P2: falha fechado, mas avermelha o `build` local em Windows sem defeito nenhum |
+| Estimativa | S |
+| Dependências | AOS-387 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/gowork.sh`, `scripts/ci/lib.sh` (`ensure_python`), `scripts/ci/selftest.sh` §GW |
+
+### Contexto
+
+Medido a 2026-10-01 em Windows + Git Bash, base `f7b23f3`, sem alteração de código: o gate
+`build` sai vermelho porque o `gowork.sh verificar` lista os 49 módulos de `packages/` duas vezes,
+como «SEM `use` no go.work» e como «`use` que NÃO é um módulo». Todos os módulos compilam e o
+`go.work` está certo. No CI (Linux) o gate passa. Há três defeitos, um atrás do outro:
+
+1. **CRLF.** O `verificar` escreve os temporários com `open(..., "w")` em Python. Em Windows o
+   modo texto troca `\n` por `\r\n` (49 de 49 linhas com CR), e a comparação com a saída de
+   `find | sort`, que é LF, nunca casa.
+2. **`python3` não provisionado.** O `gowork.sh` corre `python3` sem chamar o `ensure_python`.
+   Num checkout limpo, o `python3` do PATH é o atalho da Microsoft Store e o gate sai 49.
+3. **Cache de comandos.** O `ensure_python`, chamado depois do `setup_env`, cria o shim mas não
+   mexe no PATH (já lá está), o bash fica com o caminho antigo em cache, e a re-verificação
+   falha na primeira corrida de um checkout limpo e passa na segunda.
+
+O 2 e o 3 só apareceram ao corrigir o 1 num worktree novo.
+
+### Feito
+
+- `gowork.sh`: as três escritas passam por uma função com `newline="\n"`, e o `verificar` chama
+  `ensure_python || return 1` antes de usar o Python.
+- `lib.sh`: `hash -r` no `ensure_python`, entre a provisão e a re-verificação.
+- `selftest.sh`: caso GW14 (a: nenhuma escrita em modo texto sem `newline`; b: com um módulo sem
+  `use`, o `verificar` lista esse e só esse, sem CR; c: o `verificar` passa pelo `ensure_python`
+  e este limpa o cache).
+
+### Validação
+
+- Checkout limpo (sem `.tools/`), Windows: `gowork.sh verificar` verde à primeira e à segunda.
+- Continua a morder: com um `use` retirado, avermelha e nomeia só `./packages/testkit`.
+- Secção GW do self-test extraída e corrida isolada: 21/21. Mutações: sem `newline` → GW1, GW14a
+  e GW14b vermelhos (o GW14b lista 9 módulos em vez de 1); sem `ensure_python` → GW14c; sem
+  `hash -r` → GW14c.
+- **Não corrido:** a suite `selftest.sh` completa e o `build.sh` completo nesta árvore. Em Linux o
+  comportamento não muda (o `newline="\n"` é o que o modo texto já fazia); confirma-se no CI do PR.
+
+### Estado
+
+**FEITO** (2026-10-02), a confirmar no CI do PR.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |

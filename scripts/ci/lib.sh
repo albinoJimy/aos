@@ -720,6 +720,12 @@ ensure_python() {
   # criado e inalcancavel. Descoberto pela propria re-verificacao abaixo, na primeira
   # execucao — que e exactamente porque ela existe.
   case ":$PATH:" in *":$REPO_ROOT/.tools:"*) ;; *) PATH="$REPO_ROOT/.tools:$PATH"; export PATH;; esac
+  # E O CACHE DE COMANDOS TAMBEM (AOS-480). A sonda do topo ja correu `python3` e o bash guardou
+  # o caminho que encontrou — em Windows, o atalho da Microsoft Store. Se o [setup_env] ja tinha
+  # posto .tools no PATH, a linha acima nao mexe no PATH, o cache nao e limpo, e a re-verificacao
+  # abaixo executa o atalho em vez do shim acabado de criar: o gate falha na PRIMEIRA corrida de
+  # um checkout limpo e passa na segunda.
+  hash -r
 
   # VOLTA A VERIFICAR, como o [ensure_tool] faz depois de instalar: provisionar e assumir que
   # resultou seria a mesma classe de defeito que este arnes existe para apanhar.
