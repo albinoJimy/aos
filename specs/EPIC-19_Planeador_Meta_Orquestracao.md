@@ -8444,17 +8444,49 @@ Um run filho de um plano não gasta turnos a pedir tools que o seu nó não tem.
 
 - [x] Decisão (A)/(B)/(C) registada, com o impacto medido no prefixo cache-estável. *(Ver
       «Decidido pelo dono», acima.)*
-- [ ] Teste pelo nó real, **com o adaptador do gateway** (um modelo injectado contorna-o e não
+- [x] Teste pelo nó real, **com o adaptador do gateway** (um modelo injectado contorna-o e não
       prova a oferta): um run com `tools: []` não envia nenhum schema de tool ao modelo nem lista
-      nenhuma no prefixo e no manifesto; um run com uma lista envia só essas, pela ordem congelada;
+      nenhuma no prefixo e no manifesto; um run com uma lista envia só essas (o schema pela ordem
+      de `AOS_MODEL_TOOLS`, o prefixo e o manifesto pela ordem congelada);
       e um run sem o campo `tools` continua byte-idêntico ao de hoje no pedido, no prefixo e no
-      manifesto.
-- [ ] A distinção entre lista ausente e lista vazia decide-se por `nil`, nunca por comprimento, em
-      todos os pontos novos; a retoma e o crash-resume reproduzem o mesmo filtro.
-- [ ] O manifesto do turno e o replay continuam coerentes: o replay de um run filho reconstrói o
-      mesmo `prompt_hash`.
-- [ ] A lista-branca continua imposta na chamada (AOS-413): o que é oferecido não substitui a
-      recusa.
+      manifesto. *(Evidência: `packages/cmd/aos/aos486_oferta_no_composto_test.go` — o cliente de
+      modelo sai de `parseModelFromEnv`, com `AOS_MODEL_TOOLS` de três tools, e fala com um
+      provider em `httptest` que grava o corpo de cada pedido.
+      `TestAOS486_NoComGateway_ListaVazia_NadaOferecidoERecusaContinua`: o pedido não leva o campo
+      `tools`, o bloco `TOOLSET` fica vazio e o manifesto não tem `tools`.
+      `TestAOS486_NoComGateway_ListaComTools_SoEssas`: só as da lista nos três sítios — o schema
+      pela ordem de `AOS_MODEL_TOOLS`, o prefixo e o manifesto pela ordem congelada, com a lista
+      numa terceira ordem —, e o `run.toolset.frozen` continua com as três.
+      `TestAOS486_NoComGateway_SemLista_ByteIdentico`: o corpo do pedido e o manifesto, com o
+      `prompt_hash`, fixados em bytes; o mesmo teste passa sobre as fontes anteriores ao ticket.
+      Unitários: `packages/platform/model-gateway/runtime_adapter_aos486_test.go` e
+      `packages/integration/aos486_oferta_segue_a_lista_test.go`.)*
+- [x] A distinção entre lista ausente e lista vazia decide-se por `nil`, nunca por comprimento, em
+      todos os pontos novos; a retoma e o crash-resume reproduzem o mesmo filtro. *(Evidência: os
+      dois pontos de decisão são `specsOferecidas` (`packages/integration/freeze.go`) e
+      `withRunToolAllowlist` (`packages/cmd/aos/resume_model.go`); no contexto, o que marca o run
+      como restrito é a presença do valor e não a nil-ness da lista
+      (`TestAOS486_ListaNoContexto`). Trocar qualquer dos dois `== nil` por `len() == 0` avermelha
+      os testes da lista vazia. `TestAOS486_RetomaECrashResumeReproduzemOFiltro`: pela varredura
+      de arranque e pela retoma, com a lista vazia e com duas tools, o turno seguinte leva os
+      schemas, o prompt e o `prompt_hash` do mesmo run sem interrupção. Num dos quatro casos — o
+      crash-resume com a lista vazia — só se compara o prefixo: a call negada no turno 1 é
+      re-mediada com a credencial vazia e a recusa muda de `run_tool_allowlist` para `identity`
+      no tail, o que é anterior a este ticket.)*
+- [x] O manifesto do turno e o replay continuam coerentes: o replay de um run filho reconstrói o
+      mesmo `prompt_hash`. *(Evidência: `TestAOS486_NoComGateway_ListaComTools_SoEssas` — o replay
+      com `Spec.Tools` = `manifest.tools` do `turn.recorded` não diverge; com o tool set congelado
+      inteiro diverge em `prompt_hash` no turno 1. O `AssemblyVersion` não subiu: para os mesmos
+      inputs os bytes não mudam.)*
+- [x] A lista-branca continua imposta na chamada (AOS-413): o que é oferecido não substitui a
+      recusa. *(Evidência: em `TestAOS486_NoComGateway_ListaVazia_NadaOferecidoERecusaContinua` o
+      provider pede `counter` sem ela lhe ter sido oferecida, e o run fica com um
+      `tool.call.denied`, nenhum `tool.call.mediated` e zero execuções;
+      `TestAOS486_RunComListaVazia_NadaOferecidoERecusaContinua` mede o mesmo no composition-root.
+      Os testes do AOS-413 e do AOS-485 continuam verdes.)*
+- [ ] Verificação em produção: um run filho de um plano com a lista vazia não mostra nenhuma tool
+      no `manifest.tools` do `turn.recorded` nem a pede (`tool_calls_requested=0`), e o
+      `run.toolset.frozen` do mesmo run continua com o tool set do nó.
 
 ### Fora de âmbito
 
@@ -8462,4 +8494,41 @@ A pegada da recusa (AOS-485) e a entrega de dados entre nós (AOS-484).
 
 ### Estado
 
-**ABERTO.**
+**ABERTO.** Implementado; falta a verificação em produção.
+
+Como ficou: o adaptador do gateway ganhou `WithToolOfferFromContext`, e o nó anexa a lista-branca
+do run ao contexto do run em `submit` (comum à submissão, à retoma e ao crash-resume) só quando
+ela não é `nil`; `ApplyFrozenToGoal` passa a pôr em `Goal.Tools` a subsequência do tool set
+congelado que a lista admite. A regra é a de `referencemonitor.RunAllowsTool` nos dois caminhos.
+
+O que a implementação mediu e não estava no ticket:
+
+- **A lista filtra por nome tudo o que o snapshot projecta**, e o snapshot funde tools, skills e
+  servidores MCP numa só lista. Num run com lista-branca, uma skill ou um servidor MCP cujo nome
+  não esteja na lista também sai do prefixo e do manifesto.
+- **O crash-resume de um run cujo turno 1 teve uma call negada muda o tail.** A varredura
+  re-hospeda com a credencial vazia; a call negada não tem efeito aplicado para deduplicar, é
+  re-mediada e sai negada por `identity` em vez de `run_tool_allowlist`. O prompt do turno
+  seguinte fica diferente do do run sem interrupção. É anterior a este ticket e não muda o que é
+  oferecido.
+- **O teste da retoma não usa o gateway de produção inteiro.** A varredura de arranque re-hospeda
+  com a credencial vazia, e `crash_resume.go` declara que o turno vivo que exija identidade de
+  modelo é negado (não foi medido neste ticket). O teste usa o adaptador real sobre um gateway
+  que grava o pedido; o gateway de produção inteiro está no teste do nó composto.
+
+O que a revisão adversarial acrescentou:
+
+- **Um run com lista-branca em voo durante o deploy deixa de se poder verificar por replay de
+  spec única.** A retoma regrava os turnos reproduzidos com o mesmo `step_id`, e o Event Store
+  descarta a regravação sem comparar o payload: o log fica com os turnos antigos pelo tool set
+  inteiro e os novos filtrados. O nó não é afectado (a retoma e o replay soberano reconstroem sem
+  verificar o `prompt_hash` contra uma spec), mas o `ReplayEngine.Replay` com uma só
+  `TrajectorySpec`, usado pelo `platform/dr` e pelo harness, diverge num destes runs.
+- **A restrição chega à oferta por duas fontes** — o contexto do run para o adaptador, o goal para
+  o prefixo — que hoje só se juntam no `submit`, por onde passam a submissão, a retoma, o
+  crash-resume, a pausa e o steer. Um chamador futuro de `Runtime.Run` sem o contexto do `submit`
+  oferecia o schema inteiro sem que nada falhasse; a recusa na chamada (AOS-485) continuava a
+  valer.
+- **Skills e servidores MCP:** no nó de produção o catálogo vem só de `AOS_MODEL_TOOLS`, pelo que o
+  corte por nome não tem impacto hoje; numa composição com MCP, o manifesto de um run restrito
+  deixa de pinar o servidor MCP de cujas tools o run usa. Sem teste.

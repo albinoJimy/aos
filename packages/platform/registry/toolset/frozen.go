@@ -266,8 +266,9 @@ func (f *FrozenToolSet) Expectation(id string) (Expectation, bool) {
 }
 
 // Specs devolve uma CÓPIA das identidades pinadas na ordem congelada — a projecção
-// exacta que alimenta o prefixo imutável do prompt. A cópia impede a mutação do
-// snapshot pelo chamador.
+// que alimenta o prefixo imutável do prompt (num run com lista-branca, só a
+// subsequência que a lista admite chega ao prefixo, AOS-486). A cópia impede a mutação
+// do snapshot pelo chamador.
 func (f *FrozenToolSet) Specs() []agentruntime.ToolSpec {
 	out := make([]agentruntime.ToolSpec, len(f.specs))
 	copy(out, f.specs)

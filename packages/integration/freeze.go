@@ -9,6 +9,7 @@ import (
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
@@ -226,11 +227,22 @@ func frozenClock(frozenAt string) func() time.Time {
 
 // ApplyFrozenToGoal materializa o tool set congelado no [agentruntime.Goal] do run:
 // fixa Goal.Tools na projecção pinada do snapshot ([toolset.FrozenToolSet.Specs],
-// ordem estável congelada) — a MESMA lista que o prefixo imutável do prompt e o
-// manifesto de dependências fixam a jusante (o loop constrói ambos a partir de
-// Goal.Tools). O RunID do goal é alinhado com o do snapshot (consistência: a
-// revalidação indexa o frozen por RunID). Devolve uma CÓPIA do goal — não muta o
-// argumento.
+// ordem estável congelada) — a lista que o prefixo imutável do prompt e o manifesto
+// de dependências fixam a jusante (o loop constrói ambos a partir de Goal.Tools). O
+// RunID do goal é alinhado com o do snapshot (consistência: a revalidação indexa o
+// frozen por RunID). Devolve uma CÓPIA do goal — não muta o argumento.
+//
+// RUN COM LISTA-BRANCA (AOS-486). Se [agentruntime.Goal.AllowedTools] não é nil,
+// Goal.Tools passa a ser a SUBSEQUÊNCIA do snapshot cujo nome a lista admite
+// ([referencemonitor.RunAllowsTool], a mesma regra que o RM impõe na chamada), na
+// ordem congelada: o modelo não vê no prefixo, nem o manifesto pina, uma tool que lhe
+// seria negada. A decisão é por `== nil` e nunca por comprimento — uma lista VAZIA dá
+// Goal.Tools vazio; sem lista, o snapshot inteiro, como sempre.
+//
+// Só a OFERTA estreita. O `frozen` que entra aqui não é tocado: o evento
+// `run.toolset.frozen` e o [RunToolSets] que a revalidação por chamada consulta ficam
+// com o conjunto inteiro. Não se usa o [toolset.Selector] para isto precisamente
+// porque ele mudaria esse conjunto — e nele «vazio» quer dizer «todos».
 //
 // NOTA (tools vs skills): o snapshot funde tools+skills+servidores MCP numa única
 // projecção na ordem congelada (id, version), pelo que Goal.Skills fica vazio e
@@ -245,7 +257,24 @@ func ApplyFrozenToGoal(goal agentruntime.Goal, frozen *toolset.FrozenToolSet) ag
 		return goal
 	}
 	goal.RunID = frozen.RunID()
-	goal.Tools = frozen.Specs()
+	goal.Tools = specsOferecidas(frozen.Specs(), goal.AllowedTools)
 	goal.Skills = nil
 	return goal
+}
+
+// specsOferecidas devolve as specs que o run oferece ao modelo: todas, se o run não
+// tem lista-branca (`allowed == nil`); senão a subsequência que a lista admite, pela
+// ordem de `specs`. Uma lista não-nil sem nenhuma correspondência — a vazia incluída —
+// dá um slice vazio.
+func specsOferecidas(specs []agentruntime.ToolSpec, allowed []string) []agentruntime.ToolSpec {
+	if allowed == nil {
+		return specs
+	}
+	out := make([]agentruntime.ToolSpec, 0, len(specs))
+	for _, s := range specs {
+		if referencemonitor.RunAllowsTool(allowed, s.Name) {
+			out = append(out, s)
+		}
+	}
+	return out
 }

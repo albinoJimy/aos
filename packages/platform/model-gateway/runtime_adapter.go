@@ -36,7 +36,11 @@ type ModelClientAdapter struct {
 	// (não sabe qual run serve). Vazio/ausente ⇒ cai para [princip] (a omissão sob o cutover
 	// duro é ""), e o estágio authn nega ATRIBUÍVELMENTE — nunca se forja um principal.
 	principCtx func(context.Context) string
-	runID      string
+	// ofertaCtx SOURCE do CONTEXTO por-chamada a lista-branca de tools do RUN (AOS-486). O
+	// tool set de [WithTools] é do NÓ e fixa-se uma vez; o que cada run pode chamar só o ctx
+	// sabe. Ver [WithToolOfferFromContext].
+	ofertaCtx func(context.Context) (permite func(nome string) bool, restrito bool)
+	runID     string
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -68,6 +72,53 @@ func WithPrincipalFromContext(fn func(context.Context) string) RuntimeAdapterOpt
 			a.principCtx = fn
 		}
 	}
+}
+
+// WithToolOfferFromContext liga a fonte POR-CHAMADA da lista-branca de tools do run (AOS-486),
+// no molde de [WithPrincipalFromContext]: o adaptador é construído uma vez por nó com o tool
+// set do nó ([WithTools]), e o que um run pode chamar só se conhece por-chamada, no ctx que
+// flui de Run(ctx, goal) até Call(ctx, view).
+//
+// fn devolve o predicado «o run pode chamar esta tool» e o indicador `restrito`:
+//
+//   - restrito == false ⇒ o run não tem lista-branca: o pedido leva o tool set do nó TAL COMO
+//     foi fixado (o mesmo slice — o pedido fica byte-idêntico ao de um adaptador sem esta opção);
+//   - restrito == true ⇒ o pedido leva só as tools cujo nome o predicado admite, pela ORDEM em
+//     que o nó as fixou. Nenhuma admitida ⇒ nenhum schema (o campo `tools` é omitido).
+//
+// O indicador é EXPLÍCITO de propósito: a diferença entre «sem lista» e «lista vazia» é a que
+// separa oferecer tudo de não oferecer nada, e uma lista vazia que perdesse a identidade ao
+// atravessar o contexto (uma cópia que a tornasse nil) passava a oferecer tudo. Um predicado
+// nil com restrito == true resolve pelo lado seguro: nenhuma tool.
+//
+// O que é oferecido NÃO substitui a recusa: a lista-branca continua imposta pelo Reference
+// Monitor em cada chamada (AOS-413/AOS-485). Isto só evita mostrar ao modelo uma tool que lhe
+// seria negada. fn nil ⇒ opção inerte.
+func WithToolOfferFromContext(fn func(context.Context) (permite func(nome string) bool, restrito bool)) RuntimeAdapterOption {
+	return func(a *ModelClientAdapter) {
+		if fn != nil {
+			a.ofertaCtx = fn
+		}
+	}
+}
+
+// toolsOferecidas devolve o tool set que o pedido deste run leva — ver
+// [WithToolOfferFromContext]. Sem fonte, ou com um run sem lista-branca, é `a.tools` intocado.
+func (a *ModelClientAdapter) toolsOferecidas(ctx context.Context) []port.Tool {
+	if a.ofertaCtx == nil {
+		return a.tools
+	}
+	permite, restrito := a.ofertaCtx(ctx)
+	if !restrito {
+		return a.tools
+	}
+	var out []port.Tool
+	for _, t := range a.tools {
+		if permite != nil && permite(t.Function.Name) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // WithRegionBoard define a fronteira de soberania alvo (consumida por AOS-058).
@@ -121,7 +172,7 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	req := port.ChatRequest{
 		Model:     a.model,
 		Messages:  []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}},
-		Tools:     a.tools,
+		Tools:     a.toolsOferecidas(ctx),
 		Principal: principal,
 		Region:    a.region,
 		Board:     a.board,

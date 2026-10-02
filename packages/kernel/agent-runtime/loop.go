@@ -45,7 +45,11 @@ type Goal struct {
 	Model ModelConfig
 	// System é o system prompt — a parte imutável do prefixo cache-estável.
 	System string
-	// Tools é o tool set CONGELADO no run (ordem significativa, nunca reordenada).
+	// Tools é o tool set OFERECIDO ao modelo neste run (ordem significativa, nunca reordenada):
+	// é dele que saem o bloco TOOLSET do prefixo e o `tools` do manifesto do turno. Num run sem
+	// lista-branca é o tool set congelado inteiro; num run com [Goal.AllowedTools] é a
+	// subsequência que a lista admite, na ordem congelada (AOS-486) — quem compõe o run faz o
+	// corte, o loop usa a lista tal como a recebe.
 	Tools []ToolSpec
 	// AllowedTools é a LISTA-BRANCA de tools (por nome, o `ToolID`) que este run pode chamar
 	// (AOS-413, ADR-027). nil ⇒ sem restrição além do token — o comportamento de sempre.

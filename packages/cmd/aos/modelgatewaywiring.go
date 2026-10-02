@@ -299,9 +299,16 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 	// que o A3 §V descreve. O run e o passo de cada chamada chegam pelo ctx que o runtime escreve
 	// antes de chamar o modelo (agentruntime.ContextWithModelCall) e que o adaptador lê: é o que
 	// liga cada selo modelgw-gov ao turno que o originou.
+	//
+	// OFERTA DE TOOLS POR RUN (AOS-486). O tool set de AOS_MODEL_TOOLS fixa-se abaixo UMA vez, ao
+	// nível do nó; a lista-branca é do run e chega pelo mesmo ctx (anexada em service.go). Um run
+	// com lista só leva no pedido o schema das tools que pode chamar; um run sem lista leva o
+	// tool set do nó como sempre. Liga-se SEMPRE, haja ou não tools: num nó sem AOS_MODEL_TOOLS
+	// não há nada para filtrar e o pedido fica igual.
 	opts := []modelgateway.RuntimeAdapterOption{
 		modelgateway.WithRegionBoard(region, board),
 		modelgateway.WithPrincipalFromContext(modelCredentialFromContext),
+		modelgateway.WithToolOfferFromContext(runToolOfferFromContext),
 	}
 	if len(tools) > 0 {
 		opts = append(opts, modelgateway.WithTools(tools))
