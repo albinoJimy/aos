@@ -267,10 +267,14 @@ func (f *aos477No) ambiente(t *testing.T) (env []string, dir, wal, snap string) 
 	return []string{"AOS_ORQ_NODE_URL=" + srv.URL, "AOS_ORQ_NODE_CREDENTIAL_FILE=" + cred, "AOS_MODE="}, dir, filepath.Join(dir, "consume.wal"), snap
 }
 
+// aos477PlanoComPonto é o plano das duas folhas com um `node_id` com `.` (que a gramática admite):
+// o run filho leva-o ESCAPADO e o vínculo declara-o CRU — é o que o nó confere (M-2 da revisão).
+var aos477PlanoComPonto = strings.Replace(planoFixtureDuasFolhasComSnapshotAOS408, `"node_id":"recolha"`, `"node_id":"recolha.v1"`, 1)
+
 func (f *aos477No) consumir(t *testing.T, env []string, bin, dir, wal, snap string) resultado {
 	t.Helper()
 	fix := filepath.Join(dir, "fixture.json")
-	escrever(t, fix, planoFixtureDuasFolhasComSnapshotAOS408)
+	escrever(t, fix, aos477PlanoComPonto)
 	return correrComEnv(t, env, bin, "consume", "--wal", wal, "--snapshot", snap, "--decompose-fixture", fix,
 		"--poll-interval", "20ms", "--max", "1")
 }
@@ -321,7 +325,10 @@ func TestAOS477ConsumeCitaOPedidoEOsFilhosDeclaramAOrigem(t *testing.T) {
 		nos = append(nos, no)
 	}
 	slices.Sort(nos)
-	if !slices.Equal(nos, []string{"analise", "recolha"}) {
+	if _, ok := f.corpos["plan-477~recolha+2ev1"]; !ok {
+		t.Fatalf("o run filho do no `recolha.v1` tem de levar o node_id ESCAPADO no id: %v", f.corpos)
+	}
+	if !slices.Equal(nos, []string{"analise", "recolha.v1"}) {
 		t.Fatalf("nós declarados: %v", nos)
 	}
 }
@@ -386,4 +393,56 @@ func planRecorderDeTeste(t *testing.T, runID, planID string) *runlifecycle.PlanR
 		t.Fatal(err)
 	}
 	return rec
+}
+
+// Os MESMOS vectores do nó (`packages/cmd/aos/aos477_origem_test.go`,
+// `aos477VectoresDoRunFilho`): o nó confere o `node_id` declarado contra o id do run filho com a sua
+// cópia do escape; se as duas cópias divergirem, um dos dois testes fica vermelho.
+func TestAOS477ChildRunIDTemOsVectoresDoNo(t *testing.T) {
+	for no, quer := range map[string]string{
+		"n1":           "p~n1",
+		"recolha.v1:a": "p~recolha+2ev1:a",
+		"a.b":          "p~a+2eb",
+		"a_2eb":        "p~a_2eb",
+		"a+b":          "p~a++b",
+		"a~b":          "p~a+7eb",
+	} {
+		if got := childRunID("p", no); got != quer {
+			t.Errorf("childRunID(p, %q) = %q, quer %q", no, got, quer)
+		}
+	}
+}
+
+// B-1 da revisão: um `serve --goal` repetido no mesmo run não imprime um sal que não verifica o
+// log. O `plan.proposed` tem passo fixo; fica o da primeira, e é esse que a linha nomeia.
+func TestAOS477ServeRepetidoNaoImprimeSalQueNaoVerificaOLog(t *testing.T) {
+	bin := construir(t)
+	dir := t.TempDir()
+	snap := filepath.Join(dir, "snap.json")
+	escrever(t, snap, aos408SnapshotComPerigo)
+	fix := filepath.Join(dir, "plano.json")
+	escrever(t, fix, planoFixtureDuasFolhasComSnapshotAOS408)
+	wal := filepath.Join(dir, "orq.wal")
+	serve := func() resultado {
+		return correrComEnv(t, []string{"AOS_ORQ_NODE_URL=", "AOS_MODE="}, bin, "serve", "--wal", wal, "--run", "run-477-r",
+			"--goal", "recolher e analisar dados", "--snapshot", snap, "--decompose-fixture", fix, "--worker", "p1", "--release")
+	}
+	primeiro := serve()
+	m := reCompromissoImpresso.FindStringSubmatch(primeiro.stdout)
+	if primeiro.code != exitOK || m == nil {
+		t.Fatalf("primeiro serve: %d\n%s\n%s", primeiro.code, primeiro.stdout, primeiro.stderr)
+	}
+	segundo := serve()
+	if segundo.code != exitOK {
+		t.Fatalf("segundo serve: %d\n%s\n%s", segundo.code, segundo.stdout, segundo.stderr)
+	}
+	if strings.Contains(segundo.stdout, "sal=") {
+		t.Fatalf("o segundo serve imprimiu um sal que nao verifica o log:\n%s", segundo.stdout)
+	}
+	if !strings.Contains(segundo.stdout, "ja tem proposta registada") || !strings.Contains(segundo.stdout, m[1]) {
+		t.Fatalf("o segundo serve tem de nomear o compromisso da PRIMEIRA proposta (%s):\n%s", m[1], segundo.stdout)
+	}
+	if p, ok := propostaDoWAL(t, wal, "run-477-r-plan"); !ok || p.ObjectiveCommitment != m[1] {
+		t.Fatalf("o log guarda o compromisso da primeira proposta: %+v", p)
+	}
 }

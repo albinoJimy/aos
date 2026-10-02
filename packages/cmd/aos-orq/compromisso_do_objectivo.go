@@ -24,14 +24,17 @@ package main
 // para o journal do host — anularia o selo.
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/aos-ref/control-plane/orchestrator/plannerevents"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // tamanhoDoSal é o do nó (`packages/cmd/aos/plan_origem.go`): 32 bytes.
@@ -120,4 +123,46 @@ func linhaDoCompromisso(o origemNoLog, salImpresso string) string {
 	default:
 		return "compromisso do objectivo: " + o.compromisso
 	}
+}
+
+// leitorDoPlano é o que [propostaJaRegistada] precisa do Event Store.
+type leitorDoPlano interface {
+	Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error)
+}
+
+// propostaJaRegistada diz se o plano já tem um `plan.proposed` e devolve o compromisso dessa
+// PRIMEIRA proposta (revisão do AOS-477, B-1).
+//
+// O passo do `plan.proposed` é fixo: só a primeira proposta fica no log. Um `serve --goal` repetido
+// no mesmo run que tirasse um sal NOVO e o imprimisse estaria a imprimir a chave de um compromisso
+// que o log NÃO tem — e a linha dizia que com ele «se verifica o plan.proposed». É falso, e um
+// auditor que o seguisse concluiria que o log não bate com o objectivo.
+func propostaJaRegistada(ctx context.Context, store leitorDoPlano, planID string) (compromisso string, ja bool, err error) {
+	evs, err := store.Read(ctx, planID, 1)
+	if errors.Is(err, eventstore.ErrStreamNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("ler o plano %q para saber se ja tem proposta: %w", planID, err)
+	}
+	for _, e := range evs {
+		if e.Type != plannerevents.EventProposed {
+			continue
+		}
+		var p plannerevents.ProposedPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return "", false, fmt.Errorf("plan.proposed ilegivel no plano %q: %w", planID, err)
+		}
+		return p.ObjectiveCommitment, true, nil
+	}
+	return "", false, nil
+}
+
+// linhaDaPropostaAnterior é a pegada de um `serve --goal` sobre um plano que já tem proposta.
+func linhaDaPropostaAnterior(planID, compromisso string) string {
+	if compromisso == "" {
+		compromisso = "sem compromisso"
+	}
+	return "compromisso do objectivo: o plano " + planID + " ja tem proposta registada, e o log guarda so a PRIMEIRA (" +
+		compromisso + "); este serve NAO tira sal novo — verifica-se com o sal impresso pelo serve que a fez"
 }

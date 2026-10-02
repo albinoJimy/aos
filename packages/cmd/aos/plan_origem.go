@@ -20,8 +20,21 @@ package main
 //  2. A REFERÊNCIA AO PEDIDO: a reclamação entrega o stream e o `seq` do `planrequest.submitted`,
 //     e o `aos-orq` grava-os no `plan.proposed` (`request`).
 //  3. A ORIGEM DO RUN FILHO: quando o `POST /runs` traz o vínculo VERIFICADO ao pedido, o nó grava
-//     no stream do run um `run.plan_origin` — o pedido (stream, `seq`, `run_id`, geração) e o
-//     plano e o nó que o drenador declara.
+//     no stream do run um `run.plan_origin` — o pedido (stream, `run_id`, geração) e o plano e o
+//     nó que o drenador declara.
+//
+// # PORQUE É QUE O `run.plan_origin` NÃO LEVA O `seq` DO PEDIDO (revisão do AOS-477)
+//
+// O run filho lê-se com autorização POR REGIÃO, e a trajectória serve todos os tipos de evento. O
+// stream da fila é UM só para o nó inteiro — todas as regiões, e pedidos, reclamações e desfechos
+// no mesmo contador. O `seq` de um pedido diz quanta actividade de fila houve no nó até ele: um
+// agregado sobre recursos de OUTRAS regiões, entregue a quem não pode agir sobre eles. É a classe
+// que o ADR-030 §2.1 fecha (e mais do que o bit que o AOS-464 aceitou, porque atravessa regiões).
+// O `run_id` do pedido é um id equivalente e não conta nada: é único na fila (a idempotency-key
+// do `planrequest.submitted` é `req-<run_id>`, de primeira escrita) e já está no prefixo do id do
+// próprio run filho. O `seq` continua no `plan.proposed`, que vive no WAL do `aos-orq` e não é
+// servido a leitores de runs. O auditor que tem os dois ficheiros casa-os por `run_id` e confere
+// o `seq` do plano contra o do facto que encontrou.
 //
 // # PORQUE É UM HMAC COM SAL, E O QUE ISSO DÁ E NÃO DÁ
 //
@@ -43,13 +56,26 @@ package main
 // fica em claro ao lado dele: não há KEK sob a qual o selar, e ele não protege nada que o texto
 // em claro não exponha já.
 //
-// # O QUE O NÓ NÃO PROVA
+// # O QUE O NÓ PROVA, E O QUE NÃO PROVA
 //
-// O `plan_id` e o `node_id` do `run.plan_origin` são DECLARADOS pelo drenador: o nó não conhece o
-// documento do plano (ADR-018; o ADR-035 §5 já o diz para a forma `<plano>~<nó>`). Verifica-os
-// na forma, e só os grava com o vínculo verificado — o que os prende ao drenador que tem AGORA a
-// reclamação viva do pedido. A pertença do nó ao plano confere-se do outro lado: o
-// `task.node.created` com esse `node_id` no stream `plan_id` do WAL do `aos-orq`.
+// O NÓ PROVA o pedido: o `plan_request` do `run.plan_origin` só é gravado com o vínculo do AOS-439
+// verificado contra o seu próprio log (o pedido existe, a reclamação viva é do chamador, a região
+// coincide). E prova que o `node_id` declarado é o do `run_id`: o run tem de ser
+// `<pedido>~<node_id escapado>`, na forma que o `aos-orq` compõe ([idDoRunFilho]).
+//
+// O NÓ NÃO PROVA o `plan_id`, nem que o `node_id` pertence a esse plano: o nó não conhece o
+// documento (ADR-018; o ADR-035 §5 já o diz para a forma `<plano>~<nó>`). Os dois são DECLARADOS
+// pelo drenador, e todo o lado do plano — o WAL do `aos-orq` — é ATESTADO PELO DRENADOR: nada nele
+// é assinado nem verificado pelo nó. Daí a verificação de quem audita ter de casar os DOIS lados:
+//
+//  1. no stream `plan_id` do WAL do `aos-orq`, o `plan.proposed.request` tem de citar O MESMO pedido
+//     que o `run.plan_origin.plan_request` (o `run_id`; e o `seq` do plano tem de ser o do facto
+//     `planrequest.submitted` com esse `run_id`);
+//  2. e só então o `task.node.created`/`plan.materialized` com o `node_id`.
+//
+// Sem (1), (2) aceitaria atribuição cruzada: um drenador com a reclamação viva do pedido da Alice
+// declarava o `plan_id` do plano do Bob, e passava sempre que o plano do Bob tivesse um nó com o
+// mesmo id (`n1` é comum).
 
 import (
 	"context"
@@ -107,11 +133,10 @@ const origemNHI = "nhi:aos-node/plan-origin"
 // versaoDaOrigem é a versão do payload de `run.plan_origin`.
 const versaoDaOrigem = "1.0"
 
-// refDoPedidoDeOrigem referencia o `planrequest.submitted` deste nó: por stream e `seq` (o que um
-// auditor segue), mais o `run_id` e a geração que o vínculo nomeou.
+// refDoPedidoDeOrigem referencia o `planrequest.submitted` deste nó pelo stream e pelo `run_id`
+// do pedido (único na fila), mais a geração que o vínculo nomeou. SEM o `seq`: ver o cabeçalho.
 type refDoPedidoDeOrigem struct {
 	Stream  string `json:"stream"`
-	Seq     uint64 `json:"seq"`
 	RunID   string `json:"run_id"`
 	Geracao int    `json:"generation"`
 }
@@ -120,8 +145,8 @@ type refDoPedidoDeOrigem struct {
 type origemDoRunFilho struct {
 	Versao string              `json:"v"`
 	Pedido refDoPedidoDeOrigem `json:"plan_request"`
-	// PlanID e NodeID são DECLARADOS pelo drenador e verificados só na forma (ver o cabeçalho).
-	// Vazios quando o drenador é anterior ao AOS-477 e não os mandou.
+	// PlanID e NodeID são DECLARADOS pelo drenador: o `node_id` é conferido contra o `run_id`, o
+	// `plan_id` só na forma (ver o cabeçalho). Vazios quando o drenador é anterior ao AOS-477.
 	PlanID string `json:"plan_id,omitempty"`
 	NodeID string `json:"node_id,omitempty"`
 }
@@ -133,10 +158,12 @@ var errOrigemMalformada = errors.New("origem do run filho malformada")
 // (`plan.ValidNodeID`, 128), que o nó não pode importar (ADR-018).
 const maxNodeIDDeclarado = 128
 
-// validarOrigemDeclarada confere a FORMA do que o drenador declara: os dois ou nenhum; o `plan_id`
-// é um nome de stream (é-o, no WAL do orquestrador); o `node_id` segue a gramática do plano
-// (`[A-Za-z0-9_.:-]`, até 128). Não confere a pertença — o nó não conhece o documento.
-func validarOrigemDeclarada(v vinculoAoPedido) error {
+// validarOrigemDeclarada confere o que o drenador declara: os dois ou nenhum; o `plan_id` é um nome
+// de stream (é-o, no WAL do orquestrador); o `node_id` segue a gramática do plano
+// (`[A-Za-z0-9_.:-]`, até 128 — [TestAOS477GramaticaDoNodeIDCasaComOPlano] prende-a à fonte) E é o
+// do próprio run: `runID` tem de ser [idDoRunFilho](pedido, node_id). Não confere a pertença ao
+// plano — o nó não conhece o documento.
+func validarOrigemDeclarada(v vinculoAoPedido, runID string) error {
 	if v.PlanID == "" && v.NodeID == "" {
 		return nil
 	}
@@ -158,7 +185,38 @@ func validarOrigemDeclarada(v vinculoAoPedido) error {
 			return fmt.Errorf("%w: node_id fora da gramática do plano", errOrigemMalformada)
 		}
 	}
+	if runID != idDoRunFilho(v.RunID, v.NodeID) {
+		return fmt.Errorf("%w: o node_id declarado nao e o do run_id", errOrigemMalformada)
+	}
 	return nil
+}
+
+// marcaDeEscapeDoRunFilho é a marca de escape do `node_id` no id do run filho — a do `aos-orq`
+// (`marcaDeEscape` em `packages/cmd/aos-orq/node_executor.go`).
+const marcaDeEscapeDoRunFilho = '+'
+
+// idDoRunFilho é o id que o `aos-orq` dá ao run do nó `nodeID` do pedido `plano`
+// (`childRunID`/`escaparParaStream` em `packages/cmd/aos-orq/node_executor.go`): o separador e o
+// `node_id` escapado de forma injectiva — cada byte que um `stream_id` não representa, e o `~`,
+// vira `+<hex>`; o `+` vira `++`. Os dois binários não se importam (ADR-018);
+// [TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador] prende os mesmos vectores dos dois lados.
+func idDoRunFilho(plano, nodeID string) string {
+	b := make([]byte, 0, len(plano)+len(separadorDoRunFilho)+len(nodeID)+8)
+	b = append(b, plano...)
+	b = append(b, separadorDoRunFilho...)
+	for i := 0; i < len(nodeID); i++ {
+		c := nodeID[i]
+		switch {
+		case c == marcaDeEscapeDoRunFilho:
+			b = append(b, marcaDeEscapeDoRunFilho, marcaDeEscapeDoRunFilho)
+		case eventstore.CaractereNaoRepresentavel(rune(c)) || c == separadorDoRunFilho[0]:
+			b = append(b, marcaDeEscapeDoRunFilho)
+			b = append(b, hex.EncodeToString([]byte{c})...)
+		default:
+			b = append(b, c)
+		}
+	}
+	return string(b)
 }
 
 // apensadorDaOrigem é o que [declararOrigemDoRunFilho] precisa do Event Store: só o Append.
@@ -168,15 +226,17 @@ type apensadorDaOrigem interface {
 
 // declararOrigemDoRunFilho grava `run.plan_origin` no stream do run.
 //
-// CHAMA-SE DEPOIS DE O RUN SER HOSPEDADO, e nunca antes. Antes, um `run_id` `<plano>~<nó>` criado
-// por OUTRA via (o `POST /runs` não reserva a forma) receberia de um drenador legítimo uma
-// declaração de origem que não é a sua: a submissão do drenador seria recusada como repetida, mas
-// o facto já estaria no stream alheio. Depois, `Submit` sem erro diz que foi ESTA chamada que o
-// hospedou.
-func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido, seqDoPedido uint64) error {
+// CHAMA-SE DEPOIS DE O RUN SER HOSPEDADO, e nunca antes. O `POST /runs` não reserva a forma
+// `<plano>~<nó>`: um run com esse id pode ter sido criado ANTES por outra via (um `POST /runs` sem
+// vínculo). A submissão do drenador com o vínculo chega depois, o `Submit` devolve «já existe», e
+// a rota responde-lhe com a re-submissão idempotente (`201 accepted`; `409` só com credencial
+// forte e residência coincidente — ADR-030 §2.1). Gravar ANTES do `Submit` poria nesse stream
+// ALHEIO uma origem que não é a dele. Depois, `Submit` sem erro diz que foi ESTA chamada que o
+// hospedou. [TestAOS477OrigemNaoEntraNumRunAlheio] prende a ordem.
+func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido) error {
 	raw, err := json.Marshal(origemDoRunFilho{
 		Versao: versaoDaOrigem,
-		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, Seq: seqDoPedido, RunID: v.RunID, Geracao: v.Geracao},
+		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, RunID: v.RunID, Geracao: v.Geracao},
 		PlanID: v.PlanID,
 		NodeID: v.NodeID,
 	})
@@ -191,4 +251,18 @@ func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID s
 		Producer: eventstore.Producer{NHIID: origemNHI},
 	})
 	return err
+}
+
+// gravarOrigemDoRunFilho é a chamada do `POST /runs`: [declararOrigemDoRunFilho] sob um contexto
+// que o cliente NÃO cancela, com o prazo próprio dos selos pós-efeito ([controlSealTimeout], o
+// molde do `control_seal.go`). Com o contexto do pedido, um cliente que desligasse ou esgotasse o
+// prazo depois do `Submit` deixava o run sem origem — e o retry dele cai na re-submissão
+// idempotente, que não a volta a escrever. Uma falha fica no log do operador: o run já corre.
+func (h *apiHandler) gravarOrigemDoRunFilho(ctx context.Context, runID string, v vinculoAoPedido) {
+	origemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
+	defer cancel()
+	if err := declararOrigemDoRunFilho(origemCtx, h.node.EventStore, runID, v); err != nil {
+		h.logf("submit (AOS-477): o run %q foi hospedado mas a ORIGEM nao ficou gravada (plano=%q geracao=%d): %v",
+			runID, v.RunID, v.Geracao, err)
+	}
 }

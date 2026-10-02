@@ -12,13 +12,19 @@ package main
 // e depois o percurso que o E2E de 2026-10-01 fez à mão, agora sem partir um único id:
 //
 //	tool.call.mediated.stream_id
-//	  └► run.plan_origin (mesmo stream) ── plan_request.{stream,seq}, plan_id, node_id
-//	       ├► planrequest.submitted em {stream,seq} ── run_id, objective_commitment
-//	       └► WAL do aos-orq, stream plan_id
-//	            ├► plan.proposed ── request.{stream,seq} == o mesmo pedido; objective_commitment == o do pedido
-//	            └► plan.materialized ── nodes[].node_id contém o node_id
+//	  └► run.plan_origin (mesmo stream) ── plan_request.{stream,run_id}, plan_id, node_id
+//	       ├► planrequest.submitted no stream, com payload.run_id igual ── seq, objective_commitment
+//	       └► WAL do aos-orq, stream plan_id (ATESTADO PELO DRENADOR — por isso casa-se nos dois lados)
+//	            ├► plan.proposed ── request.run_id == o do run.plan_origin, request.{stream,seq} ==
+//	            │                    o do facto encontrado; objective_commitment == o do pedido
+//	            └► plan.materialized ── nodes[].node_id contém o node_id (só DEPOIS do pedido casar)
 //	  e, para fechar no OBJECTIVO, quem tem a custódia abre o sal e o objectivo do pedido e
 //	  recalcula o compromisso.
+//
+// O `run.plan_origin` cita o pedido pelo `run_id` e não pelo `seq` (o `seq` da fila conta actividade
+// de todas as regiões, e o run lê-se por região). O `run_id` é único na fila — idempotency-key
+// `req-<run_id>` — e casa-se por IGUALDADE do campo `run_id` do payload do pedido. O node_id do plano
+// tem um `.`, para que o percurso atravesse também o escape do id do run filho nos dois binários.
 //
 // As leituras do lado do plano usam structs LOCAIS com os nomes dos campos do `aos.planner.v1`:
 // o nó não importa o orquestrador (ADR-018), e é exactamente isso que prova que o contrato é de
@@ -109,7 +115,7 @@ func TestAOS477DoToolCallAoPedidoSoPorCampos(t *testing.T) {
 	fix := filepath.Join(dir, "plano.json")
 	escreverFicheiro(t, fix, `{"plan_version":"1.0.0","objective":"contar","budget_total":{"tokens":100,"cost_micro_usd":100},
  "planner_meta":{"model":"fixture","prompt_version":"1.2.0","capabilities_hash":"sha256:snap-477"},
- "nodes":[{"node_id":"n1","role":"worker","objective":"contar os documentos","depends_on":[],
+ "nodes":[{"node_id":"conta.v1","role":"worker","objective":"contar os documentos","depends_on":[],
   "tools":[{"name":"counter","version":"1.0.0","digest":"`+dig+`"}],"budget_estimate":{"tokens":10,"cost_micro_usd":10}}]}`)
 	wal := filepath.Join(dir, "consume.wal")
 
@@ -167,20 +173,30 @@ func TestAOS477DoToolCallAoPedidoSoPorCampos(t *testing.T) {
 		t.Fatalf("o run %q nao declara a sua origem", mediado.StreamID)
 	}
 
-	// (6) plan_request.{stream,seq} → o `planrequest.submitted`, pelo seq.
-	fila, err := f.node.EventStore.Read(ctx, origem.Pedido.Stream, origem.Pedido.Seq)
-	if err != nil || len(fila) == 0 || fila[0].Seq != origem.Pedido.Seq {
-		t.Fatalf("o pedido %s#%d nao se le: %v", origem.Pedido.Stream, origem.Pedido.Seq, err)
-	}
-	if fila[0].Type != "planrequest.submitted" {
-		t.Fatalf("em %s#%d esta %q, nao o pedido", origem.Pedido.Stream, origem.Pedido.Seq, fila[0].Type)
+	// (6) plan_request.{stream,run_id} → o `planrequest.submitted` com esse `run_id` no payload.
+	fila, err := f.node.EventStore.Read(ctx, origem.Pedido.Stream, 1)
+	if err != nil {
+		t.Fatalf("a fila %s nao se le: %v", origem.Pedido.Stream, err)
 	}
 	var pedido planRequestPayload
-	if err := json.Unmarshal(fila[0].Payload, &pedido); err != nil {
-		t.Fatal(err)
+	var seqDoPedido uint64
+	for _, e := range fila {
+		if e.Type != "planrequest.submitted" {
+			continue
+		}
+		var p planRequestPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.RunID == origem.Pedido.RunID {
+			if seqDoPedido != 0 {
+				t.Fatalf("dois planrequest.submitted com o run_id %q — o run_id nao seria um id do pedido", p.RunID)
+			}
+			pedido, seqDoPedido = p, e.Seq
+		}
 	}
-	if pedido.RunID != origem.Pedido.RunID || pedido.Principal != aos439Alice || pedido.CompromissoDoObjetivo == "" {
-		t.Fatalf("o pedido citado nao e o do run: %+v / %+v", pedido, origem.Pedido)
+	if seqDoPedido == 0 || pedido.Principal != aos439Alice || pedido.CompromissoDoObjetivo == "" {
+		t.Fatalf("o pedido citado nao se encontra: %+v / %+v", pedido, origem.Pedido)
 	}
 
 	// (7) O LADO DO PLANO, noutro ficheiro: o stream `plan_id` (campo) do WAL do `aos-orq`.
@@ -218,8 +234,10 @@ func TestAOS477DoToolCallAoPedidoSoPorCampos(t *testing.T) {
 	if proposta == nil || proposta.Request == nil {
 		t.Fatalf("o plan.proposed tem de citar o pedido: %+v", proposta)
 	}
-	if proposta.Request.Stream != origem.Pedido.Stream || proposta.Request.Seq != origem.Pedido.Seq || proposta.Request.RunID != pedido.RunID {
-		t.Fatalf("o plano cita %+v e o run filho cita %+v — nao e o mesmo pedido", *proposta.Request, origem.Pedido)
+	// O PEDIDO CASA NOS DOIS LADOS antes de se aceitar o nó (M-2 da revisão): sem isto, um plano
+	// de OUTRO pedido com um nó do mesmo id passava.
+	if proposta.Request.RunID != origem.Pedido.RunID || proposta.Request.Stream != origem.Pedido.Stream || proposta.Request.Seq != seqDoPedido {
+		t.Fatalf("o plano cita %+v e o run filho cita %+v (seq do facto %d) — nao e o mesmo pedido", *proposta.Request, origem.Pedido, seqDoPedido)
 	}
 	if proposta.ObjectiveCommitment != pedido.CompromissoDoObjetivo {
 		t.Fatalf("o compromisso do plano (%s) nao e o do pedido (%s)", proposta.ObjectiveCommitment, pedido.CompromissoDoObjetivo)
@@ -242,8 +260,8 @@ func TestAOS477DoToolCallAoPedidoSoPorCampos(t *testing.T) {
 	if claro != objectivo || compromissoDoObjetivo(sal, claro) != proposta.ObjectiveCommitment {
 		t.Fatalf("o compromisso do plano nao se verifica com o objectivo do pedido")
 	}
-	t.Logf("percurso: tool.call.mediated %s#%d -> run.plan_origin -> %s#%d (planrequest.submitted, run_id=%s) <- plan.proposed em %s (no %s), compromisso %s",
-		mediado.StreamID, mediado.Seq, origem.Pedido.Stream, origem.Pedido.Seq, pedido.RunID, origem.PlanID, origem.NodeID, proposta.ObjectiveCommitment)
+	t.Logf("percurso: tool.call.mediated %s#%d -> run.plan_origin (pedido run_id=%s) -> %s#%d (planrequest.submitted) <- plan.proposed em %s (request.seq=%d, no %s), compromisso %s",
+		mediado.StreamID, mediado.Seq, origem.Pedido.RunID, origem.Pedido.Stream, seqDoPedido, origem.PlanID, proposta.Request.Seq, origem.NodeID, proposta.ObjectiveCommitment)
 	// O texto e o sal ficaram FORA do WAL do plano.
 	bruto, err := os.ReadFile(wal)
 	if err != nil {

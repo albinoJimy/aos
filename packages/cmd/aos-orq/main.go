@@ -355,9 +355,6 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	if err != nil {
 		return err
 	}
-	if linha := linhaDoCompromisso(origem, salImpresso); linha != "" {
-		fmt.Println(linha)
-	}
 	// AOS-413: o executor de nós resolve-se ANTES da posse — uma configuração incompleta aborta
 	// sem reclamar o lease, como o audit do gateway.
 	cliDoNo, err := nodeClientDoAmbiente()
@@ -388,6 +385,21 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	}
 	defer func() { _ = fechar() }()
 	fmt.Println(sub.descrever())
+	// AOS-477 (B-1): um `serve --goal` repetido no mesmo run não tira sal novo — o `plan.proposed`
+	// tem passo fixo e o log guarda só a primeira proposta. A linha diz qual é.
+	if salImpresso != "" {
+		anterior, ja, err := propostaJaRegistada(ctx, store, planoID)
+		if err != nil {
+			return err
+		}
+		if ja {
+			origem.compromisso, salImpresso = "", ""
+			fmt.Println(linhaDaPropostaAnterior(planoID, anterior))
+		}
+	}
+	if linha := linhaDoCompromisso(origem, salImpresso); linha != "" {
+		fmt.Println(linha)
+	}
 
 	// AOS-395: o audit de governação do gateway resolve-se ANTES de tomar posse do run. Um
 	// AOS_MODEL_AUDIT_PATH inválido aborta aqui, sem reclamar o lease nem escrever no log —

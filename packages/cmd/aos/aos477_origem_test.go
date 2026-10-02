@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -190,26 +191,71 @@ func origemDe(t *testing.T, evs []eventstore.Event) (origemDoRunFilho, bool) {
 	return origemDoRunFilho{}, false
 }
 
+// segundaGeracao fecha a geração 1 com um desfecho transitório e reclama de novo: geração 2.
+func (f *aos439Fixture) segundaGeracao(t *testing.T, plano string) int {
+	t.Helper()
+	if r := postReq(f.h, "/plans/outcome", map[string]any{"run_id": plano, "generation": 1, "classe": "transitorio", "codigo_saida": 1},
+		aos439Headers(aos439Drenador)); r.Code/100 != 2 {
+		t.Fatalf("desfecho da geracao 1: %d %s", r.Code, r.Body.String())
+	}
+	r := postReq(f.h, "/plans/claim", nil, aos439Headers(aos439Drenador))
+	var c respostaDeReclamo
+	if r.Code != http.StatusOK || json.Unmarshal(r.Body.Bytes(), &c) != nil || c.RunID != plano {
+		t.Fatalf("segunda reclamacao: %d %s", r.Code, r.Body.String())
+	}
+	return c.Geracao
+}
+
 func TestAOS477RunFilhoDeclaraAOrigemNumCampo(t *testing.T) {
 	f := noAOS439(t)
 	const plano = "plano-477-o"
-	ger := f.pedirEReclamar(t, plano, aos439Alice)
-	_, seqs := pedidosGravados(t, f.node)
+	if g := f.pedirEReclamar(t, plano, aos439Alice); g != 1 {
+		t.Fatalf("primeira geracao: %d", g)
+	}
+	// A GERAÇÃO QUE O VÍNCULO NOMEIA é a que fica — testa-se com a 2, e não com a 1 de sempre.
+	ger := f.segundaGeracao(t, plano)
+	if ger != 2 {
+		t.Fatalf("esperava a geracao 2, veio %d", ger)
+	}
 	tok := f.tokenDoMandato(t, aos439Alice)
 
-	// Malformados: a MESMA 403, e o run não existe.
-	for nome, v := range map[string]vinculoAoPedido{
-		"plan_id sem node_id": {RunID: plano, Geracao: ger, PlanID: plano + "-plan"},
-		"node_id com espaco":  {RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: "n 1"},
-		"plan_id reservado":   {RunID: plano, Geracao: ger, PlanID: streamsReservados + "x", NodeID: "n1"},
-	} {
-		if r := f.submeterFilho(t, plano+separadorDoRunFilho+"m", tok, &v, aos439Drenador); r.code != http.StatusForbidden {
-			t.Fatalf("%s: tinha de ser a 403 uniforme, veio %d %s", nome, r.code, r.body)
-		}
+	// O NÓ DO PLANO com `.` (que a gramática admite): o run filho leva-o ESCAPADO, na forma do
+	// `aos-orq`, e o `node_id` declarado é o cru. (Sem `:` — um run_id com `:` é recusado pelo
+	// runtime durável, defeito anterior a este ticket, reportado à parte.)
+	const no = "recolha.v1"
+	filho := plano + separadorDoRunFilho + "recolha+2ev1"
+	if idDoRunFilho(plano, no) != filho {
+		t.Fatalf("pré-condição: idDoRunFilho(%q, %q) = %q", plano, no, idDoRunFilho(plano, no))
 	}
 
-	filho := plano + separadorDoRunFilho + "n1"
-	v := vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: "n1"}
+	// Recusados: a MESMA 403, e o run não existe.
+	for nome, c := range map[string]struct {
+		run string
+		v   vinculoAoPedido
+	}{
+		"plan_id sem node_id":   {filho, vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan"}},
+		"node_id com espaco":    {filho, vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: "n 1"}},
+		"node_id acima de 128":  {plano + separadorDoRunFilho + strings.Repeat("n", 129), vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: strings.Repeat("n", 129)}},
+		"plan_id reservado":     {filho, vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: streamsReservados + "x", NodeID: no}},
+		"plan_id com ponto":     {filho, vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + ".plan", NodeID: no}},
+		"node_id de outro run":  {filho, vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: "n1"}},
+		"node_id noutro escape": {plano + separadorDoRunFilho + "recolha+2Ev1", vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: no}},
+	} {
+		v := c.v
+		if r := f.submeterFilho(t, c.run, tok, &v, aos439Drenador); r.code != http.StatusForbidden {
+			t.Fatalf("%s: tinha de ser a 403 uniforme, veio %d %s", nome, r.code, r.body)
+		}
+		if _, err := f.node.EventStore.Read(context.Background(), c.run, 1); !errors.Is(err, eventstore.ErrStreamNotFound) {
+			t.Fatalf("%s: o run recusado nao pode existir (%v)", nome, err)
+		}
+	}
+	// O tecto é 128, e 128 passa a forma (o run com esse id é o dele).
+	if err := validarOrigemDeclarada(vinculoAoPedido{RunID: plano, PlanID: plano + "-plan", NodeID: strings.Repeat("n", 128)},
+		plano+separadorDoRunFilho+strings.Repeat("n", 128)); err != nil {
+		t.Fatalf("um node_id de 128 bytes e da gramatica: %v", err)
+	}
+
+	v := vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: no}
 	if r := f.submeterFilho(t, filho, tok, &v, aos439Drenador); r.code != http.StatusCreated {
 		t.Fatalf("run filho: %d %s", r.code, r.body)
 	}
@@ -219,8 +265,8 @@ func TestAOS477RunFilhoDeclaraAOrigemNumCampo(t *testing.T) {
 		t.Fatal("o run filho com o vinculo verificado tem de declarar a origem (run.plan_origin)")
 	}
 	quer := origemDoRunFilho{Versao: versaoDaOrigem,
-		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, Seq: seqs[0], RunID: plano, Geracao: ger},
-		PlanID: plano + "-plan", NodeID: "n1"}
+		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, RunID: plano, Geracao: 2},
+		PlanID: plano + "-plan", NodeID: no}
 	if o != quer {
 		t.Fatalf("origem declarada:\n quer %+v\n veio %+v", quer, o)
 	}
@@ -237,4 +283,91 @@ func TestAOS477RunFilhoDeclaraAOrigemNumCampo(t *testing.T) {
 	if _, ok := origemDe(t, eventosDoRun(t, f.node, "run-477-directo")); ok {
 		t.Fatal("um run sem vinculo nao pode declarar origem de plano nenhum")
 	}
+}
+
+// O run.plan_origin NÃO LEVA O `seq` da fila (revisão do AOS-477, B-2): o run filho lê-se por
+// região, e o `seq` conta a actividade de fila do nó inteiro.
+func TestAOS477OrigemNaoExpoeOSeqDaFila(t *testing.T) {
+	raw, err := json.Marshal(origemDoRunFilho{Versao: versaoDaOrigem,
+		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, RunID: "p", Geracao: 3}, PlanID: "p-plan", NodeID: "n1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"seq"`) {
+		t.Fatalf("o run.plan_origin nao pode levar o seq da fila: %s", raw)
+	}
+}
+
+// M-1 da revisão: a origem grava-se DEPOIS do Submit. Um run `<plano>~<nó>` criado ANTES por outra
+// via (um POST /runs sem vínculo) não pode receber a origem que o drenador declara depois.
+func TestAOS477OrigemNaoEntraNumRunAlheio(t *testing.T) {
+	f := noAOS439(t)
+	const plano = "plano-477-alheio"
+	ger := f.pedirEReclamar(t, plano, aos439Alice)
+	filho := plano + separadorDoRunFilho + "n1"
+
+	// O run alheio, criado primeiro e SEM vínculo.
+	manualTok, err := f.node.Authority.MintForHuman(context.Background(), tnHuman, durAgent, durClass, []string{durCap})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := f.submeterFilho(t, filho, manualTok.Compact, nil, aos439Drenador); r.code != http.StatusCreated {
+		t.Fatalf("run alheio: %d %s", r.code, r.body)
+	}
+	f.esperar(t, filho)
+
+	// Depois, o drenador com o vínculo válido para o mesmo id.
+	v := vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: "n1"}
+	r := f.submeterFilho(t, filho, f.tokenDoMandato(t, aos439Alice), &v, aos439Drenador)
+	t.Logf("re-submissao do drenador sobre o run alheio: HTTP %d %s", r.code, r.body)
+	if _, ok := origemDe(t, eventosDoRun(t, f.node, filho)); ok {
+		t.Fatal("a origem do drenador entrou no stream de um run que ele NAO hospedou")
+	}
+}
+
+// B-4 da revisão: a origem grava-se mesmo que o cliente já tenha desligado.
+func TestAOS477OrigemGravaComOClienteDesligado(t *testing.T) {
+	f := noAOS439(t)
+	h := &apiHandler{node: f.node}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.gravarOrigemDoRunFilho(ctx, "plano-477-ctx~n1", vinculoAoPedido{RunID: "plano-477-ctx", Geracao: 1, PlanID: "plano-477-ctx-plan", NodeID: "n1"})
+	if _, ok := origemDe(t, eventosDoRun(t, f.node, "plano-477-ctx~n1")); !ok {
+		t.Fatal("com o contexto do pedido cancelado a origem tem de ser gravada na mesma")
+	}
+}
+
+// B-3 da revisão: a gramática do node_id do nó é a do plano, lida da FONTE (os dois módulos não
+// se importam). Se divergirem, todos os runs filhos com um node_id fora da copia levam 403.
+func TestAOS477GramaticaDoNodeIDCasaComOPlano(t *testing.T) {
+	fonte := lerFonteDeTeste(t, "../../control-plane/orchestrator/plan/plandocument.go")
+	for _, peca := range []string{
+		"const maxNodeIDLen = " + strconv.Itoa(maxNodeIDDeclarado),
+		"case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':",
+		"case c == '_' || c == '-' || c == '.' || c == ':':",
+	} {
+		if !strings.Contains(fonte, peca) {
+			t.Fatalf("a gramatica do node_id do plano mudou (falta %q em plan/plandocument.go) — a copia de validarOrigemDeclarada tem de mudar com ela", peca)
+		}
+	}
+}
+
+// B-3 / M-2: o id do run filho que o nó confere é o que o `aos-orq` compõe. Os MESMOS vectores
+// estão em `packages/cmd/aos-orq/aos477_origem_no_log_test.go` (TestAOS477ChildRunIDTemOsVectoresDoNo).
+func TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador(t *testing.T) {
+	for no, quer := range aos477VectoresDoRunFilho {
+		if got := idDoRunFilho("p", no); got != quer {
+			t.Errorf("idDoRunFilho(p, %q) = %q, quer %q", no, got, quer)
+		}
+	}
+}
+
+// aos477VectoresDoRunFilho: node_id → id do run filho do pedido `p`.
+var aos477VectoresDoRunFilho = map[string]string{
+	"n1":           "p~n1",
+	"recolha.v1:a": "p~recolha+2ev1:a",
+	"a.b":          "p~a+2eb",
+	"a_2eb":        "p~a_2eb",
+	"a+b":          "p~a++b",
+	"a~b":          "p~a+7eb",
 }
