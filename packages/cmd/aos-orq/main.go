@@ -299,7 +299,7 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	// AOS-477: o que o `plan.proposed` cita além do documento (ver compromisso_do_objectivo.go).
 	// O `consume` passa os quatro a partir da reclamação; um `serve --goal` manual nenhum.
 	seqDoPedido := fs.Uint64("plan-request-seq", 0, "AOS-477: o `seq` do `planrequest.submitted` no Event Store do nó (o `consume` passa-o); o `plan.proposed` cita-o e cada run filho declara o seu plano e nó")
-	streamDoPedido := fs.String("plan-request-stream", "", "AOS-477: o stream da fila no Event Store do nó (com --plan-request-seq)")
+	filaDoPedido := fs.String("plan-request-stream", "", "AOS-477: o stream da fila no Event Store do nó (com --plan-request-seq)")
 	salDoObjectivo := fs.String("objective-salt", "", "AOS-477: o sal (hex, 32 bytes) do compromisso do objectivo, vindo do nó; sem ele, o `serve --goal` tira um e imprime-o")
 	compromissoDoPedido := fs.String("objective-commitment", "", "AOS-477: o compromisso gravado no pedido; o recalculado sobre o --goal tem de lhe ser igual")
 	if err := fs.Parse(args); err != nil {
@@ -362,7 +362,7 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	}
 	// AOS-477: o compromisso do objectivo e o pedido de origem resolvem-se ANTES da posse — um
 	// objectivo que não é o do pedido aborta sem reclamar o lease nem chamar o modelo.
-	origem, salImpresso, err := resolverOrigemNoLog(*goal, *salDoObjectivo, *compromissoDoPedido, *streamDoPedido, *seqDoPedido, *runID, *geracaoDoPedido > 0)
+	origem, salImpresso, err := resolverOrigemNoLog(*goal, *salDoObjectivo, *compromissoDoPedido, *filaDoPedido, *seqDoPedido, *runID, *geracaoDoPedido > 0)
 	if err != nil {
 		return err
 	}
