@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -738,8 +739,8 @@ func (m *Monitor) dispatch(ctx context.Context, p *Permit, call Call) ([]byte, i
 	}
 	// O principal desta call acompanha o efeito (AOS-478): os factos que a tool grava a
 	// jusante — o ciclo de vida da sandbox — identificam-no no envelope. É atribuição, nunca
-	// autorização: ver [ContextWithMediatedPrincipal].
-	ctx = ContextWithMediatedPrincipal(ctx, call.Principal)
+	// autorização: ver [Principal.EventProducer].
+	ctx = eventstore.ContextWithProducer(ctx, call.Principal.EventProducer())
 	// Selector de campo (t.cost/t.fn), não uma [ToolFunc] em ident de âmbito: é o
 	// caminho SANCIONADO de execução (archlint reconhece dispatch), e o único.
 	if t.cost != nil {

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -215,7 +214,7 @@ func (s *eventStoreApprovalStore) Consume(ctx context.Context, id string) (Appro
 		StepID:  "used-" + id,
 		// AOS-478: quem GASTOU a aprovação é o principal da tool call em mediação, que o
 		// [referencemonitor.ApprovalGate] anexa ao contexto antes de chamar o verificador.
-		Producer: referencemonitor.ProducerFromContext(ctx),
+		Producer: eventstore.ProducerFromContext(ctx),
 	})
 	if err != nil {
 		return ApprovalGrant{}, false, err

@@ -383,6 +383,9 @@ func (w *Worker) executeStep(ctx context.Context, sess *runSession, turn int, st
 		span.SetAttribute(otelgenai.AttrErrorType, spanErrorType(err))
 		return err
 	}
+	// AUTOR DO EFEITO → ENVELOPE DO LEDGER (AOS-478): o principal que o RM resolveu, o mesmo
+	// do selo de mediação do passo. Só o envelope — o titular da cifra não muda.
+	var autor eventstore.Producer
 	_, applied, err := w.ledger.Apply(spanCtx, key, func(ec context.Context) (durable.Result, error) {
 		call := step.Call
 		call.RunID = sess.runID
@@ -401,8 +404,9 @@ func (w *Worker) executeStep(ctx context.Context, sess *runSession, turn int, st
 			// para o ledger não memorizar um resultado falhado.
 			return durable.Result{}, dec.ToolErr
 		}
+		autor = dec.Principal.EventProducer()
 		return durable.Result{Status: "ok", Payload: dec.Output}, nil
-	})
+	}, durable.WithEffectProducer(func() eventstore.Producer { return autor }))
 	if err != nil {
 		err = sess.wrapLoss(err) // uma perda de posse concorrente reporta-se como ErrLeaseLost
 		span.SetAttribute(otelgenai.AttrErrorType, spanErrorType(err))

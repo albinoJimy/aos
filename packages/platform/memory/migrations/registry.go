@@ -19,10 +19,10 @@ const migrationAppliedEventType = "memory.migration.applied"
 // aplicada que não tenha sido posteriormente compensada (ver EffectivePhase).
 const migrationRevertedEventType = "memory.migration.reverted"
 
-// migrationProducerNHI é a identidade de COMPONENTE gravada no envelope dos registos de
+// MigrationProducerNHI é a identidade de COMPONENTE gravada no envelope dos registos de
 // migração (AOS-478, `tecnica/13_Modelo_Dados_Eventos.md` §3.1): a migração de schema é
 // manutenção da plataforma, não um acto de agente, e o envelope di-lo em vez de vir vazio.
-const migrationProducerNHI = "nhi:platform/memory/migrations"
+const MigrationProducerNHI = "nhi:platform/memory/migrations"
 
 // migrationStream é o stream append-only onde vive o registo de migrações. Um só
 // stream dá uma linhagem ordenada e auditável de todas as fases aplicadas.
@@ -134,7 +134,7 @@ func (r *Registry) Record(ctx context.Context, m Migration, phase Phase) (bool, 
 		Payload:  payload,
 		RunID:    migrationRunID,
 		StepID:   stepID(m.ID, phase),
-		Producer: eventstore.Producer{NHIID: migrationProducerNHI},
+		Producer: eventstore.Producer{NHIID: MigrationProducerNHI},
 	})
 	if err != nil {
 		return false, err
@@ -247,7 +247,7 @@ func (r *Registry) RecordRevert(ctx context.Context, m Migration, phase Phase) (
 		Payload:  payload,
 		RunID:    migrationRunID,
 		StepID:   revertStepID(m.ID, phase),
-		Producer: eventstore.Producer{NHIID: migrationProducerNHI},
+		Producer: eventstore.Producer{NHIID: MigrationProducerNHI},
 	})
 	if err != nil {
 		return false, err

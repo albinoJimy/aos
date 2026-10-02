@@ -59,6 +59,7 @@ const (
 	aos478RunB     = "run-aos478-b"
 	aos478Sandbox  = "passo_sbx"
 	aos478Operador = "human:operador-478"
+	aos478Titular  = "titular-dono-478"
 )
 
 // aos478Classes são as classes que o contrato pode declarar. Uma célula fora deste conjunto
@@ -298,6 +299,9 @@ func (h *aos478Harness) submeteRun(t *testing.T, runID string) {
 	t.Helper()
 	if err := h.svc.Submit(context.Background(), agentruntime.Goal{
 		RunID: runID, Principal: referencemonitor.Principal{NHIID: acnAgent},
+		// B6 da revisão: um titular DIFERENTE do agente — é o que torna observável, no nó, que
+		// o autor no envelope do ledger não substituiu o titular da cifra.
+		Subject:    aos478Titular,
 		Credential: h.token(t), Objective: "pegadas do producer", MaxTurns: 5,
 	}); err != nil {
 		t.Fatalf("Submit(%s): %v", runID, err)
@@ -395,17 +399,19 @@ func TestAOS478_ProducerPorFamilia(t *testing.T) {
 		switch cls {
 		case "fora-do-envelope":
 			t.Errorf("%s: o contrato diz que é rótulo de audit, mas chegou ao Event Store", ev.Type)
+		// A classe é EXACTA, não um mínimo: um contrato enfraquecido (cadeia → nhi_id, nhi_id →
+		// componente) para um tipo emitido avermelha aqui, tal como um emissor que piore.
 		case "cadeia":
 			if p.NHIID == "" || len(p.DelegationChain) == 0 {
 				t.Errorf("%s (stream %s seq %d): classe cadeia com producer=%+v", ev.Type, ev.StreamID, ev.Seq, p)
 			}
 		case "componente":
-			if !strings.HasPrefix(p.NHIID, "nhi:") {
-				t.Errorf("%s (stream %s seq %d): classe componente com producer.nhi_id=%q", ev.Type, ev.StreamID, ev.Seq, p.NHIID)
+			if !strings.HasPrefix(p.NHIID, "nhi:") || len(p.DelegationChain) != 0 {
+				t.Errorf("%s (stream %s seq %d): classe componente com producer=%+v", ev.Type, ev.StreamID, ev.Seq, p)
 			}
 		case "nhi_id":
-			if p.NHIID == "" {
-				t.Errorf("%s (stream %s seq %d): classe nhi_id com producer.nhi_id vazio", ev.Type, ev.StreamID, ev.Seq)
+			if p.NHIID == "" || len(p.DelegationChain) != 0 {
+				t.Errorf("%s (stream %s seq %d): classe nhi_id com producer=%+v", ev.Type, ev.StreamID, ev.Seq, p)
 			}
 		}
 	}
@@ -433,7 +439,89 @@ func TestAOS478_ProducerPorFamilia(t *testing.T) {
 		t.Logf("tipos vistos: %v", vistos)
 	}
 
+	aos478CoberturaDoContrato(t, contrato, catalogo, vistos)
 	aos478Relacoes(t, eventos)
+}
+
+// aos478Unitario é um tipo que o cenário do nó NÃO emite, com a classe que o contrato lhe dá
+// e o teste unitário que prova o producer no emissor real.
+type aos478Unitario struct{ classe, pacote, teste string }
+
+// aos478CobertosPorUnitario: os tipos que o cenário do nó não emite (não são compostos no nó,
+// ou o Event Store deduplica-os — ver a nota da não-vacuidade) e o teste que os cobre. A
+// classe aqui TEM de bater com a do contrato: é o que faz um contrato enfraquecido para um
+// tipo NÃO emitido avermelhar (p.ex. `credential.*` → `componente`).
+var aos478CobertosPorUnitario = map[string]aos478Unitario{
+	"tool.call.mediated":               {"cadeia", "kernel/reference-monitor", "TestMediate_EventoNoEventStoreReal"},
+	"tool.call.denied":                 {"cadeia", "kernel/reference-monitor", "TestAOS478_NegacaoLevaOPrincipal"},
+	"tool.call.outcome":                {"cadeia", "kernel/reference-monitor", "TestAOS478_DesfechoLevaOMesmoProducerQueAMediacao"},
+	"identity.nhi.issued":              {"cadeia", "platform/identity", "TestEvents_IssueAndRevoke_RealEventStore"},
+	"identity.nhi.revoked":             {"nhi_id", "platform/identity", "TestAOS478_RevogacaoLevaOJTI"},
+	"control.resume":                   {"nhi_id", "kernel/agent-runtime/control", "TestAOS478_ResumeLevaOEmissor"},
+	"control.correction_consumed":      {"componente", "kernel/agent-runtime/control", "TestDefaultProducer_NuncaVazio"},
+	"credential.exchange.issued":       {"nhi_id", "platform/broker", "TestAOS478_TrocaENegacaoLevamOPrincipal"},
+	"credential.exchange.denied":       {"nhi_id", "platform/broker", "TestAOS478_TrocaENegacaoLevamOPrincipal"},
+	"registry.artifact.published":      {"nhi_id", "platform/registry/adapters", "TestJournal_AppendAndReadAll"},
+	"registry.artifact.status_changed": {"nhi_id", "platform/registry/adapters", "TestJournal_AppendAndReadAll"},
+	"memory.record.deleted":            {"nhi_id", "platform/memory/adapters", "TestEventStore_TombstoneCarriesAttribution"},
+	"memory.episode.recorded":          {"nhi_id", "platform/memory/episodic", "TestAOS478_EpisodioLevaOAgente"},
+	"memory.semantic.fact.recorded":    {"nhi_id", "platform/memory/semantic", "TestAOS478_FactoEPromocaoLevamOAgente"},
+	"memory.semantic.fact.promoted":    {"nhi_id", "platform/memory/semantic", "TestAOS478_FactoEPromocaoLevamOAgente"},
+	"memory.context.compacted":         {"nhi_id", "platform/memory/compression", "TestAOS478_CompactacaoLevaOAgente"},
+	"memory.migration.applied":         {"componente", "platform/memory/migrations", "TestAOS478_RegistoDeMigracaoLevaIdentidadeDeComponente"},
+	"memory.migration.reverted":        {"componente", "platform/memory/migrations", "TestAOS478_RegistoDeMigracaoLevaIdentidadeDeComponente"},
+	"worker.step.dispatched":           {"componente", "kernel/agent-runtime/worker", "TestAOS478_WorkerProducerPorEvento"},
+}
+
+// aos478CoberturaDoContrato: TODO o tipo do catálogo que o contrato marca `cadeia` ou
+// `nhi_id` é emitido no cenário do nó OU consta de [aos478CobertosPorUnitario]. Cada entrada
+// da lista tem de existir no catálogo, ter no contrato a MESMA classe, e nomear um teste que
+// existe no pacote dito — uma lista que mentisse sobre a sua cobertura avermelha aqui.
+func aos478CoberturaDoContrato(t *testing.T, contrato map[string]string, catalogo map[string]string, vistos map[string]int) {
+	t.Helper()
+	for tipo := range catalogo {
+		cls, _ := aos478Classe(contrato, tipo)
+		if cls != "cadeia" && cls != "nhi_id" {
+			continue
+		}
+		if vistos[tipo] > 0 {
+			continue
+		}
+		if _, ok := aos478CobertosPorUnitario[tipo]; !ok {
+			t.Errorf("%s: o contrato marca-o %s, o cenário do nó não o emite e nenhum teste unitário está declarado a cobri-lo", tipo, cls)
+		}
+	}
+	for tipo, u := range aos478CobertosPorUnitario {
+		if _, ok := catalogo[tipo]; !ok {
+			t.Errorf("cobertura declarada para %s, que não está no catálogo", tipo)
+			continue
+		}
+		if cls, _ := aos478Classe(contrato, tipo); cls != u.classe {
+			t.Errorf("%s: o contrato diz %q, o teste unitário %s prova %q", tipo, cls, u.teste, u.classe)
+		}
+		if !aos478TesteExiste(t, u.pacote, u.teste) {
+			t.Errorf("%s: o teste %s não existe em packages/%s", tipo, u.teste, u.pacote)
+		}
+	}
+}
+
+// aos478TesteExiste procura `func <nome>(` nos ficheiros de teste do directório.
+func aos478TesteExiste(t *testing.T, pacote, nome string) bool {
+	t.Helper()
+	fs, err := filepath.Glob(filepath.Join("..", "..", pacote, "*_test.go"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	for _, f := range fs {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("ler %s: %v", f, err)
+		}
+		if strings.Contains(string(b), "func "+nome+"(") {
+			return true
+		}
+	}
+	return false
 }
 
 // aos478Relacoes verifica as relações que o contrato afirma entre envelopes do MESMO run
@@ -480,6 +568,17 @@ func aos478Relacoes(t *testing.T, eventos []eventstore.Event) {
 			// AC2: o step-ledger leva o principal da tool call do passo (as duas têm o mesmo).
 			if !mesmo(ev.Producer, mediado["passo_um"]) {
 				t.Errorf("step.ledger.applied %s: producer %+v != o do tool.call.mediated %+v", ev.StepID, ev.Producer, mediado["passo_um"])
+			}
+			// O titular da cifra continua a ser o do RUN, não o autor do envelope.
+			var reg struct {
+				Sealed  bool   `json:"sealed"`
+				Subject string `json:"subject"`
+			}
+			if err := json.Unmarshal(ev.Payload, &reg); err != nil {
+				t.Fatalf("payload do ledger: %v", err)
+			}
+			if !reg.Sealed || reg.Subject != aos478Titular {
+				t.Errorf("step.ledger.applied %s: sealed=%t subject=%q, quer selado sob o titular %q", ev.StepID, reg.Sealed, reg.Subject, aos478Titular)
 			}
 		case ev.Type == "turn.recorded" || ev.Type == "replay.captured" || ev.Type == "run.resume.record":
 			// AC4: o turno leva o principal do RUN (Goal.Principal), sem cadeia — a diferença

@@ -3,6 +3,8 @@ package referencemonitor
 import (
 	"context"
 	"crypto/sha256"
+
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // ApprovalProof é a PROVA VERIFICADA de que humanos com autoridade assumiram uma tool
@@ -113,7 +115,7 @@ func (g ApprovalGate) Evaluate(ctx context.Context, call *Call) (HookResult, err
 	// vai com ele, para o envelope de `approval.consumed` identificar quem a gastou (AOS-478).
 	// O gate corre ANTES do hook de identidade (ver integration/secured.go), pelo que é o
 	// principal APRESENTADO pelo run — o mesmo que a preview amarra.
-	vctx := ContextWithMediatedPrincipal(ctx, call.Principal)
+	vctx := eventstore.ContextWithProducer(ctx, call.Principal.EventProducer())
 	proof, err := g.verifier.VerifyApproval(vctx, call.ApprovalEvidence, ApprovalPreview(*call))
 	if err != nil {
 		// Evidência inválida/expirada/de outra acção: a call segue SEM aprovação. Não se

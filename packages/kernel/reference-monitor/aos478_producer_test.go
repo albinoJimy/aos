@@ -22,10 +22,9 @@ func aos478Call() Call {
 // E a decisão de permit devolve-o, que é por onde o step-ledger o lê.
 func TestAOS478_DespachoLevaOPrincipalNoContexto(t *testing.T) {
 	m := New(WithHooks(&spyHook{name: "policy", result: HookResult{Decision: HookAllow}}), WithEventSink(&fakeSink{}))
-	var visto Principal
-	var ok bool
+	var visto eventstore.Producer
 	if err := m.Register("tool.echo", func(ctx context.Context, _ []byte) ([]byte, error) {
-		visto, ok = MediatedPrincipalFrom(ctx)
+		visto = eventstore.ProducerFromContext(ctx)
 		return nil, nil
 	}); err != nil {
 		t.Fatal(err)
@@ -35,16 +34,13 @@ func TestAOS478_DespachoLevaOPrincipalNoContexto(t *testing.T) {
 	if err != nil || d.Effect != EffectPermit {
 		t.Fatalf("permit esperado: eff=%q err=%v", d.Effect, err)
 	}
-	if !ok || visto.NHIID != call.Principal.NHIID || len(visto.DelegationChain) != 1 {
-		t.Fatalf("a tool não viu o principal: ok=%t %+v", ok, visto)
+	if visto.NHIID != call.Principal.NHIID || len(visto.DelegationChain) != 1 || len(visto.Scope) != 1 {
+		t.Fatalf("a tool não viu o principal: %+v", visto)
 	}
 	if d.Principal.NHIID != call.Principal.NHIID || len(d.Principal.DelegationChain) != 1 {
 		t.Fatalf("Decision.Principal = %+v", d.Principal)
 	}
-	if _, fora := MediatedPrincipalFrom(context.Background()); fora {
-		t.Fatal("um contexto sem mediação não pode trazer principal")
-	}
-	if p := ProducerFromContext(context.Background()); p.NHIID != "" {
+	if p := eventstore.ProducerFromContext(context.Background()); p.NHIID != "" {
 		t.Fatalf("ProducerFromContext sem mediação devia ser zero: %+v", p)
 	}
 }
@@ -95,9 +91,31 @@ func TestAOS478_GateDeAprovacaoPassaOPrincipalAoVerificador(t *testing.T) {
 	}
 }
 
-type aos478Verificador struct{ visto Principal }
+type aos478Verificador struct{ visto eventstore.Producer }
 
 func (v *aos478Verificador) VerifyApproval(ctx context.Context, _, _ []byte) (ApprovalProof, error) {
-	v.visto, _ = MediatedPrincipalFrom(ctx)
+	v.visto = eventstore.ProducerFromContext(ctx)
 	return ApprovalProof{Approvers: []string{"human:ana"}}, nil
+}
+
+// TestAOS478_NegacaoLevaOPrincipal: `tool.call.denied`, gravado pelo sink real sobre um Event
+// Store real, leva o principal da call — com a cadeia, quando a call a traz.
+func TestAOS478_NegacaoLevaOPrincipal(t *testing.T) {
+	es, err := eventstore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(WithHooks(&spyHook{name: "policy", result: HookResult{Decision: HookDeny, Reason: "nao"}}), WithEventSink(NewEventStoreSink(es)))
+	call := aos478Call()
+	d, err := m.Mediate(context.Background(), call)
+	if err != nil || d.Effect != EffectDeny {
+		t.Fatalf("deny esperado: eff=%q err=%v", d.Effect, err)
+	}
+	evs, err := es.Read(context.Background(), call.RunID, 1)
+	if err != nil || len(evs) != 1 || evs[0].Type != EventTypeDenied {
+		t.Fatalf("Read: err=%v evs=%+v", err, evs)
+	}
+	if p := evs[0].Producer; p.NHIID != call.Principal.NHIID || len(p.DelegationChain) != 1 {
+		t.Fatalf("producer da negação=%+v", p)
+	}
 }
