@@ -8100,6 +8100,117 @@ por hash.
 
 ### Estado
 
-**ENTREGUE EM CÓDIGO, com seis dos sete critérios cumpridos.** O sétimo é a edição do passo 15
-do roteiro. O texto está escrito e cabe ao dono do roteiro (AOS-479) aplicá-lo. A verificação em
-produção fica por fazer depois do deploy.
+**ENTREGUE EM CÓDIGO, com os sete critérios cumpridos — por verificar em produção.** O sétimo (passo
+15d do roteiro) foi aplicado na integração, a 2026-10-02, e corrido a partir do ficheiro. A
+verificação em produção fica por fazer depois do deploy. Achados fora de âmbito desta entrega,
+com ticket próprio: AOS-482 (o drenador adopta um run alheio criado antes dele) e AOS-483 (um
+`node_id` com `:` produz um run-filho que o runtime durável recusa).
+
+---
+
+## AOS-482 — O drenador adopta como seu um run-filho que outra credencial criou antes dele
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma lacuna do vínculo do AOS-439 dentro do que o ADR-030 já decidiu. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (segurança) |
+| Prioridade | P1: a saída de um run que ninguém do plano criou entra no plano como trabalho do nó, incluindo o veredicto de um verificador que decide ramos |
+| Estimativa | M |
+| Dependências | AOS-439 (submissor do plano derivado pelo nó), AOS-413 (executor de nós), AOS-477 (`run.plan_origin`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/api.go`, `packages/cmd/aos/submissor_do_plano.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos/plan_origem.go` |
+
+### Contexto
+
+Achado na revisão adversarial do AOS-477 (2026-10-02) e descrito pelo implementador; reproduzido
+por sonda (`TestAOS477OrigemNaoEntraNumRunAlheio` mede a resposta).
+
+**Cenário.** Alguém com uma credencial que pode criar runs — sem vínculo a nenhum pedido de plano —
+cria `<plano>~<nó>` antes do drenador. O `POST /runs` não reserva essa forma de id.
+
+**No nó.** Quando o drenador submete depois o mesmo `run_id` com o vínculo, o vínculo é verificado
+(`submissorDoPedido`, em `api.go`) mas não confere que o run ainda não exista. O `Submit` devolve
+«já existe» e `isIdempotentResubmit` responde **201 accepted** — de propósito, para não dar um
+oráculo de existência. O 409 só sai com credencial forte e residência selada coincidente.
+
+**No `aos-orq`.** `node_client.go` trata o 201 como run seu. O executor (`node_executor.go`:
+submeter, publicar as saídas, fechar) passa a sondar esse run alheio e aceita o `final_text` dele
+como trabalho do nó — publica os payloads e, num verificador, o veredicto que decide os ramos
+condicionais.
+
+**Impacto.** O run alheio corre sem o `requested_by` do pedido e sem a lista-branca de tools do nó,
+e a sua saída entra no plano como se fosse do nó. O AOS-477 só garante que a origem
+(`run.plan_origin`) não entra nesse stream: o run alheio fica **sem** origem, e isso é o sinal que
+hoje ninguém lê.
+
+### Objectivo
+
+Um run-filho só é tratado como nó do plano se foi criado pela submissão com vínculo, sem reabrir o
+oráculo de existência que o 201 idempotente fecha.
+
+### Critérios de Aceitação
+
+- [ ] O `POST /runs` **sem** vínculo recusa ids com a forma reservada `<plano>~<nó>` (o separador
+      do AOS-439), com a mesma resposta uniforme das outras recusas de forma.
+- [ ] O drenador só aceita como seu um run-filho que tenha o `run.plan_origin` gravado pela sua
+      própria submissão com vínculo (ou um sinal equivalente que o nó lhe devolva sem revelar a
+      existência de runs alheios). Na falta dele, o nó falha fechado, e o plano não usa a saída.
+- [ ] Teste: um run `<plano>~<nó>` criado antes por outra credencial não é adoptado — nem por
+      submissão sem vínculo (recusada) nem, se já existir de antes da correcção, pelo executor.
+- [ ] A resposta a quem não tem vínculo não distingue «existe» de «não existe» (o argumento do 201
+      idempotente mantém-se).
+- [ ] Runs-filho criados antes da correcção (sem `run.plan_origin`): declarar o que acontece numa
+      retoma.
+
+### Fora de âmbito
+
+Rever o 201 idempotente em geral.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-483 — Um `node_id` com `:` produz um run-filho que o runtime durável recusa
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: alinha duas gramáticas de identificadores. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P3: falha fechada (o run-filho falha logo), mas um plano válido não corre |
+| Estimativa | S |
+| Dependências | AOS-413 (executor de nós), AOS-439 (forma `<plano>~<nó>`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plan/` (`ValidNodeID`), `packages/cmd/aos-orq/node_executor.go`, `packages/kernel/agent-runtime/durable/` |
+
+### Contexto
+
+Achado na correcção do AOS-477 (2026-10-02). A gramática do plano (`plan.ValidNodeID`) admite `:`
+num `node_id`. O `aos-orq` não o escapa ao compor o id do run-filho, porque `:` é representável num
+stream NATS. O runtime durável recusa-o (`durable: run_id/step_id não pode conter ':'`), porque `:`
+é o separador da chave de idempotência `run_id:step_id`. Medido com um run `run-x~a:b`: o
+`POST /runs` responde 201 e o run falha logo.
+
+### Critérios de Aceitação
+
+- [ ] Ou a gramática do plano recusa `:` num `node_id` (com o validador estrutural, fail-closed,
+      antes de materializar), ou o `aos-orq` escapa-o no id do run-filho, e o nó (AOS-477) confere
+      a mesma forma escapada.
+- [ ] Teste por processo: um plano com um `node_id` com `:` ou é recusado na validação, ou o seu
+      run-filho corre até ao fim.
+- [ ] As três gramáticas (plano, escape do `aos-orq`, conferência do nó) ficam presas por teste.
+
+### Estado
+
+**ABERTO.**
