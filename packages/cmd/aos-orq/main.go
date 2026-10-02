@@ -396,21 +396,6 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	}
 	defer func() { _ = fechar() }()
 	fmt.Println(sub.descrever())
-	// AOS-477 (B-1): um `serve --goal` repetido no mesmo run não tira sal novo — o `plan.proposed`
-	// tem passo fixo e o log guarda só a primeira proposta. A linha diz qual é.
-	if salImpresso != "" {
-		anterior, ja, err := propostaJaRegistada(ctx, store, planoID)
-		if err != nil {
-			return err
-		}
-		if ja {
-			origem.compromisso, salImpresso = "", ""
-			fmt.Println(linhaDaPropostaAnterior(planoID, anterior))
-		}
-	}
-	if linha := linhaDoCompromisso(origem, salImpresso); linha != "" {
-		fmt.Println(linha)
-	}
 
 	// AOS-395: o audit de governação do gateway resolve-se ANTES de tomar posse do run. Um
 	// AOS_MODEL_AUDIT_PATH inválido aborta aqui, sem reclamar o lease nem escrever no log —
@@ -445,6 +430,27 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 		return fmt.Errorf("posse do run %q: %w", *runID, err)
 	}
 	fmt.Printf("posse: run=%s plano=%s token=%d worker=%s\n", ten.RunID(), planoID, ten.Token(), *worker)
+	// AOS-477 (B-1): um `serve --goal` repetido no mesmo run não tira sal novo — o `plan.proposed`
+	// tem passo fixo e o log guarda só a primeira proposta. A linha diz qual é.
+	//
+	// LÊ-SE DEPOIS DA POSSE (revisão da ronda 2, B-c). Antes dela, dois `serve --goal` concorrentes
+	// sobre substrato replicado liam os dois «sem proposta» e imprimiam os dois um sal — e só um
+	// fica no log. Sob a posse, quem escreveu antes já não a tem, e a proposta dele está no log.
+	// LIMITE: um `serve` cuja posse é superada DEPOIS desta leitura imprime um sal cuja proposta
+	// nunca chega ao log; esse `serve` sai pela recusa do fencing (saída 4), não com sucesso.
+	if salImpresso != "" {
+		anterior, ja, err := propostaJaRegistada(ctx, store, planoID)
+		if err != nil {
+			return err
+		}
+		if ja {
+			origem.compromisso, salImpresso = "", ""
+			fmt.Println(linhaDaPropostaAnterior(planoID, anterior))
+		}
+	}
+	if linha := linhaDoCompromisso(origem, salImpresso); linha != "" {
+		fmt.Println(linha)
+	}
 	// AOS-408: a postura do gate de plano declara-se quando ha plano para gatar (--goal ou
 	// --plan-doc). Um `serve --nodes` nao passa por gate nenhum e o banner nao se aplica.
 	if *goal != "" || *planDoc != "" {

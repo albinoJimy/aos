@@ -400,12 +400,16 @@ func planRecorderDeTeste(t *testing.T, runID, planID string) *runlifecycle.PlanR
 // cópia do escape; se as duas cópias divergirem, um dos dois testes fica vermelho.
 func TestAOS477ChildRunIDTemOsVectoresDoNo(t *testing.T) {
 	for no, quer := range map[string]string{
-		"n1":           "p~n1",
-		"recolha.v1:a": "p~recolha+2ev1:a",
-		"a.b":          "p~a+2eb",
-		"a_2eb":        "p~a_2eb",
-		"a+b":          "p~a++b",
-		"a~b":          "p~a+7eb",
+		// O ALFABETO INTEIRO da gramática: só o `.` se escapa (revisão da ronda 2, B-a).
+		"azAZ09_-.:": "p~azAZ09_-+2e:",
+		// 128 bytes (o tecto) com um `.` no fim.
+		strings.Repeat("a", 127) + ".": "p~" + strings.Repeat("a", 127) + "+2e",
+		"n1":                           "p~n1",
+		"recolha.v1:a":                 "p~recolha+2ev1:a",
+		"a.b":                          "p~a+2eb",
+		"a_2eb":                        "p~a_2eb",
+		"a+b":                          "p~a++b",
+		"a~b":                          "p~a+7eb",
 	} {
 		if got := childRunID("p", no); got != quer {
 			t.Errorf("childRunID(p, %q) = %q, quer %q", no, got, quer)
@@ -444,5 +448,31 @@ func TestAOS477ServeRepetidoNaoImprimeSalQueNaoVerificaOLog(t *testing.T) {
 	}
 	if p, ok := propostaDoWAL(t, wal, "run-477-r-plan"); !ok || p.ObjectiveCommitment != m[1] {
 		t.Fatalf("o log guarda o compromisso da primeira proposta: %+v", p)
+	}
+}
+
+// B-c da revisão: a leitura «já tem proposta?» e a impressão do sal vêm DEPOIS da posse. Um
+// `serve --goal` que não chega a ter a posse (outro processo detém o lease) não imprime sal
+// nenhum — antes imprimia-o e saía com 3, e esse sal não verificava nada no log.
+func TestAOS477SemPosseNaoHaSalImpresso(t *testing.T) {
+	bin := construir(t)
+	dir := t.TempDir()
+	snap := filepath.Join(dir, "snap.json")
+	escrever(t, snap, aos408SnapshotComPerigo)
+	fix := filepath.Join(dir, "plano.json")
+	escrever(t, fix, planoFixtureDuasFolhasComSnapshotAOS408)
+	wal := filepath.Join(dir, "orq.wal")
+	env := []string{"AOS_ORQ_NODE_URL=", "AOS_MODE="}
+	// O primeiro dono fica com o lease VIVO (sem --release).
+	if r := correrComEnv(t, env, bin, "serve", "--wal", wal, "--run", "run-477-p", "--nodes", "a", "--worker", "p1"); r.code != exitOK {
+		t.Fatalf("primeiro dono: %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	r := correrComEnv(t, env, bin, "serve", "--wal", wal, "--run", "run-477-p", "--goal", "recolher e analisar dados",
+		"--snapshot", snap, "--decompose-fixture", fix, "--worker", "p2")
+	if r.code != exitPosseNegada {
+		t.Fatalf("o segundo serve tinha de sair com a posse negada (%d), veio %d\n%s\n%s", exitPosseNegada, r.code, r.stdout, r.stderr)
+	}
+	if strings.Contains(r.stdout, "sal=") || strings.Contains(r.stdout, "compromisso do objectivo") {
+		t.Fatalf("sem posse nao pode haver compromisso nem sal impressos:\n%s", r.stdout)
 	}
 }

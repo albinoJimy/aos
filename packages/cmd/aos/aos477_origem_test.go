@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	dsar "github.com/aos-ref/control-plane/governance/dsar"
 	"github.com/aos-ref/platform/audit"
@@ -319,7 +320,11 @@ func TestAOS477OrigemNaoEntraNumRunAlheio(t *testing.T) {
 	// Depois, o drenador com o vínculo válido para o mesmo id.
 	v := vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: plano + "-plan", NodeID: "n1"}
 	r := f.submeterFilho(t, filho, f.tokenDoMandato(t, aos439Alice), &v, aos439Drenador)
-	t.Logf("re-submissao do drenador sobre o run alheio: HTTP %d %s", r.code, r.body)
+	// PRÉ-CONDIÇÃO: a re-submissão tem de ter sido ACEITE (201 idempotente). Uma recusa (403) faria
+	// o teste passar sem chegar ao ponto em que a ordem «origem depois do Submit» decide.
+	if r.code != http.StatusCreated {
+		t.Fatalf("a re-submissao do drenador sobre o run alheio devia dar 201 idempotente, veio %d %s", r.code, r.body)
+	}
 	if _, ok := origemDe(t, eventosDoRun(t, f.node, filho)); ok {
 		t.Fatal("a origem do drenador entrou no stream de um run que ele NAO hospedou")
 	}
@@ -340,16 +345,46 @@ func TestAOS477OrigemGravaComOClienteDesligado(t *testing.T) {
 // B-3 da revisão: a gramática do node_id do nó é a do plano, lida da FONTE (os dois módulos não
 // se importam). Se divergirem, todos os runs filhos com um node_id fora da copia levam 403.
 func TestAOS477GramaticaDoNodeIDCasaComOPlano(t *testing.T) {
-	fonte := lerFonteDeTeste(t, "../../control-plane/orchestrator/plan/plandocument.go")
-	for _, peca := range []string{
-		"const maxNodeIDLen = " + strconv.Itoa(maxNodeIDDeclarado),
-		"case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':",
-		"case c == '_' || c == '-' || c == '.' || c == ':':",
-	} {
-		if !strings.Contains(fonte, peca) {
-			t.Fatalf("a gramatica do node_id do plano mudou (falta %q em plan/plandocument.go) — a copia de validarOrigemDeclarada tem de mudar com ela", peca)
+	plano := lerFonteDeTeste(t, "../../control-plane/orchestrator/plan/plandocument.go")
+	if !strings.Contains(plano, "const maxNodeIDLen = "+strconv.Itoa(maxNodeIDDeclarado)+"\n") {
+		t.Fatalf("o tecto do node_id do plano deixou de ser %d — a copia de validarOrigemDeclarada tem de mudar com ele", maxNodeIDDeclarado)
+	}
+	// IGUALDADE dos ramos do switch, e não presença: um ramo ACRESCENTADO de um dos lados (um
+	// carácter novo admitido pelo plano) tem de avermelhar, ou o nó recusa com 403 todos os runs
+	// filhos que o usem (revisão da ronda 2, B-b).
+	doPlano := casosDoSwitch(t, plano, "func ValidNodeID(")
+	doNo := casosDoSwitch(t, lerFonteDeTeste(t, "plan_origem.go"), "func validarOrigemDeclarada(")
+	if strings.Join(doPlano, "\n") != strings.Join(doNo, "\n") {
+		t.Fatalf("a gramatica do node_id divergiu:\n plano %q\n no    %q", doPlano, doNo)
+	}
+}
+
+// casosDoSwitch devolve as linhas `case …` do primeiro `switch {` depois de `assinatura`, até ao
+// `default:` — o charset da gramática, tal como está escrito.
+func casosDoSwitch(t *testing.T, fonte, assinatura string) []string {
+	t.Helper()
+	i := strings.Index(fonte, assinatura)
+	if i < 0 {
+		t.Fatalf("%q nao encontrada na fonte", assinatura)
+	}
+	j := strings.Index(fonte[i:], "switch {")
+	if j < 0 {
+		t.Fatalf("sem switch em %q", assinatura)
+	}
+	var casos []string
+	for _, l := range strings.Split(fonte[i+j:], "\n")[1:] {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "default:") {
+			break
+		}
+		if strings.HasPrefix(l, "case ") {
+			casos = append(casos, l)
 		}
 	}
+	if len(casos) == 0 {
+		t.Fatalf("switch sem ramos em %q", assinatura)
+	}
+	return casos
 }
 
 // B-3 / M-2: o id do run filho que o nó confere é o que o `aos-orq` compõe. Os MESMOS vectores
@@ -364,10 +399,38 @@ func TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador(t *testing.T) {
 
 // aos477VectoresDoRunFilho: node_id → id do run filho do pedido `p`.
 var aos477VectoresDoRunFilho = map[string]string{
-	"n1":           "p~n1",
-	"recolha.v1:a": "p~recolha+2ev1:a",
-	"a.b":          "p~a+2eb",
-	"a_2eb":        "p~a_2eb",
-	"a+b":          "p~a++b",
-	"a~b":          "p~a+7eb",
+	// O ALFABETO INTEIRO da gramática: só o `.` se escapa (revisão da ronda 2, B-a).
+	"azAZ09_-.:": "p~azAZ09_-+2e:",
+	// 128 bytes (o tecto) com um `.` no fim.
+	strings.Repeat("a", 127) + ".": "p~" + strings.Repeat("a", 127) + "+2e",
+	"n1":                           "p~n1",
+	"recolha.v1:a":                 "p~recolha+2ev1:a",
+	"a.b":                          "p~a+2eb",
+	"a_2eb":                        "p~a_2eb",
+	"a+b":                          "p~a++b",
+	"a~b":                          "p~a+7eb",
+}
+
+// storeQueBloqueia é um Event Store cujo Append só volta quando o contexto acaba.
+type storeQueBloqueia struct{ EventStorePort }
+
+func (storeQueBloqueia) Append(ctx context.Context, _ string, _ eventstore.EventInput, _ ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	<-ctx.Done()
+	return eventstore.AppendResult{}, ctx.Err()
+}
+
+// O contexto da origem não é cancelável pelo cliente, mas TEM prazo (controlSealTimeout): um store
+// pendurado não pode prender o handler do `POST /runs` para sempre (revisão da ronda 2, mutante C).
+func TestAOS477OrigemTemPrazoProprio(t *testing.T) {
+	h := &apiHandler{node: &Node{EventStore: storeQueBloqueia{}}}
+	feito := make(chan struct{})
+	go func() {
+		h.gravarOrigemDoRunFilho(context.Background(), "p~n1", vinculoAoPedido{RunID: "p", Geracao: 1})
+		close(feito)
+	}()
+	select {
+	case <-feito:
+	case <-time.After(controlSealTimeout + 3*time.Second):
+		t.Fatalf("a gravacao da origem nao voltou dentro do prazo proprio (%s)", controlSealTimeout)
+	}
 }
