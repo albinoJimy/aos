@@ -7728,3 +7728,149 @@ sobre o ramo de integração:
 **FEITO** (2026-10-01), com as correcções da revisão. Reproduzido e corrigido nesta máquina (CLI docker, sem daemon), com
 self-test §NX e verificação de mutação. O comportamento no job `nats` do CI (docker com daemon)
 não foi observado aqui: confirma-se no PR.
+
+---
+
+## AOS-476 — As dependências do plano continuam fora do log: levar o PR #300 à base
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma lacuna da materialização dentro do que o ADR-023 e o ADR-024 já decidiram. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P1: o grafo que um dono seguinte re-hidrata diz que os nós são independentes |
+| Estimativa | M (o código existe no PR #300; o trabalho é trazê-lo para a base de hoje e medir) |
+| Dependências | AOS-237 (materialização), AOS-231 (validação estrutural), AOS-390 (admit-only + efeito no despacho) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §7 (achado 1), `docs/testing/e2e-pegadas-visao-19.md` (achado n.º 2), `packages/control-plane/orchestrator/planmaterialize/`, `packages/control-plane/orchestrator/graph.go`, PR #300 |
+
+### Contexto
+
+Medido três vezes, com o mesmo resultado:
+
+| Onde | Quando | `task.node.created` | `task.edge.added` |
+|---|---|---|---|
+| `aos-orq serve --goal`, local, `8e88f88` | 2026-09-15 | 2 | **0** |
+| `aos-orq serve --goal`, local, `4ef35e0` | 2026-10-01 | 2 | **0** |
+| `consume.wal` de produção (12 planos, 175 eventos) | 2026-10-01, cópia só-de-leitura | 16 | **0** |
+
+O plano de teste declara `analise depends_on recolha`. O despacho respeita a dependência
+(`nos_despachados=1`), mas lê-a do `PlanDocument` em memória. No log não fica: `aos-orq inspect`
+devolve `ordem=analise,recolha`, e o `RebuildDAG` só repõe arestas a partir de `task.edge.added`.
+
+A correcção foi escrita a 2026-09-15 no **PR #300** (`claude/silly-meitner-55d3d1`), que continua
+aberto e nunca teve ticket. Entretanto a base andou e duas coisas ficaram tortas:
+
+1. Na base `f7b23f3` o `planmaterialize` continua sem admissão de arestas.
+2. O PR regista a segunda metade do achado como **DEF-913**. Esse número foi depois atribuído na
+   base a outra coisa (o tecto da fila de planos por submissor, AOS-464). O
+   `specs/EPIC-19_Planeador_Meta_Orquestracao.md` ainda cita «a PR aberta que torna as arestas do
+   plano duráveis (`task.edge.added`, DEF-913)», que hoje aponta para o deferimento errado.
+
+### Objectivo
+
+As arestas de entrada de cada nó (`depends_on` e as origens de `conditional_on`) ficam no log do
+grafo antes de `plan.materialized`, de modo que qualquer dono que re-hidrate o run veja o mesmo
+DAG que o primeiro despachou.
+
+### Critérios de Aceitação
+
+- [ ] A materialização emite um `task.edge.added` por aresta de entrada, depois dos nós e antes de
+      `plan.materialized`, sob a posse do run (ADR-023). É admissão, não efeito (ADR-024).
+- [ ] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
+- [ ] No roteiro E2E, passo 15: `wal-summary` mostra `task.edge.added 1` e `inspect` devolve
+      `ordem=recolha,analise`.
+- [ ] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
+      real, não só unitário.
+- [ ] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
+      actual, que já tem o executor de nós (AOS-413) e a drenagem da fila. Se ainda for verdade,
+      fica registada com um número de deferimento livre; se não for, diz-se com a medição.
+- [ ] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
+- [ ] Verificação em produção: depois do deploy, um plano com dois nós dependentes deixa
+      `task.edge.added` no `consume.wal`. Contar no ficheiro copiado, não por `grep` no servidor.
+
+### Fora de âmbito
+
+O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipado por aresta.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-477 — Do registo do plano não se chega ao objectivo: o sentido inverso pára no `plan_hash`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: acrescenta correlação ao log do plano. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | feat (rastreabilidade) |
+| Prioridade | P2: nada falha aberto; o que falta é poder provar, a partir do registo, que plano veio de que pedido |
+| Estimativa | M |
+| Dependências | AOS-417 (ingresso do plano, `planrequest.submitted`), AOS-413 (executor de nós), AOS-408 (gate de plano) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §3, §4 e §7 (achado 2), `tecnica/18_Planner_Meta_Orquestracao.md`, `tecnica/13_Modelo_Dados_Eventos.md`, `packages/cmd/aos/submissor_do_plano.go`, `packages/cmd/aos-orq/node_executor.go` |
+
+### Contexto
+
+O E2E de 2026-10-01 seguiu a cadeia nos dois sentidos. No sentido registo → objectivo há dois
+buracos no caminho do plano.
+
+**1. `aos-orq serve --goal`.** O texto do objectivo tem 0 ocorrências no WAL. `plan.proposed`
+leva `plan_id`, `plan_hash`, `planner_meta` e `attempt`; `plan.materialized` leva os nós e as
+tools. Nenhum evento guarda o objectivo, nem um compromisso verificável dele. Quem tem só o
+ficheiro sabe que houve um plano com aquele hash e não sabe para quê.
+
+**2. Produção (`POST /plans`).** O objectivo existe, cifrado por titular, em
+`planrequest.submitted` (`objective_sealed`), no `events.wal` do nó. O plano vive noutro ficheiro
+e noutro volume (`consume.wal`, `aos_aos-orq-data`), e o trabalho de cada nó volta ao `events.wal`
+como run `<run>~<nó>`. As três peças ligam-se **só pela convenção de nomes**: `<run>-plan` para o
+stream do plano, `<run>~<nó>` para o run-filho. O separador está escrito duas vezes, uma em cada
+binário (`separadorDoRunFilho` em `cmd/aos/submissor_do_plano.go` e em
+`cmd/aos-orq/node_executor.go`). Não encontrei, em nenhum dos eventos, um campo que diga «este
+run é o nó N do plano P, do pedido R».
+
+Para o run `plan-e2e-447-1790511800~n1` a recondução fez-se, à mão, cortando o id pelo `~` e
+procurando o prefixo nos outros dois streams. Funciona enquanto ninguém mudar a convenção.
+
+### Objectivo
+
+Dar ao registo do plano o que falta para a recondução ser um facto do log e não uma leitura de
+nomes: um compromisso do objectivo e a ligação explícita pedido → plano → nó → run-filho.
+
+### Critérios de Aceitação
+
+- [ ] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
+      o texto em claro: o objectivo é redigido na ingestão e selado por titular no pedido).
+      O ticket decide se é um campo novo ou se o `plan_hash` já o cobre; neste segundo caso,
+      escreve-se **onde** está o documento que permite verificá-lo. Hipótese por confirmar: o
+      `plan_hash` cobre o campo `objective` do `PlanDocument`, mas o documento não está no log.
+- [ ] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
+      `planrequest.submitted`, ou um id equivalente), e o mesmo compromisso bate com o do pedido.
+- [ ] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id.
+- [ ] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
+      que falha se as duas constantes divergirem.
+- [ ] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
+      `tecnica/13_Modelo_Dados_Eventos.md` (campo novo retro-compatível, leitores antigos não
+      partem), e o gate `event-catalog` verde.
+- [ ] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
+      só campos, sem partir strings.
+- [ ] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso.
+
+### Fora de âmbito
+
+Juntar os dois ficheiros num só store, e ler o objectivo em claro. A ligação é por referência e
+por hash.
+
+### Estado
+
+**ABERTO.**
