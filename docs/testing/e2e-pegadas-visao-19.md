@@ -1107,8 +1107,8 @@ cd $E2E/orq && ../bin/aos-orq serve --wal orq.wal --run run-e2e-orq --goal "reco
 **Pegada** (as três linhas de postura vão encurtadas com `…`; o compromisso e o sal da primeira linha são aleatórios por corrida e vão como padrão):
 
 ```
-compromisso do objectivo: hmac-sha256:<64 hex> sal=<64 hex> (gerado aqui e so aqui: com o objectivo e este sal verifica-se o plan.proposed; sem o sal o compromisso nao se inverte)
 substrato: ficheiro orq.wal — NÃO arbitra entre processos (DEF-282); posse SEQUENCIAL, uma instância de cada vez
+compromisso do objectivo: hmac-sha256:<64 hex> sal=<64 hex> (gerado aqui e so aqui: com o objectivo e este sal verifica-se o plan.proposed; sem o sal o compromisso nao se inverte)
 posse: run=run-e2e-orq plano=run-e2e-orq-plan token=1 worker=p1
 gate de aprovacao de plano (AOS-408, AOS-236): COMPOSTO — nivel L4 (danger exige decisao humana; lacuna de capacidade tambem, mas NADA a abre neste binario hoje — contrato, nao facto). A decisao vem por fora, assinada, com chave PINADA e autoridade por classe (`aos-orq decide`); o pendente e um FACTO no log. 4-eyes FRACO neste caminho: … 
 executor de nos (AOS-413): NAO composto — o despacho marca os nos a correr e NADA os executa (defina AOS_ORQ_NODE_URL e o NHI do run em AOS_ORQ_NODE_CREDENTIAL_FILE)
@@ -1187,6 +1187,28 @@ exit=0
 
 Depois disto, `inspect` dá `token_corrente=2 nos=2 ordem=recolha,analise` e `wal-summary` mostra `lease.claimed 2` e `lease.released 2`, e o resto igual. O segundo dono **não despacha nada**: sem `--plan-doc` não tem o documento de que o despacho precisa (ver o achado n.º 2 e DEF-817).
 
+### 15d — Sentido inverso: do registo do plano ao objectivo (AOS-477)
+
+```bash
+strings orq.wal | grep -oE '"type":"plan\.proposed".*"idempotency_key":"[^"]*"' | grep -oE '"objective_commitment":"[^"]*"|"request":|"idempotency_key":"[^"]*"'
+SAL=<o sal impresso no 15a>
+printf '%s' "recolher e analisar dados" | openssl dgst -sha256 -mac HMAC -macopt hexkey:$SAL
+grep -c "recolher e analisar dados" orq.wal; grep -c "$SAL" orq.wal
+```
+
+**Pegada** (o compromisso é o da linha do 15a):
+
+```
+"objective_commitment":"hmac-sha256:<64 hex>"
+"idempotency_key":"run-e2e-orq-plan:planstep:proposed"
+SHA2-256(stdin)= <os mesmos 64 hex>
+0
+0
+```
+
+Repetir o `serve --goal` do 15a no mesmo run **não** tira sal novo: o log guarda só a primeira proposta, e a linha passa a ser
+`compromisso do objectivo: o plano run-e2e-orq-plan ja tem proposta registada, e o log guarda so a PRIMEIRA (hmac-sha256:<64 hex>); este serve NAO tira sal novo — verifica-se com o sal impresso pelo serve que a fez`.
+
 **Verificar** (F2E-02 e S-01a, ponto a ponto):
 
 - A posse vem **antes** de qualquer escrita, com `token=1` e `ttl_nanos=30000000000` no `lease.claimed`.
@@ -1199,10 +1221,12 @@ Depois disto, `inspect` dá `token_corrente=2 nos=2 ordem=recolha,analise` e `wa
 - `plan.materialized` traz `plan_hash`. Tanto os eventos do plano como os nós e a aresta têm `idempotency_key` `run:step`.
 - **Um `task.edge.added` `recolha → analise`**, escrito depois dos dois `task.node.created` e antes do `plan.materialized` (a ordem das linhas do 15b é a do ficheiro). O `inspect`, que só tem o log, ordena `recolha,analise` (AOS-476).
 - O segundo dono recebe `token=2` (monotónico) e re-hidrata `nos=2` **e** `arestas=1 ordem=recolha,analise` **do log**, não de memória (S-01a).
+- 15d: o HMAC do objectivo **recebido** com o sal impresso dá o `objective_commitment` do `plan.proposed`; o objectivo e o sal têm 0 ocorrências no WAL; não há `"request":`, porque um `serve` manual não tem pedido de origem. O `plan_hash` cobre o `objective` do documento («recolher e analisar»), que é texto do modelo — por isso o compromisso é um campo à parte (AOS-477).
+- O percurso completo run-filho → pedido só existe no caminho da fila (`POST /plans` → `consume`), que este passo não corre. Está coberto por `TestAOS477DoToolCallAoPedidoSoPorCampos` (`packages/cmd/aos`), só por campos: `tool.call.mediated` → `run.plan_origin` → o `planrequest.submitted` com o mesmo `run_id` → o `plan.proposed` com o mesmo `request.run_id`, `request.seq` igual ao `seq` desse facto e o mesmo compromisso → só então o `node_id` no `plan.materialized`.
 
-> **Achado n.º 2 — a metade do AOS-476 está fechada; a do AOS-477 tem o seu próprio passo.**
+> **Achado n.º 2 — fechado: a metade das arestas pelo AOS-476, a do objectivo e da ligação pelo AOS-477 (15d).**
 > - *Fechado pelo AOS-476:* a dependência `recolha → analise` está no log (`task.edge.added 1`) e o `inspect` ordena `recolha,analise`. Em `7b9a9ff` havia zero arestas e a ordem era `analise,recolha`. Ressalva: um dono seguinte só **despacha** com o documento do plano (`consume` ou `serve --plan-doc`); o `serve` sem documento do 15c re-hidrata e pára (DEF-817);
-> - o objectivo (`recolher e analisar dados`) tem **0** ocorrências no WAL: o `plan.proposed` leva `plan_hash` e `planner_meta`, não o objectivo, e a ligação pedido → plano → run faz-se pela convenção de nomes (`<run>-plan`) (AOS-477).
+> - *Fechado pelo AOS-477:* o objectivo continua com **0** ocorrências no WAL, mas o `plan.proposed` leva agora um compromisso dele (`objective_commitment`, HMAC com sal), verificável por quem tem o texto e o sal (15d). No caminho da fila, o `plan.proposed` cita o pedido de origem e o run-filho declara num campo (`run.plan_origin`) de que pedido vem; a recondução deixa de depender da convenção de nomes.
 >
 > Continua a não aparecer `plan.intake_classified` (F2E-02 passo 1; achado n.º 4).
 
@@ -1493,7 +1517,7 @@ As seeds em `$E2E/keys` (incluindo a do selador do passo 13d e as âncoras que e
 Os achados 1 a 8 vêm da verificação de 2026-09-15 e estão actualizados com o que se mediu a 2026-10-02; o 9 é novo.
 
 1. **`aos-issuer autonomy-sign` mistura o aviso no corpo** — *corrigido pelo #298 (`39c0eeb`): o aviso passou para o stderr; confirmado a 2026-10-02.* Em `8e88f88`, sem `--co-emitter`, para L4/L5, o `aos-issuer` escrevia `# aviso: …` no **stdout** (`packages/cmd/aos-issuer/autonomysign.go`). O corpo capturado com `$(...)` começava por `#`, e o nó respondia `400 corpo invalido` em vez do 403 explícito que o handler tem para esse caso (`packages/cmd/aos/autonomy_route.go`). O resultado continuava fail-closed; perdia-se só o diagnóstico. Passo 6c.
-2. **Dependências do plano ausentes do log do `aos-orq --goal`** — *arestas: fechado pelo AOS-476 (re-medido a 2026-10-02); ligação pedido → plano → run: AOS-477.* O plano declara `analise depends_on recolha` e o despacho respeitava-o só em memória (`nos_despachados=1`): em `7b9a9ff` o WAL tinha **zero** `task.edge.added` e o `inspect` ordenava `analise,recolha`, porque o `RebuildDAG` só repõe arestas a partir desse evento (`packages/control-plane/orchestrator/graph.go`). Com o AOS-476 a materialização escreve um `task.edge.added` por aresta de entrada, depois dos nós e antes do `plan.materialized`; o 15b mostra `task.edge.added 1` e `ordem=recolha,analise`, e o segundo dono do 15c re-hidrata a aresta. **Ressalva:** a pergunta que o achado deixava em aberto («um segundo dono pode despachar fora de ordem?») tem resposta medida: não, e um segundo dono **sem documento** não despacha nada, re-hidrata e pára. A retoma do despacho existe pelo `consume` ou por `serve --plan-doc` com o documento ancorado no `plan.validated`, que levam o plano ao fim (`TestAOS476_DonoSeguinteDespachaSoPelaRetoma`). A via sem documento fica registada como DEF-817; a morte por TTL sobre `--nats` e a pasta `--plan-dir` partilhada não estão verificadas. O objectivo em claro continua a não ficar no WAL (0 ocorrências; AOS-477). Passos 15b e 15c.
+2. **Dependências do plano ausentes do log do `aos-orq --goal`** — *arestas: fechado pelo AOS-476; objectivo e ligação pedido → plano → run: fechado pelo AOS-477 (passo 15d). Re-medido a 2026-10-02.* O plano declara `analise depends_on recolha` e o despacho respeitava-o só em memória (`nos_despachados=1`): em `7b9a9ff` o WAL tinha **zero** `task.edge.added` e o `inspect` ordenava `analise,recolha`, porque o `RebuildDAG` só repõe arestas a partir desse evento (`packages/control-plane/orchestrator/graph.go`). Com o AOS-476 a materialização escreve um `task.edge.added` por aresta de entrada, depois dos nós e antes do `plan.materialized`; o 15b mostra `task.edge.added 1` e `ordem=recolha,analise`, e o segundo dono do 15c re-hidrata a aresta. **Ressalva:** a pergunta que o achado deixava em aberto («um segundo dono pode despachar fora de ordem?») tem resposta medida: não, e um segundo dono **sem documento** não despacha nada, re-hidrata e pára. A retoma do despacho existe pelo `consume` ou por `serve --plan-doc` com o documento ancorado no `plan.validated`, que levam o plano ao fim (`TestAOS476_DonoSeguinteDespachaSoPelaRetoma`). A via sem documento fica registada como DEF-817; a morte por TTL sobre `--nats` e a pasta `--plan-dir` partilhada não estão verificadas. O objectivo em claro continua a não ficar no WAL (0 ocorrências), mas o `plan.proposed` compromete-se com ele por HMAC com sal, e no caminho da fila o plano cita o pedido e o run-filho declara a origem num campo (AOS-477). Passos 15b, 15c e 15d.
 3. **Doc 19 §9.1 desactualizado** — *corrigido no mesmo PR de 2026-09-15: o §9.1, a regra do P-04 e o §2 passam a reflectir o ADR-025.* O texto dizia que a demoção automática não vigorava (DEF-908). O banner declara `democao automatica por anomalia (AOS-090/DEF-908): LIGADA` e `promocao automatica por fiabilidade (AOS-090/ADR-025): LIGADA`. Passo 1.
 4. **Evento citado no F2E-02 passo 1 sem emissão observada.** `plan.intake_classified` continua sem aparecer no WAL do `aos-orq`. A metade que dizia que o gate humano de plano estava fora do binário **deixou de valer**: desde o AOS-408 o `aos-orq` declara o gate composto e emite `plan.proposed`, `plan.validated` e `plan.approved` (passo 15). Passo 15.
 5. **Código HTTP da reconstrução após shred.** Observado `410 reconstrucao indisponivel`; o precedente [`ciclo-de-vida-manual.md`](ciclo-de-vida-manual.md) (passo 10) documenta 404. Passo 11.

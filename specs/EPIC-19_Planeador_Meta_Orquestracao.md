@@ -8001,9 +8001,11 @@ nomes: um compromisso do objectivo e a ligação explícita pedido → plano →
       O nó do plano tem um `.`, e por isso o escape do id atravessa os dois binários. Fecha no
       objectivo pelo HMAC, com a custódia do titular. O lado do plano lê-se com structs locais por
       nome de campo, porque o nó não importa o orquestrador.*
-- [ ] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso. — *O texto, com a
-      saída medida localmente, foi entregue ao dono do roteiro (AOS-479). Este ticket não edita
-      `docs/testing/e2e-pegadas-visao-19.md`.*
+- [x] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso. — *Passo 15d de
+      `docs/testing/e2e-pegadas-visao-19.md`, aplicado na integração (2026-10-02). Os blocos do
+      passo 15 copiados do ficheiro foram corridos por ordem sobre a árvore integrada: o HMAC do
+      objectivo com o sal impresso no 15a dá o `objective_commitment` do log, objectivo e sal com 0
+      ocorrências no WAL, e o `serve --goal` repetido imprime a linha de retoma sem sal novo.*
 
 ### Decisão do critério 1: campo novo, e porquê
 
