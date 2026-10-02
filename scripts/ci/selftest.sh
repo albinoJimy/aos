@@ -2060,6 +2060,42 @@ if grep -B2 -E '^  if ! \( cd "\$REPO_ROOT" && GOWORK="\$REPO_ROOT/go\.work" go 
 else
   bad "GW13: o cache-prime não aquece o grafo do workspace (ou engole a falha) — offline cai com versões externas divergentes"
 fi
+# GW14 — os temporários do `verificar` são LF em qualquer plataforma (AOS-480). O `verificar`
+# compara ficheiros que o Python escreve com a saída de `find | sort`. Em Windows o modo texto
+# do Python dá CRLF, nenhuma linha casa, e o gate avermelha com o go.work certo — os 49 módulos
+# como em falta e a mais ao mesmo tempo (medido a 2026-10-01, base f7b23f3). Onde o defeito
+# existe, o GW1 já o apanha; em Linux não há como o provocar, pelo que se prende a forma:
+# (a) nenhum `open(..., "w")` sem `newline=` no gowork.sh; (b) o `verificar` sobre a árvore
+# sintética não imprime CR nenhum no diagnóstico de um vermelho real.
+if grep -nE 'open\([^)]*"w"' "$GOWORK_SH" | grep -vq 'newline="\\n"'; then
+  bad "GW14a: o gowork.sh abre um ficheiro para escrita em modo texto sem newline — em Windows sai CRLF e a comparação parte"
+elif ! grep -qE 'open\([^)]*"w", newline="\\n"\)' "$GOWORK_SH"; then
+  bad "GW14a: não encontrei no gowork.sh a escrita com newline — a prova seria vacuosa"
+else
+  pass "GW14a: toda a escrita de temporários do gowork.sh fixa newline (LF em qualquer plataforma)"
+fi
+gw_modulo c
+GW_OUT="$(bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" 2>&1 || true)"
+rm -rf "$GOWORK_TMP/packages/c"
+GW_FALTA="$(printf '%s\n' "$GW_OUT" | grep -c '^ *\./packages/' || true)"
+if printf '%s' "$GW_OUT" | grep -q $'\r'; then
+  bad "GW14b: o diagnóstico do verificar traz CR — os temporários não são LF"
+elif [ "$GW_FALTA" != "1" ]; then
+  bad "GW14b: com UM módulo sem \`use\`, o verificar listou $GW_FALTA módulo(s) — a comparação não casa linha a linha"
+else
+  pass "GW14b: com um módulo sem \`use\`, o verificar lista esse e só esse, sem CR"
+fi
+# GW14c — o `verificar` usa o python PROVISIONADO, e a provisão vale na primeira corrida
+# (AOS-480). Num checkout limpo em Windows o `python3` do PATH é o atalho da Microsoft Store; o
+# gowork.sh não chamava o ensure_python, e o ensure_python, chamado depois do setup_env, deixava
+# o caminho antigo no cache de comandos do bash.
+if ! awk '/^verificar\(\) \{/{d=1} d&&/ensure_python \|\| return 1/{ok=1} d&&/python3 -c/{exit} END{exit !ok}' "$GOWORK_SH"; then
+  bad "GW14c: o verificar do gowork.sh corre python3 sem passar pelo ensure_python"
+elif ! awk '/^ensure_python\(\) \{/{d=1} d&&/^  hash -r$/{ok=1} d&&/VOLTA A VERIFICAR/{exit} END{exit !ok}' "$CI_DIR/lib.sh"; then
+  bad "GW14c: o ensure_python não limpa o cache de comandos entre a provisão e a re-verificação"
+else
+  pass "GW14c: o verificar passa pelo ensure_python, e este limpa o cache de comandos antes de re-verificar"
+fi
 rm -rf "$GOWORK_TMP"; GOWORK_TMP=""
 
 
