@@ -1588,10 +1588,12 @@ um resultado legível.
   que convém conhecer antes de lhe pendurar execução.
 - O que é o «trabalho» de um nó sem skills: o `tecnica/18` declara como lacuna honesta que os nós só
   correm sobre tools registadas. O objectivo do nó é o prompt; as tools pinadas são o que pode fazer.
-- A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, PR #300) toca no
-  mesmo `RebuildDAG`: coordenar a ordem. *(Corrigido pelo AOS-476: a citação dizia `DEF-913`, número
-  que o PR #300 usou e que no registo é o tecto da fila de planos do AOS-464. A emissão das arestas
-  entrou pelo AOS-476; a segunda metade do PR #300 foi re-medida lá e não deu deferimento.)*
+- ~~A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, PR #300) toca no
+  mesmo `RebuildDAG`: coordenar a ordem.~~ **Resolvida pelo AOS-476:** a emissão das arestas entrou
+  pela materialização, portada do PR #300 para a base (o PR em si continua aberto; fechá-lo é decisão
+  do dono). A citação dizia `DEF-913`, número que o PR #300 usou e que no registo é o tecto da fila de
+  planos do AOS-464. A segunda metade do PR #300 foi re-medida no AOS-476 e ficou registada como
+  DEF-817 (um `serve` sem documento re-hidrata e não despacha).
 
 ### Fora de âmbito
 
@@ -7792,7 +7794,25 @@ DAG que o primeiro despachou.
       já está durável quando o `plan.materialized` é pedido) e
       `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla` (posição no ficheiro WAL do binário
       real, vias `--goal` e `--plan-doc`). `TestAOS476_ArestaRecusadaNaoApensaMaterialized`: se a
-      porta recusa a aresta, o `plan.materialized` não é apenso.)*
+      porta recusa a aresta, o `plan.materialized` não é apenso;
+      `TestAOS476_ArestaRecusadaPeloStorePropaga`: o adaptador de produção não engole a recusa do
+      store. Posse, por comportamento e não só pela guarda estática:
+      `TestAOS476_ArestaDeDonoSuperadoRecusada` (runlifecycle) — um dono superado não põe a aresta
+      no log, nem pelo seu `GraphBuilder` nem pela materialização.)*
+- [x] *(Acrescentado pela revisão adversarial, MÉDIO-1.)* Uma materialização que morre entre os nós
+      e o `plan.materialized` retoma-se: um nó já durável que coincide com o do documento é aceite
+      sem reescrita, uma aresta já durável não é duplicada, e o `plan.materialized` é apenso; um nó
+      que diverge recusa, sem escrever nada.
+      *(Evidência: antes, a retoma saía 1 com «nó já existe no grafo», que o `consume` retentava até
+      ao tecto de gerações — a classe é anterior, o AOS-476 alargava a janela. Agora o adaptador de
+      produção confronta o nó durável com o do plano (tool call, prioridade, identidade, estado
+      `ready`). Por processo real, com o WAL reescrito como na revisão (registos até aos nós +
+      `lease.released`): `TestAOS476_MaterializacaoMortaAMeioRetoma` (com os dois nós, e só com o
+      primeiro) — `arestas=0`, materializa, despacha, e o WAL fica com 2 nós, 1 aresta e 1
+      `plan.materialized`; `TestAOS476_MaterializacaoMortaComNoDivergenteRecusa` — `analise` com
+      outra tool ⇒ saída 10 (documento recusado, determinista) e nada escrito. Unitários:
+      `TestAOS476_MaterializacaoRetomaDepoisDosNos`, `TestAOS476_RetomaComNoDivergenteRecusa`,
+      `TestAOS476_RetomaComNoJaEmCursoRecusa`.)*
 - [x] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
       *(Evidência: as arestas confirmam-se num DAG em memória antes da admissão global.
       `TestAOS476_CicloAbortaSemNenhumNo` e `TestAOS476_OrigemForaDoPlanoAbortaSemNenhumNo`
@@ -7802,8 +7822,9 @@ DAG que o primeiro despachou.
       `ordem=recolha,analise`.
       *(Medido nesta base, com o snapshot e o plano do passo 15 tal e qual e os binários
       compilados: `wal-summary` dá `task.edge.added 1` e `task.node.created 2`; `inspect` dá
-      `run=run-e2e-orq token_corrente=1 nos=2 ordem=recolha,analise`. O texto do passo 15 no
-      roteiro é actualizado pelo AOS-479, dono do ficheiro.)*
+      `run=run-e2e-orq token_corrente=1 nos=2 ordem=recolha,analise`. O passo 15 do roteiro
+      (15a–15c e o achado n.º 2) foi reescrito com esta pegada e re-corrido a partir dos blocos do
+      ficheiro final, já com o AOS-477 na árvore.)*
 - [x] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
       real, não só unitário.
       *(Evidência: o `serve` passa a imprimir, na re-hidratação, `grafo re-hidratado: arestas=N
@@ -7813,18 +7834,25 @@ DAG que o primeiro despachou.
 - [x] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
       actual, que já tem o executor de nós (AOS-413) e a drenagem da fila. Se ainda for verdade,
       fica registada com um número de deferimento livre; se não for, diz-se com a medição.
-      *(Re-medida: **deixou de ser verdade**, e não há deferimento novo.
+      *(Re-medida: **verdade só em parte, e registada como DEF-817.**
       `TestAOS476_DonoSeguinteDespachaSoPelaRetoma`, três processos contra um nó `aos` falso: o
-      primeiro despacha `recolha` e sai 8 com ela em voo; o segundo, `serve` sem documento,
-      re-hidrata com a aresta e não despacha nada; o terceiro, `serve --plan-doc` (a via que o
+      primeiro despacha `recolha` e sai 8 com ela em voo; o segundo, `serve` **sem documento**,
+      re-hidrata com a aresta e **não despacha nada**; o terceiro, `serve --plan-doc` (a via que o
       `consume` usa numa retoma, AOS-442), diz `materializado (retoma, do log)`, despacha
-      `analise` e acaba com `execucao: analise=complete recolha=complete`. Medido também à mão sem
-      executor: um `serve --goal` repetido já não aborta com «nó já existe no grafo» — vai à
-      retoma e dá `nos_despachados=0`, porque `recolha` fica `running` sem ninguém que a execute,
-      que é o que o banner do AOS-413 declara. O `serve` sem documento não despacha por desenho:
-      o despacho precisa do `PlanDocument` e o log só leva o hash (ADR-005).)*
+      `analise` e acaba com `execucao: analise=complete recolha=complete`. Para a retoma com
+      documento a afirmação do PR #300 deixou de ser verdade; para o `serve` sem documento continua
+      — o despacho precisa do `PlanDocument` e o log só leva o hash (ADR-005) — e é essa a via que o
+      runbook `PROC-DESPACHO-MULTIPROC` descrevia como recuperação automática da topologia
+      N× `serve --nats`. Fica em `docs/governance/REGISTO-Deferimentos.md` como **DEF-817**
+      (`POR ATRIBUIR`, ticket em falta descrito em N-DEF-817), e o runbook passou à versão 1.1.
+      Medido também à mão, sem executor: um `serve --goal` repetido já não aborta com «nó já existe
+      no grafo» — vai à retoma e dá `nos_despachados=0`, porque `recolha` fica `running` sem
+      ninguém que a execute, como o banner do AOS-413 declara. **Não verificado:** a morte por TTL
+      sobre `--nats` seguida de retoma noutra réplica, e a pasta `--plan-dir` partilhada entre
+      réplicas.)*
 - [x] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
-      *(Agora cita o PR #300, com nota de que `DEF-913` é o tecto da fila de planos do AOS-464.)*
+      *(Agora cita o PR #300, marca a lacuna como resolvida pelo AOS-476 e nota que `DEF-913` é o
+      tecto da fila de planos do AOS-464; a segunda metade do PR #300 é DEF-817.)*
 - [ ] Verificação em produção: depois do deploy, um plano com dois nós dependentes deixa
       `task.edge.added` no `consume.wal`. Contar no ficheiro copiado, não por `grep` no servidor.
 
@@ -7832,13 +7860,29 @@ DAG que o primeiro despachou.
 
 O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipado por aresta.
 
+### Residuais declarados
+
+- **Runs materializados antes desta correcção nunca recebem as arestas.** Não há migração: o grafo
+  e o `inspect` desses runs continuam a dizer que os nós são independentes. O despacho segue o
+  documento, pelo que nada corre fora de ordem; o que fica errado, para sempre, é a topologia no
+  log. A retoma da materialização deste ticket só actua sem `plan.materialized`, e não repõe
+  arestas num run já materializado — fazê-lo seria outro ticket.
+- **A retoma confronta os nós do plano, não procura nós a mais.** Um nó no grafo que o documento
+  não tem, ou uma aresta durável que o documento não declara, não são detectados na retoma da
+  materialização. Sem `plan.materialized` nada os pode ter escrito pelo caminho normal.
+- **O `task.edge.added` não distingue `depends_on` de `conditional_on`.** O despacho continua a
+  ler o documento; despachar só a partir do grafo perderia a poda `branch_not_taken` (aviso em
+  `planmaterialize/doc.go`).
+
 ### Estado
 
-**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-10-02): a
-materialização emite as arestas, um dono seguinte re-hidrata-as e o `serve` mostra-as. Falta o
-último critério, que exige um deploy e a cópia do `consume.wal` de produção. A segunda metade do
-PR #300 foi re-medida e não gera deferimento (ver o quinto critério). O ramo do PR #300 não foi
-fundido: a lógica foi portada para a base de hoje.
+**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-10-02), com a
+ronda de correcções da revisão adversarial (0 ALTO, 2 MÉDIO, 6 BAIXO, todos tratados): a
+materialização emite as arestas e é retomável depois de uma morte a meio, um dono seguinte
+re-hidrata-as e o `serve` mostra-as. Falta o último critério, que exige um deploy e a cópia do
+`consume.wal` de produção. A segunda metade do PR #300 foi re-medida e ficou registada como
+DEF-817 (ver o quinto critério). O ramo do PR #300 não foi fundido: a lógica foi portada para a
+base de hoje.
 
 ---
 

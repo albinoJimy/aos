@@ -1052,7 +1052,9 @@ Em Git Bash, a terceira linha sai em forma Windows (`C:/…/keys/ap-ana.seed`). 
 
 ## Passo 15 — Goal → plano → DAG → sub-agente, sob lease (F2E-02, S-01a)
 
-**Porquê:** o F2E-02 corre no binário `aos-orq` (ADR-018/ADR-023 mantêm o ORQ/SCH fora do nó). O planeador é governado (NHI `agent:planner`); o plano é validado contra um snapshot **pinado**; nós com dependentes viram **papéis** spawnados; o despacho respeita `depends_on`.
+**Porquê:** o F2E-02 corre no binário `aos-orq` (ADR-018/ADR-023 mantêm o ORQ/SCH fora do nó). O planeador é governado (NHI `agent:planner`); o plano é validado contra um snapshot **pinado**; nós com dependentes viram **papéis** spawnados; o despacho respeita `depends_on`, e a dependência fica no log como `task.edge.added`.
+
+> **Re-medido a 2026-10-02 com o AOS-476 e o AOS-477 já na árvore** (blocos deste passo copiados do ficheiro e corridos por esta ordem). As pegadas 15a–15c abaixo são dessa corrida.
 
 Ficheiros de entrada:
 
@@ -1102,9 +1104,10 @@ EOF
 cd $E2E/orq && ../bin/aos-orq serve --wal orq.wal --run run-e2e-orq --goal "recolher e analisar dados" --snapshot snapshot.json --decompose-fixture plano.json --worker p1 --release; echo "exit=$?"
 ```
 
-**Pegada** (as três linhas de postura vão encurtadas com `…`):
+**Pegada** (as três linhas de postura vão encurtadas com `…`; o compromisso e o sal da primeira linha são aleatórios por corrida e vão como padrão):
 
 ```
+compromisso do objectivo: hmac-sha256:<64 hex> sal=<64 hex> (gerado aqui e so aqui: com o objectivo e este sal verifica-se o plan.proposed; sem o sal o compromisso nao se inverte)
 substrato: ficheiro orq.wal — NÃO arbitra entre processos (DEF-282); posse SEQUENCIAL, uma instância de cada vez
 posse: run=run-e2e-orq plano=run-e2e-orq-plan token=1 worker=p1
 gate de aprovacao de plano (AOS-408, AOS-236): COMPOSTO — nivel L4 (danger exige decisao humana; lacuna de capacidade tambem, mas NADA a abre neste binario hoje — contrato, nao facto). A decisao vem por fora, assinada, com chave PINADA e autoridade por classe (`aos-orq decide`); o pendente e um FACTO no log. 4-eyes FRACO neste caminho: … 
@@ -1133,7 +1136,7 @@ exit=0
 ```
 
 ```bash
-strings orq.wal | grep -oE '"type":"(plan\.(proposed|validated|approved|materialized)|task\.node\.created|task\.node\.state_changed)".{0,400}'
+strings orq.wal | grep -oE '"type":"(plan\.(proposed|validated|approved|materialized)|task\.node\.created|task\.edge\.added|task\.node\.state_changed)".{0,400}'
 ```
 
 ```bash
@@ -1143,7 +1146,7 @@ printf 'FORJADO=%s goal=%s task.edge.added=%s\n' "$(grep -ac FORJADO orq.wal)" "
 **Pegada:**
 
 ```
-run=run-e2e-orq token_corrente=1 nos=2 ordem=analise,recolha
+run=run-e2e-orq token_corrente=1 nos=2 ordem=recolha,analise
 streams 3
 lease.claimed 1
 lease.released 1
@@ -1151,16 +1154,18 @@ plan.approved 1
 plan.materialized 1
 plan.proposed 1
 plan.validated 1
+task.edge.added 1
 task.node.created 2
 task.node.state_changed 1
-"type":"plan.proposed",...,"payload":{"plan_id":"run-e2e-orq-plan","plan_hash":"sha256:f5d82c50…1cdd","planner_meta":{"model":"aos-orq/decompose","prompt_version":"1.3.0","capabilities_hash":"sha256:snap-e2e"},"attempt":1},"schema_version":"aos.planner.v1","run_id":"run-e2e-orq-plan","step_id":"planstep:proposed","idempotency_key":"run-e2e-orq-plan:planstep:proposed"}
+"type":"plan.proposed",...,"payload":{"plan_id":"run-e2e-orq-plan","plan_hash":"sha256:f5d82c50…1cdd","planner_meta":{"model":"aos-orq/decompose","prompt_version":"1.3.0","capabilities_hash":"sha256:snap-e2e"},"attempt":1,"objective_commitment":"hmac-sha256:<o da linha 1 do 15a>"},"schema_version":"aos.planner.v1","run_id":"run-e2e-orq-plan","step_id":"planstep:proposed","idempotency_key":"run-e2e-orq-plan:planstep:proposed"}
 "type":"plan.validated",...,"payload":{"plan_id":"run-e2e-orq-plan","plan_hash":"sha256:f5d82c50…1cdd","node_count":2,"budget_total":100,"max_depth":0,"max_fanout":0,"max_nodes":64,"snapshot_digest":"sha256:9d864689…278d"},...,"idempotency_key":"run-e2e-orq-plan:planstep:validated"}
 "type":"plan.approved",...,"payload":{"plan_id":"run-e2e-orq-plan","plan_hash":"sha256:f5d82c50…1cdd","decision":"approved","decision_ref":"auto:autonomy:L4"},...,"idempotency_key":"run-e2e-orq-plan:planstep:decision:approved"}
 "type":"task.node.created",...,"payload":{"run_id":"run-e2e-orq","task_id":"analise","state":"ready","priority":0,"tool_id":"fs.read","capability":"cap:tool:fs.read"},...,"idempotency_key":"run-e2e-orq:node:analise"}
 "type":"task.node.created",...,"payload":{"run_id":"run-e2e-orq","task_id":"recolha","state":"ready","priority":0},...,"idempotency_key":"run-e2e-orq:node:recolha"}
+"type":"task.edge.added",...,"payload":{"run_id":"run-e2e-orq","from":"recolha","to":"analise"},"schema_version":"1.0","run_id":"run-e2e-orq","step_id":"edge:recolha>analise","idempotency_key":"run-e2e-orq:edge:recolha>analise"}
 "type":"plan.materialized",...,"payload":{"plan_id":"run-e2e-orq-plan","plan_hash":"sha256:f5d82c5096b62270d749a89e412ffdcd9c370ad6f51efae1f64314c5c8661cdd","nodes":[{"node_id":"analise","kind":"leaf","tools":["cap:tool:fs.read"]},{"node_id":"recolha","kind":"role","tools":["cap:tool:fs.read"]}]},"schema_version":"aos.plan…
 "type":"task.node.state_changed",...,"payload":{"run_id":"run-e2e-orq","task_id":"recolha","from":"ready","to":"running"},...,"idempotency_key":"run-e2e-orq:node-st:recolha:running"}
-FORJADO=0 goal=0 task.edge.added=0
+FORJADO=0 goal=0 task.edge.added=1
 ```
 
 ### 15c — Segundo dono: re-hidratação e fencing token monotónico
@@ -1175,11 +1180,12 @@ FORJADO=0 goal=0 task.edge.added=0
 substrato: ficheiro orq.wal — NÃO arbitra entre processos (DEF-282); posse SEQUENCIAL, uma instância de cada vez
 posse: run=run-e2e-orq plano=run-e2e-orq-plan token=2 worker=p2
 grafo re-hidratado: nos=2
+grafo re-hidratado: arestas=1 ordem=recolha,analise
 posse largada: run=run-e2e-orq token=2 (reclamavel JA, sem esperar TTL)
 exit=0
 ```
 
-Depois disto, `wal-summary` mostra `lease.claimed 2` e `lease.released 2`, e o resto igual.
+Depois disto, `inspect` dá `token_corrente=2 nos=2 ordem=recolha,analise` e `wal-summary` mostra `lease.claimed 2` e `lease.released 2`, e o resto igual. O segundo dono **não despacha nada**: sem `--plan-doc` não tem o documento de que o despacho precisa (ver o achado n.º 2 e DEF-817).
 
 **Verificar** (F2E-02 e S-01a, ponto a ponto):
 
@@ -1190,11 +1196,12 @@ Depois disto, `wal-summary` mostra `lease.claimed 2` e `lease.released 2`, e o r
 - O `oraculo=snapshot(sha256:snap-e2e)`: o hash é o do snapshot pinado, não o `sha256:FORJADO` do fixture (F2E-02 passo 4).
 - `recolha` tem um dependente e vira `kind=role`, spawnado **no despacho**; `analise` é `leaf` (F2E-02 passo 6, ADR-024).
 - `nos_despachados=1`: `analise` espera por `recolha`, e só `recolha` passa `ready→running` (F2E-02 passo 7).
-- `plan.materialized` traz `plan_hash`. Tanto os eventos do plano como os nós têm `idempotency_key` `run:step`.
-- O segundo dono recebe `token=2` (monotónico) e re-hidrata `nos=2` **do log**, não de memória (S-01a).
+- `plan.materialized` traz `plan_hash`. Tanto os eventos do plano como os nós e a aresta têm `idempotency_key` `run:step`.
+- **Um `task.edge.added` `recolha → analise`**, escrito depois dos dois `task.node.created` e antes do `plan.materialized` (a ordem das linhas do 15b é a do ficheiro). O `inspect`, que só tem o log, ordena `recolha,analise` (AOS-476).
+- O segundo dono recebe `token=2` (monotónico) e re-hidrata `nos=2` **e** `arestas=1 ordem=recolha,analise` **do log**, não de memória (S-01a).
 
-> **Achado n.º 2 por fechar — AOS-476/AOS-477.** Esta é a pegada que a base `7b9a9ff` produz **hoje**, e vai mudar quando esses dois tickets entrarem:
-> - zero `task.edge.added`: a dependência `analise → recolha` não está no log, e o `inspect` ordena `analise,recolha` (AOS-476);
+> **Achado n.º 2 — a metade do AOS-476 está fechada; a do AOS-477 tem o seu próprio passo.**
+> - *Fechado pelo AOS-476:* a dependência `recolha → analise` está no log (`task.edge.added 1`) e o `inspect` ordena `recolha,analise`. Em `7b9a9ff` havia zero arestas e a ordem era `analise,recolha`. Ressalva: um dono seguinte só **despacha** com o documento do plano (`consume` ou `serve --plan-doc`); o `serve` sem documento do 15c re-hidrata e pára (DEF-817);
 > - o objectivo (`recolher e analisar dados`) tem **0** ocorrências no WAL: o `plan.proposed` leva `plan_hash` e `planner_meta`, não o objectivo, e a ligação pedido → plano → run faz-se pela convenção de nomes (`<run>-plan`) (AOS-477).
 >
 > Continua a não aparecer `plan.intake_classified` (F2E-02 passo 1; achado n.º 4).
@@ -1486,7 +1493,7 @@ As seeds em `$E2E/keys` (incluindo a do selador do passo 13d e as âncoras que e
 Os achados 1 a 8 vêm da verificação de 2026-09-15 e estão actualizados com o que se mediu a 2026-10-02; o 9 é novo.
 
 1. **`aos-issuer autonomy-sign` mistura o aviso no corpo** — *corrigido pelo #298 (`39c0eeb`): o aviso passou para o stderr; confirmado a 2026-10-02.* Em `8e88f88`, sem `--co-emitter`, para L4/L5, o `aos-issuer` escrevia `# aviso: …` no **stdout** (`packages/cmd/aos-issuer/autonomysign.go`). O corpo capturado com `$(...)` começava por `#`, e o nó respondia `400 corpo invalido` em vez do 403 explícito que o handler tem para esse caso (`packages/cmd/aos/autonomy_route.go`). O resultado continuava fail-closed; perdia-se só o diagnóstico. Passo 6c.
-2. **Dependências do plano ausentes do log do `aos-orq --goal`** — *por fechar: AOS-476 (arestas) e AOS-477 (ligação pedido → plano → run).* O plano declara `analise depends_on recolha` e o despacho respeitou-o em memória (`nos_despachados=1`). Mas o WAL tem **zero** `task.edge.added`, e o `inspect` ordena `analise,recolha`. O `RebuildDAG` só repõe arestas a partir desse evento (`packages/control-plane/orchestrator/graph.go`). O objectivo também não fica no WAL (0 ocorrências). Medido de novo em `7b9a9ff`. Passo 15b.
+2. **Dependências do plano ausentes do log do `aos-orq --goal`** — *arestas: fechado pelo AOS-476 (re-medido a 2026-10-02); ligação pedido → plano → run: AOS-477.* O plano declara `analise depends_on recolha` e o despacho respeitava-o só em memória (`nos_despachados=1`): em `7b9a9ff` o WAL tinha **zero** `task.edge.added` e o `inspect` ordenava `analise,recolha`, porque o `RebuildDAG` só repõe arestas a partir desse evento (`packages/control-plane/orchestrator/graph.go`). Com o AOS-476 a materialização escreve um `task.edge.added` por aresta de entrada, depois dos nós e antes do `plan.materialized`; o 15b mostra `task.edge.added 1` e `ordem=recolha,analise`, e o segundo dono do 15c re-hidrata a aresta. **Ressalva:** a pergunta que o achado deixava em aberto («um segundo dono pode despachar fora de ordem?») tem resposta medida: não, e um segundo dono **sem documento** não despacha nada, re-hidrata e pára. A retoma do despacho existe pelo `consume` ou por `serve --plan-doc` com o documento ancorado no `plan.validated`, que levam o plano ao fim (`TestAOS476_DonoSeguinteDespachaSoPelaRetoma`). A via sem documento fica registada como DEF-817; a morte por TTL sobre `--nats` e a pasta `--plan-dir` partilhada não estão verificadas. O objectivo em claro continua a não ficar no WAL (0 ocorrências; AOS-477). Passos 15b e 15c.
 3. **Doc 19 §9.1 desactualizado** — *corrigido no mesmo PR de 2026-09-15: o §9.1, a regra do P-04 e o §2 passam a reflectir o ADR-025.* O texto dizia que a demoção automática não vigorava (DEF-908). O banner declara `democao automatica por anomalia (AOS-090/DEF-908): LIGADA` e `promocao automatica por fiabilidade (AOS-090/ADR-025): LIGADA`. Passo 1.
 4. **Evento citado no F2E-02 passo 1 sem emissão observada.** `plan.intake_classified` continua sem aparecer no WAL do `aos-orq`. A metade que dizia que o gate humano de plano estava fora do binário **deixou de valer**: desde o AOS-408 o `aos-orq` declara o gate composto e emite `plan.proposed`, `plan.validated` e `plan.approved` (passo 15). Passo 15.
 5. **Código HTTP da reconstrução após shred.** Observado `410 reconstrucao indisponivel`; o precedente [`ciclo-de-vida-manual.md`](ciclo-de-vida-manual.md) (passo 10) documenta 404. Passo 11.

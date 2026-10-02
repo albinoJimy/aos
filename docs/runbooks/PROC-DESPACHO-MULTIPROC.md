@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | ID | PROC-DESPACHO-MULTIPROC |
-| Versão | 1.0 |
+| Versão | 1.1 (2026-10-02, AOS-476: a recuperação da morte de uma réplica deixa de afirmar que o despacho retoma sozinho — DEF-817) |
 | Tipo | Procedimento operacional (v1.1 distribuído; entregue por AOS-392) |
 | Modo de falha | Correr N réplicas do `aos-orq` sobre o mesmo substrato sem arbitragem ⇒ efeito duplicado (dois processos a despachar/spawnar o mesmo run) |
 | ADR | ADR-023 (escritor único por-run: o lease arbitra), ADR-024 (o efeito vive no despacho, não na materialização), ADR-018 (fronteira nó↔ORQ/SCH) |
@@ -43,7 +43,10 @@ N× aos-orq serve --nats <cluster-addr> --nats-stream <stream> --nats-replicas 3
 
 ## Recuperação da morte de uma réplica
 
-- A morte **abrupta** de uma réplica dona de um run deixa o lease a expirar por **TTL** (`leaseTTL`). Outra réplica assume o run após a expiração e **re-hidrata** o grafo do log (`RebuildDAG`) — o despacho retoma sem re-executar o que já concluiu (idempotência por `(run_id, step_id)`).
+- A morte **abrupta** de uma réplica dona de um run deixa o lease a expirar por **TTL** (`leaseTTL`). Outra réplica pode reclamar o run após a expiração e **re-hidrata** o grafo do log (`RebuildDAG`): nós, arestas de dependência (`task.edge.added`, desde o AOS-476) e estado por-nó.
+- **O despacho só retoma com o documento do plano** (medido a 2026-10-02, AOS-476; DEF-817). A retoma existe por duas vias: o `consume` (que escolhe `--plan-doc` a partir da pasta `--plan-dir`, AOS-442) e `serve --plan-doc` com o documento que o `plan.validated` do run ancora. Por qualquer delas o `serve` reconhece o `plan.materialized`, não re-materializa e despacha os nós que ficaram por despachar, sem re-submeter os que estavam em voo (AOS-413). Uma materialização que morreu a meio (nós no log, sem `plan.materialized`) também se retoma assim: os nós que coincidem com o documento são aceites sem reescrita, e um nó que diverge recusa com **exit 10**.
+- **`serve` sem documento re-hidrata e NÃO despacha.** O despacho precisa do `PlanDocument` (predicados de `conditional_on`, `risk_class`) e o log só guarda o hash dele (ADR-005). Uma réplica que assuma o run por TTL e corra `serve` sem `--plan-doc` deixa os nós pendentes como estão: fail-closed (nada fora de ordem, nada duplicado), mas o run não termina. Tratá-lo como incidente do run e retomá-lo pelo `consume` ou por `serve --plan-doc`.
+- **Não verificado nesta topologia:** a morte por TTL sobre `--nats` seguida de retoma noutra réplica, e a pasta `--plan-dir` **partilhada** entre réplicas (o `consume` exige-a com `--nats`, mas a partilha não é verificada pelo binário — resíduo do AOS-442). Ambos estão medidos só sobre `--wal`, com processos sequenciais.
 - **NÃO** forçar a tomada de um run cujo lease ainda está vivo: o exit 3 («negado-pelo-lease») diz ao operador para **parar o outro dono do run**, não para o contornar. Roubar o lease violaria a invariante de escritor único (ADR-023).
 - Janela conhecida: a janela TOCTOU do caso token-igual do `FencedAppender` mantém-se delegada ao CAS do substrato de produção (ADR-023 §4) — não é fechada por este procedimento.
 
