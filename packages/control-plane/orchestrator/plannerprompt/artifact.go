@@ -85,9 +85,19 @@ REGRAS DURAS:
     anterior foi rejeitado pelo validador com esses codigos (rule, reason e, quando
     existe, node_id). Corrige EXACTAMENTE essa causa e devolve o documento INTEIRO e
     corrigido. Nao repitas o mesmo erro, nao pecas desculpa e nao expliques: a tua saida
-    continua a ser so o JSON.`
+    continua a ser so o JSON.
+12. depends_on sozinho fixa a ORDEM e NAO entrega dados. Um no que precise do que outro
+    no produziu (o texto lido, o registo, o artefacto) so o recebe por contrato: o
+    produtor declara-o em outputs e o consumidor declara-o em consumes. Para estes dois
+    campos isto prevalece sobre o "SO quando o objectivo os exige" da regra 7, e usa-los
+    obriga a carimbar plan_version "1.2.0" (regra 6). O executor so transporta duas
+    coisas: de um no que nao e verifier, UM output de forma aberta ("summary", "record"
+    ou "artifact"), e com mais do que um nao transporta nenhum; de um no role: verifier,
+    o "verdict". Um consumes de "metrics" NAO e entregue, venha de que no vier: o no que
+    o declara nao corre e fica failed. Um no com ferramenta de efeito continua sob a
+    regra 8. depends_on sem consumes continua valido quando a dependencia e so de ordem.`
 
-// Current é o prompt de decomposição CORRENTE que este módulo publica (v1.3.0). As
+// Current é o prompt de decomposição CORRENTE que este módulo publica (v1.4.0). As
 // propostas novas saem sob esta versão; um bump governado (ADR-012, via
 // [ValidatePromptMutation]) actualiza este valor. É cache-estável por construção
 // (template const).
@@ -121,7 +131,21 @@ REGRAS DURAS:
 // reenviava o MESMO prompt. É aditivo: as regras 1 a 10 ficam intactas, o schema não muda,
 // e um documento válido sob 1.2.0 continua válido. O 1.2.0 fica em
 // `testdata/prompt-1.2.0.txt`, contra o qual a mutação é validada.
+// 1.4.0 (AOS-484) — MINOR: a regra 12 diz que `depends_on` só fixa a ordem e que os dados
+// entre nós viajam por contrato (`outputs` no produtor, `consumes` no consumidor), lembra que
+// usar os dois campos obriga a carimbar a linha 1.2.0 (a FORMA MINIMA mostra 1.0.0), e diz o
+// que o executor consegue transportar — que é MENOS do que o validador admite: de um nó que
+// não é `verifier`, um só output de forma aberta (com dois, o `publicarSaidas` do `aos-orq`
+// não publica nenhum); de um `verifier`, o `verdict`; e nunca um `metrics`, venha de que nó
+// vier (ninguém mede os números — resíduo do AOS-414). Medido em produção a 2026-10-02 (`plan-e2e-pegadas-1790956072`): o modelo
+// declarou a dependência sem contrato — a regra 7 manda usar `outputs` e `consumes` «SO
+// quando o objectivo os exige» —, o nó de resumo correu sem o documento que o anterior leu,
+// e o plano saiu `terminal` com código 0. É aditivo: as regras 1 a 11 ficam byte a byte
+// iguais, o schema não muda e o texto não impõe nada — um plano com a dependência só de
+// ordem continua a ser admitido pelo validador, pelo que um documento válido sob 1.3.0
+// continua válido. É uma instrução ao modelo e não uma garantia (resíduo declarado no
+// ticket). O 1.3.0 fica em `testdata/prompt-1.3.0.txt`, contra o qual a mutação é validada.
 var Current = Prompt{
-	Version:  PromptVersion{Major: 1, Minor: 3, Patch: 0},
+	Version:  PromptVersion{Major: 1, Minor: 4, Patch: 0},
 	Template: decompositionTemplateV1,
 }

@@ -240,6 +240,12 @@ func TestAOS413_OrganigramaAprovadoExecutaAteAoFim(t *testing.T) {
 
 // TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco: o nó de risco só corre com `pass`. Uma saída
 // que não se lê pela gramática fechada é `fail`.
+//
+// AOS-484: a saída continua a ser 0 em TODOS os casos, incluindo o ilegível. O código 13 decide-se
+// pelo estado do NÓ, e aqui nenhum nó falhou: o verificador CONCLUIU (`complete`) — uma saída
+// ilegível regista-se como veredicto `fail` com a razão `verdict_unparseable`, não fecha o nó como
+// `failed` — e o `n3`, o ramo condicional que o veredicto reteve, nunca foi despachado. Um ramo não
+// tomado não é um nó falhado: o plano correu como foi desenhado.
 func TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco(t *testing.T) {
 	for nome, saida := range map[string]string{
 		"fail":           `{"outcome":"fail","reasons":["dados_sensiveis"]}`,
@@ -264,6 +270,10 @@ func TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco(t *testing.T) {
 			}
 			if !strings.Contains(r.stdout, "n1=complete n2=complete") {
 				t.Fatalf("n1 e n2 tinham de concluir:\n%s", r.stdout)
+			}
+			// AOS-484: o ramo retido não está `failed` — é por isso que a saída é 0 e não 13.
+			if strings.Contains(r.stdout, "=failed") {
+				t.Fatalf("o ramo retido pelo veredicto não é um nó falhado:\n%s", r.stdout)
 			}
 		})
 	}
@@ -292,13 +302,16 @@ func TestAOS413_PrazoComNosEmVooSai8ERetoma(t *testing.T) {
 
 // Um run que parou por esgotar o orçamento responde `completed` sem `terminated`: é trabalho a
 // meio, e o nó fica `failed` — os dependentes não arrancam sobre ele.
+//
+// AOS-484: e o `serve` sai com 13, não com 0. Exigia-se 0 aqui, e era o defeito: o plano chegava ao
+// fim com o primeiro nó a meio, nenhum dependente corria, e o desfecho era o de um plano bem-sucedido.
 func TestAOS413_RunAMeioNaoConcluiONo(t *testing.T) {
 	f := &aos413No{saidaVerif: `{"outcome":"pass","reasons":[]}`, aMeio: map[string]bool{"n1": true}}
 	const run = "run-aos413-a-meio"
 	env, bin, wal, snapPath, doc := aos413Aprovado(t, f, run)
 	r := aos413Serve(t, env, bin, wal, run, snapPath, doc)
-	if r.code != exitOK {
-		t.Fatalf("saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	if r.code != exitNosFalhados {
+		t.Fatalf("com o n1 a meio tinha de sair %d, saiu %d\n%s\n%s", exitNosFalhados, r.code, r.stdout, r.stderr)
 	}
 	if !strings.Contains(r.stdout, "n1=failed") {
 		t.Fatalf("o n1 que parou a meio tinha de ficar failed:\n%s", r.stdout)
@@ -426,6 +439,11 @@ const aos414PlanoComMetrics = `{
 // TestAOS414_ContratoPorCumprirFalhaONoENaoOServe: um contrato que nunca pode ser cumprido
 // fecha o CONSUMIDOR e deixa o plano terminar. FALHA-ANTES: o sink recusava, a passagem abortava,
 // o serve saia com erro e TODAS as retomas repetiam o mesmo — o plano nunca acabava.
+//
+// AOS-484: o código de saída passa de 0 para 13 (um nó `failed` não é um plano bem-sucedido). O
+// que este teste protege não muda, e continua provado: o `serve` não ABORTA a meio — chega ao fim
+// do plano, imprime o resumo e larga a posse — e a retoma não repete o erro nem re-executa nada.
+// Um `1` genérico (a passagem abortada de antes) continuaria a avermelhar aqui.
 func TestAOS414_ContratoPorCumprirFalhaONoENaoOServe(t *testing.T) {
 	f := &aos413No{}
 	srv := f.servidor(t)
@@ -441,10 +459,14 @@ func TestAOS414_ContratoPorCumprirFalhaONoENaoOServe(t *testing.T) {
 	wal := filepath.Join(dir, "es.wal")
 	const run = "run-aos414-metrics"
 
+	doc := filepath.Join(dir, "validado.json")
 	r := correrComEnv(t, env, bin, "serve", "--wal", wal, "--run", run, "--goal", "medir-e-reagir",
-		"--snapshot", snapPath, "--decompose-fixture", fix, "--worker", "p1", "--poll-interval", "20ms")
-	if r.code != exitOK {
-		t.Fatalf("o serve tinha de TERMINAR, saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+		"--snapshot", snapPath, "--decompose-fixture", fix, "--plan-out", doc, "--worker", "p1", "--poll-interval", "20ms")
+	if r.code != exitNosFalhados {
+		t.Fatalf("o serve tinha de TERMINAR o plano e sair %d (nó falhado), saiu %d\n%s\n%s", exitNosFalhados, r.code, r.stdout, r.stderr)
+	}
+	if !strings.Contains(r.stdout, "despachado: plano="+run+"-plan") {
+		t.Fatalf("o serve tinha de chegar ao FIM do despacho, e não abortar a meio:\n%s", r.stdout)
 	}
 	if !strings.Contains(r.stdout, "execucao: n1=complete n2=failed") {
 		t.Fatalf("o n1 tinha de concluir e o n2 fechar sem payload:\n%s", r.stdout)
@@ -454,5 +476,17 @@ func TestAOS414_ContratoPorCumprirFalhaONoENaoOServe(t *testing.T) {
 	}
 	if ids := f.submetidos(); len(ids) != 1 || ids[0] != run+"~n1" {
 		t.Fatalf("só o n1 podia correr, correram %v", ids)
+	}
+	// A RETOMA não repete: a posse foi largada (não sai 3), o nó já fechado não se fecha outra vez,
+	// nada é despachado, e o desfecho é o mesmo.
+	r2 := aos413Serve(t, env, bin, wal, run, snapPath, doc)
+	if r2.code != exitNosFalhados {
+		t.Fatalf("a retoma tinha de sair %d outra vez, saiu %d\n%s\n%s", exitNosFalhados, r2.code, r2.stdout, r2.stderr)
+	}
+	if strings.Contains(r2.stdout, "ficou por cumprir") || strings.Contains(r2.stdout, "despacho: ") {
+		t.Fatalf("a retoma não podia repetir o fecho do nó nem despachar:\n%s", r2.stdout)
+	}
+	if ids := f.submetidos(); len(ids) != 1 || ids[0] != run+"~n1" {
+		t.Fatalf("a retoma não podia submeter nada, e há %v", ids)
 	}
 }

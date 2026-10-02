@@ -64,6 +64,18 @@ const (
 // errNosEmVoo — o prazo do `serve` acabou com nós ainda a correr (código de saída 8).
 var errNosEmVoo = errors.New("aos-orq: prazo do serve esgotado com nos do plano em execucao")
 
+// errNosFalhados — o plano chegou ao fim com pelo menos um nó em `failed` (código de saída 13,
+// AOS-484). Decide-se pelo ESTADO DURÁVEL do nó no grafo, e por mais nada: um nó cujo run parou a
+// meio, se perdeu (404 persistente) ou cujo `consumes` ficou por cumprir QUANDO IA CORRER está
+// `failed`; um verificador que disse `fail` está `complete`, e o ramo que ele reteve fica por
+// despachar — o [podarSemPayload] não o fecha, mesmo que o `consumes` dele não se cumpra. Nenhum
+// dos dois conta.
+//
+// CONTA, e é um limite declarado: um nó `failed` cuja falha o plano previa com um ramo
+// `terminal_state eq failed`. O ramo de recuperação corre e conclui, e a saída é 13 na mesma — o
+// critério olha para o estado dos nós e não pergunta se a falha foi tratada.
+var errNosFalhados = errors.New("aos-orq: o plano terminou com nos falhados")
+
 // configDoExecutor é o executor tal como o `serve` o compõe.
 type configDoExecutor struct {
 	cli      nodeRunner
@@ -110,6 +122,22 @@ func resumoDaExecucao(g *orchestrator.GraphBuilder, payload plannerevents.Materi
 	}
 	sort.Strings(estados)
 	return "execucao: " + strings.Join(estados, " ")
+}
+
+// nosFalhados devolve, por ordem, os nós do plano que estão `failed` no grafo do run (AOS-484).
+//
+// Lê o MESMO grafo que o [resumoDaExecucao] imprime — re-hidratado do log no arranque e mantido
+// pelo `MarkTerminal` desta posse —, pelo que a linha `execucao:` e o código de saída não podem
+// dizer coisas diferentes, e uma retoma vê os mesmos nós falhados sem re-executar nenhum.
+func nosFalhados(g *orchestrator.GraphBuilder, payload plannerevents.MaterializedPayload) []string {
+	var falhados []string
+	for _, n := range payload.Nodes {
+		if st, ok := g.DAG().State(n.NodeID); ok && st == arstate.Failed {
+			falhados = append(falhados, n.NodeID)
+		}
+	}
+	sort.Strings(falhados)
+	return falhados
 }
 
 // separadorDoRunFilho separa o run do nó do plano no id do run filho. Não é `/` (o `/runs/{id}`
@@ -406,12 +434,24 @@ func (e *executorDeNos) entradasDe(n plan.Node) ([]entradaDoNo, error) {
 // recusava e a passagem ABORTAVA — deixando os irmãos em voo por recolher e o `serve` a repetir o
 // mesmo erro em todas as retomas. Falha o NÓ (durável, com razão visível) e o plano segue: os
 // dependentes são podados pelas regras normais do despacho.
+//
+// SÓ SE FECHA UM NÓ QUE IA MESMO CORRER (AOS-484). Um nó atrás de um ramo condicional por decidir
+// ou NÃO tomado não corre, logo não lhe falta payload nenhum: fechá-lo como `failed` punha no log
+// uma falha que não aconteceu — e, desde que um nó `failed` dá a saída 13, fazia um veredicto
+// `fail` que retém um ramo sair como um plano falhado. Ver [ramosRetidos].
 func (e *executorDeNos) podarSemPayload(ctx context.Context) error {
+	retidos, err := e.ramosRetidos(ctx)
+	if err != nil {
+		return err
+	}
 	for id, n := range e.nos {
 		if len(n.Consumes) == 0 {
 			continue
 		}
 		if st, ok := e.g.DAG().State(id); !ok || st != arstate.Ready {
+			continue
+		}
+		if retidos[id] {
 			continue
 		}
 		for _, c := range n.Consumes {
@@ -433,6 +473,67 @@ func (e *executorDeNos) podarSemPayload(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// ramosRetidos devolve os nós que NÃO vão correr nesta passagem por causa de um ramo condicional
+// (AOS-484): os que têm `conditional_on` sem decisão registada ou com a decisão «não tomado», e
+// toda a descendência deles por qualquer dos dois canais de aresta — a mesma propagação que o
+// despacho faz (`plandispatch.propagateNotTaken`).
+//
+// A fonte é o FACTO `plan.branch_decided` do log, lido pela mesma porta que o despacho usa, e não
+// uma segunda avaliação das condições: quem decide o ramo continua a ser o despachante. Um ramo que
+// o despacho decida «tomado» nesta passagem só aparece aqui na seguinte — ver o laço em
+// `composeEDespachar`, que não aborta nesse caso.
+//
+// Um nó que já arrancou (a correr, concluído ou falhado) não está retido: o ramo dele foi tomado.
+// Um plano sem arestas condicionais não lê o log.
+func (e *executorDeNos) ramosRetidos(ctx context.Context) (map[string]bool, error) {
+	haCondicionais := false
+	for _, n := range e.nos {
+		if len(n.ConditionalOn) > 0 {
+			haCondicionais = true
+			break
+		}
+	}
+	if !haCondicionais {
+		return nil, nil
+	}
+	decisoes, err := e.rec.BranchJournal().Decisions(ctx, e.rec.PlanID())
+	if err != nil {
+		return nil, fmt.Errorf("decisoes de ramo do plano %q: %w", e.rec.PlanID(), err)
+	}
+	memo := make(map[string]bool, len(e.nos))
+	var retido func(id string) bool
+	retido = func(id string) bool {
+		if v, visto := memo[id]; visto {
+			return v
+		}
+		memo[id] = false // o grafo é acíclico (AOS-231); isto só trava um documento que não o seja
+		n, ok := e.nos[id]
+		if !ok {
+			return false
+		}
+		if st, ok := e.g.DAG().State(id); ok && st != arstate.Ready {
+			return false
+		}
+		r := false
+		if len(n.ConditionalOn) > 0 {
+			d, decidido := decisoes[id]
+			r = !decidido || !d.Taken
+		}
+		for _, origem := range n.IncomingEdges() {
+			if r {
+				break
+			}
+			r = retido(origem)
+		}
+		memo[id] = r
+		return r
+	}
+	for id := range e.nos {
+		retido(id)
+	}
+	return memo, nil
 }
 
 // digestDoConteudo é o `sha256:<hex>` do conteúdo. O nó reverifica-o: é um controlo de

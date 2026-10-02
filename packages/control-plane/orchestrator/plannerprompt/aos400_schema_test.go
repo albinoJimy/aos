@@ -463,21 +463,170 @@ func lerTemplate120(t *testing.T) string {
 // TestAOS415_Mutacao120Para130PassaOGateADR012: o bump que acrescenta a regra 11 (o bloco
 // de RECUSA DA TENTATIVA ANTERIOR). MINOR e ADITIVO: as regras 1 a 10 do 1.2.0 ficam
 // intactas, e o que muda é texto NOVO no fim.
+//
+// AOS-484: o `Current` subiu para 1.4.0, pelo que esta mutação passa a ser medida contra o
+// template 1.3.0 GUARDADO (`testdata/prompt-1.3.0.txt`) — o que este teste prova continua a
+// ser o bump do AOS-415, não o do ticket seguinte. O bump 1.3.0 → 1.4.0 tem teste próprio.
 func TestAOS415_Mutacao120Para130PassaOGateADR012(t *testing.T) {
 	antigo := Prompt{Version: PromptVersion{Major: 1, Minor: 2, Patch: 0}, Template: lerTemplate120(t)}
+	novo := Prompt{Version: PromptVersion{Major: 1, Minor: 3, Patch: 0}, Template: lerTemplate130(t)}
 	ap := PromptApproval{Approver: "Arquitecto de Plataforma", ADR012Ref: "ADR-012 (AOS-415)"}
-	if err := ValidatePromptMutation(antigo, Current, ap); err != nil {
-		t.Fatalf("a mutacao 1.2.0 -> %s devia passar o gate: %v", Current.MetaPromptVersion(), err)
+	if err := ValidatePromptMutation(antigo, novo, ap); err != nil {
+		t.Fatalf("a mutacao 1.2.0 -> 1.3.0 devia passar o gate: %v", err)
 	}
-	if v := Current.Version; v.Major != 1 || v.Minor != 3 || v.Patch != 0 {
-		t.Fatalf("o AOS-415 e um MINOR sobre 1.2.0; Current=%s", Current.MetaPromptVersion())
+	inicioRegras := strings.Index(antigo.Template, "REGRAS DURAS:")
+	if inicioRegras < 0 || !strings.Contains(novo.Template, antigo.Template[inicioRegras:]) {
+		t.Fatal("as REGRAS DURAS do 1.2.0 tinham de ficar intactas no 1.3.0 (bump MINOR aditivo)")
+	}
+	if !strings.Contains(novo.Template, "RECUSA DA TENTATIVA ANTERIOR") {
+		t.Fatal("o 1.3.0 tem de declarar o bloco de recusa que o chamador injecta")
+	}
+}
+
+// fingerprintPrompt130 é o SHA-256 do template 1.3.0 tal como foi publicado (AOS-415).
+const fingerprintPrompt130 = "86feca621430859d2dd7b4386d3cd731f7dcc8b8c3dd01573ba5b98b5b50181a"
+
+func lerTemplate130(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/prompt-1.3.0.txt")
+	if err != nil {
+		t.Fatalf("template 1.3.0: %v", err)
+	}
+	raw = bytes.TrimSuffix(raw, []byte("\n"))
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != fingerprintPrompt130 {
+		t.Fatalf("testdata/prompt-1.3.0.txt nao e o template publicado: sha256=%s", got)
+	}
+	return string(raw)
+}
+
+// regra12 é o texto da regra que o AOS-484 acrescenta, tal como o template o publica. Fica
+// aqui por extenso de propósito: o gate ADR-012 só vê que o conteúdo mudou e a versão subiu, e
+// o teste de aditividade só vê que o texto antigo continua lá. O que a regra DIZ ao modelo é
+// isto, e uma edição que lhe mude uma palavra tem de passar por aqui.
+const regra12 = `12. depends_on sozinho fixa a ORDEM e NAO entrega dados. Um no que precise do que outro
+    no produziu (o texto lido, o registo, o artefacto) so o recebe por contrato: o
+    produtor declara-o em outputs e o consumidor declara-o em consumes. Para estes dois
+    campos isto prevalece sobre o "SO quando o objectivo os exige" da regra 7, e usa-los
+    obriga a carimbar plan_version "1.2.0" (regra 6). O executor so transporta duas
+    coisas: de um no que nao e verifier, UM output de forma aberta ("summary", "record"
+    ou "artifact"), e com mais do que um nao transporta nenhum; de um no role: verifier,
+    o "verdict". Um consumes de "metrics" NAO e entregue, venha de que no vier: o no que
+    o declara nao corre e fica failed. Um no com ferramenta de efeito continua sob a
+    regra 8. depends_on sem consumes continua valido quando a dependencia e so de ordem.`
+
+// TestAOS484_Mutacao130Para140PassaOGateADR012: o bump que acrescenta a regra 12 (os dados
+// entre nós viajam por `outputs`/`consumes`, e o que o executor consegue transportar). MINOR
+// e ADITIVO, e aqui «aditivo» mede-se byte a byte: o template 1.4.0 É o 1.3.0 seguido da
+// regra nova — nada antes dela mudou, nem o SCHEMA, nem a FORMA MINIMA, nem as regras 1 a 11.
+func TestAOS484_Mutacao130Para140PassaOGateADR012(t *testing.T) {
+	antigo := Prompt{Version: PromptVersion{Major: 1, Minor: 3, Patch: 0}, Template: lerTemplate130(t)}
+	ap := PromptApproval{Approver: "Arquitecto de Plataforma", ADR012Ref: "ADR-012 (AOS-484)"}
+	if err := ValidatePromptMutation(antigo, Current, ap); err != nil {
+		t.Fatalf("a mutacao 1.3.0 -> %s devia passar o gate: %v", Current.MetaPromptVersion(), err)
+	}
+	if v := Current.Version; v.Major != 1 || v.Minor != 4 || v.Patch != 0 {
+		t.Fatalf("o AOS-484 e um MINOR sobre 1.3.0; Current=%s", Current.MetaPromptVersion())
 	}
 	inicioRegras := strings.Index(antigo.Template, "REGRAS DURAS:")
 	if inicioRegras < 0 || !strings.Contains(Current.Template, antigo.Template[inicioRegras:]) {
-		t.Fatal("as REGRAS DURAS do 1.2.0 tinham de ficar intactas no 1.3.0 (bump MINOR aditivo)")
+		t.Fatal("as REGRAS DURAS do 1.3.0 tinham de ficar intactas no 1.4.0 (bump MINOR aditivo)")
 	}
-	if !strings.Contains(Current.Template, "RECUSA DA TENTATIVA ANTERIOR") {
-		t.Fatal("o 1.3.0 tem de declarar o bloco de recusa que o chamador injecta")
+	if Current.Template != antigo.Template+"\n"+regra12 {
+		t.Fatalf("o 1.4.0 tem de ser o 1.3.0 byte a byte, seguido da regra 12 e de mais nada:\n%s", Current.Template)
+	}
+	// Sem a aprovação ADR-012 a mesma mutação é recusada: o gate não é decorativo.
+	if err := ValidatePromptMutation(antigo, Current, PromptApproval{}); !errors.Is(err, ErrPromptUnapproved) {
+		t.Fatalf("sem aprovacao a mutacao tinha de ser recusada com ErrPromptUnapproved, veio %v", err)
+	}
+}
+
+// TestAOS484_ARegra12DizOQueOSchemaEOValidadorSustentam prende as afirmações da regra ao
+// código que as torna verdadeiras. A regra é texto para um modelo; se o contrato em código
+// mudar e ela não, passa a ensinar um plano que o resto do sistema não cumpre.
+//
+// LIMITE DECLARADO: o que o EXECUTOR transporta é comportamento do `publicarSaidas` do `aos-orq`,
+// noutro módulo — este teste não o alcança. Quem prende essas frases ao executor, em
+// `packages/cmd/aos-orq`: `TestAOS484_DoisOutputsAbertosNaoSeTransportam` («com mais do que um
+// nao transporta nenhum»), `TestAOS484_MetricsNaoSeTransportaNemDeUmVerificador` («um consumes de
+// metrics NAO e entregue, venha de que no vier») e `TestAOS414_OVerificadorRecebeOQueONoAnteriorLeu`
+// («de um no role: verifier, o verdict»).
+func TestAOS484_ARegra12DizOQueOSchemaEOValidadorSustentam(t *testing.T) {
+	// (1) Os tipos «de forma aberta» que a regra nomeia são exactamente os que o schema não
+	// trata como forma fechada, e os outros dois são os fechados.
+	for _, tipo := range []plan.PayloadType{plan.PayloadSummary, plan.PayloadRecord, plan.PayloadArtifact} {
+		if tipo.ClosedForm() {
+			t.Fatalf("a regra 12 chama forma aberta a %q, e o schema trata-o como fechado", tipo)
+		}
+		if !strings.Contains(regra12, `"`+string(tipo)+`"`) {
+			t.Fatalf("a regra 12 nao nomeia o tipo de forma aberta %q", tipo)
+		}
+	}
+	for _, tipo := range []plan.PayloadType{plan.PayloadMetrics, plan.PayloadVerdict} {
+		if !tipo.ClosedForm() {
+			t.Fatalf("a regra 12 trata %q como forma fechada, e o schema nao o trata assim", tipo)
+		}
+		if !strings.Contains(regra12, `"`+string(tipo)+`"`) {
+			t.Fatalf("a regra 12 nao nomeia o tipo de forma fechada %q", tipo)
+		}
+	}
+	// (2) O plano que a regra ensina — o produtor declara o output, o consumidor declara o
+	// consumes, linha 1.2.0 — passa o decode e o validador AOS-231.
+	snap := testSnapshot()
+	tool := snap.Tools[0]
+	contratoDoProdutor := `,
+   "outputs":[{"name":"conteudo","type":"record","taint":"untrusted"}]`
+	contratoDoConsumidor := `,
+   "consumes":[{"from":"n1","output":"conteudo","type":"record"}]`
+	comContrato := `{"plan_version":"1.2.0","objective":"ler e resumir",
+ "budget_total":{"tokens":200,"cost_micro_usd":200},
+ "planner_meta":{"model":"m","prompt_version":"` + Current.MetaPromptVersion() + `","capabilities_hash":"` + snap.Hash + `"},
+ "nodes":[
+  {"node_id":"n1","role":"reader","objective":"ler o documento",
+   "tools":[{"name":"` + tool.Name + `","version":"` + tool.Version + `","digest":"` + tool.Digest + `"}],
+   "depends_on":[],"budget_estimate":{"tokens":100,"cost_micro_usd":100}` + contratoDoProdutor + `},
+  {"node_id":"n2","role":"summarizer","objective":"resumir o que foi lido",
+   "tools":[],"depends_on":["n1"],"budget_estimate":{"tokens":100,"cost_micro_usd":100}` + contratoDoConsumidor + `}]}`
+	doc, err := plan.Decode([]byte(comContrato))
+	if err != nil {
+		t.Fatalf("o plano que a regra 12 ensina nao passa o decode: %v", err)
+	}
+	if v := planvalidate.Validate(doc, snap, testCeilings()); !v.OK {
+		t.Fatalf("o plano que a regra 12 ensina devia passar o validador: %+v", v)
+	}
+	if len(doc.Nodes[0].Outputs) != 1 || len(doc.Nodes[1].Consumes) != 1 {
+		t.Fatalf("pre-condicao: o plano com contrato tinha de declarar um output e um consumes: %+v", doc.Nodes)
+	}
+	// (2-bis) «usa-los obriga a carimbar plan_version "1.2.0" (regra 6)»: o MESMO plano carimbado
+	// com a linha que a FORMA MINIMA mostra é recusado. Sem o lembrete, a regra 12 empurrava o
+	// modelo para `outputs`/`consumes` e a forma que ele copia dava uma recusa.
+	if !strings.Contains(regra12, `plan_version "1.2.0" (regra 6)`) {
+		t.Fatal("a regra 12 tem de lembrar que outputs/consumes obrigam a carimbar a linha 1.2.0")
+	}
+	if !strings.Contains(formaMinima(t), `"plan_version":"1.0.0"`) {
+		t.Fatal("pre-condicao: a FORMA MINIMA deixou de mostrar 1.0.0; rever o lembrete da regra 12")
+	}
+	abaixo := strings.Replace(comContrato, `"plan_version":"1.2.0"`, `"plan_version":"1.0.0"`, 1)
+	doc, err = plan.Decode([]byte(abaixo))
+	if err != nil {
+		t.Fatalf("o plano com contrato carimbado 1.0.0 nao passa o decode: %v", err)
+	}
+	if v := planvalidate.Validate(doc, snap, testCeilings()); !v.Rejected() || v.Reason != planvalidate.ReasonVersionBelowFeatures {
+		t.Fatalf("outputs/consumes com plan_version 1.0.0 tinha de ser recusado com %s: %+v", planvalidate.ReasonVersionBelowFeatures, v)
+	}
+	// (3) A última frase da regra é verdadeira: a dependência só de ordem continua válida
+	// (a opção (A) do ticket — recusá-la na validação — foi recusada pelo dono).
+	soOrdem := strings.NewReplacer(contratoDoProdutor, "", contratoDoConsumidor, "",
+		`"plan_version":"1.2.0"`, `"plan_version":"1.0.0"`).Replace(comContrato)
+	doc, err = plan.Decode([]byte(soOrdem))
+	if err != nil {
+		t.Fatalf("o plano so de ordem nao passa o decode: %v", err)
+	}
+	if len(doc.Nodes[0].Outputs) != 0 || len(doc.Nodes[1].Consumes) != 0 || len(doc.Nodes[1].DependsOn) != 1 {
+		t.Fatalf("pre-condicao: o mutante so de ordem tinha de ficar com depends_on e sem contrato: %+v", doc.Nodes)
+	}
+	if v := planvalidate.Validate(doc, snap, testCeilings()); !v.OK {
+		t.Fatalf("depends_on sem consumes tem de continuar valido (AOS-484, opcao (A) recusada): %+v", v)
 	}
 }
 

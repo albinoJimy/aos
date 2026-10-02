@@ -68,6 +68,8 @@ const maxPedidosPorDrenagem = 16
 //	                                        determinista até o humano re-assinar (AOS-439)
 //	12 exitGeracoesEsgotadas   TERMINAL     o nó marcou a geração como a que passa o tecto de
 //	                                        gerações do pedido; fecha-se sem planear (AOS-467)
+//	13 exitNosFalhados         TERMINAL     o plano chegou ao fim com nó(s) `failed`; o estado é
+//	                                        durável e repetir não os re-executa (AOS-484)
 //	0 (sem erro)               TERMINAL     o plano correu
 //	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
 //
@@ -80,7 +82,8 @@ const maxPedidosPorDrenagem = 16
 // pendentes, que não o tem — limita quantos pedidos esperam, não quantas vezes um deles re-planeia.
 func classeDoDesfecho(codigo int) string {
 	switch codigo {
-	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato, exitGeracoesEsgotadas:
+	case exitOK, exitDecisaoRecusada, exitPlanoRecusado, exitDocumentoRecusado, exitRequerenteForaDoMandato, exitGeracoesEsgotadas,
+		exitNosFalhados:
 		return "terminal"
 	case exitPendenteDeAprovacao:
 		return "aguarda_humano"
@@ -487,6 +490,8 @@ func tipoDoErro(err error) string {
 		return "snapshot_diferente_do_selado"
 	case errors.Is(err, errRequerenteForaDoMandato):
 		return "requerente_fora_do_mandato"
+	case errors.Is(err, errNosFalhados):
+		return "nos_falhados"
 	default:
 		return "generico"
 	}

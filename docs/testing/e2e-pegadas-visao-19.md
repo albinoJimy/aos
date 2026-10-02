@@ -1056,6 +1056,8 @@ Em Git Bash, a terceira linha sai em forma Windows (`C:/…/keys/ap-ana.seed`). 
 
 > **Re-medido a 2026-10-02 com o AOS-476 e o AOS-477 já na árvore** (blocos deste passo copiados do ficheiro e corridos por esta ordem). As pegadas 15a–15c abaixo são dessa corrida.
 
+> **A RE-MEDIR (AOS-484).** As pegadas deste passo são as da corrida de 2026-10-02, com o prompt do planeador **1.3.0**, e ficam como foram medidas. Desde o AOS-484 o prompt é **1.4.0**: o decompositor carimba o `prompt_version` no `planner_meta` do documento e o `plan_hash` é o SHA-256 desse documento, pelo que uma corrida de hoje dá `"prompt_version":"1.4.0"` no `plan.proposed` e **outro** `plan_hash` no 15a e no 15c. O passo fica por re-medir na próxima corrida completa do roteiro.
+
 Ficheiros de entrada:
 
 ```bash

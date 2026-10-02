@@ -121,6 +121,28 @@ const (
 	// forma transitória deixe de re-planear. Quem DECIDE é o nó, que numera as gerações; quem
 	// escreve o desfecho é o consumidor, como em todos os outros (ADR-030).
 	exitGeracoesEsgotadas = 12
+	// exitNosFalhados — o laço de despacho do plano PAROU (nada em voo, nada que se possa
+	// despachar) com pelo menos um nó em `failed` (AOS-484). Até aqui saía com 0: o `serve` devolvia
+	// sucesso sempre que o laço parava, e um plano em que um nó parou a meio, se perdeu ou ficou sem
+	// o payload do seu `consumes` era indistinguível, no desfecho, de um plano que correu. TERMINAL
+	// e DETERMINISTA: o estado dos nós é durável, e uma nova invocação COM O DOCUMENTO DO PLANO
+	// (`--plan-doc`, ou `--goal` com a mesma decomposição) re-hidrata os mesmos `failed`, não
+	// re-executa nenhum e sai com o mesmo código, com ou sem o executor de nós composto — retentar
+	// seria um laço. A posse é largada.
+	//
+	// LIMITE: um `serve` SEM documento sobre o mesmo run (`serve --run X`, com ou sem `--nodes` e
+	// `--release`) não passa pelo despacho do plano, não olha para o estado dos nós e sai com 0. O
+	// código 13 é o desfecho de CORRER O PLANO, não uma propriedade que qualquer invocação sobre o
+	// run reporte; quem quer o estado dos nós lê o log (`inspect`) ou o `GET /plans/<id>` do nó.
+	//
+	// NÃO é este código: um veredicto `fail` de um `verifier` que retém um ramo condicional. O
+	// verifier CONCLUIU (`complete`) e o ramo não tomado nunca foi despachado nem fechado — não é um
+	// nó falhado, mesmo que declare um `consumes` que não se cumpriria, e o plano correu como foi
+	// desenhado (saída 0).
+	//
+	// É este código, e é um limite declarado: um nó `failed` cuja falha o plano previa com um ramo
+	// de recuperação (`conditional_on … terminal_state eq failed`). O ramo corre, e a saída é 13.
+	exitNosFalhados = 13
 )
 
 func main() {
@@ -178,7 +200,7 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
 Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
 capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista · 11 SUBMISSOR do pedido fora dos requesters do mandato — determinista · 12 GERACOES de planeamento do pedido esgotadas (AOS-467) — o no decide, o consume fecha sem planear
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista · 11 SUBMISSOR do pedido fora dos requesters do mandato — determinista · 12 GERACOES de planeamento do pedido esgotadas (AOS-467) — o no decide, o consume fecha sem planear · 13 o plano TERMINOU com no(s) FALHADO(S) (AOS-484) — determinista; a posse e largada e repetir nao re-executa
 `)
 }
 
@@ -203,6 +225,7 @@ func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(
 	// AOS-442: e a recusa determinista do documento ou do snapshot — o fim do trabalho, também.
 	// AOS-439: e a recusa do nó por o submissor não constar do mandato (saída 11) — terminal, e sem
 	// isto o lease ficava vivo até ao TTL sobre um pedido que já fechou.
+	// AOS-484: e o plano que chegou ao fim com nós falhados (saída 13) — o trabalho acabou, mal.
 	if !largaAPosse(err) {
 		return err
 	}
@@ -227,7 +250,7 @@ func largaAPosse(err error) bool {
 		return true
 	}
 	switch codigoDe(err) {
-	case exitDocumentoRecusado, exitRequerenteForaDoMandato:
+	case exitDocumentoRecusado, exitRequerenteForaDoMandato, exitNosFalhados:
 		return true
 	}
 	return false
@@ -266,6 +289,8 @@ func codigoDe(err error) int {
 		return exitDocumentoRecusado
 	case errors.Is(err, errRequerenteForaDoMandato):
 		return exitRequerenteForaDoMandato
+	case errors.Is(err, errNosFalhados):
+		return exitNosFalhados
 	default:
 		return exitErro
 	}

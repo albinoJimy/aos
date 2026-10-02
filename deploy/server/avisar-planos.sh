@@ -33,6 +33,7 @@
 #   código 7        «recusado»   prioridade high   (houve decisão e foi NÃO — ou um pendente fora do prazo)
 #   código 11       «submissor fora do mandato»  prioridade high  (AOS-439; o texto não leva o submissor)
 #   código 12       «gerações esgotadas»         prioridade high  (AOS-467; ver o log da drenagem)
+#   código 13       «nós falhados»               prioridade high  (AOS-484; o plano chegou ao fim com nós failed)
 #   outro código    «falhou»     prioridade high
 #
 # O TÓPICO É OUTRO: ${TOPICO_FILE}, separado do dos alertas de infraestrutura (secrets/ntfy-topico),
@@ -216,6 +217,11 @@ for (( i = 0; i < K; i++ )); do
       # forma transitória vezes de mais, ou o objectivo deixou de se poder abrir (tipicamente um
       # /dsar/erase do titular). Ver o log da drenagem e o GET /plans/{id}.
       12) rotulo="gerações esgotadas"; prio=high; tags="x"; titulo="AOS: plano fechado, geracoes esgotadas (codigo 12)" ;;
+      # AOS-484: o plano chegou ao FIM com pelo menos um nó `failed` — o run de um nó parou a meio
+      # ou perdeu-se, ou um nó ficou sem o payload do seu `consumes`. Até ao AOS-484 saía com 0 e
+      # este aviso dizia «ok». Quais nós, vê-se no log da drenagem (linha `execucao:`); o texto do
+      # aviso NÃO os leva (os node_id são escolhidos pelo modelo).
+      13) rotulo="nós falhados"; prio=high; tags="x"; titulo="AOS: plano terminou com nos falhados (codigo 13)" ;;
       *) rotulo="falhou";   prio=high;    tags="x";                titulo="AOS: plano falhou (codigo ${codigo})" ;;
     esac
     if notificar "${titulo}" "${prio}" "${tags}" "Plano ${p}: terminal, código ${codigo} (${rotulo})."; then

@@ -230,7 +230,8 @@ const (
 //     `--plan-timeout`: a drenagem seguinte retoma-o pelo documento (AOS-442). Contá-lo faria três
 //     drenagens de um plano longo e saudável dispararem o aviso.
 //   - SOMAM todos os outros: os transitórios de posse/WAL (3, 4, 5) e o genérico (1) — um só é
-//     contenção normal, três seguidos já não —, e os terminais ≠ 0.
+//     contenção normal, três seguidos já não —, e os terminais ≠ 0, incluindo o 13 (`exitNosFalhados`,
+//     AOS-484): um plano que chegou ao fim com nós falhados É um plano que acabou mal.
 //
 // O 7 (`exitDecisaoRecusada`) SOMA, e é o caso ambíguo: é a governação a funcionar quando um humano
 // recusa, mas é também o validado-sem-documento e o pendente fora do prazo — um plano perdido. Não
