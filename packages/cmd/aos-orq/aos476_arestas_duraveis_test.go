@@ -7,8 +7,8 @@ package main
 // respeitava `analise depends_on recolha` só porque o lia do documento em memória; o `inspect`
 // imprimia `ordem=analise,recolha` e um segundo dono re-hidratava dois nós independentes.
 //
-// Tudo aqui corre pelo BINÁRIO compilado, um processo por papel — o ficheiro WAL é a única coisa
-// que os processos partilham.
+// Os testes de aceitação correm pelo BINÁRIO compilado, um processo por papel — o ficheiro WAL é a
+// única coisa que os processos partilham. Só a contagem de arestas impressa tem teste in-process.
 
 import (
 	"bytes"
@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aos-ref/control-plane/orchestrator"
 )
 
 // aos476Snapshot e aos476Plano são os ficheiros de entrada do passo 15 do roteiro E2E
@@ -199,5 +201,34 @@ func TestAOS476_DonoSeguinteDespachaSoPelaRetoma(t *testing.T) {
 	}
 	if ids := f.submetidos(); len(ids) != 2 || ids[0] != run+"~analise" {
 		t.Fatalf("a retoma devia ter submetido `analise` uma vez e não repetir `recolha`, submetidos=%v", ids)
+	}
+}
+
+// TestAOS476_ArestasDoGrafoConta: a contagem que o `serve` imprime na re-hidratação é a do DAG, e
+// não uma constante que por acaso bate com o plano de dois nós do roteiro.
+func TestAOS476_ArestasDoGrafoConta(t *testing.T) {
+	d := orchestrator.NewDAG("run-conta")
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if err := d.AddNode(orchestrator.NodeSpec{TaskID: id}); err != nil {
+			t.Fatalf("AddNode %s: %v", id, err)
+		}
+	}
+	ordem := func() []string {
+		o, err := d.TopoOrder()
+		if err != nil {
+			t.Fatalf("TopoOrder: %v", err)
+		}
+		return o
+	}
+	if n := arestasDoGrafo(d, ordem()); n != 0 {
+		t.Fatalf("grafo sem arestas contou %d", n)
+	}
+	for _, e := range [][2]string{{"a", "b"}, {"a", "c"}, {"b", "d"}, {"c", "d"}} {
+		if err := d.AddEdge(e[0], e[1]); err != nil {
+			t.Fatalf("AddEdge %v: %v", e, err)
+		}
+	}
+	if n := arestasDoGrafo(d, ordem()); n != 4 {
+		t.Fatalf("grafo em losango contou %d arestas, quer 4", n)
 	}
 }
