@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -161,6 +162,27 @@ type dispatchSink struct {
 // `aos-orq`; o trabalho do nó corre no nó `aos` com o NHI do run cunhado pelo operador
 // (ADR-027), porque o nó só confia no seu emissor.
 func (s *dispatchSink) Dispatch(ctx context.Context, node plandispatch.Node) error {
+	// AOS-484 — O CONTRATO DE ENTRADA VERIFICA-SE ANTES DE QUALQUER EFEITO.
+	//
+	// Um nó elegível cujo `consumes` não se pode cumprir não corre. A poda do início da passagem
+	// fecha-o quando já o sabe; mas um nó atrás de um ramo condicional só fica elegível na passagem
+	// em que o despacho decide o ramo, depois da poda — e chega aqui. Verificava-se só em
+	// `submeter`, DEPOIS do `Spawn` de um papel: o nó ficava com a NHI filha cunhada, a fatia de
+	// orçamento reservada e um lugar de fan-out gasto, e o sink recusava a seguir, abortando a
+	// passagem. Agora o sink fecha o nó como `failed` pelo mesmo caminho durável da poda e devolve
+	// nil: o plano segue, e a passagem seguinte decide o que depende deste nó (um ramo de
+	// `terminal_state eq failed` sobre ele, por exemplo) como decidiria sobre qualquer falha.
+	//
+	// O lugar de concorrência que o despachante reservou para o nó devolve-se aqui: não há run a
+	// recolher que o liberte.
+	if s.exec != nil {
+		if c, falta := s.exec.contratoPorCumprir(node.NodeID); falta {
+			if err := s.exec.fecharSemPayload(ctx, node.NodeID, c); err != nil {
+				return err
+			}
+			return s.exec.headroom.Release(ctx)
+		}
+	}
 	if s.kinds[node.NodeID] == plannerevents.SpawnRole {
 		sr := orchestrator.SpawnRequest{
 			RunID:            s.runID,
@@ -401,8 +423,23 @@ func composeEDespachar(
 		}
 	}
 	fmt.Printf("despachado: plano=%s nos_despachados=%d\n", planID, total)
-	if ex != nil {
+	// AOS-484: chegar aqui é o laço ter PARADO — nada em voo e nada que esta passagem pudesse
+	// despachar. Não é «nada por despachar»: podem ficar nós à espera de cartão, de uma condição
+	// por decidir ou atrás de um ramo não tomado, e ficam os dependentes de um nó que falhou. E
+	// não é o plano ter corrido bem: um nó `failed` (run a meio, run perdido, contrato de entrada
+	// por cumprir) deixa os dependentes por despachar e o laço pára na mesma. Devolvia `nil`, e o
+	// desfecho era o de um plano bem-sucedido.
+	//
+	// FORA do `if ex != nil`, de propósito. Sem executor nenhum nó conclui nem falha NESTE
+	// processo, mas o grafo é re-hidratado do log: um `serve --plan-doc` sem `AOS_ORQ_NODE_URL`
+	// sobre um run que já saiu com 13 vê os mesmos nós `failed`, e tem de dar o mesmo código.
+	falhados := nosFalhados(g, payload)
+	if ex != nil || len(falhados) > 0 {
 		fmt.Println(resumoDaExecucao(g, payload))
+	}
+	if len(falhados) > 0 {
+		return fmt.Errorf("%w: %d de %d no(s) do plano %s (%s) — o estado e duravel: repetir o serve com o documento do plano nao os re-executa",
+			errNosFalhados, len(falhados), len(payload.Nodes), planID, strings.Join(falhados, ","))
 	}
 	return nil
 }

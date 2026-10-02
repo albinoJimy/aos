@@ -30,6 +30,7 @@ func TestAOS423ClasseDeCadaCodigoDeSaida(t *testing.T) {
 		{exitDocumentoRecusado, "exitDocumentoRecusado", "terminal", "documento/snapshot recusado; apresentá-lo outra vez dá o mesmo (AOS-442)"},
 		{exitRequerenteForaDoMandato, "exitRequerenteForaDoMandato", "terminal", "o submissor nao consta do mandato (AOS-439)"},
 		{exitGeracoesEsgotadas, "exitGeracoesEsgotadas", "terminal", "o no marcou a geracao que passa o tecto; retentar e o laco que o tecto fecha (AOS-467)"},
+		{exitNosFalhados, "exitNosFalhados", "terminal", "o plano chegou ao fim com nos failed; o estado e duravel e repetir nao os re-executa (AOS-484)"},
 	}
 	for _, c := range casos {
 		if got := classeDoDesfecho(c.codigo); got != c.classe {
@@ -65,7 +66,7 @@ func TestAOS423VocabularioDeClassesCasaComONo(t *testing.T) {
 	doNo := map[string]bool{"transitorio": true, "terminal": true, "aguarda_humano": true}
 	for _, codigo := range []int{exitOK, exitErro, exitPosseNegada, exitFenced, exitWALDetido,
 		exitPendenteDeAprovacao, exitDecisaoRecusada, exitNosEmVoo, exitPlanoRecusado, exitDocumentoRecusado,
-		exitRequerenteForaDoMandato, exitGeracoesEsgotadas} {
+		exitRequerenteForaDoMandato, exitGeracoesEsgotadas, exitNosFalhados} {
 		if c := classeDoDesfecho(codigo); !doNo[c] {
 			t.Errorf("o codigo %d produz a classe %q, que o no NAO aceita (400): o desfecho nunca "+
 				"seria registado e o pedido ficava preso ate ao TTL", codigo, c)

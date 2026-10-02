@@ -64,6 +64,7 @@ func TestAOS443DetalheNaoLevaOTextoDoErro(t *testing.T) {
 		errPlanoPendente:                       "plano_pendente",
 		errDecisaoRecusada:                     "decisao_recusada",
 		errNosEmVoo:                            "nos_em_voo",
+		errNosFalhados:                         "nos_falhados",
 		planner.ErrPlanRejected:                "plano_recusado_pelo_planeador",
 		errDocumentoDoPlanoRecusado:            "documento_recusado",
 		errGrafoDoRunDiverge:                   "grafo_diverge",
@@ -160,6 +161,9 @@ func TestAOS443FalhasSeguidasNaoContamONosEmVoo(t *testing.T) {
 	exigirSerie(t, correr(um, um, um), metricaFalhasConsecutivas, 3)
 	sete := [2]any{"terminal", exitDecisaoRecusada}
 	exigirSerie(t, correr(sete), metricaFalhasConsecutivas, 1) // o ambíguo conta (ver efeitoNasFalhas)
+	// AOS-484: um plano que chega ao fim com nós falhados conta como falha, e não zera as anteriores.
+	treze := [2]any{"terminal", exitNosFalhados}
+	exigirSerie(t, correr(um, treze, treze), metricaFalhasConsecutivas, 3)
 }
 
 // OS CONTADORES ACUMULAM-SE ENTRE DRENAGENS e a série que o sensor lê segue a regra declarada:

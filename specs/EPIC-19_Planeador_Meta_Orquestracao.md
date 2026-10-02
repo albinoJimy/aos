@@ -8334,22 +8334,90 @@ fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
 
 - [x] Decisão (A)/(B)/(C) registada neste ticket, com o que fica de fora. *(Ver «Decidido pelo
       dono», acima.)*
-- [ ] **(B)** O prompt do planeador sobe para 1.4.0 (MINOR, aditivo): uma regra nova diz que um nó
+- [x] **(B)** O prompt do planeador sobe para 1.4.0 (MINOR, aditivo): uma regra nova diz que um nó
       que precise do que outro produziu declara `outputs` no produtor e `consumes` no consumidor, e
       o que o executor consegue transportar (um só output de forma aberta por nó). As regras 1 a 11
       ficam byte a byte iguais, o template do 1.3.0 fica guardado com o seu fingerprint, e os testes
       de decomposição fixam a regra nova.
-- [ ] **(B)** Teste pelo processo real: o plano de dois nós com o contrato declarado (o primeiro lê
+      *(Evidência: `plannerprompt/artifact.go`, regra 12, e `testdata/prompt-1.3.0.txt` com o
+      fingerprint `86feca62…181a` pinado em `lerTemplate130`.
+      `TestAOS484_Mutacao130Para140PassaOGateADR012`: o gate ADR-012 aceita a mutação, recusa-a sem
+      aprovação, e o 1.4.0 é o 1.3.0 guardado seguido da regra 12 e de mais nada — byte a byte.
+      `TestAOS484_ARegra12DizOQueOSchemaEOValidadorSustentam`: os tipos que a regra nomeia são os do
+      schema, o plano que ela ensina passa o decode e o validador, o mesmo plano carimbado 1.0.0 é
+      recusado com `plan_version_below_features` (é por isso que a regra lembra o carimbo 1.2.0), e
+      a dependência só de ordem continua válida. `TestAOS415_Mutacao120Para130PassaOGateADR012`
+      passou a medir-se contra o 1.3.0 guardado. `TestTemplateDeclaraOSchemaQueODecodeExige` e
+      `TestAOS400_FormaMinimaPassaODecodeEOValidador` verdes; `decompose/decompose_test.go` fixa a
+      versão carimbada. O eval-gate ficou verde sem tocar nas fixtures do golden-set.
+      O que a regra diz que o executor transporta está preso ao executor, no `aos-orq`:
+      `TestAOS484_DoisOutputsAbertosNaoSeTransportam` (com dois outputs abertos, nenhum),
+      `TestAOS484_MetricsNaoSeTransportaNemDeUmVerificador` (um `consumes` de `metrics` não é
+      entregue nem quando vem de um verificador; do verificador só o `verdict` chega ao log) e
+      `TestAOS414_OVerificadorRecebeOQueONoAnteriorLeu` (o `verdict` é entregue).)*
+- [x] **(B)** Teste pelo processo real: o plano de dois nós com o contrato declarado (o primeiro lê
       com uma tool, o segundo sem tools consome) entrega ao segundo o conteúdo do primeiro pelo
       canal `inputs`, e o log tem o `plan.payload_published` correspondente.
-- [ ] **(C)** Um plano em que um nó termina `failed` não sai com código 0: o `serve` devolve um
+      *(Evidência: `TestAOS484_ContratoDeclaradoEntregaAoConsumidorOQueOProdutorLeu`, em
+      `packages/cmd/aos-orq/aos484_desfecho_e_contrato_test.go`: o WAL tem o `plan.payload_published`
+      do `n1` com a referência ao run filho e o digest, e o corpo do `POST /runs` do `n2` leva
+      `inputs` com o conteúdo do `n1` e o mesmo digest; saída 0. Por mutação no executor
+      (`entradasDe` a não entregar nada) o teste falha em «o n2 tinha de receber 1 payload, recebeu
+      0». Retirar o `consumes` da constante do fixture falha antes, na pré-condição do teste; o
+      que acontece a esse plano está fixado no sub-teste de controlo — sem `consumes` o plano é
+      admitido, o `n2` corre sem nada e a saída é 0 —, que é o resíduo declarado acima.)*
+- [x] **(C)** Um plano em que um nó termina `failed` não sai com código 0: o `serve` devolve um
       código próprio, o desfecho é `terminal` com um detalhe de nome estável, e os consumidores do
       código (a drenagem, os avisos, o `GET /plans/<id>`, as métricas do `consume`) tratam-no sem
       o confundir com sucesso nem com erro transitório.
-- [ ] **(C)** Um veredicto `fail` de um `verifier` que retém um ramo condicional continua a ser um
+      *(Evidência: saída **13** (`exitNosFalhados`), detalhe `erro=nos_falhados`.
+      `TestAOS484_PlanoComNoFalhadoSai13LargaAPosseENaoReexecuta`: o `serve` sai 13, e duas retomas
+      seguidas tomam a posse (não saem 3), não despacham nem submetem nada e saem 13 outra vez; o
+      `serve --plan-doc` sem o executor de nós composto sai 13 também (a verificação saiu de dentro
+      do `if ex != nil`), e o `serve` sem documento sai 0 — limite fixado no mesmo teste.
+      `TestAOS484_OConsumeReportaOPlanoFalhadoComoTerminal13`: o nó recebe `terminal`/13 com o
+      resumo e `erro=nos_falhados`, sai a linha `aviso: … codigo=13`, a série
+      `aos_orq_consume_desfechos_total{classe="terminal",codigo="13"}` sobe, as falhas seguidas
+      somam, e o documento do plano é apagado. `TestAOS484_OCodigo13NasTabelas` e as tabelas de
+      `TestAOS423ClasseDeCadaCodigoDeSaida`, `TestAOS423VocabularioDeClassesCasaComONo`,
+      `TestAOS443DetalheNaoLevaOTextoDoErro` e `TestAOS443FalhasSeguidasNaoContamONosEmVoo`.
+      No nó, `TestAOS484TerminalComNosFalhadosChegaAQuemSubmeteu` (`packages/cmd/aos`): o
+      `POST /plans/outcome` aceita `terminal`/13, o pedido não é re-oferecido e o `GET /plans/<id>`
+      devolve `exit_code` 13. O `avisar-planos.sh` ganhou o rótulo «nós falhados» (secção 4b do
+      cenário `aos445_avisos_planos.sh`); o `drenar-planos.sh` e o `medir-latencia-fila.sh` não
+      distinguem códigos e não mudaram. `TestAOS414_ContratoPorCumprirFalhaONoENaoOServe` e
+      `TestAOS413_RunAMeioNaoConcluiONo` exigiam 0 com um nó `failed` e passaram a exigir 13; o
+      primeiro ganhou a retoma. FALHA-ANTES: com a verificação desligada, os testes de processo
+      saem 0; com ela de volta para dentro do executor, o `serve --plan-doc` sem executor sai 0.)*
+- [x] **(C)** Um veredicto `fail` de um `verifier` que retém um ramo condicional continua a ser um
       plano que correu bem: o ramo não tomado não é um nó falhado.
-- [ ] A regra AOS-231 (`consumes_taint_authority`) continua a valer: um payload untrusted não
+      *(Evidência: `TestAOS484_VeredictoFailQueRetemRamoComConsumesPorCumprirSai0`, pelo processo
+      real: o plano em que o ramo retido (`conditional_on n2 verdict eq pass`) declara um `consumes`
+      de `metrics` do verificador sai 0 com veredicto `fail`, o `n3` não fica `failed` nem é
+      submetido, e a retoma dá o mesmo. FALHA-ANTES, encontrada pela revisão adversarial: a poda
+      dos consumidores sem payload corria antes da decisão de ramo e fechava o `n3` como `failed` —
+      saída 13 num plano que antes do ticket saía 0. A poda (`podarSemPayload`, com `ramosRetidos`)
+      passou a ler as decisões de ramo do log e só fecha um nó que ia mesmo correr; com essa
+      pergunta retirada, o teste sai 13. A retenção propaga-se à descendência:
+      `TestAOS484_DescendenteDeRamoRetidoNaoEFechado` (um nó sem condição própria, descendente do
+      ramo retido, que consome um `metrics`) sai 0 com `n3=ready n4=ready`, e sem a propagação sai
+      13. Um nó cujo ramo é decidido «tomado» na própria passagem é fechado pelo SINK, antes de
+      qualquer efeito: `TestAOS484_DuasRecusasSeguidasEmNosDiferentesNaoAbortamOPlano` (um ramo e a
+      sua recuperação, ambos sem payload, saem `failed`, o `serve` sai 13 e não 1, e a retoma
+      imediata sai 13 e não 3) e `TestAOS484_PapelSemPayloadNaoESpawnado` (um papel sem o payload
+      não chega ao `Delegator.Spawn`). Sem o fecho no sink, os dois primeiros saem 1 e o papel é
+      spawnado; com o `Spawn` antes da verificação, o papel é spawnado. `TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco`
+      continua a exigir a saída 0 nos seis casos — `fail` e cinco formas ilegíveis — e passou a
+      exigir que nenhum nó esteja `failed`: o verificador conclui (`complete`), e uma saída ilegível
+      regista-se como veredicto `fail`, não fecha o nó como `failed`.)*
+- [x] A regra AOS-231 (`consumes_taint_authority`) continua a valer: um payload untrusted não
       alimenta um consumidor com autoridade privilegiada.
+      *(Evidência: o validador não foi tocado. `TestAOS415_TectoEsgotadoLargaAPosse`, pelo processo
+      real, apresenta o plano com a forma que a regra 12 pede — `outputs` no produtor, `consumes`
+      num consumidor com tool de efeito — e ele continua recusado com `consumes_taint_authority`
+      (saída 9). Os vectores de `planadversarial/payload_test.go` e de
+      `plannerprompt/goldenset_adr022_test.go` continuam verdes. A regra 12 diz ao modelo que um nó
+      com ferramenta de efeito continua sob a regra 8.)*
 - [ ] Verificado em produção com o modelo vivo e o mesmo objectivo: o texto final do nó de resumo é
       um resumo do documento.
 
@@ -8362,7 +8430,28 @@ fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
 
 ### Estado
 
-**ABERTO.**
+**ABERTO.** Implementado; falta a verificação em produção com o modelo vivo.
+
+Por fechar, além dessa verificação:
+
+- **Qualquer nó `failed` dá a saída 13**, mesmo num plano que previa a falha com um ramo de
+  recuperação (`conditional_on` de `terminal_state eq failed`): o ramo corre, conclui, e a saída é
+  13. O critério decide pelo estado do nó e não pergunta se a falha foi tratada. Fixado por
+  `TestAOS484_RamoDeRecuperacaoCorreEASaidaE13`; a decidir pelo dono.
+- **Um `serve` sem documento sobre um run que saiu 13 sai 0** (`serve --run X`, com ou sem
+  `--release`): não corre o plano nem olha para o estado dos nós. Com o documento (`--plan-doc`), o
+  código é 13 com ou sem o executor de nós composto.
+- **A regra 12 pode aumentar as recusas da validação (saída 9), e não está medido.** Empurra o
+  modelo para `outputs`/`consumes`, e num plano «lê e depois publica» o consumidor tem uma tool de
+  efeito e consome de um nó que não é verificador — recusado com `consumes_taint_authority`. O
+  modelo não vê no prompt quais são as tools de efeito: a lista de capabilities que recebe mostra
+  nome, versão e digest, e a regra 8 fala em «egress ou irreversivel», quando o predicado em
+  código (`IsEffectTool`) conta também a `mutation`. O laço do AOS-415 devolve a recusa ao modelo,
+  mas o tecto é de 3 tentativas. Frequência: por medir em produção.
+- **O executor não transporta `metrics`**, nem de um verificador (resíduo do AOS-414). A regra 12
+  di-lo ao modelo; o validador continua a admitir o contrato.
+- **O passo 15 do roteiro `docs/testing/e2e-pegadas-visao-19.md` está a re-medir**: as pegadas são
+  as do prompt 1.3.0, e o `plan_hash` depende do `prompt_version` carimbado no documento.
 
 ---
 

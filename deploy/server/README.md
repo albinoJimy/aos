@@ -700,8 +700,26 @@ docker compose -f docker-compose.prod.yml --env-file .env --env-file image.env \
 
 Códigos de saída: `0` ok · `1` erro · `2` flags inválidas · `3` posse do run negada · `4` posse
 superada · `5` WAL ou `AOS_MODEL_AUDIT_PATH` detido por outro escritor · `6` plano **pendente** de
-decisão humana · `7` decisão **recusada**. Para ler um run sem tomar posse,
-`run --rm aos-orq inspect --wal … --run …`.
+decisão humana · `7` decisão **recusada** · `8` nós do plano **ainda a correr** ao fim do
+`--plan-timeout` (uma nova invocação retoma-os) · `9` plano **recusado** pela validação, tentativas
+esgotadas · `10` documento ou snapshot do plano recusado · `11` submissor fora dos `requesters` do
+mandato · `12` gerações de planeamento esgotadas · `13` o plano **terminou com nós falhados**
+(AOS-484). Para ler um run sem tomar posse, `run --rm aos-orq inspect --wal … --run …`.
+
+O `13` é o que separa «o plano chegou ao fim» de «o plano correu»: até ao AOS-484, um plano em que
+o run de um nó parava a meio, se perdia, ou em que um nó ficava sem o payload do seu `consumes`,
+saía com `0`. É **terminal** e larga a posse. O estado dos nós é durável: repetir o `serve` **com o
+documento do plano** (`--plan-doc`) não os re-executa e sai com o mesmo código, com ou sem o
+executor de nós composto.
+
+| Caso | Saída |
+|---|---|
+| O run de um nó parou a meio (orçamento, turnos) ou perdeu-se | `13` |
+| Um nó que ia correr ficou sem o payload do seu `consumes` — por exemplo um `consumes` de `metrics`, que o executor nunca transporta | `13` |
+| Um nó falhou e o plano **previa** a falha com um ramo de recuperação (`conditional_on … terminal_state eq failed`): o ramo corre e conclui | `13` — limite declarado, a decidir pelo dono |
+| Um veredicto `fail` (ou ilegível) de um `verifier` retém um ramo condicional: o verifier concluiu e o ramo não tomado não correu, **mesmo que** o ramo declare um `consumes` que não se cumpriria | `0` |
+| Um nó termina `complete` a dizer, no texto, que não conseguiu | `0` — o `13` não o apanha |
+| `serve` **sem documento** sobre um run que já saiu `13` (`serve --run X`, com ou sem `--release`) | `0` — não corre o plano nem olha para os nós; o estado lê-se no `GET /plans/<id>` ou no log |
 
 #### Gate de aprovação de plano (AOS-408)
 
@@ -990,7 +1008,8 @@ códigos, hashes e durações, e **não leva o objectivo** do pedido: o `consume
 que o modelo escolhe aparecem no log (como já apareciam no journal).
 
 `falhas_consecutivas` sobe com os genéricos (1), os de posse/WAL (3, 4, 5) e os terminais ≠ 0 —
-incluindo o 7, que tanto é uma recusa humana como um plano perdido; volta a 0 num terminal/0; e
+incluindo o 7, que tanto é uma recusa humana como um plano perdido, e o 13 (AOS-484: o plano
+terminou com nós falhados); volta a 0 num terminal/0; e
 **não se mexe** com `aguarda_humano` nem com o 8 (nós em voo: o plano é mais longo do que o prazo, e
 a drenagem seguinte retoma-o). O `alerta-nhi.sh` avisa a partir de 3 com o título «AOS: planos da
 fila em ALERTA», e volta a avisar se, com o alerta disparado, o **conjunto** de causas mudar (um
@@ -999,7 +1018,7 @@ NHI a caducar por cima dos planos a falhar, por exemplo).
 O mesmo resumo chega ao nó no `detail` do desfecho — **também em sucesso** —, e é o que o
 `GET /plans/{id}` passa a mostrar num plano terminado: `resumo: origem=… geracao=… nos=… duracao_s=…`,
 com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentinela
-(`nos_em_voo`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `plano_recusado_pelo_planeador`, … ou
+(`nos_em_voo`, `nos_falhados`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `plano_recusado_pelo_planeador`, … ou
 `generico`) e **nunca o texto do erro**, que pode citar conteúdo escrito pelo modelo. O texto de um
 `generico` vai só para o log da drenagem, para diagnóstico.
 
@@ -1020,7 +1039,7 @@ e foi não — ou um pendente fora do prazo), o `11` como «submissor fora do ma
 «gerações esgotadas» (AOS-467: o pedido passou o tecto `AOS_PLAN_MAX_GENERATIONS` do nó e fechou sem
 planear — ou a decomposição falhou de forma transitória vezes de mais, ou o objectivo deixou de se
 poder abrir, tipicamente depois de um `/dsar/erase` do titular; o log da drenagem distingue-os, o
-aviso não; re-submeter exige um `run_id` novo). Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
+aviso não; re-submeter exige um `run_id` novo). O `13` aparece como «nós falhados» (AOS-484: o plano chegou ao fim com nós `failed`; quais, vê-se na linha `execucao:` do log da drenagem — o aviso não os leva). Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
 
 | Peça | O que faz |
 |---|---|
