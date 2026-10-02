@@ -987,6 +987,83 @@ Store (ver acima).
 | Responsável de Segurança |  |  |  |
 | Responsável de Produto |  |  |  |
 
+## AOS-481 — O desfecho de uma tool call nunca chega ao log: o `tool.call.outcome` colide com o selo do mesmo passo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: corrige a chave de idempotência de dois eventos para que o consumidor do ADR-025 receba o que já devia receber. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 (Event Store e Reference Monitor) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P2: falha do lado seguro (a promoção automática nunca dispara), mas a funcionalidade do ADR-025 está morta em silêncio e o log do run omite decisões |
+| Estimativa | M |
+| Dependências | AOS-090 (fiabilidade para a promoção de autonomia), AOS-478 (producer do envelope) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/kernel/reference-monitor/eventsink.go`, `packages/kernel/reference-monitor/monitor.go`, `packages/substrate/eventstore/store.go`, `packages/substrate/eventstore/event.go`, `packages/cmd/aos/autonomy_fiabilidade.go` |
+
+### Contexto
+
+Achado durante o AOS-478 e confirmado por revisão adversarial independente, com uma sonda sobre o
+`Monitor` real e os dois sinks no mesmo Event Store em memória (2026-10-02).
+
+A chave de idempotência do Event Store é `run_id:step_id` (`event.go`), e um `Append` com uma chave
+já gravada devolve `StatusDuplicate` **sem erro** (`store.go`, «o duplicado ganha»). O sink de
+desfechos grava o `tool.call.outcome` com o **mesmo** `StepID` do selo `tool.call.mediated` do
+passo (`eventsink.go`), e o selo é gravado primeiro (`monitor.go`). Resultado medido:
+
+1. **Permit directo:** no stream fica só `tool.call.mediated`. O `tool.call.outcome` é descartado.
+2. **Escalada e depois decisão no mesmo passo:** fica só `tool.call.escalated`. O permit — ou o
+   **deny** — pós-aprovação colide com ele, e o `MediationSeq` devolvido aponta para o
+   `escalated`. O log do run nunca mostra que a acção aprovada acabou permitida ou negada; o WORM
+   tem-no.
+3. **No nó real** (cenário do teste do AOS-478): 3 `tool.call.escalated`, 0 `tool.call.mediated`,
+   0 `tool.call.outcome`.
+
+Não contradiz o relatório E2E de 2026-10-01 (§4: 52 `mediated` + 11 `denied` em produção): são
+todos permits e denies directos, nenhum run de produção teve `escalate`, e o relatório não conta
+`outcome`.
+
+**Consumidor afectado.** `autonomy_fiabilidade.go` (AOS-090, ADR-025) observa `tool.call.outcome`
+para medir desfechos. Nunca o recebe, logo o total de desfechos é sempre 0, a janela nunca fica
+válida (`WindowOK=false` abaixo do mínimo de amostras) e a promoção automática de autonomia
+**nunca dispara**. A taxa de override fica também inflacionada, porque o permit pós-aprovação
+desaparece e só conta o `escalated`. O teste `aos090_promocao_test.go` sintetiza os eventos à mão e
+por isso não o detecta.
+
+### Objectivo
+
+Cada decisão e cada desfecho de uma tool call ficam no log do run como eventos distintos, sem
+perder a idempotência por passo do selo.
+
+### Critérios de Aceitação
+
+- [ ] O `tool.call.outcome` e a decisão pós-aprovação (permit ou deny que segue um `escalated` no
+      mesmo passo) têm um `step_id` próprio e determinista (p.ex. `outcome:<step>` e um sufixo de
+      tentativa), de modo que a re-execução do mesmo desfecho continua a deduplicar.
+- [ ] Teste de integração RM + Event Store que conta os tipos no stream do run nos três casos acima
+      (permit directo; escalada → permit; escalada → deny) e falha se algum evento for engolido.
+- [ ] O `MediationSeq` devolvido depois de uma aprovação aponta para o evento da decisão, não para o
+      `escalated`.
+- [ ] `autonomy_fiabilidade.go` recebe desfechos reais num teste que passa pelo RM e pelo Event
+      Store, e não por eventos sintetizados.
+- [ ] Replay e retro-compatibilidade: os logs já gravados (sem os eventos engolidos) continuam a
+      reconstruir o mesmo estado; o `replay.sh` não muda.
+- [ ] O contrato do producer (`tecnica/13` §3.1, AOS-478) e o catálogo de eventos ficam coerentes
+      com os `step_id` novos.
+
+### Fora de âmbito
+
+Reconstituir os desfechos que ficaram por gravar em logs antigos (estão no WORM).
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
