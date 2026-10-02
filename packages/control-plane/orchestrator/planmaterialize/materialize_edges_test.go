@@ -201,3 +201,171 @@ func TestAOS476_ArestasSobrevivemAoReplay(t *testing.T) {
 		t.Fatalf("ordem re-hidratada = %v, quer %v", ordem, want)
 	}
 }
+
+// storeQueRecusa recusa o Append dos tipos de evento dados — simula a morte do processo (ou a
+// perda da posse) a meio da materialização, depois de parte das escritas ficar durável.
+type storeQueRecusa struct {
+	*eventstore.Store
+	recusar map[string]bool
+}
+
+var errAppendRecusado = errors.New("append recusado pelo store")
+
+func (s storeQueRecusa) Append(ctx context.Context, stream string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	if s.recusar[in.Type] {
+		return eventstore.AppendResult{}, errAppendRecusado
+	}
+	return s.Store.Append(ctx, stream, in, opts...)
+}
+
+// contarTipos conta os eventos de cada tipo no stream do run.
+func contarTipos(t *testing.T, es *eventstore.Store, runID string) map[string]int {
+	t.Helper()
+	evs, err := es.Read(context.Background(), runID, 1)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	n := map[string]int{}
+	for _, e := range evs {
+		n[e.Type]++
+	}
+	return n
+}
+
+func planoRecolhaAnalise() Request {
+	return baseReq(
+		node("recolha", []plan.ToolRef{tool("fs.read")}),
+		node("analise", []plan.ToolRef{tool("fs.read")}, "recolha"),
+	)
+}
+
+func novoES(t *testing.T) *eventstore.Store {
+	t.Helper()
+	es, err := eventstore.New()
+	if err != nil {
+		t.Fatalf("eventstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = es.Close() })
+	return es
+}
+
+func builderDoLog(t *testing.T, es *eventstore.Store, nhi string) *orchestrator.GraphBuilder {
+	t.Helper()
+	g, err := orchestrator.NewGraphBuilderFromLog(context.Background(), es, "run-1", eventstore.Producer{NHIID: nhi})
+	if err != nil {
+		t.Fatalf("NewGraphBuilderFromLog: %v", err)
+	}
+	return g
+}
+
+func materializador(t *testing.T, g *orchestrator.GraphBuilder, rec MaterializeRecorder) *Materializer {
+	t.Helper()
+	m, err := NewMaterializer(&fakeAdmission{}, NewGraphLeafAdmitter(g), rec)
+	if err != nil {
+		t.Fatalf("NewMaterializer: %v", err)
+	}
+	return m
+}
+
+// TestAOS476_ArestaRecusadaPeloStorePropaga (B2 da revisão): pelo adaptador de PRODUÇÃO, um
+// store que recusa o `task.edge.added` faz a materialização falhar com esse erro e sem
+// `plan.materialized` — o adaptador não pode engolir a recusa.
+func TestAOS476_ArestaRecusadaPeloStorePropaga(t *testing.T) {
+	es := novoES(t)
+	st := storeQueRecusa{Store: es, recusar: map[string]bool{contract.EventTaskEdgeAdded: true}}
+	g, err := orchestrator.NewGraphBuilder(st, "run-1", eventstore.Producer{NHIID: "nhi:test"})
+	if err != nil {
+		t.Fatalf("NewGraphBuilder: %v", err)
+	}
+	rec := &fakeRecorder{}
+	if _, err := materializador(t, g, rec).Materialize(context.Background(), planoRecolhaAnalise()); !errors.Is(err, errAppendRecusado) {
+		t.Fatalf("a recusa do store tinha de propagar, got %v", err)
+	}
+	if len(rec.payloads) != 0 {
+		t.Fatalf("plan.materialized apenso com a aresta recusada: %+v", rec.payloads)
+	}
+}
+
+// TestAOS476_MaterializacaoRetomaDepoisDosNos (MÉDIO-1 da revisão): a primeira tentativa morre
+// depois dos `task.node.created` e antes da aresta e do `plan.materialized`. Um dono seguinte,
+// com o grafo RE-HIDRATADO, volta a materializar: os nós que coincidem são aceites sem segunda
+// escrita, a aresta é escrita e o `plan.materialized` é apenso. Antes, a readmissão do primeiro
+// nó falhava com «nó já existe no grafo» e o run ficava irrecuperável.
+func TestAOS476_MaterializacaoRetomaDepoisDosNos(t *testing.T) {
+	ctx := context.Background()
+	es := novoES(t)
+	g1, err := orchestrator.NewGraphBuilder(storeQueRecusa{Store: es, recusar: map[string]bool{contract.EventTaskEdgeAdded: true}},
+		"run-1", eventstore.Producer{NHIID: "nhi:p1"})
+	if err != nil {
+		t.Fatalf("NewGraphBuilder: %v", err)
+	}
+	if _, err := materializador(t, g1, &fakeRecorder{}).Materialize(ctx, planoRecolhaAnalise()); err == nil {
+		t.Fatal("a primeira tentativa tinha de morrer na aresta")
+	}
+	if n := contarTipos(t, es, "run-1"); n[contract.EventTaskNodeCreated] != 2 || n[contract.EventTaskEdgeAdded] != 0 {
+		t.Fatalf("estado depois da morte = %v, quer 2 nós e 0 arestas", n)
+	}
+
+	rec := &fakeRecorder{}
+	if _, err := materializador(t, builderDoLog(t, es, "nhi:p2"), rec).Materialize(ctx, planoRecolhaAnalise()); err != nil {
+		t.Fatalf("a retoma da materialização falhou: %v", err)
+	}
+	if n := contarTipos(t, es, "run-1"); n[contract.EventTaskNodeCreated] != 2 || n[contract.EventTaskEdgeAdded] != 1 {
+		t.Fatalf("depois da retoma = %v, quer 2 nós (sem reescrita) e 1 aresta", n)
+	}
+	if len(rec.payloads) != 1 {
+		t.Fatalf("plan.materialized apenso %d vezes na retoma, quer 1", len(rec.payloads))
+	}
+
+	// Uma terceira passagem, com a aresta já durável, também passa e não a reescreve.
+	if _, err := materializador(t, builderDoLog(t, es, "nhi:p3"), &fakeRecorder{}).Materialize(ctx, planoRecolhaAnalise()); err != nil {
+		t.Fatalf("a retoma com a aresta já durável falhou: %v", err)
+	}
+	if n := contarTipos(t, es, "run-1"); n[contract.EventTaskEdgeAdded] != 1 {
+		t.Fatalf("a aresta já durável foi reescrita: %v", n)
+	}
+}
+
+// TestAOS476_RetomaComNoDivergenteRecusa: um nó já durável com outra tool call não é o nó do
+// plano. A retoma recusa com [ErrNodeDiverges], sem escrever nada e sem `plan.materialized`.
+func TestAOS476_RetomaComNoDivergenteRecusa(t *testing.T) {
+	ctx := context.Background()
+	es := novoES(t)
+	outro := orchestrator.NodeSpec{TaskID: "analise"}
+	outro.Task.ToolID = "http.post"
+	outro.Task.Capability = "cap:tool:http.post"
+	if err := builderDoLog(t, es, "nhi:p1").AddNode(ctx, outro); err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+	antes := contarTipos(t, es, "run-1")
+
+	rec := &fakeRecorder{}
+	_, err := materializador(t, builderDoLog(t, es, "nhi:p2"), rec).Materialize(ctx, planoRecolhaAnalise())
+	if !errors.Is(err, ErrNodeDiverges) {
+		t.Fatalf("nó divergente devia dar ErrNodeDiverges, got %v", err)
+	}
+	if depois := contarTipos(t, es, "run-1"); !reflect.DeepEqual(antes, depois) {
+		t.Fatalf("a retoma recusada escreveu: antes=%v depois=%v", antes, depois)
+	}
+	if len(rec.payloads) != 0 {
+		t.Fatalf("plan.materialized apenso sobre um nó divergente: %+v", rec.payloads)
+	}
+}
+
+// TestAOS476_RetomaComNoJaEmCursoRecusa: sem `plan.materialized` nada pode ter despachado um
+// nó. Um nó do plano que já não está `ready` não se aceita como «o mesmo nó por admitir».
+func TestAOS476_RetomaComNoJaEmCursoRecusa(t *testing.T) {
+	ctx := context.Background()
+	es := novoES(t)
+	g1 := builderDoLog(t, es, "nhi:p1")
+	// `recolha` tem um dependente no plano ⇒ papel, admitido sem tool: a especificação coincide.
+	if err := g1.AddNode(ctx, orchestrator.NodeSpec{TaskID: "recolha"}); err != nil {
+		t.Fatalf("AddNode: %v", err)
+	}
+	if err := g1.MarkRunning(ctx, "recolha"); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if _, err := materializador(t, builderDoLog(t, es, "nhi:p2"), &fakeRecorder{}).Materialize(ctx, planoRecolhaAnalise()); !errors.Is(err, ErrNodeDiverges) {
+		t.Fatalf("nó já em curso devia dar ErrNodeDiverges, got %v", err)
+	}
+}

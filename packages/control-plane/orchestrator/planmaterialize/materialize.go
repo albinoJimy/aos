@@ -34,6 +34,11 @@ var (
 	// ErrInvalidRequest — pedido de materialização malformado (run_id/plan_id vazio,
 	// documento sem nós, ou node_id vazio/duplicado).
 	ErrInvalidRequest = errors.New("planmaterialize: pedido de materialização inválido")
+	// ErrNodeDiverges — numa materialização RETOMADA (AOS-476), um nó do plano já está no
+	// grafo durável com outra especificação (tool call, prioridade, identidade) ou fora do
+	// estado `ready`. Fail-closed e DETERMINISTA: o log não muda, e apresentar o mesmo
+	// documento dá sempre o mesmo.
+	ErrNodeDiverges = errors.New("planmaterialize: nó já durável no grafo diverge do plano")
 	// ErrNodeNotAdmitted — a admissão global (AOS-027/028) recusou um nó. Fail-closed:
 	// o plano APROVADO não materializa parcialmente — a recusa aborta antes de
 	// qualquer spawn/nó (nenhum efeito parcial).
@@ -170,6 +175,13 @@ type LeafNode struct {
 // capaz de admitir nós sem arestas deixaria o grafo durável a afirmar que o plano não
 // tem dependências — foi o que o E2E mediu três vezes (2026-09-15, 2026-10-01 local e
 // no `consume.wal` de produção: zero `task.edge.added`).
+//
+// CONTRATO DE RETOMA (AOS-476). A materialização pode ser repetida sobre um grafo onde
+// uma tentativa anterior morreu depois de escrever nós ou arestas e antes de
+// `plan.materialized`. Por isso AdmitLeaf de um nó já admitido com a MESMA especificação
+// devolve nil sem reescrever, e com especificação diferente devolve [ErrNodeDiverges];
+// AdmitEdge de uma aresta já admitida devolve nil. O adaptador de produção cumpre-o (ver
+// adapters.go).
 type LeafAdmitter interface {
 	AdmitLeaf(ctx context.Context, node LeafNode) error
 	AdmitEdge(ctx context.Context, from, to string) error
@@ -465,8 +477,10 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 	}
 
 	// As DEPENDÊNCIAS, depois de todos os nós (uma aresta exige as duas pontas) e antes de
-	// `plan.materialized` (AOS-476). Também são admissão — ordenação, não efeito (ADR-024
-	// §2). É o `task.edge.added` que as torna duráveis: `plan.materialized` não as carrega e
+	// `plan.materialized` (AOS-476). Escrever uma aresta não arranca nem spawna nada, pelo
+	// que a materialização continua sem efeito, como o ADR-024 §2 a define. O ADR só
+	// enumera os NÓS pendentes e o `plan.materialized`; pôr aqui as dependências é decisão
+	// do AOS-476, não do ADR. É o `task.edge.added` que as torna duráveis: `plan.materialized` não as carrega e
 	// `task.node.created` não tem campo de dependências, pelo que sem estes factos o grafo
 	// que um dono seguinte re-hidrata (e o `inspect` lê) diria que os nós são
 	// independentes. A porta de produção (GraphBuilder.AddEdge do grafo re-hidratado da

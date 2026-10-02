@@ -12,6 +12,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/json"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -230,5 +233,190 @@ func TestAOS476_ArestasDoGrafoConta(t *testing.T) {
 	}
 	if n := arestasDoGrafo(d, ordem()); n != 4 {
 		t.Fatalf("grafo em losango contou %d arestas, quer 4", n)
+	}
+}
+
+// aos476Registo é um registo do WAL de ficheiro, já descodificado: o envelope do evento como
+// JSON cru, mais o tipo e o stream, para se poder filtrar e reescrever.
+type aos476Registo struct {
+	tipo, stream string
+	env          map[string]json.RawMessage
+}
+
+// aos476LerWAL lê o WAL pelo seu enquadramento (uint32 len big-endian, JSON, uint32 crc32 IEEE).
+func aos476LerWAL(t *testing.T, path string) []aos476Registo {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ler o WAL: %v", err)
+	}
+	var regs []aos476Registo
+	for i := 0; i < len(raw); {
+		n := int(binary.BigEndian.Uint32(raw[i:]))
+		var env map[string]json.RawMessage
+		if err := json.Unmarshal(raw[i+4:i+4+n], &env); err != nil {
+			t.Fatalf("registo ilegível no offset %d: %v", i, err)
+		}
+		var tipo, stream string
+		_ = json.Unmarshal(env["type"], &tipo)
+		_ = json.Unmarshal(env["stream_id"], &stream)
+		regs = append(regs, aos476Registo{tipo: tipo, stream: stream, env: env})
+		i += 8 + n
+	}
+	return regs
+}
+
+// aos476EscreverWAL reescreve o WAL com os registos dados, pelo mesmo enquadramento.
+func aos476EscreverWAL(t *testing.T, path string, regs []aos476Registo) {
+	t.Helper()
+	var out bytes.Buffer
+	for _, r := range regs {
+		corpo, err := json.Marshal(r.env)
+		if err != nil {
+			t.Fatalf("serializar registo: %v", err)
+		}
+		var cab [4]byte
+		binary.BigEndian.PutUint32(cab[:], uint32(len(corpo)))
+		out.Write(cab[:])
+		out.Write(corpo)
+		binary.BigEndian.PutUint32(cab[:], crc32.ChecksumIEEE(corpo))
+		out.Write(cab[:])
+	}
+	if err := os.WriteFile(path, out.Bytes(), 0o600); err != nil {
+		t.Fatalf("escrever o WAL: %v", err)
+	}
+}
+
+// aos476MorteAMeio reescreve o WAL como se o primeiro dono tivesse morrido a meio da
+// materialização: fica tudo o que veio antes do primeiro `task.edge.added` (com, no máximo,
+// `nos` dos `task.node.created`) e o `lease.released` dele — o anúncio que permite ao dono
+// seguinte entrar sem esperar o TTL, como fez a revisão (registos 0–5 + `lease.released`).
+// `mexer`, se não for nil, altera os registos guardados antes de os escrever.
+func aos476MorteAMeio(t *testing.T, wal string, nos int, mexer func(*aos476Registo)) {
+	t.Helper()
+	var guardar []aos476Registo
+	var largada *aos476Registo
+	criados := 0
+	cortado := false
+	for _, r := range aos476LerWAL(t, wal) {
+		switch {
+		case r.tipo == "lease.released" && largada == nil:
+			r := r
+			largada = &r
+		case cortado:
+		case r.tipo == "task.edge.added" || r.tipo == "plan.materialized":
+			cortado = true
+		case r.tipo == "task.node.created":
+			if criados == nos {
+				cortado = true
+				continue
+			}
+			criados++
+			if mexer != nil {
+				mexer(&r)
+			}
+			guardar = append(guardar, r)
+		default:
+			guardar = append(guardar, r)
+		}
+	}
+	if largada == nil || criados != nos {
+		t.Fatalf("WAL inesperado: largada=%v nós guardados=%d (quer %d)", largada != nil, criados, nos)
+	}
+	aos476EscreverWAL(t, wal, append(guardar, *largada))
+}
+
+// aos476PrimeiroDono corre o primeiro dono (`--goal`, com o documento validado escrito em
+// `--plan-out`) e devolve os caminhos.
+func aos476PrimeiroDono(t *testing.T, bin, run string) (wal, snap, doc string) {
+	t.Helper()
+	dir := t.TempDir()
+	snap = filepath.Join(dir, "snapshot.json")
+	escrever(t, snap, aos476Snapshot)
+	fix := filepath.Join(dir, "plano.json")
+	escrever(t, fix, aos476Plano)
+	doc = filepath.Join(dir, "validado.json")
+	wal = filepath.Join(dir, "orq.wal")
+	r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--goal", "recolher e analisar dados",
+		"--snapshot", snap, "--decompose-fixture", fix, "--plan-out", doc, "--worker", "p1", "--release")
+	if r.code != exitOK {
+		t.Fatalf("primeiro dono saiu %d\n%s\n%s", r.code, r.stdout, r.stderr)
+	}
+	return wal, snap, doc
+}
+
+// TestAOS476_MaterializacaoMortaAMeioRetoma (MÉDIO-1 da revisão), por PROCESSO real: o primeiro
+// dono morre depois de escrever os nós (os dois, ou só o primeiro) e antes da aresta e do
+// `plan.materialized`. A retoma (`serve --plan-doc`, a via do `consume`) re-hidrata os nós SEM
+// aresta, aceita os que coincidem com o documento, escreve o que falta e chega ao despacho.
+// Antes falhava com «nó já existe no grafo» e saída 1 — que o `consume` retentava até ao tecto de
+// gerações.
+func TestAOS476_MaterializacaoMortaAMeioRetoma(t *testing.T) {
+	bin := construir(t)
+	for _, nos := range []int{2, 1} {
+		t.Run(map[int]string{2: "depois-dos-nos", 1: "entre-os-nos"}[nos], func(t *testing.T) {
+			const run = "run-aos476-morte"
+			wal, snap, doc := aos476PrimeiroDono(t, bin, run)
+			aos476MorteAMeio(t, wal, nos, nil)
+
+			r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--plan-doc", doc, "--snapshot", snap,
+				"--worker", "p2", "--release")
+			if r.code != exitOK {
+				t.Fatalf("a retoma de uma materialização morta a meio saiu %d (o run ficava irrecuperável)\n%s\n%s", r.code, r.stdout, r.stderr)
+			}
+			for _, quer := range []string{"grafo re-hidratado: arestas=0", "materializado: plano=" + run + "-plan nos=2", "despachado: plano=" + run + "-plan nos_despachados=1"} {
+				if !strings.Contains(r.stdout, quer) {
+					t.Fatalf("falta %q na retoma:\n%s", quer, r.stdout)
+				}
+			}
+			raw, err := os.ReadFile(wal)
+			if err != nil {
+				t.Fatalf("ler o WAL: %v", err)
+			}
+			if n, a, m := len(aos476Tipo(raw, "task.node.created")), len(aos476Tipo(raw, "task.edge.added")), len(aos476Tipo(raw, "plan.materialized")); n != 2 || a != 1 || m != 1 {
+				t.Fatalf("WAL depois da retoma: task.node.created=%d task.edge.added=%d plan.materialized=%d, quer 2/1/1 (nenhum nó reescrito)", n, a, m)
+			}
+			insp := correr(t, bin, "inspect", "--wal", wal, "--run", run)
+			if !strings.Contains(insp.stdout, "ordem=recolha,analise") {
+				t.Fatalf("depois da retoma o grafo não ordena recolha,analise:\n%s", insp.stdout)
+			}
+		})
+	}
+}
+
+// TestAOS476_MaterializacaoMortaComNoDivergenteRecusa: se o nó que ficou no log NÃO é o do
+// documento (aqui, `analise` com outra tool), a retoma recusa com a saída DETERMINISTA do
+// documento (10) — não com 1, que seria retentado — e não escreve nada.
+func TestAOS476_MaterializacaoMortaComNoDivergenteRecusa(t *testing.T) {
+	bin := construir(t)
+	const run = "run-aos476-divergente"
+	wal, snap, doc := aos476PrimeiroDono(t, bin, run)
+	aos476MorteAMeio(t, wal, 2, func(r *aos476Registo) {
+		var p map[string]any
+		_ = json.Unmarshal(r.env["payload"], &p)
+		if p["task_id"] != "analise" {
+			return
+		}
+		p["tool_id"], p["capability"] = "http.post", "cap:tool:http.post"
+		r.env["payload"], _ = json.Marshal(p)
+	})
+	antes, err := os.ReadFile(wal)
+	if err != nil {
+		t.Fatalf("ler o WAL: %v", err)
+	}
+
+	r := correr(t, bin, "serve", "--wal", wal, "--run", run, "--plan-doc", doc, "--snapshot", snap,
+		"--worker", "p2", "--release")
+	if r.code != exitDocumentoRecusado || !strings.Contains(r.stderr, "diverge") || !strings.Contains(r.stderr, `"analise"`) {
+		t.Fatalf("um nó divergente tinha de ser recusado com %d e dizê-lo, saiu %d\n%s\n%s", exitDocumentoRecusado, r.code, r.stdout, r.stderr)
+	}
+	depois, err := os.ReadFile(wal)
+	if err != nil {
+		t.Fatalf("ler o WAL: %v", err)
+	}
+	for _, tipo := range []string{"task.node.created", "task.edge.added", "plan.materialized"} {
+		if a, d := len(aos476Tipo(antes, tipo)), len(aos476Tipo(depois, tipo)); a != d {
+			t.Fatalf("a retoma recusada escreveu %s: %d → %d", tipo, a, d)
+		}
 	}
 }

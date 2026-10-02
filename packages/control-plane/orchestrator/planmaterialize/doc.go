@@ -22,7 +22,11 @@
 //     `task.edge.added`, pela mesma porta, depois de todos os nós e antes de
 //     `plan.materialized` (AOS-476). É a fonte DURÁVEL das dependências — a topologia
 //     que um dono seguinte re-hidrata ([orchestrator.RebuildDAG] só repõe arestas a
-//     partir deste evento);
+//     partir deste evento). AVISO: o `task.edge.added` une os dois canais — não diz se a
+//     aresta é `depends_on` ou `conditional_on`, nem guarda o predicado da condição ou o
+//     `risk_class`. Despachar só a partir do grafo trataria uma aresta condicional como
+//     dependência incondicional e perderia, em silêncio, a poda `branch_not_taken` do
+//     ADR-022 §2.1. O despacho lê o `PlanDocument` aprovado; o grafo serve a topologia;
 //  3. o resultado projecta-se em `plan.materialized` (constante EXISTENTE
 //     [plannerevents.EventMaterialized], via [MaterializeRecorder]).
 //

@@ -31,6 +31,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -410,6 +411,14 @@ func materializarEDespachar(ctx context.Context, ten *runlifecycle.Tenure, store
 		// cada tentativa falhada encolhia a árvore até negar tudo.
 		if rerr := adm.Release(ctx); rerr != nil {
 			return fmt.Errorf("materialização falhou (%w) e a devolução das reservas também: %v", err, rerr)
+		}
+		// AOS-476: a materialização é RETOMÁVEL — uma tentativa anterior que morreu depois dos nós
+		// e antes do `plan.materialized` deixa nós no grafo que esta aceita se coincidirem. Se um
+		// NÃO coincide com o do documento, o log não muda e apresentar o mesmo documento dá sempre
+		// o mesmo: é a recusa DETERMINISTA do documento (10), não um `1` que o `consume` retentaria
+		// até esgotar as gerações.
+		if errors.Is(err, planmaterialize.ErrNodeDiverges) {
+			return fmt.Errorf("%w: o grafo do run já tem nós que não são os deste documento: %w", errDocumentoDoPlanoRecusado, err)
 		}
 		return fmt.Errorf("materialização: %w", err)
 	}

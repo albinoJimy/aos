@@ -311,6 +311,18 @@ func (d *DAG) Agent(taskID string) (contract.AgentIdentity, bool) {
 	return n.spec.Agent, true
 }
 
+// Spec devolve a especificação com que o nó foi admitido (a que o `task.node.created`
+// carrega e o [RebuildDAG] repõe) e se existe. Existe para uma materialização retomada
+// poder CONFRONTAR um nó já durável com o que o plano admitiria, em vez de o reescrever
+// ou de o aceitar às cegas (AOS-476).
+func (d *DAG) Spec(taskID string) (NodeSpec, bool) {
+	n, ok := d.nodes[taskID]
+	if !ok {
+		return NodeSpec{}, false
+	}
+	return n.spec, true
+}
+
 // applyDurableState repõe o estado de um nó a partir de um facto DURÁVEL já
 // committed (p.ex. deadlock.resolved), SEM revalidar a transição: o evento é a
 // autoridade de que ela foi aplicada e o replay limita-se a reproduzir o estado
