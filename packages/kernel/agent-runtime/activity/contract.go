@@ -145,6 +145,13 @@ type Activity struct {
 	// chegava ao RM de produção. Como o Credential, NÃO entra na idempotency key: é
 	// material de mediação, não de identidade da activity.
 	AuthorizationTaint taint.Label
+	// AllowedTools é a lista-branca de tools do run (AOS-413), PROPAGADA ao
+	// [referencemonitor.Call], onde o RM a impõe (AOS-485). nil ⇒ sem restrição; não-nil,
+	// mesmo VAZIA ⇒ só as listadas. Atravessa por ATRIBUIÇÃO do slice, sem cópia: uma cópia
+	// por `append` a partir de nil faria da lista vazia uma lista ausente e abriria todas as
+	// tools na via durável — a de produção. Como o Credential, NÃO entra na idempotency key
+	// nem na impressão da acção: restringe a call, não a identifica.
+	AllowedTools []string
 }
 
 func (a Activity) validate() error {
@@ -181,6 +188,7 @@ func (a Activity) toCall() referencemonitor.Call {
 		},
 		Input:            a.Input,
 		ApprovalEvidence: a.ApprovalEvidence,
+		AllowedTools:     a.AllowedTools, // AOS-485: o slice tal como veio — vazio não vira nil
 	}
 }
 

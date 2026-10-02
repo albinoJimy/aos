@@ -17,7 +17,15 @@ const (
 // HookResult é o retorno de um hook. Obligations acumulam-se ao longo da cadeia
 // e são impostas apenas se a decisão final for Permit.
 type HookResult struct {
-	Decision    HookDecision
+	Decision HookDecision
+	// Code é o código estável com que uma NEGAÇÃO deste hook sai em [Decision.Code] e no
+	// evento (AOS-485). Vazio ⇒ [CodeDeniedByHook], o de sempre. Existe para o hook cuja
+	// recusa já tem código próprio de contrato — a lista-branca do run
+	// ([CodeToolOutsideRunAllowlist]) — não o perder ao passar a ser imposta dentro do RM.
+	// Só é lido num [HookDeny]: a escalada sai sempre com [CodeEscalated], e um allow não
+	// tem código. NÃO é texto livre: só os códigos que [hookDenyCode] lista são honrados, e
+	// qualquer outro sai [CodeDeniedByHook] — um hook não inventa códigos nem veste os do RM.
+	Code        string
 	Reason      string
 	Obligations []Obligation
 	// PolicyVersion é a versão (SemVer) da política que produziu este veredicto.

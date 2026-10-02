@@ -231,6 +231,11 @@ func (d *DurableDispatcher) Dispatch(ctx context.Context, call referencemonitor.
 		// — o `doc_read` do turno 1 de um nó só com o objectivo incluído (fase 1,
 		// 2026-09-26). ParseLabel é fail-closed: vazio ou desconhecido ⇒ untrusted.
 		AuthorizationTaint: taint.ParseLabel(call.Context.Taint),
+		// AOS-485: a lista-branca do run é imposta pelo RM, e o RM desta via só vê o que a
+		// Activity levar. Sem esta linha a via durável — a de produção — mediava todas as
+		// calls sem lista, e um nó do plano voltava a ter as tools do run inteiro. O slice
+		// vai tal como veio: vazio (nega tudo) não pode chegar nil (sem restrição).
+		AllowedTools: call.AllowedTools,
 	}
 	res, err := d.dispatcher.Dispatch(ctx, act)
 	if err != nil {

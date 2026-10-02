@@ -1054,6 +1054,14 @@ passo (`eventsink.go`), e o selo é gravado primeiro (`monitor.go`). Resultado m
    tem-no.
 3. **No nó real** (cenário do teste do AOS-478): 3 `tool.call.escalated`, 0 `tool.call.mediated`,
    0 `tool.call.outcome`.
+4. **Recusa e depois permit no mesmo passo** (acrescentado a 2026-10-02 com o AOS-485, confirmado
+   pela revisão adversarial desse ticket). A recusa pela lista-branca do run passou a gravar
+   `tool.call.denied` na chave `run_id:step_id` do sub-passo. O `step_id` é posicional: numa
+   retoma em que o turno não tem captura, o modelo é re-interrogado e pode pedir, na mesma
+   posição, uma tool que a lista admite. O `tool.call.mediated` desse permit colide com o
+   `denied` já gravado e é engolido; o log do run mostra uma recusa onde houve uma execução. O
+   WORM fica certo. Vale para qualquer recusa seguida de permit no mesmo passo, não só a da
+   lista; antes do AOS-485 a recusa pela lista não ocupava a chave.
 
 Não contradiz o relatório E2E de 2026-10-01 (§4: 52 `mediated` + 11 `denied` em produção): são
 todos permits e denies directos, nenhum run de produção teve `escalate`, e o relatório não conta
@@ -1078,6 +1086,10 @@ perder a idempotência por passo do selo.
       tentativa), de modo que a re-execução do mesmo desfecho continua a deduplicar.
 - [ ] Teste de integração RM + Event Store que conta os tipos no stream do run nos três casos acima
       (permit directo; escalada → permit; escalada → deny) e falha se algum evento for engolido.
+- [ ] O caso 4 (recusa → permit no mesmo `step_id`, p.ex. uma recusa pela lista-branca do run
+      seguida, numa retoma sem captura, de um permit na mesma posição) fica no log do run como
+      dois eventos: o `tool.call.mediated` não é engolido pelo `tool.call.denied` anterior. Com
+      teste que o conta no stream do run.
 - [ ] O `MediationSeq` devolvido depois de uma aprovação aponta para o evento da decisão, não para o
       `escalated`.
 - [ ] `autonomy_fiabilidade.go` recebe desfechos reais num teste que passa pelo RM e pelo Event

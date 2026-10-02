@@ -189,8 +189,18 @@ func TestAOS454_AuditoriaCampoACampoCallActivityCall(t *testing.T) {
 
 	var enviado referencemonitor.Call
 	preencherComSentinelas(t, reflect.ValueOf(&enviado).Elem(), "")
-	if _, err := newDurableDispatcher(t, store, rm).Dispatch(context.Background(), enviado); err != nil {
+	// AOS-485: a lista-branca do run é um campo do Call como os outros, e o RM impõe-a. Com a
+	// sentinela genérica de `[]string` a tool do Call ficava FORA da lista e a auditoria
+	// passava a medir uma call negada pelo backstop — verde, mas por outra razão. A lista leva
+	// a própria tool: a call continua permitida, e um campo que se perca continua a ver-se
+	// (chegaria nil em vez desta lista).
+	enviado.AllowedTools = []string{enviado.ToolID}
+	dec, err := newDurableDispatcher(t, store, rm).Dispatch(context.Background(), enviado)
+	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
+	}
+	if dec.Effect != referencemonitor.EffectPermit {
+		t.Fatalf("a call de auditoria tinha de ser permitida, veio %s (%s por %s)", dec.Effect, dec.Code, dec.DeniedBy)
 	}
 	if len(rec.calls) != 1 {
 		t.Fatalf("esperava 1 mediação, vieram %d", len(rec.calls))

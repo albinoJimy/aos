@@ -58,6 +58,11 @@ var (
 	// divergência de step_id face à captura.
 	ErrReplayMiss = errors.New("activity: sem resultado registado para replay (replay-miss)")
 
+	// ErrAllowlistNotEnforced — o Mediator PERMITIU uma call fora da lista-branca do run
+	// (AOS-485). O RM de referência nega-a sempre (gate ou backstop); este erro só existe para
+	// um Mediator que não a imponha, e é fatal: o output dessa tool não chega ao modelo.
+	ErrAllowlistNotEnforced = errors.New("activity: o Reference Monitor permitiu uma tool fora da lista-branca do run")
+
 	// ErrNoRegistry — a [Activity] trouxe uma [Compensation] mas o [Dispatcher] não tem
 	// [CompensationRegistrar] ([WithCompensationRegistry]). Recusa-se em vez de perder
 	// silenciosamente a acção inversa.
