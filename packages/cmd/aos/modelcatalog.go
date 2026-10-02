@@ -5,10 +5,13 @@ package main
 // ADMITA. Sem isto, uma tool oferecida ao modelo mas SEM contrato assinado registado é recusada
 // pela revalidação (trust store vazio ⇒ ReasonNotFrozen) ANTES de a decisão chegar ao PDP. Com
 // isto, a revalidação passa e a decisão passa ao GATE SEGUINTE — o PDP/Cedar (3.º hook) — que
-// avalia a Capability da tool (ex.: cap:http.post) sob o taint da autorização. Uma tool call
-// originada pelo modelo tem taint=untrusted, pelo que a regra Cedar `allow_http_post`
-// (`context.taint != "untrusted"`) NÃO dá permit → deny no PDP (taint-gate, P4). Ou seja: registar
-// o contrato assinado MOVE a negação da revalidação para o taint-gate Cedar.
+// avalia a Capability da tool (ex.: cap:http.post) sob o taint da autorização — o rótulo do
+// CONTEXTO do turno, cunhado pelo runtime (ADR-034). Sobre contexto untrusted (depois de um
+// plan_input, resultado de tool ou memória), `allow_http_post` (`context.taint != "untrusted"`)
+// NÃO dá permit; sobre contexto só com o objectivo a cláusula de taint passa e o web_post dos
+// demos morre na região (`resource.region == "eu"` contra `eu-west`) — o de produção já nem é
+// oferecido (ADR-034 §2.7). Ou seja: registar o
+// contrato assinado MOVE a negação da revalidação para o PDP.
 //
 // DEV-GRADE (auto-assinado): o nó gera uma chave ed25519 EFÉMERA ao arranque, assina o catálogo com
 // ela e confia nela (trust store in-process). É o análogo, no eixo do registry, da identidade

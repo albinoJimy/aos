@@ -73,15 +73,33 @@ func (c *IdentityCheck) Evaluate(ctx context.Context, call *rm.Call) (rm.HookRes
 	// Verify) liga a NHI ao humano responsável e propaga a cada evento de tool
 	// call, permitindo reconstruir "quem autorizou" (AOS-006).
 	call.Principal = rm.Principal{
-		NHIID:           principal.AgentID,
-		AgentID:         principal.AgentID,
-		AgentClass:      principal.AgentClass,
+		NHIID:      principal.AgentID,
+		AgentID:    principal.AgentID,
+		AgentClass: principal.AgentClass,
+		// AOS-407: o board vem do token VERIFICADO. Este hook substitui o Principal inteiro, e
+		// sem esta linha o board era apagado antes de chegar ao PDP (DEF-909).
+		Board:           principal.Board,
 		DelegationChain: toRMChain(principal.DelegationChain),
 		Authority:       principal.Scope,
 		// Autoridade de escopo derivada da IDENTIDADE (AOS-156): o grant ASSINADO pelo
 		// issuer, por-sujeito, para o ScopeGate (AOS-071) resolver — incl. o agente
 		// por-mint, que nenhum directório estático pode conhecer. Ver [subjectAuthorityFromScope].
 		SubjectAuthority: subjectAuthorityFromScope(principal),
+		// AOS-439: o mandato VERIFICADO sob o qual o token foi cunhado — vai ao selo da decisão
+		// (resíduo 3 do ADR-033). Vem do Verify, nunca da call.
+		MandateID: principal.MandateID,
+		// AOS-446 fase 1: a impressão do PINO que verificou esse mandato. Vem do Verify pela
+		// mesma via e pela mesma razão — quem a recalculasse a partir da configuração do processo
+		// estaria a perguntar ao suspeito.
+		MandateSigner: principal.MandateSigner,
+		// AOS-440: o humano da raiz, do token verificado — nunca da call.
+		UserID: principal.UserID,
+		// AOS-439/440: o submissor e o titular dos dados NÃO são claims do token — são derivados
+		// pelo NÓ no `POST /runs` e viajam do Goal. Este hook substitui a identidade inteira; estes
+		// dois preservam-se, porque não autorizam nada (nenhum gate decide por eles) e sem eles a
+		// decisão selada perdia quem pediu o run e o step-ledger perdia a chave do titular.
+		RequestedBy: call.Principal.RequestedBy,
+		Subject:     call.Principal.Subject,
 	}
 	return rm.HookResult{Decision: rm.HookAllow}, nil
 }

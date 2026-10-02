@@ -25,8 +25,9 @@ const (
 )
 
 // episodicStream é o stream do Event Store onde o EventStoreAdapter escreve a classe
-// episódica (streamPrefix "memory." + "episodic").
-const episodicStream = "memory.episodic"
+// episódica. O nome vem do ACESSOR e não de uma cópia: o AOS-424 renomeou estes streams
+// e um literal aqui passaria a apontar para um stream morto, em verde.
+var episodicStream = memadapters.StreamFor(domain.ClassEpisodic)
 
 // buildGateway compõe um gateway de ingestão sobre substrato REAL (Event Store,
 // memory.Service, SpanTracer→RecordingExporter, WORM). withEngine=false injecta

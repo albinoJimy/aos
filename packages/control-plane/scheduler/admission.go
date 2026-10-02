@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -173,7 +174,9 @@ type AdmitResult struct {
 }
 
 // Admission é o controlador de admissão global (token-bucket distribuído). É
-// stateless: todo o estado vive no Event Store. Construir com [NewAdmission].
+// stateless no que DECIDE: todo o estado que produz um veredicto vive no Event
+// Store — o único campo em memória é a fronteira de leitura por bucket, que é uma
+// pista descartável (ver [bucketCursor]). Construir com [NewAdmission].
 type Admission struct {
 	log      EventLog
 	qp       QuotaProvider
@@ -190,6 +193,90 @@ type Admission struct {
 	// WithAdmissionMeter o admit emite os MESMOS eventos/spans do AOS-027 e nenhuma
 	// métrica (instrumentação ADITIVA, nil-safe). Conta admitted/deferred (defer-rate).
 	metrics *SchedulerMetrics
+	// cursors guarda, por bucket, a FRONTEIRA de leitura do fold (AOS-420). Não
+	// contradiz o «todo o estado vive no Event Store» acima: não é estado de
+	// DECISÃO, é uma pista descartável. Perdê-la (processo novo, reinício, réplica
+	// diferente) só faz a leitura seguinte recomeçar na seq 1 e recalculá-la — o
+	// veredicto é bit-a-bit o mesmo. Ver [bucketCursor] para a invariante que a
+	// torna segura.
+	cursorMu sync.Mutex
+	cursors  map[string]bucketCursor
+}
+
+// bucketCursor é a fronteira de leitura memorizada de um bucket: o menor seq que
+// o fold ainda precisa de ler, e o instante (pelo relógio INJECTADO) em que essa
+// fronteira foi calculada.
+//
+// INVARIANTE que a torna segura: todo o evento com seq < fromSeq pertence a uma
+// reserva que, em atNano, já estava FORA da janela (expirada pelo refill
+// temporizado) ou INTEGRALMENTE reconciliada (débito efectivo zero) — e nenhuma
+// das duas condições se desfaz com o avanço do relógio: a janela só desliza para
+// a frente e uma libertação nunca é retirada. Um `quota_released` cujo
+// `admit_granted` ficou para trás da fronteira é ignorado pelo fold, que é
+// exactamente o que já acontecia quando esse grant expirava.
+//
+// Por isso a fronteira só é usada quando o instante da decisão é >= atNano. Se o
+// relógio RECUAR — injecção num teste, acerto de relógio numa réplica — uma
+// reserva dada como expirada podia voltar à janela: nesse caso a fronteira é
+// esquecida e o fold relê integralmente (fail-safe).
+type bucketCursor struct {
+	fromSeq uint64
+	atNano  int64
+	// windowNano é a janela COM QUE esta fronteira foi calculada, e sem ela a
+	// invariante é falsa (AOS-420, achado crítico da revisão adversarial).
+	//
+	// O par (fromSeq, atNano) diz «tudo antes de fromSeq já estava fora da janela em
+	// atNano», e o raciocínio original era que a janela «só desliza para a frente».
+	// Desliza — mas também CRESCE: o `QuotaProvider` é uma porta cujo implementador de
+	// produção lê os limites reais do provider, e o `Window` pode mudar em runtime
+	// ([StaticQuotaProvider.SetKey] existe para isso). Uma reserva dada por expirada sob
+	// `Window=1s` volta a CONTAR sob `Window=1h`, sem o relógio recuar nenhum — e a
+	// fronteira escondia-a do fold. Medido: TPM=100 com 120 tokens activos concedidos.
+	windowNano int64
+}
+
+// fronteiraDe devolve o seq a partir do qual o fold do bucket pode ler em nowNano, sob
+// windowNano. Devolve 1 (leitura integral) quando não há fronteira memorizada, quando o
+// relógio recuou face ao instante em que ela foi calculada, ou quando a JANELA CRESCEU —
+// os três casos em que uma reserva escondida pela fronteira podia voltar a contar.
+func (a *Admission) fronteiraDe(bucketID string, nowNano, windowNano int64) uint64 {
+	a.cursorMu.Lock()
+	defer a.cursorMu.Unlock()
+	c, ok := a.cursors[bucketID]
+	if !ok {
+		return 1
+	}
+	if nowNano < c.atNano || windowNano > c.windowNano {
+		delete(a.cursors, bucketID)
+		return 1
+	}
+	return c.fromSeq
+}
+
+// avancaFronteira memoriza uma fronteira nova. Só substitui a anterior quando a
+// DOMINA nas duas dimensões (seq >= e instante >=). Misturar o seq de uma
+// observação com o instante de outra produziria um par que nunca foi observado —
+// e é o par (seq, instante) que carrega a invariante, não cada metade por si. Com
+// admissões concorrentes sobre o mesmo bucket, a observação mais atrasada é
+// simplesmente descartada: ler DE MAIS é sempre seguro, ler de menos não.
+func (a *Admission) avancaFronteira(bucketID string, nowNano, windowNano int64, fromSeq uint64) {
+	if fromSeq < 1 {
+		return
+	}
+	a.cursorMu.Lock()
+	defer a.cursorMu.Unlock()
+	if c, ok := a.cursors[bucketID]; ok && (fromSeq < c.fromSeq || nowNano < c.atNano) {
+		return
+	}
+	a.cursors[bucketID] = bucketCursor{fromSeq: fromSeq, atNano: nowNano, windowNano: windowNano}
+}
+
+// esqueceFronteira descarta a fronteira de um bucket: a leitura seguinte é
+// integral.
+func (a *Admission) esqueceFronteira(bucketID string) {
+	a.cursorMu.Lock()
+	defer a.cursorMu.Unlock()
+	delete(a.cursors, bucketID)
 }
 
 // AdmissionOption configura a [Admission].
@@ -292,6 +379,7 @@ func NewAdmission(log EventLog, qp QuotaProvider, opts ...AdmissionOption) (*Adm
 		tracer:   agentruntime.NoopTracer{},
 		producer: eventstore.Producer{NHIID: DefaultAdmissionNHI},
 		maxRetry: defaultMaxCASRetries,
+		cursors:  make(map[string]bucketCursor),
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -645,16 +733,44 @@ type bucketFold struct {
 // não conta) e as libertações explícitas (quota_released). Devolve também o
 // último seq committed (âncora do CAS). É a projecção determinística usada tanto
 // na decisão como no replay.
+//
+// A leitura começa na FRONTEIRA do bucket (AOS-420, eixo DEF-911) e não na seq 1.
+// Sem ela, cada admissão relia o stream INTEIRO — O(N) por decisão e O(N²)
+// acumulado no stream mais quente do sistema, partilhado por todos os tenants de
+// um provider:model:region. A janela de refill limitava quais as reservas que
+// CONTAVAM, não quais os eventos que eram LIDOS. A fronteira derivada da fronteira
+// da janela é BOUNDED (avança com o relógio e com as reconciliações) e não é
+// compactação nem snapshot: o stream não é tocado e [Admission.Replay] continua a
+// lê-lo por inteiro.
 func (a *Admission) foldBucket(ctx context.Context, bucketID string, nowNano, windowNano int64) (bucketFold, uint64, error) {
-	evs, err := a.log.Read(ctx, bucketID, 1)
+	vazio := func() bucketFold {
+		return bucketFold{
+			tenantTokens:   map[string]int64{},
+			tenantRequests: map[string]int64{},
+		}
+	}
+	fromSeq := a.fronteiraDe(bucketID, nowNano, windowNano)
+	evs, err := a.log.Read(ctx, bucketID, fromSeq)
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
-			return bucketFold{
-				tenantTokens:   map[string]int64{},
-				tenantRequests: map[string]int64{},
-			}, 0, nil
+			return vazio(), 0, nil
 		}
 		return bucketFold{}, 0, err
+	}
+	if len(evs) == 0 && fromSeq > 1 {
+		// A fronteira ficou à FRENTE da cauda do stream. Não deveria acontecer (o
+		// log é append-only e a fronteira deriva de um seq observado), mas se
+		// acontecer o fold ficaria sem âncora de CAS e o Append seria recusado para
+		// sempre. Fail-safe: esquece a fronteira e relê integralmente.
+		a.esqueceFronteira(bucketID)
+		fromSeq = 1
+		evs, err = a.log.Read(ctx, bucketID, fromSeq)
+		if err != nil {
+			if errors.Is(err, eventstore.ErrStreamNotFound) {
+				return vazio(), 0, nil
+			}
+			return bucketFold{}, 0, err
+		}
 	}
 
 	// Reconstrói por reservation_id: grant materializa o débito; cada release
@@ -671,6 +787,10 @@ func (a *Admission) foldBucket(ctx context.Context, bucketID string, nowNano, wi
 		relTokens   int64
 		relRequests int64
 		tsNano      int64
+		// seq é o seq do `admit_granted` que materializou a reserva. Alimenta a
+		// fronteira de leitura (AOS-420): é o menor seq entre as reservas que AINDA
+		// contam que o fold seguinte precisa de voltar a ler.
+		seq uint64
 	}
 	byID := make(map[string]*entry)
 	order := make([]string, 0, len(evs))
@@ -691,6 +811,7 @@ func (a *Admission) foldBucket(ctx context.Context, bucketID string, nowNano, wi
 					grantTokens:   pl.CostTokens,
 					grantRequests: pl.CostRequests,
 					tsNano:        pl.TSUnixNano,
+					seq:           ev.Seq,
 				}
 				order = append(order, pl.ReservationID)
 			}
@@ -702,10 +823,11 @@ func (a *Admission) foldBucket(ctx context.Context, bucketID string, nowNano, wi
 		}
 	}
 
-	fold := bucketFold{
-		tenantTokens:   map[string]int64{},
-		tenantRequests: map[string]int64{},
-	}
+	fold := vazio()
+	// menorActivo é o menor seq entre as reservas que AINDA contam. É a fronteira
+	// do fold seguinte: tudo o que está antes dela já expirou pela janela ou já foi
+	// integralmente reconciliado, e nenhuma das duas condições se desfaz.
+	var menorActivo uint64
 	for _, id := range order {
 		e := byID[id]
 		// Débito efectivo = reservado − libertado, com clamp em 0 (sobre-libertar
@@ -726,6 +848,9 @@ func (a *Admission) foldBucket(ctx context.Context, bucketID string, nowNano, wi
 		if nowNano-e.tsNano >= windowNano {
 			continue
 		}
+		if menorActivo == 0 || e.seq < menorActivo {
+			menorActivo = e.seq
+		}
 		fold.tokens += effTokens
 		fold.requests += effRequests
 		fold.tenantTokens[e.tenant] += effTokens
@@ -740,6 +865,17 @@ func (a *Admission) foldBucket(ctx context.Context, bucketID string, nowNano, wi
 			tsNano:        e.tsNano,
 		})
 	}
+
+	// Fronteira para a leitura seguinte. Com reservas activas é o seq da mais
+	// antiga que ainda conta; SEM nenhuma activa basta a CAUDA — ler um único
+	// evento chega, porque é dele que sai a âncora do CAS. Um bucket ocioso ou
+	// integralmente reconciliado colapsa assim para leitura constante.
+	novaFronteira := lastSeq
+	if menorActivo > 0 {
+		novaFronteira = menorActivo
+	}
+	a.avancaFronteira(bucketID, nowNano, windowNano, novaFronteira)
+
 	return fold, lastSeq, nil
 }
 

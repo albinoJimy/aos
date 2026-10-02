@@ -160,6 +160,59 @@ func (p *PlanRecorder) RecordVerdict(ctx context.Context, payload plannerevents.
 	return p.recorder.RecordVerdict(ctx, payload, verifier)
 }
 
+// RecordProposed, RecordValidated e RecordDecision EMITEM os três factos que faltavam ter
+// chamador de produção para o gate de aprovação-de-plano existir de facto (AOS-408, residual do
+// DEF-274).
+//
+// Até aqui o `aos-orq` emitia `plan.materialized` sem que existisse `plan.approved` no stream — a
+// DoD do AOS-237 («consome `plan.approved`») estava meia, e o estado «pendente de decisão humana»
+// não era um facto: era a ausência de qualquer facto, que não se distingue de «nunca foi proposto».
+// Com os três, o pendente passa a ser DERIVÁVEL do log (proposto+validado sem decisão terminal), o
+// que é a condição para a aprovação ser assíncrona e sobreviver a um restart.
+//
+// Como no [PlanRecorder.RecordVerdict], são finos de propósito: a validação vive no
+// [plannerevents.Recorder] (que passa pelos construtores `NewProposed`/`NewValidated`/
+// `NewDecision`), e a escrita passa pelo appender FENCED — pelo que uma decisão emitida por um
+// processo que perdeu a posse é recusada durávelmente, e não apenas localmente.
+func (p *PlanRecorder) RecordProposed(ctx context.Context, payload plannerevents.ProposedPayload) (uint64, error) {
+	if err := p.amarrarPlano(&payload.PlanID, "proposta"); err != nil {
+		return 0, err
+	}
+	return p.recorder.RecordProposed(ctx, payload)
+}
+
+// RecordValidated emite o facto de o plano ter passado a validação estrutural — a âncora temporal
+// do pendente (o TTL conta do `Ts` deste evento).
+func (p *PlanRecorder) RecordValidated(ctx context.Context, payload plannerevents.ValidatedPayload) (uint64, error) {
+	if err := p.amarrarPlano(&payload.PlanID, "validação"); err != nil {
+		return 0, err
+	}
+	return p.recorder.RecordValidated(ctx, payload)
+}
+
+// RecordDecision emite a decisão do gate (`plan.approved`/`plan.rejected`), com o `plan_hash` que
+// a amarra ao organigrama concreto: aprovar um plano e materializar outro deixa de ser possível
+// sem que o log o mostre.
+func (p *PlanRecorder) RecordDecision(ctx context.Context, payload plannerevents.DecisionPayload) (uint64, error) {
+	if err := p.amarrarPlano(&payload.PlanID, "decisão"); err != nil {
+		return 0, err
+	}
+	return p.recorder.RecordDecision(ctx, payload)
+}
+
+// amarrarPlano preenche o plan_id em falta e recusa um facto de OUTRO plano. É a mesma guarda que
+// o [PlanRecorder.RecordVerdict] aplica à mão; existe como função porque passou a haver quatro
+// chamadores e uma guarda copiada quatro vezes divergiria na quinta.
+func (p *PlanRecorder) amarrarPlano(planID *string, oQue string) error {
+	if *planID == "" {
+		*planID = p.planID
+	}
+	if *planID != p.planID {
+		return fmt.Errorf("%w: %s para %q, emissor amarrado a %q", ErrForeignPlan, oQue, *planID, p.planID)
+	}
+	return nil
+}
+
 // RecordPayloadPublished EMITE a referência de um contrato de saída cumprido — o
 // chamador de produção cuja ausência é metade do DEF-273 (a outra metade, a
 // implementação da [plandispatch.PayloadView], é o [PayloadReader]).

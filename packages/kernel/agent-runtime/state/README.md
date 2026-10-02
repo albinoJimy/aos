@@ -24,7 +24,7 @@ porta `Tracer` do Agent Runtime (AOS-013) para observabilidade.
 Terminais **absorventes** (sem saída): `complete`, `killed`, `timed_out`. `failed`
 é falha **recuperável** — a única saída é `→ compensating` (saga).
 
-## Tabela declarativa de transições (13 pares)
+## Tabela declarativa de transições (15 pares)
 
 A máquina é **dados** (`transitions.go` → `validTransitions`), não `if/switch`.
 `IsValidTransition(from, to)` é a única fonte de verdade da validação.
@@ -39,12 +39,20 @@ waiting_on_human → killed           (timeout fail-closed — ADR-013)
 running          → paused
 paused           → running
 running          → complete | failed | timed_out
+waiting_on_tool  → timed_out        (BACKSTOP de wall-clock — AOS-419)
+paused           → timed_out        (BACKSTOP de wall-clock — AOS-419)
 failed           → compensating
 compensating     → ready
 ```
 
-Os restantes 87 dos 100 pares da matriz 10×10 são inválidos e rejeitados com
+Os restantes 85 dos 100 pares da matriz 10×10 são inválidos e rejeitados com
 `ErrInvalidTransition` **sem** tocar no estado persistido.
+
+As duas arestas de **backstop** (AOS-419, eixo do DEF-906) são a saída que faltava às
+esperas **não-humanas**: sem elas, `CheckDeadlines` não tinha para onde transitar um run
+pendurado em `waiting_on_tool` ou esquecido em `paused`, e esses estados ficavam **sem
+prazo nenhum** (o disjuntor de EPIC-08 é no-op fora de `running`). `waiting_on_human`
+**não** ganha aresta: a sua saída fail-closed é `→ killed`, com TTL próprio (ADR-013).
 
 ## API essencial
 
@@ -52,7 +60,7 @@ Os restantes 87 dos 100 pares da matriz 10×10 são inválidos e rejeitados com
 m, _ := state.NewMachine(store, runID,
     state.WithClock(clk),                       // relógio injectável (timeouts determinísticos)
     state.WithHumanApprovalTTL(30*time.Second), // fail-closed do gate humano
-    state.WithRunWallClock(10*time.Minute),     // timed_out do running
+    state.WithRunWallClock(10*time.Minute),     // timed_out: running E esperas não-humanas
     state.WithTracer(tracer),                   // spans por transição (AOS-013)
     state.WithObserver(obs),                    // contadores
 )
@@ -112,6 +120,11 @@ st, fired, _ := m.CheckDeadlines(ctx)
   `waiting_on_human → killed`; `timed_out` por wall-clock; recuperação após crash;
   transição inválida e falha de Append não corrompem; pause/resume/kill;
   concorrência `-race`.
+- `aos419_backstop_suspensao_test.go` — o **backstop** das esperas não-humanas
+  (DEF-906): `waiting_on_tool`/`paused` além do tecto → `timed_out` com a razão
+  `suspension_wall_clock_exceeded`, fronteira inclusiva, tecto por-segmento na retoma,
+  fail-closed na falha do Event Store, e os dois controlos negativos (sem tecto nada
+  dispara; a deliberação humana não morre pelo tecto de máquina).
 - `bench_test.go` — benchmarks (`IsValidTransition`, `Transition`) + cobertura de
   opções/acessores/tracer.
 

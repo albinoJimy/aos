@@ -638,7 +638,7 @@ Event Store append-only nunca é mutado; o rollback reverte por estado/nova fase
 coerente com a §6 e o ADR-012.
 
 **Registo de migrações durável e idempotente.** Cada `(migração, fase)` aplicada é
-gravada como evento append-only no stream `memory.migrations`, com a
+gravada como evento append-only no stream `aos-internal/memory/migrations`, com a
 **idempotency_key** do Event Store (`mem-migration:<id>:<fase>`, coerente com
 ADR-001). **Reaplicar é um no-op**: a segunda gravação deduplica no store e devolve
 `applied=false`; a linhagem reconstrói-se por replay (`List`). A idempotência também

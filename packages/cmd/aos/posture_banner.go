@@ -68,6 +68,52 @@ import (
 // está em `deploy/node/README.md` e no relatório de prontidão.
 const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo em TOKENS — reserva antes da inferencia, saldo pelo consumo medido; o tecto em dolares e opcional e so decide quando configurado"
 
+// taintGatePostureBanner declara se a barreira control-data-plane (AOS-069/AOS-363) está ARMADA ou
+// PRESENTE-MAS-INERTE, a partir do estado realmente composto — `active` é «`AOS_PRIVILEGED_CAPS`
+// enumera >= 1 capability», não «a variável está definida».
+//
+// As duas linhas dizem coisas diferentes e ambas têm de ser verdade. Inerte é a perna
+// retro-compatível e é OPT-IN de propósito, pelo que a linha nomeia o que resta a aplicar taint (a
+// cláusula `context.taint` que cada regra `permit` do bundle TENHA) e que a `allow_fs_read` de
+// referência ainda não a tem. Anunciar «TaintGate presente» sem essa distinção leria-se como
+// barreira, e não é.
+func taintGatePostureBanner(active bool) []string {
+	if active {
+		return []string{
+			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao e NAO-CONFIAVEL (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar. O taint da autorizacao e o rotulo do CONTEXTO do turno que pediu a call, cunhado pelo runtime (ADR-034) e nunca pelo modelo: trusted enquanto o contexto so tem o objectivo e correccoes do humano, untrusted a partir do primeiro plan_input, tool_result ou memoria, e sem volta no mesmo run — uma capability privilegiada so pode ser pedida ANTES de o run ler conteudo nao-confiavel (um no que ja leu um documento nao le outro)",
+		}
+	}
+	return []string{
+		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); desde o ADR-034 o taint e o do contexto do turno, pelo que armar cap:fs.read nao impede a leitura de um run cujo contexto so tem o objectivo. E OPT-IN de proposito",
+	}
+}
+
+// mediationChannelPostureBanner declara a postura do CANAL DE EVENTOS DE MEDIAÇÃO do Reference
+// Monitor (tool.call.mediated/denied/escalated, AOS-379). Os argumentos são o ESTADO REALMENTE
+// composto — `composed` = a porta [integration.SecuredConfig.MediationEvents] foi preenchida com o
+// Event Store do nó; `durable` = esse store é durável (NATS/file) e não a referência in-memory —,
+// nunca a intenção da config (a mesma disciplina de AOS-203 que rege as outras posturas deste
+// ficheiro). É a linha que fecha o achado central de AOS-379: até aqui o canal era INALCANÇÁVEL
+// como Event Store (o único destino era a cadeia tamper-evident do WORM) e um comentário afirmava
+// FALSAMENTE que "o canal está no Event Store". Regra deste ficheiro (nunca dizer "ligado" sobre
+// algo não composto): só a perna `composed && durable` afirma o canal durável e a sua NOVA
+// implicação fail-closed; a referência in-memory declara-se como tal; não-composto diz NAO COMPOSTO.
+func mediationChannelPostureBanner(composed, durable bool) []string {
+	if !composed {
+		return []string{
+			"canal de eventos de mediacao (AOS-379): NAO COMPOSTO — a porta MediationEvents ficou nil, logo o canal tool.call.mediated/denied/escalated NAO e materializado no Event Store: o unico destino de cada mediacao e a cadeia tamper-evident do WORM (audit.NewMediationSink), e o AOS-332 nao teria de onde reconstruir \"quem autorizou o que\". E o estado anterior a AOS-379. Eixo: AOS-379 / EPIC-25",
+		}
+	}
+	if durable {
+		return []string{
+			"canal de eventos de mediacao (AOS-379): COMPOSTO e DURAVEL — a porta MediationEvents recebeu o Event Store DURAVEL do no (NATS/file), logo cada tool.call.mediated/denied/escalated e materializada NELE (referencemonitor.NewEventStoreSink, sink PRIMARIO do TeeSink com o seq duravel canonico a cabeca) EM PARALELO com a cadeia tamper-evident do WORM (a seguir). O AOS-332 passa a ter de onde ler o canal. IMPLICACAO NOVA (fail-closed): auditar-antes-do-efeito passa a EXIGIR o Event Store, nao so o WORM — uma falha a gravar o evento de mediacao no caminho de PERMIT propaga (o TeeSink para no 1o sink que falha) e o RM degrada a decisao para DENY: um Event Store em baixo passa a NEGAR tool calls, nao so a perder rasto. Eixo: AOS-379 / EPIC-25",
+		}
+	}
+	return []string{
+		"canal de eventos de mediacao (AOS-379): COMPOSTO mas NAO DURAVEL — a porta MediationEvents recebeu o Event Store de REFERENCIA in-memory (eventstore.New, sem AOS_EVENTSTORE_PATH nem AOS_EVENTSTORE_NATS): o canal tool.call.* E materializado no Event Store e o AOS-332 le-o DENTRO desta incarnacao, mas NAO SOBREVIVE a um reinicio do no. Vale a MESMA implicacao fail-closed (uma falha a gravar o evento no caminho de PERMIT degrada para DENY), so que sobre um substrato volatil. Defina AOS_EVENTSTORE_PATH (ou AOS_EVENTSTORE_NATS) para tornar o canal DURAVEL. Eixo: AOS-379 / EPIC-25",
+	}
+}
+
 // budgetPostureBanner declara o ORÇAMENTO em função do que está REALMENTE composto — o
 // parâmetro é o estado, nunca a intenção da config, como em [modelPostureBanner] e
 // [autonomyPostureBanner].
@@ -108,43 +154,13 @@ const BudgetScopeDeclaration = "orcamento: cobre tool calls E o turno de modelo 
 // Cedar traga — e o banner NÃO afirma que todas a trazem: no bundle de referência a regra
 // `allow_fs_read` ainda não a tem (AOS-363 critério 6, por fechar), pelo que o banner nomeia o
 // buraco em vez de o esconder. É o achado central de analises/13 §2.1 tornado visível no arranque.
-func taintGatePostureBanner(active bool) []string {
-	if active {
-		return []string{
-			"taint / barreira control-data-plane (AOS-069/AOS-363): ATIVA — AOS_PRIVILEGED_CAPS enumera >=1 capability privilegiada, logo o TaintGate barra uma tool call privilegiada cuja autorizacao foi promovida sobre dados NAO-CONFIAVEIS (taint=untrusted), e o apice compos a via ENDURECIDA (NewProductionHardenedTaint): um conjunto que ficasse inerte por engano faria o no RECUSAR arrancar (ErrTaintGateInert) em vez de mediar sem barreira. A defesa e ESTRUTURAL: vale para TODA a regra permitida, nao so as que trazem a clausula de taint no texto Cedar",
-		}
-	}
-	return []string{
-		"taint / barreira control-data-plane (AOS-069/AOS-363): INERTE — AOS_PRIVILEGED_CAPS nao esta definida (ou esta vazia), logo o conjunto privilegiado e VAZIO e o TaintGate esta PRESENTE-MAS-INERTE: NENHUMA promocao de escopo sobre dados untrusted e barrada pela barreira estrutural. E a perna RETRO-COMPATIVEL (o comportamento de todo deployment ate AOS-363). ATENCAO: com o gate inerte a UNICA aplicacao de taint que resta e a clausula `context.taint != \"untrusted\"` que cada regra permit do bundle Cedar TENHA — e no bundle de referencia a regra allow_fs_read AINDA NAO A TEM (AOS-363 criterio 6, por fechar): um cap:fs.read untrusted PASSA. Para fechar o buraco de forma ESTRUTURAL, define AOS_PRIVILEGED_CAPS com as capabilities privilegiadas, incluindo cap:fs.read (ex. \"cap:fs.read,cap:fs.write,cap:net.connect\"); e OPT-IN de proposito",
-	}
-}
-
-// mediationChannelPostureBanner declara a postura do CANAL DE EVENTOS DE MEDIAÇÃO do Reference
-// Monitor (tool.call.mediated/denied/escalated, AOS-379). Os argumentos são o ESTADO REALMENTE
-// composto — `composed` = a porta [integration.SecuredConfig.MediationEvents] foi preenchida com o
-// Event Store do nó; `durable` = esse store é durável (NATS/file) e não a referência in-memory —,
-// nunca a intenção da config (a mesma disciplina de AOS-203 que rege as outras posturas deste
-// ficheiro). É a linha que fecha o achado central de AOS-379: até aqui o canal era INALCANÇÁVEL
-// como Event Store (o único destino era a cadeia tamper-evident do WORM) e um comentário afirmava
-// FALSAMENTE que "o canal está no Event Store". Regra deste ficheiro (nunca dizer "ligado" sobre
-// algo não composto): só a perna `composed && durable` afirma o canal durável e a sua NOVA
-// implicação fail-closed; a referência in-memory declara-se como tal; não-composto diz NAO COMPOSTO.
-func mediationChannelPostureBanner(composed, durable bool) []string {
-	if !composed {
-		return []string{
-			"canal de eventos de mediacao (AOS-379): NAO COMPOSTO — a porta MediationEvents ficou nil, logo o canal tool.call.mediated/denied/escalated NAO e materializado no Event Store: o unico destino de cada mediacao e a cadeia tamper-evident do WORM (audit.NewMediationSink), e o AOS-332 nao teria de onde reconstruir \"quem autorizou o que\". E o estado anterior a AOS-379. Eixo: AOS-379 / EPIC-25",
-		}
-	}
-	if durable {
-		return []string{
-			"canal de eventos de mediacao (AOS-379): COMPOSTO e DURAVEL — a porta MediationEvents recebeu o Event Store DURAVEL do no (NATS/file), logo cada tool.call.mediated/denied/escalated e materializada NELE (referencemonitor.NewEventStoreSink, sink PRIMARIO do TeeSink com o seq duravel canonico a cabeca) EM PARALELO com a cadeia tamper-evident do WORM (a seguir). O AOS-332 passa a ter de onde ler o canal. IMPLICACAO NOVA (fail-closed): auditar-antes-do-efeito passa a EXIGIR o Event Store, nao so o WORM — uma falha a gravar o evento de mediacao no caminho de PERMIT propaga (o TeeSink para no 1o sink que falha) e o RM degrada a decisao para DENY: um Event Store em baixo passa a NEGAR tool calls, nao so a perder rasto. Eixo: AOS-379 / EPIC-25",
-		}
-	}
-	return []string{
-		"canal de eventos de mediacao (AOS-379): COMPOSTO mas NAO DURAVEL — a porta MediationEvents recebeu o Event Store de REFERENCIA in-memory (eventstore.New, sem AOS_EVENTSTORE_PATH nem AOS_EVENTSTORE_NATS): o canal tool.call.* E materializado no Event Store e o AOS-332 le-o DENTRO desta incarnacao, mas NAO SOBREVIVE a um reinicio do no. Vale a MESMA implicacao fail-closed (uma falha a gravar o evento no caminho de PERMIT degrada para DENY), so que sobre um substrato volatil. Defina AOS_EVENTSTORE_PATH (ou AOS_EVENTSTORE_NATS) para tornar o canal DURAVEL. Eixo: AOS-379 / EPIC-25",
-	}
-}
-
+//
+// O QUE O RÓTULO SIGNIFICA (AOS-069, ADR-034). A linha activa diz de onde vem o taint que o gate
+// lê, porque é isso que decide o que um run consegue fazer: é o rótulo do CONTEXTO do turno que
+// pediu a call, cunhado pelo runtime — trusted enquanto o contexto só tem o que o humano deu,
+// untrusted a partir do primeiro plan_input, tool_result ou memória, e sem volta no mesmo run.
+// Antes do ADR-034 toda a tool call do modelo saía untrusted, e armar o gate para uma capability
+// era proibi-la; a linha que o afirmasse hoje estaria a mentir no sentido contrário.
 func budgetPostureBanner(composed bool) []string {
 	if composed {
 		return []string{
@@ -156,51 +172,48 @@ func budgetPostureBanner(composed bool) []string {
 	}
 }
 
-// credentialBrokerPostureBanner declara a AUSÊNCIA do Credential Broker (AOS-070, ADR-006).
+// credencialNaPortaPostureBanner declara que a credencial do run é verificada à PORTA, em que modo
+// se exige a sua presença, e se a recusa deixa prova (AOS-435).
 //
-// CORRECÇÃO (AOS-325): esta linha dizia «`platform/broker` não é importado pelo nó». Deixou de
-// ser verdade com AOS-264 — `bootstrap.go` e `broker_vault_env.go` importam-no, e o nó constrói
-// `broker.NewVaultKVv2`. O que se mantém verdadeiro, e é o que o banner emitido diz, é que o nó
-// não COMPÕE o broker: `broker.New` não tem chamador de produção, e o cliente Vault construído
-// alimenta apenas a linha de postura. Importar não é compor, e a distinção é a diferença entre
-// «o eixo está preparado» e «a troca medeia alguma coisa».
+// # PORQUE É QUE ISTO FALTAVA, E O QUE CUSTAVA
 //
-// O que o nó faz em vez disso
-// — ler segredos de FICHEIROS MONTADOS no arranque e retê-los em memória do processo enquanto
-// viver — é legítimo e é o padrão documentado, mas NÃO é o invariante do ADR-006 e não deve ser
-// confundido com ele: sem broker não há troca token→credencial server-side, não há TTL curto,
-// não há revogação por lease e não há injecção no ponto de execução.
+// Desde o AOS-428 há DUAS guardas no `POST /runs` que respondem `403 nao autorizado`: a da
+// governação (o chamador não está autorizado) e a da credencial do run (o token que ele traz não
+// verifica). A uniformidade é deliberada — distinguir as duas no wire seria um oráculo. Mas o
+// operador também não as distinguia, porque nada no arranque dizia que a segunda existia.
 //
-// As variáveis são nomeadas para que o operador saiba EXACTAMENTE que material está no processo,
-// e a lista é EXAUSTIVA sobre os caminhos de material privado que o nó lê do disco — porque é
-// dela que sai a lista do que há a rodar e a proteger. Uma lista apresentada como completa e que
-// omite material é pior do que não a dar: faz sub-dimensionar a rotação com a confiança de quem
-// leu tudo (achado F-A3 da auditoria da W0, que omitia as três CHAVES PRIVADAS abaixo).
-//
-// Duas famílias, com riscos distintos, por isso declaradas em separado:
-//
-//   - CREDENCIAIS DOWNSTREAM (bearers/tokens que o nó APRESENTA a terceiros): AOS_MODEL_API_KEY_PATH,
-//     AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_BASIC_PATH;
-//   - CHAVES PRIVADAS do próprio nó: AOS_ISSUER_KEY_PATH (`main.go` — a chave ed25519 de ASSINATURA
-//     da autoridade co-localizada, o segredo de maior valor que o nó detém: quem a tem cunha
-//     tokens), AOS_TLS_KEY_PATH (`main.go` — chave do ingresso) e AOS_OTLP_CLIENT_KEY_PATH
-//     (`otlpexporter.go` — chave de cliente mTLS para o MESMO colector cujo bearer está na lista
-//     de cima). Todas lidas de ficheiro e retidas em memória do processo, exactamente como as
-//     credenciais — e nenhuma delas é gerida por broker.
-//
-// Os VALORES nunca aparecem no banner — nem aqui nem em [devModelCredentialBanner].
-// materialPrivadoDoNo é o material privado que o COMPOSITION ROOT carrega — o estado, não a
-// intenção da config. Existe porque [credentialBrokerPostureBanner] era a ÚNICA das dezasseis
-// funções de banner do binário SEM parâmetro de estado: uma constante que afirmava, no
-// presente do indicativo, que o processo detinha três chaves privadas.
-//
-// O achado A da verificação de funcionamento de 2026-08-23: em produção o processo detém
-// ZERO das três, e a primeira — a chave de assinatura do issuer — é ESTRUTURALMENTE
-// impossível no modo em que produção corre. `bootstrap.go` recusa o arranque com
-// [ErrConflictingIssuerKey] se ela estiver definida em modo endurecido. A linha não estava só
-// errada neste destacamento: descrevia um estado que, se existisse, teria impedido o nó de
-// arrancar — e fazia-o quatro linhas depois de outra linha do MESMO banner dizer «NENHUMA
-// chave de assinatura entra no runtime do nó».
+// Recebe o estado COMPOSTO, não a intenção: `endurecido` é o mesmo predicado que decide a
+// presença obrigatória (`Authority == nil`, derivado de `AOS_ISSUER_PUBKEY`), e `selada` é o
+// predicado do gate soberano — que é o que dá o WORM onde a recusa se encadeia.
+func credencialNaPortaPostureBanner(endurecido, selada bool) []string {
+	presenca := "a AUSENCIA e ACEITE (modo de REFERENCIA: a autoridade de emissao e co-localizada e " +
+		"nao tem rota de emissao, logo um cliente externo nao tem como obter uma credencial) — um run " +
+		"sem credencial e criado e morre no Reference Monitor com denied_by=identity"
+	if endurecido {
+		presenca = "a AUSENCIA e RECUSADA (modo ENDURECIDO: a credencial vem sempre de fora, e " +
+			"AOS_MODE=production exige esta postura)"
+	}
+	prova := "a recusa NAO e selada: sem gate soberano composto nao ha WORM de governacao nem submissor " +
+		"verificado a quem a atribuir — fica a metrica aos_ingress_credential_denials_total e uma linha de log"
+	if selada {
+		prova = "cada recusa em POST /runs e SELADA no WORM, na particao unica governance.credential, " +
+			"atribuida ao SUBMISSOR verificado pelo gate soberano e NAO ao principal do token (que foi " +
+			"precisamente o que nao verificou); e contada em aos_ingress_credential_denials_total. " +
+			"A retoma (POST /runs/{id}/resume) e contada mas NAO selada — o plano de controlo nao " +
+			"entrega ao handler uma identidade verificada a quem atribuir"
+	}
+	return []string{
+		"credencial do run a PORTA (AOS-428/433/435): POST /runs e POST /runs/{id}/resume verificam a " +
+			"credencial do run pelo MESMO identity.Verifier do hook do Reference Monitor, ANTES de " +
+			"qualquer escrita duravel — uma credencial malformada, expirada, revogada ou de emissor " +
+			"desconhecido e recusada com 403. O ESCOPO por capability continua a decidir-se na " +
+			"chamada, no rmadapter: a capability nao existe na submissao. Quanto a presenca, " + presenca +
+			". Quanto a prova, " + prova + ". UM 403 NESTAS ROTAS PODE VIR DE DUAS GUARDAS " +
+			"(governacao ou credencial) e a resposta e deliberadamente a mesma — distinguir no wire " +
+			"seria um oraculo; distingue-se no log do operador e, quando selado, no WORM",
+	}
+}
+
 type materialPrivadoDoNo struct {
 	// Endurecido: identidade trust-anchor-only (AOS-156). Nesse modo uma chave de assinatura
 	// do issuer no processo ABORTA o arranque — ausência ESTRUTURAL, não escolha de config.
@@ -273,6 +286,51 @@ func plataformaPostureBanner(p posturaDosServicosDePlataforma) []string {
 	}
 }
 
+// credentialBrokerPostureBanner declara a AUSÊNCIA do Credential Broker (AOS-070, ADR-006).
+//
+// CORRECÇÃO (AOS-325): esta linha dizia «`platform/broker` não é importado pelo nó». Deixou de
+// ser verdade com AOS-264 — `bootstrap.go` e `broker_vault_env.go` importam-no, e o nó constrói
+// `broker.NewVaultKVv2`. O que se mantém verdadeiro, e é o que o banner emitido diz, é que o nó
+// não COMPÕE o broker: `broker.New` não tem chamador de produção, e o cliente Vault construído
+// alimenta apenas a linha de postura. Importar não é compor, e a distinção é a diferença entre
+// «o eixo está preparado» e «a troca medeia alguma coisa».
+//
+// O que o nó faz em vez disso
+// — ler segredos de FICHEIROS MONTADOS no arranque e retê-los em memória do processo enquanto
+// viver — é legítimo e é o padrão documentado, mas NÃO é o invariante do ADR-006 e não deve ser
+// confundido com ele: sem broker não há troca token→credencial server-side, não há TTL curto,
+// não há revogação por lease e não há injecção no ponto de execução.
+//
+// As variáveis são nomeadas para que o operador saiba EXACTAMENTE que material está no processo,
+// e a lista é EXAUSTIVA sobre os caminhos de material privado que o nó lê do disco — porque é
+// dela que sai a lista do que há a rodar e a proteger. Uma lista apresentada como completa e que
+// omite material é pior do que não a dar: faz sub-dimensionar a rotação com a confiança de quem
+// leu tudo (achado F-A3 da auditoria da W0, que omitia as três CHAVES PRIVADAS abaixo).
+//
+// Duas famílias, com riscos distintos, por isso declaradas em separado:
+//
+//   - CREDENCIAIS DOWNSTREAM (bearers/tokens que o nó APRESENTA a terceiros): AOS_MODEL_API_KEY_PATH,
+//     AOS_OTLP_BEARER_TOKEN_PATH, AOS_DSAR_VAULT_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_TOKEN_PATH, AOS_ATTESTATION_VERIFIER_BASIC_PATH;
+//   - CHAVES PRIVADAS do próprio nó: AOS_ISSUER_KEY_PATH (`main.go` — a chave ed25519 de ASSINATURA
+//     da autoridade co-localizada, o segredo de maior valor que o nó detém: quem a tem cunha
+//     tokens), AOS_TLS_KEY_PATH (`main.go` — chave do ingresso) e AOS_OTLP_CLIENT_KEY_PATH
+//     (`otlpexporter.go` — chave de cliente mTLS para o MESMO colector cujo bearer está na lista
+//     de cima). Todas lidas de ficheiro e retidas em memória do processo, exactamente como as
+//     credenciais — e nenhuma delas é gerida por broker.
+//
+// Os VALORES nunca aparecem no banner — nem aqui nem em [devModelCredentialBanner].
+// materialPrivadoDoNo é o material privado que o COMPOSITION ROOT carrega — o estado, não a
+// intenção da config. Existe porque [credentialBrokerPostureBanner] era a ÚNICA das dezasseis
+// funções de banner do binário SEM parâmetro de estado: uma constante que afirmava, no
+// presente do indicativo, que o processo detinha três chaves privadas.
+//
+// O achado A da verificação de funcionamento de 2026-08-23: em produção o processo detém
+// ZERO das três, e a primeira — a chave de assinatura do issuer — é ESTRUTURALMENTE
+// impossível no modo em que produção corre. `bootstrap.go` recusa o arranque com
+// [ErrConflictingIssuerKey] se ela estiver definida em modo endurecido. A linha não estava só
+// errada neste destacamento: descrevia um estado que, se existisse, teria impedido o nó de
+// arrancar — e fazia-o quatro linhas depois de outra linha do MESMO banner dizer «NENHUMA
+// chave de assinatura entra no runtime do nó».
 func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 	detidas := []string{}
 	if m.IssuerKey {
@@ -300,6 +358,16 @@ func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 		"credential broker (AOS-070): " + posse + "." + notaColector + " " + issuer,
 		"=> ALCANCE desta declaracao: cobre o que ESTE composition-root carrega. A chave do ingresso TLS (AOS_TLS_KEY_PATH) e composta pela camada de API e declarada por ela — nao se afirma aqui posse que nao se observa. As credenciais downstream nomeadas acima entram pelo MESMO padrao (ficheiro montado, lido no arranque, retido em memoria) e sao o que ha a rodar e a proteger junto com o que esta linha nomeia",
 	}
+}
+
+// revogacaoNoBanner devolve o fragmento que descreve a cadeia de confiança dos tokens na linha de
+// postura, e existe para que a AUSÊNCIA de revogação seja dita em vez de omitida: sem o registo
+// composto, um token revogado vale até expirar, e é isso que o operador precisa de ler.
+func revogacaoNoBanner(revogacaoComposta bool) string {
+	if revogacaoComposta {
+		return "EdDSA + janela + revogacao + raiz humana ADR-003"
+	}
+	return "EdDSA + janela + raiz humana ADR-003; SEM revogacao — o registo nao esta composto, logo um token revogado vale ate expirar"
 }
 
 // modelPostureBanner declara QUAL modelo está composto, a partir do valor REALMENTE recebido em
@@ -330,13 +398,6 @@ func credentialBrokerPostureBanner(m materialPrivadoDoNo) []string {
 // composição, o banner deixa de a anunciar por construção — e [TestAOS288_BannerNaoAnunciaRevogacaoSemComposicao]
 // avermelha se a frase voltar a ser incondicional. É o molde de `budgetPostureBanner(composed)`
 // e `exhaustionPromptPostureBanner(armed, …)` já usados neste ficheiro.
-func revogacaoNoBanner(revogacaoComposta bool) string {
-	if revogacaoComposta {
-		return "EdDSA + janela + revogacao + raiz humana ADR-003"
-	}
-	return "EdDSA + janela + raiz humana ADR-003; SEM revogacao — o registo nao esta composto, logo um token revogado vale ate expirar"
-}
-
 func modelPostureBanner(m agentruntime.ModelClient, revogacaoComposta bool) []string {
 	switch m.(type) {
 	case nil:
@@ -686,4 +747,31 @@ func descricaoDaPosturaRecurso(p broker.ResourceBindingPosture) string {
 		return "allowlist DECLARADA: o host do recurso tem de constar da lista do provedor pedido, e um recurso que nao permita decidir e RECUSADO"
 	}
 	return "allowlist NAO declarada: o eixo nao e imposto. Um provedor autorizado alcanca qualquer destino — e o que o AOS-331 fecha quando ligado"
+}
+
+// planIngressPostureBanner declara a postura do INGRESSO DO CAMINHO DO PLANO (AOS-417, ADR-028).
+//
+// A linha diz duas coisas separadas de propósito, porque falham de maneiras diferentes:
+//
+//  1. Se o facto tem onde ser gravado — a rota existe sempre, mas sem Event Store recusa (503).
+//  2. Se alguém CONSOME a fila. Hoje ninguem consome, e e por isso que esta linha importa: um
+//     pedido aceite fica gravado e espera, e quem o submeter nao tem como distinguir "aceite e
+//     a caminho" de "aceite e parado". Calar isto no arranque seria deixar o operador descobrir
+//     a meio de uma corrida que nunca comeca.
+func planIngressPostureBanner(composto, duravel, reclamavel bool) []string {
+	if !composto {
+		return []string{
+			"ingresso do caminho do plano (AOS-417, ADR-028): SEM SUBSTRATO — o no nao tem Event Store composto, logo POST /plans RECUSA todo o pedido com 503. A fila de pedidos e o proprio Event Store (ADR-028 §2.2): sem ele nao ha onde gravar o facto, e aceitar seria prometer uma corrida que desaparece com o processo. Defina AOS_EVENTSTORE_PATH (ou AOS_EVENTSTORE_NATS). Eixo: AOS-417 / EPIC-19",
+		}
+	}
+	base := "ingresso do caminho do plano (AOS-417, ADR-028): ROTA ACTIVA — POST /plans aceita um objectivo e grava o facto planrequest.submitted no stream " + planRequestStream + ", sob o MESMO balde de admissao e a MESMA autoridade de identidade do POST /runs (a credencial verificada resolve o principal e a regiao, que entram no facto; o corpo nao os declara). NAO SELA RESIDENCIA, e a omissao e deliberada: o selo e pre-condicao da HOSPEDAGEM de um run e esta rota nao hospeda nada — sela-la aqui fixaria, de forma nao-renegociavel, a fronteira de soberania de um run_id que fica LIVRE para outra pessoa criar. O tecto de runs em curso tambem NAO se aplica (conta runs hospedados); o que limita esta rota e o balde, o tecto de corpo e o tecto do objectivo. TECTO DE PENDENTES DA FILA: atingido, o ingresso RECUSA pedidos novos com 503 e NUNCA descarta os antigos (AOS-423, ADR-030 2.7). E DOIS CODIGOS desde o AOS-464: 503 quando e a fila do NO que esta cheia (o no nao tem quem drene, e a espera certa e a de um operador) e 429 quando e a quota do SUBMISSOR que esta esgotada (o chamador tem de drenar o que e dele) — a reparticao por submissor so se compoe com credencial forte, e a linha do ingresso diz qual postura esta em vigor. Os NUMEROS em vigor — o tecto global e a reparticao por SUBMISSOR (AOS-464) — sao declarados na linha do INGRESSO, que e onde sao lidos: repeti-los aqui e a forma de um deles ficar obsoleto em silencio, e este ficheiro ja tinha o 1000 em texto fixo quando o tecto passou a ser afinavel. O no NAO corre o plano e NAO importa o orquestrador (ADR-018 intacto): quem o corre e o aos-orq, que consome o facto e reclama o lease como sempre fez, pelo que um serve continua a possuir um run e a terminar (ADR-023 intacto). Um pedido repetido para o mesmo run responde 201 accepted IDEMPOTENTE e NUNCA o estado do run — nao e conveniencia, e a nao-oracularidade do ADR-030 2.1 (que ate ao AOS-423 era atribuida ao ADR-016, onde a tese NAO esta)."
+	if !duravel {
+		base += " SUBSTRATO VOLATIL: o Event Store e o de REFERENCIA in-memory (sem AOS_EVENTSTORE_PATH nem AOS_EVENTSTORE_NATS), logo a fila de pedidos NAO SOBREVIVE a um reinicio do no — um pedido aceite hoje pode nao existir amanha."
+	}
+	if reclamavel {
+		base += " FILA DRENAVEL (AOS-423, ADR-030): POST /plans/claim esta ACTIVA. O aos-orq reclama um pedido de cada vez (`aos-orq consume`), corre-o pelo MESMO caminho do serve e reporta o desfecho em POST /plans/outcome. O que este no NAO sabe, e o operador tem de saber, e se algum consumidor esta mesmo a correr: a rota estar aberta nao prova que alguem a chama. Vigie o tecto de pendentes; se ele comecar a recusar pedidos, ninguem esta a drenar."
+		return []string{base + " Eixo: AOS-417/AOS-423 / EPIC-19"}
+	}
+	base += " FILA NAO DRENAVEL, e esta e a parte que o operador tem de saber: POST /plans/claim RECUSA com 501 porque o gate soberano de leitura nao esta composto. Sem ele a reclamacao serviria o conteudo de um pedido, objectivo incluido, a qualquer chamador autenticado e sem fronteira de regiao. Um pedido aceite fica gravado e ESPERA: o 201 significa 'o pedido esta duravel', nao 'a corrida comecou', e ate o gate ser composto nao ha quem o possa tirar da fila."
+	return []string{base + " Eixo: AOS-417/AOS-423 / EPIC-19"}
 }

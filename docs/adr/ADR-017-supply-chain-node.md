@@ -39,6 +39,35 @@ impõe às tools, materializadas na entrega:
    - **Formato:** envelope **DSSE v1** (`payloadType application/vnd.in-toto+json`) sobre um
      **in-toto Statement v1**. Os *subjects* assinados são o **digest da imagem**, o binário que
      ela carrega, o `sbom.json`, o `provenance.json` e o **manifesto de entrega**.
+     **Emenda (AOS-403, 2026-09-17):** a imagem passa a carregar também o orquestrador multi-nó
+     `aos-orq`, que produção corre a partir do mesmo digest. Entra na atestação como subject
+     próprio (`usr/local/bin/aos-orq`) com SBOM próprio (`sbom-aos-orq.json`), extraído da imagem
+     e sujeito à mesma verificação de reprodutibilidade que o nó (o resultado, verdadeiro ou não,
+     fica em `additionalSubjects` da proveniência); `verify-attestation.sh` recusa a entrega que
+     traga o orquestrador sem o atestar ou com o digest divergente. Um binário que corre em
+     produção fora desta cadeia seria a excepção que o ponto 3 não admite. Consequência aceite:
+     o verificador da árvore actual exige estes subjects, pelo que uma entrega anterior ao AOS-403
+     reverificada com ele sai vermelha — verifica-se com o verificador da sua própria tag.
+     **Emenda (AOS-437, 2026-09-25):** a imagem passa a carregar também o emissor de identidade
+     `aos-issuer` (os subcomandos `mandate-sign`/`mint-mandated` do ADR-033), que produção corre a
+     partir do mesmo digest, pela razão do `aos-orq`: um binário que corre em produção fora desta
+     cadeia seria a excepção que o ponto 3 não admite. Entra como subject próprio
+     (`usr/local/bin/aos-issuer`) com SBOM próprio (`sbom-aos-issuer.json`), extraído da imagem e
+     com a sua verificação de reprodutibilidade em `additionalSubjects`; `verify-attestation.sh`
+     recusa a entrega que o traga sem o atestar ou com o digest divergente. O Dockerfile faz o
+     *prime* explícito do `go.sum` do módulo (`go mod download && go mod verify`) antes do build
+     offline. **Resolve a ambiguidade do ponto 5**, cujo «nunca na imagem do nó» se refere à
+     **chave** do emissor e à sua custódia, não ao **binário**: o binário viaja na imagem atestada;
+     a chave do emissor automático vive no Vault transit (ADR-033) e a do emissor manual entra por
+     caminho montado em runtime (ADR-006), e nenhuma das duas entra na imagem. **Fecha também a lacuna que deixava isto
+     passar em silêncio:** nenhum teste nem gate apanhava um binário acrescentado ao Dockerfile
+     sem subject na atestação; `packages/cmd/aos-issuer/aos437_imagem_atestada_test.go` deriva do
+     Dockerfile o conjunto de binários (`COPY --from=builder /out/<bin> /usr/local/bin/<bin>`) e
+     exige cada um nos três scripts da cadeia — excepção nomeada no próprio teste: o
+     `aos-healthprobe` (stdlib-only, só `HEALTHCHECK`), coberto apenas pelo digest da imagem,
+     resíduo anterior a este ticket. Consequência aceite, como no AOS-403: uma entrega anterior
+     ao AOS-437 reverificada com o verificador da árvore actual sai **vermelha** (subject
+     `usr/local/bin/aos-issuer` ausente do statement) — verifica-se com o verificador da sua tag.
    - **Primitiva: `crypto/ed25519` da stdlib**, não cosign/sigstore — decisão declarada, com o
      custo em §Consequências e a matriz comparativa em `deploy/node/CUSTODIA-CHAVE-RELEASE.md §0`.
      O assinador (`scripts/ci/attest`) é um passo de **entrega (CI)**: não entra no binário do nó,
@@ -56,7 +85,8 @@ impõe às tools, materializadas na entrega:
    (fail-closed), como no resto do programa.
 5. **Cada domínio de assinatura tem custódia PRÓPRIA.** O issuer de identidade (AOS-156,
    self-hosted Nível 2) é um artefacto/trust-domain distinto do nó — a sua chave e distribuição têm
-   custódia própria (nunca na imagem do nó). **A imagem do nó passou a ter o equivalente**
+   custódia própria (a **chave** nunca na imagem do nó; o **binário** `aos-issuer` viaja nela,
+   atestado, desde a emenda AOS-437 ao ponto 3). **A imagem do nó passou a ter o equivalente**
    (AOS-207): a chave de **release** é um terceiro trust-domain, com detentor, cofre, janela de
    validade, rotação por sobreposição e revogação documentados em
    `deploy/node/CUSTODIA-CHAVE-RELEASE.md` — antes não existia procedimento nenhum. As duas chaves
@@ -140,14 +170,22 @@ de quem auditou — porque o instrumento durável tem de registar o defeito, nã
    assinatura da atestação como «deferida-com-eixo (AOS-207, DEF-501)» e `tecnica/16_Rastreabilidade_RTM.md`
    descreve o ADR-017 como «SBOM+proveniência». Depois desta entrega, as duas afirmações
    contradizem este ADR. **Eixo: dono de `tecnica/**`** (pista proibida a AOS-207).
-10. **A cadeia assinada nunca correu com uma chave de release REAL.** `deploy/node/release-pubkeys.json`
-    tem `keys: []` de propósito (fail-closed: com o roster vazio **qualquer** envelope é recusado,
-    logo **nenhuma** entrega é publicável hoje). A prova end-to-end existe, mas foi feita com chave
-    efémera. Consequência operacional a declarar: enquanto não houver `AOS_RELEASE_KEY_FILE`
-    montada, o `package.sh` devolve **3** e a CI — que não distingue 3 de 1 — deixa o job
-    `delivery` **vermelho** em push para `main`. É o comportamento pretendido (não se publica o
-    que não está verificado), mas exige decisão do **dono de `ci.yml`**: provisionar a chave no job
-    de release, ou tratar o 3 como «não-fatal mas não publicável».
+10. ~~**A cadeia assinada nunca correu com uma chave de release REAL.**~~ **FECHADO em
+    2026-08-14 — correcção de FACTO, não de decisão (2026-09-27).** A decisão deste ADR não muda:
+    o roster **vazio** recusa qualquer envelope (fail-closed), e é isso que faz do provisionamento
+    a única via para publicar. O que mudou é o estado que este ponto descrevia:
+    `deploy/node/release-pubkeys.json` tem **1 chave** (Arquitecto de Plataforma) desde o primeiro
+    release distribuído fora do repositório, pelo que **a entrega é publicável e a verificação é
+    bloqueante**. A decisão que o ponto pedia ao **dono de `ci.yml`** foi tomada pela primeira via:
+    `release.yml` provisiona a chave no job de release e faz **`exit 1`** se
+    `secrets.AOS_RELEASE_KEY` estiver vazia — o `3` do `package.sh` deixou de ser alcançável por
+    falta de chave. A prova end-to-end original foi feita com chave efémera.
+
+    > Este ponto afirmava «hoje» sobre um estado que caducou, e sobreviveu assim porque nada o
+    > cruzava com o ficheiro. Corrigi-lo **não** é supersessão (AGENTS.md §5): a decisão
+    > fail-closed está intacta e reforçada. O que se corrige é uma medição desactualizada dentro
+    > de um ADR — a mesma regra que o registo de deferimentos aplica quando marca uma linha
+    > **OBSOLETA** por o seu referente ter desaparecido do código.
 
 **Pendência de governação:** fechar a linha `DEF-501` em `docs/governance/REGISTO-Deferimentos.md`
 com eixo AOS-207 — ficheiro de outra pista, não alterado aqui.

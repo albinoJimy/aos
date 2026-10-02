@@ -32,4 +32,11 @@ fi
 
 # NO_ROLLBACK=1: se a reversão em si falhar, NÃO se auto-reverte para a versão partida de onde
 # viemos — isso seria um ciclo. Fica como está, para o operador ver.
+#
+# A DRENAGEM DA FILA (AOS-450): o deploy.sh segura-a como num deploy, mas aqui espera no máximo
+# 5 min por uma drenagem em curso e, ao desistir, AVANÇA — a reversão é a saída de emergência de um
+# nó partido agora, e a drenagem que corre contra ele já estará, provavelmente, a falhar (a razão
+# está no passo 0c do deploy.sh). Ambos se podem sobrepor pelo ambiente.
+DEPLOY_ESPERA_DRENAGEM_S="${DEPLOY_ESPERA_DRENAGEM_S:-300}" \
+DEPLOY_AO_DESISTIR_DA_DRENAGEM="${DEPLOY_AO_DESISTIR_DA_DRENAGEM:-avancar}" \
 NO_ROLLBACK=1 exec bash "${APP_DIR}/deploy.sh" "${TARGET}"

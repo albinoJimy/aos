@@ -454,6 +454,10 @@ type Placement struct {
 // volta, um nó com fronteira declarada poderia ligar-se a um stream SEM colocação e
 // julgar-se soberano — a falha mais silenciosa possível, porque tudo funciona.
 type StreamConfigLida struct {
+	// Subjects que o stream captura. O Event Store pergunta-os quando não criou o stream e
+	// recebe um 503: só um subject capturado faz desse 503 a janela de um stream ainda não
+	// servido (AOS-455), e não «ninguém vai servir isto».
+	Subjects    []string   `json:"subjects"`
 	NumReplicas int        `json:"num_replicas"`
 	Placement   *Placement `json:"placement"`
 	DenyDelete  bool       `json:"deny_delete"`
@@ -563,8 +567,10 @@ type streamClusterResponse struct {
 
 // ColocacaoDoStream lê que pares do cluster alojam o stream.
 //
-// Um stream não-replicado (R1 fora de cluster) não traz bloco `cluster`; devolve-se o
-// zero-value, que é a resposta honesta a «onde está replicado?» quando não está.
+// Uma resposta sem bloco `cluster` devolve o zero-value. NÃO é o caso de um R1 fora de
+// cluster: medido na revisão do AOS-432 contra `nats:2.10-alpine` standalone, esse traz o
+// bloco com `leader` igual ao id do servidor. `Lider` vazio significa, portanto, grupo
+// sem líder eleito — é a pergunta que o `jetstream.Abrir` faz aqui antes de devolver.
 func (cn *Conn) ColocacaoDoStream(stream string, timeout time.Duration) (ColocacaoEfectiva, error) {
 	m, err := cn.Request("$JS.API.STREAM.INFO."+stream, nil, nil, timeout)
 	if err != nil {
@@ -664,4 +670,36 @@ func (cn *Conn) ConsumidoresDoStream(stream string, timeout time.Duration) ([]st
 		return nil, r.Error
 	}
 	return r.Consumers, nil
+}
+
+type consumerClusterResponse struct {
+	Error   *JSError `json:"error"`
+	Cluster *struct {
+		Leader string `json:"leader"`
+	} `json:"cluster"`
+}
+
+// LiderDoConsumidor devolve o nome do servidor que lidera (aloja, se for R1) o consumidor.
+//
+// Existe para MEDIR onde o servidor pôs o consumidor, que não é escolha nossa: num R1 o
+// servidor sorteia um par activo do stream. Sem esta pergunta, um teste que mata «um nó»
+// só às vezes mata o do consumidor — e o defeito que isso esconde aparece como flake
+// (AOS-449). Um consumidor sem líder (o seu único par caiu) devolve "" sem erro, que é a
+// resposta honesta.
+func (cn *Conn) LiderDoConsumidor(stream, nome string, timeout time.Duration) (string, error) {
+	m, err := cn.Request("$JS.API.CONSUMER.INFO."+stream+"."+nome, nil, nil, timeout)
+	if err != nil {
+		return "", err
+	}
+	var r consumerClusterResponse
+	if err := json.Unmarshal(m.Data, &r); err != nil {
+		return "", fmt.Errorf("%w: resposta de CONSUMER.INFO ilegível (%q): %v", ErrProtocol, m.Data, err)
+	}
+	if r.Error != nil {
+		return "", r.Error
+	}
+	if r.Cluster == nil {
+		return "", nil
+	}
+	return r.Cluster.Leader, nil
 }

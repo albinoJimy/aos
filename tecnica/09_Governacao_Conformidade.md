@@ -134,6 +134,10 @@ Assim, o direito ao apagamento é satisfeito sem reescrever o log e sem quebrar 
 
 ---
 
+<!-- AOS-407 (2026-09-17): a soberania por board está ligada no caminho de efeito — o board vai
+assinado no token NHI e o PDP emite a obrigação `region` que o PEP impõe em cada tool call. Ver
+ADR-011 §5 (nota posterior) e o ticket AOS-407 em specs/EPIC-09. -->
+
 ## 6. Soberania de dados
 
 A soberania é imposta por **board** (fronteira regional de dados). A allowlist de modelos do Model Gateway é regional, e o failover está **proibido de cruzar fronteira**: um board europeu que perca capacidade não pode fazer failover para uma região fora da UE, porque isso constituiria transferência ilegal de PII. O escopo de identidade codifica a região autorizada, e o PDP devolve-a como obrigação — o PEP recusa qualquer roteamento que a viole. A soberania é, deste modo, uma propriedade do enforcement, não uma política em papel.

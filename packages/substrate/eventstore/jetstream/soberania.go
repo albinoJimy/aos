@@ -152,3 +152,10 @@ func (s *Store) ConsumidoresDoStream() ([]string, error) {
 func (s *Store) ApagarConsumidor(nome string) error {
 	return s.cn.DeleteConsumer(s.stream, nome, s.prazo)
 }
+
+// LiderDoConsumidor devolve o servidor que aloja o consumidor. Ver
+// [natsjs.Conn.LiderDoConsumidor]: é o que permite a um teste matar O NÓ DO CONSUMIDOR, e
+// não um nó qualquer que às vezes é ele.
+func (s *Store) LiderDoConsumidor(nome string) (string, error) {
+	return s.cn.LiderDoConsumidor(s.stream, nome, s.prazo)
+}

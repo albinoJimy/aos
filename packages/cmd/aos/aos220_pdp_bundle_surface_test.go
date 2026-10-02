@@ -84,6 +84,13 @@ func aos220WrongAnchorHex(t *testing.T) string {
 // credencial (token NHI) a propagar no goal.
 func aos220PermitNode(t *testing.T, withBundleEnv bool) (*Node, string) {
 	t.Helper()
+	return aos220PermitNodeComModelo(t, withBundleEnv, &twoTurnToolModel{})
+}
+
+// aos220PermitNodeComModelo é [aos220PermitNode] com o modelo escolhido pelo chamador (AOS-407 usa-o
+// para emitir a mesma tool noutra região).
+func aos220PermitNodeComModelo(t *testing.T, withBundleEnv bool, modelo agentruntime.ModelClient) (*Node, string) {
+	t.Helper()
 	ctx := context.Background()
 
 	if withBundleEnv {
@@ -120,7 +127,7 @@ func aos220PermitNode(t *testing.T, withBundleEnv bool) (*Node, string) {
 		t.Fatalf("revalidator: %v", err)
 	}
 
-	cfg.Model = &twoTurnToolModel{}
+	cfg.Model = modelo
 	cfg.Catalog = catalogStub{entries: []domain.Entry{entry}}
 	cfg.Revalidator = revalidator
 	cfg.WORM = auditStore // AOS-381: o WORM do nó = o store onde o revalidador injectado sela

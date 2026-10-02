@@ -129,8 +129,30 @@ func envsDoManifesto(t *testing.T) map[string]bool {
 		t.Fatalf("ler o manifesto de produção %s: %v", caminho, err)
 	}
 	out := map[string]bool{}
-	for _, m := range reManifesto.FindAllStringSubmatch(string(b), -1) {
+	for _, m := range reManifesto.FindAllStringSubmatch(blocoDoServico(t, string(b), "aos"), -1) {
 		out[m[1]] = true
 	}
 	return out
+}
+
+// reServico casa o cabeçalho de um serviço de topo do compose (dois espaços de indentação).
+var reServico = regexp.MustCompile(`(?m)^  [a-z][a-z0-9-]*:\s*$`)
+
+// blocoDoServico devolve o texto do serviço `nome` do compose, até ao cabeçalho do serviço
+// seguinte. O ficheiro tem mais de um serviço com as mesmas chaves `AOS_*` — o `aos-orq`
+// (AOS-403) passa AOS_MODE e as AOS_MODEL_* — e uma varredura do ficheiro inteiro contaria
+// como passada ao NÓ uma variável que só o orquestrador recebe: exactamente a cobertura falsa
+// que este teste existe para impedir.
+func blocoDoServico(t *testing.T, compose, nome string) string {
+	t.Helper()
+	cab := "\n  " + nome + ":\n"
+	i := strings.Index(compose, cab)
+	if i < 0 {
+		t.Fatalf("serviço %q não encontrado no manifesto de produção", nome)
+	}
+	resto := compose[i+len(cab):]
+	if j := reServico.FindStringIndex(resto); j != nil {
+		resto = resto[:j[0]]
+	}
+	return resto
 }

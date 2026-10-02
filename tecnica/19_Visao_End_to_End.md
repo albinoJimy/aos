@@ -53,6 +53,7 @@ Vocabulário canónico reutilizado em todo o documento:
 | **ADR-012** | SemVer + eval-gate para auto-modificação | Fluxo F2E-05 |
 | **ADR-013** | Gates de risco SA-ROC + controlo bidireccional | Processo P-04 e fluxo F2E-03 |
 | **ADR-014** | Taxonomia de autonomia L0–L5 | Camada de negócio «Governar por política» e processo P-04 |
+| **ADR-025** | Fiabilidade medida e controlador de autonomia | Processo P-04 (promoção automática abaixo de L4, demoção por anomalia) e §9.1 |
 
 ---
 
@@ -117,7 +118,7 @@ Catálogo denso — responsabilidade essencial, portas relevantes e invariante p
 
 | Código | Componente | Responsabilidade essencial | Portas / invariantes |
 |---|---|---|---|
-| **RM** | Reference Monitor (PEP) | Gate mandatório de mediação total de tool calls (ADR-002) | Resolve identidade e cadeia NHI; consulta PDP; valida orçamento; aplica egress; escreve audit. As três propriedades clássicas: sempre invocado, inviolável, verificável. Overhead alvo p95 < 15 ms |
+| **RM** | Reference Monitor (PEP) | Gate mandatório de mediação total de tool calls (ADR-002) | Resolve identidade e cadeia NHI; consulta PDP; valida orçamento; aplica egress; escreve audit. As três propriedades clássicas: sempre invocado, inviolável, verificável. Overhead alvo p95 < 15 ms — **a janela da POLÍTICA** (resolução de identidade → PDP → orçamento → egress → obrigações), que termina **antes da escrita do selo de auditoria** e não inclui essa escrita nem a execução da tool (AOS-398/AOS-401, ADR-026). A escrita durável do selo (medida directa em produção a 2026-09-17 (v0.1.19, AOS-402): escrita p50 7,38 ms, p95 8,17 ms e máximo 8,26 ms em dois permits; publicada no `/metrics` por decisão) e a tool call mediada inteira (0,6–1,8 s em gVisor) são observáveis e **não têm SLO** |
 | **RT** | Agent Runtime | Loop do agente (montar → chamar → despachar → verificar) sobre base durável (ADR-001) | Detém `*referencemonitor.Monitor`, nunca `ToolFunc`; prompt remontado por turno (prefixo byte-idêntico + tail append-only, ADR-009); resultados devolvidos sempre untrusted (ADR-005) |
 | **ORQ** | Orquestrador | Decompõe objectivos em DAG acíclico; delega a sub-agentes; map-reduce recursivo com orçamento hierárquico | Reserva atómica CAS **antes** do spawn; aciclicidade verificada na inserção de cada aresta (fail-closed); delegação mediada pelo RM |
 | **SCH** | Escalonador | Durable execution, leases/fencing, prioridade e aging, backpressure, detecção de deadlock | Não despacha sem débito reservado no token-bucket global (ADR-008); push para workers stateless; prioridade efectiva inteira com aging sem tecto (zero starvation) |
@@ -169,7 +170,7 @@ Lente «tempo»: sequências que atravessam componentes. Seis fluxos cobrem o si
 
 Participantes: RT → RM → PDP → (humano) → ADM → BRK → SBX → ES.
 
-1. **Montar** — o RT remonta o prompt (prefixo imutável byte-idêntico + tail append-only); grava `turn.recorded` com o manifesto: `prompt_hash`, `system_hash`, `assembly_version`, `model{model_id, params, seed}`, tools/skills pinadas.
+1. **Montar** — o RT remonta o prompt (prefixo imutável byte-idêntico + tail append-only); grava `turn.recorded` com o manifesto: `prompt_hash`, `system_hash`, `assembly_version`, `model{model_id, served_model_id, params, seed}` (o modelo pedido e o que serviu, AOS-396), tools/skills pinadas.
 2. **Chamar** — o modelo via GW (pipeline: auth-principal → allowlist regional → roteamento → cache-layout → metering).
 3. **Pedir tool call** — o RT propõe a activity ao RM com contexto: principal + cadeia, action/tool, resource, taint, orçamento, região, sensibilidade.
 4. **Resolver identidade** — o RM verifica a cadeia de delegação (ADR-003); sem cadeia válida até humano, **deny**.
@@ -261,7 +262,7 @@ Lente «operação»: catálogo de processos com **trigger**, **actores**, **seq
 | **Actores** | RT, SCH, ES, StepLedger, Machine de estados, humano (gates) |
 | **Output** | `Result` (resposta final ou paragem por `MaxTurns`), custo agregado, `ToolResults` untrusted |
 
-**Máquina de estados canónica (10 estados, 13 transições):**
+**Máquina de estados canónica (10 estados, 15 transições):**
 
 | # | De → Para | Gatilho | Nota |
 |---|---|---|---|
@@ -278,8 +279,10 @@ Lente «operação»: catálogo de processos com **trigger**, **actores**, **seq
 | 11 | `running → timed_out` | wall-clock excedido | terminal absorvente |
 | 12 | `failed → compensating` | saga rollback | compensação LIFO |
 | 13 | `compensating → ready` | retry idempotente | após compensação |
+| 14 | `waiting_on_tool → timed_out` | **backstop de wall-clock** (AOS-419) | mesmo tecto de `running`, contado desde a entrada na espera |
+| 15 | `paused → timed_out` | **backstop de wall-clock** (AOS-419) | idem; a deliberação HUMANA fica de fora (tem TTL próprio) |
 
-Os outros 87 pares da matriz 10×10 são inválidos (`ErrInvalidTransition`, verificação exaustiva por teste). Cada transição é evento `run.state.transition` append-only; o estado reconstrói-se por `Machine.Rebuild` (adopta o `to` de maior `seq`); in-memory só avança **após** commit durável.
+Os outros 85 pares da matriz 10×10 são inválidos (`ErrInvalidTransition`, verificação exaustiva por teste). Cada transição é evento `run.state.transition` append-only; o estado reconstrói-se por `Machine.Rebuild` (adopta o `to` de maior `seq`); in-memory só avança **após** commit durável.
 
 **Sub-processos:**
 
@@ -299,7 +302,7 @@ Os outros 87 pares da matriz 10×10 são inválidos (`ErrInvalidTransition`, ver
 
 Sequência: ver F2E-01, passos 4–11. Falhas em qualquer passo bloqueiam **fail-closed**. `deny` regista a negação; `escalate` sem resposta no TTL mata o run. Domínios de dedup por passo: turno, ledger, checkpoint, captura, compensação, transição de estado, controlo.
 
-**Sub-processos:** S-02a resolução de identidade NHI; S-02a avaliação PDP (permit/deny/escalate + obrigações como redacção de PII ou restrição de região); S-02c gate SA-ROC (ver P-04); S-02d reserva de débito (ver P-03); S-02e injecção JIT de credencial; S-02f revalidação criptográfica da tool (LOOKUP→DIGEST→ASSINATURA→SCOPE/EGRESS→EXEC→AUDIT, p95 < 15 ms com cache invalidável).
+**Sub-processos:** S-02a resolução de identidade NHI; S-02a avaliação PDP (permit/deny/escalate + obrigações como redacção de PII ou restrição de região — esta última LIGADA no nó `aos` desde AOS-407: board selado no NHI → obrigação `region` do PDP → recusa do PEP fora dessa região; o serviço `aos-orq` compõe um RM mínimo sem PDP e por isso não a impõe); S-02c gate SA-ROC (ver P-04); S-02d reserva de débito (ver P-03); S-02e injecção JIT de credencial; S-02f revalidação criptográfica da tool (LOOKUP→DIGEST→ASSINATURA→SCOPE/EGRESS→AUDIT→**EXEC**, com cache invalidável). O alvo de **p95 < 15 ms** governa a cadeia **até ao `AUDIT`, exclusive** — nem a escrita do selo nem o `EXEC` entram: o despacho é o efeito e o seu tempo é o da tool; a escrita é o custo do sink durável (AOS-401), medido directamente em produção em 6,5–8,3 ms (AOS-402). A inferência que lhe atribuía ~25 ms dos ~31 ms da v0.1.15 estava errada: política + escrita dão ≈ 12–13 ms por tool call; os ~31 ms da v0.1.15 foram o p95 de poucas amostras dominado por duas tool calls em que TODOS os troços ficaram lentos ao mesmo tempo (AOS-404): a janela da política — que inclui o selo durável da revalidação no WORM — e as duas escritas do selo de mediação, no WORM e no Event Store. Isso aponta para episódios transitórios de I/O ou do nó, não para o PDP; o custo do Event Store dessas duas calls é inferido do próprio SLI, dentro de limites medidos. Versões anteriores deste documento listavam o `EXEC` dentro do orçamento, em contradição com a linha do PDP no §4 — a arbitragem está no ADR-026, e foi a leitura errada que fez o SLI `mediation_overhead_p95` medir a execução e alertar em `critical` a cada tool call (DEF-281).
 
 ### P-03 — Admissão global e backpressure
 
@@ -330,7 +333,7 @@ A escala L0–L5 (ADR-014) com semântica normativa:
 | L4 | Autonomia por excepção | Só escala em incerteza/risco alto; *danger* deixa de exigir confirmação sistemática ⇒ **cerimónia de dual-control** para subir |
 | L5 | Autonomia plena por domínio | Oversight amostral e post-hoc |
 
-Regras: nível é propriedade do **par (agente, domínio)**; promoção **monótona, um nível de cada vez, opt-in explícito do humano** (o sistema propõe, nunca impõe) com métrica sustentada (referência: erro < 2% ao longo de 30 dias, override-rate baixo); o overlay `nível × classe` compõe-se no PDP e **só aperta** (permit→escalate, nunca deny→permit); subir a L4/L5 exige `autonomy:set` com **duas assinaturas** de emissores distintos; piso `AOS_AUTONOMY_DEFAULT >= L4` é recusado no arranque.
+Regras: nível é propriedade do **par (agente, domínio)**; promoção **monótona, um nível de cada vez**, com métrica sustentada (referência: erro < 2% ao longo de 30 dias, override-rate baixo). Abaixo de L4 a promoção é **automática** (ADR-025), aplicada em memória e revertida à base assinada no reinício; tornar uma promoção durável continua a ser decisão de provisionamento assinada. A **demoção** por anomalia é automática, imediata, durável e por classe; o overlay `nível × classe` compõe-se no PDP e **só aperta** (permit→escalate, nunca deny→permit); subir a L4/L5 exige `autonomy:set` com **duas assinaturas** de emissores distintos; piso `AOS_AUTONOMY_DEFAULT >= L4` é recusado no arranque.
 
 **Sub-processos:** S-04a gate SA-ROC (safe/gray/danger por efeito irreversível ou egress externo; card com efeito resolvido; anti-fadiga: safe sem card, gray em lote expansível, danger individual em destaque com atrito assimétrico); S-04b steer (F2E-03a); S-04c promoção/demoção de nível.
 
@@ -383,11 +386,19 @@ Sequência: ver F2E-06. **Sub-processos:** S-07a failover de node loss (diagnós
 | P-01 | `tecnica/02` |
 | P-06 | `tecnica/06` |
 
-Números normativos citados e os seus documentos: mediação p95 < 15 ms; resumo de delegação 1–2 k tokens; exaustão de orçamento a ~80%; cache-hit-rate > 80%; fidelidade de replay 100%; disponibilidade do plano de controlo 99,9%; cold-start de sandbox < 125 ms (restore 5–30 ms); RPO ≤ 1 min / RTO ≤ 30 min *(proposta)*.
+Números normativos citados e os seus documentos: **overhead da política** da mediação p95 < 15 ms (nem a escrita do selo nem a duração da tool call mediada, que não têm alvo — ADR-026); resumo de delegação 1–2 k tokens; exaustão de orçamento a ~80%; cache-hit-rate > 80%; fidelidade de replay 100%; disponibilidade do plano de controlo 99,9%; cold-start de sandbox < 125 ms (restore 5–30 ms); RPO ≤ 1 min / RTO ≤ 30 min *(proposta)*.
 
 ## 9. Dívidas e estados não compostos (não citar como controlos vigentes)
 
-1. **Autonomia automática (DEF-908):** o `autonomy.Controller` (promoção/demoção automáticas por métrica) não está composto — a demoção automática não vigora; mudança de nível é decisão de provisionamento assinada. Fórmula do override-rate não tem limiar numérico fixado.
+1. **Autonomia automática (DEF-908, fechado-residual por AOS-090/ADR-025):** o `autonomy.Controller` está composto no nó.
+   - **Vigora:** a **demoção** por anomalia. Cada trip do disjuntor multi-sinal (AOS-080) demove a **classe** dos pares (classe, domínio) que o run tocou, de forma imediata e durável, sem gate humano (ADR-014).
+   - **Vigora com limites:** a **promoção** por fiabilidade medida (desfecho pós-efeito `tool.call.outcome` e override-rate). Só actua **abaixo de L4**; L4/L5 continuam a exigir a cerimónia assinada de dual-control (AOS-305/AOS-377).
+   - **Residuais, a não citar como controlos vigentes:**
+     - a promoção automática aplica-se em memória e **não sobrevive a reinício**: o par volta ao último nível assinado;
+     - o override-rate é medido por proxy de escalada;
+     - os sinais de drift e de override-spike não têm fontes compostas;
+     - a agregação sobre histórico está por fazer;
+     - a fórmula do override-rate não tem limiar numérico fixado nos documentos-fonte.
 2. **Backup imutável em produção:** o exportador existe mas sem backend durável para a porta `ImmutableStore`; o RPO real de produção hoje é o do `backup.sh` diário (24 h). Os valores RPO ≤ 1 min / RTO ≤ 30 min são proposta a validar por game days.
 3. **Cifra por titular do payload do ES:** o `payload` do Event Store fica em claro (dívida AOS-093; mitigado no audit com crypto-shredding, e a referência de `replay.captured` é digest não-reversível).
 4. **Matriz RBAC formal** (papéis × permissões): não existe documentada; o modelo de autorização é cadeia NHI + política, os papéis de §5 são operacionais implícitos.

@@ -35,15 +35,17 @@ type appender interface {
 // via [AuthorFromEventChain]) + quando (IssuedAt) + por que método/autoridade
 // (AuthMethod, ex.: "oidc:<issuer>" ou "allowlist"). Ver [BindingAudit].
 type issuedPayload struct {
-	JTI        string   `json:"jti"`
-	UserID     string   `json:"user_id"`
-	AgentID    string   `json:"agent_id"`
-	AgentClass string   `json:"agent_class"`
-	PolicyRef  string   `json:"policy_ref,omitempty"`
-	Scope      []string `json:"scope,omitempty"`
-	Issuer     string   `json:"iss"`
-	IssuedAt   int64    `json:"iat"`
-	Expiry     int64    `json:"exp"`
+	JTI        string `json:"jti"`
+	UserID     string `json:"user_id"`
+	AgentID    string `json:"agent_id"`
+	AgentClass string `json:"agent_class"`
+	PolicyRef  string `json:"policy_ref,omitempty"`
+	// Board é o board de soberania selado no token (AOS-407); vazio ⇒ omitido.
+	Board    string   `json:"board,omitempty"`
+	Scope    []string `json:"scope,omitempty"`
+	Issuer   string   `json:"iss"`
+	IssuedAt int64    `json:"iat"`
+	Expiry   int64    `json:"exp"`
 	// AuthMethod é o CONTEXTO DE AUTORIZAÇÃO do binding: o método/autoridade pelo
 	// qual o humano na raiz foi autenticado ao mintar (ex.: "oidc:<issuer>" para
 	// prova OIDC, "allowlist" para o double demo, "delegation" para uma NHI filha

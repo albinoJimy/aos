@@ -31,6 +31,10 @@ const (
 
 // Store implementa [eventstore.EventStore] sobre JetStream.
 type Store struct {
+	// cn é CONCRETO, sem interface, e não precisa de uma para os caminhos de falha da ligação:
+	// um servidor NATS falso que faz o handshake e fecha a socket põe-no no estado desligado
+	// in-process (`aos360_ligacao_caida_test.go`). O que exige o JetStream a sério — a
+	// paginação do `lerLote` — corre contra o cluster do job `nats` (AOS-360).
 	cn      *natsjs.Conn
 	stream  string
 	prefixo string
@@ -40,6 +44,11 @@ type Store struct {
 	obs     eventstore.Observer
 	rastro  eventstore.Rastreador
 	now     func() time.Time
+
+	// capturaPropria: o stream foi criado (ou confirmado idêntico) por este Store no [Abrir],
+	// logo captura `<prefixo>.>` — um 503 num subject nosso é a janela, não um subject órfão.
+	// Ver [Store.servidoEmBreve] (AOS-455).
+	capturaPropria bool
 
 	mu      sync.Mutex
 	streams map[string]*estado
@@ -71,6 +80,7 @@ type config struct {
 	regiao    string
 	board     string
 	fronteira bool
+	cred      *natsjs.NKey
 	obs       eventstore.Observer
 	rastro    eventstore.Rastreador
 	now       func() time.Time
@@ -90,6 +100,11 @@ func ComPrazo(d time.Duration) Option { return func(c *config) { c.prazo = d } }
 
 // ComReplicas fixa o factor de replicação do stream (3 ou 5; 1 é só dev).
 func ComReplicas(n int) Option { return func(c *config) { c.replicas = n } }
+
+// ComCredencial autentica a ligação ao cluster com uma nkey de utilizador (AOS-470). Sem ela a
+// ligação é anónima — o que só serve um cluster sem `authorization` (dev, CI antigo). Ver
+// [natsjs.NKey] para o que a autenticação fecha e o que não fecha.
+func ComCredencial(k *natsjs.NKey) Option { return func(c *config) { c.cred = k } }
 
 // SemCriarStream assume que o stream já existe e não tenta criá-lo.
 func SemCriarStream() Option { return func(c *config) { c.criar = false } }
@@ -131,7 +146,7 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 	// 2026-09-01 tornou concreta: com um só, a morte desse nó deixa o cliente a tentar
 	// sempre o mesmo. O AC1 diz que a perda de uma réplica não interrompe escritas — com
 	// um endereço só, isso é verdade apenas se o nó morto não for o nosso.
-	cn, err := natsjs.ConnectServers(enderecos(addr), cfg.prazo)
+	cn, err := natsjs.ConnectServersCom(enderecos(addr), cfg.prazo, cfg.cred)
 	if err != nil {
 		return nil, err
 	}
@@ -165,6 +180,16 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 					eventstore.ErrSovereigntyViolation, tagDaRegiao(regiao), err)
 			}
 			return nil, fmt.Errorf("jetstream: criar stream %q: %w", cfg.stream, err)
+		}
+		// AOS-432: o CREATE responde antes de o grupo R3 eleger líder, e até lá toda a
+		// publicação recebe 503. Ver lider.go para a medição e para porque é que a
+		// correcção é aqui e não no mapeamento do 503.
+		if err := esperarLider(cfg.stream, func(d time.Duration) (string, error) {
+			c, err := cn.ColocacaoDoStream(cfg.stream, d)
+			return c.Lider, err
+		}, cfg.prazo, time.Now, time.Sleep); err != nil {
+			_ = cn.Close()
+			return nil, err
 		}
 	}
 	// SOBERANIA (AC5, ADR-011): a fronteira é verificada contra a configuração
@@ -203,17 +228,18 @@ func Abrir(addr string, opts ...Option) (*Store, error) {
 		}
 	}
 	return &Store{
-		cn:      cn,
-		stream:  cfg.stream,
-		prefixo: cfg.prefixo,
-		prazo:   cfg.prazo,
-		now:     cfg.now,
-		regiao:  regiao,
-		board:   cfg.board,
-		obs:     cfg.obs,
-		rastro:  cfg.rastro,
-		streams: map[string]*estado{},
-		subs:    map[string]*subscricao{},
+		cn:             cn,
+		capturaPropria: cfg.criar,
+		stream:         cfg.stream,
+		prefixo:        cfg.prefixo,
+		prazo:          cfg.prazo,
+		now:            cfg.now,
+		regiao:         regiao,
+		board:          cfg.board,
+		obs:            cfg.obs,
+		rastro:         cfg.rastro,
+		streams:        map[string]*estado{},
+		subs:           map[string]*subscricao{},
 	}, nil
 }
 
@@ -355,7 +381,9 @@ func (s *Store) Append(ctx context.Context, streamID string, in eventstore.Event
 			// Rede de segurança para retries imediatos; a garantia é o índice derivado.
 			h[natsjs.HdrMsgID] = streamID + "|" + eventstore.IdempotencyKey(in.RunID, in.StepID)
 		}
-		ack, err := s.cn.PublishExpectingSeq(subject, st.jsSeq, h, corpo, prazo)
+		// AOS-455: um 503 de janela (stream ainda não servido) é atravessado aqui, dentro do
+		// prazo; o que sai daqui nunca é esse 503 confundido com um conflito.
+		ack, err := s.publicarCAS(ctx, subject, st.jsSeq, h, corpo, prazo)
 
 		switch {
 		case err == nil && ack.Duplicate:
@@ -874,8 +902,8 @@ func (sub *subscricao) Unsubscribe() {
 // Subscribe entrega por PUSH os eventos escritos A PARTIR DE AGORA que passem o filtro.
 //
 // A semântica é a do modelo de referência (fanout do que é escrito depois da
-// subscrição), materializada por um consumidor EFÉMERO com deliver_policy "new". Ver os
-// limites no doc do pacote: sem acks, sem flow control, sem heartbeats.
+// subscrição), materializada por um consumidor DURÁVEL com acks explícitos, flow control
+// e batimento. Ver [Store.criarDuravel] e [Store.reestabelecerEntrega].
 func (s *Store) Subscribe(ctx context.Context, filtro eventstore.Filter, h eventstore.Handler) (_ eventstore.Subscription, err error) {
 	defer func() { err = indisponibilidadeTransitoria(err) }()
 	s.marcarUsado()
@@ -1073,12 +1101,15 @@ func (s *Store) prazoDe(ctx context.Context) time.Duration {
 // representável — e a resposta é RECUSAR, não escapar em silêncio para um subject
 // vizinho onde outro stream leria os nossos eventos.
 func (s *Store) subjectDe(streamID string) (string, error) {
-	if streamID == "" {
-		return "", fmt.Errorf("%w: stream_id vazio", eventstore.ErrConfig)
-	}
-	if strings.ContainsAny(streamID, ". *>\t\r\n") {
-		return "", fmt.Errorf("%w: stream_id %q contém um carácter que não é representável num subject NATS (. * > ou espaço)",
-			eventstore.ErrConfig, streamID)
+	// A REGRA VEM DA FONTE ([eventstore.ValidarStreamID]), e não de uma cópia aqui.
+	//
+	// Esteve aqui escrita à mão, e era uma de TRÊS cópias (esta, a do nó, e a extracção do
+	// gate `stream-names`). O AOS-424 mediu o que isso custa: bastava acrescentar outro
+	// `ContainsAny(streamID, ...)` ACIMA desta função para o gate passar a medir só o ponto e
+	// ficar verde com nomes inválidos na árvore. A recusa continua a ser a mesma, e o erro
+	// continua a embrulhar [eventstore.ErrConfig] — muda a origem da regra, não o contrato.
+	if err := eventstore.ValidarStreamID(streamID); err != nil {
+		return "", err
 	}
 	return s.prefixo + "." + streamID, nil
 }
@@ -1238,8 +1269,24 @@ func (s *Store) criarDuravel(ctx context.Context, sub *subscricao) error {
 // O consumidor é DURÁVEL e sobreviveu à quebra: ele sabe até onde a entrega foi
 // confirmada e retoma aí. Criar um novo (ou recalcular o ponto de partida) reabriria
 // exactamente o buraco que o durável fecha — os eventos escritos no intervalo. Reafirma-se
-// a criação por idempotência, para o caso de o consumidor ter sido perdido com o nó que o
-// alojava, e nesse caso — declarado — o intervalo perde-se na mesma: o consumidor é R1.
+// a criação por idempotência, para o caso de o consumidor ter sido APAGADO.
+//
+// # O consumidor ÓRFÃO, e porque reafirmar não chega (AOS-449)
+//
+// O consumidor é R1 e o servidor sorteia-lhe o par. Se esse par MORRE, o consumidor não
+// desaparece: continua atribuído ao nó morto. Lido no nats-server v2.10, e não suposto: o
+// `CREATE` sobre um consumidor que existe reutiliza os MESMOS pares (`ca.copyGroup()`), e
+// com o único par morto ninguém responde — o pedido EXPIRA. O servidor não move um R1 órfão
+// sozinho. Reafirmar para sempre era esperar pelo regresso de um nó que pode não voltar, e
+// entretanto nada era entregue — o buraco silencioso que o durável existe para fechar,
+// medido a uma execução em três no CI.
+//
+// Quando a reafirmação EXPIRA, o consumidor apaga-se e cria-se de novo. O `DELETE` de um
+// consumidor sem pares vivos é respondido pelo meta-leader, e a recriação sorteia um par
+// ACTIVO. Parte do seq fixado na subscrição, pelo que nada se perde e o que já tinha sido
+// entregue desde então é REENTREGUE — o mesmo at-least-once declarado para o consumidor
+// apagado pelas costas. Se a expiração foi só lentidão e o consumidor estava vivo, o custo
+// é o mesmo: reentrega, nunca perda.
 func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func(), error) {
 	espera := 200 * time.Millisecond
 	const tecto = 5 * time.Second
@@ -1254,9 +1301,13 @@ func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func()
 		}
 		ch, cancelar, err := s.cn.SubscribeSubject(sub.entrega)
 		if err == nil {
-			// Reafirma o durável: se sobreviveu, o CREATE é idempotente; se o nó que o
-			// alojava morreu, recria-se — e aí o intervalo perde-se, o que fica dito.
-			if errC := s.criarDuravel(context.Background(), sub); errC == nil || errors.Is(errC, eventstore.ErrClosed) {
+			// Reafirma o durável: se sobreviveu, o CREATE é idempotente; se foi apagado,
+			// recria-se; se ficou ÓRFÃO no nó morto, o CREATE expira e recoloca-se.
+			errC := s.criarDuravel(context.Background(), sub)
+			if errors.Is(errC, natsjs.ErrTimeout) {
+				errC = s.recolocarDuravel(sub)
+			}
+			if errC == nil || errors.Is(errC, eventstore.ErrClosed) {
 				return ch, cancelar, nil
 			}
 			cancelar()
@@ -1265,6 +1316,16 @@ func (s *Store) reestabelecerEntrega(sub *subscricao) (<-chan natsjs.Msg, func()
 			espera *= 2
 		}
 	}
+}
+
+// recolocarDuravel apaga o consumidor da subscrição e cria-o de novo, num par vivo.
+//
+// O erro do `DELETE` ignora-se de propósito: se o consumidor já não existe, a recriação é
+// o que se quer; se o apagamento falhou por outra razão, a recriação falha também (mesmo
+// nome, pares mortos) e o recuo de [Store.reestabelecerEntrega] tenta outra vez.
+func (s *Store) recolocarDuravel(sub *subscricao) error {
+	_ = s.cn.DeleteConsumer(s.stream, sub.duravel, s.prazo)
+	return s.criarDuravel(context.Background(), sub)
 }
 
 var errPararSubscricao = errors.New("jetstream: subscrição parada pelo dono")

@@ -197,8 +197,9 @@ func (w *wal) append(ev Event) error {
 // appendLote persiste um lote INTEIRO sob uma só posse do mutex, com reposição ao
 // nível do LOTE: se qualquer registo falhar, o ficheiro volta ao tamanho que tinha
 // antes do primeiro. É o que [Store.IngestStream] precisa (AOS-353) — um restauro que
-// devolve erro não pode deixar meio lote durável, pela mesma razão que um [Append] que
-// devolve erro não pode deixar um registo.
+// devolve erro não deve deixar meio lote durável, pela mesma razão que um [Append] que
+// devolve erro não deve deixar um registo. Com UMA excepção, o WAL envenenado, declarada
+// abaixo no laço.
 func (w *wal) appendLote(evs []Event) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

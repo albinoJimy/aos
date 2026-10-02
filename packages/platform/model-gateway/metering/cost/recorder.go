@@ -6,6 +6,7 @@ import (
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/platform/model-gateway/internal/lru"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
@@ -152,19 +153,36 @@ type Reading struct {
 	Err            error
 }
 
+// DefaultRetainedKeys é o tecto por omissão de chaves retidas em CADA eixo de agregação
+// (runs e árvores), AOS-397. Os agregados eram mapas sem remoção: com o run real a
+// chegar em cada chamada (AOS-394), um nó de vida longa guardava uma entrada por run
+// para sempre. O despejo é do menos-recentemente-usado, pelo que um run activo só perde
+// o cumulativo depois de 4096 outros runs terem sido observados desde a sua última
+// chamada. Cada entrada ocupa algumas centenas de bytes, pelo que o tecto nos dois eixos
+// fica abaixo de poucos megabytes.
+const DefaultRetainedKeys = 4096
+
 // Recorder é o AGREGADOR de custo por run/árvore — o estado externo do Gateway
 // stateless (injectado por porta). Concorrente-seguro. Calcula o custo (via
 // [Calculator]), agrega por run e por árvore, emite a métrica OTel, anota o span e
 // alimenta o burn-down. Construir com [NewRecorder].
+//
+// RETENÇÃO (AOS-397): cada eixo retém no máximo [DefaultRetainedKeys] chaves
+// ([WithRetention] muda o tecto), com despejo do menos-recentemente-usado. Um run
+// despejado que volte a ser observado recomeça o cumulativo do zero — nenhum consumidor
+// composto lê hoje o cumulativo (o burn-down de AOS-261 soma o custo POR CHAMADA do
+// `turn.recorded`), e o custo calculado da chamada nunca depende dele. O que recomeça é
+// também a verificação de overflow do cumulativo, que só dispara perto de MaxInt64.
 type Recorder struct {
 	calc     *Calculator
 	metrics  MetricSink
 	burndown BurndownSink
 	clock    func() time.Time
+	retencao int
 
 	mu       sync.Mutex
-	runAggs  map[RunKey]*Amount
-	treeAggs map[TreeKey]*Amount
+	runAggs  *lru.Map[RunKey, Amount]
+	treeAggs *lru.Map[TreeKey, Amount]
 }
 
 // Option configura o [Recorder].
@@ -198,6 +216,16 @@ func WithClock(clock func() time.Time) Option {
 	}
 }
 
+// WithRetention muda o tecto de chaves retidas por eixo (default [DefaultRetainedKeys]).
+// Valores < 1 são ignorados (mantém o default): não há opção sem tecto.
+func WithRetention(n int) Option {
+	return func(r *Recorder) {
+		if n >= 1 {
+			r.retencao = n
+		}
+	}
+}
+
 // NewRecorder constrói o agregador sobre um [Calculator]. Sem sinks, a agregação
 // corre na mesma (introspecção por [Recorder.CostForRun]/[Recorder.CostForTree]).
 func NewRecorder(calc *Calculator, opts ...Option) *Recorder {
@@ -206,12 +234,13 @@ func NewRecorder(calc *Calculator, opts ...Option) *Recorder {
 		metrics:  nopMetric{},
 		burndown: nopBurndown{},
 		clock:    time.Now,
-		runAggs:  make(map[RunKey]*Amount),
-		treeAggs: make(map[TreeKey]*Amount),
+		retencao: DefaultRetainedKeys,
 	}
 	for _, o := range opts {
 		o(r)
 	}
+	r.runAggs = lru.New[RunKey, Amount](r.retencao)
+	r.treeAggs = lru.New[TreeKey, Amount](r.retencao)
 	return r
 }
 
@@ -242,39 +271,36 @@ func (r *Recorder) Observe(ctx context.Context, span agentruntime.Span, s Sample
 
 	// Agregação overflow-checked por run E por árvore. Um eixo sem chave (RunID/TreeID
 	// vazio) NÃO é agregado (evita um balde global que misturaria trajectórias), mas o
-	// custo DA CHAMADA é sempre emitido/anotado.
+	// custo DA CHAMADA é sempre emitido/anotado. As duas somas calculam-se ANTES de
+	// gravar qualquer uma: um overflow num eixo não deixa o outro já actualizado.
 	var runCum, treeCum Amount
 	var runOK, treeOK bool
+	rk := RunKey{RunID: s.RunID, Tenant: s.Tenant}
+	tk := TreeKey{TreeID: s.TreeID, Tenant: s.Tenant}
 	r.mu.Lock()
 	if s.RunID != "" {
-		rk := RunKey{RunID: s.RunID, Tenant: s.Tenant}
-		acc := r.runAggs[rk]
-		if acc == nil {
-			acc = &Amount{}
-			r.runAggs[rk] = acc
-		}
-		if sum, ok := acc.AddChecked(amt); ok {
-			*acc = sum
-			runCum, runOK = sum, true
-		} else {
+		acc, _ := r.runAggs.Get(rk)
+		sum, ok := acc.AddChecked(amt)
+		if !ok {
 			r.mu.Unlock()
 			return Reading{Amount: amt, Breakdown: bd, PricingVersion: version, Err: ErrOverflow}
 		}
+		runCum, runOK = sum, true
 	}
 	if s.TreeID != "" {
-		tk := TreeKey{TreeID: s.TreeID, Tenant: s.Tenant}
-		acc := r.treeAggs[tk]
-		if acc == nil {
-			acc = &Amount{}
-			r.treeAggs[tk] = acc
-		}
-		if sum, ok := acc.AddChecked(amt); ok {
-			*acc = sum
-			treeCum, treeOK = sum, true
-		} else {
+		acc, _ := r.treeAggs.Get(tk)
+		sum, ok := acc.AddChecked(amt)
+		if !ok {
 			r.mu.Unlock()
 			return Reading{Amount: amt, Breakdown: bd, PricingVersion: version, Err: ErrOverflow}
 		}
+		treeCum, treeOK = sum, true
+	}
+	if runOK {
+		r.runAggs.Put(rk, runCum)
+	}
+	if treeOK {
+		r.treeAggs.Put(tk, treeCum)
 	}
 	r.mu.Unlock()
 
@@ -359,28 +385,30 @@ func (r *Recorder) feedBurndown(ctx context.Context, s Sample, call, runCum Amou
 	}
 }
 
-// CostForRun devolve o custo AGREGADO de um run (ok=false se nunca observado). É a
-// leitura de burn-down por run.
+// CostForRun devolve o custo AGREGADO de um run (ok=false se nunca observado ou já
+// despejado pelo tecto de retenção). É a leitura de burn-down por run. Não conta como
+// uso: ler não protege o run do despejo.
 func (r *Recorder) CostForRun(k RunKey) (Amount, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	acc, ok := r.runAggs[k]
-	if !ok {
-		return Amount{}, false
-	}
-	return *acc, true
+	return r.runAggs.Get(k)
 }
 
-// CostForTree devolve o custo AGREGADO de uma árvore (ok=false se nunca observada).
-// É a leitura de burn-down/admission GLOBAL por árvore (ADR-008).
+// CostForTree devolve o custo AGREGADO de uma árvore (ok=false se nunca observada ou
+// já despejada pelo tecto de retenção). É a leitura de burn-down/admission GLOBAL por
+// árvore (ADR-008).
 func (r *Recorder) CostForTree(k TreeKey) (Amount, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	acc, ok := r.treeAggs[k]
-	if !ok {
-		return Amount{}, false
-	}
-	return *acc, true
+	return r.treeAggs.Get(k)
+}
+
+// RetainedKeys devolve quantas chaves cada eixo retém agora (runs, árvores) — a medida
+// do AOS-397, para testes e introspecção.
+func (r *Recorder) RetainedKeys() (runs, trees int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.runAggs.Len(), r.treeAggs.Len()
 }
 
 // --- Sinks de referência in-memory (EPIC-08/EPIC-03 ligam os reais) ---
@@ -419,6 +447,10 @@ func (s *MemoryMetricSink) Metrics() []Metric {
 // MemoryBurndownSink acumula os incrementos de burn-down em memória (introspecção/
 // testes) E mantém os cumulativos por eixo — a impl de referência do burn-down que o
 // admission global de EPIC-03 substitui. Concorrente-seguro.
+//
+// SEM TECTO, por desenho (AOS-397): guarda TODOS os incrementos, que é o que um teste
+// quer inspeccionar. Não serve para um processo de vida longa e não está composto em
+// produção (o `cmd/aos` constrói o recorder sem sinks: o burn-down é o de AOS-261).
 type MemoryBurndownSink struct {
 	mu      sync.Mutex
 	entries []BurndownEntry

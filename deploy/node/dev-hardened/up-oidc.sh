@@ -246,7 +246,7 @@ echo "[oidc]   id_token obtido (${#ID_TOKEN} chars); board no payload: $(printf 
 # --- 4. NHI do issuer externo (delegação manual do humano) -------------------
 echo "[oidc] 4/5 a mintar NHI (aos-issuer) ..."
 NHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer \
-  --human human:alice --agent agt-oidc --class researcher --caps cap:doc.read --ttl 15m | tr -d '\r\n')"
+  --human human:alice --board board:demo --agent agt-oidc --class researcher --caps cap:doc.read --ttl 15m | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint do NHI falhou"
 
 # --- 5. PROVA: submeter run em PRODUÇÃO com Bearer OIDC verificado -----------

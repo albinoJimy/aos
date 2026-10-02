@@ -43,6 +43,8 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -51,10 +53,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -67,6 +71,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	risk "github.com/aos-ref/kernel/reference-monitor/risk"
 	audit "github.com/aos-ref/platform/audit"
+	identity "github.com/aos-ref/platform/identity"
 )
 
 // Defaults da API (todos endurecíveis por [APIOption]).
@@ -79,6 +84,25 @@ const (
 	DefaultRateBurst = 128
 	// DefaultRatePerSec é o reabastecimento por omissão (tokens/segundo) do token-bucket.
 	DefaultRatePerSec = 64
+	// DefaultReadRateBurst / DefaultReadRatePerSec são a admission de TAXA do plano de DADOS
+	// inteiro — as LEITURAS incluídas (AOS-458).
+	//
+	// PORQUE EXISTEM, e porque são GENEROSOS. Até AOS-458 as rotas de leitura (`GET /runs/{id}`,
+	// `/trajectory`, `/reconstruct`, `GET /tools`, `GET /plans/{id}`, `POST /plans/claim`,
+	// `POST /plans/outcome`) não tinham tecto de taxa NENHUM — e todas chamam
+	// `readGovernance.authorize`, que em produção verifica um JWS (RS256 ≈ 42 µs, ES256 ≈ 91 µs).
+	// Um chamador podia impor trabalho criptográfico sem limite, o que o `POST /runs` nunca
+	// permitiu. MEDIDO: 200 pedidos ⇒ 200 verificações, zero 429.
+	//
+	// O tecto não precisa de APERTAR para fechar isso; precisa de EXISTIR. A 256/s o vector fica
+	// limitado a ~1,1% de um core em RS256, e nenhum cliente de leitura razoável o alcança. Quem
+	// precisar de mais sobe-o por `AOS_INGRESS_READ_RATE`/`AOS_INGRESS_READ_BURST`.
+	//
+	// É um balde SEPARADO do de submissão, de propósito: o número de `AOS_INGRESS_RATE` foi
+	// escolhido para submissões, e partilhá-lo faria um scrape de leitura negar submissões — uma
+	// regressão funcional em troca de menos código.
+	DefaultReadRateBurst  = 512
+	DefaultReadRatePerSec = 256
 	// DefaultMaxInFlight é o tecto por omissão de runs EM CURSO admissíveis por esta réplica.
 	// Exceder ⇒ 429 (o ingresso não sobrecarrega o loop de serviço). <= 0 desliga o tecto.
 	DefaultMaxInFlight = 512
@@ -102,6 +126,70 @@ const (
 	// confiança (coerente com o hardening de ingresso de AOS-166). Exceder ⇒ 429. <= 0
 	// desliga o tecto.
 	DefaultMaxTrajectoryConns = 256
+	// DefaultMaxTrajectoryConnsPerReader reparte o tecto acima POR LEITOR (AOS-459).
+	//
+	// PORQUE EXISTE. O tecto global é anti-exaustão do NÓ e não diz nada sobre equidade: um leitor
+	// autenticado abre os 256 e nega `GET /runs/{id}/trajectory` a **todos** os outros,
+	// indefinidamente — não é uma rajada que passa, é ocupação que fica enquanto ele quiser. Nem o
+	// AOS-456a fecha isso (conta runs, não ligações) nem o AOS-458 (limita taxa, e abrir um stream
+	// custa UM token; depois a ligação vive minutos), nem o `edge` (o `nginx.conf` tem `limit_req`,
+	// que é taxa, e NÃO tem `limit_conn`).
+	//
+	// 32 reparte 8 leitores sobre o global de 256 e é folgado para um cliente real: uma UI observa
+	// um punhado de runs ao mesmo tempo, não trinta.
+	DefaultMaxTrajectoryConnsPerReader = 32
+	// DefaultPlanMaxPending é o tecto por omissão de pedidos de plano por drenar. Era a constante
+	// `tectoDePendentes` em `plan_claim.go`, sem variável de ambiente, até ao AOS-464; o valor em
+	// vigor vem agora de [apiConfig.planMaxPending], afinável por `AOS_PLAN_MAX_PENDING`.
+	//
+	// A CONSTANTE ANTIGA FOI REMOVIDA em vez de mantida ao lado desta: duas constantes com o mesmo
+	// valor e o mesmo significado divergem, e o compilador não se queixa de uma `const` de pacote que
+	// ninguém usa — teria ficado dívida silenciosa no primeiro commit deste ticket.
+	// Atingido, o INGRESSO recusa pedidos NOVOS (ADR-030 §2.7). Não se descartam os antigos: um
+	// pedido descartado em silêncio é a mesma classe de defeito que este eixo inteiro existe para
+	// fechar. É alto de propósito — a intenção é travar um laço em fuga, não moldar carga.
+	//
+	// # PORQUE É QUE UM TECTO GLOBAL SOZINHO NÃO CHEGA (AOS-464)
+	//
+	// Ele protege o NÓ e não diz nada sobre QUEM ocupa a fila: um submissor autenticado enfileira 1000
+	// pedidos e todos os outros levam **503** em `POST /plans` até alguém drenar. Não é uma rajada que
+	// passa — é ocupação que fica, porque um pedido só sai da fila com um desfecho terminal ou uma
+	// reclamação viva, e nenhum dos dois depende de quem submeteu.
+	//
+	// É o MESMO defeito que o AOS-456a fechou no `POST /runs`, um plano ao lado, e nenhuma das outras
+	// barreiras o cobre: o balde de admissão é de TAXA e global entre chamadores (uma submissão custa um
+	// token e o pedido fica na fila durante horas), o tecto de runs em curso conta runs HOSPEDADOS e esta
+	// rota não hospeda nenhum, e o `edge` tem `limit_req` e não `limit_conn`. A repartição é
+	// [apiConfig.planMaxPendingPerSubmitter].
+	DefaultPlanMaxPending = 1000
+	// DefaultPlanMaxGenerations é o tecto de gerações de planeamento por pedido (AOS-467, decisão
+	// do dono). Conta-se cada geração cuja anterior não acabou à espera de humano: as re-ofertas
+	// depois de um desfecho transitório ou de uma reclamação expirada. Com até 3 tentativas do
+	// planeador por geração, são no máximo ~15 chamadas ao modelo por pedido. A geração que passa o
+	// tecto entrega-se marcada, e o `aos-orq` fecha o pedido com a saída 12 sem planear.
+	DefaultPlanMaxGenerations = 5
+	// DefaultPlanMaxPendingPerSubmitter reparte o tecto acima POR SUBMISSOR (AOS-464).
+	//
+	// PORQUE EXISTE. O tecto global é anti-laço-em-fuga do NÓ e não diz nada sobre equidade: um
+	// submissor autenticado enfileira os 1000 e todos os outros levam **503** até alguém drenar. Um
+	// pedido só sai da fila com desfecho terminal ou reclamação viva, e nenhum dos dois depende de
+	// quem submeteu — logo não é uma rajada que passa, é ocupação que fica.
+	//
+	// AS BARREIRAS QUE ESTA ROTA JÁ ATRAVESSA, e nenhuma fecha a ocupação: o balde de submissão
+	// (taxa), o balde de TAXA do plano de dados (AOS-458, que `POST /plans` atravessa como
+	// `planoDados` — omitido da primeira enumeração deste ticket), o tecto de runs em curso (conta
+	// runs HOSPEDADOS, e esta rota não hospeda nenhum) e o `edge` (`limit_req`, taxa). As quatro são
+	// de TAXA ou de outro recurso: uma submissão custa um token e o pedido fica na fila horas.
+	//
+	// 125 reparte 8 submissores sobre o global de 1000, a mesma proporção que o eixo SSE usa
+	// (32/256). É folgado para um `aos-orq` real, que despacha por passagem e não enfileira centenas.
+	DefaultPlanMaxPendingPerSubmitter = 125
+	// DefaultMaxAcceptedConns é o tecto de ligações TCP abertas ao mesmo tempo no listener da API
+	// (AOS-465). Atingido, uma ligação nova DESPEJA outra (ver ligacoes_aceites.go). Tem de ficar
+	// ACIMA de [DefaultMaxTrajectoryConns]: um stream SSE entre eventos está a trabalhar e não é
+	// despejável, e sem folga os streams ocupariam o listener inteiro — incluindo as ligações do plano
+	// de CONTROLO (/steer, /pause).
+	DefaultMaxAcceptedConns = 1024
 )
 
 // Erros da API (fail-closed).
@@ -138,6 +226,11 @@ var (
 	// a terminação TLS no nó exige AMBOS (certificado E chave), e a ambiguidade aborta em vez de
 	// degradar em silêncio para texto-claro.
 	ErrIncompleteTLSConfig = errors.New("aos/api: config TLS incompleta — AOS_TLS_CERT_PATH e AOS_TLS_KEY_PATH sao AMBOS obrigatorios para terminar TLS no no (definir so um aborta em vez de servir em claro)")
+	// ErrConnCeilingNotAboveSSE — o tecto de ligações aceites (AOS-465) não fica ESTRITAMENTE acima
+	// do tecto de streams SSE, ou o SSE está sem tecto. Um stream SSE entre eventos está a trabalhar,
+	// e o despejo não o toca: sem folga, os streams fechariam o listener a tudo o resto. A
+	// leitura do ambiente já recusa o par; esta guarda cobre a composição por opções.
+	ErrConnCeilingNotAboveSSE = errors.New("aos/api: o tecto de ligacoes aceites (AOS_API_MAX_CONNS) tem de ser ESTRITAMENTE maior que o tecto de streams SSE (AOS_TRAJECTORY_MAX_CONNS), e o SSE tem de ter tecto — os streams SSE nao sao despejaveis e ocupariam o listener inteiro")
 	// ErrBadControlMTLSCA — AOS_CONTROL_MTLS_CA_PATH presente mas o bundle de CA de cliente
 	// não carrega (ficheiro ilegível, ou sem nenhum certificado PEM válido). Fail-closed de
 	// CONFIG (DEF-012, EIXO 1): um nó não sobe a anunciar mTLS do plano de controlo com uma
@@ -191,6 +284,8 @@ type apiConfig struct {
 	ratePerSec     float64
 	ctrlRateBurst  float64
 	ctrlRatePerSec float64
+	readRateBurst  float64
+	readRatePerSec float64
 	maxInFlight    int
 	// maxTurnsCeiling é o TECTO node-local do nº de turnos de um run (AOS-203, achado F2 do
 	// desafio A5). Um `max_turns` do corpo de POST /runs é CLAMPADO a este valor na fronteira
@@ -202,6 +297,22 @@ type apiConfig struct {
 	maxTurnsCeiling  int
 	trajWriteTimeout time.Duration // write-deadline por-escrita do SSE de trajectória
 	trajMaxConns     int           // tecto de streams SSE concorrentes por-nó
+	// trajMaxConnsPerReader reparte o tecto acima por LEITOR (AOS-459). <= 0 desliga a repartição,
+	// e aí o global volta a ser a única barreira — com o residual que o AOS-459 fecha.
+	trajMaxConnsPerReader int
+	// planMaxPending é o tecto de pedidos de plano por drenar (AOS-423, afinável desde AOS-464).
+	planMaxPending int
+	// planMaxPendingPerSubmitter reparte o tecto acima por SUBMISSOR (AOS-464). <= 0 desliga a
+	// repartição, e aí o global volta a ser a única barreira. NÃO se compõe sem gate soberano de
+	// leitura: sem ele o principal do pedido fica VAZIO para todos, e um tecto chaveado no vazio
+	// valeria como tecto global mais apertado — ver [handlePlanRequest].
+	planMaxPendingPerSubmitter int
+	// planMaxGenerations é o tecto de gerações de planeamento por pedido (AOS-467).
+	planMaxGenerations int
+	// maxAcceptedConns é o tecto de ligações abertas no listener (AOS-465); ligacoes é o contador
+	// partilhado entre o listener e a métrica.
+	maxAcceptedConns int
+	ligacoes         *ligacoesAceites
 	serverWriteTO    time.Duration // WriteTimeout do http.Server (0 ⇒ DefaultWriteTimeout)
 	now              func() time.Time
 	logw             io.Writer
@@ -232,6 +343,9 @@ type apiConfig struct {
 	// fail-closed) e a selar cada leitura sensível no WORM. nil ⇒ read-path legado (sem authz
 	// por-chamador, sem selo) — a topologia soberana é condicional ao provisioning (deferido).
 	readGov *readGovernance
+	// toolCatalog é o catálogo que `GET /tools` serve (AOS-441, [WithToolCatalog]): as tools que
+	// o nó oferece ao modelo, com o digest do contrato. nil ⇒ catálogo vazio.
+	toolCatalog []entradaDoCatalogo
 }
 
 // APIOption configura a API HTTP.
@@ -257,6 +371,20 @@ func WithRateLimit(perSec, burst float64) APIOption {
 		}
 		if perSec >= 0 {
 			c.ratePerSec = perSec
+		}
+	}
+}
+
+// WithReadRateLimit afina a admission de TAXA do plano de DADOS inteiro (AOS-458) — o balde que
+// o invólucro da rota consome ANTES do handler, e portanto antes de qualquer verificação
+// criptográfica. Valores <= 0 são ignorados (mantêm o default), como nas outras opções de balde.
+func WithReadRateLimit(perSec, burst float64) APIOption {
+	return func(c *apiConfig) {
+		if burst > 0 {
+			c.readRateBurst = burst
+		}
+		if perSec > 0 {
+			c.readRatePerSec = perSec
 		}
 	}
 }
@@ -313,10 +441,69 @@ func WithTrajectoryWriteTimeout(d time.Duration) APIOption {
 	}
 }
 
+// WithMaxTrajectoryConnsPerReader reparte o tecto de streams SSE por LEITOR (AOS-459/AOS-460).
+// <= 0 desliga a repartição. Ver [DefaultMaxTrajectoryConnsPerReader] para o porquê de ser preciso, e
+// [ingressPostureBanner] para as três posturas que o arranque declara.
+//
+// ⚠️ O invariante «por-leitor < global» só é imposto na leitura do ambiente: composto por esta opção,
+// um valor >= [WithMaxTrajectoryConns] deixa a repartição INERTE (o global corta primeiro). O banner
+// de arranque declara-o quando acontece, em vez de se calar.
+func WithMaxTrajectoryConnsPerReader(n int) APIOption {
+	return func(c *apiConfig) { c.trajMaxConnsPerReader = n }
+}
+
+// WithMaxAcceptedConns afina o tecto de ligações abertas no listener da API (AOS-465). <= 0 mantém o
+// default: NENHUM valor desliga este tecto.
+func WithMaxAcceptedConns(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.maxAcceptedConns = n
+		}
+	}
+}
+
+// withLigacoesAceites liga o contador partilhado. Não é exportada: quem a compõe é [NewAPIServer].
+func withLigacoesAceites(l *ligacoesAceites) APIOption {
+	return func(c *apiConfig) { c.ligacoes = l }
+}
+
+// WithPlanMaxPending afina o tecto de pedidos de plano por drenar (default [DefaultPlanMaxPending]).
+// <= 0 mantém o default: NENHUM valor desliga este tecto, porque desligá-lo abriria a fila a um laço
+// em fuga — é a mesma armadilha que `AOS_INGRESS_MAX_INFLIGHT=0` fecha.
+func WithPlanMaxPending(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.planMaxPending = n
+		}
+	}
+}
+
+// WithPlanMaxGenerations afina o tecto de gerações de planeamento por pedido (default
+// [DefaultPlanMaxGenerations], AOS-467). <= 0 mantém o default: nenhum valor desliga o tecto, pela
+// mesma razão do [WithPlanMaxPending] — sem ele, um pedido cuja decomposição falha sempre de forma
+// transitória re-planeia sem fim.
+func WithPlanMaxGenerations(n int) APIOption {
+	return func(c *apiConfig) {
+		if n > 0 {
+			c.planMaxGenerations = n
+		}
+	}
+}
+
+// WithPlanMaxPendingPerSubmitter afina a repartição do tecto acima por SUBMISSOR (AOS-464).
+// <= 0 desliga a repartição e deixa o global como única barreira.
+func WithPlanMaxPendingPerSubmitter(n int) APIOption {
+	return func(c *apiConfig) { c.planMaxPendingPerSubmitter = n }
+}
+
 // WithMaxTrajectoryConns define o tecto de streams SSE de trajectória concorrentes por-nó
 // (AOS-167; default [DefaultMaxTrajectoryConns]). Exceder ⇒ 429. <= 0 desliga o tecto (útil
 // em testes que abrem muitas ligações). É a admission anti-exaustão do read-path tempo-real,
 // coerente com o hardening de ingresso de AOS-166.
+//
+// Este comentário esteve SEQUESTRADO: o AOS-459 inseriu a opção por-leitor entre ele e esta
+// assinatura, e o `go doc` passou a mostrar esta função sem documentação nenhuma. Terceira vez na
+// mesma sessão — daí a nota, que é para o próximo.
 func WithMaxTrajectoryConns(n int) APIOption {
 	return func(c *apiConfig) { c.trajMaxConns = n }
 }
@@ -419,7 +606,30 @@ type apiHandler struct {
 	cfg        apiConfig
 	bucket     *tokenBucket // admission do plano de DADOS (POST /runs)
 	ctrlBucket *tokenBucket // admission do plano de CONTROLO (/steer, /pause, /approve)
+	// readBucket é a admission de TAXA do plano de DADOS inteiro, consumida no INVÓLUCRO da rota
+	// (planos.go) e portanto ANTES de qualquer verificação criptográfica no corpo do handler
+	// (AOS-458). Ver [DefaultReadRatePerSec] para o porquê de ser separado e generoso.
+	readBucket *tokenBucket
 	trajConns  atomic.Int64 // nº de streams SSE de trajectória concorrentes (admission)
+	// trajPorLeitor conta os streams SSE VIVOS por leitor, para o tecto por-chamador (AOS-459).
+	//
+	// ESTADO PRÓPRIO, ao contrário do tecto por-chamador de runs (AOS-456a), que deriva a contagem
+	// de `s.runs` e por isso não pode dessincronizar-se. Aqui não há estrutura existente que
+	// registe as ligações vivas, pelo que o mapa é a única via — e o risco correspondente está
+	// nomeado: uma entrada que fique a MAIS tranca o leitor para sempre. Por isso o decremento é
+	// um `defer` imediatamente após a reserva bem-sucedida, a entrada é APAGADA ao chegar a zero
+	// (senão o mapa cresce sem limite com leitores que vêm e vão), e
+	// [TestAOS459AContagemVOLTAAZeroEAEntradaDesaparece] mede as duas coisas.
+	trajPorLeitorMu sync.Mutex
+	trajPorLeitor   map[string]int
+	// credRecusadas conta as recusas por CREDENCIAL DO RUN que não verifica, nas duas rotas que
+	// a verificam: `POST /runs` (AOS-428) e `POST /runs/{id}/resume` (AOS-433).
+	//
+	// Existe porque a correcção do AOS-428 trocou uma negação TARDIA-MAS-AUDITADA por uma
+	// negação PRECOCE-E-NÃO-AUDITADA: antes, o token era negado pelo hook do RM e produzia um
+	// `MediationRecord` selado no WORM, com métrica; depois, passou a ser uma linha de log. Uma
+	// campanha de submissões com tokens roubados ficou invisível a qualquer série.
+	credRecusadas atomic.Int64
 	// controlMTLS indica se o mTLS do plano de controlo está LIGADO (DEF-012, EIXO 1). Quando
 	// true, os handlers de controlo exigem um certificado de cliente verificado — ADITIVO à
 	// assinatura ed25519. O ClientCAs/ClientAuth vive no listener ([NewAPIServer]); este flag é
@@ -427,6 +637,17 @@ type apiHandler struct {
 	controlMTLS bool
 	// readGov é a costura de soberania/conformidade de leitura (AOS-172, D7+D6). nil ⇒ legado.
 	readGov *readGovernance
+	// marcaDaFila é o `seq` a partir do qual vale a pena reler a fila de pedidos de plano
+	// (AOS-429). Vive aqui, e não no `Node`, porque o `Node` é imutável pós-bootstrap por
+	// contrato e isto é estado que se move; o handler é uma instância por servidor, criada em
+	// [NewAPIHandler], que é exactamente o âmbito certo. Ver `plan_marca_de_agua.go`.
+	marcaDaFila marcaDeAgua
+	// recusasDaFila* contam as recusas de POST /plans pelas DUAS camadas do tecto (AOS-464). Existem
+	// porque «uma guarda sem sensor é o defeito que o AOS-422 mediu» — a frase está duas linhas acima
+	// da métrica da fila, e a camada nova nascia só com log. Separadas, porque exigem acções
+	// diferentes: a global é o operador a procurar o consumidor, a do submissor é um chamador a drenar.
+	recusasDaFilaGlobal       atomic.Uint64
+	recusasDaFilaPorSubmissor atomic.Uint64
 	// O guard que serializa as passagens do [audit.ExpirationJob] vive em
 	// [NodeService.expireInFlight] — NÃO aqui. Mudou de sítio em AOS-267, quando o scheduler
 	// interno passou a conduzir a MESMA passagem: um guard no handler só excluiria as
@@ -444,16 +665,23 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		return nil, ErrNilNode
 	}
 	cfg := apiConfig{
-		maxBodyBytes:     DefaultMaxBodyBytes,
-		rateBurst:        DefaultRateBurst,
-		ratePerSec:       DefaultRatePerSec,
-		ctrlRateBurst:    DefaultRateBurst,
-		ctrlRatePerSec:   DefaultRatePerSec,
-		maxInFlight:      DefaultMaxInFlight,
-		maxTurnsCeiling:  agentruntime.DefaultMaxTurns,
-		trajWriteTimeout: DefaultTrajectoryWriteTimeout,
-		trajMaxConns:     DefaultMaxTrajectoryConns,
-		now:              time.Now,
+		maxBodyBytes:               DefaultMaxBodyBytes,
+		rateBurst:                  DefaultRateBurst,
+		ratePerSec:                 DefaultRatePerSec,
+		ctrlRateBurst:              DefaultRateBurst,
+		ctrlRatePerSec:             DefaultRatePerSec,
+		readRateBurst:              DefaultReadRateBurst,
+		readRatePerSec:             DefaultReadRatePerSec,
+		maxInFlight:                DefaultMaxInFlight,
+		maxTurnsCeiling:            agentruntime.DefaultMaxTurns,
+		trajWriteTimeout:           DefaultTrajectoryWriteTimeout,
+		trajMaxConns:               DefaultMaxTrajectoryConns,
+		trajMaxConnsPerReader:      DefaultMaxTrajectoryConnsPerReader,
+		planMaxPending:             DefaultPlanMaxPending,
+		planMaxPendingPerSubmitter: DefaultPlanMaxPendingPerSubmitter,
+		planMaxGenerations:         DefaultPlanMaxGenerations,
+		maxAcceptedConns:           DefaultMaxAcceptedConns,
+		now:                        time.Now,
 	}
 	for _, o := range opts {
 		o(&cfg)
@@ -467,7 +695,7 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 	// por lembrança de passar uma opção). Um nó sem soberania configurada (SovereignReadRegions
 	// nil) mantém o read-path legado — a regra é fixa, a topologia é condicional (deferido).
 	readGov := cfg.readGov
-	if readGov == nil && node.WORM != nil {
+	if readGov == nil && noTemGateSoberanoDeLeitura(node) {
 		switch {
 		case node.SovereignAuthority != nil:
 			// AOS-205: a FONTE DE AUTORIDADE (rotação+auditoria) e — quando composta — a
@@ -488,13 +716,19 @@ func NewAPIHandler(svc *NodeService, node *Node, opts ...APIOption) (http.Handle
 		readGov.saude = &svc.seloWORM
 	}
 	h := &apiHandler{
-		svc:         svc,
-		node:        node,
-		cfg:         cfg,
-		bucket:      newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
-		ctrlBucket:  newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
-		controlMTLS: cfg.controlMTLSCAPath != "",
-		readGov:     readGov,
+		svc:        svc,
+		node:       node,
+		cfg:        cfg,
+		bucket:     newTokenBucket(cfg.rateBurst, cfg.ratePerSec, cfg.now),
+		ctrlBucket: newTokenBucket(cfg.ctrlRateBurst, cfg.ctrlRatePerSec, cfg.now),
+		readBucket: newTokenBucket(cfg.readRateBurst, cfg.readRatePerSec, cfg.now),
+		// AOS-459: um mapa nil aceita LEITURAS mas faz panic na ESCRITA, e a escrita está no caminho
+		// de pedido. Composto aqui, e a reserva por-leitor trata o nil como «sem repartição» para
+		// que um `apiHandler` construído à mão em teste não morra — o mesmo compromisso, e a mesma
+		// razão, da guarda nil de [tokenBucket.allow].
+		trajPorLeitor: make(map[string]int),
+		controlMTLS:   cfg.controlMTLSCAPath != "",
+		readGov:       readGov,
 	}
 
 	mux := http.NewServeMux()
@@ -521,12 +755,90 @@ type submitRequest struct {
 	Scope        []string `json:"scope,omitempty"`
 	System       string   `json:"system,omitempty"`
 	MaxTurns     int      `json:"max_turns,omitempty"`
+	// Tools é a lista-branca de tools do run (AOS-413, ADR-027): o nome de cada tool que o run
+	// pode chamar. AUSENTE (ou `null`) ⇒ sem restrição além do token. PRESENTE e vazia (`[]`) ⇒
+	// nenhuma tool. Um run que é o trabalho de um nó de um plano do `aos-orq` traz aqui as tools
+	// pinadas desse nó — `[]` quando o nó não tem nenhuma.
+	Tools []string `json:"tools,omitempty"`
+	// Inputs são os payloads que o PLANO declarou que este nó consome (AOS-414). Vão ao tail
+	// como segmentos `plan_input` marcados `taint=untrusted`, com a proveniência nos rótulos —
+	// NUNCA como objectivo, que é trusted. Ausente ⇒ nada muda.
+	Inputs []planInputWire `json:"inputs,omitempty"`
+	// PlanRequest liga o run ao PEDIDO DE PLANO de que é trabalho (AOS-439): `{run_id, generation}`.
+	// NÃO traz o submissor — o nó deriva-o do seu próprio log da fila, depois de verificar que o
+	// chamador tem a reclamação viva dessa geração (submissor_do_plano.go). Ausente ⇒ nada muda.
+	PlanRequest *vinculoAoPedido `json:"plan_request,omitempty"`
 }
+
+// planInputWire é a representação de wire de um payload consumido (AOS-414). O `digest` é
+// `sha256:<hex>` do `content` e o nó VERIFICA-O: não é confiança no conteúdo (que é untrusted
+// de qualquer modo), é integridade — o que o plano publicou como referência tem de ser o que
+// chega ao consumidor.
+type planInputWire struct {
+	From    string `json:"from"`
+	Output  string `json:"output"`
+	Digest  string `json:"digest"`
+	Content string `json:"content"`
+}
+
+// Limites do canal de entrada (AOS-414): contam ANTES de o run existir, como o tecto de turnos.
+const (
+	maxPlanInputs = 16
+	// maxPlanInputBytes é o tecto de UM payload, e maxPlanInputsBytes o do conjunto. O agregado
+	// é o que conta: o corpo do pedido tem o seu tecto (DefaultMaxBodyBytes) e, sem este, 16
+	// payloads no tecto individual davam 413 na fronteira — um erro sobre o TAMANHO DO CORPO,
+	// que não diz a quem opera o que se passou.
+	maxPlanInputBytes   = 128 << 10
+	maxPlanInputsBytes  = 512 << 10
+	maxPlanInputNameLen = 128
+	planInputDigestAlgo = "sha256:"
+)
 
 // submitResponse devolve o RunID hospedado (201).
 type submitResponse struct {
 	RunID  string `json:"run_id"`
 	Status string `json:"status"`
+}
+
+// validarPlanInputs verifica os payloads do plano e converte-os para o Goal. Devolve a mensagem
+// de erro (vazia quando está tudo bem) — a fronteira recusa antes de o run existir:
+//
+//   - contrato completo (`from`/`output`), senão o segmento não tem proveniência para mostrar;
+//   - digest `sha256:<hex>` que BATE com o conteúdo — integridade do que o plano publicou;
+//   - tectos de número e tamanho, para um payload não engolir a janela do modelo.
+func validarPlanInputs(wire []planInputWire) ([]agentruntime.PlanInput, string) {
+	if len(wire) == 0 {
+		return nil, ""
+	}
+	if len(wire) > maxPlanInputs {
+		return nil, "inputs acima do tecto"
+	}
+	out := make([]agentruntime.PlanInput, 0, len(wire))
+	total := 0
+	for _, in := range wire {
+		if in.From == "" || in.Output == "" {
+			return nil, "input sem contrato (from/output)"
+		}
+		if len(in.From) > maxPlanInputNameLen || len(in.Output) > maxPlanInputNameLen {
+			return nil, "contrato do input acima do comprimento maximo"
+		}
+		if len(in.Content) > maxPlanInputBytes {
+			return nil, "input acima do tamanho maximo"
+		}
+		total += len(in.Content)
+		if total > maxPlanInputsBytes {
+			return nil, "inputs acima do tamanho agregado maximo"
+		}
+		if !strings.HasPrefix(in.Digest, planInputDigestAlgo) {
+			return nil, "input sem digest sha256"
+		}
+		soma := sha256.Sum256([]byte(in.Content))
+		if !hmac.Equal([]byte(hex.EncodeToString(soma[:])), []byte(strings.TrimPrefix(in.Digest, planInputDigestAlgo))) {
+			return nil, "digest do input nao corresponde ao conteudo"
+		}
+		out = append(out, agentruntime.PlanInput{From: in.From, Output: in.Output, Digest: in.Digest, Content: []byte(in.Content)})
+	}
+	return out, ""
 }
 
 // handleSubmit é o INGRESSO do plano de dados com ADMISSION (achado nº5): (1) rate-limit
@@ -553,6 +865,47 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "run_id em falta")
 		return
 	}
+	// ESPAÇO DE NOMES INTERNO RESERVADO (AOS-417). O Event Store tem UM espaço de nomes de
+	// streams, e o `run_id` de um run É o seu stream: sem esta recusa, um run pode nomear um
+	// stream interno do nó — por exemplo a fila de pedidos de plano — e os seus eventos
+	// (`run.state.transition`, `turn.recorded`) são apensos LÁ DENTRO, onde um consumidor que
+	// não filtre por `type` os lê como se fossem o conteúdo da fila. Ver [runIDReservado] em
+	// plan_ingress.go: a reserva tem de ser imposta nas DUAS portas de submissão, porque uma
+	// reserva que só metade das portas respeita não é uma reserva.
+	if runIDReservado(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id reservado")
+		return
+	}
+	// AOS-424: o `run_id` É o nome de um stream, e nem todo o texto o pode ser.
+	//
+	// Esta guarda esteve DESLIGADA nesta rota, e a razão está registada: o `plan.ValidNodeID`
+	// admite `.` e `:` num `node_id`, o `childRunID` compõe `<run>~<node_id>`, e o executor de
+	// nós submete esse id POR AQUI — validar partia os planos cujos nós usassem esses
+	// caracteres, em produção.
+	//
+	// **Deixou de partir.** O `childRunID` passou a ESCAPAR o `node_id` (ADR-029 §3, saída 2):
+	// o id do run filho é agora sempre um `stream_id` válido, sem mexer no que o planeador pode
+	// emitir. A razão que bloqueava esta guarda desapareceu, e a guarda liga-se.
+	if runIDInvalido(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id invalido")
+		return
+	}
+	// Uma entrada vazia na lista-branca não restringe nada e não é um nome de tool: recusa, em
+	// vez de a aceitar como se fosse uma restrição.
+	for _, t := range req.Tools {
+		if t == "" {
+			writeError(w, http.StatusBadRequest, "tools com entrada vazia")
+			return
+		}
+	}
+	// AOS-414: os payloads do plano. Fail-closed na fronteira — um digest que não bate é um
+	// payload que não é o que o plano publicou, e um input sem contrato não tem proveniência
+	// que mostrar ao modelo.
+	inputs, ierr := validarPlanInputs(req.Inputs)
+	if ierr != "" {
+		writeError(w, http.StatusBadRequest, ierr)
+		return
+	}
 
 	// SOBERANIA — RESIDÊNCIA DO RUN na CRIAÇÃO (AOS-182, DEF-202). Em modo SOBERANO (gate de
 	// leitura composto) a região de residência do run é ESTABELECIDA aqui a partir da resolução
@@ -567,6 +920,22 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// Região do submissor, retida para a decisão de colisão de run_id mais abaixo. Vazia ⇒ modo
 	// legado (sem gate soberano), onde a colisão continua a responder 201 uniforme.
 	var submitterRegion string
+	// AOS-439/440: o SUBMISSOR do plano de que o run é trabalho (derivado pelo nó, nunca do corpo)
+	// e a credencial verificada na porta — de onde saem o mandato e o agente do run.
+	var (
+		requestedBy       string
+		credDoRun         identity.Principal
+		credDoRunVerifica bool
+		// AOS-477: o vínculo ao pedido foi verificado — a condição para o run declarar a origem.
+		vinculoVerificado bool
+	)
+	// SEM GATE SOBERANO NÃO HÁ VÍNCULO (AOS-439). O vínculo exige um chamador autenticado — é ele
+	// que tem de ter a reclamação viva —, e um nó sem gate não autentica ninguém. Aceitar o campo
+	// e ignorá-lo seria correr o run como se o submissor tivesse sido verificado.
+	if req.PlanRequest != nil && h.readGov == nil {
+		writeError(w, http.StatusForbidden, "nao autorizado")
+		return
+	}
 	if h.readGov != nil {
 		submitter, ok := h.readGov.authorize(r)
 		if !ok {
@@ -596,6 +965,98 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "nao autorizado")
 			return
 		}
+		// AOS-428 — A CREDENCIAL DO RUN VERIFICA-SE AQUI, DEPOIS DE AUTENTICAR QUEM CHAMA E
+		// ANTES DE QUALQUER ESCRITA DURÁVEL.
+		//
+		// # O DEFEITO QUE ISTO FECHA
+		//
+		// Esta rota copiava `req.Credential` para o `Goal` e mais nada. A verificação acontecia no
+		// hook `identity` do Reference Monitor — na PRIMEIRA CHAMADA MEDIADA. Uma credencial
+		// malformada, expirada, de emissor desconhecido ou revogada dava `201`: o run era criado,
+		// selava residência no WORM, tomava lease, consumia estado durável — e morria com
+		// `denied_by=identity` por uma razão conhecível no primeiro milissegundo.
+		//
+		// # A POSIÇÃO É O DESENHO, E A PRIMEIRA VERSÃO TINHA-A ERRADA
+		//
+		// A primeira tentativa pôs esta guarda ANTES do [readGovernance.authorize], com o
+		// argumento de que era o ponto mais cedo sem rasto durável. Uma revisão adversarial
+		// mediu o que isso criava: um ORÁCULO DE VALIDADE DE CREDENCIAL ACESSÍVEL SEM
+		// AUTENTICAÇÃO. Um chamador anónimo distinguia, num só pedido, «este token ainda vive
+		// neste nó» (recusa da governação) de «este token morreu» (recusa da credencial) — que
+		// é exactamente o que quem apanha um token roubado quer saber.
+		//
+		// Aqui, quem não se autentica nunca chega a esta linha: para ele a resposta é sempre a
+		// mesma 403 do `authorize`. E continua ANTES da selagem de residência, que é a primeira
+		// escrita durável — uma recusa não deixa selo de um run que nunca vai existir.
+		//
+		// # PORQUÊ ACRESCENTAR E NÃO MOVER
+		//
+		// O `Verify` cobre oito dos nove predicados de recusa do hook. O nono — a fronteira de
+		// ESCOPO por capability — só é decidível na chamada, porque a capability ainda não
+		// existe aqui. Esta guarda é ADICIONAL; o `rmadapter` continua a decidir o escopo.
+		//
+		// E não queima o token: o `Verify` CONSULTA a revogação, não marca uso. Se consumisse o
+		// `jti`, verificar na porta faria da primeira tool call um falso replay.
+		var motivo string
+		credDoRun, credDoRunVerifica, motivo = credencialDoRunVerificadaNoNo(r.Context(), h.node, req.Credential)
+		if motivo != "" {
+			// A MESMA 403 do `authorize`, e não um código próprio. Um status diferente é, ele
+			// próprio, o bit que vaza: distinguiria «credencial morta» de «não autorizado» para
+			// quem sonda. As sentinelas ficam no log, com o submissor nomeado — o que só é
+			// possível porque esta guarda corre DEPOIS do `authorize`.
+			h.credRecusadas.Add(1)
+			h.logf("submit RECUSADO (AOS-428): credencial do run nao verifica submissor=%q run=%q: %s",
+				submitter.principal, req.RunID, motivo)
+			// A PROVA, e não só a contagem (AOS-435). A recusa mantém-se aconteça o que acontecer
+			// ao selo — ver `recusa_de_credencial_selo.go` para o porquê de ser best-effort, e de
+			// ser atribuída ao SUBMISSOR e não ao principal do token que não verificou.
+			if serr := h.readGov.selarRecusaDeCredencial(r.Context(), submitter, req.RunID, motivo); serr != nil {
+				h.logf("submit RECUSADO (AOS-435): o SELO da recusa nao foi gravado run=%q: %v — "+
+					"a recusa mantem-se e a metrica conta-a; falta a prova tamper-evidente", req.RunID, serr)
+			}
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
+
+		// AOS-439 — O SUBMISSOR DO PLANO, DERIVADO PELO NÓ. Depois da credencial (quem não a tem
+		// válida já saiu), antes da primeira escrita durável (a selagem da residência). A recusa é
+		// a MESMA 403, e a causa fica no log.
+		if req.PlanRequest != nil {
+			rb, verr := h.submissorDoPedido(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
+			if verr != nil {
+				h.logf("submit RECUSADO (AOS-439): vinculo ao pedido de plano chamador=%q run=%q plano=%q geracao=%d: %v",
+					submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.Geracao, verr)
+				writeError(w, http.StatusForbidden, "nao autorizado")
+				return
+			}
+			requestedBy, vinculoVerificado = rb, true
+		}
+		// AOS-439 — O MANDATO DA CREDENCIAL TEM DE NOMEAR O SUBMISSOR. Um mandato v2 só autoriza o
+		// emissor a agir pelos `requesters` que o humano assinou; um run sem submissor derivado,
+		// sob um v2, também é recusado. O v1 foi decidido pela janela de migração no `Verify`.
+		if credDoRunVerifica {
+			if merr := credDoRun.MandateAdmitsRequester(requestedBy); merr != nil {
+				h.credRecusadas.Add(1)
+				h.logf("submit RECUSADO (AOS-439): submissor fora do mandato chamador=%q run=%q requested_by=%q: %v",
+					submitter.principal, req.RunID, requestedBy, merr)
+				if serr := h.readGov.selarRecusaDeCredencial(r.Context(), submitter, req.RunID, merr.Error()); serr != nil {
+					h.logf("submit RECUSADO (AOS-439): o SELO da recusa nao foi gravado run=%q: %v", req.RunID, serr)
+				}
+				if requestedBy == "" {
+					// Sem vínculo, a recusa é a uniforme: o chamador não provou nada sobre o pedido.
+					writeError(w, http.StatusForbidden, "nao autorizado")
+					return
+				}
+				// Com o vínculo verificado, o chamador é o drenador com a reclamação viva do pedido e
+				// o portador do mandato que o recusa — o código não lhe diz nada que ele não tenha, e
+				// é o que permite ao `aos-orq` fechar o pedido como TERMINAL em vez de o retentar.
+				writeJSON(w, http.StatusForbidden, map[string]string{
+					"error": "submissor fora do mandato", "code": codigoRequerenteForaDoMandato,
+				})
+				return
+			}
+		}
+
 		if err := h.readGov.sealResidency(r.Context(), submitter, req.RunID); err != nil {
 			writeError(w, http.StatusServiceUnavailable, "indisponivel")
 			return
@@ -623,8 +1084,30 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		Scope:      req.Scope,
 		System:     req.System,
 		MaxTurns:   req.MaxTurns,
+		// AOS-413: a lista-branca do run, imposta na mediação de cada tool call.
+		AllowedTools: req.Tools,
+		// AOS-414: os payloads do plano, já verificados contra o digest declarado.
+		Inputs: inputs,
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
+	// AOS-439: quem pediu o run, para o selo de cada decisão. Vazio num run que não é de um plano.
+	goal.Principal.RequestedBy = requestedBy
+	// AOS-440: o TITULAR DOS DADOS de um run filho é o submissor do plano, e não quem chama o nó
+	// (o drenador). Vazio ⇒ o Principal.NHIID, como sempre ([agentruntime.Goal.Titular]).
+	goal.Subject = requestedBy
+	// AOS-440: o agente da credencial VERIFICADA na porta, para a retoma comparar agente com agente
+	// (resume.go, passo 2-quater) — em modo soberano o NHIID é o principal OIDC de quem chama.
+	// Revisão do AOS-439/440: também o HUMANO da raiz e o MANDATO da credencial — a retoma compara os
+	// três, porque o mesmo agente pode ser cunhado para outro humano ou sob outro mandato.
+	if credDoRunVerifica {
+		goal.Principal.AgentID = credDoRun.AgentID
+		goal.Principal.UserID = credDoRun.UserID
+		goal.Principal.MandateID = credDoRun.MandateID
+		// AOS-446 fase 1: e sob QUE CHAVE esse mandato foi aceite. Um `AOS_MANDATE_SIGNERS`
+		// trocado produz um mandato com outro id — mas nada obriga o atacante a mudar o id, e o
+		// que ele NÃO consegue reproduzir é a impressão do pino.
+		goal.Principal.MandateSigner = credDoRun.MandateSigner
+	}
 
 	// (3) SUBMETE ao loop de serviço. O ctx do pedido governa SÓ a aquisição do lease; o run
 	// sobrevive ao retorno (é cancelado só por Shutdown).
@@ -666,8 +1149,28 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 			return
 		}
+		// QUOTA POR PRINCIPAL (AOS-457): 429 com Retry-After até à reposição (00:00 UTC do dia 1).
+		// Os números da recusa vão para o log do operador e NÃO para o corpo: dizem quanto um
+		// principal gastou, e o corpo desta rota é uniforme de propósito.
+		var qe *quotaEsgotadaError
+		if errors.As(err, &qe) {
+			h.svc.log("POST /runs %q recusado pela quota por principal: %v", req.RunID, err)
+			w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(qe.faltam.Seconds())), 10))
+		}
 		writeError(w, submitErrorStatus(err), "submissao recusada")
 		return
+	}
+	// AOS-477 — O RUN DECLARA A SUA ORIGEM, num campo. Só aqui: depois de ESTA chamada o ter
+	// hospedado (ver [declararOrigemDoRunFilho] para o porquê de não ser antes) e só com o vínculo
+	// verificado. Uma falha a gravar NÃO desfaz o run, que já corre: fica no log do operador, e o
+	// run fica sem a declaração — a recondução volta a ser por nome, como antes deste ticket.
+	//
+	// SOB UM CONTEXTO QUE O CLIENTE NÃO CANCELA, com prazo próprio (o molde do `control_seal.go`).
+	// Com o `r.Context()`, um cliente que desligasse ou esgotasse o prazo depois do `Submit` deixava
+	// o run sem origem — e o retry desse cliente cai na re-submissão idempotente, que não a volta a
+	// escrever.
+	if req.PlanRequest != nil && vinculoVerificado {
+		h.gravarOrigemDoRunFilho(r.Context(), req.RunID, *req.PlanRequest)
 	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }
@@ -700,6 +1203,13 @@ func submitErrorStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, ErrServiceShuttingDown):
 		return http.StatusServiceUnavailable
+	case errors.Is(err, ErrPrincipalQuotaExhausted):
+		// 429: recusa por quota, não erro do pedido nem avaria do nó (AOS-457).
+		return http.StatusTooManyRequests
+	case errors.Is(err, ErrCallerInFlightCeiling):
+		// 429 como o tecto GLOBAL, e pela mesma razão: é uma recusa por saturação, não um erro
+		// do pedido. O corpo é uniforme; o log do operador nomeia qual dos dois tectos mordeu.
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusInternalServerError
 	}
@@ -1163,12 +1673,22 @@ type readinessProber interface {
 // métricos — disponibilidade, saúde de dependências, saturação de recursos (USE) — eram
 // indetectáveis a partir do nó em execução. Conjunto inicial produzível SEM instrumentar o
 // kernel: gauges de saúde/dependência (o gap exato do achado) + runtime Go. As latências de
-// request (mediation_overhead_p95) exigem histogramas instrumentados no kernel — follow-up. O
+// request continuam a exigir histogramas instrumentados no kernel — follow-up ainda aberto. O
+// caso do `mediation_overhead_p95`, que esta nota citava como exemplo, deixou de o ser: o
+// Reference Monitor instrumenta a janela da POLÍTICA e publica-a em
+// `aos.mediation.policy_latency_ns` (AOS-398/AOS-401, ADR-026), pelo que esse SLI passou a
+// derivar de uma medida do kernel e não de um proxy. O
 // corpo NÃO revela RunIDs/contagens sensíveis (coerente com a filosofia não-enumerável).
 func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 	g := func(name, help string, typ string, val float64, labels string) {
 		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s %s\n%s%s %g\n", name, help, name, typ, name, labels, val)
+	}
+	// amostra escreve UMA amostra a mais de uma família JÁ declarada por `g`. O `# HELP` e o
+	// `# TYPE` aparecem uma vez por família e só uma: repeti-los faz o Prometheus rejeitar o
+	// payload INTEIRO, e é isso que o TestMetricsRespeitaOFormatoDeExposicao impõe.
+	amostra := func(name, labels string, val float64) {
+		fmt.Fprintf(&b, "%s%s %g\n", name, labels, val)
 	}
 	b01 := func(ok bool) float64 {
 		if ok {
@@ -1206,6 +1726,17 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if pend, ok := shredPendingOf(h.node.DSARVault); ok {
 		g("aos_dsar_vault_shred_unconfirmed", "Destruicoes de KEK (crypto-shred) por CONFIRMAR na custodia; >0 mantem o no unready e o conteudo pode continuar recuperavel.", "gauge", float64(pend), "")
 	}
+	// AOS-436: a QUARTA causa do `aos_dsar_vault_ready` a 0 — os apagamentos por reconciliar com
+	// a custódia depois de um restauro (ou o registo de apagamentos por escrever). Mesmo
+	// raciocínio do contador acima: o corpo do /readyz é uniforme, e sem esta série um nó
+	// restaurado vermelho por uma KEK ressuscitada que não se deixou destruir era
+	// indistinguível de um token a expirar. Só sai quando a custódia é reconciliável.
+	if a, ok := h.node.DSARVault.(interface{ apagamentosFault() error }); ok {
+		g("aos_dsar_erasure_reconciled", "Apagamentos DSAR reconciliados com a custodia da KEK e registo de apagamentos escrito (1) ou por provar (0); 0 mantem o no unready - uma KEK destruida pode ter voltado com um restauro de backup.", "gauge", b01(a.apagamentosFault() == nil), "")
+	}
+	if b, ok := h.node.DSARVault.(interface{ kekBloqueadas() int }); ok {
+		g("aos_dsar_erasure_blocked_keys", "KEKs ressuscitadas que o portao da custodia mantem FECHADAS (destruicao nao confirmada, idade por verificar ou legal hold); nada se decifra nem se escreve sob elas.", "gauge", float64(b.kekBloqueadas()), "")
+	}
 
 	// aos_ready espelha o veredito do /readyz — AS QUATRO condições: drain, Event Store,
 	// custódia da KEK e a hash-chain do WORM a ACEITAR ESCRITAS. É o SLI de disponibilidade a
@@ -1238,6 +1769,64 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// não-autenticado e a filosofia não-enumerável do nó vale para ele — o drill-down por trace
 	// fica no log estruturado do serviço, junto do runbook.
 	h.writeSLOMetrics(&b)
+
+	// FILA DE PEDIDOS DE PLANO (AOS-423) — «alguém está a drenar?»
+	//
+	// O tecto de pendentes recusa submissões a partir de [DefaultPlanMaxPending] (ou do valor
+	// afinado), e uma guarda sem
+	// sensor é o defeito que o AOS-422 mediu: o operador descobre o problema quando o ingresso
+	// começa a devolver 503, e não antes. Estas duas séries dão-lhe a curva.
+	//
+	// São DUAS e não uma, porque leem-se de maneira diferente e exigem acções diferentes:
+	//
+	//   reclamavel=0                    ⇒ a rota de reclamação RECUSA (501, sem gate soberano):
+	//                                     ninguém PODE drenar, e compor o gate é a acção
+	//   reclamavel=1, pendentes a subir ⇒ a rota serve mas ninguém a chama, ou o consumidor não
+	//                                     acompanha: procurar o `aos-orq consume`
+	//   reclamavel=1, pendentes estável ⇒ o regime normal
+	//
+	// A profundidade custa uma projecção do stream. É o mesmo custo que o tecto já paga por
+	// submissão, e paga-se aqui só quando alguém raspa — o `/metrics` não é um caminho quente.
+	// Um erro a ler NÃO publica um zero: publicar zero por não saber é a mentira que faz o
+	// painel ficar verde sobre uma fila cheia.
+	g("aos_plan_queue_claimable", "Rota de reclamacao da fila de pedidos de plano a servir (1) ou a recusar 501 (0).",
+		"gauge", b01(h.readGov != nil), "")
+	if h.node != nil && h.node.EventStore != nil {
+		if pendentes, _, _, err := pendentesNaFila(r.Context(), h.node.EventStore, nil, "", ""); err == nil {
+			g("aos_plan_queue_pending", "Pedidos de plano por drenar (submetidos, sem desfecho terminal e sem reclamacao viva).",
+				"gauge", float64(pendentes), "")
+			// O TECTO EM VIGOR, e não a constante: desde o AOS-464 ele é afinável
+			// (`AOS_PLAN_MAX_PENDING`), e publicar o default sobre um nó afinado faria o operador
+			// comparar a curva com um limite que o nó dele não tem.
+			g("aos_plan_queue_ceiling", "Tecto a partir do qual o ingresso recusa pedidos novos com 503.",
+				"gauge", float64(h.cfg.planMaxPending), "")
+			// A REPARTIÇÃO, e 0 quando NÃO está em vigor — que é o que o operador precisa de
+			// distinguir. Sem gate soberano de leitura ela não se compõe (o principal do pedido fica
+			// vazio para todos), e publicar o valor configurado aí faria o painel afirmar uma
+			// equidade que não existe. Ver [handlePlanRequest].
+			porSubmissor := 0
+			if h.readGov != nil && h.readGov.cred != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+				porSubmissor = h.cfg.planMaxPendingPerSubmitter
+			}
+			g("aos_plan_queue_ceiling_per_submitter", "Tecto de pedidos por drenar POR SUBMISSOR a partir do qual o ingresso recusa com 429; 0 = reparticao NAO composta.",
+				"gauge", float64(porSubmissor), "")
+			g("aos_plan_queue_refused_total", "Submissoes de plano RECUSADAS pelo tecto GLOBAL da fila (503). A subir significa que ninguem esta a drenar.",
+				"counter", float64(h.recusasDaFilaGlobal.Load()), "")
+			g("aos_plan_queue_refused_per_submitter_total", "Submissoes de plano RECUSADAS pela quota do SUBMISSOR (429). A subir com aos_plan_queue_pending BAIXO significa um chamador a enfileirar sem drenar, nao um no sem consumidor.",
+				"counter", float64(h.recusasDaFilaPorSubmissor.Load()), "")
+		}
+	}
+
+	// LIGAÇÕES ACEITES (AOS-465). O tecto sem estas séries seria uma guarda sem sensor: o operador só
+	// daria por ele quando os clientes começassem a ver ligações despejadas ou a esperar.
+	if h.cfg.ligacoes != nil {
+		g("aos_api_connections_open", "Ligacoes TCP abertas no listener da API nesta replica. No tecto, cada ligacao nova DESPEJA a que espera pelo cliente ha mais tempo, esperando no maximo 250 ms por uma candidata madura; so espera mais enquanto todas estiverem a fazer trabalho do servidor.",
+			"gauge", float64(h.cfg.ligacoes.abertas.Load()), "")
+		g("aos_api_connections_evicted_total", "Ligacoes DESPEJADAS pelo tecto de ligacoes aceites para dar lugar a uma nova. A subir depressa com poucos pedidos servidos e sinal de ligacoes a segurar vagas sem as usar.",
+			"counter", float64(h.cfg.ligacoes.despejadas.Load()), "")
+		g("aos_api_connections_ceiling", "Tecto de ligacoes abertas no listener da API (AOS_API_MAX_CONNS).",
+			"gauge", float64(h.cfg.maxAcceptedConns), "")
+	}
 
 	// Runtime Go (USE): saturação de recursos do processo.
 	g("aos_goroutines", "Goroutines em execucao.", "gauge", float64(runtime.NumGoroutine()), "")
@@ -1319,7 +1908,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				"counter", float64(h.svc.ciclosDeBackup.Load()), "")
 			g("aos_backup_export_failures_total", "Ciclos de exportacao FALHADOS desde o arranque (fail-open: nao afectam os runs).",
 				"counter", float64(h.svc.backupFalhas.Load()), "")
-			g("aos_backup_scheduler_stopped", "O agendador PAROU definitivamente por erro permanente (violacao de soberania ou colisao de referencia no destino) (1). Nao volta sozinho.",
+			g("aos_backup_scheduler_stopped", "O agendador PAROU definitivamente por erro permanente (violacao de soberania, cadeia com outro dono, registo de ciclo que nao verifica, colisao de conteudo na ref do segmento, ou log atras do cursor da cadeia) (1). Nao volta sozinho.",
 				"gauge", b01(h.svc.backupParado.Load()), "")
 			// A JANELA EFECTIVA DE RPO, medida pelo próprio exportador: quanto tempo passou desde
 			// que o backup confirmou estar em dia com o head do Store. É o número que o critério
@@ -1375,6 +1964,23 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 					"gauge", time.Since(time.Unix(v.ultimo, 0)).Seconds(), "")
 			}
 		}
+
+		// AOS-422 — O QUE A VARREDURA SALTOU, e porque é que isto precisa de existir.
+		//
+		// O AOS-411 fez um run VIVO deixar de contar como órfão. Isso calou o ruído certo — e
+		// calou a prova: a passagem periódica só escreve no log quando encontra órfãos
+		// verdadeiros, pelo que a guarda a funcionar é, no log, indistinguível de não ter
+		// corrido. O `aos_orphan_sweeps_total` já diz que correu; estes dizem o que protegeu.
+		//
+		// SÓ DEPOIS DA PRIMEIRA PASSAGEM. Um `0` num nó que nunca varreu leria-se como «varreu
+		// e não havia nada», que é a mentira simétrica — a mesma regra do bloco acima. Depois
+		// da primeira passagem, `0` é um zero VERDADEIRO e conta como amostra.
+		if h.svc.passagensOrfaos.Load() > 0 {
+			g("aos_orphan_live_skipped_total",
+				"Runs VIVOS que a varredura de orfaos SALTOU por terem dono, desde o arranque (AOS-411). A label `dono` diz onde: `esta_replica` (no registo de em-curso deste processo) ou `outra_replica` (lease ainda valido). Um run vivo NAO e orfao: nao e retomado, nao conta como falha, e nao se lhe leem as capturas por-titular.",
+				"counter", float64(h.svc.vivosSaltadosAqui.Load()), `{dono="esta_replica"}`)
+			amostra("aos_orphan_live_skipped_total", `{dono="outra_replica"}`, float64(h.svc.vivosSaltadosNoutra.Load()))
+		}
 	}
 
 	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.
@@ -1422,6 +2028,39 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		g("aos_mediation_record_failures_total", "Registos de mediacao pos-decisao que FALHARAM a gravacao duravel desde o arranque. A PROVA do deny/escalate perdeu-se; a negacao aconteceu a mesma (o efeito ficou bloqueado). POR PROCESSO — um restart repoe.",
 			"counter", float64(h.node.Runtime.Metrics().RecordFailures()), "")
 	}
+
+	// CREDENCIAIS RECUSADAS NA PORTA — a série que a correcção do AOS-428 tinha deixado em falta.
+	//
+	// COMO SE LÊ: um valor que sobe devagar é ruído normal (tokens expirados de clientes com o
+	// relógio atrasado, retomas tardias). Um DEGRAU é o sinal — alguém a tentar submeter com
+	// credenciais que não verificam, em volume. Foi exactamente isso que deixou de ser visível
+	// quando a verificação passou do hook do RM para a porta: antes produzia um
+	// `MediationRecord` selado; depois, só uma linha de log sujeita à rotação do Docker.
+	//
+	// O QUE ESTA SÉRIE NÃO É: um registo de auditoria. Não diz QUEM nem QUANDO, e não é
+	// tamper-evidente. Fecha a detecção, não a prova — o registo durável continua declarado como
+	// resíduo do AOS-433, e tem uma dificuldade própria que vale a pena nomear: não se pode
+	// atribuir o facto ao principal da CREDENCIAL, porque foi ela que não verificou. Atribuível
+	// é o SUBMISSOR autenticado pelo gate soberano, que é outra coisa e tem de ser decidida.
+	// STREAMS SSE VIVOS (AOS-459). Sem esta série o operador tem DOIS tectos para afinar
+	// (`AOS_TRAJECTORY_MAX_CONNS` e `..._PER_READER`) e nenhuma leitura de quantos lugares estão
+	// ocupados — afinar às cegas.
+	//
+	// SENSOR DE QUÊ, depois do AOS-460 (corrigido pelo AOS-461): esta prosa dizia «uma recusa
+	// por-leitor TEM de devolver o lugar global, senão N recusas esgotam o tecto do nó». Desde o
+	// AOS-460 a repartição corre ANTES do incremento global, pelo que uma recusa por-leitor **nunca
+	// toma** o lugar global e o invariante nomeado ficou sem sujeito. O que a métrica vigia hoje é o
+	// inverso: uma recusa do tecto GLOBAL tem de devolver o lugar que já tomou, senão N recusas
+	// esgotam o tecto do nó sem uma única ligação viva. Essa lacuna era anterior ao AOS-460 — a
+	// mutação que remove o `trajConns.Add(-1)` passava a suite inteira — e fechou no AOS-461: ver
+	// [TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal], que a detecta 5/5. O
+	// [TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal] passa hoje por construção e mantém-se por outra
+	// razão, declarada no seu godoc.
+	g("aos_trajectory_streams_active", "Streams SSE de trajectoria VIVOS nesta replica. Comparar com AOS_TRAJECTORY_MAX_CONNS: perto do tecto, novas ligacoes levam 429. POR PROCESSO.",
+		"gauge", float64(h.trajConns.Load()), "")
+
+	g("aos_ingress_credential_denials_total", "Pedidos RECUSADOS a porta por a credencial do run nao verificar (POST /runs e POST /runs/{id}/resume) desde o arranque. Um DEGRAU sugere uso de credenciais roubadas ou caducadas em volume. POR PROCESSO — um restart repoe. NAO e auditoria: nao diz quem nem quando.",
+		"counter", float64(h.credRecusadas.Load()), "")
 
 	// RUNS À ESPERA DE UM HUMANO — a única paragem do nó que é DELIBERADA, e a única que não
 	// dava sinal nenhum.
@@ -2117,7 +2756,7 @@ func (h *apiHandler) admitControlMTLS(w http.ResponseWriter, r *http.Request) bo
 // (status, ok): ok=false com 413 quando o corpo excede o limite (achado nº5), ou 400 num
 // JSON malformado. O corpo limitado protege o ingresso de ser vector de exaustão.
 func (h *apiHandler) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) (int, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, h.cfg.maxBodyBytes)
+	r.Body = http.MaxBytesReader(semVigia(w), r.Body, h.cfg.maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
@@ -2176,6 +2815,17 @@ func newTokenBucket(capacity, refillRate float64, now func() time.Time) *tokenBu
 // allow consome um token se houver; devolve false quando o bucket está vazio (⇒ 429). Um
 // bucket de capacidade <= 0 é interpretado como SEM limite (sempre permite).
 func (b *tokenBucket) allow() bool {
+	// BALDE NIL NÃO LIMITA, e a guarda existe por uma razão concreta (AOS-458): desde que a
+	// admission de taxa do plano de DADOS passou a correr no INVÓLUCRO da rota, um `apiHandler`
+	// composto à mão — como dezenas de testes o fazem — alcança `allow()` com o balde a nil, e um
+	// nil deref no caminho de pedido é pior do que a ausência de tecto.
+	//
+	// O QUE IMPEDE ISTO DE SER UM FAIL-OPEN EM PRODUÇÃO: [NewAPIHandler] compõe SEMPRE os três
+	// baldes, e [TestAOS458OsTresBaldesMORDEMNumHandlerDoConstrutor] fixa-o. Um handler de produção
+	// nunca chega aqui com nil; um handler de teste que chegue não é o de produção.
+	if b == nil {
+		return true
+	}
 	if b.capacity <= 0 {
 		return true
 	}
@@ -2216,6 +2866,9 @@ type APIServer struct {
 	// listener verifica o certificado de cliente (VerifyClientCertIfGiven) e os handlers de
 	// controlo recusam sem cadeia verificada. Exposto para diagnóstico/banner.
 	controlMTLS bool
+	// maxLigacoes / ligacoes: o tecto do listener e o contador partilhado com a métrica (AOS-465).
+	maxLigacoes int
+	ligacoes    *ligacoesAceites
 }
 
 // NewAPIServer compõe o handler ([NewAPIHandler]) e um http.Server com timeouts endurecidos.
@@ -2223,13 +2876,19 @@ type APIServer struct {
 // dos ficheiros montados e monta uma [tls.Config] ENDURECIDA — fail-closed: um par inválido ou
 // uma config TLS incompleta abortam ([ErrBadTLSKeyPair]/[ErrIncompleteTLSConfig]).
 func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, error) {
+	// O contador nasce AQUI, antes do handler, para o listener e a métrica apontarem para o mesmo.
+	ligacoes := &ligacoesAceites{}
+	opts = append(append([]APIOption{}, opts...), withLigacoesAceites(ligacoes))
 	handler, err := NewAPIHandler(svc, node, opts...)
 	if err != nil {
 		return nil, err
 	}
-	var cfg apiConfig
+	cfg := apiConfig{maxAcceptedConns: DefaultMaxAcceptedConns, trajMaxConns: DefaultMaxTrajectoryConns}
 	for _, o := range opts {
 		o(&cfg)
+	}
+	if cfg.maxAcceptedConns > 0 && (cfg.trajMaxConns <= 0 || cfg.trajMaxConns >= cfg.maxAcceptedConns) {
+		return nil, fmt.Errorf("%w (ligacoes=%d, sse=%d)", ErrConnCeilingNotAboveSSE, cfg.maxAcceptedConns, cfg.trajMaxConns)
 	}
 	// O WriteTimeout do http.Server é um deadline POR-LIGAÇÃO (anti slowloris). A rota de
 	// trajectória SSE anula-o para si própria (transporte fail-safe); os restantes handlers
@@ -2245,6 +2904,8 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       DefaultIdleTimeout,
 	}
+	// O despejo do tecto de ligações (AOS-465) precisa de saber que ligações estão a ser servidas.
+	ligarAoServidor(httpSrv)
 
 	// TERMINAÇÃO TLS NO NÓ (AOS-209). Precedência sobre a declaração externa: se o nó termina
 	// TLS, não há terminação "a montante" a declarar. Fail-closed em três frentes: só um
@@ -2290,6 +2951,8 @@ func NewAPIServer(svc *NodeService, node *Node, opts ...APIOption) (*APIServer, 
 		tlsEnabled:  tlsEnabled,
 		externalTLS: externalTLS,
 		controlMTLS: controlMTLS,
+		maxLigacoes: cfg.maxAcceptedConns,
+		ligacoes:    ligacoes,
 	}, nil
 }
 
@@ -2447,7 +3110,16 @@ func (s *APIServer) listen(addr string) (net.Listener, error) {
 			addr, err)
 		return nil, err
 	}
-	return net.Listen("tcp", addr)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	// TECTO DE LIGAÇÕES ACEITES (AOS-465). Embrulha o listener TCP e fica POR BAIXO do TLS, que o
+	// `ServeTLS` põe por cima: conta ligações TCP, não sessões TLS.
+	if s.maxLigacoes > 0 {
+		ln = limitarLigacoes(ln, s.maxLigacoes, s.ligacoes)
+	}
+	return ln, nil
 }
 
 // Shutdown encerra o http.Server graciosamente.
@@ -2583,8 +3255,22 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "ha um prompt de exaustao de orcamento POR RESPONDER neste run (pending_exhaustion em GET /runs/{id}) — decida em "+exhaustionDecisionRoute+" (\""+exhaustionOptionContinue+"\" ou \""+exhaustionOptionAbort+"\", assinado por operador registado) antes de retomar; sem decisao, o TTL de pendentes expira a pergunta e a retoma volta a ser aceite")
 	case errors.Is(err, ErrResumeUnavailable):
 		writeError(w, http.StatusNotImplemented, "retoma indisponivel (four-eyes nao composto)")
+	case errors.Is(err, ErrResumeCredencialNaoVerifica):
+		// 403 e não 400: o corpo está bem formado, o que não passa é a autoridade. É a mesma
+		// resposta que o `POST /runs` dá a uma credencial que não verifica (AOS-428), e a
+		// uniformidade é deliberada — duas rotas que fazem a mesma verificação não devem
+		// distinguir-se pela resposta.
+		h.credRecusadas.Add(1)
+		h.logf("resume RECUSADO (AOS-433): %v", err)
+		writeError(w, http.StatusForbidden, "nao autorizado")
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
+	case integration.RegistoDeRetomaRecusado(err):
+		// 409 como o ErrNoResumeRecord (AOS-069): o registo existe e foi RECUSADO por não ser o
+		// que o Put do nó escreveria — um conflito com o estado do run, não uma falha interna.
+		// A causa (o nome do sentinela) vai ao log do operador; ao cliente, uma frase fechada.
+		h.svc.log("retoma do run %q RECUSADA: registo de retoma adulterado ou divergente: %v", runID, err)
+		writeError(w, http.StatusConflict, "registo de retoma recusado (nao e o que o no escreveu) — nao e reconstituivel")
 	case errors.Is(err, ErrResumeNeedsEmitter):
 		// 403, e NOMEANDO o que falta (AOS-292). Não é 404 uniforme porque não há nada a
 		// esconder — quem pede já provou conhecer o run com uma credencial válida — e não é

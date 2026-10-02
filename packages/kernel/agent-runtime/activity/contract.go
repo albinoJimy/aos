@@ -7,6 +7,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/saga"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
 // StatusOK é o Status memorizado por omissão no ledger para uma activity aplicada
@@ -78,6 +79,14 @@ type Activity struct {
 	// o adaptador de engine / evolução do evento de ledger; ver doc.go, "Âncora de
 	// identidade: step_id".)
 	StepID string
+	// ParentStepID é o passo pai da call (o turno que a pediu), PROPAGADO ao
+	// [referencemonitor.Call] para o evento de mediação o gravar em `parent_step_id` — a
+	// ligação de auditoria entre a tool call e o turno. Até AOS-454 a Activity não o tinha
+	// e, num nó com AOS_DURABLE_EXECUTION=1, o evento saía sem ele. É rasto, não
+	// autorização: NÃO entra na idempotency key (é (RunID, StepID)) nem na impressão da
+	// acção (ToolID, Input) — dois despachos do mesmo passo com pais diferentes são o
+	// MESMO efeito lógico.
+	ParentStepID string
 	// ToolID identifica a tool registada no RM (o efeito externo). Default-deny: uma
 	// tool não registada é negada.
 	ToolID string
@@ -91,8 +100,7 @@ type Activity struct {
 	// Input é o payload opaco entregue à tool após permit.
 	Input []byte
 	// Reversibility/Sensitivity/Budget alimentam o [referencemonitor.CallContext] que
-	// a política avalia. O Taint é SEMPRE forçado a untrusted (ADR-005): a intenção de
-	// tool call vem do modelo, logo é untrusted; o campo não é configurável aqui.
+	// a política avalia.
 	Reversibility         string
 	Sensitivity           string
 	BudgetTokensRemaining int64
@@ -123,6 +131,20 @@ type Activity struct {
 	// acreditado até ser verificada. NÃO entra na idempotency key (é (RunID, StepID)) nem
 	// é memorizada no ledger — é material de mediação, como o Credential.
 	ApprovalEvidence []byte
+	// AuthorizationTaint é o taint da AUTORIZAÇÃO da call (ADR-005, ADR-034): o rótulo do
+	// CONTEXTO que o modelo viu no turno que a pediu, cunhado pelo Agent Runtime a partir
+	// do tail e nunca lido da resposta do modelo. É PROPAGADO ao
+	// [referencemonitor.CallContext].Taint, onde o TaintGate o impõe.
+	//
+	// O valor-zero é [taint.Untrusted] — FAIL-CLOSED: uma activity construída sem ele
+	// (um chamador que não o conhece) medeia como untrusted, que era o comportamento de
+	// SEMPRE deste contrato. Até AOS-069 (fase 1 em produção, 2026-09-26) o campo não
+	// existia e `toCall` fixava untrusted: a via durável (AOS_DURABLE_EXECUTION=1)
+	// DEITAVA FORA o rótulo que o loop cunhara, e um `doc_read` pedido num contexto só com
+	// o objectivo era negado por taint no turno 1 — o rótulo trusted do ADR-034 nunca
+	// chegava ao RM de produção. Como o Credential, NÃO entra na idempotency key: é
+	// material de mediação, não de identidade da activity.
+	AuthorizationTaint taint.Label
 }
 
 func (a Activity) validate() error {
@@ -138,18 +160,21 @@ func (a Activity) validate() error {
 	return nil
 }
 
-// toCall traduz a activity num [referencemonitor.Call]. O Taint é SEMPRE untrusted.
+// toCall traduz a activity num [referencemonitor.Call]. O Taint da autorização é o
+// [Activity.AuthorizationTaint] (untrusted por omissão); o RESULTADO continua SEMPRE
+// untrusted (ver [Result.Output]).
 func (a Activity) toCall() referencemonitor.Call {
 	return referencemonitor.Call{
-		RunID:      a.RunID,
-		StepID:     a.StepID,
-		ToolID:     a.ToolID,
-		Capability: a.Capability,
-		Resource:   a.Resource,
-		Principal:  a.Principal,
-		Credential: a.Credential,
+		RunID:        a.RunID,
+		StepID:       a.StepID,
+		ParentStepID: a.ParentStepID,
+		ToolID:       a.ToolID,
+		Capability:   a.Capability,
+		Resource:     a.Resource,
+		Principal:    a.Principal,
+		Credential:   a.Credential,
 		Context: referencemonitor.CallContext{
-			Taint:                 agentruntime.TaintUntrusted,
+			Taint:                 a.AuthorizationTaint.String(),
 			BudgetTokensRemaining: a.BudgetTokensRemaining,
 			Reversibility:         a.Reversibility,
 			Sensitivity:           a.Sensitivity,

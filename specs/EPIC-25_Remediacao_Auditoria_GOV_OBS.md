@@ -304,6 +304,23 @@ chave de assinatura do projecto. Fica para quem a tem; até lá, o banner INERTE
 *Nota (2026-09-07): este bloco `### Estado` tinha ficado por actualizar quando o PR #242 fez merge —
 o mecanismo foi entregue, só a spec não o registou. Corrigido à parte do AOS-365.*
 
+*Nota (2026-09-26, AOS-069 / ADR-034): o critério 6 fica **adiado para a próxima cerimónia de
+chave**, depois da opção C — decisão do dono. A razão mudou de natureza: até à opção C, pôr a
+cláusula `context.taint != "untrusted"` em `allow_fs_read` partiria toda a leitura, porque toda a
+tool call do modelo saía untrusted; com a autorização derivada do contexto, a cláusula passa a ser
+segura (o `doc_read` de um nó cujo contexto só tem o objectivo é trusted). Até à cerimónia,
+`cap:fs.read` é coberta pelo TaintGate quando armada (`AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`,
+o passo de produção seguinte à release registado no AOS-069), e a baseline do gate `policy-taint`
+continua a nomear `allow_fs_read`. Nem o bundle nem as assinaturas foram tocados.*
+
+*A mesma cerimónia tem uma segunda decisão a tomar (ADR-034 §2.6, R8): a região do
+`allow_http_post`. Ela exige `resource.region == "eu"` e a tool committada declara `eu-west` (AOS-407),
+pelo que é a REGIÃO — e não o taint — que hoje mata o `web_post` de contexto limpo. Alinhá-la abre
+`cap:http.post` a contexto limpo; se se alinhar, decide-se no mesmo acto manter `cap:http.post` sempre
+atrás de confirmação humana (proibir, ou pelo menos vigiar, L5 para http).
+`TestAOS069_WebPostEmContextoLimpo_MorreNoPDPPelaRegiao` (`packages/cmd/aos`) avermelha nesse dia de
+propósito.*
+
 ---
 
 ## AOS-364 — `OpenFileStore` apaga fisicamente registos de auditoria válidos, em silêncio, e a verificação de adulteração corre depois da amputação

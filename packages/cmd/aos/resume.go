@@ -31,6 +31,14 @@ var (
 	// ErrResumePrincipalMismatch — a credencial de retoma é de OUTRO principal. A retoma
 	// não é uma via para terceiros continuarem o run de alguém.
 	ErrResumePrincipalMismatch = errors.New("aos: a credencial de retoma nao corresponde ao principal do run")
+	// ErrResumeCredencialNaoVerifica — a credencial de retoma não verifica DE TODO: malformada,
+	// expirada, revogada, de emissor desconhecido.
+	//
+	// É sentinela PRÓPRIA, e não o [ErrResumePrincipalMismatch], porque o resíduo que isto fecha
+	// tinha razão no que dizia: «transformar "não consegui verificar" em "não és tu" diria uma
+	// coisa diferente da que se sabe». O argumento era sobre o TIPO DE ERRO — e era bom. O que
+	// não se seguia dele era deixar passar.
+	ErrResumeCredencialNaoVerifica = errors.New("aos: a credencial de retoma nao verifica")
 	// ErrResumeUnavailable — o nó não tem o registo de retoma composto (sem four-eyes).
 	ErrResumeUnavailable = errors.New("aos: retoma indisponivel (four-eyes nao composto)")
 	// ErrExhaustionPromptUnanswered — o run tem um PROMPT DE EXAUSTÃO por responder (AOS-263)
@@ -183,22 +191,105 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	// `POST /autonomy/simular` (ver [readGovernance.podeLerRun]) e foi verificada antes de escrever
 	// esta linha.
 	//
-	// RESIDUAL DECLARADO: só se recusa a DIVERGÊNCIA. Uma credencial que não verifica de todo não
-	// é recusada aqui — continua a ser negada a jusante, atribuivelmente, e transformar «não
-	// consegui verificar» em «não és tu» diria uma coisa diferente da que se sabe.
-	if v := s.node.Verifier; v != nil && rec.Principal.NHIID != "" {
-		if p, verr := v.Verify(ctx, credential); verr == nil && p.AgentID != rec.Principal.NHIID {
+	// (2-ter) A CREDENCIAL VERIFICA? — o residual deste ficheiro, fechado em AOS-433.
+	//
+	// # O QUE ESTAVA ERRADO, E PORQUE É QUE PASSOU DESPERCEBIDO
+	//
+	// A linha abaixo era `verr == nil && p.AgentID != …`. Quando o `Verify` FALHA, a conjunção
+	// curto-circuita, o corpo do `if` nunca corre, **não há `return`**, e a retoma prossegue: o
+	// run é re-hospedado, toma lease e consome plano de replay com uma credencial malformada,
+	// expirada ou REVOGADA.
+	//
+	// O residual antigo justificava-o com um argumento que era BOM — «transformar "não consegui
+	// verificar" em "não és tu" diria uma coisa diferente da que se sabe». Mas esse argumento é
+	// sobre o TIPO DE ERRO, e dele não se segue deixar passar. Fecha-se com sentinela própria:
+	// diz-se o que se sabe, e recusa-se na mesma.
+	//
+	// # PORQUE É QUE A DEFESA A JUSANTE NÃO CHEGA — E ISTO JÁ ESTAVA ESCRITO AQUI
+	//
+	// O comentário logo acima explica-o: a retoma REPRODUZ os turnos da captura sem reinterrogar
+	// o modelo, pelo que um run cuja acção escalada já não gera nova mediação nunca chega ao hook
+	// de identidade do RM. Era revogação que não revogava.
+	//
+	// # A REGRA É A MESMA DO `POST /runs`, E VEM DA MESMA FONTE
+	//
+	// `credencialDoRunRecusadaNoNo` é a guarda do AOS-428, agora partilhada. Escrever aqui uma
+	// segunda verificação seria a classe de defeito que o AOS-424 encontrou em três cópias.
+	if motivo := credencialDoRunRecusadaNoNo(ctx, s.node, credential); motivo != "" {
+		return fmt.Errorf("%w: run %q: %s", ErrResumeCredencialNaoVerifica, runID, motivo)
+	}
+
+	// (2-quater) E É DE QUEM? A divergência de principal, que já existia e continua.
+	//
+	// # COM QUÊ SE COMPARA (AOS-440)
+	//
+	// Comparava-se o `AgentID` da credencial com o `Principal.NHIID` do registo. Em modo SOBERANO
+	// isso NUNCA batia: o `POST /runs` põe no NHIID o principal OIDC de quem CHAMA o nó (um humano
+	// ou um service account), e o `AgentID` do token é o do AGENTE — dois eixos diferentes, como o
+	// `credencial_do_run.go` já dizia. Todo o run soberano escalado era irretomável com a sua
+	// própria credencial (medido: `TestAOS440RetomaSoberanaComACredencialDoProprioAgente`).
+	//
+	// Desde o AOS-440 o `POST /runs` grava no registo o `AgentID` da credencial que VERIFICOU, e é
+	// com ele que se compara. Um registo que não o tem (anterior, ou de um run sem credencial
+	// verificada na porta) compara com o NHIID, como sempre — o modo não-soberano, onde os dois
+	// coincidem, não muda. RESÍDUO DECLARADO: um run soberano escalado ANTES deste binário continua
+	// irretomável pela mesma razão de antes.
+	esperado := rec.Principal.AgentID
+	if esperado == "" {
+		esperado = rec.Principal.NHIID
+	}
+	if v := s.node.Verifier; v != nil && esperado != "" {
+		if p, verr := v.Verify(ctx, credential); verr == nil {
 			// O mapeamento identidade→NHI é o canónico de `identity/rmadapter.go`
 			// (`NHIID: principal.AgentID`), e não uma segunda regra escrita aqui.
-			return fmt.Errorf("%w: run %q e de %q e a credencial e de %q",
-				ErrResumePrincipalMismatch, runID, rec.Principal.NHIID, p.AgentID)
+			if p.AgentID != esperado {
+				return fmt.Errorf("%w: run %q e de %q e a credencial e de %q",
+					ErrResumePrincipalMismatch, runID, esperado, p.AgentID)
+			}
+			// O AGENTE NÃO CHEGA (revisão do AOS-439/440). O mesmo `agent_id` pode ser cunhado para
+			// OUTRO humano, ou sob OUTRO mandato; comparar só o agente deixava um token do humano B
+			// continuar o run do humano A. O registo guarda, desde esta release, o humano da raiz e
+			// o mandato da credencial verificada no `POST /runs`; cada um compara-se quando existe
+			// no registo — vazio (registo anterior, ou emissor manual sem mandato) mantém o
+			// comportamento de antes.
+			//
+			// CONSEQUÊNCIA DECLARADA: renovar o mandato (outro id) torna os runs suspensos sob o
+			// anterior irretomáveis com os tokens do novo — a retoma exige o mesmo mandato.
+			if rec.Principal.UserID != "" && p.UserID != rec.Principal.UserID {
+				return fmt.Errorf("%w: run %q foi autorizado por %q e a credencial por %q",
+					ErrResumePrincipalMismatch, runID, rec.Principal.UserID, p.UserID)
+			}
+			if rec.Principal.MandateID != "" && p.MandateID != rec.Principal.MandateID {
+				return fmt.Errorf("%w: run %q correu sob o mandato %q e a credencial e do mandato %q",
+					ErrResumePrincipalMismatch, runID, rec.Principal.MandateID, p.MandateID)
+			}
+			// AOS-446 fase 1: e sob a MESMA CHAVE. É a mesma regra, aplicada ao que o `mandate_id`
+			// não cobre: um `AOS_MANDATE_SIGNERS` trocado entre a suspensão e a retoma pode
+			// re-assinar um mandato com o MESMO id (o id é escolhido por quem assina), e sem esta
+			// linha o run continuava sob uma autoridade que não é a que o autorizou.
+			//
+			// CONSEQUÊNCIA DECLARADA, gémea da do mandato: RODAR a chave do humano torna os runs
+			// suspensos sob a anterior irretomáveis. É o preço de a retoma exigir a mesma
+			// autoridade, e o operador escolhe o momento da rotação.
+			if rec.Principal.MandateSigner != "" && p.MandateSigner != rec.Principal.MandateSigner {
+				return fmt.Errorf("%w: run %q correu sob a chave %q e a credencial vem da chave %q",
+					ErrResumePrincipalMismatch, runID, rec.Principal.MandateSigner, p.MandateSigner)
+			}
+		}
+	}
+	// (2-quinquies) O MANDATO DA CREDENCIAL FRESCA TEM DE COBRIR QUEM PEDIU O RUN (AOS-439). A
+	// MESMA regra do `POST /runs`: sem ela, uma retoma com um token de um mandato v2 continuava o
+	// run de um submissor que esse mandato não nomeia.
+	if p, verificada, _ := credencialDoRunVerificadaNoNo(ctx, s.node, credential); verificada {
+		if merr := p.MandateAdmitsRequester(rec.Principal.RequestedBy); merr != nil {
+			return fmt.Errorf("%w: run %q: %v", ErrResumeCredencialNaoVerifica, runID, merr)
 		}
 	}
 
 	// (3) Plano de replay: as respostas do modelo JÁ REGISTADAS, por turno. Sem elas a
 	// retoma reinterrogaria o modelo e a aprovação — amarrada à preview da call original —
-	// nunca se aplicaria.
-	plan, err := s.replayPlanFor(ctx, runID, rec.Principal.NHIID)
+	// nunca se aplicaria. AOS-440: abertas pelo TITULAR, que é sob quem foram seladas.
+	plan, err := s.replayPlanFor(ctx, runID, rec.Titular())
 	if err != nil {
 		return fmt.Errorf("aos: carregar capturas do run %q para a retoma: %w", runID, err)
 	}

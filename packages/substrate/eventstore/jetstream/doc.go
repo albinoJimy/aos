@@ -46,11 +46,10 @@
 //     pedido-por-evento que isto substituiu. O WAL local continua ~4–5 MILHÕES/s: é
 //     memória contra rede, e a diferença é o preço da replicação. Sem cache de eventos —
 //     cada Read vai ao servidor, que é a diferença entre um log partilhado e N cópias.
-//   - SUBSCRIÇÃO SÓ DO NOVO. [Store.Subscribe] cria um consumidor efémero com
-//     deliver_policy "new" — a mesma semântica do modelo de referência, que só faz
-//     fanout do que é escrito depois da subscrição. Não é um consumidor durável: sem
-//     acks, sem flow control, sem heartbeats. É a configuração em que o push foi
-//     MEDIDO, e não se finge cobrir mais.
+//   - SUBSCRIÇÃO SÓ DO NOVO. [Store.Subscribe] fixa o ponto de partida no último seq
+//     do stream no momento da subscrição — a mesma semântica do modelo de referência,
+//     que só faz fanout do que é escrito depois dela. O consumidor é DURÁVEL; ver
+//     «RECONEXÃO AUTOMÁTICA» abaixo para o que isso cobre e o que custa.
 //   - SOBERANIA (AC5, ADR-011): IMPLEMENTADA por `placement` no stream e VERIFICADA
 //     contra a configuração armazenada — ver soberania.go. Sem [ComRegiao] a fronteira
 //     fica DORMENTE (retro-compatível), tal como no store de referência; com ela, um
@@ -71,5 +70,8 @@
 //     LIMITE ACEITE: o consumidor recriado parte do seq fixado na subscrição, logo os
 //     eventos desde então são REENTREGUES. É at-least-once — nada se perde, algumas
 //     coisas repetem-se —, e para um log cuja idempotência é por (run_id, step_id) essa é
-//     a troca certa. O consumidor é R1: se o nó que o aloja morrer, é isto que o cobre.
+//     a troca certa. O consumidor é R1 e o servidor sorteia-lhe o par; se esse nó morrer,
+//     o consumidor fica ÓRFÃO — o servidor não o move, e reafirmá-lo EXPIRA sem resposta.
+//     Essa expiração é o sinal: o consumidor apaga-se e recria-se num par vivo, com a
+//     mesma reentrega (AOS-449, MEDIDO matando o nó do consumidor e não um qualquer).
 package jetstream

@@ -49,7 +49,8 @@ type leafCall struct {
 
 type fakeLeaf struct {
 	calls []leafCall
-	// ops regista a ORDEM de todas as admissões no DAG — "node:<id>" e "edge:<from>-><to>".
+	// ops regista a ORDEM de todas as admissões no DAG — "node:<id>" e "edge:<from>-><to>"
+	// (AOS-476).
 	ops []string
 }
 

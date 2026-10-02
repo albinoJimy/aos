@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
@@ -21,6 +22,15 @@ type Goal struct {
 	// Principal é a NHI que origina o run e a sua cadeia de delegação (ADR-003).
 	// NHIID é obrigatório.
 	Principal referencemonitor.Principal
+	// Subject é o TITULAR DOS DADOS do run (AOS-440): a KEK por-titular sob a qual o conteúdo
+	// não-determinístico (texto do modelo, outputs de tools) é selado — na captura do turno e no
+	// step-ledger — e a que um apagamento DSAR tem de destruir para o tornar ilegível. SEPARADO do
+	// `Principal.NHIID`, que continua a ser o produtor dos eventos e o atributo do span: num run
+	// filho de um plano quem chama o nó é o drenador, e os dados são de quem pediu o plano.
+	//
+	// Vazio ⇒ `Principal.NHIID` ([Goal.Titular]) — o que todos os runs anteriores usaram, e o que
+	// continua a valer para um run que não é trabalho de um plano.
+	Subject string
 	// Credential é o token NHI (AOS-005) que autentica o Principal do run. É
 	// PROPAGADO a cada [referencemonitor.Call] mediada (Credential), onde o hook de
 	// identidade (identity.IdentityCheck) o verifica e resolve a autoridade. Vazio ⇒
@@ -37,12 +47,26 @@ type Goal struct {
 	System string
 	// Tools é o tool set CONGELADO no run (ordem significativa, nunca reordenada).
 	Tools []ToolSpec
+	// AllowedTools é a LISTA-BRANCA de tools (por nome, o `ToolID`) que este run pode chamar
+	// (AOS-413, ADR-027). nil ⇒ sem restrição além do token — o comportamento de sempre.
+	// Não-nil ⇒ uma tool call fora dela é NEGADA antes da mediação, sem despacho; e uma lista
+	// não-nil VAZIA nega TODAS — é o caso de um nó do plano sem tools pinadas, que de outro
+	// modo herdaria as tools de todo o token do run. Existe
+	// para um run que é o trabalho de UM nó de um plano: o nó só pode usar as tools que o
+	// plano lhe pinou, e não as de todo o run que o token autoriza. ESTREITA a autoridade,
+	// nunca a alarga: uma tool na lista continua sujeita a todo o RM.
+	AllowedTools []string
 	// Skills são as skills pinadas do run (vão ao manifesto).
 	Skills []ToolSpec
 	// Objective é a instrução inicial (semeia o tail append-only, trusted).
 	Objective string
 	// MemoryContext é o contexto de memória injectado no tail (ver EPIC-04).
 	MemoryContext []byte
+	// Inputs são os payloads que o PLANO declarou que este nó consome (AOS-414): produto de
+	// outros runs, entregue por quem submete. Entram no tail como segmentos
+	// [TailPlanInput], marcados `taint=untrusted` e com a proveniência do contrato. Vazio ⇒
+	// nada muda no prompt (um run que não é nó de um plano nunca os tem).
+	Inputs []PlanInput
 	// MaxTurns limita o nº de iterações (0 ⇒ [DefaultMaxTurns]).
 	MaxTurns int
 
@@ -70,6 +94,9 @@ type Result struct {
 	TotalUsage Usage
 	// TotalCostMicroUSD é o custo agregado do run em micro-USD inteiro.
 	TotalCostMicroUSD int64
+	// CustoNaoDerivado diz que pelo menos um turno do run não teve custo derivado (AOS-406):
+	// TotalCostMicroUSD é então uma soma sem fonte, não o custo do run.
+	CustoNaoDerivado bool
 	// ToolResults são TODOS os resultados de tools despachadas, na ordem de
 	// despacho, cada um marcado untrusted (ADR-005).
 	ToolResults []Tainted
@@ -169,6 +196,20 @@ type CallRewriter func(referencemonitor.Call) (referencemonitor.Call, error)
 // modelo malformados). Nenhum efeito ocorre.
 const CodeEffectRewrite = "E_EFFECT_REWRITE"
 
+// PlanInput é um payload consumido de outro nó do plano (AOS-414, ADR-022 §2.3): o contrato
+// que o declara (nó de origem e nome do output), o digest do conteúdo e o conteúdo. É SEMPRE
+// untrusted no prompt; o digest serve a integridade, não a confiança.
+type PlanInput struct {
+	From    string
+	Output  string
+	Digest  string
+	Content []byte
+}
+
+// CodeToolOutsideRunAllowlist é o Code de Deny quando a tool call não está na lista-branca
+// [Goal.AllowedTools] do run (AOS-413). Como no [CodeEffectRewrite], nada é despachado.
+const CodeToolOutsideRunAllowlist = "E_TOOL_OUTSIDE_RUN_ALLOWLIST"
+
 // WithCallRewriter injecta o [CallRewriter]. Default: nenhum (Call inalterada).
 func WithCallRewriter(r CallRewriter) Option { return func(rt *Runtime) { rt.callRewriter = r } }
 
@@ -235,6 +276,35 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 	return rt
 }
 
+// openWindow constrói a janela do run JÁ decorada com o rótulo de autoridade (ADR-034). É o
+// único sítio que vê a janela da fábrica; fail-closed: sem janela não há prompt a montar.
+func (rt *Runtime) openWindow(goal Goal) (*authorityWindow, error) {
+	w, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrWindow, err)
+	}
+	return newAuthorityWindow(w), nil
+}
+
+// Titular devolve o titular dos dados do run: [Goal.Subject], ou o `Principal.NHIID` quando vazio
+// (AOS-440). É a ÚNICA regra — a captura, o step-ledger (pela Activity), o registo de retoma e o
+// selo terminal perguntam-lha a ela.
+func (g Goal) Titular() string {
+	if g.Subject != "" {
+		return g.Subject
+	}
+	return g.Principal.NHIID
+}
+
+// callPrincipal é o Principal que o loop põe em cada tool call: o do Goal, com o titular DERIVADO
+// (AOS-440). É por ele que o titular atravessa a via durável até ao step-ledger — a Activity leva o
+// Principal inteiro —, sem que a porta da Activity tenha de mudar.
+func (g Goal) callPrincipal() referencemonitor.Principal {
+	p := g.Principal
+	p.Subject = g.Titular()
+	return p
+}
+
 // validate verifica pré-condições do run.
 func (rt *Runtime) validate(goal Goal) error {
 	switch {
@@ -269,9 +339,15 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// tail append-only e da montagem cache-estável à [WindowPort] — há UM só assembler /
 	// prefix-hash por run (o da janela). Fail-closed: sem janela não há prompt a montar.
 	// O default ([inlineWindow]) reproduz o PromptAssembler + tail inline byte-a-byte.
-	win, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools)
+	//
+	// AUTORIZAÇÃO DERIVADA DO CONTEXTO (AOS-069, ADR-034): o loop só conhece a janela
+	// decorada, que junta o rótulo de cada segmento ao do contexto. É daqui — e não da
+	// resposta do modelo — que sai o taint da autorização de cada tool call. A janela de
+	// baixo nunca tem nome neste âmbito ([Runtime.openWindow]): um Append que a contornasse
+	// não é escrevível sem se ver.
+	win, err := rt.openWindow(goal)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %w", ErrWindow, err)
+		return Result{}, err
 	}
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
@@ -333,8 +409,19 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	//
 	// Um rótulo aqui seria pior do que a ausência dele: leria como se o envenenamento de
 	// memória estivesse tratado.
+	//
+	// Na AUTORIDADE a memória já conta (ADR-034): o segmento `memory` torna o contexto
+	// untrusted, FAIL-CLOSED, pelo que nenhuma tool call privilegiada pode ser pedida depois
+	// dele. Isso não é a defesa contra o envenenamento — é só a garantia de que memória sem
+	// proveniência verificada não autoriza nada.
 	if len(goal.MemoryContext) > 0 {
 		win.Append(TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
+	}
+	// AOS-414: os payloads do plano ANTES do objectivo — primeiro o material sobre o qual se
+	// trabalha (untrusted), depois a instrução (trusted). A ordem é a mesma do par
+	// resultado-de-tool → turno seguinte, e mantém o objectivo como o último a falar.
+	for _, in := range goal.Inputs {
+		win.Append(tailFromPlanInput(in))
 	}
 	if goal.Objective != "" {
 		win.Append(TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})
@@ -353,6 +440,10 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// (1) MONTAR — prompt cache-estável (prefixo imutável + tail append-only). A
 		// janela é o dono único do assembler: um só prefix-hash por run.
 		view := win.Assemble(ctx, turn)
+		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
+		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
+		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
+		turnAuthority := win.authority()
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseAssembled); err != nil {
 			return res, err
 		}
@@ -406,6 +497,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.TotalUsage.InputTokens += resp.Usage.InputTokens
 		res.TotalUsage.OutputTokens += resp.Usage.OutputTokens
 		res.TotalCostMicroUSD += resp.CostMicroUSD
+		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
 		// Gravar o turno com o manifesto por trajectória.
 		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), stepID, turn, view, resp, producer)
@@ -417,22 +509,21 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, err
 		}
 
-		// Histórico do turno no tail append-only (o prefixo nunca muda). A saída do
-		// modelo é untrusted-por-construção — marcada com a mesma proveniência dos
-		// resultados de tool (consistência de auditoria, ADR-005).
+		// Histórico do turno no tail append-only (o prefixo nunca muda). No PROMPT, a saída
+		// do modelo leva `taint=untrusted` — a mesma marcação de proveniência dos resultados
+		// de tool (consistência de auditoria, ADR-005). Na AUTORIDADE, herda o rótulo do
+		// contexto que a produziu ([SegmentAuthority]): não o eleva nem o baixa.
 		//
-		// SEPARAÇÃO DE PLANOS (dual-LLM/CaMeL) — DIFERIDA (AOS-069). O conteúdo
-		// untrusted (esta saída do modelo e os resultados de tool abaixo) é acrescentado
-		// INLINE ao tail que asm.Assemble transforma no prompt do próximo turno; NÃO
-		// passa ainda por [SeparatePlanes]/[ControlPlanner]/[Quarantine]. A defesa activa
-		// no loop base é o default fail-closed do [referencemonitor.TaintGate]: nenhuma
-		// call é marcada trusted por omissão, logo uma acção privilegiada influenciada
-		// por injecção é BLOQUEADA (ver taint_plane_test.go). A barreira estrutural "o
-		// planeador só vê trusted + handles" existe como primitivo (taint_plane.go) mas o
-		// seu wiring à montagem de prompt do loop é DIFERIDO para o ticket de integração
-		// de superfície (EPIC-12), à semelhança das notas de AOS-021/022 em
-		// mediateToolCall e da fronteira de fim-de-turno de AOS-023 — sem ele o
-		// comportamento de AOS-013 permanece inalterado.
+		// O QUE O ADR-034 FECHOU E O QUE NÃO FECHOU. Fechou a AUTORIZAÇÃO: uma tool call
+		// pedida depois de conteúdo untrusted entrar no tail (plan_input, tool_result,
+		// memória) sai com taint untrusted, cunhado aqui a partir do contexto, e o
+		// [referencemonitor.TaintGate] nega-a se a capability for privilegiada. Não fechou a
+		// SEPARAÇÃO DE PLANOS por handle (dual-LLM/CaMeL, opção A): o conteúdo untrusted
+		// continua a entrar INLINE no tail que o modelo lê, e não passa por
+		// [SeparatePlanes]/[ControlPlanner]/[Quarantine]. Essa separação fica DIFERIDA no
+		// DEF-806 (eixo AOS-069), re-escopada a efeitos parametrizados por dados untrusted,
+		// com gatilho: a entrada de uma tool de efeito cujos argumentos venham de conteúdo
+		// untrusted.
 		if resp.Text != "" {
 			win.Append(tailFromHistory(resp.Text))
 		}
@@ -454,9 +545,10 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				Response:    resp,
 				ToolResults: turnCaptured,
 				Producer:    producer,
-				// AOS-093: o TITULAR do run (o principal, ADR-003) sob cuja chave
-				// por-titular o capturer cifra o conteúdo não-determinístico antes do ES.
-				Subject: goal.Principal.NHIID,
+				// AOS-093: o TITULAR do run sob cuja chave por-titular o capturer cifra o
+				// conteúdo não-determinístico antes do ES. AOS-440: o titular dos DADOS
+				// ([Goal.Titular]) — o submissor, num run filho de um plano —, e não o chamador.
+				Subject: goal.Titular(),
 				// AOS-218: a correcção de steer TRUSTED que o turno ANTERIOR injectou no tail
 				// (leading correction deste turno). Vazia nos runs sem steer — captura
 				// byte-idêntica. Capturá-la aqui é o que torna o replay do run steerado fiel.
@@ -467,7 +559,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return nil
 		}
 		for j, inv := range resp.ToolCalls {
-			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv)
+			out, err := rt.mediateToolCall(ctx, goal, stepID, j, inv, turnAuthority)
 			if err != nil {
 				return res, err
 			}
@@ -492,6 +584,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 					ResourceType: out.Call.Resource.Type, ResourceValue: out.Call.Resource.Value,
 					ResourceRegion: out.Call.Resource.Region,
 					Preview:        referencemonitor.ApprovalPreview(out.Call),
+					Principal:      out.Call.Principal,
 				}
 				// A CAPTURA VEM PRIMEIRO: a retoma reproduz os turnos 1..N a partir das
 				// capturas. Sem capturar ESTE turno, o registo de retoma existe mas a
@@ -644,6 +737,9 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 	// torna o cache-hit-rate do prefixo observável por telemetria (AOS-013 CA3).
 	span.SetAttribute(AttrPrefixHash, view.PrefixHash)
 
+	// AOS-394: o run e o passo seguem no ctx até ao ModelClient, para que quem sela a chamada
+	// (os selos de governação do Model Gateway) a ligue ao passo exacto deste turno.
+	chatCtx = ContextWithModelCall(chatCtx, goal.RunID, stepID)
 	resp, err := rt.model.Call(chatCtx, view)
 	if err != nil {
 		span.End()
@@ -656,8 +752,14 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 	// soma sem drift de vírgula flutuante e o que reconcilia com os totais do Model
 	// Gateway; é o mesmo valor já em mão (resp.CostMicroUSD), emitido em paralelo — não é
 	// contabilidade nova, é a exposição exacta do custo que a chat span já registava.
-	span.SetAttribute(AttrCostUSD, microUSDToUSD(resp.CostMicroUSD))
-	span.SetAttribute(AttrCostMicroUSD, resp.CostMicroUSD)
+	if resp.CustoNaoDerivado {
+		// AOS-406: sem fonte de preço não se emite custo nenhum — um `aos.cost.micro_usd` a zero
+		// seria lido como turno gratuito pela agregação e pelo SLI de custo por trajectória.
+		span.SetAttribute(AttrCostUndefined, true)
+	} else {
+		span.SetAttribute(AttrCostUSD, microUSDToUSD(resp.CostMicroUSD))
+		span.SetAttribute(AttrCostMicroUSD, resp.CostMicroUSD)
+	}
 	span.End()
 	return resp, nil
 }
@@ -669,23 +771,25 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 		SystemHash:      systemHash,
 		AssemblyVersion: rt.assemblyVersion,
 		Model: ModelManifest{
-			ModelID: goal.Model.ModelID,
-			Params:  goal.Model.Params,
-			Seed:    goal.Model.Seed,
+			ModelID:       goal.Model.ModelID,
+			ServedModelID: resp.Model,
+			Params:        goal.Model.Params,
+			Seed:          goal.Model.Seed,
 		},
 		Tools:  pinnedDeps(goal.Tools),
 		Skills: pinnedDeps(goal.Skills),
 	}
 	seq, err := rt.recorder.Record(ctx, TurnRecord{
-		RunID:        goal.RunID,
-		StepID:       stepID,
-		Turn:         turn,
-		Manifest:     manifest,
-		Usage:        resp.Usage,
-		CostMicroUSD: resp.CostMicroUSD,
-		ToolCalls:    len(resp.ToolCalls),
-		Final:        resp.Final,
-		Producer:     producer,
+		RunID:            goal.RunID,
+		StepID:           stepID,
+		Turn:             turn,
+		Manifest:         manifest,
+		Usage:            resp.Usage,
+		CostMicroUSD:     resp.CostMicroUSD,
+		CustoNaoDerivado: resp.CustoNaoDerivado,
+		ToolCalls:        len(resp.ToolCalls),
+		Final:            resp.Final,
+		Producer:         producer,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("%w: turno %d: %w", ErrTurnRecord, turn, err)
@@ -702,7 +806,8 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // [ToolDenial]), o erro DA TOOL (dec.ToolErr — não-fatal, para o loop materializar no
 // tail) e o erro FATAL do loop (só cancelamento de contexto). Um erro da tool NÃO é uma
 // negação de política: a decisão foi Permit e o efeito ocorreu, mas a execução
-// downstream falhou (ADR-005 / decision.ToolErr).
+// downstream falhou (ADR-005 / decision.ToolErr). authority é o rótulo do contexto no
+// Assemble do turno que pediu a call (ADR-034) e vai tal e qual para o CallContext.Taint.
 //
 // ADOPÇÃO DO CONTRATO DE ACTIVITY (AOS-021): o despacho passa agora pela porta
 // [ActivityDispatcher] (ver ports.go, AOS-157). O default é Mediate directo (byte-
@@ -710,6 +815,11 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string,
 // apex (activity.Dispatcher sobre rm + durable.StepLedger) acrescenta idempotência/
 // replay pelo step-ledger à volta da MESMA mediação, SEM o loop perder o Credential
 // (AOS-152) nem o taint da autorização — a porta recebe o Call já construído aqui.
+// «Recebe o Call» não bastava: o adaptador durável traduzia-o numa Activity sem o taint e
+// o RM de produção via untrusted em todas as calls (fase 1 do AOS-069, 2026-09-26). O que
+// fixa a propriedade é a paridade entre as duas vias
+// (`TestAOS069_ViaDuravelPreservaOTaintDaAutorizacao`, packages/integration).
+//
 // toolOutcome é o desfecho de UMA tool call mediada, agregado para não multiplicar
 // valores de retorno.
 type toolOutcome struct {
@@ -729,7 +839,7 @@ func (o toolOutcome) escalated() bool {
 	return o.Denial != nil && o.Denial.Effect == string(referencemonitor.EffectEscalate)
 }
 
-func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation) (toolOutcome, error) {
+func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation, authority taint.Label) (toolOutcome, error) {
 	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
 
 	call := referencemonitor.Call{
@@ -743,17 +853,18 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 			Value:  inv.ResourceValue,
 			Region: inv.ResourceRegion,
 		},
-		Principal: goal.Principal,
+		// AOS-440: com o titular derivado — ver [Goal.callPrincipal].
+		Principal: goal.callPrincipal(),
 		// Credential do run propagado à call: é AQUI que o token NHI chega ao hook de
 		// identidade (AOS-152). Vazio ⇒ anónimo ⇒ deny fail-closed sob o hook real.
 		Credential: goal.Credential,
 		Context: referencemonitor.CallContext{
-			// Taint da AUTORIZAÇÃO da call (ADR-005/AOS-069): a proveniência do PLANO
-			// que a originou, não a dos seus dados. Só o control-plane sobre dados
-			// trusted marca trusted (ver [AuthorizeTrusted]); por omissão é untrusted
-			// (fail-closed). O [referencemonitor.TaintGate] impõe: uma autorização
-			// untrusted não pode originar uma capability privilegiada.
-			Taint: authorizationTaintOf(inv),
+			// Taint da AUTORIZAÇÃO da call (ADR-005/AOS-069, ADR-034): o rótulo do CONTEXTO
+			// que o modelo viu no turno que a pediu — cunhado pelo runtime a partir do tail
+			// ([ContextAuthority]), nunca lido da [ToolInvocation], que é saída do modelo. O
+			// [referencemonitor.TaintGate] impõe: uma autorização untrusted não pode originar
+			// uma capability privilegiada.
+			Taint: authority.String(),
 			// A reversibilidade DECLARADA pelo registry. Sem isto o classificador recebe vazio,
 			// trata a acção como irreversível, e toda a tool call sai `danger` — o que colapsa
 			// a taxonomia de autonomia L0–L5 em dois estados.
@@ -773,6 +884,21 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	// emitida e consumida, nunca casava com a acção (observado ao vivo). Fazê-la na
 	// construção elimina a divergência POR CONSTRUÇÃO.
 	//
+	// LISTA-BRANCA DO RUN (AOS-413) — antes da reescrita e da mediação: uma tool fora da
+	// lista não chega a ser construída como efeito. Materializa-se como Deny no tail, como a
+	// reescrita recusada, e não é fatal para o loop.
+	if !toolPermitidaNoRun(goal.AllowedTools, inv.ToolID) {
+		return toolOutcome{
+			Result: Untrusted(nil),
+			Denial: &ToolDenial{
+				Effect:   string(referencemonitor.EffectDeny),
+				Code:     CodeToolOutsideRunAllowlist,
+				DeniedBy: "run_tool_allowlist",
+			},
+			Call: call,
+		}, nil
+	}
+
 	// Fail-closed: uma reescrita que falha (args malformados) NÃO despacha nada e
 	// materializa-se como Deny no tail — não é fatal para o loop.
 	if rt.callRewriter != nil {
@@ -848,6 +974,20 @@ func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep st
 	}, nil
 }
 
+// toolPermitidaNoRun diz se a tool pode ser chamada neste run: sem lista-branca (nil), sim; com
+// ela — mesmo vazia —, só se o nome lá estiver.
+func toolPermitidaNoRun(permitidas []string, toolID string) bool {
+	if permitidas == nil {
+		return true
+	}
+	for _, t := range permitidas {
+		if t == toolID {
+			return true
+		}
+	}
+	return false
+}
+
 // annotateAgentSpan anota o span invoke_agent com o uso e custo agregados.
 func (rt *Runtime) annotateAgentSpan(span Span, res Result) {
 	span.SetAttribute(AttrInputTokens, res.TotalUsage.InputTokens)
@@ -856,6 +996,12 @@ func (rt *Runtime) annotateAgentSpan(span Span, res Result) {
 	// somado pela agregação por trajectória (AOS-078) — duplicaria com os por-turno dos
 	// chats; a agregação conta só spans chat. O inteiro exacto aqui serve o consumidor
 	// que lê o total directamente do invoke_agent.
+	if res.CustoNaoDerivado {
+		// AOS-406: um total com turnos sem fonte de preço não é o custo do run — o agregado sai
+		// marcado e sem número, pela mesma razão do span `chat`.
+		span.SetAttribute(AttrCostUndefined, true)
+		return
+	}
 	span.SetAttribute(AttrCostUSD, microUSDToUSD(res.TotalCostMicroUSD))
 	span.SetAttribute(AttrCostMicroUSD, res.TotalCostMicroUSD)
 }

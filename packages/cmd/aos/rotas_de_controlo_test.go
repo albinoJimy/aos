@@ -178,8 +178,34 @@ func TestClassificacaoDasRotasEDeliberada(t *testing.T) {
 		"GET /readyz":  planoAberto,
 		"GET /metrics": planoAberto,
 
-		"POST /runs":                 planoDados,
-		"GET /runs/{id}":             planoDados,
+		"POST /runs":     planoDados,
+		"GET /runs/{id}": planoDados,
+		// INGRESSO DO CAMINHO DO PLANO (AOS-417). Plano de DADOS, e a escolha é deliberada: um
+		// pedido de plano é uma SUBMISSÃO — entrega um objectivo — e não uma acção sobre um run
+		// existente, que é o que distingue o plano de controlo. Classificá-la como controlo
+		// daria-lhe barreiras que a submissão irmã (`POST /runs`) não tem, sem que o risco o
+		// justifique: o que ela escreve é um pedido na fila, e o gate humano do plano continua
+		// a ser o do `aos-orq`.
+		"POST /plans": planoDados,
+		// AOS-423 / ADR-030 — A RECLAMACAO E MUTANTE E MESMO ASSIM E `planoDados`, e o juizo e este:
+		// o precedente e o `POST /runs`, que CRIA um run, e chamado pelo mesmo `aos-orq` com Bearer
+		// OIDC, e esta classificado dados. Classificar a reclamacao como CONTROLO exigiria assinatura
+		// ed25519 sobre payload canonico com nonce duravel — e o `aos-orq` gera hoje uma chave
+		// EFEMERA por execucao, pelo que seria material criptografico novo em producao, com rotacao e
+		// pinagem. O risco que a classe de controlo fecha e conteudo untrusted virar sinal; uma
+		// reclamacao nao transporta payload do chamador e o que devolve ja estava no log.
+		//
+		// O que ela NAO herda, e por isso e explicito no handler: a proteccao da barra que mantem
+		// `aos-internal/...` fora do alcance de `GET /runs/{id}`. O caminho tem dois segmentos.
+		"POST /plans/claim":   planoDados,
+		"POST /plans/outcome": planoDados,
+		// AOS-430: leitura do estado do pedido DE QUEM PERGUNTA. planoDados porque e LEITURA e
+		// porque a titularidade se compara dentro do handler contra o principal gravado no facto
+		// — nao ha payload do chamador a virar sinal, que e o risco que a classe de controlo fecha.
+		"GET /plans/{id}": planoDados,
+		// AOS-441: o catálogo de tools do nó, lido pelo `aos-orq` para conferir o snapshot. LEITURA
+		// sem payload do chamador e sem dados de titular — nada nela vira sinal.
+		"GET /tools":                 planoDados,
 		"GET /runs/{id}/trajectory":  planoDados,
 		"GET /runs/{id}/reconstruct": planoDados,
 

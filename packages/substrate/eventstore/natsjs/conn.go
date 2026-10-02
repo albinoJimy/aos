@@ -87,14 +87,33 @@ type Msg struct {
 
 // serverInfo é o subconjunto do INFO que este cliente usa.
 type serverInfo struct {
-	Headers    bool `json:"headers"`
-	MaxPayload int  `json:"max_payload"`
+	Headers      bool   `json:"headers"`
+	MaxPayload   int    `json:"max_payload"`
+	AuthRequired bool   `json:"auth_required"`
+	Nonce        string `json:"nonce"`
+}
+
+// connectOpts é o corpo do CONNECT. É serializado por encoding/json, e não concatenado à mão,
+// porque passou a levar valores (a chave pública e a assinatura) — e um valor concatenado num
+// JSON é uma injecção à espera de um carácter inesperado.
+type connectOpts struct {
+	Verbose      bool   `json:"verbose"`
+	Pedantic     bool   `json:"pedantic"`
+	TLSRequired  bool   `json:"tls_required"`
+	Headers      bool   `json:"headers"`
+	NoResponders bool   `json:"no_responders"`
+	Name         string `json:"name"`
+	Lang         string `json:"lang"`
+	Version      string `json:"version"`
+	NKey         string `json:"nkey,omitempty"`
+	Sig          string `json:"sig,omitempty"`
 }
 
 // Conn é uma ligação a um servidor NATS. É segura para uso concorrente.
 type Conn struct {
 	servidores   []string // por onde se tenta reconectar, por ordem
 	prazoLigacao time.Duration
+	credencial   *NKey // nil ⇒ ligação anónima (só dev/CI sem authorization)
 
 	c            net.Conn
 	bw           *bufio.Writer
@@ -137,12 +156,23 @@ func Connect(addr string, timeout time.Duration) (*Conn, error) {
 // replicado existe para dar. O AC1 do AOS-100 («a perda de uma réplica não interrompe
 // escritas») só era verdade se o nó morto não fosse o nosso.
 func ConnectServers(addrs []string, timeout time.Duration) (*Conn, error) {
+	return ConnectServersCom(addrs, timeout, nil)
+}
+
+// ConnectServersCom é [ConnectServers] com credencial nkey (AOS-470). Com `cred` nil a ligação
+// é anónima, e um servidor que exija autenticação é recusado no handshake com
+// [ErrAutenticacao] em vez de aceitar o CONNECT e matar a ligação a seguir.
+//
+// A credencial é a MESMA em todas as reconexões: cada uma assina o nonce NOVO do servidor a
+// que se liga, pelo que uma assinatura capturada não serve para abrir outra sessão.
+func ConnectServersCom(addrs []string, timeout time.Duration, cred *NKey) (*Conn, error) {
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("%w: sem servidores", ErrProtocol)
 	}
 	cn := &Conn{
 		servidores:   append([]string(nil), addrs...),
 		prazoLigacao: timeout,
+		credencial:   cred,
 		writeTimeout: defaultWriteTimeout,
 		subs:         map[string]chan Msg{},
 	}
@@ -189,6 +219,53 @@ func (cn *Conn) ligarA(addr string) error {
 		return fmt.Errorf("%w: o servidor não anuncia suporte de cabeçalhos, e é neles que "+
 			"viajam o expected_seq e a chave de deduplicação — recusado fail-closed", ErrProtocol)
 	}
+	opts := connectOpts{Headers: true, NoResponders: true, Name: "aos-eventstore", Lang: "go", Version: "stdlib"}
+	switch {
+	case cn.credencial != nil && info.Nonce == "":
+		// Há credencial e o servidor não pede nkey: está SEM `authorization`. Ligar assim seria
+		// aceitar em silêncio um cluster onde qualquer um escreve no log — exactamente o que
+		// a credencial veio impedir. A recusa nomeia o lado a corrigir.
+		_ = c.Close()
+		return fmt.Errorf("%w: %s não pede nkey (INFO sem nonce) — o servidor está sem `authorization`, e este cliente tem credencial; recusado fail-closed", ErrAutenticacao, addr)
+	case cn.credencial != nil:
+		opts.NKey, opts.Sig = cn.credencial.Publica(), cn.credencial.assinar(info.Nonce)
+	case info.AuthRequired:
+		_ = c.Close()
+		return fmt.Errorf("%w: %s exige autenticação e este cliente não tem credencial (AOS_EVENTSTORE_NATS_NKEY_FILE)", ErrAutenticacao, addr)
+	}
+	corpo, err := json.Marshal(opts)
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
+
+	// CONNECT e PING SAEM JUNTOS, e o PONG é esperado AQUI, antes de a ligação ser publicada.
+	//
+	// Com verbose=false o servidor não confirma o CONNECT: um servidor que recusa a identidade
+	// responde `-ERR 'Authorization Violation'` e fecha — DEPOIS de Connect ter devolvido
+	// sucesso. Sem o PING, a recusa chegava ao leitor como uma ligação partida, e o cliente
+	// entrava em reconexão infinita com um erro genérico em vez de dizer «credencial recusada».
+	// O PONG é a prova de que o servidor processou o CONNECT e o aceitou.
+	//
+	// E a ligação só fica `ligada` depois dele: até lá, nenhum Request concorrente (de uma
+	// reconexão) pode meter comandos numa sessão que ainda não foi aceite.
+	bw := bufio.NewWriterSize(c, 64*1024)
+	if err := c.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		_ = c.Close()
+		return err
+	}
+	_, err = bw.WriteString("CONNECT " + string(corpo) + "\r\nPING\r\n")
+	if err == nil {
+		err = bw.Flush()
+	}
+	if err != nil {
+		_ = c.Close()
+		return fmt.Errorf("natsjs: enviar CONNECT a %s: %w", addr, err)
+	}
+	if err := esperarPONG(c, br, addr); err != nil {
+		_ = c.Close()
+		return err
+	}
 	if err := c.SetReadDeadline(time.Time{}); err != nil {
 		_ = c.Close()
 		return err
@@ -200,18 +277,44 @@ func (cn *Conn) ligarA(addr string) error {
 	}
 
 	cn.mu.Lock()
-	cn.c, cn.bw, cn.maxFrame, cn.ligada = c, bufio.NewWriterSize(c, 64*1024), maxFrame, true
+	cn.c, cn.bw, cn.maxFrame, cn.ligada = c, bw, maxFrame, true
 	cn.mu.Unlock()
 
-	if err := cn.send(`CONNECT {"verbose":false,"pedantic":false,"tls_required":false,"headers":true,"no_responders":true,"name":"aos-eventstore","lang":"go","version":"stdlib"}` + "\r\n"); err != nil {
-		cn.mu.Lock()
-		cn.ligada = false
-		cn.mu.Unlock()
-		_ = c.Close()
-		return err
-	}
 	go cn.readLoop(br)
 	return nil
+}
+
+// esperarPONG lê, sob o prazo de leitura já armado, até ao PONG que responde ao PING do
+// handshake. Pelo caminho aceita o que um servidor pode legitimamente intercalar (+OK, INFO de
+// topologia, um PING seu); um -ERR é a recusa do CONNECT.
+func esperarPONG(c net.Conn, br *bufio.Reader, addr string) error {
+	for {
+		linha, err := br.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("natsjs: handshake com %s sem PONG: %w", addr, err)
+		}
+		campos := strings.Fields(linha)
+		if len(campos) == 0 {
+			continue
+		}
+		switch strings.ToUpper(campos[0]) {
+		case "PONG":
+			return nil
+		case "+OK", "INFO":
+		case "PING":
+			if _, err := io.WriteString(c, "PONG\r\n"); err != nil {
+				return fmt.Errorf("natsjs: handshake com %s: %w", addr, err)
+			}
+		case "-ERR":
+			msg := firstLine(linha)
+			if m := strings.ToLower(msg); strings.Contains(m, "authorization") || strings.Contains(m, "authentication") {
+				return fmt.Errorf("%w: %s recusou a credencial: %s", ErrAutenticacao, addr, msg)
+			}
+			return fmt.Errorf("natsjs: %s recusou o CONNECT: %s", addr, msg)
+		default:
+			return fmt.Errorf("%w: handshake com %s: esperava PONG, veio %q", ErrProtocol, addr, firstLine(linha))
+		}
+	}
 }
 
 // Close fecha a ligação. Idempotente.

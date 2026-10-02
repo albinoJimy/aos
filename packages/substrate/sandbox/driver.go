@@ -22,10 +22,14 @@ type DriverKind string
 
 const (
 	// DriverFirecracker — microVM Firecracker (fronteira de virtualização de
-	// hardware, mais forte). Skeleton documentado neste ambiente.
+	// hardware, mais forte). Executa no [GuestExecutor] injectado
+	// ([WithFirecrackerExecutor]) — no nó, um orchestrator EXTERNO; sem ele, fail-closed
+	// ([ErrDriverUnavailable]).
 	DriverFirecracker DriverKind = "firecracker"
 	// DriverGVisor — sandbox gVisor (interceptação de syscalls em espaço de
-	// utilizador, mais leve). Skeleton documentado neste ambiente.
+	// utilizador, mais leve). Executa no [GuestExecutor] injectado
+	// ([WithGVisorExecutor]) — no nó, um componente EXTERNO; sem ele, fail-closed
+	// ([ErrGVisorExecutorUnset]).
 	DriverGVisor DriverKind = "gvisor"
 	// DriverFake — driver de referência determinista in-process (testes). Modela
 	// o jail e impõe as invariantes de isolamento; NUNCA usar em produção.
@@ -46,6 +50,36 @@ func seccompEnforcementFor(kind DriverKind) SeccompEnforcement {
 		return SeccompEnforcedByDriver
 	}
 	return SeccompEnforcedByNone
+}
+
+// ExecutionBoundary diz, no evento selado, ONDE uma execução correu (AOS-362 d).
+type ExecutionBoundary string
+
+const (
+	// BoundaryInProcessReference — o modelo de referência in-process ([DriverFake]): impõe
+	// as invariantes do jail, mas a sua fronteira é o PROCESSO do nó, e o resultado não foi
+	// produzido por nenhuma fronteira ao nível do kernel.
+	BoundaryInProcessReference ExecutionBoundary = "in_process_reference"
+	// BoundaryGuestExecutor — a execução foi delegada no [GuestExecutor] injectado (no nó,
+	// o componente externo do Firecracker ou do gVisor).
+	BoundaryGuestExecutor ExecutionBoundary = "guest_executor"
+	// BoundaryUndeclared — um driver que esta tabela não conhece. Não se presume nenhuma
+	// das duas.
+	BoundaryUndeclared ExecutionBoundary = "undeclared"
+)
+
+// executionBoundaryFor é a única fonte da fronteira declarada por driver. Até ao AOS-362
+// um nó de desenvolvimento selava resultados do [DriverFake] no WORM sem nada no evento
+// que os distinguisse de um efeito real, ao contrário do que o AOS-351 fez para o seccomp.
+func executionBoundaryFor(kind DriverKind) ExecutionBoundary {
+	switch kind {
+	case DriverFake:
+		return BoundaryInProcessReference
+	case DriverFirecracker, DriverGVisor:
+		return BoundaryGuestExecutor
+	default:
+		return BoundaryUndeclared
+	}
 }
 
 // Isolation descreve — e o [Launcher] IMPÕE fail-closed — as propriedades de

@@ -185,6 +185,8 @@ stateDiagram-v2
     running --> complete: sucesso
     running --> failed: erro recuperavel
     running --> timed_out: excede wall-clock
+    waiting_on_tool --> timed_out: backstop wall-clock
+    paused --> timed_out: backstop wall-clock
     failed --> compensating: saga rollback
     compensating --> ready: retry idempotente
     complete --> [*]
@@ -192,7 +194,7 @@ stateDiagram-v2
     timed_out --> [*]
 ```
 
-O estado `paused` habilita o controlo bidireccional (steer/interrupt) sem quebrar a durabilidade; o `compensating` adiciona saga de compensação onde os gates só preveniam; e o `timeout fail-closed` do `waiting_on_human` garante que acções irreversíveis não ficam penduradas indefinidamente (ADR-001, ADR-013).
+O estado `paused` habilita o controlo bidireccional (steer/interrupt) sem quebrar a durabilidade; o `compensating` adiciona saga de compensação onde os gates só preveniam; e o `timeout fail-closed` do `waiting_on_human` garante que acções irreversíveis não ficam penduradas indefinidamente (ADR-001, ADR-013). As duas arestas de **backstop** para `timed_out` (AOS-419) dão o mesmo prazo às esperas **não-humanas**: sem elas, `waiting_on_tool` e `paused` não tinham saída para terminal nenhum e um run pendurado ficava suspenso para sempre (ver `tecnica/02` §5.1 e `tecnica/08` §6).
 
 ---
 

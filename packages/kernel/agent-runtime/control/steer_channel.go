@@ -58,7 +58,8 @@ const (
 	// A ACÇÃO entra no payload de propósito: uma assinatura produzida para `hold` não pode ser
 	// reapresentada como `erase`. Está aqui só pelo vocabulário do tuplo — é o `kind` que impede
 	// reutilizar a assinatura de uma revogação ou de uma mudança de autonomia como acção DSAR, e
-	// vice-versa. A destruição que autoriza é a única operação do nó que nenhum restore desfaz,
+	// vice-versa. A destruição que autoriza é a operação do nó que se quer irreversível (desde
+	// AOS-436 o nó re-destrói no arranque a KEK que um restauro de backup traga de volta),
 	// pelo que era a que menos podia ficar autorizada por um mero token de leitura (o defeito que
 	// AOS-367 fecha).
 	SignalDSAR SignalKind = "governance.dsar"
@@ -242,9 +243,16 @@ type SteerChannel struct {
 // ChannelOption configura o [SteerChannel] na construção.
 type ChannelOption func(*SteerChannel)
 
+// DefaultProducerNHI é a identidade de COMPONENTE do canal, gravada no envelope dos
+// eventos de controlo que NÃO têm um emissor humano: `control.correction_consumed` é o
+// loop a ENTREGAR uma correcção, não um operador a dá-la (AOS-478).
+const DefaultProducerNHI = "nhi:kernel/agent-runtime/steer-channel"
+
 // WithProducer define a identidade emissora (NHI + cadeia de delegação) gravada no
-// envelope dos eventos de controlo. É a identidade do CANAL/serviço; a identidade do
-// EMISSOR do sinal individual vai no payload ([Emitter]). Default: Producer zero.
+// envelope dos eventos de controlo SEM emissor autenticado — hoje só
+// `control.correction_consumed`. Os sinais de um operador (`control.pause`, `control.steer`,
+// `control.resume`) levam no envelope o EMISSOR autenticado, além de o levarem no payload
+// ([SteerChannel.producerFor], AOS-478). Default: [DefaultProducerNHI].
 func WithProducer(p eventstore.Producer) ChannelOption {
 	return func(c *SteerChannel) { c.producer = p }
 }
@@ -283,6 +291,9 @@ func NewChannel(store EventStore, auth Authenticator, opts ...ChannelOption) (*S
 	}
 	if c.tracer == nil {
 		c.tracer = agentruntime.NoopTracer{}
+	}
+	if c.producer.NHIID == "" {
+		c.producer.NHIID = DefaultProducerNHI
 	}
 	return c, nil
 }
@@ -399,7 +410,7 @@ func (c *SteerChannel) appendControl(ctx context.Context, runID string, rc *runC
 		Payload:  payload,
 		RunID:    runID,
 		StepID:   stepID,
-		Producer: c.producer,
+		Producer: c.producerFor(rec),
 	})
 	if err != nil {
 		return err
@@ -420,6 +431,21 @@ func (c *SteerChannel) appendControl(ctx context.Context, runID string, rc *runC
 	}
 	rc.nControls++
 	return nil
+}
+
+// producerFor escolhe o `producer` do envelope de um evento de controlo (AOS-478). Um sinal
+// de OPERADOR é um acto atribuível: o envelope leva o emissor que [Authenticator] acabou de
+// verificar — o mesmo `emitter_id` do payload, que até aqui só lá estava. O consumo da
+// correcção é o loop a entregá-la, e leva a identidade do canal; o `emitter_id` do payload
+// continua a ser o autor da correcção entregue.
+//
+// Não entra na reconciliação do dedup (ver [SteerChannel.appendControl]): a identidade do
+// sinal é (kind ‖ emissor ‖ correcção), e o emissor já está nela.
+func (c *SteerChannel) producerFor(rec controlRecord) eventstore.Producer {
+	if rec.Kind != SignalCorrectionConsumed && rec.EmitterID != "" {
+		return eventstore.Producer{NHIID: rec.EmitterID}
+	}
+	return c.producer
 }
 
 // apply dobra um registo de controlo na projecção in-memory. É a MESMA dobra usada por

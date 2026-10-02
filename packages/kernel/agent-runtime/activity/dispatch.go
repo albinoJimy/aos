@@ -9,6 +9,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/saga"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/substrate/eventstore"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -219,14 +220,16 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 	// OUTPUT da tool — sob a KEK POR-TITULAR antes de o persistir, mas só sabe QUEM é o
 	// titular se alguém lho disser: o ledger do nó é composto UMA vez no arranque e o
 	// titular é POR-RUN. Este é o ponto que o conhece (act.Principal), e é o MESMO valor
-	// que o capturer sela (goal.Principal.NHIID em loop.go), pelo que os mesmos bytes
-	// ficam sob a MESMA chave em replay.captured e em step.ledger.applied — e o
-	// crypto-shredding (GDPR Art. 17) alcança ambos ao destruir uma só KEK.
+	// que o capturer sela (goal.Titular() em loop.go, que o loop põe no Principal da call),
+	// pelo que os mesmos bytes ficam sob a MESMA chave em replay.captured e em
+	// step.ledger.applied — e o crypto-shredding (GDPR Art. 17) alcança ambos ao destruir uma
+	// só KEK. AOS-440: é o TITULAR DOS DADOS ([referencemonitor.Principal.Titular]), que num run
+	// filho de um plano é o submissor e não o chamador; vazio ⇒ o NHIID de sempre.
 	//
 	// Sem isto o ledger caía no fallback do produtor (vazio no nó) e persistia o output
 	// da tool EM CLARO no WAL, com o cifrador composto e inerte. O ledger de produção
 	// leva a guarda [durable.WithRequireTitular], que torna esse silêncio impossível.
-	ctx = durable.ContextWithTitular(ctx, act.Principal.NHIID)
+	ctx = durable.ContextWithTitular(ctx, act.Principal.Titular())
 
 	// A verificação already-applied vive DENTRO de Apply (precede o efeito). O efeito
 	// abaixo é a ÚNICA via de execução: constrói o Call e chama Mediate — sem permit,
@@ -243,6 +246,11 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 	// um segundo digest com outra canonicalização divergiria do primeiro, e a divergência
 	// apareceria como recusa espúria numa retoma legítima.
 	fingerprint := otelgenai.CanonicalToolCallHash(act.ToolID, act.Input)
+	// AUTOR DO EFEITO → ENVELOPE DO LEDGER (AOS-478). O `step.ledger.applied` é causado por
+	// esta tool call e identifica o MESMO principal que o selo `tool.call.mediated` do passo:
+	// o que o RM resolveu do token verificado ([referencemonitor.Decision.Principal]), e não o
+	// que o loop apresentou. Só existe depois da mediação, daí a função lida pelo ledger no fim.
+	var autor eventstore.Producer
 	res, applied, err := d.ledger.Apply(ctx, key, func(ctx context.Context) (durable.Result, error) {
 		dec, mErr := d.rm.Mediate(ctx, act.toCall())
 		if mErr != nil {
@@ -260,6 +268,7 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 		if dec.ToolErr != nil {
 			return durable.Result{}, fmt.Errorf("%w: %w", ErrToolExecution, &ToolError{Err: dec.ToolErr})
 		}
+		autor = dec.Principal.EventProducer()
 		// Canal lateral: capta o custo MEDIDO do efeito que ACABOU de correr. Só aqui —
 		// nunca no durable.Result devolvido, que é o que o ledger grava e o replay relê.
 		effectCostMicroUSD = dec.CostMicroUSD
@@ -268,7 +277,7 @@ func (d *Dispatcher) dispatchNormal(ctx context.Context, act Activity, key, keyH
 			status = StatusOK
 		}
 		return durable.Result{Status: status, Payload: dec.Output}, nil
-	}, durable.WithActionFingerprint(fingerprint))
+	}, durable.WithActionFingerprint(fingerprint), durable.WithEffectProducer(func() eventstore.Producer { return autor }))
 	if err != nil {
 		if errors.Is(err, ErrMediationDenied) {
 			span.SetAttribute(AttrDecision, "denied")

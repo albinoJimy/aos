@@ -34,6 +34,20 @@ var (
 	// ErrInvalidRequest — pedido de materialização malformado (run_id/plan_id vazio,
 	// documento sem nós, ou node_id vazio/duplicado).
 	ErrInvalidRequest = errors.New("planmaterialize: pedido de materialização inválido")
+	// ErrGraphDiverges — numa materialização RETOMADA (AOS-476), o grafo durável do run já
+	// tem nós ou arestas que não são os do plano. Fail-closed e DETERMINISTA: o log não muda,
+	// e apresentar o mesmo documento dá sempre o mesmo. Quem diverge é o GRAFO, não o
+	// documento — distinção que o operador precisa de ver para não ir trocar o documento.
+	// [ErrNodeDiverges] e [ErrEdgeDiverges] embrulham-no.
+	ErrGraphDiverges = errors.New("planmaterialize: o grafo durável do run diverge do plano")
+	// ErrNodeDiverges — um nó já durável não é o do plano: outra especificação (tool call,
+	// prioridade, identidade), fora do estado `ready`, ou um nó que o plano não tem.
+	ErrNodeDiverges = fmt.Errorf("%w: nó", ErrGraphDiverges)
+	// ErrEdgeDiverges — uma aresta já durável que o plano não declara (p.ex. invertida).
+	// Detectada ANTES de qualquer escrita: sem isto, a aresta do plano que a fecharia em ciclo
+	// só falhava no `GraphBuilder.AddEdge`, depois dos nós, com um `task.edge.rejected_cycle`
+	// no log.
+	ErrEdgeDiverges = fmt.Errorf("%w: aresta", ErrGraphDiverges)
 	// ErrNodeNotAdmitted — a admissão global (AOS-027/028) recusou um nó. Fail-closed:
 	// o plano APROVADO não materializa parcialmente — a recusa aborta antes de
 	// qualquer spawn/nó (nenhum efeito parcial).
@@ -162,13 +176,21 @@ type LeafNode struct {
 
 // LeafAdmitter é a PORTA de admissão no DAG (AOS-025): os nós (AdmitLeaf produz
 // task.node.created) E as arestas de dependência entre eles (AdmitEdge produz
-// task.edge.added; To depende de From). Ligada pelo wiring a *orchestrator.GraphBuilder
-// (ver adapters.go).
+// task.edge.added; `to` depende de `from`). Ligada pelo wiring a
+// *orchestrator.GraphBuilder (ver adapters.go).
 //
-// As duas metades vivem na MESMA porta de propósito: o contrato do grafo não põe as
-// dependências no `task.node.created` (não há campo Deps), pelo que um wiring capaz de
-// admitir nós sem arestas deixaria o grafo durável a afirmar que o plano não tem
-// dependências — foi o que o E2E de 2026-09-15 mediu.
+// As duas metades vivem na MESMA porta de propósito (AOS-476): o contrato do grafo não
+// põe as dependências no `task.node.created` (não há campo Deps), pelo que um wiring
+// capaz de admitir nós sem arestas deixaria o grafo durável a afirmar que o plano não
+// tem dependências — foi o que o E2E mediu três vezes (2026-09-15, 2026-10-01 local e
+// no `consume.wal` de produção: zero `task.edge.added`).
+//
+// CONTRATO DE RETOMA (AOS-476). A materialização pode ser repetida sobre um grafo onde
+// uma tentativa anterior morreu depois de escrever nós ou arestas e antes de
+// `plan.materialized`. Por isso AdmitLeaf de um nó já admitido com a MESMA especificação
+// devolve nil sem reescrever, e com especificação diferente devolve [ErrNodeDiverges];
+// AdmitEdge de uma aresta já admitida devolve nil. O adaptador de produção cumpre-o (ver
+// adapters.go).
 type LeafAdmitter interface {
 	AdmitLeaf(ctx context.Context, node LeafNode) error
 	AdmitEdge(ctx context.Context, from, to string) error
@@ -296,10 +318,16 @@ type plannedNode struct {
 // planEdge é uma aresta de precedência do plano: `to` depende de `from`.
 type planEdge struct{ from, to string }
 
+// confrontoDaTopologia é a vista OPCIONAL de uma porta [LeafAdmitter] que conhece o grafo
+// durável do run. O adaptador de produção implementa-a; os duplos de teste sem grafo não.
+type confrontoDaTopologia interface {
+	confrontarTopologia(nos []LeafNode, arestas []planEdge) error
+}
+
 // planEdges deriva as arestas de entrada de cada nó — `depends_on` E as origens das
 // arestas condicionais, pela MESMA união que o validador AOS-231 admite no seu DAG
 // ([plan.Node.IncomingEdges]) — em ordem canónica (nós por node_id, origens ordenadas,
-// sem duplicados), e confirma-as num DAG em memória antes de qualquer efeito.
+// sem duplicados), e confirma-as num DAG em memória ANTES de qualquer escrita (AOS-476).
 //
 // A admissão AOS-231 já recusa ciclos e referências soltas; esta confirmação é a segunda
 // linha, para documentos que cheguem por outra porta (replan, migração, edição no gate).
@@ -341,8 +369,8 @@ func planEdges(order []plan.Node) ([]planEdge, error) {
 //     fail-closed ANTES de qualquer efeito (zero materialização parcial);
 //  4. FASE 2 — ADMITE cada nó no DAG como PENDENTE ([LeafAdmitter], task.node.created):
 //     a folha com a sua tool call, o papel-que-expande SEM tool (placeholder); depois
-//     admite as arestas de dependência (task.edge.added). NÃO produz efeito — o spawn do
-//     papel e o arranque da folha são do despacho governado
+//     admite as arestas de dependência (task.edge.added, AOS-476). NÃO produz efeito —
+//     o spawn do papel e o arranque da folha são do despacho governado
 //     (plandispatch.Dispatcher/DispatchSink), disparados por elegibilidade (ADR-024);
 //  5. apensa `plan.materialized` com o mapa node_id → materialização (kind + autoridade
 //     clampada), a fonte de verdade que o sink lê para spawnar.
@@ -374,14 +402,16 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		seen[n.NodeID] = struct{}{}
 	}
 
-	// Arestas do plano, confirmadas ANTES de qualquer efeito (ver [planEdges]).
+	// Arestas do plano, confirmadas ANTES de qualquer escrita (ver [planEdges]): um ciclo
+	// ou uma origem fora do plano aborta aqui, sem admissão global e sem nó nenhum.
 	edges, err := planEdges(order)
 	if err != nil {
 		return empty, err
 	}
 
-	// NOTA (AOS-390, ADR-024): a materialização é ADMISSÃO-PURA e NÃO lê `conditional_on`
-	// — e isso é seguro precisamente porque admitir um nó condicional no DAG não produz
+	// NOTA (AOS-390, ADR-024): a materialização é ADMISSÃO-PURA e NÃO avalia
+	// `conditional_on` — só lhe lê a ORIGEM, como aresta de precedência ([planEdges]) —
+	// e isso é seguro precisamente porque admitir um nó condicional no DAG não produz
 	// efeito nenhum (o guard fail-closed de AOS-389 deixou de ser necessário). O efeito
 	// por-nó é do despacho governado (plandispatch.Dispatcher), que avalia `conditional_on`
 	// e poda `branch_not_taken` antes de qualquer spawn/arranque; um Dispatcher composto
@@ -416,6 +446,34 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 		planned = append(planned, plannedNode{node: n, kind: kind, caps: m.authorityForNode(n)})
 	}
 
+	// O que a FASE 2 escreverá por nó, calculado UMA vez e antes de qualquer escrita: é contra
+	// isto que uma retoma confronta os nós já duráveis.
+	leaves := make([]LeafNode, len(planned))
+	for i, p := range planned {
+		ln := LeafNode{
+			RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
+			Capabilities: p.caps,
+		}
+		if p.kind == plannerevents.SpawnLeaf {
+			if t, ok := m.primaryTool(p.node); ok {
+				ln.ToolID = t.Name
+				ln.Capability = m.mapper(t)
+			}
+		}
+		leaves[i] = ln
+	}
+
+	// RETOMA (AOS-476): se a porta conhece o grafo durável, confronta-o INTEIRO com o plano
+	// ANTES de qualquer escrita — cada nó durável tem de ser um nó do plano com a mesma
+	// especificação e ainda `ready`, cada aresta durável uma aresta do plano. Uma divergência
+	// aborta aqui, sem admissão global e sem nada no log. Confrontar nó a nó só na FASE 2 deixava
+	// escrito o nó que viesse antes do divergente na ordem canónica (medido na revisão).
+	if tc, ok := m.leaf.(confrontoDaTopologia); ok {
+		if err := tc.confrontarTopologia(leaves, edges); err != nil {
+			return empty, err
+		}
+	}
+
 	// FASE 1 — admissão global de TODOS os nós antes de qualquer efeito. Fail-closed.
 	for _, p := range planned {
 		v, err := m.admission.Admit(ctx, AdmitRequest{
@@ -444,30 +502,24 @@ func (m *Materializer) Materialize(ctx context.Context, req Request) (plannereve
 	// `plan.materialized.Nodes[].Tools` — é dali (uma só fonte de verdade) que o sink a
 	// reconstrói para o spawn do papel, com o orçamento estimado do documento.
 	matNodes := make([]plannerevents.MaterializedNode, 0, len(planned))
-	for _, p := range planned {
-		ln := LeafNode{
-			RunID: req.RunID, PlanID: req.PlanID, NodeID: p.node.NodeID, Role: p.node.Role,
-			Capabilities: p.caps,
-		}
-		if p.kind == plannerevents.SpawnLeaf {
-			if t, ok := m.primaryTool(p.node); ok {
-				ln.ToolID = t.Name
-				ln.Capability = m.mapper(t)
-			}
-		}
+	for i, p := range planned {
+		ln := leaves[i]
 		if err := m.leaf.AdmitLeaf(ctx, ln); err != nil {
 			return empty, fmt.Errorf("planmaterialize: admitir nó %q (%s): %w", p.node.NodeID, p.kind, err)
 		}
 		matNodes = append(matNodes, plannerevents.MaterializedNode{NodeID: p.node.NodeID, Kind: p.kind, Tools: p.caps})
 	}
 
-	// As DEPENDÊNCIAS, depois de todos os nós (uma aresta exige as duas pontas). Também são
-	// admissão — ordenação, não efeito (ADR-024 §2). É o `task.edge.added` que as torna
-	// duráveis: `plan.materialized` não as carrega e `task.node.created` não tem campo de
-	// dependências, pelo que sem estes factos o grafo que um dono seguinte re-hidrata (e o
-	// `inspect` lê) diria que os nós são independentes. A porta de produção
-	// (GraphBuilder.AddEdge) volta a impor a aciclicidade contra o grafo DURÁVEL da posse e
-	// regista `task.edge.rejected_cycle` se recusar.
+	// As DEPENDÊNCIAS, depois de todos os nós (uma aresta exige as duas pontas) e antes de
+	// `plan.materialized` (AOS-476). Escrever uma aresta não arranca nem spawna nada, pelo
+	// que a materialização continua sem efeito, como o ADR-024 §2 a define. O ADR só
+	// enumera os NÓS pendentes e o `plan.materialized`; pôr aqui as dependências é decisão
+	// do AOS-476, não do ADR. É o `task.edge.added` que as torna duráveis: `plan.materialized` não as carrega e
+	// `task.node.created` não tem campo de dependências, pelo que sem estes factos o grafo
+	// que um dono seguinte re-hidrata (e o `inspect` lê) diria que os nós são
+	// independentes. A porta de produção (GraphBuilder.AddEdge do grafo re-hidratado da
+	// posse, ADR-023) volta a impor a aciclicidade contra o grafo DURÁVEL e regista
+	// `task.edge.rejected_cycle` se recusar.
 	for _, e := range edges {
 		if err := m.leaf.AdmitEdge(ctx, e.from, e.to); err != nil {
 			return empty, fmt.Errorf("planmaterialize: admitir aresta %s→%s: %w", e.from, e.to, err)

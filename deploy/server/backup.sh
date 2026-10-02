@@ -40,6 +40,24 @@
 #   passo 2b — que ficheiros é que o tar TROUXE MESMO?
 # A primeira apanha o log que se mudou; a segunda apanha o volume que se esvaziou. Nenhuma das
 # duas substitui a outra, e as duas são fail-closed.
+#
+# ─── E O QUE SAI DO BUNDLE, EM CLARO: O REGISTO DE APAGAMENTOS (AOS-436) ────────────────────
+# Este bundle leva o Vault TAL COMO ESTÁ — com as KEKs vivas nesse instante. Restaurá-lo depois de
+# um apagamento DSAR traz a KEK do titular de volta, e o WORM do mesmo bundle nem sabe que o
+# apagamento aconteceu. Nada DENTRO do bundle pode cobrir isto: é o bundle inteiro que recua.
+#
+# Por isso o registo de apagamentos do nó (`aos/apagamentos-dsar.txt`) é copiado TAMBÉM para FORA
+# do bundle, em claro, como `backups/apagamentos-<stamp>.txt`. Cada linha é `<id> <instante> <mac>`,
+# com id e mac HMAC sob a chave do nó (`aos/apagamentos-dsar.txt.chave`) — que fica SÓ dentro do
+# bundle cifrado e NUNCA sai daqui em claro: sem ela, o registo não diz quem foi apagado nem se
+# deixa forjar. A recolha leva o mais recente; ao restaurar um bundle MAIS ANTIGO, importa-se antes
+# de arrancar o nó, e o nó destrói de novo o que ele diz destruído.
+#
+# O QUE ISTO NÃO COBRE, dito sem arredondar: esta cópia é tirada do MESMO tar e no MESMO instante que
+# o bundle. Para «perdi o host, restauro o último bundle» não acrescenta nada — o último bundle já
+# sabe o mesmo. Só ajuda quem restaura um bundle ANTERIOR ao último (o último está estragado, ou quer
+# voltar a um ponto antes de um deploy mau). Os apagamentos feitos depois do último backup não estão
+# em cópia nenhuma.
 
 set -Eeuo pipefail
 
@@ -140,8 +158,20 @@ log "  $(wc -c < "${WORK}/idp-db.sql") bytes"
 # escrito em ficheiros pequenos; a janela de inconsistência existe mas é estreita. Não se para o
 # nó para copiar 700 KB.
 log "2/4 volumes"
-docker run --rm -v aos_aos-data:/aos:ro -v aos_vault-data:/vault:ro -v "${WORK}":/out alpine:3.20 \
-  tar czf /out/volumes.tar.gz -C / aos vault 2>/dev/null || fail "tar dos volumes falhou"
+# O volume do orquestrador `aos-orq` (AOS-403) guarda os WAL dos runs multi-nó e o WORM de
+# governação do gateway do planeador. Só existe depois da primeira corrida (`--profile orq`): um
+# `-v` a um volume inexistente CRIÁ-LO-IA fora do compose, que depois avisa que não é seu. Entra
+# no tar quando existe, e a ausência fica escrita no log.
+ORQ_MOUNT=()
+ORQ_DIR=()
+if docker volume inspect aos_aos-orq-data >/dev/null 2>&1; then
+  ORQ_MOUNT=(-v aos_aos-orq-data:/aos-orq:ro)
+  ORQ_DIR=(aos-orq)
+else
+  log "  aos_aos-orq-data não existe (o aos-orq nunca correu neste servidor) — fora do tar"
+fi
+docker run --rm -v aos_aos-data:/aos:ro -v aos_vault-data:/vault:ro "${ORQ_MOUNT[@]}" -v "${WORK}":/out alpine:3.20 \
+  tar czf /out/volumes.tar.gz -C / aos vault "${ORQ_DIR[@]}" 2>/dev/null || fail "tar dos volumes falhou"
 log "  $(wc -c < "${WORK}/volumes.tar.gz") bytes"
 
 # --- 2b. E o tar trouxe mesmo o que existe para trazer? ---------------------------------------
@@ -170,6 +200,35 @@ fi
 # o Event Store no cluster.
 tem_membro "aos/worm.wal" \
   || fail "o tar dos volumes NÃO contém aos/worm.wal — o trilho de decisões não está no backup. O volume aos_aos-data está vazio, ou não é o que o nó escreve"
+
+# O REGISTO DE APAGAMENTOS (AOS-436), no mesmo molde: o caminho verificado vem do mapa do
+# docker-compose.prod.yml, e confirma-se contra o contentor. Se o nó o escrever noutro sítio, esta
+# guarda copiaria para fora um registo que não é o dele — e o restauro importaria um registo
+# parado no tempo, que é exactamente a falha que ele existe para impedir.
+REG_NO="$(env_do_no AOS_DSAR_ERASURE_REGISTER)"
+if [[ -n "${REG_NO}" && "${REG_NO}" != "/var/lib/aos/apagamentos-dsar.txt" ]]; then
+  fail "o nó corre com AOS_DSAR_ERASURE_REGISTER=${REG_NO}, mas esta guarda copia 'aos/apagamentos-dsar.txt' do tar. O mapa deixou de valer — actualize a guarda"
+fi
+# O registo é produzido SEMPRE — vazio quando o nó nunca destruiu nada (o ficheiro só nasce na
+# primeira destruição confirmada). Assim «o mais recente» existe sempre para ser recolhido, e a
+# ausência de linhas é uma afirmação («nenhum apagamento até aqui»), não um silêncio.
+if tem_membro "aos/apagamentos-dsar.txt"; then
+  tar xzOf "${WORK}/volumes.tar.gz" "aos/apagamentos-dsar.txt" > "${WORK}/apagamentos-bruto.txt" \
+    || fail "não consegui extrair aos/apagamentos-dsar.txt do tar dos volumes"
+  # O tar de um ficheiro vivo pode apanhar uma linha a meio de ser escrita. Só as linhas COMPLETAS
+  # saem (`wc -l` conta os '\n'): o fragmento final é o que o próprio nó trata como escrita
+  # interrompida, e deixá-lo sair faria a recolha rejeitar o registo todos os dias.
+  head -n "$(wc -l < "${WORK}/apagamentos-bruto.txt")" "${WORK}/apagamentos-bruto.txt" > "${WORK}/apagamentos.txt"
+  REG_ESTADO="volume"
+else
+  printf '# aos — registo de apagamentos (AOS-436): o volume nao tinha registo neste instante\n' > "${WORK}/apagamentos.txt"
+  REG_ESTADO="ausente-no-volume"
+fi
+REG_N="$(grep -cvE '^(#|[[:space:]]*$)' "${WORK}/apagamentos.txt" || true)"
+if [[ -z "${REG_NO}" ]]; then
+  log "  ⚠️  o nó corre SEM AOS_DSAR_ERASURE_REGISTER — os apagamentos novos NÃO ficam registados, e um restauro de TUDO antigo ressuscita-os sem ninguém saber"
+fi
+log "  registo de apagamentos: ${REG_N:-0} entrada(s) (${REG_ESTADO})"
 
 if [[ "${LOG_FORA_DO_VOLUME}" = 0 ]]; then
   tem_membro "aos/events.wal" \
@@ -219,7 +278,7 @@ else
   ANCORA="desligada"
 fi
 CONFIG=(.env secrets policies keycloak vault litellm model-tools tls-internal docker-compose.prod.yml image.env)
-for d in ancoras pisos; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
+for d in ancoras pisos orq; do [[ -d "${AOS_DIR}/${d}" ]] && CONFIG+=("${d}"); done
 tar czf "${WORK}/config.tar.gz" -C "${AOS_DIR}" \
   --exclude=backups --exclude='*.bak-*' --exclude='.env.bak*' \
   "${CONFIG[@]}" 2>/dev/null || fail "tar da configuração falhou"
@@ -241,6 +300,13 @@ fi
     "${STAMP}" "$(hostname)" "$(grep -oE 'sha256:[a-f0-9]{12}' "${AOS_DIR}/image.env" 2>/dev/null || echo '?')"
   printf '%s\n' "${MANIFEST_ES}"
   printf 'worm-ancora=%s\n' "${ANCORA}"
+  # AOS-403: diz se o volume do aos-orq entrou no tar, para que a ausência não se confunda com perda.
+  printf 'aos-orq-data=%s\n' "$( [[ ${#ORQ_DIR[@]} -gt 0 ]] && echo volume || echo ausente )"
+  # AOS-436: o registo de apagamentos que saiu em claro ao lado deste bundle.
+  printf 'apagamentos=%s\napagamentos-entradas=%s\n' "${REG_ESTADO}" "${REG_N:-0}"
+  # A chave que autentica o registo viaja SÓ aqui dentro. Um bundle sem ela (anterior ao AOS-436)
+  # não consegue autenticar um registo importado — o restauro tem de a trazer do bundle mais recente.
+  printf 'apagamentos-chave=%s\n' "$(tem_membro "aos/apagamentos-dsar.txt.chave" && echo volume || echo ausente)"
 } > "${WORK}/MANIFEST"
 tar czf "${WORK}/bundle.tar.gz" -C "${WORK}" MANIFEST idp-db.sql volumes.tar.gz config.tar.gz
 OUT="${DEST}/aos-${STAMP}.tar.gz.enc"
@@ -261,11 +327,23 @@ openssl asn1parse -inform DER -in "${OUT}" 2>/dev/null | head -3 | grep -q 'pkcs
   || fail "o artefacto é PKCS#7 mas NÃO é envelopedData — o conteúdo pode não estar cifrado"
 log "  ${OUT} ($(wc -c < "${OUT}") bytes, envelope verificado)"
 
+# O registo de apagamentos sai SÓ depois de o bundle estar verificado: um registo sem o bundle
+# correspondente seria recolhido como «o mais recente» de um backup que não existe.
+REG_OUT="${DEST}/apagamentos-${STAMP}.txt"
+install -m 600 "${WORK}/apagamentos.txt" "${REG_OUT}" || fail "não consegui escrever ${REG_OUT}"
+log "  ${REG_OUT} (${REG_N:-0} entrada(s), EM CLARO — ids HMAC sob a chave do nó, que fica só no bundle)"
+
 # --- Rotação ----------------------------------------------------------------------------------
 N=$(ls -1 "${DEST}"/aos-*.tar.gz.enc 2>/dev/null | wc -l)
 if (( N > KEEP )); then
   ls -1t "${DEST}"/aos-*.tar.gz.enc | tail -n +$((KEEP+1)) | while read -r f; do rm -f "$f"; done
   log "rotação: ${N} -> ${KEEP}"
+fi
+# Os registos rodam com a mesma conta. Perder os antigos não custa nada: o mais recente é
+# superconjunto de todos eles.
+NR=$(ls -1 "${DEST}"/apagamentos-*.txt 2>/dev/null | wc -l)
+if (( NR > KEEP )); then
+  ls -1t "${DEST}"/apagamentos-*.txt | tail -n +$((KEEP+1)) | while read -r f; do rm -f "$f"; done
 fi
 log "FEITO — ${N} cópia(s), $(du -sh "${DEST}" | cut -f1) no total"
 log "⚠️  no MESMO disco. Perda do host = perda destas cópias. Ver README §Backup."

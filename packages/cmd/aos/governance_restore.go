@@ -288,6 +288,13 @@ func restoreShredPending(ctx context.Context, store audit.Store, partition strin
 			pendente[rec.Resource.Value] = true
 		case dsar.EventKeyDestroyed:
 			pendente[rec.Resource.Value] = false
+		case EventKeyReshredded:
+			// AOS-436: um re-apagamento pela reconciliação também é uma destruição CONFIRMADA.
+			// Só decide quando nomeia o titular — o selo de uma chave que só o registo conhecia
+			// nomeia a chave, e esse valor não é um titular deste mapa.
+			if rec.Resource.Type == subjectResourceType {
+				pendente[rec.Resource.Value] = false
+			}
 		default:
 			continue // dsar.received / dsar.blocked não decidem sobre a custódia
 		}

@@ -1,0 +1,1425 @@
+package main
+
+// AOS-465 — TECTO DE LIGAÇÕES ACEITES NO http.Server. O teste do achado ALTO corre contra o servidor
+// REAL (`listen` + `serveListener`, TLS terminado no nó); os da ordem de despejo usam um
+// `http.Server` com a MESMA ligação ([ligarAoServidor]) e um handler que bloqueia à ordem, que o
+// servidor real não tem.
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// servidorComTecto arranca o servidor real com TLS e o tecto dado, e devolve o endereço, o servidor
+// e um canal que fecha quando o `Serve` retorna. O tecto SSE fica em 1 para o par ser válido com
+// tectos pequenos.
+func servidorComTecto(t *testing.T, tecto int, extra ...APIOption) (string, *APIServer, *x509.Certificate, chan struct{}) {
+	t.Helper()
+	node, _ := newAPINode(t, &countingModel{}, true)
+	t.Cleanup(func() { _ = node.Close() })
+	certPath, keyPath, leaf := genTLSCertFiles(t)
+	srv := newAPIServer(t, node, append([]APIOption{WithTLSFiles(certPath, keyPath), WithMaxAcceptedConns(tecto), WithMaxTrajectoryConns(1)}, extra...)...)
+	ln, err := srv.listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	fim := make(chan struct{})
+	go func() {
+		_ = srv.serveListener(ln)
+		close(fim)
+	}()
+	return ln.Addr().String(), srv, leaf, fim
+}
+
+func dialTLS(addr string, leaf *x509.Certificate, prazo time.Duration) (*tls.Conn, error) {
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	d := &net.Dialer{Timeout: prazo}
+	c, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// esperarAte faz polling de uma condição com prazo. Os testes que se seguem medem o estado do
+// listener depois de o cliente ter feito o dial, e o `Accept` do servidor corre noutra goroutine.
+func esperarAte(t *testing.T, prazo time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	fim := time.Now().Add(prazo)
+	for !cond() {
+		if time.Now().After(fim) {
+			t.Fatal(msg)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// quadroH2 monta um quadro HTTP/2 à mão. O `golang.org/x/net/http2` não está no `go.mod` (build
+// offline), e os ataques que a revisão mediu precisam de quadros que nenhum cliente normal envia.
+func quadroH2(tipo, flags byte, stream uint32, carga []byte) []byte {
+	q := []byte{byte(len(carga) >> 16), byte(len(carga) >> 8), byte(len(carga)), tipo, flags,
+		byte(stream >> 24), byte(stream >> 16), byte(stream >> 8), byte(stream)}
+	return append(q, carga...)
+}
+
+// cabecalhosH2 codifica em HPACK um pedido mínimo: método (0x82 GET, 0x83 POST da tabela estática),
+// https, e caminho e authority como «literal sem indexação» com o nome indexado, valor em claro.
+func cabecalhosH2(metodo byte, caminho string, extra ...byte) []byte {
+	b := []byte{metodo, 0x87}
+	b = append(b, 0x04, byte(len(caminho)))
+	b = append(b, caminho...)
+	b = append(b, 0x01, byte(len("127.0.0.1")))
+	b = append(b, "127.0.0.1"...)
+	return append(b, extra...)
+}
+
+// h2Cru abre uma ligação TLS com ALPN h2, envia o preâmbulo e os SETTINGS dados, e responde ao
+// SETTINGS do servidor. Falha o teste se o servidor não negociar h2: o caso não estaria a medir nada.
+func h2Cru(t *testing.T, addr string, leaf *x509.Certificate, settings []byte) *tls.Conn {
+	t.Helper()
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	c, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, &tls.Config{
+		RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatalf("dial h2: %v", err)
+	}
+	if p := c.ConnectionState().NegotiatedProtocol; p != "h2" {
+		_ = c.Close()
+		t.Fatalf("o servidor nao negociou h2 (%q)", p)
+	}
+	if _, err := c.Write(append([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"), quadroH2(0x4, 0, 0, settings)...)); err != nil {
+		t.Fatalf("preambulo h2: %v", err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	for {
+		cab := make([]byte, 9)
+		if _, err := io.ReadFull(c, cab); err != nil {
+			t.Fatalf("quadro do servidor: %v", err)
+		}
+		carga := make([]byte, int(cab[0])<<16|int(cab[1])<<8|int(cab[2]))
+		if _, err := io.ReadFull(c, carga); err != nil {
+			t.Fatalf("carga do servidor: %v", err)
+		}
+		if cab[3] == 0x4 && cab[4]&0x1 == 0 { // SETTINGS do servidor, não um ACK
+			break
+		}
+	}
+	_ = c.SetReadDeadline(time.Time{})
+	if _, err := c.Write(quadroH2(0x4, 0x1, 0, nil)); err != nil {
+		t.Fatalf("ACK dos SETTINGS: %v", err)
+	}
+	return c
+}
+
+// TestAOS465LigacoesQueSoSeguramAVagaNaoFechamOHealthz — O ACHADO ALTO DA REVISÃO, COMO REGRESSÃO.
+//
+// A primeira versão fazia o `Accept` ESPERAR no tecto. A revisão mediu que ligações que só seguram a
+// vaga — TCP sem bytes, TLS sem pedido, keep-alive depois de um 404, cabeçalhos a pingar, corpo a
+// pingar, h2 sem pedido — enchiam o tecto mais depressa do que os timeouts as libertavam, e o
+// `/healthz` passava 0/4 com 32 ligações ociosas e o tecto a 16. A segunda revisão mediu mais formas,
+// todas à espera do CLIENTE em estados que a segunda versão protegia: h2 com RST_STREAM a meio de um
+// handler (60 s), corpo anunciado que o servidor drena DEPOIS do handler (15 s), e h2 com a janela de
+// controlo de fluxo a 0, com a resposta presa depois do handler ou dentro dele (`/metrics`), 15 s.
+// Aqui abrem-se mais de dois tectos cheios de ligações dessas, de dez formas, e o `/healthz` tem de
+// passar 4/4 — sem nunca haver mais ligações abertas do que o tecto.
+func TestAOS465LigacoesQueSoSeguramAVagaNaoFechamOHealthz(t *testing.T) {
+	const tecto = 5
+	addr, srv, leaf, fim := servidorComTecto(t, tecto)
+	var ataque []net.Conn
+	t.Cleanup(func() {
+		for _, c := range ataque {
+			_ = c.Close()
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		<-fim
+	})
+
+	tlsCom := func(pedido string, lerResposta bool) {
+		c, err := dialTLS(addr, leaf, 3*time.Second)
+		if err != nil {
+			t.Fatalf("dial TLS: %v", err)
+		}
+		ataque = append(ataque, c)
+		if pedido == "" {
+			return
+		}
+		if _, err := c.Write([]byte(pedido)); err != nil {
+			t.Fatalf("escrita: %v", err)
+		}
+		if lerResposta {
+			_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+			resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+			if err != nil {
+				t.Fatalf("resposta: %v", err)
+			}
+			_ = resp.Body.Close()
+		}
+	}
+	for i := 0; i < 2; i++ {
+		// TCP sem um único byte.
+		c, err := net.DialTimeout("tcp", addr, 3*time.Second)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		ataque = append(ataque, c)
+		// TLS completo, sem pedido.
+		tlsCom("", false)
+		// Keep-alive ocioso depois de uma resposta.
+		tlsCom("GET /nao-existe HTTP/1.1\r\nHost: x\r\n\r\n", true)
+		// Cabeçalhos a pingar (slowloris).
+		tlsCom("GET /healthz HTTP/1.1\r\nHost: x\r\n", false)
+		// Corpo a pingar, DENTRO do handler de submissão.
+		tlsCom("POST /runs HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{", false)
+		// h2: preâmbulo e SETTINGS vazio, sem nenhum pedido — o vector de 61 s que a revisão mediu.
+		pool := x509.NewCertPool()
+		pool.AddCert(leaf)
+		h2, err := tls.DialWithDialer(&net.Dialer{Timeout: 3 * time.Second}, "tcp", addr, &tls.Config{
+			RootCAs: pool, ServerName: "127.0.0.1", NextProtos: []string{"h2"}, MinVersion: tls.VersionTLS12,
+		})
+		if err != nil {
+			t.Fatalf("dial h2: %v", err)
+		}
+		ataque = append(ataque, h2)
+		if p := h2.ConnectionState().NegotiatedProtocol; p != "h2" {
+			t.Fatalf("o servidor nao negociou h2 (%q): o caso h2 nao estaria a medir nada", p)
+		}
+		if _, err := h2.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00")); err != nil {
+			t.Fatalf("preambulo h2: %v", err)
+		}
+		// h1: corpo ANUNCIADO a uma rota que não o lê. O 404 sai do handler logo, e o servidor drena o
+		// corpo DEPOIS, até ao ReadTimeout.
+		tlsCom("POST /nao-existe HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n", false)
+		// h2: POST /runs sem END_STREAM (o handler bloqueia no corpo) e RST_STREAM a seguir. O servidor
+		// declara a ligação ociosa ANTES de o handler sair.
+		rst := h2Cru(t, addr, leaf, nil)
+		ataque = append(ataque, rst)
+		contentLength100 := []byte{0x0f, 0x0d, 3, '1', '0', '0'} // nome no índice 28 da tabela estática
+		if _, err := rst.Write(quadroH2(0x1, 0x4, 1, cabecalhosH2(0x83, "/runs", contentLength100...))); err != nil {
+			t.Fatalf("HEADERS: %v", err)
+		}
+		time.Sleep(50 * time.Millisecond)
+		if _, err := rst.Write(quadroH2(0x3, 0, 1, []byte{0, 0, 0, 0x8})); err != nil {
+			t.Fatalf("RST_STREAM: %v", err)
+		}
+		// h2 com a janela a 0: a resposta fica presa DEPOIS do handler (404) e DENTRO dele (/metrics).
+		for _, caminho := range []string{"/nao-existe", "/metrics"} {
+			jan := h2Cru(t, addr, leaf, []byte{0x00, 0x04, 0, 0, 0, 0}) // SETTINGS_INITIAL_WINDOW_SIZE=0
+			ataque = append(ataque, jan)
+			if _, err := jan.Write(quadroH2(0x1, 0x5, 1, cabecalhosH2(0x82, caminho))); err != nil {
+				t.Fatalf("HEADERS: %v", err)
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	for i := 0; i < 4; i++ {
+		cli := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+			DisableKeepAlives: true,
+			TLSClientConfig:   &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"},
+		}}
+		resp, err := cli.Get("https://" + addr + "/healthz")
+		if err != nil {
+			t.Fatalf("/healthz %d/4 falhou com o tecto cheio de ligacoes que so seguram a vaga: %v", i+1, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("/healthz %d/4: %d", i+1, resp.StatusCode)
+		}
+	}
+	if n := srv.ligacoes.abertas.Load(); n > tecto {
+		t.Fatalf("%d ligacoes abertas com o tecto a %d", n, tecto)
+	}
+	if d := srv.ligacoes.despejadas.Load(); d < int64(len(ataque)-tecto) {
+		t.Fatalf("so %d despejos para %d ligacoes de ataque e tecto %d", d, len(ataque), tecto)
+	}
+}
+
+// servidorUnitario monta um `http.Server` com o tecto e a MESMA ligação que o [NewAPIServer] usa
+// ([ligarAoServidor]), em claro, para os testes que precisam de um handler que bloqueie à ordem.
+func servidorUnitario(t *testing.T, tecto int, h http.Handler) (string, *listenerLimitado, *ligacoesAceites) {
+	t.Helper()
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	contador := &ligacoesAceites{}
+	ln := limitarLigacoes(interior, tecto, contador).(*listenerLimitado)
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	ligarAoServidor(srv)
+	fim := make(chan struct{})
+	go func() {
+		_ = srv.Serve(ln)
+		close(fim)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-fim
+	})
+	return interior.Addr().String(), ln, contador
+}
+
+// pedir escreve um pedido HTTP/1.1 numa ligação já aberta e lê a resposta.
+func pedir(c net.Conn, br *bufio.Reader, caminho string, prazo time.Duration) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(prazo))
+	if _, err := c.Write([]byte("GET " + caminho + " HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		return 0, err
+	}
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		return 0, err
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// bloqueante devolve um handler em que `/lento` espera por `soltar` e o resto responde logo, e um
+// canal que recebe um sinal por cada `/lento` que entrou.
+func bloqueante() (http.Handler, chan struct{}, chan struct{}) {
+	soltar := make(chan struct{})
+	entrou := make(chan struct{}, 16)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/lento" {
+			entrou <- struct{}{}
+			<-soltar
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}), soltar, entrou
+}
+
+// TestAOS465LigacaoASerServidaNaoSeDespeja — o outro lado do despejo: uma ligação DENTRO de um
+// handler a fazer trabalho do servidor não é tocada, e é o ÚNICO caso em que o `Accept` espera.
+func TestAOS465LigacaoASerServidaNaoSeDespeja(t *testing.T) {
+	h, soltar, entrou := bloqueante()
+	addr, _, contador := servidorUnitario(t, 2, h)
+
+	respostas := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer func() { _ = c.Close() }()
+		go func() {
+			st, err := pedir(c, bufio.NewReader(c), "/lento", 5*time.Second)
+			if err == nil && st != http.StatusOK {
+				err = fmt.Errorf("status %d", st)
+			}
+			respostas <- err
+		}()
+		<-entrou
+	}
+
+	// Terceira ligação, com as duas vagas em handlers: NÃO pode ser servida.
+	c3, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial 3: %v", err)
+	}
+	defer func() { _ = c3.Close() }()
+	br3 := bufio.NewReader(c3)
+	if _, err := pedir(c3, br3, "/rapido", 300*time.Millisecond); err == nil {
+		t.Fatal("uma 3a ligacao foi servida com o tecto a 2 e as duas vagas em handlers — o tecto " +
+			"despejou uma ligacao que estava a ser servida, ou nao morde")
+	}
+	if d := contador.despejadas.Load(); d != 0 {
+		t.Fatalf("%d despejos com todas as ligacoes em handlers", d)
+	}
+
+	// Os dois pedidos em curso terminam BEM: não foram cortados.
+	close(soltar)
+	for i := 0; i < 2; i++ {
+		if err := <-respostas; err != nil {
+			t.Fatalf("um pedido em curso foi cortado: %v", err)
+		}
+	}
+	// E o `Accept` à espera ACORDA quando elas ficam ociosas: o pedido de c3, escrito há muito, é
+	// servido. Sem o aviso do `StateIdle`, esperaria até uma delas fechar — ou para sempre.
+	_ = c3.SetDeadline(time.Now().Add(3 * time.Second))
+	resp, err := http.ReadResponse(br3, nil)
+	if err != nil {
+		t.Fatalf("o Accept a espera nao acordou quando as ligacoes ficaram ociosas: %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+// TestAOS465DespejaAMenosRecentementeUsada — a ordem entre ligações ociosas é a do último USO, não a
+// da chegada: uma ligação keep-alive que acabou de ser usada é a última a sair.
+func TestAOS465DespejaAMenosRecentementeUsada(t *testing.T) {
+	h, _, _ := bloqueante()
+	addr, _, contador := servidorUnitario(t, 2, h)
+
+	abrir := func() (net.Conn, *bufio.Reader) {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { _ = c.Close() })
+		return c, bufio.NewReader(c)
+	}
+	a, ra := abrir()
+	b, rb := abrir()
+	for _, p := range []struct {
+		c net.Conn
+		r *bufio.Reader
+	}{{a, ra}, {b, rb}, {a, ra}} { // a chegou primeiro mas foi usada por ÚLTIMO
+		if _, err := pedir(p.c, p.r, "/rapido", 3*time.Second); err != nil {
+			t.Fatalf("pedido: %v", err)
+		}
+	}
+
+	c, rc := abrir()
+	if _, err := pedir(c, rc, "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("a ligacao nova devia ser servida despejando uma ociosa: %v", err)
+	}
+	if _, err := pedir(b, rb, "/rapido", time.Second); err == nil {
+		t.Fatal("b (a menos recentemente usada) devia ter sido despejada")
+	}
+	if _, err := pedir(a, ra, "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("a (usada por ultimo) foi despejada em vez de b: %v", err)
+	}
+	if d := contador.despejadas.Load(); d != 1 {
+		t.Fatalf("despejos=%d, esperava 1", d)
+	}
+}
+
+// TestAOS465OCorpoLentoCedeAntesDoTrabalho — sem ligações ociosas, cede a que está à espera do CORPO
+// do cliente, nunca a que está a fazer trabalho do servidor.
+func TestAOS465OCorpoLentoCedeAntesDoTrabalho(t *testing.T) {
+	h, soltar, entrou := bloqueante()
+	addr, _, contador := servidorUnitario(t, 2, h)
+
+	// A: dentro do handler, a trabalhar (sem corpo).
+	a, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	respA := make(chan error, 1)
+	go func() {
+		st, err := pedir(a, bufio.NewReader(a), "/lento", 5*time.Second)
+		if err == nil && st != http.StatusOK {
+			err = fmt.Errorf("status %d", st)
+		}
+		respA <- err
+	}()
+	<-entrou
+
+	// B: dentro do handler, à espera de um corpo que não chega.
+	b, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	if _, err := b.Write([]byte("POST /corpo HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{")); err != nil {
+		t.Fatalf("escrita: %v", err)
+	}
+	esperarAte(t, 2*time.Second, func() bool { return contador.abertas.Load() == 2 }, "B nao foi aceite")
+	time.Sleep(50 * time.Millisecond) // B entra no handler e bloqueia no corpo
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := pedir(c, bufio.NewReader(c), "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("a ligacao nova devia ser servida despejando a do corpo lento: %v", err)
+	}
+	close(soltar)
+	if err := <-respA; err != nil {
+		t.Fatalf("a ligacao a fazer trabalho do servidor foi despejada: %v", err)
+	}
+	if d := contador.despejadas.Load(); d != 1 {
+		t.Fatalf("despejos=%d, esperava 1 (a do corpo lento)", d)
+	}
+}
+
+// TestAOS465ShutdownNaoPenduraComOTectoCheio — a armadilha clássica de um listener limitado.
+//
+// Com todas as vagas em handlers, o `Accept` segura a ligação nova e espera por vaga no SEMÁFORO, não
+// no listener interior. O `Close` do listener interior não o acorda: sem o canal `fechado`, o `Serve`
+// só retornaria quando um handler acabasse. Mede-se que retorna em menos de um segundo.
+func TestAOS465ShutdownNaoPenduraComOTectoCheio(t *testing.T) {
+	h, soltar, entrou := bloqueante()
+	defer close(soltar)
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	contador := &ligacoesAceites{}
+	ln := limitarLigacoes(interior, 1, contador)
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	ligarAoServidor(srv)
+	fim := make(chan struct{})
+	go func() {
+		_ = srv.Serve(ln)
+		close(fim)
+	}()
+	addr := interior.Addr().String()
+
+	a, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	go func() { _, _ = pedir(a, bufio.NewReader(a), "/lento", 5*time.Second) }()
+	<-entrou
+	// A segunda ligação fica na mão do `Accept`, à espera de vaga.
+	b, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	time.Sleep(50 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	inicio := time.Now()
+	go func() { _ = srv.Shutdown(ctx) }()
+	select {
+	case <-fim:
+		t.Logf("Serve retornou em %v com o tecto cheio", time.Since(inicio).Round(time.Millisecond))
+	case <-time.After(time.Second):
+		t.Fatal("o Serve NAO retornou em 1 s depois do Shutdown com o tecto cheio — o Accept esta preso " +
+			"no semaforo e o Close do listener interior nao o acorda")
+	}
+	// A ligação que o `Accept` tinha na mão é FECHADA, não abandonada: sem isso fugia um descritor.
+	_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := b.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("a ligacao na mao do Accept devia ser fechada no shutdown (EOF), leu %v", err)
+	}
+}
+
+// TestAOS465AVagaVoltaUmaSoVez — o `http.Server` pode fechar a mesma ligação mais do que uma vez, e o
+// despejo acrescenta um terceiro caminho de fecho.
+//
+// Sem o `sync.Once` o Close repetido de c1 DEPOIS de c2 ocupar a vaga rouba o lugar de c2, e o tecto
+// passa a aceitar a mais. c2 é marcada como servida para o despejo não a tirar e mascarar o defeito.
+func TestAOS465AVagaVoltaUmaSoVez(t *testing.T) {
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	contador := &ligacoesAceites{}
+	ln := limitarLigacoes(interior, 1, contador).(*listenerLimitado)
+	defer func() { _ = ln.Close() }()
+
+	var clientes []net.Conn
+	defer func() {
+		for _, c := range clientes {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < 3; i++ {
+		c, err := net.Dial("tcp", interior.Addr().String())
+		if err != nil {
+			t.Fatalf("dial %d: %v", i, err)
+		}
+		clientes = append(clientes, c)
+	}
+
+	c1, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("1o Accept: %v", err)
+	}
+	_ = c1.Close()
+	c2, err := ln.Accept() // ocupa a vaga que c1 devolveu
+	if err != nil {
+		t.Fatalf("2o Accept: %v", err)
+	}
+	defer func() { _ = c2.Close() }()
+	ln.entrar(c2.(*ligacaoLimitada))
+
+	// O Close REPETIDO de c1, com c2 a ocupar a vaga. Em goroutine: se a implementação bloquear aqui,
+	// o teste não pendura.
+	go func() { _ = c1.Close() }()
+	time.Sleep(50 * time.Millisecond)
+
+	aceite := make(chan struct{})
+	go func() {
+		if c3, err := ln.Accept(); err == nil {
+			_ = c3.Close()
+			close(aceite)
+		}
+	}()
+	select {
+	case <-aceite:
+		t.Fatal("um 3o Accept passou com o tecto a 1 e c2 a ser servida — o Close repetido de c1 " +
+			"devolveu a vaga de c2, e o tecto aceita a mais")
+	case <-time.After(300 * time.Millisecond):
+	}
+	if n := contador.abertas.Load(); n != 1 {
+		t.Fatalf("contador=%d, esperava 1 (c2 aberta)", n)
+	}
+}
+
+// TestAOS465OEmbrulhoMantemOMeioFecho — o `http.Server` em claro faz `CloseWrite` antes de fechar
+// para o cliente não receber um RST que corte a resposta. O embrulho escondia-o.
+func TestAOS465OEmbrulhoMantemOMeioFecho(t *testing.T) {
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ln := limitarLigacoes(interior, 1, &ligacoesAceites{})
+	defer func() { _ = ln.Close() }()
+	cli, err := net.Dial("tcp", interior.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = cli.Close() }()
+	c, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	cw, ok := c.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatal("a ligacao limitada nao expoe CloseWrite")
+	}
+	if err := cw.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+	_ = cli.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := cli.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("o cliente devia ler EOF do meio-fecho, leu %v", err)
+	}
+	// E a outra metade continua aberta: o servidor ainda lê.
+	if _, err := cli.Write([]byte("x")); err != nil {
+		t.Fatalf("escrita do cliente depois do meio-fecho: %v", err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("o servidor devia ler depois do meio-fecho: %v", err)
+	}
+}
+
+// TestAOS465MetricaDasLigacoes — a série existe e declara o tecto EM VIGOR.
+func TestAOS465MetricaDasLigacoes(t *testing.T) {
+	addr, srv, leaf, fim := servidorComTecto(t, 7)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		<-fim
+	})
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	cli := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"}}}
+	resp, err := cli.Get("https://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	buf := new(strings.Builder)
+	b := make([]byte, 64<<10)
+	for {
+		n, err := resp.Body.Read(b)
+		buf.Write(b[:n])
+		if err != nil {
+			break
+		}
+	}
+	corpo := buf.String()
+	if !strings.Contains(corpo, "\naos_api_connections_ceiling 7\n") {
+		t.Fatalf("a serie do tecto devia publicar 7 (o valor em vigor)")
+	}
+	if !strings.Contains(corpo, "\naos_api_connections_open 1\n") {
+		t.Fatalf("a serie das ligacoes abertas devia contar a propria ligacao do scrape (1)")
+	}
+	if !strings.Contains(corpo, "\naos_api_connections_evicted_total 0\n") {
+		t.Fatalf("a serie dos despejos devia existir e estar a 0")
+	}
+}
+
+// TestAOS465EnvOParFinalContraOTectoSSE — o tecto de ligações tem de exceder o de streams SSE, e o
+// par valida-se FINAL: baixar só um dos dois para os pôr ao contrário aborta.
+func TestAOS465EnvOParFinalContraOTectoSSE(t *testing.T) {
+	casos := []struct {
+		conns, traj string
+		aceita      bool
+	}{
+		{"", "", true},         // defaults 1024 / 256
+		{"257", "", true},      // o menor que ainda deixa folga
+		{"256", "", false},     // igual ao SSE por omissão: os streams ocupam tudo
+		{"100", "", false},     // abaixo
+		{"", "1024", false},    // SÓ o SSE subido para igualar o default de ligações
+		{"", "2000", false},    // SÓ o SSE subido acima dele
+		{"4096", "2000", true}, // par coerente, ambos explícitos
+		{"0", "", false},       // 0 NÃO desliga
+		{"-1", "", false},
+		{"abc", "", false},
+	}
+	for _, c := range casos {
+		t.Run("conns="+c.conns+"/traj="+c.traj, func(t *testing.T) {
+			clearIngressEnv(t)
+			t.Setenv("AOS_API_MAX_CONNS", c.conns)
+			t.Setenv("AOS_TRAJECTORY_MAX_CONNS", c.traj)
+			// o por-leitor tem de ficar abaixo do SSE para esse par não abortar por outra razão
+			if c.traj != "" {
+				t.Setenv("AOS_TRAJECTORY_MAX_CONNS_PER_READER", "8")
+			}
+			lim, _, err := ingressLimitsFromEnv()
+			if c.aceita && err != nil {
+				t.Fatalf("devia ser aceite: %v", err)
+			}
+			if !c.aceita && err == nil {
+				t.Fatalf("devia abortar — ligacoes=%d, SSE=%d", lim.apiMaxConns, lim.trajMaxConns)
+			}
+			// E ABORTA PELA RAZÃO CERTA: um caso que abortasse por outro par passaria este teste sem
+			// medir o tecto de ligações.
+			if !c.aceita && !strings.Contains(err.Error(), "AOS_API_MAX_CONNS") {
+				t.Fatalf("abortou, mas por outra razao que nao o tecto de ligacoes: %v", err)
+			}
+			if c.aceita && lim.apiMaxConns <= lim.trajMaxConns {
+				t.Fatalf("par em vigor sem folga: ligacoes=%d <= SSE=%d", lim.apiMaxConns, lim.trajMaxConns)
+			}
+		})
+	}
+}
+
+// TestAOS465OAmbienteChegaAoListener — achado MÉDIO da revisão: o caminho do ambiente até ao listener
+// não tinha teste, e trocar a opção por `WithMaxAcceptedConns(0)` (que mantém o default) sobrevivia à
+// suite inteira. Mede-se o número que o SERVIDOR aplica, a partir do ambiente, e o que o banner diz.
+func TestAOS465OAmbienteChegaAoListener(t *testing.T) {
+	clearIngressEnv(t)
+	t.Setenv("AOS_API_MAX_CONNS", "777")
+	lim, opts, err := ingressLimitsFromEnv()
+	if err != nil {
+		t.Fatalf("ingressLimitsFromEnv: %v", err)
+	}
+	node, _ := newAPINode(t, &countingModel{}, true)
+	t.Cleanup(func() { _ = node.Close() })
+	srv := newAPIServer(t, node, opts...)
+	if srv.maxLigacoes != 777 {
+		t.Fatalf("o servidor aplica %d, o ambiente pediu 777", srv.maxLigacoes)
+	}
+	ln, err := srv.listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	if l, ok := ln.(*listenerLimitado); !ok || cap(l.vagas) != 777 {
+		t.Fatalf("o listener nao esta limitado a 777: %T", ln)
+	}
+	// O número que o banner dá ao operador: 777 menos os 256 do SSE por omissão.
+	if d := dobraDasLigacoes(lim); !strings.Contains(d, "as outras 521 servem o resto da API") {
+		t.Fatalf("o banner nao declara as 521 ligacoes que o SSE nao toma: %s", d)
+	}
+}
+
+// TestAOS465OParComOSSEValeNasOpcoes — o par só era validado na leitura do ambiente; composto por
+// opções, o SSE podia igualar ou passar o tecto, ou ficar sem tecto, e ocupar o listener inteiro.
+func TestAOS465OParComOSSEValeNasOpcoes(t *testing.T) {
+	node, _ := newAPINode(t, &countingModel{}, true)
+	t.Cleanup(func() { _ = node.Close() })
+	svc, err := NewNodeService(node, WithLeaseClock(svcClock()), WithLeaseTTL(time.Minute))
+	if err != nil {
+		t.Fatalf("NewNodeService: %v", err)
+	}
+	for _, c := range []struct {
+		conns, sse int
+		aceita     bool
+	}{
+		{10, 9, true},
+		{10, 10, false},
+		{10, 11, false},
+		{10, 0, false}, // SSE sem tecto
+	} {
+		_, err := NewAPIServer(svc, node, WithMaxAcceptedConns(c.conns), WithMaxTrajectoryConns(c.sse))
+		if c.aceita && err != nil {
+			t.Fatalf("ligacoes=%d sse=%d devia ser aceite: %v", c.conns, c.sse, err)
+		}
+		if !c.aceita && !errors.Is(err, ErrConnCeilingNotAboveSSE) {
+			t.Fatalf("ligacoes=%d sse=%d devia recusar com ErrConnCeilingNotAboveSSE, deu %v", c.conns, c.sse, err)
+		}
+	}
+}
+
+// TestAOS465OServidorRealDistingueServidaDeOciosa — o sensor da LIGAÇÃO em [NewAPIServer].
+//
+// Sem [ligarAoServidor], o tecto continua a despejar, mas não vê handlers: todas as ligações parecem
+// ociosas e sai a mais antiga. O teste do ALTO continuaria verde. Aqui a mais antiga está DENTRO do
+// `POST /runs` à espera do corpo, e a mais nova é TCP sem bytes: com a ligação feita sai a nova
+// (primeiro escalão), sem ela sairia a antiga.
+func TestAOS465OServidorRealDistingueServidaDeOciosa(t *testing.T) {
+	addr, srv, leaf, fim := servidorComTecto(t, 2)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		<-fim
+	})
+
+	corpo, err := dialTLS(addr, leaf, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = corpo.Close() }()
+	if _, err := corpo.Write([]byte("POST /runs HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 1000\r\n\r\n{")); err != nil {
+		t.Fatalf("escrita: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond) // entra no handler e bloqueia no corpo
+
+	ociosa, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = ociosa.Close() }()
+	esperarAte(t, 2*time.Second, func() bool { return srv.ligacoes.abertas.Load() == 2 }, "a ociosa nao foi aceite")
+
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	cli := &http.Client{Timeout: 3 * time.Second, Transport: &http.Transport{
+		DisableKeepAlives: true, TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"},
+	}}
+	resp, err := cli.Get("https://" + addr + "/healthz")
+	if err != nil {
+		t.Fatalf("/healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	_ = ociosa.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := ociosa.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("a ligacao ociosa devia ter sido despejada (EOF), leu %v", err)
+	}
+	_ = corpo.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := corpo.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("a ligacao dentro do handler foi despejada antes da ociosa (%v) — o servidor real nao "+
+			"esta ligado ao tecto, e o despejo nao ve handlers", err)
+	}
+}
+
+// TestAOS465ARespostaPorTerminarCedeDepoisDasOciosas — o defeito que o teste da ligação servida
+// apanhou na primeira correcção, fixado sem depender de tempo.
+//
+// Entre o handler retornar e o servidor declarar `StateIdle`, a resposta pode estar por terminar.
+// Não é protegida (a revisão mediu 15 s de ligações presas aí pelo cliente: corpo a drenar, escrita
+// presa no controlo de fluxo), mas cede DEPOIS das ociosas, mesmo que seja mais antiga.
+func TestAOS465ARespostaPorTerminarCedeDepoisDasOciosas(t *testing.T) {
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ln := limitarLigacoes(interior, 2, &ligacoesAceites{}).(*listenerLimitado)
+	defer func() { _ = ln.Close() }()
+	var lcs []*ligacaoLimitada
+	for i := 0; i < 2; i++ {
+		cli, err := net.Dial("tcp", interior.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer func() { _ = cli.Close() }()
+		c, err := ln.Accept()
+		if err != nil {
+			t.Fatalf("Accept: %v", err)
+		}
+		defer func() { _ = c.Close() }()
+		lcs = append(lcs, c.(*ligacaoLimitada))
+	}
+	ln.graca = 0 // a ordem entre escalões, sem a graça pelo meio
+	porTerminar, ociosa := lcs[0], lcs[1]
+	ln.entrar(porTerminar)
+	ln.sair(porTerminar) // saiu do handler, o servidor ainda não disse StateIdle
+	ln.ociosa(ociosa)    // MAIS RECENTE do que a outra, mas ociosa
+
+	if ok, _ := ln.despejarUma(false); !ok {
+		t.Fatal("havia uma ligacao ociosa para despejar")
+	}
+	ln.mu.Lock()
+	despejadaAOciosa, despejadaAOutra := ociosa.despejada, porTerminar.despejada
+	ln.mu.Unlock()
+	if !despejadaAOciosa || despejadaAOutra {
+		t.Fatal("despejou a ligacao com a resposta por terminar antes da ociosa — corta respostas " +
+			"legitimas quando havia uma ligacao que nao servia ninguem")
+	}
+	if ok, _ := ln.despejarUma(false); !ok {
+		t.Fatal("sem ociosas, a resposta por terminar e o segundo escalao: devia ceder")
+	}
+}
+
+// TestAOS465ALigacaoNovaNaoEAPrimeiraASair — uma ligação acabada de chegar é a MAIS recente, não a
+// mais antiga. Sem isso uma inundação despejaria sempre a ligação legítima que acabou de entrar.
+func TestAOS465ALigacaoNovaNaoEAPrimeiraASair(t *testing.T) {
+	h, _, _ := bloqueante()
+	addr, _, _ := servidorUnitario(t, 2, h)
+
+	a, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	ra := bufio.NewReader(a)
+	if _, err := pedir(a, ra, "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("pedido: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond) // o StateIdle de a chega depois da resposta
+	b, err := net.Dial("tcp", addr)   // chega DEPOIS de a ficar ociosa, sem pedido
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	time.Sleep(20 * time.Millisecond)
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := pedir(c, bufio.NewReader(c), "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("a ligacao nova devia ser servida: %v", err)
+	}
+	_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := a.Read(make([]byte, 1)); err != io.EOF {
+		t.Fatalf("a (ociosa ha mais tempo) devia ter sido despejada, leu %v", err)
+	}
+	_ = b.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := b.Read(make([]byte, 1)); !errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("b (acabada de chegar) foi despejada em vez de a: %v", err)
+	}
+}
+
+// TestAOS465CorpoLidoETrabalhoProtegido — ler o corpo é esperar pelo cliente só DURANTE a leitura.
+// Um handler que já leu o corpo e está a trabalhar é protegido como qualquer outro.
+func TestAOS465CorpoLidoETrabalhoProtegido(t *testing.T) {
+	soltar := make(chan struct{})
+	entrou := make(chan struct{}, 4)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		if r.URL.Path == "/ler-e-lento" {
+			entrou <- struct{}{}
+			<-soltar
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	addr, _, contador := servidorUnitario(t, 1, h)
+	defer close(soltar)
+
+	a, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	if _, err := a.Write([]byte("POST /ler-e-lento HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nolaaa")); err != nil {
+		t.Fatalf("escrita: %v", err)
+	}
+	<-entrou
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := pedir(c, bufio.NewReader(c), "/rapido", 300*time.Millisecond); err == nil {
+		t.Fatal("uma ligacao nova foi servida despejando um handler que ja tinha lido o corpo e estava " +
+			"a trabalhar — a leitura do corpo continua a contar como espera pelo cliente depois de acabar")
+	}
+	if d := contador.despejadas.Load(); d != 0 {
+		t.Fatalf("despejos=%d com a unica ligacao a trabalhar", d)
+	}
+}
+
+// TestAOS465EscritaPresaCede — um cliente que não lê a resposta prende o handler na escrita, à espera
+// DELE. É o segundo escalão, e cede antes de uma ligação a trabalhar.
+//
+// Mede-se pelos dois caminhos por onde um handler escreve: `Write` com blocos grandes, e `Flush`
+// depois de blocos pequenos (é assim que o SSE escreve). Sem vigiar o `Flush`, o caminho do SSE ficava
+// protegido com o cliente parado.
+func TestAOS465EscritaPresaCede(t *testing.T) {
+	t.Run("write", func(t *testing.T) { escritaPresaCede(t, false) })
+	t.Run("flush", func(t *testing.T) { escritaPresaCede(t, true) })
+}
+
+func escritaPresaCede(t *testing.T, comFlush bool) {
+	soltar := make(chan struct{})
+	entrou := make(chan struct{}, 4)
+	aEscrever := make(chan struct{}, 1)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/lento":
+			entrou <- struct{}{}
+			<-soltar
+		case "/grande":
+			aEscrever <- struct{}{}
+			if comFlush {
+				bloco := make([]byte, 1<<10) // abaixo do buffer do servidor: quem bloqueia é o Flush
+				for i := 0; i < 64<<10; i++ {
+					if _, err := w.Write(bloco); err != nil {
+						return
+					}
+					if err := http.NewResponseController(w).Flush(); err != nil {
+						return
+					}
+				}
+				return
+			}
+			bloco := make([]byte, 64<<10)
+			for i := 0; i < 1024; i++ { // 64 MiB: muito acima dos buffers do kernel
+				if _, err := w.Write(bloco); err != nil {
+					return
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	addr, _, contador := servidorUnitario(t, 2, h)
+
+	// A: pede /grande e não lê.
+	a, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	if _, err := a.Write([]byte("GET /grande HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+		t.Fatalf("escrita: %v", err)
+	}
+	<-aEscrever
+	time.Sleep(200 * time.Millisecond) // os buffers enchem e a escrita prende
+
+	// B: a trabalhar.
+	b, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	respB := make(chan error, 1)
+	go func() {
+		st, err := pedir(b, bufio.NewReader(b), "/lento", 5*time.Second)
+		if err == nil && st != http.StatusOK {
+			err = fmt.Errorf("status %d", st)
+		}
+		respB <- err
+	}()
+	<-entrou
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := pedir(c, bufio.NewReader(c), "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("a ligacao nova devia ser servida despejando a da escrita presa: %v", err)
+	}
+	close(soltar)
+	if err := <-respB; err != nil {
+		t.Fatalf("a ligacao a trabalhar foi despejada: %v", err)
+	}
+	if d := contador.despejadas.Load(); d != 1 {
+		t.Fatalf("despejos=%d, esperava 1 (a da escrita presa)", d)
+	}
+}
+
+// TestAOS465UmPedidoH2ASerServidoNaoSeDespeja — achado MÉDIO da segunda revisão. Em h2 todo o pedido
+// tem corpo (nunca `http.NoBody`, mesmo com END_STREAM), e a segunda versão tratava um GET h2 que não
+// lesse o corpo como «à espera do corpo»: despejável, incluindo um stream SSE saudável.
+func TestAOS465UmPedidoH2ASerServidoNaoSeDespeja(t *testing.T) {
+	h, soltar, entrou := bloqueante()
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	contador := &ligacoesAceites{}
+	ln := limitarLigacoes(interior, 2, contador)
+	certPath, keyPath, leaf := genTLSCertFiles(t)
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	ligarAoServidor(srv)
+	fim := make(chan struct{})
+	go func() {
+		_ = srv.ServeTLS(ln, certPath, keyPath)
+		close(fim)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-fim
+	})
+	addr := interior.Addr().String()
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	cliente := func() *http.Client {
+		return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
+			ForceAttemptHTTP2: true,
+			TLSClientConfig:   &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"},
+		}}
+	}
+
+	respostas := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		cli := cliente()
+		go func() {
+			resp, err := cli.Get("https://" + addr + "/lento")
+			if err == nil {
+				_, err = io.Copy(io.Discard, resp.Body)
+				if err == nil && resp.ProtoMajor != 2 {
+					err = fmt.Errorf("protocolo %s: o teste precisa de h2", resp.Proto)
+				}
+				_ = resp.Body.Close()
+			}
+			respostas <- err
+		}()
+		<-entrou
+	}
+
+	c, err := dialTLS(addr, leaf, 3*time.Second)
+	if err == nil {
+		defer func() { _ = c.Close() }()
+		if _, err := pedir(c, bufio.NewReader(c), "/rapido", 300*time.Millisecond); err == nil {
+			t.Fatal("uma ligacao nova foi servida com as duas vagas em pedidos h2 a ser servidos — " +
+				"despejou um pedido h2 que nao estava a espera do cliente")
+		}
+	}
+	close(soltar)
+	for i := 0; i < 2; i++ {
+		if err := <-respostas; err != nil {
+			t.Fatalf("um pedido h2 em curso foi cortado: %v", err)
+		}
+	}
+	if d := contador.despejadas.Load(); d != 0 {
+		t.Fatalf("despejos=%d com os dois pedidos h2 a trabalhar", d)
+	}
+}
+
+// TestAOS465O413ContinuaAFecharALigacao — o `http.MaxBytesReader` avisa o servidor de que o limite do
+// corpo foi atingido por um método não exportado do `ResponseWriter` ORIGINAL. Com o embrulho do tecto
+// por cima, o aviso perdia-se e o servidor mantinha a ligação para drenar o resto do corpo.
+func TestAOS465O413ContinuaAFecharALigacao(t *testing.T) {
+	addr, srv, leaf, fim := servidorComTecto(t, 4, WithMaxBodyBytes(1024))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		<-fim
+	})
+	c, err := dialTLS(addr, leaf, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	corpo := `{"run_id":"` + strings.Repeat("x", 2000) + `"}`
+	if _, err := fmt.Fprintf(c, "POST /runs HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s", len(corpo), corpo); err != nil {
+		t.Fatalf("escrita: %v", err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatalf("resposta: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status %d, esperava 413", resp.StatusCode)
+	}
+	if !resp.Close {
+		t.Fatal("o 413 devia fechar a ligacao (Connection: close) — o MaxBytesReader recebeu o " +
+			"ResponseWriter embrulhado e o aviso ao servidor perdeu-se")
+	}
+}
+
+// TestAOS465OPedidoOriginalNaoEMudado — achado MÉDIO da segunda revisão. O `http.Server` decide o que
+// fazer ao corpo que o handler não leu olhando para o corpo do pedido ORIGINAL: grande de mais,
+// fecha sem ler. Mudar `r.Body` nesse pedido fazia-o cair em «drenar», e um 404 a um corpo de 10 MB
+// que saía de imediato passava a esperar o ReadTimeout inteiro. O servidor unitário não tem
+// ReadTimeout: com o defeito, a resposta não chega.
+func TestAOS465OPedidoOriginalNaoEMudado(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
+	addr, _, _ := servidorUnitario(t, 2, h)
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := c.Write([]byte("POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 10000000\r\n\r\n")); err != nil {
+		t.Fatalf("escrita: %v", err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil {
+		t.Fatalf("o 404 a um corpo de 10 MB nao chegou em 2 s — o servidor esta a drenar o corpo, "+
+			"porque o pedido original foi mudado: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound || !resp.Close {
+		t.Fatalf("esperava 404 com Connection: close, veio %d close=%v", resp.StatusCode, resp.Close)
+	}
+}
+
+// pedirEmCiclo abre uma ligação keep-alive TLS e faz um pedido a cada `periodo` até `parar`.
+func pedirEmCiclo(t *testing.T, addr string, leaf *x509.Certificate, periodo time.Duration, parar chan struct{}, caiu *atomic.Bool) net.Conn {
+	t.Helper()
+	c, err := dialTLS(addr, leaf, 3*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	br := bufio.NewReader(c)
+	go func() {
+		for {
+			select {
+			case <-parar:
+				return
+			default:
+			}
+			if _, err := pedir(c, br, "/nao-existe", 3*time.Second); err != nil {
+				select {
+				case <-parar:
+				default:
+					caiu.Store(true)
+				}
+				return
+			}
+			time.Sleep(periodo)
+		}
+	}()
+	return c
+}
+
+// TestAOS465AGracaNaoERenovavelPorTerceiros — o ALTO da terceira revisão.
+//
+// «O escalão manda antes da graça» sem limite deixava UMA ligação keep-alive a pedir a cada <250 ms
+// manter-se no escalão 1 imatura para sempre, e com isso impedir todos os despejos do escalão 2: com
+// as restantes vagas a segurar corpos anunciados a um 404, o `/healthz` passava 0/28 em 60 s, 0
+// despejos, sem token. E todas as vagas a pedir assim trancavam também. Os dois casos aqui, contra o
+// servidor real; o `/healthz` tem de passar 4/4, cada um em menos de um segundo.
+func TestAOS465AGracaNaoERenovavelPorTerceiros(t *testing.T) {
+	for _, caso := range []struct {
+		nome    string
+		escudos int
+	}{{"um-escudo", 1}, {"todas-escudo", 6}} {
+		t.Run(caso.nome, func(t *testing.T) {
+			const tecto = 6
+			addr, srv, leaf, fim := servidorComTecto(t, tecto)
+			parar := make(chan struct{})
+			var caiu atomic.Bool
+			var cs []net.Conn
+			t.Cleanup(func() {
+				close(parar)
+				for _, c := range cs {
+					_ = c.Close()
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(ctx)
+				<-fim
+			})
+			for i := 0; i < caso.escudos; i++ {
+				cs = append(cs, pedirEmCiclo(t, addr, leaf, 150*time.Millisecond, parar, &caiu))
+			}
+			for i := caso.escudos; i < tecto; i++ {
+				c, err := dialTLS(addr, leaf, 3*time.Second)
+				if err != nil {
+					t.Fatalf("dial: %v", err)
+				}
+				cs = append(cs, c)
+				if _, err := c.Write([]byte("POST /nao-existe HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n")); err != nil {
+					t.Fatalf("escrita: %v", err)
+				}
+			}
+			time.Sleep(600 * time.Millisecond) // todos maduros, excepto os escudos
+			pool := x509.NewCertPool()
+			pool.AddCert(leaf)
+			for i := 0; i < 4; i++ {
+				cli := &http.Client{Timeout: time.Second, Transport: &http.Transport{
+					DisableKeepAlives: true, TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"},
+				}}
+				resp, err := cli.Get("https://" + addr + "/healthz")
+				if err != nil {
+					t.Fatalf("/healthz %d/4 nao passou em 1 s com %d escudo(s) a renovar a graca: %v", i+1, caso.escudos, err)
+				}
+				_ = resp.Body.Close()
+			}
+			// Com retentoras MADURAS à espera do cliente, são elas que saem — não o escudo, que é
+			// indistinguível de um cliente legítimo a fazer polling. Com todas as vagas a pedir, não
+			// há outra escolha.
+			if caso.escudos < tecto && caiu.Load() {
+				t.Fatal("esgotado o prazo, o despejo escolheu o escudo imaturo em vez das retentoras " +
+					"maduras do escalao 2 — a vitima e o cliente que faz polling")
+			}
+		})
+	}
+}
+
+// TestAOS465UmStreamH2ATrabalharProtegeALigacao — o escalão 2 exige TODOS os handlers da ligação à
+// espera do cliente. Em h2 uma ligação pode ter um stream parado (o cliente não lê) e outro a
+// trabalhar; despejá-la cortava o que trabalha.
+func TestAOS465UmStreamH2ATrabalharProtegeALigacao(t *testing.T) {
+	soltar := make(chan struct{})
+	entrou := make(chan struct{}, 4)
+	aEscrever := make(chan struct{}, 4)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/lento":
+			entrou <- struct{}{}
+			<-soltar
+		case "/grande":
+			aEscrever <- struct{}{}
+			bloco := make([]byte, 64<<10)
+			for i := 0; i < 1024; i++ {
+				if _, err := w.Write(bloco); err != nil {
+					return
+				}
+			}
+		}
+	})
+	interior, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	contador := &ligacoesAceites{}
+	ln := limitarLigacoes(interior, 1, contador)
+	certPath, keyPath, leaf := genTLSCertFiles(t)
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	ligarAoServidor(srv)
+	fim := make(chan struct{})
+	go func() {
+		_ = srv.ServeTLS(ln, certPath, keyPath)
+		close(fim)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-fim
+	})
+	addr := interior.Addr().String()
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	cli := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		ForceAttemptHTTP2: true, TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"},
+	}}
+
+	// Na MESMA ligação h2: /grande que o cliente não lê, e /lento a trabalhar.
+	grande, err := cli.Get("https://" + addr + "/grande")
+	if err != nil {
+		t.Fatalf("/grande: %v", err)
+	}
+	defer func() { _ = grande.Body.Close() }()
+	if grande.ProtoMajor != 2 {
+		t.Fatalf("protocolo %s: o teste precisa de h2", grande.Proto)
+	}
+	<-aEscrever
+	resp := make(chan error, 1)
+	go func() {
+		r, err := cli.Get("https://" + addr + "/lento")
+		if err == nil {
+			_, err = io.Copy(io.Discard, r.Body)
+			_ = r.Body.Close()
+		}
+		resp <- err
+	}()
+	<-entrou
+	time.Sleep(600 * time.Millisecond) // a escrita de /grande presa há mais do que a graça
+
+	c, err := dialTLS(addr, leaf, 800*time.Millisecond)
+	if err == nil {
+		_ = c.Close()
+		t.Fatal("uma ligacao nova passou com a unica vaga numa ligacao h2 com um stream a trabalhar — " +
+			"o escalao 2 despejou-a por ter UM stream a espera do cliente")
+	}
+	close(soltar)
+	if err := <-resp; err != nil {
+		t.Fatalf("o stream a trabalhar foi cortado: %v", err)
+	}
+	if d := contador.despejadas.Load(); d != 0 {
+		t.Fatalf("despejos=%d", d)
+	}
+}
+
+// TestAOS465NoEscalao2SaiAQueEsperaHaMaisTempo — a ordem dentro do escalão 2 é a de quando cada
+// ligação COMEÇOU a esperar pelo cliente, não a da chegada. B chega primeiro mas prende a escrita
+// depois de A: sai A.
+func TestAOS465NoEscalao2SaiAQueEsperaHaMaisTempo(t *testing.T) {
+	aEscrever := make(chan struct{}, 4)
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/grande" {
+			aEscrever <- struct{}{}
+			bloco := make([]byte, 64<<10)
+			for i := 0; i < 1024; i++ {
+				if _, err := w.Write(bloco); err != nil {
+					return
+				}
+			}
+		}
+	})
+	addr, ln, contador := servidorUnitario(t, 2, h)
+	ln.graca = 0 // a ordem, sem a graça pelo meio
+
+	b, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = b.Close() }()
+	rb := bufio.NewReader(b)
+	if _, err := pedir(b, rb, "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("pedido: %v", err)
+	}
+	a, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+	for _, c := range []net.Conn{a, b} { // A prende primeiro, B depois
+		if _, err := c.Write([]byte("GET /grande HTTP/1.1\r\nHost: x\r\n\r\n")); err != nil {
+			t.Fatalf("escrita: %v", err)
+		}
+		<-aEscrever
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	if _, err := pedir(c, bufio.NewReader(c), "/rapido", 3*time.Second); err != nil {
+		t.Fatalf("a ligacao nova devia ser servida: %v", err)
+	}
+	if d := contador.despejadas.Load(); d != 1 {
+		t.Fatalf("despejos=%d, esperava 1", d)
+	}
+	// A foi fechada: depois de drenar o que já tinha chegado, a leitura acaba. B continua a receber.
+	_ = a.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := io.Copy(io.Discard, a); err != nil {
+		t.Fatalf("A (a espera ha mais tempo) devia ter sido despejada e acabar em EOF: %v", err)
+	}
+	_ = b.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, err := b.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("B foi despejada em vez de A: %v", err)
+	}
+}
+
+// TestAOS465OMapaDasVivasEsvazia — cada ligação fechada sai do mapa que o despejo percorre. Sem isso o
+// mapa crescia com cada ligação que já passou pelo nó, e o despejo percorria-as todas.
+func TestAOS465OMapaDasVivasEsvazia(t *testing.T) {
+	h, _, _ := bloqueante()
+	addr, ln, contador := servidorUnitario(t, 4, h)
+	for i := 0; i < 10; i++ {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		if _, err := pedir(c, bufio.NewReader(c), "/rapido", 3*time.Second); err != nil {
+			t.Fatalf("pedido: %v", err)
+		}
+		_ = c.Close()
+	}
+	esperarAte(t, 3*time.Second, func() bool { return contador.abertas.Load() == 0 }, "ligacoes por fechar")
+	ln.mu.Lock()
+	n := len(ln.vivas)
+	ln.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("o mapa das vivas tem %d entradas com 0 ligacoes abertas", n)
+	}
+}

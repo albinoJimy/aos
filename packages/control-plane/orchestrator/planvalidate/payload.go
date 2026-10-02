@@ -47,12 +47,14 @@ import (
 // EIXOS DE RISCO PINADOS do snapshot.
 //
 // O critério deriva-se daí e é EXACTAMENTE o de [IsEffectTool] (AOS-271): uma
-// capability que fala para fora (`egress ≠ none`) ou que não se desfaz
-// (`reversibility = irreversible`) é uma capability cuja autorização ADR-005 exige que
-// venha de dados trusted. Uma só definição, agora com DUAS perguntas: «um verificador
-// pode pinar isto?» (§2.2) e «este consumidor detém autoridade privilegiada?» (§2.3).
-// Inventar aqui uma segunda taxonomia — uma lista de nomes, um eixo novo — daria duas
-// respostas que envelheceriam em direcções diferentes.
+// capability que fala para fora (`egress ≠ none`), que não se desfaz
+// (`reversibility = irreversible`) ou que altera estado (`mutation ≠ none`, AOS-409) é
+// uma capability cuja autorização ADR-005 exige que venha de dados trusted. Uma só
+// definição, agora com DUAS perguntas: «um verificador pode pinar isto?» (§2.2) e «este
+// consumidor detém autoridade privilegiada?» (§2.3). Inventar aqui uma segunda
+// taxonomia — uma lista de nomes, um critério só deste lado — daria duas respostas que
+// envelheceriam em direcções diferentes; o eixo de mutação entrou no critério ÚNICO e
+// muda as duas respostas ao mesmo tempo.
 //
 // Consequência prática, e é a desejada: um nó que pina uma tool de egress NÃO pode
 // consumir um resumo produzido por outro nó. Não é um bug — é a barreira P0 aplicada

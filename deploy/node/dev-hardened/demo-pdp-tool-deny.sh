@@ -16,15 +16,16 @@
 #   turno após turno o modelo pede `web_post`, o RM nega, o resultado untrusted volta ao prompt.
 #
 #   QUAL o gate que nega (rigor): o span `execute_tool` regista `aos.decision=deny`,
-#   `aos.decision.denied_by=revalidation` e `aos.taint=untrusted`. A negação dá-se na REVALIDAÇÃO
+#   `aos.decision.denied_by=revalidation` e o `aos.taint` do contexto do turno (desde o ADR-034:
+#   `trusted` num run cujo contexto só tem o objectivo; era sempre `untrusted` antes). A negação dá-se na REVALIDAÇÃO
 #   DO REGISTRY (platform/registry/revalidation): antes de executar QUALQUER tool o RM re-verifica o
 #   CONTRATO ASSINADO da tool contra o seu trust store de registry. O nó de referência tem trust
 #   store VAZIO — logo `web_post`, embora oferecida ao modelo e anotada com capability, NÃO tem
 #   contrato assinado registado e é RECUSADA ANTES de chegar ao gate Cedar/taint. Propriedade forte:
 #   o modelo NÃO executa uma tool só porque lha ofereceram — o RM re-valida contra o SEU registry
-#   assinado (defesa-em-profundidade); e a autorização originada pelo modelo fica `untrusted`
-#   (registado no span), o degrau seguinte do fail-closed (P4). Chegar a NEGAR especificamente no
-#   taint-gate Cedar exigiria REGISTAR um contrato de tool ASSINADO (o registry/EPIC-05 mais fundo).
+#   assinado (defesa-em-profundidade). A autorização é o rótulo do CONTEXTO do turno (ADR-034),
+#   registado no span; chegar ao Cedar exige REGISTAR um contrato de tool ASSINADO, e aí um
+#   web_post de contexto limpo morre na REGIÃO (eu-west ≠ eu), não no taint.
 #
 # Pré-requisito: a stack OIDC a correr (bash up-oidc.sh) com uma MOONSHOT_API_KEY válida em
 # secrets/model.env (cada turno chama o modelo real).
@@ -56,7 +57,7 @@ BEARER="$(getidtoken)"; [[ -n "${BEARER}" ]] || fail "sem id-token do Keycloak"
 
 echo "[tool-deny] 2/5 NHI mintado COM cap:http.post (o principal ESTÁ autorizado) ..."
 NHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer \
-  --human human:alice --agent agt-tooldeny --class researcher --caps cap:http.post --ttl 15m | tr -d '\r\n')"
+  --human human:alice --board board:demo --agent agt-tooldeny --class researcher --caps cap:http.post --ttl 15m | tr -d '\r\n')"
 [[ -n "${NHI}" ]] || fail "mint falhou"
 
 echo "[tool-deny] 3/5 POST /runs — objetivo que INDUZ o modelo a pedir a tool web_post ..."

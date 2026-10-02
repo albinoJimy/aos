@@ -352,7 +352,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, p Plan) (Result, error) {
 			}
 			// Ordena antes de propagar (resultado COMPLETO e SURFACED, nunca silencioso).
 			sortResults(res.Results)
-			return res, fmt.Errorf("%w: nó %q: %v", ErrDispatchSink, n.NodeID, err)
+			// A causa do sink viaja com `%w` (AOS-439): era `%v`, e o chamador perdia o tipo — o
+			// `aos-orq` não conseguia distinguir uma recusa determinista do nó (o submissor fora
+			// do mandato) de uma avaria, e retentava-a para sempre. O texto é o mesmo.
+			return res, fmt.Errorf("%w: nó %q: %w", ErrDispatchSink, n.NodeID, err)
 		}
 		res.Results = append(res.Results, NodeResult{NodeID: n.NodeID, Outcome: OutcomeDispatched, Reason: ""})
 		res.Dispatched++

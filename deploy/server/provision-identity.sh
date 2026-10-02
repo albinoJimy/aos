@@ -132,7 +132,7 @@ done
 #     A validação por padrão faz o IdP RECUSAR um board malformado à cabeça, e `required`
 #     impede que se crie um leitor sem fronteira nenhuma.
 # ------------------------------------------------------------------------------------------
-log "4b/6 a declarar o atributo `board` no user profile do realm"
+log "4b/6 a declarar o atributo 'board' no user profile do realm"
 ADMTOK="$(curl -sk --max-time 20 -X POST "${IDP_LOCAL}/realms/master/protocol/openid-connect/token" \
   -d grant_type=password -d client_id=admin-cli \
   -d "username=$(grep -E '^IDP_ADMIN_USER=' "${ENV_FILE}" | cut -d= -f2-)" \
@@ -236,9 +236,45 @@ log "  board do leitor = ${READER_BOARD} (atributo da identidade, nao constante 
 if [[ ! -s "${SECRETS}/reader-client-secret" ]]; then
   kc "${IDP_LOCAL}/admin/realms/aos/clients/${READER_CID}/client-secret" \
     | grep -o '"value":"[^"]*"' | cut -d'"' -f4 > "${SECRETS}/reader-client-secret"
-  chmod 400 "${SECRETS}/reader-client-secret"
   [[ -s "${SECRETS}/reader-client-secret" ]] || fail "nao consegui obter o segredo do aos-reader"
-  log "  segredo em ${SECRETS}/reader-client-secret (0400)"
+  log "  segredo obtido para ${SECRETS}/reader-client-secret"
+fi
+# AOS-416 — O MODO CORRIGE-SE FORA DO GUARD, E DE PROPOSITO.
+#
+# Este ficheiro e montado no `aos-orq`, que corre como 65532 (o nonroot da imagem). Em 0400 do
+# utilizador `aos` o contentor NAO o le, e o executor de nos nao obtem Bearer nenhum — medido em
+# producao a 2026-09-20. A fronteira do segredo e o DIRECTORIO: `bootstrap.sh` cria `secrets/`
+# com `install -d -m 700` e o `provision.sh` reforca-o, portanto um 0644 la dentro nao e legivel
+# por mais ninguem. E a convencao que o `model-api.key` e o `vault-token` ja seguem.
+#
+# Um `chown 65532` seria pior de duas maneiras: exige root, que este script nao tem (corre como
+# `aos`), e tiraria a leitura ao `backup.sh`, que corre no cron do `aos` e tara o `secrets/`
+# inteiro — o backup nocturno passaria a falhar em silencio.
+#
+# FORA do `if` acima porque uma instalacao ANTERIOR ao AOS-416 ja tem o ficheiro, e um guard por
+# existencia nunca lhe tocaria: e precisamente a instalacao com o defeito que e preciso reparar.
+if [[ -s "${SECRETS}/reader-client-secret" ]]; then
+  chmod 644 "${SECRETS}/reader-client-secret"   # uid 65532 (non-root) tem de o LER
+  log "  segredo em ${SECRETS}/reader-client-secret (0644 dentro de secrets/ em 0700)"
+fi
+
+# BOARD NO CLIENTE DE CUNHAGEM (AOS-407). O realm importado antes do AOS-407 nao tinha o mapper
+# `board` no cliente aos-issuer — e a importacao do realm NAO volta a correr num Keycloak ja
+# provisionado. Sem a claim, `aos-issuer mint --assertion` RECUSA (um NHI sem board seria negado em
+# todas as tool calls). Idempotente: so cria o mapper se ele nao existir.
+ISSUER_CID="$(kc "${IDP_LOCAL}/admin/realms/aos/clients?clientId=aos-issuer" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
+if [[ -n "${ISSUER_CID}" ]]; then
+  if kc "${IDP_LOCAL}/admin/realms/aos/clients/${ISSUER_CID}/protocol-mappers/models" | grep -q '"name":"board-claim"'; then
+    log "  mapper board do aos-issuer: ja existia"
+  else
+    kc -o /dev/null -X POST "${IDP_LOCAL}/admin/realms/aos/clients/${ISSUER_CID}/protocol-mappers/models"       -H 'Content-Type: application/json' -d '{
+      "name":"board-claim","protocol":"openid-connect","protocolMapper":"oidc-usermodel-attribute-mapper",
+      "config":{"user.attribute":"board","claim.name":"board","jsonType.label":"String",
+                "id.token.claim":"true","access.token.claim":"true","multivalued":"false"}}'
+    log "  mapper board do aos-issuer: criado (AOS-407)"
+  fi
+else
+  log "  aviso: cliente aos-issuer nao encontrado — o mapper board (AOS-407) NAO foi verificado"
 fi
 unset ADMTOK
 
@@ -272,6 +308,11 @@ grep -q '"sealed":false' <<<"$(v 'https://127.0.0.1:8200/v1/sys/seal-status')" |
 
 # Motor Transit (204 = criado, 400 = já existia — ambos aceitáveis).
 vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit' "X-Vault-Token: ${ROOT_TOKEN}" '{"type":"transit"}' >/dev/null || true
+# AOS-453 — motor Transit PRÓPRIO da KEK do backup imutável (AOS_BACKUP_VAULT_TRANSIT_MOUNT=transit-backup).
+# Separado do `transit` do DSAR por duas razões: a política do nó tem `delete` sobre as chaves do
+# DSAR (é o crypto-shred do Art. 17) e NÃO pode ter sobre a do backup; e o portão da reconciliação
+# de apagamentos (AOS-436) fecha o embrulho do mount do DSAR no arranque.
+vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit-backup' "X-Vault-Token: ${ROOT_TOKEN}" '{"type":"transit"}' >/dev/null || true
 
 # Política least-privilege: SÓ as operações Transit que o nó precisa. O root token nunca chega
 # ao nó — fica em vault-init.json, para operações de administração.
@@ -284,7 +325,7 @@ vpost 'https://127.0.0.1:8200/v1/sys/mounts/transit' "X-Vault-Token: ${ROOT_TOKE
 # esta chamada NÃO leva `|| true`.
 vaultx() { docker exec -i -e VAULT_TOKEN="${ROOT_TOKEN}" -e VAULT_ADDR=https://127.0.0.1:8200 \
              -e VAULT_CACERT=/vault/tls/ca.crt aos-vault-1 "$@"; }
-vaultx vault policy write aos-node - <<'POL' >/dev/null
+POLICY_HCL="$(cat <<'POL'
 # AUTO-CONSULTA E RENOVAÇÃO. Sem estes dois caminhos o token é emitido com `no_default_policy` e
 # fica SEM eles — é a política `default` que normalmente os concede. Duas consequências, e a
 # segunda é silenciosa:
@@ -302,9 +343,60 @@ path "transit/keys/aos-kek-*" { capabilities = ["create","read","update","delete
 path "transit/keys/aos-kek-*/config" { capabilities = ["update"] }
 path "transit/encrypt/aos-kek-*" { capabilities = ["update"] }
 path "transit/decrypt/aos-kek-*" { capabilities = ["update"] }
+# AOS-453 — a KEK do BACKUP, no mount PRÓPRIO: criar, ler, embrulhar e desembrulhar. SEM `delete`.
+# `+` e NÃO `*`: no Vault o `*` só é glob no FIM do caminho, e um `aos-kek-*` casa também
+# `aos-kek-X/config`, `/rotate` e `/trim` — com `update` neles o token do nó destruía a KEK sem
+# `delete` (rotate → min_decryption_version → trim apaga a v1; ou deletion_allowed). Medido num
+# Vault 1.18 real na revisão do AOS-453. O `+` casa UM segmento: os sub-caminhos da chave ficam em
+# deny IMPLÍCITO. O mount dedicado substitui a restrição de nome `aos-kek-`.
+# Quem destrói ou roda a KEK do backup é o dono, com a raiz — nunca o nó.
+path "transit-backup/keys/+" { capabilities = ["create","read","update"] }
+path "transit-backup/encrypt/+" { capabilities = ["update"] }
+path "transit-backup/decrypt/+" { capabilities = ["update"] }
 POL
+)"
+
+# verificar_acl_backup TOKEN — CONTROLO NEGATIVO pela ACL (AOS-453), e não por uma tentativa: um
+# `delete` sobre uma chave que não existe passaria com qualquer política. Pergunta-se ao Vault (com a
+# raiz) as capacidades de TOKEN: na chave do backup `update` e nunca `delete`; em /config, /rotate e
+# /trim exactamente `deny`; em encrypt/decrypt `update`. Devolve 1 e escreve a causa em stderr.
+verificar_acl_backup() {
+  local tok="$1" cap sub
+  cap="$(vaultx vault token capabilities "${tok}" transit-backup/keys/aos-kek-controlo 2>&1 || true)"
+  if grep -q 'delete' <<<"${cap}" || ! grep -q 'update' <<<"${cap}"; then
+    echo "transit-backup/keys/<chave>: ${cap} (esperado create/read/update, sem delete)" >&2; return 1
+  fi
+  for sub in config rotate trim; do
+    cap="$(vaultx vault token capabilities "${tok}" "transit-backup/keys/aos-kek-controlo/${sub}" 2>&1 || true)"
+    if [[ "$(tr -d '[:space:]' <<<"${cap}")" != "deny" ]]; then
+      echo "transit-backup/keys/<chave>/${sub}: ${cap} (esperado deny)" >&2; return 1
+    fi
+  done
+  for sub in encrypt decrypt; do
+    cap="$(vaultx vault token capabilities "${tok}" "transit-backup/${sub}/aos-kek-controlo" 2>&1 || true)"
+    grep -q 'update' <<<"${cap}" || { echo "transit-backup/${sub}/<chave>: ${cap} (esperado update)" >&2; return 1; }
+  done
+  return 0
+}
+
+# ORDEM (AOS-453): a política nova prova-se numa política CANDIDATA com um token de teste de vida
+# curta, e SÓ DEPOIS substitui a `aos-node`. Escrevê-la primeiro e verificar depois deixava, numa
+# falha, a política partida activa no token do nó.
+vaultx vault policy write aos-node-candidata - <<<"${POLICY_HCL}" >/dev/null
+CAND_TOK="$(vaultx vault token create -policy=aos-node-candidata -no-default-policy -ttl=2m -field=token 2>/dev/null || true)"
+[[ -n "${CAND_TOK}" ]] || fail "nao consegui emitir o token de teste da politica candidata"
+if ! ACL_ERR="$(verificar_acl_backup "${CAND_TOK}" 2>&1)"; then
+  vaultx vault token revoke "${CAND_TOK}" >/dev/null 2>&1 || true
+  vaultx vault policy delete aos-node-candidata >/dev/null 2>&1 || true
+  fail "a politica candidata da ao no poder de DESTRUIR ou rodar a KEK do backup — a aos-node NAO foi alterada: ${ACL_ERR}"
+fi
+vaultx vault token revoke "${CAND_TOK}" >/dev/null 2>&1 || true
+vaultx vault policy delete aos-node-candidata >/dev/null 2>&1 || true
+unset CAND_TOK ACL_ERR
+
+vaultx vault policy write aos-node - <<<"${POLICY_HCL}" >/dev/null
 vaultx vault policy read aos-node >/dev/null || fail "a politica aos-node nao ficou escrita — o token do no ficaria sem permissao nenhuma"
-log "  politica aos-node escrita e confirmada"
+log "  politica aos-node verificada (candidata) e escrita"
 
 if [[ "$(cat "${SECRETS}/vault-token" 2>/dev/null)" == "placeholder-ate-init" ]]; then
   TOK="$(vpost 'https://127.0.0.1:8200/v1/auth/token/create' "X-Vault-Token: ${ROOT_TOKEN}" \
@@ -331,10 +423,28 @@ nodex vault token lookup >/dev/null 2>&1 \
   || fail "o token do no NAO consegue lookup-self — a sonda de saude lera 403 e o /readyz ficara VERMELHO sobre um token bom; confirme os paths auth/token/* na politica aos-node"
 nodex vault token renew >/dev/null 2>&1 \
   || fail "o token do no NAO consegue renew-self — um token periodico que nunca e renovado MORRE no fim do periodo, sem aviso"
-nodex vault list transit/keys >/dev/null 2>&1 \
-  || fail "o token do no NAO consegue listar transit/keys — a prova de capacidade da sonda falharia"
+# O `vault list` sai com 2 tanto num 403 como num motor Transit VAZIO («No value found at
+# transit/keys/» — o Vault devolve 404 ao LIST). O 404 é o Vault a dizer «autorizado, e não há
+# chaves nenhumas», e é assim que o nó o lê (provaDeCapacidade em packages/cmd/aos/vaultkeyvault.go
+# aceita 200 e 404). Tratá-lo como falta de permissão abortava o primeiro provisionamento antes do
+# passo 6 (observado em produção a 2026-09-18). Fail-closed para tudo o resto: só passa o sucesso
+# ou a mensagem do 404, e nunca com 403/permission denied na saída.
+if ! LIST_OUT="$(nodex vault list transit/keys 2>&1)"; then
+  if grep -qiE 'permission denied|Code: 403' <<<"${LIST_OUT}" \
+     || ! grep -q 'No value found at transit/keys' <<<"${LIST_OUT}"; then
+    fail "o token do no NAO consegue listar transit/keys — a prova de capacidade da sonda falharia: ${LIST_OUT}"
+  fi
+  log "  transit/keys vazio (404 no LIST) — autorizado, ainda sem chaves"
+fi
+unset LIST_OUT
+# AOS-453 — e o mesmo controlo sobre o token REAL do nó (a candidata provou a política; isto prova
+# que é ESSA a política que o token do nó tem).
+if ! ACL_ERR="$(verificar_acl_backup "${NODE_TOK}" 2>&1)"; then
+  fail "o token do no tem poder de DESTRUIR ou rodar a KEK do backup, ou nao a consegue usar: ${ACL_ERR}"
+fi
+unset ACL_ERR
 unset NODE_TOK
-log "  token do no verificado: lookup-self, renew-self e list transit/keys PASSAM"
+log "  token do no verificado: lookup-self, renew-self e list transit/keys PASSAM; KEK do backup sem delete/rotate/trim/config"
 unset ROOT_TOKEN UNSEAL_KEY
 
 # ------------------------------------------------------------------------------------------

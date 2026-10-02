@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -14,9 +15,42 @@ import (
 	"github.com/aos-ref/substrate/eventstore"
 )
 
+// TTLMaximo é o tecto de validade de um NHI emitido por esta biblioteca (AOS-427, decisão 4).
+//
+// # PORQUE É QUE ISTO EXISTE
+//
+// Não existia tecto nenhum: `ClassPolicy.TTL` era aceite tal-qual, e o valor era o que o
+// operador escrevesse. Enquanto a cunhagem foi MANUAL isso teve uma defesa acidental — dois
+// logins no browser por cada token são atrito a sério, e ninguém emite por engano uma
+// credencial de um dia quando tem de a pedir à mão.
+//
+// O AOS-427 remove esse atrito. O que protegia deixaria de proteger exactamente no momento em
+// que a emissão passasse a ser automática — que é o pior momento possível para uma defesa
+// desaparecer, porque ninguém a veria sair.
+//
+// # PORQUÊ UMA CONSTANTE, E NÃO CONFIGURAÇÃO
+//
+// Um tecto configurável é um tecto que um deployment novo, ou um script esquecido, volta a
+// poder levantar. A decisão foi «tornar impossível», não «desencorajar»: o valor vive aqui, e
+// quem precisar de mais muda-o com uma revisão — que é o ponto, não o obstáculo.
+//
+// É também a razão de viver na BIBLIOTECA e não na receita: vale para os três chamadores de
+// hoje e para os que ainda não existem, sem depender de nenhuma receita estar certa.
+//
+// # PORQUE É QUE É UMA HORA
+//
+// Medido, não escolhido por gosto. Os valores legítimos da árvore são: o nó emite a 15m
+// (`cmd/aos/main.go`), o orquestrador a 30m (`tokenTTL`, `planner_wiring.go`), e o CLI tem 15m
+// por omissão com a receita de produção a passar 45m (`deploy/server/get-id-token.ps1`). Uma
+// hora fica acima de todos — não parte nada do que existe — e continua a tornar impossível o
+// que o ADR-006 invariante 2 proíbe ao pedir «TTL curto»: um NHI que dure um turno, ou um dia.
+const TTLMaximo = time.Hour
+
 // ClassPolicy é a configuração de emissão POR CLASSE de agente: o TTL do token e
 // o escopo-máximo que a classe concede. A autoridade efectiva embutida no token
 // é sempre a intersecção deste escopo com o do utilizador (nunca alarga).
+//
+// O TTL é validado contra [TTLMaximo] na CONSTRUÇÃO do emissor, não na emissão.
 type ClassPolicy struct {
 	// TTL é o tempo de vida do token (exp - iat). Curto por desenho: minimiza a
 	// janela entre revogação e expiração natural.
@@ -36,6 +70,10 @@ type IssueRequest struct {
 	AgentClass string
 	// PolicyRef é a referência de política a codificar (policy_ref, AOS-004).
 	PolicyRef string
+	// Board é o board de soberania do humano responsável (AOS-407), tal como o autenticador o
+	// afirmou (ex.: a claim `board` do ID-token OIDC). Vazio ⇒ o token sai sem board, e a
+	// soberania por board, quando ligada, nega as suas tool calls.
+	Board string
 	// UserAuthority são as capabilities que o UTILIZADOR possui. A autoridade do
 	// token é a intersecção com [ClassPolicy.Scope].
 	UserAuthority []string
@@ -49,6 +87,12 @@ type IssueRequest struct {
 	// (evento identity.nhi.issued) — ver ADR-003 e [BindingAudit]. É um RÓTULO de
 	// método: NUNCA o token/asserção cru nem PII. Vazio ⇒ [AuthMethodUnspecified].
 	AuthMethod string
+	// Mandate, quando presente, é o mandato assinado pelo humano sob o qual se cunha (AOS-427).
+	// Vai EMBEBIDO no token, e o [Issuer] RECUSA cunhar um token que ele não cubra
+	// ([ErrMandateViolated]). Essa recusa é cortesia de um emissor honesto — quem decide é o nó,
+	// que verifica o mandato contra a chave pinada do humano. A assinatura do mandato NÃO é
+	// verificada aqui: o Issuer não conhece as chaves dos humanos (ver [SignedMandate.VerifySignature]).
+	Mandate *SignedMandate
 }
 
 // Issuer emite tokens NHI assinados. NÃO detém os bytes crus da chave privada: assina
@@ -149,8 +193,28 @@ func NewIssuerWithSigner(iss string, signer crypto.Signer, classes map[string]Cl
 	if err != nil {
 		return nil, err
 	}
+	// O TECTO IMPÕE-SE AQUI, NA CONSTRUÇÃO, E ISSO É DESENHO (AOS-427).
+	//
+	// Podia impor-se no `Issue`, e seria pior por duas razões. Primeira: um emissor construído
+	// com uma política impossível ficaria de pé e só falharia na primeira emissão — longe de
+	// quem o configurou, e possivelmente em produção. Segunda: aqui o mapa é COPIADO logo a
+	// seguir, pelo que o que se valida é exactamente o que o emissor vai usar para sempre; o
+	// chamador não o pode mutar por baixo depois.
+	//
+	// RECUSA-SE, NÃO SE APARA. Um clamp silencioso seria a pior das três saídas: o banner de
+	// arranque diria um TTL e o token teria outro, e a divergência só apareceria a quem fosse
+	// descodificar um `exp`. Um tecto que mente sobre si próprio é pior do que tecto nenhum.
 	cp := make(map[string]ClassPolicy, len(classes))
 	for k, v := range classes {
+		if v.TTL <= 0 {
+			// TTL ZERO OU NEGATIVO nasce expirado (`exp == iat`, ou antes dele). Nunca foi
+			// recusado, e é sempre defeito — ninguém quer emitir uma credencial morta. Entra
+			// no mesmo sentinela porque é a mesma pergunta: «esta validade é utilizável?».
+			return nil, fmt.Errorf("%w: classe %q tem TTL %v, e tem de ser maior que zero", ErrTTLForaDeGama, k, v.TTL)
+		}
+		if v.TTL > TTLMaximo {
+			return nil, fmt.Errorf("%w: classe %q pede TTL %v, acima do tecto de %v", ErrTTLForaDeGama, k, v.TTL, TTLMaximo)
+		}
 		cp[k] = v
 	}
 	i := &Issuer{
@@ -243,6 +307,7 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		AgentID:         req.AgentID,
 		AgentClass:      req.AgentClass,
 		PolicyRef:       req.PolicyRef,
+		Board:           req.Board,
 		Scope:           scope,
 		Issuer:          i.iss,
 		IssuedAt:        now.Unix(),
@@ -250,6 +315,14 @@ func (i *Issuer) Issue(ctx context.Context, req IssueRequest) (Token, error) {
 		Expiry:          now.Add(cp.TTL).Unix(),
 		JTI:             jti,
 		DelegationChain: chain,
+	}
+	if req.Mandate != nil {
+		if err := req.Mandate.Mandate.Covers(claims); err != nil {
+			return Token{}, err
+		}
+		m := *req.Mandate
+		m.Mandate.Scope = append([]string(nil), m.Mandate.Scope...)
+		claims.Mandate = &m
 	}
 
 	compact, err := signToken(i.signer, i.kid, claims)
@@ -283,6 +356,7 @@ func (i *Issuer) recordIssued(ctx context.Context, c Claims, authMethod string) 
 		AgentID:    c.AgentID,
 		AgentClass: c.AgentClass,
 		PolicyRef:  c.PolicyRef,
+		Board:      c.Board,
 		Scope:      c.Scope,
 		Issuer:     c.Issuer,
 		IssuedAt:   c.IssuedAt,

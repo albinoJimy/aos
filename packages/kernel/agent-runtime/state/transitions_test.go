@@ -20,9 +20,12 @@ func TestExactlyTenStates(t *testing.T) {
 	}
 }
 
-// expectedValid é a matriz de VERDADE independente da implementação: lista os 13
+// expectedValid é a matriz de VERDADE independente da implementação: lista os 15
 // pares válidos à mão (não deriva de validTransitions), para que o teste seja um
 // oráculo genuíno e detecte tanto pares em falta como pares a mais.
+//
+// Os dois últimos pares são o BACKSTOP de AOS-419 (eixo do DEF-906): a saída para
+// timed_out que faltava às esperas NÃO-humanas. Ver tecnica/02 §5.1.
 var expectedValid = map[transition]bool{
 	{Ready, Running}:          true,
 	{Running, WaitingOnTool}:  true,
@@ -35,16 +38,18 @@ var expectedValid = map[transition]bool{
 	{Running, Complete}:       true,
 	{Running, Failed}:         true,
 	{Running, TimedOut}:       true,
+	{WaitingOnTool, TimedOut}: true,
+	{Paused, TimedOut}:        true,
 	{Failed, Compensating}:    true,
 	{Compensating, Ready}:     true,
 }
 
 // TestTransitionMatrix10x10 VARRE a matriz completa 10×10 (100 pares): cada par
 // listado em expectedValid deve ser aceite por IsValidTransition, e TODOS os
-// restantes 87 pares devem ser rejeitados. É o oráculo puro da tabela declarativa.
+// restantes 85 pares devem ser rejeitados. É o oráculo puro da tabela declarativa.
 func TestTransitionMatrix10x10(t *testing.T) {
-	if len(expectedValid) != 13 {
-		t.Fatalf("oráculo deve ter 13 pares válidos, tem %d", len(expectedValid))
+	if len(expectedValid) != 15 {
+		t.Fatalf("oráculo deve ter 15 pares válidos, tem %d", len(expectedValid))
 	}
 	var validCount, invalidCount int
 	for _, from := range AllStates {
@@ -62,11 +67,11 @@ func TestTransitionMatrix10x10(t *testing.T) {
 			}
 		}
 	}
-	if validCount != 13 {
-		t.Fatalf("varredura contou %d pares válidos, esperava 13", validCount)
+	if validCount != 15 {
+		t.Fatalf("varredura contou %d pares válidos, esperava 15", validCount)
 	}
-	if invalidCount != 87 {
-		t.Fatalf("varredura contou %d pares inválidos, esperava 87 (100-13)", invalidCount)
+	if invalidCount != 85 {
+		t.Fatalf("varredura contou %d pares inválidos, esperava 85 (100-15)", invalidCount)
 	}
 }
 

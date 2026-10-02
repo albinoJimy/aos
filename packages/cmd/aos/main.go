@@ -210,6 +210,97 @@ var ErrBadRatifiers = errors.New("aos: AOS_RATIFIERS invalida (esperado \"princi
 // tenha DECIDIDO — fail-closed.
 var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminacao TLS do ingresso — defina AOS_TLS_CERT_PATH+AOS_TLS_KEY_PATH (TLS no no) OU DECLARE terminacao a montante com AOS_TLS_EXTERNAL_TERMINATION=1; a producao nao serve API/SSE/DSAR em texto-claro sem decisao explicita")
 
+var ErrProductionNeedsShredConfirmation = errors.New("aos: AOS_MODE=production com custodia de KEK INJECTADA (Config.DSARVault) exige que ela implemente a porta de confirmacao de crypto-shred — sem ela o fluxo DSAR sela key_destroyed SEM VERIFICAR, afirmando uma irrecuperabilidade que ninguem confirmou. Se a custodia destroi INCONDICIONALMENTE (o Delete nao pode falhar), DECLARE-O com AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1")
+
+// ErrProductionNeedsNATSCredential — sob AOS_MODE=production com o Event Store REPLICADO
+// (AOS_EVENTSTORE_NATS), a ligação ao cluster TEM de ser autenticada (AOS-470). Sem credencial
+// o CONNECT é anónimo, e quem alcança a porta de cliente do NATS escreve no log de produção —
+// a fonte de verdade dos runs, da revogação de NHI e das aprovações. A rede (WireGuard, bind no
+// IP do túnel, firewall por sub-rede, deploy/nats) estreita QUEM alcança a porta; não diz QUEM
+// está do outro lado. Material privado por FICHEIRO montado, nunca por variável de ambiente.
+var ErrProductionNeedsNATSCredential = errors.New("aos: AOS_MODE=production com AOS_EVENTSTORE_NATS exige AOS_EVENTSTORE_NATS_NKEY_FILE — sem credencial a ligacao ao cluster e anonima e quem alcanca a porta de cliente do NATS escreve no log de producao; a seed nkey vem de FICHEIRO montado (aos nats-nkey gerar), NUNCA de variavel de ambiente")
+
+// ErrEventStoreNATSCredentialWithoutNATS — AOS_EVENTSTORE_NATS_NKEY_FILE definido sem
+// AOS_EVENTSTORE_NATS. Uma credencial que nada usa é configuração que mente: o operador
+// julga o substrato autenticado e ele nem sequer é o replicado.
+var ErrEventStoreNATSCredentialWithoutNATS = errors.New("aos: AOS_EVENTSTORE_NATS_NKEY_FILE so faz sentido com AOS_EVENTSTORE_NATS — o Event Store local (AOS_EVENTSTORE_PATH) nao tem porta de rede a autenticar")
+
+var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem de ser um inteiro positivo (3 ou 5; 1 e so dev)")
+
+// ErrProductionNeedsDurableSubstrate — sob AOS_MODE=production o Event Store TEM de ser durável
+// (AOS_EVENTSTORE_PATH ou AOS_EVENTSTORE_NATS). Eixo AOS-300.
+//
+// A REVOGAÇÃO DE NHI é a razão, e é a que distingue esta guarda das outras duas de durabilidade.
+// [ErrDurableExecutionNeedsDurableSubstrate] cobre quem PEDE execução durável, e
+// [ErrProductionNeedsDurableApproval] cobre quem configura four-eyes; ambas são condicionais a
+// uma opção. A revogação não é: desde AOS-288 o registo é composto no verifier de identidade
+// SEMPRE, e a projecção é repovoada no arranque a partir do stream `identity.nhi.revoked`. Sobre
+// um Event Store in-memory esse stream morre com o processo, pelo que um token revogado volta a
+// ser ACEITE ao primeiro restart — em silêncio, com um Principal completo e utilizável, enquanto
+// o banner anuncia «revogacao». É a mesma classe de defeito que AOS-288 fechou, por outra porta.
+//
+// Decisão do dono: EXIGIR, não degradar — a mesma que [ErrProductionNeedsDurableApproval]
+// registou para o four-eyes.
+//
+// FICA DEPOIS das outras colunas de postura (identidade, soberania, KEK, four-eyes) de propósito:
+// um nó de produção mal configurado deve ouvir primeiro o que é mais fundamental, e mudar a ordem
+// trocaria o diagnóstico de quem já depende dela. Desde AOS-365 é a PRIMEIRA das duas guardas de
+// durabilidade incondicionais; a do WORM ([ErrProductionNeedsDurableWORM]) fecha o bloco logo a
+// seguir — mantê-la ANTES do WORM preserva TestAOS300_ProducaoSemEventStoreDuravelRecusa, que exige
+// ouvir «falta o Event Store» quando faltam os dois.
+var ErrProductionNeedsDurableSubstrate = errors.New("aos: AOS_MODE=production exige um Event Store DURAVEL — defina AOS_EVENTSTORE_NATS (ex.: aos-es-0:4222) ou AOS_EVENTSTORE_PATH (ex.: /var/lib/aos/events.wal). Sobre o store in-memory de referencia o stream identity.nhi.revoked morre com o processo: um NHI revogado volta a ser ACEITE ao primeiro restart, em silencio, enquanto o banner anuncia revogacao")
+
+// ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
+// configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
+// negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
+// escalado com fidelidade (o log durável NÃO guarda os inputs das tool calls — só a
+// captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
+// mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
+// ErrBadEventStoreReplicas — AOS_EVENTSTORE_NATS_REPLICAS presente mas nao e um inteiro
+// positivo. Fail-closed: um factor de replicacao invalido nao pode degradar para R1 em
+// silencio, porque o no anunciaria substrato replicado sobre um stream sem replicas.
+var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
+
+// ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
+// (AOS_MODEL_ENDPOINT), a credencial que o nó apresenta ao upstream NÃO pode ser o bearer de DEV
+// embebido no binário (AOS-247, achado F5). Sem AOS_MODEL_API_KEY_PATH, [staticModelCredential]
+// serve uma constante do código — a MESMA em todos os nós e legível por quem tenha o artefacto —
+// e o nó de produção falava com o gateway upstream com uma credencial que não identifica ninguém
+// e não se pode revogar. Pertence à mesma família de ErrProductionNeedsHardenedIdentity/
+// ErrProductionNeedsTLS: a produção não degrada silenciosamente para uma postura de referência.
+//
+// PORQUÊ NO ARRANQUE E NÃO NO Fetch. O `Fetch` corre POR-PEDIDO e não tem por onde abortar o
+// processo — devolver erro ali daria um nó que arranca, anuncia gateway e falha cada chamada em
+// runtime. A decisão é de CONFIG, logo vive na fronteira que lê o ambiente ([parseModelFromEnv]).
+var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com o model gateway ligado (AOS_MODEL_ENDPOINT) exige AOS_MODEL_API_KEY_PATH — sem ele o no apresentaria ao upstream um bearer de DEV embebido no binario (identico em todos os nos, legivel por quem tenha o artefacto, nao revogavel) em vez da credencial da organizacao; material privado por FICHEIRO montado, NUNCA por variavel de ambiente")
+
+// ErrProductionNeedsSandboxDriver — sob AOS_MODE=production COM tools de sandbox ligadas
+// (AOS_MODEL_TOOLS com bloco `sandbox`), o driver de execução NÃO pode ser o de referência
+// in-process (AOS-344). É condicional a uma opção do operador, no molde de
+// [ErrProductionNeedsDurableApproval] e de [ErrProductionNeedsModelCredential]: sem tool
+// nenhuma com executor não há sandbox a montar, e um nó de produção que não despacha código
+// não fica cerimonioso por isto.
+//
+// O QUE ISTO FECHA, E PORQUE NÃO É «ESCAPE DE SANDBOX». O driver de referência não corre
+// processos — é um VFS in-process que impõe as invariantes de isolamento fail-closed. O defeito
+// é outro, e é de POSTURA: dos três drivers, é o único que falha ABERTO. `firecracker` e
+// `gvisor` sem executor provisionado falham (`ErrDriverUnavailable` e `ErrGVisorExecutorUnset`,
+// respectivamente) e a chamada morre no caminho de recusa; o de referência sucede em silêncio, e o resultado — que nenhuma fronteira
+// ao nível do kernel produziu — é selado na hash-chain WORM como se fosse um efeito real. O
+// alinhamento é fazê-lo falhar fechado onde os outros dois já falham.
+//
+// RECUSA TAMBÉM A ESCOLHA EXPLÍCITA, e é deliberado. A auditoria nomeou a omissão
+// (`AOS_SANDBOX_DRIVER` vazio por omissão no compose de produção), mas uma guarda que só
+// apanhasse a omissão ficava a uma variável de distância de ser contornada, e o valor explícito
+// não acrescenta fronteira nenhuma — só torna a mesma postura deliberada. Onde há uma decisão
+// legítima a declarar (terminação TLS a montante, custódia que destrói incondicionalmente) esta
+// casa dá um escape declarado; aqui não há: nenhum deployment sancionado corre o driver de
+// referência em produção (`dev-hardened` fixa `firecracker`, o servidor usa `gvisor`).
+//
+// FORA DE PRODUÇÃO NADA MUDA: o default continua a ser o driver de referência e o valor
+// explícito `fake` continua a compor — é o que o smoke e as demos usam.
+var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois falham (ErrDriverUnavailable no firecracker, ErrGVisorExecutorUnset no gvisor) e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
+
 // ErrProductionNeedsDurableKEK — sob AOS_MODE=production COM substrato durável (AOS_WORM_PATH
 // e/ou AOS_DURABLE_EXECUTION), a custódia da KEK por-titular NÃO pode ser o vault in-memory de
 // referência (AOS-215/AOS-216). É a SIMÉTRICA de ErrDurableExecutionNeedsDurableSubstrate: aquela
@@ -241,84 +332,6 @@ var ErrProductionNeedsTLS = errors.New("aos: AOS_MODE=production exige terminaca
 // SÓ SOB PRODUÇÃO E SÓ PARA CUSTÓDIA INJECTADA: o vault de referência continua a compor sem
 // declaração nenhuma, porque transformar o modo de desenvolvimento numa configuração cerimoniosa
 // é o custo que este ticket proíbe explicitamente.
-var ErrProductionNeedsShredConfirmation = errors.New("aos: AOS_MODE=production com custodia de KEK INJECTADA (Config.DSARVault) exige que ela implemente a porta de confirmacao de crypto-shred — sem ela o fluxo DSAR sela key_destroyed SEM VERIFICAR, afirmando uma irrecuperabilidade que ninguem confirmou. Se a custodia destroi INCONDICIONALMENTE (o Delete nao pode falhar), DECLARE-O com AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL=1")
-
-// ErrProductionNeedsDurableApproval — sob AOS_MODE=production com aprovadores four-eyes
-// configurados (AOS_APPROVERS_FILE), a EXECUÇÃO DURÁVEL é obrigatória. O bridge
-// negação→aprovação→reexecução (AOS-021) depende dela em dois pontos: reproduzir o turno
-// escalado com fidelidade (o log durável NÃO guarda os inputs das tool calls — só a
-// captura de replay os tem) e impedir a dupla execução das activities já aplicadas do
-// mesmo turno (step-ledger). Decisão do dono: exigir, não degradar.
-// ErrBadEventStoreReplicas — AOS_EVENTSTORE_NATS_REPLICAS presente mas nao e um inteiro
-// positivo. Fail-closed: um factor de replicacao invalido nao pode degradar para R1 em
-// silencio, porque o no anunciaria substrato replicado sobre um stream sem replicas.
-var ErrBadEventStoreReplicas = errors.New("aos: AOS_EVENTSTORE_NATS_REPLICAS tem de ser um inteiro positivo (3 ou 5; 1 e so dev)")
-
-// ErrProductionNeedsDurableSubstrate — sob AOS_MODE=production o Event Store TEM de ser durável
-// (AOS_EVENTSTORE_PATH ou AOS_EVENTSTORE_NATS). Eixo AOS-300.
-//
-// A REVOGAÇÃO DE NHI é a razão, e é a que distingue esta guarda das outras duas de durabilidade.
-// [ErrDurableExecutionNeedsDurableSubstrate] cobre quem PEDE execução durável, e
-// [ErrProductionNeedsDurableApproval] cobre quem configura four-eyes; ambas são condicionais a
-// uma opção. A revogação não é: desde AOS-288 o registo é composto no verifier de identidade
-// SEMPRE, e a projecção é repovoada no arranque a partir do stream `identity.nhi.revoked`. Sobre
-// um Event Store in-memory esse stream morre com o processo, pelo que um token revogado volta a
-// ser ACEITE ao primeiro restart — em silêncio, com um Principal completo e utilizável, enquanto
-// o banner anuncia «revogacao». É a mesma classe de defeito que AOS-288 fechou, por outra porta.
-//
-// Decisão do dono: EXIGIR, não degradar — a mesma que [ErrProductionNeedsDurableApproval]
-// registou para o four-eyes.
-//
-// FICA DEPOIS das outras colunas de postura (identidade, soberania, KEK, four-eyes) de propósito:
-// um nó de produção mal configurado deve ouvir primeiro o que é mais fundamental, e mudar a ordem
-// trocaria o diagnóstico de quem já depende dela. Desde AOS-365 é a PRIMEIRA das duas guardas de
-// durabilidade incondicionais; a do WORM ([ErrProductionNeedsDurableWORM]) fecha o bloco logo a
-// seguir — mantê-la ANTES do WORM preserva TestAOS300_ProducaoSemEventStoreDuravelRecusa, que exige
-// ouvir «falta o Event Store» quando faltam os dois.
-var ErrProductionNeedsDurableSubstrate = errors.New("aos: AOS_MODE=production exige um Event Store DURAVEL — defina AOS_EVENTSTORE_NATS (ex.: aos-es-0:4222) ou AOS_EVENTSTORE_PATH (ex.: /var/lib/aos/events.wal). Sobre o store in-memory de referencia o stream identity.nhi.revoked morre com o processo: um NHI revogado volta a ser ACEITE ao primeiro restart, em silencio, enquanto o banner anuncia revogacao")
-
-var ErrProductionNeedsDurableApproval = errors.New("aos: AOS_MODE=production com aprovadores four-eyes (AOS_APPROVERS_FILE) exige EXECUCAO DURAVEL — defina AOS_DURABLE_EXECUTION=1 (+AOS_EVENTSTORE_PATH). Sem ela o bridge de aprovacao nao funciona: o turno escalado nao pode ser reproduzido com fidelidade (o log duravel nao guarda os inputs das tool calls) e nada impede a dupla execucao das activities ja aplicadas do mesmo turno. Um four-eyes que verifica assinaturas e nao destrava nada e pior do que desligado — cria a expectativa de aprovacao humana onde so ha negacoes")
-
-// ErrProductionNeedsModelCredential — sob AOS_MODE=production COM o model gateway LIGADO
-// (AOS_MODEL_ENDPOINT), a credencial que o nó apresenta ao upstream NÃO pode ser o bearer de DEV
-// embebido no binário (AOS-247, achado F5). Sem AOS_MODEL_API_KEY_PATH, [staticModelCredential]
-// serve uma constante do código — a MESMA em todos os nós e legível por quem tenha o artefacto —
-// e o nó de produção falava com o gateway upstream com uma credencial que não identifica ninguém
-// e não se pode revogar. Pertence à mesma família de ErrProductionNeedsHardenedIdentity/
-// ErrProductionNeedsTLS: a produção não degrada silenciosamente para uma postura de referência.
-//
-// PORQUÊ NO ARRANQUE E NÃO NO Fetch. O `Fetch` corre POR-PEDIDO e não tem por onde abortar o
-// processo — devolver erro ali daria um nó que arranca, anuncia gateway e falha cada chamada em
-// runtime. A decisão é de CONFIG, logo vive na fronteira que lê o ambiente ([parseModelFromEnv]).
-var ErrProductionNeedsModelCredential = errors.New("aos: AOS_MODE=production com o model gateway ligado (AOS_MODEL_ENDPOINT) exige AOS_MODEL_API_KEY_PATH — sem ele o no apresentaria ao upstream um bearer de DEV embebido no binario (identico em todos os nos, legivel por quem tenha o artefacto, nao revogavel) em vez da credencial da organizacao; material privado por FICHEIRO montado, NUNCA por variavel de ambiente")
-
-// ErrProductionNeedsSandboxDriver — sob AOS_MODE=production COM tools de sandbox ligadas
-// (AOS_MODEL_TOOLS com bloco `sandbox`), o driver de execução NÃO pode ser o de referência
-// in-process (AOS-344). É condicional a uma opção do operador, no molde de
-// [ErrProductionNeedsDurableApproval] e de [ErrProductionNeedsModelCredential]: sem tool
-// nenhuma com executor não há sandbox a montar, e um nó de produção que não despacha código
-// não fica cerimonioso por isto.
-//
-// O QUE ISTO FECHA, E PORQUE NÃO É «ESCAPE DE SANDBOX». O driver de referência não corre
-// processos — é um VFS in-process que impõe as invariantes de isolamento fail-closed. O defeito
-// é outro, e é de POSTURA: dos três drivers, é o único que falha ABERTO. `firecracker` e
-// `gvisor` sem executor provisionado devolvem `ErrDriverUnavailable` e a chamada morre no
-// caminho de recusa; o de referência sucede em silêncio, e o resultado — que nenhuma fronteira
-// ao nível do kernel produziu — é selado na hash-chain WORM como se fosse um efeito real. O
-// alinhamento é fazê-lo falhar fechado onde os outros dois já falham.
-//
-// RECUSA TAMBÉM A ESCOLHA EXPLÍCITA, e é deliberado. A auditoria nomeou a omissão
-// (`AOS_SANDBOX_DRIVER` vazio por omissão no compose de produção), mas uma guarda que só
-// apanhasse a omissão ficava a uma variável de distância de ser contornada, e o valor explícito
-// não acrescenta fronteira nenhuma — só torna a mesma postura deliberada. Onde há uma decisão
-// legítima a declarar (terminação TLS a montante, custódia que destrói incondicionalmente) esta
-// casa dá um escape declarado; aqui não há: nenhum deployment sancionado corre o driver de
-// referência em produção (`dev-hardened` fixa `firecracker`, o servidor usa `gvisor`).
-//
-// FORA DE PRODUÇÃO NADA MUDA: o default continua a ser o driver de referência e o valor
-// explícito `fake` continua a compor — é o que o smoke e as demos usam.
-var ErrProductionNeedsSandboxDriver = errors.New("aos: AOS_MODE=production com tools de sandbox ligadas (AOS_MODEL_TOOLS com bloco `sandbox`) exige AOS_SANDBOX_DRIVER=gvisor (+AOS_SANDBOX_GVISOR_URL) ou AOS_SANDBOX_DRIVER=firecracker (+AOS_SANDBOX_FIRECRACKER_URL) — o driver de referencia `fake` NAO e eleito em producao, nem por omissao nem por escolha explicita: a sua fronteira e o PROCESSO do no e nao o kernel, e e o unico dos tres que falha ABERTO (sem executor provisionado os outros dois devolvem ErrDriverUnavailable e a chamada morre no caminho de recusa, enquanto este sucede em silencio e o resultado fabricado e selado na hash-chain WORM como se fosse um efeito real)")
-
 var ErrProductionNeedsDurableKEK = errors.New("aos: AOS_MODE=production com substrato duravel (AOS_WORM_PATH e/ou AOS_DURABLE_EXECUTION) exige custodia de KEK DURAVEL — defina AOS_DSAR_VAULT_ADDR (+AOS_DSAR_VAULT_TOKEN_PATH). Sem ela a KEK por-titular vive no vault in-memory de referencia e um restart torna o conteudo selado (D6/captura) PERMANENTEMENTE indecifravel (over-erasure silenciosa; o legal hold deixa de preservar). Simetrica a ErrDurableExecutionNeedsDurableSubstrate: a chave tem de ser tao duravel quanto o substrato que cifra")
 
 // ErrProductionNeedsDurableWORM — sob AOS_MODE=production o trilho de auditoria WORM NÃO pode ser o
@@ -350,8 +363,9 @@ var ErrProductionNeedsDurableWORM = errors.New("aos: AOS_MODE=production exige u
 // a uma opção.
 //
 // O RACIONAL. As quatro rotas de `planoGovernacao` (`/dsar/erase`, `/dsar/hold`, `/dsar/release`,
-// `/dsar/expire`) conduzem o crypto-shred IRREVERSÍVEL da KEK por-titular — a única operação do nó
-// que nenhum restore drill desfaz. Fora de produção a prova de autoridade é opt-in por composição
+// `/dsar/expire`) conduzem o crypto-shred IRREVERSÍVEL da KEK por-titular. (Esta nota dizia que
+// nenhum restore drill o desfaz; um restauro de backup anterior desfazia-o até AOS-436, que passou a
+// re-destruir a KEK no arranque — ver reconciliacao_apagamentos.go.) Fora de produção a prova de autoridade é opt-in por composição
 // (lista vazia ⇒ desligada, retro-compatível com dev e testes por headers); mas a produção NÃO pode
 // deixá-las autorizadas por um simples token de LEITURA, porque um só par issuer/audience serve o
 // leitor e o operador DSAR. Exigir a lista não-vazia obriga o deployment a DECLARAR quem pode
@@ -589,6 +603,13 @@ func nodeConfigFromEnv() (Config, error) {
 		}
 		eventStoreNATSReplicas = n
 	}
+	// CREDENCIAL DO CLUSTER (AOS-470): o CAMINHO da seed nkey, nunca o valor. A seed é lida e
+	// validada no Bootstrap, ao abrir o substrato — um ficheiro ilegível, com modo aberto a outros
+	// ou com material que não é seed de utilizador aborta o arranque ali.
+	eventStoreNATSNKeyFile := strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_NKEY_FILE"))
+	if eventStoreNATSNKeyFile != "" && eventStoreNATS == "" {
+		return Config{}, ErrEventStoreNATSCredentialWithoutNATS
+	}
 	if durableExecution && eventStorePath == "" && eventStoreNATS == "" {
 		return Config{}, fmt.Errorf("%w (defina AOS_EVENTSTORE_NATS, ex.: aos-es-0:4222, ou AOS_EVENTSTORE_PATH, ex.: /var/lib/aos/events.wal)", ErrDurableExecutionNeedsDurableSubstrate)
 	}
@@ -670,6 +691,42 @@ func nodeConfigFromEnv() (Config, error) {
 		issuerPub = pub
 	}
 
+	// EMISSOR MANDATADO (AOS-427, ADR-033): o segundo trust anchor, que só verifica DENTRO de um
+	// mandato assinado por um humano pinado aqui. As três vêm juntas ou nenhuma — ver
+	// emissor_mandatado.go.
+	mandatedID, mandatedPub, mandateSigners, err := parseMandatedIssuer(
+		os.Getenv("AOS_MANDATED_ISSUER_ID"),
+		os.Getenv("AOS_MANDATED_ISSUER_PUBKEY"),
+		os.Getenv("AOS_MANDATE_SIGNERS"),
+	)
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439: a JANELA DE MIGRAÇÃO dos mandatos v1 (sem `requesters`). Vazia ⇒ fechada: um
+	// mandato v1 é recusado. Malformada, ou mais longe do que a validade máxima de um mandato,
+	// aborta o arranque — ver emissor_mandatado.go.
+	mandateV1Until, err := parseMandateV1Until(os.Getenv("AOS_MANDATE_V1_UNTIL"), time.Now().UTC())
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-446 fase 1: a JANELA DE ROTAÇÃO de pinos (dois pinos para o mesmo humano). Vazia ⇒
+	// fechada: dois pinos abortam o arranque — ver emissor_mandatado.go.
+	mandateDualPinUntil, err := parseMandateDualPinUntil(os.Getenv("AOS_MANDATE_DUAL_PIN_UNTIL"), time.Now().UTC())
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439/AOS-446: a ÉPOCA que o WORM escreve. Vazia ⇒ v3 (o rollback continua possível) —
+	// worm_v4.go.
+	auditWriteSchema, err := parseAuditWriteSchema(os.Getenv("AOS_AUDIT_WRITE_SCHEMA"), os.Getenv("AOS_AUDIT_WRITE_V4"))
+	if err != nil {
+		return Config{}, err
+	}
+	// AOS-439: quem drena a fila de planos. Vazia ⇒ ninguém (fail-closed) — drenadores_do_plano.go.
+	planDrainers, err := parsePlanDrainers(os.Getenv("AOS_PLAN_DRAINERS"))
+	if err != nil {
+		return Config{}, err
+	}
+
 	// FAIL-CLOSED de produção: AOS_MODE=production recusa o modo de referência (autoridade
 	// co-localizada). Um operador não pode confundir o arranque de referência com uma
 	// fronteira de produção endurecida — exige-se o trust-anchor-only.
@@ -704,6 +761,14 @@ func nodeConfigFromEnv() (Config, error) {
 		Humans:         humans,
 		HumanDirectory: humanDir,
 		IssuerPubKey:   issuerPub, // nil ⇒ referência; presente ⇒ trust-anchor-only endurecido
+		// AOS-427: o emissor automático, só aceite dentro de um mandato (vazio ⇒ não composto).
+		MandatedIssuerID:     mandatedID,
+		MandatedIssuerPubKey: mandatedPub,
+		MandateSigners:       mandateSigners,
+		MandateV1Until:       mandateV1Until,      // AOS-439: zero ⇒ mandatos v1 recusados
+		MandateDualPinUntil:  mandateDualPinUntil, // AOS-446 fase 1: zero ⇒ um pino por humano
+		PlanDrainers:         planDrainers,        // AOS-439: vazia ⇒ ninguém drena a fila de planos
+		AuditWriteSchema:     auditWriteSchema,    // AOS-439/AOS-446: zero ⇒ o WORM escreve v3
 		IssuerClasses: map[string]identity.ClassPolicy{
 			"researcher": {TTL: 15 * time.Minute, Scope: []string{"cap:doc.read"}},
 		},
@@ -733,6 +798,7 @@ func nodeConfigFromEnv() (Config, error) {
 		EventStoreNATSStream:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_STREAM")),
 		EventStoreNATSRegion:   strings.TrimSpace(os.Getenv("AOS_EVENTSTORE_NATS_REGION")),
 		EventStoreNATSReplicas: eventStoreNATSReplicas,
+		EventStoreNATSNKeyFile: eventStoreNATSNKeyFile,
 		WORMPath:               strings.TrimSpace(os.Getenv("AOS_WORM_PATH")),
 		// EXECUÇÃO DURÁVEL (AOS-180) por ambiente (AOS_DURABLE_EXECUTION — AOS-191): liga o
 		// checkpointer, o capturer de não-determinismo e o step-ledger sobre o Event Store
@@ -806,6 +872,19 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.PDP = policyDP // nil ⇒ NewUnloaded (default-deny EXPLÍCITO) no composition-root; != nil ⇒ precedência
+	// AOS-446 fase 1: a âncora da política também na Config, para o registo das âncoras no
+	// arranque a poder resumir.
+	//
+	// SAI DO PDP COMPOSTO, E NÃO DO AMBIENTE (achado A4 da revisão adversarial, 2026-09-27). A
+	// primeira versão lia `os.Getenv("AOS_POLICY_TRUST_ANCHOR")` e ENGOLIA o erro do parse — duas
+	// coisas erradas ao mesmo tempo: registava a intenção do ambiente em vez da chave em uso (com
+	// um bundle aberto sem `WithTrustAnchor`, a âncora efectiva vem do próprio directório), e uma
+	// variável malformada dava um retrato com a âncora «ausente» em vez de um erro. Agora vem de
+	// [pdp.PDP.TrustAnchor], que é a chave que verificou o bundle — e não há nada que engolir:
+	// sem bundle carregado não há âncora em uso, e é isso que se sela.
+	if policyDP != nil {
+		cfg.PolicyTrustAnchor = policyDP.TrustAnchor()
+	}
 	// ORÁCULO DE AUTONOMIA (AOS-087/AOS-248), fase 1 de 2. O registo já vai com o sink de audit
 	// ligado, mas VAZIO: os níveis só são aplicados — e SELADOS — em [Bootstrap], que é quem tem
 	// o WORM. Ver [autonomyWiring]. nil ⇒ oráculo não ligado e nenhum `escalate` é emitido.
@@ -859,10 +938,9 @@ func nodeConfigFromEnv() (Config, error) {
 	// pede 30s e fica com outra coisa qualquer não tem forma de o notar, e o sintoma seria um RPO
 	// real diferente do anunciado, descoberto no dia do restauro.
 	//
-	// ISTO NÃO LIGA O BACKUP. O interruptor é [Config.BackupDestination], que é uma PORTA
-	// injectada e não tem superfície de ambiente — ver a nota nesse campo: não há hoje backend
-	// DURÁVEL para `backup.ImmutableStore` e o nó recusa-se a inventar um. Definir só esta
-	// variável configura a cadência de um exportador que continua por compor.
+	// ISTO NÃO LIGA O BACKUP. O interruptor é o DESTINO (AOS_BACKUP_DEST → [Config.BackupDestination],
+	// AOS-453 F2, mais abaixo). Definir só esta variável configura a cadência de um exportador que
+	// continua por compor.
 	backupPeriodicity, err := backupExportIntervalFromEnv()
 	if err != nil {
 		return Config{}, err
@@ -880,6 +958,22 @@ func nodeConfigFromEnv() (Config, error) {
 	if dsarVault != nil {
 		cfg.DSARVault = dsarVault
 	}
+
+	// BACKUP IMUTÁVEL — DESTINO, REGIÃO, CHAVE, RETENÇÃO E CUSTÓDIA DA KEK (AOS-453 F2). Depois da
+	// custódia DSAR, porque a do backup reutiliza o endereço e o token dela (num mount PRÓPRIO).
+	// Sem AOS_BACKUP_DEST nada muda: o exportador não é composto — também em produção. Com ele,
+	// tudo é obrigatório e fail-closed (ver [backupFromEnv]).
+	bEnv, err := backupFromEnv(production, boardRegions, dsarVault)
+	if err != nil {
+		return Config{}, err
+	}
+	if bEnv.dest != nil {
+		cfg.BackupDestination = bEnv.dest
+		cfg.BackupSigningKey = bEnv.signingKey
+		cfg.BackupRetention = bEnv.retention
+		cfg.BackupVault = bEnv.vault
+	}
+	cfg.BackupEnvIgnored = bEnv.ignoradas
 
 	// CUSTÓDIA DAS CREDENCIAIS DOWNSTREAM do credential broker (AOS-070/AOS-264) por
 	// ambiente — SEPARADA da custódia da KEK (D7: cliente/token AOS_BROKER_VAULT_*
@@ -931,6 +1025,13 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, ErrProductionNeedsDurableSubstrate
 	}
 
+	// FAIL-CLOSED de produção (AOS-470) — o Event Store REPLICADO não aceita escritas anónimas.
+	// Ver [ErrProductionNeedsNATSCredential]. Condicional ao substrato NATS: o WAL local é um
+	// ficheiro do volume do nó e não tem porta de rede a autenticar.
+	if production && eventStoreNATS != "" && cfg.EventStoreNATSNKeyFile == "" {
+		return Config{}, ErrProductionNeedsNATSCredential
+	}
+
 	// FAIL-CLOSED de produção (AOS-365) — o TRILHO WORM tem de sobreviver a um restart, tal como o
 	// substrato. INCONDICIONAL como [ErrProductionNeedsDurableSubstrate] (o WORM sela SEMPRE), não
 	// condicional a uma opção como a KEK e o four-eyes. Fecha o bloco DEPOIS da KEK de propósito:
@@ -970,6 +1071,13 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, fmt.Errorf("%w: AOS_DSAR_VAULT_DESTROY_UNCONDITIONAL: %v", ErrBadTLSExternalTermination, derr)
 	}
 	cfg.ShredDestroyUnconditional = destroiIncond
+
+	// AOS-436 — O APAGAMENTO SOBREVIVE AO RESTAURO. O registo PRÓPRIO (onde cada destruição
+	// confirmada é acrescentada; vive no volume de dados) e um registo IMPORTADO no restauro
+	// (lido no arranque e unido à cadeia). Caminhos, material PÚBLICO: o registo só leva nomes
+	// não-reversíveis e instantes. Vazios ⇒ ausentes; a postura é declarada no banner.
+	cfg.DSARErasureRegister = strings.TrimSpace(os.Getenv("AOS_DSAR_ERASURE_REGISTER"))
+	cfg.DSARErasureRegisterImport = strings.TrimSpace(os.Getenv("AOS_DSAR_ERASURE_REGISTER_IMPORT"))
 
 	cfg.AttestationVerifierURL = strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_URL"))
 	if p := strings.TrimSpace(os.Getenv("AOS_ATTESTATION_VERIFIER_TOKEN_PATH")); p != "" {
@@ -1045,8 +1153,20 @@ func nodeConfigFromEnv() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// AOS-407: com a soberania por board ligada, cada tool call leva a obrigação `region` do board
+	// e o PEP nega uma tool cuja região não seja essa. Uma tool declarada sem região, ou numa região
+	// que nenhum board autoriza, seria negada em todas as chamadas — recusa-se o arranque com a
+	// causa, em vez de servir um nó cujas tools nunca executam.
+	if err := validarRegioesDasTools(boardRegions); err != nil {
+		return Config{}, err
+	}
 	if modelClient != nil {
 		cfg.Model = modelClient
+		// AOS-406: o mesmo juízo que compôs o decorador de custo não derivado em parseModelFromEnv.
+		cfg.CustoSemFontePreco = !modelPricingPostureFromEnv().Armed
+		// AOS-396: o nome que o adaptador do gateway pede em cada chamada. parseModelFromEnv já
+		// recusou um AOS_MODEL_NAME vazio com o endpoint definido.
+		cfg.ModelID = modelNameFromEnv()
 		// CUTOVER DURO (AOS-278): o binder liga, no Bootstrap, o verifier REAL do nó ao
 		// estágio authn do gateway construído aqui. Sem ele nenhum turno de modelo passa.
 		cfg.ModelIdentityBinder = modelBinder
@@ -1054,8 +1174,8 @@ func nodeConfigFromEnv() (Config, error) {
 
 	// REGISTRY ASSINADO DE TOOLS (AOS_MODEL_TOOLS_REGISTER): regista as tools de AOS_MODEL_TOOLS
 	// como catálogo ASSINADO+congelável para a REVALIDAÇÃO do RM as admitir — a decisão passa então
-	// ao PDP/Cedar (o gate seguinte), que nega uma capability privilegiada originada pelo modelo
-	// (taint=untrusted). Desligado ⇒ nil: o nó mantém o catálogo/revalidador de referência
+	// ao PDP/Cedar (o gate seguinte), que nega uma capability privilegiada pedida sobre contexto
+	// untrusted (o taint é o do contexto do turno, ADR-034). Desligado ⇒ nil: o nó mantém o catálogo/revalidador de referência
 	// (default-deny na revalidação). Ver modelcatalog.go. Fail-closed: config incoerente ABORTA.
 	//
 	// AOS-381: guardamos os DADOS do registo (spec), NÃO um revalidador já construído. O
@@ -1152,6 +1272,34 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// CATÁLOGO DE TOOLS (AOS-441): o que `GET /tools` serve ao `aos-orq`, composto UMA vez e do
+	// MESMO manifesto que o nó oferece ao modelo. Resolvido antes de compor o serviço: um eixo de
+	// risco ilegível aborta o arranque em vez de servir um adivinhado.
+	toolCatalog, err := catalogoDeToolsDoAmbiente()
+	if err != nil {
+		return err
+	}
+	// AOS-456 — TECTO DE CONCORRÊNCIA POR-CHAMADOR, composto SÓ quando o principal é
+	// VERIFICÁVEL.
+	//
+	// DOIS predicados, e não um — a diferença foi um achado de revisão adversarial.
+	//
+	//  - COMPOR (`gateComposto`): sem gate soberano o principal do run vem do CORPO do pedido, e um
+	//    tecto sobre um valor que o chamador escreve no corpo não é um tecto. Aí não se compõe.
+	//  - ANUNCIAR (`principalVerificavel`): com o gate composto mas SEM credencial forte, o principal
+	//    vem do header `X-Aos-Reader` — que o chamador também escreve. O tecto compõe-se (vale contra
+	//    rajada honesta) mas o banner NÃO pode chamar-lhe «VERIFICADO»: mede-se 60 submissões
+	//    rotativas admitidas com o tecto a 2. Ver [principalDoRunEVerificavel].
+	//
+	// Ambos são funções partilhadas com [NewAPIHandler], não cópias à mão. A primeira versão disto
+	// era uma cópia, e omitia o ramo `SovereignAuthority`; a nota de
+	// [noTemGateSoberanoDeLeitura] tem a gravidade real e o predicado à mão que ainda sobrevive no
+	// banner do kill-switch, que é outro ticket.
+	gateComposto := noTemGateSoberanoDeLeitura(node)
+	principalVerificavel := principalDoRunEVerificavel(node)
+	if ingressLim.inFlightPerCaller > 0 && gateComposto {
+		svcOpts = append(svcOpts, WithInFlightPerCaller(ingressLim.inFlightPerCaller))
+	}
 	svc, err := NewNodeService(node, svcOpts...)
 	if err != nil {
 		return err
@@ -1182,6 +1330,7 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	svc.StartOrphanSweeper(ctx, sweepInterval)
 	apiOpts := append([]APIOption{WithAPILog(w)}, tlsOpts...)
 	apiOpts = append(apiOpts, ingressOpts...)
+	apiOpts = append(apiOpts, WithToolCatalog(toolCatalog))
 	if maxTurnsOpt != nil {
 		apiOpts = append(apiOpts, maxTurnsOpt)
 	}
@@ -1193,7 +1342,7 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	// acima — postura anunciada = postura ligada (AOS-248). Sai aqui, e não no banner de
 	// bootstrap, porque a admission só existe quando o nó SERVE: um `aos` que faz bootstrap
 	// sem AOS_API_ADDR não tem ingresso nenhum para anunciar.
-	for _, line := range ingressPostureBanner(ingressLim) {
+	for _, line := range ingressPostureBanner(ingressLim, gateComposto, principalVerificavel) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 	// AVISO PROEMINENTE do opt-out (modelo do kill-switch de soberania, AOS-203): quem termina
@@ -1849,24 +1998,6 @@ func parseRetentionFromEnv() (audit.RetentionConfig, error) {
 	return rc, nil
 }
 
-// ErrBadVaultDSAR — a custódia externa da KEK em HashiCorp Vault (AOS-215/AOS-216) está pedida
-// (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
-// do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
-// vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
-// ErrBadAttestationCredential — o ficheiro de credencial do verificador de attestation remoto
-// (AOS_ATTESTATION_VERIFIER_TOKEN_PATH ou AOS_ATTESTATION_VERIFIER_BASIC_PATH) é ilegível ou
-// está VAZIO.
-//
-// O CAMINHO DA ATTESTATION ERA O OUTLIER (AOS-338). Os dois Vaults abortam num ficheiro de
-// credencial vazio (ver [ErrBadVaultDSAR] e `ErrBadBrokerVault`); este lia-o, aparava, e seguia
-// com a credencial a vazio — ou seja, com o verificador a falar SEM autenticação nenhuma, e sem
-// nada no arranque a dizê-lo. Um operador que monta um ficheiro está a declarar que quer
-// autenticação; um ficheiro em branco é um erro de montagem, não uma escolha.
-//
-// Fecha-o também porque o banner passa a declarar QUAL o esquema composto: um ficheiro vazio
-// tornaria essa declaração dependente de um estado que ninguém pediu.
-//
-// Ecoa o CAMINHO e o nome da variável, NUNCA o conteúdo.
 var ErrBadAttestationCredential = errors.New("aos: credencial do verificador de attestation ilegivel ou vazia (ficheiro montado; material privado NUNCA por variavel de ambiente)")
 
 // lerCredencialMontada lê uma credencial de FICHEIRO MONTADO no molde dos dois Vaults: lê,
@@ -1927,6 +2058,24 @@ func classeDeFalhaDeLeitura(err error) string {
 	}
 }
 
+// ErrBadVaultDSAR — a custódia externa da KEK em HashiCorp Vault (AOS-215/AOS-216) está pedida
+// (AOS_DSAR_VAULT_ADDR presente) mas mal configurada: sem AOS_DSAR_VAULT_TOKEN_PATH, ou o ficheiro
+// do token ilegível/vazio. Fail-closed: um endereço de Vault sem credencial NÃO degrada para o
+// vault in-memory demo-grade — quem pede custódia externa obtém-na ou o nó recusa arrancar.
+// ErrBadAttestationCredential — o ficheiro de credencial do verificador de attestation remoto
+// (AOS_ATTESTATION_VERIFIER_TOKEN_PATH ou AOS_ATTESTATION_VERIFIER_BASIC_PATH) é ilegível ou
+// está VAZIO.
+//
+// O CAMINHO DA ATTESTATION ERA O OUTLIER (AOS-338). Os dois Vaults abortam num ficheiro de
+// credencial vazio (ver [ErrBadVaultDSAR] e `ErrBadBrokerVault`); este lia-o, aparava, e seguia
+// com a credencial a vazio — ou seja, com o verificador a falar SEM autenticação nenhuma, e sem
+// nada no arranque a dizê-lo. Um operador que monta um ficheiro está a declarar que quer
+// autenticação; um ficheiro em branco é um erro de montagem, não uma escolha.
+//
+// Fecha-o também porque o banner passa a declarar QUAL o esquema composto: um ficheiro vazio
+// tornaria essa declaração dependente de um estado que ninguém pediu.
+//
+// Ecoa o CAMINHO e o nome da variável, NUNCA o conteúdo.
 var ErrBadVaultDSAR = errors.New("aos: custódia DSAR no Vault mal configurada — AOS_DSAR_VAULT_ADDR exige AOS_DSAR_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
 // ErrInsecureVaultDSARAddr — AOS_DSAR_VAULT_ADDR com transporte inseguro (AOS-249, achado F6).
@@ -2086,7 +2235,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if endpoint == "" {
 		return nil, nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
 	}
-	model := strings.TrimSpace(os.Getenv("AOS_MODEL_NAME"))
+	model := modelNameFromEnv()
 	if model == "" {
 		return nil, nil, ErrBadModelConfig
 	}
@@ -2128,7 +2277,8 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	}
 	// Tool set OFERECIDO ao modelo (registry opt-in AOS_MODEL_TOOLS): sem ele o modelo não pede
 	// tools; com ele, cada tool call é MEDIADA pelo Reference Monitor (o binding capability/recurso
-	// vem do registry trusted, o AuthorizationTaint fica untrusted). Ver modeltools.go.
+	// vem do registry trusted; o taint da autorização é cunhado pelo runtime a partir do contexto do
+	// turno, ADR-034). Ver modeltools.go.
 	tools, bindings, err := loadModelToolsFromEnv()
 	if err != nil {
 		return nil, nil, err
@@ -2168,6 +2318,12 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout)
 	if err != nil {
 		return nil, nil, err
+	}
+	// SEM FONTE DE PREÇO (AOS-406): cada turno sai marcado como custo NÃO DERIVADO, para o span e
+	// o turn.recorded não dizerem «gratuito» e o SLI de custo não se dar por cumprido com zeros.
+	// É o caso de produção: o modelo é pago por subscrição e não tem preço por token.
+	if costRec == nil {
+		client = custoNaoDerivadoClient{inner: client}
 	}
 	// Decora com o enriquecedor de governança só quando há bindings (o modelo escolhe a tool pelo
 	// nome; o RM recebe a capability do registry). Sem tools ⇒ cliente nu (comportamento inalterado).

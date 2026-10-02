@@ -126,6 +126,15 @@ type principalDTO struct {
 	// actual) também no payload da mediação, para reconstruir "quem autorizou"
 	// directamente do payload sem depender do envelope Producer (AOS-006).
 	DelegationChain []delegationHopDTO `json:"delegation_chain,omitempty"`
+	// MandateID é o mandato verificado sob o qual o token foi cunhado (AOS-439, resíduo 3 do
+	// ADR-033). RequestedBy é o submissor do run, derivado pelo nó da reclamação do plano
+	// (AOS-439). Os dois são OPCIONAIS (`omitempty`): o payload de um run sem mandato nem
+	// submissor fica byte-a-byte igual ao de antes — MINOR no `port_version` (tecnica/12 §4).
+	MandateID   string `json:"mandate_id,omitempty"`
+	RequestedBy string `json:"requested_by,omitempty"`
+	// MandateSigner é a impressão digital do pino que verificou o mandato (AOS-446 fase 1).
+	// OPCIONAL pela mesma razão dos dois acima: sem mandato o payload fica byte-a-byte igual.
+	MandateSigner string `json:"mandate_signer,omitempty"`
 }
 
 // delegationHopDTO é um elo (sub/act_as) da cadeia serializado no payload.
@@ -182,6 +191,9 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 			AgentClass:      rec.Principal.AgentClass,
 			Authority:       rec.Principal.Authority,
 			DelegationChain: toHopDTOs(rec.Principal.DelegationChain),
+			MandateID:       rec.Principal.MandateID,
+			RequestedBy:     rec.Principal.RequestedBy,
+			MandateSigner:   rec.Principal.MandateSigner,
 		},
 		Obligations: rec.Obligations,
 		Metadata:    rec.Metadata,
@@ -197,11 +209,9 @@ func (s *eventStoreSink) RecordMediation(ctx context.Context, rec MediationRecor
 		RunID:        rec.RunID,
 		StepID:       rec.StepID,
 		ParentStepID: rec.ParentStepID,
-		Producer: eventstore.Producer{
-			NHIID:           rec.Principal.NHIID,
-			DelegationChain: toStoreChain(rec.Principal.DelegationChain),
-			Scope:           rec.Principal.Authority,
-		},
+		// A projecção é partilhada com os factos que a call causa a jusante (AOS-478,
+		// [Principal.EventProducer]): o mesmo passo identifica o mesmo principal.
+		Producer: rec.Principal.EventProducer(),
 	}
 	res, err := s.store.Append(ctx, rec.RunID, in)
 	if err != nil {
@@ -292,6 +302,9 @@ func (s *eventStoreOutcomeSink) RecordOutcome(ctx context.Context, rec OutcomeRe
 		Payload: raw,
 		RunID:   rec.RunID,
 		StepID:  rec.StepID,
+		// AOS-478: o desfecho é da MESMA tool call que o selo `tool.call.mediated` do passo,
+		// e identifica o mesmo principal.
+		Producer: rec.Principal.EventProducer(),
 	})
 	return err
 }

@@ -302,17 +302,22 @@ func TestAOS262_ObservadorAvisaAoLimiarUmaVezPorRun(t *testing.T) {
 
 // --- (3-bis) M1: TRANSITÓRIO vs CEGUEIRA na leitura do burn-down --------------------
 
-// storeInstavel devolve [eventstore.ErrNoQuorum] nas primeiras `falhas` leituras e delega no
-// store real a partir daí. Reproduz a perda/troca de líder do Event Store — o modo de
-// indisponibilidade que o `Read` real tem (`store.go`, `s.leader() == nil`).
+// storeInstavel devolve um erro de indisponibilidade nas primeiras `falhas` leituras e delega
+// no store real a partir daí. Por omissão o erro é o [eventstore.ErrNoQuorum] CRU da perda/troca
+// de líder do store de referência (`store.go`, `s.leader() == nil`); `erro` substitui-o pela
+// forma que o substrato replicado produz (AOS-360, ver [erroDesligadoTraduzido]).
 type storeInstavel struct {
 	inner  turnLedgerStore
 	falhas int
+	erro   error
 }
 
 func (s *storeInstavel) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
 	if s.falhas > 0 {
 		s.falhas--
+		if s.erro != nil {
+			return nil, s.erro
+		}
 		return nil, eventstore.ErrNoQuorum
 	}
 	return s.inner.Read(ctx, streamID, fromSeq)

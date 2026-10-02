@@ -246,7 +246,14 @@ func TestFrozenLineReplaysOnItsApprovedVersion(t *testing.T) {
 	for _, fl := range frozenLines() {
 		t.Run(fl.File, func(t *testing.T) {
 			store := newStore(t)
-			planID := "plan-schemaline-" + fl.Version.String()
+			// O `plan_id` É o nome de um stream, e desde o aperto do AOS-424 um nome com
+			// ponto é recusado na escrita. Uma versão semver tem dois — daí o `-`.
+			//
+			// Isto NÃO é cosmética de teste: o `plan_id` compõe-se em runtime e vai para o
+			// `stream_id` (`plannerevents/recorder.go`), e em produção herda a validação do
+			// `run_id` porque o planeador usa o `run_id` quando o `plan_id` vem vazio. Este
+			// teste era o único sítio da árvore que lhe metia um ponto à mão.
+			planID := "plan-schemaline-" + strings.ReplaceAll(fl.Version.String(), ".", "-")
 			doc := loadFrozen(t, fl.File)
 
 			hash, proposer := seedApproval(t, store, planID, doc, nil)

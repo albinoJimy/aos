@@ -43,6 +43,12 @@ type Claims struct {
 	AgentClass string `json:"agent_class"`
 	// PolicyRef aponta a política (policy_ref) aplicável (AOS-004).
 	PolicyRef string `json:"policy_ref,omitempty"`
+	// Board é o board de soberania do humano responsável (AOS-407, ADR-011 §5.1): a fronteira
+	// regional sob a qual o agente actua, afirmada pelo IdP no mint e SELADA pela assinatura.
+	// O PDP resolve-o para a região e emite a obrigação `region` que o PEP impõe em cada tool
+	// call. Um filho herda-o do pai sem o poder mudar. `omitempty`: um token anterior ao
+	// AOS-407 continua a verificar, com board vazio — que a soberania ligada nega.
+	Board string `json:"board,omitempty"`
 	// Scope são as capabilities/recursos concedidos (autoridade = utilizador ∩
 	// classe, e ⊆ pai em on-behalf-of).
 	Scope []string `json:"scope"`
@@ -64,6 +70,11 @@ type Claims struct {
 	// tag omitempty é apenas o encoding on-the-wire, não indica tolerância a
 	// tokens legados sem cadeia.
 	DelegationChain delegation.Chain `json:"delegation_chain,omitempty"`
+	// Mandate é o mandato assinado pelo humano sob o qual um emissor AUTOMÁTICO cunhou este
+	// token (AOS-427, ver mandate.go). Vai selado pela assinatura do emissor, mas quem lhe dá
+	// valor é a assinatura do HUMANO, que o nó verifica contra a chave pinada. Ausente nos
+	// tokens do emissor manual; obrigatório nos de um emissor mandatado.
+	Mandate *SignedMandate `json:"mandate,omitempty"`
 }
 
 func b64enc(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/aos-ref/substrate/eventstore"
@@ -180,8 +181,15 @@ func WithLeaseClock(c Clock) LeaseOption {
 	}
 }
 
+// DefaultLeaseProducerNHI é a identidade de COMPONENTE gravada no envelope dos eventos
+// `lease.*` quando o compositor não dá outra ([WithLeaseProducer]). O lease é ciclo de vida
+// do próprio nó — nenhum humano nem agente o pede — e o envelope diz QUEM o emitiu em vez de
+// ficar vazio: um leitor do log não confunde «componente do nó» com «não sei» (AOS-478,
+// `tecnica/13_Modelo_Dados_Eventos.md` §3.1). O worker concreto vai no payload.
+const DefaultLeaseProducerNHI = "nhi:kernel/agent-runtime/lease"
+
 // WithLeaseProducer define a identidade emissora (NHI + cadeia de delegação) gravada
-// nos eventos de lease. Default: Producer zero (aceitável em teste).
+// nos eventos de lease. Default: [DefaultLeaseProducerNHI].
 func WithLeaseProducer(p eventstore.Producer) LeaseOption {
 	return func(m *LeaseManager) { m.producer = p }
 }
@@ -214,6 +222,9 @@ func NewLeaseManager(store EventStore, ttl time.Duration, opts ...LeaseOption) (
 	}
 	if m.clock == nil {
 		m.clock = systemClock{}
+	}
+	if m.producer.NHIID == "" {
+		m.producer.NHIID = DefaultLeaseProducerNHI
 	}
 	return m, nil
 }
@@ -326,7 +337,13 @@ func (m *LeaseManager) Claim(ctx context.Context, runID string) (Lease, error) {
 		now := m.clock.Now()
 		if st.exists && now.UnixNano() < st.expiresUnixNano {
 			// Lease vivo detido por outro (ou por este) worker: não é reclamável.
-			return Lease{}, ErrLeaseHeld
+			//
+			// A recusa NOMEIA O DONO (AOS-432): quem a lê é um operador a decidir se pára
+			// o outro processo ou se espera pela expiração, e «há um lease» sem dizer de
+			// quem nem até quando manda-o procurar às cegas. O sentinela continua na
+			// cadeia — quem classifica usa errors.Is, e todos os consumidores o fazem.
+			return Lease{}, fmt.Errorf("%w: detido por %q (token %d) até %s", ErrLeaseHeld,
+				st.worker, st.token, time.Unix(0, st.expiresUnixNano).UTC().Format(time.RFC3339Nano))
 		}
 
 		newToken := st.token + 1

@@ -53,9 +53,9 @@
 // sequência create → exec → destroy e o mesmo [ExecResult]. [FakeDriver] é o driver
 // de referência determinista (in-process) que modela o jail (isolamento de FS,
 // bloqueio de escape por symlink/metacaracteres) e é o usado nos testes.
-// [FirecrackerDriver] e [GVisorDriver] são skeletons que DOCUMENTAM a integração
-// real (sem socket do host, sem namespace de rede/PID partilhado, rootfs/jail
-// dedicado) e satisfazem o contrato via um [GuestExecutor] injectável; sem executor
+// [FirecrackerDriver] e [GVisorDriver] executam num [GuestExecutor] injectável (no
+// nó, o executor remoto de um componente externo — sem socket do host, sem namespace
+// de rede/PID partilhado, rootfs/jail dedicado); sem executor
 // o Firecracker devolve [ErrDriverUnavailable] (falta KVM/host support) e o gVisor
 // devolve [ErrGVisorExecutorUnset] (NÃO exige KVM — falta provisionar o executor,
 // AOS-384).

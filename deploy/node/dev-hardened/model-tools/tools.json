@@ -13,8 +13,9 @@
     "capability": "cap:http.post",
     "resource_type": "http",
     "resource_value": "https://api.example.com/results",
-    "resource_region": "eu",
-    "egress": "external"
+    "resource_region": "eu-west",
+    "egress": "external",
+    "mutation": "mutates"
   },
   {
     "name": "doc_read",
@@ -29,8 +30,9 @@
     "capability": "cap:fs.read",
     "resource_type": "file",
     "resource_value": "doc://{doc_id}",
-    "resource_region": "eu",
+    "resource_region": "eu-west",
     "egress": "none",
+    "mutation": "none",
     "sandbox": { "command": "read", "path_arg": "doc_id" }
   }
 ]

@@ -372,8 +372,22 @@ func servidorDaJanela(t *testing.T) string {
 // nomeDeStreamDaJanela deriva o nome do stream do NOME DO TESTE, não do relógio nem de
 // aleatoriedade: duas execuções do mesmo teste usam o mesmo stream, e o teste apaga-o no
 // fim. Um nome com timestamp deixaria lixo acumulado no cluster a cada corrida.
+//
+// # PORQUE É QUE JÁ NÃO É `AOSJANELA` (AOS-431)
+//
+// Era, e COLIDIA. O subject deste stream é `<prefixo>.>`; o `natsjs/integracao_test.go` cria
+// streams com subject `aosjanela.<hex>.>`, que cai DENTRO de `aosjanela.>`. O JetStream
+// recusa o segundo a ser criado com `subjects overlap with an existing stream` (10065) — e
+// qual dos dois falha depende de quem corre primeiro, pelo que a falha é intermitente.
+//
+// Nunca tinha aparecido porque nenhum dos dois alguma vez correu: não havia NATS no CI. Foi o
+// primeiro defeito que ligar o cluster encontrou, e é exactamente a classe que o AOS-431
+// existe para tornar visível — dois testes que se contradizem sobre o mesmo servidor.
+//
+// A determinação do nome MANTÉM-SE (a razão acima continua válida); o que muda é o
+// espaço de nomes, que passa a ser só deste teste.
 func nomeDeStreamDaJanela() (string, string) {
-	return "AOSJANELA", "aosjanela"
+	return "AOSJANELALEITURA", "aosjanelaleitura"
 }
 
 // TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel é a prova contra o substrato real.
@@ -398,7 +412,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 	const total = janelaDeLeitura + 64
 	const streamID = "run-janela"
 
-	semear, err := Abrir(addr,
+	semear, err := Abrir(addr, CredencialDeTeste(t),
 		ComNomeDeStream(nome),
 		ComPrefixoDeSubject(prefixo),
 		ComReplicas(3),
@@ -423,7 +437,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 
 	// (1) Leitura por um handle NOVO: cache fria, hidratação completa pelo caminho
 	// público. Com o defeito, isto morria no prazo do segundo lote.
-	leitor, err := Abrir(addr,
+	leitor, err := Abrir(addr, CredencialDeTeste(t),
 		ComNomeDeStream(nome),
 		ComPrefixoDeSubject(prefixo),
 		SemCriarStream(),
@@ -472,7 +486,7 @@ func TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel(t *testing.T) {
 
 	// (3) E o stream continua ESCREVÍVEL. Handle novo outra vez: o Append passa por
 	// `hidratar`, que é onde o defeito o matava.
-	escritor, err := Abrir(addr,
+	escritor, err := Abrir(addr, CredencialDeTeste(t),
 		ComNomeDeStream(nome),
 		ComPrefixoDeSubject(prefixo),
 		SemCriarStream(),

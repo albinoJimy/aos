@@ -96,6 +96,33 @@ type boardRegionResolver interface {
 	RegionFor(board string) (string, bool)
 }
 
+// boardDeReferencia devolve o board que a autoridade de identidade CO-LOCALIZADA (via de
+// REFERÊNCIA, nós não-endurecidos) sela nos tokens que cunha (AOS-407):
+//
+//   - sem mapa ⇒ vazio, e a soberania por board está desligada (o board não é consultado);
+//   - UM board ⇒ esse board;
+//   - VÁRIOS boards ⇒ VAZIO, deliberadamente.
+//
+// O terceiro caso é o que importa. Esta autoridade cunha para QUALQUER humano do directório e não
+// sabe a que board cada humano pertence — esse dado vem do IdP, e quem o lê é o `aos-issuer`.
+// Escolher um board do mapa (o «primeiro», por qualquer ordem) seria atribuir a REGIÃO desse board
+// a um humano de outro: exactamente a travessia de fronteira que a soberania existe para impedir, e
+// produzida pela peça que a devia garantir. Selar vazio deixa a decisão onde ela é fail-closed: o
+// PDP nega um board vazio (ver `applySovereignty`), pelo que os tokens desta autoridade não fazem
+// tool calls num nó multi-board — a via para isso é cunhar no `aos-issuer`, com o board do IdP.
+// Um mapa com vários boards continua legítimo (é o do read-path soberano, que resolve o board
+// DECLARADO por leitor, não o selado por esta autoridade); é a CUNHAGEM que fica sem board, não o nó
+// sem arranque. O arranque declara-o no banner.
+func boardDeReferencia(regions map[string]string) string {
+	if len(regions) != 1 {
+		return ""
+	}
+	for b := range regions {
+		return b
+	}
+	return ""
+}
+
 // readGovernance é a costura de soberania/conformidade do read-path do nó (D7+D6). Compõe a
 // autoridade board→região (a MESMA regra que o PDP usa, AOS-094) e o WORM durável já composto no
 // nó (AOS-170). É imutável após construção e seguro para uso concorrente (a fonte board→região é
@@ -127,6 +154,71 @@ type readGovernance struct {
 	now func() time.Time
 }
 
+// noTemGateSoberanoDeLeitura diz se um NÓ compõe o gate de leitura soberana — e, por
+// consequência, se o principal de um run submetido a ele é VERIFICADO pelo nó em vez de
+// auto-declarado no corpo do pedido.
+//
+// EXISTE PORQUE UMA CÓPIA DIVERGIU (AOS-456). O tecto de concorrência por-chamador só entra em
+// vigor quando o principal é verificável, e a primeira versão desse wiring escreveu o predicado à
+// mão como `SovereignReadRegions != nil && WORM != nil`, omitindo o ramo `SovereignAuthority` —
+// a via FORTE, com credencial verificada.
+//
+// GRAVIDADE, MEDIDA E NÃO SUPOSTA: pelo caminho do `Bootstrap` a divergência NÃO era alcançável,
+// porque `readRegions = readAuthority.Registry()` (bootstrap.go:2457) deriva o registo da
+// autoridade e as duas nascem juntas. Era alcançável por um `Node` composto IN-PROCESSO com
+// autoridade e sem registo — e, sobretudo, era uma cópia que nada obrigava a acompanhar a
+// composição real. O defeito estava na FORMA, não ainda no comportamento; esta função remove a
+// forma. O mesmo predicado à mão continua em `main.go:417` (banner do kill-switch AOS-203) e fica
+// registado no ticket: é outro ticket, não escopo deste.
+//
+// ALCANCE: cobre a via do NÓ, que é a única que [serveAPI] usa (nunca passa [WithReadSovereignty]).
+// Um handler composto pela OPÇÃO tem `readGov` sem que o nó o declare; ver a nota do teste de
+// equivalência.
+func noTemGateSoberanoDeLeitura(node *Node) bool {
+	return node != nil && node.WORM != nil &&
+		(node.SovereignAuthority != nil || node.SovereignReadRegions != nil)
+}
+
+// principalDoRunEVerificavel diz se o principal que o nó atribui a um run submetido é INFORJÁVEL
+// pelo submissor — condição de um tecto por-chamador que signifique alguma coisa contra abuso.
+//
+// É MAIS ESTREITO do que [noTemGateSoberanoDeLeitura], E A DIFERENÇA FOI UM ACHADO DE REVISÃO
+// ADVERSARIAL (AOS-456a). Com o gate composto mas SEM credencial forte — `AOS_BOARD_REGIONS`
+// definida e `AOS_SOVEREIGN_OIDC_ISSUER`/`AUDIENCE` ausentes, fora de produção — o
+// `readGovernance.autorizarComCausa` cai na VIA LEGADA e lê o principal de `X-Aos-Reader`
+// (sovereignty.go, ramo `g.cred == nil`). Isso é um valor que o chamador escreve: 60 submissões com
+// o header a rodar mediram 60 admitidas e 0 recusadas com o tecto a 2. O predicado que compunha o
+// tecto era o do gate, e o banner anunciava «SUBMISSOR VERIFICADO» sobre um header.
+//
+// O tecto CONTINUA a compor-se na postura demo — vale contra um cliente honesto em rajada, que é o
+// caso comum —, mas deixa de ser ANUNCIADO como o que não é: o banner distingue as duas
+// («VERIFICADO» vs «DEMO-GRADE, contornável por header»). Uma barreira útil contra acidente é
+// legítima; anunciá-la como protecção contra abuso não é.
+func principalDoRunEVerificavel(node *Node) bool {
+	// A CREDENCIAL TEM DE CHEGAR AO SÍTIO ONDE É USADA, e não só existir no nó — SEGUNDA revisão
+	// adversarial, e é o mesmo defeito da primeira uma camada abaixo.
+	//
+	// [NewAPIHandler] compõe a read-governance em DOIS ramos, e passa a credencial em UM só:
+	//
+	//	case node.SovereignAuthority != nil:      newReadGovernance(authority, node.SovereignReadCredential, …)
+	//	case node.SovereignReadRegions != nil:    newReadGovernance(regions,   nil,                          …)
+	//
+	// Logo um nó com registo board→região e credencial forte mas SEM autoridade tem a credencial
+	// COMPOSTA e IGNORADA: o `autorizarComCausa` cai na via legada e lê o principal do header. A
+	// primeira versão deste predicado testava `SovereignReadCredential != nil` e declarava esse
+	// estado VERIFICADO — medido, 60 submissões rotativas admitidas com o tecto a 2, e o banner a
+	// dizer «VERIFICADO». Exigir a AUTORIDADE fecha-o: é a condição do ramo que realmente usa a
+	// credencial.
+	//
+	// GRAVIDADE: pelo `Bootstrap` o estado NÃO é alcançável — `readRegions` só é atribuído dentro de
+	// `if sovAuthority != nil` (bootstrap.go:2457), pelo que registo ⇒ autoridade. Era alcançável
+	// in-process, e o agravante estava no TESTE: o caso que eu escrevi para provar a postura
+	// VERIFICADO compunha exactamente este estado, pelo que o sensor validava o estado errado e não
+	// cobria o caminho que o binário produz.
+	return noTemGateSoberanoDeLeitura(node) &&
+		node.SovereignAuthority != nil && node.SovereignReadCredential != nil
+}
+
 // newReadGovernance compõe a costura de leitura soberana. regions e worm são obrigatórios (o
 // chamador só a compõe quando ambos existem — ver [WithReadSovereignty]/[WithSovereignAuthority]
 // e o auto-wiring de [NewAPIHandler]). cred nil ⇒ via LEGADA por headers (demo-grade); composta
@@ -138,14 +230,6 @@ func newReadGovernance(regions boardRegionResolver, cred readCredentialVerifier,
 	return &readGovernance{regions: regions, cred: cred, worm: worm, now: now}
 }
 
-// authorize aplica a REGRA D7 fail-closed a um pedido de leitura: extrai o principal+board dos
-// headers de leitura e resolve o board para a sua região autorizada pelo [govsov.Registry].
-// Devolve (identidade resolvida, true) SÓ quando o principal e o board estão presentes E o
-// board resolve para uma região autorizada; caso contrário (_, false) — NEGA fail-closed. NÃO
-// revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
-// registo GOV, nunca do run pedido).
-// recusaDeLeitura é a CAUSA de uma recusa de admissão de leitura. Existe para separar as duas
-// que o `false` colapsava, e a distinção tem consequência no wire — ver [apiHandler.admitSovereignRead].
 type recusaDeLeitura uint8
 
 const (
@@ -160,7 +244,10 @@ const (
 	recusaGovernacao
 )
 
-// autorizarSemMemo aplica a regra e devolve a CAUSA da recusa, não só um booleano.
+// autorizarComCausa aplica a regra D7 e devolve a CAUSA da recusa, não só um booleano — é a variante
+// de [readGovernance.authorize] que o wire precisa para distinguir «credencial recusada» de «governação
+// nega» sem revelar existência de runs. A distinção vive em [recusaDeLeitura]; ver
+// [apiHandler.admitSovereignRead] para o que cada uma vale no estado da resposta.
 func (g *readGovernance) autorizarComCausa(r *http.Request) (readerIdentity, recusaDeLeitura) {
 	var principal, board string
 	if g.cred != nil {
@@ -217,6 +304,7 @@ func (g *readGovernance) autorizarComCausa(r *http.Request) (readerIdentity, rec
 // autorizarSemMemo mantém a face BOOLEANA para os chamadores que só precisam de saber se podem
 // prosseguir. A causa fica em [readGovernance.autorizarComCausa]; quem escolhe o status do wire
 // usa essa.
+// autorizarSemMemo aplica a regra e devolve a CAUSA da recusa, não só um booleano.
 func (g *readGovernance) autorizarSemMemo(r *http.Request) (readerIdentity, bool) {
 	id, causa := g.autorizarComCausa(r)
 	return id, causa == recusaNenhuma
@@ -511,6 +599,14 @@ func (h *apiHandler) sealSensitiveRead(w http.ResponseWriter, r *http.Request, i
 //
 // Sem memo no contexto (pedido construído à mão, contexto derivado), verifica como sempre
 // verificou: degrada para o comportamento anterior, nunca para «aceita sem verificar».
+// authorize aplica a REGRA D7 fail-closed a um pedido de leitura: extrai o principal+board dos
+// headers de leitura e resolve o board para a sua região autorizada pelo [govsov.Registry].
+// Devolve (identidade resolvida, true) SÓ quando o principal e o board estão presentes E o
+// board resolve para uma região autorizada; caso contrário (_, false) — NEGA fail-closed. NÃO
+// revela PII nem a existência de qualquer run (a decisão depende só dos headers do leitor e do
+// registo GOV, nunca do run pedido).
+// recusaDeLeitura é a CAUSA de uma recusa de admissão de leitura. Existe para separar as duas
+// que o `false` colapsava, e a distinção tem consequência no wire — ver [apiHandler.admitSovereignRead].
 func (g *readGovernance) authorize(r *http.Request) (readerIdentity, bool) {
 	m := memoDe(r)
 	if m == nil {

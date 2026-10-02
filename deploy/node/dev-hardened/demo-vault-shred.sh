@@ -38,7 +38,7 @@ echo "[shred]   chave Transit esperada=${NAME}"
 
 echo "[shred] 2/6 NHI (aos-issuer) ..."
 NHI="$("${ISSUERBIN}" mint --key-file "${SECRETS}/issuer.key" --issuer iss:aos-issuer \
-  --human human:alice --agent agt-shred --class researcher --caps cap:doc.read --ttl 15m | tr -d '\r\n')"
+  --human human:alice --board board:demo --agent agt-shred --class researcher --caps cap:doc.read --ttl 15m | tr -d '\r\n')"
 
 echo "[shred] 3/6 POST /runs (produção; sela conteúdo sob a KEK do titular) ..."
 rc="$(curl -sk -o /dev/null -w '%{http_code}' -X POST https://localhost:8443/runs \

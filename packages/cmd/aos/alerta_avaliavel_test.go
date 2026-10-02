@@ -64,7 +64,7 @@ func metricsDoNo274(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("NewAPIHandler: %v", err)
 	}
-	aos274EmitToolSpans(node, 8)
+	aos274EmitToolSpans(node, 8, 50*time.Millisecond)
 	svc.EvaluateSLOsNow(context.Background())
 
 	rec := httptest.NewRecorder()

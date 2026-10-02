@@ -70,6 +70,7 @@ import (
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/platform/model-gateway/internal/lru"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
@@ -280,8 +281,29 @@ type Recorder struct {
 	alerts     AlertSink
 	clock      func() time.Time
 
+	retencao int
+
 	mu   sync.Mutex
-	aggs map[Key]*Aggregate
+	aggs *lru.Map[Key, *Aggregate]
+}
+
+// DefaultRetainedKeys é o tecto por omissão de chaves (run, tenant) retidas (AOS-397). O
+// agregado era um mapa sem remoção; com o run real a chegar em cada chamada (AOS-394), um
+// processo de vida longa guardava uma entrada por run para sempre. O despejo é do
+// menos-recentemente-usado: um run activo é tocado a cada chamada. Um run despejado que
+// volte a ser observado recomeça do zero — o agregado E o estado anti-flapping
+// (`Breached`), pelo que o alerta pode voltar a disparar para esse run. Este recorder não
+// está composto em produção (`NewProduction` não passa `WithCacheSLI`).
+const DefaultRetainedKeys = 4096
+
+// WithRetention muda o tecto de chaves (run, tenant) retidas (default
+// [DefaultRetainedKeys]). Valores < 1 são ignorados: não há opção sem tecto.
+func WithRetention(n int) Option {
+	return func(r *Recorder) {
+		if n >= 1 {
+			r.retencao = n
+		}
+	}
 }
 
 // Option configura o [Recorder].
@@ -344,11 +366,12 @@ func NewRecorder(opts ...Option) *Recorder {
 		metrics:    nopMetric{},
 		alerts:     nopAlert{},
 		clock:      time.Now,
-		aggs:       make(map[Key]*Aggregate),
+		retencao:   DefaultRetainedKeys,
 	}
 	for _, o := range opts {
 		o(r)
 	}
+	r.aggs = lru.New[Key, *Aggregate](r.retencao)
 	return r
 }
 
@@ -402,11 +425,11 @@ func (r *Recorder) Observe(ctx context.Context, span agentruntime.Span, s Sample
 	}
 
 	r.mu.Lock()
-	agg := r.aggs[key]
+	agg, _ := r.aggs.Get(key)
 	if agg == nil {
 		agg = &Aggregate{}
-		r.aggs[key] = agg
 	}
+	r.aggs.Put(key, agg) // grava a chave nova ou toca a existente (despejo pelo uso)
 	agg.CacheReadTokens += read
 	agg.PromptTokens += s.PromptTokens
 	agg.CacheWriteTokens += s.CacheWriteTokens
@@ -498,15 +521,22 @@ func (r *Recorder) annotate(span agentruntime.Span, aggRate float64, aggDefined 
 }
 
 // Snapshot devolve uma CÓPIA do agregado de uma chave (introspecção/testes). ok é
-// false se a chave nunca foi observada.
+// false se a chave nunca foi observada ou já foi despejada pelo tecto de retenção.
 func (r *Recorder) Snapshot(key Key) (Aggregate, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	agg, ok := r.aggs[key]
+	agg, ok := r.aggs.Get(key)
 	if !ok {
 		return Aggregate{}, false
 	}
 	return *agg, true
+}
+
+// RetainedKeys devolve quantas chaves (run, tenant) o agregador retém agora (AOS-397).
+func (r *Recorder) RetainedKeys() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.aggs.Len()
 }
 
 // RateFor devolve o cache-hit-rate agregado de uma chave (defined=false se
@@ -514,7 +544,7 @@ func (r *Recorder) Snapshot(key Key) (Aggregate, bool) {
 func (r *Recorder) RateFor(key Key) (rate float64, defined bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	agg, ok := r.aggs[key]
+	agg, ok := r.aggs.Get(key)
 	if !ok {
 		return 0, false
 	}

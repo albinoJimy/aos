@@ -23,7 +23,7 @@ const regiaoDoCluster = "eu-west"
 
 func abrirComOpcoes(t *testing.T, addr string, opts ...jetstream.Option) (*jetstream.Store, error) {
 	t.Helper()
-	st, err := jetstream.Abrir(addr, opts...)
+	st, err := jetstream.Abrir(addr, append([]jetstream.Option{jetstream.CredencialDeTeste(t)}, opts...)...)
 	if st != nil {
 		t.Cleanup(func() {
 			_ = st.ApagarStream()
@@ -99,7 +99,7 @@ func TestSoberania_LigarAStreamSemColocacaoERecusado(t *testing.T) {
 	nome := "SOBSEM_" + sufixo(t)
 
 	// (1) alguém cria o stream SEM fronteira.
-	semFronteira, err := jetstream.Abrir(addr,
+	semFronteira, err := jetstream.Abrir(addr, jetstream.CredencialDeTeste(t),
 		jetstream.ComNomeDeStream(nome), jetstream.ComPrazo(prazo), jetstream.ComReplicas(3))
 	if err != nil {
 		t.Fatalf("criar stream sem fronteira: %v", err)
@@ -110,7 +110,7 @@ func TestSoberania_LigarAStreamSemColocacaoERecusado(t *testing.T) {
 	})
 
 	// (2) um nó COM fronteira liga-se ao mesmo stream. Tem de ser RECUSADO.
-	comFronteira, err := jetstream.Abrir(addr,
+	comFronteira, err := jetstream.Abrir(addr, jetstream.CredencialDeTeste(t),
 		jetstream.ComNomeDeStream(nome), jetstream.ComPrazo(prazo),
 		jetstream.SemCriarStream(), jetstream.ComRegiao(regiaoDoCluster))
 	if comFronteira != nil {

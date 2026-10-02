@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aos-ref/control-plane/orchestrator/plan"
 )
@@ -179,11 +180,75 @@ type PlannerMeta struct {
 
 // ProposedPayload — corpo de `plan.proposed`. Só o HASH do PlanDocument (dados
 // untrusted, ADR-005) e o planner_meta; o documento cru vive fora do log.
+//
+// AOS-477 acrescenta dois campos OPCIONAIS e ADITIVOS (`omitempty`): um facto anterior fica
+// byte-a-byte igual, e um leitor anterior ignora-os (os leitores deste payload usam
+// `json.Unmarshal`, que não recusa campos desconhecidos). Por isso o domínio continua
+// `aos.planner.v1` — a mesma regra que o `snapshot_digest` do [ValidatedPayload] seguiu.
 type ProposedPayload struct {
 	PlanID   string      `json:"plan_id"`
 	PlanHash string      `json:"plan_hash"`
 	Meta     PlannerMeta `json:"planner_meta"`
 	Attempt  int         `json:"attempt"`
+	// ObjectiveCommitment é o COMPROMISSO do objectivo que o planeador RECEBEU (AOS-477), na
+	// forma [CommitmentScheme] + hex. Nunca o texto.
+	//
+	// PORQUE É UM CAMPO NOVO E NÃO O `plan_hash`: o `plan_hash` cobre o campo `objective` do
+	// [plan.PlanDocument], mas esse campo é ESCRITO PELO MODELO — o decompositor
+	// (`decompose.LLMDecomposer.Decompose`) só carimba o `planner_meta`, e o `objective` do
+	// documento é o que o modelo devolveu, não o que o planeador recebeu. Um plano feito para um
+	// objectivo e rotulado com outro tinha o mesmo hash que se o rótulo fosse honesto. Além disso
+	// o documento não está no log (ADR-005), pelo que o `plan_hash` só se verifica com um
+	// ficheiro que pode nem existir (`--plan-out` é opcional).
+	//
+	// PORQUE É UM HMAC COM SAL E NÃO UM SHA-256: um objectivo curto adivinha-se, e um SHA-256
+	// sem chave inverte-se por dicionário a partir do log — o mesmo argumento do pseudónimo de
+	// `deploy/server/avisar-planos.sh`. O sal (32 bytes aleatórios) não vai para o log do plano:
+	// no caminho da fila fica SELADO sob a KEK do titular no `planrequest.submitted`, e um
+	// `/dsar/erase` torna o compromisso inverificável e não-ligável; no `serve --goal` manual só
+	// existe no stdout de quem o lançou. Quem tem o texto e o sal verifica; quem tem só o log não
+	// inverte. Vazio num facto anterior, ou num `serve --plan-doc` sem proposta anterior.
+	ObjectiveCommitment string `json:"objective_commitment,omitempty"`
+	// Request é o PEDIDO DE PLANO de onde este plano veio (AOS-477): o `planrequest.submitted`
+	// que o nó gravou, por stream e `seq`. É uma referência por campos para o sentido inverso
+	// (registo → pedido) não depender da convenção `<run>-plan`. nil num `serve` manual.
+	Request *PlanRequestRef `json:"request,omitempty"`
+}
+
+// CommitmentScheme é o prefixo do [ProposedPayload.ObjectiveCommitment]: HMAC-SHA256 com o sal
+// como chave e o objectivo como mensagem, em hex. O nó (`packages/cmd/aos`) calcula o MESMO
+// valor na ingestão; os dois binários não se importam (ADR-018), e o contrato prende-se por um
+// vector conhecido nos testes de cada um.
+const CommitmentScheme = "hmac-sha256:"
+
+// PlanRequestRef referencia o facto `planrequest.submitted` no Event Store do NÓ (AOS-477). O
+// plano vive noutro ficheiro (o WAL do `aos-orq`); a referência é o que liga os dois sem nomes.
+type PlanRequestRef struct {
+	// Stream é o stream da fila no Event Store do nó.
+	Stream string `json:"stream"`
+	// Seq é o `seq` do `planrequest.submitted` nesse stream (gapless e imutável, ADR-001).
+	Seq uint64 `json:"seq"`
+	// RunID é o `run_id` que o pedido nomeou — o mesmo que o payload do pedido traz.
+	RunID string `json:"run_id"`
+}
+
+// ErrInvalidProposal — um `plan.proposed` com o compromisso ou a referência ao pedido mal
+// formados. Fail-closed: um campo de correlação malformado é pior do que nenhum, porque um
+// auditor seguiria uma ligação que não existe.
+var ErrInvalidProposal = errors.New("plannerevents: proposta com compromisso ou pedido malformado")
+
+// validProposal verifica a FORMA dos dois campos opcionais do AOS-477.
+func validProposal(p ProposedPayload) error {
+	if c := p.ObjectiveCommitment; c != "" {
+		hexa, ok := strings.CutPrefix(c, CommitmentScheme)
+		if !ok || len(hexa) != 64 || strings.Trim(hexa, "0123456789abcdef") != "" {
+			return fmt.Errorf("%w: objective_commitment %q não é %s<64 hex>", ErrInvalidProposal, c, CommitmentScheme)
+		}
+	}
+	if r := p.Request; r != nil && (r.Stream == "" || r.Seq < 1 || r.RunID == "") {
+		return fmt.Errorf("%w: request sem stream, seq ou run_id (%+v)", ErrInvalidProposal, *r)
+	}
+	return nil
 }
 
 // Rule é a regra de validação estrutural violada (§3.3, regras 1–6). Enum
@@ -298,6 +363,12 @@ type ValidatedPayload struct {
 	MaxDepth    int    `json:"max_depth"`
 	MaxFanout   int    `json:"max_fanout"`
 	MaxNodes    int    `json:"max_nodes"`
+	// SnapshotDigest é o digest do CONTEÚDO do snapshot de capabilities contra o qual o plano foi
+	// validado (AOS-408) — os eixos de risco de cada tool, não o rótulo `hash` que o ficheiro
+	// declara sobre si mesmo. É a âncora que impede uma decisão humana de ser tomada, ou um plano
+	// aprovado de ser materializado, sob um catálogo diferente daquele que tornou o plano pendente.
+	// Opcional e aditivo: vazio num facto anterior, e um consumidor que dele dependa recusa.
+	SnapshotDigest string `json:"snapshot_digest,omitempty"`
 }
 
 // Decision é a decisão do gate de aprovação-de-plano (AOS-121).

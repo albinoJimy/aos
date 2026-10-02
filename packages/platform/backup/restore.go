@@ -6,6 +6,8 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -63,6 +65,55 @@ type RestoreEvidence struct {
 	HeadSeq        map[string]uint64 `json:"head_seq"`
 	EventsRestored uint64            `json:"events_restored"`
 	CheckpointHead []byte            `json:"checkpoint_head"`
+}
+
+// LoadManifest reconstrói a cadeia COMPLETA a partir dos registos de ciclo do destino, e devolve
+// também o último checkpoint assinado.
+//
+// # A segunda metade do limite do AOS-101
+//
+// Até aqui [Restorer.RestoreTo] recebia o `Manifest` e o `Checkpoint` COMO ARGUMENTOS e nada neste
+// módulo os persistia: segmentos duráveis sem manifesto guardado não eram restauráveis, e quem
+// operasse o backup tinha de guardar o manifesto algures por sua conta — um segundo artefacto,
+// fora do WORM, sem o qual todos os segmentos do mundo não valiam nada. Desde a retoma, cada ciclo
+// sela o seu elo num registo imutável no próprio destino, e a cadeia é reconstruível a partir do
+// que lá está.
+//
+// # O que este método NÃO faz, deliberadamente
+//
+// Não verifica. Devolve o que o destino diz, e a autoridade sobre isso continua a ser
+// [Restorer.VerifyManifest] — que [Restorer.RestoreTo] corre fail-closed ANTES de escrever o que
+// quer que seja. Duplicar aqui a verificação criaria uma segunda guarda a poder divergir da
+// primeira, e a primeira é a que corre no caminho que importa.
+//
+// Em particular, `expectedHead` continua a ser um argumento de quem restaura, e tem de vir de FORA
+// do backup: é a âncora anti-rollback, e uma âncora lida do mesmo sítio que se está a verificar
+// não ancora coisa nenhuma.
+//
+// Percorre os ciclos por ordem até ao primeiro ausente — O(N) leituras de objectos pequenos, pago
+// por quem restaura e não por cada arranque do nó.
+func (r *Restorer) LoadManifest() (Manifest, Checkpoint, error) {
+	region := r.backup.Region()
+	m := Manifest{Region: normalizeRegion(region)}
+	var last Checkpoint
+	for i := uint64(1); ; i++ {
+		rec, err := loadCycleRecord(r.backup, region, i)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				break
+			}
+			return Manifest{}, Checkpoint{}, err
+		}
+		if rec.Entry.Index != i {
+			return Manifest{}, Checkpoint{}, fmt.Errorf("%w: o registo do ciclo %d declara Index=%d", ErrChainBroken, i, rec.Entry.Index)
+		}
+		m.Segments = append(m.Segments, rec.Entry)
+		last = rec.Checkpoint
+	}
+	if len(m.Segments) == 0 {
+		return Manifest{}, Checkpoint{}, fmt.Errorf("%w: nenhum registo de ciclo na regiao %q — destino virgem ou cadeia noutra regiao", ErrNotFound, m.Region)
+	}
+	return m, last, nil
 }
 
 // VerifyManifest verifica a integridade do backup (AC3) SEM restaurar:
@@ -140,17 +191,26 @@ func (r *Restorer) RestoreTo(ctx context.Context, m Manifest, cp Checkpoint, exp
 	// 2) Decifra os segmentos por ordem e acumula os eventos por stream (contíguos e
 	//    crescentes em seq, porque os segmentos estão em ordem de exportação).
 	byStream := make(map[string][]eventstore.Event)
+	// AOS-453: cada segmento tem de ser do titular da KEK do backup desta região (subject-binding
+	// em [openSegment]); a região é a do manifesto, que o VerifyManifest já confrontou com a assinada.
+	subject := backupSubjectFor(m.Region)
 	for i := range m.Segments {
 		seg := m.Segments[i]
 		blob, err := r.backup.Get(seg.Ref)
 		if err != nil {
 			return RestoreEvidence{}, err
 		}
+		// AOS-453 (revisão): o blob é LIDO DE NOVO depois do VerifyManifest; sem reconferir o hash,
+		// quem tem escrita no destino trocava-o entre a verificação e a abertura (TOCTOU) — e todas
+		// as épocas partilham a KEK aos.backup:<região>, pelo que um segmento de outra época abriria.
+		if sum := sha256.Sum256(blob); !bytes.Equal(sum[:], seg.ContentHash) {
+			return RestoreEvidence{}, ErrSegmentTampered
+		}
 		enc, err := unmarshalSegment(blob)
 		if err != nil {
 			return RestoreEvidence{}, ErrSegmentTampered
 		}
-		plaintext, err := openSegment(r.vault, enc)
+		plaintext, err := openSegment(r.vault, subject, enc)
 		if err != nil {
 			return RestoreEvidence{}, err
 		}

@@ -109,6 +109,11 @@ func (a *MediationSink) RecordMediation(ctx context.Context, rec referencemonito
 		Principal: Principal{
 			NHIID:           rec.Principal.NHIID,
 			DelegationChain: mapChain(rec.Principal.DelegationChain),
+			// AOS-439: quem pediu o run e sob que mandato correu — selados a partir do SchemaV4.
+			RequestedBy: rec.Principal.RequestedBy,
+			MandateID:   rec.Principal.MandateID,
+			// AOS-446 fase 1: a impressão do pino — selada a partir do SchemaV5.
+			MandateSigner: rec.Principal.MandateSigner,
 		},
 		// PayloadRef nil: o payload da tool NUNCA entra in-line no audit; a
 		// referência cifrada por titular é preenchida por produtores que a possuam.

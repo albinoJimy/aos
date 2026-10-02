@@ -1097,6 +1097,7 @@ Preparar a troca mediada: capability nomeada (ou reutilização declarada de `ca
 
 ### Critérios de Aceitação
 - [ ] A capability da troca está no bundle assinado (ou a reutilização está declarada e testada); o pipeline do GW passa `WithRun`/`WithPrincipal` (dados já existem no call site).
+  - Nota (2026-09-15): a metade do **run** deste critério está fechada por **AOS-394** — o run e o passo do turno chegam ao gateway pelo ctx de cada chamada (`agentruntime.ContextWithModelCall`) e entram nos selos `modelgw-gov`, sem fixar o run na construção do adaptador; a metade do **principal** já vinha de AOS-278. O que falta neste critério é a capability da troca no bundle assinado, que é do broker.
 - [ ] Cliente Vault real (KV v2 vs dynamic secrets decidido e registado — só dynamic dá corte downstream) com `Secret` construído dentro do pacote.
 - [ ] `AOS_BROKER_VAULT_*` na tabela AOS-203; banner declara o modo.
 - [ ] Higiene pré-wiring: reaper de leases (molde `approval_sweeper.go`) e superfície para `Revoke`.
@@ -1593,6 +1594,1918 @@ Ligar o estágio `pipeline/authn` real na composição do GW, com o principal do
 
 ### Estado
 **FEITO** (cutover duro; raiz humana real do EPIC-16/D4 já composta pelo verifier do nó).
+
+---
+
+## AOS-456 — Rate-limit do ingresso POR-CHAMADOR (o balde global não separa utilizadores)
+
+### Contexto
+O AOS-277 deu ao ingresso um token-bucket e um tecto de in-flight, ambos **por-nó**:
+`apiHandler.bucket` é **um** balde consumido por `handleSubmit` para todo o `POST /runs`. Com um
+utilizador — o dono — é anti-exaustão correcta, e era o que aquele ticket pedia. Com N é negação de
+serviço **entre pares**, sem malícia necessária: quem submeter em rajada esgota o balde de todos, e
+o segundo utilizador vê `429` por causa do primeiro. O banner de arranque declara-o em voz alta.
+
+Apurado na auditoria de prontidão para terceiros
+(`docs/reports/auditoria-prontidao-terceiros-2026-09-27.md` §3.1).
+
+### ⛔ TENTATIVA 1 (2026-09-27) — IMPLEMENTADA, REVERTIDA. Leia isto antes de tentar outra vez.
+Uma implementação foi escrita, passou **31 check runs de CI** e foi **revertida** depois de uma
+revisão adversarial independente a medir contra o handler real. **Não entregava nada do que
+prometia, em nenhuma configuração.** O que se aprendeu é o valor deste ticket, e custa menos ler
+do que redescobrir.
+
+**O DEFEITO DE RAIZ — a ordem das duas etapas.** O desenho era «mantém o balde global como 1.ª
+etapa e acrescenta o por-chamador como 2.ª, depois de o `authorize` resolver o principal». O token
+global é consumido em `api.go:676`; a 2.ª etapa decidia em `api.go:781`. Logo **cada pedido
+recusado pela 2.ª etapa já tinha gasto um token global**: A inunda, os seus pedidos recusados
+drenam o comum, e B leva `429` na **1.ª** etapa. Medido no handler real, na configuração que o
+banner anunciava como protectora:
+
+```
+alice #1,#2 -> passam           alice #3..#10 -> 429 da 2.ª etapa (e gastam o global)
+BOB   #1    -> 429 da 1.ª etapa (global vazio)
+```
+
+**Nenhum valor de configuração o corrige.** E o cabeçalho do ficheiro implementado afirmava o
+desenho correcto — «pedido atribuível ⇒ balde desse principal, **e só dele**» — que o código não
+fazia. A prosa descrevia a solução; o código fazia outra coisa.
+
+**A RESTRIÇÃO REAL, que qualquer tentativa nova tem de resolver primeiro.** Para B não ser
+afectado por A, os pedidos **atribuíveis** de A não podem consumir um recurso partilhado. Isso
+obriga a resolver a identidade **antes** do balde global — e aí abre um vector oposto: o
+`authorize` faz verificação criptográfica.
+
+**➜ DESENHADO (2026-09-27):** [`docs/reports/AOS-456-desenho-do-trade-off-de-ordem.md`](../docs/reports/AOS-456-desenho-do-trade-off-de-ordem.md),
+com os custos medidos (recusar anónimo: **41 ns**; `ed25519.Verify`: **59,9 µs**, igual para
+assinatura válida e inválida; razão **1461x**) e três opções. O desenho **recomenda dividir este
+ticket**, e a razão vale ler antes de tocar em código:
+
+- **AOS-456a — justiça em CONCORRÊNCIA** (tecto de runs EM CURSO por principal). Não exige
+  reordenação **nenhuma**, porque um pedido recusado **não ocupa lugar** — ao contrário de um token,
+  que é gasto. Toda a maquinaria já existe (`len(s.runs)` e `goal.Principal`). É o que dá a
+  propriedade que interessa sobre o recurso que interessa.
+- **AOS-456b — justiça em TAXA** (orçamento de verificação + balde por-chamador + cache de
+  verificação). Exige a reordenação, e tem um residual que **não se elimina** neste ponto do
+  sistema: quem queime verificação degrada-a para todos. A mitigação vive no `edge`, não no nó — o
+  que pode tornar o 456b desnecessário, e é decisão a tomar antes de escrever código.
+
+O desenho **não decide nada** e não implementa. Fica a escolha ao dono.
+
+**OS OUTROS DOZE ACHADOS, todos medidos** (a evidência completa está no relatório da revisão; aqui
+ficam os que restringem o desenho):
+
+| # | Achado |
+|---|---|
+| ALTO | O banner declarava «PROTEGE» uma postura que medidamente não protege. Verificado no binário real. |
+| ALTO | O critério de aceitação central estava `[x]` com um teste que exercitava a **tabela isolada**, nunca o `handleSubmit`. Com os defaults a 2.ª etapa era **inalcançável como recusa**. |
+| ALTO | O banner derivava a postura só da **config**; a composição dependia de `readGov != nil`. Sem `AOS_BOARD_REGIONS` anunciava «LIGADA» e «PROTEGE» com a tabela a `nil` — e o ramo «NÃO COMPOSTA» era **inalcançável por env**, porque o único valor que o produzia abortava o arranque. |
+| ALTO | `AOS_INGRESS_PER_CALLER_MAX` sem tecto **superior**: `262144` fazia **uma** inserção segurar o mutex global **8,79 s**; `1e8` era aceite sem uma palavra. Fail-closed contra `0`, aberto contra o absurdo. |
+| MÉDIO | DoS novo: 3x de latência no caso benigno, 6,76 ms de pior caso para um chamador benigno com um atacante a rodar principais. Antes era um `allow()` sem varredura. |
+| MÉDIO | «O(8) amortizado por pedido» era **falso** — busca linear do mínimo por entrada dá O(n) por pedido. Medido: 4x no tecto ⇒ ~3x no custo/pedido. Exige heap ou limiar. |
+| MÉDIO | Rotação de principais anulava a etapa na via legada por headers (principal auto-declarado): 30 pedidos rotativos ⇒ **0** recusas; 30 do mesmo ⇒ 28. |
+| MÉDIO | `POST /plans` é segunda porta, consome o global e **não** debita o balde do chamador. |
+| MÉDIO | `tuned` passou a ser accionado pelas variáveis novas mas o texto de origem só nomeava as antigas: o banner afirmava «AFINADO por» três variáveis que o operador não definira. |
+| MÉDIO | A condição do banner era um `OR` de dois eixos: bastava o burst ser 1 abaixo para declarar «PROTEGE» com a taxa 100 000x acima. Os três casos do teste não distinguiam a condição de nenhum mutante de um eixo. |
+| MÉDIO | `aos-orq` submete todos os runs-filho com **um** principal (o dele), colapsando todos os humanos num balde; e o `429` novo chegava ao executor como erro genérico, sem retry/backoff. |
+| BAIXO | O teste do critério era satisfeito por um contador que **nunca reabastece** (`rate=0` passava-o palavra por palavra). |
+
+**O que sobreviveu e foi confirmado por medição independente:** a tabela nunca cresce acima do
+tecto (8000 inserções concorrentes, `-race` limpo); a selecção dos mais cheios está correcta (200
+repetições, ordem aleatória de map como vector); não há data race; a config é fail-closed por
+baixo; e o lote melhora 9x face a um-a-um. **Nada disso compensa o defeito de raiz.**
+
+### Objectivo
+Dar a cada **principal** um tecto próprio de forma que a rajada de um **não** produza `429` noutro,
+resolvendo primeiro o trade-off de ordem descrito acima.
+
+### DIVIDIDO (2026-09-28), como o desenho recomendou
+O ticket foi partido nos dois eixos, e o eixo da **concorrência** está **FEITO**:
+
+- **AOS-456a — justiça em CONCORRÊNCIA:** tecto de runs EM CURSO por submissor. ✅ **FEITO.**
+- **AOS-456b — justiça em TAXA:** balde por-chamador + orçamento de verificação. **ABERTO**, e o
+  desenho põe em causa que deva existir no nó (a mitigação vive no `edge`). Não é pré-requisito de
+  nada; **não** foi reservado ticket novo — vive aqui até alguém decidir que se faz.
+
+### Critérios de Aceitação — AOS-456a (CONCORRÊNCIA) ✅
+- [x] **Medido no `handleSubmit`, não na tabela isolada:** com A em rajada, B é admitido.
+      `TestAOS456ARajadaDeUmNaoTiraLugaresAoOutro` submete por HTTP contra um nó com o gate soberano
+      composto, com o **modelo bloqueado** (sem isso os runs terminavam entre submissões e o teste
+      passaria com o tecto REMOVIDO) e o **balde global largo com o relógio parado** (um `429` que
+      viesse do balde tornaria o teste vacuoso). Mutação `M1` (tecto removido) ⇒ **6** testes vermelhos (a primeira versão desta linha dizia 5 — contei mal).
+- [x] **Uma recusa não ocupa LUGAR** — e ⚠️ **gasta um token do balde global.** A primeira versão
+      deste critério dizia «não consome recurso partilhado» e era **falsa**: o balde é consumido no
+      topo do `handleSubmit` e a decisão por-chamador acontece no `submit`, pelo que cada 429
+      por-chamador gastou um token comum. O teste que o «provava» só era verde porque punha o balde
+      a **4096 com o relógio parado** — pôs o recurso partilhado fora do alcance do sensor, que é o
+      movimento exacto que fez a tentativa 1 passar 31 gates. **Apanhado por revisão adversarial
+      independente, não por mim.** O teste
+      (`TestAOS456AUmaRECUSANaoOcupaLUGAR_MasGASTAUmTOKEN`) passou a medir as DUAS metades com um
+      balde apertado, e a afirmar a tabela verdadeira:
+      `alice #1 -> 201; #2..#10 -> 429 por-chamador (gastam tokens); bob #1 -> 429 "rate limit"`.
+      O que este eixo dá é que A não tira **lugares** a B; **taxa** é o 456b e não está feita.
+- [x] **A verificação e a reserva são atómicas** (partilham a secção crítica de `s.mu`).
+      `TestAOS456ATectoEAtomico`: 40 pedidos concorrentes, tecto 3, admitidos **exactamente** 3.
+      ⚠️ **O sensor é probabilístico e o teste di-lo, com a tabela medida:** apanha
+      `runtime.Gosched()` e 50 µs, **não** apanha unlock/relock imediato nem 1 µs. Apanha a janela
+      que o defeito REAL teria (a verificação no handler, com `authorize` + `ed25519.Verify` 59,9 µs
+      + selagem WORM pelo meio); contra um reordering de nanossegundos a garantia vem da estrutura.
+- [x] O banner deriva a postura da **composição real**, e há **quatro** posturas, todas alcançáveis
+      e testadas. Duas correcções de revisão adversarial entraram aqui:
+      - **ALTO-1 (mentira no banner):** o predicado de composição testava «gate soberano composto»,
+        que **não é** «principal verificado». Com o gate composto e a credencial forte AUSENTE
+        (`AOS_BOARD_REGIONS` definida, `AOS_SOVEREIGN_OIDC_*` ausentes, fora de produção) o
+        principal vem do header `X-Aos-Reader` — que o chamador escreve. **Medido: 60 submissões com
+        o header a rodar, 60 admitidas com o tecto a 2**, e o banner dizia «SUBMISSOR VERIFICADO».
+        Agravante: o meu próprio teste de aceitação distingue alice de bob **por esse header**, logo
+        o critério foi provado na única configuração em que o mecanismo se contorna. Corrigido com
+        um predicado próprio (`principalDoRunEVerificavel`, que exige a credencial forte) e uma
+        **quarta** postura no banner: `LIGADO sobre principal DEMO-GRADE`, que nomeia o header, diz
+        que se contorna e diz como se fecha. O tecto continua composto nessa postura — vale contra
+        rajada honesta — mas deixa de ser anunciado como o que não é.
+      - **ALTO-2 (sensor ausente no elo que este critério declarava fechado):** duas mutações no
+        wiring de `serveAPI` — remover a condição de composição (`N1`) e passar `true` fixo ao banner
+        (`N2`) — **sobreviviam à suite inteira**, e a `N2` é literalmente o defeito ALTO da
+        tentativa 1. Nenhum teste tocava `serveAPI`. Fechado com
+        `TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL`, que arranca o servidor real em **cinco**
+        posturas e mata `N1`, `N2` e `N5`. (Uma versão desta linha citava um `N4` que nunca foi
+        definido em sítio nenhum — erro meu, apanhado pela segunda revisão.) A primeira
+        versão desse teste ainda deixava a `N1` sobreviver, porque usava o `countingModel` e o run
+        terminava entre os dois POSTs — corrigido com o modelo bloqueado.
+      - **ALTO-1b (SEGUNDA revisão adversarial): a correcção do ALTO-1 estava incompleta, e pela
+        mesma razão.** O predicado passou a exigir `SovereignReadCredential != nil` — a EXISTÊNCIA da
+        credencial no nó — mas `NewAPIHandler` compõe a read-governance em DOIS ramos e passa a
+        credencial em UM só: `case node.SovereignAuthority != nil` passa-a, `case
+        node.SovereignReadRegions != nil` passa `nil`. Um nó com registo board→região e credencial
+        forte mas SEM autoridade tinha a credencial **composta e ignorada**, e o banner dizia
+        «VERIFICADO» sobre um header — **medido: 60 submissões rotativas, todas admitidas com o tecto
+        a 2**. O predicado passou a exigir `SovereignAuthority != nil` também: é a condição do ramo
+        que realmente USA a credencial.
+        **Agravante, e é o que importa:** o caso (C) do teste que eu escrevi para provar a postura
+        VERIFICADO compunha exactamente este estado — o sensor validava o estado errado e não cobria
+        o caminho que o `Bootstrap` produz. Corrigido: (C) compõe a autoridade a sério, e um caso (E)
+        novo fixa o estado defeituoso como NÃO-verificado. Mutação `N5` (repor o predicado que lê a
+        existência em vez do ramo) ⇒ vermelho, e só nesse caso.
+        Pelo `Bootstrap` o estado é inalcançável (`readRegions` só é atribuído dentro de
+        `if sovAuthority != nil`, bootstrap.go:2457), logo era alcançável in-process — mas um
+        predicado não pode depender dessa coincidência para estar certo.
+      - **ALTO-B (2.ª revisão): a decisão de compor o tecto na postura DEMO-GRADE não tinha sensor
+        nenhum.** Está escrita em quatro sítios — «o tecto CONTINUA composto, porque vale contra rajada
+        honesta» — e a mutação que a quebra (compor só com credencial forte) **sobrevivia à suite
+        inteira**. Medido na postura DEMO-GRADE, que é a **única que um nó configurado por env fora de
+        produção alcança**: sem mutação 2 admitidas / 6 recusadas; com mutação **8 admitidas / 0
+        recusadas**, e o banner a dizer «LIGADO … vale contra rajada HONESTA» com nada composto. É o
+        defeito ALTO da tentativa 1 outra vez.
+        **Causa: 4 dos 5 casos do meu teste passavam `medir = nil` — só liam texto.** A afirmação do
+        commit anterior («arranca o servidor real em quatro posturas e **MEDE** o comportamento») era
+        falsa em 4 de 5. O caso (B) passou a medir; mutação `N6` ⇒ vermelho.
+        E a primeira versão desse sensor **apanhou-se a si mesma**: usava o `countingModel`, os runs
+        terminavam entre submissões e a medição passava com o tecto desligado — o mesmo erro que eu já
+        tinha corrigido no caso (A).
+      - **Achado próprio, anterior:** o predicado escrito à mão omitia o ramo `SovereignAuthority`.
+        Não era alcançável pelo `Bootstrap` (`readRegions = readAuthority.Registry()`), era-o
+        in-process. Extraído para `noTemGateSoberanoDeLeitura`. Mutação `M8` ⇒ vermelho.
+- [x] `AOS_INGRESS_MAX_INFLIGHT_PER_CALLER` tem tecto superior **e** inferior, com o valor recusado
+      medido: 12 casos em `TestAOS456AEnvFailClosedNOSDOISSENTIDOS`. O superior tem significado
+      próprio — acima do global **nunca morde** e anunciaria uma barreira inerte. Mutações `M6`/`M7`
+      ⇒ vermelho. A variável está no README do operador e no `docker-compose.prod.yml` (vazia por
+      omissão) — o gate `TestManifestoDeDeployPassaTodaAConfigQueONoLe` apanhou a falta.
+- [x] **A latência não degrada, com número — e o número passou a vir do código de produção.** A
+      primeira versão (`BenchmarkAOS456ContagemPorChamador`) media uma **cópia** do laço sobre um
+      `map` local: nunca chamava `submit`, nunca tomava `s.mu`. **Provado inútil por mutação (achado
+      de revisão):** pôr o laço de produção a fazer 20x o trabalho não mexia um nanossegundo.
+      Substituído por `BenchmarkAOS456SubmitRecusadoInSitu`, que percorre o caminho real
+      (`Lock → varredura → Unlock → recusa`): **75,9 ns** com 1 run, **760 ns** com 64, **6,28 µs**
+      com 512, **61,1 µs** com 4096. A mesma mutação N3 agora move o número **18–19x**.
+      Os 6,28 µs estão dentro de `s.mu`; a `ed25519.Verify` do mesmo pedido custa 59,9 µs e fora do
+      mutex, e o rate-limit por omissão admite 64/s.
+      ⚠️ **A premissa `s.runs ≤ 512` é FALSA**, e é resíduo declarado: nem `handleResume` nem o
+      `ResumeInterruptedRuns` consultam o tecto global, e o check global do handler é um TOCTOU fora
+      do mutex. Acima de 512 a varredura degrada linearmente segurando o mutex (medido pela revisão:
+      1,37 ms com 32768 runs). A via que faz `s.runs` crescer exige four-eyes composto e credencial
+      fresca por retoma.
+      **Porquê varredura e não contador O(1):** um `map[principal]int` teria de ser decrementado nos
+      **quatro** sítios onde um run sai de `s.runs`, e uma entrada a mais tranca o chamador para
+      sempre — fail-**closed** e silencioso, pior do que 6,65 µs. A contagem derivada de `s.runs`
+      não tem estado próprio e não pode dessincronizar-se.
+- [x] `POST /plans` — **exclusão declarada, e estrutural:** essa rota **não hospeda runs**
+      (`TestAOS417IngressoNaoHospedaORun`), logo não há lugar a ocupar e uma guarda ali nunca
+      dispararia. O `plan_ingress.go` já o diz para o tecto global, pela mesma razão. E a porta que
+      *conta* — os runs-filho que o `aos-orq` submete por `POST /runs` — **está coberta**: ver
+      abaixo.
+- [x] **O achado do `aos-orq` está FECHADO, não declarado como resíduo.** O drenador submete todos
+      os runs-filho sob o **seu** principal; imputar ao chamador colapsaria os planos de todos os
+      humanos num tecto — o defeito deste ticket reaparecido noutra porta. A imputação vai ao
+      `RequestedBy`, **derivado pelo nó** do `planrequest.submitted` sob reclamação viva (AOS-439),
+      nunca do corpo — o mesmo valor que o `Goal.Subject` já usa como titular (AOS-440).
+      `TestAOS456ARunFilhoEImputadoAQuemPediuOPlano`; mutações `M9` (imputar ao drenador) e `M10`
+      (imputar sempre ao `RequestedBy`, tirando o tecto a quem não submete planos) ⇒ vermelho.
+- [x] O teste do critério **não** passa com um balde que nunca reabastece: não há balde nenhum neste
+      eixo. É um tecto de ocupação, e o que o torna não-vacuoso são as mutações acima.
+
+### AOS-456b (TAXA) — ⛔ DECIDIDO: **NÃO SE FAZ NO NÓ** (2026-09-28)
+
+O primeiro critério deste eixo era uma **decisão**, não código: «decidido, antes de escrever código,
+se a mitigação pertence ao nó ou ao `edge`». Está decidido, e contra o eixo. A razão é medida.
+
+- [x] **Decidido.** A justiça em taxa por-origem pertence ao `edge` — e **já lá está, em produção**:
+      `deploy/server/nginx.conf` declara `limit_req_zone $binary_remote_addr rate=16r/s` com
+      `burst=32`, contra os 64/s + burst 128 globais do nó. O comentário ao lado já declara o alcance
+      («uma origem sozinha deixa de poder esgotar o orçamento de todas; quatro em simultâneo ainda
+      podem — NÃO fecha um flood distribuído»). Não havia nada a construir: havia a verificar se
+      estava lá, e estava.
+
+- [x] **O custo de verificação já tem tecto — é o próprio balde, e o 456b removia-o.** Este é o
+      achado que fecha o eixo, e inverte a leitura do desenho.
+
+      ⛔ **ERRADO, e corrigido pelo AOS-458.** Esta análise afirmava que **as duas** portas que
+      verificam credenciais põem um balde à frente, e concluía que «nenhuma permite forçar verificação
+      sem tecto». **Era falso.** A enumeração foi de `ed25519.Verify` (a credencial do *run*); a
+      verificação que o nó faz **primeiro e em mais sítios** é o JWS de `readGovernance.authorize`, e
+      **sete** rotas de leitura chamavam-no sem tecto de taxa nenhum. MEDIDO: 200 pedidos ⇒ 200
+      verificações, zero 429, contra 1 verificação / 199 recusas no `POST /runs`.
+      **A refutação estava escrita no banner do próprio nó** (`ingress_env.go`: «NÃO cobre as
+      LEITURAS. `GET /runs/{id}` não é limitado por taxa nenhuma») — no ficheiro que este ticket
+      editou repetidamente. Apanhado por revisão adversarial independente, não por mim.
+      O que segue vale para as duas portas que a análise nomeou, e **não** para o nó:
+
+      | porta | barreira | onde está |
+      |---|---|---|
+      | `POST /runs` | `h.bucket.allow()` na **primeira** linha; a 1.ª `ed25519.Verify` ~150 linhas depois | no handler |
+      | `POST /runs/{id}/resume` | `admitControl` (o `ctrlBucket` **dedicado**) antes de o handler correr | no **registo** da rota (`planos.go`, `planoControlo`) |
+
+      A segunda quase me escapou: a barreira está no **registo** da rota e não no corpo do handler,
+      pelo que ler `handleResume` não a mostra — a primeira versão desta análise dava-a como ausente.
+      São dois baldes **independentes**, logo o tecto agregado do vector é `128/s`, não `64/s`.
+      Medido em `BenchmarkAOS456BCustoDaVerificacao` (neste contentor, e **não** reciclando o número
+      do desenho):
+
+      | operação | custo |
+      |---|---|
+      | `ed25519.Verify`, assinatura **válida** | 53,6 µs |
+      | `ed25519.Verify`, assinatura **inválida** | 52,7 µs |
+      | recusar no balde, **sem** verificar | 30,2 ns |
+      | **rácio** | **1742x** |
+
+      Tecto **destas duas portas**: `128/s × 52,7 µs` ≈ 6,7 ms/s de CPU. ⚠️ **Não era o tecto do
+      nó** — era a propriedade de um subconjunto apresentada como propriedade do sistema, que é a
+      mesma classe de erro que este ticket cometeu três vezes. O AOS-458 fecha as sete rotas que
+      faltavam. O custo é
+      idêntico para assinatura válida e inválida porque `ed25519.Verify` é de tempo constante — um
+      atacante não precisa de credenciais válidas, qualquer lixo bem-formado serve.
+
+      **O 456b exige inverter esta ordem** (a identidade tem de ser resolvida antes de o balde
+      decidir, ou não há a quem atribuir taxa). Isso **remove o limitador**, e o «orçamento de
+      verificação» que o desenho propunha existiria para fechar um buraco que a própria mudança
+      abriu. O desenho leu o rácio como *o custo de atribuir*; é também *o preço de admissão do
+      vector*.
+
+- [x] **Prova negativa, e é um gate.** `TestAOS456BOBaldeCorreANTESDaVerificacaoCriptografica`
+      (`packages/cmd/aos/aos456b_ordem_do_balde_test.go`) prende a ordem pela métrica **real**
+      (`aos_ingress_credential_denials_total`, em `/metrics`, que só sobe quando uma credencial é
+      efectivamente verificada e recusada): com o balde a 1 token e o relógio parado, o 1.º pedido
+      com credencial inválida dá **403** e o contador **sobe**; o 2.º dá **429** e o contador **não
+      sobe**. Verificado por mutação: mover o `bucket.allow()` para depois do gate soberano — que é
+      literalmente o que o 456b pedia — **avermelha** o gate, com a razão na mensagem de falha.
+
+      E um segundo caso, `TestAOS456BAAdmissaoDeCONTROLOPrecedeARotaDeRetoma`, cobre a **outra**
+      porta: com o `ctrlBucket` a 1 token, o 1.º `POST /runs/{id}/resume` corre a rota (qualquer erro
+      menos 429) e o 2.º leva **429** sem a rota correr. Sensor pelo **código**, e não pelo contador,
+      de propósito: não obriga o teste a compor um run realmente suspenso, o que mediria outra coisa.
+      Mutação: reclassificar a rota de `planoControlo` para `planoDados` ⇒ **vermelho**.
+
+### O que fica NÃO COBERTO, e é a fronteira honesta deste fecho
+O `edge` limita por **IP**, não por **principal**. Consequências, declaradas em vez de resolvidas:
+
+- Dois chamadores atrás do **mesmo NAT** partilham a quota de 16 r/s.
+- Um chamador com **muitos IPs** obtém 16 r/s por cada um.
+- Um **flood distribuído** não é fechado por nenhuma das camadas (o próprio `nginx.conf` di-lo).
+
+Fechar isto no nó exige a inversão, e a inversão custa o vector acima. **Se um dia a justiça em taxa
+por-principal for necessária, o caminho não é o 456b como desenhado:** é uma zona por-principal no
+`edge` (derivada do JWT/header quando existe, com fallback por IP), que atribui **sem** o nó ter de
+verificar antes de admitir. Isso é trabalho de `deploy/`, não de `packages/`, e abre-se como ticket
+próprio quando houver necessidade medida — não por simetria com o 456a.
+
+### Estado (AOS-456b)
+**FECHADO — DECIDIDO E NÃO FEITO, com a justificação CORRIGIDA pelo AOS-458.**
+
+O **núcleo** da decisão aguenta-se: inverter a ordem em `POST /runs` removeria um limitador real, e
+isso é razão legítima para não fazer o 456b **tal como desenhado**. O que não se aguentou foi a
+**justificação publicada**, e falhou do lado que importa: dizia que a inversão *abriria* um vector
+que o nó não tinha, quando o nó **já o tinha em sete rotas, na configuração obrigatória de
+produção**. Com isso, o dano marginal de inverter numa porta era muito menor do que o texto afirmava.
+
+**E o eixo certo era outro, mais simples:** não «inverter a ordem no `POST /runs`», mas «pôr tecto de
+taxa nas superfícies que verificam e não têm» — as leituras —, que **não exige inversão nenhuma**. É
+o AOS-458, e está feito. O eixo da **concorrência**
+(AOS-456a) está feito e mergeado; o da **taxa por-origem** vive no `edge` e está em produção; o da
+**taxa por-principal** fica declarado como não-coberto, com o caminho nomeado caso venha a ser
+preciso.
+
+### Disciplina desta entrega, e onde ela falhou
+**Catorze mutações injectadas no código real, uma a uma.** As dez primeiras (o mecanismo, a
+imputação, a env, o predicado) avermelharam à primeira. Quatro **não**, e nenhuma foi encontrada por
+mim:
+
+| | Mutação | Quem apanhou |
+|---|---|---|
+| `M2` | separar contagem de reserva com janela **nula** | eu, ao mutar |
+| `N1` | remover a condição de composição em `serveAPI` | **1.ª revisão adversarial** |
+| `N2` | passar `true` fixo ao banner em `serveAPI` | **1.ª revisão adversarial** |
+| `N3` | laço de produção 20x mais lento (o benchmark não via) | **1.ª revisão adversarial** |
+| `N5` | predicado a ler a EXISTÊNCIA da credencial em vez do ramo que a USA | **2.ª revisão adversarial** |
+| `N6` | compor o tecto SÓ com credencial forte (nada composto na postura DEMO-GRADE) | **2.ª revisão adversarial** |
+| `N7` | mover o tecto para ANTES das guardas de estado do run | **2.ª revisão adversarial** |
+| `N8` | zerar o bloco `alcance` do banner | **2.ª revisão adversarial** |
+
+A `M2` está registada no teste como limite **conhecido** do sensor, com a tabela de sensibilidade
+medida, em vez de tapada. As `N1`–`N3` eram **lacunas de sensor sobre critérios que este ticket
+declarava fechados** — e a `N2` é literalmente o defeito ALTO da tentativa 1, reintroduzível sem uma
+linha vermelha. Estão fechadas.
+
+**A lição, e é contra mim:** a tentativa 1 morreu de prosa correcta sobre código que fazia outra
+coisa. Esta entrega repetiu a forma em três sítios — o critério «não consome recurso partilhado»
+(falso, e o teste escondia o balde), o banner a dizer «VERIFICADO» sobre um header, e o benchmark a
+medir uma cópia do laço. **O mecanismo funcionava; as afirmações sobre ele não.** Nenhum dos três foi
+apanhado por mutação minha, porque as minhas mutações atacaram o mecanismo e as afirmações estavam
+noutro lado. Mutar o código não basta: há que mutar aquilo de que a afirmação depende, incluindo a
+configuração do próprio teste.
+
+### Também fechado pela 2.ª revisão adversarial
+- **O piso do `aos-orq` estava ERRADO, e documentação errada é pior do que nenhuma.** Eu escrevi «16
+  runs-filho por plano, abaixo de 16 parte planos» — o que sugere que 16 basta. **Não basta:** a
+  imputação é ao **humano** que pediu o plano, não ao plano, logo dois planos concorrentes do mesmo
+  humano **partilham** o tecto e o piso real é `16 × (planos concorrentes do mesmo humano)`. Medido:
+  com o tecto em 16 e um plano de `human:alice` no tecto, o 1.º filho de um **segundo** plano de
+  `human:alice` é recusado e um de `human:bob` passa. E com `aos-orq serve` manual não há submissor
+  derivado: **todos** os filhos vão ao principal do `aos-orq`. Corrigido no banner, no README e no
+  compose.
+- **A ordem das guardas em `submit` é *load-bearing* e não tinha sensor.** Mover o tecto para antes das
+  guardas duplicado/suspenso/terminado passava a suite inteira, e a consequência é real: com o
+  chamador no tecto, uma re-submissão do MESMO `run_id` passaria de «duplicado» (201, idempotente)
+  para **429** — e o `nodeClient.Submit` do `aos-orq` **depende** dessa idempotência, porque repete o
+  `submeter` por passagem. Regra fixada em teste: **o tecto é a ÚLTIMA guarda**; um pedido cuja
+  resposta é determinada pelo ESTADO do run recebe essa resposta, não uma quota. Mutação `N7`.
+- **O bloco `alcance` do banner era removível com a suite verde.** O commit afirmava que «nenhuma
+  das três frases é opcional» e nada as prendia. Mutação `N8` ⇒ vermelho, nas duas posturas.
+- **`PER_CALLER == global` era aceite e é INERTE.** O teste declarava a igualdade «coerente, degenera
+  no global». Medido com global=3/per-caller=3: a 4.ª submissão dá 429 **igual com e sem** o tecto
+  composto, porque o check global corre no handler **antes** do submit. Passou a exigir-se
+  **estritamente menor** — a mesma razão que já recusava «acima».
+- **O ramo VERIFICADO do banner ignorava `gateComposto`.** Inalcançável hoje pelos predicados reais,
+  mas era a forma do ALTO-1b (confiar numa coincidência de outro sítio). Conjunção explícita + caso.
+- **A formulação declarada FALSA sobrevivia em 8 sítios**, incluindo a **mensagem de erro voltada ao
+  operador** (`ErrCallerInFlightCeiling`) e a primeira frase da célula do README, que se contradizia
+  com o aviso da mesma célula. Corrigidos.
+- **Dois erros factuais meus:** citei uma mutação `N4` que nunca defini, e disse «5 testes vermelhos»
+  onde são 6.
+- **Flake latente:** o arranque do teste de gate usava `time.Sleep(250ms)` em vez do `esperarPorta`
+  que o pacote já tem. Trocado.
+
+### Residuais DECLARADOS (não defeitos: fronteiras conhecidas)
+- Um run **SUSPENSO** à espera de aval humano sai de `s.runs` e **não** ocupa lugar — igual ao tecto
+  global. Um chamador pode acumular suspensos sem bater no tecto. Está no banner e no README.
+- A **retoma** (`/resume`) é **isenta**. Contá-la tornaria um run irretomável por quota, e um run
+  que não se pode retomar é um run **preso**, não limitado.
+- O tecto é **por-réplica**, como todo o resto da admission: N réplicas valem N vezes o tecto.
+- Sem o **gate soberano** composto o tecto **não** entra em vigor, e o banner declara-o
+  (`CONFIGURADO (n) mas NAO COMPOSTO`): sobre um principal auto-declarado no corpo, um tecto
+  contorna-se mudando o valor — pior do que não existir, porque seria anunciado.
+- O predicado à mão que este ticket removeu do wiring **sobrevive no banner do kill-switch de
+  soberania** (`main.go:417`, AOS-203). Mesma classe, outro ticket — registado, não corrigido aqui.
+- **`s.runs` NÃO está limitado por `AOS_INGRESS_MAX_INFLIGHT`:** `handleResume` e o
+  `ResumeInterruptedRuns` (arranque e varredura periódica) não o consultam, e o check do handler é um
+  TOCTOU fora do mutex. Consequência para este eixo: a varredura O(n) pode degradar acima de 512
+  (1,37 ms com 32768 runs, medido). Pré-condição para o provocar: four-eyes/`ResumeRecords` composto
+  e credencial fresca por retoma — não é via para criar trabalho novo.
+- **PISO PRÁTICO ditado pelo `aos-orq`, e não validável no nó:** ele despacha até **16** runs-filho
+  por plano (`dispatchMaxConcurrency`), todos imputados ao mesmo submissor — o que é o acerto deste
+  ticket, e faz com que **qualquer valor abaixo de 16 parta planos com *fan-out* de forma
+  reprodutível**. Pior: `nodeClient.Submit` trata o 429 como erro genérico (sem `Retry-After`, sem
+  backoff, sem ler o corpo que distingue as três recusas) e o erro aborta a passagem de despacho
+  inteira. O nó não conhece o orquestrador, logo não pode validar este piso: está declarado no
+  banner, no README do operador e no compose. **O retry/backoff no `aos-orq` é trabalho do lado dele
+  — ticket próprio, não escopo deste.**
+- **Um drenador configurado (`AOS_PLAN_DRAINERS`) pode imputar runs a qualquer humano com reclamação
+  viva**, logo um drenador comprometido esgota o tecto de uma vítima. Fronteira aceitável (o drenador
+  é confiado por configuração), declarada aqui porque não estava.
+
+### Estado
+**AOS-456a FEITO** (2026-09-28), depois de DUAS revisões adversariais independentes. **AOS-456b
+FECHADO como DECIDIDO-E-NÃO-FEITO** no mesmo dia — ver a secção própria acima. A primeira
+encontrou 3 ALTO e 3 MÉDIO — dois contra afirmações que este ticket declarava provadas. A segunda
+encontrou **2 ALTO, 3 MÉDIO e 9 BAIXO**: a correcção do ALTO-1 estava **incompleta pela mesma razão**
+(predicado a descrever uma garantia que o código não dava), o teste escrito para a provar compunha o
+estado defeituoso, e a decisão de compor o tecto na postura DEMO-GRADE — escrita em quatro sítios —
+não tinha sensor nenhum porque 4 dos 5 casos do teste só liam texto.
+
+**O padrão, três revisões seguidas: o mecanismo esteve sempre certo; as afirmações sobre ele não.**
+Das oito mutações que sobreviveram à primeira tentativa, **sete foram encontradas pelas revisões e
+uma por mim**. Mutar o código de produção não basta — as afirmações falsas vivem na configuração do
+teste, no wiring que nenhum teste toca, no texto que nada prende, e em predicados que leem a
+existência de uma coisa em vez do sítio onde ela é usada.
+As correcções estão acima, cada uma com a mutação que agora a guarda. **AOS-456b ABERTO**, e
+possivelmente desnecessário — a decisão precede o código.
+
+---
+
+## AOS-458 — As LEITURAS não tinham tecto de taxa, e verificam JWS
+
+### Contexto
+Nasceu de uma revisão adversarial ao fecho do AOS-456b, que mediu o que esse fecho afirmava não
+existir. Sete rotas do `planoDados` chamavam `readGovernance.authorize` **sem tecto de taxa nenhum**:
+
+| rota | chamador |
+|---|---|
+| `GET /runs/{id}` | `api.go` |
+| `GET /runs/{id}/trajectory` | `trajectory.go` |
+| `GET /runs/{id}/reconstruct` | `sovereign_replay.go` |
+| `GET /tools` | `catalogo_de_tools.go` |
+| `GET /plans/{id}` | `plan_estado.go` |
+| `POST /plans/claim` | `plan_claim.go` |
+| `POST /plans/outcome` | `plan_claim.go` |
+
+Em produção (`AOS_MODE=production` **exige** a credencial forte OIDC) esse `authorize` verifica um
+**JWS**: RS256 ≈ **42 µs**, ES256 ≈ **91 µs** — mais caro que a `ed25519.Verify` de 52 µs do
+`POST /runs`. **Medido:** 200 pedidos ⇒ 200 verificações e zero 429, contra 1 verificação e 199
+recusas no `POST /runs`. Um core dá ~24 000 verificações RS256/s; via *edge* (16 r/s por IP), ~1500
+IPs saturam um core — ao passo que no `POST /runs` **nenhum número de IPs** ultrapassa os 64/s.
+
+**Porque é que ninguém viu:** só **dois** handlers consumiam um balde (`handleSubmit`,
+`handlePlanRequest`), e o invólucro do `planoDados` não aplicava barreira — com a razão escrita no
+comentário do plano: pô-la ali «passaria a limitar rotas que hoje não são limitadas». Passava, e era
+isso que faltava querer.
+
+### Critérios de Aceitação ✅
+- [x] **As sete rotas têm tecto**, medido rota a rota: com o balde a 1 token, o 1.º pedido atravessa
+      o invólucro e o 2.º leva **429** sem a rota correr (`TestAOS458AsLeiturasTemTectoDeTaxa`).
+      Mutação `M1` (remover o balde do invólucro — o estado anterior) ⇒ **vermelho nas sete**.
+- [x] **O tecto PRECEDE a criptografia**, e não só limita a taxa: com credencial forte composta e um
+      verificador que **conta** as chamadas, 20 pedidos com o balde a 1 token produzem **1**
+      verificação (`TestAOS458OTectoPRECEDEAVerificacao`). Mutação `M2` (consumir o balde **depois**
+      do handler) ⇒ vermelho.
+      ⚠️ **A credencial forte no teste não é detalhe:** os gates do AOS-456b usavam
+      `WithReadSovereignty(regions, worm)` ⇒ `cred == nil` ⇒ via legada por **headers**, sem
+      criptografia nenhuma. Eram cegos ao que diziam medir.
+- [x] **O balde é SEPARADO do de submissão.** Alargar o da submissão faria um *scrape* de leitura
+      negar submissões — uma regressão funcional em troca de menos código. `POST /runs` e
+      `POST /plans` atravessam os dois; o seu é mais apertado e morde primeiro, pelo que o
+      comportamento deles não muda.
+- [x] **Defaults GENEROSOS, e é deliberado:** 256/s com burst 512. O objectivo é que o tecto
+      **exista**, não que aperte — a 256/s o vector fica em ~1,1% de um core em RS256, e nenhum
+      cliente de leitura razoável o alcança.
+- [x] **Superfície do operador:** `AOS_INGRESS_READ_RATE`/`AOS_INGRESS_READ_BURST`, fail-closed como
+      as outras (ilegível, não-finito, negativo ou `0` ⇒ aborta), documentadas no README do operador
+      e no compose. Os gates `TestAOS203EnvSurfaceIsDocumented` e
+      `TestManifestoDeDeployPassaTodaAConfigQueONoLe` apanharam as duas faltas antes de eu as ver.
+- [x] **O banner deixou de mentir.** A linha que dizia «NÃO cobre as LEITURAS» era verdadeira e era a
+      refutação do AOS-456b; passa a declarar o balde novo e a nomear o resíduo que fica.
+- [x] **O fail-open da guarda nil está fechado.** `tokenBucket.allow()` passou a tratar receiver nil
+      (dezenas de testes compõem `apiHandler` à mão, e um nil deref no caminho de pedido é pior do
+      que a ausência de tecto). O que impede isso de ser fail-open em produção é o construtor compor
+      sempre os três baldes, e `TestAOS458OsTresBaldesMORDEMNumHandlerDoConstrutor` mede o **efeito**
+      de cada um — não os campos, porque `NewAPIHandler` devolve o mux.
+
+### Residuais DECLARADOS
+- ~~**O tecto de streams SSE continua GLOBAL.**~~ ✅ **FECHADO pelo AOS-459** — repartido por leitor,
+  com o global a ganhar também a variável de ambiente que nunca teve.
+- O tecto é **por-réplica** e **global entre chamadores**, como todo o resto da admission: não é por
+  IP nem por principal. A justiça por-origem vive no `edge`.
+- **Nada no repositório verifica o `deploy/server/nginx.conf`.** A perna da decisão do 456b que
+  depende do `edge` («a justiça por-origem já está em produção») não tem sensor nenhum, e o ficheiro
+  chega ao servidor por `scp` manual. O outro `nginx.conf` do repo (`deploy/node/dev-hardened/`)
+  **não tem `limit_req`**. Fica registado como resíduo próprio.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-459 — O tecto de streams SSE é repartido por LEITOR
+
+### Contexto
+Resíduo declarado no AOS-458 e apanhado pela mesma revisão adversarial. `trajConns` limitava 256
+streams SSE concorrentes de forma **global**: um leitor autenticado abria os 256 e negava
+`GET /runs/{id}/trajectory` a **todos** os outros. E não é uma rajada que passa — é **ocupação que
+fica** enquanto ele mantiver as ligações abertas.
+
+**Nenhuma das barreiras existentes o fechava**, e vale a pena ver porquê:
+
+| barreira | porque não cobre |
+|---|---|
+| `AOS-456a` (concorrência por submissor) | conta **runs** em curso, não **ligações** |
+| `AOS-458` (taxa do plano de dados) | limita **taxa**; abrir um stream custa **um** token e a ligação vive minutos |
+| *edge* (`nginx.conf`) | tem `limit_req` (taxa) e **não** tem `limit_conn` (ligações vivas) |
+
+**Lacuna adjacente, fechada ao mesmo tempo:** o tecto global existia como constante do binário e
+**não era afinável por ambiente**. Validar «o por-leitor é estritamente menor que o global» sem poder
+configurar o global deixaria o par inútil.
+
+### Critérios de Aceitação ✅
+- [x] **Um leitor não ocupa os lugares dos outros:** alice enche o seu tecto e é recusada; bob passa,
+      e tem o **seu** tecto (não passe livre).
+- [x] **Medido na rota REAL, com um stream VIVO** (`TestAOS459ARotaREALComUmStreamVIVODevolve429AoSegundo`):
+      servidor HTTP, run com residência selada, o 1.º stream aberto e a ler backfill, o 2.º do mesmo
+      leitor a levar **429**. Um pedido que já terminou não ocupa lugar, e o teste passaria com a
+      repartição desligada — foi a lição da tentativa 1 do AOS-456.
+      ⚠️ A primeira versão deste caso dava **404**: o `admitSovereignRead` recusa um run inexistente
+      **antes** da admission, pelo que o teste não alcançava o mecanismo. Só com residência selada mede.
+- [x] **A contagem volta a zero e a entrada DESAPARECE**
+      (`TestAOS459AContagemVOLTAAZeroEAEntradaDesaparece`, três voltas). São dois defeitos distintos:
+      um decremento em falta **tranca o leitor para sempre** (fail-**closed** silencioso, pior do que
+      não ter tecto), e uma entrada que fique no mapa é uma **fuga sem tecto** num nó de vida longa.
+      Este eixo tem **estado próprio**, ao contrário do AOS-456a, que deriva a contagem de `s.runs` e
+      por isso não pode dessincronizar-se.
+- [x] **A reserva é atómica** (60 pedidos concorrentes, tecto 3 ⇒ exactamente 3 reservas, `-race`).
+- [x] **Uma recusa por-leitor DEVOLVE o lugar global.** Se não devolvesse, **N recusas esgotariam o
+      tecto do nó** — um DoS que esta correcção introduziria, pior do que o defeito que fecha.
+      **Esta mutação SOBREVIVEU à primeira volta**, porque eu perdi a asserção ao reescrever o teste
+      da rota. Fechada com `TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal`, que mede pela métrica
+      **real** (`aos_trajectory_streams_active`, nova): 10 recusas ⇒ ainda **1** activo; com a mutação,
+      **11**.
+- [x] **`por-leitor >= global` é INERTE e é recusado**, e a razão foi verificada **neste** eixo, não
+      copiada do AOS-456a: os dois tectos são verificados no **mesmo** ponto, um após o outro. Com
+      ambos a N, um leitor chega a N sem exceder nenhum e na (N+1)-ésima é o **global** que corta — o
+      por-leitor nunca dispara. 14 casos em `TestAOS459EnvFailClosedEORRACIOENTREOSDOIS`.
+- [x] **As fronteiras estão fixadas em teste, não só em prosa:** principal vazio (modo legado — não há
+      a quem imputar, degenera no global), repartição desligada (`<= 0`), e mapa não composto (um
+      `apiHandler` construído à mão; um panic no caminho de pedido é pior do que a ausência de tecto —
+      o mesmo compromisso da guarda nil de `tokenBucket.allow`).
+- [x] **Superfície do operador:** `AOS_TRAJECTORY_MAX_CONNS` (a que faltava) e
+      `AOS_TRAJECTORY_MAX_CONNS_PER_READER`, fail-closed, no README e no compose. E a métrica
+      `aos_trajectory_streams_active`, sem a qual o operador tinha dois tectos para afinar e nenhuma
+      leitura de quantos lugares estão ocupados.
+
+### Residuais DECLARADOS
+- ⛔ **ERRADO, e corrigido pelo AOS-460.** Este bullet dizia duas coisas contraditórias no mesmo
+  parágrafo, e a segunda era falsa. Há **TRÊS** posturas, não duas:
+
+  | composição | principal | consequência |
+  |---|---|---|
+  | `readGov == nil` | **vazio** | sem repartição: degenera no global |
+  | `readGov != nil`, `cred == nil` | do header `X-Aos-Reader` | reparte, mas **contorna-se rodando o header** |
+  | `readGov != nil`, credencial composta | da credencial **verificada** | inforjável |
+
+  A do meio é a de um nó com `AOS_BOARD_REGIONS` e sem OIDC — **e é a que os testes deste ticket
+  compõem**. Medido: 12 streams vivos com o tecto a 1, só a rodar o header. Ou seja, os testes do
+  AOS-459 **só passam porque o principal não é vazio, e a prosa afirmava que era**. E o banner não
+  declarava nenhuma delas, ao contrário do AOS-456a — que tem as três e cujo próprio comentário diz
+  que a do meio «é a que a revisão adversarial apanhou».
+- O tecto é **por-réplica**: N réplicas valem N vezes os lugares.
+- **Um stream ocupa um lugar durante toda a sua vida**, e este eixo não põe limite à *duração*. Um
+  leitor dentro do seu tecto pode mantê-lo ocupado indefinidamente; o que deixa de poder é ocupar o
+  dos outros.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-460 — A repartição corre ANTES do tecto global, e o banner declara as três posturas
+
+### Contexto
+Correcção de dois ALTO que uma revisão adversarial encontrou no AOS-459 **depois de mergeado**.
+
+### ALTO-1 — uma rajada de RECUSAS negava a rota aos outros pelo tecto GLOBAL
+O AOS-459 pôs a reserva por-leitor **depois** do incremento global, argumentando que «o global é a
+barreira do nó e é a mais barata». Falso por duas razões: o passo caro (`admitSovereignRead`, JWS +
+residência) corre **antes dos dois**; e um pedido destinado a ser **recusado** tomava primeiro um
+lugar global, ocupando-o enquanto estava em voo.
+
+Medido na rota real, `global=2`, `por-leitor=1`, alice presa a **um** stream:
+
+| | bob 200 | bob 429 pelo tecto **global** |
+|---|---|---|
+| sem rajada | 199/199/198 | 1/1/2 |
+| 32 recusas de alice em voo | 142/122/146 | **58/78/54** (27–39%) |
+
+É a assimetria que o **AOS-456a declara e cumpre** — «exceder responde 429 **sem ocupar lugar
+nenhum**» — e que o AOS-459 dizia replicar. Nenhum dos seis testes do AOS-459 distinguia as duas
+ordens, porque todos mediam **um** pedido de cada vez.
+`TestAOS460RecusasEmVOONaoTiramLugaresGlobaisAOutroLeitor` é o sensor que faltava.
+
+> ⚠️ **A tabela acima é incompleta, e a frase que a seguia («Trocada a ordem: 0 de 200») era uma
+> afirmação que a medição não sustenta.** Contava só a categoria de 429 que a ordem *move* e descartava
+> em silêncio a categoria para onde ela a move. Corrigido e re-medido no **AOS-461**, com as duas
+> categorias separadas; ver a tabela de lá. O que esta correcção entrega é que **uma recusa por-leitor
+> não consome lugar global** — não que o outro leitor deixe de levar 429.
+
+### ALTO-2 — a fronteira de segurança estava declarada ao contrário
+Ver o bullet corrigido na secção do AOS-459: há **três** posturas e o ticket colapsou-as em duas,
+descrevendo a do meio (principal do header, contornável) como se fosse a primeira (principal vazio).
+O banner ganhou as três, no molde do AOS-456a, mais um ramo de aviso quando o par fica **inerte**
+(`por-leitor >= global`, que a env recusa mas a composição in-process não).
+
+> ⚠️ **O aviso «inerte» NÃO é uma protecção do operador**, e este ticket contou-o como tal. Todos os
+> estados que o disparam abortam o arranque em `ingressLimitsFromEnv`, e o banner tem um só chamador de
+> produção alimentado por essa leitura — logo nenhuma configuração por ambiente o alcança. A barreira
+> que morde é o abort. Corrigido no **AOS-461**; o ramo fica como cinto-e-suspensórios para quem compõe
+> in-process.
+
+### E dois testes que não mediam o que prometiam
+- **A libertação DUPLA** passava incólume pelos seis testes do AOS-459 — e também pela primeira versão
+  do caso novo, que exercitava a **função** quando a duplicação vive no **handler**.
+  `TestAOS460ALibertacaoDUPLANoHandlerDaStreamsAMais` mede pela rota: fechado 1 de 2 streams com o
+  tecto em 2, admitidos **2** em vez de 1.
+- **A atomicidade.** O teste do AOS-459 era um detector de ~4%. A barreira de arranque melhora-o, e
+  **não chega** — medido:
+
+  | janela entre verificar e incrementar | detecta |
+  |---|---|
+  | nenhuma (`Unlock`/`Lock` adjacentes) | **1 de 10** |
+  | `runtime.Gosched()` | 10 de 10 |
+  | `time.Sleep(1µs)` | 9 de 10 |
+
+  Registado no teste: **não prova atomicidade**; prova a ausência de uma janela da ordem que um
+  defeito real teria. A garantia vem da estrutura. É o mesmo limite, medido da mesma forma, que o
+  AOS-456a registou para a sua própria asserção.
+
+### Também corrigido
+- **Dois godoc SEQUESTRADOS** pelo AOS-459: `WithMaxTrajectoryConns` ficou **sem documentação
+  nenhuma** e o doc de `handleTrajectory` passou a descrever `reservarStreamDoLeitor`. Terceira vez na
+  mesma sessão; nenhum gate apanha (não são símbolos exportados).
+- O banner afirmava «AFINADO por» quatro variáveis que podiam não estar definidas, e continuava a
+  dizer que **«as leituras não têm limite de taxa nenhum»** — falso desde o AOS-458, cujo número o
+  próprio banner exibe.
+- `TestAOS456ABannerDistingueAsTRESPosturas` procurava no banner **inteiro**, e o vocabulário passou a
+  ser partilhado por dois eixos. Passou a procurar na sua própria dobra — o que também o **fortalece**.
+
+> ⚠️ **E enfraqueceu quatro asserções do OUTRO sensor no mesmo movimento.** A dobra nova usa o mesmo
+> vocabulário, e `TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL` — que asserta sobre o banner
+> inteiro — passou a ser satisfeito por ela. Medido: detecção da mutação que neutraliza a dobra AOS-456
+> passou de **5/5 para 1/5**. É regressão introduzida por este ticket, fechada no **AOS-461**.
+
+### Residual NÃO fechado, e é enumeração parcial outra vez
+**`tectoDePendentes = 1000`** (`plan_claim.go`) é um **segundo** tecto de ocupação global, sem
+repartição por chamador, sem variável de ambiente, no mesmo plano de dados. Um submissor autenticado
+enche os 1000 e todos os outros levam **503** em `POST /plans`. O AOS-459 afirmou que `trajConns` era
+o único; não era. **Fechado em AOS-464.**
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-461 — Os residuais da sétima revisão: um sensor cego, um sensor desarmado e uma barreira que não morde
+
+### Contexto
+Uma sétima revisão adversarial correu sobre o AOS-460 **já mergeado**, com o mandato de testar a
+hipótese de que a correcção tinha introduzido o seu simétrico. Não tinha — mas encontrou **dois ALTO**,
+um deles regressão do próprio AOS-460. Todos os achados abaixo foram **reproduzidos de forma
+independente** antes de serem aceites; um deles teve o enquadramento da revisão **refutado** pela
+medição (ver ALTO-1).
+
+### ALTO-1 — a afirmação «0 de 200» não era a medida, e o sensor filtrava o que sobra
+`TestAOS460RecusasEmVOO…` contava o 429 do tecto **global** e descartava com
+`!strings.Contains(corpo, "deste leitor")` a outra categoria — exactamente a categoria para onde o dano
+migra. O comentário que o justificava («bob nunca devia vê-lo») é **falso e mensurável**.
+
+Re-medido, mesma rota, mesmo cenário (`global=2 / por-leitor=1`, alice presa a um stream, 32 recusas
+dela em voo, bob sequencial), **cinco corridas por ordem, as duas categorias separadas**:
+
+| ordem | 429 pelo tecto **GLOBAL** | 429 pelo tecto **DE BOB** | total negado a bob |
+|---|---|---|---|
+| AOS-459 (antiga) | 34–52 | 0 | 34–52 (17–26%) |
+| AOS-460 (esta) | **0** | 29–42 | 29–42 (15–21%) |
+
+**Onde a revisão acertou:** o total negado a bob move-se pouco, e a afirmação «0 de 200» convida a ler
+«bob deixa de ser negado», que é falso.
+
+**Onde a revisão errou, e a medição refuta-a:** ela apresenta o resíduo como se a rajada de alice
+continuasse a negar a bob 15–20% «da mesma ordem de grandeza» do defeito fechado. Não é o mesmo
+fenómeno, e não é propriedade do mecanismo. Medido, mesma rajada, proporção sã (`por-leitor ≤
+global/2`):
+
+| composição | bob 200 | 429-global | 429-por-leitor | corridas |
+|---|---|---|---|---|
+| `global=16 / por-leitor=8` | 200/200 | **0** | **0** | 3 |
+| `global=64 / por-leitor=32` (o **default** é 32) | 200/200 | **0** | **0** | 3 |
+
+O resíduo é **artefacto do tecto por-leitor a 1**: sob contenção, o pedido N+1 de bob chega antes de o
+lugar do N ser libertado, e bob colide com o **seu próprio** tecto. É recusa por razão **certa**,
+confinada ao próprio principal. A que desapareceu era recusa por razão **errada** — o nó cheio de
+pedidos destinados a serem recusados. Aplanar as duas numa coluna de «total 429» apaga a distinção que
+é o objecto do ticket.
+
+**E um resultado que não estava em nenhum dos dois lados:** nessa proporção sã as **duas ordens
+empatam** (ambas 0). A ordem só é observável quando a folga global é de **um** lugar. Isso não torna a
+correcção dispensável — torna-a a diferença entre um nó apertado que degrada com razão e um que degrada
+sem razão —, mas é o alcance real e não estava declarado.
+
+- [x] O sensor conta e **registra** as duas categorias; só a global avermelha, e o `t.Logf` publica o
+  resíduo em toda a corrida. O critério (global ≤ 5%) fica igual: continua a detectar a ordem antiga.
+- [x] A afirmação corrigida nos **quatro** sítios onde viajava: cabeçalho de
+  `aos460_ordem_da_admissao_test.go`, prosa de `handleTrajectory`, banner de produção
+  (`ingress_env.go`, postura VERIFICADO) e a secção do AOS-460 acima.
+
+### ALTO-2 — a dobra nova desarmou o sensor de arranque real do AOS-456a (regressão)
+`TestAOS456AServeAPIComporEAnunciarNoARRANQUEREAL` asserta `strings.Contains` sobre o banner
+**inteiro**. A dobra SSE que o AOS-460 acrescentou usa o mesmo vocabulário (`NAO COMPOSTO`,
+`DEMO-GRADE`, `LIGADO sobre principal VERIFICADO`), pelo que quatro dos cinco casos passaram a ser
+satisfeitos por ela.
+
+Medido nas duas árvores, com a dobra AOS-456 neutralizada (quatro posturas trocadas por tokens):
+
+| árvore | subtestes que **detectam** |
+|---|---|
+| `3ff4611` (AOS-460, antes desta correcção) | **1 de 5** |
+| esta | **5 de 5** |
+
+- [x] O helper devolve **a dobra do eixo**, não a saída do arranque (`arrancarMedirELerDobra456`), e
+  aborta se a dobra não existir — o que os `Contains` de tipo «NÃO pode declarar X» não viam: passavam
+  num banner vazio.
+- [x] `dobraDoEixo` deixa de receber um `fim` à mão e delimita-se por um **registo** de marcadores
+  (`marcadoresDeDobra`): acrescentar uma dobra passa a fechar automaticamente a anterior. O AOS-460
+  delimitava a sua com o sentinela `"\x00"`, o que a fazia ir até ao fim do texto e reporia a confusão
+  na dobra seguinte (BAIXO-3).
+- [x] `TestAOS461TodasAsDobrasDoBannerEstaoREGISTADAS` vigia o registo nos dois sentidos (dobra não
+  registada, marcador obsoleto). **Limite declarado:** só apanha dobras que sigam a convenção
+  «TECTO … (AOS-NNN):», que é a das duas que existem.
+
+### MÉDIO-1 — ramo sem guarda: reintrodução da forma do ALTO-1b, no ficheiro que a proíbe
+`case lim.trajMaxConnsPerReader > 0 && principalVerificavel:` — **sem `gateComposto`**, 25 linhas
+abaixo do `switch` do AOS-456 que a tem, com o comentário «a conjunção é explícita … era exactamente a
+forma do ALTO-1b». Nesse estado o banner anuncia «LIGADO sobre principal VERIFICADO … credencial FORTE
+verificada» num nó onde `admitSovereignRead` devolve principal **vazio** e **não há repartição
+nenhuma**.
+
+- [x] `&& gateComposto` acrescentado, com a razão nomeada no código.
+- [x] O caso que faltava na tabela (`verificavel SEM gate: nada esta composto`) — o gémeo do que a
+  tabela do AOS-456 tem. Medido: é o **único** dos cinco casos que detecta a remoção da guarda.
+
+### MÉDIO-2 — ⚠️ **ESTA CORRECÇÃO ESTAVA ERRADA. Ver AOS-463.**
+O AOS-461 afirmou que `ingressLimitsFromEnv` aborta em todos os estados que disparam o aviso «par
+INERTE», logo o texto nunca chegaria a um operador, e **rebaixou** o aviso de protecção do operador a
+cinto-e-suspensórios.
+
+**Era falso, e a falsidade tapava um fail-open.** A comparação `por-leitor < global` vivia **dentro** do
+ramo `if rawTrajPer != ""`: baixar só `AOS_TRAJECTORY_MAX_CONNS` deixava o por-leitor no default 32 e
+ninguém comparava nada. `AOS_TRAJECTORY_MAX_CONNS=4` **arrancava** com a repartição INERTE, e este aviso
+era a única coisa que o dizia ao operador — precisamente enquanto o AOS-461 o declarava inalcançável.
+Corrigido no **AOS-463**, que valida o **par final**.
+
+### MÉDIO-3 / BAIXO-1 — o rollback do tecto GLOBAL não tinha sensor nenhum
+A hipótese do defeito simétrico **não se confirma**: o `defer libertar()` é registado antes do bloco
+global e cobre o seu `return`; e um pedido destinado a recusa global toma um lugar por-leitor que fica
+**confinado ao próprio principal** (medido pela revisão: 0/200 para um leitor terceiro, três corridas).
+
+Mas nenhum dos dois sentidos estava vigiado, e a lacuna é **anterior** ao AOS-460: a mutação que remove
+`h.trajConns.Add(-1)` do ramo de recusa global deixava a suite **inteira** do pacote verde, com uma
+fuga **permanente** — cada recusa retém um lugar e o tecto do nó esgota-se sem uma única ligação viva.
+
+- [x] `TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal` mede os dois sentidos num só cenário
+  (`global=3 / por-leitor=2`, o global cheio de leitores dentro da sua quota, 10 recusas globais de um
+  terceiro): a métrica `aos_trajectory_streams_active` tem de ficar em 3, e o leitor recusado tem de ser
+  **admitido** quando um lugar liberta. Medido, detecção **5/5** para cada mutação:
+
+  | mutação | detecta |
+  |---|---|
+  | remover `h.trajConns.Add(-1)` do ramo de recusa global | **5 de 5** |
+  | `defer libertar()` deixa de cobrir o ramo de recusa global | **5 de 5** |
+
+- [x] O godoc de `TestAOS459ARecusaPorLeitorDEVOLVEOLugarGlobal` passa a dizer que **passa por
+  construção** desde o AOS-460, e porque se mantém (fixa a ordem pelo lado do efeito).
+- [x] O comentário de `aos_trajectory_streams_active` deixa de nomear um invariante sem sujeito.
+
+### BAIXO-5 — «12 streams vivos com o tecto a 1» viajava no banner de produção sem sensor
+A afirmação estava no commit, no ticket, no comentário do código **e no banner** que um operador lê. O
+eixo AOS-456 tem a gémea («60 submissões rotativas») fixada no arranque real; este não tinha nada.
+
+- [x] `TestAOS461ODEMOGRADEContornaSeRodandoOHeader` mede-a na rota: 12 principais distintos, 12
+  streams vivos com o tecto a 1 — **e o controlo** que a torna um sensor: o **mesmo** principal leva
+  429 ao segundo. Sem o controlo, um tecto simplesmente desligado passaria.
+
+### Residuais NÃO fechados
+- **Godoc sequestrados, a classe.** `WithControlRateLimit` ficou **sem documentação nenhuma** —
+  sequestrado pelo `WithReadRateLimit` do AOS-458, o commit imediatamente anterior, no mesmo ficheiro.
+  Reposto aqui (**quarta** ocorrência na sessão). Uma varredura AST encontra ~8 hijacks reais noutros
+  6 ficheiros do pacote; um sensor mecânico para a classe é **AOS-462**, por abrir — corrigir a
+  instância e não a classe garante uma quinta vez.
+- **`tectoDePendentes = 1000`** (`plan_claim.go`) continua sem repartição por chamador nem variável de
+  ambiente. Herdado do AOS-460; **fechado em AOS-464**.
+- **Enumeração de tectos.** `maxInFlight=512` tem repartição **não composta por omissão**, e o
+  `http.Server` de produção não tinha tecto de ligações aceites — **fechado em AOS-465**. A metade
+  sobre o `MaxHeaderBytes` estava exagerada: não definido, o Go aplica 1 MiB por omissão.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-462 — Godoc SEQUESTRADO: um sensor para a classe, não para a instância
+
+### Contexto
+Em Go, um bloco de comentário imediatamente antes de uma declaração (sem linha em branco) **é** o godoc
+dessa declaração. Inserir uma declaração entre um comentário e o símbolo que ele documenta transfere o
+doc para o símbolo errado e deixa o original **sem documentação nenhuma** — e `gofmt`, `go vet` e
+`staticcheck` não dizem nada, porque nada está sintacticamente errado (o `ST1020` só cobre
+identificadores exportados).
+
+Aconteceu **cinco vezes na mesma sessão**, sempre igual e sempre corrigido só na instância:
+`WithCompletedRetention` e `newReadGovernance` (AOS-456a), `WithMaxTrajectoryConns` e o doc de
+`handleTrajectory` (AOS-459), `WithControlRateLimit` (AOS-458, reposto no AOS-461) e — **no próprio
+commit do AOS-463, que declarou que corrigir a instância e não a classe garantia uma quinta vez** —
+`ingressPostureBanner`, o maior documento de contrato do `ingress_env.go`, que passou a ser o godoc de um
+helper de quatro linhas enquanto a função ficava com zero.
+
+**A justificação para adiar este ticket foi refutada pelo commit que a escreveu.** Foi isso, e não um
+pedido novo, que o trouxe para dentro do AOS-463.
+
+### Critérios de aceitação
+- [x] Sensor mecânico: `TestAOS462NenhumGodocSequestrado` varre a AST do pacote e falha quando a
+  primeira palavra de um godoc é **um identificador declarado no pacote** diferente do símbolo que
+  documenta.
+- [x] **O discriminante é «existe como símbolo declarado»**, e é ele que separa o hijack real da prosa.
+  Medido: a varredura ingénua (primeira palavra ≠ nome do símbolo, com heurística de maiúscula) dá 15
+  achados, ~7 falsos — docs de grupo antes de blocos `var`/`const` («`// Erros …`»), asserções de
+  interface («`// Assegura …`») e prosa PT-PT («`// O …`», «`// PRODUTOR …`»). Com o discriminante:
+  **11 achados, zero falsos positivos.**
+- [x] **O identificador branco está fora, e é correcção do sensor, não do código.** Uma asserção de
+  interface (`var _ Porta = (*tipo)(nil)`) declara o símbolo `_`, que não é documentável, e um comentário
+  que nomeia o tipo afirmado está correcto ali (`dsar.go` tem um). Um sensor que manda corrigir código
+  correcto ensina a ignorá-lo, o que é pior do que não vigiar.
+- [x] Os **11 hijacks pré-existentes corrigidos**, não baselinados, movendo o **comentário** e nunca o
+  código — a operação de menor risco: `broker_vault_env.go`, `main.go` ×3, `service.go`,
+  `posture_banner.go` ×3, `sovereignty.go` ×2, mais o `ingress_env.go` do AOS-463.
+- [x] Provado por mutação: inserir uma função entre um comentário e o seu símbolo avermelha **3/3**
+  corridas, nas duas formas testadas (`ingressPostureBanner` e `budgetPostureBanner`).
+- [x] Vive como **teste Go no pacote** (corre em `ci-test`), e não como gate novo: o `AGENTS.md` §6 avisa
+  que `scripts/ci/` é território de sessões concorrentes, e o alcance necessário é um pacote.
+
+### O que o sequestro estava a mascarar
+Corrigidos os 11, quatro símbolos ficaram **sem doc nenhum** — que é o estado verdadeiro: nunca tiveram,
+apenas carregavam o de outro. Escreveram-se docs para `taintGatePostureBanner`, `revogacaoNoBanner`,
+`autorizarComCausa` e `imputadoA`, **só com o que se verifica por leitura do corpo**; inventar
+descrições é o modo de falha que esta sessão passou o dia a pagar.
+
+### Limite declarado
+Não apanha um doc cuja primeira palavra nomeie um símbolo de **outro** pacote, nem um que descreva o
+símbolo errado sem o nomear. Apanha a forma que custou cinco ocorrências, e só o pacote
+`packages/cmd/aos` — alargá-lo aos outros 48 módulos é trabalho que ninguém mediu ainda.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-463 — O par inerte era alcançável com UMA variável, e duas correcções seguidas juraram que não
+
+### Contexto
+`ingressLimitsFromEnv` validava `AOS_TRAJECTORY_MAX_CONNS_PER_READER < AOS_TRAJECTORY_MAX_CONNS`
+**dentro** do ramo `if rawTrajPer != ""`. Só um par **explícito** era validado. Baixar apenas o global —
+a coisa mais natural de fazer num nó pequeno — deixava o por-leitor no **default 32** e ninguém
+comparava nada.
+
+Medido (determinista, `ingressLimitsFromEnv` directamente, 3 corridas idênticas):
+
+| `AOS_TRAJECTORY_MAX_CONNS` | `..._PER_READER` | resultado | repartição |
+|---|---|---|---|
+| `4` | ausente | **ARRANCA** `global=4 por-leitor=32` | **INERTE** |
+| `32` | ausente | **ARRANCA** `global=32 por-leitor=32` | **INERTE** |
+| `33` | ausente | arranca `global=33 por-leitor=32` | activa |
+
+Com a repartição inerte, um leitor ocupa os quatro lugares globais e nega
+`GET /runs/{id}/trajectory` a todos os outros — **o DoS que o AOS-459 existe para fechar**, alcançável
+com uma variável de ambiente.
+
+### Porque nenhum dos dois tickets anteriores deu por isso
+- A tabela de 14 casos de `TestAOS459EnvFailClosedEORRACIOENTREOSDOIS` **não cobria a combinação**:
+  todos os casos com `global` explícito punham também o `porLeitor` explícito. A asserção final do teste
+  (`por-leitor >= global ⇒ Fatal`) estava certa e nunca era alcançada por um par com um default.
+- O **AOS-461 afirmou o contrário do facto** — «nenhuma configuração por ambiente alcança o par
+  inerte» — em três sítios novos (banner, godoc do teste, ticket) e **rebaixou** o aviso do banner de
+  protecção do operador a cinto-e-suspensórios. Esse aviso era a única coisa que nomeava o estado.
+- O `deploy/node/README.md` promete ao operador «`>=` global ⇒ **ABORTA**», sem dizer que a promessa só
+  valia quando ele definisse a variável.
+
+### Critérios de aceitação
+- [x] A comparação sai de dentro do ramo e valida o **par final**, depois de lidas as duas variáveis.
+- [x] O erro **nomeia a origem de cada valor** (`definida` / `default do binario`): sem isso o operador
+  que definiu uma variável lê uma recusa sobre um número que não escreveu.
+- [x] Três casos novos na tabela (`{"4",""}`, `{"32",""}`, `{"33",""}`). Medido: devolvendo a validação
+  para dentro do ramo, os **dois** primeiros avermelham e mais nenhum — não são vácuos.
+- [x] O comentário do ramo INERTE do banner passa a contar a história correcta: o AOS-460 chamou-lhe
+  correcção entregue, o AOS-461 chamou-lhe ramo morto, **as duas estavam erradas**, e hoje é o abort que
+  morde *por causa desta correcção*.
+- [x] O README do operador deixa de prometer um abort incondicional.
+
+### E os residuais da oitava revisão, no mesmo commit
+- [x] **O comentário de `aos_trajectory_streams_active` contradizia o próprio commit que o escreveu:**
+  dizia que o rollback do tecto global «não tem teste nenhum» e apontava para o teste tautológico,
+  quando o AOS-461 acabara de acrescentar `TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal`. Um leitor futuro
+  concluiria que podia removê-lo.
+- [x] **Referência godoc pendurada** introduzida pelo AOS-461: `[TestAOS460OBannerDeclaraAsTRESPosturasDoSSE]`
+  não existe. O `ref-lint` não vê referências godoc em Go — fica como limite conhecido do gate.
+- [x] **TRÊS gamas contraditórias para a mesma grandeza**, no ficheiro que o AOS-461 editou (`34–52` no
+  cabeçalho, `44–78` no comentário do critério, `54-78` na mensagem de falha). Duas séries de cinco
+  corridas no mesmo contentor sob carga diferente deram `34–52/29–42` e `51–75/51–59` — ~10 pontos
+  percentuais de deslocamento. **As gamas saíram do banner de produção** (AOS-461 pô-las lá) e ficam no
+  cabeçalho do teste, com a condição declarada. O que reproduz 5/5 nas duas séries e nas duas ordens é a
+  **forma**: qual das colunas vai a zero. É isso que o critério mede.
+- [x] **Prosa obsoleta no CORPO do teste cujo godoc o AOS-461 corrigiu** (`aos459_…:421` e `:433`),
+  80 linhas abaixo da correcção.
+- [x] **O guarda do registo de dobras varria UMA postura** e o godoc dizia que varria todas. Basta para
+  as duas dobras de hoje e é falso para uma dobra **condicional** — a forma do ramo INERTE que já
+  existe. Medido: uma dobra com nome conforme emitida só quando `!gateComposto` escapava. Passa a varrer
+  12 combinações (3 formas de `lim` × 4 posturas); verificado que apanha o caso que escapava. Limite que
+  fica, declarado: uma dobra com nome fora da convenção continua invisível.
+- [x] **O sensor do rollback acertava pelo sítio errado.** Com a quota do leitor a 2 e dez recusas, a
+  fuga por-leitor disparava a **guarda de cenário** («o cenário deixou de medir o que diz medir»), que
+  convida a corrigir o *teste*, e a asserção que o godoc diz medir era inalcançável. Com a quota a 10 e
+  dez recusas, cada mutação passa a disparar na sua própria asserção — medido 5/5 cada, com o
+  diagnóstico certo.
+- [x] `abrirTrajComo` passa o `context.Context` em primeiro, pela convenção Go.
+
+### QUEBRA DE COMPATIBILIDADE OPERACIONAL, declarada
+Esta correcção transforma um arranque silencioso numa **recusa de arranque**. Um nó com
+`AOS_TRAJECTORY_MAX_CONNS <= 32` e **sem** `AOS_TRAJECTORY_MAX_CONNS_PER_READER` arrancava antes (com a
+repartição desligada em silêncio) e **deixa de arrancar** depois. É deliberado — é a postura fail-closed
+que o `AGENTS.md` §7.8 exige, e trocar um buraco silencioso por uma recusa audível é o objectivo do
+ticket — mas é uma quebra e tem de estar dita onde o operador olha.
+
+- [x] Nada no repositório é afectado: o único sítio que define as variáveis
+  (`deploy/server/docker-compose.prod.yml`) define **as duas**, com os defaults 256/32 (par válido).
+- [x] O erro nomeia os dois valores e a origem de cada um, para que a correcção seja óbvia sem ler
+  código.
+- [x] A nota de migração está na linha do **`AOS_TRAJECTORY_MAX_CONNS`** no `deploy/node/README.md`, e
+  não só na do por-leitor: quem baixa uma variável lê a linha dela. A primeira versão deste ticket pôs a
+  nota só na linha do por-leitor — colocação parcial, a sexta desta sessão.
+
+### E a NONA revisão adversarial, sobre este mesmo commit
+Mandato estreito (só `c91e3b9..2e24838`, focado na validação de arranque). **Sem ALTO** — o mecanismo
+está certo e medido: o fail-open fecha, o abort morde no binário real, nenhuma configuração do
+repositório passa a abortar, e os três casos novos não são vácuos. Todos os achados foram afirmações
+falsas ou parciais em torno de um mecanismo correcto, que é o padrão desta sessão à nona vez.
+
+- [x] **`ingressPostureBanner` perdeu o godoc INTEIRO para `origemDoLimite`** — o helper foi inserido
+  entre o bloco de comentário e a função, sem linha em branco, e o maior documento de contrato do
+  ficheiro (alvo de `[ingressPostureBanner]` em três outros ficheiros) passou a documentar quatro linhas.
+  **Quinta ocorrência da classe, no commit que declarou que a quinta viria.** Reposto, e a classe fechada
+  em **AOS-462**, que este commit tinha adiado.
+- [x] **A história do ramo INERTE era a TERCEIRA versão errada.** A nota dizia «o ramo fica para a
+  composição in-process, que não passa por essa validação». Falso, medido: a função tem **um** chamador
+  de produção alimentado pelo `ingressLim` do ambiente, o `ingressLimits` é não-exportado, e
+  `WithMaxTrajectoryConns*` configuram o `apiHandler.cfg` — a composição in-process **não chega ao banner
+  de todo**. Logo o ramo é hoje inalcançável pelos dois caminhos, e a conclusão do AOS-461 voltou a ser
+  verdadeira **por causa deste commit**, não por já o ser. O ramo fica porque está fixado em teste.
+- [x] **«VARRE TODAS AS COMBINAÇÕES DE POSTURA» era falso:** a varredura variava 2 de 8 campos de `lim` e
+  deixava `tuned` a `false` — um campo em que a função **já ramifica**. Medido: uma dobra condicionada a
+  `lim.tuned`, com nome conforme, escapava 5/5. Passa a varrer 24 combinações (3 formas × `tuned` × gate ×
+  verif); verificado que apanha o caso, 5/5. Sexta enumeração parcial da sessão.
+- [x] **Dos três sítios que o próprio ticket nomeia, corrigiu um.** O godoc de
+  `TestAOS460OBannerDECLARAUmParINERTE` e a secção do AOS-460 continuavam a dizer «não é alcançável» e
+  «catorze casos» — deixando o repositório com **duas declarações contraditórias** sobre o mesmo ramo,
+  em que a marcada como errada era a exacta. Corrigidos, e a contagem passa a **17**.
+- [x] **O commit introduziu a contradição de gamas que se propôs a remover:** `trajectory.go` ficou com
+  a tabela **pré-alargamento** (`34–52 / 29–42`) enquanto o cabeçalho do teste levou `34–75 / 29–59` e a
+  nota de dependência da carga. Em `c91e3b9` os dois concordavam; o sítio em **produção** ficou o menos
+  honesto dos dois.
+- [x] **«com a maquina declarada» sobre-promete** — o que está declarado é a condição (mesmo contentor,
+  carga diferente), não a máquina, os cores nem o `GOMAXPROCS`. Corrigido para o que é.
+- [x] **Fronteira declarada:** `origemDoLimite` quase nunca dirá «default do binario» no deployment
+  recomendado, porque o `docker-compose.prod.yml` exporta **sempre** as duas variáveis — quem baixa só o
+  global lê «PER_READER=32 (definida)», um 32 que não escreveu em sítio nenhum. O propósito do helper é
+  derrotado onde mais faria falta, e a correcção é no compose. E o quarto caso do helper é **vácuo**: com
+  nenhuma definida o par é 32 < 256 e o abort não dispara.
+
+### Residual declarado
+- **Dívida herdada, não tocada:** o texto de ajuda do `ErrBadIngressLimits` enumera **4 das 8** variáveis
+  de ingresso, e o operador lê esse prefixo colado a uma mensagem sobre `AOS_TRAJECTORY_MAX_CONNS*`, que
+  não está na lista. Antecede o AOS-459.
+- **Fronteira não declarada (mantida):** o sensor de «12 streams vivos com o tecto a 1» fixa
+  `global=100 / por-leitor=1`, uma composição que **nenhum nó por defeito tem** (256/32). A frase que o
+  operador lê cita um número medido sob um tecto que o seu nó não corre. O eixo gémeo do AOS-456 tem o
+  mesmo problema («60 submissões, tecto a 2»). Não é defeito; é escopo que passa a estar dito.
+
+### Estado
+**FEITO** (2026-09-29).
+
+---
+
+## AOS-464 — A fila de pedidos de plano reparte-se por SUBMISSOR
+
+### Contexto
+`tectoDePendentes = 1000` (`plan_claim.go`) era uma constante do binário, **sem variável de ambiente**,
+que protegia o NÓ e não dizia nada sobre QUEM ocupa a fila: um submissor autenticado enfileirava os 1000
+e todos os outros levavam **503** em `POST /plans` até alguém drenar.
+
+Não é uma rajada que passa — é **ocupação que fica**: um pedido só sai da fila com desfecho terminal ou
+reclamação viva, e nenhum dos dois depende de quem submeteu. É o MESMO defeito que o AOS-456a fechou no
+`POST /runs`, um plano ao lado, e nenhuma das outras barreiras o cobria:
+
+| barreira | porque não fecha |
+|---|---|
+| balde de admissão | é **taxa**, e global entre chamadores: uma submissão custa um token e o pedido fica na fila horas |
+| tecto de runs em curso (AOS-456a) | conta runs **hospedados**, e esta rota não hospeda nenhum |
+| balde de TAXA do plano de dados (AOS-458) | idem, e `POST /plans` atravessa-o como `planoDados` — **omitido da primeira enumeração deste ticket** |
+| `edge` / `nginx.conf` | tem `limit_req` (taxa) e **não** `limit_conn` |
+
+Declarado como residual no AOS-460 e repetido no AOS-461 e no AOS-463; fecha aqui.
+
+### O que é DIFERENTE do eixo AOS-456/459, e importa
+A contagem **não vive em memória**: sai da projecção da fila, derivada do log. Não há mapa a manter nem
+caminho de libertação, e as duas contagens saem da MESMA leitura, pelo que a segunda camada não custa uma
+varredura a mais.
+
+**MAS HÁ TOCTOU, e a primeira versão afirmava o contrário — «ao contrário do AOS-456a».** Era o inverso
+da verdade: o AOS-456a decide sob mutex, e aqui a leitura e o `Append` não estão serializados, pelo que
+este eixo tem a janela **mais larga** dos dois. O excesso sob rajada depende da carga — duas séries
+de 5 corridas deram gamas que não se sobrepõem — e por isso não se declara gama. O tecto GLOBAL tem a
+mesma forma e é dívida herdada do AOS-423. **O limite real, e é o que se declara: a quota é imposta a
+menos de `AOS_INGRESS_BURST`.** Com os defaults (quota 125, burst 128, 400 concorrentes) o excesso medido
+foi **3**, 5 corridas de 5 — 1,02×. Torna-se material para quem baixar a quota muito abaixo do burst.
+
+### Critérios de aceitação
+- [x] `pendentesNaFila` devolve o total **e** a contagem do submissor dado. Numa só função, pela razão
+  que `plan_marca_de_agua.go` já declara para a marca de água: a definição de «está na fila» em dois
+  sítios deriva.
+- [x] Duas guardas em `handlePlanRequest`, **a repartição ANTES do global**. A ordem é pelo
+  **diagnóstico**, não pelo custo: quando as duas condições valem, o submissor acima da quota é a causa
+  provável, e responder-lhe 503 («o nó não tem quem drene») manda-o procurar o consumidor quando o
+  problema são os pedidos dele. Medido: a ordem trocada dá 503, e o teste da ordem avermelha.
+- [x] **Códigos distintos:** `429` no por-submissor (o chamador tem de drenar o que é dele), `503` no
+  global (o nó não tem consumidor, e a espera certa é a de um operador).
+- [x] **A distinguibilidade que isto cria está DECLARADA, e é uma decisão em aberto para o dono.** O
+  ADR-030 §2.7 não fixa o código, logo o 429 não contradiz decisão congelada. Mas a §2.1 — e o
+  comentário que manda verificar o tecto DEPOIS da autorização — tratam «a fila está cheia» como
+  informação interna, e até aqui um chamador recusado não sabia se a culpa era dele ou do nó. Agora,
+  ao receber 503 **dentro** da quota, infere que OUTROS encheram a fila: **um bit novo** sobre
+  actividade de terceiros. Aceita-se porque (a) só um chamador autenticado o vê, e já via a fila cheia
+  antes; (b) é o bit que torna o erro accionável, e uma recusa sobre a qual o chamador não pode agir é
+  o defeito que este eixo fecha; (c) não revela a existência de pedido ou run nenhum, nem permite
+  contar os pedidos de outro submissor. **Se o dono decidir que um bit é demais**, a correcção está
+  escrita no código: 503 nas duas camadas, distinção só no log. Não é uma omissão a descobrir em
+  revisão — é uma escolha do implementador, posta por escrito para poder ser revertida sem
+  reargumentação.
+- [x] `AOS_PLAN_MAX_PENDING` e `AOS_PLAN_MAX_PENDING_PER_SUBMITTER`, com o par validado **FINAL** — a
+  correcção do AOS-463 aplicada ao nascer em vez de paga em revisão. Três casos na tabela cobrem
+  exactamente a lacuna que o AOS-463 pagou (`global` definido, `porSubmissor` ausente).
+- [x] **A repartição compõe-se SÓ sobre um principal INFORJÁVEL** (`readGov.cred != nil`), e é a única
+  das três dobras de tecto por-chamador que recusa a postura DEMO-GRADE. **Correcção de um ALTO que uma
+  revisão adversarial independente mediu na primeira versão deste ticket** — ver abaixo.
+- [x] Sem gate soberano nenhum também não compõe: [planRequest] tem `run_id` e `objective` e mais nada,
+  pelo que sem `readGov` o principal fica **vazio para TODOS**. Um tecto chaveado no vazio seria um tecto
+  **global mais apertado** (125 em vez de 1000), a recusar com 429 chamadores que não excederam nada.
+- [x] **A re-submissão de um `run_id` já pendente não gasta quota.** Não acrescenta nada à fila (o
+  `Append` é idempotente pela chave) e o banner promete «201 accepted IDEMPOTENTE»; recusá-la era um
+  falso negativo puro, alcançável a 125 por chamador e deterministicamente sozinho em vez de só com 1000
+  globais — exactamente no retry de rede de um cliente. Achado MÉDIO-4 da revisão.
+- [x] **Contadores para as duas recusas** (`aos_plan_queue_refused_total`,
+  `aos_plan_queue_refused_per_submitter_total`). A camada nova nascia só com log, duas linhas abaixo da
+  frase «uma guarda sem sensor é o defeito que o AOS-422 mediu». Achado BAIXO-6.
+
+### ALTO — a primeira versão entregava um trinco de NEGAÇÃO DIRIGIDA, não um tecto contornável
+Na postura DEMO-GRADE (gate composto, sem credencial forte — a que DEF-221 nomeia para
+dev/staging/self-hosted), o submissor vem do header `X-Aos-Reader`, que o chamador escreve. Nos eixos
+AOS-456a e AOS-459 isso deixa um atacante **evadir** o tecto dele: mau, mas limitado — obtém o que
+obteria sem tecto nenhum. **Aqui não precisava de evadir: escrevia o header da VÍTIMA e gastava a quota
+dela.**
+
+| medição | resultado |
+|---|---|
+| quota 5, global 20, 5 pedidos forjados | a vítima **fechada fora** do `POST /plans` com **15 de 20 lugares livres** |
+| defaults (125/1000) | 125 pedidos fecham-na com **875 livres**, `aos_plan_queue_pending` lê 12,5% — painel saudável |
+| sondagem pela fronteira 201/429 | dá a **contagem exacta** dos pendentes da vítima |
+
+**A diferença face aos gémeos é a DURABILIDADE:** no AOS-456a os lugares são runs em curso, que executam
+e libertam; no AOS-459 são ligações SSE, que o atacante tem de segurar. Aqui um pedido só sai da fila com
+desfecho terminal ou reclamação viva — a ocupação forjada é durável e **gratuita**, fire-and-forget até
+um operador drenar.
+
+Ou seja: **a variável que se liga PARA DAR EQUIDADE entregava um trinco de negação**. É a classe «tecto
+inerte anunciado como equidade» que o ciclo AOS-456→AOS-463 existe para fechar, com o sinal invertido — e
+declarar não bastava, porque sob abuso era **pior do que não existir**.
+
+- [x] **Fail-closed, e é o argumento deste ticket aplicado por inteiro.** Ele já recusava compor sobre um
+  principal VAZIO porque «um tecto chaveado no vazio valeria como tecto global mais apertado, anunciado
+  como equidade»; o mesmo vale para um principal FORJÁVEL, e aqui com consequência pior. A atribuição
+  exige `h.readGov.cred != nil`; na postura DEMO-GRADE o tecto global fica como única barreira.
+- [x] O predicado é o do **sítio de uso** (`h.readGov.cred`), não um predicado sobre o `*Node`: é a
+  credencial que esta decisão consulta que decide. Foi o achado MÉDIO-1 da sétima revisão, pago no SSE.
+- [x] Fixado por `TestAOS464DEMOGRADENaoCompoePorqueSeriaNegacaoDirigida`, com controlo de que o global
+  continua a morder. A mutação que volta a compor sobre o principal forjável é detectada **5/5**, e só
+  por esse teste.
+- [x] DEF-913 no registo declara a RECUSA (não dívida nela), e DEF-221 deixou de dizer que as três dobras
+  compõem sobre DEMO-GRADE — o que passara a ser falso.
+- [x] **QUATRO posturas no banner**, não três: «não configurada» e «configurada mas não composta» exigem
+  acções DIFERENTES do operador (definir a variável, ou compor o gate), e colapsá-las mandaria metade
+  deles editar o ficheiro errado. A dobra segue a convenção de nome e **está registada** em
+  `marcadoresDeDobra` — uma dobra fora da convenção é invisível ao guarda e fica engolida pela anterior,
+  que foi o achado BAIXO-3/MÉDIO-4 da 8.ª e 9.ª revisões.
+- [x] O «1000» em texto fixo **saiu** do banner do caminho do plano: os números vivem na linha do
+  ingresso, onde são lidos. Repeti-los em dois sítios é a forma de um deles ficar obsoleto em silêncio, e
+  este banner já tinha o 1000 fixo quando o tecto passou a ser afinável.
+- [x] `aos_plan_queue_ceiling` publica o valor **em vigor** e não o default; nova série
+  `aos_plan_queue_ceiling_per_submitter`, que vale **0** quando a repartição não está composta —
+  publicar o valor configurado aí faria o painel afirmar uma equidade que não existe.
+- [x] A constante `tectoDePendentes` foi **removida**, não mantida ao lado do novo default: duas
+  constantes com o mesmo valor divergem, e o compilador não se queixa de uma `const` de pacote que
+  ninguém usa — teria ficado dívida silenciosa no primeiro commit deste ticket.
+
+### Mutações medidas
+| mutação | detecta |
+|---|---|
+| a guarda por-submissor nunca dispara | **2 de 5** testes (3 corridas) |
+| ordem trocada (global antes da repartição) | 1 de 5 — o teste da ordem |
+| `pendentesNaFila` conta os SEM principal como «de um submissor» | 1 de 5 — **5/5 corridas** |
+| a validação do par volta para dentro do ramo | 2 casos da tabela, e só esses |
+| ramo VERIFICADO do banner sem `gateComposto` | 2 casos, e só esses |
+
+### O que os testes NÃO cobrem, medido e declarado
+O `h.readGov != nil` na atribuição é **cinto-e-suspensórios**: removê-lo sobrevive aos quatro testes de
+rota, porque sem `readGov` o `p.Principal` já é vazio e `pendentesNaFila` devolve 0 para submissor vazio.
+A protecção vive em dois sítios e os testes de rota só detectam a **conjunção** quebrada. A metade que se
+mede sozinha é a de dentro (`TestAOS464ContagemDeSubmISSORVazioNaoContaOsSEMPrincipal`, 5/5). A de fora
+fica declarada no código como o que é: vale se alguém vier a preencher o principal por outro caminho.
+
+### ALTO da revisão final — a isenção da re-submissão era um oráculo de existência
+A primeira isenção (`!jaPendente`) valia para **qualquer** pedido pendente com aquele `run_id`. Com a
+quota cheia, um `run_id` pendente de **outra pessoa** respondia 201 e um inexistente 429 — cross-submissor
+e cross-região, **em produção** (a única postura em que a camada 429 existe), contra o ADR-030 §2.1 à
+letra. Corrigido: a isenção só vale para o **próprio** submissor. Fixado por
+`TestAOS464QuotaCheiaNaoEOraculoDeExistencia` (mutação detectada 5/5).
+
+Na mesma passagem: a série `aos_plan_queue_ceiling_per_submitter` tinha ficado com o predicado antigo e
+publicava o tecto em DEMO-GRADE, onde a repartição não existe; os dois contadores novos não tinham
+sensor. Ambos fixados em `TestAOS464ContadoresDasRecusasEAMetricaNaoMentem` (5/5 cada).
+
+### Residuais declarados
+- **Origem dos valores no compose (herdado do AOS-463, não fechado aqui):** o
+  `docker-compose.prod.yml` exporta SEMPRE as duas variáveis (`:-1000`/`:-125`), como as ~30 outras,
+  pelo que `origemDoLimite` dirá «definida» sobre um número que o operador não escreveu. A correcção é
+  no padrão do ficheiro, para todas, e não para duas — fazê-lo só para estas deixaria o ficheiro
+  inconsistente **e** o residual aberto.
+- **A isenção da re-submissão cobre só a janela PENDENTE:** reclamado o pedido, um retry com a quota
+  cheia leva 429 embora o `Append` fosse dedup.
+- **O tecto global continua sem sensor directo** de que recusa a 1000: nenhum teste submetia até ao
+  limite antes deste ticket e nenhum o faz agora. O que se fixou é o comportamento com o tecto
+  BAIXADO pela opção; a leitura do valor por ambiente tem a sua própria tabela.
+- **Não há como DESLIGAR a repartição por ambiente:** deixar `AOS_PLAN_MAX_PENDING_PER_SUBMITTER` por
+  definir dá o default 125, LIGADA, e `=0` é recusado. O ramo «NÃO CONFIGURADA» do banner é alcançável só
+  por `WithPlanMaxPendingPerSubmitter(0)`, que é seam de teste. Mesma fronteira do eixo SSE (prior art);
+  a tabela de env deste ticket descrevia-a ao contrário, copiada do AOS-456a onde o default é 0.
+- **O TOCTOU do tecto GLOBAL** (herdado do AOS-423) fica por fechar: serializar leitura e `Append`
+  exigiria um lock no caminho quente do `POST /plans`, que ninguém mediu.
+- **O gatilho pré-registado do guarda das dobras disparou e NÃO foi honrado.** O registo dizia «vale a
+  pena [declarar as dobras em forma de dados] quando houver uma terceira, não antes»; este ticket trouxe
+  a terceira. Varrer campos à mão falhou **duas** vezes pela mesma forma (`tuned` no AOS-463,
+  `planMaxPendingPerSubmitter` aqui — esta escapava ao guarda das dobras, mas a suite do pacote apanhava-a pelo teste do banner). Fica NOMEADO em vez de apagado: fechá-lo muda a assinatura de
+  `ingressPostureBanner` e de todos os seus testes.
+
+### Estado
+**FEITO** (2026-09-30).
+
+---
+
+## AOS-465 — Tecto de ligações aceites no `http.Server`
+
+### Contexto
+Todos os outros tectos do nó actuam **depois** de uma ligação ser aceite. Sem este, cada ligação TCP
+custa um descritor e uma goroutine até os timeouts a fecharem, sem número máximo. Declarado como
+residual desde o AOS-460.
+
+### Quatro versões, três refutadas por revisão independente
+**Primeira — o `Accept` espera no tecto (semântica do `netutil.LimitListener`). ALTO.** Ligações que só
+seguram a vaga libertam-na ao ritmo dos timeouts, não do trabalho: keep-alive depois de um 404 60 s, h2
+com o preâmbulo e sem pedido 61 s, TCP sem bytes 5 s. **~17 ligações/s de uma só origem mantinham as
+1024 ocupadas**; com o tecto a 16 e 32 sockets ociosos o `/healthz` passou **0/4** (60/60 sem tecto),
+com a sonda de liveness que o README recomenda a reiniciar o pod. Sem tecto, o mesmo ataque tinha de
+esgotar os descritores. O banner dizia «ficam 768 para o plano de controlo»: falso com o nó exposto.
+
+**Segunda — despejar, classificando ESTADOS. ALTO outra vez.** Protegia «handler em curso sem corpo por
+ler» e «resposta que o servidor ainda não terminou». A revisão seguinte mediu três formas de segurar
+vagas nesses estados, todas à espera do CLIENTE: h2 com RST_STREAM a meio de um handler — o servidor
+declara `StateIdle` antes de o handler sair, o aviso era ignorado e a ligação ficava «em serviço» até ao
+IdleTimeout, **60 s, o mesmo custo do trinco original** (`/healthz` 0/10 durante 60 s); corpo anunciado
+a um 404, que o servidor drena depois do handler; h2 com a janela de controlo de fluxo a 0 e a resposta
+presa. As duas últimas 15 s cada, **sem autenticação e sem token**. E em h2 todo o pedido tem corpo, por
+isso um GET h2 — um stream SSE saudável incluído — contava como «à espera do corpo» e era despejável.
+Mais: mudar `r.Body` no pedido original mudava a decisão do servidor sobre o corpo por ler (um 404 a
+10 MB passava a esperar o ReadTimeout), e o embrulho do `ResponseWriter` escondia do `MaxBytesReader` o
+aviso que faz o servidor fechar a ligação depois do 413.
+
+**Terceira — o critério é ONDE O SERVIDOR ESTÁ BLOQUEADO.** Cada estado da segunda versão tinha uma
+variante em que a espera era, afinal, pelo cliente. Em vez de classificar estados, mede-se: uma ligação
+só está protegida enquanto um handler dela faz trabalho do servidor, isto é, não está dentro de uma
+leitura do corpo nem de uma escrita da resposta. As quatro formas novas foram sondadas uma a uma contra
+o servidor real (cada uma segura 3/3 vagas depois da graça e cai no escalão despejável; o `/healthz`
+responde em 2 ms). Para não cortar respostas acabadas de terminar, acrescentou-se uma graça de 250 ms,
+e o escalão mandava antes da graça.
+
+**Terceira — graça com precedência e SEM PRAZO. ALTO outra vez.** A mesma revisão, sobre a terceira
+versão, confirmou fechados todos os ataques anteriores e encontrou um novo, nascido da graça: uma
+ligação keep-alive a pedir a cada <250 ms fica sempre no escalão 1 imatura, e «o escalão manda antes da
+graça» impedia então todos os despejos do escalão 2. Com 1 escudo e 7 retentores, `/healthz` **0/28 em
+60 s, 0 despejos**, sem token; um poller legítimo a mais de 4 Hz faria de escudo sem o saber. Todas as
+vagas mantidas imaturas pelo mesmo meio também trancavam. Mais uma fuga: `defer t.Stop()` dentro do
+ciclo do `Accept` acumulava um temporizador por volta (+2,6 MB em 200 000 voltas).
+
+**Quarta — a graça com PRAZO por chegada.** A graça continua a mandar, mas só durante
+`GracaDeDespejo` contados a partir do momento em que a chegada vê a primeira candidata; esgotado, cede
+(maduras primeiro, depois imaturas, sempre por escalão). Esperar com todas as vagas a trabalhar não gasta
+prazo — contá-lo da chegada foi a primeira tentativa, e o teste do h2 servido apanhou-a a cortar uma
+resposta. As sondas da revisão contra esta versão: escudo + escalão 2 **49/49**, escudo h2 longo
+**49/49**, todas a renovar a graça **49/49**, primeiro `/healthz` aos 254 ms (o prazo); A1, A2(a),
+A2(b), M1 e M2 continuam fechados; a fuga de temporizadores desapareceu (−160 KB).
+
+### Critérios de aceitação
+- [x] Listener limitador em `ligacoes_aceites.go`, por baixo do TLS (conta ligações TCP). Escrito no
+  pacote porque `golang.org/x/net` não está no `go.mod` e o build de produção é offline.
+- [x] **Atingido o tecto, uma ligação nova DESPEJA outra**, por escalão: (1) sem handler e ociosa, ou
+  ainda sem pedido; (2) à espera do cliente — todos os handlers dentro de uma leitura do corpo ou de uma
+  escrita da resposta, ou nenhum handler e a resposta por terminar; (3) nenhuma: o `Accept` espera.
+  Dentro do escalão, a que espera há mais tempo. O escalão manda antes da graça.
+- [x] **Graça de 250 ms** (`GracaDeDespejo`) no estado actual antes de despejar. Em h2 o
+  `StateIdle` chega com a última trama ainda no buffer do servidor; sem a graça, um `Accept` acordado
+  por ele cortava a resposta (medido: `unexpected EOF` num pedido h2 acabado de servir).
+- [x] **A graça tem PRAZO por chegada**: no máximo `GracaDeDespejo` a partir da primeira candidata.
+  Uma ligação nova espera no máximo isso, salvo enquanto todas as vagas fazem trabalho do servidor.
+  O temporizador pára a cada volta do `Accept`.
+- [x] `StateIdle` limpa a marca de serviço mesmo com um handler ainda a correr (h2 com RST_STREAM).
+- [x] O pedido passado ao handler é uma cópia rasa; o `MaxBytesReader` recebe o `ResponseWriter`
+  original (`semVigia`). O embrulho da resposta implementa `Flush` (o SSE exige `http.Flusher`) e
+  `Unwrap` (o `ResponseController` do SSE).
+- [x] O `Accept` aceita primeiro e procura vaga depois: reservar antes obrigaria a despejar sem haver
+  quem quisesse a vaga, e com o tecto a 1 nenhuma ligação sobreviveria. Limite de descritores `n+1`.
+- [x] O `Close` do listener desbloqueia um `Accept` à espera de vaga e fecha a ligação que tem na mão.
+- [x] A vaga volta uma só vez (`sync.Once`), e a libertação nunca bloqueia. `CloseWrite` e `ReadFrom`
+  da ligação TCP repostos no embrulho.
+- [x] `AOS_API_MAX_CONNS` (default 1024), **estritamente maior** que `AOS_TRAJECTORY_MAX_CONNS`: um
+  stream SSE entre eventos está a trabalhar e é protegido. Validado sobre o par final do ambiente **e**
+  no `NewAPIServer` para a composição por opções (`ErrConnCeilingNotAboveSSE`, SSE sem tecto incluído).
+- [x] Banner declara o tecto, o critério, quantas vagas o SSE não toma, e o que o tecto NÃO contém.
+  Métricas `aos_api_connections_open`, `aos_api_connections_ceiling`, `aos_api_connections_evicted_total`.
+- [x] Regressão das três revisões contra o servidor real: mais de dois tectos cheios de ligações de dez
+  formas (TCP sem bytes, TLS sem pedido, keep-alive, cabeçalhos a pingar, corpo a pingar, h2 sem pedido,
+  corpo anunciado a um 404, h2 com RST_STREAM, h2 com janela 0 num 404 e no `/metrics`), e o `/healthz`
+  passa 4/4 sem nunca haver mais ligações do que o tecto; e um escudo a renovar a graça (um, e todas
+  as vagas), com o `/healthz` 4/4 em menos de um segundo cada.
+
+### Mutações medidas
+Trinta e duas mutações, três rodadas cada com `-race`: **96/96 detectadas**.
+
+| mutação | detectada por |
+|---|---|
+| sem despejo (o `Accept` volta a só esperar — a primeira versão) | ALTO, ligação servida, LRU, corpo lento, servidor real, ligação nova, escrita presa |
+| resposta por terminar no escalão 1 | resposta por terminar cede depois das ociosas |
+| nada protegido | ligação servida, corpo lento, vaga única, corpo lido, escrita presa, h2 servido |
+| ordem MAIS recentemente usada | LRU, ordem no escalão 2 |
+| sem o escalão «todos os handlers à espera do cliente» | corpo lento, escrita presa, ordem no escalão 2 |
+| escalão 2 com «algum handler» em vez de «todos» | stream h2 a trabalhar protege a ligação |
+| `NewAPIServer` sem `ligarAoServidor` | servidor real |
+| `Close` não acorda o `Accept` à espera | shutdown |
+| vaga devolvida a cada `Close` | ALTO, vaga única |
+| `StateIdle` não limpa a marca de serviço | ligação nova |
+| leitura do corpo não vigiada | corpo lento |
+| escrita da resposta não vigiada (`Write`) | escrita presa, ordem no escalão 2 |
+| `Flush` não vigiado | escrita presa (caminho do `Flush`) |
+| leitura que entra e não sai | corpo lento, corpo lido |
+| entrada em I/O sem marca de tempo | ordem no escalão 2 |
+| ordem do escalão 2 invertida | ordem no escalão 2 |
+| `soltar` sem tirar do mapa das vivas | o mapa esvazia |
+| embrulho sem `CloseWrite` | meio-fecho |
+| par com o SSE sem igualdade nem SSE sem tecto | par nas opções |
+| `StateActive` em vez de `StateIdle` | ligação servida, ligação nova |
+| `StateIdle` não acorda o `Accept` | ligação servida |
+| ligação nova sem marca (a mais antiga de todas) | ligação nova |
+| `MaxBytesReader` com o `ResponseWriter` embrulhado | 413 |
+| graça a 0 | h2 servido |
+| graça ignorada | h2 servido |
+| escalão 2 à frente de um escalão 1 ainda na graça | ALTO, ligação servida, LRU, servidor real, ligação nova |
+| sem temporizador de maturação | ALTO, ligação servida, LRU, corpo lento, servidor real |
+| pedido original mudado em vez de copiado | pedido original |
+| graça SEM prazo (a terceira versão) | graça não renovável por terceiros |
+| prazo contado da chegada e não da primeira candidata | h2 servido |
+| esgotado o prazo, o escudo imaturo antes das maduras do escalão 2 | graça não renovável (o escudo tem de sobreviver) |
+
+Ficam sem teste, e declara-se: a marca `despejada` (só importa com `Accept` concorrentes, que o
+`http.Server` não tem), o `Stop()` do temporizador a cada volta (a fuga foi medida pela revisão, não
+por um teste da suite), e a duração exacta do temporizador (só eficiência).
+
+Houve três surpresas durante estas versões, e todas mudaram o desenho:
+- O teste do h2 servido apanhou o corte da resposta por um despejo acordado pelo `StateIdle`, e daí
+  nasceu a graça.
+- Com a graça, uma candidata madura do escalão 2 passava à frente de uma do escalão 1 ainda na
+  graça; o teste do servidor real apanhou-o, e daí nasceu «o escalão manda antes da graça».
+- Contar o prazo da chegada deixava uma ligação que esperou segundos, com todas as vagas a
+  trabalhar, despejar sem graça a primeira resposta que acabasse; o teste do h2 servido apanhou-o.
+
+### Residuais
+- **Inundação volumétrica de ligações novas ou de pedidos.** Despejam-se umas às outras e às legítimas
+  ainda sem pedido; com todas as vagas mais novas do que a graça, a ligação nova espera o prazo e depois
+  pode despejar uma resposta legítima acabada de terminar. É do edge (`limit_conn`/`limit_req`).
+- **Trabalho legítimo dentro de handlers** protege a vaga; é limitado pelos tectos acima deste (taxa,
+  runs em curso, SSE), não por este.
+- **Com o escalão 2 como único**, uma ligação nova pode despejar uma escrita legítima em curso — só
+  depois da graça, e sempre a que espera há mais tempo.
+- **Custo:** cada leitura do corpo e cada escrita da resposta tomam o mutex do listener duas vezes, e
+  cada despejo percorre as ligações (medido pela revisão na segunda versão: 13,8 µs por despejo com
+  1024). Não medido sob carga real.
+- **Atrás do edge do compose**, o nginx tem `proxy_read_timeout 3600s` (pelo SSE). No único caso em
+  que o `Accept` espera, um pedido encaminhado pode esperar até esse prazo em vez de falhar depressa.
+- **Em h2 os streams multiplexam numa ligação**: o par com o SSE é um majorante, não uma igualdade.
+- **Descritores**: o runtime Go sobe o soft `RLIMIT_NOFILE` até ao hard no arranque, e o compose não
+  fixa `ulimit nofile`. O tecto só não morde antes dos descritores se o hard do deployment for perto
+  de 1024; não medido no deployment real.
+- **`aos_api_connections_evicted_total` pode contar a mais** quando o servidor fecha a ligação escolhida
+  ao mesmo tempo que o despejo.
+- Com todas as vagas a trabalhar, o plano de controlo espera como qualquer outra ligação — não há vaga
+  reservada.
+
+### Estado
+**FEITO** (2026-09-30).
+
+---
+
+## AOS-457 — Orçamento POR-PRINCIPAL (o tecto por-run não contém quem submete N runs)
+
+### Contexto
+`AOS_BUDGET_MAX_TOKENS` e `AOS_BUDGET_MAX_COST_MICRO_USD` (AOS-257/AOS-260) são o tecto que
+**CADA run** recebe, de uma variável de ambiente única — `packages/cmd/aos/budget_env.go` di-lo na
+primeira linha. Não existe tecto **por-principal**: N runs × tecto = despesa ilimitada por um só
+chamador. Num nó que fala com um modelo pago, é o risco financeiro mais directo de abrir a
+terceiros, e o único item da auditoria de prontidão (§3.2) cujo dano é irreversível — tokens gastos
+não se devolvem.
+
+### Objectivo
+Um tecto de consumo **agregado por principal**, numa janela declarada, que negue a admissão de um
+run novo quando o principal já esgotou a sua quota — sem tocar na semântica por-run, que continua a
+ser o que o disjuntor e o burn-down usam.
+
+### O que torna este ticket MAIOR do que o AOS-456, e a auditoria não distinguiu
+O orçamento por-run é composto **na admissão** e vive na árvore daquele run. Um tecto por-principal
+é **estado agregado que atravessa runs** e, portanto:
+
+- tem de ser **durável** (um restart não pode zerar a quota de quem já gastou — senão o tecto
+  contorna-se reiniciando o nó, e um tecto que se contorna é pior do que nenhum, porque é anunciado);
+- tem de ter **semântica de janela declarada** (diária? mensal? deslizante?) e de **reposição** —
+  e essa é uma decisão de produto, não de engenharia;
+- interage com o `burndown_ledger` e com o crypto-shredding por-titular: um agregado por principal é
+  um **registo sobre uma pessoa**, logo cai no alcance do Art. 17 e tem de ser apagável sem partir
+  a contabilidade (o precedente é o AOS-429 — um TTL próprio destruiria a KEK partilhada).
+
+**Por isso este ticket não deve ser implementado sem a janela e a reposição decididas pelo dono.**
+Implementá-lo com uma janela inventada entregaria um tecto que ninguém pediu e que o DPO tem de
+avaliar.
+
+### Decisão do dono (2026-09-30)
+Registada antes de implementar, como o primeiro critério exige.
+
+| eixo | decisão | alternativas rejeitadas |
+|---|---|---|
+| **Janela** | **Mensal, UTC.** Repõe às 00:00 UTC do dia 1. | diária UTC (não limita o mês); deslizante 30 d / 24 h (cara de calcular, «quando volto a poder?» sem resposta simples) |
+| **Unidade** | **Tokens (obrigatório) e micro-USD (opcional)**, como o tecto por-run (AOS-257/260). Nega se QUALQUER das duas estiver esgotada. | só USD (cega se o canal de custo falhar); só tokens (ignora o preço do modelo) |
+| **Excesso** | **Dura.** Na admissão reserva-se o tecto POR-RUN inteiro contra a quota; no fim do run liquida-se pelo consumo real e liberta-se o resto. Não se ultrapassa pelo que se reserva; o último turno de cada run pode passar o tecto por-run (a resposta só se mede depois), e esse transbordo conta — residual declarado. | macia — comparar só o já gasto deixava N runs admitidos juntos ultrapassar a quota até N × o tecto por-run, que é o excesso que o ticket existe para conter |
+| **Art. 17** | **O `/dsar/erase` apaga o agregado, e isso repõe a quota.** Residual declarado. | manter um bloqueio pseudonimizado até ao fim da janela (posição jurídica que o DPO teria de validar); bloquear o ticket à espera do DPO |
+
+Consequência de engenharia, não de produto (precedente AOS-464): a quota só se compõe sobre principal
+**verificado** (credencial forte). Sobre um principal forjável, uma quota de DESPESA seria negação
+dirigida — o atacante escreveria o nome da vítima e gastaria a quota dela.
+
+### Desenho
+- **Onde.** `packages/cmd/aos/quota_por_principal.go`. A reserva entra no `NodeService.submit`, depois
+  das guardas de estado e fora do mutex (é I/O), com `unreserve` a desfazer a reserva do `run_id` se a
+  quota recusar. É por aí que passam todas as admissões novas: o `POST /runs`, a CLI e os runs-filho do
+  `aos-orq` (imputados a quem pediu o plano, `RequestedBy`, e não ao drenador). A retoma e o
+  crash-resume **não** reservam: o run já reservou quando foi admitido.
+- **Durável.** Um stream por (principal, mês) sob `aos-internal/` (AOS-417):
+  `aos-internal/quota-<pseudónimo>-<AAAAMM>`, com `budget.quota.reserved`, `budget.quota.settled` e
+  `budget.quota.erased`. O gasto do mês é a soma, por run, da liquidação quando existe e da reserva
+  quando não. Entre réplicas, `WithExpectedSeq` no stream do principal.
+- **Liquidação.** Só quando o desfecho do run fica no log durável (`desfechoDuravelRegistado` no selo
+  do `hostRun`) e no abort por exaustão (`killed` sem re-hospedagem). O consumo vem do MESMO ledger de
+  turnos que o burn-down lê. Consumo ilegível (turnos sem `usage`) ⇒ a reserva fica inteira.
+- **A reserva pertence ao mês da admissão.** Resolve os runs que nunca terminam (suspensos, pausados,
+  órfãos): a reserva sai do cálculo quando o mês acaba, em vez de ficar presa para sempre.
+- **Porque não se cifra sob a KEK do titular** (desvio declarado do molde do AOS-429): o `OpenContent`
+  devolve o mesmo erro para «KEK destruída» e «vault em falha», e o `EnsureKey` cria uma KEK nova depois
+  de uma destruição. «Ilegível conta zero» abriria a quota numa falha do vault; «ilegível nega»
+  bloquearia até ao fim do mês um titular cuja KEK o varredor de retenção destruiu. E a cifra não
+  protegeria nada: os registos são pseudónimo, `run_id`, tokens e micro-USD — o que o `turn.recorded`
+  já guarda em claro. O apagamento é por **marca**; a leitura ignora o que vem antes dela.
+- **Principal verificado ou não arranca** (`ErrPrincipalQuotaUnverified`). Afasta-se do AOS-464, que
+  não compõe e declara: lá ficava um tecto global; aqui não ficaria nada, e uma quota configurada e não
+  composta deixaria o operador a julgar que a despesa tem tecto.
+
+### Critérios de Aceitação
+- [x] Janela e reposição **declaradas** (decisão do dono registada acima, antes de implementar).
+- [x] O agregado é **durável**: um restart do nó não repõe a quota consumida — provado por
+      `TestAOS457ACrashARetomaNaoRepoemAQuota` (um run em curso quando o nó cai; o nó que arranca sobre
+      o mesmo Event Store continua a recusar) e `TestAOS457UmRestartNaoRepoeAQuota`.
+- [x] Principal com quota esgotada é **negado na admissão** do run novo, com recusa atribuível: `429`
+      com `Retry-After` até à reposição; os números vão para o log do operador, não para o corpo.
+- [x] O tecto por-run continua a valer de forma independente: a quota **reserva-o**, não o substitui, e
+      o arranque recusa uma quota menor do que ele (nenhum run caberia).
+- [x] O agregado é alcançável pelo `/dsar/erase` sem destruir a contabilidade dos outros titulares:
+      store `principal-quota` no fluxo DSAR, provado pelo fluxo REAL (`node.DSAR.Receive`). A marca só
+      toca o stream do titular.
+- [x] `0` ou valor ilegível **aborta o arranque** (`ErrBadPrincipalQuota`), e também: quota sem tecto
+      por-run, quota em dólares sem tecto por-run em dólares, quota menor do que o tecto por-run, quota
+      sem principal verificado.
+
+### Revisão adversarial independente (sobre `ada6c47`)
+Recusou fechar o ticket. O que encontrou, e o que lhe aconteceu:
+
+- **ALTO — a quota contornava-se re-submetendo um `run_id` já liquidado.** A suspeita era do autor;
+  a revisão mediu-a: 20 re-submissões aceites, 20 chamadas ao modelo, gasto contado 0. A causa não
+  era da quota: o `submit` só consultava o cache `completed` (poda FIFO, vazio num restart, só desta
+  réplica), e **re-executava** um run com desfecho no log. Os `turn.recorded` da segunda execução
+  eram deduplicados por `(run_id, step)`, pelo que nem o **tecto por-run** — que é anterior a este
+  ticket — os via. **Corrigido na raiz:** o `submit` consulta o desfecho durável, como já consultava a
+  suspensão durável pela mesma razão, e responde `ErrRunAlreadyCompleted` (re-submissão idempotente
+  para a API). Isto muda um comportamento documentado («após a poda o RunID volta a ser submetível»)
+  que estava partido. `TestAOS457UmRunTerminadoNaoVoltaAExecutar`, com o relógio do lease a andar
+  para o teste medir a re-execução e não o lease.
+- **Agravante:** depois de um apagamento, re-reservar o mesmo run no mesmo mês era deduplicado pelo
+  Event Store (mesmo `StepID`) — admitido sem reserva. O `StepID` passou a levar o `seq` da reserva, e
+  a liquidação passou a referir a reserva exacta que liquida.
+- **ALTO — a ligação de produção entre a liquidação e o ledger não tinha sensor.** Trocar a fonte de
+  consumo por `nil` no Bootstrap (liquidar sempre a zero) sobrevivia. Teste novo pelo Bootstrap real.
+- **MÉDIO — «nunca se ultrapassa a quota» era falso.** O último turno pode passar o tecto por-run e a
+  liquidação conta o real (medido: quota 100, reserva 100, consumo 180). Afirmação corrigida em todo o
+  lado; é residual.
+- **MÉDIO — seis mutações fora da lista sobreviviam** (imputação ao `NHIID`, contenção a passar sem
+  reserva, o ciclo sem `ErrSeqConflict`, o relógio do `Shred`, e duas inofensivas). Testes novos.
+- **BAIXO — um arranque abortado pela quota deixava o Event Store preso e o banner já a tinha
+  anunciado LIGADA.** A recusa passou para antes do banner e da conclusão do arranque.
+- **BAIXO — um mutex para o nó inteiro** serializava todos os principais atrás do I/O de um. Passou a
+  um por principal.
+
+### Re-revisão (sobre `cd8bc5a`)
+Confirmou fechados, por medição, os três contornos (poda: 0 re-submissões aceites, eram 20; restart: 0
+chamadas ao modelo; o agravante depois do apagamento) e não encontrou formas novas de admitir sem
+reserva nem de imputar gasto a outro principal. Correu as suites de `cmd/aos-orq`, `integration`,
+`qa/*`, `security-tests` e `control-plane/runlifecycle`: verdes. Dois efeitos colaterais da recusa de
+runs terminados, ambos corrigidos:
+- **`failed` sem sensor:** a mutação para `state.IsTerminal` reabria o contorno para runs falhados e
+  passava a suite inteira. O teste passou a cobrir os dois desfechos.
+- **A recuperação documentada deixou de funcionar em silêncio.** O log de orçamento esgotado mandava
+  «levantar o tecto e re-submeter»; levantar o tecto exige um restart, e re-submeter o mesmo `run_id`
+  passou a ser recusado — com 201 no modo legado, sem executar nada. A recusa é a semântica certa; o
+  que estava errado era a instrução. O log passou a dizer «submetê-lo com um run_id NOVO», e a recusa
+  vinda do log tem erro próprio (`desfechoDuravelError`, que continua a ser um
+  `ErrRunAlreadyCompleted` para a API) em vez da mensagem do cache, que falava de «desfecho retido
+  nesta réplica».
+
+### Mutações medidas
+Trinta e uma mutações, três rodadas cada com `-race`: **93/93 detectadas**. Mais três depois da
+re-revisão, cada uma detectada: o predicado `state.IsTerminal` em vez de `desfechoDuravelRegistado`
+(deixa `failed` re-executável — sobrevivia à suite inteira), a recusa vinda do log com a mensagem do
+cache, e o mapa de mutexes sem poda.
+
+| mutação | detectada por |
+|---|---|
+| a admissão não reserva | serviço liquida pelo ledger, serviço recusa, 429, crash/retoma |
+| a retoma também reserva | serviço recusa e retoma isenta |
+| a recusa da quota não desfaz a reserva do `run_id` | serviço recusa (re-submeter tem de ter a mesma recusa) |
+| quota macia (compara só o já gasto) | reserva dura, liquidação, consumo ilegível, principais, janela |
+| a liquidação não substitui a reserva | liquidação liberta o não usado |
+| consumo ilegível liquida como zero | consumo ilegível mantém a reserva |
+| a reserva não é idempotente por run | reserva idempotente |
+| a marca de apagamento não repõe | apagamento repõe, DSAR REAL pelo Bootstrap, relógio do apagamento |
+| mês na hora local em vez de UTC | a janela é o mês UTC |
+| a liquidação só procura no mês corrente | o run liquida no mês em que reservou |
+| payload ilegível somado | registo ilegível nega |
+| sem escrita condicional entre réplicas | a outra réplica entre a leitura e a escrita |
+| o selo terminal não liquida | serviço liquida pelo ledger, Bootstrap liquida pelo ledger real |
+| liquida sem desfecho durável | um run suspenso não liquida |
+| o abort por exaustão não liquida | o abort por exaustão liquida |
+| arranca sem principal verificado | sem principal verificado não arranca |
+| a quota não entra no fluxo DSAR | Bootstrap + DSAR real, nil tipado |
+| `ErrPrincipalQuotaExhausted` não é 429 | 429 com Retry-After |
+| sem `Retry-After` | 429 com Retry-After |
+| aceita quota menor do que o tecto por-run | o ambiente valida o par final |
+| o Bootstrap não põe a quota no nó | Bootstrap + DSAR real, Bootstrap liquida pelo ledger real |
+| aceita quota em $ sem tecto por-run em $ | o ambiente valida o par final |
+| a dimensão de dólares não nega | a dimensão de dólares também nega |
+| tipo desconhecido no stream somado | registo ilegível nega |
+| **um run terminado volta a executar** | um run terminado não volta a executar |
+| **o Bootstrap liga a liquidação sem fonte de consumo** | Bootstrap liquida pelo ledger real |
+| **imputado ao `NHIID` em vez de a quem pediu o plano** | o run-filho é imputado a quem pediu |
+| **contenção sem fim admite sem reserva** | ciclo de concorrência optimista |
+| **o ciclo não trata `ErrSeqConflict`** (o do JetStream) | ciclo de concorrência optimista |
+| **o apagamento usa o relógio de parede** | o apagamento usa o relógio da quota |
+| **reserva com `StepID` sem o `seq`** | depois do apagamento o mesmo run reserva de novo |
+| **um run `failed` volta a executar** (`IsTerminal` em vez de `desfechoDuravelRegistado`) | um run terminado não volta a executar, caso `failed` |
+| **a recusa do log com a mensagem do cache** | um run terminado não volta a executar |
+| **o mapa de mutexes por principal sem poda** | o mapa dos mutexes esvazia |
+
+A negrito, as sete que a revisão encontrou vivas ou que cobrem as suas correcções. Sem teste próprio,
+declaradas: a correspondência `Reserva` na soma do gasto e na guarda de liquidação já feita — a spec
+dizia-a redundante com a limpeza dos mapas na marca de apagamento, e a re-revisão mostrou que não é:
+protege de uma liquidação de OUTRA réplica que leu antes do apagamento e escreve depois da reserva nova
+(corrida estreita, inferida, não medida); e o mutex por principal (desempenho, não correcção).
+
+**O que as mutações ensinaram.** A primeira bateria (sem `-race`) deixou sobreviver 6 de 25, e cada
+uma era um buraco real: o teste da recusa olhava para `Outcome` e não via `s.runs`; nada testava que
+um run suspenso NÃO liquida nem que o abort liquida; nada testava a dimensão de dólares nem um tipo
+estranho no stream. A sexta era código MORTO — uma liquidação num ramo do selo terminal que o
+`hostRun` nunca alcança —, retirada. A segunda (com `-race`) deixou viver a escrita condicional entre
+réplicas: o teste com goroutines só apanhava a corrida quando o escalonamento a produzia; foi
+substituído por um que injecta a escrita da outra réplica entre a leitura e a escrita. A revisão
+adversarial encontrou mais sete fora da lista, incluindo a ligação de produção da liquidação.
+
+Os gates `event-catalog` e `stream-names` foram provados não-vácuos sobre os ficheiros novos: uma
+família inexistente numa constante e um ponto no prefixo do stream avermelham-nos.
+
+### Residuais
+- **Metadados de uso em claro, e fora da retenção.** Os registos da quota não estão no `subjectOf` da
+  retenção e não expiram; o `/dsar/erase` marca o mês corrente e não toca os anteriores. O principal
+  aparece como pseudónimo (hash), que não é anonimização. É a mesma postura do `turn.recorded`, e é do
+  DPO validar.
+- **Reservas que ficam até ao fim do mês:** runs que nunca terminam (suspensos, pausados, órfãos); um
+  abort por exaustão depois de um restart (o balde de suspensos, de onde vem o principal, está vazio);
+  um selo terminal que falha; um consumo ilegível. Todos por excesso, nunca por defeito.
+- **O que um run gasta depois de mudar o mês conta no mês em que foi admitido.** Runs admitidos antes
+  de a quota existir não contam.
+- **A quota tem de caber pelo menos um tecto por-run**, e um principal com quota Q tem no máximo
+  ⌊Q / tecto⌋ runs em curso ao mesmo tempo — é o preço da quota dura, decidido pelo dono.
+- **Concorrência entre réplicas** medida só sobre o Event Store em memória; sobre o JetStream a mesma
+  semântica vem do `WithExpectedSeq`, não medida.
+- **Custo:** cada admissão lê o stream do mês do principal, O(runs dele nesse mês).
+- **Transbordo do último turno.** A quota não se ultrapassa pelo que se reserva, mas pode ultrapassar-se
+  pelo que o último turno de cada run em curso gastar acima do tecto por-run (a resposta só se mede
+  depois de chegar). Medido pela revisão: quota 100, consumo 180.
+- **O planeamento dos pedidos de plano não conta.** O `aos-orq` decompõe cada `POST /plans` com o
+  modelo antes de submeter os runs-filho, e o `POST /plans` não consulta a quota: um principal
+  esgotado continua a gastar tokens de planeamento, limitado só pelo tecto de concorrência da fila
+  (AOS-464). Eixo por abrir — fechado pelo AOS-466.
+- **Reservas presas até ao fim do mês, a mais:** falha do lease depois de reservar, shutdown entre a
+  reserva e a hospedagem, falha de ingestão do objectivo.
+- **Um run retomado dois meses depois da admissão** não encontra a sua reserva (só se procura no mês
+  corrente e no anterior) e não liquida; o que gasta nesse mês não conta. A retoma exige um humano.
+- **Re-submeter um `run_id` com desfecho no log é recusado** (201 idempotente no modo legado, 409 no
+  soberano), e isso muda um comportamento antes documentado («após a poda o RunID volta a ser
+  submetível»), que re-executava o run às cegas. Voltar a correr o trabalho exige um `run_id` novo.
+- **Estados ainda re-executáveis por re-submissão**, anteriores a este ticket: `ready` depois da saga
+  (`compensating → ready`, hoje inalcançável — o registo de compensações está vazio) e um `running`
+  órfão depois de um selo terminal que falhou. Nos dois a reserva é idempotente e a re-execução repete
+  turnos que o ledger deduplica.
+- **O `aos-orq`** trata o 409 de um filho re-submetido como erro de execução do nó
+  (`errRunFilhoJaExiste`), na janela «Submit feito, `MarkRunning` falhou». Antes deste ticket, depois
+  de uma poda ou restart, esse caso dava 201 e re-executava o filho; agora é um erro explícito. Dívida
+  anterior, não regressão.
+- **O `/dsar/erase` só aceita um `subject_id` que passe o `validPseudonym`**: um principal OIDC com
+  `|` ou `@` não consegue repor a quota por HTTP. Limitação anterior (vale também para a KEK).
+
+### Estado
+**FEITO** (2026-09-30).
+
+---
+
+## AOS-466 — O gasto de PLANEAMENTO do `POST /plans` conta na quota por principal
+
+### Contexto
+O AOS-457 fechou a despesa dos RUNS por principal e declarou um eixo por abrir: o `aos-orq` decompõe
+cada `POST /plans` com o modelo **antes** de submeter os runs-filho, e o `POST /plans` não consultava
+a quota. Um principal esgotado continuava a gastar tokens de planeamento — pagos, irreversíveis —
+limitado só pelo tecto de concorrência da fila (AOS-464). E o `aos-orq` nem media esse gasto: o
+`gatewayDecomposeModel.Complete` deitava fora o `usage` da resposta, e o tecto
+`AOS_ORQ_PLAN_BUDGET_*` (AOS-434) soma **estimativas declaradas**, não consumo real.
+
+### Objectivo
+O planeamento de um pedido conta na quota mensal do principal que o submeteu, com a mesma forma do
+AOS-457: reserva na admissão, liquidação pelo consumo real.
+
+### Decisão do dono (2026-09-30)
+| eixo | decisão | alternativas rejeitadas |
+|---|---|---|
+| **Mecanismo** | **Reservar e liquidar.** O `POST /plans` reserva uma quantia de planeamento contra a quota; o `aos-orq` mede o consumo real do modelo e reporta-o no `POST /plans/outcome`; o nó liquida. | só recusar o pedido com a quota esgotada (não conta o que se gasta); só contar depois (não trava N pedidos simultâneos) |
+| **Quantia reservada** | **Variável própria** do nó, `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS` (e `AOS_BUDGET_PRINCIPAL_PLAN_COST_MICRO_USD` quando a quota tem dólares). **Obrigatória com a quota composta; sem ela o arranque aborta.** | reservar o tecto por-run (acopla duas grandezas diferentes); reservar o `AOS_ORQ_PLAN_BUDGET_*` (é de outro processo, e é de estimativas) |
+| **Re-planeamento ilimitado** | **Fora deste ticket** — AOS-467. | tecto de gerações aqui (alarga o escopo) |
+| **Re-oferta com a quota esgotada** (decidido depois da terceira revisão) | **Não entregar**: da geração 2 em diante, a reclamação salta o pedido enquanto a quota do mês corrente do titular não tiver lugar para mais uma reserva; o pedido fica pendente e volta a ser oferecido quando houver. Não mata o plano. | fechar o pedido com um desfecho terminal (o plano morreria); deixar para o AOS-467 (contava sem travar) |
+
+### Desenho
+- **Nó — reserva.** `plan_ingress.go`: a última coisa antes do `Append` (depois dos tectos da fila e
+  do selo do objectivo, para que nenhuma recusa deles prenda quota), com a quota
+  composta, `reservarPlaneamento(principal, run_id)` sob a chave `aos-internal/plan/<run_id>` no
+  stream da quota do principal (a mesma família de eventos, `budget.quota.reserved`: um tipo novo faria
+  o `ler()` de uma réplica antiga negar tudo durante um deploy rolante). A chave vive no espaço
+  reservado, que nenhum `run_id` pode nomear. Esgotada ⇒ **429** com `Retry-After`. Idempotente: um
+  pedido já reservado no mês corrente ou no anterior não reserva de novo.
+- **Nó — liquidação por geração.** `plan_claim.go` `handlePlanOutcome` aceita um campo opcional
+  `consumo {tokens, tokens_medidos, cost_micro_usd, custo_medido}` e grava uma **parcela** por geração
+  (`budget.quota.settled` com `geracao` e o vínculo à reserva num campo próprio — uma réplica antiga
+  não o reconhece e continua a contar a reserva inteira). O principal é o do `planrequest.submitted`
+  (`estadoDoPedido`), não o do drenador. **A parcela grava-se antes do desfecho**: se falha, o desfecho
+  também não se grava (503). **A entrega** (`entregue`) grava-se na reclamação, antes de a escrever: se
+  falha, não se entrega (503). **O fecho** (`final`) grava-se **só depois** de o desfecho terminal ficar
+  no log **por esta escrita** (um desfecho duplicado não fecha); se falha, 204 e a reserva fica inteira.
+  Com a quota composta, um desfecho de uma geração que o nó não entregou é 400. Consumo negativo é 400.
+  **Uma re-oferta (geração ≥ 2) só se entrega com quota** do mês corrente para mais uma reserva; sem
+  ela a reclamação salta o pedido (fica pendente) e segue para o próximo.
+- **Dobra.** Sobre as gerações 1..G (G = a maior entregue ou com parcela): cada geração medida custa
+  o que se mediu; uma **não medida** custa o que se mediu **mais a reserva**; uma **sem parcela**
+  (a que está a correr, ou cujo desfecho se perdeu) custa **a reserva**. Sem fecho o pedido custa
+  `max(reserva, Σ)`; com fecho, `Σ`. Campo `consumo` ausente (um `aos-orq` anterior) = não medido.
+- **`aos-orq` — medição.** Um `medidorDoPlaneamento` por pedido, atravessado de `correrPedido` até ao
+  `gatewayDecomposeModel`, soma `prompt_tokens + completion_tokens` do `usage` de cada chamada. Uma
+  chamada que falha, ou uma resposta sem `usage` (`prompt_tokens <= 0`), marca os tokens como **não
+  medidos**. O custo em dólares **nunca** é medido pelo `aos-orq` — a tabela de preços vive no nó —,
+  pelo que cada geração que chamou o modelo custa a reserva em dólares.
+
+### Critérios de aceitação
+1. Com a quota composta e sem `AOS_BUDGET_PRINCIPAL_PLAN_TOKENS`, o nó não arranca; com ela inválida,
+   maior do que a quota, ou com dólares desalinhados, também não.
+2. Um `POST /plans` de um principal sem quota para a reserva de planeamento responde 429 com
+   `Retry-After`, e nada entra na fila.
+3. A reserva de planeamento conta contra a admissão de runs do mesmo principal, e o inverso.
+4. Um desfecho terminal com consumo medido liquida pelo consumo real e liberta o resto; um desfecho não
+   medido, ou transitório, não liberta nada; gerações somam.
+5. O `aos-orq` reporta o consumo medido do modelo de planeamento em cada desfecho.
+6. O banner da quota deixa de dizer que o planeamento não conta, e diz o que continua a não contar.
+
+### Residuais declarados
+- **A reserva não limita o gasto de uma geração.** O `aos-orq` não conhece a quantia reservada; uma
+  geração pode gastar mais (até 3 chamadas ao modelo por `serve`), e o excesso conta **depois**. O
+  travão do gasto por geração continua a ser o modelo e o `AOS_ORQ_PLAN_BUDGET_*` (estimativas).
+- **Re-planeamento sem tecto** — cada geração transitória planeia de novo, sem limite: AOS-467.
+- **O consumo é declarado pelo drenador.** Autenticado e em lista fechada (`AOS_PLAN_DRAINERS`, AOS-439),
+  mas o nó não o consegue verificar: um drenador comprometido pode declarar zero — ou um valor enorme,
+  que esgota o mês do titular (não há tecto superior ao consumo declarado).
+- **Dólares nunca medidos no planeamento** — cada geração que chamou o modelo custa a reserva em
+  dólares, mesmo que tenha custado mais.
+- **Depois de um `/dsar/erase` do titular**, o planeamento dos seus pedidos em curso deixa de contar (a
+  reserva apagou-se e as parcelas seguintes não a encontram). Nos runs a mesma falta tem o tecto por-run
+  como limite; aqui só o AOS-467 lho dará.
+- **Deploy rolante:** uma réplica anterior do nó conta cada pedido pela reserva, mesmo quando as parcelas
+  já passaram dela — pode admitir acima da quota enquanto convive com as novas.
+- **A reserva pertence ao mês do pedido.** O planeamento de um pedido que se arraste para lá do mês
+  seguinte ao do pedido não encontra reserva e não conta (a mesma regra dos runs).
+- **Reservas presas a mais:** falha do `Append` do pedido depois de reservar; re-`POST` de um pedido
+  já terminado há dois meses ou mais (o `Append` deduplica e ninguém liquida); re-`POST` do `run_id` de
+  um pedido **alheio** — quem re-submete paga a sua própria reserva, que nunca liquida (a liquidação vai
+  para o titular do pedido). Sempre a mais, e sempre na quota de quem fez o pedido que não conta.
+- **Custo:** com a quota composta, cada `POST /plans/outcome` lê o stream da fila desde o início
+  (`estadoDoPedido`) para saber o titular e as gerações entregues — O(histórico da fila); e cada
+  `POST /plans/claim` lê e escreve o stream da quota do titular (a entrega).
+- **Uma quota ilegível ou esgotada fecha a fila desse titular** (e só dele): os seus pedidos não se
+  entregam e a reclamação segue para os dos outros. Mas esses pedidos continuam pendentes — contam para
+  o tecto global da fila (`planMaxPending`), seguram a marca de água da projecção (o custo dela cresce
+  para todos) e cada reclamação volta a verificá-los. Uma falha do substrato no stream de um titular
+  fecha a reclamação inteira (503), e repete-se enquanto o pedido dele estiver à cabeça da fila.
+- **A re-verificação de um plano à espera de humano também espera por quota** (é uma geração nova). E,
+  com um `aos-orq` anterior a este ticket, cada re-verificação (de 10 em 10 minutos) chega sem consumo e
+  custa a reserva — um humano que demore esgota o mês do titular, e a partir daí as re-verificações
+  param até à reposição. Com o `aos-orq` novo custam zero.
+- **Um pedido com o objectivo ilegível** (custódia partida) é re-reclamado a cada TTL da reclamação sem
+  desfecho, e cada entrega custa a reserva — a mais, só ao titular afectado, e limitado pela decisão de
+  não entregar sem quota.
+- **Pedidos submetidos antes da quota** (ou por uma réplica anterior) não têm reserva: o seu
+  planeamento não conta, e o nó não recusa reclamá-los.
+- **Ordem de deploy: qualquer uma é segura para este ticket** — um `aos-orq` anterior não envia
+  `consumo` (a reserva fica inteira); um nó anterior ignora-o. O AOS-467 pede o `aos-orq` primeiro, e é
+  essa a ordem a seguir. Uma réplica anterior do nó não reserva o planeamento.
+
+### Revisão adversarial independente (2026-09-30)
+Sobre o commit `ea0270f`. Dois achados MÉDIOS, **os dois reproduzidos e os dois contagens a menos**, e
+os dois corrigidos:
+- **MÉDIO-1:** a dobra cobrava `max(reserva, Σ)` a qualquer geração não medida — com Σ já acima da
+  reserva, uma geração não medida somava zero, e cinco gerações de um `aos-orq` anterior custavam uma
+  reserva no total. Corrigido: não medida custa o medido **mais** a reserva; sem parcela, a reserva.
+- **MÉDIO-2:** a parcela marcada final gravava-se **antes** do desfecho; se o desfecho falhava, a reserva
+  estava libertada com o pedido vivo, e as gerações seguintes planeavam sem ela. Corrigido: o fecho é
+  um evento próprio, escrito **depois** do desfecho terminal, e a lacuna do meio conta mesmo sem fecho.
+- BAIXOS: a frase «dólares sempre pela reserva» era falsa com zero chamadas (corrigida); o medidor
+  ignorava o `total_tokens` (passa a usar o maior); apagamento DSAR, deploy rolante e consumo declarado
+  sem tecto superior ficam nos residuais.
+
+**Re-revisão sobre `8340bda`:** os dois MÉDIOS confirmados fechados (repros: 600/500; 100 e depois 115).
+Um MÉDIO novo, reproduzido, e corrigido: **sem fecho, a geração em curso não tinha reserva** assim que a
+soma medida passava a reserva — G só se conhecia pelas parcelas, e a geração a correr não tem parcela.
+Corrigido na raiz: o nó grava a **entrega** de cada geração na quota, na reclamação e antes dela; a
+geração entregue custa a reserva até a sua parcela chegar. Isto fecha também o BAIXO de uma reclamação
+que escapava ao fecho numa corrida. BAIXOS corrigidos: um desfecho **duplicado** com outra classe
+fechava a quota de um pedido vivo (agora só fecha o desfecho que esta escrita gravou); uma geração
+**nunca entregue** (10⁹) negava o mês do titular (agora 400). O BAIXO sobre réplicas `ea0270f` não se
+aplica: esse commit nunca saiu do ramo.
+
+**Terceira passagem sobre `9c55e2c`:** os quatro achados anteriores confirmados fechados (três
+reproduzidos pela rota). Um MÉDIO, reproduzido: **um principal esgotado continuava a receber gerações
+novas** — contava, mas não travava. É decisão de produto, e o dono decidiu **não entregar** (tabela de
+decisões acima); implementado e provado pela rota (a re-oferta fica pendente, outro titular é servido,
+e a geração volta a entregar-se quando a quota repõe). Os BAIXOS contam a mais e ficam declarados nos
+residuais.
+
+### Validação
+- Testes: `packages/cmd/aos/aos466_quota_de_planeamento_test.go` (ambiente, partilha com os runs,
+  dobra por geração, dólares, corrida com o apagamento, réplica anterior, as duas rotas) e
+  `packages/cmd/aos-orq/aos466_consumo_do_planeamento_test.go` — incluindo **o binário real** a drenar um
+  pedido com o **gateway vivo** contra um upstream falso que cobra 10+5 tokens: o desfecho que chega ao
+  nó declara exactamente 15 medidos; o controlo com o fixture declara 0 medido.
+- **Mutações, duas baterias.** A primeira (sobre `ea0270f`): 49 aplicadas, 47 mortas. A segunda (sobre a
+  dobra, o fecho e o handler reescritos depois da revisão): 22 aplicadas, 20 mortas — e uma guarda que
+  a mutação mostrou ser código morto saiu. A terceira (sobre as entregas, a validação da geração e o
+  fecho só com escrita nova, depois da re-revisão): 19 aplicadas, 18 mortas; a sobrevivente (o
+  apagamento não limpar as entregas) é equivalente pelo filtro do vínculo à reserva, que outra mata. A
+  verificação da quota na entrega (decisão do dono): 6 aplicadas, 6 mortas. Sobrevivem, declaradas: (a) o apagamento não limpar as
+  parcelas nem os fechos, e o handler não recusar um titular vazio, são EQUIVALENTES — o filtro pelo
+  vínculo à reserva e a guarda de principal vazio do `escreverNoPlano`, que outras mutações provam, já
+  os cobrem; (b) a recusa por mandato do `consume` declarar «não medido» em vez de «zero medido» — falha
+  para o lado seguro e matá-la exigia um ponta-a-ponta com mandato.
+- Gates: `build`, `lint`, `layer-lint`, `secrets`, `sast`, `rtm`, `ref-lint`, `event-catalog` verdes;
+  suites `-race` dos dois módulos verdes; smoke do `run-aos` 10/10.
+
+### Estado
+**FEITO** (2026-09-30), com os residuais acima. Três passagens de revisão adversarial independente; a
+última não encontrou contagem a menos, e a lacuna que apontou foi decidida pelo dono e implementada.
+
+---
+
+## AOS-467 — Tecto de gerações de planeamento por pedido
+
+### Contexto
+Um pedido de plano cujo `serve` falha com classe **transitória** volta à fila e é re-planeado na
+geração seguinte, sem limite (AOS-442). Cada geração chama o modelo de novo. Com o AOS-466 o gasto
+conta na quota do principal, mas continua ilimitado em número de gerações: um pedido que falhe sempre
+depois de planear gasta até a quota do principal acabar.
+
+### Objectivo
+Um tecto declarado de gerações por pedido, a partir do qual o pedido passa a terminal com um código
+próprio, e a quantia reservada pelo AOS-466 liquida.
+
+### Decisão do dono (2026-10-01)
+| eixo | decisão | alternativas rejeitadas |
+|---|---|---|
+| **Onde** | **O nó decide, o `aos-orq` fecha.** O nó — que numera as gerações e vê as que nenhum drenador viu (reclamação expirada, quota esgotada) — entrega a geração que passa o tecto marcada `generations_exhausted`; o `aos-orq` fecha-a como terminal com a saída **12**, SEM `serve` (o molde da saída 11). Só o consumidor escreve desfechos (ADR-030, ADR-018). | o nó fecha sozinho (o nó passaria a escrever desfechos com códigos que não conhece, contra o ADR-030); só no `aos-orq` (não vê o que o nó não entrega; um `aos-orq` anterior ficava sem tecto) |
+| **O que conta** (revisto depois da revisão adversarial) | **As gerações que chamaram o modelo**: o `aos-orq` declara-o no desfecho (`chamou_modelo`). As retomas de um plano já aprovado (saída 8, pelo documento) e as re-verificações não contam. Uma geração sem declaração (reclamação expirada, `aos-orq` anterior) conta, excepto se a anterior acabou em `aguarda_humano`. | a decisão inicial, «cada geração cuja anterior não terminou em `aguarda_humano`» — fechava um plano aprovado e longo (cada retoma pela saída 8 contava); excluir só a saída 8 (as falhas de posse/rede durante a execução continuariam a contar); todas as gerações |
+| **Valor** | **5**, por `AOS_PLAN_MAX_GENERATIONS` (inteiro > 0; 0 ou ilegível aborta o arranque). Com até 3 tentativas do planeador por geração, no máximo ~15 chamadas ao modelo por pedido. | 3 (fecha cedo com duas falhas de infraestrutura); 10 |
+
+### Desenho
+- **Nó — contagem.** A projecção da fila (`projectarComTerminados`, função pura) conta as gerações
+  1..N pela regra acima, descontando pelos mapas dos desfechos (sem laço até à geração).
+- **Nó — reclamação.** Se a contagem passa o tecto, a geração entrega-se **marcada**
+  (`generations_exhausted`) e **sem o objectivo** — não se decifra. Só a primeira marcada dispensa a
+  quota do AOS-466. O fecho de um pedido de objectivo ilegível (AOS-442), que antes ficava a ser
+  re-reclamado de hora a hora para sempre, passa a acontecer por esta via.
+- **`aos-orq`.** Cada desfecho declara `chamou_modelo` (o medidor do AOS-466 viu chamadas). Uma
+  reclamação marcada fecha logo: desfecho terminal com a saída 12 (`exitGeracoesEsgotadas`), consumo
+  zero medido, aviso (AOS-445) e apagamento do documento do plano.
+- **ADR-030** emendado na §2.6 (a saída 12 é «permanente»).
+
+### Validação
+- Testes: `packages/cmd/aos/aos467_tecto_de_geracoes_test.go`, que cobre:
+  - o ambiente (default 5; `0`, negativo e ilegível abortam);
+  - o que conta, na projecção pura: as re-verificações não contam, o transitório e a reclamação
+    expirada contam;
+  - uma geração de 2³¹ sem laço;
+  - pela rota: a 3.ª geração marcada com o tecto a 2, o fecho com 12 e não voltar a oferecer; o
+    default 5; a entrega de fecho com a quota esgotada; o ilegível que fecha pelo tecto, e o
+    controlo abaixo dele.
+- Testes: `packages/cmd/aos-orq/aos467_geracoes_esgotadas_test.go`, que cobre:
+  - com o binário real: a geração marcada fecha com 12 sem `serve`, avisa, apaga o documento e
+    declara consumo zero medido; o controlo sem a marca planeia;
+  - o nome `generations_exhausted` escrito à mão dos dois lados.
+- Mutações: 18 aplicadas, 17 mortas na primeira passagem. A sobrevivente (a tag JSON mudada nas duas
+  pontas) levou aos testes de contrato com o nome literal, e morre depois deles (e a do nó também).
+- Depois da revisão: os testes da regra declarada (`TestAOS467ContamAsQueChamaramOModelo`), do plano
+  longo pela rota (`TestAOS467UmPlanoLongoNaoEFechadoPeloTecto`, dez retomas com o tecto a 2), da marcada
+  sem objectivo e da isenção só da primeira; no `aos-orq`, `chamou_modelo` verdadeiro com o gateway vivo
+  e falso com o fixture e no fecho. Segunda bateria: 14 aplicadas, 14 mortas.
+- Depois da segunda revisão: os cenários A, A' e B da projecção e da rota
+  (`TestAOS467ODecompostoNaUltimaNaoEFechado`, `TestAOS467ComOTectoA1UmPlanoLongoNaoEFechado`), a
+  recusa de tudo o que não seja o terminal 12 numa marcada (`TestAOS467AMarcadaSoFechaCom12`, mais o
+  controlo), a isenção de toda a marcada, e `plano_validado` declarado pelo binário real numa saída 8.
+  Terceira bateria: 13 aplicadas, 12 mortas à primeira. A sobrevivente (a classe deixar de ser
+  verificada) levou ao caso «transitório com código 12» no teste, e morre depois dele.
+- Depois da quarta revisão: a entrega normal prevalece sobre a de fecho da mesma geração, nas duas
+  ordens (`TestAOS467AEntregaNormalPrevaleceSobreADeFecho`), e a de fecho não dispensa a quota da normal
+  (`TestAOS467AEntregaDeFechoNaoDispensaAQuotaDaNormal`). Quarta bateria: 3 aplicadas (o `step_id`
+  comum, a prevalência no `ler`, a dispensa na verificação), 3 mortas.
+- Suites `-race` dos dois módulos verdes. Gates `build`, `lint`, `layer-lint`, `secrets`, `sast`,
+  `rtm`, `ref-lint` e `event-catalog` verdes. Smoke do `run-aos` 10/10.
+
+### Residuais declarados
+- **Duas mortes seguidas do drenador fecham um plano validado mais cedo** (BAIXO da quarta revisão,
+  confirmado pela leitura de `plan_claim.go`, não reproduzido pela rota). Depois de uma geração que
+  validou o plano, a primeira expirada sem desfecho não conta; a segunda e as seguintes contam, porque
+  o nó não sabe se uma expirada chamou o modelo. Mortes repetidas aproximam o pedido do tecto, e ele
+  pode fechar com 12 um plano aprovado. É o lado fail-closed: contar a menos deixava decomposições sem
+  tecto. A saída é a de qualquer 12, com aviso e nova submissão; os runs-filho já lançados ficam órfãos,
+  como depois de qualquer fecho.
+- **Ordem de deploy: o `aos-orq` antes do nó.** Um `aos-orq` anterior ignora a marca, corre um `serve`
+  sem objectivo (zero nós) e reporta sucesso — o nó recusa-o (400). A reclamação expira (60 min) e a
+  geração volta marcada até ele ser actualizado. As suas gerações não declaradas contam todas — incluindo
+  as retomas de um plano longo, que esse `aos-orq` pode ver marcadas.
+- **Um transitório que falha ANTES do modelo não tem tecto** (credencial do modelo ilegível, erro a
+  compor o gateway, posse, WAL): declara `chamou_modelo: false` e nunca conta. Não custa modelo, mas
+  re-oferece-se a cada drenagem e faz crescer o log da fila. É a regra decidida («só as que chamaram o
+  modelo»), e fica dito.
+- **Réplicas mistas do nó:** uma réplica anterior reconstrói o desfecho sem `chamou_modelo`/
+  `plano_validado`; as gerações reportadas a ela contam pela regra conservadora.
+- **O fixture do decompositor** (`--decompose-fixture`, não-produção) declara `chamou_modelo: false` e
+  nunca conta.
+- **Depois de uma morte do drenador**, a geração seguinte não conta como provisória (pode ser uma retoma
+  de um plano que a expirada validou): um pedido pode decompor uma vez para lá do tecto antes de ser
+  marcado. A expirada conta por si.
+- **`plano_validado` também é declarado pelo drenador**, como `chamou_modelo`: cada declaração desconta
+  no máximo a geração seguinte não declarada, e a declaração da própria geração vence.
+- **Custo:** cada `POST /plans/outcome` lê o stream da fila desde o início (a marca de cada geração e a
+  quota), agora em todos os nós e não só com a quota composta — O(histórico da fila) por desfecho, e um
+  503 novo quando essa leitura falha.
+- **Um 12 atrasado** de uma marcada cuja reclamação expirou, depois de outra marcada já ter fechado,
+  é aceite também: dois avisos para o mesmo plano (o fecho da quota é idempotente) — o padrão de antes.
+- **`chamou_modelo` é declarado pelo drenador**, como o consumo do AOS-466: um drenador comprometido
+  pode declarar «não chamou» e contornar o tecto.
+- **O consumo é declarado pelo drenador** (AOS-466), e o desfecho também: um drenador que não feche a
+  geração marcada (ou que a reporte transitória) deixa-a voltar, marcada outra vez, até à reclamação
+  seguinte.
+- **A geração de fecho custa a reserva de planeamento** (AOS-466) até chegar a sua parcela de consumo
+  zero, e o fecho liberta o resto.
+- **Uma geração reportada para um número arbitrário** (sem a quota composta, o nó aceita qualquer
+  geração ≥ 1 no desfecho) conta-a toda para o tecto: o pedido fecha na reclamação seguinte. Um drenador
+  já podia fechar o pedido com um desfecho terminal; não é um poder novo.
+
+### Revisão adversarial independente (2026-10-01)
+Sobre `33e2cd4`:
+- **ALTO, reproduzido.** Um plano saudável e longo, já aprovado, era fechado pelo tecto: cada retoma
+  pela saída 8 (o caminho feliz de um plano mais longo do que o `--plan-timeout`) contava. Com os
+  defaults, mais de ~3h20 de execução, e os runs-filho ficavam órfãos.
+  - **Corrigido** com a decisão do dono acima: contam as gerações que chamaram o modelo.
+- **MÉDIO, reproduzido.** Com um `aos-orq` anterior, cada geração marcada era entregue sem quota, ele
+  planeava e reportava transitório, e a quota deixava de travar.
+  - **Corrigido** de duas maneiras: a marcada vai sem objectivo (não há o que decompor), e só a
+    primeira dispensa a quota.
+- **BAIXOS:**
+  - o banner e o README diziam que o objectivo não se abria, e abria-se: corrigido, agora não se abre;
+  - o aviso atribuía o 12 só a falhas de decomposição, quando também o fecha o objectivo ilegível:
+    corrigido;
+  - as duas ordens de deploy contradiziam-se (AOS-466 contra AOS-467): unificadas;
+  - uma frase do ADR era imprecisa: corrigida.
+
+**Segunda passagem, sobre `21fbf08`:** o MÉDIO e os BAIXOS da primeira confirmados fechados.
+- **ALTO residual, reproduzido.** A geração a oferecer contava sempre como provisória: se a
+  decomposição que vingou fosse a de número «tecto», a primeira retoma do plano aprovado saía marcada
+  (e com o tecto a 1, qualquer plano mais longo do que o `--plan-timeout`).
+  - **Corrigido:** o `aos-orq` declara `plano_validado` (lê o log do run depois da geração), e uma
+    geração não declarada que segue um plano validado não conta.
+- **MÉDIO, reproduzido.** Um `aos-orq` anterior, com a geração marcada sem objectivo, fechava como
+  SUCESSO (código 0, zero nós).
+  - **Corrigido:** a marca fica na reclamação e o nó recusa qualquer desfecho dela que não seja o 12.
+- **MÉDIO.** Uma marcada cuja reclamação expirava passava a exigir quota.
+  - **Corrigido:** com a recusa acima, uma marcada só se repete por expiração, e todas ficam isentas.
+- **MÉDIO e BAIXOS.** Os transitórios antes do modelo sem tecto, as réplicas mistas e o fixture ficam
+  declarados nos residuais.
+
+**Terceira passagem, sobre `b00a119`:** o ALTO residual (cenários A, A', B) e os dois MÉDIOS
+confirmados fechados.
+- **MÉDIO, reproduzido.** Cada re-entrega de uma marcada (reclamação expirada) era uma geração sem
+  parcela e custava a reserva para sempre, mesmo depois do fecho (medido: 800 de gasto final num pedido
+  a que só faltava fechar).
+  - **Corrigido:** a entrega de fecho fica marcada `de_fecho` na quota e não custa.
+- **MÉDIO, reproduzido.** Um drenador que morre na geração que validou deixava-a sem declaração, e a
+  seguinte (uma retoma) contava como provisória e saía marcada.
+  - **Corrigido:** a geração a oferecer não conta como provisória depois de uma expirada sem desfecho.
+- **BAIXOS.** O custo da leitura por desfecho, o `plano_validado` declarado pelo drenador e o 12
+  atrasado ficam declarados nos residuais.
+
+**Quarta passagem, sobre `444c894`:** os dois MÉDIOS da terceira confirmados fechados. O revisor não
+encontrou contagem a menos explorável, nem caminho para passar o tecto sem limite.
+- **BAIXO, por raciocínio.** A marca `de_fecho` na quota é escrita antes do `Append` da reclamação. Se
+  esse `Append` falhasse, ou se ganhasse uma réplica com outro tecto, a geração planeava sem marca. A
+  quota continuava a vê-la de fecho, e ela não custava nada se o drenador morresse sem parcela.
+  - **Pior do que o achado dizia:** as duas marcas tinham o mesmo `step_id`, e a normal, escrita
+    depois, era deduplicada.
+  - **Corrigido:** as duas marcas têm `step_id` distintos, e no `ler` a normal prevalece. A marca de
+    fecho também não dispensa a verificação de quota da normal.
+- **BAIXO.** Duas mortes seguidas do drenador fecham um plano validado: fica declarado nos residuais.
+
+### Estado
+**FEITO** (2026-10-01). Quatro passagens de revisão adversarial independente, sem achados ALTO ou
+MÉDIO em aberto. Os residuais estão acima.
+
+---
+
+## AOS-468 — `TestAOS456ARunFilhoEImputadoAQuemPediuOPlano` depende do relógio
+
+### Contexto
+Encontrado durante o AOS-466, fora do seu escopo. O CONTROLO (2) do teste espera que o segundo
+run-filho de alice bata no tecto por-chamador (1), mas o primeiro run-filho dela (`MaxTurns: 1` sobre
+o `countingModel`) corre a sério em paralelo e pode **terminar antes** do controlo, libertando o
+lugar — o controlo vê `nil` e o teste falha. Medido sob contenção (duas corridas concorrentes de
+`-count=300 -race`): **10/300 falhas na base 8538ca2**, 20/300 na árvore do AOS-466; 1 falha numa
+corrida da suite completa do módulo. O caminho do tecto por-chamador não é tocado pelo AOS-466.
+
+### Objectivo
+O primeiro run-filho fica em curso durante o teste inteiro (um modelo que bloqueia até o teste o
+soltar), para o controlo medir o tecto e não a velocidade do run.
+
+### Feito
+O modelo do teste passou a ser o `aos277BlockingModel`: os runs-filho ficam em curso até o
+`t.Cleanup` os soltar (antes do `Shutdown` do serviço e do `Close` do nó). Mantém-se o `submit` real
+do primeiro run, porque é a imputação dele ao `RequestedBy` que o teste prova — injectar um `runState`
+à mão, como o `TestAOS456ARetomaEIsenta`, saltá-la-ia.
+
+### Validação
+- **Antes:** 18/300 falhas na base `71dba54` (duas corridas concorrentes de `-count=150 -race`).
+  **Depois:** 0/300, nas mesmas condições.
+- O teste continua a morder: imputar ao chamador em vez de ao `RequestedBy` faz falhar o caso (1)
+  (3/3); desligar o tecto por-chamador faz falhar o controlo (2).
+- Suite `-race` do módulo `cmd/aos` verde; `lint` e `secrets` verdes.
+
+### Estado
+**FEITO** (2026-10-01).
 
 ---
 

@@ -40,6 +40,10 @@ type OutcomeRecord struct {
 	Outcome    string // OutcomeOK | OutcomeError
 	ErrorKind  string // classe do erro quando Outcome==OutcomeError (ex.: "tool_error"); vazio em ok
 	Latency    time.Duration
+	// Principal é o principal da tool call (o resolvido pela cadeia de hooks) — vai ao
+	// `producer` do envelope, igual ao do selo de mediação do passo (AOS-478). Não entra no
+	// payload: o desfecho continua byte-idêntico.
+	Principal Principal
 }
 
 // OutcomeSink regista o desfecho pós-efeito de uma tool call. Semântica FAIL-OPEN na medição:

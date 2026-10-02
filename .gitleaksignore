@@ -29,3 +29,12 @@ c833c620ee25200a9a50623d0b97406cfcf84510:packages/substrate/sandbox/manifest_tes
 # prova a REDACÇÃO do lease em MarshalJSON. É o dado de entrada de um teste de redacção: se fosse
 # removido, o teste deixaria de poder falhar. Verificado em 2026-08-19.
 b75a7069c107f8eb11696939fd1192afc98f51ae:packages/platform/model-gateway/internal/credentials/credentials_test.go:generic-api-key:669
+
+# deploy/server/alerta-ancora.sh — no PRIMEIRO commit do PR #297, o `--user 65534:65534` de um
+# `docker run` (o uid:gid do `nobody`, com que a alpine lê as métricas sem privilégios) ficava três
+# linhas depois do pedido HTTP do ramo de ensaio, e a regra `curl-auth-user` leu-o como credencial
+# desse pedido. Entropia 2.19; não é segredo nenhum. O commit seguinte (a513604) corrigiu na origem
+# — o ramo de produção passou para primeiro e sai limpo com o gitleaks v8.24.3 — mas o scan do PR
+# percorre os commits todos do ramo, e este continua lá. Não chega à base: o squash-merge cria um
+# commit novo a partir do código já corrigido. Verificado em 2026-09-15.
+8e88f88e92280febcb9367bd8148922edfcd4b95:deploy/server/alerta-ancora.sh:curl-auth-user:52

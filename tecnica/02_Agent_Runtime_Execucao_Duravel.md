@@ -88,7 +88,7 @@ O loop base é implementado no pacote `packages/kernel/agent-runtime` (`agentrun
 
 **Superfície pública.** `Runtime.Run(ctx, Goal) (Result, error)` percorre o ciclo montar→chamar→despachar→verificar. `Goal` traz `RunID` (stream_id), `Principal` (NHI + cadeia de delegação), escopo, `ModelConfig` (model_id/params/seed), o `System` prompt e o tool set **congelado** do run. `Result` devolve a resposta final (ou paragem por `MaxTurns`), o uso/custo agregado, os `ToolResults` (todos untrusted) e os `TurnSeqs` gravados.
 
-**Evento canónico `turn.recorded`.** Cada turno grava um evento `turn.recorded` no Event Store (AOS-002) com o **manifesto por trajectória** (ADR-010): `prompt_hash` (sha256 do prompt materializado do turno), `system_hash`, `assembly_version`, `model{model_id,params,seed}` e as `tools`/`skills` **pinadas** (nome+versão+digest+servidor MCP). O `step_id` é distinto por turno (evita a deduplicação por `idempotency_key` do Event Store). O manifesto é gravado **inline** em cada evento — a indirecção canónica `dependency_manifest_ref`/`frozen_at_seq:1` (tecnica/13 §6) fica como dívida técnica ligada a AOS-016, porque o envelope do Event Store ainda não expõe o campo.
+**Evento canónico `turn.recorded`.** Cada turno grava um evento `turn.recorded` no Event Store (AOS-002) com o **manifesto por trajectória** (ADR-010): `prompt_hash` (sha256 do prompt materializado do turno), `system_hash`, `assembly_version`, `model{model_id,served_model_id,params,seed}` (o pedido e o que serviu; origem em `tecnica/13` §6.1, AOS-396) e as `tools`/`skills` **pinadas** (nome+versão+digest+servidor MCP). O `step_id` é distinto por turno (evita a deduplicação por `idempotency_key` do Event Store). O manifesto é gravado **inline** em cada evento — a indirecção canónica `dependency_manifest_ref`/`frozen_at_seq:1` (tecnica/13 §6) fica como dívida técnica ligada a AOS-016, porque o envelope do Event Store ainda não expõe o campo.
 
 **Interfaces (portas) públicas.** `PromptAssembler` (prompt cache-estável: prefixo imutável byte-idêntico entre turnos + tail append-only; expõe `PrefixHash` como SLI de estabilidade, emitido no span `chat` via `aos.prefix_hash`); `ModelClient` (porta do Model Gateway — real em EPIC-06); `TurnRecorder` (materialização durável do `turn.recorded`); `Tracer` (spans OTel GenAI `invoke_agent`/`chat`/`execute_tool` com a semconv — real em EPIC-08).
 
@@ -546,6 +546,8 @@ stateDiagram-v2
     running --> complete: sucesso
     running --> failed: erro recuperável
     running --> timed_out: excede wall-clock
+    waiting_on_tool --> timed_out: backstop wall-clock
+    paused --> timed_out: backstop wall-clock
     failed --> compensating: saga rollback
     compensating --> ready: retry idempotente
     complete --> [*]
@@ -557,7 +559,7 @@ Os estados repartem-se em três famílias. **Activos:** `ready` (elegível para 
 
 ### 5.1 Tabela declarativa de transições (AOS-017)
 
-A máquina é implementada como **dados**, não como lógica espalhada por `if/switch`: um conjunto declarativo dos pares `(from → to)` válidos (`packages/kernel/agent-runtime/state`, `transitions.go`). Qualquer par ausente da tabela é rejeitado com `ErrInvalidTransition` **sem** tocar no estado persistido. A tabela completa tem **13** pares sobre os **10** estados canónicos:
+A máquina é implementada como **dados**, não como lógica espalhada por `if/switch`: um conjunto declarativo dos pares `(from → to)` válidos (`packages/kernel/agent-runtime/state`, `transitions.go`). Qualquer par ausente da tabela é rejeitado com `ErrInvalidTransition` **sem** tocar no estado persistido. A tabela completa tem **15** pares sobre os **10** estados canónicos (os 13 da fonte mais as **duas arestas de backstop** de AOS-419, #14 e #15):
 
 | # | De → Para | Gatilho | Pré-condição |
 |---|---|---|---|
@@ -574,14 +576,18 @@ A máquina é implementada como **dados**, não como lógica espalhada por `if/s
 | 11 | `running → timed_out` | excede o wall-clock | deadline de `running` excedido |
 | 12 | `failed → compensating` | saga rollback | — |
 | 13 | `compensating → ready` | retry idempotente | após compensação |
+| 14 | `waiting_on_tool → timed_out` | **backstop de wall-clock** (AOS-419) | tecto excedido desde a entrada na espera |
+| 15 | `paused → timed_out` | **backstop de wall-clock** (AOS-419) | tecto excedido desde a entrada na pausa |
 
-Terminais **absorventes** (zero saídas): `complete`, `killed`, `timed_out`. `failed` **não** é absorvente — a sua única saída é `→ compensating`. Os restantes 87 dos 100 pares da matriz 10×10 são inválidos por omissão (verificado por varredura exaustiva nos testes).
+Terminais **absorventes** (zero saídas): `complete`, `killed`, `timed_out`. `failed` **não** é absorvente — a sua única saída é `→ compensating`. Os restantes 85 dos 100 pares da matriz 10×10 são inválidos por omissão (verificado por varredura exaustiva nos testes).
+
+**Porquê duas arestas a mais do que a fonte (AOS-419, eixo do DEF-906).** As arestas #14 e #15 não alargam a máquina por gosto: são a **saída que faltava** às duas esperas **não-humanas**. Sem elas, `waiting_on_tool` e `paused` não tinham par válido para nenhum terminal — logo `CheckDeadlines` não tinha para onde transitar um run pendurado numa activity que nunca responde, ou pausado e esquecido, e esses dois estados ficavam **sem prazo nenhum**. A segunda via também não os cobria: o disjuntor de EPIC-08 é *no-op* fora de `running` (`liveness.CountsAsActiveWork`), pelo que o sinal wall-clock **absoluto** que `tecnica/08` §6 designa como rede de segurança era recolhido e nunca avaliado nestes estados. `waiting_on_human` **não** ganha aresta nova: a sua saída fail-closed continua a ser `→ killed` com TTL próprio (ADR-013) — a deliberação humana não morre pelo tecto de máquina.
 
 **Persistência e reconstrução (ADR-001).** Cada transição válida é um evento append-only `run.state.transition` no Event Store replicado (AOS-002), com `step_id` namespaced `state-N` — distinto dos domínios de dedup do turno (AOS-013), do ledger (AOS-014) e do checkpoint (AOS-015). O estado corrente é sempre reconstruível por `Machine.Rebuild(run_id)`, que adopta o `to` do evento de transição de seq mais alto — a máquina **sobrevive a crash**: um worker novo reconstrói do log e continua. O estado in-memory só avança **após** o commit durável, pelo que uma transição inválida ou uma falha do Event Store (fail-closed) nunca corrompe o estado.
 
 **Fencing token (contrato partilhado com AOS-018).** O claim `ready → running` exige um `FencingToken` válido; AOS-017 define só o **contrato** (`FencingToken`/`Uint64Token`) e verifica presença/validade. A origem monotónica durável do contador, o heartbeat de renovação e a rejeição de escritas de token inferior no Event Store são **AOS-018**. As retomas de suspensão para `running` reentram sob o lease já detido e **não** re-exigem token.
 
-**Timeout fail-closed (ADR-013).** `Machine.CheckDeadlines`, com um **relógio injectável** (testes determinísticos, sem sleeps), aplica: `waiting_on_human` há ≥ TTL → `killed` (nunca `running` em ambiguidade); `running` há ≥ wall-clock → `timed_out`. Os eventos `pause`/`resume`/`kill` são **expostos** (métodos finos sobre `Transition`) para o steer (AOS-023) e o lease (AOS-018) os accionarem — a lógica desses tickets não é implementada aqui.
+**Timeout fail-closed (ADR-013).** `Machine.CheckDeadlines`, com um **relógio injectável** (testes determinísticos, sem sleeps), aplica: `waiting_on_human` há ≥ TTL → `killed` (nunca `running` em ambiguidade); `running` há ≥ wall-clock → `timed_out`; e — **AOS-419** — `waiting_on_tool`/`paused` há ≥ o **mesmo** wall-clock → `timed_out`, com a razão distinta `suspension_wall_clock_exceeded` (a auditoria separa «morreu a trabalhar» de «morreu pendurado»). O tecto é **por segmento**: conta desde a entrada no estado corrente, pelo que uma espera que retoma a tempo leva o tecto inteiro consigo e o backstop só morde quem lá fica. É **um só** valor de operador (`AOS_BREAKER_MAX_WALL_CLOCK`, partilhado com o disjuntor), não um tecto novo; `0` desliga-o. Os eventos `pause`/`resume`/`kill` são **expostos** (métodos finos sobre `Transition`) para o steer (AOS-023) e o lease (AOS-018) os accionarem — a lógica desses tickets não é implementada aqui.
 
 ### 5.1 Canal de steer/interrupt e estado `paused` (AOS-023) — `runtime/control` (`steer_channel.go`, `pause_resume.go`)
 

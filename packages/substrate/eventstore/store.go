@@ -328,6 +328,27 @@ func (s *Store) Append(ctx context.Context, streamID string, in EventInput, opts
 	if s.closed.Load() {
 		return AppendResult{}, ErrClosed
 	}
+	// AOS-424 / ADR-029 §2.4 — O NOME VALIDA-SE ANTES DE EXISTIR.
+	//
+	// A recusa é AQUI, antes de tocar em stripe, líder ou quórum, e por isso é puramente
+	// lexical: não depende de topologia, não deixa rasto, e um `stream_id` irrepresentável
+	// nunca chega a ter um seq atribuído.
+	//
+	// É o que fecha a assimetria entre backends. O `subjectDe` do JetStream já recusava; o
+	// backend de ficheiro aceitava, e foi essa diferença que deixou nove nomes literais e três
+	// nomes COMPOSTOS viverem em produção sem nunca falharem um teste — porque os gates e o
+	// smoke correm todos sobre ficheiro.
+	//
+	// SÓ NA ESCRITA. [Store.Read], [Store.StreamHead], [Store.SnapshotStream] e
+	// [Store.IngestStream] continuam a aceitar nomes legados de propósito: um nome que já existe
+	// tem de poder ser lido para ser migrado, e um backup anterior a esta regra tem de poder ser
+	// restaurado. A assimetria está fixada por teste.
+	if !o.semValidacaoDeNome {
+		if err := ValidarStreamID(streamID); err != nil {
+			s.obs.AppendRejected(streamID, err)
+			return AppendResult{}, err
+		}
+	}
 	// AOS-347: um store de inspecção não escreve. A recusa é aqui, antes de qualquer
 	// stripe, para que nem sequer chegue a atribuir um seq — era a atribuição de um seq
 	// por uma segunda cabeça que produzia a colisão que o ticket fecha.
@@ -495,7 +516,8 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]Ev
 // enquanto o store ACEITA ESCRITAS e false depois de [Store.Close] (o mesmo estado que
 // faz Append/Read devolverem [ErrClosed]) ou quando o WAL deixou de as aceitar.
 //
-// São duas leituras atómicas — não adquire stripes, nem s.mu, nem o mutex do WAL, não
+// São duas leituras atómicas e um bool imutável depois de abrir (`soLeitura`, AOS-362) —
+// não adquire stripes, nem s.mu, nem o mutex do WAL, não
 // aloca e não toca em réplicas — pelo que continua segura para ser chamada com a
 // frequência de um probe de orquestrador (/readyz) sem contender com o caminho de
 // escrita. O átomo do WAL ([wal.recusaEscritas]) existe exactamente para isso: ler o
@@ -520,8 +542,16 @@ func (s *Store) Read(ctx context.Context, streamID string, fromSeq uint64) ([]Ev
 // substrato aceita I/O», não uma medida de saúde do cluster (essa é observabilidade,
 // não a condição de drain). Um WAL que recusa escritas não é degradação de quórum — é
 // o substrato a estar morto, que é precisamente a condição de drain.
+//
+// # AOS-362 (b) — O STORE DE INSPECÇÃO TAMBÉM NÃO ACEITA ESCRITAS
+//
+// [OpenReadOnly] (AOS-347) deixa `wal == nil`, e [wal.aceitaEscritas] lê um WAL nil como
+// o store in-memory, que aceita escritas. Um store só-leitura dizia-se pronto e recusava
+// TODAS as escritas com [ErrReadOnly] — o modo de falha do AOS-350 numa porta nova. Hoje
+// nenhum caminho composto liga um store só-leitura ao `/readyz`; isto fecha-o antes que
+// algum ligue.
 func (s *Store) Healthy() bool {
-	if s.closed.Load() {
+	if s.closed.Load() || s.soLeitura {
 		return false
 	}
 	return s.wal.aceitaEscritas()

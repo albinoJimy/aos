@@ -92,20 +92,22 @@ import (
 // UMA TOOL TEM EFEITO SE, PELOS EIXOS PINADOS DA SUA CAPABILITY:
 //
 //	(a) fala PARA FORA — `Egress != EgressNone`; ou
-//	(b) NÃO é desfazível — `Reversibility.IsIrreversible()`.
+//	(b) NÃO é desfazível — `Reversibility.IsIrreversible()`; ou
+//	(c) ALTERA ESTADO — `Mutation.Mutates()` (AOS-409).
 //
-// PORQUE ESTES DOIS, E PORQUE SÃO SUFICIENTES. São os mesmos eixos que a regra 6
-// (AOS-232, [deriveNodeAction]) usa para derivar o risco SA-ROC de um nó: não há
-// taxonomia nova, não há segunda fonte de verdade, e uma capability re-classificada
-// no REG muda as duas decisões ao mesmo tempo. A enumeração do ADR mapeia
-// exactamente: a ESCRITA em MEM e o SPAWN são efeitos que não se desfazem (eixo b);
-// o EGRESS é o eixo (a). O que sobra — ler um registo local, computar sobre ele — é
-// `EgressNone` + `Reversible`, e é precisamente o que um verificador precisa.
+// PORQUE ESTES TRÊS, E PORQUE NÃO SÃO UMA TAXONOMIA NOVA. São eixos PINADOS da
+// capability, os mesmos que a regra 6 (AOS-232, [deriveNodeAction]) consome para derivar
+// o risco SA-ROC de um nó: não há segunda fonte de verdade, não há lista de nomes, e uma
+// capability re-classificada no snapshot muda as duas decisões ao mesmo tempo. A
+// enumeração do ADR mapeia exactamente: a ESCRITA em MEM é mutação (eixo c), o SPAWN é
+// um efeito que não se desfaz (eixo b), o EGRESS é o eixo (a). O que sobra — ler um
+// registo local, computar sobre ele — é `EgressNone` + `Reversible` + `MutationNone`, e
+// é precisamente o que um verificador precisa.
 //
-// FAIL-CLOSED PELO TIPO, sem uma linha para isso: os valores-zero de ambos os eixos
-// são os perigosos ([risk.EgressUnknown] ≠ [risk.EgressNone];
-// [risk.Reversibility.IsIrreversible] é verdadeiro para tudo o que não seja
-// explicitamente [risk.Reversible]). Uma capability PINADA SEM eixos declarados conta
+// FAIL-CLOSED PELO TIPO, sem uma linha para isso: os valores-zero dos três eixos são
+// os perigosos ([risk.EgressUnknown] ≠ [risk.EgressNone]; [risk.Reversibility.IsIrreversible]
+// e [Mutation.Mutates] são verdadeiros para tudo o que não seja explicitamente
+// [risk.Reversible] / [MutationNone]). Uma capability PINADA SEM eixos declarados conta
 // como de efeito — uma ferramenta por classificar nunca é read-only por omissão.
 //
 // A SENSIBILIDADE não entra. É deliberado: ler dados sensíveis é uma leitura, e um
@@ -113,28 +115,23 @@ import (
 // trabalho que interessa. O que a sensibilidade governa é o RISCO do nó (regra 6) e a
 // fricção do gate — não a fronteira read-only.
 //
-// # O QUE ESTE CRITÉRIO PRESSUPÕE DO REG (declarado, não escondido)
+// # PORQUE A MUTAÇÃO É UM EIXO PRÓPRIO (AOS-409, fecha o DEF-275)
 //
-// Não há eixo de MUTAÇÃO nos eixos pinados: os três que o snapshot carrega são
-// sensibilidade, egress e reversibilidade. A ponte «escrita ⇒ efeito» apoia-se por
-// isso numa INVARIANTE DE CLASSIFICAÇÃO do REG — *toda a capability que muta estado é
-// classificada `Irreversible`* — e essa invariante é uma suposição sobre o catálogo,
-// não algo que este código imponha. Uma escrita local com undo classificada
-// `EgressNone` + `Reversible` seria contada como leitura, e um verificador podia
-// pinar a tool que mexe no que ele revê.
-//
-// Acrescentar aqui um quarto eixo fail-closed (desconhecido ⇒ mutador) tornaria a
-// invariante EXECUTÁVEL, e é a direcção certa — mas hoje não existe NENHUMA construção
-// de [Capability] fora de testes (o snapshot pinado chega pelo wiring do REG, a jusante
-// de AOS-238), pelo que o eixo novo classificaria só fixtures e daria a ilusão de uma
-// garantia que ninguém alimenta. Fica registado como residual COM eixo
-// (`docs/governance/REGISTO-Deferimentos.md`, DEF-275): o eixo de mutação entra junto
-// com o construtor real do snapshot, e o teste que o acompanha é sobre o CATÁLOGO, não
-// sobre um literal de teste. Até lá, a invariante está escrita onde é lida.
+// Até ao AOS-409 a ponte «escrita ⇒ efeito» apoiava-se numa INVARIANTE DE CLASSIFICAÇÃO
+// do REG — *toda a capability que muta estado é classificada `Irreversible`* — que o
+// código não impunha: uma escrita local com undo classificada `EgressNone` + `Reversible`
+// contava como leitura, um verificador podia pinar a tool que mexe no que revê, e um
+// consumidor com autoridade de escrita não contava como privilegiado para a regra de
+// taint (P4). O eixo (c) torna a invariante EXECUTÁVEL, e é alimentado por um construtor
+// REAL: o snapshot pinado do `aos-orq` (`carregarSnapshot`), onde `mutation` é campo
+// OBRIGATÓRIO por tool (ausente ⇒ erro de carga que nomeia a tool), conferido com o
+// catálogo do nó (`GET /tools`, AOS-441) — o snapshot não pode declarar menos mutação do
+// que o nó. O teste que o acompanha corre sobre o CATÁLOGO de produção
+// (`deploy/server/model-tools/tools.json`), não sobre um literal de teste.
 //
 // Puro.
 func IsEffectTool(c Capability) bool {
-	return c.Egress != risk.EgressNone || c.Reversibility.IsIrreversible()
+	return c.Egress != risk.EgressNone || c.Reversibility.IsIrreversible() || c.Mutation.Mutates()
 }
 
 // EffectOracle devolve o predicado «esta [plan.ToolRef] PINADA tem efeito?» ancorado

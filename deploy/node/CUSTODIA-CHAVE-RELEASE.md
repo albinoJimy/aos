@@ -80,10 +80,16 @@ poder ver, em revisão de código, **que chaves passaram a ser confiáveis e qua
 
 ## 3. COMO se provisiona
 
-Hoje `deploy/node/release-pubkeys.json` tem `keys: []` — **nenhuma chave de release
-provisionada**, e por isso a verificação **recusa** qualquer envelope (fail-closed por omissão,
-`TestAOS207RegistoVazioRecusa`). O gatilho de provisionamento é o **primeiro release distribuído
-fora do repositório**, exactamente como a linha `DEF-501` do registo já declarava.
+> ✅ **JÁ PROVISIONADO (2026-08-14).** `deploy/node/release-pubkeys.json` tem **1 chave**
+> (Arquitecto de Plataforma) e o gatilho que esta secção previa — o **primeiro release distribuído
+> fora do repositório** — ocorreu com a v0.1.0, exactamente como a linha `DEF-501` declarava. Os
+> passos abaixo ficam como **procedimento de rotação e de re-provisionamento**, não como estado
+> actual. O texto que dizia «hoje tem `keys: []`» sobreviveu à sua própria premissa por treze meses <!-- roster:historico -->
+> de commits e foi corrigido a 2026-09-27.
+
+Com o roster **vazio** a verificação recusa qualquer envelope (fail-closed por omissão,
+`TestAOS207RegistoVazioRecusa`) — é essa a garantia que torna o provisionamento a única via para
+publicar, e continua a valer se o roster for esvaziado.
 
 ```bash
 # 1. Gerar o par NUM AMBIENTE EFÉMERO E FORA DE QUALQUER ÁRVORE GIT.
@@ -170,10 +176,10 @@ O que **não** está, e fica nomeado aqui e no ADR-017 §Consequências:
 - **A comparação do digest da imagem com a imagem REAL exige a imagem no host que verifica.**
   Sem ela, `verify-attestation.sh` declara o que não recomputou e devolve **4** (não publicável) —
   já não devolve 0. Uma imagem trocada sob a mesma tag só é detectada onde a imagem exista.
-- **Esta cadeia nunca correu com uma chave de release REAL.** `release-pubkeys.json` tem
-  `keys: []`: com o roster vazio **qualquer** envelope é recusado, logo nenhuma entrega é
-  publicável até ao provisionamento (§3). A prova end-to-end foi feita com chave efémera,
-  gerada e destruída fora da árvore do repositório.
+- ~~**Esta cadeia nunca correu com uma chave de release REAL.**~~ **RESOLVIDO (2026-08-14):**
+  `release-pubkeys.json` tem **1 chave** e a cadeia corre com ela. A prova end-to-end original foi
+  feita com chave efémera, gerada e destruída fora da árvore; a garantia de que o roster vazio
+  recusa **qualquer** envelope mantém-se (§3) e é o que torna o provisionamento a única via.
 
 A estes juntam-se três residuais **de outras pistas**, nomeados em ADR-017 §Consequências
 (residuais 7, 9 e 10): a ordem dos passos em `.github/workflows/ci.yml` (que regenera a

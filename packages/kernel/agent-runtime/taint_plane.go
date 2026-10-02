@@ -167,29 +167,12 @@ func quarantineOrigin(o taint.Origin) taint.Origin {
 
 // ControlPlanner é o control-plane do dual-LLM/CaMeL: decide tool calls olhando
 // APENAS para a [PlannerView] (dados trusted + handles opacos). NUNCA recebe bytes
-// untrusted — a assinatura torna-o impossível. As invocações que devolve são
-// autorizadas pelo plano de confiança; use [AuthorizeTrusted] para as marcar antes
-// de as submeter ao RM.
+// untrusted — a assinatura torna-o impossível.
+//
+// É o primitivo da OPÇÃO A do ADR-034, ainda sem chamador de produção: o loop base autoriza
+// pelo rótulo do contexto ([ContextAuthority], opção C). Quando a opção A entrar, a autoridade
+// das invocações que um ControlPlanner devolve continua a ser cunhada pelo runtime — a partir
+// de a [PlannerView] ser trusted por construção —, e não por um campo das invocações.
 type ControlPlanner interface {
 	Plan(view PlannerView) []ToolInvocation
-}
-
-// AuthorizeTrusted marca uma tool call como autorizada pelo control-plane TRUSTED
-// (só o planeador sobre dados trusted a chama). É esta marca que o Reference
-// Monitor lê ([referencemonitor.CallContext].Taint) para permitir uma capability
-// privilegiada. Uma invocação NÃO marcada fica untrusted (fail-closed) e não pode
-// originar acções privilegiadas.
-func AuthorizeTrusted(inv ToolInvocation) ToolInvocation {
-	inv.AuthorizationTaint = TaintTrusted
-	return inv
-}
-
-// authorizationTaintOf devolve o taint de autorização efectivo de uma invocação,
-// fail-closed: uma autorização ausente/desconhecida é untrusted. É o valor que o
-// loop propaga ao [referencemonitor.CallContext].Taint.
-func authorizationTaintOf(inv ToolInvocation) string {
-	if taint.ParseLabel(inv.AuthorizationTaint).IsTrusted() {
-		return TaintTrusted
-	}
-	return TaintUntrusted
 }

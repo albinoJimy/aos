@@ -22,12 +22,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	decompose "github.com/aos-ref/control-plane/orchestrator/decompose"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/pipeline/authn"
@@ -46,8 +49,17 @@ type gatewayConfig struct {
 	region      string
 	board       string
 	egressHosts []string
-	production  bool
+	// egressTimeout é o tempo máximo de CADA pedido ao modelo (AOS_MODEL_EGRESS_TIMEOUT); 0 ⇒ o
+	// default do caminho (30 s no transporte endurecido, 60 s no seam de dev), como no nó.
+	egressTimeout time.Duration
+	production    bool
 }
+
+// Limites de AOS_MODEL_EGRESS_TIMEOUT — os mesmos do nó (packages/cmd/aos/main.go).
+const (
+	minModelEgressTimeout = time.Second
+	maxModelEgressTimeout = 30 * time.Minute
+)
 
 // gatewayConfigFromEnv lê a config do Model Gateway do ambiente. Devolve (nil, nil) quando
 // `AOS_MODEL_ENDPOINT` está ausente — não há gateway, e o `--goal` sem fixture recusa
@@ -83,7 +95,36 @@ func gatewayConfigFromEnv() (*gatewayConfig, error) {
 			}
 		}
 	}
-	return &gatewayConfig{endpoint: endpoint, model: model, apiKeyPath: apiKeyPath, region: region, board: board, egressHosts: egress, production: production}, nil
+	// AOS-403: sob produção, uma allowlist vazia deriva do host do próprio endpoint, como no nó
+	// (AOS-366, egressAllowlistFromEnv em packages/cmd/aos/main.go). Sem isto, o aos-orq
+	// corrido a partir da imagem com o `.env` do nó (AOS_MODE=production, sem
+	// AOS_MODEL_EGRESS_HOSTS) compunha o gateway com a allowlist vazia, que nega tudo — e a
+	// primeira decomposição falhava por config que o nó aceita. Deriva-se pelos mesmos
+	// acessores que a validação do gateway compara (Hostname + Port).
+	if production && len(egress) == 0 {
+		u, err := url.Parse(endpoint)
+		if err != nil || u.Hostname() == "" {
+			return nil, fmt.Errorf("AOS_MODEL_ENDPOINT (%q) sem host para a allowlist de egress endurecida de produção; defina AOS_MODEL_EGRESS_HOSTS", endpoint)
+		}
+		host := u.Hostname()
+		if p := u.Port(); p != "" {
+			host = net.JoinHostPort(host, p)
+		}
+		egress = []string{host}
+	}
+	// AOS-403: o tempo máximo de cada pedido ao modelo lê-se da MESMA variável do nó. Sem ela, o
+	// aos-orq corrido com o `.env` de produção (AOS_MODEL_EGRESS_TIMEOUT=120s, a correcção do
+	// incidente da v0.1.12) ficava nos 30 s do transporte endurecido, e uma decomposição lenta que
+	// o nó aguentaria era cortada. Valor inválido recusa, em vez de seguir com o default.
+	var egressTimeout time.Duration
+	if raw := strings.TrimSpace(os.Getenv("AOS_MODEL_EGRESS_TIMEOUT")); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < minModelEgressTimeout || d > maxModelEgressTimeout {
+			return nil, fmt.Errorf("AOS_MODEL_EGRESS_TIMEOUT inválida (%q): duração Go entre 1s e 30m, ex.: 120s", raw)
+		}
+		egressTimeout = d
+	}
+	return &gatewayConfig{endpoint: endpoint, model: model, apiKeyPath: apiKeyPath, region: region, board: board, egressHosts: egress, egressTimeout: egressTimeout, production: production}, nil
 }
 
 // staticCredencialModelo implementa [modelgateway.CredentialProvider]: devolve o segredo de
@@ -121,11 +162,17 @@ type gatewayDecomposeModel struct {
 	region    string
 	board     string
 	principal string
+	// medidor conta o `usage` de cada chamada (AOS-466). nil fora do `consume`.
+	medidor *medidorDoPlaneamento
 }
 
 // Complete satisfaz [decompose.Model]: invoca o gateway com o prompt system+user e devolve
 // o texto da resposta (o decompositor extrai e valida o JSON a jusante — AOS-231).
 func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string) (string, error) {
+	// CORRELAÇÃO POR CHAMADA (AOS-395, mecanismo do AOS-394): o run e o passo da tentativa
+	// vêm do ctx que o planeador escreve antes de decompor. O par lê-se JUNTO: sem anexo, os
+	// dois campos ficam vazios e o selo mostra a ausência — nunca se inventa uma correlação.
+	runID, stepID, _ := agentruntime.ModelCallFromContext(ctx)
 	resp, err := m.gw.Chat(ctx, port.ChatRequest{
 		Model: m.model,
 		Messages: []port.Message{
@@ -135,8 +182,13 @@ func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string
 		Principal: m.principal, // token NHI do run que sela model:invoke
 		Region:    m.region,
 		Board:     m.board,
+		RunID:     runID,
+		StepID:    stepID,
 		// Sem Tools: o decompositor quer texto JSON, não tool_calls.
 	})
+	// Conta-se ANTES de decidir o que fazer com a resposta: uma chamada que o modelo cobrou conta,
+	// quer o texto sirva quer não. Com erro não há `usage` em que confiar — NÃO MEDIDA.
+	m.medidor.registar(resp.Usage, err)
 	if err != nil {
 		// Deny do authn (falta model:invoke / token inválido) ou falha do gateway propaga
 		// fail-closed: o planeador não avança com um plano fantasma.
@@ -152,7 +204,10 @@ func (m gatewayDecomposeModel) Complete(ctx context.Context, system, user string
 // [decompose.Model], sob o `verifier` de identidade (o issuer efémero do run) e o
 // `principal` (token do run que sela `model:invoke`). Fail-closed: sem verifier não há
 // estágio authn e o gateway não se compõe.
-func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier authn.Verifier, principal string) (decompose.Model, error) {
+// govAudit é o store de governação do gateway: o WORM durável resolvido do ambiente
+// ([parseModelAuditFromEnv], AOS-395) ou nil, caso em que se usa o MemStore de referência e a
+// postura VOLÁTIL fica declarada no arranque.
+func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier authn.Verifier, principal string, govAudit audit.Store) (decompose.Model, error) {
 	if cfg == nil {
 		return nil, errors.New("config do Model Gateway nil")
 	}
@@ -178,26 +233,37 @@ func construirModeloGateway(ctx context.Context, cfg *gatewayConfig, verifier au
 		secret = strings.TrimSpace(string(raw))
 	}
 
+	// AOS-395: o audit de governação é o WORM DURÁVEL quando o ambiente o resolveu; sem ele,
+	// o MemStore de referência — e a volatilidade fica declarada no arranque, nunca em silêncio.
+	if govAudit == nil {
+		govAudit = audit.NewMemStore()
+	}
 	gwCfg := modelgateway.ProductionConfig{
 		Provider:      "openai",
 		BaseURL:       base,
 		DefaultRegion: cfg.region,
 		Authn:         authnStage,
-		Audit:         audit.NewMemStore(),
+		Audit:         govAudit,
 		Credentials:   staticCredencialModelo{secret: secret},
 		Accounts:      []modelgateway.InfraAccount{{KeyID: "model-upstream", Provider: "openai", Region: cfg.region}},
 	}
 	if cfg.production {
 		// Egress REAL endurecido (SSRF fail-closed, AOS-223): HTTPClient nil + allowlist.
 		gwCfg.AllowedEgressHosts = cfg.egressHosts
+		gwCfg.EgressTimeout = cfg.egressTimeout // 0 ⇒ o default do gateway (30 s)
 	} else {
 		// Seam de dev: transporte injectado governa o egress (aponta a endpoints internos).
-		gwCfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
+		devTimeout := 60 * time.Second
+		if cfg.egressTimeout > 0 {
+			devTimeout = cfg.egressTimeout
+		}
+		gwCfg.HTTPClient = &http.Client{Timeout: devTimeout}
 	}
 
 	gw, err := modelgateway.NewProduction(ctx, gwCfg)
 	if err != nil {
 		return nil, fmt.Errorf("compor o Model Gateway: %w", err)
 	}
-	return gatewayDecomposeModel{gw: gw, model: cfg.model, region: cfg.region, board: cfg.board, principal: principal}, nil
+	return gatewayDecomposeModel{gw: gw, model: cfg.model, region: cfg.region, board: cfg.board, principal: principal,
+		medidor: medidorDe(ctx)}, nil
 }

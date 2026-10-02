@@ -102,31 +102,87 @@ fi
 # NAO se exige `+x` a TODOS os `.sh`: o `deploy.sh`, o `rollback.sh` e o `backup.sh`
 # sao invocados via `bash /opt/aos/...` e nao precisam. Exigi-lo seria ceremonia sem
 # propriedade, e a proxima pessoa desligaria o gate em vez de o obedecer.
+#
+# AS UNIDADES QUE CORREM COMO ROOT (sem `User=`, ou `User=root`) seguem a regra INVERSA
+# da (b) — AOS-446. Um executavel que o root corre e que o `aos` (ou o rsync do deploy)
+# escreve e root para quem o escreve: o `aos-tls-sync.service` corria como root o
+# `/opt/aos/sync-tls.sh`, do `aos` e reescrito a cada deploy. Para elas:
+#   (c) o `ExecStart=` TEM de ser `/usr/local/sbin/aos-<nome>`, e a fonte e
+#       `deploy/server/<nome>.sh` (modo 755, como em (a));
+#   (d) essa fonte NAO pode constar do deploy — instala-a o root, a partir de uma
+#       copia verificada (deploy/server/README.md §TLS).
+#   (e) «fora do deploy» em QUALQUER forma: nem pelo nome (`<nome>.sh`, `<nome>*`), nem
+#       por uma forma que leve o topo de deploy/server inteiro (`deploy/server/*.sh`,
+#       `deploy/server/`, `deploy/server/.`, chaves) — trocar a lista explicita por um
+#       glob voltava a enviar o executavel do root sem que (d) visse.
+# Root e o ULTIMO `User=` (o systemd aplica o ultimo; o `grep -m1` de antes lia o
+# primeiro), um `User=` repetido falha, e um ExecStart com prefixo `+`/`!` e root
+# mesmo sob `User=aos`.
+# O teste Go `TestAOS446_UnidadesRootForaDoAlcanceDoAos` (cmd/aos-issuer) guarda o mesmo
+# e ainda o ambiente do processo root (BASH_ENV, ENV, LD_*, PATH, KUBECONFIG so o minimo,
+# EnvironmentFile e WorkingDirectory fora do `aos`); este gate guarda a ENTREGA.
 log_gate "lint · entrega do servidor (ExecStart)"
 unidades="$REPO_ROOT/deploy/server/systemd"
 if [ -d "$unidades" ]; then
   n_exec=0
-  while IFS= read -r alvo; do
-    [ -n "$alvo" ] || continue
-    n_exec=$((n_exec + 1))
-    ficheiro="deploy/server/$(basename "$alvo")"
-    if [ ! -f "$REPO_ROOT/$ficheiro" ]; then
-      log_fail "ExecStart nomeia $alvo e $ficheiro NAO existe no repositorio"
-      rc=1
-      continue
-    fi
-    modo="$( cd "$REPO_ROOT" && git ls-files -s "$ficheiro" | awk '{print $1}' )"
-    if [ "$modo" != "100755" ]; then
-      log_fail "$ficheiro e executado por systemd (ExecStart=$alvo) e tem modo $modo — o systemd responde 203/EXEC. Corrige com: git update-index --chmod=+x $ficheiro"
-      rc=1
-    else
-      log_ok "$ficheiro: modo 755 (executavel pelo systemd)"
-    fi
-    if ! grep -q "$ficheiro" "$REPO_ROOT/.github/workflows/deploy.yml"; then
-      log_fail "$ficheiro e executado por systemd e NAO consta do rsync do deploy — nunca chega ao servidor"
+  for unidade in "$unidades"/*.service; do
+    [ -f "$unidade" ] || continue
+    nome_u="$(basename "$unidade")"
+    n_user="$(grep -cE '^User=' "$unidade" || true)"
+    if [ "${n_user:-0}" -gt 1 ]; then
+      log_fail "$nome_u tem $n_user linhas User= — o systemd aplica a ULTIMA; declara uma so (AOS-446)"
       rc=1
     fi
-  done < <(grep -rhoE '^ExecStart=[^ ]+' "$unidades" 2>/dev/null | sed 's/^ExecStart=//')
+    utilizador="$(grep -oE '^User=[^[:space:]]+' "$unidade" | tail -n1 | sed 's/^User=//' || true)"
+    como_root_u=0
+    { [ -z "$utilizador" ] || [ "$utilizador" = "root" ] || [ "$utilizador" = "0" ]; } && como_root_u=1
+    while IFS= read -r alvo; do
+      [ -n "$alvo" ] || continue
+      n_exec=$((n_exec + 1))
+      # Prefixos do systemd: `+` e `!` correm com privilegios TOTAIS mesmo com User=.
+      pref="$(printf '%s' "$alvo" | sed -E 's/^([-@:+!]*).*/\1/')"
+      alvo="${alvo#"$pref"}"
+      como_root=$como_root_u
+      case "$pref" in *[+!]*) como_root=1 ;; esac
+      if [ "$como_root" -eq 1 ]; then
+        case "$alvo" in
+          /usr/local/sbin/aos-?*) ficheiro="deploy/server/${alvo#/usr/local/sbin/aos-}.sh" ;;
+          *)
+            log_fail "$nome_u corre como ROOT e ExecStart=$alvo nao e /usr/local/sbin/aos-<nome> — um executavel do root que outro utilizador escreve e root para esse utilizador (AOS-446)"
+            rc=1
+            continue ;;
+        esac
+      else
+        ficheiro="deploy/server/$(basename "$alvo")"
+      fi
+      if [ ! -f "$REPO_ROOT/$ficheiro" ]; then
+        log_fail "ExecStart nomeia $alvo ($nome_u) e $ficheiro NAO existe no repositorio"
+        rc=1
+        continue
+      fi
+      modo="$( cd "$REPO_ROOT" && git ls-files -s "$ficheiro" | awk '{print $1}' )"
+      if [ "$modo" != "100755" ]; then
+        log_fail "$ficheiro e executado por systemd (ExecStart=$alvo) e tem modo $modo — o systemd responde 203/EXEC. Corrige com: git update-index --chmod=+x $ficheiro"
+        rc=1
+      else
+        log_ok "$ficheiro: modo 755 (executavel pelo systemd)"
+      fi
+      if [ "$como_root" -eq 1 ]; then
+        nome_base="$(basename "$ficheiro" .sh)"
+        entrega="$(grep -vE '^[[:space:]]*(#|- name:|name:)' "$REPO_ROOT/.github/workflows/deploy.yml" \
+          | grep -E "${nome_base}(\.sh|\.\*|\*)|deploy/server/?(\*|\{|\.(/|\"|'|[[:space:]]|\$)|\"|'|[[:space:]]|\$)" | head -n1 || true)"
+        if [ -n "$entrega" ]; then
+          log_fail "$ficheiro corre como ROOT ($nome_u) e chega ao servidor pelo deploy ($(printf '%s' "$entrega" | sed 's/^[[:space:]]*//')) — o CD reescreveria um executavel do root (AOS-446). Tira-o do rsync; instala-o o root"
+          rc=1
+        else
+          log_ok "$ficheiro: corre como root, fora do deploy (instala-o o root)"
+        fi
+      elif ! grep -qF "$ficheiro" "$REPO_ROOT/.github/workflows/deploy.yml"; then
+        log_fail "$ficheiro e executado por systemd e NAO consta do rsync do deploy — nunca chega ao servidor"
+        rc=1
+      fi
+    done < <(grep -oE '^ExecStart=[^[:space:]]+' "$unidade" | sed 's/^ExecStart=//' || true)
+  done
   # CONTROLO ANTI-VACUIDADE: se nenhum ExecStart for encontrado, este bloco passa por
   # nao ter feito nada. Um gate que nao encontra o que verifica tem de gritar.
   if [ "$n_exec" -eq 0 ]; then

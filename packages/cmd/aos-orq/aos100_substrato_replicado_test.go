@@ -82,6 +82,10 @@ func TestAOS100_NServeEmParaleloSobreOSubstratoReplicado(t *testing.T) {
 			vencedores++
 		case exitPosseNegada:
 			negadosPeloLease++
+			// AOS-432: a recusa nomeia o dono — o operador tem de saber QUEM parar.
+			if !strings.Contains(r.stderr, "detido por \"p") {
+				t.Errorf("posse negada sem nomear o dono do run:\n%s", r.stderr)
+			}
 		case exitWALDetido:
 			guardados++
 		default:

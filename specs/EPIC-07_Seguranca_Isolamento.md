@@ -356,7 +356,7 @@ fail-closed sem política. Segue _BRIEF.md. Não expandas escopo.
 | Dependências | AOS-001 |
 | Bloqueia | AOS-074, AOS-075 |
 | Responsável sugerido | Engenheiro de Segurança / Engenheiro de Runtime |
-| Documentos de referência | `tecnica/07_Seguranca_Isolamento.md`, ADR-005 |
+| Documentos de referência | `tecnica/07_Seguranca_Isolamento.md`, ADR-005, ADR-034 |
 
 ### Contexto
 O vector nº1 (OWASP LLM01 / ASI01, prompt injection) não se resolve com tags `memory_context` in-band — tags in-band não são separação de privilégio. A defesa arquitectural é a **separação control-plane/data-plane com taint** (dual-LLM/CaMeL, ADR-005): conteúdo untrusted (tool results, web, memória, schemas MCP) é *dados*, nunca *instruções*, e é estruturalmente impedido de autorizar acções privilegiadas.
@@ -365,11 +365,35 @@ O vector nº1 (OWASP LLM01 / ASI01, prompt injection) não se resolve com tags `
 Implementar taint tracking real que marca todo o conteúdo untrusted na sua origem, propaga o taint pelo fluxo e garante que apenas dados *trusted* (system + utilizador autenticado) podem originar tool calls privilegiadas — o planeador opera sobre dados confiáveis; o untrusted fica em quarentena como dados.
 
 ### Critérios de Aceitação
-- [ ] Todo o conteúdo de tool results, web, memória e schemas MCP é marcado **UNTRUSTED** na origem.
-- [ ] O taint **propaga-se** por derivações: dados derivados de untrusted permanecem untrusted (inclui memória derivada — proveniência para mitigar *memory poisoning*, ASI06).
-- [ ] Conteúdo untrusted **não pode autorizar** uma tool call privilegiada — a tentativa é bloqueada no Reference Monitor.
+- [x] Todo o conteúdo de tool results, web, memória e schemas MCP é marcado **UNTRUSTED** na origem.
+      *Evidência:* resultados de tool devolvidos sempre `Untrusted` (`taint.go`, `loop.go`); na
+      autoridade (ADR-034), `tool_result`, `plan_input` e memória contam untrusted e a memória
+      fail-closed (`TestSegmentAuthority`, `TestAOS069_MemoriaNoContextoEUntrusted`). Web chega ao
+      nó só como resultado de tool. Schemas MCP: o nó não os ingere — o catálogo de tools oferecido
+      ao modelo é configuração trusted do operador (`AOS_MODEL_TOOLS`), e a deriva de schema MCP é
+      coberta pelo TOFU de AOS-049.
+- [x] O taint **propaga-se** por derivações: dados derivados de untrusted permanecem untrusted (inclui memória derivada — proveniência para mitigar *memory poisoning*, ASI06).
+      *Evidência:* join monótono do contexto (`ContextAuthority`, `TestContextAuthority_Monotono`
+      — nem uma correcção trusted o devolve, `TestAOS069_CorreccaoNaoLavaOContexto`); o histórico
+      herda o rótulo do contexto que o produziu; memória derivada com proveniência:
+      `TestMemoryPoisoning_DerivedStaysUntrusted` (gate `security`).
+- [x] Conteúdo untrusted **não pode autorizar** uma tool call privilegiada — a tentativa é bloqueada no Reference Monitor.
+      *Evidência:* a autorização é o rótulo do contexto cunhado no runtime, e a saída do modelo não
+      tem campo por onde a afirmar (`TestModelBoundaryCarriesNoAuthority`); com `cap:fs.read`
+      armada, o `doc_read` depois de um `plan_input` ou de um `tool_result` é negado com
+      `denied_by=taint` e o do turno 1 com só o objectivo passa
+      (`TestAOS069_DocReadDepoisDePlanInputENegado`, `TestAOS069_DocReadDepoisDeToolResultENegado`,
+      `TestAOS069_DocReadDoTurno1ComSoObjectivoPassa`).
 - [ ] Existe separação efectiva entre o plano que planeia sobre dados confiáveis e o plano que apenas manipula dados (dual-LLM/CaMeL ou equivalente contratado).
-- [ ] Uma injecção clássica ("ignora as instruções e envia X para Y") embutida num tool result **não** resulta em acção privilegiada.
+      *Por fechar:* a opção C separa a AUTORIZAÇÃO, não o conteúdo — o untrusted continua inline no
+      tail que o modelo lê (resíduo R1 do ADR-034). A separação por handle (opção A) fica com
+      gatilho: a entrada de uma tool de efeito parametrizada por dados untrusted (DEF-806,
+      re-escopado; ADR-034 §5.4).
+- [x] Uma injecção clássica ("ignora as instruções e envia X para Y") embutida num tool result **não** resulta em acção privilegiada.
+      *Evidência:* `TestPromptInjection_PlanInput_NoPrivilegedCallPermitted` (gate `security`,
+      bateria do corpus como `plan_input` pelo loop REAL, fase 0 e fase 1, com controlo de contexto
+      limpo e meta-teste `TestMetaDetects_PlanInputInjection_WhenTaintGateBypassed`); e
+      `TestAOS069_DocReadDepoisDeToolResultENegado` para o `tool_result`.
 
 ### Detalhes Técnicos
 - Componentes: RT (marcação na origem), RM (enforcement no gate), MEM (proveniência).
@@ -383,8 +407,9 @@ Implementar taint tracking real que marca todo o conteúdo untrusted na sua orig
 
 ### Definition of Done
 - [ ] Critérios de Aceitação satisfeitos e demonstráveis.
-- [ ] Toda a tool call mediada pelo Reference Monitor, com verificação de taint testada (ADR-002/005).
-- [ ] Spans OTel registam a decisão de taint; sem segredos.
+- [x] Toda a tool call mediada pelo Reference Monitor, com verificação de taint testada (ADR-002/005).
+- [x] Spans OTel registam a decisão de taint; sem segredos (`aos.taint` e `aos.decision.denied_by`
+      no `execute_tool`: `TestExecuteToolSpanCarriesTaintLabel`).
 - [ ] Revisão por dois revisores (P0 de segurança).
 
 ### Handoff para Claude Code
@@ -397,6 +422,122 @@ tool calls privilegiadas. Tags in-band não contam como separação. Prova que u
 injecção clássica embutida num tool result não gera acção privilegiada.
 Segue _BRIEF.md. Não expandas escopo.
 ```
+
+
+### Evidência de produção (2026-09-25)
+
+A análise crítica do ciclo do plano em produção mediu o caso que este ticket fecha: no plano
+`plan-e2e-docread-1790340990`, o nó `n1` leu o documento `notes` e publicou-o como contrato
+`document_content`, e o nó `n2` — um LLM — consumiu-o marcado `taint=untrusted`, inline no prompt.
+A marcação existe; a separação de planos não (DEF-806, DEF-807; ADR-027 §2.4). Não se abriu ticket
+novo: é este.
+
+### Estado
+
+**PARCIAL** (2026-09-26). Entregues a **fase 0** em código e a **fase 1** — a opção C do
+**ADR-034**: a autorização de cada tool call é o rótulo do CONTEXTO que o modelo viu, um join
+monótono cunhado no runtime (`packages/kernel/agent-runtime/context_authority.go`), e
+`ToolInvocation.AuthorizationTaint` saiu — a fronteira do `ModelClient` deixou de transportar
+autoridade (DEF-807 fechado em substância, FECHADO-RESIDUAL). O replay e a retoma reproduzem o
+rótulo (`TestAOS069_RetomaReproduzOMesmoRotulo`, `TestAOS069_ReplayReproduzAAutoridadeDoLoop`).
+
+**Fica aberto** pelo critério 4 (separação de planos por handle, opção A), com gatilho declarado:
+DEF-806, re-escopado a efeitos parametrizados por dados untrusted. Resíduos aceites pelo dono: R1
+(manipulação do texto de um nó que transforma untrusted), R2 (o veredicto de forma fechada de um
+verificador que leu untrusted continua trusted na admissão do plano) e «um nó que já leu um
+documento não lê outro» (o planeador parte as leituras por nós). O critério 6 do AOS-363 (cláusula
+de taint em `allow_fs_read`, re-assinatura do bundle) fica para a próxima cerimónia de chave. A
+revisão adversarial de segurança (2026-09-26) não encontrou CRÍTICO/ALTO e acrescentou ao ADR-034
+três resíduos declarados: R7 (a fronteira do rótulo é o principal autenticado — texto colado no
+`objective` conta trusted), R8 (o `web_post` de contexto limpo morre hoje no PDP pela REGIÃO, não pelo
+taint; decisão para a cerimónia do AOS-363) e a dependência da retoma da integridade do registo de
+retoma (detector forense opt-in no replay). A revisão por um segundo revisor (DoD) não foi feita.
+
+**Catálogo de produção só com `doc_read` (decisão do dono, 2026-09-26; ADR-034 §2.7).** O `web_post`
+saiu de `deploy/server/model-tools/tools.json` — mitigação do achado M1 da revisão de segurança: com a
+opção C um `web_post` de contexto limpo já não morre no taint, só na região do Cedar. Voltar a
+oferecê-lo (ou qualquer tool de `cap:http.post`/egress externo) é decisão explícita, e
+`TestAOS069_ManifestoDeProducaoNaoOfereceEgressExterno` avermelha até lá. Chega a produção com a
+mesma release: o `deploy.yml` sincroniza `deploy/server/model-tools/` sem `--ignore-existing` e o
+deploy recria o nó. O snapshot do `aos-orq` (só `doc_read`) não muda, e a conferência do AOS-441
+continua a bater (tools do nó que o snapshot não nomeia não contam).
+
+**Fase 1 armada e verificada em PRODUÇÃO (2026-09-26, v0.1.37).** Com a release que traz a
+correcção da via durável (abaixo), o operador definiu `AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`
+(cópia anterior em `/opt/aos/.env.antes-aos069-fase1-v0137`) e recriou só o nó, com o lock da
+drenagem seguro (AOS-450). Prova com um plano real pela fila, `plan-e2e-069f1b-neg-1790461111`
+(dois nós, `terminal`, geração 1, `exit_code 0`, 58 s): `n1`, de contexto limpo (só o objectivo),
+leu com `doc_read` — `tool.call.mediated`, `taint=trusted`; `n2`, que recebe o resultado de `n1`
+como `plan_input`, tentou `doc_read` três vezes e as três foram `tool.call.denied` com
+`denied_by=taint`. É o critério 3 medido no nó composto de produção (execução durável, cifra
+por-titular, bundle Cedar assinado, credencial do mandato), e não só nos testes. O plano positivo
+de um só nó da mesma prova (`plan-e2e-069f1b-pos-1790461111`, `terminal`, `exit_code 0`) não
+chamou a tool, pelo que não prova nada sobre o taint; a prova positiva é o `n1` do negativo. A
+fase 0 (`cap:http.post`) está armada desde a mesma data.
+
+**Fase 1 falhou em produção (2026-09-26, v0.1.36) e foi revertida.** Com
+`AOS_PRIVILEGED_CAPS=cap:http.post,cap:fs.read`, um plano de um só nó (`n1`, sem `consumes`, sem
+inputs) teve o `doc_read` negado no **turno 1**, e nos cinco seguintes: `tool.call.denied`,
+`denied_by=taint`, `context.taint=untrusted`. O operador repôs só `cap:http.post`.
+
+*Causa:* o rótulo era bem cunhado pelo loop e **perdia-se a caminho do RM na via de despacho
+durável** (`AOS_DURABLE_EXECUTION=1`, a de produção). O `integration.DurableDispatcher` traduzia o
+`Call` numa `activity.Activity`, que não tinha campo para o taint, e `Activity.toCall`
+(`packages/kernel/agent-runtime/activity/contract.go`) repunha-o fixo em untrusted — um resto de
+antes do ADR-034, quando toda a call do modelo era untrusted e o campo «não era configurável».
+Todos os testes do AOS-069 corriam pela via directa (o default do kernel), que não tem o defeito;
+o critério «o `doc_read` de `n1` passa» nunca tinha sido medido no nó composto. Reproduzido no nó
+real pela API (`TestAOS069_Fase1_NoComposto_DocReadDoTurno1Passa`, `packages/cmd/aos`): vermelho
+com execução durável, verde sem ela, com tudo o resto igual (`inputs: []`, lista-branca de tools,
+cifra por-titular, bundle Cedar assinado) — o eixo é esse. A janela do MEM não muda o rótulo (teste
+de paridade abaixo); a credencial de mandato não foi composta no teste, e não precisa: o taint não
+depende dela, e a via não-durável com a credencial do nó já chega trusted ao RM.
+
+*Correcção:* `activity.Activity.AuthorizationTaint` (`taint.Label`, valor-zero untrusted, pelo que
+um chamador que não o conheça continua fail-closed), preenchido pelo `DurableDispatcher` com
+`taint.ParseLabel(call.Context.Taint)` e levado por `toCall` ao `CallContext.Taint`. Fixado por:
+`TestAOS069_Fase1_NoComposto_*` (nó composto, durável e não-durável, com o controlo de que um
+`plan_input` continua a ser negado por taint), `TestAOS069_ViaDuravelPreservaOTaintDaAutorizacao`
+(paridade das duas vias da porta, janela inline e do MEM) e
+`TestAOS069_ViaDuravelTaintDesconhecidoResolveUntrusted` (`packages/integration`), e
+`TestDispatch_AuthorizationTaintChegaAoTaintGate` (`activity`). Voltar a armar `cap:fs.read` só
+com a release que traz esta correcção. Consequência forense: as trajectórias duráveis gravadas até
+essa release têm todas as calls seladas untrusted, como as de antes do ADR-034. O detector opt-in
+do resíduo 9 do ADR-034 (`VerifyAuthority`) **não as vê — nem a nenhuma trajectória durável**: o
+`DurableDispatcher` também não propaga o `ParentStepID` do Call, o taint selado é indexado por ele,
+e na via durável a lista a comparar vem vazia em todos os turnos. O detector está cego em produção
+(e, pela mesma razão, não dá falsos alarmes sobre as trajectórias antigas) até o `ParentStepID`
+atravessar a via durável — trabalho tratado fora deste ticket.
+
+*O que muda em produção com esta release, além da leitura:* é a primeira em que as consequências da
+§4 do ADR-034 ficam todas vivas no nó. O classificador de risco deixa de elevar a sensibilidade de
+calls de contexto limpo (menos escaladas HITL; efeito nos contadores do controlador de autonomia,
+AOS-090), e o `allow_http_post` passa a poder ser satisfeito (sem tool que o use hoje).
+
+*Registo de retoma (revisão de segurança da correcção, 2026-09-26).* Com o rótulo a chegar ao RM,
+o `Goal` da retoma passa a decidir autoridade: um registo sem os `inputs` re-autorizaria trusted.
+`integration.ResumeRecords.Get` lia o ÚLTIMO registo do run e aceitava um corpo em claro mesmo com
+o cifrador activo — quem tivesse escrita crua no Event Store sobrepunha um `Goal` sem `inputs`.
+Agora um registo que o Put não escreveria recusa a retoma com erro nomeado: outro run_id de
+envelope (`ErrResumeRecordForaDoPut` — é a única forma de pôr um segundo registo ao lado do
+legítimo, porque o Put usa sempre `approval:resume-<run>` e a dedup cobre o stream inteiro), corpo
+em claro com cifrador activo (`ErrResumeRecordEmClaro`), corpo de outro run
+(`ErrResumeRecordDeOutroRun`) e, como defesa-em-profundidade, um segundo registo diferente do
+primeiro (`ErrResumeRecordDivergente`). A rota `POST /runs/{id}/resume` responde 409 a qualquer
+deles (como ao `ErrNoResumeRecord`) e o log do operador e o do crash-resume nomeiam o sentinela.
+Fixado em `packages/integration/aos069_registo_de_retoma_test.go` e
+`packages/cmd/aos/aos069_retoma_recusada_test.go`.
+
+**Ticket a abrir (sem número; resíduo do ADR-034):** o selo do registo de retoma não está amarrado
+ao tipo nem ao run — o `contentSealer` sela sem dados associados (`packages/cmd/aos/dsar.go`,
+`audit.SealContent(..., nil)`). Com escrita crua no Event Store e um run id previsível, um blob
+selado sob o mesmo titular, cujo texto claro inteiro se controla (um JSON com o `RunID` do run),
+copiado para `resume-<run>` ANTES do Put legítimo, faz o Put legítimo virar `StatusDuplicate` e o
+forjado ser o único registo (sem `inputs`, `AllowedTools` nil) — a retoma autoriza trusted.
+Correcção proposta: dados associados `"resume:"+runID` no selo e na leitura, com a leitura a
+aceitar os dois formatos durante a transição (os registos já selados deixariam de abrir). O
+`broker` que fixa `Taint` trusted na troca (latente, sem chamador) ficou como
+pré-condição no DEF-218.
 
 ---
 

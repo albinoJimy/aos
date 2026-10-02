@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/aos-ref/control-plane/governance/autonomy"
-	govsov "github.com/aos-ref/control-plane/governance/sovereignty"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 )
 
@@ -45,8 +44,11 @@ type PDP struct {
 	// compõe para EMITIR a obrigação `region` a partir do board do escopo de
 	// identidade. nil ⇒ soberania por board inerte (opt-in; o PDP decide como antes).
 	// Só TIGHTENS: pode negar fail-closed um board desconhecido ou anexar a
-	// obrigação de região, nunca afrouxar um permit. Ligado por [WithBoardRegions].
-	boardRegions *govsov.Registry
+	// obrigação de região, nunca afrouxar um permit. Ligado por [WithBoardRegions]
+	// ou, depois de Open, por [PDP.SetBoardRegions] — é um
+	// resolvedor e não uma fotografia, para uma rotação da autoridade (AOS-407) valer já.
+	// Lido e escrito sob p.mu.
+	boardRegions BoardRegionResolver
 }
 
 // ReloadRequest transporta a atribuição do carregamento de política: QUEM o
@@ -234,6 +236,25 @@ func (p *PDP) Version() string {
 		return ""
 	}
 	return p.engine.version
+}
+
+// TrustAnchor devolve a chave pública que VERIFICOU o bundle em vigor — a de [WithTrustAnchor]
+// quando foi fornecida, senão a que o `Open` leu do directório do bundle. Vazia quando não há
+// política carregada.
+//
+// É INTROSPECÇÃO SÓ-LEITURA, e existe por uma razão concreta (AOS-446 fase 1, achado A4 da
+// revisão adversarial): o registo das âncoras de confiança no arranque tem de selar a âncora
+// EM USO. Derivá-la de `os.Getenv("AOS_POLICY_TRUST_ANCHOR")` selaria a intenção do ambiente,
+// que pode não ser a chave que o PDP composto está mesmo a usar — e um registo de âncoras que
+// nomeia a chave errada é pior do que registo nenhum. Devolve uma CÓPIA: material público, mas
+// não se entrega o slice interno a quem o possa mutar.
+func (p *PDP) TrustAnchor() ed25519.PublicKey {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.engine == nil {
+		return nil
+	}
+	return append(ed25519.PublicKey(nil), p.anchor...)
 }
 
 // RuleIDs devolve, ORDENADOS, os identificadores (@id) das regras Cedar

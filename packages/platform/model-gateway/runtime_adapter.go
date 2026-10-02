@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -75,7 +78,9 @@ func WithRegionBoard(region, board string) RuntimeAdapterOption {
 // WithRun correlaciona as chamadas deste adaptador com a TRAJECTÓRIA (run) do
 // agente: o runID entra em cada [port.ChatRequest] e torna-se o eixo de agregação
 // do SLI de cache-hit-rate (AOS-061, por run/tenant) e a ligação da atribuição à
-// trajectória (ADR-010). Um adaptador é tipicamente construído por run.
+// trajectória (ADR-010). Só serve a um adaptador construído POR RUN: o run que o
+// runtime anexa ao ctx de cada chamada ([agentruntime.ContextWithModelCall],
+// AOS-394) tem precedência, e é esse o caminho de um adaptador construído por nó.
 func WithRun(runID string) RuntimeAdapterOption {
 	return func(a *ModelClientAdapter) { a.runID = runID }
 }
@@ -102,6 +107,17 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 			principal = p
 		}
 	}
+	// CORRELAÇÃO POR-CHAMADA (AOS-394): o run e o passo do turno vêm do ctx que o runtime
+	// escreve antes de chamar o modelo. O par lê-se JUNTO: havendo anexo, é ele que vale
+	// INTEIRO; não havendo, fica o [WithRun] de construção (um adaptador por run) e o passo
+	// segue vazio. A precedência é sobre o PAR e não sobre cada campo de propósito — completar
+	// o run de uma fonte com o passo de outra selaria uma correlação que nunca existiu, que é
+	// precisamente o que este ticket proíbe. Sem nenhuma das duas fontes os campos seguem
+	// vazios e o selo mostra a ausência.
+	runID, stepID, ok := agentruntime.ModelCallFromContext(ctx)
+	if !ok {
+		runID, stepID = a.runID, ""
+	}
 	req := port.ChatRequest{
 		Model:     a.model,
 		Messages:  []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}},
@@ -109,7 +125,8 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		Principal: principal,
 		Region:    a.region,
 		Board:     a.board,
-		RunID:     a.runID,
+		RunID:     runID,
+		StepID:    stepID,
 	}
 	resp, err := a.gw.Chat(ctx, req)
 	if err != nil {
@@ -160,6 +177,31 @@ var ErrRespostaSemChoices = errors.New("model-gateway: o gateway respondeu sem n
 // Micro-USD INTEIRO em toda a travessia: os dois lados da fronteira são int64 e a
 // projecção é uma cópia — sem conversão, sem float, sem arredondamento onde se pudesse
 // perder um micro-USD.
+// maxModeloServido é o tecto em bytes do nome do modelo servido que o turno grava. Um nome
+// de modelo real tem dezenas de bytes; o tecto impede um provider avariado ou hostil de
+// encher cada `turn.recorded` com o que quiser meter no campo `model`.
+const maxModeloServido = 256
+
+// modeloServido saneia o `model` devolvido pelo provider antes de ele ir para o manifesto:
+// retira os caracteres não imprimíveis e corta em [maxModeloServido] bytes, sem partir um
+// carácter UTF-8 a meio.
+func modeloServido(s string) string {
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, s))
+	if len(s) <= maxModeloServido {
+		return s
+	}
+	corte := maxModeloServido
+	for corte > 0 && !utf8.RuneStart(s[corte]) {
+		corte--
+	}
+	return s[:corte]
+}
+
 func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, error) {
 	out := agentruntime.ModelResponse{
 		Usage: agentruntime.Usage{
@@ -175,6 +217,11 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 			Ausente: !resp.Usage.Definido(),
 		},
 		CostMicroUSD: resp.Usage.CostMicroUSD,
+		// AOS-396 — o modelo que SERVIU: o `model` que o provider devolveu (o gateway só o
+		// preenche com o modelo resolvido quando o provider não o manda). Vai para o
+		// `served_model_id` do manifesto do turno; o modelo pedido vem do Goal. É texto do
+		// provider que fica em claro em cada evento: ver [modeloServido].
+		Model: modeloServido(resp.Model),
 	}
 	if len(resp.Choices) == 0 {
 		// FAIL-CLOSED. Ver [ErrRespostaSemChoices]: isto NAO e um turno vazio.

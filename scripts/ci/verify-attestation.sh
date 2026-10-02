@@ -13,7 +13,7 @@
 #      do ticket). Uma atestação criptograficamente impecável que não cobre imagem nenhuma
 #      não prova nada sobre a imagem: NÃO sai verde (ver o vocabulário de saída, abaixo).
 #   3. REALIDADE — cada `subject` do statement autenticado é RECOMPUTADO contra o artefacto
-#      que está no disco (binário, SBOM, proveniência, manifesto) e contra o digest REAL da
+#      que está no disco (binários `aos`, `aos-orq` e `aos-issuer`, os SBOMs de cada um, proveniência, manifesto) e contra o digest REAL da
 #      imagem (`docker image inspect`). Uma atestação internamente coerente sobre bytes que já
 #      não existem não é uma garantia — e um subject que não foi recomputado NÃO é contado
 #      como verificado (a mensagem final distingue os dois, ver «CONTAGEM HONESTA»).
@@ -210,6 +210,13 @@ subjects = {s.get("name"): s.get("digest", {}).get("sha256") for s in stmt.get("
 FILES = {
     "usr/local/bin/aos": "aos",
     "sbom.json": "sbom.json",
+    # AOS-403: o orquestrador viaja na mesma imagem. Uma entrega que o traga sem o atestar é
+    # recusada como qualquer outro subject em falta.
+    "usr/local/bin/aos-orq": "aos-orq",
+    "sbom-aos-orq.json": "sbom-aos-orq.json",
+    # AOS-437: o emissor viaja na mesma imagem (o binário; a chave nunca). Mesma recusa.
+    "usr/local/bin/aos-issuer": "aos-issuer",
+    "sbom-aos-issuer.json": "sbom-aos-issuer.json",
     "provenance.json": "provenance.json",
     "delivery-manifest.json": "delivery-manifest.json",
 }
@@ -288,9 +295,13 @@ else:
     else:
         n_manifest += 1
 
+# Todo o binário que o Dockerfile copia para /usr/local/bin tem de estar aqui:
+# packages/cmd/aos-issuer/aos437_imagem_atestada_test.go avermelha um COPY sem entrada (AOS-437).
+BINARIOS = {"aos": "usr/local/bin/aos", "aos-orq": "usr/local/bin/aos-orq",
+            "aos-issuer": "usr/local/bin/aos-issuer"}
 for art in man.get("artifacts", []):
     name = art.get("name")
-    key = "usr/local/bin/aos" if name == "aos" else name
+    key = BINARIOS.get(name, name)
     signed = subjects.get(key)
     if signed is None:
         errs.append(f"o manifesto lista o artefacto {name!r} que o statement assinado NÃO cobre")

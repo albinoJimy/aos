@@ -34,6 +34,13 @@ const (
 	// span de custo — a mesma chave, aqui elevada à fonte única do vocabulário. Não é
 	// segredo (custo não é credencial, ADR-010).
 	AttrCostMicroUSD = "aos.cost.micro_usd"
+	// AttrCostUndefined — aos.cost.undefined: o custo do span NÃO FOI DERIVADO (AOS-406). O
+	// cliente de modelo não tem fonte de preço para o par pedido — em produção, um modelo pago
+	// por subscrição, sem preço por token —, pelo que o span não traz [AttrCostMicroUSD] nem
+	// [AttrCostUSD] e o zero não é lido como custo nulo. Um trace com este atributo fica FORA do
+	// SLI de custo por trajectória: afirmar o SLO cumprido com base em zeros sem fonte seria
+	// o falso verde que a regra anti-vacuidade (AOS-085) proíbe.
+	AttrCostUndefined = "aos.cost.undefined"
 	// AttrToolName — gen_ai.tool.name (span execute_tool).
 	AttrToolName = "gen_ai.tool.name"
 	// AttrPrincipalNHI — aos.principal.nhi_id: o identificador estável da NHI do
@@ -79,6 +86,47 @@ const (
 	// AttrDecision — aos.decision: o efeito da mediação (permit|deny|escalate|error)
 	// anotado no span execute_tool, para leitura directa do veredicto no span.
 	AttrDecision = "aos.decision"
+	// AttrMediationDecisionLatencyNanos — aos.mediation.decision_latency_ns: a duração da
+	// CADEIA DE DECISÃO do Reference Monitor, em nanos, EXCLUINDO a janela do despacho da
+	// tool. É a medida que o SLI [SLIMediationOverheadP95] consome.
+	//
+	// Existe porque a latência do span `execute_tool` NÃO serve para isto: o span só fecha
+	// depois de a tool correr (`Monitor.evaluate` despacha antes de devolver a decisão),
+	// pelo que a sua janela envolve a execução no sandbox — 0,6–1,8 s medidos em gVisor —
+	// e não o custo que a mediação acrescenta (2–8,6 ms medidos). Era DEF-281, e o alerta
+	// `mediation_overhead_high` (critical, RB-04) disparava em qualquer nó com tráfego real.
+	//
+	// A JANELA é a mesma que o kernel já sabia ler para selar `tool.call.mediated.latency_ns`,
+	// estendida até ao fim do registo pré-efeito: no caminho de permit fecha depois de o selo
+	// estar durável e ANTES do despacho; nos caminhos de recusa/escalada, que não despacham,
+	// é toda a mediação. Ver AOS-398 e ADR-026.
+	//
+	// É uma duração, nunca um segredo.
+	AttrMediationDecisionLatencyNanos = "aos.mediation.decision_latency_ns"
+	// AttrMediationPolicyLatencyNanos — aos.mediation.policy_latency_ns: a janela da CADEIA DE
+	// POLÍTICA do Reference Monitor, em nanos — até imediatamente ANTES da escrita do selo de
+	// auditoria. É o mesmo instante do `latency_ns` do selo `tool.call.mediated`, e é a medida
+	// que o SLI [SLIMediationOverheadP95] consome desde AOS-401.
+	//
+	// Porque não [AttrMediationDecisionLatencyNanos]: essa inclui a escrita durável do selo, e
+	// em produção (v0.1.15, 2026-09-16) mediu 30,8–32,7 ms — o SLO de 15 ms voltava a alertar
+	// em cada run, desta vez pelo custo do sink e não pelo do sandbox. Emenda ao ADR-026 §1.
+	AttrMediationPolicyLatencyNanos = "aos.mediation.policy_latency_ns"
+	// AttrMediationAuditWriteLatencyNanos — aos.mediation.audit_write_latency_ns: a duração da
+	// escrita do selo de mediação no sink (Event Store/WORM), em nanos. Somada com
+	// [AttrMediationPolicyLatencyNanos] dá [AttrMediationDecisionLatencyNanos] num permit.
+	// Observável e sem SLO: não há alvo ratificado para o custo de um sink durável.
+	AttrMediationAuditWriteLatencyNanos = "aos.mediation.audit_write_latency_ns"
+	// AttrMediationHookLatencyPrefix — aos.mediation.hook_latency_ns.<hook>: a duração de CADA hook
+	// da cadeia de política do Reference Monitor, em nanos, um atributo por hook (AOS-405). Os
+	// hooks que correram somam-se dentro de [AttrMediationPolicyLatencyNanos]; o que falta para a
+	// política é o próprio RM (registo da tool e imposição de obrigações). Numa recusa só aparecem
+	// os hooks até ao que recusou. O nome do atributo constrói-se com [MediationHookLatencyAttr].
+	//
+	// Porque existe: o AOS-404 viu em produção políticas de 17 a 104 ms em que todo o excesso estava
+	// depois do selo de revalidação — num troço que junta o fsync desse selo com risk-classify,
+	// PDP, taint, scope, budget e egress, e que os selos guardados não separam.
+	AttrMediationHookLatencyPrefix = "aos.mediation.hook_latency_ns."
 	// AttrCacheHitRate — aos.cache.hit_rate: o cache-hit-rate AGREGADO do prefixo
 	// (fracção [0,1] = cache_read_tokens / prompt_tokens) anotado no span da model
 	// call pelo Model Gateway (packages/platform/model-gateway/metering/cache_sli,
@@ -223,6 +271,10 @@ const (
 	DecisionEscalate = "escalate"
 	// DecisionError — a mediação terminou em ERRO (nem permit nem deny limpos).
 	DecisionError = "error"
+	// DeniedByContext — o valor de [AttrDeniedBy] quando a mediação é recusada porque o contexto
+	// do chamador já estava cancelado. O Reference Monitor sai antes de escrever o selo, pelo que
+	// as medidas da escrita desse span são zero sem terem sido medidas (AOS-402).
+	DeniedByContext = "context"
 )
 
 // MicroUSDToUSD converte micro-USD inteiro para USD (float, só para o atributo de

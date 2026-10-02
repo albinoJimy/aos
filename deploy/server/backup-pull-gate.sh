@@ -18,6 +18,12 @@
 #
 # O que não passa na validação é recusado e registado no syslog (`aos-backup-pull`). Um pedido
 # recusado com esta chave é, por definição, alguém que não é a tarefa.
+#
+# O REGISTO DE APAGAMENTOS (AOS-436) passa pela MESMA porta estreita: `apagamentos` diz qual é o
+# mais recente, e `scp -f` aceita-o só na forma exacta que o backup.sh produz. Está em claro, e pode:
+# cada linha é um id e um MAC HMAC sob uma chave que só existe dentro do bundle cifrado — sem ela
+# não diz quem foi apagado nem se deixa forjar. É o que um restauro de um bundle ANTERIOR importa
+# para que um apagamento não seja desfeito por ele.
 set -euo pipefail
 
 DEST=/opt/aos/backups
@@ -39,11 +45,21 @@ case "${PEDIDO}" in
     [[ -n "${f}" ]] || exit 1
     stat -c %Y "${f}"
     ;;
+  apagamentos)
+    # O registo de apagamentos MAIS RECENTE (AOS-436). É superconjunto de todos os anteriores, pelo
+    # que a recolha só precisa deste. Sem nenhum sai != 0 e o pull-backups.ps1 alerta.
+    f="$(ls -1t "${DEST}"/apagamentos-*.txt 2>/dev/null | head -1 || true)"
+    [[ -n "${f}" ]] || exit 1
+    printf '%s\n' "${f}"
+    ;;
   "scp -f "*)
     # Só um nome de artefacto do backup.sh, por caminho absoluto e sem nada à volta: sem `..`,
     # sem globs, sem opções extra (-r, -p, -d), sem um segundo caminho.
     alvo="${PEDIDO#scp -f }"
-    [[ "${alvo}" =~ ^/opt/aos/backups/aos-[0-9]{8}T[0-9]{6}Z\.tar\.gz\.enc$ ]] || recusa
+    # Dois nomes, ambos na forma EXACTA que o backup.sh escreve: o bundle cifrado e o registo de
+    # apagamentos em claro (AOS-436). Nada de `.env`, `secrets/` ou outro `.txt` do directório.
+    [[ "${alvo}" =~ ^/opt/aos/backups/aos-[0-9]{8}T[0-9]{6}Z\.tar\.gz\.enc$ \
+       || "${alvo}" =~ ^/opt/aos/backups/apagamentos-[0-9]{8}T[0-9]{6}Z\.txt$ ]] || recusa
     [[ -f "${alvo}" ]] || recusa
     exec scp -f "${alvo}"
     ;;

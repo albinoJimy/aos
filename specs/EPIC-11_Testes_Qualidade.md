@@ -791,6 +791,151 @@ Commits Conventional (feat(AOS-118): ...), branch feature/AOS-118-dr-replay-e2e,
 
 ---
 
+## AOS-479 — O roteiro E2E de pegadas está desactualizado, e três dos seus achados têm resposta
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é documentação de teste. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-11 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | docs (teste) |
+| Prioridade | P3 |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | — |
+| Responsável sugerido | QA / Arquitecto de Plataforma |
+| Documentos de referência | `docs/testing/e2e-pegadas-visao-19.md`, `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md`, `packages/cmd/aos/control_seal.go`, `packages/cmd/aos/autonomy_route.go` |
+
+### Contexto
+
+O roteiro foi verificado a 2026-09-15 em `8e88f88`. Repetido a 2026-10-01 em `4ef35e0`, todos os
+passos passam, mas várias pegadas escritas já não coincidem com o que o binário devolve, e três
+achados que o roteiro deixou em aberto ficaram respondidos. Repetido outra vez no mesmo dia sobre
+`f7b23f3` (a base, 36 commits à frente), os passos 0–14 e 16–18 dão o mesmo. O passo 15, corrido
+com o `snapshot.json` do roteiro de `4ef35e0`, é recusado com `capability sem o campo obrigatorio
+mutation (none|mutates|unknown) — AOS-409`, `exit=1`; com `"mutation"` em cada tool, passa. O
+roteiro de `f7b23f3` já declara `mutation` (o AOS-409 actualizou-o em `71b2064`).
+
+**Pegadas que mudaram** (lista completa no relatório, §6): banner de 70 linhas; partição
+`trust-anchors` (AOS-446), que desloca as contagens dos passos 8, 10 e 11; `streams 11` e
+`ratification.nonce.consumed 7` no passo 7; reidratação de autonomia no passo 12; eventos
+`plan.proposed`/`validated`/`approved` e gate de plano composto no passo 15 (AOS-408); `exit=9` e
+`lease.released` no passo 16; e a armadilha do `MSYS_NO_PATHCONV=1` com `--key-file /c/…` no
+passo 14.
+
+**Achados do roteiro com resposta:**
+
+- **N.º 6** (`GET /runs/{id}` perde `final_text` e `turns`): a causa é o **restart**, não o DSAR.
+  Antes do restart o run apagado ainda os devolve; depois, perde-os também um run de um titular
+  que nunca foi apagado, e o `reconstruct` dele passa a 410. Com a custódia de referência a KEK
+  vive em memória (deferimento DEF-302, declarado no banner).
+- **N.º 7** (recusas sem selo no WORM): é decisão registada no código, não lacuna. O
+  `control_seal.go` diz que só se selam acções que surtiram efeito, para não dar a quem inunda o
+  canal um vector para inchar o trilho.
+- **Passo 6c**: um pedido L5 com uma só assinatura gasta o nonce antes de ser recusado. É
+  deliberado (`autonomy_route.go`) e o roteiro diz o contrário («sobe um por assinatura aceite»).
+
+**Limite que o roteiro declara e não exercita:** a truncatura da cauda do WORM. Sem âncora, passa:
+removido o último selo de uma cópia (40 → 39), o nó arrancou com `readyz=200`. A defesa é a
+âncora assinada (AOS-268, deferimento DEF-268), que o roteiro nunca arma.
+
+### Objectivo
+
+O roteiro volta a ser uma referência que se pode seguir e comparar linha a linha, e deixa de
+listar como dúvida o que já tem resposta.
+
+### Critérios de Aceitação
+
+- [x] Roteiro re-executado sobre a base corrente, com as pegadas, as contagens e os códigos de
+      saída repostos, e o commit anotado no cabeçalho.
+      *(Re-executado a 2026-10-02 sobre `7b9a9ff`, em **Linux** (Go 1.25.13, `GOWORK=off`), e não
+      em Windows como o relatório: as diferenças de ambiente estão numa tabela própria no §0 do
+      roteiro (`xxd` real, `cygpath`, `kill`, `\n` no fim dos corpos HTTP). Duas corridas: uma
+      exploratória e outra **a partir do texto final**, com cada bloco `bash` do ficheiro executado
+      tal como está escrito e pela ordem do roteiro (passos 0–18; o 19 é de servidor e o 20 só
+      arruma). As pegadas são as da segunda. O cabeçalho anota `7b9a9ff`. Medido e reposto: banner
+      70 linhas (73 no restart); `streams 11` e `ratification.nonce.consumed 7` no passo 7 (8 e 4
+      entre o 6c e o 6d); partição `trust-anchors` no passo 8 (8 partições, `aos_worm_partitions
+      8`; 9 depois do DSAR); restart com 9 partições verificadas e 11 streams; passo 15 com o gate
+      de plano composto e `plan.proposed`/`validated`/`approved` (`decision_ref=auto:autonomy:L4`);
+      passo 16 com `exit=9`, `acyclicity/cycle` e `tool_resolution/tool_unknown`, e só
+      `lease.claimed` + `lease.released` no WAL; passo 18 com 25 `--- PASS` nomeados e o
+      `AOS_DR_REPORT` igual. **Divergências face ao relatório de 2026-10-01, onde vale esta
+      medição:** (a) passo 12: 9 partições e 11 streams, não 18 e 17 — o relatório tinha corrido três
+      runs extra antes do restart, que o roteiro não manda correr; (b) truncatura da cauda: 27 → 26
+      registos, não 40 → 39, pela mesma razão; (c) passo 10: `aos_slo_evaluations_total` e
+      `aos_approval_sweeps_total` dependem do minuto em que se lê (0 e ausente no primeiro minuto do
+      nó, 1 e 1 mais tarde); (d) no passo 16 a recusa já não é precedida de uma linha `decomposto:`;
+      (e) os corpos HTTP de erro terminam em `\n`, pelo que o `http=` sai na linha seguinte. O resto
+      do relatório confirma-se. O passo 15 fica com o que a base produz hoje — 0 `task.edge.added`,
+      `inspect` com `ordem=analise,recolha`, o objectivo com 0 ocorrências no WAL —, marcado como
+      «achado n.º 2 por fechar — AOS-476/AOS-477».)*
+- [x] Achados n.º 6 e n.º 7 reescritos com a causa e a decisão, e a frase do passo 7 sobre os
+      nonces corrigida.
+      *(N.º 6: a causa é o **restart** com a KEK em memória (DEF-302), isolada em duas medições —
+      no roteiro, o `GET /runs` que o passo 11 passa a fazer depois do erase ainda traz
+      `final_text` e `turns`, e o do passo 12, depois do restart, já não; e num nó à parte, sem DSAR
+      nenhum, dois runs de titulares diferentes perdem-nos no restart e o `reconstruct` do titular
+      nunca apagado passa de 200 a 410. Fica registada, sem classificação, a observação de que entre
+      o erase e o restart o `GET /runs` ainda serve o `final_text` do titular apagado. N.º 7: decisão
+      registada, citada de `packages/cmd/aos/control_seal.go:64-66`; `--denied-only` vazio em
+      `governance.control` e em `autonomy`, com a rota de promoção como contraste (sela as recusas).
+      Nonces: o 6c gasta o nonce antes da recusa (`packages/cmd/aos/autonomy_route.go:133-138`); a
+      frase do 6e passa a dizer que o contador sobe por assinatura que passa a autenticação, e o
+      passo 7 decompõe os 7 nonces.)*
+- [x] Passo 13 ganha o par de controlo da truncatura: sem âncora arranca (limite declarado), com a
+      âncora armada aborta. Se a âncora não se conseguir armar localmente, o passo diz porquê e
+      aponta o teste automático que cobre o caso.
+      *(A âncora arma-se localmente: `aos-issuer worm-seal` sela uma cópia com uma seed descartável
+      e o nó recebe as três variáveis (`AOS_WORM_TRUST_ANCHOR`, `AOS_WORM_CHECKPOINT_FILE`,
+      `AOS_WORM_EXPECTED_HEADS_FILE`). Medido: 13c, sem âncora, último selo removido (27 → 26) →
+      `readyz=200` e `NAO ANCORADA`; 13d, âncora armada sobre a cópia íntegra → `readyz=200` e
+      `ANCORADA em 9 de 9`; a mesma âncora sobre a cópia truncada → `exit=1`, `particao
+      "gov.read/run-e2e-001": audit: intervalo alem do head da particao`. O passo aponta também os
+      testes automáticos do mesmo par, verdes: `TestNode_WORMAnchor_TruncaturaDoTailDetectada`
+      (`packages/cmd/aos/aos268_worm_anchor_test.go`) e `TestWormSealRecusaSelarSobreTruncatura`
+      (`packages/cmd/aos-issuer/wormseal_test.go`).)*
+- [x] Passo 13 ganha o controlo positivo: a mesma cópia **sem** adulteração arranca.
+      *(13b: a cópia `controlo/` é tirada da `tamper/` antes do `dd`; arranca com `readyz=200` e a
+      cadeia verificada sobre 9 partições, enquanto a adulterada sai com `DANO INTERIOR …
+      audit_seq=2`, `exit=1`.)*
+- [x] Passo 19 descreve a via de leitura em produção (cópia `:ro` dos WAL e análise local) e avisa
+      que o `grep -a -o` dentro do contentor subconta: 8 `tool.call.mediated` contra 52 no
+      ficheiro copiado.
+      *(Novo 19a: `docker run --rm --network none` com `aos_aos-data` e `aos_aos-orq-data` montados
+      `:ro` (o padrão do `deploy/server/backup.sh`), cópia de `events.wal`, `worm.wal`,
+      `model-audit.wal` e `consume.wal`, e análise local com `aos wal-summary`/`audit-trail`, que
+      abrem só para leitura (AOS-347, AOS-373). O aviso cita 8 contra 52 e 3 contra 202 do relatório
+      §7 n.º 9, marcados como leitura de produção de 2026-10-01 e **não repetida**: esta verificação
+      não tocou em produção.)*
+- [x] Passo 14 passa a chave com caminho em forma Windows quando usa `MSYS_NO_PATHCONV=1`.
+      *(A chave passa por `K=…; command -v cygpath >/dev/null && K=$(cygpath -m "$K")` e entra como
+      `--key-file "$K"`: em Git Bash fica `C:/…`, em Linux fica como está. A armadilha ganha a segunda
+      metade (a conversão desligada também deixa a chave por converter). Medido só o ramo Linux; o
+      de Windows está declarado como não medido.)*
+- [x] O `snapshot.json` do passo 15 declara `mutation` em cada tool (AOS-409). *Já cumprido antes
+      deste ticket: o AOS-409 actualizou o roteiro em `71b2064` (`fs.read` `none`, `http.post`
+      `mutates`). Verificado a 2026-10-02 contra a base.*
+- [x] A nota «o gate humano de plano não está composto neste binário» do passo 15 é retirada.
+      *(Retirada do passo 15 e da metade correspondente do achado n.º 4. O passo descreve agora o
+      que o binário declara: `gate de aprovacao de plano (AOS-408, AOS-236): COMPOSTO — nivel L4`,
+      `gate de plano: APROVADO sem humano (nivel L4, sem nos de risco)`, e os três eventos
+      `plan.proposed` → `plan.validated` → `plan.approved` com o mesmo `plan_hash`.)*
+
+### Fora de âmbito
+
+Corrigir os achados 1, 2 e 3 do relatório: têm ticket próprio (AOS-476, AOS-477, AOS-478).
+
+### Estado
+
+**FECHADO** (2026-10-02). Roteiro re-executado em Linux sobre `7b9a9ff` e reposto com o que se
+mediu; os oito critérios cumpridos. Fica por medir o ramo Windows do passo 14 (`cygpath`), e o
+passo 15 muda quando AOS-476 e AOS-477 entrarem.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |

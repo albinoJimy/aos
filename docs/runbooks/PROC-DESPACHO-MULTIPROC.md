@@ -3,7 +3,7 @@
 | Campo | Valor |
 |---|---|
 | ID | PROC-DESPACHO-MULTIPROC |
-| Versão | 1.1 (2026-09-15: a recuperação da morte de uma réplica deixa de afirmar que o despacho retoma — DEF-913) |
+| Versão | 1.1 (2026-10-02, AOS-476: a recuperação da morte de uma réplica deixa de afirmar que o despacho retoma sozinho — DEF-817) |
 | Tipo | Procedimento operacional (v1.1 distribuído; entregue por AOS-392) |
 | Modo de falha | Correr N réplicas do `aos-orq` sobre o mesmo substrato sem arbitragem ⇒ efeito duplicado (dois processos a despachar/spawnar o mesmo run) |
 | ADR | ADR-023 (escritor único por-run: o lease arbitra), ADR-024 (o efeito vive no despacho, não na materialização), ADR-018 (fronteira nó↔ORQ/SCH) |
@@ -13,6 +13,16 @@
 ## Modelo (o que torna N réplicas seguro)
 
 O distribuído v1.1 do Planeador é **scale-out por run**, não co-planeamento do mesmo run (ADR-023 §2.1): **N processos `aos-orq`, cada um dono dos seus runs**, coordenados apenas pelo Event Store replicado. Para um dado run, a posse é arbitrada por um **lease durável**: exactamente um processo ganha (escreve o ciclo de vida e despacha); os outros saem **negados-pelo-lease** (exit 3). O efeito por-nó (spawn de papel / arranque de folha) nasce no **despacho governado** (ADR-024), sob a posse — logo nasce **uma só vez**, no processo dono. É esta invariante que a prova de AOS-392 exercita (`vencedores=1` por run).
+
+## De onde vem o binário (AOS-403)
+
+O `aos-orq` viaja na imagem assinada do nó (`/usr/local/bin/aos-orq`, subject próprio da atestação
+de entrega). Não se compila à parte para produção: corre-se a partir do digest publicado, com
+`--entrypoint /usr/local/bin/aos-orq` ou, no servidor single-host, pelo serviço `aos-orq` do compose
+(`--profile orq run --rm`) — ver `deploy/server/README.md` §«Orquestrador multi-nó (`aos-orq`)».
+Cada réplica tem o seu `AOS_MODEL_AUDIT_PATH`: o WORM de governação do gateway tem um escritor por
+caminho, e uma segunda réplica no mesmo caminho sai com 5. Pelo compose, o caminho por omissão é um
+só — passa-se o de cada réplica com `run -e AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/<réplica>-audit.wal`.
 
 ## Topologia
 
@@ -28,13 +38,15 @@ N× aos-orq serve --nats <cluster-addr> --nats-stream <stream> --nats-replicas 3
 ## Arranque / paragem
 
 1. **Arranque**: iniciar N instâncias com a MESMA `--nats`/`--nats-stream` e `--nats-replicas 3`. Cada uma reclama os seus runs. Confirmar no arranque: banner de postura verde, região aceite, substrato replicado ligado.
-2. **Paragem graciosa**: parar uma réplica com o anúncio de largar a posse (`--release` no fim de um run, ou o shutdown que anuncia). A réplica seguinte assume o run **sem esperar o TTL** (posse sequencial — ver `TestAOS100_PosseSequencialContinuaAFuncionarNoReplicado`).
+2. **Paragem graciosa**: parar uma réplica com o anúncio de largar a posse (`--release` no fim de um run, ou o shutdown que anuncia). A réplica seguinte pode reclamar o run **sem esperar o TTL** (posse sequencial — ver `TestAOS100_PosseSequencialContinuaAFuncionarNoReplicado`). Reclamar não é retomar: só **despacha** se correr com o documento do plano (`consume` ou `serve --plan-doc`); um `serve` sem documento re-hidrata e pára, como na recuperação abaixo (DEF-817).
 3. **Escala**: acrescentar réplicas é seguro a qualquer momento (cada uma pega runs livres). Reduzir: parar graciosamente para o handoff ser imediato.
 
 ## Recuperação da morte de uma réplica
 
-- A morte **abrupta** de uma réplica dona de um run deixa o lease a expirar por **TTL** (`leaseTTL`). Outra réplica pode reclamar o run após a expiração e **re-hidrata** o grafo do log (`RebuildDAG`) — nós, arestas de dependência e estado por-nó.
-- **O despacho NÃO retoma** (medido a 2026-09-15, DEF-913): a réplica que assume o run re-hidrata o grafo mas não despacha os nós que ficaram pendentes — o despacho só é composto no `serve --goal`, e repetir o `--goal` sobre um run já materializado é recusado (`nó já existe no grafo`). Os nós pendentes ficam pendentes (fail-closed: nada é despachado fora de ordem nem duas vezes). Um run cujo dono morreu a meio **não termina sozinho** nesta versão; tratá-lo como incidente do run, não como recuperação automática.
+- A morte **abrupta** de uma réplica dona de um run deixa o lease a expirar por **TTL** (`leaseTTL`). Outra réplica pode reclamar o run após a expiração e **re-hidrata** o grafo do log (`RebuildDAG`): nós, arestas de dependência (`task.edge.added`, desde o AOS-476) e estado por-nó.
+- **O despacho só retoma com o documento do plano** (medido a 2026-10-02, AOS-476; DEF-817). A retoma existe por duas vias: o `consume` (que escolhe `--plan-doc` a partir da pasta `--plan-dir`, AOS-442) e `serve --plan-doc` com o documento que o `plan.validated` do run ancora. Por qualquer delas o `serve` reconhece o `plan.materialized`, não re-materializa e despacha os nós que ficaram por despachar, sem re-submeter os que estavam em voo (AOS-413). Uma materialização que morreu a meio (nós no log, sem `plan.materialized`) também se retoma assim: os nós que coincidem com o documento são aceites sem reescrita, e um nó que diverge recusa com **exit 10**.
+- **`serve` sem documento re-hidrata e NÃO despacha.** O despacho precisa do `PlanDocument` (predicados de `conditional_on`, `risk_class`) e o log só guarda o hash dele (ADR-005). Uma réplica que assuma o run por TTL e corra `serve` sem `--plan-doc` deixa os nós pendentes como estão: fail-closed (nada fora de ordem, nada duplicado), mas o run não termina. Tratá-lo como incidente do run e retomá-lo pelo `consume` ou por `serve --plan-doc`.
+- **Não verificado nesta topologia:** a morte por TTL sobre `--nats` seguida de retoma noutra réplica, e a pasta `--plan-dir` **partilhada** entre réplicas (o `consume` exige-a com `--nats`, mas a partilha não é verificada pelo binário — resíduo do AOS-442). Ambos estão medidos só sobre `--wal`, com processos sequenciais.
 - **NÃO** forçar a tomada de um run cujo lease ainda está vivo: o exit 3 («negado-pelo-lease») diz ao operador para **parar o outro dono do run**, não para o contornar. Roubar o lease violaria a invariante de escritor único (ADR-023).
 - Janela conhecida: a janela TOCTOU do caso token-igual do `FencedAppender` mantém-se delegada ao CAS do substrato de produção (ADR-023 §4) — não é fechada por este procedimento.
 
@@ -54,4 +66,5 @@ N× aos-orq serve --nats <cluster-addr> --nats-stream <stream> --nats-replicas 3
 
 - **Headroom** de concorrência: neste binário é um semáforo bounded local; a integração com o `scheduler.SpawnCoordinator` (AOS-028, max_spawn=f(headroom) global) é follow-up.
 - **Laços de serviço** partilhados (retenção): a exclusão entre réplicas é o eixo do AOS-283 (só o laço de retenção precisa; os restantes já são seguros por lease/partição/chave durável). Até AOS-283 aterrar, correr a retenção numa só réplica.
-- **Model Gateway** (goal→DAG por LLM vivo): AOS-391 (bloqueado por identidade/cutover AOS-278); com `--decompose-fixture` o pipeline corre sem LLM vivo.
+- **Model Gateway** (goal→DAG por LLM vivo): composto desde AOS-391 (`AOS_MODEL_ENDPOINT` + `AOS_MODEL_NAME`); com `--decompose-fixture` o pipeline corre sem LLM vivo.
+- **Audit de governação do gateway** (AOS-395): cada réplica que decompõe pelo gateway (`--goal` sem `--decompose-fixture`) precisa do **seu** `AOS_MODEL_AUDIT_PATH`, num directório que já exista. Duas réplicas no mesmo caminho bifurcariam a hash-chain do WORM; a segunda é recusada no arranque com **exit 5**, antes de reclamar o run (posse de SO sobre `<path>.lock`, a mesma do `--wal`). Um `serve` que não decompõe pelo gateway não abre o caminho. O nó `aos` pede a mesma posse sobre o seu `model-audit.wal` (AOS-399): num host com os dois, quem arranca em segundo lugar no mesmo caminho é recusado (o `aos-orq` com exit 5, o nó com a recusa de posse detida e exit 1), pelo que os caminhos têm de ser distintos. Sem a variável, o arranque declara a postura **IN-MEMORY (VOLATIL)** e os selos das decomposições perdem-se no fim do processo.

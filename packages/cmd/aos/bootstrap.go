@@ -36,6 +36,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -73,6 +74,7 @@ import (
 	"github.com/aos-ref/platform/registry/toolset"
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/eventstore/jetstream"
+	"github.com/aos-ref/substrate/eventstore/natsjs"
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
 	"github.com/aos-ref/substrate/redaction"
 )
@@ -311,6 +313,28 @@ type Config struct {
 	// cai no modo de REFERÊNCIA (autoridade co-localizada). Mutuamente exclusiva com
 	// IssuerSigningKey.
 	IssuerPubKey ed25519.PublicKey
+	// MandatedIssuerID / MandatedIssuerPubKey / MandateSigners compõem o emissor AUTOMÁTICO
+	// (AOS-427, ADR-033): um segundo trust anchor cujos tokens só verificam com um mandato
+	// embebido, assinado por um dos humanos de MandateSigners (user_id → pubkey) e que cubra o
+	// token. Todos vazios ⇒ não composto. Juntos ou nenhum; colisões com o emissor manual abortam
+	// ([validarEmissorMandatado]).
+	MandatedIssuerID     string
+	MandatedIssuerPubKey ed25519.PublicKey
+	// MandateSigners é o PINO de cada humano, por user_id ([identity.MandateSigner]: uma chave
+	// ed25519 de software ou uma chave FIDO2 `sk-ssh-ed25519@openssh.com`, AOS-446 fase 1).
+	// Um humano pode ter MAIS DO QUE UM pino durante a janela de rotação ([MandateDualPinUntil],
+	// AOS-446 fase 1): trocar a chave de um humano invalida todos os mandatos dele no mesmo
+	// instante, e sem janela a cunhagem pára entre a troca do `.env` e a entrega do mandato novo.
+	MandateSigners map[string][]identity.MandateSigner
+	// MandateDualPinUntil é o fim da janela de rotação. Zero ⇒ fechada: dois pinos abortam.
+	MandateDualPinUntil time.Time
+	// PolicyTrustAnchor é a pubkey que VERIFICOU o bundle do PDP em vigor. Fica AQUI porque é uma
+	// ÂNCORA DE CONFIANÇA e o registo do arranque (AOS-446 fase 1, `ancoras_de_confianca.go`) tem
+	// de a resumir. A fronteira de ambiente preenche-a a partir de [pdp.PDP.TrustAnchor] — a
+	// chave EM USO — e não de `AOS_POLICY_TRUST_ANCHOR`: um bundle aberto sem `WithTrustAnchor`
+	// tira a âncora do próprio directório, e aí a variável não é o que o PDP usou (achado A4 da
+	// revisão adversarial). Vazia ⇒ sem bundle carregado, e é isso que se sela.
+	PolicyTrustAnchor ed25519.PublicKey
 
 	// --- Canal de controlo autenticado (AOS-160) -------------------------------
 	// Operators mapeia emitterID→PUBKEY dos operadores humanos/serviço autorizados a
@@ -329,6 +353,21 @@ type Config struct {
 	// por leitura (retro-compatível). Em produção a lista é obrigatória (main.go,
 	// ErrProductionNeedsDSARErasers).
 	DSARErasers []string
+	// PlanDrainers são os principals (o `sub` do ID-token do gate soberano) que podem drenar a
+	// fila de planos — `POST /plans/claim` e `POST /plans/outcome` (AOS-439). Lista FECHADA e
+	// FAIL-CLOSED: vazia ⇒ ninguém drena (ver drenadores_do_plano.go).
+	PlanDrainers []string
+	// MandateV1Until é o fim da JANELA DE MIGRAÇÃO dos mandatos v1 — os que não enumeram
+	// `requesters` (AOS-439, emenda ao ADR-033 §2.1). Até lá o nó aceita-os; a partir daí recusa-os.
+	// Zero ⇒ janela FECHADA (fail-closed). Só tem efeito com o emissor mandatado composto.
+	MandateV1Until time.Time
+	// AuditWriteSchema é a ÉPOCA que o WORM escreve (AOS-439/AOS-446 fase 1). Zero ⇒
+	// [audit.CurrentSchemaVersion] (v3), que é o que mantém o rollback possível.
+	AuditWriteSchema uint8
+	// AuditWriteV4 liga a escrita do WORM v4 (AOS-439; `requested_by` e `mandate_id` no selo).
+	// false ⇒ v3, que os binários anteriores ainda verificam (worm_v4.go). Só se aplica ao WORM
+	// que o próprio Bootstrap abre, não a um [Config.WORM] fornecido.
+	AuditWriteV4 bool
 	// SteerTTL é a janela de frescura dos sinais de controlo. <=0 ⇒ default 5min.
 	SteerTTL time.Duration
 	// SteerSkew tolera carimbos ligeiramente no futuro (relógios adiantados). Default 0.
@@ -427,6 +466,19 @@ type Config struct {
 	// config OU cair para um default de referência para o nó arrancar. O Model Gateway
 	// real é EPIC-06.
 	Model agentruntime.ModelClient
+	// CustoSemFontePreco diz que [Config.Model] é o gateway composto por ambiente SEM fonte de
+	// preço para o par pedido (AOS-406): cada turno sai marcado como custo não derivado, pelo que
+	// o SLI de custo por trajectória não tem produtor neste nó e o `/metrics` declara-o
+	// (`produtor="0"`) em vez de sugerir uma regra que pode disparar. Só o caminho por ambiente o
+	// escreve; um cfg.Model injectado deixa-o a false.
+	CustoSemFontePreco bool
+	// ModelID é o nome do modelo que [Config.Model] PEDE ao provider (AOS-396) — no nó por
+	// ambiente, o `AOS_MODEL_NAME` que o adaptador do gateway envia em cada chamada. É
+	// AUTORITATIVO: o nó escreve-o no `Goal.Model.ModelID` de cada run que hospeda, por cima
+	// do que o goal trouxer, porque é esse o modelo que viaja. Vazio com um Config.Model
+	// injectado ⇒ o nó não declara nada e o goal fica como veio. Sem Config.Model, o modelo
+	// de referência declara [ReferenceModelID].
+	ModelID string
 	// ModelIdentityBinder liga, no Bootstrap, o VERIFIER REAL do nó ao estágio authn do Model
 	// Gateway REAL (AOS-278, CUTOVER DURO). O gateway é construído na fronteira de ambiente
 	// (parseModelFromEnv), ANTES de a identidade estar composta; o seu estágio authn arranca
@@ -556,6 +608,11 @@ type Config struct {
 	// EventStoreNATSReplicas é o factor de replicação do stream (3 ou 5; 1 é só dev).
 	// Zero usa o padrão. Só é consultado com EventStoreNATS != "".
 	EventStoreNATSReplicas int
+	// EventStoreNATSNKeyFile é o CAMINHO da seed nkey de utilizador com que o nó se autentica
+	// no cluster (AOS-470). Vazio ⇒ ligação anónima, que só um cluster sem `authorization`
+	// aceita — e que AOS_MODE=production recusa ([ErrProductionNeedsNATSCredential]). Só é
+	// consultado com EventStoreNATS != "".
+	EventStoreNATSNKeyFile string
 	// WORM é o audit.Store tamper-evident único do RM. Precedência análoga: se != nil,
 	// usa-o; senão, se WORMPath != "", ABRE um WORM DURÁVEL (audit.OpenFileStore —
 	// mesma mecânica; a hash-chain sobrevive ao restart E é RE-ENCADEADA e verificada no
@@ -603,6 +660,19 @@ type Config struct {
 	// AOS-328). É o escape da guarda de produção, no molde de AOS_TLS_EXTERNAL_TERMINATION:
 	// aceita-se o estado, mas só depois de alguém o ter DECLARADO.
 	ShredDestroyUnconditional bool
+	// DSARErasureRegister é o caminho do REGISTO DE APAGAMENTOS próprio do nó
+	// (AOS_DSAR_ERASURE_REGISTER, AOS-436): cada destruição de KEK CONFIRMADA pela custódia
+	// acrescenta-lhe (id HMAC, instante, MAC) sob a chave `<caminho>.chave`. Vive no volume de
+	// dados; o backup.sh copia o registo EM CLARO para fora do bundle (a chave só viaja dentro dele)
+	// — é o que diz a um bundle ANTERIOR ao último o que foi apagado depois dele. Vazio ⇒ sem
+	// registo (a reconciliação usa só a cadeia; declarado).
+	DSARErasureRegister string
+	// DSARErasureRegisterImport é um registo de apagamentos IMPORTADO no restauro
+	// (AOS_DSAR_ERASURE_REGISTER_IMPORT, AOS-436): lido no arranque, unido à cadeia e ao registo
+	// próprio, e fundido neste. Vazio ⇒ nada importado. Definido e ilegível ⇒ a reconciliação
+	// fica por provar e o portão da custódia FECHA o conteúdo — um restauro que pediu uma
+	// importação não se dá por reconciliado sem ela. Linhas sem MAC válido nunca destroem.
+	DSARErasureRegisterImport string
 	// BrokerVault é o cliente Vault REAL (KV v2) da custódia de CREDENCIAIS DOWNSTREAM
 	// do Credential Broker (AOS-070/AOS-264) — SEPARADO do DSARVault (D7: cliente/token
 	// próprios AOS_BROKER_VAULT_*, distintos do KEK Transit que RECUSA devolver
@@ -638,6 +708,9 @@ type Config struct {
 	// RetentionClock injecta o relógio do [audit.ExpirationJob] (a idade de cada registo é
 	// agora−CreatedAt). nil ⇒ time.Now. Uso interno/testes deterministas.
 	RetentionClock func() time.Time
+	// QuotaClock injecta o relógio da quota por principal (AOS-457): o mês UTC da janela. nil ⇒
+	// time.Now. Uso interno/testes deterministas.
+	QuotaClock func() time.Time
 
 	// --- Backup imutável + PITR do Event Store (AOS-101) -----------------------
 	//
@@ -648,14 +721,22 @@ type Config struct {
 	//
 	// BackupDestination é o armazenamento imutável (object-lock/WORM) para onde os segmentos
 	// cifrados são escritos. É uma PORTA injectada, e o nó NÃO inventa uma implementação por
-	// ambiente de propósito: está MEDIDO (packages/platform/backup/reinicio_test.go) que
-	// `platform/backup` não sabe RETOMAR um manifesto — o exportador começa sempre do génesis e
-	// o primeiro ciclo depois de um reinício colide com [backup.ErrImmutable] sobre qualquer
-	// destino que sobreviva ao processo; e [backup.Restorer.RestoreTo] recebe o manifesto e o
-	// checkpoint COMO ARGUMENTOS, sem que nada os persista. Um backend de ficheiro composto por
-	// `AOS_BACKUP_DIR` produziria segmentos write-once não-restauráveis que deixavam de ser
-	// escritos ao segundo arranque — uma promessa de backup pior do que a ausência dela. Quem
-	// injecta este destino assume as duas propriedades.
+	// ambiente.
+	//
+	// A RAZÃO MUDOU, e é justo que fique escrito qual era: até à retoma de manifesto, um destino
+	// DURÁVEL era simplesmente inutilizável — o exportador começava sempre do génesis, o primeiro
+	// ciclo depois de qualquer reinício colidia com [backup.ErrImmutable], e o restauro precisava
+	// de um manifesto que nada persistia. Um `AOS_BACKUP_DIR` teria produzido segmentos
+	// write-once não-restauráveis que deixavam de ser escritos ao segundo arranque — uma promessa
+	// de backup pior do que a ausência dela.
+	//
+	// Isso está fechado (`packages/platform/backup/resume.go`): o exportador retoma a cadeia do
+	// destino, verificada fail-closed, e [backup.Restorer.LoadManifest] reconstrói-a para
+	// restauro. Desde o AOS-453 (F2) há uma IMPLEMENTAÇÃO durável da porta neste repositório —
+	// [backup.FileImmutableStore], um directório local write-once (tmp+fsync+link) — e uma
+	// superfície de ambiente que a compõe (AOS_BACKUP_DEST=file:///…). O default continua a ser
+	// NENHUM destino: onde é que os backups de uma organização vivem não é uma escolha que um
+	// default deva fazer por ela.
 	//
 	// FAIL-CLOSED na composição: com destino presente, um Event Store que não satisfaça
 	// [eventstore.BackupSource], uma chave de assinatura em falta ou uma violação de soberania
@@ -679,6 +760,19 @@ type Config struct {
 	// a janela de RPO ([backup.Exporter.RPOWindow]). nil ⇒ time.Now. Uso interno/testes
 	// deterministas: a janela de RPO mede-se avançando ESTE relógio, nunca com `time.Sleep`.
 	BackupClock func() time.Time
+	// BackupVault é a CUSTÓDIA DA KEK DO BACKUP (AOS-453). Em produção, uma segunda instância do
+	// Vault Transit num mount PRÓPRIO (AOS_BACKUP_VAULT_TRANSIT_MOUNT), sobre o mesmo endereço e o
+	// mesmo token da custódia DSAR, que sela os segmentos por ENVELOPE (a DEK é embrulhada no Vault;
+	// a KEK nunca entra no processo). nil ⇒ a custódia do nó ([Config.DSARVault]/referência) —
+	// RECUSADA quando essa é o Vault do DSAR ([ErrBackupVaultMountMissing]).
+	BackupVault audit.KeyVault
+	// BackupRetention é o object-lock de cada objecto do backup — FINITO por decisão do dono
+	// (rotação por épocas). <= 0 ⇒ o default do módulo (sem período: «para sempre»), que só os
+	// testes usam: a superfície de ambiente EXIGE AOS_BACKUP_RETENTION com destino.
+	BackupRetention time.Duration
+	// BackupEnvIgnored são variáveis AOS_BACKUP_* definidas SEM AOS_BACKUP_DEST — sem efeito; o
+	// banner nomeia-as, para uma config a meio não se ler como backup ligado.
+	BackupEnvIgnored []string
 
 	// --- Observabilidade OTLP (AOS-173, EPIC-15 §13) ---------------------------
 	// OTLPEndpoint é o endpoint do colector OTLP/HTTP (ex.: "http://collector:4318").
@@ -742,6 +836,11 @@ type Node struct {
 	// (AOS-021): uma aprovação concluída produz um GRANT persistido, amarrado à preview
 	// da acção, em vez de evaporar. nil quando o four-eyes não está composto.
 	ApprovalBroker *integration.ApprovalBroker
+	// modelID é o modelo pedido que o nó declara no Goal de cada run (AOS-396); ver
+	// [Config.ModelID] e [Node.fixarModelo]. modeloAutoritativo diz se sobrepõe o do goal
+	// (gateway por ambiente) ou só preenche um goal vazio (modelo de referência).
+	modelID            string
+	modeloAutoritativo bool
 	// PendingApprovals é o registo DURÁVEL das tool calls escaladas que aguardam aval
 	// humano — o que a superfície de administração expõe ao operador (polling). nil
 	// quando o four-eyes não está composto.
@@ -785,6 +884,9 @@ type Node struct {
 	// exigir a prova de autoridade. Vazio (não composto) ⇒ prova DESLIGADA (as rotas mantêm a
 	// autenticação por leitura, retro-compatível); não-vazio ⇒ prova EXIGIDA.
 	DSARErasers map[string]bool
+	// PlanDrainers é o conjunto dos principals que podem drenar a fila de planos (AOS-439),
+	// validado no arranque. Vazio ⇒ ninguém reclama nem reporta.
+	PlanDrainers map[string]bool
 	// fencingAuth é a autoridade de token das escritas fenceadas do ledger/checkpointer
 	// (AOS-299). Não-exportada: só o [NewNodeService] lhe liga o LeaseManager, e mais
 	// ninguém tem razão para lhe tocar. nil fora da execução durável.
@@ -835,6 +937,8 @@ type Node struct {
 	// não dependem de spans, e o banner declara quais ficaram sem produtor). Não-exportado: é um
 	// detalhe da composição do nó, não uma porta.
 	sloTap *sloSpanTap
+	// custoSemFontePreco espelha [Config.CustoSemFontePreco] para o rótulo `produtor` do /metrics.
+	custoSemFontePreco bool
 
 	// Ingestion é o motor de redacção/tokenização de PII (AOS-091) LIGADO de facto ao
 	// fecho transitivo do nó (AOS-208): a fronteira de minimização onde o objectivo de
@@ -891,6 +995,11 @@ type Node struct {
 	DSARVault audit.KeyVault
 	// DSARIndex mapeia titular→partições (torna executável o legal hold POR-PARTIÇÃO no shred).
 	DSARIndex *audit.InMemorySubjectPartitionIndex
+	// apagamentos é a reconciliação dos apagamentos DSAR com a custódia (AOS-436), corrida no
+	// arranque e re-tentada pelo laço de manutenção da custódia enquanto não ficar provada. nil
+	// quando a custódia não é reconciliável (o vault in-memory de referência). Imutável depois
+	// do bootstrap (tem o seu próprio mutex).
+	apagamentos *reconciliadorDeApagamentos
 	// ExpirationJob é o job de expiração por TTL (AOS-092) COMPOSTO no nó (AOS-213): varre os
 	// registos classificados do Event Store ([eventStoreRecordSource]) e expira os que cruzaram o
 	// TTL e não estão sob legal hold por crypto-shred da KEK por-titular ([cryptoShredSink],
@@ -966,6 +1075,9 @@ type Node struct {
 	// ser observavel por um teste. Sem isto, «o no liga a fonte duravel ao orcamento» era uma
 	// afirmacao sem prova — e uma mutacao que removesse a ligacao passava despercebida.
 	orcamento *integration.RunBudget
+	// QuotaPorPrincipal é a quota de despesa mensal por principal (AOS-457). nil ⇒ por configurar.
+	// O [NodeService] reserva contra ela na admissão e liquida no fim do run.
+	QuotaPorPrincipal *quotaPorPrincipal
 	// ancora e a verificacao ancorada do WORM que PASSOU no arranque (nil se desligada ou se o
 	// arranque a recusou — nesse caso o no nem chega aqui, porque e fail-closed).
 	//
@@ -1001,6 +1113,11 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// co-localizada). O IssuerID (trust anchor) é obrigatório em ambos.
 	if cfg.IssuerID == "" {
 		return nil, ErrNoIssuerID
+	}
+	// AOS-427: o emissor mandatado valida-se sobre a Config COMPOSTA, nos dois modos — a Config
+	// também se constrói sem o ambiente, e as colisões que anulam o mandato não dependem dele.
+	if err := validarEmissorMandatado(cfg); err != nil {
+		return nil, err
 	}
 	hardened := len(cfg.IssuerPubKey) > 0
 	if hardened {
@@ -1097,6 +1214,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			return nil, fmt.Errorf("%w: emitterID %q duplicado", ErrBadDSARErasers, id)
 		}
 		dsarErasers[id] = true
+	}
+	// (1a-quater) QUEM DRENA A FILA DE PLANOS (AOS-439). Validado aqui além de no parser do
+	// ambiente, porque a Config também se constrói à mão (testes, composition-root).
+	planDrainers, errDrenadores := conjuntoDeDrenadores(cfg.PlanDrainers)
+	if errDrenadores != nil {
+		return nil, errDrenadores
 	}
 	seenPrincipal := make(map[string]struct{}, len(cfg.Approvers))
 	seenApKey := make(map[string]string, len(cfg.Approvers))
@@ -1210,6 +1333,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			if cfg.EventStoreNATSReplicas > 0 {
 				opts = append(opts, jetstream.ComReplicas(cfg.EventStoreNATSReplicas))
 			}
+			if cfg.EventStoreNATSNKeyFile != "" {
+				cred, err := natsjs.LerNKeyFicheiro(cfg.EventStoreNATSNKeyFile)
+				if err != nil {
+					return nil, fmt.Errorf("aos: credencial do event store replicado (AOS-470): %w", err)
+				}
+				opts = append(opts, jetstream.ComCredencial(cred))
+			}
 			created, err := jetstream.Abrir(cfg.EventStoreNATS, opts...)
 			if err != nil {
 				return nil, fmt.Errorf("aos: event store replicado (AOS-100) em %q: %w", cfg.EventStoreNATS, err)
@@ -1233,8 +1363,10 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	worm := cfg.WORM
 	ownsWORM := false
 	if worm == nil {
+		// AOS-439: v3 por omissão; v4 só com AOS_AUDIT_WRITE_V4 (ver worm_v4.go).
+		versaoWORM := versaoDeEscritaDoWORM(cfg.AuditWriteSchema)
 		if cfg.WORMPath != "" {
-			fs, err := audit.OpenFileStore(cfg.WORMPath)
+			fs, err := audit.OpenFileStore(cfg.WORMPath, audit.ComVersaoDeEscrita(versaoWORM))
 			if err != nil {
 				if ownsES {
 					_ = es.Close()
@@ -1244,7 +1376,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			worm = fs
 			ownsWORM = true
 		} else {
-			worm = audit.NewMemStore()
+			mem, err := audit.NewMemStore().ComVersaoDeEscrita(versaoWORM)
+			if err != nil {
+				if ownsES {
+					_ = es.Close()
+				}
+				return nil, fmt.Errorf("aos: WORM em memoria: %w", err)
+			}
+			worm = mem
 		}
 	}
 
@@ -1392,6 +1531,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, perr
 	}
 
+	// (2b-quater) AS ÂNCORAS DE CONFIANÇA FICAM SELADAS (AOS-446 fase 1, ADR-033 §6.3/§8) — a
+	// transposição de (2b) e (2b-bis) para TODAS as raízes de confiança do nó, e não só a
+	// política. AQUI, e não antes, pela mesma razão: o WORM já existe, e a hash-chain já foi
+	// re-encadeada e ancorada, pelo que o registo entra numa cadeia verificada. Fail-closed como
+	// os dois anteriores: se o nó não consegue registar sob que âncoras vai servir, não serve.
+	trustAnchors, terr := provisionTrustAnchors(ctx, worm, cfg, time.Now())
+	if terr != nil {
+		return nil, terr
+	}
+
+	// (2b-ter) SOBERANIA POR BOARD NO CAMINHO DE EFEITO (AOS-407, fecha DEF-909). A autoridade
+	// board→região nasce AQUI — o WORM já existe e o runtime seguro ainda não — e liga-se ao PDP
+	// como resolvedor VIVO: cada decisão de base permit exige o board do principal (claim assinada
+	// no NHI) e leva a obrigação `region`, que o PEP impõe contra a região da tool. É a MESMA
+	// autoridade que o read-path soberano consulta mais abaixo (ADR-011: uma só fonte para efeito e
+	// leitura), pelo que uma rotação vale para os dois. Sem AOS_BOARD_REGIONS não há autoridade e o
+	// PDP decide como antes; sem PDP carregado não há decisão onde a ligar.
+	var sovAuthority *SovereignRegionAuthority
+	if len(cfg.BoardRegions) > 0 {
+		sa, serr := NewSovereignRegionAuthority(ctx, cfg.BoardRegions, worm, cfg.SovereignClock)
+		if serr != nil {
+			return nil, fmt.Errorf("aos: fonte de autoridade de soberania (AOS-205): %w", serr)
+		}
+		sovAuthority = sa
+		if cfg.PDP != nil {
+			cfg.PDP.SetBoardRegions(sovAuthority)
+		}
+	}
+
 	// (2c-pre) CIFRA POR-TITULAR DO CONTEÚDO DOS RUNS (AOS-093). O vault de chaves de
 	// PII por-titular e o índice titular→partição são criados AQUI — antes da execução
 	// durável — porque são PARTILHADOS por duas frentes que TÊM de usar a mesma chave:
@@ -1431,6 +1599,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		dsarVault = cfg.DSARVault
 	} else {
 		dsarVault = audit.NewInMemoryKeyVault(nil)
+	}
+	// AOS-436 — O PORTÃO DO CONTEÚDO ARMA-SE AQUI, no instante em que a custódia é composta e antes
+	// de qualquer conteúdo por-titular poder ser selado ou aberto: até a reconciliação dos
+	// apagamentos ficar provada (7c-ter, abaixo), nenhuma DEK se embrulha nem desembrulha.
+	if p, ok := dsarVault.(interface{ exigirReconciliacao() }); ok {
+		p.exigirReconciliacao()
 	}
 	dsarIndex := audit.NewInMemorySubjectPartitionIndex()
 	contentCipher := newContentSealer(dsarVault, dsarIndex)
@@ -1611,6 +1785,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, fmt.Errorf("aos: reconstruir o registo de revogacao de NHI: %w", err)
 	}
 	verifierOpts = append(verifierOpts, identity.WithRevocations(revocations))
+	// AOS-427: o emissor automático entra aqui, e não num dos ramos, pela mesma razão da
+	// revogação acima — os dois ramos consomem `verifierOpts`. A revogação de um MANDATO usa o
+	// mesmo registo (`mandate:<id>`), pelo que tem de estar composta antes: está, na linha acima.
+	if cfg.MandatedIssuerID != "" {
+		verifierOpts = append(verifierOpts, identity.WithMandatedIssuer(
+			cfg.MandatedIssuerID, append(ed25519.PublicKey(nil), cfg.MandatedIssuerPubKey...), cfg.MandateSigners),
+			identity.WithMandateDualPinUntil(cfg.MandateDualPinUntil))
+		// AOS-439: a janela de migração dos mandatos v1. Zero ⇒ fechada (o verificador recusa-os).
+		verifierOpts = append(verifierOpts, identity.WithMandateV1Until(cfg.MandateV1Until))
+	}
 	var authority *integration.IssuerAuthority
 	var verifier *identity.Verifier
 	var err error
@@ -1643,15 +1827,32 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		if cfg.HumanDirectory != nil {
 			humanDir = cfg.HumanDirectory
 		}
+		// AOS-407: o board que esta autoridade sela. Com vários boards no mapa fica VAZIO — ver
+		// [boardDeReferencia]: escolher um board é atribuir a sua região a um humano que pode ser
+		// de outro, e esta autoridade cunha para qualquer humano do directório. Vazio ⇒ o PDP nega
+		// fail-closed essas tool calls, e a via com board é cunhar no `aos-issuer`.
+		boardDaAutoridade := boardDeReferencia(cfg.BoardRegions)
 		authority, err = integration.NewIssuerAuthority(integration.AuthorityConfig{
 			IssuerID:      cfg.IssuerID,
 			Classes:       cfg.IssuerClasses,
 			Directory:     humanDir,
 			SigningKey:    signingKey,
 			IssuerOptions: issuerOpts,
+			// AOS-407: a autoridade de REFERÊNCIA sela o board do nó em cada token, para a
+			// soberania por board ligada ao PDP ter um board a resolver. Em produção quem cunha é
+			// o aos-issuer, com o board da claim do IdP.
+			Board: boardDaAutoridade,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("aos: autoridade de identidade (AOS-156): %w", err)
+		}
+		// AOS-427: a colisão de chaves do emissor mandatado também existe no modo de REFERÊNCIA — a
+		// chave da autoridade co-localizada não está na Config, só aqui. Se fosse a do emissor
+		// automático, ele assinaria com o iss desta autoridade e verificaria SEM mandato.
+		if cfg.MandatedIssuerID != "" {
+			if _, refPub := authority.TrustAnchor(); bytes.Equal(refPub, cfg.MandatedIssuerPubKey) {
+				return nil, fmt.Errorf("%w: a chave da autoridade de referencia e a do emissor automatico — cunharia como ela, sem mandato", ErrBadMandatedIssuer)
+			}
 		}
 		// VERIFIER REAL: só o trust anchor (issuerID + pubkey) da autoridade. NUNCA o
 		// identity.NewVerifier() sem anchors nem o IdentityStub do demo.
@@ -1804,6 +2005,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	var pendingApprovals *integration.PendingApprovals
 	var resumeRecords *integration.ResumeRecords
 	if foureyes != nil {
+		// AOS-424 — MIGRAÇÃO DO STREAM DE APROVAÇÕES, ANTES DE COMPOR SEJA O QUE FOR.
+		//
+		// O stream mudou de `gov.approvals` para um nome representável num subject NATS. A
+		// ordem aqui é a correcção: a cópia TEM de estar completa antes de a cerimónia poder
+		// consumir um grant, porque um `used-` por copiar é um grant que se consome DUAS vezes
+		// — e o uso-único é a propriedade que o four-eyes existe para dar.
+		//
+		// FAIL-CLOSED, e é deliberado que aborte o arranque: compor a cerimónia sobre uma
+		// migração parcial seria servir governação com uma garantia que já não vale. Em
+		// produção o `AOS_MODE` exige substrato durável para o four-eyes, pelo que não compor
+		// também impediria o arranque — abortar com a razão certa é melhor do que abortar com
+		// outra.
+		//
+		// A migração é IDEMPOTENTE: corre a cada arranque e, depois da primeira passagem,
+		// não copia nada. Ver integration/approval_stream_migracao.go.
+		copiados, merr := integration.MigrarAprovacoes(ctx, es)
+		if merr != nil {
+			return nil, fmt.Errorf("aos: migracao do stream de aprovacoes (AOS-424): %w", merr)
+		}
+		if copiados > 0 {
+			// NÃO é ruído: uma migração SILENCIOSA de material de governação é pior do que
+			// nenhuma. Quem opera tem de poder ver, no log de arranque, quantos factos de
+			// aprovação mudaram de stream e quando.
+			log("migracao de aprovacoes (AOS-424): %d facto(s) copiado(s) do stream legado "+
+				"`gov.approvals` para o actual. A copia preserva (run_id, step_id), pelo que o "+
+				"uso-unico dos grants atravessa a migracao. Idempotente: os arranques seguintes "+
+				"copiam zero.", copiados)
+		}
+
 		grantStore, gerr := integration.NewEventStoreApprovalStore(es)
 		if gerr != nil {
 			return nil, fmt.Errorf("aos: store de grants de aprovacao (AOS-021): %w", gerr)
@@ -1853,8 +2083,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	// (6) COLABORADORES NÃO-IDENTIDADE — defaults de REFERÊNCIA (o foco é a identidade).
 	model := cfg.Model
+	// AOS-396: o nome do modelo que o nó pede. Com o gateway por ambiente é o AOS_MODEL_NAME e
+	// sobrepõe-se ao goal; com o modelo de referência é um identificador estável, que só
+	// preenche um goal sem modelo (embedders e testes que declaram o seu continuam intactos).
+	modeloDoNo, modeloAutoritativo := strings.TrimSpace(cfg.ModelID), cfg.Model != nil
 	if model == nil {
 		model = referenceModel{}
+		modeloDoNo, modeloAutoritativo = ReferenceModelID, false
 	}
 	// RETOMA (AOS-021) — decorador OUTERMOST, aplicado AQUI e não no construtor de modelo
 	// do arranque por ambiente. Num turno coberto pelo plano de replay (que viaja no ctx),
@@ -2111,6 +2346,14 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		return nil, ErrProgressBudgetUnwired
 	}
 	burndownSource := newTurnLedgerBurndown(es)
+	// (7-ante-ter) QUOTA DE DESPESA POR PRINCIPAL, MENSAL UTC (AOS-457). Reserva o tecto por-run
+	// acima na admissão e liquida pelo MESMO ledger de turnos que o burn-down lê. nil ⇒ por
+	// configurar. Fail-closed: mal configurada, ou incoerente com o tecto por-run, aborta. A exigência
+	// de principal verificado é validada mais abaixo, quando a soberania de leitura está composta.
+	principalQuota, err := principalQuotaFromEnv(runBudget, es, consumoDuravelParaOrcamento(burndownSource), cfg.QuotaClock, log)
+	if err != nil {
+		return nil, err
+	}
 	// (7-ante-quinquies) O TECTO POR-RUN DEIXA DE RECOMEÇAR A CADA HOSPEDAGEM (AOS-256).
 	//
 	// A árvore de orçamento vive em memória e o nó do run nascia, a cada hospedagem, com o tecto
@@ -2226,7 +2469,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// residência do run é selada na criação e authorizeReadComCausa recusa cross-region — ver
 	// sovereignty.go/api.go. NÃO é EPIC-09/10.
 	// Vazio ⇒ read-path legado (sem authz por-chamador nem selo). Reutiliza a MESMA autoridade
-	// board→região que o PDP (AOS-094): a regra NÃO é duplicada.
+	// board→região que o PDP consulta desde o AOS-407 (antes disso o PDP não a tinha — DEF-909):
+	// a regra NÃO é duplicada.
 	// AOS-205: a fonte board→região é agora uma PORTA DE AUTORIDADE ([SovereignRegionAuthority])
 	// com ROTAÇÃO e AUDITORIA de alterações — o mapa de env é apenas a SEMENTE do provisionamento
 	// inicial, não a verdade congelada. A REGRA fail-closed (govsov.RegionFor) NÃO se duplica.
@@ -2234,11 +2478,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	var readAuthority *SovereignRegionAuthority
 	var readRegions *govsov.Registry
 	var readCred readCredentialVerifier
-	if len(cfg.BoardRegions) > 0 {
-		readAuthority, err = NewSovereignRegionAuthority(ctx, cfg.BoardRegions, worm, cfg.SovereignClock)
-		if err != nil {
-			return nil, fmt.Errorf("aos: fonte de autoridade de soberania (AOS-205): %w", err)
-		}
+	if sovAuthority != nil {
+		// AOS-407: a mesma autoridade que o PDP já consulta no caminho de efeito.
+		readAuthority = sovAuthority
 		readRegions = readAuthority.Registry()
 	}
 	// CREDENCIAL FORTE do leitor (AOS-205): quando o verificador OIDC de soberania está
@@ -2251,6 +2493,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 			return nil, fmt.Errorf("aos: verificador OIDC de soberania (AOS-205/AOS-174): %w", verr)
 		}
 		readCred = newOIDCReadCredential(v)
+	}
+	// A QUOTA POR PRINCIPAL SÓ SE COMPÕE SOBRE PRINCIPAL VERIFICADO (AOS-457). AQUI, assim que os
+	// quatro campos do predicado existem: antes do banner (que a anunciaria LIGADA e a seguir o nó
+	// abortava) e antes de o arranque se dar por concluído (a guarda de limpeza fecha os stores e
+	// larga a posse do WAL). O predicado é o PARTILHADO com o banner e o handler, sobre os mesmos
+	// campos que o nó vai levar — não uma cópia.
+	if principalQuota != nil && !principalDoRunEVerificavel(&Node{
+		WORM:                    worm,
+		SovereignReadRegions:    readRegions,
+		SovereignAuthority:      readAuthority,
+		SovereignReadCredential: readCred,
+	}) {
+		return nil, ErrPrincipalQuotaUnverified
 	}
 
 	// (7c) DSAR / CRYPTO-SHREDDING (AOS-172, Art. 17). COMPÕE o fluxo DSAR já existente
@@ -2340,6 +2595,17 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 
 	dsarShredder := audit.NewShredder(dsarVault, dsarHolds, audit.NewRetentionPolicy(nil),
 		audit.WithShredderSubjectIndex(dsarIndex))
+
+	// (7c-ter) AOS-436 — O APAGAMENTO SOBREVIVE AO RESTAURO. Um backup anterior a um apagamento
+	// traz a KEK de volta; o que se restaura é o bundle inteiro, e nenhuma guarda dentro dele o
+	// pode impedir. Aqui, ANTES de o nó servir, a custódia é interrogada sobre cada chave que a
+	// cadeia, o registo próprio e o registo importado dão por destruída, e as que voltaram são
+	// destruídas de novo — sob a barreira e a consulta de legal hold do MESMO shredder (os holds
+	// já foram repostos acima). Fail-closed de verdade: por provar ⇒ o portão da custódia fecha o
+	// conteúdo por-titular e o /readyz fica VERMELHO; a manutenção da custódia repete a passagem
+	// a cada tick. Ver reconciliacao_apagamentos.go.
+	apagamentos := comporReconciliacaoDeApagamentos(ctx, cfg, worm, "governance.dsar", dsarVault,
+		dsarHolds, dsarShredder.Held, log)
 	dsarFlow := dsar.NewFlow(
 		wormEventSealer{store: worm},
 		dsarShredder,
@@ -2355,10 +2621,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		// NÃO-nil, pelo que essa guarda não dispara. Quem salva é a guarda de RECEPTOR nil em
 		// [durable.StepLedger.ForgetSubject], que devolve 0. As duas existem porque protegem
 		// casos diferentes, e confundi-las é a armadilha clássica do nil tipado.
-		[]dsar.ShreddableKeyStore{
-			dsar.AuditStore("audit", dsarShredder),
-			dsar.StepLedgerStore("step-ledger", ledger),
-		},
+		storesDeApagamento(dsarShredder, ledger, principalQuota),
 		dsar.WithPartition("governance.dsar"),
 		dsar.WithShredConfirmer(confirmadorDeShredDe(dsarVault)),
 	)
@@ -2441,6 +2704,31 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	redactionEngine := redaction.NewEngine(nil) // RemoveAllPolicy não exige KeySource
 	redactionPolicy := redaction.RemoveAllPolicy("aos-node-redaction-v1")
 	ingestor := redaction.NewIngestor(redactionEngine, redactionPolicy)
+	// AOS-424 — MIGRAÇÃO DOS STREAMS DE MEMÓRIA, ANTES DE COMPOR A MemoryPort.
+	//
+	// As quatro classes mudaram de `memory.<classe>` para um prefixo representável num
+	// subject NATS. A ordem é a correcção: a cópia TEM de estar completa antes de a primeira
+	// leitura reconstruir o estado, porque **um TOMBSTONE por copiar é uma memória apagada que
+	// ressuscita** — o `rebuild` reconstrói por replay, e o que não tem tombstone está vivo.
+	// (Calibração: hoje NÃO há escritores de tombstones em produção — o `Delete` da MemoryPort
+	// não tem chamadores fora de testes. O invariante é o que torna o apagamento possível quando
+	// alguém o compuser; ver adapters/migracao.go.)
+	//
+	// FAIL-CLOSED: aborta o arranque. Compor a MemoryPort sobre uma migração parcial deixaria
+	// o agente a ler memória que alguém mandou apagar, sem erro nenhum — e o modo de falha
+	// desta camada é SILÊNCIO: o `rebuild` trata um stream em falta como «classe vazia».
+	//
+	// Idempotente: corre a cada arranque e, depois da primeira passagem, copia zero.
+	memCopiados, memErr := memadapters.MigrarStreamsDeMemoria(ctx, es)
+	if memErr != nil {
+		return nil, fmt.Errorf("aos: migracao dos streams de memoria (AOS-424): %w", memErr)
+	}
+	if memCopiados > 0 {
+		log("migracao de memoria (AOS-424): %d facto(s) copiado(s) dos streams legados "+
+			"`memory.<classe>` para os actuais, nas quatro classes. A copia preserva "+
+			"(run_id, step_id) e a ORDEM, pelo que os tombstones continuam a apagar o que "+
+			"apagavam. Idempotente: os arranques seguintes copiam zero.", memCopiados)
+	}
 	memPort := memadapters.NewEventStoreAdapter(es, memadapters.WithEventStoreTracer(tracer))
 	memService := memory.NewService(memPort)
 	ingestion, err := integration.NewIngestionGateway(ingestor, memService, tracer, worm)
@@ -2579,6 +2867,16 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		log("mediacao de politica (AOS-220): PDP NAO-CARREGADO (NewUnloaded) — DEFAULT-DENY EXPLICITO de TODA a tool call mediada; defina AOS_POLICY_BUNDLE_DIR + AOS_POLICY_TRUST_ANCHOR (pubkey ed25519 out-of-band) para carregar um bundle assinado")
 	}
 	// AOS-310: o que o arranque fez com o changelog `policy.changed` (nada, se não há bundle).
+	// AOS-446 fase 1: sob que âncoras de confiança este arranque vai servir, e se mudaram.
+	for _, line := range trustAnchorsBanner(trustAnchors) {
+		log("%s", line)
+	}
+	for _, line := range mandatoFIDO2PostureBanner(cfg.MandatedIssuerID, cfg.MandateSigners) {
+		log("%s", line)
+	}
+	for _, line := range janelaDeRotacaoPostureBanner(cfg.MandatedIssuerID, cfg.MandateSigners, cfg.MandateDualPinUntil, time.Now().UTC(), cfg.AuditWriteSchema, cfg.MandateV1Until) {
+		log("%s", line)
+	}
 	for _, line := range policyChangelogBanner(cfg.PDP, policyChangelog) {
 		log("%s", line)
 	}
@@ -2614,6 +2912,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	for _, line := range budgetPostureBanner(runBudget != nil) {
 		log("%s", line)
 	}
+	for _, line := range principalQuotaPostureBanner(principalQuota) {
+		log("%s", line)
+	}
 	// AOS-363: a postura da barreira control/data-plane sai do PREDICADO REAL do RM composto
 	// (Monitor.HasActiveTaintGate), nunca da intenção de config — a mesma disciplina de AOS-203.
 	// É o único chamador não-teste de HasActiveTaintGate: sem ele, o predicado de eficácia que
@@ -2628,6 +2929,50 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// inalcançável como Event Store, e a sua nova implicação fail-closed.
 	esMediationDurable := cfg.EventStore != nil || cfg.EventStorePath != "" || cfg.EventStoreNATS != ""
 	for _, line := range mediationChannelPostureBanner(es != nil, esMediationDurable) {
+		log("%s", line)
+	}
+	// AOS-417: postura do INGRESSO DO CAMINHO DO PLANO. Os dois primeiros argumentos derivam do
+	// MESMO predicado que a linha acima usa — o store REALMENTE composto e a sua durabilidade —,
+	// porque é literalmente o mesmo substrato: a fila de pedidos é o Event Store (ADR-028 §2.2).
+	// O TERCEIRO DERIVA, desde o AOS-423. Era `false` literal, e o comentario de entao dizia que
+	// o literal seria impossivel de nao ver ao ligar o consumidor. Foi meia verdade: o literal
+	// via-se, mas o GUARD que o vigiava procurava o consumidor pelo NOME DO STREAM dentro do
+	// `aos-orq`, e o consumidor que se escreveu fala HTTP e nunca nomeia o stream. A heuristica
+	// teria ficado cega em silencio, que e pior do que um literal.
+	//
+	// A regra e a de [filaReclamavel]; aqui escreve-se sobre os LOCAIS porque o `*Node` so e
+	// construido bem mais abaixo. As duas copias ficam amarradas por
+	// `TestAOS423PredicadoDoBannerCasaComOReadGov`, que le esta linha da fonte.
+	reclamavelNoArranque := wormForChain != nil && (readAuthority != nil || readRegions != nil)
+	for _, line := range planIngressPostureBanner(es != nil, esMediationDurable, reclamavelNoArranque) {
+		log("%s", line)
+	}
+	// AOS-435: a postura da credencial na porta. `hardened` é o MESMO predicado que decide a
+	// presença obrigatória; `reclamavelNoArranque` é o do gate soberano, que é o que dá o WORM
+	// onde a recusa se encadeia — reutilizá-lo, em vez de escrever um terceiro, é o que mantém as
+	// três linhas a descrever o mesmo nó.
+	for _, line := range credencialNaPortaPostureBanner(hardened, reclamavelNoArranque) {
+		log("%s", line)
+	}
+	// AOS-427: o que o nó aceita do emissor automático, e sob que limite.
+	for _, line := range emissorMandatadoPostureBanner(cfg.MandatedIssuerID, len(cfg.MandateSigners)) {
+		log("%s", line)
+	}
+	// AOS-439: a janela dos mandatos v1, pelo MESMO relógio que o verificador usa.
+	relogioDoVerificador := time.Now
+	if cfg.VerifierClock != nil {
+		relogioDoVerificador = cfg.VerifierClock
+	}
+	for _, line := range janelaV1PostureBanner(cfg.MandatedIssuerID, cfg.MandateV1Until, relogioDoVerificador()) {
+		log("%s", line)
+	}
+	// AOS-439: que versão do WORM se escreve — e se o rollback continua possível.
+	for _, line := range wormV4PostureBanner(cfg.AuditWriteSchema, cfg.WORM == nil) {
+		log("%s", line)
+	}
+	// AOS-439: quem drena a fila de planos. O argumento é o conjunto VALIDADO, o mesmo que as rotas
+	// consultam — não a Config.
+	for _, line := range planDrainersPostureBanner(planDrainers) {
 		log("%s", line)
 	}
 	// AOS-261/AOS-262: mesma disciplina — o argumento é o observador REALMENTE composto
@@ -2721,6 +3066,23 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	} else {
 		log("soberania de leitura (AOS-172, D7): read-path LEGADO (sem authz por-chamador nem selo) — defina Config.BoardRegions para ligar a regra fail-closed")
 	}
+	// SOBERANIA DE EFEITO (AOS-407). Declarada à parte da de leitura porque são duas metades
+	// distintas da MESMA autoridade, e até ao AOS-407 só a de leitura existia: o PDP não tinha
+	// registo board→região (DEF-909) e nenhuma tool call era restringida por região.
+	switch {
+	case sovAuthority != nil && cfg.PDP != nil && cfg.PDP.SovereigntyEnabled():
+		log("soberania de EFEITO (AOS-094/AOS-407, ADR-011 §5): LIGADA — o PDP resolve o board SELADO no token NHI (claim board, afirmada pelo IdP no mint) para a regiao autorizada e emite a obrigacao `region`; o PEP RECUSA qualquer tool call cujo recurso esteja noutra regiao (cross-border), e um board vazio ou desconhecido e NEGADO fail-closed. Mesma autoridade rotacionavel da soberania de leitura (%d board(s), revisao %d): uma rotacao vale para as duas. A regiao declarada de cada tool foi verificada no arranque contra este mapa — com UM board isso torna a recusa cross-border inalcancavel por construcao (regiao-da-tool = regiao-do-board) e a metade que actua e o deny de board vazio/desconhecido; a recusa cross-border pesa com >1 board de regioes diferentes", sovAuthority.Len(), sovAuthority.Revision())
+		if len(cfg.BoardRegions) > 1 && authority != nil {
+			// AOS-407: com vários boards a autoridade de identidade CO-LOCALIZADA sela board VAZIO
+			// (não escolhe por ti — ver boardDeReferencia). Declarar isto é a diferença entre "as
+			// tool calls são negadas e não sei porquê" e uma postura conhecida no arranque.
+			log("  ^ CUNHAGEM DE REFERENCIA SEM BOARD: o mapa tem %d boards e a autoridade co-localizada nao sabe a que board pertence cada humano (isso vem do IdP), pelo que sela board VAZIO — as tool calls dos tokens que ela cunha sao NEGADAS fail-closed. Para tool calls num no multi-board, cunhe no aos-issuer (mint --assertion, board da claim do IdP)", len(cfg.BoardRegions))
+		}
+	case cfg.PDP == nil && len(cfg.BoardRegions) > 0:
+		log("soberania de EFEITO (AOS-094/AOS-407): INERTE — ha mapa board->regiao mas NAO ha bundle de politica carregado, e a obrigacao `region` nasce numa decisao do PDP. NAO e permissivo: sem bundle o composition-root compoe pdp.NewUnloaded e TODA a tool call mediada e negada (default-deny explicito, ver a linha da mediacao de politica). O que fica inerte e a DISTINCAO por regiao, nao a mediacao")
+	case len(cfg.BoardRegions) == 0:
+		log("soberania de EFEITO (AOS-094/AOS-407): INERTE — sem Config.BoardRegions nao ha mapa board->regiao; as tool calls nao sao restringidas por regiao (o board selado no token nao e consultado)")
+	}
 	log("DSAR/crypto-shredding (AOS-172, Art. 17): fluxo composto (POST /dsar/erase) — legal hold re-consultado antes do shred; received/key_destroyed/blocked selados no WORM sem PII")
 	// CUSTÓDIA DA KEK (AOS-215/DEF-302). O banner DECLARA a postura REALMENTE composta: custódia
 	// externa injectada vs referência in-memory demo-grade — sem esconder que a referência perde
@@ -2811,17 +3173,27 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// `go list -deps` do módulo do nó). O módulo sabia exportar, cifrar, encadear e restaurar; o
 	// que não existia era alguém a chamá-lo. Sem destino ([Config.BackupDestination] nil) nada
 	// muda — o exportador não é composto e o laço do loop de serviço não arranca. COM destino, a
-	// composição é fail-closed em cada perna (fonte, chave, soberania) e o arranque ABORTA em vez
+	// composição é fail-closed em cada perna (fonte, chave, soberania, e a retoma da cadeia que já
+	// esteja no destino — backup.ErrResumeUnverifiable) e o arranque ABORTA em vez
 	// de deixar o operador com um backup que não existe. Ver backup_scheduler.go.
 	backupExporter, err := comporExportadorDeBackup(cfg, es, dsarVault)
 	if err != nil {
 		return nil, err
 	}
 	if backupExporter != nil {
-		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q tipo=%T, periodicidade=%s, KEK do backup na custodia do no (audit.KeyVault); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
-			backupExporter.Immutable().Region(), backupExporter.Immutable(), backupExporter.Periodicity())
+		// A retoma acontece na CONSTRUÇÃO, e é por isso que o banner da composição a declara: um
+		// exportador que continuou a cadeia do destino e um que a começou são estados diferentes.
+		cadeiaBackup := "cadeia NOVA (destino virgem)"
+		if c := backupExporter.ResumedFrom(); c > 0 {
+			cadeiaBackup = fmt.Sprintf("cadeia RETOMADA do ciclo %d do destino (conferido fail-closed SO o ultimo elo: assinatura, indice, regiao, EntryHash e o segmento a abrir com a KEK deste no; a cadeia inteira so no restauro)", c)
+		}
+		log("backup imutavel + PITR (AOS-101): exportador COMPOSTO — destino regiao=%q %s, periodicidade=%s, %s, KEK do backup selada por: %s (AOS-453); cada ciclo exporta so o INCREMENTO (envelope intacto), cifra-o AES-256-GCM em repouso, encadeia-o no manifesto hash-chain e sela o head num checkpoint ed25519. Soberania fail-closed (ADR-011) validada na construcao E a cada ciclo. QUEM O CORRE e o agendador do loop de servico (AOS_BACKUP_EXPORT_INTERVAL): um `aos` que so faz bootstrap sem AOS_API_ADDR nao tem loop de servico, logo NAO exporta — o banner do servico declara a postura real",
+			backupExporter.Immutable().Region(), descreverDestinoDoBackup(backupExporter.Immutable()), backupExporter.Periodicity(), cadeiaBackup, descreverCustodiaDoBackup(backupExporter.Vault()))
 	} else {
-		log("backup imutavel + PITR (AOS-101): DESLIGADO (por omissao) — sem Config.BackupDestination o Event Store NAO e exportado para backup imutavel por este no; o que corre no servidor e o deploy/server/backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa e nao produz segmentos cifrados nem manifesto verificavel")
+		log("backup imutavel + PITR (AOS-101): DESLIGADO (por omissao) — sem AOS_BACKUP_DEST (Config.BackupDestination) o Event Store NAO e exportado para backup imutavel por este no; o que corre no servidor e o deploy/server/backup.sh (copia de VOLUME, cron diario, RPO de 24h), que e outra coisa e nao produz segmentos cifrados nem manifesto verificavel")
+		if len(cfg.BackupEnvIgnored) > 0 {
+			log("backup imutavel (AOS-453): IGNORADAS por falta de AOS_BACKUP_DEST — %s: sem destino nada disto tem efeito, e o backup continua DESLIGADO", strings.Join(cfg.BackupEnvIgnored, ", "))
+		}
 	}
 
 	success = true    // o bootstrap concluiu: a guarda de limpeza não fecha os stores.
@@ -2829,30 +3201,35 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	return &Node{
 		BackupExporter: backupExporter, // AOS-101: nil ⇒ o nó não exporta backups (por omissão)
 		Runtime:        sec,
+		// AOS-396: o modelo pedido que o nó declara em cada turno.
+		modelID:            modeloDoNo,
+		modeloAutoritativo: modeloAutoritativo,
 		// A ancora que PASSOU no arranque, para o /metrics a poder declarar. Fail-closed acima:
 		// se nao tivesse passado, nao se chegava aqui.
-		ancora:           cfg.WORMAnchor,
-		Steer:            steer,
-		FourEyes:         foureyes,
-		ApprovalBroker:   approvalBroker,
-		PendingApprovals: pendingApprovals,
-		ResumeRecords:    resumeRecords,
-		ChallengeIssuer:  challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
-		ChallengeAuth:    challengeAuth,   // AOS-308: nil sempre que ChallengeIssuer o for (mesmo bloco)
-		Promotion:        promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
-		Authority:        authority,       // nil no modo endurecido (a autoridade corre fora do processo)
-		Verifier:         verifier,
-		SteerAuth:        steerAuth,
-		AutonomySetters:  autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
-		DSARErasers:      dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
-		Revocations:      revocations,
-		Autonomy:         cfg.Autonomy,
-		EventStore:       es,
-		WORM:             worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
-		IdentityMode:     identityMode,
-		Tracer:           tracer,
-		sloTap:           sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
-		Ingestion:        ingestion,
+		ancora:             cfg.WORMAnchor,
+		Steer:              steer,
+		FourEyes:           foureyes,
+		ApprovalBroker:     approvalBroker,
+		PendingApprovals:   pendingApprovals,
+		ResumeRecords:      resumeRecords,
+		ChallengeIssuer:    challengeIssuer, // nil quando a frescura por-cerimónia (AOS-266) está DORMENTE
+		ChallengeAuth:      challengeAuth,   // AOS-308: nil sempre que ChallengeIssuer o for (mesmo bloco)
+		Promotion:          promotion,       // SEMPRE composto (AOS-206) — via sancionada, anti-replay forçado
+		Authority:          authority,       // nil no modo endurecido (a autoridade corre fora do processo)
+		Verifier:           verifier,
+		SteerAuth:          steerAuth,
+		AutonomySetters:    autonomySetters, // AOS-305: quem detém autonomy:set (⊆ Operators, validado acima)
+		DSARErasers:        dsarErasers,     // AOS-367: quem detém dsar:erase (⊆ Operators, validado acima)
+		PlanDrainers:       planDrainers,    // AOS-439: quem drena a fila de planos (lista fechada)
+		Revocations:        revocations,
+		Autonomy:           cfg.Autonomy,
+		EventStore:         es,
+		WORM:               worm, // o store REAL (não decorado): o ciclo de vida/leitura é sobre este
+		IdentityMode:       identityMode,
+		Tracer:             tracer,
+		sloTap:             sloTap, // AOS-274: nil quando a observabilidade OTLP está desligada
+		custoSemFontePreco: cfg.CustoSemFontePreco,
+		Ingestion:          ingestion,
 
 		Checkpointer:  checkpointer, // nil quando a execução durável está desligada
 		Capturer:      capturer,     // (os três são compostos/omitidos EM CONJUNTO)
@@ -2868,6 +3245,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		holdsRestored:           holdsRestored, // prova de re-hidratação (antecedente do varredor automático)
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
+		apagamentos:             apagamentos, // AOS-436: re-tentado pelo laço de manutenção da custódia
 		ExpirationJob:           expirationJob,
 		Retention:               cfg.Retention,     // AOS-267: o loop de serviço decide o scheduler por ela
 		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio
@@ -2883,6 +3261,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		ownsWORM:       ownsWORM,
 		otlp:           otlpExp,
 		orcamento:      runBudget,
+		// AOS-457: nil quando por configurar.
+		QuotaPorPrincipal: principalQuota,
 	}, nil
 }
 
@@ -2980,6 +3360,12 @@ func describeSubstrateEx(provided bool, path, nats string) string {
 // AOS-163 é a composição de segurança/identidade, não o modelo.
 type referenceModel struct{}
 
+// ReferenceModelID é o identificador ESTÁVEL do modelo de referência (AOS-396): o
+// `model_id` e o `served_model_id` do manifesto de um turno servido por ele. Declarado para
+// que o manifesto nunca fique vazio num nó sem gateway, e distinguível à primeira vista de
+// um modelo real.
+const ReferenceModelID = "aos-reference-model"
+
 // Os números FABRICADOS do modelo de referência. São constantes NOMEADAS e não literais porque
 // deixaram de ser só decoração de observabilidade: desde AOS-260 o custo de um turno é debitado na
 // árvore de orçamento, pelo que [requireCostSourceForBudgetCap] tem de os poder citar ao operador
@@ -3006,6 +3392,7 @@ func (referenceModel) Call(context.Context, agentruntime.PromptView) (agentrunti
 		Final:        true,
 		Usage:        agentruntime.Usage{InputTokens: referenceModelInputTokens, OutputTokens: referenceModelOutputTokens},
 		CostMicroUSD: referenceModelCostMicroUSD,
+		Model:        ReferenceModelID,
 	}, nil
 }
 

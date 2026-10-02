@@ -112,9 +112,15 @@ func WithCheckpointObserver(o CheckpointObserver) CheckpointerOption {
 	return func(c *EventStoreCheckpointer) { c.obs = o }
 }
 
+// DefaultCheckpointProducerNHI é a identidade de COMPONENTE gravada no envelope de
+// `step.checkpoint` quando o compositor não dá outra. O checkpointer do nó é composto UMA
+// vez e partilhado por todos os runs, pelo que não tem o principal de nenhum: o cursor de
+// progresso é ciclo de vida do nó, e o responsável do run lê-se no `turn.recorded` do MESMO
+// passo (AOS-478, `tecnica/13_Modelo_Dados_Eventos.md` §3.1).
+const DefaultCheckpointProducerNHI = "nhi:kernel/agent-runtime/checkpointer"
+
 // WithCheckpointProducer define a identidade emissora (NHI + cadeia de delegação)
-// gravada nos eventos de checkpoint. Default: Producer zero (aceitável em teste;
-// em produção o run injecta o principal do agente).
+// gravada nos eventos de checkpoint. Default: [DefaultCheckpointProducerNHI].
 func WithCheckpointProducer(p eventstore.Producer) CheckpointerOption {
 	return func(c *EventStoreCheckpointer) { c.producer = p }
 }
@@ -131,6 +137,9 @@ func NewCheckpointer(store EventStore, opts ...CheckpointerOption) (*EventStoreC
 	}
 	if c.obs == nil {
 		c.obs = NopCheckpointObserver{}
+	}
+	if c.producer.NHIID == "" {
+		c.producer.NHIID = DefaultCheckpointProducerNHI
 	}
 	return c, nil
 }

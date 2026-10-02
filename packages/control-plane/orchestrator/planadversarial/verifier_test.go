@@ -57,6 +57,7 @@ func verifierSnapshot() planvalidate.Snapshot {
 	s.Tools = append(s.Tools, planvalidate.Capability{
 		Name: "inspect", Version: "1.0.0", Digest: "sha256:inspect", Admissible: true,
 		Sensitivity: risk.SensitivitySensitive, Egress: risk.EgressNone, Reversibility: risk.Reversible,
+		Mutation: planvalidate.MutationNone,
 	})
 	return s
 }

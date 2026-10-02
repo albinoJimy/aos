@@ -50,6 +50,11 @@ O epic vive maioritariamente na **Fase 2** (governação e observabilidade — i
 | AOS-061 | Cache-hit-rate como SLI | feature | S | P1 | AOS-060, EPIC-08 (observabilidade) |
 | AOS-062 | Contabilidade de custo por chamada (USD) | feature | M | P1 | AOS-055, EPIC-08 (observabilidade) |
 | AOS-063 | Testes de roteamento/failover | chore | M | P1 | AOS-058, AOS-059 |
+| AOS-394 | Selos de governação do Model Gateway ligados ao run e ao passo | fix | M | P1 | AOS-265, AOS-278 |
+| AOS-395 | aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run | fix | M | P2 | AOS-394, AOS-391 |
+| AOS-397 | Agregados por run do metering do GW sem remoção nem tecto | fix | M | P2 | AOS-394, AOS-062 |
+| AOS-399 | O nó pede a posse exclusiva do caminho do audit de governação do gateway | fix | S | P2 | AOS-265, AOS-285 |
+| AOS-406 | Sem fonte de preço o custo fica marcado como não derivado e o SLI de custo deixa de dar verde com zeros | fix | S | P1 | AOS-259, AOS-336 |
 
 ---
 
@@ -676,6 +681,365 @@ Cobre os cenários de risco de tecnica/06 §9. Integra a suite como gate de CI. 
 
 ---
 
+## AOS-394 — Selos de governação do Model Gateway ligados ao run e ao passo
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-265 (audit de governação do GW durável), AOS-278 (principal por ctx) — ambos fechados |
+| Bloqueia | AOS-395 |
+| Fecha | O critério residual de AOS-264 «o pipeline do GW passa `WithRun`» (a parte do principal foi fechada por AOS-278) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/platform/model-gateway/runtime_adapter.go`, `packages/platform/model-gateway/policy/allowlist/stage.go` e `audit.go`, `packages/platform/model-gateway/routing/failover/failover.go`, `packages/platform/model-gateway/production_routing.go`, `packages/platform/model-gateway/port/port.go`, `packages/cmd/aos/modelgatewaywiring.go`, `tecnica/06_Model_Gateway_Custos.md` |
+
+### Contexto
+
+Medido em produção a 2026-09-15 no run `run-delegado-1789509858` (roteiro E2E manual, PR #299): o gateway selou as 6 chamadas ao modelo em `modelgw-gov:board-eu` (`AuditSeq` 96–101, `model:invoke`, `allow`, principal `agt-e2e-19` com a cadeia até ao humano), mas **todos os selos têm `RunID`, `StepID`, `RequestID` e `ParentStepID` vazios**. O run de 14 de Setembro (`run-delegado-1789394468`, 4 selos) tem a mesma lacuna. A ligação chamada ao modelo ↔ run só se reconstrói pelo NHI do agente e pela hora; com dois runs do mesmo agente em paralelo a atribuição fica ambígua, contra a trajectória correlacionável que o ADR-010 pede.
+
+A discovery encontrou três causas que se somam:
+
+1. **O nó não entrega o run ao gateway.** O `ModelClientAdapter` só preenche `ChatRequest.RunID` a partir de um valor fixado na construção (`WithRun`, `runtime_adapter.go:79-81`, usado em `:112`). O nó não o liga de propósito (`cmd/aos/modelgatewaywiring.go:296-299`): o adaptador é construído uma vez por nó e um run de construção agregaria todos os runs no mesmo balde. O comentário remete a amarra por run para o AOS-265, que fechou sem a entregar ao GW.
+2. **Mesmo com run, o selo não o copia.** `allowlist.GovRecord` tem `RunID`/`StepID` e o `Seal` copia-os, mas os três sítios que constroem o registo não os preenchem: `allowlist.(*Stage).record` (`stage.go:151-165`), `failover.(*Stage).sealCrossBorderDeny` (`failover.go:229-243`) e `modelSwapRecorder.Process` (`production_routing.go:506-519`).
+3. **O passo não tem onde viajar.** Nem `port.ChatRequest` nem `pipeline.Exchange` têm `StepID`; o `PromptView` que atravessa a porta `ModelClient.Call(ctx, PromptView)` só leva o turno e os hashes.
+
+O `run_id` e o `step_id` existem no ponto da chamada: `Runtime.callModel` recebe-os e põe-nos no span `chat` antes de chamar o modelo.
+
+### Objectivo
+
+Cada selo de governação do gateway escrito durante um run identifica o run e o passo que o originaram, em todos os veredictos (allow, deny de allowlist, deny cross-border, troca de modelo), sem fixar o run na construção do adaptador.
+
+### Critérios de Aceitação
+
+- [x] O `RunID` e o `StepID` do turno chegam ao gateway **por chamada** — pelo ctx, à imagem de `WithPrincipalFromContext`, ou pela porta — e nunca fixados na construção do adaptador. A escolha fica registada neste ticket. *(DECISÃO: pelo **ctx**. `agentruntime.ContextWithModelCall`/`ModelCallFromContext` (`packages/kernel/agent-runtime/model_call_context.go`) são escritas por `Runtime.callModel` sobre o `chatCtx`, com o mesmo `stepID` dos checkpoints e do `turn.recorded`; o `ModelClientAdapter.Call` lê-as e o run do ctx tem **precedência** sobre `WithRun`, que fica como fallback de um adaptador construído por run. A chave vive no pacote raiz do agent-runtime, o único sítio que a baseline do `layer-lint` autoriza o gateway a importar (ADR-019 §2.3, que nomeia `RunID`/`StepID`). Alternativas rejeitadas: pôr o par na `PromptView` (muda um tipo da porta do kernel que a captura e o replay tratam) e derivar o passo no nó a partir de `view.Turn` (duplicaria o formato e divergiria de um `StepIdentity` injectado).)*
+- [x] `port.ChatRequest`, `port.EmbeddingsRequest` e `pipeline.Exchange` transportam `StepID` como metadado de plataforma (`json:"-"`, nunca no wire do provider). *(`port/port.go`, `pipeline/pipeline.go`; `newExchange` passa-o nos três caminhos (chat, stream, embeddings). `port.Version` sobe a `1.1.0` — campo aditivo, MINOR pelo critério do próprio pacote. `TestChatRequest_MarshalWire_NaoVazaMetadados` passa a proibir no wire o run, o passo, `run_id` e `step_id`.)*
+- [x] Os três construtores de `allowlist.GovRecord` copiam `RunID` e `StepID` do `Exchange`. *(`policy/allowlist/stage.go` (allow e deny), `routing/failover/failover.go` (deny cross-border), `production_routing.go` (troca de modelo). O `Seal` já os copiava para o registo de audit. A atribuição (`Gateway.attribute`) passa também a levar o `StepID`, que o `attribution.Record` já tinha.)*
+- [x] Teste que falha antes da correcção, pela cadeia real do nó (molde de `TestGatewayModelClient_EndToEnd`): uma chamada de turno sela em `modelgw-gov:<board>` com `RunID` igual ao run e `StepID` igual ao passo do turno; o deny de allowlist e o deny cross-border também. *(`packages/cmd/aos/aos394_model_gateway_run_test.go`: Agent Runtime real + `newGatewayModelClient` + upstream httptest; dois runs do mesmo agente saem distinguíveis e o passo selado é o mesmo do `turn.recorded`; um modelo fora da allowlist sela o deny com run e passo. **FALHA-ANTES MEDIDA**: comentar a escrita do ctx em `callModel` faz falhar `TestAOS394_CallModel_AnexaRunEPassoDeCadaTurno` («viu (\"\", \"\")») e os dois testes do nó («selo 1 tem RunID \"\"»). O deny cross-border e a troca de modelo não são alcançáveis pelo nó de referência (uma só conta na região pedida; sem escada de tiers, DEF-280-NO), pelo que são provados na composição `NewProduction`: `packages/platform/model-gateway/aos394_production_selos_test.go`.)*
+- [x] Chamada sem run no ctx: o comportamento é decidido e testado. O selo de governação continua a ser escrito (a governação não depende da correlação) e a ausência fica visível, nunca preenchida com um valor inventado. *(`TestAOS394_NoGateway_ChamadaSemRunSelaNaMesmaComAusenciaVisivel` e o caso «sem correlacao» de `TestAOS394_Adaptador_CorrelacaoPorChamada`.)*
+- [~] Os consumidores que já leem `ex.RunID` (cache-hit-rate por run, atribuição e custo por run) passam a receber o run real no nó, sem regressão nos seus testes. *(Sem regressão: `go test -race ./...` verde no módulo do GW, no kernel e em `cmd/aos`; `apex` e `routing` verdes. **Consequência declarada, não fechada aqui**: com o run real, o `cost.Recorder` passa a manter um cumulativo por run em `runAggs`, um mapa sem remoção nem tecto — num nó de vida longa cresce com o número de runs. Fica no **AOS-397** (o eixo é o agregador de custo, não a correlação); o `cache_sli` tem o mesmo padrão e não está composto no nó.)*
+- [x] O comentário de `cmd/aos/modelgatewaywiring.go` que remete a amarra por run para o AOS-265 é corrigido, e o critério residual de AOS-264 é marcado com a evidência deste ticket. *(Comentário reescrito; nota acrescentada ao critério de `specs/EPIC-20` — a caixa lá **não** é marcada porque a outra metade do critério, a capability da troca no bundle assinado, é do broker.)*
+- [x] Evidência de sistema: um run real (nó composto com gateway, ou produção) deixa no `model-audit.wal` um selo por turno com `RunID` e `StepID` preenchidos. É o ponto «Selo do gateway ligado ao run» do roteiro E2E. *(**VERIFICADO EM PRODUÇÃO, 2026-09-15**. A **v0.1.14** (`ghcr.io/albinojimy/aos-node@sha256:52d1e913812c691da815d5922045e00e7c3d5e4cb8c0f86efb6bf94b66d4c9b6`) entrou às 23:40Z pelo release da tag, com os 28 gates verdes e a atestação assinada e verificada. O run `run-delegado-1789519407` — 2 turnos, uma `doc_read` executada no gVisor, `ready→running` (seq 1) e `running→complete` (seq 21) — deixou em `modelgw-gov:board-eu` os selos `#102` (`RunID=run-delegado-1789519407`, `StepID=step-000001`) e `#103` (`StepID=step-000002`): **um por turno, e cada `StepID` igual ao do `turn.recorded` correspondente** (seq 5 e seq 17). O antes e o depois estão no MESMO ficheiro: os selos `#99–101`, do run de 21:04 sobre a imagem anterior, continuam com `RunID` e `StepID` vazios.)*
+- [x] `tecnica/06_Model_Gateway_Custos.md` descreve os campos do selo de governação e a correlação por run e passo. *(§5, «Selo de governação por chamada».)*
+
+### Estado
+
+**IMPLEMENTADO e VALIDADO EM PRODUÇÃO (2026-09-15).** A correlação viaja no ctx por chamada e entra nos quatro veredictos selados; `port.Version` 1.1.0. Verificado antes da entrega: suites `-race` verdes no kernel, no módulo do GW, em `cmd/aos` e no `testkit`; `build`, `lint`, `layer-lint`, `apex`, `routing` e `integration` verdes; smoke do nó composto 10/10; falha-antes medida por mutação; revisão adversarial independente com 3 achados ALTO e 4 MÉDIO, todos tratados. Verificado em produção com a **v0.1.14**: os selos do run de validação levam run e passo, contra os selos vazios do run anterior no mesmo trilho (ver o último critério).
+
+Fica declarada a consequência do agregado de custo por run (**AOS-397**). **Observação colateral da validação, alheia a este ticket:** a tool call real fez disparar em produção o alerta crítico `mediation_overhead_p95` (1,21 s contra um SLO de 15 ms) porque o SLI usa a latência do span `execute_tool`, que inclui a execução no sandbox (`packages/substrate/otel-genai/slo.go`, fora deste changeset) — o overhead da decisão do RM foi de milissegundos. O alerta calou-se quando a janela rolou; o defeito de medição está por abrir como ticket.
+
+---
+
+## AOS-395 — aos-orq: selos de governação do gateway do planeador duráveis e ligados ao run
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-394 (transporte de run e passo até ao selo), AOS-391 (gateway composto no aos-orq) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/model_gateway_wiring.go`, `packages/control-plane/orchestrator/decompose/decompose.go`, `packages/control-plane/orchestrator/planner/planner.go`, `packages/cmd/aos-orq/aos391_gateway_test.go` |
+
+### Contexto
+
+O mesmo defeito do AOS-394 repete-se no caminho `--goal` do `aos-orq`, com um agravante. `gatewayDecomposeModel.Complete` (`model_gateway_wiring.go`) envia o `port.ChatRequest` sem `RunID`, e a porta `decompose.Model.Complete(ctx, system, user)` (`decompose.go:40`) nem sequer recebe o run, embora `planner.runAttempt` o tenha. O agravante: o gateway do planeador é composto com `Audit: audit.NewMemStore()` (`model_gateway_wiring.go:185`), pelo que os selos `modelgw-gov:*` das chamadas de decomposição **perdem-se no fim do processo** — não há rasto durável de que modelo o planeador invocou, sob que principal e com que veredicto.
+
+### Objectivo
+
+As chamadas de decomposição do planeador deixam selos de governação duráveis, ligados ao run e à tentativa de planeamento que as originou.
+
+### Critérios de Aceitação
+
+- [x] Os selos `modelgw-gov:*` do planeador são escritos num WORM durável (configuração à imagem de `AOS_MODEL_AUDIT_PATH` no nó) e o modo fica declarado no arranque; sem store durável, a postura volátil é declarada, nunca silenciosa. *(`packages/cmd/aos-orq/model_audit_env.go`: a mesma variável `AOS_MODEL_AUDIT_PATH` abre um `audit.FileStore`, e o `construirModeloGateway` recebe-o no lugar do `MemStore`. A variável resolve-se no `serve` **antes** de reclamar o run e só quando a decomposição vai pelo gateway (`--goal` sem fixture, gateway configurado). Um caminho que não abre, ou cujo directório não existe, aborta com `ErrBadModelAudit` sem tomar posse. A linha de postura (`modelAuditPostureBanner`) sai quando a decomposição vai pelo gateway: `DURAVEL` com o caminho, ou `IN-MEMORY (VOLATIL)` a dizer que os selos se perdem. **Acrescento à discovery**: o WORM do audit não arbitra entre processos, e duas réplicas `aos-orq` no mesmo caminho bifurcariam a hash-chain. A abertura pede primeiro a posse exclusiva ao SO (`eventstore.LockWAL`, o árbitro do AOS-285), e um segundo escritor sai com o código 5 antes de reclamar o run. O nó `aos` pede a mesma posse desde o AOS-399, pelo que um nó e um `aos-orq` no mesmo caminho recusam-se um ao outro; os caminhos continuam a ter de ser distintos, o que fica no runbook `PROC-DESPACHO-MULTIPROC` e em `tecnica/06` §5.)*
+- [x] A chamada de decomposição leva o `RunID` do run e um `StepID` estável da tentativa de planeamento, pelo mesmo mecanismo escolhido no AOS-394. *(Pelo ctx: `planner.runAttempt` anexa `agentruntime.ContextWithModelCall(ctx, req.RunID, "planstep:decompose:<tentativa>")` e `gatewayDecomposeModel.Complete` lê o par e passa-o ao `port.ChatRequest`. A porta `decompose.Model` não muda. Sem anexo, os dois campos ficam vazios. Testes: `TestAOS395_RunAttempt_AnexaRunEPassoPorTentativa` (duas tentativas, dois passos distintos), `TestAOS395_Complete_LevaRunEPassoDoCtx` e `TestAOS395_Complete_SemCtxMostraAAusencia`.)*
+- [x] Teste por processo real (molde de `aos391_gateway_test.go`, com gateway falso): `serve --goal` sela com `RunID` igual a `--run` e o `StepID` da tentativa, e o selo é relido do ficheiro depois de o processo terminar. *(`TestAOS395_ProcessoReal_SeloDuravelComRunEPasso`: o binário compõe o gateway REAL (`NewProduction`) contra um upstream OpenAI em httptest. Depois de o processo sair, o selo `model:invoke` é relido de `modelgw-gov:board-eu` por `OpenFileStoreReadOnly`, com `RunID=run-aos395` e `StepID=planstep:decompose:1`. **FALHA-ANTES MEDIDA por mutação**: sem a anexação em `runAttempt`, o teste do planeador vê `SEM-ANEXO` e o de processo real lê `RunID=""`, com o ficheiro durável presente. As duas metades do ticket falham de forma independente.)*
+- [x] Fail-closed preservado: falha a selar ⇒ a decomposição não prossegue; nenhum nó é materializado. *(`TestAOS395_SeloFalha_NaoChamaOModeloNemDecompoe`: com o gateway composto por `construirModeloGateway` e um store que recusa o selo `model:invoke`, o `Complete` devolve erro e o upstream recebe **zero** pedidos (audit-before-effect do estágio de allowlist). O controlo positivo, com o mesmo store sem avaria, recebe um pedido. O erro do decompositor faz `decomporEMaterializar` sair antes da validação e da materialização. Na config: `TestAOS395_ProcessoReal_AuditMalConfiguradoAbortaSemPosse` (caminho que não abre ⇒ exit ≠ 0, sem nós) e `TestAOS395_ProcessoReal_CaminhoDetidoPorOutroEscritorSai5` (caminho detido ⇒ exit 5, sem `posse:`). **FALHA-ANTES MEDIDA** do último: sem o `LockWAL`, o segundo processo reclama o run e abre o WORM do outro. `TestAOS395_ProcessoReal_ServeSemGatewayIgnoraOAudit` guarda o inverso: um `serve` sem `--goal`, com o caminho detido, sai 0. Medido: com a abertura incondicional sai 5, e réplicas `--nats` que partilham o ambiente seriam recusadas sem chamarem o modelo.)*
+
+### Estado
+
+**IMPLEMENTADO (2026-09-16).** Os selos de governação das decomposições do `aos-orq` ficam num WORM em ficheiro, com um só escritor por caminho arbitrado pelo SO, e levam o run e a tentativa pelo mecanismo do AOS-394. Verificado: suites `-race` verdes no módulo do orchestrator e em `cmd/aos-orq`; `build`, `layer-lint` e `gofmt` verdes; `lint`, RTM, `ref-lint`, `deferrals` e `estado-citado` verdes; falha-antes medida por mutação na correlação, na posse e no âmbito da abertura. Revisão adversarial independente: nenhum crítico ou alto; os achados médios e baixos foram corrigidos, excepto o residual abaixo. A posse do caminho no nó `aos`, que ficou como residual na revisão, fechou com o AOS-399 (tomada em `parseModelAuditFromEnv`, antes da abertura, e não em `tomarPosseDoWAL`, que corre depois).
+
+**VERIFICADO EM PRODUÇÃO (2026-09-16, v0.1.16).** O deploy da `v0.1.16` (commit `3a5aaa6`, imagem `aos-node@sha256:7e35a476…`) não põe este caminho a correr, porque o `aos-orq` não vem na release nem na imagem do nó. A prova fez-se por um run avulso no servidor: o `aos-orq` linux compilado do `3a5aaa6` correu uma vez num contentor efémero na rede `aos_default`, contra o litellm de produção (`gpt-4o-mini`), com `AOS_MODEL_AUDIT_PATH` numa pasta temporária. O arranque declarou a postura `DURAVEL`. Depois de o processo sair, o WORM foi aberto com `OpenFileStoreReadOnly`, que valida a cadeia, e a partição `modelgw-gov:board-eu` tinha três selos `allow` de `model:invoke`:
+
+| Run | Seq | StepID |
+|---|---|---|
+| `run-aos395-prod-1789586701` | 1, 2, 3 | `planstep:decompose:1`, `:2`, `:3` |
+| `run-aos395-prod-1789587285` | 1, 2, 3 | `planstep:decompose:1`, `:2`, `:3` |
+
+Todos levam o `RunID` do seu run e a cadeia liga-se (o `PrevHash` de cada selo é o `EntryHash` do anterior). As três tentativas por run aconteceram porque o decompositor recusou os três planos devolvidos pelo modelo (`plan: objective de topo em falta`; o litellm respondeu 200 às seis chamadas). Nada foi materializado. A recusa não é deste ticket: é uma lacuna do prompt do planeador, registada no **AOS-400**. As pastas temporárias foram apagadas do servidor.
+
+---
+
+## AOS-397 — Agregados por run do metering do GW sem remoção nem tecto
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-394 (faz o run real chegar ao gateway), AOS-062 (contabilidade de custo) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/platform/model-gateway/metering/cost/recorder.go`, `packages/platform/model-gateway/metering/cache_sli/cache_sli.go`, `packages/platform/model-gateway/internal/lru/lru.go` |
+
+### Contexto
+
+O `cost.Recorder` mantém o cumulativo de custo por run em `runAggs`, um mapa `RunKey{RunID,Tenant} → *Amount` **sem remoção, expiração nem tecto**. Enquanto o nó enviava o run vazio, o ramo que o alimenta nunca corria e o mapa ficava vazio; com o AOS-394 o run real passa a chegar em cada chamada, pelo que o mapa ganha uma entrada por run e mantém-na durante toda a vida do processo — um nó que corre semanas acumula-as. O mesmo padrão existe no eixo de árvore (`treeAggs`, hoje sem `TreeID` preenchido), no `MemoryBurndownSink` (que memoriza cumulativos por run) e no `cache_sli`, que agrega por (run, tenant) e não está composto no nó.
+
+Impacto medido por leitura de código: é **memória**, não decisões — no nó de referência nenhum consumidor lê o cumulativo por run (não há `budgetbridge` composto). O custo por chamada e o canal de AOS-259 não dependem deste agregado.
+
+### Objectivo
+
+A retenção por run do metering do gateway é limitada e a política fica declarada, sem alterar o custo por chamada nem o canal de custo.
+
+### Critérios de Aceitação
+
+- [x] Teste que mede a retenção antes da correcção: N runs distintos deixam N entradas retidas no `cost.Recorder`. *(**MEDIDO antes da correcção** (2026-09-16), com um teste temporário sobre o código da base: 10 000 runs distintos ⇒ 10 000 entradas em `runAggs`. Depois da correcção, `TestAOS397_RetencaoPorOmissaoTemTecto` mede os mesmos 10 000 runs (com árvore) ⇒ 4096 runs e 4096 árvores retidos, o run mais recente presente e o mais antigo despejado. **FALHA-ANTES reprodutível por mutação**: com o tecto a `1 << 30`, o mesmo teste falha com «retidos runs=10000 arvores=10000».)*
+- [x] Política escolhida e implementada, com a decisão registada neste ticket: fim-de-run explícito, expiração por inactividade, tecto com despejo, ou não retenção quando ninguém lê o cumulativo. Verificar primeiro quem lê o cumulativo por run (burn-down de AOS-259/AOS-261, span, sinks). *(**Quem lê** (discovery): nenhum consumidor composto. O `cmd/aos` constrói o recorder sem sinks (`model_pricing_env.go`, «um canal, não dois») e o gateway do nó não tem tracer, pelo que o atributo `aos.cost.run_micro_usd` e as métricas de escopo run/árvore se perdem; o burn-down de AOS-259/261/262 soma o custo **por chamada** de cada `turn.recorded`; o `budgetbridge` só tem o seu teste; o `aos-orq` e o `packages/integration` não compõem recorder. **DECISÃO: tecto com despejo do menos-recentemente-usado**, `cost.DefaultRetainedKeys = 4096` chaves por eixo (runs e árvores), `WithRetention` para mudar (valores < 1 ignorados: não há opção sem tecto), sobre um mapa genérico novo em `internal/lru` que não toca a ordem numa leitura. Porquê: limita a memória por construção em qualquer composição (nó, `aos-orq`, integration) sem canalizar o fim-de-run do `NodeService` até ao gateway, e um run activo, tocado a cada chamada, só perde o cumulativo depois de 4096 outros runs. **Rejeitadas**: *fim-de-run explícito* — o gateway não recebe sinal de fim, o recorder não fica no `NodeService`, e não servia os outros compositores; *expiração por inactividade* — precisa de relógio e varrimento, e reduz o cumulativo de um run parado que retome; *não retenção* — partia o contrato documentado de `CostForRun`/`CostForTree` e ~8 testes que o lêem sem sinks. Um run despejado que volte recomeça do zero, incluindo a verificação de overflow do cumulativo, que só dispara perto de MaxInt64. **Correcção no mesmo `Observe`** (encontrada na discovery): um overflow no eixo árvore deixava o run já gravado; as duas somas passam a calcular-se antes de gravar qualquer uma. `TestAOS397_OverflowNaArvoreNaoActualizaORun` falha com a ordem antiga (medido por mutação: «ficou {Tokens:15 CostMicroUSD:105}»); `TestAOS397_OverflowNoRunNaoActualizaAArvore` guarda o caso simétrico, que já era correcto.)*
+- [x] O mesmo eixo verificado no `MemoryBurndownSink` e no `cache_sli`; onde não se fechar, o limite fica declarado. *(`cache_sli`: fechado com o mesmo tecto (`cache_sli.DefaultRetainedKeys = 4096`, `WithRetention`) e despejo pelo uso; um run despejado recomeça do zero, incluindo o estado anti-flapping (`Breached`), pelo que o alerta pode voltar a disparar para ele. Não está composto em produção (`NewProduction` não passa `WithCacheSLI`). Testes: `TestAOS397_CacheSLI_RetencaoTemTecto` e `TestAOS397_CacheSLI_RunActivoMantemOAgregado`. `MemoryBurndownSink`: **limite declarado, não fechado** — é o sink de referência que guarda todos os incrementos para os testes inspeccionarem, não está composto em produção e o `cmd/aos` proíbe ligá-lo; o comentário do tipo diz que não serve para um processo de vida longa. O eixo árvore (`treeAggs`) leva o mesmo tecto, embora o `TreeID` continue vazio em produção.)*
+- [x] `go test -race -count=1 ./...` no módulo do GW e `bash scripts/ci/routing.sh` verdes. *(Suite `-race` do módulo do GW verde; `routing.sh` verde — 11 cenários, 22+13 testes obrigatórios, cobertura do módulo 87,8% ≥ 80%. Também verdes: `build`, `lint`, `layer-lint` e os testes de preços/gateway do `cmd/aos`.)*
+
+### Estado
+
+**IMPLEMENTADO (2026-09-16).** Os agregados por run e por árvore do `cost.Recorder` e o agregado por (run, tenant) do `cache_sli` têm tecto de 4096 chaves com despejo do menos-recentemente-usado; o custo por chamada e o canal de custo de AOS-259 não mudam. Medido: 10 000 runs deixavam 10 000 entradas, agora deixam 4096. Revisão adversarial independente: nenhum defeito crítico, alto ou médio no código; os baixos (comentários imprecisos, overflow no run sem teste) foram corrigidos. **Limite declarado**: o `MemoryBurndownSink` de referência continua sem tecto.
+
+---
+
+## AOS-399 — O nó pede a posse exclusiva do caminho do audit de governação do gateway
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-265 (audit de governação durável do gateway), AOS-285 (posse de escrita arbitrada pelo SO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/model_audit_env.go`, `packages/cmd/aos/wal_posse.go`, `packages/substrate/eventstore/wallock.go`, `packages/cmd/aos/aos285_guard_arranque_test.go` |
+
+### Contexto
+
+O nó abre o WORM de governação do gateway a partir de `AOS_MODEL_AUDIT_PATH` em `parseModelAuditFromEnv`, chamado por `parseModelFromEnv` antes do `Bootstrap`. O guard de arranque do AOS-285 (`tomarPosseDoWAL`, no `Bootstrap`) pede a posse do Event Store e do WORM do nó, mas não a deste caminho. Dois processos apontados ao mesmo ficheiro abriam-no ambos: o segundo corria o replay da abertura, que trunca uma cauda incompleta e pode assim cortar a escrita em curso do primeiro, e selava a sua activação da allowlist na mesma partição `modelgw-gov:<board>`. A hash-chain bifurca, e a reabertura recusa a cadeia (medido para o WORM do nó no AOS-284). A variável tem o mesmo nome no `aos-orq` (AOS-395), pelo que a colisão pode vir de outro nó ou de um `aos-orq` no mesmo host. Até aqui só a documentação a impedia. Achado da revisão do AOS-395, onde ficou como residual declarado.
+
+### Objectivo
+
+Um segundo escritor do mesmo `AOS_MODEL_AUDIT_PATH` é recusado no arranque do nó, pela mesma via do Event Store e do WORM detidos, antes de o ficheiro ser aberto.
+
+### Critérios de Aceitação
+
+- [x] A posse exclusiva do caminho é pedida ao SO antes do `audit.OpenFileStore`, pelo mecanismo do AOS-285. *(`parseModelAuditFromEnv` chama `tomarPosse`, o laço de `tomarPosseDoWAL` extraído para ser partilhado, com o caminho como alvo. A posse fica aqui e não na tabela do `Bootstrap` porque este store abre-se antes dele: trancar no `Bootstrap` deixaria o replay correr sobre o ficheiro de outro escritor. O store devolvido (`modelAuditDetido`) fecha o WAL e só depois larga a posse; em produção ambos vivem até ao fim do processo, como antes.)*
+- [x] O segundo escritor é recusado pela saída existente de posse detida: `ErrEventStoreJaDetido`, com o ficheiro e a razão, e não `ErrBadModelAudit`. *(A acção do operador é parar o outro escritor, não corrigir o caminho. O processo sai pelo `main` como nas outras recusas de posse: código 1 e a mensagem no stderr.)*
+- [x] Teste por processo real. *(`TestAOS399_ProcessoReal_SegundoNoNoMesmoModelAuditRecusa`: compila o nó; o nó A serve com o caminho, o nó B, com Event Store e WORM próprios, é recusado com a mensagem que nomeia `AOS_MODEL_AUDIT_PATH` e o ficheiro, e o WAL de A fica byte a byte igual. Morto A, o mesmo B arranca e reabre a cadeia. Complementos no processo do teste: `TestAOS399_ModelAuditDetidoRecusaSemAbrir` (erro classificado e WAL não criado) e `TestAOS399_CloseLargaAPosseEOWORMDoNoNaoPartilhaOCaminho` (o `Close` larga a posse; um `AOS_WORM_PATH` igual ao caminho do audit é recusado pelo guard do WORM, porque a posse do audit já foi tomada no mesmo processo). **FALHA-ANTES MEDIDA por mutação**: sem a posse, B sai 0 e os três testes falham; com a posse tomada depois do `OpenFileStore`, o teste da ordem vê o WAL criado.)*
+- [x] O teste de reabertura do AOS-265 (`TestParseModelAuditFromEnv_Duravel_AbreWORM`) fecha o primeiro store antes de reabrir, como num restart. *(Com o primeiro aberto, a posse recusa a segunda abertura no mesmo processo, que é o comportamento pedido.)*
+
+### Estado
+
+**IMPLEMENTADO (2026-09-16).** O nó recusa arrancar sobre um `AOS_MODEL_AUDIT_PATH` detido por outro processo, antes de abrir o WAL. Verificado: suite de `cmd/aos` verde; falha-antes medida por mutação (sem posse, e com a posse depois da abertura). **Limites declarados**: a posse só protege entre processos que a pedem (o nó desde este ticket, o `aos-orq` desde o AOS-395, onde sai com o código 5); um lock de SO sobre um volume partilhado por rede depende do sistema de ficheiros, como para o Event Store e o WORM do nó.
+
+---
+
+## AOS-406 — Sem fonte de preço o custo fica marcado como não derivado e o SLI de custo deixa de dar verde com zeros
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-259 (canal de custo), AOS-336 (turno não medido) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/model_pricing_env.go`, `packages/kernel/agent-runtime/{model.go,loop.go,turn.go}`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go`, `packages/substrate/otel-genai/{semconv.go,cost_aggregation.go,slo.go}`, `deploy/server/README.md`, `deploy/node/README.md` |
+
+### Contexto
+
+Em produção o custo de todos os turnos é zero. O nó pede `gpt-4o-mini` em `eu`, e a tabela de preços
+embebida não tem esse par; `AOS_MODEL_PRICING_PATH` está vazia. O alias `gpt-4o-mini` é do LiteLLM de
+produção e encaminha para `openai/kimi-for-coding` em `api.kimi.com/coding/v1` — lido na configuração
+do LiteLLM do servidor a 2026-09-17 (o `deploy/server/litellm/config.yaml` do repositório é um modelo
+com as entradas comentadas) —, que o operador paga por **subscrição**, sem preço por token (decisão
+do dono na conversa de 2026-09-17). Não há, por isso, tabela a
+montar: pôr o preço da OpenAI daria um custo preciso e falso.
+
+O problema é o que o zero fazia a jusante. O span `chat` emitia `aos.cost.micro_usd=0`, o
+`turn.recorded` gravava `cost_micro_usd: 0` sem marca, e o SLI `cost_per_trajectory` contava esses
+traces como amostras e dava o SLO por cumprido — um verde sem dados, contra a regra anti-vacuidade do
+AOS-085. O banner dizia que o zero era ausência de dados; o `/metrics` e o evento durável não.
+
+### Objectivo
+
+Sem fonte de preço, cada turno sai marcado como custo **não derivado** em toda a travessia, e o SLI
+de custo por trajectória não conta esses traces.
+
+### Critérios de Aceitação
+
+- [x] **Kernel.** `ModelResponse.CustoNaoDerivado`. O span `chat` leva `aos.cost.undefined=true` e não
+      leva `aos.cost.micro_usd` nem `gen_ai.usage.cost_usd`; os tokens continuam no span. O agregado do
+      run no `invoke_agent` também sai marcado e sem número (`Result.CustoNaoDerivado`). O
+      `turn.recorded` leva `custo_nao_derivado: true`, com `omitempty` — um turno com preço grava os
+      mesmos bytes de sempre. É ortogonal ao `usage_ausente` do AOS-336: aqui os tokens foram medidos.
+      A captura canónica do replay guarda a marca (também `omitempty`), para um turno retomado não
+      voltar a parecer gratuito. *(`TestAOS406_SpanChatSemCustoDerivadoNaoEmiteCusto`, que cobre o `chat` e o `invoke_agent`,
+      `TestAOS406_TurnRecordedMarcaOCustoNaoDerivado`, `TestAOS406_CustoNaoDerivadoSobreviveACaptura`.)*
+- [x] **Substrato.** `aos.cost.undefined` no vocabulário; a agregação por trace propaga a marca
+      (`UsageTotals.CostUndefined`); o `cost_per_trajectory` retira da amostra **o trace inteiro** que
+      tenha um chat sem custo derivado — uma soma parcial subestimaria a trajectória — e, sem traces com
+      custo, fica sem amostras (`avaliavel="0"`). *(`TestAOS406_SLIDeCustoSemPrecoNaoEAvaliado`, que
+      falha antes: os dois traces contavam como amostras de custo zero; `TestAOS406_TraceMistoSaiInteiro`.
+      **FALHA-ANTES por mutação**: sem a exclusão no SLI, os dois falham.)*
+- [x] **Nó.** Quando a tabela em vigor não cobre `(AOS_MODEL_NAME, AOS_MODEL_REGION)`, `parseModelFromEnv`
+      envolve o cliente do gateway em `custoNaoDerivadoClient`, que marca cada resposta e zera o custo;
+      com preço, o cliente não é decorado. O banner da postura de custo passa a descrever a marca, a
+      exclusão do SLI e a postura de subscrição. *(`TestAOS406_SemPrecoOClienteMarcaOCusto` — o caso de
+      produção, `gpt-4o-mini` em `eu` com a tabela embebida, sem tools —,
+      `TestAOS406_ComToolsODecoradorFicaPorDentroDoEnriquecedor` — a cadeia real, com tools: o decorador
+      fica por dentro do enriquecedor e a marca atravessa-o —, `TestAOS406_ComPrecoOClienteNaoEDecorado`,
+      `TestAOS406_DecoradorMarcaEZeraOCusto`, `TestAOS406_BannerDeclaraAPosturaDeSubscricao`.)*
+- [x] **`/metrics` honesto.** Sem fonte de preço o SLI de custo nunca tem amostras neste nó; o
+      `aos_alert_firing` do alerta de custo sai com `produtor="0"` («a regra nunca dispara») e não com
+      `produtor="1"` («janela vazia, pode disparar»). `Config.CustoSemFontePreco` é escrito pelo caminho
+      por ambiente com o mesmo juízo que compõe o decorador; um `cfg.Model` injectado deixa-o a false.
+      *(`TestAOS406_AlertaDeCustoSemFonteDePrecoNaoTemProdutor`.)*
+- [x] **Limites declarados.** (1) Um run capturado **antes** do deploy e retomado depois devolve as
+      respostas capturadas sem a marca; se o trace só tiver turnos reproduzidos, entra no SLI como custo
+      zero — só na transição. (2) A exclusão do trace misto é inalcançável no nó (a postura de preço é
+      do processo inteiro), mas a função é genérica: uma soma parcial já acima do tecto também sai da
+      amostra. (3) Superfícies de biblioteca que não distinguem «sem custo» (`BuildRunView`,
+      `trajectory-surface`, `TraceDiff`) não são compostas no nó e ficam fora deste ticket.
+- [x] O orçamento em tokens e o tecto em dólares não mudam: sem preço, `AOS_BUDGET_MAX_COST_MICRO_USD`
+      continua recusado no arranque (DEF-277), e a dimensão que decide é tokens.
+- [x] `deploy/server/README.md` (ponto 9), `deploy/node/README.md` (`AOS_MODEL_PRICING_PATH`) e
+      `tecnica/08` §7.1 descrevem a marca e a postura de subscrição.
+- [ ] **Evidência de sistema.** Depois de um deploy, um run em produção grava `custo_nao_derivado: true`
+      nos `turn.recorded`, e o `/metrics` dá `aos_slo_samples{sli="cost_per_trajectory"}` a 0 com o
+      alerta de custo `avaliavel="0"` e `produtor="0"`, em vez de amostras com custo zero.
+
+### Estado
+
+**IMPLEMENTADO** a 2026-09-17; a evidência de sistema fica pendente do deploy.
+
+---
+
+## AOS-421 — O nó declara a escada de tiers, e o refino de roteamento passa a correr no binário que está em produção
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa o ADR-021: o scoring ponderado está entregue (AOS-269) e composto
+     no módulo do gateway (AOS-280). O que falta é a fonte de verdade da ESCADA, que vive no
+     deployment. As citações ao ADR-021 são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 — Model Gateway e Custos |
+| Fase | Prontidão de produção |
+| Milestone | v1.1 |
+| Tipo | feature (exige fonte de verdade nova) |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-269 (scoring), AOS-280 (composição do refino no GW) |
+| Bloqueia | DEF-280-NO e DEF-280-REGIAO |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/modelgatewaywiring.go` (composição do `ProductionConfig`), `packages/platform/model-gateway/production_routing.go` (`newRefineStage`, `composeRoutingStage`, `unpricedLadderPairs`, `modelSwapRecorder`), `docs/adr/ADR-021-*.md` |
+
+### Contexto
+
+O refino de roteamento **existe, está composto e provado** no módulo do gateway — e **nunca corre
+no binário do nó**. A cadeia `failover → refino` só se arma quando o deployment declara
+`RoutingConfig.Tiers`; sem isso, `newRefineStage` devolve `(nil, nil)` e o `composeRoutingStage`
+devolve só o failover.
+
+Medido: **nenhum ficheiro não-teste do repositório preenche `Routing:`** — nem o nó nem o
+composition root —, e `AOS_MODEL_TIERS` não existe em lado nenhum. O binário que está em produção
+roteia só pelo failover.
+
+**O que fica desligado por causa disso**, tudo já escrito e testado do lado do gateway:
+
+| Desligado hoje | O que faz quando armar |
+|---|---|
+| O scoring assinado do ADR-021 | escolha por custo, carga, latência e saúde, com tabela de pesos pinada e carregamento fail-closed |
+| O classificador de produção | candidatos = inventário ∩ regiões legais ∩ saudáveis |
+| A validação de perfis no arranque | um perfil por classe que não bata com a tabela assinada recusa o arranque |
+| **`unpricedLadderPairs` / `ErrRoutingPriceCoverage`** | **recusa de ARRANQUE** quando falta preço a um par alcançável, em vez de uma chamada recusada a meio de um run |
+
+Esta última é o ganho que mais conta, e é também a razão pela qual o **DEF-279** deixa de ter eixo
+de modelo: a verificação «todos os pares alcançáveis» que ele pede já está escrita aqui — modelos
+da escada × regiões das contas, filtrada pela allowlist — e arma com este ticket.
+
+### Porque é que o DEF-280-REGIAO vem no mesmo ticket
+
+O `modelSwapRecorder` é construído **na mesma expressão** que compõe o refino. Enquanto o nó não
+declarar tiers, estender a sua condição de selagem **não muda um único byte do WORM**: seria código
+que nada executa. Os dois eixos são o mesmo trabalho, e separá-los produzia um PR sem efeito.
+
+### O que este ticket tem de CRIAR, e é o que o torna um ticket e não uma limpeza
+
+Não existe fonte de verdade para a escada: **não há env, não há formato, não há artefacto
+assinado**. É o mesmo vazio que bloqueou o AOS-409 (o 4.º eixo do `IsEffectTool` não tinha de onde
+vir) e, antes dele, o DEF-275. O ticket tem de a criar antes de poder ligar o
+`ProductionConfig.Routing`.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Que modelos entram na escada.** Não se adivinha: é decisão de deployment. Cada modelo
+   declarado tem de estar coberto **pela allowlist regional do board** E **pela tabela de preços da
+   região** — senão o arranque passa a ser recusado por `ErrRoutingPriceCoverage`, que é a direcção
+   certa do erro mas tem de ser uma escolha consciente.
+2. **Por onde entra a escada.** (a) Variável de ambiente (`AOS_MODEL_TIERS`), no molde do resto da
+   superfície do nó — simples, e a postura é declarada no banner; (b) artefacto **assinado**, no
+   molde da tabela de pesos do ADR-021 — mais caro, e coerente com o facto de a escada decidir para
+   onde vai dinheiro e que fronteira de soberania se atravessa. A (b) é a que combina com o resto
+   da postura do gateway; a (a) é a que se entrega esta semana.
+3. **DEF-280-REGIAO: selo por chamada ou correlação.** Ou a resolução de região do failover passa a
+   selar um `GovRecord` próprio — custo: **+1 registo WORM em cada chamada com failover** — ou
+   aceita-se que a correlação com o registo de atribuição, selado na mesma chamada, basta ao
+   auditor. É uma decisão sobre volume de trilho em produção, não sobre código.
+
+### Critérios de aceitação
+
+- [ ] A escada tem uma fonte de verdade declarada, com formato fixado e a postura no banner de
+      arranque.
+- [ ] Com a escada declarada, o `ProductionConfig.Routing` é preenchido e o refino **arma** —
+      provado no binário do nó, não só no módulo do gateway.
+- [ ] Um modelo da escada sem preço na região alcançável **recusa o arranque**, e o teste prova-o
+      pela mensagem de `ErrRoutingPriceCoverage`.
+- [ ] Um modelo da escada fora da allowlist regional do board não é candidato, e há teste negativo.
+- [ ] A decisão (3) fica implementada e declarada — selo próprio ou correlação, com a razão escrita.
+- [ ] Verificado em produção: uma chamada cujo modelo efectivo difere do pedido, com o trilho de
+      governação a mostrá-lo.
+
+### Fora de âmbito, declarado
+
+- **DEF-279** (cobertura de preço por região). O seu eixo de MODELO fica resolvido por este ticket;
+  o que sobra é o eixo de REGIÃO, cujo gatilho continua a ser **a segunda conta no inventário do
+  keypool**, que o nó não tem. Fica aberto, com o gatilho já documentado no registo.
+- A mudança do estágio de roteamento em si: o `failover` continua a ser o primeiro elo, e este
+  ticket acrescenta o refino a seguir — não o substitui.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Declarar a escada recusa um arranque que hoje funciona, por lacuna de preço ou de allowlist | É a direcção certa do erro, mas tem de ser verificada em staging antes de produção — a recusa é no arranque, e um nó que não arranca é uma interrupção |
+| A escada por env é configuração não assinada a decidir para onde vai dinheiro | É a decisão (2); se a resposta for (a), fica declarado como resíduo com eixo próprio |
+| Armar o refino muda o caminho quente de TODAS as chamadas de modelo | O `failover` mantém-se como primeiro elo; o refino só decide entre candidatos que ele já validou |
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -689,3 +1053,7 @@ Cobre os cenários de risco de tecnica/06 §9. Integra a suite como gate de CI. 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-09-15 | AOS-394 e AOS-395: selos de governação do gateway sem run nem passo (achado do E2E em produção) | Equipa AOS |
+| 1.2 | 2026-09-15 | AOS-394 implementado; AOS-397 aberto (retenção por run do metering) a partir da revisão adversarial | Equipa AOS |
+| 1.3 | 2026-09-16 | AOS-395 implementado; AOS-399: o nó pede a posse exclusiva do caminho do audit de governação do gateway (residual da revisão do AOS-395, fechado) | Equipa AOS |
+| 1.4 | 2026-09-21 | +AOS-421 (escada de tiers no nó): medido que NENHUM ficheiro não-teste preenche `RoutingConfig.Tiers` e que `AOS_MODEL_TIERS` não existe — o refino de roteamento, o scoring assinado e a recusa de arranque por lacuna de preço estão escritos e provados no módulo do GW, e nunca correm no binário do nó. Absorve DEF-280-NO e DEF-280-REGIAO, que são o mesmo trabalho. | Equipa AOS |

@@ -65,6 +65,24 @@ func clearIngressEnv(t *testing.T) {
 	t.Setenv("AOS_INGRESS_RATE", "")
 	t.Setenv("AOS_INGRESS_BURST", "")
 	t.Setenv("AOS_INGRESS_MAX_INFLIGHT", "")
+	// AOS-456: a quarta. Sem a limpar, um ambiente de processo que a defina contamina os casos
+	// deste ficheiro que asserem `tuned` e o numero de opcoes.
+	t.Setenv("AOS_INGRESS_MAX_INFLIGHT_PER_CALLER", "")
+	// AOS-458/AOS-459: as quatro seguintes, pela mesma razao.
+	t.Setenv("AOS_INGRESS_READ_RATE", "")
+	t.Setenv("AOS_INGRESS_READ_BURST", "")
+	t.Setenv("AOS_TRAJECTORY_MAX_CONNS", "")
+	t.Setenv("AOS_TRAJECTORY_MAX_CONNS_PER_READER", "")
+	// AOS-464: as duas da fila de planos, pela MESMA razão — e o commit que as acrescentou mudou as
+	// asserções que este helper protege (`len(opts)` 5→7, `tuned`) sem estender o helper. Medido: com
+	// `AOS_PLAN_MAX_PENDING` definida no ambiente do processo, este ficheiro falhava 5/5. E é o mesmo
+	// commit que passa a exportá-las SEMPRE no `docker-compose.prod.yml`.
+	t.Setenv("AOS_PLAN_MAX_PENDING", "")
+	t.Setenv("AOS_PLAN_MAX_PENDING_PER_SUBMITTER", "")
+	// AOS-465: pela mesma razão, e à nascença em vez de em revisão.
+	t.Setenv("AOS_API_MAX_CONNS", "")
+	// AOS-467: idem — o compose exporta-a sempre (default 5).
+	t.Setenv("AOS_PLAN_MAX_GENERATIONS", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -88,8 +106,12 @@ func TestAOS277IngressEnvIsFailClosed(t *testing.T) {
 		if lim.tuned {
 			t.Fatal("sem variaveis definidas o banner nao pode anunciar limites AFINADOS")
 		}
-		if len(opts) != 2 {
-			t.Fatalf("esperava 2 opcoes de API (rate-limit + max-in-flight), vieram %d", len(opts))
+		// CINCO: rate-limit da submissão, max-in-flight, o rate-limit do plano de DADOS inteiro
+		// (AOS-458 — as leituras, que até lá não tinham tecto de taxa nenhum), e os dois tectos de
+		// streams SSE (AOS-459 — o global, que até lá não era afinável por ambiente, e a repartição
+		// por leitor).
+		if len(opts) != 9 {
+			t.Fatalf("esperava 9 opcoes de API (rate-limit + max-in-flight + read-rate-limit + os dois tectos de SSE + os dois tectos da FILA DE PLANOS do AOS-464 + o tecto de GERACOES do AOS-467 + o tecto de LIGACOES do AOS-465), vieram %d", len(opts))
 		}
 	})
 
@@ -176,6 +198,7 @@ func TestAOS277BurstExceededYields429(t *testing.T) {
 			"run_id":        id,
 			"objective":     "trabalho de referencia",
 			"principal_nhi": "nhi:" + id,
+			"credential":    credencialDeTeste(t, node),
 		})
 		codes = append(codes, rec.Code)
 	}
@@ -217,6 +240,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 		"run_id":        "run-277-inflight-1",
 		"objective":     "trabalho bloqueado",
 		"principal_nhi": "nhi:run-277-inflight-1",
+		"credential":    credencialDeTeste(t, node),
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("1o submit devia dar 201, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -250,6 +274,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 		"run_id":        "run-277-inflight-3",
 		"objective":     "trabalho readmitido",
 		"principal_nhi": "nhi:run-277-inflight-3",
+		"credential":    credencialDeTeste(t, node),
 	}); rec.Code != http.StatusCreated {
 		t.Fatalf("com o tecto livre o submit devia voltar a dar 201, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -265,7 +290,7 @@ func TestAOS277MaxInFlightYields429(t *testing.T) {
 // e que o limite é por-réplica.
 func TestAOS277BannerDeclaresLimits(t *testing.T) {
 	t.Run("defaults", func(t *testing.T) {
-		lines := ingressPostureBanner(ingressLimits{ratePerSec: DefaultRatePerSec, burst: DefaultRateBurst, maxInFlight: DefaultMaxInFlight})
+		lines := ingressPostureBanner(ingressLimits{ratePerSec: DefaultRatePerSec, burst: DefaultRateBurst, maxInFlight: DefaultMaxInFlight}, false, false)
 		if len(lines) != 1 {
 			t.Fatalf("esperava 1 linha de banner, vieram %d", len(lines))
 		}
@@ -277,7 +302,7 @@ func TestAOS277BannerDeclaresLimits(t *testing.T) {
 	})
 
 	t.Run("afinados", func(t *testing.T) {
-		lines := ingressPostureBanner(ingressLimits{ratePerSec: 12, burst: 34, maxInFlight: 56, tuned: true})
+		lines := ingressPostureBanner(ingressLimits{ratePerSec: 12, burst: 34, maxInFlight: 56, tuned: true}, false, false)
 		if len(lines) != 1 {
 			t.Fatalf("esperava 1 linha de banner, vieram %d", len(lines))
 		}
@@ -347,7 +372,7 @@ func TestAOS277ServeAPIDeclaresAndEnforcesLimits(t *testing.T) {
 		}
 
 		banner := out.String()
-		for _, marker := range []string{"ingresso / admission (AOS-166/AOS-277)", "AFINADO", "9 pedido(s)/segundo", "burst de 11", "13 run(s) EM CURSO"} {
+		for _, marker := range []string{"ingresso / admission (AOS-166/AOS-277/AOS-458)", "AFINADO", "9 pedido(s)/segundo", "burst de 11", "13 run(s) EM CURSO"} {
 			if !strings.Contains(banner, marker) {
 				t.Fatalf("o banner de arranque devia conter %q; saiu:\n%s", marker, banner)
 			}
@@ -387,9 +412,11 @@ func esperarPorta(t *testing.T, addr string) {
 }
 
 // submeterRun faz um `POST /runs` REAL (pela rede, não por httptest) e devolve o status.
-func submeterRun(t *testing.T, base, runID string) int {
+func submeterRun(t *testing.T, base, runID, cred string) int {
 	t.Helper()
-	corpo := `{"run_id":"` + runID + `","objective":"trabalho de referencia","principal_nhi":"nhi:` + runID + `"}`
+	// AOS-428: o `POST /runs` verifica a credencial do run. Vai uma real — este teste mede
+	// tectos de ingresso, e um 401 antes do tecto mediria outra coisa.
+	corpo := `{"run_id":"` + runID + `","objective":"trabalho de referencia","principal_nhi":"nhi:` + runID + `","credential":"` + cred + `"}`
 	req, err := http.NewRequest(http.MethodPost, base+"/runs", strings.NewReader(corpo))
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -442,7 +469,7 @@ func TestAOS277ServeAPIEnforcaOsLimitesLidos(t *testing.T) {
 	esperarPorta(t, addr)
 
 	base := "http://" + addr
-	if code := submeterRun(t, base, "run-277-serve-1"); code != http.StatusCreated {
+	if code := submeterRun(t, base, "run-277-serve-1", credencialDeTeste(t, node)); code != http.StatusCreated {
 		t.Fatalf("o 1o submit (dentro do tecto) devia ser ADMITIDO com 201, veio %d", code)
 	}
 	// Espera o run ENTRAR mesmo no modelo: só então está registado no loop de serviço e a
@@ -453,7 +480,7 @@ func TestAOS277ServeAPIEnforcaOsLimitesLidos(t *testing.T) {
 		t.Fatal("o 1o run nao chegou a correr — sem ele a contagem de in-flight nao sobe e a prova fica vacuosa")
 	}
 
-	if code := submeterRun(t, base, "run-277-serve-2"); code != http.StatusTooManyRequests {
+	if code := submeterRun(t, base, "run-277-serve-2", credencialDeTeste(t, node)); code != http.StatusTooManyRequests {
 		t.Fatalf("o 2o submit devia levar 429 do servidor que serveAPI construiu (AOS_INGRESS_MAX_INFLIGHT=1), veio %d.\n"+
 			"Um 201 aqui significa que os limites lidos por ingressLimitsFromEnv NAO chegam ao NewAPIServer — o defeito que este teste existe para apanhar.", code)
 	}

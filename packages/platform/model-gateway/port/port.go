@@ -31,7 +31,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -218,6 +218,11 @@ type ChatRequest struct {
 	// plataforma (nunca no wire): é o eixo de agregação do SLI de cache-hit-rate
 	// (AOS-061, por run/tenant) e liga a métrica/atribuição à trajectória (ADR-010).
 	RunID string `json:"-"`
+	// StepID correlaciona a chamada com o PASSO do run que a fez (o step_id do turno, o mesmo
+	// dos checkpoints e do turn.recorded). Metadado de plataforma (nunca no wire): entra nos
+	// selos de governação do GW (AOS-394). Vazio se o chamador não o fornece. Campo aditivo
+	// (MINOR 1.1.0).
+	StepID string `json:"-"`
 	// TreeID correlaciona a chamada com a ÁRVORE de runs (o run-tree/agent-tree a que
 	// o run pertence). Metadado de plataforma (nunca no wire): é o eixo de agregação
 	// do custo por ÁRVORE (AOS-062) que alimenta o burn-down e o admission GLOBAL
@@ -284,6 +289,8 @@ type EmbeddingsRequest struct {
 	Board     string `json:"-"`
 	// RunID correlaciona a chamada com a trajectória do agente (ver [ChatRequest]).
 	RunID string `json:"-"`
+	// StepID correlaciona a chamada com o passo do run (ver [ChatRequest]).
+	StepID string `json:"-"`
 	// TreeID correlaciona a chamada com a árvore de runs (ver [ChatRequest]) — o eixo
 	// de agregação do custo por árvore que alimenta o burn-down global (AOS-062).
 	TreeID string `json:"-"`

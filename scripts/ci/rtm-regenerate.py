@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import adr_register  # noqa: E402  (depende do sys.path acima)
+import adr_citacoes  # noqa: E402  (idem; AOS-318)
 
 # Raiz do corpus. Sobreponível por ambiente APENAS para o self-test (§R/§S)
 # poder injectar falhas numa CÓPIA em vez de mutar a árvore real — o job de CI
@@ -93,15 +94,72 @@ NFR_MANUAL_TICKETS = {
 }
 
 
-# Marcador opcional, escrito no bloco de um ticket: declara que os códigos
-# ADR-NNN que ele cita são MENÇÃO — o ticket FALA sobre eles — e não
-# implementação. Sem isto, um ticket sobre a própria rastreabilidade, que tem
-# de nomear os ADRs de que fala, entra na matriz §4 como implementador deles: a
-# matriz passaria a afirmar precisamente o que este epic existe para impedir.
-# Primeiro utilizador: AOS-313 (que discute ADR-003, ADR-014 e ADR-020…023 sem
-# realizar nenhum). `ref-lint.py` honra o mesmo marcador, para que os dois
-# leitores do corpus nunca discordem sobre o que um ticket implementa.
-RE_ADRS_MENCIONADOS = re.compile(r"<!--\s*rtm:\s*adrs-mencionados\s*-->")
+# MENÇÃO vs IMPLEMENTAÇÃO. Um ticket que cita um ADR para o discutir, delimitar
+# âmbito ou nomeá-lo como restrição não o implementa. Primeiro com o marcador de
+# bloco `<!-- rtm: adrs-mencionados -->` (AOS-313, tudo-ou-nada) e, desde AOS-318,
+# também com o trecho `<!-- rtm: menção -->` … `<!-- /rtm: menção -->`, que separa
+# os dois papéis no MESMO bloco. A regra vive em `adr_citacoes.py`, importada por
+# este ficheiro E por `ref-lint.py`, para que os dois leitores do corpus nunca
+# discordem sobre o que um ticket implementa.
+
+# ---------------------------------------------------------------------------
+# DELIMITAÇÃO DO BLOCO DE UM TICKET — partilhada em ESPÍRITO com o gémeo.
+#
+# Este código existe em DUAS cópias, `scripts/ci/rtm-regenerate.py` e
+# `scripts/ci/ref-lint.py`, porque os dois leem o mesmo corpus e o comentário de
+# `adr_citacoes.py` declara o invariante: «os dois leitores do corpus nunca discordem sobre o
+# que um ticket implementa». Uma correcção aqui SEM a gémea quebra esse invariante — foi o que
+# aconteceu a 2026-09-27, e mediu-se: 6 dos 35 ADRs passaram a ter atribuição divergente entre os
+# dois leitores. Se mudares um, muda o outro NO MESMO COMMIT.
+#
+# TRÊS DEFEITOS QUE ESTA VERSÃO FECHA, todos apurados por revisão adversarial:
+#
+#  1. O terminador original procurava só o próximo cabeçalho `AOS-NNN`, pelo que o ÚLTIMO ticket
+#     de cada epic absorvia toda a prosa final do ficheiro — e com ela os `ADR-NNN` que ela cita
+#     (glossários, tabelas de aprovação, mapas de waves). Atribuição FALSA.
+#
+#  2. A primeira correcção trocou-o por «qualquer cabeçalho de nível igual ou superior» e criou
+#     duas regressões novas: (a) uma linha `# comentário` DENTRO de um bloco de código cercado
+#     passou a terminar o bloco — vivo no corpus, `EPIC-19` AOS-417, que ficava cortado a 17% do
+#     tamanho real, 134 linhas descartadas incluindo os Critérios de Aceitação; e (b) perdeu-se a
+#     condição do cabeçalho de ticket, pelo que um ticket `##` passou a absorver um sub-ticket
+#     `### AOS-NNN` — atribuição a MAIS, que INVENTA cobertura. Nenhuma epic mistura níveis hoje,
+#     mas o script não impõe a convenção e a EPIC-17/18 usam `###` exclusivamente.
+#
+#  3. `#{1,N} ` exigia espaço, e `#\tTítulo` é cabeçalho ATX válido em CommonMark. Sem o `[ \t]`,
+#     o bloco SOBRE-extende e as atribuições falsas do ponto 1 regressam.
+#
+# A máscara preserva o COMPRIMENTO do texto de propósito: os offsets do `finditer` de quem chama
+# continuam válidos sobre o original.
+# ---------------------------------------------------------------------------
+
+def mascarar_fences(text: str) -> str:
+    """Devolve `text` com o MESMO comprimento, tendo neutralizado os `#` dentro de blocos de
+    código cercados. Um `# comentário` de bash deixa de se ler como cabeçalho Markdown.
+
+    As cercas vêm de `adr_citacoes.blocos_cercados` (AOS-318), a mesma detecção que separa
+    directivas de código: a abertura lembra o carácter e o comprimento e só fecha com o mesmo
+    carácter e comprimento ≥, com ≤ 3 espaços de indentação. A versão anterior alternava em
+    QUALQUER linha começada por ``` ou ~~~, pelo que uma cerca de quatro crases a mostrar uma de
+    três, ou ~~~ dentro de ```, invertia o estado e deixava o resto do ficheiro do lado errado."""
+    chars = list(text)
+    for ini, fim in adr_citacoes.blocos_cercados(text):
+        for i in range(ini, fim):
+            if chars[i] == "#":
+                chars[i] = "."
+    return "".join(chars)
+
+
+def fim_do_bloco(texto_mascarado: str, start: int, nivel: int) -> int:
+    """Offset (relativo a `start`) onde termina o bloco de um ticket cujo cabeçalho tem `nivel`
+    cardinais. Termina no próximo cabeçalho de nível IGUAL OU SUPERIOR (menos `#`), ou no próximo
+    cabeçalho de TICKET a qualquer nível 2-3 — a disjunção é o que impede as duas regressões
+    simétricas. Devolve -1 se não houver terminador (o bloco vai até ao fim)."""
+    m = re.search(
+        r"\n(?:#{1,%d}[ \t]|#{2,3} AOS-\d{3}\s*[-–—])" % nivel, texto_mascarado[start:]
+    )
+    return m.start() if m else -1
+
 
 
 def _read(path: Path) -> str:
@@ -322,27 +380,57 @@ def extract_all_tickets() -> dict:
                 tickets[aos]["title"] = title  # título da tabela é mais limpo
 
         # 2. Secções detalhadas (fonte primária para ADRs)
-        for m in re.finditer(r"^#{2,3} (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
-            aos = m.group(1)
-            title = m.group(2).strip()
+        # Antes de delimitar blocos: uma cerca que atravesse a fronteira de um ticket desloca
+        # pares sem que a RTM regenerada deixe de bater com o corpus (AOS-472). O `ref-lint`
+        # faz a mesma chamada, no mesmo sítio.
+        try:
+            adr_citacoes.verificar_cercas(text, epic_file.name)
+        except adr_citacoes.CitacaoError as exc:
+            sys.stderr.write(f"ERRO: {exc}\n")
+            sys.exit(1)
+        mascarado = mascarar_fences(text)
+        for m in re.finditer(r"^(#{2,3}) (AOS-\d{3})\s*[-–—]\s*(.*?)$", text, re.MULTILINE):
+            nivel = len(m.group(1))
+            aos = m.group(2)
+            title = m.group(3).strip()
             start = m.end()
-            # Fim do bloco: próximo cabeçalho de mesmo nível ou fim
-            next_h = re.search(r"\n#{2,3} (AOS-\d{3})\s*[-–—]", text[start:])
-            block = text[start : start + next_h.start()] if next_h else text[start:]
-            adrs = (
-                set()
-                if RE_ADRS_MENCIONADOS.search(block)
-                else set(re.findall(r"ADR-\d{3}", block))
-            )
+            # Fim do bloco: próximo cabeçalho de nível IGUAL OU SUPERIOR (menos `#`), seja ou
+            # não um ticket.
+            #
+            # A versão anterior procurava só o próximo cabeçalho `AOS-NNN`, e o comentário dizia
+            # «próximo cabeçalho de mesmo nível ou fim» — descrevia o que o código NÃO fazia. A
+            # consequência: o ÚLTIMO ticket de cada epic absorvia toda a prosa final do ficheiro,
+            # e com ela os `ADR-NNN` que essa prosa menciona. No EPIC-20 isso atribuía ADR-021 e
+            # ADR-022 ao AOS-278 por o «Mapa de dependências desta epic» citar os dois — uma
+            # atribuição que nenhum critério de aceitação do AOS-278 sustenta. Descoberto ao
+            # inserir AOS-456/457 antes do mapa: a falsa atribuição MUDOU DE VÍTIMA para o
+            # AOS-457, que é como se torna visível.
+            #
+            # O nível tem de vir do cabeçalho do próprio ticket, não de uma constante: um ticket
+            # `##` termina no próximo `##` (ou `#`), um `###` no próximo `###`/`##`/`#`. Cortar em
+            # qualquer `#{2,3}` truncaria todo o bloco no seu primeiro `### Contexto` e perderia
+            # os ADRs do corpo — que é a regressão simétrica, e pior.
+            fim = fim_do_bloco(mascarado, start, nivel)
+            block = text[start : start + fim] if fim >= 0 else text[start:]
+            # `adrs` é o que o ticket IMPLEMENTA — a única coisa que a §4 e a cobertura
+            # contam; `mencoes` é o que cita só como menção (AOS-318).
+            try:
+                adrs, mencoes = adr_citacoes.classificar(block, f"{epic_file.name} {aos}")
+            except adr_citacoes.CitacaoError as exc:
+                sys.stderr.write(f"ERRO: {exc}\n")
+                sys.exit(1)
             if aos not in tickets:
                 tickets[aos] = {
                     "epic": epic,
                     "title": title,
                     "adrs": adrs,
+                    "mencoes": mencoes,
                     "file": epic_file,
                 }
             else:
                 tickets[aos]["adrs"] |= adrs
+                tickets[aos].setdefault("mencoes", set())
+                tickets[aos]["mencoes"] |= mencoes
                 if title:
                     tickets[aos]["title"] = title
     return tickets
@@ -351,9 +439,15 @@ def extract_all_tickets() -> dict:
 def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
     """Devolve lista de dicts com colunas da tabela §4."""
     adr_to_tickets = defaultdict(list)
+    adr_to_mencoes = defaultdict(list)
     for aos, info in tickets.items():
         for adr in info["adrs"]:
             adr_to_tickets[adr].append(aos)
+        # Só menção, e em NENHUM bloco do ticket implementação (AOS-318): fica fora
+        # da coluna e da contagem, mas conta-se, para que o efeito do mecanismo seja
+        # visível na própria matriz em vez de presumido.
+        for adr in info.get("mencoes", set()) - info["adrs"]:
+            adr_to_mencoes[adr].append(aos)
     rows = []
     for entry in ADR_REGISTER:
         tickets_for = sorted(set(adr_to_tickets.get(entry.code, [])))
@@ -368,6 +462,7 @@ def build_adr_matrix(tickets: dict, adr_titles: dict) -> list:
             "state": entry.state,
             "count": len(tickets_for),
             "tickets": tickets_for,
+            "mencoes": sorted(set(adr_to_mencoes.get(entry.code, []))),
             "docs": docs,
         })
     return rows
@@ -660,9 +755,12 @@ def generate_section4(rows: list) -> str:
     lines = [
         "## 4. Matriz ADR × ticket",
         "",
-        f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
+        f"Para cada ADR-001…{ADR_RANGE[-1].split('-')[1]}, os tickets `AOS-NNN` cujo bloco de especificação o cita explicitamente fora de menção declarada (extracção por correspondência textual sobre `specs/EPIC-*.md`) e o(s) documento(s) técnico(s) que o desenvolvem. A coluna **Nº** é a contagem de tickets implementadores distintos.",
         "",
         "A coluna **Estado** vem do registo. Rastrear um ADR *Proposto* não o promove: a matriz mostra que tickets já o citam, e o estado diz com que autoridade (AOS-317).",
+        "",
+        "**Citar não é alegar** (AOS-318). Um bloco de ticket pode nomear um ADR sem entrar nesta tabela: `<!-- rtm: adrs-mencionados -->` declara o bloco **inteiro** como menção, e o par `<!-- rtm: menção -->` … `<!-- /rtm: menção -->` declara só o **trecho** entre os dois — um ADR citado também fora do trecho continua a contar como implementado. As duas formas escrevem-se exactamente assim, em minúsculas e com dois-pontos — não há grafia alternativa (`mencao` sem acento, `RTM:`, `rtm :` são erro) — e dentro de código (crases ou bloco cercado) são texto, não directiva. Uma menção não entra na coluna **Nº** nem satisfaz a invariante «≥ 1 ticket implementador» que o `ref-lint` impõe; qualquer comentário que comece por `rtm` e não seja uma das formas, ou um trecho desequilibrado, avermelha os dois gates. Também os avermelha uma cerca de código ou um comentário HTML que não feche ou que atravesse o cabeçalho de outro ticket, um comentário com um cabeçalho lá dentro, ou uma cerca que contenha uma abertura do seu próprio tipo (AOS-472): uma linha de prosa começada por três crases ou três tis abre uma cerca, um `<!--` solto abre um comentário, e o que fica lá dentro deixa de ser directiva e de delimitar blocos. "
+        + f"Hoje {sum(len(r['mencoes']) for r in rows)} par(es) (ticket, ADR) do canon ficam fora da tabela por serem só menção, em {len([r for r in rows if r['mencoes']])} ADR(s). A regra está em `scripts/ci/adr_citacoes.py`.",
         "",
         "| ADR | Decisão | Estado | Nº | Tickets `AOS-NNN` que o implementam | Doc(s) técnico(s) |",
         "|---|---|---|---|---|---|",
@@ -807,7 +905,16 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
     # Os epics desta gama são TODOS os que contêm tickets nela — não «o último».
     # Nomear só um transformava cada epic novo numa substituição do anterior.
     rem_epics = epics_between(aos_key(rem_low), stats["max_aos"], tickets, index)
-    rem_epics_str = ", ".join(rem_epics)
+
+    def rem_epics_menos(*ja_nomeados: str) -> str:
+        """A lista da gama de remediação sem os epics que a linha já nomeia literalmente.
+
+        Um epic antigo que receba um ticket novo entra nesta gama e sairia DUAS vezes
+        na mesma célula (o AOS-407, em EPIC-09, fez isso na linha do `tecnica/09`). As
+        declarações não mudam — o epic continua declarado com os tickets das duas gamas;
+        o que se evita é a repetição no texto.
+        """
+        return ", ".join(e for e in rem_epics if e not in ja_nomeados)
     rem_claims = [
         (e, [t for t in tickets_between(aos_key(rem_low), stats["max_aos"], tickets) if index[t] == e])
         for e in rem_epics
@@ -840,11 +947,11 @@ def generate_section6(tickets: dict, stats: dict, rf_ids: list, nfr_ids: list) -
          [("EPIC-07", rng(64, 75))]),
         ("| `tecnica/08_Observabilidade_Evals.md` | EPIC-08 | AOS-076 – AOS-086 |",
          [("EPIC-08", rng(76, 86))]),
-        (f"| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, {rem_epics_str} | AOS-087 – AOS-097 (+ {rem_range}) |",
+        (f"| `tecnica/09_Governacao_Conformidade.md` | EPIC-09, {rem_epics_menos('EPIC-09')} | AOS-087 – AOS-097 (+ {rem_range}) |",
          [("EPIC-09", rng(87, 97))] + rem_claims),
         ("| `tecnica/10_Topologia_Implantacao_Operacao.md` | EPIC-10, EPIC-11 | AOS-098 – AOS-108 (+ AOS-118) |",
          [("EPIC-10", rng(98, 108)), ("EPIC-11", ["AOS-118"])]),
-        (f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), {rem_epics_str} | AOS-109 – AOS-118 (+ AOS-045–054, + {rem_range}) |",
+        (f"| `tecnica/11_Convencoes_Engenharia_Evolucao.md` | EPIC-11 (+ EPIC-05 auto-mod), {rem_epics_menos('EPIC-11', 'EPIC-05')} | AOS-109 – AOS-118 (+ AOS-045–054, + {rem_range}) |",
          [("EPIC-11", rng(109, 118)), ("EPIC-05", rng(45, 54))] + rem_claims),
         ("| `tecnica/12_Contratos_de_Interface.md` | EPIC-01, EPIC-05, EPIC-06, EPIC-14 | AOS-003, 004; AOS-045–054; AOS-055–063; AOS-144–162 |",
          [("EPIC-01", rng(3, 4)), ("EPIC-05", rng(45, 54)), ("EPIC-06", rng(55, 63)),

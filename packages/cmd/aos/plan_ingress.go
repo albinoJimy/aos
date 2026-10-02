@@ -1,0 +1,612 @@
+package main
+
+// plan_ingress.go — POR ONDE ENTRA UM OBJECTIVO NO CAMINHO DO PLANO (AOS-417, ADR-028).
+//
+// # O QUE ISTO RESOLVE
+//
+// O caminho do plano não tinha superfície de rede nenhuma: o `aos-orq` é só CLI, e o compose
+// exclui-o do arranque de propósito («um `serve` possui um run e termina, não é um daemon»).
+// Alguém tinha de estar no terminal do servidor. Tudo o resto que faltava para o produto ser
+// usável — não haver UI, cunhar o NHI à mão, a cerimónia de aprovação — podia ser resolvido e o
+// problema permanecia, porque este passo permanecia.
+//
+// # O QUE ISTO NÃO É
+//
+// Não é o orquestrador. O nó GRAVA UM FACTO e devolve; quem corre o plano é o `aos-orq`, que
+// consome o facto e reclama o lease como sempre fez. O nó não importa `control-plane/orchestrator`
+// — nem aqui nem transitivamente —, e o guard-test de fronteira que o impõe não muda. É a
+// diferença entre o nó CONHECER a existência do caminho do plano e o nó EXECUTAR o caminho do
+// plano: a primeira é o que o ADR-028 aceita, a segunda é o que o ADR-018 proíbe.
+//
+// O ADR-023 já abria esta porta: o SCH «escreve os seus próprios factos de decisão, que vivem no
+// stream do plano, não no stream do run». Um pedido de plano é dessa família — não é uma
+// transição de ciclo de vida, e por isso não precisa da posse para ser escrito.
+//
+// # O QUE UMA REVISÃO ADVERSARIAL CORRIGIU AQUI, E QUE NÃO SE PODE PERDER
+//
+// A primeira versão desta rota tinha dois defeitos CRÍTICOS, ambos com a mesma raiz: seguiu o
+// molde do `POST /runs` sem verificar se as razões do molde valiam aqui.
+//
+//  1. **A fila estava no espaço de nomes dos runs.** O stream chamava-se `plan.requests` e o
+//     read-path de trajectória endereça streams POR `run_id` — logo `GET /runs/plan.requests/
+//     trajectory` servia a fila INTEIRA, ao vivo, a um leitor de QUALQUER região (uma fila não
+//     tem residência selada, pelo que a verificação cross-region caía no ramo «run legado, sem
+//     check»). O `run_id` também não era validado, pelo que `POST /runs {run_id:"plan.requests"}`
+//     injectava eventos de run dentro da fila. Ver [runIDReservado].
+//
+//  2. **Selava a residência de um run que não criava.** O `POST /runs` sela porque VAI HOSPEDAR
+//     o run; esta rota selava sem criar nada e deixava o `run_id` LIVRE. Como a residência é
+//     fixada pelo PRIMEIRO registo e não é re-negociável, quem pedisse um plano primeiro fixava
+//     a fronteira de soberania de um run que OUTRA pessoa viria a criar: a vítima corria o run e
+//     recebia 404 no seu próprio resultado, e a região do atacante lia-o. É pior do que o squat
+//     que o `POST /runs` já permitia — ali o id fica ocupado e a vítima não corre (negação de
+//     serviço); aqui a vítima corre e o conteúdo sai (exfiltração).
+//
+// A lição, que vale para a próxima rota que espelhe outra: copiar a FORMA de um handler é
+// barato, e copiar a JUSTIFICAÇÃO é o que tem de ser feito à mão. Um passo cuja razão de ser
+// não se verifica no destino não é defesa em profundidade — é um efeito colateral por escrever.
+
+import (
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"math"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/aos-ref/substrate/eventstore"
+)
+
+// EventTypePlanRequestSubmitted — um objectivo entrou no caminho do plano e espera consumo.
+//
+// FAMÍLIA PRÓPRIA, e não `plan.*`. A família `plan` existe e tem dono declarado em
+// `plannerevents`, que vive no módulo que o nó está PROIBIDO de importar. Escrever nela a partir
+// daqui faria a coluna «dono» da taxonomia mentir, e o ADR-028 §2.1 diz explicitamente para não
+// reutilizar aquelas constantes. Uma família própria custa uma linha em `tecnica/13` e mantém a
+// propriedade legível: o PEDIDO é do nó, o PLANO é do orquestrador.
+const EventTypePlanRequestSubmitted = "planrequest.submitted"
+
+// streamsReservados é o PREFIXO que separa os streams internos do nó do espaço de nomes dos
+// `run_id`. Existe porque o Event Store tem UM espaço de nomes de streams e as rotas de run
+// endereçam-no directamente a partir do URL: sem esta separação, todo o stream interno é
+// legível por `GET /runs/{id}/trajectory` e escrevível por `POST /runs`.
+//
+// A barra é deliberada: nenhum `run_id` em uso a contém, e [runIDReservado] recusa-a na
+// fronteira das duas rotas de submissão — a reserva só vale enquanto for IMPOSTA.
+//
+// O HÍFEN TAMBÉM É DELIBERADO, e a primeira versão disto usava um PONTO — `aos.internal/` — que
+// tornava a rota INUTILIZÁVEL sobre JetStream. O `stream_id` do AOS é livre, mas um subject NATS
+// não é: o ponto separa tokens, e [jetstream.Store.subjectDe] RECUSA qualquer `stream_id` que o
+// contenha — em vez de escapar em silêncio para um subject vizinho onde outro stream leria os
+// nossos eventos, que é a escolha certa. O `Append` chama-o antes de tudo, pelo que o
+// `POST /plans` respondia `503` a TODO o pedido num nó replicado.
+//
+// O que torna isto mais do que um erro de digitação: o substrato de ficheiro NÃO arbitra entre
+// processos (DEF-282) e o JetStream É o único que arbitra — ou seja, o único substrato onde um
+// consumidor da fila pode sequer existir era exactamente aquele onde o ingresso não gravava.
+// Ver [TestAOS417NomeDoStreamERepresentavelNoNATS], que o impede de voltar.
+const streamsReservados = "aos-internal/"
+
+// planRequestStream é o stream ÚNICO onde os pedidos se acumulam — a fila. Não se inventa
+// substrato: o Event Store já é append-only, ordenado e durável, e o consumo-uma-só-vez sai da
+// idempotency-key, no molde que o `approval_store_durable` já usa para as aprovações.
+const planRequestStream = streamsReservados + "plan-requests"
+
+// planRequestRunID é o «run» sintético que, com o StepID, forma a idempotency-key
+// (`run_id + ":" + step_id`). O stream não pertence a run nenhum: pertence à fila.
+const planRequestRunID = streamsReservados + "plan-requests"
+
+// planIngressNHI é a identidade emissora do facto. O pedido é do NÓ — quem o submeteu está no
+// payload, atribuído pela credencial verificada, não auto-declarado.
+const planIngressNHI = "nhi:aos-node/plan-ingress"
+
+// maxObjetivoBytes limita o objectivo de um pedido de plano.
+//
+// O tecto de corpo (`maxBodyBytes`) admite ~1 MiB, e um objectivo é uma frase ou um parágrafo —
+// não um ficheiro. Sem tecto próprio, cada pedido escreve até um megabyte de texto livre e
+// untrusted num log append-only que vai ao WAL e aos backups, e a fila não tem hoje quem a
+// consuma nem retenção que a encolha. 16 KiB é generoso para o uso legítimo e fecha a diferença
+// de quatro ordens de grandeza entre o que o produto precisa e o que a fronteira aceitava.
+const maxObjetivoBytes = 16 << 10
+
+// runIDReservado indica se um `run_id` invade o espaço de nomes interno do nó.
+//
+// É chamada pelas DUAS rotas de submissão, e não só por esta, e isso é necessário e não zelo:
+// se o `POST /runs` puder nomear o stream da fila, os eventos desse run são apensos À FILA e um
+// consumidor que não filtre por `type` lê transições de estado como pedidos. Uma reserva que só
+// uma das portas respeita não é uma reserva.
+func runIDReservado(runID string) bool {
+	return strings.HasPrefix(strings.TrimSpace(runID), streamsReservados)
+}
+
+// A regra do que um `stream_id` pode ser vive em [eventstore.ValidarStreamID], e o nó CHAMA-A.
+//
+// Esteve aqui duplicada, com o argumento de que o nó não pode importar o backend JetStream só
+// para lhe perguntar a regra. O argumento era válido e a conclusão era errada: a regra não é
+// do backend, é do CONTRATO do Event Store — e o nó já importa `substrate/eventstore`. Passou
+// para lá, e as três cópias (esta, a do `subjectDe` e a extracção do gate) passaram a uma.
+
+// runIDInvalido indica se um `run_id` não pode ser o nome de um stream.
+//
+// # PORQUE É QUE ISTO É VALIDADO NA FRONTEIRA, E NÃO ONDE É USADO
+//
+// O `run_id` de um run **é** o seu stream — o comentário do `handleSubmit` di-lo por escrito.
+// Até aqui o ingresso só recusava o vazio e o prefixo reservado, pelo que um cliente escolhia
+// livremente o nome de um stream do Event Store. Consequências medidas:
+//
+//   - um `run_id` com ponto (`cliente.pedido-1`) é aceite sobre WAL e recusado com `E_CONFIG`
+//     sobre JetStream — funciona em desenvolvimento e parte na única topologia que arbitra
+//     entre processos (DEF-282);
+//   - propaga-se a tudo o que deriva do run: `lease:<run>`, step-ledger, checkpoint, steer,
+//     eventsink do RM, sandbox, broker.
+//
+// Validar no `Append` — onde o valor é USADO — converteria isto de defeito silencioso em
+// avaria visível, mas no sítio errado: o run já teria sido aceite, e o erro apareceria a meio
+// da execução. É a mesma disciplina que o nó já aplica às env vars, onde uma `AOS_*_INTERVAL`
+// mal formada **aborta o arranque** em vez de degradar em silêncio.
+//
+// # SÓ O `POST /plans` A CHAMA, E A ASSIMETRIA É MEDIDA — NÃO É ESQUECIMENTO
+//
+// O AOS-424 pedia esta validação nas DUAS rotas de submissão. Ficou só numa, porque ligá-la ao
+// `POST /runs` **partiria o caminho do plano em produção, hoje**:
+//
+//   - `plan.ValidNodeID` — a grammar ÚNICA do `node_id`, declarada em `plandocument.go` — admite
+//     EXPLICITAMENTE `.` e `:` no charset fechado que aceita;
+//   - `childRunID(runID, nodeID)` compõe `<run>~<node_id>` e esse id vai, tal e qual, no
+//     `POST /runs` que o executor de nós faz ao nó (`node_executor.go:224` →
+//     `node_client.go:331`);
+//   - logo um nó de plano chamado `analise.dados` produz o run filho `run-x~analise.dados`, que
+//     esta guarda recusaria com `400` — e o nó do plano nunca executaria.
+//
+// São DOIS INVARIANTES DECLARADOS EM CONFLITO, e a escolha não é de quem escreve esta função:
+// o `ValidNodeID` permite o ponto por decisão registada (AOS-231), e o `subjectDe` recusa-o por
+// decisão registada. Resolver o conflito em silêncio aqui converteria «funciona sobre WAL,
+// parte sobre JetStream» em «parte em todo o lado» — uma REGRESSÃO para quem corre sobre WAL,
+// que é o que corre em produção.
+//
+// O `POST /plans` não tem esse problema: é superfície nova, o `run_id` é escolhido por um
+// utilizador final e não há composição de ids a jusante desta rota. Apertar o que se pode
+// apertar sem partir nada é melhor do que não apertar nada.
+//
+// **O que falta para fechar o eixo**, e está registado no AOS-424: tornar o `node_id`
+// stream-safe por construção — apertar o `ValidNodeID` para excluir `.` e `:` —, e só então
+// ligar esta guarda ao `POST /runs`. É a tese do AOS-425 aplicada: validar onde o valor ENTRA
+// (o documento de plano), não onde é usado.
+//
+// Runs JÁ CRIADOS com nomes assim não são afectados por esta guarda (ela só actua na
+// submissão); o que os afecta é a trava de leitura do AOS-426, e isso está declarado lá.
+func runIDInvalido(runID string) bool {
+	return eventstore.ValidarStreamID(runID) != nil
+}
+
+// planRequest é o corpo aceite. Deliberadamente MÍNIMO: o que o orquestrador precisa para
+// decompor é o objectivo; tudo o resto — tools, snapshot, aprovadores — é decisão do plano, não
+// do pedido.
+type planRequest struct {
+	RunID     string `json:"run_id"`
+	Objective string `json:"objective"`
+}
+
+// planRequestResponse tem a MESMA forma da resposta do `POST /runs`: um pedido repetido e um
+// pedido novo são indistinguíveis de fora, e é isso que se quer.
+type planRequestResponse struct {
+	RunID  string `json:"run_id"`
+	Status string `json:"status"`
+}
+
+// planRequestVersao é a versão do SCHEMA DESTE PAYLOAD, e não a do envelope.
+//
+// São coisas distintas e a distinção custou-me uma revisão: o Event Store preenche
+// `schema_version` no ENVELOPE (hoje "1.0"), que versiona a forma do envelope — não a do corpo
+// que cada tipo de evento define. O `tecnica/13` §3.1 di-lo por escrito: o payload «tem o seu
+// próprio schema por tipo de evento».
+//
+// PORQUE PRECISA DE VERSÃO PRÓPRIA, e com urgência maior do que a dos outros factos do nó: o
+// ÚNICO consumidor previsto deste facto vive no `packages/cmd/aos-orq`, que é OUTRO MÓDULO, e
+// este tipo está em `package main` — ele NÃO O PODE IMPORTAR. Vai reescrever a struct à mão, e
+// nenhum gate liga as duas cópias. Sem um campo que as distinga, acrescentar um campo aqui
+// amanhã é invisível do outro lado; com ele, o consumidor recusa o que não sabe ler em vez de
+// o interpretar por omissão.
+//
+// RESÍDUO DECLARADO: publicar o schema em `packages/substrate/eventstore/schemas/` — como o
+// envelope já tem — fecharia isto melhor do que uma constante, e fica por fazer. A versão é o
+// que se consegue hoje sem inventar maquinaria que ninguém pediu.
+const planRequestVersao = "1.0"
+
+// planRequestSubmittedVersao é a versão do payload do PEDIDO, e existe separada desde AOS-429.
+//
+// O `planRequestVersao` acima é partilhado por TRÊS payloads — submetido, reclamado e desfecho.
+// Subi-lo para marcar a cifra do objectivo afirmaria uma mudança de forma em dois payloads que
+// não mudaram nada, e um leitor que confiasse nisso procuraria uma diferença que não existe.
+//
+// 1.1: o payload pode trazer `objective_sealed` em vez de `objective`. A versão sobe porque a
+// forma EM REPOUSO mudou e o log é append-only — factos 1.0 continuam a ser lidos tal como
+// foram escritos, e quem vir 1.1 sabe que o texto pode não estar onde estava.
+//
+// A forma do WIRE não mudou: o consumidor continua a receber o objectivo em claro em
+// `respostaDeReclamo` e não sabe nada disto.
+//
+// 1.2 (AOS-477): o payload passa a trazer `objective_commitment` e o sal com que foi calculado —
+// selado (`objective_salt_sealed`) quando o objectivo é selado, em claro (`objective_salt`) quando
+// o objectivo também está. Aditivo: um leitor 1.1 ignora os três campos, e um facto 1.1 lido por
+// este nó não tem compromisso (a reclamação entrega-o vazio). Ver `plan_origem.go`.
+const planRequestSubmittedVersao = "1.2"
+
+// planRequestPayload é o facto gravado — e é um CONTRATO, porque alguém noutro módulo o vai ler.
+//
+// O `principal`, o `board` e a `region` vêm da credencial VERIFICADA pelo mesmo gate que
+// autoriza o `POST /runs` — nunca do corpo, que não teria como os provar. O `board` viaja porque
+// é o identificador de GOVERNAÇÃO do pedido (não é PII) e, desde que esta rota deixou de selar
+// residência, não fica gravado em mais lado nenhum: sem ele o consumidor não consegue
+// reconstituir sob que autoridade o pedido entrou.
+type planRequestPayload struct {
+	Versao string `json:"v"`
+	RunID  string `json:"run_id"`
+	// Objective é o objectivo EM CLARO, e desde o AOS-429 só é preenchido quando NÃO há titular
+	// sob o qual selar — um nó sem gate soberano composto. Com titular, fica vazio e o texto
+	// vive em [planRequestPayload.ObjetivoSelado].
+	//
+	// Os dois são MUTUAMENTE EXCLUSIVOS por construção (ver `selarObjetivo`), e há teste a
+	// amarrá-lo: o texto em claro ao lado do ciphertext tornaria a cifra decorativa.
+	Objective string `json:"objective,omitempty"`
+	// ObjetivoSelado é o objectivo cifrado sob a KEK do TITULAR (o `principal` do submissor),
+	// pelo mesmo `audit.SealContent` que sela o conteúdo dos runs. É o que põe o texto livre do
+	// utilizador dentro do alcance do crypto-shredding — ver `plan_objetivo_selado.go`.
+	ObjetivoSelado []byte `json:"objective_sealed,omitempty"`
+	// CompromissoDoObjetivo é HMAC-SHA256(sal, objectivo) — o valor que o `aos-orq` recalcula
+	// sobre o objectivo que recebe e grava no `plan.proposed` (AOS-477). Em claro de propósito: é o
+	// campo por onde plano e pedido se casam sem decifrar nada, e sem o sal não se inverte.
+	CompromissoDoObjetivo string `json:"objective_commitment,omitempty"`
+	// SalSelado é o sal do compromisso, selado sob a KEK do titular como o objectivo — o
+	// `/dsar/erase` torna-o ilegível e, com ele, o compromisso inverificável.
+	SalSelado []byte `json:"objective_salt_sealed,omitempty"`
+	// Sal é o sal em claro, SÓ quando o objectivo também está em claro (sem titular). Os dois
+	// pares são mutuamente exclusivos como `objective`/`objective_sealed` — ver `selarObjetivo`.
+	Sal       string `json:"objective_salt,omitempty"`
+	Principal string `json:"principal,omitempty"`
+	Board     string `json:"board,omitempty"`
+	Region    string `json:"region,omitempty"`
+}
+
+// handlePlanRequest recebe um objectivo, grava o facto e devolve.
+//
+// # PORQUE É QUE A COLISÃO RESPONDE 201 E NUNCA 409
+//
+// Um pedido para um run que já foi pedido devolve `201 accepted`, exactamente como um pedido
+// novo. Não é conveniência: é a garantia de NÃO-ORACULARIDADE, fixada no **ADR-030 §2.1**.
+//
+// A ATRIBUIÇÃO MUDOU, e vale a pena saber porquê. Esta linha dizia «do ADR-016» — e o ADR-016 não
+// contém a tese: tem 322 linhas e zero ocorrências de «oráculo», `201` ou `409`. O que ele decide
+// é o read-path SOBERANO (§5) e a separação canal-controlo/canal-dados (§6). A prática era real e
+// estava imposta com teste; o que não existia era a fonte. Descobriu-se no AOS-423, ao ir
+// reargumentá-la para um consumidor autenticado, e o ADR-030 deu-lhe casa. O `POST /runs` já
+// responde assim de propósito, e só dá `409` a quem traz credencial forte E residência selada
+// coincidente — uma excepção que existe por retro-compatibilidade e que aqui NÃO se repete,
+// porque não há comportamento antigo a preservar. Uma superfície nova começa na postura mais
+// apertada que consegue.
+//
+// Quem quiser saber o estado de um run pede-o pela rota de leitura, que passa pela governação.
+func (h *apiHandler) handlePlanRequest(w http.ResponseWriter, r *http.Request) {
+	// (1) ADMISSION antes de ler o corpo. O balde é o MESMO do `POST /runs`, de propósito: uma
+	// superfície nova que não passasse pela admissão seria uma porta lateral para o mesmo nó.
+	//
+	// O TECTO DE RUNS EM CURSO NÃO SE APLICA AQUI, e dizê-lo é mais honesto do que copiá-lo: ele
+	// conta runs hospedados, e esta rota não hospeda nenhum (é o que
+	// [TestAOS417IngressoNaoHospedaORun] impõe). Chamá-lo seria escrever uma guarda que nunca
+	// dispara e afirmar uma protecção que não existe. O que LIMITA esta rota é o balde, o tecto
+	// de corpo e o [maxObjetivoBytes]; o TECTO DE PENDENTES da fila é decisão em aberto —
+	// ADR-028 §4, registada no AOS-417 como resíduo por decidir, não como esquecimento.
+	if !h.bucket.allow() {
+		writeError(w, http.StatusTooManyRequests, "rate limit excedido")
+		return
+	}
+
+	var req planRequest
+	if status, ok := h.decodeJSON(w, r, &req); !ok {
+		writeError(w, status, "corpo invalido")
+		return
+	}
+	if req.RunID == "" {
+		writeError(w, http.StatusBadRequest, "run_id em falta")
+		return
+	}
+	// O ESPAÇO DE NOMES INTERNO É RESERVADO. Ver [runIDReservado]: sem isto, um pedido pode
+	// nomear o stream da própria fila.
+	if runIDReservado(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id reservado")
+		return
+	}
+	// AOS-424: o `run_id` É o nome de um stream, e nem todo o texto o pode ser.
+	// Ver [runIDInvalido] em plan_ingress.go, que diz porque é que isto se valida na
+	// FRONTEIRA e não no ponto de uso.
+	if runIDInvalido(req.RunID) {
+		writeError(w, http.StatusBadRequest, "run_id invalido")
+		return
+	}
+	if req.Objective == "" {
+		// Um pedido sem objectivo não tem o que decompor. Recusa-se aqui em vez de gravar um
+		// facto que o consumidor teria de rejeitar mais tarde, longe de quem o submeteu.
+		writeError(w, http.StatusBadRequest, "objective em falta")
+		return
+	}
+	if len(req.Objective) > maxObjetivoBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "objective demasiado longo")
+		return
+	}
+
+	p := planRequestPayload{Versao: planRequestSubmittedVersao, RunID: req.RunID, Objective: req.Objective}
+
+	// (2) SOBERANIA — a MESMA autoridade que o `POST /runs` usa, e SÓ a autoridade.
+	//
+	// NÃO SE SELA RESIDÊNCIA AQUI. O selo é pré-condição da HOSPEDAGEM de um run («nenhum run
+	// soberano fica legível antes de a sua residência estar durável») e esta rota não hospeda
+	// nada: selar fixaria, de forma não-renegociável, a fronteira de soberania de um `run_id`
+	// que fica LIVRE para outra pessoa criar. Ver o cabeçalho deste ficheiro e
+	// [TestAOS417IngressoNaoReivindicaResidencia]. A residência continua a ser selada por quem
+	// cria o run — incluindo os runs que o `aos-orq` vier a criar a partir deste pedido —, que é
+	// onde o invariante pertence. A REGIÃO do submissor viaja no facto para o consumidor a
+	// honrar; o que não viaja é uma reivindicação sobre um run que ainda não existe.
+	if h.readGov != nil {
+		submitter, ok := h.readGov.authorize(r)
+		if !ok {
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
+		if submitter.principal == "" {
+			writeError(w, http.StatusForbidden, "nao autorizado")
+			return
+		}
+		p.Principal = submitter.principal
+		p.Board = submitter.board
+		p.Region = submitter.region
+	}
+
+	// TECTO DE PENDENTES (AOS-423 / ADR-030 §2.7) — recusa-se o pedido NOVO, nunca se descarta
+	// o antigo.
+	//
+	// A ordem importa: o tecto é verificado DEPOIS da autorização e ANTES da escrita. Antes da
+	// autorização, um chamador não autenticado saberia pela resposta que a fila está cheia — que
+	// é informação sobre o estado interno do nó, exactamente o que a §2.1 do ADR-030 fecha.
+	//
+	// O `503` e não o `429`: não é o chamador que está a pedir depressa de mais, é o nó que não
+	// tem quem drene. Um `429` mandaria o cliente tentar outra vez daqui a pouco, e a espera
+	// certa aqui é a de um operador a olhar para o consumidor.
+	//
+	// **Isto custa uma varredura do stream por submissão**, e fica declarado: a projecção é
+	// linear no número de eventos da fila, como o molde das aprovações. Com o tecto em
+	// [DefaultPlanMaxPending] o pior caso é limitado, mas a fila cresce com o HISTÓRICO e não só com
+	// os pendentes — a retenção do stream é resíduo declarado do AOS-423, e a marca de água do
+	// AOS-429 é o que impede que o custo cresça com a idade do nó.
+	//
+	// DESDE O AOS-464 SÃO DUAS CAMADAS, uma projecção: o tecto GLOBAL do nó e a repartição por
+	// SUBMISSOR. As duas contagens saem da mesma leitura, pelo que a segunda camada não custa uma
+	// varredura a mais.
+	// A REPARTIÇÃO POR SUBMISSOR SÓ SE COMPÕE COM O GATE (AOS-464), e a razão é diferente da do
+	// eixo SSE: aqui o corpo do pedido NUNCA declara o principal ([planRequest] tem `run_id` e
+	// `objective` e mais nada), pelo que sem `readGov` o `p.Principal` fica VAZIO para TODOS os
+	// chamadores. Um tecto chaveado no vazio não seria contornável — seria um tecto GLOBAL mais
+	// apertado, a recusar a 125 em vez de 1000, anunciado como equidade. Não compor é a única
+	// leitura honesta, e o banner de arranque declara-a.
+	// EXIGE-SE UM PRINCIPAL INFORJÁVEL (`h.readGov.cred != nil`), e não só um gate composto. É a
+	// correcção de um ALTO que uma revisão adversarial independente mediu, e inverte a postura que a
+	// primeira versão deste ticket tinha.
+	//
+	// # PORQUE É QUE A POSTURA DEMO-GRADE NÃO PODE COMPOR ESTE TECTO
+	//
+	// Com o gate composto e SEM credencial forte, o submissor vem do header `X-Aos-Reader`, que o
+	// CHAMADOR escreve. Nos eixos gémeos (AOS-456a, AOS-459) isso deixa um atacante EVADIR o tecto
+	// dele — mau, mas limitado: ele obtém o que obteria sem tecto nenhum.
+	//
+	// AQUI É PIOR, E É QUALITATIVAMENTE OUTRO. O atacante não precisa de evadir a quota dele: escreve
+	// o header da VÍTIMA e gasta a dela. MEDIDO: com a quota a 5 e o global a 20, **5 pedidos
+	// forjados fecham uma vítima nomeada fora do `POST /plans` com 15 dos 20 lugares livres**; com os
+	// defaults, 125 pedidos fecham-na com 875 livres, e `aos_plan_queue_pending` lê 125/1000 — um
+	// painel saudável. A fronteira 201/429 conta-lhe também os pendentes exactos da vítima.
+	//
+	// A diferença face aos gémeos é a DURABILIDADE: no AOS-456a os lugares são runs em curso, que
+	// executam e libertam; no AOS-459 são ligações SSE, que o atacante tem de segurar. Aqui um pedido
+	// só sai da fila com desfecho terminal ou reclamação viva — a ocupação forjada é durável e
+	// GRÁTIS, fire-and-forget até um operador drenar.
+	//
+	// Ou seja: a variável que se liga PARA DAR EQUIDADE entregava um trinco de negação DIRIGIDA. É a
+	// classe «tecto inerte anunciado como equidade» que o ciclo AOS-456→AOS-463 existe para fechar,
+	// com o sinal invertido — e declarar não bastava, porque sob abuso era PIOR do que não existir.
+	//
+	// # É O ARGUMENTO DESTE TICKET APLICADO POR INTEIRO
+	//
+	// Ele já recusava compor sobre um principal VAZIO porque «um tecto chaveado no vazio valeria como
+	// tecto global mais apertado, anunciado como equidade». O mesmo raciocínio vale para um principal
+	// FORJÁVEL, e aqui com uma consequência pior. Recusar as duas posturas é a leitura consistente.
+	//
+	// O PREDICADO É O DO SÍTIO DE USO (`h.readGov.cred`), e não um predicado sobre o `*Node`: é a
+	// credencial que esta decisão realmente consulta que decide, não a que o nó por acaso tem. Foi o
+	// achado MÉDIO-1 da sétima revisão, pago no eixo SSE.
+	submissorImputavel := ""
+	if h.readGov != nil && h.readGov.cred != nil && h.cfg.planMaxPendingPerSubmitter > 0 {
+		submissorImputavel = p.Principal
+	}
+
+	total, doSubmissor, jaPendente, err := pendentesNaFila(r.Context(), h.node.EventStore, &h.marcaDaFila,
+		submissorImputavel, req.RunID)
+	if err != nil {
+		h.logf("plan-ingress: tecto nao verificavel: %v", err)
+		writeError(w, http.StatusServiceUnavailable, "fila indisponivel")
+		return
+	}
+
+	// A REPARTIÇÃO CORRE ANTES DO GLOBAL, e a razão é o DIAGNÓSTICO, não o custo — as duas
+	// contagens saem da MESMA projecção, já feita acima, logo nenhuma ordem poupa trabalho.
+	//
+	// Quando as duas condições são verdadeiras ao mesmo tempo (a fila está cheia E este submissor
+	// está acima da sua quota), o mais provável é que ele seja a CAUSA. Responder-lhe 503 — «o nó
+	// não tem quem drene» — ensina-lhe o contrário do que é verdade: manda-o procurar o consumidor
+	// quando o problema são os 900 pedidos dele. Na ordem inversa não se perde nada: um submissor
+	// DENTRO da sua quota continua a receber 503 quando a fila está cheia por causa de outros, que
+	// é a leitura certa para ele.
+	//
+	// O CÓDIGO É OUTRO, e a distinção é o conteúdo da correcção: **429** aqui, porque é o chamador
+	// que tem de esperar ou drenar o que é dele; **503** no global, porque é o nó que não tem quem
+	// drene e a espera certa é a de um operador. Um 503 por-submissor diria a um cliente saudável
+	// que o nó está em baixo.
+	//
+	// # O QUE ESTA DISTINÇÃO REVELA, E PORQUE SE ACEITA (AOS-464, decisão declarada)
+	//
+	// O ADR-030 §2.7 diz «com tecto atingido, o ingresso recusa pedidos novos» e NÃO fixa o código,
+	// pelo que o 429 não contradiz nenhuma decisão congelada. Mas a §2.1 — e o comentário acima, que
+	// é a razão de o tecto ser verificado DEPOIS da autorização — trata «a fila está cheia» como
+	// informação sobre o estado interno do nó.
+	//
+	// A DISTINGUIBILIDADE É NOVA, e é um bit: até ao AOS-464 um chamador recusado não sabia se a culpa
+	// era dele ou do nó; agora, ao receber 503 **dentro** da sua quota, infere que OUTROS encheram a
+	// fila. É informação agregada sobre a actividade de terceiros, e não existia.
+	//
+	// Aceita-se, e a razão não é conveniência: (1) revela-se só a um chamador AUTENTICADO, que já via
+	// a fila cheia pelo 503 antes deste ticket — o canal ganha um bit, não abre-se de novo; (2) o bit
+	// é exactamente o que torna o erro ACCIONÁVEL, e uma recusa sobre a qual o chamador não pode agir
+	// é a forma de defeito que este eixo inteiro existe para fechar; (3) não revela a EXISTÊNCIA de
+	// nenhum pedido nem de nenhum run — que é o que a §2.1 protege —, nem permite contar os pedidos de
+	// outro submissor: dá o agregado «cheia / não cheia», com a granularidade de um pedido por
+	// tentativa, que o balde de taxa já limita.
+	//
+	// Se o dono decidir que um bit é demais, a correcção é responder 503 nas DUAS camadas e manter a
+	// distinção só no log do operador — o diagnóstico perde-se para o cliente e mantém-se para quem
+	// opera. Fica escrito para que essa decisão seja possível sem reargumentar isto.
+	// A RE-SUBMISSÃO DO QUE JÁ ESTÁ NA FILA NÃO GASTA QUOTA, e a primeira versão deste ticket gastava.
+	//
+	// Um pedido repetido para um `run_id` já pendente não acrescenta nada à fila — o `Append` é
+	// idempotente pela chave, e o banner promete «201 accepted IDEMPOTENTE». Recusá-lo por quota era um
+	// falso negativo puro, e pior: alcançável a 125 por chamador e deterministicamente sozinho, em vez
+	// de só com 1000 globais. Acontecia exactamente quando um cliente faz retry de rede. Achado MÉDIO-4
+	// de uma revisão adversarial independente.
+	//
+	// A ISENÇÃO É SÓ PARA O PRÓPRIO SUBMISSOR, e a primeira versão isentava qualquer `run_id` pendente —
+	// um oráculo de existência cross-submissor e cross-região, medido pela revisão final (ADR-030 §2.1).
+	// Com o filtro, para quem sonda um `run_id` alheio, o pedido repetido e o novo levam a MESMA
+	// resposta; só o dono do pedido vê o seu próprio retry passar, e esse já sabe que o submeteu.
+	//
+	// LIMITE DECLARADO: a isenção cobre só a janela PENDENTE. Depois de reclamado o pedido sai da fila,
+	// e um retry com a quota cheia leva 429 embora o `Append` fosse dedup.
+	//
+	// O tecto GLOBAL mantém o padrão herdado do AOS-423 (recusa também o repetido): mexer nele é fora
+	// do escopo deste ticket, e está declarado nos residuais.
+	if submissorImputavel != "" && !jaPendente && doSubmissor >= h.cfg.planMaxPendingPerSubmitter {
+		h.logf("plan-ingress: RECUSADO por tecto DO SUBMISSOR — %q tem %d pedidos por drenar "+
+			"(tecto por-submissor %d, global %d, fila %d)", submissorImputavel, doSubmissor,
+			h.cfg.planMaxPendingPerSubmitter, h.cfg.planMaxPending, total)
+		h.recusasDaFilaPorSubmissor.Add(1)
+		writeError(w, http.StatusTooManyRequests, "quota de pedidos por drenar deste submissor atingida")
+		return
+	}
+	if total >= h.cfg.planMaxPending {
+		h.logf("plan-ingress: RECUSADO por tecto — %d pedidos por drenar (tecto %d); o consumidor "+
+			"nao esta a drenar a fila", total, h.cfg.planMaxPending)
+		h.recusasDaFilaGlobal.Add(1)
+		writeError(w, http.StatusServiceUnavailable, "fila de pedidos cheia")
+		return
+	}
+
+	// (2-bis-antes) O COMPROMISSO DO OBJECTIVO (AOS-477), calculado sobre o texto em claro ANTES
+	// de ele ser selado, com um sal novo por pedido. O sal segue o destino do objectivo no passo
+	// seguinte: selado com ele, ou em claro com ele. Ver `plan_origem.go`.
+	sal, errSal := novoSal()
+	if errSal != nil {
+		h.logf("plan-ingress: RECUSADO — %v", errSal)
+		writeError(w, http.StatusServiceUnavailable, "indisponivel")
+		return
+	}
+	p.CompromissoDoObjetivo = compromissoDoObjetivo(sal, p.Objective)
+	p.Sal = hex.EncodeToString(sal)
+
+	// (2-bis) CIFRA POR TITULAR (AOS-429). O objectivo é texto livre de uma pessoa; a partir
+	// daqui não volta a ser gravado em claro quando há titular sob o qual o selar. A decisão, o
+	// que ela fecha e o que NÃO fecha estão em `plan_objetivo_selado.go`.
+	p, errSelo := selarObjetivo(h.node, p)
+	if errSelo != nil {
+		// FAIL-CLOSED: com custódia composta, não se degrada para «grava em claro». Seria a
+		// rota a baixar sozinha, e em silêncio, a postura de protecção de dados do nó.
+		h.logf("plan-ingress: RECUSADO — nao foi possivel selar o objectivo run=%q: %v", req.RunID, errSelo)
+		writeError(w, http.StatusServiceUnavailable, "indisponivel")
+		return
+	}
+
+	bruto, err := json.Marshal(p)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "erro interno")
+		return
+	}
+
+	// SEM SUBSTRATO NÃO HÁ FILA. O Event Store do nó é nil quando a execução durável não está
+	// composta — o `/readyz` já conta com isso. Aqui o efeito é mais duro do que degradar a
+	// prontidão: sem onde gravar o facto, aceitar o pedido seria prometer uma corrida que
+	// desaparece com o processo. Recusa-se, e diz-se que é indisponibilidade e não erro do
+	// chamador, porque é o nó que não está em condições — não o pedido que está mal.
+	//
+	// HOJE É INALCANÇÁVEL, e fica escrito para não ser lido como protecção activa: o `Bootstrap`
+	// nunca deixa o store nil (cria um de referência no ramo default ou falha o arranque) e o
+	// `NewNodeService` recusa um nó sem ele. É uma asserção local do invariante no ponto de uso,
+	// no mesmo idioma da guarda de principal vazio do `handleSubmit`.
+	if h.node == nil || h.node.EventStore == nil {
+		writeError(w, http.StatusServiceUnavailable, "indisponivel")
+		return
+	}
+
+	// (2-ter) QUOTA DE PLANEAMENTO (AOS-466). O `aos-orq` decompõe cada pedido com o modelo ANTES de
+	// submeter os runs-filho, e esse gasto é pago e irreversível. Com a quota por principal composta,
+	// o pedido reserva a quantia de planeamento contra a quota de quem o submete; o desfecho de cada
+	// geração liquida-a pelo consumo que o drenador mediu (`handlePlanOutcome`).
+	//
+	// A ÚLTIMA COISA ANTES DO `Append`: depois dos tectos da fila e do selo do objectivo, para que
+	// nenhuma recusa deles prenda quota até ao fim do mês; antes do `Append`, porque um pedido que
+	// entra na fila sem reserva seria planeado de graça. O custo inverso declara-se — um `Append` que
+	// falhe depois de reservar deixa a reserva presa até ao fim do mês, a mais e nunca a menos.
+	//
+	// SÓ SOBRE PRINCIPAL VERIFICADO, e aqui é asserção: o `Bootstrap` não compõe a quota sem
+	// credencial forte ([ErrPrincipalQuotaUnverified]). Se o invariante se partir, recusa-se em vez
+	// de reservar contra um principal que o chamador escreveu — seria gastar a quota de outro.
+	if h.node.QuotaPorPrincipal != nil {
+		if h.readGov == nil || h.readGov.cred == nil {
+			h.logf("plan-ingress: RECUSADO — quota por principal composta sem credencial forte no gate (invariante do AOS-457 partido)")
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
+		if qerr := h.node.QuotaPorPrincipal.reservarPlaneamento(r.Context(), p.Principal, req.RunID); qerr != nil {
+			// Os números vão para o log do operador e não para o corpo, como no `POST /runs`.
+			var qe *quotaEsgotadaError
+			if errors.As(qerr, &qe) {
+				h.logf("plan-ingress: RECUSADO pela quota por principal run=%q: %v", req.RunID, qerr)
+				w.Header().Set("Retry-After", strconv.FormatInt(int64(math.Ceil(qe.faltam.Seconds())), 10))
+				writeError(w, http.StatusTooManyRequests, "quota mensal de despesa do principal esgotada")
+				return
+			}
+			// FAIL-CLOSED: uma quota que não se consegue ler não admite planeamento às cegas.
+			h.logf("plan-ingress: quota por principal nao verificavel run=%q: %v", req.RunID, qerr)
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
+	}
+
+	// (3) O FACTO. A idempotency-key é (fila, pedido-deste-run): um segundo pedido para o mesmo
+	// run devolve `StatusDuplicate` com erro NIL — não é um erro, e por isso cai no mesmo
+	// caminho de sucesso sem ramo próprio. É o que dá a idempotência SEM a distinguir de fora:
+	// o pedido já está na fila, não se duplica, e a resposta é a mesma. Mesmo primitivo que o
+	// `approval_store_durable` usa para reclamar uma aprovação uma só vez.
+	if _, err := h.node.EventStore.Append(r.Context(), planRequestStream, eventstore.EventInput{
+		Type:     EventTypePlanRequestSubmitted,
+		Payload:  bruto,
+		RunID:    planRequestRunID,
+		StepID:   "req-" + req.RunID,
+		Producer: eventstore.Producer{NHIID: planIngressNHI},
+	}); err != nil {
+		// FAIL-CLOSED: sem facto durável não há pedido. Responder 201 aqui seria prometer uma
+		// corrida que ninguém vai consumir — o modo de falha que este ticket existe para fechar.
+		writeError(w, http.StatusServiceUnavailable, "indisponivel")
+		return
+	}
+
+	// `201`, e não `202`. O `202` seria a leitura literal de «aceite para processamento futuro»,
+	// mas o que se quer aqui é o código ser INDISTINGUÍVEL do do `POST /runs`: é dessa
+	// uniformidade que sai a não-oracularidade, e um código próprio para esta rota seria mais um
+	// canal por onde a existência de um pedido alheio se podia inferir. O ADR-028 §2.3 fixa-o.
+	writeJSON(w, http.StatusCreated, planRequestResponse{RunID: req.RunID, Status: "accepted"})
+}

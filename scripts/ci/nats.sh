@@ -1,0 +1,467 @@
+#!/usr/bin/env bash
+# nats.sh — GATE do SUBSTRATO REPLICADO REAL (AOS-431).
+#
+# ─── O PROBLEMA QUE ESTE GATE FECHA ────────────────────────────────────────────────────────
+#
+# Nenhum ficheiro de CI definia `AOS_NATS_URL`. A consequência não era «alguns testes não
+# correm»: era que TUDO o que este repositório afirma sobre o JetStream era uma afirmação
+# sobre a NOSSA regra, nunca sobre o servidor. E o eixo mediu isso três vezes:
+#
+#   · o AOS-424 encontrou NOVE nomes de stream irrepresentáveis que tinham passado dez gates,
+#     uma revisão adversarial e o smoke — porque todos correm sobre ficheiro;
+#   · o aperto do `Append` revelou TRÊS streams vivos no caminho de autorização que, sobre
+#     JetStream, teriam negado toda a emissão de challenges e toda a ratificação;
+#   · o AOS-425 fechou a composição em runtime e deixou escrito que «este nome é
+#     representável» continuava a ser uma afirmação sobre nós, não sobre o NATS.
+#
+# ─── O QUE ESTE GATE PROVA ─────────────────────────────────────────────────────────────────
+#
+#   G1 As suites que exigem substrato replicado CORRERAM — e o número de testes que correram,
+#      falharam e SALTARAM é contado na EXECUÇÃO, não por grep.
+#   G2 NENHUM teste salta por falta de substrato. Com o cluster de pé, um skip não declarado é
+#      um defeito: significa que o teste pede uma condição que este gate não fornece, e um
+#      teste que salta em silêncio é indistinguível de um que não existe. Os skips legítimos
+#      — hoje um só, o teste-veneno do `selftest.sh` — estão nomeados um a um na lista
+#      `skips_legitimos`, com a razão. Não há limiar numérico: o que importa é QUAIS saltam.
+#   G3 A cerimónia four-eyes sobrevive a um restart REAL sobre JetStream — o critério que o
+#      AOS-424 deixou por marcar.
+#   G4 NENHUM pacote termina em FAIL sem um `--- FAIL` que o explique (AOS-452). Um timeout, um
+#      panic, um `[build failed]` ou um `os.Exit` fora de um teste fazem o `go test` sair ≠ 0
+#      SEM escrever as linhas que a contagem por nome lê — e o gate saía verde por baixo de
+#      uma tabela que dizia «(vermelho)». O veredicto de cada pacote vem agora da linha com que
+#      o `go test` o fecha (`gotest-pacotes.sh`), e um aborto nunca é «falha declarada».
+#   G5 Os sensores da janela do stream fresco passam NATS_REPETICOES vezes SEGUIDAS (AOS-455,
+#      bloco 1b) — uma janela que falha 8% das vezes passa quase sempre numa corrida só.
+#   G6 Um teste que falha deixa no log a SUA asserção, e não só o `--- FAIL` (AOS-455): sem ela
+#      o próximo vermelho volta a diagnosticar-se por hipótese.
+#
+# ─── O QUE ESTE GATE TOLERA, E PORQUÊ ──────────────────────────────────────────────────────
+#
+# Falhas DECLARADAS (`falhas_conhecidas`), cada uma com ticket. HOJE A LISTA ESTÁ VAZIA: as
+# duas que ela teve (AOS-432 — quem perdia a corrida ao lease saía com 503 em vez do código da
+# posse) foram corrigidas e saíram dela porque PASSARAM, que é o que a lista exige. A lista
+# auto-reforma-se: um teste dela que PASSE avermelha o gate.
+#
+# ─── PORQUE É QUE A CONTAGEM É POR EXECUÇÃO E NÃO POR GREP ─────────────────────────────────
+#
+# O `dormencia.sh` inventaria por `grep -rl 'AOS_NATS_URL'`, e isso SUBESTIMA: quatro ficheiros
+# do pacote `jetstream` (19 funções de teste) saltam pelo helper partilhado `servidor(t)` e
+# nunca escrevem o nome da variável. O gate reportava 47 testes em 9 ficheiros; a árvore tinha
+# 45 skips em 13 ficheiros. Nenhum grep fecha isto de forma estável — a contagem certa vem de
+# correr com `-v` e contar `--- SKIP`.
+#
+# ─── O QUE NÃO PROVA ───────────────────────────────────────────────────────────────────────
+#
+#   N1 NÃO prova nada sobre PRODUÇÃO. O nó de produção corre sobre ficheiro; migrá-lo para
+#      JetStream é outra decisão (fora de âmbito do AOS-431, declarado no ticket).
+#   N2 O cluster é local e de quatro nós num só host. Partição de rede real, latência entre
+#      regiões e perda de disco não são observáveis aqui.
+set -euo pipefail
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/gotest-pacotes.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/nats-levantar.sh"
+setup_env
+
+CLUSTER="$(dirname "${BASH_SOURCE[0]}")/nats-cluster.sh"
+rc=0
+
+# PISO DE COBERTURA DO `substrate/eventstore` — e este é o único gate onde ele pode existir.
+#
+# O gate de cobertura geral (`test.sh` + `COVERAGE_GATED_MODULES`) exclui este módulo, e a
+# exclusão está certa: ali não há cluster, e sem cluster o módulo mede 63,6% — gateá-lo lá
+# avermelharia por falta de infra, não por falta de teste.
+#
+# Aqui há cluster. Medido em AOS-433: **81,3%**. O piso entra em 75, abaixo do medido para
+# absorver variação de execução (os testes de perda de nó e reconexão não cobrem sempre os
+# mesmos ramos) e acima do que o módulo tinha sem cluster — o que garante que o piso está a
+# medir o ganho do cluster, e não a passar por acidente.
+#
+# O `FLOOR_MODULE_COVERAGE_MIN` de 80 não se aplica: é para módulos cuja suite corre inteira
+# sem infra externa. Este tem um piso próprio, declarado, e a razão está aqui.
+gate_threshold EVENTSTORE_COVERAGE_MIN 75 0 100 "%" always || exit 1
+
+# O `-timeout` DE CADA BINÁRIO DE TESTE, em minutos (AOS-452).
+#
+# Sem ele valia o default do `go test`, 10 min — que ninguém escolheu, e que era o único limite
+# (o job `nats` não tinha `timeout-minutes`, logo o do GitHub, 6 h). Medido no CI a 2026-09-26
+# (run 36238560614): o módulo mais lento, `cmd/aos-orq`, fecha em ~25 s COM a compilação; os
+# quatro juntos em ~1 min 45 s. Cinco minutos são mais de dez vezes o pior módulo, e um teste
+# pendurado passa a dar o diagnóstico do `go` (quais estavam a correr) em minutos, não em horas.
+#
+# O piso 1 existe porque `-timeout=0` é «sem timeout» para o `go`. O máximo 60 é o domínio, e
+# não o CI. Num posto Windows (2026-09-26) o `cmd/aos-orq` passou só 17 testes em 5 min, contra
+# 167 em ~25 s no CI: ali é preciso subir (NATS_GO_TEST_TIMEOUT=60 make ci-nats). No CI fica o
+# default, bem abaixo do `timeout-minutes` do job, que mata sem dizer que teste estava pendurado.
+gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m" always || exit 1
+
+# QUANTAS VEZES SEGUIDAS correm os sensores da janela do stream fresco (AOS-455, bloco 1b).
+#
+# Piso = default, como os limiares de qualidade: o número É a barra. Medido antes da correcção,
+# cada um dos dois testes de disputa do lease falhava 4 vezes em 50 (8%); com 10 seguidas, uma
+# janela desse tamanho escapa por acaso em ~43% das execuções, e com 5 em ~66% — abaixo de 10 o
+# sensor passa a ser decorativo. Custo medido (cluster local, 150 corridas): ~2 s por repetição
+# nos três testes juntos — ~20 s ao default.
+gate_threshold NATS_REPETICOES 10 10 200 "" always || exit 1
+# É uma CONTAGEM: o `gate_threshold` aceita decimais (os outros limiares são percentagens e
+# fracções), e `10.5` passava o piso para só rebentar no `-count=10.5` do `go test`, já com o
+# cluster de pé. Recusa-se aqui, com o diagnóstico de configuração (revisão do AOS-455).
+case "$NATS_REPETICOES" in
+  '' | *[!0-9]*)
+    log_fail "VIOLAÇÃO DE PISO (configuração inválida): NATS_REPETICOES='${NATS_REPETICOES}' não é um inteiro — é uma contagem de corridas."
+    exit 1
+    ;;
+esac
+
+# =============================================================================================
+# (0) O CLUSTER
+# =============================================================================================
+log_gate "nats · cluster JetStream de 4 nós (3 no board + 1 fora, para a fronteira soberana)"
+
+if ! nats_docker_utilizavel; then
+  # DOCKER INUTILIZÁVEL — CLI ausente OU daemon inacessível (AOS-471; até aqui só se via o CLI,
+  # e um CLI sem daemon morria mais abaixo por `AOS_NATS_URL: unbound variable`).
+  if [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+    # EM CI NÃO SE SALTA. O job `nats` existe só para exercitar o substrato replicado real, e é
+    # required check: o agregador `gates` lê `success` e não lê o AOS_SKIPPED_STEP. Um runner
+    # sem docker utilizável sairia verde sem ter medido nada — registar não é impedir. É a regra
+    # dos outros escapes que a CI não honra (pisos, desvio de raiz, entrega parcial).
+    log_fail "nats: $NATS_DOCKER_MOTIVO — a CI não salta o substrato replicado real"
+    log_fail "     o job \`nats\` existe para o exercitar; um verde sem cluster seria um verde que não mediu nada"
+    exit 1
+  fi
+  # LOCALMENTE SALTA-SE, E DECLARA-SE. É a mesma política dos outros gates que dependem de
+  # contentores (`SKIP_DOCKER`): registar não é impedir, e o veredicto final redeclara-o.
+  gate_skip "nats" "$NATS_DOCKER_MOTIVO" \
+    "o substrato replicado real NÃO foi exercitado; tudo o que o repositório afirma sobre JetStream continua por confirmar nesta execução"
+  gate_skip_report || true
+  exit 0
+fi
+
+# O `trap` derruba SEMPRE — incluindo em falha, e por isso vem ANTES do `up`: um `up` que morra
+# a meio (meta-leader por eleger, nkey por gerar) deixa contentores de pé. Um cluster deixado de
+# pé num runner partilhado rouba as portas ao job seguinte, e localmente confunde a execução
+# seguinte com streams de uma anterior (foi exactamente assim que um `subjects overlap` apareceu
+# durante o AOS-431 e custou um diagnóstico a apontar para o sítio errado).
+trap 'bash "$CLUSTER" down >/dev/null 2>&1 || true' EXIT
+
+# Docker utilizável e o cluster não sobe: VERMELHO, e o diagnóstico nomeia o `nats-cluster.sh`
+# (`nats_levantar` verifica o código e a saída do `up` ANTES do `eval`, e o AOS_NATS_URL depois).
+nats_levantar "$CLUSTER" || exit 1
+
+log_ok "nats: cluster de pé — AOS_NATS_URL=$AOS_NATS_URL"
+
+# =============================================================================================
+# (1) AS SUITES, COM A CONTAGEM FEITA NA EXECUÇÃO
+# =============================================================================================
+#
+# Os módulos estão listados um a um, e não descobertos, porque a lista é o INVENTÁRIO: se um
+# módulo novo passar a depender do substrato replicado e ninguém o acrescentar aqui, ele
+# continua dormente — e o `dormencia.sh` é que tem de o acusar. Duas defesas, não uma.
+modulos_nats=(
+  "packages/substrate/eventstore|./jetstream/ ./natsjs/"
+  "packages/integration|./..."
+  "packages/cmd/aos|./..."
+  "packages/cmd/aos-orq|./..."
+)
+
+# SKIPS LEGÍTIMOS, NOMEADOS UM A UM.
+#
+# «Nenhum teste salta» era forte demais, e foi a execução que o mostrou: o
+# `TestSelftestApexEnforcementBypassReddensGate` é um teste-VENENO do `selftest.sh` e salta de
+# propósito sem `AOS_APEX_SELFTEST=1` — não tem nada a ver com substrato.
+#
+# A lista existe em vez de um limiar numérico porque o que importa não é QUANTOS saltam, é
+# QUAIS. Um teste novo a saltar por falta de cluster tem de avermelhar isto mesmo que o total
+# não mude. Cada entrada traz a razão, e uma entrada que deixe de saltar não é problema —
+# problema é um skip que não esteja aqui.
+skips_legitimos=(
+  "TestSelftestApexEnforcementBypassReddensGate"  # veneno do selftest.sh; exige AOS_APEX_SELFTEST=1
+)
+
+# SKIPS QUE SÓ EXISTEM FORA DE LINUX, e que em CI NÃO acontecem.
+#
+# Estes medem bits POSIX de um ficheiro de segredo, e saltam em Windows porque lá os bits
+# não são significativos — o alvo é o contentor Linux. Aceitá-los INCONDICIONALMENTE seria
+# abrir um buraco permanente: se amanhã saltassem no runner, o gate calava-se. São aceites
+# apenas quando o host NÃO é Linux, que é a condição que os faz saltar.
+skips_so_fora_de_linux=(
+  "TestAOS416_NHIIlegivelRecusaNoArranque"
+  "TestAOS416_OModoDaConvencaoNaoERecusado"
+  "TestAOS416_SegredoIlegivelRecusaNoArranque"
+  "TestNKey_FicheiroAcessivelAOutrosERecusado"  # AOS-470: modo da seed nkey do cluster
+  "TestAOS453_Env_SeedLegivelPorOutrosERecusada"  # AOS-453: faltava; medido no gate local Windows
+  # Os dois seguintes não medem bits POSIX: correm um cenário em bash que usa flock(1) e /proc, e
+  # o próprio teste salta com `runtime.GOOS != "linux"`. Faltavam (AOS-480, medido no gate local
+  # Windows a 2026-10-02: os únicos dois skips não declarados em 1937 PASS / 0 FAIL).
+  "TestAOS445OutboxEAvisos"    # AOS-445: flock(1)
+  "TestAOS450DeployEDrenagem"  # AOS-450: flock(1) e /proc
+)
+em_linux=0
+[ "$(uname -s 2>/dev/null)" = "Linux" ] && em_linux=1
+
+# FALHAS CONHECIDAS, COM TICKET — e o gate avermelha quando DEIXAREM de falhar.
+#
+# O mecanismo fica, e a lista fica VAZIA. Ligar o cluster (AOS-431) encontrou um defeito REAL:
+# sobre um stream acabado de criar, quem PERDIA a corrida ao lease saía com
+# `natsjs: ninguém serve este subject (503)` em vez de `ErrLeaseHeld` — o `STREAM.CREATE`
+# responde antes de o grupo R3 eleger líder, e até lá ninguém serve os subjects. Foi declarado
+# aqui em vez de se tirar `cmd/aos-orq` do gate, e o AOS-432 corrigiu-o na causa
+# (`jetstream.Abrir` espera pelo líder). Os dois testes que o mediam PASSARAM, e por isso
+# saíram — era isso ou o gate avermelhar.
+#
+# Quem declarar uma falha nova põe o nome do teste E o ticket em comentário na mesma linha. A
+# lista AUTO-REFORMA-SE: um teste aqui que passe avermelha o gate. Uma falha declarada que se
+# cure sem ninguém dar por isso é dívida que fica a pesar sem razão, e é o modo de falha das
+# baselines que ninguém revisita.
+falhas_conhecidas=()
+
+# SENSORES OBRIGATÓRIOS, POR NOME (AOS-360). Há correcções cuja ÚNICA prova de que lá estão é um
+# teste que só este gate corre: a paginação do `lerLote` (AOS-345) não se falsifica in-process,
+# e é `TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel` que avermelha com a regra antiga. O
+# piso de `total_pass` não a protege — apagar ou renomear o teste deixava o gate verde com 59
+# outros. Cada entrada é `modulo|NomeDoTeste`, e o teste tem de aparecer como `--- PASS`.
+sensores_obrigatorios=(
+  "packages/substrate/eventstore|TestJanela_AcimaDaJanela_LeTudoEContinuaEscrivel"
+)
+
+total_pass=0
+total_fail=0
+total_skip=0
+total_skip_inesperado=0
+total_fail_conhecida=0
+total_pacotes_inexplicados=0
+
+for entrada in "${modulos_nats[@]}"; do
+  modulo="${entrada%%|*}"
+  alvos="${entrada##*|}"
+  log_gate "nats · $modulo"
+
+  saida="$(mktemp)"
+  rc_go=0
+  # `-count=1` porque um resultado em cache sobre um cluster que já não existe seria um
+  # verde que não mediu nada. Sem `-race`: estes testes esperam por eleições de Raft e por
+  # janelas de deduplicação, e o detector multiplica os tempos até ao limite do job — o
+  # `-race` destes módulos corre no gate `test`, sem cluster.
+  #
+  # O `rc_go` guarda-se, e é o que o `estado` sempre devia ter sido: um VEREDICTO. Até ao
+  # AOS-452 só era impresso — ver o bloco G4, a seguir às falhas por nome.
+  #
+  # A invocação vive em `gotest-pacotes.sh` para que o `selftest.sh` (§Y) corra EXACTAMENTE
+  # este comando sobre pacotes sintéticos — os flags de lá são os daqui.
+  gotest_pacotes_corre "$REPO_ROOT/$modulo" "$alvos" "${NATS_GO_TEST_TIMEOUT}m" "$saida" || rc_go=$?
+  if [ "$rc_go" -eq 0 ]; then
+    estado="verde"
+  else
+    estado="vermelho"
+  fi
+
+  n_pass="$(grep -c '^--- PASS' "$saida" || true)"
+  n_fail="$(grep -c '^--- FAIL' "$saida" || true)"
+  n_skip="$(grep -c '^--- SKIP' "$saida" || true)"
+  total_pass=$((total_pass + n_pass))
+  total_fail=$((total_fail + n_fail))
+  total_skip=$((total_skip + n_skip))
+
+  printf '   %-34s PASS=%-4s FAIL=%-4s SKIP=%-4s (%s)\n' "$modulo" "$n_pass" "$n_fail" "$n_skip" "$estado"
+
+  # FALHA NOVA vs FALHA DECLARADA.
+  falhadas="$(grep '^--- FAIL' "$saida" | sed -E 's/^--- FAIL: ([^ ]+).*/\1/' | sort -u || true)"
+  while IFS= read -r nome_teste; do
+    [ -n "$nome_teste" ] || continue
+    conhecida=0
+    for c in "${falhas_conhecidas[@]}"; do
+      [ "$nome_teste" = "$c" ] && conhecida=1 && break
+    done
+    if [ "$conhecida" -eq 1 ]; then
+      printf '     falha DECLARADA (ver o ticket em falhas_conhecidas): %s\n' "$nome_teste"
+      total_fail_conhecida=$((total_fail_conhecida + 1))
+    else
+      log_fail "nats: $modulo — teste NOVO a falhar sobre substrato real: $nome_teste"
+      # A ASSERÇÃO, E NÃO SÓ O VEREDICTO (AOS-455). Era `grep -A8` a partir do `--- FAIL`, e em
+      # `go test -v` o `t.Errorf`/`t.Logf` sai ANTES dessa linha: três vermelhos seguidos sem
+      # ninguém ver as contagens. Ver `gotest_saida_do_teste` (gotest-pacotes.sh).
+      gotest_saida_do_teste "$saida" "$nome_teste" | sed 's/^/       /' || true
+      rc=1
+    fi
+  done <<< "$falhadas"
+
+  # A LISTA AUTO-REFORMA-SE: uma falha declarada que passou tem de sair da lista.
+  for c in "${falhas_conhecidas[@]}"; do
+    if grep -q "^--- PASS: $c" "$saida" 2>/dev/null; then
+      log_fail "nats: $c está declarado como falha conhecida e PASSOU"
+      log_fail "     tira-o de falhas_conhecidas e fecha o ticket dele — dívida curada que fica declarada é dívida que ninguém revisita"
+      rc=1
+    fi
+  done
+
+  # UM SKIP NÃO DECLARADO É UM DEFEITO AQUI, e é o critério do ticket: «um teste que salta em
+  # silêncio é indistinguível de um que não existe». Com o cluster de pé, quem salta sem estar
+  # na lista está a pedir uma condição que este gate não dá — e essa condição tem de ser
+  # nomeada, não tolerada.
+  if [ "$n_skip" -gt 0 ]; then
+    # `|| true` em cada elo: sem ele, um `grep` sem correspondência mata o gate por `pipefail`
+    # — e mata-o precisamente no ramo que existe para DIAGNOSTICAR. Aconteceu na primeira
+    # execução deste ficheiro: o gate morreu a tentar imprimir o nome do teste que saltou.
+    saltados="$(grep '^--- SKIP' "$saida" | sed -E 's/^--- SKIP: ([^ ]+).*/\1/' | sort -u || true)"
+    while IFS= read -r nome_teste; do
+      [ -n "$nome_teste" ] || continue
+      esperado=0
+      for conhecido in "${skips_legitimos[@]}"; do
+        [ "$nome_teste" = "$conhecido" ] && esperado=1 && break
+      done
+      if [ "$esperado" -eq 0 ] && [ "$em_linux" -eq 0 ]; then
+        for conhecido in "${skips_so_fora_de_linux[@]}"; do
+          [ "$nome_teste" = "$conhecido" ] && esperado=1 && break
+        done
+      fi
+      if [ "$esperado" -eq 1 ]; then
+        printf '     salta por desenho, declarado: %s\n' "$nome_teste"
+      else
+        log_fail "nats: $modulo SALTOU um teste COM o cluster de pé, e o skip NÃO está declarado:"
+        log_fail "     $nome_teste"
+        grep -A2 "^--- SKIP: $nome_teste" "$saida" | grep -E '\.go:[0-9]+:' | sed 's/^ */       /' | head -3 || true
+        total_skip_inesperado=$((total_skip_inesperado + 1))
+        rc=1
+      fi
+    done <<< "$saltados"
+  fi
+
+  # G4 — UM PACOTE EM FAIL QUE NENHUM `--- FAIL` EXPLICA É VERMELHO (AOS-452).
+  #
+  # Tudo o que está acima lê linhas `--- FAIL`/`--- SKIP`, e um pacote que morre por timeout,
+  # panic ou falta de compilação não as escreve (ou escreve uma só, a do teste que abortou, e
+  # cala os que ficaram por correr). O `rc_go` diz que algo correu mal; `gotest-pacotes.sh`
+  # diz QUAL pacote e PORQUÊ, pela linha com que o `go test` o fecha. Este bloco não pergunta
+  # se há falhas declaradas: uma falha declarada explica um teste que falhou, nunca um pacote
+  # que deixou de medir.
+  if [ "$rc_go" -ne 0 ]; then
+    if ! inexplicados="$(gotest_pacotes_inexplicados "$saida" "$rc_go")"; then
+      while IFS=$'\t' read -r pacote causa; do
+        [ -n "$pacote" ] || continue
+        log_fail "nats: $modulo — pacote $pacote em FAIL sem falha declarada que o explique: $causa"
+        total_pacotes_inexplicados=$((total_pacotes_inexplicados + 1))
+      done <<< "$inexplicados"
+      gotest_pacotes_diagnostico "$saida"
+      rc=1
+    fi
+  fi
+
+  for sensor in "${sensores_obrigatorios[@]}"; do
+    [ "${sensor%%|*}" = "$modulo" ] || continue
+    nome_sensor="${sensor##*|}"
+    if ! grep -qE "^--- PASS: ${nome_sensor} " "$saida"; then
+      log_fail "nats: $modulo — o sensor obrigatório $nome_sensor NÃO passou (falhou, saltou, ou foi renomeado/removido)"
+      rc=1
+    fi
+  done
+
+  rm -f "$saida"
+done
+
+# =============================================================================================
+# (1b) REPETIÇÃO: OS SENSORES DA JANELA DO STREAM FRESCO, N VEZES SEGUIDAS (AOS-455)
+# =============================================================================================
+#
+# Os três testes abaixo são os que flakearam no CI sobre árvores IDÊNTICAS (o mesmo SHA de
+# árvore verde num run e vermelho no seguinte), todos pela janela entre o `STREAM.CREATE` e o
+# stream servido: um INFO a que o servidor não responde enquanto o grupo R3 se forma, e um 503
+# no primeiro PUB depois de o INFO já anunciar líder. Medido antes da correcção, contra um
+# cluster local de 4 nós: 4 falhas em 50 em cada um dos dois testes de disputa do lease.
+#
+# Uma corrida só, a 4–8%, passa quase sempre — e foi assim que a janela sobreviveu ao AOS-432.
+# Repeti-los N vezes seguidas é o que dá a este gate poder para a ver reabrir: a 8% por
+# corrida, 10 seguidas verdes acontecem por acaso em menos de metade das vezes. Correm DEPOIS
+# do restauro, para que uma falha aqui seja da janela e não de um nó que outro teste derrubou.
+bash "$CLUSTER" restore >/dev/null 2>&1 || true
+log_gate "nats · repetição dos sensores da janela do stream fresco (${NATS_REPETICOES}× seguidas, AOS-455)"
+repeticoes=(
+  "packages/integration|./|TestAOS432_LeaseSobreStreamFrescoNegaPeloLease"
+  "packages/cmd/aos-orq|./|TestAOS100_NServeEmParaleloSobreOSubstratoReplicado"
+  "packages/substrate/eventstore|./natsjs/|TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal"
+)
+for entrada in "${repeticoes[@]}"; do
+  IFS='|' read -r modulo alvo nome_teste <<< "$entrada"
+  saida="$(mktemp)"
+  rc_go=0
+  (cd "$REPO_ROOT/$modulo" && go test "$alvo" -run "^${nome_teste}\$" -count="$NATS_REPETICOES" -v \
+    -timeout="${NATS_GO_TEST_TIMEOUT}m") >"$saida" 2>&1 || rc_go=$?
+  n_pass="$(grep -c "^--- PASS: ${nome_teste} " "$saida" || true)"
+  n_fail="$(grep -c "^--- FAIL: ${nome_teste} " "$saida" || true)"
+  printf '   %-58s PASS=%s/%s FAIL=%s\n' "$nome_teste" "$n_pass" "$NATS_REPETICOES" "$n_fail"
+  # Exige-se N PASSES, e não «zero FAIL»: um teste que SALTA, ou que deixou de existir com este
+  # nome, passaria «zero FAIL» sem ter medido nada.
+  if [ "$rc_go" -ne 0 ] || [ "$n_pass" -ne "$NATS_REPETICOES" ]; then
+    log_fail "nats: $modulo — $nome_teste passou $n_pass de $NATS_REPETICOES vezes seguidas (rc=$rc_go): a janela do stream fresco reabriu, ou o sensor deixou de correr"
+    # Só as repetições que NÃO passaram, e o corte conta depois da escolha (gotest-pacotes.sh).
+    gotest_saida_do_teste "$saida" "$nome_teste" | sed 's/^/       /' || true
+    gotest_pacotes_diagnostico "$saida"
+    rc=1
+  fi
+  rm -f "$saida"
+done
+
+# =============================================================================================
+# (2) COBERTURA DO `substrate/eventstore`, MEDIDA COM O CLUSTER
+# =============================================================================================
+log_gate "nats · cobertura do substrate/eventstore (piso ${EVENTSTORE_COVERAGE_MIN}%, so mensuravel com cluster)"
+
+# RESTAURAR O CLUSTER ANTES DE MEDIR, e a razão foi uma execução.
+#
+# Esta medição corre DEPOIS das suites, e as do `cmd/aos-orq` matam nós de propósito (perda de
+# nó, reconexão). O `AOS_RESTORE_CMD` repõe-nos no `t.Cleanup` de cada teste, mas um teste que
+# falhe antes de lá chegar (foi o caso das duas falhas declaradas do AOS-432, já corrigidas)
+# deixava a medição num cluster degradado: falhava a criar streams R3, e o gate dizia «a
+# medição não correu» sem dizer porquê.
+bash "$CLUSTER" restore >/dev/null 2>&1 || true
+
+cov_out="$(mktemp)"
+cov_log="$(mktemp)"
+# A SAÍDA GUARDA-SE. A primeira versão fazia `>/dev/null 2>&1` e, quando falhou, o gate não
+# conseguia diagnosticar-se a si próprio — que é o defeito que ele existe para não ter.
+if (cd "$REPO_ROOT/packages/substrate/eventstore" && go test ./... -count=1 -timeout="${NATS_GO_TEST_TIMEOUT}m" -covermode=atomic -coverprofile="$cov_out") >"$cov_log" 2>&1; then
+  pct="$(cd "$REPO_ROOT/packages/substrate/eventstore" && go tool cover -func="$cov_out" 2>/dev/null | awk '/^total:/{print $NF}')"
+  if coverage_meets_min "$pct" "$EVENTSTORE_COVERAGE_MIN"; then
+    log_ok "eventstore: cobertura ${pct} >= ${EVENTSTORE_COVERAGE_MIN}% (com cluster)"
+  else
+    log_fail "eventstore: cobertura ${pct:-n/a} < ${EVENTSTORE_COVERAGE_MIN}% — o substrato de que dependem o WORM, o replay e a tamper-evidence perdeu cobertura"
+    rc=1
+  fi
+else
+  # FAIL-CLOSED. Uma medição que não corre não é uma medição que passa — seria o caminho
+  # exacto pelo qual um gate de cobertura fica verde sem medir nada.
+  log_fail "eventstore: a medicao de cobertura NAO correu; sem numero nao ha veredicto"
+  grep -E "^(FAIL|panic: )" "$cov_log" | head -12 || true
+  # O output de CADA teste que falhou, inteiro (AOS-455) — e não as primeiras 12 linhas que
+  # casassem com `.go:NN:`, que num pacote com vários vermelhos cortava a asserção a meio.
+  grep '^--- FAIL' "$cov_log" | sed -E 's/^--- FAIL: ([^ ]+).*/\1/' | sort -u | while IFS= read -r nome_teste; do
+    gotest_saida_do_teste "$cov_log" "$nome_teste" | sed 's/^/       /'
+  done || true
+  rc=1
+fi
+rm -f "$cov_out" "$cov_log"
+
+log_gate "nats · veredicto"
+printf '   TOTAL sobre substrato replicado real: PASS=%s FAIL=%s (%s declaradas) SKIP=%s (%s não declarados)\n' \
+  "$total_pass" "$total_fail" "$total_fail_conhecida" "$total_skip" "$total_skip_inesperado"
+
+if [ "$total_pacotes_inexplicados" -gt 0 ]; then
+  printf '   %s pacote(s) em FAIL por aborto (timeout, panic, build failed) — ver G4 acima\n' "$total_pacotes_inexplicados"
+fi
+
+if [ "$total_pass" -lt 60 ]; then
+  # CONTROLO DE NÃO-VACUIDADE. Um gate que levanta o cluster e corre zero testes fica verde
+  # e não mede nada — é o modo de falha que este ficheiro existe para não ter. O piso vem da
+  # medição do AOS-431 (67 passaram no módulo `eventstore` sozinho) e só APERTA.
+  log_fail "nats: só $total_pass teste(s) passaram — o gate correu quase vazio, e um gate vazio é verde por acidente"
+  rc=1
+fi
+
+if [ "$rc" -eq 0 ]; then
+  log_ok "nats: substrato replicado real exercitado, $total_pass teste(s), nenhum skip por falta de substrato"
+  if [ "$total_fail_conhecida" -gt 0 ]; then
+    log_warn "  $total_fail_conhecida falha(s) DECLARADA(S) em falhas_conhecidas — o gate está verde COM dívida nomeada, não sem ela"
+  fi
+fi
+
+gate_skip_report || true
+exit "$rc"

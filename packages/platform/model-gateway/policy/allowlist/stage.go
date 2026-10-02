@@ -161,7 +161,10 @@ func (s *Stage) record(ctx context.Context, ex *pipeline.Exchange, in Input, dec
 		Reason:          reason,
 		PolicyVersion:   version,
 		Operation:       string(ex.Op),
-		Timestamp:       ex.Now(),
+		// AOS-394: o selo liga-se ao run e ao passo que fizeram a chamada.
+		RunID:     ex.RunID,
+		StepID:    ex.StepID,
+		Timestamp: ex.Now(),
 	}
 	// O span é anotado pelo gateway (ver Gateway.annotateAllowlist); aqui só selamos
 	// no WORM via Seal (não Record), evitando exigir um span que o estágio não tem.

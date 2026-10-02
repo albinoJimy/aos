@@ -187,7 +187,7 @@ func TestBroker_EvidenciaVaziaOuInventada(t *testing.T) {
 // capability privilegiada que o taint-gate negaria — e SÓ ela.
 func TestBroker_LigadoAoApprovalGateDestrava(t *testing.T) {
 	call := callParaAprovar()
-	call.Context = referencemonitor.CallContext{Taint: "untrusted"} // originada pelo modelo
+	call.Context = referencemonitor.CallContext{Taint: "untrusted"} // pedida sobre contexto untrusted (ADR-034)
 	preview := referencemonitor.ApprovalPreview(call)
 	broker, grantID := brokerComAprovacaoDual(t, preview)
 

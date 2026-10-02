@@ -4,9 +4,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
 
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/eventstore/jetstream"
+	"github.com/aos-ref/substrate/eventstore/natsjs"
 )
 
 // substrato.go — de onde vem o Event Store deste processo (AOS-100).
@@ -34,6 +38,7 @@ type substrato struct {
 	stream   string
 	regiao   string
 	replicas int
+	nkey     string // caminho da seed nkey do cluster (AOS-470)
 }
 
 // registarFlags declara as flags de substrato num FlagSet.
@@ -43,7 +48,42 @@ func (s *substrato) registarFlags(fs *flag.FlagSet) {
 	fs.StringVar(&s.stream, "nats-stream", "", "nome do stream JetStream (só com --nats; vazio usa o padrão)")
 	fs.IntVar(&s.replicas, "nats-replicas", 0, "factor de replicação do stream (só com --nats; vazio usa 3)")
 	fs.StringVar(&s.regiao, "nats-region", "", "região da fronteira de soberania do board (só com --nats; vazio deixa a fronteira dormente — ADR-011)")
+	fs.StringVar(&s.nkey, "nats-nkey-file", "", "ficheiro com a seed nkey (SU…) com que o processo se autentica no cluster (só com --nats; AOS-470). Sob AOS_MODE=production é obrigatório")
 }
+
+// comoFlags devolve as flags que reproduzem ESTE substrato noutra invocação.
+//
+// Existe para o `consume` poder passar ao `serve` o substrato que recebeu, sem o reconstruir a
+// partir de strings soltas — reconstruir à mão é onde uma opção se perde em silêncio, e uma
+// opção de substrato perdida é a diferença entre escrever no store certo e no errado.
+//
+// É o INVERSO de [substrato.registarFlags], e a lista tem de as cobrir todas.
+func (s substrato) comoFlags() []string {
+	var out []string
+	if s.wal != "" {
+		out = append(out, "--wal", s.wal)
+	}
+	if s.nats != "" {
+		out = append(out, "--nats", s.nats)
+	}
+	if s.stream != "" {
+		out = append(out, "--nats-stream", s.stream)
+	}
+	if s.replicas != 0 {
+		out = append(out, "--nats-replicas", strconv.Itoa(s.replicas))
+	}
+	if s.regiao != "" {
+		out = append(out, "--nats-region", s.regiao)
+	}
+	if s.nkey != "" {
+		out = append(out, "--nats-nkey-file", s.nkey)
+	}
+	return out
+}
+
+// errProducaoSemCredencialNATS — sob AOS_MODE=production o processo não se liga ao cluster por
+// CONNECT anónimo (AOS-470): quem alcança a porta de cliente escreveria no mesmo log.
+var errProducaoSemCredencialNATS = errors.New("AOS_MODE=production com --nats exige --nats-nkey-file — sem credencial a ligacao ao cluster e anonima e quem alcanca a porta de cliente do NATS escreve no log de producao")
 
 var errSubstratoAmbiguo = errors.New("--wal e --nats são EXCLUSIVOS: um é o store de referência sobre ficheiro (posse sequencial), o outro é o replicado que arbitra entre processos. Aceitar ambos daria um processo a anunciar coordenação distribuída enquanto trancava um ficheiro local")
 
@@ -53,8 +93,8 @@ func (s substrato) validar() error {
 		return errors.New("indique --wal FICHEIRO ou --nats HOST:PORTA (o Event Store é o único canal de coordenação)")
 	case s.wal != "" && s.nats != "":
 		return errSubstratoAmbiguo
-	case s.nats == "" && (s.stream != "" || s.replicas != 0 || s.regiao != ""):
-		return errors.New("--nats-stream/--nats-replicas/--nats-region só fazem sentido com --nats")
+	case s.nats == "" && (s.stream != "" || s.replicas != 0 || s.regiao != "" || s.nkey != ""):
+		return errors.New("--nats-stream/--nats-replicas/--nats-region/--nats-nkey-file só fazem sentido com --nats")
 	case s.replicas < 0:
 		return errors.New("--nats-replicas tem de ser um inteiro positivo (3 ou 5; 1 é só dev)")
 	}
@@ -78,14 +118,42 @@ func (s substrato) descrever() string {
 
 // abrirParaLeitura abre o Event Store sem pedir posse. Ler nunca a pede, e nunca é
 // bloqueado por quem a detém.
+//
+// # AOS-359 — A VIA DE LEITURA DESTE BINÁRIO FICOU DE FORA DO AOS-347
+//
+// O AOS-347 migrou as vias de inspecção do nó (`wal-count` e `wal-summary`; o
+// `wal-inspect` que o comentário original desse ticket nomeia NÃO é subcomando —
+// ver `packages/cmd/aos/cli.go`) para [eventstore.OpenReadOnly] porque
+// [eventstore.Open] TRUNCA: repõe a cauda parcial a `validEnd` antes de anexar o WAL em
+// append. A varredura de chamadores parou no módulo `cmd/aos` e esta via — que serve
+// `aos-orq inspect` e `aos-orq plans`, os dois comandos de LEITURA deste binário —
+// continuou em [eventstore.Open].
+//
+// O efeito não é hipotético. Com um WAL cuja CAUDA está rasgada (um write interrompido,
+// que é precisamente o estado em que alguém vai inspeccionar), `contaOrfaos` não acha
+// registo íntegro depois da quebra, a guarda fail-closed de `durable.go` não dispara, e
+// o `Open` trunca: um comando de leitura apaga bytes confirmados e, com um escritor
+// vivo, deixa-lhe o tamanho em memória à frente do ficheiro (`E_WAL_DESSINCRONIZADO`).
+//
+// O comentário que aqui estava — «Ler nunca a pede» — descrevia a POSSE, e nisso estava
+// certo: [eventstore.LockWAL] é sobre o ficheiro irmão, de propósito, para não bloquear
+// quem investiga um incidente. O que ele não dizia é que não pedir posse não impede
+// escrever. Sobre FICHEIRO, [eventstore.OpenReadOnly] fecha as duas coisas: não pede
+// posse E não toca no ficheiro.
+//
+// Sobre o substrato REPLICADO o efeito a impedir é outro, e por isso é tratado noutro
+// sítio: não há ficheiro a truncar, mas [jetstream.Abrir] CRIA o stream por omissão —
+// um `inspect --nats` contra um stream inexistente materializava-o no servidor, com
+// placement e política de retenção, o que um comando de leitura não tem que fazer. Daí
+// o `soLeitura` de [substrato.abrirReplicado].
 func (s substrato) abrirParaLeitura() (eventstore.EventStore, func() error, error) {
 	if err := s.validar(); err != nil {
 		return nil, nil, err
 	}
 	if s.replicado() {
-		return s.abrirReplicado()
+		return s.abrirReplicado(true)
 	}
-	store, err := eventstore.Open(s.wal)
+	store, err := eventstore.OpenReadOnly(s.wal)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -109,7 +177,7 @@ func (s substrato) abrirParaEscrita() (eventstore.EventStore, func() error, erro
 		return nil, nil, err
 	}
 	if s.replicado() {
-		return s.abrirReplicado()
+		return s.abrirReplicado(false)
 	}
 
 	largar, err := eventstore.LockWAL(s.wal)
@@ -139,8 +207,18 @@ func (s substrato) abrirParaEscrita() (eventstore.EventStore, func() error, erro
 	}, nil
 }
 
-func (s substrato) abrirReplicado() (eventstore.EventStore, func() error, error) {
+// abrirReplicado abre o Event Store REPLICADO. Com soLeitura, NÃO cria o stream.
+//
+// AOS-359: [jetstream.Abrir] cria por omissão, e criar é a decisão certa para quem vai
+// escrever — o stream nasce com a configuração que o AOS-100 exige. Para quem vai LER é
+// a decisão errada pela mesma razão que o [eventstore.Open] era no ficheiro: um comando
+// de inspecção passa a ter efeito no substrato. Contra um stream inexistente, ler tem de
+// falhar; materializá-lo é responder a uma pergunta mudando a coisa perguntada.
+func (s substrato) abrirReplicado(soLeitura bool) (eventstore.EventStore, func() error, error) {
 	opts := []jetstream.Option{}
+	if soLeitura {
+		opts = append(opts, jetstream.SemCriarStream())
+	}
 	if s.stream != "" {
 		opts = append(opts, jetstream.ComNomeDeStream(s.stream))
 	}
@@ -149,6 +227,18 @@ func (s substrato) abrirReplicado() (eventstore.EventStore, func() error, error)
 	}
 	if s.replicas > 0 {
 		opts = append(opts, jetstream.ComReplicas(s.replicas))
+	}
+	// AOS-470: o mesmo fail-closed do nó (ErrProductionNeedsNATSCredential). Vive aqui, e não em
+	// validar(), porque é o único sítio que abre a ligação — e a leitura (inspect) também a abre.
+	switch {
+	case s.nkey != "":
+		cred, err := natsjs.LerNKeyFicheiro(s.nkey)
+		if err != nil {
+			return nil, nil, fmt.Errorf("credencial do event store replicado (AOS-470): %w", err)
+		}
+		opts = append(opts, jetstream.ComCredencial(cred))
+	case strings.TrimSpace(os.Getenv("AOS_MODE")) == "production":
+		return nil, nil, errProducaoSemCredencialNATS
 	}
 	store, err := jetstream.Abrir(s.nats, opts...)
 	if err != nil {

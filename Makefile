@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-isolation-live ci-dormencia ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
+        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-isolation-live ci-dormencia ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-nats ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -74,6 +74,9 @@ ci-layer-lint: ## Gate: lint de fronteiras de camadas (AOS-178)
 ci-rtm: ## Gate: RTM sincronizada com o corpus (AOS-186)
 	python3 scripts/ci/rtm-regenerate.py --check
 
+ci-stream-names: ## Gate: todo o stream_id é representável num subject NATS (AOS-424)
+	bash scripts/ci/stream-names.sh
+
 ci-ref-lint: ## Gate 2b: referências cruzadas AOS/ADR válidas (AOS-186)
 	python3 scripts/ci/ref-lint.py
 
@@ -113,6 +116,9 @@ ci-security: ## Gate: 4 cenários adversariais de segurança (prompt injection/e
 ci-isolation-live: ## Gate OPCIONAL: isolamento contra o executor gVisor REAL (fronteira, não contrato) — AOS-358; salta RUIDOSAMENTE sem o componente
 	$(CI)/isolation-live.sh
 
+ci-nats: ## Gate: substrato replicado REAL — levanta um cluster JetStream de 4 nos e corre as suites que sem ele SALTAM (AOS-431, fail-closed)
+	$(CI)/nats.sh
+
 ci-dormencia: ## Gate: nomeia as suites dormentes (AOS_NATS_URL, -tags fclive/gvlive) e exige que COMPILEM — AOS-358, fail-closed sobre apodrecimento
 	$(CI)/dormencia.sh
 
@@ -137,7 +143,7 @@ ci-sca: ## Gate: SCA (govulncheck, vulns afetantes)
 ci-package: ## Gate: empacotamento do nó `aos` — secrets + sast + sca + sbom + docker build (AOS-168 / AOS-187)
 	$(CI)/package.sh
 
-ci-sbom: ## Gate: SBOM + proveniência mínima do binário `aos` (ADR-017 ponto 3; AOS-187)
+ci-sbom: ## Gate: SBOM + proveniência mínima dos binários `aos` e `aos-orq` (ADR-017 ponto 3; AOS-187, AOS-403)
 	$(CI)/sbom.sh
 
 ci-policy: ## Gate: teste de política do PDP (golden allow/deny + assinatura)

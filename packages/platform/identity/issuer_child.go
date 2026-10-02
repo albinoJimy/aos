@@ -92,10 +92,13 @@ func (i *Issuer) IssueChild(ctx context.Context, parentCompact string, req Child
 
 	now := i.now()
 	claims := Claims{
-		UserID:          parent.UserID, // mesmo humano responsável
-		AgentID:         req.AgentID,
-		AgentClass:      req.AgentClass,
-		PolicyRef:       req.PolicyRef,
+		UserID:     parent.UserID, // mesmo humano responsável
+		AgentID:    req.AgentID,
+		AgentClass: req.AgentClass,
+		PolicyRef:  req.PolicyRef,
+		// AOS-407: o board é do humano responsável, não do agente — o filho herda o do pai e não
+		// o pode escolher. Por construção não há campo no ChildRequest para o mudar.
+		Board:           parent.Board,
 		Scope:           childScope,
 		Issuer:          i.iss,
 		IssuedAt:        now.Unix(),

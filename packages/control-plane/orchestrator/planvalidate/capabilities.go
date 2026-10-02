@@ -33,6 +33,56 @@ type Capability struct {
 	Sensitivity   risk.Sensitivity
 	Egress        risk.Egress
 	Reversibility risk.Reversibility
+
+	// Mutation é o QUARTO eixo pinado (AOS-409, DEF-275): a ferramenta altera estado?
+	// Não é um eixo do classificador SA-ROC ([risk.Classify] tem três, ADR-013) — é lido
+	// por este pacote, em dois sítios e com UMA definição: [IsEffectTool] (fronteira
+	// read-only de ADR-022 §2.2) e [deriveNodeAction] (regra 6, onde um mutador entra
+	// no classificador como IRREVERSÍVEL — decisão R1 do AOS-409).
+	//
+	// FAIL-CLOSED PELO TIPO, como os outros três: o valor-zero é [MutationUnknown], que
+	// conta como mutador. Uma capability construída sem este campo — um literal Go, ou a
+	// capability de eixos-zero que [resolveCaps] fabrica para uma tool não resolvida —
+	// é tratada como uma ferramenta que escreve.
+	Mutation Mutation
+}
+
+// Mutation é o eixo de MUTAÇÃO de uma capability pinada (AOS-409): se a ferramenta
+// altera estado — local ou remoto, desfazível ou não.
+//
+// É ortogonal ao egress e à reversibilidade, e é por isso que existe: uma escrita local
+// com undo é `EgressNone` + `Reversible`, e sem este eixo contava como leitura — um
+// verificador podia pinar a tool que mexe no que revê, e um consumidor com autoridade de
+// escrita não contava como privilegiado para a regra de taint (DEF-275).
+type Mutation uint8
+
+const (
+	// MutationUnknown é o valor-zero: mutação por declarar. FAIL-CLOSED — conta como
+	// mutador ([Mutation.Mutates] devolve true). Não é «inócua por omissão».
+	MutationUnknown Mutation = iota
+	// MutationNone declara que a ferramenta NÃO altera estado nenhum (só lê/computa). É
+	// o ÚNICO valor que [Mutation.Mutates] trata como inócuo, e tem de ser declarado.
+	MutationNone
+	// MutationMutates declara que a ferramenta altera estado.
+	MutationMutates
+)
+
+// Mutates diz se o eixo conta como mutador. FAIL-CLOSED: tudo o que não seja
+// explicitamente [MutationNone] — incluindo o valor-zero e qualquer valor fora do enum —
+// muta. É a mesma forma de [risk.Reversibility.IsIrreversible].
+func (m Mutation) Mutates() bool { return m != MutationNone }
+
+// String devolve o nome do eixo, o mesmo vocabulário do ficheiro do snapshot pinado
+// (`none`/`mutates`/`unknown`). Um valor fora do enum diz-se `unknown`.
+func (m Mutation) String() string {
+	switch m {
+	case MutationNone:
+		return "none"
+	case MutationMutates:
+		return "mutates"
+	default:
+		return "unknown"
+	}
 }
 
 // Snapshot é o conjunto PINADO de capabilities contra o qual a regra 3 resolve as

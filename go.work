@@ -1,0 +1,59 @@
+// go.work — GERADO por scripts/ci/gowork.sh (AOS-387). Não editar à mão a lista `use`:
+// `bash scripts/ci/gowork.sh gerar` (ou `go work use ./packages/<novo>`). Os gates correm
+// com GOWORK=off (lib.sh); ver tecnica/11 §8.1.
+
+go 1.25
+
+toolchain go1.25.13
+
+use (
+	./packages/cmd/aos
+	./packages/cmd/aos-attestation
+	./packages/cmd/aos-demo
+	./packages/cmd/aos-issuer
+	./packages/cmd/aos-orq
+	./packages/control-plane/budget
+	./packages/control-plane/governance/approval-card
+	./packages/control-plane/governance/authoring-surface
+	./packages/control-plane/governance/autonomy
+	./packages/control-plane/governance/autonomy-surface
+	./packages/control-plane/governance/compliance
+	./packages/control-plane/governance/confidence-calibration
+	./packages/control-plane/governance/control-surface
+	./packages/control-plane/governance/dsar
+	./packages/control-plane/governance/hitl
+	./packages/control-plane/governance/plan-approval
+	./packages/control-plane/governance/progress-surface
+	./packages/control-plane/governance/sovereignty
+	./packages/control-plane/governance/surface-adapter
+	./packages/control-plane/governance/trajectory-surface
+	./packages/control-plane/orchestrator
+	./packages/control-plane/pdp
+	./packages/control-plane/runlifecycle
+	./packages/control-plane/scheduler
+	./packages/integration
+	./packages/kernel/agent-runtime
+	./packages/kernel/reference-monitor
+	./packages/platform/attestation
+	./packages/platform/audit
+	./packages/platform/backup
+	./packages/platform/broker
+	./packages/platform/dr
+	./packages/platform/eval
+	./packages/platform/hipercare
+	./packages/platform/identity
+	./packages/platform/memory
+	./packages/platform/messaging
+	./packages/platform/model-gateway
+	./packages/platform/registry
+	./packages/platform/runbooks
+	./packages/qa/dr-e2e
+	./packages/qa/ux-dx
+	./packages/security-tests
+	./packages/substrate/bus
+	./packages/substrate/eventstore
+	./packages/substrate/otel-genai
+	./packages/substrate/redaction
+	./packages/substrate/sandbox
+	./packages/testkit
+)

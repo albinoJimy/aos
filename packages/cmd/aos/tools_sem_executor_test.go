@@ -60,27 +60,31 @@ func TestTodasComExecutorNaoProduzemRuido(t *testing.T) {
 	}
 }
 
-// TestManifestoDeProducaoTemUmaToolSemExecutor documenta o FACTO observado, contra o ficheiro real
-// que o repositório entrega — e falha se ele mudar sem que este texto mude.
+// TestManifestoDeProducaoNaoTemToolSemExecutor documenta o FACTO, contra o ficheiro real que o
+// repositório entrega — e falha se ele mudar sem que este texto mude.
 //
-// Não é uma acusação: pode ser deliberado (ver a demo de defesa-em-profundidade). É um registo de
-// que o operador de produção está a oferecer ao modelo uma tool que não corre, para que a decisão
-// seja CONSCIENTE e não herdada.
-func TestManifestoDeProducaoTemUmaToolSemExecutor(t *testing.T) {
+// Até 2026-09-26 o manifesto de produção oferecia o `web_post`, sem executor (registado aqui como
+// decisão a tornar consciente). Nesse dia o dono decidiu RETIRÁ-LO (ADR-034 §2.7, AOS-069): com a
+// autorização derivada do contexto, um `web_post` de contexto limpo deixava de morrer no taint e
+// passava a depender da região do Cedar. O catálogo de produção ficou só com `doc_read`, que tem
+// executor. Voltar a oferecer uma tool sem executor — ou o `web_post` — é decisão explícita.
+func TestManifestoDeProducaoNaoTemToolSemExecutor(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", "../../../deploy/server/model-tools/tools.json")
 	specs, err := readModelToolSpecs()
 	if err != nil {
 		t.Fatalf("o manifesto de producao nao carrega: %v", err)
 	}
+	if len(specs) == 0 {
+		t.Fatal("o manifesto de producao ficou vazio — o teste seria vacuo")
+	}
 	bindings, _, err := sandboxBindingsFromEnv()
 	if err != nil {
 		t.Fatalf("bindings: %v", err)
 	}
-	orfas := toolsSemExecutor(specs, bindings)
-	if len(orfas) != 1 || orfas[0] != "web_post" {
-		t.Errorf("o manifesto de producao mudou: orfas = %v (era exactamente [web_post]). "+
-			"Se a mudanca foi deliberada, actualize este teste E o texto que explica porque uma "+
-			"tool e oferecida sem executor", orfas)
+	if orfas := toolsSemExecutor(specs, bindings); len(orfas) != 0 {
+		t.Errorf("o manifesto de producao voltou a oferecer tools sem executor: %v. "+
+			"Desde 2026-09-26 (ADR-034 §2.7) nao oferece nenhuma; se a mudanca foi deliberada, "+
+			"actualize este teste E o ADR", orfas)
 	}
 }
 
@@ -92,8 +96,11 @@ func TestManifestoDeProducaoTemUmaToolSemExecutor(t *testing.T) {
 //
 // É a quinta vez neste dia que a unidade estava testada e a ligação não. Passou a haver sempre
 // uma mutação de cablagem.
+//
+// Corre sobre o manifesto dos demos dev-hardened, que ainda oferece o `web_post` sem executor: o de
+// produção deixou de ter tools órfãs (ver [TestManifestoDeProducaoNaoTemToolSemExecutor]).
 func TestBannerDeclaraAsToolsSemExecutor(t *testing.T) {
-	t.Setenv("AOS_MODEL_TOOLS", "../../../deploy/server/model-tools/tools.json")
+	t.Setenv("AOS_MODEL_TOOLS", "../../../deploy/node/dev-hardened/model-tools/tools.json")
 	t.Setenv("AOS_MODEL_TOOLS_REGISTER", "")
 
 	var banner bytes.Buffer

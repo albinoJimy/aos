@@ -141,7 +141,7 @@ flowchart TD
 
 Os quatro sinais são: **cost/token velocity** (partilhado com o orçamento por árvore do ADR-008), **wall-clock** (tempo de parede que leva ao estado durável `timed_out`), **action-dedup por hash** (`hash(tool+args)` repetido acima de um limiar indica o agente a repetir a mesma acção sem efeito) e **ausência de progresso** (nenhum novo estado útil entre iterações). Ao abrir, o disjuntor não mata cegamente: transita o run para um estado durável (`paused` ou `timed_out`), emite um span de *trip* e um alerta operacional, e permite escalar a humano ou abortar de forma graciosa — preservando a trajectória para RCA. É esta a diferença face ao *hard-stop* cego: o loop semântico é detectado no agente vivo, o gap que o lease sozinho nunca cobria.
 
-> **Exclusão do tempo de espera dos sinais (AOS-019).** Os sinais de `wall-clock` e `ausência de progresso` medem **trabalho activo**, não tempo-de-parede bruto — senão um gate `waiting_on_human` de horas leria-se como "sem progresso" e faria *trip* de um run perfeitamente saudável. O contrato de exclusão vive em `runtime/liveness` (AOS-019): o `WorkClock` acumula **só** o tempo em `running` (o tempo em `waiting_on_human`/`waiting_on_tool`/`paused` **não conta**), e `CountsAsActiveWork`/`IsWorkPaused` dão os predicados. O circuit breaker completo (avaliação multi-sinal e *trip*) é **EPIC-08**; AOS-019 fornece **apenas** esta exclusão, garantindo por construção que a espera legítima nunca alimenta o sinal de "sem progresso" (o par do não-falso-positivo de zombi por lease em `tecnica/02` §6). **Backstop das esperas não-humanas (contrato explícito, remediação AOS-019).** A exclusão tem um reverso que o breaker DEVE cobrir: `waiting_on_tool` e `paused` não têm timeout de backstop nem no `liveness` nem no `Machine.CheckDeadlines` (que só limita `waiting_on_human` e `running`), e o `WorkClock.ActiveWork` **congela** nesses estados. Logo o breaker de EPIC-08 tem de reapear essa fronteira com um sinal **wall-clock ABSOLUTO** (tempo-de-parede desde a entrada no estado), **não** com o `ActiveWork` — senão um `waiting_on_tool` forjado/pendurado escaparia a toda a deteção. O timeout da *activity* externa (AOS-018) é a primeira linha para `waiting_on_tool`; o breaker é a rede de segurança para ambos.
+> **Exclusão do tempo de espera dos sinais (AOS-019).** Os sinais de `wall-clock` e `ausência de progresso` medem **trabalho activo**, não tempo-de-parede bruto — senão um gate `waiting_on_human` de horas leria-se como "sem progresso" e faria *trip* de um run perfeitamente saudável. O contrato de exclusão vive em `runtime/liveness` (AOS-019): o `WorkClock` acumula **só** o tempo em `running` (o tempo em `waiting_on_human`/`waiting_on_tool`/`paused` **não conta**), e `CountsAsActiveWork`/`IsWorkPaused` dão os predicados. O circuit breaker completo (avaliação multi-sinal e *trip*) é **EPIC-08**; AOS-019 fornece **apenas** esta exclusão, garantindo por construção que a espera legítima nunca alimenta o sinal de "sem progresso" (o par do não-falso-positivo de zombi por lease em `tecnica/02` §6). **Backstop das esperas não-humanas (contrato explícito, remediação AOS-019; MITIGADO por AOS-419 — mecanismo entregue, alcance por ligar).** A exclusão tem um reverso: `waiting_on_tool` e `paused` não tinham timeout de backstop no `liveness`, o `WorkClock.ActiveWork` **congela** nesses estados, e o `Machine.CheckDeadlines` só limitava `waiting_on_human` e `running` — um `waiting_on_tool` pendurado, ou um `paused` esquecido, escapava a toda a detecção. Esperar que o breaker de EPIC-08 reapeasse essa fronteira **não funciona**, e foi o que o DEF-906 mediu: a guarda de entrada do disjuntor (`liveness.CountsAsActiveWork`, que só admite `running`) devolve cedo, pelo que o sinal wall-clock absoluto é recolhido e nunca avaliado nestes estados; e o disjuntor só é observado na fronteira de fim-de-turno, que um run suspenso nunca alcança. **AOS-419** dá-lhe mecanismo onde o prazo pode mesmo correr fora do turno: `Machine.CheckDeadlines` transita `waiting_on_tool` → `timed_out` (razão `suspension_wall_clock_exceeded`). O `paused` ganha a ARESTA na tabela mas **não** o disparo automático — metade dos seus produtores é uma pausa de operador, e a máquina não retém a razão de entrada que os separaria no **mesmo** tecto de wall-clock ABSOLUTO (tempo-de-parede desde a entrada no estado, **não** o `ActiveWork`) que o operador já configura para o breaker — um só valor, vários pontos de enforcement. O timeout da *activity* externa (AOS-018) continua a ser a primeira linha para `waiting_on_tool`; o backstop durável é a rede de segurança para ambos, e vale para quem **chama** `CheckDeadlines` periodicamente sobre a máquina do run (o varrimento de AOS-252, no nó).
 
 **Implementação (AOS-080).** O breaker multi-sinal do agente vivo é `packages/kernel/agent-runtime/breaker/`. O avaliador puro (`Evaluate(snapshot, thresholds) → Decision`) é **desacoplado** dos colectores: os sinais chegam num `SignalSnapshot` de escalares (determinista, sem I/O nem relógio), produzido pelas portas `VelocitySource` (cost/token velocity de AOS-078), `WallClockSource` (o wall-clock ABSOLUTO acima, derivado por omissão da `state.Machine`) e `ProgressSource` (a ausência de progresso; o detector concreto de *action-dedup* por `hash(tool+args)` é **AOS-081** e liga-se nesta porta). Os limiares são **por classe de agente** (`ThresholdProvider`), e a composição é configurável (`CompositionAny` por omissão, `CompositionAll` para exigir corroboração). Ao dar *trip*, transita para o estado durável (`velocity`/`no-progress` → `paused`, `wall-clock` → `timed_out` — nunca *kill* cego), emite o span dedicado `aos.breaker.trip` e um alerta operacional (`AlertSink`), e expõe `EscalateToHuman`/`Abort` gracioso — preservando a trajectória (event log *append-only*) para RCA. A construção é **fail-closed**: um limiar ligado sem a fonte respectiva cablada é recusado (`ErrVelocitySourceMissing`/`ErrProgressSourceMissing`), para não fabricar um breaker que se julga configurado mas está cego ao sinal. Não modifica o breaker de **orçamento** do scheduler (esse é o admission control por árvore do ADR-008).
 
@@ -152,6 +152,53 @@ Os quatro sinais são: **cost/token velocity** (partilhado com o orçamento por 
 O plano-base filtrava no *emit-time* (*"diagnósticos auto-limpam, só emito sinais operator-fixable"*), o que esconde padrões sistémicos: o que não parece accionável hoje é a pista da falha de amanhã. O AOS substitui-o pelo padrão **wide events** — capturar tudo, num evento largo e de alta cardinalidade por unidade de trabalho, e **filtrar no query-time**. Cada span é enriquecido com todas as dimensões relevantes (principal, modelo, tokens, custo, latência, decisão de política, taint, versões pinadas), de modo que perguntas novas se respondem sobre dados já recolhidos, sem reinstrumentar.
 
 Isto suporta o pilar de métricas com SLIs/SLOs (cache-hit-rate, overhead de mediação p95, custo por trajectória, override-rate) por agregação *ad hoc* sobre os wide events, e alimenta a detecção de anomalias que, por sua vez, informa o circuit breaker e a demoção automática de autonomia (L0–L5, ver `tecnica/09`). A distinção crítica: os wide events são **diagnósticos efémeros** com TTL — não devem confundir-se com o audit trail, que é permanente e tamper-evident (secção 8).
+
+### 7.1 Os quatro SLIs da mediação e o que cada um mede
+
+A tabela abaixo é a referência que `packages/substrate/otel-genai/slo.go` cita. Cada SLI nomeia a
+**dimensão exacta** de onde sai, porque é aí que o erro se esconde: um SLI e o seu SLO podem estar
+ambos certos e o par ser inútil se o número lido não for o número que o alvo descreve.
+
+| SLI | Fonte no wide event | SLO | Driver |
+|---|---|---|---|
+| `cache_hit_rate` | `aos.cache.hit_rate` dos spans `chat`, ponderado por prompt tokens | > 0,80 | ADR-009 |
+| `mediation_overhead_p95` | `aos.mediation.policy_latency_ns` dos spans `execute_tool` **que decidiram** | p95 < 15 ms | `tecnica/19` §4 |
+| `cost_per_trajectory` | custo agregado por trace (só spans `chat`, sem dupla-contagem); um trace com um chat de custo **não derivado** (`aos.cost.undefined`, AOS-406 — sem fonte de preço, ex. modelo por subscrição) sai da amostra inteiro | tecto por trajectória | ADR-008 |
+| `override_rate` | fracção de decisões com `aos.decision == escalate` | tecto de fracção | ADR-010 |
+
+**O overhead de mediação é a janela da POLÍTICA, não a da tool call nem a do selo.** O span
+`execute_tool` do Reference Monitor **fecha depois de a tool correr** — `Monitor.evaluate` despacha
+antes de devolver a decisão —, pelo que carrega três janelas encaixadas, todas publicadas pelo kernel:
+
+| Atributo | Janela | SLO |
+|---|---|---|
+| `aos.mediation.policy_latency_ns` | identidade, PDP, orçamento, egress, obrigações — até **antes** da escrita do selo | **p95 < 15 ms** |
+| `aos.mediation.audit_write_latency_ns` | a escrita durável do selo `tool.call.mediated` (Event Store/WORM) | nenhum |
+| `aos.mediation.hook_latency_ns.<hook>` | cada hook da cadeia de política, dentro da primeira (AOS-405); inclui o que o hook escreve — o de revalidação sela no WORM | nenhum |
+| `aos.mediation.decision_latency_ns` | num permit, política + escrita — tudo o que antecede o despacho | nenhum |
+| latência do span | decisão + execução da tool no sandbox | nenhum |
+
+O SLI deriva só da primeira, que é o mesmo instante do `latency_ns` do selo. A segunda é legível no
+`/metrics` do nó (AOS-402), na janela do avaliador e por decisão: `aos_mediation_audit_write_samples{decision}`
+e `aos_mediation_audit_write_latency_ns{decision,stat="p50|p95|max"}`, em nanossegundos e sem SLO — o
+atributo do span sozinho não chegava, porque o colector de produção descarta os traces. A política
+partida por hook sai também no `/metrics` (AOS-405): `aos_mediation_hook_samples{hook}` e
+`aos_mediation_hook_latency_ns{hook,stat="p50|p95|max"}`, só para os hooks que correram na janela e sem
+SLO. Os hooks de uma mediação somam-se dentro da política; o resto é o próprio Reference Monitor.
+
+Ler a janela errada custou um ano de alertas falsos: em qualquer nó com sandbox real, uma tool call
+normal violava o SLO por duas ordens de grandeza e acendia dois `critical` a apontar o RB-04 («Falha
+de PDP»), mandando depurar a peça sã. Era DEF-281, fechado por **AOS-398** / **ADR-026**.
+
+A primeira correcção (AOS-398) fechou a janela **depois** da escrita do selo. Em produção, com a
+v0.1.15, o SLI desceu de 1,21 s para ~31 ms — ainda o dobro do tecto. A política sempre coube em
+2–8,6 ms; a diferença atribuiu-se, por inferência, à escrita durável do selo. O **AOS-401** emendou o ADR-026: o SLO governa só a política. A medida directa do **AOS-402** (2026-09-17, v0.1.19) desmentiu a inferência: a escrita custa 6,5–8,3 ms e política + escrita ≈ 12–13 ms, pelo que a diferença para os ~31 ms da v0.1.15 não é da escrita. O **AOS-404** explicou-a: os ~31 ms da v0.1.15 foram o p95 de poucas amostras dominado por duas tool calls em que TODOS os troços ficaram lentos ao mesmo tempo (AOS-404): a janela da política — que inclui o selo durável da revalidação no WORM — e as duas escritas do selo de mediação, no WORM e no Event Store. Isso aponta para episódios transitórios de I/O ou do nó, não para o PDP; o custo do Event Store dessas duas calls é inferido do próprio SLI, dentro de limites medidos. A política, afinal, nem sempre coube em 2–8,6 ms (4 de 27 permits de produção passaram os 15 ms), e a sua janela inclui o selo durável da revalidação no WORM.
+
+**A escrita do selo e a duração da tool call mediada não têm SLO, e a omissão é deliberada.** Continua observável
+— é a latência do próprio span `execute_tool`, e o drill-down chega ao trace — mas nenhum documento
+normativo ratifica um orçamento para a execução de uma tool, que depende do runtime de sandbox e da
+tool concreta. Fixar aqui um limiar por estimativa reproduziria, com outro nome, o alerta mal
+calibrado que o AOS-398 apagou. Quando existir alvo ratificado, entra como SLI próprio.
 
 ---
 

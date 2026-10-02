@@ -149,6 +149,9 @@ type AppendOption func(*appendOpts)
 type appendOpts struct {
 	hasExpected bool
 	expectedSeq uint64
+	// semValidacaoDeNome desliga [ValidarStreamID]. Só a costura de teste
+	// [SemearStreamLegado] a liga — ver `semente_legada.go` para as duas barreiras.
+	semValidacaoDeNome bool
 }
 
 // WithExpectedSeq activa a concorrência optimista (CAS): o Append só procede se

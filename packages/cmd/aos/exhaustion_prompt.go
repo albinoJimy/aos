@@ -50,12 +50,17 @@ import (
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	audit "github.com/aos-ref/platform/audit"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // reasonExhaustionPrompt é o motivo gravado na transição running→waiting_on_human da
 // suspensão por exaustão — rótulo de auditoria legível (nunca segredo), DISTINTO do da
 // escalada de tool call para que o log atribua a causa certa a cada suspensão.
 const reasonExhaustionPrompt = "budget_exhaustion_prompt"
+
+// exhaustionPromptNHI é a identidade de COMPONENTE gravada no envelope do pendente de
+// exaustão (`approval.pending` com `kind=exhaustion`, AOS-478): a pergunta é do nó.
+const exhaustionPromptNHI = "nhi:aos-node/exhaustion-prompt"
 
 // exhaustionResumeRoute é a rota de RE-HOSPEDAGEM de um run suspenso (AOS-021). NÃO é uma
 // opção do prompt e deixou de ser apresentada como tal: é o que se faz DEPOIS de a decisão
@@ -274,6 +279,9 @@ func (e *exhaustionPrompt) raise(ctx context.Context, runID string, ev progresss
 		// Âncora do TTL: é daqui que o varrimento de pendentes JÁ EXISTENTE sabe que a
 		// pergunta envelheceu. Sem ela o prompt nunca expiraria sozinho (fail-safe).
 		CreatedAt: agora.Format(time.RFC3339Nano),
+		// AOS-478: a pergunta é levantada pelo NÓ (o burn-down do orçamento), não pelo agente
+		// nem por um humano. O envelope di-lo em vez de vir vazio.
+		Producer: eventstore.Producer{NHIID: exhaustionPromptNHI},
 	}
 	// Coerência do registo: sem tecto em $ a dimensão não se reporta de todo — um consumido
 	// sem denominador leria-se como «gastou X de nada».

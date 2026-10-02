@@ -56,16 +56,29 @@ uso:
   aos-issuer revoke-sign   --emitter <id> --key-file <ficheiro> --jti <jti> --reason <texto>
                           → imprime o corpo JSON de POST /nhi/revoke (AOS-288)
   aos-issuer worm-seal --worm <ficheiro> --key-file <ficheiro> [--partition <p>] [--anterior <ficheiro>] [--heads]
-                          → imprime o corpo JSON de POST /promote (AOS-275)`
+                          → imprime o corpo JSON de POST /promote (AOS-275)
+  aos-issuer plan-approve-sign --request-id plan:<plano>:<hash> --approver <principal> --key-file <ficheiro> [--approve] [--out <ficheiro>]
+                          → imprime a decisão ASSINADA de um plano pendente do aos-orq (AOS-408)
+  aos-issuer mandate-sign --key-file <chave-do-humano> --human <id> --board <b> --agent <id> --class <c> --caps <c1,c2> [--issuer iss:aos-issuer-auto] [--max-ttl 45m] [--valid-for 720h] [--out <ficheiro>]
+                          → o HUMANO assina UMA vez o mandato sob o qual o emissor automático cunha (AOS-427)
+  aos-issuer mint-mandated --mandate <ficheiro> --signer-pubkey <pino> --vault-addr ... [--ttl 45m] [--out <ficheiro>]
+                          → cunha SEM operador, dentro do mandato; o nó verifica-o contra a chave pinada (AOS-427)
+  aos-issuer mandate-prepare --human <id> --board <b> --agent <id> --class <c> --caps <c1,c2> --requesters <s1,s2> --out <prefixo>
+                          → escreve o RASCUNHO e os bytes a assinar com a chave FIDO2 (AOS-446 fase 1)
+  aos-issuer mandate-attach --mandate <ficheiro> --sig <ficheiro.sig> --signer "sk-ssh-ed25519@openssh.com AAAA…" [--out <ficheiro>]
+                          → junta a assinatura do 'ssh-keygen -Y sign' e emite o mandato FIDO2 (AOS-446 fase 1)`
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout); err != nil {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "aos-issuer:", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string, out io.Writer) error {
+// run despacha o subcomando. `out` recebe SÓ o artefacto (corpo JSON, token, pubkey) — é o que
+// o operador captura com `$(aos-issuer ...)` e envia ao nó; avisos vão para `diag`, nunca para
+// `out`, senão contaminam o corpo e o nó responde 400 em vez da recusa que o aviso anunciava.
+func run(args []string, out, diag io.Writer) error {
 	if len(args) == 0 {
 		return errors.New(usage)
 	}
@@ -74,6 +87,10 @@ func run(args []string, out io.Writer) error {
 		return cmdPubkey(args[1:], out)
 	case "approve-sign":
 		return runApproveSign(args[1:])
+	// AOS-408: a decisão assinada de um PLANO pendente do `aos-orq` (o gate de plano é
+	// non-signing, como o four-eyes do nó: quem verifica não assina).
+	case "plan-approve-sign":
+		return runPlanApproveSign(args[1:])
 	case "ratify-sign":
 		return runRatifySign(args[1:], out)
 	case "mint":
@@ -81,13 +98,24 @@ func run(args []string, out io.Writer) error {
 	case "delegation-nonce":
 		return cmdDelegationNonce(args[1:], out)
 	case "autonomy-sign":
-		return runAutonomySign(args[1:], out)
+		return runAutonomySign(args[1:], out, diag)
 	case "challenge-sign":
 		return runChallengeSign(args[1:], out)
 	case "revoke-sign":
 		return runRevokeSign(args[1:], out)
 	case "worm-seal":
 		return runWormSeal(args[1:], out)
+	// AOS-427: a cunhagem sem operador — o humano assina o mandato, o timer cunha dentro dele.
+	case "mandate-sign":
+		return cmdMandateSign(args[1:], out, diag)
+	case "mint-mandated":
+		return cmdMintMandated(args[1:], out)
+	// AOS-446 fase 1: a mesma cunhagem, com o mandato assinado por uma chave FIDO2 que não se
+	// copia. Dois comandos porque o toque no autenticador é o passo do meio — ver mandato_fido2.go.
+	case "mandate-prepare":
+		return cmdMandatePrepare(args[1:], out, diag)
+	case "mandate-attach":
+		return cmdMandateAttach(args[1:], out, diag)
 	default:
 		return fmt.Errorf("subcomando desconhecido %q\n%s", args[0], usage)
 	}
@@ -122,6 +150,7 @@ func cmdMint(args []string, out io.Writer) error {
 	buildSigner := vaultSignerFlags(fs, keyFile)
 	issuerID := fs.String("issuer", "iss:aos-issuer", "id do issuer (== AOS_ISSUER_ID do nó)")
 	human := fs.String("human", "", "humano responsável (raiz da delegação); alternativa a --assertion (via manual/allowlist)")
+	board := fs.String("board", "", "board de soberania do humano, SÓ com --human (com --assertion vem da claim `board` do IdP e esta flag é recusada)")
 	agent := fs.String("agent", "", "id do agente (NHI a criar)")
 	class := fs.String("class", "", "classe do agente (selecciona a ClassPolicy)")
 	caps := fs.String("caps", "", "capabilities CSV que o utilizador possui (a autoridade é a intersecção com a classe)")
@@ -166,7 +195,12 @@ func cmdMint(args []string, out io.Writer) error {
 		if !*assertionUnbound {
 			nonce = delegationNonce(*agent, *class, splitCSV(*caps), *ttl)
 		}
-		h, m, err := authenticateOIDC(context.Background(), oidc.Config{
+		if *board != "" {
+			// O board é uma afirmação de soberania: com prova OIDC vem do IdP, e uma flag ao lado
+			// deixaria quem cunha escolher a fronteira que o IdP não afirmou (AOS-407).
+			return errors.New("--board só se usa com --human: com --assertion o board vem da claim `board` do IdP")
+		}
+		h, m, b, err := authenticateOIDCComBoard(context.Background(), oidc.Config{
 			Issuer:     *oidcIssuer,
 			Audience:   *oidcAudience,
 			JWKSURI:    *oidcJWKS, // vazio ⇒ discovery via issuer
@@ -183,7 +217,13 @@ func cmdMint(args []string, out io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("autenticação OIDC do humano: %w", err)
 		}
-		rootHuman, method = h, m
+		if b == "" {
+			// FAIL-CLOSED (AOS-407): sem board afirmado pelo IdP não há fronteira de soberania, e
+			// um NHI sem board seria negado em cada tool call. Recusa-se aqui, com a causa, em vez
+			// de cunhar um token inútil. O cliente OIDC do aos-issuer tem de emitir a claim.
+			return errors.New("o ID-token nao traz a claim `board`: o cliente OIDC do aos-issuer tem de a emitir (mapper do atributo board no IdP) — sem board o NHI seria negado em todas as tool calls")
+		}
+		rootHuman, method, *board = h, m, b
 		if !*assertionUnbound {
 			// Rótulo FORTE: o humano autenticou-se PARA ESTA delegação, não apenas "esteve
 			// presente". *oidcIssuer é seguro como fonte porque Validate já exigiu que o `iss`
@@ -193,6 +233,9 @@ func cmdMint(args []string, out io.Writer) error {
 	}
 	if rootHuman == "" {
 		return errors.New("mint exige --human ou --assertion (o humano-raiz da delegação)")
+	}
+	if *board == "" {
+		return errors.New("mint exige o board de soberania: --board com --human, ou a claim `board` do IdP com --assertion (AOS-407)")
 	}
 	scope := splitCSV(*caps)
 
@@ -215,6 +258,7 @@ func cmdMint(args []string, out io.Writer) error {
 		AgentID:       *agent,
 		AgentClass:    *class,
 		PolicyRef:     "policy://" + *class,
+		Board:         *board,
 		UserAuthority: scope,
 		AuthMethod:    method,
 	})
@@ -238,15 +282,23 @@ func cmdMint(args []string, out io.Writer) error {
 // sem `AllowInsecureTransport`, exige https ao IdP (loopback exceptuado). Um chamador que injecte
 // um `cfg.HTTPClient` (ex.: httptest) é respeitado tal-qual.
 func authenticateOIDC(ctx context.Context, cfg oidc.Config, assertion string) (human, method string, err error) {
+	human, method, _, err = authenticateOIDCComBoard(ctx, cfg, assertion)
+	return human, method, err
+}
+
+// authenticateOIDCComBoard é [authenticateOIDC] mais o board de soberania VERIFICADO do ID-token
+// (claim `board`, AOS-407). O board vem do mesmo Validate que deriva o humano: não há caminho em
+// que um board chegue ao token sem ter passado pela assinatura do IdP.
+func authenticateOIDCComBoard(ctx context.Context, cfg oidc.Config, assertion string) (human, method, board string, err error) {
 	v, err := oidc.NewVerifier(cfg)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	claims, err := v.Validate(ctx, assertion)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return "human:" + claims.Subject, "oidc:" + claims.Issuer, nil
+	return "human:" + claims.Subject, "oidc:" + claims.Issuer, claims.Board, nil
 }
 
 // loadOrCreateKey carrega a seed ed25519 (32 bytes em hex) do ficheiro; se não existir, gera uma

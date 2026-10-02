@@ -47,6 +47,7 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-099 | Workers stateless + estado particionado | feature | L | P0 | AOS-098, EPIC-01, EPIC-03 |
 | AOS-100 | Replicação do Event Store [ADR-007] | feature | L | P0 | AOS-098, EPIC-01 |
 | AOS-101 | Backup + PITR do Event Store | feature | M | P0 | AOS-100 |
+| AOS-453 | Custódia de KEK que sela segmentos do backup: DEK embrulhada pelo Vault Transit | feature | M | P0 | AOS-101, AOS-215 |
 | AOS-102 | DR: recuperação por replay (RPO/RTO definidos) | feature | L | P0 | AOS-100, AOS-101, EPIC-08 |
 | AOS-103 | Pool de microVMs em produção | feature | M | P0 | AOS-098, EPIC-07 |
 | AOS-104 | Dashboards operacionais | feature | M | P1 | EPIC-08 |
@@ -61,6 +62,8 @@ Depende das fundações do plano de controlo (`specs/EPIC-01`, para o Event Stor
 | AOS-285 | Guard de arranque: o nó recusa arrancar sobre um Event Store já detido | feature | S | P0 | — |
 | AOS-286 | Estender o guard de posse do WAL aos restantes escritores | feature | S | P1 | AOS-285 |
 | AOS-392 | Prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook *(v1.1)* | test | M | P0 | AOS-390, AOS-283, AOS-284, AOS-391, AOS-100 |
+| AOS-403 | O `aos-orq` na release assinada e corrível em produção a partir do digest pinado | feature | M | P1 | AOS-392, AOS-395, AOS-400 |
+| AOS-410 | O controlo do `provision-identity.sh` aceita o Transit vazio (404) como o nó e as mensagens deixam de executar backticks | bug | S | P1 | AOS-098 |
 
 ---
 
@@ -320,10 +323,10 @@ Este ticket NÃO reabre a forma do produto v1 (Carta §7). O distribuído é a v
 **Objectivo.** Entregar backup imutável e contínuo do Event Store com PITR validado, verificação periódica da hash-chain do audit WORM, e conformidade de soberania nas cópias.
 
 **Critérios de Aceitação**
-- [~] O log é exportado para **backup imutável** de forma contínua, adicional à replicação por quorum. — *A primitiva existe e é INCREMENTAL: cada `Export` lê só o que passou do head anterior, cifra num segmento AES-256-GCM e encadeia-o no manifesto. **O «contínua» passou a ter condutor:** `packages/cmd/aos/backup_scheduler.go` acrescenta um laço no loop de serviço (molde dos outros cinco: ticker, mesmo `sweepStop`, sem fuga de goroutine) que corre o MESMO `Export`, com a cadência lida do próprio exportador (`Periodicity()` — fonte única, para o RPO anunciado ser o RPO ligado), fail-open com duas paragens permanentes nomeadas (soberania, colisão de referência) e postura declarada no banner e em `/metrics`. O nó passou a importar `platform/backup` (o `go list -deps` deixou de dar zero). **DESLIGADO POR OMISSÃO**, e o interruptor é o DESTINO (`Config.BackupDestination`); com destino, fonte/chave/soberania são fail-closed e abortam o arranque. **O que continua a faltar, agora MEDIDO e não presumido** (`packages/platform/backup/reinicio_test.go`): não há backend DURÁVEL para a porta `ImmutableStore`, e não é um trabalho de infra — `NewExporter` começa sempre do génesis e o primeiro ciclo depois de um reinício colide para sempre com `ErrImmutable` sobre um destino persistente, e `RestoreTo` recebe o manifesto COMO ARGUMENTO (nada o persiste). Enquanto o módulo não souber retomar um manifesto, o que corre no servidor continua a ser o `backup.sh` (cópia do VOLUME, cron diário, RPO de 24h) e esta linha fica em `[~]`: o comportamento existe e o destino durável não.*
+- [~] O log é exportado para **backup imutável** de forma contínua, adicional à replicação por quorum. — *A primitiva existe e é INCREMENTAL: cada `Export` lê só o que passou do head anterior, cifra num segmento AES-256-GCM e encadeia-o no manifesto. **O «contínua» passou a ter condutor:** `packages/cmd/aos/backup_scheduler.go` acrescenta um laço no loop de serviço (molde dos outros cinco: ticker, mesmo `sweepStop`, sem fuga de goroutine) que corre o MESMO `Export`, com a cadência lida do próprio exportador (`Periodicity()` — fonte única, para o RPO anunciado ser o RPO ligado), fail-open com paragens permanentes nomeadas (soberania; desde a retoma, também cadeia com outro dono, registo de ciclo que não verifica, colisão de conteúdo e log atrás do cursor) e postura declarada no banner e em `/metrics`. O nó passou a importar `platform/backup` (o `go list -deps` deixou de dar zero). **DESLIGADO POR OMISSÃO**, e o interruptor é o DESTINO (`Config.BackupDestination`); com destino, fonte/chave/soberania são fail-closed e abortam o arranque. **A causa medida do `[~]` anterior está FECHADA (2026-09-26, porta do PR #206 para a base `ea34099`):** `NewExporter` começava sempre do génesis e colidia para sempre com `ErrImmutable` num destino persistente, e `RestoreTo` recebia o manifesto como argumento. Agora cada ciclo sela, no mesmo `ImmutableStore`, um registo imutável `<região>/cycle-%08d` com o elo e o checkpoint; `NewExporter` **retoma** do último (sondagem O(log N)), a ref do segmento é **endereçada por conteúdo** (um ciclo que morra entre as duas escritas deixa um órfão e a re-tentativa avança), e `Restorer.LoadManifest` reconstrói a cadeia para restauro. A retoma é **fail-closed na construção** (⇒ `ErrResumeUnverifiable`, o exportador não existe e o nó ABORTA o arranque): registo ilegível, de outra chave, de outra região, com o elo ou o cursor adulterados, um BURACO na cadeia de registos, ou o segmento do último elo em falta ou a NÃO ABRIR com a KEK deste processo (sem esta, o 2.º arranque de um nó sem custódia externa retomava, verificava e não restaurava — lido no DR como adulteração); um destino que não é write-once condicional é recusado (`ErrDestinationNotConditional`, sonda de Put duplo); um destino que não responde não é lido como virgem; e um PREFIXO expirado pela retenção nem é lido como destino virgem nem é continuado: a sondagem procura o primeiro ciclo presente nas potências de dois e, faltando o ciclo 1, RECUSA — uma cadeia incremental sem génese já não se restaura. A colisão no registo de ciclo distingue três causas: a nossa escrita ambígua (o registo é EXACTAMENTE um dos que este exportador tentou escrever numa escrita que devolveu erro — mesmo EntryHash) é ADOPTADA; qualquer outro registo autêntico, mesmo a continuar o nosso head, é de outro escritor, um registo que não verifica é `ErrCycleRecordInvalid`, e um autêntico sobre outro head é `ErrChainOwned`. Um log ATRÁS do cursor (outro log, PITR, DR) NÃO recusa o arranque — o nó sobe — e o primeiro ciclo recusa sem escrever (`ErrSourceBehindBackup`) e o laço pára. Medido em `platform/backup`: `reinicio_test.go` (3), `retoma_test.go` (8) e `retoma_falha_fechada_test.go` (17), com os testes de dois arranques a RESTAURAR (e não só verificar) sob uma custódia de KEK de entropia real; e sobre o NÓ em `packages/cmd/aos/aos101_retoma_no_test.go` (dois arranques com a mesma custódia dão UMA cadeia que restaura e os dois banners dizem «RETOMADA do ciclo 1»; sem a custódia o 2.º arranque aborta a nomear a KEK; um nó com outro log sobe e o laço pára). Mutação: desligar cada guarda (KEK, buraco, prefixo, sonda condicional, adopção só da própria escrita, registo inválido) faz cair o seu teste. **Continua em `[~]`, e já não por código:** desde o AOS-453 há uma implementação DURÁVEL da porta (`backup.FileImmutableStore`, directório local write-once) e a superfície de ambiente que a compõe (`AOS_BACKUP_DEST` e irmãs), mas em produção ainda não há destino nem chave de assinatura do backup compostos — passos do dono — e o destino local não protege da perda do host (F4). Até lá o que corre no servidor continua a ser o `backup.sh` (cópia do VOLUME, cron diário, RPO de 24h). **O que a retoma NÃO detecta, e fica dito:** (i) uma cadeia de OUTRO log com a mesma chave e custódia, ou um log rebobinado que já voltou a crescer, cujo head esteja ≥ cursor — é continuada (distingui-lo exigiria o elo selar a identidade do último evento de cada stream); (ii) uma janela retida sem nenhuma potência de dois lê-se como destino virgem — o banner diz «cadeia NOVA» — e colide mais tarde como `ErrChainOwned` (distingui-lo exigiria uma âncora que não expire); (iii) um buraco cujo resto da cadeia não caia em last+2^k escapa; (iv) só o ÚLTIMO elo é conferido no arranque (o PrevHash dele não é confrontado com o anterior) — a cadeia inteira só no restauro; (v) os testes do agendador injectam o erro no destino e provam o SWITCH, com uma excepção real (outro log ⇒ paragem); (vi) um erro TRANSITÓRIO do destino num dos ~45-60 pedidos da retoma ABORTA o arranque do nó — contradiz «o nó tem de subir no DR» e fica por fechar (hoje latente: o exportador não está composto em produção); (vii) o banner diz «LIGADO/RETOMADA» até ao primeiro tick, mesmo que esse tick venha a parar o laço; (viii) não há regra de alerta sobre `aos_backup_scheduler_stopped`; (ix) o arranque decifra o segmento INTEIRO do último elo para provar a KEK (bastaria desembrulhar a DEK — o `Get` do objecto inteiro fica igual); (x) uma retenção finita exige snapshots completos periódicos (uma génese nova antes de a anterior expirar), que o módulo não faz.*
 - [~] É possível fazer **PITR** até um instante arbitrário dentro da janela de retenção, restaurando até ao último evento íntegro. — *O PITR funciona e está provado nos dois substratos (`TestAOS101_PITRAteUmAlvoParaExactamenteNoAlvo`; no ápice, `TestAOS101_ExportarERestaurarPorCimaDoSubstratoREPLICADO`). **Mas o alvo é um `seq` por stream, não um instante:** `RestoreTo` recebe `map[string]uint64`. O envelope tem `Ts`, pelo que traduzir instante→seq é possível, e ninguém o implementou — dizer «instante arbitrário» seria descrever uma API que não existe. No substrato replicado há ainda uma consequência operacional: `deny_purge` proíbe truncar, pelo que restaurar até N MATERIALIZA UM STREAM NOVO e exige reapontar o nó.*
 - [x] Um restauro de teste reconstrói um Event Store consistente e é **verificado por hash-chain** do audit WORM (ADR-010). — *`VerifyManifest` valida a assinatura ed25519 do checkpoint, recusa um checkpoint anterior (rollback), recomputa a cadeia segmento a segmento e exige que o head recomputado bata com o assinado; um blob adulterado ou qualquer campo do manifesto mexido é detectado. **Precisão que a redacção do critério não faz:** a cadeia é a DO BACKUP, construída sobre os segmentos com a mesma disciplina do audit (`SHA-256(PrevHash ‖ conteúdo canónico)`) — o Event Store não tem cadeia nativa. É irmã da do WORM, e não a mesma; e está reimplementada, não partilhada, o que é uma divergência à espera de acontecer.*
-- [x] A janela de retenção e a periodicidade satisfazem o **RPO ≤ 1 min** dentro de região (cruza com AOS-102). — *`TestRPO_WithinOneMinute`, com relógio injectado e periodicidade de 30s, mede a janela efectiva ao longo de 6 ciclos e mantém-na <= 1 min. É uma propriedade DA PERIODICIDADE CONFIGURADA, e é aí que liga ao critério anterior. **O agendador já existe** e a janela é agora medida em runtime (`aos_backup_rpo_window_seconds`, com o relógio do exportador injectável) — o que ainda falta é o DESTINO: sem backend durável para o `ImmutableStore`, o RPO efectivo em produção continua a ser o do cron do `backup.sh` — **24 horas**, não 1 minuto.*
+- [x] A janela de retenção e a periodicidade satisfazem o **RPO ≤ 1 min** dentro de região (cruza com AOS-102). — *`TestRPO_WithinOneMinute`, com relógio injectado e periodicidade de 30s, mede a janela efectiva ao longo de 6 ciclos e mantém-na <= 1 min. É uma propriedade DA PERIODICIDADE CONFIGURADA, e é aí que liga ao critério anterior. **O agendador já existe** e a janela é agora medida em runtime (`aos_backup_rpo_window_seconds`, com o relógio do exportador injectável) — o que ainda falta é o DESTINO: um destino durável já é utilizável pelo exportador (retoma do manifesto, AC1), mas sem uma implementação durável do `ImmutableStore` composta em produção, o RPO efectivo em produção continua a ser o do cron do `backup.sh` — **24 horas**, não 1 minuto.*
 - [x] Backups e cópias **nunca** cruzam a fronteira regional de soberania (ADR-011). — *Fail-closed na construção do exportador: destino noutra região é recusado, e destino SEM região também — não provar que se respeita a fronteira é diferente de a respeitar. Provado também sobre o substrato REPLICADO (`TestAOS101_UmDestinoDeBackupNOUTRARegiaoERecusadoSobreOReplicado`), o que só passou a ser possível quando o adaptador passou a expor `Region()`.*
 - [~] O restauro é **testado periodicamente** (não apenas configurado); existe evidência do último restauro bem-sucedido. — *A evidência existe como mecanismo (`RestoreEvidence`: timestamp, veredicto, head por stream, ciclo) e o `deploy/server/restore-drill.sh` prova a sério que um bundle LEVANTA o sistema — não apenas que decifra. **Falta o «periodicamente»:** não há timer nem cron para o ensaio (o único timer no `systemd/` é o do TLS), e nada persiste a evidência do último restauro. Um ensaio que só corre quando alguém se lembra é configuração, que é exactamente o que este critério distingue.*
 
@@ -333,10 +336,12 @@ Este ticket NÃO reabre a forma do produto v1 (Carta §7). O distribuído é a v
 
 **Definition of Done**
 - [x] PITR demonstrado com restauro de teste e verificação de hash-chain (ADR-010). — *Demonstrado nos DOIS substratos, com o envelope comparado campo a campo (EventID/Ts/Seq/chave de idempotência/payload) — que é o que distingue «restaurou» de «escreveu outra vez»; uma verificação por contagem teria passado nos dois casos. Sobre o replicado, `TestAOS101_ExportarERestaurarPorCimaDoSubstratoREPLICADO`, com o exportador e o restaurador REAIS e não com asserções de tipo. Ressalva do AC3: a cadeia é a do backup, irmã da do WORM.*
-- [x] Backup imutável e conforme à soberania (ADR-011). — *Segmentos write-once com object-lock por política de retenção; soberania fail-closed na construção, incluindo destino sem região. **Com uma ressalva que muda o alcance da palavra «imutável»:** o `ImmutableStore` de produção (object storage WORM) é uma PORTA; o que existe é a implementação de referência in-memory. A imutabilidade está desenhada e testada, não provada contra um backend real.*
-- [x] Sem segredos; cifra em repouso via KMS/Vault (ADR-006); testes verdes. — *Nenhum plaintext de payload chega ao armazenamento: DEK fresca por segmento sob KEK do titular, envelope AES-256-GCM; a KEK vive na porta `audit.KeyVault` e a chave de assinatura fora do repositório. Gate de segredos limpo, testes verdes. **Ressalva actualizada:** a KEK do backup deixou de ser um vault próprio do exportador — a composição do nó liga-lhe o `audit.KeyVault` DO NÓ, pelo que um deployment com Vault Transit (AOS-215) já tem a KEK do backup na mesma custódia externa. Sem isso, a KEK morria com o processo e os segmentos ficavam indecifráveis. O que continua a ser porta com implementação de referência é o `ImmutableStore`.*
+- [x] Backup imutável e conforme à soberania (ADR-011). — *Segmentos write-once com object-lock por política de retenção; soberania fail-closed na construção, incluindo destino sem região. **Com uma ressalva que muda o alcance da palavra «imutável»:** o `ImmutableStore` de produção (object storage WORM) é uma PORTA; o que existe é a implementação de referência in-memory. A imutabilidade está desenhada e testada, não provada contra um backend real. A retoma do manifesto acrescenta ao contrato da porta duas exigências que um backend real tem de cumprir e o README do módulo nomeia: `Put` CONDICIONAL numa ref existente (`ErrImmutable` — em S3, `If-None-Match: *`, porque o Object Lock sozinho cria uma versão nova e devolve sucesso) e `ErrNotFound` só para «não existe».*
+- [~] Sem segredos; cifra em repouso via KMS/Vault (ADR-006); testes verdes. — *Nenhum plaintext de payload chega ao armazenamento: DEK fresca por segmento sob KEK do titular, envelope AES-256-GCM; a KEK vive na porta `audit.KeyVault` e a chave de assinatura fora do repositório. Gate de segredos limpo, testes verdes. **Ressalva CORRIGIDA (2026-09-26, revisão adversarial):** a composição liga ao exportador o `audit.KeyVault` DO NÓ, e dizia-se aqui que por isso um deployment com Vault Transit (AOS-215) já tinha a KEK do backup em custódia externa. **É falso:** a custódia Vault do nó é *key-never-leaves* (`vaultKeyVault.EnsureKey` devolve a chave `nil` e `Key` devolve `false`), e o `sealSegment` do backup precisa da KEK crua — com ela, TODOS os ciclos falham (`crypto/aes: invalid key size 0`). A única custódia com que o exportador funciona hoje é o vault de referência em memória, que morre com o processo. A cifra em repouso existe; a custódia KMS/Vault da KEK do backup NÃO — é o **AOS-453**. **Actualização (2026-09-26, AOS-453):** existe — Vault Transit por envelope, num mount próprio sem `delete` para o nó; falta ligá-la em produção (passos do dono).*
 - [~] Revisão por dois revisores (P0); runbook de restauro esboçado (liga a AOS-106). — *Runbook esboçado no README do módulo (§«Runbook — Restauro / PITR do Event Store»). **A revisão não existe:** os dois PRs desta janela (#197 e #198) entraram na trunk com ZERO revisores humanos, por instrução do dono. Está escrito no corpo de ambos, e fica escrito aqui.*
 - [x] Documentação e `tecnica/10` §6 actualizadas. — *§6 passa a dizer o que o AOS-100 tornou verdade e o que ele obriga a mudar: que as portas de backup alcançam o substrato replicado, que `deny_purge` proíbe truncar (pelo que o PITR materializa um stream novo e reaponta o nó), e que o backup do servidor recusa produzir um artefacto sem o log — a guarda que entrou em produção na v0.1.9.*
+
+**Estado.** **ABERTO — o bloqueio mudou de «sem custódia» para «falta ligar».** O **AOS-453** fechou as duas faltas de código que impediam ligar o exportador em produção: há custódia de KEK que sela segmentos (Vault Transit por envelope, num mount PRÓPRIO sem `delete` para o nó) e há uma implementação durável da porta (`backup.FileImmutableStore`, directório local write-once) com superfície de ambiente (`AOS_BACKUP_DEST`, `AOS_BACKUP_DEST_REGION`, `AOS_BACKUP_SIGNING_KEY_PATH`, `AOS_BACKUP_RETENTION`, `AOS_BACKUP_VAULT_TRANSIT_MOUNT`), desligada por omissão. AC3, AC4 e AC5 `[x]`; AC1 `[~]` (o código está completo; falta LIGAR em produção, e o destino é local — não protege da perda do host); AC2 `[~]` (alvo em `seq`, não em instante); AC6 `[~]` (ensaio de restauro sem agendamento nem evidência persistida). O que falta: (1) **ligar em produção** — passos do dono em `deploy/server/README.md` §«Backup imutável do Event Store» (provisionar o mount e a política, seed de assinatura offline, directório da época, `.env`, forçar um `backup.sh`); (2) **F3 — ensaio periódico** do restauro a partir do destino, com evidência persistida (AC6); (3) **F4 — destino fora do host**, S3 com Object Lock e escrita condicional (`If-None-Match: *`), hoje recusado com `ErrBackupDestNotImplemented`. A retenção é finita e roda por épocas (época nova = génese nova antes de a anterior expirar), documentado no README do módulo.
 
 **Handoff para Claude Code**
 ```text
@@ -347,6 +352,39 @@ Fundações: verificação por hash-chain do audit WORM (ADR-010); backup nunca 
 Testes: restauro PITR para instante-alvo, verificação de hash-chain, imutabilidade do backup, soberania da cópia.
 Não expandas escopo. Abre PR com o template e evidências do restauro.
 ```
+
+---
+
+## AOS-453 — Custódia de KEK que sela segmentos do backup: DEK embrulhada pelo Vault Transit
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Tipo | feature |
+| Prioridade | P0 |
+| Estimativa | M |
+| Dependências | AOS-101 (retoma do manifesto), AOS-215 (custódia Vault Transit do nó) |
+| Bloqueia | ligar o exportador de backup (AOS-101) em produção |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/platform/backup/crypto.go` (`sealSegment`/`openSegment`), `packages/platform/audit/keywrapper.go` (`KeyWrapper`), `packages/cmd/aos/vaultkeyvault.go` (`WrapDEK`/`UnwrapDEK`), ADR-006 |
+
+**Contexto.** Medido pela revisão adversarial do AOS-101 (2026-09-26). O backup cifra cada segmento com uma DEK fresca embrulhada pela KEK do titular `backup:<região>`, e obtém essa KEK CRUA de `audit.KeyVault.EnsureKey`/`Key`. A custódia de produção do nó (`vaultKeyVault`, Vault Transit) é *key-never-leaves*: `EnsureKey` devolve a chave `nil` e `Key` devolve `false`. Com ela TODOS os ciclos falham (`crypto/aes: invalid key size 0`). A única custódia com que o exportador funciona é o vault de referência em memória, que morre com o processo — e a retoma do AOS-101 recusa, a nomear a KEK, uma cadeia que o processo corrente não decifra. O resto do DSAR já resolveu isto pelo envelope: `audit.SealContent`/`OpenContent` usam `KeyWrapper.WrapDEK`/`UnwrapDEK` quando a custódia o implementa.
+
+**Objectivo.** O segmento do backup sela e abre pela porta de envelope quando a custódia a implementa, e a KEK do backup vive na custódia externa do nó, sobrevivendo ao processo.
+
+**Critérios de Aceitação**
+- [x] `sealSegment`/`openSegment` usam `audit.KeyWrapper` (`WrapDEK`/`UnwrapDEK`) quando o vault o implementa, e só caem na KEK crua quando não; o formato do segmento distingue os dois sem ambiguidade. — *`packages/platform/backup/crypto.go`: com `KeyWrapper` a DEK é embrulhada DENTRO da custódia e o segmento leva o discriminador EXPLÍCITO `"wrap":"envelope"` (sem `dek_nonce`); o discriminador do audit (presença de `key_ref`) não servia porque o formato KEK-crua serializa sempre `key_ref` e `dek_nonce`. O formato KEK-crua ficou BYTE A BYTE igual — `TestAOS453_FormatoKEKCruaByteAByte` compara com o blob capturado do código ANTES da alteração. Um `wrap` desconhecido é recusado. `openSegment` recebe o titular e exige `key_ref == KeyRefFor(aos.backup:<região>)` nos dois formatos (chamadores: `resume.go` e `restore.go`, este pela região do manifesto).*
+- [x] Com a custódia Vault do nó (ou o `InMemoryKeyWrapper` de referência a modelá-la) o exportador sela, a retoma de um 2.º processo abre o último segmento, e a cadeia de dois arranques RESTAURA. — *Módulo: `TestAOS453_DoisExportadoresComACustodiaDeEnvelopeRetomamERESTAURAM` (wrapper partilhado; 5 eventos restaurados, nenhum segmento com plaintext nem `dek_nonce`) e `TestAOS453_FileStore_DoisProcessosSobreODirectorioRetomamERESTAURAM` (o mesmo sobre o destino em disco, duas instâncias do adaptador). Nó: `TestAOS453_ACustodiaDoBackupNoMountProprioSelaRetomaERestauraComOPortaoDSARFechado` — duas instâncias do `vaultKeyVault` sobre um Vault falso com um motor Transit por mount (o `fakeTransit` existente), a KEK nasce SÓ no mount do backup, o token visto é o da custódia DSAR, e a cadeia de dois arranques restaura COM o portão do AOS-436 fechado na DSAR; `TestAOS453_OBootstrapUsaACustodiaDoBackupEOsDoisBannersANomeiam` prova a ligação pelo `Bootstrap`.*
+- [x] Uma custódia que não entrega a KEK nem implementa o envelope é recusada na COMPOSIÇÃO do exportador, com erro nomeado, e não ciclo a ciclo. — *`NewExporter` prova a custódia ANTES da retoma: volta `WrapDEK→UnwrapDEK` (envelope) ou `EnsureKey` com 32 bytes (KEK-crua). Sem nenhum dos dois ⇒ `backup.ErrKEKCustodyUnsupported` (`TestAOS453_UmaCustodiaQueNaoEntregaAKEKNemEmbrulhaERecusadaNaComposicao`). E uma custódia que não responde é `backup.ErrKEKCustodyUnavailable`, que NÃO é «a KEK não é a que selou» (`TestAOS453_UmaCustodiaEmBaixoNaoSeLeComoKEKErrada`, módulo e nó) — antes, um Vault em baixo lia-se na retoma como KEK errada e mandava abandonar o destino. No nó, a custódia DSAR em Vault sem mount próprio é recusada (`ErrBackupVaultMountMissing`), tal como a própria instância DSAR ou o mesmo mount injectados.*
+- [x] O crypto-shred do titular `backup:<região>` torna os segmentos irrecuperáveis e é verificado, no molde do resto do DSAR. — *`TestAOS453_OCryptoShredDoTitularDoBackupTornaOsSegmentosIrrecuperaveis`: `Delete("aos.backup:eu-west")` na custódia ⇒ o restauro aborta com `ErrRestoreVerify` (não `ErrSegmentTampered` — a chave não existe, não é adulteração) SEM escrever nada, e a retoma de um 3.º processo é recusada a nomear a KEK (a sonda de composição passa: a custódia responde). No nó, o mesmo com a chave destruída no mount do backup. **Quem pode fazer o shred** mudou de propósito: a KEK do backup vive num mount Transit próprio onde a política do nó NÃO tem `delete` (`provision-identity.sh`: `deny` nos sub-caminhos da chave, controlo negativo pela ACL), e o DSAR reserva o prefixo `aos.` nos `subject_id` (`ErrSubjectIDReservado`, em `/dsar/erase` e `/dsar/hold` — `TestAOS453_OPrefixoAosEReservadoNoDSAR`). O shred da KEK do backup é acto do dono, com a raiz.*
+- [x] Os banners de composição e do agendador dizem que custódia sela a KEK do backup. — *«KEK do backup selada por: Vault Transit mount="transit-backup" (ENVELOPE…)», ou a custódia de envelope/KEK-crua/referência em memória que estiver composta, nos dois banners (`descreverCustodiaDoBackup`); o destino passa a ser descrito (`file:///…`, com o aviso de que não protege da perda do host).*
+
+**Fora de âmbito.** A implementação durável da porta `ImmutableStore` e a composição do destino e da chave de assinatura em produção (passos do dono no AOS-101).
+
+**Implementado também (fase F2 do desenho, decisões do dono de 2026-09-26).** (i) **Destino durável em disco**, `backup.FileImmutableStore` (stdlib): temporário + `fsync` + `os.Link` — `EEXIST` ⇒ `ErrImmutable`, atómico; `ErrNotFound` só para ficheiro inexistente (um objecto ilegível é erro); object-lock no cabeçalho do próprio objecto; a sonda `probeConditionalPut` passa; de 16 `Put` concorrentes vence um. NÃO protege da perda do host nem de root — o S3 com Object Lock é a F4, não implementada. (ii) **Superfície de ambiente** do nó, fail-closed e declarada no banner: `AOS_BACKUP_DEST` (`file:///…`; `s3://` ⇒ `ErrBackupDestNotImplemented`), `AOS_BACKUP_DEST_REGION` (∈ `AOS_BOARD_REGIONS`), `AOS_BACKUP_SIGNING_KEY_PATH` (seed lida, nunca criada), `AOS_BACKUP_RETENTION` (finita) e `AOS_BACKUP_VAULT_TRANSIT_MOUNT` (obrigatória em produção; reutiliza endereço e token da custódia DSAR, que é quem os renova). Sem `AOS_BACKUP_DEST` nada muda — também em produção —, e variáveis `AOS_BACKUP_*` soltas são declaradas IGNORADAS no banner. (iii) **Retenção finita com épocas** documentada (README do módulo e `deploy/server/README.md`): época nova = subdirectório novo = génese nova, antes de a anterior expirar. Mutação: 16 guardas novas desligadas uma a uma, 16 testes caem.
+
+**Estado.** **FECHADO no código (2026-09-26); por ligar em produção.** Os cinco critérios `[x]`. O que falta é do dono e está em `deploy/server/README.md` §«Backup imutável do Event Store»: correr de novo o `provision-identity.sh` (mount `transit-backup` + política sem `delete`), gerar a seed de assinatura offline, criar o directório da época (uid 65532), preencher o `.env` e forçar um `backup.sh` depois de ligar. **O que isto NÃO fecha, e fica dito:** o destino é local (F4 — S3 com Object Lock — por fazer); o ensaio periódico de restauro (AC6 do AOS-101, F3) continua sem agendamento; a custódia do backup não entra no `/readyz` (a credencial é a da DSAR, que entra); e o `backup.sh` continua a ser a única cópia que sai do host. **Revisão de segurança (2026-09-26, Vault 1.18 real):** a cripto não teve achados; um **ALTO confirmado** — a primeira política usava `transit-backup/keys/aos-kek-*` com um `deny` em `aos-kek-*/*` que no Vault é literal (o `*` só é glob no fim), pelo que o token do nó conseguia `rotate`→`min_decryption_version`→`trim` e `deletion_allowed` sobre a KEK do backup — **corrigido**: regras com `+` (um segmento; sub-caminhos em deny implícito), verificação pela ACL que exige `deny` em `/config`, `/rotate` e `/trim`, e a política provada numa candidata com token de teste ANTES de substituir a `aos-node` (`TestAOS453_APoliticaDoBackupUsaMaisENaoAsterisco` fixa a forma; o `fakeTransit` não modela ACL — a prova viva é a do script e o guião com `vault server -dev` no README do servidor). Um BAIXO corrigido: o `RestoreTo` reconfere o hash de cada blob que volta a ler (TOCTOU; `TestAOS453_ORestauroReconfereOHashDoBlobQueAbre`). A seed de assinatura legível por outros é recusada. Declarados no README do servidor: arranque bloqueado até ~40 s (e abortado) por um Vault lento com o backup ligado; falha transitória entre a sonda e a retoma lida como KEK errada; symlink plantado no destino pára o laço; campos em claro dos eventos não protegidos pelo crypto-shred dentro do backup.
 
 ---
 
@@ -1110,6 +1148,180 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 
 ---
 
+## AOS-403 — O `aos-orq` na release assinada e corrível em produção a partir do digest pinado
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-392 (topologia do `aos-orq`), AOS-395 (audit durável do planeador), AOS-400 (decomposição viva em produção) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma / SRE |
+| Documentos de referência | ADR-017 (ponto 3, emenda AOS-403), `deploy/node/Dockerfile`, `scripts/ci/sbom.sh`, `scripts/ci/sign.sh`, `scripts/ci/verify-attestation.sh`, `deploy/server/docker-compose.prod.yml`, `deploy/server/README.md` |
+
+**Contexto.** O `aos-orq` só existia como binário compilado a partir da árvore. As provas em produção do AOS-395 e do AOS-400 correram-no assim: compilado para linux na máquina do operador, copiado para uma pasta temporária do servidor e executado num contentor efémero. Esse binário não passou pela cadeia de supply-chain do ADR-017 (sem SBOM, proveniência nem atestação) e não tinha forma registada de correr em produção. O deploy da release também não o levava.
+
+**Objectivo.** O `aos-orq` passa a viajar na imagem assinada do nó, atestado como subject próprio. Produção corre-o a partir do digest que o deploy pinou, por um serviço do compose que não interfere com o nó.
+
+**Critérios de Aceitação**
+- [x] O `Dockerfile` compila `packages/cmd/aos-orq` no builder com as flags reprodutíveis do nó (`GOPROXY=off`, `-trimpath`, `-s -w -buildid=`) e copia-o para `/usr/local/bin/aos-orq`. O `ENTRYPOINT` continua a ser o nó, o `WORKDIR` final continua a ser `/var/lib/aos` e `/var/lib/aos-orq` é criado por um `WORKDIR` depois do `USER 65532`, o mesmo mecanismo de que `/var/lib/aos` já dependia (a ownership 65532 é a do BuildKit). *(`TestAOS403_ImagemEmpacotaOOrquestrador`, que verifica o Dockerfile e não a imagem construída. O mesmo build corre offline no host com go1.25.13, a versão do builder pinado. O `docker build` não correu localmente porque não havia daemon Docker: fica para o `package.sh` da release, que é fail-closed.)*
+- [x] A atestação de entrega cobre o orquestrador. O `sbom.sh` extrai-o da imagem e verifica a reprodutibilidade pelo mesmo procedimento do nó, com `sbom-aos-orq.json` próprio e `additionalSubjects` na proveniência. O `sign.sh` assina `usr/local/bin/aos-orq` e `sbom-aos-orq.json`, e o `verify-attestation.sh` recusa-os em falta ou divergentes. *(Prova local com uma chave descartável fora do repositório: `sbom.sh` → `sign.sh` → `verify-attestation.sh` recomputou **6** subjects contra os artefactos reais e saiu com 4, por falta de imagem neste host. Depois de um byte acrescentado ao `aos-orq`, saiu com 1: `DIGEST DIVERGENTE em aos-orq`.)*
+- [x] O serviço `aos-orq` de `deploy/server/docker-compose.prod.yml` está no profile `orq` e corre como pontual (`restart: "no"`). Usa `image: ${AOS_IMAGE}`, `entrypoint /usr/local/bin/aos-orq`, root-fs só de leitura, `cap_drop ALL`, sem o `HEALTHCHECK` do nó e o volume `aos-orq-data`, nunca o do nó. Recebe todas as variáveis que o binário lê (incluindo `AOS_MODEL_EGRESS_TIMEOUT`, que o `aos-orq` passa a respeitar como o nó), a CA interna e a credencial, e o caminho do audit não vem da variável do nó. *(`TestAOS403_ServicoDoComposeCorreOOrquestrador`. `docker compose config` sem profile não lista o serviço e com `--profile orq` resolve `AOS_MODEL_AUDIT_PATH=/var/lib/aos-orq/model-audit.wal` com o `.env` do nó.)*
+- [x] Sob `AOS_MODE=production`, com `AOS_MODEL_EGRESS_HOSTS` vazia, a allowlist de egress do `aos-orq` deriva do host do endpoint, como no nó (AOS-366). Um endpoint sem host é recusado. *(`TestAOS403_EgressDerivaDoEndpointSobProducao`.)*
+- [x] Os testes do nó que leem o compose e o ambiente continuam fiéis. O teste de manifesto lê só o bloco `aos:`, e o índice de variáveis do README inclui a árvore do `aos-orq`. *(`TestManifestoDeDeployPassaTodaAConfigQueONoLe`, `TestAOS203EnvSurfaceIsDocumented`.)*
+- [x] Operação: o `deploy.sh` cria `orq/`; o `backup.sh` inclui `aos_aos-orq-data` quando existe (sem o criar fora do compose), leva `orq/` na configuração e regista no MANIFEST se o volume entrou (`aos-orq-data=volume|ausente`). O restauro desse volume não é exercitado pelo `restore-drill.sh`, que prova o nó. A documentação está actualizada: ADR-017 (emenda), `deploy/node/README.md`, `deploy/server/README.md` (secção nova), `PROC-DESPACHO-MULTIPROC`, `tecnica/10`, CHANGELOG e RTM.
+- [x] Evidência de sistema. A release seguinte constrói a imagem com o `aos-orq` e o `verify-attestation.sh` do `package.sh` dá verde com os subjects novos. Depois do deploy, um run em produção com `docker compose --profile orq run --rm aos-orq serve … --goal …` decompõe com o modelo real (a forma do AOS-400) e sela no volume `aos-orq-data`, sem binário compilado à parte. *(**VERIFICADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.20` (merge `3f77943`).
+  - **Release.** O job `publish` do `release.yml` passou, pelo que o `docker build`, o `sign.sh` e o `verify-attestation.sh` do `package.sh` (fail-closed) passaram com a imagem. O `delivery-manifest.json` publicado lista `aos-orq` `adace7ba…` e `sbom-aos-orq.json` `004b90e8…` ao lado do nó, com atestação `ASSINADA` e `publishable=true`. A proveniência declara os dois binários com `source=image:…:v0.1.20` e `reproducible=false` (`host-rebuild-differs-from-image`), como o nó já declarava.
+  - **Deploy.** Aprovado pelo operador. O servidor ficou em `aos-node@sha256:f9aab45f…`, cujo id local `6c724605…` é o do manifesto assinado, com o nó `healthy`. O `deploy.sh` criou `/opt/aos/orq`. O `/usr/local/bin/aos-orq` extraído da imagem no servidor tem sha256 `adace7ba…`, o mesmo do manifesto.
+  - **Run.** `run-aos403-prod-1789643089` correu às 11:04:49Z, pela receita do README: `docker compose … --profile orq run --rm aos-orq serve --wal /var/lib/aos-orq/<run>.wal --goal "ler o ficheiro de configuracao e resumir o seu conteudo em duas etapas" --snapshot /etc/aos-orq/snapshot.json`. Usou o `.env` de produção (`AOS_MODE=production`, endpoint `https://litellm:4000/v1`, `gpt-4o-mini`, `AOS_MODEL_EGRESS_TIMEOUT=120s` e sem `AOS_MODEL_EGRESS_HOSTS`), pelo que a allowlist derivada do endpoint foi exercitada. Saída: postura do audit `DURAVEL` em `/var/lib/aos-orq/model-audit.wal`, `decomposto: objectivo -> plano de 2 nos (tentativas=1, planner_nhi=agent:planner)`, `materializado: … nos=2` (`read_config` papel com `cap:tool:fs.read`, `summarize_config` folha) e `despachado: … nos_despachados=1`.
+  - **Volume.** O `aos_aos-orq-data` nasceu nesta corrida, com os ficheiros owned por `65532`. O WORM, copiado e aberto com `OpenFileStoreReadOnly` (que valida a cadeia), tem em `modelgw-gov:board-eu` um selo `allow` de `model:invoke` para `gpt-4o-mini`/`eu`, com `RunID=run-aos403-prod-1789643089`, `StepID=planstep:decompose:1` e principal `agt-run-aos403-prod-1789643089` enraizado em `human:aos403-prod`. O WAL do run tem 2 `task.node.created`, 1 `task.node.state_changed` e 1 `plan.materialized`.
+  - **Não capturado:** o código de saída. O script foi enviado por `ssh … bash -s` e o `docker compose run` consumiu o resto do stdin, pelo que a linha que o imprimia não correu. O contentor `--rm` não ficou pendurado e a saída chegou ao `despachado`, a última linha de um run bem-sucedido. A receita documentada passa o comando directamente e não sofre deste efeito.)*
+
+**Estado.** **IMPLEMENTADO e VALIDADO EM PRODUÇÃO** a 2026-09-17 na `v0.1.20`. O `aos-orq` assinado (`adace7ba…`) decompôs, materializou e despachou um run pelo serviço do compose, e selou no seu volume.
+
+---
+
+## AOS-410 — O controlo do `provision-identity.sh` aceita o Transit vazio (404) como o nó e as mensagens deixam de executar backticks
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | bug |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-098 (provisionamento) |
+| Bloqueia | — |
+| Responsável sugerido | SRE |
+| Documentos de referência | `deploy/server/provision-identity.sh`, `packages/cmd/aos/vaultkeyvault.go` (`provaDeCapacidade`) |
+
+**Contexto.** Observado em produção a 2026-09-18, ao correr `bash /opt/aos/provision-identity.sh`. Dois defeitos:
+
+1. **Falso negativo no passo 5.** O controlo do token do nó fazia `nodex vault list transit/keys >/dev/null 2>&1 || fail …`. O CLI `vault list` sai com 2 quando o motor Transit está vazio (`No value found at transit/keys/`, um 404 ao LIST), tal como num 403. O script lia os dois como falta de permissão e abortava, e o passo 6 (unseal automático) ficava por correr. O nó trata o mesmo caso como autorizado: `provaDeCapacidade` aceita 200 e 404. Com o mesmo token, o `/readyz` do nó dava `ready` e o `lookup-self`/`renew-self` do script passavam.
+2. **Backticks numa mensagem.** `` log "4b/6 a declarar o atributo `board` …" ``: dentro de aspas duplas a shell executava `board` como comando (`board: command not found`) e a mensagem saía sem o nome. Era cosmético, porque a declaração real usa `board` literal e deu HTTP 200.
+
+**Objectivo.** O controlo do provisionamento usa o critério do nó: 200 e 404 passam, e continua fail-closed para o 403 e para qualquer erro que não reconheça. Nenhuma mensagem do script executa o próprio texto.
+
+**Critérios de Aceitação**
+- [x] O passo 5 guarda a saída do `vault list transit/keys` e só passa com sucesso ou com `No value found at transit/keys`. Uma saída com `permission denied`/`Code: 403` falha sempre, mesmo que mencione `No value found`, e um erro desconhecido (p.ex. ligação recusada) também falha. A mensagem de falha inclui a saída do CLI. *(`TestAOS410_ListTransitVazioNaoAbortaEo403Aborta`, que corre o bloco REAL do script em bash com um `nodex` falso: 200, 404, 403, erro de rede e 403 que menciona `No value found`.)*
+- [x] O `log` do passo 4b usa `'board'`, e nenhuma linha `log "…"`/`fail "…"` do script tem backticks. *(`TestAOS410_MensagensDoProvisionamentoSemBackticks`.)*
+- [x] FALHA-ANTES: contra o script anterior, os dois testes falham — o bloco do controlo não existe, e a linha 135 é apontada como substituição de comando.
+- [ ] Evidência de sistema: o operador volta a correr `bash /opt/aos/provision-identity.sh` no servidor e o script chega ao fim do passo 6, com a saída colada. É do operador, e não se corre daqui contra produção.
+
+**Fora de âmbito.** A saída de um 403 usada no teste imita o formato do CLI do Vault e não foi capturada de um Vault real. A direcção de falha não depende dela: só a mensagem do 404 é aceite.
+
+**Estado.** **IMPLEMENTADO**, falta a evidência de sistema do operador.
+
+---
+
+## AOS-451 — O executor gVisor de produção acumula zombies: o `/component` é PID 1 e não os recolhe
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | bug |
+| Prioridade | P2 |
+| Estimativa | XS |
+| Dependências | — |
+| Bloqueia | — |
+| Responsável sugerido | SRE |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `gvisor`), `deploy/server/gvisor/Dockerfile` (`HEALTHCHECK`, `ENTRYPOINT`) |
+
+**Contexto.** Medido em produção a 2026-09-26, ao investigar uma carga de ~12 num servidor de 8 cores. A carga é crónica e vem de um cluster Kubernetes vizinho (o `kube-apiserver` gasta em média 2 cores desde há 42 dias); a stack AOS usa menos de 15 % de um core. O que se encontrou do lado do AOS foi isto: **15 `curl <defunct>`** filhos do PID 1 do `aos-gvisor-1`, o mais antigo com ~28 dias.
+
+O `/component` é o `ENTRYPOINT` e, portanto, o PID 1 do contentor, e não recolhe processos que não lançou. O healthcheck corre `sh -c "curl …"` com `timeout 3s`; quando expira — mais provável sob a pressão de CPU que o vizinho impõe —, o `sh` morre, o `curl` órfão passa para o PID 1 e fica zombie para sempre. O serviço tem `pids_limit: 512`: ao ritmo medido a fuga leva anos a esgotá-lo, mas o ritmo cresce com a pressão, e o que se esgota é a capacidade de o executor de sandbox fazer `fork`.
+
+**Objectivo.** O PID 1 do contentor do executor gVisor recolhe órfãos.
+
+**Critérios de Aceitação**
+- [x] O serviço `gvisor` do compose de produção declara `init: true` (o `docker-init` fica PID 1, recolhe os órfãos e reencaminha os sinais ao `/component`).
+- [x] `TestAOS451_GVisorCorreComInitNoPID1` (`packages/cmd/aos`) avermelha se a linha sair — verificado por mutação (`init: false` ⇒ vermelho).
+- [x] **Verificado em PRODUÇÃO** (2026-09-26, 15:40 CEST): o compose do servidor era igual ao da base, pelo que só o bloco `init: true` foi aplicado (cópia anterior em `/opt/aos/docker-compose.prod.yml.antes-aos451`); recriado só o `gvisor` (`up -d --no-deps --no-build`). Depois: PID 1 = `/sbin/docker-init -- /component`, `healthy`, **0 zombies** (eram 15), `/healthz` 200 a partir da rede do nó, nó `healthy`, e a primeira drenagem a seguir (15:43) saiu `success`.
+
+**Fora de âmbito.** A carga do cluster Kubernetes vizinho não é do AOS e não se investigou por dentro: a conta `aos` não tem acesso a ele.
+
+**Estado.** **FEITO** — implementado (PR albinoJimy/aos#388) e verificado em produção.
+
+---
+
+## AOS-469 — Cluster NATS JetStream de produção entre o Contabo e o Hetzner, por túnel WireGuard
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feat |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-100 (adaptador JetStream e soberania), AOS-431 (receita do cluster de CI) |
+| Bloqueia | — |
+| Responsável sugerido | SRE |
+| Documentos de referência | `deploy/nats/README.md`, `deploy/nats/aos-nats.sh`, `infra/modules/eventstore/main.tf`, `packages/substrate/eventstore/natsjs/conn.go` |
+
+**Contexto.** Há um segundo servidor (Hetzner, `78.46.209.230`) para o Event Store replicado. O stream do AOS é R3, com placement `region:<regiao>`, e o cliente `natsjs` liga-se em TCP sem TLS e sem credenciais. Logo, quem chegar à porta de cliente escreve no log. Um cluster entre dois fornecedores não pode, por isso, expor o NATS nem fazer as rotas atravessar a internet em claro.
+
+**Objectivo.** Ter o substrato pronto para `AOS_EVENTSTORE_NATS` em produção: três `nats-server` (dois no Contabo e um no Hetzner), com o tráfego entre hosts cifrado e as portas NATS fechadas a tudo o que não seja o nó `aos` e os pares.
+
+**Critérios de Aceitação**
+- [x] `deploy/nats/aos-nats.sh` gera, a partir de um único `cluster.conf`, a parte de cada host: o WireGuard com o firewall no `PostUp`/`PostDown`, a config de cada `nats-server` (bind só no IP WG, `server_tags` `region:`) e o compose. Recusa uma especificação inválida (nº de nós ≠ 3/5, imagem sem digest, IP fora da rede WG, portas repetidas, chave inválida, região com prefixo).
+- [x] A chave privada WG nasce no host e não aparece em nenhum ficheiro gerado. O `aplicar` recusa correr num host cuja chave não é a declarada.
+- [x] Verificado com as configs geradas, num cluster local com os IPs WG: a suite do adaptador `jetstream` passa com `AOS_NATS_URL` apontado a ele, incluindo `TestAC4_*` (80/80 escritas confirmadas sobrevivem à morte do nó do Hetzner), `TestReconexao_*` e `TestSoberania_*`. O `provar` cria e apaga um stream R3 com placement `region:eu-west`.
+- [x] O limite da topologia 2+1 está medido e documentado: sem os dois nós do Contabo, o JetStream fica indisponível (10008).
+- [ ] Aplicado nos dois servidores reais, com o `estado` verde e o `provar` OK. Requer acesso SSH aos hosts, que a sessão de implementação não tinha.
+
+**Fora de âmbito.** Apontar o nó `aos` ao cluster: falta o backup do log replicado (o `backup.sh` recusa), a migração do `events.wal` existente, e o WORM continua local. Também fica de fora a autenticação no cliente `natsjs` e um terceiro host.
+
+**Estado.** **EM CURSO**: entregue e verificado localmente, por aplicar em produção.
+
+---
+
+## AOS-470 — O cliente NATS do Event Store autentica-se por nkey, e o cluster de produção exige-o
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-10 — Topologia, Operação e DR |
+| Fase | 3 — Escala e controlo |
+| Milestone | v1.1 (distribuído) |
+| Tipo | feat |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-469 (cluster de produção), AOS-431 (cluster de CI) |
+| Bloqueia | apontar o nó `aos` ao cluster de produção |
+| Responsável sugerido | Segurança / SRE |
+| Documentos de referência | `packages/substrate/eventstore/natsjs/nkey.go`, `packages/substrate/eventstore/natsjs/conn.go`, `deploy/nats/README.md` («Autenticação dos clientes»), `scripts/ci/nats-cluster.sh`, ADR-017 |
+
+**Contexto.** O cliente `natsjs` enviava `CONNECT` com `"tls_required":false` e nenhuma credencial. O cluster do AOS-469 mitigava isto só na rede: túnel WireGuard, bind no IP do túnel e firewall por sub-rede. Quem alcançasse a porta de cliente (qualquer contentor da sub-rede Docker permitida, ou root num dos hosts) escrevia no log de produção.
+
+**Objectivo.** Autenticar o cliente por nkey (assinatura ed25519 do nonce do INFO, só biblioteca padrão, ADR-017) e ligar `authorization` nos servidores gerados por `deploy/nats/aos-nats.sh`.
+
+**Critérios de Aceitação**
+- [x] `natsjs` lê uma seed nkey de utilizador (base32, prefixo, CRC-16/XMODEM), assina o nonce e envia `nkey`+`sig` no `CONNECT`. A seed nunca sai no fio. O handshake passa a terminar em `PING`/`PONG`: uma recusa do servidor chega ao `Connect` como `ErrAutenticacao`, em vez de uma ligação «aceite» que morre depois e reconecta para sempre. O cliente também recusa por conta própria quando o servidor exige credencial e não há nenhuma, e quando há credencial e o servidor não a pede (servidor sem `authorization`).
+- [x] `AOS_EVENTSTORE_NATS_NKEY_FILE` (caminho de ficheiro montado, nunca o valor) no nó, e `--nats-nkey-file` no `aos-orq`. Sob `AOS_MODE=production`, `AOS_EVENTSTORE_NATS` sem credencial **recusa o arranque** (`ErrProductionNeedsNATSCredential`). Uma seed ilegível, inválida ou com bits `o+rwx` aborta o arranque e nunca degrada para uma ligação anónima.
+- [x] `aos nats-nkey gerar|publica` gera a credencial com a imagem do nó (não é preciso o `nk` da NATS no host).
+- [x] `aos-nats.sh` exige pelo menos uma linha `cliente <nome> <U…>` e gera `authorization { users = [ {nkey: …} ] }` em cada servidor. Recusa uma seed colada no lugar da pública. A config gerada é aceite pelo `nats-server -t` 2.10, que rejeita a mesma chave com um carácter trocado. O `provar` passa a autenticar-se.
+- [x] `scripts/ci/nats-cluster.sh` levanta o cluster de CI **com** `authorization` por omissão e exporta `AOS_NATS_NKEY_FILE`. Contra ele, o servidor recusa o `CONNECT` anónimo pré-AOS-470 byte a byte (`Authorization Violation`) e recusa uma nkey não declarada. Com a credencial, a suite `jetstream` passa, e os quatro módulos do gate `nats` correm sem nenhuma falha (eventstore 90, integration 292, cmd/aos 1313, aos-orq 190 PASS). Medido num posto Windows: o veredicto local fica vermelho só por três skips de Linux pré-existentes (AOS-453, AOS-445 e AOS-450), que no CI não saltam.
+- [ ] Aplicado em produção: as linhas `cliente` no `cluster.conf` dos dois hosts, reaplicado, e o `provar` autenticado OK. Depende de o AOS-469 estar aplicado.
+
+**Decisões.**
+- **nkey, e não TLS mútuo nem utilizador/palavra-passe.** Com nkey o servidor guarda só a chave pública e o segredo não atravessa o fio. Com palavra-passe ou token, o segredo viajaria em claro (o cliente não fala TLS) e ficaria em claro na config do servidor. O mTLS exigiria uma CA e a rotação de certificados para proteger um troço que já vai cifrado pelo túnel.
+- **Sem `cluster.authorization` nas rotas.** O único caminho até elas é o túnel, cujos pares são autenticados pela chave WireGuard. Uma palavra-passe de rota viveria em claro no `cluster.conf`, o ficheiro que se copia entre hosts. Fica documentado em `deploy/nats/README.md`.
+
+**Fora de âmbito.** Permissões por cliente (subjects): exigem medir o conjunto exacto contra o cluster. TLS no cliente.
+
+**Residual declarado.** Root no host do nó lê a seed, porque é o nó. Root num host NATS administra o servidor. Sem TLS, quem estiver no caminho de uma sessão já aberta pode injectar comandos nela, e esse caminho é o túnel.
+
+**Estado.** **EM CURSO**: entregue e verificado contra o cluster de CI autorizado, por aplicar em produção.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -1126,3 +1338,11 @@ Não expandas escopo: este ticket NÃO reabre a forma do produto v1 (Carta §7).
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-10 | +AOS-392 (prova operacional multi-processo do despacho governado + topologia N-réplicas + runbook): capstone da v1.1 distribuída, estende a prova de 4 processos ao despacho a atravessar a fronteira do processo. | Equipa AOS |
+| 1.2 | 2026-09-17 | +AOS-403 (o `aos-orq` na release assinada): o orquestrador viaja na imagem do nó, atestado como subject próprio, e corre em produção pelo serviço `aos-orq` do compose (profile `orq`). | Equipa AOS |
+| 1.3 | 2026-09-17 | AOS-403 validado em produção (v0.1.20): binário do servidor igual ao manifesto assinado, run pelo serviço do compose com o modelo real e selo no volume próprio. | Equipa AOS |
+| 1.4 | 2026-09-19 | +AOS-410 (o controlo do `provision-identity.sh` aceita o Transit vazio como o nó e as mensagens deixam de executar backticks): dois defeitos observados em produção a 2026-09-18. | Equipa AOS |
+| 1.5 | 2026-09-26 | +AOS-451 (o executor gVisor de produção acumula zombies): `init: true` no serviço `gvisor`, com sensor que avermelha se a linha sair. | Equipa AOS |
+| 1.6 | 2026-09-26 | AOS-451 verificado em produção: o `aos-gvisor-1` recriado corre com o `docker-init` no PID 1 e os 15 zombies desapareceram. | Equipa AOS |
+| 1.7 | 2026-09-26 | AOS-101: retoma do manifesto do exportador (porta do PR #206) com duas rondas de revisão adversarial; +AOS-453 (custódia de KEK que sela segmentos do backup), que bloqueia ligar o exportador em produção. | Equipa AOS |
+| 1.8 | 2026-10-01 | +AOS-469 (cluster NATS JetStream de produção Contabo+Hetzner por WireGuard): substrato do `AOS_EVENTSTORE_NATS`, verificado com a suite do adaptador; o nó continua no WAL. | Equipa AOS |
+| 1.9 | 2026-10-01 | +AOS-470 (o cliente NATS autentica-se por nkey; `authorization` no cluster de produção e no de CI; produção recusa `AOS_EVENTSTORE_NATS` sem credencial). | Equipa AOS |

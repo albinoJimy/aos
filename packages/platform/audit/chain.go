@@ -1,6 +1,9 @@
 package audit
 
-import "crypto/sha256"
+import (
+	"crypto/sha256"
+	"fmt"
+)
 
 // genesisPrefix é o domínio determinístico da âncora de génese por partição.
 const genesisPrefix = "aos.audit.genesis:"
@@ -30,11 +33,51 @@ func GenesisHash(partition string) []byte {
 //
 // É deliberado que só o caminho de escrita a atribua: a versão faz parte do CONTEÚDO
 // SELADO, pelo que carimbá-la mais tarde mudaria o hash de um registo já na cadeia.
-func stampSchema(rec *AuditRecord) {
+//
+// `escrita` é a versão que o STORE escreve por omissão (0 ⇒ [CurrentSchemaVersion]; ver
+// [ComVersaoDeEscrita]). Um registo abaixo de [SchemaV5] PERDE a impressão do pino do mandato, e
+// um abaixo de [SchemaV4] PERDE também o `requested_by` e o `mandate_id`
+// antes de ser selado (AOS-439): num v3 eles não entram no hash, e guardá-los ao lado — o ficheiro
+// é o JSON do registo inteiro — punha no WORM uma atribuição que parece selada e não é.
+func stampSchema(rec *AuditRecord, escrita uint8) {
 	if rec.SchemaVersion == 0 {
-		rec.SchemaVersion = CurrentSchemaVersion
+		rec.SchemaVersion = escrita
+		if rec.SchemaVersion == 0 {
+			rec.SchemaVersion = CurrentSchemaVersion
+		}
+	}
+	if rec.SchemaVersion < SchemaV4 {
+		rec.Principal.RequestedBy = ""
+		rec.Principal.MandateID = ""
+	}
+	// AOS-446 fase 1, pela mesma razão: num registo abaixo de [SchemaV5] a impressão do pino não
+	// entra no hash, e guardá-la ao lado — o ficheiro do WORM é o JSON do registo inteiro — punha
+	// lá uma atribuição que parece selada e não é.
+	if rec.SchemaVersion < SchemaV5 {
+		rec.Principal.MandateSigner = ""
 	}
 }
+
+// versaoPrepostaAceite recusa um registo que o PRODUTOR preposte numa versão ACIMA da que o store
+// escreve (AOS-439, 2.ª ronda da revisão). O expand/contract só protege o rollback se nenhum
+// caminho conseguir pôr um v4 num WORM configurado para v3 — um produtor que fixasse
+// `SchemaVersion: 4` passava ao lado do `stampSchema` e cortava o rollback na mesma. Prepor uma
+// versão ABAIXO continua aceite (é como se escrevem registos de regressão do formato).
+func versaoPrepostaAceite(rec AuditRecord, escrita uint8) error {
+	efectiva := escrita
+	if efectiva == 0 {
+		efectiva = CurrentSchemaVersion
+	}
+	if rec.SchemaVersion > efectiva {
+		return fmt.Errorf("%w: registo preposto em v%d, o store escreve v%d", ErrVersaoAcimaDaEscrita, rec.SchemaVersion, efectiva)
+	}
+	return nil
+}
+
+// versaoDeEscritaValida diz se um store pode ser configurado para escrever a versão `v`.
+// Só as épocas que um binário desta release escreve: v3 (por omissão, que os binários anteriores
+// ainda verificam), v4 e v5.
+func versaoDeEscritaValida(v uint8) bool { return v == SchemaV3 || v == SchemaV4 || v == SchemaV5 }
 
 func ComputeEntryHash(prevHash []byte, rec AuditRecord) []byte {
 	h := sha256.New()

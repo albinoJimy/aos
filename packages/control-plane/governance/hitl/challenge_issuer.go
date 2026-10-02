@@ -172,6 +172,13 @@ func (i *EventStoreChallengeIssuer) IsChallengeIssued(ctx context.Context, scope
 
 // challengeStream namespaceia o stream por (scope, challenge). O challenge vai em hex: não é
 // segredo (viaja em claro no clientDataJSON da attestation) e assim o stream ID é imprimível.
+//
+// O SCOPE vai RESUMIDO, e não inteiro. Vinha de `integration.ChallengeScope(requestID)`, isto é,
+// do `request_id` do corpo do pedido: um cliente escolhia parte de um nome de stream, e um
+// `request_id` com ponto tornava o stream irrepresentável sobre JetStream. Ver
+// [nomeDeEscopo] para o porquê de resumir em vez de escapar ou recusar.
+//
+// Emitir e verificar passam os dois por aqui, pelo que continuam a concordar no nome.
 func challengeStream(scope string, challenge []byte) string {
-	return challengeStreamPrefix + scope + ":" + hex.EncodeToString(challenge)
+	return challengeStreamPrefix + nomeDeEscopo(scope) + ":" + hex.EncodeToString(challenge)
 }

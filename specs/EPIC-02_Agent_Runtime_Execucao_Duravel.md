@@ -58,6 +58,9 @@ O EPIC-02 entrega o loop durável e a sua máquina de estados de suspensão de p
 | AOS-022 | Integração com engine de durable execution ou contrato próprio | spike | L | P1 | AOS-014, AOS-015, AOS-016 |
 | AOS-023 | Estado `paused` + canal de steer/interrupt | feature | M | P2 | AOS-017 |
 | AOS-024 | Harness de testes de replay/idempotência | chore | M | P1 | AOS-014, AOS-016 |
+| AOS-396 | Manifesto do turno pina o modelo que respondeu (model_id vazio no nó) | fix | M | P1 | AOS-013, AOS-016 |
+| AOS-411 | A re-varredura de órfãos exclui os runs vivos antes de os reconstituir | fix | S | P2 | AOS-253 |
+| AOS-419 | As esperas não-humanas não tinham prazo nenhum (backstop de wall-clock) | fix | S | P2 | AOS-017, AOS-252 |
 
 > **Notas de dependência.** Os tickets `AOS-003` (Reference Monitor) e `AOS-002` (Event Store replicado) pertencem ao `specs/EPIC-01_Fundacoes_Plano_Controlo.md` e devem estar `Done` antes do arranque efectivo de AOS-013. AOS-018 partilha o contrato de lease/fencing com o Escalonador (`specs/EPIC-03_Orquestracao_Escalonamento.md`); coordenar para não duplicar a implementação do token monotónico.
 
@@ -858,6 +861,360 @@ EPIC-11. PR pelo template da secção 7.
 
 ---
 
+## AOS-396 — Manifesto do turno pina o modelo que respondeu (model_id vazio no nó)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-013 (loop e `turn.recorded`), AOS-016 (replay) — ambos fechados |
+| Bloqueia | — |
+| Relacionado | AOS-394 (correlação dos selos do gateway com o run; independente deste) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/kernel/agent-runtime/loop.go` (`recordTurn`), `packages/kernel/agent-runtime/model.go` (`ModelConfig`, `ModelResponse`), `packages/kernel/agent-runtime/replay/engine.go`, `packages/cmd/aos/api.go` (`submitRequest`, `handleSubmit`), `packages/platform/model-gateway/runtime_adapter.go` (`translateResponse`), `tecnica/13_Modelo_Dados_Eventos.md` (§3.3, §6.1) |
+
+### Contexto
+
+Medido em produção a 2026-09-15 no run `run-delegado-1789509858` (roteiro E2E manual, PR #299): os 6 eventos `turn.recorded` têm `manifest.model.model_id` vazio e `seed` 0, embora o gateway tenha selado cada chamada como `gpt-4o-mini`. O run de 14 de Setembro tem o mesmo, e o nó local com o modelo de referência também. O `tecnica/13` define `model` (`model_id`/`params`/`seed`) no manifesto como a âncora de *como* o passo foi produzido.
+
+Confirmado no código:
+
+- `recordTurn` grava `goal.Model.ModelID` e `goal.Model.Seed` (`loop.go:672-674`); o span `chat` usa o mesmo valor em `gen_ai.request.model` (`loop.go:636`).
+- O nó nunca preenche `Goal.Model`: `submitRequest` não tem campo de modelo (`api.go:516-524`) e `handleSubmit` constrói o `Goal` sem ele (`api.go:619-627`). `AOS_MODEL_NAME` chega só ao adaptador do gateway e à tabela de preços.
+- A resposta não traz o modelo de volta: `agentruntime.ModelResponse` não tem campo de modelo, e `translateResponse` não copia `port.ChatResponse.Model` (só o usa numa mensagem de erro).
+- Consequência no replay: `replay/engine.go:585` só compara o modelo gravado com o esperado quando `spec.Model.ModelID != ""`. Com o manifesto vazio, uma troca de modelo entre a gravação e o replay passa sem ser detectada.
+
+Não é um defeito do gateway: o campo fica vazio com qualquer `ModelClient` que o nó componha.
+
+### Objectivo
+
+O `turn.recorded` de cada turno regista o modelo que produziu a resposta e os parâmetros de amostragem realmente usados, e o replay volta a verificar o modelo.
+
+### Critérios de Aceitação
+
+- [x] **Decisão registada neste ticket:** o manifesto regista o modelo **pedido** (configuração do nó), o modelo **servido** (o que o provider devolveu, que pode diferir por troca de modelo no gateway), ou ambos. Se forem os dois, a forma fica acordada com `tecnica/13` (expand compatível, sem partir o `Manifest` existente). *(**DECISÃO: ambos.** `model_id` continua a ser o modelo **pedido** (`Goal.Model.ModelID`): é o que o span `chat`, o `invoke_agent` e a admissão do turno já lêem, e o que o replay compara — um nome estável, não a versão datada que o provider devolve (ex.: `gpt-4o-mini-2024-07-18`), que daria divergências falsas. O modelo **servido** entra num campo novo, `served_model_id`, `omitempty` (`ModelManifest`, `turn.go`), vindo de `ModelResponse.Model` ← `port.ChatResponse.Model` no adaptador do gateway. Expand compatível: um cliente que não reporta o modelo grava os bytes de antes (precedente `usage_ausente`, AOS-336) e o `schema_version` do manifesto fica `1.0`. **Rejeitadas**: só o pedido (perde a troca de modelo e a versão real); só o servido (o nome do provider não é estável, e um turno reproduzido na retoma vem sem ele). Forma descrita em `tecnica/13` §6.1.)*
+- [x] Com o gateway composto, o `turn.recorded` de um turno real tem `model_id` não vazio e igual ao modelo decidido acima; o `seed` e os `params` só aparecem quando foram de facto enviados ao provider (nunca preenchidos com valores que não viajaram). *(No nó por ambiente, `main.go` põe `AOS_MODEL_NAME` em `Config.ModelID` (uma só leitura, `modelNameFromEnv`, partilhada com o `parseModelFromEnv`), e `NodeService.hostRun` escreve-o no goal por `Node.fixarModelo` antes do registo de crash-resume e do primeiro turno — a via única da submissão, da retoma e da varredura de crash-resume. Com o gateway o modelo é **autoritativo** e sobrepõe-se ao do goal, porque é o nome que o adaptador envia; isso cobre a retoma de um run gravado com outra configuração. `seed` e `params` não são tocados: nenhum cliente composto os envia ao provider, pelo que `params` fica ausente e `seed` fica `0`, o valor de ausência que o campo tem desde a 1.0 — torná-lo `omitempty` mudaria os bytes de todos os turnos. O nome do provider é saneado no adaptador (sem caracteres não imprimíveis, tecto de 256 bytes). Testes: `TestAOS396_PelaAPI_ManifestoEChatComOModeloDoNo` (cliente injectado com `Config.ModelID`, pela API), `TestAOS396_ArranquePorAmbienteDeclaraOModeloDoGateway` (o fio de ambiente), `TestAOS396_TranslateResponsePassaOModeloServido` e `TestAOS396_ModeloServidoESaneado` (o adaptador real). A cadeia com o adaptador real **e** o nó juntos fica para a evidência de sistema abaixo.)*
+- [x] Com o modelo de referência, o `model_id` identifica-o como tal (valor estável e declarado), para não voltar a ficar vazio em nenhum nó. *(`ReferenceModelID = "aos-reference-model"` (`bootstrap.go`), nos dois campos. Sem `Config.Model` o nó declara-o, mas só preenche um goal sem modelo: embedders e testes que declaram o seu ficam intactos. Com um `Config.Model` injectado sem `Config.ModelID` o nó não declara nada. `TestAOS396_PelaAPI_ModeloDeReferenciaDeclaraOSeuNome`, `TestAOS396_FixarModelo_RegraPorOrigem`.)*
+- [x] Teste que falha antes da correcção, pela cadeia real do nó: o payload do `turn.recorded` traz o `model_id` esperado. *(Os dois testes pela API passam por `POST /runs` → `handleSubmit` → `NodeService.hostRun` → runtime → Event Store. **FALHA-ANTES MEDIDA por mutação**: com `fixarModelo` desligado, os dois saem com `ModelID:""`; sem a escrita de `resp.Model` no `recordTurn`, o teste do kernel e o do modelo de referência saem com `ServedModelID:""`.)*
+- [x] Teste de replay: uma trajectória gravada com um modelo e reproduzida com outro **diverge** (a verificação de `replay/engine.go` deixa de estar desligada no caminho do nó). *(No mesmo teste do nó, com a execução durável ligada (captura de não-determinismo) e o motor a ler o conteúdo selado com o opener do nó, como o `/reconstruct`: o replay com o modelo gravado não diverge e com outro modelo diverge por `model`. **FALHA-ANTES MEDIDA**: sem a correcção, o replay com o modelo **correcto** já divergia (`model_id=` contra `model_id=gpt-4o-mini`), porque o manifesto vinha vazio. Limite declarado: nenhum caminho de produção do nó corre o replay com modelo esperado; um run gravado antes do AOS-396 tem `model_id` vazio e diverge se lhe passarem um.)*
+- [x] Os consumidores do mesmo valor ficam coerentes e verificados: o atributo `gen_ai.request.model` do span `chat` e o `ModelID` que a admissão do turno regista (`model_admission_wiring.go`), cuja origem se confirma durante a implementação. *(Origem confirmada: `callModel` (span `chat`), o span `invoke_agent` e `TurnAdmissionRequest.ModelID` lêem todos o `goal.Model.ModelID` já fixado. `TestAOS396_ManifestoGravaOModeloPedidoEOServido` (kernel) verifica o `invoke_agent`, o `chat` e o `ModelID` da admissão com um espião; o teste do nó verifica os dois spans exportados por OTLP. O `model_admission_wiring.go` só usa o valor na linha de log da negação.)*
+- [x] Evidência de sistema: um run real (nó composto com gateway, ou produção) mostra `manifest.model.model_id` preenchido em todos os turnos. É o critério «`model_id` ≠ vazio» do passo 19 do roteiro E2E. *(**VERIFICADO EM PRODUÇÃO** a 2026-09-16 na `v0.1.17` (commit `5e3a672`, imagem `aos-node@sha256:dde06e55…`, deploy às 23:13Z). O run `run-delegado-1789604994`, submetido pelo roteiro E2E (`get-id-token.ps1 -Cunhar agt-e2e-19 -Submeter`), correu `ready → running → complete` entre 23:29:58Z e 23:30:51Z, com 45 eventos: 4 `turn.recorded`, 3 `tool.call.mediated` executadas na sandbox e 4 `replay.captured`. Os quatro turnos (`step-000001` a `step-000004`) gravaram `manifest.model = {"model_id":"gpt-4o-mini","served_model_id":"gpt-4o-mini","seed":0}`, sem `params`. No mesmo WAL, o run `run-delegado-1789569005`, anterior ao deploy, tem `{"model_id":"","seed":0}`. O LiteLLM de produção devolve o alias pedido e não uma versão datada, por isso o pedido e o servido coincidem neste provider. Leitura: cópia do `events.wal` do volume `aos_aos-data` aberta com `eventstore.OpenReadOnly`. Esta evidência cobre também a cadeia adaptador real + nó, que os testes só provavam separadamente.)*
+- [x] `tecnica/13_Modelo_Dados_Eventos.md` descreve de onde vem o `model_id` no nó e a regra para `seed`/`params`. *(§6.1, «De onde vem o modelo» e «Regra de `params` e `seed`»; também o `schema_version` que não sobe e o saneamento do nome do provider. Actualizados na mesma linha `tecnica/02`, `tecnica/19`, o `README` do agent-runtime, a linha de `AOS_MODEL_NAME` no `deploy/node/README.md` e a regra do roteiro E2E.)*
+
+### Estado
+
+**IMPLEMENTADO e VALIDADO EM PRODUÇÃO (2026-09-16).** O `turn.recorded` grava o modelo pedido em `model_id` e o servido em `served_model_id`; o nó escreve o modelo no goal de cada run que hospeda, e o replay volta a verificar o modelo. Verificado: suites `-race` verdes no agent-runtime, no módulo do GW, em `integration` e em `cmd/aos`; `build`, `lint`, `layer-lint`, `replay` e `event-catalog` verdes; falha-antes medida por mutação no nó, no kernel e no replay. Revisão adversarial independente: nenhum crítico ou alto; os achados foram corrigidos. **VALIDADO EM PRODUÇÃO (2026-09-16, v0.1.17)**: os quatro turnos do run `run-delegado-1789604994` gravaram `model_id` e `served_model_id` `gpt-4o-mini`, contra `model_id` vazio no run anterior ao deploy.
+
+---
+
+## AOS-411 — A re-varredura de órfãos exclui os runs vivos antes de os reconstituir
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-253 (crash-resume e a re-varredura periódica A4) — fechado |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/crash_resume.go` (`resumeInterruptedRuns`, `crashResumeBanner`), `packages/cmd/aos/orphan_sweeper.go` (`StartOrphanSweeper`), `packages/cmd/aos/resume.go` (`replayPlanFor`), `packages/cmd/aos/service.go` (`submit`, o registo `s.runs`) |
+
+### Contexto
+
+Observado em produção a 2026-09-18, na `v0.1.22`, durante a evidência do AOS-407. O run
+`run-delegado-1789775725` foi submetido e **terminou bem** (`ready → running → complete`, 5 tool
+calls executadas). Enquanto corria, o nó escreveu:
+
+```
+crash-resume: capturas do run "run-delegado-1789775725" ILEGIVEIS — NAO retomado (fail-closed): replay: trajectória vazia (sem turn.recorded)
+crash-resume / varredura de arranque (AOS-253): CORREU sobre 192 stream(s) — 1 run(s) orfaos em `running` … 0 RETOMADO(s) …
+```
+
+O contentor não tinha reiniciado (`restarts=0`, arranque às 22:19; as linhas são das 22:55). Quem as
+escreveu foi a **re-varredura periódica** (`StartOrphanSweeper`, a cada TTL de lease), que usa o
+mesmo banner da varredura de arranque sempre que encontra alguma coisa.
+
+Confirmado no código:
+
+- `resumeInterruptedRuns` classifica como órfão todo o stream cujo estado durável é `running`
+  (`crash_resume.go`, passo 1). Um run **vivo** — hospedado por esta réplica, ou com lease vivo noutra
+  — está nesse estado durante toda a execução.
+- Para esse run, a varredura reconstrói o cursor (passo 2), lê o registo de retoma (passo 3) e
+  **decifra as capturas por-titular** com o `ReconstructResumable` (passo 4, `replayPlanFor`) — tudo
+  ANTES de saber se o run está vivo.
+- Só no passo 5 (`submit`) é que o registo em memória `s.runs` devolve `ErrRunAlreadyInProgress`, ou
+  o `TryAcquire` do lease salta um run de outra réplica. É essa guarda, no fim, que impede a dupla
+  hospedagem. **Não houve dano**: o run não foi retomado nem estragado.
+
+O que está errado, então, é a ORDEM:
+
+1. **Sinal falso de órfão.** Um run vivo cujo primeiro turno ainda não foi capturado falha no passo 4
+   e sai como «capturas ILEGÍVEIS — NÃO retomado (fail-closed)», conta como falha e faz o banner
+   anunciar «1 run órfão». Um operador — e foi o caso — lê isso como um crash que não houve.
+2. **Trabalho e acesso a PII sem necessidade.** A cada ciclo, para cada run vivo, a varredura decifra
+   as capturas por-titular sob a chave do titular, só para depois descobrir que não tinha nada a
+   retomar. É o mesmo gate de decifração do read-path soberano, usado sem razão.
+3. **Correcção dependente de uma guarda tardia.** A não-duplicação assenta inteira no último passo.
+   Qualquer mudança futura na ordem ou no `submit` (por exemplo, uma retoma que escreva antes de
+   verificar) passa a correr sobre runs vivos.
+4. **O banner mente sobre a origem.** A re-varredura periódica anuncia-se como «varredura de
+   arranque».
+
+### Objectivo
+
+A varredura (de arranque e periódica) exclui, **antes** de reconstituir qualquer coisa, os runs que
+estão vivos — hospedados por esta réplica ou com lease vivo noutra —, e só conta como órfão o que
+não tem dono.
+
+### Critérios de Aceitação
+
+- [x] Um run hospedado por esta réplica (`s.runs`) é saltado sem ler cursor, registo de retoma nem
+      capturas, e sem contar como órfão nem como falha. Teste com um run a correr e o varredor
+      chamado a meio: nenhuma decifração de capturas, banner sem órfãos. **FALHA-ANTES:** hoje o teste
+      vê a linha «capturas ILEGÍVEIS» (antes do 1.º turno) ou a leitura das capturas (depois dele).
+      *(Guarda (1-bis) em `crash_resume.go`, antes do passo 2: `hospedadoNestaReplica` lê o registo
+      de em-curso sob o MESMO mutex que o `submit` usa. `TestAOS411_RunVivoNestaReplicaNaoEOrfao`
+      hospeda um run real, prende-o no 1.º turno por canal, verifica a precondição (`running`
+      durável + presente em `s.runs`) e exige `orfaos=0` e um log SEM as palavras `ILEGIVEIS`,
+      `orfao` e `crash-resume`. **FALHA-ANTES MEDIDA** contra o ficheiro da base: `orfaos=1` e a
+      saída reproduz o incidente — «capturas do run "run-411-vivo-aqui" ILEGIVEIS — NAO retomado
+      (fail-closed): replay: trajectória vazia (sem turn.recorded)».)*
+- [x] Um run com lease vivo noutra réplica é saltado pelo MESMO critério antes do passo 2, e contado
+      à parte («vivo noutra réplica»), como hoje o passo 5 já distingue. A verificação do lease no
+      `submit` mantém-se como defesa em profundidade.
+      *(`leaseAindaVivo` lê `durable.LeaseManager.CurrentLeaseExpired` — o predicado que faz o
+      `Claim` devolver `ErrLeaseHeld` —, sem mintar, renovar ou mutar nada; o `submit` e o seu
+      `TryAcquire` ficam intactos, e `heldElsewhere` continua a contar à parte o que a defesa em
+      profundidade ainda apanhar. `TestAOS411_LeaseVivoNoutraReplicaNaoEOrfao` põe uma segunda
+      autoridade de lease (`replica-B`) a reclamar o run sobre o mesmo log e o mesmo relógio manual,
+      com registo de retoma presente de propósito — para a varredura antiga chegar mesmo às
+      capturas — e exige `orfaos=0`, banner com «0 run(s) orfaos» e «1 com LEASE VIVO noutra
+      replica». **FALHA-ANTES MEDIDA**: `orfaos=1` e «capturas ... ILEGIVEIS».)*
+- [x] Um órfão verdadeiro (lease expirado, sem dono) continua a ser retomado exactamente como hoje:
+      os testes do AOS-253 e do A4 (`aos253_crash_resume_test.go`, `aos_a4_revarredura_test.go`)
+      ficam verdes sem alteração de asserções.
+      *(Nenhum dos dois ficheiros foi tocado — a assinatura de `crashResumeBanner` e o texto da
+      linha de ARRANQUE ficaram iguais. `TestAOS253_CrashResumeScanCompletesWithoutDoubleExecution`,
+      `TestAOS253_CrashResumeBannerDeclaresResult` e `TestA4_ReVarreduraRetomaOrfaoSemSegundoArranque`
+      verdes. Acresce `TestAOS411_OrfaoVerdadeiroContinuaAVerSeOLeaseExpirou`: uma réplica reclama o
+      lease, o relógio MANUAL avança um TTL, e o run volta a contar como órfão — guarda que passa
+      dos dois lados da correcção, de propósito, porque o que ela mede é a ausência de regressão.)*
+- [x] O banner distingue a origem da passagem — varredura de ARRANQUE ou RE-VARREDURA periódica — e
+      um ciclo periódico sem órfãos continua silencioso.
+      *(`crashResumeBannerDaPassagem` escolhe a origem pelo `anuncia` que já era passado; a periódica
+      diz «RE-VARREDURA periodica (AOS-253/A4)» e a de arranque mantém a forma anterior, que é a
+      pegada declarada do roteiro E2E (`docs/testing/e2e-pegadas-visao-19.md`). O silêncio é agora
+      REAL e não só por acaso: `scanned` conta órfãos verdadeiros, pelo que o ciclo que só encontrou
+      runs vivos não escreve nada. `TestAOS411_BannerDistingueAOrigemDaPassagem` (**FALHA-ANTES
+      MEDIDA**: a passagem periódica anunciava-se «varredura de arranque») e
+      `TestAOS411_CicloPeriodicoSemOrfaosContinuaMudo`.)*
+- [x] Evidência de sistema: um run real em produção atravessa pelo menos um ciclo da re-varredura
+      sem produzir linhas de crash-resume.
+      *(**VERIFICADO em produção a 2026-09-21** (`v0.1.28`). O run `run-delegado-1789995086`
+      esteve vivo durante DUAS passagens e foi saltado nas duas:
+      `aos_orphan_live_skipped_total{dono="esta_replica"} 2`, sem nenhuma linha «capturas
+      ILEGIVEIS» — o sintoma exacto do incidente de 2026-09-18. A prova é POSITIVA, e não a
+      ausência de um sintoma: foi preciso o **AOS-422** para a tornar observável, porque a
+      passagem periódica só escreve no log quando encontra órfãos verdadeiros, e este ticket fez
+      um run vivo deixar de o ser. Ver o bloco de Estado do AOS-422 para a medição inteira,
+      incluindo por que razão foi preciso baixar a cadência do varredor para a apanhar.)*
+
+### Fora de âmbito
+
+A política da retoma em si (o que se reproduz, a credencial vazia, o replay-then-continue) não muda.
+
+### Estado
+
+**IMPLEMENTADO (2026-09-20), COM A EVIDÊNCIA DE PRODUÇÃO POR RECOLHER.** A varredura pergunta pelo
+DONO antes de reconstituir o que quer que seja: um run hospedado por esta réplica, ou com lease ainda
+válido noutra, é saltado sem se lhe ler cursor, registo de retoma nem capturas por-titular, não conta
+como órfão e não conta como falha. O `submit` fica onde estava, como defesa em profundidade, e nenhum
+lease é reclamado mais cedo do que era — a guarda lê o MESMO predicado que o `Claim` usa. `scanned`
+passa a contar órfãos VERDADEIROS, o que devolve o silêncio ao ciclo periódico que só encontra runs a
+correr, e o banner passa a nomear a passagem. Verificado: suite `-race` verde em `cmd/aos` (incluindo
+AOS-253 e A4, sem tocar nos seus ficheiros); `layer-lint`, `rtm`, `ref-lint`, `deferrals` e
+`estado-citado` verdes. **FALHA-ANTES MEDIDA** contra o ficheiro da base: três dos cinco testes novos
+falham, e a saída do primeiro reproduz o incidente de produção à letra. **FICA POR FAZER**: a
+evidência de sistema (5.º critério), que precisa de um run real a atravessar um ciclo da re-varredura
+em produção.
+
+---
+
+## AOS-419 — As esperas não-humanas não tinham prazo nenhum (backstop de wall-clock)
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação pós-auditoria |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-017 (máquina de estados durável) — fechado; AOS-252 (varrimento de deadlines, o chamador de `CheckDeadlines`) — fechado |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/governance/REGISTO-Deferimentos.md` (DEF-906), `analises/09_Auditoria_RT_RM_Adversarial.md` §3.2, `tecnica/02_Agent_Runtime_Execucao_Duravel.md` §5.1, `tecnica/08_Observabilidade_Evals.md` §6, `packages/kernel/agent-runtime/state/machine.go` (`CheckDeadlines`), `packages/kernel/agent-runtime/state/transitions.go` (`validTransitions`), `packages/kernel/agent-runtime/liveness/doc.go`, `packages/cmd/aos/deadline_sweeper.go` |
+
+### Contexto
+
+O deferimento **DEF-906** declara, medido: com `humanTTL` e `wallClock` ligados e o relógio
+injectado avançado dez anos, `state.Machine.CheckDeadlines` **não transita** um run em
+`paused` nem em `waiting_on_tool`. Confirmado no código antes de se lhe tocar:
+
+- o `switch` de `CheckDeadlines` (`state/machine.go`) tinha exactamente **dois** ramos —
+  `waiting_on_human` (→ `killed`, ADR-013) e `running` (→ `timed_out`). As duas esperas
+  NÃO-humanas caíam no `default` implícito e devolviam `(estado, false, nil)`;
+- e não havia sequer **para onde** as transitar: a tabela declarativa de AOS-017 dava a
+  `waiting_on_tool` e a `paused` uma única saída, `→ running`. Sem aresta para um terminal,
+  o backstop não era uma linha esquecida no `switch` — era uma transição que não existia.
+
+A segunda via, que `tecnica/08` §6 designava como rede de segurança, também não cobre: a
+guarda de entrada do disjuntor (`breaker.Observe` → `liveness.CountsAsActiveWork`, que só
+admite `running`) devolve cedo, pelo que o sinal wall-clock **absoluto** é recolhido e nunca
+avaliado nestes estados — e, mesmo que fosse, o disjuntor só é observado na fronteira de
+fim-de-turno, que um run suspenso nunca alcança.
+
+O efeito é o que o registo diz: **um run em `paused` ou `waiting_on_tool` pode ficar
+pendurado sem prazo que o feche** — uma activity externa que nunca responde, ou um steer
+aceite e esquecido, ficam suspensos indefinidamente, com o lease largado e sem terminal no
+log durável.
+
+**Porquê um ticket NOVO.** O eixo declarado do DEF-906 cita AOS-080 e AOS-017, ambos
+ENTREGUES — um eixo fechado é operacionalmente indistinguível de não ter eixo (§1 do
+registo). Este ticket é o eixo novo, pelo precedente do DEF-274/275, reapontados para
+AOS-281 em vez de ficarem presos a um ticket fechado.
+
+### Objectivo
+
+As duas esperas NÃO-humanas passam a ter prazo: excedido o tecto de wall-clock, o run
+transita **duravelmente** para `timed_out` (fail-closed), com razão de auditoria distinta da
+do `running`. `waiting_on_human` fica intacto — a deliberação humana tem prazo próprio
+(ADR-013) e não morre pelo tecto de máquina.
+
+### Decisões tomadas (e porquê)
+
+1. **O prazo é o tecto que já existe** (`state.WithRunWallClock`, alimentado por
+   `AOS_BREAKER_MAX_WALL_CLOCK`), não um valor novo. Um segundo tecto seria mais uma variável
+   de ambiente para o operador esquecer — e o ticket seria uma opção dormente. Assim, todo o
+   nó que já configura o tecto fica com o backstop **armado**, sem wiring novo.
+2. **O destino é `timed_out`, não `killed`.** É o terminal que `tecnica/08` §6 nomeia para o
+   sinal wall-clock absoluto, e `killed` é a saída de política/gate humano (ADR-013).
+3. **A razão é distinta:** `suspension_wall_clock_exceeded` e não `wall_clock_exceeded`. O
+   tecto é o mesmo, mas «morreu a trabalhar» e «morreu pendurado numa espera» são incidentes
+   diferentes com donos diferentes (o loop vs. a activity externa ou o operador).
+4. **Por segmento, como o resto da máquina:** conta desde a ENTRADA no estado, pelo que uma
+   espera que retoma a tempo leva o tecto inteiro consigo. O backstop só morde quem lá fica.
+5. **`0` continua a desligar** — a semântica dos outros dois prazos. Quem não configurou
+   tecto nenhum não ganha um kill novo por actualizar.
+
+### Critérios de Aceitação
+
+- [x] Um run em `waiting_on_tool` além do tecto transita para `timed_out` no varrimento
+      seguinte, com a razão `suspension_wall_clock_exceeded`, e o terminal SOBREVIVE a crash
+      (reconstrução por replay).
+      *(`TestAOS419_BackstopMataWaitingOnToolPendurado`,
+      `packages/kernel/agent-runtime/state/aos419_backstop_suspensao_test.go:32`. **FALHA-ANTES
+      MEDIDA** contra os ficheiros da base: «no tecto o backstop TEM de disparar:
+      s="waiting_on_tool" fired=false err=<nil>».)*
+- [x] Idem para `paused`, com a mesma razão e a mesma fronteira INCLUSIVA (`>=`) dos prazos
+      já existentes.
+      *(`TestAOS419_BackstopMataPausedEsquecido`, `…/aos419_backstop_suspensao_test.go:64`.
+      **FALHA-ANTES MEDIDA**: «s="paused" fired=false err=<nil>».)*
+- [x] A tabela declarativa ganha EXACTAMENTE as duas arestas (`waiting_on_tool → timed_out`,
+      `paused → timed_out`) e nenhuma outra: cada uma das duas esperas fica com duas saídas
+      (`running`, `timed_out`), e a matriz 10×10 é re-varrida contra um oráculo escrito à mão
+      (15 válidos, 85 inválidos).
+      *(`TestAOS419_ArestasDeBackstopNaTabela` (`…:89`) e o oráculo de
+      `transitions_test.go:29` (`TestTransitionMatrix10x10`, `TestTableMatchesOracle`).
+      **FALHA-ANTES MEDIDA**: «"waiting_on_tool"→timed_out TEM de ser válida» e
+      «"paused" deve ter exactamente 2 saídas (running, timed_out), tem [running]».)*
+- [x] `waiting_on_human` NÃO é afectado: com o tecto configurado e sem TTL, uma deliberação
+      de 24 h não mata o run; com TTL, continua a ir para `killed` (ADR-013), nunca para
+      `timed_out`.
+      *(`TestAOS419_DeliberacaoHumanaNaoMorrePeloTectoDeMaquina` (`…:195`) — **CONTROLO
+      NEGATIVO declarado**: passa dos dois lados da correcção, porque o que mede é a ausência
+      de regressão na fronteira que AOS-263 fixou.)*
+- [x] O backstop é fail-closed como as restantes transições: com o Event Store a recusar, o
+      estado NÃO avança (persistido nem in-memory) e o erro sobe para quem varre, que
+      re-tenta no tick seguinte.
+      *(`TestAOS419_BackstopFailClosedNaFalhaDoEventStore` (`…:147`). **FALHA-ANTES MEDIDA**:
+      «err=<nil>; quero o erro do Event Store (fail-closed, não engolido)».)*
+- [x] O tecto é POR SEGMENTO no lado da espera: cinco ciclos de espera-e-retoma dentro do
+      tecto atravessam mais de sete minutos com um tecto de um minuto e o run fica vivo.
+      *(`TestAOS419_RetomaLevaOTectoInteiro` (`…:113`) e `TestAOS419_SemTectoNaoHaBackstop`
+      (`…:179`) — ambos **controlos** que passam dos dois lados: o primeiro guarda a
+      semântica por-segmento, o segundo a compatibilidade de quem não configurou tecto.)*
+- [x] O corpus deixa de afirmar o contrário: `tecnica/02` §5.1 (diagrama, tabela e contagem),
+      `tecnica/00` (diagrama), `tecnica/19` (tabela derivada), `tecnica/08` §6 (o contrato do
+      backstop), `state/doc.go`, `state/README.md` e `liveness/doc.go` — que declarava
+      explicitamente «sem backstop». RTM regenerada.
+      *(Verificado pelos gates `rtm`, `ref-lint`, `deferrals` e `estado-citado`.)*
+- [ ] ALCANCE no nó: um run que se suspende e larga a posse SAI do registo de em-curso
+      (`s.runs`) e fecha o gate, pelo que o varrimento de AOS-252 deixa de lhe tocar. O
+      backstop vem armado na máquina (o nó já abre as máquinas com o tecto), mas no nó de hoje
+      só alcança um run que suspenda e FIQUE hospedado.
+      *(**NÃO VERIFICADO — fica por fazer.** Fechá-lo é varrer os streams SUSPENSOS, no molde
+      do `approval_sweeper` (um varrimento durável, não mais uma opção na máquina), e não cabe
+      neste ticket: é trabalho no `packages/cmd/aos` com registo próprio de suspensos. O que
+      se mede quando for feito: um run pausado e largado pelo nó a transitar para `timed_out`
+      num tick do varrimento, com `reason=suspension_wall_clock_exceeded` no log durável.)*
+
+### Fora de âmbito
+
+O timeout da *activity* externa (AOS-018) — primeira linha de `waiting_on_tool` — não muda. O
+disjuntor de EPIC-08 não é tocado: continua a medir TRABALHO ACTIVO e a ser *no-op* fora de
+`running`, que é o desenho de AOS-019 e a razão pela qual não podia ser ele a fechar isto.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-20), **com efeito prático NULO hoje** — e isso é o mais importante
+deste bloco.
+
+**O que foi entregue.** `paused` e `waiting_on_tool` não tinham saída para terminal nenhum na
+tabela canónica: não era um ramo esquecido no `switch`, era uma transição que não existia, e por
+isso um run suspenso não tinha para onde ser morto. A tabela passou de 13 para 15 pares
+(matriz 10×10 re-varrida: 15 válidos / 85 inválidos), e o `CheckDeadlines` ganhou o backstop de
+`waiting_on_tool` com razão de auditoria própria (`suspension_wall_clock_exceeded`), fail-closed
+como os restantes.
+
+**O que a revisão adversarial independente mediu, e que muda a leitura do ticket:**
+
+| Achado | Consequência |
+|---|---|
+| **Nenhum código de produção transita um run para `waiting_on_tool`** — as duas ocorrências fora de testes são *switches de classificação*, não transições | A aresta que ganhou disparo automático **nunca pode disparar hoje** |
+| **Um run que se suspende sai do registo de em-curso** (`finish` faz `delete(s.runs, …)`) e o varrimento exige lá estar | A janela em que um `paused` é varrido é de microssegundos, contra um tecto de 30 min |
+| **O default do NÓ não é 0, é 30 minutos** (`DefaultBreakerMaxWallClock`), e vai direito ao `WithRunWallClock` | «Quem não configurou não ganha kill novo» era falso ao nível do produto |
+| **`paused` tem dois produtores, e um é humano** (`steer_graceful_pause` vs `budget_breaker_tripped`), com razões duráveis distintas que a máquina **não retém** | Um `/pause` de operador morreria pelo tecto do TRABALHO, irrecuperável (`timed_out` é absorvente) |
+
+**A decisão que o último achado forçou.** O `paused` foi **retirado do backstop automático**. É
+palavra por palavra o argumento com que este ticket isenta o `waiting_on_human`: a deliberação
+humana não paga o tecto da máquina. A aresta fica na tabela — a ausência de saída terminal era o
+defeito estrutural —, o disparo não. Estender o backstop a `paused` exige reter a razão de entrada
+e isentar a pausa humana, e essa é **decisão do dono**, não deste ticket.
+`TestAOS419_PausaNaoMorrePeloTectoDoTrabalho` passou a guardar isso.
+
+**Honestamente: o que isto vale hoje.** Fecha um defeito estrutural da tabela e deixa o mecanismo
+pronto. **Não** fecha nenhum caso observável em produção, porque os dois estados que nomeia ou não
+são entrados, ou saem do alcance do varrimento antes de o prazo correr. Por isso o DEF-906 fica
+**MITIGADO** e não fechado, e o último critério fica por marcar.
+
+- [ ] **Alcance:** o varrimento alcançar um run suspenso que já largou a posse (molde do
+      `approval_sweeper`, varrendo streams em vez do registo em memória). É este trabalho, e não
+      mais mecanismo, que dá ao backstop um caso real. **POR FAZER**, em `cmd/aos`.
+
+**Nota de âmbito, declarada:** este diff **não altera uma única linha de código de produção** em
+`packages/cmd/aos` — as edições de `deadline_sweeper.go` e `steer_gates.go` são de comentário e de
+uma linha de log que afirmava o que não sabia («o run estava preso a meio de um turno», que é falso
+para um disparo do backstop).
+
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -866,8 +1223,256 @@ EPIC-11. PR pelo template da secção 7.
 | Responsável de Segurança |  |  |  |
 | Responsável de Produto |  |  |  |
 
+## AOS-422 — A guarda do AOS-411 passa a ter prova: os runs vivos saltados vão ao `/metrics`
+
+<!-- rtm: adrs-mencionados -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Observabilidade da remediação |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-411 (a guarda), AOS-253/A4 (o varredor) |
+| Bloqueia | A verificação em produção do AOS-411 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/crash_resume.go` (`resumeInterruptedRuns`), `packages/cmd/aos/api.go` (`handleMetrics`), `packages/cmd/aos/orphan_sweeper.go` |
+
+### Contexto
+
+**O AOS-411 tornou a sua própria evidência inobservável**, e isso foi medido ao tentar
+verificá-lo em produção.
+
+A correcção fez um run VIVO deixar de contar como órfão. Isso calou o ruído certo — a passagem
+periódica que só encontrava runs a correr deixou de escrever no log —, mas o `if` que a cala é
+`anuncia || scanned > 0`, e `scanned` conta agora **órfãos verdadeiros**. Logo, no caso que
+interessa — varredura passa, encontra um run vivo, salta-o correctamente — **o varredor não
+escreve nada**. E os contadores `vivosAqui`/`vivosNoutra` eram variáveis locais da função.
+
+O `aos_orphan_sweeps_total` já prova que o varredor CORREU. O que faltava era provar o que ele
+**saltou** — a diferença entre «correu e não havia nada» e «correu e protegeu um run a
+trabalhar».
+
+Sem isto, a verificação do AOS-411 em produção só produz **evidência negativa**: a ausência da
+linha «capturas ILEGIVEIS», que é o sintoma do incidente de 2026-09-18. Ausência de sintoma num
+run é mais fraco do que aquilo a que este repositório chama verificado.
+
+### Objectivo
+
+Um run vivo saltado pela varredura é visível no `/metrics`, sem depender de uma linha de log que,
+no caso que interessa, não é escrita.
+
+### Critérios de aceitação
+
+- [x] `aos_orphan_live_skipped_total` existe, com a label `dono` a separar `esta_replica` de
+      `outra_replica` (`TestAOS422_OsVivosSaltadosChegamAoMetrics`).
+- [x] A série está **ausente** antes da primeira passagem do varredor — um `0` num nó que nunca
+      varreu leria-se como «varreu e não havia nada», que é a mentira simétrica
+      (`TestAOS422_SerieAusenteAntesDaPrimeiraPassagem`). É a mesma regra que o bloco dos
+      varredores já impõe.
+- [x] Depois da primeira passagem, `0` é um zero **verdadeiro** e conta como amostra
+      (`TestAOS422_ZeroDepoisDaPrimeiraPassagemEUmZeroVerdadeiro`).
+- [x] Uma família, duas amostras: `# HELP`/`# TYPE` **uma** vez
+      (`TestAOS422_UmaFamiliaDuasAmostras`) — dois blocos para o mesmo nome fazem o Prometheus
+      rejeitar o payload INTEIRO, não só a família.
+- [x] Verificado em produção: com um run vivo, o `/metrics` mostrou
+      `aos_orphan_live_skipped_total{dono="esta_replica"} 2` *(ver abaixo)*. Fecha também a
+      verificação do AOS-411.
+
+### O que este ticket NÃO faz, e porquê
+
+**Não muda quando o varredor fala.** Baixar a condição de silêncio traria de volta o ruído que o
+AOS-411 calou de propósito. O log é para acontecimentos; um facto contínuo — «a guarda protegeu N
+runs» — pertence ao `/metrics`. Separar os dois é a razão de este ticket existir.
+
+### Estado
+
+**FEITO.**
+
+**Verificado em produção a 2026-09-21** (`v0.1.28`, imagem `sha256:0b49dd71…`), em duas medições
+que provam coisas diferentes.
+
+**1. A regra da ausência, medida sem nada de especial.** Com o nó a 58 segundos de vida, o
+`/metrics` **não tinha nenhuma família `aos_orphan*`** — nem sequer o `aos_orphan_sweeps_total`,
+que já existia antes deste ticket. Aos 4 minutos, com duas passagens feitas:
+
+```console
+aos_orphan_sweeps_total 2
+aos_orphan_last_sweep_age_seconds 10.6
+aos_orphan_live_skipped_total{dono="esta_replica"} 0
+aos_orphan_live_skipped_total{dono="outra_replica"} 0
+```
+
+O mesmo `0` significa coisas opostas nos dois momentos, e agora distinguem-se: antes era
+**ausência de dados**, depois é um **facto**. Era exactamente esta ambiguidade que impedia a
+verificação do AOS-411.
+
+**2. A guarda do AOS-411 a actuar, e isto exigiu mudar a cadência.** Um run real
+(`run-delegado-1789995086`, submetido com NHI cunhado pelo operador) vive **segundos**; o varredor
+passa a cada **120**. A primeira tentativa não cruzou os dois e a métrica ficou a `0` — o que
+**não** prova que a guarda falhou, só que não foi exercitada, e ficou dito como tal antes de se
+tentar outra vez.
+
+Baixou-se `AOS_CRASH_RESUME_INTERVAL` para `10s` **temporariamente**, com confirmação pelo banner
+(`LIGADA a cada 10s`) antes de medir — uma medição com a cadência antiga voltaria a dar zero e não
+se saberia porquê. Com a cadência baixa:
+
+```console
+aos_orphan_sweeps_total 17
+aos_orphan_live_skipped_total{dono="esta_replica"} 2
+aos_orphan_live_skipped_total{dono="outra_replica"} 0
+```
+
+**A guarda actuou duas vezes.** O run esteve vivo durante duas passagens e foi SALTADO nas duas:
+não foi tratado como órfão, não lhe foram lidas as capturas por-titular, e **não apareceu nenhuma
+linha «capturas ILEGIVEIS»** — que é o sintoma exacto do incidente de 2026-09-18, onde um run vivo
+o produziu com o contentor a `restarts=0`.
+
+A cadência foi **reposta** e confirmada pelo banner (`a cada 2m0s`); o `.env` não ficou com a
+variável.
+
+**Um falso positivo apanhado na leitura, e vale a pena ficar escrito:** a primeira varredura do
+sintoma acusou uma ocorrência. Era o banner da varredura de ARRANQUE a dizer `0 run(s) orfaos em
+`running``, que o padrão apanhava pelo texto. Sem olhar para a linha, teria sido reportado um
+sintoma que não existia.
+
+Segue o molde que já existe: campo `atomic.Int64` no `NodeService`, incrementado no ponto de
+agregação da passagem, lido em `handleMetrics`. O nó **não tem** registo de métricas nem
+Prometheus — o `/metrics` é texto gerado à mão —, e este ticket não introduziu nenhum.
+
+**Uma correcção ao diagnóstico inicial, que estreitou o ticket:** eu tinha afirmado que o silêncio
+não distinguia «correu e saltou bem» de «não correu». Metade disso estava errado — o
+`aos_orphan_sweeps_total` já distinguia. O que faltava era só a prova do que foi saltado.
+
+---
+
+## AOS-454 — A via durável perde o `parent_step_id` do evento de mediação
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 — Agent Runtime e Execução Durável |
+| Fase | Remediação (achado da fase 1 do AOS-069) |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P2 |
+| Estimativa | S |
+| Dependências | AOS-021 (a porta `ActivityDispatcher` e o `DurableDispatcher`), AOS-157 (o loop despacha pela porta) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/integration/runtime_ports.go` (`DurableDispatcher.Dispatch`), `packages/kernel/agent-runtime/activity/contract.go` (`Activity`, `toCall`), `packages/kernel/reference-monitor/eventsink.go` (`MediationRecord`) |
+
+### Contexto
+
+**Achado no diagnóstico da fase 1 do AOS-069 (2026-09-26).** O `DurableDispatcher` traduz o
+`referencemonitor.Call` que o loop constrói numa `activity.Activity`, e `Activity.toCall` volta a
+construir o `Call` que o Reference Monitor medeia. A `Activity` não tinha campo para o passo pai:
+o `Call` re-hidratado chegava ao RM com `ParentStepID` vazio.
+
+Num nó com `AOS_DURABLE_EXECUTION=1` — **produção** — o evento `tool.call.mediated` saía sem
+`parent_step_id`. A via directa (o default do kernel, a de quase todos os testes) grava-o. Perde-se
+a ligação de auditoria entre a tool call e o turno que a pediu; **não é autorização** — nenhum hook
+decide pelo passo pai.
+
+**É a quarta vez que a mesma tradução perde um campo do `Call`:** o `Credential` (AOS-152), a
+`ApprovalEvidence` (AOS-021), o taint da autorização (AOS-069) e agora o passo pai. Cada correcção
+acrescentou o campo que faltava e nenhuma fixou a propriedade. Este ticket fixa-a.
+
+### Objectivo
+
+O `parent_step_id` do evento de mediação é o mesmo nas duas implementações da porta, e qualquer
+campo novo do `Call` é propagado pela via durável ou declarado perdido, com razão.
+
+### Critérios de aceitação
+
+- [x] Paridade medida no evento gravado no Event Store: o `parent_step_id` do `tool.call.mediated`
+      é igual pela via directa e pela durável, e não-vazio
+      (`TestAOS454_ViaDuravelPreservaOParentStepIDNoEvento`, `packages/integration`). **Vermelho na
+      base 9fd4c87**: via directa `step-000001`, via durável vazio.
+- [x] `Activity.ParentStepID` chega ao evento de mediação
+      (`TestAOS454_ParentStepIDChegaAoEventoDeMediacao`, `activity`).
+- [x] O passo pai **não** entra na idempotency key nem na impressão da acção: o mesmo
+      `(RunID, StepID)` com outro pai deduplica e não re-executa
+      (`TestAOS454_ParentStepIDForaDaChaveDeIdempotencia`).
+- [x] Auditoria campo a campo `Call → Activity → toCall` por reflexão: um `Call` com **todos** os
+      campos exportados preenchidos passa pelo `DurableDispatcher`, e cada campo chega igual ao RM
+      ou está declarado em `camposNaoPropagados` com a razão — e, se declarado, tem de chegar
+      diferente (`TestAOS454_AuditoriaCampoACampoCallActivityCall`). Um campo novo no `Call` que
+      ninguém propague avermelha este teste.
+- [x] Verificado em produção: num nó durável, um `tool.call.mediated` de um run novo traz
+      `parent_step_id` *(ver Estado)*.
+
+### Auditoria campo a campo
+
+Medida pelo teste de reflexão, não lida no código. Na base, só o `ParentStepID` se perdia para
+além do que fica declarado:
+
+| Campo do `Call` | Via durável | Razão |
+|---|---|---|
+| `RunID`, `StepID`, `ToolID`, `Capability`, `Resource`, `Principal`, `Credential`, `Input`, `ApprovalEvidence` | propagado | — |
+| `Context.BudgetTokensRemaining`, `Context.Reversibility`, `Context.Sensitivity` | propagado | — |
+| `ParentStepID` | **perdido → propagado (este ticket)** | — |
+| `Context.Taint` | traduzido, não copiado | Correcção do AOS-069 (fase 1): `Activity.AuthorizationTaint` com `taint.ParseLabel`, fail-closed. Tem teste próprio. Na base 9fd4c87 era fixado em untrusted; fundido no #394. |
+| `RequestID` | perdido — **latente** | Nenhum chamador o preenche: o loop não põe `RequestID` na `Call`, e o `DurableDispatcher` só é chamado pelo loop. Se passar a ter produtor, o teste de paridade não o apanha, mas a declaração tem de ser revista. |
+| `Context.RiskClass`, `Context.RiskApprover`, `Context.RiskDecisionMode` | descartado — **correcto** | São saídas do `RiskGate`, escritas dentro de `Mediate`. Deixá-las atravessar vindas do chamador permitiria pré-preencher a atribuição (`RiskApprover`) de uma acção que nenhum humano aprovou, num RM sem `RiskGate` na cadeia. |
+| `humanApproved` (não exportado) | não aplicável | Só o `ApprovalGate` o escreve, dentro do RM; nenhum chamador o consegue passar em nenhuma das vias. |
+
+### Coordenação com o AOS-069 (fase 1)
+
+A correcção do taint na via durável (`Activity.AuthorizationTaint`) estava por fundir quando este
+ticket foi feito, e toca os mesmos dois ficheiros. Os hunks deste ticket ficam longe dos dela (o
+campo a seguir a `StepID`; os dela no fim da `Activity` e no `Taint` do `toCall`). Verificado:
+`git merge-file` de cada ficheiro (base × AOS-454 × AOS-069) sai com **zero conflitos**, e na árvore
+integrada as suites de `activity` e os testes `TestAOS069_*`, `TestAOS454_*` e
+`TestDurableDispatcher_*` de `packages/integration` passam juntos.
+
+O AOS-069 fundiu-se primeiro (#394). O merge da base neste ramo confirmou a previsão: o código
+fundiu sem conflito, e o único conflito foi a RTM gerada (`tecnica/16`), resolvido regenerando-a.
+
+### O que este ticket NÃO faz, e porquê
+
+**Não propaga o `RequestID`.** Sem produtor, propagá-lo seria código sem caso. Fica declarado
+como perda latente na tabela e no teste.
+
+**Não mexe no taint.** É do AOS-069.
+
+### Estado
+
+**FEITO.**
+
+**Verificado em produção a 2026-09-27** (`v0.1.39`, imagem `sha256:95e41051…`, o digest que o
+`publish` da release anunciou), com `AOS_DURABLE_EXECUTION=1` no contentor e o banner da execução
+durável (AOS-180) `LIGADA`. As contagens são do `events.wal`, lido só em leitura.
+
+**Antes do deploy (v0.1.38) — o defeito vivo.** 61 eventos de mediação (51 `tool.call.mediated`,
+10 `tool.call.denied`), **nenhum** com `parent_step_id`. Contar ausências num WAL codificado não
+chega sozinho: a chave podia simplesmente não se gravar em texto. O controlo foi contá-la noutros
+tipos — aparece em 1281 eventos (`step.checkpoint`, `replay.captured`, `sandbox.*`). A ausência é
+do evento de mediação, não da codificação.
+
+**Depois do deploy — um run novo.** Um plano de prova pela fila real
+(`medir-latencia-fila.sh --ate-ao-fim`, `plan-e2e-447-1790511800`, `terminal`, `exit_code 0`) cujo
+nó `n1` chamou `doc_read` duas vezes:
+
+```console
+tool.call.mediated  run=plan-e2e-447-1790511800~n1  step=step-000001-tool-1  parent_step_id=step-000001
+tool.call.denied    run=plan-e2e-447-1790511800~n1  step=step-000002-tool-1  parent_step_id=step-000002
+```
+
+As duas mediações do run trazem o passo pai, e cada uma aponta para o **seu** turno. Os 61 eventos
+anteriores continuam sem ele, porque o WAL é append-only. O total passou a 52 `mediated` e 11
+`denied`, exactamente um com `parent_step_id` em cada tipo — os deste run.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
+| 1.1 | 2026-09-15 | AOS-396: manifesto do turno com model_id vazio no nó (achado do E2E em produção) | Equipa AOS |
+| 1.2 | 2026-09-19 | +AOS-411: a re-varredura de órfãos tratava um run vivo como órfão e decifrava-lhe as capturas antes de verificar o dono (observado em produção na v0.1.22) | Equipa AOS |
+| 1.3 | 2026-09-20 | +AOS-419: `paused` e `waiting_on_tool` não tinham backstop de wall-clock nem aresta de saída para terminal (eixo novo do DEF-906) | Equipa AOS |
+| 1.4 | 2026-09-21 | +AOS-422 (os runs vivos saltados vão ao `/metrics`): medido ao tentar verificar o AOS-411 em produção que a correcção tornou a sua própria evidência inobservável — a passagem periódica só fala com órfãos verdadeiros, e os contadores eram variáveis locais. | Equipa AOS |
+| 1.5 | 2026-09-26 | +AOS-454 (a via durável perde o `parent_step_id` do evento de mediação): achado no diagnóstico da fase 1 do AOS-069; auditoria campo a campo `Call → Activity → toCall` fixada por teste de reflexão. | Equipa AOS |

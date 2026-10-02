@@ -327,6 +327,9 @@ try {
         Write-Host "NHI CUNHADA" -ForegroundColor Green
         Write-Host ("  agente      = {0}" -f $p.agent_id)
         Write-Host ("  classe      = {0}" -f $p.agent_class)
+        # AOS-407: o board vem da claim `board` do ID-token e fica selado no NHI. Sem ele o mint
+        # recusa; mostra-se aqui porque e o que o PDP resolve para a regiao em cada tool call.
+        Write-Host ("  board       = {0}" -f $p.board)
         if ($p.delegation_chain) { Write-Host ("  raiz        = {0}" -f $p.delegation_chain[0].sub) }
         Write-Host "  ligacao     = imposta no mint (nonce do ID-token = digest desta delegacao)" -ForegroundColor Green
 

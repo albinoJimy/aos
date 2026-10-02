@@ -18,6 +18,31 @@ CI_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$CI_DIR/../.." && pwd)"
 BASELINE_DIR="$CI_DIR/baseline"
 
+# --- OS GATES RESOLVEM COMO ANTES DO go.work (AOS-387) --------------------------
+# Pelas `replace` de cada go.mod. Há um go.work na raiz (scripts/ci/gowork.sh) e o Go descobre-o
+# sozinho a partir de qualquer directório abaixo dela: sem esta linha, os gates passariam a correr
+# em modo workspace só por o ficheiro existir.
+#
+# PORQUE AQUI, AO CARREGAR, E NÃO DENTRO DO setup_env (onde esteve, e era um buraco). Nem todos
+# os gates chamam setup_env — o layer-lint corre `go list` sem nunca o chamar, e o run.sh também
+# não — e esses corriam em modo workspace em silêncio. Todo o gate carrega este ficheiro; é o
+# único ponto que os cobre a todos. O self-test GW prova-o com um `go` sombra no PATH que regista
+# o GOWORK de cada invocação.
+#
+# É forçado, e não um default sobreponível, porque o modo workspace MUDA o que os gates medem —
+# medido a 2026-10-01:
+#   - o self-test A injecta um módulo em packages/ sem `use`: em modo workspace o `go test`
+#     dele falha por não estar no workspace, e o «vermelho» do A2 deixava de provar o que diz;
+#   - os módulos fora de packages/ (scripts/ci/attest, que o build/test correm sempre, e
+#     deploy/*) não estão no workspace e nem compilariam;
+#   - o `go list -m -json all` do sbom.sh, em packages/platform/attestation, passaria de 3 para
+#     57 módulos: o SBOM descreveria o workspace, não o módulo.
+# Cada um teria remédio local (um GOWORK=off naquele passo); o que fica verdade é que a CI testa a
+# resolução standalone de cada módulo, a mesma da imagem de produção. O go.work é para quem
+# desenvolve (gopls, `go work use`, um build que atravessa tudo); o build.sh prova à parte, e
+# explicitamente, que ele cobre a árvore e compila offline.
+export GOWORK=off
+
 # --- Cores (desligadas se não houver TTY ou se NO_COLOR) ----------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RED=$'\033[31m'; C_GRN=$'\033[32m'; C_YEL=$'\033[33m'
@@ -315,10 +340,20 @@ EOF
 GATE_SKIPPED=()
 
 # gate_skip <etapa> <motivo> <garantia por verificar>
+#
+# O REGISTO TAMBÉM ATRAVESSA PARA O `run.sh` (AOS-474). O array é por processo, e o `run.sh`
+# corre cada gate num processo filho: o veredicto agregado dizia «TODOS OS GATES VERDES» com
+# um gate que tinha saltado — o AOS_SKIPPED_STEP ficava a meio do output. Com
+# AOS_RUN_SKIP_LEDGER definido (o `run.sh` define-o, um ficheiro por gate), cada salto anexa-se
+# lá também, incluindo os dos netos (o env herda-se). Sem `|| true`: um registo que não se
+# consegue escrever mata o gate sob `set -e` (vermelho) em vez de o deixar verde em silêncio.
 gate_skip() {
   GATE_SKIPPED+=("$1|$2|$3")
   log_warn "SALTADO: $1 — $2"
   log_warn "         garantia POR VERIFICAR: $3"
+  if [ -n "${AOS_RUN_SKIP_LEDGER:-}" ]; then
+    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$AOS_RUN_SKIP_LEDGER"
+  fi
 }
 
 # gate_skip_report — redeclara, no fim, tudo o que foi saltado (0 se nada saltou).
@@ -434,7 +469,23 @@ gate_threshold COVERAGE_MIN "$KERNEL_COVERAGE_MIN" "$FLOOR_COVERAGE_MIN" 100 "%"
 # `AOS_NATS_URL`, inventariadas pelo gate `dormencia`). Gatear o módulo inteiro avermelharia a CI
 # por falta de infra, não por falta de teste — trocaria um gate honesto por um bloqueador de
 # ambiente. A cobertura do núcleo é vigiada pelas suites que correm; o apodrecimento dos
-# adaptadores é vigiado pelo `dormencia` (exige que COMPILEM). Reavaliar quando o CI tiver NATS.
+# adaptadores é vigiado pelo `dormencia` (exige que COMPILEM).
+#
+# REAVALIADO EM AOS-433, DEPOIS DE O CI PASSAR A TER NATS (AOS-431). A nota acima terminava em
+# «reavaliar quando o CI tiver NATS», e o CI passou a ter. Medido, nos dois regimes:
+#
+#   · SEM cluster (que é como ESTE gate corre, no job `test`): 63,6% — a nota estava certa;
+#   · COM cluster de quatro nós:                               81,3%.
+#
+# A conclusão não é «entra agora». Este gate vive no `test.sh`, que NÃO levanta cluster: pôr o
+# módulo aqui mediria 63,6% contra o `COVERAGE_MIN` e avermelharia — exactamente o bloqueador de
+# ambiente que a nota original recusou. A premissa não caducou; o que caducou foi a ideia de que
+# não havia onde gatear.
+#
+# O SÍTIO CERTO É O GATE `nats`, que tem o cluster e mede o que ele exercita. É lá que o piso
+# vive (ver `scripts/ci/nats.sh`, EVENTSTORE_COVERAGE_MIN). Esta exclusão mantém-se, e deixa de
+# ser um deferimento: é uma repartição de responsabilidade entre dois gates, com o número de
+# cada um medido.
 COVERAGE_GATED_MODULES=("packages/kernel/reference-monitor" "packages/kernel/agent-runtime" "packages/testkit" "packages/control-plane/orchestrator" "packages/control-plane/scheduler" "packages/control-plane/pdp" "packages/platform/audit" "packages/control-plane/governance/approval-card" "packages/control-plane/governance/plan-approval" "packages/control-plane/governance/surface-adapter" "packages/control-plane/governance/progress-surface" "packages/control-plane/governance/confidence-calibration" "packages/control-plane/governance/autonomy-surface" "packages/control-plane/governance/authoring-surface" "packages/control-plane/governance/trajectory-surface")
 # Directório do testkit (conversor de cobertura cov2lcov, Go stdlib puro).
 TESTKIT_DIR="$REPO_ROOT/packages/testkit"
@@ -669,6 +720,12 @@ ensure_python() {
   # criado e inalcancavel. Descoberto pela propria re-verificacao abaixo, na primeira
   # execucao — que e exactamente porque ela existe.
   case ":$PATH:" in *":$REPO_ROOT/.tools:"*) ;; *) PATH="$REPO_ROOT/.tools:$PATH"; export PATH;; esac
+  # E O CACHE DE COMANDOS TAMBEM (AOS-480). A sonda do topo ja correu `python3` e o bash guardou
+  # o caminho que encontrou — em Windows, o atalho da Microsoft Store. Se o [setup_env] ja tinha
+  # posto .tools no PATH, a linha acima nao mexe no PATH, o cache nao e limpo, e a re-verificacao
+  # abaixo executa o atalho em vez do shim acabado de criar: o gate falha na PRIMEIRA corrida de
+  # um checkout limpo e passa na segunda.
+  hash -r
 
   # VOLTA A VERIFICAR, como o [ensure_tool] faz depois de instalar: provisionar e assumir que
   # resultou seria a mesma classe de defeito que este arnes existe para apanhar.

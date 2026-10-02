@@ -66,7 +66,7 @@ Princípios directamente materializados: **contexto ≠ registo** (Princípio 4)
 
 Todo o facto que ocorre num run — um turno de modelo, uma mediação de tool call, uma transição de estado, uma escrita de memória — é gravado como um **evento append-only** com o mesmo envelope canónico. O envelope é **fino e uniforme**: transporta apenas os **metadados de correlação e de ordem** (quem, que stream, que passo, que versão de schema) e delega tudo o que é específico do facto ao `payload`, que tem o **seu próprio schema por tipo de evento**.
 
-Esta é a decisão estrutural mais importante da secção, e a que mais frequentemente é mal lida: **o envelope não transporta `prompt_hash`, `model`, `taint` nem manifesto**. Esses metadados existem — mas um nível abaixo, no `payload` do tipo de evento a que pertencem. Um evento de mediação não tem `model.seed`; um evento de turno não tem `taint`. Espalhá-los pelo envelope obrigaria todos os 91 tipos de evento do Event Store (§3.3) a carregar campos vazios e tornaria qualquer novo metadado uma alteração MAJOR da porta C2.
+Esta é a decisão estrutural mais importante da secção, e a que mais frequentemente é mal lida: **o envelope não transporta `prompt_hash`, `model`, `taint` nem manifesto**. Esses metadados existem — mas um nível abaixo, no `payload` do tipo de evento a que pertencem. Um evento de mediação não tem `model.seed`; um evento de turno não tem `taint`. Espalhá-los pelo envelope obrigaria todos os tipos de evento do Event Store (§3.3) a carregar campos vazios e tornaria qualquer novo metadado uma alteração MAJOR da porta C2.
 
 ### 3.1 Envelope real `[WIRE]`
 
@@ -101,11 +101,11 @@ Campos e o seu papel:
 | Campo | Tipo | Papel |
 |---|---|---|
 | `event_id` | string (ULID, 26 chars) | Identificador globalmente único. **Não é fonte de ordem.** |
-| `stream_id` | string | Fronteira de ordenação e de particionamento (na prática, o `run_id`). A **ordem total é por `(stream_id, seq)`** — não por `seq` global. |
+| `stream_id` | string | Fronteira de ordenação e de particionamento (na prática, o `run_id`). A **ordem total é por `(stream_id, seq)`** — não por `seq` global. **O valor NÃO é texto livre**: ver §3.1.1. |
 | `seq` | integer ≥ 1 | Contador monotónico **gapless por stream**, atribuído pelo store (nunca pelo chamador). Base da ordem total (ADR-001). |
 | `type` | string | Nome canónico do facto. Catálogo em §3.3. |
 | `ts` | string RFC3339 | Relógio de parede, **observacional**, nunca fonte de ordenação. |
-| `producer` | objecto | Identidade NHI emissora, a sua `delegation_chain` *on-behalf-of* (termina num humano responsável) e o `scope` activo (ADR-003). |
+| `producer` | objecto | Identidade NHI emissora, a sua `delegation_chain` *on-behalf-of* (termina num humano responsável) e o `scope` activo (ADR-003). **Nunca vazio**, mas nem todo o tipo traz cadeia: o que cada tipo traz está na tabela «O `producer` por família de evento», logo abaixo. |
 | `payload` | qualquer JSON | Corpo do facto, com schema próprio por `type`. **Inline** neste reference impl (ver a nota de cifra abaixo). |
 | `schema_version` | string `MAJOR.MINOR` | Versão do schema do envelope/payload no registo (`"1.0"`; expand/contract, ADR-012). |
 | `run_id` | string | Correlação da trajectória. Componente da `idempotency_key`. |
@@ -114,6 +114,102 @@ Campos e o seu papel:
 | `idempotency_key` | string | `run_id + ":" + step_id`, atribuída pelo store. Garante *zero efeitos duplicados no retry* (ADR-001). |
 
 Um segundo append com a mesma `idempotency_key` devolve `status: "duplicate"` e o `seq` committed original, sem duplicar o efeito (contrato C2, `tecnica/12` §5). Os domínios de deduplicação por passo são namespaceados no `step_id` — turno (`run_id:step_id`), ledger (`run_id:ledger-…`), checkpoint (`run_id:ckpt-…`) e captura de replay (`run_id:cap-…`) — precisamente para não colidirem entre si na dedup global por chave.
+
+#### O `producer` por família de evento (AOS-478)
+
+A linha `producer` da tabela acima promete a cadeia de delegação **por evento**. Um WAL de produção lido inteiro a 2026-10-01 mostrou outra coisa: cadeia só em `tool.call.*`, só `nhi_id` em `turn.recorded`/`replay.captured`/`run.toolset.frozen`/`planrequest.*`, e `producer` **vazio** em `step.checkpoint`, `run.state.transition`, `memory.record.written`, `run.resume.record`, `lease.*`, `sandbox.*`, `step.ledger.applied`, `approval.*` e `control.*` (`docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §7, achado 3). A tabela abaixo é o contrato que substitui a promessa genérica: diz, por tipo, **o que** o `producer` traz e **como** se chega ao humano responsável.
+
+**Regra.** Nenhum tipo do envelope é emitido com `producer.nhi_id` vazio pelos emissores que o nó compõe; as excepções que restam, todas fora desse caminho, estão listadas a seguir à tabela. Há três classes:
+
+- **`cadeia`** — o principal VERIFICADO pelo Reference Monitor a partir do token NHI: `nhi_id` = agente, `delegation_chain` = raiz `human:<id>` → agente, `scope` = autoridade do token. A recondução ao humano faz-se no próprio evento.
+- **`nhi_id`** — o autor do acto, sem cadeia: o principal do run como o nó o admitiu, o operador autenticado de um sinal de controlo, o aprovador. A cadeia, quando existe, lê-se no `tool.call.*` do mesmo `(run_id, step_id)`. **Atenção ao «como o nó o admitiu»:** o principal do run (`Goal.Principal.NHIID`) só é VERIFICADO na porta em modo soberano (credencial forte, `sub` do submissor); fora dele é **auto-declarado** — o `principal_nhi` do corpo do `POST /runs` ou o header demonstrativo do leitor. Um `nhi_id` nesta classe identifica quem o run diz ser, não prova quem é; a prova está na cadeia do `tool.call.*`.
+- **`componente`** — a identidade do componente que emitiu um facto de ciclo de vida que ninguém pediu (`nhi:<camada>/<componente>`, à semelhança do `nhi:composition-root` de `run.toolset.frozen`). O responsável lê-se pelo `run_id`, no `turn.recorded` e no `tool.call.*` do run.
+
+A quarta linha da tabela, **`fora-do-envelope`**, não é uma classe de `producer`: são rótulos de `audit.AuditRecord` (§3.3, tabela (b)) que nunca chegam a um `EventInput` e cujo autor vai no `Principal` do registo WORM.
+
+| Tipo(s) | Classe | `producer.nhi_id` | Como se chega ao responsável |
+|---|---|---|---|
+| `tool.call.*` | `cadeia` | Agente do token verificado | No próprio evento. Excepção honesta: um `tool.call.denied` pelo hook de identidade grava o principal APRESENTADO (só `nhi_id`), porque não há cadeia verificada que gravar. |
+| `step.ledger.applied` | `cadeia` | O mesmo principal do `tool.call.mediated` do passo (`Decision.Principal`, passado ao ledger por `durable.WithEffectProducer` no `activity.Dispatcher` e no `worker.Worker`) | No próprio evento. O titular da cifra continua a ser o do run (`ContextWithTitular`), não este. |
+| `sandbox.*` | `cadeia` | O mesmo principal do `tool.call.mediated` do passo (o RM anexa o `producer` ao contexto do despacho com `eventstore.ContextWithProducer`, e o sink lê-o com `eventstore.ProducerFromContext`, sem importar o kernel) | No próprio evento. |
+| `identity.nhi.issued` | `cadeia` | Agente cunhado | No próprio evento (é o binding humano↔NHI do ADR-003). |
+| `turn.recorded`, `replay.captured` | `nhi_id` | Principal do run (`Goal.Principal.NHIID`). Verificado na porta só em modo soberano; caso contrário, auto-declarado (ver a classe `nhi_id`). | Ver a nota «turno ↔ tool call» abaixo. |
+| `run.resume.record` | `nhi_id` | Principal do run. Verificado na porta só em modo soberano; caso contrário, auto-declarado (ver a classe `nhi_id`). | Idem. |
+| `approval.pending` | `nhi_id` | Principal da call escalada, tal como o run a apresentou (o que a preview amarra). Verificado na porta só em modo soberano; caso contrário, auto-declarado (ver a classe `nhi_id`). No prompt de exaustão, `nhi:aos-node/exhaustion-prompt`. | O run (`payload.run_id`). |
+| `approval.consumed` | `nhi_id` | Principal da call que gastou a aprovação, tal como o run a apresentou (o `ApprovalGate` corre antes do hook de identidade). Verificado na porta só em modo soberano; caso contrário, auto-declarado (ver a classe `nhi_id`). | O `tool.call.*` do mesmo passo. |
+| `approval.granted` | `nhi_id` | O primeiro aprovador verificado pela cerimónia four-eyes | A lista completa das pernas está em `payload.approvers`; o envelope tem um só `nhi_id`. |
+| `approval.decided` | `nhi_id` | O principal verificado que decidiu | No próprio evento e no selo WORM da decisão. |
+| `control.pause`, `control.steer`, `control.resume` | `nhi_id` | O emissor autenticado (o mesmo `emitter_id` do payload) | O operador pinado; o selo WORM `control:*` tem a atribuição. |
+| `memory.*` (excepto as migrações, linha própria) | `nhi_id` | O `AgentID` que o escritor declara (obrigatório no domínio). No nó, `memory.record.written` vem da ingestão do objectivo, que o escreve com o principal do run (`Goal.Principal.NHIID`, `integration.IngestObjective`): em modo soberano o `sub` de quem submeteu, fora dele auto-declarado. | O run (`run_id`). |
+| `credential.*` | `nhi_id` | Principal da troca (`scope` = capability) | O `tool.call.*` do passo. |
+| `registry.artifact.*` | `nhi_id` | Publicador do artefacto | Proveniência assinada do artefacto. |
+| `identity.nhi.revoked` | `nhi_id` | O `jti` revogado | O `identity.nhi.issued` do mesmo `jti`. |
+| `control.correction_consumed` | `componente` | `nhi:kernel/agent-runtime/steer-channel` | O `control.steer` que a correcção entregue fecha (`payload.emitter_id`). |
+| `run.state.transition` | `componente` | `nhi:kernel/agent-runtime/state-machine` | O facto que causou a transição (sinal de controlo, escalada, decisão) está no mesmo stream. |
+| `step.checkpoint` | `componente` | `nhi:kernel/agent-runtime/checkpointer` | O `turn.recorded` do mesmo passo. |
+| `lease.*` | `componente` | `nhi:kernel/agent-runtime/lease` | O worker concreto vai no payload; o run, por `run_id`. |
+| `worker.step.dispatched` | `componente` | `nhi:kernel/agent-runtime/worker` | Por `run_id`. |
+| `approval.expired` | `componente` | `nhi:integration/approval-expiry` | O `approval.pending` que expirou. |
+| `run.toolset.frozen` | `componente` | `nhi:composition-root` | Por `run_id`. |
+| `run.plan_origin` | `componente` | `nhi:aos-node/plan-origin` (AOS-477) | Por `run_id` do run filho; o `payload.plan_request` cita o `planrequest.submitted` do titular, verificado pelo vínculo do AOS-439. |
+| `planrequest.*` | `componente` | `nhi:aos-node/plan-ingress` | O submissor vai no payload (cifrado por titular). |
+| `budget.*` | `componente` | `nhi:aos-node/quota`, `nhi:aos-node/budget-toolcall`, ou o injectado no `control-plane` | O principal imputado vai no payload. |
+| `ratification.*` | `componente` | `nhi:ratification-gate` | O selo WORM da ratificação. |
+| `foureyes.*` | `componente` | `nhi:foureyes-challenge-issuer` | O `approval.granted` da cerimónia. |
+| `memory.migration.*` | `componente` | `nhi:platform/memory/migrations` | Manutenção de schema, sem humano. |
+| `admission.*`, `backpressure.*`, `degradation.*`, `routing.*`, `scheduling.*`, `spawn.*` | `componente` | `nhi:control-plane/scheduler/…` (default de cada construtor) | Por `run_id`/`tree_id`. |
+| `plan.*`, `task.*`, `run.created`, `deadlock.*`, `subagent.*` | `componente` | `nhi:control-plane/orchestrator/…` ou o injectado pelo `aos-orq` | Pelo pedido de plano (`planrequest.submitted`). |
+| `autonomy.*`, `dsar.*`, `policy.*`, `retention.*`, `trust_anchors.*` | `fora-do-envelope` | — | `Principal` do registo WORM (§4). |
+
+**Excepções conhecidas à regra.** São quatro, todas fora do caminho que o nó compõe, e ficam escritas para que um leitor não as tome por defeito:
+
+- **`step.ledger.applied`** sai com o `producer` de composição — vazio se não houver — quando o chamador do `StepLedger` não declara o autor (`durable.WithEffectProducer`) nem compõe `WithProducer`. Os dois chamadores de produção (`activity.Dispatcher` e `worker.Worker`) declaram-no. O ledger NÃO tem default de componente de propósito: o produtor de composição é o fallback do titular da cifra, e um default faria o modo estrito selar sob a identidade do nó em vez de recusar (`ErrNoTitular`, AOS-245).
+- **`sandbox.*`** gravado fora de um despacho do RM sai vazio. Pela API exportada isso não acontece: o `MediatedLauncher` só corre a sandbox através do RM, que anexa o `producer`.
+- **`deadlock.*`, `subagent.*`, `task.*`, `plan.*`** e o emissor de `budget.*` do `control-plane` recebem o `producer` do compositor, sem default no construtor. Vazio quando quem compõe não o dá. O `aos` não os compõe; o `aos-orq` dá `nhi:<worker>` aos que compõe.
+- **`tool.call.denied`** pelo hook de identidade grava o principal APRESENTADO: o `nhi_id`, sem cadeia.
+
+**Residual declarado — a raiz humana em claro em mais envelopes.** A cadeia `human:<id> → agente` já aparecia em claro no envelope de `tool.call.*`. Passa a aparecer também em `step.ledger.applied` e nos três `sandbox.*` de cada tool call. Não é uma classe de dado nova, mas o crypto-shredding por titular (ADR-011, §4.1) cifra payloads e não redige envelopes: depois de um apagamento, a raiz humana continua legível nesses envelopes, como já continuava nos `tool.call.*`. Fica como residual do AOS-478.
+
+**Turno ↔ tool call no mesmo passo — porque o principal difere, e porque fica assim.** Num run com credencial NHI real, o `turn.recorded` de um passo leva o principal do run (o `sub` de quem submeteu, ou o NHIID que o nó verificou na porta) e o `tool.call.*` do mesmo passo leva o agente do token, com a cadeia `human → agente`. São duas perguntas distintas e cada envelope responde à sua: o turno é o run a avançar em nome de quem o pediu; a tool call é o agente a agir sob a delegação que o RM acabou de verificar. Pôr no turno o principal da tool call exigiria verificar o token a cada turno, o que gastaria o `jti` (anti-replay de uso único) sem nenhum efeito a autorizar, ou então copiar para o envelope uma cadeia que ninguém verificou naquele momento. Fica assim: os dois correlacionam-se por `(run_id, step_id)`, e o agente da credencial verificada na porta também está no `Goal` (`Principal.AgentID`, AOS-440). Com a credencial demo-grade local não há cadeia em nenhum dos dois.
+
+**Ciclo de vida do nó com identidade de componente, e não vazio — a medição.** Mudar o envelope de `run.state.transition`, `step.checkpoint` e `lease.*` não toca no replay nem na idempotência: o motor de replay e o harness não lêem o `producer` (o `FinalStateHash` é o hash do tail, reconstruído dos payloads), a `idempotency_key` é `run_id:step_id` e a reconciliação dos duplicados compara só o payload. `scripts/ci/replay.sh` passa antes e depois. O custo é o comprimento da identidade (30 bytes em `lease.*`): nos 55 263 `lease.renewed` do WAL de produção, cerca de 1,7 MB. Ganha-se a regra fail-closed: um leitor nunca confunde «componente do nó» com «não sei».
+
+**Verificação.** `TestAOS478_ProducerPorFamilia` (`packages/cmd/aos/aos478_producer_por_familia_test.go`) lê esta tabela, percorre o catálogo de §3.3 com o critério do gate `event-catalog` e exige que cada tipo tenha linha aqui. Corre depois um nó real (escalada, aprovação four-eyes, retoma, sandbox, pausa e steer, com o titular dos dados diferente do agente) e verifica a classe de cada evento emitido, que tem de ser EXACTA: `cadeia` com `delegation_chain`, `nhi_id` sem cadeia, `componente` com `nhi:` e sem cadeia. Todo o tipo `cadeia` ou `nhi_id` que o cenário não emite tem de constar de uma lista de testes unitários nomeados, com a mesma classe que esta tabela lhe dá, e o teste confirma que cada um existe. Enfraquecer aqui a classe de um tipo, emitido ou não, avermelha-o. Os eventos já gravados com `producer` vazio continuam legíveis: o envelope não é validado na leitura, e o log não se reescreve.
+
+### 3.1.1 Nomenclatura de `stream_id` — o que o valor PODE ser
+
+Este documento definia `stream_id` como «fronteira de ordenação e de particionamento» e **não
+impunha restrição nenhuma de caracteres**. Essa lacuna está na origem de uma classe inteira de
+defeitos, medida em 2026-09-21 (AOS-424): **nove** `stream_id` da árvore não eram representáveis
+no substrato replicado, dois grupos deles compostos em produção.
+
+**REGRA.** Um `stream_id` NÃO pode conter `.`, `*`, `>`, espaço, tabulação, CR ou LF.
+
+**Porquê.** O backend JetStream (ADR-007) mapeia cada stream num *subject* NATS, onde o ponto
+separa tokens e `*`/`>` são curingas. Um `stream_id` com qualquer um deles **não é
+representável**, e a implementação **recusa** (`E_CONFIG`) em vez de escapar em silêncio para um
+subject vizinho onde outro stream leria os nossos eventos — que é a escolha certa. A regra
+normativa é a do código (`jetstream.Store.subjectDe`); esta secção **descreve-a**, e quem a
+quiser verificar corre o gate, que a lê da fonte.
+
+**A armadilha, e é ela que justifica escrever isto aqui.** O store de FICHEIRO não valida
+`stream_id` nenhum. Um nome inválido funciona em desenvolvimento, em CI e em
+produção-sobre-ficheiro, e só falha na topologia replicada — que é a única que arbitra entre
+processos (DEF-282). **A assimetria entre os dois backends é a causa-raiz**, não o rigor do NATS.
+
+**Convenção de namespacing.** Use `-` onde a tentação seria um `.`, e `/` para separar
+níveis. A barra não é só representável: um nome **sem** barra é UM segmento de caminho e casa
+com o `{id}` de `GET /runs/{id}/...`. Foi assim que o AOS-426 mediu treze streams internos a
+serem servidos pelo read-path dos runs. Streams internos do nó vivem sob `aos-internal/`.
+
+**Enforcement.** `scripts/ci/stream-names.sh` verifica a árvore inteira e lê a regra da FONTE em
+vez de a duplicar. **NÃO cobre composição em runtime** — um `stream_id` formado a partir do
+`run_id` de um cliente, do nome de um modelo ou de um token externo é invisível a um gate
+estático; essa metade é o AOS-425, e a correcção lá é validar onde o valor ENTRA.
+
+**Dívida reconhecida.** Dois nomes continuam não representáveis por terem histórico em
+produção — `gov.approvals` e o prefixo `memory.` das quatro classes de memória. Estão na
+baseline do gate, com dono e com o custo de os corrigir escrito.
 
 ### 3.2 Onde vivem os metadados que **não** estão no envelope `[WIRE]`
 
@@ -125,7 +221,7 @@ A versão 1.0 deste documento desenhou um envelope «gordo», com `prompt_hash`,
 | `principal` | **Renomeado** | Chama-se `producer` e tem exactamente a mesma forma (`nhi_id` / `delegation_chain` / `scope`). Divergência de nome, não de conteúdo. |
 | `timestamp` | **Renomeado** | Chama-se `ts`. Mesma semântica (observacional). |
 | `prompt_hash` | Não no envelope | `manifest.prompt_hash` no payload de `turn.recorded` (`packages/kernel/agent-runtime/turn.go`, tipo `Manifest`). |
-| `model` (`model_id`/`params`/`seed`) | Não no envelope | `manifest.model` no payload de `turn.recorded` (mesmo ficheiro, tipo `ModelManifest`). |
+| `model` (`model_id`/`served_model_id`/`params`/`seed`) | Não no envelope | `manifest.model` no payload de `turn.recorded` (mesmo ficheiro, tipo `ModelManifest`); origem de cada campo em §6.1. |
 | `dependency_manifest_ref` | **Não existe — não há referência externa** | O manifesto é **embebido** no payload de `turn.recorded` (`manifest.tools[]`, `manifest.skills[]`). Ver §6.1, reconciliada em conformidade. |
 | `taint` | Não no envelope | Payload de mediação e de captura, e registo de audit selado. Ver §3.4 — a propagação C2→C1 **não fica sem registo**. |
 | `payload_ref` (`uri`/`content_hash`/`encryption`) | Não no envelope | O envelope carrega `payload` **inline**. A **referência cifrada por titular** existe num único sítio: `audit.PayloadRef` (`ContentHash`/`KeyRef`/`SubjectID`, `packages/platform/audit/record.go`, selado na serialização canónica) — é a única materialização do crypto-shredding. |
@@ -139,7 +235,7 @@ Consequência prática do `additionalProperties: false` no schema publicado: um 
 
 ### 3.3 Catálogo de tipos de evento `[WIRE]`
 
-À data desta revisão o código declara **98 constantes de tipo de facto**, das quais **91 são tipos do envelope do Event Store** (as que chegam a um `eventstore.EventInput.Type`) e **7 são rótulos de `audit.AuditRecord`** — nomes com a mesma forma, mas que nunca passam pelo Event Store. As duas famílias estão separadas nas duas tabelas abaixo; **o catálogo do campo `type` do envelope de §3.1 é a primeira tabela (78)**.
+À data desta revisão o código declarava **99 constantes de tipo de facto**, das quais **92 seriam tipos do envelope do Event Store** (as que chegam a um `eventstore.EventInput.Type`) e **7 são rótulos de `audit.AuditRecord`** — nomes com a mesma forma, mas que nunca passam pelo Event Store. As duas famílias estão separadas nas duas tabelas abaixo; **o catálogo do campo `type` do envelope de §3.1 é a primeira tabela (78)**.
 
 A versão 1.0 deste documento citava quatro nomes «canónicos» a título de exemplo (`turn.recorded`, `tool.call.dispatched`, `tool.result.received`, `state.transition`) — dos quais **três nunca foram emitidos por código nenhum**. A citação era ilustrativa («ex.:»), não um contrato decretado; mas um exemplo errado num documento de referência é lido como catálogo, e foi. Correcção:
 
@@ -159,14 +255,14 @@ Uma tabela com os 85 nomes ficaria desactualizada na semana seguinte — foi exa
 
 A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declaradas**; este documento fixa a **taxonomia de prefixos** e o dono de cada família.
 
-**(a) Tipos do envelope do Event Store — 91.** Estes são os valores legítimos do campo `type` de §3.1:
+**(a) Tipos do envelope do Event Store.** Estes são os valores legítimos do campo `type` de §3.1:
 
 | Prefixo | Nº | Componente dono (onde as constantes vivem) |
 |---|---|---|
 | `admission.*` | 4 | `packages/control-plane/scheduler/admission.go` |
 | `approval.*` | 4 | `packages/integration/approval_store_durable.go` (ciclo de aprovação HITL durável, AOS-021: `granted`/`consumed`/`pending`/`expired`) |
 | `backpressure.*` | 5 | `packages/control-plane/scheduler/{queue,policy}.go` |
-| `budget.*` | 7 | `packages/control-plane/budget/events.go` (ciclo reserva/commit) e `packages/control-plane/scheduler/breaker.go` (circuit breaker) |
+| `budget.*` | 10 | `packages/control-plane/budget/events.go` (ciclo reserva/commit), `packages/control-plane/scheduler/breaker.go` (circuit breaker), `packages/cmd/aos/toolcall_consumo.go` (consumo durável de tool calls, AOS-287) e `packages/cmd/aos/quota_por_principal.go` (quota mensal por principal: reserva, liquidação e marca de apagamento, AOS-457; desde o AOS-466 a reserva de planeamento de cada `POST /plans` e as suas **parcelas** por geração — `budget.quota.settled` com `geracao`, `reserva_do_plano`, `tokens_nao_medidos`, `custo_nao_medido`, e as marcas `entregue` (na reclamação) e `final` (depois do desfecho terminal), sem tipo novo) |
 | `control.*` | 3 | `packages/kernel/agent-runtime/control/steer_channel.go` |
 | `credential.*` | 2 | `packages/platform/broker/exchange.go` (`issued` da troca emitida; `denied` da negação server-side, AOS-339) |
 | `deadlock.*` | 2 | `packages/control-plane/orchestrator/contract/dag_events.go` |
@@ -175,12 +271,13 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `identity.nhi.*` | 2 | `packages/platform/identity/events.go` |
 | `lease.*` | 2 | `packages/kernel/agent-runtime/durable/lease.go` |
 | `memory.*` | 8 | `packages/platform/memory/{adapters,semantic,episodic,compression,migrations}` |
-| `plan.*` | 14 | `packages/control-plane/orchestrator/plannerevents/events.go` (domínio `aos.planner.v1`, EPIC-19/AOS-235; `plan.branch_decided` em AOS-270/ADR-022 §2.1) |
+| `plan.*` | 14 | `packages/control-plane/orchestrator/plannerevents/events.go` (domínio `aos.planner.v1`, EPIC-19/AOS-235; `plan.branch_decided` em AOS-270/ADR-022 §2.1). **Evolução do payload sem subir o domínio:** um campo novo entra OPCIONAL (`omitempty`), de modo que um facto antigo fica byte-a-byte igual e um leitor antigo (`json.Unmarshal`, sem `DisallowUnknownFields`) o ignora — foi assim com `plan.validated.snapshot_digest` (AOS-408) e com `plan.proposed.objective_commitment` + `plan.proposed.request` (AOS-477: o compromisso HMAC-SHA256 com sal do objectivo **recebido** — o `plan_hash` cobre o `objective` do documento, que é texto do modelo — e a referência `{stream, seq, run_id}` ao `planrequest.submitted`). Um campo que mude o significado de um existente, ou que um leitor tenha de entender, exige `aos.planner.v2` |
+| `planrequest.*` | 1 | `packages/cmd/aos/plan_ingress.go` (ingresso do caminho do plano, AOS-417/ADR-028; o payload de `planrequest.submitted` é versionado à parte — `v` 1.2 desde o AOS-477, com `objective_commitment` em claro e o sal selado por titular ao lado do objectivo; num nó sem gate soberano não há titular, o objectivo fica em claro e o sal também, em `objective_salt`, ao lado dele). **Família SEPARADA de `plan.*` de propósito:** o pedido é gravado pelo NÓ e o plano pelo ORQUESTRADOR, e o nó está proibido de importar `plannerevents` (ADR-018). Reutilizar `plan.*` daqui faria a coluna «Componente dono» desta tabela afirmar uma propriedade que o código não tem. |
 | `ratification.*` | 1 | `packages/control-plane/governance/hitl/nonce_store.go` |
 | `registry.artifact.*` | 2 | `packages/platform/registry/events.go` |
 | `replay.captured` | 1 | `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
 | `routing.*` | 2 | `packages/control-plane/scheduler/routing.go` |
-| `run.*` | 3 | `run.created` (`orchestrator/contract/events.go`), `run.state.transition` (`agent-runtime/state/machine.go`), `run.toolset.frozen` (`packages/integration/freeze.go`) |
+| `run.*` | 4 | `run.created` (`orchestrator/contract/events.go`), `run.state.transition` (`agent-runtime/state/machine.go`), `run.toolset.frozen` (`packages/integration/freeze.go`), `run.plan_origin` (`packages/cmd/aos/plan_origem.go`, AOS-477: no stream do run filho de um plano, o pedido `{stream, run_id, generation}` verificado pelo nó — sem o `seq` da fila, que conta actividade de todas as regiões e o run lê-se por região —, o `node_id` conferido pelo nó contra o id do run e o `plan_id` declarado pelo drenador; o lado do plano é atestado pelo drenador, e quem audita casa `plan.proposed.request.run_id` com `plan_request.run_id` antes de aceitar o `node_id`) |
 | `sandbox.*` | 3 | `packages/substrate/sandbox/events.go` |
 | `scheduling.*` | 2 | `packages/control-plane/scheduler/priority.go` |
 | `spawn.*` | 3 | `packages/control-plane/scheduler/spawn_admission.go` |
@@ -191,13 +288,15 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 | `turn.recorded` | 1 | `packages/kernel/agent-runtime/turn.go` |
 | `worker.step.dispatched` | 1 | `packages/kernel/agent-runtime/worker/worker.go` |
 
-**(b) Rótulos de `audit.AuditRecord` — 7, não são tipos do Event Store.** Têm a mesma forma de nome e aparecem no mesmo comando de verificação, mas são gravados em `Resource.Type` / `Obligation.Type` de um `AuditRecord` (§4) e **nunca** chegam a um `eventstore.EventInput` — os pacotes que os declaram não importam sequer `substrate/eventstore`. Catalogá-los como tipos de evento seria repetir, em sentido inverso, o defeito que esta revisão corrige:
+**(b) Rótulos de `audit.AuditRecord` — 9, não são tipos do Event Store.** Têm a mesma forma de nome e aparecem no mesmo comando de verificação, mas são gravados em `Resource.Type` / `Obligation.Type` de um `AuditRecord` (§4) e **nunca** chegam a um `eventstore.EventInput` — os pacotes que os declaram não importam sequer `substrate/eventstore`. Catalogá-los como tipos de evento seria repetir, em sentido inverso, o defeito que esta revisão corrige:
 
 | Rótulo | Nº | Componente dono |
 |---|---|---|
 | `autonomy.level_changed` | 1 | `packages/control-plane/governance/autonomy/events.go` (`BuildLevelChangedRecord` → `audit.AuditRecord`) |
 | `dsar.*` (`received`, `key_destroyed`, `blocked`) | 3 | `packages/control-plane/governance/dsar/flow.go` (selados por `Flow.seal`) |
+| `dsar.key_reshredded` (AOS-436) | 1 | `packages/cmd/aos/reconciliacao_apagamentos.go` — selado pelo nó em nome próprio quando uma KEK dada por destruída reaparece na custódia (restauro de backup) e é destruída de novo |
 | `policy.changed` | 1 | `packages/control-plane/pdp/audit_sink.go` (`BuildPolicyChangedRecord`) |
+| `trust_anchors.*` (`changed`, `active`) (AOS-446 fase 1) | 2 | `packages/platform/audit/trustanchors.go` — a FORMA do registo das âncoras de confiança do nó (impressões digitais de `AOS_MANDATE_SIGNERS`, `AOS_ISSUER_PUBKEY`, operadores, ratificadores, aprovadores, âncora da política e do selador do WORM), selado pelo nó em cada arranque na partição `trust-anchors` (`packages/cmd/aos/ancoras_de_confianca.go`) e lido FORA do host pelo `aos-issuer worm-seal`, que recusa selar uma troca não declarada. Os dois rótulos distinguem TRANSIÇÃO de CONFIRMAÇÃO — sela-se sempre, para que quem escreve no ficheiro não possa silenciar o registo pré-plantando o retrato que vai instalar (o argumento S-02 do `policy.changed`) |
 | `retention.*` (`expired`, `config.changed`) | 2 | `packages/platform/audit/retentionevents.go` |
 
 #### Regras do catálogo
@@ -210,7 +309,9 @@ A **fonte de verdade do catálogo é, portanto, o conjunto das constantes declar
 
 #### Verificação — gate automático `event-catalog` (AOS-198)
 
-O conjunto de constantes declaradas é reproduzível a partir da árvore, sem lista manual. **O resultado esperado é 98 linhas** — 91 tipos de Event Store + 7 rótulos de audit (a distinção não é feita pelo comando; é feita pela pertença às tabelas (a)/(b) acima).
+O conjunto de constantes declaradas é reproduzível a partir da árvore, sem lista manual. O comando devolve TODAS as constantes de tipo de facto da árvore; a distinção entre tipos do envelope e rótulos de audit não é feita por ele, é feita pela pertença às tabelas (a)/(b) acima.
+
+> **Os totais absolutos deste documento estão DESACTUALIZADOS e não devem ser lidos como contagem.** O gate `event-catalog` reportava 119 constantes e 32 famílias (28 do envelope) quando isto foi escrito, contra as 99/92/7 que o texto acima afirma — um desvio de ~20 que é anterior ao AOS-417 e que este ticket **não** corrigiu. Corrigi-lo exige recontar à mão a pertença de cada constante a (a) ou a (b), que é trabalho próprio e não um efeito lateral de acrescentar uma família. **A contagem autoritativa é a do gate, não a deste documento**; o que este documento fixa e que continua verdadeiro é a TAXONOMIA DE PREFIXOS e o dono de cada família — que é exactamente o que o gate valida.
 
 Variante GNU (Linux/macOS, ou Git Bash no Windows):
 
@@ -256,7 +357,7 @@ O envelope é o **registo**. O que o modelo vê num turno — a **projecção** 
 
 O replay é *resume-from-step* porque **cada turno grava dois eventos complementares**, ambos duráveis e ambos com o envelope de §3.1 — não porque o envelope carregue metadados de determinismo:
 
-- **`turn.recorded`** grava o `manifest` do turno no payload: `prompt_hash`, `system_hash`, `assembly_version`, `model` (`model_id`/`params`/`seed`) e as dependências pinadas (`tools[]`, `skills[]`). É a âncora de *como* o passo foi produzido.
+- **`turn.recorded`** grava o `manifest` do turno no payload: `prompt_hash`, `system_hash`, `assembly_version`, `model` (`model_id`/`served_model_id`/`params`/`seed`) e as dependências pinadas (`tools[]`, `skills[]`). É a âncora de *como* o passo foi produzido.
 - **`replay.captured`** grava os **inputs não-determinísticos observados**: a resposta completa do modelo, as tool calls pretendidas e o resultado de cada uma (com o seu `taint`). É a âncora de *o que* o mundo respondeu.
 
 O runtime lê estes inputs do log em vez de os regenerar, e os mesmos eventos produzem o mesmo estado. A serialização de ambos os payloads é canónica e estável (structs de ordem fixa, sem mapas), para que os mesmos inputs produzam sempre os mesmos bytes.
@@ -419,7 +520,11 @@ Para que o replay seja fiel *mesmo após evolução de código*, cada run **cong
 
 A v1.0 desta secção descrevia um manifesto **autónomo, referenciado** por cada evento via `dependency_manifest_ref`. O código materializou a mesma propriedade por **duas** vias, nenhuma delas uma referência externa:
 
-1. **Manifesto embebido no turno.** O tipo `Manifest` (`packages/kernel/agent-runtime/turn.go`) é serializado **dentro do payload de cada `turn.recorded`**, no campo `manifest`. Campos reais: `schema_version`, `prompt_hash`, `system_hash`, `assembly_version`, `model` (`model_id`/`params`/`seed`) e as dependências pinadas `tools[]` / `skills[]`, cada uma com `name`/`version`/`digest`/`mcp_server`. A correlação com a trajectória é feita pelo `run_id`/`step_id` do envelope, não por um `manifest_id`.
+1. **Manifesto embebido no turno.** O tipo `Manifest` (`packages/kernel/agent-runtime/turn.go`) é serializado **dentro do payload de cada `turn.recorded`**, no campo `manifest`. Campos reais: `schema_version`, `prompt_hash`, `system_hash`, `assembly_version`, `model` (`model_id`/`served_model_id`/`params`/`seed`) e as dependências pinadas `tools[]` / `skills[]`, cada uma com `name`/`version`/`digest`/`mcp_server`. A correlação com a trajectória é feita pelo `run_id`/`step_id` do envelope, não por um `manifest_id`.
+
+   **De onde vem o modelo (AOS-396).** O `model_id` é o modelo **pedido**: o `Goal.Model.ModelID` do run, o mesmo valor do atributo `gen_ai.request.model` do span `chat` e da admissão do turno, e o que o replay compara. No nó `aos`, o `NodeService` escreve-o no goal antes do primeiro turno (`Node.fixarModelo`), por uma só via que cobre a submissão, a retoma e o crash-resume. Com o Model Gateway por ambiente é o `AOS_MODEL_NAME` e sobrepõe-se ao que o goal trouxer, porque é o nome que o adaptador envia. Com o modelo de referência é `aos-reference-model`, e só preenche um goal sem modelo. O `served_model_id` é o modelo que **serviu** a resposta, como o cliente o reporta (no gateway, o `model` devolvido pelo provider, que pode ser uma versão datada do pedido ou outro modelo se o gateway o trocou). É `omitempty`: um cliente que não o reporta grava os bytes de antes. A captura de não-determinismo não o guarda, pelo que um turno reproduzido numa retoma volta sem ele em memória; no log fica o evento original, porque o Event Store descarta a regravação do mesmo `step_id` sem comparar o payload. O replay não o compara. O nome vem do provider e fica em claro em cada evento: o adaptador do gateway retira caracteres não imprimíveis e corta-o a 256 bytes. Um campo novo `omitempty` não sobe o `schema_version` do manifesto (continua `1.0`), à imagem de `usage_ausente` (AOS-336): um leitor antigo ignora-o e os bytes dos turnos que não o usam não mudam.
+
+   **Regra de `params` e `seed`.** Só descrevem o que viajou para o provider. Nenhum cliente composto pelo nó os envia hoje, pelo que o nó não os preenche: `params` fica ausente e `seed` fica `0`, o valor de ausência que o campo tem desde a 1.0 (torná-lo `omitempty` mudaria os bytes de todos os turnos). Os runs gravados antes do AOS-396 têm `model_id` vazio; um replay que lhes passe um modelo esperado diverge por `model`, e deve deixar o modelo esperado vazio.
 2. **Snapshot do tool set congelado.** O congelamento do conjunto de tools do run é ele próprio um evento append-only, `run.toolset.frozen` (`packages/integration/freeze.go`), com payload `{run_id, frozen_at, entries}` — e é relido do log para reconstruir o tool set no replay.
 
 Divergências face ao JSON de desenho abaixo, para que ninguém as volte a classificar como campos em falta: não existe `manifest_id`, não existe `frozen_at_seq` (o congelamento é datado por `frozen_at` no evento próprio), não existe `memory_schema_version` no manifesto, o campo chama-se `assembly_version` e não `assembler_version`, e as dependências pinadas **não transportam `signature`** (só `digest`) — a verificação de assinatura vive no registry/supply-chain (`tecnica/05`), não neste payload.

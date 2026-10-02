@@ -135,7 +135,7 @@ func (d *LLMDecomposer) Decompose(ctx context.Context, in planner.DecomposeInput
 		return plan.PlanDocument{}, ErrNoCapabilitiesHash
 	}
 
-	text, err := d.model.Complete(ctx, d.prompt.Template, d.renderUser(goal, capHash))
+	text, err := d.model.Complete(ctx, d.prompt.Template, d.renderUser(goal, capHash, in.Rejection))
 	if err != nil {
 		return plan.PlanDocument{}, fmt.Errorf("decompose: chamada ao modelo: %w", err)
 	}
@@ -168,8 +168,36 @@ func (d *LLMDecomposer) Decompose(ctx context.Context, in planner.DecomposeInput
 // (a mensagem `system`) descreve o contrato de schema; o conteúdo VARIÁVEL vive aqui,
 // nunca por edição do template — é isso que preserva a cache-estabilidade do prompt
 // (ADR-009: o [plannerprompt.Prompt.Fingerprint] tem de ser invariante).
-func (d *LLMDecomposer) renderUser(goal, capHash string) string {
+func (d *LLMDecomposer) renderUser(goal, capHash string, rej *planner.Rejection) string {
 	var b strings.Builder
+	// AOS-415: a recusa da tentativa anterior, em CÓDIGOS — e ANTES do objectivo. A ordem
+	// importa: o objectivo é untrusted e entra verbatim; escrito primeiro, um objectivo
+	// hostil podia SINTETIZAR um bloco de recusa a seguir a si e passá-lo por palavra do
+	// validador, que é o que a regra 11 do template manda o modelo levar a sério.
+	//
+	// O que entra é o que o validador emite: regra, sub-código e node_id. A porta
+	// [planner.Validator] é exportada e os seus campos são `string`, pelo que a garantia não
+	// pode viver só em quem a implementa — VALIDA-SE AQUI, no ponto que escreve no prompt.
+	// Um campo fora da grammar é OMITIDO: nunca se escreve no prompt o que não se reconhece.
+	if rej != nil {
+		regra, razao, no := rotuloDeRecusa(rej.Rule), rotuloDeRecusa(rej.Reason), rej.NodeID
+		if no != "" && !plan.ValidNodeID(no) {
+			no = ""
+		}
+		if regra != "" || razao != "" || no != "" {
+			b.WriteString("RECUSA DA TENTATIVA ANTERIOR (corrige e devolve o documento inteiro):\n")
+			if regra != "" {
+				fmt.Fprintf(&b, "- rule: %s\n", regra)
+			}
+			if razao != "" {
+				fmt.Fprintf(&b, "- reason: %s\n", razao)
+			}
+			if no != "" {
+				fmt.Fprintf(&b, "- node_id: %s\n", no)
+			}
+			b.WriteString("\n")
+		}
+	}
 	b.WriteString("OBJECTIVO (untrusted):\n")
 	b.WriteString(goal)
 	b.WriteString("\n\n")
@@ -183,6 +211,25 @@ func (d *LLMDecomposer) renderUser(goal, capHash string) string {
 	fmt.Fprintf(&b, "- prompt_version: %s\n", d.prompt.MetaPromptVersion())
 	fmt.Fprintf(&b, "- capabilities_hash: %s\n", capHash)
 	return b.String()
+}
+
+// rotuloDeRecusa devolve o rótulo se ele estiver na grammar dos códigos do validador
+// (minúsculas, dígitos e `_`, até 64 caracteres) — e "" caso contrário. É a mesma forma dos
+// sub-códigos de `planvalidate` e das razões de veredicto, e é o que garante que nenhum
+// carácter de estrutura (newline, `:`) entra no prompt por esta via.
+func rotuloDeRecusa(s string) string {
+	if s == "" || len(s) > 64 {
+		return ""
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '_':
+		default:
+			return ""
+		}
+	}
+	return s
 }
 
 // extractJSON isola o objecto JSON de uma resposta do modelo: o intervalo do PRIMEIRO

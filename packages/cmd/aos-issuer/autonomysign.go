@@ -23,7 +23,7 @@ import (
 //
 // A chave privada do operador NUNCA sai desta máquina: entra por --key-file, assina, e o que vai
 // para a rede é a assinatura.
-func runAutonomySign(args []string, out io.Writer) error {
+func runAutonomySign(args []string, out, diag io.Writer) error {
 	fs := flag.NewFlagSet("autonomy-sign", flag.ContinueOnError)
 	emitterID := fs.String("emitter", "", "id do operador (o mesmo que consta de AOS_OPERATORS no no)")
 	keyFile := fs.String("key-file", "", "ficheiro com a seed ed25519 (32 bytes em hex) do operador")
@@ -97,8 +97,10 @@ func runAutonomySign(args []string, out io.Writer) error {
 		body["co_emitter"] = emitterJSON(co)
 	} else if nivel == "L4" || nivel == "L5" {
 		// Aviso e não erro: o no e quem decide o limiar (e pode mudar). Mas quem assina sozinho
-		// para L4/L5 vai receber 403, e e melhor sabe-lo antes de enviar do que depois.
-		fmt.Fprintln(out, "# aviso: mudar para L4/L5 exige uma segunda assinatura (--co-emitter/--co-key-file); sem ela o no recusa (AOS-305)")
+		// para L4/L5 vai receber 403, e e melhor sabe-lo antes de enviar do que depois. Vai para
+		// `diag` e nao para `out`: no stdout o `#` entrava no corpo capturado, o no respondia 400
+		// "corpo invalido" e o 403 que este aviso anuncia nunca chegava ao operador.
+		fmt.Fprintln(diag, "# aviso: mudar para L4/L5 exige uma segunda assinatura (--co-emitter/--co-key-file); sem ela o no recusa (AOS-305)")
 	}
 	corpo, err := json.Marshal(body)
 	if err != nil {

@@ -148,6 +148,13 @@ type lifecyclePayload struct {
 	SeccompProfileHash    string `json:"seccomp_profile_hash,omitempty"`
 	SeccompProfileVersion string `json:"seccomp_profile_version,omitempty"`
 	SeccompEnforcedBy     string `json:"seccomp_enforced_by,omitempty"`
+	// ExecutionBoundary diz ONDE a execução correu (AOS-362 d): no modelo de referência
+	// in-process ([DriverFake], cujo resultado nenhuma fronteira ao nível do kernel produziu)
+	// ou no [GuestExecutor] injectado. Derivado do driver AQUI, no sink, e não pelo chamador —
+	// ao contrário do `seccomp_enforced_by`, que o [Launcher] deriva e o sink só força a `none`
+	// quando vem vazio. Atesta DELEGAÇÃO, não isolamento: um [GuestExecutor] pode ser
+	// in-process (os de teste são).
+	ExecutionBoundary string `json:"execution_boundary"`
 	// Prova do rootfs EFETIVAMENTE montado (AOS-066): só presentes quando o overlay
 	// read-only é montado (WithSnapshot), distinguindo imposição de mera declaração.
 	RootFSBaseDigest string `json:"rootfs_base_digest,omitempty"`
@@ -198,6 +205,7 @@ func (s *eventStoreSink) RecordLifecycle(ctx context.Context, ev LifecycleEvent)
 		ImageVersion:          ev.ImageVersion,
 		SeccompProfileHash:    ev.SeccompProfileHash,
 		SeccompProfileVersion: ev.SeccompProfileVersion,
+		ExecutionBoundary:     string(executionBoundaryFor(ev.Driver)),
 		RootFSBaseDigest:      ev.RootFSBaseDigest,
 		OverlayID:             ev.OverlayID,
 	}
@@ -217,6 +225,12 @@ func (s *eventStoreSink) RecordLifecycle(ctx context.Context, ev LifecycleEvent)
 		RunID:        ev.RunID,
 		StepID:       stepIDFor(ev.StepID, ev.Phase),
 		ParentStepID: ev.StepID,
+		// AOS-478: o ciclo de vida da sandbox é CAUSADO por uma tool call mediada, e o
+		// envelope identifica o mesmo principal que o `tool.call.mediated` do passo. O RM
+		// anexa-o ao contexto do despacho ([eventstore.ContextWithProducer]) — lido daqui
+		// sem importar o kernel; o `destroyed` corre sob `context.WithoutCancel`, que
+		// preserva os valores.
+		Producer: eventstore.ProducerFromContext(ctx),
 	}
 	res, err := s.store.Append(ctx, ev.RunID, in)
 	if err != nil {

@@ -251,6 +251,35 @@ func parse(policyJSON []byte) (*Policy, error) {
 	return &p, nil
 }
 
+// # PORQUE É QUE ESTE CARREGADOR *NÃO* VALIDA NOMES DE STREAM (AOS-425)
+//
+// A chave de quota de admissão é `admission/bucket/<provider>:<model>:<region>`, e é um
+// `stream_id` — que não pode conter `.`, e `gpt-4.1` é um nome de modelo real. A primeira
+// versão do AOS-425 pôs a verificação AQUI, no `parse`. **Estava errado, por duas razões
+// medidas:**
+//
+//  1. **A allowlist AUTORIZA, não FORNECE.** O valor que compõe a chave é `tier.Model`, que vem
+//     da escada de `RoutingConfig.Tiers` (`router.go`, na chamada a `Reserve`), e não desta
+//     policy. Validar aqui não alcança o valor que forma o nome — cumpria a letra de «validar
+//     na entrada» e falhava o sentido.
+//  2. **Partia a razão de ser do bundle externo.** O `deploy/node/README.md` diz que
+//     `AOS_MODEL_ALLOWLIST_BUNDLE_DIR` existe para o nó «pedir nomes de modelo REAIS (fim dos
+//     aliases)». Com a verificação aqui, um bundle correctamente assinado com `gpt-4.1` ficava
+//     INCARREGÁVEL e o nó recusava arrancar — com a mensagem `ErrBadModelAllowlist`, que diz
+//     «bundle ausente/adulterado», o diagnóstico errado. E como o `parse` também serve o
+//     [Digest], nem re-assinar salvava: o catálogo deixava de poder ser assinado. A única saída
+//     seria `models: ["*"]`, isto é, trocar uma curadoria concreta por um wildcard — perda de
+//     segurança real num estágio cujo propósito é default-deny.
+//
+// A verificação vive agora onde o valor ENTRA: na composição da escada de tiers
+// (`ErrRoutingModelNaoRepresentavel`, `production_routing.go`), ao lado da cobertura de preço,
+// que é o precedente exacto — também ela recusa no ARRANQUE um modelo da escada que a
+// contabilidade não sabe precificar.
+//
+// O `_aviso_nomes_de_stream` do `allowlist_policy.json` fica: quem cura o catálogo deve saber
+// que um modelo com ponto não poderá ser declarado numa escada de tiers. É documentação, e não
+// um controlo — e agora isso está dito nos dois sítios.
+
 // decodePubKey descodifica a chave pública ed25519 (base64) e valida o tamanho.
 func decodePubKey(pubKeyB64 string) (ed25519.PublicKey, error) {
 	raw, err := base64.StdEncoding.DecodeString(pubKeyB64)

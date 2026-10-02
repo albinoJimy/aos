@@ -30,6 +30,8 @@ import (
 	broker "github.com/aos-ref/platform/broker"
 )
 
+var ErrInsecureBrokerVaultAddr = errors.New("aos: AOS_BROKER_VAULT_ADDR com transporte INSEGURO — o token do Vault e as credenciais downstream atravessariam a rede em claro; exige https (http SO em loopback), o mesmo criterio de AOS_DSAR_VAULT_ADDR no mesmo binario")
+
 // ErrBadBrokerVault — o Vault de credenciais downstream do broker (AOS-264) está
 // pedido (AOS_BROKER_VAULT_ADDR presente) mas mal configurado: sem o token por
 // FICHEIRO montado, ou o ficheiro é ilegível/vazio. Fail-closed de CONFIG, no molde
@@ -46,8 +48,6 @@ import (
 //
 // O `X-Vault-Token` viaja em cada pedido; sobre http não-loopback viaja em claro, e quem o
 // apanhar colhe as credenciais downstream que o broker custodia.
-var ErrInsecureBrokerVaultAddr = errors.New("aos: AOS_BROKER_VAULT_ADDR com transporte INSEGURO — o token do Vault e as credenciais downstream atravessariam a rede em claro; exige https (http SO em loopback), o mesmo criterio de AOS_DSAR_VAULT_ADDR no mesmo binario")
-
 var ErrBadBrokerVault = errors.New("aos: Vault do credential broker mal configurado — AOS_BROKER_VAULT_ADDR exige AOS_BROKER_VAULT_TOKEN_PATH (ficheiro montado com o token do Vault; material privado NUNCA por variável de ambiente)")
 
 // brokerVaultSettings é o material PÚBLICO do broker Vault que o banner declara (uma

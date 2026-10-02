@@ -62,6 +62,28 @@ var (
 	// escopo).
 	ErrUnknownClass = &IdentityError{Code: "E_UNKNOWN_CLASS", msg: "classe de agente nao configurada"}
 
+	// ErrRevocationUnavailable — não foi possível CONSULTAR o registo de revogação (AOS-433).
+	//
+	// É fail-closed na mesma: o token é recusado, e o hook do RM nega em qualquer erro. O que
+	// esta sentinela dá é a DISTINÇÃO — «não consegui perguntar» não é «foi revogado».
+	//
+	// Antes, as duas resolviam em [ErrTokenRevoked] e a causa era achatada para texto com `%v`.
+	// Numa avaria do registo, todas as verificações de todos os titulares eram recusadas com o
+	// log a dizer «revogada»: o operador revogaria e reemitiria identidades num incidente que se
+	// resolvia reiniciando um serviço.
+	//
+	// A causa subjacente viaja com `%w` e é recuperável por errors.As.
+	ErrRevocationUnavailable = &IdentityError{Code: "E_REVOCATION_UNAVAILABLE", msg: "registo de revogacao indisponivel (fail-closed)"}
+
+	// ErrTTLForaDeGama — a política de uma classe pede um TTL inutilizável ou acima do tecto
+	// (AOS-427, decisão 4). Recusa-se na CONSTRUÇÃO do emissor, não na emissão: um emissor
+	// configurado com uma política impossível não chega a existir.
+	//
+	// Cobre as duas pontas com o mesmo sentinela porque é a mesma pergunta — «esta validade é
+	// utilizável?». Um TTL <= 0 nasce expirado; um acima de TTLMaximo dá a uma credencial
+	// automática o raio de acção que o atrito da cunhagem manual limitava por acidente.
+	ErrTTLForaDeGama = &IdentityError{Code: "E_TTL_FORA_DE_GAMA", msg: "TTL da classe fora da gama permitida"}
+
 	// ErrInvalidRequest — pedido de emissão/revogação com campos obrigatórios em
 	// falta (ex.: user_id, agent_id ou jti vazios).
 	ErrInvalidRequest = &IdentityError{Code: "E_INVALID_REQUEST", msg: "pedido invalido (campos obrigatorios em falta)"}
@@ -79,4 +101,33 @@ var (
 	// delegation (comparável com errors.Is em ambos os níveis). Fail-closed:
 	// AOS-006 exige que toda a NHI resolva até um humano responsável.
 	ErrDelegationInvalid = &IdentityError{Code: "E_DELEGATION_INVALID", msg: "cadeia de delegacao invalida (nao resolve ate humano ou escala autoridade)"}
+
+	// ErrMandateRequired — o token vem de um emissor MANDATADO (AOS-427) e não traz mandato.
+	// Um emissor automático só é confiado DENTRO de um mandato; sem ele, o nó recusa.
+	ErrMandateRequired = &IdentityError{Code: "E_MANDATE_REQUIRED", msg: "emissor mandatado exige mandato embebido no token"}
+
+	// ErrMandateInvalid — o mandato embebido não tem forma válida, ou a sua assinatura não
+	// verifica com a chave PINADA do humano que ele nomeia (ou não há chave pinada para ele).
+	ErrMandateInvalid = &IdentityError{Code: "E_MANDATE_INVALID", msg: "mandato invalido ou nao assinado pelo humano que nomeia"}
+
+	// ErrMandateViolated — o mandato é válido, mas o token está FORA dele (emissor, identidade,
+	// escopo, TTL ou janela). É o sinal de um emissor a cunhar o que não lhe foi autorizado.
+	ErrMandateViolated = &IdentityError{Code: "E_MANDATE_VIOLATED", msg: "token fora dos limites do mandato"}
+
+	// ErrMandateRevoked — o mandato sob o qual o token foi cunhado foi revogado. Todos os tokens
+	// cunhados sob ele deixam de verificar, incluindo os que ainda não expiraram.
+	ErrMandateRevoked = &IdentityError{Code: "E_MANDATE_REVOKED", msg: "mandato revogado"}
+
+	// ErrMandateV1Closed — o mandato é v1 (não enumera `requesters`, AOS-439) e a JANELA DE
+	// MIGRAÇÃO do nó está fechada ([WithMandateV1Until]). O humano tem de assinar um mandato v2.
+	ErrMandateV1Closed = &IdentityError{Code: "E_MANDATE_V1_CLOSED", msg: "mandato v1 (sem requesters) fora da janela de migracao"}
+
+	// ErrMandateDualPinClosed — o humano tem MAIS DO QUE UM pino em `AOS_MANDATE_SIGNERS` e a
+	// JANELA DE ROTAÇÃO (AOS-446 fase 1) está fechada. A janela existe para que trocar a chave de
+	// um humano não pare a cunhagem entre a troca do `.env` e a entrega do mandato novo; fora
+	// dela, dois pinos são duas autoridades sem justificação e o mandato é recusado.
+	ErrMandateDualPinClosed = &IdentityError{Code: "E_MANDATE_DUAL_PIN_CLOSED", msg: "humano com dois pinos fora da janela de rotacao"}
+	// ErrMandateRequester — o mandato é v2 e o SUBMISSOR do run (o `requested_by` que o nó
+	// derivou, AOS-439) não consta dos `requesters` que o humano assinou — ou não há submissor.
+	ErrMandateRequester = &IdentityError{Code: "E_MANDATE_REQUESTER", msg: "submissor fora dos requesters do mandato"}
 )

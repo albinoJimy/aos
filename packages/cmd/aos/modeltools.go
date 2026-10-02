@@ -13,12 +13,13 @@ package main
 // modelo pede uma tool → o RM decide (allow/deny) no ponto de mediação único (ADR-002). Produção
 // ligaria aqui o registry real (catálogo assinado + executor da tool).
 //
-// INVARIANTE DE SEGURANÇA (AOS-069, ver ToolInvocation.AuthorizationTaint): o binding
-// capability/recurso vem do REGISTRY (config trusted), não da saída do modelo — o modelo só escolhe
-// QUAL tool pelo nome. O AuthorizationTaint NUNCA é preenchido aqui: fica vazio ⇒ untrusted
-// (fail-closed). Uma tool call ORIGINADA pelo modelo é autorização untrusted, e o TaintGate do RM
-// impede que uma autorização untrusted origine uma capability privilegiada. É exactamente esta a
-// propriedade que o seam demonstra (P4: "untrusted não comanda").
+// INVARIANTE DE SEGURANÇA (AOS-069, ADR-034): o binding capability/recurso vem do REGISTRY
+// (config trusted), não da saída do modelo — o modelo só escolhe QUAL tool pelo nome. Este
+// decorador NÃO decide a autorização, e desde o ADR-034 nem tem por onde: a ToolInvocation deixou
+// de ter campo de taint. O taint da autorização é cunhado pelo Agent Runtime a partir do CONTEXTO
+// do turno (trusted só com objectivo/correcções; untrusted depois de plan_input, tool_result ou
+// memória), e o TaintGate do RM impede que uma autorização untrusted origine uma capability
+// privilegiada (P4: "untrusted não comanda").
 
 import (
 	"context"
@@ -60,7 +61,14 @@ type modelToolSpec struct {
 	//
 	// Era a peça em falta: o registry sabia dizer "isto não sai da máquina" e não sabia dizer
 	// "isto não altera nada", e por isso a taxonomia de autonomia L0–L5 tinha dois estados.
-	Reversibility    string   `json:"reversibility"`
+	Reversibility string `json:"reversibility"`
+	// Mutation DECLARA se a tool altera estado (AOS-409): só "none" conta como leitura, e o
+	// vazio vale MUTADOR — a mesma forma da reversibilidade. Não muda a decisão do RM nem o
+	// digest do contrato: é servido no catálogo (`GET /tools`), onde o `aos-orq` o confere com o
+	// eixo de mutação do snapshot pinado (o snapshot não pode declarar menos mutação do que o
+	// nó). Um `sandbox.write_arg` é o binding trusted que ESCREVE no recurso, e por isso uma tool
+	// que o tenha e declare "none" aborta o arranque — ver [validateMutation].
+	Mutation         string   `json:"mutation"`
 	Egress           string   `json:"egress"`
 	CredentialScopes []string `json:"credential_scopes"`
 	// Sandbox, quando presente, LIGA a tool à execução mediada em sandbox (AOS-005/AOS-064):
@@ -78,6 +86,41 @@ type sandboxMapping struct {
 	PathArg  string   `json:"path_arg"`
 	ArgsFrom []string `json:"args_from"`
 	WriteArg string   `json:"write_arg"`
+}
+
+// ErrToolRegionForaDosBoards — com AOS_BOARD_REGIONS definida, uma tool de AOS_MODEL_TOOLS declara
+// uma `resource_region` vazia ou que nenhum board autoriza (AOS-407). A obrigação `region` do PDP
+// negaria essa tool em todas as chamadas; o arranque recusa em vez de servir tools mortas.
+var ErrToolRegionForaDosBoards = errors.New("aos: AOS_MODEL_TOOLS declara uma tool com resource_region vazia ou fora das regioes de AOS_BOARD_REGIONS — com a soberania por board ligada (AOS-407) essa tool seria negada em todas as chamadas")
+
+// validarRegioesDasTools confronta a `resource_region` de cada tool com as regiões autorizadas pelo
+// mapa de soberania (AOS-407). Sem mapa (soberania desligada) ou sem tools, não há nada a validar.
+//
+// ÂMBITO: é uma validação da SUPERFÍCIE DE AMBIENTE (lê `AOS_MODEL_TOOLS`), e é por isso que o
+// chamador é o `nodeConfigFromEnv` e não o `Bootstrap` — o manifesto só existe nesta fronteira; um
+// embedder que componha `Bootstrap` com as suas próprias tools declara as regiões que quiser e
+// responde por elas. Nota lateral: com um só board isto torna a recusa cross-border inalcançável em
+// runtime (a região da tool é sempre a do board), trocando um deny por chamada por uma recusa no
+// arranque — deliberado, porque servir tools que o PEP negaria sempre é pior.
+func validarRegioesDasTools(boardRegions map[string]string) error {
+	if len(boardRegions) == 0 {
+		return nil
+	}
+	specs, err := readModelToolSpecs()
+	if err != nil || len(specs) == 0 {
+		return err
+	}
+	autorizadas := make(map[string]bool, len(boardRegions))
+	for _, r := range boardRegions {
+		autorizadas[strings.ToLower(strings.TrimSpace(r))] = true
+	}
+	for _, s := range specs {
+		regiao := strings.ToLower(strings.TrimSpace(s.ResourceRegion))
+		if regiao == "" || !autorizadas[regiao] {
+			return fmt.Errorf("%w: tool %q com resource_region %q", ErrToolRegionForaDosBoards, strings.TrimSpace(s.Name), s.ResourceRegion)
+		}
+	}
+	return nil
 }
 
 // readModelToolSpecs lê + valida o ficheiro AOS_MODEL_TOOLS e devolve os specs crus. Vazio ⇒
@@ -105,6 +148,9 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 		}
 		if err := validateResourceBinding(s); err != nil {
 			return nil, fmt.Errorf("%w: tool %q: %v", ErrBadModelTools, strings.TrimSpace(s.Name), err)
+		}
+		if _, err := validateMutation(s); err != nil {
+			return nil, fmt.Errorf("tool %q: %w", strings.TrimSpace(s.Name), err)
 		}
 	}
 	return specs, nil
@@ -242,8 +288,8 @@ func loadModelToolsFromEnv() ([]port.Tool, map[string]toolBinding, error) {
 // toolEnrichingClient decora um [agentruntime.ModelClient]: quando o modelo escolhe uma tool pelo
 // NOME, preenche o binding de GOVERNANÇA (capability + recurso) a partir do registry trusted, para
 // o Reference Monitor ter o que avaliar. Uma tool fora do registry fica com Capability vazia ⇒
-// default-deny no RM (o modelo não pode inventar uma capability). NÃO toca em AuthorizationTaint
-// (fica untrusted, fail-closed — AOS-069).
+// default-deny no RM (o modelo não pode inventar uma capability). NÃO decide a autorização: essa
+// é cunhada pelo runtime a partir do contexto (AOS-069, ADR-034).
 type toolEnrichingClient struct {
 	inner    agentruntime.ModelClient
 	bindings map[string]toolBinding
@@ -282,7 +328,6 @@ func (c *toolEnrichingClient) Call(ctx context.Context, view agentruntime.Prompt
 		// acima, de proposito: uma call que ja vai ser negada nao deve levar consigo uma
 		// declaracao de benignidade.
 		resp.ToolCalls[i].Reversibility = b.reversibility
-		// AuthorizationTaint: DELIBERADAMENTE não preenchido (vazio ⇒ untrusted). Ver AOS-069.
 	}
 	return resp, nil
 }
@@ -359,5 +404,39 @@ func validateReversibility(s string) (string, error) {
 		return v, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrBadReversibility, s)
+	}
+}
+
+// ErrBadMutation — `mutation` no registry fora do vocabulário, ou a contradizer o binding de
+// sandbox (AOS-409).
+var ErrBadMutation = errors.New("aos: mutation invalida no registry de tools (esperado \"none\", \"mutates\" ou ausente; \"none\" e incompativel com sandbox.write_arg)")
+
+// validateMutation valida o eixo de MUTAÇÃO DECLARADO de uma tool (AOS-409) e devolve-o
+// normalizado: "none" ou "mutates" — o AUSENTE vale "mutates".
+//
+// FAIL-CLOSED nas mesmas duas direcções de [validateReversibility]: não declarar nunca é lido
+// como leitura, e um valor fora do vocabulário aborta o arranque em vez de cair no silêncio.
+//
+// E uma terceira, própria deste eixo: "none" numa tool com `sandbox.write_arg` é uma
+// CONTRADIÇÃO e aborta. O `write_arg` é o binding TRUSTED cujo valor o sandbox escreve no
+// recurso (`ToolCall.Write`) — é o único facto estrutural que o nó tem sobre a escrita, e não
+// uma lista de nomes de tools. Promovê-lo em silêncio a "mutates" daria a postura certa pela
+// razão errada, e o operador continuaria a julgar que declarou uma leitura; recusar diz-lhe
+// qual das duas declarações está errada. A ausência de `write_arg` NÃO prova leitura — um
+// `command` fixo pode escrever sem argumento — e por isso não há a regra inversa.
+func validateMutation(s modelToolSpec) (string, error) {
+	v := strings.ToLower(strings.TrimSpace(s.Mutation))
+	switch v {
+	case "":
+		return "mutates", nil
+	case "mutates":
+		return v, nil
+	case "none":
+		if s.Sandbox != nil && strings.TrimSpace(s.Sandbox.WriteArg) != "" {
+			return "", fmt.Errorf("%w: declara \"none\" mas o sandbox escreve o argumento %q", ErrBadMutation, strings.TrimSpace(s.Sandbox.WriteArg))
+		}
+		return v, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrBadMutation, s.Mutation)
 	}
 }

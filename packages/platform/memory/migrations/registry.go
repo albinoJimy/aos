@@ -19,9 +19,32 @@ const migrationAppliedEventType = "memory.migration.applied"
 // aplicada que não tenha sido posteriormente compensada (ver EffectivePhase).
 const migrationRevertedEventType = "memory.migration.reverted"
 
+// MigrationProducerNHI é a identidade de COMPONENTE gravada no envelope dos registos de
+// migração (AOS-478, `tecnica/13_Modelo_Dados_Eventos.md` §3.1): a migração de schema é
+// manutenção da plataforma, não um acto de agente, e o envelope di-lo em vez de vir vazio.
+const MigrationProducerNHI = "nhi:platform/memory/migrations"
+
 // migrationStream é o stream append-only onde vive o registo de migrações. Um só
 // stream dá uma linhagem ordenada e auditável de todas as fases aplicadas.
-const migrationStream = "memory.migrations"
+//
+// O NOME MUDOU (AOS-424): era `memory.migrations`, com pontos. Um `stream_id` do AOS é livre,
+// mas um subject NATS não é — o ponto separa tokens, e o `jetstream.Store.subjectDe`
+// RECUSA qualquer `stream_id` que o contenha, em vez de escapar em silêncio para um
+// subject vizinho onde outro stream leria os nossos eventos. Sobre JetStream este
+// stream era inutilizável, e o JetStream é o único substrato que arbitra entre
+// processos (DEF-282).
+//
+// A BARRA é deliberada e vale mais do que evitar o ponto: um nome sem barra é UM
+// segmento de caminho e casa com o `{id}` de `GET /runs/{id}/...`. Foi assim que o
+// AOS-426 mediu treze streams internos a serem servidos pelo read-path dos runs. O
+// prefixo `aos-internal/` mantém este fora desse alcance por CONSTRUÇÃO, e não só
+// pela trava que o AOS-426 compôs — duas defesas independentes para a mesma coisa.
+//
+// RENOMEAR AQUI NÃO PERDE HISTÓRICO: este subpacote não é composto pelo nó (nada em
+// `cmd/aos` nem em `integration` o importa — medido), logo não há factos escritos no
+// nome antigo em produção. É por isso que este é barato HOJE e caro no dia em que
+// for ligado.
+const migrationStream = "aos-internal/memory/migrations"
 
 // migrationRunID é o namespace de idempotência das migrações no Event Store. A
 // idempotency_key efectiva é migrationRunID + ":" + <migration_id>:<phase>, pelo
@@ -107,10 +130,11 @@ func (r *Registry) Record(ctx context.Context, m Migration, phase Phase) (bool, 
 		return false, fmt.Errorf("migrations: marshal do registo: %w", err)
 	}
 	res, err := r.store.Append(ctx, migrationStream, eventstore.EventInput{
-		Type:    migrationAppliedEventType,
-		Payload: payload,
-		RunID:   migrationRunID,
-		StepID:  stepID(m.ID, phase),
+		Type:     migrationAppliedEventType,
+		Payload:  payload,
+		RunID:    migrationRunID,
+		StepID:   stepID(m.ID, phase),
+		Producer: eventstore.Producer{NHIID: MigrationProducerNHI},
 	})
 	if err != nil {
 		return false, err
@@ -219,10 +243,11 @@ func (r *Registry) RecordRevert(ctx context.Context, m Migration, phase Phase) (
 		return false, fmt.Errorf("migrations: marshal da compensacao: %w", err)
 	}
 	res, err := r.store.Append(ctx, migrationStream, eventstore.EventInput{
-		Type:    migrationRevertedEventType,
-		Payload: payload,
-		RunID:   migrationRunID,
-		StepID:  revertStepID(m.ID, phase),
+		Type:     migrationRevertedEventType,
+		Payload:  payload,
+		RunID:    migrationRunID,
+		StepID:   revertStepID(m.ID, phase),
+		Producer: eventstore.Producer{NHIID: MigrationProducerNHI},
 	})
 	if err != nil {
 		return false, err

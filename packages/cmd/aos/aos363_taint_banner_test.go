@@ -33,6 +33,12 @@ func TestAOS363_TaintGatePostureBanner(t *testing.T) {
 	if !strings.Contains(strings.ToUpper(joinAtivo), "ATIVA") {
 		t.Errorf("a postura do conjunto não-vazio não se declara activa: %q", joinAtivo)
 	}
+	// A activa TEM de dizer de onde vem o taint que o gate lê (AOS-069, ADR-034): o contexto do
+	// turno, cunhado pelo runtime. Sem isto a linha continuaria verdadeira na letra e enganaria
+	// sobre o que um run consegue fazer com o gate armado.
+	if !strings.Contains(joinAtivo, "CONTEXTO") || !strings.Contains(joinAtivo, "ADR-034") {
+		t.Errorf("a postura activa não declara a autorização derivada do contexto (ADR-034): %q", joinAtivo)
+	}
 	// A inerte deve apontar o caminho de opt-in (a variável a definir), senão o operador não
 	// sabe como ligar a barreira.
 	if !strings.Contains(joinInerte, "AOS_PRIVILEGED_CAPS") {

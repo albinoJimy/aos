@@ -38,6 +38,9 @@
 #      prova é «foi o gVisor que recusou». Separar as duas exigiria um vector que contorne o
 #      guarda do guest — desenho novo, não remediação. Quem prova execução DENTRO do sandbox é
 #      P1: o conteúdo devolvido só existe no bundle OCI montado para o runsc.
+#      E P2 SOZINHO também não distingue «recusado» de «inalcançável»: um erro de transporte conta
+#      como recusa (AOS-361 (e)). Com o executor em baixo, P2 fica verde; quem avermelha é P1 e a
+#      verificação do relatório. Também está no `not_proved`.
 #
 # ─── PORQUE É OPCIONAL, E PORQUE NÃO É INERTE ────────────────────────────────────────────────
 # O componente precisa de docker com `--privileged` (o runsc cria namespaces e monta o bundle) e

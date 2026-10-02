@@ -58,17 +58,22 @@
 // avaliado SEM gate (nil) é [WaitingLegitimate] indefinidamente — isso é wiring
 // incompleto, não espera legítima.
 //
-// # Sem backstop: waiting_on_tool e paused (contrato explícito)
+// # Backstop de waiting_on_tool e paused: FORA deste pacote (contrato explícito)
 //
 // Só waiting_on_human tem relógio de espera (o gate). waiting_on_tool e paused são
-// SEMPRE [WaitingLegitimate] e NÃO têm timeout de backstop NESTE pacote nem em
-// [state.Machine.CheckDeadlines] (que só limita waiting_on_human e running). "Espera
-// legítima" NÃO implica "reapeada em algum lado": a fronteira da espera não-humana é
-// DELEGADA a montante — o timeout da activity externa (AOS-018) para waiting_on_tool e
-// o circuit breaker multi-sinal de EPIC-08 (com um sinal wall-clock ABSOLUTO, não o
-// [WorkClock.ActiveWork], que congela nestes estados) para o resto. Fora dessa cobertura
-// a montante, um estado de espera não-humano pode persistir indefinidamente — por
-// desenho deste ticket.
+// SEMPRE [WaitingLegitimate] e NÃO têm timeout de backstop NESTE pacote. "Espera
+// legítima" NÃO implica "reapeada aqui": a fronteira da espera não-humana é DELEGADA —
+// o timeout da activity externa (AOS-018) é a primeira linha para waiting_on_tool, e a
+// rede de segurança é o tecto de wall-clock ABSOLUTO (nunca o [WorkClock.ActiveWork],
+// que CONGELA nestes estados).
+//
+// ACTUALIZAÇÃO (AOS-419, eixo do DEF-906): essa rede de segurança EXISTE desde que
+// [state.Machine.CheckDeadlines] passou a transitar waiting_on_tool/paused → timed_out
+// no mesmo tecto de [state.WithRunWallClock]. Até lá, o switch da Machine só limitava
+// waiting_on_human e running, e o disjuntor de EPIC-08 — a segunda via — é no-op fora de
+// running ([CountsAsActiveWork]), pelo que os dois estados não tinham prazo NENHUM. A
+// ressalva que sobra é de ALCANCE, não de mecanismo: o backstop só morde onde alguém
+// CHAMA CheckDeadlines sobre a máquina do run, com o tecto configurado (0 desliga-o).
 //
 // # Relógio: wall-clock, sem saltos
 //
@@ -80,6 +85,7 @@
 // # Fora de âmbito (delegado)
 //
 // A transição durável waiting_on_human → killed é de [state.Machine.CheckDeadlines]
-// (AOS-017); a origem monotónica do lease/fencing é de AOS-018; o circuit breaker
-// multi-sinal completo (e o backstop de waiting_on_tool/paused) é EPIC-08.
+// (AOS-017), tal como o backstop de waiting_on_tool/paused → timed_out (AOS-419); a
+// origem monotónica do lease/fencing é de AOS-018; o circuit breaker multi-sinal
+// completo é EPIC-08.
 package liveness

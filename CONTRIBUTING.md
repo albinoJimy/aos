@@ -14,7 +14,9 @@ bash scripts/ci/run.sh
 ```
 
 Corre, por ordem canónica, `secrets → build → lint → test → replay → sast → sca → policy-test`
-e termina com `exit != 0` se qualquer gate falhar. Provar que as falhas **são
+e termina com `exit != 0` se qualquer gate falhar — `1` se algum falhou, `3` («VERDE
+PARCIAL») se nenhum falhou mas alguma etapa foi saltada (ver «O mesmo no agregador», abaixo).
+Provar que as falhas **são
 bloqueadas**:
 
 ```bash
@@ -29,7 +31,7 @@ Correr um gate isolado: `make ci-secrets | ci-build | ci-lint | ci-test | ci-rep
 
 | Ferramenta | Versão | Notas |
 |---|---|---|
-| **Go** | 1.24 | módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
+| **Go** | 1.25.13 | a da imagem de produção (`FROM golang:` do `deploy/node/Dockerfile`); os gates fixam-na por `GOTOOLCHAIN` e o `toolchain-lint` guarda-o. Módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
 | **gcc** | qualquer | exigido pelo `go test -race` (CGO). Windows: mingw do scoop; Linux: gcc do sistema |
 | **bash** | 4+ | Git Bash em Windows |
 | staticcheck / gosec / govulncheck | pinadas | **auto-instaladas** por `go install` (idempotente) em `$(go env GOPATH)/bin`; nunca committadas |
@@ -38,11 +40,29 @@ Pins das ferramentas em `scripts/ci/lib.sh` (`*_PIN`). Em Windows, o runner
 acrescenta ao `PATH` o mingw/shims do scoop e o `bin` do GOPATH, e força
 `CGO_ENABLED=1` — não é preciso configuração manual.
 
+### Workspace `go.work` (AOS-387)
+
+Há um `go.work` na raiz, gerado por `bash scripts/ci/gowork.sh gerar`, com um `use` por módulo
+de `packages/`. Quem corre `go` à mão num módulo de `packages/` usa-o; **os gates não**, porque o
+`lib.sh` exporta `GOWORK=off` ao ser carregado. Detalhe e decisões em `tecnica/11` §8.1. Três
+casos pedem `GOWORK=off` à mão:
+
+- **worktree com base anterior ao `go.work`, dentro de uma árvore que já o tem** (o caso de
+  `.claude/worktrees/`): o Go encontra o `go.work` do checkout de fora e recusa os módulos do
+  worktree (`directory prefix . does not contain modules listed in go.work`). `export GOWORK=off`
+  nessa sessão, ou rebase sobre uma base que já traga o `go.work`;
+- **Go local < 1.25 com `GOTOOLCHAIN=local`**: o workspace pede `go 1.25` (os `cmd/*` já o pedem);
+- **módulos fora de `packages/`** (`scripts/ci/attest`, `deploy/**`): não estão no workspace.
+
+Módulo novo em `packages/`: `go work use ./packages/<novo>` (ou `gowork.sh gerar`) no mesmo
+commit, senão o gate `build` avermelha. O `go.work.sum` está no `.gitignore` (é derivado do
+cache; ver `tecnica/11` §8.1, decisão (b)).
+
 ## Os gates
 
 | # | Gate | Script | O que valida | Bloqueia |
 |---|---|---|---|---|
-| 1 | build | `build.sh` | `go build ./...` em cada módulo | merge |
+| 1 | build | `build.sh` | `go build ./...` em cada módulo **+ guarda do `go.work`** (`gowork.sh verificar` e `compilar`, AOS-387) | merge |
 | 2 | lint | `lint.sh` | `gofmt -l`, `go vet`, `staticcheck` **+ arch-lint AOS-003** (proibição de despacho directo) | merge |
 | 2b | ref-lint | `ref-lint.sh` | referências cruzadas do corpus (AOS-186): todo o `AOS-NNN` citado existe no backlog; todo o `ADR-NNN` citado existe no catálogo; cada ADR canónico tem ≥ 1 ticket implementador. Só precisa de **Python 3** | merge |
 | 2c | rtm | `rtm.sh` | sincronia da matriz de rastreabilidade `tecnica/16` com o corpus (AOS-186), via `rtm-regenerate.py --check`. Só precisa de **Python 3** | merge |
@@ -79,6 +99,8 @@ verde sem exercitar nada; um gate cujo limiar se pode zerar em silêncio não é
 | `ROUTING_COVERAGE_MIN` | 80 | **80** | 0–100 (%) | `routing.sh` | «Igual ao limiar do kernel» (§4). |
 | `REGISTRY_COVERAGE_MIN` | 80 | **80** | 0–100 (%) | `supplychain.sh` | «Igual ao limiar do kernel» (§4). |
 | `EVAL_PASS_RATE_MIN` | 0.90 | **0.90** | 0–1 (**fracção**) | `evalgate.sh` | ADR-012 / AOS-114 fixam o alvo de eval-pass-rate em ≥ 90%. É o gate de *admission control*: abaixo do alvo, promover é admitir regressão comportamental. |
+| `NATS_GO_TEST_TIMEOUT` | 5 | **1** | 1–60 (**minutos**) | `nats.sh` | Não é uma barra de qualidade, é um limite de tempo (AOS-452). `0` é «sem timeout» para o `go test`, e é isso que o piso recusa. O default é mais de 10× o módulo mais lento medido no CI (~25 s). O máximo existe para postos lentos: em Windows o `cmd/aos-orq` passou só 17 testes em 5 min. |
+| `NATS_REPETICOES` | 10 | **10** | 10–200 (corridas) | `nats.sh` | Quantas vezes seguidas o gate corre os três sensores da janela do stream fresco (AOS-455). Antes da correcção os dois testes de disputa do lease falhavam 4 em 50 (8%): com 10 seguidas essa janela ainda escapa por acaso em ~43% das execuções, com 5 em ~66%. Abaixo de 10 o sensor é decorativo. |
 
 **Piso = default é deliberado.** O default **é** o compromisso documentado; um piso mais
 baixo seria uma segunda barra, não documentada, a autorizar em silêncio exactamente o que
@@ -159,7 +181,7 @@ em vez de *knob* numérico. `gate_path <VAR> <default>` (`lib.sh`) é o simétri
 sempre `AOS_GATE_ROOT <VAR>=<valor> origem=default|env(override)`.
 
 > **PENDÊNCIA (fora do âmbito do AOS-199).** O mecanismo existe; os consumidores
-> (`layer-lint.sh`, `ref-lint.py`, `deferrals.py`, `event-catalog.py`, `integration.py`)
+> (`layer-lint.sh`, `ref-lint.py`, `deferrals.py`, `event-catalog.py`, `stream-names.py`, `integration.py`)
 > pertencem a outras pistas de escrita e **ainda não o adoptaram**. Enquanto não adoptarem,
 > `LAYER_LINT_ROOT`, `AOS_REFLINT_ROOT`, `AOS_DEFERRALS_ROOT`, `AOS_EVENT_BASELINE`,
 > `AOS_CONTRACT_BASELINE` e `AOS_CONTRACTS_DOC` continuam desviáveis. Reprodução:
@@ -208,6 +230,30 @@ Complementarmente, o registo fica **máquina-legível** ao lado do artefacto em
 para que um marcador obsoleto não seja um falso-positivo). Quem publica condiciona por
 `[ -e … ]` em vez de ler o log.
 
+#### O mesmo no agregador — `make ci` / `run.sh` (AOS-474)
+
+Até ao AOS-474, o `run.sh` dizia «RESULTADO: TODOS OS GATES VERDES» com um gate que tinha
+saltado uma etapa. O `AOS_SKIPPED_STEP` do gate ficava a meio do output, e o veredicto não o
+repetia. Medido com `env -u CI -u GITHUB_ACTIONS bash scripts/ci/run.sh nats`, num posto com o
+CLI docker e sem daemon: saía `0`.
+
+Agora cada `gate_skip` (`lib.sh`) anexa-se também ao registo do `run.sh`
+(`AOS_RUN_SKIP_LEDGER`, um ficheiro por gate, herdado pelos processos netos). O veredicto final
+redeclara todas as etapas saltadas, com o gate, como `AOS_SKIPPED_STEP  [<gate>] …`. Os
+códigos de saída são os do `package.sh`:
+
+| Saída | Significa |
+|---|---|
+| `0` | `TODOS OS GATES VERDES`: nenhum gate falhou e **nenhuma etapa foi saltada**. |
+| `1` | `PIPELINE VERMELHO`: pelo menos um gate falhou. Ganha a qualquer salto. |
+| `3` | `VERDE PARCIAL`: nada falhou, mas alguma etapa **não correu**. |
+
+O `3` é deliberado e morde o `make`: `make ci` acaba em erro, e o `make ci-all` não chega aos
+self-tests. Num posto sem docker isso acontece sempre, porque o `nats` salta. É o
+comportamento pretendido: esse posto não verificou o substrato replicado. Para correr os
+self-tests à parte: `make ci-selftest`. A CI não chama o `run.sh` (cada job corre o seu gate),
+pelo que nada muda lá.
+
 Aceitar o verde parcial é possível — `AOS_ALLOW_PARTIAL_DELIVERY=1` força a saída `0` — com
 o **mesmo modelo do escape hatch dos pisos**: imprime `AOS_PARTIAL_ACCEPTED` no output e é
 **recusado em CI**. A CI não publica entrega por verificar.
@@ -232,10 +278,38 @@ Configurar em *branch protection* de `main` os checks (lista completa, na mesma 
 do `needs:` do agregador — o self-test §M compara-a com `.github/workflows/ci.yml` e
 fica vermelho se divergir):
 
-REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · dormencia · sast · sca · policy-test · policy-taint · selftest
+REQUIRED-CHECKS: secrets · build · lint · ref-lint · deferrals · estado-citado · rtm · layer-lint · test · integration · event-catalog · stream-names · replay · memory · supplychain · routing · apex · security · evalgate · scale · dr-e2e · ux-dx · nats · dormencia · sast · sca · policy-test · policy-taint · selftest
 
 …ou, em alternativa, o agregador único **`gates`**. O **scan de segredos** (regra
 transversal de `specs/01 §4`) tem o seu próprio job e é pré-condição de merge.
+
+> **O gate `nats` levanta Docker e demora.** Entrou em AOS-431 e corre um cluster JetStream de
+> quatro nós para exercitar as suites que, sem ele, SALTAM — eram 45, em 13 ficheiros. Sem
+> Docker **utilizável** — sem o CLI, ou com o CLI e o daemon inacessível (`docker info` falha,
+> AOS-471) — ele **salta e declara-o** (`AOS_SKIPPED_STEP`), como os outros gates que dependem
+> de contentores; o que não faz é ficar verde em silêncio. **Em CI não salta**: com `CI` ou
+> `GITHUB_ACTIONS` definidos é vermelho, porque o job `nats` é required check e o agregador lê
+> `success`, não o `AOS_SKIPPED_STEP`. «Definido» é «não vazio»: **`CI=false` conta como CI**,
+> a mesma regra fail-closed do `lib.sh` e do `package.sh`. Para o salto local, apaga-se a
+> variável (`env -u CI -u GITHUB_ACTIONS …`), não se nega. A sonda do daemon (`docker info`)
+> tem prazo de 30 s onde houver `timeout`, e um daemon que não responde nesse prazo conta
+> como inutilizável. Com o daemon a responder, um cluster que não sobe é
+> sempre vermelho, a nomear o `nats-cluster.sh` e o código com que saiu. Para o correr
+> sozinho: `make ci-nats`.
+> Para levantar só o cluster e trabalhar contra ele:
+> `eval "$(bash scripts/ci/nats-cluster.sh up)"`, e `bash scripts/ci/nats-cluster.sh down` no
+> fim.
+>
+> Ele tolera **duas falhas declaradas** (AOS-432): sobre substrato replicado, quem perde a
+> corrida ao lease sai com um erro de transporte em vez do código da posse. A lista
+> auto-reforma-se — se esses testes passarem, o gate avermelha para obrigar a fechar o ticket.
+>
+> Uma falha declarada explica **um teste que falhou**, nunca **um pacote que deixou de medir**
+> (AOS-452). Um pacote que termine em FAIL por timeout, panic, `[build failed]` ou `os.Exit`
+> fora de um teste avermelha o gate com diagnóstico próprio («pacote … em FAIL sem falha
+> declarada que o explique: TIMEOUT …»), mesmo que nenhuma linha `--- FAIL` o conte. Cada
+> binário de teste corre com `-timeout=${NATS_GO_TEST_TIMEOUT}m` (default 5; piso 1, máx. 60 —
+> ver a tabela de limiares). Num posto lento, sobe-se: `NATS_GO_TEST_TIMEOUT=60 make ci-nats`.
 
 Os três gates **anti-recorrência** (`ref-lint`, `rtm`, `layer-lint`, AOS-190) constam
 do `needs:` do agregador `gates` — é isso, e só isso, que os torna bloqueantes. Um

@@ -22,10 +22,18 @@ type EventAppender interface {
 }
 
 // ModelManifest é a parte do manifesto que pina o modelo (model_id/params/seed).
+//
+// `model_id` é o modelo PEDIDO (a configuração do run, [Goal.Model]) — é o que o span
+// `chat` e a admissão do turno usam e o que o replay compara. `served_model_id` é o
+// modelo que SERVIU a resposta, como o cliente o reportou ([ModelResponse.Model]),
+// AOS-396: difere do pedido quando o provider devolve uma versão datada ou o gateway
+// troca o modelo. `omitempty` é deliberado: um cliente que não reporta o modelo grava
+// exactamente os bytes de antes (o precedente de `usage_ausente`, AOS-336).
 type ModelManifest struct {
-	ModelID string            `json:"model_id"`
-	Params  map[string]string `json:"params,omitempty"`
-	Seed    int64             `json:"seed"`
+	ModelID       string            `json:"model_id"`
+	ServedModelID string            `json:"served_model_id,omitempty"`
+	Params        map[string]string `json:"params,omitempty"`
+	Seed          int64             `json:"seed"`
 }
 
 // PinnedDep é uma dependência pinada no manifesto (tool ou skill): nome+versão+
@@ -69,6 +77,11 @@ type turnPayload struct {
 	// mesmos bytes que gravava antes desta mudança, pelo que nenhum golden de replay
 	// se move e o campo só aparece onde diz alguma coisa.
 	UsageAusente bool `json:"usage_ausente,omitempty"`
+	// CustoNaoDerivado marca que `cost_micro_usd` NÃO É UM PREÇO: o cliente de modelo não tinha
+	// fonte de preço para o par pedido (AOS-406 — em produção, modelo pago por subscrição). É
+	// ortogonal a UsageAusente: aqui os tokens foram medidos, só o custo em dólares não existe.
+	// `omitempty` pelo mesmo motivo: um turno com preço grava os mesmos bytes de sempre.
+	CustoNaoDerivado bool `json:"custo_nao_derivado,omitempty"`
 	// ToolCallsRequested é o nº de tool calls que o modelo pediu neste turno
 	// (despachadas via RM, cada uma auditada no seu próprio evento de mediação).
 	ToolCallsRequested int `json:"tool_calls_requested"`
@@ -85,9 +98,11 @@ type TurnRecord struct {
 	Manifest     Manifest
 	Usage        Usage
 	CostMicroUSD int64
-	ToolCalls    int
-	Final        bool
-	Producer     eventstore.Producer
+	// CustoNaoDerivado — ver [turnPayload.CustoNaoDerivado] (AOS-406).
+	CustoNaoDerivado bool
+	ToolCalls        int
+	Final            bool
+	Producer         eventstore.Producer
 }
 
 // TurnRecorder grava cada turno como um evento "turn.recorded" no Event Store,
@@ -121,6 +136,7 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 		OutputTokens:       rec.Usage.OutputTokens,
 		CostMicroUSD:       rec.CostMicroUSD,
 		UsageAusente:       !rec.Usage.Definido(),
+		CustoNaoDerivado:   rec.CustoNaoDerivado,
 		ToolCallsRequested: rec.ToolCalls,
 		Final:              rec.Final,
 	}

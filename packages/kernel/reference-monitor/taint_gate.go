@@ -167,17 +167,19 @@ func (g TaintGate) Evaluate(_ context.Context, call *Call) (HookResult, error) {
 // egress, para uma acção privilegiada autorizada por untrusted nunca consumir
 // recursos. É a composição recomendada em produção (AOS-069).
 //
-// ENFORCEMENT NÃO-ACTIVO POR OMISSÃO — HANDOFF DE WIRING (AOS-069). Esta composição é
-// OPT-IN: [DefaultHooks] (o default de [New]) NÃO inclui o TaintGate, logo um Monitor
-// construído sem passar esta cadeia obtém ZERO enforcement de taint — a invariante P0
-// do ADR-005 fica silenciosamente inactiva. Ligar DefaultHooksWithTaint(privileged),
-// com um [PrivilegedAuthorizer] real, é responsabilidade do composition root ápice
-// (packages/integration). Esse wiring — a par de AOS-021/037/043 — está DIFERIDO para
-// o ticket de integração de superfície; até lá o único consumidor de produção desta
-// cadeia é o harness de teste de planos (agent-runtime/taint_plane_test.go, via
-// planeHarness), que prova a barreira fim-a-fim. Um integrador de produção DEVE usar
-// esta função (ou inserir manualmente [NewTaintGate] após "policy"); construir um RM
-// de produção sobre [DefaultHooks] sem o TaintGate é misconfiguração de segurança.
+// ENFORCEMENT NÃO-ACTIVO POR OMISSÃO (AOS-069). Esta composição é OPT-IN: [DefaultHooks]
+// (o default de [New]) NÃO inclui o TaintGate, logo um Monitor construído sem passar esta
+// cadeia obtém ZERO enforcement de taint — a invariante P0 do ADR-005 fica
+// silenciosamente inactiva. Um integrador de produção DEVE usar esta função (ou inserir
+// manualmente [NewTaintGate] após "policy"); construir um RM de produção sobre
+// [DefaultHooks] sem o TaintGate é misconfiguração de segurança.
+//
+// No nó, o ápice (packages/integration/secured.go) insere o gate por [NewTaintGate] e
+// arma-o com o conjunto de AOS_PRIVILEGED_CAPS (AOS-363). O rótulo que o gate lê em
+// [CallContext.Taint] é cunhado pelo Agent Runtime a partir do CONTEXTO do turno que pediu
+// a call — o join dos rótulos de tudo o que entrou no tail (AOS-069, ADR-034) —, e não por
+// um campo da resposta do modelo. O que continua em aberto é a separação de planos por
+// handle (opção A do ADR-034, DEF-806), não o wiring deste gate.
 func DefaultHooksWithTaint(privileged PrivilegedAuthorizer) []Hook {
 	base := DefaultHooks() // identity, policy, budget, egress, audit
 	gate := NewTaintGate(privileged)

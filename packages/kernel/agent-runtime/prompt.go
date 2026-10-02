@@ -58,6 +58,12 @@ const (
 	// um humano autenticado, não do modelo nem de uma tool, pelo que o modelo a vê
 	// como directiva confiável — nunca como conteúdo untrusted (ADR-005).
 	TailCorrection TailKind = "correction"
+	// TailPlanInput — um payload que o PLANO declarou que este nó consome (AOS-414,
+	// ADR-022 §2.3). É produto de OUTRO run (saída de modelo ou de tool), logo
+	// untrusted como qualquer conteúdo (ADR-005): entra com `taint=untrusted` e com a
+	// proveniência do contrato — nó de origem, output e digest — nos rótulos, nunca no
+	// corpo. NÃO é o objectivo: esse é trusted e vem de quem submete.
+	TailPlanInput TailKind = "plan_input"
 )
 
 // TailSegment é uma unidade append-only do tail. O tail cresce a cada turno; o
@@ -309,6 +315,22 @@ func tailFromHistory(text string) TailSegment {
 		Content: []byte(text),
 	}
 }
+
+// tailFromPlanInput constrói o segmento de um payload consumido de outro nó do plano
+// (AOS-414). A marcação é a dos resultados de tool e do texto do modelo — `taint=untrusted` —,
+// mais os rótulos que dizem DE ONDE veio. Um consumidor que trate isto como directiva está a
+// desobedecer ao que o prompt lhe mostra.
+func tailFromPlanInput(in PlanInput) TailSegment {
+	meta := []TailMeta{{Key: "taint", Value: TaintUntrusted}, {Key: "plan_input_from", Value: in.From}, {Key: "plan_input_output", Value: in.Output}}
+	if in.Digest != "" {
+		meta = append(meta, TailMeta{Key: "plan_input_digest", Value: in.Digest})
+	}
+	return TailSegment{Kind: TailPlanInput, Meta: meta, Content: in.Content}
+}
+
+// TailFromPlanInput é a MESMA construção, exportada para o motor de replay reconstruir o tail
+// byte-idêntico (como [TailFromCorrection]).
+func TailFromPlanInput(in PlanInput) TailSegment { return tailFromPlanInput(in) }
 
 // tailFromCorrection constrói o segmento de tail de uma correcção humana out-of-band
 // (AOS-158). Ao contrário do output do modelo e dos resultados de tool (untrusted), a

@@ -180,7 +180,16 @@ func (g *PlanGate) Approve(ctx context.Context, plan Plan) (PlanDecision, error)
 
 	// (1) AUTO-APROVAÇÃO a níveis altos: consome autonomy.Oversight().Runs() — sem gate
 	// humano, sem chamar o canal. NÃO decide/promove o nível (só o lê).
-	if mode.Runs() {
+	//
+	// UMA EXCEPÇÃO, e é a razão de ser do campo (AOS-408): um LACUNA DE CAPACIDADE
+	// ([PlanNode.CapabilityGap]) nunca auto-aprova. A [autonomy.Oversight] é função de
+	// (nível, classe agregada) e não conhece o gap; até aqui um plano com um nó cuja
+	// capability não está concedida auto-aprovava desde que a classe o permitisse — o
+	// contrário do que o próprio contrato do campo declara («EXIGE revisão item-a-item,
+	// não colapsável») e do que a triagem do cartão já fazia. Um gap é, por definição,
+	// algo que o sistema não sabe autorizar: não pode ser o nível de autonomia a
+	// autorizá-lo por omissão.
+	if mode.Runs() && !temLacunaDeCapacidade(plan.Nodes) {
 		dec := PlanDecision{
 			Verdict:      VerdictApprove,
 			AutoApproved: true,
@@ -283,7 +292,14 @@ func (g *PlanGate) Approve(ctx context.Context, plan Plan) (PlanDecision, error)
 	req := planConfirmationRequest(effective)
 	resp, cerr := g.channel.Confirm(ctx, req)
 	if cerr != nil || !resp.Approved {
-		dec := PlanDecision{Verdict: VerdictReject, Reason: "nao aprovado pelo canal HITL (fail-closed)"}
+		// O APROVADOR viaja também na recusa (AOS-408). O canal só o preenche quando a decisão foi
+		// ASSINADA e VERIFICADA contra a chave pinada, pelo que o campo distingue duas coisas que
+		// antes se perdiam juntas: uma RECUSA de um humano autenticado (atribuível, não-repúdio —
+		// e terminal) de uma recusa por assinatura forjada, aprovador desconhecido, autoridade em
+		// falta ou timeout (não é decisão de ninguém). Sem esta distinção, quem consome o veredicto
+		// não podia registar «quem recusou» sem arriscar atribuir a recusa a um inocente — e um
+		// plano pendente podia ser fechado por quem não tem chave nenhuma.
+		dec := PlanDecision{Verdict: VerdictReject, Approver: resp.Approver, Reason: "nao aprovado pelo canal HITL (fail-closed)"}
 		g.countDenial()
 		g.emit(ctx, plan, level, class, mode, dec)
 		return dec, nil

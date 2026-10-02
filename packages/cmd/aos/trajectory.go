@@ -120,6 +120,46 @@ func (c *sseConn) pop() (eventstore.Event, bool) {
 	return ev, true
 }
 
+// reservarStreamDoLeitor reserva um lugar de stream SSE para `principal` (AOS-459). Devolve a
+// função que o LIBERTA e `true` quando há lugar; `(nil, false)` quando o tecto do leitor está cheio.
+//
+// `(nil, true)` significa «não há repartição a aplicar» e nada a libertar — quando a repartição está
+// desligada (`<= 0`), quando o principal é vazio (modo legado: não há a quem imputar) ou quando o
+// mapa não foi composto (um `apiHandler` construído à mão em teste; o mesmo compromisso da guarda
+// nil de [tokenBucket.allow], e a razão é a mesma — um panic no caminho de pedido é pior).
+//
+// A ENTRADA É APAGADA ao chegar a zero. Sem isso o mapa cresce uma entrada por leitor que já se foi,
+// e um nó de vida longa acumula-as sem limite — a fuga é pequena por entrada e não tem tecto.
+func (h *apiHandler) reservarStreamDoLeitor(principal string) (func(), bool) {
+	if h.cfg.trajMaxConnsPerReader <= 0 || principal == "" || h.trajPorLeitor == nil {
+		return nil, true
+	}
+	h.trajPorLeitorMu.Lock()
+	defer h.trajPorLeitorMu.Unlock()
+	if h.trajPorLeitor[principal] >= h.cfg.trajMaxConnsPerReader {
+		return nil, false
+	}
+	h.trajPorLeitor[principal]++
+	return func() {
+		h.trajPorLeitorMu.Lock()
+		defer h.trajPorLeitorMu.Unlock()
+		if n := h.trajPorLeitor[principal] - 1; n > 0 {
+			h.trajPorLeitor[principal] = n
+		} else {
+			delete(h.trajPorLeitor, principal)
+		}
+	}, true
+}
+
+// streamsDoLeitor devolve a contagem viva de um leitor. Existe para os testes poderem medir o
+// invariante (a contagem volta a zero e a entrada desaparece) sem lerem o mapa por baixo do mutex.
+func (h *apiHandler) streamsDoLeitor(principal string) (int, bool) {
+	h.trajPorLeitorMu.Lock()
+	defer h.trajPorLeitorMu.Unlock()
+	n, presente := h.trajPorLeitor[principal]
+	return n, presente
+}
+
 // handleTrajectory serve GET /runs/{id}/trajectory como SSE. Ordem deliberada:
 //  1. valida + tecto de concorrência (admission) + verifica suporte a streaming (http.Flusher);
 //  2. ISENTA a ligação do WriteTimeout herdado do http.Server (SSE é longo — transporte fail-safe);
@@ -145,9 +185,84 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// (1) ADMISSION — tecto de streams SSE concorrentes por-nó (anti-exaustão, coerente com o
-	// hardening de ingresso de AOS-166). Incrementado cedo, decrementado ao sair: bounda o número
-	// de subscrições + goroutines vivas, incluindo tentativas para runs inexistentes.
+	// (1) ADMISSION POR LEITOR (AOS-459/AOS-460) — a equidade que o tecto global não dá, e PRIMEIRO.
+	//
+	// O tecto global protege o NÓ e não diz nada sobre quem ocupa os lugares: um leitor autenticado
+	// abre os 256 e nega esta rota a TODOS os outros enquanto quiser. Não é uma rajada que passa —
+	// é ocupação que fica. O AOS-456a conta runs (não ligações), o AOS-458 limita taxa (abrir um
+	// stream custa UM token e a ligação vive minutos), e o `edge` tem `limit_req` e NÃO `limit_conn`.
+	//
+	// # PORQUE ANTES DO GLOBAL, e a primeira versão fazia o contrário
+	//
+	// O AOS-459 pôs esta reserva DEPOIS do incremento global, com o argumento de que «o global é a
+	// barreira do nó e é a mais barata». O argumento era falso por duas razões, e uma revisão
+	// adversarial mediu a consequência:
+	//
+	//   - «a mais barata» não decide nada: o passo CARO (`admitSovereignRead`, verificação de JWS
+	//     mais consulta de residência) corre ANTES dos dois;
+	//   - e um pedido destinado a ser RECUSADO pela repartição TOMAVA primeiro um lugar global, só
+	//     o devolvendo à saída. Enquanto está em voo, ocupa-o.
+	//
+	// MEDIDO na rota real, com `global=2`, `por-leitor=1` e alice presa a UM stream, 32 recusas
+	// concorrentes dela (cinco corridas por ordem, as DUAS categorias de 429 separadas):
+	//
+	//	ordem                429 pelo tecto GLOBAL   429 pelo tecto DE BOB
+	//	AOS-459 (antiga)     34–75                   0
+	//	esta                 0                       29–59
+	//
+	// A LARGURA É A UNIÃO DE DUAS SÉRIES de cinco corridas no mesmo contentor sob carga diferente
+	// (34–52/29–42 numa, 51–75/51–59 noutra). São contagens sob contenção e deslocam-se ~10 pontos
+	// percentuais entre séries; o que reproduz 5/5 nas duas séries e nas duas ordens é a FORMA — qual
+	// das colunas vai a zero. O AOS-463 alargou a tabela do teste e deixou esta estreita e sem a
+	// condição: a versão em PRODUÇÃO ficou a ser a menos honesta das duas (achado MÉDIO-6 da nona
+	// revisão, que é o mesmo defeito que o AOS-461 se propôs a fechar).
+	//
+	// É a mesma assimetria que o AOS-456a declara e cumpre — «exceder responde 429 SEM ocupar lugar
+	// nenhum» —, que o AOS-459 dizia replicar e não replicava. Uma recusa por-leitor passa a não
+	// tocar no contador global de todo.
+	//
+	// O QUE ISTO NÃO PROMETE (correcção do AOS-461: o AOS-460 escrevia só «Trocada a ordem: 0 em
+	// 200», o que convidava a ler «bob deixa de ser negado»). A categoria que a ordem move vai a
+	// zero — e é negação por razão ERRADA, o nó cheio de pedidos destinados a recusa. O que sobra é
+	// bob a colidir com o SEU PRÓPRIO tecto de UM: sob contenção o pedido N+1 dele chega antes de o
+	// lugar do N ser libertado. É recusa por razão CERTA, confinada ao próprio principal, e é
+	// artefacto do tecto a 1 — medido na mesma rajada com a proporção sã, `global=16/por-leitor=8` e
+	// `global=64/por-leitor=32` (o default é 32) dão **zero de qualquer categoria**. Nessa proporção
+	// as duas ordens empatam: a ordem só é observável quando a folga global é de UM lugar.
+	//
+	// # O ROLLBACK, e em que sentido
+	//
+	// «Não há rollback a fazer» é verdade num só sentido, e o AOS-460 declarava só esse. Uma recusa
+	// por-leitor não toca no contador global — nada a devolver. Mas uma recusa GLOBAL **toca** no mapa
+	// por-leitor (a reserva já aconteceu) e no próprio contador, e os dois têm de voltar: o
+	// `defer libertar()` acima cobre o `return` do bloco global, e o `trajConns.Add(-1)` explícito
+	// desfaz o incremento. Nenhum dos dois tinha sensor até [TestAOS461RecusaGLOBALDEVOLVEOLugarGlobal]
+	// (achados BAIXO-1 e MÉDIO-3 da sétima revisão); a mutação que remove o `Add(-1)` passava a suite
+	// inteira do pacote.
+	//
+	// # A ATRIBUIÇÃO, e as DUAS posturas legadas que a primeira versão colapsou numa
+	//
+	// `reader.principal` vem do `admitSovereignRead` acima. Há TRÊS posturas, não duas:
+	//
+	//	readGov == nil                    principal VAZIO ⇒ sem repartição (degenera no global)
+	//	readGov != nil, cred == nil       principal do HEADER `X-Aos-Reader` ⇒ reparte, mas o
+	//	                                  chamador escolhe o valor: CONTORNA-SE rodando o header
+	//	readGov != nil, cred composta     principal da credencial VERIFICADA ⇒ inforjável
+	//
+	// A segunda é a que um nó com `AOS_BOARD_REGIONS` e sem OIDC tem, é a que os testes deste
+	// ficheiro compõem, e o AOS-459 descrevia-a como se fosse a primeira («em modo legado vem
+	// vazio»). Vale contra rajada honesta; NÃO vale contra abuso. O banner de arranque declara qual
+	// está em vigor — ver [ingressPostureBanner].
+	if libertar, ok := h.reservarStreamDoLeitor(reader.principal); !ok {
+		writeError(w, http.StatusTooManyRequests, "tecto de streams concorrentes deste leitor atingido")
+		return
+	} else if libertar != nil {
+		defer libertar()
+	}
+
+	// (2) ADMISSION GLOBAL — tecto de streams SSE concorrentes por-nó (AOS-166/AOS-167).
+	// Incrementado depois da repartição, decrementado ao sair: bounda o número de subscrições +
+	// goroutines vivas.
 	if n := h.trajConns.Add(1); h.cfg.trajMaxConns > 0 && int(n) > h.cfg.trajMaxConns {
 		h.trajConns.Add(-1)
 		writeError(w, http.StatusTooManyRequests, "tecto de streams concorrentes atingido")
@@ -214,6 +329,24 @@ func (h *apiHandler) handleTrajectory(w http.ResponseWriter, r *http.Request) {
 			writeError(w, streamSetupErrorStatus(rerr), "trajectoria indisponivel")
 			return
 		}
+	} else if !streamDeRun(runID, events) && !h.runKnown(runID) {
+		// AOS-426: O STREAM EXISTE, MAS NÃO É DE UM RUN.
+		//
+		// A guarda acima só cobria o stream INEXISTENTE, pelo que qualquer stream INTERNO do nó
+		// cujo nome não tivesse barra era servido por esta rota — as aprovações four-eyes, a
+		// memória, a identidade, os nonces de ratificação. Ver streams_internos.go, que explica
+		// porque é que a decisão sai dos DADOS (o `RunID` dos eventos) e não de uma lista de
+		// nomes proibidos, que seria um conjunto aberto.
+		//
+		// O `runKnown` fica como segunda via porque é um facto positivo de outra natureza: esta
+		// réplica sabe que o id é um run que ela hospeda ou hospedou. Um stream interno nunca o
+		// satisfaz.
+		//
+		// O status é o MESMO 404 uniforme do run desconhecido — um código próprio diria ao
+		// chamador «este stream existe mas não é teu», que é o oráculo de existência que o
+		// ADR-016 fecha.
+		writeError(w, http.StatusNotFound, "not found")
+		return
 	}
 
 	// (D6) SELO WORM de leitura sensível (AOS-172) como PRÉ-CONDIÇÃO da abertura do stream — a

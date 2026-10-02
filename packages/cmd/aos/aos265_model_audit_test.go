@@ -49,11 +49,16 @@ func TestParseModelAuditFromEnv_Duravel_AbreWORM(t *testing.T) {
 	if store == nil {
 		t.Fatal("esperado WORM durável, obtido nil")
 	}
-	closeAudit(t, store)
 	if gotPath != path {
+		_ = store.(io.Closer).Close()
 		t.Fatalf("path = %q, esperado %q", gotPath, path)
 	}
 	// reabrir o mesmo caminho tem de funcionar (crash-safe replay) — prova de durabilidade.
+	// Fecha-se primeiro, como num restart: com o primeiro aberto, a posse exclusiva do
+	// caminho (AOS-399) recusaria a segunda abertura.
+	if err := store.(io.Closer).Close(); err != nil {
+		t.Fatalf("fechar antes de reabrir: %v", err)
+	}
 	store2, _, err := parseModelAuditFromEnv()
 	if err != nil {
 		t.Fatalf("reabrir WORM durável: %v", err)

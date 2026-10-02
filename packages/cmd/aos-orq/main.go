@@ -60,12 +60,12 @@ import (
 	"strings"
 	"time"
 
-	budget "github.com/aos-ref/control-plane/budget"
 	"github.com/aos-ref/control-plane/orchestrator"
 	"github.com/aos-ref/control-plane/orchestrator/plan"
-	"github.com/aos-ref/control-plane/orchestrator/planmaterialize"
+	planner "github.com/aos-ref/control-plane/orchestrator/planner"
 	"github.com/aos-ref/control-plane/runlifecycle"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	audit "github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/substrate/eventstore"
 )
 
@@ -86,6 +86,41 @@ const (
 	// DISTINTO do 3: ali a remediação é parar quem detém aquele RUN; aqui é parar o
 	// outro escritor do STORE. Um código só faria o operador procurar no sítio errado.
 	exitWALDetido = 5
+	// exitPendenteDeAprovacao — o plano exige decisão HUMANA e nada foi materializado
+	// (AOS-408). NÃO é avaria: é o estado normal de um plano de risco num gate assíncrono.
+	// Sem um código próprio, um operador (e um teste de aceitação) não distinguiria «à
+	// espera do humano» de «rebentou», e a diferença decide o que fazer a seguir.
+	exitPendenteDeAprovacao = 6
+	// exitDecisaoRecusada — houve decisão humana e foi NÃO (ou o prazo passou, ou a
+	// assinatura não verifica). Distinto do 6: ali espera-se, aqui o caso está fechado.
+	exitDecisaoRecusada = 7
+	// exitNosEmVoo — o prazo do `serve` (--plan-timeout) acabou com nós do plano ainda a correr
+	// no nó `aos` (AOS-413). Não é avaria: a posse é largada e uma nova invocação retoma-os.
+	exitNosEmVoo = 8
+	// exitPlanoRecusado — o planeador esgotou as tentativas e o plano continua a ser recusado
+	// pela validação estrutural (AOS-415). Tem código PRÓPRIO porque a posse É largada: sem ele,
+	// esta saída seria um `1` genérico que larga o lease, quando todo o outro `1` o retém.
+	exitPlanoRecusado = 9
+	// exitDocumentoRecusado — o documento ou o snapshot apresentados para materializar um plano não
+	// são aceitáveis, e voltar a apresentá-los dá sempre o mesmo (AOS-442): o documento não
+	// descodifica, não valida, não é o organigrama que o `plan.validated` do run ancora, ou o
+	// snapshot não é o declarado/selado. Tem código PRÓPRIO porque é DETERMINISTA: como `1`
+	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila. Partilha-o
+	// o grafo do run que diverge do plano numa materialização retomada (AOS-476), com rótulo
+	// próprio no `tipoDoErro`.
+	exitDocumentoRecusado = 10
+	// exitRequerenteForaDoMandato — o nó recusou o run de um nó do plano porque o SUBMISSOR do
+	// pedido não consta dos `requesters` do mandato da credencial (AOS-439). É DETERMINISTA — o
+	// submissor de um pedido não muda, e o mandato só muda quando o humano assina outro —, por isso
+	// TERMINAL: retentá-lo seria um laço. Só sai de um `serve` com o vínculo ao pedido
+	// (`--plan-request-generation`), porque é só aí que o nó distingue esta recusa das outras.
+	exitRequerenteForaDoMandato = 11
+	// exitGeracoesEsgotadas — o nó entregou a geração que passa o tecto de gerações de planeamento
+	// do pedido (AOS-467, `generations_exhausted`). Não sai de um `serve`: o `consume` fecha o pedido
+	// SEM planear. TERMINAL por definição — o tecto existe para que um pedido que falha sempre de
+	// forma transitória deixe de re-planear. Quem DECIDE é o nó, que numera as gerações; quem
+	// escreve o desfecho é o consumidor, como em todos os outros (ADR-030).
+	exitGeracoesEsgotadas = 12
 )
 
 func main() {
@@ -99,6 +134,16 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "inspect":
 		err = cmdInspect(os.Args[2:])
+	// AOS-408: a cerimónia de decisão de um plano pendente. `plans` LÊ (nunca pede posse);
+	// `decide` ESCREVE a decisão sob a mesma posse e o mesmo appender fenced do `serve`.
+	case "plans":
+		err = cmdPlans(os.Args[2:])
+	case "decide":
+		err = cmdDecide(os.Args[2:])
+	// AOS-423: drena a fila de pedidos de plano do nó. Reclama, corre pelo mesmo caminho do
+	// `serve`, reporta o desfecho, repete — e TERMINA. Ver consumir.go.
+	case "consume":
+		err = cmdConsume(os.Args[2:])
 	default:
 		usage()
 		os.Exit(exitErro)
@@ -114,7 +159,14 @@ func usage() {
 
   aos-orq serve   (--wal FICHEIRO | --nats HOST:PORTA) --run ID [--plan ID] [--nodes a,b,c]
                   [--release] [--worker NOME] [--plan-doc DOC.json --snapshot SNAP.json]
+                  [--goal OBJECTIVO --snapshot SNAP.json [--plan-out DOC.json]]
   aos-orq inspect (--wal FICHEIRO | --nats HOST:PORTA) --run ID
+  aos-orq plans   (--wal FICHEIRO | --nats HOST:PORTA) --run ID [--ttl DURACAO]
+  aos-orq decide  (--wal FICHEIRO | --nats HOST:PORTA) --run ID --plan-doc DOC.json
+                  --snapshot SNAP.json --decision approve|reject --approval APROVACAO.json
+                  [--approvers APROVADORES.json] [--ttl DURACAO]
+                  (o plan_id DERIVA do run: <run>-plan. O lease e do RUN e a escrita e no stream do
+                   PLANO; com os dois independentes, dois decide nao seriam arbitrados por lease.)
 
 Substrato (EXCLUSIVO — um ou outro, nunca ambos):
   --wal   Event Store de referencia sobre ficheiro. NAO arbitra entre processos:
@@ -123,13 +175,74 @@ Substrato (EXCLUSIVO — um ou outro, nunca ambos):
           em paralelo sao suportadas e o vencedor e decidido pelo LEASE (3).
           [--nats-stream NOME] [--nats-replicas N] [--nats-region REGIAO]
 
-Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL detido por outro ESCRITOR
+Gate de aprovação de plano (AOS-408): um plano com nós de risco (danger) ou lacuna de
+capacidade NAO materializa — fica PENDENTE (saida 6) e a decisao vem por fora, assinada.
+
+Códigos de saída: 0 ok · 1 erro · 3 posse do RUN negada (lease vivo de outro) · 4 posse superada/expirada · 5 WAL (ou AOS_MODEL_AUDIT_PATH) detido por outro ESCRITOR · 6 plano PENDENTE de decisao humana · 7 decisao RECUSADA · 8 nos do plano AINDA A CORRER · 9 plano RECUSADO pela validacao (tentativas esgotadas) · 10 DOCUMENTO do plano (ou snapshot) recusado — determinista · 11 SUBMISSOR do pedido fora dos requesters do mandato — determinista · 12 GERACOES de planeamento do pedido esgotadas (AOS-467) — o no decide, o consume fecha sem planear
 `)
+}
+
+// largarSePendente ANUNCIA que larga a posse quando o plano ficou PENDENTE de decisão humana
+// (AOS-408), e devolve o erro original intacto.
+//
+// Um pendente não é uma avaria a meio do trabalho: é o fim do trabalho deste processo. Manter o
+// lease até expirar bloquearia o `aos-orq decide` — que ESCREVE a decisão no stream do plano e
+// precisa da mesma posse — e a barreira do gate ficaria a bloquear-se a si mesma. Uma falha
+// verdadeira, em contraste, NÃO larga: aí o lease a expirar é a informação certa (alguém estava a
+// trabalhar neste run e caiu).
+//
+// Um erro a largar é reportado JUNTO do pendente, nunca em vez dele: a causa que interessa ao
+// operador é o plano estar à espera de uma decisão.
+func largarSePendente(ctx context.Context, ten *runlifecycle.Tenure, parar func(), err error) error {
+	// Uma RECUSA também é o fim do trabalho deste processo sobre o run (o plano não vai correr por
+	// esta via), e reter a posse bloqueava o passo seguinte do operador com um «posse negada».
+	// AOS-413: o prazo esgotado com nós em voo também — a retoma é de outra invocação.
+	// AOS-415: e a recusa da validação, depois de esgotadas as tentativas. Sem isto o `serve`
+	// seguinte, com o mesmo `--run`, saía com 3 («lease detido») e o operador esperava pelo TTL —
+	// observado na validação do AOS-414.
+	// AOS-442: e a recusa determinista do documento ou do snapshot — o fim do trabalho, também.
+	// AOS-439: e a recusa do nó por o submissor não constar do mandato (saída 11) — terminal, e sem
+	// isto o lease ficava vivo até ao TTL sobre um pedido que já fechou.
+	if !largaAPosse(err) {
+		return err
+	}
+	if parar != nil {
+		parar()
+	}
+	if rerr := ten.Release(ctx); rerr != nil {
+		return fmt.Errorf("%w (e o anúncio de largar a posse falhou: %v)", err, rerr)
+	}
+	return err
+}
+
+// largaAPosse diz se o erro de um `serve` é o FIM do trabalho deste processo sobre o run — e por
+// isso se anuncia que se larga a posse — ou um erro de que o mesmo run se retoma (o lease fica).
+// Existe como função para o critério ser testável sem um lease vivo.
+func largaAPosse(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errPlanoPendente) || errors.Is(err, errDecisaoRecusada) ||
+		errors.Is(err, errNosEmVoo) || errors.Is(err, planner.ErrPlanRejected) {
+		return true
+	}
+	switch codigoDe(err) {
+	case exitDocumentoRecusado, exitRequerenteForaDoMandato:
+		return true
+	}
+	return false
 }
 
 // codigoDe traduz o erro no código de saída que o distingue.
 func codigoDe(err error) int {
 	switch {
+	// SEM ERRO É SUCESSO (AOS-438). O `main` só chama isto com erro, e por isso o caso nunca fez
+	// falta — até o `consume` o chamar com o retorno do `serve` tal-qual. Sem este caso, `nil` caía no
+	// `default` e saía `exitErro`: TODO o plano bem-sucedido era reportado ao nó como falha
+	// transitória, voltava à fila, e a retoma re-decompunha e era recusada pelo gate. Medido em
+	// produção a 2026-09-25 (plan-e2e-437-1790336067: nó `complete`, desfecho final `7`).
+	case err == nil:
+		return exitOK
 	case errors.Is(err, eventstore.ErrWALHeld):
 		return exitWALDetido
 	case errors.Is(err, durable.ErrLeaseHeld):
@@ -138,6 +251,21 @@ func codigoDe(err error) int {
 		errors.Is(err, durable.ErrLeaseSuperseded),
 		errors.Is(err, durable.ErrLeaseExpired):
 		return exitFenced
+	case errors.Is(err, errPlanoPendente):
+		return exitPendenteDeAprovacao
+	case errors.Is(err, errDecisaoRecusada):
+		return exitDecisaoRecusada
+	case errors.Is(err, errNosEmVoo):
+		return exitNosEmVoo
+	case errors.Is(err, planner.ErrPlanRejected):
+		return exitPlanoRecusado
+	case errors.Is(err, errDocumentoDoPlanoRecusado),
+		errors.Is(err, errGrafoDoRunDiverge),
+		errors.Is(err, ErrSnapshotNaoCorresponde),
+		errors.Is(err, ErrSnapshotDiferenteDoSelado):
+		return exitDocumentoRecusado
+	case errors.Is(err, errRequerenteForaDoMandato):
+		return exitRequerenteForaDoMandato
 	default:
 		return exitErro
 	}
@@ -147,7 +275,11 @@ func codigoDe(err error) int {
 // vive em substrato.go. O `inspect` abre para LEITURA (nunca pede posse); o `serve` abre
 // para ESCRITA, e é aí que a posse do ficheiro é (ou não) tomada.
 
-func cmdServe(args []string) error {
+func cmdServe(args []string) error { return cmdServeCom(args, nil) }
+
+// cmdServeCom é o `serve` com o medidor do consumo do modelo de planeamento (AOS-466), que o
+// `consume` passa para declarar ao nó o que a geração gastou. nil ⇒ não se mede (o `serve` manual).
+func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var sub substrato
 	sub.registarFlags(fs)
@@ -159,19 +291,102 @@ func cmdServe(args []string) error {
 	planDoc := fs.String("plan-doc", "", "ficheiro JSON do PlanDocument APROVADO a materializar")
 	snapshot := fs.String("snapshot", "", "ficheiro JSON do snapshot PINADO de capabilities (obrigatório com --plan-doc/--goal: é dele que sai o oráculo de efeito e o validador AOS-231)")
 	goal := fs.String("goal", "", "objectivo a decompor num DAG multi-nó pelo Planner governado (F2E-02, AOS-388; exige --snapshot; exclui --nodes/--plan-doc)")
-	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM até o Model Gateway ser composto (T2-B)")
+	decomposeFixture := fs.String("decompose-fixture", "", "NÃO-PRODUÇÃO: ficheiro(s) com o PlanDocument que o decompositor-fixture devolve, para exercitar o pipeline do --goal sem LLM. Vários ficheiros separados por vírgula ⇒ um por TENTATIVA (AOS-415), repetindo o último; um caminho com vírgula não é suportado por esta via")
+	planOut := fs.String("plan-out", "", "ficheiro onde escrever o PlanDocument validado — PENDENTE de aprovação humana (AOS-408) ou aprovado (AOS-442): o documento cru não vive no log, e é este ficheiro que o `decide` reapresenta e a retoma corre por --plan-doc")
+	planTimeout := fs.Duration("plan-timeout", prazoDoPlanoPorOmissao, "com o executor de nós composto (AOS_ORQ_NODE_URL, AOS-413): quanto tempo o serve espera pelos runs dos nós; esgotado com nós em voo, sai com 8 e larga a posse. Abaixo da validade do NHI do run")
+	pollInterval := fs.Duration("poll-interval", intervaloDeSondagemPorOmissao, "com o executor de nós composto: intervalo entre leituras do estado dos runs dos nós")
+	geracaoDoPedido := fs.Int("plan-request-generation", 0, "AOS-439: a geração da reclamação do PEDIDO DE PLANO que este serve trabalha (o `consume` passa-a). Com ela, cada run filho leva o vínculo `plan_request` ao nó, que deriva daí o submissor do plano; 0 ⇒ serve manual, sem pedido e sem submissor")
+	// AOS-477: o que o `plan.proposed` cita além do documento (ver compromisso_do_objectivo.go).
+	// O `consume` passa os quatro a partir da reclamação; um `serve --goal` manual nenhum.
+	seqDoPedido := fs.Uint64("plan-request-seq", 0, "AOS-477: o `seq` do `planrequest.submitted` no Event Store do nó (o `consume` passa-o); o `plan.proposed` cita-o e cada run filho declara o seu plano e nó")
+	filaDoPedido := fs.String("plan-request-stream", "", "AOS-477: o stream da fila no Event Store do nó (com --plan-request-seq)")
+	salDoObjectivo := fs.String("objective-salt", "", "AOS-477: o sal (hex, 32 bytes) do compromisso do objectivo, vindo do nó; sem ele, o `serve --goal` tira um e imprime-o")
+	compromissoDoPedido := fs.String("objective-commitment", "", "AOS-477: o compromisso gravado no pedido; o recalculado sobre o --goal tem de lhe ser igual")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *planTimeout <= 0 || *pollInterval <= 0 {
+		return errors.New("--plan-timeout e --poll-interval têm de ser positivos")
+	}
+	if *geracaoDoPedido < 0 {
+		return errors.New("--plan-request-generation não pode ser negativa")
+	}
+	// AOS-425 — OS IDs VALIDAM-SE PRIMEIRO, ANTES DE SE LER O AMBIENTE.
+	//
+	// Esta verificação é puramente LEXICAL: não abre ficheiros, não lê env vars, não toca na
+	// rede. Vem antes da resolução do executor de nós para que, com o `--run` mal escrito E o
+	// ambiente incompleto, o operador ouça falar do FLAG que escreveu e não de uma env var que
+	// não mencionou. Está fixado por `TestAOS425OFlagEeJulgadoAntesDoAmbiente`.
+	//
+	// Não é a verificação mais barata da função — o `substrato.validar()` também é lexical e
+	// continua depois. A ordem aqui é sobre QUAL MENSAGEM GANHA, não sobre custo.
+	//
+	// Continua a cumprir a ordem que o AOS-413 fixou: tudo isto acontece ANTES da posse.
 	if *runID == "" {
 		return errors.New("--run é obrigatório")
+	}
+	// AOS-476 (revisão, B1): `--nodes` admite nós SEM plano — sem tool, sem gate — e o
+	// `--plan-doc` materializa o plano por cima. Desde que a materialização é retomável, um nó do
+	// `--nodes` com o nome de um papel do plano coincidia com ele e era aceite, e os restantes
+	// ficavam no grafo como se fossem do plano. São duas fontes de nós para o mesmo run: recusa-se
+	// a combinação antes da posse, como já se recusava com `--goal`.
+	if len(separar(*nodes)) > 0 && *planDoc != "" {
+		return errors.New("--nodes e --plan-doc não se combinam: com --plan-doc os nós são os do documento aprovado")
+	}
+	// AOS-413: o id do run filho é `<run>~<node_id>`; com um `~` no run a decomposição deixava de
+	// ser única e dois planos podiam dar o mesmo run filho.
+	if strings.Contains(*runID, separadorDoRunFilho) {
+		return fmt.Errorf("--run não pode conter %q (separa o run do nó no id dos runs filhos)", separadorDoRunFilho)
+	}
+	// AOS-425 — VALIDAR ONDE O VALOR ENTRA.
+	//
+	// O `--run` torna-se QUATRO nomes de stream: o stream do run, o `lease:<run>` da posse
+	// (AOS-286), o `<run>-plan` dos eventos do planeador, e o id da árvore de orçamento. Nenhum
+	// deles é um literal, e por isso nenhum gate estático os vê.
+	//
+	// O nó de referência já validava o mesmo valor nas DUAS portas HTTP (`POST /runs` e
+	// `POST /plans`). Este binário não validava nada além do `~`: o mesmo valor, duas portas,
+	// uma guardada. Sem isto a recusa dá-se no `Append`, DEPOIS de o lease estar reclamado — e a
+	// mensagem fala de um `stream_id`, não do flag que o operador escreveu.
+	if err := eventstore.ValidarStreamID(*runID); err != nil {
+		return fmt.Errorf("--run invalido: %w", err)
 	}
 	planoID := *planID
 	if planoID == "" {
 		planoID = *runID + "-plan"
 	}
+	// O `--plan` EXPLÍCITO precisa da sua própria verificação: o derivado herda a validade do
+	// `--run` (o sufixo `-plan` é representável), mas um valor dado à mão não herda nada.
+	if err := eventstore.ValidarStreamID(planoID); err != nil {
+		return fmt.Errorf("--plan invalido: %w", err)
+	}
+	// AOS-477: o compromisso do objectivo e o pedido de origem resolvem-se ANTES da posse — um
+	// objectivo que não é o do pedido aborta sem reclamar o lease nem chamar o modelo.
+	origem, salImpresso, err := resolverOrigemNoLog(*goal, *salDoObjectivo, *compromissoDoPedido, *filaDoPedido, *seqDoPedido, *runID, *geracaoDoPedido > 0)
+	if err != nil {
+		return err
+	}
+	// AOS-413: o executor de nós resolve-se ANTES da posse — uma configuração incompleta aborta
+	// sem reclamar o lease, como o audit do gateway.
+	cliDoNo, err := nodeClientDoAmbiente()
+	if err != nil {
+		return err
+	}
 
-	ctx := context.Background()
+	ctx := comMedidor(context.Background(), medidor)
+	// AOS-441: com o executor de nós composto, o snapshot confere-se com o catálogo de tools do
+	// nó ANTES da posse — é pelos nomes dele que os runs dos nós vão pedir as tools. Um snapshot
+	// que diverge recusa aqui, com a divergência nomeada, sem reclamar o lease.
+	// O conferido é o que se usa daqui em diante — não se relê o ficheiro (TOCTOU).
+	var conferido snapshotConferido
+	if cliDoNo != nil && *snapshot != "" {
+		snapConferido, err := conferirSnapshotComONo(ctx, cliDoNo, *snapshot)
+		if err != nil {
+			return err
+		}
+		conferido = snapshotConferido{snap: snapConferido, ok: true}
+		fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility, mutation) — AOS-441, AOS-409\n", len(snapConferido.Tools))
+	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
 	// Ver substrato.go, onde essa diferença está nomeada.
@@ -181,6 +396,27 @@ func cmdServe(args []string) error {
 	}
 	defer func() { _ = fechar() }()
 	fmt.Println(sub.descrever())
+
+	// AOS-395: o audit de governação do gateway resolve-se ANTES de tomar posse do run. Um
+	// AOS_MODEL_AUDIT_PATH inválido aborta aqui, sem reclamar o lease nem escrever no log —
+	// abortar depois da posse deixaria um lease tomado por causa de um erro de config. Um
+	// caminho detido por outro processo sai com 5, como o WAL detido. Só se abre quando a
+	// decomposição vai DE FACTO pelo gateway: um `serve` sem `--goal`, com fixture ou sem
+	// gateway não sela nada, e trancar-lhe o caminho recusaria réplicas `--nats` que partilham
+	// o ambiente sem nunca chamarem o modelo (AOS-100). Um erro de config do gateway é
+	// reportado pelo ramo do `--goal`, abaixo.
+	var govAudit audit.Store
+	var govAuditPath string
+	if *goal != "" && *decomposeFixture == "" {
+		if gw, gwErr := gatewayConfigFromEnv(); gwErr == nil && gw != nil {
+			st, caminho, fecharAudit, err := parseModelAuditFromEnv()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = fecharAudit() }()
+			govAudit, govAuditPath = st, caminho
+		}
+	}
 
 	leases, err := durable.NewLeaseManager(store, leaseTTL, durable.WithWorkerID(*worker))
 	if err != nil {
@@ -194,6 +430,44 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("posse do run %q: %w", *runID, err)
 	}
 	fmt.Printf("posse: run=%s plano=%s token=%d worker=%s\n", ten.RunID(), planoID, ten.Token(), *worker)
+	// AOS-477 (B-1): um `serve --goal` repetido no mesmo run não tira sal novo — o `plan.proposed`
+	// tem passo fixo e o log guarda só a primeira proposta. A linha diz qual é.
+	//
+	// LÊ-SE DEPOIS DA POSSE (revisão da ronda 2, B-c). Antes dela, dois `serve --goal` concorrentes
+	// sobre substrato replicado liam os dois «sem proposta» e imprimiam os dois um sal — e só um
+	// fica no log. Sob a posse, quem escreveu antes já não a tem, e a proposta dele está no log.
+	// LIMITE: um `serve` cuja posse é superada DEPOIS desta leitura imprime um sal cuja proposta
+	// nunca chega ao log; esse `serve` sai pela recusa do fencing (saída 4), não com sucesso.
+	if salImpresso != "" {
+		anterior, ja, err := propostaJaRegistada(ctx, store, planoID)
+		if err != nil {
+			return err
+		}
+		if ja {
+			origem.compromisso, salImpresso = "", ""
+			fmt.Println(linhaDaPropostaAnterior(planoID, anterior))
+		}
+	}
+	if linha := linhaDoCompromisso(origem, salImpresso); linha != "" {
+		fmt.Println(linha)
+	}
+	// AOS-408: a postura do gate de plano declara-se quando ha plano para gatar (--goal ou
+	// --plan-doc). Um `serve --nodes` nao passa por gate nenhum e o banner nao se aplica.
+	if *goal != "" || *planDoc != "" {
+		fmt.Println(bannerDoGateDePlano())
+		fmt.Println(bannerDoExecutor(cliDoNo))
+		// O TECTO DO ORÇAMENTO RESOLVE-SE AQUI, E É AQUI QUE FALHA SE ESTIVER MAL (AOS-434).
+		//
+		// Cedo de propósito: a composição só acontece depois de se tomar POSSE do run, e um
+		// `consume` que abortasse lá teria gasto uma geração de reclamação para descobrir um
+		// erro de configuração. A `comporBaseDeExecucao` relê a mesma função — o ambiente do
+		// processo não muda, logo o valor é o mesmo, e o banner declara o que vai ser composto.
+		tectoDoPlano, errTecto := tectoDoPlanoDoAmbiente()
+		if errTecto != nil {
+			return errTecto
+		}
+		fmt.Println(bannerDoOrcamentoDoPlano(tectoDoPlano))
+	}
 
 	// O emissor do domínio do plano (veredicto, payload, decisões de ramo) — os
 	// chamadores de produção que DEF-272/DEF-273 nomeavam como ausentes. É construído
@@ -215,6 +489,13 @@ func cmdServe(args []string) error {
 	})
 	defer parar()
 
+	// AOS-413: o executor de nós, quando composto; nil ⇒ o despacho não executa (como antes).
+	var exe *configDoExecutor
+	if cliDoNo != nil {
+		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
+			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil}
+	}
+
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse
 	// não precisa de saber, à partida, se o run é novo — e era essa pergunta, mal
 	// respondida, a origem do builder cego (ADR-023 §2.3).
@@ -223,6 +504,16 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("re-hidratação do grafo: %w", err)
 	}
 	fmt.Printf("grafo re-hidratado: nos=%d\n", g.DAG().Len())
+	// AOS-476: a TOPOLOGIA re-hidratada, e não só a contagem de nós. As dependências do plano só
+	// chegam a um dono seguinte pelo `task.edge.added`; sem esta linha, um grafo re-hidratado
+	// SEM arestas (o defeito medido três vezes) era indistinguível, daqui, de um com elas.
+	if g.DAG().Len() > 0 {
+		ordem, err := g.TopoOrder()
+		if err != nil {
+			return fmt.Errorf("ordem do grafo re-hidratado: %w", err)
+		}
+		fmt.Printf("grafo re-hidratado: arestas=%d ordem=%s\n", arestasDoGrafo(g.DAG(), ordem), strings.Join(ordem, ","))
+	}
 
 	// (4-goal) PIPELINE goal→DAG (F2E-02, AOS-388): com --goal, é o Planner GOVERNADO que
 	// produz os nós — mediação RM, reserva CAS, NHI agent:planner e validação AOS-231
@@ -236,7 +527,7 @@ func cmdServe(args []string) error {
 		if *snapshot == "" {
 			return errors.New("--goal exige --snapshot: o validador (AOS-231) e o oráculo de efeito derivam do snapshot pinado")
 		}
-		snap, err := carregarSnapshot(*snapshot)
+		snap, err := conferido.obter(*snapshot)
 		if err != nil {
 			return err
 		}
@@ -254,8 +545,13 @@ func cmdServe(args []string) error {
 		if model == nil && gwCfg == nil {
 			return errors.New("--goal exige --decompose-fixture (pipeline offline) OU o Model Gateway (AOS_MODEL_ENDPOINT + AOS_MODEL_NAME); nenhum composto")
 		}
-		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker); err != nil {
-			return err
+		// AOS-395: a postura do audit de governação declara-se quando a decomposição vai de
+		// facto pelo gateway (sem fixture) — amarrada ao estado composto, não à intenção.
+		if linha := modelAuditPostureBanner(model == nil && gwCfg != nil, govAuditPath); linha != "" {
+			fmt.Println(linha)
+		}
+		if err := decomporEMaterializar(ctx, ten, store, rec, snap, *goal, model, gwCfg, *worker, govAudit, *planOut, exe, origem); err != nil {
+			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
 
@@ -278,8 +574,8 @@ func cmdServe(args []string) error {
 	// snapshot pinado e não aceita substituição — ver o comentário lá. O que este
 	// comando fornece é a FONTE do snapshot e o documento aprovado.
 	if *planDoc != "" {
-		if err := materializar(ctx, ten, rec, *planDoc, *snapshot, *worker); err != nil {
-			return err
+		if err := materializar(ctx, ten, store, rec, *planDoc, *snapshot, conferido, *worker, exe); err != nil {
+			return largarSePendente(ctx, ten, parar, err)
 		}
 	}
 
@@ -342,6 +638,21 @@ func cmdInspect(args []string) error {
 	return nil
 }
 
+// arestasDoGrafo conta as arestas de dependência do DAG (AOS-476). O DAG não expõe a lista; a
+// contagem faz-se pelos pares de nós da ordem topológica — quadrática no número de nós, que num
+// plano é limitado pelo tecto do planeador, e só corre uma vez, na re-hidratação.
+func arestasDoGrafo(d *orchestrator.DAG, nos []string) int {
+	n := 0
+	for _, de := range nos {
+		for _, para := range nos {
+			if d.HasEdge(de, para) {
+				n++
+			}
+		}
+	}
+	return n
+}
+
 // separar parte uma lista separada por vírgulas, ignorando entradas vazias.
 func separar(s string) []string {
 	var out []string
@@ -368,11 +679,11 @@ func separar(s string) []string {
 // tecto real vem do plano de controlo, e este comando não o compõe. É limitação de
 // escopo DESTE binário — a admissão em si ([runlifecycle.BudgetAdmission]) é a real,
 // com reserva atómica em toda a ancestralidade e saldo por Commit/Release.
-func materializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecycle.PlanRecorder, docPath, snapPath, worker string) error {
+func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, docPath, snapPath string, conferido snapshotConferido, worker string, exe *configDoExecutor) error {
 	if snapPath == "" {
 		return errors.New("--plan-doc exige --snapshot: sem o snapshot pinado não há oráculo de efeito real, e o verificador materializaria com autoridade vazia (DEF-273)")
 	}
-	snap, err := carregarSnapshot(snapPath)
+	snap, err := conferido.obter(snapPath)
 	if err != nil {
 		return err
 	}
@@ -382,61 +693,69 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, rec *runlifecyc
 	}
 	doc, err := plan.Decode(raw)
 	if err != nil {
-		return fmt.Errorf("documento aprovado %q: %w", docPath, err)
+		// AOS-442: um documento que não descodifica não descodificará à segunda — determinista.
+		return fmt.Errorf("%w: %q nao descodifica: %v", errDocumentoDoPlanoRecusado, docPath, err)
 	}
-
-	b, err := budget.New(ten.RunID(), budget.Amount{Tokens: materializeBudgetTokens, CostMicroUSD: materializeBudgetCost})
-	if err != nil {
-		return fmt.Errorf("orçamento da árvore: %w", err)
-	}
-	adm, err := runlifecycle.NewBudgetAdmission(b, ten.RunID())
+	// AOS-442 — SE O RUN TEM UM PLANO VALIDADO E AINDA SEM DECISÃO, O DOCUMENTO TEM DE SER ESSE, em
+	// qualquer ramo do gate.
+	//
+	// Sem decisão, o gate só confrontava o hash com o `plan.validated` no ramo de RISCO. Um ficheiro
+	// trocado por um organigrama BENIGNO com o mesmo `capabilities_hash` caía no ramo sem risco e era
+	// auto-aprovado — contornando a revisão humana do plano que estava de facto pendente. O
+	// `plan.validated` é de primeira escrita: é ele a âncora do run.
+	//
+	// COM decisão, quem manda é ela: o gate recusa (7) qualquer documento cujo hash não seja o
+	// decidido, e diz qual foi a decisão — que é a causa que o operador precisa de ver.
+	estado, err := lerDecisaoDoPlano(ctx, store, rec.PlanID())
 	if err != nil {
 		return err
 	}
-
-	m, err := ten.Materializer(ctx, snap, rec, adm)
-	if err != nil {
-		return fmt.Errorf("materializador: %w", err)
+	if h := hashDoPlano(doc); estado.Validated() && estado.Decision() == "" && h != estado.PlanHash() {
+		return fmt.Errorf("%w: %q tem hash %s e o plano %s ja foi validado com %s — nao e o organigrama deste run",
+			errDocumentoDoPlanoRecusado, docPath, h, rec.PlanID(), estado.PlanHash())
 	}
-	payload, err := m.Materialize(ctx, planmaterialize.Request{
-		RunID:          ten.RunID(),
-		PlanID:         rec.PlanID(),
-		ParentToken:    "nhi:" + worker,
-		RootBudgetNode: ten.RunID(),
-		Doc:            doc,
+	// AOS-412: o `--plan-doc` percorre o MESMO caminho que o `--goal`, menos a decomposição.
+	//
+	// Até aqui era uma via à parte e incompleta: materializava com um token de faz-de-conta
+	// (`"nhi:"+worker`), NÃO validava o documento (a regra AOS-231 só corria no `--goal`) e NÃO
+	// despachava — os nós ficavam admitidos e pendentes para sempre. Com o modelo vivo isso
+	// deixava um plano de risco APROVADO sem forma nenhuma de correr: repetir o `--goal`
+	// re-decompõe e produz outro organigrama, e o `--plan-doc`, a via determinística, parava na
+	// admissão.
+	//
+	// (a) validação estrutural — o documento é untrusted, venha de onde vier. Uma recusa aqui é
+	//     determinista (AOS-442): o mesmo documento sob o mesmo snapshot recusa sempre;
+	if err := validarEstrutura(doc, snap); err != nil {
+		return fmt.Errorf("%w: %v", errDocumentoDoPlanoRecusado, err)
+	}
+	// (b) o MESMO gate do `--goal`: um plano sem risco auto-aprova e fica com os factos no log;
+	//     um de risco exige a decisão humana DESTE organigrama, sob o mesmo catálogo e no plano do
+	//     run da posse (ten.RunID(), nunca derivado do `--plan`);
+	hashDoPlano, err := gatearPlano(ctx, pedidoDeGate{
+		rec:   rec,
+		store: store,
+		runID: ten.RunID(),
+		doc:   doc,
+		snap:  snap,
 	})
 	if err != nil {
-		// FAIL-CLOSED SEM VAZAR: a materialização é em duas fases e aborta antes de
-		// qualquer efeito, mas os nós JÁ admitidos deixaram reservas pendentes. Sem
-		// esta devolução, cada tentativa falhada encolhia a árvore até negar tudo.
-		if rerr := adm.Release(ctx); rerr != nil {
-			return fmt.Errorf("materialização falhou (%w) e a devolução das reservas também: %v", err, rerr)
-		}
-		return fmt.Errorf("materialização: %w", err)
+		return err
 	}
-	if err := adm.Commit(ctx); err != nil {
-		return fmt.Errorf("confirmação das reservas de admissão: %w", err)
+	// (c) a base de execução REAL (identidade, RM, orçamento) e (d) materializar + despachar.
+	b, err := comporBaseDeExecucao(ctx, ten.RunID(), worker, snap)
+	if err != nil {
+		return err
 	}
-
-	fmt.Printf("materializado: plano=%s nos=%d oraculo=snapshot(%s)\n", payload.PlanID, len(payload.Nodes), snap.Hash)
-	for _, n := range payload.Nodes {
-		fmt.Printf("  no=%s kind=%s tools=%s\n", n.NodeID, n.Kind, strings.Join(n.Tools, "|"))
-	}
-	return nil
+	b.exe = exe
+	return materializarEDespachar(ctx, ten, store, rec, b, snap, doc, hashDoPlano, worker)
 }
 
-// NOTA (AOS-390, ADR-024): a via `--plan-doc` é ADMISSÃO-PURA. A materialização já não
-// produz efeito (não spawna papéis nem arranca folhas); admite os nós no DAG como
-// pendentes e apensa `plan.materialized`. Um documento com papéis-que-expandem é
-// ADMITIDO (o papel entra como nó pendente sem tool), não recusado — mas este comando
-// não compõe o despacho governado, pelo que os nós ficam pendentes (nenhum sub-agente é
-// criado). O antigo `recusaSpawn` deixou de fazer sentido: não há spawn na
-// materialização que recusar.
+// NOTA (AOS-390, ADR-024, revista no AOS-412): a MATERIALIZAÇÃO continua admissão-pura — não
+// spawna papéis nem arranca folhas; admite os nós no DAG e apensa `plan.materialized`. O efeito
+// nasce no DESPACHO governado, que desde o AOS-412 o `--plan-doc` também compõe (antes não
+// compunha, e os nós ficavam pendentes para sempre). É a leitura do ADR-024 levada até ao fim:
+// efeito no despacho, e não «sem efeito nenhum por esta via».
 
-// Tectos do orçamento da árvore usados pela materialização deste comando. Um tecto
-// real vem do plano de controlo; aqui são generosos e declarados, para que a admissão
-// exercite o caminho de RESERVA sem ser o que decide o desfecho da demonstração.
-const (
-	materializeBudgetTokens = 1 << 30
-	materializeBudgetCost   = 1 << 30
-)
+// Os tectos do orçamento da árvore SAÍRAM daqui em AOS-434 — eram duas constantes fixas de
+// `1 << 30` e passaram a ser configuráveis, com os defaults e a explicação do que governam (e
+// do que NÃO governam) em `budget_env.go`.

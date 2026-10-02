@@ -56,6 +56,15 @@ type Obligation struct {
 	Params map[string]string // parâmetros genéricos (ex.: {"seconds": "3600"})
 }
 
+// HookLatency é a duração de um hook da cadeia de política numa mediação (AOS-405).
+type HookLatency struct {
+	// Hook é o [Hook.Name] do hook.
+	Hook string
+	// Latency é o tempo de [Hook.Evaluate] desse hook, incluindo o que ele próprio escreve (o
+	// hook de revalidação sela no WORM dentro desta janela).
+	Latency time.Duration
+}
+
 // Decision é o resultado de [Monitor.Mediate]. É sempre devolvida (mesmo em
 // negação): fail-closed produz uma Decision Deny, nunca a ausência de resposta.
 type Decision struct {
@@ -74,6 +83,39 @@ type Decision struct {
 	Obligations []Obligation
 	// Latency é o tempo total de mediação (avaliação + registo + despacho).
 	Latency time.Duration
+	// DecisionLatency é o tempo da CADEIA DE DECISÃO apenas — avaliação de política,
+	// obrigações e registo pré-efeito — EXCLUINDO a janela do despacho da tool.
+	//
+	// Num permit é ESTRITAMENTE MENOR que [Latency]: fecha depois de o selo pré-efeito
+	// `tool.call.mediated` estar durável e ANTES de a tool ser despachada.
+	// Numa recusa ou escalada é IGUAL a [Latency] — esses caminhos não despacham nada.
+	//
+	// É esta, e não [Latency], que exprime o custo que a mediação ACRESCENTA, e é a que
+	// o SLO de overhead de mediação (p95 < 15 ms) mede. Confundi-las fazia o SLI reportar
+	// a duração da execução no sandbox — 0,6–1,8 s em gVisor — como overhead de decisão,
+	// e disparar um `critical` em qualquer nó com tráfego real (DEF-281, fechado por AOS-398).
+	DecisionLatency time.Duration
+	// PolicyLatency é a janela da CADEIA DE POLÍTICA: identidade, PDP, orçamento, egress e
+	// obrigações — até imediatamente ANTES da escrita do selo de auditoria. É o mesmo instante
+	// que o `latency_ns` do selo `tool.call.mediated` regista, e é ESTA a janela que o SLO de
+	// overhead de mediação (p95 < 15 ms) governa (AOS-401, emenda ao ADR-026 §1).
+	//
+	// Existe porque [DecisionLatency] inclui a escrita durável do selo: a 2026-09-16, com a
+	// v0.1.15, a janela da decisão mediu 30,8–32,7 ms em produção. O SLO voltava a disparar. A
+	// diferença atribuiu-se à escrita por inferência; [AuditWriteLatency] é a medida directa que
+	// faltava. O AOS-404 decompôs esses valores: duas calls lentas em todos os troços ao mesmo tempo,
+	// num p95 de poucas amostras. A janela da política inclui o selo durável da revalidação (AOS-381).
+	PolicyLatency time.Duration
+	// AuditWriteLatency é a duração da escrita do selo de mediação no sink (Event Store/WORM).
+	// Num permit está no caminho crítico — o efeito espera por ela — e soma com [PolicyLatency]
+	// para dar [DecisionLatency]. Observável, sem SLO: nenhum alvo foi ratificado para o custo
+	// de um sink durável, e é por não o haver que ela deixou de contar para os 15 ms.
+	AuditWriteLatency time.Duration
+	// HookLatencies é a duração de CADA hook que correu, pela ordem da cadeia (AOS-405). Somam-se
+	// dentro de [PolicyLatency]; o resto da política é o próprio RM (registo da tool e imposição de
+	// obrigações). Numa recusa ou escalada só estão os hooks até ao que decidiu, esse incluído; na
+	// recusa por contexto cancelado, antes de correr qualquer hook, é nil. Observável, sem SLO.
+	HookLatencies []HookLatency
 	// MediationSeq é o seq do evento de mediação no Event Store (0 se o registo
 	// não produziu seq).
 	MediationSeq uint64
@@ -92,6 +134,12 @@ type Decision struct {
 	// do ledger — assim replay/dedup, que não re-incorrem o efeito, emitem ZERO custo.
 	// Uma tool reporta-o via [Monitor.RegisterCosting]; via [Monitor.Register] é sempre 0.
 	CostMicroUSD int64
+	// Principal é o principal da call TAL COMO A CADEIA DE HOOKS O DEIXOU — no nó, o que o
+	// hook de identidade resolveu do token verificado (agente + cadeia raiz humana → agente).
+	// Só em permit. É ATRIBUIÇÃO, não autorização: serve a quem grava um facto causado por
+	// esta call — o step-ledger do Agent Runtime — para o envelope identificar o MESMO
+	// principal que o selo `tool.call.mediated` do passo (AOS-478).
+	Principal Principal
 
 	// permit é o token não-forjável emitido só em Permit (nil caso contrário).
 	// É não-exportado: código externo não o consegue construir nem inspeccionar,

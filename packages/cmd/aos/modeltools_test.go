@@ -50,8 +50,10 @@ func TestLoadModelTools_FailClosed(t *testing.T) {
 }
 
 // TestToolEnrichment_BindsCapabilityNotTaint — o enriquecedor preenche Capability/Resource do
-// registry TRUSTED mas NUNCA AuthorizationTaint (invariante AOS-069: fica untrusted → o TaintGate
-// nega a capability privilegiada). É a peça que torna a mediação PDP demonstrável fim-a-fim.
+// registry TRUSTED e mais nada. Que ele não decide a autorização é hoje ESTRUTURAL: a ToolInvocation
+// não tem campo de taint (AOS-069, ADR-034 — guardado por TestModelBoundaryCarriesNoAuthority no
+// agent-runtime); o taint é cunhado pelo runtime a partir do contexto do turno. É a peça que torna
+// a mediação PDP demonstrável fim-a-fim.
 func TestToolEnrichment_BindsCapabilityNotTaint(t *testing.T) {
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, `[{
 		"name":"web_post","description":"HTTP POST","capability":"cap:http.post",
@@ -75,11 +77,6 @@ func TestToolEnrichment_BindsCapabilityNotTaint(t *testing.T) {
 	}
 	if inv.ResourceType != "http" || inv.ResourceRegion != "eu" {
 		t.Errorf("Resource não enriquecido: type=%q region=%q", inv.ResourceType, inv.ResourceRegion)
-	}
-	// INVARIANTE: AuthorizationTaint tem de ficar VAZIO (untrusted, fail-closed). Se algum dia for
-	// preenchido a partir da saída do modelo, a escalada de privilégio (P4) fica aberta.
-	if inv.AuthorizationTaint != "" {
-		t.Errorf("AuthorizationTaint NÃO pode ser preenchido pelo enriquecedor, got %q", inv.AuthorizationTaint)
 	}
 }
 

@@ -410,7 +410,7 @@ func TestDevHarness_SovereignSubmit_TitularAndResidency(t *testing.T) {
 
 	// (1) FAIL-CLOSED: sem credencial resolvível não há titular sob o qual cifrar ⇒ 403, nada persiste.
 	const runIDDeny = "dev-sov-deny"
-	rec := postReq(h, "/runs", submitRequest{RunID: runIDDeny, PrincipalNHI: "nhi:auto-declarado"}, nil)
+	rec := postReq(h, "/runs", submitRequest{RunID: runIDDeny, PrincipalNHI: "nhi:auto-declarado", Credential: credencialDeTeste(t, node)}, nil)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("submit soberano SEM credencial devia dar 403, veio %d (%s)", rec.Code, rec.Body.String())
 	}
@@ -556,7 +556,10 @@ func buildAOSIssuer(t *testing.T) string {
 	}
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	cmd.Dir = "../aos-issuer" // cwd de `go test` = packages/cmd/aos ⇒ ../aos-issuer = o módulo do issuer
-	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod")
+	// GOWORK=off (AOS-387): o issuer compila-se como módulo standalone, pelas suas próprias
+	// `replace`, e o modo workspace (o go.work da raiz) proíbe -mod=mod — sem isto o teste
+	// avermelhava a quem corresse `go test` com o workspace activo.
+	cmd.Env = append(os.Environ(), "GOPROXY=off", "GOFLAGS=-mod=mod", "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("compilar aos-issuer: %v\n%s", err, out)
 	}
@@ -600,7 +603,7 @@ func TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary(t *testing.T) {
 
 	// PROCESSO 1 (aos-issuer): minta um token NHI — a chave NUNCA sai deste processo.
 	tok := runAOSIssuer(t, bin, "mint", "--key-file", keyFile, "--issuer", issuerID,
-		"--human", "human:alice", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
+		"--human", "human:alice", "--board", "board:aos-demo", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
 	if tok == "" {
 		t.Fatal("o issuer não produziu token")
 	}
@@ -636,7 +639,7 @@ func TestDevHarness_IssuerSubprocess_NodeVerifiesRealBinary(t *testing.T) {
 	// NEGADO em identity — o anchor (pubkey da 1ª chave) é a única fonte de confiança.
 	rogueKey := filepath.Join(t.TempDir(), "rogue.key")
 	rogueTok := runAOSIssuer(t, bin, "mint", "--key-file", rogueKey, "--issuer", issuerID,
-		"--human", "human:alice", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
+		"--human", "human:alice", "--board", "board:aos-demo", "--agent", tnAgent, "--class", tnClass, "--caps", tnCap)
 	decRogue, err := node.Runtime.Monitor().Mediate(ctx, tnCall(rogueTok))
 	if err != nil {
 		t.Fatalf("Mediate (rogue): %v", err)

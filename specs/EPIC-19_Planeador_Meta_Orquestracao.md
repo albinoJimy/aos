@@ -65,6 +65,9 @@ Invariante congelado (autoridade de `tecnica/18`): o **plano proposto pelo LLM �
 | AOS-390 | Compor o despacho governado do Planeador (`plandispatch.Dispatcher` sob Tenure) | feature | L | P0 | AOS-281, AOS-237, AOS-238, AOS-389 |
 | AOS-391 | T2-B: compor o `decompose.Model` real via Model Gateway | feature | L | P1 | AOS-388, AOS-390, AOS-278 |
 | AOS-393 | Fix fail-closed: o ramo papéis-que-expandem via `Delegator.Spawn` é recusado no `--goal` (depth_mismatch; `agent.spawn` latente) | feature (correcção) | S | P1 | AOS-388, AOS-026, AOS-237 |
+| AOS-400 | O prompt de decomposição declara o schema do `PlanDocument` que o decode exige | fix | M | P1 | AOS-241, AOS-273, AOS-391 |
+| AOS-408 | O gate de aprovação de plano fica composto no `aos-orq`: um plano de risco espera decisão humana antes de materializar | feature | L | P1 | AOS-236, AOS-237, AOS-390, AOS-388 |
+| AOS-409 | O `IsEffectTool` ganha o 4.º eixo — mutação — a partir de uma fonte de verdade que não seja o próprio plano | feature | M | P2 | AOS-231, AOS-408 |
 
 ---
 
@@ -75,6 +78,49 @@ O contrato entre o LLM e o sistema é o PlanDocument (`tecnica/18` §3.3): artef
 
 ### Objectivo
 Definir o schema do PlanDocument com `plan_version` SemVer e desserialização fail-closed.
+
+### O que a discovery mediu, e que condiciona quem implementar
+
+- **O facto não traz o que o `serve` exige.** O payload tem `run_id` e `objective`; o
+  `serve --goal` exige **também** `--snapshot` (ficheiro pinado, hoje colocado à mão em
+  `/etc/aos-orq/snapshot.json`) e o Model Gateway por ambiente (`AOS_MODEL_ENDPOINT`/`_NAME`), sem
+  os quais recusa. De onde vem o snapshot por pedido? Um snapshot global significa que **todos** os
+  pedidos correm contra o mesmo catálogo pinado.
+- **`region` e `board` viajam no facto e nada no `serve` os honra.** Não há flag de região; com
+  `--nats-region` a fronteira é do store inteiro, não do run. Um consumidor que ignore o `region`
+  do facto viola a intenção escrita no ingresso — e a soberania é o eixo onde o AOS-417 já
+  tropeçou uma vez.
+- **O molde do `approval_store_durable` NÃO é importável:** `packages/integration` não está no
+  `go.mod` do `aos-orq`, e o tipo vive em `package integration`. Terá de ser **reescrito**, não
+  reutilizado. Em contrapartida o `control-plane/scheduler` **já está** no grafo (indirect, com
+  `replace`), pelo que o vocabulário de backpressure é alcançável.
+- **Do backpressure do EPIC-03 reaproveita-se o vocabulário, não a fila.** O `Degrader` e o
+  `PolicyEngine` são injectáveis e as acções estão modeladas (`ActionShed`, `ActionDefer`,
+  `ActionDowngrade`, `ActionReject`), mas o `PartitionedQueues` é **em memória** — e o ADR-028 §3
+  rejeita-o explicitamente por isso. O `Defer` exige um `DeferSink` que para uma fila durável não
+  existe.
+- **Mapeamento dos códigos de saída**, que a decisão (4) tem de fixar: `3` (lease detido por outro)
+  é **transitório**; `8` (prazo esgotado com nós em voo) é **retomável**; `6` (pendente de decisão
+  humana) e `7` (decisão recusada) são **terminais para esta invocação**; `9` (plano recusado pela
+  validação) é **permanente**. Os códigos `6/7/8/9` **largam** a posse; qualquer outro `1`
+  retém-na até ao TTL de 30s — o que importa para a cadência de re-tentativa.
+- **Custo de leitura O(n).** O molde existente varre o stream inteiro por passagem. O
+  `approval_store_durable` declara-o aceitável «porque a partição é pequena»; uma fila sem
+  retenção não o é. É a razão PRÁTICA pela qual a decisão (3) importa, e não só a de espaço.
+- **Determinismo dos testes:** o molde do repositório é o `ExportBackupNow`/`SweepRetentionNow` —
+  um método exportado que conduz UM ciclo sem esperar pelo ticker. O `testkit` tem
+  `NewManualClock`, `MustEventStore` e `IdempotencyKey(runID, stepID)` — a **mesma** função pura
+  que o Event Store usa, pelo que a chave se assere sem a reescrever. E o
+  `dois_processos_test.go` do `aos-orq` já compila o binário e corre dois processos reais — é lá
+  que o teste dos dois consumidores pertence.
+- **Efeito colateral garantido:** o `TestAOS417BannerDoConsumidorNaoApodrece` fica **vermelho** no
+  instante em que qualquer ficheiro de `packages/cmd/aos-orq/` contiver o nome do stream —
+  incluindo um teste. É intencional, e obriga o PR do consumidor a corrigir o literal `false` no
+  `bootstrap.go` do nó.
+- **LACUNA por fechar, herdada do AOS-417:** não há evidência de que o caminho novo passe pelo
+  orçamento por árvore (AOS-027). O `materializar` usa tectos `1<<30` vindos do próprio comando,
+  declaradamente de demonstração. Um consumidor torna trivial disparar corridas; sem isto
+  verificado, torna trivial disparar **custo**.
 
 ### Critérios de Aceitação
 - [x] Campos por nó: `node_id`, `role`, `objective`, `tools[]` (nome+versão+digest), `depends_on`, `budget_estimate`, `risk_class` (advisory). *(Evidência: `packages/control-plane/orchestrator/plan/plandocument.go` — struct `Node`.)*
@@ -649,11 +695,11 @@ Alternativas rejeitadas: **(B)** o Dispatcher gateia ANTES da materialização �
 - [ ] **Gating por `depends_on`**: um nó com dependência não concluída **não** é despachado (teste: `B depends_on A`, `A` pendente ⇒ `B` não spawna).
 - [ ] **Arestas condicionais + poda `branch_not_taken`** (ADR-022 §2.1): `B conditional_on A {verdict=fail}` — se `A` passa, `B` é decidido `branch_not_taken` e **não** tem efeito; se `A` falha, `B` é despachado. Prova pela composição real, caso positivo **e** negativo. **Isto fecha a violação medida no AOS-389.**
 - [ ] **Headroom de concorrência**: com headroom esgotado, os nós elegíveis excedentes ficam `OutcomeDeferredHeadroom` e são retomados numa passagem seguinte quando a concorrência liberta — sem os perder e sem fail-open.
-- [ ] **Card oracle**: um nó cujo card exige aprovação humana (`danger`) fica `waiting`, não é spawnado sem o gate (AOS-236).
+- [x] **Card oracle**: um nó cujo card exige aprovação humana (`danger`) fica `waiting`, não é spawnado sem o gate (AOS-236). *(Fechado pelo **AOS-408**: o `cardsFailClosed` — que recusava sempre e nunca era consultado, porque o `needsCard` era `false` — deu lugar ao `runlifecycle.PlanDecisionReader` (decisão do plano derivada do log) e a um `needsCard` que é a projecção do cartão pelo risco RESOLVIDO. `TestAOS408_PlanoDeRiscoNaoMaterializaSemAprovacao` e `TestAOS408_DecisaoAssinadaAprovaEDepoisMaterializa`.)*
 - [ ] **Semântica re-invocável**: o Dispatcher é função por passagem, sem laço próprio; o escalonador do `serve` re-invoca-o quando `ResultView`/`LifecycleView` mudam ou headroom liberta. **Não escreve ciclo de vida** (teste: o stream do run não cresce por escrita do dispatcher numa passagem só de leitura).
 - [ ] **Sob Tenure**: um dispatcher cuja posse foi superada é recusado por fencing (`ErrStaleFencingToken`) sem tocar no log — herda a disciplina de AOS-281.
 - [ ] **AOS-389 é superado**: o guard fail-closed de condicionais é substituído pela avaliação real; o guard-test de não-regressão de AOS-389 passa a assertar avaliação em vez de recusa.
-- [ ] **Registo**: a row de deferimento do gap de despacho passa a `FECHADO-RESIDUAL`/removida; DEF-274 e DEF-275 têm o Eixo corrigido para este ticket. RTM regenerada.
+- [ ] **Registo**: a row de deferimento do gap de despacho passa a `FECHADO-RESIDUAL`/removida; DEF-274 e DEF-275 têm o Eixo corrigido para este ticket. RTM regenerada. *(Esta caixa fica por marcar e assim deve ficar: o eixo de DEF-274/275 foi corrigido no **AOS-408** — para si próprio —, não neste ticket. Marcá-la seria afirmar que este ticket fez o que não fez; o AOS-408 fechou o DEF-274 e o DEF-275 continua ABERTO com eixo válido.)*
 
 ---
 
@@ -685,7 +731,7 @@ Medido: sem `--decompose-fixture`, `--goal` recusa fail-closed com erro que nome
 Compor um `decompose.Model` de produção que invoca o Model Gateway para produzir o `PlanDocument` a partir do `goal`, sob a identidade e o orçamento corretos, substituindo o `fixtureModel` no caminho `--goal`. Fecha DEF-803 e o critério de saída do goal→DAG real.
 
 ### Critérios de Aceitação
-- [x] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline. *(Cablagem entregue: `packages/cmd/aos-orq/model_gateway_wiring.go` — `gatewayDecomposeModel` fala directo com `port.Gateway.Chat` (system+user); composição via `modelgateway.NewProduction` em `decomporEMaterializar`. Build OFFLINE verde. O caminho VIVO é **env-gated** — `AOS_MODEL_ENDPOINT`+`AOS_MODEL_NAME`+credencial+rede — corre onde há endpoint, como os testes `--nats` cluster-gated.)*
+- [x] `--goal` **sem** `--decompose-fixture` produz um `PlanDocument` via Model Gateway (deixa de recusar); `--decompose-fixture` continua disponível para testes offline. *(Cablagem entregue: `packages/cmd/aos-orq/model_gateway_wiring.go` — `gatewayDecomposeModel` fala directo com `port.Gateway.Chat` (system+user); composição via `modelgateway.NewProduction` em `decomporEMaterializar`. Build OFFLINE verde. O caminho VIVO é **env-gated** — `AOS_MODEL_ENDPOINT`+`AOS_MODEL_NAME`+credencial+rede — corre onde há endpoint, como os testes `--nats` cluster-gated.)* **Reaberto a 2026-09-16:** com o modelo de produção a chamada chega ao gateway e é selada, mas o planeador recusa os três planos (`plan: objective de topo em falta`), porque o prompt não declara o schema que o decode exige. **Fechado outra vez a 2026-09-16 pelo AOS-400:** com o prompt 1.2.0, o run `run-aos400-prod-1789593240` decompôs à primeira tentativa um plano de 2 nós, que foi validado, materializado e despachado.
 - [x] A invocação corre sob NHI com `model:invoke` **verificada**; a decisão ADR-020 está documentada e implementada. *(O token do run sela `model:invoke` (`planner_wiring.go`, `coordCaps`); o estágio authn REAL do gateway (`authn.New(verifier, autoridadeModelo, LoadPolicy())`) verifica-o fail-closed. Fidelidade ADR-020 RESIDUAL declarada: usa-se o token do RUN, não o `agent:planner`, porque o `planner.Planner` não expõe o token filho ao decompositor — follow-up no control-plane.)*
 - [~] A reserva de planeamento é admitida antes da decomposição (AOS-234) — SIM (via `planner.Planner`). O custo do turno para o burn-down (AOS-259) — `Cost: nil` (sem tabela de preços montada) ⇒ transporta ZERO declarado; montar o `cost.Recorder` (à imagem de `cmd/aos/model_pricing_env.go`) é follow-up.
 - [x] O `PlanDocument` passa pelo validador puro (AOS-231) e, se tiver condicionais, são **avaliadas** por AOS-390 (landed) — nem recusadas nem fail-open. *(O caminho `--goal` valida com `planvalidate.Validate` e despacha via o Dispatcher composto.)*
@@ -782,6 +828,4651 @@ Corrige o ramo papéis-que-expandem do --goal do aos-orq (AOS-393, EPIC-19).
 
 ---
 
+## AOS-400 — O prompt de decomposição declara o schema do `PlanDocument` que o decode exige
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-009 (cache-estabilidade do prompt) e ADR-012 (mutação governada do prompt) citados
+     neste bloco são MENÇÃO — restrições que o ticket respeita — não implementação. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-241 (prompt SemVer, golden-sets e eval-gate), AOS-273 (precedente: a regra do `plan_version`), AOS-391 (decomposição pelo Model Gateway) |
+| Bloqueia | AOS-391 (critério «`--goal` sem fixture produz um `PlanDocument`», que não se cumpre com o modelo vivo) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plannerprompt/artifact.go` (`decompositionTemplateV1`, `Current`), `packages/control-plane/orchestrator/plan/plandocument.go` (`Decode`, `validateShape`), `packages/control-plane/orchestrator/decompose/decompose.go` (`renderUser`, `extractJSON`), `packages/control-plane/orchestrator/plannerprompt/prompt.go` (`ValidatePromptMutation`) |
+
+### Contexto
+
+Medido em produção a 2026-09-16, na validação do AOS-395. O `aos-orq` compilado do `3a5aaa6` correu duas vezes contra o litellm de produção (`gpt-4o-mini`) com `serve --goal`. Nas duas, o litellm respondeu 200 às três tentativas e o planeador recusou os três planos:
+
+```
+aos-orq: decomposição do objectivo: planner: decomposição falhou em todas as tentativas:
+  decompose: documento invalido: plan: objective de topo em falta
+```
+
+Nada foi materializado (fail-closed correcto). A decomposição por LLM vivo nunca tinha produzido um plano aceite: os testes do AOS-388/391/395 usam fixtures ou upstreams falsos que já devolvem o schema certo.
+
+**Causa.** O template `decompositionTemplateV1` (prompt 1.1.0) exige «UM PlanDocument JSON de schema FECHADO (sem campos extra)», mas nunca diz quais são os campos. Nomeia só os campos por nó `node_id`, `role`, `objective` e `depends_on`, mais `planner_meta` e `plan_version`. O `plan.Decode` recusa campos desconhecidos (`DisallowUnknownFields`) e o `validateShape` exige:
+- no topo: `plan_version`, `objective`, `planner_meta` completo e `nodes` não vazio;
+- em cada nó: `node_id`, `role` e `objective` não vazios, `risk_class` num valor válido, e cada referência de ferramenta com `name`, `version` e `digest`.
+
+O template não menciona o `objective` de topo, o `budget_total`, o nome da lista `nodes`, nem os campos de nó `tools`, `budget_estimate` e `risk_class`. O modelo não tem como adivinhar um schema fechado que não vê. O primeiro campo em falta é o `objective` de topo. É a mesma classe de lacuna que o AOS-273 fechou para o `plan_version`, que o template também não nomeava: um prompt é um pedido e o validador impõe, mas o pedido tem de conter o contrato.
+
+### Objectivo
+
+Com o modelo de produção, `serve --goal` sem fixture produz um `PlanDocument` que passa o `plan.Decode` e o validador AOS-231, sem mudar o contrato do schema nem enfraquecer a validação.
+
+### Critérios de Aceitação
+
+- [x] O template declara o schema completo do `PlanDocument`: os campos de topo e de nó, quais são obrigatórios, a forma das referências de ferramenta e dos orçamentos, os valores de `risk_class`, e que campos fora do schema são recusados. O texto continua estático (cache-estável, ADR-009); o conteúdo variável continua no `renderUser`. *(`plannerprompt/artifact.go`: bloco SCHEMA com o topo, o nó, os tipos aninhados entre chavetas, os tectos de cardinalidade, o predicado por subject e todos os valores fechados; FORMA MINIMA com placeholders `<...>`, uma ferramenta e orçamentos positivos. **Acrescento à discovery (revisão adversarial)**: mostrar as extensões sem as regras do validador que as acompanham seria ensinar planos que o AOS-231 recusa, e o planeador só repete a tentativa quando o decode falha — uma recusa do validador acaba o run. As regras 7 a 9 dizem essas regras (aresta por um só canal, `consumes` sobre aresta de entrada com o mesmo `type`, `verdict` só de um `role: verifier`), e a 10 pede orçamentos realistas: um nó a zero é admitido sem reserva e um papel a zero não consegue delegar, porque a fatia do spawn tem de ser positiva. O template continua `const`.)*
+- [x] A mudança é um bump governado por `ValidatePromptMutation` (ADR-012), com a classe SemVer justificada (MINOR se só acrescenta o contrato, como no AOS-273) e o `Current` actualizado. *(`Current` = 1.2.0. MINOR: as regras 1 a 6 ficam iguais byte a byte, o schema não muda e o texto não impõe nada que o decode e o validador não impusessem já. `TestAOS400_Mutacao110Para120PassaOGateADR012` é a primeira chamada do gate sobre a mutação real: o template 1.1.0 publicado fica em `testdata/prompt-1.1.0.txt`, preso pelo SHA-256 `25c9732a…`, e o teste confere também o MINOR e as regras intactas. O gate em si não classifica a classe SemVer — aceita qualquer versão estritamente maior —, por isso a classe é verificada no teste.)*
+- [x] Os golden-sets e o eval-gate do prompt (AOS-241) ficam verdes com a nova versão, e há um caso que falha com o template 1.1.0: um documento sem `objective` de topo é o que um modelo produz sem o schema. *(`scripts/ci/evalgate.sh` verde: planeador com segurança 12/12 e qualidade 8/10, golden-set 1.2.0 inalterado. O eval-gate avalia documentos já descodificados e não lê o template, pelo que não consegue ver esta lacuna: o caso que falha com o 1.1.0 vive no teste do template. `TestTemplateDeclaraOSchemaQueODecodeExige` mede o 1.1.0 e exige as faltas `topo.objective*`, `topo.nodes*`, `topo.budget_total` e `no.objective*`; `TestAOS400_SemOObjectiveDeTopoAFaltaEExactamenteEssa` isola-a, retirando do template corrente só a linha do `objective` de topo e exigindo que a única falta seja essa. `TestAOS400_DocumentoDaProducaoERecusadoSemObjectiveDeTopo` documenta o lado do decode.)*
+- [x] Um teste impede a regressão da lacuna: cada campo obrigatório de `validateShape` aparece nomeado no template. Um campo novo obrigatório no `PlanDocument` sem menção no prompt faz o teste falhar. *(`TestTemplateDeclaraOSchemaQueODecodeExige`: os nomes saem das tags JSON dos tipos de `plan`; a obrigatoriedade sai do próprio `plan.Decode`, retirando cada campo de um documento válido; cada campo procura-se na linha onde o template o declara (topo, nó, ou as chavetas do campo-pai), com `*` se e só se o decode o exige; um campo novo que o documento de teste não use faz o teste falhar. `TestAOS400_FormaMinimaPassaODecodeEOValidador` prova que a forma mínima passa o decode e, preenchida, o validador. **FALHA-ANTES MEDIDA por mutação** no template: sem a linha do `objective` de topo, com `name` sem `*` em `outputs`, sem `"gray"` em `risk_class`, sem `"verdict"` na linha de `type`, e sem o `objective` na forma mínima — cada uma falha com a falta exacta. **Limites declarados**: a obrigatoriedade dos campos do predicado depende do subject e fica fixa no teste; os valores fechados são uma lista do teste tirada das constantes de `plan`, pelo que um valor novo não é detectado sozinho.)*
+- [x] Evidência de sistema: um run avulso em produção (a forma registada no AOS-395) produz `decomposto: objectivo -> plano de N nos` com o modelo real, e o selo do planeador fica no WORM como antes. Se o modelo continuar a falhar por outra forma, a causa fica registada neste ticket. *(2026-09-16, run `run-aos400-prod-1789593240`: `aos-orq` linux compilado desta árvore (template 1.2.0, fingerprint `07c2ae7b…`), contentor efémero na rede `aos_default`, litellm de produção (`gpt-4o-mini`), mesmo objectivo e snapshot dos runs do AOS-395. Saída: `decomposto: objectivo -> plano de 2 nos (tentativas=1, planner_nhi=agent:planner)`, `materializado: … nos=2` (`n1.read_config` papel com `cap:tool:fs.read`, `n2.summarize_config` folha), `despacho: papel n1.read_config spawnado`, exit 0. O WORM relido tem um selo `allow` com `RunID` do run e `StepID=planstep:decompose:1`, cadeia íntegra. Com o 1.1.0, o mesmo objectivo falhou 3/3 em dois runs. Pasta temporária apagada.)*
+- [x] O critério do AOS-391 «`--goal` sem fixture produz um `PlanDocument`» volta a `[x]` com esta evidência.
+
+### Estado
+
+**IMPLEMENTADO (2026-09-16).** O prompt de decomposição passa a 1.2.0 e declara o schema, as regras de grafo do validador que acompanham as extensões e orçamentos realistas; o modelo de produção decompôs à primeira tentativa um objectivo que falhava 3/3 com o 1.1.0. Verificado: suites `-race` verdes no orchestrator e em `cmd/aos-orq`; `evalgate`, `build`, `lint` e `layer-lint` verdes; falha-antes medida por mutação em cinco pontos do template. Revisão adversarial independente: nenhum crítico ou alto; os dois médios (regras de grafo ausentes, forma mínima com orçamentos a zero) e os baixos foram corrigidos, excepto os limites declarados no critério do teste. **Riscos que ficam fora deste ticket**: o catálogo que o modelo vê (`renderCapabilities`) não marca ferramentas inadmissíveis nem deprecadas, e o modelo não conhece a folga de orçamento do run — um plano pode ainda ser recusado por essas razões. Uma prova com um só objectivo não mede a taxa de sucesso do modelo; isso é o eval-gate com modelo vivo, que não existe.
+
+---
+
+## AOS-408 — O gate de aprovação de plano fica composto no `aos-orq`: um plano de risco espera decisão humana antes de materializar
+
+<!-- rtm: adrs-mencionados -->
+<!-- ADR-005 (o plano é dados; o documento cru não vive no log de eventos), ADR-016 §1 (a
+     assinatura do humano é produzida FORA do processo que a verifica) e ADR-019 (fronteiras de
+     camada; o composition root é que pode cruzar governance × orchestrator) são MENÇÃO —
+     restrições que este ticket respeita — não implementação. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-236 (contrato do gate e do cartão), AOS-237 (materialização consome `plan.approved`), AOS-390 (despacho governado, de onde vem o `CardOracle`), AOS-388/AOS-391 (decomposição viva no `aos-orq`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma / Responsável de Segurança |
+| Documentos de referência | `packages/control-plane/governance/plan-approval/{gate.go,ports.go,plancard.go,triage.go}`, `packages/cmd/aos-orq/{planner_wiring.go,dispatch_wiring.go,main.go,snapshot.go}`, `packages/control-plane/orchestrator/{plan/plandocument.go,plan/payload.go,planvalidate/resources.go}`, `packages/control-plane/runlifecycle/emitters.go`, `packages/control-plane/governance/hitl/{channel.go,approval.go,nonce_store.go}` |
+
+### Contexto
+
+O gate de aprovação-de-plano (AOS-236) está **entregue como contrato e ausente como caminho**. O
+`plan-approval` tem a porta, o cartão `aos.plan.card.v1` 1.1.0, a triagem por risco e o
+dual-control; o único consumidor é o `aos-demo`, que constrói o `planapproval.Plan` **à mão**
+(`packages/cmd/aos-demo/main.go:235-255`) com um revisor de demonstração. É o residual que o
+DEF-274 nomeia: «o mapeamento `PlanDocument → planapproval.Plan` vive a jusante e NÃO existe em
+produção».
+
+No `aos-orq` — o binário que decompõe e materializa de verdade desde a v0.1.20 — a sequência é
+`decompose → planvalidate.Validate → materializar → despachar`, **sem gate**. Duas consequências
+medidas na leitura do código:
+
+1. **Nada consome `plan.approved`.** O catálogo `aos.planner.v1` declara `plan.approved` e
+   `plan.rejected` e o `aos-orq` emite `plan.materialized` sem que exista decisão nenhuma no
+   stream. A DoD do AOS-237 («consome `plan.approved`; emite `plan.materialized`») está meia.
+2. **O despacho mente por omissão.** `cardsFailClosed` devolve `false`
+   (`packages/cmd/aos-orq/dispatch_wiring.go:95-101`) e o `needsCard` do `plandispatch` deriva de
+   `Node.RiskClass`, que é o rótulo **advisory do LLM** (`plandispatch/dispatch.go:546`). Um plano
+   que declare `"risk_class":"safe"` sobre uma tool `irreversible` no snapshot pinado despacha
+   **sem cartão**: o piso de risco autoritativo é o do `planvalidate` (`elevateOnly`), e ninguém o
+   consulta no despacho.
+
+Havia ainda um defeito de governação a montante: DEF-274 e DEF-275 tinham como **eixo** o AOS-238,
+que está **FECHADO** — um deferimento cujo gatilho aponta para um ticket fechado não tem quem o
+reavalie, que é exactamente o que o §1 do registo existe para impedir. O AOS-390 tinha «corrigir o
+eixo destes dois» na DoD e fechou sem o cumprir. Este ticket corrige o eixo para si.
+
+### Objectivo
+
+No `aos-orq`, um plano cujo cartão traga risco (`danger`) ou lacuna de capability (`gap`) **não
+materializa nem despacha** sem uma decisão humana assinada, durável e verificável; os restantes
+planos continuam a passar sem atrito. O veredicto passa a ser a fonte do `CardOracle` do despacho,
+substituindo o `cardsFailClosed`.
+
+### Decisões do dono (2026-09-17)
+
+- **Aprovação ASSÍNCRONA.** O plano fica pendente como FACTO no stream do plano
+  (`plan.proposed` + `plan.validated`, sem decisão terminal); a decisão chega por fora e a
+  materialização continua nessa passagem. Não se bloqueia o processo à espera de um humano, e a
+  ausência de decisão **não** é uma recusa.
+- **Âmbito `danger` ou `gap`.** Um plano `safe`/`gray` auto-aprova pelo nível de autonomia; o
+  atrito humano é só para risco resolvido `danger` ou lacuna de capability.
+
+### Critérios de Aceitação
+
+- [x] **Mapeador de produção.** `plan.PlanDocument` → `planapproval.Plan` no composition root do
+      `aos-orq`, com as extensões do DEF-274 (`Role`, `ConditionalOn`, `Outputs`, `Consumes`) e o
+      taint **efectivo** do output (`plan.Node.EffectiveOutputTaint`), não o declarado. A `Class` de
+      cada nó é o risco **resolvido** pelo `planvalidate` (o advisory do LLM só eleva), nunca o
+      `risk_class` cru. O `Preview` do cartão não transporta texto livre do modelo.
+      **A amarra do snapshot é parte da regra, e tem duas camadas.** O rótulo: o snapshot tem de ser
+      o que o documento DECLARA (`planner_meta.capabilities_hash`). E o CONTEÚDO: o `hash` de um
+      snapshot é um rótulo que o ficheiro declara sobre si mesmo — copiá-lo para um catálogo com
+      eixos benignos passava a primeira camada (a 2.ª revisão reproduziu-o). Por isso o digest dos
+      eixos de cada tool é SELADO no `plan.validated` quando o plano fica pendente, e a decisão e a
+      materialização têm de apresentar o mesmo conteúdo.
+      *(`packages/cmd/aos-orq/plan_gate_wiring.go`. O risco resolvido entra por
+      `planvalidate.ResolveRisks`, ponto de entrada novo que isola a regra 6: o `ValidateResources`
+      rejeitava o plano inteiro sem `Pricer`, e o `aos-orq` não compõe tabela de preços — sem isto o
+      binário cairia no rótulo advisory, que é exactamente o que a regra 6 existe para não fazer.
+      Cinco testes em `aos408_mapeador_test.go`: o nó que se declara `safe` sobre uma tool
+      irreversível chega ao cartão como `danger`; um `summary` declarado `trusted` por um
+      não-verificador fica `untrusted` e só sobe com produtor verificador E forma fechada; o
+      `objective` do modelo não aparece no cartão; as condições e arestas de dados atravessam.)*
+- [x] **Risco autoritativo no despacho, e o oráculo consultado de facto.** O `needsCard` passa a
+      ser a projecção do cartão (`danger` ou `gap`) derivada do risco resolvido — antes vinha do
+      `risk_class` ADVISORY do LLM, pelo que um plano que se declarasse `safe` sobre uma tool
+      irreversível não exigia cartão nenhum. *(Duas metades inertes a anularem-se deram lugar a duas
+      ligadas: o `cardsFailClosed` — que recusava sempre e cujo comentário dizia «não é consultada em
+      prática» — deu lugar ao `PlanDecisionReader`. **Correcção vinda da revisão:** trocar as duas
+      metades não bastava. O despacho só corre pelo caminho do `--goal`, e esse caminho só chegava
+      ao despacho quando NENHUM nó exigia cartão — o oráculo continuava provadamente nunca
+      consultado, e um plano aprovado não tinha caminho para correr. O `gatearPlano` passou a
+      reconhecer a decisão já tomada e a prosseguir: repetir a mesma invocação depois da aprovação
+      materializa E despacha, e é no despacho que o oráculo autoriza o nó `danger` — com o MESMO
+      predicado do gate (decisão humana, deste hash), e não o `Approved()` sozinho que a 1.ª versão
+      usava (`TestAOS408_DepoisDaAprovacaoODespachoConsultaOOraculo`, que afirma o ARRANQUE do nó
+      `danger` — `nos_despachados=2` —; **falha-antes por mutação**: com o oráculo a recusar, o nó de
+      risco fica parado e `nos_despachados=1`. A 1.ª versão do teste usava um plano em que o nó de
+      risco dependia do outro e nunca chegava ao oráculo — apanhado no ensaio da validação de
+      produção).) **Âmbito real:** isto vale
+      quando a repetição produz o MESMO documento — uma decomposição determinística. Com o modelo
+      vivo, a segunda decomposição produz outro organigrama (outro hash) e fica pendente sem poder
+      ser decidida (o plano já tem decisão terminal); o plano aprovado materializa por
+      `--plan-doc`, mas esse caminho nunca despachou — limitação anterior a este ticket, que fica
+      como resíduo com eixo próprio.*
+- [x] **Gate composto.** `planapproval.NewPlanGate` no caminho do `--goal`, entre a validação e a
+      materialização, com revisão forçada dos nós de risco. Um plano `danger` não materializa: o
+      processo apensa os factos do pendente, larga a posse e sai com código próprio (**6**); um
+      plano sem risco auto-aprova pelo nível de autonomia e materializa como antes.
+      *(PAR FALHA-ANTES pelo processo real, `aos408_gate_plano_test.go`: o MESMO pipeline com o
+      plano de risco sai 6, não imprime `materializado:` e deixa o grafo durável a `nos=0`; o plano
+      sem risco sai 0 e despacha os 2 nós. Quem fica pendente LARGA o lease — um pendente é o fim do
+      trabalho deste processo, e retê-lo bloquearia o próprio `decide`, que escreve no stream do
+      plano: o gate a travar-se a si mesmo.)*
+- [x] **O `gap` força humano.** A auto-aprovação por nível de autonomia deixa de ignorar
+      `CapabilityGap`: a `autonomy.Oversight` é função de (nível, classe) e não conhece o gap, pelo
+      que um plano com lacuna auto-aprovava a L5 desde que a classe o permitisse — o contrário do
+      que o contrato do campo declara e do que a triagem do cartão já fazia.
+      *(`temLacunaDeCapacidade` em `ports.go`, guarda em `gate.go`;
+      `TestAOS408_LacunaDeCapacidadeNaoAutoAprova` com contraprova (sem gap, auto-aprova e o canal
+      nem é chamado) e **FALHA-ANTES por mutação**: sem a guarda, o plano com gap auto-aprova.
+      DECLARADO: no `aos-orq` nada abre um gap hoje, pelo que esta metade do âmbito é contrato e não
+      facto — o banner diz-lo.)*
+- [x] **Pendente durável, derivado do log.** O pendente é `plan.validated` sem decisão terminal,
+      dentro do prazo, lido pelo `runlifecycle.PlanDecisionReader` (irmão do `GateReader`: relê o
+      stream uma vez e fixa um retrato imutável). Os três factos que faltavam ter chamador de
+      produção — `plan.proposed`, `plan.validated`, `plan.approved`/`rejected` — passam pelo
+      `PlanRecorder`, logo pelo appender FENCED. *(Sem estes factos, «à espera do humano» era a
+      AUSÊNCIA de factos, indistinguível de «nunca foi proposto», e um restart perdia o caso. A
+      precedência terminal é explícita porque o step id é `planstep:decision:<decisão>`, o que
+      deixa um `approved` e um `rejected` coexistirem no mesmo stream.)*
+- [x] **Decisão assinada fora do processo.** `aos-issuer plan-approve-sign` produz a decisão
+      (ed25519, chave privada lida de ficheiro montado, nunca vista pelo verificador — ADR-016 §1);
+      `aos-orq decide` verifica-a pelo `hitl.Channel` contra chaves **pinadas** com autoridade por
+      classe, no MESMO formato de `AOS_APPROVERS_FILE` do nó. `aos-orq plans` imprime o `request_id`
+      a assinar. **A pinagem é por ficheiro escolhido pelo operador** (`--approvers`, ou
+      `AOS_APPROVERS_FILE` do compose): protege contra quem não tem chave, não contra quem controla
+      esse ficheiro — ver «Fronteira de confiança». *(Seis testes pelo processo real em
+      `aos408_decide_test.go`: aprovação legítima
+      aprova e só então materializa; assinatura de chave não-pinada recusa; aprovador com
+      `approve:gray` não aprova `danger`; replay da mesma aprovação recusa (nonce por CAS durável);
+      documento adulterado recusa por divergência de hash; recusa assinada fecha o plano. Um bug
+      real que esta prova apanhou: com `issued_at` em RFC3339 de segundos, a assinatura — que cobre
+      o instante em `UnixNano` — deixava de verificar; o wire passou a RFC3339Nano nos três sítios.)*
+      **Quatro furos ALTA que a revisão adversarial reproduziu com os binários reais, e as
+      correcções:** (1) o `--snapshot` do `decide` era arbitrário — com um snapshot benigno o risco
+      resolvia-se `safe`, a auto-aprovação por nível SALTAVA o canal e uma assinatura de lixo
+      aprovava um plano `danger`: passou a exigir-se o snapshot declarado pelo documento e a
+      cerimónia corre a L1, onde o canal é sempre chamado; (2) a âncora era o hash do primeiro
+      `plan.validated`, pelo que a auto-aprovação de um plano inócuo no mesmo `plan_id` autorizava o
+      perigoso: o predicado passou a exigir decisão APROVADA, do MESMO hash e com referência
+      `hitl:`; (3) o ramo de recusa gravava `plan.rejected` antes de qualquer verificação — quem não
+      tinha chave fechava um plano pendente e o log culpava um aprovador pinado: um facto terminal só
+      se escreve com aprovador VERIFICADO (o `plan-approval` passou a levar o aprovador também na
+      recusa, que antes descartava), e o nonce só é consumido DEPOIS da verificação, senão uma forja
+      queimava o nonce de uma decisão legítima; (4) um nó `gray` ao lado do `danger` tornava o plano
+      INAPROVÁVEL (a revisão forçada cobre `>=gray` e o revisor declarava só `danger|gap`) — e a
+      primeira tentativa legítima fechava-o: o revisor passou a declarar os nós que o CARTÃO força.
+      Cada um tem teste em `aos408_furos_test.go`.
+- [x] **TTL imposto na decisão, e a expiração DERIVADA.** Um pendente fora do prazo é recusado no
+      momento da decisão, sem varredor — a disciplina do `handleApprove` do nó. A expiração NÃO
+      escreve facto: é derivada do instante do `plan.validated` e do prazo, como o próprio pendente.
+      *(A 1.ª versão gravava `plan.rejected` ao expirar, e o teste chamava-se «...FechaOCaso»: a
+      2.ª revisão mostrou que isso ERA o ataque — `decide --ttl 1ns` com ficheiros que nem existiam
+      fechava qualquer plano pendente para sempre. O prazo passou a só poder ser ENCURTADO por quem
+      decide, nunca alargado nem desligado (`--ttl` ≤ 24 h e positivo), e a decisão assinada tem
+      janela de frescura. `TestAOS408_PrazoExpiradoRecusaSemFecharOPlano` (recusa, o plano continua
+      pendente e a decisão legítima aprova a seguir), `TestAOS408_PrazoNaoPodeSerAlargadoPorQuemDecide`,
+      `TestAOS408_PrazoNaoPositivoERecusado`, `TestAOS408_ExpiracaoEDerivadaENaoEscrita`.)*
+- [x] **Postura declarada no arranque.** `bannerDoGateDePlano` declara o gate composto e o nível,
+      e diz em voz alta as três limitações que, caladas, seriam ilusões de governação: o `gap` é
+      contrato e não facto neste binário; o 4-eyes é **fraco** aqui (o solicitante é a NHI do run,
+      logo qualquer humano o satisfaz — a garantia é «um humano com autoridade pinada», não «dois
+      humanos»); e o nível de autonomia é um default do processo, não um nível durável por par
+      (agente, domínio) como no nó.
+- [x] **Prova falsificável.** 33 testes: 5 do mapeador, 2 do par falha-antes, 9 da cerimónia
+      (incluindo o prazo), 10 dos furos das duas revisões — todos estes pelo processo real —, 5 do
+      predicado de decisão no `runlifecycle` e 2 do gap no `plan-approval`. Falha-antes por mutação no gap e na condição `hitl:` do predicado.
+      O contorno do `--plan-doc` fica fechado **contra o plano e contra quem decide**
+      (`TestAOS408_PlanDocSemDecisaoNaoContornaOGate`,
+      `TestAOS408_PlanDocComSnapshotBenignoNaoContorna`); NÃO contra um operador que escreve um
+      catálogo com eixos benignos num run novo — ver «Fronteira de confiança».
+- [x] **Governação.** O eixo de DEF-274/275 passou de AOS-238 (**fechado** — um deferimento cujo
+      gatilho aponta para um ticket fechado não tem quem o reavalie) para AOS-408; o DEF-274 passa a
+      **FECHADO-RESIDUAL** (o estado terminal do registo — a linha fica como contraste, com os
+      residuais nomeados) e o critério «Card oracle» do AOS-390 fica marcado com evidência. O
+      DEF-275 continua ABERTO, agora com eixo válido.
+
+### Fora de âmbito (declarado)
+
+- **API HTTP no `aos-orq`.** O binário não tem superfície de rede nenhuma (o único `net/http` é
+  cliente do Model Gateway); abrir uma exige barreiras próprias (mTLS, token-bucket, OIDC) e é
+  outro ticket. A cerimónia aqui é CLI + ficheiro assinado, que é a disciplina mais forte
+  (ADR-016 §1: quem verifica não assina), não a mais fraca.
+- **`Pricer`/tabela de preços** no `aos-orq` (regra 5 do AOS-232) — residual já declarado no
+  AOS-391; por isso o risco resolvido entra por um ponto de entrada só-risco, sem orçamento.
+- **DEF-275** (4.º eixo de mutação no `IsEffectTool`) fica ABERTO, com eixo no **AOS-409** — este
+  ticket não o implementa, e apontá-lo para aqui repetiria, ao fechar, o defeito que corrigiu (um
+  eixo num ticket fechado). A premissa de bloqueio do registo já é falsa (há construção de
+  `planvalidate.Capability` em produção); o eixo tem decisões próprias.
+
+### Fronteira de confiança (declarada)
+
+Este gate governa o **PLANO**: um organigrama de risco vindo do modelo não materializa nem despacha
+sem uma decisão humana explícita, atribuível e amarrada àquele organigrama e àquele catálogo. É isso
+que o dono pediu, e é isso que está provado — contra o documento (que não escolhe o seu risco),
+contra quem decide sem chave (a assinatura é sempre verificada), contra a reutilização de decisões
+(noutro hash, noutro catálogo, noutro run, noutro nonce) e contra o fecho de planos por quem não
+decidiu.
+
+**NÃO é uma fronteira de segurança contra quem opera o CLI no servidor.** O Event Store não assina
+eventos (quem tem escrita no WAL pode apensar um `plan.approved`), o snapshot é um ficheiro pinado e
+NÃO assinado (quem o escreve escolhe os eixos de risco de um run novo), e o registo de aprovadores é
+um ficheiro que o operador escolhe. No deploy, o `aos-orq` corre no contentor que detém o WAL: o
+acesso ao CLI é o acesso ao store. Endurecer isso exige snapshot assinado, decisões assinadas no log
+e verificadas no consumo, e pinagem fora do alcance de quem invoca — trabalho de outro ticket, que
+não se finge feito aqui. Declarado também no banner.
+- **Dual-control por-efeito** (dois humanos distintos) e **edição de plano pela CLI**: as portas
+  existem, a correspondência assinatura↔chamada e a UX são trabalho separado.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-17). Verificado: suites `cmd/aos-orq`, `cmd/aos-issuer`,
+`governance/plan-approval`, `runlifecycle` e `orchestrator` verdes; `build`, `lint`, `layer-lint`,
+`event-catalog` e os gates documentais verdes; falha-antes medida por mutação no gap e pelo par de
+processos no gate.
+
+**Verificado em produção a 2026-09-18** (`v0.1.22`, imagem `sha256:35ea82a0…`), com o plano do
+caso adversarial: o nó `publicacao` usa uma tool irreversível com egress externo e DECLARA-SE
+`safe`. O snapshot, o plano e uma chave de aprovador **só de validação** foram postos em
+`/opt/aos/orq/` e retirados no fim (a chave privada nunca saiu da máquina do aprovador).
+
+| Passo | Saída em produção |
+|---|---|
+| `serve --goal` | `EXIT=6`, `pendente de aprovacao humana … 1 no(s) de risco: publicacao`, `plan_hash=sha256:b14d2336…`, nada materializado |
+| `decide` | `EXIT=0`, `decisao APROVADA por human:validacao-aos408` — assinatura feita fora do servidor e verificada contra a chave pinada; o hash é o do ensaio local, o que confirma o `request_id` determinístico |
+| `serve --goal` repetido | `EXIT=0`, `gate de plano: APROVADO por humano`, `folha publicacao a arrancar`, `nos_despachados=2` — o nó de risco só arrancou porque o oráculo de cartão o autorizou |
+| `plans` / `inspect` (leitura) | `estado=DECIDIDO decisao=approved em=2026-09-18T22:32:34Z` com o mesmo hash; `nos=2 ordem=leitura,publicacao` |
+
+A primeira tentativa falhou por um defeito dos COMANDOS, não do gate: o PowerShell 5.1 estraga as
+aspas duplas dentro de `ssh '…'`, o `--goal "dois termos"` chegou partido e o parser de flags parou.
+Nesse estado tudo recusou — `--goal exige --snapshot`, e o `decide` recusou por não haver
+`plan.validated` no log — e nada foi materializado.
+
+O ensaio local desta validação apanhou ainda um defeito do teste do oráculo: com o nó de risco
+dependente do outro, ele nunca chegava ao oráculo numa passagem de despacho. O teste e o plano de
+validação passaram a ter o nó de risco sem dependências, e a mutação do oráculo passou a ser
+detectada.
+
+**Duas revisões adversariais independentes**, ambas com reprodução nos binários reais. A 1.ª
+encontrou quatro furos ALTA (snapshot escolhido por quem decide; âncora no `plan.validated`; recusa
+gravada antes de verificar; nó `gray` a tornar o plano inaprovável) e o oráculo ainda nunca
+consultado. A 2.ª mostrou que duas correcções só fechavam a variante exacta dos testes — o rótulo
+`hash` do snapshot copia-se (fechado selando o CONTEÚDO), e a expiração gravada era a mesma arma que
+a recusa (fechado derivando-a) — e encontrou a decisão de um run a servir outro pelo `--plan` do
+`serve`, uma aprovação negada pelo canal gravada como recusa humana, e o oráculo com critério mais
+fraco que o gate. Todos corrigidos e com teste.
+
+**Resíduos declarados:** o `plan_id` da cerimónia DERIVA do run (`<run>-plan`) porque a ligação
+run→plano não é um facto do log — um run cujo plano tenha outro id não é decidível por esta via; os
+nós de `--nodes` entram no grafo antes do gate do `--plan-doc` (sem tools, sem efeito, mas entram);
+o `Cleared` do oráculo é por PLANO e não por nó — um auditor vê «este
+plano foi aprovado», não «este nó foi revisto»; não há dual-control por-efeito (dois humanos
+distintos); o selo do canal HITL é in-memory neste binário (a decisão durável vive no Event Store) e
+um WORM próprio para o gate fica para ticket separado — o não-repúdio da decisão fica, portanto,
+na referência `hitl:<principal>` do log e NÃO na assinatura, que não é re-verificável depois; com o
+modelo vivo, um plano aprovado não despachava (o `--plan-doc` nunca despachou) — fechado pelo
+AOS-412; o nonce é consumido
+antes de o facto da decisão ser escrito, pelo que uma escrita falhada obriga a reassinar; um
+`plan_id` admite uma só decisão — re-planear exige um run novo; a regra Cedar `allow_http_post`
+continua a exigir `region == "eu"`, resíduo herdado do AOS-407.
+
+---
+
+## AOS-409 — O `IsEffectTool` ganha o 4.º eixo — mutação — a partir de uma fonte de verdade que não seja o próprio plano
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-231 (validador e `IsEffectTool`), AOS-408 (o gate que consome o risco resolvido) |
+| Bloqueia | — |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/control-plane/orchestrator/planvalidate/verifier.go` (`IsEffectTool`), `packages/cmd/aos-orq/snapshot.go` (`carregarSnapshot`) |
+
+### Contexto
+
+É o eixo do **DEF-275**. O `IsEffectTool` classifica uma tool como «com efeito» por egress ou
+irreversibilidade, e ignora a **mutação**: uma tool que altera estado sem egress e reversível passa
+por inócua, e um verificador pode pinná-la. O registo dava como bloqueio «não existe construção de
+`planvalidate.Capability` fora de testes» — premissa que deixou de ser verdadeira: o `aos-orq`
+constrói-as do snapshot pinado (`carregarSnapshot`). O eixo do DEF-275 apontava para o AOS-238
+(fechado) e passou provisoriamente para o AOS-408, que não o implementa — este ticket existe para o
+eixo apontar para quem o fará.
+
+### Objectivo
+
+Uma tool que muta estado conta como efeito na validação e no risco, com o dado a vir de uma fonte
+que não seja o documento do plano.
+
+### Critérios de Aceitação
+
+- [x] Decisão registada sobre a FONTE do eixo (campo do snapshot pinado vs. classificação do REG) e
+      sobre a omissão para snapshots existentes — fail-closed (todo o catálogo passa a «mutador») ou
+      transição declarada. Uma decisão fail-closed pode impedir planos de quem já corre.
+      **Feito:** decisão do dono de 2026-10-01, registada abaixo em *Entrega — registo da decisão*
+      (fonte e omissão: opção 2, campo OBRIGATÓRIO no snapshot pinado, sem default no ficheiro,
+      conferido com o catálogo do nó; risco: R1), com a transição declarada e o ritual de release.
+- [x] `IsEffectTool` com o 4.º eixo e teste sobre o CATÁLOGO, não sobre literal de teste.
+      **Feito:** `IsEffectTool` = `egress ≠ none ∨ irreversível ∨ Mutation.Mutates()`.
+      `TestAOS409IsEffectToolSobreOCatalogoDeProducao` (`packages/cmd/aos-orq`) lê o manifesto de
+      produção `deploy/server/model-tools/tools.json` pelo MESMO caminho relativo do AOS-441, traduz
+      os eixos que o nó declara pelas tabelas da carga/conferência e corre `planvalidate.IsEffectTool`:
+      o `doc_read` de produção, que é `egress none` + `reversible`, sai SEM efeito porque declara
+      `"mutation":"none"`, e o MESMO manifesto sem o campo, ou com `"mutates"`, sai DE efeito. A
+      metade do nó — o que `GET /tools` serve desse manifesto (`none`; `mutates` sem o campo) — é
+      `TestAOS409CatalogoDeProducaoServeAMutacao` (`packages/cmd/aos`). O critério não corre no
+      módulo do nó porque o nó não pode depender do módulo do orquestrador, nem em teste via go.mod
+      (ADR-018, AOS-164b).
+- [x] DEF-275 fecha com evidência. **Feito:** linha do registo em `FECHADO-RESIDUAL` (o único
+      estado de fecho do vocabulário do gate `deferrals`), com o commit `71b2064` e os testes.
+
+### Entrega — registo da decisão (dono, 2026-10-01)
+
+Registo verbatim da decisão do dono, tomada sobre a *discovery* desta sessão:
+
+- **FONTE e OMISSÃO = Opção 2:** um campo `mutation` **OBRIGATÓRIO** por tool no ficheiro do
+  snapshot pinado. Ausente é **ERRO DE CARGA** que nomeia a tool; **não há default implícito** no
+  ficheiro.
+  - Em Go, um enum fail-closed cujo valor-zero é `unknown`, tratado como mutador. Cobre os literais
+    Go e o `resolveCaps` (`planvalidate/resources.go`, a capability de eixos-zero de uma tool não
+    resolvida).
+  - Conferido com o catálogo do nó (AOS-441): o snapshot NÃO pode declarar MENOS mutação do que o nó.
+  - Transição declarada: o operador acrescenta `"mutation":"none"` à única tool de produção
+    (`doc_read`). Os planos pendentes drenam-se antes do release — o mesmo ritual do AOS-441.
+- **RISCO = R1:** uma tool mutadora é tratada como `Irreversible` em `planvalidate.deriveNodeAction`.
+  **Não** se toca no `risk.Classify` do kernel — fazê-lo emendaria o ADR-013. Tudo o que escreve
+  passa a `danger`, com cartão humano.
+
+### Entrega — o que mudou
+
+- **`planvalidate`** (`capabilities.go`): `Capability.Mutation` e o tipo `Mutation`
+  (`MutationUnknown`=0 ⇒ mutador, `MutationNone`, `MutationMutates`; `Mutates()` é verdadeiro para
+  tudo o que não seja `MutationNone`). `IsEffectTool` (verifier.go) lê o 4.º eixo — e com ele as
+  três superfícies que o consomem: (V3) `checkVerifierAuthority`, (P4) `privilegedAuthority` e o
+  `Snapshot.EffectOracle()` do materializador. `deriveNodeAction` (risk.go) projecta um mutador no
+  classificador como irreversível (R1). O doc de `IsEffectTool` deixou de declarar a invariante do
+  REG como suposição: passou a dizer de onde o eixo vem.
+- **`aos-orq`** (`snapshot.go`): `mutation` obrigatório na carga (`ErrMutacaoEmFalta`, com a tool
+  nomeada; vocabulário `none|mutates|unknown`, um nome desconhecido é erro); a conferência com o nó
+  ganha a regra «o snapshot não declara menos mutação do que o nó» — e um nó que NÃO serve o campo
+  (anterior ao AOS-409) conta como mutador. `digestDoSnapshot` (plan_gate_wiring.go) passa a
+  incluir o eixo: sem isso, o buraco A1 do AOS-408 reabria (um snapshot com a mutação trocada
+  passava pelo selo). Os banners do `serve` e do `consume` nomeiam o eixo conferido.
+- **Nó** (`modeltools.go`, `catalogo_de_tools.go`): `modelToolSpec.Mutation` (só `none` é leitura;
+  o vazio vale `mutates`, como a reversibilidade; um valor fora do vocabulário aborta o arranque —
+  `ErrBadMutation`), servido em `GET /tools` sempre como `none` ou `mutates`.
+  **Piso do `sandbox.write_arg` — decidido e justificado:** `"mutation":"none"` numa tool com
+  `write_arg` **aborta o arranque**, em vez de ser promovido em silêncio a `mutates`. O `write_arg` é
+  o binding TRUSTED cujo valor o sandbox escreve no recurso (`ToolCall.Write`) — um facto
+  estrutural da configuração, não uma lista de nomes de tools (tecnica/18 §3.3.2 recusa a
+  *allowlist* mágica) nem uma segunda taxonomia. Promover em silêncio daria a postura certa pela
+  razão errada (a mesma regra do `validateReversibility`). A regra inversa não existe: a ausência de
+  `write_arg` não prova leitura.
+- **Manifestos:** `deploy/server/model-tools/tools.json` ganha `"mutation":"none"` no `doc_read`; o
+  dos demos `deploy/node/dev-hardened/` também (`none` no `doc_read`, `mutates` no `web_post`).
+- **Documentos:** `deploy/server/README.md` (exemplo do snapshot de produção, conferência e ritual
+  de release), `docs/testing/e2e-pegadas-visao-19.md` (passo 15), `tecnica/18` §3.3.2 e §3.3.3
+  (o critério e a «uma definição, duas perguntas») com a linha 1.6 do histórico.
+- **Fixtures:** todos os snapshots de teste passam a declarar `mutation`, **mantendo a intenção
+  original de cada teste**: uma tool modelada como leitura (ou como egress reversível, para isolar
+  o eixo de egress) declara `"none"` EXPLICITAMENTE; uma irreversível declara `"mutates"`. Nenhum
+  teste foi enfraquecido — os que provam um eixo isolado (irreversível, egress) passaram a declarar
+  `none` precisamente para que a mutação desconhecida não lhes mascare o eixo.
+
+### Entrega — evidência
+
+| Propriedade | Teste |
+|---|---|
+| `IsEffectTool` sobre o catálogo de produção | `TestAOS409IsEffectToolSobreOCatalogoDeProducao` (`cmd/aos-orq`) e, do lado do nó, `TestAOS409CatalogoDeProducaoServeAMutacao` (`cmd/aos`) |
+| Critério em tabela (escrita com undo, valor-zero, fora do enum) | `TestIsEffectToolCriterion` (`planvalidate`) |
+| (V3) verificador que pina um mutador ⇒ `verifier_effect_tool` | `TestVerifierEffectToolRejected/mutacao` |
+| (P4) consumidor mutador é privilegiado ⇒ `consumes_taint_authority` | `TestConsumesTaintIncompatibleWithAuthority/mutador` |
+| Risco R1 por `ResolveRisks`: mutador `EgressNone`+`Reversible` ⇒ `danger`, não auto-aprovável | `TestMutadorReversivelSemEgressDerivaDanger`, `TestMutacaoPorDeclararDerivaDanger`, `TestLeituraDeclaradaContinuaSafe` |
+| … e no cartão do gate (`planoParaGate`), a partir do ficheiro | `TestAOS409EscritaChegaAoCartaoComoDanger` (`cmd/aos-orq`) |
+| Carga: `mutation` ausente/vazia ⇒ erro que nomeia a tool | `TestSnapshot_MutacaoAusenteEErroQueNomeiaATool` |
+| Carga: nome desconhecido ⇒ erro | `TestSnapshot_EixoDesconhecidoERecusado/mutation` |
+| Conferência: snapshot `none` vs nó `mutates`/vazio/`unknown` ⇒ recusa | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation*` |
+| Digest: mudar só a mutação muda o `snapshot_digest` | `TestAOS409DigestMudaSoComAMutacao` (unidade) e `TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado` (binário: `nao e o selado`) |
+| Nó: vocabulário e contradição com `write_arg` | `TestAOS409MutacaoForaDoVocabularioAborta`, `TestAOS409WriteArgComMutacaoNoneAborta` |
+| Forma do fio de `GET /tools` | `TestAOS441GetToolsServeOCatalogoComAFormaDoFio` |
+
+**Mutation-check** (cada peça central retirada, um teste avermelha; repostas e verdes depois) —
+11 mutantes, 11 mortos:
+
+| Mutação | Morta por |
+|---|---|
+| `IsEffectTool` sem o termo `c.Mutation.Mutates()` | `TestVerifierEffectToolRejected/mutacao`, `TestConsumesTaintIncompatibleWithAuthority/mutador`, e sobre o catálogo `TestAOS409IsEffectToolSobreOCatalogoDeProducao/{sem_o_campo,mutates}` |
+| `deriveNodeAction` sem R1 | `TestMutadorReversivelSemEgressDerivaDanger`, `TestMutacaoPorDeclararDerivaDanger`, `TestAOS409EscritaChegaAoCartaoComoDanger` |
+| `Mutates()` fail-open no valor-zero (`== MutationMutates`) | `TestIsEffectToolCriterion/mutacao_por_declarar…`, `…/mutacao_fora_do_enum…`, `TestMutacaoPorDeclararDerivaDanger` |
+| `digestDoSnapshot` sem o campo | `TestAOS409DigestMudaSoComAMutacao`, `TestAOS409SnapshotComAMutacaoTrocadaNaoEOSelado` |
+| carga sem a verificação obrigatória | `TestSnapshot_MutacaoAusenteEErroQueNomeiaATool/{ausente,vazia,so-na-outra}` |
+| conferência sem a regra de mutação | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation*` (3) |
+| conferência: nó sem o campo deixa de ser mutador | `TestAOS441SnapshotMenosArriscadoDoQueONoAvermelha/mutation-ausente-no-no` |
+| nó: o vazio serve `none` | `TestAOS409CatalogoDeProducaoServeAMutacao/sem_o_campo` |
+| nó: `write_arg` com `none` passa | `TestAOS409WriteArgComMutacaoNoneAborta` |
+
+As 9 linhas somam 11 porque a da conferência conta 3 subtestes.
+
+**Revisão adversarial independente (2026-10-01), sobre a entrega integrada.** Sem ALTO; nenhum
+caminho de produção leva uma tool mutadora a `safe` sem a declarar `none` à mão (o resíduo 1). Dois
+mutantes que a entrega não tentou SOBREVIVIAM, e a afirmação «nenhum teste foi enfraquecido» era
+falsa para o primeiro:
+
+| Mutação | Antes | Corrigido por |
+|---|---|---|
+| `deriveNodeAction` sem o termo `IsIrreversible()` | sobrevivia: o fixture `dangerCap` (`planvalidate/resources_test.go`) ficou sem `Mutation`, o valor-zero conta como mutador e o R1 forçava `danger` sozinho — o eixo irreversível deixou de ter teste isolado | `dangerCap` declara `MutationNone`; `TestNoIrreversivelClassificadoDanger` e `TestDowngradeDeRiskClassEIgnorado` voltam a matá-lo |
+| carregador normaliza `"mutation":"unknown"` para `none` | sobrevivia a todo o `cmd/aos-orq` (sem `AOS_ORQ_NODE_URL` não há conferência que o apanhe) | `TestAOS409MutacaoUnknownExplicitaContaComoMutador` |
+
+O resíduo 2 foi completado com o `DualControlRequired` do cartão, e o passo 1 do ritual passou de
+«drenar e decidir» a «drenar até à conclusão».
+
+### Entrega — transição declarada e ritual de release
+
+A primeira release com o AOS-409 muda a forma do snapshot e a do digest. Pela ordem (o mesmo ritual
+do AOS-441, descrito em `deploy/server/README.md` §executor de nós):
+
+1. **Antes do release, drenar os planos ATÉ À CONCLUSÃO** — nenhum pendente por decidir e nenhum
+   `plan.validated` com run por terminar. Decidir não chega: um plano já aprovado passa outra vez
+   pelo `exigirSnapshotSelado` ao materializar. A forma do `digestDoSnapshot` ganhou um campo, pelo
+   que o digest muda para TODOS os snapshots; um plano validado, aprovado ou pendente sob a versão
+   anterior sai com `1` (`o conteudo do snapshot nao e o selado`) e não corre.
+2. **No release, os dois lados juntos, o nó primeiro:** a imagem nova do `aos` com o `tools.json`
+   que já traz `"mutation":"none"` no `doc_read`, e o `orq/snapshot.json` do operador com
+   `"mutation":"none"` no `doc_read`. Um `aos-orq` novo contra um nó anterior ao AOS-409 recusa
+   arrancar (o nó não serve o eixo ⇒ mutador ⇒ o `none` do snapshot é «menos risco»).
+3. **Depois do deploy, a drenagem recusa em cada tick** até o `orq/snapshot.json` ter o campo; a
+   recusa nomeia a tool. Nenhum pedido se perde.
+
+### Resíduos declarados
+
+1. **A mutação continua declarada à mão nos dois lados.** O nó declara-a no manifesto e o snapshot
+   no ficheiro; a conferência garante que o snapshot não diz MENOS, mas nada prova que o manifesto
+   diz a verdade sobre o que a tool faz — é configuração trusted do operador, como o `egress` e a
+   `reversibility`. A atestação dos eixos pertence ao REG (DEF-812).
+2. **R1 é conservador de propósito.** Uma escrita desfazível chega ao cartão marcada irreversível
+   (`Irreversible: true`), porque a mutação entra no classificador por essa porta — e, com ela,
+   `DualControlRequired: true` (`approval-card/card.go`, que o deriva do mesmo bool) e
+   `aggregate_irreversible` no PlanCard: o humano lê «dual-control exigido» para uma escrita que se
+   desfaz. O exagero fica no cartão: o `aos-orq` não liga o dual-control por efeito, e o bool não
+   alimenta compensação, retry, idempotência nem a reversibilidade que o RM lê do `tools.json` em
+   runtime. Distinguir
+   «escreve com undo» de «não se desfaz» no cartão exigiria um eixo no `risk.Classify` — uma emenda
+   ao ADR-013, fora deste ticket.
+3. **Sem verificação em produção nesta entrega.** O ritual de release está escrito; a primeira
+   release que o execute regista aqui a evidência (recusa antes da correcção, «conferida(s)»
+   depois).
+
+### Estado
+
+**FEITO** (2026-10-01), commit `71b2064`. Gates locais verdes: `build`, `lint`, `layer-lint`,
+`test` (com `-race`), `apex`, `policy-test`, `security`, `rtm`, `ref-lint`, `deferrals`,
+`estado-citado`, e o smoke do `run-aos` (10/10). A verificação em produção fica para a primeira
+release (resíduo 3).
+
+---
+
+## AOS-412 — Com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-408 (o gate de aprovação de plano), AOS-390 (materialização admit-only, efeito no despacho) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/main.go` (`materializar`), `packages/cmd/aos-orq/planner_wiring.go` (`comporBaseDeExecucao`, `materializarEDespachar`), `packages/cmd/aos-orq/plan_gate_wiring.go` (`gatearPlano`) |
+
+### Contexto
+
+O AOS-408 compôs o gate e validou-o em produção (v0.1.22) com o planeador de fixture, que é
+determinístico: repetir o `serve --goal` depois do `decide` re-decompõe no MESMO organigrama e o
+plano aprovado corre. Com o **modelo vivo** não é assim — a segunda decomposição produz outro
+organigrama (outro `plan_hash`), e o registo do AOS-408 declarava-o como resíduo: «com o modelo
+vivo, um plano aprovado não despacha». Havia dois becos:
+
+- o `--goal` repetido dizia «pendente» sobre um `plan_id` que JÁ tinha decisão terminal, e o
+  `decide` recusava-o depois («ja tem decisao terminal») — um pendente sem saída;
+- o `--plan-doc`, a via determinística, **parava na admissão**: materializava com um token de
+  faz-de-conta (`"nhi:"+worker`), não despachava (os nós ficavam pendentes para sempre) e nem
+  sequer corria a validação estrutural AOS-231, que só o `--goal` chamava.
+
+Ou seja: o caso para que o gate existe — aprovar um organigrama de risco e vê-lo correr — não era
+possível em produção com o planeador real.
+
+### Objectivo
+
+O `serve --plan-doc` percorre o mesmo caminho do `--goal`, menos a decomposição: validação
+estrutural → o MESMO gate → base de execução real (identidade, RM, orçamento) → materializar →
+**despachar**. E o `--goal` sobre um plano já decidido recusa em vez de mentir «pendente».
+
+### Critérios de Aceitação
+
+- [x] `serve --plan-doc <documento aprovado>` materializa E despacha o organigrama aprovado,
+      incluindo o nó de risco. *(Evidência: `TestAOS412_ComModeloVivoOPlanoAprovadoCorrePeloPlanDoc`
+      — aprova H1, simula a re-decomposição com um H2 diferente e corre H1 pelo `--plan-doc`:
+      «APROVADO por humano», `folha publicacao a arrancar`, `nos_despachados=2`.)*
+- [x] O `--goal` sobre um `plan_id` com decisão terminal para OUTRO organigrama sai com **7** e
+      indica o caminho (`--plan-doc`), sem materializar. *(Evidência: o mesmo teste, passo 1.)*
+- [x] O documento do `--plan-doc` é untrusted como o do modelo: passa pela validação AOS-231.
+      *(Evidência: `TestAOS412_PlanDocValidaAEstrutura` — uma tool fora do snapshot é recusada
+      com a regra AOS-231.)*
+- [x] Um plano sem risco pelo `--plan-doc` passa pelo MESMO gate (auto-aprova, com os factos no
+      log) e despacha. *(Evidência: `TestAOS412_PlanDocSemRiscoAutoAprovaEDespacha`.)*
+- [x] Um só gate para as duas vias: `exigirDecisaoParaDocumento` (a verificação paralela do
+      `--plan-doc`) sai; o `gatearPlano` lê a decisão ANTES de apensar factos.
+- [x] Um segundo organigrama de risco sobre um plano JÁ pendente de outro sai com **7** e não
+      reescreve o documento pendente (o `plan.validated` é de primeira-escrita e o `decide` ancora
+      nele). *(Evidência: `TestAOS412_SegundoOrganigramaSobrePendenteRecusa`.)*
+- [x] Reutilizar uma aprovação (ramo sem risco) exige o catálogo SELADO, como o ramo de risco.
+      *(Evidência: `TestAOS412_AprovacaoReutilizadaExigeOSnapshotSelado`.)*
+- [x] O runbook da cerimónia (`deploy/server/README.md`) executa o plano aprovado pelo `--plan-doc`.
+
+**FALHA-ANTES:** os três testes, contra os ficheiros de produção da base (`main.go`,
+`planner_wiring.go`, `plan_gate_wiring.go` repostos), falham pela razão que medem — o H2 saía **6**
+(pendente) em vez de 7; o documento com tool desconhecida não era recusado pela AOS-231; o plano sem
+risco não passava pelo gate nem despachava.
+
+**Fixtures corrigidas.** Dois testes antigos usavam documentos que a regra AOS-231 recusa e que
+passavam só porque o `--plan-doc` não validava: o do DEF-273 (um `verifier` com `plan_version` 1.0.0
+e uma tool de efeito) e o do AOS-390 (um ramo condicional sobre o `verdict` de um nó que não é
+verificador). Passaram a documentos admissíveis. O do DEF-273 prova agora as duas linhas pelo
+processo real: a regra (V3) recusa o verificador com tool de efeito (`verifier_effect_tool`) e o
+oráculo do snapshot continua composto para o verificador read-only. O clamp da materialização
+(segunda linha) deixou de ser alcançável por esta via, porque a primeira apanha o documento antes;
+a sua cobertura é a de unidade.
+
+### Fora de âmbito
+
+- O `plan_id` continua a admitir UMA decisão: re-planear depois de uma recusa exige um run novo
+  (resíduo do AOS-408, inalterado).
+- Os nós de `--nodes` continuam a entrar no grafo antes do gate (resíduo do AOS-408, inalterado).
+
+### Estado
+
+**FEITO.**
+
+**Verificado em produção a 2026-09-19** (`v0.1.23`, imagem `sha256:b59db1fb…`), com o **modelo
+vivo** (sem `--decompose-fixture`) no run `run-aos412-vivo-1`. O snapshot com uma tool `danger`
+(`http.post`, irreversível, egress externo) e a chave pública de um aprovador **só de validação**
+foram postos em `/opt/aos/orq/` e retirados no fim; a chave privada nunca saiu da máquina do
+aprovador.
+
+| Passo | Saída em produção |
+|---|---|
+| `serve --goal` | `EXIT=6`, `plan_hash=sha256:3c370e34…` (H1), `1 no(s) de risco: n3`, documento em `--plan-out` |
+| `serve --goal` repetido, H1 pendente | `EXIT=7` — o modelo re-decompôs em `sha256:96617bd1…` e o `serve` recusou («ja esta pendente para o organigrama … decida o documento pendente … `serve --plan-doc`») em vez de um segundo pendente indecidível |
+| `decide` | `EXIT=0`, `decisao APROVADA por human:validacao-aos408` sobre o H1 — o documento pendente não foi reescrito pelo passo anterior (senão o hash não batia) |
+| `serve --goal` depois da decisão | `EXIT=7` — outro organigrama (`sha256:844511f7…`), recusado com a indicação do `--plan-doc` |
+| `serve --plan-doc` | `EXIT=0`, `gate de plano: APROVADO por humano`, `materializado: … nos=3 oraculo=snapshot(sha256:snap-aos408-validacao)`, `despacho: papel n1 spawnado`, `nos_despachados=1` |
+| `plans` / `inspect` (leitura) | `estado=DECIDIDO decisao=approved plan_hash=sha256:3c370e34…`; `nos=3 ordem=n1,n2,n3` |
+
+O despacho parou no `n1` pela TOPOLOGIA que o modelo escolheu, não pelo gate: o documento aprovado
+(lido do volume, só leitura) tem `n1` a ler, `n2` como `verifier` sobre o que o `n1` leu, e o `n3`
+(`http.post`, `danger`) com `conditional_on: n2 verdict eq pass`. O `n3` espera, correctamente, pelo
+veredicto — que só existe depois de os filhos correrem, fora de um `serve` de uma passagem. A
+execução do nó de risco depois da aprovação ficou vista na validação do AOS-408 (fixture,
+`nos_despachados=2`); com o modelo vivo, NÃO VERIFICADO nesta corrida.
+
+**Observado, fora deste ticket:** a primeira decomposição viva produziu um plano que a regra AOS-231
+recusou (`consumes_taint_authority`) e o `serve` saiu com `1` sem voltar a pedir ao modelo
+(`tentativas=1`) — a recusa estrutural não realimenta o planeador. A segunda corrida decompôs num
+plano admissível.
+
+---
+
+## AOS-413 — Os nós despachados de um organigrama executam até ao fim e o plano produz resultado
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-390 (despacho governado sob Tenure), AOS-412 (o plano aprovado corre pelo `--plan-doc`), ADR-018, ADR-024, ADR-027 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/dispatch_wiring.go` (`dispatchSink.Dispatch`), `packages/control-plane/orchestrator/graph.go` (`MarkRunning`), `packages/control-plane/orchestrator/plandispatch/ports.go`, `packages/control-plane/runlifecycle/emitters.go`, `packages/cmd/aos/api.go` (`POST /runs`) |
+
+### Contexto
+
+Os tickets AOS-400 a AOS-412 fecharam a cadeia do `aos-orq` até ao despacho: modelo vivo → plano →
+validação → gate humano → materializar → despachar. A cadeia **acaba aí**. Despachar um nó é, hoje,
+cunhar a NHI (se for papel) e `MarkRunning` — e nada executa o trabalho do nó nem o conclui. O próprio
+código o diz: «Sem um executor a concluir nós, o ponto fixo alcança-se numa ou duas passagens».
+
+Em produção (v0.1.23, run `run-aos412-vivo-1`) o organigrama aprovado despachou o `n1` (ler o
+relatório) e parou: o `n1` fica `running` para sempre, o verificador `n2` nunca emite veredicto e o
+nó de risco `n3` (`conditional_on: n2 verdict eq pass`) nunca publica. **Um objectivo entregue ao
+`aos-orq` não produz resultado.** O caminho de um só run no nó `aos` executa tools na sandbox e
+conclui (E2E de 2026-09-15); o multi-nó é o único que não chega ao fim.
+
+O lado de LEITURA já existe e está composto — falta quem ESCREVA:
+
+| Peça | Leitor (composto) | Produtor (em falta) |
+|---|---|---|
+| Dependência cumprida | `LifecycleView.State` sobre `task.node.state_changed` (`RebuildDAG` já honra um `To=complete`) | nenhuma transição `running→complete\|failed` no `GraphBuilder` — só existe `MarkRunning` |
+| Veredicto de um `verifier` | `runlifecycle.ResultReader` sobre `plan.verdict_recorded` | `PlanRecorder.RecordVerdict` sem chamador de produção |
+| Payload entre nós (`consumes`) | `PayloadResolver` sobre `plan.payload_published` | `PlanRecorder.RecordPayloadPublished` sem chamador de produção |
+| Headroom | a porta diz que o liberta quem conclui o nó | o `boundedHeadroom` do `aos-orq` é em memória e nunca liberta |
+| O trabalho do nó | — | **indefinido**: nenhum ciclo de modelo corre para um nó do plano (o `aos-orq` nunca chama `agentruntime.Run`) |
+
+Não há deferimento registado para isto: a lacuna não estava declarada.
+
+### Decisão a tomar primeiro (do dono)
+
+Onde corre o trabalho de um nó. O ADR-018 faz do laço de serviço do nó `aos` a fonte única do ciclo
+de vida de um run e proíbe-o de importar orquestrador/scheduler (`boundary_orq_sch_test.go`); o
+ADR-024 põe a composição do despacho no `aos-orq serve`. Opções, com o que cada uma custa:
+
+- **(A) Cada folha é um run no nó `aos`.** O `aos-orq` submete-a por `POST /runs` e acompanha-a por
+  `GET /runs/{id}`; as tool calls ficam governadas pelo RM e pela sandbox que já estão em produção.
+  Não mexe no ADR-018. Custa: um cliente HTTP autenticado no `aos-orq` (não existe), o corpo do
+  `POST /runs` não leva as tools nem o `node_id` do plano (o nó tem de ficar restrito às tools
+  pinadas do nó do plano, senão o clamp da materialização é decorativo), e a espera por um run
+  remoto num binário que hoje é de uma passagem.
+- **(B) O `aos-orq` corre o ciclo de modelo em processo** (`agentruntime` com o RM do próprio
+  binário). Custa: um segundo sítio a executar tools, fora da sandbox e da cadeia PDP completa do nó
+  — o RM do `aos-orq` é mínimo e sem PDP (fora de âmbito declarado no AOS-407).
+- **(C) Emendar o ADR-018** para o nó `aos` hospedar o multi-nó. Custa: reabre a decisão que mantém
+  uma só autoridade sobre o ciclo de vida.
+
+A recomendação à partida é **(A)**, por reutilizar a execução governada que já corre em produção —
+mas a escolha é do dono, e fica num ADR.
+
+**Decidido (2026-09-19) — ADR-027:** opção **(A)**. O NHI do run é cunhado pelo operador com o
+`aos-issuer` e montado em ficheiro (o nó continua a confiar num só emissor); o `POST /runs` ganha um
+campo `tools` como lista-branca imposta pelo RM; a validade do NHI (45 min) é o tecto de um plano por
+agora, com a renovação como resíduo declarado.
+
+### Objectivo
+
+Um organigrama aprovado executa até ao fim: cada folha faz o seu trabalho com as tools pinadas do seu
+nó, conclui (`complete`/`failed`) de forma durável sob a posse do run, um `verifier` emite o
+veredicto, o despacho avança para os dependentes e para os ramos condicionais, e o plano termina com
+um resultado legível.
+
+### Critérios de Aceitação
+
+- [x] Decisão (A)/(B)/(C) registada num ADR, com o impacto no ADR-018/ADR-024. *(Evidência: ADR-027.)*
+- [x] Transição durável `running→complete|failed` de um nó do plano, escrita só sob o lease
+      (ADR-023), e `RebuildDAG` a reconstituí-la depois de um crash. *(Evidência:
+      `GraphBuilder.MarkTerminal`; `TestAOS413_MarkTerminalFicaDuravelESobreviveAoReplay`,
+      `…RecusaOQueNaoEConclusao` (ready→complete e killed recusados), `…RevertidoSeOAppendFalha`.)*
+- [x] O trabalho de uma folha executa restrito às tools pinadas DO NÓ (as do `plan.materialized`),
+      não às do run inteiro — com teste que prova que uma tool de outro nó é negada. *(Evidência:
+      campo `tools` do `POST /runs` → `Goal.AllowedTools`, imposto antes da mediação; lista
+      AUSENTE ⇒ sem restrição, PRESENTE e vazia ⇒ nenhuma tool (um nó sem tools pinadas não herda
+      as do NHI do run); preservada pela retoma. `TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista`
+      pelo nó real (a call não chega ao RM, nas duas variantes), `TestAOS413_ListaBrancaVaziaNegaTudo`,
+      `TestAOS413_RetomaDistingueListaVaziaDeAusente`; mutação no guarda e no mapeamento da API.)*
+- [~] Um `verifier` concluído emite `plan.verdict_recorded`; os outputs declarados emitem
+      `plan.payload_published`; o `conditional_on` passa a ser avaliado sobre veredictos reais.
+      *(Feito: o veredicto lê-se da saída final por gramática fechada — texto à volta, campo a mais,
+      outcome ou razão fora da gramática ⇒ `fail` `verdict_unparseable`; os `subjects` vêm do plano.
+      `TestAOS413_VeredictoFailOuIlegivelNaoLibertaORisco`. POR FAZER: os payloads — a saída de um
+      nó não chega ao run seguinte, porque o conteúdo é untrusted e o prompt não tem canal
+      separado por taint (DEF-806); publicar referências sem consumidor seria decorativo.)*
+- [x] O headroom liberta-se na conclusão (o laço não esgota o tecto de concorrência). *(E a
+      retoma re-adquire-o para os nós que um `serve` anterior deixou a correr.)*
+- [x] O `serve` termina quando o plano chega a estado terminal (ou declara, com código de saída
+      próprio, que deixou nós a correr), e o `inspect` mostra o resultado por nó. *(Evidência: a
+      linha `execucao: n1=complete …`; `--plan-timeout` esgotado ⇒ saída **8**, posse largada, e a
+      invocação seguinte retoma sem re-materializar (lê o `plan.materialized` do log) —
+      `TestAOS413_PrazoComNosEmVooSai8ERetoma`. O estado por nó fica no stream do run; o `inspect`
+      não mudou.)*
+- [x] Um nó `danger` aprovado executa e um nó não aprovado não executa — pelo processo real.
+      *(Evidência: `TestAOS413_OrganigramaAprovadoExecutaAteAoFim` — o plano do `run-aos412-vivo-1`
+      contra um nó falso: nada é submetido enquanto está pendente; aprovado, `n1`, `n2` e `n3` são
+      runs do nó, cada um com a lista-branca do SEU nó (`n2` com `[]`), e o `n3` só corre depois do
+      `pass`.)*
+- [ ] Verificado em produção com o modelo vivo: um organigrama com `verifier` e ramo condicional
+      chega ao fim (o caso do `run-aos412-vivo-1`).
+
+### Lacunas a verificar no desenho
+
+- O comentário de `dispatchSink.Dispatch` diz que o spawn de um PAPEL falha fail-closed (o token do
+  run traz `cap:plan` e o `IssueChild` exige `Authority` ⊆ folha do pai), mas em produção o `n1` foi
+  «papel spawnado» com sucesso. Ou o comentário ficou desactualizado, ou o spawn passa por uma razão
+  que convém conhecer antes de lhe pendurar execução.
+- O que é o «trabalho» de um nó sem skills: o `tecnica/18` declara como lacuna honesta que os nós só
+  correm sobre tools registadas. O objectivo do nó é o prompt; as tools pinadas são o que pode fazer.
+- ~~A PR aberta que torna as arestas do plano duráveis no grafo (`task.edge.added`, PR #300) toca no
+  mesmo `RebuildDAG`: coordenar a ordem.~~ **Resolvida pelo AOS-476:** a emissão das arestas entrou
+  pela materialização, portada do PR #300 para a base (o PR em si continua aberto; fechá-lo é decisão
+  do dono). A citação dizia `DEF-913`, número que o PR #300 usou e que no registo é o tecto da fila de
+  planos do AOS-464. A segunda metade do PR #300 foi re-medida no AOS-476 e ficou registada como
+  DEF-817 (um `serve` sem documento re-hidrata e não despacha).
+
+### Fora de âmbito
+
+- Um executor de skills (a lacuna do `capability_gap`, AOS-240).
+- O re-planeamento quando a regra AOS-231 recusa uma decomposição viva (observado na validação do
+  AOS-412) — é outro ticket, se se quiser.
+
+- [x] Verificado em produção com o modelo vivo: um organigrama com `verifier` e ramo condicional
+      chega ao fim (o caso do `run-aos412-vivo-1`). *(Ver abaixo.)*
+
+### Estado
+
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.24`, imagem `sha256:d808d964…`), com o **modelo
+vivo**, no run `run-aos413-vivo-1`. O snapshot de validação usa os nomes de tool DO NÓ
+(`doc_read`, `web_post`) — com outros nomes a lista-branca nega tudo e o plano não faz nada.
+
+O planeador decompôs em três nós: `read_notes` lê com `doc_read`; `verify_publication` é o
+verificador do que ele leu; `publish_external` publica com `web_post` (`danger`) e só corre com
+`verdict eq pass`. O plano ficou pendente (`EXIT=6`), foi aprovado por decisão assinada fora do
+servidor, e o `serve --plan-doc` correu com o executor composto:
+
+| Passo | Saída em produção |
+|---|---|
+| Banner | `executor de nos (AOS-413, ADR-027): COMPOSTO — cada no despachado e um run do no aos em http://aos:8080 (chamador autenticado pelo IdP …)` |
+| Gate | `gate de plano: APROVADO por humano … nos_de_risco=1` |
+| Materialização | `nos=3 oraculo=snapshot(sha256:snap-aos413-validacao)`, com `cap:tool:doc_read`, `cap:tool:web_post` e o verificador SEM tools |
+| Execução | `no read_notes complete (run run-aos413-vivo-1~read_notes)` e `no verify_publication complete (run …~verify_publication)` — **runs reais do nó `aos`** |
+| Veredicto no log | `node_id=verify_publication subjects=["read_notes"] outcome=fail reasons=["documento_nao_fornecido"]` |
+| Fim | `nos_despachados=2`, `execucao: publish_external=ready read_notes=complete verify_publication=complete`, `EXIT=0` |
+
+**O que isto prova:** os nós do plano executam e concluem de forma durável (antes ficavam
+`running` para sempre); cada run levou a lista-branca do SEU nó; o veredicto veio do modelo vivo
+na gramática fechada, com os sujeitos tirados do plano; e o nó `danger` APROVADO **não** correu,
+porque a condição que o liberta não se cumpriu — o ramo condicional é avaliado sobre um veredicto
+real.
+
+**E confirma o limite declarado (DEF-806).** A razão do `fail` é `documento_nao_fornecido`: o
+verificador não vê o que o `read_notes` leu, porque a saída de um nó não chega ao run do nó
+seguinte. O plano executa-se e governa-se; os nós ainda não trocam dados. É o próximo passo
+natural desta linha, e precisa de um canal de entrada separado por taint.
+
+**Higiene da validação:** o NHI do run (45 min) foi cunhado pelo operador com login no IdP, ficou
+num ficheiro montado e não passou por variável de ambiente. O segredo do cliente do IdP está em
+`0400` do utilizador `aos` e o contentor corre como uid 65532; sem `root` na sessão, a validação
+usou uma CÓPIA legível localmente (`orq-client-secret`), a apagar no fim, com rotação do segredo
+recomendada. A forma correcta — cópia com dono 65532 e `0400` — exige `sudo` com terminal.
+
+
+---
+
+## AOS-414 — Os nós de um plano trocam dados por um canal de entrada marcado como untrusted
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-413 (os nós executam como runs do nó), ADR-027, ADR-022 §2.3 (payload tipado por aresta), ADR-005 (taint) |
+| Bloqueia | — |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/cmd/aos/api.go` (`POST /runs`), `packages/kernel/agent-runtime/loop.go` (montagem do tail), `packages/kernel/agent-runtime/prompt.go` (`tailFromHistory`, marcação `taint=`), `packages/control-plane/runlifecycle/readers.go` (`PayloadReader`), `packages/control-plane/runlifecycle/emitters.go` (`RecordPayloadPublished`) |
+
+### Contexto
+
+O AOS-413 pôs os nós a executar, e a validação em produção (v0.1.24, run `run-aos413-vivo-1`)
+mediu exactamente onde a cadeia ainda se parte: o verificador respondeu
+
+```
+outcome=fail reasons=["documento_nao_fornecido"]
+```
+
+— porque a saída do nó anterior **não chega** ao run do nó seguinte. O nó `danger` aprovado não
+correu, e fez bem: a condição que o liberta nunca se cumpriu. Enquanto isto não mudar, **qualquer
+plano com verificação termina em `fail`**, e o `consumes` de ADR-022 §2.3 é um contrato que
+ninguém pode cumprir.
+
+Não é um esquecimento do AOS-413: está declarado no ADR-027. O conteúdo produzido por um run é
+**untrusted** (ADR-005), e as duas entradas do prompt que existiam não servem — o `objective` é
+**trusted** (vem de uma submissão autenticada) e o `memory_context` **não tem separação de taint**
+(é o DEF-806, cujo eixo é o AOS-069). Levar conteúdo por qualquer uma delas era branquear o taint.
+
+### Objectivo
+
+Um nó recebe, no seu run, os payloads que o plano lhe declarou em `consumes` — com a marca de
+untrusted e a proveniência (nó de origem, contrato, digest) visíveis no prompt materializado —,
+sem que isso enfraqueça a fronteira de privilégio.
+
+### Decisão a tomar primeiro (do dono): onde vive o conteúdo
+
+O nó cifra o conteúdo não-determinístico por-titular no seu Event Store; o `aos-orq` **não** tem
+acesso a esse conteúdo, e o `final_text` de um run filho vive na memória do nó (um reinício
+perde-o). Opções:
+
+- **(A) Em memória do `serve`, por referência no log.** O `aos-orq` lê o `final_text` do run
+  filho, publica `plan.payload_published` (referência + digest, sem conteúdo) e entrega o conteúdo
+  ao run seguinte. Custa: um `serve` que retome depois de morrer não tem o conteúdo, e os nós cujo
+  produtor já concluiu têm de voltar a correr.
+- **(B) Durável no stream do plano.** O conteúdo passa a ser um facto do log do `aos-orq`. Custa:
+  saída de modelo **em claro** no WAL do orquestrador, que não tem a cifra por-titular do nó — uma
+  fronteira de dados nova, e o crypto-shredding do nó deixa de a alcançar.
+- **(C) Sem transporte: o consumidor vai buscar.** O nó seguinte lê o artefacto com as SUAS tools
+  (por exemplo, o mesmo `doc_read`). Custa: só funciona quando o produto do nó é um recurso
+  endereçável, e o veredicto de um verificador não o é.
+
+A recomendação à partida é **(A)**, com a duração do plano já limitada pelo NHI (45 min) e a
+retoma a re-executar o que falte; **(B)** exige decisão explícita sobre guardar conteúdo untrusted
+em claro no orquestrador.
+
+### Critérios de Aceitação
+
+- [x] Decisão (A)/(B)/(C) registada (emenda ao ADR-027 ou ADR novo), com o impacto em ADR-005.
+      *(Evidência: **(A)**, decidida pelo dono a 2026-09-20 e emendada no ADR-027 §2.4.)*
+- [x] O `POST /runs` ganha um canal de ENTRADA de dados distinto do `objective`, e o conteúdo
+      entra no tail como segmento **marcado `taint=untrusted`** com proveniência — a mesma
+      marcação de `tailFromHistory`/resultados de tool, nunca uma tag in-band inventada.
+      *(Evidência: campo `inputs` → `Goal.Inputs` → segmento `TailPlanInput`, com
+      `plan_input_from/output/digest` nos rótulos da linha de delimitação. O nó VERIFICA o digest
+      e recusa na fronteira (400) um payload sem contrato, sem digest, com digest que não bate ou
+      acima dos tectos — `TestAOS414_InputsNaFronteiraDoNo` (5 casos);
+      `TestAOS414_PayloadEntraMarcadoUntrustedComProveniencia`;
+      `TestAOS414_PayloadSubmetidoChegaAoPromptDoRun` pelo nó real, com mutação.)*
+- [x] O `aos-orq` publica `plan.payload_published` por cada output declarado que cumpra
+      (referência + digest, derivados do contrato), e entrega ao consumidor só o que o `consumes`
+      DELE declara — não o que o produtor quiser dar. *(Evidência:
+      `TestAOS414_OVerificadorRecebeOQueONoAnteriorLeu` e `TestAOS414_SoOQueOConsumesDeclara`;
+      um `metrics` sem fonte NÃO se publica, em vez de se inventarem números.)*
+- [x] Um payload de taint efectivo `untrusted` continua a NÃO alimentar um consumidor com
+      autoridade privilegiada: a regra do validador (AOS-231/ADR-022 §2.3) continua a valer e tem
+      teste que o prova pelo processo real. *(Inalterada: o plano é recusado na validação, antes
+      de existir transporte; o canal não lhe mexe.)*
+- [x] O prompt materializado do run consumidor MOSTRA a proveniência (nó, contrato, digest), e há
+      teste que prova que o conteúdo não aparece como `objective` nem como directiva trusted.
+      *(Evidência: o teste confirma que o segmento do objectivo não contém o conteúdo, e
+      `TestAOS414_PayloadNaoForjaSegmentoTrusted` prova que um payload com `<correction>` no corpo
+      não forja o único rótulo trusted da janela.)*
+- [x] Verificado em produção com o modelo vivo: o caso do `run-aos413-vivo-1` passa a ter o
+      verificador a decidir sobre o documento que o `read_notes` leu — `pass` liberta o nó
+      `danger` aprovado, `fail` mantém-no retido. *(Ver abaixo: `run-aos414-vivo-2`, v0.1.25.)*
+
+### Fora de âmbito
+
+- **A separação de planos (DEF-806/AOS-069) continua aberta.** Este ticket dá ao conteúdo
+  untrusted um canal PRÓPRIO e marcado; não o executa num plano separado do que planeia. Dizer o
+  contrário seria fechar por decreto uma dívida que não se fechou.
+- A autorização estruturalmente infalsificável do taint (DEF-807).
+
+### Estado
+
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.25`, imagem `sha256:51ca557c…`), com o modelo vivo,
+no run `run-aos414-vivo-2`. O planeador decompôs em `n1_read_notes` (lê com `doc_read`),
+`n2_verify_content` (verificador, sem tools) e `n3_publish_external` (`web_post`, `danger`,
+condicional ao `pass`). O plano ficou pendente, foi aprovado por decisão assinada fora do servidor,
+e o `serve --plan-doc` com o executor composto levou a cadeia ao fim:
+
+| Facto no log | Conteúdo |
+|---|---|
+| `plan.payload_published` (n1) | `output=notes_content type=record taint=untrusted`, referência `stream=run-aos414-vivo-2~n1_read_notes` com digest |
+| `plan.verdict_recorded` (n2) | `subjects=["n1_read_notes"] outcome=pass reasons=["conteudo_nao_contem_segredos","sem_credenciais_chaves_ou_tokens","sem_dados_pessoais_sensiveis_apenas_nomes_proprios","informacao_tecnica_generica_sem_identificadores_internos"]` |
+| `plan.branch_decided` (n3) | `taken=true sources=["n2_verify_content"]` |
+| Fim do `serve` | `nos_despachados=3`, `execucao: n1_read_notes=complete n2_verify_content=complete n3_publish_external=complete`, `EXIT=0` |
+
+**A prova está nas razões do veredicto.** Na validação do AOS-413 o verificador reprovava com
+`documento_nao_fornecido`; aqui pronuncia-se sobre o QUE LEU — quatro razões sobre segredos,
+credenciais, dados pessoais e identificadores internos. É a diferença entre o canal existir e não
+existir. O nó `danger` aprovado correu porque a condição se cumpriu, e não porque alguém o deixou
+passar.
+
+**Observado, fora deste ticket:**
+
+- A primeira decomposição viva foi recusada pela regra AOS-231 (`consumes_taint_authority`): o
+  modelo tentou alimentar um consumidor com autoridade privilegiada a partir de um payload
+  untrusted. A regra fez o seu trabalho — e o `serve` não re-planeia (resíduo do AOS-412), pelo
+  que foi preciso repetir.
+- Esse `serve` recusado **reteve a posse do run**: a invocação seguinte com o mesmo `--run` saiu
+  com `3` (lease detido) e a validação seguiu num run novo. Largar a posse numa recusa de
+  validação é candidato a ticket.
+- Ler o WAL com `grep` deu contagens FALSAS (zero veredictos) por causa do enquadramento binário
+  do ficheiro; só `strings` mostrou os 33 eventos. Quem verificar um WAL de produção à mão que
+  use `strings`, ou lerá um log incompleto e concluirá o contrário do que lá está.
+
+**Decisão do dono: opção (A)** — o conteúdo vive na memória do `serve`, e no log fica a
+referência com o digest. Uma retoma sem o material recusa-se a correr o consumidor
+(`ErrPayloadPerdido`), em vez de o correr às cegas.
+
+**Revisão adversarial independente.** O gate, os contratos e a marcação do prompt aguentaram
+(incluindo a injecção de rótulos pela proveniência, que o assembler saneia). Oito achados, todos
+tratados:
+
+| Achado | O que mudou |
+|---|---|
+| Um contrato impossível de cumprir (`metrics`) abortava o `serve` e repetia-se em todas as retomas | O CONSUMIDOR fecha em `failed`, com a razão, e o plano termina |
+| O aborto acontecia a meio da passagem, deixando irmãos em voo por recolher | A poda corre ANTES dos retratos da passagem |
+| Os tectos por payload (16×256 KiB) eram inalcançáveis: o corpo do `POST /runs` corta a 1 MiB | 128 KiB por payload, 512 KiB agregado, e tecto no produtor |
+| O replay não semeava os payloads: um run com entradas divergia no turno 1 | `TrajectorySpec.Inputs` semeado pelo mesmo construtor do loop |
+| Dois contratos de forma aberta recebiam os MESMOS bytes | Um nó com mais do que um contrato aberto não publica nenhum |
+| O digest era descrito como prova do que o plano publicou | É um controlo de integridade do transporte, e está dito assim |
+| O banner e o cabeçalho ainda diziam que nada é transportado | Corrigidos |
+| O `PayloadResolver` ficou sem chamador | Declarado como resíduo |
+
+**Resíduos declarados:** um contrato `metrics` não se publica (ninguém mede os números, e
+inventá-los era pior), e um segundo contrato de forma aberta também não; o conteúdo não sobrevive
+à morte do `serve`; o `PayloadResolver` continua por ligar; e a separação de planos
+(DEF-806/AOS-069) continua aberta — este ticket dá canal próprio e marcação, não plano separado.
+
+---
+
+## AOS-415 — O veredicto da validação volta ao planeador, e a recusa deixa de acabar o run
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | feature |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-231 (validador e o enum de razões), AOS-388/AOS-391 (planeador governado com laço de tentativas), AOS-400 (prompt 1.2.0) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/planner/planner.go` (laço de tentativas, `DecomposeInput`), `packages/control-plane/orchestrator/decompose/decompose.go` (`Decomposer`, `renderUser`), `packages/control-plane/orchestrator/planvalidate/verdict.go` (`Verdict`, `Reason`, `Locator`), `packages/cmd/aos-orq/planner_wiring.go` (`decomporEMaterializar`, `validarEstrutura`) |
+
+### Contexto
+
+Nas **duas** validações em produção com o modelo vivo, a PRIMEIRA decomposição foi recusada pela
+validação AOS-231 — as duas vezes por `consumes_taint_authority` — e o `serve` terminou com `1`:
+
+| Quando | Run | Resultado da 1.ª tentativa |
+|---|---|---|
+| v0.1.23 (AOS-412) | `run-aos412-vivo-1` | recusada (`consumes_taint_authority`), repetida à mão |
+| v0.1.25 (AOS-414) | `run-aos414-vivo-2` | recusada (`consumes_taint_authority`), repetida à mão num run NOVO |
+
+O caminho principal do produto falha em cerca de metade das corridas, e a recuperação é manual. A
+razão é estrutural, e está declarada no próprio epic (§AOS-391): **o laço de tentativas do
+planeador só cobre falhas do decompositor** — erro de chamada, resposta vazia, `plan.Decode`
+falhado (`planner.go:442`, `decompose.go:138-148`; o default são 3 tentativas). A validação
+estrutural corre **fora e depois** desse laço (`planner_wiring.go`, `validarEstrutura`), pelo que
+uma recusa do validador é terminal, com zero retentativas.
+
+E o pior: **cada tentativa reenvia o mesmo prompt**. O `DecomposeInput` leva o número da tentativa
+e mais nada; o modelo não sabe o que fez de errado.
+
+A matéria-prima existe e foi desenhada exactamente para isto. O `planvalidate.Reason` é um enum
+FECHADO e sem conteúdo, e o comentário do ficheiro di-lo: existe «para dar ao re-planeamento um
+sinal accionável sem vazar conteúdo untrusted» (`verdict.go`). Hoje o `validarEstrutura` colapsa o
+veredicto numa string e **deita fora a `Rule` e o `Locator`**.
+
+### Objectivo
+
+Uma decomposição recusada pela validação é reapresentada ao modelo com a razão — em código
+fechado, sem conteúdo — e o `serve` só desiste depois de esgotar as tentativas.
+
+### O PROBLEMA CENTRAL, medido: hoje o consumidor não consegue alcançar a fila
+
+Isto não é um detalhe de implementação — é a pergunta que tem de ser respondida antes de se
+escrever código, e **os três caminhos possíveis estão fechados no código de hoje**.
+
+A fila vive no Event Store **do nó**. Reclamar um item, no molde do `approval_store_durable`, é
+uma **escrita** (`Append` com idempotency-key). Ora:
+
+| Caminho | Estado hoje | Onde se mede |
+|---|---|---|
+| **Ficheiro (`--wal`)** | **FECHADO.** O nó toma `LockWAL` sobre o seu WAL enquanto corre. O `aos-orq` só consegue `abrirParaLeitura` (`OpenReadOnly`, sem tranca); `abrirParaEscrita` faz `LockWAL` primeiro e devolve `ErrWALHeld` ⇒ saída **5** | `packages/cmd/aos/wal_posse.go` (`guardDePosseAplicavel`), `packages/cmd/aos-orq/substrato.go` (`abrirParaEscrita`) |
+| **JetStream (`--nats`)** | **Estava fechado por um defeito do ingresso**, entretanto corrigido: o nome da fila tinha um ponto e o `subjectDe` recusa-o, pelo que o `POST /plans` respondia `503` a tudo sobre NATS. Ver o bloco do AOS-417 sobre isso. **Mas continua sem topologia**: não há serviço NATS no `docker-compose.prod.yml` e o `AOS_EVENTSTORE_NATS` tem default vazio | `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`), `deploy/server/docker-compose.prod.yml` |
+| **HTTP** | **FECHADO POR DESENHO.** Não há rota de leitura da fila, e a barra em `aos-internal/` existe precisamente para que `GET /runs/{id}/...` não a alcance — foi um dos dois defeitos críticos que a revisão do AOS-417 encontrou. Abrir uma rota reabriria as questões do ADR-016 que o ingresso fechou | `packages/cmd/aos/planos.go`, `aos417_soberania_test.go` |
+
+E há um facto de produção que agrava a pergunta: **o Event Store do `aos-orq` em produção não é o
+do nó.** A receita em vigor usa um WAL **por run** (`--wal /var/lib/aos-orq/run-X.wal`), em volume
+próprio (`aos-orq-data`), criado no momento pelo operador. Não existe hoje nenhum store partilhado
+entre os dois processos.
+
+**Consequência para este ticket:** a decisão (1) abaixo não é sobre o *feitio* do trabalhador — é
+sobre **que substrato passa a ser partilhado**, e isso é uma mudança de topologia de produção, não
+uma opção de código. Qualquer desenho que ignore isto escreve um consumidor que não corre.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Onde vive o laço.** (a) A validação entra no planeador, que já tem o laço, por uma porta
+   nova (`Validator`) — o planeador passa a devolver só planos válidos, e o `aos-orq` deixa de
+   validar a jusante; (b) o laço fica no `aos-orq`, que já conhece o snapshot, e o planeador não
+   muda. **(a)** mantém uma só autoridade sobre «o que é um plano admissível» e é a recomendada;
+   **(b)** é menor mas espalha o critério por dois sítios.
+2. **Que forma tem o feedback no prompt.** O que se reenvia é `rule`, `reason` e `node_id` do
+   `Locator` — nunca texto do documento nem do modelo. Falta decidir se entra como bloco próprio
+   do prompt (e se isso obriga a subir a versão do prompt, hoje 1.2.0) ou como instrução no
+   `user`.
+3. **Quantas tentativas.** Hoje são 3 para o decode. A recusa de validação partilha o mesmo tecto
+   (recomendado: o custo de planeamento já é debitado por tentativa) ou tem tecto próprio?
+
+### Critérios de Aceitação
+
+- [x] Decisão (1)/(2)/(3) registada no ticket; se mudar a versão do prompt, ADR ou nota no epic.
+      *(Decidido a 2026-09-20: **(1)** o laço vive no PLANEADOR, por uma porta `Validator` que o
+      `aos-orq` injecta com o snapshot pinado — uma só autoridade sobre o que é admissível;
+      **(2)** bloco próprio no `user` e o CONTRATO no template, que sobe a **1.3.0** (regra 11)
+      sob o gate ADR-012; **(3)** tecto PARTILHADO de 3 tentativas.)*
+- [x] Uma recusa da validação AOS-231 gera nova tentativa, com `rule`/`reason`/`node_id` no
+      prompt — e o teste prova que o conteúdo do documento **não** é reenviado. *(Evidência:
+      `TestAOS415_RecusaDoValidadorGeraNovaTentativaComARazao` (a 1.ª tentativa sem recusa, a 2.ª
+      com ela); `TestAOS415_RecusaEntraNoUserEmCodigos` (e o template NÃO é tocado, ADR-009);
+      `TestAOS415_ODocumentoRecusadoNaoVolta` (nenhum valor do documento recusado aparece).)*
+- [x] O tecto é respeitado: esgotadas as tentativas, o `serve` sai como hoje, com a razão da
+      ÚLTIMA recusa. *(Evidência: `TestAOS415_TectoEsgotadoDevolveARecusa` — e o erro é
+      `ErrPlanRejected`, NÃO `ErrDecomposition`: o modelo produziu documento, o que não é
+      admissível é o documento.)*
+- [x] Cada tentativa continua a ser debitada no orçamento de planeamento e a ter o seu span
+      (`planner.go` mantém a contabilidade actual). *(Evidência:
+      `TestAOS415_TentativaRecusadaContinuaAAbrirSpanPorTentativa` — duas tentativas, dois spans
+      `chat`, cada um anotado com o custo por tentativa. A RESERVA continua dimensionada para
+      `maxAttempts`, e uma recusa não acrescenta chamadas ao modelo além do tecto.)*
+- [~] O facto durável do planeador regista quantas tentativas foram recusadas pelo validador e
+      com que razão (observabilidade de fiabilidade, hoje inexistente). *(Feito no SPAN
+      (`aos.planner.validator_rejections`) e no `PlanResult.ValidatorRejections`. POR FAZER no
+      facto durável: o `plan.planner_admitted` é apensado ANTES das tentativas (é a admissão, não
+      o desfecho), e acrescentar-lhe um contador exigiria um facto novo — que se abre quando
+      alguém precisar dele para medir fiabilidade ao longo do tempo.)*
+- [x] **Falha-antes por processo real:** um decompositor-fixture que devolve um plano recusado na
+      1.ª tentativa e um válido na 2.ª — hoje o `serve` sai com 1; depois, materializa.
+      *(Evidência: `TestAOS415_RecusaDaValidacaoGeraNovaTentativaNoBinario`; o `--decompose-fixture`
+      passa a aceitar vários ficheiros separados por vírgula, um por tentativa — superfície
+      NÃO-PRODUÇÃO, como o próprio flag. Com a mutação que tira o validador do laço, o binário
+      reproduz a falha de produção: `tentativas=1` e `consumes_taint_authority`.)*
+- [x] Verificado em produção: uma corrida `--goal` com o modelo vivo que recupere de uma recusa
+      sem intervenção. *(Ver abaixo: `run-aos415-vivo-3`, `tentativas=3`, v0.1.26.)*
+
+### Âmbito acrescentado, e porquê
+
+- **Largar a posse do run quando a validação recusa.** Observado na validação do AOS-414: o
+  `serve` recusado reteve o lease, e a invocação seguinte com o mesmo `--run` saiu com `3`. É o
+  mesmo caminho de falha que este ticket toca (`largarSePendente` já trata o pendente e a recusa
+  de decisão), e deixá-lo de fora obrigaria o operador a esperar pelo TTL na corrida seguinte.
+  *(Feito: `ErrPlanRejected` larga a posse; `TestAOS415_TectoEsgotadoLargaAPosse` prova que a
+  invocação seguinte com o MESMO run toma a posse e materializa.)*
+
+### Fora de âmbito
+
+- **O `replan.Coordinator` (AOS-239), que continua sem chamador de produção.** Governa o
+  re-plano de uma árvore EM EXECUÇÃO — orçamento residual, autonomia fixada, nós concluídos
+  intocáveis — e não a primeira decomposição. Ligá-lo é outro ticket, com outra justificação.
+- A separação de planos (DEF-806/AOS-069) e o eval-gate com modelo vivo (§5, lacuna declarada).
+
+### Estado
+
+**FEITO.**
+
+**Verificado em produção a 2026-09-20** (`v0.1.26`, imagem `sha256:d0dd2667…`), com o modelo vivo.
+Cinco corridas, todas reportadas — não só as que favorecem:
+
+| Run | Resultado |
+|---|---|
+| `run-aos415-vivo-1` (1.ª invocação) | **3 tentativas, todas recusadas** ⇒ saída **9** e posse LARGADA |
+| `run-aos415-vivo-1` (2.ª invocação, MESMO run) | Tomou a posse (`token=2`) — antes disto saía `3` («lease detido») —, `tentativas=1`, pendente |
+| `run-aos415-vivo-2` | `tentativas=1`, pendente |
+| **`run-aos415-vivo-3`** | **`tentativas=3` e o plano passou**: recuperação DENTRO da corrida, sem intervenção, seguida do gate (`EXIT=6`, pendente) |
+| `run-aos415-vivo-4` | `tentativas=1`, pendente |
+
+**O que isto prova:** o laço repete sobre a recusa e uma corrida recuperou sozinha — antes deste
+ticket, a 1.ª recusa acabava o run com `1`. E a posse é largada: o segundo `serve` com o MESMO
+`--run` tomou-a, que é exactamente o que falhava na validação do AOS-414.
+
+**O que isto NÃO prova, e é preciso dizer:** a realimentação não garante sucesso. Na 1.ª corrida
+as três tentativas foram recusadas e a razão MUDOU pelo caminho — de `consumes_taint_authority`
+para `verifier_commissions_work` —, ou seja, o modelo reagiu ao feedback e caiu noutra regra do
+validador. Com quatro corridas em cinco a decompor à primeira e uma a esgotar o tecto, esta
+amostra não mede taxa de sucesso: isso é o eval-gate com modelo vivo, que continua a não existir
+(§5, lacuna declarada desde o AOS-400).
+
+**Resíduo confirmado em produção:** o tecto de 3 é atingível. Subi-lo é trocar custo por
+probabilidade de sucesso, e essa decisão precisa de dados do eval-gate, não de uma corrida.
+
+**Decisões do dono:** o laço no planeador (porta `Validator`), bloco próprio com o prompt a subir
+para **1.3.0** (regra 11, sob o gate ADR-012 do AOS-273/AOS-400), e tecto PARTILHADO de 3
+tentativas.
+
+**Revisão adversarial independente.** Nove achados, todos tratados. Os três que mudaram
+comportamento:
+
+| Achado | O que mudou |
+|---|---|
+| Uma recusa seguida de falha de decode devolvia `ErrDecomposition`: o `serve` RETINHA a posse e a invocação seguinte saía com `3` — o sintoma do AOS-414, de forma intermitente | Se houve recusa do validador, o desfecho é `ErrPlanRejected`, seja qual for a última falha (`TestAOS415_RecusaSeguidaDeFalhaDeDecodeContinuaARecusa`) |
+| A garantia de «só códigos» vivia em quem implementa a porta, não no ponto que escreve no prompt | O decompositor valida os campos da recusa onde os escreve, e OMITE o que não reconhece (`TestAOS415_CampoHostilDaRecusaNaoEntraNoPrompt`) |
+| O objectivo era escrito ANTES do bloco: um objectivo hostil podia sintetizar o seu próprio bloco de recusa, que a regra 11 manda levar a sério | O bloco passa a vir primeiro (`TestAOS415_ORecusaVemAntesDoObjectivo`) |
+
+Mais: a recusa passou a ter **código de saída próprio (9)**, porque larga a posse e todo o outro
+`1` a retém; uma recusa velha deixa de ser reapresentada depois de uma tentativa que nem produziu
+documento; a ajuda do `--decompose-fixture` deixou de mentir; e dois testes que afirmavam mais do
+que mediam foram reformulados.
+
+**Resíduo declarado:** o contador de recusas vive no span e no `PlanResult`, não num facto
+durável — medir fiabilidade ao longo do tempo exige um facto novo, que este ticket não inventa.
+
+---
+
+## AOS-416 — O executor de nós obtém o segredo do IdP sem uma cópia legível por todos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa o ADR-027: corrige a superfície de deploy que o ADR-027 assume
+     (o executor obtém um Bearer do IdP com o segredo do cliente num ficheiro montado). As
+     citações ao ADR-027 são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orchestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P0 |
+| Estimativa | S |
+| Dependências | AOS-413 (executor de nós e a superfície `AOS_ORQ_OIDC_CLIENT_SECRET_FILE`) |
+| Bloqueia | Qualquer uso do executor de nós numa instalação limpa |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, montagem de `./secrets/reader-client-secret`), `deploy/server/README.md` (passos do operador para o executor), `packages/cmd/aos-orq/node_client.go` (`nodeClientDoAmbiente`, leitura do ficheiro do segredo), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md` |
+
+### Contexto
+
+O `docker-compose.prod.yml` monta o segredo do cliente do IdP no serviço `aos-orq`:
+
+```yaml
+- ./secrets/reader-client-secret:/run/aos-orq/reader-client-secret:ro
+```
+
+O ficheiro no servidor está em `0400`, dono `aos`. O contentor corre como `65532:65532`
+(`docker inspect`, campo `Config.User`). **O uid do contentor não consegue ler o ficheiro que o
+compose lhe monta.** Medido em produção a 2026-09-20, com o uid real e o ficheiro real:
+
+```console
+$ docker run --rm --user 65532:65532 \
+    -v /opt/aos/secrets/reader-client-secret:/s:ro --entrypoint /bin/sh busybox \
+    -c "cat /s >/dev/null && echo LEGIVEL || echo ILEGIVEL"
+cat: can't open '/s': Permission denied
+ILEGIVEL
+```
+
+Sem o segredo não há Bearer; sem Bearer o `nodeClientDoAmbiente` não compõe e o executor de nós
+não arranca. Ou seja, **o caminho que o AOS-413 entregou e que o compose documenta não funciona
+numa instalação limpa**.
+
+A validação do AOS-413 e do AOS-415 só passou porque existia uma segunda cópia do mesmo segredo,
+criada à mão pelo operador em `0444` — legível por qualquer processo da máquina. A cópia era
+byte a byte idêntica ao original (`cmp` deu igual) e foi **apagada** a 2026-09-20; a partir daí o
+executor deixou de ter caminho para o segredo. Hoje o estado é este: ou o executor não arranca, ou
+volta a existir um segredo do IdP legível por todos. Nenhum dos dois serve.
+
+Isto contradiz uma convenção explícita do repositório — «nenhum segredo em texto claro: env var,
+Vault, ou ficheiro montado em runtime» — no único ponto onde a convenção tinha de valer.
+
+### Objectivo
+
+Numa instalação limpa, o executor de nós obtém o segredo do cliente do IdP **sem que o segredo
+fique legível por processos que não sejam o próprio `aos-orq`**, e sem um passo manual do operador
+que crie uma cópia.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Por onde entra o segredo.** (a) Continua a ser ficheiro montado, mas com dono/modo que o uid
+   do contentor lê e mais ninguém — `0400` com dono `65532`, posto pelo mesmo mecanismo que hoje
+   instala os outros segredos; (b) passa a vir do Vault, como os segredos do nó, e o compose deixa
+   de montar ficheiro nenhum. **(a)** é mais pequena e resolve o bloqueio medido; **(b)** alinha
+   com o resto da postura mas arrasta o arranque do `aos-orq` para uma dependência nova.
+2. **Se o `aos-orq` partilha o cliente `aos-reader` ou tem cliente próprio.** Hoje partilha o do
+   E2E de leitura. Um cliente próprio torna a rotação independente e o alcance do segredo menor;
+   partilhar é menos configuração.
+
+### Critérios de aceitação
+
+- [x] Numa instalação limpa, o `aos-orq` com o executor composto obtém um Bearer sem que o segredo
+      fique exposto — **provado pela leitura real do ficheiro no arranque**, e não por afirmação.
+      *(O critério dizia «sem que nenhum ficheiro esteja legível por outro utilizador que não o uid
+      do contentor». **A premissa estava errada e foi emendada**: a fronteira do segredo é o
+      DIRECTÓRIO `secrets/`, que o `bootstrap.sh` cria em 0700 — medido em produção,
+      `drwx------ aos aos`. Um `0644` lá dentro não é legível por mais ninguém, e é a convenção que
+      todos os outros segredos montados seguem.)*
+- [x] Nenhuma cópia do segredo existe fora do caminho único
+      *(a cópia `0444` da validação do AOS-415 foi apagada; o README deixa de sugerir cópias)*.
+- [x] Um teste falha se uma credencial montada voltar a ficar ilegível pelo uid do contentor —
+      `TestAOS416_SegredoIlegivelRecusaNoArranque` e `TestAOS416_NHIIlegivelRecusaNoArranque`;
+      e `TestAOS416_ODirectorioDosSegredosEAFronteira` avermelha se o `secrets/` deixar de ser
+      0700, que é a premissa em que a escolha de modo assenta.
+- [x] O `deploy/server/README.md` descreve o caminho real, e a cópia manual desaparece dos passos.
+- [~] Verificado em produção (`v0.1.27`): o ARRANQUE está medido nos três estados — ausente,
+      ilegível e legível *(ver abaixo)*. O que falta é o Bearer **em uso**: a corrida positiva
+      parou antes de o pedir, e essa metade continua **POR FAZER**.
+
+### O que a revisão adversarial corrigiu, escrito para não se repetir
+
+A primeira versão desta rota tinha **dois defeitos CRÍTICOS**, ambos com a mesma raiz: espelhou o
+`handleSubmit` linha a linha e, ao fazê-lo, copiou passos cuja razão de ser não foi verificada no
+destino. Nenhum foi encontrado pelos gates — todos estavam verdes — nem pela auto-validação.
+
+| # | Defeito | Porque escapou |
+|---|---|---|
+| 1 | **A fila estava no espaço de nomes dos runs.** O stream chamava-se `plan.requests`, e o read-path de trajectória endereça streams POR `run_id`: `GET /runs/plan.requests/trajectory` servia a fila INTEIRA, ao vivo e por SSE, a um leitor de QUALQUER região — os objectivos de todos os tenants. Uma fila não tem residência selada, logo a verificação cross-region caía no ramo «run legado, sem check». O `run_id` também não era validado, pelo que `POST /runs {run_id:"plan.requests"}` injectava eventos de run dentro da fila | O ADR-028 §2.2 decidiu «o Event Store já é a fila» sem notar que, no nó, o espaço de nomes de streams **é** o espaço de nomes de `run_id` — e que esse espaço tem um read-path público |
+| 2 | **Selava residência de um run que não criava.** O `POST /runs` sela porque VAI HOSPEDAR; esta rota selava sem criar nada e deixava o `run_id` LIVRE. Como a residência é fixada pelo PRIMEIRO registo e não é re-negociável, quem pedisse um plano primeiro fixava a fronteira de soberania de um run que OUTRA pessoa viria a criar: a vítima corria o run e recebia 404 no seu próprio resultado; a região do atacante lia-o | É **pior** do que o squat que o `POST /runs` já permitia: ali o id fica ocupado e a vítima não corre (negação de serviço); aqui a vítima corre e o conteúdo sai (exfiltração) |
+
+Ambos estão fechados e com sensor — `aos417_soberania_test.go`, com as quatro mutações
+verificadas (repor o nome do stream, repor o selo, remover o bloco de soberania, e tirar a
+reserva do `POST /runs`) a produzir vermelho.
+
+**Três sensores que faltavam**, e que valem mais do que os defeitos que apanharam:
+
+- o bloco INTEIRO de soberania podia ser apagado sem uma única falha — os testes do ticket
+  corriam com `readGov == nil`, pelo que a rota nunca era exercitada AUTENTICADA;
+- remover a admissão deixava a suite COMPLETA do pacote verde;
+- remover a chamada ao banner no composition-root idem.
+
+A lição é a mesma das três: **copiar a forma de um handler é barato; copiar a justificação tem
+de ser feito à mão.** Um passo cuja razão de ser não se verifica no destino não é defesa em
+profundidade — é um efeito colateral por escrever.
+
+### O defeito que só apareceu DEPOIS do merge, e o que ele ensina
+
+Corrigido em `fix/AOS-417-nome-do-stream`. **O nome que a fila recebeu — `aos.internal/plan-requests`
+— tornava a rota inutilizável sobre JetStream.**
+
+O `stream_id` do AOS é livre, mas um subject NATS não é: o ponto separa tokens, e o
+`jetstream.Store.subjectDe` **recusa** qualquer `stream_id` que o contenha — em vez de escapar em
+silêncio para um subject vizinho onde outro stream leria os nossos eventos, que é a escolha certa.
+O `Append` chama-o antes de tudo, pelo que o `POST /plans` respondia **`503` a todo o pedido** num
+nó replicado. Medido a correr, não inferido:
+
+```text
+subjectDe("aos.internal/plan-requests") -> err=E_CONFIG: ... não é representável num subject NATS
+subjectDe("aos-internal/plan-requests") -> subject="aos.aos-internal/plan-requests" err=<nil>
+```
+
+**O que o torna mais do que um erro de digitação.** O substrato de ficheiro NÃO arbitra entre
+processos (DEF-282) e o JetStream é o único que arbitra — ou seja, o único substrato onde um
+consumidor da fila pode sequer existir era exactamente aquele onde o ingresso não gravava. A rota
+funcionava em tudo o que se mede hoje e não funcionaria na única topologia em que ela serve para
+alguma coisa.
+
+**Porque escapou a tudo.** Dez gates verdes, uma revisão adversarial que encontrou dois críticos, e
+um smoke de dez passos — **todos correm sobre o substrato de FICHEIRO**. Não há teste de ingresso
+sobre JetStream, e o defeito só apareceu na discovery do trabalho SEGUINTE — o consumidor da
+fila —, quando alguém perguntou como é que ele alcançaria o stream.
+
+A lição não é «falta um teste»: é que **uma superfície nova foi validada só na topologia
+conveniente**, e a topologia que importa para o seu propósito nunca foi exercitada. O guard que
+agora o impede (`TestAOS417NomeDoStreamERepresentavelNoNATS`) **lê a regra da fonte** em vez de a
+repetir — duplicá-la daria um teste verde no dia em que a regra do NATS apertasse.
+
+**RESÍDUO NÃO FECHADO, encontrado ao lado:** `approvalStream = "gov.approvals"`
+(`packages/integration/approval_store_durable.go`) tem **o mesmo defeito** e é anterior a este
+ticket — o que sugere que esta classe de streams nunca foi exercitada sobre JetStream. Não se
+corrigiu aqui porque renomear um stream com histórico não é trocar uma constante: os factos já
+escritos ficam no nome antigo. Precisa de ticket próprio.
+
+### Resíduos DECLARADOS deste ticket — o que o ADR-028 §4 lhe atribuiu e não foi feito
+
+Isto estava a faltar ao ticket, e a revisão apanhou-o: o ADR-028 §4 atribui explicitamente ao
+ticket de implementação a **retenção e o tecto de pendentes**, e a primeira versão nem o fez nem
+o declarou.
+
+1. **Tecto de pendentes da fila e retenção — POR DECIDIR (do dono).** A fila não tem tecto, não
+   tem retenção e não tem métrica de profundidade. A retenção do nó (`audit.RetentionConfig`)
+   actua sobre partições WORM, não sobre streams do Event Store. **Não se inventou uma política**
+   porque um tecto sem consumidor bloqueia a rota permanentemente ao fim de N pedidos, e decidir
+   isso é escolher entre recusar pedidos novos e descartar antigos — uma decisão de produto. O
+   que **foi** feito, por ser inequívoco: tecto de 16 KiB no objectivo (`maxObjetivoBytes`),
+   porque um objectivo é uma frase e não um ficheiro, e sem ele cada pedido escrevia até ~1 MiB
+   de texto untrusted no WAL e nos backups.
+2. **O tecto de runs em curso NÃO se aplica a esta rota, e isso está agora escrito em vez de
+   simulado.** A primeira versão copiou-o do `handleSubmit`: conta runs HOSPEDADOS, esta rota não
+   hospeda nenhum, logo nunca disparava — uma guarda decorativa que fazia o código, a tabela de
+   rotas e o banner afirmarem uma protecção inexistente.
+3. **O objectivo fica em claro no log durável.** É texto livre e untrusted, sem titular, fora do
+   alcance do crypto-shredding por-titular (AOS-093/AOS-217) que existe para tornar o
+   apagamento do Art.º 17 possível por destruição de chave. **NÃO é regressão deste ticket** — o
+   `payload` do Event Store é inline e em claro por desenho actual (`tecnica/13` §3.2, pendência
+   §8.1) — mas esta rota passa a alimentar esse log com texto escrito por um utilizador final,
+   que é um perfil de conteúdo diferente do que lá entrava.
+4. **O schema do payload não está publicado.** O consumidor vive noutro módulo e não pode
+   importar o tipo (`package main`): vai reescrever a struct à mão e nenhum gate liga as duas
+   cópias. Mitigado com um campo de versão (`v`) e um teste que fixa as chaves JSON
+   (`TestAOS417FormaDoFactoEEstavel`); publicar o schema em
+   `packages/substrate/eventstore/schemas/`, como o envelope já tem, fecharia-o melhor e fica
+   por fazer.
+
+### Fora de âmbito, declarado
+
+- **A renovação do NHI e o tecto de 45 minutos** (resíduo declarado no ADR-027): é a outra metade
+  da credencial do executor, mas é outro eixo — o NHI é cunhado pelo operador por decisão do
+  ADR-027, e mudá-lo exige decidir quem o renova. Não entra aqui, e continua sem ticket próprio.
+- A rotação do segredo do cliente `aos-reader` no IdP, recomendada por ter existido uma cópia
+  legível: é operação, não código.
+
+### A migração do `gov.approvals`, e como se sabe que funcionou
+
+**Desenho: copiar e cortar, numa só vez.** Os factos do nome antigo são copiados para
+`aos-internal/gov/approvals` preservando `(RunID, StepID)`. A idempotency-key é
+`run_id + ":" + step_id`; copiada verbatim, um `used-<id>` que existia no antigo bloqueia, no
+novo, qualquer tentativa de reclamar o mesmo grant. **O uso-único atravessa a migração**, e é
+essa a propriedade inteira.
+
+Pela mesma razão a cópia é **idempotente**: re-corrê-la devolve `StatusDuplicate` em cada facto
+e não duplica nada — o que a torna segura de pôr no arranque e retomável se falhar a meio.
+
+**A ordem relativa preserva-se** (lê-se por `seq` ascendente, apende-se nessa ordem). Os `seq`
+do stream novo são outros; o que os consumidores usam é a ordem — o `lookup` varre do fim para
+o início e o `geracaoDe` conta ocorrências.
+
+**Duas coisas que se verificaram antes de escrever o código, e que podiam ter invalidado tudo:**
+
+- o `resume_records.go` passa o nome do stream para dentro da cifra. **Não é usado como dados
+  autenticados**: o `SealContent` cifra só por titular e o `streamID` serve para ligar
+  `subject→partição` no índice. A decifração sobrevive ao rename;
+- ~~esse índice é reconstruído a cada arranque~~ **— ESTA AFIRMAÇÃO ERA FALSA, e a direcção
+  é a contrária.** O `restoreSubjectIndex` filtra por `subjectOf`, que reconhece apenas
+  `replay.captured` e `step.ledger.applied`; nenhum facto de aprovação é de uma dessas
+  famílias, pelo que o índice não religa ao nome novo NEM ao antigo. A única ligação é feita
+  ao vivo pelo `contentSealer`, em memória, e passa a apontar para o nome novo.
+  **Consequência:** um legal hold DURÁVEL sobre a partição `gov.approvals` deixa de
+  intersectar as partições de qualquer titular — **SUB-cobertura**, o fail-open que o AOS-352
+  documenta como o pior dos quatro. A migração **não re-chaveia holds**: quem os tiver sobre
+  `gov.approvals` tem de os repor sobre o nome novo. Encontrado por revisão adversarial, que
+  o provou correndo o `restoreSubjectIndex` contra os dois streams (`ligou n=0`).
+
+**Evidência, e não é só de teste unitário.** No smoke do `run-aos`, sobre um WAL persistido de
+corridas anteriores: **53 factos copiados na primeira passagem, ZERO na segunda**, com o nó
+composto a arrancar e os dez passos verdes nas duas. É a migração e a idempotência observadas
+no produto, não em fixture.
+
+Sete testes em `approval_stream_migracao_test.go`, com o controlo de não-vacuidade que importa:
+um grant **por consumir** continua consumível depois da migração — sem ele, uma migração que
+copiasse um `used-` para todos os grants passaria no teste central e partiria o produto.
+
+### A migração dos streams de memória, e o que NÃO podia ficar para trás
+
+O prefixo `memory.` formava as quatro classes e passou a `aos-internal/memory/`. Mesmo desenho
+da migração das aprovações — copiar preservando `(RunID, StepID)` e a ordem — mas o facto que
+não pode ficar para trás é **outro**, e vale a pena nomeá-lo:
+
+**O TOMBSTONE.** Apagar uma memória é um evento NOVO (`memory.record.deleted`) e o `rebuild`
+reconstrói o estado por replay: «written» fixa o registo, «deleted» remove-o. Se um tombstone
+não atravessar, **o registo que ele apagava RESSUSCITA**. É o análogo do `used-` das aprovações.
+
+**CALIBRAÇÃO, porque a primeira versão deste parágrafo exagerou:** dizia «uma memória que alguém,
+possivelmente um `/dsar/erase`, mandou apagar», e **as duas metades estavam erradas**. O
+`/dsar/erase` faz crypto-shred da KEK por-titular e o `subjectOf` não reconhece os eventos de
+memória, pelo que o DSAR não alcança estes streams; e o `MemoryPort.Delete` **não tem um único
+chamador** fora de testes, pelo que **não existe um tombstone em produção hoje**. O invariante
+continua a ser o certo a preservar — é o que torna o apagamento possível quando alguém o
+compuser — mas quem calibrasse a severidade pela frase antiga ficava com o número errado.
+
+E o modo de falha desta camada é **SILÊNCIO**: o `rebuild` trata `ErrStreamNotFound` como «classe
+vazia, não é erro». Sobre um backend que recusa o nome, a memória do nó não dava erro nenhum —
+desaparecia.
+
+**Uma coisa verificada antes de escrever o código:** o `StepID` do tombstone embebe o `seq` do
+registo apagado (`<class>:del:<id>:<seq>`), e os `seq` mudam na cópia. **Não é problema** — o
+`rebuild` obtém o id a apagar do PAYLOAD, nunca do `StepID`; o `seq` ali só torna a chave única
+por apagamento.
+
+**A cópia passou a viver no substrato.** A subtileza do `ErrConfig` — a que custou o defeito
+CRÍTICO da migração das aprovações — não pode existir em duas cópias, porque é assim que um
+defeito fechado volta. `eventstore.CopiarStream` concentra-a, e a migração das aprovações foi
+refeita para a usar.
+
+**E uma causa fechada, não só um sintoma.** O rename partiu QUATRO sítios que tinham o nome
+antigo escrito à mão — incluindo o teste do AOS-426, que pela **segunda vez no mesmo ticket**
+passou a medir streams MORTOS sem que nada avisasse. Em vez de corrigir os literais, exportou-se
+`memadapters.StreamFor(class)`: quem precisa de nomear um stream de memória chama-o. Uma cópia
+do valor deriva em silêncio; uma chamada não.
+
+#### O que a revisão adversarial encontrou nesta migração
+
+**Sem crítico** — o primeiro dos quatro ciclos desta série em que isso acontece. Sete eixos
+foram verificados e estão limpos, entre eles os três que eu tinha nomeado como dúvidas: o helper
+partilhado não perdeu nenhuma das cinco verificações da versão anterior, o rename não toca em
+legal holds nem em crypto-shredding (e a afirmação falsa que a migração das aprovações teve
+sobre o `restoreSubjectIndex` **não se repetiu**), e nenhum consumidor composto antes do ponto de
+cablagem lê memória.
+
+**ALTO — mudei o código e deixei o teste para trás.** A lição do `ErrConfig` foi movida para o
+`CopiarStream`, mas o único sensor dela ficou no pacote `integration` — precisamente aquele cuja
+constante legada está marcada para desaparecer. Medido: desligando o ramo do `ErrConfig`, as
+suites do `eventstore` e da memória ficavam VERDES. No dia da limpeza, o defeito CRÍTICO voltaria
+na terceira migração. Fechado com `substrate/eventstore/migracao_test.go` (sete testes),
+incluindo o caso que **não tinha sensor em lado nenhum**: um `ErrConfig` na ESCRITA do destino
+tem de propagar.
+
+**MÉDIO — um duplicado com conteúdo diferente era descartado em silêncio.** O
+`StatusDuplicate` era tratado como «já lá estava» sem comparar o payload: sem erro, sem
+contagem, sem linha de log, com a migração a declarar-se bem-sucedida. O mesmo ficheiro recusa
+`origem == destino` por essa razão exacta — o padrão estava aplicado a um eixo e não ao outro.
+Passa a ser erro, com controlo de não-vacuidade para a idempotência não partir.
+
+**MÉDIO — a ordem só se preserva DENTRO do conjunto copiado.** Contra o que já está no destino
+é ordem de CHEGADA, e num consumidor last-write-wins isso INVERTE desfechos: um facto velho pode
+ganhar a um recente, e um apagamento copiado tarde pode apagar uma escrita posterior. Provado em
+dois cenários. Está agora escrito com precisão, e é o que motiva a postura de rollback.
+
+**MÉDIO — nenhuma postura de rollback**, ao contrário da migração das aprovações. Acrescentada,
+com as duas pernas separadas: a que está VIVA (um `Put` na janela de rollback ganha, por
+last-write-wins, a escritas mais recentes) e a que está LATENTE (a ressurreição, que precisa de
+haver tombstones).
+
+**BAIXO — o sensor do AOS-426 mudou de categoria em silêncio.** Com a barra no nome novo, o
+`{id}` da stdlib deixa de casar, pelo que o 404 das quatro classes passa a vir do ROTEAMENTO e
+não da trava. Não é buraco (a trava tem teste próprio), mas o comentário que eu tinha escrito
+— «torna a deriva impossível» — dizia mais do que se conseguiu. Corrigido.
+
+**BAIXO — mutantes sobreviventes do envelope.** `RunID: ""` e `Producer{}` deixavam a suite de
+memória verde. O `RunID` não é decorativo: é o que a trava do AOS-426 lê para classificar um
+stream. Fechado, e os três mutantes morrem agora nos dois pacotes.
+
+**Evidência:** no smoke, sobre um WAL persistido, **56 factos copiados na primeira passagem,
+ZERO na segunda**, com o nó composto e os dez passos verdes nas duas. Sete testes, com o teste
+central a medir pelo caminho REAL (o `Get` do adaptador em vigor, que é o que a MemoryPort usa)
+e o controlo de não-vacuidade que importa: um registo NÃO apagado continua legível e com o
+conteúdo certo — sem ele, uma migração que copiasse um tombstone para tudo passaria no teste
+central e apagaria a memória inteira do nó. Duas mutações verificadas: não copiar tombstones, e
+migrar só uma das quatro classes.
+
+#### O que a revisão adversarial encontrou, e que os gates não viam
+
+**CRÍTICO — a migração impedia o nó de arrancar sobre JetStream. Para sempre.** O
+`MigrarAprovacoes` só tolerava `ErrStreamNotFound`. Sobre JetStream o `Read` do nome legado
+devolve **`ErrConfig`** — o `subjectDe` recusa o ponto LEXICALMENTE, antes de tocar na rede — e
+o `Bootstrap` abortava. **Um nó JetStream com four-eyes não arrancava, tivesse ou não factos
+legados**, porque a recusa é do NOME e não do stream: até um nó fresco falhava.
+
+Era o **inverso exacto do propósito do ticket** — a migração que existe para destrancar o
+four-eyes sobre JetStream era a única coisa que o impedia de correr lá. E o smoke não o via
+porque corre sobre WAL de ficheiro: **o único substrato onde isto importa era o único onde não
+foi medido.**
+
+Fechado tratando o `ErrConfig` do nome LEGADO como «nada para migrar», com âmbito estreito. Não
+é tolerância a erro: o `Append` e o `IngestStream` passam pelo MESMO `subjectDe`, logo um stream
+com ponto **nunca pôde receber uma escrita** nesse backend, nem por restauro de backup — «não
+consigo ler o nome legado» e «o nome legado não tem factos» são, ali, a mesma afirmação. Um
+`ErrConfig` na ESCRITA do nome novo continua a abortar.
+
+**ALTO — nenhum dos sete testes olhava para o CORPO dos factos.** A revisão mutou a cópia para
+`Payload: nil` e a suite INTEIRA do pacote passou. É o sobrevivente mais perigoso possível: a
+propriedade de SEGURANÇA continua a valer (os `used-` bloqueiam) e os DADOS desaparecem todos —
+e como o `Consume` reclama ANTES de ler, cada grant seria QUEIMADO e só depois se descobriria
+ilegível. Fechado com um teste que usa o caminho REAL nas duas pontas (o wire do `Put`, o
+`Consume` da store em vigor) e verifica a preview, os aprovadores, o dual-control e a validade.
+
+**ALTO — a cablagem não tinha sensor.** Substituir a chamada por `copiados, merr := 0, nil`
+deixava a suite do `cmd/aos` verde. Fechado com `aos424_migracao_cablagem_test.go`, que exige
+que a chamada exista, que PRECEDA os três consumidores do stream, e que seja fail-closed. Duas
+mutações verificadas: remover a chamada e movê-la para depois da store.
+
+**ALTO — o rollback reabre o duplo-consumo, e não estava declarado.** Um grant migrado e
+consumido pelo binário novo tem o `used-` só no stream novo; o binário antigo lê o legado, não
+o encontra, e o grant volta a ser consumível. Além disso um facto escrito pelo binário antigo
+durante a janela pode vir `StatusDuplicate` no roll-forward e não atravessar — em silêncio.
+**Declarado** no cabeçalho da migração: o rollback depois desta migração não é seguro para a
+cerimónia, e não há código que o torne seguro — um log append-only não desfaz.
+
+**E um teste meu que passava pela razão errada**, apanhado pela minha própria mutação ao
+verificar as correcções: o sensor do `SchemaVersion` usava `"1.0"`, que é **o default que o
+store preenche quando o campo vem vazio** — apagar a cópia era indistinguível de a preservar.
+Corrigido para uma versão não-default, e o mutante passa a morrer.
+
+**O que esta migração NÃO garante, declarado:** assume **um único escritor** durante a cópia. O
+substrato de ficheiro impõe-o (`LockWAL`) e é o que corre em produção. Sobre `--nats` com várias
+réplicas, um binário ANTIGO ainda a escrever no nome antigo depois da cópia deixa um facto por
+copiar — e se for um `used-`, abre-se a janela de duplo-consumo. **Todas as réplicas têm de
+estar no binário novo** antes de a garantia valer.
+
+O stream antigo **não é apagado** (um log append-only não apaga): fica inerte. A constante
+`approvalStreamLegado` continua na baseline do gate, com natureza diferente — não é um stream
+em uso, é o nome que a migração precisa de LER. Sai quando nenhuma implantação tiver factos por
+migrar.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Mudar dono/modo de um segredo em produção parte outro consumidor do mesmo ficheiro | Verificar quem mais monta o `reader-client-secret` antes de tocar; o E2E de leitura usa-o |
+| A correcção volta a ser um passo manual do operador, e o próximo instalador repete o erro | O critério de aceitação exige um sensor que falhe, não documentação |
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+**Decisões do dono, tomadas:** (1) **ficheiro montado**, não Vault — a via do Vault arrastaria o
+arranque do `aos-orq` para uma dependência nova e não é exercitável neste ambiente; (2) **o cliente
+`aos-reader` continua partilhado** — um cliente próprio exige criá-lo no Keycloak, que é acção do
+operador no servidor. As duas ficam reversíveis.
+
+**A correcção que importa não é o modo do ficheiro: é o arranque passar a LER a credencial.** O
+banner do executor decidia por `cli == nil` e `cli.bearer != nil`, e com o segredo ilegível
+imprimia na mesma `COMPOSTO`; a falha aparecia na PRIMEIRA SUBMISSÃO de nó — o modo de falha do
+AOS-413 (o plano despacha, nada executa) a voltar por outra porta. Um `os.Stat` teria passado por
+cima do defeito, porque existir não é o mesmo que ser legível.
+
+A verificação cobre **as duas** credenciais montadas. O `AOS_ORQ_NODE_CREDENTIAL_FILE` (o NHI do
+run) tinha o mesmo defeito, o mesmo uid e o mesmo sintoma, e é *mais* provável estar mal: o
+operador copia-o à mão com `umask 077`, o que dá `0600` do utilizador dele. Fechar uma porta e
+deixar a outra aberta na mesma parede não fecharia nada.
+
+**Uma premissa deste ticket estava errada, e a revisão adversarial apanhou-a.** A primeira versão
+recusava em produção qualquer ficheiro com bits de grupo ou de outros, por entender que `0644`
+punha o segredo «ao alcance de qualquer processo da máquina». **É falso neste deployment**:
+`bootstrap.sh` cria `secrets/` com `install -d -m 700` e o `provision.sh` reforça-o — medido em
+produção, `drwx------ aos aos`. Sem travessia do directório, o modo do ficheiro lá dentro não abre
+nada a ninguém. A regra teria recusado a configuração CORRECTA e foi removida.
+
+**E o `chown 65532` que a primeira versão instalava partia produção de três maneiras**, todas
+verificadas no servidor:
+
+| O que partia | Evidência |
+|---|---|
+| O **backup nocturno** | `backup.sh` corre no cron do `aos` (`17 3 * * *`, medido) e tara o `secrets/` inteiro; com o ficheiro em `0400` do 65532 o `tar` falha — e o `2>/dev/null` do script engole a única linha que o explicaria |
+| O **próprio provisionamento** | `provision-identity.sh` corre como `aos`, que não tem sudo (medido): o `chown` falharia, o `|| fail` mataria o script, e os passos 5 e 6 nunca correriam |
+| A **instalação real** | o `chown` estava dentro do guard `[[ ! -s ]]`, que numa instalação existente é falso — ou seja, nunca tocaria no ficheiro com o defeito |
+
+O provisionamento passou a `chmod 644`, **fora do guard**, para reparar também as instalações
+anteriores ao ticket.
+
+**Falha-antes medida em LINUX, como uid 65532** — não em Windows, onde os bits POSIX não são
+significativos e três destes testes saltariam. O binário de teste foi compilado para `linux/amd64`
+e corrido sob `setpriv --reuid=65532 --regid=65532 --clear-groups`, que é a identidade real do
+contentor. Com a validação removida:
+
+```console
+--- FAIL: TestAOS416_SegredoIlegivelRecusaNoArranque
+--- FAIL: TestAOS416_NHIIlegivelRecusaNoArranque
+--- FAIL: TestAOS416_CredencialAusenteDizQueEstaAusente
+--- FAIL: TestAOS416_CredencialVaziaERecusada
+```
+
+`TestAOS416_OModoDaConvencaoNaoERecusado` é **controlo positivo** e passa dos dois lados por
+desenho: é ele que mata a versão recusada acima, porque «recusa sempre» satisfaria os outros
+quatro.
+
+**O sensor do provisionamento amarra-se à cadeia executável, não à prosa.** A primeira versão fazia
+`grep` do texto do script e sobrevivia a **comentar** a linha que verifica — a revisão demonstrou-o.
+É a mesma disciplina que o `scripts/ci/deploy-gate-lint.sh` já tinha escrito para si próprio.
+
+**O que o banner prova, e o que não prova:** o arranque lê as credenciais, por isso «do ficheiro
+montado» deixou de ser promessa. Não prova autenticação — um segredo legível mas obsoleto (rodado
+no IdP, ficheiro por actualizar) dá `401` na primeira submissão, e o segredo relê-se a cada chamada
+de propósito, para que rodá-lo não exija reiniciar.
+
+**Âmbito que NÃO foi alargado, e fica nomeado:** o `model-api.key` e o `vault-token` estão em
+`0644` — o que, dentro de um `secrets/` em 0700, é a postura coerente e não um defeito. O que
+*seria* defeito é o directório afrouxar, e é isso que o
+`TestAOS416_ODirectorioDosSegredosEAFronteira` passa a vigiar.
+
+**Verificado em produção a 2026-09-20** (`v0.1.27`, imagem `sha256:fe6f363e…`), com o
+`chmod 644` aplicado ao ficheiro vivo pelo operador. Os três estados do arranque, medidos no
+servidor com o `aos-orq` real:
+
+| Estado da credencial montada | O que o arranque fez |
+|---|---|
+| **Ausente** (`AOS_ORQ_NODE_CREDENTIAL_FILE` a apontar para um caminho inexistente) | recusou: «está configurado mas o ficheiro NÃO existe — sem ele o executor não fala com o nó» |
+| **Presente e ILEGÍVEL** pelo uid do contentor (`-rw------- aos aos`, criado com `umask 077`) | recusou com **saída 1**: «o ficheiro existe mas este processo NÃO o consegue ler. O contentor corre como uid 65532: no host, `chmod 0644 …` … NÃO faça uma cópia do ficheiro» |
+| **Legível** (`-rw-r--r--`, as duas credenciais) | compôs, e o banner declarou `executor de nos (AOS-413/AOS-414, ADR-027): COMPOSTO` |
+
+O caso do meio é a **reprodução exacta do defeito que originou o ticket**: é o mesmo estado que em
+produção fazia o `aos-orq` anunciar `COMPOSTO` e falhar só na primeira submissão de nó. Agora é
+recusado à cabeça, com o gesto na mensagem.
+
+**O que isto NÃO prova, e é preciso dizer:** o Bearer **nunca chegou a ser pedido**. A corrida
+positiva parou antes, em `--goal exige --snapshot`, e a contagem de `401`/«token do IdP» no log deu
+**zero**. Ou seja, está provado que o arranque deixou de mentir; **não** está provado que o token
+funciona contra o IdP. Fechar essa metade é a validação completa do executor, e exige um NHI
+cunhado pelo operador (tecto de 45 min) mais os aprovadores do gate.
+
+**Mudança de comportamento em produção, declarada:** a partir da `v0.1.27` o `serve` RECUSA
+arrancar com uma credencial montada ilegível, onde antes arrancava e falhava mais tarde. O
+`chmod 644` no `secrets/reader-client-secret` foi feito no mesmo deploy; sem ele o executor teria
+ficado indisponível. O nó `aos` não é afectado — só o `aos-orq`, que corre por invocação.
+
+**Por verificar:** o `restore-drill.sh` extrai o bundle sem `-p` e como não-root, pelo que a
+ownership arquivada é ignorada e o modo passa a ser o do umask de quem extrai — **não verificado**
+se um restauro repõe um modo que o contentor não lê. E, da mesma release, o **AOS-359** e o
+**AOS-411** continuam sem verificação em produção: o AOS-411 só se observa num ciclo de
+`AOS_CRASH_RESUME_INTERVAL` no log do nó.
+
+---
+
+## AOS-417 — Por onde entra um objectivo no caminho do plano: o orquestrador não tem superfície de rede
+
+<!-- rtm: menção -->
+<!-- Este ticket IMPLEMENTA o ADR-028 (o seu próprio), e por isso o marcador
+     `rtm: adrs-mencionados` SAIU: enquanto lá esteve, o ref-lint tratava TODAS as citações do
+     bloco como menções, e o ADR-028 ficaria sem ticket implementador — gate vermelho. O preço
+     de o tirar é que o ADR-018, o ADR-023 e o ADR-027, que aqui são RESTRIÇÕES e não entregas,
+     passam a contar como implementados por este ticket na RTM. Fica dito porque o parser é
+     textual e o marcador é tudo-ou-nada: não há forma de separar os dois papéis no mesmo bloco. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura (ADR) + implementação |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | <!-- rtm: menção -->ADR-018, ADR-023, ADR-027<!-- /rtm: menção --> (restrições, não pré-requisitos) |
+| Bloqueia | AOS-133 (BFF) e, por arrasto, todo o EPIC-13; qualquer uso do caminho do plano sem operador |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `packages/cmd/aos-orq/main.go` (subcomandos `serve|inspect|plans|decide`), `packages/cmd/aos/planos.go` (a tabela de rotas do nó), <!-- rtm: menção -->`docs/adr/ADR-023-*.md`, `docs/adr/ADR-018-*.md`<!-- /rtm: menção --> |
+
+### Contexto
+
+O caminho do **agente único** já é utilizável sem operador: `POST /runs` aceita um objectivo em
+linguagem natural e autentica-se por `client_credentials`, que é automatizável.
+
+O caminho do **plano multi-nó não tem superfície de rede nenhuma.** Medido: `ListenAndServe` e
+`http.Server` em `packages/cmd/aos-orq/`, fora de testes, devolvem **zero ocorrências**. O
+`aos-orq` é só CLI, e o compose exclui-o deliberadamente do arranque:
+
+```yaml
+profiles: ["orq"]
+restart: "no"
+# está no profile `orq` para que o deploy.sh (up -d) NUNCA o arranque:
+# um `serve` possui um run e termina, não é um daemon
+```
+
+Não existe agendador, fila, nem caminho em que um pedido de utilizador desencadeie um `serve`.
+Os únicos temporizadores do deploy são a sincronização de TLS e a recolha de backups; nenhum
+toca no orquestrador.
+
+**A consequência mede-se nos passos manuais.** Uma corrida com nós executados em produção exige
+hoje, por esta ordem de bloqueio:
+
+| # | Passo manual |
+|---|---|
+| 1 | invocar `aos-orq serve` à mão no servidor (`docker compose --profile orq run --rm`) |
+| 2 | não há UI nenhuma — tudo é `curl`, `docker compose` e PowerShell |
+| 3 | cunhar o NHI na máquina do operador, copiá-lo para o servidor, e apagá-lo no fim |
+| 4 | **dois** logins no browser no caminho de produção (delegação + chamada) |
+| 5 | para um plano de risco, assinar a decisão numa terceira máquina e copiar o ficheiro |
+| 6 | preparar o snapshot pinado à mão, com nomes de tool que coincidam com os do nó |
+
+Os passos 2 a 6 podem ser atacados isoladamente e continuariam a não dar um produto utilizável,
+porque **o passo 1 permanece**: alguém tem de estar no terminal do servidor. O EPIC-13 já o diz
+à sua maneira — «o bloqueador duro é a dívida de wiring de backend, não o frontend» —, e o
+AOS-133 (o BFF) não tem o que chamar para o caminho do plano.
+
+**Não existe ticket que cubra isto.** Varridos os 25 epics.
+
+### Objectivo
+
+Um objectivo submetido por um utilizador autenticado desencadeia uma corrida do caminho do plano
+**sem que ninguém esteja num terminal do servidor**.
+
+### Porque é que isto é um ADR e não só um ticket
+
+A frase «um `serve` possui um run e termina, não é um daemon» não é um acaso de operação: é o
+**<!-- rtm: menção -->ADR-023<!-- /rtm: menção -->** a manifestar-se — a autoridade sobre o ciclo de vida de um run é o LEASE, e um
+processo que o detém não é partilhável. Dar ingresso de rede ao caminho do plano obriga a decidir
+coisas que o <!-- rtm: menção -->ADR-023 e o ADR-018<!-- /rtm: menção --> hoje respondem por omissão, e que não se decidem em código:
+
+- **Quem detém o lease** quando o pedido chega por rede — o processo que atende, ou um trabalhador
+  que ele desencadeia?
+- **O que acontece a um segundo pedido** para um run que já tem posse: recusa (o actual código 3),
+  fila, ou coalescência?
+- **Onde vive o ingresso** — no nó `aos`, que o <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> declara única autoridade do ciclo de vida
+  e que o `layer-lint` impede de importar o orquestrador; ou num serviço próprio que fala com o nó
+  como o executor já fala (<!-- rtm: menção -->ADR-027<!-- /rtm: menção -->)?
+- **O modelo de execução**: daemon que aceita e executa, ou ingresso que só ENFILEIRA e um
+  trabalhador consome? A segunda preserva melhor «um `serve` possui um run», mas introduz uma fila
+  durável que hoje não existe.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Onde vive o ingresso.** (a) Rota nova no nó `aos`, que enfileira e um trabalhador do
+   `aos-orq` consome — mantém uma só porta de entrada e reaproveita a autenticação que já existe,
+   mas o nó passa a conhecer a existência do caminho do plano; (b) serviço próprio do `aos-orq`
+   com porta própria, atrás do mesmo edge — não mexe no nó, mas duplica autenticação, admissão e
+   observabilidade.
+2. **Daemon ou fila.** Aceitar-e-executar no mesmo processo é mais simples e contradiz
+   frontalmente a nota do compose; enfileirar preserva-a, ao custo de uma fila durável nova.
+3. **O que fazer a um pedido cujo run já tem posse** — recusar, enfileirar, ou devolver o estado
+   do run em curso.
+
+### Critérios de aceitação
+
+- [x] Um **ADR novo** regista a decisão, cita o <!-- rtm: menção -->ADR-018/023/027<!-- /rtm: menção --> e diz explicitamente o que
+      SUPERA ou EMENDA da nota «não é um daemon» — ou porque não a contradiz.
+      *(ADR-028, aceite 2026-09-21. Não emenda nada: o ingresso enfileira e não executa, pelo
+      que um `serve` continua a possuir um run e a terminar.)*
+- [ ] Um utilizador autenticado submete um objectivo por rede e obtém um identificador com que
+      acompanha a corrida, **sem sessão no servidor**.
+      *(**METADE FEITA, e a metade que falta é a que conta para o utilizador.** A submissão por
+      rede existe — `POST /plans` aceita o objectivo, autentica pela mesma credencial forte do
+      `POST /runs` e devolve o identificador. O que NÃO existe é quem consuma a fila: o pedido
+      fica gravado e espera, e `acompanha a corrida` não é hoje verdade porque corrida nenhuma
+      começa. O banner de arranque di-lo por palavras nessas — ver o critério do banner abaixo
+      — em vez de deixar o operador descobri-lo a meio. O trabalhador do `aos-orq` é o passo
+      seguinte, e está bloqueado numa decisão do dono: retenção e tecto da fila, declarados
+      como residuais no ADR-028.)*
+- [x] Um segundo pedido para um run com posse tem o desfecho decidido em (3), e há teste que o
+      fixa — não é comportamento acidental do lease.
+      *(Decidido no ADR-028 §2.3 e imposto por DOIS testes, porque são dois casos distintos e a
+      primeira versão destes testes só cobria o segundo: `TestAOS417PedidoParaRunComPosse`
+      hospeda um run REAL, espera que ele entre no modelo e fique com lease, e só então pede
+      o plano — é este o caso do critério. `TestAOS417PedidoRepetidoNaoDuplicaNemRevela`
+      cobre o pedido repetido, que é outra coisa: a dedup da fila é por `pedido-deste-run`,
+      não por posse, pelo que o desfecho certo saía por coincidência de nomes até o primeiro
+      teste existir. Este segundo assere que
+      `201 accepted` idempotente, **nunca** o estado do run. O teste assere as DUAS metades — a
+      resposta indistinguível byte-a-byte E um só facto na fila — porque cada uma sozinha deixa
+      passar um defeito diferente: só o código deixa passar a gravação em duplicado, só a
+      contagem deixa passar um `409` que seria um oráculo de existência.)*
+- [x] O `layer-lint` continua verde: se a opção for (a), o nó **não** importa o orquestrador.
+      *(A opção foi (a). Dos pacotes do repositório, o `plan_ingress.go` importa apenas
+      `substrate/eventstore` (mais `encoding/json`, `net/http` e `strings` da stdlib); o
+      guard-test de fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> não foi tocado. Medido com `go list -deps` sobre
+      `packages/cmd/aos`: zero `orchestrator`/`scheduler`, directo ou transitivo. E há prova pelo COMPORTAMENTO, não só
+      pelos imports: `TestAOS417IngressoNaoHospedaORun` falha se a rota hospedar o run.)*
+- [x] O banner de arranque declara a postura do ingresso, como o resto do sistema já faz.
+      *(`planIngressPostureBanner`, com sensor: `TestAOS417BannerDeclaraAPosturaReal` fixa o que
+      cada postura tem de dizer, e `TestAOS417BannerDoConsumidorNaoApodrece` varre a árvore do
+      `aos-orq` e fica VERMELHO no dia em que alguém lá nomear o stream da fila — que é
+      exactamente o instante em que a linha passaria a mentir. Sem ele, o literal `false` do
+      composition-root sobreviveria ao consumidor, porque quem escrever o consumidor não passa
+      por `bootstrap.go` (é outro módulo). Molde: `aos255_budget_scope_test.go`, que existe
+      pela mesma razão. Declara três coisas separadas porque falham de maneiras
+      diferentes: se há substrato onde gravar, se ele é durável, e — a que importa hoje — que
+      **ninguém consome a fila ainda**, pelo que um `201` significa «o pedido está durável» e
+      não «a corrida começou».)*
+- [ ] Verificado em produção: uma corrida desencadeada por rede, sem ninguém no terminal.
+      *(**NÃO VERIFICÁVEL AINDA, e não por falta de acesso:** sem consumidor não há corrida que
+      se desencadeie. O que se pode medir hoje em produção é estritamente menos do que este
+      critério pede — que a rota aceita, grava e deduplica — e mede-se lendo o stream
+      `plan.requests`. Deixa-se por marcar de propósito: marcar com a medição menor seria
+      trocar o critério por outro mais fácil.)*
+
+### Fora de âmbito, declarado
+
+- **A cunhagem automática do NHI** (passos 3 e 4). É a segunda maior barreira, mas é uma decisão
+  de SEGURANÇA — a `issuer.key` não vai para o servidor por desenho — e não se resolve com
+  ingresso. Continua sem ticket próprio.
+- **A UI** (passo 2). Fica desbloqueada por este ticket, mas é o EPIC-13.
+- **A cerimónia de aprovação** de planos de risco (passo 5): o custo manual ali é o desenho do
+  AOS-408, não um defeito.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Um ingresso que aceite e execute no mesmo processo ressuscita o problema de dois escritores que o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> fechou | O ADR tem de responder «quem detém o lease» antes de existir código |
+| Duplicar autenticação e admissão num serviço próprio abre uma segunda superfície com postura diferente da do nó | Se for a opção (b), reaproveitar a mesma admissão e o mesmo edge, e prová-lo com teste |
+| O ingresso torna trivial disparar corridas, e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele |
+
+---
+
+## AOS-427 — A cunhagem do NHI do run é manual, e é o que separa «funciona» de «funciona sem ninguém no terminal»
+
+<!-- rtm: menção -->
+<!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa a condição exacta:
+     «a decisão (1) é de ARQUITECTURA e vai exigir ADR próprio — quando existir, este marcador
+     sai». O ADR-032 existe, e regista as QUATRO decisões.
+
+     Este ticket IMPLEMENTA o ADR-032 — a decisão (4) dele, o tecto de TTL; as outras três estão
+     declaradas no próprio ADR §5 como por construir. O preço de tirar o marcador é o mesmo que o
+     AOS-430 pagou pelo ADR-031 e o AOS-424 pelo ADR-029: o ADR-003, o ADR-006, o ADR-016 e o
+     ADR-027, que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este
+     ticket na RTM. O parser é textual e o marcador é tudo-ou-nada. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade ao caminho do plano; o eixo REAL é o EPIC-16 / D4, autoridade de identidade) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura + implementação |
+| Prioridade | **P1** — é a última peça do «sem operador», e o AOS-417 e o AOS-423 deixaram ambos o critério por marcar por causa dela |
+| Estimativa | L |
+| Dependências | AOS-423 (o consumidor, FECHADO); EPIC-16 Frente 2 (custódia por `crypto.Signer`, contrato entregue) |
+| Bloqueia | O critério «uma corrida desencadeada por rede, sem ninguém no terminal» do AOS-417 e do AOS-423 |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/cmd/aos-issuer/main.go` (`mint`), `packages/cmd/aos-orq/node_client.go` (o consumo), `packages/platform/identity/issuer.go`, `deploy/server/README.md` §custódia, <!-- rtm: menção -->`docs/adr/ADR-006-credential-broker-jit.md`, `docs/adr/ADR-027`<!-- /rtm: menção -->, `docs/adr/ADR-028` §resíduos |
+
+### Contexto
+
+O caminho do plano está completo desde o AOS-423: um objectivo entra por `POST /plans`, o
+`aos-orq consume` reclama-o e corre-o. **Falta a credencial.**
+
+Medido:
+
+| O que | Onde | Valor |
+|---|---|---|
+| A credencial é um token NHI compact (JWS ed25519), cru | `node_client.go:282-292` | ficheiro apontado por `AOS_ORQ_NODE_CREDENTIAL_FILE` |
+| Relida do disco a CADA submissão | `node_client.go:316` | substituir o ficheiro renova sem reiniciar o `serve` |
+| TTL decidido na cunhagem, sem tecto na biblioteca | `identity/issuer.go:255`, `aos-issuer/main.go:138` | default 15m; a receita de produção usa **45m** (`get-id-token.ps1:55`) |
+| Um ficheiro serve TODOS os runs filhos de um plano | `node_executor.go:113,224` | o mesmo token em cada `POST /runs` |
+| Quem a cunha | `aos-issuer mint`, com a `issuer.key` **na máquina do operador** | dois logins no browser (audiências `aos-issuer` e `aos-node`) |
+
+**E ninguém a escreve.** Não há script, `cron` nem `systemd timer` no repositório que produza ou
+renove esse ficheiro — o `docker-compose.prod.yml:541` só propaga a variável, sem montagem
+declarada (ao contrário do `./secrets/reader-client-secret`, `:555`, que é montado). É
+procedimento manual não versionado.
+
+A consequência é a que o ADR-028 §resíduos já nomeia: **«a cunhagem do NHI continua manual (dois
+logins no browser, tecto de 45 min). É a barreira seguinte ao uso sem operador […] e continua sem
+ticket próprio.»** Este ticket é esse ticket.
+
+### O que NÃO se pode fazer, e está decidido
+
+Estas quatro portas estão fechadas por decisão registada. Quem executar este ticket **não as
+reabre sem ADR de supersessão**:
+
+- ❌ **Pôr a `issuer.key` no servidor.** `deploy/server/docker-compose.prod.yml:303-306` é
+  explícito: «`AOS_ISSUER_KEY_PATH` daria ao nó um caminho para uma CHAVE DE ASSINATURA […]
+  **tornar isto definível é oferecer a porta que a postura fecha.**» E `deploy/server/README.md:93`:
+  «se a privada vivesse no servidor, quem o comprometesse mintaria a sua própria identidade».
+- ❌ **Fazer o nó confiar em `iss:aos-orq`.** O `aos-orq` **já cunha** identidades em runtime, com
+  um emissor ed25519 efémero por processo (`planner_wiring.go:254-294`) — mas essa confiança é
+  auto-referencial e confinada ao seu Model Gateway interno. O <!-- rtm: menção -->ADR-027<!-- /rtm: menção --> §2.2 rejeita explicitamente
+  estendê-la ao nó: «daria ao orquestrador o poder de cunhar qualquer autoridade para o nó e
+  desfazia a separação de domínios de confiança (<!-- rtm: menção -->ADR-006<!-- /rtm: menção -->)».
+- ❌ **Assinar em nome do humano sem hardware do humano** (<!-- rtm: menção -->ADR-006 invariante 6, ADR-016 §1<!-- /rtm: menção -->).
+- ❌ **Compor o `integration.IssuerAuthority` no nó.** Tem `MintForAssertion`, mas só é composto no
+  ramo NÃO-endurecido (`bootstrap.go:1690-1698`), e a produção proíbe esse ramo
+  (`main.go:672-674`).
+
+### O que o <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> AUTORIZA, e que é a porta aberta
+
+O <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> §2 invariante 2 pede exactamente isto para NHIs de agente: **«JIT com TTL curto. A
+credencial é obtida no momento em que é precisa (não pré-provisionada), guardada num cache de vida
+curta, renovada antes de expirar.»** O que ele proíbe é assinar pelo humano e o agente ver segredo
+downstream — não colide com renovar o NHI de um run.
+
+E metade do mecanismo já existe: o `aos-issuer` já fala Vault Transit
+(`vaulttransitsigner.go` + flags `--vault-*`), o EPIC-16 Frente 2 já fixou a custódia por
+`crypto.Signer` fora do processo do nó, e o consumo por substituição de ficheiro já funciona
+(`node_client.go:316` relê a cada submissão).
+
+### Decisões a tomar primeiro (do dono)
+
+1. **ONDE vive a autoridade de emissão.** Um emissor externo ao nó E ao `aos-orq`, com
+   `crypto.Signer` sobre Vault/HSM, é o desenho que o <!-- rtm: menção -->ADR-006<!-- /rtm: menção --> pede e de que o `aos-issuer
+   --vault-addr` já é meia implementação. Mas é um processo novo em produção, com o seu ciclo de
+   vida, a sua rede e o seu próprio problema de arranque. **Exige ADR.**
+2. **Qual é a PROVA que autoriza uma cunhagem sem humano presente.** Hoje a raiz é um ID-token
+   OIDC verificado (`--assertion`), e o humano sai do `sub` da prova. Sem browser, de onde vem a
+   prova? Um `client_credentials` do próprio serviço não tem `sub` humano — e a cadeia
+   `on-behalf-of` do <!-- rtm: menção -->ADR-003<!-- /rtm: menção --> exige raiz humana. **Ou se relaxa isso (e é decisão de segurança), ou
+   a raiz passa a ser uma delegação de longa duração assinada uma vez por um humano.**
+3. **A renovação a meio de um plano.** O <!-- rtm: menção -->ADR-027<!-- /rtm: menção --> fixa que «a validade do NHI é o tecto de duração
+   de um plano» e deixa a renovação como resíduo. Com renovação, esse tecto cai — o que é bom para
+   planos longos e mau para o raio de acção de uma credencial comprometida.
+4. **Tecto máximo de TTL.** Não existe nenhum na biblioteca (`identity/issuer.go`): o valor é o que
+   o operador escrever. Se a cunhagem passar a ser automática, um TTL generoso deixa de ter o
+   atrito humano que hoje o limita.
+
+### Critérios de Aceitação
+
+- [x] **As QUATRO decisões registadas em ADR-032**, com as quatro portas fechadas como
+      restrições e cada alternativa rejeitada com o custo escrito. O ADR declara também, em §5, o
+      que fica por construir e porquê — não é um ADR que finge que a implementação o segue toda.
+- [x] **ACRESCENTADO E ENTREGUE (2026-09-25) — o MANDATO, verificado pelo NÓ** (ADR-033, que
+      substitui o ADR-032 §2.2): o formato da delegação existe (`identity.Mandate`), assina-o o
+      humano com a sua chave (`aos-issuer mandate-sign`), cunha-se sob ele sem operador
+      (`aos-issuer mint-mandated`), e o nó só aceita o emissor automático DENTRO dele
+      (`AOS_MANDATED_ISSUER_ID` / `_PUBKEY` / `AOS_MANDATE_SIGNERS`). Revoga-se o mandato inteiro
+      por `jti=mandate:<id>`.
+- [ ] **Corre sem ninguém no terminal, verificado em PRODUÇÃO.** POR FAZER — o código de cunhagem
+      e de verificação existe; falta pô-lo a correr no servidor: o binário na imagem, o timer de
+      cunhagem, o de drenagem da fila e o sensor. É a entrega operacional seguinte (ticket por abrir).
+- [ ] **Gate que prove que a chave do HUMANO está fora do servidor.** POR FAZER, e o critério
+      MUDOU de objecto com o ADR-033: a `issuer.key` do emissor automático vive agora no Vault do
+      servidor por decisão; o que tem de estar fora é a chave que assina os MANDATOS. Não há gate
+      que o prove.
+- [ ] **Sensor de renovação.** POR FAZER na entrega operacional seguinte (no servidor, ao lado de quem cunha, no
+      molde do `alerta-ancora.sh` — ADR-033 §3). O obstáculo original continua medido: **o `aos-orq` não
+      expõe `/metrics` de todo**. Quem quer que passe a cunhar tem de criar a superfície, não
+      apenas a série. O critério («visível ANTES de o run falhar») exclui pô-lo no nó, que só
+      sabe da credencial quando ela chega.
+- [ ] **O TTL no banner.** POR FAZER na entrega operacional seguinte. O `bannerDoExecutor` do `aos-orq` não diz
+      nada sobre validade. (O banner do NÓ já declara o emissor mandatado — ver abaixo.)
+- [x] **ACRESCENTADO E ENTREGUE — o tecto máximo de TTL na biblioteca** (decisão 4):
+      `identity.TTLMaximo = 1h`, validado na construção nas duas vias, recusando também o TTL
+      zero ou negativo que nascia expirado e nunca tinha sido recusado nem testado.
+
+### Fora de âmbito, declarado
+
+- **A verificação da credencial no ingresso** — é o AOS-428, e é independente desta.
+- **A rotação da `issuer.key`** — runbook existente (`docs/runbooks/swaps-producao-identidade.md`).
+- **A UI** (EPIC-13).
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Automatizar a cunhagem remove o atrito humano que hoje limita o raio de acção de uma credencial | Decisão (4): tecto máximo de TTL imposto na biblioteca, não na receita |
+| Um emissor externo novo torna-se um ponto único de falha do caminho do plano | O consumo é por ficheiro relido (`node_client.go:316`): uma credencial válida em disco sobrevive à indisponibilidade do emissor até expirar |
+| A prova sem humano relaxa a cadeia `on-behalf-of` do <!-- rtm: menção -->ADR-003<!-- /rtm: menção --> sem que ninguém o note | Decisão (2) tem de ser escrita como decisão de SEGURANÇA, com o que se perde |
+
+### Estado
+
+**PARCIALMENTE FECHADO — o que falta é operação, não desenho.** As decisões (1) e (4) do ADR-032
+estão implementadas; a (2) foi substituída pelo **ADR-033** e implementada; a (3), renovação com
+sensor, e a verificação em produção são a entrega operacional seguinte.
+
+### O que se entregou: o tecto de TTL (decisão 4)
+
+`identity.TTLMaximo = 1 hora`, imposto na CONSTRUÇÃO do emissor, nas duas vias.
+
+**É a mais valiosa das quatro, e é por isso que entra primeiro.** O atrito da cunhagem manual —
+dois logins no browser por token — era uma defesa ACIDENTAL: limitava o raio de acção de uma
+credencial sem que ninguém o tivesse decidido. Este ticket remove esse atrito, e uma defesa
+acidental desaparece exactamente no momento em que a emissão passa a ser automática. É o pior
+momento possível, porque ninguém a vê sair.
+
+Detalhes que a implementação obrigou a decidir, e porquê:
+
+| Escolha | Razão |
+|---|---|
+| Na **biblioteca**, não na receita | Vale para os três chamadores de hoje e para os que ainda não existem |
+| **Constante**, não configuração | Um tecto configurável é um tecto que um deployment novo volta a levantar |
+| **Recusa**, não clamp | Um clamp faria o banner dizer um TTL e o token ter outro |
+| Na **construção**, não na emissão | Um emissor com política impossível não chega a existir; e o mapa é copiado ali, logo é o que ele vai usar para sempre |
+| **Uma hora** | Medido: nó 15m, orq 30m, CLI 15m, receita de produção 45m. Fica acima de todos e continua a impedir um NHI que dure um turno |
+
+Cobre também o **TTL zero ou negativo**, que nascia expirado e que nenhum teste da árvore cobria —
+o que quer dizer que a ausência de tecto não era uma escolha testada, era um buraco.
+
+### O que BLOQUEIA as outras três, e não é tempo
+
+**A pergunta que determina tudo o resto não tem resposta:** onde corre o emissor externo, em
+concreto. Serviço no compose, ou o `aos-issuer` a ganhar um modo `serve`? Que rede alcança o
+Vault? O `aos-orq` pede o token, ou o emissor escreve o ficheiro? A resposta decide também onde
+vive o sensor.
+
+**E o formato da delegação não existe** — não há tipo, ficheiro, esquema nem nome. Quatro
+perguntas por responder, todas de segurança: que campos a assinatura cobre; curinga ou enumerada;
+**como se revoga** (hoje a revogação é por `jti` de TOKEN, não há revogação de DELEGAÇÃO); e qual
+é a validade da própria delegação e quem a renova — o mesmo problema um nível acima.
+
+### DOIS ACHADOS QUE MUDAM O DESENHO DO QUE FALTA
+
+1. **O `mint` não audita nada.** O caminho CLI não passa `WithEventStore`, logo `recordIssued` é
+   no-op e **não existe evento `identity.nhi.issued`**. O `Issue` já é fail-closed quando o store
+   existe e falha — falta ligá-lo. Uma cunhagem AUTOMÁTICA sem auditoria é muito pior do que uma
+   manual sem auditoria.
+2. **O anti-replay está desligado de propósito** no `mint` (`RequireJTI`), porque o binário é
+   efémero e o armazém nasceria vazio a cada invocação. Um emissor persistente pode e deve
+   ligá-lo; não o fazer seria regressão.
+
+### O que se entregou: o mandato (ADR-033, 2026-09-25)
+
+**A pergunta que bloqueava tudo tinha um pressuposto que não se aguentava.** O ADR-032 §2.2
+rejeitou o emissor no servidor para proteger a CHAVE. Mas o Vault de produção corre nesse mesmo
+servidor e destrava-se sozinho (`vault-init.json` está no disco): com a chave no Vault, quem
+comprometesse o servidor pedia assinaturas ao Vault. «Chave externa no Vault» e «emissor no
+servidor» davam a mesma protecção — nenhuma. O que importava proteger era o PODER DE CUNHAR.
+
+E o nó confiava no emissor por inteiro. O limite tinha de passar para o nó.
+
+| Peça | Onde |
+|---|---|
+| O mandato: tipo, forma canónica (netstrings com domínio), assinatura, `Covers` | `packages/platform/identity/mandate.go` |
+| O verificador com um segundo anchor que só aceita DENTRO do mandato | `identity.WithMandatedIssuer`, passo 7 do `Verify` |
+| O emissor honesto recusa cunhar fora do mandato (cortesia — quem decide é o nó) | `IssueRequest.Mandate` |
+| O humano assina UMA vez; o timer cunha sem flags de identidade | `aos-issuer mandate-sign` / `mint-mandated` |
+| O nó compõe-no, aborta nas colisões que o anulariam, e declara-o no banner | `packages/cmd/aos/emissor_mandatado.go` |
+
+**Sensores verificados por mutação:** desligar o passo 7 do verificador avermelha 8 testes;
+aceitar o mandato sem verificar a assinatura do humano avermelha os 2 testes de forja.
+
+**O que isto responde do ADR-032 §5:** onde corre o emissor (servidor, push para o ficheiro que o
+`aos-orq` relê); o formato da delegação (enumerado, sem curingas); como se revoga (o mandato
+inteiro, pelo registo durável que já existia); a validade da delegação (≤ 90 dias, tecto na
+biblioteca, renova-a o humano assinando outro).
+
+**Os achados que mudavam o desenho, revistos:**
+
+- O anti-replay (`RequireJTI`) continua desligado, e continua certo: o `mint-mandated` também é
+  um processo efémero, corrido por timer.
+- A rotação da chave e o token do Vault lidos uma vez **deixam de morder**: o emissor não é
+  persistente, lê ambos a cada execução do timer.
+
+### Resíduos declarados
+
+1. **A verificação em produção** — o binário na imagem, o timer de cunhagem, o de drenagem da
+   fila (o AOS-430 mediu que nada a drena) e o sensor. É a entrega operacional seguinte (ticket por abrir).
+2. **Não há gate que prove que a chave do HUMANO está fora do servidor.** Com o ADR-033 é essa a
+   chave que tem de estar fora; a do emissor está no Vault por decisão.
+3. **A chave do humano é uma seed em ficheiro**, não hardware (<!-- rtm: menção -->ADR-016<!-- /rtm: menção --> §1 na forma, não no
+   espírito). Não existe no repositório via de assinatura por hardware.
+4. **Uma cunhagem que nunca é usada não deixa rasto** — o `mint-mandated` corre sem Event Store,
+   logo não há `identity.nhi.issued`. O ADR-033 §5 aceita-o: um token só age quando chega ao nó,
+   e aí é registado.
+5. **O `Principal.MandateID` não é selado nos registos de decisão.** O verificador devolve-o; a
+   atribuição «este run correu sob o mandato X» fica para quando a auditoria o consumir.
+6. **Dentro do mandato, um emissor comprometido cunha à vontade** — o mandato limita o QUÊ, não
+   o QUANTAS VEZES. O escopo e a janela devem ser os mínimos.
+7. **Root no host do NÓ não é coberto**: muda `AOS_MANDATE_SIGNERS` e reinicia. O mandato limita
+   o emissor, não o anfitrião (ADR-033 §2.1).
+
+**Revisão adversarial antes do merge (2026-09-25)** — um achado ALTO e cinco BAIXOS, todos
+fechados com sensor:
+
+| Achado | Correcção | Sensor |
+|---|---|---|
+| **ALTO** — `iat` escolhido pelo emissor: um token de 45 min válido até ao fim do mandato | o nó exige `nbf == iat`, e o passo 4 já recusa `nbf` futuro | 3 casos; mutação ⇒ 3 vermelhos |
+| Elos intermédios na cadeia, fora do mandato | emissor mandatado só cunha a raiz | mutação ⇒ 1 vermelho |
+| Overflow do `time.Duration` nos tectos | comparação em segundos inteiros, instantes positivos | 3 casos |
+| Colisão de chaves no modo de referência | comparada com a chave da autoridade co-localizada | mutação ⇒ 1 vermelho |
+| ID com espaço irrevogável pela rota | ID só base64url | 2 casos |
+| Buracos de teste (`iss` diferente, `Rebuild`, chave pinada inválida) | testes novos | — |
+
+E um de DESENHO, que mudou o texto e não o código: o ADR, o banner e o README prometiam proteger
+contra «quem comprometer o servidor». O que protegem é o comprometimento do **emissor**.
+
+---
+
+## AOS-428 — O `POST /runs` aceita uma credencial que não verifica, e o run só falha no primeiro turno de modelo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma assimetria entre duas rotas do mesmo
+     ficheiro. As citações ao ADR-003 (proibição de anónimo) e ao ADR-016 (não-oracularidade) são
+     RESTRIÇÕES, não entregas. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade; o eixo é o EPIC-01/AOS-003, mediação) |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | P1 — é defeito VIVO em todos os runs, hoje |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | — |
+| Responsável sugerido | Responsável de Segurança |
+| Documentos de referência | `packages/cmd/aos/api.go:610-739` (`handleSubmit`), `:2727` (o `resume`, que verifica), `packages/platform/identity/rmadapter.go:39-89` (onde a verificação REALMENTE acontece) |
+
+### Contexto
+
+O `handleSubmit` **não verifica a credencial do run**. Medido: `api.go:739` copia
+`req.Credential` para o `Goal` e mais nada — não há verificação em `cmd/aos` no momento da
+submissão.
+
+A verificação acontece, mas **muito depois**: no hook `identity` do Reference Monitor
+(`identity/rmadapter.go:44-53`), que corre na PRIMEIRA CHAMADA MEDIADA — o turno de modelo.
+
+O que isso produz:
+
+```text
+POST /runs  com credencial ausente, malformada ou expirada
+  -> 201 Created
+  -> o run é criado, sela residência, consome estado durável
+  -> primeira chamada mediada -> denied_by=identity
+  -> o run morre por uma razão que era conhecível no primeiro milissegundo
+```
+
+**A assimetria que torna isto claramente um defeito e não uma escolha:** o `resume` do MESMO
+ficheiro exige credencial não-vazia e recusa com 400 (`api.go:2727`). Duas rotas, o mesmo campo,
+posturas opostas — e a que aceita é a que CRIA o run.
+
+### Objectivo
+
+Um `POST /runs` cuja credencial não passe a verificação é recusado **na porta**, antes de o run
+existir.
+
+### O que torna isto não-trivial, e é preciso decidir
+
+- **A verificação completa é cara e contextual.** O `rmadapter` verifica assinatura, emissor,
+  janela temporal, revogação **e** o escopo POR CAPABILITY — e a capability só se conhece na
+  chamada. No ingresso só se pode verificar a parte que não depende do contexto: assinatura,
+  emissor conhecido, `exp` no futuro, não revogado.
+- **A recusa não pode virar oráculo.** Distinguir «credencial inválida» de «credencial de outro
+  board» na resposta daria a um chamador uma sonda sobre o trust store. A postura do ADR-030 §2.1
+  aplica-se: recusa uniforme.
+- **Fail-closed sem verificador composto?** Num nó sem identidade endurecida (fora de produção) o
+  verificador pode não existir. Recusar tudo aí partiria o dev; aceitar tudo repõe o defeito. A
+  decisão tem de ser escrita.
+
+### Critérios de Aceitação
+
+- [x] Um `POST /runs` com credencial malformada, expirada, de emissor desconhecido ou revogada é
+      recusado **sem criar o run** e sem selar residência. **A credencial VAZIA só é recusada em
+      modo ENDURECIDO** — ver a decisão no Estado, que o smoke obrigou a tomar.
+- [x] Teste que prova que nenhum estado durável fica para trás. A primeira versão desse teste era
+      **tautológica** (repetia a submissão com outra credencial inválida, que é recusada na mesma
+      guarda quer o primeiro pedido tenha criado algo quer não); agora prova-o submetendo com uma
+      credencial VÁLIDA e exigindo 201 fresco.
+- [x] A recusa é uniforme **em duas dimensões**: entre as causas, e face à recusa da governação. A
+      primeira versão devolvia `401` — um status que mais nenhuma rota do nó usa —, e isso fazia
+      da guarda um oráculo por si só. É a mesma `403`.
+- [x] O caminho de sucesso não regride, e há guard a fixar que o escopo por-capability **não**
+      migrou para a porta (é um guard de FONTE, e o ficheiro di-lo).
+- [ ] **A postura no banner de arranque fica por fazer**, e é dívida: o nó não declara que
+      verifica a credencial na porta, nem em que modo exige a presença. Um operador que veja um
+      403 não tem por onde saber qual das duas guardas o produziu.
+
+### Fora de âmbito, declarado
+
+- **A cunhagem** (AOS-427). Este ticket faz o nó recusar cedo; não resolve quem produz a
+  credencial.
+- **O escopo por-capability**, que continua a ser do `rmadapter` por construção.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Verificar no ingresso duplica a regra e as duas cópias divergem | Chamar o MESMO `identity.Verifier` que o `rmadapter` usa, nunca reimplementar a verificação |
+| Um nó de dev sem verificador passa a recusar tudo e o smoke parte | Decisão escrita + banner; o smoke é a evidência |
+
+### Estado
+
+**FECHADO**, com cinco resíduos declarados e uma correcção ao próprio desenho a meio.
+
+A guarda chama o **mesmo** `identity.Verifier` do hook do RM — não reimplementa —, corre **depois**
+de autenticar o chamador e **antes** da selagem de residência, e recusa com a mesma `403` da
+governação. Cobre oito dos nove predicados do hook; o nono (escopo por capability) só é decidível
+na chamada e continua no `rmadapter`.
+
+### O que a revisão adversarial encontrou, e que estava errado
+
+**A primeira versão criava um oráculo de validade de credencial ACESSÍVEL SEM AUTENTICAÇÃO.** A
+guarda corria antes do `readGov.authorize`, pelo que um chamador anónimo distinguia, num só pedido,
+«este token ainda vive neste nó» (403 da governação) de «este token morreu» (401 da guarda). É
+exactamente o que quem apanha um token roubado quer saber, e passou de trás do gate soberano para a
+borda anónima.
+
+**E a inversão de ordem era conhecida — foi tratada só nas fixtures.** Os testes levavam credencial
+injectada com o comentário «para que o 403 continue a vir do gate soberano e não do 401 da guarda,
+que corre antes dele». O sintoma foi remendado nos testes em vez da causa.
+
+**Uma afirmação falsa num ficheiro novo:** o `credencial_do_run.go` dizia que fechava o residual do
+`resume.go`. Não fecha — o `resume` faz `if verr == nil && …`, pelo que quando a verificação FALHA
+o ramo é saltado e a retoma prossegue.
+
+### O que só o SMOKE apanhou
+
+Com a guarda a exigir presença sempre, **o nó de referência deixou de conseguir submeter**. Não por
+descuido da fixture: em modo não-endurecido **não existe forma de um cliente externo obter uma
+credencial** — a autoridade de emissão é co-localizada e não tem rota de emissão. Nenhum dos testes
+unitários o apanhou.
+
+Decisão: a **presença** só se exige em modo ENDURECIDO (`AOS_ISSUER_PUBKEY`, obrigatório sob
+`AOS_MODE=production`). O que é APRESENTADO verifica-se sempre.
+
+### Resíduos declarados
+
+1. **O `POST /runs/{id}/resume` continua com o defeito** — re-hospeda com credencial não
+   verificada. Eixo próprio: lá os dois lados são agentes e comparam-se, o que na submissão não
+   acontece.
+2. **A recusa deixou de produzir registo de auditoria durável.** Antes o deny era um
+   `MediationRecord` tamper-evidente no WORM, com métrica; agora é uma linha de log. Não selar
+   RESIDÊNCIA é correcto; não deixar rasto de AUDITORIA é outra coisa.
+3. **Falha de CONSULTA do registo de revogação é indistinguível de revogação genuína** — o
+   verificador embrulha as duas na mesma sentinela, com `%v` e não `%w`. A mensagem foi mudada para
+   não mentir; a distinção exige sentinela própria noutro módulo.
+4. **Em modo de referência um run sem credencial continua a ser criado** e a morrer no RM.
+5. **O banner não declara esta postura.**
+
+### Custo em testes, medido
+
+38 funções vermelhas, reduzidas a zero **sem nenhum seam que desligasse a guarda**. O achado que
+mudou a leitura do custo: **nenhum teste apresentava uma credencial inválida** — as 38 falhas vinham
+todas do ramo «ausente». Verificar o que é apresentado custou zero, e revelou que esse caminho não
+tinha cobertura nenhuma.
+
+
+## AOS-429 — A fila de pedidos de plano nunca expira, e o objectivo do utilizador fica em claro no WAL e nos backups
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: materializa a metade «retenção» que o ADR-028 §4
+     atribuiu ao ticket de implementação e que o AOS-423 entregou só como tecto. As citações ao
+     ADR-013 (retenção) e ao ADR-028 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção + decisão |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-423 (a fila e o tecto, FECHADO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/retention.go:77-94` (`subjectOf`), `:101-141` (a fonte), `packages/cmd/aos/plan_ingress.go:100-107`, `docs/adr/ADR-028` §4 |
+
+### Contexto
+
+O AOS-423 entregou o TECTO de pendentes e declarou a retenção por fazer. Medido agora, a lacuna é
+estrutural e tem duas metades.
+
+**(i) O varredor de retenção não conhece a fila, e não é esquecimento — é o desenho.** O
+`eventStoreRecordSource.List` varre todos os streams (`retention.go:110-121`), mas só produz um
+registo expirável quando `subjectOf(e)` devolve um titular. E o `subjectOf` (`:77-94`) reconhece
+exactamente dois tipos de evento — `replay.captured` (`:79`) e `step.ledger.applied` (`:85`) —,
+tudo o resto cai no `default: return ""` (`:91-93`). O `planrequest.submitted` cai aí. **Nunca
+entra na lista, nunca expira.**
+
+Agravante: o sink é crypto-shred da KEK por-titular (`:200-209`). **Sem titular, `Expire` é um
+no-op explícito.**
+
+**(ii) O objectivo é texto livre de utilizador final, em claro.** O payload do pedido é inline e
+sem cifra (`plan_ingress.go:220-227`), e o ficheiro já o declara em `:100-107`. Vai para o WAL e
+para os backups, fora do alcance do crypto-shredding por-titular — que é o mecanismo que o resto
+do sistema usa para o Art. 17.
+
+O custo composto: a fila cresce com o HISTÓRICO e não só com os pendentes, e a projecção do
+AOS-423 é linear nos eventos — o tecto limita os pendentes, não o trabalho de os contar.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **O pedido tem titular?** Se o `principal` da credencial verificada contar como titular, o
+   pedido entra no mecanismo que já existe e o crypto-shredding aplica-se. Se não, é preciso outro
+   mecanismo — e a pergunta «de quem é um objectivo submetido por uma máquina» é de governação,
+   não de código.
+2. **Expirar por idade ou por desfecho?** Um pedido terminal (desfecho `terminal` ou
+   `aguarda_humano`) já não serve para nada; um pendente há três semanas provavelmente também não.
+   São políticas diferentes e podem coexistir.
+3. **O objectivo em claro fica, ou passa a `PayloadRef`?** Cifrá-lo por-titular alinha-o com o
+   resto, mas o consumidor tem de o poder ler — e ele corre noutro processo.
+
+### Critérios de Aceitação
+
+- [x] Um pedido terminal deixa de contar para o tecto **e** deixa de ser relido (marca de água).
+      **Não sai do stream, e a razão está escrita** — pelo ramo que o próprio critério prevê: o
+      contrato do Event Store não tem `Delete`/`Truncate`/`Purge`/`Compact`, e não é lacuna — um
+      log encadeado por hash de que se removessem entradas deixava de ser tamper-evident. O
+      apagamento é por **ilegibilidade**, e há guard de fonte que avermelha se alguém acrescentar
+      remoção ao contrato, para que a decisão seja reavaliada em vez de o comentário passar a
+      mentir.
+- [x] A projecção deixa de ser linear no histórico. **Marca de água**: o maior `seq` até ao qual
+      todos os pedidos estão terminados; abaixo dela não há nada que a projecção possa concluir
+      de diferente. Em regime o custo é linear nos pedidos NÃO TERMINADOS, que o tecto limita a
+      1000. Resíduo: a marca vive em memória, logo um restart paga uma leitura completa — uma vez
+      por processo, declarado.
+- [x] O objectivo **deixa de ficar em claro**: é cifrado sob a KEK do titular. A decisão está em
+      `tecnica/14_Matriz_Conformidade.md` §5.2, com linha própria e as duas ressalvas — e obrigou
+      a nomear uma **excepção** no parágrafo que afirmava que nenhuma PII era cifrada sob a KEK
+      do titular, que deixou de ser inteiramente verdade.
+- [x] Teste da expiração **ponta-a-ponta com relógio injectado**
+      (`TestAOS429AFilaExpiraPeloVarredorComposto`): submete pela rota real, corre o
+      `ExpirationJob` composto no nó, exige que o objectivo deixe de abrir e que o evento
+      CONTINUE no log. Sensor verificado por mutação. O relógio é injectado por
+      `cfg.RetentionClock`, não por `testkit.ManualClock` — ver a nota no teste.
+
+### Fora de âmbito, declarado
+
+- **O tecto de pendentes**, entregue pelo AOS-423.
+- **A retenção dos streams de run**, que já funciona pelo mecanismo por-titular.
+
+### Estado
+
+**FECHADO**, e o desenho mudou a meio por duas medições que contradiziam a decisão inicial.
+
+### A DECISÃO APROVADA LEVAVA A DESTRUIR DADOS QUE NÃO ERAM DA FILA
+
+A decisão (1) — «o titular é o principal do submissor» — é a certa. O que a discovery mediu é que
+implementá-la com um TTL PRÓPRIO para a fila teria destruído, em cada expiração, a KEK partilhada
+desse principal — e com ela todo o `replay.captured` e `step.ledger.applied` dele. **Um pedido de
+plano de dez minutos apagaria os runs de dez meses.**
+
+A granularidade do mecanismo é por-titular: uma KEK embrulha as DEKs todas. A saída é o pedido
+**partilhar o TTL do titular** em vez de ganhar um mais curto. Expira mais tarde do que um TTL
+próprio daria, e é a única leitura que não destrói o que não devia.
+
+### E, COM O OBJECTIVO EM CLARO, A EXPIRAÇÃO ERA UM NO-OP POR CONSTRUÇÃO
+
+A decisão (3) inicial mantinha o objectivo em claro. Crypto-shred destrói uma chave; um payload
+que não está cifrado não fica ilegível por isso. As duas decisões juntas davam um mecanismo que
+corria, contava expirações e não tornava nada ilegível — um verde que mede o vazio. Posta a
+questão, a decisão (3) foi revertida: **o objectivo passa a ser cifrado por titular**.
+
+### E ISSO ERA MUITO MAIS BARATO DO QUE EU ESTIMEI
+
+Estimei que exigiria distribuir chaves ao `aos-orq`, e provavelmente um ADR. **Errado, e a
+resposta já estava no AOS-423:** desde que a fila ganhou a rota de reclamação, o `aos-orq` não lê
+o Event Store — reclama por HTTP e recebe o pedido no corpo da resposta. Quem lê e projecta é o
+nó, logo o nó decifra server-side e entrega em claro pelo canal já autenticado e gatado. O
+consumidor nunca precisa da chave, e a forma do wire (`respostaDeReclamo`) não muda.
+
+Não se escreveu cripto nenhuma: `audit.SealContent`/`OpenContent`, o mesmo que sela o conteúdo
+dos runs, sobre o mesmo `Node.DSARVault`.
+
+### O QUE SE ENTREGOU
+
+| Peça | Onde |
+|---|---|
+| Cifra do objectivo por titular, com ligação titular↔partição no índice DSAR | `plan_objetivo_selado.go` |
+| `subjectOf` reconhece `planrequest.submitted`, **só com ciphertext** | `retention.go` |
+| Marca de água: a projecção deixa de reler o histórico | `plan_marca_de_agua.go` |
+| Entrada para o DPO, com as duas ressalvas | `tecnica/14` §5.2 |
+
+### UM GUARD MUDOU DE PERGUNTA, E A PREMISSA ANTIGA ERA FALSA
+
+O `TestAOS417FormaDoFactoEEstavel` ficou vermelho, como devia. Mas a mensagem dele dizia que tirar
+uma chave do payload «quebra quem lá está do outro lado» — e **isso foi verificado e é falso**:
+ninguém fora de `packages/cmd/aos` lê este evento. O contrato entre módulos é a resposta HTTP, que
+o `aos-orq` espelha em `node_client.go:386-394`, e essa não mudou.
+
+É a mesma classe que o AOS-423 já apanhou neste eixo: um guard a detectar o consumidor por PROXY.
+O proxy era razoável quando foi escrito e deixou de o ser sem que nada o ligasse à mudança. Passou
+a fixar o que é mesmo contrato — nas duas pontas — e ganhou a invariante nova: `objective` e
+`objective_sealed` são mutuamente exclusivos, porque o texto em claro ao lado do ciphertext
+tornaria a cifra decorativa.
+
+### A VERSÃO DO PAYLOAD SUBIU, MAS SÓ A DESTE
+
+O `planRequestVersao` é partilhado por TRÊS payloads — submetido, reclamado e desfecho. Subi-lo
+teria afirmado uma mudança de forma em dois que não mudaram nada. Criou-se
+`planRequestSubmittedVersao = "1.1"` só para o pedido.
+
+### Resíduos declarados
+
+1. **O evento não sai do log, e não pode sair.** Ver o critério 1. O apagamento é por
+   ilegibilidade.
+2. **A marca de água vive em memória.** Um restart paga uma leitura completa, uma vez.
+   Persisti-la exigiria um stream de marcas (que cresce, só mais devagar) ou uma leitura para
+   trás que o contrato não tem; nenhuma se justifica por um custo pago uma vez por processo.
+3. **Sem gate soberano o objectivo fica em claro.** Não há titular sob o qual selar. Não se fecha
+   com fail-closed porque fecharia a rota num nó de referência inteiro — a lição do AOS-428, em
+   que exigir uma credencial que o nó não sabe dar partiu o smoke. Em produção não ocorre.
+4. **Os backups continuam fora do alcance.** A KEK do backup é por REGIÃO, não por titular
+   (`platform/backup/crypto.go`). Destruir a KEK de um titular não torna o backup ilegível. Já
+   estava nomeado em `tecnica/14`; este ticket não o move.
+5. **A decisão (2) foi cumprida por um só eixo.** Escolheu-se expirar por desfecho E por idade; o
+   que se entregou é a idade (o TTL do titular, pelo varredor) mais o desfecho a deixar de contar
+   para o tecto e de ser relido. Um pedido terminal não é expirado ANTES do TTL do titular — e
+   não pode ser, pela razão da KEK partilhada.
+
+---
+
+## AOS-430 — Quem submete um plano não tem por onde ver o desfecho: o run de topo vive noutro Event Store
+
+<!-- rtm: menção -->
+<!-- O marcador `rtm: adrs-mencionados` SAIU, e o comentário anterior previa que saísse: dizia
+     que «a decisão (1) é de fronteira entre dois processos e vai exigir ADR». Exigiu, e o
+     ADR-031 é dele.
+
+     Este ticket IMPLEMENTA o ADR-031. O preço de tirar o marcador é o mesmo que o AOS-424 pagou
+     pelo ADR-029 e o AOS-417 pelo ADR-028: o ADR-016, o ADR-018, o ADR-027 e o ADR-030, que aqui
+     são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket na RTM.
+     Fica dito porque o parser é textual e o marcador é tudo-ou-nada — não há forma de separar os
+     dois papéis dentro do mesmo bloco. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | AOS-423 (FECHADO) |
+| Bloqueia | A UI (EPIC-13), que precisa de mostrar o estado de um plano submetido |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/runlifecycle/tenure.go:150-158`, `packages/control-plane/orchestrator/graph.go:639-645`, `deploy/server/docker-compose.prod.yml:416,547,824-828` (os volumes), `packages/cmd/aos-orq/node_executor.go:113` |
+
+### Contexto
+
+O AOS-423 deixou a pergunta (5) por confirmar: **se o `run_id` de topo chega a ser um run
+legível.** A hipótese registada era que o id de topo «pode nunca existir como run», por o <!-- rtm: menção -->ADR-027<!-- /rtm: menção -->
+materializar nós como `<run>~<nó>`.
+
+**A hipótese estava errada na causa, e a causa real é mais funda.**
+
+Medido: os eventos do run de topo EXISTEM e declaram-no. O `Tenure.Append` escreve em `t.runID`
+(`tenure.go:150-158`), o `fencedStore` recusa qualquer outro stream (`graph.go:46-47`), e o `emit`
+do construtor do grafo põe o campo explicitamente — `RunID: b.dag.runID` coincidente com o stream
+(`orchestrator/graph.go:639-645`). A trava do AOS-426 devolveria `true`.
+
+**O problema é que esses eventos estão no Event Store do `aos-orq`, não no do nó.** Os dois
+processos têm volumes separados por desenho: `aos-data:/var/lib/aos` (`:416`) e
+`aos-orq-data:/var/lib/aos-orq` (`:547`), declarados distintos em `:824-828`. E o `aos-orq` só
+submete ao nó os runs FILHOS — `childRunID(runID, nodeID)` (`node_executor.go:113`). **O id de
+topo nunca é submetido.**
+
+Logo `GET /runs/<topo>` e `GET /runs/<topo>/trajectory` no nó dão **404**, porque o stream não
+existe naquele substrato. Quem submeteu por `POST /plans` recebe `201` e não tem por onde seguir.
+Os filhos são legíveis; o plano que os gerou não.
+
+**NÃO VERIFICADO EM EXECUÇÃO.** A conclusão vem de leitura de código e dos volumes do compose. Um
+deployment que aponte os dois processos ao mesmo `--nats` mudaria a resposta, e essa configuração
+não é a de produção hoje.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **De quem é a superfície de leitura de um PLANO?** Três formas, e nenhuma é gratuita:
+   (a) o nó expõe o estado do plano, lendo-o de onde? não o tem;
+   (b) o `aos-orq` ganha superfície de rede — o que o AOS-417 evitou de propósito, e que o ADR-028
+   rejeitou («uma segunda superfície com postura diferente da do nó é exactamente o modo de falha
+   que o <!-- rtm: menção -->ADR-016<!-- /rtm: menção --> vem fechar»);
+   (c) o `aos-orq` reporta o estado ao nó pela rota que já usa, e o nó serve-o — simétrico ao
+   `POST /plans/outcome` que o AOS-423 criou.
+2. **Substrato partilhado resolve isto por acidente?** Se os dois processos passarem a partilhar
+   JetStream (a saída que o <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §3 deixou como destino), o topo fica legível sem superfície
+   nova. Mas isso é o AOS-431/infra e uma migração de produção.
+
+### Critérios de Aceitação
+
+- [x] **Verificada em execução** — `TestAOS430ORunDeTopoNaoEServivelPeloReadPath` submete um
+      plano e mede as TRÊS rotas de leitura de run (`/runs/{id}`, `/trajectory`, `/reconstruct`)
+      pelo `run_id` de topo. As três dão 404, e a premissa do ticket confirma-se.
+- [x] Decisão registada em **ADR-031**, com as quatro alternativas rejeitadas e o custo de cada
+      uma — incluindo o substrato partilhado, rejeitado **para já** e não em princípio.
+- [x] `GET /plans/{id}`, e **não reabre a não-oracularidade**: a fronteira é a titularidade, e as
+      três recusas (não existe / não é teu / outra região) dão o MESMO 404, com corpo comparado
+      byte-a-byte no teste. O <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §2.1 diz «não revelar a quem NÃO PODE AGIR sobre o
+      recurso», e quem submeteu pode — foi ele que o criou.
+
+### Fora de âmbito, declarado
+
+- **A UI** (EPIC-13), que consome isto e não o desenha.
+- **A migração para JetStream**, que é decisão de infraestrutura.
+
+### Estado
+
+**FECHADO.** O âmbito acabou menor do que o ticket supunha, e por uma boa razão.
+
+### A metade «o `aos-orq` reporta» já estava feita
+
+O ticket punha a decisão como sendo sobre o sentido do fluxo. Medido, o `POST /plans/outcome`
+**já reporta** `classe`, `codigo_saida` e `detalhe` desde o AOS-423 — e ninguém os lia: o
+`desfechoPayload` grava os três, e a projecção da fila só consulta o `Classe`.
+
+Logo o AOS-430 é **só read-path**. Não se tocou no `aos-orq`.
+
+### A objecção que quase parou isto, e a leitura que a resolve
+
+Uma rota de leitura de plano parece ser exactamente o oráculo que o <!-- rtm: menção -->ADR-030<!-- /rtm: menção --> §2.1 fecha — a fila
+não é enumerável *por construção*, e é essa premissa que sustenta o `201` a uma colisão e o `204`
+indistinguível entre «vazia» e «outra região».
+
+A regra, lida à letra, é outra: «não revela a EXISTÊNCIA de um recurso **a quem não pode agir
+sobre ele**». Quem submeteu pode — criou-o e escolheu-lhe o `run_id`. **Isto aplica o <!-- rtm: menção -->ADR-030<!-- /rtm: menção -->;
+não o emenda.** O ADR-031 regista-o.
+
+### O `Principal` ganhou o primeiro leitor
+
+Era gravado desde o AOS-417 e **nunca lido por código nenhum**. Passa a ser a fronteira de
+titularidade. Um campo gravado que ninguém lê é uma afirmação por verificar.
+
+### UMA ARMADILHA QUE EU PRÓPRIO CRIEI NO TICKET ANTERIOR
+
+A marca de água do AOS-429 faz a projecção ler **a partir** do `seq` acima do qual tudo está
+terminado. Um pedido TERMINADO está, por definição, abaixo dela — e é precisamente o desfecho
+dele que quem submeteu vem procurar.
+
+Reutilizar o caminho quente devolveria «não existe» para **todos os planos que acabaram**: uma
+resposta errada e indistinguível da certa. A rota lê do princípio, e há teste com controlo de
+não-vacuidade que demonstra a armadilha antes de provar que ela foi evitada.
+
+### E UM DEFEITO ADJACENTE, FECHADO
+
+O `POST /plans` recusa um `run_id` com o prefixo reservado; o `POST /plans/outcome` **não** —
+só chamava o `runIDInvalido`, que valida representabilidade, e a barra É representável por
+decisão do AOS-424. O dano era pequeno (a projecção trata o resultado como órfão), mas a
+assimetria é que é o defeito: a mesma regra tem de valer nas duas pontas.
+
+### Resíduos declarados
+
+1. **O estado é grosso** — quatro valores mais o código de saída. Não há progresso por nó do
+   plano, porque esses factos vivem no Event Store do `aos-orq`, noutro volume.
+2. **Nada drena a fila em produção.** O `aos-orq` é `profiles: ["orq"]`, `restart: "no"`, e o
+   `consume` drena uma vez e termina. Enquanto não houver quem o dispare, a rota reporta
+   `pending` para sempre — é verdade, e é informação, mas não é o que um utilizador espera.
+   Trabalho de implantação, com âmbito próprio.
+3. **A leitura não sela WORM**, ao contrário das rotas de leitura de run. O que revela é estado
+   de processo e não conteúdo de run, e o objectivo fica de fora — mas a assimetria está
+   declarada e não resolvida.
+4. **O custo é linear no histórico da fila, por chamada.** Aceite porque a rota é autenticada e
+   não está em caminho quente; a saída, se doer, é persistir a marca de água (resíduo do
+   AOS-429).
+
+---
+
+## AOS-431 — Não há NATS no CI, e por isso a cerimónia four-eyes nunca foi provada sobre JetStream
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. As citações ao ADR-007
+     (Event Store replicado) e ao ADR-013 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade; o eixo é o EPIC-10 / infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | infraestrutura |
+| Prioridade | P2 |
+| Estimativa | M |
+| Dependências | — |
+| Bloqueia | O critério por marcar do AOS-424 («pelo menos um teste da cerimónia four-eyes sobre JetStream»); a confiança em tudo o que o AOS-424 e o AOS-425 afirmam sobre representabilidade |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `.github/workflows/ci.yml`, `scripts/ci/dormencia.sh:40,52-56`, `packages/integration/approval_store_durable_test.go`, `packages/substrate/eventstore/jetstream/` |
+
+### Contexto
+
+**Nenhum ficheiro de CI define `AOS_NATS_URL`.** Confirmado: a variável aparece no
+`dormencia.sh:40,52-56` e no `Makefile:119` apenas como INVENTÁRIO, e o gate emite **warn**, não
+fail — «razão declarada: nenhum ficheiro de CI define AOS_NATS_URL». Não há `services:` de NATS no
+`ci.yml`.
+
+O efeito acumulou-se, e este eixo mediu-o três vezes:
+
+- o **AOS-424** encontrou nove nomes de stream irrepresentáveis que passaram dez gates, uma
+  revisão adversarial e o smoke — porque **todos correm sobre ficheiro**;
+- o aperto do `Append` revelou **três streams vivos** no caminho de autorização que, sobre
+  JetStream, teriam negado toda a emissão de challenges e toda a ratificação;
+- o **AOS-425** fechou a composição em runtime e deixou declarado que «este nome é representável»
+  continua a ser uma afirmação sobre a NOSSA regra, não sobre o NATS.
+
+E o modo de falha que isto esconde está escrito: sob `AOS_MODE=production` o four-eyes **exige**
+substrato durável (`ErrProductionNeedsDurableApproval`, `bootstrap.go:1843`), e o JetStream é uma
+das duas opções sancionadas. Se o `PendingApprovals.Put` falhar ali, «o operador nunca vê o que
+tem para aprovar — fail-closed **e invisível**, a pior combinação».
+
+O código já existe e já foi migrado (`approval_store_durable.go:56`,
+`approval_stream_migracao.go`). **O que falta é cobertura, não implementação.**
+
+### Critérios de Aceitação
+
+- [x] O CI levanta NATS JetStream e define `AOS_NATS_URL` — job `nats`, `scripts/ci/nats.sh` +
+      `scripts/ci/nats-cluster.sh`, no `needs:` do agregador. **Não é um `services:`**: esse não
+      liga os contentores em rota de cluster (e sem cluster um stream R3 não é criável), não
+      injecta ficheiro de configuração (e `server_tags` só existe em configuração), e não
+      deixaria matar um nó de dentro do job. O `dormencia` deixou de o inventariar como ausente
+      — e a afirmação nova é **verificada** contra o `ci.yml`, não escrita: tirar o job
+      avermelha o gate (mutação corrida).
+- [x] **A cerimónia four-eyes sobre JetStream** —
+      `TestAOS431_FourEyesSobreJetStream_UsoUnicoSobrevive`, com o segundo consumo a vir de uma
+      **ligação nova** sobre um cluster R3. Fecha o critério por marcar do AOS-424. Sensor
+      verificado por mutação: repor `gov.approvals` como nome da cerimónia avermelha-o.
+- [x] Os testes que saltavam passam a correr, **e o número é contado na EXECUÇÃO**. Eram 45
+      dormentes; passaram a `PASS=70 FAIL=0 SKIP=0` no `eventstore` e `SKIP=0` por falta de
+      substrato nos quatro módulos. O gate falha com um skip que não esteja declarado por nome.
+- [x] O `subjectDe` é exercitado contra NATS real com o nome legado —
+      `TestAOS431_SubjectDeRecusaNomeLegadoContraNATSReal`. **E a recusa não é a que o critério
+      assumia**: vem da NOSSA regra (o aperto do `Append`, AOS-424), antes da rede. O nome nunca
+      chega ao servidor, o que é a postura certa e é o que o teste fixa.
+
+### Fora de âmbito, declarado
+
+- **Levantar JetStream em PRODUÇÃO**, que é outra decisão (e é o destino que o ADR-030 §3 nomeia).
+- **Migrar o nó para NATS.**
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Um serviço de NATS no CI torna os gates mais lentos e mais frágeis | Isolar num job próprio, não em todos: o que precisa de NATS é uma minoria conhecida |
+| Os testes que hoje saltam podem estar podres há muito, e ligá-los abre uma frente grande | Medir primeiro quantos são e o que falham, antes de os tornar obrigatórios |
+
+### Estado
+
+**FECHADO.** De 45 testes dormentes para zero skips por falta de substrato, com dois defeitos
+reais encontrados pelo caminho — que é a razão de o ticket existir.
+
+### O que o ticket assumia e estava errado
+
+**«O código já existe e já foi migrado. O que falta é cobertura, não implementação.»** Certo
+quanto ao código, errado quanto ao custo. Ligar o cluster encontrou **dois defeitos vivos**, e
+nenhum deles era de cobertura.
+
+### O que se entregou
+
+- **`scripts/ci/nats-cluster.sh`** — quatro nós JetStream: três na região do board (`eu-west`,
+  a que os testes fixam em código) e **um fora** (`us-east`), que existe para um teste só — o
+  que prova que réplicas não caem fora da fronteira, a propriedade mais forte do ADR-011. A
+  receita (imagem pinada, flags, fragmento com `server_tags`) é copiada de
+  `infra/modules/eventstore/main.tf` de propósito: se divergirem, o CI mede um substrato que a
+  produção não tem, que é a classe de defeito que este ticket veio fechar.
+- **`scripts/ci/nats.sh`** — o gate, com contagem na execução, controlo de não-vacuidade
+  (um gate que levanta o cluster e corre zero testes é verde por acidente) e `trap` que derruba
+  sempre.
+- **Job `nats` no `ci.yml`**, no `needs:` do agregador.
+- **Dois testes novos** em `packages/integration`, um deles a fechar o critério do AOS-424.
+
+### OS DOIS DEFEITOS QUE SÓ O CLUSTER ENCONTROU
+
+**1. Dois testes disputavam o mesmo espaço de nomes de subject, e nunca se souberam.**
+`janela_test.go` criava o stream `AOSJANELA`, cujo subject derivado é `aosjanela.>`;
+`natsjs/integracao_test.go` cria `aosjanela.<hex>.>`, que cai dentro dele. O JetStream recusa o
+segundo com `subjects overlap with an existing stream` (10065), e **qual dos dois falha depende
+de quem corre primeiro** — falha intermitente. Nunca apareceu porque nenhum dos dois alguma vez
+correu. O nome determinista mantém-se (a razão dele é boa: não deixar lixo no cluster); o que
+mudou foi o espaço de nomes.
+
+**2. `AOS_NATS_URL` significava duas coisas incompatíveis.** O `jetstream.Abrir` reparte uma
+lista separada por vírgulas; o `natsjs` entrega a variável ao `net.Dial` e só sabe falar com um
+nó. Com a lista, cinco testes do `natsjs` falhavam com «too many colons in address». Com um
+endereço só, os **dois testes de reconexão** falhavam — e por uma razão que é o próprio objecto
+deles: matam o nó a que a ligação aponta e exigem que o cliente encontre outro. A lista ganha
+porque a propriedade que ela permite observar não é observável de outra forma; a limitação do
+`natsjs` resolve-se onde vive, no helper desse pacote.
+
+### O QUE EU MEDI MAL, E O QUE A EXECUÇÃO CORRIGIU
+
+- **«Um NATS single-node chega para a maioria»** — hipótese da discovery. **Não chega**: 24 de
+  53 falham, todas com `replicas > 1 not supported in non-clustered mode`. Baixar as réplicas
+  para 1 tornaria tudo verde e seria substituir o ambiente por uma fixture.
+- **«Nenhum teste pode saltar»** — regra que escrevi no gate. Forte demais: o
+  `TestSelftestApexEnforcementBypassReddensGate` é um teste-veneno do `selftest.sh` e salta por
+  desenho. A regra passou a ser por NOME, não por contagem.
+- **O meu gate morreu a diagnosticar.** O ramo que imprime o nome do teste que saltou era um
+  pipeline de `grep`s; sem correspondência, o `pipefail` matava o gate exactamente no caminho
+  que existe para explicar a falha.
+- **Deixei os testes destrutivos derrubarem o cluster.** Sem `AOS_RESTORE_CMD`, ficavam dois nós
+  em baixo e os 13 testes seguintes falhavam com 10008 — causa aparente soberania e arbitragem,
+  causa real o cluster em baixo. Os testes já suportavam o restauro; faltava definir a variável.
+
+### O DEFEITO DE PRODUTO QUE ISTO ENCONTROU — AOS-432
+
+A primeira coisa que as suites do `aos-orq` fizeram contra o cluster foi falhar, em dois testes
+que **nunca tinham corrido**. Medido:
+
+| Propriedade | Estado |
+|---|---|
+| A arbitragem funciona | **SIM** — exactamente 1 vencedor, 3/3 execuções |
+| Os perdedores são negados pelo LEASE | **NÃO** — `negados-pelo-lease=0`, sempre |
+| O que recebem | `natsjs: ninguém serve este subject (503)`, e saem com código genérico |
+
+**A propriedade de segurança do ADR-023 aguenta; a de diagnosticabilidade não.** Em incidente,
+um operador lê um erro de NATS quando a causa real é «outra réplica detém este run».
+
+Três hipóteses morreram por experiência — corrida de arranque (3/3 idêntico), o quarto nó
+noutra região (um cluster de 3 numa só região dá o mesmo), propagação do binding entre nós
+(todos no mesmo endereço dá o mesmo). A quarta exige ler o protocolo, e é o **AOS-432**.
+
+Fica **declarada no gate**, e não excluída: tirar o `cmd/aos-orq` da lista de módulos deixaria
+de a ver no dia seguinte. A lista auto-reforma-se — um teste declarado que PASSE avermelha o
+gate, para que dívida curada não fique a pesar sem razão.
+
+### O inventário do `dormencia` estava falso, e agora nomeia em vez de contar
+
+Contava por `grep -rl 'AOS_NATS_URL'` e **subestimava**: quatro ficheiros do pacote `jetstream`
+(19 funções) saltam pelo helper partilhado `servidor(t)` e nunca escrevem o nome da variável.
+Reportava 47 testes em 9 ficheiros; a árvore tinha 45 skips em 13.
+
+A primeira correcção que tentei — contar o directório inteiro — apanhava os escondidos e
+produzia «packages/cmd/aos <=1040 teste(s)» para 6 skips reais. Um número que erra por duas
+ordens de grandeza é pior do que número nenhum, porque convida a ser citado. O gate passou a
+**nomear** os pacotes; a contagem é do `nats.sh`, feita na execução.
+
+E a razão declarada que ele imprimia durante meses — «nenhum ficheiro de CI define
+AOS_NATS_URL» — era verdadeira quando foi escrita e passou a ser falsa sem que nada a
+reavaliasse. A nova é verificada contra o `ci.yml`.
+
+### Resíduos declarados
+
+1. **Isto não prova nada sobre produção.** O nó de produção corre sobre ficheiro. Migrá-lo é
+   outra decisão, declarada fora de âmbito, e é o destino que o ADR-030 §3 nomeia.
+2. **O cluster é de quatro nós num só host.** Partição de rede real, latência entre regiões e
+   perda de disco continuam por observar.
+3. **O gate corre sem `-race`.** Estes testes esperam por eleições de Raft e por janelas de
+   deduplicação; o detector levaria o job ao limite. O `-race` destes módulos continua no gate
+   `test`, sem cluster — logo uma corrida que só apareça sobre substrato real fica invisível.
+4. **`packages/substrate/eventstore` continua fora do gate de cobertura** (`lib.sh:434-436`,
+   com a nota «reavaliar quando o CI tiver NATS»). O CI passou a ter NATS; a reavaliação não
+   foi feita aqui, e é trabalho com âmbito próprio.
+5. **O nome de stream determinista do `janela_test.go`** colide se duas execuções partilharem
+   um cluster. No CI não acontece (o cluster é efémero e derrubado pelo `trap`); localmente,
+   duas sessões contra o mesmo cluster colidem.
+6. **As duas falhas do AOS-432 ficam declaradas.** O gate está verde COM dívida nomeada, não
+   sem ela — e di-lo em cada execução.
+
+---
+
+## AOS-433 — Os resíduos vivos do eixo da identidade, por ordem de impacto
+
+<!-- Este ticket IMPLEMENTA parte do ADR-028 (a verificação de credencial no ingresso, estendida
+     à retoma). As citações ao ADR-003, ADR-006 e ADR-023 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção |
+| Prioridade | **P1** — o item 1 é explorável em produção hoje |
+| Estimativa | M |
+| Dependências | AOS-428, AOS-429, AOS-430, AOS-431 (todos FECHADOS) |
+| Responsável sugerido | Responsável de Segurança |
+
+### Contexto
+
+Uma triagem verificou **cada** resíduo declarado pelos tickets AOS-417 a AOS-431 contra o código
+actual, em vez de os ler pelo título. Resultado: alguns tinham sido fechados por tickets
+posteriores sem ninguém actualizar o texto, e outros eram mais graves do que o título sugeria.
+
+Este ticket fecha os de CÓDIGO com impacto real, por ordem.
+
+### (1) O `POST /runs/{id}/resume` aceitava credencial que não verifica
+
+```go
+if p, verr := v.Verify(ctx, credential); verr == nil && p.AgentID != rec.Principal.NHIID {
+```
+
+Quando o `Verify` **falha**, a conjunção curto-circuita, o corpo nunca corre, **não há `return`**,
+e a retoma prossegue: re-hospeda o run, toma lease, consome plano de replay.
+
+**A defesa a jusante não cobre isto, e o próprio ficheiro dizia porquê:** a retoma reproduz os
+turnos da captura sem reinterrogar o modelo, logo um run cuja acção escalada já não gere mediação
+nunca chega ao hook de identidade do RM. Era revogação que não revogava.
+
+**E havia um teste que fixava o defeito como comportamento desejado.** O
+`TestUmaCredencialQueNaoVERIFICANaoEDivergencia` aseria que o erro *não* era divergência de
+principal — e parava aí. Ao parar aí, documentava um buraco como se fosse desenho.
+
+O residual antigo justificava-o com um argumento que **era bom**: «transformar "não consegui
+verificar" em "não és tu" diria uma coisa diferente da que se sabe». Mas isso é sobre o TIPO DE
+ERRO, e dele não se segue deixar passar. Fecha-se com sentinela própria
+(`ErrResumeCredencialNaoVerifica`): diz-se o que se sabe, e recusa-se na mesma.
+
+**A regra não foi reescrita.** A guarda do AOS-428 passou a função livre sobre `*Node`
+(`credencialDoRunRecusadaNoNo`) e as duas rotas chamam a MESMA — o AOS-424 passou uma série
+inteira a fechar a classe «a mesma regra em três cópias».
+
+### (2) Uma avaria do registo de revogação era indistinguível de revogação
+
+`verifier.go` fazia `fmt.Errorf("%w: %v", ErrTokenRevoked, rerr)` — sentinela com `%w`, causa com
+`%v`. As duas condições resolviam em `ErrTokenRevoked`, e a causa era achatada para texto.
+
+Numa indisponibilidade do registo, **todas** as verificações de **todos** os titulares eram
+recusadas e o log dizia «revogada» para todos: o operador iria revogar e reemitir identidades num
+incidente que se resolvia reiniciando um serviço.
+
+Sentinela própria (`ErrRevocationUnavailable`), causa com `%w`. **A postura não muda** — continua
+fail-closed, e o hook do RM nega em qualquer erro.
+
+### (3) A recusa no ingresso não tinha sensor nenhum
+
+A correcção do AOS-428 trocou uma negação **tardia-mas-auditada** (um `MediationRecord` selado no
+WORM, com métrica) por uma **precoce-e-não-auditada** (uma linha de log). Uma campanha de
+submissões com tokens roubados ficou invisível.
+
+Entra `aos_ingress_credential_denials_total`, incrementado nas duas rotas.
+
+**O que isto NÃO é:** auditoria. Não diz quem nem quando, e não é tamper-evidente. Fecha a
+detecção, não a prova — e o registo durável tem uma dificuldade própria que vale a pena nomear:
+não se pode atribuir o facto ao principal da CREDENCIAL, porque foi ela que não verificou.
+Atribuível é o SUBMISSOR autenticado, que é outra coisa e é decisão por tomar.
+
+### (4) A cobertura do `eventstore` — e a medição mudou a conclusão
+
+O `lib.sh` excluía o módulo do gate com a nota «reavaliar quando o CI tiver NATS». O AOS-431 pôs
+NATS no CI. Medido nos dois regimes:
+
+| Regime | Cobertura |
+|---|---|
+| **SEM** cluster (como o gate `test` corre) | **63,6%** — a nota estava certa |
+| **COM** cluster de quatro nós | **81,3%** |
+
+**A conclusão não é «entra agora no gate geral».** Esse gate vive no `test.sh`, que não levanta
+cluster: pô-lo lá mediria 63,6% e avermelharia — exactamente o bloqueador de ambiente que a nota
+original recusou, e com razão. A premissa não caducou; caducou a ideia de que não havia onde
+gatear.
+
+O piso entra no gate `nats`, que tem o cluster: `EVENTSTORE_COVERAGE_MIN=75`, abaixo do medido
+para absorver variação e acima do valor sem cluster — o que garante que está a medir o ganho do
+cluster e não a passar por acidente.
+
+### (5) Três textos do registo estavam factualmente errados
+
+- **O AOS-425 citava um teste que não existe** (`TestAOS425WildcardAtravessaEEstaDeclarado`), e
+  descrevia uma «verificação na carga» que foi revertida dentro do próprio ticket. Um registo que
+  afirma ter um sensor é pior do que um que admite não ter: ninguém volta a olhar.
+- **O cabeçalho da baseline `stream-names` contradizia as suas próprias entradas** — dizia que
+  restava uma entrada com histórico real, e as duas entradas dizem, cada uma, que foram migradas.
+- **O AOS-426 dizia que a causa de fundo «continua aberta»** quando o AOS-424 fez seis renames,
+  dois com migração de factos.
+
+### UM GUARD DISPAROU PELA RAZÃO ERRADA — A TERCEIRA VEZ NESTA SÉRIE
+
+O `TestAOS428OEscopoNaoMigrouParaAPorta` procurava o literal `h.node.Verifier.Verify(`. Tornar a
+guarda partilhada mudou o receptor para `no`, e ele ficou vermelho — com a propriedade que vigia
+inteiramente verdadeira.
+
+É o mesmo padrão do `TestAOS417BannerDoConsumidorNaoApodrece` (AOS-423) e do
+`TestAOS417FormaDoFactoEEstavel` (AOS-429): um detector por PROXY, razoável quando escrito,
+desligado da mudança que o invalidou. Passou a procurar a chamada sem o receptor, e ganhou uma
+segunda asserção — que a regra continua partilhável com o `resume`.
+
+### Critérios de Aceitação
+
+- [x] O `resume` recusa credencial que não verifica, com sentinela própria, e o teste que fixava o
+      defeito passa a exigir a recusa. Sensor verificado por mutação: **5 vermelhos**.
+- [x] «Registo indisponível» distingue-se de «revogado», a causa é recuperável por `errors.As`, e
+      a postura fail-closed não relaxa (teste com controlo de não-vacuidade nos dois sentidos).
+- [x] A recusa no ingresso tem série em `/metrics`, com o que ela **não** é declarado.
+- [x] A cobertura do `eventstore` tem piso, no gate onde é mensurável, com os dois números.
+- [x] Os três textos errados estão corrigidos, cada um com a correcção visível e datada.
+
+### Resíduos declarados
+
+1. **Registo de auditoria DURÁVEL na recusa** — a métrica fecha a detecção, não a prova. Tem a
+   dificuldade de atribuição descrita em (3).
+2. **O `Subscribe` que falha em silêncio** (AOS-424): uma subscrição filtrada por um nome não
+   representável nunca casa nada, sem erro. Pior MODO de falha da lista, menor probabilidade
+   actual — o `Append` foi apertado e produção corre sobre ficheiro.
+3. **O gate `nats` corre sem `-race`**: uma corrida que só apareça sobre substrato replicado
+   continua invisível.
+4. **`GET /plans/{id}` não sela WORM** e é linear no histórico (AOS-430).
+
+### Estado
+
+**FECHADO.** Cinco itens, por ordem de impacto medido. O que ficou de fora está em ticket próprio
+(AOS-434) ou declarado acima.
+
+---
+
+## AOS-434 — O caminho do plano materializa com orçamento efectivamente infinito
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum. As citações ao ADR-008 (orçamento com circuit
+     breaker) e ao ADR-024 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção + decisão |
+| Prioridade | **P1 — mas só quando a fila for drenada.** Hoje é inalcançável |
+| Estimativa | S |
+| Dependências | — |
+| Bloqueia | **O timer de deployment que drenar a fila.** Tem de ser feito ANTES, não depois |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/main.go` (`materializeBudgetTokens`), `docs/adr/ADR-008`, o resíduo do AOS-417 |
+
+### Contexto
+
+```go
+const (
+	materializeBudgetTokens = 1 << 30
+	materializeBudgetCost   = 1 << 30
+)
+```
+
+Mil milhões de tokens e mil milhões de unidades de custo. O comentário declara-o: «aqui são
+generosos e declarados, para que a admissão exercite o caminho de RESERVA sem ser o que decide o
+desfecho da demonstração».
+
+Era razoável enquanto o `serve` era invocado à mão por um operador.
+
+> **CORRECÇÃO (AOS-434, na execução).** Este parágrafo dizia que, com a fila drenada, «quem puder
+> submeter a `POST /plans` queima orçamento de modelo sem travão node-local». **É falso, e fui eu
+> que o escrevi.** A discovery seguiu o que esta árvore efectivamente debita:
+>
+> | O que debita a árvore do `aos-orq` | O que NÃO debita |
+> |---|---|
+> | a ESTIMATIVA do planeador, reservada e confirmada tal-qual | o `usage` real da resposta do modelo — **não há reconciliação** |
+> | o `budget_estimate` DECLARADO por cada nó do documento | o trabalho dos nós, que corre como runs do nó `aos` e debita o orçamento DELE |
+> | `{1,1}` por avaliação de aresta condicional | |
+>
+> Ou seja: **um tecto aqui limita a soma de números que o próprio documento declara, e nada
+> mais.** Mexer nele não trava o custo do modelo, e a ligação que o parágrafo afirmava não existe
+> no código.
+>
+> O travão de custo REAL é o `AOS_BUDGET_MAX_TOKENS` do **nó**, que reserva antes do turno e
+> salda pelo consumo MEDIDO. ~~Está **por definir** em produção~~ — **CORRIGIDO pelo AOS-437
+> (2026-09-25):** estava a **200000 tokens por run**, medido no contentor, e o banner do nó
+> declara-o COMPOSTO. A afirmação riscada foi escrita sem ir ver; fica riscada, e não apagada,
+> porque outros documentos a citaram.
+
+**Hoje é inalcançável** — o AOS-430 mediu que nada drena a fila em produção. É por isso que a
+prioridade é condicional, e é por isso que tem de ser feito **antes** do timer e não depois: uma
+vez ligado, o custo é imediato e real.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Qual é o tecto?** Não há número decidido, e o certo depende do que um plano típico consome —
+   que não está medido. Sem medição, qualquer valor é arbitrário.
+2. **Vem de onde?** Constante, variável de ambiente, ou do plano de controlo (que é onde o
+   comentário diz que um tecto real vive)?
+3. **O que acontece ao exceder?** O caminho de admissão já sabe ADIAR (`defer` com `retry_after`)
+   em vez de descartar — é a postura do AOS-027. Aplica-se aqui?
+
+### Critérios de Aceitação
+
+- [x] O tecto é configurável (`AOS_ORQ_PLAN_BUDGET_MAX_TOKENS` /
+      `_COST_MICRO_USD`, fail-closed no molde do `budget_env.go` do nó) e o valor em vigor é
+      **declarado no banner** — incluindo, e sobretudo, **o que ele NÃO cobre**. Há teste que
+      exige essa segunda metade: sem ela, o banner convidaria à mesma conclusão errada que o
+      ticket fazia.
+- [x] Um plano acima do tecto é **RECUSADO** na materialização, não adiado — e isso não é uma
+      escolha deste ticket, é o que o mecanismo faz: `Reserve` devolve `ErrNoHeadroom`
+      (`budget.go`), a admissão traduz em veredicto negado (`runlifecycle/materialize.go`) e o
+      materializador aborta o plano (`ErrNodeNotAdmitted`). **Não existe adiamento nesta
+      árvore**; o `defer`/`retry_after` da postura AOS-027 vive noutra admissão
+      (`scheduler/admission.go`), que o `aos-orq` não compõe. Cobertura do mecanismo já existia
+      (`TestBudgetAdmission_SemHeadroomNegaENaoVaza`).
+- [ ] **O número NÃO tem razão medida por trás, e por isso NÃO se escolheu um.** Não existe
+      medição de consumo de um plano no repositório — nem relatório, nem teste, nem número. O
+      único consumo medido é de UM run do nó (1 749 tokens contra tecto de 200 000), de uma
+      fonte que esta árvore nunca lê. O default mantém-se; a variável existe para quem tenha o
+      número. Inventar um valor e chamar-lhe tecto seria o oposto do que este critério pede.
+
+### Estado
+
+**FECHADO**, com o critério do número por marcar e a **premissa do próprio ticket corrigida**.
+
+### A PREMISSA ESTAVA ERRADA, E ERA MINHA
+
+O ticket dizia que `1<<30` deixava «queimar orçamento de modelo sem travão node-local». A
+discovery seguiu o que a árvore debita e mostrou que **o consumo real nunca passa por aqui**: o
+planeador reserva a estimativa e não a reconcilia com o `usage`, e o trabalho dos nós debita o
+orçamento do NÓ. A correcção está no Contexto, em tabela.
+
+Isto não anula o ticket — reenquadra-o, e para menos. O que `1<<30` estragava era outra coisa, e
+continua a valer a pena fechar.
+
+### O QUE ESTE TECTO GOVERNA, E PORQUE É QUE ISSO IMPORTA
+
+A admissão de materialização existe para recusar um plano cujas estimativas declaradas são
+implausíveis. Com `1<<30` em ambas as dimensões, essa admissão era **vácua**: nenhum documento
+era recusado, por mais absurdo que declarasse. Uma guarda que corre e nunca nega é o modo de
+falha que esta série passou a fechar noutros sítios — e estava aqui.
+
+### O QUE SE ENTREGOU
+
+| Peça | Nota |
+|---|---|
+| Tecto configurável, fail-closed | Molde do `budget_env.go` do nó, incluindo a razão de o ZERO abortar (não desliga o tecto — negaria todos os planos) |
+| Validação **cedo**, no arranque | Antes de tomar posse do run: um `consume` que abortasse na composição teria gasto uma geração de reclamação para descobrir um erro de configuração |
+| Banner que declara o tecto **e o que ele não cobre** | É a metade que importa, e tem teste próprio |
+| Variável no `docker-compose.prod.yml` | Com o aviso, no comentário, de que configurar esta e não a do nó deixa o custo sem tecto |
+
+### O DEFAULT NÃO DESCE, E ISSO É A RESPOSTA HONESTA
+
+Não há medição de consumo de um plano. Escolher um número sem ela seria inventar um tecto e
+chamar-lhe protecção — exactamente o que o critério 3 pede para não se fazer. O default mantém-se,
+a variável existe, e o banner diz qual está em vigor.
+
+### Resíduos declarados
+
+1. **O critério do número fica por marcar.** Fecha-se com uma medição, que pode sair dos factos
+   `plan.materialized` já gravados (a soma dos `BudgetEstimate` de planos reais), sem
+   instrumentação nova — não verificado se esses WAL estão acessíveis.
+2. **`dispatchNodeBudgetTokens = 100_000`** (`dispatch_wiring.go`) é um segundo número arbitrário
+   na mesma árvore, com o mesmo comentário «tecto local generoso». Fora do âmbito declarado deste
+   ticket, que só nomeava as duas constantes do `main.go`.
+3. **A estimativa nunca é reconciliada com o consumo.** É a razão de fundo pela qual esta árvore
+   não protege de custo, e fechá-la é outro eixo — exige o canal de `usage` do gateway a debitar
+   esta árvore, que hoje não existe no `aos-orq` (o `budgetbridge` não tem chamador).
+4. **O travão real depende de uma variável do NÓ que está por definir em produção.** É decisão do
+   operador, o nó declara-a, e não é código.
+
+## AOS-435 — A recusa de credencial volta a deixar prova, e a postura passa a ser declarada
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma regressão de auditabilidade. As citações
+     ao ADR-016 (read-path soberano) e ao ADR-030 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção |
+| Prioridade | P1 — é uma regressão, e foi introduzida por outra correcção |
+| Estimativa | S |
+| Dependências | AOS-428, AOS-433 (FECHADOS) |
+| Responsável sugerido | Responsável de Segurança |
+
+### Contexto
+
+Dois itens da triagem de resíduos do AOS-433, ficados por fazer e do mesmo eixo.
+
+**(1) A recusa não deixava prova.** Antes do AOS-428, uma credencial do run que não verificava
+era negada pelo hook do RM — tarde, mas AUDITADA: um `MediationRecord` selado no WORM. O AOS-428
+passou a verificação para a porta, que era o que estava certo, e ao fazê-lo trocou uma negação
+tardia-mas-auditada por uma precoce-e-não-auditada. O AOS-433 acrescentou a métrica, que fecha a
+DETECÇÃO; faltava a PROVA.
+
+**(2) O banner não declarava a postura.** Desde o AOS-428 há duas guardas no `POST /runs` que
+respondem `403`, e a uniformidade é deliberada. Mas nada no arranque dizia ao operador que a
+segunda existia — um 403 não tinha por onde ser atribuído.
+
+### As três decisões de desenho, e porquê
+
+**A quem se atribui: ao SUBMISSOR, não ao principal do token.** Foi exactamente esse token que não
+verificou — o seu principal é uma afirmação por provar, e selá-lo seria gravar numa cadeia
+tamper-evidente uma identidade que ninguém confirmou. O submissor foi verificado pelo gate
+soberano antes de esta guarda correr, e é a pessoa que um auditor quer encontrar numa campanha.
+
+**Uma partição ÚNICA, e isto é uma defesa.** As leituras sensíveis selam em `gov.read/<run>`, uma
+partição por run. Copiar esse molde aqui seria um defeito: o `run_id` de uma submissão recusada
+vem do PEDIDO, e o run nunca existe. Um chamador autenticado com `run_id`s aleatórios criaria
+**partições WORM sem limite**. Vai em `governance.credential`, no molde de `governance.dsar`; o
+`run_id` fica no registo, onde é dado, e não no nome, onde seria estrutura.
+
+**Best-effort, e porque isso não é o mesmo que a leitura.** O selo de uma leitura é
+pré-condição — se falha, a leitura é negada. Aqui não há nada a negar: a recusa já aconteceu.
+Tornar o selo obrigatório só podia transformar um 403 num 503, que diria ao chamador algo sobre o
+WORM sem ganho nenhum. A métrica conta a recusa na mesma.
+
+### Critérios de Aceitação
+
+- [x] Uma recusa em `POST /runs` produz um selo `deny` no WORM, com o motivo.
+- [x] O selo é atribuído ao submissor verificado, e não ao principal do token.
+- [x] Todas as recusas vão para a MESMA partição, e nenhuma cria partição com o nome do run —
+      sensor verificado por mutação: tornar a partição por-run avermelha **três** testes.
+- [x] O banner declara a postura nos quatro estados (endurecido/referência × selado/não selado)
+      e explica que um 403 pode vir de duas guardas.
+
+### Resíduos declarados
+
+1. **A retoma não é selada.** O `POST /runs/{id}/resume` é rota de `planoControlo`, e nem o
+   `admitControl` nem o `admitControlMTLS` entregam ao handler uma identidade verificada. Sem ela
+   não há a quem atribuir — e um registo sem principal numa cadeia cujo valor é a atribuição seria
+   pior do que nenhum, porque pareceria prova sem o ser. A métrica conta-a.
+2. **A partição usa a forma `governance.*`, com ponto** — a convenção do WORM em vigor
+   (`governance.dsar`, `governance.retention`). Herda o resíduo do AOS-425 sobre a forma das
+   partições do WORM, que nunca foi investigado.
+3. **Selo best-effort.** Com o WORM em baixo, a recusa fica sem prova tamper-evidente — declarado,
+   e a métrica continua a contá-la.
+
+### Estado
+
+**FECHADO.**
+
+---
+
+## AOS-455 — Janela residual do AOS-432: o primeiro CAS sobre um stream FRESCO ainda apanha 503
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador e Meta-Orquestração |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-432 |
+| Bloqueia | — |
+| Responsável sugerido | Engenheiro de Runtime |
+| Documentos de referência | ADR-023, `scripts/ci/nats.sh`, `packages/substrate/eventstore/jetstream/lider.go` |
+
+### Contexto
+O AOS-432 fechou o caso em que quem PERDE o lease sobre substrato replicado saía com um erro de
+transporte em vez de `durable.ErrLeaseHeld`: o `jetstream.Abrir` passou a esperar pelo líder do
+stream (`esperarLider`). Ficou uma janela mais estreita, e ela está VIVA no gate `nats`.
+
+**Medido, sem alteração de código nenhuma.** Os commits `c0d7fde` e `c595782` têm o **mesmo SHA de
+árvore** (`73846cb6891b671e8b33a4c276ca24a78c4a618b`): o gate `nats` ficou **verde** no run
+36277503033 e **vermelho** no 36279687386. Três ocorrências em dois dias, sempre o mesmo mecanismo
+— N reclamantes a disputar o lease sobre um stream R3 **acabado de criar**:
+
+| Run | Ramo | Teste que falhou |
+|---|---|---|
+| 36279687386 | `feature/AOS-128-ux-dx-tests` (base) | `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` (`packages/integration`) |
+| 36288541771 | PR #396 | `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` (`packages/cmd/aos-orq`) |
+| 36330671442 | PR #399 | `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` (`packages/integration`) |
+| 36330671442 (re-corrida) | PR #399 | `TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal` (`substrate/eventstore/natsjs`), na passagem da COBERTURA — os quatro pacotes tinham ficado verdes (1733/0) |
+
+Localmente não reproduz: 13 corridas com cluster real, todas verdes. A quarta ocorrência mostrou
+que a **passagem da cobertura** morre pela mesma causa depois de os quatro pacotes ficarem verdes:
+o gate reprova com «a medicao de cobertura NAO correu; sem numero nao ha veredicto», o que é
+correcto (fail-closed) mas soma uma re-corrida inteira a cada flake.
+
+Hipótese (POR PROVAR): o `esperarLider` garante que o stream tem líder no momento do `Abrir`, mas
+não que o servidor a que a ligação está presa já instalou o interesse nos subjects do stream fresco,
+nem que não há re-eleição entre o `Abrir` e o PUB do CAS. Em qualquer dessas janelas o PUB recebe
+503 `no_responders`, o `Claim` devolve erro de transporte em vez de `ErrLeaseHeld`, e o perdedor
+sai `1` em vez de `3`.
+
+### Objectivo
+Fechar a janela para que a recusa por lease seja SEMPRE distinguível de uma avaria de transporte,
+e o gate `nats` deixe de flakear.
+
+### Critérios de Aceitação
+- [x] O diagnóstico está PROVADO e não suposto: existe uma reprodução determinista da janela — por
+      exemplo com o líder do stream derrubado entre o `Abrir` e o primeiro CAS — que mostra o
+      código de saída errado antes da correcção. — *A hipótese estava meio certa: a janela tem
+      DUAS formas, e a que dominava localmente não era o 503. Ver «A medição» e «A reprodução
+      determinista», abaixo: `TestAOS455_PerdedorComINFOCaladoSaiPelaPosse` e
+      `TestAOS455_PerdedorCom503NoPrimeiroCASSaiPelaPosse` correm o `cmdServe` real do perdedor
+      contra um JetStream de brincar e saíam `1` (`exitErro`) antes da correcção; saem `3`.*
+- [x] Um 503 `no_responders` no primeiro CAS sobre um stream fresco **não** se confunde com «o lease
+      é de outro»: ou se retenta até o interesse estar instalado, ou sai com um erro de transporte
+      próprio, nomeado e distinto de `ErrLeaseHeld`. — *As duas coisas: o `Append` re-tenta o 503
+      de um subject que o stream captura, dentro do prazo da operação; esgotado, sai
+      `ErrNoQuorum` + `jetstream.ErrStreamNaoServe`, com o 503 na cadeia. O 503 de um subject que
+      nenhum stream captura continua a subir na hora e tal qual
+      (`TestAOS432_503VerdadeiroNaoEPosseNegada` verde sobre o cluster).*
+- [x] O gate `nats` corre os dois testes afectados N vezes seguidas sem falhar. — *Bloco (1b) do
+      `nats.sh`: os dois, mais o `TestIntegracao_DedupDentroDaJanelaDevolveOSeqOriginal`,
+      `NATS_REPETICOES` vezes seguidas (default e piso 10). Contra um cluster local de 4 nós:
+      antes da correcção 46/50 em cada um dos dois testes de disputa; depois, 200/200 em cada um
+      dos três, e 10/10 × 3 no próprio gate. O verde no CI (docker) confirma-se no PR.*
+- [x] `falhas_conhecidas` do `nats.sh` continua **VAZIA** — este defeito fecha-se, não se declara.
+- [x] O gate publica o output da asserção (ver Detalhes Técnicos): sem isso, o próximo vermelho
+      volta a diagnosticar-se por hipótese. — *`gotest_saida_do_teste` (`gotest-pacotes.sh`)
+      imprime as linhas do teste que falhou — `-v` e sem `-v` — no ramo do teste novo a falhar,
+      na passagem da cobertura e no bloco de repetição. Self-test Y7 (avermelha com o `grep -A8`
+      antigo, medido).*
+
+### Detalhes Técnicos
+- Componentes: ES (`substrate/eventstore/jetstream`), ORQ (`cmd/aos-orq`), `durable`.
+- **O output da asserção não chega ao log do CI.** O gate imprime `grep -A8` a partir do
+  `--- FAIL`, e em `go test -v` as linhas de `t.Logf`/`t.Errorf` saem **antes** dessa linha; o
+  ficheiro completo é um `mktemp` que não é publicado. Em três vermelhos ninguém viu as contagens.
+  Corrigir isto é pré-requisito de diagnosticar o resto com evidência.
+
+### Testes Requeridos
+- Reprodução determinista da janela (líder derrubado, ou interesse ainda não instalado).
+- Repetição: os dois testes afectados, N corridas sem falha.
+
+### Definition of Done
+- [x] Critérios de Aceitação satisfeitos e demonstráveis.
+- [~] Gate `nats` verde em corridas consecutivas, sem entradas novas em `falhas_conhecidas`. —
+      *Verde contra o cluster local (o `nats.sh` deste ramo, só com o cluster trocado por processos
+      nativos); `falhas_conhecidas` vazia. As corridas consecutivas no CI são as do PR.*
+
+### Handoff para Claude Code
+```text
+Implementa AOS-455 (EPIC-19). O AOS-432 deixou uma janela: o primeiro CAS sobre
+um stream R3 FRESCO ainda pode apanhar 503 no_responders, e o perdedor do lease
+sai 1 em vez de 3. Começa por fazer o gate publicar o output da asserção — sem
+isso o diagnóstico é hipótese. PROVA a janela com uma reprodução determinista
+antes de a fechar. Não declares o flake em falhas_conhecidas. Segue _BRIEF.md.
+Não expandas escopo.
+```
+
+### A medição
+
+O output da asserção nunca tinha chegado ao log, por isso a primeira coisa foi ir buscá-lo: os
+logs das tentativas vermelhas do run 36330671442 mostram o `TestAOS432_…` a falhar em **0,14 s**
+(o log não traz a asserção — é o defeito do critério 5) e o `TestIntegracao_Dedup…` com
+`integracao_test.go:150: A.Publish: natsjs: ninguém serve este subject (503)`. Depois, contra um
+cluster local com a receita do `nats-cluster.sh` (4 nós `nats-server` v2.10.22 nativos, R3,
+`server_tags`, autorização por nkey), sem alteração de código:
+
+| Experiência | Resultado |
+|---|---|
+| Os três testes afectados, 50× cada | `TestAOS432_Lease…` 46/50; `TestAOS100_NServe…` 46/50 (5 processos a sair `1` nesta corrida; 7 na corrida da revisão — variância observada, não um número fixo); `Dedup…` 50/50 |
+| A asserção dessas 8 falhas | **Todas** «`jetstream: esperar pelo líder do stream …: natsjs: indeterminado — … sem resposta dentro do prazo ($JS.API.STREAM.INFO…, 9.99s)`» — e nenhuma com 503 |
+| 4 ligações criam o mesmo stream e fazem `STREAM.INFO` com prazo de 500 ms (100×) | **32 de 400 INFO sem resposta nenhuma**; o INFO seguinte respondeu em 1–2 ms |
+| 4 ligações criam, esperam até o INFO anunciar líder, e publicam com CAS 0 (100×) | 2 iterações com um **503 depois de o INFO anunciar líder** (numa, o cliente estava no próprio nó líder) |
+| 1 ligação cria e publica logo (100×) | 1 com 503 no primeiro PUB, curado na publicação seguinte (2 ms) |
+
+A janela tem **duas formas**, e as duas têm linha no servidor (nats-server v2.10.22):
+
+1. **O INFO calado.** `jsStreamInfoRequest` só responde se for o líder do stream ou, num grupo
+   novo, o membro preferido já com o nó Raft criado; caso contrário `if bail { return }` — sem
+   resposta. Cala-se também, mais cedo, o servidor que ainda não aplicou a atribuição do stream
+   (`sa == nil`, l. 1839–1846): só responde, com erro e atrasado, se a meta-camada estiver sem
+   líder. O `esperarLider` do AOS-432 entregava a cada consulta o prazo que restava (todo, à
+   primeira): um INFO calado gastava os 10 s, o `Abrir` falhava, e o perdedor saía `1`. **Era esta
+   a forma dominante localmente** (8 de 8 falhas), e a que a hipótese do ticket não previa.
+2. **O 503 com líder anunciado.** `switchState(Leader)` põe o Raft em líder — e
+   `isStreamLeader`/o INFO dizem-no logo — mas os subjects só são subscritos quando a goroutine do
+   stream consome a mudança (`processStreamLeaderChange` → `setLeader` → `subscribeToStream`).
+   Uma publicação nesse intervalo recebe 503; o `Claim` devolvia-o cru e o perdedor saía `1`. Era
+   a forma do CI (o 503 do `Dedup…`, e a falha de 0,14 s, curta demais para um prazo de INFO).
+   É o resíduo que o AOS-432 tinha declarado como «não excluído».
+
+### A reprodução determinista
+
+Antes de qualquer correcção, e vermelhas sem ela:
+
+- `cmd/aos-orq/aos455_janela_do_primeiro_cas_test.go` — um JetStream de brincar (só o que o
+  `serve` usa até ao `Claim`) com as janelas accionadas por contagem na ligação do perdedor. O
+  vencedor reclama pelo `LeaseManager` real; o perdedor é o `cmdServe` real e o código é o do
+  `codigoDe`. **Antes:** `TestAOS455_PerdedorComINFOCaladoSaiPelaPosse` → «o perdedor saiu 1,
+  quer 3 (…) sem resposta dentro do prazo ($JS.API.STREAM.INFO.AOS455_INFO, 9.999999891s)» — a
+  mesma mensagem do cluster; `TestAOS455_PerdedorCom503NoPrimeiroCASSaiPelaPosse` → «o perdedor
+  saiu 1, quer 3: posse do run …: natsjs: ninguém serve este subject (503)». O **controlo** sem
+  janela sai `3` antes e depois — o servidor de brincar não é a causa.
+- `jetstream/aos455_janela_test.go` — o mesmo, uma camada abaixo: `Abrir` com o 1.º INFO calado
+  falhava ao fim do prazo; `Append` com um 503 de janela devolvia o 503 cru.
+
+### Entrega
+
+- **`jetstream/lider.go`** — `esperarLider` dá a cada consulta `min(consultaLiderInicial, resta)`
+  (250 ms, dobrando a cada consulta sem resposta). Um INFO calado (`natsjs.ErrTimeout`) é «ainda
+  ninguém responde» e pergunta-se de novo dentro do MESMO orçamento; qualquer outro erro sobe tal
+  qual, como no AOS-432. Esgotado, `ErrNoQuorum` + `ErrStreamSemLider` — já não «indeterminado —
+  a escrita pode ter sido aplicada», que sobre um INFO (uma leitura) era falso.
+- **`jetstream/janela.go`** (`publicarCAS`, usada pelo `Append` e pelo `IngestStream`) — um 503
+  num subject que o stream captura é a janela: re-tenta-se a MESMA publicação (mesmo CAS, mesmo
+  `Nats-Msg-Id`; um 503 é o servidor a dizer que ninguém a recebeu), com espera de 5 ms a dobrar
+  até 100 ms, dentro do prazo da operação e obedecendo ao `ctx`. Esgotado:
+  `ErrNoQuorum` + **`ErrStreamNaoServe`** + o 503 na cadeia. «Captura» sabe-se sem perguntar
+  quando o Store criou o stream; com `SemCriarStream` lê-se o `config.subjects` armazenado
+  (`natsjs.StreamConfigLida.Subjects`, campo novo). O 503 de um subject fora do stream sobe na
+  hora.
+- **`natsjs/integracao_test.go`** — `esperarQueSirva`: antes de medir, os testes do cliente cru
+  esperam até o stream servir, com uma sonda de CAS impossível (`1<<62`) que o servidor recusa e
+  que não deixa rasto — `TestIntegracao_RecusaNaoDeixaRasto` continua a medir `Messages == 1`.
+- **`scripts/ci/gotest-pacotes.sh`** — `gotest_saida_do_teste`: as linhas das execuções de um
+  teste que não passaram (cabeçalho, `t.Logf`/`t.Errorf`, veredicto, subtestes), com `-v` e sem
+  ele, com `-count=N`, e com corte declarado do meio.
+- **`scripts/ci/nats.sh`** — usa-a no teste novo a falhar e na passagem da cobertura (critério
+  5); bloco (1b) repete os três sensores `NATS_REPETICOES` vezes (critério 3);
+  `falhas_conhecidas` intacta e vazia. `CONTRIBUTING.md` ganha a linha do `NATS_REPETICOES`.
+- **`scripts/ci/selftest.sh`** — Y7 (os três ramos vermelhos mostram a asserção; vermelho com o
+  `grep -A8` antigo, medido), Y7b (com `-count=N`, só a repetição que falhou) e Y8 (a repetição
+  não se desliga em silêncio: estrutura do veredicto e recusa de 9 e de 10.5).
+
+**Contra-provas por mutação** (núcleo revertido, testes deterministas, restaurado sem commit):
+(M1) consulta volta a receber o que resta e o silêncio volta a subir → 4 testes do `jetstream` e
+o `TestAOS455_PerdedorComINFOCalado…` vermelhos, este com «saiu 1, quer 3»; (M2) o `Append` volta
+a publicar sem `publicarCAS` → 4 do `jetstream` e o `TestAOS455_PerdedorCom503…` vermelhos;
+(M3) todo o 503 passa a «janela» → `TestAOS455_503DeUmSubjectQueOStreamNaoCaptura…` vermelho;
+(M4) a janela esgotada devolve o 503 cru → `TestAOS455_JanelaQueNaoFecha…` e
+`…ContextoCancelado…` vermelhos.
+
+**Repetição contra o cluster local** (depois da correcção): `TestAOS432_Lease…` 200/200,
+`TestAOS100_NServe…` 200/200, `Dedup…` 200/200; o `nats.sh` deste ramo, só com o cluster trocado
+por processos nativos: os quatro módulos verdes, (1b) 10/10 × 3, cobertura do `eventstore` 80,4%.
+O único vermelho dessa corrida foram 3 skips do `cmd/aos-orq` por o posto correr como **root**
+(«como root nenhum modo torna um ficheiro ilegível») — condição do posto, não do CI.
+
+**Revisão adversarial independente (2026-10-01), sobre 0ea361d** (reaplicado como `6438546` por
+cima do AOS-318, sem conflitos). Sem achados ALTO. Confirmou:
+só um 503 exacto é re-tentado (do lado do servidor, um 503 é `!didDeliver` — nada foi aplicado);
+o CAS é idêntico em todas as tentativas; a re-tentativa é limitada e obedece ao `ctx`; um 503
+nunca vira `ErrLeaseHeld` nem sucesso; M1–M4 reproduzem; o controlo sai `3`. Achados, todos
+corrigidos ou declarados num commit à parte, cada correcção com contra-prova por mutação:
+
+- **M-1 (médio).** `TestAOS455_ContextoCancelado…` passava SEM o ramo do `ctx.Done()`: o
+  `WithTimeout` alinhava o limite da janela com o ctx (via `prazoDe`) e o teste aceitava
+  `ErrStreamNaoServe`. Passa a cancelar aos 200 ms com prazo do store de 10 s e a exigir
+  `context.Canceled`, não-`ErrStreamNaoServe` e menos de 1 s. Mutação (canal que nunca fica
+  pronto no lugar do `ctx.Done()`): vermelho ao fim de 10 s.
+- **M-2 (médio).** O Y8 eram três greps: `if false` no veredicto do bloco (1b) deixava-o verde.
+  Ganha uma verificação estrutural (awk, no molde do Y6: o veredicto exacto e o `rc=1` dentro do
+  bloco) e duas comportamentais: `NATS_REPETICOES=9` e `=10.5` são recusados por VIOLAÇÃO DE
+  PISO antes do cluster. Mutações: `if false` → Y8 vermelho; sem a recusa de não-inteiros → Y8
+  vermelho. Não se acrescentou o `NATS_REPETICOES` ao `gate_floor_selftest` (1): esse ponto
+  testa o MECANISMO com os pisos de `lib.sh`, e o deste limiar é literal no `nats.sh` (como o do
+  `NATS_GO_TEST_TIMEOUT`); a prova comportamental do Y8 corre a chamada real.
+- **B-1.** O `IngestStream` não tinha teste da janela: `TestAOS455_RestauroAtravessaAJanela`
+  (`pub503=1`). Mutação (voltar ao `PublishExpectingSeq` cru): vermelho.
+- **B-2.** No bloco (1b) o corte de 150 linhas aplicava-se antes de se filtrarem as repetições
+  verdes. O `gotest_saida_do_teste` passa a escolher POR EXECUÇÃO (só as que não passaram) e a
+  cortar o MEIO, guardando o fim. Self-test Y7b (4 repetições de 200 linhas, falha a 3.ª); sem a
+  escolha por execução → Y7b vermelho.
+- **B-3.** Declarado (resíduo 4).
+- **B-4.** O Y7 verificava a chamada com um só padrão, que casava a do bloco (1b): passa a
+  verificar cada um dos três ramos vermelhos. Mutação (tirar a chamada do ramo do teste NOVO): Y7
+  vermelho.
+- **B-5.** Declarado (resíduo 5) e escrito no comentário da função.
+- **B-6.** O INFO calado também vem do ramo `sa == nil` (acrescentado acima); o `NATS_REPETICOES`
+  recusa não-inteiros (o `gate_threshold` aceita decimais, e `10.5` só rebentava no
+  `-count=10.5`); a contagem de processos a sair `1` é variância observada (5 aqui, 7 na revisão).
+- **B-7.** Nenhum teste distinguia «silêncio» de «qualquer indeterminado»:
+  `TestAOS455_IndeterminadoSemTimeoutSobeSemRetentar` (ligação fechada com o pedido em voo).
+  Mutação (todo o `ErrIndeterminate` conta como silêncio): vermelho.
+
+### Resíduos declarados
+
+1. **Não verificado no CI.** Tudo o que está acima correu contra `nats-server` v2.10.22 nativo; o
+   CI usa a imagem `nats:2.10-alpine`, cuja tag flutua dentro da 2.10. A linha do servidor citada
+   para cada forma é da v2.10.22.
+2. **A leitura numa re-eleição continua sem tolerância.** Num stream EXISTENTE cujo líder cai, o
+   `hidratar` (INFO/MSG.GET) pode ficar sem resposta antes de o CAS chegar a ser tentado; este
+   ticket cobre a publicação e a espera do `Abrir`, não a leitura. O efeito é o de sempre: erro
+   de transporte, código `1`, nunca posse negada.
+3. **Um stream apagado por baixo de um Store que o criou** é tratado como janela: re-tenta-se até
+   ao prazo e sai `ErrNoQuorum` + `ErrStreamNaoServe` + o 503 — indisponibilidade com a causa na
+   cadeia, ao fim do prazo em vez de na hora.
+4. **Com `SemCriarStream`, um INFO calado conta como janela** (apontado pela revisão,
+   reproduzido): se o stream estiver a formar o grupo quando chega o 503, a captura do subject
+   não se pode verificar, e um 503 num subject que o stream NÃO captura (`subjects=["outro.>"]`)
+   é re-tentado até ao prazo. Continua fail-closed — sai `ErrNoQuorum` + `ErrStreamNaoServe`
+   com o 503 na cadeia, nunca posse negada nem sucesso —, mas ao fim do prazo em vez de na hora.
+   Fechá-lo exigiria esperar que o INFO responda antes de decidir, o que é a mesma espera.
+5. **O stdout cru de um teste paralelo** (`fmt.Println`, não `t.Log`) é atribuído pelo
+   `gotest_saida_do_teste` ao último teste anunciado — o `go test -v` não o re-anuncia. As
+   asserções e o `t.Logf` não têm este limite; está escrito no comentário da função.
+
+### Estado
+
+**FEITO** (2026-10-01). Aberto a 2026-09-27 a partir da análise do vermelho do gate `nats` no PR
+#396; a terceira ocorrência veio no PR #399. Diagnóstico medido e reproduzido de forma determinista,
+correcção na publicação e na espera do `Abrir`, gate com a asserção no log e com a repetição dos
+sensores. O verde em corridas consecutivas no CI (docker) é o do PR — não foi observado aqui.
+
+---
+
+## AOS-432 — Sobre substrato replicado, quem PERDE o lease não sabe que o perdeu: sai com um erro de NATS
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: corrige um modo de FALHA no caminho do lease. As
+     citações ao ADR-023 (escritor único sob lease) e ao ADR-007 são RESTRIÇÕES. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade; o eixo é o EPIC-02 / execução durável) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | **P1** — não é falha de segurança, é de diagnosticabilidade, e cai em cima de um operador em incidente |
+| Estimativa | M |
+| Dependências | AOS-431 (o cluster no CI, que é o que torna isto observável — FECHADO) |
+| Bloqueia | O gate `nats` fica verde com duas falhas DECLARADAS até isto fechar |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/kernel/agent-runtime/durable/lease.go:317-360` (`Claim`), `packages/substrate/eventstore/natsjs/conn.go:37-41,276` (`ErrNoResponders`), `packages/cmd/aos-orq/main.go:331-335`, `packages/cmd/aos-orq/aos392_despacho_multiproc_test.go`, `packages/cmd/aos-orq/aos100_substrato_replicado_test.go` |
+
+### Contexto
+
+O AOS-431 ligou um cluster JetStream ao CI, e a primeira coisa que as suites do `aos-orq`
+fizeram foi falhar — em dois testes que **nunca tinham corrido**.
+
+Medido, e o que se mediu é preciso:
+
+| Propriedade | Estado |
+|---|---|
+| A arbitragem funciona | **SIM.** Exactamente 1 vencedor, em 3/3 execuções, com 3 e com 4 processos |
+| Os perdedores são negados PELO LEASE | **NÃO.** `negados-pelo-lease=0`, sempre |
+| O que os perdedores recebem | `aos-orq: posse do run "…": natsjs: ninguém serve este subject (503) (aos.es.<stream>.lease:<run>)` |
+| Os perdedores saem com | código `1` (genérico), não `exitPosseNegada` |
+| Posse SEQUENCIAL sobre o mesmo substrato | **passa** (`TestAOS100_PosseSequencialContinuaAFuncionarNoReplicado`) |
+
+**A propriedade de segurança do ADR-023 aguenta** — nunca há dois donos. O que falha é a
+capacidade de um operador distinguir «outra réplica detém este run» de «o substrato avariou».
+Em incidente, esta mensagem manda-o depurar o NATS quando o sistema está a funcionar como
+desenhado.
+
+### O que já está eliminado como causa
+
+Hipóteses testadas e MORTAS, para que ninguém as repita:
+
+- ❌ **Corrida de arranque.** 3/3 execuções idênticas (`vencedores=1 negados=0 outros=2`).
+  Determinista, não intermitente.
+- ❌ **O quarto nó noutra região.** Um cluster de 3 nós, todos `eu-west`, dá o mesmo.
+- ❌ **Propagação do binding do subject entre nós.** Com os três processos apontados ao
+  **mesmo** endereço, dá o mesmo.
+
+### A pista
+
+O `Claim` (`lease.go:321-359`) lê o estado, e se não houver lease vivo escreve com
+`WithExpectedSeq(st.lastSeq)`. O caminho DESENHADO para um perdedor é: a escrita colide,
+`isConcurrencyConflict` apanha-a, relê, vê o lease vivo, devolve `ErrLeaseHeld`. O que se
+observa é a escrita a falhar com **503 no_responders** — que `isConcurrencyConflict` não
+reconhece, e que sobe crua.
+
+Porque é que o MESMO subject aceita a escrita do vencedor e responde 503 à do perdedor é a
+pergunta central, e **não está respondida**. O `ErrNoResponders` do cliente
+(`conn.go:37-41`) documenta três causas — «JetStream desligado, stream inexistente, sem
+permissões» — e nenhuma delas explica um vencedor no mesmo instante.
+
+### Critérios de Aceitação
+
+- [x] A causa do 503 está **medida**, não inferida: um traço do protocolo (PUB + headers +
+      resposta) do vencedor e de um perdedor, lado a lado. — *Ver «A medição», abaixo.*
+- [x] Um processo que perca o lease sai com `exitPosseNegada` e uma mensagem que nomeia o
+      dono — não com um erro de transporte. — *`aos-orq: posse do run "r-msg": durable: run
+      já tem um lease válido detido (não expirado): detido por "dono-1" (token 1) até
+      2026-09-26T12:20:07.2729463Z`, saída `3`. O `TestAOS100_NServe…` passa a exigir o dono
+      na mensagem de cada perdedor; `TestAOS432_RecusaDoLeaseNomeiaODono` fixa-o no `durable`.*
+- [x] `TestAOS392_DespachoMultiProcessoSobreSubstratoReplicado` e
+      `TestAOS100_NServeEmParaleloSobreOSubstratoReplicado` passam, e saem da lista de falhas
+      declaradas de `scripts/ci/nats.sh` — que **avermelha sozinho** quando elas passarem. —
+      *3/3 execuções sobre o cluster do gate: `vencedores=1 negados-pelo-lease=3` e
+      `vencedores=1 negados-pelo-lease=2`. `falhas_conhecidas` fica vazia; o mecanismo fica.*
+- [x] Se a correcção for mapear um erro, há teste que prova que o mapeamento não engole uma
+      indisponibilidade REAL do substrato: «o lease foi negado» e «o NATS está em baixo» têm
+      de continuar distinguíveis, senão troca-se um defeito por outro pior. — *A correcção NÃO
+      mapeia erro nenhum, e mesmo assim o teste existe: `TestAOS432_503VerdadeiroNaoEPosseNegada`,
+      em «Os testes, e o que cada um prova».*
+
+### Fora de âmbito, declarado
+
+- **A arbitragem em si**, que está correcta e tem teste que o prova.
+- **A migração do nó para NATS**, que é outra decisão.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Mapear 503 para «lease detido» esconde uma indisponibilidade real do substrato | O critério 4 exige o teste que separa os dois casos |
+| A causa estar no cliente escrito à mão (`natsjs`), e não no lease | O critério 1 pede o traço do protocolo antes de qualquer correcção |
+
+### Estado
+
+**FECHADO.** Encontrado pelo AOS-431 ao ligar o cluster ao CI e declarado como falha conhecida
+no gate `nats`; medido ao nível do protocolo, corrigido na causa, e as duas falhas declaradas
+saíram da lista porque passaram.
+
+### A medição
+
+Instrumento: três experiências com o cliente `natsjs` do próprio repositório contra o cluster
+do `nats-cluster.sh` (quatro nós, `nats:2.10-alpine`), a 2026-09-26. O instrumento não ficou
+versionado: é um traço de uma vez, e o que ele prova está fixado pelos testes de regressão
+abaixo.
+
+**A — a sequência do `aos-orq serve --nats` em quatro ligações, sobre um stream NOVO**
+(`STREAM.CREATE` → `STREAM.INFO` → `PUB` com `Nats-Expected-Last-Subject-Sequence: 0`):
+
+| Ligação | CREATE | `cluster.leader` no CREATE | PUB (CAS 0) | Resposta ao PUB |
+|---|---|---|---|---|
+| 0 | 42 ms, sucesso | `""` | 2,8 ms | **Status 503**, sem corpo |
+| 1 | 40 ms, sucesso | `""` | 2,2 ms | **Status 503**, sem corpo |
+| 2 | 40 ms, sucesso | `""` | 3,6 ms | **Status 503**, sem corpo |
+| 3 | **106 ms**, sucesso | `"aos432-4"` | 5,8 ms | `{"stream":"…","seq":1}` |
+
+As quatro recebem o CREATE com sucesso. Três recebem-no em ~40 ms com o líder **vazio**, e o
+`STREAM.INFO` seguinte também o traz vazio; uma recebe-o em ~106 ms, já com líder. As três
+sem líder publicam e recebem 503. O que responde é o servidor, e não há ninguém do outro lado:
+no JetStream em cluster só o **líder** do stream subscreve os subjects dele, e o líder ainda
+não existe.
+
+**B — controlo: o mesmo PUB concorrente contra um stream que JÁ tem líder.** Zero 503: um
+`seq:1` e três `{"error":{"code":400,"err_code":10071,"description":"wrong last sequence: 1"}}`
+— exactamente a recusa do CAS de que o `Claim` precisa para reler e devolver `ErrLeaseHeld`.
+
+**C — a janela.** Uma ligação publica em ciclo enquanto outra cria o stream: 503 a +12, +24,
++37, +48, +58, +66, +74, +84, +93 e +101 ms, e `seq:1` a +111 ms. A janela entre o stream
+existir e ser servido é de **~100 ms** neste cluster.
+
+**A pergunta central do ticket — «porque é que o mesmo subject aceita a escrita do vencedor e
+responde 503 à do perdedor» — tem resposta:** não é o mesmo instante. O vencedor é quem
+publica depois de o líder existir; os perdedores publicam dentro da janela. O `Claim` estava
+certo; o que recebia era um stream que ainda não estava em condições de receber escritas.
+
+### Porque é que as hipóteses mortas não mataram esta
+
+- **«Corrida de arranque» foi refutada por ser determinista (3/3), e isso não a refutava.** A
+  corrida existe, mas o desfecho dela é fixado por uma razão de tempos que não varia: a janela
+  de eleição (~100 ms) é várias vezes maior do que o tempo que um processo leva do CREATE ao
+  PUB (~25 ms). Uma corrida com essa margem dá sempre o mesmo resultado — determinismo não
+  distingue «não há corrida» de «há uma corrida que se perde sempre».
+- **«Propagação do binding entre nós» foi refutada apontando os processos ao mesmo nó, e
+  estava bem refutada** — só que a hipótese que sobra não é sobre propagação: antes de o líder
+  ser eleito, o binding não existe em nó NENHUM.
+- **A medição do AOS-100 (2026-08-31), que deu `negados-pelo-lease=3`,** correu por túnel SSH
+  para o nó 0. **Hipótese, não medida:** a latência do túnel dava tempo à eleição antes do
+  primeiro PUB; o cluster local do AOS-431, com latência de micro-segundos, não dá.
+
+### A correcção
+
+Na causa, e nenhum 503 é remapeado:
+
+- **`jetstream.Abrir` espera pelo líder depois do CREATE** (`jetstream/lider.go`,
+  `esperarLider`): consulta o `STREAM.INFO` (via `ColocacaoDoStream`) com intervalo de 5 ms a
+  duplicar até 100 ms. O prazo do store é **um só orçamento**: cada consulta recebe o que
+  RESTA dele, e cada espera é cortada ao que resta — a espera nunca excede o prazo (a
+  primeira versão passava o prazo inteiro a cada INFO, e o pior caso era ~2× na espera e ~4×
+  no `Abrir`; apanhado na revisão). Prazo esgotado sem líder falha fechado com
+  `ErrStreamSemLider` embrulhado em `eventstore.ErrNoQuorum` — o sentinela canónico de
+  indisponibilidade da porta. Um erro do INFO sobe tal qual, sem re-tentar.
+- **Não há ramo «sem grupo Raft».** A primeira versão tratava um INFO sem bloco `cluster` como
+  «R1 fora de cluster, não espera». A revisão MEDIU contra `nats:2.10-alpine` standalone que um
+  R1 traz o bloco com `leader` = id do servidor — o ramo nunca acontecia com o servidor real,
+  e a frase que o justificava (também na documentação pré-existente do `ColocacaoDoStream`)
+  era falsa. Foi retirado com a função que o servia; líder vazio é «não pronto», que é o lado
+  fail-closed.
+- **A recusa do lease nomeia o dono** (`durable/lease.go`): `ErrLeaseHeld` continua na cadeia e
+  a mensagem acrescenta o worker, o token e a expiração. Todos os consumidores classificam por
+  `errors.Is` (verificado na árvore), pelo que o código de saída não muda.
+- **`scripts/ci/nats.sh`** — `falhas_conhecidas` fica vazia, com o mecanismo intacto.
+
+**Contra-provas.** Com a espera desligada, `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease`
+(sobre o cluster) falha 3/3 com exactamente o defeito original (`vencedores=1
+negados-pelo-lease=0`, três `ninguém serve este subject (503)`); com ela ligada, passa 3/3.
+Fora do cluster, com a chamada ao `esperarLider` retirada do `Abrir`, os dois testes do
+servidor de brincar em `jetstream/aos432_abrir_espera_test.go` ficam vermelhos (`INFO = 0,
+quer 4`; `Abrir devolveu um Store sobre um stream que nunca elegeu líder`) — apagar a chamada
+já não passa verde fora do gate `nats`.
+
+### Os testes, e o que cada um prova
+
+| Teste | Onde | O que prova |
+|---|---|---|
+| `TestAOS432_LeaseSobreStreamFrescoNegaPeloLease` | `integration`, sobre o cluster | **A correcção:** N ligações abrem o mesmo stream novo e disputam o run — 1 vencedor, N-1 × `ErrLeaseHeld`, zero 503 |
+| `TestAOS432_503VerdadeiroNaoEPosseNegada` | `integration`, sobre o cluster | **Critério 4:** um `Claim` sobre um subject que nenhum stream captura recebe o 503 REAL e devolve `natsjs.ErrNoResponders`, nunca `ErrLeaseHeld`. Contra-prova: com o 503 tratado como conflito no `isConcurrencyConflict`, fica vermelho |
+| `TestAOS432_AbrirNaoDevolveAntesDeHaverLider`, `TestAOS432_AbrirSemLiderFalhaFechadoDentroDoPrazo` | `jetstream`, sem cluster (servidor NATS de brincar) | O `Abrir` CHAMA a espera, e falha fechado dentro do prazo — não o dobro |
+| `TestAOS432_CadaConsultaRecebeOPrazoQueResta` e mais quatro | `jetstream`, determinista | A espera: orçamento único, devolve ao aparecer o líder, não espera com líder presente, falha fechado no prazo, não re-tenta um erro de consulta |
+| `TestAOS432_RecusaDoLeaseNomeiaODono` | `durable`, determinista | A mensagem de posse negada nomeia worker, token e expiração, com `ErrLeaseHeld` na cadeia |
+| `TestAOS432_IndisponibilidadeDoSubstratoNaoEPosseNegada`, `TestAOS432_NATSEmBaixoSaiComErroENaoComPosse` | `cmd/aos-orq` | **Guardas de regressão do `codigoDe`, NÃO prova desta correcção.** O primeiro verifica o `switch` (quase tautológico por construção); o segundo falha na ligação, antes de qualquer CREATE. Ficam porque fixam que nenhuma forma de indisponibilidade sai com o código `3` se alguém mexer no `codigoDe` |
+
+### Residual declarado
+
+- **O gate `nats` é fail-open quando um módulo morre sem `--- FAIL`** (panic, timeout, erro de
+  build): o módulo desaparece da contagem e o gate fica verde. Visto nesta entrega — localmente
+  a suite do `cmd/aos-orq` excedeu os 10 min do `go test` e o gate deu `rc=0` com o módulo
+  «vermelho». Tratado à parte e já FECHADO pelo AOS-452 (albinoJimy/aos#389): o gate falha
+  fechado quando um pacote aborta sem `--- FAIL`.
+- **«Stream sem líder» classifica-se de três maneiras conforme o instante** (declarado pela
+  revisão a partir do código, não medido): no `Abrir` de um stream fresco sai
+  `ErrNoQuorum` + `ErrStreamSemLider`; numa publicação posterior sai `natsjs.ErrNoResponders`
+  cru — `indisponibilidadeTransitoria` (`jetstream/store.go`) só traduz `ErrDesligado`; num
+  stream existente em re-eleição, o erro genérico do caminho que a apanhar. Quem ramificar em
+  `ErrNoQuorum` trata de forma diferente a mesma indisponibilidade. Unificá-lo é decidir que um
+  503 do JetStream é transitório — a mesma decisão que o AOS-354 deixou em aberto para o
+  timeout.
+- **Uma janela residual entre o INFO anunciar o líder e o líder subscrever os subjects** não
+  está excluída: o 3/3 e as execuções do gate não a mostraram, mas não a provam inexistente.
+  Se existir, o sintoma é o original (um perdedor com 503), e o teste de integração acima é
+  quem o apanha.
+- **A mesma janela deve reabrir quando o líder de um stream EXISTENTE cai** (perda do nó que
+  o lidera) — **inferido do mecanismo, não medido**: até à nova eleição, publicações recebem
+  503 e um `Claim` nessa janela sai `1` e não `3`. É indisponibilidade REAL do substrato e o
+  código genérico está certo para ela; fica escrito para que não se leia como regressão deste
+  ticket.
+
+---
+
+## AOS-426 — O read-path dos runs servia treze streams internos do nó, incluindo aprovações, memória e nonces de ratificação
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma exposição de leitura. As citações ao
+     ADR-016 (o canal não é oráculo de existência) e ao ADR-011 são RESTRIÇÕES que a correcção
+     tem de preservar — nomeadamente o 404 uniforme. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração (por proximidade ao AOS-424/425, onde a classe foi descoberta; o âmbito que toca é o read-path soberano do EPIC-09) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção — exposição de leitura |
+| Prioridade | **P0** |
+| Estimativa | S |
+| Dependências | descoberto a partir do AOS-424; **não depende dele** — a correcção aqui não precisa de renomear nada |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/streams_internos.go` (a trava e a sua justificação), `packages/cmd/aos/trajectory.go`, `packages/cmd/aos/sovereign_replay.go`, `packages/cmd/aos/aos426_streams_internos_test.go` |
+
+### Contexto
+
+O Event Store tem **um** espaço de nomes de streams, e o `run_id` de um run **é** o seu stream.
+As rotas de leitura por-run endereçam esse espaço directamente a partir do URL:
+
+```text
+GET /runs/{id}/trajectory   ->  Read(ctx, id, ...) + Subscribe(Streams: [id])
+GET /runs/{id}/reconstruct  ->  Read(ctx, id, 1)
+```
+
+O padrão da stdlib casa `{id}` com UM segmento de caminho. Logo **qualquer stream interno do nó
+cujo nome não contenha barra era endereçável por estas rotas** — e ambas serviam qualquer stream
+que EXISTISSE, porque a única guarda era o 404 para o stream INEXISTENTE.
+
+### O que foi medido
+
+A 2026-09-21, com o **gate soberano composto** e um leitor **autenticado de OUTRA região**,
+`GET /runs/<stream>/trajectory` devolvia `200` e servia o conteúdo de treze streams internos:
+
+| Stream | O que guarda |
+|---|---|
+| `gov.approvals` | Grants de aprovação four-eyes, pendentes por decidir, e os **registos de retoma**, que carregam o `Goal` |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | A memória do nó (compostas em produção, `bootstrap.go` (composição da MemoryPort; a linha mudou com esta entrega)) |
+| `memory.semantic.knowledge` · `memory.episodic.trajectories` · `memory.migrations` | Idem (sem compositor hoje) |
+| `identity` | Eventos de identidade NHI |
+| `registry` | Registo de artefactos |
+| `lease:<run>` | Posse de run |
+| `ratify-nonce:<escopo>:<hex>` · `4eyes-challenge:<escopo>:<hex>` | **Primitivos de frescura e anti-replay da ratificação humana** |
+
+**Um leitor SEM credencial recebia `404`** — o alcance era de quem já tem credencial válida. O que
+NÃO se aplicava era a fronteira de REGIÃO: um stream interno não tem residência selada, pelo que
+a verificação cross-region caía no ramo «run legado, sem check» (retro-compatibilidade do
+AOS-182) e servia. **O leitor US leu tal como o EU.**
+
+Oito streams estavam seguros — os do scheduler e a fila de pedidos de plano — e o discriminador
+era um só: **têm barra no nome**. A barra estava lá para namespacing; a protecção veio de lambuja.
+
+**NÃO É LATENTE.** Ao contrário do AOS-424/425, isto não depende do JetStream nem de migração
+nenhuma: mede-se no substrato de FICHEIRO, que é o que corre em produção.
+
+### Como foi encontrado, e porque é que isso importa
+
+A revisão adversarial do **AOS-417** encontrou exactamente este defeito **numa superfície NOVA**
+— a fila de pedidos de plano, que ficou corrigida com o prefixo `aos-internal/`. Ninguém
+perguntou, na altura, se as superfícies ANTIGAS tinham o mesmo. Tinham, há muito mais tempo.
+
+A lição é de método: **quando uma revisão encontra um defeito de forma numa superfície nova,
+a pergunta seguinte é sempre se a forma é partilhada.** Aqui era, e só se viu três tickets
+depois.
+
+### A correcção, e porque não é uma lista de nomes proibidos
+
+O read-path dos runs serve **runs**, e isso passa a ser um **facto positivo lido dos dados**: num
+stream de run os eventos declaram o run a que pertencem, e esse run é o stream. Um stream interno
+não satisfaz isto — e não por convenção de nomes, mas porque os seus eventos pertencem a outra
+coisa:
+
+- `gov.approvals` grava com o `RunID` SINTÉTICO `approval` (é a fila de aprovações);
+- `memory.semantic` grava com o `RunID` do run que ESCREVEU a memória, enquanto o stream é a
+  CLASSE;
+- `lease:<run>` grava a posse do run `<run>`, e o stream é `lease:<run>`, não `<run>`.
+
+Uma lista de nomes internos seria um conjunto **ABERTO**: o stream interno seguinte nasceria
+servível e ninguém seria avisado — o mesmo modo de falha que o `planos.go` fechou para as rotas
+(«uma rota só existe se estiver registada»). Com a regra lida dos dados, **um stream interno novo
+fica coberto no dia em que nasce**, sem ninguém declarar nada.
+
+O status é o MESMO `404` uniforme do run desconhecido: um código próprio diria ao chamador
+«este stream existe mas não é teu», que é o oráculo de existência que o ADR-016 fecha.
+
+### Critérios de Aceitação
+
+- [x] Os treze streams expostos respondem `404` e não servem conteúdo, nas DUAS rotas que leem o
+      store por id. *(`TestAOS426ReadPathNaoServeStreamsInternos`, que enumera os 21 — os treze
+      expostos e os oito que a barra já protegia, para que a protecção deixe de depender dela.)*
+- [x] Um run LEGÍTIMO continua a ser servido ao seu leitor. *(`TestAOS426RunLegitimoContinuaAServirTrajectoria`
+      — sem esta metade, uma trava que recusasse toda a gente passaria no critério acima.)*
+- [x] A decisão sai dos DADOS e não do nome. *(`TestAOS426TravaDecidePelosDadosENaoPeloNome`: o
+      mesmo nome de stream é servível ou não consoante os eventos declararem pertencer-lhe.)*
+- [x] O sensor foi verificado: removida a trava, o teste acusa **26 falhas** (13 streams × 2
+      asserções — status e corpo).
+- [x] A não-oracularidade é preservada: `404` uniforme, nunca um código próprio.
+
+### O que isto custa, declarado
+
+Um run cujo `run_id` colida com um stream interno — hoje possível, porque o `POST /runs` **não
+valida o `run_id`** (eixo do AOS-424) — deixa de ser legível por estas rotas. **É a consequência
+pretendida:** um run que partilha stream com o interior do nó já estava a misturar os seus eventos
+com os dele, que é um problema pior do que não o conseguir ler.
+
+### Resíduos declarados
+
+- **O `handleGet` (`GET /runs/{id}`) já dava `404`** para estes nomes, porque não consulta o
+  store — resolve por estado local do serviço. Não foi tocado.
+- **A exposição existiu.** Este ticket fecha-a; não diz nada sobre se foi explorada. Avaliar isso
+  exige os logs de acesso de produção e **não foi feito aqui**.
+- **A causa de fundo — streams internos a viverem no mesmo espaço de nomes dos runs — continua
+  aberta**, e o fim-de-linha limpo é movê-los todos para o prefixo reservado `aos-internal/`. Isso
+  é o AOS-424, e tem o custo de renomear streams com histórico. Esta trava **não** o dispensa: é a
+  defesa que não obriga a migrar dados.
+
+  > **CORRECÇÃO (AOS-433).** Já não «continua aberta». O AOS-424 fez os **seis renames**, dois
+  > deles **com migração de factos** (`gov.approvals` e as quatro classes de memória), e o
+  > prefixo `aos-internal/` está hoje em `plan_ingress.go`, `plan_claim.go`, `planos.go`,
+  > `integration/approval_store_durable.go` e em `memory/{adapters,compression,episodic,
+  > migrations,semantic}`. O que resta na baseline do gate são constantes do nome ANTIGO em que
+  > nada escreve — ver o cabeçalho de `scripts/ci/baseline/stream-names.txt`, também corrigido
+  > aqui. O texto acima ficou por actualizar quando o AOS-424 fechou, e um resíduo que diz estar
+  > aberto quando já não está desvia trabalho de onde ele é preciso.
+
+### Estado
+
+**FECHADO.** Trava composta nas duas rotas, com teste que enumera os 21 streams, controlo de
+não-vacuidade e sensor verificado por mutação. Suite do pacote verde com `-race`.
+
+---
+
+## AOS-425 — Metade do espaço de nomes de streams é composto em runtime, a partir de valores que ninguém valida
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha a metade da classe do AOS-424 que não é
+     alcançável por renomear constantes. As citações ao ADR-007 e ao ADR-011 são RESTRIÇÕES. Se
+     a decisão (2) levar a validar na carga da POLÍTICA, isso é desenho de fronteira e pode
+     exigir ADR — o marcador sai nesse caso. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração (por proximidade ao AOS-424; o âmbito que toca é o do EPIC-03 e do EPIC-06) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção de classe (fronteiras de entrada) |
+| Prioridade | **P1** (subiu de P2 com o aperto do `Append` no AOS-424 — a justificação dada nessa altura estava errada e está corrigida na secção «Estado»; a prioridade manteve-se por outra razão, o `--run` do `aos-orq`) |
+| Estimativa | M |
+| Dependências | **AOS-424 — FECHADO.** Apertou o `Append`, fechou duas linhas desta tabela na origem, e converteu o resto de «defeito silencioso» em «avaria visível no ponto de uso»; AOS-100/101 (Event Store replicado) |
+| Bloqueia | a migração para JetStream, em conjunto com o AOS-424 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/scheduler/{admission,quota}.go`, `packages/platform/model-gateway/policy/allowlist/allowlist_policy.json`, `packages/control-plane/governance/hitl/{challenge_issuer,nonce_store}.go`, `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`) |
+
+### Contexto
+
+O AOS-424 inventariou os `stream_id` **literais** que não são representáveis num subject NATS, e
+esses corrigem-se a renomear constantes. Este ticket é a outra metade, e não se corrige assim:
+**os nomes de stream compostos em RUNTIME, a partir de valores que entram no sistema por
+configuração, por ficheiro de política ou por token externo.**
+
+Um grep de literais não os vê. Só aparecem quando o valor que os alimenta muda — e aí já estão
+em produção.
+
+### A tese, e o que a torna concreta
+
+O exemplo que a mostra inteira é a admissão de quota. Medido:
+
+```text
+scheduler/admission.go:64   bucketStreamPrefix = "admission/bucket/"
+scheduler/quota.go:27       ProviderKey.String() = Provider + ":" + Model + ":" + Region
+scheduler/admission.go:463  bucketID := bucketStreamPrefix + keyStr
+scheduler/admission.go:575  a.log.Append(ctx, bucketID, ...)
+```
+
+O `stream_id` de admissão **contém o nome do modelo**. E o nome do modelo não é escolhido por
+quem escreve código: vem da allowlist **assinada** em
+`platform/model-gateway/policy/allowlist/allowlist_policy.json`.
+
+**Hoje isto NÃO é um defeito vivo, e foi medido:** a allowlist em vigor para `board-eu` traz
+`gpt-4o`, `gpt-4o-mini` e `text-embedding-3-large` — **nenhum tem ponto**. A barreira que segura
+esta linha é a política assinada, não o código.
+
+**E é exactamente isso o problema.** `gpt-4.1` é um nome de modelo real. Acrescentá-lo à allowlist
+— uma alteração de POLÍTICA, revista por quem revê política, assinada e promovida como política —
+partiria os streams de admissão sobre JetStream. **Um ficheiro de política e o espaço de nomes do
+substrato estão acoplados, e nada no repositório diz que estão.** Ninguém que revê aquele JSON
+tem razão nenhuma para saber que está a mexer em nomes de stream.
+
+### Inventário dos sítios de composição
+
+Proveniência: varredura de 2026-09-21. As duas primeiras linhas foram **confirmadas por leitura
+directa**; as restantes vêm da varredura e estão marcadas como tal.
+
+| Risco | Composição | Onde | De onde vem o valor |
+|---|---|---|---|
+| ~~ALTO~~ **DORMENTE, defendido na COMPOSIÇÃO** | `admission/bucket/<provider>:<model>:<region>` e `admission/audit/…` | `scheduler/admission.go:463,679,956`; `quota.go:27-29` | **`tier.Model`, da escada de `RoutingConfig.Tiers`** — NÃO da allowlist, que apenas autoriza. A composição da escada recusa o ARRANQUE (`ErrRoutingModelNaoRepresentavel`). **E o caminho não está ligado**: `DEF-280-NO`, nada constrói `[]tiering.Tier` fora de testes — a gravidade ALTO atribuída antes estava errada |
+| **VIVO → FECHADO** | `<run>`, `lease:<run>`, `<run>-plan`, id da árvore de orçamento | `cmd/aos-orq/main.go` (flag `--run`) | **O operador, por CLI.** Era o único sítio VIVO desta classe sem validação, e a tabela original não o tinha. O nó validava o mesmo valor nas duas portas HTTP; o binário não validava nenhuma. Fechado |
+| ~~MÉDIO~~ **FECHADO** | `plan_id` | `orchestrator/plannerevents/recorder.go:98` | Vem do `--plan` ou deriva de `<run>-plan`; ambos validados na fronteira de entrada |
+| ~~MÉDIO~~ **FECHADO** | `4eyes-challenge:<scope>:<hex>` | `hitl/challenge_issuer.go` | Era pior do que a varredura indicava: o `scope` traz o `request_id` do CORPO de um pedido. **Fechado pelo AOS-424** — o escopo entra RESUMIDO (`hitl.nomeDeEscopo`) |
+| ~~MÉDIO~~ **FECHADO** | `ratify-nonce:<scope>:<hex>` | `hitl/nonce_store.go` | Idem, e com dois defeitos VIVOS que a varredura não viu: três constantes de domínio com ponto (`foureyes.challenge`, `governance.dsar`, `nhi.revoke`) e um separador `\x00` no `nonceScope`. **Fechado pelo AOS-424** |
+| BAIXO | `backpressure/queue/<name>`, `degradation/<name>`, `routing/<name>`, `scheduling/dispatch/<name>`, `backpressure/policy-audit/<name>` | `scheduler/{queue,degradation,routing,priority,policy}.go` *(varredura)* | nome de instância, dado por quem compõe (interno) |
+| BAIXO | `budget-breaker/<treeID>`, `<treeID>` | `scheduler/breaker.go:882`; `budget/events.go:91` *(varredura)* | id de árvore de orçamento |
+
+**O `run_id` NÃO está nesta lista de propósito** — é critério de aceitação do AOS-424.
+**ATENÇÃO, e isto mudou:** o AOS-424 validou-o **só no `POST /plans`**. No `POST /runs` — o
+único sítio onde um `run_id` de cliente se torna um `stream_id` — **continua sem validação**,
+bloqueado por um conflito de invariantes (o `ValidNodeID` admite `.` e `:`). Quem executar este
+ticket **não pode considerar o `run_id` fechado**: ou o eixo do `ValidNodeID` é resolvido no
+AOS-424, ou esta lista tem de o incluir.
+
+### Porque é que o AOS-424 sozinho não fecha isto
+
+A decisão (1) do AOS-424 é validar o `stream_id` no contrato do `eventstore`, imposto pelos dois
+backends. Isso **apanha** estes casos — mas repare-se no QUANDO e no QUE ACONTECE:
+
+- a validação dá-se no `Append`, isto é, **no ponto de USO**, muito depois de o valor ter entrado
+  no sistema;
+- o efeito é uma recusa. Para a admissão de quota, uma recusa no `Append` significa **runs a
+  deixarem de ser admitidos** — em produção, por causa de uma alteração de política feita horas
+  antes e aprovada por quem não podia saber.
+
+Ou seja: apertar o contrato do Event Store converte um defeito SILENCIOSO numa **avaria VISÍVEL**,
+que é melhor, mas continua a ser uma avaria — e no sítio errado. Para valores compostos em
+runtime, a validação tem de estar **onde o valor ENTRA**, não onde é usado: na carga da allowlist,
+na emissão do `RatificationID`, na composição do scheduler. É a mesma disciplina que o resto do
+sistema já aplica às env vars — uma `AOS_*_INTERVAL` mal formada **aborta o arranque** em vez de
+degradar em silêncio.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Esperar pelo AOS-424 ou correr em paralelo?** Se a decisão (1) de lá for «só renomear», este
+   ticket passa a ser a única defesa desta metade e sobe para P1. Se for a causa-raiz, este ticket
+   muda de natureza: deixa de ser «impedir nomes inválidos» e passa a ser «antecipar a recusa para
+   a fronteira de entrada».
+2. **Onde validar cada valor.** A allowlist é ASSINADA — validar na carga significa que um bundle
+   assinado válido pode ser **recusado** por conter um modelo com ponto. Isso é desejável (falha
+   cedo, num arranque, e não a meio da admissão de um run), mas é uma decisão de fronteira: passa
+   a haver políticas assinadas que o nó recusa por uma razão que não é de política.
+3. **O `RatificationID` é um token de fonte externa.** Recusar um `scope` com ponto significa
+   recusar uma ratificação — numa cerimónia humana, com assinaturas já dadas. Recusar cedo (na
+   emissão) ou tarde (no uso) tem custos humanos diferentes.
+4. **Escapar em vez de recusar, para os casos internos?** Para nomes de instância do scheduler e
+   `treeID`, uma normalização determinista (`.` → `-`) seria transparente. **NÃO se propõe para os
+   outros**: o `subjectDe` recusa em vez de escapar precisamente para não produzir colisões
+   silenciosas entre streams vizinhos, e essa razão vale aqui na mesma.
+
+### Critérios de Aceitação
+
+- [x] Cada sítio da tabela tem a sua decisão tomada e **escrita** — em
+      `scheduler/aos425_chave_de_quota_test.go` (admissão, spawn, nomes de instância),
+      em `allowlist.go` (`validarNomesQueViramStream`) e em `cmd/aos-orq/main.go` (`--run`/`--plan`).
+- [x] **O nome do modelo é validado onde ENTRA**, com teste que prova a recusa e nomeia a razão —
+      `TestAOS425EscadaComModeloNaoRepresentavelRecusaOArranque`. A região do gateway também,
+      porque entra na mesma chave.
+
+      **O critério dizia «a allowlist é validada na carga», e isso estava errado.** Foi tentado e
+      revertido: a allowlist AUTORIZA um modelo, quem o FORNECE é a escada de tiers. Validar lá
+      não tocava no valor que compõe a chave **e** partia a razão de ser documentada do bundle
+      externo — `deploy/node/README.md` diz que ele existe para o nó «pedir nomes de modelo
+      REAIS». Um bundle bem assinado com `gpt-4.1` ficava incarregável, o nó recusava arrancar com
+      a mensagem errada («bundle adulterado»), e como o `parse` também serve o `Digest` nem
+      re-assinar salvava. A única saída seria `models: ["*"]` — trocar curadoria por wildcard num
+      estágio cujo propósito é default-deny. `TestAOS425BundleComNomeDeModeloRealCarrega` fixa a
+      correcção.
+- [x] O acoplamento **política ↔ espaço de nomes** está escrito **dentro** do
+      `allowlist_policy.json`, no campo `_aviso_nomes_de_stream`, com o exemplo concreto
+      (`gpt-4.1`). **Medido:** o campo não entra no digest assinado (o digest é sobre uma struct
+      canónica, não sobre os bytes), pelo que pôde ser acrescentado sem re-assinar — e por isso
+      mesmo NÃO é um controlo, só documentação. Quem protege é a verificação na carga.
+      `TestAOS425AvisoNaoEntraNoDigest` fixa as duas metades.
+- [x] Os casos de risco MÉDIO/ALTO têm teste com um valor que contém ponto — e o valor escolhido é
+      um nome de modelo REAL (`gpt-4.1`, `claude-3.5-sonnet`), não um `"a.b"` sintético.
+- [x] O gate de alcance de repositório declara que não apanha composição em runtime e aponta para
+      aqui. Feito no AOS-424, e já com os exemplos medidos.
+- [ ] **Um teste sobre JetStream.** Continua por fazer e depende de haver NATS no CI. É o único
+      sítio onde «este nome é representável» deixa de ser uma afirmação sobre a nossa regra e passa
+      a ser uma afirmação sobre o NATS.
+
+### Fora de âmbito, declarado
+
+- **O `run_id`** — é do AOS-424.
+- **Renomear os nove streams com nome LITERAL** — idem.
+- **Levantar JetStream em produção** — é do AOS-423.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Validar na carga da allowlist faz o nó recusar um bundle ASSINADO e válido | Decisão (2). A recusa tem de nomear a razão real — «este modelo entra num nome de stream» — e não parecer um erro de política |
+| Recusar um `RatificationID` com ponto aborta uma cerimónia humana com assinaturas já dadas | Decisão (3): validar na EMISSÃO, não no uso |
+| Normalizar (`.` → `-`) onde não se deve cria colisões silenciosas entre streams vizinhos | É a razão pela qual o `subjectDe` recusa em vez de escapar. Só se normaliza onde o valor é interno e a colisão é impossível |
+| Este ticket ser lido como «já está coberto pelo AOS-424» e ser fechado sem trabalho | O AOS-424 valida no USO; esta classe precisa de validação na ENTRADA. São coisas diferentes e está escrito acima porquê |
+
+### Estado
+
+**FECHADO**, e com uma correcção à sua própria tese.
+
+### O que se entregou
+
+| Frente | O que ficou |
+|---|---|
+| **`aos-orq --run` / `--plan`** | Validados com `eventstore.ValidarStreamID`, **antes** de se ler o ambiente — a verificação mais barata dá a mensagem mais específica, e nomeia o flag que o operador escreveu |
+| **Escada de tiers** | `ErrRoutingModelNaoRepresentavel` recusa o ARRANQUE do gateway se um modelo da escada — ou a região declarada — não puder aparecer num `stream_id`. Ao lado da cobertura de preço, que é o precedente exacto |
+| **Allowlist: NÃO recusa** | Tentou-se, e foi revertido por revisão adversarial — ver o critério de aceitação. A allowlist autoriza; não fornece |
+| **Acoplamento visível** | `_aviso_nomes_de_stream` dentro do `allowlist_policy.json`, com o exemplo `gpt-4.1` |
+| **Escape do `node_id`** | Passou a decidir pelo predicado da regra (`eventstore.CaractereNaoRepresentavel`) em vez de um subconjunto próprio dela — um buraco que o AOS-424 deixou e que estava tapado por acaso |
+| **Casos dormentes** | Decisão escrita e teste com valor com ponto, em vez de código novo num caminho que não corre |
+
+### A CORRECÇÃO — a tese deste ticket estava certa, a sua tabela não
+
+O ticket nomeava a admissão de quota como **ALTO** e o `--run` do `aos-orq` **não aparecia de
+todo**. Medido ao executar:
+
+- **A admissão de quota não está ligada a binário nenhum.** Nada na árvore constrói
+  `[]tiering.Tier` fora de testes; o único importador do `scheduler` é o `tieradapter`, que
+  também não tem chamador; e o wiring do nó declara-o — `DEFERIDO (DEF-280-NO)`. O
+  `budget.WithEmitter` também não tem chamador. A linha continua a valer como dívida, mas a
+  gravidade era outra.
+- **O `--run` do `aos-orq` era o único sítio VIVO desta classe sem validação.** Torna-se quatro
+  nomes de stream (`<run>`, `lease:<run>`, `<run>-plan`, id da árvore de orçamento), e o binário
+  corre em produção desde a v0.1.20. O nó validava o mesmo valor nas duas portas HTTP.
+
+A gravidade errada veio da varredura de 2026-09-21, cujas linhas estavam marcadas como
+*(varredura)* e não confirmadas por leitura — e de eu ter repetido a tabela sem verificar se o
+caminho estava ligado. **A lição é a do AOS-424 outra vez: uma tabela não é uma medição.** As
+duas linhas que a varredura tinha confirmado por leitura directa estavam certas; as outras não.
+
+### A SEGUNDA CORRECÇÃO — o primeiro desenho pôs a guarda no sítio errado
+
+A primeira implementação deste ticket validava os nomes na **carga da allowlist**. Uma revisão
+adversarial mediu duas coisas que a derrubaram:
+
+1. **A allowlist não é a fonte do valor.** `router.go` compõe a chave com `tier.Model`, da escada
+   de `RoutingConfig.Tiers`. Validar a allowlist cumpria a letra de «validar onde o valor entra» e
+   falhava o sentido — e o ticket chegou a afirmar «defendido a montante» sobre uma defesa que não
+   tocava no valor.
+2. **Partia uma capacidade documentada.** O bundle externo existe para o nó «pedir nomes de modelo
+   REAIS»; com a guarda na carga, um bundle assinado com `gpt-4.1` ficava incarregável e o nó
+   recusava arrancar — com `ErrBadModelAllowlist`, que diz «bundle adulterado». E o `parse` serve
+   também o `Digest`, pelo que o catálogo deixava de poder ser assinado: não havia saída, a não ser
+   `models: ["*"]`.
+
+É a **terceira vez** nesta série que a mesma disciplina falha: afirmar uma propriedade sobre um
+caminho que não se seguiu até ao fim. Da primeira foi «39 testes, na maioria andaime»; da segunda,
+«acrescentar um gpt-4.1 passa a ser runs não admitidos»; desta, «defendido a montante».
+
+### Por fechar, declarado
+
+- **Uma policy com `models: ["*"]`** — o wildcard é uma escolha legítima de produto e não é,
+  ele próprio, um nome de stream. A defesa contra um nome sujo cai para a recusa tardia do
+  `Append`.
+
+  > **CORRECÇÃO (AOS-433).** Este parágrafo dizia que isto estava «fixado por teste
+  > (`TestAOS425WildcardAtravessaEEstaDeclarado`)». **Esse teste não existe** — um `grep` em
+  > `packages/` não o encontra, e os testes reais do ficheiro são outros
+  > (`TestAOS425BundleComNomeDeModeloRealCarrega` e companhia). E a premissa também caiu: não há
+  > «verificação na carga» que o wildcard possa derrotar, porque essa verificação foi **revertida**
+  > dentro do próprio AOS-425 — o `allowlist.go` não chama `ValidarStreamID`.
+  >
+  > Um registo que afirma ter um sensor é pior do que um que admite não ter: ninguém volta a
+  > olhar para o que já está «fixado por teste». Fica por fechar, sem sensor, e dito.
+- **O teste sobre JetStream.** Hoje prova-se que os nomes passam na NOSSA regra; que o NATS os
+  aceita é inferência. Depende de haver NATS no CI (AOS-423).
+- **O `provider` da chave de admissão** vem do PEDIDO (`req.Provider`), não da composição, e não
+  é alcançável por nenhuma guarda de arranque. Fica sem defesa na entrada; a recusa do `Append` é
+  o que resta.
+- **Bytes não-ASCII no `node_id`.** O escape decide byte a byte e a regra decide por runes: um
+  byte cru `>= 0x80` não é escapado nem recusado (a regra descodifica-o como U+FFFD). A gramática
+  do `node_id` não os admite, mas o `Decode` não a impõe — é a mesma porta pela qual o `~` entra.
+- **As partições do WORM** (`sbx-egress:<nhi>`, `ingestion:<run>`, `procedural:<name>`) têm a
+  mesma FORMA — um valor externo concatenado num identificador — mas o WORM é um store separado e
+  as partições não são subjects. Não foi investigado, e fica dito que não foi.
+
+---
+## AOS-424 — Nove streams não são representáveis no JetStream, e o `run_id` do cliente também não é validado
+
+<!-- rtm: menção -->
+<!-- O marcador `rtm: adrs-mencionados` SAIU, e o próprio comentário anterior previa que saísse:
+     dizia que «se a decisão (1) for aceite, abre-se ADR próprio e este marcador sai». Foi
+     aceite, e o ADR-029 é dele.
+
+     Este ticket IMPLEMENTA o ADR-029. O preço de tirar o marcador é que o ADR-001 e o ADR-007,
+     que aqui são RESTRIÇÕES e não entregas, passam a contar como implementados por este ticket
+     na RTM. Fica dito porque o parser é textual e o marcador é tudo-ou-nada: não há forma de
+     separar os dois papéis no mesmo bloco. É o mesmo preço que o AOS-417 pagou pelo ADR-028. *(Desde AOS-473: em trecho de menção, fora da §4 — o trecho separa os dois papéis no mesmo bloco.)* -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração (por ser onde o resíduo ficou registado; o âmbito que toca é o do EPIC-24, e o eixo funcional é EPIC-02/AOS-021) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção de classe + decisão de contrato |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-417 (onde o resíduo foi declarado); AOS-021 (a cerimónia four-eyes, o consumidor mais afectado); AOS-100/101 (donos do Event Store replicado) |
+| Bloqueia | **AOS-423** — uma das três vias para o consumidor da fila é migrar para JetStream, e esta dívida torna essa via destrutiva |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/store.go` (`subjectDe`), `packages/substrate/eventstore/store.go` (o backend que NÃO valida), `packages/integration/approval_store_durable.go`, `packages/platform/memory/**`, `packages/cmd/aos/aos417_nome_do_stream_test.go` (o guard de alcance limitado), `scripts/ci/event-catalog.py` (o molde do gate que falta) |
+
+### Contexto
+
+O `jetstream.Store.subjectDe` **recusa** qualquer `stream_id` que contenha `.`, `*`, `>`, espaço,
+tab, CR ou LF — porque um subject NATS não os representa, e escapar em silêncio para um subject
+vizinho seria pior. É a escolha certa.
+
+O problema é o outro lado: **o store de FICHEIRO não valida nada.** O `eventstore.Store.Append`
+aceita qualquer `streamID`. É essa assimetria — e não o rigor do NATS — a causa-raiz: um nome
+inválido funciona em desenvolvimento, em CI e em produção-sobre-ficheiro, e só falha na topologia
+que nada exercita.
+
+O AOS-417 apanhou UM caso (a fila de pedidos de plano, corrigida no PR #354) e declarou o
+`gov.approvals` como resíduo. **A varredura mostrou que são nove**, mais uma superfície aberta a
+clientes externos.
+
+### O que foi medido
+
+**Nove `stream_id` com ponto**, todos lidos linha a linha:
+
+| Stream | Onde | Composto em produção? |
+|---|---|---|
+| `gov.approvals` | `integration/approval_store_durable.go:48` (à data da medição) | **SIM**, quando o four-eyes está ligado (`bootstrap.go:1855`, `:1865`). Serve TAMBÉM os registos de retoma (`resume_records.go:132`) |
+| `memory.episodic` · `memory.semantic` · `memory.procedural` · `memory.working` | `platform/memory/adapters/eventstore_adapter.go:27` (`streamPrefix = "memory."`) | **SIM** — `bootstrap.go` (composição da MemoryPort; a linha mudou com esta entrega) compõe o `NewEventStoreAdapter` |
+| `memory.semantic.knowledge` | `memory/semantic/knowledge_base.go:66` | não (sem compositor) |
+| `memory.episodic.trajectories` | `memory/episodic/trajectory_store.go:75` | não |
+| `memory.compression.summaries` | `memory/compression/async_compactor.go:71` | não |
+| `memory.migrations` | `memory/migrations/registry.go:24` | não |
+
+**O `subjectDe` tem QUATRO chamadores em produção**, e o quarto não era conhecido:
+`Append` (`store.go:301`), `Read` (`:455`), `StreamHead` (`backup.go:61`) e **`IngestStream`**
+(`backup.go:129`) — o caminho de **restauro / DR**. Consequência: restaurar para um nó JetStream
+um backup tirado de um nó WAL **aborta ao primeiro stream com ponto**, e o `restore.go:168-182`
+pára no primeiro erro. Como `gov.approvals` é alfabeticamente anterior a `memory.*` e a `run-*`,
+**nem os streams de run chegam a ser tentados**. Isto também fecha a via de migração «copiar do
+nome antigo para o novo pelo backup».
+
+**O `Subscribe` falha em SILÊNCIO.** Não chama o `subjectDe`: o consumidor durável usa
+`FilterSubject: prefixo + ".>"` (`store.go:1228`) e o filtro por stream é aplicado **em processo**.
+Um filtro por um nome não representável não dá erro — nunca casa nada. É um modo de falha pior
+do que o `E_CONFIG`.
+
+**O `run_id` NÃO é validado.** O `POST /runs` verifica «vazio» e «prefixo reservado» e mais
+nada (`api.go:628`, `:639`) — e o `run_id` de um run **é** o seu stream. Um cliente que submeta
+`run_id: "cliente.pedido-1"` recebe `201` sobre WAL e `E_CONFIG` sobre JetStream. Propaga-se a
+tudo o que deriva do run: `lease:<run>`, step-ledger, checkpoint, steer, eventsink do RM,
+sandbox, broker. **É a maior superfície da lista, e a única controlável por um cliente externo.**
+
+**Sem teste sobre JetStream em lado nenhum que toque nisto.** O
+`approval_store_durable_test.go` usa o store in-memory; os únicos testes que importam
+`eventstore/jetstream` saltam sem `AOS_NATS_URL`, e **nenhum ficheiro de CI define essa
+variável**. O gate `dormencia` inventaria-as e emite *warn*, não *fail*.
+
+### Gravidade: LATENTE hoje, DESTRUTIVA no dia da migração
+
+**Não há serviço NATS no `docker-compose.prod.yml` e o `AOS_EVENTSTORE_NATS` tem default vazio**
+(medido). Logo isto não é uma avaria em curso — é dívida latente. Mas:
+
+- **o AOS-423 identificou a migração para JetStream como uma das três vias** para o consumidor da
+  fila existir, porque o substrato de ficheiro não arbitra entre processos (DEF-282). Esta dívida
+  torna essa via destrutiva;
+- `AOS_MODE=production` **exige** substrato durável para o four-eyes
+  (`ErrProductionNeedsDurableApproval`), e o JetStream é uma das duas opções sancionadas — a
+  configuração afectada não é exótica, é suportada.
+
+O que acontece no dia em que alguém ligue o JetStream, por ordem de gravidade:
+
+1. **A cerimónia four-eyes fica inoperante por inteiro.** O `PendingApprovals.Put` falha ⇒ **o
+   operador nunca vê o que tem para aprovar**: a escalada acontece, o registo não grava, a lista
+   fica vazia e o run fica suspenso. Fail-closed **e invisível** — a pior combinação.
+2. **A memória desaparece em silêncio.** As quatro classes estão compostas no nó, e o
+   `ErrStreamNotFound` é tratado como «vazio» nessa camada: não há erro, há degradação da
+   qualidade do agente.
+3. **O restauro/DR aborta** ao primeiro stream com ponto.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Corrigir a CAUSA-RAIZ, ou só os nomes?** A causa-raiz é a assimetria: o backend de ficheiro
+   aceita o que o JetStream recusa. Corrigi-la é validar o `stream_id` **no contrato do
+   `eventstore`**, imposto pelos DOIS backends. Isso torna os nove nomes actuais **ilegítimos em
+   qualquer substrato** — é uma quebra de compatibilidade deliberada e precisa de ADR. A
+   alternativa (renomear e pôr um gate estático) é mais barata e deixa a classe reabrir-se a cada
+   stream novo composto em runtime. **Recomendação: corrigir a causa-raiz**, porque enquanto os
+   dois backends discordarem, «funciona em dev, falha em produção» continua a ser o desfecho por
+   omissão.
+2. **Que nome de substituição.** Hífen (`gov-approvals`) ou barra (`gov/approvals`)? A barra tem
+   precedente (`aos-internal/`) e uma propriedade adicional: mantém o stream **fora do alcance de
+   `GET /runs/{id}/...`**, porque o padrão da stdlib casa `{id}` com um só segmento. Para o
+   `gov.approvals` — que guarda grants de aprovação — essa propriedade parece desejável.
+3. **A migração do `gov.approvals` — DECIDIDA e FEITA (copiar e cortar).** O que se segue
+   continua válido como registo do porquê.
+
+   **A migração NÃO admite leitura dupla ingénua.** O uso-único atómico do
+   `Consume` assenta na dedup do Event Store, que é **por stream**. Com dois streams vivos, um
+   grant consumido no antigo não deduplica no novo, e a garantia «uma aprovação destrava no
+   máximo UMA execução» quebra-se durante a janela — é o primitivo de SEGURANÇA do four-eyes.
+   Ou se copia tudo e se corta de uma vez, ou se aceita que os factos antigos ficam órfãos. E o
+   `platform/backup` **não** serve de veículo (ver `IngestStream` acima).
+4. **Validar o `run_id` na fronteira** é uma mudança de contrato público: um cliente que hoje use
+   um ponto passa a receber `400`. Aceitável? (O sítio óbvio é ao lado do `runIDReservado`, que
+   as duas rotas de submissão já chamam.)
+
+### Âmbito proposto, e o que é barato AGORA
+
+- **Barato e com prazo de validade:** `memory.semantic.knowledge`,
+  `memory.episodic.trajectories`, `memory.compression.summaries` e `memory.migrations` **não têm
+  compositor** — hoje renomear é literalmente trocar uma constante. O `memory.migrations` é o mais
+  urgente dos quatro porque o seu modo de falha é ACTIVO: `IsApplied` responde «não aplicada»
+  sobre stream vazio, logo renomear depois de ligado faz **reaplicar todas as migrações**.
+- **Caro e com histórico:** `gov.approvals` e as quatro classes `memory.*`, todas compostas em
+  produção.
+- **Aditivo, sem histórico:** a validação do `run_id` e o gate de reincidência.
+
+### Critérios de Aceitação
+
+- [~] Decisão (1) tomada e registada — em ADR se for a causa-raiz.
+      *(**TOMADA e registada em [ADR-029](../docs/adr/ADR-029-nomenclatura-de-stream-id.md).**
+      A metade que se pôde fazer está feita: a regra deixou de existir em TRÊS cópias (o
+      `ContainsAny` do `subjectDe`, uma constante no nó, e a extracção do gate) e passou a ser
+      `eventstore.ValidarStreamID` — do CONTRATO do Event Store, e não do backend JetStream, que
+      é só onde se manifestou primeiro.
+      **A metade que FALTA é o aperto do `Append` no backend de ficheiro, e está BLOQUEADA** por
+      uma cadeia que termina fora do código — ver a secção abaixo e o ADR-029 §2.4.)*
+- [~] Há **gate que impõe a regra**, e quatro dos seis nomes estão corrigidos — mas **NÃO é
+      verdade que nenhum `stream_id` da árvore contenha carácter não representável**: dois
+      contêm, e estão em baseline. A primeira versão desta caixa dizia `[x]` com esta mesma
+      nota por baixo a contradizê-la; uma revisão adversarial apanhou-o. Uma caixa que afirma
+      o contrário da sua própria nota avermelha a confiança em todas as outras.
+      *(`scripts/ci/stream-names.{py,sh}`, no molde do `event-catalog`: lê os ficheiros e por
+      isso vê os 49 módulos, que um teste Go num módulo não vê. **Lê a regra da FONTE** —
+      extrai o `ContainsAny` do `subjectDe` — em vez de a duplicar, com controlo de
+      não-vacuidade contra um valor conhecidamente mau, e fail-closed a zero constantes.
+      Registado nos QUATRO sítios onde a lista de checks vive — `ci.yml` (`needs` e
+      comentário), `CONTRIBUTING.md` e o `ALL_GATES` de `scripts/ci/run.sh` —, mais o
+      `Makefile` (`ci-stream-names`). O quarto faltava, e faltava de forma consequente: sem
+      ele o gate não corria no `make ci`, e o gate é o **único** sensor dos quatro renames —
+      revertendo um deles, todas as suites locais ficavam verdes. O self-test §M passou a
+      cruzar os quatro (antes cruzava três). Verificados 24 nomes.
+      **Alcance exacto, sem exagero:** o gate lê `packages/**/*.go` e **salta `*_test.go`**.
+      Os quatro módulos Go fora de `packages/` (três em `deploy/`, `scripts/ci/attest`) não
+      importam o `eventstore` nem chamam `Append` — verificado —, pelo que a omissão não é
+      um buraco; mas «alcance de repositório» era demasiado forte. **Dois ficam em BASELINE**, com dono e com o custo escrito — ver
+      abaixo; a baseline é dívida declarada, não verde.)*
+- [x] **Os SEIS nomes não representáveis corrigidos** — quatro por rename simples, dois com
+      MIGRAÇÃO dos factos.
+      *(`memory/{semantic,episodic,compression,migrations}` → `aos-internal/memory/...`. Custou
+      uma constante cada porque **nenhum é composto pelo nó** — medido: nada em `cmd/aos` nem
+      em `integration` os importa, logo não há factos no nome antigo. Usou-se **barra**, e não
+      hífen: um nome sem barra é um segmento de caminho e o AOS-426 mediu treze streams internos
+      a serem servidos por `GET /runs/{id}/...` — o prefixo mantém estes fora desse alcance por
+      CONSTRUÇÃO, e não só pela trava. Suites dos cinco pacotes de memória verdes.)*
+- [~] O `run_id` é validado na fronteira das duas rotas de submissão, com teste.
+      *(**METADE, e a outra metade está BLOQUEADA por um conflito de invariantes que este ticket
+      descobriu.** Ver a secção abaixo. Feito no `POST /plans`; **NÃO** feito no `POST /runs`,
+      onde partiria o caminho do plano em produção.
+      **E a metade feita é a que NÃO tem efeito hoje**, o que tem de ser dito: no `/plans` o
+      `run_id` do cliente nunca se torna um `stream_id` — o append é ao stream fixo da fila e
+      o id vai no payload e no `StepID`. O único sítio onde um `run_id` de cliente se torna
+      stream é o `POST /runs`, que continua permissivo; logo o objectivo da guarda é
+      alcançável pela outra porta, hoje. O que ela vale, e não é nada: é validação **no ponto
+      de entrada** de um valor que se torna stream quando o plano correr — a tese do AOS-425 —
+      e impede que um pedido irrepresentável entre na fila para o consumidor falhar mais
+      tarde, longe de quem o submeteu. A assimetria está fixada por teste
+      (`TestAOS424PostRunsAindaNaoValidaEPorque`), que **lê o charset do `ValidNodeID` da
+      fonte** e fica VERMELHO no dia em que ele deixar de admitir `.` e `:`, com o remédio na
+      mensagem. A primeira versão afirmava isto e era FALSA: reagia à consequência (alguem
+      ligar a guarda), não à causa — uma revisão adversarial apertou o `ValidNodeID` e o teste
+      ficou verde. Verificado por mutação depois de corrigido.)*
+- [ ] Existe **pelo menos um teste da cerimónia four-eyes sobre JetStream**.
+      *(**NÃO FEITO, e re-classificado.** Este critério pedia um teste que exige `AOS_NATS_URL`
+      no CI — que nenhum ficheiro de CI define hoje, e o gate `dormencia` inventaria essa
+      ausência como *warn*. Levantar NATS no CI é trabalho de infraestrutura com âmbito próprio,
+      não um efeito lateral deste ticket. **Fica por marcar**; ver resíduos.)*
+- [x] `tecnica/13` ganha a **regra escrita de nomenclatura de `stream_id`**.
+      *(Nova §3.1.1. O documento definia `stream_id` como «fronteira de ordenação» e não impunha
+      restrição nenhuma — era a lacuna documental na origem da classe. A secção diz a regra,
+      **porque** existe, a armadilha da assimetria entre backends, a convenção de namespacing
+      (`-` em vez de `.`, `/` para níveis, `aos-internal/` para streams do nó), o enforcement e
+      o que o gate NÃO cobre.)*
+- [x] A migração do `gov.approvals` tem plano escrito que **preserva o uso-único** do `Consume`.
+      *(**FEITA**, não só planeada. `integration/approval_stream_migracao.go`: copia os factos do
+      nome antigo para `aos-internal/gov/approvals` **preservando `(RunID, StepID)`** — e é daí
+      que vem a correcção inteira, porque a idempotency-key é `run_id + ":" + step_id`: um
+      `used-<id>` copiado verbatim passa a bloquear, no stream NOVO, a reclamação de um grant
+      que já tinha sido reclamado no antigo. Corre no arranque, ANTES de a cerimónia ser
+      composta, e é fail-closed: um `used-` por copiar é um grant consumível duas vezes.
+      **Não se fez leitura dupla**, pela razão que este ticket já registava: a dedup é por
+      stream.)*
+- [x] **O `Append` do backend de ficheiro impõe a regra** (ADR-029 §2.4), com a assimetria
+      escrita/leitura fixada por teste e a costura de semente protegida por duas barreiras.
+- [ ] O comportamento SILENCIOSO do `Subscribe` é fechado ou declarado.
+      *(**NÃO FEITO.** O `Subscribe` não chama o `subjectDe` — usa `FilterSubject: prefixo + ".>"`
+      e filtra em processo —, pelo que um filtro por um nome impossível **não dá erro: nunca casa
+      nada**. Fechá-lo é mexer no backend replicado e não cabe num ticket de nomes.)*
+
+### O aperto do contrato: o que se fez, e a cadeia que bloqueia o resto
+
+**FEITO — a regra tem uma fonte.** `eventstore.ValidarStreamID` +
+`eventstore.CaracteresNaoRepresentaveis`, em `substrate/eventstore/stream_id.go`. O `subjectDe`
+chama-a, o nó chama-a (deixou de ter cópia) e o gate `stream-names` lê a declaração canónica.
+Registado no **ADR-029**.
+
+Quando a mudança foi feita, **o gate e o guard do AOS-417 ficaram VERMELHOS** com «nao encontrei
+a regra» — falharam fechados, que é exactamente o que se lhes pedia, e é a prova de que as
+âncoras não eram decorativas. O guard passou a **CHAMAR** a regra em vez de a extrair por regex:
+não há cópia para derivar nem parser para partir.
+
+**FEITO — o aperto do `Append` no backend de ficheiro**, que é a correcção da causa-raiz. O
+`Store.Append` chama `ValidarStreamID` antes de tocar em stripe, líder ou quórum; a recusa é
+lexical e não deixa rasto. Leitura, `StreamHead`, `SnapshotStream` e `IngestStream` **não**
+validam — um nome que já existe tem de poder ser lido para ser migrado, e um backup anterior à
+regra tem de poder ser restaurado. A assimetria está fixada por teste, para que ninguém a
+«arrume» e leve a recuperação de desastre à frente.
+
+A cadeia que bloqueava isto — `node_id` stream-safe → `ValidNodeID` → prompt novo → revalidar com
+o modelo vivo — **foi fechada pelo escape do `childRunID`** (ADR-029 §3, saída 2).
+
+#### O QUE O APERTO REVELOU, e que muda a leitura deste ticket
+
+Este ticket dizia, antes desta revisão, que o aperto custava «39 testes, na maioria andaime das
+migrações». **A medição estava errada**, e estava errada por uma razão que vale mais do que o
+número: foi feita a olhar para uma LISTA DE NOMES DE TESTE, e não para as suas causas.
+
+Medido agora, com as causas: **catorze das quinze falhas do `cmd/aos` eram um DEFEITO VIVO.**
+
+| Stream composto | O escopo vinha de | O carácter | Estado |
+|---|---|---|---|
+| `ratify-nonce:<escopo>:<hex>` | constantes de domínio do autenticador | `.` em `foureyes.challenge`, `governance.dsar`, `nhi.revoke` | **corrigido** |
+| `ratify-nonce:<escopo>:<hex>` | o tuplo `<domínio>\x00<emissor>` do `nonceScope` | `\x00` (nem estava na regra) | **corrigido** |
+| `4eyes-challenge:<escopo>:<hex>` | o `request_id` do CORPO de um pedido | o que o cliente lá puser | **corrigido** |
+| `plan-schemaline-<semver>` | um `plan_id` construído num teste | `.` | fixture corrigida |
+
+Sobre ficheiro nada disto falha, e foi assim que sobreviveu a dez gates, a uma revisão
+adversarial e ao smoke — que correm todos sobre ficheiro. **Sobre JetStream negaria toda a
+emissão de challenges e toda a ratificação**, com um `403 aprovador nao autorizado` que nomeia a
+causa errada.
+
+A correcção foi na ORIGEM (`hitl.nomeDeEscopo`, que resume o escopo), e não no ponto de uso. O
+custo — nonces consumidos e challenges emitidos antes do deploy são esquecidos — está declarado
+no ADR-029 §2.4.
+
+**Os restantes dezasseis testes eram, esses sim, andaime**, e passaram a semear o mundo «antes»
+por `eventstore.SemearStreamLegado`: uma costura com duas barreiras (`testing.Testing()` em
+runtime, e o gate `stream-names` a recusar chamadores fora de `_test.go`). Sem ela, os testes das
+migrações teriam de ser apagados — e o que se perderia é justamente a prova de que um grant
+consumido antes da migração não volta a ser consumível depois.
+
+### O CONFLITO DE INVARIANTES que este ticket descobriu, e que bloqueia metade do critério do `run_id`
+
+Ligar a validação do `run_id` ao `POST /runs` **partiria o caminho do plano em produção, hoje.**
+Medido, e a suite do pacote apanhou-o (o `TestAOS413_ToolsDoPostRunsCortaAToolForaDaLista` usa o
+`run_id` `run-413.n1`):
+
+| Fonte | O que declara | Onde |
+|---|---|---|
+| `plan.ValidNodeID` | O charset FECHADO de um `node_id` **admite explicitamente `.` e `:`**, e é a «grammar ÚNICA do node_id no módulo», imposta pelo validador semântico do AOS-231 | `orchestrator/plan/plandocument.go:88-115` |
+| `jetstream.Store.subjectDe` | Um `stream_id` com `.` **não é representável** e é RECUSADO | `substrate/eventstore/jetstream/store.go:1075` |
+| `childRunID` | Compõe `<run>~<node_id>` e submete-o ao nó por `POST /runs` | `cmd/aos-orq/node_executor.go:113,224` → `node_client.go:331` |
+
+Um nó de plano chamado `analise.dados` produz o run filho `run-x~analise.dados`. Sobre JetStream
+esse run **já está partido hoje**; sobre WAL funciona. Validar no `POST /runs` converteria
+«funciona sobre WAL, parte sobre JetStream» em «parte em todo o lado» — uma **regressão** para
+quem corre sobre WAL, que é o que corre em produção.
+
+Não se resolveu em silêncio, e não é escolha de quem escreve o handler: os dois invariantes estão
+REGISTADOS, um pelo AOS-231 e outro pelo <!-- rtm: menção -->ADR-007<!-- /rtm: menção -->.
+
+**Recomendação registada:** tornar o `node_id` **stream-safe por construção** — apertar o
+`ValidNodeID` para excluir `.` e `:` — e só então ligar a guarda ao `POST /runs`. É a tese do
+AOS-425 aplicada: validar onde o valor ENTRA (o documento de plano, na validação semântica), e
+não onde é usado. Um plano com um `node_id` mal formado passa a ser recusado na validação, com
+razão legível, em vez de falhar a meio da execução. **Custo:** é uma mudança semântica noutro
+módulo, afecta o que o planeador pode produzir, e o prompt de decomposição tem de o saber.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Renomear `gov.approvals` ou o prefixo `memory.` num nó com histórico perde grants, pendentes, registos de retoma e a memória — e o backup não os transporta | Decisão (3). Ficam em baseline até existir plano de migração |
+| **A validação na fronteira quebra um cliente que use pontos no `run_id`** — decisão (4), **TOMADA nesta entrega para o `POST /plans`** | Superfície nova (AOS-417, mergida no mesmo dia) e sem consumidor: nenhum cliente depende dela. No `POST /runs`, onde há comportamento a preservar, a guarda **não** foi ligada |
+| Um gate com evasões dá falsa segurança, que é pior do que gate nenhum | Quatro evasões fechadas depois da revisão: segundo `ContainsAny` no ficheiro (âncora no `subjectDe` + piso da regra), chamada com parênteses no 1.º argumento, concatenação de literais, e escapes `\t`/`\r`/`\n`. Todas verificadas por mutação |
+| O gate corre só no CI e não no `make ci` | Fechado: `ALL_GATES` + self-test §M a cruzar quatro listas |
+
+### Resíduos deste ticket, declarados
+
+1. **Os dois nomes com histórico** (`gov.approvals` e o prefixo `memory.`) estão na baseline do
+   gate, com o custo escrito. Saem quando a decisão (3) existir.
+2. **Um teste da cerimónia four-eyes sobre JetStream** depende de haver NATS no CI. Este
+   resíduo SUBIU de importância: a correcção dos nomes compostos do `hitl` é exactamente o tipo
+   de coisa que só um teste sobre JetStream prova de verdade. O que se tem hoje é a regra
+   aplicada ao nome — não o NATS a aceitá-lo.
+3. **O `Subscribe` que falha em silêncio** — fechá-lo é mexer no backend replicado.
+4. **As duas barreiras da costura de semente** são independentes, mas nenhuma cobre um teste que
+   passe a semear por um caminho novo. Se aparecer um terceiro sítio a precisar de estado
+   legado, passa por `SemearStreamLegado` ou o gate acusa.
+
+### Estado
+
+**FECHADO.** Entregue: o gate de alcance de repositório (registado nos quatro sítios da lista de
+checks), **os SEIS renames** — quatro por troca de constante e dois **com migração dos factos**
+(`gov.approvals` e as quatro classes de memória) —, a validação do `run_id` nas DUAS rotas
+(`POST /plans` e `POST /runs`, esta última destrancada pelo escape do `childRunID`), a regra de
+nomenclatura em `tecnica/13` §3.1.1, e **o aperto do `Append`** — a correcção da causa-raiz.
+
+**Não resta nenhum `stream_id` da árvore com carácter não representável em uso**, nem literal nem
+composto pelos caminhos que os testes exercitam. As duas entradas que ficam na baseline do gate
+são constantes do nome ANTIGO, que existem só para as migrações conseguirem LER.
+
+**O que este ticket NÃO permite concluir.** Que a classe está fechada. O aperto encontrou os
+defeitos que existem na ÁRVORE DE TESTES; um caminho de composição que nenhum teste exercita com
+um valor «sujo» continua invisível.
+
+> **CORRECÇÃO (AOS-425).** Este parágrafo dizia que a admissão de quota era «a linha mais
+> perigosa» e que acrescentar um `gpt-4.1` passaria a significar runs não admitidos. **Errado**:
+> o caminho de admissão não está ligado a binário nenhum (`DEF-280-NO`; nada constrói
+> `[]tiering.Tier` fora de testes). O risco vivo era outro e a tabela não o tinha — o `--run` do
+> `aos-orq`, sem validação, a virar quatro nomes de stream. Fechado pelo AOS-425.
+
+## AOS-423 — A fila de pedidos de plano não tem quem a consuma: o `201` promete uma corrida que não começa
+
+<!-- rtm: menção -->
+<!-- O MARCADOR `rtm: adrs-mencionados` SAIU, e o comentario anterior previa que saisse: dizia
+     que «se vier a exigir decisao nova — e a pergunta (1) abaixo pode exigi-la — abre-se ADR
+     proprio e este marcador sai». A decisao (1) exigiu, e o ADR-030 e dele.
+
+     O preco de tirar o marcador e que o ADR-018, o ADR-023 e o ADR-028, que aqui sao RESTRICOES
+     e nao entregas, passam a contar como implementados por este ticket na RTM. Fica dito porque
+     o parser e textual e o marcador e tudo-ou-nada: nao ha forma de separar os dois papeis no
+     mesmo bloco. E o mesmo preco que o AOS-417 pagou pelo ADR-028 e o AOS-424 pelo ADR-029. *(Desde AOS-473: as restrições estão em trecho de menção, fora da §4 — excepto o ADR-028, que aqui é restrição e entrega e por isso fica implementado.)* -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | P1 |
+| Estimativa | L |
+| Dependências | AOS-417 (o ingresso, **FEITO** — PR #353); ADR-028 §2.2 (a decisão de forma); DEF-282 (o substrato de ficheiro não arbitra entre processos) |
+| Bloqueia | AOS-133 (BFF) e, por arrasto, o EPIC-13; o critério por marcar do AOS-417 («uma corrida desencadeada por rede, sem ninguém no terminal») |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/plan_ingress.go` (a forma do facto), `packages/integration/approval_store_durable.go` (o molde de consumo-uma-só-vez), `packages/cmd/aos-orq/substrato.go` (`--wal` vs `--nats`), `deploy/server/docker-compose.prod.yml` (serviço `aos-orq`, `profiles: ["orq"]`), `docs/adr/ADR-028-ingresso-do-caminho-do-plano.md` |
+
+### Contexto
+
+O AOS-417 abriu a porta e não pôs ninguém do outro lado. `POST /plans` aceita um objectivo,
+grava `planrequest.submitted` no stream `aos-internal/plan-requests` e devolve `201 accepted` —
+e o pedido fica lá, a acumular. **Nada o lê.**
+
+Isto não é uma omissão silenciosa: o banner de arranque do nó di-lo por palavras nessas, e o
+critério de aceitação do AOS-417 sobre a verificação em produção ficou deliberadamente **por
+marcar**, porque sem consumidor não há corrida que se desencadeie. Mas é exactamente o modo de
+falha que o próprio AOS-417 existia para fechar — **prometer uma corrida que ninguém vai
+consumir** —, deslocado um passo para a frente: antes o `serve` não tinha quem o invocasse por
+rede; agora o pedido chega por rede e continua sem quem o invoque.
+
+Do ponto de vista de quem usa o produto, **nada mudou ainda**. Continua a ser preciso alguém no
+terminal do servidor.
+
+### Objectivo
+
+Um pedido gravado na fila desencadeia a corrida do plano **sem ninguém no terminal do servidor**,
+uma só vez, e o desfecho fica ao alcance de quem o submeteu.
+
+### O que o ADR-028 §2.2 JÁ decidiu, e que este ticket NÃO reabre
+
+- **O `aos-orq` consome o facto e corre o `serve` como hoje**: reclama o lease, possui o run,
+  termina. Nada no modelo de posse muda.
+- **A frase do compose mantém-se verdadeira** — «um `serve` possui um run e termina, não é um
+  daemon». O que muda é **quem o invoca**: em vez de um humano num terminal, um trabalhador que
+  lê o facto.
+- **Não se inventa substrato de fila.** O Event Store é a fila e o consumo-uma-só-vez segue o
+  molde do `approval_store_durable` (claim-before-read por `Append` com idempotency-key,
+  `StatusDuplicate` como primitivo de arbitragem). Não um broker novo, não um estado paralelo
+  (que o <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> §4 proíbe).
+- **Quem arbitra entre dois consumidores continua a ser o LEASE** (<!-- rtm: menção -->ADR-023<!-- /rtm: menção -->). O ingresso não
+  introduziu uma segunda autoridade, e o consumidor também não pode introduzir.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **COMO É QUE O CONSUMIDOR ALCANÇA A FILA.** É a decisão de que tudo o resto depende, e a
+   tabela acima mostra que não há opção gratuita:
+   - **(a) NATS partilhado entre nó e consumidor.** É o único substrato que arbitra entre
+     processos, e o único em que mais do que um consumidor é seguro. Custo: levantar JetStream em
+     produção, migrar o nó de `AOS_EVENTSTORE_PATH` para `AOS_EVENTSTORE_NATS`, e o `aos-orq`
+     passar a apontar ao mesmo. É a mudança de infraestrutura mais pesada das três e a única que
+     escala para além de um consumidor.
+   - **(b) Consumidor DENTRO do processo do nó.** Elimina o problema da tranca — quem já tem o
+     `LockWAL` é o nó — e reaproveita os laços que o nó já tem (molde do `backup_scheduler.go`).
+     **Mas põe o nó a invocar o `aos-orq`**, e isso toca a fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> de frente: o nó
+     deixaria de apenas CONHECER a existência do caminho do plano para o DESENCADEAR. Exigiria ADR
+     de emenda, e não é óbvio que deva ser aceite.
+   - **(c) Rota de leitura/reclamação no nó, consumida pelo `aos-orq` por HTTP.** O canal
+     `aos-orq`→nó já existe (`node_client.go`, credencial NHI + Bearer OIDC). Mantém a fronteira
+     do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> (o nó continua a não correr o plano) e não exige infraestrutura nova. Custo: uma
+     rota que EXPÕE a fila, com tudo o que o ADR-016 e a revisão do AOS-417 obrigam a pensar — e
+     foi deliberadamente fechada por essa razão.
+
+   **Recomendação registada: (c)**, e a razão é que preserva as duas fronteiras que custaram mais a
+   estabelecer — o nó não corre o plano <!-- rtm: menção -->(ADR-018)<!-- /rtm: menção --> e a posse continua a ser o lease <!-- rtm: menção -->(ADR-023)<!-- /rtm: menção --> — sem
+   pedir uma migração de substrato em produção. **Mas exige ADR**, porque abre uma superfície de
+   leitura que o AOS-417 fechou de propósito, e a não-oracularidade tem de ser reargumentada para
+   um consumidor autenticado (que é caso diferente do chamador anónimo que o ADR-016 considerou).
+2. **A forma do trabalhador**, uma vez resolvido (1). O ADR-028 diz «um trabalhador que lê o
+   facto» e não diz o que ele é: (a) processo de longa duração; (b) temporizador que acorda, drena
+   e termina. **Nenhum dos dois contradiz o compose** — a frase «um `serve` possui um run e
+   termina» é sobre o `serve`, que continua a terminar. O que pesa é outro facto medido: **nenhum
+   binário do AOS corre hoje como serviço de longa duração além do nó** (os `restart: unless-stopped`
+   do compose são todos imagens de terceiros), e o único temporizador do host é o
+   `aos-tls-sync.timer`. Um trabalhador contínuo seria o primeiro, e traz healthcheck, reinicio e
+   observabilidade próprios.
+3. **Tecto de pendentes e retenção**, que o ADR-028 §4 atribuiu ao ticket de implementação «com
+   o molde de backpressure que o EPIC-03 já descreve». O AOS-417 **não** o fez e declarou-o: um
+   tecto sem consumidor bloqueia a rota para sempre ao fim de N pedidos, pelo que a decisão só
+   fica bem informada **depois** de existir quem drene. Com consumidor, a pergunta passa a ser de
+   parâmetros e não de modelo. Recomendação registada: **recusar pedidos novos com tecto alto**,
+   em vez de descartar antigos — um pedido descartado em silêncio é a mesma classe de defeito
+   que este eixo inteiro existe para fechar.
+4. **O que acontece a um pedido cujo `serve` falha.** O facto é reclamado UMA vez; se a corrida
+   terminar em recusa (o `serve` tem códigos de saída distintos para lease detido, fenced, WAL
+   detido, humano pendente, recusa e plano rejeitado), o pedido não pode simplesmente desaparecer.
+   Retentar? Marcar como falhado num facto de desfecho? Uma falha transitória (lease detido por
+   outra réplica) e uma permanente (plano rejeitado) **não podem ter o mesmo tratamento**, e
+   confundi-las dá um de dois defeitos: um pedido perdido, ou um laço a retentar para sempre uma
+   recusa determinista.
+5. **Como é que quem submeteu sabe o desfecho.** Hoje recebe `201` e mais nada. O ADR-028 §2.3
+   proíbe devolver o estado do run na resposta ao pedido (não-oracularidade), e a leitura passa
+   pelo read-path soberano — mas **o `run_id` que o submissor nomeou chega sequer a ser um run
+   legível?** Se o plano materializa nós como `<run>~<nó>` (ADR-027), o id de topo pode nunca
+   existir como run, e o submissor fica sem nada para consultar. *(Continua **POR CONFIRMAR**: a
+   discovery não inspeccionou `decomporEMaterializar`/`materializarEDespachar` em profundidade.)*
+
+### Critérios de Aceitação
+
+- [x] Um pedido gravado na fila desencadeia a corrida **uma só vez**, provado com DOIS
+      consumidores — e o teste custou uma lição: a primeira versão reclamava duas vezes EM SÉRIE e
+      **a mutação sobreviveu**, porque a segunda projecção já vê a reclamação da primeira e nunca
+      chega ao `StatusDuplicate`. O sensor só passou a existir quando a corrida se tornou
+      DETERMINISTA (`storeQueEsconde`, uma leitura cega à reclamação do outro).
+- [x] O consumo usa o molde do `approval_store_durable` (`StatusDuplicate` como árbitro) e não um
+      estado paralelo. **Com uma diferença deliberada:** o molde reclama ANTES de ler e queima o
+      item se o processo morrer — lado seguro para um grant humano, lado ERRADO para um pedido de
+      plano. Daí a GERAÇÃO, que é o padrão de re-encarnação do mesmo ficheiro.
+- [x] O `layer-lint` continua verde e o guard-test de fronteira do <!-- rtm: menção -->ADR-018<!-- /rtm: menção --> não mudou: o nó não
+      importa o orquestrador, e o consumidor fala HTTP.
+- [x] Um pedido cujo `serve` falhe tem o desfecho decidido, com teste que distingue TRANSITÓRIA
+      (3/4/5/8 — volta à fila já), PERMANENTE (7/9 — não volta) e AGUARDA-HUMANO (6 — nem uma
+      coisa nem outra). O genérico (1) é TRANSITÓRIO, e é a escolha menos óbvia: perder um pedido
+      em silêncio é o defeito que este eixo fecha.
+- [x] O banner deixou de dizer que ninguém consome a fila, e o guard ficou vermelho como devia.
+      **Mas não bastou corrigir o literal** — o guard detectava o consumidor por PROXY («quem
+      nomeia o stream dentro do `aos-orq`»), e o consumidor que se escreveu fala HTTP e nunca
+      nomeia o stream. A heurística teria ficado CEGA em silêncio. O guard mudou de pergunta:
+      agora exige que o argumento seja DERIVADO e amarra o predicado ao do `readGov`.
+- [x] A profundidade da fila é observável: `aos_plan_queue_pending`, `aos_plan_queue_ceiling` e
+      `aos_plan_queue_claimable`. São TRÊS séries porque lêem-se de maneira diferente — «ninguém
+      PODE drenar» (gate ausente) e «ninguém ESTÁ a drenar» exigem acções distintas. Um erro a ler
+      não publica zero: publicar zero por não saber é a mentira que faz o painel ficar verde sobre
+      uma fila cheia.
+- [x] Tecto de pendentes implementado (1000, recusa pedidos novos com 503, nunca descarta
+      antigos). **A RETENÇÃO fica por fazer e declarada:** o stream da fila cresce com o
+      HISTÓRICO, não só com os pendentes, e nada o poda — o `retention_sweeper` não o conhece. A
+      projecção é linear nos eventos, pelo que o custo cresce com o histórico mesmo com a fila
+      vazia.
+- [ ] **Verificado em produção: POR FAZER.** É o critério que o AOS-417 deixou por marcar e que
+      este ticket também deixa. O que existe é prova em teste; falta um objectivo submetido por
+      rede a correr até ao fim sem ninguém no terminal, no servidor.
+
+### Fora de âmbito, declarado
+
+- **A cunhagem automática do NHI.** Continua a ser a barreira seguinte ao uso sem operador, é
+  decisão de SEGURANÇA (a `issuer.key` não vai para o servidor por desenho) e continua sem ticket
+  próprio. Um consumidor que corra sem humano **não** dispensa a credencial que o `serve` precisa.
+- **A UI** (EPIC-13). Fica desbloqueada por este ticket; não é feita nele.
+- **O crypto-shredding do objectivo**, declarado como resíduo no AOS-417: o payload do Event Store
+  é inline e em claro por desenho actual (`tecnica/13` §3.2, pendência §8.1). Não é regressão
+  deste ticket nem se fecha nele.
+
+### Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Um trabalhador de longa duração ressuscita, por outra via, o problema de dois escritores que o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> fechou | A arbitragem tem de continuar a ser o LEASE, e o teste de dois consumidores é o que o prova. Se a forma escolhida em (1) exigir mais, abre-se ADR |
+| O consumo reclama o facto e o processo morre antes de o `serve` arrancar: o pedido fica reclamado e por correr | É o modo de falha central deste ticket. O claim tem de ser recuperável — ou o desfecho tem de ser um facto próprio, não a ausência de um |
+| Retentar uma recusa determinista (plano rejeitado pela AOS-231) num laço infinito | Decisão (4): distinguir transitório de permanente pelos códigos de saída, e prová-lo com teste |
+| Um consumidor torna trivial disparar corridas e o custo do modelo deixa de ter quem o trave | O orçamento por árvore já existe (AOS-027); verificar que o caminho novo passa por ele — o mesmo risco que o AOS-417 registou e que o ingresso sozinho não exercitava |
+
+### Estado
+
+**PARCIAL — o código está feito e provado em teste; falta a verificação em produção.**
+
+### O que se entregou
+
+| Frente | O que ficou |
+|---|---|
+| **ADR-030** | A decisão da rota, e a não-oracularidade a ganhar casa (ver abaixo) |
+| **`POST /plans/claim`** | Reclama UM pedido. Nada enumera a fila; nada devolve um pedido sem o consumir |
+| **`POST /plans/outcome`** | Decide se o pedido volta à fila. Sem ela, uma falha transitória custava o TTL inteiro |
+| **`aos-orq consume`** | Reclama, corre pelo MESMO caminho do `serve`, reporta, repete — e termina |
+| **`/metrics`** | `aos_plan_queue_pending`, `_ceiling`, `_claimable` |
+| **Banner** | Deriva, e o guard que o vigiava mudou de pergunta |
+
+### O achado que este ticket não ia buscar
+
+A tese da **não-oracularidade** — que o `plan_ingress.go` e o ADR-028 §2.3 citavam ambos como
+sendo «do ADR-016» — **não está no ADR-016**. Medido: 322 linhas, zero ocorrências de «oráculo»,
+`201`, `409` ou `404`. O que o ADR-016 decide é o read-path SOBERANO (§5) e a separação
+canal-controlo/canal-dados (§6), que é adjacente e, para o que aqui interessava, mais forte.
+
+A prática era real e imposta com teste. O que não existia era a **fonte**: dois sítios a
+citarem-se um ao outro e a apontar para onde a tese não está. Descobriu-se ao ir reargumentá-la
+para um consumidor autenticado — que era exactamente o que a decisão (1)(c) exigia. O ADR-030 §2.1
+dá-lhe casa e os dois sítios passam a apontar para ela.
+
+É a quarta vez nesta série que uma afirmação sedimentada não sobrevive a ser verificada.
+
+### A decisão (1), e o que a postura custou
+
+Escolheu-se **(c)**: rota de reclamação no nó, consumida pelo `aos-orq` por HTTP. Preserva o<!-- rtm: menção -->
+ADR-018<!-- /rtm: menção --> (o nó não corre o plano) e o <!-- rtm: menção -->ADR-023<!-- /rtm: menção --> (a posse é o lease) sem pedir uma migração de
+substrato.
+
+A postura é `planoDados` + Bearer OIDC + gate soberano, pelo **precedente medido** do `POST /runs`
+— que cria um run, é chamado pelo mesmo `aos-orq` com a mesma credencial, e é dados. A alternativa
+`planoControlo` exigiria assinatura ed25519 sobre payload canónico, e o `aos-orq` gera hoje uma
+chave **efémera por execução**: seria material criptográfico novo em produção, com rotação e
+pinagem. Está registado no ADR-030 §2.3 com o custo escrito.
+
+### As decisões (2) a (5)
+
+- **(2) Forma do trabalhador — NÃO DECIDIDA, e de propósito.** O `consume` drena uma vez e
+  termina; quem o invoca (timer do host, como o `aos-tls-sync.timer`, ou um serviço) é decisão de
+  implantação e o código é o mesmo. Não obriga este binário a ser o primeiro serviço de longa
+  duração do AOS além do nó.
+- **(3) Tecto:** 1000, recusa pedidos novos, nunca descarta antigos.
+- **(4) Desfecho:** transitório (3/4/5/8) volta já; permanente (7/9) não volta; aguarda-humano (6)
+  nem uma coisa nem outra. O genérico é transitório.
+- **(5) Como o submissor sabe o desfecho — CONTINUA POR CONFIRMAR.** Os factos de desfecho
+  existem no log, mas se o `run_id` de topo nunca existir como run legível (o ADR-027 materializa
+  nós como `<run>~<nó>`), a leitura pelo read-path não o alcança. Medi que o `Tenure.Append`
+  escreve no stream do run de topo, logo o stream EXISTE; o que não fixei foi o campo `RunID` dos
+  seus eventos, que é o que a trava do AOS-426 lê. Fica por confirmar, e é honesto dizê-lo: o
+  `201` já não mente sobre a corrida, mas continua a não dar ao submissor uma forma directa de ver
+  o desfecho.
+
+### Por fechar, declarado
+
+- **A verificação em produção**, que é o critério que o AOS-417 deixou por marcar e este também.
+- **A retenção do stream da fila.** Cresce com o histórico, não só com os pendentes, e nada o
+  poda — a projecção é linear nos eventos, pelo que o custo cresce mesmo com a fila vazia.
+- **A pergunta (5)**, acima.
+- **Nenhum teste sobre JetStream**, que continua a depender de haver NATS no CI.
+
+## AOS-418 — Os payloads de um plano reconstroem-se do log: um `serve` que morra deixa de os levar consigo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket EMENDA uma decisão registada no ADR-027 §2.4 (decisão (A) do dono no AOS-414:
+     conteúdo em memória) sem a superar: o regime continua a ser memória, e o que muda é que ela
+     passa a ser RECONSTRUÍVEL. As citações ao ADR-022/027 são menções. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 — Planeador Produtivo e Meta-Orquestração |
+| Fase | Remediação pós-produção |
+| Milestone | v1.1 |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | M |
+| Dependências | AOS-414 (o canal de entrada e o `plan.payload_published`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos-orq/node_executor.go` (`publicarSaidas`, `entradasDe`, `ErrPayloadPerdido`), `packages/cmd/aos-orq/dispatch_wiring.go` (composição do executor), `packages/control-plane/orchestrator/plannerevents/events.go` (`PayloadPublishedPayload`) |
+
+### Contexto
+
+O conteúdo que os nós de um plano trocam vivia **só** no mapa em memória do executor — decisão (A)
+do dono no AOS-414, declarada como resíduo. Um `serve` novo sobre o MESMO plano via o mapa vazio e
+o consumidor falhava com `ErrPayloadPerdido`, **apesar de a saída do produtor existir, durável**.
+
+Enquanto cada corrida é conduzida por um operador, isto é um incómodo: repete-se a corrida. Com o
+ingresso do AOS-417 e corridas a tornarem-se rotina, **passa a ser perda de dados visível ao
+utilizador**. A fragilidade não muda; muda quem a sofre.
+
+### Objectivo
+
+Um `serve` que arranca sobre um plano a meio reconstrói os payloads dos contratos já cumpridos, e
+o que não conseguir confirmar não entrega.
+
+### O que torna isto possível sem evento novo
+
+O `plan.payload_published` já carrega o suficiente, de duas formas:
+
+| Forma | O que o evento carrega | Como se reconstrói |
+|---|---|---|
+| **Fechada** (veredicto) | o conteúdo INTEIRO, em `Closed` | pela mesma função canónica que o publicou |
+| **Aberta** | a REFERÊNCIA durável (o run filho) e o DIGEST | relê-se o run filho pelo nó, e o digest diz se é o mesmo |
+
+### Critérios de aceitação
+
+- [x] A forma fechada reconstrói-se do log sem falar com ninguém
+      (`TestAOS418_FormaFechadaReconstroiSeDoLog`).
+- [x] A forma aberta relê-se do run filho e **confere o digest**
+      (`TestAOS418_FormaAbertaReleDoRunFilhoEConfereODigest`).
+- [x] Um digest que não bate **não entra** no mapa — entregar o que voltou seria substituir o
+      payload por outro sem ninguém dar por isso (`TestAOS418_DigestQueNaoBateNaoEntra`).
+- [x] Um run filho que o nó já não conhece não entra, e o consumidor falha como antes
+      (`TestAOS418_RunFilhoDesaparecidoNaoEntra`).
+- [x] A forma canónica do conteúdo fechado vive numa só função **que NORMALIZA** — uma função
+      partilhada fecha o eixo da expressão e não o das entradas, e era por aí que divergia
+      (`TestAOS418_RazoesVaziasNaoDivergemEntrePublicarEReidratar`).
+- [x] Um `plan.payload_published` ilegível **não tranca o plano**: é ignorado com aviso, em vez de
+      abortar todas as retomas seguintes (`TestAOS418_EventoIlegivelNaoTrancaOPlano`).
+- [x] A reidratação corre no CONSTRUTOR do executor, não no wiring — um passo que se pode esquecer
+      sem nenhum teste dar por isso não é um passo.
+- [ ] Verificado em produção: um `serve` morto a meio de um plano, e o seguinte a concluir o
+      consumidor. **POR FAZER** (exige deploy), e ver o alcance real abaixo.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-20), verificação em produção por fazer.
+
+**Falha-antes, pelo processo real.** Com a reidratação neutralizada, os dois testes que provam a
+reconstrução ficam vermelhos:
+
+```console
+--- FAIL: TestAOS418_FormaFechadaReconstroiSeDoLog
+      o payload de forma FECHADA não foi reconstruído do log
+--- FAIL: TestAOS418_FormaAbertaReleDoRunFilhoEConfereODigest
+      payload de forma ABERTA = "", quero "o texto que o no produziu"
+```
+
+Os outros três passam dos dois lados **por desenho**, e digo-o em vez de os contar como prova: dois
+são guardas (digest que não bate; run filho desaparecido) e o terceiro é o controlo que prova que
+o mapa vazio É o modo de falha — sem ele, «reconstrói sempre alguma coisa» satisfazia os
+primeiros.
+
+**A decisão de desenho que não tomei.** Não pus o conteúdo da forma aberta dentro do evento. Seria
+mais simples de reidratar e poria conteúdo untrusted, até 128 KiB por payload, no log de
+governação — que é append-only e vai ao WORM. A referência + digest dá a mesma durabilidade sem
+engordar o log, e o digest é o que impede que a releitura devolva outra coisa.
+
+**Revisão adversarial independente: onze achados, um crítico.** Os cinco que mudaram
+comportamento:
+
+| Achado | O que mudou |
+|---|---|
+| **A forma fechada DIVERGIA entre publicar e reidratar**, e o critério dizia que não podia. A publicação calculava o conteúdo das razões CRUAS e a reidratação das do evento, que o `normalizeClosed` reduz — uma lista vazia vira `nil` (campo `omitempty`). Medido: publicado `{"outcome":"pass","reasons":[]}`, reidratado `{"outcome":"pass","reasons":null}`, para um veredicto que a gramática fechada aceita | `conteudoFechado` passou a NORMALIZAR, tornando-se total sobre as duas entradas |
+| **A composição não tinha sensor nenhum:** tirar as três linhas do wiring que chamavam a reidratação deixava a suite INTEIRA verde, porque nada no pacote exercita o `composeEDespachar`. O «falha-antes» declarado cobria o corpo da função e não o facto de ela ser chamada | A reidratação passou para o CONSTRUTOR. A mesma mutação agora mata dois testes |
+| **Um evento ilegível trancava o plano para sempre**, e contradizia o resíduo que eu tinha declarado: o evento não desaparece de um log append-only, logo todas as retomas batiam no mesmo ponto | Ignora-se com aviso, como o `fechar` já fazia a um veredicto ilegível |
+| **A mensagem acusava adulteração no caso mais provável**: com o nó reiniciado, o `final_text` volta vazio e o digest não bate — mas o facto é «o nó já não retém a saída», não «a saída mudou» | Caso próprio, com a razão certa |
+| **Latência de arranque ilimitada e fora do `--plan-timeout`**: uma chamada ao nó por payload, sequencial, com `ctx` sem deadline | Prazo de 2 min para a reidratação inteira |
+
+**O ALCANCE REAL, que a revisão mediu e que muda o valor deste ticket.** A forma aberta relê-se do
+`GET /runs/{id}` do nó, e o `final_text` que esse endpoint devolve vem de um registo de desfechos
+**em memória**, com poda FIFO. O ramo durável responde `completed` **sem** `final_text`. Logo:
+
+- um `serve` que morra sozinho e volte — **os payloads voltam**, que é o caso que o ticket fecha;
+- um restart do STACK inteiro (o `aos-orq` e o `aos` correm no mesmo compose) — **os de forma
+  aberta NÃO voltam**, porque o nó já não retém o texto. Os de forma fechada voltam sempre, porque
+  vêm do evento.
+
+Ou seja: isto fecha a morte do orquestrador, **não** a morte do nó. Dizê-lo aqui porque a
+verificação em produção pode passar sem medir o caso que interessa — se o operador reiniciar só o
+`aos-orq`, mede o caso fácil.
+
+**A alternativa que existe e que não usei:** o `runlifecycle.PayloadReader` já faz a metade do log
+(ler o stream, indexar por `(produtor, output)`, primeiro vence) e alimenta o
+`plandispatch.PayloadResolver`, que re-verifica tipo, taint efectivo e `contract_digest` contra o
+documento aprovado — defesa-em-profundidade que esta implementação **salta**. Reusá-lo é o caminho
+certo e é trabalho a mais do que cabe aqui; fica nomeado em vez de ignorado.
+
+**Resíduo declarado:** a reidratação é *best-effort por payload*. Um payload que não se confirme
+não aborta o arranque — fica por cumprir, e o consumidor falha com `ErrPayloadPerdido` como antes.
+Abortar o `serve` inteiro por causa de um payload de um nó seria trocar uma falha localizada por
+uma total. E o digest protege INTEGRIDADE, não origem nem contrato: quem calcula e quem compara
+são o mesmo processo.
+
+---
+
 ## 5. Vista de qualidade
 
 - **Segurança:** o plano é dados (ADR-005); validação pura fecha schema/aciclicidade/tools/tectos e **deriva** o risco; gate humano com risco resolvido; spawn mediado nó a nó. Planeador taintado como qualquer consumidor de untrusted.
@@ -819,4 +5510,2727 @@ Corrige o ramo papéis-que-expandem do --goal do aos-orq (AOS-393, EPIC-19).
 |---|---|---|---|
 | 1.0 | 2026-08-02 | Emissão inicial: decomposição do `tecnica/18` v1.0 (Ratificado) em 15 tickets AOS-230..244. | Equipa AOS |
 | 1.1 | 2026-09-09 | +AOS-388 (Decomposer LLM de produção + wiring multi-nó no aos-orq): gradua a decomposição LLM offline (doubles) para viva, fechando DEF-803 e a dependência de Model Gateway nomeada em §2/§6. | Equipa AOS |
+| 1.2 | 2026-09-16 | +AOS-400 (o prompt de decomposição declara o schema do `PlanDocument`): a validação em produção do AOS-395 mostrou o modelo real a falhar 3/3 com `objective de topo em falta`; o critério de cabeçalho do AOS-391 passa a `[~]`. | Equipa AOS |
+| 1.3 | 2026-09-16 | AOS-400 implementado: prompt de decomposição 1.2.0 com o schema e as regras de grafo; o modelo de produção decompõe à primeira tentativa e o critério de cabeçalho do AOS-391 volta a `[x]`. | Equipa AOS |
+| 1.4 | 2026-09-17 | +AOS-408 (o gate de aprovação de plano fica composto no `aos-orq`): fecha o residual do DEF-274 (o mapeador `PlanDocument`→`planapproval.Plan` não existia em produção) e o fail-open do `needsCard` derivado do `risk_class` advisory; corrige o eixo de DEF-274/275, que citava o AOS-238 (fechado). | Equipa AOS |
+| 1.5 | 2026-09-18 | +AOS-409 (4.º eixo de mutação no `IsEffectTool`): passa a ser o eixo do DEF-275, que o AOS-408 não implementa. AOS-408: duas revisões adversariais e a fronteira de confiança declarada. | Equipa AOS |
 | 1.2 | 2026-09-10 | +AOS-389/390/391 (despacho governado do Planeador para v1.1 distribuído): guard fail-closed de condicionais (389), composição do `plandispatch.Dispatcher` sob Tenure com avaliação de elegibilidade/condicionais/headroom (390), e T2-B do Model Gateway (391). Origem: análise adversarial que mediu a violação fail-open do ADR-022 §2.1 no spawn-eager. | Equipa AOS |
+| 1.6 | 2026-09-19 | +AOS-412 (com o modelo vivo, um plano de risco aprovado corre pelo `--plan-doc`): fecha o resíduo do AOS-408 «com o modelo vivo, um plano aprovado não despacha». | Equipa AOS |
+| 1.7 | 2026-09-19 | AOS-412 verificado em produção (`v0.1.23`) com o modelo vivo: as duas re-decomposições recusadas com 7, o organigrama aprovado materializado e despachado pelo `--plan-doc`. | Equipa AOS |
+| 1.8 | 2026-09-19 | +AOS-413 (os nós despachados executam até ao fim): a cadeia do `aos-orq` acabava no despacho — nada executava nem concluía um nó do plano, e a lacuna não estava registada. Decisão de onde corre o trabalho (ADR) antes da implementação. | Equipa AOS |
+| 1.9 | 2026-09-20 | AOS-413 implementado (ADR-027) e verificado em produção (`v0.1.24`): dois nós do plano correram como runs do nó `aos`, o veredicto do verificador veio do modelo vivo na gramática fechada e o nó `danger` aprovado não correu por não ter `pass`. O `fail` foi `documento_nao_fornecido` — o limite do DEF-806 medido em produção. | Equipa AOS |
+| 1.10 | 2026-09-20 | +AOS-414 (canal de entrada marcado como untrusted): a validação do AOS-413 em produção mediu a cadeia a partir-se — o verificador reprovou com `documento_nao_fornecido` porque a saída de um nó não chega ao run do seguinte, e sem isso qualquer plano com verificação termina em `fail`. | Equipa AOS |
+| 1.11 | 2026-09-20 | +AOS-415 (o veredicto da validação volta ao planeador): nas DUAS validações em produção com o modelo vivo a 1.ª decomposição foi recusada pela AOS-231 e o `serve` terminou — o laço de tentativas só cobre o decode, e cada tentativa reenvia o mesmo prompt. | Equipa AOS |
+| 1.12 | 2026-09-20 | +AOS-416 (o segredo do IdP do executor de nós): a limpeza do servidor depois do AOS-415 mediu que o uid do contentor (`65532`) não lê o ficheiro `0400` que o compose lhe monta — o executor só funcionou porque existia uma cópia `0444` do segredo, entretanto apagada. | Equipa AOS |
+| 1.13 | 2026-09-20 | +AOS-417 (ingresso do caminho do plano): medido que o `aos-orq` não tem superfície de rede nenhuma (`ListenAndServe` fora de testes = zero) e que o compose o exclui do arranque por desenho — logo toda a corrida com nós executados exige um humano no terminal do servidor, e nenhum ticket cobria isso. | Equipa AOS |
+| 1.14 | 2026-09-20 | +AOS-418 (payloads reconstroem-se do log): o conteúdo vivia só em memória e um `serve` que morresse levava-o consigo, apesar de a saída do produtor existir durável — incómodo com operador, perda de dados quando o ingresso do AOS-417 tornar as corridas rotina. | Equipa AOS |
+| 1.15 | 2026-09-21 | +AOS-423 (consumidor da fila de pedidos): o AOS-417 abriu a porta e não pôs ninguém do outro lado — `POST /plans` grava o facto e devolve `201`, e nada o lê. O modo de falha é o MESMO que o AOS-417 existia para fechar (prometer uma corrida que ninguém consome), deslocado um passo à frente. | Equipa AOS |
+| 1.16 | 2026-09-21 | +AOS-424 (nomes de stream não representáveis): a correcção do AOS-417 revelou uma classe — são NOVE os streams com ponto, dois deles compostos em produção (four-eyes e memória), o `run_id` do cliente não é validado, e a causa-raiz é o backend de ficheiro aceitar o que o JetStream recusa. Latente hoje (sem NATS em prod), destrutivo no dia da migração que o AOS-423 precisa. | Equipa AOS |
+| 1.17 | 2026-09-21 | +AOS-425 (composição de nomes de stream em runtime): a outra metade da classe do AOS-424, que um grep de literais não vê. O `stream_id` de admissão contém o NOME DO MODELO, que vem da allowlist assinada — hoje sem pontos (medido), mas acrescentar um `gpt-4.1` é uma alteração de POLÍTICA que partiria o substrato, e nada no repositório liga as duas coisas. | Equipa AOS |
+| 1.18 | 2026-09-21 | +AOS-426 (read-path servia streams internos): medido que `GET /runs/<stream>/trajectory` devolvia 200 e servia treze streams internos do nó a um leitor autenticado de OUTRA região — aprovações four-eyes, memória, identidade e os nonces de ratificação. NÃO latente: mede-se no substrato de ficheiro, que é o de produção. Fechado com uma trava que lê os DADOS, não uma lista de nomes. | Equipa AOS |
+| 1.19 | 2026-09-25 | +AOS-436 (o apagamento DSAR sobrevive ao restauro): medido que o `backup.sh` leva o volume do Vault com as KEKs vivas e que restaurar um bundle anterior a um apagamento repunha a KEK sem nada o detectar; três documentos afirmavam o contrário. Reconciliação no arranque por IDADE da chave + registo de apagamentos fora do bundle. Ticket acrescentado no fim do ficheiro. | Equipa AOS |
+| 1.20 | 2026-09-25 | AOS-436 refeito depois de uma revisão adversarial independente que o reprovou para produção: registo autenticado por HMAC, portão de conteúdo na custódia, fontes independentes, legal hold consultado, LIST em vez de GET por chave. Tabela «revisão → correcção → sensor» no ticket. | Equipa AOS |
+| 1.21 | 2026-09-25 | AOS-436, terceira ronda: a segunda revisão adversarial confirmou os oito achados fechados (o 1 parcial) e mediu novos — MAC encadeado, importado mais antigo do que o bundle recusado, chave nunca recriada, importado fundido deixa de ser exigido, «indisponível» distinto de «apagado» no step-ledger. Segunda tabela no ticket. | Equipa AOS |
+
+---
+
+## AOS-436 — O apagamento DSAR sobrevive ao restauro de um backup anterior
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | correcção |
+| Prioridade | P1 — o Art. 17 era desfeito por uma operação de rotina, em silêncio, e três documentos afirmavam o contrário |
+| Estimativa | M |
+| Dependências | AOS-093, AOS-249, AOS-322 (FECHADOS) |
+| Responsável sugerido | Responsável de Segurança |
+
+### Contexto
+
+O `POST /dsar/erase` destrói a KEK do titular no Vault (`vaultKeyVault.Delete`, chave Transit
+`aos-kek-<sha256(keyRef)>`) e sela `dsar.key_destroyed` no WORM. O `deploy/server/backup.sh` copia,
+no mesmo bundle cifrado, o volume de dados (`events.wal`, `worm.wal`), o volume do Vault — com as
+KEKs vivas nesse instante — e o `vault-init.json`. Retenção: 14 cópias no servidor e 30 na máquina
+do operador.
+
+**Medido, e não suposto:** restaurar um bundle anterior a um apagamento repõe a KEK e o conteúdo
+volta a decifrar. Dois sabores: Vault antigo com o WORM actual (a cadeia sabe do apagamento, mas
+`restoreShredPending` trata `dsar.key_destroyed` como confirmado e nada volta a perguntar ao Vault),
+e tudo antigo (a cadeia restaurada nem sabe que o apagamento aconteceu).
+
+Três documentos afirmavam o contrário — «a única operação que nenhum *restore drill* desfaz» —
+(`deploy/server/README.md` em duas passagens, `deploy/node/README.md`, `docs/conceitos-verificaveis.md`),
+e o mesmo texto vivia em dois comentários de código (`packages/cmd/aos/main.go`,
+`packages/kernel/agent-runtime/control/steer_channel.go`). A `tecnica/14` tinha duas células
+erradas: a do backup falava de `platform/backup` (desligado) e não do `backup.sh` que corre, e a da
+cifra do conteúdo dos runs afirmava «Ausente»/«texto-claro», contra o `contentCipher` composto desde
+AOS-093 e o próprio banner do nó.
+
+**Correcção a um relatório datado, registada aqui e não no relatório.** A
+`docs/reports/varredura-adversarial-2026-08-21.md` §2 refutou esta mesma acusação («o restauro de
+backup desfaz o crypto-shred») apoiando-se na linha da `tecnica/14` sobre `platform/backup`, que é
+sobre outro mecanismo. A acusação estava certa quanto ao `backup.sh`. O relatório fica como está.
+
+### Decisão (do dono): reaplicar no restauro — e o desenho que sobreviveu à revisão
+
+A primeira entrega (`2faff18`) foi **reprovada para produção** por uma revisão adversarial
+independente, que reproduziu oito achados com o nó real. O desenho abaixo é o refeito.
+
+**1. A pergunta é pela IDADE da chave, não pela existência.** Um titular apagado pode voltar a gerar
+dados e o `EnsureKey` re-provisiona uma KEK nova com o MESMO nome. O Vault devolve em
+`GET transit/keys/<nome>` o instante de criação de cada versão (Vault 1.18: `data.keys={"1":<unix>}`
+para `aes256-gcm96`, verificado pela coordenação): nascida antes (ou no mesmo segundo) da destruição ⇒
+a destruída, ressuscitada ⇒ destrói-se de novo, verifica-se (404) e sela-se `dsar.key_reshredded` em
+nome próprio (`nhi:aos-node/erasure-reconciler`); nascida depois ⇒ geração nova ⇒ intacta.
+
+**2. Só `dsar.key_destroyed` é autoridade.** O `dsar.key_reshredded` é prova e nunca é relido. Um
+instante mais de 5 min no futuro — na cadeia ou no registo — é rejeitado e nomeado.
+
+**3. Registo de apagamentos autenticado.** `AOS_DSAR_ERASURE_REGISTER` (produção:
+`/var/lib/aos/apagamentos-dsar.txt`) com uma chave do nó em `<registo>.chave` (32 bytes, `0600`,
+criada uma vez, no volume — viaja só dentro do bundle cifrado). Linha: `<id> <instante> <mac>`, com
+`id = HMAC(k, "aos436/id\n"‖nome)` e `mac = HMAC(k, "aos436/mac\n"‖id‖" "‖instante)`. Sem a chave o
+`id` não identifica o titular (o nome do Vault, sha256 público de `aos.audit.pii:<user>`, era
+invertível por dicionário) e uma linha não se forja. A reconciliação volta do `id` ao nome enumerando
+as chaves do Vault (`LIST transit/keys`). Escrito pela custódia a cada destruição **confirmada** —
+erase e expiração por TTL. `AOS_DSAR_ERASURE_REGISTER_IMPORT` aponta, no restauro, para o registo mais
+recente recolhido; as linhas válidas são unidas à cadeia e fundidas no registo próprio.
+
+**4. Portão de conteúdo NA CUSTÓDIA.** Enquanto a reconciliação estiver por provar, o
+`vaultKeyVault` recusa `WrapDEK`, `UnwrapDEK` e `EnsureKey`: nenhum conteúdo por-titular se lê nem se
+escreve — capturer, step-ledger, retoma, replay soberano e fila de planos passam todos por ali. O
+portão arma-se no instante em que o `Bootstrap` compõe a custódia. KEKs ressuscitadas que não se
+deixam destruir, ou cuja idade não se verifica, ficam fechadas uma a uma.
+
+**5. Legal hold consultado.** A re-destruição corre sob a barreira `BeginDestruction` e consulta
+`Shredder.Held` (titular e partições). Sob hold, a KEK **não** é destruída e fica fechada no portão;
+não tira o nó de rotação (um hold dura meses, e o que ele pede — preservação — o bloqueio dá).
+
+**6. Fontes independentes; um LIST; nenhuma chave pára as outras.** A cadeia é sempre processada;
+uma fonte que falha fica nomeada e mantém a passagem por provar. Um `LIST` diz o que existe; só as
+KEKs vivas levam um `GET`. Orçamento por passagem (30 s no arranque, 45 s por tick) com o que ficou
+por verificar contado e fechado.
+
+**7. Periódica.** A passagem corre em cada tick da manutenção do token da custódia (1 min), e não só
+no arranque — fecha o caso de um Vault restaurado com o nó a correr. O log só fala quando o desfecho
+muda.
+
+**8. Operação.** `backup.sh` copia o registo (sem o fragmento final de um ficheiro vivo) para
+`backups/apagamentos-<stamp>.txt` depois de o bundle verificar, e declara no `MANIFEST` se a chave vai
+no bundle; `backup-pull-gate.sh` aceita `apagamentos` e o `scp -f` desse nome exacto;
+`pull-backups.ps1` guarda o mais recente depois de verificar que contém todos os `id` do anterior;
+`restore-drill.sh` exige o registo (escape declarado `RESTORE_DRILL_SEM_REGISTO=1`), exige a chave no
+volume (ou `RESTORE_DRILL_CHAVE_DO_REGISTO`) e recusa se o nó não declarar a reconciliação PROVADA; o
+runbook do `deploy/server/README.md` §«Restaurar» ganha o passo, a substituir a definição no `.env`.
+
+**Ajustes ao enunciado, justificados.** (a) Duas variáveis e não uma: o registo próprio precisa da
+sua (o backup.sh procura-o num caminho fixo, e é a chave dele que autentica o importado). (b) A chave
+fica ao lado do registo próprio (`<registo>.chave`) e não em `secrets/`: nasce com o nó, sem passo de
+provisionamento, e viaja no mesmo tar do volume — o que faz o bundle trazê-la sempre que é posterior a
+ela. (c) Linhas rejeitadas não apagam as válidas da mesma fonte — a independência vale por linha.
+(d) Uma KEK sob hold não tira o nó de rotação; fica fechada no portão.
+
+### Revisão adversarial → correcção → sensor
+
+| # | Achado (confirmado) | Correcção | Sensor (mutação ⇒ vermelhos) |
+|---|---|---|---|
+| 1 | ALTO/CRÍTICO — registo importado forjado destrói a KEK viva; o selo relido eterniza a data; sem limite no futuro; hold não consultado | HMAC por linha; limite `agora+5min`; `key_reshredded` nunca é autoridade; hold consultado sob a barreira | sem MAC ⇒ 2 (`RegistoImportadoForjadoNaoDestroi`, `CicloCompleto…`); sem limite ⇒ 1 (`InstanteNoFuturo…`); selo como autoridade ⇒ 1 (`OSeloDoReApagamentoNaoEAutoridade`); sem hold ⇒ 1 (`LegalHoldNaoEDestruido…`) |
+| 2 | ALTO — «not-ready» não protege: o nó serve e decifra com a KEK ressuscitada | portão na custódia (`WrapDEK`/`UnwrapDEK`/`EnsureKey`), armado na composição | portão aberto ⇒ 3 (`ConteudoFechadoEnquantoPorProvar`, `LegalHold…`, `Milhares…`) |
+| 3 | ALTO — uma fonte opcional que falha aborta antes de a cadeia ser reconciliada | fontes independentes; a cadeia é sempre processada | abortar na primeira fonte falhada ⇒ 1 (`FonteQueFalhaNaoImpedeACadeia`) |
+| 4 | MÉDIO — linha rasgada permanente | fragmento final ignorado na leitura e truncado antes da escrita; linhas completas malformadas continuam rejeitadas | sem truncar ⇒ 1 (`LinhaCortadaETruncadaNaProximaEscrita`) |
+| 5 | MÉDIO (RGPD) — `aos-kek-<sha256>` invertível por dicionário | o registo leva `HMAC(k, nome)`; o selo sem titular leva o `id` | id reversível ⇒ 1 (`RegistoNaoRevelaOTitular`) |
+| 6 | MÉDIO — a cópia fora do bundle é do mesmo instante; «cobre (b)» exagerava | documentação: só acrescenta ao restaurar um bundle anterior ao último | documental (README do nó, README do servidor, backup.sh, `tecnica/14`) |
+| 7 | BAIXO — ps1 case-insensitive e `\d` Unicode; regex do drill mais estrita que o nó; `echo >>` no `.env` | `-cnotmatch`/`[0-9]`, dicionário ordinal, fragmento tolerado; regex do drill com a forma do parser; `sed -i …/d` antes do `echo` | exercido à mão (parser do PowerShell sem erros; leitor exercitado com maiúsculas, fragmento e linha malformada; regex do drill contra CRLF, tabs, fragmento e lixo) |
+| 8 | BAIXO — um GET por chave, aborta no 1.º erro | LIST + GET só das vivas; erro por chave fecha essa chave e continua; orçamento com contagem | GET por chave ⇒ 1 (`MilharesDeApagamentosUmLIST`); abortar no 1.º erro ⇒ 1 (idem) |
+| H1 | hipótese — Vault restaurado com o nó a correr não re-tenta | passagem em cada tick | só no arranque ⇒ 2 (`VaultRestauradoComONoACorrer`, `ConteudoFechado…`) |
+| H2 | hipótese — `key_destroyed` pré-AOS-249 sobre chave que nunca morreu | **não corrigido**: resíduo 7 | — |
+| H3 | hipótese — relógio do Vault adiantado deixa passar uma KEK | **não corrigido**: resíduo 3 | — |
+
+Mutação «desligar a reconciliação» (a composição devolve nil) na primeira correcção: **14** testes
+vermelhos (hoje, com os testes da segunda ronda: **20**).
+
+### Segunda revisão adversarial → correcção → sensor
+
+A segunda revisão independente confirmou os oito achados fechados — o 1 só **parcialmente** — e mediu,
+com o nó real e o Vault falso, os seguintes. Os testes do revisor serviram de ponto de partida.
+
+| # | Achado (confirmado) | Correcção | Sensor (mutação ⇒ vermelhos) |
+|---|---|---|---|
+| R1 | MÉDIO/ALTO — remover uma linha do importado desfaz o apagamento e a reconciliação declara-se PROVADA (MAC por linha, ninguém autentica o conjunto); também «importar um registo mais antigo» | MAC **encadeado** (cobre a linha anterior): remoção, inserção ou troca a meio parte a cadeia; o importado tem de conter **todos** os ids do registo próprio restaurado (a cadeia deixou de contar na terceira revisão — ver N4), senão é recusado como mais antigo. O **corte do fim** não se distingue de um registo mais antigo: resíduo 12 | sem encadeamento ⇒ 1 (`R2_LinhaRemovidaAMeioPartACadeia`); sem a verificação de contenção ⇒ 1 (`R2_ImportadoMaisAntigoQueOBundleERecusado`) |
+| R4 | MÉDIO — registo presente e chave perdida: o nó criava outra em silêncio e escrevia sob ela ⇒ `MAC invalido` para sempre | a chave **nunca** se cria por cima de um registo com entradas: falha nomeada, nada escrito; recuperação no runbook (repor a chave; em último caso pôr o registo de lado) | criar por cima ⇒ 1 (`R2_ChavePerdidaNaoSeRecria`) |
+| R5 | MÉDIO — arrancar sem a chave num bundle antigo com importação: o nó escrevia as linhas da cadeia sob chave nova e copiar depois a chave certa não recuperava; o passo 0 do runbook só imprimia | com importação pedida a chave **não** se cria; importado não aceite ⇒ **nada** se escreve no registo próprio; o passo 0 do runbook passa a **impedir** os passos seguintes | criar com importação ⇒ 2 (`R2_ImportadoSemChave…`, `CicloCompleto…`); escrever com o importado recusado ⇒ 1 (`R2_ImportadoMaisAntigo…`) |
+| R3 | MÉDIO — o importado era relido a cada tick; apagá-lo com a variável definida fechava tudo | aceite e fundido, deixa de ser lido no processo; a variável sai do `.env` (passo 4 do runbook) antes do próximo arranque — escolhido em vez de um marcador persistente porque o restauro é um acto único e um marcador seria mais estado para restaurar | sempre exigido ⇒ 1 (`R2_ImportadoFundidoDeixaDeSerExigido`) |
+| R2 | MÉDIO/BAIXO — 5 bytes de lixo no importado fecham tudo | **mantido** como decisão fail-closed: resíduo 10 | — |
+| R6 | BAIXO/MÉDIO — quem lê e escreve o volume destrói a KEK viva de qualquer titular | **declarado**: resíduo 13 (README do nó e `tecnica/14`) | — |
+| R7 | BAIXO — criação da chave não atómica | temporário + `fsync` + `link` (falha se existir); chave curta existente é erro nomeado, nunca substituída | exercido por `R2_ChaveNasceAtomica` (sem mutação: um crash a meio não se simula no teste) |
+| R8 | BAIXO — Vault restaurado com o nó a correr: até 1 tick de KEK ressuscitada a servir | **declarado**: resíduo 14 | — |
+| G | BAIXO — os testes «sem MAC» só avermelhavam em mensagens; faltava o que o MAC dá de facto | teste de uma linha **legítima re-datada** para depois do regresso do titular | MAC sem o instante ⇒ 1 (`R2_LinhaLegitimaReDatadaNaoDestroi`); sem MAC ⇒ 3 |
+| Op | BAIXO — drill instalava a `.chave` a 0644; runbook sem comando nem permissões | drill: 32 bytes verificados, `chown 65532` + `0600` pelo docker; runbook: `install -m 600 -o 65532 -g 65532` | exercido à mão (`bash -n`) |
+| H-a | hipótese — `StepLedger.Rebuild` tratava portão fechado como conteúdo apagado ⇒ passo já aplicado esquecido, efeito externo repetido | **CONFIRMADA por leitura** (`step_ledger.go`, `continue` em qualquer erro do cifrador) e corrigida: novo `durable.ErrConteudoIndisponivel`; o cifrador do nó devolve-o com o portão fechado **ou** com a KEK viva/por verificar; o Rebuild falha fechado com ele; o replay soberano responde 503 e não 410. A falha passageira do Vault (anterior ao AOS-436) fica fechada pelo mesmo caminho | Rebuild a saltar ⇒ 1 (`RebuildFalhaFechadoComConteudoIndisponivel`, em `durable`); cifrador a não distinguir ⇒ 1; portão a sair como apagado ⇒ 1 (`R2_IndisponivelNaoEApagado`) |
+| H-b | hipótese — relógio do nó adiantado destrói KEK nova | **declarada**: resíduo 3 (limitada pela folga de 5 min) | — |
+| H-c | hipótese — `WriteAt`/`Truncate` sem lock entre processos | **declarada**: resíduo 15 (um processo por volume) | — |
+| H-d | hipótese — erros do portão com `aos-kek-<sha256>` | **confirmada** e corrigida: nenhum erro nem log nomeia a KEK pelo nome do Vault (prefixo do `id` do registo, ou nada); também o `shredConfirmed` de AOS-322 e o comentário que dizia o nome «sem PII» | portão a nomear a KEK ⇒ 1 (`R2_ErrosNaoNomeiamAKEK`) |
+| H-e | hipótese — zeros antes de `\n` depois de um crash ⇒ linha malformada permanente | **declarada**: resíduo 11 (a linha é completa, e a leitura estrita rejeita-a) | — |
+
+### Terceira revisão adversarial → correcção → sensor
+
+A terceira verificação, independente, correu os testes de ataque da segunda contra o código novo:
+R3, R4, R7, G e H-d **FECHADOS**; R1 fechado a meio e para o importado mais antigo, com o corte do fim
+declarado; R5 fechado na ordem do runbook. Mediu quatro achados novos:
+
+| # | Achado | Correcção | Sensor |
+|---|---|---|---|
+| N1 | MÉDIO (RGPD/disponibilidade) — um titular apagado que VOLTOU tem KEK viva de geração nova; o conteúdo antigo dele falha com a KEK «viva» e sai como INDISPONÍVEL (503, Rebuild dos runs antigos a falhar em cada varrimento) quando é APAGADO | **declarado**: resíduo 17. Distinguir exigia mudar a porta partilhada `audit.KeyVault` (o `UnwrapDEK` só devolve um bool); a heurística barata reabria o H-a para os runs NOVOS do titular numa falha passageira — repetir um efeito externo é pior do que classificar mal conteúdo que continua ilegível. O comentário do cifrador, que prometia «indisponível nunca é apagamento», foi corrigido | — |
+| N2 | MÉDIO (disponibilidade) — uma linha corrompida a meio do registo próprio: apagá-la não recupera, porque a seguinte autentica a anterior | runbook: a recuperação (b) passa a cobrir a corrupção, com o porquê; resíduo 18 | — (runbook) |
+| N3 | BAIXO/MÉDIO — o nó arrancado antes de a importação estar configurada cria uma chave própria, e o passo 0 (`test -s … \|\| install`) mantinha-a | o passo 0 instala **sempre** a chave do bundle mais recente, por cima; a recuperação (b) cobre também este caso | — (runbook) |
+| N4 | BAIXO — a contenção contava os ids da CADEIA: o registo do mesmo tar pode estar atrás dela (ordem do `readdir`), e o registo legítimo desse bundle era recusado em cada tick | a contenção exige só os ids do **registo próprio**; o que a cadeia sabe é reconciliado pela cadeia | regra antiga reposta ⇒ 1 (`R3_RegistoDoMesmoBundleAtrasadoFaceACadeiaEAceite`) |
+
+### Critérios de Aceitação
+
+- [x] Uma KEK que a cadeia dá por destruída e que o Vault tem com nascimento anterior à destruição é
+      destruída de novo e `dsar.key_reshredded` fica selado; a de um titular que voltou fica intacta.
+- [x] Restaurar um bundle anterior com o registo importado (mesma chave) re-destrói a KEK, sela o facto
+      a nomear o `id` e funde o importado no registo próprio; sem a chave, nada é criado nem escrito,
+      e copiar a chave certa depois recupera.
+- [x] Registo forjado, formato antigo, chave de outro nó, linha re-datada, linha removida a meio,
+      instante no futuro e selo relido **não destroem** e ficam nomeados.
+- [x] Um importado mais antigo do que o bundle é recusado e o registo próprio fica intacto.
+- [x] Chave perdida com registo presente: falha nomeada, nunca uma chave nova; repor a chave recupera.
+- [x] KEK ressuscitada sob legal hold não é destruída e fica fechada; outro titular continua a servir.
+- [x] Enquanto a reconciliação estiver por provar, o `contentOpener` do replay soberano **não abre** e
+      nada novo se sela; portão fechado e Vault sem resposta saem como **indisponível** (503; o
+      step-ledger falha fechado), só a KEK destruída sai como **apagado** (410).
+- [x] Fontes independentes; linha cortada tratada; o registo não contém o titular nem o nome do Vault,
+      e os erros também não.
+- [x] 3000 apagamentos com 2 KEKs vivas: ≤ 10 GETs; uma KEK cuja leitura falha não impede a seguinte.
+- [x] O importado fundido deixa de ser exigido; o runbook tira a variável do `.env`.
+- [x] Scripts, runbook e documentação dizem o que o registo cobre e o que não, e o que o portão faz e
+      o `/readyz` não faz; a chave vai a 0600/uid 65532 no drill e no runbook.
+
+### Resíduos declarados
+
+1. **Apagamentos posteriores ao último backup** não estão em cópia nenhuma e voltam com qualquer
+   restauro. Para «perdi o servidor, restauro o último bundle», o registo fora do bundle não acrescenta
+   nada — é do mesmo instante.
+2. **O segundo.** A KEK re-provisionada no mesmo segundo da destruição é tratada como a destruída.
+3. **Relógios.** Destruição pelo relógio do nó, nascimento pelo do Vault: um Vault adiantado faz uma
+   KEK ressuscitada parecer nova; um nó adiantado (até à folga de 5 min) faz uma KEK nova parecer
+   ressuscitada (H-b).
+4. **Só a custódia Vault implementa a porta.** Declarado no banner, não imposto em produção.
+5. **Hold de uma KEK que só o registo conhece** não é consultável se a cadeia restaurada não nomear o
+   titular.
+6. **Expirações por TTL anteriores a AOS-436** não estão em registo nenhum.
+7. **`key_destroyed` anterior ao AOS-249** selado sobre uma chave que nunca morreu: o primeiro arranque
+   destrói-a, com os dados escritos depois do pedido de apagamento. Não reproduzido.
+8. **Selo perdido.** Re-destruição confirmada com o selo a falhar: o facto em falta só fica no log.
+9. **Bundle anterior à chave** precisa da chave do bundle mais recente; perder os dois é perder o uso
+   do registo (e, com a chave perdida e o registo posto de lado, os apagamentos que só ele conhecia).
+10. **Portão global** (R2): uma linha rejeitada numa fonte fecha o conteúdo de TODOS os titulares até
+    o operador corrigir a fonte — a escolha fail-closed pedida.
+11. **Linha completa corrompida** por um crash (zeros antes do `\n`, H-e) é rejeitada e fica até o
+    operador a corrigir — só o fragmento FINAL sem `\n` é tratado como escrita interrompida.
+12. **O corte do fim** de um registo, ou importar um registo mais recente do que o bundle mas mais
+    antigo do que o último, não se distingue por conteúdo (R1 residual). Confere-se pela contagem do
+    `pull.log`; a recolha recusa um registo que perdeu entradas.
+13. **Quem lê e escreve o volume de dados destrói a KEK viva de qualquer titular** (R6): a chave do
+    registo vive no volume, e o nome de uma KEK deriva de um keyRef público. Antes do AOS-436 o acesso
+    ao volume não bastava para isso; agora basta.
+14. **Vault restaurado com o nó a correr** (R8): até ao tick seguinte (≤ 1 min) a KEK ressuscitada
+    decifra e aceita escritas, que a re-destruição depois torna ilegíveis.
+15. **Um só processo por volume** (H-c): a escrita do registo não tem lock entre processos.
+16. **Não exercido em produção nem no ensaio.** Provado por teste com o nó real e um Vault falso; o
+    `restore-drill.sh`, o `backup.sh`, o `pull-backups.ps1` e o runbook não foram corridos contra o
+    servidor. (As premissas sobre o Vault — `data.keys` com segundos Unix, `LIST` vazio a 404, `LIST`
+    como lista de nomes, `DELETE` sem `deletion_allowed` a 400 — foram medidas num Vault 1.18 real.)
+17. **O conteúdo antigo de um titular que voltou sai como INDISPONÍVEL, não como APAGADO** (N1): 503
+    no replay soberano e o Rebuild dos seus runs antigos a falhar em cada varrimento de retoma.
+    Continua ilegível — nada se decifra —, mas a classificação mente e o varrimento gasta um GET por
+    tentativa. Fechar exige que o `UnwrapDEK` da porta `audit.KeyVault` distinga «este blob não é
+    desta chave» de «a custódia não respondeu».
+18. **Uma linha corrompida a meio do registo próprio só se resolve pondo o registo de lado** (N2),
+    perdendo as expirações por TTL e o que só veio por importação.
+
+### Estado
+
+**FECHADO.**
+
+---
+
+## AOS-437 — A cunhagem sem operador existia em código e não corria em lado nenhum: a imagem, os timers e o sensor
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano); o eixo de identidade é o EPIC-16 / D4 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | operação + implementação |
+| Prioridade | **P1** — é o que falta ao critério «sem ninguém no terminal» do AOS-417, do AOS-423 e do AOS-427 |
+| Estimativa | M |
+| Dependências | AOS-427 (o mandato e o `mint-mandated`, ADR-033) |
+| Responsável sugerido | Responsável de Plataforma |
+| Documentos de referência | `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md`, `docs/adr/ADR-017-supply-chain-node.md`, `deploy/server/docker-compose.prod.yml`, `deploy/server/systemd/`, `deploy/server/alerta-ancora.sh`, `packages/cmd/aos-orq/consumir.go` |
+
+### Contexto
+
+O AOS-427 entregou o mandato: o humano assina, o `aos-issuer mint-mandated` cunha sem operador, e
+o nó só aceita o emissor automático dentro do mandato. **Nada disso corria em produção**, e o que
+faltava foi medido no servidor em 2026-09-25:
+
+| O que faltava | Medido |
+|---|---|
+| O `aos-issuer` **não vinha na imagem** | o `deploy/node/Dockerfile` compilava `aos`, `aos-orq` e o `healthprobe`; e o ADR-017 §5 dizia «nunca na imagem do nó», sem distinguir binário de chave |
+| **Ninguém drenava a fila** de planos | o único timer do servidor era o `aos-tls-sync`; o `aos-orq` é `restart: "no"` e o `consume` drena uma vez e termina |
+| **Ninguém cunhava** | não havia chave `aos-issuer-auto` no Vault, nem política que só a deixasse assinar, nem token |
+| **Nenhum sensor** via a credencial a caducar | o `aos-orq` não expõe `/metrics`; o precedente que funciona é o `alerta-ancora.sh` |
+| **Nenhum gate** apanhava um binário na imagem sem atestação | um `COPY` novo no Dockerfile sem subject no sbom/sign/verify ficava só coberto pelo digest da imagem, e nada ficava vermelho |
+
+E uma afirmação falsa por corrigir: o AOS-434 escreveu que `AOS_BUDGET_MAX_TOKENS` estava **por
+definir** em produção. Estava a **200000 por run** — medido no contentor.
+
+### O que se entregou
+
+**A imagem.** O `aos-issuer` viaja na imagem assinada, atestado como o `aos-orq` no AOS-403 —
+subject `usr/local/bin/aos-issuer`, SBOM próprio, reprodutibilidade em `additionalSubjects`. O
+ADR-017 ganha uma emenda que resolve a ambiguidade da §5: **o binário vai na imagem, a chave
+nunca** (vive no Vault transit, ADR-033). E um teste novo lê o Dockerfile e os três scripts da
+cadeia, e fica vermelho se algum binário copiado para `/usr/local/bin/` não tiver subject.
+
+**O servidor.**
+
+| Peça | O que faz |
+|---|---|
+| `provision-issuer-auto.sh` | chave `aos-issuer-auto` (ed25519, não exportável), política que **só** assina, token periódico, pasta `/opt/aos/nhi` (uid 65532, `0700`); **controla** cada uma — incluindo que o token não toca nas KEKs dos titulares — e imprime a pubkey pelo próprio `aos-issuer` |
+| serviço `aos-issuer` (profile `issuer`) | `mint-mandated` sem flags de identidade; a chave do humano vem da **mesma** lista que o nó lê (`--signers`, novo) |
+| `aos-cunhar-nhi.timer` → `cunhar-nhi.sh` | a cada 15 min, com 45 de vida: o NHI tem sempre entre 30 e 45 min; renova o token do Vault a cada passagem |
+| `aos-drenar-planos.timer` → `drenar-planos.sh` | 5 min depois da última drenagem (nunca sobrepostas); **recusa reclamar** com o NHI ausente ou a menos de 10 min do fim |
+| `alerta-nhi.sh` (cron) | ntfy **antes** de faltar a credencial: NHI a < 20 min, mandato a < 7 dias, timer falhado |
+
+O NHI deixa de ser um ficheiro `0644` em `orq/` (a receita manual) e passa a viver numa pasta do
+uid 65532 em `0700`; os scripts do host lêem o prazo por um contentor com esse uid, sem rede.
+
+**O prazo do NHI lê-se sem jq nem Go no host**, com `sed` sobre o payload — e o mandato embebido
+também tem `exp`. O parser ancora em `"exp":N,"jti"`, que só o de topo tem, e
+`TestAOS437OExpDeTopoESeguidoDoJti` fixa essa forma: se a ordem das Claims mudar, os scripts
+passariam a ler o prazo do MANDATO (dias) e a drenagem nunca recusaria um NHI caducado. O parser
+foi exercido com um NHI real no BusyBox 1.37.
+
+### Critérios de Aceitação
+
+- [x] O `aos-issuer` viaja na imagem assinada, com subject, SBOM e reprodutibilidade próprios, e a
+      emenda ao ADR-017 que o autoriza.
+- [x] Um gate que avermelha um binário na imagem sem atestação.
+- [x] Provisionamento idempotente da chave, da política e do token, com controlo do que o token
+      consegue e do que não consegue.
+- [x] Timer de cunhagem, com escrita atómica do NHI.
+- [x] Timer de drenagem, sem sobreposição, que recusa reclamar sem credencial.
+- [x] Sensor que avisa antes de a credencial faltar e antes de o mandato caducar.
+- [x] Runbook no `deploy/server/README.md`: cerimónia do mandato, provisionamento, timers,
+      revogação, renovação e paragem.
+- [x] A afirmação falsa do AOS-434 corrigida, no ticket, no `budget_env.go` e no compose.
+- [ ] **Verificado em PRODUÇÃO**: um pedido entra por `POST /plans` e corre sem ninguém no
+      terminal. POR FAZER — exige a release com a imagem nova, e os passos do operador do runbook
+      (o mandato assinado na máquina dele, o provisionamento, as variáveis no `.env`, os timers).
+
+### Resíduos declarados
+
+1. **Não verificado em produção** — ver o critério por marcar.
+2. **Root no host do nó não é coberto** (ADR-033 §2.1): muda `AOS_MANDATE_SIGNERS` e reinicia.
+3. **O token do Vault do emissor é `0644` dentro de `secrets/` (`0700`)**, o mesmo precedente do
+   token do nó: o contentor corre como 65532 e lê-o pelo bind-mount. Só assina com
+   `aos-issuer-auto`, e o que assina só vale dentro do mandato.
+4. **O parser do prazo depende da ordem dos campos das Claims** — fixada por teste, não eliminada.
+5. **Uma cunhagem nunca usada não deixa rasto** (resíduo 4 do AOS-427): o `mint-mandated` corre
+   sem Event Store.
+6. **A drenagem é sequencial** (um `consume` de cada vez, até 3 pedidos por passagem): a vazão da
+   fila é a de um trabalhador.
+7. **Revogar o mandato não pára a máquina** (M1): o emissor não consulta o registo de revogação,
+   continua a cunhar, o nó recusa cada NHI, o `serve` classifica-o como transitório, o pedido volta
+   à fila e o `consume` sai com `0` — a cada 5 min, com uma decomposição ao modelo por tentativa. O
+   runbook manda parar os timers e retirar o mandato no mesmo acto. Fechar de todo exige que o
+   emissor pergunte ao nó, ou que o `consume` distinga a recusa de credencial.
+8. **Todos os planos da fila correm sob o humano do mandato**, seja quem for que os submeteu (M4):
+   o `POST /plans` grava o `principal` de quem pede, mas os runs levam o NHI do humano do mandato. A
+   cadeia on-behalf-of termina nele. Já era assim com o NHI manual do operador — mas aí havia um
+   operador a decidir drenar. Declarado no ADR-033 §5.
+9. **Só o primeiro pedido de cada drenagem vê o prazo do NHI** (B4): os seguintes são reclamados
+   sem nova verificação. Com a cunhagem a cada 15 min e o `consume` a reler o ficheiro a cada
+   submissão, só morde se a cunhagem parar a meio de uma drenagem longa.
+10. **O `aos-issuer` está na rede `default`** (B7), onde alcança o nó, o IdP e o LiteLLM; só precisa
+    do Vault. Uma rede dedicada obrigaria a mexer no serviço `vault`, o que o reinicia.
+11. **Não há procedimento de rotação do token do emissor** (B9); é filho do root, e revogar o root
+    revoga-o — o mesmo padrão do token do nó.
+12. **As chamadas ao Vault do controlo por ACL** (`sys/capabilities`, `auth/token/lookup` com o
+    token por stdin) **não foram exercidas contra um Vault real** — o Docker não estava disponível.
+    Correm no primeiro `provision-issuer-auto.sh`, que falha fechado se a forma da resposta divergir.
+
+**Revisão adversarial antes do merge (2026-09-25)** — um ALTO e quatro MÉDIOS:
+
+| Achado | Correcção |
+|---|---|
+| **ALTO** — o controlo negativo da política testava uma chave inexistente (404 com qualquer política; `encrypt` numa chave inexistente é um *create*), e um token existente era aceite sem verificar as políticas | controlo pela ACL (`sys/capabilities`, que responde pelo caminho e não pela existência) em oito caminhos proibidos, e políticas do token exactamente `[aos-issuer-auto]` |
+| M1 — revogar não pára a máquina | runbook: parar os timers e retirar o mandato no mesmo acto; resíduo 7 |
+| M2 — o sensor não via a drenagem parada (timer `inactive`, não `failed`) | `is-active` dos dois timers + carimbo da última drenagem bem-sucedida (alerta a 5 h) |
+| M3 — o teste da cadeia só casava a forma canónica do `COPY` | toda a linha `COPY`/`ADD` do estágio final tem de ser canónica; 6 variantes com mutação |
+| M4 — os planos correm sob o humano do mandato | declarado: resíduo 8, ADR-033 §5 |
+| BAIXOS | bind de um mandato inexistente criava uma directoria (verificado antes do compose); `Persistent=` sem efeito removido; `flock` e `--max 3` com 4h; prazo do NHI com tecto; comentário falso do deploy corrigido; `allow_plaintext_backup` verificado |
+
+### Estado
+
+**ABERTO** — entregue em código e em runbook; falta a verificação em produção, que depende de
+passos do operador.
+
+---
+
+## AOS-438 — A drenagem gravava como FALHADO um plano bem-sucedido, e não largava a posse
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | **P1** — cada plano bem-sucedido era gravado como falha e pagava uma decomposição extra ao modelo |
+| Estimativa | S |
+| Dependências | AOS-423 (o `consume`), AOS-437 (a drenagem em produção que o expôs) |
+| Documentos de referência | `packages/cmd/aos-orq/consumir.go`, `packages/cmd/aos-orq/main.go` (`codigoDe`) |
+
+### Contexto — medido em produção, 2026-09-25
+
+A prova ponta-a-ponta do AOS-437 submeteu `plan-e2e-437-1790336067` por `POST /plans`. O
+drenador reclamou-o, o plano foi aprovado (L4), o nó `n1` correu **e terminou `complete`**: o run
+filho `plan-e2e-437-1790336067~n1` existe no nó, `completed`, com a resposta certa — o que prova
+que o nó aceitou o NHI cunhado sob o mandato. **E o desfecho final gravado foi `7` (falha).**
+
+A reprodução controlada (`plan-e2e-437b-1790336718`, drenagem à mão com o output guardado) deu:
+
+```
+execucao: n1=complete
+desfecho: run=plan-e2e-437b-1790336718 codigo=1 classe=transitorio
+```
+
+Dois defeitos, no `consume`:
+
+1. **`codigoDe(nil)` devolvia `exitErro` (1).** O `main` só o chama com erro; o `consume` chamava-o
+   com o retorno do `serve` tal-qual. Todo o plano bem-sucedido era reportado como falha
+   TRANSITÓRIA, voltava à fila, e a retoma — que corre `serve --goal` outra vez — re-decompunha com
+   o modelo, produzia outro organigrama, e o gate recusava-o (AOS-412, saída `7`, terminal).
+2. **O `serve` do `consume` não largava a posse** (faltava `--release`). O lease do run ficava vivo
+   até ao TTL, e duas das quatro gerações do plano medido foram gastas contra ele (saída `3`).
+
+Os testes do AOS-423 cobriam a tabela código→classe, mas nunca a tradução do retorno do `serve` —
+que era onde estava o defeito.
+
+### O que se entregou
+
+- `codigoDe(nil)` = `exitOK`, com o porquê no código.
+- O desfecho passa a derivar-se numa função própria (`desfechoDoServe`), e a invocação do `serve`
+  noutra (`argsDoServe`), que passa `--release`.
+- `aos438_desfecho_test.go`: sem erro ⇒ `(0, terminal)`; os erros continuam classificados; o `serve`
+  do `consume` larga a posse. Mutações: tirar o caso `nil` ⇒ 1 vermelho; tirar o `--release` ⇒ 1.
+
+### Critérios de Aceitação
+
+- [x] Um `serve` sem erro é reportado ao nó como `terminal` com código `0`.
+- [x] O `serve` do `consume` larga a posse no fim.
+- [ ] **Verificado em PRODUÇÃO**: um plano submetido por `POST /plans` fica `terminal` com
+      `exit_code` 0, numa só geração. Exige a release com esta correcção.
+
+### Resíduos declarados
+
+1. **Uma retoma genuína depois da aprovação continua a falhar.** Se o `serve` falhar DE FACTO de
+   forma transitória depois de o plano estar aprovado, a retoma corre `serve --goal` outra vez, o
+   modelo re-decompõe, e o gate recusa o organigrama novo (AOS-412). Fechar exige que o `consume`
+   retome pelo documento aprovado (`--plan-doc`) em vez do objectivo. **Entregue pelo AOS-442**
+   (por verificar em produção).
+2. **Os dois planos de prova ficam gravados como falhados** no nó — o primeiro com `7`; o segundo
+   seguirá o mesmo caminho até esta correcção estar implantada. O trabalho deles foi feito.
+
+### Estado
+
+**ABERTO** até à verificação em produção.
+
+---
+
+## AOS-439 — O pedido de plano esquece quem o pediu: os runs correm sob o humano do mandato, seja quem for que submeteu
+
+<!-- Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). Implementa o ADR-035 e a
+     emenda §7 do ADR-033 (2026-09-27): os ADR citados neste bloco são IMPLEMENTAÇÃO. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura + implementação |
+| Prioridade | **P1** — o humano do mandato responde por tudo o que qualquer submissor autorizado pedir |
+| Estimativa | M |
+| Dependências | AOS-423 (fila), AOS-427/437 (mandato e drenagem) |
+| Documentos de referência | `packages/cmd/aos/plan_claim.go`, `packages/cmd/aos-orq/node_client.go`, `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md` §5 |
+
+### Contexto — medido em produção
+
+Em a prova ponta-a-ponta de 2026-09-25 (`plan-e2e-docread-1790340990`, v0.1.33): plano submetido por `POST /plans` pelo service account `aos-reader`, drenado pelo timer, dois nós, `terminal` com `exit_code 0` na geração 1, a chamada à tool foi selada como `agt-drenador` com a cadeia
+`human:a2b5947c-…` → `agt-drenador` — o humano que assinou o MANDATO —, embora o pedido tenha sido
+feito pelo `aos-reader`. O principal de quem submete fica gravado no `planrequest.submitted`
+(`plan_ingress.go:248`) e serve só a titularidade do `GET /plans/{id}`; **não viaja** na
+reclamação (`respostaDeReclamo`, `plan_claim.go:266-272`; `pedidoReclamado`, `node_client.go:389-395`)
+e o `aos-orq` usa um NHI único por ficheiro para todos os pedidos (`node_client.go:115-125`, `:316`).
+
+Está declarado como resíduo — ADR-033 §5 resíduo 7, AOS-437 resíduo 8 — e sem ticket que o feche.
+No fluxo manual havia um operador a decidir drenar cada pedido; com a drenagem automática, a
+responsabilidade de quem assinou o mandato estende-se a qualquer submissor autorizado sem que ele
+veja o pedido.
+
+### Decisões a tomar primeiro (do dono)
+
+1. **Quem é o humano responsável de um plano drenado?** (a) o submissor, e o mandato passa a
+   autorizar a MÁQUINA a agir por ele (a cadeia `human:<submissor>` → `agt-drenador`, o mandato como
+   prova de que o drenador pode cunhar para aquele submissor); (b) o humano do mandato, e o
+   submissor fica apenas registado; (c) um mandato por submissor.
+2. Um submissor que é um service account (como o `aos-reader`) pode pedir planos? Se sim, que
+   humano responde por ele?
+
+### Decisões tomadas (dono, 2026-09-26)
+
+1. **B+**: o humano do mandato continua a RAIZ da cadeia; o SUBMISSOR viaja até ao run filho e fica
+   SELADO como `requested_by`. O vínculo é DERIVADO PELO NÓ do seu log da fila — nunca aceite do
+   corpo. O mandato passa a enumerar os `requesters`; o nó recusa o `POST /runs` quando o submissor
+   não consta deles.
+2. Um service account só submete se estiver nomeado nos `requesters`.
+3. **Pré-requisito**: `POST /plans/claim` e `POST /plans/outcome` restritos a uma lista FECHADA de
+   drenadores (`AOS_PLAN_DRAINERS`, fail-closed).
+
+### Critérios de Aceitação
+
+- [x] Decisão registada em ADR: **ADR-035** (novo) e **ADR-033 §7** (emenda aditiva a §2.1 e §5:
+      `requesters`, janela dos v1, resíduo 3 fechado).
+- [x] O principal do submissor viaja do `planrequest.submitted` até ao run filho e fica no registo
+      de decisão da tool call — `requested_by` e `mandate_id` no evento `tool.call.*` SEMPRE, e
+      **selados no WORM v4 com `AOS_AUDIT_WRITE_V4=1`** (`platform/audit/record.go`, `SchemaV4`;
+      expand/contract da revisão adversarial: por omissão escreve-se v3, para o rollback continuar
+      possível — `TestAOS439PorOmissaoOWORMEscreveV3EOEventoLevaOSubmissor`); o `plan_request` do
+      `POST /runs` é verificado em `packages/cmd/aos/submissor_do_plano.go`. O drenador fecha com a
+      saída 11, sem planear, os pedidos de quem o mandato não nomeia
+      (`TestAOS439ConsumeNaoPlaneiaPorQuemOMandatoNaoNomeia`; sob um v2 também o pedido sem
+      submissor, e um NHI cunhado sob outro mandato aborta a drenagem antes de reclamar).
+- [x] Teste que liga o submissor de um `POST /plans` à cadeia selada do run filho —
+      `TestAOS439SubmissorViajaAteAoSeloEOsDadosSaoDele` (nó durável e soberano, emissor mandatado:
+      `POST /plans` pela submissora → reclamação pelo drenador → `POST /runs` com o vínculo → a
+      decisão selada da tool call nomeia a submissora e o mandato, com a raiz no humano do mandato).
+      As recusas: `TestAOS439VinculoRecusaCadaFalha`, `TestAOS439MandatoRecusaSubmissorForaDosRequesters`,
+      `TestAOS439VinculoExpiradoOuDeOutraRegiao`; a lista de drenadores, vermelha antes da guarda:
+      `TestAOS439ReclamacaoRecusaQuemNaoEDrenador`.
+- [ ] **Verificado em PRODUÇÃO**: um plano submetido por um humano deixa a sua identidade no selo
+      (com o WORM v4 ligado). Passos do dono em `deploy/server/README.md` §«Submissor do plano e
+      titular do run filho».
+
+### Estado
+
+**IMPLEMENTADO — por verificar em produção.** Código, testes e emenda documental entregues
+(2026-09-27); falta o critério de produção, que depende de o dono re-assinar o mandato com
+`--requesters` e de um plano submetido por um humano.
+
+---
+
+## AOS-440 — O conteúdo dos runs filhos é cifrado sob a chave de quem chamou o nó, e não sob o titular dos dados
+
+<!-- Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). Implementa o ADR-035
+     §2.5 (2026-09-27): os ADR citados neste bloco são IMPLEMENTAÇÃO. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de conformidade + implementação |
+| Prioridade | **P1** — um pedido de apagamento do titular não apaga o conteúdo; apagar a chave do service account apaga o de todos |
+| Estimativa | M |
+| Dependências | AOS-439 (o submissor tem de chegar ao run), AOS-429 (titular do objectivo) |
+| Documentos de referência | `packages/cmd/aos/api.go`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/activity/dispatch.go`, `tecnica/14_Matriz_Conformidade.md` |
+
+### Contexto — medido em produção
+
+Em a prova ponta-a-ponta de 2026-09-25 (`plan-e2e-docread-1790340990`, v0.1.33): plano submetido por `POST /plans` pelo service account `aos-reader`, drenado pelo timer, dois nós, `terminal` com `exit_code 0` na geração 1, o resultado da `doc_read` e as capturas de replay foram seladas com
+`key_ref: aos.audit.pii:91a30a69-…` — a KEK do service account `aos-reader`, que é quem chama
+`POST /runs` a partir do `aos-orq`. O titular é derivado do chamador HTTP (`api.go:707-728`, `:784`,
+`:812`) e propagado à captura (`loop.go:497`) e ao step-ledger (`dispatch.go:229`).
+
+Duas consequências:
+
+- **Um pedido de apagamento do humano que pediu o plano não apaga este conteúdo** — a KEK dele não o
+  selou.
+- **Apagar a KEK do service account apaga o conteúdo de TODOS os planos** que ele submeteu, de todos
+  os humanos.
+
+O AOS-429 decidiu «o titular é o principal do submissor» para o OBJECTIVO do pedido
+(`plan_objetivo_selado.go:60-66`); o conteúdo dos runs filhos nunca foi decidido. A observação O2 da
+auditoria de 2026-08-17 («duas credenciais, sem ligação entre si») apontava para isto e não foi
+seguida. DEF-307 trata o alcance do crypto-shredding de forma genérica.
+
+### Decisões tomadas (dono, 2026-09-26)
+
+1. O titular do conteúdo do run filho é o **submissor autenticado** do plano, derivado pelo nó pelo
+   MESMO vínculo do AOS-439. Campo novo `Goal.Subject`, **separado** de `Principal.NHIID` (vazio ⇒
+   `Principal.NHIID`, compatível com os registos antigos). O produtor dos eventos e o atributo do
+   span continuam o principal.
+2. O conteúdo já selado sob o `aos-reader` migra-se por **M1** (destruir a KEK do `aos-reader` uma
+   vez, depois de inventariar as partições `~`) — operação do dono, documentada, não executada.
+3. Declarados, sem implementação: conteúdo sobre terceiros dentro de um run fica sob o submissor; um
+   `POST /runs` directo por um service account tem a SA como titular; documentos de plano em claro
+   no `aos-orq`, veredictos no WAL do orquestrador e `--goal` na linha de comando ficam fora do
+   crypto-shredding (ticket a abrir).
+
+### Critérios de Aceitação
+
+- [x] Decisão registada na matriz de conformidade (`tecnica/14`, linha AOS-440) e em ADR
+      (**ADR-035** §2.5).
+- [x] O conteúdo de um run filho é selado sob o titular decidido, e um teste prova que o apagamento
+      desse titular o torna ilegível e não toca no de outros —
+      `TestAOS439SubmissorViajaAteAoSeloEOsDadosSaoDele`: a captura do turno e o output da tool
+      (step-ledger) do run filho saem selados sob a submissora; `/dsar` dela ⇒ `ErrDecrypt` nos
+      dois; o run de outro titular continua legível. Pontos tocados: captura (`loop.go`),
+      step-ledger pela Activity (`dispatch.go`, `Principal.Titular()`), registo de retoma
+      (`integration/resume_records.go`), `replayPlanFor` (`resume.go`, `crash_resume.go`), selo
+      terminal e saga, ingestão. A hipótese da retoma soberana confirmou-se e corrigiu-se —
+      `TestAOS440RetomaSoberanaComACredencialDoProprioAgente` (vermelho com a comparação antiga) — e
+      a retoma compara agente, humano e mandato (`TestAOS440RetomaComparaHumanoEMandato`).
+      **Excepção declarada:** o objectivo redigido em `memory.episodic` (em claro, pré-existente)
+      sobrevive ao apagamento — ADR-035 §5.
+- [ ] **Verificado em PRODUÇÃO**: o `key_ref` do run filho de um plano é o do titular decidido.
+      Passos do dono em `deploy/server/README.md` §«Submissor do plano e titular do run filho».
+
+### Estado
+
+**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-09-27); falta o
+critério de produção e a migração M1, ambos do dono.
+
+---
+
+## AOS-441 — O risco de um plano decide-se por um snapshot editado à mão, que ninguém compara com o catálogo do nó
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | **P1** — a aprovação automática (L4) confia num ficheiro que esteve semanas com a tool com o nome errado |
+| Estimativa | M |
+| Dependências | AOS-231 (validador), AOS-409 (4.º eixo), AOS-413 (lista-branca do nó) |
+| Documentos de referência | `packages/cmd/aos-orq/snapshot.go`, `packages/cmd/aos-orq/plan_gate_wiring.go`, `deploy/server/README.md` §executor de nós |
+
+### Contexto — medido em produção
+
+O `/opt/aos/orq/snapshot.json` de produção nomeava a tool `fs.read`; o nó chama-lhe `doc_read`
+(`AOS_MODEL_TOOLS`). Um plano que pedisse a tool ficaria sem nenhuma utilizável — fail-closed, mas
+sem fazer nada. Estava assim desde o AOS-395 e foi encontrado a olho, em 2026-09-25, e corrigido à
+mão (`snapshot.json.antes-doc_read` guardado). O digest da tool é o marcador `sha256:aaa`.
+
+O `hash` do snapshot é um rótulo que o ficheiro declara sobre si (`snapshot.go:52`, `:100`); o gate
+compara rótulos (`plan_gate_wiring.go:76-84`) e sela o digest do conteúdo (`:86-108`), mas **nada
+compara o conteúdo com as tools que o nó tem**. O próprio `snapshot.go:17-22` diz «em produção o
+snapshot vem do Registry (REG)». O AOS-409 (DEF-275) só toca a fonte do 4.º eixo.
+
+### O que se entregou
+
+- **O nó expõe o seu catálogo** em `GET /tools` (`packages/cmd/aos/catalogo_de_tools.go`), plano de
+  dados: por tool, o nome que a lista-branca compara, a versão, o digest do contrato e os dois eixos
+  de risco que o manifesto declara, normalizados fail-closed (`egress` não declarado ⇒ `unknown`;
+  `reversibility` que não seja «reversible» ⇒ `irreversible`). O digest é um **pin do contrato**
+  `KindTool` — schema de entrada, scopes e egress —, calculado pela fórmula do registo assinado; não
+  cobre a capability, o recurso, a reversibilidade nem o binding de sandbox, e **não prova registo
+  assinado**: em produção o `AOS_MODEL_TOOLS_REGISTER` vem vazio e nada é assinado. Compõe-se uma
+  vez no arranque (`serveAPI`), do mesmo manifesto que o nó oferece ao modelo; sem
+  `AOS_MODEL_ENDPOINT` é vazio. Com o gate soberano composto exige a credencial das rotas irmãs
+  (`/plans/claim`, `/plans/outcome`); sem ele serve pelo read-path legado, como o `GET /runs/{id}`.
+- **O `aos-orq` confere o snapshot com esse catálogo** (`conferirSnapshotComONo`, `snapshot.go`)
+  no arranque do `consume` — antes de reclamar qualquer pedido, e passa a exigir `--snapshot` — e
+  do `serve` com `AOS_ORQ_NODE_URL` — antes de abrir o WAL e de tomar posse. Recusa com
+  `ErrSnapshotDivergeDoNo` se uma tool do snapshot não existir no nó, se o digest não for o do nó,
+  ou se `egress`/`reversibility` forem **menos arriscados** do que o nó declara (mais conservador é
+  aceite; `unknown` no nó conta como o pior caso). Cada divergência vem nomeada, e a lista das tools
+  do nó vem com o digest a copiar. Um catálogo que não se lê (transporte, credencial, nó sem
+  `GET /tools`) ou com nomes repetidos recusa com `ErrCatalogoDoNoIlegivel` — fail-closed, mas sem
+  afirmar uma divergência que não se mediu. O `serve` usa daí em diante o snapshot **conferido**, e
+  não uma segunda leitura do ficheiro.
+- Testes: `aos441_snapshot_vs_catalogo_test.go` (aos-orq) e `aos441_catalogo_de_tools_test.go`
+  (nó), este último sobre o manifesto real de `deploy/server/model-tools/tools.json`, amarrando o
+  digest servido ao do registo, e batendo no servidor que o `serveAPI` constrói
+  (`TestAOS441ServeAPIServeOCatalogo`; apagar o `WithToolCatalog` avermelha-o).
+
+### Critérios de Aceitação
+
+- [ ] O snapshot passa a derivar-se do catálogo do nó (ou do REG), com os digests reais das tools.
+      **Parcial:** os digests reais passam a ser **obrigatórios** (um digest que não é o do nó é
+      recusado) e o nó serve-os, mas o snapshot não é gerado — ver o resíduo 1.
+- [x] Um snapshot cujas tools não existam no nó é RECUSADO no arranque do `consume`/`serve`, com a
+      divergência nomeada. `TestAOS441ConsumeRecusaSnapshotDivergenteAntesDeReclamar` (zero
+      reclamações) e `TestAOS441ServeConfereOSnapshotAntesDaPosse` (binário real: sai `1`, nomeia
+      `fs.read` e `doc_read`, não abre o WAL; e o controlo com o catálogo certo, que toma posse).
+- [x] Teste: renomear uma tool no catálogo avermelha. `TestAOS441RenomearUmaToolNoCatalogoAvermelha`
+      (o caso de produção: `fs.read` → `doc_read`).
+- [x] **Verificado em PRODUÇÃO** (v0.1.34, 2026-09-26): o snapshot em uso bate com o catálogo do nó.
+      Depois do deploy, `GET /tools` serviu `doc_read` (`sha256:cc05b325…`) e `web_post`
+      (`sha256:c8206d3d…`), e a drenagem recusou o snapshot com `sha256:aaa` — o serviço ficou
+      `failed`, como a transição previa. Corrigido o digest (rótulo `sha256:snap-aos441-prod`; cópia
+      em `orq/snapshot.json.antes-aos441`), uma drenagem imprimiu «snapshot: 1 tool(s) conferida(s)
+      com o catálogo do nó» e a do timer seguinte ficou verde. **Controlo negativo:** uma cópia do
+      snapshot com a tool chamada `fs.read` foi recusada antes de reclamar — «tool "fs.read" não
+      existe no nó (o nó tem: doc_read sha256:cc05…, web_post sha256:c820…)».
+
+### Resíduos declarados
+
+1. **A derivação completa do snapshot não se fez, porque exigiria inventar eixos de risco.** O
+   manifesto do nó (`AOS_MODEL_TOOLS`) declara `egress` e `reversibility`, mas não a
+   `sensitivity` nem a admissibilidade; gerar o snapshot a partir do catálogo obrigaria a
+   escolhê-las aqui. Continuam escritas à mão, e o que é conferível passa a sê-lo. Fechar exige que
+   o manifesto do nó (ou o REG) declare a sensibilidade.
+2. **A versão não se compara.** O manifesto do nó não versiona tools — o registo assinado pina
+   todas em `1.0.0` — pelo que uma diferença de versão não diria nada sobre a tool.
+3. **A conferência é no arranque.** Um nó reiniciado com outro manifesto a meio de uma drenagem só
+   é apanhado pelo `serve` do pedido seguinte, que também confere antes da posse.
+4. **A transição em produção tem uma ordem, e o código não a impõe.** O digest de cada tool entra
+   no `digestDoSnapshot` que o `plan.validated` sela, e o `exigirSnapshotSelado` recusa materializar
+   sob outro conteúdo. Por isso um plano pendente ou em voo validado sob o snapshot com
+   `sha256:aaa` deixa de correr quando o snapshot é corrigido: sai com `1`, que é transitório, e é
+   re-oferecido até ao tecto de pendentes sem nunca correr. E, entre o deploy e a correcção do
+   `orq/snapshot.json`, a drenagem recusa em cada tick. A ordem — drenar e decidir os pendentes
+   **antes** do release, corrigir o snapshot com os digests que a recusa (ou o `GET /tools`) lista
+   logo depois do deploy — está em `deploy/server/README.md` §executor de nós.
+
+### Estado
+
+**FECHADO**, com o critério da derivação por marcar: a conferência está em produção e
+provada nos dois sentidos, e o snapshot continua escrito à mão porque o nó não declara a
+sensibilidade nem a admissibilidade (resíduo 1). O `web_post` ficou de fora do snapshot de
+produção de propósito — admiti-lo é uma decisão sobre uma tool de egress externo e irreversível,
+não uma correcção.
+
+*Nota (2026-09-26, AOS-069 / ADR-034 §2.7):* o **catálogo do nó** de produção passou a ter só
+`doc_read` — o `web_post` saiu de `deploy/server/model-tools/tools.json` por decisão do dono. Chega a
+produção com a próxima release (o `deploy.yml` sincroniza `deploy/server/model-tools/` sem
+`--ignore-existing` e o deploy recria o nó). A conferência deste ticket continua a bater: o snapshot
+de produção já só nomeava `doc_read`, e as tools do nó que o snapshot não nomeia não contam. O
+exemplo de recusa em `deploy/server/README.md` foi actualizado.
+
+---
+
+## AOS-442 — A retoma de um plano aprovado decompõe de novo e é recusada; um plano à espera de humano nunca é retomado
+
+<!-- rtm: menção -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25).
+     EXCEPÇÃO DECLARADA: este ticket EMENDA o ADR-030 §2.6, e a emenda está registada no próprio
+     ADR, que o nomeia. O marcador fica porque o parser da RTM é tudo-ou-nada, e os restantes
+     (ADR-005, ADR-018, ADR-031) são de facto só menção. *(Desde AOS-473: o marcador de bloco saiu; estas menções estão em trechos, e a emenda do ADR-030 conta como implementação.)* -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | **P1** — uma falha transitória depois da aprovação torna-se definitiva, e paga uma decomposição ao modelo |
+| Estimativa | M |
+| Dependências | AOS-412 (plan-doc), AOS-423 (consume), AOS-438 (resíduo 1) |
+| Documentos de referência | `packages/cmd/aos-orq/consumir.go`, `packages/cmd/aos-orq/plan_gate_wiring.go`, `packages/cmd/aos/plan_claim.go` |
+
+### Contexto — medido em produção
+
+Na primeira prova do AOS-437 (`plan-e2e-437-1790336067`), a retoma do `consume` correu
+`serve --goal` outra vez: o modelo re-decompôs, saiu outro organigrama, e o gate recusou-o
+(`plan_gate_wiring.go:196-207`, saída `7`, terminal). O AOS-438 fechou a CAUSA desse caso (um
+sucesso reportado como falha), e deixou declarado como resíduo 1 o mecanismo: o `argsDoServe` usa
+sempre `--goal` (`consumir.go:173-184`), e uma falha REAL depois da aprovação continua a acabar assim.
+
+E um segundo buraco, encontrado pela discovery: `aguarda_humano` marca o pedido como terminado na
+fila (`plan_claim.go:202-203`). Depois da decisão humana, **nada no caminho da fila volta a correr o
+pedido** — fica aprovado e parado.
+
+### O que se entregou
+
+Decisão registada como **emenda ao ADR-030 §2.6** (o `aguarda_humano` estaciona; não fecha).
+
+- **Onde vive o documento aprovado.** Fora do log, como sempre (<!-- rtm: menção -->ADR-005<!-- /rtm: menção -->): o `serve` escreve-o por
+  `--plan-out` quando o plano é VALIDADO — pendente ou aprovado, e não só pendente como até aqui — e
+  **antes** de apensar os factos (`gatearPlano`), para que nunca haja `plan.validated` sem documento.
+  A escrita é atómica (temporário, `fsync`, `rename`). O `consume` dá a cada pedido um ficheiro
+  em `planos/` ao lado do WAL, com o SHA-256 do `run_id` por nome (`--plan-dir` para outro sítio;
+  obrigatório sobre `--nats`), e apaga-o quando reporta um desfecho `terminal`.
+- **A retoma** (`retoma_do_plano.go`) é decidida pelo LOG do run, lido antes do `serve`: sem
+  `plan.validated`, `serve --goal --plan-out` (um documento que lá esteja não é usado); validado e
+  decidido, `serve --plan-doc` e o gate decide; validado sem decisão e com nós de risco,
+  `aguarda_humano` SEM correr o `serve`; validado sem decisão e sem risco (auto-aprovação a meio),
+  `--plan-doc`; fora do prazo, ou validado sem documento, `7` sem `serve`.
+- **O `--plan-doc` exige o organigrama do `plan.validated`** do run quando ele existe e ainda não
+  há decisão, em qualquer ramo do gate (`materializar`); com decisão, o gate já exigia o hash
+  decidido. Antes, um documento benigno com o mesmo `capabilities_hash` era auto-aprovado por cima
+  de um plano de risco pendente. O `serve --goal` repetido não é coberto (resíduo 7).
+- **Recusas deterministas fecham o pedido:** documento que não descodifica, não valida, não é o
+  validado ou não se lê, e snapshot que não é o declarado ou o selado, saem com o código novo `10`
+  (`exitDocumentoRecusado`, terminal). Como `1` genérico eram transitórios e voltavam à cabeça da
+  fila para sempre.
+- **O `aguarda_humano` no nó** (`plan_claim.go`): estaciona e é re-oferecido de 10 em 10 min
+  (`intervaloDeReverificacao`) numa geração nova; só `terminal` fecha; não conta para a marca de
+  água. O nó continua a não saber o que é uma decisão (<!-- rtm: menção -->ADR-018<!-- /rtm: menção -->): quem re-verifica é o `consume`,
+  pelo documento, sem modelo e sem gastar o `--max`. O `GET /plans/{id}` passou a escolher o
+  desfecho terminal de maior geração (antes dependia da ordem de um mapa).
+- **O prazo do pendente** (24 h) passa a ser imposto pelo `consume` e pelo `serve` (saída `7`),
+  para a re-oferta de um plano que ninguém decide acabar; um carimbo ilegível conta como expirado.
+- **Um pedido cujo objectivo selado já não abre** deixa de tapar os seguintes: a reclamação salta-o
+  e entrega o próximo (o 503 fica só para quando nada era entregável).
+- Testes: `aos442_retoma_test.go` (aos-orq, `consume` real contra um nó falso, com o fixture a
+  devolver OUTRO organigrama na retoma e as decomposições contadas) e
+  `aos442_reverificacao_test.go` (nó, projecção e estado servido). Mutações: `argsDoServe` sempre
+  por `--goal` ⇒ 2 vermelhos; documento só no pendente ⇒ 1; `aguarda_humano` a fechar ⇒ 2; prazo
+  nunca expirado ⇒ 1. A revisão adversarial acrescentou: snapshot trocado entre tentativas ⇒
+  terminal 10; documento truncado ⇒ terminal 10; documento plantado num run novo não é usado;
+  `--plan-doc` benigno sobre um pendente ⇒ 10; pedido ilegível à frente não tapa o seguinte; o
+  documento de um pedido fechado é apagado.
+
+### Critérios de Aceitação
+
+- [x] Um pedido já aprovado é retomado pelo documento aprovado (`--plan-doc`), nunca por `--goal`.
+- [x] Um pedido em `aguarda_humano` volta a ser reclamável depois da decisão, e corre pelo documento
+      aprovado.
+- [x] Testes: retoma pós-aprovação não re-decompõe; aprovação humana leva o pedido a correr.
+- [x] **Verificado em PRODUÇÃO** (v0.1.34, 2026-09-26): um plano com uma falha transitória induzida
+      acaba `terminal` 0. `plan-e2e-442-1790377888`, submetido por `POST /plans`: a geração 1, com
+      `--plan-timeout 5s`, decompôs uma vez (2 nós), foi aprovada sem humano (L4) e saiu `8`
+      transitório; a geração 2 retomou «pelo plano validado; sem decomposicao», o gate reconheceu a
+      aprovação com o mesmo `plan_hash` (`sha256:efa522e7…`), materializou do log e saiu `0`
+      terminal. `GET /plans/{id}` → `terminal`, geração 2, `exit_code` 0; a pasta `planos/` do
+      volume ficou vazia (documento apagado no desfecho terminal). Antes do AOS-442 a mesma
+      sequência acabava em `7` (plan-e2e-437-1790336067).
+
+### Resíduos declarados
+
+1. **A composição nó↔`consume` não corre num só teste.** São dois binários de módulos distintos: a
+   re-oferta do nó está provada sobre a projecção (com o relógio dado pelo teste) e o `consume` contra
+   um nó falso que re-oferece. A prova conjunta é a verificação em produção — feita para a retoma
+   transitória; o caminho `aguarda_humano` → decisão → corre não foi exercido em produção (nenhuma
+   tool de risco no snapshot de produção o dispara).
+2. **Planos validados antes desta release não têm documento guardado.** Uma retoma deles sai `7`
+   sem modelo — o mesmo desfecho de antes, mas sem pagar a decomposição.
+3. **A latência depois da decisão humana** é até 10 min (re-oferta) mais o intervalo do timer de
+   drenagem. Uma notificação pelo `decide` foi rejeitada na emenda (ADR-030); se a espera doer, o
+   intervalo é o botão.
+4. **A cópia em claro do documento** (organigrama e objectivos derivados) existe enquanto o pedido
+   não fecha, e um `/dsar/erase` do titular não a alcança. É apagada no desfecho `terminal`.
+5. **`--nats` exige a pasta dos documentos PARTILHADA entre as réplicas**, e nada o verifica: uma
+   pasta local fecharia com `7`, noutra réplica, um plano pendente ou aprovado. Produção usa `--wal`.
+6. **Um pedido com o objectivo ilegível não fecha:** é saltado e fica reclamado até ao TTL, para ser
+   saltado outra vez. Fechá-lo exige decidir quem escreve o desfecho e com que código (o nó não
+   conhece os códigos do `serve`) — mexe no contrato do ADR-030/031, e fica para ticket próprio.
+7. **O `serve --goal` repetido à mão sobre um plano pendente** continua a auto-aprovar um
+   organigrama novo sem risco com o seu próprio hash (comportamento do AOS-408, fixado pelo
+   `TestAOS408_AprovacaoDeOutroOrganigramaNaoServe`). O `consume` não o exerce: nunca decompõe um
+   run já validado. Fechá-lo muda um teste de aceitação do AOS-408 e fica para decisão.
+8. **A RTM não liga a emenda do ADR-030 a este ticket:** o marcador `adrs-mencionados` do bloco é
+   tudo-ou-nada, e os outros ADR citados são só menção. O próprio ADR nomeia o AOS-442. *(Ligada pelo AOS-473: o marcador de bloco deu lugar a trechos de menção, e a emenda passa a contar como implementação.)*
+9. **Os pedidos `aguarda_humano` de ANTES desta release voltam à fila.** Deixaram de contar como
+   terminados, e a marca de água é recomputada no arranque do nó: são re-oferecidos depois do
+   intervalo e, como foram validados sem documento guardado, fecham com `7` sem correr o `serve`
+   nem o modelo. Mas cada um é um desfecho `terminal`, que conta para o `--max`: as primeiras
+   drenagens depois da release podem gastar-se neles e atrasar os pedidos novos.
+10. **`--plan-dir` passou a ser obrigatório com `--nats`.** Uma invocação existente do `consume`
+    sobre `--nats` sem ele deixa de correr — mas falha no arranque, antes de reclamar qualquer
+    pedido. Produção usa `--wal`, onde a pasta deriva do WAL.
+11. **Uma drenagem longa pode re-verificar o mesmo pedido estacionado mais de uma vez.** Com o
+    prazo de cada plano a 40 min, uma drenagem pode durar mais do que o intervalo de re-oferta
+    (10 min), e o pedido volta a ser oferecido dentro dela. Desde a revisão, a re-verificação só lê
+    o log e o documento (sem `serve`, sem posse, sem modelo): o custo é um par reclamação+desfecho
+    no stream da fila, não conta para o `--max`, e é travado pelo limite de 64 re-verificações por
+    drenagem (`maxReverificacoesPorDrenagem`).
+
+### Estado
+
+**FECHADO.** A retoma pelo documento aprovado está em produção e provada com uma falha
+transitória induzida; os resíduos acima ficam declarados, e o 6 e o 7 pedem ticket ou decisão
+próprios.
+
+---
+
+## AOS-443 — O caminho do plano não se observa: o aos-orq não tem métricas, e o estado de um plano não diz porquê
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | implementação |
+| Prioridade | P2 — o AOS-438 só foi diagnosticado reproduzindo à mão e lendo WALs com `strings` |
+| Estimativa | M |
+| Dependências | AOS-430 (estado do plano), AOS-437 (drenagem) |
+| Documentos de referência | `packages/cmd/aos-orq/`, `packages/cmd/aos/plan_estado.go`, `deploy/server/alerta-nhi.sh` |
+
+### Contexto — medido em produção
+
+Para encontrar o AOS-438 foi preciso submeter um segundo plano, correr a drenagem à mão a guardar o
+output, e indexar o WAL do `consume` dentro de um contentor. O stderr da drenagem vai para o journal
+do sistema, que o utilizador `aos` não lê. Declarado sem ticket em três sítios (ADR-032 §5 item 4,
+AOS-437, `alerta-nhi.sh:11`): **o `aos-orq` não expõe métricas**.
+
+E o `GET /plans/{id}` só traz `detail` quando há erro (`consumir.go:159-165`) — «terminado com
+sucesso» e «terminado» dizem o mesmo; declarado como resíduo 1 do AOS-430 / ADR-031 §4.
+
+### O que se entregou
+
+- **As métricas são um ficheiro, não um `/metrics`.** O `consume` drena uma vez e termina: não há
+  processo vivo para um scrape, e um endpoint obrigaria a fazer do `aos-orq` um serviço de longa
+  duração com superfície de rede — o que o ADR-031 §3(b) já recusou. A forma que serve um processo
+  curto é a do *textfile collector*: no fim de cada drenagem, mesmo quando aborta, o `consume`
+  reescreve de forma atómica (temporário, `fsync`, `rename`) um ficheiro em formato de texto
+  Prometheus, `--metrics-file` (por omissão `aos-orq-consume.prom` ao lado do `--wal`). Os
+  contadores **acumulam-se** no próprio `consume` (lê o ficheiro anterior e soma), para que o
+  leitor, em bash, não faça contas; um ficheiro anterior ilegível recomeça do zero e di-lo.
+  Séries (`metricas_do_consumo.go`): `aos_orq_consume_drenagens_total{resultado}`,
+  `…_pedidos_reclamados_total`, `…_retomas_total` (geração > 1),
+  `…_origem_total{origem=decomposicao|documento|reverificacao|sem_serve}`,
+  `…_desfechos_total{classe,codigo}`, `…_desfechos_nao_reportados_total`,
+  `…_plano_duracao_segundos_{sum,count}{classe}`, e os gauges `…_falhas_consecutivas`,
+  `…_ultima_drenagem_timestamp_seconds`, `…_ultima_drenagem_pedidos`. Nenhum identificador. Não
+  conseguir escrever o ficheiro **falha a invocação**: o sensor leria um ficheiro parado.
+- **O sensor lê-o.** O `consume` da drenagem escreve-o pelo caminho por omissão, no volume do
+  `aos-orq` — o `drenar-planos.sh` **não** passa a flag, para que um rollback da imagem (que não
+  repõe os scripts) não pare a fila com uma flag desconhecida. No fim, o script copia o ficheiro
+  (como `65532`, sem rede) para `/opt/aos/logs/aos-orq-consume.prom` e, depois de um `consume`
+  bem-sucedido, falha se a cópia não tiver o carimbo desta drenagem. O `alerta-nhi.sh` avisa a
+  partir de **3** em `aos_orq_consume_falhas_consecutivas` (`AOS_ALERTA_FALHAS_PLANO_MAX`), com o
+  título «AOS: planos da fila em ALERTA».
+- **A regra das falhas seguidas** (`efeitoNasFalhas`): terminal/0 zera; `aguarda_humano` e o 8
+  (nós em voo — o caminho feliz de um plano mais longo do que o prazo, que a drenagem seguinte
+  retoma) são neutros; somam o genérico, os de posse/WAL (3, 4, 5) e os terminais ≠ 0. O 7 soma, e
+  é ambíguo: tanto é uma recusa humana (a governação a funcionar) como um plano perdido
+  (validado sem documento, pendente fora do prazo) — pelo código não se distinguem, e calar planos
+  perdidos custa mais do que um aviso sobre três recusas seguidas.
+- **O sensor já não se cala.** O `alerta-nhi.sh` corre todos os cheques e guarda no estado o
+  CONJUNTO de causas avisado; um conjunto diferente com o alerta disparado avisa logo («causas
+  mudaram»). Antes parava na primeira causa e um único `disparado` calava as seguintes. O debounce
+  de 2 leituras e o lembrete de 24 h mantêm-se para o mesmo conjunto.
+- **O resumo do desfecho, também em sucesso.** O `detalhe` do `POST /plans/outcome` passa a ser
+  `resumo: origem=<origem> geracao=<N> nos=<N|-> duracao_s=<s.mmm>`, com ` erro=<tipo>` no fim
+  quando o `serve` falhou. O **tipo** é o nome do sentinela que classifica o erro (`tipoDoErro`,
+  na tabela do `codigoDe`: `nos_em_voo`, `decisao_recusada`, `documento_recusado`,
+  `plano_recusado_pelo_planeador`, `snapshot_nao_corresponde`, …) ou `generico` — **nunca o texto
+  do erro**, que pode citar conteúdo escrito pelo modelo (o `plan.Decode` cita `node_id`s e campos
+  com `%q`) e que o nó gravaria em claro no stream da fila, fora do alcance do `/dsar/erase`. O
+  texto de um `generico` vai só para o stderr da drenagem. `nos` conta os nós do documento do plano
+  quando ele é deste pedido (ancorado no log, ou escrito durante o pedido) — um documento plantado
+  não conta. O nó **não muda**: o `GET /plans/{id}` já servia o `detail` quando não vazio, e o
+  contrato do ADR-031 §2.3 fica igual; o que passa a ser verdade é que o terminal/0 o traz.
+- **O log da drenagem sem root.** O `drenar-planos.sh` escreve tudo o que ele e o `consume` imprimem
+  (stdout e stderr), com carimbo UTC, em `/opt/aos/logs/drenar-planos.log` (do `aos`, `0750`),
+  além do journal. **Roda-o o próprio script**, debaixo do lock da drenagem, quando passa de
+  `DRENAR_LOG_MAX_BYTES` (5 MiB), guardando `DRENAR_LOG_GERACOES` (5) gerações.
+- **O objectivo sai do stdout NA ORIGEM.** A linha `reclamado:` imprimia `objectivo=%q` — dado do
+  titular que ia para o journal e iria para um ficheiro em claro que o `/dsar/erase` não alcança.
+  Passa a `objectivo_bytes=N`. Tirou-se no `consume` e não se filtrou no script: fecha também o
+  journal, e um filtro sobre texto livre seria uma lista negra que deixa passar a próxima linha
+  que alguém acrescente.
+- Testes: `aos443_observabilidade_test.go` (aos-orq — forma do resumo, o texto do erro fora do
+  `detail` e um tipo por sentinela, origem, contagem de nós, acumulação e regra das falhas seguidas
+  com o 8 neutro, escrita atómica, contrato dos nomes com os dois scripts e ausência da flag no
+  script, e o `consume` real numa retoma transitória→terminal/0 a ler o `detalhe` que chega ao nó,
+  o ficheiro de métricas e a ausência do objectivo no output) e
+  `aos443_resumo_do_desfecho_test.go` (nó — terminal/0 com resumo servido pelo `GET /plans/{id}`).
+
+### Critérios de Aceitação
+
+- [x] Métricas do `aos-orq` legíveis pelo sensor: pedidos reclamados, desfechos por classe, duração
+      por plano, retomas.
+- [x] O desfecho reportado ao nó leva um resumo também em sucesso (nós, gerações, duração).
+- [x] O output da drenagem legível sem root (ficheiro de log do `aos`, com rotação).
+- [x] **Verificado em PRODUÇÃO** (v0.1.35, 2026-09-26): depois da release, uma drenagem com um plano
+      deixa `/opt/aos/logs/drenar-planos.log` e `/opt/aos/logs/aos-orq-consume.prom` legíveis pelo
+      `aos`, sem o objectivo no log, e o `GET /plans/{id}` desse plano terminado com 0 traz o resumo.
+      `plan-e2e-443-1790420556`, drenado pelo `drenar-planos.sh`: o log tem
+      `reclamado: … objectivo_bytes=96` e `desfecho: … codigo=0 classe=terminal origem=decomposicao
+      geracao=1 nos=1 duracao_s=63.832`, e `objectivo=` aparece 0 vezes; as métricas trazem
+      `pedidos_reclamados_total 1`, `desfechos_total{classe="terminal",codigo="0"} 1`,
+      `origem_total{origem="decomposicao"} 1` e `falhas_consecutivas 0`; o `GET /plans/{id}` devolve
+      `terminal`, `exit_code` 0 e `detail` `resumo: origem=decomposicao geracao=1 nos=1
+      duracao_s=63.832`. A primeira drenagem da release falhou por correr o script novo com o
+      binário antigo na janela do deploy — aberto o AOS-450.
+
+### Resíduos declarados
+
+1. **Um escritor de métricas de cada vez** é garantia de quem invoca (o `flock` do
+   `drenar-planos.sh` e o oneshot do systemd), não do `consume`. Um `consume` corrido à mão ao mesmo
+   tempo que a drenagem perde incrementos — conta a menos, nunca a mais.
+2. **O texto de um erro `generico` vai para o log da drenagem.** O `detail` só leva o tipo; mas um
+   erro que nenhum sentinela classifica é o que mais precisa de diagnóstico, e o texto dele sai no
+   stderr do `consume` — journal e `/opt/aos/logs/drenar-planos.log`, com retenção limitada
+   (6 × 5 MiB) e fora do alcance do `/dsar/erase`. Os erros com conteúdo do modelo conhecidos
+   (recusas do documento e do planeador) têm sentinela e não vão.
+3. **Os `node_id` que o modelo escolhe aparecem no log** (já apareciam no journal). A gramática do
+   `node_id` limita-os, mas não impede um nome pessoal.
+4. **Um `panic` no `consume` regista `resultado="ok"` nas métricas** (o `defer` não o distingue); o
+   código de saída do processo, que o `drenar-planos.sh` lê, apanha-o.
+5. **Nenhum teste executa a lógica bash.** Os testes Go fixam o contrato de nomes entre o ficheiro e
+   os scripts; a rotação, a cópia, a frescura e as mudanças de causa do alerta foram exercidas num
+   smoke local com `docker`/`systemctl`/`curl` falsos, que não está versionado.
+6. **Depois de um rollback da imagem**, o script novo drena com o binário antigo mas falha a
+   verificação das métricas (ruidoso, esperado), e o binário antigo volta a pôr o objectivo no log.
+   Declarado no README do servidor.
+7. **As falhas seguidas não voltam a zero sozinhas.** Depois de 3 falhas, o alerta mantém-se (com
+   lembrete diário) até um plano acabar terminal/0 — é verdade que os últimos falharam, mas numa
+   fila sem pedidos novos o operador não tem como o calar senão submetendo um plano.
+8. **O nome do volume** (`aos_aos-orq-data`) é o do projecto `aos` do compose, como no `backup.sh`;
+   outro nome de projecto exige `DRENAR_ORQ_VOLUME`.
+9. **Sobre `--nats` sem `--metrics-file` não há métricas** (não há WAL de onde derivar o caminho);
+   o `consume` di-lo no stderr. Produção usa `--wal`.
+
+### Estado
+
+**FECHADO** — verificado em produção na v0.1.35. A corrida entre o deploy e a drenagem que a
+primeira drenagem da release expôs é o AOS-450.
+
+---
+
+## AOS-444 — A reconstrução de um run (`GET /runs/{id}/reconstruct`) leva minutos em produção
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | medição + implementação |
+| Prioridade | P2 — a leitura que um auditor usa para reconstruir a autoria não escala |
+| Estimativa | S (medir) + M (corrigir) |
+| Dependências | AOS-214 (replay soberano) |
+| Documentos de referência | `packages/cmd/aos/sovereign_replay.go`, `packages/cmd/aos/sovereignty.go` |
+
+### Contexto — medido em produção
+
+Em 2026-09-25, a leitura de `/reconstruct` de um run de dois turnos não respondeu em mais de três
+minutos e foi abandonada; o `GET /runs/{id}` e o `/trajectory` do mesmo run responderam em segundos.
+O `handleReconstruct` lê o stream desde a seq 1, verifica o selo WORM e corre o motor de
+reconstrução (`sovereign_replay.go:91-172`), depois de resolver a residência (`sovereignty.go:343-358`).
+Não há medição, teste de desempenho nem registo deste custo.
+
+### Medição em produção — a premissa não se confirma
+
+Em 2026-09-26, na v0.1.34, sobre o run `plan-e2e-442-1790377888~n1`, com `curl -w` a partir da rede
+`aos_default` e um token novo por chamada:
+
+| Leitura | HTTP | TTFB | Total | Corpo |
+|---|---|---|---|---|
+| `GET /runs/{id}` | 200 | 0,024 s | 0,024 s | 1222 B |
+| `GET /runs/{id}/trajectory` | 200 | 0,013 s | 1200,0 s (cortado pelo `--max-time 1200`) | 38558 B |
+| `GET /runs/{id}/reconstruct` | 200 | 0,042 s | 0,043 s | 2881 B (turnos reconstruídos, correctos) |
+
+Nó durante a medição: CPU 0,5 %, 200 MiB.
+
+**Causa do «não respondeu em mais de três minutos»: erro de medição, não defeito do nó.** O
+`/trajectory` é SSE ao vivo por desenho (AOS-167, `packages/cmd/aos/trajectory.go`: backfill e
+depois subscrição live — a ligação não fecha quando o backfill acaba). O script de pegadas que fez
+a medição original chamava o `/trajectory` ANTES do `/reconstruct`, ficou pendurado nele à espera
+de um fim que não vem, e nunca chegou ao `/reconstruct`. O minuto que se atribuiu ao
+`/reconstruct` era o SSE lido como um pedido que termina. Quem medir estas rotas com um script tem
+de dar ao `/trajectory` um `--max-time` curto (ou ler só o backfill) e não pôr nada depois dele à
+espera do seu fim.
+
+### Medição local — o que o handler gasta, troço a troço
+
+Feita antes de haver os números de produção, para confirmar ou refutar as suspeitas do ticket. Nó
+REAL (`Bootstrap`) com execução durável, soberania de leitura e a custódia Vault de produção
+(`vaultKeyVault`) contra um Transit falso que conta os pedidos; Event Store e WORM envolvidos em
+contadores; cada troço cronometrado isolado (média de 20 corridas) e o handler inteiro pelo wire.
+O instrumento de tempo foi descartável e não ficou no repositório; as contagens ficaram, no teste.
+
+| Cenário | selo D6 | motor | handler | ES lido | WORM | Vault |
+|---|---|---|---|---|---|---|
+| 2 turnos | 2,9 ms (1.ª escrita) | 1,0 ms | 3,8 ms | 2× / 4 ev. | 1 At + 1 Append | 2 decrypt |
+| 2 turnos + 300 runs e 5000 selos alheios | 0,61 ms | 0,78 ms | 2,4 ms | 2× / 4 ev. | 1 At + 1 Append | 2 decrypt |
+| 20 turnos | 0,65 ms | 5,5 ms | 7,6 ms | 2× / 40 ev. | 1 At + 1 Append | 20 decrypt |
+| 20 turnos, Vault a 5 ms por pedido | 0,62 ms | 126 ms | 121 ms | 2× / 40 ev. | 1 At + 1 Append | 20 decrypt |
+
+A residência (`At`) e a leitura do stream ficam abaixo da resolução do relógio (< 0,1 ms).
+
+1. **Varrer o Event Store/WORM inteiro — refutada.** O custo é igual num nó limpo e num nó com 300
+   runs e 5000 selos alheios; o ES lê só o stream do run e nunca enumera streams.
+2. **Verificar a hash-chain do WORM por pedido — refutada.** Zero `Read`/`Head` no WORM por pedido;
+   um `At` (residência) e um `Append` com fsync (selo D6).
+3. **Uma chamada ao Vault por evento — refutada.** Há um `transit/decrypt` por captura selada (cada
+   captura tem a sua DEK — envelope DEK/KEK de `audit.SealContent`), não por evento; o
+   `turn.recorded` não vai ao Vault. É o troço dominante e é linear nas capturas: inerente à cifra
+   por-titular com a KEK dentro do Vault (AOS-216), não um defeito.
+4. **Timeout ou espera fixa — refutada.** Dois turnos reconstroem em milissegundos.
+
+Observado e **não corrigido**: o handler lê o stream do run duas vezes por pedido (a porta de posse
+e, de novo, o motor desde a seq 1). Custa microssegundos (ES em memória) — não é patológico e não
+justifica mexer no read-path soberano.
+
+### O que se entregou
+
+- **Nenhuma alteração ao read-path.** A premissa foi refutada em produção; a leitura dupla não é
+  patológica.
+- `packages/cmd/aos/aos444_reconstrucao_custo_test.go` — guarda BARATA das suspeitas do ticket, por
+  CONTAGEM (sem tempo de parede): sobre o nó real com a custódia Vault, uma reconstrução lê só o
+  stream do run e nunca enumera streams, faz 1 `At` + 1 `Append` no WORM sem verificar a cadeia, e
+  pede ao Vault exactamente 1 `decrypt` por captura; e esse custo é igual num nó com 30 runs e 500
+  selos alheios. Mutação: acrescentar ao handler uma enumeração de streams e um `Head` no WORM ⇒
+  vermelho (`streams=1`, `head=1`).
+
+### Critérios de Aceitação
+
+- [x] Medição: onde vai o tempo (leitura do stream, verificação do WORM, reconstrução, residência).
+      Em produção: 42 ms; localmente, por troço, acima.
+- [x] Correcção do troço dominante, ou tecto declarado com o porquê. Nada a corrigir: o troço
+      dominante (um `decrypt` por captura) é o tecto inerente à cifra por-titular, e custa
+      milissegundos.
+- [x] Teste de desempenho que avermelha uma regressão.
+
+### Estado
+
+**FECHADO-REFUTADO** — a reconstrução responde em 42 ms em produção; os minutos eram o SSE ao vivo
+do `/trajectory`, lido pelo script de medição como um pedido que termina.
+
+---
+
+## AOS-445 — Ninguém é avisado do resultado de um plano: quem pediu só o sabe se perguntar
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de produto + implementação |
+| Prioridade | P2 — um plano que falha em produção passa despercebido |
+| Estimativa | M |
+| Dependências | AOS-430 (leitura do estado), AOS-133 (BFF com SSE, EPIC-13) |
+| Documentos de referência | `docs/adr/ADR-031-leitura-do-estado-de-um-pedido-de-plano.md`, `deploy/server/alerta-nhi.sh`, `deploy/server/avisar-planos.sh`, `deploy/server/drenar-planos.sh`, `packages/cmd/aos-orq/consumir.go` |
+
+### Contexto
+
+O único aviso que existe é de INFRAESTRUTURA (`alerta-nhi.sh`, `alerta-ancora.sh`: NHI, timers,
+âncora). O resultado de um plano só se lê por sondagem de `GET /plans/{id}` (ADR-031), e só pelo
+submissor. Nas provas de 2026-09-25, três planos ficaram gravados como falhados sem que nada o
+dissesse a ninguém. O AOS-133 (SSE no BFF) está por fazer.
+
+### Decisões do dono (2026-09-26)
+
+1. **Por onde: ntfy**, enviado a partir do HOST (o molde do `alerta-nhi.sh`), num **tópico separado**
+   do dos alertas de infraestrutura (`/opt/aos/secrets/ntfy-topico-planos`). O webhook do submissor
+   foi rejeitado; o **SSE ao submissor** (AOS-133) fica para uma **fase 2** — não feita aqui.
+2. **A quem: ao operador.**
+3. **O quê:** só desfechos TERMINAIS (0 e ≠ 0); o conteúdo é o id **pseudonimizado**
+   (`sha256(run_id)[:12]` na decisão; **HMAC-SHA256 com chave** depois da revisão — ver Desenho), a
+   classe e o código — sem objectivo, sem
+   resultado, sem tipo de erro. Prioridade *default* para 0, *high* para ≠ 0; o 7 aparece como
+   «recusado».
+
+### Critérios de Aceitação
+
+- [x] Um plano que termina (bem ou mal) produz um aviso pelo canal decidido, sem conteúdo do
+      objectivo nem do resultado (só id, desfecho e código).
+      — ntfy ao operador, tópico próprio, id pseudonimizado + classe + código; verificado contra
+      stubs (ver Estado), **não** em produção.
+- [ ] **Verificado em PRODUÇÃO.**
+
+### Desenho
+
+- **A linha, e a ordem.** O `aos-orq consume` imprime `aviso: run=<id> geracao=<g> classe=terminal
+  codigo=<n>` SÓ DEPOIS de o `ReportarDesfecho` ter sucesso (`reportarEAvisar` em `consumir.go`) —
+  a linha `desfecho:` sai antes do reporte e diz o que o `serve` deu; esta diz o que o nó registou.
+  Um reporte falhado não avisa (o pedido volta à fila e a geração seguinte terá o seu desfecho).
+- **O outbox.** O `drenar-planos.sh` recolhe as linhas `aviso:` (a mesma regex `AVISO_RE` que o
+  `avisar-planos.sh` usa) e, debaixo do lock da drenagem e de um lock próprio do outbox, acrescenta-as
+  a `/opt/aos/.avisos-planos/pendentes` (600, pasta 700). **Falhar a escrever o outbox nunca faz
+  falhar a drenagem** (di-lo o log). Um `consume` que falha entrega na mesma o que já tinha reportado.
+- **A conferência.** A drenagem compara o delta de `aos_orq_consume_desfechos_total{classe="terminal"}`
+  nas métricas DESTA drenagem com as linhas `aviso:` lidas. O «antes» é a contagem que a última
+  drenagem conferida guardou (`.drenagem/avisos-contagem`), apagada no início de cada drenagem — uma
+  que não leia métricas suas não deixa a seguinte conferir contra um «antes» velho. Um desencontro
+  (imagem anterior ao AOS-445 depois de um rollback — o par misturado do AOS-450 —, reporte falhado,
+  ou um `consume` corrido à mão) é dito com `AVISO:` no log e posto no outbox como `desencontro:`, que
+  chega ao operador pelo mesmo canal.
+- **O envio.** `deploy/server/avisar-planos.sh`, no cron do `aos` a cada minuto, com `flock`: consome o
+  outbox (lê e reescreve debaixo do lock do outbox; envia fora dele, para a drenagem não esperar pela
+  rede), pseudonimiza, envia pelo molde `notificar()` do `alerta-nhi.sh` para o tópico dos planos, e
+  recusa se esse tópico for o mesmo da infraestrutura. Um envio falhado **fica** no outbox, e a volta
+  **pára nele** (com o ntfy em baixo, cada tentativa custava até 20 s); um feito regista-se em
+  `.avisos-planos/enviados` por **run** (o HMAC completo, sem o `run_id`; 30 dias). Os `desencontro:`
+  levam `em=<início da drenagem>` e também se registam — não se reenviam numa reescrita falhada.
+  Até 20 avisos por execução. `--teste` envia um aviso de teste sem mexer no estado. O
+  `logs/avisar-planos.log` tem uma linha por envio com o pseudónimo e o `run_id` lado a lado — é por
+  ela que o operador cruza.
+- **O pseudónimo é HMAC-SHA256 com chave** (revisão): um `sha256` sem chave de um id previsível
+  inverte-se por dicionário, e era o prefixo do nome do documento do plano no volume
+  (`planos/<sha256>.plan.json`, AOS-442). A chave (`/opt/aos/secrets/aviso-planos-hmac.key`, 64 hex)
+  cria-a o dono; **sem ela nada sai** (fail-closed, também o `--teste`). O HMAC calcula-se em bash com
+  o `sha256sum` — a chave nunca vai para o argv de outro processo, que um `openssl dgst -hmac` exporia
+  a `ps`; o cenário confere-o contra o vector 2 do RFC 4231, e localmente contra o `openssl`.
+  `--pseudonimo <run>` dá o sentido inverso ao operador.
+- **Locale** (revisão): os dois scripts fazem `export LC_ALL=C`. O `[^[:space:]]` da regex dependia do
+  locale: em C.UTF-8 um run_id com U+3000/U+2028 (que o `ValidarStreamID` aceita) não casava — o
+  submissor fazia desaparecer o aviso do seu plano, e com locales diferentes no systemd e no cron o
+  `avisar` descartava a linha sem desencontro.
+- **Sobras de uma drenagem interrompida** (revisão): a drenagem que arranca entrega ao outbox o
+  `avisos-desta-drenagem` que uma drenagem morta (entre o `aviso:` e o `entregar_avisos`) deixou, em
+  vez de o apagar; o registo de enviados cobre a duplicação.
+- **Instalação** (passos do dono, README §Aviso do resultado de um plano): criar o tópico e a chave,
+  `--teste`, e a linha do cron. Cron e não systemd: é o padrão dos outros avisos do `aos` (`alerta-nhi.sh`,
+  `alerta-ancora.sh`), invocado por `/bin/bash`, pelo que o lint do `ExecStart` não se aplica; o
+  script está na lista do rsync do `deploy.yml`.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-26); verificação em produção por fazer. Verificado:
+
+- `TestAOS445AvisoSoDepoisDoReporte` — a linha só sai depois de um reporte bem-sucedido, e só para
+  terminais (0 e 7); um reporte falhado, um transitório e um `aguarda_humano` não avisam. Controlo
+  negativo: com a linha impressa ANTES do reporte, 3 dos 5 casos falham.
+- `TestAOS445ContratoDaLinhaDoAvisoComOsScripts` — a `AVISO_RE` é a mesma nos dois scripts e aceita o
+  que o `linhaDoAviso` do Go imprime (e recusa transitórios, a linha `desfecho:` e um run com espaço);
+  o prefixo da série dos terminais que a drenagem soma é o que o `serie` escreve; os caminhos do
+  outbox e do tópico; o `consume` reporta pelo `reportarEAvisar`; o script está no rsync.
+- `TestAOS445OutboxEAvisos` corre o `drenar-planos.sh` e o `avisar-planos.sh` REAIS contra stubs de
+  docker/curl/logger (`testdata/aos445_avisos_planos.sh`, 63 verificações; em Linux, mais uma, dos
+  modos 600/700). Git Bash com um `flock` falso: 63/0; num `debian:12` com o `flock(1)` real: 64/0 (e
+  o cenário do AOS-450 77/0). Cobre, além do desenho de base: o vector do RFC 4231, a recusa sem
+  chave, `--pseudonimo`, a volta que pára no primeiro envio falhado, o desencontro que não se reenvia,
+  as sobras de uma drenagem interrompida e o run_id com U+3000/U+2028 com `LC_ALL=C.UTF-8` por fora.
+  **Controlo negativo** (no `debian:12`): sem o `export LC_ALL=C` nos dois scripts, os dois casos do
+  locale falham. Uma primeira versão com `{1,512}` na regex deu 25 falhas — o `regcomp` do MSYS recusa
+  intervalos acima de 255 e o bash lê isso como «não casa»; a regex passou a `+`.
+- Revisão adversarial independente (2026-09-26): sem injecção nem fuga (o `ValidarStreamID` exclui
+  newline e controlo; nada do run_id sai para o ntfy); os médios e baixos que apontou estão corrigidos
+  acima e no AOS-447.
+
+**Resíduos**:
+1. **Um reporte cuja resposta se perdeu** (o nó gravou o terminal; o `consume` viu erro) não imprime a
+   linha, e o pedido fica FECHADO no nó — esse plano não é avisado. A conferência apanha-o (`AVISO:` +
+   `desencontro:` ao operador, com as contagens), mas o aviso nomeado não sai.
+2. **No máximo um aviso por plano**: um segundo terminal do mesmo run (reporte falhado seguido de
+   nova geração) não é avisado — fica no `avisar-planos.log`, com a geração e o código de cada um.
+3. **Um `consume` corrido à mão** entre drenagens conta terminais no volume sem passar pelo outbox: a
+   drenagem seguinte acusa um desencontro (e os planos dele não são avisados).
+4. **Fase 2 declarada**: avisar o SUBMISSOR por SSE (AOS-133) — hoje só pela sondagem do
+   `GET /plans/{id}` (ADR-031).
+5. A primeira drenagem com o AOS-445 — e a primeira depois de uma que não leu métricas suas — não
+   confere a contagem (não tem contagem anterior) e di-lo no log; os avisos dela seguem na mesma.
+6. Sem tópico em `secrets/ntfy-topico-planos` (ou com o mesmo da infraestrutura), os avisos acumulam
+   no outbox sem tecto e saem, 20 por minuto, quando o tópico existir. **Nenhum sensor vigia o
+   outbox**: sem o cron instalado, ou com o ntfy em baixo durante dias, os avisos acumulam em
+   silêncio — o `alerta-nhi.sh` não o lê.
+7. **Declarados na revisão**: um disco cheio a meio de uma escrita pode colar duas linhas do outbox (a
+   colada não casa com a forma e é descartada, com linha no log); a drenagem recolhe as linhas
+   `aviso:` do stdout **e** do stderr do `consume` — não se encontrou caminho para uma linha não
+   confiável lá chegar a começar por `aviso: run=` (o `ValidarStreamID` exclui `\n`), mas fica como
+   hipótese; o contrato Go da regex não prova a semântica do bash (prova-a o cenário shell, com
+   `LC_ALL=C.UTF-8` por fora); rodar a chave HMAC muda os pseudónimos dali em diante e desliga o
+   registo de enviados dos anteriores (inofensivo fora da janela de 30 min do TTL da reclamação).
+
+**Verificação em produção (do dono)**: depois do deploy — (a) criar o tópico
+(`secrets/ntfy-topico-planos`) e a chave (`( umask 077; openssl rand -hex 32 >
+/opt/aos/secrets/aviso-planos-hmac.key )`) e correr `bash /opt/aos/avisar-planos.sh --teste` (tem de
+chegar ao telemóvel); (b) instalar o cron; (c) submeter um plano (p.ex. pelo
+`medir-latencia-fila.sh --ate-ao-fim` do AOS-447) e confirmar que chega **um** aviso com o pseudónimo
+de `bash /opt/aos/avisar-planos.sh --pseudonimo '<run>'`, código e classe, e nada mais;
+`grep '<pseudónimo>' /opt/aos/logs/avisar-planos.log` devolve o run.
+
+---
+
+## AOS-446 — A fronteira do host: root contorna o mandato, o `aos` é root pelo grupo docker, e a chave do humano é um ficheiro
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). A
+     Fase 0 EMENDA o ADR-033 (§6), cuja implementação continua a ser a do AOS-427. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano); o eixo é o EPIC-16 / D4 |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de segurança + infraestrutura |
+| Prioridade | P2 — os três limites estão escritos como resíduos, mas não têm ticket nem plano; a F3 (Fase 0) era P1 — root e cluster-admin a quem escrevesse num ficheiro do `aos` |
+| Estimativa | L |
+| Dependências | AOS-427/437 (mandato), DEF-103 (HSM), DEF-107 (WebAuthn) |
+| Documentos de referência | `docs/adr/ADR-033-emissor-automatico-limitado-por-mandato.md` §2.1, §5 e §6 (emenda deste ticket), `deploy/server/bootstrap.sh`, `deploy/server/sync-tls.sh`, `deploy/server/systemd/aos-tls-sync.service`, `deploy/server/tls-sync-rbac.yaml`, `packages/cmd/aos-issuer/mandato.go` |
+
+### Contexto
+
+Três limites declarados, nenhum com ticket:
+
+1. **Root no host do nó contorna o mandato** — muda `AOS_MANDATE_SIGNERS` e reinicia (ADR-033 §2.1,
+   §5 resíduo 5; AOS-437 resíduo 2). O nó e o emissor partilham o host.
+2. **O utilizador `aos` está no grupo docker** (`bootstrap.sh:13-14`, `:74`), o que equivale a root:
+   a fronteira do root para instalar os timers (AOS-437) é de procedimento, não de segurança.
+3. **A chave que assina os mandatos é uma seed em ficheiro** na máquina do humano
+   (`lerSeedHumana`, `mandato.go:204-218`), **em hex e em claro — sem passphrase** (esta linha dizia
+   «com passphrase», e estava errada: o código lê hex e decodifica, sem cifra nenhuma) — não
+   hardware (ADR-033 §3, §5 resíduo 1). DEF-107 (four-eyes sem WebAuthn) e DEF-103 (HSM para a
+   autoridade) são adjacentes.
+
+### O que o desenho mediu (2026-09-26, código e produção)
+
+- **Quem contorna o mandato não é só root** (ADR-033 §6.1): o `.env` com o pino é do `aos`; o `aos`
+  está no grupo `docker`; a chave de deploy e quem aprova o environment `production` agem como o
+  `aos`; a máquina do operador guarda a `humano-mandato.key` e a `issuer.key` (que cunha sem
+  mandato), na mesma `secrets-local/` que as duas seeds do *four-eyes*, a `wormseal.key` e a chave
+  dos backups.
+- **F3 — a ponte TLS escalava para root e cluster-admin.** Verificado em produção: o
+  `aos-tls-sync.timer` activo, o serviço como **root** (sem `User=`), `KUBECONFIG=/etc/kubernetes/admin.conf`,
+  `ExecStart=/opt/aos/sync-tls.sh` — ficheiro `aos:aos 0755`, reescrito pelo CD a cada deploy. Quem
+  escrevesse nele ganhava root e cluster-admin na passagem diária seguinte. E o script fazia um
+  `chown` do root sobre caminhos da pasta do edge, que é do `aos` (symlink plantado entre o `mv` e o
+  `chown`).
+- **F5 — o pino não é só `AOS_MANDATE_SIGNERS`.** O mesmo `.env` traz o `AOS_ISSUER_PUBKEY` (confiado
+  por inteiro), `AOS_OPERATORS`, `AOS_RATIFIERS`, `AOS_POLICY_TRUST_ANCHOR` e `AOS_WORM_TRUST_ANCHOR`,
+  e o `secrets/approvers.json` também é do `aos`.
+
+### Decisões a tomar primeiro (do dono)
+
+1. Separar o nó do emissor em hosts diferentes, ou pinar as chaves humanas fora do alcance do root?
+2. Tirar o `aos` do grupo docker (e com que substituto para o deploy e para os scripts)?
+3. Assinar mandatos com hardware (passkey/WebAuthn)?
+
+**Decidido pelo dono (2026-09-26): Fase 0 + Fase 1.** A Fase 0 fecha a F3, emenda o ADR-033 e
+fixa a custódia; a Fase 1 responde às decisões 1 e 3 — as âncoras de confiança registadas no WORM
+(um pino trocado deixa rasto selado) e o mandato assinado por FIDO2 `sk-ssh`. A decisão 2 continua
+aberta.
+
+### Fase 0 — o que se entregou
+
+- **A ponte TLS sai do alcance do `aos`.** O executável que o root corre passa a
+  `/usr/local/sbin/aos-sync-tls` (root:root 0755), instalado **pelo root** a partir de um pacote
+  tirado do commit revisto e conferido por SHA-256 (`deploy/server/README.md` §TLS, «Instalar como
+  root»); o `sync-tls.sh` **sai do rsync** do `deploy.yml`.
+- **O `admin.conf` dá lugar a uma identidade mínima:** ServiceAccount `aos-tls-sync` num namespace
+  próprio, com uma Role que só permite `get` em `default/aos-node-tls`
+  (`deploy/server/tls-sync-rbac.yaml`), e o kubeconfig em `/etc/aos/kube/aos-tls-sync.kubeconfig`
+  (root:root 0600). O procedimento gera-o sem pôr o token nos argumentos de um processo, e verifica
+  o positivo e os negativos sobre recursos que existem.
+- **O script recusa a instalação errada:** correr como root a partir de `/opt/aos`, um executável
+  que não seja do root ou tenha escrita de grupo, um `KUBECONFIG` que não seja **exactamente** o
+  mínimo (allowlist — o `admin.conf`, o `controller-manager.conf` e o `scheduler.conf` do kubeadm
+  ficam de fora), um kubeconfig que não seja root:root 0600, ou uma credencial que consiga
+  `list secrets`. Já não recua para o `admin.conf` quando o `KUBECONFIG` falta. Lê, escreve **e
+  analisa** (`openssl`) o que está na pasta do edge **como o `aos`** (`runuser`): o `chown` do root
+  desapareceu. A unidade tem `TimeoutStartSec=5min` (um `edge.crt` trocado por uma FIFO bloquearia a
+  leitura).
+- **As unidades da cunhagem e da drenagem deixam de ser instaladas por glob a partir de
+  `/opt/aos/systemd/`** (do `aos`): as seis unidades entram no mesmo pacote verificado e instalam-se
+  pelo nome. O rsync de `deploy/server/systemd/` fica como referência de leitura, não fonte do root.
+- **O procedimento de root começa por conter e guardar a prova:** pára o timer, copia o
+  `/opt/aos/sync-tls.sh` e compara-o com a versão do repositório, e revê o journal, as unidades e os
+  drop-ins — antes de mudar qualquer coisa. O pacote sai de um SHA **fixo** do merge.
+- **Gate e teste.** O gate `lint` (entrega do servidor) passa a aplicar a regra inversa às unidades
+  root: `ExecStart=/usr/local/sbin/aos-<nome>`, fonte `deploy/server/<nome>.sh` em modo 755 e
+  **fora** do deploy em qualquer forma (nome, glob, directório inteiro); lê o **último** `User=` e
+  recusa um repetido; trata `+`/`!` como root. As unidades do `aos` mantêm a regra de sempre.
+  `aos446_fronteira_host_test.go` (`packages/cmd/aos-issuer`) deriva as unidades root de
+  `deploy/server/systemd/` e recusa, com uma mutação por caso: executável, linha de comando,
+  `EnvironmentFile`, `WorkingDirectory` ou `Environment=` sob `/opt/aos` ou `/home`; `BASH_ENV`,
+  `ENV`, `LD_*` e `PATH`; um `KUBECONFIG` que não seja o mínimo; `User=` repetido; a fonte no rsync
+  em qualquer forma; e um RBAC com mais do que um verbo.
+- **ADR-033 emendado** (§2.1, §3, §5 e §6 nova): o conjunto de quem contorna o mandato, a F3, a F5, a
+  seed em claro e a custódia.
+- **Custódia** (passos do dono, `deploy/server/README.md` §Custódia das chaves humanas):
+  `humano-mandato.key` e `issuer.key` para suporte offline cifrado; chave SSH interactiva do
+  operador para o `aos` em `ed25519-sk`; declarado que as duas seeds do *four-eyes* estão na mesma
+  máquina.
+
+### Critérios de Aceitação
+
+- [x] **Fase 0 — F3 fechada no repositório:** nenhuma unidade root executa um ficheiro, um
+      `EnvironmentFile` ou um kubeconfig ao alcance do `aos` ou do deploy.
+      `TestAOS446_UnidadesRootForaDoAlcanceDoAos`, `TestAOS446_VerificadorRecusaAUnidadeDeProducao`
+      e `TestAOS446_SyncTLSNaoRecuaParaOAdminConf` passam; repostos a unidade, o script e o
+      `deploy.yml` anteriores, avermelham os três aspectos (executável sob `/opt/aos`, fora de
+      `/usr/local/sbin`, `admin.conf`) e o recuo do script para o `admin.conf`. O gate `lint` recusa a
+      unidade anterior (`corre como ROOT e ExecStart=/opt/aos/sync-tls.sh …`).
+- [x] **Fase 0 — o script prova as recusas como root:** num contentor descartável (root, `runuser`,
+      `kubectl` e `docker` falsos), 17/17 — instala como `aos:aos` 644/640, idempotente, `/etc/shadow`
+      intacto com symlinks plantados pelo `aos` na pasta do edge, recusa `/opt/aos`, `admin.conf`,
+      `controller-manager.conf`, kubeconfig 644 ou do `aos`, executável 775, e uma credencial que
+      responde «yes» a `can-i list secrets`; ponte partida e expiração < 15 dias falham.
+- [x] **Revisão de segurança independente da Fase 0** (2026-09-26): três médios e os baixos
+      corrigidos — o verificador Go aceitava `BASH_ENV`/`PATH`/`WorkingDirectory` do `aos` e
+      KUBECONFIGs largos não listados; a instalação por glob das unidades da cunhagem; a prova
+      forense apagada pelo procedimento. O lint recusa, por mutação na árvore, o rsync por glob, o
+      `sync-tls.sh` de volta na lista, `User=` repetido e `ExecStart=+` sob `User=aos`.
+- [ ] **Fase 0 — F3 fechada em PRODUÇÃO:** o dono corre «Instalar como root» (README §TLS), e o
+      passo 0 guarda a prova e o `cmp` do passo B dá «IGUAL ao repositorio»; o passo 5 mostra
+      `ExecStart=/usr/local/sbin/aos-sync-tls`, `KUBECONFIG=/etc/aos/kube/aos-tls-sync.kubeconfig`,
+      `TimeoutStartUSec=5min`, `systemctl cat` sem drop-ins, `root:root 755`/`700`/`600`, as seis
+      unidades iguais às do pacote, e o `aos` sem escrita no executável nem leitura do kubeconfig;
+      `systemctl start aos-tls-sync.service` sai 0; os negativos do passo 3 dão `forbidden` sobre um
+      secret que existe.
+- [x] **Fase 0 — decisão registada:** emenda ao ADR-033 (§6), com a F3, a F5 e a seed em claro.
+- [ ] **Fase 0 — custódia feita pelo dono** (README §Custódia das chaves humanas, passos 1 e 2).
+- [x] **Fase 1 — âncoras de confiança seladas no arranque:** o nó sela na partição `trust-anchors`
+      a impressão de cada uma das oito âncoras do `.env` (emissor manual, emissor mandatado,
+      assinantes de mandatos, operadores, ratificadores, aprovadores do *four-eyes* com a
+      autoridade de cada um, âncora da política, âncora do selador). `TestAOS446CadaAncoraEntraNoDigest`
+      prova, com **uma mutação por eixo**, que trocar qualquer uma muda o digest e que a diferença
+      nomeia só essa; `TestAOS446RegistoDasAncorasSelaSempreENomeiaOQueMudou` prova o primeiro
+      arranque, a confirmação (S-02: sela-se sempre) e a transição. Fail-closed sem WORM.
+- [x] **Fase 1 — o selador, FORA do host, denuncia a troca:** `TestAOS446SeladorDenunciaAncoraTrocada`
+      corre o `worm-seal` real sobre quatro WORM: base, reinício sem troca (sela), troca
+      (`ErrWormSealAncorasTrocadas`, a nomear `mandate_signers` e o digest novo) e rotação declarada
+      com `--aceitar-ancoras` (sela). **Controlo negativo:** com o digest ERRADO recusa na mesma —
+      senão o flag seria um `--sim`.
+- [x] **Fase 1 — a chave que aceitou o mandato entra no selo de cada decisão (`SchemaV5`):**
+      `TestAOS446PinoEstaSeladoEmV5` mostra que mutar a impressão muda o `entry_hash`;
+      `TestAOS446V3EV4TemOsBytesDeSempre` mostra que v2/v3/v4 produzem **exactamente** os bytes de
+      antes (é o que faz o WORM de produção sobreviver ao deploy) e que os quatro domínios são
+      distintos; `TestAOS446CadeiaMistaV3V4V5Verifica` verifica uma cadeia com as três épocas.
+- [x] **Fase 1 — mandatos FIDO2 `sk-ssh-ed25519`, em stdlib:** verificação SSHSIG sem dependências
+      novas. Os vectores golden (`platform/identity/testdata/aos446_sshsig_sk_vectores.json`) foram
+      **aceites pelo `ssh-keygen -Y verify` do OpenSSH_10.3p1**, que os recusa com o contador mutado,
+      a namespace trocada ou a mensagem trocada; `TestAOS446SSHKeygenRealAceitaOQueProduzimos` repete
+      a prova contra o binário real quando ele está no PATH. **Divergência deliberada, medida:** o
+      `ssh-keygen` aceita `flags=0x00` (sem toque) e nós recusamos
+      (`TestAOS446SSHSIGExigePresencaDeUtilizador`). `TestAOS446TabelaPinoVersusFmt` cobre as nove
+      combinações de pino × `fmt`, e `TestAOS446MandatoFIDO2CorreNoNoEOSeloDizAChave` corre um run
+      inteiro no nó sob um mandato FIDO2, com o selo a nomear a chave.
+- [x] **Fase 1 — um parser de assinante, e não dois:** `identity.ParseMandateSigners`;
+      `TestAOS446PinoDoHumanoEUnificado` prova que o emissor passou a recusar o que o nó já recusava
+      (chave partilhada por dois nomes, nome repetido, entrada malformada noutra posição da lista) —
+      o `pubkeyDoHumano` antigo aceitava os quatro casos.
+- [x] **Fase 1 — revisão adversarial de segurança independente (2026-09-27), corrigida:** 25 casos
+      adversariais cruzados com o `ssh-keygen -Y verify` do OpenSSH_10.3p1 sem um único caso em que
+      aceitemos o que ele recusa, e os vectores golden confirmados não-circulares de fora. **A1
+      (ALTO, provado a correr):** o denunciante das âncoras era derrotado por UM registo
+      acrescentado, sem apagar nada — comparava só o último registo de cada lado, e os do meio
+      nunca eram lidos; a sequência `[honesto, do-atacante, honesto]` selava com «INALTERADAS».
+      Fechado pela varredura de `(ancorado, agora]`, com `TestAOS446SeladorVarreTodosOsRegistosDoIntervalo`
+      a reproduzi-la (e um controlo positivo: três registos iguais continuam a selar). **A2:** a
+      linha do diagnóstico passa a nomear quantos registos varreu. **A3:** as duas JANELAS
+      (`AOS_MANDATE_V1_UNTIL`, `AOS_MANDATE_DUAL_PIN_UNTIL`) são autoridade e entram no retrato —
+      root que as estenda alarga o que o nó aceita sem tocar em chave nenhuma; o piso de frescura
+      fica FORA, por decisão declarada. **A4:** a âncora da política sai de `pdp.PDP.TrustAnchor()`
+      (a chave em uso) e não de `os.Getenv`, e o erro deixa de ser engolido. **A5:** `fmt` com
+      espaços recusado, `application=ssh:aos-mandate` exigida no pino, armor com exactamente um
+      bloco e sem texto à volta; rollback do contador declarado. **A6:** o resíduo 1 corrigido —
+      era falso, e foi medido.
+- [x] **Fase 1 — a rotação de um pino não pára a cunhagem** (decisão do dono, 2026-09-27, achado
+      A7): `AOS_MANDATE_SIGNERS` admite dois pinos por humano dentro de
+      `AOS_MANDATE_DUAL_PIN_UNTIL`, os dois verificam, e o selo diz qual.
+      `TestAOS446JanelaDeRotacaoDeDoisPinos` prova os dois mandatos aceites na janela com
+      impressões distintas, os dois recusados com `E_MANDATE_DUAL_PIN_CLOSED` fora dela, e a
+      tabela pino×fmt a valer por pino; `TestAOS446JanelaDeRotacaoNoArranque` prova o arranque a
+      abortar sem janela, com a janela passada e com três pinos, mais os três estados do banner;
+      `TestAOS446EmissorCunhaComQualquerUmDosDoisPinos` corre a cerimónia inteira e cunha sob os
+      dois com a MESMA lista (e recusa uma chave fora dos dois, dizendo que tentou os dois).
+- [x] **Fase 1 — 2.ª ronda de revisão, corrigida:** as três mutações novas da revisão ficaram
+      vermelhas e dez hipóteses morreram. **B1 (ALTO):** o `--aceitar-ancoras` guardava UM digest e
+      comparava com `==`, mas o procedimento de rotação produz DUAS mudanças do retrato (abrir e
+      fechar a janela) — com as duas entre dois selos diários, nenhuma forma de invocar o flag
+      selava, e a pressão empurrava o operador para largar o `--anterior`, sem o qual a
+      verificação A1 nem corre. Passa a ser uma LISTA comparada por pertença
+      (`TestAOS446AceitarAncorasEUmaLista`: a sequência [a,b,c] sela com `<b>,<c>`, recusa com
+      cada um sozinho, e um retrato NÃO declarado no meio continua a recusar a nomear o seq).
+      **B2 (MÉDIO):** `AOS_AUDIT_WRITE_SCHEMA=5` passa a pré-requisito de abrir a janela — abaixo
+      do v5 o `stampSchema` apaga o `mandate_signer` e o passo de confirmação não tem o que ler; o
+      banner declara-o, com a consequência gémea de a guarda da retoma não disparar
+      (`TestAOS446BannerAvisaQuandoOSeloNaoLevaOPino`, três épocas + o controlo de que o aviso
+      desaparece com o v5). **B3 (MÉDIO, segurança):** a guarda de «mesma chave sob dois nomes»
+      indexava pela impressão, que difere entre formas — `alice=<hex K>,bob=<sk com K>` era ACEITE;
+      passa a colidir também pela chave crua (`TestAOS446MesmaChaveEmDuasFormasNaoSePinaEmDoisNomes`,
+      com o controlo de que o mesmo humano nas duas formas continua a passar). **B4 (MÉDIO):** as
+      duas janelas abertas ao mesmo tempo deixam um v1 assinado pelo pino novo contornar os
+      `requesters`; NÃO se recusa (em produção o mandato vivo é v1), declara-se no ADR §8.9, o
+      README manda fechar a janela v1 primeiro, e o banner avisa
+      (`TestAOS446BannerAvisaAsDuasJanelasAbertas`). **Nove baixos** todos corrigidos, incluindo o
+      tecto de pinos imposto também no verificador (medido: três pinos verificavam), o
+      `--partition` a declarar que a verificação não correu, e o registo estranho na partição a
+      ser contado e nomeado em vez de saltado em silêncio.
+- [ ] **Fase 1 — verificada em PRODUÇÃO** (passos do dono, `deploy/server/README.md` §Mandato em
+      hardware e §As âncoras de confiança seladas no WORM): gerar a chave FIDO2; abrir a janela
+      (`AOS_MANDATE_DUAL_PIN_UNTIL`) e **acrescentar** o pino novo ao lado do antigo; re-assinar o
+      mandato com `mandate-prepare`/`ssh-keygen -Y sign`/`mandate-attach` e entregá-lo; confirmar
+      **pelo selo** (`signer=SHA256:…` no `audit-trail`) que o mandato em uso já é o de hardware;
+      **só então** remover o pino antigo e apagar a janela. Depois do deploy saudável, subir
+      `AOS_AUDIT_WRITE_SCHEMA=5`. Confirmar que a selagem diária seguinte recusa com o digest novo
+      e passa com `--aceitar-ancoras`.
+- [ ] **Decisão 2** (o `aos` fora do grupo `docker`) registada.
+
+### Resíduos declarados
+
+1. **Enquanto o `aos` estiver no grupo `docker`, o conjunto de quem contorna o mandato não muda.** A
+   F3 e a instalação por glob das unidades eram dois caminhos a mais para o mesmo root, nenhum
+   declarado; a F3 era o que chegava ao cluster sem passar pelo `docker`. Fechá-los é necessário
+   para a decisão 2 valer; não chega. E o cluster é outra porta: o host é nó control-plane, e quem é
+   cluster-admin é root nele (ADR-033 §6.1 — o agendamento de um pod privilegiado neste nó é
+   inferência, não verificado).
+2. ~~As unidades da cunhagem e da drenagem instaladas por glob a partir de `/opt/aos/systemd/`.~~
+   **Fechado na Fase 0** (achado MÉDIO da revisão de segurança, confirmado num contentor: um
+   symlink plantado pelo `aos` levava o `install` a copiar o `admin.conf` para `/etc/systemd/system`
+   a `0644`, e um `User=root` escrito pelo `aos` passava; em produção nada foi explorado). As seis
+   unidades instalam-se pelo nome a partir do pacote verificado; o `/opt/aos/systemd/` fica como
+   referência. O que **não** fecha: um root que, apesar do README, copie de lá.
+3. **O token da ServiceAccount não expira.** Renová-lo exigiria uma credencial maior no host, que é o
+   que a Fase 0 tira de lá; revoga-se apagando o Secret, e só vale `get` num secret.
+4. **Cada alteração ao `sync-tls.sh` ou a uma das seis unidades exige o passo de root** (A, B, 4 e
+   5): o CD já não as entrega ao root. É o preço de o que o root executa não ser escrito por quem não
+   é root.
+5. **Um `edge.crt` trocado pelo `aos` por uma FIFO bloqueia a leitura** (feita como o `aos`): o
+   `TimeoutStartSec=5min` corta-a e deixa a unidade `failed` — é disponibilidade (uma passagem
+   perdida), não escalada.
+
+### Fase 1 — o que se entregou
+
+- **As âncoras de confiança ficam seladas no arranque** (`packages/cmd/aos/ancoras_de_confianca.go`),
+  na partição `trust-anchors`, como IMPRESSÕES e nunca material de chave. Sela-se SEMPRE — o
+  argumento S-02 do changelog de política: escrever só quando muda dá a quem escreve no ficheiro um
+  botão de silenciamento. `trust_anchors.changed` / `trust_anchors.active` distinguem transição de
+  confirmação. A FORMA do registo vive em `platform/audit/trustanchors.go` porque tem dois leitores
+  em módulos diferentes, e duas definições divergentes dariam um selador verde a varrer nada.
+- **O `aos-issuer worm-seal` verifica-as entre âncoras diárias** e recusa selar uma troca não
+  declarada (`ErrWormSealAncorasTrocadas`); `--aceitar-ancoras <digest>` é o escape para uma rotação
+  legítima, e exige o digest EXACTO.
+- **`SchemaV5`**: cada decisão sela a impressão do pino que aceitou o mandato. Época NOVA e não um
+  campo no v4 — o binário que escreve v4 já está em produção e basta o operador ligá-lo para nascerem
+  registos v4 da serialização dele; redefinir o v4 faria o nó deixar de arrancar sobre o seu próprio
+  log. O expand/contract mantém-se: escreve-se v3 por omissão, sobe-se com `AOS_AUDIT_WRITE_SCHEMA`.
+- **Mandatos FIDO2 `sk-ssh-ed25519`** (`platform/identity/sshsig.go`, stdlib), com a cerimónia em
+  dois comandos (`mandate-prepare` → `ssh-keygen -Y sign` → `mandate-attach`) porque o toque no
+  autenticador é o passo do meio e falar CTAP2 exigiria um driver que este binário não tem.
+- **A retoma compara também a impressão do pino**, a par do humano e do mandato (resíduo declarado
+  abaixo).
+- **ADR-033 §8** e `deploy/server/README.md` (§Mandato em hardware, §As âncoras de confiança).
+
+### Resíduos da Fase 1
+
+1. **O TAIL AINDA NÃO ANCORADO é reescrevível por inteiro por root.** O `EntryHash` é um SHA-256
+   **sem chave**: apagar os registos posteriores ao último checkpoint e re-encadear o que resta
+   produz um WORM que verifica. A garantia do denunciante vale para registos que **já
+   atravessaram uma selagem**; o que ele obriga é a **reescrever** em vez de acrescentar.
+   Encolher a janela é selar mais vezes; fechá-la exige uma testemunha independente (DEF-268).
+
+   > **Correcção (A6, revisão adversarial de 2026-09-27).** Este resíduo dizia antes que as duas
+   > trocas eram «apanhadas se a selagem cair no intervalo». Era **FALSO**, e foi medido: a
+   > selagem caía no intervalo e **não** apanhava, porque só se liam dois registos. Fechado por
+   > `TestAOS446SeladorVarreTodosOsRegistosDoIntervalo`; o que fica é o parágrafo acima.
+2. **O primeiro registo de sempre não prova nada sobre o passado** — não há base de comparação até
+   haver uma selagem que o cubra. O banner do arranque di-lo com essas letras.
+3. **Rodar a chave do humano torna os runs SUSPENSOS sob a anterior irretomáveis** (`resume.go`),
+   gémeo do que o AOS-439 declarou para o `mandate_id`. É o preço de a retoma exigir a mesma
+   autoridade que autorizou o run.
+4. **Uma chave FIDO2 perdida não se recupera**: sem ela não há como assinar o mandato seguinte
+   (≤ 90 dias). O README manda decidir entre registar uma segunda chave ou guardar a seed antiga
+   offline — e diz que a segunda opção reabre o vector.
+5. **O `worm-seal` de uma release anterior lê um WORM v5 como «hash-chain adulterada»**, tal como já
+   lia um v4. Agravamento de grau e não de natureza: quem subir a época fica preso a um selador desta
+   release ou posterior.
+6. **Os vectores golden usam chaves ed25519 de software a fingir-se de autenticador** — hardware real
+   não existe neste ambiente. A diferença está toda do lado de quem ASSINA; o verificador não as
+   distingue, e é suposto não distinguir. O que ancora a forma é o `ssh-keygen` real tê-la aceite.
+7. **Três cópias do autenticador simulado** (identity, cmd/aos, aos-issuer), porque são três módulos
+   Go e o Go não partilha código de teste entre módulos. As três estão amarradas aos MESMOS vectores
+   por um teste em cada uma: derivar avermelha.
+8. **Uma rotação de pino tem uma janela com data-limite** (AOS_MANDATE_DUAL_PIN_UNTIL): enquanto
+   está aberta, DUAS chaves do mesmo humano assinam mandatos aceites. É autoridade a mais por
+   opção declarada — o alternativo era parar a drenagem durante a troca. Fecha-se apagando a
+   variável, e o arranque aborta se a data passar com dois pinos ainda no `.env`.
+9. **O contador de uma assinatura SSHSIG aceita qualquer valor, incluindo um recuo** — tal como o
+   `ssh-keygen -Y verify`. Detectar um autenticador clonado exigiria guardar o último valor por
+   chave (estado persistente que este verificador não tem). Impacto nulo aqui: um mandato
+   assina-se uma vez e verifica-se muitas sobre os mesmos bytes; quem fecha o clone é a custódia
+   do autenticador.
+10. **Com a época de escrita abaixo do v5, a guarda da retoma NÃO dispara** — o
+    `rec.Principal.MandateSigner` fica vazio e um run suspenso sob um pino retoma sob outro sem
+    dizer nada. É o estado de produção hoje (v3), e é a razão de `AOS_AUDIT_WRITE_SCHEMA=5` ser
+    pré-requisito da rotação e não um passo posterior.
+11. **Fechar a janela de rotação torna irretomáveis os runs suspensos sob o pino antigo** — a
+    retoma exige a mesma autoridade. Ou se esperam os runs, ou se aceita perdê-los.
+12. **Durante a janela de rotação, um mandato v1 assinado pelo pino NOVO é aceite** e sob v1 o
+    emissor age por qualquer submissor (contorna os `requesters` do AOS-439). Não se recusa,
+    porque em produção o mandato vivo é v1 e recusar partiria a rotação; mitiga-se pela ORDEM
+    (fechar a janela v1 primeiro) e pelo aviso no banner.
+13. **A mesma chave ed25519 pinada nas duas formas sob o MESMO humano continua a passar.** Não é
+    uma rotação de material — é a mesma chave apresentada de duas maneiras —, mas não acrescenta
+    ninguém à autoridade, e recusá-la partiria uma rotação legítima a meio.
+14. **O `fmt` não entra no `SigningInput`** — tinha de não entrar, para não partir o v1 em produção nem
+   o v2 acabado de entrar. Quem decide é o pino, e as duas combinações cruzadas são recusa explícita
+   (ADR-033 §8.5). O campo é declaração, não autoridade.
+
+### Estado
+
+**ABERTO — Fases 0 e 1 entregues no repositório**; falta, da Fase 0, a instalação como root em
+produção e a custódia; da **Fase 1**, os passos do dono (a chave FIDO2 física, a troca do pino e a
+subida de `AOS_AUDIT_WRITE_SCHEMA=5`) e a verificação em produção. A **decisão 2** (o `aos` fora do
+grupo `docker`) continua aberta.
+
+---
+
+## AOS-447 — A fila de planos drena-se com um trabalhador e de cinco em cinco minutos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | decisão de arquitectura + implementação |
+| Prioridade | P3 — aceitável com o volume de hoje; limita a latência e a vazão quando houver utilizadores |
+| Estimativa | M |
+| Dependências | AOS-423 (forma do trabalhador, não decidida), ADR-030 §3-§4 |
+| Documentos de referência | `deploy/server/systemd/aos-drenar-planos.timer`, `deploy/server/drenar-planos.sh`, `packages/cmd/aos-orq/consumir.go`, `deploy/server/medir-latencia-fila.sh`, `docs/adr/ADR-030-reclamacao-da-fila-de-pedidos-de-plano.md` (nota ao §4) |
+
+### Contexto — medido em produção
+
+Nas provas de 2026-09-25 um pedido esperou até 5 minutos antes de começar
+(`OnUnitInactiveSec=5min`), e cada passagem drena até 3 pedidos, em série, com um WAL de ficheiro de
+posse sequencial (`consume.wal`). A forma do trabalhador ficou por decidir no AOS-423 (decisão 2) e
+o NATS partilhado foi rejeitado «por agora» (ADR-030 §3); o AOS-437 declarou-o como resíduo 6.
+
+### Decisões do dono (2026-09-26)
+
+1. **Não** um `consume` contínuo: continua o timer, com **`OnUnitInactiveSec=1min`** e
+   `AccuracySec=5s`, e **um pedido por drenagem** (`DRENAR_MAX=1`, na unidade — ver Desenho).
+2. **Um trabalhador.** Vários só com uma medição que o justifique, por um WAL por run, e com a
+   pré-condição TTL da reclamação ≥ prazo do plano (ver os achados abaixo).
+3. Em duas fases: **fase 0** mede (antes), **fase 1** baixa o timer — e mede-se outra vez (depois).
+
+### Critérios de Aceitação
+
+- [x] Decisão registada — nota ao ADR-030 §4 (2026-09-26).
+- [ ] Latência de arranque e vazão medidas **antes** (fase 0, `medir-latencia-fila.sh`, em produção).
+- [ ] Latência de arranque e vazão medidas **depois** de reinstalar o timer (idem).
+
+### Desenho
+
+- **Fase 0 — medir.** `deploy/server/medir-latencia-fila.sh` (no rsync do `deploy.yml`; corre como
+  `aos`): submete um pedido de prova `plan-e2e-447-<epoch>` com um objectivo inócuo (`doc_read` sobre
+  o `notes`) por `POST /plans`, com um token `client_credentials` do `aos-reader` POR CHAMADA, pedido
+  de dentro de um contentor `curlimages/curl` **fixado por digest** e corrido com `--pull=never` (o
+  dono puxa-o uma vez pelo digest), na rede `aos_default` (o segredo montado só-leitura; o Bearer por
+  `-H @ficheiro`, nunca no argv; o IdP validado pela CA interna); sonda `GET /plans/<id>` de ~1 s em ~1 s e regista `t(saída de pending) − t(201)`.
+  Do `drenar-planos.log` tira `S` (a duração das passagens vazias), o intervalo entre passagens, os
+  planos por passagem, a duração de cada plano e a vazão; do `aos-orq-consume.prom`, os contadores
+  acumulados. `--so-logs` não submete nada; `--ate-ao-fim` espera também pelo fim do plano.
+- **Fase 1 — baixar.** `aos-drenar-planos.timer`: `OnUnitInactiveSec=1min`, `AccuracySec=5s`.
+  `aos-drenar-planos.service`: `Environment=DRENAR_MAX=1` — na UNIDADE e não como omissão do script
+  (revisão): o script chega pelo rsync em cada deploy e as unidades só quando o root as reinstala;
+  com o 1 no script, entre um e outro a fila drenava 1 pedido de 5 em 5 min. O script mantém a
+  omissão 3 (corridas à mão). Os comentários «a cada 5 min» do
+  `drenar-planos.sh`, do `deploy.sh`, do `deploy.yml` e do `.service` foram corrigidos, e o README
+  (§A forma do trabalhador) diz o que muda na operação. **Reinstalar a unidade exige root** — passo do
+  dono, no README.
+
+### Achados do desenho (declarados)
+
+1. **O `decide` fica bloqueado enquanto um plano corre.** O `decide` toma posse de ESCRITA do
+   `consume.wal`, e o `serve` que o `consume` corre por cada pedido detém-na durante o plano inteiro
+   (o `abrirParaEscrita` do `cmdServe` só a larga no fim): o `decide` sai com 5 (WAL detido,
+   transitório) e tem de ser repetido. Medido por `TestAOS447DecideBloqueadoEnquantoUmServeDetemOWAL`
+   (com o WAL detido pelo teste no papel do `serve`: `ErrWALHeld`, código 5; largado, passa da posse).
+   O README já dizia «um `decide` que saia com 5 apanhou uma drenagem a meio: repita».
+2. **A reclamação (30 min, `ttlDaReclamacao` em `packages/cmd/aos/plan_claim.go`) expira antes do
+   prazo do plano (40 min, `prazoDoPlanoPorOmissao` em `packages/cmd/aos-orq/node_executor.go`).**
+   Com um trabalhador é inofensivo: ninguém mais reclama o pedido, e o desfecho tardio é aceite e
+   fecha-o — mas o `GET /plans/{id}` diz `pending` entre os 30 min e o fim. Com dois trabalhadores o
+   segundo reclamá-lo-ia. Pré-condição registada no ADR-030 §4 (nota).
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-26) — fases 0 e 1 no repositório; as medições e a reinstalação do timer
+são do dono, em produção. Verificado: `TestAOS447TimerDeUmMinutoEUmPedidoPorDrenagem` (o timer, o
+`Environment=DRENAR_MAX=1` da unidade, a omissão 3 do script e a ausência de «a cada 5 min» nos três
+ficheiros); `TestAOS447DecideBloqueadoEnquantoUmServeDetemOWAL`; o cenário do AOS-450
+(`testdata/aos450_deploy_drenagem.sh`) num `debian:12` com o `flock(1)` real: 77/0 (em Git Bash, com
+um `flock` falso, as MESMAS 13 falhas contra o script novo e o de HEAD — as que dependem de o lock
+arbitrar). Smoke do `medir-latencia-fila.sh` com stubs (docker a correr o script interno, curl a
+fingir o IdP e o nó): mede o arranque e o fim, lê S/intervalo/vazão de um log sintético, corre com
+`--pull=never`, e nem o segredo nem o Bearer aparecem no argv.
+
+**O que muda na operação**: o log da drenagem cresce ~5× mais depressa (5 × 5 MiB passam a cobrir
+semanas); uma causa de falha que se repete (mandato revogado, snapshot errado) repete-se a cada
+minuto — e cada tentativa pode pagar uma decomposição (README §Revogar um mandato); cada passagem
+vazia custa um `compose run` e dois `docker run` por minuto (é o `S` que a fase 0 mede); e o
+`alerta-nhi.sh` lê o `is-failed` da unidade de 15 em 15 min, pelo que uma falha ISOLADA, sobreposta
+pela passagem seguinte, tem menos probabilidade de ser vista (declarado na revisão).
+
+**A medição suja** (declarado): submete com a identidade do `aos-reader`; o pedido de prova conta nas
+métricas, no log da drenagem, no histórico do `GET /plans` e dá um aviso do AOS-445; a sondagem pede
+~1 token por segundo ao IdP.
+
+**Verificação em produção (do dono)**:
+0. Uma vez, como `aos`: `docker pull curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69`.
+1. Antes de reinstalar: `bash /opt/aos/medir-latencia-fila.sh` (uma ou mais vezes) e
+   `bash /opt/aos/medir-latencia-fila.sh --so-logs` — guardar `arranque`, `S`, intervalo e vazão.
+2. Como root, pelo procedimento de instalação das units a partir do pacote verificado (AOS-446) —
+   nunca de `/opt/aos/systemd/`, que é escrita pelo `aos` (um symlink plantado fazia o root copiar
+   um ficheiro que o `aos` não pode ler; confirmado na revisão do AOS-446). Pelo nome e sem glob:
+   `install -o root -g root -m 0644 /root/<pacote>/deploy/server/systemd/aos-drenar-planos.timer /etc/systemd/system/aos-drenar-planos.timer`
+   e `install -o root -g root -m 0644 /root/<pacote>/deploy/server/systemd/aos-drenar-planos.service /etc/systemd/system/aos-drenar-planos.service`;
+   depois `systemctl daemon-reload && systemctl restart aos-drenar-planos.timer`, e `systemctl list-timers
+   aos-drenar-planos.timer` mostra o próximo a ≤ 1 min do fim do anterior; `systemctl show -p
+   Environment aos-drenar-planos.service` mostra `DRENAR_MAX=1`.
+3. Depois: as mesmas medições — o `arranque` esperado passa de 0–5 min para ~0–1 min mais `S`, e o
+   intervalo entre passagens de ~300 s para ~60 s.
+
+---
+
+## AOS-448 — A captura de replay grava 0 tokens sem dizer que não mediu
+
+<!-- rtm: adrs-mencionados -->
+<!-- Os ADR-NNN citados neste bloco são MENÇÃO — restrições e contexto que o ticket respeita — e
+     não implementação. Aberto pela análise crítica do ciclo do plano em produção (2026-09-25). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | P3 — engana quem lê o registo; o orçamento não é afectado |
+| Estimativa | S |
+| Dependências | AOS-336 (marca de turno não medido), AOS-406 (custo não derivado) |
+| Documentos de referência | `packages/kernel/agent-runtime/replay/nondeterminism_capture.go`, `packages/kernel/agent-runtime/turn.go` |
+
+### Contexto — medido em produção
+
+A análise crítica de 2026-09-25 suspeitou que o consumo de tokens estava a zero, porque o
+`replay.captured` do run `plan-e2e-docread-1790340990~n1` regista `input_tokens: 0` e
+`output_tokens: 0` nos dois turnos. **Refutado:** o `turn.recorded` dos mesmos turnos tem o consumo
+real (434+1523 e 915+165 tokens), e o pico do run (3151) está no tecto de orçamento. O orçamento
+funciona.
+
+O que fica é uma inconsistência do registo: o `turn.recorded` marca a ausência de medição
+(`usage_ausente`, `turn.go:60-80`), e o `responseCapture` do replay grava números sem essa marca
+(`nondeterminism_capture.go:62-73`, `:360-368`) — um zero que não distingue «não medido» de «zero».
+
+### Causa — seguida até quem fornece o valor
+
+A captura **recebia** o consumo: o loop passa o MESMO `resp` ao `turn.recorded` e ao capturer
+(`loop.go`, `recordTurn` e `captureTurn`), e o `encodeResponse` copiava os números. O zero nascia
+depois. Em produção o capturer é composto com a cifra por-titular (`cmd/aos/bootstrap.go`,
+`replay.WithContentSealer`, AOS-093): a resposta inteira era selada no envelope e o `response` do
+evento reposto a `responseCapture{}`. Como os campos de consumo não têm `omitempty`, o que ia ao WAL
+era `"input_tokens":0,"output_tokens":0,"cost_micro_usd":0` — o valor-zero da struct, não uma
+medição. O mode 3 (`WithPayloadStore`, AOS-079) reconstruía o evento com a mesma forma. Os números
+reais estavam dentro do `sealed_content`, ilegíveis sem a chave.
+
+### Correcção
+
+- Fora do inline, o `response` do evento passa a levar **só o consumo** (`responseCapture.consumo`:
+  tokens, custo, `custo_nao_derivado`, `usage_ausente`) em vez do valor-zero; o conteúdo continua
+  selado ou no PayloadStore. Os mesmos números já estão em claro no `turn.recorded` do mesmo turno,
+  pelo que nada novo fica exposto ao crypto-shredding.
+- `usage_ausente` (`omitempty`) entra no `responseCapture` com o critério do `turn.recorded`
+  (`!Usage.Definido()`, AOS-336) e volta na descodificação como `Usage.Ausente` — a marca atravessa a
+  retoma.
+- Compatibilidade: um turno medido serializa os bytes de sempre (as goldens do gate `replay` não
+  mudam de digest); as capturas antigas, incluindo as seladas com o exterior a zeros, descodificam
+  como antes; o motor de replay continua a substituir o `response` pelo conteúdo decifrado ou
+  resolvido, e não lê o exterior.
+
+### Critérios de Aceitação
+
+- [x] O `replay.captured` leva o consumo medido ou uma marca explícita de não medido, nunca um zero
+      mudo — nos três modos de escrita (inline, selado, mode 3).
+- [x] Teste que avermelha um zero sem marca (`aos448_consumo_na_captura_test.go`,
+      `TestAOS448_CapturaNuncaGravaZeroMudo`; reposto o comportamento anterior, os casos `selado` e
+      `mode3` falham com os bytes medidos em produção).
+- [x] **Verificado em PRODUÇÃO** (v0.1.35, 2026-09-26): no run `plan-e2e-443-1790420556~n1`, lido
+      pelo `GET /runs/{id}/trajectory`, o `replay.captured` de cada turno tem os tokens do
+      `turn.recorded` do mesmo turno — 437/79 e 918/1903 nos dois (antes: 0/0).
+
+### Resíduos declarados
+
+1. **As capturas já gravadas não mudam.** O log é append-only: os `replay.captured` selados até esta
+   correcção continuam com o exterior a zeros, e para eles o consumo lê-se no `turn.recorded`.
+2. **O `final` exterior continua a ser o valor-zero** num evento selado ou de mode 3. Não é consumo
+   e fica fora do âmbito; o `turn.recorded` tem-no.
+3. **`cost_micro_usd: 0` com tokens medidos e sem marca** fica como no `turn.recorded`: o custo sem
+   preço é o eixo do AOS-406 (`custo_nao_derivado`), não deste ticket.
+
+### Estado
+
+**FECHADO** — verificado em produção na v0.1.35.
+
+---
+
+## AOS-449 — O consumidor R1 da subscrição fica órfão no nó morto, e o intervalo nunca chega
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (substrato replicado sob o gate `nats`, AOS-431) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção |
+| Prioridade | **P1** — uma em cada três mortes de nó deixava uma subscrição sem entregar nada, em silêncio, até o nó voltar |
+| Estimativa | S |
+| Dependências | AOS-100 (o adaptador JetStream), AOS-431 (o cluster no CI que o expôs) |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/store.go` (`criarDuravel`, `reestabelecerEntrega`), `packages/substrate/eventstore/jetstream/reconexao_test.go`, ADR-007 |
+
+### Contexto — medido no CI, 2026-09-25
+
+`TestReconexao_SubscricaoRECUPERAOIntervalo` falhou de forma intermitente no gate `nats`: run
+36128693205 (base) e run 36194085946 (PR #383, duas tentativas), sempre com os três eventos
+escritos depois de matar `aos-ci-nats-1` a «NUNCA chegar», com execuções verdes pelo meio. Na
+36128693205 o mesmo teste **passou** na primeira execução do módulo e **falhou** na segunda (a da
+cobertura), sobre um cluster novo e o mesmo código.
+
+Não era flake do teste. O durável da subscrição é criado com `NumReplicas: 1`, valor herdado dos
+consumidores **de leitura** (efémeros, transitórios). Lido no nats-server v2.10:
+
+1. `createGroupForConsumer` coloca um R1 num par **activo sorteado** (`rand.Shuffle`) — uma vez em
+   três é o nó que o teste mata;
+2. o `CREATE` sobre um consumidor que já existe reutiliza **os mesmos pares** (`ca.copyGroup()`):
+   com o único par morto, ninguém responde e o pedido expira. O servidor não move um R1 órfão;
+3. a reafirmação do adaptador repetia esse `CREATE` para sempre. Até o nó voltar — o teste só o
+   repõe no `Cleanup` —, nada era entregue.
+
+A doc do pacote dizia o contrário («se o nó que o aloja morrer, é isto que o cobre»).
+
+### O que se entregou
+
+- `TestReconexao_MorteDoNoDoConsumidor`: pergunta ao servidor onde está o consumidor
+  (`CONSUMER.INFO`, `natsjs.Conn.LiderDoConsumidor`) e mata **esse** nó, sempre. Sem a correcção
+  falha de forma determinista (commit do teste sozinho, vermelho no CI do PR).
+- `reestabelecerEntrega`: quando a reafirmação **expira**, o consumidor apaga-se e recria-se
+  (`recolocarDuravel`). O `DELETE` de um consumidor sem pares vivos é respondido pelo meta-leader,
+  e a recriação sorteia um par vivo. Parte do seq fixado na subscrição: nada se perde, e o que já
+  tinha sido entregue desde então é reentregue (o at-least-once já declarado).
+- O teste antigo regista onde estava o consumidor antes da falha, para que um vermelho futuro se
+  leia pela causa e não como flake.
+- `nats-cluster.sh` exporta `AOS_KILL_NODE_CMD` (prefixo; o teste junta o nome do servidor).
+
+### Critérios de Aceitação
+
+- [x] Matar o nó que aloja o consumidor da subscrição não impede a entrega dos eventos escritos
+      depois, sem reiniciar o processo — medido no gate `nats`, de forma determinista.
+- [x] O teste determinista avermelha sem a correcção.
+- [x] A doc do pacote deixa de afirmar uma cobertura que não existia.
+
+### Resíduos declarados
+
+1. **A reentrega é desde o início da subscrição, não desde o último ACK.** Numa subscrição longa,
+   a recolocação reentrega tudo o que ela já viu. É correcto (idempotência por `(run_id, step_id)`),
+   mas o custo cresce com a idade da subscrição. Fechar exigiria recriar a partir do *ack floor*,
+   que o cliente não conhece com o consumidor morto.
+2. **A detecção custa um prazo do store.** A recolocação só começa quando a reafirmação expira.
+
+### Estado
+
+**FEITO** (CI do PR albinoJimy/aos#384).
+
+---
+
+## AOS-450 — O deploy corre contra a drenagem: um timer que calhe na janela do deploy dá uma falha falsa
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (caminho do plano) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção (operação) |
+| Prioridade | P3 — nenhum pedido se perde; é um `failed` falso e um alerta a cada release que mude os scripts |
+| Estimativa | S |
+| Dependências | AOS-437 (timer de drenagem), AOS-443 (verificação de frescura das métricas) |
+| Documentos de referência | `.github/workflows/deploy.yml` (rsync dos scripts antes do `deploy.sh`), `deploy/server/deploy.sh`, `deploy/server/rollback.sh`, `deploy/server/drenar-planos.sh` (`flock` em `/opt/aos/.drenagem/lock`) |
+
+### Contexto — medido em produção, 2026-09-26
+
+No deploy da v0.1.35 o `deploy.yml` sincronizou os scripts do servidor (rsync) ANTES de o
+`deploy.sh` trocar a imagem. O timer `aos-drenar-planos` disparou na janela entre os dois: a
+drenagem das 11:00:18Z correu o `drenar-planos.sh` NOVO com o binário ANTIGO (o nó só reiniciou
+às 11:00:24Z). A fila estava vazia e drenou, mas o binário antigo não escreve o ficheiro de
+métricas do AOS-443, e a verificação de frescura falhou — «métricas do consume NÃO copiadas».
+Resultado: o serviço ficou `failed` e o `alerta-nhi.sh` passou a «mau (1/2)» até à drenagem
+seguinte. A drenagem manual das 11:01, já com a imagem nova, ficou verde.
+
+É a forma declarada na revisão do AOS-443 para o rollback, mas acontece em QUALQUER release que
+mude os scripts, sempre que o timer calhe na janela. E há um segundo efeito na mesma janela: uma
+drenagem que esteja a correr quando o `compose up` reinicia o nó vê os pedidos a meio falharem
+como transitórios.
+
+### Critérios de Aceitação
+
+- [ ] O deploy (e o rollback) seguram o lock da drenagem (`/opt/aos/.drenagem/lock`) desde antes
+      do rsync dos scripts até o nó estar saudável com a imagem nova — ou a troca dos scripts passa
+      para depois da troca da imagem —, de forma que nenhuma drenagem corra com um par
+      script/binário misturado nem durante o reinício do nó.
+      — **Cumprido só num deploy BEM-SUCEDIDO**: nenhuma drenagem corre entre o anúncio e o fim do
+      `deploy.sh`, nem durante o reinício do nó. Num deploy que falhe DEPOIS do rsync (passos 0/0b
+      antes do 0c, pull falhado, desistência no 0c, reversão automática) os scripts novos ficam com o
+      binário antigo e o marcador é largado: a drenagem seguinte corre esse par (o mesmo `failed`
+      falso da v0.1.35). Idem depois de um `rollback.sh`, que não repõe os scripts.
+- [x] Uma drenagem que encontre o lock ocupado pelo deploy termina sem `failed` (hoje o `flock -n`
+      sai com erro): distinguir «deploy em curso» de «outra drenagem em curso».
+- [x] O deploy espera, com prazo, que uma drenagem em curso termine antes de trocar a imagem, e
+      diz no log se desistiu de esperar.
+- [ ] **Verificado em PRODUÇÃO**: num deploy com o timer a disparar na janela, o serviço não fica
+      `failed` e o alerta não passa a «mau».
+
+### Desenho
+
+- **Marcador + lock, e não só a ordem.** O rsync e o `deploy.sh` são duas ligações SSH, e um `flock`
+  não atravessa processos que não existem. O CD corre `deploy.sh --anunciar` ANTES do rsync (o
+  script vai por stdin, do checkout): escreve `/opt/aos/.drenagem/deploy-em-curso`
+  (`<epoch> <pid> <validade_s> <origem>`, pid 0 = anúncio) e espera pelo lock da drenagem em curso.
+  O `deploy.sh` (passo 0c) assume o marcador com o seu pid e segura o lock até sair — depois de o nó
+  estar saudável, ou de reverter —, e apaga-o num trap. Mudar só a ordem (scripts depois da imagem)
+  trocava a janela pela inversa e não protegia o reinício do nó.
+- **A drenagem perante o deploy** sai 0 com «deploy em curso — drenagem ADIADA, nada reclamado», sem
+  docker e sem escrever `ultima-ok` (não drenou). Confere o marcador também COM o lock na mão (o
+  anúncio não segura o lock). «Outra drenagem em curso» continua a falhar: o systemd nunca arranca
+  dois oneshot, por isso é uma corrida à mão.
+- **Ao desistir de esperar** (45 min por omissão): o anúncio aborta ANTES do rsync, sem tocar em
+  nada; o `deploy.sh` aborta sem trocar a imagem — adiar um deploy não perde nada, interromper um
+  plano fecha o pedido; o `rollback.sh` espera 5 min e AVANÇA, porque é a saída de emergência de um
+  nó partido. O CD sobrepõe a espera e a decisão pelas variáveis do GitHub
+  `DEPLOY_ESPERA_DRENAGEM_S` e `DEPLOY_AO_DESISTIR_DA_DRENAGEM` (validadas no workflow e no script);
+  o README (§Operação) diz também como parar uma drenagem em curso.
+- **Um deploy morto** não pára a fila: pid morto ou que não corre um `deploy.sh`, marcador expirado
+  (o anúncio vale 15 min depois de tomado o lock, até 1 h se o job for cancelado durante a espera),
+  ilegível, com zeros à esquerda ou com validade acima de `DRENAR_DEPLOY_MAX_S` (4 h) são órfãos — a
+  drenagem ignora-os, di-lo com o motivo (morreu, expirou, ilegível), apaga-os com o lock na mão, e
+  drena.
+
+### Estado
+
+**IMPLEMENTADO** (2026-09-26) com o critério 1 cumprido só para deploys bem-sucedidos;
+verificação em produção por fazer. Verificado:
+`TestAOS450DeployEDrenagem` corre o `deploy.sh`, o `rollback.sh` e o `drenar-planos.sh` reais contra
+stubs de docker/curl (58 verificações, em Linux; localmente em Git Bash com um `flock` emulado), e o
+mesmo cenário contra os scripts anteriores dá 26 falhas; `TestAOS450ContratoDoAnuncioEDoMarcador`
+fixa o caminho do marcador nos dois lados e a ordem anúncio → rsync → deploy no `deploy.yml`.
+Revisão adversarial independente: sem crítico nem alto; o cenário correu também num Debian 12 com
+o `flock(1)` real (58/0) e com o anúncio entregue por pipe, como o SSH o entrega.
+
+**Resíduos**:
+1. **Par misturado nos deploys que falham** depois do rsync, e depois de um `rollback.sh` (ver o
+   critério 1). A alternativa que o fecharia, **não implementada**: o CD sincroniza os scripts para
+   uma pasta de preparação e o `deploy.sh` instala-os debaixo do lock, só depois do nó saudável —
+   um deploy falhado deixaria o par antigo intacto.
+2. **Primeiro deploy com isto**: o servidor ainda tem o `drenar-planos.sh` antigo, que ignora o
+   marcador (corre com o binário antigo, par coerente, e o `deploy.sh` novo espera por ele antes do
+   `compose up`). Mas se essa drenagem durar mais de 45 min, o passo 0c desiste DEPOIS do rsync e
+   fica o par misturado do resíduo 1.
+3. Um adiamento sai 0 e por isso limpa um `failed` anterior da unidade até à drenagem seguinte.
+4. Um filho vivo de um `deploy.sh` morto por SIGKILL (um `docker` a meio) herdou o lock e segura-o
+   até acabar: a drenagem desse intervalo falha como «outra drenagem em curso» (transitório).
+5. O marcador confere o pid por `/proc/<pid>/cmdline`: com `/proc` montado com `hidepid` e um
+   `DEPLOY_USER` diferente do `aos`, o deploy vivo passa por órfão.
+6. O anúncio cancelado a meio da espera vale até 1 h (a espera + 15 min), não 15 min.
+
+## AOS-452 — O gate `nats` sai verde quando um pacote morre por timeout: a contagem só lê `--- FAIL`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade, com o AOS-431 e o AOS-432; o eixo é a infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Milestone | v1.1 |
+| Tipo | correcção (CI) |
+| Prioridade | **P1**: é um gate FAIL-OPEN, e é o único que exercita o substrato replicado real |
+| Estimativa | S |
+| Dependências | AOS-431 (o gate `nats`, FECHADO) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/nats.sh` (ciclo dos módulos), `scripts/ci/gotest-pacotes.sh`, `scripts/ci/selftest.sh` §Y, `.github/workflows/ci.yml` (job `nats`) |
+
+### Contexto: medido localmente, 2026-09-26
+
+Ao corrigir o AOS-432, a suite de `packages/cmd/aos-orq` rebentou com
+`panic: test timed out after 10m0s`. A tabela do gate mostrou o módulo como `FAIL=0 (vermelho)`,
+e o gate saiu **0**.
+
+O defeito está no ciclo dos módulos do `nats.sh`. O `rc` do `go test` só servia para escrever
+`verde`/`vermelho` na tabela e nunca chegava ao `rc` do gate. O que avermelhava era a contagem
+das linhas `--- FAIL` por nome (teste novo ou declarado). Há três formas de um pacote terminar
+em FAIL **sem escrever `--- FAIL` nenhum**, e todas passavam:
+
+- **timeout**: o `go` imprime `panic: test timed out after …` e o teste em curso é morto sem
+  veredicto;
+- **`FAIL <pacote> [build failed]`**: o pacote não compilou e não correu nenhum teste;
+- **`os.Exit`/`log.Fatal` fora de um teste** (num `TestMain`): `exit status 1`.
+
+Há ainda um quarto caso que escreve `--- FAIL` e mesmo assim não fica explicado por ele. Um
+`panic` num teste aborta o binário do pacote, e os testes seguintes não correm. Se o teste em
+pânico estiver em `falhas_conhecidas`, a contagem por nome dá «falha declarada» e não diz nada
+sobre os que ficaram por medir.
+
+Por fim, não havia `-timeout` explícito: valia o default de 10 min do `go test`. O job `nats`
+também não tem `timeout-minutes`, e por isso o do GitHub era de 6 h. No CI (run 36238560614) o
+módulo mais lento, `cmd/aos-orq`, fecha em ~25 s já com a compilação, e o job inteiro em ~3,5 min.
+
+### Critérios de Aceitação
+
+- [x] O defeito está localizado no script: o `estado` do ciclo dos módulos era calculado do `rc`
+      do `go test` e só impresso. — *`nats.sh`, ciclo `for entrada in "${modulos_nats[@]}"`.
+      O `rc_go` passa a guardar-se e a entrar no veredicto (bloco G4).*
+- [x] Um pacote que termine em FAIL sem um `--- FAIL` limpo que o explique avermelha o gate,
+      com diagnóstico próprio que nomeia o pacote e a causa (TIMEOUT, PANIC, NAO COMPILOU,
+      `os.Exit` fora de um teste, ou `go` que falhou antes de correr testes), seguido das linhas
+      que dizem porquê (mensagem do panic, testes em curso no timeout, erros de compilação).
+      — *`gotest-pacotes.sh`: o veredicto é por **pacote**, pela linha com que o `go test` fecha
+      cada um. Por módulo não bastava: uma falha declarada num pacote «explicaria» o timeout de
+      outro.*
+- [x] Um aborto nunca é «falha declarada»: um `panic` num teste que está em `falhas_conhecidas`
+      avermelha na mesma.
+- [x] `-timeout` explícito em todas as invocações do `go test` do gate (suites e medição de
+      cobertura), resolvido por `gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m"`. O piso 1 recusa
+      o `0`, que para o `go` quer dizer «sem timeout». O job `nats` ganha `timeout-minutes: 40`
+      como rede.
+- [x] O `selftest.sh` prova-o (§Y), com a MESMA invocação (`gotest_pacotes_corre`) e o MESMO
+      classificador do gate sobre módulos sintéticos fora do repo: Y1 panic, Y2 timeout sem
+      `--- FAIL`, Y3 build failed e Y4 `os.Exit` num `TestMain` ao lado de uma falha declarada
+      noutro pacote avermelham. Y5 é o controlo: um `t.Fatal` limpo e um módulo verde não
+      avermelham. Y6 confirma que o `nats.sh` usa as duas funções e põe `rc=1` no ramo, e que
+      `NATS_GO_TEST_TIMEOUT=0` é recusado por VIOLAÇÃO DE PISO antes de subir o cluster.
+- [x] **O gate avermelha ao vivo.** Correu localmente contra o cluster de 4 nós a 2026-09-26,
+      sobre a base e sem a correcção do AOS-432. O `cmd/aos-orq` excedeu os 5 min e o gate saiu
+      **rc=1** com: `pacote github.com/aos-ref/cmd/aos-orq em FAIL sem falha declarada que o
+      explique: TIMEOUT`, seguido de `panic: test timed out after 5m0s` e do teste em curso
+      (`TestAOS395_ProcessoReal_SeloDuravelComRunEPasso`). Antes deste ticket, este mesmo caso
+      saía 0.
+- [x] **Verificado no CI**: o job `nats` fica verde com o `-timeout` novo, e a tabela e o
+      veredicto batem certo. — *Run 36250347573 do PR #389, fundido como `d84aa65`, a
+      2026-09-26. O job `nats` (108427089945) correu com
+      `AOS_GATE_THRESHOLD NATS_GO_TEST_TIMEOUT=5m`; o `cmd/aos-orq` deu `PASS=167 FAIL=2`, e as
+      2 falhas são as declaradas do AOS-432. Como explicam o FAIL do pacote, o G4 não disparou,
+      que era o controlo pretendido: avermelha abortos, não as falhas que o gate já tolera.
+      `TOTAL … PASS=1633`. O job `selftest` (108427090076) correu o §Y em Linux, Y1–Y6 verdes,
+      com «TODOS OS SELF-TESTS OK».*
+- **Sem critério de produção, por desenho.** O ticket corrige um gate de CI, e o `nats.sh`
+  declara no N1 que não prova nada sobre produção, que corre sobre ficheiro.
+
+### Fora de âmbito, declarado
+
+- **Porque é que o `cmd/aos-orq` é tão lento localmente.** É o sintoma que revelou o defeito, e
+  não é este defeito. O run acima sugere que não é um teste pendurado. Em 5 min passaram 17
+  testes, e o que estava a correr quando o timeout disparou levava 31 s. No CI passam 167 em
+  ~25 s. O timeout de 10 min observado ao corrigir o AOS-432 pode ter sido lentidão, e não um
+  bloqueio. A causa não foi medida.
+- **`EVENTSTORE_COVERAGE_MIN` tem piso 0** (`gate_threshold … 75 0 100`), o que quer dizer que
+  `EVENTSTORE_COVERAGE_MIN=0` desliga o piso de cobertura do `substrate/eventstore` neste gate.
+  É o mesmo tipo de buraco (ORF-06), noutro knob, e fica para ticket próprio.
+- **Os outros gates que correm `go test`.** Uma pesquisa em `scripts/ci/*.sh` mostra que só o
+  `nats.sh` decidia contando `--- FAIL`. O `test.sh` e o `require_tests` (`lib.sh`) avermelham
+  pelo `rc` do `go test`, e o `require_tests` também exige `--- PASS` por nome. Foi uma pesquisa
+  por texto e não uma auditoria gate a gate.
+
+### Estado
+
+**FECHADO.** O gate `nats` falha fechado quando um pacote aborta. Isto foi provado ao vivo
+(rc=1 no timeout do `cmd/aos-orq`), pelo self-test §Y e no CI do PR #389, que ficou verde.
+
+---
+
+## AOS-471 — O gate `nats` com o CLI `docker` e sem daemon morre por `AOS_NATS_URL: unbound variable`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é infraestrutura de CI. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 (por proximidade, com o AOS-431, o AOS-452 e o AOS-455; o eixo é a infraestrutura de CI) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (CI) |
+| Prioridade | P2: o gate já falhava fechado, mas com o diagnóstico no sítio errado |
+| Estimativa | S |
+| Dependências | AOS-431 (o gate `nats`, FECHADO) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `scripts/ci/nats.sh`, `scripts/ci/nats-levantar.sh`, `scripts/ci/nats-cluster.sh`, `scripts/ci/selftest.sh` §NX, `CONTRIBUTING.md` §«Etapas saltadas — `SKIP_DOCKER` e afins» |
+
+### Contexto
+
+Encontrado ao fazer o AOS-455, e reproduzido a 2026-10-01 numa máquina com o CLI `docker` e
+**sem daemon**, sem alteração de código nenhuma:
+
+```text
+== GATE: nats · cluster JetStream de 4 nós (3 no board + 1 fora, para a fronteira soberana) ==
+failed to connect to the docker API at unix:///var/run/docker.sock; check if the path is correct and if the daemon is running: dial unix /var/run/docker.sock: connect: no such file or directory
+scripts/ci/nats.sh: line 138: AOS_NATS_URL: unbound variable
+```
+
+Rc 1. Há dois defeitos, um em cima do outro:
+
+1. **O «sem docker» só via o CLI.** O `nats.sh` decidia saltar com `command -v docker`. Um CLI
+   sem daemon passava essa porta e ia levantar o cluster.
+2. **O código de saída do `up` perdia-se.** O gate fazia
+   `if ! eval "$(bash nats-cluster.sh up)"`. O código da substituição de comando não chega ao
+   `if`: o que conta é o do `eval`, e o `eval` de uma string vazia sai 0. O ramo
+   «o cluster não subiu» era inalcançável. O gate seguia sem `AOS_NATS_URL` e morria no
+   primeiro uso, por `set -u`.
+
+Falhava fechado, mas por acaso, e o diagnóstico apontava para uma variável em vez do cluster.
+
+### Objectivo
+
+Separar as duas avarias e dar a cada uma o seu destino, sem que nenhuma vire verde em silêncio:
+
+- **Docker inutilizável** (sem o CLI, ou com o CLI e o daemon inacessível) é uma propriedade do
+  posto e não do código. Localmente segue o caminho do «sem CLI»: salto declarado.
+- **Docker utilizável e um cluster que não sobe** é avaria a sério (imagem, portas, Raft, nkey).
+  É sempre vermelho, e o diagnóstico nomeia o `nats-cluster.sh`.
+
+### A decisão, e porque é que em CI não se salta
+
+A política do projecto para contentores em falta é o salto declarado (`gate_skip`,
+`AOS_SKIPPED_STEP`; `CONTRIBUTING.md` §«Etapas saltadas»). Localmente, um daemon parado é o
+mesmo caso que um CLI ausente, e segue o mesmo caminho.
+
+**Em CI (`CI` ou `GITHUB_ACTIONS` definidos) é vermelho**, para os dois casos:
+
+- O job `nats` existe só para exercitar o substrato replicado real, e é required check. O
+  agregador `gates` lê `success` e não lê o `AOS_SKIPPED_STEP`: «registar não é impedir»
+  (AGENTS.md §4). Um runner sem docker utilizável sairia verde sem ter medido nada.
+- Os outros escapes já não são honrados em CI: o `AOS_GATE_FLOOR_OVERRIDE` («a CI não desce
+  pisos»), o desvio de raiz do `gate_path` e o `AOS_ALLOW_PARTIAL_DELIVERY` do `package.sh`.
+- Antes deste ticket, o daemon parado em CI já era vermelho, ainda que por acaso. Passar a
+  saltar convertia esse vermelho num verde.
+
+Isto também muda o «sem CLI» em CI, de salto para vermelho. No `ubuntu-latest` o CLI existe
+sempre, pelo que nada muda no CI de hoje. Num runner próprio sem docker, o required check
+deixa de ficar verde sem ter medido nada. Deixar os dois casos com destinos diferentes em CI
+não teria razão que o justificasse.
+
+### Critérios de Aceitação
+
+- [x] **O defeito está reproduzido**, com a mensagem de antes. — *Ver «Contexto»: rc 1 e
+      `AOS_NATS_URL: unbound variable`, nesta máquina (CLI docker, sem daemon).*
+- [x] **Localmente, com o CLI e sem daemon, o gate salta DECLARADO**, com o motivo e a garantia
+      por verificar redeclarados no veredicto, e sai 0, como o «sem CLI». — *`nats_docker_utilizavel`
+      (`nats-levantar.sh`) sonda com `docker info`, a sonda do `isolation-live.sh`. Medido aqui:
+      `SALTADO: nats — daemon docker inacessível (docker info: failed to connect to the docker
+      API at unix:///var/run/docker.sock; …)` e
+      `AOS_SKIPPED_STEP  nats (motivo: daemon docker inacessível …) -> POR VERIFICAR: o substrato
+      replicado real NÃO foi exercitado; …`, rc 0. Self-test NX1.*
+- [x] **Em CI, docker inutilizável é VERMELHO** e diz porquê. — *Medido aqui com `CI=1`:
+      `FAIL nats: daemon docker inacessível (…) — a CI não salta o substrato replicado real`,
+      rc 1. Self-test NX2.*
+- [x] **Com o docker utilizável, um cluster que não sobe é VERMELHO** e nomeia o
+      `nats-cluster.sh` e o código com que saiu. Nunca é salto nem variável por definir. —
+      *`nats_levantar` verifica o código e a saída do `up` ANTES do `eval`:
+      `FAIL nats: o cluster NÃO subiu — \`nats-cluster.sh up\` saiu 1 com o docker utilizável
+      (o motivo está nas linhas acima)`. Self-test NX3, com um `docker` cujo `info` responde e
+      cujo `network create` é recusado.*
+- [x] **Depois do `eval`, sem `AOS_NATS_URL`, é vermelho com mensagem própria.** Um `up` que
+      saia 0 sem imprimir o env é um cluster que ninguém sabe onde está. — *Self-test NX4. Na
+      versão revista (`91c6087`) isto só valia com o env LIMPO: o NX4 fazia `unset
+      AOS_NATS_URL` e escondia que um URL herdado da shell satisfazia a verificação (ver
+      «Revisão adversarial»). Agora o `nats_levantar` apaga o AOS_NATS_URL e as variáveis que o
+      `up` exporta ANTES do `eval`. O NX4b (URL herdado, `up` mudo) e o NX4c (outra variável
+      herdada, `up` parcial) provam-no.*
+- [x] **Um `up` que morre a meio não deixa contentores de pé.** — *A limpeza já existia na base,
+      mas só porque o rc do `up` se perdia e o gate seguia até ao `trap`. Com o rc verificado,
+      o `exit 1` sai antes da linha onde o `trap` estava. Por isso o `trap` passa para antes do
+      `up`: isto PRESERVA a limpeza, não a corrige. Self-test NX6: o `nats.sh` inteiro, com um
+      `docker` que regista as chamadas e um meta-leader que nunca é eleito. Exige os 4
+      `docker rm -f` depois do último `docker run`.*
+- [x] **O motivo do salto é o erro, e a sonda não pendura.** — *O motivo é a primeira linha
+      que fala de error/cannot/failed/permission e, sem nenhuma, a última não vazia (NX7: um
+      `WARNING:` impresso depois do erro tomava-lhe o lugar). A sonda corre com
+      `timeout 30` onde o houver, e o prazo esgotado conta como docker inutilizável, sem
+      subir o cluster (NX8, com um `timeout` de brincar que sai 124).*
+- [x] **Os três marcadores de CI avermelham:** `CI=1`, só `GITHUB_ACTIONS=true`, e `CI=false`
+      (conta como CI: «definido» é «não vazio», a regra do `lib.sh` e do `package.sh`). —
+      *NX2 com as três variantes. Um gate que lesse só `${CI:-}` passava a primeira.*
+- [x] **O caminho feliz não muda.** — *Self-test NX5: sobre o `nats-cluster.sh` REAL, com um
+      `docker` em que tudo responde, a sonda aceita e o `nats_levantar` exporta
+      `AOS_NATS_URL=127.0.0.1:14225,127.0.0.1:14226,127.0.0.1:14227`.*
+- [x] **Cada caso do self-test morde** (verificação de mutação, cada mutante numa cópia de
+      `scripts/ci` fora do repo, só a §NX corrida). — *Primeira ronda (`91c6087`): sem a sonda
+      do daemon, NX1 e NX2 vermelhos; sem o ramo de CI, NX2; com o rc do `up` ignorado, NX3,
+      porque a mensagem passa a ser a do AOS_NATS_URL; sem exigir o AOS_NATS_URL, NX4; sem o
+      `eval`, NX5; com a sonda a recusar sempre, NX1, NX2, NX3 e NX5; com o `nats.sh` da base
+      (`54d36e2`), NX1, NX2 e NX3, NX1 e NX3 por «unbound variable». A afirmação era
+      **parcialmente falsa**: a revisão mostrou mutantes que sobreviviam a toda a §NX (o `trap`
+      depois do `nats_levantar`, o `trap` removido, ler só `${CI:-}`).*
+
+      *Segunda ronda, sobre a versão corrigida. Cada mutante faz avermelhar pelo menos um caso:*
+
+      | Mutante | Casos que avermelham |
+      |---|---|
+      | `trap` depois do `nats_levantar` | NX6 |
+      | `trap` removido | NX6 |
+      | só `${CI:-}` | NX2 com `GITHUB_ACTIONS=true` |
+      | `CI=false` não conta | NX2 com `CI=false` |
+      | sem o `unset AOS_NATS_URL` | NX4b |
+      | sem o `unset` das outras variáveis | NX4c |
+      | motivo pela última linha | NX7 |
+      | sonda sem prazo | NX8 |
+      | 124 contado como vivo | NX8 |
+      | sem a sonda do daemon | NX1, NX2 ×3, NX7, NX8 |
+      | rc do `up` ignorado | NX3 |
+      | sem exigir o URL | NX4, NX4b |
+      | sem `eval` | NX4c, NX5 |
+
+### Entrega
+
+- `scripts/ci/nats-levantar.sh` (novo, biblioteca): `nats_docker_utilizavel` (CLI e daemon,
+  com o motivo) e `nats_levantar` (código e saída do `up` antes do `eval`, `AOS_NATS_URL`
+  depois). Fica à parte do `nats.sh` pela razão do `gotest-pacotes.sh`: para que o self-test
+  exercite o mesmo código.
+- `scripts/ci/nats.sh`: usa as duas. Docker inutilizável dá salto declarado localmente e
+  vermelho em CI. O `trap` do `down` passa para ANTES do `up`. Isso preserva a limpeza que a
+  base fazia por acaso: com o rc verificado, um `up` que morra a meio (meta-leader por eleger,
+  nkey por gerar) sairia antes de o `trap` existir.
+- `scripts/ci/selftest.sh` §NX1–NX8 (NX4b, NX4c e as três variantes do NX2 incluídas). Os
+  `docker` de brincar e o estado do cluster ficam em `mktemp -d`. NX1–NX3 e NX6–NX8 correm o
+  `nats.sh` inteiro, e saem todos antes das suites.
+- `CONTRIBUTING.md`: a nota do gate `nats` diz o que é «docker utilizável» e que em CI não se
+  salta.
+
+### Fora de âmbito, declarado
+
+- **Sem `timeout` no posto, a sonda `docker info` não tem prazo**: um daemon pendurado
+  continua a pendurar o gate local. Onde o há (Linux, Git Bash), o prazo é de 30 s. O macOS
+  de origem não traz `timeout`.
+- **O caminho feliz do `nats.sh` inteiro** não corre no self-test: correria as suites contra um
+  cluster que não existe. O NX5 prova a função que o gate chama, e o NX3 prova que o gate a
+  chama.
+
+### Revisão adversarial independente (2026-10-01), sobre 91c6087 (integrado como d884ad3)
+
+Não houve achados ALTO. Houve 3 MÉDIO e 5 BAIXO, e todos foram corrigidos num commit próprio
+sobre o ramo de integração:
+
+- **M1 (reproduzido).** Mover o `trap` para antes do `up` era correcto e NECESSÁRIO, mas nenhum
+  self-test o protegia: com o `trap` depois do `nats_levantar`, ou sem `trap`, o NX1–NX5
+  continuava verde. → NX6.
+- **M2 (reproduzido).** A verificação «saiu 0 sem AOS_NATS_URL» lia o ENV. Com um URL herdado e
+  um `up` mudo, o gate imprimiu «cluster de pé — AOS_NATS_URL=nats://stale:4222». O NX4
+  escondia-o com `unset`. → apaga-se o env herdado antes do `eval`; NX4b e NX4c.
+- **M3.** É pré-existente e transversal: o `run.sh` não redeclara as etapas saltadas no
+  veredicto final. → ticket próprio, o AOS-474.
+- **B1.** O texto dizia que mover o `trap` «corrigia» a limpeza. A base também limpava, por
+  acaso, e o movimento preserva-a. → corrigido acima.
+- **B2.** `CI=false` conta como CI, e isso não estava escrito. → `CONTRIBUTING.md`, e NX2
+  com `CI=false`.
+- **B3.** Um mutante que lesse só `${CI:-}` sobrevivia. → NX2 com só `GITHUB_ACTIONS=true`.
+- **B4.** O motivo era a última linha do stderr, e um `WARNING:` final substituía o erro. →
+  `nats_linha_de_erro`; NX7.
+- **B5.** A sonda não tinha prazo. → `timeout 30` onde o houver; NX8.
+
+### Estado
+
+**FEITO** (2026-10-01), com as correcções da revisão. Reproduzido e corrigido nesta máquina (CLI docker, sem daemon), com
+self-test §NX e verificação de mutação. O comportamento no job `nats` do CI (docker com daemon)
+não foi observado aqui: confirma-se no PR.
+
+---
+
+## AOS-476 — As dependências do plano continuam fora do log: levar o PR #300 à base
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma lacuna da materialização dentro do que o ADR-023 e o ADR-024 já decidiram. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P1: o grafo que um dono seguinte re-hidrata diz que os nós são independentes |
+| Estimativa | M (o código existe no PR #300; o trabalho é trazê-lo para a base de hoje e medir) |
+| Dependências | AOS-237 (materialização), AOS-231 (validação estrutural), AOS-390 (admit-only + efeito no despacho) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §7 (achado 1), `docs/testing/e2e-pegadas-visao-19.md` (achado n.º 2), `packages/control-plane/orchestrator/planmaterialize/`, `packages/control-plane/orchestrator/graph.go`, PR #300 |
+
+### Contexto
+
+Medido três vezes, com o mesmo resultado:
+
+| Onde | Quando | `task.node.created` | `task.edge.added` |
+|---|---|---|---|
+| `aos-orq serve --goal`, local, `8e88f88` | 2026-09-15 | 2 | **0** |
+| `aos-orq serve --goal`, local, `4ef35e0` | 2026-10-01 | 2 | **0** |
+| `consume.wal` de produção (12 planos, 175 eventos) | 2026-10-01, cópia só-de-leitura | 16 | **0** |
+
+O plano de teste declara `analise depends_on recolha`. O despacho respeita a dependência
+(`nos_despachados=1`), mas lê-a do `PlanDocument` em memória. No log não fica: `aos-orq inspect`
+devolve `ordem=analise,recolha`, e o `RebuildDAG` só repõe arestas a partir de `task.edge.added`.
+
+A correcção foi escrita a 2026-09-15 no **PR #300** (`claude/silly-meitner-55d3d1`), que continua
+aberto e nunca teve ticket. Entretanto a base andou e duas coisas ficaram tortas:
+
+1. Na base `f7b23f3` o `planmaterialize` continua sem admissão de arestas.
+2. O PR regista a segunda metade do achado como **DEF-913**. Esse número foi depois atribuído na
+   base a outra coisa (o tecto da fila de planos por submissor, AOS-464). O
+   `specs/EPIC-19_Planeador_Meta_Orquestracao.md` ainda cita «a PR aberta que torna as arestas do
+   plano duráveis (`task.edge.added`, DEF-913)», que hoje aponta para o deferimento errado.
+
+### Objectivo
+
+As arestas de entrada de cada nó (`depends_on` e as origens de `conditional_on`) ficam no log do
+grafo antes de `plan.materialized`, de modo que qualquer dono que re-hidrate o run veja o mesmo
+DAG que o primeiro despachou.
+
+### Critérios de Aceitação
+
+- [x] A materialização emite um `task.edge.added` por aresta de entrada, depois dos nós e antes de
+      `plan.materialized`, sob a posse do run (ADR-023). É admissão, não efeito (ADR-024).
+      *(Evidência: a porta `LeafAdmitter` ganhou `AdmitEdge`, na mesma porta que os nós; o
+      adaptador de produção é `GraphBuilder.AddEdge` do grafo que `Tenure.Graph` re-hidrata sob o
+      lease, pelo que a escrita passa pelo `FencedAppender`. Ordem provada em três sítios:
+      `TestAOS476_ArestasDepoisDosNosAntesDoMaterialized` (sequência
+      nós → arestas → `plan.materialized`, com `depends_on`, origem de `conditional_on` e
+      dependência duplicada), `TestAOS476_ArestasSobrevivemAoReplay` (Event Store real: a aresta
+      já está durável quando o `plan.materialized` é pedido) e
+      `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla` (posição no ficheiro WAL do binário
+      real, vias `--goal` e `--plan-doc`). `TestAOS476_ArestaRecusadaNaoApensaMaterialized`: se a
+      porta recusa a aresta, o `plan.materialized` não é apenso;
+      `TestAOS476_ArestaRecusadaPeloStorePropaga`: o adaptador de produção não engole a recusa do
+      store. Posse, por comportamento e não só pela guarda estática:
+      `TestAOS476_ArestaDeDonoSuperadoRecusada` (runlifecycle) — um dono superado não põe a aresta
+      no log, nem pelo seu `GraphBuilder` nem pela materialização.)*
+- [x] *(Acrescentado pela revisão adversarial, MÉDIO-1.)* Uma materialização que morre entre os nós
+      e o `plan.materialized` retoma-se: um nó já durável que coincide com o do documento é aceite
+      sem reescrita, uma aresta já durável não é duplicada, e o `plan.materialized` é apenso; um
+      grafo que diverge do plano recusa, sem escrever nada.
+      *(Evidência: antes, a retoma saía 1 com «nó já existe no grafo», que o `consume` retentava até
+      ao tecto de gerações — a classe é anterior, o AOS-476 alargava a janela. Agora, antes de
+      qualquer escrita, o adaptador de produção confronta o grafo re-hidratado INTEIRO com o plano:
+      cada nó durável tem de ser um nó do plano com a mesma especificação (tool call, capability,
+      prioridade, identidade) e ainda `ready`, cada aresta durável uma aresta do plano. A recusa é
+      `errGrafoDoRunDiverge` — rótulo `grafo_diverge`, código 10, posse largada: quem diverge é o
+      grafo, não o documento. Por processo real, com o WAL reescrito como na revisão (registos até
+      aos nós + `lease.released`): `TestAOS476_MaterializacaoMortaAMeioRetoma` (com os dois nós, e
+      só com o primeiro) — `arestas=0`, materializa, despacha, e o WAL fica com 2 nós, 1 aresta e 1
+      `plan.materialized`; `TestAOS476_MaterializacaoMortaComNoDivergenteRecusa` (`analise` com
+      outra tool) e `TestAOS476_MaterializacaoMortaComArestaInvertidaRecusa` (aresta
+      `analise→recolha` a mais) — saída 10 duas vezes seguidas (a segunda prova que o lease foi
+      largado), o erro nomeia o grafo, e nada escrito, nem `task.edge.rejected_cycle`. Unitários:
+      `TestAOS476_MaterializacaoRetomaDepoisDosNos`, `TestAOS476_RetomaComNoDivergenteRecusa`,
+      `TestAOS476_RetomaComNoJaEmCursoRecusa` e `TestAOS476_RetomaSobreGrafoQueNaoEODoPlanoRecusa`
+      (prioridade, identidade, capability, estado terminal, nó a mais, aresta invertida).
+      `serve --nodes … --plan-doc …` é recusado antes da posse (`TestAOS476_NodesComPlanDocRecusado`):
+      eram duas fontes de nós para o mesmo run.)*
+- [x] Um ciclo ou uma origem fora do plano aborta a materialização sem escrever nó nenhum.
+      *(Evidência: as arestas confirmam-se num DAG em memória antes da admissão global.
+      `TestAOS476_CicloAbortaSemNenhumNo` e `TestAOS476_OrigemForaDoPlanoAbortaSemNenhumNo`
+      (por `depends_on` e por `conditional_on`): `ErrInvalidRequest` com o sentinela do DAG
+      preservado, zero admissões, zero nós, zero `plan.materialized`.)*
+- [x] No roteiro E2E, passo 15: `wal-summary` mostra `task.edge.added 1` e `inspect` devolve
+      `ordem=recolha,analise`.
+      *(Medido nesta base, com o snapshot e o plano do passo 15 tal e qual e os binários
+      compilados: `wal-summary` dá `task.edge.added 1` e `task.node.created 2`; `inspect` dá
+      `run=run-e2e-orq token_corrente=1 nos=2 ordem=recolha,analise`. O passo 15 do roteiro
+      (15a–15c e o achado n.º 2) foi reescrito com esta pegada e re-corrido a partir dos blocos do
+      ficheiro final, já com o AOS-477 na árvore.)*
+- [x] O segundo dono (`serve` sem `--goal`) re-hidrata o grafo **com** a aresta. Teste por processo
+      real, não só unitário.
+      *(Evidência: o `serve` passa a imprimir, na re-hidratação, `grafo re-hidratado: arestas=N
+      ordem=…`. `TestAOS476_ArestaNoLogEDonoSeguinteRehidrataComEla`: segundo processo, `token=2`,
+      `grafo re-hidratado: nos=2` e `grafo re-hidratado: arestas=1 ordem=recolha,analise`.
+      `TestAOS476_ArestasDoGrafoConta` impede que a contagem seja uma constante.)*
+- [x] A segunda metade do PR #300 («nenhum dono seguinte despacha nada») é **re-medida** na base
+      actual, que já tem o executor de nós (AOS-413) e a drenagem da fila. Se ainda for verdade,
+      fica registada com um número de deferimento livre; se não for, diz-se com a medição.
+      *(Re-medida: **verdade só em parte, e registada como DEF-817.**
+      `TestAOS476_DonoSeguinteDespachaSoPelaRetoma`, três processos contra um nó `aos` falso: o
+      primeiro despacha `recolha` e sai 8 com ela em voo; o segundo, `serve` **sem documento**,
+      re-hidrata com a aresta e **não despacha nada**; o terceiro, `serve --plan-doc` (a via que o
+      `consume` usa numa retoma, AOS-442), diz `materializado (retoma, do log)`, despacha
+      `analise` e acaba com `execucao: analise=complete recolha=complete`. Para a retoma com
+      documento a afirmação do PR #300 deixou de ser verdade; para o `serve` sem documento continua
+      — o despacho precisa do `PlanDocument` e o log só leva o hash (ADR-005) — e é essa a via que o
+      runbook `PROC-DESPACHO-MULTIPROC` descrevia como recuperação automática da topologia
+      N× `serve --nats`. Fica em `docs/governance/REGISTO-Deferimentos.md` como **DEF-817**
+      (`POR ATRIBUIR`, ticket em falta descrito em N-DEF-817), e o runbook passou à versão 1.1.
+      Medido também à mão, sem executor: um `serve --goal` repetido já não aborta com «nó já existe
+      no grafo» — vai à retoma e dá `nos_despachados=0`, porque `recolha` fica `running` sem
+      ninguém que a execute, como o banner do AOS-413 declara. **Não verificado:** a morte por TTL
+      sobre `--nats` seguida de retoma noutra réplica, e a pasta `--plan-dir` partilhada entre
+      réplicas.)*
+- [x] A citação de `DEF-913` no `specs/EPIC-19_Planeador_Meta_Orquestracao.md` é corrigida.
+      *(Agora cita o PR #300, marca a lacuna como resolvida pelo AOS-476 e nota que `DEF-913` é o
+      tecto da fila de planos do AOS-464; a segunda metade do PR #300 é DEF-817.)*
+- [ ] Verificação em produção: depois do deploy, um plano com dois nós dependentes deixa
+      `task.edge.added` no `consume.wal`. Contar no ficheiro copiado, não por `grep` no servidor.
+
+### Fora de âmbito
+
+O avaliador de arestas condicionais (AOS-389 mantém a recusa) e o payload tipado por aresta.
+
+### Residuais declarados
+
+- **Runs materializados antes desta correcção nunca recebem as arestas.** Não há migração: o grafo
+  e o `inspect` desses runs continuam a dizer que os nós são independentes. O despacho segue o
+  documento, pelo que nada corre fora de ordem; o que fica errado, para sempre, é a topologia no
+  log. A retoma da materialização deste ticket só actua sem `plan.materialized`, e não repõe
+  arestas num run já materializado — fazê-lo seria outro ticket.
+- **A retoma exige que o grafo durável seja um subconjunto exacto do plano.** Um nó ou uma aresta
+  que o plano não declara recusa a retoma com `grafo_diverge` (10), sem escrever. Isto também
+  apanha o que o `--nodes` deixava no grafo — a combinação `--nodes` + `--plan-doc` no mesmo
+  `serve` passou a ser recusada, mas um `serve --nodes` anterior sobre o mesmo run continua a
+  poder escrever nós sem plano, e a retoma que vier depois recusa em vez de os adoptar. O que a
+  retoma não sabe é **porque** o grafo diverge (log adulterado, `--nodes` anterior, outro
+  escritor): diz que diverge e qual o primeiro nó ou aresta, e o diagnóstico é do operador.
+- **O `task.edge.added` não distingue `depends_on` de `conditional_on`.** O despacho continua a
+  ler o documento; despachar só a partir do grafo perderia a poda `branch_not_taken` (aviso em
+  `planmaterialize/doc.go`).
+
+### Estado
+
+**IMPLEMENTADO — por verificar em produção.** Código e testes entregues (2026-10-02), com a
+ronda de correcções da revisão adversarial (0 ALTO, 2 MÉDIO, 6 BAIXO, todos tratados) e a da
+revisão desse delta (4 BAIXO e 3 mutantes sobreviventes, todos tratados): a
+materialização emite as arestas e é retomável depois de uma morte a meio, um dono seguinte
+re-hidrata-as e o `serve` mostra-as. Falta o último critério, que exige um deploy e a cópia do
+`consume.wal` de produção. A segunda metade do PR #300 foi re-medida e ficou registada como
+DEF-817 (ver o quinto critério). O ramo do PR #300 não foi fundido: a lógica foi portada para a
+base de hoje.
+
+---
+
+## AOS-477 — Do registo do plano não se chega ao objectivo: o sentido inverso pára no `plan_hash`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: acrescenta correlação ao log do plano. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | feat (rastreabilidade) |
+| Prioridade | P2: nada falha aberto; o que falta é poder provar, a partir do registo, que plano veio de que pedido |
+| Estimativa | M |
+| Dependências | AOS-417 (ingresso do plano, `planrequest.submitted`), AOS-413 (executor de nós), AOS-408 (gate de plano) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/e2e-pegadas-bidireccional-2026-10-01.md` §3, §4 e §7 (achado 2), `tecnica/18_Planner_Meta_Orquestracao.md`, `tecnica/13_Modelo_Dados_Eventos.md`, `packages/cmd/aos/submissor_do_plano.go`, `packages/cmd/aos-orq/node_executor.go` |
+
+### Contexto
+
+O E2E de 2026-10-01 seguiu a cadeia nos dois sentidos. No sentido registo → objectivo há dois
+buracos no caminho do plano.
+
+**1. `aos-orq serve --goal`.** O texto do objectivo tem 0 ocorrências no WAL. `plan.proposed`
+leva `plan_id`, `plan_hash`, `planner_meta` e `attempt`; `plan.materialized` leva os nós e as
+tools. Nenhum evento guarda o objectivo, nem um compromisso verificável dele. Quem tem só o
+ficheiro sabe que houve um plano com aquele hash e não sabe para quê.
+
+**2. Produção (`POST /plans`).** O objectivo existe, cifrado por titular, em
+`planrequest.submitted` (`objective_sealed`), no `events.wal` do nó. O plano vive noutro ficheiro
+e noutro volume (`consume.wal`, `aos_aos-orq-data`), e o trabalho de cada nó volta ao `events.wal`
+como run `<run>~<nó>`. As três peças ligam-se **só pela convenção de nomes**: `<run>-plan` para o
+stream do plano, `<run>~<nó>` para o run-filho. O separador está escrito duas vezes, uma em cada
+binário (`separadorDoRunFilho` em `cmd/aos/submissor_do_plano.go` e em
+`cmd/aos-orq/node_executor.go`). Não encontrei, em nenhum dos eventos, um campo que diga «este
+run é o nó N do plano P, do pedido R».
+
+Para o run `plan-e2e-447-1790511800~n1` a recondução fez-se, à mão, cortando o id pelo `~` e
+procurando o prefixo nos outros dois streams. Funciona enquanto ninguém mudar a convenção.
+
+### Objectivo
+
+Dar ao registo do plano o que falta para a recondução ser um facto do log e não uma leitura de
+nomes: um compromisso do objectivo e a ligação explícita pedido → plano → nó → run-filho.
+
+### Critérios de Aceitação
+
+- [x] `plan.proposed` leva um compromisso do objectivo que o planeador recebeu (um hash, **nunca**
+      o texto em claro: o objectivo é selado por titular no pedido).
+      *(Correcção da revisão: o enunciado original dizia «redigido na ingestão», e é falso. O
+      `plan_ingress.go` guarda o texto cru, selado. É o certo: o drenador planeia sobre o texto
+      cru, e o compromisso é desse texto.)*
+      O ticket decide se é um campo novo ou se o `plan_hash` já o cobre; neste segundo caso,
+      escreve-se **onde** está o documento que permite verificá-lo. Hipótese por confirmar: o
+      `plan_hash` cobre o campo `objective` do `PlanDocument`, mas o documento não está no log.
+      — *Campo novo, `objective_commitment`. A decisão e a prova estão em «Decisão do critério 1»,
+      abaixo. Testes: `TestAOS477OObjectivoDoDocumentoEDoModeloENaoDoPedido`
+      (`orchestrator/decompose`), `TestAOS477RecordProposedLevaOsCamposEOsImpoeNaForma`
+      (`orchestrator/plannerevents`) e `TestAOS477ServeManualComprometeOObjectivoSemOGravar`
+      (`cmd/aos-orq`, processo real). Este último confere o HMAC fora do binário e procura o
+      objectivo e o sal nos bytes do WAL, onde não estão.*
+- [x] No caminho da fila, o registo do plano cita o pedido de origem (stream e `seq` do
+      `planrequest.submitted`, ou um id equivalente), e o mesmo compromisso bate com o do pedido.
+      — *`plan.proposed.request = {stream, seq, run_id}`. A reclamação passa a entregar
+      `request_stream`, `request_seq`, `objective_commitment` e `objective_salt`. O `consume`
+      passa-os ao `serve`, que recalcula o compromisso sobre o objectivo recebido e recusa antes
+      da posse se não bater (`errObjectivoNaoEOdoPedido`, saída genérica e transitória, limitada
+      pelo tecto de gerações). Testes: `TestAOS477ReclamacaoEntregaOPedidoEOCompromisso`
+      (`cmd/aos`), `TestAOS477ConsumeCitaOPedidoEOsFilhosDeclaramAOrigem` e
+      `TestAOS477ConsumeRecusaUmObjectivoQueNaoEODoPedido` (`cmd/aos-orq`, processo real).*
+- [x] O run-filho declara de que plano e de que nó vem, num campo, e não só no seu id. — *Evento
+      novo `run.plan_origin` no stream do run filho, com `plan_request {stream, run_id,
+      generation}`, `plan_id` e `node_id`. Não leva o `seq` da fila: ver «Decisão do B-2».
+      É escrito pelo nó (`cmd/aos/plan_origem.go`) só com o vínculo do AOS-439 verificado, e
+      **depois** de o `POST /runs` hospedar o run. `TestAOS477OrigemNaoEntraNumRunAlheio` prende
+      essa ordem. O contexto não é cancelável pelo cliente
+      (`TestAOS477OrigemGravaComOClienteDesligado`).
+      O `node_id` declarado é **conferido** contra o id do run: o run tem de ser
+      `<pedido>~<node_id escapado>`, com o escape do `aos-orq`. Os mesmos vectores estão nos dois
+      binários: `TestAOS477IdDoRunFilhoTemOsVectoresDoOrquestrador` e
+      `TestAOS477ChildRunIDTemOsVectoresDoNo`. A gramática copiada de `plan.ValidNodeID` está
+      presa à fonte (`TestAOS477GramaticaDoNodeIDCasaComOPlano`).
+      O `plan_id` só se confere na forma: o nó não conhece o documento (ADR-018). **Todo o lado
+      do plano é atestado pelo drenador**, por isso quem audita tem de casar os dois lados antes de
+      aceitar o nó: `plan.proposed.request.run_id` igual a `run.plan_origin.plan_request.run_id`,
+      e o `request.seq` do plano igual ao `seq` do facto com esse `run_id`. Só depois procura o
+      `node_id` no `plan.materialized`. Sem isto, um drenador com a reclamação viva do pedido da
+      Alice podia declarar o plano do Bob, e passava sempre que esse plano tivesse um nó com o
+      mesmo id. Todas as recusas dão a 403 uniforme. Teste:
+      `TestAOS477RunFilhoDeclaraAOrigemNumCampo`, que usa a geração 2 e um `node_id` com `.`, e
+      cobre os casos de 129 bytes, `plan_id` com `.`, `node_id` de outro run e outro escape.*
+- [x] A convenção `<run>~<nó>` deixa de estar escrita em dois sítios, ou fica presa por um teste
+      que falha se as duas constantes divergirem. *Já cumprido pela segunda alternativa antes deste
+      ticket: `TestAOS439SeparadorDoRunFilhoCasaComOOrquestrador`
+      (`packages/cmd/aos/aos439_submissor_do_plano_test.go`) lê a constante do `aos-orq` da fonte e
+      falha se divergir. Verificado a 2026-10-02 contra a base.*
+- [x] Mudança de payload ⇒ versão do schema `aos.planner.v1` tratada conforme
+      `tecnica/13_Modelo_Dados_Eventos.md` (campo novo retro-compatível, leitores antigos não
+      partem), e o gate `event-catalog` verde. — *Os dois campos são `omitempty`, e o domínio fica
+      `aos.planner.v1`, como o `snapshot_digest` do AOS-408. A regra ficou escrita na linha
+      `plan.*` de `tecnica/13` §3.3, que também regista o `run.plan_origin` e o payload 1.2 do
+      `planrequest.submitted`. `TestAOS477PropostaSemCamposNovosFicaComoEra` prova que um facto
+      sem os campos fica byte a byte igual. `TestAOS477LeitorAnteriorLeAPropostaNova` prova que a
+      struct anterior lê o novo. Gate `event-catalog` verde.*
+- [x] Teste que parte de um `tool.call.mediated` de um run-filho e chega ao pedido de plano usando
+      só campos, sem partir strings. — *`TestAOS477DoToolCallAoPedidoSoPorCampos` (`cmd/aos`):
+      nó real com Event Store em disco e `aos-orq consume` compilado e corrido como processo. O
+      percurso tem quatro passos, todos por igualdade de campo:
+      1. `tool.call.mediated.stream_id` → `run.plan_origin`;
+      2. → o `planrequest.submitted` cujo `payload.run_id` é o citado;
+      3. → `plan.proposed` no stream `plan_id` do WAL do `aos-orq`, com o mesmo `request.run_id`,
+         o `request.seq` igual ao do facto e o mesmo compromisso;
+      4. → só então o `plan.materialized` com o `node_id`.
+      O nó do plano tem um `.`, e por isso o escape do id atravessa os dois binários. Fecha no
+      objectivo pelo HMAC, com a custódia do titular. O lado do plano lê-se com structs locais por
+      nome de campo, porque o nó não importa o orquestrador.*
+- [x] Roteiro E2E actualizado: o passo 15 passa a verificar o sentido inverso. — *Passo 15d de
+      `docs/testing/e2e-pegadas-visao-19.md`, aplicado na integração (2026-10-02). Os blocos do
+      passo 15 copiados do ficheiro foram corridos por ordem sobre a árvore integrada: o HMAC do
+      objectivo com o sal impresso no 15a dá o `objective_commitment` do log, objectivo e sal com 0
+      ocorrências no WAL, e o `serve --goal` repetido imprime a linha de retoma sem sal novo.*
+
+### Decisão do critério 1: campo novo, e porquê
+
+**A hipótese confirma-se na letra e falha no que importa.** O `plan_hash` é o SHA-256 do
+`plan.Encode(doc)`, e o `PlanDocument` tem `objective`. Logo cobre esse campo, e mudá-lo muda o
+hash. Só que esse `objective` é **texto do modelo**. O `LLMDecomposer.Decompose`
+(`orchestrator/decompose/decompose.go`) carimba só o `planner_meta`, e o resto do documento é o
+que o modelo devolveu. No roteiro, o objectivo recebido é «recolher e analisar dados» e o
+documento diz «recolher e analisar». `TestAOS477OObjectivoDoDocumentoEDoModeloENaoDoPedido` mede
+isto. O `plan_hash` compromete-se, portanto, com a paráfrase do modelo. Um plano feito para um
+objectivo e rotulado com outro teria um hash igualmente válido. Além disso, o documento não está
+no log (ADR-005), e o ficheiro que o guarda (`--plan-out`) é opcional. A segunda condição da
+hipótese também se confirma.
+
+**A forma é um HMAC-SHA256 com sal por pedido.** Um SHA-256 do objectivo inverte-se por
+dicionário: «auditar o pipeline de faturas» adivinha-se. Ficaria além disso no log do plano para
+sempre, fora do alcance do crypto-shredding. É o argumento que o
+`deploy/server/avisar-planos.sh` já usa para o pseudónimo do run. O `prompt_hash` do turno não
+serve, porque é um compromisso do prompt materializado e não do objectivo cru (relatório de
+origem, §2). Também é determinístico: liga titulares que submetem o mesmo objectivo. O
+desenho:
+
+- **Fila.** Na ingestão, o nó tira 32 bytes aleatórios, grava `objective_commitment =
+  hmac-sha256:<hex>` em claro no `planrequest.submitted` e sela o sal sob a KEK do titular
+  (`objective_salt_sealed`), ao lado do objectivo. O payload passa a `v` 1.2. A reclamação
+  entrega o sal ao drenador pelo canal por onde já entrega o objectivo em claro. O `aos-orq`
+  recalcula o compromisso e grava-o no `plan.proposed`, sem gravar o sal.
+- **`serve --goal` manual.** Não há pedido. O sal é tirado no `aos-orq` e sai **uma vez** no
+  stdout de quem lançou o comando, que é quem já tem o texto. Se o run **já tem** `plan.proposed`
+  (o `--goal` repetido no mesmo run), não se tira sal novo: o passo é fixo e o log guarda só a
+  primeira proposta. A linha impressa nomeia o compromisso dessa primeira proposta
+  (`TestAOS477ServeRepetidoNaoImprimeSalQueNaoVerificaOLog`). Um sal novo não verificaria o log.
+- **Fila sem sal** (um pedido `v` 1.1, ou um nó anterior). Não há compromisso, e nenhum sal é
+  tirado nem impresso. Imprimi-lo poria no journal do drenador a chave de um compromisso sobre
+  um objectivo que o nó selou.
+- **Sem titular** (nó sem gate soberano). O objectivo já fica em claro no pedido, e o sal fica em
+  claro ao lado dele.
+
+**Propriedades declaradas.** Quem tem só o log não inverte o compromisso. Quem tem o texto e o
+sal verifica-o. Depois de um `/dsar/erase` o sal deixa de abrir e o compromisso fica
+inverificável e não-ligável. Dois pedidos com o mesmo objectivo dão compromissos diferentes. No
+caminho manual, quem tiver o stdout do `serve` e o WAL pode atacar por dicionário: esse stdout
+já esteve ao lado do `--goal` em claro na linha de comandos.
+
+### Decisão do B-2 da revisão: o `run.plan_origin` cita o pedido pelo `run_id`, não pelo `seq`
+
+O run filho lê-se com autorização **por região** (`sovereignty.go`), e a trajectória serve todos
+os tipos de evento. O stream da fila é um só para o nó inteiro: todas as regiões, com pedidos,
+reclamações e desfechos no mesmo contador. Por isso o `seq` de um pedido revelava, a qualquer
+leitor da região, quanta actividade de fila houve no nó até ele. É um agregado sobre recursos de
+**outras** regiões, entregue a quem não pode agir sobre eles. É a classe que o ADR-030 §2.1 fecha,
+e vai além do bit que o AOS-464 aceitou, porque atravessa regiões.
+
+**Decisão:** o `run.plan_origin` deixa de levar o `seq`. Cita o pedido pelo `run_id`, um id
+equivalente que não conta nada: é único na fila, porque a idempotency-key do
+`planrequest.submitted` é `req-<run_id>`, de primeira escrita, e já está no prefixo do id do
+próprio run filho. A `generation` fica, porque é sobre este pedido.
+
+O `seq` continua no `plan.proposed` e cumpre o AOS-477 (AC2). Esse evento vive no WAL do
+`aos-orq`, que não é servido a leitores de runs. O AC6 continua a cumprir-se só por campos.
+**Pergunta ao dono**, se quiser ir mais longe: a `generation` diz a um leitor da região quantas
+vezes o pedido foi **reclamado** (cada reclamação é uma geração; o passo do `plan.proposed` é fixo,
+pelo que não é o número de planos). Tirá-la também é possível sem perder a travessia.
+
+### Limites declarados
+
+- **A leitura «já tem proposta?» do `serve --goal` é feita sob a posse** (revisão da ronda 2).
+  Um `serve` sem posse não imprime sal nenhum (`TestAOS477SemPosseNaoHaSalImpresso`). Fica uma
+  janela: um `serve` cuja posse é superada **depois** dessa leitura imprime um sal cuja proposta
+  nunca chega ao log. Esse `serve` sai pela recusa do fencing (saída 4), não com sucesso.
+- **O prazo da gravação da origem está testado.** `TestAOS477OrigemTemPrazoProprio` usa um store
+  pendurado e prova que o handler volta dentro do `controlSealTimeout`.
+- **A origem do run filho é gravada depois de o run ser hospedado.** Antes, um `run_id`
+  `<plano>~<nó>` criado por outra via receberia de um drenador legítimo uma declaração que não é
+  a sua. Uma falha a gravá-la não desfaz o run, que já corre: fica no log do operador, e esse run
+  volta a reconduzir-se por nome.
+- **Só o caminho da fila tem pedido.** Num `serve` manual com executor, os runs filhos não levam
+  vínculo e não declaram origem. O `plan.proposed` leva só o compromisso.
+- **Os pedidos anteriores (`v` 1.1) não têm compromisso.** A reclamação entrega-os sem ele, e o
+  plano cita o pedido sem compromisso.
+- **O `aos-orq` só manda `plan_id`/`node_id` a um nó que entregou `request_seq`.** Um nó anterior
+  recusaria os campos com 400, porque o `POST /runs` usa `DisallowUnknownFields`.
+- **Um `node_id` com `:` produz um run filho que o runtime recusa.** É um defeito anterior a
+  este ticket. A gramática do plano admite `:`, e o `aos-orq` não o escapa, porque `:` é
+  representável num subject NATS. O runtime durável recusa um `run_id` com `:` («durable:
+  run_id/step_id não pode conter ':'»). O `POST /runs` responde 201 e o run falha logo. Medido
+  com um run `run-x~a:b`. Fica para ticket próprio.
+- **Comportamento do AOS-439, fora de âmbito.** Um run `<plano>~<nó>` criado antes por outra via
+  recebe a submissão do drenador como re-submissão idempotente (201). O drenador passa então a
+  tratar esse run alheio como o seu nó. A origem do AOS-477 não entra lá, mas o resto do vínculo
+  já não protege. Está descrito à parte para ticket.
+- **Medido localmente, não em produção.** Falta medir no `consume.wal` e no `events.wal` de
+  produção depois do deploy.
+
+### Fora de âmbito
+
+Juntar os dois ficheiros num só store, e ler o objectivo em claro. A ligação é por referência e
+por hash.
+
+### Estado
+
+**ENTREGUE EM CÓDIGO, com os sete critérios cumpridos — por verificar em produção.** O sétimo (passo
+15d do roteiro) foi aplicado na integração, a 2026-10-02, e corrido a partir do ficheiro. A
+verificação em produção fica por fazer depois do deploy. Achados fora de âmbito desta entrega,
+com ticket próprio: AOS-482 (o drenador adopta um run alheio criado antes dele) e AOS-483 (um
+`node_id` com `:` produz um run-filho que o runtime durável recusa).
+
+---
+
+## AOS-482 — O drenador adopta como seu um run-filho que outra credencial criou antes dele
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: fecha uma lacuna do vínculo do AOS-439 dentro do que o ADR-030 já decidiu. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix (segurança) |
+| Prioridade | P1: a saída de um run que ninguém do plano criou entra no plano como trabalho do nó, incluindo o veredicto de um verificador que decide ramos |
+| Estimativa | M |
+| Dependências | AOS-439 (submissor do plano derivado pelo nó), AOS-413 (executor de nós), AOS-477 (`run.plan_origin`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/api.go`, `packages/cmd/aos/submissor_do_plano.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos/plan_origem.go` |
+
+### Contexto
+
+Achado na revisão adversarial do AOS-477 (2026-10-02) e descrito pelo implementador; reproduzido
+por sonda (`TestAOS477OrigemNaoEntraNumRunAlheio` mede a resposta).
+
+**Cenário.** Alguém com uma credencial que pode criar runs — sem vínculo a nenhum pedido de plano —
+cria `<plano>~<nó>` antes do drenador. O `POST /runs` não reserva essa forma de id.
+
+**No nó.** Quando o drenador submete depois o mesmo `run_id` com o vínculo, o vínculo é verificado
+(`submissorDoPedido`, em `api.go`) mas não confere que o run ainda não exista. O `Submit` devolve
+«já existe» e `isIdempotentResubmit` responde **201 accepted** — de propósito, para não dar um
+oráculo de existência. O 409 só sai com credencial forte e residência selada coincidente.
+
+**No `aos-orq`.** `node_client.go` trata o 201 como run seu. O executor (`node_executor.go`:
+submeter, publicar as saídas, fechar) passa a sondar esse run alheio e aceita o `final_text` dele
+como trabalho do nó — publica os payloads e, num verificador, o veredicto que decide os ramos
+condicionais.
+
+**Impacto.** O run alheio corre sem o `requested_by` do pedido e sem a lista-branca de tools do nó,
+e a sua saída entra no plano como se fosse do nó. O AOS-477 só garante que a origem
+(`run.plan_origin`) não entra nesse stream: o run alheio fica **sem** origem, e isso é o sinal que
+hoje ninguém lê.
+
+### Objectivo
+
+Um run-filho só é tratado como nó do plano se foi criado pela submissão com vínculo, sem reabrir o
+oráculo de existência que o 201 idempotente fecha.
+
+### Critérios de Aceitação
+
+- [ ] O `POST /runs` **sem** vínculo recusa ids com a forma reservada `<plano>~<nó>` (o separador
+      do AOS-439), com a mesma resposta uniforme das outras recusas de forma.
+- [ ] O drenador só aceita como seu um run-filho que tenha o `run.plan_origin` gravado pela sua
+      própria submissão com vínculo (ou um sinal equivalente que o nó lhe devolva sem revelar a
+      existência de runs alheios). Na falta dele, o nó falha fechado, e o plano não usa a saída.
+- [ ] Teste: um run `<plano>~<nó>` criado antes por outra credencial não é adoptado — nem por
+      submissão sem vínculo (recusada) nem, se já existir de antes da correcção, pelo executor.
+- [ ] A resposta a quem não tem vínculo não distingue «existe» de «não existe» (o argumento do 201
+      idempotente mantém-se).
+- [ ] Runs-filho criados antes da correcção (sem `run.plan_origin`): declarar o que acontece numa
+      retoma.
+
+### Fora de âmbito
+
+Rever o 201 idempotente em geral.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-483 — Um `node_id` com `:` produz um run-filho que o runtime durável recusa
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: alinha duas gramáticas de identificadores. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P3: falha fechada (o run-filho falha logo), mas um plano válido não corre |
+| Estimativa | S |
+| Dependências | AOS-413 (executor de nós), AOS-439 (forma `<plano>~<nó>`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/control-plane/orchestrator/plan/` (`ValidNodeID`), `packages/cmd/aos-orq/node_executor.go`, `packages/kernel/agent-runtime/durable/` |
+
+### Contexto
+
+Achado na correcção do AOS-477 (2026-10-02). A gramática do plano (`plan.ValidNodeID`) admite `:`
+num `node_id`. O `aos-orq` não o escapa ao compor o id do run-filho, porque `:` é representável num
+stream NATS. O runtime durável recusa-o (`durable: run_id/step_id não pode conter ':'`), porque `:`
+é o separador da chave de idempotência `run_id:step_id`. Medido com um run `run-x~a:b`: o
+`POST /runs` responde 201 e o run falha logo.
+
+### Critérios de Aceitação
+
+- [ ] Ou a gramática do plano recusa `:` num `node_id` (com o validador estrutural, fail-closed,
+      antes de materializar), ou o `aos-orq` escapa-o no id do run-filho, e o nó (AOS-477) confere
+      a mesma forma escapada.
+- [ ] Teste por processo: um plano com um `node_id` com `:` ou é recusado na validação, ou o seu
+      run-filho corre até ao fim.
+- [ ] As três gramáticas (plano, escape do `aos-orq`, conferência do nó) ficam presas por teste.
+
+### Estado
+
+**ABERTO.**

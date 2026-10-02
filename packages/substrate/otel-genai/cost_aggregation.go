@@ -74,6 +74,9 @@ type UsageTotals struct {
 	InputTokens  int64
 	OutputTokens int64
 	CostMicroUSD int64
+	// CostUndefined diz que pelo menos um chat do conjunto não teve custo derivado
+	// ([AttrCostUndefined], AOS-406): CostMicroUSD é então uma soma parcial, não o custo.
+	CostUndefined bool
 }
 
 // TotalTokens é a soma input+output (o volume de tokens de modelo do conjunto).
@@ -88,9 +91,10 @@ func (u UsageTotals) CostUSD() float64 { return MicroUSDToUSD(u.CostMicroUSD) }
 // spans já emitidos, cujos valores já couberam em int64 na emissão).
 func (u UsageTotals) add(o UsageTotals) UsageTotals {
 	return UsageTotals{
-		InputTokens:  u.InputTokens + o.InputTokens,
-		OutputTokens: u.OutputTokens + o.OutputTokens,
-		CostMicroUSD: u.CostMicroUSD + o.CostMicroUSD,
+		InputTokens:   u.InputTokens + o.InputTokens,
+		OutputTokens:  u.OutputTokens + o.OutputTokens,
+		CostMicroUSD:  u.CostMicroUSD + o.CostMicroUSD,
+		CostUndefined: u.CostUndefined || o.CostUndefined,
 	}
 }
 
@@ -386,6 +390,11 @@ func chatSampleFromSpanData(sd SpanData) (chatSample, bool) {
 		}
 	}
 	t.CostMicroUSD = costMicroUSDOf(sd)
+	if v, ok := sd.Attribute(AttrCostUndefined); ok {
+		if b, ok := v.(bool); ok && b {
+			t.CostUndefined = true
+		}
+	}
 	return chatSample{
 		traceHex:  sd.SpanContext.TraceIDHex(),
 		parentHex: parentHexOf(sd),

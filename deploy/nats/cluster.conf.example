@@ -1,0 +1,45 @@
+# cluster.conf — especificação do cluster NATS JetStream de produção (AOS-469).
+#
+# UM ficheiro descreve o cluster inteiro e é IGUAL em todos os hosts: copia-o para
+# /etc/aos-nats/cluster.conf em cada um. Só leva material PÚBLICO (IPs, chaves públicas WG e
+# chaves públicas nkey dos clientes).
+# Formato: `CHAVE=valor`, ou linhas `host …` / `no …` separadas por espaços. `#` comenta.
+
+# Região NUA (sem «region:»). Tem de ser a de AOS_BOARD_REGIONS do nó (board:prod=eu-west).
+REGIAO=eu-west
+
+# Rede do túnel. Escolhida para não colidir com o cluster k8s do Contabo
+# (pods 10.244.0.0/16, serviços 10.96.0.0/12) nem com as redes Docker (172.16.0.0/12).
+REDE_WG=10.77.0.0/24
+PORTA_WG=51820
+
+# Pinadas por digest. A versão do servidor é a da infra e do CI (nats:2.10-alpine,
+# infra/env/*.tfvars, scripts/ci/nats-cluster.sh) — v2.10.29 neste digest.
+IMAGEM=nats:2.10-alpine@sha256:b83efabe3e7def1e0a4a31ec6e078999bb17c80363f881df35edc70fcb6bb927
+IMAGEM_BOX=natsio/nats-box:0.14.5@sha256:0784ab710aefaf6ef037ed797ee7dcde613c6ad208c4dbff1945fc7c1b5b5375
+
+NOME_CLUSTER=aos-es
+MAX_FILE_STORE=20G
+
+# host <nome> <ip-público> <ip-wg> <chave-pública-wg> [sub-rede-docker-permitida]
+#   chave-pública-wg: a saída de `sudo bash aos-nats.sh chave` NESSE host.
+#   sub-rede-docker-permitida: a do nó aos (no Contabo: rede `aos_default`) — ver o README,
+#   `docker network inspect aos_default -f '{{(index .IPAM.Config 0).Subnet}}'`.
+host contabo 37.60.241.150 10.77.0.1 SUBSTITUIR_PELA_CHAVE_PUBLICA_DO_CONTABO= 172.18.0.0/16
+host hetzner 78.46.209.230 10.77.0.2 SUBSTITUIR_PELA_CHAVE_PUBLICA_DO_HETZNER=
+
+# no <nome> <host> <porta-cliente> <porta-rota> <porta-monitor>
+# Exactamente 3 (ou 5): o stream do AOS é R3. Com DOIS hosts, um deles leva dois nós — ver o
+# README, «O que dois hosts compram, e o que não compram». Com um terceiro host, muda o
+# aos-es-1 para lá e acabou.
+no aos-es-0 contabo 4222 6222 8222
+no aos-es-1 contabo 4223 6223 8223
+no aos-es-2 hetzner 4222 6222 8222
+
+# cliente <nome> <nkey-pública-U…>   (AOS-470 — pelo menos UM; sem ele o `gerar` recusa)
+#   Os únicos que se ligam ao cluster. A SEED fica no host do cliente; aqui só a pública:
+#     (umask 077; docker run --rm "$AOS_IMAGE" nats-nkey gerar > /opt/aos/secrets/aos-nats.nk)
+#     docker run --rm -i "$AOS_IMAGE" nats-nkey publica < /opt/aos/secrets/aos-nats.nk
+#   Um nó `aos` e o `aos-orq` do mesmo host podem partilhar a seed; nós em hosts diferentes
+#   levam uma cada, para que revogar um (apagar a linha e reaplicar) não derrube os outros.
+cliente aos-contabo SUBSTITUIR_PELA_NKEY_PUBLICA_DO_NO_AOS

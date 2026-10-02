@@ -75,6 +75,23 @@ type WideEvent struct {
 	// --- latência (End-Start; 0 se os spans não modelam relógio) ---
 	LatencyNanos int64
 
+	// MediationDecisionLatencyNanos é a duração da CADEIA DE DECISÃO do Reference
+	// Monitor, EXCLUINDO o despacho da tool ([AttrMediationDecisionLatencyNanos]).
+	// Só o span `execute_tool` do RM a traz; 0 em qualquer outro evento, e 0 também
+	// num `execute_tool` emitido por um produtor que não decide (o worker, o
+	// Launcher) ou por um RM anterior ao AOS-398.
+	//
+	// DISTINTA de [LatencyNanos] por construção: aquela é a janela do span inteiro,
+	// que no RM fecha DEPOIS de a tool correr no sandbox. Confundi-las era DEF-281.
+	MediationDecisionLatencyNanos int64
+
+	// MediationPolicyLatencyNanos é a janela da cadeia de política, até antes da escrita do
+	// selo ([AttrMediationPolicyLatencyNanos]). É a fonte do SLI de overhead desde AOS-401.
+	MediationPolicyLatencyNanos int64
+	// MediationAuditWriteLatencyNanos é a duração da escrita do selo no sink
+	// ([AttrMediationAuditWriteLatencyNanos]). Observável, sem SLO.
+	MediationAuditWriteLatencyNanos int64
+
 	// --- decisão de política (PDP) ---
 	Decision string
 	DeniedBy string
@@ -183,6 +200,9 @@ func (w *WideEvent) deriveFromBag() {
 	w.PrefixHash = attrStringBag(w.Attributes, AttrPrefixHash)
 	w.ToolCallHash = attrStringBag(w.Attributes, AttrToolCallHash)
 	w.ErrorType = attrStringBag(w.Attributes, AttrErrorType)
+	w.MediationDecisionLatencyNanos = attrInt64Bag(w.Attributes, AttrMediationDecisionLatencyNanos)
+	w.MediationPolicyLatencyNanos = attrInt64Bag(w.Attributes, AttrMediationPolicyLatencyNanos)
+	w.MediationAuditWriteLatencyNanos = attrInt64Bag(w.Attributes, AttrMediationAuditWriteLatencyNanos)
 
 	// Versões pinadas: TODAS as chaves com o prefixo aos.pinned.* — sem fixar o
 	// conjunto, uma dimensão pinada nova aparece sem alterar este código.

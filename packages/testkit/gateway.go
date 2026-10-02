@@ -45,8 +45,8 @@ type GWUsage struct {
 }
 
 // GWChatRequest é o pedido de chat NORMALIZADO (espelha port.ChatRequest). Os
-// metadados de plataforma (Principal/Region/Board/RunID) NÃO vão no "wire" — aqui
-// existem só para o fake os poder registar/asserir.
+// metadados de plataforma (Principal/Region/Board/RunID/StepID) NÃO vão no "wire" —
+// aqui existem só para o fake os poder registar/asserir.
 type GWChatRequest struct {
 	Model     string
 	Messages  []GWMessage
@@ -55,6 +55,10 @@ type GWChatRequest struct {
 	Region    string
 	Board     string
 	RunID     string
+	// StepID é o passo do run que fez a chamada (AOS-394): entra nos selos de
+	// governação do gateway a par do RunID. Espelha port.ChatRequest.StepID —
+	// acrescentado com a porta 1.1.0, para o espelho não ficar atrás dela.
+	StepID string
 }
 
 // GWChatResponse é a resposta de chat NORMALIZADA (espelha port.ChatResponse).
@@ -71,6 +75,8 @@ type GWEmbeddingsRequest struct {
 	Model string
 	Input []string
 	RunID string
+	// StepID espelha port.EmbeddingsRequest.StepID (AOS-394, porta 1.1.0).
+	StepID string
 }
 
 // GWEmbeddingsResponse é a resposta de embeddings NORMALIZADA (espelha port).
