@@ -117,7 +117,9 @@ func noAOS439Com(t *testing.T, epoca uint8, sk *aos446Autenticador) *aos439Fixtu
 // noAOS439Em é a mesma fixture sobre um DIRECTÓRIO dado e com o pino do `tnHuman` substituível —
 // as duas coisas de que um teste de REINÍCIO precisa: o WAL, o WORM e o registo de retoma
 // sobrevivem, e o `.env` é outro (AOS-446 fase 1).
-func noAOS439Em(t *testing.T, dir string, epoca uint8, sk *aos446Autenticador, pinoDoHumano *identity.MandateSigner, kek audit.KeyVault) *aos439Fixture {
+//
+// apiOpts (AOS-477) vão ao handler — o E2E do sentido inverso compõe o catálogo de tools.
+func noAOS439Em(t *testing.T, dir string, epoca uint8, sk *aos446Autenticador, pinoDoHumano *identity.MandateSigner, kek audit.KeyVault, apiOpts ...APIOption) *aos439Fixture {
 	t.Helper()
 	signer := durSigner(t)
 	entry := counterEntry(t, signer)
@@ -178,7 +180,7 @@ func noAOS439Em(t *testing.T, dir string, epoca uint8, sk *aos446Autenticador, p
 	if node.ResumeRecords == nil {
 		t.Fatal("fixture: o registo de retoma tem de estar composto")
 	}
-	svc, h := newAPI(t, node)
+	svc, h := newAPI(t, node, apiOpts...)
 	return &aos439Fixture{node: node, svc: svc, h: h, auto: auto, humano: humano, humanoB: humanoB, sk: sk}
 }
 

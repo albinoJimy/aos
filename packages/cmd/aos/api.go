@@ -926,6 +926,9 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		requestedBy       string
 		credDoRun         identity.Principal
 		credDoRunVerifica bool
+		// AOS-477: o `seq` do `planrequest.submitted` que o vínculo nomeia; >0 só com o vínculo
+		// verificado — é a condição para o run declarar a sua origem.
+		seqDoPedido uint64
 	)
 	// SEM GATE SOBERANO NÃO HÁ VÍNCULO (AOS-439). O vínculo exige um chamador autenticado — é ele
 	// que tem de ter a reclamação viva —, e um nó sem gate não autentica ninguém. Aceitar o campo
@@ -1020,14 +1023,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// válida já saiu), antes da primeira escrita durável (a selagem da residência). A recusa é
 		// a MESMA 403, e a causa fica no log.
 		if req.PlanRequest != nil {
-			rb, verr := h.submissorDoPedido(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
+			rb, seq, verr := h.vinculoVerificado(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
 			if verr != nil {
 				h.logf("submit RECUSADO (AOS-439): vinculo ao pedido de plano chamador=%q run=%q plano=%q geracao=%d: %v",
 					submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.Geracao, verr)
 				writeError(w, http.StatusForbidden, "nao autorizado")
 				return
 			}
-			requestedBy = rb
+			requestedBy, seqDoPedido = rb, seq
 		}
 		// AOS-439 — O MANDATO DA CREDENCIAL TEM DE NOMEAR O SUBMISSOR. Um mandato v2 só autoriza o
 		// emissor a agir pelos `requesters` que o humano assinou; um run sem submissor derivado,
@@ -1157,6 +1160,16 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		}
 		writeError(w, submitErrorStatus(err), "submissao recusada")
 		return
+	}
+	// AOS-477 — O RUN DECLARA A SUA ORIGEM, num campo. Só aqui: depois de ESTA chamada o ter
+	// hospedado (ver [declararOrigemDoRunFilho] para o porquê de não ser antes) e só com o vínculo
+	// verificado. Uma falha a gravar NÃO desfaz o run, que já corre: fica no log do operador, e o
+	// run fica sem a declaração — a recondução volta a ser por nome, como antes deste ticket.
+	if req.PlanRequest != nil && seqDoPedido > 0 {
+		if oerr := declararOrigemDoRunFilho(r.Context(), h.node.EventStore, req.RunID, *req.PlanRequest, seqDoPedido); oerr != nil {
+			h.logf("submit (AOS-477): o run %q foi hospedado mas a ORIGEM nao ficou gravada (plano=%q geracao=%d): %v",
+				req.RunID, req.PlanRequest.RunID, req.PlanRequest.Geracao, oerr)
+		}
 	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }

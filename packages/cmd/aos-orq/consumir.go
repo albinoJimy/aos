@@ -519,6 +519,18 @@ func argsDoServe(snapshot string, p pedidoReclamado, sub substrato, planTimeout,
 	if p.Geracao > 0 {
 		args = append(args, "--plan-request-generation", strconv.Itoa(p.Geracao))
 	}
+	// AOS-477: o pedido de origem, que o `plan.proposed` cita e que faz os runs filhos declararem
+	// o plano e o nó; e, quando há decomposição, o compromisso do pedido e o sal com que o `serve`
+	// o recalcula sobre o objectivo recebido. Um nó anterior não os entrega, e nada disto passa.
+	if p.RequestSeq > 0 && p.RequestStream != "" {
+		args = append(args, "--plan-request-stream", p.RequestStream, "--plan-request-seq", strconv.FormatUint(p.RequestSeq, 10))
+	}
+	if !origem.porDocumento && p.ObjectiveSalt != "" {
+		args = append(args, "--objective-salt", p.ObjectiveSalt)
+		if p.ObjectiveCommitment != "" {
+			args = append(args, "--objective-commitment", p.ObjectiveCommitment)
+		}
+	}
 	if snapshot != "" {
 		args = append(args, "--snapshot", snapshot)
 	}

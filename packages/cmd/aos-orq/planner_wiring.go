@@ -143,7 +143,9 @@ func carregarFixtureModel(path string) (*fixtureModel, error) {
 // planOut, quando dado, é o ficheiro onde o documento validado é escrito — pendente, para o humano
 // o rever e o `decide` o reapresentar; aprovado, para a retoma correr por `--plan-doc` sem decompor
 // de novo (AOS-442). O documento cru NÃO vive no log, ADR-005 — só o seu hash.
-func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string, exe *configDoExecutor) error {
+//
+// origem (AOS-477) é o compromisso do objectivo e o pedido de origem que o `plan.proposed` cita.
+func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecycle.EventStore, rec *runlifecycle.PlanRecorder, snap planvalidate.Snapshot, goal string, model decompose.Model, gwCfg *gatewayConfig, worker string, govAudit audit.Store, planOut string, exe *configDoExecutor, origem origemNoLog) error {
 	runID := ten.RunID()
 
 	// (1)–(3) BASE DE EXECUÇÃO — identidade real, RM mínimo e orçamento partilhado. É a MESMA que
@@ -221,6 +223,7 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 		snap:      snap,
 		tentativa: res.Attempts,
 		planOut:   planOut,
+		origem:    origem,
 	})
 	if err != nil {
 		return err // errPlanoPendente ⇒ saída 6; qualquer outro ⇒ fail-closed

@@ -140,7 +140,13 @@ func (r *Recorder) RecordProposedFrom(ctx context.Context, planID string, attemp
 
 // RecordProposed apensa `plan.proposed` a partir de um payload já montado (sem
 // consultar o modelo — útil quando a proposta já foi obtida noutro passo).
+//
+// AOS-477: recusa fail-closed um compromisso do objectivo ou uma referência ao pedido mal
+// formados ([ErrInvalidProposal]) — os dois são opcionais, mas presentes têm de ser seguíveis.
 func (r *Recorder) RecordProposed(ctx context.Context, p ProposedPayload) (uint64, error) {
+	if err := validProposal(p); err != nil {
+		return 0, err
+	}
 	return r.emit(ctx, p.PlanID, EventProposed, stepProposed, p)
 }
 

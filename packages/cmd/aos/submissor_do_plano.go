@@ -58,6 +58,11 @@ const separadorDoRunFilho = "~"
 type vinculoAoPedido struct {
 	RunID   string `json:"run_id"`
 	Geracao int    `json:"generation"`
+	// PlanID e NodeID são o plano e o nó de que o run é trabalho, DECLARADOS pelo drenador
+	// (AOS-477). Opcionais e juntos; o nó confere-lhes a forma e grava-os no `run.plan_origin` do
+	// run, sem os poder confrontar com o documento (ADR-018). Ver `plan_origem.go`.
+	PlanID string `json:"plan_id,omitempty"`
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // codigoRequerenteForaDoMandato é o código do corpo da recusa em que o vínculo PASSOU mas o
@@ -77,8 +82,16 @@ var errVinculoRecusado = errors.New("vinculo ao pedido de plano recusado")
 //
 // A causa de uma recusa é para o LOG DO OPERADOR; a resposta ao chamador é uniforme.
 func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdentity, runID string, v vinculoAoPedido, agora time.Time) (string, error) {
-	recusa := func(causa string) (string, error) {
-		return "", errors.Join(errVinculoRecusado, errors.New(causa))
+	submissor, _, err := h.vinculoVerificado(ctx, chamador, runID, v, agora)
+	return submissor, err
+}
+
+// vinculoVerificado é [apiHandler.submissorDoPedido] mais o `seq` do `planrequest.submitted` que
+// o vínculo nomeia — a referência que o `run.plan_origin` grava (AOS-477). O `seq` sai da MESMA
+// leitura que verificou o vínculo: não há segunda leitura que pudesse ver outro facto.
+func (h *apiHandler) vinculoVerificado(ctx context.Context, chamador readerIdentity, runID string, v vinculoAoPedido, agora time.Time) (string, uint64, error) {
+	recusa := func(causa string) (string, uint64, error) {
+		return "", 0, errors.Join(errVinculoRecusado, errors.New(causa))
 	}
 	if h == nil || h.node == nil || h.node.EventStore == nil {
 		return recusa("sem Event Store onde ler a fila")
@@ -114,6 +127,7 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 
 	var (
 		pedido       planRequestPayload
+		seqDoPedido  uint64
 		submetido    bool
 		maiorGeracao int
 		reclamadoEm  = map[int]time.Time{}
@@ -130,6 +144,7 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 				return recusa("pedido ilegivel")
 			}
 			submetido = true
+			seqDoPedido = ev.Seq
 		case EventTypePlanRequestClaimed:
 			ger, alvo, ok := partirChaveComGeracao(ev.StepID, prefixoReclamo)
 			if !ok || alvo != v.RunID {
@@ -191,5 +206,10 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 	if pedido.Region == "" || pedido.Region != chamador.region {
 		return recusa("regiao do pedido diferente da do chamador")
 	}
-	return pedido.Principal, nil
+	// (5) A origem DECLARADA (AOS-477), na forma. Recusa-se com a mesma 403: um `plan_id`/`node_id`
+	// malformado é um drenador a mandar o que não devia, e não há razão para lho distinguir.
+	if err := validarOrigemDeclarada(v); err != nil {
+		return recusa(err.Error())
+	}
+	return pedido.Principal, seqDoPedido, nil
 }

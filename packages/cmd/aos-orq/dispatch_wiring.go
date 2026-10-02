@@ -299,6 +299,7 @@ func composeEDespachar(
 			return errEx
 		}
 		ex.geracaoDoPedido = exe.geracaoDoPedido // AOS-439: o vínculo ao pedido de plano
+		ex.declararOrigem = exe.declararOrigem   // AOS-477: e o plano e o nó, num campo
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {
