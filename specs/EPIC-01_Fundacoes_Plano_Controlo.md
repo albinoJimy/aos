@@ -884,17 +884,20 @@ responsável.
       — *§3.1, «O `producer` por família de evento (AOS-478)»: quatro classes (`cadeia`,
       `nhi_id`, `componente`, e `fora-do-envelope` para os rótulos de audit), uma linha por
       família ou tipo, com o `nhi_id` esperado e como se chega ao responsável. A regra escrita é
-      que nenhum tipo do envelope sai com `producer.nhi_id` vazio. É lida pelo teste do AC5, não
-      copiada para ele.*
+      que nenhum tipo do envelope sai com `producer.nhi_id` vazio pelos emissores que o nó compõe,
+      com as quatro excepções que ficam fora desse caminho declaradas a seguir à tabela. A
+      classe `nhi_id` diz também que o principal do run só é verificado na porta em modo
+      soberano e que fora dele é auto-declarado. É lida pelo teste do AC5, não copiada para ele.*
 - [x] Os eventos que resultam de um acto atribuível levam o seu autor: `control.pause` e
       `control.steer` (o emissor já vem no payload, falta no envelope), `approval.*`,
       `step.ledger.applied` e `sandbox.*` (o principal da tool call que os causou).
       — *`control.pause`/`steer`/`resume` levam o emissor autenticado
       (`SteerChannel.producerFor`). `step.ledger.applied` e `sandbox.*` levam o principal que o
-      RM resolveu do token: o RM devolve-o em `Decision.Principal` (o `activity.Dispatcher`
-      passa-o ao ledger por `durable.WithEffectProducer`, que é só envelope e não muda o titular
-      da cifra) e anexa-o ao contexto do despacho (`referencemonitor.ContextWithMediatedPrincipal`,
-      que o `EventStoreSink` da sandbox lê). Em `approval.*`: `pending` e `consumed` levam o
+      RM resolveu do token. O RM devolve-o em `Decision.Principal`, e o `activity.Dispatcher` e o
+      `worker.Worker` passam-no ao ledger por `durable.WithEffectProducer`, que é só envelope e não
+      muda o titular da cifra. O RM também anexa o `producer` ao contexto do despacho
+      (`eventstore.ContextWithProducer`), e o `EventStoreSink` da sandbox lê-o com
+      `eventstore.ProducerFromContext` sem importar o kernel. Em `approval.*`: `pending` e `consumed` levam o
       principal apresentado pelo run, `granted` o primeiro aprovador, `decided` quem decidiu e
       `expired` a identidade de componente. De caminho, `tool.call.outcome`,
       `memory.record.written`, `run.resume.record` e `memory.migration.*` também deixaram de
@@ -912,13 +915,24 @@ responsável.
 - [x] Um teste percorre os tipos do catálogo e falha se um tipo que o contrato marca como
       atribuível for emitido com `producer.nhi_id` vazio.
       — *`TestAOS478_ProducerPorFamilia` (`packages/cmd/aos/aos478_producer_por_familia_test.go`):
-      lê a tabela do contrato, extrai os 127 tipos do catálogo com a expressão do gate
-      `event-catalog` e exige linha para cada um; corre um nó real (dois ciclos escalada →
+      lê a tabela do contrato, extrai os 128 tipos do catálogo com a expressão do gate
+      `event-catalog` e exige linha para cada um. Corre depois um nó real: dois ciclos escalada →
       four-eyes → retoma, o segundo numa sandbox ligada pelo `registerSandboxLaunchers` de
-      produção, pausa e steer assinados, um pendente expirado pelo varrimento real) e verifica
-      cada evento do Event Store contra a classe. Exige ainda que 21 tipos tenham sido
-      exercitados, para o teste não passar sobre um conjunto vazio. Mutantes: 15 retiradas de
-      `producer`, uma por família corrigida, e as 15 avermelham o teste.*
+      produção; pausa e steer assinados; um pendente expirado pelo varrimento real; e o titular
+      dos dados diferente do agente. Verifica cada evento do Event Store contra a classe, que tem
+      de ser EXACTA (`cadeia` com cadeia, `nhi_id` sem cadeia, `componente` com `nhi:` e sem
+      cadeia). Verifica também que o `step.ledger.applied` continua selado sob o titular do run.
+      Todo o tipo `cadeia`/`nhi_id` que o cenário não emite tem de constar de uma lista (19
+      tipos, cada um com o teste unitário que o cobre), com a classe igual à do contrato, e o
+      teste confirma que cada teste nomeado existe. Exige ainda que 21 tipos tenham sido exercitados. Mutantes: 25, todos vermelhos.
+      São 15 retiradas de `producer`, uma por família corrigida; seis mutações nos sítios que a
+      primeira versão deixava escapar (`control.resume`, pendente de exaustão, default do
+      worker, as duas metades de `memory.migration.*`, autor do ledger no worker); e quatro
+      mutações do PRÓPRIO contrato (`identity.nhi.issued` e `credential.*` para `componente`,
+      `control.resume` numa linha própria como `componente`, e `turn.recorded` para
+      `componente`). A primeira versão deste critério dizia «15 de 15». Era verdade para as 15
+      retiradas, mas a revisão mostrou quatro mutantes de código e um de contrato que lhe
+      sobreviviam.*
 - [x] Retro-compatibilidade: os 57 861 eventos já gravados continuam legíveis e o replay não muda.
       — *O envelope não é validado na leitura e nada reescreve o log. `bash scripts/ci/replay.sh`
       verde antes e depois (fidelidade 100 %, 0 efeitos duplicados). Um log de transições
@@ -964,8 +978,17 @@ passo, e o Event Store deduplica-o: nunca chega ao log. O mesmo acontece ao `med
 passo aprovado, que colide com o `escalated` anterior. O WORM guarda os dois, mas o leitor de
 fiabilidade da promoção de autonomia (`cmd/aos/autonomy_fiabilidade.go`, AOS-090) lê o Event
 Store. Medido num teste descartável (um permit com os dois sinks deixa só `tool.call.mediated`
-no stream) e no cenário do AC5 (3 `escalated`, 0 `mediated`, 0 `outcome`). Fica por abrir
-ticket próprio. Este ticket corrigiu só o `producer` desses dois tipos.
+no stream) e no cenário do AC5 (3 `escalated`, 0 `mediated`, 0 `outcome`). Fica para um
+ticket próprio, escrito à parte, e não se corrige aqui. Este ticket corrigiu só o `producer`
+desses dois tipos.
+
+### Residual declarado
+
+A raiz `human:<id>` da cadeia de delegação aparece em claro em mais quatro envelopes por tool
+call: o `step.ledger.applied` e os três `sandbox.*`. Já aparecia nos `tool.call.*`, por isso
+não é uma classe de dado nova. Mas o crypto-shredding por titular (ADR-011) cifra payloads e
+não redige envelopes: depois de um apagamento, essa raiz continua legível. Fica registado em
+`tecnica/13_Modelo_Dados_Eventos.md` §3.1, como residual.
 
 ### Fora de âmbito
 
@@ -973,9 +996,19 @@ Assinar eventos no Event Store, e reescrever histórico.
 
 ### Estado
 
-**FECHADO.** Os seis critérios `[x]`, com a evidência em cada um. Fica um achado para ticket
-próprio: o `tool.call.outcome` e o `mediated` pós-aprovação perdem-se na deduplicação do Event
-Store (ver acima).
+**FECHADO.** Os seis critérios `[x]`, com a evidência em cada um, depois de uma ronda de
+correcções da revisão adversarial. A ronda tratou um achado médio (a cobertura de mutantes
+estava sobrestimada) e seis baixos:
+- a classe `nhi_id` declara que o principal do run é auto-declarado fora do modo soberano;
+- a linha `memory.*` diz o que o nó realmente escreve;
+- as excepções à regra ficaram escritas, e o worker passou a dar o autor ao ledger;
+- o `producer` em contexto mudou-se para `substrate/eventstore`, e a sandbox deixou de importar
+  o RM para o ler;
+- a contagem do catálogo foi corrigida;
+- o cenário do nó passou a ter o titular diferente do agente.
+
+Ficam por resolver o residual da raiz humana em claro nos envelopes (acima) e o achado da
+deduplicação do `tool.call.outcome` e do `mediated` pós-aprovação, que segue em ticket próprio.
 
 ---
 
