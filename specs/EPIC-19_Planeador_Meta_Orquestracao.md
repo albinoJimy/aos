@@ -8080,10 +8080,17 @@ próprio run filho. A `generation` fica, porque é sobre este pedido.
 O `seq` continua no `plan.proposed` e cumpre o AOS-477 (AC2). Esse evento vive no WAL do
 `aos-orq`, que não é servido a leitores de runs. O AC6 continua a cumprir-se só por campos.
 **Pergunta ao dono**, se quiser ir mais longe: a `generation` diz a um leitor da região quantas
-vezes o pedido foi re-planeado. Tirá-la também é possível sem perder a travessia.
+vezes o pedido foi **reclamado** (cada reclamação é uma geração; o passo do `plan.proposed` é fixo,
+pelo que não é o número de planos). Tirá-la também é possível sem perder a travessia.
 
 ### Limites declarados
 
+- **A leitura «já tem proposta?» do `serve --goal` é feita sob a posse** (revisão da ronda 2).
+  Um `serve` sem posse não imprime sal nenhum (`TestAOS477SemPosseNaoHaSalImpresso`). Fica uma
+  janela: um `serve` cuja posse é superada **depois** dessa leitura imprime um sal cuja proposta
+  nunca chega ao log. Esse `serve` sai pela recusa do fencing (saída 4), não com sucesso.
+- **O prazo da gravação da origem está testado.** `TestAOS477OrigemTemPrazoProprio` usa um store
+  pendurado e prova que o handler volta dentro do `controlSealTimeout`.
 - **A origem do run filho é gravada depois de o run ser hospedado.** Antes, um `run_id`
   `<plano>~<nó>` criado por outra via receberia de um drenador legítimo uma declaração que não é
   a sua. Uma falha a gravá-la não desfaz o run, que já corre: fica no log do operador, e esse run
