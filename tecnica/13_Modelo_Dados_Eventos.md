@@ -151,6 +151,7 @@ A quarta linha da tabela, **`fora-do-envelope`**, não é uma classe de `produce
 | `worker.step.dispatched` | `componente` | `nhi:kernel/agent-runtime/worker` | Por `run_id`. |
 | `approval.expired` | `componente` | `nhi:integration/approval-expiry` | O `approval.pending` que expirou. |
 | `run.toolset.frozen` | `componente` | `nhi:composition-root` | Por `run_id`. |
+| `run.plan_origin` | `componente` | `nhi:aos-node/plan-origin` (AOS-477) | Por `run_id` do run filho; o `payload.plan_request` cita o `planrequest.submitted` do titular, verificado pelo vínculo do AOS-439. |
 | `planrequest.*` | `componente` | `nhi:aos-node/plan-ingress` | O submissor vai no payload (cifrado por titular). |
 | `budget.*` | `componente` | `nhi:aos-node/quota`, `nhi:aos-node/budget-toolcall`, ou o injectado no `control-plane` | O principal imputado vai no payload. |
 | `ratification.*` | `componente` | `nhi:ratification-gate` | O selo WORM da ratificação. |
