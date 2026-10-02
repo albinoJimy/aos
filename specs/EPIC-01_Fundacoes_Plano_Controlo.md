@@ -978,8 +978,8 @@ passo, e o Event Store deduplica-o: nunca chega ao log. O mesmo acontece ao `med
 passo aprovado, que colide com o `escalated` anterior. O WORM guarda os dois, mas o leitor de
 fiabilidade da promoção de autonomia (`cmd/aos/autonomy_fiabilidade.go`, AOS-090) lê o Event
 Store. Medido num teste descartável (um permit com os dois sinks deixa só `tool.call.mediated`
-no stream) e no cenário do AC5 (3 `escalated`, 0 `mediated`, 0 `outcome`). Fica para um
-ticket próprio, escrito à parte, e não se corrige aqui. Este ticket corrigiu só o `producer`
+no stream) e no cenário do AC5 (3 `escalated`, 0 `mediated`, 0 `outcome`). Fica para o
+AOS-481, e não se corrige aqui. Este ticket corrigiu só o `producer`
 desses dois tipos.
 
 ### Residual declarado
