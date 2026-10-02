@@ -460,6 +460,16 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 		return fmt.Errorf("re-hidratação do grafo: %w", err)
 	}
 	fmt.Printf("grafo re-hidratado: nos=%d\n", g.DAG().Len())
+	// AOS-476: a TOPOLOGIA re-hidratada, e não só a contagem de nós. As dependências do plano só
+	// chegam a um dono seguinte pelo `task.edge.added`; sem esta linha, um grafo re-hidratado
+	// SEM arestas (o defeito medido três vezes) era indistinguível, daqui, de um com elas.
+	if g.DAG().Len() > 0 {
+		ordem, err := g.TopoOrder()
+		if err != nil {
+			return fmt.Errorf("ordem do grafo re-hidratado: %w", err)
+		}
+		fmt.Printf("grafo re-hidratado: arestas=%d ordem=%s\n", arestasDoGrafo(g.DAG(), ordem), strings.Join(ordem, ","))
+	}
 
 	// (4-goal) PIPELINE goal→DAG (F2E-02, AOS-388): com --goal, é o Planner GOVERNADO que
 	// produz os nós — mediação RM, reserva CAS, NHI agent:planner e validação AOS-231
@@ -582,6 +592,21 @@ func cmdInspect(args []string) error {
 	}
 	fmt.Printf("run=%s token_corrente=%d nos=%d ordem=%s\n", *runID, tok.Value(), dag.Len(), strings.Join(ordem, ","))
 	return nil
+}
+
+// arestasDoGrafo conta as arestas de dependência do DAG (AOS-476). O DAG não expõe a lista; a
+// contagem faz-se pelos pares de nós da ordem topológica — quadrática no número de nós, que num
+// plano é limitado pelo tecto do planeador, e só corre uma vez, na re-hidratação.
+func arestasDoGrafo(d *orchestrator.DAG, nos []string) int {
+	n := 0
+	for _, de := range nos {
+		for _, para := range nos {
+			if d.HasEdge(de, para) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // separar parte uma lista separada por vírgulas, ignorando entradas vazias.
