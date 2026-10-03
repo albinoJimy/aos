@@ -12,7 +12,7 @@ até uma resposta final ou o esgotamento do tecto de turnos. Este pacote entrega
 
 `Runtime.Run(ctx, Goal)` recebe um objectivo com `RunID`, `Principal` (NHI + cadeia de delegação) e escopo, e devolve um `Result` (resposta final ou paragem por `MaxTurns`). Por cada turno:
 
-1. **Montar** — o `PromptAssembler` remonta o prompt preservando um **prefixo IMUTÁVEL** (`system` + tool set congelado no run) e um **tail append-only** (`memory_context`, objectivo, histórico, resultados). O prefixo é **byte-idêntico** entre turnos com o mesmo tool set (ADR-009) — nunca é reordenado. O prompt materializado é hasheado (`prompt_hash = sha256:…`) por turno.
+1. **Montar** — o `PromptAssembler` remonta o prompt preservando um **prefixo IMUTÁVEL** (`system` + tool set congelado no run) e um **tail append-only** (`memory_context`, objectivo, histórico e, por cada tool call, a chamada do modelo seguida do seu resultado — layout 1.4.0, AOS-489). O prefixo é **byte-idêntico** entre turnos com o mesmo tool set (ADR-009) — nunca é reordenado. O prompt materializado é hasheado (`prompt_hash = sha256:…`) por turno.
 2. **Chamar** — a `ModelClient` (porta do Model Gateway) é invocada com a `PromptView` do turno, sob um span `chat`.
 3. **Despachar** — cada tool call **pretendida** pelo modelo é traduzida num `referencemonitor.Call` e submetida a `Monitor.Mediate`. **Nenhuma** tool executa fora do RM.
 4. **Verificar** — o resultado de cada tool volta ao loop **marcado untrusted** (`Tainted`, ADR-005) e é injectado no tail append-only. A terminação é um *stub* simples (a máquina de estados durável é AOS-017).

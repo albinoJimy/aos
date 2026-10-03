@@ -1100,6 +1100,12 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// modelo. Esta é a via única por onde passam a submissão, a retoma e a varredura de
 	// crash-resume.
 	goal = s.node.fixarModelo(goal)
+	// AOS-489: o LAYOUT de montagem do prompt fica fixado no Goal ANTES do registo de retoma e
+	// do primeiro turno, pela mesma razão do modelo: o que o registo guarda, o que o runtime
+	// monta e o que o manifesto de cada turno grava são o mesmo valor. Um run NOVO chega aqui
+	// sem versão e fica na dos runs novos; um run RETOMADO (aprovação ou crash-resume) chega
+	// com a do seu registo de retoma ([integration.ResumeRecord.GoalWith]) e não é tocado.
+	goal = fixarLayout(goal)
 	s.persistCrashResumeRecord(ctx, goal)
 
 	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
@@ -1176,9 +1182,27 @@ func (s *NodeService) persistCrashResumeRecord(ctx context.Context, goal agentru
 	}
 }
 
+// fixarLayout escreve no Goal o layout de montagem do prompt em que o run fica FIXADO (AOS-489).
+// Um Goal sem versão é um run NOVO: fica no layout dos runs novos ([agentruntime.AssemblyVersion]
+// — o que o [agentruntime.Runtime] do nó usaria por omissão; o nó não o sobrepõe). Um Goal que já
+// traz versão — o de uma retoma — fica como está: é isso que mantém em 1.3.0 um run começado
+// antes desta versão.
+func fixarLayout(goal agentruntime.Goal) agentruntime.Goal {
+	if goal.AssemblyVersion == "" {
+		goal.AssemblyVersion = agentruntime.AssemblyVersion
+	}
+	return goal
+}
+
 // resumeRecordFromGoal projecta o Goal no registo de retoma. A Credential é
 // DELIBERADAMENTE omitida — ver [integration.ResumeRecord].
+//
+// O LAYOUT VAI SEMPRE EXPLÍCITO (AOS-489), mesmo que o Goal recebido ainda não o tenha fixado:
+// um registo SEM versão é lido como «run anterior ao AOS-489» e retomado em 1.3.0
+// ([integration.ResumeRecordLegacyAssemblyVersion]). Deixar a versão vazia aqui poria um run
+// novo, com os primeiros turnos em 1.4.0, a continuar em 1.3.0 depois da retoma.
 func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
+	goal = fixarLayout(goal)
 	return integration.ResumeRecord{
 		RunID:             goal.RunID,
 		Principal:         goal.Principal,
@@ -1194,6 +1218,7 @@ func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 		MemoryContext:     goal.MemoryContext,
 		MaxTurns:          goal.MaxTurns,
 		ParentTraceParent: goal.ParentTraceParent,
+		AssemblyVersion:   goal.AssemblyVersion, // AOS-489: o run continua no layout em que começou
 	}
 }
 

@@ -52,6 +52,7 @@ turno** — lido antes de a resposta existir, pelo que nada do que o modelo devo
 | objectivo | trusted (submissão autenticada) |
 | correcção de steer | trusted (humano autenticado pelo canal de controlo) |
 | histórico (texto do modelo) | o rótulo do contexto que o produziu |
+| `tool_call` (a tool call que o modelo fez; emenda de 2026-10-03) | o rótulo do contexto que o produziu |
 | `plan_input` | untrusted |
 | `tool_result` (permit, deny ou erro) | untrusted |
 | memória | untrusted — **fail-closed** |
@@ -60,6 +61,18 @@ turno** — lido antes de a resposta existir, pelo que nada do que o modelo devo
 O rótulo é função do **tipo** dos segmentos que o runtime acrescenta, nunca do seu conteúdo: um
 documento que diga `taint=trusted` continua a ser um `plan_input`. O join é monótono — uma
 correcção trusted depois de um resultado de tool **não** devolve a autoridade.
+
+**Emenda de 2026-10-03 (AOS-489).** O assembler 1.4.0 passou a registar no tail a tool call do
+modelo, num segmento `tool_call` que precede o `tool_result` que lhe responde; a tabela ganhou a
+linha correspondente. É output do modelo, como o histórico, e entra no join com o rótulo do
+contexto que o produziu: não **eleva** (os argumentos são texto do modelo, e um pedido de tool não
+é um humano autenticado) nem **baixa** (registar uma chamada que o modelo já fez não acrescenta
+conteúdo de terceiros — quem torna o contexto untrusted é o resultado que vem logo a seguir). O
+caso é explícito em `SegmentAuthority`, e não o `default`: assim, inserir o segmento em qualquer
+ponto do tail deixa a dobra igual, e a autoridade de cada turno — e portanto cada decisão do
+TaintGate — é a mesma com e sem ele (`TestAOS489_ToolCallNaoMudaAAutoridade`,
+`TestAOS489_MesmasMediacoesNosDoisLayouts`). O `id` do segmento correlaciona a chamada com o
+resultado; nenhuma decisão o lê.
 
 Implementação: `SegmentAuthority`/`ContextAuthority` e a janela decorada `authorityWindow`
 (`packages/kernel/agent-runtime/context_authority.go`); o loop lê o rótulo a seguir ao `Assemble`
@@ -201,6 +214,9 @@ snapshot não nomeia não contam.
   `allow_http_post` passa a poder ser satisfeita (hoje sem tool que a use: o `web_post` está fora
   do manifesto de produção, §2.7).
 - O `AssemblyVersion` não muda: os bytes do prompt são os mesmos; só a autorização muda.
+  *Nota de 2026-10-03 (AOS-489):* a frase é a deste ADR à data da decisão — a opção C não mexeu
+  nos bytes do prompt. O `AssemblyVersion` subiu depois para 1.4.0, pelo AOS-489 (a tool call do
+  modelo passa a ficar no tail), e essa subida não mexeu na autorização: ver a emenda em §2.1.
 - Demonstrações cuja premissa era «toda a tool call do modelo é untrusted» deixam de a ter (ex.
   `deploy/node/dev-hardened/demo-pdp-taint-gate.sh`, que isola a cláusula Cedar com um `web_post`
   no turno 1).

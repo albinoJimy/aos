@@ -3265,6 +3265,11 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "nao autorizado")
 	case errors.Is(err, ErrNoResumeRecord):
 		writeError(w, http.StatusConflict, "run sem registo de retoma — nao e reconstituivel")
+	case errors.Is(err, ErrResumeLayoutDesconhecido):
+		// 409 (AOS-489): o run existe e está suspenso, e a retoma é legítima — não é ESTE binário
+		// que a pode fazer. O run fica como estava; a versão em causa vai ao log do operador.
+		h.svc.log("retoma do run %q RECUSADA: %v", runID, err)
+		writeError(w, http.StatusConflict, "run fixado num layout de prompt que esta versao do no nao conhece — retome-o com a versao que o gravou")
 	case integration.RegistoDeRetomaRecusado(err):
 		// 409 como o ErrNoResumeRecord (AOS-069): o registo existe e foi RECUSADO por não ser o
 		// que o Put do nó escreveria — um conflito com o estado do run, não uma falha interna.

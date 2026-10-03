@@ -1728,41 +1728,110 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
 
 ### Critérios de Aceitação
 
-- [ ] Por cada tool call do modelo o tail ganha um segmento `tool_call` antes do resultado, com o
+- [x] Por cada tool call do modelo o tail ganha um segmento `tool_call` antes do resultado, com o
       `id` cunhado pelo runtime (`<passo>-tool-<n>`) e o `name` na linha de delimitação, e os
       argumentos tal como o modelo os emitiu (antes da reescrita do efeito) no corpo. O `tool_result`
       leva o mesmo `id` e `name`. Capability, recurso, região, reversibilidade, `Reason` e metadados
       de hook não entram.
-- [ ] O prefixo ganha um preâmbulo de protocolo fixo e versionado: o que é cada segmento, que o
+      *(Evidência: `packages/kernel/agent-runtime/layout.go` (`tailFromToolCall`, `tailFromIdentifiedResult`,
+      `ToolStepID`). `TestAOS489_OModeloVeAChamadaEOResultado` fixa o tail do turno seguinte byte a
+      byte, com uma chamada permitida e uma negada, um `CallRewriter` que troca o input e os campos de
+      política preenchidos com valores que não podem aparecer; `TestAOS489_IdDoPromptEODoEventoDeMediacao`
+      (o `id` é o `step_id` da mediação); `TestAOS489_Forja_ReasonEMetadataForaDoPromptComAChamadaRegistada`.)*
+- [x] O prefixo ganha um preâmbulo de protocolo fixo e versionado: o que é cada segmento, que o
       resultado com o mesmo `id` responde à chamada, que uma recusa não se repete com os mesmos
       argumentos, e que conteúdo `taint=untrusted` é dados.
-- [ ] `AssemblyVersion` sobe para 1.4.0, com o golden do layout derivado à mão a cobrir o segmento
+      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 772
+      bytes ASCII, sem dados do run. `TestPreambuloDeProtocolo_RestricoesDoTexto` (igual à cópia
+      selada à mão, ASCII, nenhuma linha a abrir por `<`, sem rótulos de recusa nem `taint=trusted`,
+      prefixo byte-idêntico entre turnos) e o golden `promptSelado140`.)*
+- [x] `AssemblyVersion` sobe para 1.4.0, com o golden do layout derivado à mão a cobrir o segmento
       novo, o hash e a versão selados, e a entrada no comentário da constante (incluindo a da 1.3.0,
       que falta).
-- [ ] A sequência de segmentos de um turno vive numa função única, usada pelo loop e pelo motor de
+      *(Evidência: `packages/kernel/agent-runtime/layout_do_prompt_selado_test.go` — `promptSelado140` escrito à mão
+      (preâmbulo, três chamadas num turno, recusa, nome hostil, CR seguido de delimitador forjado,
+      argumentos acima do tecto) e `hashSelado140` calculado sobre o literal;
+      `TestLayoutDoPromptSelado_BytesMaterializados`, `TestLayoutDoPromptSelado_VersaoCorresponde`.
+      O golden da 1.3.0 ficou como estava, com o mesmo hash
+      (`TestLayoutDoPromptSelado_130ContinuaByteIdentico`). As entradas 1.3.0 e 1.4.0 estão no
+      comentário de `AssemblyVersion` em `prompt.go`.)*
+- [x] A sequência de segmentos de um turno vive numa função única, usada pelo loop e pelo motor de
       replay, incluindo o caminho de escalada e o de várias chamadas no mesmo turno.
-- [ ] **Layout por versão:** um log gravado em 1.3.0 reproduz-se com fidelidade 1.0 (teste com um
+      *(Evidência: `layout.turnSegments` / `TurnSegments` e `CorrectionSegments` em `layout.go`; o
+      loop chama-as em `fecharTail` (fim do turno e saída por escalada) e o motor em
+      `dobrasPorLayout`. `TestAOS489_OLoopEOMotorDobramOMesmoTail` compara o tail que o loop
+      construiu com o estado final do motor, nos dois layouts, com três chamadas num turno, recusa,
+      erro de tool, steer e escalada; `TestAOS489_EscaladaAMeioDoTurno`; `TestAOS489_SequenciaDoTurno`.)*
+- [x] **Layout por versão:** um log gravado em 1.3.0 reproduz-se com fidelidade 1.0 (teste com um
       log 1.3.0 fixado em disco, não gerado pelo código corrente); um log misto por turno
       reproduz-se; um run iniciado em 1.3.0 e retomado depois continua em 1.3.0 (a versão fica no
       registo de retoma, com `omitempty`); a divergência por versão sai atribuída a
       `assembly_version`.
-- [ ] Um run sem tool calls grava em 1.4.0 os mesmos bytes de `turn.recorded` e `replay.captured`,
+      *(Evidência: `packages/kernel/agent-runtime/replay/testdata/aos489_log_1_3_0.json` — três runs corridos pela
+      árvore do commit `4253c70` extraída com `git archive`, com o gerador ao lado —, e
+      `TestAOS489_Log130FixadoEmDiscoReproduzSe` (fidelidade 1.0 com e sem âncora, autoridade
+      verificada, e a âncora errada atribuída a `assembly_version` mesmo quando o prompt também
+      diverge). `TestAOS489_LogMistoPorTurnoReproduzSe` (nos dois sentidos).
+      `TestAOS489_VersaoDesconhecidaNoLogFalhaFechada`. Pelo nó:
+      `TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou` em `packages/cmd/aos` (retoma e
+      crash-resume; um registo sem versão continua em 1.3.0 e um run novo em 1.4.0), sobre
+      `integration.ResumeRecord.AssemblyVersion` e `fixarLayout` em `service.go`;
+      `TestAOS489_RegistoAntigoSemLayoutERetomadoEm130` em `packages/integration`. Um registo num
+      layout que o binário não conhece não é retomado, e o run fica como estava:
+      `TestAOS489_LayoutDesconhecidoNoRegistoNaoERetomado`.)*
+- [x] Um run sem tool calls grava em 1.4.0 os mesmos bytes de `turn.recorded` e `replay.captured`,
       salvo a versão e o prefixo; as capturas antigas descodificam como antes.
-- [ ] O tipo novo é classificado explicitamente em `SegmentAuthority` como output do modelo (não
+      *(Evidência: `TestAOS489_RunSemToolCalls_MesmosBytesSalvoAVersaoEOPrefixo` compara os payloads
+      que o código antigo gravou (a fixture em disco) com os de agora: a captura é byte-idêntica, e o
+      `turn.recorded` é-o depois de trocar a `assembly_version` e o `prompt_hash`.
+      `TestAOS489_ReconstructDeUmLog130` descodifica as capturas antigas. O esquema de captura não
+      mudou.)*
+- [x] O tipo novo é classificado explicitamente em `SegmentAuthority` como output do modelo (não
       eleva nem baixa a autoridade), com caso em `TestSegmentAuthority` e linha na tabela do ADR-034
       §2.1; a autoridade de cada turno e a decisão do TaintGate não mudam (replay com
       `VerifyAuthority`).
-- [ ] Segurança do segmento: argumentos só no corpo e neutralizados; `id` e `name` só na linha de
+      *(Evidência: `context_authority.go` (`case TailHistory, TailToolCall`); `TestSegmentAuthority`;
+      a emenda de 2026-10-03 ao ADR-034 §2.1. `TestAOS489_ToolCallNaoMudaAAutoridade` (inserir o
+      segmento em qualquer posição não muda a dobra de nenhum prefixo) e
+      `TestAOS489_MesmasMediacoesNosDoisLayouts` (o mesmo taint e o mesmo veredicto em cada chamada,
+      com o TaintGate armado, em 1.3.0 e em 1.4.0). Replay com `VerifyAuthority` sobre o log 1.3.0 em
+      disco, o 1.4.0 e o misto. Os `TestAOS069_*` continuam verdes, sem alteração.)*
+- [x] Segurança do segmento: argumentos só no corpo e neutralizados; `id` e `name` só na linha de
       delimitação, saneados e com tecto de comprimento; tecto de tamanho dos argumentos, com digest
       acima dele; testes de forja (argumentos, nome e resultado que imitam `<tool_call>`,
       `<tool_result>` e `<correction taint=trusted>`), e a `Reason` continua fora do prompt.
-- [ ] A neutralização de delimitadores reconhece `\r` e os separadores de linha Unicode como início
+      *(Evidência: `MaxToolCallLabelBytes` (256) e `MaxToolCallArgBytes` (4 KiB) em `layout.go`; acima
+      do tecto o corpo fica vazio e a linha de delimitação leva `args_omitted_bytes` e `args_digest`.
+      `TestAOS489_Forja_ArgumentosNaoAbremSegmentos`, `TestAOS489_Forja_NomeDeToolHostil`,
+      `TestAOS489_Forja_ResultadoImitaChamadaEResultado`,
+      `TestAOS489_Forja_ReasonEMetadataForaDoPromptComAChamadaRegistada` — todos pelo loop real, a
+      contar as linhas de delimitação do tail —, e `TestAOS489_TectoDosArgumentos`.
+      `TestModelBoundaryCarriesNoAuthority` continua verde: `ToolInvocation` e `ModelResponse` não
+      ganharam campos.)*
+- [x] A neutralização de delimitadores reconhece `\r` e os separadores de linha Unicode como início
       de linha, com a tabela de neutralização actualizada.
-- [ ] `PromptView` passa a transportar o tail estruturado (aditivo), para o AOS-490; a janela gerida
+      *(Evidência: `inicioDeLinha` em `prompt.go` — no layout 1.4.0 abrem linha `\r`, VT, FF, U+0085,
+      U+2028 e U+2029; o 1.3.0 fica como estava. `packages/kernel/agent-runtime/tabela_de_neutralizacao_test.go`:
+      `TestNeutralizarDelimitadores_QuebrasDeLinhaPorLayout` (nos dois sentidos),
+      `TestNeutralizarDelimitadores_EInjectiva` e `TestNeutralizarDelimitadores_Reversivel`.)*
+- [x] `PromptView` passa a transportar o tail estruturado (aditivo), para o AOS-490; a janela gerida
       (`working.TailInput`) transporta os campos novos, com a paridade inline/gerida provada.
+      *(Evidência: `PromptView.Tail`, `.System` e `.AssemblyVersion` em `prompt.go`
+      (`TestAOS489_PromptViewEstruturada`: cópia profunda, conteúdo cru). O `TailSegment` não ganhou
+      campos — o `id` e o `name` são rótulos e atravessam `working.TailInput.Meta`; o que a janela
+      gerida ganhou foi o layout (`working.Config.AssemblyVersion`, e o parâmetro novo de
+      `WindowFactory.NewWindow`). `TestAOS489_JanelaGeridaByteIdenticaAInline_NosDoisLayouts`
+      compara a vista inteira nos dois layouts; `TestWindowManagerFactory_ByteIdenticalToInline`
+      continua verde.)*
 - [ ] Métrica de eficiência de trajectória em `/metrics`: tool calls repetidas (mesma tool, mesmos
       argumentos) por processo, e aviso trusted no tail à terceira repetição idêntica num run.
-- [ ] Gates: `replay` (os 12 testes pelo mesmo nome), `security`, `apex`, `lint`, `build`.
+- [x] Gates: `replay` (os 12 testes pelo mesmo nome), `security`, `apex`, `lint`, `build`.
+      *(Evidência: corridos localmente a 2026-10-03 sobre a árvore do ramo, todos verdes — `replay`
+      («12 testes obrigatórios correram e passaram», fidelidade 100%), `security`, `apex` (piso do
+      ápice 83,6%), `lint`, `build`; e ainda `layer-lint`, `dr-e2e`, `ref-lint`, `deferrals`,
+      `event-catalog`, `secrets` e `sast`. O `rtm` fica vermelho só pela gama de tickets
+      descontínua — falta um número, de um ticket que está noutro ramo por fundir —, pelo que a RTM não foi regenerada
+      neste ramo.)*
 - [ ] Verificado em produção: em pelo menos dez runs com tools, repetições da mesma tool sobre o
       mesmo recurso perto de zero, medidas com o script da linha de base.
 

@@ -134,8 +134,14 @@ func TestTokenAccountingAndGracefulSignal(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			wm, err := NewWindowManager(Config{
-				RunID:           "run-tok",
-				System:          tc.prefixSystem,
+				RunID:  "run-tok",
+				System: tc.prefixSystem,
+				// AOS-489: os limites desta tabela (à unidade, com um estimador por
+				// carácter) foram calculados sobre o prefixo da 1.3.0. O que o teste mede
+				// é a contabilidade em tokens, não o layout — fixa-se o layout para os
+				// números continuarem a dizer o que diziam. O preâmbulo da 1.4.0 tem o seu
+				// próprio teste de ocupação mais abaixo.
+				AssemblyVersion: agentruntime.AssemblyVersion130,
 				ModelTokenLimit: tc.limit,
 				ExhaustionRatio: tc.ratio,
 				Estimator:       perChar,
@@ -323,6 +329,8 @@ func TestMarkedForCompressionClearedAfterEviction(t *testing.T) {
 	wm, err := NewWindowManager(Config{
 		RunID: "run-latch", System: "sys", ModelTokenLimit: 1000, ExhaustionRatio: 0.80,
 		Estimator: perChar, Sink: sink,
+		// AOS-489: limite de 1000 «tokens» por carácter, calculado sobre o prefixo da 1.3.0.
+		AssemblyVersion: agentruntime.AssemblyVersion130,
 	})
 	if err != nil {
 		t.Fatalf("NewWindowManager: %v", err)

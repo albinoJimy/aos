@@ -94,12 +94,19 @@ func NewWindowManagerFactory(modelTokenLimit int, opts ...WindowFactoryOption) (
 }
 
 // NewWindow implementa [agentruntime.WindowFactory]: congela o prefixo do run e devolve
-// o gestor da janela adaptado à [agentruntime.WindowPort].
-func (f *WindowManagerFactory) NewWindow(runID, system string, tools []agentruntime.ToolSpec) (agentruntime.WindowPort, error) {
+// o gestor da janela adaptado à [agentruntime.WindowPort]. O layout em que o run está fixado
+// (AOS-489) vai para o WindowManager tal como o loop o entrega — nunca vazio aqui, porque o
+// loop o resolve antes de abrir a janela; um vazio é recusado em vez de cair no layout dos
+// runs novos, que para um run retomado seria o errado.
+func (f *WindowManagerFactory) NewWindow(runID, system string, tools []agentruntime.ToolSpec, assemblyVersion string) (agentruntime.WindowPort, error) {
+	if err := agentruntime.ValidateAssemblyVersion(assemblyVersion); err != nil {
+		return nil, err
+	}
 	wm, err := working.NewWindowManager(working.Config{
 		RunID:           runID,
 		System:          system,
 		Tools:           tools,
+		AssemblyVersion: assemblyVersion,
 		ModelTokenLimit: f.modelTokenLimit,
 		ExhaustionRatio: f.ratio,
 		Estimator:       f.estimator,

@@ -66,10 +66,20 @@ type TrajectorySpec struct {
 	// INVISÍVEL ao prompt_hash (troca de modelo/params/seed sem mexer no prompt).
 	// Vazio (ModelID == "") ⇒ sem verificação de modelo (retrocompatível).
 	Model agentruntime.ModelConfig
-	// AssemblyVersion é a versão do assembler ESPERADA. Se != "", o replay compara-a
-	// com a gravada no manifesto (Reason="assembly_version") — uma subida da versão do
-	// código de montagem sem alterar os bytes do prompt é, tal como o modelo, invisível
-	// ao prompt_hash. Vazio ⇒ sem verificação (retrocompatível).
+	// AssemblyVersion é a versão do assembler ESPERADA — uma ÂNCORA, não uma escolha.
+	//
+	// O LAYOUT com que cada turno é re-materializado é SEMPRE o que esse turno gravou em
+	// `manifest.assembly_version` (AOS-489): um log 1.3.0 monta-se em 1.3.0, um 1.4.0 em
+	// 1.4.0, e um log misto monta cada turno no seu. Este campo não muda isso.
+	//
+	// Se != "", o replay EXIGE que cada turno verificado tenha sido gravado nesta versão: um
+	// turno gravado noutra sai como divergência com Reason="assembly_version" (esperado = a
+	// gravada, obtido = esta), e a comparação corre ANTES da do prompt_hash — é a causa, e
+	// tem de ser ela a aparecer. Serve a quem quer afirmar «este run foi montado na versão
+	// X»; quem só quer saber se o log se reproduz deixa-o vazio.
+	//
+	// Vazio ⇒ sem âncora (retrocompatível): cada turno é montado no layout que gravou e
+	// nenhuma versão é exigida.
 	AssemblyVersion string
 }
 
@@ -429,6 +439,13 @@ func admit(tr trajectory) error {
 		if tr.manifest[turn].PromptHash == "" {
 			return ErrIncompleteCapture
 		}
+		// LAYOUT DESCONHECIDO (AOS-489): o turno gravou uma `assembly_version` que este
+		// assembler não sabe montar. Recusa-se AQUI, antes de reproduzir o que quer que
+		// seja, e com o turno e a versão no erro — nunca se monta «no layout mais recente»,
+		// que daria um `prompt_hash` divergente sem causa à vista.
+		if err := agentruntime.ValidateAssemblyVersion(tr.manifest[turn].AssemblyVersion); err != nil {
+			return fmt.Errorf("replay: turno %d (%s) inadmissivel: %w", turn, tr.stepByTurn[turn], err)
+		}
 		if err := capturaCompleta(capt); err != nil {
 			return err
 		}
@@ -513,8 +530,12 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 	modelClient := newReplayModelClient(tr.capture)
 	dispatcher := newReplayDispatcher(tr.capture)
 
-	// O MESMO assembler que o loop usou (mesmo system + tool set congelado).
-	asm := agentruntime.NewPromptAssembler(opts.Spec.System, opts.Spec.Tools)
+	// O MESMO assembler que o loop usou (mesmo system + tool set congelado), NO LAYOUT QUE
+	// CADA TURNO GRAVOU (AOS-489) — ver [dobrasPorLayout].
+	dobras, err := novasDobras(tr, opts.Spec)
+	if err != nil {
+		return ReplayResult{}, err
+	}
 
 	res := ReplayResult{
 		RunID:             runID,
@@ -523,8 +544,9 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		AnchorsVerified:   activeAnchors(opts.Spec, opts.StepIdentity, opts.VerifyAuthority),
 	}
 
-	// Semeia o tail EXACTAMENTE como o loop (memory_context + objectivo).
-	tail := seedTail(opts.Spec)
+	// O tail é semeado EXACTAMENTE como o loop (memory_context + objectivo), em cada dobra.
+	// corrente é a dobra do último turno reproduzido — o estado final é o dela.
+	var corrente *dobra
 
 	matched, verified := 0, 0
 	for _, turn := range tr.turns {
@@ -547,13 +569,17 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		// no estado reconstruído — o que faz o resume-from-step convergir com o replay
 		// completo. Runs sem steer têm LeadingCorrection vazia ⇒ tail byte-idêntico.
 		if len(capt.LeadingCorrection) > 0 {
-			tail = append(tail, agentruntime.TailFromCorrection(capt.LeadingCorrection))
+			if err := dobras.correccao(capt.LeadingCorrection); err != nil {
+				return ReplayResult{}, err
+			}
 		}
 
-		// (1) RE-MATERIALIZAR o prompt do turno com o tail corrente.
-		incoming := tailHash(tail)
-		view := asm.Assemble(turn, tail)
-		authority := agentruntime.ContextAuthority(tail)
+		// (1) RE-MATERIALIZAR o prompt do turno com o tail corrente, NO LAYOUT QUE O TURNO
+		// GRAVOU. A versão já foi admitida ([admit]); a dobra existe por construção.
+		corrente = dobras.porVersao[manifest.AssemblyVersion]
+		incoming := tailHash(corrente.tail)
+		view := corrente.asm.Assemble(turn, corrente.tail)
+		authority := agentruntime.ContextAuthority(corrente.tail)
 
 		// (2) "CHAMAR" o modelo de replay — devolve a resposta REGISTADA.
 		resp, cerr := modelClient.Call(ctx, view)
@@ -590,18 +616,24 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			res.Steps = append(res.Steps, rt)
 		}
 
-		// (3) DOBRAR o resultado do turno no tail — histórico do modelo + resultado de
-		// cada tool (do dispatcher de replay, REGISTADO). Idêntico ao loop base, quer
-		// o turno esteja no segmento verificado, quer seja um turno anterior dobrado
-		// para reconstruir o estado do resume.
-		if resp.Text != "" {
-			tail = append(tail, agentruntime.TailFromModelText(resp.Text))
-		}
-		for idx := range resp.ToolCalls {
-			// A negação REGISTADA entra na reconstrução: o loop materializa-a no tail,
-			// logo omiti-la divergiria o prompt_hash de qualquer run com uma negação.
+		// (3) DOBRAR o resultado do turno no tail — histórico do modelo e, por cada tool
+		// call, a chamada e o seu resultado (do dispatcher de replay, REGISTADO). Quer o
+		// turno esteja no segmento verificado, quer seja um turno anterior dobrado para
+		// reconstruir o estado do resume.
+		//
+		// A ORDEM NÃO ESTÁ ESCRITA AQUI (AOS-489). Este bloco espelhava à mão os appends de
+		// `loop.go`; agora os dois chamam [agentruntime.TurnSegments], e o motor só lhe
+		// entrega o que o loop lhe entregaria: o texto e, pela ordem de despacho, cada
+		// invocação com o desfecho REGISTADO. A negação registada vai com ele — o loop
+		// materializa-a no tail, logo omiti-la divergiria o prompt_hash de qualquer run com
+		// uma negação.
+		results := make([]agentruntime.CapturedToolResult, len(resp.ToolCalls))
+		for idx, inv := range resp.ToolCalls {
 			value, toolErr, denial := dispatcher.Dispatch(turn, idx)
-			tail = append(tail, agentruntime.TailFromToolResultDenied(value, toolErr, denial))
+			results[idx] = agentruntime.CapturedToolResult{Invocation: inv, Result: value, ToolError: toolErr, Denial: denial}
+		}
+		if err := dobras.turno(stepID, resp.Text, results); err != nil {
+			return ReplayResult{}, err
 		}
 
 		// (4) TERMINAÇÃO — igual ao loop: resposta final ou sem tool calls.
@@ -612,39 +644,119 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		}
 	}
 
-	res.FinalStateHash = tailHash(tail)
+	if corrente != nil {
+		res.FinalStateHash = tailHash(corrente.tail)
+	}
 	res.Fidelity = fidelity(matched, verified)
 	e.emitMarker(ctx, res)
 	return res, nil
 }
 
-// detectDivergence localiza a divergência do turno, por ordem de fundamentalidade:
-//  1. prompt_hash — os bytes materializados do prompt divergem do gravado;
-//  2. model — model_id/params/seed re-fornecidos divergem dos pinados no manifesto
+// dobra é o tail do run dobrado NUM layout, com o assembler desse layout.
+type dobra struct {
+	version string
+	asm     *agentruntime.PromptAssembler
+	tail    []agentruntime.TailSegment
+}
+
+// dobrasPorLayout são as dobras do tail de um run — uma por `assembly_version` que o log
+// gravou (AOS-489, decisão D2).
+//
+// # PORQUE UMA DOBRA POR VERSÃO, E NÃO UM TAIL COM SEGMENTOS DE VÁRIAS
+//
+// A sequência de segmentos de um turno depende do layout: a 1.4.0 regista a tool call antes do
+// resultado, a 1.3.0 não. Num log MISTO (os primeiros turnos numa versão, os seguintes
+// noutra) a pergunta é com que tail foi montado o primeiro turno da versão nova — e a resposta
+// vem de como um log misto nasce. A retoma re-hospeda o run DESDE O TURNO 1 e reproduz os
+// turnos já dados; um binário que continue um run noutro layout remonta-os TODOS nesse layout.
+// O prompt de um turno gravado na versão V foi, portanto, montado sobre um tail INTEIRO em V —
+// incluindo os turnos que o log gravou noutra versão. É isso que cada dobra reproduz: o run
+// todo dobrado em V, lido nos turnos que V gravou.
+//
+// Um log de uma só versão — o caso de todos os runs que nunca mudaram de binário a meio, e de
+// todos os que mudaram com o layout fixado no registo de retoma — tem uma dobra, e o custo é o
+// de sempre.
+type dobrasPorLayout struct {
+	ordem     []*dobra // pela ordem em que as versões aparecem no log (determinística)
+	porVersao map[string]*dobra
+}
+
+// novasDobras abre uma dobra por versão gravada, cada uma com o tail semeado como o loop o
+// semeia. As versões já foram admitidas ([admit]); um erro aqui é defesa em profundidade.
+func novasDobras(tr trajectory, spec TrajectorySpec) (*dobrasPorLayout, error) {
+	d := &dobrasPorLayout{porVersao: make(map[string]*dobra)}
+	for _, turn := range tr.turns {
+		v := tr.manifest[turn].AssemblyVersion
+		if _, ok := d.porVersao[v]; ok {
+			continue
+		}
+		asm, err := agentruntime.NewPromptAssemblerFor(v, spec.System, spec.Tools)
+		if err != nil {
+			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
+		}
+		nova := &dobra{version: v, asm: asm, tail: seedTail(spec)}
+		d.ordem = append(d.ordem, nova)
+		d.porVersao[v] = nova
+	}
+	return d, nil
+}
+
+// correccao dobra uma correcção de steer em todas as dobras.
+func (d *dobrasPorLayout) correccao(correction []byte) error {
+	for _, f := range d.ordem {
+		segs, err := agentruntime.CorrectionSegments(f.version, correction)
+		if err != nil {
+			return err
+		}
+		f.tail = append(f.tail, segs...)
+	}
+	return nil
+}
+
+// turno dobra o que um turno acrescenta ao tail em todas as dobras, cada uma na sequência do
+// seu layout.
+func (d *dobrasPorLayout) turno(stepID, text string, results []agentruntime.CapturedToolResult) error {
+	for _, f := range d.ordem {
+		segs, err := agentruntime.TurnSegments(f.version, stepID, text, results)
+		if err != nil {
+			return err
+		}
+		f.tail = append(f.tail, segs...)
+	}
+	return nil
+}
+
+// detectDivergence localiza a divergência do turno, por esta ordem:
+//  1. assembly_version — o turno foi gravado numa versão do assembler que não é a ESPERADA
+//     pela spec. Vem PRIMEIRO (AOS-489): antes vinha depois do prompt_hash, e como uma
+//     versão diferente quase sempre muda os bytes, a divergência saía como `prompt_hash` —
+//     que culpa o conteúdo — e a causa ficava escondida;
+//  2. prompt_hash — os bytes materializados do prompt (no layout que o turno gravou)
+//     divergem do gravado;
+//  3. model — model_id/params/seed re-fornecidos divergem dos pinados no manifesto
 //     (drift INVISÍVEL ao prompt_hash: o modelo não entra nos bytes do prompt);
-//  3. assembly_version — a versão do assembler re-fornecida diverge da gravada;
 //  4. step_id sequence — a derivação de step_id não reproduz o gravado.
 //
 // As comparações de modelo e de assembly são OPT-IN: só correm quando o chamador
 // re-fornece o campo esperado na [TrajectorySpec] (Model.ModelID != "" /
 // AssemblyVersion != ""). Devolve a primeira divergência encontrada ou nil.
 func (e *ReplayEngine) detectDivergence(runID string, turn int, stepID, actual string, manifest agentruntime.Manifest, spec TrajectorySpec, ident agentruntime.StepIdentity) *ReplayDivergence {
-	// (1) prompt_hash — âncora primária (bytes materializados do prompt).
+	// (1) assembly_version — a versão do CÓDIGO de montagem que o turno gravou não é a que
+	// a spec espera. Antes do prompt_hash, para a causa sair com o seu nome.
+	if spec.AssemblyVersion != "" && spec.AssemblyVersion != manifest.AssemblyVersion {
+		return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: manifest.AssemblyVersion, ActualHash: spec.AssemblyVersion, Reason: "assembly_version"}
+	}
+	// (2) prompt_hash — âncora primária (bytes materializados do prompt).
 	if actual != manifest.PromptHash {
 		return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: manifest.PromptHash, ActualHash: actual, Reason: "prompt_hash"}
 	}
-	// (2) model — model_id/params/seed pinados. INVISÍVEL ao prompt_hash: uma troca de
+	// (3) model — model_id/params/seed pinados. INVISÍVEL ao prompt_hash: uma troca de
 	// modelo/params/seed que não mexa nos bytes materializados passaria como fidelidade
 	// 1.0 se não fosse comparada aqui explicitamente contra o manifesto (ADR-010).
 	if spec.Model.ModelID != "" {
 		if exp, act := canonicalModel(manifest.Model.ModelID, manifest.Model.Params, manifest.Model.Seed), canonicalModel(spec.Model.ModelID, spec.Model.Params, spec.Model.Seed); exp != act {
 			return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: exp, ActualHash: act, Reason: "model"}
 		}
-	}
-	// (3) assembly_version — a versão do CÓDIGO de montagem (também invisível ao
-	// prompt_hash quando o layout materializado não muda entre versões).
-	if spec.AssemblyVersion != "" && spec.AssemblyVersion != manifest.AssemblyVersion {
-		return &ReplayDivergence{StepID: stepID, Turn: turn, ExpectedHash: manifest.AssemblyVersion, ActualHash: spec.AssemblyVersion, Reason: "assembly_version"}
 	}
 	// (4) step_id sequence — a derivação de step_id não reproduz o gravado.
 	if ident != nil {

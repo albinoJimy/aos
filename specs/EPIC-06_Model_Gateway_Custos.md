@@ -1074,6 +1074,35 @@ passa a ter a conversa estruturada, e este ticket projecta-a na forma nativa do 
 **Decidido pelo dono (2026-10-03, D1):** as duas fases saem numa só entrega. Para conter o risco, a
 projecção nativa é seleccionável por configuração, e o texto único continua disponível.
 
+### Medição de 2026-10-03 (autorizada pelo dono)
+
+Três pedidos ao LiteLLM de produção, de dentro da rede `aos_default`, com conteúdo inócuo e a chave
+do modelo montada só-de-leitura. **Fora da cadeia de governação do nó:** sem NHI, sem allowlist e
+sem selo `modelgw-gov`. Alias `gpt-4o-mini`, encaminhado para `openai/kimi-for-coding`.
+
+| Pedido | Forma | Resultado |
+|---|---|---|
+| 1 | `system` + `user` + `tools` | 200 em 3,2 s. `finish_reason=tool_calls`; a mensagem traz `content` vazio, `tool_calls` com id do provider (`tool_…`), **`reasoning_content`** (155 caracteres) e `provider_specific_fields`; `usage.completion_tokens_details.reasoning_tokens=33` |
+| 2a | pedido 1 + `assistant` com `tool_calls` (id cunhado `step-000001-tool-1`, `content` vazio, **sem** `reasoning_content`) + `tool` com o mesmo `tool_call_id` | 200 em 3,9 s. `finish_reason=stop`: o modelo respondeu com o conteúdo do resultado, **sem voltar a pedir a tool**. 348 tokens de entrada |
+| 2b | o mesmo, **com** o `reasoning_content` do pedido 1 no `assistant` | 200 em 5,0 s. `finish_reason=stop`, resposta equivalente. 380 tokens de entrada: os 32 a mais são o raciocínio, logo o LiteLLM entrega-o ao provider |
+
+O que fica medido:
+
+- O `reasoning_content` **chega** na resposta pelo provider genérico `openai/` do LiteLLM, e
+  **sobrevive** no pedido seguinte.
+- **Não é exigido** por este provider: o turno nativo sem ele foi aceite. Devolvê-lo é opção, não
+  obrigação, e custa os tokens do raciocínio em cada turno seguinte.
+- Um **id cunhado pelo runtime** é aceite como `tool_call_id`, desde que seja o mesmo no `assistant`
+  e no `tool`. O id do provider não é necessário.
+- `"content": ""` num `assistant` só com tool calls é aceite.
+- O conteúdo do `tool` ia num envelope JSON com `taint`; o raciocínio do modelo refere-o («tool
+  output stdout_text has untrusted taint»): a proveniência dentro da mensagem é lida.
+- O `usage` não trouxe `prompt_tokens_details` (tokens em cache) nestes pedidos, de 228 a 380 tokens.
+  Se o provider faz cache de prefixo, não ficou visível a esta escala.
+
+Limites: três pedidos, um só modelo, um só turno de tool; não mede a taxa de repetição em runs
+reais nem o comportamento com várias chamadas no mesmo turno.
+
 ### Objectivo
 
 O provider recebe a conversa em turnos nativos, derivados de forma determinística do tail; o
@@ -1082,9 +1111,10 @@ enviado continua a poder reconstruir-se a partir do registo.
 
 ### Critérios de Aceitação
 
-- [ ] **Medição prévia, antes do desenho final:** um pedido ao LiteLLM de produção com turnos
+- [x] **Medição prévia, antes do desenho final:** um pedido ao LiteLLM de produção com turnos
       nativos e tools, para saber se o `reasoning_content` chega na resposta, se é exigido no pedido
-      seguinte e se sobrevive ao proxy. O resultado fica registado neste ticket.
+      seguinte e se sobrevive ao proxy. O resultado fica registado neste ticket. *(Ver «Medição de
+      2026-10-03», abaixo.)*
 - [ ] ADR novo (projecção do tail em mensagens nativas): o `prompt_hash` é o hash do tail canónico e
       a projecção é função determinística e versionada dele; como viaja a proveniência
       (`taint`, recusas) dentro das mensagens; como se separam segmentos trusted e untrusted; o que

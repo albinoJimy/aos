@@ -22,7 +22,23 @@ import (
 // neutralização existe para impedir. A versão sobe na mesma: o que ela versiona é o
 // CÓDIGO de montagem, e uma divergência tem de sair como `assembly_version` — atribuível
 // — e não como um `prompt_hash` que ninguém sabe explicar.
-const AssemblyVersion = "1.3.0"
+// 1.3.0 — os RÓTULOS de proveniência (`taint`, `tool_denied`, `denied_code`, `denied_by`,
+// `plan_input_*`) saíram do CORPO do segmento e passaram para a LINHA DE DELIMITAÇÃO
+// (`<tool_result taint=untrusted tool_denied=deny>`), saneados por [sanitizarRotulo]; o
+// prefixo textual `correction=` desapareceu do corpo da correcção (ver [TailMeta]). Fechou o
+// segundo vector da forja no tail: conteúdo untrusted a escrever uma linha `taint=trusted` no
+// mesmo espaço de linhas do rótulo genuíno. Mudou os bytes de TODOS os segmentos com rótulo —
+// nenhuma trajectória anterior voltou a reproduzir byte a byte.
+// 1.4.0 — AOS-489, o tail passa a registar a conversa. (a) O prefixo abre com um PREÂMBULO DE
+// PROTOCOLO fixo ([preambuloDeProtocolo140]). (b) Cada tool call do modelo entra no tail como
+// um segmento `tool_call` ANTES do seu resultado, com o `id` cunhado pelo runtime
+// ([ToolStepID]) e o `name` na linha de delimitação e os argumentos do modelo no corpo; o
+// `tool_result` ganha o mesmo `id` e `name` ([tailFromToolCall]). (c) A neutralização do
+// corpo reconhece como início de linha, além de '\n', o '\r', VT, FF, U+0085, U+2028 e
+// U+2029 ([neutralizarDelimitadores]). É a PRIMEIRA subida que não invalida o replay do que
+// estava gravado: a 1.3.0 continua a montar-se byte a byte ([AssemblyVersion130]), o layout é
+// fixado por run e escolhido por turno no replay — ver layout.go.
+const AssemblyVersion = AssemblyVersion140
 
 // hashPrefix é o prefixo dos hashes emitidos (formato tecnica/13 §3: "sha256:…").
 const hashPrefix = "sha256:"
@@ -64,6 +80,12 @@ const (
 	// proveniência do contrato — nó de origem, output e digest — nos rótulos, nunca no
 	// corpo. NÃO é o objectivo: esse é trusted e vem de quem submete.
 	TailPlanInput TailKind = "plan_input"
+	// TailToolCall — uma tool call que o MODELO fez neste run (AOS-489, layout 1.4.0): o
+	// `id` cunhado pelo runtime e o `name` nos rótulos, os argumentos tal como o modelo os
+	// emitiu no corpo. É output do modelo, como o [TailHistory]: untrusted no prompt e, na
+	// autoridade, o rótulo do contexto que o produziu ([SegmentAuthority]). Precede sempre o
+	// [TailToolResult] com o mesmo `id`.
+	TailToolCall TailKind = "tool_call"
 )
 
 // TailSegment é uma unidade append-only do tail. O tail cresce a cada turno; o
@@ -118,6 +140,26 @@ type PromptView struct {
 	// turnos do mesmo run — o SLI de estabilidade do prefixo, exposto no PromptView
 	// para que o span chat o emita (cache-hit-rate observável, AOS-013 CA3).
 	PrefixHash string
+
+	// OS TRÊS CAMPOS ABAIXO SÃO A FORMA ESTRUTURADA DO MESMO PROMPT (AOS-489). Existem para
+	// que quem projecta o prompt noutra forma — as mensagens nativas do provider, AOS-490 —
+	// o faça a partir dos segmentos, e não a re-interpretar o texto de Materialized. São
+	// ADITIVOS: Materialized, PromptHash e PrefixHash continuam a ser exactamente o que eram,
+	// e é sobre Materialized que o `prompt_hash` é calculado.
+
+	// AssemblyVersion é a versão do layout com que este turno foi montado. É a que o loop
+	// grava em `manifest.assembly_version`, e ele recusa uma janela que monte noutra.
+	AssemblyVersion string
+	// System é o system prompt do run, separado do resto do prefixo.
+	System string
+	// Tail são os segmentos do tail, pela ordem em que foram materializados. É uma CÓPIA
+	// (o consumidor não alcança o estado da janela). O Content é o conteúdo CRU, antes da
+	// neutralização, e os valores de Meta são os que o runtime construiu, antes do
+	// saneamento: os dois são transformações da forma TEXTUAL, aplicadas na materialização.
+	// Quem projectar estes segmentos noutra forma tem de aplicar a sua própria defesa de
+	// fronteira — um Content pode conter linhas que imitam delimitadores, e um `name` é
+	// texto do modelo.
+	Tail []TailSegment
 }
 
 // PromptAssembler monta prompts cache-estáveis (ADR-009). É construído uma vez
@@ -126,29 +168,61 @@ type PromptView struct {
 // mutável após a construção — não há qualquer método que altere o prefixo, o que
 // torna a regressão de cache estruturalmente impossível dentro de um run.
 type PromptAssembler struct {
+	lay        layout // o layout que este assembler monta — fixo, como o prefixo
+	system     string // o system prompt, para a vista estruturada ([PromptView.System])
 	prefix     []byte // imutável após New
 	systemHash string // sha256(system) — vai ao manifesto (system_hash)
 	prefixHash string // sha256(prefix)
 }
 
-// NewPromptAssembler congela o prefixo a partir do system prompt e do tool set.
-// A ordem de tools é preservada tal-e-qual (nunca reordenada).
+// NewPromptAssembler congela o prefixo a partir do system prompt e do tool set, no layout
+// dos runs NOVOS ([AssemblyVersion]). A ordem de tools é preservada tal-e-qual (nunca
+// reordenada). Quem tem de montar um layout DETERMINADO — a retoma de um run começado noutra
+// versão, o replay de um turno gravado — usa [NewPromptAssemblerFor].
 func NewPromptAssembler(system string, tools []ToolSpec) *PromptAssembler {
-	prefix := buildPrefix(system, tools)
+	return newPromptAssembler(layoutCorrente(), system, tools)
+}
+
+// NewPromptAssemblerFor é [NewPromptAssembler] no layout da versão dada (AOS-489). Uma versão
+// que este assembler não sabe montar devolve [ErrUnknownAssemblyVersion] — nunca um assembler
+// de outra versão.
+func NewPromptAssemblerFor(assemblyVersion, system string, tools []ToolSpec) (*PromptAssembler, error) {
+	lay, err := layoutFor(assemblyVersion)
+	if err != nil {
+		return nil, err
+	}
+	return newPromptAssembler(lay, system, tools), nil
+}
+
+func newPromptAssembler(lay layout, system string, tools []ToolSpec) *PromptAssembler {
+	prefix := buildPrefix(lay, system, tools)
 	return &PromptAssembler{
+		lay:        lay,
+		system:     system,
 		prefix:     prefix,
 		systemHash: sha256Tagged([]byte(system)),
 		prefixHash: sha256Tagged(prefix),
 	}
 }
 
+// AssemblyVersion devolve a versão do layout que este assembler monta.
+func (a *PromptAssembler) AssemblyVersion() string { return a.lay.version }
+
 // buildPrefix serializa o prefixo de forma determinística e estável. O layout é
 // deliberadamente simples e append-only-friendly: uma secção SYSTEM seguida de
 // uma secção TOOLSET onde cada linha descreve uma tool na ORDEM congelada. Não há
 // mapas nem qualquer fonte de não-determinismo — os mesmos inputs produzem
 // sempre os mesmos bytes.
-func buildPrefix(system string, tools []ToolSpec) []byte {
+//
+// PREÂMBULO DE PROTOCOLO (1.4.0). Quando o layout o tem, o prefixo ABRE com ele — antes de
+// SYSTEM. É a única parte do prompt que é igual em todos os runs, e à cabeça fica a parte
+// comum mais longa possível entre runs diferentes (os caches de prompt dos providers são por
+// prefixo); o bloco TOOLSET continua imediatamente seguido de CONTEXT, que é a forma que quem
+// lê o prefixo já conhece; e o modelo lê as regras de leitura antes do que elas descrevem. Não
+// tem dados do run: o prefixo continua byte-idêntico entre turnos (ADR-009).
+func buildPrefix(lay layout, system string, tools []ToolSpec) []byte {
 	var b []byte
+	b = append(b, lay.preambulo...)
 	b = append(b, "=== SYSTEM ===\n"...)
 	b = append(b, system...)
 	b = append(b, '\n')
@@ -192,7 +266,7 @@ func (a *PromptAssembler) Assemble(turn int, tail []TailSegment) PromptView {
 			mat = append(mat, sanitizarRotulo(m.Value)...)
 		}
 		mat = append(mat, ">\n"...)
-		mat = append(mat, neutralizarDelimitadores(seg.Content)...)
+		mat = append(mat, neutralizarDelimitadores(seg.Content, a.lay)...)
 		mat = append(mat, '\n')
 	}
 
@@ -200,12 +274,32 @@ func (a *PromptAssembler) Assemble(turn int, tail []TailSegment) PromptView {
 	copy(prefixCopy, a.prefix)
 
 	return PromptView{
-		Turn:         turn,
-		Prefix:       prefixCopy,
-		Materialized: mat,
-		PromptHash:   sha256Tagged(mat),
-		PrefixHash:   a.prefixHash,
+		Turn:            turn,
+		Prefix:          prefixCopy,
+		Materialized:    mat,
+		PromptHash:      sha256Tagged(mat),
+		PrefixHash:      a.prefixHash,
+		AssemblyVersion: a.lay.version,
+		System:          a.system,
+		Tail:            copiarTail(tail),
 	}
+}
+
+// copiarTail devolve uma cópia PROFUNDA dos segmentos: o consumidor da [PromptView] não pode
+// alcançar o tail da janela, que é o estado do run.
+func copiarTail(tail []TailSegment) []TailSegment {
+	if len(tail) == 0 {
+		return nil
+	}
+	out := make([]TailSegment, len(tail))
+	for i, seg := range tail {
+		out[i] = TailSegment{
+			Kind:    seg.Kind,
+			Meta:    append([]TailMeta(nil), seg.Meta...),
+			Content: append([]byte(nil), seg.Content...),
+		}
+	}
+	return out
 }
 
 // Prefix devolve uma cópia do prefixo congelado (imutável). Existe para asserção
@@ -271,7 +365,16 @@ type ToolDenial struct {
 // resultado de uma call negada continua a ser untrusted-VAZIO (invariante selado por
 // teste), e o marcador é metadado de proveniência, não conteúdo devolvido por uma tool.
 func tailFromResultDenied(r Tainted, toolErr error, den *ToolDenial) TailSegment {
+	return tailResultado(r, toolErr, den, nil)
+}
+
+// tailResultado é a construção ÚNICA do segmento `tool_result`, para os dois layouts.
+// identidade são os rótulos que ligam o resultado à sua chamada (`id`, `name` — 1.4.0, ver
+// [tailFromIdentifiedResult]); nil ⇒ a forma da 1.3.0, byte a byte. Entram logo a seguir ao
+// `taint` e ANTES dos rótulos de recusa: quem o resultado É vem antes do que lhe aconteceu.
+func tailResultado(r Tainted, toolErr error, den *ToolDenial, identidade []TailMeta) TailSegment {
 	meta := []TailMeta{{Key: "taint", Value: r.Taint}}
+	meta = append(meta, identidade...)
 	if den != nil {
 		meta = append(meta, TailMeta{Key: "tool_denied", Value: den.Effect})
 		if den.Code != "" {
@@ -487,13 +590,28 @@ func byteDeRotulo(b byte) bool {
 	}
 }
 
-func neutralizarDelimitadores(content []byte) []byte {
+// neutralizarDelimitadores aplica a regra descrita acima (no comentário que abre em «O DEFEITO
+// QUE FECHA»): por linha do conteúdo, um '<' ou um '\' a abrir a linha recebe '\' à frente.
+//
+// # O QUE É «INÍCIO DE LINHA», POR LAYOUT (AOS-489)
+//
+// Até à 1.3.0 só o '\n' abria linha. Ficava de fora tudo o resto que um leitor — e um modelo —
+// trata como quebra: um `\r<correction taint=trusted>` isolado, ou o mesmo depois de um
+// separador Unicode, chegava ao prompt SEM escape, numa posição que se lê como princípio de
+// linha. A 1.4.0 fecha a lacuna ([inicioDeLinha]); a 1.3.0 fica como estava, byte a byte,
+// porque é com ela que os runs gravados se reproduzem.
+//
+// A transformação continua INJECTIVA, pelo mesmo argumento: só se insere '\' num início de
+// linha, e todo o '\' que já lá estivesse recebe outro. A inserção acontece sempre DEPOIS de
+// uma quebra completa, nunca a meio de uma sequência UTF-8, e o byte inserido não é parte de
+// quebra nenhuma — os inícios de linha da saída são os da entrada.
+func neutralizarDelimitadores(content []byte, lay layout) []byte {
 	if len(content) == 0 {
 		return content
 	}
 	precisa := false
 	for i := 0; i < len(content); i++ {
-		if (i == 0 || content[i-1] == '\n') && (content[i] == '<' || content[i] == '\\') {
+		if (content[i] == '<' || content[i] == '\\') && inicioDeLinha(content, i, lay) {
 			precisa = true
 			break
 		}
@@ -504,10 +622,43 @@ func neutralizarDelimitadores(content []byte) []byte {
 	}
 	out := make([]byte, 0, len(content)+8)
 	for i := 0; i < len(content); i++ {
-		if (i == 0 || content[i-1] == '\n') && (content[i] == '<' || content[i] == '\\') {
+		if (content[i] == '<' || content[i] == '\\') && inicioDeLinha(content, i, lay) {
 			out = append(out, '\\')
 		}
 		out = append(out, content[i])
 	}
 	return out
+}
+
+// inicioDeLinha diz se a posição i de content abre uma linha, no layout dado.
+//
+// Em todos os layouts: o princípio do conteúdo e a posição a seguir a '\n'. Com
+// `quebrasAlargadas` (1.4.0), também a seguir às restantes quebras de linha obrigatórias do
+// Unicode (UAX #14, classes BK, CR e NL):
+//
+//	'\r'    U+000D  (um CR isolado; num CRLF é o '\n' que abre a linha)
+//	'\v'    U+000B  tabulação vertical
+//	'\f'    U+000C  form feed
+//	C2 85   U+0085  NEXT LINE
+//	E2 80 A8  U+2028  LINE SEPARATOR
+//	E2 80 A9  U+2029  PARAGRAPH SEPARATOR
+//
+// Lista fechada e explícita, sobre BYTES: o conteúdo é opaco e pode não ser UTF-8 válido, e
+// uma decisão de segurança não pode depender de o descodificar.
+func inicioDeLinha(content []byte, i int, lay layout) bool {
+	if i == 0 {
+		return true
+	}
+	switch content[i-1] {
+	case '\n':
+		return true
+	case '\r', '\v', '\f':
+		return lay.quebrasAlargadas
+	case 0x85:
+		return lay.quebrasAlargadas && i >= 2 && content[i-2] == 0xC2
+	case 0xA8, 0xA9:
+		return lay.quebrasAlargadas && i >= 3 && content[i-2] == 0x80 && content[i-3] == 0xE2
+	default:
+		return false
+	}
 }

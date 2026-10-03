@@ -112,15 +112,20 @@ func (w *fakeWindow) Assemble(_ context.Context, turn int) PromptView {
 func (w *fakeWindow) SystemHash() string { return w.asm.SystemHash() }
 
 type fakeWindowFactory struct {
-	win    *fakeWindow
-	runID  string
-	system string
-	tools  int
+	win     *fakeWindow
+	runID   string
+	system  string
+	tools   int
+	version string
 }
 
-func (f *fakeWindowFactory) NewWindow(runID, system string, tools []ToolSpec) (WindowPort, error) {
-	f.runID, f.system, f.tools = runID, system, len(tools)
-	f.win.asm = NewPromptAssembler(system, tools)
+func (f *fakeWindowFactory) NewWindow(runID, system string, tools []ToolSpec, assemblyVersion string) (WindowPort, error) {
+	f.runID, f.system, f.tools, f.version = runID, system, len(tools), assemblyVersion
+	asm, err := NewPromptAssemblerFor(assemblyVersion, system, tools)
+	if err != nil {
+		return nil, err
+	}
+	f.win.asm = asm
 	return f.win, nil
 }
 
@@ -140,8 +145,12 @@ func TestLoop_WindowFactory_OwnsTail(t *testing.T) {
 	if ff.runID != g.RunID || ff.system != g.System || ff.tools != len(g.Tools) {
 		t.Fatalf("factory recebeu (runID=%q system=%q tools=%d), quero (%q,%q,%d)", ff.runID, ff.system, ff.tools, g.RunID, g.System, len(g.Tools))
 	}
-	// Objective (seed) + history(t1) + tool_result(t1) + history(t2).
-	want := []TailKind{TailObjective, TailHistory, TailToolResult, TailHistory}
+	if ff.version != AssemblyVersion {
+		t.Fatalf("factory recebeu o layout %q, quero o dos runs novos (%q)", ff.version, AssemblyVersion)
+	}
+	// Objective (seed) + history(t1) + tool_call(t1) + tool_result(t1) + history(t2). O
+	// `tool_call` antes do resultado é da 1.4.0 (AOS-489).
+	want := []TailKind{TailObjective, TailHistory, TailToolCall, TailToolResult, TailHistory}
 	if !kindsEqual(fw.appended, want) {
 		t.Fatalf("appends=%v, quero %v (o loop delega a posse do tail à WindowPort)", fw.appended, want)
 	}
@@ -164,7 +173,7 @@ func TestLoop_WindowFactoryError_FailClosed(t *testing.T) {
 
 type failingWindowFactory struct{ err error }
 
-func (f failingWindowFactory) NewWindow(string, string, []ToolSpec) (WindowPort, error) {
+func (f failingWindowFactory) NewWindow(string, string, []ToolSpec, string) (WindowPort, error) {
 	return nil, f.err
 }
 

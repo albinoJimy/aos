@@ -75,6 +75,17 @@ type Goal struct {
 	Inputs []PlanInput
 	// MaxTurns limita o nº de iterações (0 ⇒ [DefaultMaxTurns]).
 	MaxTurns int
+	// AssemblyVersion FIXA o layout de montagem do prompt deste run (AOS-489): o prefixo, a
+	// sequência de segmentos de cada turno e o `manifest.assembly_version` que cada turno
+	// grava. Vazio ⇒ o layout dos runs NOVOS (o do [Runtime], por omissão [AssemblyVersion]).
+	//
+	// Só quem RE-HOSPEDA um run o preenche: a retoma por aprovação e a recuperação de crash
+	// repõem aqui a versão que ficou no registo de retoma, para o run continuar no layout em
+	// que começou. Um run que mudasse de layout a meio ficava com um log misto, e os turnos
+	// já dados — que a retoma REPRODUZ desde o turno 1 — seriam remontados com outros bytes
+	// do que os gravados. Versão desconhecida ⇒ o run não arranca
+	// ([ErrUnknownAssemblyVersion]).
+	AssemblyVersion string
 
 	// ParentTraceParent é o SEED cross-fronteira da árvore de spans (AOS-077):
 	// quando este run é um sub-agente DELEGADO, transporta o traceparent W3C do span
@@ -221,8 +232,11 @@ const CodeToolOutsideRunAllowlist = referencemonitor.CodeToolOutsideRunAllowlist
 // WithCallRewriter injecta o [CallRewriter]. Default: nenhum (Call inalterada).
 func WithCallRewriter(r CallRewriter) Option { return func(rt *Runtime) { rt.callRewriter = r } }
 
-// WithAssemblyVersion sobrepõe a versão do assembler gravada no manifesto (por
-// omissão [AssemblyVersion]). Útil para testes de replay/versão.
+// WithAssemblyVersion fixa o LAYOUT de montagem dos runs que não tragam o seu
+// ([Goal.AssemblyVersion]); por omissão [AssemblyVersion]. Desde o AOS-489 a versão não é só o
+// que o manifesto grava: é o layout com que o prompt é de facto montado, pelo que tem de ser
+// uma versão que o assembler conheça — outra faz o run falhar no arranque
+// ([ErrUnknownAssemblyVersion]). Vazio ⇒ [AssemblyVersion].
 func WithAssemblyVersion(v string) Option { return func(rt *Runtime) { rt.assemblyVersion = v } }
 
 // WithMaxTurns sobrepõe o tecto de turnos por omissão.
@@ -286,12 +300,24 @@ func New(model ModelClient, rm *referencemonitor.Monitor, recorder *TurnRecorder
 
 // openWindow constrói a janela do run JÁ decorada com o rótulo de autoridade (ADR-034). É o
 // único sítio que vê a janela da fábrica; fail-closed: sem janela não há prompt a montar.
-func (rt *Runtime) openWindow(goal Goal) (*authorityWindow, error) {
-	w, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools)
+func (rt *Runtime) openWindow(goal Goal, lay layout) (*authorityWindow, error) {
+	w, err := rt.windowFactory.NewWindow(goal.RunID, goal.System, goal.Tools, lay.version)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrWindow, err)
 	}
 	return newAuthorityWindow(w), nil
+}
+
+// layoutDoRun resolve o layout em que o run fica FIXADO (AOS-489): o do [Goal], quando quem o
+// submete o traz (a retoma de um run começado noutra versão), ou o do runtime. É resolvido UMA
+// vez, antes do primeiro turno, e é o mesmo valor que dá o prefixo, a sequência de segmentos
+// e o `assembly_version` do manifesto — as três coisas não têm por onde discordar.
+func (rt *Runtime) layoutDoRun(goal Goal) (layout, error) {
+	v := goal.AssemblyVersion
+	if v == "" {
+		v = rt.assemblyVersion
+	}
+	return layoutFor(v)
 }
 
 // Titular devolve o titular dos dados do run: [Goal.Subject], ou o `Principal.NHIID` quando vazio
@@ -353,7 +379,14 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// resposta do modelo — que sai o taint da autorização de cada tool call. A janela de
 	// baixo nunca tem nome neste âmbito ([Runtime.openWindow]): um Append que a contornasse
 	// não é escrevível sem se ver.
-	win, err := rt.openWindow(goal)
+	//
+	// LAYOUT FIXADO POR RUN (AOS-489): resolvido aqui, antes de qualquer efeito, e fail-closed
+	// — um run cuja versão este assembler não conhece não chega a montar um prompt.
+	lay, err := rt.layoutDoRun(goal)
+	if err != nil {
+		return Result{}, err
+	}
+	win, err := rt.openWindow(goal, lay)
 	if err != nil {
 		return Result{}, err
 	}
@@ -448,6 +481,14 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// (1) MONTAR — prompt cache-estável (prefixo imutável + tail append-only). A
 		// janela é o dono único do assembler: um só prefix-hash por run.
 		view := win.Assemble(ctx, turn)
+		// A JANELA MONTOU NO LAYOUT DO RUN? (AOS-489) A fábrica recebe a versão, mas é uma
+		// porta: uma implementação que a ignorasse daria um prefixo de um layout com a
+		// sequência de segmentos de outro, e o manifesto gravaria uma versão que não é a dos
+		// bytes. Fail-closed, antes de o prompt chegar ao modelo.
+		if view.AssemblyVersion != lay.version {
+			return res, fmt.Errorf("%w: a janela montou o turno %d no layout %q e o run esta fixado em %q",
+				ErrWindow, turn, view.AssemblyVersion, lay.version)
+		}
 		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
 		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
 		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
@@ -508,7 +549,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
 		// Gravar o turno com o manifesto por trajectória.
-		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), stepID, turn, view, resp, producer)
+		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, stepID, turn, view, resp, producer)
 		if err != nil {
 			return res, err
 		}
@@ -517,10 +558,19 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, err
 		}
 
-		// Histórico do turno no tail append-only (o prefixo nunca muda). No PROMPT, a saída
-		// do modelo leva `taint=untrusted` — a mesma marcação de proveniência dos resultados
-		// de tool (consistência de auditoria, ADR-005). Na AUTORIDADE, herda o rótulo do
-		// contexto que a produziu ([SegmentAuthority]): não o eleva nem o baixa.
+		// O QUE O TURNO ACRESCENTA AO TAIL (o prefixo nunca muda) é decidido num só sítio —
+		// [layout.turnSegments], a MESMA função que o motor de replay usa — e acrescentado
+		// de uma vez, quando o despacho do turno acaba ([fecharTail], abaixo): o texto do
+		// modelo e, por cada tool call despachada, a chamada e o seu resultado (AOS-489).
+		// Antes do AOS-489 o texto era acrescentado aqui e cada resultado dentro do laço de
+		// despacho, e o motor espelhava essa ordem à mão. A ordem dos segmentos é a mesma; o
+		// tail só é lido no Assemble do turno seguinte, pelo que o momento do append dentro
+		// do turno não é observável.
+		//
+		// No PROMPT, a saída do modelo — texto e tool calls — leva `taint=untrusted`, a mesma
+		// marcação de proveniência dos resultados de tool (consistência de auditoria,
+		// ADR-005). Na AUTORIDADE, herda o rótulo do contexto que a produziu
+		// ([SegmentAuthority]): não o eleva nem o baixa.
 		//
 		// O QUE O ADR-034 FECHOU E O QUE NÃO FECHOU. Fechou a AUTORIZAÇÃO: uma tool call
 		// pedida depois de conteúdo untrusted entrar no tail (plan_input, tool_result,
@@ -532,14 +582,26 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// DEF-806 (eixo AOS-069), re-escopada a efeitos parametrizados por dados untrusted,
 		// com gatilho: a entrada de uma tool de efeito cujos argumentos venham de conteúdo
 		// untrusted.
-		if resp.Text != "" {
-			win.Append(tailFromHistory(resp.Text))
-		}
 
 		// (3) DESPACHAR — cada tool call PRETENDIDA via o Reference Monitor.
 		// turnCaptured acumula os resultados DESTE turno (com a invocação original)
 		// para a captura de não-determinismo (AOS-016), sem afectar res.ToolResults.
 		var turnCaptured []CapturedToolResult
+		// fecharTail acrescenta ao tail o que este turno produziu. Tem os MESMOS dois pontos
+		// de saída da captura — o fim normal do turno e a escalada —, e corre sempre ANTES
+		// dela: o tail e a captura descrevem o mesmo turno a partir do mesmo `turnCaptured`.
+		// Na escalada o run pára a seguir e esta janela não volta a ser montada (a retoma
+		// re-hospeda desde o turno 1); fecha-se o tail na mesma, para que as duas saídas
+		// deixem o mesmo estado e uma mudança futura não tenha de se lembrar da diferença.
+		//
+		// Os ARGUMENTOS que entram no `tool_call` são os de `turnCaptured[i].Invocation` — a
+		// tool call tal como o modelo a emitiu. O `Call` reescrito pelo [CallRewriter] (e a
+		// capability, o recurso e a reversibilidade que ele leva) nunca chega aqui.
+		fecharTail := func() {
+			for _, seg := range lay.turnSegments(stepID, resp.Text, turnCaptured) {
+				win.Append(seg)
+			}
+		}
 		// captureTurn é uma closure porque a captura tem DOIS pontos de saída: o fim
 		// normal do turno e a ESCALADA (AOS-021), que retorna de dentro do laço. Um run
 		// suspenso cuja retoma depende de reproduzir a trajectória TEM de ter o turno
@@ -572,12 +634,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				return res, err
 			}
 			res.ToolResults = append(res.ToolResults, out.Result)
-			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: out.Result, ToolError: out.ToolErr, Denial: out.Denial})
-			// O tail materializa a condição de erro da tool (se houver) E o facto de a
+			// O tail vai materializar a condição de erro da tool (se houver) E o facto de a
 			// call ter sido NEGADA pelo RM (rótulos sanitizados, nunca a Reason) para o
 			// modelo poder reagir em vez de reemitir a mesma call às cegas; o conteúdo
-			// mantém-se untrusted, append-only.
-			win.Append(tailFromResultDenied(out.Result, out.ToolErr, out.Denial))
+			// mantém-se untrusted, append-only. É de `turnCaptured` que [fecharTail] o tira.
+			turnCaptured = append(turnCaptured, CapturedToolResult{Invocation: inv, Result: out.Result, ToolError: out.ToolErr, Denial: out.Denial})
 
 			// ESCALADA PARA HUMANO (AOS-021) — ANTES do checkpoint da activity, e é
 			// crítico que seja antes: o cpActivity marca a activity como CONFIRMADA
@@ -598,6 +659,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 				// capturas. Sem capturar ESTE turno, o registo de retoma existe mas a
 				// trajectória está vazia e o run suspenso fica irrecuperável. Fail-closed
 				// pela mesma razão que a escalada: sem captura não há retoma possível.
+				fecharTail()
 				if err := captureTurn(); err != nil {
 					return res, err
 				}
@@ -642,6 +704,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// reconstruir a trajectória sem re-executar o modelo nem os efeitos. É
 		// ADITIVA: default no-op ⇒ AOS-013 inalterado. Corre DEPOIS do despacho
 		// (para captar os resultados das tools) e ANTES da verificação.
+		fecharTail()
 		if err := captureTurn(); err != nil {
 			return res, err
 		}
@@ -680,7 +743,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// no prompt desse turno que a correcção entra, logo é lá que o replay tem de a
 			// reconstruir para o prompt_hash bater.
 			if corr, ok := rt.steer.PendingCorrection(ctx, goal.RunID); ok {
-				win.Append(tailFromCorrection(corr))
+				for _, seg := range lay.correctionSegments(corr) {
+					win.Append(seg)
+				}
 				pendingCorrection = corr
 			} else {
 				pendingCorrection = nil
@@ -773,11 +838,14 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 }
 
 // recordTurn constrói o manifesto e grava o evento "turn.recorded".
-func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash string, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
+func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
 	manifest := Manifest{
-		PromptHash:      view.PromptHash,
-		SystemHash:      systemHash,
-		AssemblyVersion: rt.assemblyVersion,
+		PromptHash: view.PromptHash,
+		SystemHash: systemHash,
+		// O layout em que o run está FIXADO (AOS-489) — o mesmo que montou `view` (o loop
+		// verificou-o) —, e não uma constante: é por ele que o replay escolhe, turno a turno,
+		// o layout com que re-materializa.
+		AssemblyVersion: assemblyVersion,
 		Model: ModelManifest{
 			ModelID:       goal.Model.ModelID,
 			ServedModelID: resp.Model,
@@ -848,7 +916,10 @@ func (o toolOutcome) escalated() bool {
 }
 
 func (rt *Runtime) mediateToolCall(ctx context.Context, goal Goal, parentStep string, idx int, inv ToolInvocation, authority taint.Label) (toolOutcome, error) {
-	toolStep := parentStep + "-tool-" + itoa(idx+1) // step_id distinto: evento de mediação próprio
+	// step_id distinto: evento de mediação próprio. É também o `id` do `tool_call` e do
+	// `tool_result` no prompt (AOS-489) — o mesmo [ToolStepID], para que o que o modelo vê e o
+	// que o log regista falem da mesma chamada.
+	toolStep := ToolStepID(parentStep, idx)
 
 	call := referencemonitor.Call{
 		RunID:        goal.RunID,
@@ -1016,10 +1087,10 @@ func (rt *Runtime) cp(ctx context.Context, runID, stepID string, turn int, phase
 // e que o step-ledger de AOS-014, garantindo consistência checkpoint↔ledger. Só a
 // ligação do cursor é aditiva; o default no-op ignora os campos extra.
 func (rt *Runtime) cpActivity(ctx context.Context, runID, stepID string, turn, idx, total int) error {
-	confirmed := stepID + "-tool-" + itoa(idx+1)
+	confirmed := ToolStepID(stepID, idx)
 	var pending []string
-	for k := idx + 2; k <= total; k++ {
-		pending = append(pending, stepID+"-tool-"+itoa(k))
+	for k := idx + 1; k < total; k++ {
+		pending = append(pending, ToolStepID(stepID, k))
 	}
 	return rt.checkpointer.Checkpoint(ctx, Checkpoint{
 		RunID:             runID,

@@ -359,7 +359,7 @@ O envelope é o **registo**. O que o modelo vê num turno — a **projecção** 
 
 O replay é *resume-from-step* porque **cada turno grava dois eventos complementares**, ambos duráveis e ambos com o envelope de §3.1 — não porque o envelope carregue metadados de determinismo:
 
-- **`turn.recorded`** grava o `manifest` do turno no payload: `prompt_hash`, `system_hash`, `assembly_version`, `model` (`model_id`/`served_model_id`/`params`/`seed`) e as dependências pinadas (`tools[]`, `skills[]`). É a âncora de *como* o passo foi produzido.
+- **`turn.recorded`** grava o `manifest` do turno no payload: `prompt_hash`, `system_hash`, `assembly_version`, `model` (`model_id`/`served_model_id`/`params`/`seed`) e as dependências pinadas (`tools[]`, `skills[]`). É a âncora de *como* o passo foi produzido. O `assembly_version` é o layout com que o prompt **desse turno** foi montado (AOS-489): é fixado por run — um run retomado continua no layout em que começou —, o replay monta cada turno no layout que ele gravou, e uma versão que o assembler não conheça torna o replay inadmissível.
 - **`replay.captured`** grava os **inputs não-determinísticos observados**: a resposta completa do modelo, as tool calls pretendidas e o resultado de cada uma (com o seu `taint`). É a âncora de *o que* o mundo respondeu.
 
 O runtime lê estes inputs do log em vez de os regenerar, e os mesmos eventos produzem o mesmo estado. A serialização de ambos os payloads é canónica e estável (structs de ordem fixa, sem mapas), para que os mesmos inputs produzam sempre os mesmos bytes.
