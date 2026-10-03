@@ -53,6 +53,7 @@ turno** — lido antes de a resposta existir, pelo que nada do que o modelo devo
 | correcção de steer | trusted (humano autenticado pelo canal de controlo) |
 | histórico (texto do modelo) | o rótulo do contexto que o produziu |
 | `tool_call` (a tool call que o modelo fez; emenda de 2026-10-03) | o rótulo do contexto que o produziu |
+| `notice` (aviso de texto fixo do runtime; emenda de 2026-10-03) | trusted |
 | `plan_input` | untrusted |
 | `tool_result` (permit, deny ou erro) | untrusted |
 | memória | untrusted — **fail-closed** |
@@ -73,6 +74,13 @@ ponto do tail deixa a dobra igual, e a autoridade de cada turno — e portanto c
 TaintGate — é a mesma com e sem ele (`TestAOS489_ToolCallNaoMudaAAutoridade`,
 `TestAOS489_MesmasMediacoesNosDoisLayouts`). O `id` do segmento correlaciona a chamada com o
 resultado; nenhuma decisão o lê.
+
+Na mesma versão o runtime passou a acrescentar um segmento `notice` à terceira tool call idêntica de
+um run. É **trusted**: o corpo é uma constante e o único dado variável é um `id` cunhado pelo
+runtime — o modelo consegue provocar o aviso, não escrevê-lo. Não é uma correcção de steer (essa é
+de um humano autenticado) e não devolve autoridade: o join é monótono, e o aviso sai sempre a seguir
+a um `tool_result`, com o contexto já untrusted
+(`TestAOS489_AvisoNaoMudaAAutoridadeNemEForjavel`).
 
 Implementação: `SegmentAuthority`/`ContextAuthority` e a janela decorada `authorityWindow`
 (`packages/kernel/agent-runtime/context_authority.go`); o loop lê o rótulo a seguir ao `Assemble`

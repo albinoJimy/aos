@@ -54,7 +54,7 @@ sensível troca fidelidade byte-a-byte por confidencialidade, por desenho.
 2. **Re-materializa** o prompt de cada turno com o **mesmo** `PromptAssembler`, **no
    layout que o turno gravou** (`manifest.assembly_version`; uma versão desconhecida torna o
    replay inadmissível), e a **mesma** sequência de tail do loop
-   (`agentruntime.TurnSegments`, a função que o próprio loop usa), semeando o tail com `System`/`Tools`/`Objective`/
+   (`agentruntime.TailSequence`, a que o próprio loop usa), semeando o tail com `System`/`Tools`/`Objective`/
    `MemoryContext` da `TrajectorySpec`.
 3. **Compara** o `prompt_hash` re-materializado com o gravado no manifesto.
 4. **"Chama"** o modelo via um cliente de replay que devolve a resposta **registada**

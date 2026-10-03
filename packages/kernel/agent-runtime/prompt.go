@@ -33,7 +33,8 @@ import (
 // PROTOCOLO fixo ([preambuloDeProtocolo140]). (b) Cada tool call do modelo entra no tail como
 // um segmento `tool_call` ANTES do seu resultado, com o `id` cunhado pelo runtime
 // ([ToolStepID]) e o `name` na linha de delimitação e os argumentos do modelo no corpo; o
-// `tool_result` ganha o mesmo `id` e `name` ([tailFromToolCall]). (c) A neutralização do
+// `tool_result` ganha o mesmo `id` e `name` ([tailFromToolCall]); à terceira chamada idêntica do run segue-se um `notice` trusted de
+// texto fixo ([tailFromRepeatNotice]). (c) A neutralização do
 // corpo reconhece como início de linha, além de '\n', o '\r', VT, FF, U+0085, U+2028 e
 // U+2029 ([neutralizarDelimitadores]). É a PRIMEIRA subida que não invalida o replay do que
 // estava gravado: a 1.3.0 continua a montar-se byte a byte ([AssemblyVersion130]), o layout é
@@ -86,6 +87,11 @@ const (
 	// autoridade, o rótulo do contexto que o produziu ([SegmentAuthority]). Precede sempre o
 	// [TailToolResult] com o mesmo `id`.
 	TailToolCall TailKind = "tool_call"
+	// TailNotice — um aviso do RUNTIME (AOS-489, layout 1.4.0): texto fixo, trusted, que o
+	// runtime acrescenta por um facto do próprio run. Hoje há um: o de repetição, à terceira
+	// tool call idêntica ([tailFromRepeatNotice]). Não é uma [TailCorrection] — essa é de um
+	// humano autenticado —, e não é capturado: é função das tool calls do run.
+	TailNotice TailKind = "notice"
 )
 
 // TailSegment é uma unidade append-only do tail. O tail cresce a cada turno; o

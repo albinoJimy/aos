@@ -251,6 +251,9 @@ type NodeService struct {
 	// run a trabalhar».
 	vivosSaltadosAqui   atomic.Int64
 	vivosSaltadosNoutra atomic.Int64
+	// layouts conta os runs hospedados por layout de montagem do prompt (AOS-489). Um run que
+	// continua em 1.3.0 — registo de retoma antigo — deixa de ser visível só no WAL.
+	layouts *runsPorLayout
 	// varredorParado marca a paragem DEFINITIVA por incidente de integridade — distinta de
 	// «ainda não armado» e de «armado, à espera do primeiro tick». As três leem-se de maneira
 	// diferente e exigem acções diferentes.
@@ -517,6 +520,7 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
+		layouts:      novoRunsPorLayout(),
 		node:         node,
 		assigner:     assigner,
 		leases:       leases,
@@ -1106,6 +1110,15 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// sem versão e fica na dos runs novos; um run RETOMADO (aprovação ou crash-resume) chega
 	// com a do seu registo de retoma ([integration.ResumeRecord.GoalWith]) e não é tocado.
 	goal = fixarLayout(goal)
+	// O LAYOUT EM USO, À VISTA (AOS-489). Conta-se cada hospedagem pelo seu layout, e diz-se em
+	// voz alta quando NÃO é o dos runs novos: é o caso de um run começado antes desta versão e
+	// re-hospedado agora (o registo de retoma não tem o campo, ou tem o layout antigo) — o run
+	// que continua a ver o prompt sem a sua própria tool call. Sem isto só o WAL o dizia.
+	s.layouts.contar(goal.AssemblyVersion)
+	if goal.AssemblyVersion != agentruntime.AssemblyVersion {
+		s.log("run %q hospedado no layout de prompt %s, e nao no dos runs novos (%s): o layout e fixado por run e veio do registo de retoma (AOS-489) — o run continua no layout em que os seus turnos foram gravados",
+			rs.runID, goal.AssemblyVersion, agentruntime.AssemblyVersion)
+	}
 	s.persistCrashResumeRecord(ctx, goal)
 
 	res, _, err = s.node.Runtime.Run(ctx, goal, nil)

@@ -501,12 +501,19 @@ func TestAOS489_LogMistoPorTurnoReproduzSe(t *testing.T) {
 			goal := aos489Goal("run-aos489-misto")
 			guiao := aos489Guiao()
 
+			// Com uma CORRECÇÃO DE STEER no fim do turno 1: tem de ser dobrada em TODAS as
+			// dobras, e não só na da versão do turno em que foi capturada — os turnos da
+			// segunda versão foram montados sobre um tail que a tinha. Cada hospedagem tem
+			// a sua fonte, que a entrega no mesmo ponto (a retoma percorre o run de novo).
+			steer := func() agentruntime.Option {
+				return agentruntime.WithSteerSource(&onceCorrection{corr: []byte("usa o documento 'notes'")})
+			}
 			goal.AssemblyVersion, goal.MaxTurns = c.primeiro, 2
-			if _, err := b.correr(goal, guiao); !errors.Is(err, agentruntime.ErrMaxTurnsExceeded) {
+			if _, err := b.correr(goal, guiao, steer()); !errors.Is(err, agentruntime.ErrMaxTurnsExceeded) {
 				t.Fatalf("a primeira hospedagem devia parar ao fim de 2 turnos: %v", err)
 			}
 			goal.AssemblyVersion, goal.MaxTurns = c.segue, 0
-			if res, err := b.correr(goal, guiao); err != nil || !res.Terminated {
+			if res, err := b.correr(goal, guiao, steer()); err != nil || !res.Terminated {
 				t.Fatalf("a segunda hospedagem devia concluir: res=%+v err=%v", res, err)
 			}
 
@@ -650,8 +657,8 @@ func (suspendeSempre) Escalate(context.Context, agentruntime.PendingApproval) er
 // TestAOS489_OLoopEOMotorDobramOMesmoTail: o tail que o LOOP construiu — observado na janela — é o
 // tail que o MOTOR reconstrói do log, nos dois layouts e em todos os caminhos: várias chamadas no
 // turno, recusa, erro de tool, correcção de steer e ESCALADA (o loop pára a meio do turno).
-// Compara-se o estado final (kind e conteúdo de cada segmento, pela ordem) e a fidelidade dos
-// prompts intermédios.
+// Compara-se o estado final (kind, RÓTULOS e conteúdo de cada segmento, pela ordem — o
+// `tailHash` cobre os três) e a fidelidade dos prompts intermédios.
 func TestAOS489_OLoopEOMotorDobramOMesmoTail(t *testing.T) {
 	escalada := agentruntime.ToolInvocation{ToolID: "echo", Capability: "cap:risco", Input: []byte(`{"acao":"de risco"}`)}
 	echo := agentruntime.ToolInvocation{ToolID: "echo", Capability: "cap:echo", Input: []byte("antes")}
@@ -662,6 +669,7 @@ func TestAOS489_OLoopEOMotorDobramOMesmoTail(t *testing.T) {
 		steer     agentruntime.SteerSource
 		escala    bool
 		verificar int // turnos que o replay verifica
+		avisos    int // `notice` que o tail da 1.4.0 tem de ter
 	}{
 		{nome: "permit, deny, erro e tres chamadas", guiao: aos489Guiao(), verificar: 5},
 		{nome: "com correccao de steer", guiao: aos489Guiao(), steer: &onceCorrection{corr: []byte("usa o documento 'notes'")}, verificar: 5},
@@ -674,6 +682,18 @@ func TestAOS489_OLoopEOMotorDobramOMesmoTail(t *testing.T) {
 				{Text: "agora a de risco", ToolCalls: []agentruntime.ToolInvocation{echo, escalada}, Usage: agentruntime.Usage{InputTokens: 5}},
 			},
 			escala: true, verificar: 2,
+		},
+		{
+			// A mesma chamada três vezes: na 1.4.0 o tail ganha o aviso de repetição, que o
+			// motor tem de reconstruir sozinho — não é capturado. O turno 4 só bate se o fizer.
+			nome: "tres chamadas identicas (aviso de repeticao)",
+			guiao: []agentruntime.ModelResponse{
+				{ToolCalls: []agentruntime.ToolInvocation{echo}, Usage: agentruntime.Usage{InputTokens: 5}},
+				{ToolCalls: []agentruntime.ToolInvocation{echo}, Usage: agentruntime.Usage{InputTokens: 5}},
+				{ToolCalls: []agentruntime.ToolInvocation{echo, echo}, Usage: agentruntime.Usage{InputTokens: 5}},
+				{Text: "fim", Final: true, Usage: agentruntime.Usage{InputTokens: 5}},
+			},
+			verificar: 4, avisos: 1,
 		},
 	}
 	for _, c := range casos {
@@ -704,9 +724,11 @@ func TestAOS489_OLoopEOMotorDobramOMesmoTail(t *testing.T) {
 
 				// E o tail do loop tem a forma do layout: em 1.4.0 cada resultado é precedido da
 				// sua chamada; em 1.3.0 não há chamadas.
-				chamadas, resultados := 0, 0
+				chamadas, resultados, avisos := 0, 0, 0
 				for i, s := range f.janela.segs {
 					switch s.Kind {
+					case agentruntime.TailNotice:
+						avisos++
 					case agentruntime.TailToolCall:
 						chamadas++
 						if i+1 >= len(f.janela.segs) || f.janela.segs[i+1].Kind != agentruntime.TailToolResult {
@@ -722,7 +744,62 @@ func TestAOS489_OLoopEOMotorDobramOMesmoTail(t *testing.T) {
 				if quero := map[string]int{agentruntime.AssemblyVersion130: 0, agentruntime.AssemblyVersion140: resultados}[versao]; chamadas != quero {
 					t.Fatalf("layout %s: %d tool_call para %d tool_result (queria %d)", versao, chamadas, resultados, quero)
 				}
+				if quero := map[string]int{agentruntime.AssemblyVersion130: 0, agentruntime.AssemblyVersion140: c.avisos}[versao]; avisos != quero {
+					t.Fatalf("layout %s: %d aviso(s) de repeticao no tail, queria %d", versao, avisos, quero)
+				}
 			})
 		}
+	}
+}
+
+// TestAOS489_TailHashCobreOsRotulos: dois tails que só diferem num rótulo — o `id` de um
+// resultado, ou a recusa — têm fingerprints diferentes. Antes o hash só via kind e conteúdo, e a
+// paridade loop/motor não distinguia um resultado atribuído à chamada errada.
+func TestAOS489_TailHashCobreOsRotulos(t *testing.T) {
+	inv := agentruntime.ToolInvocation{ToolID: "echo", Input: []byte("x")}
+	r := agentruntime.Untrusted([]byte("r"))
+	base := []agentruntime.TailSegment{agentruntime.TailFromIdentifiedToolResult("step-000001-tool-1", "echo", r, nil, nil)}
+	outroID := []agentruntime.TailSegment{agentruntime.TailFromIdentifiedToolResult("step-000001-tool-2", "echo", r, nil, nil)}
+	negado := []agentruntime.TailSegment{agentruntime.TailFromIdentifiedToolResult("step-000001-tool-1", "echo", r, nil, &agentruntime.ToolDenial{Effect: "deny"})}
+	semRotulos := []agentruntime.TailSegment{{Kind: agentruntime.TailToolResult, Content: []byte("r")}}
+	vistos := map[string]string{}
+	for nome, tail := range map[string][]agentruntime.TailSegment{"base": base, "outro id": outroID, "negado": negado, "sem rotulos": semRotulos,
+		"chamada": {agentruntime.TailFromToolCall("step-000001-tool-1", inv)}} {
+		h := tailHash(tail)
+		if outro, colide := vistos[h]; colide {
+			t.Fatalf("%q e %q tem o mesmo fingerprint", nome, outro)
+		}
+		vistos[h] = nome
+	}
+}
+
+// steerVazio entrega UMA correcção vazia no fim do turno 1.
+type steerVazio struct{ dada bool }
+
+func (s *steerVazio) GracefulPause(context.Context, string) (bool, error) { return false, nil }
+func (s *steerVazio) PendingCorrection(context.Context, string) ([]byte, bool) {
+	if s.dada {
+		return nil, false
+	}
+	s.dada = true
+	return []byte{}, true
+}
+
+// TestAOS489_CorreccaoVaziaReproduzSe: um run com um steer VAZIO reproduz-se. Antes o loop
+// acrescentava um `<correction>` sem corpo e o motor saltava-o (a captura omite uma correcção
+// vazia): o `prompt_hash` do turno seguinte divergia. A decisão vive agora na sequência
+// partilhada — uma correcção vazia não acrescenta segmento —, nos dois layouts.
+func TestAOS489_CorreccaoVaziaReproduzSe(t *testing.T) {
+	for _, versao := range []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140} {
+		t.Run(versao, func(t *testing.T) {
+			b := novaBancada(t)
+			goal := aos489Goal("run-aos489-steer-vazio")
+			goal.AssemblyVersion = versao
+			if res, err := b.correr(goal, aos489Guiao(), agentruntime.WithSteerSource(&steerVazio{})); err != nil || !res.Terminated {
+				t.Fatalf("Run: res=%+v err=%v", res, err)
+			}
+			res, err := b.motor().Replay(context.Background(), goal.RunID, Options{Spec: aos489SpecDe(goal)})
+			exigirFiel(t, res, err, 5)
+		})
 	}
 }

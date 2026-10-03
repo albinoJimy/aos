@@ -518,13 +518,18 @@ func (m *aos262ModeloQueimador) Call(context.Context, agentruntime.PromptView) (
 // avisar sem ter onde.
 func TestAOS262_RunDoNoRealAvisaUmaVez(t *testing.T) {
 	aos262LimparEnvs(t)
-	t.Setenv("AOS_BUDGET_MAX_TOKENS", "1000")
+	// 4000 e 1800 por turno, e nao 1000 e 450 (AOS-489): as proporcoes sao as mesmas (0.45 e
+	// 0.90), mas o tecto tem de comportar a ADMISSAO do turno 2, que soma ao consumido a
+	// estimativa do prompt — e desde a 1.4.0 o prefixo abre com o preambulo de protocolo (~280
+	// tokens). Com 1000 a admissao negava o turno 2 e o aviso, que so sai no fim dele, nunca
+	// chegava a ser testado.
+	t.Setenv("AOS_BUDGET_MAX_TOKENS", "4000")
 	t.Setenv("AOS_PROGRESS_THRESHOLD", "0.80")
 
 	cfg := tnBaseConfig()
-	// 450 tokens/turno: 0.45, 0.90 — o limiar é cruzado no TURNO 2, e o turno 3 conclui (um
+	// 1800 tokens/turno: 0.45, 0.90 — o limiar é cruzado no TURNO 2, e o turno 3 conclui (um
 	// run terminal retorna ANTES do observador, pelo que o aviso do turno 2 é o único).
-	cfg.Model = &aos262ModeloQueimador{porTurno: 450, final: 3}
+	cfg.Model = &aos262ModeloQueimador{porTurno: 1800, final: 3}
 
 	var out syncBuf
 	node, err := Bootstrap(context.Background(), cfg, &out)
@@ -547,7 +552,7 @@ func TestAOS262_RunDoNoRealAvisaUmaVez(t *testing.T) {
 	if n := aos262AvisosNoLog(saida); n != 1 {
 		t.Fatalf("o run devia produzir EXACTAMENTE 1 aviso de burn-down no log do no, got %d:\n%s", n, saida)
 	}
-	for _, marcador := range []string{run, "turno 2", "900 de 1000 tokens"} {
+	for _, marcador := range []string{run, "turno 2", "3600 de 4000 tokens"} {
 		if !strings.Contains(saida, marcador) {
 			t.Errorf("a linha de aviso devia conter %q (correlacao (run,turno) e os numeros LIDOS DO LEDGER):\n%s", marcador, saida)
 		}

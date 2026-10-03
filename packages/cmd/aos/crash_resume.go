@@ -204,7 +204,8 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 
 		// (3-bis) O LAYOUT DO RUN É UM QUE ESTE BINÁRIO SABE MONTAR? (AOS-489) Um registo escrito
 		// por uma versão mais recente do nó pode fixar o run num layout de prompt que este
-		// binário não conhece (rollback). Re-hospedá-lo faria o [agentruntime.Runtime.Run] falhar
+		// binário não conhece — uma versão FUTURA. (Não cobre o rollback para um binário anterior
+		// ao AOS-489, que não lê o campo e continua em 1.3.0.) Re-hospedá-lo faria o [agentruntime.Runtime.Run] falhar
 		// fechado — e o run ficaria gravado como FALHADO. Deixa-se como órfão, declarado, para um
 		// binário que conheça o layout: é a postura deste varredor para tudo o que não consegue
 		// retomar com verdade. Continuá-lo noutro layout nunca é opção.

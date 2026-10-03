@@ -35,6 +35,9 @@ import (
 //
 //   - objectivo e correcção de steer ⇒ trusted: vêm de um humano autenticado (a submissão e o
 //     canal de controlo), nunca do modelo nem de uma tool;
+//   - notice ⇒ trusted (AOS-489): é texto FIXO do runtime — o modelo consegue provocá-lo,
+//     não escrevê-lo. Como o join é monótono não devolve autoridade a um contexto untrusted, e
+//     na prática nunca a muda: sai sempre a seguir a um `tool_result`;
 //   - histórico ⇒ producedUnder: o modelo não tem autoridade própria, só a do contexto que viu;
 //   - tool_call ⇒ producedUnder, pela MESMA razão (AOS-489): é o pedido que o modelo fez, e o
 //     modelo só tem a autoridade do contexto que viu. Não ELEVA — os argumentos são texto do
@@ -52,7 +55,7 @@ import (
 // de [ContextAuthority].
 func SegmentAuthority(kind TailKind, producedUnder taint.Label) taint.Label {
 	switch kind {
-	case TailObjective, TailCorrection:
+	case TailObjective, TailCorrection, TailNotice:
 		return taint.Trusted
 	case TailHistory, TailToolCall:
 		return producedUnder

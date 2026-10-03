@@ -58,8 +58,12 @@ var (
 	// ser aceite — a mesma escotilha fail-safe que o pendente sempre teve.
 	ErrExhaustionPromptUnanswered = errors.New("aos: run com prompt de exaustao por responder — decida em POST /runs/{id}/exhaustion (continue|abort) antes de retomar")
 	// ErrResumeLayoutDesconhecido — o run está FIXADO num layout de montagem do prompt que este
-	// binário não sabe montar (AOS-489): o registo de retoma foi escrito por uma versão mais
-	// recente do nó (o caso de um rollback do binário).
+	// binário não sabe montar (AOS-489): o registo de retoma traz uma versão que este binário
+	// não conhece — na prática, uma versão FUTURA, escrita por um nó mais recente do que este.
+	//
+	// NÃO é a protecção de um rollback para um binário ANTERIOR ao AOS-489: esse não tem esta
+	// guarda nem lê o campo, e continua em 1.3.0 um run gravado em 1.4.0 (o log fica misto, e
+	// reproduz-se). A guarda só vale daqui para a frente, entre binários que já a têm.
 	//
 	// A retoma RECUSA, e recusa ANTES de re-hospedar. Deixar seguir levaria o run até ao
 	// [agentruntime.Runtime.Run], que falha fechado na mesma — mas aí o run já saiu do balde de

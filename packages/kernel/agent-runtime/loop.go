@@ -173,6 +173,7 @@ type Runtime struct {
 	steer            SteerSource
 	breaker          LivenessBreaker        // AOS-080/081: disjuntor multi-sinal do agente vivo
 	actionObserver   ActionObserver         // AOS-251: fonte do sinal de no-progress (hash por acção mediada)
+	toolCallStats    ToolCallStats          // AOS-489: tool calls despachadas e repetidas, por turno (leitura)
 	admission        ModelAdmission         // AOS-260: admissão do TURNO DE MODELO (reserva antes, saldo depois)
 	progressObserver ProgressObserver       // AOS-262: burn-down + aviso a ~limiar (leitura, nunca decisão)
 	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
@@ -390,6 +391,8 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// A sequência de segmentos do run (AOS-489): a MESMA que o motor de replay usa.
+	sequencia := lay.novaSequencia()
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
 		DelegationChain: toStoreChain(goal.Principal.DelegationChain),
@@ -559,7 +562,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		}
 
 		// O QUE O TURNO ACRESCENTA AO TAIL (o prefixo nunca muda) é decidido num só sítio —
-		// [layout.turnSegments], a MESMA função que o motor de replay usa — e acrescentado
+		// [TailSequence.Turn], a MESMA função que o motor de replay usa — e acrescentado
 		// de uma vez, quando o despacho do turno acaba ([fecharTail], abaixo): o texto do
 		// modelo e, por cada tool call despachada, a chamada e o seu resultado (AOS-489).
 		// Antes do AOS-489 o texto era acrescentado aqui e cada resultado dentro do laço de
@@ -597,9 +600,16 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// Os ARGUMENTOS que entram no `tool_call` são os de `turnCaptured[i].Invocation` — a
 		// tool call tal como o modelo a emitiu. O `Call` reescrito pelo [CallRewriter] (e a
 		// capability, o recurso e a reversibilidade que ele leva) nunca chega aqui.
+		//
+		// Corre UMA vez por turno (a escalada retorna logo a seguir), e é isso que deixa a
+		// medição de repetições ([ToolCallStats]) sair daqui sem contar um turno duas vezes.
 		fecharTail := func() {
-			for _, seg := range lay.turnSegments(stepID, resp.Text, turnCaptured) {
+			segs, repetidas := sequencia.Turn(stepID, resp.Text, turnCaptured)
+			for _, seg := range segs {
 				win.Append(seg)
+			}
+			if rt.toolCallStats != nil && len(turnCaptured) > 0 {
+				rt.toolCallStats(goal.RunID, len(turnCaptured), repetidas)
 			}
 		}
 		// captureTurn é uma closure porque a captura tem DOIS pontos de saída: o fim
@@ -743,7 +753,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// no prompt desse turno que a correcção entra, logo é lá que o replay tem de a
 			// reconstruir para o prompt_hash bater.
 			if corr, ok := rt.steer.PendingCorrection(ctx, goal.RunID); ok {
-				for _, seg := range lay.correctionSegments(corr) {
+				for _, seg := range sequencia.Correction(corr) {
 					win.Append(seg)
 				}
 				pendingCorrection = corr

@@ -1740,8 +1740,9 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
 - [x] O prefixo ganha um preâmbulo de protocolo fixo e versionado: o que é cada segmento, que o
       resultado com o mesmo `id` responde à chamada, que uma recusa não se repete com os mesmos
       argumentos, e que conteúdo `taint=untrusted` é dados.
-      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 772
-      bytes ASCII, sem dados do run. `TestPreambuloDeProtocolo_RestricoesDoTexto` (igual à cópia
+      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 1 118
+      bytes ASCII (cerca de 280 tokens), sem dados do run. Diz também que só `objective`,
+      `correction` e `notice` são instruções, e que `memory` — que não tem rótulo — é dados. `TestPreambuloDeProtocolo_RestricoesDoTexto` (igual à cópia
       selada à mão, ASCII, nenhuma linha a abrir por `<`, sem rótulos de recusa nem `taint=trusted`,
       prefixo byte-idêntico entre turnos) e o golden `promptSelado140`.)*
 - [x] `AssemblyVersion` sobe para 1.4.0, com o golden do layout derivado à mão a cobrir o segmento
@@ -1756,9 +1757,9 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
       comentário de `AssemblyVersion` em `prompt.go`.)*
 - [x] A sequência de segmentos de um turno vive numa função única, usada pelo loop e pelo motor de
       replay, incluindo o caminho de escalada e o de várias chamadas no mesmo turno.
-      *(Evidência: `layout.turnSegments` / `TurnSegments` e `CorrectionSegments` em `layout.go`; o
-      loop chama-as em `fecharTail` (fim do turno e saída por escalada) e o motor em
-      `dobrasPorLayout`. `TestAOS489_OLoopEOMotorDobramOMesmoTail` compara o tail que o loop
+      *(Evidência: `TailSequence` (`Turn`, `Correction`) em `layout.go`; o loop usa-a em
+      `fecharTail` (fim do turno e saída por escalada) e o motor em `dobrasPorLayout`, uma por
+      dobra. `TestAOS489_OLoopEOMotorDobramOMesmoTail` compara o tail que o loop
       construiu com o estado final do motor, nos dois layouts, com três chamadas num turno, recusa,
       erro de tool, steer e escalada; `TestAOS489_EscaladaAMeioDoTurno`; `TestAOS489_SequenciaDoTurno`.)*
 - [x] **Layout por versão:** um log gravado em 1.3.0 reproduz-se com fidelidade 1.0 (teste com um
@@ -1822,8 +1823,20 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
       `WindowFactory.NewWindow`). `TestAOS489_JanelaGeridaByteIdenticaAInline_NosDoisLayouts`
       compara a vista inteira nos dois layouts; `TestWindowManagerFactory_ByteIdenticalToInline`
       continua verde.)*
-- [ ] Métrica de eficiência de trajectória em `/metrics`: tool calls repetidas (mesma tool, mesmos
+- [x] Métrica de eficiência de trajectória em `/metrics`: tool calls repetidas (mesma tool, mesmos
       argumentos) por processo, e aviso trusted no tail à terceira repetição idêntica num run.
+      *(Evidência: `aos_tool_calls_total` e `aos_tool_calls_repeated_total` no `/metrics` do nó
+      (`packages/cmd/aos/aos489_metricas.go`, `api.go`), alimentados por
+      `agentruntime.WithToolCallStats`; a contagem vive na `TailSequence` do kernel, que é quem tem
+      a história das chamadas do run. `TestAOS489_MedicaoDeRepeticoes` (permitidas e negadas, nos
+      dois layouts), `TestAOS489_MetricasDoLayoutEDasRepeticoes`. O aviso é o segmento `notice`
+      (`tailFromRepeatNotice`), à terceira chamada idêntica, uma vez por chamada, só na 1.4.0:
+      `TestAOS489_AvisoATerceiraChamadaIdentica`, `TestAOS489_AvisoNaoMudaAAutoridadeNemEForjavel`,
+      o golden `promptSelado140` e o caso «tres chamadas identicas» de
+      `TestAOS489_OLoopEOMotorDobramOMesmoTail` (o motor reconstrói-o sem captura). O layout em
+      uso também se vê: `aos_runs_hosted_total{assembly_version}` e uma linha de log quando um
+      run é hospedado fora do layout dos runs novos
+      (`TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou`).)*
 - [x] Gates: `replay` (os 12 testes pelo mesmo nome), `security`, `apex`, `lint`, `build`.
       *(Evidência: corridos localmente a 2026-10-03 sobre a árvore do ramo, todos verdes — `replay`
       («12 testes obrigatórios correram e passaram», fidelidade 100%), `security`, `apex` (piso do

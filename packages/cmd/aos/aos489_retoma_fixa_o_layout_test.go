@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -179,7 +180,17 @@ func TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou(t *testing.T) {
 				// ===== INCARNAÇÃO 2 (o binário corrente): re-hospeda o run pela via em teste.
 				inc2 := aos486Incarnar(t, store, vault, approvers, &conta)
 				t.Cleanup(func() { _ = inc2.node.Close() })
-				svc2 := aos486Servico(t, inc2.node)
+				// O serviço com o log À VISTA: o layout em uso tem de se ver sem ler o WAL.
+				registo := &syncBuf{}
+				svc2, err := NewNodeService(inc2.node, WithDeadlineSweepInterval(0), WithServiceLog(registo))
+				if err != nil {
+					t.Fatalf("NewNodeService: %v", err)
+				}
+				t.Cleanup(func() {
+					sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = svc2.Shutdown(sc)
+				})
 				switch via {
 				case "crash-resume":
 					scanned, resumed, err := svc2.ResumeInterruptedRuns(ctx)
@@ -195,6 +206,25 @@ func TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou(t *testing.T) {
 					}
 				}
 				aos486Esperar(t, svc2, runID)
+
+				// (0) O LAYOUT EM USO VÊ-SE: a hospedagem conta no layout do run, e um run que não
+				// está no layout dos runs novos é anunciado no log, com o run e o layout.
+				outro := map[string]string{agentruntime.AssemblyVersion130: agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion140: agentruntime.AssemblyVersion130}[c.layout]
+				if svc2.layouts.lido(c.layout) != 1 || svc2.layouts.lido(outro) != 0 {
+					t.Fatalf("runs hospedados por layout: %s=%d %s=%d; queria 1 e 0", c.layout, svc2.layouts.lido(c.layout), outro, svc2.layouts.lido(outro))
+				}
+				registo.mu.Lock()
+				linhas := registo.b.String()
+				registo.mu.Unlock()
+				anuncio := `run "` + runID + `" hospedado no layout de prompt 1.3.0, e nao no dos runs novos (1.4.0)`
+				if c.antigo != strings.Contains(linhas, anuncio) {
+					t.Fatalf("anuncio do layout antigo no log: presente=%v, queria %v\n%s", strings.Contains(linhas, anuncio), c.antigo, linhas)
+				}
+				// E a medição de tool calls está ligada ao runtime do nó: o run de referência
+				// despachou UMA tool call, sem repetições.
+				if d, r := ref.node.toolCalls.despachadas.Load(), ref.node.toolCalls.repetidas.Load(); d != 1 || r != 0 {
+					t.Fatalf("medicao de tool calls do no de referencia: despachadas=%d repetidas=%d; queria 1 e 0", d, r)
+				}
 
 				// (1) Os DOIS turnos estão gravados no layout em que o run começou.
 				if got, quero := aos489VersoesGravadas(t, store, runID), []string{c.layout, c.layout}; !reflect.DeepEqual(got, quero) {
@@ -354,5 +384,47 @@ func TestAOS489_FixarLayout(t *testing.T) {
 	antigo := resumeRecordFromGoal(agentruntime.Goal{RunID: "r", AssemblyVersion: agentruntime.AssemblyVersion130})
 	if antigo.AssemblyVersion != agentruntime.AssemblyVersion130 || antigo.GoalWith("cred").AssemblyVersion != agentruntime.AssemblyVersion130 {
 		t.Fatalf("o layout 1.3.0 nao sobreviveu a ida e volta pelo registo: %+v", antigo)
+	}
+}
+
+// TestAOS489_MetricasDoLayoutEDasRepeticoes: as duas famílias chegam ao `/metrics` do nó — os
+// runs hospedados por layout (vocabulário fechado: só os layouts suportados, sempre presentes) e
+// as tool calls despachadas e repetidas.
+func TestAOS489_MetricasDoLayoutEDasRepeticoes(t *testing.T) {
+	h := noComTodasAsFamilias(t)
+	corpo := metricasDe(t, h)
+	for _, quero := range []string{
+		`aos_runs_hosted_total{assembly_version="1.3.0"} 0`,
+		`aos_runs_hosted_total{assembly_version="1.4.0"} 0`,
+		"aos_tool_calls_total 0",
+		"aos_tool_calls_repeated_total 0",
+	} {
+		if !strings.Contains(corpo, quero+"\n") {
+			t.Fatalf("faltou %q no /metrics de um no acabado de arrancar:\n%s\n%s", quero, amostrasDe(corpo, "aos_runs_hosted_total"), amostrasDe(corpo, "aos_tool_calls"))
+		}
+	}
+
+	if !h.svc.layouts.contar(agentruntime.AssemblyVersion130) || !h.svc.layouts.contar(agentruntime.AssemblyVersion140) || !h.svc.layouts.contar(agentruntime.AssemblyVersion140) {
+		t.Fatal("os layouts suportados tem de contar")
+	}
+	// Um layout que o assembler não conhece NÃO vira rótulo.
+	if h.svc.layouts.contar(`9.9.9"} 1` + "\n" + `aos_ready{x="`) {
+		t.Fatal("um layout desconhecido foi contado")
+	}
+	h.node.toolCalls.observar("run-a", 5, 3)
+	h.node.toolCalls.observar("run-b", 2, 0)
+	corpo = metricasDe(t, h)
+	for _, quero := range []string{
+		`aos_runs_hosted_total{assembly_version="1.3.0"} 1`,
+		`aos_runs_hosted_total{assembly_version="1.4.0"} 2`,
+		"aos_tool_calls_total 7",
+		"aos_tool_calls_repeated_total 3",
+	} {
+		if !strings.Contains(corpo, quero+"\n") {
+			t.Fatalf("faltou %q:\n%s\n%s", quero, amostrasDe(corpo, "aos_runs_hosted_total"), amostrasDe(corpo, "aos_tool_calls"))
+		}
+	}
+	if n := strings.Count(corpo, "aos_runs_hosted_total{"); n != len(agentruntime.SupportedAssemblyVersions()) {
+		t.Fatalf("a familia tem %d amostras; queria uma por layout suportado", n)
 	}
 }

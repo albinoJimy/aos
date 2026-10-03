@@ -1981,6 +1981,35 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				"counter", float64(h.svc.vivosSaltadosAqui.Load()), `{dono="esta_replica"}`)
 			amostra("aos_orphan_live_skipped_total", `{dono="outra_replica"}`, float64(h.svc.vivosSaltadosNoutra.Load()))
 		}
+
+		// AOS-489 — O LAYOUT DO PROMPT EM USO. Uma amostra por layout que o assembler monta
+		// (vocabulário fechado), sempre presentes: o zero é um zero verdadeiro — «nenhum run
+		// hospedado nesse layout desde o arranque». Um valor a subir no layout antigo são runs
+		// retomados que continuam sem a tool call do modelo no prompt.
+		if h.svc.layouts != nil {
+			for i, v := range h.svc.layouts.versoes {
+				labels := `{assembly_version="` + v + `"}`
+				if i == 0 {
+					g("aos_runs_hosted_total",
+						"Runs HOSPEDADOS por este processo desde o arranque, por layout de montagem do prompt (AOS-489). Conta cada hospedagem: submissao, retoma e crash-resume. O layout e fixado por run; um run retomado continua no layout em que comecou, pelo que uma amostra a subir num layout anterior ao corrente sao runs antigos re-hospedados.",
+						"counter", float64(h.svc.layouts.lido(v)), labels)
+					continue
+				}
+				amostra("aos_runs_hosted_total", labels, float64(h.svc.layouts.lido(v)))
+			}
+		}
+	}
+
+	// AOS-489 — EFICIÊNCIA DE TRAJECTÓRIA. As duas séries lêem-se juntas: a taxa de repetição é
+	// repeated/total. Só saem com a medição composta (o Bootstrap compõe-a sempre); um nó sem
+	// ela não publica um zero que se leria como «nenhuma repetição».
+	if h.node != nil && h.node.toolCalls != nil {
+		g("aos_tool_calls_total",
+			"Tool calls do modelo DESPACHADAS ao Reference Monitor desde o arranque, permitidas ou negadas (AOS-489). Denominador de aos_tool_calls_repeated_total. Por processo: um run re-hospedado (retoma, crash-resume) volta a somar os turnos que reproduz.",
+			"counter", float64(h.node.toolCalls.despachadas.Load()), "")
+		g("aos_tool_calls_repeated_total",
+			"Tool calls REPETIDAS desde o arranque: a mesma tool com os mesmos argumentos (os que o modelo emitiu, em forma canonica) ja pedida antes NO MESMO RUN, permitida ou negada (AOS-489). A subir em relacao a aos_tool_calls_total, o modelo esta a refazer o que ja fez.",
+			"counter", float64(h.node.toolCalls.repetidas.Load()), "")
 	}
 
 	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.

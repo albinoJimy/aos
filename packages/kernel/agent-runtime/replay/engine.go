@@ -569,9 +569,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		// no estado reconstruído — o que faz o resume-from-step convergir com o replay
 		// completo. Runs sem steer têm LeadingCorrection vazia ⇒ tail byte-idêntico.
 		if len(capt.LeadingCorrection) > 0 {
-			if err := dobras.correccao(capt.LeadingCorrection); err != nil {
-				return ReplayResult{}, err
-			}
+			dobras.correccao(capt.LeadingCorrection)
 		}
 
 		// (1) RE-MATERIALIZAR o prompt do turno com o tail corrente, NO LAYOUT QUE O TURNO
@@ -622,7 +620,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		// reconstruir o estado do resume.
 		//
 		// A ORDEM NÃO ESTÁ ESCRITA AQUI (AOS-489). Este bloco espelhava à mão os appends de
-		// `loop.go`; agora os dois chamam [agentruntime.TurnSegments], e o motor só lhe
+		// `loop.go`; agora os dois usam a [agentruntime.TailSequence], e o motor só lhe
 		// entrega o que o loop lhe entregaria: o texto e, pela ordem de despacho, cada
 		// invocação com o desfecho REGISTADO. A negação registada vai com ele — o loop
 		// materializa-a no tail, logo omiti-la divergiria o prompt_hash de qualquer run com
@@ -632,9 +630,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			value, toolErr, denial := dispatcher.Dispatch(turn, idx)
 			results[idx] = agentruntime.CapturedToolResult{Invocation: inv, Result: value, ToolError: toolErr, Denial: denial}
 		}
-		if err := dobras.turno(stepID, resp.Text, results); err != nil {
-			return ReplayResult{}, err
-		}
+		dobras.turno(stepID, resp.Text, results)
 
 		// (4) TERMINAÇÃO — igual ao loop: resposta final ou sem tool calls.
 		if resp.Final || len(resp.ToolCalls) == 0 {
@@ -656,7 +652,10 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 type dobra struct {
 	version string
 	asm     *agentruntime.PromptAssembler
-	tail    []agentruntime.TailSegment
+	// seq é a sequência de segmentos do run neste layout — a que o loop usa. Tem o estado de
+	// que o aviso de repetição depende, refeito aqui porque a dobra percorre o run do turno 1.
+	seq  *agentruntime.TailSequence
+	tail []agentruntime.TailSegment
 }
 
 // dobrasPorLayout são as dobras do tail de um run — uma por `assembly_version` que o log
@@ -694,7 +693,11 @@ func novasDobras(tr trajectory, spec TrajectorySpec) (*dobrasPorLayout, error) {
 		if err != nil {
 			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
 		}
-		nova := &dobra{version: v, asm: asm, tail: seedTail(spec)}
+		seq, err := agentruntime.NewTailSequence(v)
+		if err != nil {
+			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
+		}
+		nova := &dobra{version: v, asm: asm, seq: seq, tail: seedTail(spec)}
 		d.ordem = append(d.ordem, nova)
 		d.porVersao[v] = nova
 	}
@@ -702,28 +705,19 @@ func novasDobras(tr trajectory, spec TrajectorySpec) (*dobrasPorLayout, error) {
 }
 
 // correccao dobra uma correcção de steer em todas as dobras.
-func (d *dobrasPorLayout) correccao(correction []byte) error {
+func (d *dobrasPorLayout) correccao(correction []byte) {
 	for _, f := range d.ordem {
-		segs, err := agentruntime.CorrectionSegments(f.version, correction)
-		if err != nil {
-			return err
-		}
-		f.tail = append(f.tail, segs...)
+		f.tail = append(f.tail, f.seq.Correction(correction)...)
 	}
-	return nil
 }
 
 // turno dobra o que um turno acrescenta ao tail em todas as dobras, cada uma na sequência do
 // seu layout.
-func (d *dobrasPorLayout) turno(stepID, text string, results []agentruntime.CapturedToolResult) error {
+func (d *dobrasPorLayout) turno(stepID, text string, results []agentruntime.CapturedToolResult) {
 	for _, f := range d.ordem {
-		segs, err := agentruntime.TurnSegments(f.version, stepID, text, results)
-		if err != nil {
-			return err
-		}
+		segs, _ := f.seq.Turn(stepID, text, results)
 		f.tail = append(f.tail, segs...)
 	}
-	return nil
 }
 
 // detectDivergence localiza a divergência do turno, por esta ordem:
@@ -864,15 +858,25 @@ func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
 }
 
 // tailHash é o fingerprint determinístico do tail (o ESTADO do run num ponto). Um
-// hash sobre kind+content de cada segmento, com separadores, imune a colisões de
-// concatenação.
+// hash sobre kind, rótulos e conteúdo de cada segmento, cada campo com o seu comprimento à
+// frente — imune a colisões de concatenação. Os RÓTULOS entram desde o AOS-489: o `id`, o
+// `name` e a recusa de um resultado são estado do run tanto quanto o corpo, e dois tails que só
+// diferissem neles davam o mesmo fingerprint.
 func tailHash(tail []agentruntime.TailSegment) string {
 	h := sha256.New()
+	campo := func(b []byte) {
+		_, _ = h.Write([]byte(strconv.Itoa(len(b))))
+		_, _ = h.Write([]byte{':'})
+		_, _ = h.Write(b)
+	}
 	for _, seg := range tail {
-		_, _ = h.Write([]byte(seg.Kind))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write(seg.Content)
-		_, _ = h.Write([]byte{0})
+		campo([]byte(seg.Kind))
+		campo([]byte(strconv.Itoa(len(seg.Meta))))
+		for _, m := range seg.Meta {
+			campo([]byte(m.Key))
+			campo([]byte(m.Value))
+		}
+		campo(seg.Content)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
