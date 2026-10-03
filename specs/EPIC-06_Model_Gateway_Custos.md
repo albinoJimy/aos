@@ -1048,6 +1048,82 @@ vir) e, antes dele, o DEF-275. O ticket tem de a criar antes de poder ligar o
 | Responsável de Segurança |  |  |  |
 | Responsável de Produto |  |  |  |
 
+## AOS-490 — O adaptador do gateway projecta o tail em mensagens nativas, com continuidade do raciocínio
+
+<!-- rtm: adrs-mencionados -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | feature |
+| Prioridade | P1: é a forma para a qual os modelos de function-calling são treinados, e a que suporta chamadas paralelas e modelos de raciocínio |
+| Estimativa | L |
+| Dependências | AOS-489 (tail estruturado na `PromptView`), AOS-278 e AOS-394 (identidade e correlação por run no adaptador), AOS-486 (oferta de tools por run) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-protocolo-tool-use-2026-10-03.md` §5, `packages/platform/model-gateway/runtime_adapter.go`, `port/port.go`, `port/normalize.go`, `packages/kernel/agent-runtime/model.go`, `replay/nondeterminism_capture.go` |
+
+### Contexto
+
+O nó envia ao modelo o prompt inteiro como uma mensagem de utilizador. O contrato do gateway já tem
+`assistant` com `tool_calls` e `tool` com `tool_call_id`, e o planeador do `aos-orq` já envia
+`system` e `user` separados pela mesma pipeline; o adaptador do nó não os usa. Com o AOS-489 o tail
+passa a ter a conversa estruturada, e este ticket projecta-a na forma nativa do provider.
+
+**Decidido pelo dono (2026-10-03, D1):** as duas fases saem numa só entrega. Para conter o risco, a
+projecção nativa é seleccionável por configuração, e o texto único continua disponível.
+
+### Objectivo
+
+O provider recebe a conversa em turnos nativos, derivados de forma determinística do tail; o
+raciocínio do modelo volta com os resultados das tools quando o provider o exige; e o que foi
+enviado continua a poder reconstruir-se a partir do registo.
+
+### Critérios de Aceitação
+
+- [ ] **Medição prévia, antes do desenho final:** um pedido ao LiteLLM de produção com turnos
+      nativos e tools, para saber se o `reasoning_content` chega na resposta, se é exigido no pedido
+      seguinte e se sobrevive ao proxy. O resultado fica registado neste ticket.
+- [ ] ADR novo (projecção do tail em mensagens nativas): o `prompt_hash` é o hash do tail canónico e
+      a projecção é função determinística e versionada dele; como viaja a proveniência
+      (`taint`, recusas) dentro das mensagens; como se separam segmentos trusted e untrusted; o que
+      se captura do raciocínio. Emenda as frases do ADR-034 e de `tecnica/` que dizem que o hash é o
+      dos bytes enviados.
+- [ ] O adaptador projecta: `system` (o `system` do run e o preâmbulo de protocolo), `user`
+      (objectivo e entradas), e por turno `assistant` com `tool_calls` e um `tool` por chamada, com
+      o `id` do tail como `tool_call_id`. Cada `tool_call` tem exactamente um `tool`, incluindo as
+      negadas, as falhadas e as que ficaram por despachar numa escalada.
+- [ ] A proveniência não se perde: o conteúdo de cada mensagem `tool` leva o `taint` e os rótulos de
+      recusa num envelope, o conteúdo continua neutralizado, e nenhum segmento untrusted é fundido
+      com um trusted no mesmo papel sem delimitação. Testes de forja pela projecção.
+- [ ] Raciocínio: o contrato do gateway e a `ModelResponse` transportam o raciocínio do turno como
+      carga opaca, byte a byte; a captura guarda-o (selado por titular, `omitempty`); a retoma e o
+      replay devolvem-no igual. `TestModelBoundaryCarriesNoAuthority` continua verde.
+- [ ] A projecção é seleccionável por configuração do nó (texto único ou nativa), declarada no
+      banner de arranque, e o modo usado fica no manifesto do turno (`omitempty`). Com o texto único
+      o pedido é byte-idêntico ao de hoje.
+- [ ] Desempenho: o gateway lê os tokens em cache do wire do provider
+      (`prompt_tokens_details.cached_tokens`) para `CacheReadTokens`; `max_tokens` e `temperature`
+      do run chegam ao pedido quando definidos; o corpo do pedido e a estimativa de admissão
+      continuam coerentes.
+- [ ] Gates: `routing`, `replay`, `security`, `apex`, `lint`, `build`, `layer-lint`.
+- [ ] Verificado em produção com o modelo vivo: o objectivo multi-nó cumpre-se com a projecção
+      nativa, sem repetições, e com a taxa de tokens em cache medida.
+
+### Fora de âmbito
+
+- Streaming, `parallel_tool_calls` e despacho paralelo de tools.
+- Blocos de raciocínio assinados (Anthropic) e itens cifrados (OpenAI Responses): o contrato fica
+  preparado para carga opaca, mas só a forma de texto por mensagem é implementada e medida.
+- A confirmação contratual do uso do `kimi-for-coding` em produção.
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1057,3 +1133,4 @@ vir) e, antes dele, o DEF-275. O ticket tem de a criar antes de poder ligar o
 | 1.2 | 2026-09-15 | AOS-394 implementado; AOS-397 aberto (retenção por run do metering) a partir da revisão adversarial | Equipa AOS |
 | 1.3 | 2026-09-16 | AOS-395 implementado; AOS-399: o nó pede a posse exclusiva do caminho do audit de governação do gateway (residual da revisão do AOS-395, fechado) | Equipa AOS |
 | 1.4 | 2026-09-21 | +AOS-421 (escada de tiers no nó): medido que NENHUM ficheiro não-teste preenche `RoutingConfig.Tiers` e que `AOS_MODEL_TIERS` não existe — o refino de roteamento, o scoring assinado e a recusa de arranque por lacuna de preço estão escritos e provados no módulo do GW, e nunca correm no binário do nó. Absorve DEF-280-NO e DEF-280-REGIAO, que são o mesmo trabalho. | Equipa AOS |
+| 1.5 | 2026-10-03 | +AOS-490: o adaptador projecta o tail em mensagens nativas, com continuidade do raciocínio | Equipa AOS |
