@@ -448,6 +448,15 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
+	// A FORMA DO PEDIDO AO MODELO (AOS-490): mensagens nativas ou texto único. O valor já foi
+	// validado em [parseModelFromEnv] (um valor desconhecido abortou o arranque); relê-se aqui
+	// só para o declarar. Amarrado ao estado composto, como as linhas vizinhas.
+	if projection, perr := parseModelProjectionFromEnv(); perr == nil {
+		for _, line := range modelProjectionBanner(cfg.Model != nil, projection) {
+			fmt.Fprintf(w, "[aos] %s\n", line)
+		}
+	}
+
 	// CANAL DE CUSTO (AOS-259): declara se o custo por turno é DERIVADO de uma tabela de
 	// preços que cobre o par (modelo, região) deste nó — e portanto flui até ao ledger que o
 	// burn-down lê — ou se o canal transporta ZERO por o par não ter preço. A distinção
@@ -2246,6 +2255,12 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if terr != nil {
 		return nil, nil, terr
 	}
+	// A FORMA DO PEDIDO AO MODELO (AOS-490). Vocabulário fechado, validado aqui pela mesma razão
+	// do tempo máximo: um valor desconhecido aborta o arranque antes de qualquer efeito.
+	projection, perr := parseModelProjectionFromEnv()
+	if perr != nil {
+		return nil, nil, perr
+	}
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
@@ -2315,7 +2330,8 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 			return nil, nil, err
 		}
 	}
-	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout)
+	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
+		modelProjectionOption(projection))
 	if err != nil {
 		return nil, nil, err
 	}

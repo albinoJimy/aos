@@ -260,20 +260,7 @@ func (a *PromptAssembler) Assemble(turn int, tail []TailSegment) PromptView {
 	// Tail append-only, na ordem fornecida (cronológica). O Content é NEUTRALIZADO —
 	// ver [neutralizarDelimitadores] — para que nenhum conteúdo consiga abrir um segmento.
 	for _, seg := range tail {
-		mat = append(mat, '<')
-		mat = append(mat, string(seg.Kind)...)
-		// Rótulos de proveniência na LINHA DE DELIMITAÇÃO — ver [TailMeta]. Os valores
-		// passam por [sanitizarRotulo] mesmo vindo todos de enumerações fechadas: a
-		// garantia tem de ser ESTRUTURAL e não uma promessa sobre os chamadores de hoje.
-		for _, m := range seg.Meta {
-			mat = append(mat, ' ')
-			mat = append(mat, sanitizarRotulo(m.Key)...)
-			mat = append(mat, '=')
-			mat = append(mat, sanitizarRotulo(m.Value)...)
-		}
-		mat = append(mat, ">\n"...)
-		mat = append(mat, neutralizarDelimitadores(seg.Content, a.lay)...)
-		mat = append(mat, '\n')
+		mat = appendSegmento(mat, seg, a.lay)
 	}
 
 	prefixCopy := make([]byte, len(a.prefix))
@@ -289,6 +276,61 @@ func (a *PromptAssembler) Assemble(turn int, tail []TailSegment) PromptView {
 		System:          a.system,
 		Tail:            copiarTail(tail),
 	}
+}
+
+// appendSegmento acrescenta a dst os bytes com que o layout materializa UM segmento: a linha de
+// delimitação (`<kind chave=valor ...>`), o corpo NEUTRALIZADO e a quebra de linha final. É a construção
+// ÚNICA — [PromptAssembler.Assemble] e [RenderTailSegment] usam-na, e por isso o que uma
+// projecção do tail escreve por segmento não tem por onde divergir do prompt materializado.
+func appendSegmento(dst []byte, seg TailSegment, lay layout) []byte {
+	dst = append(dst, '<')
+	dst = append(dst, string(seg.Kind)...)
+	// Rótulos de proveniência na LINHA DE DELIMITAÇÃO — ver [TailMeta]. Os valores passam por
+	// [sanitizarRotulo] mesmo vindo todos de enumerações fechadas: a garantia tem de ser
+	// ESTRUTURAL e não uma promessa sobre os chamadores de hoje.
+	for _, m := range seg.Meta {
+		dst = append(dst, ' ')
+		dst = append(dst, sanitizarRotulo(m.Key)...)
+		dst = append(dst, '=')
+		dst = append(dst, sanitizarRotulo(m.Value)...)
+	}
+	dst = append(dst, ">\n"...)
+	dst = append(dst, neutralizarDelimitadores(seg.Content, lay)...)
+	return append(dst, '\n')
+}
+
+// RenderTailSegment devolve os bytes com que o layout da versão dada materializa UM segmento
+// do tail — exactamente os que [PromptAssembler.Assemble] escreve por ele (AOS-490). A
+// concatenação de RenderTailSegment sobre [PromptView.Tail], pela ordem, é
+// [PromptView.Materialized] sem o [PromptView.Prefix].
+//
+// Existe para quem projecta o tail noutra forma (as mensagens nativas do provider): a linha de
+// delimitação saneada e o corpo neutralizado são a defesa de fronteira do prompt, e uma
+// projecção que os reimplementasse teria duas definições do que é inforjável. O `kind` também
+// passa pelo alfabeto dos rótulos aqui: os kinds do runtime são constantes que já lhe pertencem
+// (bytes iguais), e um kind que este assembler não conheça não consegue fechar a linha.
+//
+// Uma versão desconhecida devolve [ErrUnknownAssemblyVersion]. O resultado é uma fatia nova.
+func RenderTailSegment(assemblyVersion string, seg TailSegment) ([]byte, error) {
+	lay, err := layoutFor(assemblyVersion)
+	if err != nil {
+		return nil, err
+	}
+	seg.Kind = TailKind(sanitizarRotulo(string(seg.Kind)))
+	return appendSegmento(make([]byte, 0, len(seg.Content)+64), seg, lay), nil
+}
+
+// NeutralizeContent devolve content com a neutralização de corpo do layout da versão dada
+// ([neutralizarDelimitadores]): nenhuma linha do resultado começa por '<' sem escape. É a
+// MESMA função que materializa o corpo de um segmento, exportada para a projecção do tail
+// (AOS-490) a aplicar a texto que vai FORA de um segmento — o texto do modelo numa mensagem
+// `assistant`. Devolve sempre uma fatia nova. Versão desconhecida ⇒ [ErrUnknownAssemblyVersion].
+func NeutralizeContent(assemblyVersion string, content []byte) ([]byte, error) {
+	lay, err := layoutFor(assemblyVersion)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), neutralizarDelimitadores(content, lay)...), nil
 }
 
 // copiarTail devolve uma cópia PROFUNDA dos segmentos: o consumidor da [PromptView] não pode

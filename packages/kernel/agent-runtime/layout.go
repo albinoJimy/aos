@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	otelgenai "github.com/aos-ref/substrate/otel-genai"
@@ -169,6 +170,34 @@ const MaxToolCallArgBytes = 4 << 10
 // idempotência, nem política lêem o `id` do tail.
 func ToolStepID(parentStepID string, idx int) string {
 	return parentStepID + "-tool-" + itoa(idx+1)
+}
+
+// ToolStepParent é o inverso de [ToolStepID]: de `<passo>-tool-<n>` devolve o passo-PAI e o n
+// (a contar de 1). ok é false quando id não tem essa forma — sufixo ausente, n vazio, com sinal,
+// com zeros à esquerda, zero ou fora do alcance de um int.
+//
+// Serve a quem projecta o tail (AOS-490) para saber que tool calls pertencem ao MESMO turno do
+// modelo: as chamadas de um turno partilham o passo-pai, e o n recomeça em 1 a cada turno. O
+// `id` de um rótulo passou por [toolCallLabelID], que corta o PAI e deixa o sufixo inteiro —
+// duas chamadas do mesmo turno continuam com o mesmo pai. Como o [ToolStepID], isto
+// CORRELACIONA e não decide nada.
+func ToolStepParent(id string) (parent string, n int, ok bool) {
+	const sep = "-tool-"
+	i := strings.LastIndex(id, sep)
+	if i < 0 {
+		return "", 0, false
+	}
+	digitos := id[i+len(sep):]
+	if digitos == "" || digitos[0] == '0' || len(digitos) > 9 {
+		return "", 0, false
+	}
+	for j := 0; j < len(digitos); j++ {
+		if digitos[j] < '0' || digitos[j] > '9' {
+			return "", 0, false
+		}
+		n = n*10 + int(digitos[j]-'0')
+	}
+	return id[:i], n, true
 }
 
 // tectoDeRotulo corta s a NO MÁXIMO max bytes, sem partir um carácter UTF-8 a meio: o corte

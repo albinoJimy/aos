@@ -72,12 +72,56 @@ Há duas projecções, seleccionáveis por configuração do nó:
 
 - **Texto único:** o prompt materializado numa mensagem de utilizador. É a forma anterior, e
   continua disponível.
-- **Mensagens nativas:** `system` (o `system` do run e o protocolo), `user` (objectivo e entradas),
-  e por turno um `assistant` com `tool_calls` e um `tool` por chamada, com o `id` do tail como
-  `tool_call_id`. Cada `tool_call` tem exactamente um `tool`, incluindo as negadas, as falhadas e
-  as que ficaram por despachar numa escalada.
+- **Mensagens nativas:** `system` (o protocolo e o `system` do run), `user` (entradas e
+  objectivo), e por turno um `assistant` com `tool_calls` e um `tool` por chamada, com o `id` do
+  tail como `tool_call_id`.
 
-O modo usado fica gravado no manifesto do turno.
+**Quando se aplica a nativa.** A um turno montado no layout 1.4.0, num nó configurado em nativo
+(`AOS_MODEL_PROJECTION`, valor por omissão `native`; `text` repõe o texto único; outro valor
+recusa o arranque). Um run fixado na 1.3.0 vai sempre em texto único, byte a byte como antes: a
+1.3.0 não tem o segmento `tool_call`, e não há de onde tirar o `assistant`. Um layout futuro tem
+de ser acrescentado à projecção de forma explícita.
+
+**O protocolo nativo.** A mensagem `system` abre com um texto fixo, ASCII e versionado com a
+projecção, que adapta o preâmbulo da 1.4.0 à forma de mensagens: as mensagens `user` e `tool`
+são feitas de segmentos com uma linha de cabeçalho que só o runtime escreve; só `objective`,
+`correction` e `notice` são instruções; tudo o resto — as mensagens `tool`, `plan_input`,
+`memory`, o que levar `taint=untrusted` e o texto das mensagens `assistant` anteriores — é dados.
+O bloco TOOLSET do prefixo de texto não tem equivalente: as tools vão no campo `tools` do pedido.
+
+**O mapeamento.**
+
+- Cada segmento que não é do modelo nem resultado de tool vai numa mensagem `user`, renderizado
+  pelo kernel com a mesma linha de cabeçalho e o mesmo corpo neutralizado do texto. Segmentos
+  seguidos partilham uma mensagem, cada um com o seu cabeçalho.
+- O texto do modelo de um turno (`history`) é o `content` do `assistant`, neutralizado e sem
+  cabeçalho. Os argumentos de cada chamada vão crus em `function.arguments`; os omitidos por
+  tamanho vão como um JSON com `args_omitted_bytes` e `args_digest`. O nome da tool é levado ao
+  alfabeto que o wire aceita em `function.name`.
+- Cada `tool_result` é uma mensagem `tool` cujo conteúdo é o segmento renderizado pelo kernel.
+- Um kind que a projecção não conheça sai em `user`, com o seu cabeçalho: é lido como dados.
+
+**A regra de agrupamento por turno.** O wire exige que as mensagens `tool` de um turno venham
+todas logo a seguir ao `assistant` desse turno. O tail não tem marcador de turno; a fronteira
+deriva-se dos segmentos:
+
+- um `history` abre um turno;
+- um `tool_call` junta-se ao turno aberto se este não tem chamadas ou se as tem do mesmo
+  passo-pai (o `id` é `<passo>-tool-<n>`); senão fecha-o e abre outro;
+- um `tool_result` liga-se, pelo `id`, a uma chamada do turno aberto ainda sem resultado;
+- um `notice` com o turno aberto fica retido e sai, em `user`, depois da última mensagem `tool`
+  do turno;
+- qualquer outro segmento fecha o turno aberto.
+
+**O invariante.** Cada `tool_call` projectado tem exactamente uma mensagem `tool` com o mesmo
+`id`, logo a seguir ao seu `assistant` — incluindo as negadas, as falhadas e a escalada. Um tail
+que não o permita não produz pedido: o turno falha de forma atribuível. As chamadas que o modelo
+pediu e o loop não despachou depois de uma escalada não têm segmento no tail e não aparecem.
+
+O modo usado e a versão da projecção ficam gravados no manifesto do turno (`projection`,
+`projection_version`; ausentes = texto único). A configuração é do nó, não do run: um run
+re-hospedado depois de o nó mudar de modo segue no modo novo, e é o manifesto de cada turno que
+diz em que forma ele foi.
 
 ### 2.5 O `prompt_hash` é o hash do tail canónico
 
@@ -102,8 +146,14 @@ conteúdo:
 ### 2.7 O raciocínio do modelo é carga opaca
 
 O contrato do gateway e a resposta do modelo transportam o raciocínio do turno
-(`reasoning_content`) como texto opaco, byte a byte. A captura guarda-o, selado por titular. Na
-projecção nativa pode ser devolvido no `assistant` do turno seguinte; devolvê-lo é configurável.
+(`reasoning_content`) como texto opaco, byte a byte. A captura guarda-o, selado por titular; a
+retoma e o replay devolvem-no igual.
+
+**Não é devolvido ao provider nesta entrega; fica capturado.** Nenhum pedido o leva — a
+serialização do pedido retira-o de todas as mensagens —, e não entra no tail, no prompt, em spans
+nem em eventos em claro. Devolvê-lo custaria os seus tokens em cada turno seguinte e obrigava a
+pô-lo no tail, que é de onde a projecção sai. Sem tecto próprio: é limitado pelo corpo da
+resposta (1 MiB), como o texto do modelo, e truncá-lo quebrava a carga opaca.
 
 Medido a 2026-10-03 contra o LiteLLM de produção (alias `gpt-4o-mini` → `kimi-for-coding`): o
 raciocínio chega na resposta e sobrevive no pedido seguinte, e **não é exigido** por este provider
@@ -132,7 +182,9 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
 - Com os argumentos ao lado do código de recusa, conteúdo injectado pode sondar a fronteira da
   política argumento a argumento. A `Reason` continua fora.
 - O preâmbulo custa cerca de 280 tokens de entrada por turno na projecção de texto único (1 118
-  bytes, a 4 bytes por token).
+  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 314 (1 256 bytes).
+- A estimativa de admissão de um turno continua a fazer-se sobre o prompt materializado, também
+  quando o pedido vai em mensagens nativas.
 - O `prompt_hash` deixa de ser, na projecção nativa, o hash dos bytes enviados.
 - Um run sem tool calls grava os mesmos eventos que antes, salvo a versão e o prefixo.
 
@@ -148,3 +200,7 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
   segmento novo no replay.
 - **Chamadas paralelas, streaming, blocos de raciocínio assinados e itens cifrados:** fora desta
   decisão.
+- **Argumentos que não são JSON.** Vão crus em `function.arguments`, como o modelo os emitiu. Um
+  provider que valide esse campo recusa o pedido seguinte; não foi medido.
+- **Run sem objectivo nem entradas.** A projecção nativa dá um pedido só com `system`; se o
+  provider o aceita não foi medido.

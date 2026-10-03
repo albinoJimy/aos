@@ -77,10 +77,16 @@ func validRole(r Role) bool {
 // (ordem de campos fixa pela struct wireChatRequest) e NUNCA inclui os metadados
 // de plataforma (Principal/Region/Board). stream reflecte a intenção de
 // streaming independentemente do valor em r.Stream.
+//
+// O RACIOCÍNIO NÃO SAI (AOS-490). [Message.ReasoningContent] é retirado de todas as mensagens
+// antes de serializar — sobre uma cópia, a do chamador fica intacta. A regra vive aqui, no
+// único sítio por onde um pedido chega ao wire, e não em cada chamador: um adaptador que
+// reencaminhasse a mensagem `assistant` de uma resposta tal como a recebeu devolveria o
+// raciocínio ao provider sem que ninguém o tivesse decidido.
 func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 	w := wireChatRequest{
 		Model:       r.Model,
-		Messages:    r.Messages,
+		Messages:    semRaciocinio(r.Messages),
 		Tools:       r.Tools,
 		ToolChoice:  r.ToolChoice,
 		Stream:      stream,
@@ -89,6 +95,27 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 		MaxTokens:   r.MaxTokens,
 	}
 	return json.Marshal(w)
+}
+
+// semRaciocinio devolve as mensagens sem [Message.ReasoningContent]. Sem nenhuma mensagem com
+// raciocínio devolve a fatia recebida, sem copiar.
+func semRaciocinio(msgs []Message) []Message {
+	tem := false
+	for i := range msgs {
+		if msgs[i].ReasoningContent != "" {
+			tem = true
+			break
+		}
+	}
+	if !tem {
+		return msgs
+	}
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		out[i].ReasoningContent = ""
+	}
+	return out
 }
 
 // Normalize valida um [EmbeddingsRequest].
@@ -141,7 +168,53 @@ func UnmarshalChatResponse(data []byte) (ChatResponse, error) {
 		return ChatResponse{}, err
 	}
 	resp.Usage.Ausente = usageAusente(data)
+	resp.Usage.CacheReadTokens = cacheLidaDoWire(data, resp.Usage)
 	return resp, nil
+}
+
+// wireCachedProbe é a sonda do sítio onde o wire OpenAI reporta os tokens de prompt servidos
+// da cache de prefixo: `usage.prompt_tokens_details.cached_tokens`. É uma segunda sonda pela
+// razão da [wireUsageProbe] — só conhece o campo que lhe interessa.
+type wireCachedProbe struct {
+	Usage *struct {
+		PromptTokensDetails *struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+	} `json:"usage"`
+}
+
+// cacheLidaDoWire devolve o [Usage.CacheReadTokens] de uma resposta de chat (AOS-490).
+//
+// O DEFEITO QUE FECHA. O contrato só lia um `cache_read_tokens` de topo, que não é o campo do
+// wire OpenAI: um provider que fizesse cache de prefixo reportava-a em
+// `prompt_tokens_details.cached_tokens`, o gateway lia zero, o SLI de cache-hit-rate marcava
+// 0% e a contabilidade cobrava o prompt inteiro ao preço de input.
+//
+// A REGRA. Um `cache_read_tokens` de topo já preenchido prevalece (é a forma deste contrato).
+// Senão vale o `cached_tokens` do wire, quando positivo, com tecto em PromptTokens: os tokens
+// em cache são um SUBCONJUNTO do prompt — é sobre isso que assentam a contabilidade de custo
+// (input facturável = prompt − cache) e o SLI —, e um provider que reporte mais cache do que
+// prompt está inconsistente; não se grava uma taxa acima de 100%. Um valor negativo ou um
+// corpo sem o campo dão zero.
+func cacheLidaDoWire(data []byte, u Usage) int64 {
+	if u.CacheReadTokens != 0 {
+		return u.CacheReadTokens
+	}
+	var probe wireCachedProbe
+	if err := json.Unmarshal(data, &probe); err != nil || probe.Usage == nil || probe.Usage.PromptTokensDetails == nil {
+		return 0
+	}
+	cached := probe.Usage.PromptTokensDetails.CachedTokens
+	if cached <= 0 {
+		return 0
+	}
+	if cached > u.PromptTokens {
+		cached = u.PromptTokens
+	}
+	if cached < 0 {
+		return 0
+	}
+	return cached
 }
 
 // UnmarshalEmbeddingsResponse desserializa o wire JSON de uma resposta de

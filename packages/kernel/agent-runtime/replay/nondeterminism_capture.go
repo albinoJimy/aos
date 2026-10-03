@@ -77,6 +77,18 @@ type responseCapture struct {
 	// medido». `omitempty` mantém os bytes de um turno medido: nenhuma golden muda de digest, e
 	// uma captura antiga (sem o campo) descodifica exactamente como antes.
 	UsageAusente bool `json:"usage_ausente,omitempty"`
+	// CacheReadTokens (AOS-490): os tokens de entrada servidos da cache de prefixo do provider,
+	// subconjunto de `input_tokens`. É medição, como os outros contadores: fica em claro no
+	// resumo de consumo ([responseCapture.consumo]). `omitempty` — uma captura sem leitura de
+	// cache reportada tem os bytes de sempre.
+	CacheReadTokens int64 `json:"cache_read_tokens,omitempty"`
+	// Reasoning (AOS-490, ADR-036 §2.7) é o raciocínio do modelo neste turno, carga OPACA,
+	// byte a byte. É CONTEÚDO, como o Text: com cifra por-titular vai dentro do envelope
+	// selado e nunca fica em claro no evento ([responseCapture.consumo] não o copia); em modo
+	// sensível é redigido para uma referência, como o Text. `omitempty`: um turno sem
+	// raciocínio grava os bytes de sempre, e uma captura anterior ao campo descodifica como
+	// antes.
+	Reasoning string `json:"reasoning,omitempty"`
 }
 
 // consumo devolve SÓ a medição do turno — tokens, custo e as duas marcas que os qualificam —,
@@ -104,6 +116,7 @@ func (r responseCapture) consumo() responseCapture {
 		CostMicroUSD:     r.CostMicroUSD,
 		CustoNaoDerivado: r.CustoNaoDerivado,
 		UsageAusente:     r.UsageAusente,
+		CacheReadTokens:  r.CacheReadTokens,
 	}
 }
 
@@ -409,11 +422,17 @@ func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) respon
 		CostMicroUSD:     r.CostMicroUSD,
 		CustoNaoDerivado: r.CustoNaoDerivado,
 		// AOS-448: o mesmo critério do `turn.recorded` (turn.go, AOS-336).
-		UsageAusente: !r.Usage.Definido(),
+		UsageAusente:    !r.Usage.Definido(),
+		CacheReadTokens: r.Usage.CacheReadTokens,
+		Reasoning:       r.Reasoning,
 	}
 	if c.sensitive && rc.Text != "" {
 		// NUNCA persistir o texto do modelo em claro em modo sensível — pode ecoar PII.
 		rc.Text = redactRef([]byte(r.Text))
+	}
+	if c.sensitive && rc.Reasoning != "" {
+		// O raciocínio é texto livre do modelo sobre o mesmo material: a mesma guarda (AOS-490).
+		rc.Reasoning = redactRef([]byte(r.Reasoning))
 	}
 	for _, tc := range r.ToolCalls {
 		call := toolCallCapture{
@@ -487,9 +506,11 @@ func (r responseCapture) decode() agentruntime.ModelResponse {
 	resp := agentruntime.ModelResponse{
 		Text:             r.Text,
 		Final:            r.Final,
-		Usage:            agentruntime.Usage{InputTokens: r.InputTokens, OutputTokens: r.OutputTokens, Ausente: r.UsageAusente},
+		Usage:            agentruntime.Usage{InputTokens: r.InputTokens, OutputTokens: r.OutputTokens, CacheReadTokens: r.CacheReadTokens, Ausente: r.UsageAusente},
 		CostMicroUSD:     r.CostMicroUSD,
 		CustoNaoDerivado: r.CustoNaoDerivado,
+		// AOS-490: o raciocínio volta tal como foi capturado (carga opaca).
+		Reasoning: r.Reasoning,
 	}
 	for _, tc := range r.ToolCalls {
 		resp.ToolCalls = append(resp.ToolCalls, agentruntime.ToolInvocation{

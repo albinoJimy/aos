@@ -31,7 +31,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.1.0"
+const Version = "1.2.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -73,6 +73,17 @@ type Message struct {
 	Name       string     `json:"name,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	// ReasoningContent é o raciocínio do modelo que o provider devolve com a mensagem
+	// (`reasoning_content` do wire), como CARGA OPACA: texto, byte a byte, que o gateway não
+	// interpreta (AOS-490, ADR-036 §2.7; campo aditivo, MINOR 1.2.0).
+	//
+	// SÓ SE LÊ, NÃO SE ENVIA. Chega nas RESPOSTAS ([UnmarshalChatResponse]) e
+	// [ChatRequest.MarshalWire] retira-o de todas as mensagens de um PEDIDO, qualquer que
+	// seja o chamador: devolvê-lo ao provider custa os tokens do raciocínio em cada turno
+	// seguinte e não é exigido pelo provider medido (ticket AOS-490, «Medição de
+	// 2026-10-03»). Os blocos de raciocínio assinados e os itens cifrados de outros
+	// fornecedores não têm esta forma e ficam fora do contrato.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // FunctionDef descreve uma função disponível ao modelo. Parameters é o JSON
@@ -107,6 +118,11 @@ type Usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	TotalTokens      int64 `json:"total_tokens"`
+	// CacheReadTokens são os tokens de prompt servidos da cache de prefixo do provider — um
+	// SUBCONJUNTO de PromptTokens. No wire OpenAI o provider reporta-os em
+	// `usage.prompt_tokens_details.cached_tokens`, e é de lá que [UnmarshalChatResponse] os
+	// lê (AOS-490); o campo de topo `cache_read_tokens` é a forma própria deste contrato e,
+	// quando vem preenchido, prevalece.
 	CacheReadTokens  int64 `json:"cache_read_tokens,omitempty"`
 	CacheWriteTokens int64 `json:"cache_write_tokens,omitempty"`
 	// CostMicroUSD é o custo DERIVADO desta chamada em MICRO-USD INTEIRO (1 USD =

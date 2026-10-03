@@ -179,7 +179,11 @@ func (nodeModelAuthority) ClassAuthority(context.Context, string) ([]string, err
 // (model, region) deste nó, e é o que faz o canal de custo transportar um número derivado
 // em vez de zero. nil ⇒ sem contabilidade (zero DECLARADO no banner, nunca um preço
 // inventado) — ver model_pricing_env.go.
-func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration) (agentruntime.ModelClient, error) {
+//
+// extra são opções do adaptador RT→GW aplicadas DEPOIS das que este wiring fixa. Hoje é por
+// onde entra a projecção do pedido ([modelgateway.WithProjection], AOS-490): quem lê o ambiente
+// ([parseModelFromEnv]) decide o modo, e sem a opção o adaptador fala em texto único.
+func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration, extra ...modelgateway.RuntimeAdapterOption) (agentruntime.ModelClient, error) {
 	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
 	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
 	if verifier == nil {
@@ -313,5 +317,6 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 	if len(tools) > 0 {
 		opts = append(opts, modelgateway.WithTools(tools))
 	}
+	opts = append(opts, extra...)
 	return modelgateway.NewModelClient(gw, model, opts...), nil
 }

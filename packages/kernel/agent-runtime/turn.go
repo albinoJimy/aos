@@ -57,6 +57,14 @@ type Manifest struct {
 	Model           ModelManifest `json:"model"`
 	Tools           []PinnedDep   `json:"tools,omitempty"`
 	Skills          []PinnedDep   `json:"skills,omitempty"`
+	// Projection e ProjectionVersion dizem em que FORMA o prompt deste turno foi enviado ao
+	// provider (AOS-490, ADR-036 §2.4): ausentes ⇒ texto único (o `prompt_hash` é o hash dos
+	// bytes enviados); `native` + versão ⇒ mensagens nativas derivadas do tail por essa
+	// versão da projecção (o `prompt_hash` é o do tail canónico, e o que foi enviado
+	// reconstrói-se dele). `omitempty` é deliberado: um turno em texto único grava exactamente
+	// os bytes de antes.
+	Projection        string `json:"projection,omitempty"`
+	ProjectionVersion string `json:"projection_version,omitempty"`
 }
 
 // turnPayload é o corpo JSON do evento "turn.recorded". Contém o manifesto por
@@ -82,6 +90,10 @@ type turnPayload struct {
 	// ortogonal a UsageAusente: aqui os tokens foram medidos, só o custo em dólares não existe.
 	// `omitempty` pelo mesmo motivo: um turno com preço grava os mesmos bytes de sempre.
 	CustoNaoDerivado bool `json:"custo_nao_derivado,omitempty"`
+	// CacheReadTokens são os tokens de entrada servidos da cache de prefixo do provider
+	// (AOS-490) — um subconjunto de `input_tokens`. `omitempty`: um turno sem leitura de cache
+	// reportada grava os mesmos bytes de sempre.
+	CacheReadTokens int64 `json:"cache_read_tokens,omitempty"`
 	// ToolCallsRequested é o nº de tool calls que o modelo pediu neste turno
 	// (despachadas via RM, cada uma auditada no seu próprio evento de mediação).
 	ToolCallsRequested int `json:"tool_calls_requested"`
@@ -137,6 +149,7 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 		CostMicroUSD:       rec.CostMicroUSD,
 		UsageAusente:       !rec.Usage.Definido(),
 		CustoNaoDerivado:   rec.CustoNaoDerivado,
+		CacheReadTokens:    rec.Usage.CacheReadTokens,
 		ToolCallsRequested: rec.ToolCalls,
 		Final:              rec.Final,
 	}

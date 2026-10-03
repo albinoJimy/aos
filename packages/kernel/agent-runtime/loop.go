@@ -548,6 +548,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		}
 		res.TotalUsage.InputTokens += resp.Usage.InputTokens
 		res.TotalUsage.OutputTokens += resp.Usage.OutputTokens
+		res.TotalUsage.CacheReadTokens += resp.Usage.CacheReadTokens
 		res.TotalCostMicroUSD += resp.CostMicroUSD
 		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
@@ -864,6 +865,10 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		},
 		Tools:  pinnedDeps(goal.Tools),
 		Skills: pinnedDeps(goal.Skills),
+		// A forma em que o prompt foi ENVIADO (AOS-490): declarada por quem fez o pedido, na
+		// resposta. Vazia ⇒ texto único, e o manifesto fica com os bytes de antes.
+		Projection:        resp.Projection,
+		ProjectionVersion: resp.ProjectionVersion,
 	}
 	seq, err := rt.recorder.Record(ctx, TurnRecord{
 		RunID:            goal.RunID,

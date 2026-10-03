@@ -1106,8 +1106,19 @@ reais nem o comportamento com várias chamadas no mesmo turno.
 ### Objectivo
 
 O provider recebe a conversa em turnos nativos, derivados de forma determinística do tail; o
-raciocínio do modelo volta com os resultados das tools quando o provider o exige; e o que foi
-enviado continua a poder reconstruir-se a partir do registo.
+raciocínio do modelo é transportado e capturado como carga opaca; e o que foi enviado continua a
+poder reconstruir-se a partir do registo.
+
+### Âmbito decidido (2026-10-03, depois da medição)
+
+- **Raciocínio: capturado, não devolvido.** A medição mostrou que o provider de produção não o
+  exige. Devolvê-lo custaria os tokens do raciocínio em cada turno seguinte e obrigava a pô-lo no
+  tail. Nesta entrega o contrato e a resposta do modelo transportam-no, a captura guarda-o selado
+  por titular, e nenhum pedido o leva.
+- **`max_tokens` e `temperature` do run não vão no pedido.** Passou para «Fora de âmbito», com a
+  razão.
+- **A projecção nativa é o valor por omissão do nó** (`AOS_MODEL_PROJECTION=native`), e só se
+  aplica a runs no layout 1.4.0.
 
 ### Critérios de Aceitação
 
@@ -1120,30 +1131,65 @@ enviado continua a poder reconstruir-se a partir do registo.
       (`taint`, recusas) dentro das mensagens; como se separam segmentos trusted e untrusted; o que
       se captura do raciocínio. Emenda as frases do ADR-034 e de `tecnica/` que dizem que o hash é o
       dos bytes enviados.
-- [ ] O adaptador projecta: `system` (o `system` do run e o preâmbulo de protocolo), `user`
-      (objectivo e entradas), e por turno `assistant` com `tool_calls` e um `tool` por chamada, com
-      o `id` do tail como `tool_call_id`. Cada `tool_call` tem exactamente um `tool`, incluindo as
-      negadas, as falhadas e as que ficaram por despachar numa escalada.
-- [ ] A proveniência não se perde: o conteúdo de cada mensagem `tool` leva o `taint` e os rótulos de
-      recusa num envelope, o conteúdo continua neutralizado, e nenhum segmento untrusted é fundido
-      com um trusted no mesmo papel sem delimitação. Testes de forja pela projecção.
-- [ ] Raciocínio: o contrato do gateway e a `ModelResponse` transportam o raciocínio do turno como
-      carga opaca, byte a byte; a captura guarda-o (selado por titular, `omitempty`); a retoma e o
-      replay devolvem-no igual. `TestModelBoundaryCarriesNoAuthority` continua verde.
-- [ ] A projecção é seleccionável por configuração do nó (texto único ou nativa), declarada no
-      banner de arranque, e o modo usado fica no manifesto do turno (`omitempty`). Com o texto único
-      o pedido é byte-idêntico ao de hoje.
-- [ ] Desempenho: o gateway lê os tokens em cache do wire do provider
-      (`prompt_tokens_details.cached_tokens`) para `CacheReadTokens`; `max_tokens` e `temperature`
-      do run chegam ao pedido quando definidos; o corpo do pedido e a estimativa de admissão
-      continuam coerentes.
-- [ ] Gates: `routing`, `replay`, `security`, `apex`, `lint`, `build`, `layer-lint`.
+- [x] O adaptador projecta: `system` (o protocolo nativo e o `system` do run), `user`
+      (entradas e objectivo, cada segmento com a sua linha de cabeçalho), e por turno `assistant`
+      com `tool_calls` e um `tool` por chamada, com o `id` do tail como `tool_call_id`. Cada
+      `tool_call` do tail tem exactamente um `tool`, incluindo as negadas, as falhadas e a
+      escalada; as chamadas que o loop não chegou a despachar depois de uma escalada não têm
+      segmento no tail e não entram no `assistant`. Um tail que não o permita não produz pedido
+      (`ErrNativeProjection`). *(Evidência: `projection.go`;
+      `TestAOS490_PedidoNativo_GoldenDerivadoAMao`, `TestAOS490_Agrupamento_PorTurno`,
+      `TestAOS490_Escalada_SoAsChamadasDespachadas`, `TestAOS490_Invariante_TailInvalidoNaoSai` no
+      `model-gateway`; `TestAOS490_NoNativo_ChamadaPermitida` no nó, com o corpo dos dois pedidos
+      derivado à mão.)*
+- [x] A proveniência não se perde: o conteúdo de cada mensagem `tool` é o segmento `tool_result`
+      renderizado pelo kernel — a linha de cabeçalho com `taint`, `id`, `name` e os rótulos de
+      recusa, e o corpo neutralizado; os segmentos de uma mensagem `user` levam cada um o seu
+      cabeçalho; o texto do modelo no `assistant` é neutralizado. A projecção não tem saneamento
+      seu (`agentruntime.RenderTailSegment`, `NeutralizeContent`). *(Evidência:
+      `TestAOS490_Forja_NenhumCabecalhoNasceDeConteudo`, `TestAOS490_KindDesconhecido_EDados`,
+      `TestAOS490_Protocolo_Restricoes`; `TestAOS490_RenderTailSegment_ReproduzOMaterializado` no
+      kernel; `TestAOS490_NoNativo_RecusaPelaListaBranca` no nó.)*
+- [x] Raciocínio: o contrato do gateway (`port.Message.ReasoningContent`, contrato 1.2.0) e a
+      `ModelResponse` (`Reasoning`) transportam o raciocínio do turno como carga opaca, byte a
+      byte; a captura guarda-o (`omitempty`; dentro do conteúdo cifrado por titular no modo
+      selado, redigido no modo sensível); a retoma e o replay devolvem-no igual; **nenhum pedido
+      o leva** (`ChatRequest.MarshalWire` retira-o). `TestModelBoundaryCarriesNoAuthority`
+      continua verde. *(Evidência: `TestAOS490_Travessia_RaciocinioETokensEmCache`,
+      `TestAOS490_MarshalWire_NaoEnviaRaciocinio`, `TestAOS490_Captura_*` em `replay`,
+      `TestAOS490_Raciocinio_ForaDoPromptDosEventosEDosSpans` no kernel, e o ponto (6) de
+      `TestAOS490_NoNativo_ChamadaPermitida`.)*
+- [x] A projecção é seleccionável por configuração do nó (`AOS_MODEL_PROJECTION`: `native`, por
+      omissão, ou `text`; outro valor recusa o arranque), declarada no banner, e o modo usado
+      fica no manifesto do turno (`projection`, `projection_version`, `omitempty`). Com o texto
+      único, e para qualquer run no layout 1.3.0, o pedido é byte-idêntico ao anterior.
+      *(Evidência: `TestAOS490_Env_VocabularioFechadoEBanner`,
+      `TestAOS490_TextoUnico_ByteIdentico`, `TestAOS486_NoComGateway_SemLista_ByteIdentico` — que
+      passou a fixar `text` e mantém os bytes do commit base —,
+      `TestAOS490_RetomaECrashResumeReproduzemAsMensagens`,
+      `TestAOS490_Manifesto_ProjeccaoETokensEmCache`.)*
+- [x] Desempenho: o gateway lê os tokens em cache do wire do provider
+      (`prompt_tokens_details.cached_tokens`) para `CacheReadTokens`, e o valor chega a
+      `cache_read_tokens` do `turn.recorded`. A estimativa de admissão continua sobre o prompt
+      materializado nas duas projecções; a diferença está declarada em `tecnica/06` §5 e em
+      `integration/model_admission.go`, e não é corrigida nesta entrega. *(Evidência:
+      `TestAOS490_Resposta_RaciocinioETokensEmCacheDoWire`, `TestAOS490_TokensEmCache_Regra`, e o
+      ponto (7) de `TestAOS490_NoNativo_ChamadaPermitida`.)*
+- [x] Gates: `routing`, `replay`, `security`, `apex`, `lint`, `build`, `layer-lint`.
+      *(Evidência: corridos sobre a árvore da entrega, 2026-10-03.)*
 - [ ] Verificado em produção com o modelo vivo: o objectivo multi-nó cumpre-se com a projecção
       nativa, sem repetições, e com a taxa de tokens em cache medida.
 
 ### Fora de âmbito
 
-- Streaming, `parallel_tool_calls` e despacho paralelo de tools.
+- Streaming, `parallel_tool_calls` e despacho paralelo de tools. O caminho de streaming do
+  adaptador HTTP não lê o `reasoning_content` nem o `prompt_tokens_details`.
+- Levar `max_tokens` e `temperature` do run ao pedido. A documentação do provider de produção
+  desaconselha `temperature` e exige um `max_tokens` alto com raciocínio activo: que valores o nó
+  envia é uma decisão à parte, com medição própria.
+- Devolver o raciocínio ao provider no `assistant` do turno seguinte. Fica capturado; devolvê-lo
+  exige pô-lo no tail (é de lá que a projecção sai) e paga os seus tokens em cada turno.
+- Corrigir a estimativa de admissão para a forma nativa do pedido.
 - Blocos de raciocínio assinados (Anthropic) e itens cifrados (OpenAI Responses): o contrato fica
   preparado para carga opaca, mas só a forma de texto por mensagem é implementada e medida.
 - A confirmação contratual do uso do `kimi-for-coding` em produção.
@@ -1164,3 +1210,4 @@ enviado continua a poder reconstruir-se a partir do registo.
 | 1.3 | 2026-09-16 | AOS-395 implementado; AOS-399: o nó pede a posse exclusiva do caminho do audit de governação do gateway (residual da revisão do AOS-395, fechado) | Equipa AOS |
 | 1.4 | 2026-09-21 | +AOS-421 (escada de tiers no nó): medido que NENHUM ficheiro não-teste preenche `RoutingConfig.Tiers` e que `AOS_MODEL_TIERS` não existe — o refino de roteamento, o scoring assinado e a recusa de arranque por lacuna de preço estão escritos e provados no módulo do GW, e nunca correm no binário do nó. Absorve DEF-280-NO e DEF-280-REGIAO, que são o mesmo trabalho. | Equipa AOS |
 | 1.5 | 2026-10-03 | +AOS-490: o adaptador projecta o tail em mensagens nativas, com continuidade do raciocínio | Equipa AOS |
+| 1.6 | 2026-10-03 | AOS-490 implementado: projecção nativa seleccionável (`AOS_MODEL_PROJECTION`), raciocínio capturado e não devolvido, tokens em cache lidos do wire; parâmetros de amostragem movidos para fora de âmbito; produção por verificar | Equipa AOS |

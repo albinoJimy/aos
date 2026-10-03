@@ -664,6 +664,31 @@ Porque é que cada parâmetro tem de ser assim:
 > composta; **não os uses como referência para este servidor** — falham aqui, e falham por razão
 > legítima.
 
+### A forma do pedido ao modelo — `AOS_MODEL_PROJECTION` (AOS-490)
+
+O nó envia a conversa de um run ao modelo numa de duas formas, escolhida no `.env`:
+
+| Valor | O que o provider recebe |
+|---|---|
+| *(vazio)* ou `native` | Mensagens nativas derivadas do tail: `system` (o protocolo e o system do run), `user` (entradas e objectivo), e por turno do modelo um `assistant` com `tool_calls` e uma mensagem `tool` por chamada, com o `id` cunhado pelo runtime (`step-000001-tool-1`) |
+| `text` | O prompt materializado inteiro numa só mensagem de utilizador — a forma anterior, byte a byte |
+
+- **Outro valor recusa o arranque** (`ErrBadModelProjection`). O banner declara a forma em uso
+  numa linha `projeccao do pedido ao modelo`.
+- **A nativa só vale para runs no layout `1.4.0`.** A retoma de um run começado na `1.3.0`
+  continua em texto único, qualquer que seja o valor.
+- **Onde se vê o que foi usado:** `manifest.projection` (e `projection_version`) do
+  `turn.recorded` de cada turno. Ausente quer dizer texto único. Com a nativa, o `prompt_hash`
+  é o do tail canónico e não o dos bytes enviados.
+- **Tokens em cache:** quando o provider reporta `usage.prompt_tokens_details.cached_tokens`, o
+  valor fica em `cache_read_tokens` do `turn.recorded`.
+- **Recuo:** se o provider rejeitar a forma nativa (um `400` no primeiro turno com tool calls),
+  define `AOS_MODEL_PROJECTION=text` e recria o nó. Os runs em curso retomam em texto, e o
+  manifesto de cada turno diz em que forma foi.
+
+O `docker-compose.prod.yml` passa a variável só ao serviço do nó. O orquestrador `aos-orq` não a
+lê: o planeador dele fala com o modelo com mensagens `system` e `user` próprias.
+
 ---
 
 ## Orquestrador multi-nó (`aos-orq`)

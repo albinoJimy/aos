@@ -20,6 +20,12 @@ type ModelConfig struct {
 type Usage struct {
 	InputTokens  int64
 	OutputTokens int64
+	// CacheReadTokens são os tokens de entrada que o provider serviu da sua cache de prefixo
+	// (AOS-490). São um SUBCONJUNTO de InputTokens — a semântica do wire OpenAI
+	// (`prompt_tokens_details.cached_tokens`) e a da contabilidade de custo do gateway —, não
+	// um contador à parte. Zero quando o provider não os reporta: é medição de desempenho e
+	// não entra em nenhuma decisão do runtime (o orçamento continua sobre InputTokens).
+	CacheReadTokens int64
 
 	// Ausente marca que o turno NÃO FOI MEDIDO — o provedor respondeu e não reportou
 	// usage em que se possa confiar. É a distinção entre «o provedor disse zero» e «o
@@ -115,7 +121,30 @@ type ModelResponse struct {
 	// sabe. Vai para `manifest.model.served_model_id` do `turn.recorded`; o modelo PEDIDO
 	// continua a vir de [Goal.Model].
 	Model string
+	// Reasoning é o raciocínio que o provider devolveu com este turno (o `reasoning_content`
+	// do wire), como CARGA OPACA: o runtime não o lê, não o interpreta e não o altera
+	// (AOS-490, ADR-036 §2.7). O ÚNICO destino é a captura do turno ([TurnCapture.Response]),
+	// onde fica selado com o resto do conteúdo; a retoma e o replay devolvem-no igual. NÃO
+	// entra no tail, no prompt, em spans nem em eventos em claro, e não é devolvido ao
+	// provider. É saída do modelo, como [ModelResponse.Text]: não autoriza nada. Vazio quando
+	// o provider não o envia.
+	Reasoning string
+	// Projection é a forma em que o cliente ENVIOU o prompt deste turno ao provider, quando
+	// não foi a de sempre (AOS-490, ADR-036 §2.4): vazio ⇒ texto único — o prompt
+	// materializado numa mensagem —, que é o que qualquer cliente anterior fazia;
+	// [ProjectionNative] ⇒ mensagens nativas derivadas do tail. ProjectionVersion é a versão
+	// da função de projecção usada (vazia com o texto único). O loop grava os dois no
+	// manifesto do turno, para que o que foi enviado se reconstrua do registo: o
+	// `prompt_hash` continua a ser o do tail canónico, e não o dos bytes enviados. É um facto
+	// sobre o PEDIDO, declarado por quem o fez; não decide nada no runtime.
+	Projection        string
+	ProjectionVersion string
 }
+
+// ProjectionNative é o valor de [ModelResponse.Projection] e de `manifest.projection` para um
+// turno enviado ao provider em mensagens nativas (AOS-490). O texto único não tem valor: é a
+// ausência do campo.
+const ProjectionNative = "native"
 
 // ModelClient é a PORTA para o Model Gateway (GW). O GW real — routing,
 // rate-limit, cache de prompt no provider — é EPIC-06; aqui é uma porta mínima,

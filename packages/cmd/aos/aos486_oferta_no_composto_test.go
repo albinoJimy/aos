@@ -52,15 +52,23 @@ type aos486Upstream struct {
 	mu     sync.Mutex
 	corpos [][]byte
 	pede   string
+	// responde, quando definido, substitui o corpo da resposta (AOS-490: respostas com
+	// raciocínio e tokens em cache). Recebe se o pedido é o que leva a tool call.
+	responde func(pedeTool bool, tool string) []byte
 }
 
 func (u *aos486Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	corpo, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.corpos = append(u.corpos, corpo)
-	pede := u.pede
+	pede, responde := u.pede, u.responde
 	u.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if responde != nil {
+		// O mesmo delimitador do ramo de baixo, na forma do wire (escrito por partes).
+		_, _ = w.Write(responde(pede != "" && !strings.Contains(string(corpo), `\`+`u003ctool_result`), pede))
+		return
+	}
 	if pede != "" && !strings.Contains(string(corpo), `\u003ctool_result`) {
 		_, _ = w.Write([]byte(`{"id":"cmpl-1","object":"chat.completion","model":"gpt-4o",` +
 			`"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function",` +
@@ -110,11 +118,25 @@ type aos486No struct {
 	upstream *aos486Upstream
 	tok      string
 	execs    map[string]*int64
+	// nativo: o nó fala em mensagens nativas — o pedido não é UMA mensagem com o prompt.
+	nativo bool
 }
 
 // aos486Compor levanta o nó: execução durável sobre Event Store em disco, cifra por-titular,
 // bundle Cedar assinado, registo de tools assinado — e o cliente de modelo de [parseModelFromEnv].
+//
+// PROJECÇÃO FIXADA EM TEXTO (AOS-490). O que estes testes medem — o schema oferecido, o bloco
+// TOOLSET do prefixo e os bytes do pedido de sempre — é a projecção de texto único, e o nó passou
+// a falar em mensagens nativas por omissão. Fixam-na de forma explícita: o teste `SemLista_
+// ByteIdentico` é assim a prova de que `AOS_MODEL_PROJECTION=text` repõe o pedido anterior byte a
+// byte. A oferta de tools em projecção nativa está em aos490_projeccao_nativa_no_test.go.
 func aos486Compor(t *testing.T, tweak func(*Config)) *aos486No {
+	t.Helper()
+	return aos486ComporCom(t, "text", tweak)
+}
+
+// aos486ComporCom é [aos486Compor] com a projecção do pedido (`AOS_MODEL_PROJECTION`) dada.
+func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos486No {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -137,6 +159,7 @@ func aos486Compor(t *testing.T, tweak func(*Config)) *aos486No {
 	t.Setenv("AOS_MODEL_PRICING_PATH", "")
 	t.Setenv("AOS_MODEL_AUDIT_PATH", "")
 	t.Setenv("AOS_MODEL_EGRESS_TIMEOUT", "")
+	t.Setenv("AOS_MODEL_PROJECTION", projeccao)
 	t.Setenv("AOS_MODEL_TOOLS", writeTools(t, "["+strings.Join(specs, ",")+"]"))
 	modelo, binder, err := parseModelFromEnv(false)
 	if err != nil {
@@ -184,7 +207,7 @@ func aos486Compor(t *testing.T, tweak func(*Config)) *aos486No {
 	}
 	t.Cleanup(func() { _ = node.Close() })
 
-	n := &aos486No{node: node, upstream: up, execs: map[string]*int64{}}
+	n := &aos486No{node: node, upstream: up, execs: map[string]*int64{}, nativo: projeccao != "text"}
 	for _, nome := range aos486OrdemDoFicheiro {
 		conta := new(int64)
 		n.execs[nome] = conta
@@ -263,7 +286,11 @@ func (n *aos486No) medir(t *testing.T, runID string, desde int) aos486Medido {
 	t.Helper()
 	var m aos486Medido
 	for _, cru := range n.upstream.pedidos()[desde:] {
-		m.pedidos = append(m.pedidos, aos486LerPedido(t, cru))
+		p := aos486LerTools(t, cru)
+		if !n.nativo {
+			p.prompt = aos486LerPrompt(t, cru)
+		}
+		m.pedidos = append(m.pedidos, p)
 	}
 	var err error
 	if m.eventos, err = n.node.EventStore.Read(context.Background(), runID, 1); err != nil {
@@ -273,7 +300,8 @@ func (n *aos486No) medir(t *testing.T, runID string, desde int) aos486Medido {
 	return m
 }
 
-func aos486LerPedido(t *testing.T, cru []byte) aos486Pedido {
+// aos486LerTools lê do corpo de um pedido os schemas de tool enviados (qualquer projecção).
+func aos486LerTools(t *testing.T, cru []byte) aos486Pedido {
 	t.Helper()
 	var wire map[string]json.RawMessage
 	if err := json.Unmarshal(cru, &wire); err != nil {
@@ -295,14 +323,22 @@ func aos486LerPedido(t *testing.T, cru []byte) aos486Pedido {
 			p.tools = append(p.tools, tool.Function.Name)
 		}
 	}
-	var msgs []struct {
-		Content string `json:"content"`
-	}
-	if err := json.Unmarshal(wire["messages"], &msgs); err != nil || len(msgs) != 1 {
-		t.Fatalf("o pedido tinha de levar UMA mensagem com o prompt materializado: %v (%s)", err, cru)
-	}
-	p.prompt = msgs[0].Content
 	return p
+}
+
+// aos486LerPrompt devolve o prompt materializado de um pedido em TEXTO ÚNICO: a única mensagem.
+func aos486LerPrompt(t *testing.T, cru []byte) string {
+	t.Helper()
+	var wire struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(cru, &wire); err != nil || len(wire.Messages) != 1 || wire.Messages[0].Role != "user" {
+		t.Fatalf("o pedido tinha de levar UMA mensagem user com o prompt materializado: %v (%s)", err, cru)
+	}
+	return wire.Messages[0].Content
 }
 
 func aos486LerTurnos(t *testing.T, eventos []eventstore.Event) []aos486Turno {
