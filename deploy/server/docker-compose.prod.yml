@@ -498,6 +498,11 @@ services:
       # headers` — um provider lento tratado como avariado. Duração Go entre 1s e 30m; fora disso o
       # nó recusa arrancar (ErrBadModelEgressTimeout), em vez de seguir com o default em silêncio.
       AOS_MODEL_EGRESS_TIMEOUT: "${AOS_MODEL_EGRESS_TIMEOUT:-}"
+      # A FORMA DO PEDIDO AO MODELO (AOS-490). Vazio ⇒ `native`: mensagens nativas (system, user,
+      # assistant com tool_calls, tool) derivadas do tail. `text` repõe o prompt inteiro numa só
+      # mensagem de utilizador, a forma anterior. Outro valor ⇒ o nó recusa arrancar
+      # (ErrBadModelProjection).
+      AOS_MODEL_PROJECTION: "${AOS_MODEL_PROJECTION:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"

@@ -27,8 +27,17 @@ func TestSegmentAuthority(t *testing.T) {
 	}{
 		{TailObjective, taint.Untrusted, taint.Trusted},
 		{TailCorrection, taint.Untrusted, taint.Trusted},
+		// AOS-489: o aviso do runtime é texto fixo — trusted, como a correcção.
+		{TailNotice, taint.Untrusted, taint.Trusted},
 		{TailHistory, taint.Trusted, taint.Trusted},
 		{TailHistory, taint.Untrusted, taint.Untrusted},
+		// AOS-489: a tool call do modelo é output do modelo, como o histórico — o rótulo do
+		// contexto que a produziu, nos dois sentidos. Caso EXPLÍCITO: no `default` sairia
+		// untrusted sob um contexto trusted. Hoje isso não chegaria a um Assemble (a chamada
+		// é sempre seguida do seu resultado, que já é untrusted), mas a classificação estaria
+		// errada, e a propriedade «inserir um tool_call não muda a dobra» deixava de valer.
+		{TailToolCall, taint.Trusted, taint.Trusted},
+		{TailToolCall, taint.Untrusted, taint.Untrusted},
 		{TailPlanInput, taint.Trusted, taint.Untrusted},
 		{TailToolResult, taint.Trusted, taint.Untrusted},
 		// Memória: FAIL-CLOSED — nenhuma proveniência a eleva aqui.

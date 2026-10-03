@@ -49,7 +49,9 @@ func TestAOS414_SemPayloadsOPromptNaoMuda(t *testing.T) {
 	if _, err := New(semInputs, h.rm, h.recorder).Run(context.Background(), aos414Goal()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if bytes.Contains(semInputs.views[0], []byte("plan_input")) {
+	// Procura-se o DELIMITADOR do segmento, e nao a palavra: desde a 1.4.0 (AOS-489) o preambulo
+	// de protocolo do prefixo nomeia os kinds, `plan_input` incluido, em todos os prompts.
+	if bytes.Contains(semInputs.views[0], []byte("<"+string(TailPlanInput))) {
 		t.Fatalf("um run sem payloads não pode trazer o segmento:\n%s", semInputs.views[0])
 	}
 }

@@ -896,7 +896,12 @@ func TestAOS457OArranqueAbortadoNaoPrendeNemAnuncia(t *testing.T) {
 // Aqui a quota é a que o Bootstrap compõe, e o run liquida pelo ledger de turnos real.
 func TestAOS457OBootstrapLiquidaPeloLedgerReal(t *testing.T) {
 	limparAmbienteDaQuota(t)
-	t.Setenv("AOS_BUDGET_MAX_TOKENS", "100")
+	// 500, e nao 100 (AOS-489): o tecto por-run tem de comportar o prompt do turno, e desde a
+	// 1.4.0 o prefixo abre com o preambulo de protocolo (~770 bytes). Com 100 a admissao negava o
+	// unico turno e o run liquidava a zero — o teste media a exaustao, e nao a liquidacao pelo
+	// ledger. O que ele prova nao depende do valor: e a quota do Bootstrap a liquidar pelo ledger
+	// real de turnos (2 tokens).
+	t.Setenv("AOS_BUDGET_MAX_TOKENS", "500")
 	t.Setenv("AOS_BUDGET_PRINCIPAL_MAX_TOKENS", "1000")
 	t.Setenv("AOS_BUDGET_PRINCIPAL_PLAN_TOKENS", "10")
 	node := newSovOIDCNode(t, &countingModel{}, newSovTestIDP(t))

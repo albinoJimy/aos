@@ -62,6 +62,34 @@ type ResumeRecord struct {
 	MemoryContext     []byte
 	MaxTurns          int
 	ParentTraceParent string
+	// AssemblyVersion é o LAYOUT de montagem do prompt em que o run está fixado (AOS-489,
+	// [agentruntime.Goal.AssemblyVersion]). Tem de sobreviver à retoma: a retoma re-hospeda o
+	// run desde o turno 1 e REPRODUZ os turnos já dados, pelo que um run continuado noutro
+	// layout remontaria esses turnos com outros bytes e ficaria com um log misto.
+	//
+	// AUSENTE ⇒ 1.3.0, e não «o layout corrente». Um registo sem o campo foi escrito por um
+	// binário anterior ao AOS-489, e esses só montavam um layout — o que hoje se chama 1.3.0
+	// ([ResumeRecordLegacyAssemblyVersion]). Ler a ausência como «corrente» faria todos os
+	// runs suspensos antes do deploy continuarem em 1.4.0. Quem lê o layout pergunta-o a
+	// [ResumeRecord.LayoutDoRun] (é o que o [ResumeRecord.GoalWith] faz), e a escrita do nó
+	// grava-o sempre — um registo novo nunca depende desta regra.
+	//
+	// `omitempty` porque um registo construído sem o campo (os de antes) re-serializa sem
+	// ele; a chave é o nome do campo, como nos irmãos.
+	AssemblyVersion string `json:"AssemblyVersion,omitempty"`
+}
+
+// ResumeRecordLegacyAssemblyVersion é o layout de um registo de retoma que NÃO traz
+// `AssemblyVersion`: o dos binários anteriores ao AOS-489, que só montavam a 1.3.0.
+const ResumeRecordLegacyAssemblyVersion = agentruntime.AssemblyVersion130
+
+// LayoutDoRun devolve a versão de layout em que o run do registo está fixado: a gravada, ou
+// [ResumeRecordLegacyAssemblyVersion] quando o registo é anterior ao campo. Nunca vazio.
+func (r ResumeRecord) LayoutDoRun() string {
+	if r.AssemblyVersion == "" {
+		return ResumeRecordLegacyAssemblyVersion
+	}
+	return r.AssemblyVersion
 }
 
 // GoalWith reconstrói o [agentruntime.Goal] com a credencial FRESCA fornecida na retoma.
@@ -83,6 +111,9 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		MemoryContext:     r.MemoryContext,
 		MaxTurns:          r.MaxTurns,
 		ParentTraceParent: r.ParentTraceParent,
+		// AOS-489: o run continua no layout em que começou. Nunca vazio — um Goal de retoma
+		// com a versão vazia cairia no layout dos runs NOVOS.
+		AssemblyVersion: r.LayoutDoRun(),
 	}
 }
 
@@ -232,7 +263,14 @@ func (r *ResumeRecords) Get(ctx context.Context, runID string) (ResumeRecord, bo
 		if rec.RunID != runID {
 			return ResumeRecord{}, false, ErrResumeRecordDeOutroRun
 		}
-		canon, err := json.Marshal(rec)
+		// AOS-489: compara-se a forma CANÓNICA, com o layout explícito. Um registo antigo (sem
+		// o campo) e a re-escrita do mesmo run na retoma (que o leva explícito, 1.3.0) são o
+		// MESMO registo — sem isto, se o transporte perdesse a deduplicação, os dois dariam
+		// ErrResumeRecordDivergente sobre um run legítimo. O registo DEVOLVIDO é o que foi
+		// escrito, sem normalização: quem lhe pergunta o layout usa [ResumeRecord.LayoutDoRun].
+		canonico := rec
+		canonico.AssemblyVersion = rec.LayoutDoRun()
+		canon, err := json.Marshal(canonico)
 		if err != nil {
 			return ResumeRecord{}, false, err
 		}

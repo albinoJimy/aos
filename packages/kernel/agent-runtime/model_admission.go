@@ -87,8 +87,10 @@ type ModelAdmission interface {
 
 // TurnAdmissionRequest é o que a porta vê ANTES da chamada ao modelo. Transporta a chave de
 // dedup (`RunID`+`StepID`) e a única base honesta para estimar o input: o prompt JÁ
-// MATERIALIZADO do turno — o mesmo bytes-a-bytes que vai ser enviado ao provider, e o mesmo
-// cujo hash o manifesto por trajectória grava.
+// MATERIALIZADO do turno — aquele cujo hash o manifesto por trajectória grava. Na projecção de
+// texto único é, byte a byte, o que vai ser enviado ao provider; na projecção nativa (AOS-490,
+// ADR-036 §2.5) o provider recebe mensagens derivadas do mesmo tail, e a estimativa continua a
+// fazer-se sobre o materializado.
 type TurnAdmissionRequest struct {
 	// RunID é o run (e, no nó, também o id do nó da árvore de orçamento).
 	RunID string

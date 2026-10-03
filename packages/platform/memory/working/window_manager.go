@@ -86,6 +86,7 @@ const (
 	TailObjective  = agentruntime.TailObjective
 	TailToolResult = agentruntime.TailToolResult
 	TailHistory    = agentruntime.TailHistory
+	TailToolCall   = agentruntime.TailToolCall
 )
 
 // DefaultExhaustionRatio é o limiar default de exaustão graciosa (~80%), coerente
@@ -128,6 +129,11 @@ type Config struct {
 	System string
 	// Tools é o tool set CONGELADO no run (ordem significativa).
 	Tools []ToolSpec
+	// AssemblyVersion é o LAYOUT de montagem em que o run está fixado (AOS-489): decide o
+	// prefixo (a 1.4.0 abre com o preâmbulo de protocolo) e a neutralização do corpo. Vazio
+	// ⇒ o layout dos runs novos ([agentruntime.AssemblyVersion]); uma versão que o assembler
+	// não conhece é recusada na construção ([agentruntime.ErrUnknownAssemblyVersion]).
+	AssemblyVersion string
 	// ModelTokenLimit é o limite de tokens do modelo para a janela (> 0).
 	ModelTokenLimit int
 	// ExhaustionRatio é o limiar de exaustão graciosa em (0,1]; 0 usa o default (~0.80).
@@ -170,6 +176,8 @@ type WindowManager struct {
 	frozenTools map[string]ToolSpec
 	toolOrder   []ToolSpec // ordem congelada (para derivar runs novos)
 	system      string
+	// assemblyVersion é o layout do assembler congelado — herdado por [WindowManager.NewRunWith].
+	assemblyVersion string
 
 	tail       []tailEntry
 	tailTokens int
@@ -207,7 +215,17 @@ func NewWindowManager(cfg Config) (*WindowManager, error) {
 		tracer = agentruntime.NoopTracer{}
 	}
 
-	asm := agentruntime.NewPromptAssembler(cfg.System, cfg.Tools)
+	// O assembler é pedido NO LAYOUT DO RUN (AOS-489). A janela gerida tem de montar os
+	// mesmos bytes que a inline para o mesmo layout — é o contrato de D-TAIL, e é o layout que
+	// decide o prefixo.
+	version := cfg.AssemblyVersion
+	if version == "" {
+		version = agentruntime.AssemblyVersion
+	}
+	asm, err := agentruntime.NewPromptAssemblerFor(version, cfg.System, cfg.Tools)
+	if err != nil {
+		return nil, err
+	}
 	if asm == nil {
 		return nil, ErrNilAssembler
 	}
@@ -237,6 +255,8 @@ func NewWindowManager(cfg Config) (*WindowManager, error) {
 		frozenTools:  frozen,
 		toolOrder:    order,
 		system:       cfg.System,
+
+		assemblyVersion: version,
 	}, nil
 }
 
@@ -295,6 +315,7 @@ func (w *WindowManager) NewRunWith(runID string, extra ...ToolSpec) (*WindowMana
 		RunID:           runID,
 		System:          w.system,
 		Tools:           tools,
+		AssemblyVersion: w.assemblyVersion,
 		ModelTokenLimit: w.limit,
 		ExhaustionRatio: w.ratio,
 		Estimator:       w.estimator,
@@ -312,6 +333,11 @@ type TailInput struct {
 	// atravessar esta porta: sem eles, um prompt montado pela janela GERIDA sai sem
 	// marca de proveniência nenhuma, enquanto o caminho inline a traz — e a diferença
 	// não seria cosmética, seria o modelo a deixar de ver o que é untrusted.
+	//
+	// É por aqui que passam também o `id` e o `name` de um `tool_call`/`tool_result` e os
+	// rótulos de argumentos omitidos (AOS-489, 1.4.0): são rótulos como os outros. O
+	// [agentruntime.TailSegment] não ganhou campos com a 1.4.0 — Kind, Meta e Content
+	// continuam a ser tudo o que um segmento é, e os três atravessam.
 	Meta []TailMeta
 	// Content é o conteúdo já serializado (bytes opacos).
 	Content string

@@ -28,4 +28,9 @@ var (
 	// (AOS-037). Fail-closed: sem janela não há prompt a montar, logo o run aborta antes
 	// do primeiro turno. Envolve o erro subjacente da fábrica.
 	ErrWindow = errors.New("agentruntime: falha ao construir a janela de contexto")
+	// ErrUnknownAssemblyVersion — pediu-se um layout de montagem que este assembler não
+	// conhece (AOS-489): a versão fixada num run, gravada num turno ou guardada num registo
+	// de retoma. Fail-closed: nunca se monta «no layout mais recente» em vez do pedido — um
+	// prompt montado no layout errado diverge no `prompt_hash` sem que nada diga porquê.
+	ErrUnknownAssemblyVersion = errors.New("agentruntime: assembly_version desconhecida")
 )

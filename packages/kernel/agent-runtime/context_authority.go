@@ -35,7 +35,17 @@ import (
 //
 //   - objectivo e correcção de steer ⇒ trusted: vêm de um humano autenticado (a submissão e o
 //     canal de controlo), nunca do modelo nem de uma tool;
+//   - notice ⇒ trusted (AOS-489): é texto FIXO do runtime — o modelo consegue provocá-lo,
+//     não escrevê-lo. Como o join é monótono não devolve autoridade a um contexto untrusted, e
+//     na prática nunca a muda: sai sempre a seguir a um `tool_result`;
 //   - histórico ⇒ producedUnder: o modelo não tem autoridade própria, só a do contexto que viu;
+//   - tool_call ⇒ producedUnder, pela MESMA razão (AOS-489): é o pedido que o modelo fez, e o
+//     modelo só tem a autoridade do contexto que viu. Não ELEVA — os argumentos são texto do
+//     modelo, e um pedido de tool não é um humano autenticado. Não BAIXA — registar no tail
+//     uma chamada que o modelo já tinha feito não acrescenta conteúdo de terceiros; quem torna
+//     o contexto untrusted é o `tool_result` que vem logo a seguir. O caso é EXPLÍCITO, e não
+//     o `default`, para que a autoridade de nenhuma trajectória mude com a entrada do
+//     segmento: com `producedUnder`, inseri-lo em qualquer ponto do tail deixa a dobra igual;
 //   - plan_input, tool_result ⇒ untrusted: produto de outro run ou de uma tool;
 //   - memória ⇒ untrusted, FAIL-CLOSED: nenhum caminho de produção a preenche hoje e, quando o
 //     EPIC-04 a ligar, a proveniência que a elevaria ainda não chega aqui;
@@ -45,9 +55,9 @@ import (
 // de [ContextAuthority].
 func SegmentAuthority(kind TailKind, producedUnder taint.Label) taint.Label {
 	switch kind {
-	case TailObjective, TailCorrection:
+	case TailObjective, TailCorrection, TailNotice:
 		return taint.Trusted
-	case TailHistory:
+	case TailHistory, TailToolCall:
 		return producedUnder
 	default:
 		return taint.Untrusted

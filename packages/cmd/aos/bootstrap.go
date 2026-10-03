@@ -1031,6 +1031,11 @@ type Node struct {
 	// Bootstrap compõe-o SEMPRE (mesma instância que sela), independentemente de DurableExecution.
 	contentOpener agentruntime.ContentOpener
 
+	// toolCalls é a medição de eficiência de trajectória (AOS-489): tool calls despachadas e
+	// repetidas, somadas por processo e expostas no `/metrics`. Ligada ao runtime por
+	// [agentruntime.WithToolCallStats]. Ver aos489_metricas.go.
+	toolCalls *medicaoDeToolCalls
+
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
 	// serviço ABRE/LIBERTA um gate por run hospedado (ver service.go hostRun); o loop base
@@ -2283,6 +2288,12 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// AOS-251: o detector de no-progress só vê acções se o loop as reportar — liga o
 	// observador ao runtime (method value nil-safe: sem disjuntor composto é inerte).
 	runtimeOpts = append(runtimeOpts, agentruntime.WithActionObserver(breakers.observeAction))
+	// AOS-489: a medição de tool calls repetidas. É uma porta à parte da do disjuntor, e não a
+	// reutilização do hash que ele recebe: o disjuntor vê a acção JÁ reescrita (o efeito), e o
+	// que aqui se mede é o que o MODELO pediu duas vezes — os argumentos como ele os emitiu. O
+	// comportamento do disjuntor não muda.
+	toolCalls := &medicaoDeToolCalls{}
+	runtimeOpts = append(runtimeOpts, agentruntime.WithToolCallStats(toolCalls.observar))
 
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
@@ -3250,6 +3261,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		Retention:               cfg.Retention,     // AOS-267: o loop de serviço decide o scheduler por ela
 		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio
 		contentOpener:           contentCipher,     // AOS-214: o MESMO cifrador que sela decifra o replay soberano
+		toolCalls:               toolCalls,         // AOS-489: tool calls despachadas e repetidas, para o /metrics
 		stateGates:              stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 		anomaliaAutonomia:       anomaliaAutonomia, // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)

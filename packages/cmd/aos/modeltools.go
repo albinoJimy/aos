@@ -31,6 +31,7 @@ import (
 	"strings"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
@@ -145,6 +146,12 @@ func readModelToolSpecs() ([]modelToolSpec, error) {
 	for i, s := range specs {
 		if strings.TrimSpace(s.Name) == "" || strings.TrimSpace(s.Capability) == "" {
 			return nil, fmt.Errorf("%w: tool #%d sem name/capability", ErrBadModelTools, i)
+		}
+		// NOME RESERVADO (AOS-490). A projecção nativa do pedido usa este nome para uma tool call
+		// cujo nome, tal como o modelo o escreveu, não cabe no wire. Se fosse também o nome de uma
+		// tool do nó, o `assistant` projectado afirmaria ao modelo que ele a chamou.
+		if strings.TrimSpace(s.Name) == modelgateway.ReservedInvalidToolName {
+			return nil, fmt.Errorf("%w: tool #%d: o nome %q e reservado pela projeccao do pedido ao modelo", ErrBadModelTools, i, modelgateway.ReservedInvalidToolName)
 		}
 		if err := validateResourceBinding(s); err != nil {
 			return nil, fmt.Errorf("%w: tool %q: %v", ErrBadModelTools, strings.TrimSpace(s.Name), err)

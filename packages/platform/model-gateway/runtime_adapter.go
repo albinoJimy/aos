@@ -41,6 +41,9 @@ type ModelClientAdapter struct {
 	// sabe. Ver [WithToolOfferFromContext].
 	ofertaCtx func(context.Context) (permite func(nome string) bool, restrito bool)
 	runID     string
+	// nativa: a projecção CONFIGURADA é a de mensagens nativas ([WithProjection], AOS-490).
+	// false — o valor-zero — é o texto único, a forma de sempre.
+	nativa bool
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -136,6 +139,26 @@ func WithRun(runID string) RuntimeAdapterOption {
 	return func(a *ModelClientAdapter) { a.runID = runID }
 }
 
+// WithProjection escolhe a forma em que o adaptador envia o prompt ao provider (AOS-490, ADR-036
+// §2.4): [ProjectionText] — o prompt materializado numa mensagem de utilizador, a forma de
+// sempre e a do adaptador sem esta opção — ou [ProjectionNative] — mensagens nativas derivadas
+// do tail ([ProjectNative]).
+//
+// A nativa só se aplica a um turno montado num layout que a projecção cobre (a 1.4.0 — ver
+// [projecaoNativaSuporta]); um run fixado na 1.3.0 vai SEMPRE em texto único, byte a byte como
+// antes, qualquer que seja a configuração. O modo EFECTIVAMENTE usado em cada turno volta na
+// resposta ([agentruntime.ModelResponse.Projection]) e fica no manifesto do turno.
+//
+// O modo tem de ser do vocabulário fechado ([ParseProjection]); um valor desconhecido é
+// ignorado aqui — fica o texto único —, e é a quem lê a configuração que cabe recusá-lo.
+func WithProjection(mode string) RuntimeAdapterOption {
+	return func(a *ModelClientAdapter) {
+		if m, err := ParseProjection(mode); err == nil {
+			a.nativa = m == ProjectionNative
+		}
+	}
+}
+
 // NewModelClient constrói o adaptador RT→GW para um modelo dado.
 func NewModelClient(gw port.Gateway, model string, opts ...RuntimeAdapterOption) *ModelClientAdapter {
 	a := &ModelClientAdapter{gw: gw, model: model}
@@ -169,9 +192,22 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	if !ok {
 		runID, stepID = a.runID, ""
 	}
+	// A FORMA DO PEDIDO (AOS-490). Texto único: o prompt materializado numa mensagem `user` —
+	// os bytes com hash. Nativa: as mensagens derivadas do tail, só quando o nó a configurou E
+	// o turno foi montado num layout que a projecção cobre. Uma projecção que falha não cai
+	// para o texto: o erro sobe e o turno falha de forma atribuível, em vez de o run mudar de
+	// forma a meio sem que nada o registe.
+	msgs := []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}}
+	nativa := a.nativa && projecaoNativaSuporta(view.AssemblyVersion)
+	if nativa {
+		var perr error
+		if msgs, perr = ProjectNative(view); perr != nil {
+			return agentruntime.ModelResponse{}, perr
+		}
+	}
 	req := port.ChatRequest{
 		Model:     a.model,
-		Messages:  []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}},
+		Messages:  msgs,
 		Tools:     a.toolsOferecidas(ctx),
 		Principal: principal,
 		Region:    a.region,
@@ -183,7 +219,16 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	if err != nil {
 		return agentruntime.ModelResponse{}, err
 	}
-	return translateResponse(resp)
+	out, err := translateResponse(resp)
+	if err != nil {
+		return agentruntime.ModelResponse{}, err
+	}
+	if nativa {
+		// O adaptador declara a forma que USOU; o runtime grava-a no manifesto do turno. O
+		// texto único não declara nada — o manifesto fica com os bytes de antes.
+		out.Projection, out.ProjectionVersion = ProjectionNative, NativeProjectionVersion
+	}
+	return out, nil
 }
 
 // ErrRespostaSemChoices — o gateway devolveu 200 e o corpo não produziu nenhuma escolha.
@@ -266,6 +311,10 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 			// `usage` em falta, e o `usage` presente sem contadores legíveis — é o critério
 			// do próprio [port.Usage.Definido], projectado sem o enfraquecer.
 			Ausente: !resp.Usage.Definido(),
+			// AOS-490 — os tokens de prompt servidos da cache de prefixo do provider (um
+			// subconjunto de InputTokens), até ao `turn.recorded`: é a medição que diz se o
+			// prefixo estável está a ser aproveitado.
+			CacheReadTokens: resp.Usage.CacheReadTokens,
 		},
 		CostMicroUSD: resp.Usage.CostMicroUSD,
 		// AOS-396 — o modelo que SERVIU: o `model` que o provider devolveu (o gateway só o
@@ -280,6 +329,9 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 	}
 	choice := resp.Choices[0]
 	out.Text = choice.Message.Content
+	// AOS-490 — o raciocínio do turno, carga opaca, byte a byte. Segue só para a captura; não
+	// volta a nenhum pedido ([port.ChatRequest.MarshalWire] retira-o) nem entra no tail.
+	out.Reasoning = choice.Message.ReasoningContent
 	for _, tc := range choice.Message.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, agentruntime.ToolInvocation{
 			ToolID: tc.Function.Name,

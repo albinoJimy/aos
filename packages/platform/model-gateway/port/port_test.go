@@ -96,11 +96,12 @@ func TestChatRequest_Normalize(t *testing.T) {
 }
 
 // TestVersion_ValorFixado fixa o LITERAL da versão do contrato: 1.1.0 desde que o StepID entrou
-// (campo aditivo, MINOR — AOS-394). O teste de formato sozinho compara a constante consigo
+// (campo aditivo, MINOR — AOS-394); 1.2.0 desde que a mensagem transporta o raciocínio
+// (`reasoning_content`, campo aditivo — AOS-490). O teste de formato sozinho compara a constante consigo
 // própria e deixava a versão mudar em silêncio, enquanto a prosa de tecnica/06 §5 a afirma.
 func TestVersion_ValorFixado(t *testing.T) {
 	t.Parallel()
-	const quer = "1.1.0"
+	const quer = "1.2.0"
 	if port.Version != quer {
 		t.Fatalf("port.Version = %q, quer %q — se a mudança é deliberada, actualize tecnica/06 §5 e este teste", port.Version, quer)
 	}

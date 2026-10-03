@@ -18,6 +18,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/state"
 
 	integration "github.com/aos-ref/integration"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 )
 
@@ -56,6 +57,21 @@ var (
 	// `abort`), e se ninguém decidir o TTL de pendentes expira a pergunta e a retoma volta a
 	// ser aceite — a mesma escotilha fail-safe que o pendente sempre teve.
 	ErrExhaustionPromptUnanswered = errors.New("aos: run com prompt de exaustao por responder — decida em POST /runs/{id}/exhaustion (continue|abort) antes de retomar")
+	// ErrResumeLayoutDesconhecido — o run está FIXADO num layout de montagem do prompt que este
+	// binário não sabe montar (AOS-489): o registo de retoma traz uma versão que este binário
+	// não conhece — na prática, uma versão FUTURA, escrita por um nó mais recente do que este.
+	//
+	// NÃO é a protecção de um rollback para um binário ANTERIOR ao AOS-489: esse não tem esta
+	// guarda nem lê o campo, e continua em 1.3.0 um run gravado em 1.4.0 (o log fica misto, e
+	// reproduz-se). A guarda só vale daqui para a frente, entre binários que já a têm.
+	//
+	// A retoma RECUSA, e recusa ANTES de re-hospedar. Deixar seguir levaria o run até ao
+	// [agentruntime.Runtime.Run], que falha fechado na mesma — mas aí o run já saiu do balde de
+	// suspensos e o desfecho seria gravado como FALHADO: uma suspensão recuperável trocada por
+	// um terminal, só por ter sido tentada com o binário errado. Recusado aqui, o run continua
+	// suspenso e retoma-se com um binário que conheça o layout. Continuá-lo NOUTRO layout nunca
+	// é opção: os turnos já dados seriam remontados com outros bytes do que os gravados.
+	ErrResumeLayoutDesconhecido = errors.New("aos: o run esta fixado num layout de prompt que este binario nao conhece")
 )
 
 // Resume retoma um run SUSPENSO com uma credencial NHI FRESCA.
@@ -170,6 +186,12 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	}
 	if !ok {
 		return ErrNoResumeRecord
+	}
+
+	// (2-0) O LAYOUT DO RUN É UM QUE ESTE BINÁRIO SABE MONTAR? (AOS-489) — ver
+	// [ErrResumeLayoutDesconhecido]. Um registo sem versão é um run 1.3.0, que este binário monta.
+	if lerr := agentruntime.ValidateAssemblyVersion(rec.LayoutDoRun()); lerr != nil {
+		return fmt.Errorf("%w: run %q: %w", ErrResumeLayoutDesconhecido, runID, lerr)
 	}
 
 	// (2-bis) A CREDENCIAL É DE QUEM? — a verificação que o comentário deste ficheiro afirmava

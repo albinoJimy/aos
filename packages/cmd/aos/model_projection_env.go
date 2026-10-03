@@ -1,0 +1,69 @@
+package main
+
+// A FORMA DO PEDIDO AO MODELO (AOS-490, ADR-036 §2.4) — `AOS_MODEL_PROJECTION`.
+//
+// O tail é a forma canónica da conversa de um run; o que o adaptador do Model Gateway envia ao
+// provider é uma projecção dele. Há duas, e o nó escolhe uma no arranque:
+//
+//   - `native` (por omissão) — mensagens nativas: `system`, `user`, e por turno do modelo um
+//     `assistant` com `tool_calls` e uma mensagem `tool` por chamada;
+//   - `text` — o prompt materializado numa só mensagem de utilizador, a forma anterior ao
+//     AOS-490, byte a byte.
+//
+// A nativa só se aplica a runs no layout 1.4.0: um run começado na 1.3.0 (uma retoma antiga)
+// continua em texto único qualquer que seja o valor. O modo usado em cada turno fica no
+// manifesto do `turn.recorded`.
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+
+	modelgateway "github.com/aos-ref/platform/model-gateway"
+)
+
+// defaultModelProjection é a projecção de um nó que não define AOS_MODEL_PROJECTION.
+const defaultModelProjection = modelgateway.ProjectionNative
+
+// ErrBadModelProjection — AOS_MODEL_PROJECTION está definida com um valor fora do vocabulário
+// fechado. Fail-closed: o nó não arranca. Cair para um dos modos em silêncio deixaria o
+// operador convencido de que o modelo recebe uma forma e a receber a outra — e é pela forma do
+// pedido que se lê o comportamento do modelo em produção.
+var ErrBadModelProjection = errors.New("aos: AOS_MODEL_PROJECTION invalida — valores aceites: native (mensagens nativas derivadas do tail; por omissao) ou text (o prompt inteiro numa mensagem de utilizador)")
+
+// parseModelProjectionFromEnv lê AOS_MODEL_PROJECTION. Vazia ⇒ [defaultModelProjection]. Um
+// valor fora do vocabulário ⇒ [ErrBadModelProjection]. Sem normalização de caixa: `Native` não é
+// `native`, pela regra das outras variáveis de vocabulário fechado do nó.
+func parseModelProjectionFromEnv() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_MODEL_PROJECTION"))
+	if raw == "" {
+		return defaultModelProjection, nil
+	}
+	mode, err := modelgateway.ParseProjection(raw)
+	if err != nil {
+		return "", fmt.Errorf("%w (veio %q)", ErrBadModelProjection, raw)
+	}
+	return mode, nil
+}
+
+// modelProjectionOption é a opção do adaptador RT→GW para o modo dado (já validado).
+func modelProjectionOption(mode string) modelgateway.RuntimeAdapterOption {
+	return modelgateway.WithProjection(mode)
+}
+
+// modelProjectionBanner declara a projecção com que o nó fala com o modelo. Só sai quando há um
+// gateway composto (gatewayComposed): o modelo de referência não fala com provider nenhum.
+func modelProjectionBanner(gatewayComposed bool, mode string) []string {
+	if !gatewayComposed {
+		return nil
+	}
+	if mode == modelgateway.ProjectionText {
+		return []string{
+			"projeccao do pedido ao modelo (EPIC-06/AOS-490): TEXTO UNICO — AOS_MODEL_PROJECTION=text: o prompt materializado segue inteiro numa mensagem de utilizador (a forma anterior ao AOS-490); o modelo le as suas proprias tool calls como texto. Para mensagens nativas remova a variavel ou defina native",
+		}
+	}
+	return []string{
+		fmt.Sprintf("projeccao do pedido ao modelo (EPIC-06/AOS-490): MENSAGENS NATIVAS (versao %s) — system/user/assistant com tool_calls/tool, derivadas do tail; aplica-se a runs no layout 1.4.0 (um run retomado na 1.3.0 segue em texto unico) e o modo de cada turno fica em manifest.projection do turn.recorded. O prompt_hash continua a ser o do tail canonico, nao o dos bytes enviados. AOS_MODEL_PROJECTION=text repoe o texto unico", modelgateway.NativeProjectionVersion),
+	}
+}

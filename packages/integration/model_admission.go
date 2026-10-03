@@ -467,7 +467,15 @@ func (a *ModelTurnAdmission) forgetRun(runID string) {
 type admissionKey struct{ runID, stepID string }
 
 // ModelPromptTokens estima os tokens de INPUT de um turno a partir do prompt MATERIALIZADO —
-// os mesmos bytes que vão para o provider e cujo hash o manifesto grava.
+// os bytes cujo hash o manifesto grava. Na projecção de texto único são também os bytes que vão
+// para o provider.
+//
+// NA PROJECÇÃO NATIVA NÃO SÃO (AOS-490, ADR-036 §2.5): o provider recebe mensagens derivadas do
+// tail, e a estimativa continua sobre o materializado. A diferença é pequena e não é corrigida
+// aqui: o conteúdo dos segmentos é o mesmo nas duas formas; o materializado leva a mais o bloco
+// TOOLSET e as linhas dos segmentos `tool_call` e `history`, e a menos o envelope JSON das
+// mensagens e os schemas de tool (que já não contava em texto único). A reserva é saldada pelo
+// consumo MEDIDO na resposta, pelo que o desvio vale só entre a admissão e o saldo do turno.
 //
 // Reutiliza [approxTokens], a contagem por átomos de AOS-258, com o mesmo piso de bytes: não
 // se inventa aqui um segundo estimador, e a direcção do erro é a mesma (sobrestima texto

@@ -61,6 +61,7 @@ import (
 	"errors"
 	"fmt"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
 	"github.com/aos-ref/kernel/agent-runtime/state"
 )
@@ -198,6 +199,19 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 		}
 		if !ok {
 			s.log("crash-resume: run %q em `running` SEM registo de retoma — nao reconstituivel, deixado como orfao (nao ha Goal para re-hospedar)", runID)
+			continue
+		}
+
+		// (3-bis) O LAYOUT DO RUN É UM QUE ESTE BINÁRIO SABE MONTAR? (AOS-489) Um registo escrito
+		// por uma versão mais recente do nó pode fixar o run num layout de prompt que este
+		// binário não conhece — uma versão FUTURA. (Não cobre o rollback para um binário anterior
+		// ao AOS-489, que não lê o campo e continua em 1.3.0.) Re-hospedá-lo faria o [agentruntime.Runtime.Run] falhar
+		// fechado — e o run ficaria gravado como FALHADO. Deixa-se como órfão, declarado, para um
+		// binário que conheça o layout: é a postura deste varredor para tudo o que não consegue
+		// retomar com verdade. Continuá-lo noutro layout nunca é opção.
+		if lerr := agentruntime.ValidateAssemblyVersion(rec.LayoutDoRun()); lerr != nil {
+			failed++
+			s.log("crash-resume: run %q fixado num layout de prompt que este binario nao conhece — NAO retomado, deixado como orfao (fail-closed, AOS-489): %v", runID, lerr)
 			continue
 		}
 

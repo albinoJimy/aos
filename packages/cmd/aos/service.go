@@ -256,6 +256,9 @@ type NodeService struct {
 	// run a trabalhar».
 	vivosSaltadosAqui   atomic.Int64
 	vivosSaltadosNoutra atomic.Int64
+	// layouts conta os runs hospedados por layout de montagem do prompt (AOS-489). Um run que
+	// continua em 1.3.0 — registo de retoma antigo — deixa de ser visível só no WAL.
+	layouts *runsPorLayout
 	// varredorParado marca a paragem DEFINITIVA por incidente de integridade — distinta de
 	// «ainda não armado» e de «armado, à espera do primeiro tick». As três leem-se de maneira
 	// diferente e exigem acções diferentes.
@@ -522,6 +525,7 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
+		layouts:      novoRunsPorLayout(),
 		node:         node,
 		assigner:     assigner,
 		leases:       leases,
@@ -1105,6 +1109,21 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// modelo. Esta é a via única por onde passam a submissão, a retoma e a varredura de
 	// crash-resume.
 	goal = s.node.fixarModelo(goal)
+	// AOS-489: o LAYOUT de montagem do prompt fica fixado no Goal ANTES do registo de retoma e
+	// do primeiro turno, pela mesma razão do modelo: o que o registo guarda, o que o runtime
+	// monta e o que o manifesto de cada turno grava são o mesmo valor. Um run NOVO chega aqui
+	// sem versão e fica na dos runs novos; um run RETOMADO (aprovação ou crash-resume) chega
+	// com a do seu registo de retoma ([integration.ResumeRecord.GoalWith]) e não é tocado.
+	goal = fixarLayout(goal)
+	// O LAYOUT EM USO, À VISTA (AOS-489). Conta-se cada hospedagem pelo seu layout, e diz-se em
+	// voz alta quando NÃO é o dos runs novos: é o caso de um run começado antes desta versão e
+	// re-hospedado agora (o registo de retoma não tem o campo, ou tem o layout antigo) — o run
+	// que continua a ver o prompt sem a sua própria tool call. Sem isto só o WAL o dizia.
+	s.layouts.contar(goal.AssemblyVersion)
+	if goal.AssemblyVersion != agentruntime.AssemblyVersion {
+		s.log("run %q hospedado no layout de prompt %s, e nao no dos runs novos (%s): o layout e fixado por run e veio do registo de retoma (AOS-489) — o run continua no layout em que os seus turnos foram gravados",
+			rs.runID, goal.AssemblyVersion, agentruntime.AssemblyVersion)
+	}
 	s.persistCrashResumeRecord(ctx, goal)
 
 	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
@@ -1181,9 +1200,27 @@ func (s *NodeService) persistCrashResumeRecord(ctx context.Context, goal agentru
 	}
 }
 
+// fixarLayout escreve no Goal o layout de montagem do prompt em que o run fica FIXADO (AOS-489).
+// Um Goal sem versão é um run NOVO: fica no layout dos runs novos ([agentruntime.AssemblyVersion]
+// — o que o [agentruntime.Runtime] do nó usaria por omissão; o nó não o sobrepõe). Um Goal que já
+// traz versão — o de uma retoma — fica como está: é isso que mantém em 1.3.0 um run começado
+// antes desta versão.
+func fixarLayout(goal agentruntime.Goal) agentruntime.Goal {
+	if goal.AssemblyVersion == "" {
+		goal.AssemblyVersion = agentruntime.AssemblyVersion
+	}
+	return goal
+}
+
 // resumeRecordFromGoal projecta o Goal no registo de retoma. A Credential é
 // DELIBERADAMENTE omitida — ver [integration.ResumeRecord].
+//
+// O LAYOUT VAI SEMPRE EXPLÍCITO (AOS-489), mesmo que o Goal recebido ainda não o tenha fixado:
+// um registo SEM versão é lido como «run anterior ao AOS-489» e retomado em 1.3.0
+// ([integration.ResumeRecordLegacyAssemblyVersion]). Deixar a versão vazia aqui poria um run
+// novo, com os primeiros turnos em 1.4.0, a continuar em 1.3.0 depois da retoma.
 func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
+	goal = fixarLayout(goal)
 	return integration.ResumeRecord{
 		RunID:             goal.RunID,
 		Principal:         goal.Principal,
@@ -1199,6 +1236,7 @@ func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 		MemoryContext:     goal.MemoryContext,
 		MaxTurns:          goal.MaxTurns,
 		ParentTraceParent: goal.ParentTraceParent,
+		AssemblyVersion:   goal.AssemblyVersion, // AOS-489: o run continua no layout em que começou
 	}
 }
 

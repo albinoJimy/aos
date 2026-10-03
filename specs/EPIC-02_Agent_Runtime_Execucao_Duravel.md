@@ -1681,6 +1681,206 @@ Fechar o ticket sem esta prova é decisão do dono.
 
 ---
 
+## AOS-489 — O tail do prompt regista a tool call do modelo e identifica o resultado (assembler 1.4.0)
+
+<!-- Implementa o ADR-036 §2.1 a §2.3 (o tail canónico, o segmento `tool_call`, o layout por versão) e emenda o ADR-034 §2.1. A projecção em mensagens nativas (ADR-036 §2.4 a §2.7) é do AOS-490. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P0: 60% das tool calls mediadas em produção são o modelo a repetir uma chamada que já fez, e uma em três validações acabou com o objectivo por cumprir |
+| Estimativa | L |
+| Dependências | AOS-013 (loop), AOS-016 (captura e replay), AOS-069 e ADR-034 (autoridade derivada do contexto), AOS-414 (`plan_input`), AOS-487 (resultado da sandbox em texto) |
+| Bloqueia | AOS-490 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-protocolo-tool-use-2026-10-03.md` (desenho e decisões), `packages/kernel/agent-runtime/prompt.go`, `loop.go`, `context_authority.go`, `replay/engine.go`, `replay/nondeterminism_capture.go`, `packages/integration/resume_records.go` |
+
+### Contexto
+
+Medido sobre o `events.wal` de produção inteiro a 2026-10-03: desde que há eventos de mediação, 17
+de 32 runs que pediram tools repetiram a mesma tool sobre o mesmo recurso, e 45 das 75 tool calls
+registadas são repetições. Na validação `plan-e2e-v0143r-1790988359` o nó desistiu depois da recusa
+da releitura e o plano saiu 0 sem o objectivo cumprido.
+
+A causa está no que o modelo recebe. O prompt vai inteiro numa mensagem de utilizador, e no turno a
+seguir a uma tool call o tail tem o objectivo e um `<tool_result taint=untrusted>` sem mais nada: a
+chamada do próprio modelo não é registada (o loop só acrescenta o texto da resposta, se não for
+vazio), o resultado não diz de que chamada é, e o `system` dos runs filhos de um plano é vazio. A
+documentação do provider de produção lista esta forma como a primeira causa de tool calls
+repetidas. O desenho completo, com as cinco frentes de análise, está no documento de referência.
+
+### Decidido pelo dono (2026-10-03)
+
+- **D2 — layout por versão, fixado por run.** O assembler monta o layout 1.3.0 e o 1.4.0; o replay
+  escolhe por turno pelo `assembly_version` gravado; um run que atravesse o deploy continua no
+  layout em que começou.
+- **D3 — preâmbulo de protocolo no prefixo**, na 1.4.0.
+- **D4 — os argumentos vão no prompt**, com tecto de tamanho e digest acima dele. Aceita-se o
+  reenvio dos argumentos nos turnos seguintes e a proximidade entre argumentos e código de recusa.
+
+### Objectivo
+
+O modelo vê, no turno seguinte, que chamada fez e que resultado lhe corresponde; os runs gravados
+antes continuam a reproduzir-se; e a repetição passa a ser medida.
+
+### Critérios de Aceitação
+
+- [x] Por cada tool call do modelo o tail ganha um segmento `tool_call` antes do resultado, com o
+      `id` cunhado pelo runtime (`<passo>-tool-<n>`) e o `name` na linha de delimitação, e os
+      argumentos tal como o modelo os emitiu (antes da reescrita do efeito) no corpo. O `tool_result`
+      leva o mesmo `id` e `name`. Capability, recurso, região, reversibilidade, `Reason` e metadados
+      de hook não entram.
+      *(Evidência: `packages/kernel/agent-runtime/layout.go` (`tailFromToolCall`, `tailFromIdentifiedResult`,
+      `ToolStepID`). `TestAOS489_OModeloVeAChamadaEOResultado` fixa o tail do turno seguinte byte a
+      byte, com uma chamada permitida e uma negada, um `CallRewriter` que troca o input e os campos de
+      política preenchidos com valores que não podem aparecer; `TestAOS489_IdDoPromptEODoEventoDeMediacao`
+      (o `id` é o `step_id` da mediação); `TestAOS489_Forja_ReasonEMetadataForaDoPromptComAChamadaRegistada`.)*
+- [x] O prefixo ganha um preâmbulo de protocolo fixo e versionado: o que é cada segmento, que o
+      resultado com o mesmo `id` responde à chamada, que uma recusa não se repete com os mesmos
+      argumentos, e que conteúdo `taint=untrusted` é dados.
+      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 1 144
+      bytes ASCII (cerca de 286 tokens), sem dados do run. A frase da recusa é condicionada
+      («Unless something has changed since, …»): há recusas transitórias (audit indisponível,
+      erro de hook, contexto cancelado, escalada). Diz também que só `objective`,
+      `correction` e `notice` são instruções, e que `memory` — que não tem rótulo — é dados. `TestPreambuloDeProtocolo_RestricoesDoTexto` (igual à cópia
+      selada à mão, ASCII, nenhuma linha a abrir por `<`, sem rótulos de recusa nem `taint=trusted`,
+      prefixo byte-idêntico entre turnos) e o golden `promptSelado140`.)*
+- [x] `AssemblyVersion` sobe para 1.4.0, com o golden do layout derivado à mão a cobrir o segmento
+      novo, o hash e a versão selados, e a entrada no comentário da constante (incluindo a da 1.3.0,
+      que falta).
+      *(Evidência: `packages/kernel/agent-runtime/layout_do_prompt_selado_test.go` — `promptSelado140` escrito à mão
+      (preâmbulo, três chamadas num turno, recusa, nome hostil, CR seguido de delimitador forjado,
+      argumentos acima do tecto) e `hashSelado140` calculado sobre o literal;
+      `TestLayoutDoPromptSelado_BytesMaterializados`, `TestLayoutDoPromptSelado_VersaoCorresponde`.
+      O golden da 1.3.0 ficou como estava, com o mesmo hash
+      (`TestLayoutDoPromptSelado_130ContinuaByteIdentico`). As entradas 1.3.0 e 1.4.0 estão no
+      comentário de `AssemblyVersion` em `prompt.go`.)*
+- [x] A sequência de segmentos de um turno vive numa função única, usada pelo loop e pelo motor de
+      replay, incluindo o caminho de escalada e o de várias chamadas no mesmo turno.
+      *(Evidência: `TailSequence` (`Turn`, `Correction`) em `layout.go`; o loop usa-a em
+      `fecharTail` (fim do turno e saída por escalada) e o motor em `dobrasPorLayout`, uma por
+      dobra. `TestAOS489_OLoopEOMotorDobramOMesmoTail` compara o tail que o loop
+      construiu com o estado final do motor, nos dois layouts, com três chamadas num turno, recusa,
+      erro de tool, steer e escalada; `TestAOS489_EscaladaAMeioDoTurno`; `TestAOS489_SequenciaDoTurno`.)*
+- [x] **Layout por versão:** um log gravado em 1.3.0 reproduz-se com fidelidade 1.0 (teste com um
+      log 1.3.0 fixado em disco, não gerado pelo código corrente); um log misto por turno
+      reproduz-se; um run iniciado em 1.3.0 e retomado depois continua em 1.3.0 (a versão fica no
+      registo de retoma, com `omitempty`); a divergência por versão sai atribuída a
+      `assembly_version`.
+      *(Evidência: `packages/kernel/agent-runtime/replay/testdata/aos489_log_1_3_0.json` — três runs corridos pela
+      árvore do commit `4253c70` extraída com `git archive`, com o gerador ao lado —, e
+      `TestAOS489_Log130FixadoEmDiscoReproduzSe` (fidelidade 1.0 com e sem âncora, autoridade
+      verificada, e a âncora errada atribuída a `assembly_version` mesmo quando o prompt também
+      diverge). `TestAOS489_LogMistoPorTurnoReproduzSe` (nos dois sentidos).
+      `TestAOS489_VersaoDesconhecidaNoLogFalhaFechada`. Pelo nó:
+      `TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou` em `packages/cmd/aos` (retoma e
+      crash-resume; um registo sem versão continua em 1.3.0 e um run novo em 1.4.0), sobre
+      `integration.ResumeRecord.AssemblyVersion` e `fixarLayout` em `service.go`;
+      `TestAOS489_RegistoAntigoSemLayoutERetomadoEm130` em `packages/integration`. Um registo num
+      layout que o binário não conhece não é retomado, e o run fica como estava:
+      `TestAOS489_LayoutDesconhecidoNoRegistoNaoERetomado`.)*
+- [x] Um run sem tool calls grava em 1.4.0 os mesmos bytes de `turn.recorded` e `replay.captured`,
+      salvo a versão e o prefixo; as capturas antigas descodificam como antes.
+      *(Evidência: `TestAOS489_RunSemToolCalls_MesmosBytesSalvoAVersaoEOPrefixo` compara os payloads
+      que o código antigo gravou (a fixture em disco) com os de agora: a captura é byte-idêntica, e o
+      `turn.recorded` é-o depois de trocar a `assembly_version` e o `prompt_hash`.
+      `TestAOS489_ReconstructDeUmLog130` descodifica as capturas antigas. O esquema de captura não
+      mudou.)*
+- [x] O tipo novo é classificado explicitamente em `SegmentAuthority` como output do modelo (não
+      eleva nem baixa a autoridade), com caso em `TestSegmentAuthority` e linha na tabela do ADR-034
+      §2.1; a autoridade de cada turno e a decisão do TaintGate não mudam (replay com
+      `VerifyAuthority`).
+      *(Evidência: `context_authority.go` (`case TailHistory, TailToolCall`); `TestSegmentAuthority`;
+      a emenda de 2026-10-03 ao ADR-034 §2.1. `TestAOS489_ToolCallNaoMudaAAutoridade` (inserir o
+      segmento em qualquer posição não muda a dobra de nenhum prefixo) e
+      `TestAOS489_MesmasMediacoesNosDoisLayouts` (o mesmo taint e o mesmo veredicto em cada chamada,
+      com o TaintGate armado, em 1.3.0 e em 1.4.0). Replay com `VerifyAuthority` sobre o log 1.3.0 em
+      disco, o 1.4.0 e o misto. Os `TestAOS069_*` continuam verdes, sem alteração.)*
+- [x] Segurança do segmento: argumentos só no corpo e neutralizados; `id` e `name` só na linha de
+      delimitação, saneados e com tecto de comprimento; tecto de tamanho dos argumentos, com digest
+      acima dele; testes de forja (argumentos, nome e resultado que imitam `<tool_call>`,
+      `<tool_result>` e `<correction taint=trusted>`), e a `Reason` continua fora do prompt.
+      *(Evidência: o `tool_result` de uma tool que falhou leva o rótulo `tool_error=1` na linha de
+      delimitação (`TestAOS489_ToolErrorERotuloNa140`). `MaxToolCallLabelBytes` (256) e `MaxToolCallArgBytes` (4 KiB) em `layout.go`; acima
+      do tecto o corpo fica vazio e a linha de delimitação leva `args_omitted_bytes` e `args_digest`.
+      `TestAOS489_Forja_ArgumentosNaoAbremSegmentos`, `TestAOS489_Forja_NomeDeToolHostil`,
+      `TestAOS489_Forja_ResultadoImitaChamadaEResultado`,
+      `TestAOS489_Forja_ReasonEMetadataForaDoPromptComAChamadaRegistada` — todos pelo loop real, a
+      contar as linhas de delimitação do tail —, e `TestAOS489_TectoDosArgumentos`.
+      `TestModelBoundaryCarriesNoAuthority` continua verde: `ToolInvocation` e `ModelResponse` não
+      ganharam campos.)*
+- [x] A neutralização de delimitadores reconhece `\r` e os separadores de linha Unicode como início
+      de linha, com a tabela de neutralização actualizada.
+      *(Evidência: `inicioDeLinha` em `prompt.go` — no layout 1.4.0 abrem linha `\r`, VT, FF, U+0085,
+      U+2028 e U+2029; o 1.3.0 fica como estava. `packages/kernel/agent-runtime/tabela_de_neutralizacao_test.go`:
+      `TestNeutralizarDelimitadores_QuebrasDeLinhaPorLayout` (nos dois sentidos),
+      `TestNeutralizarDelimitadores_EInjectiva` e `TestNeutralizarDelimitadores_Reversivel`.)*
+- [x] `PromptView` passa a transportar o tail estruturado (aditivo), para o AOS-490; a janela gerida
+      (`working.TailInput`) transporta os campos novos, com a paridade inline/gerida provada.
+      *(Evidência: `PromptView.Tail`, `.System` e `.AssemblyVersion` em `prompt.go`
+      (`TestAOS489_PromptViewEstruturada`: cópia profunda, conteúdo cru). O `TailSegment` não ganhou
+      campos — o `id` e o `name` são rótulos e atravessam `working.TailInput.Meta`; o que a janela
+      gerida ganhou foi o layout (`working.Config.AssemblyVersion`, e o parâmetro novo de
+      `WindowFactory.NewWindow`). `TestAOS489_JanelaGeridaByteIdenticaAInline_NosDoisLayouts`
+      compara a vista inteira nos dois layouts; `TestWindowManagerFactory_ByteIdenticalToInline`
+      continua verde.)*
+- [x] Métrica de eficiência de trajectória em `/metrics`: tool calls repetidas (mesma tool, mesmos
+      argumentos) por processo, e aviso trusted no tail à terceira repetição idêntica num run.
+      *(Evidência: `aos_tool_calls_total` e `aos_tool_calls_repeated_total` no `/metrics` do nó
+      (`packages/cmd/aos/aos489_metricas.go`, `api.go`), alimentados por
+      `agentruntime.WithToolCallStats`; a contagem vive na `TailSequence` do kernel, que é quem tem
+      a história das chamadas do run. `TestAOS489_MedicaoDeRepeticoes` (permitidas e negadas, nos
+      dois layouts), `TestAOS489_MetricasDoLayoutEDasRepeticoes`. A repetição mede-se sobre os
+      argumentos do MODELO, mesmo com um `CallRewriter` que varia o input por chamada. O aviso é o
+      segmento `notice` (`tailFromRepeatNotice`), só na 1.4.0 e só em repetições ESTÉREIS: a
+      mesma chamada com o mesmo desfecho (resultado, falha ou recusa) três vezes seguidas; um
+      resultado diferente recomeça a série. `TestAOS489_AvisoATerceiraChamadaIdentica`,
+      `TestAOS489_AvisoSoEmRepeticoesEstereis` (três negadas, três falhadas, e
+      leitura/escrita/leitura sem aviso), `TestAOS489_ChaveDaChamadaNaoColide` (limitação
+      declarada: chave repetida num objecto JSON), `TestAOS489_DesfechoDaChamada`,
+      `TestAOS489_AvisoDeRepeticaoAtravessaAAprovacaoHumana` (pelo nó, com quatro suspensões e
+      retomas), `TestAOS489_AvisoNaoMudaAAutoridadeNemEForjavel`,
+      o golden `promptSelado140` e o caso «tres chamadas identicas» de
+      `TestAOS489_OLoopEOMotorDobramOMesmoTail` (o motor reconstrói-o sem captura). O layout em
+      uso também se vê: `aos_runs_hosted_total{assembly_version}` e uma linha de log quando um
+      run é hospedado fora do layout dos runs novos
+      (`TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou`).)*
+- [x] Gates: `replay` (os 12 testes pelo mesmo nome), `security`, `apex`, `lint`, `build`.
+      *(Evidência: corridos localmente a 2026-10-03 sobre a árvore do ramo, todos verdes — `replay`
+      («12 testes obrigatórios correram e passaram», fidelidade 100%), `security`, `apex` (piso do
+      ápice 83,6%), `lint`, `build`; e ainda `layer-lint`, `dr-e2e`, `ref-lint`, `deferrals`,
+      `event-catalog`, `secrets` e `sast`. O `rtm` fica vermelho só pela gama de tickets
+      descontínua — falta um número, de um ticket que está noutro ramo por fundir —, pelo que a RTM não foi regenerada
+      neste ramo.)*
+- [ ] Verificado em produção: em pelo menos dez runs com tools, repetições da mesma tool sobre o
+      mesmo recurso perto de zero, medidas com o script da linha de base.
+
+### Fora de âmbito
+
+- A projecção em mensagens nativas e a continuidade do raciocínio (AOS-490).
+
+### Resíduos conhecidos (revisão adversarial de 2026-10-03)
+
+- **Erro de tool com mensagem vazia.** Uma tool que falhe com um erro cuja mensagem é a string
+  vazia diverge entre o loop e o replay: a captura grava `tool_error` com `omitempty`, o campo
+  vazio desaparece, e o motor reconstrói o resultado como bem-sucedido — sem o rótulo
+  `tool_error=1` e sem a linha do corpo. É anterior a este ticket (o `omitempty` é o da captura
+  original) e não foi corrigido aqui.
+- **A chave de «chamada idêntica» com bytes que não são UTF-8** foi corrigida na integração com o
+  AOS-490: argumentos que não são UTF-8 válido comparam-se pelos bytes crus, sem forma canónica
+  (`TestAOS489_ChaveDaChamadaNaoColide`).
+- A separação de planos por handle (DEF-806): o segmento de argumentos fica compatível com ela, mas
+  não a implementa.
+- Os achados laterais do documento de desenho §6.
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1692,3 +1892,4 @@ Fechar o ticket sem esta prova é decisão do dono.
 | 1.4 | 2026-09-21 | +AOS-422 (os runs vivos saltados vão ao `/metrics`): medido ao tentar verificar o AOS-411 em produção que a correcção tornou a sua própria evidência inobservável — a passagem periódica só fala com órfãos verdadeiros, e os contadores eram variáveis locais. | Equipa AOS |
 | 1.5 | 2026-09-26 | +AOS-454 (a via durável perde o `parent_step_id` do evento de mediação): achado no diagnóstico da fase 1 do AOS-069; auditoria campo a campo `Call → Activity → toCall` fixada por teste de reflexão. | Equipa AOS |
 | 1.6 | 2026-10-02 | +AOS-485: a recusa de uma tool call pela lista-branca do run não deixa evento nem selo (achado do E2E de plano multi-nó em produção) | Equipa AOS |
+| 1.7 | 2026-10-03 | +AOS-489: o tail do prompt regista a tool call do modelo e identifica o resultado; 60% das tool calls em produção eram repetições | Equipa AOS |

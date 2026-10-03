@@ -57,7 +57,14 @@ import (
 type WindowFactory interface {
 	// NewWindow congela o prefixo do run e devolve o gestor da janela. Fail-closed: um
 	// erro aborta o run antes do primeiro turno (sem janela não há prompt a montar).
-	NewWindow(runID, system string, tools []ToolSpec) (WindowPort, error)
+	//
+	// assemblyVersion é o LAYOUT em que o run está fixado (AOS-489) — o prefixo depende
+	// dele, e a janela tem de montar todos os turnos nesse layout. É um parâmetro POSICIONAL
+	// de propósito: uma fábrica que não o conheça deixa de compilar, em vez de o ignorar em
+	// silêncio (foi assim que o `Meta` se perdeu na janela gerida, na 1.3.0). Versão que a
+	// fábrica não saiba montar ⇒ erro ([ErrUnknownAssemblyVersion]). O loop confirma em cada
+	// turno que a vista veio no layout pedido ([PromptView.AssemblyVersion]).
+	NewWindow(runID, system string, tools []ToolSpec, assemblyVersion string) (WindowPort, error)
 }
 
 // WindowPort é o DONO ÚNICO da janela de contexto de um run: o prefixo imutável
@@ -69,7 +76,7 @@ type WindowFactory interface {
 type WindowPort interface {
 	// Append acrescenta um segmento ao tail append-only; nunca muta nem reordena o
 	// prefixo. O loop chama-o para semear (memory/objective) e a cada turno (history/
-	// tool_result/correction).
+	// tool_call/tool_result/correction).
 	Append(seg TailSegment)
 	// Assemble materializa a vista cache-estável do turno (prefixo imutável ++ tail
 	// serializado). O PrefixHash é byte-idêntico entre turnos do mesmo run. O ctx é o do
@@ -99,8 +106,12 @@ func (w *inlineWindow) SystemHash() string { return w.asm.SystemHash() }
 // defaultWindowFactory constrói um [inlineWindow] — o comportamento AOS-013.
 type defaultWindowFactory struct{}
 
-func (defaultWindowFactory) NewWindow(_ /*runID*/, system string, tools []ToolSpec) (WindowPort, error) {
-	return &inlineWindow{asm: NewPromptAssembler(system, tools)}, nil
+func (defaultWindowFactory) NewWindow(_ /*runID*/, system string, tools []ToolSpec, assemblyVersion string) (WindowPort, error) {
+	asm, err := NewPromptAssemblerFor(assemblyVersion, system, tools)
+	if err != nil {
+		return nil, err
+	}
+	return &inlineWindow{asm: asm}, nil
 }
 
 var _ WindowPort = (*inlineWindow)(nil)
