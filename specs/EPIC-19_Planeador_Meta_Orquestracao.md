@@ -8418,8 +8418,8 @@ fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
       (saída 9). Os vectores de `planadversarial/payload_test.go` e de
       `plannerprompt/goldenset_adr022_test.go` continuam verdes. A regra 12 diz ao modelo que um nó
       com ferramenta de efeito continua sob a regra 8.)*
-- [ ] Verificado em produção com o modelo vivo e o mesmo objectivo: o texto final do nó de resumo é
-      um resumo do documento.
+- [x] Verificado em produção com o modelo vivo e o mesmo objectivo: o texto final do nó de resumo é
+      um resumo do documento. *(Ver «Estado».)*
 
 ### Fora de âmbito
 
@@ -8430,7 +8430,26 @@ fez o seu trabalho não termina com o mesmo desfecho de um plano bem-sucedido.
 
 ### Estado
 
-**ABERTO.** Implementado; falta a verificação em produção com o modelo vivo.
+**FEITO.**
+
+**Verificado em produção a 2026-10-03** (`v0.1.43`, imagem `sha256:feca01e6…`), com o modelo
+vivo e o mesmo objectivo do relatório de 2026-10-02, submetido por `POST /plans` e drenado pela
+fila: plano `plan-e2e-v0143-1790987272`.
+
+| Pegada | Medido |
+|---|---|
+| Decomposição | 2 nós à primeira tentativa (`n1` papel com `doc_read`, `n2` folha sem tools); `plan_hash=sha256:bd90691b…` |
+| Contrato de dados | `consume.wal`: `plan.payload_published` de `n1/notes_text` (`record`, `untrusted`) e de `n2/tres_pontos` (`summary`) |
+| Entrada do `n2` | prompt do turno 1 com 371 tokens (294 no run de 2026-10-02, sem o documento) |
+| Resultado do `n2` | resumo do documento em três pontos (a decisão do gVisor e as duas acções), num só turno |
+| Desfecho | `planrequest.outcome` `terminal`, `exit_code 0`, 53,3 s |
+| Invariantes | 82/82 eventos com `idempotency_key == run_id:step_id`; 7 streams sem buracos; 8 partições WORM com encadeamento íntegro |
+
+O caso do dia anterior saía com o mesmo código 0 e o resumo por fazer; aqui o 0 corresponde ao
+objectivo cumprido. A saída 13 não foi exercida em produção (nenhum nó falhou).
+
+Observado, fora deste ticket: o `n1` leu o documento uma vez e tentou relê-lo três vezes; as três
+foram negadas por taint (ADR-005, `tool.call.denied` e selo `deny`) e custaram três turnos.
 
 Por fechar, além dessa verificação:
 
@@ -8573,7 +8592,7 @@ Um run filho de um plano não gasta turnos a pedir tools que o seu nó não tem.
       `tool.call.denied`, nenhum `tool.call.mediated` e zero execuções;
       `TestAOS486_RunComListaVazia_NadaOferecidoERecusaContinua` mede o mesmo no composition-root.
       Os testes do AOS-413 e do AOS-485 continuam verdes.)*
-- [ ] Verificação em produção: um run filho de um plano com a lista vazia não mostra nenhuma tool
+- [x] Verificação em produção: um run filho de um plano com a lista vazia não mostra nenhuma tool
       no `manifest.tools` do `turn.recorded` nem a pede (`tool_calls_requested=0`), e o
       `run.toolset.frozen` do mesmo run continua com o tool set do nó.
 
@@ -8583,7 +8602,19 @@ A pegada da recusa (AOS-485) e a entrega de dados entre nós (AOS-484).
 
 ### Estado
 
-**ABERTO.** Implementado; falta a verificação em produção.
+**FEITO.**
+
+**Verificado em produção a 2026-10-03** (`v0.1.43`, imagem `sha256:feca01e6…`), com o modelo
+vivo e o mesmo objectivo do relatório de 2026-10-02, submetido por `POST /plans` e drenado pela
+fila: plano `plan-e2e-v0143-1790987272`.
+
+- `turn.recorded` do `n2` (lista-branca vazia): o manifesto **não tem** `tools`, e
+  `tool_calls_requested=0`; o modelo não pediu nenhuma tool (no run de 2026-10-02 pediu
+  `doc_read` e foi negado).
+- `run.toolset.frozen` do `n2`: continua com `doc_read` (o tool set do nó, inteiro).
+- `turn.recorded` do `n1` (lista `[doc_read]`): o manifesto lista `doc_read`.
+- O corpo do pedido ao provider não fica em nenhum registo; a ausência do schema infere-se de o
+  modelo não ter pedido a tool e prova-se nos testes do nó composto.
 
 Como ficou: o adaptador do gateway ganhou `WithToolOfferFromContext`, e o nó anexa a lista-branca
 do run ao contexto do run em `submit` (comum à submissão, à retoma e ao crash-resume) só quando
