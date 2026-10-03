@@ -173,6 +173,11 @@ type NodeService struct {
 	// AOS-021 — varrimento de aprovações expiradas (decisão do dono: no loop de serviço).
 	sweepInterval time.Duration // período do varrimento; <= 0 desliga
 	approvalTTL   time.Duration // janela de validade de uma aprovação pendente
+	// approvalClock é o «agora» contra o qual o varrimento mede a idade dos pendentes; nil ⇒
+	// time.Now. Só os testes o fixam (AOS-488): uma expiração provocada encolhendo o TTL e
+	// medida no relógio de parede caía, no Windows, no mesmo tick do `created_at` e não
+	// expirava nada.
+	approvalClock func() time.Time
 	// seloWORM observa os `Append` das vias de governacao — ver [saudeDeSelagem]. NAO e ponteiro:
 	// o valor-zero e valido (nunca falhou, nunca teve sucesso) e evita um nil a esquecer.
 	seloWORM  saudeDeSelagem

@@ -29,6 +29,7 @@ import (
 	domain "github.com/aos-ref/platform/registry/domain"
 	"github.com/aos-ref/substrate/eventstore"
 	"github.com/aos-ref/substrate/sandbox"
+	"github.com/aos-ref/testkit"
 )
 
 // ---------------------------------------------------------------------------
@@ -295,6 +296,39 @@ func (h *aos478Harness) aprova(t *testing.T, runID, requestID string) {
 	}
 }
 
+// expiraPorVarrimento conduz o varrimento de PRODUÇÃO (TTL de produção) sobre o pendente do
+// run com um relógio manual ancorado no `created_at` gravado (AOS-488). Antes encolhia-se o
+// TTL para 1 ns e media-se no relógio de parede: no Windows o varrimento caía no mesmo tick
+// do `created_at`, a idade dava 0 < 1 ns e o `approval.expired` não saía (2 em 6 runs).
+func (h *aos478Harness) expiraPorVarrimento(t *testing.T, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	pend, err := h.node.PendingApprovals.ListForRun(ctx, runID)
+	if err != nil || len(pend) != 1 {
+		t.Fatalf("ListForRun(%s): err=%v n=%d", runID, err, len(pend))
+	}
+	criado, err := time.Parse(time.RFC3339Nano, pend[0].CreatedAt)
+	if err != nil {
+		t.Fatalf("created_at do pendente ilegivel %q: %v", pend[0].CreatedAt, err)
+	}
+	ttl := h.svc.approvalTTL
+	relogio := testkit.NewManualClock(criado.Add(ttl - time.Nanosecond))
+	h.svc.approvalClock = relogio.Now
+
+	// Um nanossegundo antes do TTL o pendente ainda vale; no TTL expira. Se o varrimento
+	// ignorasse este relógio, a idade no de parede (~0) nunca chegaria ao TTL de produção e
+	// a segunda verificação avermelhava.
+	h.svc.SweepApprovalsNow(ctx)
+	if ainda, _ := h.node.PendingApprovals.ListForRun(ctx, runID); len(ainda) != 1 {
+		t.Fatalf("antes do TTL o pendente de %s nao podia ter expirado; n=%d", runID, len(ainda))
+	}
+	relogio.Advance(time.Nanosecond)
+	h.svc.SweepApprovalsNow(ctx)
+	if resta, _ := h.node.PendingApprovals.ListForRun(ctx, runID); len(resta) != 0 {
+		t.Fatalf("no TTL o varrimento tinha de expirar o pendente de %s; restam %d", runID, len(resta))
+	}
+}
+
 func (h *aos478Harness) submeteRun(t *testing.T, runID string) {
 	t.Helper()
 	if err := h.svc.Submit(context.Background(), agentruntime.Goal{
@@ -342,8 +376,7 @@ func aos478Cenario(t *testing.T) []eventstore.Event {
 
 	// Run B: escala e fica sem decisão; o varrimento de produção expira-o.
 	h.submeteRun(t, aos478RunB)
-	h.svc.approvalTTL = time.Nanosecond
-	h.svc.SweepApprovalsNow(ctx)
+	h.expiraPorVarrimento(t, aos478RunB)
 	// approval.decided: o emissor é chamado pela rota de decisão de exaustão com o principal
 	// VERIFICADO; aqui chama-se o mesmo emissor com um principal pinado.
 	if err := h.node.PendingApprovals.Decide(ctx, integration.PendingKindExhaustion, aos478RunB, "exh-478", "stop", aos478Operador); err != nil {

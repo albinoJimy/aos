@@ -27,6 +27,7 @@ require (
 	github.com/aos-ref/substrate/otel-genai v0.0.0
 	github.com/aos-ref/substrate/redaction v0.0.0
 	github.com/aos-ref/substrate/sandbox v0.0.0
+	github.com/aos-ref/testkit v0.0.0
 )
 
 require (
