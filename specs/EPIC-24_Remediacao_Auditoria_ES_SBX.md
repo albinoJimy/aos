@@ -1716,8 +1716,9 @@ perda; os resultados gravados antes continuam legíveis.
       *(Evidência: `TestAOS487_OModeloRecebeOTextoPeloRM`.
       Mutações: sem o ramo UTF-8, com o escape de HTML e sem a recusa dos dois campos, cada uma
       avermelha o teste correspondente.)*
-- [ ] Verificado em produção: o mesmo objectivo do AOS-484, repetido, não tem releitura do
-      documento no `n1`, e o nó de resumo recebe o texto.
+- [~] Verificado em produção: o mesmo objectivo do AOS-484, repetido, não tem releitura do
+      documento no `n1`, e o nó de resumo recebe o texto. *(Metade: o texto chega legível e o nó
+      de resumo recebe-o; a releitura continua. Ver «Estado».)*
 
 ### Fora de âmbito
 
@@ -1730,7 +1731,26 @@ perda; os resultados gravados antes continuam legíveis.
 
 ### Estado
 
-**ABERTO.** Implementado; falta a verificação em produção.
+**ABERTO.** Em produção na `v0.1.44`; a releitura, que este ticket esperava eliminar, continua.
+
+**Verificado em produção a 2026-10-03** (`v0.1.44`, imagem `sha256:405c7cb7…`), com o modelo vivo
+e o mesmo objectivo, pela fila: plano `plan-e2e-v0144-1791017397`.
+
+| Pegada | `v0.1.43` (`plan-e2e-v0143r-1790988359`) | `v0.1.44` |
+|---|---|---|
+| Entrada do `n1` no turno a seguir à leitura | 771 tokens (o documento em base64) | 489 tokens (o documento em texto) |
+| Texto final do `n1` | «Não consegui validar/ler o documento» | «Li o documento `notes` na totalidade», com o conteúdo |
+| Payload entregue ao `n2` | a frase de desistência (270 tokens de entrada) | o conteúdo (413 tokens de entrada) |
+| Resultado do `n2` | recusou resumir | resumo correcto em três pontos, num turno |
+| Releituras do `n1` | 1, negada por taint | **4, negadas por taint** (turnos 2 a 5), 6 turnos no total |
+| Desfecho | `terminal` 0, objectivo por cumprir | `terminal` 0, objectivo cumprido |
+
+**O que isto prova e o que refuta.** O documento passou a chegar ao modelo em texto, e o nó deixou
+de desistir. Mas a hipótese de que o base64 era a causa da releitura está **refutada**: com o texto
+legível no contexto, o `n1` pediu `doc_read` mais quatro vezes, todas negadas por taint (ADR-005),
+com evento e selo, e só respondeu ao sexto turno. O próprio texto final o diz: «a primeira leitura
+teve êxito e leituras subsequentes foram negadas por hook/taint». A causa da releitura fica por
+investigar, fora deste ticket.
 
 O `result_hash` do step-ledger de uma tool com sandbox muda nos runs novos, porque é o hash deste
 JSON. As capturas e os resultados memorizados antes reproduzem-se com os bytes que foram gravados.
