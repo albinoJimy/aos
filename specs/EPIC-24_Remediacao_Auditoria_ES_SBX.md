@@ -1658,3 +1658,100 @@ pontos, todos no sentido fail-closed:
 - `Healthy()` de um store só-leitura passa a falso;
 - o span de um `Create` falhado passa a levar a qualificação do seccomp;
 - o payload selado ganha `execution_boundary`.
+
+---
+
+## AOS-487 — O resultado de uma tool com sandbox chegava ao modelo em base64
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: muda a serialização do resultado da sandbox que o modelo lê, sem mexer no taint (ADR-005) nem na mediação (ADR-002). -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-24 |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P1: o modelo recebia o documento que pediu codificado, e em produção chegou a desistir de um objectivo com o documento no contexto |
+| Estimativa | S |
+| Dependências | AOS-064 (sandbox mediada), AOS-484 (contrato de dados entre nós) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/substrate/sandbox/mediated.go` (`resultDTO`, `encodeResult`), `packages/cmd/aos/sandboxwiring.go`, `packages/kernel/agent-runtime/prompt.go` (segmento do resultado da tool), `docs/reports/e2e-plano-multi-no-prod-2026-10-02.md` |
+
+### Contexto
+
+Medido em produção a 2026-10-03 (`v0.1.43`), na repetição da validação do AOS-484
+(`plan-e2e-v0143r-1790988359`). O nó `n1` leu `doc://notes` com `doc_read` (permitido), tinha o
+documento no contexto no turno seguinte (771 tokens de entrada contra 290), pediu-o outra vez, foi
+negado por taint (ADR-005) e terminou `complete` a dizer «Não consegui validar/ler o documento».
+Esse texto foi o payload entregue ao nó de resumo, e o plano saiu 0 sem o objectivo cumprido. Na
+corrida de 2026-10-02 o mesmo nó tinha escrito «O conteúdo veio codificado em Base64».
+
+A causa está na serialização. Cada tool com sandbox é registada no Reference Monitor com
+`MediatedLauncher.dispatch` (`sandboxwiring.go`), que devolve `json.Marshal(resultDTO)`. O campo
+`Stdout` era um `[]byte`, que o JSON codifica em base64. Esses bytes são o `Output` da decisão do
+RM, e o ciclo do runtime põe-nos no tail do prompt tal como vêm. O modelo recebia
+`{"stdout":"UmV1bmnDo28gZGUg…","exit_code":0}` em vez do texto.
+
+### Objectivo
+
+O modelo recebe o texto que a tool leu, como texto; um resultado binário continua a viajar sem
+perda; os resultados gravados antes continuam legíveis.
+
+### Critérios de Aceitação
+
+- [x] Um `stdout` que é UTF-8 válido viaja em `stdout_text`, como texto, sem o escape de HTML do JSON
+      (`<`, `>` e `&` chegam como estão). *(Evidência: `TestAOS487_StdoutDeTextoViajaComoTexto`.)*
+- [x] Um `stdout` binário continua em `stdout` (base64) e volta byte a byte.
+      *(Evidência: `TestAOS487_StdoutBinarioContinuaEmBase64`.)*
+- [x] Um resultado na forma anterior descodifica para os mesmos bytes, e continua untrusted.
+      *(Evidência: `TestAOS487_ResultadoGravadoAntesLeSeIgual`.)*
+- [x] Um resultado sem `stdout` fica byte a byte igual (`{"exit_code":0}`); um resultado com os dois
+      campos é recusado (`ErrAmbiguousResult`). *(Evidência: `TestAOS487_StdoutVazioMantemOsBytes`.)*
+- [x] Pelo caminho de produção — a tool registada no RM e despachada por `Mediate` — o output que
+      chega ao ciclo traz o `stdout` em texto. *(E ponta a ponta: `TestDemo_SandboxNodeEndToEnd`
+      exige `stdout_text` no prompt do turno 2. Antes exigia o base64 do conteúdo, que o driver fake
+      também põe nos artefactos, e continuava verde com o defeito; a revisão adversarial
+      confirmou-o.)*
+      *(Evidência: `TestAOS487_OModeloRecebeOTextoPeloRM`.
+      Mutações: sem o ramo UTF-8, com o escape de HTML e sem a recusa dos dois campos, cada uma
+      avermelha o teste correspondente.)*
+- [ ] Verificado em produção: o mesmo objectivo do AOS-484, repetido, não tem releitura do
+      documento no `n1`, e o nó de resumo recebe o texto.
+
+### Fora de âmbito
+
+- Os `Artifacts` (`Data []byte`) continuam em base64: são ficheiros, e os executores de produção
+  (gVisor, Firecracker) devolvem-nos vazios. O driver `fake` — o de omissão fora de produção — devolve
+  o ficheiro lido também como artefacto, pelo que em dev, smoke e CI o modelo recebe o documento duas
+  vezes: em texto (`stdout_text`) e em base64 (`artifacts[].Data`).
+- A recusa por taint da releitura do mesmo recurso (decisão do AOS-069 fase 1) e a falta de forma de
+  um nó folha declarar falha (resíduo do AOS-484) — a decidir depois de medir este ticket.
+
+### Estado
+
+**ABERTO.** Implementado; falta a verificação em produção.
+
+O `result_hash` do step-ledger de uma tool com sandbox muda nos runs novos, porque é o hash deste
+JSON. As capturas e os resultados memorizados antes reproduzem-se com os bytes que foram gravados.
+
+**Segurança.** O base64 escondia, por acidente, o conteúdo do documento ao modelo: uma instrução
+injectada num documento chegava codificada. Agora chega legível, tal como o resto do conteúdo
+untrusted (resultados de tools sem sandbox, payloads entre nós). A defesa não era a codificação e
+não muda: o resultado continua marcado `taint=untrusted` no tail, e uma tool call privilegiada pedida
+depois dele é negada pelo TaintGate (ADR-005, AOS-069 fase 1) — é essa negação que se vê em
+produção quando o `n1` tenta reler o documento. A separação de planos (DEF-806) continua aberta.
+
+Precisões da revisão adversarial:
+
+- **Rótulos literais a meio da linha.** Sem o escape de HTML, um `<correction taint=trusted>` dentro
+  de um documento chega ao modelo como está, a meio da linha do JSON (os `
+` saem escapados, por
+  isso nenhuma linha começa por `<` e o neutralizador de delimitadores continua válido ao nível dos
+  bytes). Não é uma classe nova: o texto do modelo e os payloads entre nós já chegavam em claro. É o
+  resíduo do DEF-806.
+- **Janela de retoma mista.** Um run em curso durante o deploy e retomado depois pode receber de um
+  passo já aplicado no ledger o resultado memorizado no formato antigo (base64). A idempotência e o
+  replay não são afectados (a impressão da acção não inclui o resultado, o `result_hash` não é
+  verificado na leitura, e o replay usa os bytes capturados), mas o modelo desse run volta a ver
+  base64 nesse passo.

@@ -1,8 +1,11 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"unicode/utf8"
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
@@ -115,14 +118,44 @@ func (ml *MediatedLauncher) Execute(ctx context.Context, authz Authorization, re
 // resultDTO é a serialização do [ExecResult] entre o despacho e o Execute. O taint
 // NÃO é serializado: é reimposto (untrusted) na descodificação — não há como o
 // tornar trusted.
+//
+// É TAMBÉM o que o modelo lê: o output da ToolFunc é o resultado da tool call que o
+// ciclo do runtime põe no tail do prompt, tal como vem. Por isso o `stdout` que é
+// texto (UTF-8 válido) viaja em `stdout_text`, como texto (AOS-487). Antes ia sempre
+// em `stdout`, um `[]byte`, que o JSON codifica em base64: o modelo recebia o
+// documento que pediu em base64, tentava validá-lo com uma segunda leitura (negada por
+// taint) e, em produção, chegou a desistir com o documento no contexto. O `stdout`
+// binário continua em `stdout` (base64), e é também a forma dos resultados gravados
+// antes desta versão — o descodificador lê as duas.
 type resultDTO struct {
-	Stdout    []byte     `json:"stdout,omitempty"`
-	Artifacts []Artifact `json:"artifacts,omitempty"`
-	ExitCode  int        `json:"exit_code"`
+	StdoutText string     `json:"stdout_text,omitempty"`
+	Stdout     []byte     `json:"stdout,omitempty"`
+	Artifacts  []Artifact `json:"artifacts,omitempty"`
+	ExitCode   int        `json:"exit_code"`
 }
 
+// ErrAmbiguousResult — um resultado serializado com o `stdout` nos dois campos. O
+// codificador nunca o produz; descodificá-lo obrigava a escolher um dos dois em
+// silêncio.
+var ErrAmbiguousResult = errors.New("sandbox: resultado com stdout_text e stdout ao mesmo tempo")
+
 func encodeResult(r ExecResult) ([]byte, error) {
-	return json.Marshal(resultDTO(r))
+	dto := resultDTO{Artifacts: r.Artifacts, ExitCode: r.ExitCode}
+	if utf8.Valid(r.Stdout) {
+		dto.StdoutText = string(r.Stdout)
+	} else {
+		dto.Stdout = r.Stdout
+	}
+	// Sem o escape de HTML do json.Marshal: `<`, `>` e `&` de um documento chegariam ao
+	// modelo como `<`, `>` e `&`. O Encode acrescenta um `\n` final, que
+	// sai — os bytes ficam os do json.Marshal, salvo o escape.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(dto); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 func decodeResult(b []byte) (ExecResult, error) {
@@ -133,5 +166,13 @@ func decodeResult(b []byte) (ExecResult, error) {
 	if err := json.Unmarshal(b, &dto); err != nil {
 		return ExecResult{}, err
 	}
-	return ExecResult(dto), nil // o taint é reimposto pelo tipo (sempre untrusted)
+	if dto.StdoutText != "" && len(dto.Stdout) > 0 {
+		return ExecResult{}, ErrAmbiguousResult
+	}
+	stdout := dto.Stdout
+	if dto.StdoutText != "" {
+		stdout = []byte(dto.StdoutText)
+	}
+	// o taint é reimposto pelo tipo (sempre untrusted)
+	return ExecResult{Stdout: stdout, Artifacts: dto.Artifacts, ExitCode: dto.ExitCode}, nil
 }
