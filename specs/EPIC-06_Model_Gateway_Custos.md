@@ -1050,7 +1050,7 @@ vir) e, antes dele, o DEF-275. O ticket tem de a criar antes de poder ligar o
 
 ## AOS-490 — O adaptador do gateway projecta o tail em mensagens nativas, com continuidade do raciocínio
 
-<!-- rtm: adrs-mencionados -->
+<!-- Implementa o ADR-036 §2.4 a §2.7. -->
 
 | Campo | Valor |
 |---|---|
@@ -1115,7 +1115,7 @@ enviado continua a poder reconstruir-se a partir do registo.
       nativos e tools, para saber se o `reasoning_content` chega na resposta, se é exigido no pedido
       seguinte e se sobrevive ao proxy. O resultado fica registado neste ticket. *(Ver «Medição de
       2026-10-03», abaixo.)*
-- [ ] ADR novo (projecção do tail em mensagens nativas): o `prompt_hash` é o hash do tail canónico e
+- [x] ADR-036 (o tail é canónico; o que vai para o provider é uma projecção): o `prompt_hash` é o hash do tail canónico e
       a projecção é função determinística e versionada dele; como viaja a proveniência
       (`taint`, recusas) dentro das mensagens; como se separam segmentos trusted e untrusted; o que
       se captura do raciocínio. Emenda as frases do ADR-034 e de `tecnica/` que dizem que o hash é o

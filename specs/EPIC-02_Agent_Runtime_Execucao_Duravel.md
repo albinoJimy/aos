@@ -1683,8 +1683,7 @@ Fechar o ticket sem esta prova é decisão do dono.
 
 ## AOS-489 — O tail do prompt regista a tool call do modelo e identifica o resultado (assembler 1.4.0)
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa um ADR novo: sobe a versão do assembler do prompt e acrescenta uma linha à tabela de segmentos do ADR-034. A projecção em mensagens nativas, com ADR próprio, é do AOS-490. -->
+<!-- Implementa o ADR-036 §2.1 a §2.3 (o tail canónico, o segmento `tool_call`, o layout por versão) e emenda o ADR-034 §2.1. A projecção em mensagens nativas (ADR-036 §2.4 a §2.7) é do AOS-490. -->
 
 | Campo | Valor |
 |---|---|

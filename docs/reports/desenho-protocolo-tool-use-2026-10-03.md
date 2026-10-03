@@ -4,7 +4,7 @@
 |---|---|
 | Data | 2026-10-03 |
 | Estado | Decidido pelo dono a 2026-10-03 (§7). Em implementação: AOS-489 e AOS-490 |
-| Ticket | AOS-489 (fase 1, kernel) e AOS-490 (fase 2, gateway, com ADR próprio) |
+| Ticket | AOS-489 (fase 1, kernel) e AOS-490 (fase 2, gateway); a decisão está no ADR-036 |
 | Origem | Validações em produção de 2026-10-02/03 ([relatório](e2e-plano-multi-no-prod-2026-10-02.md), AOS-484, AOS-487) |
 | Base da análise | Cinco frentes: assembler e tail, replay e retoma, taint e segurança, gateway e desempenho, pesquisa externa nos fornecedores. Medição sobre o `events.wal` de produção inteiro |
 
