@@ -1139,7 +1139,10 @@ poder reconstruir-se a partir do registo.
       segmento no tail e não entram no `assistant`. Um tail que não o permita não produz pedido
       (`ErrNativeProjection`). *(Evidência: `projection.go`;
       `TestAOS490_PedidoNativo_GoldenDerivadoAMao`, `TestAOS490_Agrupamento_PorTurno`,
-      `TestAOS490_Escalada_SoAsChamadasDespachadas`, `TestAOS490_Invariante_TailInvalidoNaoSai` no
+      `TestAOS490_Escalada_SoAsChamadasDespachadas`, `TestAOS490_Invariante_TailInvalidoNaoSai`
+      (inclui o id repetido entre turnos e o turno só com texto a meio do tail),
+      `TestAOS490_Argumentos_FormaNoWire`, `TestAOS490_NomeDeFuncaoNoWire`,
+      `TestAOS490_ToolFalhada_RotuloNoCabecalho`, `TestAOS490_AvisoDeSerieEsteril_EntreTurnos` no
       `model-gateway`; `TestAOS490_NoNativo_ChamadaPermitida` no nó, com o corpo dos dois pedidos
       derivado à mão.)*
 - [x] A proveniência não se perde: o conteúdo de cada mensagem `tool` é o segmento `tool_result`
@@ -1152,20 +1155,24 @@ poder reconstruir-se a partir do registo.
       kernel; `TestAOS490_NoNativo_RecusaPelaListaBranca` no nó.)*
 - [x] Raciocínio: o contrato do gateway (`port.Message.ReasoningContent`, contrato 1.2.0) e a
       `ModelResponse` (`Reasoning`) transportam o raciocínio do turno como carga opaca, byte a
-      byte; a captura guarda-o (`omitempty`; dentro do conteúdo cifrado por titular no modo
+      byte, em qualquer forma JSON que o provider lhe dê (uma string guarda-se como string, outra
+      forma como os bytes JSON que vieram; nunca derruba a resposta); a captura guarda-o (`omitempty`; dentro do conteúdo cifrado por titular no modo
       selado, redigido no modo sensível); a retoma e o replay devolvem-no igual; **nenhum pedido
       o leva** (`ChatRequest.MarshalWire` retira-o). `TestModelBoundaryCarriesNoAuthority`
       continua verde. *(Evidência: `TestAOS490_Travessia_RaciocinioETokensEmCache`,
-      `TestAOS490_MarshalWire_NaoEnviaRaciocinio`, `TestAOS490_Captura_*` em `replay`,
+      `TestAOS490_MarshalWire_NaoEnviaRaciocinio`, `TestAOS490_Raciocinio_QualquerFormaJSON`,
+      `TestAOS490_Travessia_RaciocinioQueNaoEString`, `TestAOS490_Captura_*` em `replay`,
       `TestAOS490_Raciocinio_ForaDoPromptDosEventosEDosSpans` no kernel, e o ponto (6) de
       `TestAOS490_NoNativo_ChamadaPermitida`.)*
 - [x] A projecção é seleccionável por configuração do nó (`AOS_MODEL_PROJECTION`: `native`, por
-      omissão, ou `text`; outro valor recusa o arranque), declarada no banner, e o modo usado
+      omissão, ou `text`; com o gateway ligado, outro valor recusa o arranque), declarada no banner, e o modo usado
       fica no manifesto do turno (`projection`, `projection_version`, `omitempty`). Com o texto
       único, e para qualquer run no layout 1.3.0, o pedido é byte-idêntico ao anterior.
       *(Evidência: `TestAOS490_Env_VocabularioFechadoEBanner`,
       `TestAOS490_TextoUnico_ByteIdentico`, `TestAOS486_NoComGateway_SemLista_ByteIdentico` — que
-      passou a fixar `text` e mantém os bytes do commit base —,
+      passou a fixar `text` e prova que, no layout 1.4.0, o pedido em texto único é o de antes do
+      AOS-490 (um só `user` com o prompt materializado; os bytes do preâmbulo são os do AOS-489,
+      que mudou face à base `4f4d419`). Byte-idêntico à base só o layout 1.3.0 —,
       `TestAOS490_RetomaECrashResumeReproduzemAsMensagens`,
       `TestAOS490_Manifesto_ProjeccaoETokensEmCache`.)*
 - [x] Desempenho: o gateway lê os tokens em cache do wire do provider
@@ -1173,7 +1180,9 @@ poder reconstruir-se a partir do registo.
       `cache_read_tokens` do `turn.recorded`. A estimativa de admissão continua sobre o prompt
       materializado nas duas projecções; a diferença está declarada em `tecnica/06` §5 e em
       `integration/model_admission.go`, e não é corrigida nesta entrega. *(Evidência:
-      `TestAOS490_Resposta_RaciocinioETokensEmCacheDoWire`, `TestAOS490_TokensEmCache_Regra`, e o
+      `TestAOS490_Resposta_RaciocinioETokensEmCacheDoWire`, `TestAOS490_TokensEmCache_Regra`
+      (as duas vias — o campo do wire e o `cache_read_tokens` de topo — com a mesma regra: sem
+      sinal negativo e com tecto em `prompt_tokens`), `TestAOS490_TokensEmCache_EmbeddingsEStream`, e o
       ponto (7) de `TestAOS490_NoNativo_ChamadaPermitida`.)*
 - [x] Gates: `routing`, `replay`, `security`, `apex`, `lint`, `build`, `layer-lint`.
       *(Evidência: corridos sobre a árvore da entrega, 2026-10-03.)*
@@ -1190,6 +1199,22 @@ poder reconstruir-se a partir do registo.
 - Devolver o raciocínio ao provider no `assistant` do turno seguinte. Fica capturado; devolvê-lo
   exige pô-lo no tail (é de lá que a projecção sai) e paga os seus tokens em cada turno.
 - Corrigir a estimativa de admissão para a forma nativa do pedido.
+- Uma ferramenta que reconstrua, do registo de um run, o pedido enviado em cada turno. O registo
+  permite-o (o replay refaz o tail e `ProjectNative` está exportada), mas nada lê
+  `manifest.projection`/`projection_version`, e o replay não recusa uma versão de projecção que
+  não conheça.
+
+### Notas da revisão adversarial (2026-10-03)
+
+- **Raciocínio em claro fora de produção.** Sem selo por titular nem modo sensível, a captura
+  guarda o raciocínio em claro, como guarda o texto do modelo. «Fora de eventos em claro» vale
+  para a captura selada (produção) e para a sensível.
+- **`function.arguments`.** JSON válido vai cru; omitido por tamanho vai como
+  `{"aos_args_omitted_bytes":N,"aos_args_digest":…}`; o que não é JSON válido vai como
+  `{"aos_args_invalid_bytes":N,"aos_args_digest":…}` e vazio como `{}`. Um modelo pode emitir
+  esse mesmo objecto; não muda autorização nenhuma.
+- **`function.name`.** Um nome que não cabe no wire sai como `aos_invalid_tool_name`, que o nó
+  recusa em `AOS_MODEL_TOOLS` (`TestAOS490_NomeReservadoRecusadoEmModelTools`).
 - Blocos de raciocínio assinados (Anthropic) e itens cifrados (OpenAI Responses): o contrato fica
   preparado para carga opaca, mas só a forma de texto por mensagem é implementada e medida.
 - A confirmação contratual do uso do `kimi-for-coding` em produção.

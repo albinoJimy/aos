@@ -142,7 +142,7 @@ func WithRun(runID string) RuntimeAdapterOption {
 // WithProjection escolhe a forma em que o adaptador envia o prompt ao provider (AOS-490, ADR-036
 // §2.4): [ProjectionText] — o prompt materializado numa mensagem de utilizador, a forma de
 // sempre e a do adaptador sem esta opção — ou [ProjectionNative] — mensagens nativas derivadas
-// do tail ([projectNative]).
+// do tail ([ProjectNative]).
 //
 // A nativa só se aplica a um turno montado num layout que a projecção cobre (a 1.4.0 — ver
 // [projecaoNativaSuporta]); um run fixado na 1.3.0 vai SEMPRE em texto único, byte a byte como
@@ -201,7 +201,7 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	nativa := a.nativa && projecaoNativaSuporta(view.AssemblyVersion)
 	if nativa {
 		var perr error
-		if msgs, perr = projectNative(view); perr != nil {
+		if msgs, perr = ProjectNative(view); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
 	}

@@ -1022,6 +1022,9 @@ func TestAOS489_ChaveDaChamadaNaoColide(t *testing.T) {
 		{"ordem de um array", c("t", `[1,2]`), c("t", `[2,1]`)},
 		{"vazio e objecto vazio", c("t", ``), c("t", `{}`)},
 		{"texto que nao e JSON", c("t", `ola`), c("t", `ola `)},
+		// AOS-490 (revisão): o encoding/json troca um byte inválido por U+FFFD ao canonizar.
+		{"UTF-8 invalido e o seu substituto", c("t", "{\"a\":\"\xff\"}"), c("t", "{\"a\":\"\xef\xbf\xbd\"}")},
+		{"dois bytes invalidos diferentes", c("t", "{\"a\":\"\xff\"}"), c("t", "{\"a\":\"\xfe\"}")},
 	}
 	for _, d := range diferentes {
 		if chaveDaChamada(d.a) == chaveDaChamada(d.b) {

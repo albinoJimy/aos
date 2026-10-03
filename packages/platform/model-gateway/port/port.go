@@ -83,7 +83,51 @@ type Message struct {
 	// seguinte e não é exigido pelo provider medido (ticket AOS-490, «Medição de
 	// 2026-10-03»). Os blocos de raciocínio assinados e os itens cifrados de outros
 	// fornecedores não têm esta forma e ficam fora do contrato.
+	//
+	// QUALQUER FORMA JSON É ACEITE ([Message.UnmarshalJSON]). O campo não é do protocolo
+	// OpenAI e cada fornecedor dá-lhe a sua forma: uma string, um objecto, uma lista de blocos.
+	// Uma string JSON guarda-se descodificada; qualquer outra forma guarda-se como os BYTES
+	// JSON crus que vieram; `null` ou ausente é vazio. Nunca é erro: uma carga que o gateway
+	// não interpreta não pode derrubar a resposta que a transporta.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+}
+
+// UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com UMA diferença:
+// `reasoning_content` aceita qualquer valor JSON (AOS-490).
+//
+// O DEFEITO QUE FECHA. Com o campo declarado como string, uma resposta cujo `reasoning_content`
+// fosse um objecto, uma lista ou um número fazia o `encoding/json` recusar a resposta INTEIRA —
+// a mensagem, as tool calls e o usage iam com ela. Antes de o campo existir essas respostas eram
+// aceites (o campo era ignorado). Afectava todos os consumidores da porta, em qualquer forma de
+// pedido.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type semMetodos Message // o mesmo layout, sem este UnmarshalJSON (evita a recursão)
+	aux := struct {
+		*semMetodos
+		ReasoningContent json.RawMessage `json:"reasoning_content"`
+	}{semMetodos: (*semMetodos)(m)}
+	m.ReasoningContent = ""
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	m.ReasoningContent = raciocinioOpaco(aux.ReasoningContent)
+	return nil
+}
+
+// raciocinioOpaco converte o valor JSON de `reasoning_content` na carga opaca que o contrato
+// transporta: uma string JSON ⇒ a string; `null` ou ausente ⇒ vazio; qualquer outra forma ⇒ os
+// bytes JSON tal como vieram.
+func raciocinioOpaco(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+	}
+	return string(raw)
 }
 
 // FunctionDef descreve uma função disponível ao modelo. Parameters é o JSON

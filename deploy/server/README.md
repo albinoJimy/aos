@@ -673,7 +673,7 @@ O nó envia a conversa de um run ao modelo numa de duas formas, escolhida no `.e
 | *(vazio)* ou `native` | Mensagens nativas derivadas do tail: `system` (o protocolo e o system do run), `user` (entradas e objectivo), e por turno do modelo um `assistant` com `tool_calls` e uma mensagem `tool` por chamada, com o `id` cunhado pelo runtime (`step-000001-tool-1`) |
 | `text` | O prompt materializado inteiro numa só mensagem de utilizador — a forma anterior, byte a byte |
 
-- **Outro valor recusa o arranque** (`ErrBadModelProjection`). O banner declara a forma em uso
+- **Com o gateway ligado (`AOS_MODEL_ENDPOINT` definida), outro valor recusa o arranque** (`ErrBadModelProjection`). Sem gateway a variável não é lida. O banner declara a forma em uso
   numa linha `projeccao do pedido ao modelo`.
 - **A nativa só vale para runs no layout `1.4.0`.** A retoma de um run começado na `1.3.0`
   continua em texto único, qualquer que seja o valor.
@@ -682,9 +682,13 @@ O nó envia a conversa de um run ao modelo numa de duas formas, escolhida no `.e
   é o do tail canónico e não o dos bytes enviados.
 - **Tokens em cache:** quando o provider reporta `usage.prompt_tokens_details.cached_tokens`, o
   valor fica em `cache_read_tokens` do `turn.recorded`.
-- **Recuo:** se o provider rejeitar a forma nativa (um `400` no primeiro turno com tool calls),
-  define `AOS_MODEL_PROJECTION=text` e recria o nó. Os runs em curso retomam em texto, e o
-  manifesto de cada turno diz em que forma foi.
+- **Recuo:** `AOS_MODEL_PROJECTION=text` e recriar o nó. É o recuo para um provider que rejeite
+  a forma nativa das mensagens — um `400` num turno que leve `assistant` com `tool_calls` ou
+  mensagens `tool`. A projecção já não envia o que um provider costuma recusar nesses campos:
+  argumentos que não são JSON válido vão como um objecto do runtime (`aos_args_invalid_bytes`),
+  e um nome de tool fora do alfabeto do wire vai como `aos_invalid_tool_name`. Os runs em curso
+  retomam em texto, e o manifesto de cada turno diz em que forma foi. **Não é recuo** para uma
+  resposta que o nó não consiga ler: a leitura da resposta é a mesma nas duas formas.
 
 O `docker-compose.prod.yml` passa a variável só ao serviço do nó. O orquestrador `aos-orq` não a
 lê: o planeador dele fala com o modelo com mensagens `system` e `user` próprias.

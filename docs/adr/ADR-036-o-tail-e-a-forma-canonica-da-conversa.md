@@ -102,9 +102,20 @@ tools vão no campo `tools` do pedido.
   pelo kernel com a mesma linha de cabeçalho e o mesmo corpo neutralizado do texto. Segmentos
   seguidos partilham uma mensagem, cada um com o seu cabeçalho.
 - O texto do modelo de um turno (`history`) é o `content` do `assistant`, neutralizado e sem
-  cabeçalho. Os argumentos de cada chamada vão crus em `function.arguments`; os omitidos por
-  tamanho vão como um JSON com `args_omitted_bytes` e `args_digest`. O nome da tool é levado ao
-  alfabeto que o wire aceita em `function.name`.
+  cabeçalho.
+- `function.arguments` tem de ser um documento JSON, e o segmento fica no tail até ao fim do run.
+  Argumentos que são JSON válido vão crus, como o modelo os emitiu. Os omitidos por tamanho vão
+  como `{"aos_args_omitted_bytes":N,"aos_args_digest":"sha256:…"}`. Os que não são JSON válido —
+  uma resposta truncada, texto solto, bytes que não são UTF-8 — vão como
+  `{"aos_args_invalid_bytes":N,"aos_args_digest":"sha256:…"}`, com o tamanho e o digest dos bytes
+  originais; vazios vão como `{}`. O texto cru continua no tail e no `prompt_hash`. As chaves
+  `aos_args_*` não são uma fronteira: um modelo pode emitir esse mesmo objecto como argumentos
+  seus, e confunde-se a si próprio; nada na autorização lê os argumentos projectados.
+- `function.name` leva o nome da tool quando ele cabe no alfabeto do wire (letras, dígitos, `_` e
+  `-`, até 64). Senão leva o nome reservado `aos_invalid_tool_name`, e não uma versão saneada:
+  `doc.read` saneado seria `doc_read`, que pode ser uma tool que existe. O nome original fica,
+  saneado como rótulo, no cabeçalho da mensagem `tool`. O nó recusa o nome reservado no seu
+  registo de tools.
 - Cada `tool_result` é uma mensagem `tool` cujo conteúdo é o segmento renderizado pelo kernel.
 - Um kind que a projecção não conheça sai em `user`, com o seu cabeçalho: é lido como dados.
 
@@ -123,18 +134,27 @@ deriva-se dos segmentos:
 **O invariante.** Cada `tool_call` projectado tem exactamente uma mensagem `tool` com o mesmo
 `id`, logo a seguir ao seu `assistant` — incluindo as negadas, as falhadas e a escalada. Um tail
 que não o permita não produz pedido: o turno falha de forma atribuível. As chamadas que o modelo
-pediu e o loop não despachou depois de uma escalada não têm segmento no tail e não aparecem.
+pediu e o loop não despachou depois de uma escalada não têm segmento no tail e não aparecem. Um
+turno do modelo sem tool calls a meio do tail também é recusado: o loop só deixa no tail turnos
+que despacharam pelo menos uma chamada.
 
 O modo usado e a versão da projecção ficam gravados no manifesto do turno (`projection`,
 `projection_version`; ausentes = texto único). A configuração é do nó, não do run: um run
 re-hospedado depois de o nó mudar de modo segue no modo novo, e é o manifesto de cada turno que
 diz em que forma ele foi.
 
+**O que o registo permite, e o que ainda não tem ferramenta.** O replay reconstrói o tail de cada
+turno, e `ProjectNative` — a função que o adaptador usa, exportada e pura — dá as mensagens a
+partir da vista desse turno. Não existe ainda um leitor que junte as duas coisas: nada lê
+`manifest.projection` nem `projection_version`, o motor de replay não expõe a vista
+reconstruída, e não recusa uma `projection_version` que não conheça. Fica por fazer.
+
 ### 2.5 O `prompt_hash` é o hash do tail canónico
 
 O `prompt_hash` continua a ser o hash do prompt materializado em texto, que é a serialização
 canónica do tail. Com a projecção nativa, os bytes enviados ao provider deixam de ser os bytes com
-hash; o que o hash ancora é a conversa, e a projecção reconstrói-se dela pela versão gravada. As
+hash; o que o hash ancora é a conversa, e a projecção é função dela e da versão gravada (§2.4
+diz o que existe hoje para a reconstruir). As
 frases de código e de documentação que dizem «os mesmos bytes que vão para o provider» passam a
 valer só para a projecção de texto único.
 
@@ -157,8 +177,12 @@ O contrato do gateway e a resposta do modelo transportam o raciocínio do turno
 retoma e o replay devolvem-no igual.
 
 **Não é devolvido ao provider nesta entrega; fica capturado.** Nenhum pedido o leva — a
-serialização do pedido retira-o de todas as mensagens —, e não entra no tail, no prompt, em spans
-nem em eventos em claro. Devolvê-lo custaria os seus tokens em cada turno seguinte e obrigava a
+serialização do pedido retira-o de todas as mensagens —, e não entra no tail, no prompt nem em
+spans. Só a captura do turno o guarda, e segue a regra do texto do modelo: com a captura selada
+por titular (produção) vai dentro do conteúdo cifrado; no modo sensível é redigido; sem selo nem
+modo sensível (desenvolvimento) fica em claro no `replay.captured`. O campo aceita qualquer valor
+JSON — uma string guarda-se como string, outra forma como os bytes JSON que vieram — e nunca
+derruba a resposta. Devolvê-lo custaria os seus tokens em cada turno seguinte e obrigava a
 pô-lo no tail, que é de onde a projecção sai. Sem tecto próprio: é limitado pelo corpo da
 resposta (1 MiB), como o texto do modelo, e truncá-lo quebrava a carga opaca.
 
@@ -188,8 +212,8 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
   tamanho. Se contiverem dados pessoais ou segredos, são reenviados ao provider que sirva o turno.
 - Com os argumentos ao lado do código de recusa, conteúdo injectado pode sondar a fronteira da
   política argumento a argumento. A `Reason` continua fora.
-- O preâmbulo custa cerca de 277 tokens de entrada por turno na projecção de texto único (1 108
-  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 330 (1 322 bytes).
+- O preâmbulo custa cerca de 286 tokens de entrada por turno na projecção de texto único (1 144
+  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 390 (1 559 bytes).
 - A estimativa de admissão de um turno continua a fazer-se sobre o prompt materializado, também
   quando o pedido vai em mensagens nativas.
 - O `prompt_hash` deixa de ser, na projecção nativa, o hash dos bytes enviados.
@@ -207,7 +231,10 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
   segmento novo no replay.
 - **Chamadas paralelas, streaming, blocos de raciocínio assinados e itens cifrados:** fora desta
   decisão.
-- **Argumentos que não são JSON.** Vão crus em `function.arguments`, como o modelo os emitiu. Um
-  provider que valide esse campo recusa o pedido seguinte; não foi medido.
+- **Argumentos JSON que não são um objecto** (`"tick"`, `42`). Vão crus em `function.arguments`.
+  Se um provider exige ali um objecto não foi medido.
+- **Reconstrução do pedido a partir do registo.** O registo permite-a e a função está exportada;
+  falta a ferramenta que a faça de ponta a ponta, e a recusa de uma `projection_version`
+  desconhecida no replay.
 - **Run sem objectivo nem entradas.** A projecção nativa dá um pedido só com `system`; se o
   provider o aceita não foi medido.

@@ -190,29 +190,34 @@ type wireCachedProbe struct {
 // `prompt_tokens_details.cached_tokens`, o gateway lia zero, o SLI de cache-hit-rate marcava
 // 0% e a contabilidade cobrava o prompt inteiro ao preço de input.
 //
-// A REGRA. Um `cache_read_tokens` de topo já preenchido prevalece (é a forma deste contrato).
-// Senão vale o `cached_tokens` do wire, quando positivo, com tecto em PromptTokens: os tokens
-// em cache são um SUBCONJUNTO do prompt — é sobre isso que assentam a contabilidade de custo
-// (input facturável = prompt − cache) e o SLI —, e um provider que reporte mais cache do que
-// prompt está inconsistente; não se grava uma taxa acima de 100%. Um valor negativo ou um
-// corpo sem o campo dão zero.
+// A REGRA, a mesma para as duas vias. Um `cache_read_tokens` de topo POSITIVO prevalece (é a
+// forma deste contrato); senão vale o `cached_tokens` do wire. O valor escolhido passa por
+// [cacheSaneada]. Um corpo sem nenhum dos dois campos dá zero.
 func cacheLidaDoWire(data []byte, u Usage) int64 {
-	if u.CacheReadTokens != 0 {
-		return u.CacheReadTokens
-	}
-	var probe wireCachedProbe
-	if err := json.Unmarshal(data, &probe); err != nil || probe.Usage == nil || probe.Usage.PromptTokensDetails == nil {
-		return 0
-	}
-	cached := probe.Usage.PromptTokensDetails.CachedTokens
+	cached := u.CacheReadTokens
 	if cached <= 0 {
+		cached = 0
+		var probe wireCachedProbe
+		if err := json.Unmarshal(data, &probe); err == nil && probe.Usage != nil && probe.Usage.PromptTokensDetails != nil {
+			cached = probe.Usage.PromptTokensDetails.CachedTokens
+		}
+	}
+	return cacheSaneada(cached, u.PromptTokens)
+}
+
+// cacheSaneada aplica a um contador de tokens em cache VINDO DO PROVIDER os dois limites que o
+// resto do sistema assume: nunca negativo, e nunca acima de prompt. Os tokens em cache são um
+// SUBCONJUNTO do prompt — é sobre isso que assentam a contabilidade de custo (input facturável =
+// prompt − cache) e o SLI de cache —, e o valor vai em claro para o `turn.recorded`. Um provider
+// que reporte −7, ou mais cache do que prompt, está inconsistente: grava-se 0, ou o prompt, e
+// nunca uma taxa negativa ou acima de 100%. Vale para QUALQUER via por onde o número chegue — o
+// campo do wire OpenAI, o campo de topo deste contrato, o chunk final de um stream.
+func cacheSaneada(cached, prompt int64) int64 {
+	if cached <= 0 || prompt <= 0 {
 		return 0
 	}
-	if cached > u.PromptTokens {
-		cached = u.PromptTokens
-	}
-	if cached < 0 {
-		return 0
+	if cached > prompt {
+		return prompt
 	}
 	return cached
 }
@@ -226,6 +231,7 @@ func UnmarshalEmbeddingsResponse(data []byte) (EmbeddingsResponse, error) {
 		return EmbeddingsResponse{}, err
 	}
 	resp.Usage.Ausente = usageAusente(data)
+	resp.Usage.CacheReadTokens = cacheSaneada(resp.Usage.CacheReadTokens, resp.Usage.PromptTokens)
 	return resp, nil
 }
 
@@ -295,6 +301,8 @@ func CollectStream(s ChatStream) (ChatResponse, error) {
 		}
 		if d.Usage != nil {
 			usage = *d.Usage
+			// A mesma regra do caminho síncrono (AOS-490): o contador vem do provider.
+			usage.CacheReadTokens = cacheSaneada(usage.CacheReadTokens, usage.PromptTokens)
 		}
 		for _, tc := range d.ToolCalls {
 			cur, ok := byIdx[tc.Index]

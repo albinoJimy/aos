@@ -54,6 +54,12 @@ func TestAOS490_TokensEmCache_Regra(t *testing.T) {
 		{"details null", `{"prompt_tokens":100,"prompt_tokens_details":null}`, 0},
 		{"cached_tokens do wire", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":64}}`, 64},
 		{"cache_read_tokens de topo prevalece", `{"prompt_tokens":100,"cache_read_tokens":10,"prompt_tokens_details":{"cached_tokens":64}}`, 10},
+		// A via de TOPO tem a mesma regra da do wire: sem sinal negativo e com tecto no prompt.
+		{"topo negativo nao e leitura", `{"prompt_tokens":100,"cache_read_tokens":-7}`, 0},
+		{"topo negativo cede ao cached_tokens do wire", `{"prompt_tokens":100,"cache_read_tokens":-7,"prompt_tokens_details":{"cached_tokens":64}}`, 64},
+		{"topo acima do prompt fica no prompt", `{"prompt_tokens":100,"cache_read_tokens":1000000000000}`, 100},
+		{"topo sem prompt nao inventa cache", `{"cache_read_tokens":50}`, 0},
+		{"topo com prompt negativo", `{"prompt_tokens":-3,"cache_read_tokens":50}`, 0},
 		{"negativo nao e leitura", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":-5}}`, 0},
 		{"mais cache do que prompt fica no prompt", `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":500}}`, 100},
 		{"usage sem prompt nao inventa cache", `{"prompt_tokens_details":{"cached_tokens":64}}`, 0},
@@ -103,5 +109,73 @@ func TestAOS490_MarshalWire_NaoEnviaRaciocinio(t *testing.T) {
 	wire, _ := port.ChatRequest{Model: "m", Messages: msgs[:1]}.MarshalWire(false)
 	if string(wire) != `{"model":"m","messages":[{"role":"user","content":"oi"}]}` {
 		t.Fatalf("wire de um pedido simples mudou: %s", wire)
+	}
+}
+
+// A regra da cache vale também nas outras duas vias por onde um `usage` do provider entra: a
+// resposta de embeddings e o chunk final de um stream.
+func TestAOS490_TokensEmCache_EmbeddingsEStream(t *testing.T) {
+	t.Parallel()
+	emb, err := port.UnmarshalEmbeddingsResponse([]byte(`{"data":[],"usage":{"prompt_tokens":10,"cache_read_tokens":-7}}`))
+	if err != nil || emb.Usage.CacheReadTokens != 0 {
+		t.Fatalf("embeddings: %+v (%v)", emb.Usage, err)
+	}
+	for _, c := range []struct{ in, quer int64 }{{-7, 0}, {1 << 40, 100}, {64, 64}} {
+		resp, err := port.CollectStream(port.NewSliceStream([]port.ChatStreamDelta{
+			{Content: "ok", FinishReason: "stop", Usage: &port.Usage{PromptTokens: 100, CompletionTokens: 1, CacheReadTokens: c.in}},
+		}))
+		if err != nil || resp.Usage.CacheReadTokens != c.quer {
+			t.Fatalf("stream com cache_read_tokens=%d: veio %d, quero %d (%v)", c.in, resp.Usage.CacheReadTokens, c.quer, err)
+		}
+	}
+}
+
+// `reasoning_content` É CARGA OPACA: qualquer valor JSON é aceite, e nenhum derruba a resposta.
+// Uma string guarda-se descodificada; outra forma guarda-se como os bytes JSON que vieram; null
+// ou ausente é vazio. O resto da mensagem e o usage lêem-se como sempre.
+func TestAOS490_Raciocinio_QualquerFormaJSON(t *testing.T) {
+	t.Parallel()
+	casos := []struct {
+		nome, valor, quer string
+	}{
+		{"string", `"penso\nlogo"`, "penso\nlogo"},
+		{"string vazia", `""`, ""},
+		{"null", `null`, ""},
+		{"objecto", `{"x":1}`, `{"x":1}`},
+		{"lista de strings", `["a","b"]`, `["a","b"]`},
+		{"numero", `42`, `42`},
+		{"booleano", `true`, `true`},
+		{"lista de blocos", `[{"type":"thinking","thinking":"hmm","signature":"abc"}]`, `[{"type":"thinking","thinking":"hmm","signature":"abc"}]`},
+		{"objecto com espaco fica como veio", `{ "x" : 1 }`, `{ "x" : 1 }`},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			t.Parallel()
+			corpo := `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"texto","reasoning_content":` + c.valor +
+				`,"tool_calls":[{"id":"c1","type":"function","function":{"name":"t","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":2}}`
+			resp, err := port.UnmarshalChatResponse([]byte(corpo))
+			if err != nil {
+				t.Fatalf("a resposta foi recusada por causa do reasoning_content: %v", err)
+			}
+			msg := resp.Choices[0].Message
+			if msg.ReasoningContent != c.quer {
+				t.Fatalf("ReasoningContent = %q, quero %q", msg.ReasoningContent, c.quer)
+			}
+			if msg.Role != port.RoleAssistant || msg.Content != "texto" || len(msg.ToolCalls) != 1 || msg.ToolCalls[0].ID != "c1" || resp.Usage.PromptTokens != 7 {
+				t.Fatalf("o resto da resposta nao foi lido como sempre: %+v / %+v", msg, resp.Usage)
+			}
+		})
+	}
+	// Ausente: vazio, e uma mensagem reutilizada não herda o raciocínio da leitura anterior.
+	var m port.Message
+	if err := m.UnmarshalJSON([]byte(`{"role":"assistant","content":"a","reasoning_content":"r"}`)); err != nil || m.ReasoningContent != "r" {
+		t.Fatalf("leitura directa: %+v (%v)", m, err)
+	}
+	if err := m.UnmarshalJSON([]byte(`{"role":"assistant","content":"b"}`)); err != nil || m.ReasoningContent != "" || m.Content != "b" {
+		t.Fatalf("mensagem sem o campo: %+v (%v)", m, err)
+	}
+	// JSON malformado continua a ser erro — a tolerância é para a FORMA do campo, não para o corpo.
+	if _, err := port.UnmarshalChatResponse([]byte(`{"choices":[{"message":{"role":"assistant","reasoning_content":{]}}]}`)); err == nil {
+		t.Fatal("um corpo que nao e JSON tinha de continuar a ser recusado")
 	}
 }

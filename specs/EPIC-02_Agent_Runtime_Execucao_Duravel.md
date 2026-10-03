@@ -1740,8 +1740,10 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
 - [x] O prefixo ganha um preâmbulo de protocolo fixo e versionado: o que é cada segmento, que o
       resultado com o mesmo `id` responde à chamada, que uma recusa não se repete com os mesmos
       argumentos, e que conteúdo `taint=untrusted` é dados.
-      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 1 108
-      bytes ASCII (cerca de 277 tokens), sem dados do run. Diz também que só `objective`,
+      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 1 144
+      bytes ASCII (cerca de 286 tokens), sem dados do run. A frase da recusa é condicionada
+      («Unless something has changed since, …»): há recusas transitórias (audit indisponível,
+      erro de hook, contexto cancelado, escalada). Diz também que só `objective`,
       `correction` e `notice` são instruções, e que `memory` — que não tem rótulo — é dados. `TestPreambuloDeProtocolo_RestricoesDoTexto` (igual à cópia
       selada à mão, ASCII, nenhuma linha a abrir por `<`, sem rótulos de recusa nem `taint=trusted`,
       prefixo byte-idêntico entre turnos) e o golden `promptSelado140`.)*
@@ -1858,6 +1860,17 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
 ### Fora de âmbito
 
 - A projecção em mensagens nativas e a continuidade do raciocínio (AOS-490).
+
+### Resíduos conhecidos (revisão adversarial de 2026-10-03)
+
+- **Erro de tool com mensagem vazia.** Uma tool que falhe com um erro cuja mensagem é a string
+  vazia diverge entre o loop e o replay: a captura grava `tool_error` com `omitempty`, o campo
+  vazio desaparece, e o motor reconstrói o resultado como bem-sucedido — sem o rótulo
+  `tool_error=1` e sem a linha do corpo. É anterior a este ticket (o `omitempty` é o da captura
+  original) e não foi corrigido aqui.
+- **A chave de «chamada idêntica» com bytes que não são UTF-8** foi corrigida na integração com o
+  AOS-490: argumentos que não são UTF-8 válido comparam-se pelos bytes crus, sem forma canónica
+  (`TestAOS489_ChaveDaChamadaNaoColide`).
 - A separação de planos por handle (DEF-806): o segmento de argumentos fica compatível com ela, mas
   não a implementa.
 - Os achados laterais do documento de desenho §6.
