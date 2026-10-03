@@ -1107,6 +1107,59 @@ Reconstituir os desfechos que ficaram por gravar em logs antigos (estão no WORM
 
 **ABERTO.**
 
+## AOS-488 — O teste do producer por família falha 1 em 3: a expiração da aprovação corre no mesmo tick do `created_at`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: torna determinista o cenário do teste AC5 do AOS-478. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 (Event Store e Reference Monitor) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P3: só o teste falha, mas um gate intermitente ensina a re-correr em vez de ler |
+| Estimativa | S |
+| Dependências | AOS-478 (o teste), AOS-021 (varrimento de aprovações) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/cmd/aos/aos478_producer_por_familia_test.go`, `packages/cmd/aos/approval_sweeper.go`, `packages/cmd/aos/escalation_sink.go`, `packages/integration/approval_store_durable.go` (`ListExpirable`) |
+
+### Contexto
+
+Medido na base `dd836a0` (2026-10-03), em Windows: `go test -race -count=6 -run
+TestAOS478_ProducerPorFamilia .` falhou 2 de 6 vezes com «o cenário não exercitou
+approval.expired — a verificação deste tipo seria vácua». Falhou também na suite inteira do
+`cmd/aos`.
+
+O cenário provocava a expiração do pendente do run B encolhendo o TTL para 1 ns e chamando o
+varrimento logo a seguir. O `created_at` do pendente vem do relógio de parede
+(`nodeEscalationSink`, `time.Now`) e o varrimento compara-o com outro `time.Now()`. O instante
+gravado não leva leitura monotónica, e o relógio de parede do Windows avança por ticks: quando o
+varrimento cai no mesmo tick, a idade dá 0, que é menor do que 1 ns, e nada expira.
+
+### Objectivo
+
+O cenário expira o pendente de forma determinista, sem `time.Sleep` e sem enfraquecer a
+verificação de não-vacuidade de `approval.expired`.
+
+### Critérios de Aceitação
+
+- [x] O varrimento de aprovações mede a idade contra um relógio injectável do `NodeService`
+      (`approvalClock`, nil ⇒ `time.Now`); em produção nada muda.
+- [x] O cenário usa o TTL de produção e um `testkit.ManualClock` ancorado no `created_at`
+      gravado: um nanossegundo antes do TTL o pendente continua pendente, no TTL expira.
+- [x] A lista de não-vacuidade do teste mantém `approval.expired`.
+- [x] `go test -race -count=20 -run TestAOS478_ProducerPorFamilia .` verde.
+
+### Fora de âmbito
+
+O `created_at` continua a vir do relógio de parede no `nodeEscalationSink`; injectá-lo exigia
+levar um relógio pelo `Bootstrap`, e o teste já não depende dele.
+
+### Estado
+
+**FEITO.**
+
 ---
 
 ## Controlo de versões
