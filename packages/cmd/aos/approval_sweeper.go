@@ -85,7 +85,11 @@ func (s *NodeService) sweepApprovals(stop <-chan struct{}) {
 // Exportada-por-teste através de [NodeService.SweepApprovalsNow].
 func (s *NodeService) sweepApprovalsOnce(ctx context.Context) {
 	pend := s.node.PendingApprovals
-	expiraveis, err := pend.ListExpirable(ctx, time.Now(), s.approvalTTL)
+	agora := time.Now
+	if s.approvalClock != nil {
+		agora = s.approvalClock
+	}
+	expiraveis, err := pend.ListExpirable(ctx, agora(), s.approvalTTL)
 	if err != nil {
 		s.log("varrimento de aprovacoes: falha a listar expiraveis (re-tenta no proximo tick): %v", err)
 		return
