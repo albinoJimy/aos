@@ -1660,7 +1660,24 @@ call: quem pediu, o quê, em que passo, e porque foi negada.
 
 ### Estado
 
-**ABERTO.** Implementado; falta a verificação em produção.
+**ABERTO.** Implementado; a verificação em produção não é alcançável pelo caminho normal.
+
+**Verificado em produção a 2026-10-03** (`v0.1.43`, imagem `sha256:feca01e6…`), com o modelo
+vivo e o mesmo objectivo do relatório de 2026-10-02, submetido por `POST /plans` e drenado pela
+fila: plano `plan-e2e-v0143-1790987272`. **O critério não se cumpriu, e por uma razão que não é defeito.**
+
+Nenhum run do plano deixou uma recusa pela lista-branca (`E_TOOL_OUTSIDE_RUN_ALLOWLIST`: 0
+ocorrências). Com o AOS-486 na mesma release, o modelo de um run filho deixou de receber o schema
+das tools que a lista nega, e por isso não as pede: o `n2`, com a lista vazia, teve
+`tool_calls_requested=0`. A imposição no Reference Monitor passou a ser defesa em profundidade, e
+um run com o modelo vivo já não a exercita.
+
+O que fica provado em produção é só o caminho de mediação do mesmo run: as três recusas por taint
+do `n1` deixaram `tool.call.denied` e selo `deny` na partição do run, como o desenho exige para
+qualquer recusa do RM. A recusa pela lista-branca em si está provada pelos testes do nó composto
+(`TestAOS485_NoComposto_ListaVaziaNegaPelaListaEConta`, com o `/metrics`). Exercê-la em produção
+exige um modelo que peça uma tool que não lhe foi oferecida, o que o caminho normal já não produz.
+Fechar o ticket sem esta prova é decisão do dono.
 
 ---
 
