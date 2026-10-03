@@ -52,9 +52,12 @@ corpo. O `tool_result` leva o mesmo `id` e nome.
 - O tipo `tool_call` é classificado como output do modelo: não eleva nem baixa a autoridade.
 - O prefixo ganha um preâmbulo de protocolo fixo e versionado, que diz ao modelo o que são os
   segmentos.
-- À terceira tool call idêntica de um run (mesma tool, mesmos argumentos) o tail leva, a seguir ao
-  resultado, um segmento `notice`: trusted, de texto fixo, com o `id` da primeira dessas chamadas.
-  É derivado das tool calls do run — não é capturado, e o replay recalcula-o.
+- Quando a mesma tool call (mesma tool, mesmos argumentos) dá o mesmo desfecho três vezes seguidas
+  num run, o tail leva, a seguir ao terceiro resultado, um segmento `notice`: trusted, de texto
+  fixo, com o `id` da primeira chamada dessa série. É derivado das tool calls do run e dos seus
+  resultados — não é capturado, e o replay recalcula-o.
+- O `tool_result` de uma tool que falhou leva o rótulo `tool_error=1` na linha de delimitação; a
+  mensagem do erro fica no corpo.
 
 ### 2.3 O layout é versionado, e a versão fixa-se por run
 
@@ -87,7 +90,11 @@ projecção, que adapta o preâmbulo da 1.4.0 à forma de mensagens: as mensagen
 são feitas de segmentos com uma linha de cabeçalho que só o runtime escreve; só `objective`,
 `correction` e `notice` são instruções; tudo o resto — as mensagens `tool`, `plan_input`,
 `memory`, o que levar `taint=untrusted` e o texto das mensagens `assistant` anteriores — é dados.
-O bloco TOOLSET do prefixo de texto não tem equivalente: as tools vão no campo `tools` do pedido.
+A falha e a recusa lêem-se, como no texto, pelos rótulos `tool_error` e `tool_denied` do
+cabeçalho da mensagem `tool`. O corpo do `notice` de série estéril é o do layout e fala do
+«tool_call whose id is the ref label»: o protocolo nativo diz que essa é a tool call com esse `id`
+numa mensagem `assistant` anterior. O bloco TOOLSET do prefixo de texto não tem equivalente: as
+tools vão no campo `tools` do pedido.
 
 **O mapeamento.**
 
@@ -181,8 +188,8 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
   tamanho. Se contiverem dados pessoais ou segredos, são reenviados ao provider que sirva o turno.
 - Com os argumentos ao lado do código de recusa, conteúdo injectado pode sondar a fronteira da
   política argumento a argumento. A `Reason` continua fora.
-- O preâmbulo custa cerca de 280 tokens de entrada por turno na projecção de texto único (1 118
-  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 314 (1 256 bytes).
+- O preâmbulo custa cerca de 277 tokens de entrada por turno na projecção de texto único (1 108
+  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 330 (1 322 bytes).
 - A estimativa de admissão de um turno continua a fazer-se sobre o prompt materializado, também
   quando o pedido vai em mensagens nativas.
 - O `prompt_hash` deixa de ser, na projecção nativa, o hash dos bytes enviados.

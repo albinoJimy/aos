@@ -835,17 +835,29 @@ func correrGuiaoDeTurnos(t *testing.T, h *harness, goal Goal, turnos [][]ToolInv
 }
 
 // avisoSelado é o texto do aviso de repetição, escrito aqui outra vez: é parte do layout 1.4.0.
-const avisoSelado = "You have now made this exact tool call (same tool, same arguments) 3 times. Its results are already in the CONTEXT; the first one is the tool_result whose id is the ref label of this header. Do not make this call again: use those results, or change your approach."
+const avisoSelado = "The last 3 times you made this exact tool call (same tool, same arguments) the outcome was the same; the first of them is the tool_call whose id is the ref label of this header. Unless something has changed since, calling it again will give the same outcome. Use the results you already have, or change your approach."
+
+// linhaDoAviso é a linha de delimitação do aviso para a série que começou na chamada dada.
+func linhaDoAviso(ref string) string { return "<notice taint=trusted ref=" + ref + ">" }
+
+// avisosNoPrompt conta as linhas de delimitação `notice` do prompt.
+func avisosNoPrompt(prompt []byte) int { return bytes.Count(prompt, []byte("\n<notice ")) }
 
 // TestAOS489_AvisoATerceiraChamadaIdentica: a terceira chamada idêntica (mesma tool, mesmos
-// argumentos) ganha um `notice` trusted a seguir ao seu resultado — não antes, uma só vez, e com
-// o id da PRIMEIRA no rótulo `ref`. Argumentos JSON com outra ordem de chaves são a mesma chamada;
-// argumentos diferentes, ou outra tool, não contam.
+// argumentos) seguida com o MESMO desfecho ganha um `notice` trusted a seguir ao seu resultado —
+// não antes, não outra vez à quarta, e com o id da PRIMEIRA da série no rótulo `ref`. Argumentos
+// JSON com outra ordem de chaves são a mesma chamada; argumentos diferentes, ou outra tool, não
+// contam.
 func TestAOS489_AvisoATerceiraChamadaIdentica(t *testing.T) {
 	ler := func(args string) ToolInvocation {
-		return ToolInvocation{ToolID: "echo", Capability: "cap:echo", Input: []byte(args)}
+		return ToolInvocation{ToolID: "ler", Capability: "cap:fs.read", Input: []byte(args)}
 	}
-	h := newHarness(t, echoToolset())
+	tools := func() map[string]referencemonitor.ToolFunc {
+		return map[string]referencemonitor.ToolFunc{
+			"ler": func(context.Context, []byte) ([]byte, error) { return []byte("conteudo do documento"), nil },
+		}
+	}
+	h := newHarness(t, tools())
 	views := correrGuiaoDeTurnos(t, h, sampleGoal(), [][]ToolInvocation{
 		{ler(`{"doc":"notes","p":1}`), ler(`{"doc":"outro","p":1}`)},                             // turno 1: 1.ª vez, e outra chamada
 		{ler(`{"p":1,"doc":"notes"}`)},                                                           // turno 2: 2.ª vez (chaves trocadas)
@@ -856,26 +868,24 @@ func TestAOS489_AvisoATerceiraChamadaIdentica(t *testing.T) {
 	if len(views) != 6 {
 		t.Fatalf("queria 6 turnos, vieram %d", len(views))
 	}
-	const linhaDoAviso = "<notice taint=trusted ref=step-000001-tool-1>"
-	conta := func(prompt []byte) int { return bytes.Count(prompt, []byte("\n"+linhaDoAviso+"\n")) }
 	for i := 0; i < 4; i++ { // turnos 1..4: a terceira ainda não foi despachada
-		if n := conta(views[i]); n != 0 || bytes.Contains(views[i], []byte("<notice")) {
+		if avisosNoPrompt(views[i]) != 0 {
 			t.Fatalf("turno %d: o aviso apareceu antes da terceira chamada identica\n%s", i+1, views[i])
 		}
 	}
 	// Turno 5: o tail acaba na 3.ª chamada, no seu resultado e no aviso — byte a byte.
-	const fim = "<tool_call taint=untrusted id=step-000004-tool-1 name=echo>\n" +
+	fim := "<tool_call taint=untrusted id=step-000004-tool-1 name=ler>\n" +
 		"{\"doc\":\"notes\",\"p\":1}\n" +
-		"<tool_result taint=untrusted id=step-000004-tool-1 name=echo>\n" +
-		"{\"doc\":\"notes\",\"p\":1}\n" +
-		"<notice taint=trusted ref=step-000001-tool-1>\n" +
+		"<tool_result taint=untrusted id=step-000004-tool-1 name=ler>\n" +
+		"conteudo do documento\n" +
+		linhaDoAviso("step-000001-tool-1") + "\n" +
 		avisoSelado + "\n"
 	if !bytes.HasSuffix(views[4], []byte(fim)) {
 		t.Fatalf("o tail do turno 5 devia acabar no aviso:\n--- quero o fim ---\n%s\n--- obtido ---\n%s", fim, views[4])
 	}
 	// Turno 6: a 4.ª chamada idêntica NÃO acrescenta outro aviso.
-	if n := conta(views[5]); n != 1 || bytes.Count(views[5], []byte("\n<notice")) != 1 {
-		t.Fatalf("o aviso sai UMA vez por (tool, argumentos); no turno 6 ha %d", n)
+	if n := avisosNoPrompt(views[5]); n != 1 {
+		t.Fatalf("o aviso sai quando a serie chega a tres, e nao outra vez a quarta; no turno 6 ha %d", n)
 	}
 	if avisoDeRepeticao140 != avisoSelado || RepeatNoticeAt != 3 {
 		t.Fatal("o texto do aviso ou o limiar mudaram: sao parte do layout 1.4.0")
@@ -885,9 +895,16 @@ func TestAOS489_AvisoATerceiraChamadaIdentica(t *testing.T) {
 			t.Fatalf("o aviso tem de ser ASCII imprimivel numa so linha; byte %#x", avisoSelado[i])
 		}
 	}
+	// O texto não PROÍBE nem promete resultados que podem não existir (três recusas não têm
+	// resultado nenhum): afirma o que o runtime viu e condiciona a previsão.
+	for _, proibido := range []string{"Do not", "Never", "results are already"} {
+		if strings.Contains(avisoSelado, proibido) {
+			t.Fatalf("o aviso contem %q: tem de ser verdadeiro com chamadas negadas e falhadas, e nao e uma proibicao", proibido)
+		}
+	}
 
 	// 1.3.0: a MESMA forma de trajectória não ganha nada — nem aviso, nem tool_call.
-	h130 := newHarness(t, echoToolset())
+	h130 := newHarness(t, tools())
 	g := sampleGoal()
 	g.AssemblyVersion = AssemblyVersion130
 	for i, v := range correrGuiaoDeTurnos(t, h130, g, [][]ToolInvocation{
@@ -896,6 +913,183 @@ func TestAOS489_AvisoATerceiraChamadaIdentica(t *testing.T) {
 		if bytes.Contains(v, []byte("<notice")) || bytes.Contains(v, []byte("<tool_call")) {
 			t.Fatalf("turno %d: um run 1.3.0 ganhou um segmento da 1.4.0:\n%s", i+1, v)
 		}
+	}
+}
+
+// TestAOS489_AvisoSoEmRepeticoesEstereis fixa a regra: o aviso sai quando a mesma chamada deu
+// o MESMO desfecho três vezes SEGUIDAS — seja ele um resultado, uma falha ou uma recusa — e não
+// sai quando o resultado mudou entre chamadas (releitura depois de uma escrita, polling). Um
+// resultado novo recomeça a série nessa chamada.
+func TestAOS489_AvisoSoEmRepeticoesEstereis(t *testing.T) {
+	umaPorTurno := func(inv ToolInvocation, n int) [][]ToolInvocation {
+		out := make([][]ToolInvocation, n)
+		for i := range out {
+			out[i] = []ToolInvocation{inv}
+		}
+		return out
+	}
+
+	t.Run("tres negadas: aviso, e o texto continua verdadeiro", func(t *testing.T) {
+		h := newHarness(t, nil) // nenhuma tool registada: todas as chamadas são negadas
+		views := correrGuiaoDeTurnos(t, h, sampleGoal(), umaPorTurno(ToolInvocation{ToolID: "web_post", Capability: "cap:http.post", Input: []byte(`{"url":"x"}`)}, 3))
+		fim := "<tool_result taint=untrusted id=step-000003-tool-1 name=web_post tool_denied=deny denied_code=" + referencemonitor.CodeToolNotRegistered + " denied_by=dispatch>\n" +
+			"\n" +
+			linhaDoAviso("step-000001-tool-1") + "\n" + avisoSelado + "\n"
+		if avisosNoPrompt(views[2]) != 0 || !bytes.HasSuffix(views[3], []byte(fim)) {
+			t.Fatalf("tres recusas iguais: queria o aviso a seguir a terceira:\n%s", views[3])
+		}
+	})
+
+	t.Run("tres falhadas com o mesmo erro: aviso", func(t *testing.T) {
+		h := newHarness(t, map[string]referencemonitor.ToolFunc{
+			"http_get": func(context.Context, []byte) ([]byte, error) { return nil, errors.New("timeout") },
+		})
+		views := correrGuiaoDeTurnos(t, h, sampleGoal(), umaPorTurno(ToolInvocation{ToolID: "http_get", Capability: "cap:http.get", Input: []byte(`{"url":"x"}`)}, 3))
+		fim := "<tool_result taint=untrusted id=step-000003-tool-1 name=http_get tool_error=1>\n" +
+			"tool_error=timeout\n" +
+			"\n" +
+			linhaDoAviso("step-000001-tool-1") + "\n" + avisoSelado + "\n"
+		if avisosNoPrompt(views[2]) != 0 || !bytes.HasSuffix(views[3], []byte(fim)) {
+			t.Fatalf("tres falhas iguais: queria o aviso a seguir a terceira:\n%s", views[3])
+		}
+	})
+
+	t.Run("falhas com erros DIFERENTES: sem aviso", func(t *testing.T) {
+		n := 0
+		h := newHarness(t, map[string]referencemonitor.ToolFunc{
+			"http_get": func(context.Context, []byte) ([]byte, error) { n++; return nil, errors.New("tentativa " + itoa(n)) },
+		})
+		views := correrGuiaoDeTurnos(t, h, sampleGoal(), umaPorTurno(ToolInvocation{ToolID: "http_get", Capability: "cap:http.get", Input: []byte(`{"url":"x"}`)}, 4))
+		if avisosNoPrompt(views[4]) != 0 {
+			t.Fatalf("quatro falhas com mensagens diferentes nao sao uma repeticao esteril:\n%s", views[4])
+		}
+	})
+
+	t.Run("leitura, escrita, leitura, escrita, leitura: sem aviso; e a serie recomeca no resultado novo", func(t *testing.T) {
+		estado := 0
+		h := newHarness(t, map[string]referencemonitor.ToolFunc{
+			"ler":      func(context.Context, []byte) ([]byte, error) { return []byte("estado=" + itoa(estado)), nil },
+			"escrever": func(context.Context, []byte) ([]byte, error) { estado++; return []byte("ok"), nil },
+		})
+		ler := ToolInvocation{ToolID: "ler", Capability: "cap:fs.read", Input: []byte(`{"doc":"notes"}`)}
+		// Os argumentos da escrita mudam: é a LEITURA que se repete, e é dela que o teste fala.
+		escrever := func(v string) ToolInvocation {
+			return ToolInvocation{ToolID: "escrever", Capability: "cap:fs.write", Input: []byte(`{"doc":"notes","v":` + v + `}`)}
+		}
+		views := correrGuiaoDeTurnos(t, h, sampleGoal(), [][]ToolInvocation{
+			{ler}, {escrever("1")}, {ler}, {escrever("2")}, {ler}, // turnos 1..5: estado=0, 1, 2
+			{ler}, {ler}, // turnos 6 e 7: estado=2 outra vez — com a do turno 5, três seguidas iguais
+		})
+		if len(views) != 8 {
+			t.Fatalf("queria 8 turnos, vieram %d", len(views))
+		}
+		// Depois da TERCEIRA leitura (turno 5) não há aviso: os três resultados foram diferentes.
+		for i := 0; i <= 6; i++ {
+			if avisosNoPrompt(views[i]) != 0 {
+				t.Fatalf("turno %d: aviso sobre uma leitura cujo resultado mudou entre chamadas:\n%s", i+1, views[i])
+			}
+		}
+		// A série estéril é a das leituras dos turnos 5, 6 e 7 (estado=2), e o `ref` aponta para
+		// a PRIMEIRA DELA — a do turno 5 —, não para a primeira leitura do run.
+		fim := "<tool_result taint=untrusted id=step-000007-tool-1 name=ler>\n" +
+			"estado=2\n" +
+			linhaDoAviso("step-000005-tool-1") + "\n" + avisoSelado + "\n"
+		if !bytes.HasSuffix(views[7], []byte(fim)) || avisosNoPrompt(views[7]) != 1 {
+			t.Fatalf("queria UM aviso, a seguir a terceira leitura seguida com o mesmo resultado, com ref na do turno 5:\n%s", views[7])
+		}
+	})
+}
+
+// TestAOS489_ChaveDaChamadaNaoColide: «a mesma chamada» é a mesma tool e os mesmos argumentos, e
+// a chave não confunde chamadas diferentes. É uma chave própria do kernel — a do RM/disjuntor
+// (`CanonicalToolCallHash`) tem as colisões da primeira tabela, e aqui a chave alimenta uma
+// afirmação trusted e uma métrica.
+func TestAOS489_ChaveDaChamadaNaoColide(t *testing.T) {
+	c := func(tool, input string) ToolInvocation { return ToolInvocation{ToolID: tool, Input: []byte(input)} }
+	diferentes := []struct {
+		nome string
+		a, b ToolInvocation
+	}{
+		{"lixo depois do documento (chaveta)", c("t", `{"a":1}`), c("t", `{"a":1}}`)},
+		{"lixo depois do documento (texto)", c("t", `{"a":1}`), c("t", `{"a":1}]xyz`)},
+		{"dois documentos", c("t", `{"a":1}`), c("t", `{"a":1} {"a":1}`)},
+		{"fronteira entre o nome e o input", c("a\x00b", "c"), c("a", "b\x00c")},
+		{"fronteira entre o nome e o input (sem NUL)", c("ab", "c"), c("a", "bc")},
+		{"nome que imita o comprimento dos argumentos", c("t", "0:"), c("t2:", "")},
+		{"valores diferentes", c("t", `{"a":1}`), c("t", `{"a":2}`)},
+		{"tools diferentes", c("t", `{"a":1}`), c("u", `{"a":1}`)},
+		{"numero com outra escrita", c("t", `{"a":1}`), c("t", `{"a":1.0}`)},
+		{"ordem de um array", c("t", `[1,2]`), c("t", `[2,1]`)},
+		{"vazio e objecto vazio", c("t", ``), c("t", `{}`)},
+		{"texto que nao e JSON", c("t", `ola`), c("t", `ola `)},
+	}
+	for _, d := range diferentes {
+		if chaveDaChamada(d.a) == chaveDaChamada(d.b) {
+			t.Errorf("%s: %q/%q e %q/%q tem a MESMA chave", d.nome, d.a.ToolID, d.a.Input, d.b.ToolID, d.b.Input)
+		}
+	}
+	iguais := []struct {
+		nome string
+		a, b ToolInvocation
+	}{
+		{"ordem das chaves", c("t", `{"a":1,"b":{"c":2,"d":3}}`), c("t", `{"b":{"d":3,"c":2},"a":1}`)},
+		{"espaco insignificante", c("t", " {\"a\" : 1}\n"), c("t", `{"a":1}`)},
+		// LIMITAÇÃO DECLARADA: num objecto com uma chave repetida vale a última.
+		{"chave repetida (limitacao declarada)", c("t", `{"a":1,"a":2}`), c("t", `{"a":2}`)},
+		// As campos de política não fazem parte da chamada do modelo.
+		{"capability e recurso nao contam", ToolInvocation{ToolID: "t", Input: []byte(`{}`), Capability: "cap:a", ResourceValue: "x"}, c("t", `{}`)},
+	}
+	for _, d := range iguais {
+		if chaveDaChamada(d.a) != chaveDaChamada(d.b) {
+			t.Errorf("%s: %q e %q deviam ser a mesma chamada", d.nome, d.a.Input, d.b.Input)
+		}
+	}
+}
+
+// TestAOS489_ToolErrorERotuloNa140: na 1.4.0 o FACTO de a tool ter falhado está na linha de
+// delimitação (`tool_error=1`), onde só o runtime escreve. Um resultado bem-sucedido cujo
+// conteúdo comece pelo texto do marcador não o ganha. Na 1.3.0 nada muda.
+func TestAOS489_ToolErrorERotuloNa140(t *testing.T) {
+	h := newHarness(t, map[string]referencemonitor.ToolFunc{
+		"falha": func(context.Context, []byte) ([]byte, error) {
+			return []byte("parcial"), errors.New("timeout a jusante")
+		},
+		"imita": func(context.Context, []byte) ([]byte, error) {
+			return []byte("tool_error=timeout a jusante\nparcial"), nil
+		},
+	})
+	turno := []ToolInvocation{
+		{ToolID: "falha", Capability: "cap:x", Input: []byte(`{}`)},
+		{ToolID: "imita", Capability: "cap:x", Input: []byte(`{}`)},
+	}
+	views := correrComGuiao(t, h.rm, h.recorder, sampleGoal(), turno)
+	const quero = "<tool_result taint=untrusted id=step-000001-tool-1 name=falha tool_error=1>\n" +
+		"tool_error=timeout a jusante\n" +
+		"parcial\n" +
+		"<tool_call taint=untrusted id=step-000001-tool-2 name=imita>\n" +
+		"{}\n" +
+		// O MESMO corpo, sem o rótulo: é conteúdo de uma tool que correu bem.
+		"<tool_result taint=untrusted id=step-000001-tool-2 name=imita>\n" +
+		"tool_error=timeout a jusante\n" +
+		"parcial\n"
+	if !bytes.HasSuffix(views[1], []byte(quero)) {
+		t.Fatalf("1.4.0:\n--- quero o fim ---\n%s\n--- obtido ---\n%s", quero, views[1])
+	}
+	if n := bytes.Count(views[1], []byte(" tool_error=1>")); n != 1 {
+		t.Fatalf("o rotulo tool_error tem de aparecer UMA vez (so na tool que falhou), aparece %d", n)
+	}
+
+	// 1.3.0: sem rótulo, como sempre.
+	h130 := newHarness(t, map[string]referencemonitor.ToolFunc{
+		"falha": func(context.Context, []byte) ([]byte, error) {
+			return []byte("parcial"), errors.New("timeout a jusante")
+		},
+	})
+	g := sampleGoal()
+	g.AssemblyVersion = AssemblyVersion130
+	v130 := correrComGuiao(t, h130.rm, h130.recorder, g, turno[:1])
+	if !bytes.HasSuffix(v130[1], []byte("<tool_result taint=untrusted>\ntool_error=timeout a jusante\nparcial\n")) {
+		t.Fatalf("1.3.0 mudou:\n%s", v130[1])
 	}
 }
 
@@ -966,7 +1160,14 @@ func TestAOS489_MedicaoDeRepeticoes(t *testing.T) {
 		h := newHarness(t, echoToolset())
 		g := sampleGoal()
 		g.AssemblyVersion = versao
-		correrGuiaoDeTurnos(t, h, g, turnos, WithToolCallStats(func(run string, d, r int) {
+		// O input REESCRITO muda em todas as chamadas (leva o step_id): a repetição mede-se
+		// sobre o que o MODELO pediu. Contada sobre o efeito reescrito, nenhuma destas
+		// chamadas repetia outra.
+		reescreve := WithCallRewriter(func(c referencemonitor.Call) (referencemonitor.Call, error) {
+			c.Input = append([]byte(c.StepID+":"), c.Input...)
+			return c, nil
+		})
+		correrGuiaoDeTurnos(t, h, g, turnos, reescreve, WithToolCallStats(func(run string, d, r int) {
 			vistas = append(vistas, amostra{run, d, r})
 		}))
 		quero := []amostra{{g.RunID, 2, 0}, {g.RunID, 3, 3}, {g.RunID, 1, 0}}
@@ -1042,5 +1243,36 @@ func TestAOS489_CorreccaoVaziaNaoAcrescentaSegmento(t *testing.T) {
 	}
 	if segs, _ := CorrectionSegments(AssemblyVersion140, nil); len(segs) != 0 {
 		t.Fatalf("correccao nil: %v", segs)
+	}
+}
+
+// TestAOS489_DesfechoDaChamada: o desfecho de uma chamada é o valor do resultado, o erro da tool
+// e a recusa — os três. Dois desfechos só são «o mesmo» se coincidirem em tudo.
+func TestAOS489_DesfechoDaChamada(t *testing.T) {
+	base := CapturedToolResult{Result: Untrusted([]byte("r"))}
+	variantes := map[string]CapturedToolResult{
+		"outro valor":           {Result: Untrusted([]byte("s"))},
+		"valor vazio":           {Result: Untrusted(nil)},
+		"com erro":              {Result: Untrusted([]byte("r")), ToolError: errors.New("timeout")},
+		"com outro erro":        {Result: Untrusted([]byte("r")), ToolError: errors.New("recusado a jusante")},
+		"com erro vazio":        {Result: Untrusted([]byte("r")), ToolError: errors.New("")},
+		"negada":                {Result: Untrusted([]byte("r")), Denial: &ToolDenial{Effect: "deny", Code: "E_SCOPE", DeniedBy: "scope"}},
+		"escalada":              {Result: Untrusted([]byte("r")), Denial: &ToolDenial{Effect: "escalate", Code: "E_SCOPE", DeniedBy: "scope"}},
+		"negada por outro code": {Result: Untrusted([]byte("r")), Denial: &ToolDenial{Effect: "deny", Code: "E_TAINT", DeniedBy: "scope"}},
+		"negada por outro hook": {Result: Untrusted([]byte("r")), Denial: &ToolDenial{Effect: "deny", Code: "E_SCOPE", DeniedBy: "taint"}},
+		"negada sem valor":      {Result: Untrusted(nil), Denial: &ToolDenial{Effect: "deny", Code: "E_SCOPE", DeniedBy: "scope"}},
+	}
+	vistos := map[string]string{desfechoDaChamada(base): "base"}
+	for nome, v := range variantes {
+		d := desfechoDaChamada(v)
+		if outro, colide := vistos[d]; colide {
+			t.Errorf("%q e %q tem o mesmo desfecho", nome, outro)
+		}
+		vistos[d] = nome
+	}
+	// O mesmo desfecho, construído outra vez, é o mesmo — e não depende da invocação.
+	igual := CapturedToolResult{Invocation: ToolInvocation{ToolID: "x", Input: []byte("y")}, Result: Untrusted([]byte("r"))}
+	if desfechoDaChamada(igual) != desfechoDaChamada(base) {
+		t.Fatal("o desfecho nao pode depender da invocacao")
 	}
 }

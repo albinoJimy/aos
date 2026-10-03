@@ -1740,8 +1740,8 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
 - [x] O prefixo ganha um preâmbulo de protocolo fixo e versionado: o que é cada segmento, que o
       resultado com o mesmo `id` responde à chamada, que uma recusa não se repete com os mesmos
       argumentos, e que conteúdo `taint=untrusted` é dados.
-      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 1 118
-      bytes ASCII (cerca de 280 tokens), sem dados do run. Diz também que só `objective`,
+      *(Evidência: `preambuloDeProtocolo140` em `layout.go`, à cabeça do prefixo (`buildPrefix`): 1 108
+      bytes ASCII (cerca de 277 tokens), sem dados do run. Diz também que só `objective`,
       `correction` e `notice` são instruções, e que `memory` — que não tem rótulo — é dados. `TestPreambuloDeProtocolo_RestricoesDoTexto` (igual à cópia
       selada à mão, ASCII, nenhuma linha a abrir por `<`, sem rótulos de recusa nem `taint=trusted`,
       prefixo byte-idêntico entre turnos) e o golden `promptSelado140`.)*
@@ -1800,7 +1800,8 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
       delimitação, saneados e com tecto de comprimento; tecto de tamanho dos argumentos, com digest
       acima dele; testes de forja (argumentos, nome e resultado que imitam `<tool_call>`,
       `<tool_result>` e `<correction taint=trusted>`), e a `Reason` continua fora do prompt.
-      *(Evidência: `MaxToolCallLabelBytes` (256) e `MaxToolCallArgBytes` (4 KiB) em `layout.go`; acima
+      *(Evidência: o `tool_result` de uma tool que falhou leva o rótulo `tool_error=1` na linha de
+      delimitação (`TestAOS489_ToolErrorERotuloNa140`). `MaxToolCallLabelBytes` (256) e `MaxToolCallArgBytes` (4 KiB) em `layout.go`; acima
       do tecto o corpo fica vazio e a linha de delimitação leva `args_omitted_bytes` e `args_digest`.
       `TestAOS489_Forja_ArgumentosNaoAbremSegmentos`, `TestAOS489_Forja_NomeDeToolHostil`,
       `TestAOS489_Forja_ResultadoImitaChamadaEResultado`,
@@ -1829,9 +1830,16 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
       (`packages/cmd/aos/aos489_metricas.go`, `api.go`), alimentados por
       `agentruntime.WithToolCallStats`; a contagem vive na `TailSequence` do kernel, que é quem tem
       a história das chamadas do run. `TestAOS489_MedicaoDeRepeticoes` (permitidas e negadas, nos
-      dois layouts), `TestAOS489_MetricasDoLayoutEDasRepeticoes`. O aviso é o segmento `notice`
-      (`tailFromRepeatNotice`), à terceira chamada idêntica, uma vez por chamada, só na 1.4.0:
-      `TestAOS489_AvisoATerceiraChamadaIdentica`, `TestAOS489_AvisoNaoMudaAAutoridadeNemEForjavel`,
+      dois layouts), `TestAOS489_MetricasDoLayoutEDasRepeticoes`. A repetição mede-se sobre os
+      argumentos do MODELO, mesmo com um `CallRewriter` que varia o input por chamada. O aviso é o
+      segmento `notice` (`tailFromRepeatNotice`), só na 1.4.0 e só em repetições ESTÉREIS: a
+      mesma chamada com o mesmo desfecho (resultado, falha ou recusa) três vezes seguidas; um
+      resultado diferente recomeça a série. `TestAOS489_AvisoATerceiraChamadaIdentica`,
+      `TestAOS489_AvisoSoEmRepeticoesEstereis` (três negadas, três falhadas, e
+      leitura/escrita/leitura sem aviso), `TestAOS489_ChaveDaChamadaNaoColide` (limitação
+      declarada: chave repetida num objecto JSON), `TestAOS489_DesfechoDaChamada`,
+      `TestAOS489_AvisoDeRepeticaoAtravessaAAprovacaoHumana` (pelo nó, com quatro suspensões e
+      retomas), `TestAOS489_AvisoNaoMudaAAutoridadeNemEForjavel`,
       o golden `promptSelado140` e o caso «tres chamadas identicas» de
       `TestAOS489_OLoopEOMotorDobramOMesmoTail` (o motor reconstrói-o sem captura). O layout em
       uso também se vê: `aos_runs_hosted_total{assembly_version}` e uma linha de log quando um

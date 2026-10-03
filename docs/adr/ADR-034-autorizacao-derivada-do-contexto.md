@@ -75,8 +75,8 @@ TaintGate — é a mesma com e sem ele (`TestAOS489_ToolCallNaoMudaAAutoridade`,
 `TestAOS489_MesmasMediacoesNosDoisLayouts`). O `id` do segmento correlaciona a chamada com o
 resultado; nenhuma decisão o lê.
 
-Na mesma versão o runtime passou a acrescentar um segmento `notice` à terceira tool call idêntica de
-um run. É **trusted**: o corpo é uma constante e o único dado variável é um `id` cunhado pelo
+Na mesma versão o runtime passou a acrescentar um segmento `notice` quando a mesma tool call dá o
+mesmo desfecho três vezes seguidas num run. É **trusted**: o corpo é uma constante e o único dado variável é um `id` cunhado pelo
 runtime — o modelo consegue provocar o aviso, não escrevê-lo. Não é uma correcção de steer (essa é
 de um humano autenticado) e não devolve autoridade: o join é monótono, e o aviso sai sempre a seguir
 a um `tool_result`, com o contexto já untrusted
