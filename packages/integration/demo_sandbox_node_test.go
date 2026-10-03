@@ -192,11 +192,13 @@ func TestDemo_SandboxNodeEndToEnd(t *testing.T) {
 		t.Fatalf("esperava permits=1 denials=0 (permit ponta-a-ponta via sandbox), veio permits=%d denials=%d", permits, denials)
 	}
 
-	// O OUTPUT da sandbox (untrusted) VOLTOU ao modelo: o conteúdo lido aparece (base64, no
-	// envelope ExecResult) no prompt materializado do turno 2.
-	wantB64 := base64.StdEncoding.EncodeToString(content)
-	if !bytes.Contains(model.lastView, []byte(wantB64)) {
-		t.Fatalf("o output da sandbox devia voltar ao prompt do turno 2 (base64 do conteúdo); tail=%dB", len(model.lastView))
+	// O OUTPUT da sandbox (untrusted) VOLTOU ao modelo: o conteúdo lido aparece EM TEXTO, no
+	// campo `stdout_text` do envelope ExecResult, no prompt materializado do turno 2 (AOS-487).
+	// Antes ia em base64 no campo `stdout`. O driver fake devolve o ficheiro lido também como
+	// artefacto (`artifacts[].Data`, em base64): procurar o base64 do conteúdo encontrava-o lá e
+	// deixava este teste verde mesmo com o stdout em base64 — por isso procura-se o campo.
+	if !bytes.Contains(model.lastView, []byte(`"stdout_text":"`+string(content)+`"`)) {
+		t.Fatalf("o output da sandbox devia voltar ao prompt do turno 2 com o stdout em texto (stdout_text); tail=%dB", len(model.lastView))
 	}
 
 	t.Logf("\n"+

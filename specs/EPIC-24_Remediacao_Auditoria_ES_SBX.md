@@ -1709,7 +1709,11 @@ perda; os resultados gravados antes continuam legíveis.
 - [x] Um resultado sem `stdout` fica byte a byte igual (`{"exit_code":0}`); um resultado com os dois
       campos é recusado (`ErrAmbiguousResult`). *(Evidência: `TestAOS487_StdoutVazioMantemOsBytes`.)*
 - [x] Pelo caminho de produção — a tool registada no RM e despachada por `Mediate` — o output que
-      chega ao ciclo traz o `stdout` em texto. *(Evidência: `TestAOS487_OModeloRecebeOTextoPeloRM`.
+      chega ao ciclo traz o `stdout` em texto. *(E ponta a ponta: `TestDemo_SandboxNodeEndToEnd`
+      exige `stdout_text` no prompt do turno 2. Antes exigia o base64 do conteúdo, que o driver fake
+      também põe nos artefactos, e continuava verde com o defeito; a revisão adversarial
+      confirmou-o.)*
+      *(Evidência: `TestAOS487_OModeloRecebeOTextoPeloRM`.
       Mutações: sem o ramo UTF-8, com o escape de HTML e sem a recusa dos dois campos, cada uma
       avermelha o teste correspondente.)*
 - [ ] Verificado em produção: o mesmo objectivo do AOS-484, repetido, não tem releitura do
@@ -1717,8 +1721,10 @@ perda; os resultados gravados antes continuam legíveis.
 
 ### Fora de âmbito
 
-- Os `Artifacts` (`Data []byte`) continuam em base64: são ficheiros, e nenhuma tool de produção os
-  usa hoje.
+- Os `Artifacts` (`Data []byte`) continuam em base64: são ficheiros, e os executores de produção
+  (gVisor, Firecracker) devolvem-nos vazios. O driver `fake` — o de omissão fora de produção — devolve
+  o ficheiro lido também como artefacto, pelo que em dev, smoke e CI o modelo recebe o documento duas
+  vezes: em texto (`stdout_text`) e em base64 (`artifacts[].Data`).
 - A recusa por taint da releitura do mesmo recurso (decisão do AOS-069 fase 1) e a falta de forma de
   um nó folha declarar falha (resíduo do AOS-484) — a decidir depois de medir este ticket.
 
@@ -1735,3 +1741,17 @@ untrusted (resultados de tools sem sandbox, payloads entre nós). A defesa não 
 não muda: o resultado continua marcado `taint=untrusted` no tail, e uma tool call privilegiada pedida
 depois dele é negada pelo TaintGate (ADR-005, AOS-069 fase 1) — é essa negação que se vê em
 produção quando o `n1` tenta reler o documento. A separação de planos (DEF-806) continua aberta.
+
+Precisões da revisão adversarial:
+
+- **Rótulos literais a meio da linha.** Sem o escape de HTML, um `<correction taint=trusted>` dentro
+  de um documento chega ao modelo como está, a meio da linha do JSON (os `
+` saem escapados, por
+  isso nenhuma linha começa por `<` e o neutralizador de delimitadores continua válido ao nível dos
+  bytes). Não é uma classe nova: o texto do modelo e os payloads entre nós já chegavam em claro. É o
+  resíduo do DEF-806.
+- **Janela de retoma mista.** Um run em curso durante o deploy e retomado depois pode receber de um
+  passo já aplicado no ledger o resultado memorizado no formato antigo (base64). A idempotência e o
+  replay não são afectados (a impressão da acção não inclui o resultado, o `result_hash` não é
+  verificado na leitura, e o replay usa os bytes capturados), mas o modelo desse run volta a ver
+  base64 nesse passo.
