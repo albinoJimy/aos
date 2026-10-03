@@ -33,7 +33,8 @@ import (
 // PROTOCOLO fixo ([preambuloDeProtocolo140]). (b) Cada tool call do modelo entra no tail como
 // um segmento `tool_call` ANTES do seu resultado, com o `id` cunhado pelo runtime
 // ([ToolStepID]) e o `name` na linha de delimitação e os argumentos do modelo no corpo; o
-// `tool_result` ganha o mesmo `id` e `name` ([tailFromToolCall]); à terceira chamada idêntica do run segue-se um `notice` trusted de
+// `tool_result` ganha o mesmo `id` e `name` ([tailFromToolCall]) e, se a tool falhou, o rótulo
+// `tool_error=1`; à terceira chamada idêntica seguida com o mesmo desfecho segue-se um `notice` trusted de
 // texto fixo ([tailFromRepeatNotice]). (c) A neutralização do
 // corpo reconhece como início de linha, além de '\n', o '\r', VT, FF, U+0085, U+2028 e
 // U+2029 ([neutralizarDelimitadores]). É a PRIMEIRA subida que não invalida o replay do que

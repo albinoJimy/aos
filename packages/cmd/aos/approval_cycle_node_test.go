@@ -52,10 +52,18 @@ const (
 
 // acnModel pede UMA tool call por turno (turnos 1 e 2) e conclui no 3.º. Conta as idas ao
 // modelo: é assim que se prova que a retoma reproduziu da captura em vez de reinterrogar.
-type acnModel struct{ hits int64 }
+type acnModel struct {
+	hits int64
+	// guiao, quando preenchido ANTES de o run arrancar, substitui o guiao fixo de dois passos
+	// (AOS-489: o teste do aviso de repeticao precisa de pedir a mesma chamada varias vezes).
+	guiao func(agentruntime.PromptView) agentruntime.ModelResponse
+}
 
 func (m *acnModel) Call(_ context.Context, view agentruntime.PromptView) (agentruntime.ModelResponse, error) {
 	atomic.AddInt64(&m.hits, 1)
+	if m.guiao != nil {
+		return m.guiao(view), nil
+	}
 	switch view.Turn {
 	case 1:
 		return acnCall("passo_um", "doc-a"), nil
