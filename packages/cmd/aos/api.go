@@ -2012,6 +2012,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"counter", float64(h.node.toolCalls.repetidas.Load()), "")
 	}
 
+	// AOS-491 — TURNOS POR MOTIVO DE PARAGEM. Uma amostra por valor do vocabulário fechado,
+	// sempre presentes: o zero é um zero verdadeiro — «nenhum turno parou por esse motivo desde
+	// o arranque». Só sai com a medição composta (o Bootstrap compõe-a sempre).
+	if h.node != nil && h.node.turnosPorMotivo != nil {
+		for i, m := range h.node.turnosPorMotivo.motivos {
+			labels := `{stop_reason="` + rotuloDoMotivo(m) + `"}`
+			if i == 0 {
+				g("aos_model_turns_total",
+					"Turnos de modelo desde o arranque, por motivo de paragem declarado pelo provider (AOS-491). Vocabulario fechado: stop, tool_calls, length (resposta cortada pelo limite de tokens), content_filter, other (motivo fora do mapa conhecido) e unreported (o provider nao o enviou). Por processo: um run re-hospedado (retoma, crash-resume) volta a somar os turnos que reproduz.",
+					"counter", float64(h.node.turnosPorMotivo.lido(m)), labels)
+				continue
+			}
+			amostra("aos_model_turns_total", labels, float64(h.node.turnosPorMotivo.lido(m)))
+		}
+	}
+
 	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.
 	//
 	// TRÊS rotas fail-closed dependem de um `Append` e recusavam com o mesmo 503 uniforme, sem

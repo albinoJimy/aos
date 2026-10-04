@@ -139,6 +139,67 @@ type ModelResponse struct {
 	// sobre o PEDIDO, declarado por quem o fez; não decide nada no runtime.
 	Projection        string
 	ProjectionVersion string
+	// StopReason é o MOTIVO DE PARAGEM do turno, tal como o provider o declarou, já no
+	// vocabulário fechado de [StopReason] (AOS-491). Quem traduz a resposta do provider — o
+	// adaptador do gateway — faz a normalização; o valor bruto não entra no runtime, e o loop
+	// fecha o vocabulário outra vez à entrada ([StopReason.Normalizado]) para que um cliente
+	// que o preencha com outra coisa não chegue ao registo. Vazio ([StopUnreported]) quando o
+	// provider não o envia ou o cliente não o sabe.
+	//
+	// É MEDIÇÃO, e neste ticket só isso: vai para a captura do turno, para o `turn.recorded` e
+	// para a contagem por motivo. NÃO entra em [TurnEndsRun] nem em nenhuma decisão do loop.
+	StopReason StopReason
+	// ToolsOffered é o número de tools que o cliente OFERECEU ao modelo no pedido deste turno
+	// (AOS-491) — no gateway, quantos schemas o pedido levou no campo `tools`. Como
+	// [ModelResponse.Projection], é um facto sobre o PEDIDO, declarado por quem o fez: o
+	// runtime não o consegue saber de outra maneira, porque o que o pedido leva é decidido do
+	// lado do cliente (o tool set do nó, cortado pela lista-branca do run) e pode não ser o
+	// [Goal.Tools] que o prefixo lista. Zero quando o pedido não levou tools OU quando o
+	// cliente não o declara. Vai para `tools_offered` do `turn.recorded`; não decide nada.
+	//
+	// A captura do turno NÃO o guarda (como não guarda o [ModelResponse.Model]): um turno
+	// reproduzido numa retoma volta com zero em memória, e no log fica o evento original,
+	// porque o Event Store descarta a regravação do mesmo passo.
+	ToolsOffered int
+}
+
+// StopReason é o motivo de paragem de um turno de modelo, num vocabulário FECHADO (AOS-491).
+// O texto de cada valor é o que fica gravado na captura e no `turn.recorded`, e o rótulo da
+// métrica por motivo — por ser fechado, nunca leva texto de terceiros.
+type StopReason string
+
+const (
+	// StopUnreported — o provider não enviou motivo de paragem (ou o cliente não o sabe). É
+	// o valor-zero, e é também o de qualquer captura gravada antes do AOS-491.
+	StopUnreported StopReason = ""
+	// StopStop — o modelo parou por si: deu o turno por acabado.
+	StopStop StopReason = "stop"
+	// StopToolCalls — o modelo parou para pedir tool calls.
+	StopToolCalls StopReason = "tool_calls"
+	// StopLength — a resposta foi CORTADA pelo limite de tokens.
+	StopLength StopReason = "length"
+	// StopContentFilter — a resposta foi retida ou cortada por um filtro de conteúdo.
+	StopContentFilter StopReason = "content_filter"
+	// StopOther — o provider declarou um motivo fora do mapa conhecido. O valor bruto não é
+	// guardado em lado nenhum do runtime.
+	StopOther StopReason = "other"
+)
+
+// StopReasons devolve o vocabulário fechado, numa ordem fixa. É o que quem rotula por motivo
+// de paragem (a métrica do nó) percorre.
+func StopReasons() []StopReason {
+	return []StopReason{StopStop, StopToolCalls, StopLength, StopContentFilter, StopOther, StopUnreported}
+}
+
+// Normalizado devolve o motivo DENTRO do vocabulário fechado: um valor conhecido fica como
+// está; qualquer outro texto vira [StopOther]. O vazio é do vocabulário ([StopUnreported]).
+func (s StopReason) Normalizado() StopReason {
+	switch s {
+	case StopUnreported, StopStop, StopToolCalls, StopLength, StopContentFilter, StopOther:
+		return s
+	default:
+		return StopOther
+	}
 }
 
 // ProjectionNative é o valor de [ModelResponse.Projection] e de `manifest.projection` para um

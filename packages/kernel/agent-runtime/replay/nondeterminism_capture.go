@@ -89,6 +89,13 @@ type responseCapture struct {
 	// raciocínio grava os bytes de sempre, e uma captura anterior ao campo descodifica como
 	// antes.
 	Reasoning string `json:"reasoning,omitempty"`
+	// StopReason (AOS-491) é o motivo de paragem do turno, no vocabulário fechado de
+	// [agentruntime.StopReason]. É MEDIÇÃO, não conteúdo — o mesmo valor está em claro no
+	// `turn.recorded` do mesmo turno —, pelo que fica no resumo de consumo
+	// ([responseCapture.consumo]) quando o conteúdo sai do evento. `omitempty`: um turno sem
+	// motivo declarado grava os bytes de sempre, e uma captura anterior ao campo descodifica
+	// com o motivo vazio.
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 // consumo devolve SÓ a medição do turno — tokens, custo e as duas marcas que os qualificam —,
@@ -117,6 +124,7 @@ func (r responseCapture) consumo() responseCapture {
 		CustoNaoDerivado: r.CustoNaoDerivado,
 		UsageAusente:     r.UsageAusente,
 		CacheReadTokens:  r.CacheReadTokens,
+		StopReason:       r.StopReason,
 	}
 }
 
@@ -425,6 +433,9 @@ func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) respon
 		UsageAusente:    !r.Usage.Definido(),
 		CacheReadTokens: r.Usage.CacheReadTokens,
 		Reasoning:       r.Reasoning,
+		// AOS-491: vocabulário fechado — nunca texto do provider, pelo que nem em modo
+		// sensível há o que redigir.
+		StopReason: string(r.StopReason.Normalizado()),
 	}
 	if c.sensitive && rc.Text != "" {
 		// NUNCA persistir o texto do modelo em claro em modo sensível — pode ecoar PII.
@@ -511,6 +522,9 @@ func (r responseCapture) decode() agentruntime.ModelResponse {
 		CustoNaoDerivado: r.CustoNaoDerivado,
 		// AOS-490: o raciocínio volta tal como foi capturado (carga opaca).
 		Reasoning: r.Reasoning,
+		// AOS-491: o motivo de paragem volta como foi capturado; uma captura sem o campo dá o
+		// vazio ([agentruntime.StopUnreported]).
+		StopReason: agentruntime.StopReason(r.StopReason).Normalizado(),
 	}
 	for _, tc := range r.ToolCalls {
 		resp.ToolCalls = append(resp.ToolCalls, agentruntime.ToolInvocation{

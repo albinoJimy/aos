@@ -33,3 +33,22 @@ func TurnEndsRun(resp ModelResponse, assemblyVersion string) (bool, error) {
 	}
 	return resp.Final || len(resp.ToolCalls) == 0, nil
 }
+
+// StopReasonStats recebe, por cada turno em que o modelo respondeu, o motivo de paragem desse
+// turno, já no vocabulário fechado de [StopReason] (AOS-491). É a medição que faltava para ver
+// de fora respostas cortadas ou filtradas: quem a liga ([WithStopReasonStats]) soma-a onde a
+// quiser expor.
+//
+// É LEITURA: não decide nada e não pode parar o run. Como o [ToolCallStats], é por turno
+// PERCORRIDO — um run re-hospedado (retoma, crash-resume) volta a percorrer os turnos já dados
+// e volta a reportá-los.
+type StopReasonStats func(runID string, motivo StopReason)
+
+// WithStopReasonStats liga o observador do motivo de paragem. Um valor nil é ignorado.
+func WithStopReasonStats(o StopReasonStats) Option {
+	return func(rt *Runtime) {
+		if o != nil {
+			rt.stopReasonStats = o
+		}
+	}
+}

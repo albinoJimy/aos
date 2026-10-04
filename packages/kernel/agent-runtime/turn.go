@@ -99,6 +99,20 @@ type turnPayload struct {
 	ToolCallsRequested int `json:"tool_calls_requested"`
 	// Final indica se este turno produziu a resposta final.
 	Final bool `json:"final"`
+	// StopReason é o motivo de paragem que o provider declarou para este turno, no
+	// vocabulário fechado de [StopReason] (AOS-491): `stop`, `tool_calls`, `length`,
+	// `content_filter` ou `other`. `omitempty`: um turno cujo provider não o enviou — e todo o
+	// turno gravado antes deste campo — não o tem, e grava os bytes de sempre. É o que
+	// distingue, no registo, uma conclusão de uma resposta cortada: o `final` sozinho não o faz.
+	StopReason StopReason `json:"stop_reason,omitempty"`
+	// ToolsOffered é o número de tools que o cliente de modelo OFERECEU ao modelo no pedido
+	// deste turno, declarado por ele ([ModelResponse.ToolsOffered], AOS-491) — no gateway,
+	// quantos schemas o pedido levou. Não é o comprimento de `manifest.tools`: esse é o tool
+	// set que o prefixo do prompt lista; este é o que foi no pedido como tools chamáveis.
+	// `omitempty`: um turno sem tools no pedido, ou de um cliente que não o declara, grava os
+	// bytes de sempre. AUSENTE não distingue por isso «zero tools oferecidas» de «não
+	// declarado» — nem de um turno gravado antes do campo.
+	ToolsOffered int `json:"tools_offered,omitempty"`
 }
 
 // TurnRecord é o input que o [Runtime] passa ao [TurnRecorder] por turno.
@@ -114,7 +128,10 @@ type TurnRecord struct {
 	CustoNaoDerivado bool
 	ToolCalls        int
 	Final            bool
-	Producer         eventstore.Producer
+	// StopReason e ToolsOffered — ver os campos homónimos de [turnPayload] (AOS-491).
+	StopReason   StopReason
+	ToolsOffered int
+	Producer     eventstore.Producer
 }
 
 // TurnRecorder grava cada turno como um evento "turn.recorded" no Event Store,
@@ -152,6 +169,10 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 		CacheReadTokens:    rec.Usage.CacheReadTokens,
 		ToolCallsRequested: rec.ToolCalls,
 		Final:              rec.Final,
+		// AOS-491: o vocabulário fecha-se também aqui — o recorder é exportado, e um chamador
+		// que não seja o loop não pode pôr texto livre num evento em claro.
+		StopReason:   rec.StopReason.Normalizado(),
+		ToolsOffered: rec.ToolsOffered,
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

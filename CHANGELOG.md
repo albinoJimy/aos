@@ -7,6 +7,15 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-06 (AOS-491) O motivo de paragem do modelo chega ao runtime, à captura e ao registo do turno
+- `feat(AOS-491)` — o adaptador do Model Gateway lia o `finish_reason` do provider para calcular o `Final` e deitava-o fora: uma resposta cortada pelo limite de tokens, uma recusa por filtro de conteúdo e uma conclusão chegavam iguais ao runtime. Passa a levá-lo, normalizado num **vocabulário fechado** (`stop`, `tool_calls`, `length`, `content_filter`, `other`, e vazio quando o provider não o envia), em `ModelResponse.StopReason`. Um valor fora do mapa conhecido vira `other`; o texto do provider não sai do adaptador, e o loop e o `TurnRecorder` voltam a fechar o vocabulário para um cliente de modelo que não seja o do gateway.
+  - **Sem mudança de comportamento.** O `Final` e a regra de terminação são os de antes: um `length` sem tool calls continua a terminar o run. O que muda é que fica registado.
+  - **`turn.recorded`** ganha `stop_reason` e `tools_offered` (quantas tools o pedido do turno ofereceu ao modelo — os schemas que foram no `tools` do pedido, declarados pelo adaptador; não é o comprimento de `manifest.tools`). Os dois são omitidos quando vazios: um turno sem motivo e sem tools no pedido, ou de um cliente de modelo que não os declara, grava os bytes de antes. A captura não guarda `tools_offered`.
+  - **Captura do turno** (`replay.captured`): `stop_reason` na resposta, em claro no resumo de consumo quando o conteúdo é selado. O replay devolve-o igual; uma captura anterior reproduz-se com o motivo vazio, sem divergência de `prompt_hash` nem de trajectória (o log 1.3.0 de `replay/testdata` é o árbitro).
+  - **`/metrics` do nó:** `aos_model_turns_total{stop_reason=…}`, uma amostra por valor do vocabulário (o vazio sai como `unreported`). Por processo; um run re-hospedado volta a somar os turnos que reproduz.
+  - **Contrato da porta do gateway `1.3.0`** (MINOR, aditivo): constantes `port.Finish*` com os valores conhecidos de `finish_reason`. O campo `Choice.FinishReason` não muda.
+  - O caminho de streaming não é lido pelo adaptador e fica como estava.
+
 ### Changed — EPIC-02 (AOS-492) A regra de terminação do run vive numa só função
 - `refactor(AOS-492)` — a condição «resposta final ou sem tool calls» estava escrita no loop e copiada à mão no motor de replay. É agora `agentruntime.TurnEndsRun`, que recebe a resposta e a versão de layout do turno e é chamada pelos dois. Nenhum comportamento muda nos layouts 1.3.0 e 1.4.0. Um teste estrutural lê `loop.go` e `replay/engine.go` e falha se a condição voltar a aparecer escrita localmente.
 

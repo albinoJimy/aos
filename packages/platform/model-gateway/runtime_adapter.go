@@ -228,6 +228,10 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 		// texto único não declara nada — o manifesto fica com os bytes de antes.
 		out.Projection, out.ProjectionVersion = ProjectionNative, NativeProjectionVersion
 	}
+	// AOS-491 — quantas tools ESTE pedido ofereceu ao modelo: os schemas que foram no campo
+	// `tools`, depois do corte pela lista-branca do run. É o que separa, no registo, um turno
+	// sem tool calls de um modelo que as tinha à disposição de um que não tinha nenhuma.
+	out.ToolsOffered = len(req.Tools)
 	return out, nil
 }
 
@@ -340,5 +344,38 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 	}
 	// Sem tool calls e finish_reason terminal ⇒ o turno é final.
 	out.Final = len(out.ToolCalls) == 0 && (choice.FinishReason == "stop" || choice.FinishReason == "")
+	// AOS-491 — o motivo de paragem ATRAVESSA, normalizado. Até aqui o `finish_reason` era lido
+	// na linha acima e deitado fora: uma resposta cortada, uma recusa por filtro e uma
+	// conclusão chegavam iguais ao runtime. É só transporte — o `Final` acima não mudou.
+	out.StopReason = motivoDeParagem(choice.FinishReason)
 	return out, nil
+}
+
+// motivoDeParagem normaliza o `finish_reason` do provider no vocabulário fechado do runtime
+// ([agentruntime.StopReason], AOS-491). É o ÚNICO sítio onde esse texto é traduzido; o que
+// sai daqui é sempre uma das constantes, pelo que o valor bruto não chega ao runtime, à
+// captura, ao `turn.recorded` nem a um rótulo de métrica.
+//
+// A comparação é EXACTA, sem aparar nem mudar a caixa: o mapa é o do wire OpenAI, que é o
+// contrato da porta, e um provider que escreva o motivo de outra maneira é precisamente o que
+// `other` existe para tornar visível. O vazio fica vazio — «o provider não disse» não é o mesmo
+// que «disse uma coisa que não conhecemos».
+//
+// Serve as duas projecções (texto único e mensagens nativas): as duas passam por
+// [translateResponse], que só lê a primeira escolha.
+func motivoDeParagem(finishReason string) agentruntime.StopReason {
+	switch finishReason {
+	case "":
+		return agentruntime.StopUnreported
+	case port.FinishStop:
+		return agentruntime.StopStop
+	case port.FinishToolCalls, port.FinishFunctionCall:
+		return agentruntime.StopToolCalls
+	case port.FinishLength:
+		return agentruntime.StopLength
+	case port.FinishContentFilter:
+		return agentruntime.StopContentFilter
+	default:
+		return agentruntime.StopOther
+	}
 }
