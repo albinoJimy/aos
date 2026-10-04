@@ -1907,6 +1907,144 @@ restantes nove acumulam-se com o uso. As métricas `aos_tool_calls_repeated_tota
 
 ---
 
+## AOS-492 — A regra de terminação do run vive num só sítio, partilhado pelo loop e pelo replay
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é uma refactorização sem mudança de comportamento, que prepara o AOS-493. O ADR-036 §2.3 (layout por versão) é citado como restrição: nada muda nos layouts 1.3.0 e 1.4.0. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A0 |
+| Tipo | refactor |
+| Prioridade | P0: a regra está copiada à mão no motor de replay; mudá-la só no loop faz o replay parar no turno errado sem avisar |
+| Estimativa | S |
+| Dependências | AOS-489 (layout por versão) |
+| Bloqueia | AOS-493 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md` §3, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/replay/engine.go`, `packages/kernel/agent-runtime/layout.go` |
+
+### Contexto
+
+O loop decide que um run terminou com `resp.Final || len(resp.ToolCalls) == 0` (`loop.go`). O
+motor de replay tem a mesma condição escrita outra vez (`replay/engine.go`). São duas cópias sem
+nada que as mantenha iguais.
+
+O AOS-493 vai mudar o que essa decisão significa. Se a mudança entrar numa cópia e não na outra, o
+replay reproduz uma trajectória diferente da que correu, com fidelidade aparente de 100%.
+
+### Objectivo
+
+Uma única função decide se um turno termina o run, usada pelo loop e pelo motor de replay. O
+comportamento nos layouts 1.3.0 e 1.4.0 fica byte a byte igual.
+
+### Critérios de Aceitação
+
+- [ ] A decisão de terminação é uma função única do pacote do runtime, que recebe a resposta do
+      modelo e o layout do run. O loop e o motor de replay chamam-na; nenhum dos dois tem a
+      condição escrita localmente.
+- [ ] Um teste estrutural falha se a condição voltar a aparecer escrita à mão no loop ou no motor
+      de replay.
+- [ ] Todos os goldens de replay existentes passam sem alteração, incluindo a fixture do layout
+      1.3.0.
+- [ ] A suite do runtime, do replay e do nó passa com `-race` sem mudança de asserções.
+
+### Fora de âmbito
+
+- Qualquer mudança de comportamento (AOS-493).
+- O motivo de paragem (AOS-491).
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-493 — O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket escreve e implementa um ADR novo (o desfecho de um run é um veredicto do kernel, e a ausência de tool calls não é conclusão). O número do ADR é atribuído na implementação, e é nesse PR que este marcador sai e a ligação passa a contar. O ADR-034 e o ADR-036 são citados como contexto e NÃO são implementados nem emendados aqui — a reparação, que exigiria emendá-los, é da fase A1. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A0 |
+| Tipo | fix |
+| Prioridade | P0: em 2 de 10 planos em produção o run fechou concluído sem ter executado a tool de que a sua saída dependia, e o plano saiu com `exit_code=0` |
+| Estimativa | L |
+| Dependências | AOS-491 (motivo de paragem), AOS-492 (regra de terminação única), AOS-485 (lista-branca do run no Reference Monitor) |
+| Bloqueia | AOS-494, AOS-495 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md` §5.1 e §7, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/replay/engine.go`, `packages/cmd/aos/terminal_states.go` |
+
+### Contexto
+
+Uma só condição no loop responde a três perguntas: «o modelo não pediu tools», «o run acabou» e
+«o run acabou bem». Qualquer turno sem tool calls fecha o run como concluído: texto legítimo, uma
+tool call escrita como texto, texto vazio, resposta truncada, recusa.
+
+Medido em produção a 2026-10-04 (v0.1.45): nos planos `plan-e2e-v0145-1791115918` e
+`plan-e2e-v0145-1791117087` o nó de leitura respondeu num turno, com a chamada a `doc_read` escrita
+como texto e nenhuma tool call. O run fechou `completed`, o texto foi publicado como saída do nó, e
+os dois planos saíram verdes sem cumprir o objectivo.
+
+### Decidido pelo dono (2026-10-04)
+
+- O contrato de conclusão é **inferido das tools atribuídas ao nó**, em âmbito estreito, sem
+  mudar o schema do plano.
+- O «não cumprido» grava-se como **`failed` com razão própria**. Não há `status` novo.
+
+### Objectivo
+
+O kernel calcula o desfecho de um run a partir do que foi de facto executado, contra um contrato
+de conclusão que o chamador declara, e sela-o na transição terminal com uma razão em vocabulário
+fechado. Um run que não cumpre o contrato termina `failed`, nunca `completed`.
+
+### Critérios de Aceitação
+
+- [ ] O objectivo de um run pode levar um **contrato de conclusão**: a lista de tools de que a
+      conclusão depende. Vazio quer dizer o comportamento de hoje.
+- [ ] O kernel conta, por tool, as chamadas **efectivas** do run: despachadas, sem recusa e sem
+      erro de tool. A contagem vem dos contadores do próprio loop; não se lê do evento de desfecho
+      da tool, que é opcional e fail-open.
+- [ ] O veredicto é um vector por tool exigida, e distingue pelo menos estas razões: contrato não
+      cumprido sem nenhuma chamada pedida; contrato não cumprido depois de uma recusa; contrato não
+      cumprido depois de uma falha de tool; resposta truncada; saída vazia.
+- [ ] Um turno com motivo de paragem `length` deixa de ser conclusão, com ou sem contrato.
+- [ ] Um run com veredicto negativo termina no estado durável `failed`, com `outcome_reason` no
+      vocabulário fechado e sem texto final. O evento da transição terminal leva a razão e o
+      vector do veredicto.
+- [ ] Modo de aplicação por configuração do nó, com três valores: desligado, observação (calcula,
+      regista e conta, mas não muda o desfecho) e imposição. A omissão é observação. Um valor
+      desconhecido recusa o arranque.
+- [ ] Contadores no `/metrics`: runs terminados por desfecho e razão; runs concluídos sem nenhuma
+      tool call tendo tools na oferta.
+- [ ] O replay reproduz o veredicto: o motor usa a mesma função (AOS-492) e chega ao mesmo
+      desfecho a partir da captura. Um run gravado antes deste ticket reproduz-se com o desfecho
+      que teve.
+- [ ] A retoma depois de um crash preserva o contrato e os contadores (o contrato fica no registo
+      de retoma; os contadores reconstroem-se do log).
+- [ ] As duas respostas de produção de 2026-10-04 entram como fixtures: com contrato e em
+      imposição, cada uma termina `failed` com a razão «sem nenhuma chamada pedida».
+- [ ] ADR novo escrito e registado: o desfecho de um run é um veredicto do kernel; a ausência de
+      tool calls não é conclusão; a evidência de tool call não é fidelidade da saída (resíduo
+      declarado).
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+
+### Fora de âmbito
+
+- Reparação (dar outro turno ao modelo): fase A1.
+- Detectar a forma do texto como critério. Pode existir como rótulo de medição, nunca como
+  entrada de controlo.
+- Garantir que a saída corresponde ao que a tool devolveu: fase de saída por referência.
+- O campo no `POST /runs` e a resposta do `GET /runs` (AOS-494); o lado do `aos-orq` (AOS-495).
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1920,3 +2058,4 @@ restantes nove acumulam-se com o uso. As métricas `aos_tool_calls_repeated_tota
 | 1.6 | 2026-10-02 | +AOS-485: a recusa de uma tool call pela lista-branca do run não deixa evento nem selo (achado do E2E de plano multi-nó em produção) | Equipa AOS |
 | 1.7 | 2026-10-03 | +AOS-489: o tail do prompt regista a tool call do modelo e identifica o resultado; 60% das tool calls em produção eram repetições | Equipa AOS |
 | 1.8 | 2026-10-04 | AOS-489: verificação em produção da v0.1.45 (um run, zero repetições; critério dos 10 runs por cumprir) | Equipa AOS |
+| 1.9 | 2026-10-04 | +AOS-492 (regra de terminação única) e +AOS-493 (o desfecho de um run é um veredicto do kernel): em 2 de 10 planos em produção o run fechou concluído sem executar a tool de que a saída dependia | Equipa AOS |

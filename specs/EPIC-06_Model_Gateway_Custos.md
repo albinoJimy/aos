@@ -1242,6 +1242,69 @@ não esteja em `tools` não ocorreram neste run.
 
 ---
 
+## AOS-491 — O motivo de paragem do modelo chega ao runtime, à captura e ao registo do turno
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é instrumentação. Transporta um campo que o adaptador hoje descarta; a decisão sobre o que o runtime faz com ele é do AOS-493. O ADR-036 é citado só como contexto do contrato do gateway. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A0 |
+| Tipo | feat |
+| Prioridade | P0: sem este campo o runtime não distingue uma conclusão de uma resposta truncada, e o defeito medido a 2026-10-04 não aparece em nenhuma métrica |
+| Estimativa | S |
+| Dependências | AOS-490 (projecção nativa e contrato 1.2.0 da porta) |
+| Bloqueia | AOS-493 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md` §3 e §7, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/platform/model-gateway/port/port.go`, `packages/kernel/agent-runtime/model.go`, `packages/kernel/agent-runtime/turn.go` |
+
+### Contexto
+
+O adaptador do nó lê a resposta do provider e deita fora o `finish_reason`
+(`runtime_adapter.go`, na conversão para `ModelResponse`). O runtime recebe só o texto, as tool
+calls e um booleano `Final`. Uma resposta cortada por limite de tokens, uma recusa por filtro de
+conteúdo e uma conclusão legítima chegam iguais, e o `turn.recorded` não regista nenhuma delas.
+
+Na série de 2026-10-04 em produção (v0.1.45), dois planos em dez fecharam verdes sem cumprir o
+objectivo. O observador de tool calls só corre quando há pelo menos uma chamada, por isso o defeito
+não é visível em nenhum contador.
+
+### Objectivo
+
+O motivo de paragem de cada turno, normalizado num vocabulário fechado, viaja do provider até ao
+runtime, à captura do turno e ao `turn.recorded`. O comportamento do loop não muda neste ticket.
+
+### Critérios de Aceitação
+
+- [ ] `ModelResponse` ganha o motivo de paragem num vocabulário fechado: `stop`, `tool_calls`,
+      `length`, `content_filter`, `other`, e vazio quando o provider não o envia. Um valor do
+      provider fora do mapa conhecido vira `other`; o valor bruto não entra no runtime.
+- [ ] O adaptador do gateway preenche-o a partir do `finish_reason` da primeira escolha da
+      resposta, tanto na projecção nativa como na de texto único.
+- [ ] A captura do turno guarda o motivo, e o replay devolve-o igual. Uma captura gravada antes
+      deste ticket reproduz-se com o motivo vazio, sem divergência de `prompt_hash` nem de
+      trajectória.
+- [ ] O `turn.recorded` grava o motivo de paragem e o número de tools oferecidas ao modelo no
+      turno. Os dois campos são aditivos: quem lê eventos antigos não parte.
+- [ ] Contador novo no `/metrics` do nó: turnos por motivo de paragem.
+- [ ] O loop termina exactamente nos mesmos turnos que antes (teste de não-regressão sobre os
+      goldens de replay existentes).
+- [ ] O catálogo de eventos e a documentação do contrato da porta registam os campos novos; a
+      versão do contrato sobe em MINOR.
+
+### Fora de âmbito
+
+- Mudar a regra de terminação ou o desfecho do run (AOS-492, AOS-493).
+- Parâmetros de amostragem, `tool_choice` e `max_tokens` no pedido.
+- Streaming.
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1254,3 +1317,4 @@ não esteja em `tools` não ocorreram neste run.
 | 1.5 | 2026-10-03 | +AOS-490: o adaptador projecta o tail em mensagens nativas, com continuidade do raciocínio | Equipa AOS |
 | 1.6 | 2026-10-03 | AOS-490 implementado: projecção nativa seleccionável (`AOS_MODEL_PROJECTION`), raciocínio capturado e não devolvido, tokens em cache lidos do wire; parâmetros de amostragem movidos para fora de âmbito; produção por verificar | Equipa AOS |
 | 1.7 | 2026-10-04 | AOS-490: verificação em produção da v0.1.45 (projecção nativa aceite pelo provider, tokens em cache registados) | Equipa AOS |
+| 1.8 | 2026-10-04 | +AOS-491: o motivo de paragem do modelo chega ao runtime, à captura e ao registo do turno (fase A0 da arquitectura-alvo da fronteira) | Equipa AOS |
