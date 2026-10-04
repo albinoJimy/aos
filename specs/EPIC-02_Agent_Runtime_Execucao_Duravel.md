@@ -1973,8 +1973,10 @@ o resultado da função; o diferencial nasceu desse achado.
 
 ## AOS-493 — O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket escreve e implementa um ADR novo (o desfecho de um run é um veredicto do kernel, e a ausência de tool calls não é conclusão). O número do ADR é atribuído na implementação, e é nesse PR que este marcador sai e a ligação passa a contar. O ADR-034 e o ADR-036 são citados como contexto e NÃO são implementados nem emendados aqui — a reparação, que exigiria emendá-los, é da fase A1. -->
+<!-- Este ticket escreve e implementa o ADR-037 (o desfecho de um run é um veredicto do kernel sobre um contrato de conclusão, e a ausência de tool calls não é conclusão). -->
+<!-- rtm: menção -->
+<!-- O ADR-034 e o ADR-036 são citados como contexto e NÃO são implementados nem emendados aqui — a reparação, que exigiria emendá-los, é da fase A1. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -2013,31 +2015,31 @@ fechado. Um run que não cumpre o contrato termina `failed`, nunca `completed`.
 
 ### Critérios de Aceitação
 
-- [ ] O objectivo de um run pode levar um **contrato de conclusão**: a lista de tools de que a
+- [x] O objectivo de um run pode levar um **contrato de conclusão**: a lista de tools de que a
       conclusão depende. Vazio quer dizer o comportamento de hoje.
-- [ ] O kernel conta, por tool, as chamadas **efectivas** do run: despachadas, sem recusa e sem
+- [x] O kernel conta, por tool, as chamadas **efectivas** do run: despachadas, sem recusa e sem
       erro de tool. A contagem vem dos contadores do próprio loop; não se lê do evento de desfecho
       da tool, que é opcional e fail-open.
-- [ ] O veredicto é um vector por tool exigida, e distingue pelo menos estas razões: contrato não
+- [x] O veredicto é um vector por tool exigida, e distingue pelo menos estas razões: contrato não
       cumprido sem nenhuma chamada pedida; contrato não cumprido depois de uma recusa; contrato não
       cumprido depois de uma falha de tool; resposta truncada; saída vazia.
-- [ ] Um turno com motivo de paragem `length` deixa de ser conclusão, com ou sem contrato.
-- [ ] Um run com veredicto negativo termina no estado durável `failed`, com `outcome_reason` no
+- [x] Um turno com motivo de paragem `length` deixa de ser conclusão, com ou sem contrato.
+- [x] Um run com veredicto negativo termina no estado durável `failed`, com `outcome_reason` no
       vocabulário fechado e sem texto final. O evento da transição terminal leva a razão e o
       vector do veredicto.
-- [ ] Modo de aplicação por configuração do nó, com três valores: desligado, observação (calcula,
+- [x] Modo de aplicação por configuração do nó, com três valores: desligado, observação (calcula,
       regista e conta, mas não muda o desfecho) e imposição. A omissão é observação. Um valor
       desconhecido recusa o arranque.
-- [ ] Contadores no `/metrics`: runs terminados por desfecho e razão; runs concluídos sem nenhuma
+- [x] Contadores no `/metrics`: runs terminados por desfecho e razão; runs concluídos sem nenhuma
       tool call tendo tools na oferta.
-- [ ] O replay reproduz o veredicto: o motor usa a mesma função (AOS-492) e chega ao mesmo
+- [x] O replay reproduz o veredicto: o motor usa a mesma função (AOS-492) e chega ao mesmo
       desfecho a partir da captura. Um run gravado antes deste ticket reproduz-se com o desfecho
       que teve.
-- [ ] A retoma depois de um crash preserva o contrato e os contadores (o contrato fica no registo
+- [x] A retoma depois de um crash preserva o contrato e os contadores (o contrato fica no registo
       de retoma; os contadores reconstroem-se do log).
-- [ ] As duas respostas de produção de 2026-10-04 entram como fixtures: com contrato e em
+- [x] As duas respostas de produção de 2026-10-04 entram como fixtures: com contrato e em
       imposição, cada uma termina `failed` com a razão «sem nenhuma chamada pedida».
-- [ ] ADR novo escrito e registado: o desfecho de um run é um veredicto do kernel; a ausência de
+- [x] ADR novo escrito e registado: o desfecho de um run é um veredicto do kernel; a ausência de
       tool calls não é conclusão; a evidência de tool call não é fidelidade da saída (resíduo
       declarado).
 - [ ] Revisão adversarial independente com mutações, antes da fusão.
@@ -2052,7 +2054,39 @@ fechado. Um run que não cumpre o contrato termina `failed`, nunca `completed`.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-04); por verificar em produção. Falta a revisão adversarial independente.**
+A decisão está no ADR-037 (`docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md`).
+
+- **Contrato e modo.** `Goal.CompletionRequires` (nomes de tool) e `Goal.CompletionMode`. O nó
+  fixa o modo por run a partir de `AOS_COMPLETION_VERDICT` (`observe` por omissão, `enforce`,
+  `off`; outro valor recusa o arranque). Os dois vão no registo de retoma e em
+  `manifest.completion` de cada `turn.recorded`. Um registo de retoma sem modo é de um run
+  anterior e retoma-se sem veredicto.
+- **Veredicto.** `agentruntime.ConcludeRun`, chamada pelo loop e pelo motor de replay no turno
+  terminal, sobre contadores (`RunEvidence`) alimentados das tool calls despachadas em cada turno.
+  `TurnEndsRun` não mudou.
+- **Razões** (`outcome_reason`): `truncated`, `contract_unmet_no_call`,
+  `contract_unmet_after_denial`, `contract_unmet_after_tool_error`, `empty_output`, por esta
+  precedência. A razão do contrato é a da primeira tool em falta.
+- **Estado durável.** `failed` com razão de auditoria `objective_unfulfilled`; a transição
+  terminal leva `outcome_reason` e `verdict`, também em observação (aí com `run_complete`).
+- **Métricas.** `aos_runs_finished_total{outcome,reason}` e
+  `aos_runs_completed_without_tool_call_total`.
+- **Entrou por campos, não por layout novo.** O prompt não muda um byte, e um layout novo teria
+  de ser conhecido da projecção nativa.
+
+Decisões de implementação que o dono ou o revisor devem validar:
+
+1. `empty_output` e `truncated` valem com ou sem contrato. O ticket só o pede para `length`.
+2. Saída só com espaços conta como vazia.
+3. `content_filter` e motivos de paragem fora do mapa conhecido **não** são veredicto negativo.
+4. Um run não cumprido entra na saga de compensação, como qualquer `failed`.
+5. Em observação o manifesto de cada turno de um run novo ganha `completion`. Os bytes do
+   `turn.recorded` mudam para runs novos; com `off` ficam os de antes.
+
+O que este ticket não fecha, além do «Fora de âmbito»: enquanto o desfecho estiver em memória, o
+`GET /runs/{id}` de um run não cumprido responde `status: "completed"` com `terminated=false`
+(AOS-494). O contrato só entra por código: até ao AOS-494 nenhum run submetido pela API o leva.
 
 ---
 
@@ -2070,3 +2104,4 @@ fechado. Um run que não cumpre o contrato termina `failed`, nunca `completed`.
 | 1.7 | 2026-10-03 | +AOS-489: o tail do prompt regista a tool call do modelo e identifica o resultado; 60% das tool calls em produção eram repetições | Equipa AOS |
 | 1.8 | 2026-10-04 | AOS-489: verificação em produção da v0.1.45 (um run, zero repetições; critério dos 10 runs por cumprir) | Equipa AOS |
 | 1.9 | 2026-10-04 | +AOS-492 (regra de terminação única) e +AOS-493 (o desfecho de um run é um veredicto do kernel): em 2 de 10 planos em produção o run fechou concluído sem executar a tool de que a saída dependia | Equipa AOS |
+| 1.10 | 2026-10-04 | AOS-493 implementado (ADR-037): veredicto do kernel, contrato de conclusão no objectivo do run, modo de aplicação por nó (observação por omissão). Por rever e por verificar em produção | Equipa AOS |

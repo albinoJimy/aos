@@ -7,6 +7,17 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-02 (AOS-493) O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão
+- `fix(AOS-493)` — um turno sem tool calls fechava o run como concluído, fosse o texto uma resposta, uma tool call escrita como texto, nada ou uma resposta cortada. Em 2 de 10 planos em produção (2026-10-04) o run fechou concluído sem executar a tool de que a saída dependia. O kernel passa a calcular o desfecho no turno terminal (`agentruntime.ConcludeRun`, a mesma função no loop e no motor de replay), a partir dos seus próprios contadores de tool calls efectivas, contra um contrato de conclusão declarado no objectivo do run. ADR-037.
+  - **Contrato e modo no `Goal`:** `CompletionRequires` (nomes das tools de que a conclusão depende) e `CompletionMode` (`off`, `observe`, `enforce`). Fixados por run: vão no registo de retoma e em `manifest.completion` de cada `turn.recorded`. O campo no `POST /runs` é do AOS-494; até lá o contrato só entra por código.
+  - **Veredicto:** um vector por tool exigida (pedidas, efectivas, negadas, falhadas, último desfecho) e uma razão em vocabulário fechado — `truncated`, `contract_unmet_no_call`, `contract_unmet_after_denial`, `contract_unmet_after_tool_error`, `empty_output`. Uma resposta cortada (`length`) ou sem texto não é conclusão, com ou sem contrato.
+  - **`AOS_COMPLETION_VERDICT`** (`observe` por omissão, `enforce`, `off`; outro valor recusa o arranque; uma linha no banner). Em `observe` o desfecho **não muda**: o veredicto vai na transição terminal, no log e no `/metrics`. Em `enforce` um veredicto negativo termina o run em `failed` (razão `objective_unfulfilled`), sem texto final. Entra no `docker-compose.prod.yml`, no `.env.example` e nos dois README.
+  - **`run.state.transition` terminal** ganha `outcome_reason` e `verdict`, omitidos quando não há veredicto. Não há estado novo.
+  - **`/metrics` do nó:** `aos_runs_finished_total{outcome,reason}` (3 estados × 6 razões, `none` incluída) e `aos_runs_completed_without_tool_call_total`.
+  - **Replay:** o motor lê o modo e o contrato do manifesto do turno terminal e refaz os contadores da captura; `ReplayResult` ganha `Unfulfilled` e `Verdict`. Um log gravado antes desta versão reproduz-se concluído e sem veredicto.
+  - **Muda para runs novos, em observação:** o manifesto do `turn.recorded` ganha `"completion":{"mode":"observe"}`. Com `off` os bytes são os de antes.
+  - Sem reparação: um veredicto negativo fecha o run. Evidência de tool call não prova que a saída deriva do que a tool devolveu.
+
 ### Added — EPIC-06 (AOS-491) O motivo de paragem do modelo chega ao runtime, à captura e ao registo do turno
 - `feat(AOS-491)` — o adaptador do Model Gateway lia o `finish_reason` do provider para calcular o `Final` e deitava-o fora: uma resposta cortada pelo limite de tokens, uma recusa por filtro de conteúdo e uma conclusão chegavam iguais ao runtime. Passa a levá-lo, normalizado num **vocabulário fechado** (`stop`, `tool_calls`, `length`, `content_filter`, `other`, e vazio quando o provider não o envia), em `ModelResponse.StopReason`. Um valor fora do mapa conhecido vira `other`; o texto do provider não sai do adaptador, e o loop e o `TurnRecorder` voltam a fechar o vocabulário para um cliente de modelo que não seja o do gateway.
   - **Sem mudança de comportamento.** O `Final` e a regra de terminação são os de antes: um `length` sem tool calls continua a terminar o run. O que muda é que fica registado.
