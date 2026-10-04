@@ -7,6 +7,9 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Changed — EPIC-02 (AOS-492) A regra de terminação do run vive numa só função
+- `refactor(AOS-492)` — a condição «resposta final ou sem tool calls» estava escrita no loop e copiada à mão no motor de replay. É agora `agentruntime.TurnEndsRun`, que recebe a resposta e a versão de layout do turno e é chamada pelos dois. Nenhum comportamento muda nos layouts 1.3.0 e 1.4.0. Um teste estrutural lê `loop.go` e `replay/engine.go` e falha se a condição voltar a aparecer escrita localmente.
+
 ### Changed — EPIC-06 (AOS-490) O nó envia a conversa ao modelo em mensagens nativas, derivadas do tail
 - `feat(AOS-490)` — o adaptador do Model Gateway enviava o prompt inteiro numa mensagem de utilizador. Passa a projectar o tail (ADR-036 §2.4) em **mensagens nativas**: `system` (um protocolo fixo e o system do run), `user` (entradas e objectivo), e por turno do modelo um `assistant` com `tool_calls` e uma mensagem `tool` por chamada, com o `id` cunhado pelo runtime (`step-000001-tool-1`) como `tool_call_id`. Medido a 2026-10-03 contra o LiteLLM de produção: com esta forma o modelo respondeu com o resultado em vez de voltar a pedir a tool.
   - **`AOS_MODEL_PROJECTION`** (`native` por omissão, `text`; com o gateway ligado, outro valor recusa o arranque; uma linha no banner). `text` repõe a forma anterior do pedido — um só `user` com o prompt materializado —, e um run fixado no layout 1.3.0 vai sempre em texto único. Entra no `docker-compose.prod.yml` (só no serviço do nó), no `.env.example` e nos dois README.

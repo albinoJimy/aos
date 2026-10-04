@@ -724,8 +724,13 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseVerified); err != nil {
 			return res, err
 		}
-		// TERMINAÇÃO — uma resposta final acaba o run (não se pausa um run já concluído).
-		if resp.Final || len(resp.ToolCalls) == 0 {
+		// TERMINAÇÃO — uma resposta final acaba o run (não se pausa um run já concluído). A
+		// regra é a de [TurnEndsRun], a MESMA função que o motor de replay usa (AOS-492).
+		termina, err := TurnEndsRun(resp, lay.version)
+		if err != nil {
+			return res, err
+		}
+		if termina {
 			res.FinalText = resp.Text
 			res.Turns = turn
 			res.Terminated = true

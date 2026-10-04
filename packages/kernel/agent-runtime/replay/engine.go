@@ -632,8 +632,13 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		}
 		dobras.turno(stepID, resp.Text, results)
 
-		// (4) TERMINAÇÃO — igual ao loop: resposta final ou sem tool calls.
-		if resp.Final || len(resp.ToolCalls) == 0 {
+		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no
+		// layout que o turno gravou. A regra não está escrita aqui.
+		termina, terr := agentruntime.TurnEndsRun(resp, manifest.AssemblyVersion)
+		if terr != nil {
+			return ReplayResult{}, terr
+		}
+		if termina {
 			res.Terminated = true
 			res.FinalText = resp.Text
 			break
