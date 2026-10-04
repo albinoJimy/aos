@@ -68,6 +68,13 @@ func TestAOS492_TurnEndsRun_LayoutDesconhecidoEErro(t *testing.T) {
 //   - `len(x.ToolCalls)` comparado com o literal 0 ou 1, por qualquer operador (`== 0`, `> 0`,
 //     `< 1`, …). Comparar com outro comprimento (`len(a.ToolCalls) > len(b.ToolResults)`, a
 //     admissão do replay) é outra pergunta, e é permitido.
+//
+// O QUE ESTE TESTE NÃO GARANTE. É sintáctico: apanha a cópia verbatim, a closure local, a
+// negação e a remoção da chamada. Escapa-lhe a mesma regra escrita de outra forma — os campos
+// lidos para uma variável intermédia, um `switch` sobre o comprimento, uma função auxiliar
+// noutro ficheiro — e, sobretudo, exige só que a chamada a [TurnEndsRun] EXISTA, não que o
+// resultado decida. A igualdade de comportamento entre o loop e o replay é garantida pelo teste
+// diferencial do pacote `replay` (`TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou`).
 func TestAOS492_ARegraDeTerminacaoNaoEstaEscritaAMao(t *testing.T) {
 	t.Parallel()
 	for _, caminho := range []string{"loop.go", "replay/engine.go"} {

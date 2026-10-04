@@ -8,8 +8,24 @@ package agentruntime
 // diferente daquele em que o run parou — e com fidelidade aparente de 100%, porque o replay só
 // compara os turnos que chega a reproduzir.
 //
-// [TurnEndsRun] é essa decisão. O loop e o motor chamam-na; nenhum dos dois a tem escrita
-// localmente, e [TestAOS492_ARegraDeTerminacaoNaoEstaEscritaAMao] avermelha se voltar a estar.
+// [TurnEndsRun] é essa decisão. O loop e o motor chamam-na, e nenhum dos dois a tem escrita
+// localmente. Duas coisas o seguram, e cada uma garante uma coisa diferente:
+//
+//   - o teste ESTRUTURAL (`TestAOS492_ARegraDeTerminacaoNaoEstaEscritaAMao`) lê o código dos
+//     dois ficheiros. APANHA a cópia verbatim da condição, a closure local com a regra, a sua
+//     negação e a remoção da chamada a [TurnEndsRun]. É sintáctico, e por isso ESCAPA-LHE uma
+//     reescrita que não tenha essa forma: os campos lidos para uma variável intermédia, um
+//     `switch` sobre o comprimento, uma função auxiliar noutro ficheiro do pacote. Garante que
+//     a chamada existe — NÃO que o seu resultado é o que decide;
+//   - o teste DIFERENCIAL (`TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou`, no pacote
+//     `replay`) é o que garante a igualdade de COMPORTAMENTO: para uma tabela de respostas do
+//     modelo, nos dois layouts, corre o loop com captura, reproduz o log com o motor e exige o
+//     mesmo número de turnos, o mesmo `Terminated` e o mesmo texto final. Não olha para a forma
+//     do código, pelo que apanha as reescritas que escapam ao estrutural quando mudam o
+//     desfecho — incluindo um chamador que chame a função e ignore o resultado.
+//
+// Quem mudar a regra (um layout novo) apoia-se no diferencial, e acrescenta-lhe os casos em que
+// a regra nova decide de outra maneira.
 
 // TurnEndsRun diz se a resposta do modelo de um turno TERMINA o run, no layout em que o turno
 // foi montado.
