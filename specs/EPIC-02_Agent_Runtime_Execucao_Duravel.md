@@ -1940,14 +1940,14 @@ comportamento nos layouts 1.3.0 e 1.4.0 fica byte a byte igual.
 
 ### Critérios de Aceitação
 
-- [ ] A decisão de terminação é uma função única do pacote do runtime, que recebe a resposta do
+- [x] A decisão de terminação é uma função única do pacote do runtime, que recebe a resposta do
       modelo e o layout do run. O loop e o motor de replay chamam-na; nenhum dos dois tem a
       condição escrita localmente.
-- [ ] Um teste estrutural falha se a condição voltar a aparecer escrita à mão no loop ou no motor
+- [x] Um teste estrutural falha se a condição voltar a aparecer escrita à mão no loop ou no motor
       de replay.
-- [ ] Todos os goldens de replay existentes passam sem alteração, incluindo a fixture do layout
+- [x] Todos os goldens de replay existentes passam sem alteração, incluindo a fixture do layout
       1.3.0.
-- [ ] A suite do runtime, do replay e do nó passa com `-race` sem mudança de asserções.
+- [x] A suite do runtime, do replay e do nó passa com `-race` sem mudança de asserções.
 
 ### Fora de âmbito
 
@@ -1956,7 +1956,18 @@ comportamento nos layouts 1.3.0 e 1.4.0 fica byte a byte igual.
 
 ### Estado
 
-**ABERTO.**
+**FEITO (2026-10-04).** A função é `TurnEndsRun`. Dois testes guardam-na, e garantem coisas
+diferentes:
+
+- O teste estrutural apanha a cópia da regra escrita à mão (verbatim, em closure local, negada)
+  e a remoção da chamada. Escapa-lhe uma cópia através de variável intermédia, de `switch` ou
+  de função auxiliar.
+- O teste diferencial corre o loop e reprodu-lo no motor de replay, para sete tipos de resposta
+  nos dois layouts, e exige o mesmo turno de terminação e o mesmo texto final. É este que
+  garante a igualdade de comportamento, e falha se entrar um layout que a tabela não cobre.
+
+A revisão adversarial mostrou que o teste estrutural sozinho deixava passar o motor a ignorar
+o resultado da função; o diferencial nasceu desse achado.
 
 ---
 

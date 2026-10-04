@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-04 (abertura dos tickets de A0).
+Última actualização: 2026-10-04 (AOS-491 e AOS-492 implementados).
 
 ## 1. Objectivo e promessa
 
@@ -43,8 +43,8 @@ fidelidade» para nós que passam o resultado sem o transformar.
 
 | Ticket | Epic | Título curto | Depende de | Estado |
 |---|---|---|---|---|
-| AOS-491 | EPIC-06 | O motivo de paragem chega ao runtime, à captura e ao registo do turno | — | aberto |
-| AOS-492 | EPIC-02 | A regra de terminação vive num só sítio, partilhado por loop e replay | — | aberto |
+| AOS-491 | EPIC-06 | O motivo de paragem chega ao runtime, à captura e ao registo do turno | — | implementado; por verificar em produção |
+| AOS-492 | EPIC-02 | A regra de terminação vive num só sítio, partilhado por loop e replay | — | feito |
 | AOS-493 | EPIC-02 | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão | AOS-491, AOS-492 | aberto |
 | AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | aberto |
 | AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | aberto |
@@ -78,7 +78,7 @@ correspondentes estiverem tomadas.
 | 2026-10-04 | Repetições na v0.1.45 (10 planos) | 0 de 8 chamadas | AOS-489, AOS-490 |
 | 2026-10-04 | Verdes falsos na v0.1.45 (10 planos) | 2 de 10 planos saíram `exit_code=0` sem cumprir | `analise-fronteira-runtime-modelo-2026-10-04.md` §2 |
 
-Por medir: taxa de vermelhos falsos do contrato em modo de observação; eficácia da recuperação;
+Por medir: o vocabulário de motivos de paragem que o provider de produção envia; taxa de vermelhos falsos do contrato em modo de observação; eficácia da recuperação;
 o que o proxy devolve no campo `model`.
 
 ## 6. Matriz de suporte por classe de modelo

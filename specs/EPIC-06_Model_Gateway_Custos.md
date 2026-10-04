@@ -1277,20 +1277,20 @@ runtime, à captura do turno e ao `turn.recorded`. O comportamento do loop não 
 
 ### Critérios de Aceitação
 
-- [ ] `ModelResponse` ganha o motivo de paragem num vocabulário fechado: `stop`, `tool_calls`,
+- [x] `ModelResponse` ganha o motivo de paragem num vocabulário fechado: `stop`, `tool_calls`,
       `length`, `content_filter`, `other`, e vazio quando o provider não o envia. Um valor do
       provider fora do mapa conhecido vira `other`; o valor bruto não entra no runtime.
-- [ ] O adaptador do gateway preenche-o a partir do `finish_reason` da primeira escolha da
+- [x] O adaptador do gateway preenche-o a partir do `finish_reason` da primeira escolha da
       resposta, tanto na projecção nativa como na de texto único.
-- [ ] A captura do turno guarda o motivo, e o replay devolve-o igual. Uma captura gravada antes
+- [x] A captura do turno guarda o motivo, e o replay devolve-o igual. Uma captura gravada antes
       deste ticket reproduz-se com o motivo vazio, sem divergência de `prompt_hash` nem de
       trajectória.
-- [ ] O `turn.recorded` grava o motivo de paragem e o número de tools oferecidas ao modelo no
+- [x] O `turn.recorded` grava o motivo de paragem e o número de tools oferecidas ao modelo no
       turno. Os dois campos são aditivos: quem lê eventos antigos não parte.
-- [ ] Contador novo no `/metrics` do nó: turnos por motivo de paragem.
-- [ ] O loop termina exactamente nos mesmos turnos que antes (teste de não-regressão sobre os
+- [x] Contador novo no `/metrics` do nó: turnos por motivo de paragem.
+- [x] O loop termina exactamente nos mesmos turnos que antes (teste de não-regressão sobre os
       goldens de replay existentes).
-- [ ] O catálogo de eventos e a documentação do contrato da porta registam os campos novos; a
+- [x] O catálogo de eventos e a documentação do contrato da porta registam os campos novos; a
       versão do contrato sobe em MINOR.
 
 ### Fora de âmbito
@@ -1301,7 +1301,23 @@ runtime, à captura do turno e ao `turn.recorded`. O comportamento do loop não 
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-04); por verificar em produção.** Revisão adversarial independente sem
+achados bloqueantes (44 mutações; as que escaparam ganharam teste).
+
+Por verificar em produção: o contador `aos_model_turns_total` no `/metrics` e o `stop_reason`
+nos `turn.recorded`, com o vocabulário que o provider de produção envia de facto.
+
+Resíduos declarados:
+
+- `tools_offered` vem do pedido ao provider e **não está na captura**: numa retoma, o turno
+  reproduzido volta com zero em memória (o evento original fica no log). Se o AOS-493 precisar
+  deste número de forma reproduzível, tem de ir para a captura ou ser derivado do manifesto.
+- Só o adaptador do gateway declara o motivo; os outros clientes do modelo somam em
+  `unreported`. O caminho de streaming não o transporta.
+- O motivo de paragem fica em claro numa captura selada e sobrevive ao crypto-shredding. É um
+  facto sobre o turno, já em claro no `turn.recorded`, e não contém conteúdo do titular.
+- Depois de um crash entre as duas escritas, o `turn.recorded` e a captura podem discordar no
+  motivo. É a mesma classe que já existia para os outros campos do turno.
 
 ---
 
