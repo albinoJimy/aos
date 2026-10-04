@@ -8652,3 +8652,119 @@ O que a revisão adversarial acrescentou:
 - **Skills e servidores MCP:** no nó de produção o catálogo vem só de `AOS_MODEL_TOOLS`, pelo que o
   corte por nome não tem impacto hoje; numa composição com MCP, o manifesto de um run restrito
   deixa de pinar o servidor MCP de cujas tools o run usa. Sem teste.
+
+---
+
+## AOS-494 — O nó aceita o contrato de conclusão no `POST /runs` e devolve o desfecho no `GET /runs`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é a superfície HTTP do contrato que o AOS-493 decide. O ADR-027 (cada nó do plano é um run do nó) é citado como contexto da relação entre o aos-orq e o nó. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A0 |
+| Tipo | feat |
+| Prioridade | P0: sem isto o `aos-orq` não consegue declarar o contrato nem saber porque um run filho falhou |
+| Estimativa | M |
+| Dependências | AOS-493 |
+| Bloqueia | AOS-495 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md` §5.1, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`, `packages/cmd/aos/api.go`, `packages/cmd/aos/terminal_states.go`, `packages/cmd/aos-orq/node_client.go` |
+
+### Contexto
+
+O `POST /runs` do nó recusa campos desconhecidos. Um `aos-orq` novo que envie o contrato a um nó
+anterior recebe 400 em todas as submissões. O `GET /runs/{id}` devolve só `status`, `terminated`,
+`error` e `final_text`.
+
+Lido no código e não exercitado: depois de um reinício do nó, o ramo durável do `GET /runs/{id}`
+responde `completed` sem texto, e o `aos-orq` publicaria uma saída vazia com o nó do plano
+`complete`.
+
+### Objectivo
+
+O nó aceita o contrato de conclusão de um chamador autorizado, anuncia que o suporta, e devolve o
+desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durável).
+
+### Critérios de Aceitação
+
+- [ ] O `POST /runs` aceita o contrato de conclusão. As tools do contrato têm de pertencer à
+      lista-branca do run; caso contrário o pedido é recusado com 400 e mensagem própria.
+- [ ] O nó anuncia o suporte do contrato numa superfície que o `aos-orq` consegue ler antes de
+      submeter. Um nó sem o suporte continua a responder como hoje.
+- [ ] O `GET /runs/{id}` devolve `outcome_reason` e o vector do veredicto. Os campos são aditivos:
+      um cliente anterior continua a funcionar.
+- [ ] O ramo durável do `GET /runs/{id}` devolve o mesmo desfecho, a mesma razão e a mesma saída
+      que o ramo em memória. Teste que reinicia o nó entre a conclusão e a leitura.
+- [ ] Um run `failed` por contrato não cumprido responde `terminated=false` com a razão, sem
+      texto final.
+- [ ] A superfície de variáveis de ambiente, o README do servidor e o exemplo de `.env` registam
+      o modo de aplicação do contrato (AOS-493).
+- [ ] Smoke do nó sobre ficheiro e sobre JetStream.
+
+### Fora de âmbito
+
+- O lado do `aos-orq` (AOS-495).
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-495 — O `aos-orq` declara o contrato de conclusão por nó e não publica saídas sem evidência
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: liga o aos-orq ao contrato que o AOS-493 decide e o AOS-494 expõe. O ADR-027 é citado como contexto. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A0 |
+| Tipo | fix |
+| Prioridade | P0: é aqui que o verde falso passa a vermelho com razão (saída 13) |
+| Estimativa | M |
+| Dependências | AOS-494, AOS-484 (saída 13 para planos com nós falhados) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md` §5.1 e §7, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/node_client.go`, `deploy/server/avisar-planos.sh` |
+
+### Contexto
+
+Para o `aos-orq`, um nó está concluído quando o run filho responde `completed`, `terminated` e sem
+erro. A saída publicada é o texto final, byte a byte. Não há validação de conteúdo para as saídas
+de forma aberta, e uma saída vazia também é publicada.
+
+### Objectivo
+
+O `aos-orq` declara o contrato de conclusão dos nós elegíveis, trata o desfecho «não cumprido»
+como nó falhado com a razão visível, e nunca publica uma saída vazia.
+
+### Critérios de Aceitação
+
+- [ ] Um nó é elegível quando não é verificador, tem tools atribuídas no plano materializado e
+      declara uma saída de forma aberta. Para esses, o `aos-orq` envia o contrato com as tools
+      atribuídas. Os restantes nós não levam contrato.
+- [ ] O contrato só é enviado a um nó que anuncie suportá-lo (AOS-494). Contra um nó anterior, o
+      `aos-orq` submete como hoje e regista que o contrato não foi aplicado.
+- [ ] Um run filho `failed` por contrato deixa o nó do plano `failed`, e o plano sai com o código
+      13. A razão aparece no `detail` do `GET /plans/{id}`, em vocabulário fechado, e no log da
+      drenagem.
+- [ ] Uma saída vazia nunca é publicada: o produtor fica `failed` com razão própria.
+- [ ] O aviso de planos distingue esta falha das outras.
+- [ ] Teste de ponta a ponta com o modelo falso: as duas respostas de produção de 2026-10-04 dão
+      plano com código 13 e a razão certa; a resposta boa dá código 0.
+- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo com nó anterior, e nó
+      novo com `aos-orq` anterior.
+- [ ] Verificação em produção: uma série de planos com o objectivo multi-nó, com zero verdes
+      falsos; os planos em que o modelo não chama a tool saem 13 com a razão.
+
+### Fora de âmbito
+
+- Nova tentativa do nó e reparação: fase A1.
+- Um campo `tool_use` no schema do plano: decidido pelo dono que o contrato é inferido.
+
+### Estado
+
+**ABERTO.**
