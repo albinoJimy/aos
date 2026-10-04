@@ -77,6 +77,18 @@ type ResumeRecord struct {
 	// `omitempty` porque um registo construído sem o campo (os de antes) re-serializa sem
 	// ele; a chave é o nome do campo, como nos irmãos.
 	AssemblyVersion string `json:"AssemblyVersion,omitempty"`
+	// CompletionRequires e CompletionMode são o contrato de conclusão do run e o modo de
+	// aplicação do veredicto (AOS-493, [agentruntime.Goal.CompletionRequires] e
+	// [agentruntime.Goal.CompletionMode]). Têm de sobreviver à retoma pela razão do layout: um
+	// run re-hospedado sem o contrato concluía sem a tool de que a conclusão depende, e um
+	// re-hospedado noutro modo acabava com um desfecho que o manifesto dos seus turnos não
+	// reproduz.
+	//
+	// MODO AUSENTE ⇒ desligado, e não «o modo corrente do nó». Um registo sem o campo foi
+	// escrito por um binário anterior ao AOS-493, cujos runs não tinham veredicto. Quem lê o
+	// modo pergunta-o a [ResumeRecord.ModoDeConclusao]; a escrita do nó grava-o sempre.
+	CompletionRequires []string                    `json:"CompletionRequires,omitempty"`
+	CompletionMode     agentruntime.CompletionMode `json:"CompletionMode,omitempty"`
 }
 
 // ResumeRecordLegacyAssemblyVersion é o layout de um registo de retoma que NÃO traz
@@ -90,6 +102,16 @@ func (r ResumeRecord) LayoutDoRun() string {
 		return ResumeRecordLegacyAssemblyVersion
 	}
 	return r.AssemblyVersion
+}
+
+// ModoDeConclusao devolve o modo de aplicação do veredicto em que o run do registo está
+// fixado: o gravado, ou [agentruntime.CompletionOff] quando o registo é anterior ao campo.
+// Nunca vazio.
+func (r ResumeRecord) ModoDeConclusao() agentruntime.CompletionMode {
+	if r.CompletionMode == "" {
+		return agentruntime.CompletionOff
+	}
+	return r.CompletionMode
 }
 
 // GoalWith reconstrói o [agentruntime.Goal] com a credencial FRESCA fornecida na retoma.
@@ -114,6 +136,10 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		// AOS-489: o run continua no layout em que começou. Nunca vazio — um Goal de retoma
 		// com a versão vazia cairia no layout dos runs NOVOS.
 		AssemblyVersion: r.LayoutDoRun(),
+		// AOS-493: o contrato e o modo com que o run começou. O modo nunca vai vazio — um Goal
+		// de retoma com o modo vazio receberia o do nó que o retoma.
+		CompletionRequires: r.CompletionRequires,
+		CompletionMode:     r.ModoDeConclusao(),
 	}
 }
 
@@ -270,6 +296,8 @@ func (r *ResumeRecords) Get(ctx context.Context, runID string) (ResumeRecord, bo
 		// escrito, sem normalização: quem lhe pergunta o layout usa [ResumeRecord.LayoutDoRun].
 		canonico := rec
 		canonico.AssemblyVersion = rec.LayoutDoRun()
+		// AOS-493: o mesmo para o modo do veredicto — ausente e `off` são o mesmo registo.
+		canonico.CompletionMode = rec.ModoDeConclusao()
 		canon, err := json.Marshal(canonico)
 		if err != nil {
 			return ResumeRecord{}, false, err

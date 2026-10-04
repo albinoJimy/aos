@@ -108,6 +108,10 @@ func TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou(t *testing.T) {
 					Objective:    "o trabalho de um no do plano",
 					MaxTurns:     4,
 					AllowedTools: lista,
+					// AOS-493: o modo do veredicto que um run novo recebe do nó ([Node.fixarConclusao]).
+					// A incarnação 1 deste teste corre o turno 1 pelo runtime, sem passar pelo
+					// hostRun, pelo que o Goal tem de o trazer para os manifestos se compararem.
+					CompletionMode: agentruntime.CompletionObserve,
 				}
 
 				// ===== REFERÊNCIA: o mesmo run, sem interrupção, no layout do caso.

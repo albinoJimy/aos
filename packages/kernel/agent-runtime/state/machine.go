@@ -97,6 +97,11 @@ type TransitionEvent struct {
 	// exige fencing ([RequiresFencingToken] — o claim ready → running). Ignorado nas
 	// demais transições (as retomas reentram sob o lease já detido).
 	Token FencingToken
+	// Verdict é o veredicto do kernel sobre a conclusão do run (AOS-493, ADR-037), quando a
+	// transição é a TERMINAL de um run que o calculou. Vai no evento como `outcome_reason` (a
+	// razão do veredicto, vazia quando o run cumpriu) e `verdict` (o vector). nil ⇒ os dois
+	// campos ficam ausentes e o evento tem os bytes de antes.
+	Verdict *agentruntime.Verdict
 }
 
 // Clock é o relógio INJECTÁVEL da máquina — a fonte do wall-clock que decide os
@@ -154,6 +159,11 @@ type transitionRecord struct {
 	Reason     string `json:"reason,omitempty"`
 	TokenValue uint64 `json:"token_value,omitempty"`
 	At         string `json:"at"` // RFC3339Nano, wall-clock da transição (relógio injectável)
+	// OutcomeReason e Verdict são o veredicto do kernel na transição terminal (AOS-493):
+	// a razão, no vocabulário fechado de [agentruntime.OutcomeReason], e o vector por tool
+	// exigida. `omitempty`: uma transição sem veredicto grava os bytes de sempre.
+	OutcomeReason agentruntime.OutcomeReason `json:"outcome_reason,omitempty"`
+	Verdict       *agentruntime.Verdict      `json:"verdict,omitempty"`
 }
 
 // Machine é a MÁQUINA DE ESTADOS DURÁVEL do run (AOS-017). Cada transição válida é
@@ -541,6 +551,10 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 		Reason:     event.Reason,
 		TokenValue: tokenValue,
 		At:         now.Format(time.RFC3339Nano),
+	}
+	if event.Verdict != nil {
+		rec.OutcomeReason = event.Verdict.Reason
+		rec.Verdict = event.Verdict
 	}
 	payload, err := json.Marshal(rec)
 	if err != nil {

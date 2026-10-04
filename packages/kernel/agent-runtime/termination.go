@@ -33,6 +33,9 @@ package agentruntime
 // A regra, igual nos layouts 1.3.0 e 1.4.0: o turno termina o run quando o modelo o declara
 // final ([ModelResponse.Final]) ou quando não pede nenhuma tool call.
 //
+// TERMINAR NÃO É CONCLUIR (AOS-493). Esta função diz só que o run não tem mais turnos; se
+// acabou cumprido ou não é de [ConcludeRun], que o loop e o motor chamam a seguir.
+//
 // PORQUE RECEBE O LAYOUT, se hoje a regra é a mesma em todos. A versão de layout é o que um run
 // fixa à partida e o que cada turno grava no manifesto: é a única coordenada por que o replay
 // consegue escolher, turno a turno, a regra com que o run correu. Uma regra nova entra por um

@@ -441,6 +441,12 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
+	// O VEREDICTO DE CONCLUSÃO (AOS-493): o que o nó faz com o veredicto do kernel nos runs
+	// novos. Já validado em [nodeConfigFromEnv].
+	if cfg.CompletionVerdict != "" {
+		fmt.Fprintf(w, "[aos] %s\n", completionVerdictBanner(cfg.CompletionVerdict))
+	}
+
 	// AUDIT DE GOVERNAÇÃO DO GATEWAY (AOS-265): declara se a activação da allowlist e as
 	// decisões por chamada selam num WORM DURÁVEL (AOS_MODEL_AUDIT_PATH) ou num MemStore
 	// volátil. Amarrado ao estado composto (cfg.Model != nil): sem gateway não há linha.
@@ -939,6 +945,14 @@ func nodeConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	cfg.Retention = retention
+
+	// O VEREDICTO DE CONCLUSÃO (AOS-493). Vocabulário fechado: um valor desconhecido aborta o
+	// arranque. Vazia ⇒ observação.
+	completionVerdict, err := parseCompletionVerdictFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.CompletionVerdict = completionVerdict
 
 	// PERIODICIDADE DA EXPORTAÇÃO DE BACKUP (AOS-101) por ambiente. É a BASE DO RPO: a janela de
 	// perda é limitada pela cadência com que o Event Store é exportado para o backup imutável.

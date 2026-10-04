@@ -479,6 +479,10 @@ type Config struct {
 	// injectado ⇒ o nó não declara nada e o goal fica como veio. Sem Config.Model, o modelo
 	// de referência declara [ReferenceModelID].
 	ModelID string
+	// CompletionVerdict é o modo com que o nó trata o veredicto de conclusão dos runs NOVOS
+	// (AOS-493, `AOS_COMPLETION_VERDICT`): `observe`, `enforce` ou `off`. Vazio ⇒ `observe`
+	// ([defaultCompletionVerdict]). Um valor fora do vocabulário falha o Bootstrap.
+	CompletionVerdict agentruntime.CompletionMode
 	// ModelIdentityBinder liga, no Bootstrap, o VERIFIER REAL do nó ao estágio authn do Model
 	// Gateway REAL (AOS-278, CUTOVER DURO). O gateway é construído na fronteira de ambiente
 	// (parseModelFromEnv), ANTES de a identidade estar composta; o seu estágio authn arranca
@@ -1040,6 +1044,11 @@ type Node struct {
 	// para o `/metrics`. Ligado ao runtime por [agentruntime.WithStopReasonStats]. Ver
 	// aos491_metricas.go.
 	turnosPorMotivo *turnosPorMotivo
+
+	// completionVerdict é o modo de aplicação do veredicto de conclusão dos runs novos
+	// (AOS-493). Vazio num nó montado à mão ⇒ [defaultCompletionVerdict]. Ver
+	// completion_verdict.go.
+	completionVerdict agentruntime.CompletionMode
 
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
@@ -2302,6 +2311,15 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// AOS-491: os turnos por motivo de paragem. Leitura, como a de cima.
 	motivosDeParagem := novoTurnosPorMotivo()
 	runtimeOpts = append(runtimeOpts, agentruntime.WithStopReasonStats(motivosDeParagem.observar))
+	// AOS-493: o modo do veredicto de conclusão dos runs novos. Vocabulário fechado, validado
+	// aqui também — um Config construído em código não passa por [parseCompletionVerdictFromEnv].
+	completionVerdict := cfg.CompletionVerdict
+	if completionVerdict == "" {
+		completionVerdict = defaultCompletionVerdict
+	}
+	if _, verr := agentruntime.ParseCompletionMode(string(completionVerdict)); verr != nil {
+		return nil, fmt.Errorf("%w (Config.CompletionVerdict=%q)", ErrBadCompletionVerdict, completionVerdict)
+	}
 
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
@@ -3271,6 +3289,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		contentOpener:           contentCipher,     // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		toolCalls:               toolCalls,         // AOS-489: tool calls despachadas e repetidas, para o /metrics
 		turnosPorMotivo:         motivosDeParagem,  // AOS-491: turnos por motivo de paragem, para o /metrics
+		completionVerdict:       completionVerdict, // AOS-493: modo do veredicto de conclusão dos runs novos
 		stateGates:              stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 		anomaliaAutonomia:       anomaliaAutonomia, // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)

@@ -146,8 +146,9 @@ type ModelResponse struct {
 	// que o preencha com outra coisa não chegue ao registo. Vazio ([StopUnreported]) quando o
 	// provider não o envia ou o cliente não o sabe.
 	//
-	// É MEDIÇÃO, e neste ticket só isso: vai para a captura do turno, para o `turn.recorded` e
-	// para a contagem por motivo. NÃO entra em [TurnEndsRun] nem em nenhuma decisão do loop.
+	// Vai para a captura do turno, para o `turn.recorded` e para a contagem por motivo. NÃO
+	// entra em [TurnEndsRun]. Desde o AOS-493 entra no VEREDICTO do run ([ConcludeRun]): um
+	// turno que acaba o run com [StopLength] não é conclusão.
 	StopReason StopReason
 	// ToolsOffered é o número de tools que o cliente OFERECEU ao modelo no pedido deste turno
 	// (AOS-491) — no gateway, quantos schemas o pedido levou no campo `tools`. Como

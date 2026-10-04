@@ -2028,6 +2028,29 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-493 — RUNS TERMINADOS POR DESFECHO E RAZÃO DO VEREDICTO. Uma amostra por par dos dois
+	// vocabulários fechados, sempre presentes: o zero é um zero verdadeiro.
+	if h.svc != nil && h.svc.desfechos != nil {
+		d := h.svc.desfechos
+		primeira := true
+		for _, e := range d.estados {
+			for _, rz := range d.razoes {
+				labels := `{outcome="` + string(e) + `",reason="` + rotuloDaRazao(rz) + `"}`
+				if primeira {
+					primeira = false
+					g("aos_runs_finished_total",
+						"Runs que este processo SELOU num estado terminal desde o arranque, por estado (complete, failed, timed_out) e por razao do veredicto de conclusao do kernel (AOS-493): none (sem veredicto negativo, ou run sem veredicto), contract_unmet_no_call, contract_unmet_after_denial, contract_unmet_after_tool_error, truncated, empty_output. Com o no em observacao um veredicto negativo aparece com outcome=complete: e quantos runs AOS_COMPLETION_VERDICT=enforce teria fechado em failed. Por processo: um run re-hospedado que volte a selar soma outra vez.",
+						"counter", float64(d.lido(e, rz)), labels)
+					continue
+				}
+				amostra("aos_runs_finished_total", labels, float64(d.lido(e, rz)))
+			}
+		}
+		g("aos_runs_completed_without_tool_call_total",
+			"Runs selados complete desde o arranque SEM nenhuma tool call pedida, tendo pelo menos uma tool oferecida ao modelo (AOS-493). E a forma do verde falso medido em producao a 2026-10-04: nem todos o sao (um run pode concluir bem sem precisar da tool), mas uma subida em relacao aos runs complete de aos_runs_finished_total pede leitura.",
+			"counter", float64(d.semToolCall.Load()), "")
+	}
+
 	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.
 	//
 	// TRÊS rotas fail-closed dependem de um `Append` e recusavam com o mesmo 503 uniforme, sem

@@ -439,6 +439,10 @@ func TestAOS490_RetomaECrashResumeReproduzemAsMensagens(t *testing.T) {
 					Objective:       "o trabalho de um run",
 					MaxTurns:        4,
 					AssemblyVersion: layout,
+					// AOS-493: o modo do veredicto que um run novo recebe do nó ([Node.fixarConclusao]).
+					// A incarnação 1 deste teste corre o turno 1 pelo runtime, sem passar pelo
+					// hostRun, pelo que o Goal tem de o trazer para os manifestos se compararem.
+					CompletionMode: agentruntime.CompletionObserve,
 				}
 				nativo := layout == agentruntime.AssemblyVersion140
 

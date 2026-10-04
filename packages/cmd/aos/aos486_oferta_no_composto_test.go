@@ -598,7 +598,11 @@ const (
 		`"model":{"model_id":"gpt-4o","served_model_id":"gpt-4o","seed":0},` +
 		`"tools":[{"name":"arquivo","version":"1.0.0","digest":"sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4"},` +
 		`{"name":"beta","version":"1.0.0","digest":"sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4"},` +
-		`{"name":"counter","version":"1.0.0","digest":"sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4"}]}`
+		`{"name":"counter","version":"1.0.0","digest":"sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4"}],` +
+		// AOS-493: o manifesto de um run novo grava o modo do veredicto de conclusão (o nó de
+		// teste fica em observação, por omissão). É o único campo acrescentado; os de cima não
+		// mexeram.
+		`"completion":{"mode":"observe"}}`
 )
 
 // SEM O CAMPO `tools` — o run de sempre. O pedido, o prefixo e o manifesto são byte-idênticos

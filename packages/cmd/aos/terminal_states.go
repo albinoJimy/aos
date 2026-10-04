@@ -18,6 +18,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/state"
@@ -51,6 +53,15 @@ const (
 	// (max_turns, wall-clock do disjuntor, deadline) porque só o rótulo torna a causa
 	// atribuível no log.
 	reasonBudgetExhausted = "budget_exhausted"
+	// reasonRunUnfulfilled — running→failed por VEREDICTO NEGATIVO do kernel em modo de
+	// imposição (AOS-493, ADR-037): o loop acabou sem erro, mas o turno que o terminou não é
+	// conclusão (resposta cortada, saída vazia, contrato de conclusão por cumprir). Rótulo
+	// distinto de [reasonRunFailed] para a auditoria separar «o loop falhou» de «o run acabou
+	// e não cumpriu». A razão fina vai no `outcome_reason` do mesmo evento, com o vector.
+	//
+	// `failed`, e não um estado novo: foi a decisão do dono (2026-10-04), e um `status` que um
+	// `aos-orq` anterior não conhecesse deixava-o a sondar até ao prazo.
+	reasonRunUnfulfilled = "objective_unfulfilled"
 )
 
 // sealTerminal materializa o estado TERMINAL do run no log durável. É NO-OP quando a
@@ -78,6 +89,10 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 		to, reason = state.Failed, reasonRunPanicked
 	case runErr == nil && res.Terminated:
 		to, reason = state.Complete, reasonRunComplete
+	case runErr == nil && res.Unfulfilled:
+		// VEREDICTO NEGATIVO IMPOSTO (AOS-493). Sem este ramo cairia no `default` e sairia
+		// `run_failed`, indistinguível de um erro de loop.
+		to, reason = state.Failed, reasonRunUnfulfilled
 	case runErr == nil && res.BudgetExhausted:
 		// DEGRADAÇÃO DECLARADA (AOS-260): o loop parou por falta de orçamento, sem erro e sem
 		// resposta final. Sem este ramo cairia no `default` e o log diria `failed` — a causa
@@ -98,7 +113,14 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 		// durável, e aí a saga de compensação é a recuperação certa.
 		to, reason = state.Failed, reasonRunFailed
 	}
-	if err := g.m.Transition(ctx, to, state.TransitionEvent{Token: g.token, Reason: reason}); err != nil {
+	// O VEREDICTO VAI NO EVENTO (AOS-493), qualquer que seja o estado: em observação um
+	// veredicto negativo acompanha um `run_complete`, e é esse o registo do que o modo de
+	// imposição teria feito. Só o leva um run que chegou ao turno terminal sem erro.
+	ev := state.TransitionEvent{Token: g.token, Reason: reason}
+	if runErr == nil && !panicked {
+		ev.Verdict = res.Verdict
+	}
+	if err := g.m.Transition(ctx, to, ev); err != nil {
 		return g.m.Current(), err
 	}
 	return to, nil
@@ -113,7 +135,10 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 // rollback (AOS-254). titular é o titular dos dados do run (goal.Titular(), AOS-440 — o
 // Principal.NHIID quando o run não tem Subject), propagado do hostRun: a compensação corre no
 // step-ledger cifrado por-titular, que o recusa se ele faltar.
-func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentruntime.Result, runErr error, panicked bool) {
+//
+// Devolve o estado em que o log durável ficou; vazio quando o selo não aconteceu (sem máquina,
+// sem gate, ou transição falhada).
+func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentruntime.Result, runErr error, panicked bool) state.State {
 	// TERMINOU EM MEMÓRIA? É esta premissa que separa uma DIVERGÊNCIA de um no-op legítimo.
 	//
 	// A guarda TEM DE COBRIR OS MESMOS CASOS que o `switch` de [runGate.sealTerminal]: se
@@ -126,21 +151,21 @@ func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentr
 	// Se `sealTerminal` ganhar um ramo novo, esta linha tem de ganhar o termo correspondente —
 	// e o teste que o acompanha compara os dois conjuntos precisamente para que o esquecimento
 	// fique vermelho em vez de silencioso.
-	terminouEmMemoria := panicked || runErr != nil || res.Terminated || res.BudgetExhausted
+	terminouEmMemoria := panicked || runErr != nil || res.Terminated || res.BudgetExhausted || res.Unfulfilled
 	if s.node == nil || s.node.stateGates == nil {
 		s.declararDesfechoNaoSelado(rs.runID, terminouEmMemoria, "nao ha maquina de estados composta neste no", "")
-		return
+		return ""
 	}
 	gate := s.node.stateGates.resolveGate(rs.runID)
 	if gate == nil {
 		s.declararDesfechoNaoSelado(rs.runID, terminouEmMemoria, "nao foi resolvido gate de estado para este run", "")
-		return
+		return ""
 	}
 	sealed, err := gate.sealTerminal(context.Background(), res, runErr, panicked)
 	if err != nil {
 		// Sem desfecho durável a reserva da quota fica inteira (AOS-457): fail-closed.
 		s.log("selo do estado terminal do run %q FALHOU — o log duravel fica sem desfecho (indistinguivel de crash, F4): %v", rs.runID, err)
-		return
+		return ""
 	}
 	// AOS-457: o desfecho ficou no log — o run acabou de gastar, e a quota passa a valer pelo que
 	// ele gastou. Um no-op em `paused`/`waiting_on_human` não liquida: o run vai continuar. É o ÚNICO
@@ -162,6 +187,21 @@ func (s *NodeService) sealTerminalState(rs *runState, titular string, res agentr
 	if sealed == state.Failed {
 		s.driveSagaCompensation(rs, titular)
 	}
+	return sealed
+}
+
+// vectorDoVeredicto escreve o vector do veredicto numa linha de log: por tool exigida, quantas
+// chamadas foram pedidas, efectivas, negadas e falhadas. Só nomes de tool do contrato (que vem
+// de quem compõe o run) e números.
+func vectorDoVeredicto(v *agentruntime.Verdict) string {
+	if v == nil || len(v.Tools) == 0 {
+		return "[sem contrato]"
+	}
+	partes := make([]string, 0, len(v.Tools))
+	for _, l := range v.Tools {
+		partes = append(partes, fmt.Sprintf("%q pedidas=%d efectivas=%d negadas=%d falhadas=%d", l.Tool, l.Requested, l.Effective, l.Denied, l.Failed))
+	}
+	return "[" + strings.Join(partes, "; ") + "]"
 }
 
 // desfechoDuravelRegistado indica se `st` é um estado em que o log durável REGISTA o fim do

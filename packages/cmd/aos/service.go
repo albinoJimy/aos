@@ -259,6 +259,9 @@ type NodeService struct {
 	// layouts conta os runs hospedados por layout de montagem do prompt (AOS-489). Um run que
 	// continua em 1.3.0 — registo de retoma antigo — deixa de ser visível só no WAL.
 	layouts *runsPorLayout
+	// desfechos conta os runs selados por estado terminal e razão do veredicto do kernel
+	// (AOS-493), e os concluídos sem nenhuma tool call com tools na oferta.
+	desfechos *desfechosDeRuns
 	// varredorParado marca a paragem DEFINITIVA por incidente de integridade — distinta de
 	// «ainda não armado» e de «armado, à espera do primeiro tick». As três leem-se de maneira
 	// diferente e exigem acções diferentes.
@@ -526,6 +529,7 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 
 	s := &NodeService{
 		layouts:      novoRunsPorLayout(),
+		desfechos:    novoDesfechosDeRuns(),
 		node:         node,
 		assigner:     assigner,
 		leases:       leases,
@@ -1063,7 +1067,10 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			// AOS-254: o titular acompanha o selo — a saga de rollback que um desfecho `failed`
 			// aciona corre no step-ledger cifrado por-titular, que o exige. AOS-440: o titular
 			// dos DADOS (goal.Titular()), o mesmo sob o qual o step-ledger selou os outputs.
-			s.sealTerminalState(rs, goal.Titular(), res, err, r != nil)
+			selado := s.sealTerminalState(rs, goal.Titular(), res, err, r != nil)
+			// AOS-493: o run conta-se pelo estado em que o log durável ficou, e pela razão do
+			// veredicto.
+			s.desfechos.contar(selado, res)
 			if r != nil {
 				panic(r)
 			}
@@ -1115,6 +1122,10 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// sem versão e fica na dos runs novos; um run RETOMADO (aprovação ou crash-resume) chega
 	// com a do seu registo de retoma ([integration.ResumeRecord.GoalWith]) e não é tocado.
 	goal = fixarLayout(goal)
+	// AOS-493: o MODO DE APLICAÇÃO do veredicto de conclusão fica fixado no Goal no mesmo ponto
+	// e pela mesma razão: o registo de retoma, o runtime e o manifesto de cada turno têm o
+	// mesmo valor. Um run novo fica no modo do nó; um retomado traz o do seu registo.
+	goal = s.node.fixarConclusao(goal)
 	// O LAYOUT EM USO, À VISTA (AOS-489). Conta-se cada hospedagem pelo seu layout, e diz-se em
 	// voz alta quando NÃO é o dos runs novos: é o caso de um run começado antes desta versão e
 	// re-hospedado agora (o registo de retoma não tem o campo, ou tem o layout antigo) — o run
@@ -1138,6 +1149,19 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	if res.BudgetExhausted {
 		s.log("run %q PAROU por ORCAMENTO ESGOTADO (AOS-260) ao fim de %d turnos completos — %s. Estado duravel: timed_out (%s), NAO failed: um tecto defensivo atingido nao e uma falha recuperavel por compensacao. Para o trabalho prosseguir e preciso levantar o tecto (AOS_BUDGET_MAX_TOKENS / AOS_BUDGET_MAX_COST_MICRO_USD) e submete-lo com um run_id NOVO: este tem desfecho no log e a re-submissao do mesmo id e recusada (AOS-457)",
 			rs.runID, res.Turns, res.BudgetExhaustionReason, reasonBudgetExhausted)
+	}
+
+	// O VEREDICTO DO KERNEL, À VISTA (AOS-493). Um veredicto negativo diz-se no log do processo
+	// nos dois modos: em imposição o run fechou sem concluir; em observação concluiu como
+	// sempre e esta linha é o que o modo de imposição teria feito dele.
+	if v := res.Verdict; v != nil && !v.Fulfilled {
+		if res.Unfulfilled {
+			s.log("run %q NAO CUMPRIDO (AOS-493) ao fim de %d turno(s): veredicto do kernel %q, %d tool call(s) pedida(s), vector %s. Estado duravel: failed (%s), sem texto final",
+				rs.runID, res.Turns, v.Reason, v.ToolCallsRequested, vectorDoVeredicto(v), reasonRunUnfulfilled)
+		} else {
+			s.log("run %q concluido com VEREDICTO NEGATIVO em observacao (AOS-493): %q, %d tool call(s) pedida(s), vector %s. O desfecho nao mudou; com AOS_COMPLETION_VERDICT=enforce este run terminava failed",
+				rs.runID, v.Reason, v.ToolCallsRequested, vectorDoVeredicto(v))
+		}
 	}
 
 	// SUSPENSÃO À ESPERA DE HUMANO (AOS-021): o run NÃO terminou — uma tool call foi
@@ -1221,6 +1245,11 @@ func fixarLayout(goal agentruntime.Goal) agentruntime.Goal {
 // novo, com os primeiros turnos em 1.4.0, a continuar em 1.3.0 depois da retoma.
 func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 	goal = fixarLayout(goal)
+	// AOS-493: o modo do veredicto também vai SEMPRE explícito. Um registo sem ele é lido como
+	// «run anterior ao AOS-493» e retomado sem veredicto ([integration.ResumeRecord.ModoDeConclusao]).
+	if goal.CompletionMode == "" {
+		goal.CompletionMode = agentruntime.CompletionOff
+	}
 	return integration.ResumeRecord{
 		RunID:             goal.RunID,
 		Principal:         goal.Principal,
@@ -1237,6 +1266,9 @@ func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 		MaxTurns:          goal.MaxTurns,
 		ParentTraceParent: goal.ParentTraceParent,
 		AssemblyVersion:   goal.AssemblyVersion, // AOS-489: o run continua no layout em que começou
+		// AOS-493: o contrato de conclusão e o modo do veredicto sobrevivem à retoma.
+		CompletionRequires: goal.CompletionRequires,
+		CompletionMode:     goal.CompletionMode,
 	}
 }
 
