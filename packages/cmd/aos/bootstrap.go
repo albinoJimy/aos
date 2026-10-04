@@ -1036,6 +1036,11 @@ type Node struct {
 	// [agentruntime.WithToolCallStats]. Ver aos489_metricas.go.
 	toolCalls *medicaoDeToolCalls
 
+	// turnosPorMotivo conta os turnos de modelo por motivo de paragem (AOS-491), por processo,
+	// para o `/metrics`. Ligado ao runtime por [agentruntime.WithStopReasonStats]. Ver
+	// aos491_metricas.go.
+	turnosPorMotivo *turnosPorMotivo
+
 	// stateGates é a costura por-run (AOS-218) que resolve o [control.StateGate] durável
 	// (AOS-017) que o canal de steer usa para materializar running↔paused. O loop de
 	// serviço ABRE/LIBERTA um gate por run hospedado (ver service.go hostRun); o loop base
@@ -2294,6 +2299,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// comportamento do disjuntor não muda.
 	toolCalls := &medicaoDeToolCalls{}
 	runtimeOpts = append(runtimeOpts, agentruntime.WithToolCallStats(toolCalls.observar))
+	// AOS-491: os turnos por motivo de paragem. Leitura, como a de cima.
+	motivosDeParagem := novoTurnosPorMotivo()
+	runtimeOpts = append(runtimeOpts, agentruntime.WithStopReasonStats(motivosDeParagem.observar))
 
 	var escalationSink agentruntime.EscalationSink
 	var approvalEvidence agentruntime.ApprovalEvidenceSource
@@ -3262,6 +3270,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio
 		contentOpener:           contentCipher,     // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		toolCalls:               toolCalls,         // AOS-489: tool calls despachadas e repetidas, para o /metrics
+		turnosPorMotivo:         motivosDeParagem,  // AOS-491: turnos por motivo de paragem, para o /metrics
 		stateGates:              stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
 		anomaliaAutonomia:       anomaliaAutonomia, // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)

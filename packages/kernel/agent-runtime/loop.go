@@ -174,6 +174,7 @@ type Runtime struct {
 	breaker          LivenessBreaker        // AOS-080/081: disjuntor multi-sinal do agente vivo
 	actionObserver   ActionObserver         // AOS-251: fonte do sinal de no-progress (hash por acção mediada)
 	toolCallStats    ToolCallStats          // AOS-489: tool calls despachadas e repetidas, por turno (leitura)
+	stopReasonStats  StopReasonStats        // AOS-491: o motivo de paragem de cada turno (leitura)
 	admission        ModelAdmission         // AOS-260: admissão do TURNO DE MODELO (reserva antes, saldo depois)
 	progressObserver ProgressObserver       // AOS-262: burn-down + aviso a ~limiar (leitura, nunca decisão)
 	escalation       EscalationSink         // AOS-021: tool call escalada → espera por humano
@@ -543,8 +544,20 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		if err != nil {
 			return res, err
 		}
+		// O MOTIVO DE PARAGEM ENTRA NO RUNTIME JÁ FECHADO (AOS-491). O cliente de modelo é uma
+		// porta: um que devolvesse o texto do provider tal como veio poria esse texto na
+		// captura, no `turn.recorded` e num rótulo de métrica. Daqui para baixo `resp` só tem
+		// um valor do vocabulário. É medição — nada neste loop decide por ele.
+		resp.StopReason = resp.StopReason.Normalizado()
+		if resp.ToolsOffered < 0 {
+			// Uma contagem negativa não existe; não chega ao registo.
+			resp.ToolsOffered = 0
+		}
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseModelCalled); err != nil {
 			return res, err
+		}
+		if rt.stopReasonStats != nil {
+			rt.stopReasonStats(goal.RunID, resp.StopReason)
 		}
 		res.TotalUsage.InputTokens += resp.Usage.InputTokens
 		res.TotalUsage.OutputTokens += resp.Usage.OutputTokens
@@ -724,8 +737,13 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseVerified); err != nil {
 			return res, err
 		}
-		// TERMINAÇÃO — uma resposta final acaba o run (não se pausa um run já concluído).
-		if resp.Final || len(resp.ToolCalls) == 0 {
+		// TERMINAÇÃO — uma resposta final acaba o run (não se pausa um run já concluído). A
+		// regra é a de [TurnEndsRun], a MESMA função que o motor de replay usa (AOS-492).
+		termina, err := TurnEndsRun(resp, lay.version)
+		if err != nil {
+			return res, err
+		}
+		if termina {
 			res.FinalText = resp.Text
 			res.Turns = turn
 			res.Terminated = true
@@ -880,7 +898,11 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		CustoNaoDerivado: resp.CustoNaoDerivado,
 		ToolCalls:        len(resp.ToolCalls),
 		Final:            resp.Final,
-		Producer:         producer,
+		// AOS-491: o motivo de paragem do turno e quantas tools o pedido ofereceu ao modelo,
+		// os dois declarados pelo cliente na resposta.
+		StopReason:   resp.StopReason,
+		ToolsOffered: resp.ToolsOffered,
+		Producer:     producer,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("%w: turno %d: %w", ErrTurnRecord, turn, err)

@@ -31,7 +31,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -293,10 +293,31 @@ type ChatRequest struct {
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).
 type Choice struct {
-	Index        int     `json:"index"`
-	Message      Message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	Index   int     `json:"index"`
+	Message Message `json:"message"`
+	// FinishReason é o `finish_reason` do provider, TAL COMO VEIO: a porta não o interpreta
+	// nem o restringe. Os valores que o contrato conhece são as constantes Finish* abaixo;
+	// um provider pode mandar outro texto, ou nenhum. Quem o leva para fora do gateway — o
+	// adaptador do runtime — normaliza-o num vocabulário fechado e não propaga o valor bruto
+	// (AOS-491).
+	FinishReason string `json:"finish_reason"`
 }
+
+// Valores de [Choice.FinishReason] que o contrato conhece (AOS-491; aditivo, MINOR 1.3.0). São
+// os do wire OpenAI. Não é um vocabulário fechado da porta — o campo continua a ser o texto do
+// provider —, é o mapa a partir do qual o adaptador do runtime normaliza.
+const (
+	// FinishStop — o modelo parou por si.
+	FinishStop = "stop"
+	// FinishToolCalls — o modelo parou para pedir tool calls.
+	FinishToolCalls = "tool_calls"
+	// FinishFunctionCall — a forma antiga de [FinishToolCalls] (a API de `functions`).
+	FinishFunctionCall = "function_call"
+	// FinishLength — a resposta foi cortada pelo limite de tokens.
+	FinishLength = "length"
+	// FinishContentFilter — a resposta foi retida ou cortada por um filtro de conteúdo.
+	FinishContentFilter = "content_filter"
+)
 
 // ChatResponse é a resposta de chat/completions NORMALIZADA. Model é o modelo
 // EFECTIVAMENTE usado (pode diferir de ChatRequest.Model num swap).
