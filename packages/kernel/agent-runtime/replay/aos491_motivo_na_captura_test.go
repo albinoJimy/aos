@@ -163,3 +163,69 @@ func TestAOS491_Replay_LogAnteriorAoTicket_MotivoVazioSemDivergencia(t *testing.
 		}
 	}
 }
+
+// DEFESA EM PROFUNDIDADE NA LEITURA (revisão do AOS-491, m2). O capturer normaliza ao gravar, mas
+// o que o replay lê é o LOG — e uma captura pode ter sido escrita por outro produtor, ou
+// adulterada. O `decode` fecha o vocabulário outra vez: um `stop_reason` fora dele volta `other`,
+// e o texto bruto não chega ao [agentruntime.ModelResponse] que o motor devolve (e que, numa
+// retoma, o loop volta a gravar e a contar por rótulo de métrica).
+func TestAOS491_Captura_Decode_MotivoForaDoVocabularioSaiOther(t *testing.T) {
+	const bruto = "MOTIVO-BRUTO\"} 1\naos_up 0\n# HELP"
+	if got := (responseCapture{Text: "x", StopReason: bruto}).decode().StopReason; got != agentruntime.StopOther {
+		t.Fatalf("decode de um motivo fora do vocabulario devolveu %q, quero other", got)
+	}
+	// Vindo do JSON do evento, que é por onde chega de facto.
+	hostil, err := json.Marshal(map[string]any{"text": "x", "final": true, "stop_reason": bruto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rc responseCapture
+	if err := json.Unmarshal(hostil, &rc); err != nil {
+		t.Fatal(err)
+	}
+	if rc.StopReason != bruto {
+		t.Fatalf("o controlo falhou: a captura hostil nao chegou ao decode com o texto bruto (%q)", rc.StopReason)
+	}
+	if got := rc.decode(); got.StopReason != agentruntime.StopOther || got.Text != "x" || !got.Final {
+		t.Fatalf("captura hostil descodificada de outra forma: %+v", got)
+	}
+	// Os valores do vocabulário não são tocados.
+	for _, motivo := range agentruntime.StopReasons() {
+		if got := (responseCapture{StopReason: string(motivo)}).decode().StopReason; got != motivo {
+			t.Fatalf("decode mudou o motivo %q para %q", motivo, got)
+		}
+	}
+}
+
+// O MESMO, PELO MOTOR: um log cuja captura traz um motivo fora do vocabulário reproduz-se com
+// fidelidade 1.0 (o motivo não entra no prompt) e o turno sai com `other`.
+func TestAOS491_Replay_CapturaComMotivoForaDoVocabulario(t *testing.T) {
+	guiao, _ := aos491ComMotivos()
+	b := novaBancada(t)
+	goal := aos489Goal("run-aos491-captura-hostil")
+	if res, err := b.correr(goal, guiao); err != nil || !res.Terminated || res.Turns != 5 {
+		t.Fatalf("Run: res=%+v err=%v", res, err)
+	}
+	const gravado, bruto = `"stop_reason":"length"`, `"stop_reason":"MOTIVO-BRUTO-NO-LOG"`
+	eventos := b.eventos(goal.RunID)
+	trocados := 0
+	for i, ev := range eventos {
+		if ev.Type != EventTypeCaptured || !bytes.Contains(ev.Payload, []byte(gravado)) {
+			continue
+		}
+		eventos[i].Payload = bytes.Replace(ev.Payload, []byte(gravado), []byte(bruto), 1)
+		trocados++
+	}
+	if trocados != 1 {
+		t.Fatalf("queria adulterar a captura de um turno (o de motivo length); adulterei %d", trocados)
+	}
+	e, err := NewEngine(logFixo{goal.RunID: eventos})
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	res, err := e.Replay(context.Background(), goal.RunID, Options{Spec: aos489SpecDe(goal)})
+	exigirFiel(t, res, err, 5)
+	if got := res.Steps[2].Response.StopReason; got != agentruntime.StopOther {
+		t.Fatalf("turno 3: o replay devolveu o motivo %q de uma captura adulterada, quero other", got)
+	}
+}

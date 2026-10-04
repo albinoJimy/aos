@@ -2020,7 +2020,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			labels := `{stop_reason="` + rotuloDoMotivo(m) + `"}`
 			if i == 0 {
 				g("aos_model_turns_total",
-					"Turnos de modelo desde o arranque, por motivo de paragem declarado pelo provider (AOS-491). Vocabulario fechado: stop, tool_calls, length (resposta cortada pelo limite de tokens), content_filter, other (motivo fora do mapa conhecido) e unreported (o provider nao o enviou). Por processo: um run re-hospedado (retoma, crash-resume) volta a somar os turnos que reproduz.",
+					"Turnos de modelo desde o arranque, por motivo de paragem declarado pelo provider (AOS-491). Vocabulario fechado: stop, tool_calls, length (resposta cortada pelo limite de tokens), content_filter, other (motivo fora do mapa conhecido) e unreported (turno sem motivo declarado: o provider nao o enviou, o cliente de modelo nao o declara, ou o turno foi reproduzido de uma captura anterior ao campo). Por processo: um run re-hospedado (retoma, crash-resume) volta a somar os turnos que reproduz.",
 					"counter", float64(h.node.turnosPorMotivo.lido(m)), labels)
 				continue
 			}

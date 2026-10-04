@@ -216,3 +216,45 @@ func TestAOS491_OMotivoNaoMudaOndeOLoopTermina(t *testing.T) {
 		}
 	}
 }
+
+// DEFESA EM PROFUNDIDADE NO RECORDER (revisão do AOS-491, m2). O [TurnRecorder] é exportado: um
+// chamador que não seja o loop — que já normaliza à entrada — pode entregar-lhe um motivo fora do
+// vocabulário. O `turn.recorded` fica em claro, por isso o recorder fecha o vocabulário outra vez:
+// o texto bruto não chega ao evento e o que se grava é `other`. Os valores conhecidos e o vazio
+// passam como estão.
+func TestAOS491_TurnRecorder_FechaOVocabularioSemPassarPeloLoop(t *testing.T) {
+	const bruto = "MOTIVO-BRUTO\"} 1\naos_up 0\n# HELP"
+	casos := []struct {
+		motivo StopReason
+		quer   StopReason
+	}{
+		{bruto, StopOther},
+		{"STOP", StopOther},
+		{StopLength, StopLength},
+		{StopContentFilter, StopContentFilter},
+		{StopUnreported, StopUnreported},
+	}
+	for i, c := range casos {
+		h := newHarness(t, nil)
+		runID := "run-aos491-recorder-" + string(rune('a'+i))
+		if _, err := h.recorder.Record(context.Background(), TurnRecord{
+			RunID: runID, StepID: "step-000001", Turn: 1, StopReason: c.motivo,
+		}); err != nil {
+			t.Fatalf("Record(%q): %v", c.motivo, err)
+		}
+		events, err := h.store.Read(context.Background(), runID, 1)
+		if err != nil || len(events) != 1 {
+			t.Fatalf("Read: %d evento(s), err=%v", len(events), err)
+		}
+		var p turnPayload
+		if err := json.Unmarshal(events[0].Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.StopReason != c.quer {
+			t.Fatalf("Record com o motivo %q gravou %q, quero %q: %s", c.motivo, p.StopReason, c.quer, events[0].Payload)
+		}
+		if bytes.Contains(events[0].Payload, []byte("MOTIVO-BRUTO")) || bytes.Contains(events[0].Payload, []byte("STOP")) {
+			t.Fatalf("o texto bruto chegou ao turn.recorded: %s", events[0].Payload)
+		}
+	}
+}

@@ -182,3 +182,44 @@ func TestAOS491_Adaptador_DeclaraAsToolsQueOPedidoLevou(t *testing.T) {
 		}
 	}
 }
+
+// A PRIMEIRA ESCOLHA (revisão do AOS-491, m1). Uma resposta com várias `choices` de motivos
+// diferentes: o runtime recebe o texto, as tool calls e o `Final` da primeira, e o motivo tem de
+// ser o DESSA — o de outra escolha descreveria um turno que o runtime não viu. Todas as outras
+// fixtures têm uma só escolha, pelo que sem este teste «primeira» não estava fixado por nada.
+func TestAOS491_Traducao_VariasEscolhas_OMotivoEODaPrimeira(t *testing.T) {
+	t.Parallel()
+	escolha := func(texto, finish string) port.Choice {
+		return port.Choice{Message: port.Message{Role: port.RoleAssistant, Content: texto}, FinishReason: finish}
+	}
+	casos := []struct {
+		finishes []string
+		quer     agentruntime.StopReason
+	}{
+		{[]string{"length", "stop"}, agentruntime.StopLength},
+		{[]string{"stop", "length"}, agentruntime.StopStop},
+		{[]string{"content_filter", "stop", "length"}, agentruntime.StopContentFilter},
+		{[]string{"", "length"}, agentruntime.StopUnreported},
+		{[]string{"end_turn", "stop"}, agentruntime.StopOther},
+	}
+	for _, c := range casos {
+		resp := port.ChatResponse{Model: "modelo-de-teste", Usage: port.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12}}
+		for i, f := range c.finishes {
+			resp.Choices = append(resp.Choices, escolha("escolha-"+string(rune('0'+i)), f))
+		}
+		out, err := translateResponse(resp)
+		if err != nil {
+			t.Fatalf("finish_reasons %q: translateResponse: %v", c.finishes, err)
+		}
+		if out.StopReason != c.quer {
+			t.Fatalf("finish_reasons %q: StopReason = %q, quero %q (o da primeira escolha)", c.finishes, out.StopReason, c.quer)
+		}
+		if out.Text != "escolha-0" {
+			t.Fatalf("finish_reasons %q: o texto veio de outra escolha: %q", c.finishes, out.Text)
+		}
+		// O `Final` continua a sair da mesma escolha que o motivo.
+		if quer := c.finishes[0] == "stop" || c.finishes[0] == ""; out.Final != quer {
+			t.Fatalf("finish_reasons %q: Final = %v, quero %v", c.finishes, out.Final, quer)
+		}
+	}
+}

@@ -95,11 +95,20 @@ type responseCapture struct {
 	// ([responseCapture.consumo]) quando o conteúdo sai do evento. `omitempty`: um turno sem
 	// motivo declarado grava os bytes de sempre, e uma captura anterior ao campo descodifica
 	// com o motivo vazio.
+	//
+	// DECISÃO (revisão do AOS-491): o motivo fica EM CLARO numa captura selada e SOBREVIVE ao
+	// crypto-shredding do titular. Inclui `content_filter`. É aceite porque é um facto sobre o
+	// TURNO («o provider parou este turno por filtro»), num vocabulário fechado de seis
+	// valores, e não leva conteúdo do titular: nem o texto que accionou o filtro, nem o texto
+	// do provider. Não é exposição nova — o `turn.recorded` do mesmo turno, no mesmo stream,
+	// já o tem em claro, e esse evento nunca foi selado. Quem apagar o titular fica com «houve
+	// um turno, custou tanto, parou por este motivo», como já ficava com os tokens e o custo.
 	StopReason string `json:"stop_reason,omitempty"`
 }
 
-// consumo devolve SÓ a medição do turno — tokens, custo e as duas marcas que os qualificam —,
-// sem nenhum conteúdo (texto, tool calls). É o que fica EM CLARO no evento quando o conteúdo sai
+// consumo devolve SÓ a medição do turno — tokens, custo, as duas marcas que os qualificam e,
+// desde o AOS-491, o motivo de paragem —, sem nenhum conteúdo (texto, tool calls, raciocínio).
+// É o que fica EM CLARO no evento quando o conteúdo sai
 // dele: selado por-titular (AOS-093) ou movido para o PayloadStore (mode 3, AOS-079).
 //
 // # PORQUE (AOS-448, medido em produção)
@@ -113,7 +122,11 @@ type responseCapture struct {
 // facto não houve medição.
 //
 // NÃO é conteúdo nem abre nada novo ao crypto-shredding: os mesmos números estão em claro no
-// `turn.recorded` do mesmo turno, no mesmo stream. O `final` não é copiado — o âmbito é o consumo.
+// `turn.recorded` do mesmo turno, no mesmo stream. O mesmo vale para o motivo de paragem
+// (`stop_reason`, AOS-491): é medição num vocabulário fechado, está em claro no `turn.recorded`,
+// e fica aqui pela mesma razão — ver a decisão registada em [responseCapture.StopReason]. O
+// `final` não é copiado: o âmbito é a medição do turno, e o `final` é do conteúdo que o replay
+// lê do envelope.
 // Nenhum leitor do replay depende disto: [ReplayEngine] substitui o `response` inteiro pelo
 // conteúdo decifrado ou resolvido ([resolveSealed], [resolvePayload]).
 func (r responseCapture) consumo() responseCapture {
