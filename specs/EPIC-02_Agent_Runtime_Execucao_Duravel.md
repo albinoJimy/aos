@@ -1875,9 +1875,35 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
   não a implementa.
 - Os achados laterais do documento de desenho §6.
 
+### Verificação em produção (2026-10-04, v0.1.45)
+
+Imagem `sha256:006c50db…` em produção. Um pedido de plano real pela fila, o mesmo objectivo
+multi-nó das validações da v0.1.43 e da v0.1.44 (ler `notes` com `doc_read`; num passo
+dependente, resumir em três pontos): `plan-e2e-v0145-1791114237`, terminal, `exit_code=0`,
+32,8 s.
+
+| | v0.1.44 (`plan-e2e-v0144-1791017397`) | v0.1.45 (`plan-e2e-v0145-1791114237`) |
+|---|---|---|
+| Turnos do nó que lê (`~n1`) | 6 | 2 |
+| Tool calls pedidas pelo modelo | 5 | 1 |
+| `tool.call.mediated` | 1 | 1 |
+| `tool.call.denied` (releituras negadas por taint) | 4 | 0 |
+| Turnos do nó que resume (`~n2`) | 1 | 1 |
+| `assembly_version` nos `turn.recorded` | 1.3.0 | 1.4.0 |
+
+- O nó `~n1` leu o documento uma vez e concluiu no turno seguinte. O `final_text` reproduz o
+  conteúdo de `notes`, e o do `~n2` resume-o em três pontos.
+- Invariantes das pegadas (chave de idempotência, `seq` sem buracos, encadeamento dos selos):
+  íntegros.
+
+**Por cumprir:** o critério «repetições perto de zero em pelo menos 10 runs» tem um run. A
+linha de base recalculada sobre o `events.wal` inteiro mostra este run com zero repetições; os
+restantes nove acumulam-se com o uso. As métricas `aos_tool_calls_repeated_total` e
+`aos_runs_hosted_total{assembly_version}` não foram lidas no `/metrics` de produção.
+
 ### Estado
 
-**ABERTO.**
+**ABERTO.** Entregue e em produção na v0.1.45; verificado num run (2026-10-04). Fecha quando houver pelo menos 10 runs com tools no layout 1.4.0 e as repetições estiverem perto de zero.
 
 ---
 
@@ -1893,3 +1919,4 @@ antes continuam a reproduzir-se; e a repetição passa a ser medida.
 | 1.5 | 2026-09-26 | +AOS-454 (a via durável perde o `parent_step_id` do evento de mediação): achado no diagnóstico da fase 1 do AOS-069; auditoria campo a campo `Call → Activity → toCall` fixada por teste de reflexão. | Equipa AOS |
 | 1.6 | 2026-10-02 | +AOS-485: a recusa de uma tool call pela lista-branca do run não deixa evento nem selo (achado do E2E de plano multi-nó em produção) | Equipa AOS |
 | 1.7 | 2026-10-03 | +AOS-489: o tail do prompt regista a tool call do modelo e identifica o resultado; 60% das tool calls em produção eram repetições | Equipa AOS |
+| 1.8 | 2026-10-04 | AOS-489: verificação em produção da v0.1.45 (um run, zero repetições; critério dos 10 runs por cumprir) | Equipa AOS |

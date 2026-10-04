@@ -1219,9 +1219,26 @@ poder reconstruir-se a partir do registo.
   preparado para carga opaca, mas só a forma de texto por mensagem é implementada e medida.
 - A confirmação contratual do uso do `kimi-for-coding` em produção.
 
+### Verificação em produção (2026-10-04, v0.1.45)
+
+- **Banner do nó:** `projeccao do pedido ao modelo (EPIC-06/AOS-490): MENSAGENS NATIVAS
+  (versao 1.0.0)`. O `.env` do servidor não foi alterado; a forma nativa é a de omissão.
+- **Manifesto dos turnos** do plano `plan-e2e-v0145-1791114237` (três `turn.recorded`, dois em
+  `~n1` e um em `~n2`): `"projection": "native"`, `"projection_version": "1.0.0"`,
+  `"assembly_version": "1.4.0"` em todos.
+- **O provider aceitou a forma nativa:** o segundo turno do `~n1` levou um `assistant` com
+  `tool_calls` e a mensagem `tool` correspondente, com o id cunhado pelo runtime, e devolveu a
+  conclusão. Nenhum `400`.
+- **Tokens em cache:** o segundo turno do `~n1` regista `cache_read_tokens=512` em 871 tokens de
+  entrada. O primeiro turno de cada nó não regista o campo.
+- **Efeito:** o nó que lê o documento não repetiu a tool call (ver a tabela no AOS-489).
+
+**Por verificar:** várias tool calls num mesmo turno e uma tool call no histórico cujo nome
+não esteja em `tools` não ocorreram neste run.
+
 ### Estado
 
-**ABERTO.**
+**ABERTO.** Entregue e em produção na v0.1.45; a forma nativa foi aceite pelo provider e verificada num run (2026-10-04). Fecha com o AOS-489.
 
 ---
 
@@ -1236,3 +1253,4 @@ poder reconstruir-se a partir do registo.
 | 1.4 | 2026-09-21 | +AOS-421 (escada de tiers no nó): medido que NENHUM ficheiro não-teste preenche `RoutingConfig.Tiers` e que `AOS_MODEL_TIERS` não existe — o refino de roteamento, o scoring assinado e a recusa de arranque por lacuna de preço estão escritos e provados no módulo do GW, e nunca correm no binário do nó. Absorve DEF-280-NO e DEF-280-REGIAO, que são o mesmo trabalho. | Equipa AOS |
 | 1.5 | 2026-10-03 | +AOS-490: o adaptador projecta o tail em mensagens nativas, com continuidade do raciocínio | Equipa AOS |
 | 1.6 | 2026-10-03 | AOS-490 implementado: projecção nativa seleccionável (`AOS_MODEL_PROJECTION`), raciocínio capturado e não devolvido, tokens em cache lidos do wire; parâmetros de amostragem movidos para fora de âmbito; produção por verificar | Equipa AOS |
+| 1.7 | 2026-10-04 | AOS-490: verificação em produção da v0.1.45 (projecção nativa aceite pelo provider, tokens em cache registados) | Equipa AOS |
