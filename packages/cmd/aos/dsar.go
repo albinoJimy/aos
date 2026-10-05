@@ -294,6 +294,13 @@ func (h *apiHandler) handleDSAR(w http.ResponseWriter, r *http.Request) {
 
 	// (5) EXECUTA o fluxo DSAR (legal hold → crypto-shredding → selo WORM).
 	res, err := h.node.DSAR.Receive(r.Context(), dsar.Request{RequestID: req.RequestID, SubjectID: req.SubjectID, Principal: leitor.principal})
+	// (5a) AOS-496 — o desfecho EM MEMÓRIA dos runs do titular sai do registo. A destruição da KEK
+	// não lhe chega: o `GET /runs/{id}` servia o `final_text` em claro até o nó reiniciar. Avisa-se
+	// logo que o shred foi pedido, antes das verificações abaixo e também quando a custódia não o
+	// confirma — o `GET` passa a responder pelo log, que diz a verdade nos dois casos.
+	if err == nil || errors.Is(err, dsar.ErrShredUnconfirmed) {
+		h.node.titularApagado.avisar(req.SubjectID)
+	}
 	if err != nil {
 		if errors.Is(err, dsar.ErrLegalHold) {
 			// BLOQUEADO por legal hold: nada foi apagado (fail-closed do apagamento); o evento

@@ -122,6 +122,11 @@ type runState struct {
 	// se fosse buscar noutro sítio seria contar por um proxy.
 	principal string
 
+	// titular é o titular dos dados do run ([agentruntime.Goal.Titular]): a chave sob que a captura
+	// cifrou o conteúdo dele. É por ele que o apagamento do titular retira o desfecho do registo em
+	// memória (AOS-496).
+	titular string
+
 	// outcome — escrito UMA vez sob o mutex do serviço, antes de close(done).
 	result   agentruntime.Result
 	err      error
@@ -625,6 +630,14 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 		go node.fiabilidade.correr(s.sweepStop)
 		s.log("promocao automatica por fiabilidade (AOS-090/ADR-025): LIGADA — o controlador promove uma CLASSE (abaixo de L4; L4/L5 exigem dual-control assinado) quando a taxa de erro e o override-rate ficam sob os limiares SUSTENTADOS na janela. Aplica em-memoria e NAO sobrevive a reinicio: no arranque o par volta a base assinada (a chave do no partilha o disco do WORM, logo uma elevacao duravel sem assinatura seria forjavel).")
 	}
+	// AOS-496: o apagamento de um titular (`/dsar/erase` ou expiração por TTL) retira do registo em
+	// memória os desfechos dos runs dele — ver desfecho_do_titular.go.
+	node.titularApagado.subscrever(func(titular string) {
+		if n := s.esquecerDesfechosDoTitular(titular); n > 0 {
+			s.log("apagamento de titular (AOS-496): %d desfecho(s) retirado(s) do registo em memoria — o GET /runs/{id} desses runs passa a responder pelo log", n)
+		}
+	})
+
 	return s, nil
 }
 
@@ -756,7 +769,7 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 			}
 		}
 	}
-	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal)}
+	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular()}
 	s.runs[runID] = rs // RESERVA — bloqueia duplicados enquanto adquirimos o lease
 	s.mu.Unlock()
 

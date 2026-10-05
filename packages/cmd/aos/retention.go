@@ -188,6 +188,8 @@ func (s eventStoreRecordSource) List(ctx context.Context) ([]audit.ExpirableReco
 // a KEK onde ela realmente vive (custódia externa quando injectada).
 type cryptoShredSink struct {
 	vault audit.KeyVault
+	// apagado avisa quem guarda conteúdo do titular em memória (AOS-496). nil ⇒ ninguém a avisar.
+	apagado *avisoDeTitularApagado
 }
 
 // shredConfirmer é a porta OPCIONAL de VERIFICAÇÃO do crypto-shred. A porta [audit.KeyVault]
@@ -239,6 +241,7 @@ func (s cryptoShredSink) Expire(_ context.Context, rec audit.ExpirableRecord) er
 		return nil
 	}
 	s.vault.Delete(rec.SubjectID)
+	s.apagado.avisar(rec.SubjectID)
 	if c, ok := s.vault.(shredConfirmer); ok {
 		return c.shredConfirmed(rec.SubjectID)
 	}
