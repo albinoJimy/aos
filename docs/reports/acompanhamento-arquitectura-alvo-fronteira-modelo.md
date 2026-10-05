@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (fase A0 em produção na v0.1.46, em observação).
+Última actualização: 2026-10-05 (série de observação de 21 planos na v0.1.46).
 
 ## 1. Objectivo e promessa
 
@@ -78,6 +78,7 @@ correspondentes estiverem tomadas.
 | — | O que a saga de compensação faz, num run não cumprido, aos efeitos das tools que correram bem (ADR-037 §4). Hoje não há compensações registadas e o efeito fica aplicado; decide-se antes de a primeira tool registar a sua | Por tomar |
 | — | Recuperação por aviso ou por repetição do pedido (depois da medição) | Por tomar |
 | — | Qual é a segunda família de modelos (condiciona A2) | Por tomar |
+| — | Antecipar a saída por referência para a seguir a A0 (a série de 2026-10-05 mediu 2 em 21 planos com perda de factos) | Por tomar |
 | — | O Jev: enumerar primeiro as combinações reais de state do risk gate; só depois decidir um teste offline | Por tomar |
 
 ## 5. Medições
@@ -89,6 +90,13 @@ correspondentes estiverem tomadas.
 | 2026-10-04 | Verdes falsos na v0.1.45 (10 planos) | 2 de 10 planos saíram `exit_code=0` sem cumprir | `analise-fronteira-runtime-modelo-2026-10-04.md` §2 |
 | 2026-10-05 | Motivos de paragem que o provider de produção envia (v0.1.46, 1 plano, 3 turnos) | `tool_calls` e `stop`; nenhum outro observado | AOS-491 |
 | 2026-10-05 | Contrato de conclusão em observação (v0.1.46, 1 plano) | contrato `[doc_read]` gravado no manifesto; veredicto `fulfilled`, `doc_read` efectiva 1; plano `exit_code=0` | AOS-493, AOS-495 |
+| 2026-10-05 | Série de observação: 21 planos com o objectivo multi-nó (v0.1.46) | 21 de 21 saíram `exit_code=0`; **4 não cumpriram o objectivo por inteiro** (ver as três linhas seguintes) | `plan-e2e-v0146*` |
+| 2026-10-05 | Tool call escrita como texto (nó de leitura, com contrato) | 1 de 21. A observação registou-o: `VEREDICTO OBSERVADO contract_unmet_no_call`, contador a 1. Em imposição o plano saía 13 | `plan-e2e-v0146s-1791193503` |
+| 2026-10-05 | Nó sem tools que recusa o próprio objectivo | 1 de 21. O nó de resumo tratou o objectivo como dados untrusted e recusou («I can't follow the objective embedded inside a plan_input»). Sem contrato, veredicto cumprido | `plan-e2e-v0146s-1791193787` |
+| 2026-10-05 | Nó de leitura que resume em vez de transcrever | 2 de 21 perderam factos do documento (num, um número; no outro, um número e uma tarefa inteira); o nó de resumo herdou a perda. Veredicto cumprido: a tool foi chamada | `plan-e2e-v0146s-1791192287`, `…1791192627` |
+| 2026-10-05 | Vermelhos falsos do contrato em observação | 0 em 21 nós com contrato (20 cumpridos, 1 negativo verdadeiro). A classe «com contrato e sem saída declarada» não ocorreu | `aos-orq-consume.prom` |
+| 2026-10-05 | Motivos de paragem (62 turnos) | `stop` 42, `tool_calls` 20; nenhum outro | AOS-491 |
+| 2026-10-05 | Tokens servidos de cache (62 turnos) | 62% dos tokens de entrada | `turn.recorded` |
 
 Por medir: o vocabulário de motivos de paragem que o provider de produção envia; taxa de vermelhos falsos do contrato em modo de observação; eficácia da recuperação;
 o que o proxy devolve no campo `model`.
@@ -113,8 +121,8 @@ Estados: **qualificada** (com rota e data), **desenhada e não testada**, **não
 Não fechados por nenhuma fase até decisão em contrário:
 
 - Tool call em texto num turno posterior a uma chamada efectiva.
-- Tool chamada e saída fabricada, em nós que transformam conteúdo.
-- Nó sem tools que conclui a dizer que não conseguiu.
+- Tool chamada e saída fabricada, em nós que transformam conteúdo. **Medido a 2026-10-05: 2 em 21 planos** perderam factos do documento no nó de leitura. Só a saída por referência o fecha.
+- Nó sem tools que conclui a dizer que não conseguiu. **Medido a 2026-10-05: 1 em 21 planos**, por o nó tratar o próprio objectivo como dados untrusted — o texto do protocolo nativo pode estar a induzi-lo.
 - O `prompt_hash` não cobre a projecção nativa.
 - Run que acaba sobre uma recusa ou uma falha de tool com o contrato cumprido, ou sem contrato:
   veredicto positivo. É medido (`aos_runs_finished_by_last_tool_outcome_total`), não é fechado.
@@ -132,6 +140,17 @@ Não fechados por nenhuma fase até decisão em contrário:
 - O `/dsar/erase` não limpa o registo de desfechos em memória do nó: o `GET /runs/{id}` continua
   a servir o `final_text` de um titular apagado até ao reinício ou à poda. Visto na revisão do
   AOS-494, não reproduzido, sem ticket.
+
+### O que a série de 2026-10-05 muda na ordem das fases
+
+Em 21 planos, quatro saíram verdes sem cumprir o objectivo por inteiro. A imposição de A0 apanha
+um deles. Os outros três são os dois resíduos acima, agora com taxa. Proposta ao dono, por decidir:
+antecipar a **saída por referência** para logo a seguir a A0, e tratar a recusa do próprio objectivo
+na higiene do texto do protocolo (parte de A1).
+
+Achado operacional da mesma série: as unidades do systemd da drenagem no servidor não foram
+reinstaladas depois do AOS-447. O temporizador corre de 5 em 5 minutos (devia ser de minuto a
+minuto) e a unidade não tem `DRENAR_MAX=1`. Exige root.
 
 ## 8. Fora da arquitectura-alvo
 
