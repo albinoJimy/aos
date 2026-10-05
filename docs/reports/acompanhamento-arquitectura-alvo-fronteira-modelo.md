@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (saída por referência: AOS-497 implementado e revisto — o kernel designa e sela a origem da saída; AOS-498 implementado e revisto — o nó aceita a declaração e devolve a âncora e os bytes; AOS-499 implementado e revisto — o `aos-orq` mede com o interruptor em `observe`, desligado por omissão, e a revisão refez a medição para comparar o texto final com o conteúdo do resultado e não com o envelope; AOS-500 implementado, com a revisão adversarial por fazer — o plano pode declarar a origem de uma saída e nenhum plano a usa ainda; AOS-501 aberto).
+Última actualização: 2026-10-05 (v0.1.47 em produção com a medição ligada; série de 21 planos; AOS-500 implementado).
 
 ## 1. Objectivo e promessa
 
@@ -149,6 +149,9 @@ correspondentes estiverem tomadas.
 | 2026-10-05 | Motivos de paragem (62 turnos) | `stop` 42, `tool_calls` 20; nenhum outro | AOS-491 |
 | 2026-10-05 | Tokens servidos de cache (62 turnos) | 62% dos tokens de entrada | `turn.recorded` |
 | 2026-10-05 | Primeiro plano com a imposição ligada | `exit_code=0`, dois nós `complete`; o banner do nó declara «IMPOSTO». Nenhum veredicto negativo ainda sob imposição | `plan-e2e-v0146e-1791194746` |
+| 2026-10-05 | Série de 21 planos na v0.1.47, nó em imposição e medição da origem ligada (`AOS_ORQ_SAIDA_POR_REFERENCIA=observe`) | 15 saíram `exit_code=0`; **6 saíram 13** com `causa=contract_unmet_no_call` (o nó de leitura não pediu a tool). É a primeira prova em produção de que a imposição transforma o verde falso em vermelho com razão | `plan-e2e-v0147*` |
+| 2026-10-05 | Taxa de «o modelo não chamou a tool», por série | 2 em 10 (v0.1.45), 1 em 22 (v0.1.46, manhã), 6 em 21 (v0.1.47, noite): 9 em 53, 17%. Os mesmos `prompt_hash` aparecem com e sem medição: o pedido ao modelo é o mesmo, a variação é do modelo | `turn.recorded` |
+| 2026-10-05 | Medição da origem nos 15 nós que chamaram a tool | 15 âncoras `designated`, 15 resultados servidos e conferidos. Envelope de 582 bytes para um documento de cerca de 240 (o envelope leva o documento duas vezes). Números do documento em falta no texto final: 1 em 15. A métrica de linhas não é útil: 13 em 15 abaixo de metade, porque o modelo reformata e acentua o texto | `aos-orq-consume.prom` |
 
 Por medir: o vocabulário de motivos de paragem que o provider de produção envia; taxa de vermelhos falsos do contrato em modo de observação; eficácia da recuperação;
 o que o proxy devolve no campo `model`.
