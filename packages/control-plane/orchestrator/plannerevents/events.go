@@ -86,6 +86,11 @@ const (
 	// efectivo + proveniência —, NUNCA o conteúdo: é isto que faz do transporte de
 	// payload o oposto de um blackboard (rejeição (c) do ADR).
 	EventPayloadPublished = "plan.payload_published"
+	// EventOutputSourceDeclared — o executor declarou ao nó, na submissão do run de um nó do
+	// plano, a ORIGEM de uma saída e o VÍNCULO dessa declaração (ADR-038 §2.4, AOS-501). É o
+	// facto que diz, no log do plano e não só na memória de quem submeteu, que aquele run foi
+	// pedido por referência — e é dele que quem recolhe decide se pode entregar por referência.
+	EventOutputSourceDeclared = "plan.output_source_declared"
 	// EventCapabilityGapOpened — um nó abriu um gap de capacidade (skill em falta).
 	EventCapabilityGapOpened = "plan.capability_gap_opened"
 	// EventCapabilityGapResolved — o gap foi ratificado e resolvido (AOS-096).
@@ -112,6 +117,7 @@ var canonicalLifecycle = []string{
 	EventMaterialized,
 	EventVerdictRecorded,
 	EventPayloadPublished,
+	EventOutputSourceDeclared,
 	EventBranchDecided,
 	EventCapabilityGapOpened,
 	EventCapabilityGapResolved,
@@ -790,6 +796,202 @@ type PayloadPublishedPayload struct {
 	Record      PayloadRecordRef `json:"record"`
 	Closed      *ClosedPayload   `json:"closed,omitempty"`
 	DerivedFrom []PayloadOrigin  `json:"derived_from,omitempty"`
+	// Source é a ORIGEM de um payload publicado POR REFERÊNCIA (ADR-038 §2.6, AOS-501): o
+	// resultado de uma tool, designado e selado pelo kernel do nó. Só existe quando o contrato
+	// do documento aprovado declara `from_tool`, e nesse caso é obrigatório ([PayloadSource]).
+	// Omitido nos outros: o evento de um contrato sem origem tem os bytes de antes.
+	Source *PayloadSource `json:"source,omitempty"`
+}
+
+// PayloadSourceKind é o TIPO da origem de um payload por referência. Enum FECHADO, com um só
+// valor por agora: o resultado de uma tool.
+type PayloadSourceKind string
+
+// PayloadSourceToolResult — o payload é o resultado de uma tool call do run produtor.
+const PayloadSourceToolResult PayloadSourceKind = "tool_result"
+
+// PayloadExtraction é a FORMA DA EXTRACÇÃO: como o que foi entregue se deriva dos bytes que o
+// kernel selou. Enum FECHADO — é ele que torna a derivação reproduzível por quem audita.
+type PayloadExtraction string
+
+const (
+	// PayloadExtractionRaw — entregou-se o resultado tal como a tool o devolveu: o digest do
+	// entregue É o da âncora.
+	PayloadExtractionRaw PayloadExtraction = "raw"
+	// PayloadExtractionSandboxStdoutText — o resultado selado é o envelope da sandbox e
+	// entregou-se só o seu `stdout_text` (o documento, uma vez). O digest do entregue é o do
+	// texto; o da âncora continua a ser o do envelope inteiro.
+	PayloadExtractionSandboxStdoutText PayloadExtraction = "sandbox_stdout_text"
+)
+
+func (e PayloadExtraction) valid() bool {
+	return e == PayloadExtractionRaw || e == PayloadExtractionSandboxStdoutText
+}
+
+// PayloadSource é a origem de um payload por referência. SEM CONTEÚDO: nomes, um passo, dois
+// digests (o do entregue está em `record.digest`) e um tamanho.
+//
+//   - `kind` e `tool` são DERIVADOS do contrato do documento aprovado, como o tipo e o taint —
+//     nunca aceites de quem publica;
+//   - `step_id` é o passo da chamada designada, tal como a âncora o traz. Valida-se na forma;
+//   - `anchor_digest` e `anchor_bytes` são o digest e o tamanho dos bytes que o kernel selou — o
+//     resultado INTEIRO da tool, antes de qualquer extracção;
+//   - `extraction` diz como o entregue se deriva deles.
+type PayloadSource struct {
+	Kind         PayloadSourceKind `json:"kind"`
+	Tool         string            `json:"tool"`
+	StepID       string            `json:"step_id"`
+	AnchorDigest string            `json:"anchor_digest"`
+	AnchorBytes  int               `json:"anchor_bytes"`
+	Extraction   PayloadExtraction `json:"extraction"`
+}
+
+// maxSourceStepIDBytes limita o `step_id` de uma origem: é um identificador de passo, não um
+// sítio onde caiba texto.
+const maxSourceStepIDBytes = 128
+
+// validSealedDigest confere a forma `sha256:<64 hex minúsculos>` — a do digest que o kernel
+// sela na âncora da saída.
+func validSealedDigest(d string) bool {
+	const prefixo = "sha256:"
+	if len(d) != len(prefixo)+64 || d[:len(prefixo)] != prefixo {
+		return false
+	}
+	for i := len(prefixo); i < len(d); i++ {
+		c := d[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// validStepID confere a forma de um passo: não vazio, limitado, sem espaços nem controlo.
+func validStepID(s string) bool {
+	if s == "" || len(s) > maxSourceStepIDBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// normalizeSource impõe a REGRA SIMÉTRICA da origem (AOS-501): um contrato que declara
+// `from_tool` OBRIGA a `source`; um que não declara PROÍBE-o. É a simetria que impede as duas
+// mentiras possíveis — publicar o texto do modelo sob um contrato que promete o resultado da
+// tool, e carimbar como resultado de tool uma saída que ninguém declarou assim.
+//
+// `kind` e `tool` saem do contrato; do chamador só se aceitam o passo, a âncora e a forma da
+// extracção, todos validados na forma. Com a extracção `raw` o digest entregue TEM de ser o da
+// âncora: de outro modo o evento afirmava «tal como a tool devolveu» de bytes que o kernel não
+// selou.
+func normalizeSource(contract plan.Output, record PayloadRecordRef, in *PayloadSource) (*PayloadSource, error) {
+	if contract.FromTool == "" {
+		if in != nil {
+			return nil, fmt.Errorf("%w: o contrato nao declara a origem (`from_tool`) e a publicacao traz `source`", ErrInvalidPayloadRef)
+		}
+		return nil, nil
+	}
+	if in == nil {
+		return nil, fmt.Errorf("%w: o contrato declara a origem (`from_tool`) e a publicacao NAO traz `source` — o texto do modelo nao se publica sob um contrato que promete o resultado da tool", ErrInvalidPayloadRef)
+	}
+	if !validStepID(in.StepID) {
+		return nil, fmt.Errorf("%w: `source.step_id` fora da forma", ErrInvalidPayloadRef)
+	}
+	if !validSealedDigest(in.AnchorDigest) || in.AnchorBytes < 0 {
+		return nil, fmt.Errorf("%w: `source.anchor_digest`/`anchor_bytes` fora da forma", ErrInvalidPayloadRef)
+	}
+	if !in.Extraction.valid() {
+		return nil, fmt.Errorf("%w: `source.extraction` fora do enum", ErrInvalidPayloadRef)
+	}
+	if !validSealedDigest(record.Digest) {
+		return nil, fmt.Errorf("%w: o digest de um payload por referencia tem a forma sha256:<hex>", ErrInvalidPayloadRef)
+	}
+	if in.Extraction == PayloadExtractionRaw && record.Digest != in.AnchorDigest {
+		return nil, fmt.Errorf("%w: extraccao `raw` com um digest entregue diferente do da ancora", ErrInvalidPayloadRef)
+	}
+	return &PayloadSource{
+		Kind:         PayloadSourceToolResult,
+		Tool:         contract.FromTool,
+		StepID:       in.StepID,
+		AnchorDigest: in.AnchorDigest,
+		AnchorBytes:  in.AnchorBytes,
+		Extraction:   in.Extraction,
+	}, nil
+}
+
+// OutputSourceBinding é o VÍNCULO de uma declaração de origem, tal como foi enviado ao nó. São
+// os dois valores do kernel (`agentruntime.OutputSourceBinding`), que este pacote não importa.
+type OutputSourceBinding string
+
+const (
+	// OutputSourceBindingMeasure — só medição: o kernel sela a âncora e não julga por ela.
+	OutputSourceBindingMeasure OutputSourceBinding = "measure"
+	// OutputSourceBindingBinds — vinculativa: é a única com que se entrega por referência.
+	OutputSourceBindingBinds OutputSourceBinding = "binding"
+)
+
+func (b OutputSourceBinding) valid() bool {
+	return b == OutputSourceBindingMeasure || b == OutputSourceBindingBinds
+}
+
+// OutputSourceDeclaredPayload — corpo de `plan.output_source_declared` (AOS-501): o executor
+// vai pedir ao nó o run de `node_id` declarando que a saída `output` é o resultado de `tool`,
+// com o vínculo `binding`.
+//
+// Escreve-se ANTES do pedido ao nó. Um facto sem run (o processo morreu entre os dois) é
+// inofensivo: quem recolhe não encontra o run. O contrário — um run vinculativo sem facto —
+// deixava quem recolhe sem saber com que vínculo o run foi pedido.
+//
+// SEM CONTEÚDO. `output`, `tool` e `contract_digest` são DERIVADOS do contrato do documento
+// aprovado; do chamador só vem o vínculo, do enum fechado.
+type OutputSourceDeclaredPayload struct {
+	PlanID         string              `json:"plan_id"`
+	NodeID         string              `json:"node_id"`
+	Output         string              `json:"output"`
+	Tool           string              `json:"tool"`
+	Binding        OutputSourceBinding `json:"binding"`
+	ContractDigest string              `json:"contract_digest"`
+}
+
+// ErrInvalidOutputSourceDeclaration — a declaração proposta não conforma ao documento aprovado.
+var ErrInvalidOutputSourceDeclaration = errors.New("plannerevents: declaracao de origem invalida")
+
+// NewOutputSourceDeclared valida a declaração contra o NÓ do documento aprovado e devolve o
+// payload pronto a apensar. O nó tem de declarar EXACTAMENTE uma saída com origem (é o que o
+// validador do plano admite): a saída, a tool e o digest do contrato saem dela.
+func NewOutputSourceDeclared(p OutputSourceDeclaredPayload, producer plan.Node) (OutputSourceDeclaredPayload, error) {
+	if p.PlanID == "" {
+		return OutputSourceDeclaredPayload{}, fmt.Errorf("%w: plan_id vazio", ErrInvalidOutputSourceDeclaration)
+	}
+	if !plan.ValidNodeID(p.NodeID) || producer.NodeID != p.NodeID {
+		return OutputSourceDeclaredPayload{}, fmt.Errorf("%w: node_id fora da grammar, ou o no fornecido nao e o do facto", ErrInvalidOutputSourceDeclaration)
+	}
+	if !p.Binding.valid() {
+		return OutputSourceDeclaredPayload{}, fmt.Errorf("%w: vinculo fora do enum {measure,binding}", ErrInvalidOutputSourceDeclaration)
+	}
+	var contrato plan.Output
+	com := 0
+	for _, o := range producer.Outputs {
+		if o.FromTool != "" {
+			contrato = o
+			com++
+		}
+	}
+	if com != 1 {
+		return OutputSourceDeclaredPayload{}, fmt.Errorf("%w: o no declara %d saidas com origem; o facto exige exactamente uma", ErrInvalidOutputSourceDeclaration, com)
+	}
+	return OutputSourceDeclaredPayload{
+		PlanID:         p.PlanID,
+		NodeID:         p.NodeID,
+		Output:         contrato.Name,
+		Tool:           contrato.FromTool,
+		Binding:        p.Binding,
+		ContractDigest: plan.OutputDigest(producer, contrato),
+	}, nil
 }
 
 // ErrInvalidPayloadRef é devolvido quando a referência proposta não conforma ao
@@ -879,6 +1081,11 @@ func NewPayloadPublished(p PayloadPublishedPayload, producer plan.Node) (Payload
 	if len(p.DerivedFrom) > maxPayloadOrigins {
 		return PayloadPublishedPayload{}, fmt.Errorf("%w: %d origens > %d", ErrInvalidPayloadRef, len(p.DerivedFrom), maxPayloadOrigins)
 	}
+	// A ORIGEM (AOS-501): obrigatória com `from_tool` no contrato, proibida sem ele.
+	source, err := normalizeSource(contract, p.Record, p.Source)
+	if err != nil {
+		return PayloadPublishedPayload{}, err
+	}
 	var origins []PayloadOrigin
 	if len(p.DerivedFrom) > 0 {
 		origins = make([]PayloadOrigin, 0, len(p.DerivedFrom))
@@ -907,6 +1114,7 @@ func NewPayloadPublished(p PayloadPublishedPayload, producer plan.Node) (Payload
 		Record:         p.Record,
 		Closed:         closed,
 		DerivedFrom:    origins,
+		Source:         source,
 	}, nil
 }
 

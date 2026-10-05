@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -96,23 +97,6 @@ var ondeSeDeclaraAninhado = []struct {
 	{reflect.TypeOf(plan.ConditionalEdge{}), cabecalhoNo, "conditional_on"},
 	{reflect.TypeOf(plan.Output{}), cabecalhoNo, "outputs"},
 	{reflect.TypeOf(plan.PayloadEdge{}), cabecalhoNo, "consumes"},
-}
-
-// camposAindaForaDoPrompt é a EXCEPÇÃO, nomeada e única, à regra «o template declara todos os
-// campos do schema»: campos que o `plan.Decode` já aceita e que o prompt do planeador ainda não
-// nomeia, na forma `Tipo.campo_json`.
-//
-// Tem UMA entrada, `Output.from_tool` (AOS-500), e é para ter só essa. O schema do plano ganhou
-// a origem declarada de uma saída na linha 1.3.0, mas o planeador só é instruído a emiti-la
-// quando houver quem entregue por referência — o prompt 1.5.0, do AOS-501. Até lá o template
-// fica byte a byte o de hoje, e sem esta excepção [TestTemplateDeclaraOSchemaQueODecodeExige]
-// obrigava a mexer nele.
-//
-// O AOS-501 RETIRA-A, ao nomear o campo no bloco SCHEMA. Não é um sítio para deixar campos
-// novos por documentar: [TestAOS500_AExcepcaoDoPromptESoFromTool] falha se ela ganhar outra
-// entrada, se o template já nomear o campo, ou se ela deixar de ser necessária.
-var camposAindaForaDoPrompt = map[string]bool{
-	"Output.from_tool": true,
 }
 
 // camposJSON devolve os nomes JSON dos campos exportados de um tipo.
@@ -250,17 +234,10 @@ func chavetas(texto string) map[string]bool {
 	return out
 }
 
-// faltasNoTemplate devolve tudo o que o bloco SCHEMA não declara como o código exige, salvo os
-// campos de [camposAindaForaDoPrompt].
+// faltasNoTemplate devolve tudo o que o bloco SCHEMA não declara como o código exige. NÃO HÁ
+// EXCEPÇÕES: a que o AOS-500 deixou para `outputs.from_tool` saiu com o prompt 1.5.0 (AOS-501),
+// que nomeia o campo.
 func faltasNoTemplate(t *testing.T, template string) []string {
-	t.Helper()
-	return faltasNoTemplateSalvo(t, template, camposAindaForaDoPrompt)
-}
-
-// faltasNoTemplateSalvo é [faltasNoTemplate] com a excepção dada à mão. Só os campos ANINHADOS
-// se podem exceptuar: é onde a excepção de hoje vive, e um campo do topo ou do nó que o prompt
-// não nomeasse falhava sempre.
-func faltasNoTemplateSalvo(t *testing.T, template string, salvo map[string]bool) []string {
 	t.Helper()
 	topo := seccao(template, cabecalhoTopo, cabecalhoNo)
 	no := seccao(template, cabecalhoNo, cabecalhoPred)
@@ -290,9 +267,6 @@ func faltasNoTemplateSalvo(t *testing.T, template string, salvo map[string]bool)
 		texto, _, _ := entrada(seccoes[alvo.seccao], alvo.campoPai)
 		declarados := chavetas(texto)
 		for _, campo := range camposJSON(alvo.tipo) {
-			if salvo[alvo.tipo.Name()+"."+campo] {
-				continue
-			}
 			quer := obrig[alvo.tipo.Name()][campo]
 			if !declarados[campo+marca(quer)] {
 				faltas = append(faltas, alvo.campoPai+"."+campo+marca(quer))
@@ -346,12 +320,21 @@ func marca(obrigatorio bool) string {
 	return ""
 }
 
-// TestTemplateDeclaraOSchemaQueODecodeExige: o template corrente declara todos os campos,
-// com a obrigatoriedade certa e no sítio certo, e todos os valores fechados. O template
-// 1.1.0 (o que falhou em produção) não tem bloco nenhum e falha em tudo.
+// TestTemplateDeclaraOSchemaQueODecodeExige: o template que declara o schema INTEIRO — o 1.5.0
+// ([WithOutputSource], AOS-501) — declara todos os campos, com a obrigatoriedade certa e no
+// sítio certo, e todos os valores fechados, sem excepção nenhuma. Ao corrente (1.4.0) falta
+// EXACTAMENTE `outputs.from_tool`: é por isso que só o 1.5.0 pode instruir um planeador cujos
+// planos com origem correm. O template 1.1.0 (o que falhou em produção) não tem bloco nenhum e
+// falha em tudo.
 func TestTemplateDeclaraOSchemaQueODecodeExige(t *testing.T) {
-	if faltas := faltasNoTemplate(t, Current.Template); len(faltas) > 0 {
-		t.Fatalf("o template %s nao declara: %v", Current.MetaPromptVersion(), faltas)
+	if faltas := faltasNoTemplate(t, WithOutputSource.Template); len(faltas) > 0 {
+		t.Fatalf("o template %s nao declara: %v", WithOutputSource.MetaPromptVersion(), faltas)
+	}
+	if faltas := faltasNoTemplate(t, Current.Template); len(faltas) != 1 || faltas[0] != "outputs.from_tool" {
+		t.Fatalf("ao template corrente (%s) tem de faltar so outputs.from_tool; faltas medidas: %v", Current.MetaPromptVersion(), faltas)
+	}
+	if strings.Contains(Current.Template, "from_tool") {
+		t.Fatalf("o template corrente (%s) nao pode nomear from_tool: fora de `on` o planeador nao e instruido a emiti-lo", Current.MetaPromptVersion())
 	}
 	faltas := faltasNoTemplate(t, lerTemplate110(t))
 	for _, quer := range []string{"topo.objective*", "topo.budget_total", "topo.nodes*", "no.objective*"} {
@@ -361,46 +344,198 @@ func TestTemplateDeclaraOSchemaQueODecodeExige(t *testing.T) {
 	}
 }
 
-// fingerprintPrompt140 é o SHA-256 do template 1.4.0 (AOS-484), o corrente quando o AOS-500
-// entrou. Tirado antes de qualquer alteração deste ticket.
+// fingerprintPrompt140 é o SHA-256 do template 1.4.0 (AOS-484), o corrente. Tirado antes de
+// qualquer alteração do AOS-500, e o AOS-501 não lhe toca.
 const fingerprintPrompt140 = "51393c16f3b22337ea71b016c1e21a4ea0ab9b4cb624676f5d7a2bb0192fb5c8"
 
-// TestAOS500_OPromptNaoMudaNesteTicket: o schema do plano subiu a 1.3.0 e o prompt do planeador
-// ficou onde estava — a versão e os bytes. O prompt que nomeia `from_tool` é o 1.5.0 (AOS-501).
-// Quando esse ticket subir a versão, este teste é o que ele tem de actualizar de propósito.
-func TestAOS500_OPromptNaoMudaNesteTicket(t *testing.T) {
-	if got := Current.MetaPromptVersion(); got != "1.4.0" {
-		t.Fatalf("o prompt corrente e %s; o AOS-500 nao o muda (1.4.0)", got)
-	}
-	sum := sha256.Sum256([]byte(Current.Template))
-	if got := hex.EncodeToString(sum[:]); got != fingerprintPrompt140 {
-		t.Fatalf("os bytes do template mudaram: sha256=%s, o do 1.4.0 e %s", got, fingerprintPrompt140)
+// fingerprintPrompt150 é o SHA-256 do template 1.5.0 (AOS-501), tal como este ticket o publica.
+const fingerprintPrompt150 = "8d33873417075208e36321f1ceb504f0fa799f100b4df0b24e9cc41dc4bfd746"
+
+// TestAOS501_OsDoisPromptsTemOsBytesFixados: o binário conhece DUAS versões do prompt de
+// decomposição, e os bytes das duas estão presos aqui.
+//
+//   - [Current] é a 1.4.0, byte a byte a de antes do AOS-500 e do AOS-501: é a de omissão de
+//     `decompose.New`, e a que o planeador recebe com a entrega por referência desligada;
+//   - [WithOutputSource] é a 1.5.0, que nomeia `from_tool`, e só se usa por escolha explícita.
+//
+// Mudar um byte de qualquer delas tem de passar por aqui.
+func TestAOS501_OsDoisPromptsTemOsBytesFixados(t *testing.T) {
+	for _, c := range []struct {
+		p           Prompt
+		versao, sha string
+	}{
+		{Current, "1.4.0", fingerprintPrompt140},
+		{WithOutputSource, "1.5.0", fingerprintPrompt150},
+	} {
+		if got := c.p.MetaPromptVersion(); got != c.versao {
+			t.Fatalf("a versao do prompt e %s; fixada em %s", got, c.versao)
+		}
+		if got := c.p.Fingerprint(); got != c.sha {
+			t.Fatalf("os bytes do template %s mudaram: sha256=%s, fixado em %s", c.versao, got, c.sha)
+		}
 	}
 }
 
-// TestAOS500_AExcepcaoDoPromptESoFromTool prende a excepção [camposAindaForaDoPrompt]:
-//   - tem exactamente uma entrada, `Output.from_tool` — uma segunda falha aqui;
-//   - é NECESSÁRIA: sem ela, a única falta do template corrente é `outputs.from_tool`;
-//   - é VERDADEIRA: o template corrente não nomeia o campo em lado nenhum. Quando o AOS-501 o
-//     nomear, este teste falha e manda retirar a excepção.
-func TestAOS500_AExcepcaoDoPromptESoFromTool(t *testing.T) {
-	if len(camposAindaForaDoPrompt) != 1 || !camposAindaForaDoPrompt["Output.from_tool"] {
-		t.Fatalf("a excepcao do prompt tem de conter so Output.from_tool; tem %v — um campo novo do schema declara-se no template, nao aqui", camposAindaForaDoPrompt)
+// regra13 é o texto da regra que o AOS-501 acrescenta, por extenso, pela razão da regra 12: o
+// que ela DIZ ao modelo é isto, e uma edição que lhe mude uma palavra tem de passar por aqui.
+const regra13 = `13. from_tool declara a ORIGEM de uma saida: o no seguinte recebe o que a ferramenta
+    devolveu, e NAO o texto que o no escreveu. Declara-o num output quando o no existe
+    para ir buscar um conteudo (ler um documento, obter um registo) e o consumidor
+    precisa desse conteudo inteiro, sem transformacao. NAO o declares quando o
+    consumidor precisa do que o no CONCLUIU (resumir, extrair, classificar, decidir):
+    ai a saida e o texto do no, sem from_tool. Condicoes, todas obrigatorias: o valor e
+    o name de uma ferramenta de tools desse mesmo no, e esse name aparece uma so vez em
+    tools; o type do output e "record" ou "artifact"; o no nao e role: verifier e nao
+    tem consumes; no maximo UM output do no usa from_tool. O no tem de chamar essa
+    ferramenta UMA so vez, na primeira resposta: sem essa chamada, ou com duas, o no
+    fica failed e o consumidor nao corre. Usar from_tool obriga a carimbar plan_version
+    "1.3.0" (regra 6), e nao "1.2.0".`
+
+// TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes: o 1.5.0 é o 1.4.0 com QUATRO edições, e
+// mais nada — o campo na linha de `outputs`, a linha que o explica, a linha 1.3.0 na regra 6, e
+// a regra 13 no fim. Refaz-se o 1.5.0 a partir do 1.4.0 e exige-se a igualdade byte a byte: uma
+// quinta diferença, em qualquer sítio, falha aqui.
+//
+// É um MINOR e passa o gate ADR-012 com aprovação; sem ela é recusado.
+func TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes(t *testing.T) {
+	refeito := Current.Template
+	for _, e := range [][2]string{
+		{"  outputs          lista de {name*, type*, taint} (no maximo 8)",
+			"  outputs          lista de {name*, type*, taint, from_tool} (no maximo 8)"},
+		{"taint de outputs: \"trusted\" ou \"untrusted\"; omite se nao tiveres base.\n",
+			"taint de outputs: \"trusted\" ou \"untrusted\"; omite se nao tiveres base.\n" +
+				"from_tool de outputs: o name de UMA ferramenta de tools do mesmo no (regra 13); omite\n" +
+				"nos outros casos.\n"},
+		{"usa outputs, consumes ou o papel reservado role: verifier. Carimbar abaixo da linha\n" +
+			"   que usas e RECUSADO (plan_version_below_features); carimbar acima da linha corrente\n" +
+			"   tambem.",
+			"usa outputs, consumes ou o papel reservado role: verifier; \"1.3.0\" se algum output\n" +
+				"   usa from_tool. Carimbar abaixo da linha que usas e RECUSADO\n" +
+				"   (plan_version_below_features); carimbar acima da linha corrente tambem."},
+	} {
+		if strings.Count(refeito, e[0]) != 1 {
+			t.Fatalf("pre-condicao: o 1.4.0 tem exactamente uma vez o troco %q", e[0])
+		}
+		refeito = strings.Replace(refeito, e[0], e[1], 1)
 	}
-	semExcepcao := faltasNoTemplateSalvo(t, Current.Template, nil)
-	if len(semExcepcao) != 1 || semExcepcao[0] != "outputs.from_tool" {
-		t.Fatalf("sem a excepcao, a unica falta do template devia ser outputs.from_tool; veio %v", semExcepcao)
+	refeito += "\n" + regra13
+	if WithOutputSource.Template != refeito {
+		t.Fatalf("o 1.5.0 tem de ser o 1.4.0 com as quatro edicoes do AOS-501 e mais nada:\n%s", WithOutputSource.Template)
 	}
-	if strings.Contains(Current.Template, "from_tool") {
-		t.Fatal("o template ja nomeia from_tool: retira a excepcao camposAindaForaDoPrompt (AOS-501)")
+	ap := PromptApproval{Approver: "Arquitecto de Plataforma", ADR012Ref: "ADR-012 (AOS-501)"}
+	if err := ValidatePromptMutation(Current, WithOutputSource, ap); err != nil {
+		t.Fatalf("a mutacao %s -> %s devia passar o gate: %v", Current.MetaPromptVersion(), WithOutputSource.MetaPromptVersion(), err)
 	}
-	// A excepção não esconde mais nada: com ela, um campo vizinho por declarar continua a falhar.
-	semTaint := strings.Replace(Current.Template, "taint}", "}", 1)
-	if semTaint == Current.Template {
-		t.Fatal("pre-condicao: a linha de outputs do template declara taint entre chavetas")
+	if v := WithOutputSource.Version; v.Major != 1 || v.Minor != 5 || v.Patch != 0 {
+		t.Fatalf("o AOS-501 e um MINOR sobre 1.4.0; e %s", WithOutputSource.MetaPromptVersion())
 	}
-	if faltas := faltasNoTemplate(t, semTaint); !contem(faltas, "outputs.taint") {
-		t.Fatalf("um template sem `taint` em outputs devia falhar em outputs.taint mesmo com a excepcao; faltas: %v", faltas)
+	if err := ValidatePromptMutation(Current, WithOutputSource, PromptApproval{}); !errors.Is(err, ErrPromptUnapproved) {
+		t.Fatalf("sem aprovacao a mutacao tinha de ser recusada com ErrPromptUnapproved, veio %v", err)
+	}
+	// As regras 1 a 5 e 7 a 12 ficam byte a byte: só a 6 ganha uma linha.
+	for _, n := range []string{"1. ", "2. ", "3. ", "4. ", "5. ", "7. ", "8. ", "9. ", "10. ", "11. ", "12. "} {
+		de := strings.Index(Current.Template, "\n"+n)
+		if de < 0 {
+			t.Fatalf("pre-condicao: o 1.4.0 tem a regra %q", n)
+		}
+		ate := strings.Index(Current.Template[de+1:], "\n"+proximaRegra(n))
+		regra := Current.Template[de:]
+		if ate >= 0 {
+			regra = Current.Template[de : de+1+ate]
+		}
+		if !strings.Contains(WithOutputSource.Template, regra) {
+			t.Fatalf("a regra %q do 1.4.0 tinha de ficar intacta no 1.5.0", n)
+		}
+	}
+}
+
+// proximaRegra devolve o prefixo da regra a seguir a `n` ("12. " ⇒ "13. ").
+func proximaRegra(n string) string {
+	num := 0
+	for _, c := range n {
+		if c < '0' || c > '9' {
+			break
+		}
+		num = num*10 + int(c-'0')
+	}
+	return strconv.Itoa(num+1) + ". "
+}
+
+// TestAOS501_ARegra13DizOQueOValidadorSustenta prende as afirmações da regra ao validador
+// (AOS-500): o plano que ela ensina passa; cada condição que ela dá por obrigatória é recusada
+// com o sub-código próprio quando violada; e o carimbo que ela manda é o que o validador exige.
+//
+// LIMITE DECLARADO: «o no seguinte recebe o que a ferramenta devolveu» e «sem essa chamada, ou
+// com duas, o no fica failed» são comportamento do `aos-orq` e do kernel do nó, noutros
+// módulos. Quem as prende: `TestAOS501ComOBinarioReal` e `TestAOS501_EntregaDoRun`, em
+// `packages/cmd/aos-orq`.
+func TestAOS501_ARegra13DizOQueOValidadorSustenta(t *testing.T) {
+	snap := testSnapshot()
+	tool := snap.Tools[0]
+	ref := `{"name":"` + tool.Name + `","version":"` + tool.Version + `","digest":"` + tool.Digest + `"}`
+	plano := func(carimbo, papelDoLeitor, toolsDoLeitor, saidaDoLeitor, consumesDoLeitor string) plan.PlanDocument {
+		t.Helper()
+		raw := `{"plan_version":"` + carimbo + `","objective":"ler e resumir",
+ "budget_total":{"tokens":300,"cost_micro_usd":300},
+ "planner_meta":{"model":"m","prompt_version":"` + WithOutputSource.MetaPromptVersion() + `","capabilities_hash":"` + snap.Hash + `"},
+ "nodes":[
+  {"node_id":"n0","role":"reader","objective":"preparar",
+   "tools":[],"depends_on":[],"budget_estimate":{"tokens":100,"cost_micro_usd":100},
+   "outputs":[{"name":"base","type":"record"}]},
+  {"node_id":"n1","role":"` + papelDoLeitor + `","objective":"ler o documento",
+   "tools":[` + toolsDoLeitor + `],"depends_on":["n0"],"budget_estimate":{"tokens":100,"cost_micro_usd":100},
+   "outputs":[` + saidaDoLeitor + `]` + consumesDoLeitor + `},
+  {"node_id":"n2","role":"summarizer","objective":"resumir o que foi lido",
+   "tools":[],"depends_on":["n1"],"budget_estimate":{"tokens":100,"cost_micro_usd":100}}]}`
+		doc, err := plan.Decode([]byte(raw))
+		if err != nil {
+			t.Fatalf("o plano de teste nao passa o decode: %v\n%s", err, raw)
+		}
+		return doc
+	}
+	comOrigem := `{"name":"conteudo","type":"record","from_tool":"` + tool.Name + `"}`
+
+	// O plano que a regra ensina passa — com `record` e com `artifact`.
+	for _, saida := range []string{comOrigem, strings.Replace(comOrigem, `"record"`, `"artifact"`, 1)} {
+		if v := planvalidate.Validate(plano("1.3.0", "reader", ref, saida, ""), snap, testCeilings()); !v.OK {
+			t.Fatalf("o plano que a regra 13 ensina devia passar o validador: %+v", v)
+		}
+	}
+	// «Usar from_tool obriga a carimbar plan_version "1.3.0" (regra 6), e nao "1.2.0"».
+	if !strings.Contains(regra13, `plan_version
+    "1.3.0" (regra 6), e nao "1.2.0"`) {
+		t.Fatal("a regra 13 tem de dizer o carimbo que from_tool obriga")
+	}
+	if v := planvalidate.Validate(plano("1.2.0", "reader", ref, comOrigem, ""), snap, testCeilings()); v.Reason != planvalidate.ReasonVersionBelowFeatures {
+		t.Fatalf("from_tool carimbado 1.2.0 tinha de ser recusado com %s: %+v", planvalidate.ReasonVersionBelowFeatures, v)
+	}
+	// Cada condição «obrigatória» da regra, violada, é recusada com o seu sub-código.
+	outraRef := `{"name":"` + tool.Name + `","version":"` + tool.Version + `","digest":"` + tool.Digest + `"}`
+	for nome, c := range map[string]struct {
+		doc   plan.PlanDocument
+		razao planvalidate.Reason
+		frase string
+	}{
+		"tool que nao e do no": {plano("1.3.0", "reader", "", comOrigem, ""),
+			planvalidate.ReasonFromToolUnknownTool, "o name de uma ferramenta de tools desse mesmo no"},
+		"tool referida duas vezes": {plano("1.3.0", "reader", ref+","+outraRef, comOrigem, ""),
+			planvalidate.ReasonFromToolAmbiguousTool, "esse name aparece uma so vez em\n    tools"},
+		"tipo summary": {plano("1.3.0", "reader", ref, strings.Replace(comOrigem, `"record"`, `"summary"`, 1), ""),
+			planvalidate.ReasonFromToolOutputType, `o type do output e "record" ou "artifact"`},
+		"no com consumes": {plano("1.3.0", "reader", ref, comOrigem, `,"consumes":[{"from":"n0","output":"base","type":"record"}]`),
+			planvalidate.ReasonFromToolWithConsumes, "nao\n    tem consumes"},
+		"duas saidas com origem": {plano("1.3.0", "reader", ref, comOrigem+`,{"name":"copia","type":"record","from_tool":"`+tool.Name+`"}`, ""),
+			planvalidate.ReasonFromToolMultiple, "no maximo UM output do no usa from_tool"},
+	} {
+		if !strings.Contains(regra13, c.frase) {
+			t.Errorf("%s: a regra 13 deixou de dizer %q", nome, c.frase)
+		}
+		if v := planvalidate.Validate(c.doc, snap, testCeilings()); !v.Rejected() || v.Reason != c.razao {
+			t.Errorf("%s: tinha de ser recusado com %s; veio %+v", nome, c.razao, v)
+		}
+	}
+	if !strings.Contains(regra13, "o no nao e role: verifier") {
+		t.Error("a regra 13 tem de dizer que um verifier nao declara a origem")
 	}
 }
 
@@ -409,10 +544,12 @@ func TestAOS500_AExcepcaoDoPromptESoFromTool(t *testing.T) {
 // exactamente nesse campo; o objective dos nós não a tapa.
 func TestAOS400_SemOObjectiveDeTopoAFaltaEExactamenteEssa(t *testing.T) {
 	linha := "  objective*       string nao vazia: o objectivo do plano inteiro\n"
-	if strings.Count(Current.Template, linha) != 1 {
+	// Parte do template que declara o schema INTEIRO (o 1.5.0): a falta tem de ser só a que o
+	// mutante cria. A linha é igual nas duas versões.
+	if strings.Count(WithOutputSource.Template, linha) != 1 || strings.Count(Current.Template, linha) != 1 {
 		t.Fatalf("pre-condicao: a linha do objective de topo mudou; actualizar o mutante")
 	}
-	mutante := strings.Replace(Current.Template, linha, "", 1)
+	mutante := strings.Replace(WithOutputSource.Template, linha, "", 1)
 	if faltas := faltasNoTemplate(t, mutante); len(faltas) != 1 || faltas[0] != "topo.objective*" {
 		t.Fatalf("sem o objective de topo, a falta devia ser so topo.objective*; veio %v", faltas)
 	}

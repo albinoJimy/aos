@@ -76,9 +76,14 @@ func TestAOS500_CartaoDeUmPlanoSemOrigemEOdeAntes(t *testing.T) {
 	if strings.Contains(string(raw), "tool=") || strings.Contains(string(raw), "from_tool") {
 		t.Fatalf("um cartao sem origem declarada fala dela:\n%s", raw)
 	}
-	// E a versão do contrato do cartão não subiu: subi-la mudava o carimbo de todos os cartões.
-	if CurrentVersion != (PlanCardSchemaVersion{Major: 1, Minor: 1, Patch: 0}) {
-		t.Fatalf("a versao do cartao passou a %s; o AOS-500 nao a muda", CurrentVersion)
+	// E o CARIMBO deste cartão não subiu: um cartão sem origem usa o contrato 1.1.0 e carimba-o,
+	// mesmo depois de o AOS-501 ter subido a versão corrente para os cartões com origem.
+	var relido PlanCard
+	if err := json.Unmarshal(raw, &relido); err != nil {
+		t.Fatal(err)
+	}
+	if relido.SchemaVersion != (PlanCardSchemaVersion{Major: 1, Minor: 1, Patch: 0}) {
+		t.Fatalf("o cartao de um plano sem origem carimba %s; tem de continuar a carimbar 1.1.0", relido.SchemaVersion)
 	}
 }
 
@@ -104,8 +109,12 @@ func TestAOS500_CartaoMostraAOrigemDeclarada(t *testing.T) {
 	if string(comWire) == string(semWire) {
 		t.Fatal("o plano com from_tool e o mesmo plano sem ele deram o mesmo cartao: o aprovador nao via a diferenca")
 	}
-	if got := strings.Replace(string(comWire), ":tool=doc_read", "", 1); got != string(semWire) {
-		t.Fatalf("a diferenca entre os dois cartoes devia ser so a origem da saida:\n com=%s\n sem=%s", comWire, semWire)
+	// A diferença são duas coisas, e só elas: a origem na saída do leitor, e o carimbo do
+	// contrato, que sobe a 1.2.0 quando o cartão a mostra (AOS-501).
+	got := strings.Replace(string(comWire), ":tool=doc_read", "", 1)
+	got = strings.Replace(got, `{"schema_version":"1.2.0","run_id"`, `{"schema_version":"1.1.0","run_id"`, 1)
+	if got != string(semWire) {
+		t.Fatalf("a diferenca entre os dois cartoes devia ser so a origem da saida e o carimbo:\n com=%s\n sem=%s", comWire, semWire)
 	}
 
 	// O cartão com origem faz a ida e volta pelo wire.

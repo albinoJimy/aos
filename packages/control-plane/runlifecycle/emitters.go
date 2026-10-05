@@ -230,6 +230,19 @@ func (p *PlanRecorder) RecordPayloadPublished(ctx context.Context, payload plann
 	return p.recorder.RecordPayloadPublished(ctx, payload, producer)
 }
 
+// RecordOutputSourceDeclared EMITE o facto de que o run de um nó do plano vai ser pedido com a
+// origem de uma saída declarada, e com que vínculo (ADR-038 §2.4, AOS-501). Fino, como os
+// outros: a validação é a de `NewOutputSourceDeclared`, e a escrita passa pelo appender FENCED.
+func (p *PlanRecorder) RecordOutputSourceDeclared(ctx context.Context, payload plannerevents.OutputSourceDeclaredPayload, producer plan.Node) (uint64, error) {
+	if payload.PlanID == "" {
+		payload.PlanID = p.planID
+	}
+	if payload.PlanID != p.planID {
+		return 0, fmt.Errorf("%w: declaracao de origem para %q, emissor amarrado a %q", ErrForeignPlan, payload.PlanID, p.planID)
+	}
+	return p.recorder.RecordOutputSourceDeclared(ctx, payload, producer)
+}
+
 // BranchJournal devolve a implementação de [plandispatch.BranchJournal] sobre este
 // emissor: o registo append-only das decisões de ramo DO DESPACHANTE.
 //

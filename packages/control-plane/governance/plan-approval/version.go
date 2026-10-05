@@ -45,7 +45,60 @@ type PlanCardSchemaVersion struct {
 // o que ADR-012 e a auditabilidade da decisão exigem dela. O caso «adição
 // retrocompatível» é literalmente a definição de MINOR neste ficheiro
 // (ver [ChangeMinor]); molde: `plan.CurrentPlanVersion` 1.0.0→1.1.0 em AOS-270.
-var CurrentVersion = PlanCardSchemaVersion{Major: 1, Minor: 1, Patch: 0}
+//
+// 1.2.0 (AOS-501, ADR-038 §2.1) — MINOR: uma saída do cartão pode levar a ORIGEM declarada, o
+// quarto segmento `:tool=<nome>` de `node_extensions[].outputs[]`. A gramática foi alargada no
+// AOS-500 sem subir a versão, porque nenhum plano com origem corria e subir o carimbo mudava os
+// bytes de todos os cartões. Com a entrega por referência passam a existir cartões com origem,
+// e vale o argumento de cima: sem a subida, dois binários carimbavam a mesma versão e
+// discordavam sobre o que o cartão mostra — aqui, se o nó seguinte recebe o que a tool
+// devolveu ou o que o modelo escreveu.
+//
+// O CARIMBO É O DO CONTRATO QUE O CARTÃO USA ([versionFor]): um cartão sem nenhuma saída com
+// origem carimba [versionWithoutOutputSource] (1.1.0) e fica byte a byte o que era; um cartão
+// com origem carimba 1.2.0, e [PlanCard.Validate] recusa-o com um carimbo abaixo disso. Um
+// leitor anterior recusa um cartão com origem pela forma do segmento; o carimbo passa a dizer
+// porquê.
+var CurrentVersion = PlanCardSchemaVersion{Major: 1, Minor: 2, Patch: 0}
+
+// versionWithoutOutputSource é o carimbo de um cartão que não mostra origem nenhuma: o contrato
+// 1.1.0, que é o que ele usa.
+var versionWithoutOutputSource = PlanCardSchemaVersion{Major: 1, Minor: 1, Patch: 0}
+
+// versionFor devolve o carimbo do contrato que um cartão usa: [CurrentVersion] se alguma saída
+// leva a origem declarada, [versionWithoutOutputSource] se não.
+func versionFor(comOrigem bool) PlanCardSchemaVersion {
+	if comOrigem {
+		return CurrentVersion
+	}
+	return versionWithoutOutputSource
+}
+
+// extensionsDeclareOutputSource diz se alguma saída das extensões do cartão leva a origem
+// declarada — o quarto segmento `:tool=<nome>` da forma canónica.
+func extensionsDeclareOutputSource(exts []NodeExtension) bool {
+	for _, e := range exts {
+		for _, o := range e.Outputs {
+			parts := strings.Split(o, ":")
+			if len(parts) == 4 && strings.HasPrefix(parts[3], canonicalOutputSourcePrefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// planDeclaresOutputSource é a mesma pergunta feita ao plano, antes de haver cartão.
+func planDeclaresOutputSource(p Plan) bool {
+	for _, n := range p.Nodes {
+		for _, o := range n.Outputs {
+			if o.FromTool != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // ParsePlanCardSchemaVersion aceita ESTRITAMENTE "X.Y.Z" com X,Y,Z inteiros
 // não-negativos. Fail-closed: qualquer outra forma devolve [ErrInvalidSchemaVersion]
