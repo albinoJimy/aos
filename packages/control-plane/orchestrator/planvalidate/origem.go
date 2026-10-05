@@ -21,7 +21,12 @@ import (
 //	(O3) no máximo UMA saída com origem — um run tem uma só origem designada;
 //	(O4) só em `record` ou `artifact` — um `summary` é, por definição, transformado, e as formas
 //	     fechadas são derivadas pelo sistema;
-//	(O5) `from_tool` é o nome EXACTO de uma tool de `tools` do mesmo nó.
+//	(O5) `from_tool` é o nome EXACTO de uma tool de `tools` do mesmo nó;
+//	(O6) essa tool está pinada UMA SÓ VEZ no nó — a origem refere-a pelo nome, e duas `ToolRef`
+//	     com o mesmo nome (versões ou digests diferentes) deixavam-na ambígua.
+//
+// O QUE AINDA NÃO SE DECIDE: se a tool de origem pode ser uma tool de egress ou de efeito do nó
+// (`web_post`, por exemplo). Hoje é aceite; a decisão é do AOS-501, que é quem passa a entregar.
 //
 // A sexta regra do ticket — usar o campo obriga a carimbar a linha 1.3.0 — é do piso de versão
 // derivado das features ([plan.FeatureFloor], regra 1), com o sub-código que já existia.
@@ -70,21 +75,28 @@ func checkOutputSources(doc plan.PlanDocument) Verdict {
 			}
 			// (O5) A forma do identificador já é da forma ([plan.Decode]); repete-se aqui
 			// porque o validador também recebe documentos montados à mão.
-			if !plan.ValidIdentifier(o.FromTool) || !nodeHasTool(n, o.FromTool) {
+			pinadas := toolRefsNamed(n, o.FromTool)
+			if !plan.ValidIdentifier(o.FromTool) || pinadas == 0 {
 				return reject(plannerevents.RuleSchema, ReasonFromToolUnknownTool, loc)
+			}
+			// (O6)
+			if pinadas > 1 {
+				return reject(plannerevents.RuleSchema, ReasonFromToolAmbiguousTool, loc)
 			}
 		}
 	}
 	return accepted
 }
 
-// nodeHasTool indica se o nó pina uma tool com este nome EXACTO. Comparação byte a byte, sem
-// normalização: é o nome que o run vai declarar ao kernel, e o kernel compara assim.
-func nodeHasTool(n plan.Node, name string) bool {
+// toolRefsNamed conta as `ToolRef` do nó com este nome EXACTO. Comparação byte a byte, sem
+// normalização: é o nome que o run vai declarar ao kernel, e o kernel compara assim. Zero quer
+// dizer que a tool não é do nó (O5); mais de uma, que a origem é ambígua (O6).
+func toolRefsNamed(n plan.Node, name string) int {
+	pinadas := 0
 	for _, t := range n.Tools {
 		if t.Name == name {
-			return true
+			pinadas++
 		}
 	}
-	return false
+	return pinadas
 }

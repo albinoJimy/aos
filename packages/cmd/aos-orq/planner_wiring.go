@@ -205,11 +205,12 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	}
 	fmt.Printf("decomposto: objectivo -> plano de %d nos (tentativas=%d, planner_nhi=%s)\n", len(res.Doc.Nodes), res.Attempts, res.PlannerNHI)
 
-	// (5-bis) AOS-500: um plano que declara a origem de uma saída não corre neste binário (ver
-	// origem_no_plano.go). Antes da validação a jusante, do gate e da materialização: nenhum nó
-	// é admitido nem submetido, e o documento não é escrito no `--plan-out`. O planeador não é
-	// instruído a emitir o campo; isto apanha o modelo que o invente.
-	if err := recusarOrigemDeclarada(res.Doc); err != nil {
+	// (5-bis) AOS-500: um plano da linha 1.3.0 não corre neste binário (ver origem_no_plano.go).
+	// A recusa que CONTA é a do laço — [validadorDoSnapshot] devolve-a ao planeador, que tenta
+	// de novo, como o binário anterior fazia. Esta é a última linha: um documento que saísse do
+	// laço ainda nessa linha não é validado, não passa pelo gate, não é escrito no `--plan-out`
+	// e não materializa nada.
+	if err := recusarSemEntrega(res.Doc); err != nil {
 		return err
 	}
 
@@ -349,6 +350,12 @@ func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planva
 type validadorDoSnapshot struct{ snap planvalidate.Snapshot }
 
 func (v validadorDoSnapshot) Validate(doc plan.PlanDocument) *planner.Rejection {
+	// AOS-500, até ao AOS-501: um documento carimbado na linha 1.3.0 é uma tentativa RECUSADA,
+	// com o código que o binário anterior lhe dava — volta ao laço, não acaba o `serve`. Antes
+	// do validador porque era também a primeira coisa que o validador anterior conferia.
+	if r := recusaDoLacoSemEntrega(doc); r != nil {
+		return r
+	}
 	ver := planvalidate.Validate(doc, v.snap, planvalidate.Ceilings{MaxNodes: planvalidate.DefaultMaxNodes})
 	if !ver.Rejected() {
 		return nil

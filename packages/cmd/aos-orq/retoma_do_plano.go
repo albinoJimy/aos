@@ -194,6 +194,13 @@ func documentoExigeHumano(doc, snapshot, runID string, estado *runlifecycle.Plan
 	if err != nil {
 		return false, fmt.Errorf("%w: %q nao descodifica: %v", errDocumentoDoPlanoRecusado, doc, err)
 	}
+	// AOS-500, até ao AOS-501: um documento guardado que seja da linha 1.3.0 não corre neste
+	// binário, e por isso não fica à espera de humano — a recusa só chegava no `serve`, depois
+	// de o humano aprovar. Antes do confronto com o hash: a causa é a do documento, seja ou não
+	// o que o log ancora. (Só existe um pendente assim se outro binário o tiver criado.)
+	if err := recusarSemEntrega(d); err != nil {
+		return false, err
+	}
 	if h := hashDoPlano(d); h != estado.PlanHash() {
 		return false, fmt.Errorf("%w: %q tem hash %s e o plano validado tem %s", errDocumentoDoPlanoRecusado, doc, h, estado.PlanHash())
 	}

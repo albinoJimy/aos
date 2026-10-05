@@ -112,6 +112,10 @@ const (
 	// ReasonFromToolUnknownTool — `from_tool` não é o nome exacto de uma tool de `tools` do
 	// mesmo nó (ou não é um identificador).
 	ReasonFromToolUnknownTool Reason = "from_tool_unknown_tool"
+	// ReasonFromToolAmbiguousTool — `from_tool` nomeia uma tool que o nó pina MAIS DE UMA VEZ
+	// (duas `ToolRef` com o mesmo nome e versões ou digests diferentes). O campo refere a tool
+	// pelo nome, e com o nome repetido não diz de qual das duas a saída é o resultado.
+	ReasonFromToolAmbiguousTool Reason = "from_tool_ambiguous_tool"
 
 	// Regra 2-bis — alcançabilidade dos ramos (ADR-022 §2.1).
 	// ReasonUnreachableJunction — a ancestralidade do nó exige DOIS ramos

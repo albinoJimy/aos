@@ -1,8 +1,10 @@
 package plan
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -230,6 +232,51 @@ type Output struct {
 	FromTool string `json:"from_tool,omitempty"`
 }
 
+// UnmarshalJSON existe por UMA razão: distinguir `from_tool` AUSENTE de `from_tool` PRESENTE E
+// VAZIO (AOS-500, revisão). Com o campo num `string`, `"from_tool": ""` e `"from_tool": null`
+// descodificavam como «sem origem», e a chave desaparecia na re-serialização: um documento que
+// dizia uma coisa lia-se como outra, em silêncio. Um campo presente e vazio não é um campo
+// ausente — recusa-se, com [ErrInvalidOutput].
+//
+// PARA UM DOCUMENTO SEM A CHAVE NADA MUDA. Os restantes campos descodificam pelo mesmo caminho
+// de sempre (o tipo embutido é o próprio [Output], sem este método), e o descodificador interno
+// é tão estrito como o de [Decode]: um campo desconhecido continua a ser recusado.
+//
+// A chave é lida como o `encoding/json` a lê — sem distinguir caixa —, porque é assim que o
+// campo do struct a receberia: `"FROM_TOOL": ""` é o mesmo documento.
+func (o *Output) UnmarshalJSON(data []byte) error {
+	type semMetodo Output
+	var lido struct {
+		semMetodo
+		// Origem sombreia o `from_tool` do tipo embutido (o campo menos fundo ganha): fica nil
+		// quando a chave não vem, e com os bytes do valor — incluindo `null` — quando vem.
+		Origem json.RawMessage `json:"from_tool"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&lido); err != nil {
+		return err
+	}
+	saida := Output(lido.semMetodo)
+	saida.FromTool = ""
+	if lido.Origem != nil {
+		var origem string
+		if bytes.Equal(bytes.TrimSpace(lido.Origem), []byte("null")) {
+			return fmt.Errorf("%w: from_tool presente e nulo", ErrInvalidOutput)
+		}
+		if err := json.Unmarshal(lido.Origem, &origem); err != nil {
+			// O valor recusado não vai na mensagem: é texto do documento.
+			return fmt.Errorf("%w: from_tool nao e uma string", ErrInvalidOutput)
+		}
+		if origem == "" {
+			return fmt.Errorf("%w: from_tool presente e vazio", ErrInvalidOutput)
+		}
+		saida.FromTool = origem
+	}
+	*o = saida
+	return nil
+}
+
 // EffectiveOutputTaint é o rótulo que VALE para um contrato de saída DECLARADO POR
 // ESTE NÓ. É a derivação completa da nota de topo — forma E autoridade —, e vive no
 // [Node] (não no [Output]) precisamente porque a autoridade é uma propriedade do
@@ -294,7 +341,8 @@ var (
 	// ErrTooManyPayloadContracts — outputs/consumes acima do tecto de aridade.
 	ErrTooManyPayloadContracts = errors.New("plan: contratos de payload acima do tecto de aridade")
 	// ErrInvalidOutput — output com nome fora da grammar, duplicado no nó, tipo fora
-	// do enum, taint fora do enum ou origem declarada (`from_tool`) fora da grammar.
+	// do enum, taint fora do enum ou origem declarada (`from_tool`) fora da grammar — ou
+	// presente e vazia (`""`, `null`), que não é o mesmo que ausente ([Output.UnmarshalJSON]).
 	ErrInvalidOutput = errors.New("plan: contrato de output invalido (nome/tipo/taint)")
 	// ErrInvalidConsumes — aresta de dados com `from` vazio, nome de output fora da
 	// grammar, tipo fora do enum, ou par (from,output) repetido no mesmo nó.
