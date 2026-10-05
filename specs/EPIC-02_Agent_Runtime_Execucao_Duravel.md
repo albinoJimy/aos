@@ -2134,9 +2134,9 @@ O que este ticket não fecha, além do «Fora de âmbito»: enquanto o desfecho 
 
 ## AOS-497 — O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada
 
-<!-- Este ticket escreve e implementa o ADR-038 (a saida de um no de passagem directa e o resultado da tool: o kernel designa e sela a origem). -->
+<!-- Este ticket escreve e implementa o ADR-038 (a saída de um nó de passagem directa é o resultado da tool: o kernel designa e sela a origem). -->
 <!-- rtm: menção -->
-<!-- O ADR-037 e emendado aqui so no vocabulario das razoes. O ADR-022, o ADR-027, o ADR-034 e o ADR-036 sao citados como contexto e NAO sao implementados neste ticket; as emendas ao ADR-027 e ao ADR-022 cabem aos tickets que mudam o que eles descrevem (AOS-501 e AOS-500), como o ADR-038 regista. -->
+<!-- O ADR-037 é emendado aqui (as razões novas do veredicto). O ADR-022, o ADR-027, o ADR-034 e o ADR-036 são citados como contexto e NÃO são implementados neste ticket; as emendas ao ADR-027 e ao ADR-022 cabem aos tickets que mudam o que eles descrevem (AOS-501 e AOS-500), como o ADR-038 regista. -->
 <!-- /rtm: menção -->
 
 | Campo | Valor |
@@ -2149,7 +2149,7 @@ O que este ticket não fecha, além do «Fora de âmbito»: enquanto o desfecho 
 | Dependências | AOS-493 (veredicto do kernel e contrato de conclusão), AOS-492 (regra de terminação única) |
 | Bloqueia | AOS-498 |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md`, `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md`, `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/completion.go`, `packages/kernel/agent-runtime/context_authority.go`, `packages/kernel/agent-runtime/replay/engine.go`, `packages/integration/resume_records.go` |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md`, `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/completion.go`, `packages/kernel/agent-runtime/context_authority.go`, `packages/kernel/agent-runtime/replay/engine.go`, `packages/integration/resume_records.go` |
 
 ### Contexto
 
@@ -2234,10 +2234,11 @@ declarar a origem (AOS-498), nenhum run muda.
       final, e regista como **rejeitada agora** a alternativa em que o nó consumidor resolve a
       referência, com os seus gatilhos (o primeiro payload legítimo acima do tecto; a fase A5 ou
       A6; a reabertura do DEF-806).
-- [ ] Emendas no mesmo PR: ADR-037 §2.4 (as duas razões novas), §2.8 (num run por referência a
-      leitura de desfecho cobre um resultado de tool) e §5 (o resíduo «evidência não é
-      fidelidade» fecha para a passagem directa); ADR-027 §2.4 (origem do payload); ADR-022 §2.3
-      (a origem declarada de um output). A RTM (`tecnica/16`) é regenerada no mesmo commit.
+- [ ] Emendas no mesmo PR ao ADR-037: §2.4 (as duas razões novas) e §5 (o resíduo «evidência não é
+      fidelidade» fecha para a passagem directa). As emendas aos outros ADR que o desenho lista
+      ficam para os tickets que mudam o que eles descrevem, como o ADR novo regista: a leitura de
+      desfecho de um run por referência (AOS-498), a origem declarada de um output (AOS-500) e a
+      origem do payload (AOS-501). A RTM (`tecnica/16`) é regenerada no mesmo commit.
 - [ ] Revisão adversarial independente com mutações, antes da fusão.
 
 ### Vínculo por run (acrescentado a 2026-10-05, antes de implementar)
