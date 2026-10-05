@@ -261,13 +261,11 @@ func (o *Output) UnmarshalJSON(data []byte) error {
 	saida.FromTool = ""
 	if lido.Origem != nil {
 		var origem string
-		if bytes.Equal(bytes.TrimSpace(lido.Origem), []byte("null")) {
-			return fmt.Errorf("%w: from_tool presente e nulo", ErrInvalidOutput)
-		}
 		if err := json.Unmarshal(lido.Origem, &origem); err != nil {
 			// O valor recusado não vai na mensagem: é texto do documento.
 			return fmt.Errorf("%w: from_tool nao e uma string", ErrInvalidOutput)
 		}
+		// `null` descodifica para a string vazia sem erro, e cai aqui com `""`.
 		if origem == "" {
 			return fmt.Errorf("%w: from_tool presente e vazio", ErrInvalidOutput)
 		}
