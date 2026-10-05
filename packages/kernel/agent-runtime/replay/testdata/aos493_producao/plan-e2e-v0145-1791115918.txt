@@ -1,0 +1,3 @@
+<tool_call id="call_doc_read_notes" name="doc_read">
+<aos_args>{"doc_id": "notes"}</aos_args>
+</tool_call>

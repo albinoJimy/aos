@@ -86,6 +86,18 @@ type Goal struct {
 	// do que os gravados. Versão desconhecida ⇒ o run não arranca
 	// ([ErrUnknownAssemblyVersion]).
 	AssemblyVersion string
+	// CompletionRequires é o CONTRATO DE CONCLUSÃO do run (AOS-493, ADR-037): os nomes (o
+	// `ToolID`) das tools de que a conclusão depende. O run só conclui cumprido com pelo menos
+	// uma chamada EFECTIVA de cada uma — despachada, sem recusa e sem erro de tool. Vazio ⇒ sem
+	// contrato. Quem o declara é quem compõe o run; nunca sai de conteúdo do modelo.
+	CompletionRequires []string
+	// CompletionMode é o MODO DE APLICAÇÃO do veredicto, fixado por run como o layout: vazio ou
+	// [CompletionOff] ⇒ o desfecho de sempre, sem veredicto; [CompletionObserve] ⇒ o veredicto
+	// calcula-se e vai no [Result], sem mudar o desfecho; [CompletionEnforce] ⇒ um veredicto
+	// negativo fecha o run como não cumprido ([Result.Unfulfilled]). Um valor fora do
+	// vocabulário ⇒ o run não arranca ([ErrUnknownCompletionMode]). Vai no manifesto de cada
+	// turno, para o replay chegar ao mesmo desfecho.
+	CompletionMode CompletionMode
 
 	// ParentTraceParent é o SEED cross-fronteira da árvore de spans (AOS-077):
 	// quando este run é um sub-agente DELEGADO, transporta o traceparent W3C do span
@@ -156,6 +168,28 @@ type Result struct {
 	// EscalatedPreview é o digest canónico da acção que aguarda aprovação — o mesmo valor
 	// que as pernas de aprovação assinam. Vazio quando !Escalated.
 	EscalatedPreview []byte
+	// Unfulfilled indica que o run ACABOU SEM CONCLUIR (AOS-493): o turno que o terminou teve
+	// veredicto negativo e o run corria em modo de imposição. Não é erro do loop (como
+	// BudgetExhausted, é um desfecho declarado), Terminated fica false e FinalText fica vazio:
+	// o que o modelo escreveu nesse turno não é resposta de nada.
+	Unfulfilled bool
+	// Verdict é o veredicto do kernel sobre a conclusão do run, calculado no turno que o
+	// terminou. nil quando o run não chegou a um turno terminal ou corria com o modo
+	// desligado. Em modo de observação um veredicto negativo vem com Terminated=true.
+	Verdict *Verdict
+	// ToolCallsRequested é o total de tool calls que o modelo pediu e o loop despachou no run,
+	// qualquer que seja o modo. É medição.
+	ToolCallsRequested int
+	// ToolsOffered é o tamanho do TOOL SET DO RUN ([Goal.Tools], tal como o loop o recebeu) — o
+	// que o prefixo do prompt e o manifesto pinam. NÃO é o número de schemas que o cliente de
+	// modelo enviou ao provider em cada turno: esse é [ModelResponse.ToolsOffered] (AOS-491), por
+	// turno, e pode ser menor. É medição: serve a quem conta os runs que concluíram sem pedir
+	// nenhuma tool tendo-as no tool set. Não entra no veredicto.
+	ToolsOffered int
+	// LastToolOutcome diz sobre o que o run acabou ([RunEvidence.LastToolOutcome]): o desfecho
+	// do último turno que despachou tool calls — `none`, `effective`, `denied` ou `tool_error`.
+	// Preenchido em qualquer modo e em todos os caminhos de saída. É medição.
+	LastToolOutcome string
 }
 
 // Runtime é o Agent Runtime: corre o loop base. Detém um *[referencemonitor.Monitor]
@@ -394,6 +428,20 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	}
 	// A sequência de segmentos do run (AOS-489): a MESMA que o motor de replay usa.
 	sequencia := lay.novaSequencia()
+	// O VEREDICTO DO RUN (AOS-493): o modo e o contrato resolvem-se aqui, antes de qualquer
+	// efeito, e são os que cada turno grava no manifesto. Os contadores são os do próprio loop.
+	conclusao, err := completionDoGoal(goal)
+	if err != nil {
+		return Result{}, err
+	}
+	// CONTRATO IMPOSSÍVEL ⇒ O RUN NÃO ARRANCA (AOS-493, revisão I5). Aqui, e não mais acima,
+	// porque é neste ponto que [Goal.Tools] e [Goal.AllowedTools] são os definitivos: quem
+	// compõe o run já cortou a oferta pela lista-branca (AOS-486) e o Reference Monitor vai
+	// impor a mesma lista em cada chamada (AOS-485). Antes de qualquer evento, span ou turno.
+	if err := contratoPossivel(conclusao, goal); err != nil {
+		return Result{}, err
+	}
+	evidencia := NewRunEvidence()
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
 		DelegationChain: toStoreChain(goal.Principal.DelegationChain),
@@ -417,7 +465,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	agentSpan.SetAttribute(AttrRequestModel, goal.Model.ModelID)
 	agentSpan.SetAttribute(AttrRunID, goal.RunID)
 
-	res := Result{RunID: goal.RunID}
+	res := Result{RunID: goal.RunID, ToolsOffered: len(goal.Tools), LastToolOutcome: evidencia.LastToolOutcome()}
 
 	// Anotar o uso/custo AGREGADO no span invoke_agent em TODOS os caminhos de
 	// saída — inclusive nos returns de erro (ErrModelCall/ErrTurnRecord/checkpoint/
@@ -547,7 +595,8 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// O MOTIVO DE PARAGEM ENTRA NO RUNTIME JÁ FECHADO (AOS-491). O cliente de modelo é uma
 		// porta: um que devolvesse o texto do provider tal como veio poria esse texto na
 		// captura, no `turn.recorded` e num rótulo de métrica. Daqui para baixo `resp` só tem
-		// um valor do vocabulário. É medição — nada neste loop decide por ele.
+		// um valor do vocabulário. O loop não decide o despacho por ele; entra só no veredicto do
+		// turno que acaba o run ([ConcludeRun], AOS-493).
 		resp.StopReason = resp.StopReason.Normalizado()
 		if resp.ToolsOffered < 0 {
 			// Uma contagem negativa não existe; não chega ao registo.
@@ -566,7 +615,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		res.CustoNaoDerivado = res.CustoNaoDerivado || resp.CustoNaoDerivado
 
 		// Gravar o turno com o manifesto por trajectória.
-		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, stepID, turn, view, resp, producer)
+		seq, err := rt.recordTurn(ctx, goal, win.SystemHash(), lay.version, conclusao, stepID, turn, view, resp, producer)
 		if err != nil {
 			return res, err
 		}
@@ -625,6 +674,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			if rt.toolCallStats != nil && len(turnCaptured) > 0 {
 				rt.toolCallStats(goal.RunID, len(turnCaptured), repetidas)
 			}
+			// Os contadores do veredicto (AOS-493) saem do MESMO `turnCaptured` que o tail e a
+			// captura, e pela mesma razão do comentário acima somam cada turno uma só vez.
+			evidencia.Observe(turnCaptured)
+			res.ToolCallsRequested = evidencia.ToolCallsRequested()
+			res.LastToolOutcome = evidencia.LastToolOutcome()
 		}
 		// captureTurn é uma closure porque a captura tem DOIS pontos de saída: o fim
 		// normal do turno e a ESCALADA (AOS-021), que retorna de dentro do laço. Um run
@@ -744,9 +798,17 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, err
 		}
 		if termina {
-			res.FinalText = resp.Text
+			// O DESFECHO é de [ConcludeRun] (AOS-493), a MESMA função que o motor de replay usa:
+			// acabar o run e acabá-lo bem deixaram de ser a mesma pergunta.
+			fim, err := ConcludeRun(resp, conclusao, evidencia)
+			if err != nil {
+				return res, err
+			}
 			res.Turns = turn
-			res.Terminated = true
+			res.Terminated = fim.Terminated
+			res.FinalText = fim.FinalText
+			res.Unfulfilled = fim.Unfulfilled
+			res.Verdict = fim.Verdict
 			return res, nil
 		}
 
@@ -867,7 +929,7 @@ func (rt *Runtime) callModel(ctx context.Context, goal Goal, stepID string, view
 }
 
 // recordTurn constrói o manifesto e grava o evento "turn.recorded".
-func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
+func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemblyVersion string, conclusao *Completion, stepID string, turn int, view PromptView, resp ModelResponse, producer eventstore.Producer) (uint64, error) {
 	manifest := Manifest{
 		PromptHash: view.PromptHash,
 		SystemHash: systemHash,
@@ -887,6 +949,9 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		// resposta. Vazia ⇒ texto único, e o manifesto fica com os bytes de antes.
 		Projection:        resp.Projection,
 		ProjectionVersion: resp.ProjectionVersion,
+		// O modo e o contrato com que o run corre (AOS-493). nil com o modo desligado, e o
+		// manifesto fica com os bytes de antes.
+		Completion: conclusao,
 	}
 	seq, err := rt.recorder.Record(ctx, TurnRecord{
 		RunID:            goal.RunID,

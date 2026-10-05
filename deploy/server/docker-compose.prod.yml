@@ -503,6 +503,11 @@ services:
       # mensagem de utilizador, a forma anterior. Outro valor ⇒ o nó recusa arrancar
       # (ErrBadModelProjection).
       AOS_MODEL_PROJECTION: "${AOS_MODEL_PROJECTION:-}"
+      # O VEREDICTO DE CONCLUSÃO (AOS-493, ADR-037). Vazio ⇒ `observe`: o kernel calcula se o run
+      # concluiu, regista-o e conta-o, sem mudar o desfecho. `enforce` fecha em `failed` um run
+      # com veredicto negativo; `off` não calcula. Outro valor ⇒ o nó recusa arrancar
+      # (ErrBadCompletionVerdict). Vale para runs novos: o modo é fixado por run.
+      AOS_COMPLETION_VERDICT: "${AOS_COMPLETION_VERDICT:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"

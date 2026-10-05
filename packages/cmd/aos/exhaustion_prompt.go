@@ -367,7 +367,7 @@ func (s *NodeService) absorveSuspensaoPorExaustao(ctx context.Context, goal agen
 		// retoma); mantém-se como guarda local para o invariante ser auditável no ponto de uso.
 		return false, fmt.Errorf("aos: run %q suspenso por exaustao mas o no nao tem registo de retoma composto — tratado como FALHADO: %w", goal.RunID, runErr)
 	}
-	if perr := s.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); perr != nil {
+	if perr := s.putResumeRecord(ctx, goal); perr != nil {
 		return false, fmt.Errorf("aos: persistir registo de retoma do run %q suspenso por exaustao (AOS-263): %w", goal.RunID, perr)
 	}
 	s.log("run %q SUSPENSO por exaustao de orcamento (AOS-263) — largado o lease e o heartbeat; a pergunta esta em GET /runs/{id} e responde-se em %s (%s ou %s, assinado por operador pinado). Depois de um %s decidido, a re-hospedagem e %s com credencial fresca",

@@ -426,7 +426,7 @@ func aos263TornaRetomavel(t *testing.T, node *Node, svc *NodeService, runID stri
 		Objective: "trabalho do run suspenso",
 		Principal: referencemonitor.Principal{NHIID: "nhi:agente-263"},
 	}
-	if err := node.ResumeRecords.Put(context.Background(), resumeRecordFromGoal(goal)); err != nil {
+	if err := node.ResumeRecords.Put(context.Background(), registoDeRetomaDeTeste(t, goal)); err != nil {
 		t.Fatalf("ResumeRecords.Put: %v", err)
 	}
 	svc.mu.Lock()

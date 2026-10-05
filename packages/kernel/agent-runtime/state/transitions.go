@@ -154,6 +154,13 @@ func IsTerminal(s State) bool {
 	}
 }
 
+// terminaORun indica se s é um estado em que um run ACABA: os absorventes ([IsTerminal]) e
+// `failed`. `failed` não é absorvente (sai para `compensating`), mas é onde o loop deixa um run
+// que não concluiu — e é o destino de um veredicto negativo imposto (AOS-493).
+func terminaORun(s State) bool {
+	return IsTerminal(s) || s == Failed
+}
+
 // IsSuspended indica se s é um estado de SUSPENSÃO LEGÍTIMA e retomável
 // (waiting_on_tool, waiting_on_human, paused) — deliberadamente distinto de falha e
 // de worker morto (tecnica/02 §5). É a distinção que dá valor à máquina rica.

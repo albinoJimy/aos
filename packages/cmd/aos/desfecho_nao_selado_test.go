@@ -168,6 +168,7 @@ func TestDesfechoNaoSelado_GuardaCobreTodosOsDesfechos(t *testing.T) {
 		{"failed (erro de loop)", agentruntime.Result{}, errors.New("erro"), false},
 		{"timed_out (max_turns)", agentruntime.Result{}, agentruntime.ErrMaxTurnsExceeded, false},
 		{"timed_out (budget_exhausted)", agentruntime.Result{BudgetExhausted: true}, nil, false},
+		{"failed (veredicto negativo imposto, AOS-493)", agentruntime.Result{Unfulfilled: true}, nil, false},
 	}
 	for _, d := range desfechos {
 		t.Run(d.nome, func(t *testing.T) {

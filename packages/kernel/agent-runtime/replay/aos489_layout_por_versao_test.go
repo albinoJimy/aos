@@ -433,6 +433,17 @@ func (b *aos489Bancada) correr(goal agentruntime.Goal, respostas []agentruntime.
 	return agentruntime.New(model, b.rm, agentruntime.NewTurnRecorder(b.store), todas...).Run(context.Background(), goal)
 }
 
+// correrCom executa o goal com um modelo que conclui no primeiro turno e avisa quando é
+// interrogado — para os casos em que o run NÃO pode chegar ao modelo.
+func (b *aos489Bancada) correrCom(goal agentruntime.Goal, aoInterrogar func()) (agentruntime.Result, error) {
+	b.t.Helper()
+	model := agentruntime.ModelClientFunc(func(context.Context, agentruntime.PromptView) (agentruntime.ModelResponse, error) {
+		aoInterrogar()
+		return agentruntime.ModelResponse{Text: "feito", Final: true, StopReason: agentruntime.StopStop}, nil
+	})
+	return agentruntime.New(model, b.rm, agentruntime.NewTurnRecorder(b.store), agentruntime.WithCapturer(b.cap)).Run(context.Background(), goal)
+}
+
 func (b *aos489Bancada) eventos(runID string) []eventstore.Event {
 	b.t.Helper()
 	evs, err := b.store.Read(context.Background(), runID, 1)

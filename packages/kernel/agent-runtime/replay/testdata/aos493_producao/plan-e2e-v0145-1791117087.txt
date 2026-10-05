@@ -1,0 +1,9 @@
+<plan>…</plan>
+<tool_use>
+<invoke name="doc_read">
+<parameter name="doc_id">notes</parameter>
+</invoke>
+</tool_use>
+<result>Aguardando…</result>
+---
+O documento não existe … a ferramenta doc_read não está disponível

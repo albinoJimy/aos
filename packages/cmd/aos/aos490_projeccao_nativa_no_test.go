@@ -439,6 +439,10 @@ func TestAOS490_RetomaECrashResumeReproduzemAsMensagens(t *testing.T) {
 					Objective:       "o trabalho de um run",
 					MaxTurns:        4,
 					AssemblyVersion: layout,
+					// AOS-493: o modo do veredicto que um run novo recebe do nó ([Node.fixarConclusao]).
+					// A incarnação 1 deste teste corre o turno 1 pelo runtime, sem passar pelo
+					// hostRun, pelo que o Goal tem de o trazer para os manifestos se compararem.
+					CompletionMode: agentruntime.CompletionObserve,
 				}
 				nativo := layout == agentruntime.AssemblyVersion140
 
@@ -507,7 +511,7 @@ func TestAOS490_RetomaECrashResumeReproduzemAsMensagens(t *testing.T) {
 				if err := mq.Transition(ctx, state.Running, state.TransitionEvent{Token: state.Uint64Token(1), Reason: "crash_simulado"}); err != nil {
 					t.Fatalf("claim do crash simulado: %v", err)
 				}
-				if err := node1.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+				if err := node1.ResumeRecords.Put(ctx, registoDeRetomaDeTeste(t, goal)); err != nil {
 					t.Fatalf("semear o registo de retoma: %v", err)
 				}
 				_ = node1.Close()

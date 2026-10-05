@@ -664,6 +664,46 @@ Porque é que cada parâmetro tem de ser assim:
 > composta; **não os uses como referência para este servidor** — falham aqui, e falham por razão
 > legítima.
 
+### O veredicto de conclusão — `AOS_COMPLETION_VERDICT` (AOS-493)
+
+No turno que acaba um run, o nó calcula se ele **concluiu**. Um turno cortado pelo limite de
+tokens ou sem texto não é conclusão. Um run com contrato de conclusão (as tools de que a saída
+depende) só conclui com pelo menos uma chamada efectiva de cada uma: despachada, sem recusa e sem
+erro de tool. O que o nó faz com esse veredicto escolhe-se no `.env`:
+
+| Valor | O que acontece a um run com veredicto negativo |
+|---|---|
+| *(vazio)* ou `observe` | Conclui como hoje. O veredicto fica na transição terminal, no log e no `/metrics` |
+| `enforce` | Termina `failed`, com razão `objective_unfulfilled` e sem texto final |
+| `off` | Nada é calculado |
+
+- **Outro valor recusa o arranque** (`ErrBadCompletionVerdict`). O banner declara o modo numa linha
+  `veredicto de conclusao`.
+- **O modo é fixado por run.** Fica no registo de retoma e em `manifest.completion` de cada
+  `turn.recorded`. Mudar a variável e recriar o nó só vale para runs novos; um run retomado
+  continua no modo em que começou, e um run começado antes desta versão retoma sem veredicto.
+- **Onde se vê:** a transição terminal do run (`run.state.transition`) leva `outcome_reason` e
+  `verdict`, o vector por tool exigida. As razões são `truncated`, `contract_unmet_no_call`,
+  `contract_unmet_after_denial`, `contract_unmet_after_tool_error` e `empty_output`.
+- **O que medir antes de impor:** `aos_runs_finished_total{outcome="complete",reason=…}` com uma
+  razão diferente de `none` são os runs que `enforce` teria fechado em `failed`.
+  `aos_runs_completed_without_tool_call_total` são os runs concluídos sem pedir nenhuma tool
+  tendo tools no tool set do run (não é o que o gateway enviou ao provider em cada turno).
+  `aos_runs_finished_by_last_tool_outcome_total{outcome,verdict,last}` diz sobre o que cada run
+  acabou — o desfecho do último turno que despachou tool calls: `none`, `effective`, `denied` ou
+  `tool_error`. As séries com `verdict="none"` e `last="denied"` ou `last="tool_error"` são runs
+  que acabaram logo a seguir a uma recusa ou a uma falha de tool e mesmo assim concluíram. O
+  veredicto não os apanha, e `enforce` não os muda; é a leitura que diz quantos são.
+- **Um contrato impossível não arranca.** Um run cujo contrato exige uma tool que ele não tem no
+  tool set, ou que a sua lista-branca não admite, é recusado antes do primeiro turno e fica
+  `failed` com a razão `run_failed`. Vale em `observe` e em `enforce`.
+- **Em `enforce`, um run não cumprido que já fez efeitos fica com eles.** Entra na saga de
+  compensação como qualquer `failed`; não há compensações registadas, pelo que nada é desfeito e
+  o nó grava uma declaração de ausência no WORM por cada run.
+- **O contrato ainda não chega pelo `POST /runs`** (é do AOS-494). Até lá, em `enforce` só mudam
+  de desfecho os runs cujo último turno foi cortado ou veio vazio.
+- **Recuo:** `AOS_COMPLETION_VERDICT=observe` (ou `off`) e recriar o nó.
+
 ### A forma do pedido ao modelo — `AOS_MODEL_PROJECTION` (AOS-490)
 
 O nó envia a conversa de um run ao modelo numa de duas formas, escolhida no `.env`:

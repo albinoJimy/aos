@@ -52,4 +52,16 @@ var (
 	// bifurcado, com furos ou de dois escritores). Fail-closed: recusa reconstruir
 	// sob uma cadeia partida em vez de adoptar o último To silenciosamente.
 	ErrCorruptChain = errors.New("state: cadeia de transições descontínua no log (from não bate o to anterior)")
+
+	// ErrVerdictOutsideTerminal — a transição leva um veredicto de conclusão
+	// ([TransitionEvent.Verdict], AOS-493) e o seu destino não é o fim de um run (`complete`,
+	// `failed`, `timed_out` ou `killed`). O veredicto é o desfecho do run: gravado numa
+	// transição intermédia, um leitor do log encontrava um `outcome_reason` num run que
+	// continua. Rejeitada sem efeitos.
+	ErrVerdictOutsideTerminal = errors.New("state: veredicto de conclusao numa transição que não termina o run")
+
+	// ErrVerdictReasonUnknown — o veredicto traz uma razão fora do vocabulário fechado
+	// ([agentruntime.OutcomeReasons]). O `outcome_reason` é lido por quem decide sobre o run e
+	// serve de rótulo de métrica; não leva texto livre. Rejeitada sem efeitos.
+	ErrVerdictReasonUnknown = errors.New("state: veredicto de conclusao com outcome_reason fora do vocabulário fechado")
 )

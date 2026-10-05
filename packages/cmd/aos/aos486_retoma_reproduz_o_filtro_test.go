@@ -194,6 +194,10 @@ func TestAOS486_RetomaECrashResumeReproduzemOFiltro(t *testing.T) {
 					Objective:    "o trabalho de um no do plano",
 					MaxTurns:     4,
 					AllowedTools: l.lista,
+					// AOS-493: o modo do veredicto que um run novo recebe do nó ([Node.fixarConclusao]).
+					// A incarnação 1 deste teste corre o turno 1 pelo runtime, sem passar pelo
+					// hostRun, pelo que o Goal tem de o trazer para os manifestos se compararem.
+					CompletionMode: agentruntime.CompletionObserve,
 				}
 
 				// ===== REFERÊNCIA: o mesmo run, sem interrupção, pelo serviço do nó.
@@ -252,7 +256,7 @@ func TestAOS486_RetomaECrashResumeReproduzemOFiltro(t *testing.T) {
 					t.Fatalf("claim do crash simulado: %v", err)
 				}
 				// O registo de retoma é o que o hostRun de produção escreve no arranque.
-				if err := inc1.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+				if err := inc1.node.ResumeRecords.Put(ctx, registoDeRetomaDeTeste(t, goal)); err != nil {
 					t.Fatalf("semear o registo de retoma: %v", err)
 				}
 				_ = inc1.node.Close()

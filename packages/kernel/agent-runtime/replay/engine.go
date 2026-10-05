@@ -182,6 +182,13 @@ type ReplayResult struct {
 	// FinalText/Terminated espelham o desfecho reconstruído.
 	FinalText  string
 	Terminated bool
+	// Unfulfilled e Verdict são o desfecho do run como o kernel o julgou (AOS-493), calculados
+	// pela MESMA função do loop ([agentruntime.ConcludeRun]) com o modo e o contrato que o
+	// manifesto do turno terminal gravou, e com os contadores refeitos da captura. Num run
+	// gravado sem veredicto (antes do AOS-493, ou com o modo desligado) ficam a zero e o
+	// desfecho é o de sempre.
+	Unfulfilled bool
+	Verdict     *agentruntime.Verdict
 	// FinalStateHash é o fingerprint do ESTADO final reconstruído (hash do tail). É
 	// idêntico entre um replay completo e um resume-from-step do mesmo run — a prova
 	// de que o resume produz o mesmo estado.
@@ -548,6 +555,10 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 	// corrente é a dobra do último turno reproduzido — o estado final é o dela.
 	var corrente *dobra
 
+	// Os contadores do veredicto (AOS-493), refeitos do que a captura registou — o motor
+	// percorre o run desde o turno 1, como o loop numa retoma.
+	evidencia := agentruntime.NewRunEvidence()
+
 	matched, verified := 0, 0
 	for _, turn := range tr.turns {
 		stepID := tr.stepByTurn[turn]
@@ -631,6 +642,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			results[idx] = agentruntime.CapturedToolResult{Invocation: inv, Result: value, ToolError: toolErr, Denial: denial}
 		}
 		dobras.turno(stepID, resp.Text, results)
+		evidencia.Observe(results)
 
 		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no
 		// layout que o turno gravou. A regra não está escrita aqui.
@@ -639,8 +651,17 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			return ReplayResult{}, terr
 		}
 		if termina {
-			res.Terminated = true
-			res.FinalText = resp.Text
+			// O DESFECHO — [agentruntime.ConcludeRun] (AOS-493), com o modo e o contrato que
+			// ESTE turno gravou. Nunca com a configuração de quem reproduz: um run que correu
+			// em observação reproduz-se concluído mesmo num nó que hoje impõe.
+			fim, ferr := agentruntime.ConcludeRun(resp, manifest.Completion, evidencia)
+			if ferr != nil {
+				return ReplayResult{}, fmt.Errorf("replay: turno %d (%s): %w", turn, stepID, ferr)
+			}
+			res.Terminated = fim.Terminated
+			res.FinalText = fim.FinalText
+			res.Unfulfilled = fim.Unfulfilled
+			res.Verdict = fim.Verdict
 			break
 		}
 	}

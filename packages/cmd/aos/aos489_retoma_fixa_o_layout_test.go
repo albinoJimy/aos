@@ -40,7 +40,7 @@ import (
 // registo que se semeia tem os bytes que o código antigo produzia.
 func aos489RegistoComoOBinarioAntigo(t *testing.T, goal agentruntime.Goal) integration.ResumeRecord {
 	t.Helper()
-	rec := resumeRecordFromGoal(goal)
+	rec := registoDeRetomaDeTeste(t, goal)
 	rec.AssemblyVersion = ""
 	raw, err := json.Marshal(rec)
 	if err != nil {
@@ -108,6 +108,10 @@ func TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou(t *testing.T) {
 					Objective:    "o trabalho de um no do plano",
 					MaxTurns:     4,
 					AllowedTools: lista,
+					// AOS-493: o modo do veredicto que um run novo recebe do nó ([Node.fixarConclusao]).
+					// A incarnação 1 deste teste corre o turno 1 pelo runtime, sem passar pelo
+					// hostRun, pelo que o Goal tem de o trazer para os manifestos se compararem.
+					CompletionMode: agentruntime.CompletionObserve,
 				}
 
 				// ===== REFERÊNCIA: o mesmo run, sem interrupção, no layout do caso.
@@ -168,7 +172,7 @@ func TestAOS489_RetomaContinuaNoLayoutEmQueORunComecou(t *testing.T) {
 				}
 				// O registo de retoma: o do binário antigo (sem layout), ou o que o hostRun de
 				// produção escreve hoje para um run novo.
-				rec := resumeRecordFromGoal(goal)
+				rec := registoDeRetomaDeTeste(t, goal)
 				if c.antigo {
 					rec = aos489RegistoComoOBinarioAntigo(t, goal)
 				}
@@ -323,7 +327,7 @@ func TestAOS489_LayoutDesconhecidoNoRegistoNaoERetomado(t *testing.T) {
 				t.Fatalf("claim do crash simulado: %v", err)
 			}
 			// O registo que um binário FUTURO teria escrito.
-			rec := resumeRecordFromGoal(goal)
+			rec := registoDeRetomaDeTeste(t, goal)
 			rec.AssemblyVersion = "9.9.9"
 			if err := inc1.node.ResumeRecords.Put(ctx, rec); err != nil {
 				t.Fatalf("semear o registo de retoma: %v", err)
@@ -378,10 +382,10 @@ func TestAOS489_FixarLayout(t *testing.T) {
 	if got := fixarLayout(agentruntime.Goal{AssemblyVersion: agentruntime.AssemblyVersion130}).AssemblyVersion; got != agentruntime.AssemblyVersion130 {
 		t.Fatalf("um Goal fixado em 1.3.0 foi movido para %q", got)
 	}
-	if got := resumeRecordFromGoal(agentruntime.Goal{RunID: "r"}).AssemblyVersion; got != agentruntime.AssemblyVersion {
+	if got := registoDeRetomaDeTeste(t, agentruntime.Goal{RunID: "r"}).AssemblyVersion; got != agentruntime.AssemblyVersion {
 		t.Fatalf("o registo de retoma de um run novo tem de levar o layout explicito; levou %q", got)
 	}
-	antigo := resumeRecordFromGoal(agentruntime.Goal{RunID: "r", AssemblyVersion: agentruntime.AssemblyVersion130})
+	antigo := registoDeRetomaDeTeste(t, agentruntime.Goal{RunID: "r", AssemblyVersion: agentruntime.AssemblyVersion130})
 	if antigo.AssemblyVersion != agentruntime.AssemblyVersion130 || antigo.GoalWith("cred").AssemblyVersion != agentruntime.AssemblyVersion130 {
 		t.Fatalf("o layout 1.3.0 nao sobreviveu a ida e volta pelo registo: %+v", antigo)
 	}

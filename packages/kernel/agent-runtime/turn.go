@@ -65,6 +65,12 @@ type Manifest struct {
 	// os bytes de antes.
 	Projection        string `json:"projection,omitempty"`
 	ProjectionVersion string `json:"projection_version,omitempty"`
+	// Completion é o modo de aplicação do veredicto e o contrato de conclusão com que o run
+	// correu (AOS-493, ADR-037). É por ele que o motor de replay calcula o MESMO desfecho que o
+	// loop: lê-o daqui, e não da configuração de quem reproduz. Ausente ⇒ o run correu sem
+	// veredicto — é o caso de todo o turno gravado antes deste campo — e reproduz-se com o
+	// desfecho de sempre. `omitempty`: um run com o modo desligado grava os bytes de antes.
+	Completion *Completion `json:"completion,omitempty"`
 }
 
 // turnPayload é o corpo JSON do evento "turn.recorded". Contém o manifesto por
