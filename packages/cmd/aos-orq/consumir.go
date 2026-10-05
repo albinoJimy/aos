@@ -521,6 +521,8 @@ func tipoDoErro(err error) string {
 		return "grafo_diverge"
 	case errors.Is(err, errOrigemSemEntrega):
 		return "origem_sem_entrega"
+	case errors.Is(err, errNoSemEntregaPorReferencia):
+		return "no_sem_saida_por_referencia"
 	case errors.Is(err, ErrSnapshotNaoCorresponde):
 		return "snapshot_nao_corresponde"
 	case errors.Is(err, ErrSnapshotDiferenteDoSelado):

@@ -45,6 +45,7 @@ import (
 	planmaterialize "github.com/aos-ref/control-plane/orchestrator/planmaterialize"
 	planner "github.com/aos-ref/control-plane/orchestrator/planner"
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
+	plannerprompt "github.com/aos-ref/control-plane/orchestrator/plannerprompt"
 	planvalidate "github.com/aos-ref/control-plane/orchestrator/planvalidate"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
 	rm "github.com/aos-ref/kernel/reference-monitor"
@@ -170,14 +171,23 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	}
 
 	// (4) DECOMPOSER + PLANEADOR GOVERNADO.
-	dec, err := decompose.New(model, decompose.WithModelID("aos-orq/decompose"), decompose.WithCapabilities(renderCapabilities(snap)))
+	// AOS-501: o prompt do planeador segue a postura da entrega ([promptDoPlaneador]).
+	postura := posturaDoContexto(ctx)
+	if postura == entregaActiva {
+		fmt.Printf("planeador: prompt %s (nomeia a origem de uma saida, outputs[].from_tool) — a entrega por referencia esta activa\n", promptDoPlaneador(postura).MetaPromptVersion())
+	}
+	dec, err := novoDecompositor(model, snap, postura)
 	if err != nil {
 		return fmt.Errorf("decompositor: %w", err)
+	}
+	var medicaoDoPlano *medicaoDoContrato
+	if exe != nil {
+		medicaoDoPlano = exe.medicao
 	}
 	// AOS-415: a validação estrutural (AOS-231) entra NO LAÇO de tentativas do planeador. Antes
 	// corria só aqui a jusante, e uma recusa era terminal — medido em produção nas validações do
 	// AOS-412 e do AOS-414, as duas com a 1.ª decomposição recusada e o `serve` a acabar.
-	pl, err := planner.NewPlanner(b.bud, b.mon, b.iss, dec, planner.WithValidator(validadorDoSnapshot{snap: snap}))
+	pl, err := planner.NewPlanner(b.bud, b.mon, b.iss, dec, planner.WithValidator(validadorDoSnapshot{snap: snap, postura: postura, medicao: medicaoDoPlano}))
 	if err != nil {
 		return fmt.Errorf("planeador: %w", err)
 	}
@@ -205,12 +215,12 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	}
 	fmt.Printf("decomposto: objectivo -> plano de %d nos (tentativas=%d, planner_nhi=%s)\n", len(res.Doc.Nodes), res.Attempts, res.PlannerNHI)
 
-	// (5-bis) AOS-500: um plano da linha 1.3.0 não corre neste binário (ver origem_no_plano.go).
-	// A recusa que CONTA é a do laço — [validadorDoSnapshot] devolve-a ao planeador, que tenta
-	// de novo, como o binário anterior fazia. Esta é a última linha: um documento que saísse do
-	// laço ainda nessa linha não é validado, não passa pelo gate, não é escrito no `--plan-out`
-	// e não materializa nada.
-	if err := recusarSemEntrega(res.Doc); err != nil {
+	// (5-bis) AOS-500: sem a entrega por referência activa, um plano da linha 1.3.0 não corre
+	// (ver origem_no_plano.go). A recusa que CONTA é a do laço — [validadorDoSnapshot] devolve-a
+	// ao planeador, que tenta de novo, como o binário anterior fazia. Esta é a última linha: um
+	// documento que saísse do laço ainda nessa linha não é validado, não passa pelo gate, não é
+	// escrito no `--plan-out` e não materializa nada. Decide a postura do `serve` (AOS-501).
+	if err := postura.recusar(res.Doc); err != nil {
 		return err
 	}
 
@@ -340,6 +350,29 @@ func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planva
 	return &baseDeExecucao{iss: iss, tokenDoRun: runTok.Compact, mon: mon, bud: bud}, nil
 }
 
+// promptDoPlaneador escolhe o prompt de decomposição pela postura da entrega por referência
+// (AOS-501). SÓ COM A ENTREGA ACTIVA o planeador recebe o 1.5.0, que nomeia `from_tool`; em todos
+// os outros casos — interruptor em `off` ou `observe`, ou em `on` contra um nó que não anuncia o
+// vínculo vinculativo — fica o corrente (1.4.0), que não pede um campo que este `serve`
+// recusaria. Instruir o planeador a emitir o que o binário recusa gastava tentativas do laço e
+// gerações do pedido.
+func promptDoPlaneador(p posturaDaEntrega) plannerprompt.Prompt {
+	if p == entregaActiva {
+		return plannerprompt.WithOutputSource
+	}
+	return plannerprompt.Current
+}
+
+// novoDecompositor compõe o decompositor do `--goal` com o prompt da postura. O prompt passa-se
+// SEMPRE de forma explícita: a omissão de `decompose.New` é a mesma [plannerprompt.Current], mas
+// aqui a escolha é uma decisão deste binário e fica à vista.
+func novoDecompositor(model decompose.Model, snap planvalidate.Snapshot, p posturaDaEntrega) (*decompose.LLMDecomposer, error) {
+	return decompose.New(model,
+		decompose.WithModelID("aos-orq/decompose"),
+		decompose.WithCapabilities(renderCapabilities(snap)),
+		decompose.WithPrompt(promptDoPlaneador(p)))
+}
+
 // validadorDoSnapshot adapta a validação estrutural (AOS-231) à porta [planner.Validator]: é o
 // MESMO `planvalidate.Validate` que corre a jusante, com o MESMO snapshot pinado — não uma
 // segunda opinião sobre o que é admissível.
@@ -347,18 +380,32 @@ func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planva
 // O que atravessa a fronteira é só o que o veredicto traz em CÓDIGOS: a regra, o sub-código e o
 // node_id do locator. O enum foi escrito para isto («sinal accionável sem vazar conteúdo
 // untrusted», `planvalidate/verdict.go`), e o node_id tem grammar fechada.
-type validadorDoSnapshot struct{ snap planvalidate.Snapshot }
+//
+// `postura` (AOS-501) é a da entrega por referência neste `serve`: o zero é a entrega desligada,
+// e a guarda da linha 1.3.0 fica como o AOS-500 a deixou. `medicao`, quando existe, conta as
+// tentativas recusadas pelas regras da origem.
+type validadorDoSnapshot struct {
+	snap    planvalidate.Snapshot
+	postura posturaDaEntrega
+	medicao *medicaoDoContrato
+}
 
 func (v validadorDoSnapshot) Validate(doc plan.PlanDocument) *planner.Rejection {
-	// AOS-500, até ao AOS-501: um documento carimbado na linha 1.3.0 é uma tentativa RECUSADA,
-	// com o código que o binário anterior lhe dava — volta ao laço, não acaba o `serve`. Antes
-	// do validador porque era também a primeira coisa que o validador anterior conferia.
-	if r := recusaDoLacoSemEntrega(doc); r != nil {
+	// AOS-500: sem a entrega por referência activa, um documento carimbado na linha 1.3.0 é uma
+	// tentativa RECUSADA, com o código que o binário anterior lhe dava — volta ao laço, não acaba
+	// o `serve`. Antes do validador porque era também a primeira coisa que o validador anterior
+	// conferia. Com a entrega activa (AOS-501) a postura não recusa, e decide o validador.
+	if r := v.postura.recusaDoLaco(doc); r != nil {
 		return r
 	}
 	ver := planvalidate.Validate(doc, v.snap, planvalidate.Ceilings{MaxNodes: planvalidate.DefaultMaxNodes})
 	if !ver.Rejected() {
 		return nil
+	}
+	for _, razao := range razoesDaOrigemNoValidador {
+		if string(ver.Reason) == razao {
+			v.medicao.recusaDaOrigemNoValidador(razao)
+		}
 	}
 	return &planner.Rejection{Rule: string(ver.Rule), Reason: string(ver.Reason), NodeID: ver.Locator.NodeID}
 }

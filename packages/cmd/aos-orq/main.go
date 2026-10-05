@@ -288,6 +288,7 @@ func codigoDe(err error) int {
 	case errors.Is(err, errDocumentoDoPlanoRecusado),
 		errors.Is(err, errGrafoDoRunDiverge),
 		errors.Is(err, errOrigemSemEntrega),
+		errors.Is(err, errNoSemEntregaPorReferencia),
 		errors.Is(err, ErrSnapshotNaoCorresponde),
 		errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return exitDocumentoRecusado
@@ -392,9 +393,10 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		return fmt.Errorf("--plan invalido: %w", err)
 	}
 	// AOS-500: um documento da linha 1.3.0 — que declara a origem de uma saída
-	// (`outputs[].from_tool`), ou que carimba essa linha — não corre neste binário: a entrega por
-	// referência é do AOS-501. Recusa-se AQUI, antes da posse, de abrir o Event Store e de falar
-	// com o nó: o documento do `--plan-doc` conhece-se à partida.
+	// (`outputs[].from_tool`), ou que carimba essa linha — não corre com a entrega por referência
+	// desligada. Recusa-se AQUI, antes da posse, de abrir o Event Store e de falar com o nó: o
+	// documento do `--plan-doc` conhece-se à partida. Com o interruptor em `on` (AOS-501) esta
+	// recusa não se aplica, e quem decide é a postura contra o nó, mais abaixo.
 	if *planDoc != "" {
 		if err := recusarDocumentoComOrigem(*planDoc); err != nil {
 			return err
@@ -413,7 +415,7 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		return err
 	}
 	// AOS-499: o interruptor da saída por referência, também antes da posse. Um valor que este
-	// binário não aceita (desconhecido, ou `on`) recusa o arranque.
+	// binário não aceita recusa o arranque.
 	modoDaSaida, err := modoDaSaidaPorReferenciaDoAmbiente()
 	if err != nil {
 		return err
@@ -457,6 +459,18 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		// AOS-499: o modo da saída por referência, contra o que ESTE nó anuncia — lido na mesma
 		// resposta, pelo que um anúncio ilegível já parou o `serve` acima.
 		fmt.Println(bannerDaSaidaPorReferencia(modoDaSaida, anuncio))
+	}
+	// AOS-501: a POSTURA da entrega por referência neste `serve` — o interruptor contra o que o nó
+	// anuncia (o zero, sem executor composto). Vai no contexto até à materialização, ao laço do
+	// planeador e ao despacho. Fora de `on` é [entregaDesligada], e nada do que segue muda.
+	postura := posturaDe(modoDaSaida, anuncio)
+	ctx = comPostura(ctx, postura)
+	// `on` contra um nó que não anuncia o vínculo vinculativo: um `--plan-doc` que declare a
+	// origem recusa-se AQUI, antes da posse — nunca corre a cair para o texto do modelo.
+	if *planDoc != "" {
+		if err := recusarDocumentoSemNo(*planDoc, postura); err != nil {
+			return err
+		}
 	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
@@ -568,7 +582,9 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil,
 			contratoDeConclusao: anuncio.aceita, medicao: medicao,
 			// AOS-499: só em `observe`, e só declara a um nó que anuncie (ver [executorDeNos.submeter]).
-			medirOrigem: modoDaSaida == saidaPorReferenciaObserve, origemAnunciada: anuncio.origem}
+			medirOrigem: modoDaSaida == saidaPorReferenciaObserve, origemAnunciada: anuncio.origem,
+			// AOS-501: só com a postura activa um nó com origem declarada é submetido.
+			entregaActiva: postura == entregaActiva}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse
@@ -773,8 +789,9 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 	}
 	// AOS-500: a mesma recusa de antes da posse, agora sobre os bytes que de facto se vão
 	// materializar — o ficheiro foi relido, e um documento trocado entre as duas leituras não
-	// pode correr por ter passado na primeira. Antes de ler o log e de qualquer escrita.
-	if err := recusarSemEntrega(doc); err != nil {
+	// pode correr por ter passado na primeira. Antes de ler o log e de qualquer escrita. Quem
+	// decide é a postura deste `serve` (AOS-501): desligada, é a guarda de sempre.
+	if err := posturaDoContexto(ctx).recusar(doc); err != nil {
 		return err
 	}
 	// AOS-442 — SE O RUN TEM UM PLANO VALIDADO E AINDA SEM DECISÃO, O DOCUMENTO TEM DE SER ESSE, em

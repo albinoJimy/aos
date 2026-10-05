@@ -75,6 +75,12 @@ func causaDaConclusao(causa string) bool {
 	case causaSaidaVazia, causaSaidaIndisponivel:
 		return true
 	}
+	// AOS-501: uma saída por referência que não se entrega é a conclusão por cumprir.
+	for _, c := range causasDaOrigem {
+		if causa == c {
+			return true
+		}
+	}
 	for _, r := range agentruntime.OutcomeReasons() {
 		if causa == string(r) {
 			return true
@@ -187,6 +193,10 @@ type anuncioDoNo struct {
 	// veredicto desligado. Lê-se na MESMA resposta do contrato: um anúncio que não se leu pára o
 	// `serve` para os dois.
 	origem bool
+	// vinculativa — o mesmo anúncio diz aceitar o vínculo VINCULATIVO (`binding`): é a condição
+	// de a entrega por referência estar activa (AOS-501). Um nó que só anunciasse `measure` não
+	// julga a origem, e por ele não se entrega.
+	vinculativa bool
 }
 
 // ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
@@ -237,6 +247,9 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 		for _, v := range corpo.OutputSource.Bindings {
 			if v == string(agentruntime.OutputSourceMeasure) {
 				anuncio.origem = true
+			}
+			if v == string(agentruntime.OutputSourceBinds) {
+				anuncio.vinculativa = true
 			}
 		}
 	}

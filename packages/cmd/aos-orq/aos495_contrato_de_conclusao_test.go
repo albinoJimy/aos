@@ -82,6 +82,9 @@ type aos495No struct {
 	// ilegivelAntes é quantas vezes o `GET /runs/{id}` de um nó do plano responde 503 antes de
 	// responder o desfecho.
 	ilegivelAntes map[string]int
+	// falhaNoPost (AOS-501) é quantas vezes o `POST /runs` de um nó do plano responde 500 antes de
+	// o aceitar: o `serve` aborta a meio, com o que já publicou no log.
+	falhaNoPost map[string]int
 
 	mu          sync.Mutex
 	ofertas     []pedidoReclamado
@@ -127,7 +130,16 @@ func (f *aos495No) servidor(t *testing.T) *httptest.Server {
 		id, _ := corpo["run_id"].(string)
 		f.mu.Lock()
 		f.submissoes++
+		noDoPlano := id[strings.LastIndex(id, "~")+1:]
+		falha := f.falhaNoPost[noDoPlano] > 0
+		if falha {
+			f.falhaNoPost[noDoPlano]--
+		}
 		f.mu.Unlock()
+		if falha {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		if f.estrito {
 			for campo := range corpo {
 				if !slices.Contains(camposDoPostRunsAnterior, campo) {
