@@ -2132,6 +2132,157 @@ O que este ticket não fecha, além do «Fora de âmbito»: enquanto o desfecho 
 
 ---
 
+## AOS-497 — O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada
+
+<!-- Este ticket escreve e implementa o ADR-038 (a saida de um no de passagem directa e o resultado da tool: o kernel designa e sela a origem). -->
+<!-- rtm: menção -->
+<!-- O ADR-037 e emendado aqui so no vocabulario das razoes. O ADR-022, o ADR-027, o ADR-034 e o ADR-036 sao citados como contexto e NAO sao implementados neste ticket; as emendas ao ADR-027 e ao ADR-022 cabem aos tickets que mudam o que eles descrevem (AOS-501 e AOS-500), como o ADR-038 regista. -->
+<!-- /rtm: menção -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-02 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — saída por referência |
+| Tipo | feat |
+| Prioridade | P0: em 2 de 21 planos em produção o nó de leitura chamou a tool com sucesso e entregou um resumo em vez do conteúdo; o nó seguinte herdou a perda e o veredicto deu «cumprido» |
+| Estimativa | M |
+| Dependências | AOS-493 (veredicto do kernel e contrato de conclusão), AOS-492 (regra de terminação única) |
+| Bloqueia | AOS-498 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `docs/reports/analise-fronteira-runtime-modelo-2026-10-04.md`, `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md`, `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md`, `packages/kernel/agent-runtime/loop.go`, `packages/kernel/agent-runtime/completion.go`, `packages/kernel/agent-runtime/context_authority.go`, `packages/kernel/agent-runtime/replay/engine.go`, `packages/integration/resume_records.go` |
+
+### Contexto
+
+A saída de um run é hoje o texto final do modelo. O resultado real da tool fica selado no run
+(captura do turno e, na via durável, o step-ledger) e nunca sai dele pelo caminho do plano. O
+veredicto do AOS-493 conta chamadas efectivas por tool do contrato e, por desenho, não olha para o
+texto: prova que a tool foi chamada, não que a saída é o que ela devolveu. É o resíduo «evidência
+de tool call não é fidelidade da saída» do ADR-037.
+
+Medido em produção a 2026-10-05 (v0.1.46, série de 21 planos): nos planos
+`plan-e2e-v0146s-1791192287` e `plan-e2e-v0146s-1791192627` o nó de leitura chamou a tool com
+sucesso e escreveu um resumo em vez do conteúdo. Perderam-se factos do documento (num, um número;
+no outro, um número e uma tarefa inteira), o nó seguinte herdou a perda, e o veredicto de conclusão
+deu «cumprido». Na mesma série o nó de leitura foi declarado `record` em 17 planos, `summary` em 3
+e `artifact` em 1: o tipo da saída não diz se ela é o resultado da tool.
+
+Não existe hoje um digest do resultado amarrado a um evento de mediação. O único digest do
+resultado em claro é o `result_hash` do step-ledger, e só existe na via durável.
+
+### Decidido pelo dono (2026-10-05)
+
+- A origem de uma saída **declara-se** (no plano, AOS-500) e chega ao run como configuração do
+  chamador. Não se infere da estrutura do run; a inferência estrutural existe só como medição
+  (AOS-499).
+- Sem origem designável (nenhuma chamada candidata, ou mais de uma), o run **falha com causa
+  própria**. Nunca se entrega o texto do modelo no lugar do resultado da tool.
+- A saída por referência é o resultado **tal como a tool o devolveu** (o envelope), byte a byte,
+  conferível contra o digest selado.
+- O texto final do modelo continua a ser capturado e selado, e deixa de ser a saída (por omissão,
+  recomendação do desenho).
+
+### Objectivo
+
+Um run pode declarar que a sua saída é o resultado de uma tool. O kernel designa, de factos
+estruturais e sem ler texto nem conteúdo, qual chamada é a origem, e sela a designação e o digest
+desse resultado na transição terminal, ao lado do veredicto. Às escuras: enquanto nenhum chamador
+declarar a origem (AOS-498), nenhum run muda.
+
+### Critérios de Aceitação
+
+- [ ] O objectivo de um run pode levar a **origem da saída**: o nome de uma tool
+      (`Goal.OutputFromTool`). Vazio quer dizer o comportamento de hoje, sem mudar um byte de
+      eventos, manifesto ou registo de retoma.
+- [ ] Uma origem declarada que não está no tool set do run ou na sua lista-branca recusa o
+      arranque, pela mesma regra do contrato impossível do AOS-493.
+- [ ] **Regra de designação**, calculada no kernel: a origem é a chamada **efectiva** (sem recusa
+      e sem erro de tool) da tool declarada, feita no **primeiro turno do run que despachou tool
+      calls**, e só se o contexto desse turno era **trusted**. Exactamente uma dá `designated`;
+      nenhuma dá `missing`; mais de uma dá `ambiguous`. Não se concatenam resultados.
+- [ ] A designação não depende do texto do modelo, do conteúdo do resultado nem de nada que o
+      chamador envie além do nome da tool. Fixado por teste: mudar o texto final ou o conteúdo do
+      resultado não muda o estado da designação.
+- [ ] A designação é a **mesma função** no loop e no motor de replay. Teste de paridade: para o
+      mesmo run, o loop e a reconstrução a partir da captura dão o mesmo estado, o mesmo passo e o
+      mesmo digest.
+- [ ] Na transição terminal fica selado, ao lado do veredicto e **sem conteúdo**:
+      `{tool, step_id, digest, bytes, estado}`. O digest é o SHA-256 dos bytes do `tool_result`
+      gravado, calculado por quem executou a tool. O mesmo registo vai no `Result` do run.
+- [ ] A origem declarada vai no manifesto de cada turno e no registo de retoma, com `omitempty`.
+      Os goldens de runs sem origem declarada não mudam um byte. O `prompt_hash` não muda: o
+      modelo não é avisado.
+- [ ] A designação é um **facto**, calculado e selado em qualquer modo de aplicação do veredicto.
+      Com o modo diferente de desligado, o veredicto ganha duas razões no vocabulário fechado:
+      `output_source_missing` e `output_source_ambiguous`. Em observação reporta e não muda o
+      desfecho; em imposição fecha `failed`. A precedência das duas razões face às cinco
+      existentes fica fixada no ADR e por teste.
+- [ ] Num run com origem declarada, `empty_output` avalia os bytes designados e não o texto
+      final.
+- [ ] Testes, cada um com o estado esperado: zero chamadas (`missing`); uma chamada efectiva
+      (`designated`); duas chamadas efectivas da tool no mesmo turno (`ambiguous`); chamada negada
+      (`missing`); erro de tool (`missing`); segunda leitura num turno posterior, provocada pelo
+      conteúdo da primeira (continua `designated` pela primeira, e a segunda nunca é a origem);
+      run com `plan_input` ou com memória no contexto (`missing`: o contexto é untrusted desde o
+      turno 1).
+- [ ] Retoma depois de um crash: a origem declarada sobrevive (registo de retoma), a designação
+      recalcula-se do log e um resultado com êxito memorizado no ledger reproduz os mesmos bytes e
+      o mesmo digest. Fixado por teste.
+- [ ] Um run gravado antes deste ticket reproduz-se no replay com o desfecho que teve.
+- [ ] ADR novo deste ticket escrito (MADR) e registado no catálogo: a saída de um nó de passagem
+      directa é o resultado da tool, por referência. Decide a declaração no plano, a regra de
+      designação, o transporte pelo `aos-orq` com âncora selada pelo kernel, o destino do texto
+      final, e regista como **rejeitada agora** a alternativa em que o nó consumidor resolve a
+      referência, com os seus gatilhos (o primeiro payload legítimo acima do tecto; a fase A5 ou
+      A6; a reabertura do DEF-806).
+- [ ] Emendas no mesmo PR: ADR-037 §2.4 (as duas razões novas), §2.8 (num run por referência a
+      leitura de desfecho cobre um resultado de tool) e §5 (o resíduo «evidência não é
+      fidelidade» fecha para a passagem directa); ADR-027 §2.4 (origem do payload); ADR-022 §2.3
+      (a origem declarada de um output). A RTM (`tecnica/16`) é regenerada no mesmo commit.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+
+### Vínculo por run (acrescentado a 2026-10-05, antes de implementar)
+
+As razões novas não dependem só do modo de aplicação do nó. A declaração de origem leva um
+vínculo por run, dado pelo chamador: «vinculativa» ou «só medição».
+
+- [ ] Com declaração, o kernel designa e sela sempre a âncora na transição terminal, com o
+      estado designada, em falta ou ambígua, em qualquer modo do nó excepto desligado.
+- [ ] As razões `output_source_missing` e `output_source_ambiguous` só entram no veredicto
+      quando a declaração é vinculativa e o nó está em imposição.
+- [ ] Em «só medição», o desfecho do run é exactamente o que seria sem declaração, também com
+      o nó em imposição; o estado da âncora conta-se numa métrica de cardinalidade fechada.
+- [ ] O vínculo fica gravado com a declaração (manifesto de cada turno e registo de retoma); o
+      replay reproduz sem ler configuração.
+
+Motivo: o nó de produção está em imposição, e o AOS-499 tem de medir a designação em produção
+sem falhar nenhum run.
+
+### Fora de âmbito
+
+- O campo no `POST /runs`, a resposta do `GET /runs/{id}` e o anúncio (AOS-498).
+- O schema do plano (AOS-500), a medição no `aos-orq` (AOS-499) e a entrega (AOS-501).
+- O transporte em que o nó consumidor resolve a referência: rejeitado agora, com gatilho.
+- Concluir o run logo a seguir à chamada designada: mexe na regra única de terminação (AOS-492).
+- Nós que transformam o conteúdo (resumir, classificar, extrair): o modelo continua no caminho.
+- Agregar várias chamadas numa só saída.
+
+### Limites conhecidos à partida
+
+- A fidelidade é ao resultado da chamada **feita**. Se o modelo leu o documento errado, a origem
+  designada é esse resultado. O `step_id` liga ao `tool.call.mediated` do mesmo passo, onde um
+  auditor vê o recurso.
+- Uma tool que falha no primeiro turno com tools e tem êxito num turno posterior dá `missing`: o
+  resultado da falha já tornou o contexto untrusted. É uma falha honesta e conta contra a taxa
+  de «não cumprido»; a observação (AOS-499) mede-a antes de se impor.
+- As duas razões novas seguem o modo de aplicação do veredicto do nó, que em produção está em
+  imposição desde 2026-10-05. Ver o ponto em aberto do AOS-499.
+
+### Estado
+
+**ABERTO.**
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2148,3 +2299,4 @@ O que este ticket não fecha, além do «Fora de âmbito»: enquanto o desfecho 
 | 1.9 | 2026-10-04 | +AOS-492 (regra de terminação única) e +AOS-493 (o desfecho de um run é um veredicto do kernel): em 2 de 10 planos em produção o run fechou concluído sem executar a tool de que a saída dependia | Equipa AOS |
 | 1.10 | 2026-10-04 | AOS-493 implementado (ADR-037): veredicto do kernel, contrato de conclusão no objectivo do run, modo de aplicação por nó (observação por omissão). Por rever e por verificar em produção | Equipa AOS |
 | 1.11 | 2026-10-05 | AOS-493 revisto: contrato impossível recusa o arranque, medição dos runs que acabam sobre uma recusa ou falha de tool, critério do replay restrito aos runs de uma só vida, saga de compensação decidida e com limite declarado | Equipa AOS |
+| 1.12 | 2026-10-05 | +AOS-497 (o kernel designa e sela a origem da saída de um run): em 2 de 21 planos em produção o nó de leitura chamou a tool com sucesso e entregou um resumo em vez do conteúdo; primeira peça da saída por referência | Equipa AOS |

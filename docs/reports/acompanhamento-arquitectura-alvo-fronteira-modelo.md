@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (imposição do veredicto ligada em produção; saída por referência antecipada).
+Última actualização: 2026-10-05 (saída por referência: fase A0.5 aberta, com os tickets AOS-497 a AOS-501 e as decisões do dono sobre o desenho).
 
 ## 1. Objectivo e promessa
 
@@ -26,16 +26,17 @@ Uma fase só passa a **provada** quando o critério de prova está medido e regi
 | Fase | Conteúdo | Critério de prova | Depende de | Estado |
 |---|---|---|---|---|
 | **A0** | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão; o `aos-orq` trata «não cumprido» como nó falhado | Zero verdes falsos em pelo menos 150 runs com tools na oferta | — | **em produção por verificar** (v0.1.46, imposição ligada a 2026-10-05; falta o critério de prova) |
+| **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **em curso** (tickets abertos a 2026-10-05) |
 | **A1** | Recuperação do run (aviso ou repetição do pedido) e rota sob governação (nome real do modelo, proxy sem descartar parâmetros, modelo servido comparado por turno) | «Não cumprido» abaixo de 2%; uma troca de modelo por baixo é detectada | A0; medição de até 150 pedidos | por começar |
 | **A2** | Estado opaco do provider por turno (raciocínio, assinaturas, identificadores), com sondas de protocolo deterministas | Duas famílias de modelos completam runs com tools | A0; escolha da segunda família | por começar |
 | **A3** | Entrada automática: arnês de qualificação, perfil do modelo como artefacto do registo, mais de um modelo por nó, canary, disjuntor | O terceiro modelo entra com zero PRs e uma assinatura em menos de uma hora; um modelo mau é recusado sozinho | A1, A2 | por começar |
 | **A4** | Cascata: estimar a capacidade que o passo exige e eleger o modelo por roteamento determinista, com limiares num `decision pack` | A divisão entre modelos baratos e caros é medida e ajustada sem deploy | A3 | por começar |
 | **A5** | Multimodal de entrada (media por referência) | Um modelo recebe imagem ou áudio num run, com replay | A2 | por começar |
-| **A6** | Multimodal de geração, como tool | Uma modalidade gerada com proveniência e custo contabilizado | A5; saída por referência | por começar |
+| **A6** | Multimodal de geração, como tool | Uma modalidade gerada com proveniência e custo contabilizado | A5; A0.5 | por começar |
 
-Transversal: **saída por referência** ao resultado da tool (a saída de um nó deriva de facto da
-tool). Não tem fase própria ainda; é pré-requisito de A6 e fecha o resíduo «evidência não é
-fidelidade» para nós que passam o resultado sem o transformar.
+A **saída por referência** deixou de ser transversal: é a fase A0.5, antecipada pelo dono a
+2026-10-05. É pré-requisito de A6 e fecha o resíduo «evidência não é fidelidade» para os nós que
+passam o resultado sem o transformar. Não o fecha para os nós que transformam (§7).
 
 ## 3. Tickets por fase
 
@@ -61,6 +62,28 @@ aberto para eles. Passa a levar contrato todo o nó não-verificador com tools a
 sem `outputs`. Com o nó em `observe` isto não muda nenhum desfecho; aumenta o que se mede. O dono
 valida a classe alargada antes de ligar `enforce` (§4).
 
+### A0.5 — Saída por referência
+
+| Ticket | Epic | Título curto | Depende de | Estado |
+|---|---|---|---|---|
+| AOS-497 | EPIC-02 | O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada. Escreve o ADR novo e as emendas ao ADR-037, ao ADR-027 e ao ADR-022 | AOS-493 | aberto |
+| AOS-498 | EPIC-19 | O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}` e anuncia-o no `GET /tools` | AOS-497, AOS-494; relaciona AOS-496 | aberto |
+| AOS-499 | EPIC-19 | O `aos-orq` mede a saída por referência sem mudar a entrega | AOS-498 | aberto |
+| AOS-500 | EPIC-19 | O plano declara a origem de uma saída: `outputs[].from_tool`, schema 1.3.0 | — | aberto |
+| AOS-501 | EPIC-19 | O `aos-orq` entrega por referência as saídas declaradas | AOS-498, AOS-499 (medição lida), AOS-500 | aberto |
+
+Ordem de entrega: AOS-497 e AOS-498 no nó, às escuras (ninguém envia o campo); depois o AOS-499,
+com o `aos-orq` em observação e a entrega de hoje, durante pelo menos uma série; depois o AOS-500,
+schema e validador sem mudar o prompt; por fim o AOS-501, com o interruptor ligado, só para as
+saídas declaradas. O nó sai antes do `aos-orq`. Em nenhum passo um plano que hoje sai certo passa
+a sair errado em silêncio: o pior caso novo é um vermelho com causa nomeada onde havia um verde.
+
+O AOS-501 é o único que muda o que flui entre nós.
+
+**Por fechar antes de implementar o AOS-499:** as razões novas do veredicto seguem o modo de
+aplicação do nó, que em produção está em imposição desde 2026-10-05. O desenho só envia o campo
+com o nó em observação; assim, a medição não corre em produção. As duas saídas estão no ticket.
+
 ### A1 a A6
 
 Sem tickets abertos. Abrem-se quando a fase anterior estiver em produção e as decisões da §4
@@ -75,6 +98,12 @@ correspondentes estiverem tomadas.
 | 2026-10-04 | «Não cumprido» grava-se como `failed` com razão própria | Tomada |
 | 2026-10-05 | Ligar a imposição do veredicto em produção (`AOS_COMPLETION_VERDICT=enforce`), com os dados da série de 21 planos: zero vermelhos falsos em 21 nós com contrato e o caso real apanhado | Tomada |
 | 2026-10-05 | Antecipar a saída por referência para logo a seguir a A0 | Tomada |
+| 2026-10-05 | Saída por referência: a origem declara-se no plano (`outputs[].from_tool`); não se infere da estrutura. A inferência estrutural existe só como medição | Tomada |
+| 2026-10-05 | Saída por referência: sem origem designável (nenhuma ou mais de uma chamada candidata), o nó falha com causa própria; nunca se entrega o texto do modelo no lugar do resultado da tool | Tomada |
+| 2026-10-05 | Saída por referência: o nó seguinte recebe o resultado tal como a tool o devolveu (o envelope), byte a byte, conferível contra o digest selado | Tomada |
+| 2026-10-05 | Saída por referência: os bytes viajam pelo `aos-orq`, com âncora selada pelo kernel; o nó consumidor não muda. A alternativa em que o nó consumidor resolve a referência fica rejeitada agora, com gatilhos (o primeiro payload legítimo acima do tecto; a fase A5 ou A6; a reabertura do DEF-806) | Tomada |
+| 2026-10-05 | Saída por referência: o texto final do nó produtor continua a ser capturado mas não é publicado nem entregue | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
+| 2026-10-05 | Saída por referência: um nó candidato sem declaração não é recusado pelo validador por agora; decide-se com a taxa de omissão medida em observação (AOS-499, AOS-501) | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
 | — | Validar a classe alargada do contrato de conclusão antes de ligar `enforce`: os nós com tools e **sem** saída de forma aberta declarada (`com_contrato_sem_saida`; o alargamento veio da revisão adversarial do AOS-495, não da decisão de 2026-10-04). Lê-se em `aos_orq_consume_nos_por_contrato_total` e `aos_orq_consume_veredictos_observados_total` quantos são e quantos `enforce` fechava `failed` | Por tomar |
 | — | Autorizar a medição de até 150 pedidos ao LiteLLM de produção e pôr `drop_params: false` (condiciona A1) | Por tomar |
 | — | O que a saga de compensação faz, num run não cumprido, aos efeitos das tools que correram bem (ADR-037 §4). Hoje não há compensações registadas e o efeito fica aplicado; decide-se antes de a primeira tool registar a sua | Por tomar |
@@ -123,7 +152,7 @@ Estados: **qualificada** (com rota e data), **desenhada e não testada**, **não
 Não fechados por nenhuma fase até decisão em contrário:
 
 - Tool call em texto num turno posterior a uma chamada efectiva.
-- Tool chamada e saída fabricada, em nós que transformam conteúdo. **Medido a 2026-10-05: 2 em 21 planos** perderam factos do documento no nó de leitura. Só a saída por referência o fecha.
+- Tool chamada e saída fabricada, em nós que transformam conteúdo. **Medido a 2026-10-05: 2 em 21 planos** perderam factos do documento no nó de leitura. Só a saída por referência o fecha, e só para os nós de passagem directa (fase A0.5, AOS-497 a AOS-501).
 - Nó sem tools que conclui a dizer que não conseguiu. **Medido a 2026-10-05: 1 em 21 planos**, por o nó tratar o próprio objectivo como dados untrusted — o texto do protocolo nativo pode estar a induzi-lo.
 - O `prompt_hash` não cobre a projecção nativa.
 - Run que acaba sobre uma recusa ou uma falha de tool com o contrato cumprido, ou sem contrato:
