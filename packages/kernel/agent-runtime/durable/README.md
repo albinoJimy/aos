@@ -125,6 +125,14 @@ em memória (o `Rebuild` deixava o resultado em claro em memória, partilhado en
 autoriza ninguém e não confere nada — quem chama autoriza o leitor antes e confere os bytes
 contra o digest que o kernel selou. Sem registo para o passo devolve `ErrAppliedResultNotFound`.
 
+O opener é obrigatório, e é a única porta por onde sai conteúdo: sem ele a função não lê nada
+(`ErrSealedResultNoCipher`), e um registo com conteúdo que não esteja selado por-titular não é
+devolvido (`ErrAppliedResultInClear`). Um resultado vazio não é conteúdo e lê-se vazio. Um
+registo do ledger que não descodifica, em qualquer passo do stream, ou um par (run, passo) que
+não forma chave de idempotência dão `ErrAppliedResultUnreadable`. Os três são definitivos; só o
+erro do opener com a custódia fechada (`ErrConteudoIndisponivel`) e o erro de leitura do Event
+Store são para tentar outra vez.
+
 ---
 
 ## Checkpoint intra-iteração + resume (AOS-015)

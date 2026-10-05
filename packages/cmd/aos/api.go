@@ -1585,7 +1585,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		resp.PendingApprovals, resp.PendingExhaustion, resp.PendingUnavailable = h.pendingFor(r.Context(), runID)
 		// AOS-498: a âncora da saída e, com a origem designada, os bytes do resultado — lidos do
 		// step-ledger e conferidos, depois do selo acima. Só um run que concluiu tem saída.
-		if !h.origemNaResposta(r, &resp, oc.Result.OutputSource, resp.Status == "completed" && oc.Result.Terminated) {
+		if !h.origemNaResposta(r, reader, &resp, oc.Result.OutputSource, resp.Status == "completed" && oc.Result.Terminated) {
 			writeError(w, http.StatusServiceUnavailable, "indisponivel")
 			return
 		}
@@ -1690,7 +1690,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// AOS-498: a MESMA âncora e os MESMOS bytes que o ramo em memória — a âncora sai da
 			// transição que deu o estado, e os bytes do step-ledger. Depois do selo e, num run
 			// `complete`, depois da trava do AOS-426 acima.
-			if !h.origemNaResposta(r, &resp, desfecho.OutputSource, st == state.Complete) {
+			if !h.origemNaResposta(r, reader, &resp, desfecho.OutputSource, st == state.Complete) {
 				writeError(w, http.StatusServiceUnavailable, "indisponivel")
 				return
 			}

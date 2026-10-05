@@ -32,6 +32,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	"github.com/aos-ref/kernel/agent-runtime/replay"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 )
 
@@ -125,7 +126,8 @@ const (
 	// sem o alterar.
 	saidaOmitidaNaoTexto = "not_utf8"
 	// saidaOmitidaDeVez — os bytes não se lêem e não se vão ler: titular apagado, passo fora do
-	// step-ledger, bytes que não conferem com o digest selado, nó sem o gate de leitura.
+	// step-ledger, registo do ledger ilegível ou em claro, âncora cujo passo não forma chave,
+	// bytes que não conferem com o digest selado, nó sem o gate de leitura.
 	saidaOmitidaDeVez = "unavailable"
 	// saidaOmitidaAgora — os bytes não se leram NESTE MOMENTO (custódia fechada, log que não
 	// leu). Só num run com o vínculo «só medição»; com o vínculo vinculativo o `GET` responde 503.
@@ -136,16 +138,54 @@ const (
 // o tamanho não batem com a âncora. Conta como captura corrompida, e é definitivo.
 var errOrigemNaoConfere = errors.New("aos: os bytes do passo designado nao conferem com o digest selado na ancora da saida")
 
-// origemIndisponivelDeVez diz se o erro de [apiHandler.bytesDesignados] é DEFINITIVO. A lista é a
-// da saída durável ([saidaDuravelIndisponivelDeVez], AOS-494) e os dois erros que só esta leitura
-// produz. Tudo o resto é transitório.
+// origemIndisponivelDeVez diz se o erro de [apiHandler.bytesDesignados] é DEFINITIVO. A lista é
+// FECHADA: a da saída durável ([saidaDuravelIndisponivelDeVez], AOS-494) e os erros que só esta
+// leitura produz. Tudo o resto é transitório.
+//
+// O REGISTO ILEGÍVEL E A CHAVE INVÁLIDA SÃO DEFINITIVOS ([durable.ErrAppliedResultUnreadable];
+// revisão do AOS-498, M1). Caíam do lado transitório por omissão, e um log danificado ou um
+// `step_id` de âncora que não forma chave não passam com o tempo: em `measure` o `GET` dizia
+// `unavailable_now` para sempre, e em `binding` respondia 503 para sempre — quem sonda ficava à
+// espera até ao prazo do plano, sem causa. O registo em claro ([durable.ErrAppliedResultInClear])
+// é da mesma família: é o log que é assim.
 func origemIndisponivelDeVez(err error) bool {
 	if errors.Is(err, durable.ErrConteudoIndisponivel) {
 		return false
 	}
 	return errors.Is(err, durable.ErrAppliedResultNotFound) ||
+		errors.Is(err, durable.ErrAppliedResultUnreadable) ||
+		errors.Is(err, durable.ErrAppliedResultInClear) ||
 		errors.Is(err, errOrigemNaoConfere) ||
 		saidaDuravelIndisponivelDeVez(err)
+}
+
+// openerDoLeitor é o opener por-titular do nó ATRÁS do escopo do leitor (revisão do AOS-498, M3).
+// É a mesma segunda linha que a reconstrução soberana tem ([apiHandler.newReaderReplayEngine] →
+// o gate do opener no motor de replay): o conteúdo só abre para um accessor com um principal e
+// com o escopo soberano de conteúdo.
+//
+// A âncora de negação continua a ser o gate D7 do `GET` ([apiHandler.admitSovereignRead]). Isto
+// existe para que a legitimidade da leitura não seja só POSICIONAL — «quem chama fez o gate
+// antes» —: um caminho que chegue aqui sem um leitor autenticado na mão não abre nada.
+type openerDoLeitor struct {
+	dentro   agentruntime.ContentOpener
+	accessor replay.Accessor
+}
+
+// OpenContent abre o conteúdo selado se, e só se, o accessor tem principal e o escopo soberano.
+// A recusa é a do motor de replay ([replay.ErrPayloadAccessDenied]), e é definitiva: é
+// composição, não momento.
+func (o openerDoLeitor) OpenContent(ctx context.Context, subject string, sealed []byte) ([]byte, error) {
+	comEscopo := false
+	for _, e := range o.accessor.Scopes {
+		if e == replay.DefaultSovereignContentScope {
+			comEscopo = true
+		}
+	}
+	if o.dentro == nil || o.accessor.Principal == "" || !comEscopo {
+		return nil, replay.ErrPayloadAccessDenied
+	}
+	return o.dentro.OpenContent(ctx, subject, sealed)
 }
 
 // bytesDesignados lê do step-ledger, no LOG, os bytes do passo que a âncora designa, e confere-os
@@ -159,15 +199,23 @@ func origemIndisponivelDeVez(err error) bool {
 // autenticou — vale também para o ramo em memória, que hoje entrega o `final_text` sem gate
 // porque o tem em claro, e não porque o decifre.
 //
+// O LEITOR VEM NA MÃO (`reader`), como no caminho soberano existente: o opener só abre atrás do
+// escopo dele ([openerDoLeitor]). E a leitura só devolve conteúdo que o opener abriu
+// ([durable.ReadAppliedResult]): um registo em claro não sai.
+//
 // # A conferência
 //
 // `sha256(bytes)` e o tamanho contra a âncora selada. O `result_hash` do registo é do mesmo log
 // que os bytes e não prova nada; a âncora vem da transição terminal, que o kernel escreveu.
-func (h *apiHandler) bytesDesignados(ctx context.Context, runID string, ancora *agentruntime.OutputSource) ([]byte, error) {
+func (h *apiHandler) bytesDesignados(ctx context.Context, reader readerIdentity, runID string, ancora *agentruntime.OutputSource) ([]byte, error) {
 	if h.readGov == nil || h.node == nil || h.node.EventStore == nil || h.node.contentOpener == nil {
 		return nil, errSaidaDuravelSemGate
 	}
-	bytesDoPasso, err := durable.ReadAppliedResult(ctx, h.node.EventStore, h.node.contentOpener, runID, ancora.StepID)
+	opener := openerDoLeitor{dentro: h.node.contentOpener, accessor: replay.Accessor{
+		Principal: reader.principal,
+		Scopes:    []string{replay.DefaultSovereignContentScope},
+	}}
+	bytesDoPasso, err := durable.ReadAppliedResult(ctx, h.node.EventStore, opener, runID, ancora.StepID)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +229,8 @@ func (h *apiHandler) bytesDesignados(ctx context.Context, runID string, ancora *
 
 // origemNaResposta escreve na resposta do `GET /runs/{id}` a âncora da saída e, quando a origem
 // ficou designada num run CONCLUÍDO, os bytes do resultado. Os dois ramos do `GET` chamam esta
-// função, DEPOIS do selo de leitura sensível: é ele a pré-condição de abrir conteúdo.
+// função, DEPOIS do selo de leitura sensível: é ele a pré-condição de abrir conteúdo. `reader` é
+// o leitor que o gate D7 deste `GET` admitiu.
 //
 // Devolve false quando quem chama tem de responder 503 e não escrever desfecho nenhum.
 //
@@ -190,7 +239,8 @@ func (h *apiHandler) bytesDesignados(ctx context.Context, runID string, ancora *
 // O vínculo diz o que os bytes SÃO para aquele run:
 //
 //   - `binding` — são a saída do run. Não os conseguir servir é não conseguir servir a saída: de
-//     vez, `output_unavailable`; por instantes, 503. As regras do AOS-494.
+//     vez, `output_unavailable`; por instantes, 503. As regras do AOS-494. «De vez» inclui o log
+//     danificado e a âncora cujo passo não forma chave ([origemIndisponivelDeVez]).
 //   - `measure` — são medição. A saída do run continua a ser o texto final, e a falta dos bytes
 //     medidos nunca muda o que o `GET` diz sobre ele: nem `output_unavailable` (quem lê fecha o
 //     nó do plano `failed`), nem 503 (quem lê fica à espera). Fica só o `output_omitted`.
@@ -202,7 +252,7 @@ func (h *apiHandler) bytesDesignados(ctx context.Context, runID string, ancora *
 // Um run `failed` pode ter uma âncora designada (o contrato não se cumpriu por outra tool, o
 // turno terminal foi cortado). Não concluiu, e não tem saída: saem os metadados, sem bytes — a
 // regra do `final_text`.
-func (h *apiHandler) origemNaResposta(r *http.Request, resp *runStateResponse, ancora *agentruntime.OutputSource, concluido bool) bool {
+func (h *apiHandler) origemNaResposta(r *http.Request, reader readerIdentity, resp *runStateResponse, ancora *agentruntime.OutputSource, concluido bool) bool {
 	if ancora == nil {
 		return true
 	}
@@ -216,7 +266,7 @@ func (h *apiHandler) origemNaResposta(r *http.Request, resp *runStateResponse, a
 		resp.OutputOmitted = saidaOmitidaGrande
 		return true
 	}
-	bytesDoPasso, err := h.bytesDesignados(r.Context(), resp.RunID, ancora)
+	bytesDoPasso, err := h.bytesDesignados(r.Context(), reader, resp.RunID, ancora)
 	vinculativa := ancora.Binding == agentruntime.OutputSourceBinds
 	switch {
 	case err == nil && !utf8.Valid(bytesDoPasso):

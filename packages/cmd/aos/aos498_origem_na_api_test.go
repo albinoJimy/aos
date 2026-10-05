@@ -28,6 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,6 +41,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/durable"
+	"github.com/aos-ref/kernel/agent-runtime/replay"
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
 	audit "github.com/aos-ref/platform/audit"
@@ -377,6 +379,9 @@ func TestAOS498_GetTools_AnunciaAOrigem(t *testing.T) {
 				if corpo.OutputSource != nil || strings.Contains(rec.Body.String(), "output_source") {
 					t.Fatalf("com o veredicto desligado o no nao tem ancora e nao a anuncia; veio %s", rec.Body.String())
 				}
+				// O anúncio em `off` é o que o `aos-orq` lê nos testes dele: sem a chave, de um nó real
+				// (revisão, M8 — antes o teste do `aos-orq` apagava a chave à mão).
+				aos498Fio(t, "tools-off", rec.Body.Bytes())
 				return
 			}
 			quer := &anuncioDaOrigem{Bindings: agentruntime.OutputSourceBindings(), MaxBytes: maxPlanInputBytes}
@@ -731,7 +736,7 @@ func TestAOS498_BytesDoLedger_FalhaERetoma(t *testing.T) {
 	// A leitura deste ticket, com o gate composto: os bytes da segunda vida, conferidos.
 	h := &apiHandler{node: inc2.node, svc: svc2, readGov: &readGovernance{}}
 	resp := runStateResponse{RunID: runID}
-	if !h.origemNaResposta(httptest.NewRequest(http.MethodGet, "/runs/x", nil), &resp, a, true) {
+	if !h.origemNaResposta(httptest.NewRequest(http.MethodGet, "/runs/x", nil), aos498Leitor, &resp, a, true) {
 		t.Fatal("a leitura tinha de responder")
 	}
 	if resp.Output == nil || *resp.Output != vida2 || resp.OutputOmitted != "" || resp.OutputUnavailable {
@@ -920,15 +925,23 @@ func TestAOS498_NoSemGate_NaoAbreOsBytes(t *testing.T) {
 // A classificação, sobre um step-ledger montado à mão
 // ---------------------------------------------------------------------------------------------
 
+// aos498Leitor é o leitor que o gate D7 admitiu, para os testes que chamam a leitura sem passar
+// pelo `GET` (revisão, M3: o leitor vai na mão até ao opener).
+var aos498Leitor = readerIdentity{principal: govReader, board: govBoard, region: govRegion}
+
 // aos498Cifra é um cifrador por-titular de teste: «sela» com um prefixo e abre devolvendo o erro
-// que lhe mandarem.
-type aos498Cifra struct{ erro error }
+// que lhe mandarem. Conta as aberturas.
+type aos498Cifra struct {
+	erro      error
+	aberturas int
+}
 
 func (c *aos498Cifra) SealContent(_ context.Context, _, _ string, claro []byte) ([]byte, error) {
 	return append([]byte("selado:"), claro...), nil
 }
 
 func (c *aos498Cifra) OpenContent(_ context.Context, _ string, selado []byte) ([]byte, error) {
+	c.aberturas++
 	if c.erro != nil {
 		return nil, c.erro
 	}
@@ -973,6 +986,7 @@ func TestAOS498_OrigemNaResposta_Classificacao(t *testing.T) {
 		erro      error                              // o que o cifrador devolve ao abrir
 		ajusta    func(a *agentruntime.OutputSource) // muda a âncora
 		semGate   bool                               // nó sem gate de leitura
+		leitor    *readerIdentity                    // nil ⇒ o leitor admitido ([aos498Leitor])
 		concluido bool
 		measure   quer
 		binding   quer
@@ -995,11 +1009,22 @@ func TestAOS498_OrigemNaResposta_Classificacao(t *testing.T) {
 			measure: quer{true, false, saidaOmitidaGrande, false}, binding: quer{true, false, saidaOmitidaGrande, false}},
 		{nome: "no sem gate de leitura", semGate: true, concluido: true,
 			measure: quer{true, false, saidaOmitidaDeVez, false}, binding: quer{true, false, saidaOmitidaDeVez, true}},
+		// Revisão, M3: sem um leitor autenticado na mão o opener não abre — a guarda não é só a
+		// ordem das chamadas. Definitivo: é composição, não momento.
+		{nome: "leitor sem principal", leitor: &readerIdentity{}, concluido: true,
+			measure: quer{true, false, saidaOmitidaDeVez, false}, binding: quer{true, false, saidaOmitidaDeVez, true}},
+		// Revisão, M1: a âncora cujo passo não forma chave é definitiva — nunca 503.
+		{nome: "passo da ancora que nao forma chave", ajusta: func(a *agentruntime.OutputSource) { a.StepID = "x:" + passo }, concluido: true,
+			measure: quer{true, false, saidaOmitidaDeVez, false}, binding: quer{true, false, saidaOmitidaDeVez, true}},
 	} {
 		for vinculo, q := range map[agentruntime.OutputSourceBinding]quer{agentruntime.OutputSourceMeasure: c.measure, agentruntime.OutputSourceBinds: c.binding} {
 			t.Run(c.nome+"/"+string(vinculo), func(t *testing.T) {
-				cifra.erro = c.erro
+				cifra.erro, cifra.aberturas = c.erro, 0
 				t.Cleanup(func() { cifra.erro = nil })
+				leitor := aos498Leitor
+				if c.leitor != nil {
+					leitor = *c.leitor
+				}
 				h := &apiHandler{node: &Node{EventStore: store, contentOpener: cifra}}
 				if !c.semGate {
 					h.readGov = &readGovernance{}
@@ -1009,9 +1034,12 @@ func TestAOS498_OrigemNaResposta_Classificacao(t *testing.T) {
 					c.ajusta(a)
 				}
 				resp := runStateResponse{RunID: runID, Status: "completed", Terminated: true, FinalText: "o texto final"}
-				responde := h.origemNaResposta(httptest.NewRequest(http.MethodGet, "/runs/"+runID, nil), &resp, a, c.concluido)
+				responde := h.origemNaResposta(httptest.NewRequest(http.MethodGet, "/runs/"+runID, nil), leitor, &resp, a, c.concluido)
 				if responde != q.responde {
 					t.Fatalf("responde = %v; quero %v (false ⇒ 503)", responde, q.responde)
+				}
+				if c.leitor != nil && cifra.aberturas != 0 {
+					t.Fatalf("sem leitor autenticado o cifrador nao pode ser chamado; foi %d vez(es)", cifra.aberturas)
 				}
 				if !responde {
 					return
@@ -1034,13 +1062,14 @@ func TestAOS498_OrigemNaResposta_Classificacao(t *testing.T) {
 	}
 	// Sem âncora, nada: nem campo, nem leitura.
 	resp := runStateResponse{RunID: runID}
-	if !(&apiHandler{}).origemNaResposta(httptest.NewRequest(http.MethodGet, "/runs/x", nil), &resp, nil, true) || !reflect.DeepEqual(resp, runStateResponse{RunID: runID}) {
+	if !(&apiHandler{}).origemNaResposta(httptest.NewRequest(http.MethodGet, "/runs/x", nil), aos498Leitor, &resp, nil, true) || !reflect.DeepEqual(resp, runStateResponse{RunID: runID}) {
 		t.Fatalf("um run sem ancora nao muda a resposta; veio %+v", resp)
 	}
 }
 
-// TestAOS498_OrigemIndisponivelDeVez: a lista dos definitivos é a do AOS-494 mais os dois erros
-// que só a leitura do step-ledger produz. A custódia fechada decide-se primeiro.
+// TestAOS498_OrigemIndisponivelDeVez: a lista dos definitivos é a do AOS-494 mais os erros que só
+// a leitura do step-ledger produz — com o registo ilegível, a chave inválida e o registo em claro
+// (revisão, M1 e M2). A custódia fechada decide-se primeiro.
 func TestAOS498_OrigemIndisponivelDeVez(t *testing.T) {
 	for _, c := range []struct {
 		nome  string
@@ -1052,6 +1081,11 @@ func TestAOS498_OrigemIndisponivelDeVez(t *testing.T) {
 		{"titular apagado", audit.ErrDecrypt, true},
 		{"no sem gate", errSaidaDuravelSemGate, true},
 		{"registo selado sem cifra", durable.ErrSealedResultNoCipher, true},
+		{"registo do ledger ilegivel", fmt.Errorf("%w: %w", durable.ErrAppliedResultUnreadable, errors.New("unexpected end of JSON input")), true},
+		{"passo que nao forma chave", fmt.Errorf("%w: %w", durable.ErrAppliedResultUnreadable, durable.ErrDelimiterInInput), true},
+		{"registo em claro", durable.ErrAppliedResultInClear, true},
+		{"leitor sem escopo", replay.ErrPayloadAccessDenied, true},
+		{"registo ilegivel com a custodia fechada ao lado", errors.Join(durable.ErrConteudoIndisponivel, durable.ErrAppliedResultUnreadable), false},
 		{"custodia fechada", durable.ErrConteudoIndisponivel, false},
 		{"custodia fechada com a KEK por verificar", errors.Join(durable.ErrConteudoIndisponivel, audit.ErrDecrypt), false},
 		{"event store fechado", eventstore.ErrClosed, false},
