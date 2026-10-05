@@ -1,1 +1,1 @@
-{"tools":[{"name":"doc_read","version":"1.0.0","digest":"sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4","egress":"none","reversibility":"reversible","mutation":"none"}],"completion_contract":{"mode":"observe"}}
+{"tools":[{"name":"doc_read","version":"1.0.0","digest":"sha256:598d8a70b117520fccd43f9abe0dbeef4f7c533b15718a19c631854599fcd7b4","egress":"none","reversibility":"reversible","mutation":"none"}],"completion_contract":{"mode":"observe"},"output_source":{"bindings":["measure","binding"],"max_bytes":131072}}

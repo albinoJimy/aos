@@ -9040,34 +9040,34 @@ enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
 
 ### Critérios de Aceitação
 
-- [ ] O `POST /runs` aceita `output_from_tool` (o nome de uma tool). A tool tem de pertencer à
+- [x] O `POST /runs` aceita `output_from_tool` (o nome de uma tool). A tool tem de pertencer à
       lista-branca do mesmo pedido; caso contrário, ou sem lista-branca, o pedido é recusado com
       400 e mensagem própria. Aceita-o quem já pode submeter o run; não dá autoridade nenhuma.
-- [ ] O nó anuncia o suporte no `GET /tools`, numa chave própria cuja presença é o anúncio. Um
+- [x] O nó anuncia o suporte no `GET /tools`, numa chave própria cuja presença é o anúncio. Um
       nó sem o suporte continua a responder como hoje.
-- [ ] O `GET /runs/{id}` de um run que declarou a origem devolve `output_source` (os metadados
+- [x] O `GET /runs/{id}` de um run que declarou a origem devolve `output_source` (os metadados
       selados: tool, `step_id`, digest, tamanho e estado da designação) e, com o estado
       `designated`, `output` (os bytes designados). Os campos são aditivos: um run sem origem
       declarada responde com os bytes de hoje, e um `aos-orq` anterior continua a funcionar
       (teste com a estrutura e a regra de leitura do cliente anterior).
-- [ ] `final_text` continua a ser devolvido, como hoje.
-- [ ] O nó confere `sha256(output)` contra o digest selado antes de responder. Uma divergência
+- [x] `final_text` continua a ser devolvido, como hoje.
+- [x] O nó confere `sha256(output)` contra o digest selado antes de responder. Uma divergência
       nunca serve os bytes: conta como captura corrompida.
-- [ ] O ramo em memória e o ramo durável devolvem os **mesmos bytes** e os mesmos metadados.
+- [x] O ramo em memória e o ramo durável devolvem os **mesmos bytes** e os mesmos metadados.
       Teste que reinicia o nó entre a conclusão e a leitura, com a custódia das KEK partilhada
       entre as duas incarnações.
-- [ ] O ramo durável só abre conteúdo **depois** do selo WORM da leitura de desfecho, com o
+- [x] O ramo durável só abre conteúdo **depois** do selo WORM da leitura de desfecho, com o
       principal do leitor, e mantém a trava dos streams que não são de run (AOS-426). Fixado por
       teste com um espião no cifrador.
-- [ ] Indisponibilidade **definitiva** da saída (titular apagado, captura em falta, incompleta
+- [x] Indisponibilidade **definitiva** da saída (titular apagado, captura em falta, incompleta
       ou corrompida, nó sem o gate de leitura): `output_unavailable`, com os metadados e sem
       bytes. Indisponibilidade **transitória** (custódia fechada ou sem resposta, erro de leitura
       do Event Store): **503**. A lista dos erros definitivos é fechada e é a do AOS-494.
-- [ ] Um resultado acima do tecto de transporte (128 KiB) ou que não é UTF-8 válido responde com
+- [x] Um resultado acima do tecto de transporte (128 KiB) ou que não é UTF-8 válido responde com
       os metadados e **sem conteúdo**, com uma marca própria e distinta de `output_unavailable`.
       Nunca se trunca.
-- [ ] Os estados `missing` e `ambiguous` respondem com os metadados e sem `output`.
-- [ ] O apagamento e a expiração do titular (AOS-496) retiram também o `output` do registo de
+- [x] Os estados `missing` e `ambiguous` respondem com os metadados e sem `output`.
+- [x] O apagamento e a expiração do titular (AOS-496) retiram também o `output` do registo de
       desfechos em memória. Teste: depois do apagamento, o ramo em memória não serve os bytes.
 - [ ] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior, e
       `aos-orq` novo com nó anterior (que não anuncia e recusa o campo).
@@ -9075,7 +9075,7 @@ enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
       `GET /runs/{id}` (em memória, durável, `output_unavailable`, não transportável) e o anúncio
       do `GET /tools`, gerados pelo nó; o corpo do `POST /runs` com o campo, gerado pelo
       `aos-orq`.
-- [ ] O README do servidor descreve o campo, o anúncio e os campos novos do `GET`.
+- [x] O README do servidor descreve o campo, o anúncio e os campos novos do `GET`.
 - [ ] Smoke do nó sobre ficheiro **e** sobre JetStream.
 - [ ] Revisão adversarial independente com mutações, antes da fusão.
 
@@ -9096,7 +9096,46 @@ enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-05), por rever e por verificar em produção.** Às escuras: nenhum chamador
+envia os campos, e um run sem eles responde os bytes de antes.
+
+Critérios que ficam por marcar, e porquê:
+
+- **Compatibilidade nos dois sentidos** e **ficheiros de fio com o corpo do `POST` gerado pelo
+  `aos-orq`**: a metade do nó está provada aqui (um cliente anterior lê a resposta nova e decide
+  como sempre; um run sem os campos não ganha campo nenhum; as respostas do `GET` e o anúncio
+  estão em `packages/cmd/aos/testdata/aos498_fio/` e `aos494_fio/tools-*.json`). A metade do
+  `aos-orq` — o corpo com os campos, e o nó anterior que não anuncia e recusa — só existe com o
+  AOS-499, e marca-se com ele.
+- **Smoke sobre JetStream**: não corrido. O smoke sobre ficheiro está registado na entrega.
+- **Revisão adversarial independente**: é feita a seguir, antes da fusão.
+
+O que a implementação fixou e o ticket não dizia (a validar pelo dono):
+
+- **O pedido leva dois campos**, `output_from_tool` e `output_source_binding` (`measure` ou
+  `binding`), sempre juntos. O vínculo por run é do AOS-497 e este ticket foi escrito antes dele.
+- **A fonte dos bytes é o step-ledger nos dois ramos.** O registo de desfechos em memória só tem
+  a âncora: o kernel não guarda resultados. O ramo em memória passa por isso a decifrar um
+  registo do step-ledger num run com origem designada, depois do mesmo selo. A captura do turno
+  não é lida para isto.
+- **O vínculo decide como a falta dos bytes se manifesta.** Com `binding` vale o critério como
+  está escrito (`output_unavailable` de vez, 503 por instantes). Com `measure` os bytes são
+  medição, e a sua falta não muda o estado, o texto final nem o código da resposta: sem isto,
+  medir mudava desfechos de plano, porque o `aos-orq` fecha `failed` um nó com
+  `output_unavailable`. Nos dois, um campo próprio, `output_omitted`, diz a causa:
+  `unavailable`, `unavailable_now`, `too_large`, `not_utf8`.
+- **`output` só sai num run concluído.** Um run `failed` com a origem designada responde com os
+  metadados.
+- **Um nó com o veredicto desligado aceita e ignora os campos, e não anuncia**: nesse modo o
+  kernel não lê a declaração e não há âncora.
+- **A porta também recusa um nome que a âncora selada não admite** (mais de 128 bytes, espaços),
+  com a função do selo. O que depende do tool set do nó continua a ser recusado pelo kernel no
+  arranque do run.
+
+Limites que ficam: sem execução durável não há step-ledger, e sem o gate soberano de leitura o
+nó não decifra para ninguém — nos dois casos a âncora sai e os bytes não. A emenda à secção 2.8
+da decisão sobre o desfecho de um run (o que a leitura de desfecho passa a cobrir) foi escrita
+com este ticket, e não com o AOS-497.
 
 ---
 

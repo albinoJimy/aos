@@ -7,7 +7,8 @@
 - **Revisto:** 2026-10-05, depois da revisão adversarial independente: §2.2 (contrato impossível),
   §2.7 (o que o replay reproduz), §4 (saga de compensação) e §5 (retoma, medição)
 - **Emendado:** 2026-10-05, por AOS-497 (ADR-038): §2.4 (duas razões novas e a sua precedência)
-  e §5 (o resíduo «evidência não é fidelidade» remete para o ADR-038)
+  e §5 (o resíduo «evidência não é fidelidade» remete para o ADR-038); e por AOS-498: §2.8 (o
+  que a leitura de desfecho cobre num run que declarou a origem da saída)
 - **Tickets:** AOS-493
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-010 (manifesto por trajectória e replay), ADR-018 (o nó é a autoridade sobre o run),
@@ -178,6 +179,42 @@ incompleta ou corrompida, nó sem o gate de leitura) a resposta é `completed` c
 que não leu, ou um erro que ninguém classificou) a resposta é 503, como na reconstrução
 soberana, e nenhum desfecho é escrito. A lista fechada é a dos erros definitivos; o resto cai do
 lado de voltar a perguntar.
+
+**Emenda de 2026-10-05 (AOS-498, ADR-038 §2.6): num run que declarou a origem da saída, a
+leitura de desfecho cobre também o resultado da tool designada.** O `GET /runs/{id}` desse run
+devolve a âncora selada (`output_source`) e, com a origem `designated` e o run concluído, os
+bytes do resultado (`output`). O que muda face ao que esta secção dizia:
+
+- **O rótulo `read:outcome` deixa de querer dizer só «o texto final».** Passa a cobrir o texto
+  final e, num run com origem declarada, o resultado de UMA tool: o da chamada designada. Não
+  cobre os outros resultados do run; esses continuam a sair só pela reconstrução soberana, sob
+  `read:reconstruct`. O leitor é o mesmo e a autorização é a do ponto 1: quem lê este resultado
+  já o lia pelo `/reconstruct`.
+- **Os dois ramos decifram.** O ramo em memória entregava o texto final que tinha em claro e não
+  abria nada. Num run com origem designada passa a abrir um registo do step-ledger: os bytes
+  designados não estão no registo de desfechos em memória, porque o kernel só guarda a âncora.
+  A frase «o selo não distingue a leitura servida da memória da que decifrou o log» continua
+  verdadeira, e passa a valer também para este ramo.
+- **A fonte é o step-ledger, e não a captura do turno** (ADR-038 §2.3): lê-se o
+  `step.ledger.applied` do passo designado, decifra-se com o cifrador por-titular, e conferem-se
+  `sha256(bytes)` e o tamanho contra a âncora da transição terminal. Bytes que não conferem não
+  saem. A ordem dos pontos 1 a 4 acima é a mesma, e a leitura do step-ledger vem depois deles;
+  não há selo novo, nem um segundo selo por leitura.
+- **Como a falta dos bytes se manifesta depende do vínculo do run.** Com `binding` os bytes são a
+  saída do run, e valem as regras desta secção: de vez, `output_unavailable`; por instantes, 503.
+  Com `measure` são medição: a saída do run continua a ser o texto final, e a falta dos bytes
+  medidos não muda o que a resposta diz dele — nem `output_unavailable`, nem 503. Nos dois, o
+  campo `output_omitted` diz a causa num vocabulário fechado (`unavailable`, `unavailable_now`,
+  e as duas de transporte: `too_large` acima de 128 KiB e `not_utf8`), e a âncora sai sempre.
+  Aos erros definitivos juntam-se dois que só esta leitura produz: o passo que o step-ledger não
+  tem, e os bytes que não conferem.
+- **Um nó sem o gate soberano de leitura não abre os bytes**, também no ramo em memória: continua
+  a entregar o texto final, que tem em claro, e a âncora, que não tem conteúdo.
+
+O que isto custa a quem audita: o selo `read:outcome` de um run com origem declarada pode ter
+entregue o resultado de uma tool, e o selo não o diz. Vê-se no próprio run: a transição terminal
+leva `output_source`, com o passo designado. Um run sem `output_source` na transição terminal
+não entregou resultado de tool nenhum por esta rota.
 
 ## 3. Alternativas rejeitadas
 

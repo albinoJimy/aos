@@ -704,6 +704,33 @@ erro de tool. O que o nó faz com esse veredicto escolhe-se no `.env`:
   do tool set ou da lista-branca, nome com mais de 128 bytes ou com espaços) ou mal formada
   recusa o arranque nos dois vínculos; esses runs não contam nesta família e aparecem em
   `aos_runs_finished_total{outcome="failed"}`.
+- **A origem da saída chega pelo `POST /runs`** (AOS-498), em dois campos que vêm sempre juntos:
+  `output_from_tool` (o nome de uma tool de `tools`, a lista-branca do mesmo pedido) e
+  `output_source_binding` (`measure`, só medição, ou `binding`, vinculativa). Um pedido com um
+  sem o outro, com um vínculo desconhecido, com um nome que não tem a forma de um nome de tool
+  ou com uma tool fora da lista-branca leva 400 com a razão no corpo. Não dão autoridade nenhuma.
+  Nenhum chamador os envia ainda; sem eles, as respostas do nó não mudam.
+- **O nó anuncia que os aceita** no `GET /tools`:
+  `"output_source":{"bindings":["measure","binding"],"max_bytes":131072}`. A presença da chave é
+  o anúncio. Com `AOS_COMPLETION_VERDICT=off` o nó não a devolve: sem veredicto não há âncora.
+- **A âncora e o resultado lêem-se no `GET /runs/{id}`** de um run que declarou a origem:
+  `output_source` (tool, vínculo, estado, e — com o estado `designated` — passo, digest e
+  tamanho) e `output`, os bytes que a tool devolveu, sem transformação. `final_text` continua a
+  sair. `output` só vem com o run concluído e a origem `designated`; os estados `missing`,
+  `ambiguous` e `inapplicable` respondem só com `output_source`. Os bytes lêem-se do step-ledger
+  e conferem-se contra o digest selado antes de saírem; exigem execução durável, o gate soberano
+  de leitura e a custódia das KEK no Vault, como a saída depois de um reinício.
+- **Quando `output` não vem com a origem designada, `output_omitted` diz porquê:** `too_large`
+  (o resultado tem mais de 128 KiB; não se trunca), `not_utf8` (não é texto válido),
+  `unavailable` (não se lê e não se vai ler: titular apagado, passo fora do step-ledger, bytes
+  que não conferem, nó sem gate de leitura) ou `unavailable_now` (Vault selado ou sem resposta).
+  Com o vínculo `binding`, `unavailable` vem com `"output_unavailable": true` e a falta por
+  instantes responde `503`. Com `measure`, o estado, o `final_text` e o código da resposta são os
+  de um run sem declaração.
+- **Esta leitura também decifra, sob o mesmo selo `read:outcome`.** Num run com origem designada
+  o nó abre um registo do step-ledger nos dois ramos, mesmo com o desfecho ainda em memória. Quem
+  audita vê na transição terminal do run (`output_source`) se a leitura pode ter entregue o
+  resultado de uma tool.
 - **Um contrato impossível não arranca.** Um run cujo contrato exige uma tool que ele não tem no
   tool set, ou que a sua lista-branca não admite, é recusado antes do primeiro turno e fica
   `failed` com a razão `run_failed`. Vale em `observe` e em `enforce`.

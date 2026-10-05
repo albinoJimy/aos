@@ -52,8 +52,11 @@ de sinal (§1).
 
 No run, a declaração é o campo `Goal.OutputFromTool` — o nome exacto da tool — acompanhado do
 vínculo da §2.4. **Implementado em AOS-497.** O campo correspondente no `POST /runs`, validado
-contra a lista-branca do mesmo pedido e anunciado no `GET /tools`, **fica para AOS-498**; até lá
-a declaração só entra por código e nenhum run de produção a tem.
+contra a lista-branca do mesmo pedido e anunciado no `GET /tools`, **está implementado
+(AOS-498)**: `output_from_tool` e `output_source_binding`, que vêm sempre juntos. A porta recusa
+com 400 o que se decide sem o tool set (declaração incompleta, vínculo fora do vocabulário, nome
+que o selo recusaria, tool fora da lista-branca); o que depende do tool set continua a ser do
+kernel, no arranque. Nenhum chamador de produção envia ainda os campos.
 
 **Uma declaração impossível não arranca.** Antes do primeiro turno o kernel verifica que a tool
 declarada consta do tool set do run e, havendo lista-branca, está nela — a regra do contrato
@@ -239,7 +242,19 @@ truncado.
 
 Quem lê, com que autorização e por que canal ficam como estão: a leitura do desfecho pelo gate
 soberano, depois do selo WORM. O que muda é de onde vêm os bytes e a que se amarra o digest.
-**A leitura e a resposta do nó ficam para AOS-498; a publicação e a entrega para AOS-501.**
+**A leitura e a resposta do nó estão implementadas (AOS-498); a publicação e a entrega ficam
+para AOS-501.**
+
+O que o AOS-498 fixou ao implementar a leitura:
+
+- os bytes lêem-se do step-ledger nos **dois** ramos do `GET` (em memória e durável): o registo
+  de desfechos em memória só tem a âncora;
+- `output` só sai num run **concluído**; um run `failed` com âncora `designated` responde com os
+  metadados;
+- a falta dos bytes manifesta-se conforme o vínculo — com `measure` nunca muda o que a resposta
+  diz do run (ADR-037 §2.8, emenda de AOS-498);
+- o nó anuncia o suporte no `GET /tools` (`output_source`, com os vínculos e o tecto), e não o
+  anuncia com o veredicto desligado.
 
 ### 2.7 Entrega-se o resultado tal como a tool o devolveu
 
@@ -393,7 +408,7 @@ não cai para o texto. **Fica para AOS-501.**
 - **ADR-037 §2.4** ganha as duas razões e a precedência da §2.4 acima, e **§5** remete para
   aqui no resíduo «evidência não é fidelidade». Feitas com AOS-497.
 - **ADR-037 §2.8** (o que a leitura de desfecho cobre, quando passa a servir um resultado de
-  tool) é emendada com AOS-498, que é quem muda essa leitura.
+  tool) foi emendada com AOS-498, que é quem muda essa leitura.
 - **ADR-027 §2.4** (a origem do payload publicado) é emendado com AOS-501, e **ADR-022 §2.3** (a
   origem declarada de um output) com AOS-500. AOS-497 não muda o que esses dois descrevem: nenhum
   payload é ainda publicado por referência e o plano ainda não tem o campo.
