@@ -123,11 +123,15 @@ O que a emenda fixa nesta secção:
 - O validador puro recusa, com um sub-código por caso, uma origem que a estrutura não sustenta:
   uma tool que não é do nó; uma saída que não é `record` nem `artifact`; um nó verificador; um
   nó com `consumes` (tem o contexto *untrusted* desde o primeiro turno e nunca tem origem
-  designável); mais de uma saída com origem no mesmo nó. Um nó que podia declarar a origem e não
-  o faz **não** é recusado.
+  designável); mais de uma saída com origem no mesmo nó; uma tool que o nó refere mais de uma
+  vez (a origem ficava ambígua). Um nó que podia declarar a origem e não o faz **não** é
+  recusado.
 - É a linha `1.3.0` do `plan_version` (MINOR, aditiva), com o piso de versão derivado do uso
   do campo, como as extensões anteriores.
-- O invariante 5 da §2.4 estende-se: o humano no gate vê a origem declarada de cada saída.
+- O invariante 5 da §2.4 estende-se: a origem declarada de cada saída está no documento do
+  plano e na forma do cartão de aprovação. O `aos-orq` não apresenta hoje um cartão ao humano:
+  quem decide, decide sobre o documento do plano, onde o campo se lê; o cartão constrói-se
+  dentro do gate.
 
 O que **não** muda: o transporte continua a ser referência a registo com proveniência, e
 nenhuma das duas rejeições desta decisão (ciclos por aresta, *blackboard*) é reaberta.

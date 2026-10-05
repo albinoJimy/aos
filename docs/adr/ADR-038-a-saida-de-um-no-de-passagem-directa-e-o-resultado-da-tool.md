@@ -12,7 +12,7 @@
 - **Tickets:** AOS-497 (o kernel designa e sela a origem), AOS-498 (a declaração, a âncora e os
   bytes na API do nó) e AOS-499 (o `aos-orq` mede com o vínculo «só medição»), os três
   implementados e revistos; AOS-500 (a declaração no plano: `outputs[].from_tool`, schema 1.3.0,
-  validador e cartão de aprovação), implementado e com a revisão adversarial por fazer. As
+  validador e cartão de aprovação), implementado e revisto, sem efeito até ao AOS-501. As
   partes que ficam para AOS-501 estão marcadas em cada secção e resumidas na §6.
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-005 (taint), ADR-010 (manifesto por trajectória e replay), ADR-022 (extensões ao grafo de
@@ -49,11 +49,13 @@ campo da saída (`outputs[].from_tool`, o nome de uma tool do mesmo nó; schema 
 `contract_digest` do contrato aprovado e aparece no cartão de aprovação. **Implementado em
 AOS-500** (emenda o ADR-022 §2.3). O validador do plano recusa, com um sub-código por caso, a
 tool que não é do nó, a saída que não é `record` nem `artifact`, o nó verificador, o nó com
-`consumes` e a segunda saída com origem no mesmo nó; usar o campo obriga a carimbar a linha
-1.3.0. Um contrato sem o campo mantém a forma canónica e o `contract_digest`. **Até ao AOS-501
-nenhum plano corre com o campo:** o planeador não é instruído a emiti-lo, e o `aos-orq` recusa
-correr um documento que o traga (causa `origem_sem_entrega`), antes da posse do run com
-`--plan-doc` e antes de admitir ou submeter qualquer nó com `--goal`.
+`consumes`, a segunda saída com origem no mesmo nó e a tool que o nó refere mais de uma vez;
+usar o campo obriga a carimbar a linha 1.3.0. Um contrato sem o campo mantém a forma canónica e
+o `contract_digest`. **Até ao AOS-501 nenhum plano corre com o campo:** o planeador não é
+instruído a emiti-lo, e o `aos-orq` trata a linha 1.3.0 do plano — o documento com o campo, ou
+só com o carimbo — como o binário anterior a tratava: vinda do planeador (`--goal`), é uma
+tentativa recusada, e o planeador tenta de novo; lida do disco (`--plan-doc`, materialização,
+re-verificação de um pendente, `decide`), é recusada com a causa `origem_sem_entrega`.
 
 A inferência a partir da estrutura do nó (não-verificador, uma tool, uma saída aberta, sem
 `consumes`) serve só para medir (AOS-499): decidir por ela mudaria o conteúdo que atravessa uma
@@ -445,7 +447,7 @@ não cai para o texto. **Fica para AOS-501.**
 | Manifesto, registo de retoma, paridade do replay | §2.5 | AOS-497 |
 | Campo no `POST /runs`, âncora e bytes no `GET /runs/{id}`, anúncio no `GET /tools` (implementado e revisto) | §2.1, §2.6 | AOS-498 |
 | Medição pelo `aos-orq` com o vínculo `measure`, sem mudar a entrega (implementado e revisto: interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`; só declara num pedido que já leva o contrato sobre a mesma tool; compara o texto final com o conteúdo desembrulhado do resultado e publica só classes) | §2.4 | AOS-499 |
-| `outputs[].from_tool` no plano, schema 1.3.0, validador, cartão de aprovação (implementado; revisão adversarial por fazer. O prompt do planeador não muda, e o `aos-orq` recusa correr um plano com o campo até à entrega) | §2.1 | AOS-500 |
+| `outputs[].from_tool` no plano, schema 1.3.0, validador, cartão de aprovação (implementado e revisto. O prompt do planeador não muda, e o `aos-orq` não corre a linha 1.3.0 do plano até à entrega) | §2.1 | AOS-500 |
 | Publicação e entrega pelos bytes designados; origem no evento do plano; texto final não publicado; causas de falha; prompt do planeador | §2.6 a §2.9 | AOS-501 |
 
 ## 7. Emendas a outros ADR

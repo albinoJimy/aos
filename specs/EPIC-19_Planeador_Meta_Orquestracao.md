@@ -9446,7 +9446,7 @@ o nó seguinte herdou a perda e o veredicto de conclusão deu «cumprido».
 O schema do plano ganha, num output, a tool do mesmo nó de que essa saída é o resultado. O campo
 é opcional e aditivo (MINOR 1.3.0), entra no `contract_digest`, é validado por regras estruturais
 e aparece no cartão de aprovação. Neste ticket nenhum plano o usa: o planeador não é instruído a
-emiti-lo e o `serve` não corre um plano que o traga.
+emiti-lo e o `serve` não corre um plano que o traga, nem um documento carimbado 1.3.0.
 
 ### Critérios de Aceitação
 
@@ -9482,7 +9482,7 @@ emiti-lo e o `serve` não corre um plano que o traga.
 - [x] Rollback medido e registado no ticket: um binário anterior recusa um documento com o campo
       (campos desconhecidos). Fica escrito o que acontece a um pedido em fila cujo documento
       gravado deixa de decodificar, e a um plano 1.3.0 aprovado e corrido por `serve --plan-doc`.
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] Revisão adversarial independente com mutações, antes da fusão.
 
 ### Fora de âmbito
 
@@ -9495,17 +9495,58 @@ emiti-lo e o `serve` não corre um plano que o traga.
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-05); revisão adversarial a seguir.** Nenhum plano usa o campo: o
-planeador não é instruído a emiti-lo e o `aos-orq` recusa correr um documento que o traga.
+**IMPLEMENTADO e REVISTO (2026-10-05); invisível até ao AOS-501.** Nenhum plano usa o campo: o
+planeador não é instruído a emiti-lo, e o `aos-orq` trata um documento da linha 1.3.0 (com o
+campo, ou só com o carimbo) como o binário anterior o tratava.
 
-Critério que fica por marcar: a **revisão adversarial independente**.
+### Revisão adversarial (2026-10-05)
+
+Feita, sem achados bloqueantes: um plano sem o campo, carimbado até 1.2.0, é byte a byte igual
+antes e depois (documento, hash, digests, cartão e eventos), e 22 de 28 mutações morriam. Mostrou
+que o ticket não era invisível em dois casos (um carimbo 1.3.0 sem o campo passava a correr, e a
+recusa do campo no `--goal` era terminal onde antes o planeador recuperava) e que o predicado de
+que tudo depende não estava preso por teste; os três foram corrigidos, e o resto está abaixo.
+
+O que mudou com a revisão:
+
+- **A guarda do `aos-orq` passou a ser da linha 1.3.0**, e não só do campo: o documento que
+  declara `from_tool` e o documento carimbado 1.3.x sem ele. Vive num só ficheiro
+  (`origem_no_plano.go`), que o AOS-501 retira.
+- **No `serve --goal`, a recusa volta ao laço do planeador.** Um documento carimbado 1.3.0 é uma
+  tentativa recusada, com o código que o binário anterior dava a esse carimbo
+  (`plan_version_ahead_of_reader`), e o planeador tenta de novo. Só é terminal se o laço esgotar
+  as tentativas, e nesse caso é a saída 9 de qualquer plano recusado em todas elas.
+- **Todo o documento relido do disco é recusado com a saída 10**, causa `origem_sem_entrega`,
+  antes de qualquer efeito: o `--plan-doc` (antes da posse), a segunda leitura na
+  materialização, a re-verificação de um pendente pelo `consume` e o `decide`. Os dois últimos
+  não tinham guarda.
+- **Comparado com o binário anterior** (as mesmas sequências corridas nos dois): com o
+  planeador a devolver primeiro um documento 1.3.0 (com ou sem o campo) e depois um 1.2.0, a
+  saída do processo, o documento do `--plan-out`, o hash do plano e todos os eventos do log são
+  iguais; com `--plan-doc` sobre um documento 1.3.0 a saída é 10 nos dois, e este binário
+  recusa antes de tomar a posse (o anterior tomava-a e largava-a).
+- **Validador.** A tool nomeada em `from_tool` pinada mais de uma vez no nó (duas referências
+  com o mesmo nome) é recusada com `from_tool_ambiguous_tool`: o campo refere a tool pelo nome.
+- **Forma.** `"from_tool": ""` e `"from_tool": null` são recusados pelo `plan.Decode`: um campo
+  presente e vazio não é um campo ausente. Um documento sem a chave descodifica como sempre.
+- **Testes que faltavam:** a origem na segunda saída de um nó e no segundo nó do plano, nos três
+  sítios que dependem do predicado (o piso de versão, a entrada no validador e a guarda do
+  `aos-orq`); `artifact` com `consumes`; o mapeador num nó com duas saídas em que só uma tem
+  origem; o nome exacto da tool (outro nome com o mesmo comprimento, e outra caixa).
+- **Golden-set.** Um teste liga a excepção do prompt ao golden-set: enquanto a excepção existir,
+  nenhuma fixture declara o campo nem carimba 1.3.0; retirá-la sem acrescentar um caso com
+  `from_tool` carimbado 1.3.0 falha.
+
+Ficou registado no AOS-501, sem correcção aqui: a versão do contrato do cartão, a ordem de
+rollback com planos em voo, e a tool de egress ou de efeito como origem.
 
 ### O que foi feito
 
 - **Schema.** `plan.Output.FromTool` (`from_tool`, omitido quando vazio). A forma — um
   identificador, a grammar do nome do output — confere-se no `plan.Decode`, que continua a
-  recusar campos desconhecidos. `CurrentPlanVersion` é 1.3.0; a tabela de funcionalidades por
-  versão ganhou `from_tool` com o piso 1.3.0.
+  recusar campos desconhecidos e recusa o campo presente e vazio (`""`, `null`).
+  `CurrentPlanVersion` é 1.3.0; a tabela de funcionalidades por versão ganhou `from_tool` com o
+  piso 1.3.0.
 - **Contrato.** `plan.CanonicalOutput` acrescenta `:tool=<nome>` só quando há origem. Os
   digests de três contratos sem origem estão fixados por literais tirados com o código
   anterior, e o corpo do `plan.payload_published` de um contrato sem origem também. O evento
@@ -9515,6 +9556,7 @@ Critério que fica por marcar: a **revisão adversarial independente**.
   | Regra do critério | Código de recusa |
   |---|---|
   | (1) a tool não é de `tools` do mesmo nó, ou não é um identificador | `from_tool_unknown_tool` |
+  | (1) a tool está em `tools` do nó mais de uma vez (acrescentada pela revisão) | `from_tool_ambiguous_tool` |
   | (2) a saída não é `record` nem `artifact` | `from_tool_output_type` |
   | (3) o nó é verificador | `from_tool_on_verifier` |
   | (3) o nó tem `consumes` | `from_tool_with_consumes` |
@@ -9538,12 +9580,14 @@ Critério que fica por marcar: a **revisão adversarial independente**.
   teste falha se ganhar outra entrada, se deixar de ser necessária ou se o template já nomear o
   campo. As fixtures do golden-set do planeador não mudam: continuam carimbadas 1.2.0, que é o
   que o prompt manda carimbar, e o teste que lhes exigia «a linha corrente» passou a exigir a
-  linha que introduziu as extensões que elas usam.
-- **`aos-orq`.** Um documento que declara a origem é recusado com a causa `origem_sem_entrega`
-  e a saída 10: com `--plan-doc`, antes da posse do run e de abrir o Event Store, e outra vez
-  sobre os bytes relidos para materializar; com `--goal`, a seguir à decomposição, antes da
-  validação a jusante, do gate e da materialização. Não depende do interruptor
-  `AOS_ORQ_SAIDA_POR_REFERENCIA`.
+  linha que introduziu as extensões que elas usam. Um segundo teste prende o golden-set à
+  excepção (ver a revisão, acima).
+- **`aos-orq`.** Um documento da linha 1.3.0 — que declara a origem, ou que só carimba 1.3.x —
+  não corre. Lido do disco, é recusado com a causa `origem_sem_entrega` e a saída 10: com
+  `--plan-doc`, antes da posse do run e de abrir o Event Store; outra vez sobre os bytes relidos
+  para materializar; na re-verificação de um pendente pelo `consume`; e no `decide`. Vindo do
+  planeador (`--goal`), é uma tentativa recusada dentro do laço, e o planeador tenta de novo.
+  Não depende do interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA`.
 
 ### Rollback (medido a 2026-10-05, com o binário do `aos-orq` anterior a este ticket)
 
@@ -9561,24 +9605,34 @@ Critério que fica por marcar: a **revisão adversarial independente**.
   para saber se exige humano; com decisão, corre o `serve --plan-doc`), e nos dois casos o
   desfecho é a saída 10, causa `documento_recusado`. Não fica a retentar à cabeça da fila e não
   é re-planeado.
-- **Hoje não há nada a perder:** este binário não corre planos com o campo e, no `--goal`,
-  recusa-os antes de escrever o documento na pasta dos planos; o planeador não é instruído a
-  emitir o campo nem a carimbar 1.3.0. Um modelo que carimbe 1.3.0 por iniciativa própria passa
-  agora a ser aceite (antes era recusado por `plan_version_ahead_of_reader`), e esse documento,
-  gravado, não corre num binário anterior. A partir do AOS-501 haverá documentos 1.3.0
-  gravados, e é esse ticket que regista a ordem de rollback.
+- **Hoje não há nada a perder:** este binário não corre nem guarda documentos da linha 1.3.0.
+  No `--goal`, um documento com o campo ou carimbado 1.3.0 é recusado dentro do laço do
+  planeador, antes de ser escrito na pasta dos planos; o planeador não é instruído a emitir o
+  campo nem a carimbar 1.3.0, e um modelo que o faça por iniciativa própria é recusado como era
+  no binário anterior. Por isso não há documentos 1.3.0 gravados de que um rollback tenha de
+  cuidar. A partir do AOS-501 haverá, e é esse ticket que regista a ordem de rollback.
 
 ### Decisões de desenho, a validar
 
 - **A saída é a 10, partilhada, com causa própria.** O critério pede «código próprio e
   determinista». A causa (`origem_sem_entrega`) é própria; o código de saída é o do documento
   recusado, como o `grafo_diverge`: terminal no `consume` e com a posse largada. Um código de
-  saída novo obrigava a mexer na classificação dos desfechos da fila.
-- **No `--goal`, a recusa é terminal e não volta ao planeador.** A posse já existe nesse ponto
-  (o planeador corre sob ela) e o `plan.proposed` e o `plan.validated` da decomposição já estão
-  no log; o que se garante é que nenhum nó é admitido nem submetido. Devolver a recusa ao laço
-  de tentativas, como uma recusa do validador, era gastar gerações contra um modelo que ninguém
-  instruiu.
+  saída novo obrigava a mexer na classificação dos desfechos da fila. Vale para o documento
+  lido do disco.
+- **No `--goal`, a recusa volta ao laço do planeador** (decidido depois da revisão; a primeira
+  versão era terminal). É o que o binário anterior fazia: recusava a tentativa e tentava de
+  novo, e um planeador que devolva um documento 1.3.0 e a seguir um 1.2.0 corre pelo segundo.
+  A recusa do laço leva o código do validador para um carimbo à frente do leitor
+  (`plan_version_ahead_of_reader`), e não a causa `origem_sem_entrega`, que é só do disco. Se o
+  planeador insistir em todas as tentativas, o `serve` sai com 9 (plano recusado), terminal no
+  `consume` e com a posse largada; o binário anterior, com um documento que trouxesse o campo,
+  saía com 1 (transitório) e deixava a posse por largar.
+- **O que fica no log depois de uma recusa no `--goal`.** Medido: só a posse e a sua
+  libertação (`lease.claimed`, `lease.released`). Nenhum facto do plano — nem `plan.proposed`
+  nem `plan.validated` —, e o documento não é escrito. Uma geração nova do mesmo pedido
+  decompõe de novo; não encontra um plano validado sem documento. (A primeira versão deste
+  ticket dizia que o `plan.proposed` e o `plan.validated` já estavam no log nesse ponto; não
+  estão.)
 - **A versão do contrato do cartão não sobe** (fica 1.1.0). Subi-la mudava o carimbo, e por isso
   os bytes, do cartão de todos os planos. Consequência: um leitor anterior do cartão recusa,
   pela forma, um cartão com uma saída de quatro segmentos.
@@ -9590,9 +9644,9 @@ Critério que fica por marcar: a **revisão adversarial independente**.
 
 ### Por fazer
 
-- A revisão adversarial independente.
 - A entrega, o `source` no evento, o prompt 1.5.0 e o golden-set (AOS-501), que retira a
-  recusa do `aos-orq` e a excepção do teste do prompt.
+  guarda do `aos-orq` e a excepção do teste do prompt, e herda os pontos que a revisão deixou
+  para ele.
 
 ---
 
@@ -9744,6 +9798,42 @@ Fica também daqui: a medição do AOS-499 dá um **limite superior** à perda d
 números do documento que não aparecem, letra a letra, no texto final), não uma contagem. Ler a
 série antes de ligar a entrega é ler quantos nós ficam abaixo de «todas as linhas» ou com números
 em falta, e ir ver esses.
+
+### Herdado da revisão do AOS-500 (2026-10-05)
+
+A revisão adversarial do AOS-500 deixou quatro pontos que são deste ticket, porque só passam a
+ter efeito quando houver planos com origem a correr. Não foram corrigidos lá.
+
+- **Retirar a guarda do `aos-orq`.** Até este ticket, o `aos-orq` não corre a linha 1.3.0 do
+  plano: um documento com `from_tool`, ou só carimbado 1.3.x, é uma tentativa recusada no laço
+  do `serve --goal` e uma recusa com a saída 10 (`origem_sem_entrega`) em todo o documento lido
+  do disco (`--plan-doc`, materialização, re-verificação de um pendente, `decide`). A guarda
+  vive num só ficheiro, `packages/cmd/aos-orq/origem_no_plano.go`; ligar a entrega é apagá-lo,
+  com as suas chamadas e os testes que o prendem. Ao retirá-la, um carimbo 1.3.0 **sem** o
+  campo volta a ser aceite pelo validador: decidir se é isso que se quer.
+- **Subir a versão do contrato do cartão quando houver cartões com origem.** O AOS-500 alargou
+  a gramática de uma saída no cartão (um quarto segmento, `:tool=<nome>`) e deixou a versão do
+  contrato em 1.1.0, para não mudar os bytes de nenhum cartão existente. A regra escrita em
+  `plan-approval/version.go` manda subir o MINOR mesmo numa adição retrocompatível, e a razão é
+  a que lá está: sem a subida, dois binários carimbam a mesma versão e discordam sobre o que o
+  cartão mostra, e o carimbo deixa de identificar o contrato apresentado a quem aprova. Hoje não
+  tem efeito, porque não existe nenhum cartão com origem; passa a ter com este ticket. Um
+  leitor anterior recusa um cartão com origem pela forma, sem sinal de versão.
+- **A ordem de rollback com planos em voo e documentos 1.3.0 guardados.** Medido na revisão,
+  com um estado criado por um binário sem a guarda: a retoma de um plano com origem já
+  materializado sai com 10 antes da posse, o `consume` fecha o pedido como terminal e apaga o
+  documento, o nó do plano fica `running` no grafo e o run filho fica órfão no nó `aos`. E um
+  documento carimbado 1.3.0 guardado na pasta dos planos (com nós em voo, ou pendente de
+  humano) é recusado pelo binário anterior com a saída 10: o plano perde-se a meio. O runbook
+  de deploy deste ticket tem de dizer o que se faz a esses planos antes de voltar atrás.
+- **Decidir a tool de egress ou de efeito como origem.** O validador aceita que `from_tool`
+  nomeie uma tool do nó que fala para fora ou que altera estado. Com a entrega ligada, o
+  consumidor recebia o resultado dessa chamada. Aceitar, recusar com código próprio, ou limitar
+  às tools de leitura.
+
+Fica também daqui: a guarda de teste que liga a excepção do prompt ao golden-set
+(`plannerprompt`) falha quando a excepção for retirada sem um caso com `from_tool` carimbado
+1.3.0 no golden-set.
 
 ### Em aberto, a fechar antes de implementar
 
