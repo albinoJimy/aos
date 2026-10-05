@@ -138,6 +138,22 @@ factos, não uma prova. Nenhum conteúdo, linha, número ou digest do nó vai pa
 ou o `detail`. Os envelopes dos testes são escritos pelo codificador da sandbox
 (`packages/substrate/sandbox/testdata/aos499_envelope/`).
 
+**A saída por referência, entregue pelo `aos-orq` (AOS-501).** Com
+`AOS_ORQ_SAIDA_POR_REFERENCIA=on`, e contra um nó que anuncia o vínculo `binding`, um plano que
+declare a origem de uma saída (`outputs[].from_tool`) corre. O run do nó produtor leva a
+declaração com o vínculo `binding`, e o facto fica no log do plano antes do pedido
+(`plan.output_source_declared`). No fecho, com o run concluído, o `aos-orq` exige as duas provas
+— o facto do log e a âncora selada, ambos `binding` para a tool do contrato, com o estado
+`designated` —, confere os bytes inteiros que o nó serviu contra o digest e o tamanho da âncora,
+e só então deriva o que entrega: de um envelope da sandbox reconhecível, o `stdout_text`; de
+outro resultado, os bytes crus (`extrairEntrega`, a mesma leitura do envelope da medição). O
+`plan.payload_published` leva `source` e o digest do que foi entregue. O texto final do produtor
+não é publicado nem entregue. Sem entrega, o nó do plano fecha `failed` com uma causa `origem_*`
+(em falta, ambígua, inaplicável, sem vínculo, não confere, indisponível, não transportável, tool
+falhou, vazia) e o consumidor não corre; um 503 do nó volta a ler-se. A reidratação relê o
+resultado designado e refaz a derivação. Os ficheiros de fio do nó real, com a tool na sandbox,
+estão em `packages/cmd/aos/testdata/aos501_fio/`.
+
 **O contrato e o desfecho na API do nó (AOS-494).** O `POST /runs` aceita `completion_requires`,
 a lista de tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do
 mesmo pedido; senão o pedido é recusado com 400. O modo de aplicação não tem campo: é do nó. O

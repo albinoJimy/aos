@@ -369,6 +369,23 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 		}
 	})
 
+	// (3-bis) NUM NÓ POR REFERÊNCIA, A REGRA DA SAÍDA VAZIA AVALIA O QUE SE ENTREGA, E NÃO O TEXTO.
+	// O modelo do produtor concluiu sem escrever nada; a tool devolveu o documento. O nó conclui e
+	// o consumidor recebe o documento — em `off`, o mesmo run fechava o nó com `saida_vazia`.
+	t.Run("On_TextoFinalVazio_ASaidaEOResultadoDaTool", func(t *testing.T) {
+		const cru = "linha unica do registo 77\n"
+		resposta := []byte(`{"run_id":"` + aos501Run + `~read_notes","status":"completed","terminated":true,"final_text":"","turns":2,` +
+			aos501Ancora("binding", "designated", cru) + "," + aos501Servido(t, cru) + "}")
+		f := &aos495No{catalogo: p.catalogo, respostas: map[string][]byte{"read_notes": resposta}}
+		d := aos499Consumir(t, bin, f, aos501Run, comOrigem, p.snapshot, "on")
+		if d.classe != "terminal" || d.codigo != exitOK {
+			t.Fatalf("com o texto final vazio e a origem designada o plano conclui; saiu %s/%d %q\n%s", d.classe, d.codigo, d.detalhe, d.stdout)
+		}
+		if entrada := aos501Entrada(t, f); entrada["content"] != cru {
+			t.Fatalf("o consumidor recebe o resultado da tool: %v", entrada)
+		}
+	})
+
 	// (4) CADA FALHA TEM CAUSA PRÓPRIA, E O CONSUMIDOR NÃO CORRE. O run do produtor CONCLUIU com o
 	// texto final do modelo em todos os casos: é exactamente quando seria fácil cair para ele.
 	envelopeBom, documento := aos499Envelope(t, "notas")
@@ -616,6 +633,26 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 			}
 		})
 	}
+
+	// (7-bis) UM ANÚNCIO QUE NÃO SE LEU NÃO É UM «NÃO», também em `on`: o `serve` pára antes da
+	// posse, o desfecho é transitório, o pedido volta à fila e nada se submete. Tratá-lo como
+	// «o nó não anuncia `binding`» fechava como terminal um plano com origem por uma leitura
+	// falhada.
+	t.Run("On_AnuncioIlegivel_PedidoVoltaAFila", func(t *testing.T) {
+		f := &aos495No{catalogo: p.catalogo, toolsNaLeitura: func(n int) (int, []byte) {
+			if n >= 3 {
+				return 503, []byte(`{"error":"indisponivel"}`)
+			}
+			return 0, nil
+		}}
+		d := aos499Consumir(t, bin, f, aos501Run, comOrigem, p.snapshot, "on")
+		if d.classe != "transitorio" || d.codigo != exitErro || !strings.HasSuffix(d.detalhe, " erro=anuncio_ilegivel") || f.submissoes != 0 {
+			t.Fatalf("um anuncio que nao se leu da transitorio/1 e nenhuma submissao; veio %s/%d %q, %d submissao(oes)\n%s", d.classe, d.codigo, d.detalhe, f.submissoes, d.stdout)
+		}
+		if strings.Contains(d.stdout, "saida por referencia (AOS-501)") {
+			t.Fatalf("com o anuncio por ler nao ha banner da entrega:\n%s", d.stdout)
+		}
+	})
 
 	// (8) FORA DE `on` A GUARDA DA LINHA 1.3.0 FICA, nos dois modos e sem a variável. (Os outros
 	// caminhos da guarda estão em aos500_origem_no_plano_test.go, que corre sem a variável.)

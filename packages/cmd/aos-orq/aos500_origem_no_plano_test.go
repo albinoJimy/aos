@@ -1,8 +1,13 @@
 package main
 
-// AOS-500 — ATÉ AO AOS-501, A LINHA 1.3.0 DO PLANO NÃO CORRE NESTE BINÁRIO: nem o documento que
+// AOS-500 — FORA DE `on`, A LINHA 1.3.0 DO PLANO NÃO CORRE NESTE BINÁRIO: nem o documento que
 // declara a origem de uma saída (`outputs[].from_tool`), nem o que só carimba essa linha. O
 // binário trata-os como o anterior os tratava.
+//
+// O AOS-501 ligou a entrega por referência atrás de `AOS_ORQ_SAIDA_POR_REFERENCIA=on`. Estes
+// testes correm SEM a variável (a omissão é `off`) e continuam a valer tal como foram escritos:
+// são eles que prendem que, fora de `on`, a guarda não saiu. O que acontece em `on` está em
+// aos501_entrega_por_referencia_test.go.
 //
 // O que os testes prendem:
 //   - com `--plan-doc`, a recusa dá-se ANTES da posse: o Event Store nem chega a ser aberto e o

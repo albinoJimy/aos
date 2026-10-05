@@ -147,6 +147,27 @@ O `scope` existente fica como está: os clientes actuais já o enviam com capabi
     que o validador impõe na admissão deixaria de significar o que diz;
   - **o digest é um controlo de INTEGRIDADE do transporte**, não uma prova de origem: quem o
     calcula e quem o envia são o mesmo processo. A proveniência viaja nos rótulos, fora do digest.
+  - **A ORIGEM do payload (EMENDADO a 2026-10-06 pelo AOS-501, ADR-038 §2.6 a §2.9).** Tudo o
+    que este ponto diz acima vale para um contrato de saída SEM origem declarada: o payload é o
+    texto final do run filho. Quando o documento aprovado declara a origem da saída
+    (`outputs[].from_tool`, linha 1.3.0 do plano) e o `aos-orq` corre com
+    `AOS_ORQ_SAIDA_POR_REFERENCIA=on` contra um nó que anuncia o vínculo vinculativo, o payload
+    passa a ser o **resultado da tool** que o kernel do nó designou e selou:
+    - o run do produtor leva `output_from_tool` com o vínculo `binding`, e o facto fica no log
+      do plano antes do pedido (`plan.output_source_declared`);
+    - o `aos-orq` confere os bytes inteiros que o nó serve contra o digest e o tamanho da âncora
+      selada, e só depois deriva o que entrega: de um envelope da sandbox, o `stdout_text`; de
+      outro resultado, os bytes crus. O que não confere não se entrega;
+    - o `plan.payload_published` ganha `source` (tipo, tool, passo, digest e tamanho da âncora,
+      forma da extracção), e o seu `record.digest` é o do que foi entregue. Para estas saídas
+      o digest deixa de ser só integridade do transporte: amarra-se, pela extracção nomeada, a um
+      digest calculado por quem executou a tool;
+    - o texto final do run filho **não é publicado nem entregue**; sem origem designável o
+      produtor fecha `failed` com causa própria e o consumidor não corre. Nunca se cai para o
+      texto;
+    - o canal de entrada do consumidor, os tectos e o taint `untrusted` não mudam; o conteúdo
+      continua na memória do `serve` e reconstrói-se do log relendo o resultado designado.
+    Fora de `on`, um plano que declare a origem não corre.
   - **Não fecha a separação de planos (DEF-806/AOS-069):** o conteúdo untrusted passa a ter canal
     próprio e marcado, mas continua a ser lido pelo MESMO plano que planeia.
   - **O `plandispatch.PayloadResolver` continua sem chamador de produção:** a entrega lê o mapa em
