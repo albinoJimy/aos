@@ -117,20 +117,7 @@ func (g *runStateGates) currentOutcome(ctx context.Context, runID string) (state
 	if err != nil {
 		return "", state.Outcome{}, err
 	}
-	// A âncora da saída que o mesmo evento sela (AOS-497) não sai por aqui: servi-la na API é
-	// do ticket seguinte.
-	st, oc, err := m.RebuildOutcome(ctx)
-	return st, oc.Verdict, err
-}
-
-// recusadoNoArranque diz se o erro de loop é uma das recusas que o kernel faz ANTES do primeiro
-// turno por defeito de quem compôs o run: o contrato de conclusão impossível (AOS-493) e a
-// origem da saída impossível ou mal formada (AOS-497). O nó sela esses runs em `failed`; a
-// leitura em memória tem de dizer o mesmo.
-func recusadoNoArranque(err error) bool {
-	return errors.Is(err, agentruntime.ErrImpossibleCompletionContract) ||
-		errors.Is(err, agentruntime.ErrImpossibleOutputSource) ||
-		errors.Is(err, agentruntime.ErrBadOutputSourceBinding)
+	return m.RebuildOutcome(ctx)
 }
 
 // recusadoNoArranque diz se o erro de loop é uma das recusas que o kernel faz ANTES do primeiro
