@@ -134,6 +134,11 @@ func TestAOS500_AOrigemEUmSimboloNaConstrucaoENoWire(t *testing.T) {
 		if _, err := BuildPlanCard(planoDeLeitura(mau)); !errors.Is(err, ErrNonCanonicalExtension) {
 			t.Fatalf("from_tool=%q devia recusar o plano com ErrNonCanonicalExtension; veio %v", mau, err)
 		}
+		// E na porta do plano, antes de haver cartão: quem valida o plano sem o construir
+		// (a edição humana revalida assim) tem a mesma recusa.
+		if err := planoDeLeitura(mau).Validate(); !errors.Is(err, ErrNonCanonicalExtension) {
+			t.Fatalf("Plan.Validate com from_tool=%q devia dar ErrNonCanonicalExtension; veio %v", mau, err)
+		}
 	}
 	// Wire: o quarto segmento é exactamente `tool=<símbolo>`.
 	for _, c := range []struct {
