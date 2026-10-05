@@ -7,6 +7,28 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Fixed — EPIC-19 (AOS-499) A medição da saída por referência mede o conteúdo, e não o envelope
+- `fix(AOS-499)` — revisão adversarial de 2026-10-05, sem bloqueantes. Em produção o resultado designado é o **envelope** que a sandbox escreve, e não o documento; a medição comparava o texto final com o envelope (por digest e por tamanho) e todos os testes usavam tools que devolviam bytes crus. «Igual» era impossível, e uma transcrição byte a byte de um documento curto contava como resumo. **Nada disto é critério de controlo: a publicação e a entrega não mudam.**
+  - **A medição desembrulha o envelope, só para medir.** Reconhece a forma exacta do codificador da sandbox (objecto com `exit_code` inteiro e só as chaves do envelope) e compara o `stdout_text` com o texto final dentro do processo. O que não é um envelope reconhecível compara-se como veio.
+  - **Séries novas:** `aos_orq_consume_origem_forma_total{forma}` (`envelope`, `envelope_exit_nao_zero`, `envelope_binario`, `cru`, `sem_bytes`) e `aos_orq_consume_origem_numeros_total{resultado}` (`todos`, `em_falta`, `sem_numeros`, `nao_comparado`).
+  - **Séries que mudam de significado:** `…_origem_texto_final_total{comparacao}` deixa de ter `igual`/`diferente` por digests e passa a ter `igual`, `contem`, `linhas_todas`, `linhas_de_0_9_a_1`, `linhas_de_0_5_a_0_9`, `linhas_abaixo_de_0_5`, `texto_vazio`, `conteudo_vazio`, `nao_comparado`, sobre o conteúdo e depois de normalizar espaços; `…_origem_razao_texto_total` passa a dividir pelo tamanho do conteúdo, e ganha `nao_comparado`. `…_origem_tamanho_total` não muda, e o README passa a dizer que é o tamanho do envelope.
+  - **O que as classes não concluem:** as fracções de linhas e `em_falta` são um limite superior à perda de factos (um número reformatado conta como em falta), não uma prova.
+  - **Sem conteúdo:** só classes vão para o log, as métricas e o `detail` — nenhuma linha, número ou digest do nó. Cardinalidade fechada, com teste.
+  - **«Nenhum desfecho muda» com respostas diferentes por modo:** em `off` o nó falso responde sem os campos novos e em `observe` com eles (16 respostas).
+  - **O interruptor apara os espaços das pontas** e não dobra maiúsculas; fixado por teste.
+  - **Envelopes reais nos testes:** `packages/substrate/sandbox/testdata/aos499_envelope/`, escritos pelo codificador da sandbox e exigidos byte a byte pelo teste do pacote. A leitura no driver de referência devolve o ficheiro também como artefacto: o envelope leva o documento duas vezes.
+  - **Por fazer:** a série de pelo menos 20 planos em `observe` em produção. O cenário de shell das métricas em contentor não correu depois desta alteração (Docker parado).
+
+### Fixed — EPIC-19 (AOS-498) O que não se lê do step-ledger por causa do log é definitivo; a leitura exige o opener e o leitor
+- `fix(AOS-498)` — revisão adversarial de 2026-10-05, sem bloqueantes.
+  - **Definitivos:** um `step.ledger.applied` ilegível em qualquer passo do stream e uma âncora cujo passo não forma chave de idempotência (`durable.ErrAppliedResultUnreadable`) respondem `output_omitted: "unavailable"` — com `binding`, mais `output_unavailable`. Antes eram transitórios: `unavailable_now` para sempre em `measure` e **503 para sempre** em `binding`.
+  - **`durable.ReadAppliedResult` exige o opener** e só devolve conteúdo que ele abriu: sem opener não lê nada, e um registo com conteúdo em claro dá `durable.ErrAppliedResultInClear` (definitivo). Um resultado vazio continua a ler-se vazio.
+  - **O leitor vai na mão:** a leitura dos bytes recebe o leitor que o gate admitiu, e o opener só abre atrás do escopo dele, como a reconstrução soberana.
+  - **Testes que faltavam** (as mutações sobreviviam): `output` não sai de um run que não concluiu, pela API, nos dois ramos e nos dois vínculos; a chave do registo e o digest comparam-se inteiros; 128 KiB exactos saem.
+  - **O envelope real da sandbox de ponta a ponta no nó** (`TestAOS498_Sandbox_EnvelopeReal`): a tool corre no `MediatedLauncher`, a âncora designa o envelope e `output` é esse envelope, nos dois ramos.
+  - **Fio:** cada resposta que o nó gera tem leitura num teste do `aos-orq`; há ficheiro do anúncio com o veredicto em `off`.
+  - **Por fazer:** smoke sobre JetStream e um run com a origem designada pelo binário do driver; verificação em produção.
+
 ### Added — EPIC-19 (AOS-499) O `aos-orq` mede a saída por referência sem mudar a entrega
 - `feat(AOS-499)` — a entrega por referência (AOS-501) vai trocar verdes, por vezes falsos, por vermelhos com causa. Antes de mudar o que flui entre nós é preciso saber quantos são. **Nenhum desfecho de plano muda**, e por omissão nada é enviado nem medido.
   - **Interruptor:** `AOS_ORQ_SAIDA_POR_REFERENCIA`, `off` (a omissão) ou `observe`. `on` e qualquer outro valor recusam o arranque do `consume` e do `serve`, antes de reclamar um pedido. O banner do `serve` diz o modo.
@@ -15,7 +37,7 @@ Todas as alterações relevantes deste repositório. Formato baseado em
   - **A entrega é a de hoje:** publica-se o texto final, com o digest do texto final. O `output` que o nó devolve não é guardado, publicado nem entregue. O mesmo plano, com as mesmas respostas do nó, dá em `off` e em `observe` os mesmos estados de nó, o mesmo código de saída e os mesmos eventos do plano.
   - **Métricas** (ficheiro da drenagem, rótulos de vocabulário fechado, sem conteúdo): `aos_orq_consume_nos_por_estrutura_total{classe}`, `…_origem_designacao_total{estado}`, `…_origem_tamanho_total{classe}`, `…_origem_razao_texto_total{classe}`, `…_origem_texto_final_total{comparacao}` (texto final igual ou diferente do resultado designado, por digests) e `…_origem_transporte_total{resultado}`.
   - **Fio:** o corpo do `POST /runs` na forma de produção (nó `read_notes`, tool `doc_read`, saída `record`) é gerado pelo `aos-orq` e entregue byte a byte ao nó real; as respostas do nó a esse corpo são as que o `aos-orq` lê nos testes.
-  - **Por fazer:** revisão adversarial independente; série de pelo menos 20 planos em `observe` em produção.
+  - **Por fazer:** série de pelo menos 20 planos em `observe` em produção. (A revisão adversarial está feita: ver a entrada `fix(AOS-499)` acima, que muda o significado de duas destas séries.)
 
 ### Added — EPIC-19 (AOS-498) O nó aceita a origem da saída no `POST /runs` e devolve a âncora e os bytes no `GET /runs`
 - `feat(AOS-498)` — o kernel já designava e selava a origem da saída de um run (AOS-497), mas a declaração só entrava por código e a âncora não saía do nó. **Às escuras:** nenhum chamador envia os campos, e um run sem eles responde os mesmos bytes (os ficheiros de fio do AOS-494 não mudaram, salvo o anúncio do `GET /tools`).
@@ -27,7 +49,7 @@ Todas as alterações relevantes deste repositório. Formato baseado em
   - **O vínculo decide como a falta dos bytes se manifesta:** com `binding`, `output_unavailable` (de vez) ou 503 (por instantes); com `measure`, só `output_omitted` — o estado, o texto final e o código da resposta são os de um run sem declaração.
   - **Apagamento do titular (AOS-496):** o desfecho sai do registo em memória e a KEK deixa de abrir o step-ledger; nenhum byte sai. O digest da âncora sobrevive, como o `result_hash` do ledger.
   - **Limites:** sem execução durável, sem o gate soberano de leitura ou sem custódia das KEK que sobreviva ao reinício, a âncora sai e os bytes não. Um resultado acima de 128 KiB ou que não é UTF-8 não se transporta.
-  - **Por fazer:** smoke sobre JetStream; revisão adversarial independente; verificação em produção.
+  - **Por fazer:** smoke sobre JetStream; verificação em produção. (A revisão adversarial está feita: ver a entrada `fix(AOS-498)` acima.)
 
 ### Added — EPIC-02 (AOS-497) O kernel designa e sela a origem da saída de um run
 - `feat(AOS-497)` — a saída de um run era o texto final do modelo, e o veredicto do AOS-493 prova que a tool correu, não que a saída é o que ela devolveu. Em 2 de 21 planos em produção (2026-10-05) o nó de leitura chamou a tool com êxito e entregou um resumo. Um run passa a poder declarar que a sua saída é o resultado de uma tool; o kernel designa qual chamada é essa origem e sela a âncora na transição terminal (ADR-038). **Às escuras:** nenhum chamador declara ainda a origem (o campo no `POST /runs` é do AOS-498), e um run sem declaração grava os mesmos bytes — fixado por uma fixture gravada sobre a base, antes do código.

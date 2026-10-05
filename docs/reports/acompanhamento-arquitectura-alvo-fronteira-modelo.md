@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (saída por referência: AOS-497 implementado e revisto — o kernel designa e sela a origem da saída; AOS-498 implementado, por rever — o nó aceita a declaração e devolve a âncora e os bytes; AOS-499 implementado, por rever — o `aos-orq` mede com o interruptor em `observe`, desligado por omissão; AOS-500 e AOS-501 abertos).
+Última actualização: 2026-10-05 (saída por referência: AOS-497 implementado e revisto — o kernel designa e sela a origem da saída; AOS-498 implementado e revisto — o nó aceita a declaração e devolve a âncora e os bytes; AOS-499 implementado e revisto — o `aos-orq` mede com o interruptor em `observe`, desligado por omissão, e a revisão refez a medição para comparar o texto final com o conteúdo do resultado e não com o envelope; AOS-500 e AOS-501 abertos).
 
 ## 1. Objectivo e promessa
 
@@ -67,8 +67,8 @@ valida a classe alargada antes de ligar `enforce` (§4).
 | Ticket | Epic | Título curto | Depende de | Estado |
 |---|---|---|---|---|
 | AOS-497 | EPIC-02 | O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada. Escreve o ADR-038 e as emendas ao ADR-037; as do ADR-027 e do ADR-022 ficam para os tickets que mudam o que eles descrevem (AOS-501 e AOS-500) | AOS-493 | implementado (ADR-038) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket: a regra conta as chamadas pedidas, o run com entradas tem o estado `inapplicable`, a forma do nome valida-se no arranque, a fonte dos bytes é o step-ledger); invisível até haver chamador; por verificar em produção |
-| AOS-498 | EPIC-19 | O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}` e anuncia-o no `GET /tools` | AOS-497, AOS-494; relaciona AOS-496 | implementado (2026-10-05), por rever e por verificar em produção. Os bytes lêem-se do step-ledger nos dois ramos e conferem-se contra o digest selado; a falta deles manifesta-se conforme o vínculo e nunca muda o desfecho de um run «só medição». Emenda o ADR-037 §2.8. Por fazer: smoke sobre JetStream |
-| AOS-499 | EPIC-19 | O `aos-orq` mede a saída por referência sem mudar a entrega | AOS-498 | implementado (2026-10-05), por rever. `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`: os candidatos por estrutura declaram a origem com o vínculo `measure`; a entrega, os estados dos nós, o código de saída e os eventos do plano são os de `off`. **Por fazer: a série de pelo menos 20 planos em `observe` em produção, e ler as métricas aqui** |
+| AOS-498 | EPIC-19 | O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}` e anuncia-o no `GET /tools` | AOS-497, AOS-494; relaciona AOS-496 | implementado e revisto (2026-10-05, sem bloqueantes), por verificar em produção. Os bytes lêem-se do step-ledger nos dois ramos e conferem-se contra o digest selado; a falta deles manifesta-se conforme o vínculo e nunca muda o desfecho de um run «só medição». Da revisão: o que não se lê por causa do log é definitivo (deixou de dar 503 para sempre); a leitura exige o opener e o leitor; `output` não sai de um run que não concluiu, agora com teste; o envelope real da sandbox de ponta a ponta. Emenda o ADR-037 §2.8. Por fazer: smoke sobre JetStream e um run designado pelo binário do driver |
+| AOS-499 | EPIC-19 | O `aos-orq` mede a saída por referência sem mudar a entrega | AOS-498 | implementado e revisto (2026-10-05, sem bloqueantes). `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`: os candidatos por estrutura declaram a origem com o vínculo `measure`; a entrega, os estados dos nós, o código de saída e os eventos do plano são os de `off`. Da revisão: a medição comparava o texto final com o envelope da sandbox e não distinguia uma transcrição de um resumo; passou a desembrulhar o conteúdo e a publicar classes (forma, relação com o texto final, números). **Por fazer: a série de pelo menos 20 planos em `observe` em produção, e ler as métricas aqui** |
 | AOS-500 | EPIC-19 | O plano declara a origem de uma saída: `outputs[].from_tool`, schema 1.3.0 | — | aberto |
 | AOS-501 | EPIC-19 | O `aos-orq` entrega por referência as saídas declaradas | AOS-498, AOS-499 (medição lida), AOS-500 | aberto |
 
@@ -87,10 +87,23 @@ desfecho do run é o que seria sem a declaração, com o nó em qualquer modo.
 
 **Medição do AOS-499 em produção: por fazer.** Quando a série de pelo menos 20 planos em
 `observe` correr, registam-se aqui, do ficheiro de métricas da drenagem: os nós por classe
-estrutural; nos candidatos, o estado da designação; o tamanho do resultado designado contra os
-128 KiB; a razão entre o texto final e o resultado; em quantos o texto final é diferente do
-resultado; e o que o nó fez dos bytes. Os tokens de saída do nó produtor lêem-se do registo de
-turnos.
+estrutural; nos candidatos, o estado da designação; o tamanho do resultado designado tal como se
+transporta, contra os 128 KiB; o que o nó fez dos bytes; a forma do que serviu; e, dos
+comparados, a relação do texto final com o conteúdo e os números. Os tokens de saída do nó
+produtor lêem-se do registo de turnos.
+
+**Como ler a série** (revisão de 2026-10-05). O resultado designado é o envelope da sandbox, e a
+medição compara o texto final com o **conteúdo** desembrulhado. `igual`, `contem` e
+`linhas_todas` com os números todos: o documento está no texto final. As fracções de linhas e
+`numeros=em_falta` são um limite superior à perda de factos, não uma contagem: dizem onde ir ver.
+`forma=envelope_exit_nao_zero` e o conteúdo vazio são origens que se designam e não servem a
+ninguém — a decisão sobre elas é do AOS-501. O tamanho é o do envelope, que na leitura de um
+ficheiro leva o documento duas vezes (visto com o driver de referência; a confirmar na série).
+
+**Achados da revisão do AOS-498/499 que passam ao AOS-501** (registados no ticket): o que é uma
+origem inútil; os dois sentidos de `output_unavailable` com o vínculo vinculativo; gravar no log
+do plano que o nó declarou a origem e com que vínculo; o custo de ler o stream inteiro por
+`GET`.
 
 ### A1 a A6
 

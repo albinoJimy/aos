@@ -109,12 +109,34 @@ veredicto desligado não anuncia. O `GET /runs/{id}` de um run que declarou a or
 `output_source` (a âncora selada) e, com o run concluído e a origem `designated`, `output`: os
 bytes do resultado, lidos do step-ledger por `durable.ReadAppliedResult` — uma leitura do log,
 sem estado, que não toca na projecção em memória do ledger — e conferidos contra o digest e o
-tamanho da âncora. Os dois ramos do `GET` (em memória e durável) lêem da mesma fonte, depois do
+tamanho da âncora. Essa leitura exige o opener por-titular e só devolve conteúdo que ele abriu
+(um registo em claro dá `ErrAppliedResultInClear`); o nó passa-lhe o opener atrás do escopo do
+leitor que o gate admitiu. Com uma tool que corre na sandbox, os bytes são o ENVELOPE que ela
+escreve (`stdout_text`, `artifacts`, `exit_code`), e não o documento. Os dois ramos do `GET` (em memória e durável) lêem da mesma fonte, depois do
 selo WORM `read:outcome`. Quando os bytes não saem, `output_omitted` diz porquê: `too_large`
-(acima de 128 KiB), `not_utf8`, `unavailable` (de vez) ou `unavailable_now` (por instantes). Com
+(acima de 128 KiB; 128 KiB exactos saem), `not_utf8`, `unavailable` (de vez: titular apagado,
+passo sem registo, registo do ledger ilegível ou em claro, âncora cujo passo não forma chave —
+`ErrAppliedResultUnreadable` —, bytes que não conferem, nó sem gate) ou `unavailable_now` (por
+instantes: custódia fechada, erro de leitura do Event Store). Só sai num run que concluiu. Com
 o vínculo `binding`, a falta dos bytes segue as regras da saída (`output_unavailable` ou 503); com
 `measure` não muda o estado, o texto final nem o código da resposta. `final_text` continua a
 sair. Um run sem declaração responde os bytes de antes.
+
+**A saída por referência, medida pelo `aos-orq` (AOS-499).** Com
+`AOS_ORQ_SAIDA_POR_REFERENCIA=observe` (a omissão é `off`), cada nó do plano candidato por
+estrutura — não-verificador, uma tool, uma saída de forma aberta, sem `consumes` — declara a
+origem ao nó com o vínculo `measure`, e só a um nó que a anuncie. O que se publica e se entrega
+continua a ser o texto final. Para cada candidato com a origem `designated`, e só quando o nó
+serve os bytes e eles conferem com a âncora, o `aos-orq` reconhece a forma do envelope da sandbox
+(`desembrulharEnvelope`: um objecto com `exit_code` inteiro e só as chaves do envelope; o resto é
+`cru`), tira-lhe o `stdout_text` e compara-o com o texto final dentro do processo
+(`relacaoComOConteudo`). Publica só classes: a forma (`envelope`, `envelope_exit_nao_zero`,
+`envelope_binario`, `cru`, `sem_bytes`), a relação (`igual`, `contem`, e a fracção das linhas não
+vazias do conteúdo presentes no texto final), os números (`todos`, `em_falta`, `sem_numeros`) e a
+razão de tamanhos sobre o conteúdo. As fracções e `em_falta` são um limite superior à perda de
+factos, não uma prova. Nenhum conteúdo, linha, número ou digest do nó vai para o log, as métricas
+ou o `detail`. Os envelopes dos testes são escritos pelo codificador da sandbox
+(`packages/substrate/sandbox/testdata/aos499_envelope/`).
 
 **O contrato e o desfecho na API do nó (AOS-494).** O `POST /runs` aceita `completion_requires`,
 a lista de tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do

@@ -206,8 +206,14 @@ bytes do resultado (`output`). O que muda face ao que esta secção dizia:
   medidos não muda o que a resposta diz dele — nem `output_unavailable`, nem 503. Nos dois, o
   campo `output_omitted` diz a causa num vocabulário fechado (`unavailable`, `unavailable_now`,
   e as duas de transporte: `too_large` acima de 128 KiB e `not_utf8`), e a âncora sai sempre.
-  Aos erros definitivos juntam-se dois que só esta leitura produz: o passo que o step-ledger não
-  tem, e os bytes que não conferem.
+  Aos erros definitivos juntam-se os que só esta leitura produz: o passo que o step-ledger não
+  tem, os bytes que não conferem e — depois da revisão adversarial de 2026-10-05 — um registo do
+  ledger que não descodifica, uma âncora cujo passo não forma chave de idempotência e um registo
+  com conteúdo em claro. Nenhum deles passa com o tempo; tratá-los como transitórios dava 503
+  para sempre com `binding`.
+- **O leitor vai até ao opener.** A leitura do step-ledger só devolve conteúdo que o opener
+  por-titular abriu, e o opener só abre atrás do escopo do leitor que o ponto 1 admitiu — a
+  segunda linha que a reconstrução soberana já tinha. `output` só sai de um run que concluiu.
 - **Um nó sem o gate soberano de leitura não abre os bytes**, também no ramo em memória: continua
   a entregar o texto final, que tem em claro, e a âncora, que não tem conteúdo.
 

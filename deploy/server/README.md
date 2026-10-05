@@ -722,8 +722,11 @@ erro de tool. O que o nó faz com esse veredicto escolhe-se no `.env`:
   de leitura e a custódia das KEK no Vault, como a saída depois de um reinício.
 - **Quando `output` não vem com a origem designada, `output_omitted` diz porquê:** `too_large`
   (o resultado tem mais de 128 KiB; não se trunca), `not_utf8` (não é texto válido),
-  `unavailable` (não se lê e não se vai ler: titular apagado, passo fora do step-ledger, bytes
-  que não conferem, nó sem gate de leitura) ou `unavailable_now` (Vault selado ou sem resposta).
+  `unavailable` (não se lê e não se vai ler: titular apagado, passo fora do step-ledger, registo
+  do ledger ilegível ou em claro, bytes que não conferem, nó sem gate de leitura) ou
+  `unavailable_now` (Vault selado ou sem resposta). `output` só sai de um run que concluiu: um
+  run `failed` com a origem designada responde só com `output_source`. Com uma tool que corre na
+  sandbox, `output` é o envelope que ela escreve, e não o documento.
   Com o vínculo `binding`, `unavailable` vem com `"output_unavailable": true` e a falta por
   instantes responde `503`. Com `measure`, o estado, o `final_text` e o código da resposta são os
   de um run sem declaração.
@@ -1133,8 +1136,9 @@ contrato de conclusão (AOS-495): `…_contrato_nao_aplicado_total{motivo=no_nao
 `…_veredictos_observados_total{razao}` e `…_nos_por_contrato_total{classe}`. Da saída por
 referência, medida (AOS-499, só com `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`):
 `…_nos_por_estrutura_total{classe}`, `…_origem_designacao_total{estado}`,
-`…_origem_tamanho_total{classe}`, `…_origem_razao_texto_total{classe}`,
-`…_origem_texto_final_total{comparacao}` e `…_origem_transporte_total{resultado}`. **Não
+`…_origem_tamanho_total{classe}`, `…_origem_transporte_total{resultado}`,
+`…_origem_forma_total{forma}`, `…_origem_texto_final_total{comparacao}`,
+`…_origem_numeros_total{resultado}` e `…_origem_razao_texto_total{classe}`. **Não
 levam identificador nenhum** — nem `run_id` nem objectivo. O log leva ids (run, nós, plano),
 códigos, hashes e durações, e **não leva o objectivo** do pedido: o `consume` imprime só
 `objectivo_bytes=N`, porque um ficheiro em claro não é alcançado pelo `/dsar/erase`. Os `node_id`
@@ -1199,25 +1203,56 @@ publicado nem entregue. O estado de cada nó, o código de saída do plano e os 
 os mesmos em `off` e em `observe`.
 
 Cada candidato deixa no log da drenagem uma linha `execucao: no <id> ORIGEM MEDIDA estado=…`, e
-soma às séries:
+soma às séries abaixo. **O resultado designado não é o documento.** Com a tool a correr na sandbox
+é o ENVELOPE que ela escreve — `{"stdout_text":"…","artifacts":[…],"exit_code":0}` —, e é esse
+envelope que o kernel sela e que o nó devolve. Para medir, e só para medir, o `aos-orq`
+desembrulha o `stdout_text` e compara-o com o texto final dentro do processo; publica só classes.
+(A primeira versão comparava o texto final com o envelope: dava `diferente` a uma transcrição
+byte a byte e classificava como resumo um documento curto. Corrigido na revisão de 2026-10-05.)
 
-| Série | Rótulo | O que conta |
+| Série | Rótulo | O que mede de facto |
 |---|---|---|
 | `aos_orq_consume_nos_por_estrutura_total` | `classe`: `candidato`, `nao_candidato` | nós submetidos em `observe` |
 | `aos_orq_consume_origem_designacao_total` | `estado`: `designated`, `missing`, `ambiguous`, `inapplicable`, `nao_medido` | o que o kernel selou para cada candidato; `nao_medido` quando o nó não anuncia, a declaração não foi enviada ou a resposta não trouxe âncora |
-| `aos_orq_consume_origem_tamanho_total` | `classe`: `vazio`, `ate_1k`, `ate_16k`, `ate_128k`, `acima_128k` | tamanho do resultado designado, contra o tecto de 128 KiB |
-| `aos_orq_consume_origem_razao_texto_total` | `classe`: `origem_vazia`, `texto_vazio`, `abaixo_de_0_5`, `de_0_5_a_0_9`, `de_0_9_a_1_1`, `de_1_1_a_2`, `acima_de_2` | tamanho do texto final a dividir pelo do resultado designado; abaixo de 1 o modelo escreveu menos do que leu |
-| `aos_orq_consume_origem_texto_final_total` | `comparacao`: `igual`, `diferente` | o texto final é ou não é o resultado designado, por comparação de digests |
+| `aos_orq_consume_origem_tamanho_total` | `classe`: `vazio`, `ate_1k`, `ate_16k`, `ate_128k`, `acima_128k` | tamanho do resultado designado **tal como se transporta** (o envelope), contra o tecto de 128 KiB. Não é o tamanho do documento: uma leitura leva-o em `stdout_text` e outra vez, em base64, em `artifacts` — mais do dobro. `vazio` só acontece com uma tool que devolva zero bytes; um documento vazio lido na sandbox são os bytes do envelope |
 | `aos_orq_consume_origem_transporte_total` | `resultado`: `servido_confere`, `servido_nao_confere`, `too_large`, `not_utf8`, `unavailable`, `unavailable_now`, `ausente` | o que o nó fez dos bytes designados — o que a entrega por referência vai encontrar |
+| `aos_orq_consume_origem_forma_total` | `forma`: `envelope`, `envelope_exit_nao_zero`, `envelope_binario`, `cru`, `sem_bytes` | o que o nó serviu, e portanto com o que se pôde comparar. `envelope`: envelope da sandbox com `exit_code` 0 e stdout de texto — compara-se o `stdout_text`. `envelope_exit_nao_zero`: a tool correu e falhou (é designável, e não é um documento). `envelope_binario`: stdout em base64. `cru`: não é um envelope reconhecível — compara-se com os bytes como vieram. `sem_bytes`: o nó não serviu bytes que confiram (a causa está no `transporte`) |
+| `aos_orq_consume_origem_texto_final_total` | `comparacao`: `igual`, `contem`, `linhas_todas`, `linhas_de_0_9_a_1`, `linhas_de_0_5_a_0_9`, `linhas_abaixo_de_0_5`, `texto_vazio`, `conteudo_vazio`, `nao_comparado` | relação entre o texto final e o **conteúdo** do resultado designado, depois de reduzir cada sequência de espaços e quebras de linha a um espaço. `igual`: é o conteúdo. `contem`: tem o conteúdo inteiro e seguido, com moldura. As `linhas_…`: fracção das linhas não vazias do conteúdo que aparecem no texto final (todas mas não seguidas; ≥ 0,9; ≥ 0,5; < 0,5). `nao_comparado`: a forma não é `envelope` nem `cru` |
+| `aos_orq_consume_origem_numeros_total` | `resultado`: `todos`, `em_falta`, `sem_numeros`, `nao_comparado` | os números (sequências de dígitos) do conteúdo aparecem todos no texto final, cada um como sequência inteira (`12` não está em `2012`) |
+| `aos_orq_consume_origem_razao_texto_total` | `classe`: `origem_vazia`, `texto_vazio`, `abaixo_de_0_5`, `de_0_5_a_0_9`, `de_0_9_a_1_1`, `de_1_1_a_2`, `acima_de_2`, `nao_comparado` | tamanho do texto final a dividir pelo do **conteúdo** (não pelo do envelope). É só tamanho |
+
+As quatro últimas somam o mesmo: o número de candidatos com a origem `designated`.
+
+**O que cada classe conclui, e o que não conclui.**
+
+- `igual`, `contem` e `linhas_todas` com `numeros=todos`: o documento está no texto final. A
+  entrega por referência não mudaria o conteúdo desses nós, só a prova.
+- As fracções abaixo de «todas» e `numeros=em_falta`: o texto final não traz, letra a letra, tudo o
+  que o documento tinha. É o que um **resumo** produz — e também uma transcrição que o modelo
+  reformatou: uma data por extenso, `1.250` no lugar de `1250`, uma lista renumerada, texto
+  escapado. São um **limite superior** à perda de factos, não uma prova de perda. `em_falta` e uma
+  fracção baixa dizem onde ir ver; não dizem quantos factos se perderam.
+- `razao` não distingue um resumo de uma transcrição: é bytes a dividir por bytes.
+- `tamanho` diz quanto custa transportar, não quanto mede o documento. Um documento de cerca de
+  50 KiB lido com artefacto já não cabe nos 128 KiB.
+- `forma=envelope` diz que os bytes têm a forma do envelope da sandbox, não que vieram dela.
+- **Não se mede**: se o conteúdo é o do documento certo (a chamada errada), se a tool devolveu
+  dados errados, a qualidade de um resumo, nem o conteúdo dos `artifacts`. Com `forma=sem_bytes`
+  não se compara nada: sem execução durável ou sem o gate soberano de leitura no nó, o nó não
+  serve os bytes e as séries de conteúdo ficam todas em `nao_comparado`.
 
 O que ler antes de ligar a entrega (AOS-501): quantos candidatos ficam `missing` ou `ambiguous`
-(com a entrega ligada passam a vermelhos com causa), quantos resultados não cabem no tecto, e em
-quantos o texto final é `diferente` e mais curto do que o resultado — os nós em que hoje se
-entrega um resumo no lugar do documento. As séries não levam conteúdo nem identificadores; o log
-leva o id do nó, o estado, classes e tamanhos.
+(com a entrega ligada passam a vermelhos com causa); quantos resultados não cabem no tecto
+(`tamanho=acima_128k`, `transporte=too_large`); quantos são `envelope_exit_nao_zero` ou têm o
+conteúdo vazio (uma origem que se designa e que não serve a ninguém); e, dos comparados, quantos
+têm `numeros=em_falta` ou menos do que todas as linhas — os nós em que hoje se pode estar a
+entregar um resumo no lugar do documento. As séries não levam conteúdo nem identificadores; o log
+leva o id do nó, o estado, classes e tamanhos em bytes — nunca uma linha, um número ou um digest
+do que o nó devolveu.
 
 `on` não existe neste binário: qualquer valor que não seja `off` ou `observe` recusa o arranque
-do `consume` (e do `serve`) antes de reclamar um pedido. A declaração só vai num pedido que já
+do `consume` (e do `serve`) antes de reclamar um pedido. Os espaços nas pontas do valor aparam-se
+(` observe ` é `observe`); as maiúsculas não se dobram (`Observe` recusa o arranque). A declaração só vai num pedido que já
 leva o contrato de conclusão sobre a mesma tool e cujo nome de tool tem a forma que a âncora
 admite; de outro modo o candidato conta como `nao_medido`, para a medição nunca impedir um run
 de arrancar. Os tokens de saída do nó produtor não se medem aqui: lêem-se do registo de turnos.
