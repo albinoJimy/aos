@@ -7,6 +7,16 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-19 (AOS-499) O `aos-orq` mede a saída por referência sem mudar a entrega
+- `feat(AOS-499)` — a entrega por referência (AOS-501) vai trocar verdes, por vezes falsos, por vermelhos com causa. Antes de mudar o que flui entre nós é preciso saber quantos são. **Nenhum desfecho de plano muda**, e por omissão nada é enviado nem medido.
+  - **Interruptor:** `AOS_ORQ_SAIDA_POR_REFERENCIA`, `off` (a omissão) ou `observe`. `on` e qualquer outro valor recusam o arranque do `consume` e do `serve`, antes de reclamar um pedido. O banner do `serve` diz o modo.
+  - **Candidato por estrutura:** nó não-verificador, com exactamente uma tool, exactamente uma saída de forma aberta e sem `consumes`. Cada nó diz a sua classe no log da drenagem.
+  - **Em `observe`:** o `POST /runs` de um candidato leva `output_from_tool` (a tool do nó) e `output_source_binding: "measure"` — sempre `measure` —, e só a um nó que anuncie `output_source` no `GET /tools`. A declaração só vai num pedido que já leva o contrato de conclusão sobre a mesma tool e com um nome que a âncora admite, para a medição nunca acrescentar uma razão para o run não arrancar. Um anúncio ilegível pára e o pedido volta à fila, como no AOS-495.
+  - **A entrega é a de hoje:** publica-se o texto final, com o digest do texto final. O `output` que o nó devolve não é guardado, publicado nem entregue. O mesmo plano, com as mesmas respostas do nó, dá em `off` e em `observe` os mesmos estados de nó, o mesmo código de saída e os mesmos eventos do plano.
+  - **Métricas** (ficheiro da drenagem, rótulos de vocabulário fechado, sem conteúdo): `aos_orq_consume_nos_por_estrutura_total{classe}`, `…_origem_designacao_total{estado}`, `…_origem_tamanho_total{classe}`, `…_origem_razao_texto_total{classe}`, `…_origem_texto_final_total{comparacao}` (texto final igual ou diferente do resultado designado, por digests) e `…_origem_transporte_total{resultado}`.
+  - **Fio:** o corpo do `POST /runs` na forma de produção (nó `read_notes`, tool `doc_read`, saída `record`) é gerado pelo `aos-orq` e entregue byte a byte ao nó real; as respostas do nó a esse corpo são as que o `aos-orq` lê nos testes.
+  - **Por fazer:** revisão adversarial independente; série de pelo menos 20 planos em `observe` em produção.
+
 ### Added — EPIC-19 (AOS-498) O nó aceita a origem da saída no `POST /runs` e devolve a âncora e os bytes no `GET /runs`
 - `feat(AOS-498)` — o kernel já designava e selava a origem da saída de um run (AOS-497), mas a declaração só entrava por código e a âncora não saía do nó. **Às escuras:** nenhum chamador envia os campos, e um run sem eles responde os mesmos bytes (os ficheiros de fio do AOS-494 não mudaram, salvo o anúncio do `GET /tools`).
   - **`POST /runs`:** `output_from_tool` (uma tool da lista-branca do mesmo pedido) e `output_source_binding` (`measure` ou `binding`), sempre juntos. 400 com mensagem própria para a declaração incompleta, o vínculo desconhecido, o nome que a âncora não admite e a tool fora da lista-branca. A tool que o nó não oferece continua a ser recusada pelo kernel no arranque (`failed`, com o erro).

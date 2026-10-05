@@ -67,6 +67,14 @@ const (
 	metricaContratoNaoAplicado  = "aos_orq_consume_contrato_nao_aplicado_total"
 	metricaVeredictosObservados = "aos_orq_consume_veredictos_observados_total"
 	metricaNosPorContrato       = "aos_orq_consume_nos_por_contrato_total"
+	// AOS-499 — a saída por referência, medida (saida_por_referencia.go). Rótulos de vocabulário
+	// FECHADO e nenhum conteúdo. Só têm valores com AOS_ORQ_SAIDA_POR_REFERENCIA=observe.
+	metricaNosPorEstrutura  = "aos_orq_consume_nos_por_estrutura_total"
+	metricaOrigemDesignacao = "aos_orq_consume_origem_designacao_total"
+	metricaOrigemTamanho    = "aos_orq_consume_origem_tamanho_total"
+	metricaOrigemRazao      = "aos_orq_consume_origem_razao_texto_total"
+	metricaOrigemTextoFinal = "aos_orq_consume_origem_texto_final_total"
+	metricaOrigemTransporte = "aos_orq_consume_origem_transporte_total"
 )
 
 // catalogoDeMetricas é a lista FECHADA do que o ficheiro contém, pela ordem em que é escrito. Uma
@@ -86,6 +94,12 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaContratoNaoAplicado, "counter", "Execucoes de plano (um serve por geracao) em que o contrato de conclusao nao foi aplicado, por motivo: no_nao_anuncia (o plano correu sem contrato) ou anuncio_ilegivel (o plano nao correu; o pedido voltou a fila)."},
 	{metricaVeredictosObservados, "counter", "Nos do plano que concluiram com um veredicto NEGATIVO observado (no aos em observe), por razao: os que enforce fechava failed."},
 	{metricaNosPorContrato, "counter", "Nos do plano submetidos, por classe face ao contrato de conclusao (com_contrato_saida_aberta|com_contrato_sem_saida|sem_contrato_verificador|sem_contrato_sem_tools|sem_contrato_no_nao_anuncia)."},
+	{metricaNosPorEstrutura, "counter", "Saida por referencia, medida (AOS-499): nos do plano submetidos em modo observe, por classe estrutural (candidato: nao-verificador, uma tool, uma saida aberta, sem consumes | nao_candidato)."},
+	{metricaOrigemDesignacao, "counter", "Saida por referencia, medida: nos candidatos por estado da designacao que o kernel do no selou (designated|missing|ambiguous|inapplicable) ou nao_medido (o no nao anuncia, a declaracao nao foi enviada, ou a resposta nao trouxe ancora)."},
+	{metricaOrigemTamanho, "counter", "Saida por referencia, medida: tamanho do resultado designado, em classes contra o tecto de transporte de 128 KiB (vazio|ate_1k|ate_16k|ate_128k|acima_128k)."},
+	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2). Abaixo de 1 o modelo escreveu menos do que leu."},
+	{metricaOrigemTextoFinal, "counter", "Saida por referencia, medida: o texto final e (igual) ou nao e (diferente) o resultado designado, por comparacao de digests sha256 — nunca de conteudo."},
+	{metricaOrigemTransporte, "counter", "Saida por referencia, medida: o que o no fez dos bytes designados (servido_confere|servido_nao_confere|too_large|not_utf8|unavailable|unavailable_now|ausente). E o que a entrega por referencia vai encontrar."},
 }
 
 // Origens de um pedido — o rótulo `origem` de [metricaOrigem] e do resumo do desfecho.

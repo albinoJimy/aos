@@ -9069,9 +9069,9 @@ enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
 - [x] Os estados `missing` e `ambiguous` respondem com os metadados e sem `output`.
 - [x] O apagamento e a expiração do titular (AOS-496) retiram também o `output` do registo de
       desfechos em memória. Teste: depois do apagamento, o ramo em memória não serve os bytes.
-- [ ] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior, e
+- [x] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior, e
       `aos-orq` novo com nó anterior (que não anuncia e recusa o campo).
-- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: as respostas do
+- [x] Ficheiros de fio gerados por um lado e consumidos pelo outro: as respostas do
       `GET /runs/{id}` (em memória, durável, `output_unavailable`, não transportável) e o anúncio
       do `GET /tools`, gerados pelo nó; o corpo do `POST /runs` com o campo, gerado pelo
       `aos-orq`.
@@ -9101,12 +9101,10 @@ envia os campos, e um run sem eles responde os bytes de antes.
 
 Critérios que ficam por marcar, e porquê:
 
-- **Compatibilidade nos dois sentidos** e **ficheiros de fio com o corpo do `POST` gerado pelo
-  `aos-orq`**: a metade do nó está provada aqui (um cliente anterior lê a resposta nova e decide
-  como sempre; um run sem os campos não ganha campo nenhum; as respostas do `GET` e o anúncio
-  estão em `packages/cmd/aos/testdata/aos498_fio/` e `aos494_fio/tools-*.json`). A metade do
-  `aos-orq` — o corpo com os campos, e o nó anterior que não anuncia e recusa — só existe com o
-  AOS-499, e marca-se com ele.
+- (A compatibilidade nos dois sentidos e o fio com o corpo do `POST` gerado pelo `aos-orq`
+  ficaram marcados com o AOS-499, que é quem tem a metade do `aos-orq`: o corpo com os campos em
+  `packages/cmd/aos-orq/testdata/aos499_fio/`, entregue byte a byte ao nó real, e o nó anterior
+  que não anuncia e recusa o campo.)
 - **Smoke sobre JetStream**: não corrido. O smoke sobre ficheiro está registado na entrega.
 - **Revisão adversarial independente**: é feita a seguir, antes da fusão.
 
@@ -9184,32 +9182,32 @@ hoje. Nenhum desfecho de plano muda.
 
 ### Critérios de Aceitação
 
-- [ ] Interruptor de configuração no `aos-orq`: `AOS_ORQ_SAIDA_POR_REFERENCIA`, com os valores
+- [x] Interruptor de configuração no `aos-orq`: `AOS_ORQ_SAIDA_POR_REFERENCIA`, com os valores
       `off` e `observe` neste ticket. A omissão é `off`. Um valor desconhecido recusa o arranque;
       `on` é recusado até ao AOS-501. O banner do `serve` diz o modo.
-- [ ] **Candidato estrutural**: nó não-verificador, com exactamente uma tool pinada, exactamente
+- [x] **Candidato estrutural**: nó não-verificador, com exactamente uma tool pinada, exactamente
       uma saída de forma aberta e sem `consumes`. Cada nó diz no log da drenagem em que classe
       fica.
-- [ ] Em `observe`, o `aos-orq` envia `output_from_tool` aos candidatos, e só a um nó que
+- [x] Em `observe`, o `aos-orq` envia `output_from_tool` aos candidatos, e só a um nó que
       anuncie suportá-lo (AOS-498). Contra um nó que não anuncia, submete como hoje e regista que
       não mediu. Um anúncio ilegível pára e o pedido volta à fila, como no AOS-495.
-- [ ] A publicação e a entrega são as de hoje: publica-se o texto final, com o digest do texto
+- [x] A publicação e a entrega são as de hoje: publica-se o texto final, com o digest do texto
       final. O `aos-orq` não publica nem entrega o resultado designado neste ticket.
-- [ ] **Nenhum desfecho de plano muda.** Teste: o mesmo plano, com as mesmas respostas do nó,
+- [x] **Nenhum desfecho de plano muda.** Teste: o mesmo plano, com as mesmas respostas do nó,
       dá em `off` e em `observe` os mesmos estados de nó, o mesmo código de saída e os mesmos
       eventos do plano, byte a byte.
-- [ ] Métricas no ficheiro da drenagem, todas com rótulos de vocabulário fechado e **sem
+- [x] Métricas no ficheiro da drenagem, todas com rótulos de vocabulário fechado e **sem
       conteúdo**: nós por classe estrutural (candidato, não candidato); nos candidatos, o estado
       da designação (`designated`, `missing`, `ambiguous`, e não medido); tamanho do resultado
       designado, em classes, contra os 128 KiB; razão entre o tamanho do texto final e o tamanho
       do resultado designado, em classes.
-- [ ] A razão de tamanhos calcula-se dos metadados (`output_source`) e do comprimento do texto
+- [x] A razão de tamanhos calcula-se dos metadados (`output_source`) e do comprimento do texto
       final. Nenhum conteúdo é escrito em log, métrica ou evento.
-- [ ] A superfície de variáveis de ambiente, o README e o exemplo de `.env` registam o
+- [x] A superfície de variáveis de ambiente, o README e o exemplo de `.env` registam o
       interruptor.
-- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo em `observe` com nó
+- [x] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo em `observe` com nó
       anterior, e nó novo com `aos-orq` anterior.
-- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: o corpo do `POST /runs` com
+- [x] Ficheiros de fio gerados por um lado e consumidos pelo outro: o corpo do `POST /runs` com
       o campo, gerado pelo `aos-orq` na forma de produção (nó de leitura, uma tool, saída
       `record`), entregue byte a byte ao nó real; as respostas do nó a esse corpo são as que o
       `aos-orq` lê.
@@ -9240,7 +9238,31 @@ Lêem-se do registo de turnos na análise da série.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-05), por rever e por verificar em produção.** Desligado por omissão: sem
+a variável, o corpo do `POST /runs`, o log dos nós e as métricas são os de antes.
+
+Critérios que ficam por marcar: a **revisão adversarial independente**, que é feita a seguir,
+antes da fusão; e a **verificação em produção** (a série de pelo menos 20 planos em `observe`).
+
+O que a implementação fixou e o ticket não dizia (a validar pelo dono):
+
+- **A declaração só vai num pedido que já leva o contrato de conclusão sobre a mesma tool**, e
+  cujo nome de tool tem a forma que a âncora selada admite. «Só medição» não muda o desfecho de
+  um run que arranca, mas uma declaração impossível recusa o arranque; com esta condição, a
+  declaração nunca acrescenta uma razão para o run não arrancar que o contrato já não tivesse.
+  Um candidato a quem ela não vai conta como `nao_medido`, com a causa no log.
+- **«Exactamente uma saída de forma aberta»** conta só as abertas: um nó com uma saída aberta e
+  uma fechada é candidato, porque é a aberta que hoje se publica do texto final.
+- **Em `off` nenhum nó diz a classe estrutural no log** e nenhuma série nova é escrita: só o
+  banner do `serve` diz o modo. A classe de cada nó aparece em `observe`.
+- **O estado `inapplicable`** do kernel (um run com entradas declarado como produtor) tem a sua
+  série, ao lado dos três do critério. Um candidato não o produz, porque não tem `consumes`.
+- **Duas medidas a mais**, para o AOS-501 saber o que vai encontrar: se o texto final é igual ou
+  diferente do resultado designado (por digests), e o que o nó fez dos bytes (servidos e
+  conferidos, acima do tecto, não texto, indisponíveis).
+- **Os bytes designados que o nó devolve só servem para conferir o digest**; não são guardados.
+- A medida só aceita uma âncora com o vínculo que este binário enviou e com a forma que o
+  kernel produz; o resto conta como `nao_medido`, sem repetir o que veio do nó.
 
 ---
 

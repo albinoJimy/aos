@@ -182,6 +182,11 @@ type anuncioDoNo struct {
 	aceita bool
 	// modo é o que o nó diz fazer com o veredicto (`observe`, `enforce`, `off`). Só se imprime.
 	modo string
+	// origem — o nó devolveu `output_source` no `GET /tools` e diz aceitar o vínculo «só medição»
+	// (AOS-498): aceita `output_from_tool` no `POST /runs`. Falso num nó anterior, e num nó com o
+	// veredicto desligado. Lê-se na MESMA resposta do contrato: um anúncio que não se leu pára o
+	// `serve` para os dois.
+	origem bool
 }
 
 // ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
@@ -219,14 +224,27 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 		CompletionContract *struct {
 			Mode string `json:"mode"`
 		} `json:"completion_contract"`
+		OutputSource *struct {
+			Bindings []string `json:"bindings"`
+		} `json:"output_source"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
 		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: resposta ilegível: %w", err)
 	}
-	if corpo.CompletionContract == nil {
-		return anuncioDoNo{}, nil
+	var anuncio anuncioDoNo
+	if corpo.OutputSource != nil {
+		// A presença é o anúncio; o vínculo que este binário envia tem de constar dos aceites.
+		for _, v := range corpo.OutputSource.Bindings {
+			if v == string(agentruntime.OutputSourceMeasure) {
+				anuncio.origem = true
+			}
+		}
 	}
-	return anuncioDoNo{aceita: true, modo: modoImprimivel(corpo.CompletionContract.Mode)}, nil
+	if corpo.CompletionContract == nil {
+		return anuncio, nil
+	}
+	anuncio.aceita, anuncio.modo = true, modoImprimivel(corpo.CompletionContract.Mode)
+	return anuncio, nil
 }
 
 // modoImprimivel reduz o modo anunciado a um dos três que este binário conhece. O valor vem de

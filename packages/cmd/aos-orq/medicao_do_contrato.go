@@ -25,6 +25,14 @@ type medicaoDoContrato struct {
 	naoAplicado map[string]int // motivo → execuções de plano
 	observados  map[string]int // razão → nós do plano
 	classes     map[string]int // classe → nós submetidos
+	// AOS-499 — a saída por referência, medida (saida_por_referencia.go). Só com o interruptor em
+	// `observe`; vazios em `off`.
+	estruturas  map[string]int // classe estrutural → nós submetidos
+	designacoes map[string]int // estado da designação → nós candidatos
+	tamanhos    map[string]int // classe de tamanho do resultado designado → nós
+	razoes      map[string]int // classe da razão texto final / resultado designado → nós
+	comparacoes map[string]int // texto final igual ou diferente do resultado designado → nós
+	transportes map[string]int // o que o nó fez dos bytes designados → nós
 }
 
 // contratoNaoAplicado conta uma execução de plano em que o contrato não foi aplicado.
@@ -89,4 +97,5 @@ func (m *metricasDoConsumo) registarContrato(c *medicaoDoContrato) {
 	somar(metricaContratoNaoAplicado, "motivo", motivosDoContratoNaoAplicado, c.naoAplicado)
 	somar(metricaVeredictosObservados, "razao", razoesObservaveis(), c.observados)
 	somar(metricaNosPorContrato, "classe", classesDoContrato, c.classes)
+	m.registarOrigem(c)
 }

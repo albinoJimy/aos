@@ -1130,7 +1130,11 @@ As séries: `aos_orq_consume_drenagens_total{resultado}`, `…_pedidos_reclamado
 `…_plano_duracao_segundos_{sum,count}{classe}`, e os gauges `…_falhas_consecutivas` (o que o
 `alerta-nhi.sh` lê), `…_ultima_drenagem_timestamp_seconds` e `…_ultima_drenagem_pedidos`. Do
 contrato de conclusão (AOS-495): `…_contrato_nao_aplicado_total{motivo=no_nao_anuncia|anuncio_ilegivel}`,
-`…_veredictos_observados_total{razao}` e `…_nos_por_contrato_total{classe}`. **Não
+`…_veredictos_observados_total{razao}` e `…_nos_por_contrato_total{classe}`. Da saída por
+referência, medida (AOS-499, só com `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`):
+`…_nos_por_estrutura_total{classe}`, `…_origem_designacao_total{estado}`,
+`…_origem_tamanho_total{classe}`, `…_origem_razao_texto_total{classe}`,
+`…_origem_texto_final_total{comparacao}` e `…_origem_transporte_total{resultado}`. **Não
 levam identificador nenhum** — nem `run_id` nem objectivo. O log leva ids (run, nós, plano),
 códigos, hashes e durações, e **não leva o objectivo** do pedido: o `consume` imprime só
 `objectivo_bytes=N`, porque um ficheiro em claro não é alcançado pelo `/dsar/erase`. Os `node_id`
@@ -1180,6 +1184,43 @@ soma um a `aos_orq_consume_nos_por_contrato_total{classe}`:
 > saída de forma aberta. Em `observe` não muda nenhum desfecho. Em `enforce`, um nó desta classe
 > com uma tool atribuída de que o objectivo não precisa fica `failed`. Quantos são, e quantos
 > tiveram veredicto negativo, está nas duas séries acima. A validação é do dono.
+
+**A saída por referência, medida (AOS-499) — `AOS_ORQ_SAIDA_POR_REFERENCIA`.** Desligado por
+omissão (`off`). Com `observe`, o `serve` di-lo numa linha `saida por referencia (AOS-499): modo
+observe`, e cada nó do plano diz se é **candidato por estrutura**: não é verificador, tem
+exactamente uma tool, declara exactamente uma saída de forma aberta e não tem `consumes`. A um
+candidato, e só contra um nó `aos` que anuncie o suporte (`output_source` no `GET /tools`), o
+`POST /runs` leva a origem da saída (a tool do nó) com o vínculo `measure`. O kernel do nó designa
+e sela a âncora; o desfecho do run é o que seria sem a declaração, também com o nó em `enforce`.
+
+**Nada do que flui muda.** A saída publicada e entregue ao nó seguinte continua a ser o texto
+final do run, com o digest do texto final. O resultado designado que o nó devolve não é guardado,
+publicado nem entregue. O estado de cada nó, o código de saída do plano e os eventos do plano são
+os mesmos em `off` e em `observe`.
+
+Cada candidato deixa no log da drenagem uma linha `execucao: no <id> ORIGEM MEDIDA estado=…`, e
+soma às séries:
+
+| Série | Rótulo | O que conta |
+|---|---|---|
+| `aos_orq_consume_nos_por_estrutura_total` | `classe`: `candidato`, `nao_candidato` | nós submetidos em `observe` |
+| `aos_orq_consume_origem_designacao_total` | `estado`: `designated`, `missing`, `ambiguous`, `inapplicable`, `nao_medido` | o que o kernel selou para cada candidato; `nao_medido` quando o nó não anuncia, a declaração não foi enviada ou a resposta não trouxe âncora |
+| `aos_orq_consume_origem_tamanho_total` | `classe`: `vazio`, `ate_1k`, `ate_16k`, `ate_128k`, `acima_128k` | tamanho do resultado designado, contra o tecto de 128 KiB |
+| `aos_orq_consume_origem_razao_texto_total` | `classe`: `origem_vazia`, `texto_vazio`, `abaixo_de_0_5`, `de_0_5_a_0_9`, `de_0_9_a_1_1`, `de_1_1_a_2`, `acima_de_2` | tamanho do texto final a dividir pelo do resultado designado; abaixo de 1 o modelo escreveu menos do que leu |
+| `aos_orq_consume_origem_texto_final_total` | `comparacao`: `igual`, `diferente` | o texto final é ou não é o resultado designado, por comparação de digests |
+| `aos_orq_consume_origem_transporte_total` | `resultado`: `servido_confere`, `servido_nao_confere`, `too_large`, `not_utf8`, `unavailable`, `unavailable_now`, `ausente` | o que o nó fez dos bytes designados — o que a entrega por referência vai encontrar |
+
+O que ler antes de ligar a entrega (AOS-501): quantos candidatos ficam `missing` ou `ambiguous`
+(com a entrega ligada passam a vermelhos com causa), quantos resultados não cabem no tecto, e em
+quantos o texto final é `diferente` e mais curto do que o resultado — os nós em que hoje se
+entrega um resumo no lugar do documento. As séries não levam conteúdo nem identificadores; o log
+leva o id do nó, o estado, classes e tamanhos.
+
+`on` não existe neste binário: qualquer valor que não seja `off` ou `observe` recusa o arranque
+do `consume` (e do `serve`) antes de reclamar um pedido. A declaração só vai num pedido que já
+leva o contrato de conclusão sobre a mesma tool e cujo nome de tool tem a forma que a âncora
+admite; de outro modo o candidato conta como `nao_medido`, para a medição nunca impedir um run
+de arrancar. Os tokens de saída do nó produtor não se medem aqui: lêem-se do registo de turnos.
 
 **Um anúncio que não se leu não é um «não».** Se o `GET /tools` do anúncio falhar (rede, `429`,
 `5xx`, corpo ilegível), o plano **não corre sem contrato**: o `serve` pára antes da posse, o

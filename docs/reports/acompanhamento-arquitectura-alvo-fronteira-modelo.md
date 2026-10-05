@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (saída por referência: AOS-497 implementado e revisto — o kernel designa e sela a origem da saída; AOS-498 implementado, por rever — o nó aceita a declaração e devolve a âncora e os bytes, às escuras; AOS-499 a AOS-501 abertos).
+Última actualização: 2026-10-05 (saída por referência: AOS-497 implementado e revisto — o kernel designa e sela a origem da saída; AOS-498 implementado, por rever — o nó aceita a declaração e devolve a âncora e os bytes; AOS-499 implementado, por rever — o `aos-orq` mede com o interruptor em `observe`, desligado por omissão; AOS-500 e AOS-501 abertos).
 
 ## 1. Objectivo e promessa
 
@@ -26,7 +26,7 @@ Uma fase só passa a **provada** quando o critério de prova está medido e regi
 | Fase | Conteúdo | Critério de prova | Depende de | Estado |
 |---|---|---|---|---|
 | **A0** | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão; o `aos-orq` trata «não cumprido» como nó falhado | Zero verdes falsos em pelo menos 150 runs com tools na oferta | — | **em produção por verificar** (v0.1.46, imposição ligada a 2026-10-05; falta o critério de prova) |
-| **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **em curso** (AOS-497 implementado e revisto a 2026-10-05; AOS-498 implementado a 2026-10-05, por rever; os dois sem efeito enquanto nenhum chamador declarar a origem; AOS-499 a AOS-501 abertos) |
+| **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **em curso** (AOS-497 implementado e revisto a 2026-10-05; AOS-498 e AOS-499 implementados a 2026-10-05, por rever; sem efeito enquanto `AOS_ORQ_SAIDA_POR_REFERENCIA` não for `observe`; AOS-500 e AOS-501 abertos) |
 | **A1** | Recuperação do run (aviso ou repetição do pedido) e rota sob governação (nome real do modelo, proxy sem descartar parâmetros, modelo servido comparado por turno) | «Não cumprido» abaixo de 2%; uma troca de modelo por baixo é detectada | A0; medição de até 150 pedidos | por começar |
 | **A2** | Estado opaco do provider por turno (raciocínio, assinaturas, identificadores), com sondas de protocolo deterministas | Duas famílias de modelos completam runs com tools | A0; escolha da segunda família | por começar |
 | **A3** | Entrada automática: arnês de qualificação, perfil do modelo como artefacto do registo, mais de um modelo por nó, canary, disjuntor | O terceiro modelo entra com zero PRs e uma assinatura em menos de uma hora; um modelo mau é recusado sozinho | A1, A2 | por começar |
@@ -68,7 +68,7 @@ valida a classe alargada antes de ligar `enforce` (§4).
 |---|---|---|---|---|
 | AOS-497 | EPIC-02 | O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada. Escreve o ADR-038 e as emendas ao ADR-037; as do ADR-027 e do ADR-022 ficam para os tickets que mudam o que eles descrevem (AOS-501 e AOS-500) | AOS-493 | implementado (ADR-038) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket: a regra conta as chamadas pedidas, o run com entradas tem o estado `inapplicable`, a forma do nome valida-se no arranque, a fonte dos bytes é o step-ledger); invisível até haver chamador; por verificar em produção |
 | AOS-498 | EPIC-19 | O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}` e anuncia-o no `GET /tools` | AOS-497, AOS-494; relaciona AOS-496 | implementado (2026-10-05), por rever e por verificar em produção. Os bytes lêem-se do step-ledger nos dois ramos e conferem-se contra o digest selado; a falta deles manifesta-se conforme o vínculo e nunca muda o desfecho de um run «só medição». Emenda o ADR-037 §2.8. Por fazer: smoke sobre JetStream |
-| AOS-499 | EPIC-19 | O `aos-orq` mede a saída por referência sem mudar a entrega | AOS-498 | aberto |
+| AOS-499 | EPIC-19 | O `aos-orq` mede a saída por referência sem mudar a entrega | AOS-498 | implementado (2026-10-05), por rever. `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`: os candidatos por estrutura declaram a origem com o vínculo `measure`; a entrega, os estados dos nós, o código de saída e os eventos do plano são os de `off`. **Por fazer: a série de pelo menos 20 planos em `observe` em produção, e ler as métricas aqui** |
 | AOS-500 | EPIC-19 | O plano declara a origem de uma saída: `outputs[].from_tool`, schema 1.3.0 | — | aberto |
 | AOS-501 | EPIC-19 | O `aos-orq` entrega por referência as saídas declaradas | AOS-498, AOS-499 (medição lida), AOS-500 | aberto |
 
@@ -80,9 +80,17 @@ a sair errado em silêncio: o pior caso novo é um vermelho com causa nomeada on
 
 O AOS-501 é o único que muda o que flui entre nós.
 
-**Por fechar antes de implementar o AOS-499:** as razões novas do veredicto seguem o modo de
-aplicação do nó, que em produção está em imposição desde 2026-10-05. O desenho só envia o campo
-com o nó em observação; assim, a medição não corre em produção. As duas saídas estão no ticket.
+**Fechado antes de implementar o AOS-499:** as razões novas do veredicto seguiam o modo de
+aplicação do nó, que em produção está em imposição desde 2026-10-05, e a medição não corria em
+produção. Resolvido no AOS-497 com o vínculo por run: o `aos-orq` envia sempre `measure`, e o
+desfecho do run é o que seria sem a declaração, com o nó em qualquer modo.
+
+**Medição do AOS-499 em produção: por fazer.** Quando a série de pelo menos 20 planos em
+`observe` correr, registam-se aqui, do ficheiro de métricas da drenagem: os nós por classe
+estrutural; nos candidatos, o estado da designação; o tamanho do resultado designado contra os
+128 KiB; a razão entre o texto final e o resultado; em quantos o texto final é diferente do
+resultado; e o que o nó fez dos bytes. Os tokens de saída do nó produtor lêem-se do registo de
+turnos.
 
 ### A1 a A6
 

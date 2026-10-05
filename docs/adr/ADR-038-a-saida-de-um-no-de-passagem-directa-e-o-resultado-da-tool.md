@@ -399,7 +399,7 @@ não cai para o texto. **Fica para AOS-501.**
 | Razões novas e precedência; métrica do estado da âncora | §2.4 | AOS-497 |
 | Manifesto, registo de retoma, paridade do replay | §2.5 | AOS-497 |
 | Campo no `POST /runs`, âncora e bytes no `GET /runs/{id}`, anúncio no `GET /tools` | §2.1, §2.6 | AOS-498 |
-| Medição pelo `aos-orq` com o vínculo `measure`, sem mudar a entrega | §2.4 | AOS-499 |
+| Medição pelo `aos-orq` com o vínculo `measure`, sem mudar a entrega (implementado: interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`; só declara num pedido que já leva o contrato sobre a mesma tool) | §2.4 | AOS-499 |
 | `outputs[].from_tool` no plano, schema 1.3.0, validador, cartão de aprovação | §2.1 | AOS-500 |
 | Publicação e entrega pelos bytes designados; origem no evento do plano; texto final não publicado; causas de falha; prompt do planeador | §2.6 a §2.9 | AOS-501 |
 
