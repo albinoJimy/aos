@@ -226,7 +226,9 @@ func TestAOS499ComOBinarioReal(t *testing.T) {
 				t.Fatal("o digest entregue e o da ancora: o aos-orq publicou o resultado designado")
 			}
 			for _, quer := range []string{
-				"execucao: no read_notes ORIGEM MEDIDA estado=designated bytes_da_origem=21 (ate_1k) bytes_do_texto=5 razao=abaixo_de_0_5 texto_final=diferente transporte=servido_confere — so medicao",
+				// A `doc_read` deste nó de teste devolve bytes CRUS (não corre na sandbox): a forma
+				// é `cru`, e o texto final (`feito`) não tem a única linha do documento.
+				"execucao: no read_notes ORIGEM MEDIDA estado=designated bytes_da_origem=21 (ate_1k) transporte=servido_confere forma=cru bytes_do_texto=5 texto_final=linhas_abaixo_de_0_5 numeros=sem_numeros razao=abaixo_de_0_5 — so medicao",
 				"execucao: payload read_notes/conteudo publicado (record)",
 				"execucao: read_notes=complete summarize=complete",
 			} {
@@ -240,7 +242,9 @@ func TestAOS499ComOBinarioReal(t *testing.T) {
 				serie(metricaOrigemDesignacao, "estado", "designated"):                      1,
 				serie(metricaOrigemTamanho, "classe", tamanhoAte1K):                         1,
 				serie(metricaOrigemRazao, "classe", razaoAbaixoDe05):                        1,
-				serie(metricaOrigemTextoFinal, "comparacao", textoDiferenteDaOrigem):        1,
+				serie(metricaOrigemTextoFinal, "comparacao", comparacaoLinhasAbaixo05):      1,
+				serie(metricaOrigemNumeros, "resultado", numerosNenhum):                     1,
+				serie(metricaOrigemForma, "forma", formaCru):                                1,
 				serie(metricaOrigemTransporte, "resultado", transporteConfere):              1,
 				serie(metricaNosPorContrato, "classe", classeComContratoSaidaAberta):        1,
 				serie(metricaDesfechos, "classe", "terminal", "codigo", fmt.Sprint(exitOK)): 1,
@@ -264,63 +268,147 @@ func TestAOS499ComOBinarioReal(t *testing.T) {
 		})
 	}
 
-	// (3) NENHUM DESFECHO MUDA. O mesmo plano, com as mesmas respostas do nó, dá em `off` (e sem a
-	// variável) e em `observe` os mesmos estados de nó, o mesmo código de saída e os mesmos eventos
-	// do plano. Com a resposta designada, com a origem em falta e com a resposta de produção em
-	// que o nó de leitura não chamou a tool.
-	for _, c := range []struct{ nome, fio, modoDoNo string }{
-		{"designada", "producao-designada-enforce", "enforce"},
-		{"em-falta", "producao-em-falta-observe", "observe"},
+	// (3) NENHUM DESFECHO MUDA — COM RESPOSTAS DIFERENTES POR MODO (revisão de 2026-10-05, I3).
+	//
+	// A primeira versão dava ao `off` e ao `observe` a MESMA resposta do nó, já com a âncora e os
+	// bytes. Mas é exactamente isso que os distingue: em `off` não há declaração e o nó responde
+	// SEM os três campos novos; em `observe` responde COM eles. Um `aos-orq` que lesse um dos
+	// campos novos para decidir (a mutação Q9: `output_omitted` lido como `output_unavailable`)
+	// passava no teste antigo, porque a leitura errada acontecia nos dois lados.
+	//
+	// Aqui cada caso é a resposta completa do nó em `observe`; em `off` (e sem a variável) o nó
+	// falso responde a mesma coisa SEM `output_source`, `output` e `output_omitted`. Exige-se o
+	// mesmo desfecho do plano, os mesmos estados de nó, os mesmos eventos e o mesmo `POST` do
+	// consumidor — e que nada do que o nó mandou nos campos novos chegue ao log, às métricas ou ao
+	// `detail`.
+	semOrigem := func(t *testing.T, cru []byte) []byte {
+		t.Helper()
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(cru, &m); err != nil {
+			t.Fatalf("resposta ilegivel: %v", err)
+		}
+		delete(m, "output_source")
+		delete(m, "output")
+		delete(m, "output_omitted")
+		out, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	const idDoNo = run + "~read_notes"
+	ancora := func(estado, resto string) string {
+		a := `"output_source":{"tool":"doc_read","binding":"measure","state":"` + estado + `"`
+		if estado == "designated" {
+			a += `,"step_id":"step-000001-tool-1","digest":"` + digestDoConteudo(aos499Documento) + `","bytes":21`
+		}
+		return a + "}" + resto
+	}
+	concluido := `{"run_id":"` + idDoNo + `","status":"completed","terminated":true,"final_text":"feito","turns":2,`
+	type casoDeModo struct {
+		nome, modoDoNo string
+		completa       []byte
+		semVariavel    bool // corre também sem a variável definida
+	}
+	casos := []casoDeModo{
+		{nome: "fio-designada", modoDoNo: "enforce", completa: aos499FioDoNo(t, "producao-designada-enforce"), semVariavel: true},
+		{nome: "fio-em-falta", modoDoNo: "observe", completa: aos499FioDoNo(t, "producao-em-falta-observe"), semVariavel: true},
+	}
+	for nome, completa := range map[string]string{
+		"servido":            concluido + ancora("designated", `,"output":"`+aos499Documento+`"`) + "}",
+		"servido-nao-bate":   concluido + ancora("designated", `,"output":"OUTRO conteudo qualquer"`) + "}",
+		"unavailable_now":    concluido + ancora("designated", `,"output_omitted":"unavailable_now"`) + "}",
+		"unavailable":        concluido + ancora("designated", `,"output_omitted":"unavailable"`) + "}",
+		"too_large":          concluido + ancora("designated", `,"output_omitted":"too_large"`) + "}",
+		"not_utf8":           concluido + ancora("designated", `,"output_omitted":"not_utf8"`) + "}",
+		"missing":            concluido + ancora("missing", "") + "}",
+		"ambiguous":          concluido + ancora("ambiguous", "") + "}",
+		"inapplicable":       concluido + ancora("inapplicable", "") + "}",
+		"marca-desconhecida": concluido + ancora("designated", `,"output_omitted":"qualquer coisa\nforjada"`) + "}",
+		"ancora-mal-formada": concluido + `"output_source":{"tool":"x y","binding":"binding","state":"Designated","step_id":"zzz","digest":"nada","bytes":-4},"output":"lixo"}`,
+		"failed-com-ancora":  `{"run_id":"` + idDoNo + `","status":"failed","outcome_reason":"contract_unmet_no_call","error":"contrato","turns":1,` + ancora("missing", "") + "}",
+		"texto-vazio-com-output": `{"run_id":"` + idDoNo + `","status":"completed","terminated":true,"final_text":"","turns":2,` +
+			ancora("designated", `,"output":"`+aos499Documento+`"`) + "}",
+		"saida-indisponivel-e-ancora": `{"run_id":"` + idDoNo + `","status":"completed","terminated":true,"output_unavailable":true,"turns":2,` +
+			ancora("designated", `,"output_omitted":"unavailable"`) + "}",
 	} {
+		casos = append(casos, casoDeModo{nome: nome, modoDoNo: "enforce", completa: []byte(completa)})
+	}
+	estados := func(stdout string) string {
+		for _, linha := range strings.Split(stdout, "\n") {
+			if strings.Contains(linha, "execucao: read_notes=") {
+				return strings.TrimSpace(linha)
+			}
+		}
+		return ""
+	}
+	for _, c := range casos {
 		t.Run("NenhumDesfechoMuda/"+c.nome, func(t *testing.T) {
 			p := aos495FormaDeProducao(t, c.modoDoNo)
-			fio := aos499FioDoNo(t, c.fio)
-			correr := func(modo string) (aos499Drenagem, []aos499Evento, *aos495No) {
-				f := &aos495No{catalogo: p.catalogo, respostas: map[string][]byte{"read_notes": fio}}
+			semCampos := semOrigem(t, c.completa)
+			if bytes.Equal(bytes.TrimSpace(semCampos), bytes.TrimSpace(c.completa)) {
+				t.Fatal("pre-condicao: a resposta em observe tem de diferir da resposta em off — senao o teste nao distingue os modos")
+			}
+			correr := func(modo string, resposta []byte) (aos499Drenagem, []aos499Evento, *aos495No) {
+				f := &aos495No{catalogo: p.catalogo, respostas: map[string][]byte{"read_notes": resposta}}
 				d := aos499Consumir(t, bin, f, run, p.plano, p.snapshot, modo)
 				return d, aos499EventosDoPlano(t, d.wal, run), f
 			}
-			base, eventosBase, fBase := correr("")
+			base, eventosBase, fBase := correr("off", semCampos)
 			if strings.Contains(base.stdout, "ORIGEM MEDIDA") || strings.Contains(base.stdout, "saida por referencia: classe=") ||
 				strings.Contains(base.metricas, metricaNosPorEstrutura+"{") || strings.Contains(base.metricas, metricaOrigemDesignacao+"{") {
-				t.Fatalf("sem a variavel nada e declarado nem medido:\n%s\n%s", base.stdout, base.metricas)
+				t.Fatalf("em off nada e declarado nem medido:\n%s\n%s", base.stdout, base.metricas)
 			}
 			if _, _, presente := origemEnviada(fBase.corpo(run, "read_notes")); presente {
-				t.Fatal("sem a variavel o corpo nao leva a declaracao de origem")
+				t.Fatal("em off o corpo nao leva a declaracao de origem")
 			}
 			if !strings.Contains(base.stdout, "saida por referencia (AOS-499): modo off") {
 				t.Fatalf("o banner do serve diz o modo, tambem em off:\n%s", base.stdout)
 			}
-			estados := func(stdout string) string {
-				for _, linha := range strings.Split(stdout, "\n") {
-					if strings.Contains(linha, "execucao: read_notes=") {
-						return strings.TrimSpace(linha)
-					}
-				}
-				return ""
-			}
 			if estados(base.stdout) == "" {
 				t.Fatalf("pre-condicao: o log tem a linha dos estados dos nos:\n%s", base.stdout)
 			}
-			for _, modo := range []string{"off", "observe"} {
-				d, eventos, f := correr(modo)
+			type corrida struct {
+				modo     string
+				resposta []byte
+			}
+			corridas := []corrida{{"observe", c.completa}}
+			if c.semVariavel {
+				corridas = append(corridas, corrida{"", semCampos})
+			}
+			for _, k := range corridas {
+				d, eventos, f := correr(k.modo, k.resposta)
 				if d.codigo != base.codigo || d.classe != base.classe {
-					t.Fatalf("modo %s: o desfecho mudou: %s/%d, e sem a variavel era %s/%d", modo, d.classe, d.codigo, base.classe, base.codigo)
+					t.Fatalf("modo %q: o desfecho do plano MUDOU: %s/%d %q, e em off era %s/%d %q", k.modo, d.classe, d.codigo, d.detalhe, base.classe, base.codigo, base.detalhe)
 				}
 				if estados(d.stdout) != estados(base.stdout) {
-					t.Fatalf("modo %s: os estados dos nos mudaram: %q, e eram %q", modo, estados(d.stdout), estados(base.stdout))
+					t.Fatalf("modo %q: os estados dos nos mudaram: %q, e em off eram %q", k.modo, estados(d.stdout), estados(base.stdout))
 				}
 				// Stream, tipo, passo e payload de cada evento, pela ordem do log: byte a byte.
 				if !reflect.DeepEqual(eventos, eventosBase) {
-					t.Fatalf("modo %s: os eventos do plano mudaram:\n  agora: %v\n  antes: %v", modo, eventos, eventosBase)
+					t.Fatalf("modo %q: os eventos do plano mudaram:\n  agora: %v\n  em off: %v", k.modo, eventos, eventosBase)
 				}
-				// O que o consumidor recebe é o mesmo, byte a byte.
-				if !reflect.DeepEqual(f.corpo(run, "summarize")["inputs"], fBase.corpo(run, "summarize")["inputs"]) {
-					t.Fatalf("modo %s: o consumidor recebeu outra coisa: %v, e era %v", modo, f.corpo(run, "summarize")["inputs"], fBase.corpo(run, "summarize")["inputs"])
+				// O `POST` do consumidor é o mesmo, byte a byte — ou nenhum, nos dois.
+				if !reflect.DeepEqual(f.corpo(run, "summarize"), fBase.corpo(run, "summarize")) {
+					t.Fatalf("modo %q: o consumidor recebeu outra coisa: %v, e em off era %v", k.modo, f.corpo(run, "summarize"), fBase.corpo(run, "summarize"))
 				}
 				_, _, presente := origemEnviada(f.corpo(run, "read_notes"))
-				if presente != (modo == "observe") {
-					t.Fatalf("modo %s: declaracao de origem no corpo = %v", modo, presente)
+				if presente != (k.modo == "observe") {
+					t.Fatalf("modo %q: declaracao de origem no corpo = %v", k.modo, presente)
+				}
+				if k.modo != "observe" {
+					continue
+				}
+				if !strings.Contains(d.stdout, "ORIGEM MEDIDA") {
+					t.Fatalf("em observe o candidato tem a sua linha de medicao:\n%s", d.stdout)
+				}
+				// NADA do que o nó mandou nos campos novos se repete fora do vocabulário fechado.
+				for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": d.metricas, "detalhe": d.detalhe} {
+					for _, proibido := range []string{aos499Documento, "OUTRO conteudo", "forjada", "lixo", "x y", "zzz", digestDoConteudo(aos499Documento)} {
+						if strings.Contains(texto, proibido) {
+							t.Fatalf("o %s leva %q, que veio do no:\n%s", onde, proibido, texto)
+						}
+					}
 				}
 			}
 		})
@@ -487,6 +575,28 @@ func TestAOS499_Interruptor(t *testing.T) {
 	}
 }
 
+// TestAOS499_Interruptor_DoAmbiente fixa o que a LEITURA da variável faz com os espaços (mutação
+// Q3b da revisão: nada dizia se se aparavam). Aparam-se nas pontas — um `.env` com um espaço ou
+// uma quebra de linha a mais não é um valor desconhecido —, e só nas pontas; as maiúsculas não se
+// dobram. A função que valida o valor já lido continua exacta ([TestAOS499_Interruptor]).
+func TestAOS499_Interruptor_DoAmbiente(t *testing.T) {
+	for bruto, quer := range map[string]string{
+		"": saidaPorReferenciaOff, "   ": saidaPorReferenciaOff, "off": saidaPorReferenciaOff, " off\n": saidaPorReferenciaOff,
+		"observe": saidaPorReferenciaObserve, " observe ": saidaPorReferenciaObserve, "\tobserve\r\n": saidaPorReferenciaObserve,
+	} {
+		t.Setenv("AOS_ORQ_SAIDA_POR_REFERENCIA", bruto)
+		if got, err := modoDaSaidaPorReferenciaDoAmbiente(); err != nil || got != quer {
+			t.Errorf("AOS_ORQ_SAIDA_POR_REFERENCIA=%q: modo = %q, %v; quero %q", bruto, got, err, quer)
+		}
+	}
+	for _, bruto := range []string{" Observe ", "obs erve", " on ", "observe,off"} {
+		t.Setenv("AOS_ORQ_SAIDA_POR_REFERENCIA", bruto)
+		if got, err := modoDaSaidaPorReferenciaDoAmbiente(); !errors.Is(err, ErrSaidaPorReferencia) || got != "" {
+			t.Errorf("AOS_ORQ_SAIDA_POR_REFERENCIA=%q: modo = %q, %v; quero a recusa", bruto, got, err)
+		}
+	}
+}
+
 // TestAOS499_CandidatoEstrutural: a regra, caso a caso.
 func TestAOS499_CandidatoEstrutural(t *testing.T) {
 	aberta := plan.Output{Name: "conteudo", Type: plan.PayloadRecord}
@@ -536,79 +646,6 @@ func TestAOS499_OrigemDeclaravel(t *testing.T) {
 	}
 }
 
-// TestAOS499_MedirOrigem: a medida, sobre as respostas do nó real (os ficheiros do fio) e sobre
-// respostas que o nó real não daria — as que vêm de fora do vocabulário não são repetidas.
-func TestAOS499_MedirOrigem(t *testing.T) {
-	ler := func(nome string) estadoDoRun {
-		t.Helper()
-		var st estadoDoRun
-		if err := json.Unmarshal(aos499FioDoNo(t, nome), &st); err != nil {
-			t.Fatalf("%s: %v", nome, err)
-		}
-		return st
-	}
-	for _, c := range []struct {
-		fio  string
-		quer medidaDaOrigem
-	}{
-		{"memoria-measure-enforce", medidaDaOrigem{estado: "designated", bytes: 27, tamanho: tamanhoAte1K, razao: razaoDe11A2, comparacao: textoDiferenteDaOrigem, transporte: transporteConfere}},
-		{"duravel-measure-enforce", medidaDaOrigem{estado: "designated", bytes: 27, tamanho: tamanhoAte1K, razao: razaoDe11A2, comparacao: textoDiferenteDaOrigem, transporte: transporteConfere}},
-		{"memoria-missing-measure", medidaDaOrigem{estado: "missing"}},
-		{"memoria-ambiguous-measure", medidaDaOrigem{estado: "ambiguous"}},
-		{"memoria-bytes-indisponiveis-measure", medidaDaOrigem{estado: "designated", bytes: 27, tamanho: tamanhoAte1K, razao: razaoDe11A2, comparacao: textoDiferenteDaOrigem, transporte: transporteIndisponivel}},
-		{"duravel-titular-apagado-measure", medidaDaOrigem{estado: "designated", bytes: 27, tamanho: tamanhoAte1K, razao: razaoTextoVazio, comparacao: textoDiferenteDaOrigem, transporte: transporteIndisponivel}},
-		// Um vínculo que este binário não enviou não é uma medida dele.
-		{"memoria-binding-enforce", medidaDaOrigem{estado: estadoNaoMedido}},
-		{"nao-transportavel-grande", medidaDaOrigem{estado: estadoNaoMedido}},
-	} {
-		if got := medirOrigem(ler(c.fio)); got != c.quer {
-			t.Errorf("%s: medida = %+v, quero %+v", c.fio, got, c.quer)
-		}
-	}
-
-	// O que o nó real não daria.
-	doc := "o documento"
-	designada := func() *agentruntime.OutputSource {
-		return &agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceMeasure, State: agentruntime.OutputSourceDesignated,
-			StepID: "step-000001-tool-1", Digest: digestDoConteudo(doc), Bytes: len(doc)}
-	}
-	outro := "outro conteudo"
-	grande := designada()
-	grande.Bytes = maxPayloadBytes + 1
-	semForma := designada()
-	semForma.Digest = "sha256:curto"
-	estadoDeFora := designada()
-	estadoDeFora.State = "Designated\naviso: forjado"
-	for _, c := range []struct {
-		nome string
-		st   estadoDoRun
-		quer medidaDaOrigem
-	}{
-		{"sem ancora", estadoDoRun{FinalText: doc}, medidaDaOrigem{estado: estadoNaoMedido}},
-		{"ancora que o kernel nao produziria", estadoDoRun{OutputSource: semForma}, medidaDaOrigem{estado: estadoNaoMedido}},
-		{"estado fora do vocabulario", estadoDoRun{OutputSource: estadoDeFora}, medidaDaOrigem{estado: estadoNaoMedido}},
-		{"o texto final E o resultado da tool", estadoDoRun{FinalText: doc, OutputSource: designada(), Output: &doc},
-			medidaDaOrigem{estado: "designated", bytes: len(doc), tamanho: tamanhoAte1K, razao: razaoDe09A11, comparacao: textoIgualAOrigem, transporte: transporteConfere}},
-		{"output que nao confere", estadoDoRun{FinalText: doc, OutputSource: designada(), Output: &outro},
-			medidaDaOrigem{estado: "designated", bytes: len(doc), tamanho: tamanhoAte1K, razao: razaoDe09A11, comparacao: textoIgualAOrigem, transporte: transporteNaoConfere}},
-		{"sem output e sem marca", estadoDoRun{FinalText: doc, OutputSource: designada()},
-			medidaDaOrigem{estado: "designated", bytes: len(doc), tamanho: tamanhoAte1K, razao: razaoDe09A11, comparacao: textoIgualAOrigem, transporte: transporteAusente}},
-		{"marca fora do vocabulario", estadoDoRun{FinalText: doc, OutputSource: designada(), OutputOmitted: "porque sim\naviso: forjado"},
-			medidaDaOrigem{estado: "designated", bytes: len(doc), tamanho: tamanhoAte1K, razao: razaoDe09A11, comparacao: textoIgualAOrigem, transporte: transporteAusente}},
-		{"acima do tecto", estadoDoRun{FinalText: doc, OutputSource: grande, OutputOmitted: "too_large"},
-			medidaDaOrigem{estado: "designated", bytes: maxPayloadBytes + 1, tamanho: tamanhoAcima128K, razao: razaoAbaixoDe05, comparacao: textoIgualAOrigem, transporte: transporteGrande}},
-	} {
-		got := medirOrigem(c.st)
-		if got != c.quer {
-			t.Errorf("%s: medida = %+v, quero %+v", c.nome, got, c.quer)
-		}
-		// A linha do log só leva vocabulário fechado e números: nunca uma quebra de linha vinda do nó.
-		if linha := got.linha(len(c.st.FinalText)); strings.ContainsAny(linha, "\n\r") || strings.Contains(linha, "forjado") || strings.Contains(linha, doc) {
-			t.Errorf("%s: a linha do log leva o que veio do no: %q", c.nome, linha)
-		}
-	}
-}
-
 // TestAOS499_ClassesDeTamanhoERazao: as fronteiras das classes.
 func TestAOS499_ClassesDeTamanhoERazao(t *testing.T) {
 	for n, quer := range map[int]string{0: tamanhoVazio, 1: tamanhoAte1K, 1024: tamanhoAte1K, 1025: tamanhoAte16K, 16 << 10: tamanhoAte16K,
@@ -631,57 +668,6 @@ func TestAOS499_ClassesDeTamanhoERazao(t *testing.T) {
 	}
 }
 
-// TestAOS499_Metricas_SoVocabularioFechado: o que se escreve no ficheiro de métricas é o que as
-// listas fechadas admitem. Um valor fora delas não cria série.
-func TestAOS499_Metricas_SoVocabularioFechado(t *testing.T) {
-	c := &medicaoDoContrato{}
-	c.noPorEstrutura(classeCandidato)
-	c.noPorEstrutura(classeCandidato)
-	c.noPorEstrutura(classeNaoCandidato)
-	c.noPorEstrutura("classe\ninventada")
-	c.origemMedida(medidaDaOrigem{estado: "designated", tamanho: tamanhoAte16K, razao: razaoDe05A09, comparacao: textoDiferenteDaOrigem, transporte: transporteConfere})
-	c.origemMedida(medidaDaOrigem{estado: "missing"})
-	c.origemMedida(medidaDaOrigem{estado: estadoNaoMedido})
-	c.origemMedida(medidaDaOrigem{estado: "estado de fora", tamanho: "enorme", razao: "muita", comparacao: "parecido", transporte: "por pombo"})
-	m := &metricasDoConsumo{series: map[string]float64{}}
-	m.registarContrato(c)
-	texto := string(m.texto())
-	for chave, valor := range map[string]int{
-		serie(metricaNosPorEstrutura, "classe", classeCandidato):             2,
-		serie(metricaNosPorEstrutura, "classe", classeNaoCandidato):          1,
-		serie(metricaOrigemDesignacao, "estado", "designated"):               1,
-		serie(metricaOrigemDesignacao, "estado", "missing"):                  1,
-		serie(metricaOrigemDesignacao, "estado", estadoNaoMedido):            1,
-		serie(metricaOrigemTamanho, "classe", tamanhoAte16K):                 1,
-		serie(metricaOrigemRazao, "classe", razaoDe05A09):                    1,
-		serie(metricaOrigemTextoFinal, "comparacao", textoDiferenteDaOrigem): 1,
-		serie(metricaOrigemTransporte, "resultado", transporteConfere):       1,
-	} {
-		if !temSerie(texto, chave, valor) {
-			t.Fatalf("faltou nas metricas %s %d:\n%s", chave, valor, texto)
-		}
-	}
-	for _, proibido := range []string{"inventada", "estado de fora", "enorme", "muita", "parecido", "pombo"} {
-		if strings.Contains(texto, proibido) {
-			t.Fatalf("um valor fora do vocabulario criou uma serie (%q):\n%s", proibido, texto)
-		}
-	}
-	// Nil não rebenta e não conta: o `serve` manual não mede.
-	var nula *medicaoDoContrato
-	nula.noPorEstrutura(classeCandidato)
-	nula.origemMedida(medidaDaOrigem{estado: "designated"})
-	// As seis famílias estão no catálogo do ficheiro: uma linha que o catálogo não conheça é deitada fora.
-	for _, nome := range []string{metricaNosPorEstrutura, metricaOrigemDesignacao, metricaOrigemTamanho, metricaOrigemRazao, metricaOrigemTextoFinal, metricaOrigemTransporte} {
-		achou := false
-		for _, e := range catalogoDeMetricas {
-			achou = achou || e.nome == nome
-		}
-		if !achou {
-			t.Errorf("%s nao esta no catalogo do ficheiro de metricas", nome)
-		}
-	}
-}
-
 // TestAOS499_Anuncio_OClienteLeOFioDoNo: o cliente lê o anúncio da origem dos bytes que o NÓ REAL
 // responde, e não o inventa onde ele não está.
 func TestAOS499_Anuncio_OClienteLeOFioDoNo(t *testing.T) {
@@ -696,6 +682,12 @@ func TestAOS499_Anuncio_OClienteLeOFioDoNo(t *testing.T) {
 		if err != nil || !a.aceita || a.modo != modo || !a.origem {
 			t.Fatalf("o anuncio do no real (%s) traz o contrato e a origem; veio %+v, %v", modo, a, err)
 		}
+	}
+	// O NÓ REAL COM O VEREDICTO DESLIGADO (`off`): anuncia o contrato com o modo `off` e NÃO anuncia
+	// a origem — em `off` o kernel não lê a declaração. É o ficheiro que o nó gera
+	// (`aos498_fio/tools-off.json`); antes este teste apagava a chave à mão a um anúncio de outro modo.
+	if a, err := ler(t, aos499FioDoNo(t, "tools-off")); err != nil || !a.aceita || a.modo != "off" || a.origem {
+		t.Fatalf("o anuncio do no real em off traz o contrato (modo off) e NAO a origem; veio %+v, %v", a, err)
 	}
 	for nome, c := range map[string]struct {
 		corpo  string

@@ -75,6 +75,9 @@ const (
 	metricaOrigemRazao      = "aos_orq_consume_origem_razao_texto_total"
 	metricaOrigemTextoFinal = "aos_orq_consume_origem_texto_final_total"
 	metricaOrigemTransporte = "aos_orq_consume_origem_transporte_total"
+	// As duas da revisão de 2026-10-05 (I1): a forma do que o nó serviu, e os números do conteúdo.
+	metricaOrigemForma   = "aos_orq_consume_origem_forma_total"
+	metricaOrigemNumeros = "aos_orq_consume_origem_numeros_total"
 )
 
 // catalogoDeMetricas é a lista FECHADA do que o ficheiro contém, pela ordem em que é escrito. Uma
@@ -96,10 +99,12 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaNosPorContrato, "counter", "Nos do plano submetidos, por classe face ao contrato de conclusao (com_contrato_saida_aberta|com_contrato_sem_saida|sem_contrato_verificador|sem_contrato_sem_tools|sem_contrato_no_nao_anuncia)."},
 	{metricaNosPorEstrutura, "counter", "Saida por referencia, medida (AOS-499): nos do plano submetidos em modo observe, por classe estrutural (candidato: nao-verificador, uma tool, uma saida aberta, sem consumes | nao_candidato)."},
 	{metricaOrigemDesignacao, "counter", "Saida por referencia, medida: nos candidatos por estado da designacao que o kernel do no selou (designated|missing|ambiguous|inapplicable) ou nao_medido (o no nao anuncia, a declaracao nao foi enviada, ou a resposta nao trouxe ancora)."},
-	{metricaOrigemTamanho, "counter", "Saida por referencia, medida: tamanho do resultado designado, em classes contra o tecto de transporte de 128 KiB (vazio|ate_1k|ate_16k|ate_128k|acima_128k)."},
-	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2). Abaixo de 1 o modelo escreveu menos do que leu."},
-	{metricaOrigemTextoFinal, "counter", "Saida por referencia, medida: o texto final e (igual) ou nao e (diferente) o resultado designado, por comparacao de digests sha256 — nunca de conteudo."},
+	{metricaOrigemTamanho, "counter", "Saida por referencia, medida: tamanho do resultado designado TAL COMO SE TRANSPORTA (com a tool na sandbox e o envelope, mais do dobro do documento), em classes contra o tecto de 128 KiB (vazio|ate_1k|ate_16k|ate_128k|acima_128k)."},
 	{metricaOrigemTransporte, "counter", "Saida por referencia, medida: o que o no fez dos bytes designados (servido_confere|servido_nao_confere|too_large|not_utf8|unavailable|unavailable_now|ausente). E o que a entrega por referencia vai encontrar."},
+	{metricaOrigemForma, "counter", "Saida por referencia, medida: forma do resultado designado que o no serviu e que confere (envelope: envelope da sandbox com exit_code 0 e stdout de texto | envelope_exit_nao_zero | envelope_binario | cru: nao e um envelope reconhecivel | sem_bytes: nada que confira para comparar). So envelope e cru sao comparados com o texto final."},
+	{metricaOrigemTextoFinal, "counter", "Saida por referencia, medida: relacao entre o texto final e o CONTEUDO do resultado designado (o stdout_text do envelope, ou os bytes crus), depois de normalizar espacos: igual | contem (o conteudo inteiro, com moldura) | linhas_todas | linhas_de_0_9_a_1 | linhas_de_0_5_a_0_9 | linhas_abaixo_de_0_5 (fraccao das linhas nao vazias do conteudo presentes no texto) | texto_vazio | conteudo_vazio | nao_comparado. So a classe e publicada, nunca conteudo."},
+	{metricaOrigemNumeros, "counter", "Saida por referencia, medida: os numeros (sequencias de digitos) do conteudo do resultado designado aparecem todos no texto final (todos|em_falta|sem_numeros|nao_comparado). em_falta e um limite superior a perda, nao uma prova: um numero reformatado conta como em falta."},
+	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do CONTEUDO do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2|nao_comparado). E so tamanho: nao diz se o que se escreveu e o que se leu."},
 }
 
 // Origens de um pedido — o rótulo `origem` de [metricaOrigem] e do resumo do desfecho.

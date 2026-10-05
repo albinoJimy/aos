@@ -18,11 +18,20 @@ package main
 // vínculo «só medição» o kernel dá ao run o desfecho que ele teria sem declaração, qualquer que
 // seja o modo do nó.
 //
-// SEM CONTEÚDO. O log e as métricas levam estados, classes e números. Não levam o texto final,
-// os bytes designados, nem nenhum valor que o nó tenha devolvido sem passar por um vocabulário
-// fechado deste ficheiro.
+// SEM CONTEÚDO. O log e as métricas levam estados, classes e tamanhos. Não levam o texto final,
+// os bytes designados, nem nenhuma linha, número ou digest deles — nem nenhum valor que o nó
+// tenha devolvido sem passar por um vocabulário fechado deste ficheiro.
+//
+// O QUE SE COMPARA (revisão adversarial de 2026-10-05, achado I1). Em produção o resultado
+// designado não é o documento: é o ENVELOPE que a sandbox escreve (`stdout_text`, `exit_code`, e
+// o ficheiro lido outra vez em `artifacts`). A primeira versão comparava o texto final com esse
+// envelope — por digest e por tamanho — e por isso dizia «diferente» de uma transcrição fiel, e
+// classificava como resumo um documento curto transcrito byte a byte. A medição passa a
+// DESEMBRULHAR o conteúdo ([desembrulharEnvelope]) e a comparar conteúdo com conteúdo
+// ([relacaoComOConteudo]), dentro deste processo, publicando só as classes.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -49,6 +58,10 @@ var ErrSaidaPorReferencia = errors.New("aos-orq: AOS_ORQ_SAIDA_POR_REFERENCIA in
 // modoDaSaidaPorReferenciaDoAmbiente lê o interruptor. Vazio ⇒ `off`. Um valor desconhecido
 // recusa o arranque, e `on` também: prometer a entrega por referência e fazer a de sempre era
 // pior do que não arrancar.
+//
+// OS ESPAÇOS NAS PONTAS APARAM-SE, como nas outras variáveis deste binário: ` observe ` (um valor
+// com um espaço ou uma quebra de linha a mais num `.env`) é `observe`. As maiúsculas NÃO se
+// dobram: `Observe` é um valor desconhecido e recusa o arranque. Só espaços é vazio — `off`.
 //
 // O `os.Getenv` é LITERAL de propósito (ver [tectoDoPlanoDoAmbiente]): o gate da superfície de
 // variáveis de ambiente enumera-as pelo nome escrito no código.
@@ -159,8 +172,12 @@ func estadosDaDesignacao() []string {
 	return append(estados, estadoNaoMedido)
 }
 
-// Classes de tamanho do resultado designado, contra o tecto de transporte de um payload
-// ([maxPayloadBytes], 128 KiB) — o rótulo `classe` de [metricaOrigemTamanho].
+// Classes de tamanho do resultado designado TAL COMO SE TRANSPORTA, contra o tecto de transporte
+// de um payload ([maxPayloadBytes], 128 KiB) — o rótulo `classe` de [metricaOrigemTamanho]. Com a
+// tool a correr na sandbox é o tamanho do ENVELOPE, e não o do documento: a leitura de um
+// ficheiro leva-o em `stdout_text` e outra vez, em base64, em `artifacts` — mais do dobro. `vazio`
+// só acontece com uma tool que devolva zero bytes; um documento vazio lido na sandbox são os
+// bytes do envelope.
 const (
 	tamanhoVazio     = "vazio"
 	tamanhoAte1K     = "ate_1k"
@@ -187,9 +204,240 @@ func classeDeTamanho(n int) string {
 	}
 }
 
-// Classes da razão entre o tamanho do TEXTO FINAL e o tamanho do RESULTADO DESIGNADO — o rótulo
-// `classe` de [metricaOrigemRazao]. Abaixo de 1 o modelo escreveu menos do que leu (um resumo);
-// perto de 1, uma transcrição; acima, acrescentou.
+// Formas do resultado designado — o rótulo `forma` de [metricaOrigemForma]. Diz o que é que o nó
+// serviu em `output`, e portanto COM O QUE é que o texto final se pôde comparar.
+const (
+	// formaEnvelope — os bytes servidos têm a forma do envelope da sandbox, com `exit_code` zero
+	// e o stdout em texto: o conteúdo comparado é o `stdout_text` (o documento).
+	formaEnvelope = "envelope"
+	// formaEnvelopeFalhou — envelope com `exit_code` diferente de zero: a tool correu e falhou. É
+	// uma chamada efectiva e o kernel designa-a; o stdout de uma falha não é o documento, e não
+	// se compara.
+	formaEnvelopeFalhou = "envelope_exit_nao_zero"
+	// formaEnvelopeBinario — envelope com o stdout em base64 (não é UTF-8). Não é texto que se
+	// compare com um texto final.
+	formaEnvelopeBinario = "envelope_binario"
+	// formaCru — os bytes servidos NÃO são um envelope reconhecível: a tool não corre na sandbox,
+	// ou a forma do envelope mudou. O conteúdo comparado são os bytes tal como vieram.
+	formaCru = "cru"
+	// formaSemBytes — o nó não serviu bytes que confiram com a âncora (ver [metricaOrigemTransporte]
+	// para a causa). Não há conteúdo para comparar.
+	formaSemBytes = "sem_bytes"
+)
+
+var formasDaOrigem = []string{formaEnvelope, formaEnvelopeFalhou, formaEnvelopeBinario, formaCru, formaSemBytes}
+
+// chavesDoEnvelope são os campos do envelope que a sandbox escreve (`resultDTO` em
+// `substrate/sandbox/mediated.go`). Um objecto com qualquer outra chave não é esse envelope.
+var chavesDoEnvelope = map[string]bool{"stdout_text": true, "stdout": true, "artifacts": true, "exit_code": true}
+
+// desembrulharEnvelope reconhece nos bytes servidos pelo nó a forma do envelope da sandbox e
+// devolve o conteúdo a comparar e a forma. SÓ SERVE A MEDIÇÃO: nada do que devolve é publicado,
+// entregue ou guardado.
+//
+// # A forma exacta, lida de forma tolerante
+//
+// O codificador da sandbox não é exportado e este binário não depende do pacote dela; por isso
+// descodifica aqui só o que precisa, e exige o que distingue o envelope de outro JSON qualquer:
+//
+//   - um objecto JSON, sem nada depois dele;
+//   - com `exit_code` inteiro — o único campo que o codificador escreve sempre;
+//   - só com as chaves do envelope (`stdout_text`, `stdout`, `artifacts`, `exit_code`);
+//   - `stdout_text` texto e `stdout` base64, e nunca os dois com conteúdo (o descodificador da
+//     sandbox recusa esse resultado por ambíguo).
+//
+// Tudo o resto é [formaCru], e compara-se com os bytes tal como vieram. Reconhecer a forma não
+// prova que os bytes vieram da sandbox: uma tool que devolva `{"exit_code":0}` por conta própria
+// conta como envelope vazio. Os ficheiros de fio `substrate/sandbox/testdata/aos499_envelope/`
+// prendem esta leitura ao codificador real: se a forma mudar, a classe passa a `cru` e o teste
+// que os consome falha.
+//
+// Os `artifacts` não se comparam: na leitura de um documento são o mesmo ficheiro outra vez.
+func desembrulharEnvelope(servido string) (conteudo, forma string) {
+	var campos map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(servido), &campos); err != nil || campos == nil {
+		return servido, formaCru
+	}
+	for chave := range campos {
+		if !chavesDoEnvelope[chave] {
+			return servido, formaCru
+		}
+	}
+	var (
+		saida  int
+		texto  string
+		binary []byte
+	)
+	if cru, tem := campos["exit_code"]; !tem || json.Unmarshal(cru, &saida) != nil {
+		return servido, formaCru
+	}
+	if cru, tem := campos["stdout_text"]; tem && json.Unmarshal(cru, &texto) != nil {
+		return servido, formaCru
+	}
+	if cru, tem := campos["stdout"]; tem && json.Unmarshal(cru, &binary) != nil {
+		return servido, formaCru
+	}
+	switch {
+	case texto != "" && len(binary) > 0:
+		return servido, formaCru
+	case saida != 0:
+		return "", formaEnvelopeFalhou
+	case len(binary) > 0:
+		return "", formaEnvelopeBinario
+	default:
+		return texto, formaEnvelope
+	}
+}
+
+// Relação entre o TEXTO FINAL e o CONTEÚDO do resultado designado — o rótulo `comparacao` de
+// [metricaOrigemTextoFinal]. Classes FECHADAS e mutuamente exclusivas, da mais forte para a mais
+// fraca; decide-se pela primeira que se verifica. «Normalizar» é reduzir cada sequência de
+// espaços, tabulações e quebras de linha a um espaço e aparar as pontas.
+const (
+	// comparacaoConteudoVazio — o conteúdo não tem nada além de espaços. Não há o que perder.
+	comparacaoConteudoVazio = "conteudo_vazio"
+	// comparacaoTextoVazio — o conteúdo tem alguma coisa e o texto final não tem nada.
+	comparacaoTextoVazio = "texto_vazio"
+	// comparacaoIgual — o texto final É o conteúdo, depois de normalizar: uma transcrição.
+	comparacaoIgual = "igual"
+	// comparacaoContem — o texto final contém o conteúdo INTEIRO e seguido, depois de normalizar:
+	// uma transcrição com moldura (uma frase antes, um fecho depois).
+	comparacaoContem = "contem"
+	// As quatro seguintes contam a fracção das linhas não vazias do conteúdo que aparecem no
+	// texto final (cada linha normalizada, procurada no texto normalizado): todas (mas não
+	// seguidas, ou com outra ordem), pelo menos 0,9, pelo menos 0,5, menos de 0,5.
+	comparacaoLinhasTodas    = "linhas_todas"
+	comparacaoLinhasDe09     = "linhas_de_0_9_a_1"
+	comparacaoLinhasDe05     = "linhas_de_0_5_a_0_9"
+	comparacaoLinhasAbaixo05 = "linhas_abaixo_de_0_5"
+	// naoComparado — não houve conteúdo de texto para comparar (ver a `forma`). É também classe
+	// das outras duas séries de conteúdo, para as três somarem o mesmo.
+	naoComparado = "nao_comparado"
+)
+
+var comparacoesDoTexto = []string{
+	comparacaoIgual, comparacaoContem, comparacaoLinhasTodas, comparacaoLinhasDe09, comparacaoLinhasDe05,
+	comparacaoLinhasAbaixo05, comparacaoTextoVazio, comparacaoConteudoVazio, naoComparado,
+}
+
+// Os NÚMEROS do conteúdo no texto final — o rótulo `resultado` de [metricaOrigemNumeros]. Um
+// número é uma sequência de dígitos ASCII; conta-se cada número distinto do conteúdo, e está
+// presente se o texto final tem a MESMA sequência (inteira: `12` não está em `2012`).
+const (
+	// numerosTodos — todos os números do conteúdo aparecem no texto final.
+	numerosTodos = "todos"
+	// numerosEmFalta — pelo menos um número do conteúdo não aparece no texto final.
+	numerosEmFalta = "em_falta"
+	// numerosNenhum — o conteúdo não tem números.
+	numerosNenhum = "sem_numeros"
+)
+
+var resultadosDosNumeros = []string{numerosTodos, numerosEmFalta, numerosNenhum, naoComparado}
+
+// maxProcurasDeLinha limita o trabalho de [relacaoComOConteudo] sobre conteúdo que este binário
+// não controla. Uma linha do conteúdo que seja também uma linha inteira do texto final decide-se
+// por um conjunto; só as outras se procuram dentro do texto, e só as primeiras
+// `maxProcurasDeLinha` — as restantes contam como ausentes. Com o tecto de transporte de 128 KiB
+// isto limita a comparação a poucas centenas de MiB percorridos no pior caso construído.
+const maxProcurasDeLinha = 4096
+
+// normalizarEspacos reduz cada sequência de espaços a um espaço e apara as pontas.
+func normalizarEspacos(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// numerosDe devolve o conjunto das sequências de dígitos ASCII de um texto.
+func numerosDe(s string) map[string]struct{} {
+	conjunto := map[string]struct{}{}
+	inicio := -1
+	for i := 0; i <= len(s); i++ {
+		digito := i < len(s) && s[i] >= '0' && s[i] <= '9'
+		switch {
+		case digito && inicio < 0:
+			inicio = i
+		case !digito && inicio >= 0:
+			conjunto[s[inicio:i]] = struct{}{}
+			inicio = -1
+		}
+	}
+	return conjunto
+}
+
+// relacaoComOConteudo compara o texto final com o conteúdo do resultado designado e devolve DUAS
+// classes: a da relação entre os textos e a dos números. É a única função deste ficheiro que lê
+// conteúdo, e NÃO DEVOLVE CONTEÚDO: só constantes do vocabulário fechado.
+//
+// # O que as classes concluem, e o que não concluem
+//
+// `igual`, `contem` e `linhas_todas` dizem que o documento está no texto final. As classes de
+// fracção e `em_falta` dizem que o texto final NÃO traz, letra a letra, tudo o que o documento
+// tinha — o que acontece num resumo, mas também numa transcrição que o modelo reformatou (uma
+// data escrita por extenso, um número com separador de milhares, uma lista renumerada). São um
+// limite superior à perda, não uma prova de perda: `todos` e `linhas_todas` são evidência forte de
+// fidelidade; `em_falta` e uma fracção baixa pedem que se vá ver.
+func relacaoComOConteudo(textoFinal, conteudo string) (comparacao, numeros string) {
+	doConteudo, doTexto := numerosDe(conteudo), numerosDe(textoFinal)
+	numeros = numerosTodos
+	if len(doConteudo) == 0 {
+		numeros = numerosNenhum
+	}
+	for n := range doConteudo {
+		if _, tem := doTexto[n]; !tem {
+			numeros = numerosEmFalta
+			break
+		}
+	}
+
+	texto, alvo := normalizarEspacos(textoFinal), normalizarEspacos(conteudo)
+	switch {
+	case alvo == "":
+		return comparacaoConteudoVazio, numeros
+	case texto == "":
+		return comparacaoTextoVazio, numeros
+	case texto == alvo:
+		return comparacaoIgual, numeros
+	case strings.Contains(texto, alvo):
+		return comparacaoContem, numeros
+	}
+	linhasDoTexto := map[string]struct{}{}
+	for _, l := range strings.Split(textoFinal, "\n") {
+		if n := normalizarEspacos(l); n != "" {
+			linhasDoTexto[n] = struct{}{}
+		}
+	}
+	total, presentes, procuras := 0, 0, 0
+	for _, l := range strings.Split(conteudo, "\n") {
+		n := normalizarEspacos(l)
+		if n == "" {
+			continue
+		}
+		total++
+		if _, inteira := linhasDoTexto[n]; inteira {
+			presentes++
+			continue
+		}
+		if procuras < maxProcurasDeLinha {
+			procuras++
+			if strings.Contains(texto, n) {
+				presentes++
+			}
+		}
+	}
+	switch {
+	case presentes == total:
+		return comparacaoLinhasTodas, numeros
+	case 10*presentes >= 9*total:
+		return comparacaoLinhasDe09, numeros
+	case 2*presentes >= total:
+		return comparacaoLinhasDe05, numeros
+	default:
+		return comparacaoLinhasAbaixo05, numeros
+	}
+}
+
+// Classes da razão entre o tamanho do TEXTO FINAL e o tamanho do CONTEÚDO do resultado designado
+// — o rótulo `classe` de [metricaOrigemRazao]. Abaixo de 1 o modelo escreveu menos do que leu;
+// perto de 1, uma transcrição; acima, acrescentou. É um tamanho, e não diz se o que se escreveu é
+// o que se leu: isso é a `comparacao`. Calcula-se sobre o CONTEÚDO desembrulhado — contra o
+// envelope, um documento curto transcrito byte a byte caía abaixo de 0,9 só pelo peso do JSON.
 const (
 	razaoOrigemVazia = "origem_vazia"
 	razaoTextoVazio  = "texto_vazio"
@@ -200,9 +448,9 @@ const (
 	razaoAcimaDe2    = "acima_de_2"
 )
 
-var classesDeRazao = []string{razaoOrigemVazia, razaoTextoVazio, razaoAbaixoDe05, razaoDe05A09, razaoDe09A11, razaoDe11A2, razaoAcimaDe2}
+var classesDeRazao = []string{razaoOrigemVazia, razaoTextoVazio, razaoAbaixoDe05, razaoDe05A09, razaoDe09A11, razaoDe11A2, razaoAcimaDe2, naoComparado}
 
-// classeDeRazao põe a razão texto/origem numa das classes. Só tamanhos: nenhum conteúdo é lido.
+// classeDeRazao põe a razão texto/conteúdo numa das classes. Só tamanhos.
 func classeDeRazao(texto, origem int) string {
 	switch {
 	case origem <= 0:
@@ -224,16 +472,6 @@ func classeDeRazao(texto, origem int) string {
 		return razaoAcimaDe2
 	}
 }
-
-// O texto final É ou NÃO É o resultado designado — o rótulo `comparacao` de
-// [metricaOrigemTextoFinal]. Decide-se por DIGESTS: `sha256(texto final)`, calculado aqui, contra
-// o digest da âncora que o kernel selou. O conteúdo não é comparado nem escrito.
-const (
-	textoIgualAOrigem      = "igual"
-	textoDiferenteDaOrigem = "diferente"
-)
-
-var comparacoesDoTexto = []string{textoIgualAOrigem, textoDiferenteDaOrigem}
 
 // O que o nó `aos` fez dos bytes designados na resposta — o rótulo `resultado` de
 // [metricaOrigemTransporte]. É o que a entrega por referência (AOS-501) vai encontrar.
@@ -258,20 +496,27 @@ var resultadosDoTransporte = []string{
 }
 
 // medidaDaOrigem é o que se mediu num nó candidato. Todos os campos são de vocabulário fechado ou
-// números.
+// tamanhos em bytes. NENHUM leva conteúdo — nem uma linha, nem um número, nem um digest.
 type medidaDaOrigem struct {
 	estado string
-	// Só com a origem designada:
+	// Só com a origem designada. `bytes` e `tamanho` são do resultado designado TAL COMO SE
+	// TRANSPORTA (o envelope, quando a tool corre na sandbox), lidos da âncora.
 	bytes      int
 	tamanho    string
-	razao      string
-	comparacao string
 	transporte string
+	// O conteúdo, quando o nó o serviu e ele confere com a âncora.
+	forma      string
+	comparacao string
+	numeros    string
+	razao      string
 }
 
-// medirOrigem reduz a resposta do nó `aos` à medida. NÃO DECIDE NADA e não devolve conteúdo: lê a
-// âncora, o comprimento e o digest do texto final, e — se o nó serviu `output` — confere-o contra
-// o digest da âncora.
+// medirOrigem reduz a resposta do nó `aos` à medida. NÃO DECIDE NADA e não devolve conteúdo.
+//
+// Lê a âncora (o estado, o tamanho do que se transportaria) e o que o nó fez dos bytes. Se o nó
+// serviu `output` E ele confere com o digest da âncora, desembrulha o conteúdo e compara-o com o
+// texto final; se não, as três classes de conteúdo ficam «não comparado» — não se compara com
+// bytes que não são os que o kernel selou.
 //
 // O que vem do nó passa por vocabulários fechados: um estado, um vínculo ou uma marca que este
 // binário não conhece contam como «não medido» ou «ausente», sem serem repetidos.
@@ -288,14 +533,16 @@ func medirOrigem(st estadoDoRun) medidaDaOrigem {
 	}
 	m.bytes = a.Bytes
 	m.tamanho = classeDeTamanho(a.Bytes)
-	m.razao = classeDeRazao(len(st.FinalText), a.Bytes)
-	m.comparacao = textoDiferenteDaOrigem
-	if digestDoConteudo(st.FinalText) == a.Digest {
-		m.comparacao = textoIgualAOrigem
-	}
+	m.forma, m.comparacao, m.numeros, m.razao = formaSemBytes, naoComparado, naoComparado, naoComparado
 	switch {
 	case st.Output != nil && digestDoConteudo(*st.Output) == a.Digest:
 		m.transporte = transporteConfere
+		conteudo, forma := desembrulharEnvelope(*st.Output)
+		m.forma = forma
+		if forma == formaEnvelope || forma == formaCru {
+			m.comparacao, m.numeros = relacaoComOConteudo(st.FinalText, conteudo)
+			m.razao = classeDeRazao(len(st.FinalText), len(conteudo))
+		}
 	case st.Output != nil:
 		m.transporte = transporteNaoConfere
 	default:
@@ -309,13 +556,13 @@ func medirOrigem(st estadoDoRun) medidaDaOrigem {
 	return m
 }
 
-// linha escreve a medida para o log da drenagem. Só vocabulário fechado e números.
+// linha escreve a medida para o log da drenagem. Só vocabulário fechado e tamanhos em bytes.
 func (m medidaDaOrigem) linha(texto int) string {
 	if m.estado != string(agentruntime.OutputSourceDesignated) {
 		return "estado=" + m.estado
 	}
-	return fmt.Sprintf("estado=%s bytes_da_origem=%d (%s) bytes_do_texto=%d razao=%s texto_final=%s transporte=%s",
-		m.estado, m.bytes, m.tamanho, texto, m.razao, m.comparacao, m.transporte)
+	return fmt.Sprintf("estado=%s bytes_da_origem=%d (%s) transporte=%s forma=%s bytes_do_texto=%d texto_final=%s numeros=%s razao=%s",
+		m.estado, m.bytes, m.tamanho, m.transporte, m.forma, texto, m.comparacao, m.numeros, m.razao)
 }
 
 // noPorEstrutura conta um nó do plano submetido, pela sua classe estrutural.
@@ -345,9 +592,11 @@ func (m *medicaoDoContrato) origemMedida(o medidaDaOrigem) {
 	}
 	contar(&m.designacoes, o.estado)
 	contar(&m.tamanhos, o.tamanho)
-	contar(&m.razoes, o.razao)
-	contar(&m.comparacoes, o.comparacao)
 	contar(&m.transportes, o.transporte)
+	contar(&m.formas, o.forma)
+	contar(&m.comparacoes, o.comparacao)
+	contar(&m.numeros, o.numeros)
+	contar(&m.razoes, o.razao)
 }
 
 // registarOrigem soma às séries o que um `serve` mediu sobre a saída por referência. Só escreve
@@ -366,7 +615,9 @@ func (m *metricasDoConsumo) registarOrigem(c *medicaoDoContrato) {
 	somar(metricaNosPorEstrutura, "classe", classesEstruturais, c.estruturas)
 	somar(metricaOrigemDesignacao, "estado", estadosDaDesignacao(), c.designacoes)
 	somar(metricaOrigemTamanho, "classe", classesDeTamanho, c.tamanhos)
-	somar(metricaOrigemRazao, "classe", classesDeRazao, c.razoes)
-	somar(metricaOrigemTextoFinal, "comparacao", comparacoesDoTexto, c.comparacoes)
 	somar(metricaOrigemTransporte, "resultado", resultadosDoTransporte, c.transportes)
+	somar(metricaOrigemForma, "forma", formasDaOrigem, c.formas)
+	somar(metricaOrigemTextoFinal, "comparacao", comparacoesDoTexto, c.comparacoes)
+	somar(metricaOrigemNumeros, "resultado", resultadosDosNumeros, c.numeros)
+	somar(metricaOrigemRazao, "classe", classesDeRazao, c.razoes)
 }

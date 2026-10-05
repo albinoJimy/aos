@@ -29,10 +29,12 @@ type medicaoDoContrato struct {
 	// `observe`; vazios em `off`.
 	estruturas  map[string]int // classe estrutural → nós submetidos
 	designacoes map[string]int // estado da designação → nós candidatos
-	tamanhos    map[string]int // classe de tamanho do resultado designado → nós
-	razoes      map[string]int // classe da razão texto final / resultado designado → nós
-	comparacoes map[string]int // texto final igual ou diferente do resultado designado → nós
+	tamanhos    map[string]int // classe de tamanho do resultado designado, tal como se transporta → nós
 	transportes map[string]int // o que o nó fez dos bytes designados → nós
+	formas      map[string]int // forma do resultado designado (envelope da sandbox, cru, sem bytes) → nós
+	comparacoes map[string]int // relação entre o texto final e o CONTEÚDO do resultado designado → nós
+	numeros     map[string]int // os números do conteúdo aparecem todos no texto final → nós
+	razoes      map[string]int // classe da razão tamanho do texto final / tamanho do conteúdo → nós
 }
 
 // contratoNaoAplicado conta uma execução de plano em que o contrato não foi aplicado.
