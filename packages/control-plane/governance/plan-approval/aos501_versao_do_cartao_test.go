@@ -59,11 +59,13 @@ func TestAOS501_CartaoComOrigemEmVersaoAnteriorERecusado(t *testing.T) {
 		t.Fatalf("pre-condicao: o wire do cartao com origem carimba 1.2.0 no topo:\n%s", wire)
 	}
 	antigo := strings.Replace(wire, `{"schema_version":"1.2.0","run_id"`, `{"schema_version":"1.1.0","run_id"`, 1)
+	// A recusa é a do `Validate`, que a desserialização do cartão também corre: o wire nem entra.
 	var c PlanCard
-	if err := json.Unmarshal([]byte(antigo), &c); err != nil {
-		t.Fatalf("o wire com o carimbo trocado tem de desserializar (a recusa e do Validate): %v", err)
+	err := json.Unmarshal([]byte(antigo), &c)
+	if err == nil {
+		err = c.Validate()
 	}
-	if err := c.Validate(); !errors.Is(err, ErrOutputSourceBelowVersion) {
+	if !errors.Is(err, ErrOutputSourceBelowVersion) {
 		t.Fatalf("um cartao com origem carimbado 1.1.0 tinha de ser recusado com ErrOutputSourceBelowVersion; veio %v", err)
 	}
 	var novo PlanCard
