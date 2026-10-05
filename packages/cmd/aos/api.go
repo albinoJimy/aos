@@ -2047,8 +2047,27 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		g("aos_runs_completed_without_tool_call_total",
-			"Runs selados complete desde o arranque SEM nenhuma tool call pedida, tendo pelo menos uma tool oferecida ao modelo (AOS-493). E a forma do verde falso medido em producao a 2026-10-04: nem todos o sao (um run pode concluir bem sem precisar da tool), mas uma subida em relacao aos runs complete de aos_runs_finished_total pede leitura.",
+			"Runs selados complete desde o arranque SEM nenhuma tool call pedida, tendo pelo menos uma tool no TOOL SET DO RUN (AOS-493). O tool set do run e o que o prefixo do prompt e o manifesto pinam; NAO e o numero de schemas que o gateway enviou ao provider em cada turno (esse esta em tools_offered do turn.recorded, AOS-491, e pode ser menor). E a forma do verde falso medido em producao a 2026-10-04: nem todos o sao (um run pode concluir bem sem precisar da tool), mas uma subida em relacao aos runs complete de aos_runs_finished_total pede leitura.",
 			"counter", float64(d.semToolCall.Load()), "")
+
+		// SOBRE O QUE O RUN ACABOU (AOS-493, revisão I6). 3 estados × 2 × 4 = 24 amostras,
+		// sempre presentes.
+		primeira = true
+		for _, e := range d.estados {
+			for _, negativo := range []bool{false, true} {
+				for _, u := range d.ultimos {
+					labels := `{outcome="` + string(e) + `",verdict="` + rotuloDoVeredicto(negativo) + `",last="` + u + `"}`
+					if primeira {
+						primeira = false
+						g("aos_runs_finished_by_last_tool_outcome_total",
+							"Runs que este processo SELOU num estado terminal desde o arranque, por estado (complete, failed, timed_out), por veredicto de conclusao (negative; none = veredicto positivo ou run sem veredicto) e por desfecho do ULTIMO TURNO QUE DESPACHOU TOOL CALLS, de qualquer tool (AOS-493): none (o run nao despachou nenhuma), effective (todas efectivas), denied (pelo menos uma recusada), tool_error (nenhuma recusada e pelo menos uma falhou). E MEDICAO, nao veredicto: verdict=none com last=denied ou last=tool_error sao os runs que acabaram sobre uma recusa ou uma falha de tool e mesmo assim concluiram (contrato cumprido antes, ou run sem contrato) — a classe que aos_runs_finished_total mostra como reason=none. Por processo.",
+							"counter", float64(d.lidoSobre(e, negativo, u)), labels)
+						continue
+					}
+					amostra("aos_runs_finished_by_last_tool_outcome_total", labels, float64(d.lidoSobre(e, negativo, u)))
+				}
+			}
+		}
 	}
 
 	// SELAGEM NO WORM — o que acontece quando a cadeia deixa de aceitar escritas.

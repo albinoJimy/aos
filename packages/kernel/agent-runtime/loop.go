@@ -180,10 +180,16 @@ type Result struct {
 	// ToolCallsRequested é o total de tool calls que o modelo pediu e o loop despachou no run,
 	// qualquer que seja o modo. É medição.
 	ToolCallsRequested int
-	// ToolsOffered é o tamanho do tool set oferecido ao modelo neste run ([Goal.Tools], tal
-	// como o loop o recebeu). É medição: serve a quem conta os runs que concluíram sem pedir
-	// nenhuma tool tendo-as na oferta. Não entra no veredicto.
+	// ToolsOffered é o tamanho do TOOL SET DO RUN ([Goal.Tools], tal como o loop o recebeu) — o
+	// que o prefixo do prompt e o manifesto pinam. NÃO é o número de schemas que o cliente de
+	// modelo enviou ao provider em cada turno: esse é [ModelResponse.ToolsOffered] (AOS-491), por
+	// turno, e pode ser menor. É medição: serve a quem conta os runs que concluíram sem pedir
+	// nenhuma tool tendo-as no tool set. Não entra no veredicto.
 	ToolsOffered int
+	// LastToolOutcome diz sobre o que o run acabou ([RunEvidence.LastToolOutcome]): o desfecho
+	// do último turno que despachou tool calls — `none`, `effective`, `denied` ou `tool_error`.
+	// Preenchido em qualquer modo e em todos os caminhos de saída. É medição.
+	LastToolOutcome string
 }
 
 // Runtime é o Agent Runtime: corre o loop base. Detém um *[referencemonitor.Monitor]
@@ -428,6 +434,13 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// CONTRATO IMPOSSÍVEL ⇒ O RUN NÃO ARRANCA (AOS-493, revisão I5). Aqui, e não mais acima,
+	// porque é neste ponto que [Goal.Tools] e [Goal.AllowedTools] são os definitivos: quem
+	// compõe o run já cortou a oferta pela lista-branca (AOS-486) e o Reference Monitor vai
+	// impor a mesma lista em cada chamada (AOS-485). Antes de qualquer evento, span ou turno.
+	if err := contratoPossivel(conclusao, goal); err != nil {
+		return Result{}, err
+	}
 	evidencia := NewRunEvidence()
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
@@ -452,7 +465,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	agentSpan.SetAttribute(AttrRequestModel, goal.Model.ModelID)
 	agentSpan.SetAttribute(AttrRunID, goal.RunID)
 
-	res := Result{RunID: goal.RunID, ToolsOffered: len(goal.Tools)}
+	res := Result{RunID: goal.RunID, ToolsOffered: len(goal.Tools), LastToolOutcome: evidencia.LastToolOutcome()}
 
 	// Anotar o uso/custo AGREGADO no span invoke_agent em TODOS os caminhos de
 	// saída — inclusive nos returns de erro (ErrModelCall/ErrTurnRecord/checkpoint/
@@ -665,6 +678,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// captura, e pela mesma razão do comentário acima somam cada turno uma só vez.
 			evidencia.Observe(turnCaptured)
 			res.ToolCallsRequested = evidencia.ToolCallsRequested()
+			res.LastToolOutcome = evidencia.LastToolOutcome()
 		}
 		// captureTurn é uma closure porque a captura tem DOIS pontos de saída: o fim
 		// normal do turno e a ESCALADA (AOS-021), que retorna de dentro do laço. Um run

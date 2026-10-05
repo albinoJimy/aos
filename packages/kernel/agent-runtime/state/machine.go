@@ -101,6 +101,10 @@ type TransitionEvent struct {
 	// transição é a TERMINAL de um run que o calculou. Vai no evento como `outcome_reason` (a
 	// razão do veredicto, vazia quando o run cumpriu) e `verdict` (o vector). nil ⇒ os dois
 	// campos ficam ausentes e o evento tem os bytes de antes.
+	//
+	// SÓ É ACEITE numa transição que termina o run e com a razão dentro do vocabulário fechado;
+	// de outro modo a transição é rejeitada ([ErrVerdictOutsideTerminal],
+	// [ErrVerdictReasonUnknown]) sem tocar no log.
 	Verdict *agentruntime.Verdict
 }
 
@@ -509,6 +513,21 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 	if !IsValidTransition(from, to) {
 		m.obs.Rejected(from, to, ErrInvalidTransition)
 		return ErrInvalidTransition
+	}
+
+	// 1b) O VEREDICTO SÓ ENTRA NO FIM DO RUN, E NO VOCABULÁRIO (AOS-493). Validado antes do
+	// fencing e do Append: uma transição recusada aqui não deixa rasto.
+	if event.Verdict != nil {
+		if !terminaORun(to) {
+			m.obs.Rejected(from, to, ErrVerdictOutsideTerminal)
+			return fmt.Errorf("%w: %s → %s", ErrVerdictOutsideTerminal, from, to)
+		}
+		if !event.Verdict.Reason.NoVocabulario() {
+			m.obs.Rejected(from, to, ErrVerdictReasonUnknown)
+			// A razão recusada NÃO vai na mensagem: é exactamente o texto que não se quer
+			// ver propagado para logs.
+			return ErrVerdictReasonUnknown
+		}
 	}
 
 	// 2) Pré-condição de fencing token (só no claim ready → running).

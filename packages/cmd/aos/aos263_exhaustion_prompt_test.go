@@ -720,7 +720,9 @@ func TestAOS263_ServicoAbsorveOSinalComoSuspensao(t *testing.T) {
 		t.Fatalf("NewResumeRecords: %v", err)
 	}
 	svc := &NodeService{node: &Node{ResumeRecords: rr}, logw: io.Discard}
-	goal := agentruntime.Goal{RunID: "run-263-absorve", Objective: "trabalho"}
+	// O Goal chega aqui como o `hostRun` o entrega: com o modo do veredicto ja fixado
+	// ([Node.fixarConclusao], AOS-493). Sem ele o registo de retoma e recusado — caso (d).
+	goal := agentruntime.Goal{RunID: "run-263-absorve", Objective: "trabalho", CompletionMode: agentruntime.CompletionObserve}
 	ctx := context.Background()
 
 	// (a) O sinal ⇒ SUSPENSO, sem erro retido, e o run fica RETOMÁVEL (há registo).
@@ -744,6 +746,16 @@ func TestAOS263_ServicoAbsorveOSinalComoSuspensao(t *testing.T) {
 	semRetoma := &NodeService{node: &Node{}, logw: io.Discard}
 	if suspenso, retido := semRetoma.absorveSuspensaoPorExaustao(ctx, goal, sinal); suspenso || !errors.Is(retido, errExhaustionSuspended) {
 		t.Fatalf("sem registo de retoma nao ha suspensao; suspenso=%v err=%v", suspenso, retido)
+	}
+
+	// (d) FAIL-CLOSED (AOS-493): um Goal SEM o modo do veredicto fixado nao e gravado com um
+	// modo inventado. O registo e recusado, o run fica FALHADO e nada chega ao Event Store.
+	semModo := agentruntime.Goal{RunID: "run-263-sem-modo", Objective: "trabalho"}
+	if suspenso, retido := svc.absorveSuspensaoPorExaustao(ctx, semModo, sinal); suspenso || !errors.Is(retido, errResumeRecordSemModo) {
+		t.Fatalf("um Goal sem modo nao pode ser suspenso com um registo de retoma inventado; suspenso=%v err=%v", suspenso, retido)
+	}
+	if _, ok, gerr := rr.Get(ctx, semModo.RunID); ok || gerr != nil {
+		t.Fatalf("o registo recusado nao podia ter sido gravado; ok=%v err=%v", ok, gerr)
 	}
 }
 

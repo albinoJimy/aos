@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-04 (AOS-491, AOS-492 e AOS-493 implementados; AOS-493 por rever e por verificar em produção).
+Última actualização: 2026-10-05 (AOS-493 revisto e corrigido; AOS-491 e AOS-493 por verificar em produção).
 
 ## 1. Objectivo e promessa
 
@@ -45,7 +45,7 @@ fidelidade» para nós que passam o resultado sem o transformar.
 |---|---|---|---|---|
 | AOS-491 | EPIC-06 | O motivo de paragem chega ao runtime, à captura e ao registo do turno | — | implementado; por verificar em produção |
 | AOS-492 | EPIC-02 | A regra de terminação vive num só sítio, partilhado por loop e replay | — | feito |
-| AOS-493 | EPIC-02 | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão | AOS-491, AOS-492 | implementado (ADR-037), nó em observação por omissão; falta a revisão adversarial independente; por verificar em produção |
+| AOS-493 | EPIC-02 | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão | AOS-491, AOS-492 | implementado (ADR-037) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket), nó em observação por omissão; por verificar em produção |
 | AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | aberto |
 | AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | aberto |
 
@@ -66,6 +66,7 @@ correspondentes estiverem tomadas.
 | 2026-10-04 | O contrato de conclusão é inferido das tools atribuídas ao nó, em âmbito estreito, sem mudar o schema do plano | Tomada |
 | 2026-10-04 | «Não cumprido» grava-se como `failed` com razão própria | Tomada |
 | — | Autorizar a medição de até 150 pedidos ao LiteLLM de produção e pôr `drop_params: false` (condiciona A1) | Por tomar |
+| — | O que a saga de compensação faz, num run não cumprido, aos efeitos das tools que correram bem (ADR-037 §4). Hoje não há compensações registadas e o efeito fica aplicado; decide-se antes de a primeira tool registar a sua | Por tomar |
 | — | Recuperação por aviso ou por repetição do pedido (depois da medição) | Por tomar |
 | — | Qual é a segunda família de modelos (condiciona A2) | Por tomar |
 | — | O Jev: enumerar primeiro as combinações reais de state do risk gate; só depois decidir um teste offline | Por tomar |
@@ -104,6 +105,15 @@ Não fechados por nenhuma fase até decisão em contrário:
 - Tool chamada e saída fabricada, em nós que transformam conteúdo.
 - Nó sem tools que conclui a dizer que não conseguiu.
 - O `prompt_hash` não cobre a projecção nativa.
+- Run que acaba sobre uma recusa ou uma falha de tool com o contrato cumprido, ou sem contrato:
+  veredicto positivo. É medido (`aos_runs_finished_by_last_tool_outcome_total`), não é fechado.
+- Retoma por crash depois de uma falha de tool: a re-hospedagem não tem credencial, a tool é
+  negada na segunda vida e, em imposição, o run sela `contract_unmet_after_denial` de uma chamada
+  que tinha sido permitida. Anterior ao AOS-493; passou a decidir o desfecho.
+- O replay de um run retomado cujo turno re-executado mudou de desfecho pára em divergência de
+  `prompt_hash` e não reproduz veredicto nenhum. Anterior ao AOS-493.
+- Antes de ligar a imposição a outros consumidores: o `GET /runs/{id}` de um run não cumprido
+  responde `status: "completed"` enquanto o desfecho está em memória (AOS-494).
 
 ## 8. Fora da arquitectura-alvo
 

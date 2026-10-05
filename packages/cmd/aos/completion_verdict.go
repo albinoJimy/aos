@@ -82,11 +82,13 @@ func (n *Node) fixarConclusao(goal agentruntime.Goal) agentruntime.Goal {
 const rotuloSemRazao = "none"
 
 // desfechosDeRuns conta, por processo, os runs que este nó SELOU num estado terminal, pelo
-// estado e pela razão do veredicto do kernel; e, à parte, os que concluíram sem pedir nenhuma
-// tool call tendo tools na oferta.
+// estado e pela razão do veredicto do kernel; à parte, os que concluíram sem pedir nenhuma
+// tool call tendo tools no tool set; e, noutra família, SOBRE O QUE cada run acabou.
 //
-// Os dois vocabulários são FECHADOS: os estados que [runGate.sealTerminal] materializa e as
-// razões de [agentruntime.OutcomeReasons]. O rótulo nunca leva texto de terceiros.
+// Os vocabulários são todos FECHADOS: os estados que [runGate.sealTerminal] materializa, as
+// razões de [agentruntime.OutcomeReasons], os dois valores do veredicto ([rotuloVeredictoNegativo]
+// e [rotuloSemRazao]) e os desfechos de [agentruntime.LastToolOutcomes]. O rótulo nunca leva
+// texto de terceiros.
 //
 // É por processo e desde o arranque. Em modo de observação um veredicto negativo aparece com
 // `outcome="complete"`: é essa a série que diz quantos runs o modo de imposição teria fechado
@@ -96,8 +98,38 @@ type desfechosDeRuns struct {
 	razoes  []agentruntime.OutcomeReason
 	total   map[state.State]map[agentruntime.OutcomeReason]*atomic.Int64
 	// semToolCall são os runs selados `complete` sem nenhuma tool call pedida, com pelo menos
-	// uma tool oferecida ao modelo.
+	// uma tool no TOOL SET DO RUN ([agentruntime.Result.ToolsOffered], que é `len(Goal.Tools)`).
+	// Não é «o que o gateway enviou ao provider»: essa contagem é por turno
+	// ([agentruntime.ModelResponse.ToolsOffered], AOS-491) e pode ser menor — um run com tools
+	// no tool set cujo cliente de modelo não as ofereceu conta aqui na mesma.
 	semToolCall atomic.Int64
+	// ultimos são os desfechos do último turno que despachou tool calls
+	// ([agentruntime.LastToolOutcomes]), na ordem do kernel.
+	ultimos []string
+	// sobre conta os runs selados por (estado, veredicto negativo ou não, desfecho do último
+	// turno com tool calls). É a medição da classe que o veredicto NÃO apanha (revisão I6): o
+	// run que acaba sobre uma recusa ou uma falha de tool com o contrato cumprido, ou sem
+	// contrato, tem veredicto positivo e sai `reason="none"` na outra família.
+	sobre map[chaveSobre]*atomic.Int64
+}
+
+// chaveSobre é a chave de [desfechosDeRuns.sobre].
+type chaveSobre struct {
+	estado   state.State
+	negativo bool
+	ultimo   string
+}
+
+// rotuloVeredictoNegativo é o valor do rótulo `verdict` de um run com veredicto negativo; o de
+// um run sem ele (veredicto positivo, ou run sem veredicto) é [rotuloSemRazao].
+const rotuloVeredictoNegativo = "negative"
+
+// rotuloDoVeredicto é o valor do rótulo `verdict`.
+func rotuloDoVeredicto(negativo bool) string {
+	if negativo {
+		return rotuloVeredictoNegativo
+	}
+	return rotuloSemRazao
 }
 
 func novoDesfechosDeRuns() *desfechosDeRuns {
@@ -105,11 +137,18 @@ func novoDesfechosDeRuns() *desfechosDeRuns {
 		estados: []state.State{state.Complete, state.Failed, state.TimedOut},
 		razoes:  append([]agentruntime.OutcomeReason{agentruntime.OutcomeFulfilled}, agentruntime.OutcomeReasons()...),
 		total:   map[state.State]map[agentruntime.OutcomeReason]*atomic.Int64{},
+		ultimos: agentruntime.LastToolOutcomes(),
+		sobre:   map[chaveSobre]*atomic.Int64{},
 	}
 	for _, e := range d.estados {
 		d.total[e] = map[agentruntime.OutcomeReason]*atomic.Int64{}
 		for _, r := range d.razoes {
 			d.total[e][r] = new(atomic.Int64)
+		}
+		for _, negativo := range []bool{false, true} {
+			for _, u := range d.ultimos {
+				d.sobre[chaveSobre{e, negativo, u}] = new(atomic.Int64)
+			}
 		}
 	}
 	return d
@@ -130,9 +169,34 @@ func (d *desfechosDeRuns) contar(selado state.State, res agentruntime.Result) {
 			c.Add(1)
 		}
 	}
+	// `res.ToolsOffered` é o tamanho do tool set do run, não o que o gateway enviou em cada
+	// turno — ver o campo [desfechosDeRuns.semToolCall].
 	if selado == state.Complete && res.ToolCallsRequested == 0 && res.ToolsOffered > 0 {
 		d.semToolCall.Add(1)
 	}
+	// SOBRE O QUE O RUN ACABOU. Um Result que não passou pelo loop (o run recusado antes do
+	// primeiro turno) não despachou nada: `none`. Um valor fora do vocabulário não tem
+	// contador e não soma — não se cria série nenhuma a partir do que o Result traga.
+	ultimo := res.LastToolOutcome
+	if ultimo == "" {
+		ultimo = agentruntime.ToolOutcomeNone
+	}
+	negativo := res.Verdict != nil && !res.Verdict.Fulfilled
+	if c := d.sobre[chaveSobre{selado, negativo, ultimo}]; c != nil {
+		c.Add(1)
+	}
+}
+
+// lidoSobre devolve o total de um trio (estado, veredicto negativo, desfecho do último turno
+// com tool calls) dos vocabulários.
+func (d *desfechosDeRuns) lidoSobre(estado state.State, negativo bool, ultimo string) int64 {
+	if d == nil {
+		return 0
+	}
+	if c := d.sobre[chaveSobre{estado, negativo, ultimo}]; c != nil {
+		return c.Load()
+	}
+	return 0
 }
 
 // lido devolve o total de um par (estado, razão) dos vocabulários.

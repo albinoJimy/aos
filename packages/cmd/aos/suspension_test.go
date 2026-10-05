@@ -25,7 +25,7 @@ func TestResumeRecord_NaoGuardaACredencial(t *testing.T) {
 		System:     "sistema",
 		Objective:  "objectivo",
 	}
-	rec := resumeRecordFromGoal(goal)
+	rec := registoDeRetomaDeTeste(t, goal)
 
 	// O registo NÃO tem sequer campo para a credencial — a projecção não a transporta.
 	if rec.RunID != "run-susp" || rec.Principal.NHIID != "agt-1" {
@@ -56,7 +56,7 @@ func TestResumeRecord_PersisteEResolve(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewResumeRecords: %v", err)
 	}
-	want := resumeRecordFromGoal(agentruntime.Goal{
+	want := registoDeRetomaDeTeste(t, agentruntime.Goal{
 		RunID:     "run-persist",
 		Principal: referencemonitor.Principal{NHIID: "agt-9"},
 		Objective: "ler o documento",

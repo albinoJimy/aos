@@ -78,7 +78,7 @@ func TestA4_ReVarreduraRetomaOrfaoSemSegundoArranque(t *testing.T) {
 	if err := m.Transition(ctx, state.Running, state.TransitionEvent{Token: state.Uint64Token(1), Reason: "crash_simulado"}); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := node1.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+	if err := node1.ResumeRecords.Put(ctx, registoDeRetomaDeTeste(t, goal)); err != nil {
 		t.Fatalf("registo de retoma: %v", err)
 	}
 	_ = node1.Close()

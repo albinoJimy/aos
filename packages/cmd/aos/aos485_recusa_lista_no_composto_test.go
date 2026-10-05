@@ -255,7 +255,7 @@ func TestAOS485_RegistoDeRetomaLevaAListaDoGoal(t *testing.T) {
 				AllowedTools: lista,
 			}
 			ctx := context.Background()
-			if err := registos.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+			if err := registos.Put(ctx, registoDeRetomaDeTeste(t, goal)); err != nil {
 				t.Fatalf("Put: %v", err)
 			}
 			rec, ok, err := registos.Get(ctx, goal.RunID)

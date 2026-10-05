@@ -478,7 +478,7 @@ func TestAOS493_RetomaPreservaContratoModoEContadores(t *testing.T) {
 				if err := m.Transition(ctx, state.Running, state.TransitionEvent{Token: state.Uint64Token(1), Reason: "crash_simulado"}); err != nil {
 					t.Fatalf("claim do crash simulado: %v", err)
 				}
-				rec := resumeRecordFromGoal(goal)
+				rec := registoDeRetomaDeTeste(t, goal)
 				if c.modoDoRun == "" {
 					rec = aos493RegistoComoOBinarioAntigo(t, goal)
 				} else if rec.CompletionMode != c.modoDoRun || !reflect.DeepEqual(rec.CompletionRequires, c.contrato) {
@@ -565,7 +565,7 @@ func TestAOS493_RetomaPreservaContratoModoEContadores(t *testing.T) {
 // AOS-493 o escreveu: sem contrato e sem modo. Confirma que a serialização os omite.
 func aos493RegistoComoOBinarioAntigo(t *testing.T, goal agentruntime.Goal) integration.ResumeRecord {
 	t.Helper()
-	rec := resumeRecordFromGoal(goal)
+	rec := registoDeRetomaDeTeste(t, goal)
 	rec.CompletionMode = ""
 	rec.CompletionRequires = nil
 	raw, err := json.Marshal(rec)
@@ -579,16 +579,4 @@ func aos493RegistoComoOBinarioAntigo(t *testing.T, goal agentruntime.Goal) integ
 		t.Fatal("um registo sem modo e um run sem veredicto: o Goal de retoma tem de trazer off, nunca vazio")
 	}
 	return rec
-}
-
-// Um registo NOVO leva sempre o modo explícito — mesmo que o Goal ainda não o tenha fixado.
-func TestAOS493_RegistoDeRetoma_ModoSempreExplicito(t *testing.T) {
-	rec := resumeRecordFromGoal(agentruntime.Goal{RunID: "r", CompletionRequires: []string{"doc_read"}})
-	if rec.CompletionMode != agentruntime.CompletionOff || !reflect.DeepEqual(rec.CompletionRequires, []string{"doc_read"}) {
-		t.Fatalf("registo = modo %q, contrato %v", rec.CompletionMode, rec.CompletionRequires)
-	}
-	g := rec.GoalWith("cred")
-	if g.CompletionMode != agentruntime.CompletionOff || !reflect.DeepEqual(g.CompletionRequires, []string{"doc_read"}) {
-		t.Fatalf("Goal de retoma = modo %q, contrato %v", g.CompletionMode, g.CompletionRequires)
-	}
 }

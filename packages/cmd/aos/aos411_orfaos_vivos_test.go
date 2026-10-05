@@ -221,7 +221,7 @@ func TestAOS411_LeaseVivoNoutraReplicaNaoEOrfao(t *testing.T) {
 
 	const runID = "run-411-lease-noutra"
 	marcarDuravelmenteRunning(t, store, runID)
-	if err := node.ResumeRecords.Put(ctx, resumeRecordFromGoal(agentruntime.Goal{
+	if err := node.ResumeRecords.Put(ctx, registoDeRetomaDeTeste(t, agentruntime.Goal{
 		RunID:     runID,
 		Principal: referencemonitor.Principal{NHIID: durAgent},
 		Objective: "run possuido por outra replica",

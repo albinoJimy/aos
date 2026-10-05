@@ -1071,6 +1071,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			// AOS-493: o run conta-se pelo estado em que o log durável ficou, e pela razão do
 			// veredicto.
 			s.desfechos.contar(selado, res)
+			// E só AGORA se diz o estado durável de um run não cumprido: depois de o selo ter
+			// sido tentado, e com o que ele devolveu (revisão M3).
+			s.dizerNaoCumprido(rs.runID, res, selado)
 			if r != nil {
 				panic(r)
 			}
@@ -1154,14 +1157,17 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// O VEREDICTO DO KERNEL, À VISTA (AOS-493). Um veredicto negativo diz-se no log do processo
 	// nos dois modos: em imposição o run fechou sem concluir; em observação concluiu como
 	// sempre e esta linha é o que o modo de imposição teria feito dele.
-	if v := res.Verdict; v != nil && !v.Fulfilled {
-		if res.Unfulfilled {
-			s.log("run %q NAO CUMPRIDO (AOS-493) ao fim de %d turno(s): veredicto do kernel %q, %d tool call(s) pedida(s), vector %s. Estado duravel: failed (%s), sem texto final",
-				rs.runID, res.Turns, v.Reason, v.ToolCallsRequested, vectorDoVeredicto(v), reasonRunUnfulfilled)
-		} else {
-			s.log("run %q concluido com VEREDICTO NEGATIVO em observacao (AOS-493): %q, %d tool call(s) pedida(s), vector %s. O desfecho nao mudou; com AOS_COMPLETION_VERDICT=enforce este run terminava failed",
-				rs.runID, v.Reason, v.ToolCallsRequested, vectorDoVeredicto(v))
-		}
+	//
+	// AQUI SÓ SE DIZ O OBSERVADO, que não afirma nada sobre o log durável. A linha do run NÃO
+	// CUMPRIDO afirma um estado durável («failed») e por isso sai do `defer` do selo, depois de
+	// ele correr ([NodeService.dizerNaoCumprido], revisão M3). Num nó sem máquina de estados
+	// esse `defer` não existe, e a linha sai daqui a dizer que não há selo.
+	if v := res.Verdict; v != nil && !v.Fulfilled && !res.Unfulfilled {
+		s.log("run %q concluido com VEREDICTO NEGATIVO em observacao (AOS-493): %q, %d tool call(s) pedida(s), vector %s. O desfecho nao mudou; com AOS_COMPLETION_VERDICT=enforce este run terminava failed",
+			rs.runID, v.Reason, v.ToolCallsRequested, vectorDoVeredicto(v))
+	}
+	if s.node.stateGates == nil {
+		s.dizerNaoCumprido(rs.runID, res, "")
 	}
 
 	// SUSPENSÃO À ESPERA DE HUMANO (AOS-021): o run NÃO terminou — uma tool call foi
@@ -1173,7 +1179,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// espera de uma aprovação que nunca teria efeito).
 	suspenso := false
 	if res.Escalated && s.node.ResumeRecords != nil {
-		if perr := s.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); perr != nil {
+		if perr := s.putResumeRecord(ctx, goal); perr != nil {
 			err = fmt.Errorf("aos: persistir registo de retoma do run %q: %w", rs.runID, perr)
 		} else {
 			suspenso = true
@@ -1219,8 +1225,45 @@ func (s *NodeService) persistCrashResumeRecord(ctx context.Context, goal agentru
 	if s.node == nil || s.node.ResumeRecords == nil || goal.Titular() == "" {
 		return
 	}
-	if err := s.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+	if err := s.putResumeRecord(ctx, goal); err != nil {
 		s.log("registo de retoma de arranque do run %q FALHOU (AOS-253) — o run corre, mas um crash a meio NAO sera retomavel pela varredura de arranque: %v", goal.RunID, err)
+	}
+}
+
+// putResumeRecord projecta o Goal no registo de retoma e grava-o. É a ÚNICA via por que o nó
+// escreve um registo de retoma: um Goal que [resumeRecordFromGoal] recuse (sem o modo do
+// veredicto fixado) não chega ao Event Store.
+func (s *NodeService) putResumeRecord(ctx context.Context, goal agentruntime.Goal) error {
+	rec, err := resumeRecordFromGoal(goal)
+	if err != nil {
+		return err
+	}
+	return s.node.ResumeRecords.Put(ctx, rec)
+}
+
+// dizerNaoCumprido escreve no log do processo a linha de um run que acabou SEM CONCLUIR
+// (veredicto negativo imposto, AOS-493), com o estado em que o log durável ficou DE FACTO.
+// `selado` é o que [NodeService.sealTerminalState] devolveu: `failed` quando o selo foi escrito;
+// vazio quando não foi (sem máquina, sem gate, ou a transição falhou — a linha anterior deste
+// run diz qual); outro estado quando o selo foi no-op porque o run já estava fechado ou parado
+// por outro condutor.
+//
+// Existe porque a linha dizia «Estado duravel: failed» ANTES de o selo correr (revisão M3): se
+// ele falhasse, o log do processo tinha afirmado um facto durável que não existe.
+func (s *NodeService) dizerNaoCumprido(runID string, res agentruntime.Result, selado state.State) {
+	v := res.Verdict
+	if !res.Unfulfilled || v == nil {
+		return
+	}
+	cabeca := fmt.Sprintf("run %q NAO CUMPRIDO (AOS-493) ao fim de %d turno(s): veredicto do kernel %q, %d tool call(s) pedida(s), vector %s",
+		runID, res.Turns, v.Reason, v.ToolCallsRequested, vectorDoVeredicto(v))
+	switch selado {
+	case state.Failed:
+		s.log("%s. Estado duravel: failed (%s), sem texto final", cabeca, reasonRunUnfulfilled)
+	case "":
+		s.log("%s. O SELO NAO FOI ESCRITO: o log duravel NAO regista failed para este run (a causa esta na linha anterior). Sem texto final", cabeca)
+	default:
+		s.log("%s. O selo foi no-op: o estado duravel e %s, e NAO failed (%s) — o run ja tinha sido fechado ou parado por outro condutor. Sem texto final", cabeca, selado, reasonRunUnfulfilled)
 	}
 }
 
@@ -1243,12 +1286,20 @@ func fixarLayout(goal agentruntime.Goal) agentruntime.Goal {
 // um registo SEM versão é lido como «run anterior ao AOS-489» e retomado em 1.3.0
 // ([integration.ResumeRecordLegacyAssemblyVersion]). Deixar a versão vazia aqui poria um run
 // novo, com os primeiros turnos em 1.4.0, a continuar em 1.3.0 depois da retoma.
-func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
+//
+// O MODO DO VEREDICTO TEM DE VIR FIXADO (AOS-493, revisão M4). Um registo sem ele é lido como
+// «run anterior ao AOS-493» e retomado SEM veredicto ([integration.ResumeRecord.ModoDeConclusao]).
+// Ao contrário do layout, aqui não há valor por omissão que se possa escrever sem decidir pelo
+// chamador: gravar `off` punha um run novo a retomar sem veredicto, em silêncio; gravar o modo
+// do nó exigia conhecê-lo. Quem chama fixa-o antes ([Node.fixarConclusao], no `hostRun`); um
+// Goal que chegue aqui sem modo é um defeito de cablagem e é recusado ([errResumeRecordSemModo]).
+func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, error) {
 	goal = fixarLayout(goal)
-	// AOS-493: o modo do veredicto também vai SEMPRE explícito. Um registo sem ele é lido como
-	// «run anterior ao AOS-493» e retomado sem veredicto ([integration.ResumeRecord.ModoDeConclusao]).
 	if goal.CompletionMode == "" {
-		goal.CompletionMode = agentruntime.CompletionOff
+		return integration.ResumeRecord{}, fmt.Errorf("%w (run %q)", errResumeRecordSemModo, goal.RunID)
+	}
+	if _, err := agentruntime.ParseCompletionMode(string(goal.CompletionMode)); err != nil {
+		return integration.ResumeRecord{}, fmt.Errorf("aos: registo de retoma do run %q: %w", goal.RunID, err)
 	}
 	return integration.ResumeRecord{
 		RunID:             goal.RunID,
@@ -1269,8 +1320,12 @@ func resumeRecordFromGoal(goal agentruntime.Goal) integration.ResumeRecord {
 		// AOS-493: o contrato de conclusão e o modo do veredicto sobrevivem à retoma.
 		CompletionRequires: goal.CompletionRequires,
 		CompletionMode:     goal.CompletionMode,
-	}
+	}, nil
 }
+
+// errResumeRecordSemModo — pediu-se o registo de retoma de um Goal sem o modo de aplicação do
+// veredicto fixado. Fail-closed: o registo não é escrito. Ver [resumeRecordFromGoal].
+var errResumeRecordSemModo = errors.New("aos: registo de retoma sem o modo do veredicto de conclusao fixado (Goal.CompletionMode vazio) — o Goal tem de passar por fixarConclusao antes de ser gravado; sem isso o run seria retomado sem veredicto, em silencio")
 
 // heartbeat renova periodicamente a posse do lease do run enquanto ele corre. Pára quando
 // hbStop fecha (run terminou) ou o ctx do run é cancelado. Se perder a partição —

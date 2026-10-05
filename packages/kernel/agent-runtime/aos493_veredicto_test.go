@@ -155,3 +155,56 @@ func TestAOS493_Contrato_Normalizado(t *testing.T) {
 		t.Fatalf("forma do veredicto:\n  %s\nquero\n  %s", raw, quer)
 	}
 }
+
+// SOBRE O QUE O RUN ACABOU (revisão I6): o desfecho do ÚLTIMO TURNO que despachou tool calls, de
+// qualquer tool. O pior do turno, e não a última chamada; um turno sem tool calls não o muda.
+func TestAOS493_RunEvidence_SobreOQueORunAcabou(t *testing.T) {
+	t.Parallel()
+	if got, quer := LastToolOutcomes(), []string{"none", "effective", "denied", "tool_error"}; !reflect.DeepEqual(got, quer) {
+		t.Fatalf("LastToolOutcomes() = %q, quero %q", got, quer)
+	}
+	var nula *RunEvidence
+	if nula.LastToolOutcome() != ToolOutcomeNone {
+		t.Fatal("contadores nil dizem none")
+	}
+	ok, negada, falhada := aos493Resultado("a", false, false), aos493Resultado("b", true, false), aos493Resultado("c", false, true)
+	for _, c := range []struct {
+		nome   string
+		turnos [][]CapturedToolResult
+		quer   string
+	}{
+		{"nenhuma tool call", nil, ToolOutcomeNone},
+		{"so turnos sem tool calls", [][]CapturedToolResult{nil, {}}, ToolOutcomeNone},
+		{"efectiva", [][]CapturedToolResult{{ok}}, ToolOutcomeEffective},
+		{"negada", [][]CapturedToolResult{{negada}}, ToolOutcomeDenied},
+		{"falhada", [][]CapturedToolResult{{falhada}}, ToolOutcomeFailed},
+		{"o pior do turno: negada antes de efectiva", [][]CapturedToolResult{{negada, ok}}, ToolOutcomeDenied},
+		{"o pior do turno: falhada antes de efectiva", [][]CapturedToolResult{{falhada, ok}}, ToolOutcomeFailed},
+		{"a recusa ganha a falha", [][]CapturedToolResult{{falhada, negada, ok}}, ToolOutcomeDenied},
+		{"so o ultimo turno conta", [][]CapturedToolResult{{negada}, {ok}}, ToolOutcomeEffective},
+		{"recusa depois de efectiva", [][]CapturedToolResult{{ok}, {negada}}, ToolOutcomeDenied},
+		{"um turno sem tool calls nao apaga o anterior", [][]CapturedToolResult{{falhada}, nil}, ToolOutcomeFailed},
+	} {
+		e := NewRunEvidence()
+		for _, turno := range c.turnos {
+			e.Observe(turno)
+		}
+		if got := e.LastToolOutcome(); got != c.quer {
+			t.Fatalf("%s: acabou sobre %q, quero %q", c.nome, got, c.quer)
+		}
+	}
+}
+
+func TestAOS493_OutcomeReason_NoVocabulario(t *testing.T) {
+	t.Parallel()
+	for _, r := range append([]OutcomeReason{OutcomeFulfilled}, OutcomeReasons()...) {
+		if !r.NoVocabulario() {
+			t.Fatalf("%q e do vocabulario", r)
+		}
+	}
+	for _, r := range []OutcomeReason{"objective_unfulfilled", "Truncated", " truncated", "run_failed", "x\ny"} {
+		if r.NoVocabulario() {
+			t.Fatalf("%q NAO e do vocabulario", r)
+		}
+	}
+}

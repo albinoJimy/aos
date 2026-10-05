@@ -256,7 +256,7 @@ func TestAOS486_RetomaECrashResumeReproduzemOFiltro(t *testing.T) {
 					t.Fatalf("claim do crash simulado: %v", err)
 				}
 				// O registo de retoma é o que o hostRun de produção escreve no arranque.
-				if err := inc1.node.ResumeRecords.Put(ctx, resumeRecordFromGoal(goal)); err != nil {
+				if err := inc1.node.ResumeRecords.Put(ctx, registoDeRetomaDeTeste(t, goal)); err != nil {
 					t.Fatalf("semear o registo de retoma: %v", err)
 				}
 				_ = inc1.node.Close()

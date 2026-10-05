@@ -4,6 +4,8 @@
 - **Data:** 2026-10-04
 - **Deciders:** Dono do produto (decisões de 2026-10-04: contrato inferido das tools do nó, e
   «não cumprido» gravado como `failed` com razão própria) · executor de AOS-493 (implementação)
+- **Revisto:** 2026-10-05, depois da revisão adversarial independente: §2.2 (contrato impossível),
+  §2.7 (o que o replay reproduz), §4 (saga de compensação) e §5 (retoma, medição)
 - **Tickets:** AOS-493
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-010 (manifesto por trajectória e replay), ADR-018 (o nó é a autoridade sobre o run),
@@ -41,6 +43,21 @@ O objectivo de um run pode declarar um contrato de conclusão: a lista de tools 
 depende (`Goal.CompletionRequires`, por nome). Quem o declara é quem compõe o run; nunca sai de
 conteúdo do modelo. O contrato está cumprido quando cada tool da lista teve pelo menos uma
 chamada **efectiva** no run.
+
+**Um contrato impossível não arranca.** Antes do primeiro turno o kernel verifica que cada tool
+do contrato pode ser chamada neste run: consta do tool set do run e, havendo lista-branca, está
+nela. Se não, o run é recusado com um erro próprio (`ErrImpossibleCompletionContract`), sem
+gravar eventos nem interrogar o modelo. Sem esta verificação o run gastava todos os turnos e
+acabava em `contract_unmet_no_call`, que diz «o modelo não chamou» de um defeito de quem compôs
+o run. A comparação de nomes é exacta, como a do Reference Monitor: um nome com outra caixa ou
+com espaços não é a tool, e cai nesta recusa. O nó sela o run recusado como um erro de loop
+(`failed`, razão de auditoria `run_failed`, sem `outcome_reason`).
+
+A recusa não depende do modo, excepto em `off`, onde o contrato não é lido. Em `observe` isto
+muda o desfecho de um run com contrato impossível: arrancava e concluía, e passa a não arrancar.
+É aceitável porque nenhum contrato chega ainda pela API (o campo no `POST /runs` é do AOS-494):
+hoje só código declara um contrato, e nenhum run de produção o tem. Quando o AOS-494 e o AOS-495
+o trouxerem, um contrato impossível passa a ser um erro de quem submete, visível à primeira.
 
 ### 2.3 A evidência são os contadores do loop
 
@@ -93,12 +110,19 @@ Um valor desconhecido recusa o arranque. O modo e o contrato ficam no registo de
 manifesto de cada turno (`manifest.completion`). Um run retomado continua no modo em que começou;
 um registo de retoma sem o campo é de um run anterior a esta decisão e retoma-se sem veredicto.
 
-### 2.7 O replay reproduz o veredicto
+### 2.7 O replay reproduz o veredicto dos runs de uma só vida
 
 O motor de replay chama `ConcludeRun` com o modo e o contrato que o manifesto do turno terminal
 gravou, e com contadores refeitos dos resultados que a captura registou. Não conhece a
 configuração do nó que reproduz. Um turno gravado sem `manifest.completion` reproduz-se com o
 desfecho de sempre: concluído, sem veredicto.
+
+O modo que vale é o do turno **terminal**. Num log misto (os turnos de um run não gravaram todos
+o mesmo `manifest.completion`, que é o que um rollback do binário a meio do run deixa) quem selou
+o run foi quem deu o último turno, e é o manifesto desse turno que diz com que regra.
+
+Isto vale para um run que correu numa só vida, ou cuja retoma reproduziu os turnos anteriores com
+o mesmo desfecho. Não vale para um run retomado cujo turno re-executado mudou de desfecho: ver §5.
 
 A regra nova entra por estes campos e não por um layout de prompt novo. Um layout é a forma dos
 bytes do prompt, e esta decisão não muda nenhum. Um layout que a projecção nativa não conhecesse
@@ -134,8 +158,21 @@ cairia em silêncio na projecção de texto.
   `failed`, o `aos-orq` dá o nó por falhado e o plano não sai com `exit_code=0`.
 - Em observação nada muda no desfecho. A série `aos_runs_finished_total{outcome="complete"}` com
   uma razão diferente de `none` diz quantos runs a imposição teria fechado em `failed`.
-- `failed` é a origem da saga de compensação. Um run não cumprido que tenha feito efeitos entra
-  nela, como qualquer outro run falhado.
+- **Um run não cumprido é `failed`, e segue o caminho de qualquer `failed`.** `failed` é a
+  origem da saga de compensação, e o run entra nela. Os efeitos das tools que correram bem ficam
+  sujeitos às compensações que estiverem registadas. **Hoje não há nenhuma**: o loop não regista
+  compensações, a saga não desfaz nada, declara a ausência no log e no WORM (partição da saga,
+  razão `saga_no_compensation_registered`, uma escrita por run) e o run fica em `failed` com o
+  efeito **aplicado**. Um run cujo contrato é `[doc_read, doc_write]`, que escreveu e nunca leu,
+  acaba `failed` com a escrita feita.
+- **Ponto a decidir antes de haver compensações reais.** No dia em que uma tool registar a sua
+  compensação, a saga passa a desfazer, num run não cumprido, efeitos de tools que correram bem —
+  incluindo os que cumpriam parte do contrato. Pode ser o que se quer (o run não concluiu, nada
+  do que fez fica) ou não (a escrita era boa, faltou só a leitura). A decisão não está tomada, e
+  `objective_unfulfilled` é a razão de auditoria por que a saga os pode distinguir de um erro de
+  loop. O comportamento de hoje está fixado por teste, para a mudança se ver.
+- Um run recusado por contrato impossível (§2.2) também é `failed` e também entra na saga, onde
+  não há efeito nenhum a desfazer: não chegou a dar um turno.
 - Em imposição, um run sem contrato cujo último turno foi cortado ou veio vazio passa a `failed`.
 - O manifesto de cada turno de um run com veredicto ganha o campo `completion`. Um run com o modo
   desligado grava os bytes de antes.
@@ -154,12 +191,44 @@ cairia em silêncio na projecção de texto.
   contrato está cumprido e o run conclui. Não há critério estrutural que o apanhe.
 - **Desistência depois de uma recusa posterior à primeira chamada efectiva.** O vector regista
   que a última chamada foi recusada; o veredicto é positivo.
+- **Acabar sobre uma recusa ou uma falha de tool é medido, e não é veredicto negativo.** Um run
+  com o contrato cumprido, ou sem contrato, que acaba logo a seguir a uma recusa ou a uma falha
+  de tool tem veredicto positivo e sai `reason="none"`. A análise pedia uma classe própria para
+  estes runs; ficou como medição e não como razão negativa nova, porque um run pode acabar bem
+  depois de uma recusa (pediu o que não podia, e respondeu com o que tinha) e o kernel não tem
+  como os separar sem ler o texto. A família
+  `aos_runs_finished_by_last_tool_outcome_total{outcome,verdict,last}` conta cada run selado pelo
+  desfecho do último turno que despachou tool calls, de qualquer tool: `none`, `effective`,
+  `denied` (pelo menos uma recusada) ou `tool_error` (nenhuma recusada e pelo menos uma falhou).
+  É o pior do turno e não a última chamada: as chamadas de um turno chegam juntas ao modelo. A
+  classe em causa é `verdict="none"` com `last="denied"` ou `last="tool_error"`. Não vai em
+  evento nenhum; o período de observação lê-a do `/metrics`.
 - **Contrato com mão larga.** Uma tool exigida que o objectivo afinal não precisava dá um
   vermelho falso. O âmbito em que o `aos-orq` declara o contrato é do AOS-495.
 - **Sem reparação.** Um veredicto negativo fecha o run; não há outro turno para o modelo.
-- **Retoma depois de uma falha de tool.** Uma tool que falhou numa vida do run volta a correr na
-  retoma e pode ter êxito. O veredicto selado é o da vida que terminou; a captura do turno é a da
-  vida em que ele foi gravado, e o replay pode chegar a outro vector.
+- **Retoma depois de uma falha de tool: dois ramos, medidos.** A retoma reproduz os turnos já
+  dados. Uma chamada que teve êxito tem o resultado memorizado e não volta a executar. Uma que
+  **falhou** não tem, e é mediada outra vez. O que acontece depende de a retoma ter credencial:
+  - **Retoma por crash (a varredura de arranque), sem credencial.** A chamada é **negada** pelo
+    Reference Monitor na segunda vida: não há credencial de agente com que a autorizar. A tool
+    não volta a executar. O vector sai «pedida 1, negada 1» e, em `enforce`, o run sela `failed`
+    com `contract_unmet_after_denial` — a razão diz «recusa» de uma chamada que na primeira vida
+    foi permitida e falhou na execução. A causa é anterior a esta decisão (a re-hospedagem por
+    crash nunca teve credencial); passou a decidir o desfecho.
+  - **Retoma com credencial (a retoma por aprovação).** A chamada volta a correr e pode ter
+    êxito; nesse caso o contrato fica cumprido e o run conclui.
+
+  Nos dois ramos o veredicto selado é o da vida que terminou.
+- **O replay destes runs pára em divergência; não reproduz veredicto nenhum.** A captura do turno
+  re-executado é a da primeira vida (a deduplicação do Event Store fica com a primeira escrita),
+  e o turno seguinte foi gravado na segunda, com outro resultado no tail. O motor remonta o
+  prompt do turno seguinte a partir da captura, o `prompt_hash` não bate com o gravado, e o
+  replay pára aí: divergência de `prompt_hash`, fidelidade parcial, sem desfecho e sem veredicto.
+  Medido nos dois ramos acima. Vale por inferência para o caminho normal de aprovação humana (a
+  chamada escalada na primeira vida e aprovada na segunda), que não foi reproduzido. É uma classe
+  anterior a esta decisão — um run retomado cujo turno re-executado muda de desfecho nunca se
+  reproduziu com fidelidade total —, e o veredicto não a agrava nem a resolve: o replay não
+  contradiz o desfecho selado, mas também não o confirma.
 - **`content_filter` e motivos de paragem desconhecidos** concluem como hoje.
 - **O modo é do nó, não do run.** Dois nós com modos diferentes dão desfechos diferentes ao mesmo
   objectivo.
