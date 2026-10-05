@@ -64,6 +64,10 @@ const maxPedidosPorDrenagem = 16
 //	9 exitPlanoRecusado        TERMINAL     o planeador esgotou tentativas; não se retenta
 //	10 exitDocumentoRecusado   TERMINAL     documento/snapshot recusado; determinista (AOS-442);
 //	                                        também o grafo do run que diverge do plano (AOS-476)
+//	                                        e o documento da linha 1.3.0 do plano (origem de uma
+//	                                        saída declarada, ou só o carimbo) enquanto não houver
+//	                                        entrega por referência (AOS-500), com tipo próprio no
+//	                                        resumo (`origem_sem_entrega`)
 //	11 exitRequerenteForaDoMandato TERMINAL o submissor não consta dos requesters do mandato;
 //	                                        determinista até o humano re-assinar (AOS-439)
 //	12 exitGeracoesEsgotadas   TERMINAL     o nó marcou a geração como a que passa o tecto de
@@ -515,6 +519,8 @@ func tipoDoErro(err error) string {
 		return "documento_recusado"
 	case errors.Is(err, errGrafoDoRunDiverge):
 		return "grafo_diverge"
+	case errors.Is(err, errOrigemSemEntrega):
+		return "origem_sem_entrega"
 	case errors.Is(err, ErrSnapshotNaoCorresponde):
 		return "snapshot_nao_corresponde"
 	case errors.Is(err, ErrSnapshotDiferenteDoSelado):

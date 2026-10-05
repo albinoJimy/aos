@@ -205,6 +205,15 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	}
 	fmt.Printf("decomposto: objectivo -> plano de %d nos (tentativas=%d, planner_nhi=%s)\n", len(res.Doc.Nodes), res.Attempts, res.PlannerNHI)
 
+	// (5-bis) AOS-500: um plano da linha 1.3.0 não corre neste binário (ver origem_no_plano.go).
+	// A recusa que CONTA é a do laço — [validadorDoSnapshot] devolve-a ao planeador, que tenta
+	// de novo, como o binário anterior fazia. Esta é a última linha: um documento que saísse do
+	// laço ainda nessa linha não é validado, não passa pelo gate, não é escrito no `--plan-out`
+	// e não materializa nada.
+	if err := recusarSemEntrega(res.Doc); err != nil {
+		return err
+	}
+
 	// (6) VALIDAÇÃO ESTRUTURAL (AOS-231) — fail-closed. O documento é untrusted; a forma
 	// já passou em plan.Decode, aqui valida-se aciclicidade/tools/tectos contra o snapshot
 	// pinado. O tecto de cardinalidade é o DERIVADO da revisibilidade humana.
@@ -341,6 +350,12 @@ func comporBaseDeExecucao(ctx context.Context, runID, worker string, snap planva
 type validadorDoSnapshot struct{ snap planvalidate.Snapshot }
 
 func (v validadorDoSnapshot) Validate(doc plan.PlanDocument) *planner.Rejection {
+	// AOS-500, até ao AOS-501: um documento carimbado na linha 1.3.0 é uma tentativa RECUSADA,
+	// com o código que o binário anterior lhe dava — volta ao laço, não acaba o `serve`. Antes
+	// do validador porque era também a primeira coisa que o validador anterior conferia.
+	if r := recusaDoLacoSemEntrega(doc); r != nil {
+		return r
+	}
 	ver := planvalidate.Validate(doc, v.snap, planvalidate.Ceilings{MaxNodes: planvalidate.DefaultMaxNodes})
 	if !ver.Rejected() {
 		return nil

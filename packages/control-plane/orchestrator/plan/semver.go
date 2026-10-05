@@ -42,6 +42,9 @@ type PlanVersion struct {
 //   - 1.2.0 (AOS-271+AOS-272, ADR-022 §2.2/§2.3) — MINOR: o `Node` ganhou `outputs` e
 //     `consumes` (campos OPCIONAIS e ADITIVOS) e o literal `verifier` do campo `role`
 //     passou a ser RESERVADO, com a semântica de sistema de §2.2 imposta na admissão.
+//   - 1.3.0 (AOS-500, ADR-038 §2.1) — MINOR: o `Output` ganhou `from_tool`, a origem
+//     DECLARADA de uma saída (campo OPCIONAL e ADITIVO). Um documento sem o campo
+//     re-serializa nos mesmos bytes e os seus contratos mantêm o digest.
 //
 // PORQUE O MINOR PERTENCE A QUEM ALARGA O SCHEMA. Sem o bump, dois binários
 // carimbavam AMBOS a mesma versão e discordavam sobre o schema aceite: um planeador
@@ -79,7 +82,7 @@ type PlanVersion struct {
 // transformação de dados a exercitar seria quebrar a compatibilidade de graça e dar
 // trabalho a fingir ao `planmigrate` — a migração REAL desta linha é a ausência de
 // migração, e prova-se, não se declara.
-var CurrentPlanVersion = PlanVersion{Major: 1, Minor: 2, Patch: 0}
+var CurrentPlanVersion = PlanVersion{Major: 1, Minor: 3, Patch: 0}
 
 // schemaFeature é UMA extensão do schema com o MINOR em que passou a EXISTIR. A tabela
 // abaixo é o outro lado da lista MINOR-a-MINOR de [CurrentPlanVersion]: aquela diz o que
@@ -133,6 +136,31 @@ var schemaFeatures = []schemaFeature{
 	// campo novo: é o significado que o sistema passou a IMPOR a esse nó.
 	{Name: "role_verifier", Since: PlanVersion{Major: 1, Minor: 2, Patch: 0},
 		Used: Node.IsVerifier},
+	// 1.3.0 (AOS-500, ADR-038 §2.1) — a origem declarada de uma saída.
+	{Name: "from_tool", Since: PlanVersion{Major: 1, Minor: 3, Patch: 0},
+		Used: Node.DeclaresOutputSource},
+}
+
+// DeclaresOutputSource indica se alguma saída do nó declara a origem (`from_tool`, AOS-500). É a
+// ÚNICA leitura de «este nó tem uma saída por referência» no módulo: o piso de versão, o
+// validador e quem corre o plano perguntam todos aqui.
+func (n Node) DeclaresOutputSource() bool {
+	for _, o := range n.Outputs {
+		if o.FromTool != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// DeclaresOutputSource indica se algum nó do documento declara a origem de uma saída.
+func (d PlanDocument) DeclaresOutputSource() bool {
+	for _, n := range d.Nodes {
+		if n.DeclaresOutputSource() {
+			return true
+		}
+	}
+	return false
 }
 
 // FeatureUse é o uso CONCRETO que fixa o piso de versão de um documento: que feature, em

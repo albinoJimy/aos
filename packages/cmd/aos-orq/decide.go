@@ -407,6 +407,12 @@ func lerDocumentoPorHash(caminho, hashSelado string) (plan.PlanDocument, string,
 	if err != nil {
 		return plan.PlanDocument{}, "", fmt.Errorf("documento pendente %q: %w", caminho, err)
 	}
+	// AOS-500, até ao AOS-501: não se decide sobre um documento da linha 1.3.0 — o `serve` não
+	// o correria, e uma aprovação humana gasta num plano que não corre é pior do que a recusa.
+	// Antes do confronto com o hash e de qualquer escrita no log.
+	if err := recusarSemEntrega(doc); err != nil {
+		return plan.PlanDocument{}, "", err
+	}
 	hash := hashDoPlano(doc)
 	if hash != hashSelado {
 		return plan.PlanDocument{}, "", fmt.Errorf("%w: o documento reapresentado tem hash %s e o plano validado tem %s — o humano decidiria sobre outro organigrama",

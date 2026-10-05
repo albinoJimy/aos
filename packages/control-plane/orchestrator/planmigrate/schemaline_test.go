@@ -67,6 +67,12 @@ const (
 
 	conditionalCanonical = `{"plan_version":"1.1.0","objective":"recolher fontes, com pesquisa suplementar se a recolha falhar","budget_total":{"tokens":2200,"cost_micro_usd":11000},"planner_meta":{"model":"planner-model-a","prompt_version":"2.2.0","capabilities_hash":"sha256:snap-conditional"},"nodes":[{"node_id":"recolha","role":"searcher","objective":"recolher fontes candidatas","tools":[{"name":"search","version":"1.0.0","digest":"sha256:search"}],"depends_on":[],"budget_estimate":{"tokens":800,"cost_micro_usd":4000},"risk_class":"safe"},{"node_id":"suplementar","role":"searcher","objective":"pesquisa suplementar quando a recolha falha","tools":[{"name":"search","version":"1.0.0","digest":"sha256:search"}],"depends_on":[],"budget_estimate":{"tokens":800,"cost_micro_usd":4000},"risk_class":"safe","conditional_on":[{"from":"recolha","when":[{"subject":"terminal_state","op":"eq","enum":"failed"}]}]},{"node_id":"resumo","role":"summarizer","objective":"redigir o resumo executivo","tools":[],"depends_on":[],"budget_estimate":{"tokens":600,"cost_micro_usd":3000},"risk_class":"safe","conditional_on":[{"from":"recolha","when":[{"subject":"terminal_state","op":"eq","enum":"complete"}]}]}]}`
 	conditionalHash      = "sha256:09f58a174064605da6c60f15f08cbd8025797de41c6f75e2fbf7f82be46e780b"
+
+	// A linha 1.2.0 (AOS-500): congelada quando deixou de ser a corrente. A forma canónica e o
+	// hash foram tirados com o binário ANTERIOR a `outputs[].from_tool` — é isso que faz deles um
+	// ponto fixo, e não um valor que o código novo calcula sobre si próprio.
+	payloadCanonical = `{"plan_version":"1.2.0","objective":"recolher fontes, verificar a recolha e redigir o resumo executivo","budget_total":{"tokens":2600,"cost_micro_usd":13000},"planner_meta":{"model":"planner-model-a","prompt_version":"2.3.0","capabilities_hash":"sha256:snap-payload"},"nodes":[{"node_id":"recolha","role":"searcher","objective":"recolher fontes candidatas","tools":[{"name":"search","version":"1.0.0","digest":"sha256:search"}],"depends_on":[],"budget_estimate":{"tokens":800,"cost_micro_usd":4000},"risk_class":"safe","outputs":[{"name":"achados","type":"record"},{"name":"notas","type":"summary","taint":"untrusted"}]},{"node_id":"revisao","role":"verifier","objective":"verificar a cobertura da recolha","tools":[],"depends_on":["recolha"],"budget_estimate":{"tokens":600,"cost_micro_usd":3000},"risk_class":"safe","outputs":[{"name":"veredicto","type":"verdict"}],"consumes":[{"from":"recolha","output":"achados","type":"record"}]},{"node_id":"resumo","role":"summarizer","objective":"redigir o resumo executivo","tools":[],"depends_on":["recolha"],"budget_estimate":{"tokens":1200,"cost_micro_usd":6000},"risk_class":"safe","conditional_on":[{"from":"revisao","when":[{"subject":"verdict","op":"eq","enum":"pass"}]}],"consumes":[{"from":"recolha","output":"notas","type":"summary"}]}]}`
+	payloadHash      = "sha256:823aa24c953afc6e58ac9d4441fb180144720724d2bf2207045bbfef1021df3c"
 )
 
 // frozenLine é UM documento congelado de uma linha anterior do schema: o ficheiro, a
@@ -93,7 +99,7 @@ func frozenLines() []frozenLine {
 			Canonical: baselineCanonical,
 			Hash:      baselineHash,
 			// A linha base é PRÉ-ADR-022 por inteiro: nenhuma das três extensões.
-			AbsentKeys: []string{`"conditional_on"`, `"outputs"`, `"consumes"`},
+			AbsentKeys: []string{`"conditional_on"`, `"outputs"`, `"consumes"`, `"from_tool"`},
 		},
 		{
 			File:      "plan-1.1.0-conditional.json",
@@ -102,7 +108,16 @@ func frozenLines() []frozenLine {
 			Hash:      conditionalHash,
 			// 1.1.0 já tem `conditional_on` (AOS-270) mas ainda não os contratos de
 			// payload (AOS-272) — que é exactamente o que separa 1.1.0 de 1.2.0.
-			AbsentKeys: []string{`"outputs"`, `"consumes"`},
+			AbsentKeys: []string{`"outputs"`, `"consumes"`, `"from_tool"`},
+		},
+		{
+			File:      "plan-1.2.0-payload.json",
+			Version:   plan.PlanVersion{Major: 1, Minor: 2, Patch: 0},
+			Canonical: payloadCanonical,
+			Hash:      payloadHash,
+			// 1.2.0 tem os contratos de payload e o verificador, mas ainda não a origem
+			// declarada de uma saída (AOS-500) — que é o que separa 1.2.0 de 1.3.0.
+			AbsentKeys: []string{`"from_tool"`},
 		},
 	}
 }
@@ -369,6 +384,84 @@ func TestIndependentTwinOfBaselineHashesTheSame(t *testing.T) {
 	mig := planmigrate.NewMigrator(mustPolicy(t, declaredWindow))
 	if _, err := mig.Replay(context.Background(), store, planID, twin); err != nil {
 		t.Fatalf("o gemeo devia ser um reader admissivel da mesma captura: %v", err)
+	}
+}
+
+// TestCurrentLineFromToolRoundTripsAndReplays — o caso 1.3.0 da linha (AOS-500). O documento de
+// `testdata/schemaline/plan-1.3.0-from-tool.json` é a fixture 1.2.0 com UMA diferença além do
+// carimbo: a saída `achados` declara `from_tool`. Prova, sobre a linha corrente:
+//
+//   - o leitor aceita o campo, guarda-o e re-serializa-o (a ida e volta não o perde);
+//   - o hash de binding é OUTRO: um documento que declara a origem não se confunde com o que
+//     não a declara, e tirar o campo (e repor o carimbo) devolve exactamente o hash congelado
+//     da 1.2.0;
+//   - o replay reproduz o plano na versão em que foi aprovado, 1.3.0.
+//
+// Não é uma linha congelada: 1.3.0 é a corrente, e entra em [frozenLines] quando deixar de ser.
+func TestCurrentLineFromToolRoundTripsAndReplays(t *testing.T) {
+	t.Parallel()
+	const file = "plan-1.3.0-from-tool.json"
+	v130 := plan.PlanVersion{Major: 1, Minor: 3, Patch: 0}
+	doc := loadFrozen(t, file)
+	if doc.PlanVersion != v130 {
+		t.Fatalf("plan_version=%s, esperado %s", doc.PlanVersion, v130)
+	}
+	if got := doc.Nodes[0].Outputs[0].FromTool; got != "search" {
+		t.Fatalf("from_tool lido = %q; a fixture declara search", got)
+	}
+	enc, err := plan.Encode(doc)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if !strings.Contains(string(enc), `{"name":"achados","type":"record","from_tool":"search"}`) {
+		t.Fatalf("a ida e volta perdeu a origem declarada:\n%s", enc)
+	}
+	relido, err := plan.Decode(enc)
+	if err != nil {
+		t.Fatalf("Decode do re-serializado: %v", err)
+	}
+	h, err := planmigrate.HashPlan(doc)
+	if err != nil {
+		t.Fatalf("HashPlan: %v", err)
+	}
+	if h2, _ := planmigrate.HashPlan(relido); h2 != h {
+		t.Fatalf("o hash mudou na ida e volta: %s -> %s", h, h2)
+	}
+	if h == payloadHash {
+		t.Fatal("o documento com origem declarada tem o hash do documento sem ela")
+	}
+
+	// Tirar o campo e repor o carimbo dá, byte a byte, o documento congelado da linha 1.2.0.
+	sem := relido
+	sem.PlanVersion = plan.PlanVersion{Major: 1, Minor: 2, Patch: 0}
+	sem.Nodes = append([]plan.Node(nil), relido.Nodes...)
+	sem.Nodes[0].Outputs = append([]plan.Output(nil), relido.Nodes[0].Outputs...)
+	sem.Nodes[0].Outputs[0].FromTool = ""
+	encSem, err := plan.Encode(sem)
+	if err != nil {
+		t.Fatalf("Encode sem origem: %v", err)
+	}
+	if string(encSem) != payloadCanonical {
+		t.Fatalf("sem a origem, o documento devia ser o congelado da 1.2.0:\n got=%s\nwant=%s", encSem, payloadCanonical)
+	}
+
+	store := newStore(t)
+	planID := "plan-schemaline-1-3-0"
+	hash, _ := seedApproval(t, store, planID, doc, nil)
+	if hash != h {
+		t.Fatalf("hash aprovado=%s, esperado %s", hash, h)
+	}
+	seedMaterialized(t, store, planID, doc, hash)
+	rp, err := planmigrate.NewMigrator(mustPolicy(t, declaredWindow)).Replay(context.Background(), store, planID, doc)
+	if err != nil {
+		t.Fatalf("Replay de um documento 1.3.0: %v", err)
+	}
+	if rp.Manifest.PlanVersion != v130 || rp.Manifest.PlanHash != h {
+		t.Fatalf("manifesto = %s/%s; esperado %s/%s", rp.Manifest.PlanVersion, rp.Manifest.PlanHash, v130, h)
+	}
+	// O reader que NÃO declara a origem não é um reader desta captura.
+	if _, err := planmigrate.NewMigrator(mustPolicy(t, declaredWindow)).Replay(context.Background(), store, planID, sem); err == nil {
+		t.Fatal("um documento sem a origem foi aceite como reader de um plano aprovado com ela")
 	}
 }
 

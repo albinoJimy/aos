@@ -1268,7 +1268,7 @@ deixar de responder ao `GET /tools`, o pedido fecha no tecto de gerações (saí
 O mesmo resumo chega ao nó no `detail` do desfecho — **também em sucesso** —, e é o que o
 `GET /plans/{id}` passa a mostrar num plano terminado: `resumo: origem=… geracao=… nos=… duracao_s=…`,
 com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentinela
-(`nos_em_voo`, `nos_falhados`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `plano_recusado_pelo_planeador`, `anuncio_ilegivel`, … ou
+(`nos_em_voo`, `nos_falhados`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `origem_sem_entrega`, `plano_recusado_pelo_planeador`, `anuncio_ilegivel`, … ou
 `generico`) e **nunca o texto do erro**, que pode citar conteúdo escrito pelo modelo. O texto de um
 `generico` vai só para o log da drenagem, para diagnóstico.
 
