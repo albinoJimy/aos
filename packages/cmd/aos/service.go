@@ -1333,6 +1333,9 @@ func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, err
 		// AOS-493: o contrato de conclusão e o modo do veredicto sobrevivem à retoma.
 		CompletionRequires: goal.CompletionRequires,
 		CompletionMode:     goal.CompletionMode,
+		// AOS-497: a origem declarada da saída e o seu vínculo sobrevivem à retoma.
+		OutputFromTool:      goal.OutputFromTool,
+		OutputSourceBinding: goal.OutputSourceBinding,
 	}, nil
 }
 

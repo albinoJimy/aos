@@ -89,6 +89,15 @@ type ResumeRecord struct {
 	// modo pergunta-o a [ResumeRecord.ModoDeConclusao]; a escrita do nó grava-o sempre.
 	CompletionRequires []string                    `json:"CompletionRequires,omitempty"`
 	CompletionMode     agentruntime.CompletionMode `json:"CompletionMode,omitempty"`
+	// OutputFromTool e OutputSourceBinding são a origem declarada da saída do run e o seu
+	// vínculo (AOS-497, [agentruntime.Goal.OutputFromTool] e
+	// [agentruntime.Goal.OutputSourceBinding]). Têm de sobreviver à retoma: um run re-hospedado
+	// sem a declaração acabava sem âncora, e um re-hospedado com outro vínculo acabava com um
+	// desfecho que o manifesto dos seus turnos não reproduz. Um registo anterior não os tem e
+	// decodifica vazio — esses runs nunca declararam origem. `omitempty`: um registo sem
+	// declaração serializa sem os campos.
+	OutputFromTool      string                           `json:"OutputFromTool,omitempty"`
+	OutputSourceBinding agentruntime.OutputSourceBinding `json:"OutputSourceBinding,omitempty"`
 }
 
 // ResumeRecordLegacyAssemblyVersion é o layout de um registo de retoma que NÃO traz
@@ -140,6 +149,9 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		// de retoma com o modo vazio receberia o do nó que o retoma.
 		CompletionRequires: r.CompletionRequires,
 		CompletionMode:     r.ModoDeConclusao(),
+		// AOS-497: a origem declarada da saída e o vínculo com que o run começou.
+		OutputFromTool:      r.OutputFromTool,
+		OutputSourceBinding: r.OutputSourceBinding,
 	}
 }
 

@@ -36,7 +36,7 @@ func TestAOS494_RebuildOutcome_EstadoEVeredictoDaUltimaTransicao(t *testing.T) {
 				t.Fatal(err)
 			}
 			// A meio do run não há veredicto para ler.
-			if estado, v, err := mustMachine(t, st, "run-494-outcome").RebuildOutcome(ctx); err != nil || estado != Running || v != nil {
+			if estado, v, err := mustMachine(t, st, "run-494-outcome").RebuildOutcome(ctx); err != nil || estado != Running || v.Verdict != nil || v.OutputSource != nil {
 				t.Fatalf("a meio do run: estado=%s veredicto=%+v err=%v; quero running, nil, nil", estado, v, err)
 			}
 			if err := m.Transition(ctx, c.to, c.ev); err != nil {
@@ -48,8 +48,8 @@ func TestAOS494_RebuildOutcome_EstadoEVeredictoDaUltimaTransicao(t *testing.T) {
 			if err != nil || estado != c.to {
 				t.Fatalf("RebuildOutcome: estado=%s err=%v; quero %s", estado, err, c.to)
 			}
-			if !reflect.DeepEqual(v, c.quer) {
-				t.Fatalf("veredicto lido do log = %+v, quero %+v", v, c.quer)
+			if !reflect.DeepEqual(v.Verdict, c.quer) || v.OutputSource != nil {
+				t.Fatalf("lido do log: veredicto = %+v ancora = %+v, quero %+v e nenhuma ancora", v.Verdict, v.OutputSource, c.quer)
 			}
 			// E é o mesmo estado que o Rebuild de sempre devolve.
 			if so, err := mustMachine(t, st, "run-494-outcome").Rebuild(ctx); err != nil || so != estado {
@@ -59,7 +59,7 @@ func TestAOS494_RebuildOutcome_EstadoEVeredictoDaUltimaTransicao(t *testing.T) {
 	}
 
 	// Um run que nunca existiu é `ready`, sem veredicto e sem erro — como no Rebuild.
-	if estado, v, err := mustMachine(t, newStore(t), "run-494-inexistente").RebuildOutcome(ctx); err != nil || estado != Ready || v != nil {
+	if estado, v, err := mustMachine(t, newStore(t), "run-494-inexistente").RebuildOutcome(ctx); err != nil || estado != Ready || v.Verdict != nil || v.OutputSource != nil {
 		t.Fatalf("stream inexistente: estado=%s veredicto=%+v err=%v", estado, v, err)
 	}
 }

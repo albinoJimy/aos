@@ -6,6 +6,8 @@
   «não cumprido» gravado como `failed` com razão própria) · executor de AOS-493 (implementação)
 - **Revisto:** 2026-10-05, depois da revisão adversarial independente: §2.2 (contrato impossível),
   §2.7 (o que o replay reproduz), §4 (saga de compensação) e §5 (retoma, medição)
+- **Emendado:** 2026-10-05, por AOS-497 (ADR-038): §2.4 (duas razões novas e a sua precedência)
+  e §5 (o resíduo «evidência não é fidelidade» remete para o ADR-038)
 - **Tickets:** AOS-493
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-010 (manifesto por trajectória e replay), ADR-018 (o nó é a autoridade sobre o run),
@@ -85,6 +87,21 @@ o desfecho da última. A razão de um veredicto negativo é uma de:
 
 A ordem da tabela é a de precedência. A razão do contrato é a da primeira tool em falta, na ordem
 em que o contrato foi declarado. `truncated` e `empty_output` valem com ou sem contrato.
+
+**Emenda de 2026-10-05 (AOS-497, ADR-038 §2.4).** O vocabulário ganha duas razões, que só
+existem num run que declarou a origem da saída como **vinculativa** e com o nó em imposição:
+
+| `outcome_reason` | Quando |
+|---|---|
+| `output_source_missing` | Nenhuma chamada é designável como origem da saída |
+| `output_source_ambiguous` | Mais de uma chamada podia ser a origem |
+
+Na precedência entram **depois** das três razões do contrato e **antes** de `empty_output`:
+`truncated`, as do contrato, as da origem, `empty_output`. O contrato vem primeiro porque diz
+porquê não há chamada efectiva. Nesse mesmo caso (declaração vinculativa em imposição)
+`empty_output` avalia os bytes do resultado designado e não o texto do turno terminal. Num run
+sem declaração, com a declaração «só medição», ou com o nó em observação, a tabela acima vale
+sem alteração.
 
 Um motivo de paragem `content_filter`, ou fora do mapa conhecido, não é veredicto negativo. O
 vocabulário de outros providers não está medido, e tratar o desconhecido como falha poria
@@ -219,7 +236,10 @@ lado de voltar a perguntar.
 - **Evidência de tool call não é fidelidade da saída.** O veredicto prova que a tool exigida
   correu com êxito pelo menos uma vez. Não prova que o texto final deriva do que ela devolveu: um
   run que chama a tool e publica outra coisa cumpre o contrato. Só a saída por referência ao
-  resultado da tool fecha isto, e só para nós de passagem directa.
+  resultado da tool fecha isto, e só para nós de passagem directa. **Nota de 2026-10-05:** é a
+  decisão do ADR-038. Com AOS-497 o kernel designa e sela a origem da saída (a âncora, com o
+  digest do resultado); o resíduo fecha para a passagem directa quando a entrega se fizer pelos
+  bytes designados (ADR-038 §2.6, §6).
 - **Tool call escrita como texto num turno posterior**, depois de uma chamada efectiva. O
   contrato está cumprido e o run conclui. Não há critério estrutural que o apanhe.
 - **Desistência depois de uma recusa posterior à primeira chamada efectiva.** O vector regista

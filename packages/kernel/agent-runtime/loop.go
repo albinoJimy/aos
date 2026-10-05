@@ -98,6 +98,19 @@ type Goal struct {
 	// vocabulário ⇒ o run não arranca ([ErrUnknownCompletionMode]). Vai no manifesto de cada
 	// turno, para o replay chegar ao mesmo desfecho.
 	CompletionMode CompletionMode
+	// OutputFromTool é a ORIGEM DECLARADA da saída do run (AOS-497, ADR-038): o nome (o `ToolID`)
+	// da tool cujo resultado é a saída. Vazio ⇒ sem declaração, e o run grava os bytes de sempre.
+	// Quem a declara é quem compõe o run; nunca se infere nem sai de conteúdo do modelo. Com ela,
+	// o kernel designa qual chamada é a origem e devolve a âncora ([Result.OutputSource]). Uma
+	// tool fora do tool set ou da lista-branca ⇒ o run não arranca ([ErrImpossibleOutputSource]).
+	// Com o modo do veredicto desligado é ignorada, como o contrato.
+	OutputFromTool string
+	// OutputSourceBinding é o VÍNCULO dessa declaração, dado pelo chamador e fixado por run:
+	// [OutputSourceMeasure] (a âncora sela-se e o desfecho é o de um run sem declaração) ou
+	// [OutputSourceBinds] (em imposição, origem em falta ou ambígua fecha o run como não
+	// cumprido). Obrigatório com a origem declarada e proibido sem ela
+	// ([ErrBadOutputSourceBinding]). Vai, com a origem, no manifesto de cada turno.
+	OutputSourceBinding OutputSourceBinding
 
 	// ParentTraceParent é o SEED cross-fronteira da árvore de spans (AOS-077):
 	// quando este run é um sub-agente DELEGADO, transporta o traceparent W3C do span
@@ -177,6 +190,10 @@ type Result struct {
 	// terminou. nil quando o run não chegou a um turno terminal ou corria com o modo
 	// desligado. Em modo de observação um veredicto negativo vem com Terminated=true.
 	Verdict *Verdict
+	// OutputSource é a âncora da saída do run (AOS-497): a designação da origem declarada, com o
+	// digest do resultado designado. nil quando o run não declarou a origem, corria com o modo
+	// desligado ou não chegou a um turno terminal. Sem conteúdo.
+	OutputSource *OutputSource
 	// ToolCallsRequested é o total de tool calls que o modelo pediu e o loop despachou no run,
 	// qualquer que seja o modo. É medição.
 	ToolCallsRequested int
@@ -441,6 +458,10 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	if err := contratoPossivel(conclusao, goal); err != nil {
 		return Result{}, err
 	}
+	// A mesma recusa para a origem declarada da saída (AOS-497).
+	if err := origemPossivel(conclusao, goal); err != nil {
+		return Result{}, err
+	}
 	evidencia := NewRunEvidence()
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
@@ -676,7 +697,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			}
 			// Os contadores do veredicto (AOS-493) saem do MESMO `turnCaptured` que o tail e a
 			// captura, e pela mesma razão do comentário acima somam cada turno uma só vez.
-			evidencia.Observe(turnCaptured)
+			// Levam o passo e o rótulo do contexto DESTE turno: é do primeiro turno que despachou
+			// tool calls que a origem da saída se designa (AOS-497).
+			evidencia.Observe(stepID, turnAuthority, turnCaptured)
 			res.ToolCallsRequested = evidencia.ToolCallsRequested()
 			res.LastToolOutcome = evidencia.LastToolOutcome()
 		}
@@ -809,6 +832,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			res.FinalText = fim.FinalText
 			res.Unfulfilled = fim.Unfulfilled
 			res.Verdict = fim.Verdict
+			res.OutputSource = fim.OutputSource
 			return res, nil
 		}
 

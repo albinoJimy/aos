@@ -119,6 +119,8 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 	ev := state.TransitionEvent{Token: g.token, Reason: reason}
 	if runErr == nil && !panicked {
 		ev.Verdict = res.Verdict
+		// A ÂNCORA DA SAÍDA (AOS-497) vai ao lado do veredicto, nas mesmas condições.
+		ev.OutputSource = res.OutputSource
 	}
 	if err := g.m.Transition(ctx, to, ev); err != nil {
 		return g.m.Current(), err

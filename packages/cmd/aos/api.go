@@ -2112,7 +2112,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				if primeira {
 					primeira = false
 					g("aos_runs_finished_total",
-						"Runs que este processo SELOU num estado terminal desde o arranque, por estado (complete, failed, timed_out) e por razao do veredicto de conclusao do kernel (AOS-493): none (sem veredicto negativo, ou run sem veredicto), contract_unmet_no_call, contract_unmet_after_denial, contract_unmet_after_tool_error, truncated, empty_output. Com o no em observacao um veredicto negativo aparece com outcome=complete: e quantos runs AOS_COMPLETION_VERDICT=enforce teria fechado em failed. Por processo: um run re-hospedado que volte a selar soma outra vez.",
+						"Runs que este processo SELOU num estado terminal desde o arranque, por estado (complete, failed, timed_out) e por razao do veredicto de conclusao do kernel (AOS-493): none (sem veredicto negativo, ou run sem veredicto), contract_unmet_no_call, contract_unmet_after_denial, contract_unmet_after_tool_error, truncated, empty_output, e as duas da origem da saida (AOS-497), que so existem num run que a declarou vinculativa com o no em imposicao: output_source_missing, output_source_ambiguous. Com o no em observacao um veredicto negativo aparece com outcome=complete: e quantos runs AOS_COMPLETION_VERDICT=enforce teria fechado em failed. Por processo: um run re-hospedado que volte a selar soma outra vez.",
 						"counter", float64(d.lido(e, rz)), labels)
 					continue
 				}
@@ -2139,6 +2139,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 					}
 					amostra("aos_runs_finished_by_last_tool_outcome_total", labels, float64(d.lidoSobre(e, negativo, u)))
 				}
+			}
+		}
+
+		// A ORIGEM DA SAÍDA (AOS-497). 2 vínculos × 3 estados = 6 amostras, sempre presentes.
+		primeira = true
+		for _, vinculo := range agentruntime.OutputSourceBindings() {
+			for _, estado := range agentruntime.OutputSourceStates() {
+				labels := `{binding="` + string(vinculo) + `",state="` + string(estado) + `"}`
+				if primeira {
+					primeira = false
+					g("aos_runs_output_source_total",
+						"Runs que este processo SELOU num estado terminal desde o arranque e que DECLARARAM a origem da saida (AOS-497, ADR-038), pelo vinculo da declaracao (measure = so medicao, nunca muda o desfecho; binding = vinculativa) e pelo estado da designacao que o kernel selou na transicao terminal: designated (exactamente uma chamada efectiva da tool declarada, no primeiro turno que despachou tools e com contexto trusted), missing, ambiguous. Um run sem origem declarada nao conta aqui. binding=measure com state diferente de designated sao os runs que uma declaracao vinculativa em imposicao teria fechado em failed. Por processo: um run re-hospedado que volte a selar soma outra vez.",
+						"counter", float64(d.lidoOrigem(vinculo, estado)), labels)
+					continue
+				}
+				amostra("aos_runs_output_source_total", labels, float64(d.lidoOrigem(vinculo, estado)))
 			}
 		}
 	}

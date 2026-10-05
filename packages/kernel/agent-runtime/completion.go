@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	referencemonitor "github.com/aos-ref/kernel/reference-monitor"
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
 // O DESFECHO DE UM RUN É UM VEREDICTO DO KERNEL (AOS-493, ADR-037).
@@ -83,6 +84,11 @@ const (
 	OutcomeTruncated OutcomeReason = "truncated"
 	// OutcomeEmptyOutput — o turno que acabou o run não trouxe texto nenhum.
 	OutcomeEmptyOutput OutcomeReason = "empty_output"
+	// OutcomeOutputSourceMissing — o run declarou a origem da saída como vinculativa
+	// ([OutputSourceBinds]) e nenhuma chamada é designável (AOS-497, ADR-038).
+	OutcomeOutputSourceMissing OutcomeReason = "output_source_missing"
+	// OutcomeOutputSourceAmbiguous — idem, e mais de uma chamada podia ser a origem.
+	OutcomeOutputSourceAmbiguous OutcomeReason = "output_source_ambiguous"
 )
 
 // OutcomeReasons devolve as razões de veredicto negativo, numa ordem fixa.
@@ -90,6 +96,7 @@ func OutcomeReasons() []OutcomeReason {
 	return []OutcomeReason{
 		OutcomeContractNoCall, OutcomeContractAfterDenial, OutcomeContractAfterToolError,
 		OutcomeTruncated, OutcomeEmptyOutput,
+		OutcomeOutputSourceMissing, OutcomeOutputSourceAmbiguous,
 	}
 }
 
@@ -137,9 +144,14 @@ var ErrImpossibleCompletionContract = errors.New("agentruntime: contrato de conc
 // Completion é o que o manifesto de cada turno grava sobre o veredicto do run: o modo com que
 // o run correu e o contrato. É por aqui que o motor de replay chega ao mesmo desfecho que o
 // loop sem conhecer a configuração do nó. Ausente do manifesto ⇒ modo [CompletionOff].
+//
+// OutputFrom e OutputBinding são a declaração de origem da saída do run (AOS-497, ADR-038): a
+// tool e o vínculo. `omitempty`: um run sem declaração grava os bytes de antes.
 type Completion struct {
-	Mode     CompletionMode `json:"mode"`
-	Requires []string       `json:"requires,omitempty"`
+	Mode          CompletionMode      `json:"mode"`
+	Requires      []string            `json:"requires,omitempty"`
+	OutputFrom    string              `json:"output_from,omitempty"`
+	OutputBinding OutputSourceBinding `json:"output_binding,omitempty"`
 }
 
 // completionDoGoal resolve o modo e o contrato do run. Devolve nil com o modo desligado, para
@@ -152,7 +164,12 @@ func completionDoGoal(goal Goal) (*Completion, error) {
 	if modo == CompletionOff {
 		return nil, nil
 	}
-	return &Completion{Mode: modo, Requires: contratoNormalizado(goal.CompletionRequires)}, nil
+	return &Completion{
+		Mode:          modo,
+		Requires:      contratoNormalizado(goal.CompletionRequires),
+		OutputFrom:    goal.OutputFromTool,
+		OutputBinding: goal.OutputSourceBinding,
+	}, nil
 }
 
 // contratoPossivel verifica, ANTES do primeiro turno, que cada tool do contrato pode ser chamada
@@ -242,6 +259,9 @@ type RunEvidence struct {
 	// ultimoTurno é o desfecho do último turno que despachou tool calls — ver
 	// [RunEvidence.LastToolOutcome]. Vazio enquanto nenhum despachou.
 	ultimoTurno string
+	// primeiro são os factos do primeiro turno que despachou tool calls: é sobre eles que a
+	// origem da saída se designa ([RunEvidence.designar], AOS-497). nil enquanto nenhum despachou.
+	primeiro *primeiroDespacho
 }
 
 // NewRunEvidence devolve os contadores de um run que ainda não despachou nada.
@@ -252,11 +272,20 @@ func NewRunEvidence() *RunEvidence {
 // Observe soma as tool calls de um turno, na ordem de despacho. Uma chamada é EFECTIVA quando
 // foi despachada sem recusa e sem erro de tool — a mesma condição com que o loop confirma a
 // activity no checkpoint.
-func (e *RunEvidence) Observe(results []CapturedToolResult) {
+//
+// stepID é o passo do turno e authority o rótulo do contexto que o modelo viu nele
+// ([ContextAuthority], lido a seguir ao Assemble). Só se guardam do PRIMEIRO turno que despachou
+// tool calls, e servem a designação da origem da saída (AOS-497). Nada é lido nem calculado
+// sobre os resultados aqui: o digest só se calcula em [ConcludeRun], e só num run que declarou
+// a origem.
+func (e *RunEvidence) Observe(stepID string, authority taint.Label, results []CapturedToolResult) {
 	if len(results) == 0 {
 		// Um turno sem tool calls não muda nada: o «último turno que despachou» continua a
 		// ser o anterior.
 		return
+	}
+	if e.primeiro == nil {
+		e.primeiro = &primeiroDespacho{stepID: stepID, authority: authority, results: append([]CapturedToolResult(nil), results...)}
 	}
 	negadas, falhadas := 0, 0
 	defer func() {
@@ -334,6 +363,9 @@ type Conclusion struct {
 	Unfulfilled bool
 	// Verdict é o veredicto calculado. nil com o modo desligado.
 	Verdict *Verdict
+	// OutputSource é a âncora da saída (AOS-497). nil quando o run não declarou a origem ou
+	// corria com o modo desligado. Acompanha o desfecho nos dois sentidos: concluído ou não.
+	OutputSource *OutputSource
 }
 
 // ConcludeRun calcula o desfecho do run no turno que o termina ([TurnEndsRun] disse que sim).
@@ -344,6 +376,13 @@ type Conclusion struct {
 // podia ir pedir a tool). Depois o contrato, pela primeira tool em falta na ordem em que foi
 // declarado. Por fim a saída vazia. O vector vai sempre completo, pelo que a razão escolhida
 // não esconde as outras.
+//
+// A ORIGEM DA SAÍDA (AOS-497, ADR-038). Com a origem declarada no [Completion], a âncora
+// calcula-se sempre e vai na [Conclusion]. Só entra no VEREDICTO quando a declaração é
+// vinculativa ([OutputSourceBinds]) e o modo é de imposição: aí uma origem em falta ou ambígua
+// é razão negativa, DEPOIS do contrato (que diz porque não há chamada efectiva) e antes da saída
+// vazia — e a saída vazia passa a ser a dos bytes designados, não a do texto. Em qualquer outra
+// combinação o veredicto é exactamente o de um run sem declaração.
 //
 // O QUE NÃO É VEREDICTO NEGATIVO: um motivo de paragem `content_filter` ou fora do mapa
 // conhecido. O vocabulário de outros providers não está medido, e tratar o desconhecido como
@@ -381,19 +420,34 @@ func ConcludeRun(resp ModelResponse, c *Completion, e *RunEvidence) (Conclusion,
 			doContrato = OutcomeContractNoCall
 		}
 	}
+	var origem *OutputSource
+	if c.OutputFrom != "" {
+		origem = e.designar(c.OutputFrom, c.OutputBinding)
+	}
+	vincula := origem != nil && c.OutputBinding == OutputSourceBinds && modo == CompletionEnforce
 	switch {
 	case resp.StopReason.Normalizado() == StopLength:
 		v.Reason = OutcomeTruncated
 	case doContrato != OutcomeFulfilled:
 		v.Reason = doContrato
+	case vincula && origem.State == OutputSourceMissing:
+		v.Reason = OutcomeOutputSourceMissing
+	case vincula && origem.State == OutputSourceAmbiguous:
+		v.Reason = OutcomeOutputSourceAmbiguous
+	case vincula:
+		// A saída é o resultado designado: vazia quer dizer zero bytes. O texto não conta.
+		if origem.Bytes == 0 {
+			v.Reason = OutcomeEmptyOutput
+		}
 	case strings.TrimSpace(resp.Text) == "":
 		v.Reason = OutcomeEmptyOutput
 	}
 	v.Fulfilled = v.Reason == OutcomeFulfilled
 
 	if !v.Fulfilled && modo == CompletionEnforce {
-		return Conclusion{Unfulfilled: true, Verdict: v}, nil
+		return Conclusion{Unfulfilled: true, Verdict: v, OutputSource: origem}, nil
 	}
 	concluido.Verdict = v
+	concluido.OutputSource = origem
 	return concluido, nil
 }

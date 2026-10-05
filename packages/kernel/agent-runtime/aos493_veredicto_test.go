@@ -5,6 +5,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/aos-ref/kernel/reference-monitor/taint"
 )
 
 // AOS-493 — o veredicto do kernel sobre a conclusão de um run ([ConcludeRun]) como função pura:
@@ -14,7 +16,10 @@ import (
 
 func TestAOS493_Vocabularios_Fechados(t *testing.T) {
 	t.Parallel()
-	quer := []OutcomeReason{"contract_unmet_no_call", "contract_unmet_after_denial", "contract_unmet_after_tool_error", "truncated", "empty_output"}
+	quer := []OutcomeReason{"contract_unmet_no_call", "contract_unmet_after_denial", "contract_unmet_after_tool_error", "truncated", "empty_output",
+		// AOS-497: as duas razões da origem da saída, no fim — a ordem desta lista não é a de
+		// precedência, e as cinco anteriores ficam onde estavam.
+		"output_source_missing", "output_source_ambiguous"}
 	if got := OutcomeReasons(); !reflect.DeepEqual(got, quer) {
 		t.Fatalf("OutcomeReasons() = %q, quero %q", got, quer)
 	}
@@ -48,7 +53,7 @@ func TestAOS493_RunEvidence_ContaSoAsEfectivas(t *testing.T) {
 	e := NewRunEvidence()
 	escalada := aos493Resultado("ler", false, false)
 	escalada.Denial = &ToolDenial{Effect: "escalate"}
-	e.Observe([]CapturedToolResult{
+	e.Observe("turno-1", taint.Trusted, []CapturedToolResult{
 		aos493Resultado("ler", false, false),
 		aos493Resultado("ler", true, false),
 		aos493Resultado("ler", false, true),
@@ -96,7 +101,7 @@ func TestAOS493_ConcludeRun_Tabela(t *testing.T) {
 		for _, modo := range []CompletionMode{CompletionObserve, CompletionEnforce} {
 			t.Run(c.nome+"/"+string(modo), func(t *testing.T) {
 				e := NewRunEvidence()
-				e.Observe(c.observado)
+				e.Observe("turno-1", taint.Trusted, c.observado)
 				fim, err := ConcludeRun(c.resp, &Completion{Mode: modo, Requires: c.requires}, e)
 				if err != nil {
 					t.Fatalf("ConcludeRun: %v", err)
@@ -187,7 +192,7 @@ func TestAOS493_RunEvidence_SobreOQueORunAcabou(t *testing.T) {
 	} {
 		e := NewRunEvidence()
 		for _, turno := range c.turnos {
-			e.Observe(turno)
+			e.Observe("turno", taint.Trusted, turno)
 		}
 		if got := e.LastToolOutcome(); got != c.quer {
 			t.Fatalf("%s: acabou sobre %q, quero %q", c.nome, got, c.quer)

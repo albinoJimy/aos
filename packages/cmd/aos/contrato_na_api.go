@@ -116,7 +116,10 @@ func (g *runStateGates) currentOutcome(ctx context.Context, runID string) (state
 	if err != nil {
 		return "", nil, err
 	}
-	return m.RebuildOutcome(ctx)
+	// A âncora da saída que o mesmo evento sela (AOS-497) não sai por aqui: servi-la na API é
+	// do ticket seguinte.
+	st, oc, err := m.RebuildOutcome(ctx)
+	return st, oc.Verdict, err
 }
 
 // errSaidaDuravelSemGate — o ramo durável do `GET /runs/{id}` não lê a saída: o gate soberano

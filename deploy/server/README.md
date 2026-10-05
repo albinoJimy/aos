@@ -694,6 +694,10 @@ erro de tool. O que o nó faz com esse veredicto escolhe-se no `.env`:
   `tool_error`. As séries com `verdict="none"` e `last="denied"` ou `last="tool_error"` são runs
   que acabaram logo a seguir a uma recusa ou a uma falha de tool e mesmo assim concluíram. O
   veredicto não os apanha, e `enforce` não os muda; é a leitura que diz quantos são.
+  `aos_runs_output_source_total{binding,state}` (AOS-497) conta os runs que declararam a origem
+  da saída, pelo vínculo (`measure`, `binding`) e pelo estado da designação (`designated`,
+  `missing`, `ambiguous`). Fica a zero enquanto nenhum chamador a declarar. Com `measure` o
+  desfecho de um run nunca muda, também com o nó em `enforce`.
 - **Um contrato impossível não arranca.** Um run cujo contrato exige uma tool que ele não tem no
   tool set, ou que a sua lista-branca não admite, é recusado antes do primeiro turno e fica
   `failed` com a razão `run_failed`. Vale em `observe` e em `enforce`.
