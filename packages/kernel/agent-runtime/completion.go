@@ -85,9 +85,11 @@ const (
 	// OutcomeEmptyOutput — o turno que acabou o run não trouxe texto nenhum.
 	OutcomeEmptyOutput OutcomeReason = "empty_output"
 	// OutcomeOutputSourceMissing — o run declarou a origem da saída como vinculativa
-	// ([OutputSourceBinds]) e nenhuma chamada é designável (AOS-497, ADR-038).
+	// ([OutputSourceBinds]) e nenhuma chamada é designável (AOS-497, ADR-038): a âncora está em
+	// [OutputSourceMissing] ou em [OutputSourceInapplicable].
 	OutcomeOutputSourceMissing OutcomeReason = "output_source_missing"
-	// OutcomeOutputSourceAmbiguous — idem, e mais de uma chamada podia ser a origem.
+	// OutcomeOutputSourceAmbiguous — idem, e a tool declarada foi pedida mais de uma vez no
+	// turno da designação.
 	OutcomeOutputSourceAmbiguous OutcomeReason = "output_source_ambiguous"
 )
 
@@ -262,11 +264,23 @@ type RunEvidence struct {
 	// primeiro são os factos do primeiro turno que despachou tool calls: é sobre eles que a
 	// origem da saída se designa ([RunEvidence.designar], AOS-497). nil enquanto nenhum despachou.
 	primeiro *primeiroDespacho
+	// origem é a tool declarada como origem da saída que a evidência segue
+	// ([RunEvidence.FollowOutputFrom]). Vazia num run sem declaração.
+	origem string
 }
 
 // NewRunEvidence devolve os contadores de um run que ainda não despachou nada.
 func NewRunEvidence() *RunEvidence {
 	return &RunEvidence{porTool: make(map[string]*ToolEvidence)}
+}
+
+// FollowOutputFrom diz à evidência qual é a tool declarada como origem da saída do run
+// (AOS-497), para que os factos da designação sejam tirados quando o primeiro turno com tools
+// for observado. Chama-se ANTES de [RunEvidence.Observe]; com a tool vazia (run sem declaração)
+// nada se calcula. Depois de esse turno observado já não muda o que ficou guardado: uma origem
+// diferente da seguida faz [ConcludeRun] falhar com [ErrOutputSourceNotFollowed].
+func (e *RunEvidence) FollowOutputFrom(tool string) {
+	e.origem = tool
 }
 
 // Observe soma as tool calls de um turno, na ordem de despacho. Uma chamada é EFECTIVA quando
@@ -275,9 +289,12 @@ func NewRunEvidence() *RunEvidence {
 //
 // stepID é o passo do turno e authority o rótulo do contexto que o modelo viu nele
 // ([ContextAuthority], lido a seguir ao Assemble). Só se guardam do PRIMEIRO turno que despachou
-// tool calls, e servem a designação da origem da saída (AOS-497). Nada é lido nem calculado
-// sobre os resultados aqui: o digest só se calcula em [ConcludeRun], e só num run que declarou
-// a origem.
+// tool calls, e servem a designação da origem da saída (AOS-497).
+//
+// O DIGEST DA ORIGEM CALCULA-SE AQUI, no momento em que o turno é observado, e só num run que
+// declarou a origem ([RunEvidence.FollowOutputFrom]): os bytes são os que o despacho acabou de
+// devolver, e nada do que lhes aconteça até ao turno terminal muda a âncora. Num run sem
+// declaração nenhum resultado é lido.
 func (e *RunEvidence) Observe(stepID string, authority taint.Label, results []CapturedToolResult) {
 	if len(results) == 0 {
 		// Um turno sem tool calls não muda nada: o «último turno que despachou» continua a
@@ -285,7 +302,7 @@ func (e *RunEvidence) Observe(stepID string, authority taint.Label, results []Ca
 		return
 	}
 	if e.primeiro == nil {
-		e.primeiro = &primeiroDespacho{stepID: stepID, authority: authority, results: append([]CapturedToolResult(nil), results...)}
+		e.primeiro = observarPrimeiroDespacho(stepID, authority, e.origem, results)
 	}
 	negadas, falhadas := 0, 0
 	defer func() {
@@ -379,10 +396,12 @@ type Conclusion struct {
 //
 // A ORIGEM DA SAÍDA (AOS-497, ADR-038). Com a origem declarada no [Completion], a âncora
 // calcula-se sempre e vai na [Conclusion]. Só entra no VEREDICTO quando a declaração é
-// vinculativa ([OutputSourceBinds]) e o modo é de imposição: aí uma origem em falta ou ambígua
-// é razão negativa, DEPOIS do contrato (que diz porque não há chamada efectiva) e antes da saída
-// vazia — e a saída vazia passa a ser a dos bytes designados, não a do texto. Em qualquer outra
-// combinação o veredicto é exactamente o de um run sem declaração.
+// vinculativa ([OutputSourceBinds]) e o modo é de imposição: aí uma origem que não ficou
+// designada é razão negativa — `output_source_ambiguous` quando ambígua,
+// `output_source_missing` quando em falta ou não aplicável ([OutputSourceInapplicable]: não há
+// terceira razão) —, DEPOIS do corte e do contrato (que diz porque não há chamada efectiva) e
+// antes da saída vazia — e a saída vazia passa a ser a dos bytes designados, não a do texto. Em
+// qualquer outra combinação o veredicto é exactamente o de um run sem declaração.
 //
 // O QUE NÃO É VEREDICTO NEGATIVO: um motivo de paragem `content_filter` ou fora do mapa
 // conhecido. O vocabulário de outros providers não está medido, e tratar o desconhecido como
@@ -422,7 +441,9 @@ func ConcludeRun(resp ModelResponse, c *Completion, e *RunEvidence) (Conclusion,
 	}
 	var origem *OutputSource
 	if c.OutputFrom != "" {
-		origem = e.designar(c.OutputFrom, c.OutputBinding)
+		if origem, err = e.designar(c.OutputFrom, c.OutputBinding); err != nil {
+			return Conclusion{}, err
+		}
 	}
 	vincula := origem != nil && c.OutputBinding == OutputSourceBinds && modo == CompletionEnforce
 	switch {
@@ -430,10 +451,12 @@ func ConcludeRun(resp ModelResponse, c *Completion, e *RunEvidence) (Conclusion,
 		v.Reason = OutcomeTruncated
 	case doContrato != OutcomeFulfilled:
 		v.Reason = doContrato
-	case vincula && origem.State == OutputSourceMissing:
-		v.Reason = OutcomeOutputSourceMissing
 	case vincula && origem.State == OutputSourceAmbiguous:
 		v.Reason = OutcomeOutputSourceAmbiguous
+	case vincula && origem.State != OutputSourceDesignated:
+		// Em falta e não aplicável fecham com a mesma razão; a âncora distingue-os. Um estado
+		// que este código não conheça cai aqui também: fail-closed.
+		v.Reason = OutcomeOutputSourceMissing
 	case vincula:
 		// A saída é o resultado designado: vazia quer dizer zero bytes. O texto não conta.
 		if origem.Bytes == 0 {

@@ -647,7 +647,11 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 		}
 		dobras.turno(stepID, resp.Text, results)
 		// O passo e a autoridade do turno são os que o loop entregou: o `step_id` gravado e a
-		// dobra de [agentruntime.ContextAuthority] sobre o tail antes deste turno (AOS-497).
+		// dobra de [agentruntime.ContextAuthority] sobre o tail antes deste turno (AOS-497). A
+		// origem que a evidência segue é a que o manifesto DESTE turno gravou, como no loop.
+		if manifest.Completion != nil {
+			evidencia.FollowOutputFrom(manifest.Completion.OutputFrom)
+		}
 		evidencia.Observe(stepID, authority, results)
 
 		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no

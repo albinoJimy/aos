@@ -54,18 +54,27 @@ func OutputSourceBindings() []OutputSourceBinding {
 type OutputSourceState string
 
 const (
-	// OutputSourceDesignated — exactamente uma chamada é a origem.
+	// OutputSourceDesignated — a tool declarada foi pedida exactamente uma vez no primeiro turno
+	// que despachou tools, com contexto trusted, e essa chamada foi efectiva.
 	OutputSourceDesignated OutputSourceState = "designated"
-	// OutputSourceMissing — nenhuma chamada é a origem.
+	// OutputSourceMissing — nenhuma chamada é a origem: a tool declarada não foi pedida nesse
+	// turno, ou foi pedida uma vez e a chamada não foi efectiva, ou nenhum turno despachou tools.
 	OutputSourceMissing OutputSourceState = "missing"
-	// OutputSourceAmbiguous — mais de uma chamada podia ser a origem. Não se escolhe nem se
-	// concatena: seria o runtime a compor conteúdo.
+	// OutputSourceAmbiguous — a tool declarada foi PEDIDA mais de uma vez nesse turno, qualquer
+	// que seja o desfecho de cada chamada. Não se escolhe nem se concatena: seria o runtime a
+	// compor conteúdo, ou quem controla a falha de uma chamada a escolher a outra.
 	OutputSourceAmbiguous OutputSourceState = "ambiguous"
+	// OutputSourceInapplicable — a regra não se pode aplicar a este run: o contexto do primeiro
+	// turno que despachou tools já era untrusted. Como um turno sem tool calls termina o run, não
+	// há resultado de tool antes desse turno; o que o tornou untrusted foram as ENTRADAS do run
+	// (um `plan_input`, memória). É um defeito de quem compôs o run — um consumidor declarado
+	// como produtor — e não «o modelo não chamou»: por isso tem estado próprio.
+	OutputSourceInapplicable OutputSourceState = "inapplicable"
 )
 
 // OutputSourceStates devolve os estados da designação, numa ordem fixa.
 func OutputSourceStates() []OutputSourceState {
-	return []OutputSourceState{OutputSourceDesignated, OutputSourceMissing, OutputSourceAmbiguous}
+	return []OutputSourceState{OutputSourceDesignated, OutputSourceMissing, OutputSourceAmbiguous, OutputSourceInapplicable}
 }
 
 // outputDigestAlgo é o prefixo do digest da âncora — a forma do digest de um `plan_input`, para
@@ -81,11 +90,13 @@ type OutputSource struct {
 	Binding OutputSourceBinding `json:"binding"`
 	// State é o estado da designação.
 	State OutputSourceState `json:"state"`
-	// StepID é o passo da chamada designada — o `step_id` do seu evento de mediação
-	// ([ToolStepID]). Só em [OutputSourceDesignated].
+	// StepID é o passo da chamada designada — o `step_id` dos seus eventos de mediação
+	// ([ToolStepID]). Só em [OutputSourceDesignated]. Num run retomado o mesmo passo pode ter
+	// mais de um evento (uma escalada e, depois da aprovação, a mediação que executou): o passo
+	// identifica a CHAMADA, não um evento.
 	StepID string `json:"step_id,omitempty"`
-	// Digest é `sha256:<hex>` dos bytes do resultado tal como a tool os devolveu. Só em
-	// [OutputSourceDesignated].
+	// Digest é `sha256:<hex>` dos bytes do resultado tal como o despacho os devolveu NESTA vida
+	// do run — o `result_hash` do step-ledger na via durável. Só em [OutputSourceDesignated].
 	Digest string `json:"digest,omitempty"`
 	// Bytes é o tamanho desse resultado. Só em [OutputSourceDesignated]; ausente no JSON quer
 	// dizer zero.
@@ -94,8 +105,9 @@ type OutputSource struct {
 
 // Erros da declaração de origem. Os dois recusam o ARRANQUE do run, antes de qualquer evento.
 var (
-	// ErrImpossibleOutputSource — a tool declarada como origem não pode ser chamada neste run:
-	// não está no tool set ([Goal.Tools]) ou a lista-branca ([Goal.AllowedTools]) não a admite.
+	// ErrImpossibleOutputSource — a tool declarada como origem não pode ser a origem deste run:
+	// não está no tool set ([Goal.Tools]), a lista-branca ([Goal.AllowedTools]) não a admite, ou
+	// o seu nome não tem a forma que a âncora selada admite ([OutputSource.BemFormada]).
 	// É a regra de [ErrImpossibleCompletionContract]: deixá-lo correr acabava em «origem em
 	// falta», que diz «o modelo não chamou» de um defeito de quem compôs o run.
 	ErrImpossibleOutputSource = errors.New("agentruntime: origem da saida impossivel — a tool declarada nao pode ser chamada neste run")
@@ -111,9 +123,16 @@ func vinculoValido(b OutputSourceBinding) bool {
 }
 
 // origemPossivel verifica, ANTES do primeiro turno, a declaração de origem que o run vai gravar
-// no manifesto: vínculo no vocabulário e tool chamável neste run. c nil (veredicto desligado) ⇒
-// a declaração é ignorada, como o contrato. Vale para os dois vínculos: uma medição sobre uma
-// tool que o run não pode chamar mede um defeito de composição como se fosse do modelo.
+// no manifesto: vínculo no vocabulário, nome com a forma que o selo admite e tool chamável neste
+// run. c nil (veredicto desligado) ⇒ a declaração é ignorada, como o contrato. Vale para os dois
+// vínculos: uma medição sobre uma tool que o run não pode chamar mede um defeito de composição
+// como se fosse do modelo.
+//
+// A FORMA DO NOME VALIDA-SE AQUI COM A FUNÇÃO DO SELO ([nomeDeToolImprimivel], a que
+// [OutputSource.BemFormada] usa). Um nome que o tool set aceita e a máquina de estados recusa
+// deixava o run correr, terminar em memória e ficar sem transição terminal — em `running` no
+// log, indistinguível de um crash. As duas pontas perguntam o mesmo à mesma função, pelo que uma
+// âncora que este run produza é sempre selável.
 func origemPossivel(c *Completion, goal Goal) error {
 	if c == nil {
 		return nil
@@ -127,6 +146,10 @@ func origemPossivel(c *Completion, goal Goal) error {
 	if !vinculoValido(c.OutputBinding) {
 		// O valor recusado não vai na mensagem: vem de fora.
 		return ErrBadOutputSourceBinding
+	}
+	if !nomeDeToolImprimivel(c.OutputFrom) {
+		// O nome recusado não vai na mensagem: pode ser comprido ou trazer quebras de linha.
+		return fmt.Errorf("%w: o nome da tool de origem nao tem a forma que a ancora selada admite (ate %d bytes, sem espacos nem caracteres de controlo)", ErrImpossibleOutputSource, maxNomeDeTool)
 	}
 	oferecida := false
 	for _, spec := range goal.Tools {
@@ -144,59 +167,107 @@ func origemPossivel(c *Completion, goal Goal) error {
 	return nil
 }
 
-// primeiroDespacho são os factos do PRIMEIRO turno do run que despachou tool calls: o passo do
-// turno, o rótulo do contexto que o modelo viu nele, e os resultados pela ordem de despacho.
+// ErrOutputSourceNotFollowed — [ConcludeRun] recebeu uma origem declarada que a evidência não
+// estava a seguir quando observou o primeiro turno com tools ([RunEvidence.FollowOutputFrom]).
+// Os factos da designação — e o digest — guardam-se quando o turno é observado; sem eles não há
+// âncora honesta a calcular depois. Fail-closed: nem «em falta» nem «designada».
+var ErrOutputSourceNotFollowed = errors.New("agentruntime: a evidencia do run nao seguiu a tool declarada como origem da saida quando observou o primeiro turno com tools")
+
+// primeiroDespacho são os factos do PRIMEIRO turno do run que despachou tool calls, tirados no
+// momento em que o turno foi observado: o passo do turno, o rótulo do contexto que o modelo viu
+// nele e, sobre a tool declarada como origem, quantas vezes foi pedida e — quando foi pedida uma
+// só vez — o índice, o desfecho e o digest dessa chamada.
+//
+// NÃO GUARDA OS RESULTADOS. O digest calcula-se aqui, uma vez, sobre os bytes que o despacho
+// acabou de devolver; uma escrita posterior nesses bytes (que o tail e a captura partilham) já
+// não o pode mudar.
 type primeiroDespacho struct {
 	stepID    string
 	authority taint.Label
-	results   []CapturedToolResult
+	// origem é a tool que a evidência seguia quando o turno foi observado. Vazia ⇒ o run não
+	// declarou a origem e nada mais se calculou.
+	origem string
+	// pedidas é o número de chamadas da tool declarada neste turno, com qualquer desfecho.
+	pedidas int
+	// indice, efectiva, digest e bytes são os da PRIMEIRA chamada da tool declarada; só contam
+	// quando pedidas == 1. O digest só existe quando essa chamada foi efectiva.
+	indice   int
+	efectiva bool
+	digest   string
+	bytes    int
+}
+
+// observarPrimeiroDespacho tira os factos do primeiro turno que despachou tool calls. origem
+// vazia (run sem declaração) ⇒ nenhum resultado é lido.
+func observarPrimeiroDespacho(stepID string, authority taint.Label, origem string, results []CapturedToolResult) *primeiroDespacho {
+	p := &primeiroDespacho{stepID: stepID, authority: authority, origem: origem, indice: -1}
+	if origem == "" {
+		return p
+	}
+	for i, r := range results {
+		if r.Invocation.ToolID != origem {
+			continue
+		}
+		p.pedidas++
+		if p.pedidas == 1 {
+			p.indice = i
+			p.efectiva = r.Denial == nil && r.ToolError == nil
+		}
+	}
+	if p.pedidas == 1 && p.efectiva {
+		// Os bytes do resultado tal como o despacho os devolveu nesta vida do run: os do
+		// segmento `tool_result` do tail e, na via durável, os do `result_hash` do step-ledger.
+		valor := results[p.indice].Result.Value
+		soma := sha256.Sum256(valor)
+		p.digest = outputDigestAlgo + hex.EncodeToString(soma[:])
+		p.bytes = len(valor)
+	}
+	return p
 }
 
 // designar aplica a REGRA DE DESIGNAÇÃO (ADR-038 §2.2) aos factos guardados:
 //
-//	a origem é a chamada EFECTIVA (despachada, sem recusa e sem erro de tool) da tool declarada,
-//	feita no primeiro turno do run que despachou tool calls, e só se o contexto desse turno era
-//	trusted. Exactamente uma ⇒ designada. Nenhuma ⇒ em falta. Mais de uma ⇒ ambígua.
+//	no primeiro turno do run que despachou tool calls, e só se o contexto desse turno era
+//	trusted, a tool declarada foi PEDIDA exactamente uma vez e essa chamada foi EFECTIVA
+//	(despachada, sem recusa e sem erro de tool) ⇒ designada.
+//	Pedida mais de uma vez nesse turno, qualquer que seja o desfecho de cada chamada ⇒ ambígua.
+//	Pedida uma vez e não efectiva, não pedida, ou nenhum turno despachou tools ⇒ em falta.
+//	Contexto desse turno untrusted ⇒ não aplicável.
 //
 // PORQUE O CONTEXTO TRUSTED. É o que garante que os argumentos da chamada foram escolhidos por
 // um modelo que só tinha visto o prefixo e o objectivo. Uma chamada pedida depois de conteúdo
 // untrusted entrar no tail (um `plan_input`, memória, um resultado de tool) pode ter sido
 // provocada por esse conteúdo, e nunca é a origem.
 //
+// PORQUE SE CONTAM AS PEDIDAS E NÃO AS EFECTIVAS. Com duas chamadas da tool declarada no mesmo
+// turno, contar só as efectivas deixava quem controla a falha de uma delas (um servidor que
+// devolve erro, um recurso que a política nega) escolher qual dos dois resultados fica selado
+// como a saída. As duas foram pedidas pelo modelo; o desfecho honesto desse turno é «ambígua».
+//
 // LIMITE CONHECIDO. Se a tool declarada falha (ou é recusada) no primeiro turno com tools e tem
 // êxito num turno posterior, o estado é «em falta»: o resultado da primeira tentativa já tornou
 // o contexto untrusted.
-func (e *RunEvidence) designar(tool string, binding OutputSourceBinding) *OutputSource {
+func (e *RunEvidence) designar(tool string, binding OutputSourceBinding) (*OutputSource, error) {
 	src := &OutputSource{Tool: tool, Binding: binding, State: OutputSourceMissing}
-	if e == nil || e.primeiro == nil || !e.primeiro.authority.IsTrusted() {
-		return src
+	if e == nil || e.primeiro == nil {
+		return src, nil
 	}
-	candidata, candidatas := -1, 0
-	for i, r := range e.primeiro.results {
-		if r.Invocation.ToolID != tool || r.Denial != nil || r.ToolError != nil {
-			continue
-		}
-		candidatas++
-		if candidata < 0 {
-			candidata = i
-		}
+	p := e.primeiro
+	if p.origem != tool {
+		return nil, ErrOutputSourceNotFollowed
 	}
 	switch {
-	case candidatas == 0:
-		return src
-	case candidatas > 1:
+	case !p.authority.IsTrusted():
+		src.State = OutputSourceInapplicable
+	case p.pedidas > 1:
 		src.State = OutputSourceAmbiguous
-		return src
+	case p.pedidas == 1 && p.efectiva:
+		src.State = OutputSourceDesignated
+		src.StepID = ToolStepID(p.stepID, p.indice)
+		src.Digest = p.digest
+		src.Bytes = p.bytes
 	}
-	// Os bytes do resultado tal como o despacho os devolveu: os mesmos de que saem o segmento
-	// `tool_result` do tail e a captura do turno.
-	valor := e.primeiro.results[candidata].Result.Value
-	soma := sha256.Sum256(valor)
-	src.State = OutputSourceDesignated
-	src.StepID = ToolStepID(e.primeiro.stepID, candidata)
-	src.Digest = outputDigestAlgo + hex.EncodeToString(soma[:])
-	src.Bytes = len(valor)
-	return src
+	return src, nil
 }
 
 // BemFormada diz se a âncora tem a forma que [RunEvidence.designar] produz: vocabulários
@@ -221,17 +292,21 @@ func (s *OutputSource) BemFormada() bool {
 			}
 		}
 		return true
-	case OutputSourceMissing, OutputSourceAmbiguous:
+	case OutputSourceMissing, OutputSourceAmbiguous, OutputSourceInapplicable:
 		return s.StepID == "" && s.Digest == "" && s.Bytes == 0
 	}
 	return false
 }
 
+// maxNomeDeTool é o comprimento máximo, em bytes, do nome de tool que uma âncora leva.
+const maxNomeDeTool = 128
+
 // nomeDeToolImprimivel recusa um nome vazio, comprido ou com espaços e caracteres de controlo.
-// O nome vem de quem compõe o run e o kernel já o confrontou com o tool set; isto só impede
-// texto com quebras de linha de chegar a um evento em claro por outro chamador.
+// É a ÚNICA regra de forma do nome da tool de origem, perguntada nas duas pontas: no arranque
+// ([origemPossivel], que recusa o run) e no selo ([OutputSource.BemFormada], que recusa a
+// transição). O que ela impede é texto com quebras de linha num evento em claro.
 func nomeDeToolImprimivel(nome string) bool {
-	if nome == "" || len(nome) > 128 {
+	if nome == "" || len(nome) > maxNomeDeTool {
 		return false
 	}
 	for _, r := range nome {

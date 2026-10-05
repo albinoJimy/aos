@@ -115,7 +115,13 @@ func aos497CorrerEVerter(t *testing.T) []aos497RunDaBase {
 		if res.Unfulfilled {
 			destino, razao = state.Failed, "objective_unfulfilled"
 		}
-		if err := m.Transition(context.Background(), destino, state.TransitionEvent{Reason: razao, Verdict: res.Verdict}); err != nil {
+		// O selo leva o que o nó leva: o veredicto e a âncora da saída do Result. Nestes runs,
+		// sem origem declarada, a âncora é nil — e se o kernel passasse a devolver uma, ela
+		// ia para a transição e a comparação com a fixture da base falhava.
+		if res.OutputSource != nil {
+			t.Fatalf("run %s: um run sem origem declarada devolveu uma ancora: %+v", c.goal.RunID, res.OutputSource)
+		}
+		if err := m.Transition(context.Background(), destino, state.TransitionEvent{Reason: razao, Verdict: res.Verdict, OutputSource: res.OutputSource}); err != nil {
 			t.Fatalf("selo terminal: %v", err)
 		}
 		run := aos497RunDaBase{RunID: c.goal.RunID}

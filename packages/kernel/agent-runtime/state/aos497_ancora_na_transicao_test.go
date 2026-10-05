@@ -47,6 +47,10 @@ func TestAOS497_Ancora_SeladaAoLadoDoVeredictoELidaDeVolta(t *testing.T) {
 			`"output_source":{"tool":"doc_read","binding":"binding","state":"missing"}`},
 		{"failed, ambigua", Failed, &agentruntime.Verdict{Mode: agentruntime.CompletionEnforce, Reason: agentruntime.OutcomeOutputSourceAmbiguous}, ambigua,
 			`"output_source":{"tool":"doc_read","binding":"binding","state":"ambiguous"}`},
+		{"complete, so medicao nao aplicavel", Complete, positivo, &agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceMeasure, State: agentruntime.OutputSourceInapplicable},
+			`"output_source":{"tool":"doc_read","binding":"measure","state":"inapplicable"}`},
+		{"failed, vinculada nao aplicavel", Failed, negativo, &agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceBinds, State: agentruntime.OutputSourceInapplicable},
+			`"output_source":{"tool":"doc_read","binding":"binding","state":"inapplicable"}`},
 		{"timed_out, sem veredicto", TimedOut, nil, emFalta, `"output_source":{"tool":"doc_read","binding":"measure","state":"missing"}`},
 	} {
 		t.Run(c.nome, func(t *testing.T) {

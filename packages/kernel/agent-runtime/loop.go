@@ -102,7 +102,8 @@ type Goal struct {
 	// da tool cujo resultado é a saída. Vazio ⇒ sem declaração, e o run grava os bytes de sempre.
 	// Quem a declara é quem compõe o run; nunca se infere nem sai de conteúdo do modelo. Com ela,
 	// o kernel designa qual chamada é a origem e devolve a âncora ([Result.OutputSource]). Uma
-	// tool fora do tool set ou da lista-branca ⇒ o run não arranca ([ErrImpossibleOutputSource]).
+	// tool fora do tool set ou da lista-branca, ou com um nome que a âncora selada não admite ⇒
+	// o run não arranca ([ErrImpossibleOutputSource]).
 	// Com o modo do veredicto desligado é ignorada, como o contrato.
 	OutputFromTool string
 	// OutputSourceBinding é o VÍNCULO dessa declaração, dado pelo chamador e fixado por run:
@@ -463,6 +464,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		return Result{}, err
 	}
 	evidencia := NewRunEvidence()
+	if conclusao != nil {
+		// A evidência segue a tool declarada desde o início: os factos da designação e o digest
+		// tiram-se quando o primeiro turno com tools é observado (AOS-497).
+		evidencia.FollowOutputFrom(conclusao.OutputFrom)
+	}
 	producer := eventstore.Producer{
 		NHIID:           goal.Principal.NHIID,
 		DelegationChain: toStoreChain(goal.Principal.DelegationChain),

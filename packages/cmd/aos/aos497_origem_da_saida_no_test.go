@@ -49,22 +49,32 @@ func aos497AncoraDoLog(t *testing.T, store state.EventStore, runID string) (aos4
 	return tr, corpo.OutputSource
 }
 
-// TestAOS497_No_AncoraNoSeloENasMetricas: três guiões × dois vínculos, com o nó em IMPOSIÇÃO —
+// TestAOS497_No_AncoraNoSeloENasMetricas: os guiões × dois vínculos, com o nó em IMPOSIÇÃO —
 // o modo de produção. «Só medição» conclui sempre como o run sem declaração; «vinculativa»
 // fecha `failed` quando a origem não é designável. A âncora é a mesma nos dois.
+//
+// Os dois últimos guiões são runs com ENTRADAS (um `plan_input`; memória): o contexto do turno 1
+// já é untrusted e a âncora leva o estado próprio `inapplicable`, que a métrica conta à parte de
+// `missing`. Vinculada em imposição fecha com a razão `output_source_missing`.
 func TestAOS497_No_AncoraNoSeloENasMetricas(t *testing.T) {
 	leitura := agentruntime.ModelResponse{ToolCalls: []agentruntime.ToolInvocation{aos493Counter("tick")}, StopReason: agentruntime.StopToolCalls}
 	duas := agentruntime.ModelResponse{ToolCalls: []agentruntime.ToolInvocation{aos493Counter("tick"), aos493Counter("tock")}, StopReason: agentruntime.StopToolCalls}
 	fim := agentruntime.ModelResponse{Text: "um resumo", StopReason: agentruntime.StopStop}
+	material := []byte("material de outro no")
+	entradas := []agentruntime.PlanInput{{From: "leitura", Output: "notas", Digest: aos497Digest(string(material)), Content: material}}
 	for i, c := range []struct {
-		nome   string
-		guiao  []agentruntime.ModelResponse
-		estado agentruntime.OutputSourceState
-		razao  agentruntime.OutcomeReason
+		nome    string
+		guiao   []agentruntime.ModelResponse
+		inputs  []agentruntime.PlanInput
+		memoria []byte
+		estado  agentruntime.OutputSourceState
+		razao   agentruntime.OutcomeReason
 	}{
-		{"designada", []agentruntime.ModelResponse{leitura, fim}, agentruntime.OutputSourceDesignated, agentruntime.OutcomeFulfilled},
-		{"em falta", []agentruntime.ModelResponse{fim}, agentruntime.OutputSourceMissing, agentruntime.OutcomeOutputSourceMissing},
-		{"ambigua", []agentruntime.ModelResponse{duas, fim}, agentruntime.OutputSourceAmbiguous, agentruntime.OutcomeOutputSourceAmbiguous},
+		{"designada", []agentruntime.ModelResponse{leitura, fim}, nil, nil, agentruntime.OutputSourceDesignated, agentruntime.OutcomeFulfilled},
+		{"em falta", []agentruntime.ModelResponse{fim}, nil, nil, agentruntime.OutputSourceMissing, agentruntime.OutcomeOutputSourceMissing},
+		{"ambigua", []agentruntime.ModelResponse{duas, fim}, nil, nil, agentruntime.OutputSourceAmbiguous, agentruntime.OutcomeOutputSourceAmbiguous},
+		{"nao aplicavel, plan_input", []agentruntime.ModelResponse{leitura, fim}, entradas, nil, agentruntime.OutputSourceInapplicable, agentruntime.OutcomeOutputSourceMissing},
+		{"nao aplicavel, memoria", []agentruntime.ModelResponse{leitura, fim}, nil, []byte("uma memoria qualquer"), agentruntime.OutputSourceInapplicable, agentruntime.OutcomeOutputSourceMissing},
 	} {
 		for k, vinculo := range agentruntime.OutputSourceBindings() {
 			t.Run(c.nome+"/"+string(vinculo), func(t *testing.T) {
@@ -73,6 +83,7 @@ func TestAOS497_No_AncoraNoSeloENasMetricas(t *testing.T) {
 				runID := "run-497-no-" + string(rune('a'+i)) + string(rune('a'+k))
 				oc := aos493Desfecho(t, n, agentruntime.Goal{
 					RunID: runID, Objective: "le o documento", MaxTurns: 4,
+					Inputs: c.inputs, MemoryContext: c.memoria,
 					OutputFromTool: "counter", OutputSourceBinding: vinculo,
 				})
 				res := oc.Result
@@ -136,8 +147,8 @@ func TestAOS497_No_AncoraNoSeloENasMetricas(t *testing.T) {
 				if quero := `aos_runs_output_source_total{binding="` + string(vinculo) + `",state="` + string(c.estado) + `"} 1`; !strings.Contains(corpo, quero+"\n") {
 					t.Fatalf("faltou %q:\n%s", quero, amostrasDe(corpo, "aos_runs_output_source_total"))
 				}
-				if got := strings.Count(corpo, "aos_runs_output_source_total{"); got != 6 {
-					t.Fatalf("queria 6 amostras (2 vinculos x 3 estados), vieram %d", got)
+				if got := strings.Count(corpo, "aos_runs_output_source_total{"); got != 8 {
+					t.Fatalf("queria 8 amostras (2 vinculos x 4 estados), vieram %d", got)
 				}
 				uns := 0
 				for _, l := range strings.Split(corpo, "\n") {

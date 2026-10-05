@@ -114,8 +114,10 @@ type desfechosDeRuns struct {
 	// origens conta os runs selados que DECLARARAM a origem da saída (AOS-497, ADR-038), pelo
 	// vínculo da declaração e pelo estado da designação — os dois vocabulários fechados do
 	// kernel ([agentruntime.OutputSourceBindings], [agentruntime.OutputSourceStates]). É por
-	// aqui que uma declaração «só medição» se lê: não muda o desfecho de run nenhum, e o que a
-	// imposição teria fechado é `binding="measure"` com `state` diferente de `designated`.
+	// aqui que uma declaração «só medição» se lê: a designação não entra no veredicto, e o que
+	// a imposição teria fechado é `binding="measure"` com `state` diferente de `designated`.
+	// Só conta um run cujo desfecho ficou SELADO: sem selo não há âncora no log, e contar aqui
+	// uma que ninguém consegue ler de volta era a métrica a dizer mais do que o registo.
 	origens map[chaveOrigem]*atomic.Int64
 }
 

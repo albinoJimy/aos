@@ -33,11 +33,12 @@ type aos497Caso struct {
 	nome   string
 	guiao  []agentruntime.ModelResponse
 	origem string
-	// contrato, permitidas, negada e inputs compõem o run.
+	// contrato, permitidas, negada, inputs e memoria compõem o run.
 	contrato   []string
 	permitidas []string
 	negada     string
 	inputs     []agentruntime.PlanInput
+	memoria    []byte
 	turnos     int
 	estado     agentruntime.OutputSourceState
 	// turnoDaOrigem (a contar de 1), indice (a contar de 0) e bytesDaOrigem dizem qual chamada é
@@ -118,10 +119,33 @@ func aos497Casos() []aos497Caso {
 			estado: agentruntime.OutputSourceMissing, vinculada: agentruntime.OutcomeOutputSourceMissing,
 		},
 		{
-			// Um run que consome um payload do plano tem o contexto untrusted desde o turno 1.
+			// A TOOL DECLARADA É PEDIDA DUAS VEZES E AS DUAS FALHAM (revisão, I4): contam as
+			// pedidas, não as efectivas. Com a regra antiga («exactamente uma efectiva») isto era
+			// «em falta»; e com uma a falhar e a outra não, era «designada» pela que sobrou.
+			nome: "tool declarada pedida duas vezes no mesmo turno, as duas falham", origem: "falha",
+			guiao: []agentruntime.ModelResponse{pede("duas tentativas", falha, falha), fim("falhou")}, turnos: 2,
+			estado: agentruntime.OutputSourceAmbiguous, vinculada: agentruntime.OutcomeOutputSourceAmbiguous,
+		},
+		{
+			// Um run que consome um payload do plano tem o contexto untrusted desde o turno 1: a
+			// regra não se pode aplicar. Estado próprio (revisão, M1), que a medição não confunde
+			// com «o modelo não chamou»; em vinculativa e imposição fecha com a razão de «em falta».
 			nome: "run com plan_input", origem: "echo",
 			inputs: []agentruntime.PlanInput{{From: "leitura", Output: "notas", Digest: aos497DigestDe([]byte("material")), Content: []byte("material")}},
 			guiao:  []agentruntime.ModelResponse{pede("leio", echo(doc)), fim("feito")}, turnos: 2,
+			estado: agentruntime.OutputSourceInapplicable, vinculada: agentruntime.OutcomeOutputSourceMissing,
+		},
+		{
+			// O mesmo com MEMÓRIA no contexto: o segmento `memory` é untrusted (ADR-034).
+			nome: "run com memoria", origem: "echo", memoria: []byte("uma memoria qualquer"),
+			guiao: []agentruntime.ModelResponse{pede("leio", echo(doc)), fim("feito")}, turnos: 2,
+			estado: agentruntime.OutputSourceInapplicable, vinculada: agentruntime.OutcomeOutputSourceMissing,
+		},
+		{
+			// Com entradas e SEM nenhum turno com tools não há turno de designação: «em falta».
+			nome: "run com plan_input e zero chamadas", origem: "echo",
+			inputs: []agentruntime.PlanInput{{From: "leitura", Output: "notas", Digest: aos497DigestDe([]byte("material")), Content: []byte("material")}},
+			guiao:  []agentruntime.ModelResponse{fim("um resumo")}, turnos: 1,
 			estado: agentruntime.OutputSourceMissing, vinculada: agentruntime.OutcomeOutputSourceMissing,
 		},
 		{
@@ -146,6 +170,7 @@ func aos497Goal(runID, versao string, modo agentruntime.CompletionMode, vinculo 
 	goal.AssemblyVersion = versao
 	goal.AllowedTools = c.permitidas
 	goal.Inputs = c.inputs
+	goal.MemoryContext = c.memoria
 	goal.CompletionRequires = c.contrato
 	goal.CompletionMode = modo
 	goal.OutputFromTool = c.origem

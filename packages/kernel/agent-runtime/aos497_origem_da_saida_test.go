@@ -48,8 +48,11 @@ type aos497Turno struct {
 	results   []CapturedToolResult
 }
 
+// aos497Evidencia observa os turnos com a evidência a seguir a tool `doc_read`, como o loop faz
+// com a origem declarada do run.
 func aos497Evidencia(turnos []aos497Turno) *RunEvidence {
 	e := NewRunEvidence()
+	e.FollowOutputFrom("doc_read")
 	for _, tn := range turnos {
 		e.Observe(tn.passo, tn.autoridad, tn.results)
 	}
@@ -69,6 +72,7 @@ func aos497CasosDeDesignacao() []struct {
 	}
 	emFalta := OutputSource{Tool: "doc_read", State: OutputSourceMissing}
 	ambigua := OutputSource{Tool: "doc_read", State: OutputSourceAmbiguous}
+	naoAplicavel := OutputSource{Tool: "doc_read", State: OutputSourceInapplicable}
 	return []struct {
 		nome   string
 		turnos []aos497Turno
@@ -93,9 +97,23 @@ func aos497CasosDeDesignacao() []struct {
 		{"erro de tool",
 			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Falhada("doc_read")}}},
 			emFalta},
-		{"uma negada e uma efectiva no mesmo turno: ha exactamente uma efectiva",
+		// CONTAM-SE AS PEDIDAS, NÃO AS EFECTIVAS (revisão, I4). Quem controla a falha ou a recusa
+		// de uma das chamadas não escolhe qual resultado fica selado como a saída.
+		{"uma negada e uma efectiva no mesmo turno: pedida duas vezes, ambigua",
 			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Negada("doc_read"), aos497Res("doc_read", aos497Documento)}}},
-			designada("p1-tool-2", aos497Documento)},
+			ambigua},
+		{"uma efectiva e uma negada no mesmo turno (a outra ordem): ambigua",
+			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento), aos497Negada("doc_read")}}},
+			ambigua},
+		{"uma falhada e uma efectiva no mesmo turno: ambigua",
+			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Falhada("doc_read"), aos497Res("doc_read", aos497Documento)}}},
+			ambigua},
+		{"uma efectiva e uma falhada no mesmo turno (a outra ordem): ambigua",
+			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento), aos497Falhada("doc_read")}}},
+			ambigua},
+		{"duas negadas no mesmo turno: ambigua",
+			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Negada("doc_read"), aos497Negada("doc_read")}}},
+			ambigua},
 		{"uma falhada e duas efectivas: ambigua",
 			[]aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Falhada("doc_read"), aos497Res("doc_read", "a"), aos497Res("doc_read", "b")}}},
 			ambigua},
@@ -120,14 +138,43 @@ func aos497CasosDeDesignacao() []struct {
 				{"p2", taint.Untrusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}},
 			},
 			emFalta},
-		{"contexto untrusted no primeiro despacho (plan_input ou memoria)",
+		// O CONTEXTO DO PRIMEIRO DESPACHO JÁ ERA UNTRUSTED (revisão, M1): só as entradas do run o
+		// podem ter posto assim. Estado próprio, o que quer que o modelo tenha pedido nesse turno.
+		{"contexto untrusted no primeiro despacho (plan_input ou memoria): nao aplicavel",
 			[]aos497Turno{{"p1", taint.Untrusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}}},
-			emFalta},
+			naoAplicavel},
+		{"contexto untrusted no primeiro despacho e a tool pedida duas vezes: nao aplicavel",
+			[]aos497Turno{{"p1", taint.Untrusted, []CapturedToolResult{aos497Res("doc_read", "a"), aos497Res("doc_read", "b")}}},
+			naoAplicavel},
+		{"contexto untrusted no primeiro despacho e a tool nao pedida: nao aplicavel",
+			[]aos497Turno{{"p1", taint.Untrusted, []CapturedToolResult{aos497Res("outra", "x")}}},
+			naoAplicavel},
 		// As duas condições verificam-se em separado: mesmo que um turno posterior chegasse
 		// com rótulo trusted, não é o primeiro que despachou.
-		{"primeiro despacho untrusted e um posterior trusted: em falta",
+		{"primeiro despacho untrusted e um posterior trusted: nao aplicavel",
 			[]aos497Turno{
 				{"p1", taint.Untrusted, []CapturedToolResult{aos497Res("doc_read", "a")}},
+				{"p2", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}},
+			},
+			naoAplicavel},
+		// «O PRIMEIRO TURNO QUE DESPACHOU TOOLS» É O PRIMEIRO COM CHAMADAS PEDIDAS, não o primeiro
+		// com alguma efectiva (revisão, M9/R2a). O loop nunca entrega um turno posterior trusted
+		// depois de um despacho; a função decide sozinha, e estes casos fixam-no.
+		{"a unica chamada do primeiro despacho e negada e um posterior trusted: em falta",
+			[]aos497Turno{
+				{"p1", taint.Trusted, []CapturedToolResult{aos497Negada("doc_read")}},
+				{"p2", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}},
+			},
+			emFalta},
+		{"a unica chamada do primeiro despacho falha e um posterior trusted: em falta",
+			[]aos497Turno{
+				{"p1", taint.Trusted, []CapturedToolResult{aos497Falhada("doc_read")}},
+				{"p2", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}},
+			},
+			emFalta},
+		{"a unica chamada do primeiro despacho e de outra tool, negada, e um posterior trusted: em falta",
+			[]aos497Turno{
+				{"p1", taint.Trusted, []CapturedToolResult{aos497Negada("outra")}},
 				{"p2", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}},
 			},
 			emFalta},
@@ -243,6 +290,8 @@ func TestAOS497_Veredicto_SoVinculativaEmImposicao(t *testing.T) {
 	duas := []aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", "a"), aos497Res("doc_read", "b")}}}
 	vazia := []aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", "")}}}
 	negada := []aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Negada("doc_read")}}}
+	negadaEEfectiva := []aos497Turno{{"p1", taint.Trusted, []CapturedToolResult{aos497Negada("doc_read"), aos497Res("doc_read", aos497Documento)}}}
+	comEntradas := []aos497Turno{{"p1", taint.Untrusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}}}
 	falhaEExito := []aos497Turno{
 		{"p1", taint.Trusted, []CapturedToolResult{aos497Falhada("doc_read")}},
 		{"p2", taint.Untrusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)}},
@@ -262,12 +311,22 @@ func TestAOS497_Veredicto_SoVinculativaEmImposicao(t *testing.T) {
 		// PRECEDÊNCIA: o corte vem primeiro.
 		{"cortado e em falta: truncated", cortado, nil, nil, OutputSourceMissing, OutcomeTruncated},
 		{"cortado e ambigua: truncated", cortado, nil, duas, OutputSourceAmbiguous, OutcomeTruncated},
+		// O corte vem também antes da saída vazia dos BYTES DESIGNADOS (revisão, M9/R30).
+		{"cortado e designada com zero bytes: truncated", cortado, nil, vazia, OutputSourceDesignated, OutcomeTruncated},
+		{"cortado e nao aplicavel: truncated", cortado, nil, comEntradas, OutputSourceInapplicable, OutcomeTruncated},
 		// PRECEDÊNCIA: o contrato vem antes da origem — diz porque não há chamada efectiva.
 		{"contrato por cumprir e em falta: contract_unmet_no_call", texto, []string{"doc_read"}, nil, OutputSourceMissing, OutcomeContractNoCall},
 		{"contrato por cumprir depois de recusa: contract_unmet_after_denial", texto, []string{"doc_read"}, negada, OutputSourceMissing, OutcomeContractAfterDenial},
 		// O contrato cumpre-se com a chamada do turno 2; a origem continua em falta (o limite).
 		{"contrato cumprido num turno posterior e origem em falta", texto, []string{"doc_read"}, falhaEExito, OutputSourceMissing, OutcomeOutputSourceMissing},
 		{"contrato cumprido e ambigua", texto, []string{"doc_read"}, duas, OutputSourceAmbiguous, OutcomeOutputSourceAmbiguous},
+		// Uma recusada e uma efectiva no mesmo turno: o contrato está cumprido (há uma efectiva)
+		// e a origem é ambígua (foi pedida duas vezes).
+		{"contrato cumprido por uma de duas pedidas: ambigua", texto, []string{"doc_read"}, negadaEEfectiva, OutputSourceAmbiguous, OutcomeOutputSourceAmbiguous},
+		// NÃO APLICÁVEL fecha com a razão de «em falta»: não há terceira razão. A âncora distingue.
+		{"nao aplicavel, com a tool chamada: output_source_missing", texto, nil, comEntradas, OutputSourceInapplicable, OutcomeOutputSourceMissing},
+		{"nao aplicavel, contrato cumprido: output_source_missing", texto, []string{"doc_read"}, comEntradas, OutputSourceInapplicable, OutcomeOutputSourceMissing},
+		{"nao aplicavel e sem texto: output_source_missing", semTexto, nil, comEntradas, OutputSourceInapplicable, OutcomeOutputSourceMissing},
 		// PRECEDÊNCIA: a origem vem antes da saída vazia.
 		{"em falta e sem texto: output_source_missing", semTexto, nil, nil, OutputSourceMissing, OutcomeOutputSourceMissing},
 		// A SAÍDA VAZIA de um run vinculado é a dos bytes designados, não a do texto.
@@ -367,7 +426,9 @@ func TestAOS497_SemDeclaracaoOuDesligado_NaoHaAncora(t *testing.T) {
 // DECLARAÇÃO IMPOSSÍVEL OU MAL FORMADA ⇒ o run não arranca, nos dois vínculos.
 func TestAOS497_DeclaracaoImpossivelOuMalFormada(t *testing.T) {
 	t.Parallel()
-	tools := []ToolSpec{{Name: "doc_read"}, {Name: "doc_write"}}
+	// Dois nomes que o tool set aceita e a âncora selada recusaria (revisão, I1).
+	comEspaco, comprido := "ler documento", string(bytes.Repeat([]byte("a"), 129))
+	tools := []ToolSpec{{Name: "doc_read"}, {Name: "doc_write"}, {Name: comEspaco}, {Name: comprido}, {Name: "ler\ndocumento"}}
 	for _, c := range []struct {
 		nome       string
 		origem     string
@@ -382,11 +443,17 @@ func TestAOS497_DeclaracaoImpossivelOuMalFormada(t *testing.T) {
 		{nome: "sem declaracao"},
 		{nome: "fora do tool set", origem: "doc_search", vinculo: OutputSourceMeasure, erro: ErrImpossibleOutputSource, diz: `"doc_search" nao esta no tool set do run`},
 		{nome: "outra caixa", origem: "Doc_Read", vinculo: OutputSourceBinds, erro: ErrImpossibleOutputSource, diz: `"Doc_Read" nao esta no tool set do run`},
-		{nome: "com espaco", origem: " doc_read", vinculo: OutputSourceBinds, erro: ErrImpossibleOutputSource, diz: `" doc_read" nao esta no tool set do run`},
+		{nome: "com espaco", origem: " doc_read", vinculo: OutputSourceBinds, erro: ErrImpossibleOutputSource, diz: `nao tem a forma que a ancora selada admite`},
 		{nome: "run sem tool set", origem: "doc_read", vinculo: OutputSourceMeasure, semTools: true, erro: ErrImpossibleOutputSource, diz: `nao esta no tool set do run`},
 		{nome: "fora da lista-branca, so medicao", origem: "doc_read", vinculo: OutputSourceMeasure, permitidas: []string{"doc_write"}, erro: ErrImpossibleOutputSource, diz: `"doc_read" esta fora da lista-branca do run`},
 		{nome: "fora da lista-branca, vinculativa", origem: "doc_read", vinculo: OutputSourceBinds, permitidas: []string{"doc_write"}, erro: ErrImpossibleOutputSource, diz: `"doc_read" esta fora da lista-branca do run`},
 		{nome: "lista-branca vazia", origem: "doc_read", vinculo: OutputSourceBinds, permitidas: []string{}, erro: ErrImpossibleOutputSource, diz: `fora da lista-branca`},
+		// A FORMA DO NOME É A DO SELO. A tool existe no tool set e a lista-branca admite-a; o run
+		// é recusado na mesma, nos dois vínculos, e o erro não repete o nome.
+		{nome: "nome com espaco, no tool set, so medicao", origem: comEspaco, vinculo: OutputSourceMeasure, erro: ErrImpossibleOutputSource, diz: `nao tem a forma que a ancora selada admite`},
+		{nome: "nome com espaco, no tool set e na lista-branca, vinculativa", origem: comEspaco, vinculo: OutputSourceBinds, permitidas: []string{comEspaco}, erro: ErrImpossibleOutputSource, diz: `nao tem a forma que a ancora selada admite`},
+		{nome: "nome acima do comprimento, no tool set", origem: comprido, vinculo: OutputSourceMeasure, erro: ErrImpossibleOutputSource, diz: `nao tem a forma que a ancora selada admite`},
+		{nome: "nome com quebra de linha, no tool set", origem: "ler\ndocumento", vinculo: OutputSourceBinds, erro: ErrImpossibleOutputSource, diz: `nao tem a forma que a ancora selada admite`},
 		{nome: "origem sem vinculo", origem: "doc_read", erro: ErrBadOutputSourceBinding},
 		{nome: "vinculo desconhecido", origem: "doc_read", vinculo: "Binding", erro: ErrBadOutputSourceBinding},
 		{nome: "vinculo sem origem", vinculo: OutputSourceBinds, erro: ErrBadOutputSourceBinding},
@@ -411,6 +478,20 @@ func TestAOS497_DeclaracaoImpossivelOuMalFormada(t *testing.T) {
 				if c.vinculo == "Binding" && bytes.Contains([]byte(err.Error()), []byte("Binding")) {
 					t.Fatalf("o erro repete o vinculo recusado: %q", err)
 				}
+				if err != nil && (bytes.Contains([]byte(err.Error()), []byte("aaaaaaaa")) || bytes.Contains([]byte(err.Error()), []byte("documento"))) {
+					t.Fatalf("o erro repete um nome que o selo recusaria: %q", err)
+				}
+				// AS DUAS PONTAS DIZEM O MESMO: um nome que o arranque aceita dá sempre uma
+				// âncora que o selo aceita, e um que o selo recusaria nunca passa o arranque.
+				if c.origem != "" && vinculoValido(c.vinculo) {
+					selavel := (&OutputSource{Tool: c.origem, Binding: c.vinculo, State: OutputSourceMissing}).BemFormada()
+					if err == nil && !selavel {
+						t.Fatalf("o arranque aceitou %q e o selo recusa-o", c.origem)
+					}
+					if !selavel && !errors.Is(err, ErrImpossibleOutputSource) {
+						t.Fatalf("o selo recusa %q e o arranque nao o recusou com ErrImpossibleOutputSource: %v", c.origem, err)
+					}
+				}
 			})
 		}
 		// Com o veredicto desligado a declaração não é lida, como o contrato.
@@ -424,7 +505,7 @@ func TestAOS497_DeclaracaoImpossivelOuMalFormada(t *testing.T) {
 // VOCABULÁRIOS FECHADOS, e a forma da âncora que a máquina de estados aceita.
 func TestAOS497_VocabulariosEForma(t *testing.T) {
 	t.Parallel()
-	if got := OutputSourceStates(); !reflect.DeepEqual(got, []OutputSourceState{"designated", "missing", "ambiguous"}) {
+	if got := OutputSourceStates(); !reflect.DeepEqual(got, []OutputSourceState{"designated", "missing", "ambiguous", "inapplicable"}) {
 		t.Fatalf("OutputSourceStates() = %q", got)
 	}
 	if got := OutputSourceBindings(); !reflect.DeepEqual(got, []OutputSourceBinding{"measure", "binding"}) {
@@ -462,6 +543,8 @@ func TestAOS497_VocabulariosEForma(t *testing.T) {
 		"em falta com passo":        func(s *OutputSource) { s.State = OutputSourceMissing },
 		"ambigua com digest":        func(s *OutputSource) { s.State = OutputSourceAmbiguous; s.StepID = ""; s.Bytes = 0 },
 		"em falta com tamanho":      func(s *OutputSource) { s.State = OutputSourceMissing; s.StepID = ""; s.Digest = "" },
+		"nao aplicavel com passo":   func(s *OutputSource) { s.State = OutputSourceInapplicable },
+		"nao aplicavel com digest":  func(s *OutputSource) { s.State = OutputSourceInapplicable; s.StepID = ""; s.Bytes = 0 },
 		"tool acima do comprimento": func(s *OutputSource) { s.Tool = string(bytes.Repeat([]byte("a"), 129)) },
 	} {
 		s := boa
@@ -470,10 +553,65 @@ func TestAOS497_VocabulariosEForma(t *testing.T) {
 			t.Fatalf("%s: a ancora devia ser recusada: %+v", nome, s)
 		}
 	}
-	for _, st := range []OutputSourceState{OutputSourceMissing, OutputSourceAmbiguous} {
+	for _, st := range []OutputSourceState{OutputSourceMissing, OutputSourceAmbiguous, OutputSourceInapplicable} {
 		s := OutputSource{Tool: "doc_read", Binding: OutputSourceMeasure, State: st}
 		if !s.BemFormada() {
 			t.Fatalf("ancora %s recusada: %+v", st, s)
+		}
+	}
+}
+
+// O DIGEST É O DO MOMENTO EM QUE O TURNO FOI OBSERVADO (revisão, M3). Os bytes do resultado são
+// partilhados com o tail e a captura; uma escrita neles entre o despacho e o turno terminal não
+// muda a âncora. E a evidência não guarda os resultados.
+func TestAOS497_Digest_CalculadoNaObservacao(t *testing.T) {
+	t.Parallel()
+	comp := &Completion{Mode: CompletionEnforce, OutputFrom: "doc_read", OutputBinding: OutputSourceBinds}
+	results := []CapturedToolResult{aos497Res("doc_read", "AAAA")}
+	e := NewRunEvidence()
+	e.FollowOutputFrom("doc_read")
+	e.Observe("p1", taint.Trusted, results)
+	// Depois de observado: os bytes mudam, e o slice do chamador passa a ter outra chamada.
+	copy(results[0].Result.Value, "ZZZZ")
+	results[0] = aos497Negada("doc_read")
+	fim, err := ConcludeRun(ModelResponse{Text: "fim", Final: true, StopReason: StopStop}, comp, e)
+	if err != nil {
+		t.Fatalf("ConcludeRun: %v", err)
+	}
+	quer := OutputSource{Tool: "doc_read", Binding: OutputSourceBinds, State: OutputSourceDesignated, StepID: "p1-tool-1", Digest: aos497Digest("AAAA"), Bytes: 4}
+	if fim.OutputSource == nil || *fim.OutputSource != quer {
+		t.Fatalf("ancora = %+v; quero a dos bytes observados %+v", fim.OutputSource, quer)
+	}
+	// Num run SEM declaração nada se calcula sobre os resultados.
+	sem := NewRunEvidence()
+	sem.Observe("p1", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", "AAAA")})
+	if sem.primeiro == nil || sem.primeiro.digest != "" || sem.primeiro.pedidas != 0 {
+		t.Fatalf("um run sem origem declarada nao le resultados: %+v", sem.primeiro)
+	}
+}
+
+// A EVIDÊNCIA TEM DE TER SEGUIDO A TOOL DECLARADA. Os factos tiram-se na observação; se a
+// evidência não seguia a tool que o [Completion] declara, não há âncora a inventar depois —
+// [ConcludeRun] falha em vez de responder «em falta» ou «designada».
+func TestAOS497_EvidenciaQueNaoSeguiuAOrigem(t *testing.T) {
+	t.Parallel()
+	fim := ModelResponse{Text: "fim", Final: true, StopReason: StopStop}
+	comp := &Completion{Mode: CompletionEnforce, OutputFrom: "doc_read", OutputBinding: OutputSourceMeasure}
+	for nome, seguida := range map[string]string{"nenhuma": "", "outra": "doc_write"} {
+		e := NewRunEvidence()
+		e.FollowOutputFrom(seguida)
+		e.Observe("p1", taint.Trusted, []CapturedToolResult{aos497Res("doc_read", aos497Documento)})
+		// Seguir a tool certa DEPOIS de o turno observado não refaz o que ficou guardado.
+		e.FollowOutputFrom("doc_read")
+		if got, err := ConcludeRun(fim, comp, e); !errors.Is(err, ErrOutputSourceNotFollowed) {
+			t.Fatalf("%s: ConcludeRun = %+v, %v; quero ErrOutputSourceNotFollowed", nome, got.OutputSource, err)
+		}
+	}
+	// Sem nenhum turno com tools não há factos em falta: «em falta», sem erro.
+	for _, e := range []*RunEvidence{nil, NewRunEvidence()} {
+		got, err := ConcludeRun(fim, comp, e)
+		if err != nil || got.OutputSource == nil || got.OutputSource.State != OutputSourceMissing {
+			t.Fatalf("sem despacho: ancora=%+v err=%v", got.OutputSource, err)
 		}
 	}
 }
