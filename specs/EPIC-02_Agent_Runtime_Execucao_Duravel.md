@@ -2238,6 +2238,23 @@ declarar a origem (AOS-498), nenhum run muda.
       (a origem declarada de um output). A RTM (`tecnica/16`) é regenerada no mesmo commit.
 - [ ] Revisão adversarial independente com mutações, antes da fusão.
 
+### Vínculo por run (acrescentado a 2026-10-05, antes de implementar)
+
+As razões novas não dependem só do modo de aplicação do nó. A declaração de origem leva um
+vínculo por run, dado pelo chamador: «vinculativa» ou «só medição».
+
+- [ ] Com declaração, o kernel designa e sela sempre a âncora na transição terminal, com o
+      estado designada, em falta ou ambígua, em qualquer modo do nó excepto desligado.
+- [ ] As razões `output_source_missing` e `output_source_ambiguous` só entram no veredicto
+      quando a declaração é vinculativa e o nó está em imposição.
+- [ ] Em «só medição», o desfecho do run é exactamente o que seria sem declaração, também com
+      o nó em imposição; o estado da âncora conta-se numa métrica de cardinalidade fechada.
+- [ ] O vínculo fica gravado com a declaração (manifesto de cada turno e registo de retoma); o
+      replay reproduz sem ler configuração.
+
+Motivo: o nó de produção está em imposição, e o AOS-499 tem de medir a designação em produção
+sem falhar nenhum run.
+
 ### Fora de âmbito
 
 - O campo no `POST /runs`, a resposta do `GET /runs/{id}` e o anúncio (AOS-498).

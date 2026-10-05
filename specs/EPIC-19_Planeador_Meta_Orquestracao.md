@@ -9178,23 +9178,20 @@ hoje. Nenhum desfecho de plano muda.
 - [ ] Verificação em produção: uma série de pelo menos 20 planos em `observe`, com as métricas
       acima lidas e registadas no documento de acompanhamento.
 
-### Em aberto, a fechar antes de implementar
+### Fechado antes de implementar (2026-10-05)
 
-O desenho manda enviar o campo aos candidatos **só com o nó em observação**, porque as duas razões
-novas do veredicto (`output_source_missing`, `output_source_ambiguous`, AOS-497) seguem o modo de
-aplicação do nó, e em imposição fechariam `failed` um run que hoje sai `completed`. O nó de
-produção está em imposição desde 2026-10-05. Tal como está desenhado, este ticket não mede nada em
-produção.
+O desenho mandava enviar o campo aos candidatos só com o nó em observação, porque as duas razões
+novas do veredicto seguiam o modo de aplicação do nó. O nó de produção está em imposição desde
+2026-10-05, e assim este ticket não media nada em produção.
 
-Duas saídas, por decidir: (a) o nó aplica as razões novas num modo próprio, separado do modo do
-contrato de conclusão, e nasce em observação; (b) a série de medição corre com o nó de volta a
-observação durante a janela. A escolha (a) muda um critério do AOS-497. Enquanto não estiver
-decidido, o critério «nenhum desfecho de plano muda» obriga: o `aos-orq` em `observe` **não envia
-o campo** a um nó cujo anúncio diga que as razões novas fecham o run.
+Resolvido no AOS-497 com um **vínculo por run**: a declaração de origem é «vinculativa» ou «só
+medição», dada pelo chamador e gravada com o run. Em «só medição» o kernel designa e sela a âncora
+(com o estado designada, em falta ou ambígua) e o desfecho do run é o que seria sem declaração,
+qualquer que seja o modo do nó. Este ticket envia sempre «só medição». O vínculo vinculativo é do
+AOS-501.
 
-Fica também por resolver a medição dos tokens de saída do nó produtor, que o desenho pede: o
-`GET /runs/{id}` não os devolve. Lê-se do registo de turnos na análise da série, fora deste
-binário.
+Os tokens de saída do nó produtor não se medem neste binário: o `GET /runs/{id}` não os devolve.
+Lêem-se do registo de turnos na análise da série.
 
 ### Fora de âmbito
 
