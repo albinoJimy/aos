@@ -189,6 +189,10 @@ type ReplayResult struct {
 	// desfecho é o de sempre.
 	Unfulfilled bool
 	Verdict     *agentruntime.Verdict
+	// OutputSource é a âncora da saída do run (AOS-497), designada pela MESMA função do loop com
+	// a origem e o vínculo que o manifesto do turno terminal gravou, sobre os resultados da
+	// captura. nil num run sem origem declarada.
+	OutputSource *agentruntime.OutputSource
 	// FinalStateHash é o fingerprint do ESTADO final reconstruído (hash do tail). É
 	// idêntico entre um replay completo e um resume-from-step do mesmo run — a prova
 	// de que o resume produz o mesmo estado.
@@ -642,7 +646,13 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			results[idx] = agentruntime.CapturedToolResult{Invocation: inv, Result: value, ToolError: toolErr, Denial: denial}
 		}
 		dobras.turno(stepID, resp.Text, results)
-		evidencia.Observe(results)
+		// O passo e a autoridade do turno são os que o loop entregou: o `step_id` gravado e a
+		// dobra de [agentruntime.ContextAuthority] sobre o tail antes deste turno (AOS-497). A
+		// origem que a evidência segue é a que o manifesto DESTE turno gravou, como no loop.
+		if manifest.Completion != nil {
+			evidencia.FollowOutputFrom(manifest.Completion.OutputFrom)
+		}
+		evidencia.Observe(stepID, authority, results)
 
 		// (4) TERMINAÇÃO — a MESMA função do loop ([agentruntime.TurnEndsRun], AOS-492), no
 		// layout que o turno gravou. A regra não está escrita aqui.
@@ -662,6 +672,7 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			res.FinalText = fim.FinalText
 			res.Unfulfilled = fim.Unfulfilled
 			res.Verdict = fim.Verdict
+			res.OutputSource = fim.OutputSource
 			break
 		}
 	}

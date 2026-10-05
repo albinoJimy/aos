@@ -382,8 +382,9 @@ func TestAOS493_No_RespostasDeProducao(t *testing.T) {
 				if quero := `aos_runs_finished_total{outcome="` + estado + `",reason="contract_unmet_no_call"} 1`; !strings.Contains(corpo, quero+"\n") {
 					t.Fatalf("faltou %q:\n%s", quero, amostrasDe(corpo, "aos_runs_finished_total"))
 				}
-				if n := strings.Count(corpo, "aos_runs_finished_total{"); n != 18 {
-					t.Fatalf("a familia tem %d amostras; queria 3 estados x 6 razoes", n)
+				// AOS-497: o vocabulario ganhou as duas razoes da origem da saida (8 com `none`).
+				if n := strings.Count(corpo, "aos_runs_finished_total{"); n != 24 {
+					t.Fatalf("a familia tem %d amostras; queria 3 estados x 8 razoes", n)
 				}
 				semTool := map[bool]string{true: "0", false: "1"}[imposto]
 				if quero := "aos_runs_completed_without_tool_call_total " + semTool; !strings.Contains(corpo, quero+"\n") {

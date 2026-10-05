@@ -64,4 +64,15 @@ var (
 	// ([agentruntime.OutcomeReasons]). O `outcome_reason` é lido por quem decide sobre o run e
 	// serve de rótulo de métrica; não leva texto livre. Rejeitada sem efeitos.
 	ErrVerdictReasonUnknown = errors.New("state: veredicto de conclusao com outcome_reason fora do vocabulário fechado")
+
+	// ErrOutputSourceOutsideTerminal — a transição leva a âncora da saída
+	// ([TransitionEvent.OutputSource], AOS-497) e o seu destino não é o fim de um run. A âncora
+	// é do desfecho, como o veredicto. Rejeitada sem efeitos.
+	ErrOutputSourceOutsideTerminal = errors.New("state: ancora da saida numa transição que não termina o run")
+
+	// ErrOutputSourceMalformed — a âncora da saída não tem a forma que o kernel produz
+	// ([agentruntime.OutputSource.BemFormada]): estado ou vínculo fora do vocabulário, digest
+	// que não é `sha256:<hex>`, ou campos da chamada designada fora do estado `designated`. O
+	// evento é em claro; não leva texto livre. Rejeitada sem efeitos.
+	ErrOutputSourceMalformed = errors.New("state: ancora da saida mal formada")
 )

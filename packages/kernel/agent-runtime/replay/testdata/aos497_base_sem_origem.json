@@ -1,0 +1,846 @@
+[
+ {
+  "RunID": "run-aos497-base-observe",
+  "Eventos": [
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000001",
+    "Payload": {
+     "turn": 1,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:d72f5dc72e73fc7242cc8baed6bf8a47935b0f531717053fb4be765c7cb11854",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ],
+      "completion": {
+       "mode": "observe",
+       "requires": [
+        "echo"
+       ]
+      }
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 1,
+     "final": false,
+     "stop_reason": "tool_calls"
+    }
+   },
+   {
+    "Type": "tool.call.mediated",
+    "StepID": "step-000001-tool-1",
+    "Payload": {
+     "port_version": "1.0.0",
+     "decision": "permit",
+     "tool_id": "echo",
+     "capability": "cap:echo",
+     "resource": {
+      "type": "doc",
+      "value": "notes"
+     },
+     "context": {
+      "taint": "trusted"
+     },
+     "latency_ns": 0,
+     "principal": {
+      "nhi_id": "nhi:agente-aos489",
+      "agent_id": "agente-aos489",
+      "agent_class": "researcher",
+      "authority": [
+       "cap:echo"
+      ]
+     }
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000001",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 1,
+     "response": {
+      "text": "vou ler",
+      "tool_calls": [
+       {
+        "tool_id": "echo",
+        "capability": "cap:echo",
+        "resource_type": "doc",
+        "resource_value": "notes",
+        "input": "eyJkb2NfaWQiOiJub3RlcyJ9"
+       }
+      ],
+      "final": false,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "tool_calls"
+     },
+     "tool_results": [
+      {
+       "taint": "untrusted",
+       "output": "ZWNob2VkOnsiZG9jX2lkIjoibm90ZXMifQ=="
+      }
+     ],
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000002",
+    "Payload": {
+     "turn": 2,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:22884c4747804f630db0f27594e9a21ddc45036a1d83fc342dece56486bae75c",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ],
+      "completion": {
+       "mode": "observe",
+       "requires": [
+        "echo"
+       ]
+      }
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 0,
+     "final": true,
+     "stop_reason": "stop"
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000002",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 2,
+     "response": {
+      "text": "lido",
+      "final": true,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "stop"
+     },
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-1",
+    "Payload": {
+     "from": "ready",
+     "to": "running",
+     "token_value": 1,
+     "at": "2023-11-14T22:15:00Z"
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-2",
+    "Payload": {
+     "from": "running",
+     "to": "complete",
+     "reason": "run_complete",
+     "at": "2023-11-14T22:15:00Z",
+     "verdict": {
+      "mode": "observe",
+      "fulfilled": true,
+      "tools": [
+       {
+        "tool": "echo",
+        "requested": 1,
+        "effective": 1,
+        "denied": 0,
+        "failed": 0,
+        "last": "effective"
+       }
+      ],
+      "tool_calls_requested": 1
+     }
+    }
+   }
+  ]
+ },
+ {
+  "RunID": "run-aos497-base-enforce",
+  "Eventos": [
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000001",
+    "Payload": {
+     "turn": 1,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:d72f5dc72e73fc7242cc8baed6bf8a47935b0f531717053fb4be765c7cb11854",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ],
+      "completion": {
+       "mode": "enforce"
+      }
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 3,
+     "final": false,
+     "stop_reason": "tool_calls"
+    }
+   },
+   {
+    "Type": "tool.call.mediated",
+    "StepID": "step-000001-tool-1",
+    "Payload": {
+     "port_version": "1.0.0",
+     "decision": "permit",
+     "tool_id": "echo",
+     "capability": "cap:echo",
+     "resource": {
+      "type": "doc",
+      "value": "notes"
+     },
+     "context": {
+      "taint": "trusted"
+     },
+     "latency_ns": 0,
+     "principal": {
+      "nhi_id": "nhi:agente-aos489",
+      "agent_id": "agente-aos489",
+      "agent_class": "researcher",
+      "authority": [
+       "cap:echo"
+      ]
+     }
+    }
+   },
+   {
+    "Type": "tool.call.mediated",
+    "StepID": "step-000001-tool-2",
+    "Payload": {
+     "port_version": "1.0.0",
+     "decision": "permit",
+     "tool_id": "falha",
+     "capability": "cap:echo",
+     "resource": {},
+     "context": {
+      "taint": "trusted"
+     },
+     "latency_ns": 0,
+     "principal": {
+      "nhi_id": "nhi:agente-aos489",
+      "agent_id": "agente-aos489",
+      "agent_class": "researcher",
+      "authority": [
+       "cap:echo"
+      ]
+     }
+    }
+   },
+   {
+    "Type": "tool.call.mediated",
+    "StepID": "step-000001-tool-3",
+    "Payload": {
+     "port_version": "1.0.0",
+     "decision": "permit",
+     "tool_id": "echo",
+     "capability": "cap:echo",
+     "resource": {
+      "type": "doc",
+      "value": "notes"
+     },
+     "context": {
+      "taint": "trusted"
+     },
+     "latency_ns": 0,
+     "principal": {
+      "nhi_id": "nhi:agente-aos489",
+      "agent_id": "agente-aos489",
+      "agent_class": "researcher",
+      "authority": [
+       "cap:echo"
+      ]
+     }
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000001",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 1,
+     "response": {
+      "text": "tres",
+      "tool_calls": [
+       {
+        "tool_id": "echo",
+        "capability": "cap:echo",
+        "resource_type": "doc",
+        "resource_value": "notes",
+        "input": "eyJuIjoxfQ=="
+       },
+       {
+        "tool_id": "falha",
+        "capability": "cap:echo",
+        "input": "eyJ1cmwiOiJodHRwOi8vZXhlbXBsby5pbnZhbGlkIn0="
+       },
+       {
+        "tool_id": "echo",
+        "capability": "cap:echo",
+        "resource_type": "doc",
+        "resource_value": "notes",
+        "input": "eyJuIjoyfQ=="
+       }
+      ],
+      "final": false,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "tool_calls"
+     },
+     "tool_results": [
+      {
+       "taint": "untrusted",
+       "output": "ZWNob2VkOnsibiI6MX0="
+      },
+      {
+       "taint": "untrusted",
+       "tool_error": "timeout a jusante"
+      },
+      {
+       "taint": "untrusted",
+       "output": "ZWNob2VkOnsibiI6Mn0="
+      }
+     ],
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000002",
+    "Payload": {
+     "turn": 2,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:18c0e64dfb503cdca68c05aefe7173e7cf8b6f1012e4c9382a4263ca772f28c3",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ],
+      "completion": {
+       "mode": "enforce"
+      }
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 1,
+     "final": false,
+     "stop_reason": "tool_calls"
+    }
+   },
+   {
+    "Type": "tool.call.mediated",
+    "StepID": "step-000002-tool-1",
+    "Payload": {
+     "port_version": "1.0.0",
+     "decision": "permit",
+     "tool_id": "echo",
+     "capability": "cap:echo",
+     "resource": {
+      "type": "doc",
+      "value": "notes"
+     },
+     "context": {
+      "taint": "untrusted"
+     },
+     "latency_ns": 0,
+     "principal": {
+      "nhi_id": "nhi:agente-aos489",
+      "agent_id": "agente-aos489",
+      "agent_class": "researcher",
+      "authority": [
+       "cap:echo"
+      ]
+     }
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000002",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 2,
+     "response": {
+      "text": "mais uma",
+      "tool_calls": [
+       {
+        "tool_id": "echo",
+        "capability": "cap:echo",
+        "resource_type": "doc",
+        "resource_value": "notes",
+        "input": "eyJuIjozfQ=="
+       }
+      ],
+      "final": false,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "tool_calls"
+     },
+     "tool_results": [
+      {
+       "taint": "untrusted",
+       "output": "ZWNob2VkOnsibiI6M30="
+      }
+     ],
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000003",
+    "Payload": {
+     "turn": 3,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:0467d537210449543c9eda43fe8f877c19107cfbef38dd79e63b57ce32957624",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ],
+      "completion": {
+       "mode": "enforce"
+      }
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 0,
+     "final": true,
+     "stop_reason": "stop"
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000003",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 3,
+     "response": {
+      "text": "feito",
+      "final": true,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "stop"
+     },
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-1",
+    "Payload": {
+     "from": "ready",
+     "to": "running",
+     "token_value": 1,
+     "at": "2023-11-14T22:15:00Z"
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-2",
+    "Payload": {
+     "from": "running",
+     "to": "complete",
+     "reason": "run_complete",
+     "at": "2023-11-14T22:15:00Z",
+     "verdict": {
+      "mode": "enforce",
+      "fulfilled": true,
+      "tool_calls_requested": 4
+     }
+    }
+   }
+  ]
+ },
+ {
+  "RunID": "run-aos497-base-off",
+  "Eventos": [
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000001",
+    "Payload": {
+     "turn": 1,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:d72f5dc72e73fc7242cc8baed6bf8a47935b0f531717053fb4be765c7cb11854",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ]
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 1,
+     "final": false,
+     "stop_reason": "tool_calls"
+    }
+   },
+   {
+    "Type": "tool.call.mediated",
+    "StepID": "step-000001-tool-1",
+    "Payload": {
+     "port_version": "1.0.0",
+     "decision": "permit",
+     "tool_id": "echo",
+     "capability": "cap:echo",
+     "resource": {
+      "type": "doc",
+      "value": "notes"
+     },
+     "context": {
+      "taint": "trusted"
+     },
+     "latency_ns": 0,
+     "principal": {
+      "nhi_id": "nhi:agente-aos489",
+      "agent_id": "agente-aos489",
+      "agent_class": "researcher",
+      "authority": [
+       "cap:echo"
+      ]
+     }
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000001",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 1,
+     "response": {
+      "text": "vou ler",
+      "tool_calls": [
+       {
+        "tool_id": "echo",
+        "capability": "cap:echo",
+        "resource_type": "doc",
+        "resource_value": "notes",
+        "input": "eyJkb2NfaWQiOiJub3RlcyJ9"
+       }
+      ],
+      "final": false,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "tool_calls"
+     },
+     "tool_results": [
+      {
+       "taint": "untrusted",
+       "output": "ZWNob2VkOnsiZG9jX2lkIjoibm90ZXMifQ=="
+      }
+     ],
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000002",
+    "Payload": {
+     "turn": 2,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:22884c4747804f630db0f27594e9a21ddc45036a1d83fc342dece56486bae75c",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ]
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 0,
+     "final": true,
+     "stop_reason": "stop"
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000002",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 2,
+     "response": {
+      "text": "lido",
+      "final": true,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "stop"
+     },
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-1",
+    "Payload": {
+     "from": "ready",
+     "to": "running",
+     "token_value": 1,
+     "at": "2023-11-14T22:15:00Z"
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-2",
+    "Payload": {
+     "from": "running",
+     "to": "complete",
+     "reason": "run_complete",
+     "at": "2023-11-14T22:15:00Z"
+    }
+   }
+  ]
+ },
+ {
+  "RunID": "run-aos497-base-negativo",
+  "Eventos": [
+   {
+    "Type": "turn.recorded",
+    "StepID": "step-000001",
+    "Payload": {
+     "turn": 1,
+     "manifest": {
+      "schema_version": "1.0",
+      "prompt_hash": "sha256:d72f5dc72e73fc7242cc8baed6bf8a47935b0f531717053fb4be765c7cb11854",
+      "system_hash": "sha256:9c6f86ab67638476ba3948c0b3c96498cc51f228918cc05c51b513e3155fb0e1",
+      "assembly_version": "1.4.0",
+      "model": {
+       "model_id": "modelo-fixture",
+       "params": {
+        "temperature": "0"
+       },
+       "seed": 7
+      },
+      "tools": [
+       {
+        "name": "echo",
+        "version": "0.9.0",
+        "digest": "sha256:cc03"
+       },
+       {
+        "name": "falha",
+        "version": "1.0.0",
+        "digest": "sha256:dd04",
+        "mcp_server": "mcp://fixture"
+       }
+      ],
+      "completion": {
+       "mode": "enforce",
+       "requires": [
+        "echo"
+       ]
+      }
+     },
+     "input_tokens": 10,
+     "output_tokens": 5,
+     "cost_micro_usd": 0,
+     "tool_calls_requested": 0,
+     "final": true,
+     "stop_reason": "stop"
+    }
+   },
+   {
+    "Type": "replay.captured",
+    "StepID": "cap-step-000001",
+    "Payload": {
+     "schema_version": "1.0",
+     "turn": 1,
+     "response": {
+      "text": "nao chamei nada",
+      "final": true,
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micro_usd": 0,
+      "stop_reason": "stop"
+     },
+     "observed_at_unix_nano": 1700000000000000000
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-1",
+    "Payload": {
+     "from": "ready",
+     "to": "running",
+     "token_value": 1,
+     "at": "2023-11-14T22:15:00Z"
+    }
+   },
+   {
+    "Type": "run.state.transition",
+    "StepID": "state-2",
+    "Payload": {
+     "from": "running",
+     "to": "failed",
+     "reason": "objective_unfulfilled",
+     "at": "2023-11-14T22:15:00Z",
+     "outcome_reason": "contract_unmet_no_call",
+     "verdict": {
+      "mode": "enforce",
+      "fulfilled": false,
+      "reason": "contract_unmet_no_call",
+      "tools": [
+       {
+        "tool": "echo",
+        "requested": 0,
+        "effective": 0,
+        "denied": 0,
+        "failed": 0
+       }
+      ],
+      "tool_calls_requested": 0
+     }
+    }
+   }
+  ]
+ }
+]

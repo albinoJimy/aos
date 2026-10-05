@@ -111,6 +111,20 @@ type desfechosDeRuns struct {
 	// run que acaba sobre uma recusa ou uma falha de tool com o contrato cumprido, ou sem
 	// contrato, tem veredicto positivo e sai `reason="none"` na outra família.
 	sobre map[chaveSobre]*atomic.Int64
+	// origens conta os runs selados que DECLARARAM a origem da saída (AOS-497, ADR-038), pelo
+	// vínculo da declaração e pelo estado da designação — os dois vocabulários fechados do
+	// kernel ([agentruntime.OutputSourceBindings], [agentruntime.OutputSourceStates]). É por
+	// aqui que uma declaração «só medição» se lê: a designação não entra no veredicto, e o que
+	// a imposição teria fechado é `binding="measure"` com `state` diferente de `designated`.
+	// Só conta um run cujo desfecho ficou SELADO: sem selo não há âncora no log, e contar aqui
+	// uma que ninguém consegue ler de volta era a métrica a dizer mais do que o registo.
+	origens map[chaveOrigem]*atomic.Int64
+}
+
+// chaveOrigem é a chave de [desfechosDeRuns.origens].
+type chaveOrigem struct {
+	vinculo agentruntime.OutputSourceBinding
+	estado  agentruntime.OutputSourceState
 }
 
 // chaveSobre é a chave de [desfechosDeRuns.sobre].
@@ -139,6 +153,12 @@ func novoDesfechosDeRuns() *desfechosDeRuns {
 		total:   map[state.State]map[agentruntime.OutcomeReason]*atomic.Int64{},
 		ultimos: agentruntime.LastToolOutcomes(),
 		sobre:   map[chaveSobre]*atomic.Int64{},
+		origens: map[chaveOrigem]*atomic.Int64{},
+	}
+	for _, vinculo := range agentruntime.OutputSourceBindings() {
+		for _, estado := range agentruntime.OutputSourceStates() {
+			d.origens[chaveOrigem{vinculo, estado}] = new(atomic.Int64)
+		}
 	}
 	for _, e := range d.estados {
 		d.total[e] = map[agentruntime.OutcomeReason]*atomic.Int64{}
@@ -185,6 +205,24 @@ func (d *desfechosDeRuns) contar(selado state.State, res agentruntime.Result) {
 	if c := d.sobre[chaveSobre{selado, negativo, ultimo}]; c != nil {
 		c.Add(1)
 	}
+	// A ORIGEM DA SAÍDA (AOS-497): só os runs que a declararam, e só quando o desfecho ficou no
+	// log (um dos três estados contados). Um par fora dos vocabulários não tem contador.
+	if o := res.OutputSource; o != nil && d.total[selado] != nil {
+		if c := d.origens[chaveOrigem{o.Binding, o.State}]; c != nil {
+			c.Add(1)
+		}
+	}
+}
+
+// lidoOrigem devolve o total de um par (vínculo, estado da designação) dos vocabulários.
+func (d *desfechosDeRuns) lidoOrigem(vinculo agentruntime.OutputSourceBinding, estado agentruntime.OutputSourceState) int64 {
+	if d == nil {
+		return 0
+	}
+	if c := d.origens[chaveOrigem{vinculo, estado}]; c != nil {
+		return c.Load()
+	}
+	return 0
 }
 
 // lidoSobre devolve o total de um trio (estado, veredicto negativo, desfecho do último turno

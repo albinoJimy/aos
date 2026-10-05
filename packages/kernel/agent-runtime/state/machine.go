@@ -106,6 +106,11 @@ type TransitionEvent struct {
 	// de outro modo a transição é rejeitada ([ErrVerdictOutsideTerminal],
 	// [ErrVerdictReasonUnknown]) sem tocar no log.
 	Verdict *agentruntime.Verdict
+	// OutputSource é a âncora da saída do run (AOS-497, ADR-038), quando o run declarou a
+	// origem da saída. Vai no evento como `output_source`, ao lado do veredicto. nil ⇒ o campo
+	// fica ausente e o evento tem os bytes de antes. Só é aceite numa transição que termina o
+	// run e bem formada ([ErrOutputSourceOutsideTerminal], [ErrOutputSourceMalformed]).
+	OutputSource *agentruntime.OutputSource
 }
 
 // Clock é o relógio INJECTÁVEL da máquina — a fonte do wall-clock que decide os
@@ -168,6 +173,10 @@ type transitionRecord struct {
 	// exigida. `omitempty`: uma transição sem veredicto grava os bytes de sempre.
 	OutcomeReason agentruntime.OutcomeReason `json:"outcome_reason,omitempty"`
 	Verdict       *agentruntime.Verdict      `json:"verdict,omitempty"`
+	// OutputSource é a âncora da saída (AOS-497): tool, vínculo, estado e, quando designada, o
+	// passo, o digest e o tamanho do resultado. Sem conteúdo. `omitempty`: um run sem origem
+	// declarada grava os bytes de sempre.
+	OutputSource *agentruntime.OutputSource `json:"output_source,omitempty"`
 }
 
 // Machine é a MÁQUINA DE ESTADOS DURÁVEL do run (AOS-017). Cada transição válida é
@@ -427,11 +436,20 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 //
 // É a mesma leitura e a mesma validação da cadeia: quem pergunta pelo desfecho de um run que
 // já não está em memória recebe o estado e a razão do MESMO evento, e não de duas leituras.
-func (m *Machine) RebuildOutcome(ctx context.Context) (State, *agentruntime.Verdict, error) {
+//
+// Desde o AOS-497 devolve também a âncora da saída selada nesse evento ([Outcome.OutputSource]).
+func (m *Machine) RebuildOutcome(ctx context.Context) (State, Outcome, error) {
 	return m.rebuild(ctx)
 }
 
-func (m *Machine) rebuild(ctx context.Context) (State, *agentruntime.Verdict, error) {
+// Outcome é o que a última transição do run selou sobre o desfecho: o veredicto de conclusão
+// (AOS-493) e a âncora da saída (AOS-497). Os dois são nil quando o evento não os tem.
+type Outcome struct {
+	Verdict      *agentruntime.Verdict
+	OutputSource *agentruntime.OutputSource
+}
+
+func (m *Machine) rebuild(ctx context.Context) (State, Outcome, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -439,9 +457,9 @@ func (m *Machine) rebuild(ctx context.Context) (State, *agentruntime.Verdict, er
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
 			m.instalarEstado(Ready, m.clock.Now(), 0)
-			return Ready, nil, nil
+			return Ready, Outcome{}, nil
 		}
-		return "", nil, err
+		return "", Outcome{}, err
 	}
 
 	var (
@@ -456,17 +474,17 @@ func (m *Machine) rebuild(ctx context.Context) (State, *agentruntime.Verdict, er
 		}
 		var rec transitionRecord
 		if err := json.Unmarshal(events[i].Payload, &rec); err != nil {
-			return "", nil, fmt.Errorf("state: rebuild descodifica transição seq=%d: %w", events[i].Seq, err)
+			return "", Outcome{}, fmt.Errorf("state: rebuild descodifica transição seq=%d: %w", events[i].Seq, err)
 		}
 		if !IsKnown(rec.To) {
-			return "", nil, fmt.Errorf("%w: %q (seq=%d)", ErrUnknownState, rec.To, events[i].Seq)
+			return "", Outcome{}, fmt.Errorf("%w: %q (seq=%d)", ErrUnknownState, rec.To, events[i].Seq)
 		}
 		// Continuidade da cadeia: o From de cada transição tem de bater o To da
 		// anterior (ou ready na primeira). Uma quebra (log bifurcado/com furos/dois
 		// escritores) aborta fail-closed em vez de adoptar o último To — coerente com
 		// o fail-closed já existente contra estados desconhecidos.
 		if rec.From != prev {
-			return "", nil, fmt.Errorf("%w: seq=%d from=%q, estado anterior=%q", ErrCorruptChain, events[i].Seq, rec.From, prev)
+			return "", Outcome{}, fmt.Errorf("%w: seq=%d from=%q, estado anterior=%q", ErrCorruptChain, events[i].Seq, rec.From, prev)
 		}
 		prev = rec.To
 		count++
@@ -483,7 +501,7 @@ func (m *Machine) rebuild(ctx context.Context) (State, *agentruntime.Verdict, er
 	if last == nil {
 		// Stream existe mas sem transições de estado (p.ex. só turn.recorded).
 		m.instalarEstado(Ready, m.clock.Now(), 0)
-		return Ready, nil, nil
+		return Ready, Outcome{}, nil
 	}
 
 	// nStates é o piso para o próximo step_id (state-{nStates+1}). Usa o maior N dos
@@ -501,7 +519,7 @@ func (m *Machine) rebuild(ctx context.Context) (State, *agentruntime.Verdict, er
 	// Instalar campo a campo durante a reconstrução exporia estados intermédios a quem
 	// lê — e a máquina só deve mudar de estado de uma vez.
 	m.instalarEstado(last.To, enteredAt, nStates)
-	return last.To, last.Verdict, nil
+	return last.To, Outcome{Verdict: last.Verdict, OutputSource: last.OutputSource}, nil
 }
 
 // Transition tenta transitar para to com os metadados de event. Valida (from → to)
@@ -543,6 +561,20 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 			// A razão recusada NÃO vai na mensagem: é exactamente o texto que não se quer
 			// ver propagado para logs.
 			return ErrVerdictReasonUnknown
+		}
+	}
+
+	// 1c) A ÂNCORA DA SAÍDA (AOS-497) segue a regra do veredicto: só no fim do run, e só na
+	// forma que o kernel produz. Uma transição recusada aqui não deixa rasto.
+	if event.OutputSource != nil {
+		if !terminaORun(to) {
+			m.obs.Rejected(from, to, ErrOutputSourceOutsideTerminal)
+			return fmt.Errorf("%w: %s → %s", ErrOutputSourceOutsideTerminal, from, to)
+		}
+		if !event.OutputSource.BemFormada() {
+			m.obs.Rejected(from, to, ErrOutputSourceMalformed)
+			// O conteúdo recusado NÃO vai na mensagem.
+			return ErrOutputSourceMalformed
 		}
 	}
 
@@ -591,6 +623,7 @@ func (m *Machine) doTransition(ctx context.Context, to State, event TransitionEv
 		rec.OutcomeReason = event.Verdict.Reason
 		rec.Verdict = event.Verdict
 	}
+	rec.OutputSource = event.OutputSource
 	payload, err := json.Marshal(rec)
 	if err != nil {
 		m.obs.Rejected(from, to, err)
