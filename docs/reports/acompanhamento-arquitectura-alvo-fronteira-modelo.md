@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (AOS-493 revisto e corrigido; AOS-491 e AOS-493 por verificar em produção).
+Última actualização: 2026-10-05 (AOS-494 implementado, por rever; AOS-493 revisto e corrigido; AOS-491 e AOS-493 por verificar em produção).
 
 ## 1. Objectivo e promessa
 
@@ -46,7 +46,7 @@ fidelidade» para nós que passam o resultado sem o transformar.
 | AOS-491 | EPIC-06 | O motivo de paragem chega ao runtime, à captura e ao registo do turno | — | implementado; por verificar em produção |
 | AOS-492 | EPIC-02 | A regra de terminação vive num só sítio, partilhado por loop e replay | — | feito |
 | AOS-493 | EPIC-02 | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão | AOS-491, AOS-492 | implementado (ADR-037) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket), nó em observação por omissão; por verificar em produção |
-| AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | aberto |
+| AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | implementado (2026-10-05); por rever; smoke sobre JetStream por correr |
 | AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | aberto |
 
 Ordem de entrega: AOS-491 e AOS-492 (sem mudança de comportamento), depois AOS-493 em modo de
@@ -112,8 +112,9 @@ Não fechados por nenhuma fase até decisão em contrário:
   que tinha sido permitida. Anterior ao AOS-493; passou a decidir o desfecho.
 - O replay de um run retomado cujo turno re-executado mudou de desfecho pára em divergência de
   `prompt_hash` e não reproduz veredicto nenhum. Anterior ao AOS-493.
-- Antes de ligar a imposição a outros consumidores: o `GET /runs/{id}` de um run não cumprido
-  responde `status: "completed"` enquanto o desfecho está em memória (AOS-494).
+- Depois de um reinício do nó, a saída de um run concluído só se lê com o gate soberano de
+  leitura e com a custódia das KEK no Vault. Sem isso o `GET /runs/{id}` responde
+  `output_unavailable` (AOS-494), e o nó do plano que a esperava fica falhado.
 
 ## 8. Fora da arquitectura-alvo
 

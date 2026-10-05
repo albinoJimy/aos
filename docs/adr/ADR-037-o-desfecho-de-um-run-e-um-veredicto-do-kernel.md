@@ -176,10 +176,9 @@ cairia em silêncio na projecção de texto.
 - Em imposição, um run sem contrato cujo último turno foi cortado ou veio vazio passa a `failed`.
 - O manifesto de cada turno de um run com veredicto ganha o campo `completion`. Um run com o modo
   desligado grava os bytes de antes.
-- Enquanto o desfecho de um run não cumprido estiver em memória, o `GET /runs/{id}` responde
-  `status: "completed"` com `terminated=false` e sem texto final; depois lê o estado durável e
-  responde `failed`. O `aos-orq` decide por `terminated`, pelo que dá o nó por falhado nos dois
-  casos. Corrigir esse `status` e devolver a razão é do AOS-494.
+- O `GET /runs/{id}` de um run não cumprido responde `status: "failed"`, `terminated=false`, com
+  `outcome_reason` e o vector, e sem texto final, quer o desfecho esteja em memória quer se leia
+  do log (AOS-494). Até ao AOS-494 o ramo em memória respondia `status: "completed"`.
 
 ## 5. Resíduos declarados
 

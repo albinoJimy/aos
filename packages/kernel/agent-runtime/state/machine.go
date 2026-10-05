@@ -416,6 +416,22 @@ func parseStateStepID(stepID string) (uint64, bool) {
 // (log corrompido/schema incompatível) aborta com [ErrUnknownState] em vez de
 // adoptar um estado desconhecido.
 func (m *Machine) Rebuild(ctx context.Context) (State, error) {
+	st, _, err := m.rebuild(ctx)
+	return st, err
+}
+
+// RebuildOutcome é o [Machine.Rebuild] que devolve também o VEREDICTO gravado na última
+// transição do run (AOS-494): o que [TransitionEvent.Verdict] levou para o log quando o run
+// acabou (AOS-493). nil quando a última transição não o tem — um run sem veredicto, um run
+// gravado antes do AOS-493, ou um run que ainda não acabou.
+//
+// É a mesma leitura e a mesma validação da cadeia: quem pergunta pelo desfecho de um run que
+// já não está em memória recebe o estado e a razão do MESMO evento, e não de duas leituras.
+func (m *Machine) RebuildOutcome(ctx context.Context) (State, *agentruntime.Verdict, error) {
+	return m.rebuild(ctx)
+}
+
+func (m *Machine) rebuild(ctx context.Context) (State, *agentruntime.Verdict, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -423,9 +439,9 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 	if err != nil {
 		if errors.Is(err, eventstore.ErrStreamNotFound) {
 			m.instalarEstado(Ready, m.clock.Now(), 0)
-			return Ready, nil
+			return Ready, nil, nil
 		}
-		return "", err
+		return "", nil, err
 	}
 
 	var (
@@ -440,17 +456,17 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 		}
 		var rec transitionRecord
 		if err := json.Unmarshal(events[i].Payload, &rec); err != nil {
-			return "", fmt.Errorf("state: rebuild descodifica transição seq=%d: %w", events[i].Seq, err)
+			return "", nil, fmt.Errorf("state: rebuild descodifica transição seq=%d: %w", events[i].Seq, err)
 		}
 		if !IsKnown(rec.To) {
-			return "", fmt.Errorf("%w: %q (seq=%d)", ErrUnknownState, rec.To, events[i].Seq)
+			return "", nil, fmt.Errorf("%w: %q (seq=%d)", ErrUnknownState, rec.To, events[i].Seq)
 		}
 		// Continuidade da cadeia: o From de cada transição tem de bater o To da
 		// anterior (ou ready na primeira). Uma quebra (log bifurcado/com furos/dois
 		// escritores) aborta fail-closed em vez de adoptar o último To — coerente com
 		// o fail-closed já existente contra estados desconhecidos.
 		if rec.From != prev {
-			return "", fmt.Errorf("%w: seq=%d from=%q, estado anterior=%q", ErrCorruptChain, events[i].Seq, rec.From, prev)
+			return "", nil, fmt.Errorf("%w: seq=%d from=%q, estado anterior=%q", ErrCorruptChain, events[i].Seq, rec.From, prev)
 		}
 		prev = rec.To
 		count++
@@ -467,7 +483,7 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 	if last == nil {
 		// Stream existe mas sem transições de estado (p.ex. só turn.recorded).
 		m.instalarEstado(Ready, m.clock.Now(), 0)
-		return Ready, nil
+		return Ready, nil, nil
 	}
 
 	// nStates é o piso para o próximo step_id (state-{nStates+1}). Usa o maior N dos
@@ -485,7 +501,7 @@ func (m *Machine) Rebuild(ctx context.Context) (State, error) {
 	// Instalar campo a campo durante a reconstrução exporia estados intermédios a quem
 	// lê — e a máquina só deve mudar de estado de uma vez.
 	m.instalarEstado(last.To, enteredAt, nStates)
-	return last.To, nil
+	return last.To, last.Verdict, nil
 }
 
 // Transition tenta transitar para to com os metadados de event. Valida (from → to)

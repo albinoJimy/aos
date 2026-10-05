@@ -700,8 +700,20 @@ erro de tool. O que o nó faz com esse veredicto escolhe-se no `.env`:
 - **Em `enforce`, um run não cumprido que já fez efeitos fica com eles.** Entra na saga de
   compensação como qualquer `failed`; não há compensações registadas, pelo que nada é desfeito e
   o nó grava uma declaração de ausência no WORM por cada run.
-- **O contrato ainda não chega pelo `POST /runs`** (é do AOS-494). Até lá, em `enforce` só mudam
-  de desfecho os runs cujo último turno foi cortado ou veio vazio.
+- **O contrato chega pelo `POST /runs`** (AOS-494), no campo `completion_requires`: os nomes das
+  tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do mesmo
+  pedido; senão o pedido leva 400 com a razão no corpo. O modo não se escolhe no pedido.
+- **O nó anuncia que aceita o contrato** no `GET /tools`: `"completion_contract":{"mode":"observe"}`.
+  É por aí que o `aos-orq` sabe se o pode enviar; a um nó sem esse campo não o envia.
+- **O desfecho lê-se no `GET /runs/{id}`:** `outcome_reason` e `verdict`. Um run não cumprido
+  responde `status: "failed"`, `terminated: false` e sem `final_text`. Em `observe`, um run com
+  veredicto negativo responde `completed` com o texto **e** com `outcome_reason`: a razão diz o
+  que `enforce` teria feito, não é o desfecho.
+- **Depois de um reinício do nó, a saída de um run concluído lê-se do log**, da captura do turno
+  terminal. Exige a custódia das KEK no Vault (`AOS_DSAR_VAULT_ADDR`): com a custódia em memória
+  as chaves morrem com o processo, e o nó responde `"output_unavailable": true` e sem texto. O
+  mesmo acontece a um run cujo titular foi apagado. O `aos-orq` não publica a saída de um run
+  nessas condições.
 - **Recuo:** `AOS_COMPLETION_VERDICT=observe` (ou `off`) e recriar o nó.
 
 ### A forma do pedido ao modelo — `AOS_MODEL_PROJECTION` (AOS-490)

@@ -8689,19 +8689,65 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
 
 ### Critérios de Aceitação
 
-- [ ] O `POST /runs` aceita o contrato de conclusão. As tools do contrato têm de pertencer à
+- [x] O `POST /runs` aceita o contrato de conclusão. As tools do contrato têm de pertencer à
       lista-branca do run; caso contrário o pedido é recusado com 400 e mensagem própria.
-- [ ] O nó anuncia o suporte do contrato numa superfície que o `aos-orq` consegue ler antes de
+      — campo `completion_requires`. Três recusas, cada uma com a sua mensagem: entrada vazia,
+      contrato sem lista-branca (`tools` ausente) e tool fora da lista-branca, pela regra do
+      Reference Monitor (comparação exacta). O modo não tem campo: `completion_mode` no corpo dá
+      400. `TestAOS494_PostRuns_ContratoContraAListaBranca`.
+- [x] O nó anuncia o suporte do contrato numa superfície que o `aos-orq` consegue ler antes de
       submeter. Um nó sem o suporte continua a responder como hoje.
-- [ ] O `GET /runs/{id}` devolve `outcome_reason` e o vector do veredicto. Os campos são aditivos:
+      — `GET /tools` ganha `completion_contract: {"mode": …}`. A presença do objecto é o anúncio;
+      `mode` é o modo do nó. `TestAOS494_GetTools_AnunciaOContrato`.
+- [x] O `GET /runs/{id}` devolve `outcome_reason` e o vector do veredicto. Os campos são aditivos:
       um cliente anterior continua a funcionar.
-- [ ] O ramo durável do `GET /runs/{id}` devolve o mesmo desfecho, a mesma razão e a mesma saída
+      — `outcome_reason`, `verdict` e `output_unavailable`. `TestAOS494_AosOrqAnterior_ContinuaAFuncionar`
+      lê a resposta com a estrutura e a regra do `aos-orq` anterior.
+- [x] O ramo durável do `GET /runs/{id}` devolve o mesmo desfecho, a mesma razão e a mesma saída
       que o ramo em memória. Teste que reinicia o nó entre a conclusão e a leitura.
-- [ ] Um run `failed` por contrato não cumprido responde `terminated=false` com a razão, sem
+      — `TestAOS494_Fio_DesfechoRazaoESaidaNosDoisRamos`: seis casos, cada um com um segundo
+      `Bootstrap` sobre os mesmos ficheiros. **Com uma condição, ver «Limites».**
+- [x] Um run `failed` por contrato não cumprido responde `terminated=false` com a razão, sem
       texto final.
-- [ ] A superfície de variáveis de ambiente, o README do servidor e o exemplo de `.env` registam
+      — nos dois ramos, com `status: "failed"`. Fecha o achado M7 da revisão do AOS-493 (o ramo
+      em memória respondia `completed`).
+- [x] A superfície de variáveis de ambiente, o README do servidor e o exemplo de `.env` registam
       o modo de aplicação do contrato (AOS-493).
+      — a variável já estava registada pelo AOS-493 (`.env.example`, compose, os dois READMEs, e
+      os testes de superfície, que continuam verdes). Este ticket não acrescenta variáveis; o
+      README do servidor passa a descrever o campo, o anúncio e os campos do `GET`.
 - [ ] Smoke do nó sobre ficheiro e sobre JetStream.
+      — **sobre ficheiro: feito** (`driver.sh smoke`, 10 de 10, binário reconstruído; e a
+      superfície nova exercitada à mão no binário real, com um reinício). **Sobre JetStream: não
+      correu.**
+
+### Como ficou
+
+- **Contrato.** `completion_requires` é uma lista de nomes de tool. Aceita-o quem já pode
+  submeter o run; não dá autoridade nenhuma, só pode tornar vermelho um run que saía verde.
+- **Contrato impossível.** A porta só conhece a lista-branca do pedido. Se o nó não oferece a
+  tool, é o kernel que recusa, antes do primeiro turno (AOS-493): o `POST` dá 201 e o `GET`
+  responde `failed` com o erro do kernel. O tool set do run só é congelado no arranque do run.
+- **Ramo durável.** O estado e o veredicto saem da mesma transição do log
+  (`state.Machine.RebuildOutcome`). A saída lê-se da captura do turno terminal, pelo motor e com
+  a autorização da reconstrução soberana (AOS-214), depois do selo de leitura do `GET`.
+
+### Limites
+
+- **A saída do ramo durável exige o gate soberano de leitura e uma custódia de KEK que sobreviva
+  ao reinício.** Num nó sem gate, ou cuja captura não abre (titular apagado, captura incompleta,
+  KEK em memória perdida no reinício), o nó responde `completed` com `output_unavailable: true`
+  e sem texto. Medido no binário real com a custódia em memória do `driver.sh`: depois do
+  reinício a resposta é `output_unavailable`. O teste que prova a igualdade dos dois ramos
+  partilha o cofre de KEK entre as duas incarnações, como a produção faz com o Vault.
+- **O estado do ramo em memória de um run não cumprido é `failed` sem consultar o log.** Se o
+  selo foi um no-op (outro condutor já tinha fechado o run em `timed_out` ou `killed`), a
+  memória diz `failed` e o log diz outro estado, até ao reinício.
+- **O contrato impossível responde `failed` sem `outcome_reason`,** e depois de um reinício sem
+  o erro: o estado durável é `run_failed` (ADR-037 §2.2).
+- **O `aos-orq` não importa o pacote do nó.** O que liga os testes dos dois lados são os
+  ficheiros `packages/cmd/aos/testdata/aos494_fio/`: o teste do nó exige que o `GET` responda
+  esses bytes, e os testes do AOS-495 servem-nos a partir de um nó falso.
 
 ### Fora de âmbito
 
@@ -8709,7 +8755,8 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-05).** Falta o smoke sobre JetStream e a revisão adversarial, que é feita
+a seguir.
 
 ---
 

@@ -7,6 +7,15 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-19 (AOS-494) O nó aceita o contrato de conclusão no `POST /runs` e devolve o desfecho no `GET /runs`
+- `feat(AOS-494)` — o contrato de conclusão do AOS-493 só entrava por código, e o `GET /runs/{id}` não dizia porque um run tinha falhado. Depois de um reinício do nó respondia `completed` sem texto.
+  - **`POST /runs`:** campo novo `completion_requires` (nomes de tools). Cada uma tem de constar de `tools` do mesmo pedido, pela regra do Reference Monitor; senão 400 com mensagem própria. O modo de aplicação não tem campo.
+  - **`GET /tools`:** campo novo `completion_contract: {"mode": …}`. A presença do objecto anuncia que o nó aceita o contrato. Um nó anterior não o tem, e recusa `completion_requires` com 400.
+  - **`GET /runs/{id}`:** campos novos `outcome_reason`, `verdict` e `output_unavailable`, omitidos quando vazios. **Muda:** um run não cumprido (veredicto negativo em `enforce`) ou recusado por contrato impossível passa a responder `status: "failed"` enquanto o desfecho está em memória; respondia `completed` com `terminated=false`. `terminated` não muda.
+  - **Ramo durável:** devolve a razão e o vector da última transição do run, e a saída de um run concluído, lida da captura do turno terminal com a autorização da reconstrução soberana. Quando a saída não se lê (nó sem gate soberano de leitura, titular apagado, KEK em memória perdida no reinício) responde `output_unavailable: true`.
+  - Em `observe`, um run com veredicto negativo responde `completed`, `terminated`, com o texto e com `outcome_reason`.
+  - Smoke sobre JetStream por correr.
+
 ### Added — EPIC-02 (AOS-493) O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão
 - `fix(AOS-493)` — um turno sem tool calls fechava o run como concluído, fosse o texto uma resposta, uma tool call escrita como texto, nada ou uma resposta cortada. Em 2 de 10 planos em produção (2026-10-04) o run fechou concluído sem executar a tool de que a saída dependia. O kernel passa a calcular o desfecho no turno terminal (`agentruntime.ConcludeRun`, a mesma função no loop e no motor de replay), a partir dos seus próprios contadores de tool calls efectivas, contra um contrato de conclusão declarado no objectivo do run. ADR-037.
   - **Contrato e modo no `Goal`:** `CompletionRequires` (nomes das tools de que a conclusão depende) e `CompletionMode` (`off`, `observe`, `enforce`). Fixados por run: vão no registo de retoma e em `manifest.completion` de cada `turn.recorded`. O campo no `POST /runs` é do AOS-494; até lá o contrato só entra por código.

@@ -82,6 +82,10 @@ type entradaDoCatalogo struct {
 // resposta mal formada.
 type respostaDoCatalogo struct {
 	Tools []entradaDoCatalogo `json:"tools"`
+	// CompletionContract anuncia que este nó aceita o contrato de conclusão no `POST /runs`
+	// (AOS-494). É aqui, e não noutra rota, porque é a leitura que o `aos-orq` já faz antes de
+	// submeter. Campo aditivo: um cliente anterior ignora-o.
+	CompletionContract *anuncioDoContrato `json:"completion_contract,omitempty"`
 }
 
 // contratoDaTool constrói o contrato de supply-chain de uma tool EXACTAMENTE como o registo
@@ -179,5 +183,5 @@ func (h *apiHandler) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []entradaDoCatalogo{}
 	}
-	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools})
+	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node)})
 }

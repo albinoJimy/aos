@@ -244,10 +244,22 @@ func TestAOS441GetToolsServeOCatalogoComAFormaDoFio(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /tools sem gate soberano devia servir pelo read-path legado, veio %d (%s)", rec.Code, rec.Body.String())
 	}
-	var bruto map[string][]map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &bruto); err != nil {
+	// AOS-494: o corpo ganhou o campo ADITIVO `completion_contract` (um objecto, o anúncio do
+	// contrato de conclusão). A forma de `tools` — o que este teste fixa — não mudou, e o corpo
+	// não pode ter mais nenhuma chave.
+	var campos map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &campos); err != nil {
 		t.Fatalf("corpo ilegível: %v (%s)", err, rec.Body.String())
 	}
+	if _, anuncia := campos["completion_contract"]; !anuncia || len(campos) != 2 {
+		t.Fatalf("o corpo tem de ter `tools` e `completion_contract`, e mais nada — veio %s", rec.Body.String())
+	}
+	bruto := map[string][]map[string]any{}
+	var tools []map[string]any
+	if err := json.Unmarshal(campos["tools"], &tools); err != nil {
+		t.Fatalf("`tools` ilegível: %v (%s)", err, rec.Body.String())
+	}
+	bruto["tools"] = tools
 	quer := map[string][]map[string]any{"tools": {{
 		"name": "doc_read", "version": "1.0.0", "digest": "sha256:d", "egress": "none", "reversibility": "reversible",
 		"mutation": "none", // AOS-409 — o terceiro eixo que o `aos-orq` confere
