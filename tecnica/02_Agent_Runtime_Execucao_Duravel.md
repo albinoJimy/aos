@@ -106,15 +106,25 @@ submete o saber antes: um nó anterior recusa o campo com 400. O `GET /runs/{id}
 `outcome_reason` e `verdict`. Um run não cumprido responde `failed`, `terminated=false`, sem
 texto. Depois de um reinício do nó a resposta lê-se do log: o estado e o veredicto da última
 transição, e a saída da captura do turno terminal, com a autorização da reconstrução soberana.
-Quando a saída não se consegue ler, a resposta diz `output_unavailable` em vez de um `completed`
-sem texto.
+Esta leitura decifra conteúdo por-titular: tem a trava do AOS-426 (o stream é o de um run), e
+deixa um selo WORM `read:outcome` antes de abrir conteúdo — o rótulo da leitura de desfecho, o
+mesmo do ramo em memória, e não `read:reconstruct` (ADR-037 §2.8). Quando a saída não se lê de
+vez (titular apagado, captura em falta ou incompleta, nó sem o gate de leitura), a resposta diz
+`output_unavailable` em vez de um `completed` sem texto. Quando não se lê agora (custódia das KEK
+fechada ou sem resposta, Event Store que não leu), a resposta é 503, como na reconstrução
+soberana.
 
 **Quem declara o contrato num plano (AOS-495).** O `aos-orq` envia `completion_requires` com as
-tools atribuídas a cada nó do plano que não é verificador, tem tools e declara uma saída de forma
-aberta, e só a um nó que anuncie aceitá-lo. O nó do plano continua a concluir por `completed`,
-`terminated` e sem erro; a razão do veredicto nomeia a causa de um nó `failed` no `detail` do
-desfecho do plano, e não é o critério. Uma saída vazia não é publicada: o nó que a produziu fica
-`failed`.
+tools atribuídas a cada nó do plano que não é verificador e tem tools, com ou sem `outputs`, e só
+a um nó que anuncie aceitá-lo. Um nó que responde sem o anúncio é um nó anterior, e o plano corre
+sem contrato; um anúncio que não se leu (rede, 429, 5xx, corpo ilegível) não é um «não»: o
+`serve` pára antes da posse com um desfecho transitório, e o pedido volta à fila. O nó do plano
+continua a concluir por `completed`, `terminated` e sem erro; a razão do veredicto nomeia a causa
+de um nó `failed` no `detail` do desfecho do plano, e não é o critério. Uma saída vazia não é
+publicada: o nó que a produziu fica `failed`, se declarar uma saída de forma aberta (um nó sem
+ela pode concluir sem texto). Um 503 do nó ao `GET /runs/{id}` não fecha o nó do plano: o
+estado fica por ler até à passagem seguinte. O ficheiro de métricas da drenagem conta as
+execuções sem contrato, os veredictos negativos observados e os nós por classe face ao contrato.
 
 **Garantia estrutural de no-bypass (ADR-002).** O `Runtime` detém um `*referencemonitor.Monitor`, **nunca** uma `ToolFunc`: o único caminho de execução de tools é `Monitor.Mediate`. A prova é estrutural (reflexão) + sintáctica (`archlint`). Cada resultado de tool volta ao loop **marcado untrusted** (ADR-005); um erro de tool permitida (`dec.ToolErr`) é propagado ao span (`error.type`) e ao tail, sem ser silenciosamente descartado.
 

@@ -8707,6 +8707,20 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
       que o ramo em memória. Teste que reinicia o nó entre a conclusão e a leitura.
       — `TestAOS494_Fio_DesfechoRazaoESaidaNosDoisRamos`: seis casos, cada um com um segundo
       `Bootstrap` sobre os mesmos ficheiros. **Com uma condição, ver «Limites».**
+- [x] (revisão adversarial) Uma indisponibilidade **transitória** da saída no ramo durável não é
+      «saída indisponível»: o `GET` responde **503**, como o `/reconstruct`, e a saída volta
+      quando a custódia volta. `output_unavailable` fica para o que é definitivo.
+      — `saidaDuravelIndisponivelDeVez`: a lista dos erros definitivos é fechada (titular
+      apagado, captura em falta, incompleta ou corrompida, nó sem o gate de leitura); tudo o
+      resto, incluindo a custódia fechada ou sem resposta e um erro de leitura do Event Store,
+      dá 503. `TestAOS494_RamoDuravel_CustodiaFechadaNaoESaidaIndisponivel` (um cofre cuja
+      custódia se fecha sem apagar nada) e `TestAOS494_SaidaDuravel_ClassificacaoDosErros`.
+- [x] (revisão adversarial) A leitura durável que decifra deixa um selo WORM, com a capability
+      da leitura de desfecho e o principal do leitor, **antes** de abrir conteúdo; e tem a trava
+      do AOS-426 (`streamDeRun`) que o `/reconstruct` tem.
+      — `TestAOS494_RamoDuravel_SelaAntesDeDecifrar` (um espião no cifrador lê a cabeça da
+      cadeia WORM no momento da primeira abertura) e
+      `TestAOS494_RamoDuravel_StreamQueNaoEDeRunNaoSeDecifra`.
 - [x] Um run `failed` por contrato não cumprido responde `terminated=false` com a razão, sem
       texto final.
       — nos dois ramos, com `status: "failed"`. Fecha o achado M7 da revisão do AOS-493 (o ramo
@@ -8731,6 +8745,14 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
 - **Ramo durável.** O estado e o veredicto saem da mesma transição do log
   (`state.Machine.RebuildOutcome`). A saída lê-se da captura do turno terminal, pelo motor e com
   a autorização da reconstrução soberana (AOS-214), depois do selo de leitura do `GET`.
+- **O selo da leitura durável é `read:outcome`.** A rota decifra conteúdo histórico do titular
+  sob o rótulo da leitura de desfecho, e não sob `read:reconstruct`. É a mesma resposta, ao
+  mesmo leitor, que o ramo em memória já selava com `read:outcome`; e o rótulo não autoriza
+  nada — a autorização é a credencial, o board e a residência do run, iguais nas duas rotas.
+  Quem audita decifrações tem de contar os dois rótulos (ADR-037 §2.8).
+- **503 e `output_unavailable`.** Custódia das KEK fechada ou sem resposta, ou Event Store que
+  não leu: 503, sem desfecho no corpo. Titular apagado, captura que não existe ou não se
+  reconstrói, nó sem o gate de leitura: `completed` com `output_unavailable`.
 
 ### Limites
 
@@ -8740,14 +8762,30 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
   e sem texto. Medido no binário real com a custódia em memória do `driver.sh`: depois do
   reinício a resposta é `output_unavailable`. O teste que prova a igualdade dos dois ramos
   partilha o cofre de KEK entre as duas incarnações, como a produção faz com o Vault.
+- **Um titular apagado que voltou responde 503 para os runs antigos, e não `output_unavailable`.**
+  É o limite que o AOS-436 já declara no cifrador: com uma KEK viva de geração nova, o conteúdo
+  selado sob a geração destruída sai como «indisponível» e não como «apagado». Para quem lê é
+  um 503 que não passa; o `aos-orq` deixa de esperar no prazo do `serve`.
+- **Um 503 do ramo durável deixa na mesma um selo de leitura.** O selo é anterior à decifração,
+  como no `/reconstruct`: cada tentativa fica registada, com ou sem conteúdo entregue.
+- **A indisponibilidade transitória da custódia não foi reproduzida com um Vault real.** O teste
+  usa um cofre cuja custódia se fecha (a mesma porta, `portaoDoTitular`, que o cofre do Vault
+  implementa); o Vault selado em produção fica por medir.
 - **O estado do ramo em memória de um run não cumprido é `failed` sem consultar o log.** Se o
   selo foi um no-op (outro condutor já tinha fechado o run em `timed_out` ou `killed`), a
   memória diz `failed` e o log diz outro estado, até ao reinício.
 - **O contrato impossível responde `failed` sem `outcome_reason`,** e depois de um reinício sem
   o erro: o estado durável é `run_failed` (ADR-037 §2.2).
-- **O `aos-orq` não importa o pacote do nó.** O que liga os testes dos dois lados são os
-  ficheiros `packages/cmd/aos/testdata/aos494_fio/`: o teste do nó exige que o `GET` responda
-  esses bytes, e os testes do AOS-495 servem-nos a partir de um nó falso.
+- **O `aos-orq` não importa o pacote do nó.** O que liga os testes dos dois lados são ficheiros
+  que um lado gera e o outro consome, nas três direcções do fio (revisão adversarial):
+  o `GET /runs/{id}` em memória, do ramo durável e com `output_unavailable`, e o anúncio do
+  `GET /tools`, gerados pelo nó em `packages/cmd/aos/testdata/aos494_fio/`; e o corpo do
+  `POST /runs`, gerado pelo `aos-orq` em `packages/cmd/aos-orq/testdata/aos495_fio/`. O corpo
+  tem a forma de produção (nó `read_notes`, `tools:["doc_read"]`,
+  `completion_requires:["doc_read"]`). O teste do nó entrega-o byte a byte ao `POST /runs` e
+  exige que passe todas as recusas de pedido; para o run correr troca só a credencial e o
+  principal e tira o vínculo `plan_request`, que não se podem fixar num ficheiro (um token
+  assinado com validade, e a reclamação viva do pedido).
 
 ### Fora de âmbito
 
@@ -8755,8 +8793,17 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-05).** Falta o smoke sobre JetStream e a revisão adversarial, que é feita
-a seguir.
+**IMPLEMENTADO E REVISTO (2026-10-05).** Falta o smoke sobre JetStream.
+
+- [x] Revisão adversarial independente (2026-10-05). Sem bloqueantes. Corrigidos: custódia
+      fechada dá 503 e não `output_unavailable`; selo da leitura durável fixado por teste, com a
+      trava `streamDeRun`; fio preso nas três direcções. Por corrigir, por decisão: M3 e M7.
+- **M3 e M7, para registo:** o contrato impossível mata o run também em `observe`; e o ramo
+  durável reconstrói o run inteiro para devolver o texto do último turno.
+- **Visto na revisão, fora deste ticket e não corrigido:** o `/dsar/erase` não limpa o registo
+  de desfechos em memória. Até ao reinício ou à poda, o ramo em memória do `GET /runs/{id}`
+  continua a servir o `final_text` de um titular apagado. Não foi reproduzido; pede ticket
+  próprio.
 
 ---
 
@@ -8790,17 +8837,34 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
 
 ### Critérios de Aceitação
 
-- [x] Um nó é elegível quando não é verificador, tem tools atribuídas no plano materializado e
-      declara uma saída de forma aberta. Para esses, o `aos-orq` envia o contrato com as tools
-      atribuídas. Os restantes nós não levam contrato.
-      — `contratoDoNo`. Forma aberta é um `outputs[].type` `summary`, `record` ou `artifact`
-      (`metrics` e `verdict` são fechadas). As tools são as pinadas no `plan.materialized`, as
-      mesmas da lista-branca do run. `TestAOS495_Elegibilidade`.
+- [x] Um nó é elegível quando não é verificador e tem tools atribuídas no plano materializado,
+      **com ou sem `outputs`**. Para esses, o `aos-orq` envia o contrato com as tools atribuídas.
+      Os restantes nós não levam contrato. Cada nó diz no log da drenagem em que classe fica.
+      — `contratoDoNo` e `classeDoContrato`. As tools são as pinadas no `plan.materialized`, as
+      mesmas da lista-branca do run. Classes: `com_contrato_saida_aberta`,
+      `com_contrato_sem_saida`, `sem_contrato_verificador`, `sem_contrato_sem_tools` e
+      `sem_contrato_no_nao_anuncia`. `TestAOS495_Elegibilidade` e
+      `FormaDeProducao/NoComToolsSemOutputs_Enforce_Sai13`.
+      **Critério alargado pela revisão adversarial (2026-10-05).** O critério do dono, de
+      2026-10-04, exigia também uma saída de forma aberta declarada. O planeador só declara
+      `outputs` quando outro nó os consome, pelo que o plano de um só nó, o último nó e os nós
+      de escrita ficavam sem contrato, e para eles o verde falso continuava aberto
+      (reproduzido: plano 0 com o nó em `enforce`). Com o nó em `observe` o alargamento não
+      muda nenhum desfecho: só passa a medir mais nós. **O dono valida a classe alargada
+      (`com_contrato_sem_saida`) antes de ligar `enforce`** — é a que mais pode dar vermelhos
+      falsos, porque um nó sem saída declarada pode ter uma tool atribuída de que não precisa.
 - [x] O contrato só é enviado a um nó que anuncie suportá-lo (AOS-494). Contra um nó anterior, o
       `aos-orq` submete como hoje e regista que o contrato não foi aplicado.
-      — o anúncio lê-se do `GET /tools`, uma vez por `serve`. O log diz `NAO APLICADO` no
-      arranque e em cada nó elegível. `NoAnterior_NaoLeva400`, contra um nó falso que recusa
-      campos desconhecidos como o decoder do nó anterior.
+      — o anúncio lê-se do `GET /tools`, uma vez por `serve`, antes da posse. O log diz `NAO
+      APLICADO` no arranque e a classe `sem_contrato_no_nao_anuncia` em cada nó elegível.
+      `NoAnterior_NaoLeva400`, contra um nó falso que recusa campos desconhecidos como o decoder
+      do nó anterior.
+- [x] (revisão adversarial) Um anúncio que **não se leu** não é o nó a dizer que não. O plano não
+      corre sem contrato: o desfecho é transitório e o pedido volta à fila.
+      — rede, 429, 5xx ou corpo ilegível no `GET /tools` do anúncio: o `serve` pára antes da
+      posse e antes de planear, com a saída 1 e `erro=anuncio_ilegivel` no resumo.
+      `AnuncioIlegivel_PedidoVoltaAFila` (503, 429, corpo ilegível) e
+      `TestAOS495_Anuncio_OClienteLeOFioDoNo`.
 - [x] Um run filho `failed` por contrato deixa o nó do plano `failed`, e o plano sai com o código
       13. A razão aparece no `detail` do `GET /plans/{id}`, em vocabulário fechado, e no log da
       drenagem.
@@ -8808,7 +8872,11 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
       continua a ser `completed`, `terminated` e sem erro: a razão só nomeia a causa.
 - [x] Uma saída vazia nunca é publicada: o produtor fica `failed` com razão própria.
       — `saida_vazia` (texto vazio ou só espaços), ou `saida_indisponivel` quando o nó responde
-      `output_unavailable` (AOS-494). Vale para qualquer nó que declare uma saída de forma aberta.
+      `output_unavailable` (AOS-494). Vale para qualquer nó que declare uma saída de forma
+      aberta, e só para esses: um nó sem saída aberta não tem nada para publicar e pode concluir
+      sem texto (`FormaDeProducao/NoSemSaidaAberta_ConcluiSemTexto`). Um **503** do nó não é
+      `output_unavailable`: o estado fica «ilegível nesta passagem» e o nó do plano não fecha
+      (`Estado503_NaoFechaONo`).
 - [x] O aviso de planos distingue esta falha das outras.
       — a linha `aviso:` leva `causa=conclusao_nao_cumprida` e o push diz «nós falhados:
       conclusão não cumprida». Cenário shell `4c`, corrido em Linux num contentor.
@@ -8816,7 +8884,15 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
       plano com código 13 e a razão certa; a resposta boa dá código 0.
       — **em duas metades, ver «Limites».** `TestAOS494_Fio_…` (nó real, modelo falso) e
       `TestAOS495ComOBinarioReal` (`aos-orq` real). Com o nó em `observe`, código 0 e o veredicto
-      no log.
+      no log. Também na forma de produção (`FormaDeProducao`: nó `read_notes`, tool `doc_read`,
+      saída `record`), em que o corpo do `POST /runs` que o `aos-orq` enviou é o que o nó real
+      recebe, e as respostas do nó real a esse corpo são as que o `aos-orq` lê.
+- [x] (revisão adversarial) A medição de `observe` do lado do plano está no ficheiro de métricas
+      da drenagem, e não só no log.
+      — `aos_orq_consume_contrato_nao_aplicado_total{motivo}`,
+      `aos_orq_consume_veredictos_observados_total{razao}` e
+      `aos_orq_consume_nos_por_contrato_total{classe}`, os três com rótulos de vocabulário
+      fechado. `TestAOS495_MetricasDoContrato`.
 - [x] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo com nó anterior, e nó
       novo com `aos-orq` anterior.
       — `NoAnterior_NaoLeva400` e `TestAOS494_AosOrqAnterior_ContinuaAFuncionar` (o corpo e a
@@ -8839,23 +8915,34 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
 
 ### Limites
 
-- **Não há um teste que cruze os dois binários reais.** O módulo do `aos-orq` não importa o do
-  nó. O teste do nó exige que o `GET /runs/{id}` responda os bytes de
-  `packages/cmd/aos/testdata/aos494_fio/`, e o teste do `aos-orq` serve esses bytes a partir de
-  um nó falso. O campo `completion_requires` e o anúncio do `GET /tools` estão provados de cada
-  lado, e não pelo mesmo teste.
+- **Não há um teste que corra os dois binários reais um contra o outro.** O módulo do `aos-orq`
+  não importa o do nó. As três direcções do fio estão presas por ficheiros que um lado gera e o
+  outro consome (ver AOS-494, «Limites»): o corpo do `POST /runs`, o anúncio do `GET /tools` e
+  as respostas do `GET /runs/{id}`. O que não fica preso: a credencial, o principal e o vínculo
+  `plan_request` do corpo, que o teste do nó troca ou tira para o run correr.
 - **As causas vivem na memória do `serve`.** Um `serve` que retome um run com nós já `failed`
   reporta-os como `nao_registada`. A saída 13 é terminal, pelo que isto só acontece se o
   processo morrer entre fechar o nó e reportar o desfecho.
 - **Contrato com mão larga.** O contrato são todas as tools atribuídas ao nó. Uma tool atribuída
   de que o objectivo afinal não precisava dá um vermelho falso em `enforce`. É o que o período
   de observação mede.
-- **Um anúncio que não se leu conta como «não anunciado».** O plano corre sem contrato e o
-  banner di-lo; não falha.
+- **Um anúncio que não se leu gasta uma geração do pedido.** O desfecho é transitório e o
+  pedido volta à fila; se o nó deixar de responder ao `GET /tools`, o pedido fecha no tecto de
+  gerações (AOS-467) e nunca corre sem contrato. Não há nova tentativa dentro do mesmo `serve`.
+- **A classe alargada pode dar vermelhos falsos em `enforce`.** Um nó sem saída declarada com
+  uma tool atribuída de que o objectivo não precisa fica `failed`. É o que as séries
+  `nos_por_contrato_total{classe="com_contrato_sem_saida"}` e `veredictos_observados_total`
+  medem em `observe`, e o que o dono valida antes de ligar `enforce`.
+- **A reidratação dos payloads no arranque não distingue um 503.** Um `serve` que retome um
+  plano e apanhe 503 ao reler a saída de um produtor não reidrata esse payload, e o consumidor
+  fecha `failed` com `entrada_por_cumprir` (regra do AOS-418: o que não se confirma não entra).
+  É a mesma janela do reinício do servidor; antes do AOS-494 o desfecho era o mesmo. Não foi
+  corrigido aqui: muda uma decisão do AOS-418.
 - **Um nó `aos` com o veredicto em `off`** anuncia o contrato na mesma. O `aos-orq` envia-o e o
   nó ignora-o.
 - **Um reinício do nó `aos` com a custódia das KEK em memória** deixa a saída ilegível: o nó
-  do plano fica `failed` com `saida_indisponivel`, onde antes publicava uma saída vazia.
+  do plano fica `failed` com `saida_indisponivel`, onde antes publicava uma saída vazia. Com a
+  custódia no Vault e o Vault ainda selado, o nó responde 503 e o `aos-orq` volta a ler.
 
 ### Fora de âmbito
 
@@ -8864,4 +8951,9 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-05); por verificar em produção.** A revisão adversarial é feita a seguir.
+**IMPLEMENTADO E REVISTO (2026-10-05); por verificar em produção.**
+
+- [x] Revisão adversarial independente (2026-10-05). Sem bloqueantes. Corrigidos: elegibilidade
+      alargada aos nós sem `outputs`; anúncio ilegível deixa de falhar aberto; contadores da
+      medição; testes do modo, do vector e do nó sem saída aberta. Por corrigir, por decisão: M9.
+- **M9, para registo:** numa retoma, um nó que já vinha `failed` do log sai como `nao_registada`.

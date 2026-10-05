@@ -128,6 +128,40 @@ A regra nova entra por estes campos e não por um layout de prompt novo. Um layo
 bytes do prompt, e esta decisão não muda nenhum. Um layout que a projecção nativa não conhecesse
 cairia em silêncio na projecção de texto.
 
+### 2.8 Ler o desfecho depois de um reinício decifra, sob o selo da leitura de desfecho
+
+Nota de 2026-10-05 (AOS-494 e a sua revisão adversarial). O `GET /runs/{id}` de um run concluído
+que já não está na memória do nó lê a saída da captura do turno terminal, cifrada por-titular.
+É decifração de conteúdo histórico do titular numa rota que, até ao AOS-494, não decifrava nada.
+
+As verificações, pela ordem em que correm:
+
+1. a autorização soberana do leitor (credencial, board→região, residência do run): a mesma
+   chamada da reconstrução soberana (`GET /runs/{id}/reconstruct`), antes de qualquer ramo;
+2. a trava do AOS-426: o stream de onde saiu o estado `complete` é o de um run com esse id;
+   senão, o 404 uniforme;
+3. o selo WORM de leitura sensível, **antes** de abrir conteúdo; se o WORM não selar, 503;
+4. o gate soberano e a cifra por-titular compostos; sem eles não se decifra;
+5. a decifração, pelo motor de replay com o cifrador por-titular.
+
+**O selo diz `read:outcome`, e não `read:reconstruct`.** É a mesma resposta, ao mesmo leitor,
+que o ramo em memória entrega sob `read:outcome`: o rótulo diz o que o leitor recebeu (o texto
+final do run), e não de onde o nó o foi buscar. `read:reconstruct` fica para a rota que entrega
+todos os turnos e as saídas das tools. O rótulo não autoriza nada: nenhuma política decide pela
+capability do selo, e a autorização é a do ponto 1, igual nas duas rotas.
+
+O que isto custa a quem audita: quem conta decifrações só por `read:reconstruct` não vê estas.
+As leituras que podem ter entregue conteúdo do titular são as de `read:outcome` e as de
+`read:reconstruct`. O selo `read:outcome` não distingue a leitura servida da memória da que
+decifrou o log, nem a que acabou sem conteúdo: é anterior à decifração.
+
+**Indisponível não é apagado.** Se a saída não se lê de vez (titular apagado, captura em falta,
+incompleta ou corrompida, nó sem o gate de leitura) a resposta é `completed` com
+`output_unavailable`. Se não se lê agora (custódia das KEK fechada ou sem resposta, Event Store
+que não leu, ou um erro que ninguém classificou) a resposta é 503, como na reconstrução
+soberana, e nenhum desfecho é escrito. A lista fechada é a dos erros definitivos; o resto cai do
+lado de voltar a perguntar.
+
 ## 3. Alternativas rejeitadas
 
 - **Detectar a forma do texto** (o texto «parece» uma tool call) como critério de controlo. É um
@@ -203,7 +237,10 @@ cairia em silêncio na projecção de texto.
   classe em causa é `verdict="none"` com `last="denied"` ou `last="tool_error"`. Não vai em
   evento nenhum; o período de observação lê-a do `/metrics`.
 - **Contrato com mão larga.** Uma tool exigida que o objectivo afinal não precisava dá um
-  vermelho falso. O âmbito em que o `aos-orq` declara o contrato é do AOS-495.
+  vermelho falso. O âmbito em que o `aos-orq` declara o contrato é do AOS-495: todo o nó
+  não-verificador com tools atribuídas, com ou sem saída declarada. A revisão adversarial
+  alargou-o (o critério inicial exigia uma saída de forma aberta), o que aumenta este resíduo
+  para os nós sem saída declarada; é o que o período de observação mede.
 - **Sem reparação.** Um veredicto negativo fecha o run; não há outro turno para o modelo.
 - **Retoma depois de uma falha de tool: dois ramos, medidos.** A retoma reproduz os turnos já
   dados. Uma chamada que teve êxito tem o resultado memorizado e não volta a executar. Uma que
