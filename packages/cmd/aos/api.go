@@ -1269,8 +1269,10 @@ type runStateResponse struct {
 	Verdict *agentruntime.Verdict `json:"verdict,omitempty"`
 	// OutputUnavailable declara que o run CONCLUIU e que este nó já não consegue servir a sua
 	// saída (AOS-494): o desfecho saiu da memória (reinício, poda) e a captura do turno terminal
-	// não se leu do log. Sem este campo a resposta era um `completed` sem texto, que não se
-	// distingue de um run que não escreveu nada. Ver [apiHandler.saidaDuravel].
+	// não se lê do log, DE VEZ — titular apagado, captura em falta ou incompleta, nó sem o gate
+	// de leitura. Sem este campo a resposta era um `completed` sem texto, que não se distingue de
+	// um run que não escreveu nada. Uma indisponibilidade TRANSITÓRIA (custódia fechada ou sem
+	// resposta) não chega aqui: o `GET` responde 503. Ver [saidaDuravelIndisponivelDeVez].
 	OutputUnavailable bool `json:"output_unavailable,omitempty"`
 }
 
@@ -1611,6 +1613,27 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			resp = runStateResponse{RunID: runID, Status: string(state.Compensating)}
 		}
 		if resp.Status != "" {
+			// AOS-426, no ramo que DECIFRA (AOS-494): o stream de onde saiu o `complete` tem de
+			// ser o de um run com este id. A mesma trava, e pela mesma ordem, da reconstrução
+			// soberana: antes do selo e antes de abrir conteúdo. Um stream que não se leu é
+			// transitório — 503, sem selo e sem desfecho.
+			if st == state.Complete {
+				deRun, serr := h.streamDuravelEDeRun(r.Context(), runID)
+				if serr != nil {
+					h.logf("GET /runs/%q (AOS-494): o stream do run nao se leu antes de decifrar a saida — responde 503: %v", runID, serr)
+					writeError(w, http.StatusServiceUnavailable, "indisponivel")
+					return
+				}
+				if !deRun {
+					writeError(w, http.StatusNotFound, "not found")
+					return
+				}
+			}
+			// O SELO É DA LEITURA DE DESFECHO (`read:outcome`), nos dois ramos. O ramo em memória
+			// entrega este mesmo texto ao mesmo leitor sob este rótulo; o durável entrega-o depois
+			// de um reinício, e para isso decifra a captura do turno terminal. A autorização é a
+			// mesma da reconstrução soberana (credencial, board→região, residência do run) — o
+			// rótulo não é o que autoriza. O que ele diz, e o que não diz, está no ADR-037 §2.8.
 			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
 				return
 			}
@@ -1618,8 +1641,12 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// transição que deu o estado; a saída de um run concluído lê-se da captura do turno
 			// terminal, e só depois do selo acima. Um run que não concluiu não tem texto.
 			veredictoNaResposta(&resp, veredicto)
-			if st == state.Complete {
-				h.desfechoDuravelNaResposta(r, reader, &resp)
+			if st == state.Complete && !h.desfechoDuravelNaResposta(r, reader, &resp) {
+				// A saída está indisponível NESTE MOMENTO (custódia fechada ou sem resposta, log
+				// que não leu). Responder `output_unavailable` era dar por perdido o que está
+				// inteiro, e quem lê fecha o nó do plano de vez. 503, como o `/reconstruct`.
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
 			}
 			writeJSON(w, http.StatusOK, resp)
 			return

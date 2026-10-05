@@ -106,6 +106,9 @@ func aos486Entry(signer *signing.Signer, id string) domain.Entry {
 var (
 	aos486OrdemDoFicheiro = []string{"counter", "arquivo", "beta"}
 	aos486OrdemCongelada  = []string{"arquivo", "beta", "counter"}
+	// aos486CamposExtraDaSpec vai colado a cada spec do AOS_MODEL_TOOLS (comeca por virgula). O
+	// AOS-494 usa-o para declarar os eixos de risco da tool do fio; vazio em todos os outros testes.
+	aos486CamposExtraDaSpec = ""
 )
 
 const aos486Modelo = "gpt-4o"
@@ -148,7 +151,7 @@ func aos486ComporCom(t *testing.T, projeccao string, tweak func(*Config)) *aos48
 	var specs []string
 	for _, nome := range aos486OrdemDoFicheiro {
 		specs = append(specs, `{"name":"`+nome+`","description":"tool `+nome+`","capability":"`+durCap+
-			`","resource_type":"file","resource_value":"doc://notes","resource_region":"eu"}`)
+			`","resource_type":"file","resource_value":"doc://notes","resource_region":"eu"`+aos486CamposExtraDaSpec+`}`)
 	}
 	t.Setenv("AOS_MODEL_ENDPOINT", srv.URL)
 	t.Setenv("AOS_MODEL_NAME", aos486Modelo)
