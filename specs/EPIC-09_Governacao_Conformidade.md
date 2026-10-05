@@ -977,6 +977,83 @@ autorizadas com a obrigação `region=eu-west` e executadas na sandbox.
 
 ---
 
+## AOS-496 — O apagamento do titular chega ao registo de desfechos em memória do nó
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-09 — Governação e Conformidade |
+| Fase | Remediação pós-produção |
+| Tipo | fix |
+| Prioridade | P1 |
+| Estimativa | S |
+| Dependências | AOS-093 (crypto-shredding), AOS-213 (expiração por TTL), AOS-494 (ramo durável do `GET /runs/{id}`) |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma / Responsável de Segurança |
+| Documentos de referência | ADR-011 (GDPR por desenho), `packages/cmd/aos/{api.go,service.go,dsar.go,retention.go,desfecho_do_titular.go}` |
+
+### Contexto
+
+O `GET /runs/{id}` serve um run concluído por dois ramos. O ramo durável decifra o texto final da
+captura do turno terminal, cifrada por-titular, e responde `output_unavailable` quando a KEK foi
+destruída. O ramo em memória lê o `final_text` de um registo de desfechos do processo, em claro,
+e não depende da KEK.
+
+Uma revisão adversarial de 2026-10-05 apontou, por leitura de código, que o `/dsar/erase` não
+toca nesse registo: a única remoção era a poda FIFO. A hipótese foi **reproduzida** no nó
+composto: depois de um `/dsar/erase` com 200, e com o `GET /runs/{id}/reconstruct` do mesmo run
+a responder 410, o `GET /runs/{id}` no mesmo processo continuava a devolver o `final_text`
+inteiro. A janela durava até o nó reiniciar ou a poda levar o desfecho (por omissão o registo retém os últimos
+1024).
+
+A expiração por TTL (`POST /dsar/expire` e o varredor interno) destrói a mesma KEK por outra
+porta e tinha o mesmo defeito, também reproduzido.
+
+### Objectivo
+
+Depois de a KEK de um titular ser mandada destruir, por apagamento ou por expiração, o nó não
+serve o texto final dos runs desse titular por nenhum ramo do `GET /runs/{id}`, sem esperar por
+um reinício.
+
+### Critérios de Aceitação
+
+- [x] Depois de um `/dsar/erase` do titular de um run concluído, o `GET /runs/{id}` no mesmo
+      processo responde `completed`, sem `final_text` e com `output_unavailable` — a resposta que
+      o ramo durável dá ao mesmo run depois de um reinício. O veredicto, que não é conteúdo de
+      titular, continua a sair.
+      — o desfecho sai do registo em memória e o `GET` cai no ramo durável; não há uma segunda
+      forma de responder «apagado». O titular de cada run (`Goal.Titular()`) fica no registo à
+      entrada. `TestApagamentoDoTitular_ODesfechoEmMemoriaDeixaDeServirOTexto`, com o 410 do
+      `/reconstruct` como controlo de que o apagamento foi o do titular deste run. Falha sem a
+      correcção (medido por mutação).
+- [x] O apagamento de outro titular não toca no desfecho.
+      — `TestApagamentoDoTitular_NaoTocaNoDesfechoDeOutroTitular`.
+- [x] A expiração por TTL tem o mesmo efeito, pela rota e sobre o nó composto.
+      — o sink de expiração avisa pelo mesmo canal que o handler do apagamento.
+      `TestExpiracaoDoTitular_ODesfechoEmMemoriaDeixaDeServirOTexto`. Falha sem o aviso no sink
+      (medido por mutação).
+- [x] O aviso dá-se quando a destruição é pedida, também quando a custódia não a confirma: o
+      `GET` passa a responder pelo log, que diz a verdade nos dois casos.
+
+### Fora de âmbito (declarado)
+
+- **Runs suspensos e em curso.** Só o balde de terminados é limpo: é o único de onde o
+  `GET /runs/{id}` serve conteúdo do run. Um run do titular que esteja em curso no momento do
+  apagamento termina e fica com desfecho em memória; o conteúdo que ele escrever depois do
+  apagamento é cifrado sob uma KEK nova e o ramo durável também o lê. É o comportamento
+  existente para um titular que volta, e este ticket não o muda.
+- **Nó sem execução durável.** Sem log não há ramo durável: o run do titular apagado passa a
+  responder o 404 uniforme, como depois de uma poda.
+- **Outras cópias em memória.** O `final_text` do registo de desfechos é o único conteúdo de run
+  que o pacote `cmd/aos` serve de memória por HTTP. Não foi feito um levantamento das cópias em
+  memória noutros processos (o `aos-orq` lê o `final_text` dos runs filhos para publicar as
+  saídas dos nós do plano).
+
+### Estado
+
+**IMPLEMENTADO** a 2026-10-05. Sem verificação em produção.
+
+---
+
 ## Tabela de aprovação
 
 | Papel | Nome | Assinatura | Data |
@@ -993,5 +1070,6 @@ autorizadas com a obrigação `region=eu-west` e executadas na sandbox.
 |---|---|---|---|
 | 1.0 | Julho 2026 | Emissão inicial | Equipa AOS |
 | 1.1 | 2026-09-17 | AOS-407: o board vai assinado no NHI e a soberania por board fica ligada no caminho de efeito (fecha DEF-909); AC1/AC2 do AOS-094 passam a entregues | Equipa AOS |
+| 1.2 | 2026-10-05 | AOS-496: o apagamento e a expiração do titular retiram o desfecho do registo em memória do nó; o `GET /runs/{id}` deixa de servir o `final_text` de um titular apagado | Equipa AOS |
 </content>
 </invoke>

@@ -83,7 +83,9 @@ func aos494Modelo(texto string) agentruntime.ModelClient {
 // aos494Compor levanta UMA incarnação do nó sobre a pasta `dir` e o cofre `vault`. Duas chamadas
 // com a mesma pasta e o mesmo cofre são o nó antes e depois de um reinício: o Event Store e o
 // WORM estão em ficheiro, e tudo o que vive em memória (o registo de desfechos) nasce vazio.
-func aos494Compor(t *testing.T, dir string, vault audit.KeyVault, modo agentruntime.CompletionMode, modelo agentruntime.ModelClient, soberano bool) (*Node, *NodeService, http.Handler) {
+// `ajustes` mexem na configuração antes do arranque, para os testes que precisam de mais do que
+// este fio (a política de retenção, no AOS-496).
+func aos494Compor(t *testing.T, dir string, vault audit.KeyVault, modo agentruntime.CompletionMode, modelo agentruntime.ModelClient, soberano bool, ajustes ...func(*Config)) (*Node, *NodeService, http.Handler) {
 	t.Helper()
 	ctx := context.Background()
 	signer := durSigner(t)
@@ -114,6 +116,9 @@ func aos494Compor(t *testing.T, dir string, vault audit.KeyVault, modo agentrunt
 		Set("human:"+tnHuman, durCap).
 		Set(durAgent, durCap).
 		Set("agent:"+durClass, durCap)
+	for _, ajuste := range ajustes {
+		ajuste(&cfg)
+	}
 
 	node, err := Bootstrap(ctx, cfg, io.Discard)
 	if err != nil {

@@ -1004,6 +1004,10 @@ type Node struct {
 	// quando a custódia não é reconciliável (o vault in-memory de referência). Imutável depois
 	// do bootstrap (tem o seu próprio mutex).
 	apagamentos *reconciliadorDeApagamentos
+	// titularApagado avisa quem guarda conteúdo de titular EM MEMÓRIA de que a KEK foi mandada
+	// destruir, pelo `/dsar/erase` ou pela expiração por TTL (AOS-496). O [NodeService] subscreve-o
+	// para retirar do registo de desfechos os runs desse titular.
+	titularApagado *avisoDeTitularApagado
 	// ExpirationJob é o job de expiração por TTL (AOS-092) COMPOSTO no nó (AOS-213): varre os
 	// registos classificados do Event Store ([eventStoreRecordSource]) e expira os que cruzaram o
 	// TTL e não estão sob legal hold por crypto-shred da KEK por-titular ([cryptoShredSink],
@@ -2714,11 +2718,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if cfg.RetentionClock != nil {
 		expirationOpts = append(expirationOpts, audit.WithExpirationClock(cfg.RetentionClock))
 	}
+	// AOS-496: as duas vias de destruição da KEK avisam por aqui quem guarda conteúdo em memória.
+	titularApagado := &avisoDeTitularApagado{}
 	expirationJob := audit.NewExpirationJob(
 		cfg.Retention,
 		dsarHolds,
 		eventStoreRecordSource{es: es},
-		cryptoShredSink{vault: dsarVault},
+		cryptoShredSink{vault: dsarVault, apagado: titularApagado},
 		expirationOpts...,
 	)
 
@@ -3282,7 +3288,8 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		holdsRestored:           holdsRestored, // prova de re-hidratação (antecedente do varredor automático)
 		DSARVault:               dsarVault,
 		DSARIndex:               dsarIndex,
-		apagamentos:             apagamentos, // AOS-436: re-tentado pelo laço de manutenção da custódia
+		titularApagado:          titularApagado, // AOS-496: o apagamento chega ao registo de desfechos em memória
+		apagamentos:             apagamentos,    // AOS-436: re-tentado pelo laço de manutenção da custódia
 		ExpirationJob:           expirationJob,
 		Retention:               cfg.Retention,     // AOS-267: o loop de serviço decide o scheduler por ela
 		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio
