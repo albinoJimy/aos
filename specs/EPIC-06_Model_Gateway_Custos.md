@@ -1299,6 +1299,18 @@ runtime, à captura do turno e ao `turn.recorded`. O comportamento do loop não 
 - Parâmetros de amostragem, `tool_choice` e `max_tokens` no pedido.
 - Streaming.
 
+### Verificação em produção (2026-10-05, v0.1.46)
+
+Imagem `sha256:f9a66635…` em produção, nó em observação (banner «veredicto de conclusao (EPIC-02/AOS-493): EM OBSERVACAO»). Um pedido de plano real pela fila, com o objectivo multi-nó de sempre: `plan-e2e-v0146-1791189316`, terminal, `exit_code=0`, 26 s.
+
+- Os três `turn.recorded` do plano levam `stop_reason`: `tool_calls` no turno que pediu a
+  tool, `stop` nos dois que concluíram. É o primeiro registo do vocabulário que o provider de
+  produção envia; só estes dois valores foram observados.
+- `tools_offered` é 1 nos turnos do nó com tool e está ausente no nó sem tools.
+- `/metrics`: `aos_model_turns_total{stop_reason="stop"} 2` e `{stop_reason="tool_calls"} 1`.
+
+**Por observar:** `length`, `content_filter` e valores fora do mapa nunca ocorreram.
+
 ### Estado
 
 **IMPLEMENTADO (2026-10-04); por verificar em produção.** Revisão adversarial independente sem
