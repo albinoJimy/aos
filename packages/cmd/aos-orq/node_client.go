@@ -28,6 +28,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 )
 
 // nodeClientTimeout limita cada pedido HTTP ao nó ou ao IdP.
@@ -43,6 +45,16 @@ type estadoDoRun struct {
 	Terminated bool   `json:"terminated,omitempty"`
 	Error      string `json:"error,omitempty"`
 	FinalText  string `json:"final_text,omitempty"`
+	// OutcomeReason e Verdict são o veredicto do kernel do nó sobre a conclusão do run (AOS-494):
+	// a razão de um veredicto negativo, em vocabulário fechado, e o vector. Vazios num nó
+	// anterior, e num run sem veredicto.
+	//
+	// NÃO SÃO O CRITÉRIO. Em modo de observação o nó devolve uma razão ao lado de um run
+	// `completed` e `terminated`; quem decide se o nó do plano concluiu é o [estadoDoRun.concluiu].
+	OutcomeReason string                `json:"outcome_reason,omitempty"`
+	Verdict       *agentruntime.Verdict `json:"verdict,omitempty"`
+	// OutputUnavailable — o run concluiu e o nó já não consegue servir a saída (AOS-494).
+	OutputUnavailable bool `json:"output_unavailable,omitempty"`
 }
 
 // terminal diz se o run acabou: o nó marca `terminated` num run que concluiu nesta vida do
@@ -78,6 +90,9 @@ type pedidoDeRun struct {
 	// PlanRequest liga o run ao pedido de plano que o `consume` reclamou (AOS-439). nil num
 	// `serve` manual.
 	PlanRequest *vinculoAoPedido
+	// CompletionRequires é o contrato de conclusão do run (AOS-495): as tools de que a conclusão
+	// depende. Vazio ⇒ o campo NÃO vai no corpo — um nó anterior ao AOS-494 recusa-o com 400.
+	CompletionRequires []string
 }
 
 // vinculoAoPedido é o `plan_request` do `POST /runs` (AOS-439): o plano e a geração da
@@ -350,6 +365,9 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 	}
 	if p.PlanRequest != nil {
 		campos["plan_request"] = p.PlanRequest
+	}
+	if len(p.CompletionRequires) > 0 {
+		campos["completion_requires"] = p.CompletionRequires
 	}
 	corpo, err := json.Marshal(campos)
 	if err != nil {

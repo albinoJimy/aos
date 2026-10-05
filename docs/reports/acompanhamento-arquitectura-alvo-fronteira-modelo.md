@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (AOS-493 revisto e corrigido; AOS-491 e AOS-493 por verificar em produção).
+Última actualização: 2026-10-05 (AOS-494 e AOS-495 implementados e revistos, com os achados da revisão corrigidos; AOS-493 revisto e corrigido; nada da fase A0 verificado em produção).
 
 ## 1. Objectivo e promessa
 
@@ -46,12 +46,20 @@ fidelidade» para nós que passam o resultado sem o transformar.
 | AOS-491 | EPIC-06 | O motivo de paragem chega ao runtime, à captura e ao registo do turno | — | implementado; por verificar em produção |
 | AOS-492 | EPIC-02 | A regra de terminação vive num só sítio, partilhado por loop e replay | — | feito |
 | AOS-493 | EPIC-02 | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão | AOS-491, AOS-492 | implementado (ADR-037) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket), nó em observação por omissão; por verificar em produção |
-| AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | aberto |
-| AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | aberto |
+| AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | implementado e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket); smoke sobre JetStream por correr |
+| AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | implementado e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket, com a elegibilidade alargada); por verificar em produção |
 
 Ordem de entrega: AOS-491 e AOS-492 (sem mudança de comportamento), depois AOS-493 em modo de
 observação, depois AOS-494 e AOS-495. O nó sai antes do `aos-orq`. A imposição liga-se depois de o
 modo de observação dar a taxa de vermelhos falsos.
+
+**A elegibilidade do contrato foi alargada pela revisão adversarial do AOS-495 (2026-10-05).** A
+decisão de 2026-10-04 dava contrato a um nó não-verificador, com tools atribuídas e com uma saída
+de forma aberta declarada. O planeador só declara `outputs` quando outro nó os consome: o plano
+de um só nó, o último nó e os nós de escrita ficavam sem contrato, e o verde falso continuava
+aberto para eles. Passa a levar contrato todo o nó não-verificador com tools atribuídas, com ou
+sem `outputs`. Com o nó em `observe` isto não muda nenhum desfecho; aumenta o que se mede. O dono
+valida a classe alargada antes de ligar `enforce` (§4).
 
 ### A1 a A6
 
@@ -65,6 +73,7 @@ correspondentes estiverem tomadas.
 | 2026-10-04 | A arquitectura-alvo A0 a A6 substitui as fases F0 a F4 da análise e o desenho de IA de governação | Tomada |
 | 2026-10-04 | O contrato de conclusão é inferido das tools atribuídas ao nó, em âmbito estreito, sem mudar o schema do plano | Tomada |
 | 2026-10-04 | «Não cumprido» grava-se como `failed` com razão própria | Tomada |
+| — | Validar a classe alargada do contrato de conclusão antes de ligar `enforce`: os nós com tools e **sem** saída de forma aberta declarada (`com_contrato_sem_saida`; o alargamento veio da revisão adversarial do AOS-495, não da decisão de 2026-10-04). Lê-se em `aos_orq_consume_nos_por_contrato_total` e `aos_orq_consume_veredictos_observados_total` quantos são e quantos `enforce` fechava `failed` | Por tomar |
 | — | Autorizar a medição de até 150 pedidos ao LiteLLM de produção e pôr `drop_params: false` (condiciona A1) | Por tomar |
 | — | O que a saga de compensação faz, num run não cumprido, aos efeitos das tools que correram bem (ADR-037 §4). Hoje não há compensações registadas e o efeito fica aplicado; decide-se antes de a primeira tool registar a sua | Por tomar |
 | — | Recuperação por aviso ou por repetição do pedido (depois da medição) | Por tomar |
@@ -112,8 +121,15 @@ Não fechados por nenhuma fase até decisão em contrário:
   que tinha sido permitida. Anterior ao AOS-493; passou a decidir o desfecho.
 - O replay de um run retomado cujo turno re-executado mudou de desfecho pára em divergência de
   `prompt_hash` e não reproduz veredicto nenhum. Anterior ao AOS-493.
-- Antes de ligar a imposição a outros consumidores: o `GET /runs/{id}` de um run não cumprido
-  responde `status: "completed"` enquanto o desfecho está em memória (AOS-494).
+- Depois de um reinício do nó, a saída de um run concluído só se lê com o gate soberano de
+  leitura e com a custódia das KEK no Vault. Sem isso o `GET /runs/{id}` responde
+  `output_unavailable` (AOS-494), e o nó do plano que a esperava fica falhado. Com o Vault
+  ainda selado a resposta é 503 e o `aos-orq` volta a ler; mas um `serve` que **retome** o
+  plano nessa janela não reidrata a saída do produtor e fecha o consumidor
+  (`entrada_por_cumprir`, regra do AOS-418).
+- O `/dsar/erase` não limpa o registo de desfechos em memória do nó: o `GET /runs/{id}` continua
+  a servir o `final_text` de um titular apagado até ao reinício ou à poda. Visto na revisão do
+  AOS-494, não reproduzido, sem ticket.
 
 ## 8. Fora da arquitectura-alvo
 

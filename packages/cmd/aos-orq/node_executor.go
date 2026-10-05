@@ -33,6 +33,7 @@ import (
 	plan "github.com/aos-ref/control-plane/orchestrator/plan"
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	runlifecycle "github.com/aos-ref/control-plane/runlifecycle"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	arstate "github.com/aos-ref/kernel/agent-runtime/state"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -91,6 +92,13 @@ type configDoExecutor struct {
 	// `run.plan_origin` do run filho. Só com a reclamação de um nó que entregou a referência ao
 	// pedido (`request_seq`) — um nó anterior recusaria os campos com 400 (`DisallowUnknownFields`).
 	declararOrigem bool
+	// contratoDeConclusao (AOS-495): o nó anunciou que aceita o contrato de conclusão
+	// ([nodeClient.ContratoDeConclusao]). Falso ⇒ os nós são submetidos sem o campo, como antes.
+	contratoDeConclusao bool
+	// medicao recebe o que o executor mede sobre o contrato (AOS-495): a classe de cada nó
+	// submetido e os veredictos observados. O `consume` escreve-a no ficheiro de métricas; nil
+	// num `serve` manual, onde não se mede.
+	medicao *medicaoDoContrato
 }
 
 // bannerDoExecutor declara no arranque se o trabalho dos nós é executado — e onde.
@@ -287,6 +295,13 @@ type executorDeNos struct {
 	geracaoDoPedido int
 	// declararOrigem — ver [configDoExecutor.declararOrigem] (AOS-477).
 	declararOrigem bool
+	// contratoDeConclusao — ver [configDoExecutor.contratoDeConclusao] (AOS-495).
+	contratoDeConclusao bool
+	// medicao — ver [configDoExecutor.medicao] (AOS-495). nil fora do `consume`.
+	medicao *medicaoDoContrato
+	// causas guarda, por nó que ESTE processo fechou `failed`, a causa em vocabulário fechado
+	// (AOS-495, contrato_de_conclusao.go). Vai ao `detail` do desfecho do plano.
+	causas map[string]string
 	// emVoo são os nós cujo run foi submetido e ainda não foi recolhido.
 	emVoo map[string]struct{}
 	// sumidos marca desde quando um nó em voo responde 404, e agora dá o relógio.
@@ -345,7 +360,7 @@ func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.Pl
 		nos[n.NodeID] = n
 	}
 	e := &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
-		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now,
+		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now, causas: map[string]string{},
 		payloads: map[chaveDePayload]string{}}
 	if store != nil && planID != "" {
 		if err := e.rehidratarPayloads(ctx, store, planID); err != nil {
@@ -392,6 +407,18 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 		Tools:     nomesDasTools(e.tools[nodeID]),
 		Inputs:    entradas,
 	}
+	// AOS-495: o contrato de conclusão de um nó elegível — e só para um nó `aos` que anunciou
+	// aceitá-lo. A um nó anterior o campo não vai (dava 400). CADA nó diz aqui em que classe
+	// fica, também os que não levam contrato: um nó com tools que ficasse de fora em silêncio
+	// era a porta que a revisão adversarial encontrou aberta.
+	classe := classeDoContrato(n, p.Tools, e.contratoDeConclusao)
+	switch classe {
+	case classeComContratoSaidaAberta, classeComContratoSemSaida:
+		p.CompletionRequires = contratoDoNo(n, p.Tools)
+		fmt.Printf("  execucao: no %s contrato de conclusao: classe=%s tools=%s\n", nodeID, classe, strings.Join(p.CompletionRequires, ","))
+	default:
+		fmt.Printf("  execucao: no %s contrato de conclusao: classe=%s — NAO leva contrato\n", nodeID, classe)
+	}
 	// AOS-439: o vínculo ao pedido — de que plano, e de que geração da reclamação, este run é
 	// trabalho. Não diz quem é o submissor: o nó lê-o do seu log, e só se a reclamação viva for
 	// deste chamador.
@@ -406,6 +433,7 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	if err := e.cli.Submit(ctx, p); err != nil {
 		return err
 	}
+	e.medicao.noSubmetido(classe)
 	e.emVoo[nodeID] = struct{}{}
 	return nil
 }
@@ -496,6 +524,7 @@ func (e *executorDeNos) contratoPorCumprir(nodeID string) (plan.PayloadEdge, boo
 // `failed` e nenhum dos dois o volta a tocar — ambos só olham para nós `ready`.
 func (e *executorDeNos) fecharSemPayload(ctx context.Context, id string, c plan.PayloadEdge) error {
 	fmt.Printf("  execucao: no %s NAO corre — o contrato %s/%s ficou por cumprir\n", id, c.From, c.Output)
+	e.causas[id] = causaEntradaPorCumprir
 	if err := e.g.MarkRunning(ctx, id); err != nil {
 		return fmt.Errorf("marcar %q a correr para o fechar: %w", id, err)
 	}
@@ -816,9 +845,39 @@ func (e *executorDeNos) recolher(ctx context.Context) (int, error) {
 // `complete` veja também o veredicto que ele emitiu.
 func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRun, existe bool) error {
 	n := e.nos[nodeID]
-	destino := arstate.Failed
-	if existe && st.concluiu() {
+	destino, causa := arstate.Failed, ""
+	switch {
+	case !existe || !st.concluiu():
+		// O critério é o de sempre: `completed`, `terminated`, sem erro. A razão do veredicto do
+		// nó só entra AQUI, para nomear a causa de um run que já não concluiu (AOS-495).
+		causa = causaDoRunFilho(st, existe)
+	case produzSaidaAberta(n) && strings.TrimSpace(st.FinalText) == "":
+		// UMA SAÍDA VAZIA NÃO SE PUBLICA (AOS-495). O run concluiu, mas o nó declara uma saída
+		// de forma aberta e não há texto: publicá-lo entregava ao consumidor um `plan_input`
+		// vazio com o nó do plano `complete`. Quem falha é o PRODUTOR — a causa está nele, e é
+		// nele que o operador a deve ler. Vazio é o que o kernel conta como vazio (só espaços);
+		// não é um juízo sobre o que o texto diz.
+		//
+		// SÓ PARA QUEM DECLARA UMA SAÍDA ABERTA. Um nó sem ela — um nó de escrita, o último do
+		// plano — não tem nada para publicar e pode concluir sem texto: o que diz se fez o
+		// trabalho é o contrato de conclusão, não o tamanho da resposta.
+		causa = causaSaidaVazia
+		if st.OutputUnavailable {
+			// O nó `aos` diz que o run escreveu e que já não o consegue servir (reiniciou, e a
+			// captura não se leu do log). É outra causa, e outro sítio onde procurar.
+			causa = causaSaidaIndisponivel
+		}
+	default:
 		destino = arstate.Complete
+	}
+	if destino == arstate.Complete && st.Verdict != nil && !st.Verdict.Fulfilled {
+		// VEREDICTO OBSERVADO (AOS-495). O nó `aos` está em observação: calculou um veredicto
+		// negativo e não fechou o run. O nó do plano conclui e a saída publica-se, como antes;
+		// esta linha é o que mede quantos nós a imposição teria fechado `failed`.
+		razao := causaDoRunFilho(st, true)
+		e.medicao.veredictoObservado(razao)
+		fmt.Printf("  execucao: no %s VEREDICTO OBSERVADO %s (modo %s), vector %s — o no conclui e a saida publica-se; com o no aos em enforce ficava failed\n",
+			nodeID, razao, modoImprimivel(string(st.Verdict.Mode)), e.vectorDe(nodeID, st.Verdict))
 	}
 	var veredicto *plannerevents.VerdictRecordedPayload
 	if n.IsVerifier() && destino == arstate.Complete {
@@ -858,8 +917,23 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	if err := e.headroom.Release(ctx); err != nil {
 		return err
 	}
+	if destino == arstate.Failed {
+		e.causas[nodeID] = causa
+		fmt.Printf("  execucao: no %s %s (run %s) causa=%s vector %s\n", nodeID, destino, childRunID(e.runID, nodeID), causa, e.vectorDe(nodeID, st.Verdict))
+		return nil
+	}
 	fmt.Printf("  execucao: no %s %s (run %s)\n", nodeID, destino, childRunID(e.runID, nodeID))
 	return nil
+}
+
+// vectorDe escreve o vector do veredicto do run do nó, nomeando só as tools que o contrato
+// deste nó levou.
+func (e *executorDeNos) vectorDe(nodeID string, v *agentruntime.Verdict) string {
+	contrato := map[string]bool{}
+	for _, tool := range contratoDoNo(e.nos[nodeID], nomesDasTools(e.tools[nodeID])) {
+		contrato[tool] = true
+	}
+	return vectorDoRunFilho(v, contrato)
 }
 
 // veredictoDaSaida lê o veredicto da saída final de um run verificador pela gramática fechada.

@@ -98,6 +98,34 @@ O loop base é implementado no pacote `packages/kernel/agent-runtime` (`agentrun
 
 **Terminar não é concluir: o veredicto do kernel (AOS-493, ADR-037).** `TurnEndsRun` diz que o run não tem mais turnos. Se acabou cumprido é a função `agentruntime.ConcludeRun(resposta, completion, evidência)`, chamada pelo loop e pelo motor de replay no turno terminal. O objectivo do run pode declarar um **contrato de conclusão** (`Goal.CompletionRequires`: os nomes das tools de que a conclusão depende) e leva um **modo de aplicação** (`Goal.CompletionMode`: `off`, `observe`, `enforce`). A evidência são contadores do próprio loop (`RunEvidence`), somados das tool calls despachadas em cada turno: uma chamada é **efectiva** quando foi despachada sem recusa e sem erro de tool, a mesma condição com que o loop confirma a activity no checkpoint; uma escalada conta como recusa. O veredicto não lê o evento `tool.call.outcome`, que é opcional e fail-open. O veredicto (`Verdict`) é um vector com uma linha por tool exigida (`requested`, `effective`, `denied`, `failed`, `last`) e uma razão em vocabulário fechado, por esta precedência: `truncated` (o turno terminal parou com `length`), `contract_unmet_no_call`, `contract_unmet_after_denial`, `contract_unmet_after_tool_error` (a da primeira tool em falta, na ordem do contrato), `empty_output`. `truncated` e `empty_output` valem com ou sem contrato; `content_filter` e um motivo de paragem fora do mapa conhecido não são veredicto negativo. Com `enforce`, um veredicto negativo devolve `Result.Unfulfilled` sem erro, sem `Terminated` e sem texto final; com `observe` o desfecho é o de sempre e o veredicto vai em `Result.Verdict`; com `off` (o valor por omissão do kernel) nada é calculado. O modo e o contrato são gravados no manifesto de cada turno (`manifest.completion`, ausente com `off`) e no registo de retoma; o motor de replay lê-os do manifesto do turno terminal e refaz os contadores dos resultados capturados, pelo que chega ao mesmo desfecho sem conhecer a configuração de quem reproduz. Um turno gravado sem o campo reproduz-se concluído e sem veredicto. O teste diferencial `TestAOS493_Diferencial_OReplayChegaAoVeredictoDoLoop` corre o loop real e o motor, nos dois layouts e nos dois modos, e compara os dois um com o outro e com o valor esperado. O nó escolhe o modo dos runs novos por `AOS_COMPLETION_VERDICT` (`observe` por omissão) e sela um run não cumprido em `failed` com a razão `objective_unfulfilled`. **Contrato impossível.** Antes do primeiro turno o loop verifica que cada tool do contrato consta do tool set do run (`Goal.Tools`) e, havendo lista-branca (`Goal.AllowedTools`), está nela; se não, `Run` devolve `ErrImpossibleCompletionContract` sem gravar eventos nem interrogar o modelo. A comparação de nomes é exacta. A recusa vale em `observe` e em `enforce`; com `off` o contrato não é lido. **Sobre o que o run acabou.** `Result.LastToolOutcome` é o desfecho do último turno que despachou tool calls, de qualquer tool (`none`, `effective`, `denied`, `tool_error`; o pior do turno). É medição: não entra no veredicto nem em evento nenhum, e o nó conta-o em `aos_runs_finished_by_last_tool_outcome_total`. **O que o replay não reproduz.** Num run retomado cujo turno re-executado mudou de desfecho (uma tool que falhou e na retoma tem êxito ou é recusada) o motor pára em divergência de `prompt_hash` no turno seguinte e não devolve veredicto; num log misto vale o `manifest.completion` do turno terminal. **Um run não cumprido e a saga.** `failed` é a origem da saga de compensação e o run entra nela; sem compensações registadas (o caso de hoje) os efeitos das tools que correram bem ficam aplicados e a ausência é declarada no WORM (ADR-037 §4).
 
+**O contrato e o desfecho na API do nó (AOS-494).** O `POST /runs` aceita `completion_requires`,
+a lista de tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do
+mesmo pedido; senão o pedido é recusado com 400. O modo de aplicação não tem campo: é do nó. O
+`GET /tools` anuncia que o nó aceita o campo (`completion_contract`, com o modo), para quem
+submete o saber antes: um nó anterior recusa o campo com 400. O `GET /runs/{id}` devolve
+`outcome_reason` e `verdict`. Um run não cumprido responde `failed`, `terminated=false`, sem
+texto. Depois de um reinício do nó a resposta lê-se do log: o estado e o veredicto da última
+transição, e a saída da captura do turno terminal, com a autorização da reconstrução soberana.
+Esta leitura decifra conteúdo por-titular: tem a trava do AOS-426 (o stream é o de um run), e
+deixa um selo WORM `read:outcome` antes de abrir conteúdo — o rótulo da leitura de desfecho, o
+mesmo do ramo em memória, e não `read:reconstruct` (ADR-037 §2.8). Quando a saída não se lê de
+vez (titular apagado, captura em falta ou incompleta, nó sem o gate de leitura), a resposta diz
+`output_unavailable` em vez de um `completed` sem texto. Quando não se lê agora (custódia das KEK
+fechada ou sem resposta, Event Store que não leu), a resposta é 503, como na reconstrução
+soberana.
+
+**Quem declara o contrato num plano (AOS-495).** O `aos-orq` envia `completion_requires` com as
+tools atribuídas a cada nó do plano que não é verificador e tem tools, com ou sem `outputs`, e só
+a um nó que anuncie aceitá-lo. Um nó que responde sem o anúncio é um nó anterior, e o plano corre
+sem contrato; um anúncio que não se leu (rede, 429, 5xx, corpo ilegível) não é um «não»: o
+`serve` pára antes da posse com um desfecho transitório, e o pedido volta à fila. O nó do plano
+continua a concluir por `completed`, `terminated` e sem erro; a razão do veredicto nomeia a causa
+de um nó `failed` no `detail` do desfecho do plano, e não é o critério. Uma saída vazia não é
+publicada: o nó que a produziu fica `failed`, se declarar uma saída de forma aberta (um nó sem
+ela pode concluir sem texto). Um 503 do nó ao `GET /runs/{id}` não fecha o nó do plano: o
+estado fica por ler até à passagem seguinte. O ficheiro de métricas da drenagem conta as
+execuções sem contrato, os veredictos negativos observados e os nós por classe face ao contrato.
+
 **Garantia estrutural de no-bypass (ADR-002).** O `Runtime` detém um `*referencemonitor.Monitor`, **nunca** uma `ToolFunc`: o único caminho de execução de tools é `Monitor.Mediate`. A prova é estrutural (reflexão) + sintáctica (`archlint`). Cada resultado de tool volta ao loop **marcado untrusted** (ADR-005); um erro de tool permitida (`dec.ToolErr`) é propagado ao span (`error.type`) e ao tail, sem ser silenciosamente descartado.
 
 **Pontos de ligação (hooks, default no-op).** `StepIdentity` — derivação do `step_id` (AOS-014, idempotência por passo). `Checkpointer` — checkpoint intra-iteração por fase `assembled`/`model_called`/`turn_recorded`/`dispatched`/`verified` (AOS-015). A máquina de estados durável rica (`waiting_on_human`/`paused`) é AOS-017.

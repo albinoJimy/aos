@@ -34,6 +34,9 @@
 #   código 11       «submissor fora do mandato»  prioridade high  (AOS-439; o texto não leva o submissor)
 #   código 12       «gerações esgotadas»         prioridade high  (AOS-467; ver o log da drenagem)
 #   código 13       «nós falhados»               prioridade high  (AOS-484; o plano chegou ao fim com nós failed)
+#   código 13 com `causa=conclusao_nao_cumprida`
+#                   «nós falhados: conclusão não cumprida»  prioridade high  (AOS-495; um nó acabou
+#                   sem cumprir o contrato de conclusão, ou com a saída vazia ou indisponível)
 #   outro código    «falhou»     prioridade high
 #
 # O TÓPICO É OUTRO: ${TOPICO_FILE}, separado do dos alertas de infraestrutura (secrets/ntfy-topico),
@@ -72,8 +75,9 @@ MAX_POR_EXECUCAO="${AOS_AVISO_PLANOS_MAX:-20}"
 # reclamação (60 min desde o AOS-439); 30 dias é folga larga, e o ficheiro não cresce sem fim.
 RETER_S=2592000
 # A forma EXACTA da linha — a mesma do drenar-planos.sh; o TestAOS445ContratoDaLinhaDoAvisoComOsScripts
-# fixa as duas contra o `linhaDoAviso` do Go.
-AVISO_RE='^aviso: run=[^[:space:]]+ geracao=[0-9]{1,9} classe=terminal codigo=[0-9]{1,3}$'
+# fixa as duas contra o `linhaDoAviso` do Go. O sufixo ` causa=<valor>` é opcional (AOS-495): só o
+# valor `conclusao_nao_cumprida` muda o texto do aviso; outro valor é lido e ignorado.
+AVISO_RE='^aviso: run=[^[:space:]]+ geracao=[0-9]{1,9} classe=terminal codigo=[0-9]{1,3}( causa=[a-z_]{1,40})?$'
 DESENCONTRO_RE='^desencontro: terminais=([0-9]{1,9}) avisos=([0-9]{1,9}) em=([0-9]{1,12})$'
 
 umask 077
@@ -198,7 +202,11 @@ for (( i = 0; i < K; i++ )); do
     resto="${linha#aviso: run=}"
     run="${resto%% geracao=*}"
     resto="${resto#* geracao=}"; geracao="${resto%% *}"
+    # AOS-495: depois do código pode vir ` causa=<valor>`. O código é o que está até ao espaço.
     codigo="${linha##*codigo=}"
+    causa=""
+    if [[ "${codigo}" == *" causa="* ]]; then causa="${codigo##* causa=}"; fi
+    codigo="${codigo%% *}"
     h="$(hmac_sha256 "${CHAVE}" "${run}")"; p="${h:0:12}"
     anterior="$(ja_enviado "${h}")"
     if [[ -n "${anterior}" ]]; then
@@ -221,7 +229,17 @@ for (( i = 0; i < K; i++ )); do
       # ou perdeu-se, ou um nó ficou sem o payload do seu `consumes`. Até ao AOS-484 saía com 0 e
       # este aviso dizia «ok». Quais nós, vê-se no log da drenagem (linha `execucao:`); o texto do
       # aviso NÃO os leva (os node_id são escolhidos pelo modelo).
-      13) rotulo="nós falhados"; prio=high; tags="x"; titulo="AOS: plano terminou com nos falhados (codigo 13)" ;;
+      #
+      # AOS-495: com `causa=conclusao_nao_cumprida`, pelo menos um nó falhou por a CONCLUSÃO não se
+      # ter cumprido — o run acabou sem chamar a tool de que a saída dependia, veio cortado, ou a
+      # saída veio vazia ou já não se consegue ler. É a falha que até aqui saía com 0 e «ok». O
+      # rótulo é fixo e escolhido aqui: as contagens por causa não saem do servidor (estão no log
+      # da drenagem, linha `desfecho:`, e no GET /plans/{id}).
+      13) rotulo="nós falhados"; prio=high; tags="x"; titulo="AOS: plano terminou com nos falhados (codigo 13)"
+          if [[ "${causa}" == "conclusao_nao_cumprida" ]]; then
+            rotulo="nós falhados: conclusão não cumprida"
+            titulo="AOS: plano terminou com nos falhados, conclusao nao cumprida (codigo 13)"
+          fi ;;
       *) rotulo="falhou";   prio=high;    tags="x";                titulo="AOS: plano falhou (codigo ${codigo})" ;;
     esac
     if notificar "${titulo}" "${prio}" "${tags}" "Plano ${p}: terminal, código ${codigo} (${rotulo})."; then

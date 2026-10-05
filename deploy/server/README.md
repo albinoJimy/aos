@@ -700,8 +700,29 @@ erro de tool. O que o nó faz com esse veredicto escolhe-se no `.env`:
 - **Em `enforce`, um run não cumprido que já fez efeitos fica com eles.** Entra na saga de
   compensação como qualquer `failed`; não há compensações registadas, pelo que nada é desfeito e
   o nó grava uma declaração de ausência no WORM por cada run.
-- **O contrato ainda não chega pelo `POST /runs`** (é do AOS-494). Até lá, em `enforce` só mudam
-  de desfecho os runs cujo último turno foi cortado ou veio vazio.
+- **O contrato chega pelo `POST /runs`** (AOS-494), no campo `completion_requires`: os nomes das
+  tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do mesmo
+  pedido; senão o pedido leva 400 com a razão no corpo. O modo não se escolhe no pedido.
+- **O nó anuncia que aceita o contrato** no `GET /tools`: `"completion_contract":{"mode":"observe"}`.
+  É por aí que o `aos-orq` sabe se o pode enviar; a um nó sem esse campo não o envia.
+- **O desfecho lê-se no `GET /runs/{id}`:** `outcome_reason` e `verdict`. Um run não cumprido
+  responde `status: "failed"`, `terminated: false` e sem `final_text`. Em `observe`, um run com
+  veredicto negativo responde `completed` com o texto **e** com `outcome_reason`: a razão diz o
+  que `enforce` teria feito, não é o desfecho.
+- **Depois de um reinício do nó, a saída de um run concluído lê-se do log**, da captura do turno
+  terminal. Exige a custódia das KEK no Vault (`AOS_DSAR_VAULT_ADDR`): com a custódia em memória
+  as chaves morrem com o processo, e o nó responde `"output_unavailable": true` e sem texto. O
+  mesmo acontece a um run cujo titular foi apagado. O `aos-orq` não publica a saída de um run
+  nessas condições.
+- **Com o Vault ainda selado, ou sem resposta, o `GET /runs/{id}` de um run concluído responde
+  `503`**, e não `output_unavailable`: o conteúdo não foi dado por perdido. É o que acontece
+  quando o nó sobe antes de o `vault-unseal` acabar. O `aos-orq` lê o 503 como «estado ilegível
+  nesta passagem» e volta a perguntar; quando o Vault abre, a saída lê-se. Um 503 que não passa
+  num run antigo de um titular que foi apagado e voltou é o limite declarado no AOS-436.
+- **Esta leitura decifra, e fica selada como `read:outcome`.** Quem audita no WORM as leituras
+  que entregaram conteúdo de um titular conta `read:outcome` e `read:reconstruct`: desde o
+  AOS-494 a primeira também decifra (a saída de um run que já não está em memória). O selo é
+  anterior à decifração, pelo que uma leitura que acabou em 503 também o deixa.
 - **Recuo:** `AOS_COMPLETION_VERDICT=observe` (ou `off`) e recriar o nó.
 
 ### A forma do pedido ao modelo — `AOS_MODEL_PROJECTION` (AOS-490)
@@ -1070,7 +1091,9 @@ As séries: `aos_orq_consume_drenagens_total{resultado}`, `…_pedidos_reclamado
 `…_retomas_total` (geração > 1), `…_origem_total{origem=decomposicao|documento|reverificacao|sem_serve}`,
 `…_desfechos_total{classe,codigo}`, `…_desfechos_nao_reportados_total`,
 `…_plano_duracao_segundos_{sum,count}{classe}`, e os gauges `…_falhas_consecutivas` (o que o
-`alerta-nhi.sh` lê), `…_ultima_drenagem_timestamp_seconds` e `…_ultima_drenagem_pedidos`. **Não
+`alerta-nhi.sh` lê), `…_ultima_drenagem_timestamp_seconds` e `…_ultima_drenagem_pedidos`. Do
+contrato de conclusão (AOS-495): `…_contrato_nao_aplicado_total{motivo=no_nao_anuncia|anuncio_ilegivel}`,
+`…_veredictos_observados_total{razao}` e `…_nos_por_contrato_total{classe}`. **Não
 levam identificador nenhum** — nem `run_id` nem objectivo. O log leva ids (run, nós, plano),
 códigos, hashes e durações, e **não leva o objectivo** do pedido: o `consume` imprime só
 `objectivo_bytes=N`, porque um ficheiro em claro não é alcançado pelo `/dsar/erase`. Os `node_id`
@@ -1084,10 +1107,55 @@ a drenagem seguinte retoma-o). O `alerta-nhi.sh` avisa a partir de 3 com o títu
 fila em ALERTA», e volta a avisar se, com o alerta disparado, o **conjunto** de causas mudar (um
 NHI a caducar por cima dos planos a falhar, por exemplo).
 
+Num plano que sai com `13`, o resumo leva também `causa=<nome>:<n>,…` (AOS-495): quantos nós
+falharam por cada causa. As causas são as razões do veredicto do nó (`contract_unmet_no_call`,
+`contract_unmet_after_denial`, `contract_unmet_after_tool_error`, `truncated`, `empty_output`) e
+as do `aos-orq`: `saida_vazia` (o run concluiu sem texto), `saida_indisponivel` (o nó já não
+consegue servir a saída do run), `run_nao_concluido` (erro, orçamento ou turnos esgotados),
+`run_perdido`, `entrada_por_cumprir` (o nó não correu: faltou-lhe o payload de outro),
+`razao_desconhecida` e `nao_registada` (o nó já vinha falhado de um `serve` anterior).
+
+**O contrato de conclusão (AOS-495).** O `serve` pergunta ao nó, no `GET /tools`, se ele aceita o
+contrato, e di-lo numa linha `contrato de conclusao (AOS-495): DECLARADO` ou `NAO APLICADO`. Com
+ele declarado, cada nó do plano que não é verificador e tem tools leva as suas tools como
+contrato, **com ou sem saída declarada**. O que acontece a seguir depende do modo **do nó**
+(`AOS_COMPLETION_VERDICT`; o `aos-orq` não lê a variável):
+
+- `observe`: o plano corre como antes. Cada nó cujo run teve veredicto negativo deixa no log da
+  drenagem uma linha `execucao: no <id> VEREDICTO OBSERVADO <razão> (modo observe)`, e soma um a
+  `aos_orq_consume_veredictos_observados_total{razao}`. É a medida de quantos nós `enforce`
+  fechava `failed`.
+- `enforce`: esse nó fica `failed` e o plano sai `13` com a causa.
+
+Cada nó submetido diz a sua classe no log, `execucao: no <id> contrato de conclusao: classe=…`, e
+soma um a `aos_orq_consume_nos_por_contrato_total{classe}`:
+
+| Classe | Leva contrato | O que é |
+|---|---|---|
+| `com_contrato_saida_aberta` | sim | tem tools e declara uma saída `summary`, `record` ou `artifact`; uma saída vazia também o fecha `failed` |
+| `com_contrato_sem_saida` | sim | tem tools e não declara saída aberta: o plano de um só nó, o último nó, o nó de escrita |
+| `sem_contrato_verificador` | não | um verificador julga muitas vezes só com os `inputs` |
+| `sem_contrato_sem_tools` | não | sem tools atribuídas não há de que a conclusão dependa |
+| `sem_contrato_no_nao_anuncia` | não | era elegível, e o nó `aos` não anuncia o suporte (anterior ao AOS-494) |
+
+> ⚠️ **Antes de pôr o nó em `enforce`, olhar para `com_contrato_sem_saida`.** A classe entrou pela
+> revisão adversarial do AOS-495; a decisão inicial do dono só dava contrato a quem declarava uma
+> saída de forma aberta. Em `observe` não muda nenhum desfecho. Em `enforce`, um nó desta classe
+> com uma tool atribuída de que o objectivo não precisa fica `failed`. Quantos são, e quantos
+> tiveram veredicto negativo, está nas duas séries acima. A validação é do dono.
+
+**Um anúncio que não se leu não é um «não».** Se o `GET /tools` do anúncio falhar (rede, `429`,
+`5xx`, corpo ilegível), o plano **não corre sem contrato**: o `serve` pára antes da posse, o
+desfecho é `classe=transitorio codigo=1 … erro=anuncio_ilegivel`, o pedido volta à fila e a
+drenagem seguinte pergunta outra vez. Conta em
+`aos_orq_consume_contrato_nao_aplicado_total{motivo="anuncio_ilegivel"}`; o
+`motivo="no_nao_anuncia"` são os planos que correram sem contrato contra um nó anterior. Se o nó
+deixar de responder ao `GET /tools`, o pedido fecha no tecto de gerações (saída `12`).
+
 O mesmo resumo chega ao nó no `detail` do desfecho — **também em sucesso** —, e é o que o
 `GET /plans/{id}` passa a mostrar num plano terminado: `resumo: origem=… geracao=… nos=… duracao_s=…`,
 com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentinela
-(`nos_em_voo`, `nos_falhados`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `plano_recusado_pelo_planeador`, … ou
+(`nos_em_voo`, `nos_falhados`, `decisao_recusada`, `documento_recusado`, `grafo_diverge`, `plano_recusado_pelo_planeador`, `anuncio_ilegivel`, … ou
 `generico`) e **nunca o texto do erro**, que pode citar conteúdo escrito pelo modelo. O texto de um
 `generico` vai só para o log da drenagem, para diagnóstico.
 
@@ -1108,7 +1176,7 @@ e foi não — ou um pendente fora do prazo), o `11` como «submissor fora do ma
 «gerações esgotadas» (AOS-467: o pedido passou o tecto `AOS_PLAN_MAX_GENERATIONS` do nó e fechou sem
 planear — ou a decomposição falhou de forma transitória vezes de mais, ou o objectivo deixou de se
 poder abrir, tipicamente depois de um `/dsar/erase` do titular; o log da drenagem distingue-os, o
-aviso não; re-submeter exige um `run_id` novo). O `13` aparece como «nós falhados» (AOS-484: o plano chegou ao fim com nós `failed`; quais, vê-se na linha `execucao:` do log da drenagem — o aviso não os leva). Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
+aviso não; re-submeter exige um `run_id` novo). O `13` aparece como «nós falhados» (AOS-484: o plano chegou ao fim com nós `failed`; quais, vê-se na linha `execucao:` do log da drenagem — o aviso não os leva). Quando pelo menos um nó falhou por a conclusão não se ter cumprido — o run não chamou a tool de que a saída dependia, veio cortado, ou a saída veio vazia ou ilegível —, o aviso diz «nós falhados: conclusão não cumprida» (AOS-495). As contagens por causa não saem do servidor. Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
 
 | Peça | O que faz |
 |---|---|

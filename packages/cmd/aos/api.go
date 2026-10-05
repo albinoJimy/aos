@@ -768,6 +768,11 @@ type submitRequest struct {
 	// NÃO traz o submissor — o nó deriva-o do seu próprio log da fila, depois de verificar que o
 	// chamador tem a reclamação viva dessa geração (submissor_do_plano.go). Ausente ⇒ nada muda.
 	PlanRequest *vinculoAoPedido `json:"plan_request,omitempty"`
+	// CompletionRequires é o CONTRATO DE CONCLUSÃO do run (AOS-494, ADR-037): os nomes das tools
+	// de que a conclusão depende. Cada uma tem de constar da lista-branca `tools` do MESMO pedido
+	// ([validarContratoDeConclusao]). Ausente ⇒ run sem contrato, como sempre. O MODO de
+	// aplicação do veredicto não tem campo: é do nó (`AOS_COMPLETION_VERDICT`).
+	CompletionRequires []string `json:"completion_requires,omitempty"`
 }
 
 // planInputWire é a representação de wire de um payload consumido (AOS-414). O `digest` é
@@ -897,6 +902,12 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "tools com entrada vazia")
 			return
 		}
+	}
+	// AOS-494: o contrato de conclusão, contra a lista-branca do mesmo pedido. Recusa de pedido
+	// (400, com mensagem própria), antes de autenticar e de qualquer escrita.
+	if cerr := validarContratoDeConclusao(req.CompletionRequires, req.Tools); cerr != "" {
+		writeError(w, http.StatusBadRequest, cerr)
+		return
 	}
 	// AOS-414: os payloads do plano. Fail-closed na fronteira — um digest que não bate é um
 	// payload que não é o que o plano publicou, e um input sem contrato não tem proveniência
@@ -1088,6 +1099,9 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		AllowedTools: req.Tools,
 		// AOS-414: os payloads do plano, já verificados contra o digest declarado.
 		Inputs: inputs,
+		// AOS-494: o contrato de conclusão, já conferido com a lista-branca. O modo de aplicação
+		// fica por fixar: é o nó que o fixa no arranque do run ([Node.fixarConclusao]).
+		CompletionRequires: req.CompletionRequires,
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
 	// AOS-439: quem pediu o run, para o selo de cada decisão. Vazio num run que não é de um plano.
@@ -1243,6 +1257,23 @@ type runStateResponse struct {
 	// custa caro: o operador vê `waiting_on_human` sem pergunta e não sabe se espera ou se
 	// investiga. Ausente no caminho normal (é a leitura que degrada, não a resposta).
 	PendingUnavailable bool `json:"pending_unavailable,omitempty"`
+	// OutcomeReason é a razão de um VEREDICTO NEGATIVO do kernel (AOS-493/AOS-494), no vocabulário
+	// fechado de [agentruntime.OutcomeReason]. Ausente com veredicto positivo ou sem veredicto.
+	//
+	// NÃO É O CRITÉRIO DO DESFECHO. Em modo de observação um veredicto negativo acompanha um run
+	// `completed` e `terminated`: quem lê decide por `terminated`, e a razão diz o que o modo de
+	// imposição teria feito.
+	OutcomeReason string `json:"outcome_reason,omitempty"`
+	// Verdict é o vector do veredicto: o modo com que o run correu e, por tool do contrato, as
+	// chamadas pedidas, efectivas, negadas e falhadas. Só nomes de tool do contrato e números.
+	Verdict *agentruntime.Verdict `json:"verdict,omitempty"`
+	// OutputUnavailable declara que o run CONCLUIU e que este nó já não consegue servir a sua
+	// saída (AOS-494): o desfecho saiu da memória (reinício, poda) e a captura do turno terminal
+	// não se lê do log, DE VEZ — titular apagado, captura em falta ou incompleta, nó sem o gate
+	// de leitura. Sem este campo a resposta era um `completed` sem texto, que não se distingue de
+	// um run que não escreveu nada. Uma indisponibilidade TRANSITÓRIA (custódia fechada ou sem
+	// resposta) não chega aqui: o `GET` responde 503. Ver [saidaDuravelIndisponivelDeVez].
+	OutputUnavailable bool `json:"output_unavailable,omitempty"`
 }
 
 // pendingApprovalWire é a face de wire de uma aprovação pendente. Descreve O QUE vai
@@ -1485,6 +1516,8 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		if oc.Err != nil {
 			resp.Error = oc.Err.Error()
 		}
+		// AOS-494: a razão e o vector do veredicto do kernel, quando o run os tem.
+		veredictoNaResposta(&resp, oc.Result.Verdict)
 		// UM RUN PARADO NÃO ESTÁ COMPLETO — a outra metade do achado C.
 		//
 		// Este ramo escrevia `"completed"` fixo e, ao mesmo tempo, copiava `Paused` do
@@ -1499,6 +1532,14 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		// esse rótulo em vez de o achatar — vale para `paused` e para `timed_out`, que são
 		// os dois alvos que o disjuntor produz.
 		switch {
+		case oc.Result.Unfulfilled, errors.Is(oc.Err, agentruntime.ErrImpossibleCompletionContract):
+			// UM RUN NÃO CUMPRIDO NÃO ESTÁ COMPLETO (AOS-494; achado M7 da revisão do AOS-493).
+			// O veredicto negativo imposto, e o contrato que o kernel recusou por impossível,
+			// selam o run em `failed`. Este ramo respondia `completed` com `terminated=false`
+			// enquanto o desfecho vivia em memória, e `failed` depois de um reinício: o mesmo run,
+			// dois estados, conforme a hora a que se perguntava. Sem texto final nos dois casos —
+			// o kernel não o devolve num run que não concluiu.
+			resp.Status = string(state.Failed)
 		case oc.Result.Paused:
 			resp.Status = string(state.Paused)
 			resp.Paused = true
@@ -1539,7 +1580,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// paused (trip do breaker) — em vez do 404 de "nunca existiu". Um run em ready/running
 	// (crash ou órfão sem desfecho — AOS-253) ou inexistente cai no 404 uniforme: a leitura
 	// é um caminho de CONSULTA e um erro de leitura resolve-se pelo lado não-enumerável.
-	if st, derr := h.svc.DurableState(r.Context(), runID); derr == nil {
+	if st, veredicto, derr := h.svc.DurableOutcome(r.Context(), runID); derr == nil {
 		var resp runStateResponse
 		switch st {
 		case state.Complete:
@@ -1572,7 +1613,39 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			resp = runStateResponse{RunID: runID, Status: string(state.Compensating)}
 		}
 		if resp.Status != "" {
+			// AOS-426, no ramo que DECIFRA (AOS-494): o stream de onde saiu o `complete` tem de
+			// ser o de um run com este id. A mesma trava, e pela mesma ordem, da reconstrução
+			// soberana: antes do selo e antes de abrir conteúdo. Um stream que não se leu é
+			// transitório — 503, sem selo e sem desfecho.
+			if st == state.Complete {
+				deRun, serr := h.streamDuravelEDeRun(r.Context(), runID)
+				if serr != nil {
+					h.logf("GET /runs/%q (AOS-494): o stream do run nao se leu antes de decifrar a saida — responde 503: %v", runID, serr)
+					writeError(w, http.StatusServiceUnavailable, "indisponivel")
+					return
+				}
+				if !deRun {
+					writeError(w, http.StatusNotFound, "not found")
+					return
+				}
+			}
+			// O SELO É DA LEITURA DE DESFECHO (`read:outcome`), nos dois ramos. O ramo em memória
+			// entrega este mesmo texto ao mesmo leitor sob este rótulo; o durável entrega-o depois
+			// de um reinício, e para isso decifra a captura do turno terminal. A autorização é a
+			// mesma da reconstrução soberana (credencial, board→região, residência do run) — o
+			// rótulo não é o que autoriza. O que ele diz, e o que não diz, está no ADR-037 §2.8.
 			if !h.sealSensitiveRead(w, r, reader, residency, runID, capReadOutcome) {
+				return
+			}
+			// AOS-494: o MESMO desfecho que o ramo em memória. A razão e o vector saem da
+			// transição que deu o estado; a saída de um run concluído lê-se da captura do turno
+			// terminal, e só depois do selo acima. Um run que não concluiu não tem texto.
+			veredictoNaResposta(&resp, veredicto)
+			if st == state.Complete && !h.desfechoDuravelNaResposta(r, reader, &resp) {
+				// A saída está indisponível NESTE MOMENTO (custódia fechada ou sem resposta, log
+				// que não leu). Responder `output_unavailable` era dar por perdido o que está
+				// inteiro, e quem lê fecha o nó do plano de vez. 503, como o `/reconstruct`.
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
 				return
 			}
 			writeJSON(w, http.StatusOK, resp)
