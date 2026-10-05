@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (saída por referência: fase A0.5 aberta, com os tickets AOS-497 a AOS-501 e as decisões do dono sobre o desenho).
+Última actualização: 2026-10-05 (saída por referência: AOS-497 implementado e revisto — o kernel designa e sela a origem da saída, às escuras; AOS-498 a AOS-501 abertos).
 
 ## 1. Objectivo e promessa
 
@@ -26,7 +26,7 @@ Uma fase só passa a **provada** quando o critério de prova está medido e regi
 | Fase | Conteúdo | Critério de prova | Depende de | Estado |
 |---|---|---|---|---|
 | **A0** | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão; o `aos-orq` trata «não cumprido» como nó falhado | Zero verdes falsos em pelo menos 150 runs com tools na oferta | — | **em produção por verificar** (v0.1.46, imposição ligada a 2026-10-05; falta o critério de prova) |
-| **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **em curso** (tickets abertos a 2026-10-05) |
+| **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **em curso** (AOS-497 implementado e revisto a 2026-10-05, sem efeito enquanto nenhum chamador declarar a origem; AOS-498 a AOS-501 abertos) |
 | **A1** | Recuperação do run (aviso ou repetição do pedido) e rota sob governação (nome real do modelo, proxy sem descartar parâmetros, modelo servido comparado por turno) | «Não cumprido» abaixo de 2%; uma troca de modelo por baixo é detectada | A0; medição de até 150 pedidos | por começar |
 | **A2** | Estado opaco do provider por turno (raciocínio, assinaturas, identificadores), com sondas de protocolo deterministas | Duas famílias de modelos completam runs com tools | A0; escolha da segunda família | por começar |
 | **A3** | Entrada automática: arnês de qualificação, perfil do modelo como artefacto do registo, mais de um modelo por nó, canary, disjuntor | O terceiro modelo entra com zero PRs e uma assinatura em menos de uma hora; um modelo mau é recusado sozinho | A1, A2 | por começar |
@@ -66,7 +66,7 @@ valida a classe alargada antes de ligar `enforce` (§4).
 
 | Ticket | Epic | Título curto | Depende de | Estado |
 |---|---|---|---|---|
-| AOS-497 | EPIC-02 | O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada. Escreve o ADR novo e as emendas ao ADR-037, ao ADR-027 e ao ADR-022 | AOS-493 | aberto |
+| AOS-497 | EPIC-02 | O kernel designa e sela a origem da saída de um run: o resultado da chamada efectiva da tool declarada. Escreve o ADR-038 e as emendas ao ADR-037; as do ADR-027 e do ADR-022 ficam para os tickets que mudam o que eles descrevem (AOS-501 e AOS-500) | AOS-493 | implementado (ADR-038) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket: a regra conta as chamadas pedidas, o run com entradas tem o estado `inapplicable`, a forma do nome valida-se no arranque, a fonte dos bytes é o step-ledger); invisível até haver chamador; por verificar em produção |
 | AOS-498 | EPIC-19 | O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}` e anuncia-o no `GET /tools` | AOS-497, AOS-494; relaciona AOS-496 | aberto |
 | AOS-499 | EPIC-19 | O `aos-orq` mede a saída por referência sem mudar a entrega | AOS-498 | aberto |
 | AOS-500 | EPIC-19 | O plano declara a origem de uma saída: `outputs[].from_tool`, schema 1.3.0 | — | aberto |

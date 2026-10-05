@@ -5,8 +5,10 @@
 - **Deciders:** Dono do produto (decisões de 2026-10-05: a origem declara-se e não se infere; sem
   origem designável o run não cumpre e nunca se entrega o texto do modelo; entrega-se o resultado
   tal como a tool o devolveu; os bytes passam pelo `aos-orq`; o texto final do produtor não é
-  publicado; o vínculo da declaração é por run) · executor de AOS-497 (implementação da §2.2 à
-  §2.5)
+  publicado; o vínculo da declaração é por run; depois da revisão adversarial de AOS-497, na
+  mesma data: contam-se as chamadas pedidas e não as efectivas, o run com entradas tem estado
+  próprio, a forma do nome valida-se no arranque, e a fonte dos bytes é o step-ledger — §8) ·
+  executor de AOS-497 (implementação da §2.2 à §2.5)
 - **Tickets:** AOS-497 (o kernel designa e sela a origem). As partes que ficam para AOS-498,
   AOS-499, AOS-500 e AOS-501 estão marcadas em cada secção e resumidas na §6.
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
@@ -61,14 +63,28 @@ com um vínculo desconhecido, ou um vínculo sem tool, também recusa o arranque
 (`ErrBadOutputSourceBinding`). Vale nos dois vínculos; com o veredicto desligado (`off`) a
 declaração não é lida, como o contrato.
 
+**A forma do nome valida-se no arranque, com a função do selo.** O nome da tool de origem vai
+para um evento em claro (§2.3), e a máquina de estados só aceita uma âncora cujo nome tenha até
+128 bytes e não traga espaços nem caracteres de controlo. A mesma função responde nas duas
+pontas: um nome que o selo recusaria recusa o arranque (`ErrImpossibleOutputSource`, sem repetir
+o nome na mensagem), mesmo que a tool exista no tool set com esse nome. Sem isto, um run com um
+nome assim corria, terminava em memória e a transição terminal era recusada — ficava em
+`running` no log, indistinguível de um crash. Uma âncora que um run produza é sempre selável.
+
+O nó sela um run recusado no arranque em `failed`, e o `GET /runs/{id}` responde `failed` com
+`terminated=false` enquanto o desfecho vive em memória, como para o contrato impossível.
+
 ### 2.2 A regra de designação
 
 Qual chamada é «a» origem decide-se no kernel, sem ler texto nem conteúdo:
 
-> A origem é a chamada **efectiva** (despachada, sem recusa e sem erro de tool) da tool
-> declarada, feita no **primeiro turno do run que despachou tool calls**, e só se o contexto
-> desse turno era **trusted**. Exactamente uma dá `designated`. Nenhuma dá `missing`. Mais de
-> uma dá `ambiguous`.
+> No **primeiro turno do run que despachou tool calls**, e só se o contexto desse turno era
+> **trusted**: se a tool declarada foi **pedida exactamente uma vez** e essa chamada foi
+> **efectiva** (despachada, sem recusa e sem erro de tool), o estado é `designated`. Se foi
+> pedida **mais de uma vez** nesse turno, qualquer que seja o desfecho de cada chamada, é
+> `ambiguous`. Se foi pedida uma vez e a chamada não foi efectiva, se não foi pedida, ou se
+> nenhum turno despachou tool calls, é `missing`. Se o contexto desse turno já era untrusted, é
+> `inapplicable`.
 
 - **Contexto trusted** é o rótulo de autoridade do ADR-034, lido a seguir à montagem do prompt
   do turno: só o prefixo, o objectivo, uma correcção de steer ou um aviso do runtime entraram no
@@ -78,18 +94,34 @@ Qual chamada é «a» origem decide-se no kernel, sem ler texto nem conteúdo:
 - **O primeiro turno que despachou tool calls** é o primeiro em que o loop despachou pelo menos
   uma chamada, de qualquer tool e com qualquer desfecho. As duas condições são verificadas em
   separado.
-- **Várias chamadas no turno.** As de outras tools não contam. Duas efectivas da tool declarada
+- **Várias chamadas no turno.** As de outras tools não contam. Duas chamadas da tool declarada
   dão `ambiguous`: não se escolhe nem se concatena, porque seria o runtime a compor conteúdo e o
-  digest deixava de ser o de um resultado gravado. Uma recusada e uma efectiva dão `designated`:
-  há exactamente uma efectiva.
+  digest deixava de ser o de um resultado gravado.
+- **Contam-se as chamadas pedidas, não as efectivas.** Uma recusada e uma efectiva, ou uma
+  falhada e uma efectiva, dão `ambiguous`. As duas foram pedidas pelo modelo em contexto trusted,
+  pelo que um atacante não escolhe os argumentos de nenhuma; mas se só contassem as efectivas,
+  quem controla a falha de uma chamada (um servidor remoto que devolve erro, um recurso que a
+  política nega) convertia um turno ambíguo em `designated` e escolhia qual dos dois resultados
+  atravessa a aresta, com selo. A regra não deixa o desfecho de uma chamada decidir qual é a
+  origem.
 - **Um run com `plan_input` ou memória** tem o contexto untrusted desde o turno 1 e nunca tem
-  origem. O validador do plano recusará `from_tool` num nó com `consumes` (AOS-500); o kernel é
-  a segunda linha.
+  origem. Como um turno sem tool calls termina o run, antes do primeiro turno com tools não há
+  resultado de tool no tail: o que tornou o contexto untrusted foram as entradas do run. O estado
+  é `inapplicable` — um defeito de quem compôs o run (um consumidor declarado como produtor), que
+  a medição não confunde com «o modelo não chamou» (`missing`). O kernel **não recusa o
+  arranque** por isto: em «só medição» mudaria o desfecho de um run que hoje conclui. O validador
+  do plano recusará `from_tool` num nó com `consumes` (AOS-500); o kernel é a segunda linha. Um
+  run com entradas em que nenhum turno despachou tools fica `missing`: não houve turno de
+  designação.
 - **Uma chamada servida pelo step-ledger** (um resultado memorizado, numa retoma) conta como
   qualquer outra, uma vez, com os bytes memorizados.
 
 A designação é a mesma função no loop e no motor de replay, alimentada das mesmas entradas que o
-tail e a captura do turno. **Implementado em AOS-497.**
+tail e a captura do turno. Os factos — quantas vezes a tool foi pedida, o desfecho da chamada e
+o digest dos seus bytes — tiram-se **no momento em que o turno é observado**, e não no turno
+terminal: os bytes do resultado são partilhados com o tail e a captura, e nada do que lhes
+aconteça depois muda a âncora. Num run sem origem declarada nenhum resultado é lido.
+**Implementado em AOS-497.**
 
 ### 2.3 A âncora
 
@@ -100,15 +132,32 @@ veredicto, a **âncora** (`output_source`):
 |---|---|
 | `tool` | A tool declarada |
 | `binding` | O vínculo da declaração (§2.4) |
-| `state` | `designated`, `missing` ou `ambiguous` |
-| `step_id` | O passo da chamada designada: o `step_id` do seu evento de mediação. Só em `designated` |
+| `state` | `designated`, `missing`, `ambiguous` ou `inapplicable` |
+| `step_id` | O passo da chamada designada: o `step_id` dos seus eventos de mediação. Só em `designated` |
 | `digest` | `sha256:<hex>` dos bytes do resultado. Só em `designated` |
 | `bytes` | O tamanho do resultado. Só em `designated`; ausente quer dizer zero |
 
-O digest calcula-se sobre os bytes do resultado **tal como a tool os devolveu** ao despacho — os
-mesmos de que saem o segmento `tool_result` do tail e a captura do turno —, sem rótulos,
-delimitadores nem escape. É calculado por quem executou a tool, e não por quem transporta. A
-âncora não leva conteúdo do titular.
+O digest calcula-se sobre os bytes do resultado **tal como o despacho os devolveu nesta vida do
+run**, sem rótulos, delimitadores nem escape. É calculado por quem executou a tool, e não por
+quem transporta. A âncora não leva conteúdo do titular.
+
+**A fonte dos bytes.** Na via durável, o digest selado é o `result_hash` do `step.ledger.applied`
+do passo designado (`"sha256:" + result_hash`, chave `<run_id>:<step_id>`): o step-ledger grava o
+resultado de cada chamada com êxito e é dele que uma retoma o volta a servir. A captura do turno
+só contém esses bytes quando o turno designado **não mudou de desfecho entre vidas**. Em dois
+casos muda, e a captura fica a da primeira vida (a re-captura do turno é um duplicado):
+
+- a chamada **escala** na primeira vida e executa depois da aprovação, numa retoma — a captura
+  tem a escalada, sem resultado;
+- a chamada **falha** na primeira vida e tem êxito depois de uma retoma — a captura tem a falha.
+
+Nos dois a âncora é `designated` e o digest confere com o step-ledger, não com a captura. Por
+isso **quem serve os bytes (AOS-498) lê-os de onde o digest confere — o step-ledger, na via
+durável — e confere sempre `sha256(bytes)` contra o digest selado; se não conferir, não serve.**
+Reconstruí-los da captura falhava a conferência, para sempre, em todo o nó cuja leitura precise
+de aprovação humana. A igualdade entre o `result_hash` e o digest selado está fixada por teste
+nos três cenários (uma vida; escalada e aprovação; falha e retoma). Fora da via durável não há
+step-ledger: um nó sem execução durável não tem de onde servir os bytes de um run retomado.
 
 A âncora existe em qualquer modo de aplicação do veredicto excepto `off`, nos dois vínculos, e
 com qualquer estado. A máquina de estados só a aceita numa transição que termina o run e na
@@ -121,11 +170,22 @@ campos da chamada só em `designated`); de outro modo rejeita a transição sem 
 A declaração leva um **vínculo**, dado pelo chamador e fixado por run
 (`Goal.OutputSourceBinding`):
 
-- `measure` (só medição): a âncora calcula-se e sela-se. O veredicto e o desfecho do run são
-  exactamente os de um run sem declaração, qualquer que seja o modo do nó. O estado da âncora
-  conta-se em `aos_runs_output_source_total{binding,state}`.
-- `binding` (vinculativa): com o nó em imposição (`enforce`), uma origem em falta ou ambígua é
-  veredicto negativo e o run termina `failed`. Com o nó em observação comporta-se como `measure`.
+- `measure` (só medição): a âncora calcula-se e sela-se. A designação não entra no veredicto: o
+  veredicto e o desfecho de um run **que arranca** são os de um run sem declaração, qualquer que
+  seja o modo do nó. O estado da âncora conta-se em
+  `aos_runs_output_source_total{binding,state}`.
+- `binding` (vinculativa): com o nó em imposição (`enforce`), uma origem que não ficou designada
+  é veredicto negativo e o run termina `failed`. Com o nó em observação comporta-se como
+  `measure`.
+
+**«Só medição» não é estritamente neutra.** Uma declaração impossível ou mal formada (§2.1: tool
+fora do tool set ou da lista-branca, nome que o selo recusa, vínculo fora do vocabulário) recusa
+o arranque **nos dois vínculos** — um run que sem a declaração teria corrido não corre. É por
+desenho: medir sobre uma tool que o run não pode chamar contava um defeito de composição como se
+fosse do modelo. A consequência é para quem declara: o `aos-orq`, ao medir (AOS-499), tem de
+garantir que a tool declarada está no tool set do nó e na lista-branca do pedido. Um run recusado
+assim não conta em `aos_runs_output_source_total` (não tem âncora); vê-se em
+`aos_runs_finished_total{outcome="failed"}` e no erro do run.
 
 O vínculo existe porque o modo de aplicação é do nó (ADR-037 §2.6) e a produção está em
 imposição desde 2026-10-05: se as razões novas seguissem só o modo do nó, medir a designação em
@@ -138,7 +198,7 @@ O vocabulário do veredicto (ADR-037 §2.4) ganha duas razões, e a precedência
 |---|---|---|
 | 1 | `truncated` | O turno terminal parou com o motivo `length` |
 | 2 | `contract_unmet_no_call`, `contract_unmet_after_denial`, `contract_unmet_after_tool_error` | O contrato de conclusão não está cumprido |
-| 3 | `output_source_missing`, `output_source_ambiguous` | Declaração vinculativa em imposição, e a origem não é designável |
+| 3 | `output_source_ambiguous`, `output_source_missing` | Declaração vinculativa em imposição, e a origem não ficou designada: `ambiguous` dá a primeira; `missing` e `inapplicable` dão a segunda (não há terceira razão — a âncora distingue-os) |
 | 4 | `empty_output` | Declaração vinculativa em imposição: a origem designada tem zero bytes. Nos outros casos: o turno terminal não trouxe texto |
 
 O contrato vem antes da origem porque diz porquê não há chamada efectiva (nunca pedida,
@@ -158,14 +218,17 @@ e o mesmo digest. O `prompt_hash` não muda com a declaração: o modelo não é
 
 Numa retoma (por aprovação ou depois de um crash) o run é re-hospedado desde o turno 1 e a
 designação recalcula-se. Um resultado com êxito está memorizado no step-ledger e reproduz os
-mesmos bytes; a tool não volta a correr e o digest selado é o da chamada da primeira vida.
+mesmos bytes; a tool não volta a correr e o digest selado é o da chamada da primeira vida. Uma
+chamada que na vida anterior escalou ou falhou volta a ser despachada, e o digest selado é o dos
+bytes desta vida — os do step-ledger (§2.3, «A fonte dos bytes»).
 
 Todos os campos novos são omitidos quando vazios: um run sem origem declarada grava os bytes de
 antes, e um log gravado antes desta decisão reproduz-se sem âncora. **Implementado em AOS-497.**
 
 ### 2.6 O transporte: os bytes passam pelo `aos-orq`, com a âncora no kernel
 
-O `GET /runs/{id}` de um run que declarou a origem devolve a âncora e os bytes designados; o
+O `GET /runs/{id}` de um run que declarou a origem devolve a âncora e os bytes designados, lidos
+do step-ledger e conferidos contra o digest selado antes de saírem (§2.3, «A fonte dos bytes»); o
 `aos-orq` confere `sha256(bytes)` contra o digest selado, publica-os como payload do nó e
 entrega-os ao consumidor pelo canal `inputs` que já existe. O evento `plan.payload_published`
 ganha a origem (`source`: tipo, tool e passo), derivada do contrato aprovado, e o seu digest
@@ -240,8 +303,9 @@ não cai para o texto. **Fica para AOS-501.**
 - Para um nó de passagem directa, o resíduo «evidência não é fidelidade» do ADR-037 passa a ser
   uma igualdade de digests — quando a entrega existir (AOS-501). Com AOS-497 existe a âncora;
   nada é ainda entregue por ela.
-- O `/metrics` do nó ganha `aos_runs_output_source_total{binding,state}` (6 séries) e duas
-  razões em `aos_runs_finished_total`. As razões novas chegam também aos contadores do `aos-orq`
+- O `/metrics` do nó ganha `aos_runs_output_source_total{binding,state}` (8 séries: 2 vínculos ×
+  4 estados; só conta runs cujo desfecho ficou selado) e duas razões em
+  `aos_runs_finished_total`. As razões novas chegam também aos contadores do `aos-orq`
   que enumeram o vocabulário do kernel; um `aos-orq` anterior lê uma razão que não conhece como
   `razao_desconhecida`.
 - Mais um digest de conteúdo do titular em claro, na transição terminal do run. O step-ledger já
@@ -251,8 +315,9 @@ não cai para o texto. **Fica para AOS-501.**
   regra do contexto trusted garante.
 - `Machine.RebuildOutcome` devolve a âncora com o veredicto, do mesmo evento.
 - Com a declaração vinculativa em imposição haverá mais runs `failed`, com causa nomeada onde
-  hoje há um verde (por vezes falso): duas leituras no mesmo turno, a tool chamada só depois de
-  outra, um nó com `consumes`. A medição com `measure` conta-os antes de se impor.
+  hoje há um verde (por vezes falso): duas leituras no mesmo turno (mesmo que uma falhe), a tool
+  chamada só depois de outra, um nó com `consumes`. A medição com `measure` conta-os antes de se
+  impor, e separa o último (`inapplicable`) dos que são do modelo.
 
 ## 5. Resíduos e limites declarados
 
@@ -269,6 +334,23 @@ não cai para o texto. **Fica para AOS-501.**
 - **Nós que transformam** (resumir, classificar, extrair). O modelo continua no caminho. Só um
   verificador com a fonte autêntica o fecha, e a saída por referência é o que lhe dá a fonte.
 - **Agregações** (duas leituras num nó) são `ambiguous`.
+- **Uma nova tentativa no mesmo turno é `ambiguous`.** Um modelo que peça duas vezes a mesma
+  leitura no primeiro turno, com uma a falhar, deixa de ter origem. É o preço de o desfecho de
+  uma chamada não escolher a origem (§2.2); mede-se antes de impor.
+- **Um envelope de sandbox com código de saída diferente de zero é uma chamada efectiva.** Para o
+  runtime, «efectiva» é despachada, sem recusa e sem erro de tool; uma tool com sandbox que
+  termina com `exit_code` diferente de zero devolve o envelope sem erro de tool. Essa chamada é
+  designável e o envelope — com o `stderr` e o código — é o que fica selado e o que seria
+  entregue. Decidir se um envelope de falha se entrega é do AOS-501.
+- **Bytes designados e texto final vazio.** Com `binding` em imposição, a saída vazia avalia os
+  bytes designados: um run com origem designada, bytes presentes e texto final vazio é
+  **cumprido**, com `FinalText` vazio. O `aos-orq` de hoje fecha `failed` um nó de saída aberta
+  com texto vazio; o tratamento do lado do `aos-orq` é do AOS-501.
+- **O `step_id` da âncora identifica a chamada, não um evento.** Num run retomado o mesmo passo
+  pode ter mais de um evento de mediação (uma escalada e, depois da aprovação, a mediação que
+  executou). Quem audita lê o último permit desse passo.
+- **A captura não tem os bytes de um turno designado que mudou de desfecho entre vidas** (§2.3,
+  «A fonte dos bytes»). Tem-nos o step-ledger, e só na via durável.
 - **Resultados acima do tecto ou que não são texto** falham; fecham-se com a alternativa
   rejeitada agora.
 - **A separação de planos (DEF-806) não fecha.** O conteúdo untrusted continua em linha no tail
@@ -280,10 +362,15 @@ não cai para o texto. **Fica para AOS-501.**
   existe com o veredicto desligado. Um nó em `off` não serve saídas por referência.
 - **Em observação, uma declaração vinculativa não deixa razão no veredicto.** O que a imposição
   teria feito lê-se no estado da âncora, não em `outcome_reason`.
-- **A captura em modo de referência não reproduz o digest.** Sem cifra por-titular e com a
-  guarda de segredos ligada, a captura guarda só o hash do resultado e o replay devolve um
-  marcador; a reprodução já divergia aí no turno seguinte. Não é o caminho de produção, que sela
-  por-titular.
+- **A captura em modo de referência não reproduz o digest, e nem sempre o diz.** Sem cifra
+  por-titular e com a guarda de segredos ligada, a captura guarda só o hash do resultado e o
+  replay devolve um marcador em vez dos bytes. Quando há um turno a seguir ao designado, a
+  reprodução diverge nele (o `prompt_hash` não bate) e não chega a dar âncora. Quando o turno
+  designado é também o **terminal** (uma resposta final que ainda traz tool calls), não há turno
+  seguinte onde divergir: o replay sai fiel, sem divergência visível, com uma âncora de digest e
+  tamanho **diferentes** dos selados (os do marcador). Não é o caminho de produção: o nó sela
+  por-titular, e o gateway só dá uma resposta final sem tool calls. Quem comparar a âncora de um
+  replay com a selada tem de saber em que modo a captura foi feita.
 - **Um run retomado cujo turno re-executado mudou de desfecho** tem a âncora da vida que
   terminou, e o replay pára em divergência sem a reproduzir (a classe do ADR-037 §5).
 
@@ -310,3 +397,21 @@ não cai para o texto. **Fica para AOS-501.**
 - **ADR-027 §2.4** (a origem do payload publicado) é emendado com AOS-501, e **ADR-022 §2.3** (a
   origem declarada de um output) com AOS-500. AOS-497 não muda o que esses dois descrevem: nenhum
   payload é ainda publicado por referência e o plano ainda não tem o campo.
+
+## 8. O que a revisão adversarial de AOS-497 mudou
+
+A revisão independente de 2026-10-05, feita antes de existir qualquer chamador e qualquer âncora
+selada, não encontrou bloqueantes e levou a estas alterações, decididas pelo dono do produto no
+mesmo dia. Mudar a regra depois de haver âncoras seladas mudaria o significado do selo; por isso
+entraram com AOS-497.
+
+| Achado | O que mudou | Secção |
+|---|---|---|
+| Um nome de tool que o tool set aceita e o selo recusa deixava o run sem transição terminal | A forma do nome valida-se no arranque, com a função do selo | §2.1 |
+| O `GET /runs/{id}` em memória respondia `completed` a um run recusado no arranque | Responde `failed`, como o log durável | §2.1 |
+| «Exactamente uma efectiva» deixava quem controla a falha de uma chamada escolher a origem | Contam-se as chamadas pedidas: mais de uma é `ambiguous` | §2.2 |
+| Um run com entradas contava como `missing`, igual a «o modelo não chamou» | Estado próprio, `inapplicable`; fecha com `output_source_missing` | §2.2, §2.4 |
+| Num run retomado com mudança de desfecho, os bytes designados não estão na captura | A fonte dos bytes é o step-ledger; quem serve confere sempre | §2.3, §2.6 |
+| O digest calculava-se no turno terminal, sobre bytes partilhados | Calcula-se quando o turno é observado | §2.2 |
+| «Só medição» descrita como neutra | Declarado: uma declaração impossível ou mal formada recusa o arranque nos dois vínculos | §2.4 |
+| Limites em falta | Captura de referência com turno terminal designado; envelope de sandbox com saída diferente de zero; `step_id` num run retomado; texto final vazio com bytes designados | §5 |

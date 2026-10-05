@@ -93,8 +93,8 @@ existem num run que declarou a origem da saída como **vinculativa** e com o nó
 
 | `outcome_reason` | Quando |
 |---|---|
-| `output_source_missing` | Nenhuma chamada é designável como origem da saída |
-| `output_source_ambiguous` | Mais de uma chamada podia ser a origem |
+| `output_source_missing` | Nenhuma chamada é designável como origem da saída: a âncora está em `missing` ou em `inapplicable` (ADR-038 §2.2) |
+| `output_source_ambiguous` | A tool declarada foi pedida mais de uma vez no turno da designação |
 
 Na precedência entram **depois** das três razões do contrato e **antes** de `empty_output`:
 `truncated`, as do contrato, as da origem, `empty_output`. O contrato vem primeiro porque diz
