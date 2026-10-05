@@ -1,0 +1,273 @@
+package main
+
+// O CONTRATO DE CONCLUSÃO, DO LADO DO `aos-orq` (AOS-495).
+//
+// Para o `aos-orq`, um nó do plano estava concluído quando o run filho respondia `completed`,
+// `terminated` e sem erro. Nada perguntava o que o run fez. Medido em produção a 2026-10-04: em
+// dois de dez planos o nó de leitura respondeu num turno, com a chamada à tool escrita como
+// texto; o texto foi publicado como saída do nó e os planos saíram com 0.
+//
+// O kernel do nó passou a julgar o desfecho de um run contra um contrato de conclusão (AOS-493,
+// ADR-037), e o nó passou a aceitar o contrato e a devolver a razão (AOS-494). Este ficheiro é
+// o que o `aos-orq` faz com isso:
+//
+//   - DECLARA o contrato dos nós elegíveis, e só a um nó que anuncie aceitá-lo;
+//   - regista a CAUSA de cada nó que fecha `failed`, num vocabulário fechado, e leva-a ao
+//     `detail` do desfecho do plano;
+//   - nunca publica uma saída VAZIA.
+//
+// O QUE NÃO MUDA, DE PROPÓSITO. O nó do plano conclui pela regra de sempre — `completed`,
+// `terminated`, sem erro ([estadoDoRun.concluiu]). A razão do veredicto é informação: em modo de
+// observação o nó devolve-a ao lado de um run concluído, e o nó do plano conclui. E o `aos-orq`
+// não olha para a forma do texto: quem julga se o run cumpriu é o kernel do nó, pelos seus
+// contadores.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+
+	plan "github.com/aos-ref/control-plane/orchestrator/plan"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+)
+
+// Causas de um nó do plano `failed`, como o `aos-orq` as nomeia. Com as razões do veredicto do
+// kernel ([agentruntime.OutcomeReasons]) formam o VOCABULÁRIO FECHADO do `causa=` do desfecho:
+// o `detail` fica em claro no nó, e nunca leva texto de terceiros.
+const (
+	// causaSaidaVazia — o run concluiu e o nó declara uma saída de forma aberta, mas o texto
+	// final veio vazio. Não se publica; quem falha é o produtor.
+	causaSaidaVazia = "saida_vazia"
+	// causaSaidaIndisponivel — o run concluiu e o nó `aos` já não consegue servir a saída
+	// (`output_unavailable`): o desfecho saiu da memória dele e a captura não se leu do log.
+	causaSaidaIndisponivel = "saida_indisponivel"
+	// causaRunNaoConcluido — o run filho acabou sem concluir e sem razão de veredicto: erro de
+	// loop, orçamento ou turnos esgotados, run morto.
+	causaRunNaoConcluido = "run_nao_concluido"
+	// causaRunPerdido — o nó `aos` deixou de conhecer o run filho (404 persistente).
+	causaRunPerdido = "run_perdido"
+	// causaEntradaPorCumprir — o nó não correu: um contrato do seu `consumes` ficou por cumprir.
+	causaEntradaPorCumprir = "entrada_por_cumprir"
+	// causaRazaoDesconhecida — o nó `aos` devolveu uma razão fora do vocabulário do kernel que
+	// este binário conhece. O texto dela não é repetido.
+	causaRazaoDesconhecida = "razao_desconhecida"
+	// causaNaoRegistada — o nó do plano já vinha `failed` do log: fechou-o um `serve` anterior,
+	// e a causa vivia na memória dele.
+	causaNaoRegistada = "nao_registada"
+)
+
+// causaConclusaoNaoCumprida é o valor do sufixo `causa=` da linha `aviso:` (AOS-495): pelo
+// menos um nó do plano falhou por a CONCLUSÃO não se ter cumprido — veredicto negativo do
+// kernel, ou saída vazia ou indisponível. É um valor fixo, e o único: as contagens por causa
+// não saem do servidor.
+const causaConclusaoNaoCumprida = "conclusao_nao_cumprida"
+
+// causaDaConclusao diz se a causa é da classe «a conclusão não se cumpriu».
+func causaDaConclusao(causa string) bool {
+	switch causa {
+	case causaSaidaVazia, causaSaidaIndisponivel:
+		return true
+	}
+	for _, r := range agentruntime.OutcomeReasons() {
+		if causa == string(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// causaDoRunFilho classifica um run filho que NÃO concluiu. A razão do veredicto do nó só
+// passa se for do vocabulário do kernel; tudo o resto é um nome deste ficheiro.
+func causaDoRunFilho(st estadoDoRun, existe bool) string {
+	if !existe {
+		return causaRunPerdido
+	}
+	if st.OutcomeReason == "" {
+		return causaRunNaoConcluido
+	}
+	razao := agentruntime.OutcomeReason(st.OutcomeReason)
+	if razao == agentruntime.OutcomeFulfilled || !razao.NoVocabulario() {
+		return causaRazaoDesconhecida
+	}
+	return st.OutcomeReason
+}
+
+// contratoDoNo devolve o contrato de conclusão de um nó ELEGÍVEL (AOS-495), ou nil. Âmbito estreito,
+// decidido pelo dono a 2026-10-04 sem mudar o schema do plano:
+//
+//   - não é verificador: um verificador julga muitas vezes só com os `inputs`;
+//   - tem tools atribuídas no plano materializado (`tools`, os nomes da lista-branca do run);
+//   - declara pelo menos uma saída de forma ABERTA (`summary`, `record` ou `artifact`): diz
+//     que produz conteúdo, e tem uma tool para o obter.
+//
+// O contrato é a lista inteira das tools atribuídas: o plano não diz qual delas é o trabalho do
+// nó. Uma tool atribuída que o objectivo afinal não precisava dá um vermelho falso — resíduo
+// declarado no ADR-037 §5, e é por isso que o nó `aos` corre primeiro em observação.
+func contratoDoNo(n plan.Node, tools []string) []string {
+	if n.IsVerifier() || len(tools) == 0 {
+		return nil
+	}
+	for _, o := range n.Outputs {
+		if !o.Type.ClosedForm() {
+			return tools
+		}
+	}
+	return nil
+}
+
+// produzSaidaAberta diz se o nó declara pelo menos uma saída de forma aberta — a que se
+// publica a partir do texto final do run.
+func produzSaidaAberta(n plan.Node) bool {
+	for _, o := range n.Outputs {
+		if !o.Type.ClosedForm() {
+			return true
+		}
+	}
+	return false
+}
+
+// anuncioDoNo é o que o nó `aos` anuncia sobre o contrato de conclusão.
+type anuncioDoNo struct {
+	// aceita — o nó devolveu `completion_contract` no `GET /tools`: aceita `completion_requires`
+	// no `POST /runs`. Falso num nó anterior ao AOS-494, que recusaria o campo com 400.
+	aceita bool
+	// modo é o que o nó diz fazer com o veredicto (`observe`, `enforce`, `off`). Só se imprime.
+	modo string
+}
+
+// ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
+//
+// É a rota que o `serve` já lê antes de submeter (a conferência do snapshot, AOS-441), com a
+// mesma credencial. Lê-se por `serve`, logo por plano: um nó trocado entre dois planos é
+// perguntado outra vez.
+//
+// Um erro aqui NÃO é o nó a dizer que não: quem chama trata-o como «não anunciado» e submete
+// sem contrato, que é o comportamento de antes deste ticket.
+func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/tools", nil)
+	if err != nil {
+		return anuncioDoNo{}, err
+	}
+	if err := c.autenticar(ctx, req); err != nil {
+		return anuncioDoNo{}, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: GET /tools deu HTTP %d", resp.StatusCode)
+	}
+	var corpo struct {
+		CompletionContract *struct {
+			Mode string `json:"mode"`
+		} `json:"completion_contract"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
+		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: resposta ilegível: %w", err)
+	}
+	if corpo.CompletionContract == nil {
+		return anuncioDoNo{}, nil
+	}
+	return anuncioDoNo{aceita: true, modo: modoImprimivel(corpo.CompletionContract.Mode)}, nil
+}
+
+// modoImprimivel reduz o modo anunciado a um dos três que este binário conhece. O valor vem de
+// outro processo e vai para o log: um modo desconhecido imprime-se como tal, sem o repetir.
+func modoImprimivel(modo string) string {
+	if _, err := agentruntime.ParseCompletionMode(modo); err != nil {
+		return "desconhecido"
+	}
+	return modo
+}
+
+// bannerDoContrato declara, no arranque do `serve`, se os nós elegíveis vão levar contrato.
+func bannerDoContrato(a anuncioDoNo, err error) string {
+	switch {
+	case err != nil:
+		return fmt.Sprintf("contrato de conclusao (AOS-495): NAO APLICADO — o anuncio do no nao se leu (%v). Os nos do plano sao submetidos sem contrato, como antes: um run que termine sem chamar a tool de que a saida depende conta como concluido", err)
+	case !a.aceita:
+		return "contrato de conclusao (AOS-495): NAO APLICADO — o no nao anuncia o suporte (GET /tools sem completion_contract: no anterior ao AOS-494). Os nos do plano sao submetidos sem contrato, como antes: enviar o campo dava 400 em todas as submissoes"
+	default:
+		return fmt.Sprintf("contrato de conclusao (AOS-495): DECLARADO — cada no nao-verificador com tools atribuidas e saida de forma aberta leva as suas tools como contrato de conclusao. O no anuncia o modo %q: em enforce um run que nao o cumpra fecha failed e o plano sai 13; em observe o no do plano conclui como antes e o veredicto observado fica neste log", a.modo)
+	}
+}
+
+// vectorDoRunFilho escreve o vector do veredicto numa linha de log: por tool do contrato, as
+// chamadas pedidas, efectivas, negadas e falhadas. Só números, e os nomes de tool que este
+// processo enviou no contrato — os do nó não se repetem.
+func vectorDoRunFilho(v *agentruntime.Verdict, contrato map[string]bool) string {
+	if v == nil || len(v.Tools) == 0 {
+		return "[sem contrato]"
+	}
+	partes := make([]string, 0, len(v.Tools))
+	for _, l := range v.Tools {
+		nome := "outra"
+		if contrato[l.Tool] {
+			nome = l.Tool
+		}
+		partes = append(partes, fmt.Sprintf("%s pedidas=%d efectivas=%d negadas=%d falhadas=%d", nome, l.Requested, l.Effective, l.Denied, l.Failed))
+	}
+	return "[" + strings.Join(partes, "; ") + "]"
+}
+
+// erroDeNosFalhados é o [errNosFalhados] com as causas dos nós que falharam. O `consume` lê-as
+// para o resumo do desfecho; quem só pergunta `errors.Is(err, errNosFalhados)` não muda.
+type erroDeNosFalhados struct {
+	msg string
+	// causas conta os nós `failed` por causa, no vocabulário fechado deste ficheiro.
+	causas map[string]int
+}
+
+func (e *erroDeNosFalhados) Error() string { return e.msg }
+func (e *erroDeNosFalhados) Unwrap() error { return errNosFalhados }
+
+// causasDosFalhados agrega as causas dos nós `failed` do plano. Um nó cuja causa este processo
+// não registou (fechou-o um `serve` anterior) conta como [causaNaoRegistada].
+func causasDosFalhados(falhados []string, porNo map[string]string) map[string]int {
+	causas := map[string]int{}
+	for _, id := range falhados {
+		c := porNo[id]
+		if c == "" {
+			c = causaNaoRegistada
+		}
+		causas[c]++
+	}
+	return causas
+}
+
+// linhaDasCausas é a forma do `causa=` do resumo: `nome:n` separados por vírgula, por ordem
+// alfabética. Vazio sem causas.
+func linhaDasCausas(causas map[string]int) string {
+	nomes := make([]string, 0, len(causas))
+	for c := range causas {
+		nomes = append(nomes, c)
+	}
+	sort.Strings(nomes)
+	partes := make([]string, 0, len(nomes))
+	for _, c := range nomes {
+		partes = append(partes, c+":"+strconv.Itoa(causas[c]))
+	}
+	return strings.Join(partes, ",")
+}
+
+// causaDoAviso devolve o sufixo de causa da linha `aviso:` para um desfecho: o valor fixo
+// [causaConclusaoNaoCumprida] quando o plano saiu com nós falhados e pelo menos um falhou por a
+// conclusão não se ter cumprido; vazio em todos os outros casos.
+func causaDoAviso(codigo int, causas map[string]int) string {
+	if codigo != exitNosFalhados {
+		return ""
+	}
+	for c, n := range causas {
+		if n > 0 && causaDaConclusao(c) {
+			return causaConclusaoNaoCumprida
+		}
+	}
+	return ""
+}

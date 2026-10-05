@@ -8790,22 +8790,72 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
 
 ### Critérios de Aceitação
 
-- [ ] Um nó é elegível quando não é verificador, tem tools atribuídas no plano materializado e
+- [x] Um nó é elegível quando não é verificador, tem tools atribuídas no plano materializado e
       declara uma saída de forma aberta. Para esses, o `aos-orq` envia o contrato com as tools
       atribuídas. Os restantes nós não levam contrato.
-- [ ] O contrato só é enviado a um nó que anuncie suportá-lo (AOS-494). Contra um nó anterior, o
+      — `contratoDoNo`. Forma aberta é um `outputs[].type` `summary`, `record` ou `artifact`
+      (`metrics` e `verdict` são fechadas). As tools são as pinadas no `plan.materialized`, as
+      mesmas da lista-branca do run. `TestAOS495_Elegibilidade`.
+- [x] O contrato só é enviado a um nó que anuncie suportá-lo (AOS-494). Contra um nó anterior, o
       `aos-orq` submete como hoje e regista que o contrato não foi aplicado.
-- [ ] Um run filho `failed` por contrato deixa o nó do plano `failed`, e o plano sai com o código
+      — o anúncio lê-se do `GET /tools`, uma vez por `serve`. O log diz `NAO APLICADO` no
+      arranque e em cada nó elegível. `NoAnterior_NaoLeva400`, contra um nó falso que recusa
+      campos desconhecidos como o decoder do nó anterior.
+- [x] Um run filho `failed` por contrato deixa o nó do plano `failed`, e o plano sai com o código
       13. A razão aparece no `detail` do `GET /plans/{id}`, em vocabulário fechado, e no log da
       drenagem.
-- [ ] Uma saída vazia nunca é publicada: o produtor fica `failed` com razão própria.
-- [ ] O aviso de planos distingue esta falha das outras.
-- [ ] Teste de ponta a ponta com o modelo falso: as duas respostas de produção de 2026-10-04 dão
+      — o `detail` ganha `causa=<nome>:<n>,…` depois de `erro=nos_falhados`. O critério do nó
+      continua a ser `completed`, `terminated` e sem erro: a razão só nomeia a causa.
+- [x] Uma saída vazia nunca é publicada: o produtor fica `failed` com razão própria.
+      — `saida_vazia` (texto vazio ou só espaços), ou `saida_indisponivel` quando o nó responde
+      `output_unavailable` (AOS-494). Vale para qualquer nó que declare uma saída de forma aberta.
+- [x] O aviso de planos distingue esta falha das outras.
+      — a linha `aviso:` leva `causa=conclusao_nao_cumprida` e o push diz «nós falhados:
+      conclusão não cumprida». Cenário shell `4c`, corrido em Linux num contentor.
+- [x] Teste de ponta a ponta com o modelo falso: as duas respostas de produção de 2026-10-04 dão
       plano com código 13 e a razão certa; a resposta boa dá código 0.
-- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo com nó anterior, e nó
+      — **em duas metades, ver «Limites».** `TestAOS494_Fio_…` (nó real, modelo falso) e
+      `TestAOS495ComOBinarioReal` (`aos-orq` real). Com o nó em `observe`, código 0 e o veredicto
+      no log.
+- [x] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo com nó anterior, e nó
       novo com `aos-orq` anterior.
+      — `NoAnterior_NaoLeva400` e `TestAOS494_AosOrqAnterior_ContinuaAFuncionar` (o corpo e a
+      regra de leitura do `aos-orq` anterior, contra o nó real).
 - [ ] Verificação em produção: uma série de planos com o objectivo multi-nó, com zero verdes
       falsos; os planos em que o modelo não chama a tool saem 13 com a razão.
+
+### Como ficou
+
+- **Vocabulário do `causa=`:** as cinco razões do kernel (`truncated`, `contract_unmet_no_call`,
+  `contract_unmet_after_denial`, `contract_unmet_after_tool_error`, `empty_output`) e as do
+  `aos-orq`: `saida_vazia`, `saida_indisponivel`, `run_nao_concluido`, `run_perdido`,
+  `entrada_por_cumprir`, `razao_desconhecida` (o nó mandou uma razão que este binário não
+  conhece; o texto não é repetido) e `nao_registada`.
+- **Em `observe`** o nó do plano conclui e a saída publica-se, como antes. O log da drenagem tem
+  uma linha `VEREDICTO OBSERVADO <razão>` por nó: é a contagem dos nós que `enforce` fechava
+  `failed`.
+- **O `aos-orq` não lê `AOS_COMPLETION_VERDICT`.** O modo é do nó; o anúncio trá-lo só para o
+  banner.
+
+### Limites
+
+- **Não há um teste que cruze os dois binários reais.** O módulo do `aos-orq` não importa o do
+  nó. O teste do nó exige que o `GET /runs/{id}` responda os bytes de
+  `packages/cmd/aos/testdata/aos494_fio/`, e o teste do `aos-orq` serve esses bytes a partir de
+  um nó falso. O campo `completion_requires` e o anúncio do `GET /tools` estão provados de cada
+  lado, e não pelo mesmo teste.
+- **As causas vivem na memória do `serve`.** Um `serve` que retome um run com nós já `failed`
+  reporta-os como `nao_registada`. A saída 13 é terminal, pelo que isto só acontece se o
+  processo morrer entre fechar o nó e reportar o desfecho.
+- **Contrato com mão larga.** O contrato são todas as tools atribuídas ao nó. Uma tool atribuída
+  de que o objectivo afinal não precisava dá um vermelho falso em `enforce`. É o que o período
+  de observação mede.
+- **Um anúncio que não se leu conta como «não anunciado».** O plano corre sem contrato e o
+  banner di-lo; não falha.
+- **Um nó `aos` com o veredicto em `off`** anuncia o contrato na mesma. O `aos-orq` envia-o e o
+  nó ignora-o.
+- **Um reinício do nó `aos` com a custódia das KEK em memória** deixa a saída ilegível: o nó
+  do plano fica `failed` com `saida_indisponivel`, onde antes publicava uma saída vazia.
 
 ### Fora de âmbito
 
@@ -8814,4 +8864,4 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-05); por verificar em produção.** A revisão adversarial é feita a seguir.

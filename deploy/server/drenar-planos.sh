@@ -86,8 +86,11 @@ METRICAS="${LOG_DIR}/aos-orq-consume.prom"
 # está no avisar-planos.sh, e o TestAOS445ContratoDaLinhaDoAvisoComOsScripts fixa as duas contra o
 # `linhaDoAviso` do Go. O run_id vai com `+` e não com um tecto `{1,N}`: acima de 255 o regcomp de
 # algumas libc recusa a regex, e o bash trata isso como «não casa» — em silêncio.
+# AOS-495: a linha pode trazer no fim ` causa=<valor>` (um valor fixo, em minúsculas e sublinhado),
+# quando o plano saiu com nós falhados por a conclusão de um nó não se ter cumprido. É opcional: um
+# binário anterior não o imprime, e a linha dele casa na mesma.
 AVISOS_DIR="${DRENAR_AVISOS_DIR:-${AOS_DIR}/.avisos-planos}"
-AVISO_RE='^aviso: run=[^[:space:]]+ geracao=[0-9]{1,9} classe=terminal codigo=[0-9]{1,3}$'
+AVISO_RE='^aviso: run=[^[:space:]]+ geracao=[0-9]{1,9} classe=terminal codigo=[0-9]{1,3}( causa=[a-z_]{1,40})?$'
 ALPINE="alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
 COMPOSE=(docker compose -f "${AOS_DIR}/docker-compose.prod.yml" --env-file "${AOS_DIR}/.env"
          --env-file "${AOS_DIR}/image.env")

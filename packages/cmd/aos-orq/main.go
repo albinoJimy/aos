@@ -517,8 +517,14 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	// AOS-413: o executor de nós, quando composto; nil ⇒ o despacho não executa (como antes).
 	var exe *configDoExecutor
 	if cliDoNo != nil {
+		// AOS-495: o nó `aos` aceita o contrato de conclusão? Pergunta-se-lhe antes de submeter
+		// o primeiro nó do plano. Um anúncio que não se leu conta como «não aceita»: os nós vão
+		// sem contrato, como antes, e o banner di-lo.
+		anuncio, aerr := cliDoNo.ContratoDeConclusao(ctx)
+		fmt.Println(bannerDoContrato(anuncio, aerr))
 		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
-			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil}
+			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil,
+			contratoDeConclusao: aerr == nil && anuncio.aceita}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse

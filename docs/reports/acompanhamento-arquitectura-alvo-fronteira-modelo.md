@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-05 (AOS-494 implementado, por rever; AOS-493 revisto e corrigido; AOS-491 e AOS-493 por verificar em produção).
+Última actualização: 2026-10-05 (AOS-494 e AOS-495 implementados, por rever; AOS-493 revisto e corrigido; nada da fase A0 verificado em produção).
 
 ## 1. Objectivo e promessa
 
@@ -47,7 +47,7 @@ fidelidade» para nós que passam o resultado sem o transformar.
 | AOS-492 | EPIC-02 | A regra de terminação vive num só sítio, partilhado por loop e replay | — | feito |
 | AOS-493 | EPIC-02 | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão | AOS-491, AOS-492 | implementado (ADR-037) e revisto (2026-10-05, sem bloqueantes; achados corrigidos no ticket), nó em observação por omissão; por verificar em produção |
 | AOS-494 | EPIC-19 | O nó aceita o contrato no `POST /runs` e devolve o desfecho no `GET /runs` | AOS-493 | implementado (2026-10-05); por rever; smoke sobre JetStream por correr |
-| AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | aberto |
+| AOS-495 | EPIC-19 | O `aos-orq` declara o contrato por nó e não publica saídas sem evidência | AOS-494 | implementado (2026-10-05); por rever; por verificar em produção |
 
 Ordem de entrega: AOS-491 e AOS-492 (sem mudança de comportamento), depois AOS-493 em modo de
 observação, depois AOS-494 e AOS-495. O nó sai antes do `aos-orq`. A imposição liga-se depois de o

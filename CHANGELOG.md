@@ -7,6 +7,15 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Fixed — EPIC-19 (AOS-495) O `aos-orq` declara o contrato de conclusão por nó e não publica saídas sem evidência
+- `fix(AOS-495)` — para o `aos-orq`, um nó do plano estava concluído quando o run filho respondia `completed`, `terminated` e sem erro. O texto final era publicado como saída, mesmo vazio. Em 2 de 10 planos em produção (2026-10-04) o nó de leitura não chamou a tool e o plano saiu com 0.
+  - **Contrato:** um nó não-verificador, com tools atribuídas e com uma saída de forma aberta (`summary`, `record`, `artifact`) leva as suas tools em `completion_requires`. Só é enviado a um nó `aos` que o anuncie no `GET /tools` (AOS-494); contra um nó anterior o plano corre como antes e o log diz `contrato de conclusao (AOS-495): NAO APLICADO`.
+  - **Muda (com o nó em `enforce`):** um nó cujo run não cumpriu o contrato fica `failed` e o plano sai **13**. Com o nó em `observe` nada muda no desfecho; o log da drenagem ganha uma linha `VEREDICTO OBSERVADO <razão>` por nó.
+  - **Muda (em qualquer modo):** um nó que declara uma saída de forma aberta e cujo run conclui sem texto, ou só com espaços, fica `failed` (`saida_vazia`) e nada é publicado. Era publicado um payload vazio com o nó `complete`. O mesmo quando o nó responde `output_unavailable` (`saida_indisponivel`).
+  - **`detail` do desfecho e linha `desfecho:`** ganham `causa=<nome>:<n>,…` depois de `erro=nos_falhados`, em vocabulário fechado.
+  - **Linha `aviso:`** ganha o sufixo opcional `causa=conclusao_nao_cumprida`. O `drenar-planos.sh` e o `avisar-planos.sh` aceitam a linha com e sem ele; o push passa a dizer «nós falhados: conclusão não cumprida». Os scripts novos lêem a linha de um binário anterior.
+  - Não há novo `status` nem novo código de saída. O `aos-orq` não lê `AOS_COMPLETION_VERDICT`.
+
 ### Added — EPIC-19 (AOS-494) O nó aceita o contrato de conclusão no `POST /runs` e devolve o desfecho no `GET /runs`
 - `feat(AOS-494)` — o contrato de conclusão do AOS-493 só entrava por código, e o `GET /runs/{id}` não dizia porque um run tinha falhado. Depois de um reinício do nó respondia `completed` sem texto.
   - **`POST /runs`:** campo novo `completion_requires` (nomes de tools). Cada uma tem de constar de `tools` do mesmo pedido, pela regra do Reference Monitor; senão 400 com mensagem própria. O modo de aplicação não tem campo.

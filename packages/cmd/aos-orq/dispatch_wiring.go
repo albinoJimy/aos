@@ -322,6 +322,8 @@ func composeEDespachar(
 		}
 		ex.geracaoDoPedido = exe.geracaoDoPedido // AOS-439: o vínculo ao pedido de plano
 		ex.declararOrigem = exe.declararOrigem   // AOS-477: e o plano e o nó, num campo
+		// AOS-495: o contrato de conclusão dos nós elegíveis, se o nó `aos` anunciou aceitá-lo.
+		ex.contratoDeConclusao = exe.contratoDeConclusao
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {
@@ -438,8 +440,15 @@ func composeEDespachar(
 		fmt.Println(resumoDaExecucao(g, payload))
 	}
 	if len(falhados) > 0 {
-		return fmt.Errorf("%w: %d de %d no(s) do plano %s (%s) — o estado e duravel: repetir o serve com o documento do plano nao os re-executa",
-			errNosFalhados, len(falhados), len(payload.Nodes), planID, strings.Join(falhados, ","))
+		// AOS-495: o erro leva as CAUSAS, em vocabulário fechado, para o `consume` as pôr no
+		// `detail` do desfecho. Um nó que já vinha `failed` do log sai como `nao_registada`.
+		var porNo map[string]string
+		if ex != nil {
+			porNo = ex.causas
+		}
+		causas := causasDosFalhados(falhados, porNo)
+		return &erroDeNosFalhados{causas: causas, msg: fmt.Sprintf("%v: %d de %d no(s) do plano %s (%s), causas %s — o estado e duravel: repetir o serve com o documento do plano nao os re-executa",
+			errNosFalhados, len(falhados), len(payload.Nodes), planID, strings.Join(falhados, ","), linhaDasCausas(causas))}
 	}
 	return nil
 }

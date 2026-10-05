@@ -230,7 +230,7 @@ func cmdConsume(args []string) (err error) {
 				duracao: time.Since(inicio), erro: "geracoes_esgotadas"}
 			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitGeracoesEsgotadas, resumo.linha())
 			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
-				exitGeracoesEsgotadas, detalheDoDesfecho(resumo), declarar(medidor, nil)); err != nil {
+				exitGeracoesEsgotadas, detalheDoDesfecho(resumo), declarar(medidor, nil), ""); err != nil {
 				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
 					"fila quando a reclamacao expirar\n", pedido.RunID, err)
 				metricas.registarDesfecho(resumo, "terminal", exitGeracoesEsgotadas, false)
@@ -251,7 +251,7 @@ func cmdConsume(args []string) (err error) {
 				duracao: time.Since(inicio), erro: "requerente_fora_do_mandato"}
 			fmt.Printf("desfecho: run=%s codigo=%d classe=terminal %s\n", pedido.RunID, exitRequerenteForaDoMandato, resumo.linha())
 			if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, "terminal",
-				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo), declarar(medidor, nil)); err != nil {
+				exitRequerenteForaDoMandato, detalheDoDesfecho(resumo), declarar(medidor, nil), ""); err != nil {
 				fmt.Fprintf(os.Stderr, "aos-orq: desfecho de %s NAO reportado (%v); o pedido volta a "+
 					"fila quando a reclamacao expirar\n", pedido.RunID, err)
 				metricas.registarDesfecho(resumo, "terminal", exitRequerenteForaDoMandato, false)
@@ -282,6 +282,14 @@ func cmdConsume(args []string) (err error) {
 			duracao: time.Since(inicio),
 			erro:    tipo,
 		}
+		// AOS-495: as causas dos nós falhados, quando o plano saiu com 13 — no `detail` e na
+		// linha `desfecho:`, em vocabulário fechado.
+		var falhados *erroDeNosFalhados
+		var causasDosNos map[string]int
+		if errors.As(erroDoServe, &falhados) {
+			causasDosNos = falhados.causas
+			resumo.causas = linhaDasCausas(causasDosNos)
+		}
 		detalhe := detalheDoDesfecho(resumo)
 		fmt.Printf("desfecho: run=%s codigo=%d classe=%s %s\n", pedido.RunID, codigo, classe, resumo.linha())
 		if tipo == "generico" {
@@ -306,7 +314,7 @@ func cmdConsume(args []string) (err error) {
 		// pedido preso até ao TTL da reclamação — meia hora de silêncio por uma falha que já
 		// conhecemos.
 		if err := reportarEAvisar(ctx, cli, os.Stdout, pedido.RunID, pedido.Geracao, classe, codigo, detalhe,
-			declarar(medidor, planoValidadoDepois(sub, pedido.RunID, classe))); err != nil {
+			declarar(medidor, planoValidadoDepois(sub, pedido.RunID, classe)), causaDoAviso(codigo, causasDosNos)); err != nil {
 			// Falhar a reportar NÃO é fatal para os pedidos seguintes: o TTL recupera este.
 			// Mas é ruidoso de propósito — um consumidor que não consegue reportar está a
 			// trabalhar às cegas.
@@ -385,7 +393,19 @@ const prefixoDoAviso = "aviso: "
 // antes de sair do servidor), a geração, a classe e o código. Nunca o objectivo, o resultado nem o
 // tipo do erro — esses ficam no log da drenagem e no `GET /plans/{id}`.
 func linhaDoAviso(runID string, geracao int, classe string, codigo int) string {
-	return fmt.Sprintf("%srun=%s geracao=%d classe=%s codigo=%d", prefixoDoAviso, runID, geracao, classe, codigo)
+	return linhaDoAvisoComCausa(runID, geracao, classe, codigo, "")
+}
+
+// linhaDoAvisoComCausa é a [linhaDoAviso] com o sufixo opcional `causa=<valor>` (AOS-495). O
+// valor é UM, e fixo ([causaConclusaoNaoCumprida]): diz ao operador que o plano falhou por a
+// conclusão de um nó não se ter cumprido, e não diz mais nada — as contagens por causa ficam
+// no log da drenagem e no `GET /plans/{id}`. Sem causa, a linha é byte a byte a de antes.
+func linhaDoAvisoComCausa(runID string, geracao int, classe string, codigo int, causa string) string {
+	l := fmt.Sprintf("%srun=%s geracao=%d classe=%s codigo=%d", prefixoDoAviso, runID, geracao, classe, codigo)
+	if causa != "" {
+		l += " causa=" + causa
+	}
+	return l
 }
 
 // reportarEAvisar reporta o desfecho ao nó e, SÓ DEPOIS de o nó o ter aceitado, imprime a linha
@@ -396,12 +416,12 @@ func linhaDoAviso(runID string, geracao int, classe string, codigo int) string {
 // geração seguinte terá o seu desfecho — avisar já seria anunciar um fim que o nó não conhece, e
 // possivelmente dois fins para o mesmo plano. Os desfechos que não são terminais (transitório, à
 // espera de humano) não avisam: o plano ainda não acabou.
-func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string, d declaracaoDaGeracao) error {
+func reportarEAvisar(ctx context.Context, rep reportadorDeDesfecho, out io.Writer, runID string, geracao int, classe string, codigo int, detalhe string, d declaracaoDaGeracao, causaDoAviso string) error {
 	if err := rep.ReportarDesfecho(ctx, runID, geracao, classe, codigo, detalhe, d); err != nil {
 		return err
 	}
 	if classe == "terminal" {
-		fmt.Fprintln(out, linhaDoAviso(runID, geracao, classe, codigo))
+		fmt.Fprintln(out, linhaDoAvisoComCausa(runID, geracao, classe, codigo, causaDoAviso))
 	}
 	return nil
 }

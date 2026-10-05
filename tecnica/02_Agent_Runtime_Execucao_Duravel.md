@@ -109,6 +109,13 @@ transição, e a saída da captura do turno terminal, com a autorização da rec
 Quando a saída não se consegue ler, a resposta diz `output_unavailable` em vez de um `completed`
 sem texto.
 
+**Quem declara o contrato num plano (AOS-495).** O `aos-orq` envia `completion_requires` com as
+tools atribuídas a cada nó do plano que não é verificador, tem tools e declara uma saída de forma
+aberta, e só a um nó que anuncie aceitá-lo. O nó do plano continua a concluir por `completed`,
+`terminated` e sem erro; a razão do veredicto nomeia a causa de um nó `failed` no `detail` do
+desfecho do plano, e não é o critério. Uma saída vazia não é publicada: o nó que a produziu fica
+`failed`.
+
 **Garantia estrutural de no-bypass (ADR-002).** O `Runtime` detém um `*referencemonitor.Monitor`, **nunca** uma `ToolFunc`: o único caminho de execução de tools é `Monitor.Mediate`. A prova é estrutural (reflexão) + sintáctica (`archlint`). Cada resultado de tool volta ao loop **marcado untrusted** (ADR-005); um erro de tool permitida (`dec.ToolErr`) é propagado ao span (`error.type`) e ao tail, sem ser silenciosamente descartado.
 
 **Pontos de ligação (hooks, default no-op).** `StepIdentity` — derivação do `step_id` (AOS-014, idempotência por passo). `Checkpointer` — checkpoint intra-iteração por fase `assembled`/`model_called`/`turn_recorded`/`dispatched`/`verified` (AOS-015). A máquina de estados durável rica (`waiting_on_human`/`paused`) é AOS-017.

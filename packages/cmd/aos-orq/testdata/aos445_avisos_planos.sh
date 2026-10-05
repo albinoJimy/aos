@@ -277,10 +277,25 @@ rm -f "${STUB_DIR}/ntfy.log"
 avisar
 exige "o 13: «nós falhados», título próprio, prioridade high, e nunca «ok»" bash -c 'grep -qF "CORPO Plano $2: terminal, código 13 (nós falhados)." "$1" && grep -qF "H Title: AOS: plano terminou com nos falhados (codigo 13)" "$1" && grep -qF "H Priority: high" "$1" && ! grep -qF "(ok)" "$1"' _ "${STUB_DIR}/ntfy.log" "$(pseudo plan-p13)"
 
+echo "── 4c. o 13 com a causa «conclusão não cumprida» distingue-se do 13 de sempre (AOS-495)"
+printf 'aviso: run=plan-p13c geracao=1 classe=terminal codigo=13 causa=conclusao_nao_cumprida\n' > "${OUTBOX}"
+rm -f "${STUB_DIR}/ntfy.log"
+avisar
+exige "o 13 com causa: rótulo e título próprios, prioridade high, e o código continua 13" bash -c 'grep -qF "CORPO Plano $2: terminal, código 13 (nós falhados: conclusão não cumprida)." "$1" && grep -qF "H Title: AOS: plano terminou com nos falhados, conclusao nao cumprida (codigo 13)" "$1" && grep -qF "H Priority: high" "$1" && ! grep -qF "causa=" "$1"' _ "${STUB_DIR}/ntfy.log" "$(pseudo plan-p13c)"
+printf 'aviso: run=plan-p13d geracao=1 classe=terminal codigo=13 causa=outra_coisa\n' > "${OUTBOX}"
+rm -f "${STUB_DIR}/ntfy.log"
+avisar
+exige "  … uma causa que o script não conhece não muda o texto" bash -c 'grep -qF "CORPO Plano $2: terminal, código 13 (nós falhados)." "$1"' _ "${STUB_DIR}/ntfy.log" "$(pseudo plan-p13d)"
+consume 0 "aviso: run=plan-p13e geracao=1 classe=terminal codigo=13 causa=conclusao_nao_cumprida"
+metricas 10 1 1
+drenar; rc=$?
+exige "  … a drenagem de uma linha com causa sai 0" test "${rc}" -eq 0 || mostrar "${T}/dout"
+exige "  … e a drenagem recolhe a linha com causa para o outbox, tal e qual" contem "${OUTBOX}" "aviso: run=plan-p13e geracao=1 classe=terminal codigo=13 causa=conclusao_nao_cumprida"
+
 echo "── 5. espaços Unicode no run_id casam em qualquer locale"
 RU=$'plan-u\xe3\x80\x80x\xe2\x80\xa8y'   # U+3000 e U+2028, que o ValidarStreamID aceita
 consume 0 "aviso: run=${RU} geracao=1 classe=terminal codigo=0"
-metricas 10 1 1
+metricas 11 1 1
 LC_ALL=C.UTF-8 timeout 60 bash "${AOS}/drenar-planos.sh" > "${T}/dout" 2>&1
 exige "drenagem em C.UTF-8: o aviso do run com U+3000/U+2028 entra no outbox" bash -c 'grep -qF "$2" "$1"' _ "${OUTBOX}" "aviso: run=${RU} "
 rm -f "${STUB_DIR}/ntfy.log"
@@ -290,7 +305,7 @@ exige "  … e o avisar em C.UTF-8 envia-o (não o descarta)" bash -c 'grep -qF 
 echo "── 6. as sobras de uma drenagem interrompida"
 printf 'aviso: run=plan-orfao geracao=2 classe=terminal codigo=9\n' > "${AOS}/.drenagem/avisos-desta-drenagem"
 consume 0 "fila vazia: nada a consumir"
-metricas 10 1 1
+metricas 11 1 1
 drenar; rc=$?
 exige "a drenagem seguinte entrega as sobras ao outbox" bash -c '[[ $1 == 0 ]] && grep -qF "aviso: run=plan-orfao geracao=2" "$2" && grep -qF "drenagem INTERROMPIDA" "$3"' _ "${rc}" "${OUTBOX}" "${T}/dout"
 exige "  … e não as deixa para trás" test ! -e "${AOS}/.drenagem/avisos-desta-drenagem"

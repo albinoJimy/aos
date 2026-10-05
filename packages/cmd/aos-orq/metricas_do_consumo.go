@@ -345,6 +345,9 @@ type resumoDoPedido struct {
 	// erro é o TIPO do erro do `serve` ([tipoDoErro]) — um nome de vocabulário fechado, nunca o
 	// texto do erro; vazio sem erro.
 	erro string
+	// causas são as causas dos nós `failed` de um plano que saiu com 13 (AOS-495), na forma de
+	// [linhaDasCausas]: nomes de vocabulário fechado e contagens. Vazio nos outros desfechos.
+	causas string
 }
 
 // linha é o formato do resumo: pares `chave=valor` separados por espaço, sem aspas, para se ler a
@@ -358,6 +361,9 @@ func (r resumoDoPedido) linha() string {
 		r.origem, r.geracao, nos, strconv.FormatFloat(r.duracao.Seconds(), 'f', 3, 64))
 	if r.erro != "" {
 		l += " erro=" + r.erro
+	}
+	if r.causas != "" {
+		l += " causa=" + r.causas
 	}
 	return l
 }

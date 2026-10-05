@@ -1096,6 +1096,25 @@ a drenagem seguinte retoma-o). O `alerta-nhi.sh` avisa a partir de 3 com o títu
 fila em ALERTA», e volta a avisar se, com o alerta disparado, o **conjunto** de causas mudar (um
 NHI a caducar por cima dos planos a falhar, por exemplo).
 
+Num plano que sai com `13`, o resumo leva também `causa=<nome>:<n>,…` (AOS-495): quantos nós
+falharam por cada causa. As causas são as razões do veredicto do nó (`contract_unmet_no_call`,
+`contract_unmet_after_denial`, `contract_unmet_after_tool_error`, `truncated`, `empty_output`) e
+as do `aos-orq`: `saida_vazia` (o run concluiu sem texto), `saida_indisponivel` (o nó já não
+consegue servir a saída do run), `run_nao_concluido` (erro, orçamento ou turnos esgotados),
+`run_perdido`, `entrada_por_cumprir` (o nó não correu: faltou-lhe o payload de outro),
+`razao_desconhecida` e `nao_registada` (o nó já vinha falhado de um `serve` anterior).
+
+**O contrato de conclusão (AOS-495).** O `serve` pergunta ao nó, no `GET /tools`, se ele aceita o
+contrato, e di-lo numa linha `contrato de conclusao (AOS-495): DECLARADO` ou `NAO APLICADO`. Com
+ele declarado, cada nó do plano que não é verificador, tem tools e declara uma saída de forma
+aberta leva as suas tools como contrato. O que acontece a seguir depende do modo **do nó**
+(`AOS_COMPLETION_VERDICT`; o `aos-orq` não lê a variável):
+
+- `observe`: o plano corre como antes. Cada nó cujo run teve veredicto negativo deixa no log da
+  drenagem uma linha `execucao: no <id> VEREDICTO OBSERVADO <razão> (modo observe)`. Contá-las é
+  medir quantos planos `enforce` punha a sair `13`.
+- `enforce`: esse nó fica `failed` e o plano sai `13` com a causa.
+
 O mesmo resumo chega ao nó no `detail` do desfecho — **também em sucesso** —, e é o que o
 `GET /plans/{id}` passa a mostrar num plano terminado: `resumo: origem=… geracao=… nos=… duracao_s=…`,
 com `erro=<tipo>` no fim quando o `serve` falhou. O tipo é o nome de um sentinela
@@ -1120,7 +1139,7 @@ e foi não — ou um pendente fora do prazo), o `11` como «submissor fora do ma
 «gerações esgotadas» (AOS-467: o pedido passou o tecto `AOS_PLAN_MAX_GENERATIONS` do nó e fechou sem
 planear — ou a decomposição falhou de forma transitória vezes de mais, ou o objectivo deixou de se
 poder abrir, tipicamente depois de um `/dsar/erase` do titular; o log da drenagem distingue-os, o
-aviso não; re-submeter exige um `run_id` novo). O `13` aparece como «nós falhados» (AOS-484: o plano chegou ao fim com nós `failed`; quais, vê-se na linha `execucao:` do log da drenagem — o aviso não os leva). Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
+aviso não; re-submeter exige um `run_id` novo). O `13` aparece como «nós falhados» (AOS-484: o plano chegou ao fim com nós `failed`; quais, vê-se na linha `execucao:` do log da drenagem — o aviso não os leva). Quando pelo menos um nó falhou por a conclusão não se ter cumprido — o run não chamou a tool de que a saída dependia, veio cortado, ou a saída veio vazia ou ilegível —, o aviso diz «nós falhados: conclusão não cumprida» (AOS-495). As contagens por causa não saem do servidor. Os planos à espera de humano e os transitórios **não** avisam: ainda não acabaram.
 
 | Peça | O que faz |
 |---|---|

@@ -657,7 +657,7 @@ func TestAOS484_OConsumeReportaOPlanoFalhadoComoTerminal13(t *testing.T) {
 	// (2) O detalhe é o resumo com o NOME ESTÁVEL do erro, nunca o texto dele (que cita node_ids).
 	ds := espiao.detalhes()
 	if len(ds) != 1 || !strings.HasPrefix(ds[0], "resumo: origem=decomposicao geracao=1 nos=2 duracao_s=") ||
-		!strings.HasSuffix(ds[0], " erro=nos_falhados") {
+		!strings.HasSuffix(ds[0], " erro=nos_falhados causa=entrada_por_cumprir:1") { // AOS-495: a causa, em vocabulário fechado
 		t.Fatalf("detail do desfecho: %q", ds)
 	}
 	if strings.Contains(ds[0], "n2") || strings.Contains(ds[0], "terminou com") {
