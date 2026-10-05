@@ -408,8 +408,9 @@ origem (saída 10, `no_sem_saida_por_referencia`); não cai para o texto.
 - Um run sem origem declarada não muda: os mesmos eventos, o mesmo manifesto, o mesmo registo de
   retoma, o mesmo desfecho. Fixado por uma fixture gravada antes da implementação.
 - Para um nó de passagem directa, o resíduo «evidência não é fidelidade» do ADR-037 passa a ser
-  uma igualdade de digests — quando a entrega existir (AOS-501). Com AOS-497 existe a âncora;
-  nada é ainda entregue por ela.
+  uma cadeia de digests conferível: o digest selado dos bytes da tool, e o digest do que foi
+  entregue, ligados pela forma da extracção que o evento nomeia (AOS-501, §2.6 e §2.7). Só com a
+  entrega ligada (§10); desligada, existe a âncora e nada é entregue por ela.
 - O `/metrics` do nó ganha `aos_runs_output_source_total{binding,state}` (8 séries: 2 vínculos ×
   4 estados; só conta runs cujo desfecho ficou selado) e duas razões em
   `aos_runs_finished_total`. As razões novas chegam também aos contadores do `aos-orq`
@@ -468,9 +469,11 @@ origem (saída 10, `no_sem_saida_por_referencia`); não cai para o texto.
   rejeitada agora.
 - **A separação de planos (DEF-806) não fecha.** O conteúdo untrusted continua em linha no tail
   do consumidor. Tira-se o modelo do caminho do produtor; não se cria um handle. O consumidor
-  passa a receber os bytes exactos do atacante, no envelope cru: as defesas são as de hoje
-  (`plan_input` é dados, autoridade untrusted, gate de taint), e têm de ser exercitadas por este
-  caminho antes de se ligar a entrega.
+  passa a receber os bytes exactos do atacante — o texto do documento, sem o modelo do produtor
+  de permeio —: as defesas são as de hoje (`plan_input` é dados, autoridade untrusted, gate de
+  taint). **Não foram exercitadas por este caminho em AOS-501**: o corpus adversarial do gate
+  `security` não corre pela entrega por referência, e deve correr antes de se ligar `on` em
+  produção.
 - **Em `off` não há âncora.** A declaração vive com o contrato em `manifest.completion`, que não
   existe com o veredicto desligado. Um nó em `off` não serve saídas por referência.
 - **Em observação, uma declaração vinculativa não deixa razão no veredicto.** O que a imposição

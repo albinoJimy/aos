@@ -610,8 +610,12 @@ func TestAOS500_MapeadorLevaAOrigemAoCartao(t *testing.T) {
 	if !strings.Contains(cSem, `"notas:record:untrusted"`) || strings.Contains(cSem, "tool=") {
 		t.Fatalf("o cartao do plano sem origem nao e o de sempre:\n%s", cSem)
 	}
-	if got := strings.Replace(cCom, ":tool=fs.read", "", 1); got != cSem {
-		t.Fatalf("a unica diferenca entre os cartoes devia ser a origem da saida:\n com=%s\n sem=%s", cCom, cSem)
+	// Duas diferenças, e só elas: a origem na saída, e o carimbo do contrato do cartão, que sobe a
+	// 1.2.0 quando o cartão mostra uma origem (AOS-501).
+	got := strings.Replace(cCom, ":tool=fs.read", "", 1)
+	got = strings.Replace(got, `{"schema_version":"1.2.0","run_id"`, `{"schema_version":"1.1.0","run_id"`, 1)
+	if got != cSem {
+		t.Fatalf("a diferenca entre os cartoes devia ser so a origem da saida e o carimbo:\n com=%s\n sem=%s", cCom, cSem)
 	}
 }
 
