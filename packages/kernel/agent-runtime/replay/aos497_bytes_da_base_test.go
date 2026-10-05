@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -28,6 +29,15 @@ import (
 // com várias tool calls no primeiro turno.
 
 const aos497FixtureDaBase = "aos497_base_sem_origem.json"
+
+// aos497Latencia apanha a ÚNICA medição não determinística destes eventos: a latência que o
+// Reference Monitor mede em cada mediação (`latency_ns`, relógio de parede). Não é um campo que
+// este ticket toque; os dois lados comparam-se com ela a zero. Tudo o resto é byte a byte.
+var aos497Latencia = regexp.MustCompile(`"latency_ns":[0-9]+`)
+
+func aos497SemLatencia(payload []byte) []byte {
+	return aos497Latencia.ReplaceAll(payload, []byte(`"latency_ns":0`))
+}
 
 type aos497EventoDaBase struct {
 	Type    string
@@ -166,7 +176,7 @@ func TestAOS497_SemDeclaracaoDeOrigem_OsEventosSaoOsDaBase(t *testing.T) {
 			if err := json.Compact(&co, eo.Payload); err != nil {
 				t.Fatal(err)
 			}
-			if !bytes.Equal(cb.Bytes(), co.Bytes()) {
+			if !bytes.Equal(aos497SemLatencia(cb.Bytes()), aos497SemLatencia(co.Bytes())) {
 				t.Fatalf("%s evento %d (%s %s): o payload mudou face a base\n base     %s\n corrente %s", b.RunID, j, eb.Type, eb.StepID, cb.Bytes(), co.Bytes())
 			}
 			if !bytes.Equal(co.Bytes(), eo.Payload) {
