@@ -107,7 +107,9 @@ const (
 	// snapshot não é o declarado/selado. Tem código PRÓPRIO porque é DETERMINISTA: como `1`
 	// genérico era transitório, e o `consume` retentava-o para sempre à cabeça da fila. Partilha-o
 	// o grafo do run que diverge do plano numa materialização retomada (AOS-476), com rótulo
-	// próprio no `tipoDoErro`.
+	// próprio no `tipoDoErro`. E partilha-o o documento que declara a origem de uma saída
+	// (`outputs[].from_tool`, AOS-500) enquanto este binário não entrega por referência: também
+	// determinista, também com rótulo próprio (`origem_sem_entrega`).
 	exitDocumentoRecusado = 10
 	// exitRequerenteForaDoMandato — o nó recusou o run de um nó do plano porque o SUBMISSOR do
 	// pedido não consta dos `requesters` do mandato da credencial (AOS-439). É DETERMINISTA — o
@@ -284,6 +286,7 @@ func codigoDe(err error) int {
 		return exitPlanoRecusado
 	case errors.Is(err, errDocumentoDoPlanoRecusado),
 		errors.Is(err, errGrafoDoRunDiverge),
+		errors.Is(err, errOrigemSemEntrega),
 		errors.Is(err, ErrSnapshotNaoCorresponde),
 		errors.Is(err, ErrSnapshotDiferenteDoSelado):
 		return exitDocumentoRecusado
@@ -386,6 +389,14 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 	// `--run` (o sufixo `-plan` é representável), mas um valor dado à mão não herda nada.
 	if err := eventstore.ValidarStreamID(planoID); err != nil {
 		return fmt.Errorf("--plan invalido: %w", err)
+	}
+	// AOS-500: um documento que declara a origem de uma saída (`outputs[].from_tool`) não corre
+	// neste binário — a entrega por referência é do AOS-501. Recusa-se AQUI, antes da posse, de
+	// abrir o Event Store e de falar com o nó: o documento do `--plan-doc` conhece-se à partida.
+	if *planDoc != "" {
+		if err := recusarDocumentoComOrigem(*planDoc); err != nil {
+			return err
+		}
 	}
 	// AOS-477: o compromisso do objectivo e o pedido de origem resolvem-se ANTES da posse — um
 	// objectivo que não é o do pedido aborta sem reclamar o lease nem chamar o modelo.
@@ -757,6 +768,12 @@ func materializar(ctx context.Context, ten *runlifecycle.Tenure, store runlifecy
 	if err != nil {
 		// AOS-442: um documento que não descodifica não descodificará à segunda — determinista.
 		return fmt.Errorf("%w: %q nao descodifica: %v", errDocumentoDoPlanoRecusado, docPath, err)
+	}
+	// AOS-500: a mesma recusa de antes da posse, agora sobre os bytes que de facto se vão
+	// materializar — o ficheiro foi relido, e um documento trocado entre as duas leituras não
+	// pode correr por ter passado na primeira. Antes de ler o log e de qualquer escrita.
+	if err := recusarOrigemDeclarada(doc); err != nil {
+		return err
 	}
 	// AOS-442 — SE O RUN TEM UM PLANO VALIDADO E AINDA SEM DECISÃO, O DOCUMENTO TEM DE SER ESSE, em
 	// qualquer ramo do gate.

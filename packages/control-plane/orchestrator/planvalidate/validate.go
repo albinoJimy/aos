@@ -125,6 +125,12 @@ func Validate(doc plan.PlanDocument, snap Snapshot, ceil Ceilings) Verdict {
 	if v := checkVerifierAuthority(doc, snap); v.Rejected() {
 		return v
 	}
+	// A ORIGEM DECLARADA DE UMA SAÍDA (origem.go, ADR-038 §2.1, AOS-500). Depois de
+	// [checkTools]: a regra pergunta se `from_tool` é uma tool do nó, e uma tool que não
+	// resolve tem de morrer pela sua razão.
+	if v := checkOutputSources(doc); v.Rejected() {
+		return v
+	}
 	// CONTRATOS TIPADOS DE PAYLOAD (payload.go, ADR-022 §2.3). Também depois de
 	// [checkTools], e pela mesma razão: a AUTORIDADE do consumidor (que decide a
 	// compatibilidade de taint) deriva-se das tools PINADAS — perguntá-la a uma

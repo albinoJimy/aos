@@ -10,6 +10,7 @@
 | **Contexto-fonte** | Análise comparativa do conceito «Graph Engineering» ([AI Builder Club — Graph Engineering Guide 2026](https://www.aibuilderclub.com/blog/graph-engineering-guide-2026)) contra o grafo de plano do AOS (`packages/control-plane/orchestrator/`, EPIC-03/EPIC-19) |
 | **ADRs relacionados** | ADR-002 (RM mandatório), ADR-003 (NHI por agente), ADR-005 (control/data + taint), ADR-008 (admission tokens/$), ADR-010 (observabilidade/replay), ADR-013 (gates SA-ROC), ADR-018 (fronteira nó↔ORQ/SCH), ADR-020 (planeador como agente governado) |
 | **Supersede** | — |
+| **Emendado** | 2026-10-05, por AOS-500 (ADR-038 §2.1): §2.3 (um contrato de saída pode declarar a sua origem) |
 
 > **RATIFICADO (2026-08-13, autoridade de dono).** O estado passou de *Proposto* a
 > *Aceite*: a decisão da §2 — as três extensões **e** os cinco invariantes de §2.4 — é
@@ -102,6 +103,34 @@ grafo não valida se um nó consome um output inexistente, de tipo incompatível
 não autorizar elevação). O transporte do payload **não é um blackboard**: é referência
 a registo no Event Store/MEM com proveniência, respeitando «contexto ≠ registo» (o
 consumidor recebe resumo/referência, não o histórico bruto).
+
+**Emenda de 2026-10-05 (AOS-500, ADR-038 §2.1): um contrato de saída pode declarar a sua
+origem.** Um `output` ganha um campo opcional, `from_tool`: o nome exacto de uma tool do mesmo
+nó, de que essa saída é o resultado. Sem o campo, o contrato é o que esta secção sempre
+descreveu — nome, schema e *taint* — e a saída é o que o nó escreve. Com ele, o contrato diz
+que o que atravessa a aresta é o que a tool devolveu, e não o que o modelo escreveu sobre isso
+(a razão, a designação pelo kernel e o transporte são do ADR-038; a entrega é do AOS-501).
+
+O que a emenda fixa nesta secção:
+
+- A origem **declara-se e não se infere**: nem do tipo da saída, nem da estrutura do nó.
+- É **ortogonal ao tipo e ao *taint***. Não há um tipo novo, e o *taint* não muda: a saída de um
+  nó que não é verificador continua *untrusted*, e um consumidor com autoridade privilegiada
+  continua a não a poder consumir.
+- **Entra no contrato.** A forma canónica e o carimbo do contrato (`contract_digest`) incluem a
+  origem quando ela existe, e só então: um contrato sem origem tem o carimbo que tinha, e pôr ou
+  tirar a origem num documento muda-o.
+- O validador puro recusa, com um sub-código por caso, uma origem que a estrutura não sustenta:
+  uma tool que não é do nó; uma saída que não é `record` nem `artifact`; um nó verificador; um
+  nó com `consumes` (tem o contexto *untrusted* desde o primeiro turno e nunca tem origem
+  designável); mais de uma saída com origem no mesmo nó. Um nó que podia declarar a origem e não
+  o faz **não** é recusado.
+- É a linha `1.3.0` do `plan_version` (MINOR, aditiva), com o piso de versão derivado do uso
+  do campo, como as extensões anteriores.
+- O invariante 5 da §2.4 estende-se: o humano no gate vê a origem declarada de cada saída.
+
+O que **não** muda: o transporte continua a ser referência a registo com proveniência, e
+nenhuma das duas rejeições desta decisão (ciclos por aresta, *blackboard*) é reaberta.
 
 ### 2.4 Invariantes preservados (pré-condições da proposta)
 

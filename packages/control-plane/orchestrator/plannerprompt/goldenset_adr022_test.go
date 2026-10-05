@@ -76,13 +76,23 @@ func loadExtensionCandidate(t *testing.T, dir, name string) plan.PlanDocument {
 	if err != nil {
 		t.Fatalf("decode da fixture %s/%s: %v", dir, name, err)
 	}
-	// As fixtures das extensões carimbam a linha CORRENTE: são planos que só um
-	// planeador pós-ADR-022 produz, e é isso que o carimbo tem de dizer.
-	if doc.PlanVersion != plan.CurrentPlanVersion {
-		t.Fatalf("fixture %s/%s carimbada %s; esperado %s", dir, name, doc.PlanVersion, plan.CurrentPlanVersion)
+	// As fixtures das extensões carimbam a linha que as INTRODUZIU, 1.2.0: são planos que só
+	// um planeador pós-ADR-022 produz, e é isso que o carimbo tem de dizer.
+	//
+	// Era a linha corrente, e a comparação fazia-se com [plan.CurrentPlanVersion]. Desde o
+	// AOS-500 a corrente é 1.3.0, e o golden-set NÃO muda com ela: o prompt do planeador
+	// continua a mandar carimbar "1.2.0" quando se usam estas extensões, e nenhuma fixture usa
+	// `from_tool` (o prompt que o pede é do AOS-501). Re-carimbar as fixtures era mudar o
+	// golden-set para dizer uma coisa que o planeador não produz.
+	if doc.PlanVersion != linhaDasExtensoesADR022 {
+		t.Fatalf("fixture %s/%s carimbada %s; esperado %s", dir, name, doc.PlanVersion, linhaDasExtensoesADR022)
 	}
 	return doc
 }
+
+// linhaDasExtensoesADR022 é o `plan_version` que as fixtures do golden-set de ADR-022 carimbam:
+// o MINOR que introduziu `outputs`, `consumes` e o papel verificador.
+var linhaDasExtensoesADR022 = plan.PlanVersion{Major: 1, Minor: 2, Patch: 0}
 
 // loadStampedCandidate é o irmão de [loadExtensionCandidate] para as fixtures cujo
 // CARIMBO é o objecto do teste: exige a versão DADA em vez da corrente. Existe porque a

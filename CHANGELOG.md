@@ -7,6 +7,19 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-19 (AOS-500) O plano declara a origem de uma saída: `outputs[].from_tool`, schema 1.3.0
+- `feat(AOS-500)` — a declaração de que a entrega por referência (AOS-501) depende. **Nenhum plano muda:** o planeador não é instruído a emitir o campo, e um documento sem ele tem os bytes, os digests, os eventos e o cartão de antes. Emenda o ADR-022 §2.3.
+  - **Schema:** `outputs[].from_tool`, opcional — o nome de uma tool do mesmo nó de que a saída é o resultado. `plan_version` corrente 1.3.0 (MINOR). O `plan.Decode` continua a recusar campos desconhecidos e exige que o valor seja um identificador.
+  - **Contrato:** a forma canónica de uma saída ganha `:tool=<nome>` só quando há origem; o `contract_digest` de um contrato sem origem não muda (literais tirados com o código anterior), e pôr ou tirar o campo muda-o.
+  - **Validador**, com um código por regra: `from_tool_unknown_tool` (não é uma tool do nó), `from_tool_output_type` (a saída não é `record` nem `artifact`), `from_tool_on_verifier`, `from_tool_with_consumes`, `from_tool_multiple`; usar o campo com um carimbo abaixo de 1.3.0 dá `plan_version_below_features`. Um nó que podia declarar a origem e não o faz não é recusado. O taint não muda.
+  - **Cartão de aprovação:** a saída mostra a origem (`notas:record:untrusted:tool=doc_read`), e o mesmo plano com e sem o campo dá cartões diferentes. A versão do contrato do cartão não sobe.
+  - **Linha de versões:** a fixture da 1.2.0 fica congelada; o caso 1.3.0 reproduz-se na sua versão.
+  - **Prompt do planeador:** não muda (1.4.0, bytes fixados por teste). O teste que deriva o schema do prompt dos tipos do plano tem uma excepção nomeada com uma só entrada, `Output.from_tool`, que o AOS-501 retira.
+  - **`aos-orq`:** recusa correr um plano que declare `from_tool` — causa `origem_sem_entrega`, saída `10`, posse largada —, antes da posse com `--plan-doc` e antes de admitir ou submeter qualquer nó com `--goal`. Não depende de `AOS_ORQ_SAIDA_POR_REFERENCIA`.
+  - **Muda sem o campo:** um documento carimbado `1.3.0` passa a ser aceite (antes: `plan_version_ahead_of_reader`).
+  - **Rollback (medido):** o binário anterior recusa com a saída `10` um documento com o campo (`unknown field "from_tool"`) e um documento carimbado 1.3.0; um documento 1.2.0 corre igual. Não há documentos 1.3.0 gravados em produção antes do AOS-501.
+  - **Por fazer:** a revisão adversarial independente.
+
 ### Fixed — EPIC-19 (AOS-499) A medição da saída por referência mede o conteúdo, e não o envelope
 - `fix(AOS-499)` — revisão adversarial de 2026-10-05, sem bloqueantes. Em produção o resultado designado é o **envelope** que a sandbox escreve, e não o documento; a medição comparava o texto final com o envelope (por digest e por tamanho) e todos os testes usavam tools que devolviam bytes crus. «Igual» era impossível, e uma transcrição byte a byte de um documento curto contava como resumo. **Nada disto é critério de controlo: a publicação e a entrega não mudam.**
   - **A medição desembrulha o envelope, só para medir.** Reconhece a forma exacta do codificador da sandbox (objecto com `exit_code` inteiro e só as chaves do envelope) e compara o `stdout_text` com o texto final dentro do processo. O que não é um envelope reconhecível compara-se como veio.

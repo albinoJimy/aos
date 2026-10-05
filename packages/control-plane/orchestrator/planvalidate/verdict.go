@@ -93,6 +93,26 @@ const (
 	// elevação). É a barreira P0 do TaintGate aplicada na admissão, antes do spawn.
 	ReasonConsumesTaintAuthority Reason = "consumes_taint_authority"
 
+	// Regra 1-quinquies — A ORIGEM DECLARADA DE UMA SAÍDA (ADR-038 §2.1, AOS-500; origem.go).
+	// Um sub-código por regra: cada recusa corrige-se de maneira diferente.
+	//
+	// ReasonFromToolOnVerifier — um nó verificador declara `from_tool`. A saída de um
+	// verificador é o veredicto, que o sistema deriva; não é o resultado de uma tool.
+	ReasonFromToolOnVerifier Reason = "from_tool_on_verifier"
+	// ReasonFromToolWithConsumes — o nó declara `from_tool` e tem `consumes`. Um nó que recebe
+	// entradas tem o contexto untrusted desde o primeiro turno, e a chamada da tool nunca é
+	// designável como origem (ADR-038 §2.2 e §5).
+	ReasonFromToolWithConsumes Reason = "from_tool_with_consumes"
+	// ReasonFromToolMultiple — mais de uma saída do mesmo nó declara `from_tool`. Um run tem
+	// uma só origem designada.
+	ReasonFromToolMultiple Reason = "from_tool_multiple"
+	// ReasonFromToolOutputType — `from_tool` numa saída que não é `record` nem `artifact`: um
+	// `summary` é, por definição, transformado, e uma forma fechada é derivada pelo sistema.
+	ReasonFromToolOutputType Reason = "from_tool_output_type"
+	// ReasonFromToolUnknownTool — `from_tool` não é o nome exacto de uma tool de `tools` do
+	// mesmo nó (ou não é um identificador).
+	ReasonFromToolUnknownTool Reason = "from_tool_unknown_tool"
+
 	// Regra 2-bis — alcançabilidade dos ramos (ADR-022 §2.1).
 	// ReasonUnreachableJunction — a ancestralidade do nó exige DOIS ramos
 	// MUTUAMENTE EXCLUSIVOS sobre a MESMA origem, logo o nó é inalcançável em

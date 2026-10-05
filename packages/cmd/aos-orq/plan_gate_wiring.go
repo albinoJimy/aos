@@ -690,6 +690,9 @@ func operandoCanonico(p plan.Predicate) string {
 // saidasDoNo projecta os contratos de saída com o taint EFECTIVO — [plan.Node.EffectiveOutputTaint],
 // que é «forma fechada E produtor verificador», e não o rótulo advisory do documento. É a diferença
 // entre mostrar ao humano o que VALE e mostrar o que o modelo DISSE.
+//
+// A ORIGEM DECLARADA (`from_tool`, AOS-500) vai tal como o documento a declara: o aprovador tem de
+// ver que o nó seguinte recebe o resultado da tool, e não o texto do nó.
 func saidasDoNo(n plan.Node) []planapproval.PlanOutput {
 	if len(n.Outputs) == 0 {
 		return nil
@@ -700,6 +703,9 @@ func saidasDoNo(n plan.Node) []planapproval.PlanOutput {
 			Name:  o.Name,
 			Type:  string(o.Type),
 			Taint: string(n.EffectiveOutputTaint(o)),
+			// AOS-500: sem isto o cartão de um plano que declara a origem era igual ao do
+			// mesmo plano sem ela, e o humano aprovava uma entrega que não via.
+			FromTool: o.FromTool,
 		})
 	}
 	return out

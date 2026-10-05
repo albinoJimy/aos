@@ -217,6 +217,17 @@ type Output struct {
 	// Taint é o rótulo ADVISORY. Só ELEVA o piso derivado — ver
 	// [Node.EffectiveOutputTaint]. Opcional.
 	Taint PayloadTaint `json:"taint,omitempty"`
+	// FromTool é a ORIGEM DECLARADA da saída (AOS-500, ADR-038 §2.1; linha 1.3.0): o nome exacto
+	// de uma tool do MESMO nó, de que esta saída é o resultado. Opcional. Vazio quer dizer o que
+	// sempre quis dizer: a saída é o que o nó escreve.
+	//
+	// É um IDENTIFICADOR ([ValidIdentifier]), nunca texto livre: viaja para a forma canónica,
+	// para o `contract_digest` e para o cartão de aprovação. A forma confere-se aqui; que a tool
+	// seja do nó, o tipo da saída e as restantes regras são do validador (`planvalidate`).
+	//
+	// NÃO MUDA O TAINT. A saída de um não-verificador continua `untrusted`, com ou sem origem
+	// ([Node.EffectiveOutputTaint] não lê este campo).
+	FromTool string `json:"from_tool,omitempty"`
 }
 
 // EffectiveOutputTaint é o rótulo que VALE para um contrato de saída DECLARADO POR
@@ -283,7 +294,7 @@ var (
 	// ErrTooManyPayloadContracts — outputs/consumes acima do tecto de aridade.
 	ErrTooManyPayloadContracts = errors.New("plan: contratos de payload acima do tecto de aridade")
 	// ErrInvalidOutput — output com nome fora da grammar, duplicado no nó, tipo fora
-	// do enum ou taint fora do enum.
+	// do enum, taint fora do enum ou origem declarada (`from_tool`) fora da grammar.
 	ErrInvalidOutput = errors.New("plan: contrato de output invalido (nome/tipo/taint)")
 	// ErrInvalidConsumes — aresta de dados com `from` vazio, nome de output fora da
 	// grammar, tipo fora do enum, ou par (from,output) repetido no mesmo nó.
@@ -319,6 +330,11 @@ func validatePayload(nodeID string, outputs []Output, consumes []PayloadEdge) er
 		}
 		if !o.Taint.Valid() {
 			return fmt.Errorf("%w: taint %q (no %q)", ErrInvalidOutput, o.Taint, nodeID)
+		}
+		// A origem declarada (AOS-500) é opcional; presente, tem de ser um identificador. O
+		// valor recusado não vai na mensagem: é texto do documento.
+		if o.FromTool != "" && !ValidIdentifier(o.FromTool) {
+			return fmt.Errorf("%w: from_tool fora da grammar (no %q)", ErrInvalidOutput, nodeID)
 		}
 	}
 	if len(consumes) > maxConsumesPerNode {
@@ -362,6 +378,13 @@ func validatePayload(nodeID string, outputs []Output, consumes []PayloadEdge) er
 // passa por [ValidIdentifier] e tipo/taint são enums fechados —, pelo que a forma é
 // não-ambígua por construção, não por escape. É o mesmo argumento de
 // [CanonicalConditional].
+//
+// A ORIGEM DECLARADA (AOS-500, ADR-038 §2.1) entra SÓ QUANDO PRESENTE, como um quarto segmento
+// `:tool=<nome>`. Um contrato sem origem tem a forma — e por isso o digest — que tinha antes de
+// o campo existir: é o que mantém válidas as referências já publicadas. Com origem, o digest
+// amarra a declaração: pôr ou tirar `from_tool` num documento muda o carimbo, e uma referência
+// publicada sob um contrato não serve o outro. O nome da tool é um identificador (conferido na
+// forma) e os três primeiros campos não contêm `:`, pelo que a forma continua não-ambígua.
 func CanonicalOutput(n Node, o Output) string {
 	var b strings.Builder
 	b.WriteString(o.Name)
@@ -369,6 +392,10 @@ func CanonicalOutput(n Node, o Output) string {
 	b.WriteString(string(o.Type))
 	b.WriteByte(':')
 	b.WriteString(string(n.EffectiveOutputTaint(o)))
+	if o.FromTool != "" {
+		b.WriteString(":tool=")
+		b.WriteString(o.FromTool)
+	}
 	return b.String()
 }
 

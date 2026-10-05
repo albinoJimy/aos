@@ -102,6 +102,7 @@ func TestMinorAcimaDoLeitorERecusado(t *testing.T) {
 func TestPisoDerivaDeCadaFeature(t *testing.T) {
 	v110 := plan.PlanVersion{Major: 1, Minor: 1, Patch: 0}
 	v120 := plan.PlanVersion{Major: 1, Minor: 2, Patch: 0}
+	v130 := plan.PlanVersion{Major: 1, Minor: 3, Patch: 0}
 
 	casos := []struct {
 		nome    string
@@ -117,6 +118,10 @@ func TestPisoDerivaDeCadaFeature(t *testing.T) {
 		{"consumes", plan.Node{NodeID: "n", Role: "r", Objective: "o",
 			Consumes: []plan.PayloadEdge{{From: "a", Output: "resumo", Type: plan.PayloadSummary}}}, v120, "consumes"},
 		{"role: verifier", plan.Node{NodeID: "n", Role: plan.RoleVerifier, Objective: "o"}, v120, "role_verifier"},
+		// AOS-500: a origem declarada de uma saída. O nó usa também `outputs` (1.2.0); o piso é
+		// o MAIOR, e a feature reportada é a que o fixa.
+		{"outputs[].from_tool", plan.Node{NodeID: "n", Role: "r", Objective: "o",
+			Outputs: []plan.Output{{Name: "notas", Type: plan.PayloadRecord, FromTool: "inspect"}}}, v130, "from_tool"},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {

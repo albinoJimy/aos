@@ -1,0 +1,45 @@
+{
+  "plan_version": "1.3.0",
+  "objective": "recolher fontes, verificar a recolha e redigir o resumo executivo",
+  "budget_total": {"tokens": 2600, "cost_micro_usd": 13000},
+  "planner_meta": {"model": "planner-model-a", "prompt_version": "2.3.0", "capabilities_hash": "sha256:snap-payload"},
+  "nodes": [
+    {
+      "node_id": "recolha",
+      "role": "searcher",
+      "objective": "recolher fontes candidatas",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [],
+      "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000},
+      "risk_class": "safe",
+      "outputs": [
+        {"name": "achados", "type": "record", "from_tool": "search"},
+        {"name": "notas", "type": "summary", "taint": "untrusted"}
+      ]
+    },
+    {
+      "node_id": "revisao",
+      "role": "verifier",
+      "objective": "verificar a cobertura da recolha",
+      "tools": [],
+      "depends_on": ["recolha"],
+      "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000},
+      "risk_class": "safe",
+      "outputs": [{"name": "veredicto", "type": "verdict"}],
+      "consumes": [{"from": "recolha", "output": "achados", "type": "record"}]
+    },
+    {
+      "node_id": "resumo",
+      "role": "summarizer",
+      "objective": "redigir o resumo executivo",
+      "tools": [],
+      "depends_on": ["recolha"],
+      "budget_estimate": {"tokens": 1200, "cost_micro_usd": 6000},
+      "risk_class": "safe",
+      "conditional_on": [
+        {"from": "revisao", "when": [{"subject": "verdict", "op": "eq", "enum": "pass"}]}
+      ],
+      "consumes": [{"from": "recolha", "output": "notas", "type": "summary"}]
+    }
+  ]
+}

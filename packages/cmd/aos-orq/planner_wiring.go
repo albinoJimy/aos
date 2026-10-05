@@ -205,6 +205,14 @@ func decomporEMaterializar(ctx context.Context, ten *runlifecycle.Tenure, store 
 	}
 	fmt.Printf("decomposto: objectivo -> plano de %d nos (tentativas=%d, planner_nhi=%s)\n", len(res.Doc.Nodes), res.Attempts, res.PlannerNHI)
 
+	// (5-bis) AOS-500: um plano que declara a origem de uma saída não corre neste binário (ver
+	// origem_no_plano.go). Antes da validação a jusante, do gate e da materialização: nenhum nó
+	// é admitido nem submetido, e o documento não é escrito no `--plan-out`. O planeador não é
+	// instruído a emitir o campo; isto apanha o modelo que o invente.
+	if err := recusarOrigemDeclarada(res.Doc); err != nil {
+		return err
+	}
+
 	// (6) VALIDAÇÃO ESTRUTURAL (AOS-231) — fail-closed. O documento é untrusted; a forma
 	// já passou em plan.Decode, aqui valida-se aciclicidade/tools/tectos contra o snapshot
 	// pinado. O tecto de cardinalidade é o DERIVADO da revisibilidade humana.

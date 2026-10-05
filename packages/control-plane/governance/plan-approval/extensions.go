@@ -114,6 +114,14 @@ type PlanOutput struct {
 	// produtor verificador). O gate NÃO deriva taint: exibe o que lhe é dado, e
 	// exibe-o fail-closed — ver [PlanOutput.EffectiveTaint].
 	Taint string `json:"taint,omitempty"`
+	// FromTool é a ORIGEM DECLARADA da saída (ADR-038 §2.1, AOS-500): o nome da tool do mesmo
+	// nó de que esta saída é o resultado. Vazio ⇒ a saída é o que o nó escreve, como sempre.
+	//
+	// É a forma textual EXACTA do `plan.Output.FromTool` do orquestrador, e um SÍMBOLO do
+	// charset fechado como o nome e o tipo: o humano no gate tem de ver que o nó seguinte vai
+	// receber o que a tool devolveu, e não o que o modelo escreveu sobre isso. O gate não
+	// confere que a tool é do nó — isso é do validador puro a montante.
+	FromTool string `json:"from_tool,omitempty"`
 }
 
 // TaintTrusted/TaintUntrusted são as duas formas textuais canónicas do reticulado de
@@ -209,9 +217,23 @@ func CanonicalConditions(cs []PlanCondition) string {
 // Canonical devolve a forma canónica do contrato de saída: `nome:tipo:taint`, com o
 // taint EFECTIVO ([PlanOutput.EffectiveTaint]) — o rótulo que vale, não um campo em
 // branco. Isomorfa à `plan.CanonicalOutput`.
+//
+// Com a origem declarada (AOS-500) ganha um quarto segmento, `:tool=<nome>`, e só então: uma
+// saída sem origem tem a forma de sempre, pelo que o cartão de um plano que não usa o campo é
+// byte a byte o que era. É o que o humano lê no cartão, e é o que distingue, no diff de edição
+// ([PlanNode.extensionSignature]), um plano que declara a origem de um que não a declara.
 func (o PlanOutput) Canonical() string {
-	return o.Name + ":" + o.Type + ":" + o.EffectiveTaint()
+	s := o.Name + ":" + o.Type + ":" + o.EffectiveTaint()
+	if o.FromTool != "" {
+		s += ":" + canonicalOutputSourcePrefix + o.FromTool
+	}
+	return s
 }
+
+// canonicalOutputSourcePrefix é o prefixo do quarto segmento da forma canónica de uma saída
+// com origem declarada. O `=` não pode ocorrer num símbolo, pelo que o segmento não se
+// confunde com um nome, um tipo ou um rótulo.
+const canonicalOutputSourcePrefix = "tool="
 
 // Canonical devolve a forma canónica da aresta de dados: `from:output:tipo`.
 func (c PlanConsume) Canonical() string {
@@ -344,6 +366,11 @@ func (n PlanNode) validateExtensions(known map[string]bool, declared map[[2]stri
 		if o.Taint != "" && !validCanonicalSymbol(o.Taint) {
 			return ErrNonCanonicalExtension
 		}
+		// A origem declarada é o nome de uma tool: um símbolo, como o nome do contrato. Texto
+		// livre aqui era o cartão a mostrar conteúdo do documento (AOS-500).
+		if o.FromTool != "" && !validCanonicalSymbol(o.FromTool) {
+			return ErrNonCanonicalExtension
+		}
 	}
 	for _, c := range n.Consumes {
 		// A FORMA primeiro (nome e tipo), depois a REFERÊNCIA, depois a topologia. A
@@ -430,7 +457,8 @@ type NodeExtension struct {
 	// Conditions são as arestas condicionais que GOVERNAM A ENTRADA deste nó — sob que
 	// condição este ramo corre de todo.
 	Conditions []CardCondition `json:"conditions,omitempty"`
-	// Outputs são os contratos de saída em forma canónica `nome:tipo:taint`.
+	// Outputs são os contratos de saída em forma canónica `nome:tipo:taint`, com o quarto
+	// segmento `:tool=<nome>` quando a saída declara a origem (AOS-500).
 	Outputs []string `json:"outputs,omitempty"`
 	// Consumes são as arestas de dados em forma canónica `origem:output:tipo` — QUE
 	// trabalho de QUEM entra neste nó.
@@ -541,12 +569,21 @@ func validCanonicalPredicate(s string) bool {
 	return validCanonicalSymbol(subject) && validCanonicalSymbol(parts[1]) && validCanonicalOperand(parts[2])
 }
 
-// validCanonicalOutput confere `nome:tipo:taint`. O taint tem de ser um dos DOIS rótulos
-// do reticulado: [PlanOutput.Canonical] emite sempre o taint EFECTIVO, pelo que qualquer
-// outra coisa no wire é um rótulo que este módulo nunca produziu.
+// validCanonicalOutput confere `nome:tipo:taint`, ou `nome:tipo:taint:tool=<nome>` quando a
+// saída declara a origem (AOS-500). O taint tem de ser um dos DOIS rótulos do reticulado:
+// [PlanOutput.Canonical] emite sempre o taint EFECTIVO, pelo que qualquer outra coisa no wire
+// é um rótulo que este módulo nunca produziu. O quarto segmento, se existir, é exactamente o
+// prefixo `tool=` seguido de um símbolo — nunca um segmento vazio nem texto livre.
 func validCanonicalOutput(s string) bool {
 	parts := strings.Split(s, ":")
-	if len(parts) != 3 {
+	switch len(parts) {
+	case 3:
+	case 4:
+		tool, ok := strings.CutPrefix(parts[3], canonicalOutputSourcePrefix)
+		if !ok || !validCanonicalSymbol(tool) {
+			return false
+		}
+	default:
 		return false
 	}
 	if parts[2] != TaintTrusted && parts[2] != TaintUntrusted {

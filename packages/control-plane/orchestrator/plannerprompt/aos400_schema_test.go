@@ -35,10 +35,11 @@ import (
 )
 
 // documentoCompleto usa todos os campos dos tipos cuja obrigatoriedade se mede por remoção
-// (na linha 1.2.0, para caberem outputs e consumes). É válido para o DECODE, que é o que se
-// mede aqui; não para o validador (analise liga-se a recolha pelos dois canais).
+// (na linha 1.3.0, para caberem outputs, consumes e a origem declarada de uma saída). É válido
+// para o DECODE, que é o que se mede aqui; não para o validador (analise liga-se a recolha
+// pelos dois canais).
 const documentoCompleto = `{
-  "plan_version": "1.2.0",
+  "plan_version": "1.3.0",
   "objective": "recolher e analisar",
   "budget_total": {"tokens": 100, "cost_micro_usd": 100},
   "planner_meta": {"model": "m", "prompt_version": "1.2.0", "capabilities_hash": "sha256:x"},
@@ -48,7 +49,7 @@ const documentoCompleto = `{
      "depends_on": [],
      "budget_estimate": {"tokens": 10, "cost_micro_usd": 10},
      "risk_class": "safe",
-     "outputs": [{"name": "dados", "type": "record", "taint": "untrusted"}]},
+     "outputs": [{"name": "dados", "type": "record", "taint": "untrusted", "from_tool": "fs.read"}]},
     {"node_id": "analise", "role": "worker", "objective": "analisar",
      "tools": [], "depends_on": ["recolha"],
      "budget_estimate": {"tokens": 10, "cost_micro_usd": 10},
@@ -95,6 +96,23 @@ var ondeSeDeclaraAninhado = []struct {
 	{reflect.TypeOf(plan.ConditionalEdge{}), cabecalhoNo, "conditional_on"},
 	{reflect.TypeOf(plan.Output{}), cabecalhoNo, "outputs"},
 	{reflect.TypeOf(plan.PayloadEdge{}), cabecalhoNo, "consumes"},
+}
+
+// camposAindaForaDoPrompt é a EXCEPÇÃO, nomeada e única, à regra «o template declara todos os
+// campos do schema»: campos que o `plan.Decode` já aceita e que o prompt do planeador ainda não
+// nomeia, na forma `Tipo.campo_json`.
+//
+// Tem UMA entrada, `Output.from_tool` (AOS-500), e é para ter só essa. O schema do plano ganhou
+// a origem declarada de uma saída na linha 1.3.0, mas o planeador só é instruído a emiti-la
+// quando houver quem entregue por referência — o prompt 1.5.0, do AOS-501. Até lá o template
+// fica byte a byte o de hoje, e sem esta excepção [TestTemplateDeclaraOSchemaQueODecodeExige]
+// obrigava a mexer nele.
+//
+// O AOS-501 RETIRA-A, ao nomear o campo no bloco SCHEMA. Não é um sítio para deixar campos
+// novos por documentar: [TestAOS500_AExcepcaoDoPromptESoFromTool] falha se ela ganhar outra
+// entrada, se o template já nomear o campo, ou se ela deixar de ser necessária.
+var camposAindaForaDoPrompt = map[string]bool{
+	"Output.from_tool": true,
 }
 
 // camposJSON devolve os nomes JSON dos campos exportados de um tipo.
@@ -232,8 +250,17 @@ func chavetas(texto string) map[string]bool {
 	return out
 }
 
-// faltasNoTemplate devolve tudo o que o bloco SCHEMA não declara como o código exige.
+// faltasNoTemplate devolve tudo o que o bloco SCHEMA não declara como o código exige, salvo os
+// campos de [camposAindaForaDoPrompt].
 func faltasNoTemplate(t *testing.T, template string) []string {
+	t.Helper()
+	return faltasNoTemplateSalvo(t, template, camposAindaForaDoPrompt)
+}
+
+// faltasNoTemplateSalvo é [faltasNoTemplate] com a excepção dada à mão. Só os campos ANINHADOS
+// se podem exceptuar: é onde a excepção de hoje vive, e um campo do topo ou do nó que o prompt
+// não nomeasse falhava sempre.
+func faltasNoTemplateSalvo(t *testing.T, template string, salvo map[string]bool) []string {
 	t.Helper()
 	topo := seccao(template, cabecalhoTopo, cabecalhoNo)
 	no := seccao(template, cabecalhoNo, cabecalhoPred)
@@ -263,6 +290,9 @@ func faltasNoTemplate(t *testing.T, template string) []string {
 		texto, _, _ := entrada(seccoes[alvo.seccao], alvo.campoPai)
 		declarados := chavetas(texto)
 		for _, campo := range camposJSON(alvo.tipo) {
+			if salvo[alvo.tipo.Name()+"."+campo] {
+				continue
+			}
 			quer := obrig[alvo.tipo.Name()][campo]
 			if !declarados[campo+marca(quer)] {
 				faltas = append(faltas, alvo.campoPai+"."+campo+marca(quer))
@@ -328,6 +358,49 @@ func TestTemplateDeclaraOSchemaQueODecodeExige(t *testing.T) {
 		if !contem(faltas, quer) {
 			t.Fatalf("o template 1.1.0 devia falhar em %q; faltas medidas: %v", quer, faltas)
 		}
+	}
+}
+
+// fingerprintPrompt140 é o SHA-256 do template 1.4.0 (AOS-484), o corrente quando o AOS-500
+// entrou. Tirado antes de qualquer alteração deste ticket.
+const fingerprintPrompt140 = "51393c16f3b22337ea71b016c1e21a4ea0ab9b4cb624676f5d7a2bb0192fb5c8"
+
+// TestAOS500_OPromptNaoMudaNesteTicket: o schema do plano subiu a 1.3.0 e o prompt do planeador
+// ficou onde estava — a versão e os bytes. O prompt que nomeia `from_tool` é o 1.5.0 (AOS-501).
+// Quando esse ticket subir a versão, este teste é o que ele tem de actualizar de propósito.
+func TestAOS500_OPromptNaoMudaNesteTicket(t *testing.T) {
+	if got := Current.MetaPromptVersion(); got != "1.4.0" {
+		t.Fatalf("o prompt corrente e %s; o AOS-500 nao o muda (1.4.0)", got)
+	}
+	sum := sha256.Sum256([]byte(Current.Template))
+	if got := hex.EncodeToString(sum[:]); got != fingerprintPrompt140 {
+		t.Fatalf("os bytes do template mudaram: sha256=%s, o do 1.4.0 e %s", got, fingerprintPrompt140)
+	}
+}
+
+// TestAOS500_AExcepcaoDoPromptESoFromTool prende a excepção [camposAindaForaDoPrompt]:
+//   - tem exactamente uma entrada, `Output.from_tool` — uma segunda falha aqui;
+//   - é NECESSÁRIA: sem ela, a única falta do template corrente é `outputs.from_tool`;
+//   - é VERDADEIRA: o template corrente não nomeia o campo em lado nenhum. Quando o AOS-501 o
+//     nomear, este teste falha e manda retirar a excepção.
+func TestAOS500_AExcepcaoDoPromptESoFromTool(t *testing.T) {
+	if len(camposAindaForaDoPrompt) != 1 || !camposAindaForaDoPrompt["Output.from_tool"] {
+		t.Fatalf("a excepcao do prompt tem de conter so Output.from_tool; tem %v — um campo novo do schema declara-se no template, nao aqui", camposAindaForaDoPrompt)
+	}
+	semExcepcao := faltasNoTemplateSalvo(t, Current.Template, nil)
+	if len(semExcepcao) != 1 || semExcepcao[0] != "outputs.from_tool" {
+		t.Fatalf("sem a excepcao, a unica falta do template devia ser outputs.from_tool; veio %v", semExcepcao)
+	}
+	if strings.Contains(Current.Template, "from_tool") {
+		t.Fatal("o template ja nomeia from_tool: retira a excepcao camposAindaForaDoPrompt (AOS-501)")
+	}
+	// A excepção não esconde mais nada: com ela, um campo vizinho por declarar continua a falhar.
+	semTaint := strings.Replace(Current.Template, "taint}", "}", 1)
+	if semTaint == Current.Template {
+		t.Fatal("pre-condicao: a linha de outputs do template declara taint entre chavetas")
+	}
+	if faltas := faltasNoTemplate(t, semTaint); !contem(faltas, "outputs.taint") {
+		t.Fatalf("um template sem `taint` em outputs devia falhar em outputs.taint mesmo com a excepcao; faltas: %v", faltas)
 	}
 }
 
