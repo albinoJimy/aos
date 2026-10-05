@@ -62,6 +62,11 @@ const (
 	metricaFalhasConsecutivas = "aos_orq_consume_falhas_consecutivas"
 	metricaUltimaDrenagem     = "aos_orq_consume_ultima_drenagem_timestamp_seconds"
 	metricaUltimaPedidos      = "aos_orq_consume_ultima_drenagem_pedidos"
+	// AOS-495 — o contrato de conclusão, do lado do plano. Os rótulos são de vocabulário FECHADO
+	// (contrato_de_conclusao.go): um valor fora dele não se escreve.
+	metricaContratoNaoAplicado  = "aos_orq_consume_contrato_nao_aplicado_total"
+	metricaVeredictosObservados = "aos_orq_consume_veredictos_observados_total"
+	metricaNosPorContrato       = "aos_orq_consume_nos_por_contrato_total"
 )
 
 // catalogoDeMetricas é a lista FECHADA do que o ficheiro contém, pela ordem em que é escrito. Uma
@@ -78,6 +83,9 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaFalhasConsecutivas, "gauge", "Desfechos falhados seguidos (aguarda_humano e o 8, nos em voo, sao neutros); volta a 0 no primeiro terminal/0."},
 	{metricaUltimaDrenagem, "gauge", "Fim da ultima drenagem, em segundos unix."},
 	{metricaUltimaPedidos, "gauge", "Pedidos tratados na ultima drenagem (consumidos e re-verificados)."},
+	{metricaContratoNaoAplicado, "counter", "Execucoes de plano (um serve por geracao) em que o contrato de conclusao nao foi aplicado, por motivo: no_nao_anuncia (o plano correu sem contrato) ou anuncio_ilegivel (o plano nao correu; o pedido voltou a fila)."},
+	{metricaVeredictosObservados, "counter", "Nos do plano que concluiram com um veredicto NEGATIVO observado (no aos em observe), por razao: os que enforce fechava failed."},
+	{metricaNosPorContrato, "counter", "Nos do plano submetidos, por classe face ao contrato de conclusao (com_contrato_saida_aberta|com_contrato_sem_saida|sem_contrato_verificador|sem_contrato_sem_tools|sem_contrato_no_nao_anuncia)."},
 }
 
 // Origens de um pedido — o rótulo `origem` de [metricaOrigem] e do resumo do desfecho.

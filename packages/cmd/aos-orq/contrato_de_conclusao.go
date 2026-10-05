@@ -11,7 +11,8 @@ package main
 // ADR-037), e o nó passou a aceitar o contrato e a devolver a razão (AOS-494). Este ficheiro é
 // o que o `aos-orq` faz com isso:
 //
-//   - DECLARA o contrato dos nós elegíveis, e só a um nó que anuncie aceitá-lo;
+//   - DECLARA o contrato dos nós elegíveis, e só a um nó que anuncie aceitá-lo — um anúncio
+//     que não se leu não é um «não»: o `serve` pára e o pedido volta à fila;
 //   - regista a CAUSA de cada nó que fecha `failed`, num vocabulário fechado, e leva-a ao
 //     `detail` do desfecho do plano;
 //   - nunca publica uma saída VAZIA.
@@ -25,6 +26,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -97,27 +99,69 @@ func causaDoRunFilho(st estadoDoRun, existe bool) string {
 	return st.OutcomeReason
 }
 
-// contratoDoNo devolve o contrato de conclusão de um nó ELEGÍVEL (AOS-495), ou nil. Âmbito estreito,
-// decidido pelo dono a 2026-10-04 sem mudar o schema do plano:
+// Classes de um nó do plano face ao contrato de conclusão (AOS-495). É o que cada nó diz no log
+// da drenagem quando é submetido, e o rótulo `classe` de [metricaNosPorContrato]. Vocabulário
+// FECHADO: cinco valores, todos deste ficheiro.
+const (
+	// classeComContratoSaidaAberta — leva contrato e declara uma saída de forma aberta: além do
+	// contrato, uma saída vazia fecha-o `failed`.
+	classeComContratoSaidaAberta = "com_contrato_saida_aberta"
+	// classeComContratoSemSaida — leva contrato e não declara saída de forma aberta: o último nó
+	// do plano, o plano de um só nó, o nó de escrita. Pode concluir sem texto.
+	classeComContratoSemSaida = "com_contrato_sem_saida"
+	// classeSemContratoVerificador — um verificador julga muitas vezes só com os `inputs`.
+	classeSemContratoVerificador = "sem_contrato_verificador"
+	// classeSemContratoSemTools — sem tools atribuídas não há de que a conclusão dependa.
+	classeSemContratoSemTools = "sem_contrato_sem_tools"
+	// classeSemContratoNaoAnunciado — o nó do plano era elegível, e o nó `aos` não anuncia o
+	// suporte (anterior ao AOS-494): o campo não vai, porque dava 400.
+	classeSemContratoNaoAnunciado = "sem_contrato_no_nao_anuncia"
+)
+
+// classesDoContrato é a lista fechada das classes, pela ordem em que se documentam.
+var classesDoContrato = []string{
+	classeComContratoSaidaAberta, classeComContratoSemSaida,
+	classeSemContratoVerificador, classeSemContratoSemTools, classeSemContratoNaoAnunciado,
+}
+
+// contratoDoNo devolve o contrato de conclusão de um nó ELEGÍVEL (AOS-495), ou nil. É elegível
+// TODO o nó que:
 //
 //   - não é verificador: um verificador julga muitas vezes só com os `inputs`;
-//   - tem tools atribuídas no plano materializado (`tools`, os nomes da lista-branca do run);
-//   - declara pelo menos uma saída de forma ABERTA (`summary`, `record` ou `artifact`): diz
-//     que produz conteúdo, e tem uma tool para o obter.
+//   - tem tools atribuídas no plano materializado (`tools`, os nomes da lista-branca do run).
+//
+// COM OU SEM `outputs`. A primeira versão exigia também uma saída de forma aberta declarada, e a
+// revisão adversarial mostrou o que isso deixava de fora: o planeador só declara `outputs` quando
+// outro nó os consome (regras 7 e 12 do prompt), pelo que o plano de um só nó, o último nó e os
+// nós de escrita ficavam sem contrato — a classe mais cara, a de um nó que diz «feito» sem ter
+// escrito. Reproduzido: nó com `doc_read` e sem `outputs`, resposta de produção, plano 0.
 //
 // O contrato é a lista inteira das tools atribuídas: o plano não diz qual delas é o trabalho do
 // nó. Uma tool atribuída que o objectivo afinal não precisava dá um vermelho falso — resíduo
-// declarado no ADR-037 §5, e é por isso que o nó `aos` corre primeiro em observação.
+// declarado no ADR-037 §5, e é por isso que o nó `aos` corre primeiro em observação. O
+// alargamento aumenta esse resíduo, e o dono valida a classe alargada antes de ligar `enforce`.
 func contratoDoNo(n plan.Node, tools []string) []string {
 	if n.IsVerifier() || len(tools) == 0 {
 		return nil
 	}
-	for _, o := range n.Outputs {
-		if !o.Type.ClosedForm() {
-			return tools
-		}
+	return tools
+}
+
+// classeDoContrato diz em que classe o nó do plano fica. `anunciado` é o que o nó `aos`
+// respondeu no anúncio ([nodeClient.ContratoDeConclusao]).
+func classeDoContrato(n plan.Node, tools []string, anunciado bool) string {
+	switch {
+	case n.IsVerifier():
+		return classeSemContratoVerificador
+	case len(tools) == 0:
+		return classeSemContratoSemTools
+	case !anunciado:
+		return classeSemContratoNaoAnunciado
+	case produzSaidaAberta(n):
+		return classeComContratoSaidaAberta
+	default:
+		return classeComContratoSemSaida
 	}
-	return nil
 }
 
 // produzSaidaAberta diz se o nó declara pelo menos uma saída de forma aberta — a que se
@@ -146,8 +190,15 @@ type anuncioDoNo struct {
 // mesma credencial. Lê-se por `serve`, logo por plano: um nó trocado entre dois planos é
 // perguntado outra vez.
 //
-// Um erro aqui NÃO é o nó a dizer que não: quem chama trata-o como «não anunciado» e submete
-// sem contrato, que é o comportamento de antes deste ticket.
+// DUAS RESPOSTAS, QUE NÃO SE CONFUNDEM:
+//
+//   - `(anuncio, nil)` — o nó RESPONDEU. Com `aceita` falso, respondeu sem `completion_contract`:
+//     é um nó anterior ao AOS-494, e os nós do plano vão sem contrato;
+//   - `(_, erro)` — o anúncio NÃO SE LEU (rede, 429, 5xx, corpo ilegível). Não é o nó a dizer
+//     que não. Quem chama NÃO pode tratá-lo como «não anunciado»: era desligar o contrato do
+//     plano inteiro por uma leitura falhada, e quem conseguisse provocar um 429 nesta rota
+//     desligava-o sem credencial nenhuma. O `serve` pára com [errAnuncioIlegivel] e o pedido
+//     volta à fila.
 func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/tools", nil)
 	if err != nil {
@@ -187,16 +238,31 @@ func modoImprimivel(modo string) string {
 	return modo
 }
 
-// bannerDoContrato declara, no arranque do `serve`, se os nós elegíveis vão levar contrato.
-func bannerDoContrato(a anuncioDoNo, err error) string {
-	switch {
-	case err != nil:
-		return fmt.Sprintf("contrato de conclusao (AOS-495): NAO APLICADO — o anuncio do no nao se leu (%v). Os nos do plano sao submetidos sem contrato, como antes: um run que termine sem chamar a tool de que a saida depende conta como concluido", err)
-	case !a.aceita:
+// errAnuncioIlegivel — o `serve` não conseguiu ler do nó `aos` se ele aceita o contrato de
+// conclusão. É TRANSITÓRIO (saída 1): o `serve` pára antes da posse e antes de planear, e o
+// `consume` devolve o pedido à fila. Correr sem contrato era falhar aberto num controlo cujo
+// objectivo é não haver verdes falsos.
+var errAnuncioIlegivel = errors.New("aos-orq: o anuncio do contrato de conclusao nao se leu do no")
+
+// Motivos por que o contrato não foi aplicado a uma execução de plano — o rótulo `motivo` de
+// [metricaContratoNaoAplicado]. Vocabulário fechado.
+const (
+	// motivoNoNaoAnuncia — o nó respondeu sem `completion_contract`; o plano correu sem contrato.
+	motivoNoNaoAnuncia = "no_nao_anuncia"
+	// motivoAnuncioIlegivel — o anúncio não se leu; o plano NÃO correu e o pedido voltou à fila.
+	motivoAnuncioIlegivel = "anuncio_ilegivel"
+)
+
+// motivosDoContratoNaoAplicado é a lista fechada dos motivos.
+var motivosDoContratoNaoAplicado = []string{motivoNoNaoAnuncia, motivoAnuncioIlegivel}
+
+// bannerDoContrato declara, no arranque do `serve`, se os nós elegíveis vão levar contrato. Só
+// se chama com um anúncio que se LEU: o que não se leu pára o `serve` ([errAnuncioIlegivel]).
+func bannerDoContrato(a anuncioDoNo) string {
+	if !a.aceita {
 		return "contrato de conclusao (AOS-495): NAO APLICADO — o no nao anuncia o suporte (GET /tools sem completion_contract: no anterior ao AOS-494). Os nos do plano sao submetidos sem contrato, como antes: enviar o campo dava 400 em todas as submissoes"
-	default:
-		return fmt.Sprintf("contrato de conclusao (AOS-495): DECLARADO — cada no nao-verificador com tools atribuidas e saida de forma aberta leva as suas tools como contrato de conclusao. O no anuncia o modo %q: em enforce um run que nao o cumpra fecha failed e o plano sai 13; em observe o no do plano conclui como antes e o veredicto observado fica neste log", a.modo)
 	}
+	return fmt.Sprintf("contrato de conclusao (AOS-495): DECLARADO — cada no nao-verificador com tools atribuidas leva as suas tools como contrato de conclusao, com ou sem saida declarada. O no anuncia o modo %q: em enforce um run que nao o cumpra fecha failed e o plano sai 13; em observe o no do plano conclui como antes e o veredicto observado fica neste log", a.modo)
 }
 
 // vectorDoRunFilho escreve o vector do veredicto numa linha de log: por tool do contrato, as

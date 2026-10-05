@@ -95,6 +95,10 @@ type configDoExecutor struct {
 	// contratoDeConclusao (AOS-495): o nó anunciou que aceita o contrato de conclusão
 	// ([nodeClient.ContratoDeConclusao]). Falso ⇒ os nós são submetidos sem o campo, como antes.
 	contratoDeConclusao bool
+	// medicao recebe o que o executor mede sobre o contrato (AOS-495): a classe de cada nó
+	// submetido e os veredictos observados. O `consume` escreve-a no ficheiro de métricas; nil
+	// num `serve` manual, onde não se mede.
+	medicao *medicaoDoContrato
 }
 
 // bannerDoExecutor declara no arranque se o trabalho dos nós é executado — e onde.
@@ -293,6 +297,8 @@ type executorDeNos struct {
 	declararOrigem bool
 	// contratoDeConclusao — ver [configDoExecutor.contratoDeConclusao] (AOS-495).
 	contratoDeConclusao bool
+	// medicao — ver [configDoExecutor.medicao] (AOS-495). nil fora do `consume`.
+	medicao *medicaoDoContrato
 	// causas guarda, por nó que ESTE processo fechou `failed`, a causa em vocabulário fechado
 	// (AOS-495, contrato_de_conclusao.go). Vai ao `detail` do desfecho do plano.
 	causas map[string]string
@@ -402,15 +408,16 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 		Inputs:    entradas,
 	}
 	// AOS-495: o contrato de conclusão de um nó elegível — e só para um nó `aos` que anunciou
-	// aceitá-lo. A um nó anterior o campo não vai (dava 400), e diz-se aqui que o contrato não
-	// foi aplicado, nó a nó.
-	if contrato := contratoDoNo(n, p.Tools); contrato != nil {
-		if e.contratoDeConclusao {
-			p.CompletionRequires = contrato
-			fmt.Printf("  execucao: no %s leva contrato de conclusao: %s\n", nodeID, strings.Join(contrato, ","))
-		} else {
-			fmt.Printf("  execucao: no %s elegivel para contrato de conclusao, NAO aplicado (o no aos nao anuncia o suporte)\n", nodeID)
-		}
+	// aceitá-lo. A um nó anterior o campo não vai (dava 400). CADA nó diz aqui em que classe
+	// fica, também os que não levam contrato: um nó com tools que ficasse de fora em silêncio
+	// era a porta que a revisão adversarial encontrou aberta.
+	classe := classeDoContrato(n, p.Tools, e.contratoDeConclusao)
+	switch classe {
+	case classeComContratoSaidaAberta, classeComContratoSemSaida:
+		p.CompletionRequires = contratoDoNo(n, p.Tools)
+		fmt.Printf("  execucao: no %s contrato de conclusao: classe=%s tools=%s\n", nodeID, classe, strings.Join(p.CompletionRequires, ","))
+	default:
+		fmt.Printf("  execucao: no %s contrato de conclusao: classe=%s — NAO leva contrato\n", nodeID, classe)
 	}
 	// AOS-439: o vínculo ao pedido — de que plano, e de que geração da reclamação, este run é
 	// trabalho. Não diz quem é o submissor: o nó lê-o do seu log, e só se a reclamação viva for
@@ -426,6 +433,7 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	if err := e.cli.Submit(ctx, p); err != nil {
 		return err
 	}
+	e.medicao.noSubmetido(classe)
 	e.emVoo[nodeID] = struct{}{}
 	return nil
 }
@@ -849,6 +857,10 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 		// vazio com o nó do plano `complete`. Quem falha é o PRODUTOR — a causa está nele, e é
 		// nele que o operador a deve ler. Vazio é o que o kernel conta como vazio (só espaços);
 		// não é um juízo sobre o que o texto diz.
+		//
+		// SÓ PARA QUEM DECLARA UMA SAÍDA ABERTA. Um nó sem ela — um nó de escrita, o último do
+		// plano — não tem nada para publicar e pode concluir sem texto: o que diz se fez o
+		// trabalho é o contrato de conclusão, não o tamanho da resposta.
 		causa = causaSaidaVazia
 		if st.OutputUnavailable {
 			// O nó `aos` diz que o run escreveu e que já não o consegue servir (reiniciou, e a
@@ -862,8 +874,10 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 		// VEREDICTO OBSERVADO (AOS-495). O nó `aos` está em observação: calculou um veredicto
 		// negativo e não fechou o run. O nó do plano conclui e a saída publica-se, como antes;
 		// esta linha é o que mede quantos nós a imposição teria fechado `failed`.
+		razao := causaDoRunFilho(st, true)
+		e.medicao.veredictoObservado(razao)
 		fmt.Printf("  execucao: no %s VEREDICTO OBSERVADO %s (modo %s), vector %s — o no conclui e a saida publica-se; com o no aos em enforce ficava failed\n",
-			nodeID, causaDoRunFilho(st, true), modoImprimivel(string(st.Verdict.Mode)), e.vectorDe(nodeID, st.Verdict))
+			nodeID, razao, modoImprimivel(string(st.Verdict.Mode)), e.vectorDe(nodeID, st.Verdict))
 	}
 	var veredicto *plannerevents.VerdictRecordedPayload
 	if n.IsVerifier() && destino == arstate.Complete {

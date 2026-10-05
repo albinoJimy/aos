@@ -324,6 +324,7 @@ func composeEDespachar(
 		ex.declararOrigem = exe.declararOrigem   // AOS-477: e o plano e o nó, num campo
 		// AOS-495: o contrato de conclusão dos nós elegíveis, se o nó `aos` anunciou aceitá-lo.
 		ex.contratoDeConclusao = exe.contratoDeConclusao
+		ex.medicao = exe.medicao
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {

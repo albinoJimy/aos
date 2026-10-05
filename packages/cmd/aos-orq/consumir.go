@@ -71,7 +71,9 @@ const maxPedidosPorDrenagem = 16
 //	13 exitNosFalhados         TERMINAL     o plano chegou ao fim com nó(s) `failed`; o estado é
 //	                                        durável e repetir não os re-executa (AOS-484)
 //	0 (sem erro)               TERMINAL     o plano correu
-//	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo
+//	1 exitErro                 TRANSITÓRIO  genérico — ver abaixo. Também o anúncio do contrato de
+//	                                        conclusão que não se leu do nó (AOS-495), com tipo
+//	                                        próprio no resumo (`anuncio_ilegivel`)
 //
 // O GENÉRICO É TRANSITÓRIO, e é a escolha menos óbvia. Um erro que não soubemos classificar pode
 // ser uma configuração má (que se repetirá) ou uma falha de rede (que não). Tratá-lo como
@@ -269,7 +271,11 @@ func cmdConsume(args []string) (err error) {
 		serveCorreu := erroDoServe == nil
 		if serveCorreu {
 			fmt.Printf("origem do plano: run=%s %s\n", pedido.RunID, origem.descrever())
-			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem, medidor)
+			// AOS-495: o que o `serve` mede sobre o contrato de conclusão soma-se às métricas
+			// aconteça o que acontecer ao plano — também quando o anúncio não se leu.
+			medicao := &medicaoDoContrato{}
+			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem, medidor, medicao)
+			metricas.registarContrato(medicao)
 		}
 		codigo, classe, tipo := desfechoDoServe(erroDoServe)
 		// AOS-443: o resumo vai TAMBÉM em sucesso — antes, o `detail` só existia com erro, e
@@ -459,8 +465,8 @@ func (o origemDoPlano) descrever() string {
 // governada, gate de aprovação, executor de nós. Um caminho paralelo seria um segundo sítio onde
 // a governação podia divergir, que é a forma de defeito que o AOS-424 e o AOS-425 passaram a
 // série inteira a encontrar.
-func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string, origem origemDoPlano, medidor *medidorDoPlaneamento) error {
-	return cmdServeCom(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker, origem), medidor)
+func correrPedido(snapshot string, p pedidoReclamado, sub substrato, planTimeout, pollInterval time.Duration, worker string, origem origemDoPlano, medidor *medidorDoPlaneamento, medicao *medicaoDoContrato) error {
+	return cmdServeCom(argsDoServe(snapshot, p, sub, planTimeout, pollInterval, worker, origem), medidor, medicao)
 }
 
 // desfechoDoServe traduz o retorno do `serve` no que se reporta ao nó: código, classe e o tipo do
@@ -512,6 +518,8 @@ func tipoDoErro(err error) string {
 		return "requerente_fora_do_mandato"
 	case errors.Is(err, errNosFalhados):
 		return "nos_falhados"
+	case errors.Is(err, errAnuncioIlegivel):
+		return "anuncio_ilegivel"
 	default:
 		return "generico"
 	}

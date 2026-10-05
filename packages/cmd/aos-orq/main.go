@@ -300,11 +300,13 @@ func codigoDe(err error) int {
 // vive em substrato.go. O `inspect` abre para LEITURA (nunca pede posse); o `serve` abre
 // para ESCRITA, e é aí que a posse do ficheiro é (ou não) tomada.
 
-func cmdServe(args []string) error { return cmdServeCom(args, nil) }
+func cmdServe(args []string) error { return cmdServeCom(args, nil, nil) }
 
 // cmdServeCom é o `serve` com o medidor do consumo do modelo de planeamento (AOS-466), que o
-// `consume` passa para declarar ao nó o que a geração gastou. nil ⇒ não se mede (o `serve` manual).
-func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
+// `consume` passa para declarar ao nó o que a geração gastou, e com a medição do contrato de
+// conclusão (AOS-495), que o `consume` escreve no ficheiro de métricas. nil ⇒ não se mede (o
+// `serve` manual).
+func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoDoContrato) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	var sub substrato
 	sub.registarFlags(fs)
@@ -412,6 +414,28 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 		conferido = snapshotConferido{snap: snapConferido, ok: true}
 		fmt.Printf("snapshot: %d tool(s) conferida(s) com o catálogo do nó (nome, digest, egress, reversibility, mutation) — AOS-441, AOS-409\n", len(snapConferido.Tools))
 	}
+	// AOS-495: o nó `aos` aceita o contrato de conclusão? Pergunta-se-lhe ANTES da posse e antes
+	// de planear, e só quando há plano para executar.
+	//
+	// UM ANÚNCIO QUE NÃO SE LEU PÁRA O `serve`. Contava como «não aceita», e os nós iam sem
+	// contrato: uma leitura falhada (rede, 429, 5xx) desligava o controlo para o plano inteiro,
+	// com o banner como único rasto. Agora o desfecho é transitório — o pedido volta à fila e a
+	// geração seguinte pergunta outra vez —, e por ser antes da posse e da decomposição não
+	// fica lease por expirar nem se gasta uma chamada ao modelo. Um nó que RESPONDE sem o
+	// anúncio é outra coisa: é um nó anterior, e o plano corre sem contrato, dito no banner.
+	var anuncio anuncioDoNo
+	if cliDoNo != nil && (*goal != "" || *planDoc != "") {
+		a, aerr := cliDoNo.ContratoDeConclusao(ctx)
+		if aerr != nil {
+			medicao.contratoNaoAplicado(motivoAnuncioIlegivel)
+			return fmt.Errorf("%w — o plano NAO corre sem saber se o no aceita o contrato; o pedido volta a fila: %v", errAnuncioIlegivel, aerr)
+		}
+		anuncio = a
+		if !anuncio.aceita {
+			medicao.contratoNaoAplicado(motivoNoNaoAnuncia)
+		}
+		fmt.Println(bannerDoContrato(anuncio))
+	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
 	// Ver substrato.go, onde essa diferença está nomeada.
@@ -517,14 +541,10 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento) error {
 	// AOS-413: o executor de nós, quando composto; nil ⇒ o despacho não executa (como antes).
 	var exe *configDoExecutor
 	if cliDoNo != nil {
-		// AOS-495: o nó `aos` aceita o contrato de conclusão? Pergunta-se-lhe antes de submeter
-		// o primeiro nó do plano. Um anúncio que não se leu conta como «não aceita»: os nós vão
-		// sem contrato, como antes, e o banner di-lo.
-		anuncio, aerr := cliDoNo.ContratoDeConclusao(ctx)
-		fmt.Println(bannerDoContrato(anuncio, aerr))
+		// AOS-495: o anúncio do contrato de conclusão foi lido antes da posse (ver acima).
 		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
 			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil,
-			contratoDeConclusao: aerr == nil && anuncio.aceita}
+			contratoDeConclusao: anuncio.aceita, medicao: medicao}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse
