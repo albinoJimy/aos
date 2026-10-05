@@ -5537,6 +5537,7 @@ são o mesmo processo.
 | 1.19 | 2026-09-25 | +AOS-436 (o apagamento DSAR sobrevive ao restauro): medido que o `backup.sh` leva o volume do Vault com as KEKs vivas e que restaurar um bundle anterior a um apagamento repunha a KEK sem nada o detectar; três documentos afirmavam o contrário. Reconciliação no arranque por IDADE da chave + registo de apagamentos fora do bundle. Ticket acrescentado no fim do ficheiro. | Equipa AOS |
 | 1.20 | 2026-09-25 | AOS-436 refeito depois de uma revisão adversarial independente que o reprovou para produção: registo autenticado por HMAC, portão de conteúdo na custódia, fontes independentes, legal hold consultado, LIST em vez de GET por chave. Tabela «revisão → correcção → sensor» no ticket. | Equipa AOS |
 | 1.21 | 2026-09-25 | AOS-436, terceira ronda: a segunda revisão adversarial confirmou os oito achados fechados (o 1 parcial) e mediu novos — MAC encadeado, importado mais antigo do que o bundle recusado, chave nunca recriada, importado fundido deixa de ser exigido, «indisponível» distinto de «apagado» no step-ledger. Segunda tabela no ticket. | Equipa AOS |
+| 1.22 | 2026-10-05 | +AOS-498, +AOS-499, +AOS-500 e +AOS-501 (saída por referência ao resultado da tool): o nó devolve a origem e a saída designadas, o `aos-orq` mede sem mudar a entrega, o plano declara `outputs[].from_tool` (schema 1.3.0) e o `aos-orq` entrega por referência as saídas declaradas. Em 2 de 21 planos em produção o nó de leitura entregou um resumo em vez do conteúdo. | Equipa AOS |
 
 ---
 
@@ -8986,3 +8987,472 @@ ligada.
       alargada aos nós sem `outputs`; anúncio ilegível deixa de falhar aberto; contadores da
       medição; testes do modo, do vector e do nó sem saída aberta. Por corrigir, por decisão: M9.
 - **M9, para registo:** numa retoma, um nó que já vinha `failed` do log sai como `nao_registada`.
+
+---
+
+## AOS-498 — O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}`, e anuncia-o no `GET /tools`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é a superfície HTTP da designação que o AOS-497 decide. O ADR-037 (selo da leitura de desfecho) e o ADR-027 (cada nó do plano é um run do nó) são citados como contexto. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — saída por referência |
+| Tipo | feat |
+| Prioridade | P0: sem isto o `aos-orq` não consegue declarar a origem nem ler o resultado designado |
+| Estimativa | M |
+| Dependências | AOS-497, AOS-494 (contrato e desfecho na API); relaciona AOS-496 (apagamento do titular no registo de desfechos em memória) |
+| Bloqueia | AOS-499, AOS-501 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md` §2.8, `packages/cmd/aos/api.go`, `packages/cmd/aos/contrato_na_api.go`, `packages/cmd/aos/catalogo_de_tools.go`, `packages/cmd/aos/sovereign_replay.go`, `packages/cmd/aos-orq/node_client.go` |
+
+### Contexto
+
+O `aos-orq` só tem duas operações sobre o nó: submeter um run e ler o seu estado. O
+`GET /runs/{id}` devolve o texto final; o resultado das tools existe no nó (em memória no desfecho
+retido e, durável, na captura selada de cada turno) e hoje é deitado fora na resposta. O
+`POST /runs` recusa campos desconhecidos: um `aos-orq` novo que envie a origem a um nó anterior
+recebe 400.
+
+Medido em produção a 2026-10-05 (v0.1.46, série de 21 planos): nos planos
+`plan-e2e-v0146s-1791192287` e `plan-e2e-v0146s-1791192627` o nó de leitura chamou a tool com
+sucesso e escreveu um resumo em vez do conteúdo, perdendo factos do documento (num, um número; no
+outro, um número e uma tarefa inteira). O nó seguinte herdou a perda e o veredicto de conclusão deu
+«cumprido». Na mesma série o nó de leitura foi declarado `record` em 17 planos, `summary` em 3 e
+`artifact` em 1.
+
+### Decidido pelo dono (2026-10-05)
+
+- Os bytes do resultado viajam **pelo `aos-orq`**, com âncora selada pelo kernel. O nó consumidor
+  não muda. A alternativa em que o nó consumidor resolve a referência fica rejeitada agora, com
+  gatilho (AOS-497).
+- O que se devolve é o resultado **tal como a tool o devolveu** (o envelope), byte a byte,
+  conferível contra o digest selado. O nó não o desembrulha.
+- Sem origem designável, não há queda para o texto do modelo.
+
+### Objectivo
+
+O nó aceita de um chamador autorizado a declaração da origem da saída, anuncia que a suporta, e
+devolve no `GET /runs/{id}` os metadados da origem designada e os bytes do resultado, nos dois
+ramos (em memória e durável), sempre atrás do gate soberano de leitura e do selo WORM. Às escuras:
+enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
+
+### Critérios de Aceitação
+
+- [ ] O `POST /runs` aceita `output_from_tool` (o nome de uma tool). A tool tem de pertencer à
+      lista-branca do mesmo pedido; caso contrário, ou sem lista-branca, o pedido é recusado com
+      400 e mensagem própria. Aceita-o quem já pode submeter o run; não dá autoridade nenhuma.
+- [ ] O nó anuncia o suporte no `GET /tools`, numa chave própria cuja presença é o anúncio. Um
+      nó sem o suporte continua a responder como hoje.
+- [ ] O `GET /runs/{id}` de um run que declarou a origem devolve `output_source` (os metadados
+      selados: tool, `step_id`, digest, tamanho e estado da designação) e, com o estado
+      `designated`, `output` (os bytes designados). Os campos são aditivos: um run sem origem
+      declarada responde com os bytes de hoje, e um `aos-orq` anterior continua a funcionar
+      (teste com a estrutura e a regra de leitura do cliente anterior).
+- [ ] `final_text` continua a ser devolvido, como hoje.
+- [ ] O nó confere `sha256(output)` contra o digest selado antes de responder. Uma divergência
+      nunca serve os bytes: conta como captura corrompida.
+- [ ] O ramo em memória e o ramo durável devolvem os **mesmos bytes** e os mesmos metadados.
+      Teste que reinicia o nó entre a conclusão e a leitura, com a custódia das KEK partilhada
+      entre as duas incarnações.
+- [ ] O ramo durável só abre conteúdo **depois** do selo WORM da leitura de desfecho, com o
+      principal do leitor, e mantém a trava dos streams que não são de run (AOS-426). Fixado por
+      teste com um espião no cifrador.
+- [ ] Indisponibilidade **definitiva** da saída (titular apagado, captura em falta, incompleta
+      ou corrompida, nó sem o gate de leitura): `output_unavailable`, com os metadados e sem
+      bytes. Indisponibilidade **transitória** (custódia fechada ou sem resposta, erro de leitura
+      do Event Store): **503**. A lista dos erros definitivos é fechada e é a do AOS-494.
+- [ ] Um resultado acima do tecto de transporte (128 KiB) ou que não é UTF-8 válido responde com
+      os metadados e **sem conteúdo**, com uma marca própria e distinta de `output_unavailable`.
+      Nunca se trunca.
+- [ ] Os estados `missing` e `ambiguous` respondem com os metadados e sem `output`.
+- [ ] O apagamento e a expiração do titular (AOS-496) retiram também o `output` do registo de
+      desfechos em memória. Teste: depois do apagamento, o ramo em memória não serve os bytes.
+- [ ] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior, e
+      `aos-orq` novo com nó anterior (que não anuncia e recusa o campo).
+- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: as respostas do
+      `GET /runs/{id}` (em memória, durável, `output_unavailable`, não transportável) e o anúncio
+      do `GET /tools`, gerados pelo nó; o corpo do `POST /runs` com o campo, gerado pelo
+      `aos-orq`.
+- [ ] O README do servidor descreve o campo, o anúncio e os campos novos do `GET`.
+- [ ] Smoke do nó sobre ficheiro **e** sobre JetStream.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+
+### Fora de âmbito
+
+- A designação e o selo (AOS-497).
+- O lado do `aos-orq`: medir (AOS-499) e entregar (AOS-501).
+- Uma variante de `inputs[]` sem conteúdo, resolvida pelo nó consumidor: rejeitada agora.
+- Servir resultados de tool que não sejam o designado.
+
+### Limites conhecidos à partida
+
+- A leitura de desfecho passa a servir um resultado de tool sob o mesmo rótulo de selo. Para um
+  nó fiel é o mesmo conteúdo que o texto final de hoje; formalmente alarga o que o rótulo cobre,
+  e é o AOS-497 que o regista na emenda ao ADR-037 §2.8.
+- A saída do ramo durável exige o gate soberano de leitura e uma custódia de KEK que sobreviva ao
+  reinício, como no AOS-494.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-499 — O `aos-orq` mede a saída por referência sem mudar a entrega
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: é medição, sem mudança de comportamento. O ADR-027 e o ADR-037 são citados como contexto. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — saída por referência |
+| Tipo | feat |
+| Prioridade | P1: dá os números com que se liga a entrega (AOS-501) |
+| Estimativa | S |
+| Dependências | AOS-498 |
+| Bloqueia | AOS-501 (a medição tem de estar lida antes de ligar a entrega) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/contrato_de_conclusao.go` |
+
+### Contexto
+
+Medido em produção a 2026-10-05 (v0.1.46, série de 21 planos): nos planos
+`plan-e2e-v0146s-1791192287` e `plan-e2e-v0146s-1791192627` o nó de leitura chamou a tool com
+sucesso e escreveu um resumo em vez do conteúdo, perdendo factos do documento (num, um número; no
+outro, um número e uma tarefa inteira). O nó seguinte herdou a perda e o veredicto de conclusão deu
+«cumprido». Na mesma série o nó de leitura foi declarado `record` em 17 planos, `summary` em 3 e
+`artifact` em 1.
+
+A entrega por referência (AOS-501) vai trocar verdes, por vezes falsos, por vermelhos com causa:
+duas leituras no mesmo turno, resultado acima do tecto, saída que não é texto. Antes de mudar o
+que flui entre nós é preciso saber quantos são.
+
+### Decidido pelo dono (2026-10-05)
+
+- A origem de uma saída declara-se no plano. A **inferência estrutural existe só como medição**:
+  é o que este ticket faz, e nunca muda a entrega.
+- Um nó candidato em que o planeador não declarou a origem **não é recusado** pelo validador por
+  agora (por omissão). Decide-se com a taxa de omissão medida em observação.
+
+### Objectivo
+
+Em modo de observação, o `aos-orq` pede ao nó a designação da origem para os nós candidatos por
+estrutura, regista o que o kernel designou e continua a publicar e a entregar o texto final, como
+hoje. Nenhum desfecho de plano muda.
+
+### Critérios de Aceitação
+
+- [ ] Interruptor de configuração no `aos-orq`: `AOS_ORQ_SAIDA_POR_REFERENCIA`, com os valores
+      `off` e `observe` neste ticket. A omissão é `off`. Um valor desconhecido recusa o arranque;
+      `on` é recusado até ao AOS-501. O banner do `serve` diz o modo.
+- [ ] **Candidato estrutural**: nó não-verificador, com exactamente uma tool pinada, exactamente
+      uma saída de forma aberta e sem `consumes`. Cada nó diz no log da drenagem em que classe
+      fica.
+- [ ] Em `observe`, o `aos-orq` envia `output_from_tool` aos candidatos, e só a um nó que
+      anuncie suportá-lo (AOS-498). Contra um nó que não anuncia, submete como hoje e regista que
+      não mediu. Um anúncio ilegível pára e o pedido volta à fila, como no AOS-495.
+- [ ] A publicação e a entrega são as de hoje: publica-se o texto final, com o digest do texto
+      final. O `aos-orq` não publica nem entrega o resultado designado neste ticket.
+- [ ] **Nenhum desfecho de plano muda.** Teste: o mesmo plano, com as mesmas respostas do nó,
+      dá em `off` e em `observe` os mesmos estados de nó, o mesmo código de saída e os mesmos
+      eventos do plano, byte a byte.
+- [ ] Métricas no ficheiro da drenagem, todas com rótulos de vocabulário fechado e **sem
+      conteúdo**: nós por classe estrutural (candidato, não candidato); nos candidatos, o estado
+      da designação (`designated`, `missing`, `ambiguous`, e não medido); tamanho do resultado
+      designado, em classes, contra os 128 KiB; razão entre o tamanho do texto final e o tamanho
+      do resultado designado, em classes.
+- [ ] A razão de tamanhos calcula-se dos metadados (`output_source`) e do comprimento do texto
+      final. Nenhum conteúdo é escrito em log, métrica ou evento.
+- [ ] A superfície de variáveis de ambiente, o README e o exemplo de `.env` registam o
+      interruptor.
+- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo em `observe` com nó
+      anterior, e nó novo com `aos-orq` anterior.
+- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: o corpo do `POST /runs` com
+      o campo, gerado pelo `aos-orq` na forma de produção (nó de leitura, uma tool, saída
+      `record`), entregue byte a byte ao nó real; as respostas do nó a esse corpo são as que o
+      `aos-orq` lê.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [ ] Verificação em produção: uma série de pelo menos 20 planos em `observe`, com as métricas
+      acima lidas e registadas no documento de acompanhamento.
+
+### Fechado antes de implementar (2026-10-05)
+
+O desenho mandava enviar o campo aos candidatos só com o nó em observação, porque as duas razões
+novas do veredicto seguiam o modo de aplicação do nó. O nó de produção está em imposição desde
+2026-10-05, e assim este ticket não media nada em produção.
+
+Resolvido no AOS-497 com um **vínculo por run**: a declaração de origem é «vinculativa» ou «só
+medição», dada pelo chamador e gravada com o run. Em «só medição» o kernel designa e sela a âncora
+(com o estado designada, em falta ou ambígua) e o desfecho do run é o que seria sem declaração,
+qualquer que seja o modo do nó. Este ticket envia sempre «só medição». O vínculo vinculativo é do
+AOS-501.
+
+Os tokens de saída do nó produtor não se medem neste binário: o `GET /runs/{id}` não os devolve.
+Lêem-se do registo de turnos na análise da série.
+
+### Fora de âmbito
+
+- Mudar o que se publica ou se entrega (AOS-501).
+- O campo no schema do plano (AOS-500). Aqui a origem é inferida e serve só para medir.
+- Recusar no validador um candidato sem declaração.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-500 — O plano declara a origem de uma saída: `outputs[].from_tool`, schema 1.3.0
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum por agora: o ADR novo do AOS-497 ainda não existe, e o ADR-022 (payload tipado por aresta) e o ADR-013 (cartão de aprovação) são citados como contexto. A emenda ao ADR-022 §2.3 é do AOS-497. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — saída por referência |
+| Tipo | feat |
+| Prioridade | P1: é a declaração de que a entrega (AOS-501) depende; sozinho não muda nenhum plano |
+| Estimativa | M |
+| Dependências | — |
+| Bloqueia | AOS-501 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `tecnica/18_Planner_Meta_Orquestracao.md` §3.6.1, `docs/adr/ADR-022-grafo-plano-extensoes.md` §2.3, `packages/control-plane/orchestrator/plan/payload.go`, `packages/control-plane/orchestrator/plan/semver.go`, `packages/control-plane/orchestrator/plan/plandocument.go`, `packages/control-plane/orchestrator/planvalidate/payload.go`, `packages/control-plane/orchestrator/plannerprompt/artifact.go` |
+
+### Contexto
+
+No plano, `tools` num nó é autoridade (lista-branca), não intenção. Um output tem nome, tipo e
+taint: não há ligação entre uma saída e a tool que a produz. O tipo não serve de sinal: `record`
+está definido como registo estruturado produzido pelo nó, e o planeador usa as três formas abertas
+para o mesmo nó.
+
+Medido em produção a 2026-10-05 (v0.1.46, série de 21 planos): o nó de leitura foi declarado
+`record` em 17 planos, `summary` em 3 e `artifact` em 1. Em 2 dos 21, `plan-e2e-v0146s-1791192287`
+e `plan-e2e-v0146s-1791192627`, esse nó chamou a tool com sucesso e escreveu um resumo em vez do
+conteúdo, perdendo factos do documento (num, um número; no outro, um número e uma tarefa inteira);
+o nó seguinte herdou a perda e o veredicto de conclusão deu «cumprido».
+
+### Decidido pelo dono (2026-10-05)
+
+- A origem **declara-se no plano**, em `outputs[].from_tool`. Não se infere da estrutura do nó:
+  inferir decidiria, sem ninguém o ter aprovado, que o consumidor passa a receber outra coisa. A
+  inferência estrutural existe só como medição (AOS-499).
+- Um nó candidato sem declaração **não é recusado** pelo validador por agora (por omissão).
+  Decide-se com a taxa de omissão medida em observação.
+
+### Objectivo
+
+O schema do plano ganha, num output, a tool do mesmo nó de que essa saída é o resultado. O campo
+é opcional e aditivo (MINOR 1.3.0), entra no `contract_digest`, é validado por regras estruturais
+e aparece no cartão de aprovação. Neste ticket nenhum plano o usa: o planeador não é instruído a
+emiti-lo e o `serve` não corre um plano que o traga.
+
+### Critérios de Aceitação
+
+- [ ] `outputs[].from_tool` existe no documento do plano, opcional. Forma:
+      `{"name":"notas","type":"record","from_tool":"doc_read"}`. Um documento anterior decodifica
+      como antes e **re-serializa com os mesmos bytes**; o replay das migrações de plano continua
+      verde.
+- [ ] A versão corrente do schema passa a 1.3.0 (MINOR), com a entrada correspondente na tabela
+      de funcionalidades por versão. `tecnica/18` §3.6.1 ganha a linha 1.3.0.
+- [ ] A forma canónica de um output inclui a origem **só quando presente**. O `contract_digest`
+      de um contrato sem o campo fica byte a byte igual (as fixtures congeladas 1.2.0 não mudam);
+      pôr ou tirar `from_tool` num documento muda o carimbo (teste nos dois sentidos).
+- [ ] Regras do validador, todas estruturais, cada uma com o seu código de recusa:
+      (1) `from_tool` é o nome exacto de uma tool de `tools` do mesmo nó e é um identificador
+      válido; (2) só em `record` ou `artifact`, nunca em `summary` nem numa forma fechada;
+      (3) o nó não é verificador e não tem `consumes`; (4) no máximo uma saída com `from_tool`
+      por nó; (5) usar o campo obriga a carimbar a versão do plano em 1.3.0 ou superior.
+- [ ] Um teste por regra, com o caso que passa e o caso que é recusado.
+- [ ] O taint não muda: a saída de um não-verificador continua `untrusted`, com ou sem
+      `from_tool`, e a regra que impede um consumidor privilegiado de consumir um output
+      untrusted continua a aplicar-se (teste com um output por referência).
+- [ ] Um nó candidato por estrutura **sem** `from_tool` passa no validador, como hoje (teste).
+- [ ] O cartão de aprovação mostra a origem da saída, e o mapeador do documento para o plano de
+      aprovação leva o campo (teste: um plano com `from_tool` e o mesmo plano sem ele dão cartões
+      diferentes).
+- [ ] **O prompt do planeador não muda neste ticket**: a versão do artefacto e os seus bytes
+      ficam os de hoje. Se o teste que deriva o schema do prompt a partir dos tipos do plano
+      obrigar a nomear o campo, a excepção é explícita, contém só `from_tool` e é retirada pelo
+      AOS-501.
+- [ ] Até ao AOS-501, o `serve` **recusa correr** um plano que declare `from_tool`, com código
+      próprio e determinista. Não o corre a publicar o texto do modelo sob um contrato que
+      promete outra coisa.
+- [ ] Rollback medido e registado no ticket: um binário anterior recusa um documento com o campo
+      (campos desconhecidos). Fica escrito o que acontece a um pedido em fila cujo documento
+      gravado deixa de decodificar, e a um plano 1.3.0 aprovado e corrido por `serve --plan-doc`.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+
+### Fora de âmbito
+
+- O prompt do planeador e o golden-set (AOS-501).
+- O campo no `POST /runs` do nó (AOS-498) e a entrega (AOS-501).
+- Um tipo novo de output para «resultado de tool»: mistura forma com origem e, com mais de uma
+  tool no nó, não diz qual.
+- Recusar no validador um nó candidato sem declaração.
+- Mais de uma saída por referência por nó, e `from_tool` num nó com `consumes`.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-501 — O `aos-orq` entrega por referência as saídas declaradas
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum por agora: o ADR novo do AOS-497 ainda não existe. O ADR-027 (payloads entre nós), o ADR-037 (veredicto e selo da leitura de desfecho) e o ADR-034 (autorização derivada do contexto) são citados como contexto. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — saída por referência |
+| Tipo | fix |
+| Prioridade | P0: é aqui que o nó seguinte passa a receber o que a tool devolveu, e não o que o modelo escreveu sobre isso |
+| Estimativa | M |
+| Dependências | AOS-498, AOS-499 (com a medição lida), AOS-500 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A0.5), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md` §2.4, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/node_client.go`, `packages/control-plane/orchestrator/plannerevents/events.go`, `packages/control-plane/orchestrator/plannerprompt/artifact.go`, `deploy/server/avisar-planos.sh` |
+
+### Contexto
+
+O `aos-orq` publica como saída de um nó o texto final do run filho, com um digest que ele próprio
+calcula: é um controlo de integridade do transporte, não uma prova de origem. O evento de
+publicação não diz de onde a saída vem.
+
+Medido em produção a 2026-10-05 (v0.1.46, série de 21 planos): nos planos
+`plan-e2e-v0146s-1791192287` e `plan-e2e-v0146s-1791192627` o nó de leitura chamou a tool com
+sucesso e escreveu um resumo em vez do conteúdo, perdendo factos do documento (num, um número; no
+outro, um número e uma tarefa inteira). O nó seguinte herdou a perda e o veredicto de conclusão deu
+«cumprido». Na mesma série o nó de leitura foi declarado `record` em 17 planos, `summary` em 3 e
+`artifact` em 1.
+
+Este é o **único** ticket da fase que muda o que flui entre nós.
+
+### Decidido pelo dono (2026-10-05)
+
+1. A origem declara-se no plano (`outputs[].from_tool`); não se infere da estrutura. A inferência
+   estrutural existe só como medição.
+2. Sem origem designável (nenhuma chamada candidata, ou mais de uma), o nó **falha com causa
+   própria**. Nunca se entrega o texto do modelo no lugar do resultado da tool.
+3. O nó seguinte recebe o resultado **tal como a tool o devolveu** (o envelope), byte a byte,
+   conferível contra o digest selado.
+4. Os bytes viajam **pelo `aos-orq`**, com âncora selada pelo kernel; o nó consumidor não muda. A
+   alternativa em que o nó consumidor resolve a referência fica rejeitada agora, com os gatilhos
+   registados no AOS-497.
+5. (Por omissão, recomendação do desenho.) O texto final do nó produtor continua a ser capturado,
+   mas **não é publicado nem entregue**, nem como comentário.
+6. (Por omissão.) Um nó candidato sem declaração não é recusado pelo validador por agora;
+   decide-se com a taxa de omissão medida em observação.
+
+### Objectivo
+
+Para uma saída que o plano aprovado declara com `from_tool`, o `aos-orq` publica e entrega os
+bytes do resultado que o kernel designou, conferidos contra o digest selado, e o evento do plano
+nomeia a origem. Os planos sem o campo ficam como hoje. A mudança entra atrás de um interruptor,
+depois de um período de observação.
+
+### Critérios de Aceitação
+
+- [ ] Interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA` com três valores: `off`, `observe` (o
+      comportamento do AOS-499) e `on`. Fora de `on`, um plano com `from_tool` é recusado com
+      código próprio e a entrega é a de hoje. Um plano **sem** o campo corre igual nos três modos
+      (teste: mesmos estados, mesmo código de saída, mesmos eventos, byte a byte).
+- [ ] Em `on`, a saída declarada publica-se com os bytes de `output` do run filho (AOS-498). O
+      `aos-orq` confere `sha256(output)` contra o digest selado pelo kernel antes de publicar; o
+      `record.digest` do evento passa a ser esse digest selado. Uma divergência não se publica.
+- [ ] O `plan.payload_published` de uma saída por referência leva `source`:
+      `{kind: "tool_result", tool, step_id}`. `kind` e `tool` são derivados do contrato do
+      documento aprovado, como o tipo e o taint; `step_id` é validado na forma. Regra simétrica,
+      imposta na construção do evento: contrato com `from_tool` obriga a `source`; sem ele,
+      `source` é proibido. O evento continua sem conteúdo.
+- [ ] O conteúdo entregue ao nó consumidor, no canal `inputs` de hoje, é **byte a byte** o
+      resultado da tool. Teste com o envelope real da sandbox: o `content` que chega ao
+      `POST /runs` do consumidor tem o digest selado no run produtor.
+- [ ] O nó consumidor não muda: o corpo do `POST /runs` do consumidor tem a forma de hoje e
+      passa as validações de hoje (digest, 128 KiB por entrada, 512 KiB no conjunto).
+- [ ] O payload por referência é sempre `untrusted`. Um consumidor com autoridade privilegiada
+      continua a não o poder consumir (teste).
+- [ ] O texto final do nó produtor **não é publicado nem entregue** numa saída por referência.
+      Teste: um produtor cujo texto final difere do resultado da tool entrega o resultado, e o
+      texto não aparece em nenhum `inputs`.
+- [ ] **Sem queda para o texto do modelo.** O `aos-orq` não publica sem o estado `designated`,
+      qualquer que seja o modo do nó, e fecha o produtor `failed` com causa em vocabulário
+      fechado: `saida_sem_origem`, `saida_ambigua`, `saida_nao_transportavel` (acima do tecto ou
+      não-texto; nunca se trunca) e `saida_indisponivel`. Um teste por causa. Um 503 do nó não
+      fecha o nó do plano.
+- [ ] A regra «saída vazia não se publica» avalia os bytes designados, e não o texto, nos nós
+      por referência.
+- [ ] As causas novas aparecem no `detail` do `GET /plans/{id}`, no log da drenagem e no aviso
+      de planos; o plano sai com o código 13.
+- [ ] A reidratação no arranque do `serve` relê `output` do run filho e só o aceita se o digest
+      bater com o do evento. Teste que mata o `serve` entre a publicação e o despacho do
+      consumidor.
+- [ ] `DerivedFrom` passa a ser preenchido onde é verdadeiro: na saída de texto de um nó com
+      `consumes`, com os contratos consumidos, derivado do plano.
+- [ ] Contra um nó que não anuncia o suporte (AOS-498), o `serve` **recusa correr** um plano com
+      `from_tool`, com código próprio e determinista. Um anúncio ilegível pára e o pedido volta
+      à fila.
+- [ ] Prompt do planeador 1.5.0 (MINOR, aditivo) e golden-set: o bloco de schema nomeia
+      `from_tool`; a regra da versão manda carimbar 1.3.0 quando algum output o usa; uma regra
+      nova diz quando declarar a origem (o nó seguinte precisa do que a tool devolveu: uma só
+      chamada, sem `consumes`) e quando não (o nó seguinte precisa do que o nó concluiu). A
+      excepção deixada pelo AOS-500 no teste que deriva o schema é retirada.
+- [ ] Fora de `on`, o planeador não é instruído a emitir `from_tool`.
+- [ ] Métricas, sem conteúdo: divergências entre o digest entregue e o digest selado (tem de ser
+      zero em 100% dos payloads por referência); candidatos estruturais que o planeador não
+      declarou; recusas do validador pelas regras do AOS-500; nós falhados por cada causa nova.
+- [ ] O corpus adversarial do gate `security` corre pelo caminho por referência.
+- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo com nó anterior, e nó
+      novo com `aos-orq` anterior; e um `aos-orq` anterior a ler um `plan.payload_published` com
+      `source` na reidratação (o consumidor falha fechado, não recebe o texto).
+- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: as respostas do
+      `GET /runs/{id}` com `output` geradas pelo nó e lidas pelo `aos-orq`; o corpo do
+      `POST /runs` do consumidor gerado pelo `aos-orq` e entregue byte a byte ao nó real.
+- [ ] O runbook de deploy regista a ordem de saída (nó primeiro, depois o `aos-orq`) e a de
+      rollback (o `aos-orq` antes do nó), e o interruptor.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [ ] Verificação em produção, primeiro em `observe` e depois em `on`: numa série de pelo menos
+      20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool, e
+      nenhum facto do documento se perde.
+
+### Em aberto, a fechar antes de implementar
+
+O prompt do planeador é um artefacto governado com uma só versão corrente, e o desenho quer que a
+1.5.0 só valha com o interruptor em `on`. As duas coisas não cabem juntas sem mais: ou o binário
+conhece duas versões e escolhe pelo interruptor, ou a 1.5.0 passa a ser a única e o interruptor
+só governa a entrega. Na segunda, um plano emitido com `from_tool` fora de `on` é recusado e o
+pedido gasta gerações. O critério acima («fora de `on`, o planeador não é instruído») obriga à
+primeira, salvo decisão em contrário.
+
+### Fora de âmbito
+
+- Nós que transformam (resumir, classificar, extrair): o modelo continua no caminho. Fechá-los
+  pede um verificador que receba a fonte autêntica e o produto.
+- Desembrulhar o envelope da tool antes de o entregar: revê-se com a medição de qualidade.
+- O transporte em que o nó consumidor resolve a referência; payloads acima do tecto ou binários.
+- Um sufixo no objectivo a pedir ao modelo que não transcreva, e a conclusão antecipada do run.
+- Agregações (duas leituras num nó).
+- A recuperação do run que não chama a tool: fase A1.
+
+### Limites conhecidos à partida
+
+- A fidelidade é ao resultado da chamada feita. Se o modelo leu o documento errado, entrega-se
+  esse, byte a byte.
+- O planeador pode declarar mal: omitir `from_tool`, e o defeito fica; ou declará-lo num nó cujo
+  trabalho é transformar, e o consumidor recebe o documento cru. É uma instrução a um modelo;
+  mede-se.
+- O consumidor passa a receber o envelope cru e o documento inteiro: mais tokens de entrada do
+  que a estimativa do planeador conta, e bytes exactos de origem untrusted no `plan_input`. As
+  defesas são as de hoje.
+- Para afirmar menos de 2% de perda de factos no plano inteiro são precisas cerca de 150
+  execuções limpas. A propriedade do nó de leitura (digest entregue igual ao selado) é por
+  construção e não precisa dessa série.
+
+### Estado
+
+**ABERTO.**
