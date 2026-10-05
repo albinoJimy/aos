@@ -2058,6 +2058,20 @@ fechado. Um run que não cumpre o contrato termina `failed`, nunca `completed`.
 - Garantir que a saída corresponde ao que a tool devolveu: fase de saída por referência.
 - O campo no `POST /runs` e a resposta do `GET /runs` (AOS-494); o lado do `aos-orq` (AOS-495).
 
+### Verificação em produção (2026-10-05, v0.1.46)
+
+Imagem `sha256:f9a66635…` em produção, nó em observação (banner «veredicto de conclusao (EPIC-02/AOS-493): EM OBSERVACAO»). Um pedido de plano real pela fila, com o objectivo multi-nó de sempre: `plan-e2e-v0146-1791189316`, terminal, `exit_code=0`, 26 s.
+
+- O manifesto de cada turno grava o modo e o contrato: `{"mode":"observe","requires":["doc_read"]}`
+  no nó de leitura e `{"mode":"observe"}` no nó de resumo.
+- A transição terminal do nó de leitura leva o vector: `doc_read` pedida 1, efectiva 1,
+  `last=effective`, `fulfilled=true`. A do nó de resumo: `fulfilled=true`, zero tool calls.
+- `/metrics`: `aos_runs_finished_total{outcome="complete",reason="none"} 2`; um run com
+  `last="effective"` e outro com `last="none"`.
+
+**Por observar:** um veredicto negativo. Neste plano o modelo chamou a tool; o caso do verde
+falso (cerca de um plano em cinco, medido a 2026-10-04) ainda não ocorreu depois do deploy.
+
 ### Estado
 
 **IMPLEMENTADO (2026-10-04) e REVISTO (2026-10-05); por verificar em produção.**

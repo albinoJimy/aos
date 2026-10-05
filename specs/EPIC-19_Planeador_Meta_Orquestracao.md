@@ -8791,6 +8791,17 @@ desfecho e a sua razão no `GET /runs/{id}`, nos dois ramos (em memória e durá
 
 - O lado do `aos-orq` (AOS-495).
 
+### Verificação em produção (2026-10-05, v0.1.46)
+
+Imagem `sha256:f9a66635…` em produção, nó em observação (banner «veredicto de conclusao (EPIC-02/AOS-493): EM OBSERVACAO»). Um pedido de plano real pela fila, com o objectivo multi-nó de sempre: `plan-e2e-v0146-1791189316`, terminal, `exit_code=0`, 26 s.
+
+- O `aos-orq` leu o anúncio do nó (`GET /tools`) e registou o modo `observe`.
+- O `POST /runs` do nó de leitura levou o contrato `["doc_read"]`, que ficou gravado no
+  manifesto dos turnos do run filho.
+
+**Por verificar:** o ramo durável do `GET /runs/{id}` depois de um reinício do nó, e o smoke
+sobre JetStream.
+
 ### Estado
 
 **IMPLEMENTADO E REVISTO (2026-10-05).** Falta o smoke sobre JetStream.
@@ -8948,6 +8959,24 @@ como nó falhado com a razão visível, e nunca publica uma saída vazia.
 
 - Nova tentativa do nó e reparação: fase A1.
 - Um campo `tool_use` no schema do plano: decidido pelo dono que o contrato é inferido.
+
+### Verificação em produção (2026-10-05, v0.1.46)
+
+Imagem `sha256:f9a66635…` em produção, nó em observação (banner «veredicto de conclusao (EPIC-02/AOS-493): EM OBSERVACAO»). Um pedido de plano real pela fila, com o objectivo multi-nó de sempre: `plan-e2e-v0146-1791189316`, terminal, `exit_code=0`, 26 s.
+
+Log da drenagem:
+
+- `contrato de conclusao (AOS-495): DECLARADO … O no anuncia o modo "observe"`.
+- `no n1 contrato de conclusao: classe=com_contrato_saida_aberta tools=doc_read`.
+- `no n2 contrato de conclusao: classe=sem_contrato_sem_tools — NAO leva contrato`.
+
+`aos-orq-consume.prom`: `aos_orq_consume_nos_por_contrato_total` com um nó em cada uma das
+duas classes.
+
+**Por verificar:** um plano em que o modelo não chame a tool (linha `VEREDICTO OBSERVADO` em
+observação; código 13 em imposição); a classe `com_contrato_sem_saida`; e o critério de prova
+da fase A0 — zero verdes falsos em pelo menos 150 runs com tools na oferta, com a imposição
+ligada.
 
 ### Estado
 
