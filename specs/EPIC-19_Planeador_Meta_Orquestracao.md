@@ -8992,8 +8992,10 @@ ligada.
 
 ## AOS-498 — O nó aceita `output_from_tool` no `POST /runs`, devolve a origem e a saída no `GET /runs/{id}`, e anuncia-o no `GET /tools`
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum: é a superfície HTTP da designação que o AOS-497 decide. O ADR-037 (selo da leitura de desfecho) e o ADR-027 (cada nó do plano é um run do nó) são citados como contexto. -->
+<!-- Este ticket implementa a parte do ADR-038 que é do nó: a §2.1 (a declaração no `POST /runs` e o anúncio no `GET /tools`) e a §2.6 (a âncora e os bytes no `GET /runs/{id}`). E emenda o ADR-037 §2.8 (o que o selo da leitura de desfecho passa a cobrir). -->
+<!-- rtm: menção -->
+<!-- O ADR-027 (cada nó do plano é um run do nó) é citado como contexto e NÃO é implementado neste ticket. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -9040,44 +9042,110 @@ enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
 
 ### Critérios de Aceitação
 
-- [ ] O `POST /runs` aceita `output_from_tool` (o nome de uma tool). A tool tem de pertencer à
+- [x] O `POST /runs` aceita `output_from_tool` (o nome de uma tool). A tool tem de pertencer à
       lista-branca do mesmo pedido; caso contrário, ou sem lista-branca, o pedido é recusado com
       400 e mensagem própria. Aceita-o quem já pode submeter o run; não dá autoridade nenhuma.
-- [ ] O nó anuncia o suporte no `GET /tools`, numa chave própria cuja presença é o anúncio. Um
+- [x] O nó anuncia o suporte no `GET /tools`, numa chave própria cuja presença é o anúncio. Um
       nó sem o suporte continua a responder como hoje.
-- [ ] O `GET /runs/{id}` de um run que declarou a origem devolve `output_source` (os metadados
+- [x] O `GET /runs/{id}` de um run que declarou a origem devolve `output_source` (os metadados
       selados: tool, `step_id`, digest, tamanho e estado da designação) e, com o estado
       `designated`, `output` (os bytes designados). Os campos são aditivos: um run sem origem
       declarada responde com os bytes de hoje, e um `aos-orq` anterior continua a funcionar
       (teste com a estrutura e a regra de leitura do cliente anterior).
-- [ ] `final_text` continua a ser devolvido, como hoje.
-- [ ] O nó confere `sha256(output)` contra o digest selado antes de responder. Uma divergência
+- [x] `final_text` continua a ser devolvido, como hoje.
+- [x] O nó confere `sha256(output)` contra o digest selado antes de responder. Uma divergência
       nunca serve os bytes: conta como captura corrompida.
-- [ ] O ramo em memória e o ramo durável devolvem os **mesmos bytes** e os mesmos metadados.
+- [x] O ramo em memória e o ramo durável devolvem os **mesmos bytes** e os mesmos metadados.
       Teste que reinicia o nó entre a conclusão e a leitura, com a custódia das KEK partilhada
       entre as duas incarnações.
-- [ ] O ramo durável só abre conteúdo **depois** do selo WORM da leitura de desfecho, com o
+- [x] O ramo durável só abre conteúdo **depois** do selo WORM da leitura de desfecho, com o
       principal do leitor, e mantém a trava dos streams que não são de run (AOS-426). Fixado por
       teste com um espião no cifrador.
-- [ ] Indisponibilidade **definitiva** da saída (titular apagado, captura em falta, incompleta
+- [x] Indisponibilidade **definitiva** da saída (titular apagado, captura em falta, incompleta
       ou corrompida, nó sem o gate de leitura): `output_unavailable`, com os metadados e sem
       bytes. Indisponibilidade **transitória** (custódia fechada ou sem resposta, erro de leitura
-      do Event Store): **503**. A lista dos erros definitivos é fechada e é a do AOS-494.
-- [ ] Um resultado acima do tecto de transporte (128 KiB) ou que não é UTF-8 válido responde com
+      do Event Store): **503**. A lista dos erros definitivos é fechada: a do AOS-494 e os da
+      leitura do step-ledger — passo sem registo, bytes que não conferem e, desde a revisão, um
+      registo do ledger ilegível, uma âncora cujo passo não forma chave de idempotência e um
+      registo com conteúdo em claro.
+- [x] Um resultado acima do tecto de transporte (128 KiB) ou que não é UTF-8 válido responde com
       os metadados e **sem conteúdo**, com uma marca própria e distinta de `output_unavailable`.
       Nunca se trunca.
-- [ ] Os estados `missing` e `ambiguous` respondem com os metadados e sem `output`.
-- [ ] O apagamento e a expiração do titular (AOS-496) retiram também o `output` do registo de
+- [x] Os estados `missing` e `ambiguous` respondem com os metadados e sem `output`.
+- [x] O apagamento e a expiração do titular (AOS-496) retiram também o `output` do registo de
       desfechos em memória. Teste: depois do apagamento, o ramo em memória não serve os bytes.
-- [ ] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior, e
+- [x] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior, e
       `aos-orq` novo com nó anterior (que não anuncia e recusa o campo).
-- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: as respostas do
+- [x] Ficheiros de fio gerados por um lado e consumidos pelo outro: as respostas do
       `GET /runs/{id}` (em memória, durável, `output_unavailable`, não transportável) e o anúncio
       do `GET /tools`, gerados pelo nó; o corpo do `POST /runs` com o campo, gerado pelo
       `aos-orq`.
-- [ ] O README do servidor descreve o campo, o anúncio e os campos novos do `GET`.
-- [ ] Smoke do nó sobre ficheiro **e** sobre JetStream.
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] O README do servidor descreve o campo, o anúncio e os campos novos do `GET`.
+- [x] `output` **só sai de um run que concluiu**, provado pela API, nos dois ramos e nos dois
+      vínculos: um run `failed` com a âncora `designated` (contrato sobre duas tools, só a
+      designada chamada) responde com os metadados, sem bytes e sem abrir conteúdo do titular.
+- [x] O envelope **real** da sandbox de ponta a ponta no nó: com a `doc_read` a correr no
+      `MediatedLauncher` (driver de referência), a âncora designa o envelope e `output` é esse
+      envelope, byte a byte, nos dois ramos; o ficheiro de fio é lido pelo `aos-orq`.
+- [ ] Smoke do nó sobre ficheiro **e** sobre JetStream. Sobre ficheiro correu a porta, o anúncio
+      e a recusa no arranque (ver «Revisão adversarial»); um run com a origem designada pelo
+      binário do driver **não correu**, nem nada sobre JetStream.
+- [x] Revisão adversarial independente com mutações, antes da fusão. Feita a 2026-10-05, sem
+      bloqueantes: 30 mutações, 8 sobreviventes; os achados e o que mudou estão abaixo.
+- [ ] Verificação em produção, com o `aos-orq` em `observe` (AOS-499): o nó anuncia, aceita a
+      declaração e serve o envelope conferido nos runs dos candidatos.
+
+### Revisão adversarial (2026-10-05)
+
+Revisão independente sobre o ramo, com mutações numa cópia destacada. **Sem bloqueantes.** O que
+mudou por causa dela, com o ticket:
+
+- **`output` só sai de um run concluído — agora com teste pela API** (as mutações que punham a
+  condição sempre verdadeira, num ramo e no outro, sobreviviam à suite). O cenário é real: nó em
+  imposição, contrato sobre duas tools, o modelo chama só a designada; o run fecha `failed` com a
+  âncora `designated`. É a guarda que impede a entrega (AOS-501) de entregar bytes de um run
+  falhado.
+- **Um registo do step-ledger ilegível e uma âncora cujo passo não forma chave são definitivos.**
+  Caíam do lado transitório: `unavailable_now` para sempre com `measure` e **503 para sempre**
+  com `binding`, com quem sonda à espera até ao prazo do plano. Passam a `unavailable` (e
+  `output_unavailable` com `binding`). Sentinela próprio no pacote do ledger.
+- **A leitura do ledger exige o opener e só devolve conteúdo que ele abriu.** Um registo com
+  conteúdo em claro (não selado por-titular) não sai — definitivo —, e sem opener não se lê nada.
+  A composição de produção nunca escreve um registo assim; a leitura deixou de depender disso.
+- **O leitor vai na mão até ao opener.** A leitura dos bytes recebe o leitor que o gate admitiu
+  e o opener só abre atrás do escopo dele, como o caminho soberano que já existia: a guarda
+  deixou de ser só a ordem das chamadas.
+- **Testes para o que estava certo e ninguém fixava:** a chave do registo compara-se inteira (um
+  registo de outro run no stream deste não é o pedido); o digest compara-se inteiro (uma âncora
+  com o digest em prefixo não confere); 128 KiB exactos saem, e com mais um byte não.
+- **Ficheiros de fio:** cada resposta que o nó gera é lida por um teste do `aos-orq`, que falha
+  se aparecer uma sem leitura; há ficheiro do anúncio com o veredicto em `off`.
+- **O envelope real da sandbox** (acima). Mostrou o que os testes com bytes crus não mostravam:
+  a leitura de um ficheiro devolve-o também como artefacto, e o envelope leva o documento duas
+  vezes (em texto e em base64). Com o driver de referência; **em produção está por verificar**.
+
+Smoke pelo driver, sobre ficheiro (nó de desenvolvimento, build forçado): o `GET /tools` anuncia
+`output_source` com os dois vínculos e o tecto; as quatro recusas da porta dão 400 com a sua
+mensagem; uma declaração sobre uma tool que o nó não oferece é aceite e o run fica `failed` com a
+causa, nos dois vínculos; um run sem declaração responde como antes. O nó do driver não tem
+tools nem um modelo que as chame, pelo que **nenhum run com a origem designada correu pelo
+binário do driver**: essa prova é a do teste com a sandbox real. **Sobre JetStream nada correu**
+(o daemon do Docker estava parado).
+
+Limites que ficam, declarados e não corrigidos aqui:
+
+- **Custo.** Cada `GET` de um run concluído com a origem designada lê o stream inteiro do run.
+  Medido pelo revisor: de 0,4 ms para 26,9 ms com um resultado de 6 MiB noutro passo do stream.
+- **Em `measure` o nó decifra e envia até 128 KiB do titular** a um chamador que só os mede; e o
+  digest e o tamanho do conteúdo de um titular apagado saem pela API, na âncora.
+- **`output_unavailable` tem dois sentidos com `binding`**: o texto final ilegível, e os bytes
+  designados ilegíveis.
+- **A resposta pode crescer no fio**: o JSON escapa `<`, `>` e `&`, e 128 KiB de HTML chegam a
+  várias vezes isso.
+- A expiração por TTL a retirar o `output`, e binários de versões diferentes dos dois lados, não
+  têm prova própria.
+
+O primeiro e os dois do meio passam ao AOS-501, que é quem os tem de decidir.
 
 ### Fora de âmbito
 
@@ -9090,20 +9158,60 @@ enquanto nenhum chamador enviar o campo, nenhuma resposta muda.
 
 - A leitura de desfecho passa a servir um resultado de tool sob o mesmo rótulo de selo. Para um
   nó fiel é o mesmo conteúdo que o texto final de hoje; formalmente alarga o que o rótulo cobre,
-  e é o AOS-497 que o regista na emenda ao ADR-037 §2.8.
+  e fica registado na emenda ao ADR-037 §2.8, escrita com este ticket.
 - A saída do ramo durável exige o gate soberano de leitura e uma custódia de KEK que sobreviva ao
   reinício, como no AOS-494.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO E REVISTO (2026-10-05), por verificar em produção.** Às escuras: nenhum chamador
+envia os campos, e um run sem eles responde os bytes de antes.
+
+Critérios que ficam por marcar, e porquê:
+
+- (A compatibilidade nos dois sentidos e o fio com o corpo do `POST` gerado pelo `aos-orq`
+  ficaram marcados com o AOS-499, que é quem tem a metade do `aos-orq`: o corpo com os campos em
+  `packages/cmd/aos-orq/testdata/aos499_fio/`, entregue byte a byte ao nó real, e o nó anterior
+  que não anuncia e recusa o campo.)
+- **Smoke**: sobre ficheiro correu só a porta, o anúncio e a recusa no arranque; um run com a
+  origem designada pelo binário do driver, e tudo sobre JetStream, não correram.
+- **Verificação em produção**: por fazer.
+
+O que a implementação fixou e o ticket não dizia (a validar pelo dono):
+
+- **O pedido leva dois campos**, `output_from_tool` e `output_source_binding` (`measure` ou
+  `binding`), sempre juntos. O vínculo por run é do AOS-497 e este ticket foi escrito antes dele.
+- **A fonte dos bytes é o step-ledger nos dois ramos.** O registo de desfechos em memória só tem
+  a âncora: o kernel não guarda resultados. O ramo em memória passa por isso a decifrar um
+  registo do step-ledger num run com origem designada, depois do mesmo selo. A captura do turno
+  não é lida para isto.
+- **O vínculo decide como a falta dos bytes se manifesta.** Com `binding` vale o critério como
+  está escrito (`output_unavailable` de vez, 503 por instantes). Com `measure` os bytes são
+  medição, e a sua falta não muda o estado, o texto final nem o código da resposta: sem isto,
+  medir mudava desfechos de plano, porque o `aos-orq` fecha `failed` um nó com
+  `output_unavailable`. Nos dois, um campo próprio, `output_omitted`, diz a causa:
+  `unavailable`, `unavailable_now`, `too_large`, `not_utf8`.
+- **`output` só sai num run concluído.** Um run `failed` com a origem designada responde com os
+  metadados.
+- **Um nó com o veredicto desligado aceita e ignora os campos, e não anuncia**: nesse modo o
+  kernel não lê a declaração e não há âncora.
+- **A porta também recusa um nome que a âncora selada não admite** (mais de 128 bytes, espaços),
+  com a função do selo. O que depende do tool set do nó continua a ser recusado pelo kernel no
+  arranque do run.
+
+Limites que ficam: sem execução durável não há step-ledger, e sem o gate soberano de leitura o
+nó não decifra para ninguém — nos dois casos a âncora sai e os bytes não. A emenda à secção 2.8
+da decisão sobre o desfecho de um run (o que a leitura de desfecho passa a cobrir) foi escrita
+com este ticket, e não com o AOS-497.
 
 ---
 
 ## AOS-499 — O `aos-orq` mede a saída por referência sem mudar a entrega
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa ADR nenhum: é medição, sem mudança de comportamento. O ADR-027 e o ADR-037 são citados como contexto. -->
+<!-- Este ticket implementa a parte do ADR-038 que é do `aos-orq` em observação: a §2.4 (o vínculo «só medição» — declarar a origem, medir o que o kernel designou e não mudar a entrega). -->
+<!-- rtm: menção -->
+<!-- O ADR-027 e o ADR-037 são citados como contexto e NÃO são implementados neste ticket. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -9145,38 +9253,99 @@ hoje. Nenhum desfecho de plano muda.
 
 ### Critérios de Aceitação
 
-- [ ] Interruptor de configuração no `aos-orq`: `AOS_ORQ_SAIDA_POR_REFERENCIA`, com os valores
+- [x] Interruptor de configuração no `aos-orq`: `AOS_ORQ_SAIDA_POR_REFERENCIA`, com os valores
       `off` e `observe` neste ticket. A omissão é `off`. Um valor desconhecido recusa o arranque;
       `on` é recusado até ao AOS-501. O banner do `serve` diz o modo.
-- [ ] **Candidato estrutural**: nó não-verificador, com exactamente uma tool pinada, exactamente
+- [x] **Candidato estrutural**: nó não-verificador, com exactamente uma tool pinada, exactamente
       uma saída de forma aberta e sem `consumes`. Cada nó diz no log da drenagem em que classe
       fica.
-- [ ] Em `observe`, o `aos-orq` envia `output_from_tool` aos candidatos, e só a um nó que
+- [x] Em `observe`, o `aos-orq` envia `output_from_tool` aos candidatos, e só a um nó que
       anuncie suportá-lo (AOS-498). Contra um nó que não anuncia, submete como hoje e regista que
       não mediu. Um anúncio ilegível pára e o pedido volta à fila, como no AOS-495.
-- [ ] A publicação e a entrega são as de hoje: publica-se o texto final, com o digest do texto
+- [x] A publicação e a entrega são as de hoje: publica-se o texto final, com o digest do texto
       final. O `aos-orq` não publica nem entrega o resultado designado neste ticket.
-- [ ] **Nenhum desfecho de plano muda.** Teste: o mesmo plano, com as mesmas respostas do nó,
-      dá em `off` e em `observe` os mesmos estados de nó, o mesmo código de saída e os mesmos
-      eventos do plano, byte a byte.
-- [ ] Métricas no ficheiro da drenagem, todas com rótulos de vocabulário fechado e **sem
+- [x] **Nenhum desfecho de plano muda.** Teste: o mesmo plano dá em `off` e em `observe` os
+      mesmos estados de nó, o mesmo código de saída, os mesmos eventos do plano e o mesmo `POST`
+      do consumidor, byte a byte — **com respostas diferentes do nó por modo**, como em produção:
+      em `off` sem os três campos novos, em `observe` com eles (16 respostas: servido, digest que
+      não bate, as quatro marcas, `missing`, `ambiguous`, `inapplicable`, marca desconhecida,
+      âncora mal formada, `failed` com âncora, texto vazio com bytes, saída indisponível com
+      âncora, e as duas do nó real).
+- [x] Métricas no ficheiro da drenagem, todas com rótulos de vocabulário fechado e **sem
       conteúdo**: nós por classe estrutural (candidato, não candidato); nos candidatos, o estado
       da designação (`designated`, `missing`, `ambiguous`, e não medido); tamanho do resultado
-      designado, em classes, contra os 128 KiB; razão entre o tamanho do texto final e o tamanho
-      do resultado designado, em classes.
-- [ ] A razão de tamanhos calcula-se dos metadados (`output_source`) e do comprimento do texto
-      final. Nenhum conteúdo é escrito em log, métrica ou evento.
-- [ ] A superfície de variáveis de ambiente, o README e o exemplo de `.env` registam o
+      designado tal como se transporta, em classes, contra os 128 KiB; o que o nó fez dos bytes;
+      e, sobre o **conteúdo** do resultado (desembrulhado do envelope da sandbox), a forma, a
+      relação com o texto final, os números e a razão de tamanhos.
+- [x] A medição compara **conteúdo com conteúdo**: quando o nó serve os bytes e eles conferem
+      com a âncora, o `aos-orq` desembrulha o `stdout_text` do envelope da sandbox e compara-o
+      com o texto final dentro do processo. Só classes são escritas: nenhum conteúdo, linha,
+      número ou digest do nó vai para log, métrica, `detail` ou evento (teste de cardinalidade
+      fechada, e com o binário real). Sem bytes conferidos, as classes de conteúdo ficam «não
+      comparado». (Reescrito na revisão: a razão calculada só dos metadados media o envelope.)
+- [x] A superfície de variáveis de ambiente, o README e o exemplo de `.env` registam o
       interruptor.
-- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo em `observe` com nó
+- [x] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo em `observe` com nó
       anterior, e nó novo com `aos-orq` anterior.
-- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: o corpo do `POST /runs` com
+- [x] Ficheiros de fio gerados por um lado e consumidos pelo outro: o corpo do `POST /runs` com
       o campo, gerado pelo `aos-orq` na forma de produção (nó de leitura, uma tool, saída
       `record`), entregue byte a byte ao nó real; as respostas do nó a esse corpo são as que o
       `aos-orq` lê.
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] A medição corre sobre o envelope **real** da sandbox: os envelopes dos testes são escritos
+      pelo codificador da sandbox (ficheiros de fio que o teste do pacote exige byte a byte) e
+      pela resposta de um nó cuja tool corre na sandbox. Uma transcrição fiel dá `igual` ou
+      `contem`; um resumo que perde um número dá `numeros=em_falta`.
+- [x] Revisão adversarial independente com mutações, antes da fusão. Feita a 2026-10-05, sem
+      bloqueantes: `off` e `observe` são seguros para os desfechos; três das seis séries não
+      mediam o que o README dizia, e foram refeitas (abaixo).
 - [ ] Verificação em produção: uma série de pelo menos 20 planos em `observe`, com as métricas
       acima lidas e registadas no documento de acompanhamento.
+
+### Revisão adversarial (2026-10-05)
+
+Revisão independente sobre o ramo, com mutações numa cópia destacada. **Sem bloqueantes**: não se
+encontrou caminho em que medir mude um run ou um plano. O achado importante era outro — **a
+medição não media o que dizia**. Em produção o resultado designado é o envelope que a sandbox
+escreve, e não o documento; todos os testes usavam tools que devolviam bytes crus. Comparar o
+texto final com o envelope dava «diferente» a uma transcrição byte a byte (a série «igual» era
+impossível), classificava como resumo um documento fiel até cerca de 350 bytes, e nunca dava
+«vazio». Era com essas séries que se ia decidir a entrega.
+
+O que mudou:
+
+- **A medição desembrulha o envelope**, só para medir. Reconhece a forma exacta que o
+  codificador da sandbox escreve (um objecto com `exit_code` inteiro e só as chaves do
+  envelope); o resto conta como bytes crus e compara-se como veio.
+- **Classes novas, fechadas, sobre o conteúdo:**
+
+  | Série | Classes | O que conclui |
+  |---|---|---|
+  | forma | `envelope`, `envelope_exit_nao_zero`, `envelope_binario`, `cru`, `sem_bytes` | o que o nó serviu, e com o que se pôde comparar; só `envelope` e `cru` se comparam |
+  | texto final | `igual`, `contem`, `linhas_todas`, `linhas_de_0_9_a_1`, `linhas_de_0_5_a_0_9`, `linhas_abaixo_de_0_5`, `texto_vazio`, `conteudo_vazio`, `nao_comparado` | as três primeiras: o documento está no texto final; as fracções: não está todo, letra a letra |
+  | números | `todos`, `em_falta`, `sem_numeros`, `nao_comparado` | `todos`: nenhum número do documento falta; `em_falta`: falta pelo menos um, ou foi reformatado |
+  | razão | as de antes, sobre o conteúdo, e `nao_comparado` | só tamanho; não distingue um resumo de uma transcrição |
+
+- **O que as classes não concluem:** as fracções e `em_falta` são um limite superior à perda de
+  factos, não uma prova — um número com separador de milhares ou uma data por extenso contam
+  como em falta. Não se mede se o documento é o certo, nem a qualidade de um resumo.
+- **«Nenhum desfecho muda» com respostas diferentes por modo** (o critério acima). A mutação que
+  lia uma marca nova como saída indisponível sobrevivia ao teste antigo.
+- **O interruptor apara os espaços das pontas** e não dobra maiúsculas; fixado por teste e escrito
+  no README.
+- **Achado do envelope real:** a leitura de um ficheiro devolve-o também como artefacto, e o
+  envelope leva o documento duas vezes. O tamanho que a série conta é o do envelope: um documento
+  de cerca de 50 KiB já não cabe nos 128 KiB. Com o driver de referência; por verificar em
+  produção.
+
+Limites que ficam, declarados e não corrigidos aqui (passam ao AOS-501):
+
+- **Subcontagem.** Que o nó declarou a origem vive na memória do `serve`: um candidato submetido
+  por um `serve` e recolhido por outro não entra em série nenhuma. O buraco é observável —
+  candidatos por estrutura menos a soma dos estados da designação.
+- **O nó decifra e envia até 128 KiB do titular** para o `aos-orq` os medir; a comparação é feita
+  em memória e nada é guardado.
+- Sem execução durável ou sem o gate soberano de leitura no nó, os bytes não vêm e as séries de
+  conteúdo ficam todas em `nao_comparado`.
 
 ### Fechado antes de implementar (2026-10-05)
 
@@ -9201,7 +9370,34 @@ Lêem-se do registo de turnos na análise da série.
 
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO E REVISTO (2026-10-05), por verificar em produção.** Desligado por omissão: sem
+a variável, o corpo do `POST /runs`, o log dos nós e as métricas são os de antes.
+
+Critério que fica por marcar: a **verificação em produção** (a série de pelo menos 20 planos em
+`observe`). O cenário de shell das métricas num contentor não correu depois da revisão (o daemon
+do Docker estava parado).
+
+O que a implementação fixou e o ticket não dizia (a validar pelo dono):
+
+- **A declaração só vai num pedido que já leva o contrato de conclusão sobre a mesma tool**, e
+  cujo nome de tool tem a forma que a âncora selada admite. «Só medição» não muda o desfecho de
+  um run que arranca, mas uma declaração impossível recusa o arranque; com esta condição, a
+  declaração nunca acrescenta uma razão para o run não arrancar que o contrato já não tivesse.
+  Um candidato a quem ela não vai conta como `nao_medido`, com a causa no log.
+- **«Exactamente uma saída de forma aberta»** conta só as abertas: um nó com uma saída aberta e
+  uma fechada é candidato, porque é a aberta que hoje se publica do texto final.
+- **Em `off` nenhum nó diz a classe estrutural no log** e nenhuma série nova é escrita: só o
+  banner do `serve` diz o modo. A classe de cada nó aparece em `observe`.
+- **O estado `inapplicable`** do kernel (um run com entradas declarado como produtor) tem a sua
+  série, ao lado dos três do critério. Um candidato não o produz, porque não tem `consumes`.
+- **Medidas a mais**, para o AOS-501 saber o que vai encontrar: o que o nó fez dos bytes
+  (servidos e conferidos, acima do tecto, não texto, indisponíveis) e, desde a revisão, a forma
+  do que serviu e a relação do texto final com o conteúdo (ver «Revisão adversarial»). A
+  comparação por digests da primeira versão saiu: contra o envelope nunca dava igual.
+- **Os bytes designados que o nó devolve servem para conferir o digest e para comparar em
+  memória**; não são guardados, publicados nem entregues.
+- A medida só aceita uma âncora com o vínculo que este binário enviou e com a forma que o
+  kernel produz; o resto conta como `nao_medido`, sem repetir o que veio do nó.
 
 ---
 
@@ -9419,6 +9615,36 @@ depois de um período de observação.
 - [ ] Verificação em produção, primeiro em `observe` e depois em `on`: numa série de pelo menos
       20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool, e
       nenhum facto do documento se perde.
+
+### Herdado da revisão do AOS-498/499 (2026-10-05)
+
+A revisão adversarial dos dois tickets anteriores deixou quatro pontos que são deste, por serem
+decisões sobre a entrega. Não foram corrigidos lá.
+
+- **Decidir o que é uma origem inútil.** Um envelope de sandbox com `exit_code` diferente de zero
+  ou com `stdout_text` vazio é uma chamada efectiva, e o kernel designa-a. A guarda `saida_vazia`
+  do `aos-orq` olha para o texto final, e um envelope nunca tem zero bytes: com a entrega ligada,
+  o consumidor recebia o envelope de uma falha, ou de um documento vazio, como saída cumprida. A
+  medição já os separa (as formas `envelope_exit_nao_zero` e o conteúdo vazio); falta a regra.
+  Junta-se a isto o que o envelope real mostrou: a leitura leva o documento duas vezes (texto e
+  artefacto em base64), e o tecto de 128 KiB aplica-se ao envelope.
+- **Separar os dois sentidos de `output_unavailable` com `binding`.** Hoje diz «o texto final não
+  se lê» e «os bytes designados não se lêem»; um nó sem gate responde com o texto final presente
+  e `output_unavailable: true`. Quem entrega por referência tem de os distinguir para dar a causa
+  certa.
+- **Gravar no log do plano que o nó declarou a origem, e com que vínculo.** Hoje vive na memória
+  do `serve`. Duas consequências: um run submetido em `measure` pode ser recolhido por um `serve`
+  em `on`, que o trataria como vinculativo sem o kernel o ter julgado assim; e um candidato
+  recolhido por outro `serve` não é medido (a subcontagem do AOS-499).
+- **O custo de ler o stream inteiro por `GET`.** Cada leitura de um run concluído com a origem
+  designada percorre o stream do run (medido: de 0,4 ms para 26,9 ms com um resultado de 6 MiB
+  noutro passo). O `aos-orq` faz uma por nó; com a entrega ligada e a reidratação a reler, pesa
+  mais, e um leitor autorizado pode repetir.
+
+Fica também daqui: a medição do AOS-499 dá um **limite superior** à perda de factos (linhas e
+números do documento que não aparecem, letra a letra, no texto final), não uma contagem. Ler a
+série antes de ligar a entrega é ler quantos nós ficam abaixo de «todas as linhas» ou com números
+em falta, e ir ver esses.
 
 ### Em aberto, a fechar antes de implementar
 

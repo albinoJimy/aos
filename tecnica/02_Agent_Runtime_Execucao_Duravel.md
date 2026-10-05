@@ -100,6 +100,44 @@ O loop base é implementado no pacote `packages/kernel/agent-runtime` (`agentrun
 
 **A origem da saída de um run (AOS-497, ADR-038).** O objectivo do run pode declarar que a sua saída é o resultado de uma tool: `Goal.OutputFromTool` (o nome exacto da tool) e `Goal.OutputSourceBinding` (o vínculo: `measure` ou `binding`; obrigatório com a origem, proibido sem ela). Vazio é o comportamento de sempre, sem mudar um byte de eventos, manifesto ou registo de retoma. Com a declaração, a evidência do run segue a tool declarada (`RunEvidence.FollowOutputFrom`) e `RunEvidence.Observe(passo, autoridade, resultados)` tira, **no momento em que observa o primeiro turno que despachou tool calls**, os factos da designação: quantas vezes a tool declarada foi pedida nesse turno, o desfecho da chamada e o digest dos seus bytes. `ConcludeRun` aplica-lhes a regra no turno terminal, e só com o rótulo do contexto desse turno (`ContextAuthority`, ADR-034, lido a seguir ao Assemble) trusted: pedida **exactamente uma vez** e essa chamada efectiva dá `designated`; pedida **mais de uma vez**, qualquer que seja o desfecho de cada chamada, dá `ambiguous` (quem controla a falha de uma chamada não escolhe qual resultado fica selado); pedida uma vez e não efectiva, não pedida, ou sem nenhum turno com tools, dá `missing`. Com o contexto desse turno já untrusted — o que, como um turno sem tool calls termina o run, só as entradas do run (`plan_input`, memória) provocam — o estado é `inapplicable`: um defeito de composição, que a medição não confunde com «o modelo não chamou»; o arranque não é recusado por isto. A designação não lê o texto do modelo nem o conteúdo do resultado. O resultado é a **âncora** `OutputSource{tool, binding, state, step_id, digest, bytes}`, em `Result.OutputSource`: o `step_id` é o da chamada (`ToolStepID`; num run retomado o mesmo passo pode ter mais de um evento de mediação), o digest é `sha256:<hex>` dos bytes de `CapturedToolResult.Result.Value` tal como o despacho os devolveu nesta vida do run, e não há conteúdo. **A fonte dos bytes** é o step-ledger: na via durável o digest é o `result_hash` do `step.ledger.applied` do passo designado; a captura do turno só tem esses bytes quando o turno designado não mudou de desfecho entre vidas (não os tem depois de escalada e aprovação, nem depois de falha e retoma). Quem os servir (AOS-498) lê-os do step-ledger e confere-os contra o digest selado. A âncora existe nos dois vínculos e em `observe` e `enforce`; com `off` a declaração não é lida. **O que entra no veredicto.** Só com o vínculo `binding` e o modo `enforce`: `output_source_ambiguous` (âncora `ambiguous`) e `output_source_missing` (âncora `missing` ou `inapplicable`), depois de `truncated` e das razões do contrato e antes de `empty_output`, que nesse caso avalia os bytes designados (zero bytes) e não o texto — um run com bytes designados e texto final vazio é cumprido, com texto vazio. Em qualquer outra combinação — incluindo `measure` com o nó em imposição — o veredicto, o desfecho e o texto final de um run que arranca são os de um run sem declaração. **Declaração impossível.** Antes do primeiro turno, uma tool de origem fora do tool set ou da lista-branca, ou com um nome que a âncora selada não admite (mais de 128 bytes, espaços ou caracteres de controlo — a mesma função valida a forma no arranque e no selo), devolve `ErrImpossibleOutputSource`, e uma declaração mal formada `ErrBadOutputSourceBinding`, sem eventos nem modelo; vale nos dois vínculos, pelo que «só medição» não é estritamente neutra: uma declaração impossível impede de arrancar um run que sem ela teria corrido. O nó sela esses runs em `failed` e o `GET /runs/{id}` responde `failed`. **Replay e retoma.** A origem e o vínculo vão em `manifest.completion` (`output_from`, `output_binding`) e no registo de retoma; o motor lê-os do manifesto do turno terminal e chama a mesma função com os resultados da captura, pelo que `ReplayResult.OutputSource` é igual ao do loop (`TestAOS497_Diferencial_OReplayDesignaAOrigemDoLoop`, nos dois layouts, modos e vínculos, e sobre a captura selada). Numa retoma o run é re-hospedado desde o turno 1; um resultado com êxito está memorizado no step-ledger, a tool não volta a correr e o digest é o da primeira vida. **Limites** (ADR-038 §5). Se a tool declarada falha ou é recusada no primeiro turno com tools e tem êxito depois, o estado é `missing`: o contexto já é untrusted. Uma segunda tentativa da tool declarada no mesmo turno é `ambiguous`. Um envelope de sandbox com código de saída diferente de zero é uma chamada efectiva, e designável. Com a captura em modo de referência (sem cifra por-titular) e o turno designado a ser também o terminal, o replay sai sem divergência com uma âncora diferente da selada; não é o caminho de produção. O nó conta as âncoras seladas em `aos_runs_output_source_total{binding,state}` (2 vínculos × 4 estados; só runs cujo desfecho ficou selado). Nenhum chamador declara ainda a origem pela API, e nada é entregue pela âncora (ADR-038 §6).
 
+**A origem da saída na API do nó (AOS-498).** O `POST /runs` aceita `output_from_tool` (o nome de
+uma tool da lista-branca `tools` do mesmo pedido) e `output_source_binding` (`measure` ou
+`binding`); vêm sempre juntos, e a porta recusa com 400 e mensagem própria a declaração
+incompleta, o vínculo desconhecido, o nome que a âncora não admite e a tool fora da lista-branca.
+O `GET /tools` anuncia o suporte em `output_source` (`bindings`, `max_bytes`); um nó com o
+veredicto desligado não anuncia. O `GET /runs/{id}` de um run que declarou a origem devolve
+`output_source` (a âncora selada) e, com o run concluído e a origem `designated`, `output`: os
+bytes do resultado, lidos do step-ledger por `durable.ReadAppliedResult` — uma leitura do log,
+sem estado, que não toca na projecção em memória do ledger — e conferidos contra o digest e o
+tamanho da âncora. Essa leitura exige o opener por-titular e só devolve conteúdo que ele abriu
+(um registo em claro dá `ErrAppliedResultInClear`); o nó passa-lhe o opener atrás do escopo do
+leitor que o gate admitiu. Com uma tool que corre na sandbox, os bytes são o ENVELOPE que ela
+escreve (`stdout_text`, `artifacts`, `exit_code`), e não o documento. Os dois ramos do `GET` (em memória e durável) lêem da mesma fonte, depois do
+selo WORM `read:outcome`. Quando os bytes não saem, `output_omitted` diz porquê: `too_large`
+(acima de 128 KiB; 128 KiB exactos saem), `not_utf8`, `unavailable` (de vez: titular apagado,
+passo sem registo, registo do ledger ilegível ou em claro, âncora cujo passo não forma chave —
+`ErrAppliedResultUnreadable` —, bytes que não conferem, nó sem gate) ou `unavailable_now` (por
+instantes: custódia fechada, erro de leitura do Event Store). Só sai num run que concluiu. Com
+o vínculo `binding`, a falta dos bytes segue as regras da saída (`output_unavailable` ou 503); com
+`measure` não muda o estado, o texto final nem o código da resposta. `final_text` continua a
+sair. Um run sem declaração responde os bytes de antes.
+
+**A saída por referência, medida pelo `aos-orq` (AOS-499).** Com
+`AOS_ORQ_SAIDA_POR_REFERENCIA=observe` (a omissão é `off`), cada nó do plano candidato por
+estrutura — não-verificador, uma tool, uma saída de forma aberta, sem `consumes` — declara a
+origem ao nó com o vínculo `measure`, e só a um nó que a anuncie. O que se publica e se entrega
+continua a ser o texto final. Para cada candidato com a origem `designated`, e só quando o nó
+serve os bytes e eles conferem com a âncora, o `aos-orq` reconhece a forma do envelope da sandbox
+(`desembrulharEnvelope`: um objecto com `exit_code` inteiro e só as chaves do envelope; o resto é
+`cru`), tira-lhe o `stdout_text` e compara-o com o texto final dentro do processo
+(`relacaoComOConteudo`). Publica só classes: a forma (`envelope`, `envelope_exit_nao_zero`,
+`envelope_binario`, `cru`, `sem_bytes`), a relação (`igual`, `contem`, e a fracção das linhas não
+vazias do conteúdo presentes no texto final), os números (`todos`, `em_falta`, `sem_numeros`) e a
+razão de tamanhos sobre o conteúdo. As fracções e `em_falta` são um limite superior à perda de
+factos, não uma prova. Nenhum conteúdo, linha, número ou digest do nó vai para o log, as métricas
+ou o `detail`. Os envelopes dos testes são escritos pelo codificador da sandbox
+(`packages/substrate/sandbox/testdata/aos499_envelope/`).
+
 **O contrato e o desfecho na API do nó (AOS-494).** O `POST /runs` aceita `completion_requires`,
 a lista de tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do
 mesmo pedido; senão o pedido é recusado com 400. O modo de aplicação não tem campo: é do nó. O

@@ -399,6 +399,12 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 	if err != nil {
 		return err
 	}
+	// AOS-499: o interruptor da saída por referência, também antes da posse. Um valor que este
+	// binário não aceita (desconhecido, ou `on`) recusa o arranque.
+	modoDaSaida, err := modoDaSaidaPorReferenciaDoAmbiente()
+	if err != nil {
+		return err
+	}
 
 	ctx := comMedidor(context.Background(), medidor)
 	// AOS-441: com o executor de nós composto, o snapshot confere-se com o catálogo de tools do
@@ -435,6 +441,9 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 			medicao.contratoNaoAplicado(motivoNoNaoAnuncia)
 		}
 		fmt.Println(bannerDoContrato(anuncio))
+		// AOS-499: o modo da saída por referência, contra o que ESTE nó anuncia — lido na mesma
+		// resposta, pelo que um anúncio ilegível já parou o `serve` acima.
+		fmt.Println(bannerDaSaidaPorReferencia(modoDaSaida, anuncio))
 	}
 	// ESCRITA ⇒ sobre ficheiro, posse exclusiva do WAL (AOS-286); sobre o substrato
 	// REPLICADO, nenhuma posse de ficheiro — N escritores são o objectivo (AOS-100).
@@ -544,7 +553,9 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		// AOS-495: o anúncio do contrato de conclusão foi lido antes da posse (ver acima).
 		exe = &configDoExecutor{cli: cliDoNo, prazo: *planTimeout, sondagem: *pollInterval, perdida: perdida,
 			geracaoDoPedido: *geracaoDoPedido, declararOrigem: origem.pedido != nil,
-			contratoDeConclusao: anuncio.aceita, medicao: medicao}
+			contratoDeConclusao: anuncio.aceita, medicao: medicao,
+			// AOS-499: só em `observe`, e só declara a um nó que anuncie (ver [executorDeNos.submeter]).
+			medirOrigem: modoDaSaida == saidaPorReferenciaObserve, origemAnunciada: anuncio.origem}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse

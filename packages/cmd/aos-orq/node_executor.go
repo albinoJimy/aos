@@ -99,6 +99,12 @@ type configDoExecutor struct {
 	// submetido e os veredictos observados. O `consume` escreve-a no ficheiro de métricas; nil
 	// num `serve` manual, onde não se mede.
 	medicao *medicaoDoContrato
+	// medirOrigem (AOS-499): o interruptor da saída por referência está em `observe`. Os nós
+	// candidatos por estrutura declaram a origem com o vínculo «só medição». Falso ⇒ nada muda.
+	medirOrigem bool
+	// origemAnunciada (AOS-499): o nó anunciou que aceita a declaração de origem
+	// ([anuncioDoNo.origem]). Falso ⇒ os campos não vão, e o candidato conta como não medido.
+	origemAnunciada bool
 }
 
 // bannerDoExecutor declara no arranque se o trabalho dos nós é executado — e onde.
@@ -299,6 +305,13 @@ type executorDeNos struct {
 	contratoDeConclusao bool
 	// medicao — ver [configDoExecutor.medicao] (AOS-495). nil fora do `consume`.
 	medicao *medicaoDoContrato
+	// medirOrigem e origemAnunciada — ver [configDoExecutor] (AOS-499).
+	medirOrigem     bool
+	origemAnunciada bool
+	// candidatos guarda, por nó candidato por estrutura que ESTE processo submeteu em modo de
+	// observação, se a declaração de origem foi no pedido (AOS-499). É o que diz, no fecho, se há
+	// uma âncora para ler ou se o nó conta como não medido.
+	candidatos map[string]bool
 	// causas guarda, por nó que ESTE processo fechou `failed`, a causa em vocabulário fechado
 	// (AOS-495, contrato_de_conclusao.go). Vai ao `detail` do desfecho do plano.
 	causas map[string]string
@@ -361,7 +374,7 @@ func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.Pl
 	}
 	e := &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
 		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now, causas: map[string]string{},
-		payloads: map[chaveDePayload]string{}}
+		payloads: map[chaveDePayload]string{}, candidatos: map[string]bool{}}
 	if store != nil && planID != "" {
 		if err := e.rehidratarPayloads(ctx, store, planID); err != nil {
 			return nil, err
@@ -419,6 +432,25 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	default:
 		fmt.Printf("  execucao: no %s contrato de conclusao: classe=%s — NAO leva contrato\n", nodeID, classe)
 	}
+	// AOS-499: em modo de observação, um nó CANDIDATO POR ESTRUTURA declara a origem da saída, com
+	// o vínculo «só medição» — e só a um nó `aos` que anunciou aceitá-la, e só quando a declaração
+	// não acrescenta uma razão para o run não arrancar ([origemDeclaravel]). Cada nó diz a sua
+	// classe. Com o interruptor desligado este bloco não corre: nem campo, nem linha.
+	estrutura := ""
+	if e.medirOrigem {
+		estrutura = classeEstrutural(n, p.Tools)
+		switch {
+		case estrutura != classeCandidato:
+			fmt.Printf("  execucao: no %s saida por referencia: classe=%s — NAO declara a origem\n", nodeID, estrutura)
+		case !e.origemAnunciada:
+			fmt.Printf("  execucao: no %s saida por referencia: classe=%s — NAO MEDIDO: o no aos nao anuncia o suporte, e a declaracao nao vai\n", nodeID, estrutura)
+		case !origemDeclaravel(p.Tools[0], p.CompletionRequires):
+			fmt.Printf("  execucao: no %s saida por referencia: classe=%s — NAO MEDIDO: a declaracao podia impedir o run de arrancar (o pedido nao leva contrato sobre a mesma tool, ou o nome nao tem a forma que a ancora admite), e nao vai\n", nodeID, estrutura)
+		default:
+			p.OutputFromTool = p.Tools[0]
+			fmt.Printf("  execucao: no %s saida por referencia: classe=%s — declara a origem (a sua unica tool) com o vinculo measure\n", nodeID, estrutura)
+		}
+	}
 	// AOS-439: o vínculo ao pedido — de que plano, e de que geração da reclamação, este run é
 	// trabalho. Não diz quem é o submissor: o nó lê-o do seu log, e só se a reclamação viva for
 	// deste chamador.
@@ -434,6 +466,12 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 		return err
 	}
 	e.medicao.noSubmetido(classe)
+	if e.medirOrigem {
+		e.medicao.noPorEstrutura(estrutura)
+		if estrutura == classeCandidato {
+			e.candidatos[nodeID] = p.OutputFromTool != ""
+		}
+	}
 	e.emVoo[nodeID] = struct{}{}
 	return nil
 }
@@ -879,6 +917,9 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 		fmt.Printf("  execucao: no %s VEREDICTO OBSERVADO %s (modo %s), vector %s — o no conclui e a saida publica-se; com o no aos em enforce ficava failed\n",
 			nodeID, razao, modoImprimivel(string(st.Verdict.Mode)), e.vectorDe(nodeID, st.Verdict))
 	}
+	// AOS-499: a ORIGEM MEDIDA de um nó candidato. Depois de o desfecho estar decidido, e sem
+	// mexer nele: `destino` e `causa` já não mudam, e o que se publica abaixo é o texto final.
+	e.registarOrigemMedida(nodeID, st, existe)
 	var veredicto *plannerevents.VerdictRecordedPayload
 	if n.IsVerifier() && destino == arstate.Complete {
 		v := veredictoDaSaida(st.FinalText)
@@ -924,6 +965,26 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	}
 	fmt.Printf("  execucao: no %s %s (run %s)\n", nodeID, destino, childRunID(e.runID, nodeID))
 	return nil
+}
+
+// registarOrigemMedida escreve no log da drenagem e na medição o que o kernel do nó designou para
+// um nó CANDIDATO que este processo submeteu em modo de observação (AOS-499). Não devolve nada e
+// não decide nada: quem a chama já decidiu o desfecho do nó.
+//
+// Um candidato a quem a declaração não foi enviada (o nó `aos` não anuncia), ou cujo run não
+// trouxe âncora (não arrancou, perdeu-se), conta como «não medido».
+func (e *executorDeNos) registarOrigemMedida(nodeID string, st estadoDoRun, existe bool) {
+	declarada, candidato := e.candidatos[nodeID]
+	if !candidato {
+		return
+	}
+	medida := medidaDaOrigem{estado: estadoNaoMedido}
+	if declarada && existe {
+		medida = medirOrigem(st)
+	}
+	e.medicao.origemMedida(medida)
+	fmt.Printf("  execucao: no %s ORIGEM MEDIDA %s — so medicao: o no do plano fecha e publica o texto final, como sempre\n",
+		nodeID, medida.linha(len(st.FinalText)))
 }
 
 // vectorDe escreve o vector do veredicto do run do nó, nomeando só as tools que o contrato

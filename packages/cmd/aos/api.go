@@ -773,6 +773,13 @@ type submitRequest struct {
 	// ([validarContratoDeConclusao]). Ausente ⇒ run sem contrato, como sempre. O MODO de
 	// aplicação do veredicto não tem campo: é do nó (`AOS_COMPLETION_VERDICT`).
 	CompletionRequires []string `json:"completion_requires,omitempty"`
+	// OutputFromTool é a ORIGEM DECLARADA da saída do run (AOS-498, ADR-038): o nome de uma tool
+	// da lista-branca `tools` do MESMO pedido. OutputSourceBinding é o vínculo dessa declaração —
+	// `measure` (só medição) ou `binding` (vinculativa) — e os dois vêm sempre juntos
+	// ([validarOrigemDaSaida]). Ausentes ⇒ run sem origem declarada, como sempre. Não dão
+	// autoridade nenhuma: quem pode submeter o run pode declará-los.
+	OutputFromTool      string `json:"output_from_tool,omitempty"`
+	OutputSourceBinding string `json:"output_source_binding,omitempty"`
 }
 
 // planInputWire é a representação de wire de um payload consumido (AOS-414). O `digest` é
@@ -907,6 +914,12 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// (400, com mensagem própria), antes de autenticar e de qualquer escrita.
 	if cerr := validarContratoDeConclusao(req.CompletionRequires, req.Tools); cerr != "" {
 		writeError(w, http.StatusBadRequest, cerr)
+		return
+	}
+	// AOS-498: a origem declarada da saída, contra a mesma lista-branca. Recusa de pedido, como a
+	// do contrato: antes de autenticar e de qualquer escrita.
+	if oerr := validarOrigemDaSaida(req.OutputFromTool, req.OutputSourceBinding, req.Tools); oerr != "" {
+		writeError(w, http.StatusBadRequest, oerr)
 		return
 	}
 	// AOS-414: os payloads do plano. Fail-closed na fronteira — um digest que não bate é um
@@ -1102,6 +1115,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// AOS-494: o contrato de conclusão, já conferido com a lista-branca. O modo de aplicação
 		// fica por fixar: é o nó que o fixa no arranque do run ([Node.fixarConclusao]).
 		CompletionRequires: req.CompletionRequires,
+		// AOS-498: a origem declarada da saída e o seu vínculo, já conferidos na porta. O kernel
+		// volta a verificá-los no arranque, contra o tool set que só ele conhece.
+		OutputFromTool:      req.OutputFromTool,
+		OutputSourceBinding: agentruntime.OutputSourceBinding(req.OutputSourceBinding),
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
 	// AOS-439: quem pediu o run, para o selo de cada decisão. Vazio num run que não é de um plano.
@@ -1274,6 +1291,19 @@ type runStateResponse struct {
 	// um run que não escreveu nada. Uma indisponibilidade TRANSITÓRIA (custódia fechada ou sem
 	// resposta) não chega aqui: o `GET` responde 503. Ver [saidaDuravelIndisponivelDeVez].
 	OutputUnavailable bool `json:"output_unavailable,omitempty"`
+	// OutputSource é a ÂNCORA da saída de um run que declarou a origem (AOS-498, ADR-038 §2.3): a
+	// tool, o vínculo, o estado da designação e, quando designada, o passo, o digest e o tamanho
+	// do resultado. São os metadados que o kernel selou na transição terminal; sem conteúdo.
+	// Ausente num run sem origem declarada.
+	OutputSource *agentruntime.OutputSource `json:"output_source,omitempty"`
+	// Output são os BYTES DESIGNADOS: o resultado da tool tal como ela o devolveu, lido do
+	// step-ledger e conferido contra `output_source.digest` antes de sair. Só com o run concluído
+	// e a origem `designated`. Ponteiro: uma origem designada com zero bytes responde `""`.
+	Output *string `json:"output,omitempty"`
+	// OutputOmitted diz porque é que `output` não veio apesar de a origem estar designada, num
+	// vocabulário fechado: `too_large`, `not_utf8`, `unavailable`, `unavailable_now`. É distinto de
+	// OutputUnavailable, que fala da saída do run. Ver [apiHandler.origemNaResposta].
+	OutputOmitted string `json:"output_omitted,omitempty"`
 }
 
 // pendingApprovalWire é a face de wire de uma aprovação pendente. Descreve O QUE vai
@@ -1553,6 +1583,12 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		// Um run TERMINADO pode ter deixado pendentes por decidir (ex.: expirou o TTL e
 		// voltou a correr sem a acção). Expô-los mantém o histórico legível ao operador.
 		resp.PendingApprovals, resp.PendingExhaustion, resp.PendingUnavailable = h.pendingFor(r.Context(), runID)
+		// AOS-498: a âncora da saída e, com a origem designada, os bytes do resultado — lidos do
+		// step-ledger e conferidos, depois do selo acima. Só um run que concluiu tem saída.
+		if !h.origemNaResposta(r, reader, &resp, oc.Result.OutputSource, resp.Status == "completed" && oc.Result.Terminated) {
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -1583,7 +1619,7 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 	// paused (trip do breaker) — em vez do 404 de "nunca existiu". Um run em ready/running
 	// (crash ou órfão sem desfecho — AOS-253) ou inexistente cai no 404 uniforme: a leitura
 	// é um caminho de CONSULTA e um erro de leitura resolve-se pelo lado não-enumerável.
-	if st, veredicto, derr := h.svc.DurableOutcome(r.Context(), runID); derr == nil {
+	if st, desfecho, derr := h.svc.DurableOutcome(r.Context(), runID); derr == nil {
 		var resp runStateResponse
 		switch st {
 		case state.Complete:
@@ -1643,11 +1679,18 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// AOS-494: o MESMO desfecho que o ramo em memória. A razão e o vector saem da
 			// transição que deu o estado; a saída de um run concluído lê-se da captura do turno
 			// terminal, e só depois do selo acima. Um run que não concluiu não tem texto.
-			veredictoNaResposta(&resp, veredicto)
+			veredictoNaResposta(&resp, desfecho.Verdict)
 			if st == state.Complete && !h.desfechoDuravelNaResposta(r, reader, &resp) {
 				// A saída está indisponível NESTE MOMENTO (custódia fechada ou sem resposta, log
 				// que não leu). Responder `output_unavailable` era dar por perdido o que está
 				// inteiro, e quem lê fecha o nó do plano de vez. 503, como o `/reconstruct`.
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			// AOS-498: a MESMA âncora e os MESMOS bytes que o ramo em memória — a âncora sai da
+			// transição que deu o estado, e os bytes do step-ledger. Depois do selo e, num run
+			// `complete`, depois da trava do AOS-426 acima.
+			if !h.origemNaResposta(r, reader, &resp, desfecho.OutputSource, st == state.Complete) {
 				writeError(w, http.StatusServiceUnavailable, "indisponivel")
 				return
 			}

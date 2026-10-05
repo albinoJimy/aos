@@ -55,6 +55,15 @@ type estadoDoRun struct {
 	Verdict       *agentruntime.Verdict `json:"verdict,omitempty"`
 	// OutputUnavailable — o run concluiu e o nó já não consegue servir a saída (AOS-494).
 	OutputUnavailable bool `json:"output_unavailable,omitempty"`
+	// OutputSource, Output e OutputOmitted são a origem da saída de um run que a declarou
+	// (AOS-498): a âncora que o kernel selou, os bytes designados, e a marca de porque não vieram.
+	// Vazios num nó anterior e num run sem declaração.
+	//
+	// SÃO MEDIÇÃO (AOS-499). Este binário não decide nada por eles e não publica `output`: a
+	// saída de um nó do plano continua a ser o `final_text`. Ver saida_por_referencia.go.
+	OutputSource  *agentruntime.OutputSource `json:"output_source,omitempty"`
+	Output        *string                    `json:"output,omitempty"`
+	OutputOmitted string                     `json:"output_omitted,omitempty"`
 }
 
 // terminal diz se o run acabou: o nó marca `terminated` num run que concluiu nesta vida do
@@ -93,6 +102,11 @@ type pedidoDeRun struct {
 	// CompletionRequires é o contrato de conclusão do run (AOS-495): as tools de que a conclusão
 	// depende. Vazio ⇒ o campo NÃO vai no corpo — um nó anterior ao AOS-494 recusa-o com 400.
 	CompletionRequires []string
+	// OutputFromTool é a origem declarada da saída do run (AOS-499): a tool cujo resultado o
+	// kernel do nó deve designar. Vazio ⇒ os dois campos NÃO vão no corpo — um nó anterior ao
+	// AOS-498 recusa-os com 400. Vai SEMPRE com o vínculo «só medição»: este binário não tem
+	// outro (o vinculativo é do AOS-501).
+	OutputFromTool string
 }
 
 // vinculoAoPedido é o `plan_request` do `POST /runs` (AOS-439): o plano e a geração da
@@ -368,6 +382,10 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 	}
 	if len(p.CompletionRequires) > 0 {
 		campos["completion_requires"] = p.CompletionRequires
+	}
+	if p.OutputFromTool != "" {
+		campos["output_from_tool"] = p.OutputFromTool
+		campos["output_source_binding"] = string(agentruntime.OutputSourceMeasure)
 	}
 	corpo, err := json.Marshal(campos)
 	if err != nil {

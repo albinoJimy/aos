@@ -9,8 +9,10 @@
   mesma data: contam-se as chamadas pedidas e não as efectivas, o run com entradas tem estado
   próprio, a forma do nome valida-se no arranque, e a fonte dos bytes é o step-ledger — §8) ·
   executor de AOS-497 (implementação da §2.2 à §2.5)
-- **Tickets:** AOS-497 (o kernel designa e sela a origem). As partes que ficam para AOS-498,
-  AOS-499, AOS-500 e AOS-501 estão marcadas em cada secção e resumidas na §6.
+- **Tickets:** AOS-497 (o kernel designa e sela a origem), AOS-498 (a declaração, a âncora e os
+  bytes na API do nó) e AOS-499 (o `aos-orq` mede com o vínculo «só medição»), os três
+  implementados e revistos. As partes que ficam para AOS-500 e AOS-501 estão marcadas em cada
+  secção e resumidas na §6.
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-005 (taint), ADR-010 (manifesto por trajectória e replay), ADR-022 (extensões ao grafo de
   plano), ADR-027 (cada nó do plano é um run do nó), ADR-034 (autorização derivada do contexto),
@@ -52,8 +54,11 @@ de sinal (§1).
 
 No run, a declaração é o campo `Goal.OutputFromTool` — o nome exacto da tool — acompanhado do
 vínculo da §2.4. **Implementado em AOS-497.** O campo correspondente no `POST /runs`, validado
-contra a lista-branca do mesmo pedido e anunciado no `GET /tools`, **fica para AOS-498**; até lá
-a declaração só entra por código e nenhum run de produção a tem.
+contra a lista-branca do mesmo pedido e anunciado no `GET /tools`, **está implementado
+(AOS-498)**: `output_from_tool` e `output_source_binding`, que vêm sempre juntos. A porta recusa
+com 400 o que se decide sem o tool set (declaração incompleta, vínculo fora do vocabulário, nome
+que o selo recusaria, tool fora da lista-branca); o que depende do tool set continua a ser do
+kernel, no arranque. Nenhum chamador de produção envia ainda os campos.
 
 **Uma declaração impossível não arranca.** Antes do primeiro turno o kernel verifica que a tool
 declarada consta do tool set do run e, havendo lista-branca, está nela — a regra do contrato
@@ -239,7 +244,26 @@ truncado.
 
 Quem lê, com que autorização e por que canal ficam como estão: a leitura do desfecho pelo gate
 soberano, depois do selo WORM. O que muda é de onde vêm os bytes e a que se amarra o digest.
-**A leitura e a resposta do nó ficam para AOS-498; a publicação e a entrega para AOS-501.**
+**A leitura e a resposta do nó estão implementadas (AOS-498); a publicação e a entrega ficam
+para AOS-501.**
+
+O que o AOS-498 fixou ao implementar a leitura:
+
+- os bytes lêem-se do step-ledger nos **dois** ramos do `GET` (em memória e durável): o registo
+  de desfechos em memória só tem a âncora;
+- `output` só sai num run **concluído**; um run `failed` com âncora `designated` responde com os
+  metadados;
+- a falta dos bytes manifesta-se conforme o vínculo — com `measure` nunca muda o que a resposta
+  diz do run (ADR-037 §2.8, emenda de AOS-498);
+- o nó anuncia o suporte no `GET /tools` (`output_source`, com os vínculos e o tecto), e não o
+  anuncia com o veredicto desligado;
+- a leitura do step-ledger só devolve conteúdo que o opener por-titular abriu, e o opener só
+  abre atrás do escopo do leitor que o gate admitiu: um registo em claro não sai, e sem leitor
+  autenticado na mão nada se abre (§9);
+- o que não se lê por causa do log — um registo do ledger ilegível, uma âncora cujo passo não
+  forma chave de idempotência, um registo em claro — é **definitivo**, como o passo sem registo
+  e os bytes que não conferem. Só a custódia fechada e o erro de leitura do Event Store são
+  transitórios (§9).
 
 ### 2.7 Entrega-se o resultado tal como a tool o devolveu
 
@@ -318,6 +342,11 @@ não cai para o texto. **Fica para AOS-501.**
   hoje há um verde (por vezes falso): duas leituras no mesmo turno (mesmo que uma falhe), a tool
   chamada só depois de outra, um nó com `consumes`. A medição com `measure` conta-os antes de se
   impor, e separa o último (`inapplicable`) dos que são do modelo.
+- O ficheiro de métricas da drenagem do `aos-orq` ganha oito famílias (AOS-499), todas de
+  vocabulário fechado e sem conteúdo: a classe estrutural do nó, o estado da designação, o
+  tamanho do que se transportaria, o que o nó fez dos bytes e, sobre o conteúdo desembrulhado do
+  resultado, a forma, a relação com o texto final, os números e a razão de tamanhos. Só têm
+  valores com o interruptor em `observe`.
 
 ## 5. Resíduos e limites declarados
 
@@ -373,6 +402,29 @@ não cai para o texto. **Fica para AOS-501.**
   replay com a selada tem de saber em que modo a captura foi feita.
 - **Um run retomado cujo turno re-executado mudou de desfecho** tem a âncora da vida que
   terminou, e o replay pára em divergência sem a reproduzir (a classe do ADR-037 §5).
+- **O resultado designado de uma tool com sandbox é o envelope, e o envelope leva o documento
+  duas vezes.** A leitura de um ficheiro devolve-o em `stdout_text` e outra vez, em base64, como
+  artefacto: o que se sela, se serve e se conta contra os 128 KiB é mais do dobro do documento.
+  Visto com o driver de referência, no teste de ponta a ponta do AOS-498; em produção está por
+  verificar. Um documento vazio lido na sandbox não é um resultado vazio: são os bytes do
+  envelope. Decidir o que se entrega de um envelope é do AOS-501.
+- **A medição do AOS-499 é um limite superior à perda, não uma contagem de factos perdidos.**
+  Compara, letra a letra depois de normalizar espaços, as linhas e os números do conteúdo com o
+  texto final. Um número reformatado, uma data por extenso ou texto escapado contam como em
+  falta. Não mede se o documento é o certo, nem a qualidade de um resumo, nem os artefactos. Só
+  compara quando o nó serve os bytes e eles conferem: sem execução durável ou sem o gate soberano
+  de leitura, as classes de conteúdo ficam «não comparado».
+- **Que um nó do plano declarou a origem vive na memória do `serve`.** Um candidato submetido por
+  um `serve` e recolhido por outro não é medido, e nada no log do plano diz com que vínculo o run
+  foi submetido. Gravá-lo é do AOS-501, que não pode tratar como vinculativo um run submetido em
+  «só medição».
+- **Ler os bytes custa uma leitura do stream inteiro do run**, em cada `GET` de um run concluído
+  com a origem designada. Medido na revisão: de 0,4 ms para 26,9 ms com um resultado de 6 MiB
+  noutro passo. A rever no AOS-501.
+- **Em «só medição» o nó decifra e envia os bytes** (até 128 KiB do titular) a um chamador que só
+  os mede; e o digest e o tamanho do conteúdo de um titular apagado continuam a sair, na âncora.
+- **`output_unavailable` tem dois sentidos com o vínculo vinculativo:** o texto final que não se
+  lê, e os bytes designados que não se lêem. Separá-los é do AOS-501.
 
 ## 6. O que cada ticket implementa
 
@@ -383,8 +435,8 @@ não cai para o texto. **Fica para AOS-501.**
 | Âncora no desfecho do run e na transição terminal | §2.3 | AOS-497 |
 | Razões novas e precedência; métrica do estado da âncora | §2.4 | AOS-497 |
 | Manifesto, registo de retoma, paridade do replay | §2.5 | AOS-497 |
-| Campo no `POST /runs`, âncora e bytes no `GET /runs/{id}`, anúncio no `GET /tools` | §2.1, §2.6 | AOS-498 |
-| Medição pelo `aos-orq` com o vínculo `measure`, sem mudar a entrega | §2.4 | AOS-499 |
+| Campo no `POST /runs`, âncora e bytes no `GET /runs/{id}`, anúncio no `GET /tools` (implementado e revisto) | §2.1, §2.6 | AOS-498 |
+| Medição pelo `aos-orq` com o vínculo `measure`, sem mudar a entrega (implementado e revisto: interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`; só declara num pedido que já leva o contrato sobre a mesma tool; compara o texto final com o conteúdo desembrulhado do resultado e publica só classes) | §2.4 | AOS-499 |
 | `outputs[].from_tool` no plano, schema 1.3.0, validador, cartão de aprovação | §2.1 | AOS-500 |
 | Publicação e entrega pelos bytes designados; origem no evento do plano; texto final não publicado; causas de falha; prompt do planeador | §2.6 a §2.9 | AOS-501 |
 
@@ -393,7 +445,7 @@ não cai para o texto. **Fica para AOS-501.**
 - **ADR-037 §2.4** ganha as duas razões e a precedência da §2.4 acima, e **§5** remete para
   aqui no resíduo «evidência não é fidelidade». Feitas com AOS-497.
 - **ADR-037 §2.8** (o que a leitura de desfecho cobre, quando passa a servir um resultado de
-  tool) é emendada com AOS-498, que é quem muda essa leitura.
+  tool) foi emendada com AOS-498, que é quem muda essa leitura.
 - **ADR-027 §2.4** (a origem do payload publicado) é emendado com AOS-501, e **ADR-022 §2.3** (a
   origem declarada de um output) com AOS-500. AOS-497 não muda o que esses dois descrevem: nenhum
   payload é ainda publicado por referência e o plano ainda não tem o campo.
@@ -415,3 +467,24 @@ entraram com AOS-497.
 | O digest calculava-se no turno terminal, sobre bytes partilhados | Calcula-se quando o turno é observado | §2.2 |
 | «Só medição» descrita como neutra | Declarado: uma declaração impossível ou mal formada recusa o arranque nos dois vínculos | §2.4 |
 | Limites em falta | Captura de referência com turno terminal designado; envelope de sandbox com saída diferente de zero; `step_id` num run retomado; texto final vazio com bytes designados | §5 |
+
+## 9. O que a revisão adversarial de AOS-498 e AOS-499 mudou
+
+A revisão independente de 2026-10-05, feita sobre os dois tickets antes da fusão, não encontrou
+bloqueantes: sem declaração o nó não muda, e medir não muda um run nem um plano. Levou a estas
+alterações, feitas nos dois tickets.
+
+| Achado | O que mudou | Secção |
+|---|---|---|
+| A medição comparava o texto final com o envelope da sandbox, e não com o documento: «igual» era impossível e uma transcrição curta contava como resumo | O `aos-orq` desembrulha o conteúdo do envelope, só para medir, e publica classes sobre a relação entre os dois textos e sobre os números | §2.4, §5 |
+| Nada fixava, pela API, que os bytes não saem de um run que não concluiu | Teste nos dois ramos e nos dois vínculos, com o cenário real (run `failed` com âncora designada) | §2.6 |
+| «Medir não muda nada» só estava provado com a mesma resposta do nó nos dois modos | O teste dá ao modo desligado a resposta sem os campos novos e ao modo de observação a resposta com eles | §2.4 |
+| Um registo do ledger ilegível e uma âncora cujo passo não forma chave eram transitórios: 503 para sempre com o vínculo vinculativo | São definitivos, com sentinela próprio | §2.6 |
+| A leitura do ledger devolvia um registo em claro sem passar pelo opener | Exige o opener e só devolve conteúdo que ele abriu | §2.6 |
+| A guarda da leitura dos bytes era só a ordem das chamadas | O leitor admitido vai na mão, e o opener só abre atrás do escopo dele | §2.6 |
+| Nenhum teste servia um envelope real da sandbox | Teste de ponta a ponta no nó com a tool da sandbox; os envelopes dos testes do `aos-orq` são escritos pelo codificador real | §2.6, §5 |
+| O catálogo de decisões e a matriz de rastreabilidade diziam que só a designação estava implementada | Os dois tickets passam a constar como implementadores | §6 |
+| Limites em falta | O envelope com o documento duas vezes; o que a medição não conclui; a declaração na memória do `serve`; o custo da leitura; os dois sentidos de `output_unavailable` | §5 |
+
+Por verificar: a medição em produção (a série em observação), o smoke sobre JetStream, e um run
+com a origem designada pelo binário de um nó de desenvolvimento.

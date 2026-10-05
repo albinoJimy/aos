@@ -245,14 +245,17 @@ func TestAOS441GetToolsServeOCatalogoComAFormaDoFio(t *testing.T) {
 		t.Fatalf("GET /tools sem gate soberano devia servir pelo read-path legado, veio %d (%s)", rec.Code, rec.Body.String())
 	}
 	// AOS-494: o corpo ganhou o campo ADITIVO `completion_contract` (um objecto, o anúncio do
-	// contrato de conclusão). A forma de `tools` — o que este teste fixa — não mudou, e o corpo
-	// não pode ter mais nenhuma chave.
+	// contrato de conclusão), e com o AOS-498 o `output_source` (o anúncio da origem da saída). A
+	// forma de `tools` — o que este teste fixa — não mudou, e o corpo não pode ter mais nenhuma
+	// chave.
 	var campos map[string]json.RawMessage
 	if err := json.Unmarshal(rec.Body.Bytes(), &campos); err != nil {
 		t.Fatalf("corpo ilegível: %v (%s)", err, rec.Body.String())
 	}
-	if _, anuncia := campos["completion_contract"]; !anuncia || len(campos) != 2 {
-		t.Fatalf("o corpo tem de ter `tools` e `completion_contract`, e mais nada — veio %s", rec.Body.String())
+	_, anunciaContrato := campos["completion_contract"]
+	_, anunciaOrigem := campos["output_source"]
+	if !anunciaContrato || !anunciaOrigem || len(campos) != 3 {
+		t.Fatalf("o corpo tem de ter `tools`, `completion_contract` e `output_source`, e mais nada — veio %s", rec.Body.String())
 	}
 	bruto := map[string][]map[string]any{}
 	var tools []map[string]any

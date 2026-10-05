@@ -101,25 +101,23 @@ func veredictoNaResposta(resp *runStateResponse, v *agentruntime.Verdict) {
 	}
 }
 
-// DurableOutcome devolve o estado durável do run e o veredicto gravado na sua última transição
-// (AOS-494). É o [NodeService.DurableState] com a razão: os dois saem do mesmo evento.
-func (s *NodeService) DurableOutcome(ctx context.Context, runID string) (state.State, *agentruntime.Verdict, error) {
+// DurableOutcome devolve o estado durável do run e o que a sua última transição selou: o
+// veredicto (AOS-494) e a âncora da saída (AOS-498). É o [NodeService.DurableState] com o
+// desfecho: saem os três do mesmo evento.
+func (s *NodeService) DurableOutcome(ctx context.Context, runID string) (state.State, state.Outcome, error) {
 	if s.node == nil || s.node.stateGates == nil {
-		return "", nil, nil
+		return "", state.Outcome{}, nil
 	}
 	return s.node.stateGates.currentOutcome(ctx, runID)
 }
 
-// currentOutcome é o [runStateGates.currentState] com o veredicto da última transição.
-func (g *runStateGates) currentOutcome(ctx context.Context, runID string) (state.State, *agentruntime.Verdict, error) {
+// currentOutcome é o [runStateGates.currentState] com o veredicto e a âncora da última transição.
+func (g *runStateGates) currentOutcome(ctx context.Context, runID string) (state.State, state.Outcome, error) {
 	m, err := state.NewMachine(g.store, runID)
 	if err != nil {
-		return "", nil, err
+		return "", state.Outcome{}, err
 	}
-	// A âncora da saída que o mesmo evento sela (AOS-497) não sai por aqui: servi-la na API é
-	// do ticket seguinte.
-	st, oc, err := m.RebuildOutcome(ctx)
-	return st, oc.Verdict, err
+	return m.RebuildOutcome(ctx)
 }
 
 // recusadoNoArranque diz se o erro de loop é uma das recusas que o kernel faz ANTES do primeiro

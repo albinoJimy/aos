@@ -123,6 +123,11 @@ func cmdConsume(args []string) (err error) {
 	if err := sub.validar(); err != nil {
 		return err
 	}
+	// O INTERRUPTOR DA SAÍDA POR REFERÊNCIA também (AOS-499): é configuração, e um valor que o
+	// `serve` vai recusar não deve custar uma geração a cada pedido da fila.
+	if _, err := modoDaSaidaPorReferenciaDoAmbiente(); err != nil {
+		return err
+	}
 	// A PASTA DOS DOCUMENTOS também, e pela mesma razão (AOS-442): sem ela, a retoma de um plano
 	// aprovado não tem por onde correr senão decompor de novo.
 	pasta, err := pastaDosPlanos(*planDir, sub)

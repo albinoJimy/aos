@@ -86,6 +86,10 @@ type respostaDoCatalogo struct {
 	// (AOS-494). É aqui, e não noutra rota, porque é a leitura que o `aos-orq` já faz antes de
 	// submeter. Campo aditivo: um cliente anterior ignora-o.
 	CompletionContract *anuncioDoContrato `json:"completion_contract,omitempty"`
+	// OutputSource anuncia que este nó aceita a origem declarada da saída no `POST /runs` e
+	// devolve a âncora e os bytes designados no `GET /runs/{id}` (AOS-498). A presença é o
+	// anúncio; ausente num nó com o veredicto desligado. Campo aditivo.
+	OutputSource *anuncioDaOrigem `json:"output_source,omitempty"`
 }
 
 // contratoDaTool constrói o contrato de supply-chain de uma tool EXACTAMENTE como o registo
@@ -183,5 +187,5 @@ func (h *apiHandler) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []entradaDoCatalogo{}
 	}
-	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node)})
+	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node)})
 }
