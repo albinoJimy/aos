@@ -78,6 +78,12 @@ const (
 	// As duas da revisão de 2026-10-05 (I1): a forma do que o nó serviu, e os números do conteúdo.
 	metricaOrigemForma   = "aos_orq_consume_origem_forma_total"
 	metricaOrigemNumeros = "aos_orq_consume_origem_numeros_total"
+	// AOS-501 — a entrega por referência (entrega_por_referencia.go). Rótulos de vocabulário
+	// FECHADO e nenhum conteúdo. Só têm valores com AOS_ORQ_SAIDA_POR_REFERENCIA=on.
+	metricaEntregaPorReferencia     = "aos_orq_consume_entrega_por_referencia_total"
+	metricaEntregaExtraccao         = "aos_orq_consume_entrega_extraccao_total"
+	metricaCandidatosSemOrigem      = "aos_orq_consume_candidatos_sem_origem_total"
+	metricaOrigemRecusasDoValidador = "aos_orq_consume_origem_recusas_do_validador_total"
 )
 
 // catalogoDeMetricas é a lista FECHADA do que o ficheiro contém, pela ordem em que é escrito. Uma
@@ -104,6 +110,10 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaOrigemForma, "counter", "Saida por referencia, medida: forma do resultado designado que o no serviu e que confere (envelope: envelope da sandbox com exit_code 0 e stdout de texto | envelope_exit_nao_zero | envelope_binario | cru: nao e um envelope reconhecivel | sem_bytes: nada que confira para comparar). So envelope e cru sao comparados com o texto final."},
 	{metricaOrigemTextoFinal, "counter", "Saida por referencia, medida: relacao entre o texto final e o CONTEUDO do resultado designado (o stdout_text do envelope, ou os bytes crus), depois de normalizar espacos: igual | contem (o conteudo inteiro, com moldura) | linhas_todas | linhas_de_0_9_a_1 | linhas_de_0_5_a_0_9 | linhas_abaixo_de_0_5 (fraccao das linhas nao vazias do conteudo presentes no texto) | texto_vazio | conteudo_vazio | nao_comparado. So a classe e publicada, nunca conteudo."},
 	{metricaOrigemNumeros, "counter", "Saida por referencia, medida: os numeros (sequencias de digitos) do conteudo do resultado designado aparecem todos no texto final (todos|em_falta|sem_numeros|nao_comparado). em_falta e um limite superior a perda, nao uma prova: um numero reformatado conta como em falta."},
+	{metricaEntregaPorReferencia, "counter", "Entrega por referencia (AOS-501): nos do plano com uma saida de origem declarada (outputs[].from_tool) cujo run concluiu, por resultado: entregue, ou a causa por que o no fechou failed (origem_em_falta|origem_ambigua|origem_inaplicavel|origem_sem_vinculo|origem_nao_confere|origem_indisponivel|origem_nao_transportavel|origem_tool_falhou|origem_vazia). origem_nao_confere tem de ser zero: e o no a servir bytes que o kernel nao selou."},
+	{metricaEntregaExtraccao, "counter", "Entrega por referencia: saidas entregues, pela forma da extraccao (sandbox_stdout_text: o texto do envelope da sandbox | raw: o resultado tal como a tool o devolveu)."},
+	{metricaCandidatosSemOrigem, "counter", "Entrega por referencia: nos submetidos com a entrega activa que sao candidatos por estrutura (nao-verificador, uma tool, uma saida aberta, sem consumes) e cujo plano NAO declarou a origem. E a taxa de omissao do planeador: esses nos entregam o texto final, como sempre."},
+	{metricaOrigemRecusasDoValidador, "counter", "Entrega por referencia: tentativas do planeador recusadas por uma regra da origem do validador do plano, por razao (from_tool_on_verifier|from_tool_with_consumes|from_tool_multiple|from_tool_output_type|from_tool_unknown_tool|from_tool_ambiguous_tool)."},
 	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do CONTEUDO do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2|nao_comparado). E so tamanho: nao diz se o que se escreveu e o que se leu."},
 }
 

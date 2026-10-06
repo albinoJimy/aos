@@ -59,8 +59,10 @@ type estadoDoRun struct {
 	// (AOS-498): a âncora que o kernel selou, os bytes designados, e a marca de porque não vieram.
 	// Vazios num nó anterior e num run sem declaração.
 	//
-	// SÃO MEDIÇÃO (AOS-499). Este binário não decide nada por eles e não publica `output`: a
-	// saída de um nó do plano continua a ser o `final_text`. Ver saida_por_referencia.go.
+	// COM O VÍNCULO «SÓ MEDIÇÃO» SÃO MEDIÇÃO (AOS-499): nada se decide por eles e `output` não se
+	// publica — a saída do nó do plano é o `final_text`. COM O VÍNCULO VINCULATIVO, num nó cujo
+	// plano declara a origem (AOS-501), `output` é o que se confere contra a âncora e de que se
+	// deriva o que o nó seguinte recebe. Ver entrega_por_referencia.go.
 	OutputSource  *agentruntime.OutputSource `json:"output_source,omitempty"`
 	Output        *string                    `json:"output,omitempty"`
 	OutputOmitted string                     `json:"output_omitted,omitempty"`
@@ -104,9 +106,13 @@ type pedidoDeRun struct {
 	CompletionRequires []string
 	// OutputFromTool é a origem declarada da saída do run (AOS-499): a tool cujo resultado o
 	// kernel do nó deve designar. Vazio ⇒ os dois campos NÃO vão no corpo — um nó anterior ao
-	// AOS-498 recusa-os com 400. Vai SEMPRE com o vínculo «só medição»: este binário não tem
-	// outro (o vinculativo é do AOS-501).
+	// AOS-498 recusa-os com 400.
 	OutputFromTool string
+	// OutputBinding é o vínculo dessa declaração: «só medição» para um candidato por estrutura em
+	// `observe` (AOS-499), vinculativo para uma saída cuja origem o plano declara (AOS-501). NÃO
+	// HÁ VALOR POR OMISSÃO: os dois decidem coisas opostas, e uma origem sem vínculo recusa a
+	// submissão ([nodeClient.Submit]).
+	OutputBinding agentruntime.OutputSourceBinding
 }
 
 // vinculoAoPedido é o `plan_request` do `POST /runs` (AOS-439): o plano e a geração da
@@ -384,8 +390,11 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 		campos["completion_requires"] = p.CompletionRequires
 	}
 	if p.OutputFromTool != "" {
+		if p.OutputBinding != agentruntime.OutputSourceMeasure && p.OutputBinding != agentruntime.OutputSourceBinds {
+			return fmt.Errorf("submeter %s ao nó: origem da saída declarada sem vínculo (measure ou binding)", p.RunID)
+		}
 		campos["output_from_tool"] = p.OutputFromTool
-		campos["output_source_binding"] = string(agentruntime.OutputSourceMeasure)
+		campos["output_source_binding"] = string(p.OutputBinding)
 	}
 	corpo, err := json.Marshal(campos)
 	if err != nil {

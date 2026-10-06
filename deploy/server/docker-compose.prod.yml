@@ -711,7 +711,10 @@ services:
       # `observe`: os nós candidatos por estrutura declaram ao nó `aos` a origem da saída com o
       # vínculo «só medição», e a designação do kernel vai para o log e para as métricas da
       # drenagem. Não muda o que se publica, o que se entrega, nem o desfecho de plano nenhum.
-      # `on` não existe ainda (AOS-501): qualquer outro valor recusa o arranque do `consume`.
+      # AOS-501 — `on` LIGA A ENTREGA POR REFERÊNCIA: um plano que declare a origem de uma saída
+      # (outputs[].from_tool) corre, e o nó seguinte recebe o resultado da tool que o kernel
+      # designou, e não o texto do modelo. Só contra um nó que anuncie o vínculo `binding`.
+      # Qualquer outro valor recusa o arranque do `consume`.
       AOS_ORQ_SAIDA_POR_REFERENCIA: "${AOS_ORQ_SAIDA_POR_REFERENCIA:-}"
     volumes:
       - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação

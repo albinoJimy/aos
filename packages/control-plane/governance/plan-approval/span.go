@@ -52,7 +52,8 @@ func emitPlanSpan(ctx context.Context, tracer agentruntime.Tracer, plan Plan, le
 	span.SetAttribute(AttrPlanAutonomyLevel, level.String())
 	span.SetAttribute(AttrPlanAutoApproved, dec.AutoApproved)
 	span.SetAttribute(AttrPlanVerdict, dec.Verdict.String())
-	span.SetAttribute(AttrPlanSchemaVersion, CurrentVersion.String())
+	// O carimbo do contrato que o cartão DESTE plano usa (AOS-501) — o mesmo de [BuildPlanCard].
+	span.SetAttribute(AttrPlanSchemaVersion, versionFor(planDeclaresOutputSource(plan)).String())
 	span.End()
 
 	// Expõe o nível/oversight consultado pelo vocabulário partilhado de AOS-089, ligado

@@ -1,8 +1,13 @@
 package main
 
-// AOS-500 — ATÉ AO AOS-501, A LINHA 1.3.0 DO PLANO NÃO CORRE NESTE BINÁRIO: nem o documento que
+// AOS-500 — FORA DE `on`, A LINHA 1.3.0 DO PLANO NÃO CORRE NESTE BINÁRIO: nem o documento que
 // declara a origem de uma saída (`outputs[].from_tool`), nem o que só carimba essa linha. O
 // binário trata-os como o anterior os tratava.
+//
+// O AOS-501 ligou a entrega por referência atrás de `AOS_ORQ_SAIDA_POR_REFERENCIA=on`. Estes
+// testes correm SEM a variável (a omissão é `off`) e continuam a valer tal como foram escritos:
+// são eles que prendem que, fora de `on`, a guarda não saiu. O que acontece em `on` está em
+// aos501_entrega_por_referencia_test.go.
 //
 // O que os testes prendem:
 //   - com `--plan-doc`, a recusa dá-se ANTES da posse: o Event Store nem chega a ser aberto e o
@@ -605,8 +610,12 @@ func TestAOS500_MapeadorLevaAOrigemAoCartao(t *testing.T) {
 	if !strings.Contains(cSem, `"notas:record:untrusted"`) || strings.Contains(cSem, "tool=") {
 		t.Fatalf("o cartao do plano sem origem nao e o de sempre:\n%s", cSem)
 	}
-	if got := strings.Replace(cCom, ":tool=fs.read", "", 1); got != cSem {
-		t.Fatalf("a unica diferenca entre os cartoes devia ser a origem da saida:\n com=%s\n sem=%s", cCom, cSem)
+	// Duas diferenças, e só elas: a origem na saída, e o carimbo do contrato do cartão, que sobe a
+	// 1.2.0 quando o cartão mostra uma origem (AOS-501).
+	got := strings.Replace(cCom, ":tool=fs.read", "", 1)
+	got = strings.Replace(got, `{"schema_version":"1.2.0","run_id"`, `{"schema_version":"1.1.0","run_id"`, 1)
+	if got != cSem {
+		t.Fatalf("a diferenca entre os cartoes devia ser so a origem da saida e o carimbo:\n com=%s\n sem=%s", cCom, cSem)
 	}
 }
 

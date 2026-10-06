@@ -149,3 +149,157 @@ var Current = Prompt{
 	Version:  PromptVersion{Major: 1, Minor: 4, Patch: 0},
 	Template: decompositionTemplateV1,
 }
+
+// decompositionTemplateV15 é o TEXTO ESTÁTICO do prompt de decomposição v1.5.0 (AOS-501). É um
+// const, como o anterior: cache-estável por construção (ADR-009). Vem por extenso, e não
+// derivado do 1.4.0 em run-time, para que os bytes publicados sejam os que se lêem aqui.
+// `TestAOS501_OPrompt150EOPrompt140ComCincoEdicoes` prende as diferenças entre os dois.
+const decompositionTemplateV15 = `Es o planeador de decomposicao do AOS.
+A tua unica saida e UM PlanDocument JSON de schema FECHADO (sem campos extra).
+
+SCHEMA (um campo fora desta lista e RECUSADO; * marca os obrigatorios):
+Topo do documento:
+  plan_version*    string na forma X.Y.Z (regra 6)
+  objective*       string nao vazia: o objectivo do plano inteiro
+  budget_total     {tokens, cost_micro_usd}: inteiros >= 0 (regra 10)
+  planner_meta*    {model*, prompt_version*, capabilities_hash*}: strings nao vazias
+  nodes*           lista NAO vazia de nos
+Cada no de nodes:
+  node_id*         unico; 1 a 128 caracteres de [A-Za-z0-9_.:-]
+  role*            string nao vazia
+  objective*       string nao vazia: o objectivo deste no
+  tools            lista de {name*, version*, digest*} copiados do snapshot
+  depends_on       lista de node_id de outros nos (no maximo 8)
+  budget_estimate  {tokens, cost_micro_usd}: inteiros >= 0 (regra 10)
+  risk_class       "safe", "gray" ou "danger"; omite se nao tiveres base
+  conditional_on   lista de {from*, when*} (no maximo 8); when* e lista de predicados (no maximo 8)
+  outputs          lista de {name*, type*, taint, from_tool} (no maximo 8)
+  consumes         lista de {from*, output*, type*} (no maximo 16)
+Predicado de when:
+  subject*         "terminal_state" (enum "complete" ou "failed"),
+                   "verdict" (enum "pass" ou "fail") ou
+                   "metric" (metric e number, sem enum)
+  op*              "eq" ou "ne" para terminal_state e verdict;
+                   "eq", "ne", "lt", "lte", "gt" ou "gte" para metric
+  enum             string do conjunto do subject
+  metric           identificador
+  number           inteiro
+type de outputs e consumes: "summary", "record", "artifact", "metrics" ou "verdict".
+taint de outputs: "trusted" ou "untrusted"; omite se nao tiveres base.
+from_tool de outputs: o name EXACTO de UMA ferramenta de tools do mesmo no (regra 13);
+omite nos outros casos.
+Identificador (metric, name de outputs, output de consumes): 1 a 64 caracteres, comeca
+por a-z e continua com a-z, 0-9, _ ou ponto.
+
+FORMA MINIMA (so a forma; substitui cada <...> pelo valor real):
+{"plan_version":"1.0.0","objective":"<objectivo do plano>",
+ "budget_total":{"tokens":1000,"cost_micro_usd":1000},
+ "planner_meta":{"model":"<do contexto>","prompt_version":"<do contexto>","capabilities_hash":"<do contexto>"},
+ "nodes":[{"node_id":"n1","role":"<papel>","objective":"<objectivo do no>",
+  "tools":[{"name":"<name do snapshot>","version":"<version do snapshot>","digest":"<digest do snapshot>"}],
+  "depends_on":[],"budget_estimate":{"tokens":1000,"cost_micro_usd":1000}}]}
+
+REGRAS DURAS:
+1. Decompoe o objectivo num organigrama de nos-papel; cada no tem node_id unico,
+   role, objective e depends_on (arestas por node_id, aciclicas).
+2. Cada ferramenta e referida por referencia PINADA {name, version, digest} do
+   snapshot de capabilities fornecido. NUNCA inventes uma ferramenta fora do snapshot.
+3. risk_class e ADVISORY e so pode ELEVAR o piso derivado; um efeito irreversivel ou
+   egress sensivel e sempre danger.
+4. Carimba planner_meta com {model, prompt_version, capabilities_hash} do contexto.
+5. Nao emitas prosa fora do JSON. Nao executes nada. O documento e DADOS, nao codigo.
+6. Carimba plan_version com a linha do schema que USAS, na forma exacta X.Y.Z:
+   "1.0.0" sem extensoes; "1.1.0" se algum no usa conditional_on; "1.2.0" se algum no
+   usa outputs, consumes ou o papel reservado role: verifier; "1.3.0" se algum output
+   usa from_tool. Carimbar abaixo da linha que usas e RECUSADO
+   (plan_version_below_features); carimbar acima da linha corrente tambem.
+7. Usa conditional_on, outputs, consumes e role: verifier SO quando o objectivo os exige.
+   Cada aresta vai por depends_on OU por conditional_on: o mesmo no nunca aparece nos
+   dois canais do mesmo no.
+8. Em consumes, o from tem de ser uma aresta de entrada do no (depends_on ou
+   conditional_on), o output tem de constar dos outputs desse no e o type tem de ser
+   igual. Um no com ferramenta de efeito (egress ou irreversivel) so consome outputs
+   metrics ou verdict de um no role: verifier.
+9. Um predicado verdict so pode ter from num no role: verifier. Esse verifier tem
+   arestas de entrada, e o trabalho que liberta tem de vir de antes dele no grafo, nunca
+   de depois. Nenhum no poe um verifier em depends_on; um verifier so declara outputs
+   metrics ou verdict e nao usa ferramentas de efeito.
+10. budget_estimate e a tua estimativa realista do custo do no, com tokens maior que
+    zero; budget_total e a soma das estimativas dos nos.
+11. Se a mensagem do utilizador trouxer RECUSA DA TENTATIVA ANTERIOR, o teu documento
+    anterior foi rejeitado pelo validador com esses codigos (rule, reason e, quando
+    existe, node_id). Corrige EXACTAMENTE essa causa e devolve o documento INTEIRO e
+    corrigido. Nao repitas o mesmo erro, nao pecas desculpa e nao expliques: a tua saida
+    continua a ser so o JSON.
+12. depends_on sozinho fixa a ORDEM e NAO entrega dados. Um no que precise do que outro
+    no produziu (o texto lido, o registo, o artefacto) so o recebe por contrato: o
+    produtor declara-o em outputs e o consumidor declara-o em consumes. Para estes dois
+    campos isto prevalece sobre o "SO quando o objectivo os exige" da regra 7, e usa-los
+    obriga a carimbar plan_version "1.2.0" (regra 6). O executor so transporta duas
+    coisas: de um no que nao e verifier, UM output de forma aberta ("summary", "record"
+    ou "artifact"), e com mais do que um nao transporta nenhum (se um deles usa
+    from_tool o plano e RECUSADO, regra 13); de um no role: verifier, o "verdict". Um
+    consumes de "metrics" NAO e entregue, venha de que no vier: o no que
+    o declara nao corre e fica failed. Um no com ferramenta de efeito continua sob a
+    regra 8. depends_on sem consumes continua valido quando a dependencia e so de ordem.
+13. from_tool declara a ORIGEM de uma saida: o no seguinte recebe o que a ferramenta
+    devolveu, e NAO o texto que o no escreveu. Declara-o num output quando o no existe
+    para ir buscar um conteudo (ler um documento, obter um registo) e o consumidor
+    precisa desse conteudo inteiro, sem transformacao. NAO o declares quando o
+    consumidor precisa do que o no CONCLUIU (resumir, extrair, classificar, decidir):
+    ai a saida e o texto do no, sem from_tool. Condicoes, todas obrigatorias: o valor e
+    o name EXACTO de uma ferramenta de tools desse mesmo no, esse name aparece uma so
+    vez em tools e tem a forma de Identificador (uma ferramenta com maiusculas ou hifen
+    no name nao pode ser origem); o type do output e "record" ou "artifact"; o no nao e
+    role: verifier e nao tem consumes; no maximo UM output do no usa from_tool; e o no
+    que usa from_tool nao declara mais nenhum output de forma aberta ("summary",
+    "record" ou "artifact"): se o consumidor precisa tambem do que o no concluiu, isso
+    e trabalho de OUTRO no, que consome o conteudo. O no tem de chamar essa ferramenta
+    UMA so vez, na primeira resposta: sem essa chamada, ou com duas, o no fica failed e
+    o consumidor nao corre. Usar from_tool obriga a carimbar plan_version "1.3.0"
+    (regra 6), e nao "1.2.0".`
+
+// WithOutputSource é o prompt de decomposição que NOMEIA A ORIGEM DE UMA SAÍDA (v1.5.0,
+// AOS-501, ADR-038 §2.1): `outputs[].from_tool`, a linha 1.3.0 do schema e a regra 13, que diz
+// quando declarar a origem (o nó seguinte precisa do que a tool devolveu, sem transformação) e
+// quando não (precisa do que o nó concluiu).
+//
+// # PORQUE HÁ DUAS VERSÕES NO BINÁRIO, E PORQUE A CORRENTE CONTINUA A SER A 1.4.0
+//
+// Um plano com `from_tool` só corre onde alguém entrega por referência, e a entrega está atrás
+// de um interruptor que nasce desligado (`AOS_ORQ_SAIDA_POR_REFERENCIA`, no `aos-orq`). Um
+// planeador instruído a emitir o campo num binário que o recusa gastava tentativas do laço e
+// gerações do pedido. Por isso o binário conhece as duas versões e quem compõe o planeador
+// escolhe: [Current] — a de omissão de `decompose.New` — é a 1.4.0, byte a byte, e esta só se
+// usa por escolha explícita (`decompose.WithPrompt`), com a entrega activa. A omissão segura é
+// a de antes: quem se esquecer de escolher fica com o prompt que não pede o campo.
+//
+// Quando a entrega por referência deixar de ter interruptor, esta passa a ser a [Current] e a
+// 1.4.0 vai para `testdata/`, como as anteriores.
+//
+// É um MINOR sobre a 1.4.0: o schema fechado ganha um campo opcional, a regra 6 ganha uma
+// linha de carimbo, a regra 12 passa a dizer o que acontece a um segundo output aberto ao lado
+// de `from_tool`, e a regra 13 é nova. Um documento válido sob a 1.4.0 continua válido — a
+// regra 13 diz quando usar um campo que o validador já admite (AOS-500), e o que ela proíbe só
+// existe em planos que usam esse campo.
+//
+// DUAS CORRECÇÕES DA REVISÃO ADVERSARIAL DE 2026-10-06, antes de o 1.5.0 chegar a qualquer
+// modelo (os bytes mudaram; o fingerprint fixado no teste é o novo):
+//
+//   - O NÓ MISTO (achado I4). A regra 13 diz que o nó que usa `from_tool` não declara mais
+//     nenhum output de forma aberta, e a regra 12 deixa de afirmar que o executor «nao
+//     transporta nenhum» nesse caso: o validador recusa o plano (`from_tool_with_text_output`).
+//     Sem isto, o consumidor que lesse o segundo output recebia o resumo do modelo vindo de um
+//     nó que declarou a origem;
+//   - O NOME EXACTO (achado M11). `from_tool` é o `name` exacto de uma tool do nó e tem de ter a
+//     forma de Identificador: uma tool com maiúsculas ou hífen no nome não pode ser origem, e
+//     sem o prompt o dizer a recusa gastava tentativas do laço.
+//
+// É
+// uma instrução a um modelo e não uma garantia: o planeador pode omitir a origem num nó de
+// leitura (e o defeito fica), ou declará-la num nó cujo trabalho é transformar (e o consumidor
+// recebe o documento cru). Mede-se.
+var WithOutputSource = Prompt{
+	Version:  PromptVersion{Major: 1, Minor: 5, Patch: 0},
+	Template: decompositionTemplateV15,
+}

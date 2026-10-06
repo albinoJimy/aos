@@ -23,10 +23,18 @@ import (
 //	     fechadas são derivadas pelo sistema;
 //	(O5) `from_tool` é o nome EXACTO de uma tool de `tools` do mesmo nó;
 //	(O6) essa tool está pinada UMA SÓ VEZ no nó — a origem refere-a pelo nome, e duas `ToolRef`
-//	     com o mesmo nome (versões ou digests diferentes) deixavam-na ambígua.
+//	     com o mesmo nome (versões ou digests diferentes) deixavam-na ambígua;
+//	(O7) o nó que declara a origem de uma saída NÃO declara outra saída de forma aberta
+//	     (`summary`, `record` ou `artifact` sem `from_tool`) — o NÓ MISTO não existe (AOS-501,
+//	     revisão adversarial de 2026-10-06, achado I4). Uma saída aberta sem origem publica-se do
+//	     texto final do run: no mesmo nó que promete o resultado da tool, o consumidor que a
+//	     consumisse recebia o resumo do modelo vindo de um nó que declarou a origem — o defeito
+//	     que a origem existe para fechar, e sem que nenhuma métrica o contasse. Uma saída de
+//	     forma fechada (`metrics`) ao lado da origem continua admitida: nunca se publica do texto.
 //
-// O QUE AINDA NÃO SE DECIDE: se a tool de origem pode ser uma tool de egress ou de efeito do nó
-// (`web_post`, por exemplo). Hoje é aceite; a decisão é do AOS-501, que é quem passa a entregar.
+// A ORIGEM PODE SER QUALQUER TOOL DO NÓ, também uma de egress ou de efeito (`web_post`, por
+// exemplo): é decisão do dono, e o limite que ela traz está declarado no ADR-038 §5 — quem
+// controla a resposta de uma tool que não corre na sandbox escolhe o texto entregue.
 //
 // A sexta regra do ticket — usar o campo obriga a carimbar a linha 1.3.0 — é do piso de versão
 // derivado das features ([plan.FeatureFloor], regra 1), com o sub-código que já existia.
@@ -82,6 +90,13 @@ func checkOutputSources(doc plan.PlanDocument) Verdict {
 			// (O6)
 			if pinadas > 1 {
 				return reject(plannerevents.RuleSchema, ReasonFromToolAmbiguousTool, loc)
+			}
+		}
+		// (O7) Depois das regras sobre a saída COM origem: um nó que as viole morre pela razão
+		// dessa saída, e só um nó cuja origem é sustentável é acusado de a misturar com texto.
+		for _, o := range n.Outputs {
+			if o.FromTool == "" && !o.Type.ClosedForm() {
+				return reject(plannerevents.RuleSchema, ReasonFromToolWithTextOutput, loc)
 			}
 		}
 	}

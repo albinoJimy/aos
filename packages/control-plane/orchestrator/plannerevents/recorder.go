@@ -31,6 +31,7 @@ const (
 	stepBranchDecided    = "planstep:branch_decided"
 	stepVerdictRecorded  = "planstep:verdict_recorded"
 	stepPayloadPublished = "planstep:payload_published"
+	stepOutputSourceDecl = "planstep:output_source_declared"
 	stepCapabilityGap    = "planstep:capability_gap"
 	stepReplan           = "planstep:replan"
 )
@@ -275,6 +276,22 @@ func (r *Recorder) RecordPayloadPublished(ctx context.Context, p PayloadPublishe
 	}
 	stepID := stepPayloadPublished + ":" + payload.NodeID + ":" + payload.Output
 	return r.emit(ctx, payload.PlanID, EventPayloadPublished, stepID, payload)
+}
+
+// RecordOutputSourceDeclared apensa `plan.output_source_declared` (ADR-038 §2.4, AOS-501): o
+// executor vai submeter o run do nó declarando a origem de uma saída, com o vínculo dado.
+//
+// Passa SEMPRE por [NewOutputSourceDeclared]. O step id é
+// `planstep:output_source_declared:<node_id>` — UM por nó, sem discriminador: a idempotency_key
+// do Event Store faz da primeira declaração o facto, e uma submissão repetida (retoma) não a
+// substitui.
+func (r *Recorder) RecordOutputSourceDeclared(ctx context.Context, p OutputSourceDeclaredPayload, producer plan.Node) (uint64, error) {
+	payload, err := NewOutputSourceDeclared(p, producer)
+	if err != nil {
+		return 0, err
+	}
+	stepID := stepOutputSourceDecl + ":" + payload.NodeID
+	return r.emit(ctx, payload.PlanID, EventOutputSourceDeclared, stepID, payload)
 }
 
 // RecordCapabilityGap apensa `plan.capability_gap_opened`/`resolved`. Fail-closed:

@@ -15,11 +15,14 @@ import (
 // anteriores só a punham na primeira saída do primeiro nó. Com um predicado que olhasse só para
 // a primeira saída (mutação R22), o nó abaixo não entrava no validador e a saída `summary` com
 // origem era aceite; e o carimbo 1.2.0 passava no piso.
+//
+// A PRIMEIRA SAÍDA É DE FORMA FECHADA (`metrics`) desde o AOS-501: uma saída ABERTA sem origem ao
+// lado da origem é o nó misto, que a regra (O7) recusa — e aqui o que se mede é o predicado.
 func TestOrigemNaSegundaSaidaENoSegundoNoEntraNoValidador(t *testing.T) {
 	// (a) origem na SEGUNDA saída, inválida pela regra (O4): tem de ser recusada.
 	segunda := origemDoc()
 	segunda.Nodes[0].Outputs = []plan.Output{
-		{Name: "livre", Type: plan.PayloadRecord},
+		{Name: "livre", Type: plan.PayloadMetrics},
 		{Name: "notas", Type: plan.PayloadSummary, FromTool: "inspect"},
 	}
 	segunda.Nodes[1].Consumes[0].Type = plan.PayloadSummary
@@ -28,7 +31,7 @@ func TestOrigemNaSegundaSaidaENoSegundoNoEntraNoValidador(t *testing.T) {
 	// (b) origem na segunda saída, válida, com o carimbo abaixo do piso: o piso tem de a ver.
 	piso := origemDoc()
 	piso.Nodes[0].Outputs = []plan.Output{
-		{Name: "livre", Type: plan.PayloadArtifact},
+		{Name: "livre", Type: plan.PayloadMetrics},
 		{Name: "notas", Type: plan.PayloadRecord, FromTool: "inspect"},
 	}
 	assertAceite(t, stamped(piso, 1, 3, 0))
@@ -39,7 +42,7 @@ func TestOrigemNaSegundaSaidaENoSegundoNoEntraNoValidador(t *testing.T) {
 	segundoNo.Nodes = []plan.Node{
 		{NodeID: "preparar", Role: "r", Objective: "prepara", Tools: []plan.ToolRef{readOnlyTool()}},
 		{NodeID: "ler", Role: "reader", Objective: "le", DependsOn: []string{"preparar"}, Tools: []plan.ToolRef{readOnlyTool()},
-			Outputs: []plan.Output{{Name: "livre", Type: plan.PayloadRecord}, {Name: "notas", Type: plan.PayloadRecord, FromTool: "search"}}},
+			Outputs: []plan.Output{{Name: "livre", Type: plan.PayloadMetrics}, {Name: "notas", Type: plan.PayloadRecord, FromTool: "search"}}},
 	}
 	assertRejects(t, segundoNo, plannerevents.RuleSchema, ReasonFromToolUnknownTool, "ler")
 	assertRejects(t, stamped(segundoNo, 1, 2, 0), plannerevents.RuleSchema, ReasonVersionBelowFeatures, "ler")

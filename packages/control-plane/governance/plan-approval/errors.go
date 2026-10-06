@@ -37,6 +37,10 @@ var (
 	// cobre todos os nós). O plano NÃO é aprovável (fail-closed).
 	ErrPlanCycle = errors.New("planapproval: grafo de tarefas contem um ciclo (fail-closed)")
 
+	// ErrOutputSourceBelowVersion — o cartão mostra a origem declarada de uma saída
+	// (`:tool=<nome>`) e carimba uma versão do contrato anterior à que a introduziu (1.2.0,
+	// AOS-501). Fail-closed: o carimbo tem de identificar o contrato apresentado.
+	ErrOutputSourceBelowVersion = errors.New("planapproval: cartao com origem de saida carimbado abaixo de 1.2.0 (rejeitado)")
 	// ErrInvalidPlanCard — o [PlanCard] está incoerente (contagem de nós divergente da
 	// dos cards/ordem, ou um card por-nó inválido). Fail-closed.
 	ErrInvalidPlanCard = errors.New("planapproval: plan-card invalido (fail-closed)")

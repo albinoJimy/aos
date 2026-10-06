@@ -514,8 +514,9 @@ func TestAOS499ComOBinarioReal(t *testing.T) {
 		}
 	})
 
-	// (7) O INTERRUPTOR RECUSA O QUE NÃO CONHECE, E `on`: antes de reclamar o pedido.
-	for _, valor := range []string{"on", "enforce", "Observe", "1"} {
+	// (7) O INTERRUPTOR RECUSA O QUE NÃO CONHECE: antes de reclamar o pedido. (`on` era recusado
+	// até ao AOS-501, que o implementa; os testes dele estão em aos501_*_test.go.)
+	for _, valor := range []string{"enforce", "Observe", "1"} {
 		t.Run("ValorRecusado/"+valor, func(t *testing.T) {
 			p := aos495FormaDeProducao(t, "enforce")
 			f := &aos495No{catalogo: p.catalogo}
@@ -552,26 +553,23 @@ func TestAOS499ComOBinarioReal(t *testing.T) {
 	}
 }
 
-// TestAOS499_Interruptor: a omissão é `off`; `observe` mede; `on` e tudo o resto recusam, sem
-// repetir o valor recusado.
+// TestAOS499_Interruptor: a omissão é `off`; `observe` mede; `on` entrega (AOS-501); tudo o
+// resto recusa, sem repetir o valor recusado.
 func TestAOS499_Interruptor(t *testing.T) {
-	for bruto, quer := range map[string]string{"": saidaPorReferenciaOff, "off": saidaPorReferenciaOff, "observe": saidaPorReferenciaObserve} {
+	for bruto, quer := range map[string]string{"": saidaPorReferenciaOff, "off": saidaPorReferenciaOff, "observe": saidaPorReferenciaObserve, "on": saidaPorReferenciaOn} {
 		if got, err := modoDaSaidaPorReferencia(bruto); err != nil || got != quer {
 			t.Errorf("modoDaSaidaPorReferencia(%q) = %q, %v; quero %q", bruto, got, err, quer)
 		}
 	}
-	for _, bruto := range []string{"on", "ON", "Observe", "OFF", "enforce", "measure", "binding", "true", "1", "observe "} {
+	for _, bruto := range []string{"ON", "On", "Observe", "OFF", "enforce", "measure", "binding", "true", "1", "observe ", "on "} {
 		got, err := modoDaSaidaPorReferencia(bruto)
 		if !errors.Is(err, ErrSaidaPorReferencia) || got != "" {
 			t.Errorf("modoDaSaidaPorReferencia(%q) = %q, %v; quero a recusa", bruto, got, err)
 			continue
 		}
-		if bruto != "on" && strings.Contains(err.Error(), "`"+bruto+"`") {
+		if strings.Contains(err.Error(), "`"+bruto+"`") {
 			t.Errorf("a recusa de %q repete o valor: %v", bruto, err)
 		}
-	}
-	if _, err := modoDaSaidaPorReferencia("on"); err == nil || !strings.Contains(err.Error(), "AOS-501") {
-		t.Errorf("a recusa de `on` diz de quem e: %v", err)
 	}
 }
 
@@ -583,13 +581,14 @@ func TestAOS499_Interruptor_DoAmbiente(t *testing.T) {
 	for bruto, quer := range map[string]string{
 		"": saidaPorReferenciaOff, "   ": saidaPorReferenciaOff, "off": saidaPorReferenciaOff, " off\n": saidaPorReferenciaOff,
 		"observe": saidaPorReferenciaObserve, " observe ": saidaPorReferenciaObserve, "\tobserve\r\n": saidaPorReferenciaObserve,
+		"on": saidaPorReferenciaOn, " on ": saidaPorReferenciaOn,
 	} {
 		t.Setenv("AOS_ORQ_SAIDA_POR_REFERENCIA", bruto)
 		if got, err := modoDaSaidaPorReferenciaDoAmbiente(); err != nil || got != quer {
 			t.Errorf("AOS_ORQ_SAIDA_POR_REFERENCIA=%q: modo = %q, %v; quero %q", bruto, got, err, quer)
 		}
 	}
-	for _, bruto := range []string{" Observe ", "obs erve", " on ", "observe,off"} {
+	for _, bruto := range []string{" Observe ", "obs erve", " On ", "o n", "observe,off"} {
 		t.Setenv("AOS_ORQ_SAIDA_POR_REFERENCIA", bruto)
 		if got, err := modoDaSaidaPorReferenciaDoAmbiente(); !errors.Is(err, ErrSaidaPorReferencia) || got != "" {
 			t.Errorf("AOS_ORQ_SAIDA_POR_REFERENCIA=%q: modo = %q, %v; quero a recusa", bruto, got, err)

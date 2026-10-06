@@ -1,6 +1,10 @@
 package main
 
-// A SAÍDA POR REFERÊNCIA, MEDIDA (AOS-499, ADR-038 §2.1 e §2.4).
+// A SAÍDA POR REFERÊNCIA: O INTERRUPTOR E A MEDIÇÃO (AOS-499, ADR-038 §2.1 e §2.4).
+//
+// Desde o AOS-501 o interruptor tem um terceiro valor, `on`, que liga a ENTREGA por referência
+// das saídas que o plano declara (entrega_por_referencia.go). O que este ficheiro descreve a
+// seguir é o modo `observe`, que continua a só medir.
 //
 // O kernel do nó `aos` designa e sela a origem da saída de um run — o resultado da chamada
 // efectiva da tool declarada (AOS-497) — e o nó aceita a declaração e devolve a âncora (AOS-498).
@@ -48,7 +52,9 @@ const (
 	// saidaPorReferenciaObserve — os candidatos por estrutura declaram a origem com o vínculo
 	// «só medição»; a entrega é a de hoje.
 	saidaPorReferenciaObserve = "observe"
-	// saidaPorReferenciaOn — a entrega por referência. NÃO existe neste binário (AOS-501).
+	// saidaPorReferenciaOn — a ENTREGA por referência (AOS-501): um plano que declare a origem de
+	// uma saída corre, e o nó seguinte recebe o resultado designado pelo kernel. Não mede por
+	// estrutura: quem diz que uma saída é por referência é o plano.
 	saidaPorReferenciaOn = "on"
 )
 
@@ -56,8 +62,7 @@ const (
 var ErrSaidaPorReferencia = errors.New("aos-orq: AOS_ORQ_SAIDA_POR_REFERENCIA invalido")
 
 // modoDaSaidaPorReferenciaDoAmbiente lê o interruptor. Vazio ⇒ `off`. Um valor desconhecido
-// recusa o arranque, e `on` também: prometer a entrega por referência e fazer a de sempre era
-// pior do que não arrancar.
+// recusa o arranque.
 //
 // OS ESPAÇOS NAS PONTAS APARAM-SE, como nas outras variáveis deste binário: ` observe ` (um valor
 // com um espaço ou uma quebra de linha a mais num `.env`) é `observe`. As maiúsculas NÃO se
@@ -77,9 +82,9 @@ func modoDaSaidaPorReferencia(bruto string) (string, error) {
 	case saidaPorReferenciaObserve:
 		return saidaPorReferenciaObserve, nil
 	case saidaPorReferenciaOn:
-		return "", fmt.Errorf("%w: `on` (a entrega por referencia) ainda nao existe neste binario — e do AOS-501; os valores aceites sao off e observe", ErrSaidaPorReferencia)
+		return saidaPorReferenciaOn, nil
 	default:
-		return "", fmt.Errorf("%w: os valores aceites sao off (a omissao) e observe", ErrSaidaPorReferencia)
+		return "", fmt.Errorf("%w: os valores aceites sao off (a omissao), observe e on", ErrSaidaPorReferencia)
 	}
 }
 
@@ -149,6 +154,8 @@ func origemDeclaravel(tool string, contrato []string) bool {
 // faz contra ESTE nó. Só se chama com um anúncio que se leu.
 func bannerDaSaidaPorReferencia(modo string, a anuncioDoNo) string {
 	switch {
+	case modo == saidaPorReferenciaOn:
+		return bannerDaEntrega(posturaDe(modo, a))
 	case modo != saidaPorReferenciaObserve:
 		return "saida por referencia (AOS-499): modo off — nenhum no declara a origem da saida e nada e medido. A saida de cada no e o texto final do run, como sempre (AOS_ORQ_SAIDA_POR_REFERENCIA=observe mede)"
 	case !a.origem:
@@ -232,8 +239,13 @@ var formasDaOrigem = []string{formaEnvelope, formaEnvelopeFalhou, formaEnvelopeB
 var chavesDoEnvelope = map[string]bool{"stdout_text": true, "stdout": true, "artifacts": true, "exit_code": true}
 
 // desembrulharEnvelope reconhece nos bytes servidos pelo nó a forma do envelope da sandbox e
-// devolve o conteúdo a comparar e a forma. SÓ SERVE A MEDIÇÃO: nada do que devolve é publicado,
-// entregue ou guardado.
+// devolve o conteúdo do envelope e a forma.
+//
+// TEM DOIS CHAMADORES. A medição do AOS-499 ([medirOrigem]) compara o conteúdo com o texto final
+// e não o publica. A ENTREGA do AOS-501 ([extrairEntrega]) usa a MESMA leitura para derivar o
+// que o nó seguinte recebe: com o interruptor em `on`, o conteúdo que esta função devolve para
+// um envelope com `exit_code` zero É o que se publica e se entrega. As duas têm de ler o
+// envelope da mesma maneira — é por isso que é uma só função.
 //
 // # A forma exacta, lida de forma tolerante
 //

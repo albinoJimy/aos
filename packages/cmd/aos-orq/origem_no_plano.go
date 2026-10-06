@@ -1,6 +1,15 @@
 package main
 
-// ATÉ AO AOS-501, A LINHA 1.3.0 DO PLANO NÃO CORRE NESTE BINÁRIO (AOS-500, ADR-038 §2.1).
+// FORA DE `on`, A LINHA 1.3.0 DO PLANO NÃO CORRE NESTE BINÁRIO (AOS-500, ADR-038 §2.1).
+//
+// DESDE O AOS-501 ESTA GUARDA DEPENDE DO INTERRUPTOR. Com `AOS_ORQ_SAIDA_POR_REFERENCIA` em `off`
+// (a omissão) ou `observe`, tudo o que este ficheiro descreve abaixo vale tal como foi escrito:
+// as mesmas recusas, os mesmos códigos, as mesmas mensagens. Com `on` a guarda cai — quem
+// decide então se um plano com origem corre é a postura do `serve` contra o nó
+// ([posturaDaEntrega], entrega_por_referencia.go): com um nó que anuncia o vínculo vinculativo,
+// corre e entrega por referência; sem ele, é recusado com outra causa
+// (`no_sem_saida_por_referencia`), e nunca cai para o texto do modelo. O texto que segue é o do
+// AOS-500, e descreve os modos `off` e `observe`.
 //
 // O schema do plano (linha 1.3.0) deixa uma saída declarar `from_tool`: a tool do mesmo nó de que
 // ela é o resultado. A declaração promete ao nó seguinte — e ao humano que aprovou o plano — o
@@ -39,8 +48,7 @@ package main
 //     10 e causa `origem_sem_entrega`, antes de qualquer efeito. Um documento do disco não tem
 //     laço a que voltar.
 //
-// NÃO DEPENDE DO INTERRUPTOR `AOS_ORQ_SAIDA_POR_REFERENCIA` (AOS-499): esse governa a medição, e
-// nenhum dos seus valores entrega por referência.
+// DEPENDE DO INTERRUPTOR `AOS_ORQ_SAIDA_POR_REFERENCIA` desde o AOS-501: ver o topo do ficheiro.
 
 import (
 	"errors"
@@ -58,11 +66,24 @@ import (
 var linhaSemEntrega = plan.PlanVersion{Major: 1, Minor: 3, Patch: 0}
 
 // errOrigemSemEntrega — o documento do plano é da linha 1.3.0 (declara a origem de uma saída, ou
-// carimba essa linha) e este binário não entrega por referência. É DETERMINISTA para o
-// documento: partilha a saída 10 com o documento recusado ([exitDocumentoRecusado]) e larga a
-// posse, mas tem causa própria no vocabulário fechado de [tipoDoErro] (`origem_sem_entrega`) —
-// quem lê o resumo da drenagem tem de distinguir «o documento não presta» de «o documento pede
-// uma entrega que ainda não existe».
+// carimba essa linha) e este processo não a corre. É DETERMINISTA para o documento: partilha a
+// saída 10 com o documento recusado ([exitDocumentoRecusado]) e larga a posse, mas tem causa
+// própria no vocabulário fechado de [tipoDoErro] (`origem_sem_entrega`) — quem lê o resumo da
+// drenagem tem de distinguir «o documento não presta» de «o documento pede uma entrega que este
+// processo não faz».
+//
+// O TEXTO DA MENSAGEM É O DO AOS-500, E DEIXOU DE SER EXACTO (revisão adversarial de 2026-10-06,
+// M7). Diz «este binario ainda nao entrega por referencia (AOS-501)»; desde o AOS-501 o binário
+// entrega, e a causa verdadeira é o INTERRUPTOR: `AOS_ORQ_SAIDA_POR_REFERENCIA` não está em `on`
+// no processo que leu o documento — o `serve`/`consume` em `off` ou `observe`, ou um `decide`
+// corrido sem a variável que o `consume` tem. Só se levanta com o interruptor fora de `on`
+// ([recusarSemEntrega], [posturaDaEntrega.recusar]); em `on` a recusa é outra
+// ([errNoSemEntregaPorReferencia]).
+//
+// NÃO SE MUDA AQUI, de propósito: fora de `on` este binário tem de ser byte a byte o anterior, e
+// esta mensagem vai ao stderr e ao `detail` do desfecho precisamente fora de `on`. Mudá-la era
+// quebrar essa garantia para corrigir uma frase. Corrige-se quando a entrega deixar de ter
+// interruptor; até lá a causa certa está no runbook (`deploy/server/README.md`) e no ticket.
 var errOrigemSemEntrega = errors.New("plano da linha 1.3.0 (origem de saida declarada em outputs[].from_tool, ou carimbo 1.3.x) NAO CORRE: este binario ainda nao entrega por referencia (AOS-501)")
 
 // semEntregaPorReferencia é o PREDICADO da guarda, e a sua única leitura: o documento é da linha
@@ -81,11 +102,70 @@ func semEntregaPorReferencia(doc plan.PlanDocument) (nosComOrigem int, carimboDa
 	return nosComOrigem, carimboDaLinha
 }
 
-// recusarSemEntrega devolve [errOrigemSemEntrega] para um documento da linha 1.3.0. É a forma
+// entregaLigadaNoAmbiente diz se o interruptor está em `on`. É a leitura dos sítios que julgam um
+// documento SEM falar com o nó (antes da posse, a re-verificação de um pendente, o `decide`): aí
+// a guarda cai com o interruptor, e quem recusa um plano com origem contra um nó que não o
+// suporta é o `serve`. Um valor inválido não é `on`: a guarda fica, e quem valida o interruptor
+// recusa o arranque a seguir.
+func entregaLigadaNoAmbiente() bool {
+	modo, err := modoDaSaidaPorReferenciaDoAmbiente()
+	return err == nil && modo == saidaPorReferenciaOn
+}
+
+// recusarSemEntrega é a guarda dos leitores que NÃO têm o nó na mão: com o interruptor em `on`
+// não recusa nada; fora dele é a guarda do AOS-500 ([recusarLinhaDaOrigem]).
+func recusarSemEntrega(doc plan.PlanDocument) error {
+	if entregaLigadaNoAmbiente() {
+		return nil
+	}
+	return recusarLinhaDaOrigem(doc)
+}
+
+// recusar é a guarda de quem TEM a postura do `serve` (a materialização e a última linha depois
+// do laço do planeador):
+//
+//   - [entregaDesligada] — a guarda do AOS-500, sem tirar nem pôr;
+//   - [entregaSemNo] — o interruptor diz `on` e não há nó a quem declarar a origem: um plano que
+//     a DECLARE não corre ([errNoSemEntregaPorReferencia]). Só o carimbo 1.3.0, sem o campo, não
+//     pede entrega nenhuma e segue para o validador;
+//   - [entregaActiva] — não recusa.
+func (p posturaDaEntrega) recusar(doc plan.PlanDocument) error {
+	switch p {
+	case entregaActiva:
+		return nil
+	case entregaSemNo:
+		if nos, _ := semEntregaPorReferencia(doc); nos > 0 {
+			return fmt.Errorf("%w — %d no(s) do plano declaram a origem; nunca se entrega o texto do modelo no lugar do resultado da tool", errNoSemEntregaPorReferencia, nos)
+		}
+		return nil
+	default:
+		return recusarLinhaDaOrigem(doc)
+	}
+}
+
+// recusaDoLaco é a forma NÃO-TERMINAL de [posturaDaEntrega.recusar], para o laço de tentativas
+// do planeador. Sem entrega activa o planeador recebe o prompt 1.4.0, que não pede o campo: um
+// documento com origem (ou, com a entrega desligada, só com o carimbo) é uma tentativa
+// recusada com o código de sempre, e ele tenta de novo.
+func (p posturaDaEntrega) recusaDoLaco(doc plan.PlanDocument) *planner.Rejection {
+	switch p {
+	case entregaActiva:
+		return nil
+	case entregaSemNo:
+		if nos, _ := semEntregaPorReferencia(doc); nos == 0 {
+			return nil
+		}
+		return &planner.Rejection{Rule: string(plannerevents.RuleSchema), Reason: string(planvalidate.ReasonVersionAheadOfReader)}
+	default:
+		return recusaDoLacoSemEntrega(doc)
+	}
+}
+
+// recusarLinhaDaOrigem devolve [errOrigemSemEntrega] para um documento da linha 1.3.0. É a forma
 // TERMINAL da guarda: para o documento que vem do disco, e como última linha depois do laço do
 // planeador. A mensagem leva só a contagem e o carimbo: os `node_id` e os nomes das tools são
 // texto do documento, e este erro pode ser levantado antes de o validador os ter conferido.
-func recusarSemEntrega(doc plan.PlanDocument) error {
+func recusarLinhaDaOrigem(doc plan.PlanDocument) error {
 	nos, carimbo := semEntregaPorReferencia(doc)
 	switch {
 	case nos > 0:
@@ -113,6 +193,25 @@ func recusaDoLacoSemEntrega(doc plan.PlanDocument) *planner.Rejection {
 		return nil
 	}
 	return &planner.Rejection{Rule: string(plannerevents.RuleSchema), Reason: string(planvalidate.ReasonVersionAheadOfReader)}
+}
+
+// recusarDocumentoSemNo aplica [posturaDaEntrega.recusar] ao ficheiro do `--plan-doc`, ANTES da
+// posse do run, quando o interruptor está em `on` e o nó não anuncia o vínculo vinculativo. Como
+// [recusarDocumentoComOrigem], só recusa o que é seu: um ficheiro que não se lê ou não
+// descodifica tem o seu tratamento no caminho de sempre.
+func recusarDocumentoSemNo(docPath string, p posturaDaEntrega) error {
+	if p != entregaSemNo {
+		return nil
+	}
+	raw, err := os.ReadFile(docPath)
+	if err != nil {
+		return nil
+	}
+	doc, err := plan.Decode(raw)
+	if err != nil {
+		return nil
+	}
+	return p.recusar(doc)
 }
 
 // recusarDocumentoComOrigem aplica [recusarSemEntrega] ao ficheiro do `--plan-doc`, ANTES da

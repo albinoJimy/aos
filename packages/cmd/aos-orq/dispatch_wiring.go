@@ -326,6 +326,7 @@ func composeEDespachar(
 		ex.contratoDeConclusao = exe.contratoDeConclusao
 		ex.medicao = exe.medicao
 		ex.medirOrigem, ex.origemAnunciada = exe.medirOrigem, exe.origemAnunciada
+		ex.entregaActiva = exe.entregaActiva // AOS-501: a entrega por referência das saídas declaradas
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {

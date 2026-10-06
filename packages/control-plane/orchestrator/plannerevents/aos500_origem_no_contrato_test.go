@@ -10,8 +10,9 @@ import (
 
 // AOS-500 — o `plan.payload_published` e a origem declarada de uma saída.
 //
-// Este ticket NÃO muda o evento: não há campo novo (a origem no evento, `source`, é do AOS-501).
-// O que muda é uma coisa que o evento DERIVA do documento aprovado — o `contract_digest`:
+// O AOS-500 não mudou o evento: o que mudou foi uma coisa que o evento DERIVA do documento
+// aprovado — o `contract_digest`. A origem no evento (`source`) chegou com o AOS-501, e os
+// testes dela estão em aos501_origem_no_evento_test.go:
 //
 //   - de um contrato SEM `from_tool`, o evento é byte a byte o de antes (literal congelado);
 //   - de um contrato COM `from_tool`, o digest é outro, pelo que uma referência publicada sob um
@@ -44,11 +45,14 @@ func TestAOS500_EventoDeUmContratoSemOrigemEOdeAntes(t *testing.T) {
 	}
 }
 
-func TestAOS500_EventoDeUmContratoComOrigemTemOutroDigestENenhumCampoNovo(t *testing.T) {
+// Desde o AOS-501 um contrato com origem só se publica com `source`: a referência é a de
+// [aos501RefPorReferencia]. O que este teste prende continua a ser o do AOS-500 — o digest do
+// contrato é outro — e passa a prender também que a única chave nova é `source`.
+func TestAOS500_EventoDeUmContratoComOrigemTemOutroDigestESoAChaveSource(t *testing.T) {
 	produtor := plan.Node{NodeID: "recolha", Role: "searcher", Objective: "o",
 		Tools:   []plan.ToolRef{{Name: "doc_read", Version: "1.0.0", Digest: "sha256:d"}},
 		Outputs: []plan.Output{{Name: "achados", Type: plan.PayloadRecord, FromTool: "doc_read"}}}
-	p, err := NewPayloadPublished(aos500Ref(), produtor)
+	p, err := NewPayloadPublished(aos501RefPorReferencia(), produtor)
 	if err != nil {
 		t.Fatalf("NewPayloadPublished: %v", err)
 	}
@@ -65,17 +69,15 @@ func TestAOS500_EventoDeUmContratoComOrigemTemOutroDigestENenhumCampoNovo(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	// As chaves são as de sempre: este ticket não acrescenta a origem ao evento.
+	// As chaves são as de sempre, mais `source` (AOS-501). `from_tool` não é chave do evento.
 	var chaves map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &chaves); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"source", "from_tool"} {
-		if _, ha := chaves[k]; ha {
-			t.Fatalf("o evento ganhou a chave %q, que e do AOS-501:\n%s", k, raw)
-		}
+	if _, ha := chaves["from_tool"]; ha {
+		t.Fatalf("o evento ganhou a chave from_tool; a origem vai em `source`:\n%s", raw)
 	}
-	if len(chaves) != 7 {
-		t.Fatalf("o evento tem %d chaves; tinha 7 (plan_id, node_id, output, type, taint, contract_digest, record):\n%s", len(chaves), raw)
+	if _, ha := chaves["source"]; !ha || len(chaves) != 8 {
+		t.Fatalf("o evento de um contrato com origem tem as 7 chaves de sempre e `source`; tem %d:\n%s", len(chaves), raw)
 	}
 }

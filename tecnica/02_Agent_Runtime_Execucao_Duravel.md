@@ -138,6 +138,29 @@ factos, não uma prova. Nenhum conteúdo, linha, número ou digest do nó vai pa
 ou o `detail`. Os envelopes dos testes são escritos pelo codificador da sandbox
 (`packages/substrate/sandbox/testdata/aos499_envelope/`).
 
+**A saída por referência, entregue pelo `aos-orq` (AOS-501).** Com
+`AOS_ORQ_SAIDA_POR_REFERENCIA=on`, e contra um nó que anuncia o vínculo `binding`, um plano que
+declare a origem de uma saída (`outputs[].from_tool`) corre. O run do nó produtor leva a
+declaração com o vínculo `binding`, e o facto fica no log do plano antes do pedido
+(`plan.output_source_declared`). No fecho, com o run concluído, o `aos-orq` exige três provas — o
+documento (o nó tem uma só saída com origem, e nenhuma de texto ao lado dela: o nó misto é
+recusado pelo validador e não é entregável), o facto do log (`binding`, para a tool e para o
+`contract_digest` do contrato) e a âncora selada (a resposta é sobre o run pedido, `binding`,
+para a mesma tool, com o estado `designated` e um passo que o evento admite) —, confere os bytes
+inteiros que o nó serviu contra o digest e o tamanho da âncora, e só então deriva o que entrega: de um envelope da sandbox reconhecível, o `stdout_text`; de
+outro resultado, os bytes crus (`extrairEntrega`, a mesma leitura do envelope da medição). O
+`plan.payload_published` leva `source` e o digest do que foi entregue. O texto final do produtor
+não é publicado nem entregue. Sem entrega, o nó do plano fecha `failed` com uma causa `origem_*`
+(em falta, ambígua, inaplicável, sem vínculo, não confere, indisponível, não transportável, tool
+falhou, vazia) e o consumidor não corre; um 503 do nó volta a ler-se. De um run que não concluiu
+nunca se entrega, mesmo que a resposta traga a âncora designada e os bytes. A reidratação
+consulta o documento aprovado — uma saída com origem só entra de um evento com `source` e com o
+facto vinculativo no log; uma saída sem origem só entra de um evento sem `source` —, relê o
+resultado designado e refaz a derivação. O corpus de injecção da suite de segurança corre por
+este caminho, numa cadeia de ficheiros de fio que acaba no prompt e no gate de taint do nó real
+(`packages/security-tests/aos501_corpus_por_referencia_test.go`). Os ficheiros de fio do nó real, com a tool na sandbox,
+estão em `packages/cmd/aos/testdata/aos501_fio/`.
+
 **O contrato e o desfecho na API do nó (AOS-494).** O `POST /runs` aceita `completion_requires`,
 a lista de tools de que a conclusão depende. Cada uma tem de constar de `tools`, a lista-branca do
 mesmo pedido; senão o pedido é recusado com 400. O modo de aplicação não tem campo: é do nó. O

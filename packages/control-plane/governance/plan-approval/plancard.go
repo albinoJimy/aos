@@ -173,8 +173,10 @@ func BuildPlanCard(plan Plan, opts ...BuildOption) (PlanCard, error) {
 		cards = append(cards, card)
 	}
 
+	extensions := buildNodeExtensions(order, byID)
 	pc := PlanCard{
-		SchemaVersion:         CurrentVersion,
+		// O carimbo é o do contrato que ESTE cartão usa (AOS-501): 1.2.0 com origem, 1.1.0 sem.
+		SchemaVersion:         versionFor(extensionsDeclareOutputSource(extensions)),
 		RunID:                 plan.RunID,
 		Agent:                 plan.Agent,
 		Domain:                plan.Domain,
@@ -186,7 +188,7 @@ func BuildPlanCard(plan Plan, opts ...BuildOption) (PlanCard, error) {
 		AggregateIrreversible: aggregateIrreversible(plan.Nodes),
 		EstimatedCost:         cfg.cost,
 		NodeReviews:           buildNodeReviews(order, byID),
-		NodeExtensions:        buildNodeExtensions(order, byID),
+		NodeExtensions:        extensions,
 	}
 	if verr := pc.Validate(); verr != nil {
 		return PlanCard{}, verr
@@ -205,6 +207,13 @@ func BuildPlanCard(plan Plan, opts ...BuildOption) (PlanCard, error) {
 func (c PlanCard) Validate() error {
 	if !CurrentVersion.Compatible(c.SchemaVersion) {
 		return ErrIncompatibleSchema
+	}
+	// AOS-501: um cartão que mostra a origem de uma saída usa o contrato 1.2.0, e tem de o
+	// carimbar. Com um carimbo abaixo, a versão deixava de identificar o que o aprovador viu.
+	// O piso é a versão em que a origem ENTROU, fixa, e não a corrente: ver
+	// [versionOutputSourceSince].
+	if extensionsDeclareOutputSource(c.NodeExtensions) && c.SchemaVersion.Compare(versionOutputSourceSince) < 0 {
+		return ErrOutputSourceBelowVersion
 	}
 	if c.RunID == "" || c.Agent == "" {
 		return ErrInvalidPlanCard

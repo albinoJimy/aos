@@ -35,6 +35,12 @@ type medicaoDoContrato struct {
 	comparacoes map[string]int // relação entre o texto final e o CONTEÚDO do resultado designado → nós
 	numeros     map[string]int // os números do conteúdo aparecem todos no texto final → nós
 	razoes      map[string]int // classe da razão tamanho do texto final / tamanho do conteúdo → nós
+	// AOS-501 — a entrega por referência (entrega_por_referencia.go). Só com o interruptor em
+	// `on`; vazios nos outros modos.
+	entregas            map[string]int // entregue, ou a causa → nós com saída de origem declarada
+	extraccoes          map[string]int // forma da extracção → saídas entregues
+	recusasDaOrigem     map[string]int // razão do validador → tentativas do planeador recusadas
+	candidatosSemOrigem int            // candidatos por estrutura cujo plano não declarou a origem
 }
 
 // contratoNaoAplicado conta uma execução de plano em que o contrato não foi aplicado.
@@ -100,4 +106,5 @@ func (m *metricasDoConsumo) registarContrato(c *medicaoDoContrato) {
 	somar(metricaVeredictosObservados, "razao", razoesObservaveis(), c.observados)
 	somar(metricaNosPorContrato, "classe", classesDoContrato, c.classes)
 	m.registarOrigem(c)
+	m.registarEntrega(c)
 }

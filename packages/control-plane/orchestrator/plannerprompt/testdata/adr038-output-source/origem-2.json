@@ -1,0 +1,35 @@
+{
+  "plan_version": "1.3.0",
+  "objective": "search two angles of the topic and compare them, handing each search result itself to the comparer",
+  "budget_total": {"tokens": 2200, "cost_micro_usd": 11000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.5.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "angulo.a", "role": "searcher", "objective": "pesquisar o primeiro angulo com uma unica pesquisa",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000}, "risk_class": "safe",
+      "outputs": [
+        {"name": "achados", "type": "artifact", "from_tool": "search"}
+      ]
+    },
+    {
+      "node_id": "angulo.b", "role": "searcher", "objective": "pesquisar o segundo angulo com uma unica pesquisa",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000}, "risk_class": "safe",
+      "outputs": [
+        {"name": "achados", "type": "record", "from_tool": "search"}
+      ]
+    },
+    {
+      "node_id": "comparacao", "role": "summarizer", "objective": "comparar os dois conjuntos de achados",
+      "tools": [], "depends_on": ["angulo.a", "angulo.b"], "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000}, "risk_class": "safe",
+      "outputs": [
+        {"name": "comparacao", "type": "summary"}
+      ],
+      "consumes": [
+        {"from": "angulo.a", "output": "achados", "type": "artifact"},
+        {"from": "angulo.b", "output": "achados", "type": "record"}
+      ]
+    }
+  ]
+}
