@@ -1295,6 +1295,16 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if err != nil {
 		return err
 	}
+	// NOVA TENTATIVA de um nó do plano (AOS-502): AOS_RUN_RETRY_MAX é o tecto do nó. Vocabulário
+	// fechado: um valor fora de {0,1,2} aborta o arranque. Com zero — a omissão — nada se compõe
+	// e nada se imprime.
+	runRetryOpt, runRetryMax, err := apiRunRetryMaxOptionFromEnv()
+	if err != nil {
+		return err
+	}
+	if runRetryMax > 0 {
+		fmt.Fprintf(w, "[aos] %s\n", runRetryBanner(runRetryMax))
+	}
 	// CATÁLOGO DE TOOLS (AOS-441): o que `GET /tools` serve ao `aos-orq`, composto UMA vez e do
 	// MESMO manifesto que o nó oferece ao modelo. Resolvido antes de compor o serviço: um eixo de
 	// risco ilegível aborta o arranque em vez de servir um adivinhado.
@@ -1356,6 +1366,9 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	apiOpts = append(apiOpts, WithToolCatalog(toolCatalog))
 	if maxTurnsOpt != nil {
 		apiOpts = append(apiOpts, maxTurnsOpt)
+	}
+	if runRetryOpt != nil {
+		apiOpts = append(apiOpts, runRetryOpt)
 	}
 	srv, err := NewAPIServer(svc, node, apiOpts...)
 	if err != nil {

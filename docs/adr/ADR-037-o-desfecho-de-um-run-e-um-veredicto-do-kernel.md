@@ -9,6 +9,8 @@
 - **Emendado:** 2026-10-05, por AOS-497 (ADR-038): §2.4 (duas razões novas e a sua precedência)
   e §5 (o resíduo «evidência não é fidelidade» remete para o ADR-038); e por AOS-498: §2.8 (o
   que a leitura de desfecho cobre num run que declarou a origem da saída)
+- **Emendado:** 2026-10-06, por AOS-502 e AOS-503 (ADR-039): §5 («sem reparação» continua
+  verdadeiro no kernel; a recuperação vive no plano)
 - **Tickets:** AOS-493
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-010 (manifesto por trajectória e replay), ADR-018 (o nó é a autoridade sobre o run),
@@ -305,6 +307,12 @@ não entregou resultado de tool nenhum por esta rota.
   alargou-o (o critério inicial exigia uma saída de forma aberta), o que aumenta este resíduo
   para os nós sem saída declarada; é o que o período de observação mede.
 - **Sem reparação.** Um veredicto negativo fecha o run; não há outro turno para o modelo.
+  **EMENDADO a 2026-10-06 (ADR-039):** continua verdadeiro **no kernel** e em cada run. A
+  recuperação que passou a existir vive no PLANO: o `aos-orq` volta a submeter o nó do plano como
+  um run NOVO, que o nó `aos` só hospeda depois de provar que o anterior não pediu tool nenhuma. O
+  veredicto de nenhum run muda — o run que não cumpriu fica `failed`, com a razão e o vector —, e
+  a regra de terminação, o tail e o replay ficam como estavam. A reamostragem do turno dentro do
+  run foi rejeitada, e o «aviso e mais um turno» adiado com gatilho (ADR-039 §3).
 - **Retoma depois de uma falha de tool: dois ramos, medidos.** A retoma reproduz os turnos já
   dados. Uma chamada que teve êxito tem o resultado memorizado e não volta a executar. Uma que
   **falhou** não tem, e é mediada outra vez. O que acontece depende de a retoma ter credencial:

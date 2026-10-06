@@ -1,0 +1,470 @@
+[
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "read_notes",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~read_notes"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "read_notes",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~read_notes~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "read_notes",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~read_notes~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n1"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n1~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n1~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1~2",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n1+7e2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1~2",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n1+7e2~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1~2",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n1+7e2~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1+7e2",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n1++7e2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1+7e2",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n1++7e2~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1+7e2",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n1++7e2~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1.2",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n1+2e2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1.2",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n1+2e2~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1.2",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n1+2e2~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1:2",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n1:2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1:2",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n1:2~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1:2",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n1:2~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "a.b",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~a+2eb"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "a.b",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~a+2eb~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "a.b",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~a+2eb~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "a+2eb",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~a++2eb"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "a+2eb",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~a++2eb~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "a+2eb",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~a++2eb~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "2",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "2",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~2~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "2",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~2~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1-2",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n1-2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1-2",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n1-2~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n1-2",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n1-2~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n_1",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~n_1"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n_1",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~n_1~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "n_1",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~n_1~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "~",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~+7e"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "~",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~+7e~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "~",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~+7e~3"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "+",
+  "tentativa": 1,
+  "id": "plan-aos503-fio~++"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "+",
+  "tentativa": 2,
+  "id": "plan-aos503-fio~++~2"
+ },
+ {
+  "plano": "plan-aos503-fio",
+  "node_id": "+",
+  "tentativa": 3,
+  "id": "plan-aos503-fio~++~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "read_notes",
+  "tentativa": 1,
+  "id": "run-x~read_notes"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "read_notes",
+  "tentativa": 2,
+  "id": "run-x~read_notes~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "read_notes",
+  "tentativa": 3,
+  "id": "run-x~read_notes~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1",
+  "tentativa": 1,
+  "id": "run-x~n1"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1",
+  "tentativa": 2,
+  "id": "run-x~n1~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1",
+  "tentativa": 3,
+  "id": "run-x~n1~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1~2",
+  "tentativa": 1,
+  "id": "run-x~n1+7e2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1~2",
+  "tentativa": 2,
+  "id": "run-x~n1+7e2~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1~2",
+  "tentativa": 3,
+  "id": "run-x~n1+7e2~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1+7e2",
+  "tentativa": 1,
+  "id": "run-x~n1++7e2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1+7e2",
+  "tentativa": 2,
+  "id": "run-x~n1++7e2~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1+7e2",
+  "tentativa": 3,
+  "id": "run-x~n1++7e2~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1.2",
+  "tentativa": 1,
+  "id": "run-x~n1+2e2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1.2",
+  "tentativa": 2,
+  "id": "run-x~n1+2e2~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1.2",
+  "tentativa": 3,
+  "id": "run-x~n1+2e2~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1:2",
+  "tentativa": 1,
+  "id": "run-x~n1:2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1:2",
+  "tentativa": 2,
+  "id": "run-x~n1:2~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1:2",
+  "tentativa": 3,
+  "id": "run-x~n1:2~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "a.b",
+  "tentativa": 1,
+  "id": "run-x~a+2eb"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "a.b",
+  "tentativa": 2,
+  "id": "run-x~a+2eb~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "a.b",
+  "tentativa": 3,
+  "id": "run-x~a+2eb~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "a+2eb",
+  "tentativa": 1,
+  "id": "run-x~a++2eb"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "a+2eb",
+  "tentativa": 2,
+  "id": "run-x~a++2eb~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "a+2eb",
+  "tentativa": 3,
+  "id": "run-x~a++2eb~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "2",
+  "tentativa": 1,
+  "id": "run-x~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "2",
+  "tentativa": 2,
+  "id": "run-x~2~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "2",
+  "tentativa": 3,
+  "id": "run-x~2~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1-2",
+  "tentativa": 1,
+  "id": "run-x~n1-2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1-2",
+  "tentativa": 2,
+  "id": "run-x~n1-2~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n1-2",
+  "tentativa": 3,
+  "id": "run-x~n1-2~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n_1",
+  "tentativa": 1,
+  "id": "run-x~n_1"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n_1",
+  "tentativa": 2,
+  "id": "run-x~n_1~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "n_1",
+  "tentativa": 3,
+  "id": "run-x~n_1~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "~",
+  "tentativa": 1,
+  "id": "run-x~+7e"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "~",
+  "tentativa": 2,
+  "id": "run-x~+7e~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "~",
+  "tentativa": 3,
+  "id": "run-x~+7e~3"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "+",
+  "tentativa": 1,
+  "id": "run-x~++"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "+",
+  "tentativa": 2,
+  "id": "run-x~++~2"
+ },
+ {
+  "plano": "run-x",
+  "node_id": "+",
+  "tentativa": 3,
+  "id": "run-x~++~3"
+ }
+]

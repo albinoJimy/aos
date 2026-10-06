@@ -90,6 +90,10 @@ type respostaDoCatalogo struct {
 	// devolve a âncora e os bytes designados no `GET /runs/{id}` (AOS-498). A presença é o
 	// anúncio; ausente num nó com o veredicto desligado. Campo aditivo.
 	OutputSource *anuncioDaOrigem `json:"output_source,omitempty"`
+	// RunRetry anuncia que este nó aceita a NOVA TENTATIVA de um nó do plano no `POST /runs`
+	// (`plan_request.attempt`, AOS-502) e o tecto em vigor. Só com o tecto acima de zero: com zero
+	// o corpo é o de antes. Campo aditivo.
+	RunRetry *anuncioDaNovaTentativa `json:"run_retry,omitempty"`
 }
 
 // contratoDaTool constrói o contrato de supply-chain de uma tool EXACTAMENTE como o registo
@@ -187,5 +191,5 @@ func (h *apiHandler) handleToolCatalog(w http.ResponseWriter, r *http.Request) {
 	if tools == nil {
 		tools = []entradaDoCatalogo{}
 	}
-	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node)})
+	writeJSON(w, http.StatusOK, respostaDoCatalogo{Tools: tools, CompletionContract: anuncioDoContratoDoNo(h.node), OutputSource: anuncioDaOrigemDoNo(h.node), RunRetry: anuncioDaNovaTentativaDoNo(h.cfg.runRetryMax)})
 }

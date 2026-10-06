@@ -149,6 +149,12 @@ type origemDoRunFilho struct {
 	// `plan_id` só na forma (ver o cabeçalho). Vazios quando o drenador é anterior ao AOS-477.
 	PlanID string `json:"plan_id,omitempty"`
 	NodeID string `json:"node_id,omitempty"`
+	// Attempt e RetryOf existem só num run que é uma NOVA TENTATIVA de um nó do plano (AOS-502,
+	// ADR-039): a tentativa (≥ 2) e o id do run anterior, que o nó PROVOU não ter pedido tool
+	// nenhuma antes de hospedar este. Aditivos e `omitempty`: o evento de um run sem tentativa
+	// tem os bytes de sempre, e quem lê eventos antigos não parte.
+	Attempt int    `json:"attempt,omitempty"`
+	RetryOf string `json:"retry_of,omitempty"`
 }
 
 // errOrigemMalformada — o vínculo traz um `plan_id`/`node_id` que não tem forma de id.
@@ -185,7 +191,8 @@ func validarOrigemDeclarada(v vinculoAoPedido, runID string) error {
 			return fmt.Errorf("%w: node_id fora da gramática do plano", errOrigemMalformada)
 		}
 	}
-	if runID != idDoRunFilho(v.RunID, v.NodeID) {
+	// AOS-502: com `attempt`, o id é o da tentativa; sem ele, [idDaTentativa] é o [idDoRunFilho].
+	if runID != idDaTentativa(v.RunID, v.NodeID, v.Attempt) {
 		return fmt.Errorf("%w: o node_id declarado nao e o do run_id", errOrigemMalformada)
 	}
 	return nil
@@ -234,12 +241,17 @@ type apensadorDaOrigem interface {
 // ALHEIO uma origem que não é a dele. Depois, `Submit` sem erro diz que foi ESTA chamada que o
 // hospedou. [TestAOS477OrigemNaoEntraNumRunAlheio] prende a ordem.
 func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido) error {
-	raw, err := json.Marshal(origemDoRunFilho{
+	origem := origemDoRunFilho{
 		Versao: versaoDaOrigem,
 		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, RunID: v.RunID, Geracao: v.Geracao},
 		PlanID: v.PlanID,
 		NodeID: v.NodeID,
-	})
+	}
+	if v.Attempt >= 2 {
+		// AOS-502: só quem passou a prova chega aqui com `attempt` — o `POST /runs` recusa antes.
+		origem.Attempt, origem.RetryOf = v.Attempt, idDaTentativa(v.RunID, v.NodeID, v.Attempt-1)
+	}
+	raw, err := json.Marshal(origem)
 	if err != nil {
 		return err
 	}

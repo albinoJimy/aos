@@ -508,6 +508,12 @@ services:
       # com veredicto negativo; `off` não calcula. Outro valor ⇒ o nó recusa arrancar
       # (ErrBadCompletionVerdict). Vale para runs novos: o modo é fixado por run.
       AOS_COMPLETION_VERDICT: "${AOS_COMPLETION_VERDICT:-}"
+      # A NOVA TENTATIVA de um nó do plano (AOS-502, ADR-039). Vazio ou 0 ⇒ o nó recusa todo o
+      # `POST /runs` com `plan_request.attempt`, não anuncia nada no `GET /tools` e é o de antes. 1
+      # ou 2 ⇒ aceita até esse número de tentativas a mais por nó do plano, e só depois de provar
+      # no SEU log que a tentativa anterior fechou failed por contract_unmet_no_call sem nenhuma
+      # tool call pedida. Outro valor ⇒ o nó recusa arrancar (ErrBadRunRetryMax).
+      AOS_RUN_RETRY_MAX: "${AOS_RUN_RETRY_MAX:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
@@ -716,6 +722,15 @@ services:
       # designou, e não o texto do modelo. Só contra um nó que anuncie o vínculo `binding`.
       # Qualquer outro valor recusa o arranque do `consume`.
       AOS_ORQ_SAIDA_POR_REFERENCIA: "${AOS_ORQ_SAIDA_POR_REFERENCIA:-}"
+      # AOS-503 — A NOVA TENTATIVA (ADR-039). Vazio ⇒ off: um nó do plano cujo run não concluiu
+      # fecha failed, como sempre. `observe` conta e diz o que tentaria, sem tentar. `on`: quando o
+      # run de um nó não-verificador com tools fecha por contract_unmet_no_call sem nenhuma tool
+      # call pedida, o facto fica no log do plano e o MESMO pedido volta a ser submetido — até
+      # duas vezes a mais por nó, e só contra um nó que anuncie o suporte (AOS_RUN_RETRY_MAX > 0).
+      # Qualquer outro valor recusa o arranque do `consume`.
+      AOS_ORQ_NOVA_TENTATIVA: "${AOS_ORQ_NOVA_TENTATIVA:-}"
+      # O tecto de tentativas a mais POR PLANO. Vazio ⇒ 4. Um inteiro de 0 a 64.
+      AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO: "${AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO:-}"
     volumes:
       - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação
       - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc, approvers)

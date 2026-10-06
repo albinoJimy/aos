@@ -189,6 +189,24 @@ ela pode concluir sem texto). Um 503 do nó ao `GET /runs/{id}` não fecha o nó
 estado fica por ler até à passagem seguinte. O ficheiro de métricas da drenagem conta as
 execuções sem contrato, os veredictos negativos observados e os nós por classe face ao contrato.
 
+**A nova tentativa de um nó do plano (AOS-502 e AOS-503; ADR-039).** Um run que fecha `failed`
+por `contract_unmet_no_call` não tem outro turno: o veredicto do kernel fica como está. A
+recuperação vive no plano. O `plan_request` do `POST /runs` aceita `attempt` (`n ≥ 2`), e o id do
+run é então `<plano>~<nó>~<n>`. O nó só hospeda a tentativa depois de ler, do seu próprio log,
+sobre o run da tentativa anterior: o `run.plan_origin` que ele próprio escreveu, para o mesmo
+pedido e o mesmo nó; a última transição `failed`, com o veredicto `contract_unmet_no_call` e zero
+tool calls pedidas; nenhum evento `tool.call.*`; e um só `turn.recorded`, sem tool calls e com
+`stop_reason = stop`. A residência do run anterior tem de ser a região de quem pede. Nada vem do
+corpo. As recusas respondem a 403 uniforme da rota, com a causa no log e em
+`aos_runs_retry_refused_total{causa}`; um log que não se leu agora responde 503. O tecto é do nó
+(`AOS_RUN_RETRY_MAX`, 0 por omissão, até 2) e anuncia-se no `GET /tools` (`run_retry.max`), só
+acima de zero. O `run.plan_origin` de uma tentativa leva `attempt` e `retry_of`. Do lado do plano,
+o `aos-orq` (`AOS_ORQ_NOVA_TENTATIVA=off|observe|on`) pede a tentativa só para um nó
+não-verificador com tools cujo run fechou por essa razão com zero tool calls pedidas, grava o
+facto `plan.node_attempt_started` no log do plano antes do pedido, e envia o mesmo corpo — muda o
+`run_id` e o `attempt`. O nó do plano fica `running` entre tentativas; a entrega por referência
+(AOS-501) confere-se contra o run da tentativa que concluiu.
+
 **Garantia estrutural de no-bypass (ADR-002).** O `Runtime` detém um `*referencemonitor.Monitor`, **nunca** uma `ToolFunc`: o único caminho de execução de tools é `Monitor.Mediate`. A prova é estrutural (reflexão) + sintáctica (`archlint`). Cada resultado de tool volta ao loop **marcado untrusted** (ADR-005); um erro de tool permitida (`dec.ToolErr`) é propagado ao span (`error.type`) e ao tail, sem ser silenciosamente descartado.
 
 **Pontos de ligação (hooks, default no-op).** `StepIdentity` — derivação do `step_id` (AOS-014, idempotência por passo). `Checkpointer` — checkpoint intra-iteração por fase `assembled`/`model_called`/`turn_recorded`/`dispatched`/`verified` (AOS-015). A máquina de estados durável rica (`waiting_on_human`/`paused`) é AOS-017.
