@@ -94,6 +94,10 @@ const (
 	metricaTentativasPorPlano     = "aos_orq_consume_tentativas_por_plano_total"
 	metricaTentativasRecusadas    = "aos_orq_consume_tentativas_recusadas_total"
 	metricaTentativasEmObservacao = "aos_orq_consume_tentativas_em_observacao_total"
+	// AOS-504 — o canário da recusa do próprio objectivo (canario_de_recusa.go). Sem rótulos e sem
+	// conteúdo: duas contagens, que só fazem sentido juntas.
+	metricaCanarioDeRecusaNos = "aos_orq_consume_canario_de_recusa_nos_total"
+	metricaCanarioDeRecusa    = "aos_orq_consume_canario_de_recusa_total"
 )
 
 // catalogoDeMetricas é a lista FECHADA do que o ficheiro contém, pela ordem em que é escrito. Uma
@@ -133,6 +137,8 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaTentativasRecusadas, "counter", "Nova tentativa: tentativas a que o no do plano tinha direito e que NAO se fizeram, por causa (quota: o no aos respondeu 429 | tecto_do_no | tecto_do_plano | prazo | nao_anunciado: o no aos nao anuncia o suporte | recusada_pelo_no: 403 ou 409 na submissao). O no do plano fecha failed com a causa do run."},
 	{metricaTentativasEmObservacao, "counter", "Nova tentativa: em observe, os nos que o aos-orq tentaria outra vez (run failed por contract_unmet_no_call sem tool calls), por com_consumes. Nao tenta: tem de coincidir com os runs nesse estado, e com mais nenhum."},
 	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do CONTEUDO do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2|nao_comparado). E so tamanho: nao diz se o que se escreveu e o que se leu."},
+	{metricaCanarioDeRecusaNos, "counter", "Canario da recusa do proprio objectivo (AOS-504), denominador: nos do plano SEM tools e COM consumes (o no de resumo) que concluiram."},
+	{metricaCanarioDeRecusa, "counter", "Canario da recusa do proprio objectivo (AOS-504), numerador: dos nos sem tools e com consumes que concluiram, os que tem vocabulario do protocolo da projeccao (plan_input, taint=untrusted) no texto final. SO MEDICAO: nao muda desfecho nenhum, e o texto nao e publicado. E um limite inferior: uma recusa que nao use essas palavras nao conta."},
 }
 
 // Origens de um pedido — o rótulo `origem` de [metricaOrigem] e do resumo do desfecho.

@@ -1243,6 +1243,9 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	// AOS-499: a ORIGEM MEDIDA de um nó candidato. Depois de o desfecho estar decidido, e sem
 	// mexer nele: `destino` e `causa` já não mudam, e o que se publica abaixo é o texto final.
 	e.registarOrigemMedida(nodeID, st, existe)
+	// AOS-504: o CANÁRIO da recusa do próprio objectivo. Só medição, e também depois de o
+	// desfecho estar decidido: não devolve nada, e nada abaixo lê o que ele contou.
+	e.registarCanarioDeRecusa(n, destino == arstate.Complete, st.FinalText)
 	var veredicto *plannerevents.VerdictRecordedPayload
 	if n.IsVerifier() && destino == arstate.Complete {
 		v := veredictoDaSaida(st.FinalText)
