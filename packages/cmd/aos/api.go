@@ -1343,6 +1343,12 @@ type runStateResponse struct {
 	// vocabulário fechado: `too_large`, `not_utf8`, `unavailable`, `unavailable_now`. É distinto de
 	// OutputUnavailable, que fala da saída do run. Ver [apiHandler.origemNaResposta].
 	OutputOmitted string `json:"output_omitted,omitempty"`
+	// PlanAttempt declara que o run é uma NOVA TENTATIVA de um nó do plano hospedada por este nó
+	// (AOS-502): o pedido, o plano, o nó e a tentativa do `run.plan_origin` que o nó escreveu
+	// depois da prova. Ausente em qualquer outro run — os bytes de sempre. É por ele que o
+	// `aos-orq` que retoma um plano confere que o run é do seu pedido antes de o seguir. Ver
+	// [apiHandler.tentativaNaResposta].
+	PlanAttempt *tentativaNaAPI `json:"plan_attempt,omitempty"`
 }
 
 // pendingApprovalWire é a face de wire de uma aprovação pendente. Descreve O QUE vai
@@ -1544,26 +1550,36 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		// O selo da leitura sensível já foi feito acima, para os DOIS ramos — selá-lo outra
 		// vez aqui poria dois registos na cadeia WORM para uma leitura só.
 		if oc.Result.Paused {
-			writeJSON(w, http.StatusOK, runStateResponse{
+			resp := runStateResponse{
 				RunID:  runID,
 				Status: string(state.Paused),
 				Paused: true,
 				Turns:  oc.Result.Turns,
-			})
+			}
+			if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 		// As DUAS decisões humanas que suspendem um run saem por aqui: a aprovação de uma tool
 		// call escalada (AOS-021) e o prompt de exaustão de orçamento (AOS-263). Uma leitura
 		// só, cada tipo na sua face de wire.
 		aprovacoes, exaustoes, indisponivel := h.pendingFor(r.Context(), runID)
-		writeJSON(w, http.StatusOK, runStateResponse{
+		resp := runStateResponse{
 			RunID:              runID,
 			Status:             "waiting_on_human",
 			Turns:              oc.Result.Turns,
 			PendingApprovals:   aprovacoes,
 			PendingExhaustion:  exaustoes,
 			PendingUnavailable: indisponivel,
-		})
+		}
+		if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	// Terminado (desfecho retido)?
@@ -1628,6 +1644,11 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "indisponivel")
 			return
 		}
+		// AOS-502: uma nova tentativa diz de que pedido é — depois do selo, como o resto.
+		if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -1642,13 +1663,18 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// preview a assinar em POST /runs/{id}/approve (AOS-021, polling) — e, com ela, os
 			// prompts de exaustão por responder (AOS-263).
 			aprovacoes, exaustoes, indisponivel := h.pendingFor(r.Context(), runID)
-			writeJSON(w, http.StatusOK, runStateResponse{
+			resp := runStateResponse{
 				RunID:              runID,
 				Status:             "in_progress",
 				PendingApprovals:   aprovacoes,
 				PendingExhaustion:  exaustoes,
 				PendingUnavailable: indisponivel,
-			})
+			}
+			if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
@@ -1730,6 +1756,11 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// transição que deu o estado, e os bytes do step-ledger. Depois do selo e, num run
 			// `complete`, depois da trava do AOS-426 acima.
 			if !h.origemNaResposta(r, reader, &resp, desfecho.OutputSource, st == state.Complete) {
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			// AOS-502: o MESMO `plan_attempt` que o ramo em memória.
+			if !h.tentativaNaResposta(r.Context(), runID, &resp) {
 				writeError(w, http.StatusServiceUnavailable, "indisponivel")
 				return
 			}
