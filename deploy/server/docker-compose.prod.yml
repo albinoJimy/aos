@@ -503,6 +503,11 @@ services:
       # mensagem de utilizador, a forma anterior. Outro valor ⇒ o nó recusa arrancar
       # (ErrBadModelProjection).
       AOS_MODEL_PROJECTION: "${AOS_MODEL_PROJECTION:-}"
+      # A VERSÃO DA PROJECÇÃO NATIVA (AOS-504). Vazio ⇒ `1.0.0`, a de sempre. `1.1.0` ⇒ linha de
+      # fim `</kind>` por segmento e o texto do protocolo reescrito; entra desligada e mede-se
+      # antes de ligar. Outro valor ⇒ o nó recusa arrancar (ErrBadModelProjectionVersion) — com
+      # AOS_MODEL_ENDPOINT definida; sem gateway a variável não é lida nem validada.
+      AOS_MODEL_PROJECTION_VERSION: "${AOS_MODEL_PROJECTION_VERSION:-}"
       # O VEREDICTO DE CONCLUSÃO (AOS-493, ADR-037). Vazio ⇒ `observe`: o kernel calcula se o run
       # concluiu, regista-o e conta-o, sem mudar o desfecho. `enforce` fecha em `failed` um run
       # com veredicto negativo; `off` não calcula. Outro valor ⇒ o nó recusa arrancar

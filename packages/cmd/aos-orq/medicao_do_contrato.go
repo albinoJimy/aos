@@ -50,6 +50,9 @@ type medicaoDoContrato struct {
 	// tentativasDoPlano é o que o plano fica a dizer sobre as tentativas quando o `serve` acaba.
 	// nil com o interruptor desligado e sem tentativas no log.
 	tentativasDoPlano *resumoDasTentativas
+	// AOS-504 — o canário da recusa do próprio objectivo (canario_de_recusa.go). Só medição.
+	canarioNos     int // nós sem tools e com `consumes` que concluíram
+	canarioRecusas int // desses, os que usam vocabulário do protocolo no texto final
 }
 
 // contratoNaoAplicado conta uma execução de plano em que o contrato não foi aplicado.
@@ -117,4 +120,5 @@ func (m *metricasDoConsumo) registarContrato(c *medicaoDoContrato) {
 	m.registarOrigem(c)
 	m.registarEntrega(c)
 	m.registarNovaTentativa(c)
+	m.registarCanario(c)
 }

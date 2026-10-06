@@ -458,8 +458,12 @@ func run(w io.Writer) error {
 	// validado em [parseModelFromEnv] (um valor desconhecido abortou o arranque); relê-se aqui
 	// só para o declarar. Amarrado ao estado composto, como as linhas vizinhas.
 	if projection, perr := parseModelProjectionFromEnv(); perr == nil {
-		for _, line := range modelProjectionBanner(cfg.Model != nil, projection) {
-			fmt.Fprintf(w, "[aos] %s\n", line)
+		// A VERSÃO da projecção nativa (AOS-504) foi validada no mesmo sítio; com a de omissão as
+		// linhas são as de antes.
+		if version, verr := parseModelProjectionVersionFromEnv(); verr == nil {
+			for _, line := range modelProjectionBannerFor(cfg.Model != nil, projection, version) {
+				fmt.Fprintf(w, "[aos] %s\n", line)
+			}
 		}
 	}
 
@@ -2288,6 +2292,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if perr != nil {
 		return nil, nil, perr
 	}
+	// A VERSÃO DA PROJECÇÃO NATIVA (AOS-504). Vocabulário fechado, validado aqui pela mesma razão.
+	projectionVersion, pverr := parseModelProjectionVersionFromEnv()
+	if pverr != nil {
+		return nil, nil, pverr
+	}
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
@@ -2358,7 +2367,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 		}
 	}
 	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
-		modelProjectionOption(projection))
+		modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion))
 	if err != nil {
 		return nil, nil, err
 	}

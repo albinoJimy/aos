@@ -1278,6 +1278,11 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	if err := e.g.MarkTerminal(ctx, nodeID, destino); err != nil && !errors.Is(err, orchestrator.ErrLogAhead) {
 		return fmt.Errorf("conclusão de %q: %w", nodeID, err)
 	}
+	// AOS-504: o CANÁRIO da recusa do próprio objectivo. Só medição: não devolve nada, e nada
+	// abaixo lê o que ele contou. Conta-se AQUI — depois de a saída estar publicada e a conclusão
+	// escrita —, pela razão do `contarEntrega` logo abaixo: contado antes, um nó cuja publicação
+	// falhasse ficava no denominador, e a retoma voltava a contá-lo (revisão do AOS-504, M2).
+	e.registarCanarioDeRecusa(n, destino == arstate.Complete, st.FinalText)
 	if porReferencia {
 		// A MÉTRICA CONTA O DESFECHO DO NÓ, e por isso só aqui — depois de a saída estar
 		// publicada e a conclusão escrita (revisão adversarial, M9). Contar `entregue` no momento

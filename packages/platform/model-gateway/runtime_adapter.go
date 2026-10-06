@@ -44,6 +44,9 @@ type ModelClientAdapter struct {
 	// nativa: a projecção CONFIGURADA é a de mensagens nativas ([WithProjection], AOS-490).
 	// false — o valor-zero — é o texto único, a forma de sempre.
 	nativa bool
+	// versaoNativa: a versão da projecção nativa a usar ([WithProjectionVersion], AOS-504). Vazia
+	// — o valor-zero — é [NativeProjectionVersion], a de sempre.
+	versaoNativa string
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -159,6 +162,27 @@ func WithProjection(mode string) RuntimeAdapterOption {
 	}
 }
 
+// WithProjectionVersion escolhe a VERSÃO da projecção nativa (AOS-504, emenda ao ADR-036 §2.4):
+// [NativeProjectionVersion] — a de sempre, e a do adaptador sem esta opção — ou
+// [NativeProjectionVersion110] — linha de fim por segmento e o texto de protocolo novo.
+//
+// Só tem efeito num turno que vá em projecção nativa ([WithProjection] e um layout coberto): em
+// texto único não há projecção nem versão dela. A versão EFECTIVAMENTE usada em cada turno
+// volta na resposta ([agentruntime.ModelResponse.ProjectionVersion]) e fica no manifesto desse
+// turno — um run em curso quando a configuração muda pode ter turnos em versões diferentes, e
+// cada um grava a sua.
+//
+// A versão tem de ser do vocabulário fechado ([ParseNativeProjectionVersion]); um valor
+// desconhecido é ignorado aqui — fica a de sempre —, e é a quem lê a configuração que cabe
+// recusá-lo.
+func WithProjectionVersion(version string) RuntimeAdapterOption {
+	return func(a *ModelClientAdapter) {
+		if v, err := ParseNativeProjectionVersion(version); err == nil {
+			a.versaoNativa = v
+		}
+	}
+}
+
 // NewModelClient constrói o adaptador RT→GW para um modelo dado.
 func NewModelClient(gw port.Gateway, model string, opts ...RuntimeAdapterOption) *ModelClientAdapter {
 	a := &ModelClientAdapter{gw: gw, model: model}
@@ -199,9 +223,13 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	// forma a meio sem que nada o registe.
 	msgs := []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}}
 	nativa := a.nativa && projecaoNativaSuporta(view.AssemblyVersion)
+	versaoNativa := a.versaoNativa
+	if versaoNativa == "" {
+		versaoNativa = NativeProjectionVersion
+	}
 	if nativa {
 		var perr error
-		if msgs, perr = ProjectNative(view); perr != nil {
+		if msgs, perr = ProjectNativeVersion(versaoNativa, view); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
 	}
@@ -226,7 +254,7 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	if nativa {
 		// O adaptador declara a forma que USOU; o runtime grava-a no manifesto do turno. O
 		// texto único não declara nada — o manifesto fica com os bytes de antes.
-		out.Projection, out.ProjectionVersion = ProjectionNative, NativeProjectionVersion
+		out.Projection, out.ProjectionVersion = ProjectionNative, versaoNativa
 	}
 	// AOS-491 — quantas tools ESTE pedido ofereceu ao modelo: os schemas que foram no campo
 	// `tools`, depois do corte pela lista-branca do run. É o que separa, no registo, um turno
