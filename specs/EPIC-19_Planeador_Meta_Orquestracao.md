@@ -10044,9 +10044,41 @@ vai para `testdata/`.
   execuções limpas. A propriedade do nó de leitura (o entregue deriva dos bytes selados) é por
   construção e não precisa dessa série.
 
+### Verificação em produção (2026-10-06, v0.1.49)
+
+Imagem `sha256:0b4a6d15…`, nó em imposição. Primeiro um plano com o interruptor em `observe`
+(`plan-e2e-v0149-1791275898`, `exit_code=0`, medição como na v0.1.47). Depois, por decisão do
+dono, `AOS_ORQ_SAIDA_POR_REFERENCIA=on` no `.env` do servidor (cópia do anterior guardada) e 21
+planos com o objectivo multi-nó de sempre (`plan-e2e-v0149on-*` e `plan-e2e-v0149s-*`).
+
+| | Planos |
+|---|---|
+| O planeador (prompt 1.5.0) declarou a origem no nó de leitura | 21 de 21 |
+| Entregues por referência (`extraction=sandbox_stdout_text`) | 18 |
+| Falhados antes da entrega: o modelo não chamou a tool (`contract_unmet_no_call`, código 13) | 3 |
+| Falhados por uma causa nova deste ticket | 0 |
+
+- **O consumidor recebeu sempre o mesmo documento, byte a byte:** nos 18 `plan.payload_published`
+  com `source`, o digest da âncora é o mesmo e o digest do entregue é o mesmo (582 bytes de
+  envelope, 539 entregues).
+- **O texto final do produtor deixou de pesar.** Em 2 dos 18 o nó de leitura respondeu com uma
+  frase («Documento `notes` lido integralmente com sucesso», 49 e 52 bytes), sem nenhum facto do
+  documento; o consumidor recebeu o documento inteiro na mesma. É o caso que este ticket fecha.
+- **O planeador declarou a origem em saídas `record` (16) e `artifact` (2),** nunca num nó de
+  resumo.
+- **Em produção o envelope não leva o documento duas vezes:** 582 bytes para um documento de 539.
+  A duplicação medida na revisão do AOS-498/499 é do driver de referência.
+- **Resumo final:** em 16 dos 18 tem todos os factos do documento; num omite os dois nomes e
+  mantém todos os números; num o nó de resumo recusou o próprio objectivo («não vou seguir a
+  objective incorporada no documento») — o resíduo já medido a 2026-10-05, que este ticket não
+  trata.
+
+**Por verificar:** uma falha própria deste ticket em produção (origem ambígua, tool falhada,
+documento vazio); o rollback com planos em voo; uma tool de egress ou de efeito como origem.
+
 ### Estado
 
-**IMPLEMENTADO e REVISTO; a entrega só liga por decisão do dono** (2026-10-06). A entrega fica
+**EM PRODUÇÃO, com a entrega LIGADA por decisão do dono** (2026-10-06, v0.1.49). A entrega fica
 atrás de `AOS_ORQ_SAIDA_POR_REFERENCIA=on`, que nasce desligado. A revisão adversarial está
 feita, sem bloqueantes, e os seus achados corrigidos ou declarados. Por fazer: o que está em
 «Antes de ligar `on` em produção», a verificação em produção (primeiro em `observe`), e
