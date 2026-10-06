@@ -52,18 +52,76 @@ func modelProjectionOption(mode string) modelgateway.RuntimeAdapterOption {
 	return modelgateway.WithProjection(mode)
 }
 
+// A VERSÃO DA PROJECÇÃO NATIVA (AOS-504, emenda ao ADR-036 §2.4) — `AOS_MODEL_PROJECTION_VERSION`.
+//
+//   - `1.0.0` (por omissão) — a projecção de sempre, byte a byte;
+//   - `1.1.0` — cada segmento de uma mensagem `user` ou `tool` termina com a linha de fim
+//     `</kind>`, e o texto do protocolo é reescrito para o objectivo não se confundir com dados.
+//
+// A 1.1.0 entra DESLIGADA: o texto do protocolo é lido por todos os runs, e só passa a omissão
+// depois de medida numa série de planos em produção. A versão usada em cada turno fica em
+// `manifest.projection_version` do `turn.recorded`. Não muda o layout, o tail nem o
+// `prompt_hash`. Só tem efeito com `AOS_MODEL_PROJECTION=native`: em texto único não há
+// projecção, e a variável é validada mas não usada.
+
+// defaultModelProjectionVersion é a versão da projecção nativa de um nó que não define
+// AOS_MODEL_PROJECTION_VERSION.
+const defaultModelProjectionVersion = modelgateway.NativeProjectionVersion
+
+// ErrBadModelProjectionVersion — AOS_MODEL_PROJECTION_VERSION está definida com um valor fora do
+// vocabulário fechado. Fail-closed: o nó não arranca. Cair para uma das versões em silêncio
+// deixaria o operador a medir uma série de planos convencido de que o modelo recebia um texto de
+// protocolo e a receber o outro.
+var ErrBadModelProjectionVersion = errors.New("aos: AOS_MODEL_PROJECTION_VERSION invalida — valores aceites: 1.0.0 (a projeccao nativa de sempre; por omissao) ou 1.1.0 (linha de fim por segmento e texto de protocolo novo, AOS-504)")
+
+// parseModelProjectionVersionFromEnv lê AOS_MODEL_PROJECTION_VERSION. Vazia ⇒
+// [defaultModelProjectionVersion]. Um valor fora do vocabulário ⇒ [ErrBadModelProjectionVersion].
+// Sem normalização: `1.1` e `v1.1.0` não são `1.1.0`.
+func parseModelProjectionVersionFromEnv() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("AOS_MODEL_PROJECTION_VERSION"))
+	if raw == "" {
+		return defaultModelProjectionVersion, nil
+	}
+	version, err := modelgateway.ParseNativeProjectionVersion(raw)
+	if err != nil {
+		return "", fmt.Errorf("%w (veio %q)", ErrBadModelProjectionVersion, raw)
+	}
+	return version, nil
+}
+
+// modelProjectionVersionOption é a opção do adaptador RT→GW para a versão dada (já validada).
+func modelProjectionVersionOption(version string) modelgateway.RuntimeAdapterOption {
+	return modelgateway.WithProjectionVersion(version)
+}
+
 // modelProjectionBanner declara a projecção com que o nó fala com o modelo. Só sai quando há um
 // gateway composto (gatewayComposed): o modelo de referência não fala com provider nenhum.
 func modelProjectionBanner(gatewayComposed bool, mode string) []string {
+	return modelProjectionBannerFor(gatewayComposed, mode, defaultModelProjectionVersion)
+}
+
+// modelProjectionBannerFor é [modelProjectionBanner] com a versão da projecção nativa dada
+// (AOS-504). Com a versão por omissão as linhas são, byte a byte, as de antes; com a 1.1.0 a
+// linha das mensagens nativas declara-a e segue-se uma que diz o que ela muda e como se repõe a
+// de sempre. Em texto único a versão não se aplica, e uma 1.1.0 pedida é declarada sem efeito.
+func modelProjectionBannerFor(gatewayComposed bool, mode, version string) []string {
 	if !gatewayComposed {
 		return nil
 	}
 	if mode == modelgateway.ProjectionText {
-		return []string{
+		lines := []string{
 			"projeccao do pedido ao modelo (EPIC-06/AOS-490): TEXTO UNICO — AOS_MODEL_PROJECTION=text: o prompt materializado segue inteiro numa mensagem de utilizador (a forma anterior ao AOS-490); o modelo le as suas proprias tool calls como texto. Para mensagens nativas remova a variavel ou defina native",
 		}
+		if version != defaultModelProjectionVersion {
+			lines = append(lines, fmt.Sprintf("versao da projeccao nativa (EPIC-06/AOS-504): AOS_MODEL_PROJECTION_VERSION=%s SEM EFEITO — em texto unico nao ha projeccao nativa", version))
+		}
+		return lines
 	}
-	return []string{
-		fmt.Sprintf("projeccao do pedido ao modelo (EPIC-06/AOS-490): MENSAGENS NATIVAS (versao %s) — system/user/assistant com tool_calls/tool, derivadas do tail; aplica-se a runs no layout 1.4.0 (um run retomado na 1.3.0 segue em texto unico) e o modo de cada turno fica em manifest.projection do turn.recorded. O prompt_hash continua a ser o do tail canonico, nao o dos bytes enviados. AOS_MODEL_PROJECTION=text repoe o texto unico", modelgateway.NativeProjectionVersion),
+	lines := []string{
+		fmt.Sprintf("projeccao do pedido ao modelo (EPIC-06/AOS-490): MENSAGENS NATIVAS (versao %s) — system/user/assistant com tool_calls/tool, derivadas do tail; aplica-se a runs no layout 1.4.0 (um run retomado na 1.3.0 segue em texto unico) e o modo de cada turno fica em manifest.projection do turn.recorded. O prompt_hash continua a ser o do tail canonico, nao o dos bytes enviados. AOS_MODEL_PROJECTION=text repoe o texto unico", version),
 	}
+	if version != defaultModelProjectionVersion {
+		lines = append(lines, fmt.Sprintf("versao da projeccao nativa (EPIC-06/AOS-504): AOS_MODEL_PROJECTION_VERSION=%s — cada segmento das mensagens user e tool termina com a linha de fim </kind>, e o texto do protocolo (a mensagem system) e o da %s; o layout, o tail e o prompt_hash nao mudam, e a versao de cada turno fica em manifest.projection_version. A mensagem system muda: os tokens servidos de cache de prefixo caem na troca. Remova a variavel ou defina %s para repor a projeccao de sempre", version, version, defaultModelProjectionVersion))
+	}
+	return lines
 }
