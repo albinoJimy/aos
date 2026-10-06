@@ -243,6 +243,19 @@ func (p *PlanRecorder) RecordOutputSourceDeclared(ctx context.Context, payload p
 	return p.recorder.RecordOutputSourceDeclared(ctx, payload, producer)
 }
 
+// RecordNodeAttemptStarted EMITE o facto de que uma nova tentativa do run de um nó do plano vai
+// ser pedida ao nó (ADR-039, AOS-503). Fino, como os outros: a validação é a de
+// `NewNodeAttemptStarted`, e a escrita passa pelo appender FENCED.
+func (p *PlanRecorder) RecordNodeAttemptStarted(ctx context.Context, payload plannerevents.NodeAttemptStartedPayload, producer plan.Node) (uint64, error) {
+	if payload.PlanID == "" {
+		payload.PlanID = p.planID
+	}
+	if payload.PlanID != p.planID {
+		return 0, fmt.Errorf("%w: tentativa de no para %q, emissor amarrado a %q", ErrForeignPlan, payload.PlanID, p.planID)
+	}
+	return p.recorder.RecordNodeAttemptStarted(ctx, payload, producer)
+}
+
 // BranchJournal devolve a implementação de [plandispatch.BranchJournal] sobre este
 // emissor: o registo append-only das decisões de ramo DO DESPACHANTE.
 //

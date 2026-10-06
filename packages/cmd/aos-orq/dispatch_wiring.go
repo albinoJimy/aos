@@ -327,6 +327,13 @@ func composeEDespachar(
 		ex.medicao = exe.medicao
 		ex.medirOrigem, ex.origemAnunciada = exe.medirOrigem, exe.origemAnunciada
 		ex.entregaActiva = exe.entregaActiva // AOS-501: a entrega por referência das saídas declaradas
+		// AOS-503: a nova tentativa. O prazo é o do `serve`: uma tentativa não começa depois dele.
+		ex.nt = exe.novaTentativa
+		ex.nt.prazo = time.Now().Add(exe.prazo)
+		defer ex.fecharMedicaoDasTentativas(func(nodeID string) bool {
+			st, ok := g.DAG().State(nodeID)
+			return ok && st == arstate.Complete
+		})
 		sink.exec = ex
 		var emExecucao []string
 		for _, n := range payload.Nodes {

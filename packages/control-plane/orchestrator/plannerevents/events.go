@@ -91,6 +91,11 @@ const (
 	// facto que diz, no log do plano e não só na memória de quem submeteu, que aquele run foi
 	// pedido por referência — e é dele que quem recolhe decide se pode entregar por referência.
 	EventOutputSourceDeclared = "plan.output_source_declared"
+	// EventNodeAttemptStarted — o executor vai pedir ao nó uma NOVA TENTATIVA do run de um nó do
+	// plano, porque a anterior terminou sem chamar a tool (ADR-039, AOS-503). É o facto durável
+	// de que a tentativa começou: escreve-se ANTES do pedido ao nó, um por tentativa, e é dele que
+	// uma retoma lê em que tentativa cada nó ficou — sem a repetir nem a saltar.
+	EventNodeAttemptStarted = "plan.node_attempt_started"
 	// EventCapabilityGapOpened — um nó abriu um gap de capacidade (skill em falta).
 	EventCapabilityGapOpened = "plan.capability_gap_opened"
 	// EventCapabilityGapResolved — o gap foi ratificado e resolvido (AOS-096).
@@ -118,6 +123,7 @@ var canonicalLifecycle = []string{
 	EventVerdictRecorded,
 	EventPayloadPublished,
 	EventOutputSourceDeclared,
+	EventNodeAttemptStarted,
 	EventBranchDecided,
 	EventCapabilityGapOpened,
 	EventCapabilityGapResolved,
@@ -999,6 +1005,67 @@ func NewOutputSourceDeclared(p OutputSourceDeclaredPayload, producer plan.Node) 
 		Binding:        p.Binding,
 		ContractDigest: plan.OutputDigest(producer, contrato),
 	}, nil
+}
+
+// AttemptReason é a razão por que uma nova tentativa de um nó do plano começou. Enum FECHADO, e
+// de um só valor: a recuperação só existe para o run que terminou sem pedir tool nenhuma.
+type AttemptReason string
+
+// AttemptReasonContractUnmetNoCall — o run anterior fechou `failed` com a razão
+// `contract_unmet_no_call` do veredicto do kernel do nó, e sem nenhuma tool call pedida.
+const AttemptReasonContractUnmetNoCall AttemptReason = "contract_unmet_no_call"
+
+// MaxNodeAttempt é a maior tentativa que o facto admite: a terceira (duas a mais), a decisão do
+// dono de 2026-10-06.
+const MaxNodeAttempt = 3
+
+// maxRetryOfBytes é o tecto do id do run anterior no facto.
+const maxRetryOfBytes = 512
+
+// NodeAttemptStartedPayload — corpo de `plan.node_attempt_started` (ADR-039, AOS-503): o
+// executor vai pedir ao nó a tentativa `attempt` do run de `node_id`; a anterior, `retry_of`,
+// terminou pela razão `reason`.
+//
+// Escreve-se ANTES do pedido ao nó. Um facto sem run (o processo morreu entre os dois) não gasta
+// nada: quem retoma lê o estado do id da tentativa e, se o nó não o conhece, submete-a. O
+// contrário — um run de tentativa sem facto — deixava quem retoma a seguir o run errado.
+//
+// SEM CONTEÚDO. Ids, um inteiro e uma razão de vocabulário fechado. O `retry_of` é um id de
+// run composto pelo executor a partir do id do plano e do nó; nunca texto de um modelo.
+type NodeAttemptStartedPayload struct {
+	PlanID  string        `json:"plan_id"`
+	NodeID  string        `json:"node_id"`
+	Attempt int           `json:"attempt"`
+	RetryOf string        `json:"retry_of"`
+	Reason  AttemptReason `json:"reason"`
+}
+
+// ErrInvalidNodeAttempt — o facto da tentativa proposto não tem a forma admitida.
+var ErrInvalidNodeAttempt = errors.New("plannerevents: tentativa de no invalida")
+
+// NewNodeAttemptStarted valida o facto contra o NÓ do documento aprovado e devolve o payload
+// pronto a apensar: a tentativa está em 2..[MaxNodeAttempt], a razão é a do enum, o nó fornecido
+// é o do facto e não é um verificador, e o id do run anterior tem a forma de um id.
+func NewNodeAttemptStarted(p NodeAttemptStartedPayload, producer plan.Node) (NodeAttemptStartedPayload, error) {
+	if p.PlanID == "" {
+		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: plan_id vazio", ErrInvalidNodeAttempt)
+	}
+	if !plan.ValidNodeID(p.NodeID) || producer.NodeID != p.NodeID {
+		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: node_id fora da grammar, ou o no fornecido nao e o do facto", ErrInvalidNodeAttempt)
+	}
+	if producer.IsVerifier() {
+		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: um verificador nao tem nova tentativa", ErrInvalidNodeAttempt)
+	}
+	if p.Attempt < 2 || p.Attempt > MaxNodeAttempt {
+		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: tentativa fora de 2..%d", ErrInvalidNodeAttempt, MaxNodeAttempt)
+	}
+	if p.Reason != AttemptReasonContractUnmetNoCall {
+		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: razao fora do enum", ErrInvalidNodeAttempt)
+	}
+	if len(p.RetryOf) > maxRetryOfBytes || !validStepID(p.RetryOf) {
+		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: retry_of sem a forma de um id de run", ErrInvalidNodeAttempt)
+	}
+	return p, nil
 }
 
 // ErrInvalidPayloadRef é devolvido quando a referência proposta não conforma ao
