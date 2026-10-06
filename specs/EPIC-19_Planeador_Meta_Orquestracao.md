@@ -10342,7 +10342,11 @@ mudança entra atrás de um interruptor próprio, desligado por omissão, com um
       primeiro o estado do id da tentativa: se o run existe, segue-o; se o nó responde 404,
       submete. Nunca reenvia às cegas. Testes em que o primeiro `serve` acaba entre o facto e a
       submissão, e entre a submissão e a recolha, e outro processo continua de onde ficou sem
-      gastar uma tentativa a mais.
+      gastar uma tentativa a mais. Um run que este processo não submeteu só se segue depois de
+      conferida a origem que o nó declara (`plan_attempt`: pedido, plano, nó, tentativa e
+      geração); sem ela, ou com outra, o nó fecha `failed` com
+      `tentativa_recusada=run_de_outra_origem`. Um facto que não possa ser gravado fecha o nó com
+      `tentativa_recusada=facto_invalido`.
 - [ ] **Orçamento.** Cada tentativa conta para a quota do submissor do plano. Um 429 na submissão
       de uma tentativa pára as tentativas: o nó fecha `failed` com a causa original e
       `tentativa_recusada=quota`, e o plano **não** sai com o código 8. O mesmo para o prazo do
