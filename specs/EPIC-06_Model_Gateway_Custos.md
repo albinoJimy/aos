@@ -1554,9 +1554,6 @@ não está seleccionada em lado nenhum: `AOS_MODEL_PROJECTION_VERSION` ausente �
 
 ## AOS-505 — Rota sob governação: o proxy deixa de descartar parâmetros e o modelo que serviu cada turno é comparado com o esperado
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este bloco só MENCIONA um ADR que já existe (ADR-036, como contexto do contrato do gateway): não é implementado aqui. Se a implementação precisar de um ADR ou de uma emenda, o PR da implementação retira este marcador e declara-o. -->
-
 | Campo | Valor |
 |---|---|
 | Epic | EPIC-06 |
@@ -1567,7 +1564,7 @@ não está seleccionada em lado nenhum: `AOS_MODEL_PROJECTION_VERSION` ausente �
 | Dependências | AOS-490, AOS-491; decisão do dono para cada mudança de configuração de produção |
 | Bloqueia | — |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `docs/reports/desenho-a1-recuperacao-2026-10-06.md` §6, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1), `deploy/server/litellm/config.yaml`, `deploy/server/README.md`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/platform/model-gateway/port/port.go` |
+| Documentos de referência | ADR-036 §2.8 (emenda deste ticket), `docs/reports/desenho-a1-recuperacao-2026-10-06.md` §6, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1), `deploy/server/litellm/config.yaml`, `deploy/server/README.md`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/platform/model-gateway/port/port.go` |
 
 ### Contexto
 
@@ -1604,56 +1601,98 @@ O proxy deixa de descartar parâmetros em silêncio; o nome que o nó pede ao pr
 modelo real; e o modelo que serviu cada turno é comparado com o esperado e fica no registo. Uma
 troca de modelo por baixo é detectada e visível.
 
+### Medição de 2026-10-06 — o que o proxy expõe sobre o modelo real
+
+**Como foi medido, e porque não foi um plano pela fila.** O primeiro critério pedia um plano real
+pela fila. O nó não guarda cabeçalhos de resposta em lado nenhum, pelo que um plano não os mostra.
+Por decisão do dono de 2026-10-06, mediu-se **localmente**, com a imagem de produção do proxy
+pelo digest — `ghcr.io/berriai/litellm@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63`,
+`litellm` 1.96.2 — à frente de **providers falsos**. Nenhum contacto com produção nem com o
+provider real.
+
+| O que se leu | O que é | Muda com a troca de configuração? |
+|---|---|---|
+| `model` do corpo | **Sempre o nome pedido** — o proxy carimba-o, com e sem stream. O que o provider devolveu é descartado | Não. **Não serve** |
+| `x-litellm-model-name` | O `litellm_params.model` do deployment (ex.: `openai/kimi-for-coding`) | Sim, com a troca de modelo |
+| `x-litellm-model-api-base` | O `api_base` do deployment | Sim, com a troca de endpoint |
+| `x-litellm-model-id` | SHA-256 **sem sal** de todos os `litellm_params`, **incluindo a `api_key`** | Sim, com qualquer mudança — e com uma rotação de chave. **É derivado de segredo: o nó não o lê, não o grava, não o regista e não o põe em métricas** |
+| `x-litellm-model-group` | O nome pedido | Não |
+
+`drop_params` a `true` e a `false` não deu diferença para um `openai/<nome>` com `api_base`
+próprio: o proxy reencaminha tudo (`tool_choice`, `top_k`, uma chave inventada), e quem aceita ou
+recusa é o provider. Em produção o nome `gpt-4o-mini` vai para `openai/kimi-for-coding` e `gpt-4o`
+para `openai/k3`, no mesmo `api_base`.
+
+**Conclusão do critério:** há sinal que distingue o modelo configurado do nome pedido, nos
+cabeçalhos; a comparação por turno prova a detecção de uma **troca de configuração no proxy**.
+
+**Por confirmar** (não medido): o que o provider real devolve sobre si próprio, e se o proxy de
+produção — que corre a etiqueta `main-stable`, não o digest medido — emite os mesmos cabeçalhos. O
+segundo lê-se na verificação em `observe`: `nao_reportado` a zero.
+
 ### Critérios de Aceitação
 
-- [ ] **Antes de qualquer código:** um pedido de verificação (um plano real pela fila) regista no
-      ticket o que o proxy de produção expõe sobre o modelo real — o campo `model` da resposta e
-      os cabeçalhos de resposta —, com o proxy na versão que está em produção. Se nada do que o
-      proxy expõe distinguir o modelo real do nome pedido, a comparação por turno não prova a
-      detecção: pára-se e reporta-se antes de implementar o resto.
-- [ ] `drop_params: false` em `deploy/server/litellm/config.yaml`, com o comentário a dizer
-      porquê. Um plano de verificação pela fila **antes** e outro **depois** da mudança, com o
-      mesmo objectivo: os dois terminam com o mesmo código, e o log do proxy não mostra nenhum
-      pedido recusado por parâmetro. Rollback de uma linha, escrito no runbook.
-- [ ] Teste que prende o que o adaptador envia: o corpo do pedido ao provider (ficheiro de fio)
-      tem exactamente os campos de hoje, e nenhum parâmetro opcional. É o que sustenta que a
-      mudança anterior não altera nenhum pedido.
-- [ ] O nome que o nó pede ao proxy passa a ser o do modelo real. Isto muda a allowlist assinada
-      do gateway (alteração de política, com a assinatura e a ratificação de sempre), a fonte de
-      preço e a escada de tiers onde o nome apareça, e o `model_name` do proxy. Teste com o nome
-      real, incluindo os caracteres que ele tiver (`.`, `/`, `-`), em tudo o que compõe nomes a
-      partir do modelo, a começar pelo `stream_id` de admissão (AOS-425).
-- [ ] Ordem de entrada sem janela de recusa: primeiro o proxy serve os dois nomes; depois o nó
-      passa a pedir o novo; só então o nome antigo sai do proxy e da allowlist. Rollback pela
-      ordem inversa. Os eventos, capturas e selos gravados com o nome antigo continuam legíveis e
-      reproduzem-se sem divergência (teste de replay sobre uma captura anterior).
-- [ ] Um perfil mínimo da rota, em código: nome pedido, modelo esperado, classe de wire e
-      capacidades declaradas. O digest do perfil fica no manifesto de cada turno (campo aditivo:
-      quem lê manifestos antigos não parte). O perfil não contém segredos nem endereços.
-- [ ] O `served_model_id` do manifesto passa a guardar o modelo real, lido de onde o primeiro
-      critério mostrou que o proxy o expõe. Quando o proxy não o envia, o campo fica vazio e
-      conta como não reportado — nunca se preenche com o nome pedido.
-- [ ] O gateway compara, em cada turno, o modelo servido com o esperado do perfil. Interruptor
-      próprio com três valores: `off` (omissão), `observe` (evento de variância e contador, sem
-      mudar o turno) e `enforce` (o turno falha de forma atribuível, com causa própria em
-      vocabulário fechado). Um valor inválido recusa o arranque.
-- [ ] Com o interruptor em `off` e a configuração de antes, o binário é byte a byte o anterior,
-      provado por comparação com a base (corpos dos pedidos ao provider, eventos, manifestos e
-      métricas), com uma diferença declarada: o campo aditivo do perfil, se não puder ficar
-      ausente em `off`.
-- [ ] Métricas no `/metrics` do nó, em vocabulário fechado: turnos por resultado da comparação
-      (`igual`, `diferente`, `nao_reportado`). Regra de alerta sobre `diferente` maior do que
-      zero. O nome do modelo servido só entra em etiquetas se vier de um conjunto fechado
-      (o perfil); um nome fora dele conta como `outro`.
-- [ ] **Uma troca de modelo por baixo é detectada.** Num ambiente de teste com o proxy real
-      (a mesma imagem de produção) à frente de dois providers falsos, troca-se o modelo por baixo
-      do nome a meio de um plano: o turno seguinte regista a variância (evento, contador e
-      alerta) em `observe`, e falha com causa em `enforce`. O replay desse run devolve o mesmo
-      modelo servido e a mesma variância.
-- [ ] A captura do turno guarda o modelo servido e o replay devolve-o igual; uma captura anterior
-      a este ticket reproduz-se sem divergência de `prompt_hash` nem de trajectória.
-- [ ] O `deploy/server/README.md` e o cabeçalho do `config.yaml` deixam de dizer que o
-      roteamento é livre por baixo do nome: descrevem o que fica governado e o que não fica.
+- [x] **Antes de qualquer código:** registar o que o proxy de produção expõe sobre o modelo real
+      — o campo `model` da resposta e os cabeçalhos de resposta —, com o proxy na versão que está
+      em produção. **Feito por medição local** com a imagem de produção e providers falsos, por
+      decisão do dono, em vez de um plano pela fila (secção acima). O proxy expõe o que distingue
+      o modelo configurado; o que o provider real devolve fica por confirmar.
+- [ ] `drop_params: false`, com o comentário a dizer porquê; um plano de verificação **antes** e
+      outro **depois**; rollback de uma linha no runbook. **No repositório:** a semente
+      `deploy/server/litellm/config.yaml` passa a `false`, com o porquê e o que foi medido, e o
+      runbook tem os passos e o rollback. **Por fazer, por decisão do dono:** a mudança no
+      `config.yaml` do servidor (o deploy nunca o reescreve) e os dois planos.
+- [x] Teste que prende o que o adaptador envia: o corpo do pedido ao provider tem exactamente os
+      campos de hoje (`model`, `messages` e, com tools, `tools`), e nenhum parâmetro opcional —
+      nos três modos do interruptor (`TestAOS505_CorpoDoPedido_SoOsCamposDeHoje`; no nó composto,
+      os pedidos são os goldens do AOS-490 em `off` e em `observe`).
+- [ ] O nome que o nó pede ao proxy passa a ser o do modelo real. **No repositório:** os perfis
+      dos nomes reais (`kimi-for-coding`, `k3`) estão no binário, e o nó composto corre com eles
+      e com nomes com `/` e `.` por um bundle de allowlist externo assinado com uma chave de teste
+      — pedido, `model_id`, selo de governação, `stream_id` de admissão
+      (`TestAOS505_NomeRealDoModelo_EmTudoOQueCompoeNomes`, `TestAOS505_No_NomeRealDoModelo`). Um
+      nome com `.` numa escada de tiers recusa o arranque nomeando o modelo (AOS-425): é o limite
+      conhecido, e fica no runbook. **Por fazer, por decisão do dono:** a allowlist assinada (a
+      embebida só se re-assina com a chave custodiada, que este trabalho não tem nem contornou) e
+      o `model_name` do proxy. A fonte de preço e a escada de tiers não têm o nome: produção não
+      monta tabela de preços nem declara escada.
+- [ ] Ordem de entrada sem janela de recusa, e rollback pela inversa. **No repositório:** o
+      runbook (`deploy/server/README.md`, «Rota do modelo sob governação», passo 3). O replay
+      compara cada turno com o `model_id` que esse turno gravou, pelo que o que foi gravado com o
+      nome antigo se reproduz. **Por fazer:** executar, e o teste de replay de um run de produção
+      gravado antes da troca.
+- [x] Um perfil mínimo da rota, em código: nome pedido, modelo esperado, classe de wire e
+      capacidades declaradas (`route.go`). O digest fica em `manifest.model.route_profile_digest`
+      de cada turno comparado — campo aditivo e `omitempty`. O perfil não contém segredos nem
+      endereços: o host esperado do endpoint é configuração do nó.
+- [x] O `served_model_id` do manifesto passa a guardar o modelo que o proxy declarou
+      (`x-litellm-model-name`), **num turno comparado**. Quando o proxy não o envia, o campo fica
+      ausente e o turno conta como `nao_reportado` — nunca se preenche com o nome pedido nem com
+      o `model` do corpo. Com o interruptor em `off` o campo é o de antes.
+- [x] O gateway compara, em cada turno, o modelo servido com o esperado do perfil.
+      `AOS_MODEL_ROUTE_GOVERNANCE`: `off` (omissão), `observe` (o resultado no `turn.recorded`,
+      um selo de variância no audit de governação do gateway e o contador, sem mudar o turno) e
+      `enforce` (o turno falha com causa em vocabulário fechado). Um valor inválido recusa o
+      arranque; com a governação ligada, um modelo sem perfil também.
+- [x] Com o interruptor em `off`, o nó é byte a byte o anterior, provado contra goldens medidos na
+      base do ticket (`TestAOS505_No_Off_SaoOsBytesDaBase`): corpos dos pedidos, `turn.recorded`,
+      tipos e ordem dos eventos, parte em claro das capturas, famílias do `/metrics`. **Sem
+      diferença declarada:** o campo do perfil fica ausente em `off`.
+- [x] Métricas no `/metrics` do nó: `aos_model_route_checks_total{result,served}`, com `result`
+      em `igual`, `diferente`, `nao_reportado`. O modelo servido só entra no rótulo se for um dos
+      modelos esperados dos perfis; outro texto conta como `outro`. A regra de alerta sobre
+      `diferente` maior do que zero é o `deploy/server/alerta-rota.sh`.
+- [x] **Uma troca de modelo por baixo é detectada**, com o proxy real: a imagem de produção à
+      frente de dois providers falsos, e a configuração trocada por baixo do nome a meio de um run
+      — o modelo, e depois o endpoint. O turno seguinte regista a variância em `observe` e falha
+      com causa em `enforce` (`make ci-rota-live`; evidência no registo abaixo). O replay devolve
+      o mesmo modelo servido e a mesma variância: provado no nó composto, com os mesmos
+      cabeçalhos em httptest (`TestAOS505_No_Observe_TrocaPorBaixoAMeioDoRun`).
+- [x] A captura de um turno comparado guarda o modelo servido e o replay devolve-o igual; uma
+      captura anterior a este ticket descodifica com a rota vazia e reproduz-se sem divergência
+      de `prompt_hash` nem de trajectória (o gate `replay` continua verde).
+- [x] O `deploy/server/README.md` e o cabeçalho do `config.yaml` deixam de dizer que o roteamento
+      é livre por baixo do nome: descrevem o que fica governado e o que não fica.
 - [ ] Revisão adversarial independente com mutações, antes da fusão.
 - [ ] Verificação em produção, em `observe`: numa série de pelo menos 20 planos, todos os turnos
       têm o modelo servido reportado e igual ao esperado (`diferente` e `nao_reportado` a zero),
@@ -1669,9 +1708,86 @@ troca de modelo por baixo é detectada e visível.
 - Assinar o `config.yaml` do proxy.
 - Mais de um modelo por nó.
 
+### O que isto detecta, e o que não detecta
+
+- **Detecta** uma troca de **configuração no proxy**: outro modelo por baixo do mesmo nome
+  pedido, ou outro endpoint (este só com `AOS_MODEL_ROUTE_API_HOST` definida).
+- **Não detecta** uma troca feita pelo **provider** por trás do mesmo nome e do mesmo endpoint:
+  os cabeçalhos dizem o que o proxy está configurado para pedir, não o que o provider serviu.
+- **Os cabeçalhos não são atestação.** São emitidos pelo proxy sem prova de origem, e valem
+  enquanto o canal entre o nó e o proxy for de confiança.
+- **O streaming e os embeddings** não são comparados.
+
+### Passos de produção — por decisão do dono
+
+Runbook em `deploy/server/README.md`, «Rota do modelo sob governação». Nenhum é feito pelo deploy.
+
+1. `drop_params: false` no `config.yaml` do servidor, com um plano de verificação antes e outro
+   depois. Rollback de uma linha.
+2. `AOS_MODEL_ROUTE_GOVERNANCE=observe` e `AOS_MODEL_ROUTE_API_HOST`, o cron do `alerta-rota.sh`, e
+   a série de pelo menos 20 planos.
+3. A troca do nome pedido pelo nome real: o proxy serve os dois nomes, a allowlist é re-assinada
+   com os dois, o nó passa a pedir o novo, e só então o antigo sai. **Exige a chave custodiada da
+   allowlist** (ou um bundle externo assinado pelo operador).
+4. A passagem a `enforce`.
+
+### Registo da implementação (2026-10-07)
+
+**O que entrou.**
+
+- Contrato da porta do gateway `1.4.0`: `port.ChatResponse.Route` (`port.ServedRoute`), fora do
+  wire. O adaptador HTTP lê os dois cabeçalhos na chamada síncrona de chat.
+- `route.go` do gateway: o perfil da rota e o seu digest, a comparação, o interruptor, o erro de
+  imposição, o rótulo fechado do modelo servido. `allowlist.Recorder.SealRouteVariance` sela a
+  variância no audit de governação, com o run e o passo.
+- Kernel: `ModelResponse.RouteCheck` e `RouteProfileDigest`; `route_check` e
+  `manifest.model.route_profile_digest` no `turn.recorded`; `served_model`, `route_check` e
+  `route_profile_digest` na captura de um turno comparado. O kernel fecha o vocabulário e a forma
+  do digest à entrada.
+- Nó: `AOS_MODEL_ROUTE_GOVERNANCE`, `AOS_MODEL_ROUTE_API_HOST`, a linha do banner e
+  `aos_model_route_checks_total`.
+- `deploy/server/alerta-rota.sh`, `scripts/ci/rota-live.sh` (`make ci-rota-live`), a semente do
+  LiteLLM e o runbook.
+
+**Onde a comparação acontece.** No `Gateway.Chat`, depois de o custo da chamada estar contado, e
+sobre o nome que o gateway de facto pediu ao proxy (o resolvido pelo roteamento). O host do
+endpoint é retirado da resposta antes de qualquer outro passo e não sai do gateway.
+
+**O «evento de variância».** Em `observe` são dois registos duráveis: o `route_check: diferente`
+do `turn.recorded`, no stream do run, e um selo no audit de governação do gateway (partição
+`modelgw-gov:<board>`), com o run, o passo, o modelo esperado e o servido. Em `enforce` o turno
+falha e não há `turn.recorded` desse turno: fica o selo, com decisão `deny`. Não se criou um tipo
+novo de evento no stream do run.
+
+**Como se prova «`off` são os bytes de hoje».** O run de referência do AOS-490 foi corrido na
+base do ticket (`ce189122`), antes de qualquer alteração, com o provider de ensaio a emitir os
+cabeçalhos do proxy; o que ele gravou está em `aos505_goldens_da_base_test.go`. O teste repete o
+run com a variável ausente, vazia e em `off`, com o host esperado definido e o proxy a declarar
+outro modelo, e compara: os dois pedidos (contra os goldens do AOS-490), os dois `turn.recorded`
+byte a byte, os 18 tipos de evento pela ordem, a parte em claro das duas capturas e as chaves do
+seu payload, e as 37 famílias do `/metrics`. No gateway, o audit tem os mesmos registos que sem
+cabeçalhos, e nem o observador nem o sink de variância são chamados.
+
+**A troca por baixo, com o proxy real (2026-10-07).** `bash scripts/ci/rota-live.sh`, com a
+imagem de produção pelo digest: três arranques do proxy; partida `openai/k3` no provider A
+(`igual`); (i) `openai/outro-nome` no mesmo endpoint — `diferente`, causa `modelo_diferente`;
+(ii) `openai/k3` no provider B — `diferente`, causa `endpoint_diferente`. Em `observe` o turno
+seguiu; em `enforce` falhou com a causa. Um selo por variância, do turno certo; e nem o
+identificador do deployment de cada configuração, nem o endereço dos providers, nem as chaves
+aparecem nos selos, nas observações ou nos eventos de variância.
+
+**Uma rota sem perfil** conta como `diferente` (causa `rota_sem_perfil`) e falha em `enforce`:
+está fora do que é governado. O arranque recusa-a para o modelo do nó; só é alcançável com uma
+escada de tiers, que o nó de referência não declara.
+
+**Por fazer.** A revisão adversarial independente; os passos de produção, por decisão do dono; e
+confirmar contra o provider real o que ele devolve sobre si próprio.
+
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-07), desligado por omissão; por rever e por verificar em produção.**
+`AOS_MODEL_ROUTE_GOVERNANCE` ausente é `off`. Os passos de produção (o `config.yaml` do servidor,
+`observe`, a troca do nome pedido e `enforce`) ligam-se por decisão do dono.
 
 ---
 
@@ -1689,3 +1805,4 @@ troca de modelo por baixo é detectada e visível.
 | 1.7 | 2026-10-04 | AOS-490: verificação em produção da v0.1.45 (projecção nativa aceite pelo provider, tokens em cache registados) | Equipa AOS |
 | 1.8 | 2026-10-04 | +AOS-491: o motivo de paragem do modelo chega ao runtime, à captura e ao registo do turno (fase A0 da arquitectura-alvo da fronteira) | Equipa AOS |
 | 1.9 | 2026-10-06 | +AOS-504 e +AOS-505 (fase A1, recuperação): projecção nativa 1.1.0 (fim de segmento inforjável e texto do protocolo reescrito, desligada por omissão) com o canário de medição da recusa do objectivo; e a rota sob governação (o proxy deixa de descartar parâmetros, o nome pedido é o do modelo real, o modelo servido é comparado por turno) | Equipa AOS |
+| 2.0 | 2026-10-07 | AOS-505 implementado, desligado por omissão: medição local do que o proxy expõe (o `model` do corpo é o nome pedido; o modelo e o endpoint configurados vêm em cabeçalhos), perfil da rota em código, comparação por turno com `AOS_MODEL_ROUTE_GOVERNANCE` (`off`, `observe`, `enforce`), contrato da porta `1.4.0`, emenda ao ADR-036 §2.8; os passos de produção ficam por decisão do dono | Equipa AOS |

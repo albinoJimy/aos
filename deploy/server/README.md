@@ -840,6 +840,133 @@ lê: o planeador dele fala com o modelo com mensagens `system` e `user` própria
 
 ---
 
+### Rota do modelo sob governação — `AOS_MODEL_ROUTE_GOVERNANCE` (AOS-505)
+
+O nó governa **que nome** se pode pedir ao LiteLLM (a allowlist assinada). O que esse nome
+significa — que modelo e que endpoint o servem — decide-se em `litellm/config.yaml`, que **não é
+assinado**. Até aqui uma troca nesse ficheiro não deixava rasto nenhum: o `served_model_id` de
+cada turno era o nome pedido, porque o LiteLLM carimba o campo `model` da resposta com ele.
+
+Com a governação ligada, o nó compara em cada turno o que o LiteLLM **declara** ter servido com o
+**perfil da rota**, que vive no código do nó:
+
+| Nome pedido (`AOS_MODEL_NAME`) | Modelo esperado (`litellm_params.model`) |
+|---|---|
+| `gpt-4o-mini` | `openai/kimi-for-coding` |
+| `gpt-4o` | `openai/k3` |
+| `kimi-for-coding` | `openai/kimi-for-coding` |
+| `k3` | `openai/k3` |
+
+| Valor | O que o nó faz |
+|---|---|
+| *(vazio)* ou `off` | Nada: pedidos, eventos, manifestos, capturas e `/metrics` são byte a byte os de antes |
+| `observe` | Compara cada turno. Grava `route_check` (`igual`, `diferente`, `nao_reportado`) no `turn.recorded`; o `served_model_id` passa a ser o modelo que o LiteLLM declarou (ausente se não o declarou); o digest do perfil fica em `manifest.model.route_profile_digest`. Uma variância é selada no audit de governação do gateway e contada. **O turno segue** |
+| `enforce` | O mesmo registo, e um turno cuja rota não se prove igual à do perfil — diferente **ou** não reportada — **falha**, com causa em vocabulário fechado (`modelo_diferente`, `modelo_nao_reportado`, `endpoint_diferente`, `endpoint_nao_reportado`, `rota_sem_perfil`) |
+
+**O que fica governado, e o que não fica.**
+
+- **Detecta:** uma troca de **configuração no LiteLLM** — outro `litellm_params.model` por baixo
+  do mesmo nome, ou outro `api_base` (este, só com `AOS_MODEL_ROUTE_API_HOST` definida). Provado
+  com a imagem de produção do LiteLLM à frente de dois providers falsos (`make ci-rota-live`).
+- **Não detecta:** uma troca feita pelo **provider** por trás do mesmo nome e do mesmo endpoint.
+  O nó lê o que o LiteLLM está configurado para pedir, não o que o provider serviu.
+- **Não é atestação.** Os cabeçalhos são emitidos pelo LiteLLM sem prova de origem; valem
+  enquanto o canal entre o nó e o LiteLLM for de confiança (a rede interna do compose, com TLS).
+- **O `litellm/config.yaml` continua sem assinatura.**
+- **O que o provider real devolve sobre si próprio não foi medido.** A medição foi local, com a
+  imagem de produção (`litellm` 1.96.2, pelo digest) contra providers falsos.
+
+**O que o nó lê e o que nunca lê.** Lê `x-litellm-model-name` e `x-litellm-model-api-base`, e do
+segundo só o host. **Não lê `x-litellm-model-id`**: é um SHA-256 sem sal de todos os parâmetros do
+deployment, incluindo a chave do provider. Não o ponhas num log nem num painel por tua conta.
+
+**Onde se vê.**
+
+- `route_check` e `manifest.model.served_model_id` do `turn.recorded` de cada turno.
+- `/metrics`: `aos_model_route_checks_total{result,served}`. `served` é um conjunto fechado — os
+  modelos esperados dos perfis, `outro` e `nao_reportado` —; o texto que o LiteLLM declarou nunca
+  chega a um rótulo. A família **só existe** com a governação ligada.
+- O audit de governação do gateway (`AOS_MODEL_AUDIT_PATH`, partição `modelgw-gov:<board>`): um
+  selo por variância, com o run, o passo, o modelo esperado e o servido.
+- No arranque, a linha `rota do modelo sob governacao` (não sai com `off`).
+
+**O alerta** — [`alerta-rota.sh`](alerta-rota.sh), no molde do `alerta-ancora.sh` e com o mesmo
+tópico ntfy: avisa quando a soma de `result="diferente"` é maior do que zero. O contador é por
+processo e só sobe: fica em alerta até o nó reiniciar. Não avisa por `nao_reportado` nem com a
+família ausente (governação desligada). Instala-se como os outros:
+
+```
+# como aos: crontab -e  →  */15 * * * * /bin/bash /opt/aos/alerta-rota.sh >/dev/null 2>&1
+bash /opt/aos/alerta-rota.sh        # «ok: turnos comparados desde o arranque do nó: N iguais, 0 diferentes, 0 não reportados»
+```
+
+#### Passos de produção — cada um liga-se por decisão do dono
+
+Nenhum deles é feito pelo deploy. O `litellm/config.yaml` do servidor é do operador: o deploy
+nunca o reescreve (o do repositório é só a semente de uma instalação nova).
+
+**1. `drop_params: false` no LiteLLM.** Um parâmetro que o provider não suporte passa a ser erro
+visível em vez de descarte silencioso. O nó não envia hoje nenhum parâmetro opcional (só `model`,
+`messages` e `tools` — preso por teste), e foi medido que, para `openai/<nome>` com `api_base`
+próprio, o LiteLLM 1.96.2 reencaminha tudo com `true` ou com `false`: não se espera diferença.
+
+```
+# antes: um plano de verificação pela fila; anota o código de saída
+# em /opt/aos/litellm/config.yaml:   drop_params: false
+docker compose -f docker-compose.prod.yml up -d --force-recreate litellm
+# depois: o mesmo plano, com o mesmo objectivo; tem de terminar com o mesmo código
+docker compose -f docker-compose.prod.yml logs --since 15m litellm | grep -ci 'UnsupportedParams'   # 0
+```
+
+O `grep` é só o primeiro olhar: lê as linhas do `litellm` desse intervalo e confirma que nenhum
+pedido foi recusado por um parâmetro.
+
+Rollback, uma linha: repõe `drop_params: true` e recria o `litellm`.
+
+**2. Ligar a observação.** No `.env`: `AOS_MODEL_ROUTE_GOVERNANCE=observe` e
+`AOS_MODEL_ROUTE_API_HOST=<host do api_base do config.yaml>` (só o host: `api.kimi.com`), e
+recria o nó. Confirma a linha do banner e instala o cron do `alerta-rota.sh`. Critério do ticket:
+numa série de pelo menos **20 planos**, todos os turnos com `result="igual"` — `diferente` e
+`nao_reportado` a **zero** — e a taxa de planos falhados sem subir em relação à série anterior.
+Recuo: remove as duas variáveis e recria o nó.
+
+Se `nao_reportado` não ficar a zero, o LiteLLM de produção não está a emitir os cabeçalhos (outra
+versão, ou uma opção que os desliga): **não passes a `enforce`**, que falharia todos os turnos.
+
+**3. Passar a pedir o nome real do modelo** (opcional, e independente de 2). Hoje o nó pede
+`gpt-4o-mini` e o LiteLLM serve `openai/kimi-for-coding`. Para o nó pedir `kimi-for-coding`, sem
+janela de recusa, pela ordem:
+
+1. **LiteLLM serve os dois nomes.** Acrescenta ao `config.yaml` uma entrada `model_name:
+   kimi-for-coding` com os mesmos `litellm_params` da de `gpt-4o-mini`, e recria o `litellm`.
+2. **A allowlist autoriza o nome novo.** É alteração de política, com a assinatura e a
+   ratificação de sempre, e **não se faz sem a chave custodiada**: ou re-assinas a allowlist
+   embebida (`packages/platform/model-gateway/policy/allowlist`, `gen_signature.go` com a seed do
+   cofre; entra num release), ou montas um bundle externo assinado
+   (`AOS_MODEL_ALLOWLIST_BUNDLE_DIR` + `AOS_MODEL_ALLOWLIST_TRUST_ANCHOR`). A allowlist fica com
+   os **dois** nomes nesta fase.
+3. **O nó passa a pedir o novo:** `AOS_MODEL_NAME=kimi-for-coding` no `.env`, e recria o nó. O
+   perfil de `kimi-for-coding` já está no binário. Se houver tabela de preços
+   (`AOS_MODEL_PRICING_PATH`), a entrada tem de existir com o nome novo — em produção não há
+   (modelo pago por subscrição). O nó de produção não declara escada de tiers.
+4. **Só então o nome antigo sai** do `config.yaml` e da allowlist (outra assinatura).
+
+Rollback pela ordem inversa: repõe `AOS_MODEL_NAME=gpt-4o-mini` (o LiteLLM e a allowlist ainda
+têm os dois nomes) e só depois retira o nome novo. Os eventos, capturas e selos gravados com o
+nome antigo continuam legíveis e reproduzem-se: o replay compara cada turno com o `model_id` que
+esse turno gravou.
+
+Um nome com `.` (`kimi-k2.5`) serve para pedir ao LiteLLM e para a allowlist, mas **não pode
+entrar numa escada de tiers**: o nome compõe um `stream_id` de admissão, e o gateway recusa o
+arranque nomeando o modelo (AOS-425). `-` e `/` passam.
+
+**4. Passar a `enforce`.** Decisão do dono, com os números do passo 2. A partir daí, **mudar
+`model` ou `api_base` no `config.yaml` pára os runs** até o perfil (código, num release) e
+`AOS_MODEL_ROUTE_API_HOST` acompanharem: é esse o efeito pretendido, e é o que tens de saber
+antes de trocar de modelo. Recuo imediato: `AOS_MODEL_ROUTE_GOVERNANCE=observe` e recria o nó.
+
+---
+
 ## Orquestrador multi-nó (`aos-orq`)
 
 Desde o **AOS-403** o `aos-orq` vem **na mesma imagem** que o nó, atestado como subject próprio

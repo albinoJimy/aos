@@ -8,10 +8,27 @@
 #               A política é `default: deny`; um nome fora dela é NEGADO no nó, antes de
 #               qualquer chamada sair. É a fronteira de GOVERNANÇA, imutável sem re-assinar.
 #
-# `litellm_params.model` é o provider/modelo REAL. Isto é ROTEAMENTO, e é livre: trocar de
-#               provider, de modelo ou de região faz-se AQUI, sem tocar no nó nem no código.
+# `litellm_params.model` é o provider/modelo REAL, e `api_base` o endpoint. Trocar de provider,
+#               de modelo ou de região faz-se AQUI, sem tocar no nó nem no código — e SEM
+#               ASSINATURA: este ficheiro não é assinado.
 #
 # Ou seja: o nó governa QUE nomes podem ser pedidos; este ficheiro decide o que eles significam.
+#
+# ─── O que fica governado, e o que não fica (AOS-505) ────────────────────────────────────────
+# Com `AOS_MODEL_ROUTE_GOVERNANCE=observe|enforce` no nó, o que este ficheiro decide deixa de ser
+# invisível: em cada turno o nó compara o `litellm_params.model` que o LiteLLM DECLARA ter servido
+# (cabeçalho `x-litellm-model-name`) com o modelo esperado do perfil da rota, que vive no código
+# do nó; e, com `AOS_MODEL_ROUTE_API_HOST` definida, o host do `api_base`. Uma troca feita aqui
+# fica registada em cada turno (`observe`) ou faz o turno falhar (`enforce`). Consequência
+# prática: MUDAR `model` OU `api_base` NUM NÓ EM `enforce` PÁRA OS RUNS até o perfil (código) e a
+# variável do host acompanharem a mudança.
+#
+# O que NÃO fica governado: o que o provider serve de facto por trás desse nome e desse endpoint
+# (o nó lê o que o LiteLLM declara, não o que o provider fez); este ficheiro continua sem
+# assinatura; e com a governação em `off` — a omissão — nada disto é comparado.
+#
+# NÃO ponhas `model_info.id` nas entradas: fixa o identificador do deployment e não serve de nada
+# ao nó, que não o lê (é derivado da chave do provider).
 #
 # As chaves dos providers vivem em `../secrets/model.env` (git-ignored) e NUNCA aqui.
 # =============================================================================
@@ -47,7 +64,16 @@ model_list:
   #     api_base: https://api.kimi.com/coding/v1
 
 litellm_settings:
-  drop_params: true      # tolera parâmetros que um provider não suporte, em vez de rebentar
+  # `false` (AOS-505): um parâmetro que o provider não suporte passa a ser um ERRO visível, em
+  # vez de ser descartado em silêncio. Hoje o nó não envia nenhum parâmetro opcional (só `model`,
+  # `messages` e `tools` — preso por teste), pelo que isto não altera nenhum pedido; importa no
+  # dia em que enviar `tool_choice`, amostragem ou `max_tokens`. MEDIDO com a 1.96.2: para um
+  # `openai/<nome>` com `api_base` próprio o LiteLLM reencaminha tudo com `true` ou com `false` —
+  # quem aceita ou recusa o parâmetro é o provider. Rollback: voltar a `true` e recriar o serviço.
+  #
+  # ESTE FICHEIRO É A SEMENTE: o deploy nunca reescreve o config.yaml que já está no servidor.
+  # Pôr `false` em produção é um passo do dono (README, «Rota do modelo sob governação»).
+  drop_params: false
   telemetry: false       # sem telemetria externa
 
 general_settings:
