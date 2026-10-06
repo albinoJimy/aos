@@ -116,6 +116,11 @@ const (
 	// (duas `ToolRef` com o mesmo nome e versões ou digests diferentes). O campo refere a tool
 	// pelo nome, e com o nome repetido não diz de qual das duas a saída é o resultado.
 	ReasonFromToolAmbiguousTool Reason = "from_tool_ambiguous_tool"
+	// ReasonFromToolWithTextOutput — o nó declara a origem de uma saída E declara outra saída de
+	// forma aberta sem origem (AOS-501): o nó misto. A segunda publicava-se do texto final do
+	// run, e o consumidor dela recebia o que o modelo escreveu, vindo de um nó que prometeu o
+	// resultado da tool. Corrige-se separando o trabalho em dois nós.
+	ReasonFromToolWithTextOutput Reason = "from_tool_with_text_output"
 
 	// Regra 2-bis — alcançabilidade dos ramos (ADR-022 §2.1).
 	// ReasonUnreachableJunction — a ancestralidade do nó exige DOIS ramos

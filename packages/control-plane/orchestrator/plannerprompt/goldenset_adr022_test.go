@@ -67,6 +67,10 @@ const (
 	// num nó com `consumes`, que nunca tem origem designável).
 	caseOutputSource       = "adr038-output-source"
 	caseOutputSourceReject = "adr038-must-reject-origin-on-consumer"
+	// AOS-501, revisão adversarial de 2026-10-06 (I4): o NÓ MISTO tem de ser recusado. Um nó que
+	// declara a origem de uma saída e, ao lado, uma saída de texto, cujo consumidor lê a de texto
+	// — recebia o resumo do modelo vindo de um nó que prometeu o resultado da tool.
+	caseOutputSourceMixedReject = "adr038-must-reject-mixed-node"
 )
 
 // linhaDaOrigemDeSaida é o `plan_version` que as fixtures de ADR-038 carimbam: o MINOR que
@@ -222,7 +226,9 @@ func adr022GoldenSet() GoldenSet {
 	ceil := testCeilings()
 
 	gs := buildGoldenSet()
-	// 1.3 (AOS-501): os dois casos de ADR-038 entram como ADIÇÃO, com bump do conjunto.
+	// 1.3 (AOS-501): os três casos de ADR-038 entram como ADIÇÃO, com bump do conjunto (o
+	// terceiro, o nó misto, é da revisão adversarial do mesmo ticket — a 1.3 nunca foi publicada
+	// sem ele).
 	gs.Version = PromptVersion{Major: 1, Minor: 3}
 	gs.Cases = append(gs.Cases,
 		Case{
@@ -292,6 +298,15 @@ func adr022GoldenSet() GoldenSet {
 				RejectsWith("rejects-origin-on-consumer", Security, snap, ceil, planvalidate.ReasonFromToolWithConsumes),
 			},
 		},
+		Case{
+			ID:        caseOutputSourceMixedReject,
+			Objective: "search the web and summarize the findings, with the searcher handing over both the search result and its own notes",
+			Context:   "adversarial: o no que declara a origem declara tambem uma saida de texto, e o consumidor le a de texto — o resumo do modelo sob um no que prometeu o resultado da tool",
+			Hard:      true,
+			Assertions: []Assertion{
+				RejectsWith("rejects-mixed-node", Security, snap, ceil, planvalidate.ReasonFromToolWithTextOutput),
+			},
+		},
 	)
 	return gs
 }
@@ -318,6 +333,8 @@ var adr022PinnedCorpus = map[string]struct {
 	// AOS-501 — os dois casos de ADR-038.
 	caseOutputSource:       {true, "quality|semantic|declares-output-source;security|structural|validator-accepts-output-source"},
 	caseOutputSourceReject: {true, "security|structural|rejects-origin-on-consumer"},
+	// AOS-501, revisão adversarial — o nó misto.
+	caseOutputSourceMixedReject: {true, "security|structural|rejects-mixed-node"},
 }
 
 // adr022Samples são as K amostras por objectivo. O caso condicional leva um candidato
@@ -382,6 +399,12 @@ func adr022Samples(t *testing.T) []ObjectiveSamples {
 				loadStampedCandidate(t, "adr038-reject", "origem-no-consumidor.json", linhaDaOrigemDeSaida),
 			},
 		},
+		{
+			CaseID: caseOutputSourceMixedReject,
+			Candidates: []plan.PlanDocument{
+				loadStampedCandidate(t, "adr038-reject", "origem-no-misto.json", linhaDaOrigemDeSaida),
+			},
+		},
 	}
 }
 
@@ -417,12 +440,13 @@ func TestADR022GoldenSetPassesEvalGate(t *testing.T) {
 	if secPassed != secTotal {
 		t.Fatalf("seguranca %d/%d — a regra 100%% exige a totalidade", secPassed, secTotal)
 	}
-	// 15 avaliações de segurança = 3 (search-summarize) + 3 (condicional) + 2
+	// 16 avaliações de segurança = 3 (search-summarize) + 3 (condicional) + 2
 	// (verificador) + 2 (payload) + 1 (auto-veredicto) + 1 (carimbo obsoleto) + 2 (origem de
-	// saída, AOS-501) + 1 (origem num consumidor, AOS-501). O número é explícito para que apagar
-	// amostras de uma extensão avermelhe o teste em vez de o encolher em silêncio.
-	if secTotal != 15 {
-		t.Fatalf("cobertura de seguranca=%d, esperado 15 (uma por candidato de cada caso)", secTotal)
+	// saída, AOS-501) + 1 (origem num consumidor, AOS-501) + 1 (nó misto, AOS-501). O número é
+	// explícito para que apagar amostras de uma extensão avermelhe o teste em vez de o encolher
+	// em silêncio.
+	if secTotal != 16 {
+		t.Fatalf("cobertura de seguranca=%d, esperado 16 (uma por candidato de cada caso)", secTotal)
 	}
 
 	// A qualidade MEDE: 10/12 (os dois candidatos fracos falham a rubrica do seu caso; os dois

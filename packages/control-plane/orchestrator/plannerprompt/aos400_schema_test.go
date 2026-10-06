@@ -349,7 +349,7 @@ func TestTemplateDeclaraOSchemaQueODecodeExige(t *testing.T) {
 const fingerprintPrompt140 = "51393c16f3b22337ea71b016c1e21a4ea0ab9b4cb624676f5d7a2bb0192fb5c8"
 
 // fingerprintPrompt150 é o SHA-256 do template 1.5.0 (AOS-501), tal como este ticket o publica.
-const fingerprintPrompt150 = "8d33873417075208e36321f1ceb504f0fa799f100b4df0b24e9cc41dc4bfd746"
+const fingerprintPrompt150 = "f45750c436345a63eaf6175aa15f40e3f3dec77c97392b32d0fe51629df5f270"
 
 // TestAOS501_OsDoisPromptsTemOsBytesFixados: o binário conhece DUAS versões do prompt de
 // decomposição, e os bytes das duas estão presos aqui.
@@ -384,34 +384,46 @@ const regra13 = `13. from_tool declara a ORIGEM de uma saida: o no seguinte rece
     precisa desse conteudo inteiro, sem transformacao. NAO o declares quando o
     consumidor precisa do que o no CONCLUIU (resumir, extrair, classificar, decidir):
     ai a saida e o texto do no, sem from_tool. Condicoes, todas obrigatorias: o valor e
-    o name de uma ferramenta de tools desse mesmo no, e esse name aparece uma so vez em
-    tools; o type do output e "record" ou "artifact"; o no nao e role: verifier e nao
-    tem consumes; no maximo UM output do no usa from_tool. O no tem de chamar essa
-    ferramenta UMA so vez, na primeira resposta: sem essa chamada, ou com duas, o no
-    fica failed e o consumidor nao corre. Usar from_tool obriga a carimbar plan_version
-    "1.3.0" (regra 6), e nao "1.2.0".`
+    o name EXACTO de uma ferramenta de tools desse mesmo no, esse name aparece uma so
+    vez em tools e tem a forma de Identificador (uma ferramenta com maiusculas ou hifen
+    no name nao pode ser origem); o type do output e "record" ou "artifact"; o no nao e
+    role: verifier e nao tem consumes; no maximo UM output do no usa from_tool; e o no
+    que usa from_tool nao declara mais nenhum output de forma aberta ("summary",
+    "record" ou "artifact"): se o consumidor precisa tambem do que o no concluiu, isso
+    e trabalho de OUTRO no, que consome o conteudo. O no tem de chamar essa ferramenta
+    UMA so vez, na primeira resposta: sem essa chamada, ou com duas, o no fica failed e
+    o consumidor nao corre. Usar from_tool obriga a carimbar plan_version "1.3.0"
+    (regra 6), e nao "1.2.0".`
 
-// TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes: o 1.5.0 é o 1.4.0 com QUATRO edições, e
-// mais nada — o campo na linha de `outputs`, a linha que o explica, a linha 1.3.0 na regra 6, e
-// a regra 13 no fim. Refaz-se o 1.5.0 a partir do 1.4.0 e exige-se a igualdade byte a byte: uma
-// quinta diferença, em qualquer sítio, falha aqui.
+// TestAOS501_OPrompt150EOPrompt140ComCincoEdicoes: o 1.5.0 é o 1.4.0 com CINCO edições, e
+// mais nada — o campo na linha de `outputs`, a linha que o explica, a linha 1.3.0 na regra 6, a
+// frase da regra 12 sobre um segundo output aberto ao lado de `from_tool`, e a regra 13 no fim.
+// Refaz-se o 1.5.0 a partir do 1.4.0 e exige-se a igualdade byte a byte: uma sexta diferença, em
+// qualquer sítio, falha aqui.
+//
+// A quinta edição (a da regra 12) e o texto da regra 13 são da revisão adversarial de
+// 2026-10-06: o nó misto passou a ser recusado pelo validador, e a regra 12 do 1.5.0 dizia que o
+// executor «nao transporta nenhum» de dois outputs abertos — falso para o par origem + texto.
 //
 // É um MINOR e passa o gate ADR-012 com aprovação; sem ela é recusado.
-func TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes(t *testing.T) {
+func TestAOS501_OPrompt150EOPrompt140ComCincoEdicoes(t *testing.T) {
 	refeito := Current.Template
 	for _, e := range [][2]string{
 		{"  outputs          lista de {name*, type*, taint} (no maximo 8)",
 			"  outputs          lista de {name*, type*, taint, from_tool} (no maximo 8)"},
 		{"taint de outputs: \"trusted\" ou \"untrusted\"; omite se nao tiveres base.\n",
 			"taint de outputs: \"trusted\" ou \"untrusted\"; omite se nao tiveres base.\n" +
-				"from_tool de outputs: o name de UMA ferramenta de tools do mesmo no (regra 13); omite\n" +
-				"nos outros casos.\n"},
+				"from_tool de outputs: o name EXACTO de UMA ferramenta de tools do mesmo no (regra 13);\n" +
+				"omite nos outros casos.\n"},
 		{"usa outputs, consumes ou o papel reservado role: verifier. Carimbar abaixo da linha\n" +
 			"   que usas e RECUSADO (plan_version_below_features); carimbar acima da linha corrente\n" +
 			"   tambem.",
 			"usa outputs, consumes ou o papel reservado role: verifier; \"1.3.0\" se algum output\n" +
 				"   usa from_tool. Carimbar abaixo da linha que usas e RECUSADO\n" +
 				"   (plan_version_below_features); carimbar acima da linha corrente tambem."},
+		{"nao transporta nenhum; de um no role: verifier,\n    o \"verdict\". Um consumes de \"metrics\"",
+			"nao transporta nenhum (se um deles usa\n    from_tool o plano e RECUSADO, regra 13); de um no role: verifier, o \"verdict\". Um\n" +
+				"    consumes de \"metrics\""},
 	} {
 		if strings.Count(refeito, e[0]) != 1 {
 			t.Fatalf("pre-condicao: o 1.4.0 tem exactamente uma vez o troco %q", e[0])
@@ -420,7 +432,7 @@ func TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes(t *testing.T) {
 	}
 	refeito += "\n" + regra13
 	if WithOutputSource.Template != refeito {
-		t.Fatalf("o 1.5.0 tem de ser o 1.4.0 com as quatro edicoes do AOS-501 e mais nada:\n%s", WithOutputSource.Template)
+		t.Fatalf("o 1.5.0 tem de ser o 1.4.0 com as cinco edicoes do AOS-501 e mais nada:\n%s", WithOutputSource.Template)
 	}
 	ap := PromptApproval{Approver: "Arquitecto de Plataforma", ADR012Ref: "ADR-012 (AOS-501)"}
 	if err := ValidatePromptMutation(Current, WithOutputSource, ap); err != nil {
@@ -432,8 +444,8 @@ func TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes(t *testing.T) {
 	if err := ValidatePromptMutation(Current, WithOutputSource, PromptApproval{}); !errors.Is(err, ErrPromptUnapproved) {
 		t.Fatalf("sem aprovacao a mutacao tinha de ser recusada com ErrPromptUnapproved, veio %v", err)
 	}
-	// As regras 1 a 5 e 7 a 12 ficam byte a byte: só a 6 ganha uma linha.
-	for _, n := range []string{"1. ", "2. ", "3. ", "4. ", "5. ", "7. ", "8. ", "9. ", "10. ", "11. ", "12. "} {
+	// As regras 1 a 5 e 7 a 11 ficam byte a byte: a 6 ganha uma linha, e a 12 a frase do nó misto.
+	for _, n := range []string{"1. ", "2. ", "3. ", "4. ", "5. ", "7. ", "8. ", "9. ", "10. ", "11. "} {
 		de := strings.Index(Current.Template, "\n"+n)
 		if de < 0 {
 			t.Fatalf("pre-condicao: o 1.4.0 tem a regra %q", n)
@@ -502,8 +514,8 @@ func TestAOS501_ARegra13DizOQueOValidadorSustenta(t *testing.T) {
 		}
 	}
 	// «Usar from_tool obriga a carimbar plan_version "1.3.0" (regra 6), e nao "1.2.0"».
-	if !strings.Contains(regra13, `plan_version
-    "1.3.0" (regra 6), e nao "1.2.0"`) {
+	if !strings.Contains(regra13, `plan_version "1.3.0"
+    (regra 6), e nao "1.2.0"`) {
 		t.Fatal("a regra 13 tem de dizer o carimbo que from_tool obriga")
 	}
 	if v := planvalidate.Validate(plano("1.2.0", "reader", ref, comOrigem, ""), snap, testCeilings()); v.Reason != planvalidate.ReasonVersionBelowFeatures {
@@ -517,15 +529,21 @@ func TestAOS501_ARegra13DizOQueOValidadorSustenta(t *testing.T) {
 		frase string
 	}{
 		"tool que nao e do no": {plano("1.3.0", "reader", "", comOrigem, ""),
-			planvalidate.ReasonFromToolUnknownTool, "o name de uma ferramenta de tools desse mesmo no"},
+			planvalidate.ReasonFromToolUnknownTool, "o name EXACTO de uma ferramenta de tools desse mesmo no"},
 		"tool referida duas vezes": {plano("1.3.0", "reader", ref+","+outraRef, comOrigem, ""),
-			planvalidate.ReasonFromToolAmbiguousTool, "esse name aparece uma so vez em\n    tools"},
+			planvalidate.ReasonFromToolAmbiguousTool, "esse name aparece uma so\n    vez em tools"},
 		"tipo summary": {plano("1.3.0", "reader", ref, strings.Replace(comOrigem, `"record"`, `"summary"`, 1), ""),
 			planvalidate.ReasonFromToolOutputType, `o type do output e "record" ou "artifact"`},
 		"no com consumes": {plano("1.3.0", "reader", ref, comOrigem, `,"consumes":[{"from":"n0","output":"base","type":"record"}]`),
-			planvalidate.ReasonFromToolWithConsumes, "nao\n    tem consumes"},
+			planvalidate.ReasonFromToolWithConsumes, "nao tem consumes"},
 		"duas saidas com origem": {plano("1.3.0", "reader", ref, comOrigem+`,{"name":"copia","type":"record","from_tool":"`+tool.Name+`"}`, ""),
 			planvalidate.ReasonFromToolMultiple, "no maximo UM output do no usa from_tool"},
+		// O NÓ MISTO (revisão adversarial, I4): a origem e, ao lado, um output aberto sem ela.
+		"no misto, com um summary ao lado": {plano("1.3.0", "reader", ref, comOrigem+`,{"name":"resumo","type":"summary"}`, ""),
+			planvalidate.ReasonFromToolWithTextOutput, "nao declara mais nenhum output de forma aberta"},
+		"no misto, com um record ao lado": {plano("1.3.0", "reader", ref, `{"name":"notas","type":"record"},`+comOrigem, ""),
+			planvalidate.ReasonFromToolWithTextOutput, `("summary",
+    "record" ou "artifact")`},
 	} {
 		if !strings.Contains(regra13, c.frase) {
 			t.Errorf("%s: a regra 13 deixou de dizer %q", nome, c.frase)
@@ -534,8 +552,29 @@ func TestAOS501_ARegra13DizOQueOValidadorSustenta(t *testing.T) {
 			t.Errorf("%s: tinha de ser recusado com %s; veio %+v", nome, c.razao, v)
 		}
 	}
-	if !strings.Contains(regra13, "o no nao e role: verifier") {
+	if !strings.Contains(regra13, "o no nao e\n    role: verifier") {
 		t.Error("a regra 13 tem de dizer que um verifier nao declara a origem")
+	}
+	// A REGRA 12 DO 1.5.0 DIZ O MESMO que a 13 sobre o nó misto, e já não diz que o executor
+	// «nao transporta nenhum» dos dois outputs: o plano é recusado antes de haver executor.
+	if !strings.Contains(WithOutputSource.Template, "nao transporta nenhum (se um deles usa\n    from_tool o plano e RECUSADO, regra 13)") {
+		t.Error("a regra 12 do 1.5.0 tem de dizer que um segundo output aberto ao lado de from_tool e recusado")
+	}
+	if strings.Contains(Current.Template, "RECUSADO, regra 13") {
+		t.Error("o 1.4.0 nao fala da regra 13: nao muda um byte")
+	}
+	// O NOME EXACTO (M11): `from_tool` tem a forma de Identificador, e a forma e imposta já na
+	// desserialização — uma tool com hífen ou maiúsculas no nome não pode ser origem.
+	if !strings.Contains(regra13, "tem a forma de Identificador (uma ferramenta com maiusculas ou hifen\n    no name nao pode ser origem)") {
+		t.Error("a regra 13 tem de dizer que o name da origem tem a forma de Identificador")
+	}
+	for _, nome := range []string{"Doc_Read", "doc-read"} {
+		raw := `{"plan_version":"1.3.0","objective":"o","planner_meta":{"model":"m","prompt_version":"1.5.0","capabilities_hash":"h"},
+ "nodes":[{"node_id":"n1","role":"reader","objective":"ler","tools":[{"name":"` + nome + `","version":"1","digest":"sha256:a"}],
+  "outputs":[{"name":"conteudo","type":"record","from_tool":"` + nome + `"}]}]}`
+		if _, err := plan.Decode([]byte(raw)); err == nil {
+			t.Errorf("from_tool %q nao tem a forma de Identificador e tinha de ser recusado na desserializacao", nome)
+		}
 	}
 }
 

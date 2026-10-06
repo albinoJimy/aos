@@ -122,7 +122,7 @@ func TestAOS500_OGoldenSetAcompanhaAExcepcaoDoPrompt(t *testing.T) {
 			}
 		}
 	}
-	if !avaliados[caseOutputSource] || !avaliados[caseOutputSourceReject] {
+	if !avaliados[caseOutputSource] || !avaliados[caseOutputSourceReject] || !avaliados[caseOutputSourceMixedReject] {
 		t.Fatalf("os casos de ADR-038 tem de entrar na avaliacao do golden-set com planos que declaram a origem; entraram %v", avaliados)
 	}
 }

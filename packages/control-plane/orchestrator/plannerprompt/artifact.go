@@ -153,7 +153,7 @@ var Current = Prompt{
 // decompositionTemplateV15 é o TEXTO ESTÁTICO do prompt de decomposição v1.5.0 (AOS-501). É um
 // const, como o anterior: cache-estável por construção (ADR-009). Vem por extenso, e não
 // derivado do 1.4.0 em run-time, para que os bytes publicados sejam os que se lêem aqui.
-// `TestAOS501_OPrompt150EOPrompt140ComQuatroEdicoes` prende as diferenças entre os dois.
+// `TestAOS501_OPrompt150EOPrompt140ComCincoEdicoes` prende as diferenças entre os dois.
 const decompositionTemplateV15 = `Es o planeador de decomposicao do AOS.
 A tua unica saida e UM PlanDocument JSON de schema FECHADO (sem campos extra).
 
@@ -186,8 +186,8 @@ Predicado de when:
   number           inteiro
 type de outputs e consumes: "summary", "record", "artifact", "metrics" ou "verdict".
 taint de outputs: "trusted" ou "untrusted"; omite se nao tiveres base.
-from_tool de outputs: o name de UMA ferramenta de tools do mesmo no (regra 13); omite
-nos outros casos.
+from_tool de outputs: o name EXACTO de UMA ferramenta de tools do mesmo no (regra 13);
+omite nos outros casos.
 Identificador (metric, name de outputs, output de consumes): 1 a 64 caracteres, comeca
 por a-z e continua com a-z, 0-9, _ ou ponto.
 
@@ -237,8 +237,9 @@ REGRAS DURAS:
     campos isto prevalece sobre o "SO quando o objectivo os exige" da regra 7, e usa-los
     obriga a carimbar plan_version "1.2.0" (regra 6). O executor so transporta duas
     coisas: de um no que nao e verifier, UM output de forma aberta ("summary", "record"
-    ou "artifact"), e com mais do que um nao transporta nenhum; de um no role: verifier,
-    o "verdict". Um consumes de "metrics" NAO e entregue, venha de que no vier: o no que
+    ou "artifact"), e com mais do que um nao transporta nenhum (se um deles usa
+    from_tool o plano e RECUSADO, regra 13); de um no role: verifier, o "verdict". Um
+    consumes de "metrics" NAO e entregue, venha de que no vier: o no que
     o declara nao corre e fica failed. Um no com ferramenta de efeito continua sob a
     regra 8. depends_on sem consumes continua valido quando a dependencia e so de ordem.
 13. from_tool declara a ORIGEM de uma saida: o no seguinte recebe o que a ferramenta
@@ -247,12 +248,16 @@ REGRAS DURAS:
     precisa desse conteudo inteiro, sem transformacao. NAO o declares quando o
     consumidor precisa do que o no CONCLUIU (resumir, extrair, classificar, decidir):
     ai a saida e o texto do no, sem from_tool. Condicoes, todas obrigatorias: o valor e
-    o name de uma ferramenta de tools desse mesmo no, e esse name aparece uma so vez em
-    tools; o type do output e "record" ou "artifact"; o no nao e role: verifier e nao
-    tem consumes; no maximo UM output do no usa from_tool. O no tem de chamar essa
-    ferramenta UMA so vez, na primeira resposta: sem essa chamada, ou com duas, o no
-    fica failed e o consumidor nao corre. Usar from_tool obriga a carimbar plan_version
-    "1.3.0" (regra 6), e nao "1.2.0".`
+    o name EXACTO de uma ferramenta de tools desse mesmo no, esse name aparece uma so
+    vez em tools e tem a forma de Identificador (uma ferramenta com maiusculas ou hifen
+    no name nao pode ser origem); o type do output e "record" ou "artifact"; o no nao e
+    role: verifier e nao tem consumes; no maximo UM output do no usa from_tool; e o no
+    que usa from_tool nao declara mais nenhum output de forma aberta ("summary",
+    "record" ou "artifact"): se o consumidor precisa tambem do que o no concluiu, isso
+    e trabalho de OUTRO no, que consome o conteudo. O no tem de chamar essa ferramenta
+    UMA so vez, na primeira resposta: sem essa chamada, ou com duas, o no fica failed e
+    o consumidor nao corre. Usar from_tool obriga a carimbar plan_version "1.3.0"
+    (regra 6), e nao "1.2.0".`
 
 // WithOutputSource é o prompt de decomposição que NOMEIA A ORIGEM DE UMA SAÍDA (v1.5.0,
 // AOS-501, ADR-038 §2.1): `outputs[].from_tool`, a linha 1.3.0 do schema e a regra 13, que diz
@@ -273,8 +278,24 @@ REGRAS DURAS:
 // 1.4.0 vai para `testdata/`, como as anteriores.
 //
 // É um MINOR sobre a 1.4.0: o schema fechado ganha um campo opcional, a regra 6 ganha uma
-// linha de carimbo e a regra 13 é nova. Um documento válido sob a 1.4.0 continua válido — a
-// regra 13 diz quando usar um campo que o validador já admite (AOS-500), e não proíbe nada. É
+// linha de carimbo, a regra 12 passa a dizer o que acontece a um segundo output aberto ao lado
+// de `from_tool`, e a regra 13 é nova. Um documento válido sob a 1.4.0 continua válido — a
+// regra 13 diz quando usar um campo que o validador já admite (AOS-500), e o que ela proíbe só
+// existe em planos que usam esse campo.
+//
+// DUAS CORRECÇÕES DA REVISÃO ADVERSARIAL DE 2026-10-06, antes de o 1.5.0 chegar a qualquer
+// modelo (os bytes mudaram; o fingerprint fixado no teste é o novo):
+//
+//   - O NÓ MISTO (achado I4). A regra 13 diz que o nó que usa `from_tool` não declara mais
+//     nenhum output de forma aberta, e a regra 12 deixa de afirmar que o executor «nao
+//     transporta nenhum» nesse caso: o validador recusa o plano (`from_tool_with_text_output`).
+//     Sem isto, o consumidor que lesse o segundo output recebia o resumo do modelo vindo de um
+//     nó que declarou a origem;
+//   - O NOME EXACTO (achado M11). `from_tool` é o `name` exacto de uma tool do nó e tem de ter a
+//     forma de Identificador: uma tool com maiúsculas ou hífen no nome não pode ser origem, e
+//     sem o prompt o dizer a recusa gastava tentativas do laço.
+//
+// É
 // uma instrução a um modelo e não uma garantia: o planeador pode omitir a origem num nó de
 // leitura (e o defeito fica), ou declará-la num nó cujo trabalho é transformar (e o consumidor
 // recebe o documento cru). Mede-se.

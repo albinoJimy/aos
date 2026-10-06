@@ -1,0 +1,25 @@
+{
+  "plan_version": "1.3.0",
+  "objective": "search the web and summarize the findings, with the searcher handing over both the search result and its own notes",
+  "budget_total": {"tokens": 1400, "cost_micro_usd": 7000},
+  "planner_meta": {"model": "test-model", "prompt_version": "1.5.0", "capabilities_hash": "snap-v1"},
+  "nodes": [
+    {
+      "node_id": "recolha", "role": "searcher", "objective": "recolher as fontes com uma unica pesquisa e anotar o que interessa",
+      "tools": [{"name": "search", "version": "1.0.0", "digest": "sha256:search"}],
+      "depends_on": [], "budget_estimate": {"tokens": 800, "cost_micro_usd": 4000}, "risk_class": "safe",
+      "outputs": [
+        {"name": "fontes", "type": "record", "from_tool": "search"},
+        {"name": "notas", "type": "summary"}
+      ]
+    },
+    {
+      "node_id": "sintese", "role": "summarizer", "objective": "sintetizar a partir das notas do pesquisador",
+      "tools": [], "depends_on": ["recolha"], "budget_estimate": {"tokens": 600, "cost_micro_usd": 3000}, "risk_class": "safe",
+      "outputs": [
+        {"name": "sintese", "type": "summary"}
+      ],
+      "consumes": [{"from": "recolha", "output": "notas", "type": "summary"}]
+    }
+  ]
+}

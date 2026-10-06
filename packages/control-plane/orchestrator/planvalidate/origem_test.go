@@ -155,15 +155,31 @@ func TestOrigemNoMaximoUmaPorNo(t *testing.T) {
 	}
 	assertRejects(t, doc, plannerevents.RuleSchema, ReasonFromToolMultiple, "ler")
 
-	// Uma com origem e outra sem: passa no validador (o limite de uma saída aberta por nó é do
-	// executor, não desta regra).
-	uma := doc
-	uma.Nodes = append([]plan.Node(nil), doc.Nodes...)
-	uma.Nodes[0].Outputs = []plan.Output{
-		{Name: "notas", Type: plan.PayloadRecord, FromTool: "inspect"},
-		{Name: "anexo", Type: plan.PayloadArtifact},
+}
+
+// TestOrigemNaoSeMisturaComSaidaDeTexto — regra (O7), AOS-501. O nó misto não existe: um nó que
+// declara a origem de uma saída não declara outra de forma aberta, que se publicaria do texto do
+// modelo. Vale para os três tipos abertos e em qualquer ordem; uma forma fechada ao lado passa.
+func TestOrigemNaoSeMisturaComSaidaDeTexto(t *testing.T) {
+	com := plan.Output{Name: "notas", Type: plan.PayloadRecord, FromTool: "inspect"}
+	no := func(saidas ...plan.Output) plan.PlanDocument {
+		doc := baseDoc()
+		doc.Nodes = []plan.Node{{NodeID: "ler", Role: "reader", Objective: "le", Tools: []plan.ToolRef{readOnlyTool()}, Outputs: saidas}}
+		return stamped(doc, 1, 3, 0)
 	}
-	assertAceite(t, uma)
+	for _, tipo := range []plan.PayloadType{plan.PayloadSummary, plan.PayloadRecord, plan.PayloadArtifact} {
+		aberta := plan.Output{Name: "resumo", Type: tipo}
+		assertRejects(t, no(com, aberta), plannerevents.RuleSchema, ReasonFromToolWithTextOutput, "ler")
+		assertRejects(t, no(aberta, com), plannerevents.RuleSchema, ReasonFromToolWithTextOutput, "ler")
+	}
+	// Só a origem, ou a origem com uma forma fechada (que nunca se publica do texto): passa.
+	assertAceite(t, no(com))
+	assertAceite(t, no(com, plan.Output{Name: "medidas", Type: plan.PayloadMetrics}))
+	// Um nó SEM origem com duas saídas abertas não é desta regra: valida como sempre.
+	assertAceite(t, no(plan.Output{Name: "a", Type: plan.PayloadRecord}, plan.Output{Name: "b", Type: plan.PayloadSummary}))
+	// A ATRIBUIÇÃO: um nó misto cuja origem já é insustentável morre pela razão da origem.
+	assertRejects(t, no(plan.Output{Name: "notas", Type: plan.PayloadRecord, FromTool: "nao_e_do_no"}, plan.Output{Name: "resumo", Type: plan.PayloadSummary}),
+		plannerevents.RuleSchema, ReasonFromToolUnknownTool, "ler")
 }
 
 // TestOrigemObrigaACarimbar130 — a regra do carimbo, pelo piso derivado das features: o mesmo
