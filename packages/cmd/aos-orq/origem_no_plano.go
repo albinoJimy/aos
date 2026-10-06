@@ -66,11 +66,24 @@ import (
 var linhaSemEntrega = plan.PlanVersion{Major: 1, Minor: 3, Patch: 0}
 
 // errOrigemSemEntrega — o documento do plano é da linha 1.3.0 (declara a origem de uma saída, ou
-// carimba essa linha) e este binário não entrega por referência. É DETERMINISTA para o
-// documento: partilha a saída 10 com o documento recusado ([exitDocumentoRecusado]) e larga a
-// posse, mas tem causa própria no vocabulário fechado de [tipoDoErro] (`origem_sem_entrega`) —
-// quem lê o resumo da drenagem tem de distinguir «o documento não presta» de «o documento pede
-// uma entrega que ainda não existe».
+// carimba essa linha) e este processo não a corre. É DETERMINISTA para o documento: partilha a
+// saída 10 com o documento recusado ([exitDocumentoRecusado]) e larga a posse, mas tem causa
+// própria no vocabulário fechado de [tipoDoErro] (`origem_sem_entrega`) — quem lê o resumo da
+// drenagem tem de distinguir «o documento não presta» de «o documento pede uma entrega que este
+// processo não faz».
+//
+// O TEXTO DA MENSAGEM É O DO AOS-500, E DEIXOU DE SER EXACTO (revisão adversarial de 2026-10-06,
+// M7). Diz «este binario ainda nao entrega por referencia (AOS-501)»; desde o AOS-501 o binário
+// entrega, e a causa verdadeira é o INTERRUPTOR: `AOS_ORQ_SAIDA_POR_REFERENCIA` não está em `on`
+// no processo que leu o documento — o `serve`/`consume` em `off` ou `observe`, ou um `decide`
+// corrido sem a variável que o `consume` tem. Só se levanta com o interruptor fora de `on`
+// ([recusarSemEntrega], [posturaDaEntrega.recusar]); em `on` a recusa é outra
+// ([errNoSemEntregaPorReferencia]).
+//
+// NÃO SE MUDA AQUI, de propósito: fora de `on` este binário tem de ser byte a byte o anterior, e
+// esta mensagem vai ao stderr e ao `detail` do desfecho precisamente fora de `on`. Mudá-la era
+// quebrar essa garantia para corrigir uma frase. Corrige-se quando a entrega deixar de ter
+// interruptor; até lá a causa certa está no runbook (`deploy/server/README.md`) e no ticket.
 var errOrigemSemEntrega = errors.New("plano da linha 1.3.0 (origem de saida declarada em outputs[].from_tool, ou carimbo 1.3.x) NAO CORRE: este binario ainda nao entrega por referencia (AOS-501)")
 
 // semEntregaPorReferencia é o PREDICADO da guarda, e a sua única leitura: o documento é da linha

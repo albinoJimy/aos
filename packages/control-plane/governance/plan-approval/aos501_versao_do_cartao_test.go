@@ -80,3 +80,36 @@ func TestAOS501_CartaoComOrigemEmVersaoAnteriorERecusado(t *testing.T) {
 		t.Fatalf("um cartao sem origem carimbado 1.2.0 valida: %v / %v", err, sem.Validate())
 	}
 }
+
+// TestAOS501_OPisoDaOrigemNaoSobeComAVersaoCorrente: o piso que o `Validate` exige de um cartão
+// com origem é a versão em que a origem ENTROU (1.2.0), e não a corrente. Sobe-se a corrente a
+// 1.3.0 — a próxima subida, por outra razão qualquer — e um cartão 1.2.0 com origem, já
+// aprovado, continua a validar.
+//
+// A revisão adversarial de 2026-10-06 (M8) mostrou que a comparação era com [CurrentVersion]:
+// a subida seguinte recusava todos os cartões 1.2.0 com origem.
+func TestAOS501_OPisoDaOrigemNaoSobeComAVersaoCorrente(t *testing.T) {
+	if versionOutputSourceSince != (PlanCardSchemaVersion{Major: 1, Minor: 2, Patch: 0}) {
+		t.Fatalf("a origem entrou no contrato 1.2.0; o piso diz %s", versionOutputSourceSince)
+	}
+	wire := wireDoCartao(t, planoDeLeitura("doc_read"))
+	anterior := CurrentVersion
+	defer func() { CurrentVersion = anterior }()
+	CurrentVersion = PlanCardSchemaVersion{Major: 1, Minor: 3, Patch: 0}
+
+	var c PlanCard
+	if err := json.Unmarshal(wire, &c); err != nil {
+		t.Fatalf("com a versao corrente em 1.3.0, o cartao 1.2.0 com origem tinha de se ler: %v", err)
+	}
+	if c.SchemaVersion != versionOutputSourceSince {
+		t.Fatalf("pre-condicao: o cartao lido carimba 1.2.0; carimba %s", c.SchemaVersion)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("com a versao corrente em 1.3.0, o cartao 1.2.0 com origem tinha de validar: %v", err)
+	}
+	// O piso continua lá: o mesmo cartão carimbado 1.1.0 é recusado, com a corrente em 1.3.0.
+	c.SchemaVersion = PlanCardSchemaVersion{Major: 1, Minor: 1, Patch: 0}
+	if err := c.Validate(); !errors.Is(err, ErrOutputSourceBelowVersion) {
+		t.Fatalf("um cartao com origem carimbado 1.1.0 continua recusado; veio %v", err)
+	}
+}

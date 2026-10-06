@@ -56,10 +56,20 @@ type PlanCardSchemaVersion struct {
 //
 // O CARIMBO É O DO CONTRATO QUE O CARTÃO USA ([versionFor]): um cartão sem nenhuma saída com
 // origem carimba [versionWithoutOutputSource] (1.1.0) e fica byte a byte o que era; um cartão
-// com origem carimba 1.2.0, e [PlanCard.Validate] recusa-o com um carimbo abaixo disso. Um
-// leitor anterior recusa um cartão com origem pela forma do segmento; o carimbo passa a dizer
-// porquê.
+// com origem carimba 1.2.0, e [PlanCard.Validate] recusa-o com um carimbo abaixo de
+// [versionOutputSourceSince]. Um leitor anterior recusa um cartão com origem pela forma do
+// segmento; o carimbo passa a dizer porquê.
 var CurrentVersion = PlanCardSchemaVersion{Major: 1, Minor: 2, Patch: 0}
+
+// versionOutputSourceSince é a versão do contrato EM QUE A ORIGEM ENTROU: 1.2.0, fixa. É o piso
+// que [PlanCard.Validate] exige de um cartão com origem.
+//
+// É uma constante própria, e não [CurrentVersion], de propósito (revisão adversarial de
+// 2026-10-06, M8). Comparar com a versão CORRENTE punha o piso a subir com ela: no dia em que o
+// contrato passasse a 1.3.0 por outra razão qualquer, todos os cartões 1.2.0 com origem — já
+// aprovados, e válidos — passavam a ser recusados por um carimbo que diz exactamente o que eles
+// são. O piso é o MINOR que introduziu a feature, como em `plan.FeatureFloor`.
+var versionOutputSourceSince = PlanCardSchemaVersion{Major: 1, Minor: 2, Patch: 0}
 
 // versionWithoutOutputSource é o carimbo de um cartão que não mostra origem nenhuma: o contrato
 // 1.1.0, que é o que ele usa.

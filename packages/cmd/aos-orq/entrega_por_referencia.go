@@ -16,7 +16,9 @@ package main
 // NUNCA HÁ QUEDA PARA O TEXTO DO MODELO. Uma saída com origem declarada ou se publica a partir
 // dos bytes designados, ou não se publica: o produtor fecha `failed` com causa e o consumidor
 // não corre. O texto final do produtor continua capturado no run filho e não é publicado nem
-// entregue.
+// entregue — NENHUMA saída de um nó que declara a origem se publica do texto final: o nó misto
+// (uma saída com origem e outra de texto) é recusado pelo validador do plano, e aqui não é
+// entregável ([saidaComOrigem]).
 //
 // QUEM DECIDE SE UM NÓ É POR REFERÊNCIA É O DOCUMENTO APROVADO, e não o interruptor do `serve`
 // que o recolhe. O interruptor governa a ADMISSÃO de planos com origem (origem_no_plano.go); o
@@ -87,31 +89,31 @@ func posturaDoContexto(ctx context.Context) posturaDaEntrega {
 // (`no_sem_saida_por_referencia`).
 var errNoSemEntregaPorReferencia = errors.New("plano com origem de saida declarada (outputs[].from_tool) NAO CORRE: o no aos nao anuncia o vinculo vinculativo da origem (GET /tools sem output_source.bindings=binding — no anterior ao AOS-498, com o veredicto desligado, ou executor de nos nao composto)")
 
-// saidaComOrigem devolve a saída do nó que declara a origem. O validador do plano admite no
-// máximo uma por nó (`from_tool_multiple`); com mais do que uma não devolve nenhuma, e quem
-// chama trata o nó como não entregável.
+// saidaComOrigem devolve a saída do nó que declara a origem, e se o nó é ENTREGÁVEL por
+// referência. Só o é o nó que o validador do plano admite:
+//
+//   - EXACTAMENTE uma saída com origem (`from_tool_multiple`);
+//   - e NENHUMA outra saída de forma aberta (`from_tool_with_text_output`) — o NÓ MISTO não
+//     existe (revisão adversarial de 2026-10-06, achado I4). Uma saída aberta sem origem
+//     publicava-se do texto final, e o consumidor dela recebia o resumo do modelo vindo de um nó
+//     que declarou a origem.
+//
+// Com `false`, quem chama trata o nó como não entregável: não o submete, e se o encontrar já
+// submetido fecha-o `failed` sem publicar NADA. É defesa em profundidade — um documento assim
+// não passa o validador —, e falha fechado.
 func saidaComOrigem(n plan.Node) (plan.Output, bool) {
 	var saida plan.Output
-	com := 0
+	com, deTexto := 0, 0
 	for _, o := range n.Outputs {
-		if o.FromTool != "" {
+		switch {
+		case o.FromTool != "":
 			saida = o
 			com++
+		case !o.Type.ClosedForm():
+			deTexto++
 		}
 	}
-	return saida, com == 1
-}
-
-// saidasDeTexto conta as saídas de forma aberta que se publicam do TEXTO FINAL: as abertas sem
-// origem declarada. Num plano sem `from_tool` é o número de saídas abertas, como sempre.
-func saidasDeTexto(n plan.Node) int {
-	abertas := 0
-	for _, o := range n.Outputs {
-		if !o.Type.ClosedForm() && o.FromTool == "" {
-			abertas++
-		}
-	}
-	return abertas
+	return saida, com == 1 && deTexto == 0
 }
 
 // Causas de um nó do plano `failed` por a sua saída POR REFERÊNCIA não se poder entregar.
@@ -125,10 +127,14 @@ const (
 	// causaOrigemInaplicavel — o run tinha entradas, e um run com entradas nunca tem origem
 	// (`inapplicable`): defeito de quem compôs o plano.
 	causaOrigemInaplicavel = "origem_inaplicavel"
-	// causaOrigemSemVinculo — não há prova de que o run foi pedido por referência com o vínculo
-	// vinculativo: falta o facto `plan.output_source_declared` no log do plano, ou ele diz
-	// «só medição» ou outra tool; ou o run não traz âncora, ou traz uma que o kernel não
-	// produziria, ou com outro vínculo ou outra tool.
+	// causaOrigemSemVinculo — não há prova de que ESTE run foi pedido por referência com o
+	// vínculo vinculativo, para o contrato do documento aprovado: falta o facto
+	// `plan.output_source_declared` no log do plano, ou ele diz «só medição», outra tool, ou o
+	// digest de outro contrato; ou a resposta do nó é sobre OUTRO run (o `run_id` não é o que se
+	// pediu); ou o run não traz âncora, ou traz uma que o kernel não produziria (incluindo um
+	// passo que o evento de publicação não admite), ou com outro vínculo ou outra tool; ou o nó
+	// do plano declara a origem de uma forma que o validador recusa (mais de uma saída com
+	// origem, ou uma saída de texto ao lado dela).
 	causaOrigemSemVinculo = "origem_sem_vinculo"
 	// causaOrigemNaoConfere — o nó serviu bytes que NÃO são os que o kernel selou (o digest ou
 	// o tamanho não batem com a âncora). Não se entregam.
@@ -222,23 +228,35 @@ func extrairEntrega(servido string) (conteudo string, forma plannerevents.Payloa
 //
 // A ORDEM É A DAS GARANTIAS:
 //
+//  0. a resposta é sobre o run QUE SE PEDIU: o `run_id` que o nó devolve é `runFilho`. A âncora
+//     não leva o run, e sem esta conferência uma resposta coerente sobre outro run — outra
+//     âncora, outros bytes, que conferem entre si — entregava-se (revisão adversarial, M4);
 //  1. a âncora existe, tem a forma que o kernel produz, e diz o vínculo VINCULATIVO e a tool
 //     DO CONTRATO. Um run pedido em «só medição» não foi julgado pelo kernel como vinculativo, e
 //     não se entrega por ele;
-//  2. o estado é `designated`;
+//  2. o estado é `designated`, e o passo da chamada tem a forma que o evento de publicação
+//     admite ([plannerevents.ValidSourceStepID]). O kernel não limita o passo e o evento limita:
+//     um passo que a âncora aceita e o evento recusa fecha o nó AQUI, com causa, em vez de
+//     abortar a publicação — o que parava o `serve` em todas as gerações (M3);
 //  3. o nó serviu os bytes, e `sha256(bytes)` e o tamanho são os da âncora. O QUE NÃO CONFERE
 //     NÃO SE ENTREGA — e a conferência é sobre os bytes INTEIROS, antes de qualquer extracção;
 //  4. só então se extrai ([extrairEntrega]).
 //
 // O que vem do nó passa por vocabulários fechados: um estado ou uma marca que este binário não
 // conhece dão uma causa deste ficheiro, sem serem repetidos.
-func entregaDoRun(tool string, st estadoDoRun) (entregaPorReferencia, string) {
+func entregaDoRun(tool, runFilho string, st estadoDoRun) (entregaPorReferencia, string) {
+	if st.RunID != runFilho {
+		return entregaPorReferencia{}, causaOrigemSemVinculo
+	}
 	a := st.OutputSource
 	if a == nil || !a.BemFormada() || a.Binding != agentruntime.OutputSourceBinds || a.Tool != tool {
 		return entregaPorReferencia{}, causaOrigemSemVinculo
 	}
 	switch a.State {
 	case agentruntime.OutputSourceDesignated:
+		if !plannerevents.ValidSourceStepID(a.StepID) {
+			return entregaPorReferencia{}, causaOrigemSemVinculo
+		}
 	case agentruntime.OutputSourceMissing:
 		return entregaPorReferencia{}, causaOrigemEmFalta
 	case agentruntime.OutputSourceAmbiguous:
@@ -270,16 +288,29 @@ func entregaDoRun(tool string, st estadoDoRun) (entregaPorReferencia, string) {
 }
 
 // declaracaoDeOrigem é o facto `plan.output_source_declared` de um nó, tal como este processo o
-// escreveu ou o leu do log do plano: a tool e o vínculo com que o run foi pedido.
+// escreveu ou o leu do log do plano: a tool e o vínculo com que o run foi pedido, e o digest do
+// contrato da saída a que a declaração se refere.
 type declaracaoDeOrigem struct {
 	tool    string
 	vinculo plannerevents.OutputSourceBinding
+	// digestDoContrato é o `contract_digest` do facto: o carimbo do contrato da saída tal como
+	// estava no documento de quem declarou.
+	digestDoContrato string
 }
 
 // vinculativa diz se o facto prova que o run foi pedido por referência, com o vínculo
-// vinculativo, para a tool do contrato.
-func (d declaracaoDeOrigem) vinculativa(tool string) bool {
-	return d.vinculo == plannerevents.OutputSourceBindingBinds && d.tool == tool
+// vinculativo, para ESTE contrato: a mesma tool, e o mesmo digest do contrato que o documento
+// aprovado dá agora ([digestDoContratoComOrigem]). Um facto escrito para outro contrato — outra
+// saída, outro tipo, outro documento — não prova nada sobre este.
+func (d declaracaoDeOrigem) vinculativa(tool, digestDoContrato string) bool {
+	return d.vinculo == plannerevents.OutputSourceBindingBinds && d.tool == tool &&
+		d.digestDoContrato != "" && d.digestDoContrato == digestDoContrato
+}
+
+// digestDoContratoComOrigem é o carimbo do contrato de uma saída do nó, derivado do documento
+// aprovado pela mesma função que o facto e o evento de publicação usam.
+func digestDoContratoComOrigem(n plan.Node, saida plan.Output) string {
+	return plan.OutputDigest(n, saida)
 }
 
 // bannerDaEntrega declara, no arranque do `serve`, o que a postura faz. Só se imprime com o
@@ -296,6 +327,7 @@ func bannerDaEntrega(p posturaDaEntrega) string {
 var razoesDaOrigemNoValidador = []string{
 	"from_tool_on_verifier", "from_tool_with_consumes", "from_tool_multiple",
 	"from_tool_output_type", "from_tool_unknown_tool", "from_tool_ambiguous_tool",
+	"from_tool_with_text_output",
 }
 
 // entregaResolvida conta um nó com saída por referência, pelo resultado: entregue, ou a causa.

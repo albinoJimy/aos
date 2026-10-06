@@ -866,6 +866,13 @@ func validSealedDigest(d string) bool {
 	return true
 }
 
+// ValidSourceStepID diz se `s` tem a forma que [PayloadSource.StepID] admite. É EXPORTADA para
+// quem publica poder perguntar ANTES de construir o evento (AOS-501, revisão adversarial, M3): a
+// âncora que o kernel do nó sela não limita o passo, e um passo que a âncora aceita e este
+// construtor recusa tem de fechar o nó do plano com causa, e não abortar quem o recolhe com um
+// erro de publicação que se repetia em todas as gerações.
+func ValidSourceStepID(s string) bool { return validStepID(s) }
+
 // validStepID confere a forma de um passo: não vazio, limitado, sem espaços nem controlo.
 func validStepID(s string) bool {
 	if s == "" || len(s) > maxSourceStepIDBytes {

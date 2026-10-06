@@ -37,7 +37,9 @@ import (
 	plannerevents "github.com/aos-ref/control-plane/orchestrator/plannerevents"
 	plannerprompt "github.com/aos-ref/control-plane/orchestrator/plannerprompt"
 	"github.com/aos-ref/control-plane/orchestrator/planvalidate"
+	"github.com/aos-ref/control-plane/runlifecycle"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	arstate "github.com/aos-ref/kernel/agent-runtime/state"
 )
 
 const aos501Run = "plan-aos501-fio"
@@ -426,6 +428,23 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 	// um documento que não existe (a tool corre e falha) e a de um documento vazio.
 	falhas["fio-do-no-tool-falhou"] = falha{aos501FioDoNo(t, "sandbox-binding-tool-falhou"), causaOrigemToolFalhou}
 	falhas["fio-do-no-documento-vazio"] = falha{aos501FioDoNo(t, "sandbox-binding-vazio"), causaOrigemVazia}
+	// SEM QUEDA PARA O TEXTO, COM OS BYTES PRESENTES (revisão adversarial de 2026-10-06, I3). O
+	// run NÃO CONCLUIU — e a resposta traz a âncora `designated` e os bytes, que conferem. É o caso
+	// mais directo do critério, e não tinha teste: os de cima trazem todos âncora `missing` e sem
+	// `output`. Nunca se entrega; a causa é a do run, `run_nao_concluido`.
+	designadaComBytes := aos501Ancora("binding", "designated", envelopeBom) + "," + aos501Servido(t, envelopeBom)
+	falhas["run-failed-com-ancora-designada-e-bytes"] = falha{[]byte(`{"run_id":"` + aos501Run + `~read_notes","status":"failed","error":"falhou a meio","final_text":"` + aos501TextoFinal + `","turns":2,` + designadaComBytes + "}"), causaRunNaoConcluido}
+	falhas["run-completed-sem-terminated-com-bytes"] = falha{[]byte(`{"run_id":"` + aos501Run + `~read_notes","status":"completed","final_text":"` + aos501TextoFinal + `","turns":2,` + designadaComBytes + "}"), causaRunNaoConcluido}
+	falhas["run-timed-out-com-ancora-designada-e-bytes"] = falha{[]byte(`{"run_id":"` + aos501Run + `~read_notes","status":"timed_out","turns":2,` + designadaComBytes + "}"), causaRunNaoConcluido}
+	// A RESPOSTA É SOBRE O RUN PEDIDO (M4): a âncora e os bytes conferem entre si, e o `run_id`
+	// da resposta é de outro run.
+	falhas["resposta-de-outro-run"] = falha{[]byte(`{"run_id":"OUTRO-RUN~x","status":"completed","terminated":true,"final_text":"` + aos501TextoFinal + `","turns":2,` + designadaComBytes + "}"), causaOrigemSemVinculo}
+	falhas["resposta-sem-run-id"] = falha{[]byte(`{"status":"completed","terminated":true,"final_text":"` + aos501TextoFinal + `","turns":2,` + designadaComBytes + "}"), causaOrigemSemVinculo}
+	// O PASSO QUE A ÂNCORA ACEITA E O EVENTO RECUSA (M3): fecha o nó com causa. Abortava o `serve`
+	// com um erro não classificado (transitório/1), em todas as gerações.
+	for nome, passo := range map[string]string{"passo-de-200-bytes": strings.Repeat("a", 200) + "-tool-1", "passo-com-espaco": "passo com espaco-tool-1"} {
+		falhas[nome] = falha{aos501Concluido(strings.Replace(aos501Ancora("binding", "designated", envelopeBom), "step-000001-tool-1", passo, 1), aos501Servido(t, envelopeBom)), causaOrigemSemVinculo}
+	}
 	for nome, c := range falhas {
 		t.Run("On_Falha/"+nome, func(t *testing.T) {
 			f := &aos495No{catalogo: p.catalogo, respostas: map[string][]byte{"read_notes": c.resposta}}
@@ -445,11 +464,17 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 			if evs := aos501Eventos(eventos, plannerevents.EventPayloadPublished); len(evs) != 0 {
 				t.Fatalf("publicou-se um payload com o produtor falhado por %s: %+v", c.causa, evs)
 			}
+			// O aviso fixo da conclusão por cumprir é das causas dessa classe; um run que não concluiu
+			// sem razão de veredicto (`run_nao_concluido`) sai 13 sem ele, como sempre saiu.
+			aviso := "aviso: run=" + aos501Run + " geracao=1 classe=terminal codigo=13\n"
+			if causaDaConclusao(c.causa) {
+				aviso = "aviso: run=" + aos501Run + " geracao=1 classe=terminal codigo=13 causa=" + causaConclusaoNaoCumprida + "\n"
+			}
 			for _, quer := range []string{
 				"execucao: no read_notes failed (run " + aos501Run + "~read_notes) causa=" + c.causa + " ",
 				"execucao: no summarize NAO corre — o contrato read_notes/conteudo ficou por cumprir\n",
 				"execucao: read_notes=failed summarize=failed",
-				"aviso: run=" + aos501Run + " geracao=1 classe=terminal codigo=13 causa=" + causaConclusaoNaoCumprida + "\n",
+				aviso,
 			} {
 				if !strings.Contains(d.stdout, quer) {
 					t.Fatalf("faltou no log da drenagem %q:\n%s", quer, d.stdout)
@@ -458,14 +483,50 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 			// A CAUSA NÃO LEVA CONTEÚDO, e o texto final não aparece em lado nenhum.
 			aos501NuncaAparece(t, "o texto final do produtor", aos501TextoFinal, d, f, eventos)
 			aos501NuncaAparece(t, "o texto final do produtor (o resumo do fio do no)", "Resumo das notas", d, f, eventos)
-			for _, proibido := range []string{documento, "1250", "9999", "forjada", "zzz", "web_post", "cat: notes", digestDoConteudo(envelopeBom)} {
+			for _, proibido := range []string{documento, "1250", "9999", "forjada", "zzz", "web_post", "cat: notes", digestDoConteudo(envelopeBom),
+				"OUTRO-RUN", "falhou a meio", "passo com espaco", strings.Repeat("a", 40)} {
 				aos501NuncaAparece(t, "conteudo ou um valor vindo do no ("+proibido+")", proibido, d, f, eventos)
 			}
 			if strings.HasPrefix(c.causa, "origem_") && !temSerie(d.metricas, serie(metricaEntregaPorReferencia, "resultado", c.causa), 1) {
 				t.Fatalf("faltou nas metricas a causa %s:\n%s", c.causa, d.metricas)
 			}
+			// E NUNCA `entregue`, nem uma extracção: em nenhum destes casos se entregou nada.
+			if strings.Contains(d.metricas, serie(metricaEntregaPorReferencia, "resultado", resultadoEntregue)+" ") || strings.Contains(d.metricas, metricaEntregaExtraccao+"{") {
+				t.Fatalf("as metricas dizem que se entregou num no que fechou failed por %s:\n%s", c.causa, d.metricas)
+			}
+			if strings.Contains(d.stdout, "POR REFERENCIA") {
+				t.Fatalf("o log diz que se publicou por referencia com o produtor falhado por %s:\n%s", c.causa, d.stdout)
+			}
 		})
 	}
+
+	// (4-bis) O FACTO FICA NO LOG ANTES DO PEDIDO AO NÓ (revisão adversarial, M2). O `POST /runs` do
+	// produtor falha — o nó responde 500 — e o `serve` aborta. O facto da declaração JÁ ESTÁ no
+	// log do plano, sem que run nenhum tenha sido aceite: quem recolher este nó, se ele vier a
+	// existir, sabe com que vínculo foi pedido. A ordem contrária — pedir primeiro e registar
+	// depois — deixava um run vinculativo sem facto, e este teste falhava.
+	t.Run("On_OFactoFicaNoLogAntesDoPedidoAoNo", func(t *testing.T) {
+		f := &aos495No{catalogo: p.catalogo, falhaNoPost: map[string]int{"read_notes": 1 << 30}}
+		d := aos499Consumir(t, bin, f, aos501Run, comOrigem, p.snapshot, "on")
+		if f.submissoes == 0 || f.corpo(aos501Run, "read_notes") != nil {
+			t.Fatalf("pre-condicao: o POST /runs do produtor foi tentado e recusado pelo no (submissoes=%d, aceite=%v)\n%s", f.submissoes, f.corpo(aos501Run, "read_notes") != nil, d.stdout)
+		}
+		if d.codigo == exitOK || d.codigo == exitNosFalhados {
+			t.Fatalf("com o POST recusado o serve nao conclui nem fecha o no; saiu %s/%d %q", d.classe, d.codigo, d.detalhe)
+		}
+		eventos := aos499EventosDoPlano(t, d.wal, aos501Run)
+		declarados := aos501Eventos(eventos, plannerevents.EventOutputSourceDeclared)
+		if len(declarados) != 1 || declarados[0].Passo != "planstep:output_source_declared:read_notes" {
+			t.Fatalf("o facto plan.output_source_declared tinha de estar no log ANTES de o no aceitar o run; o log tem %+v\n%s", declarados, d.stdout)
+		}
+		var facto plannerevents.OutputSourceDeclaredPayload
+		if err := json.Unmarshal([]byte(declarados[0].Payload), &facto); err != nil || facto.Binding != plannerevents.OutputSourceBindingBinds || facto.Tool != "doc_read" || facto.ContractDigest == "" {
+			t.Fatalf("o facto diz o vinculo binding, a tool e o digest do contrato: %+v (%v)", facto, err)
+		}
+		if len(aos501Eventos(eventos, plannerevents.EventPayloadPublished)) != 0 || f.corpo(aos501Run, "summarize") != nil {
+			t.Fatal("sem run do produtor nada se publica e o consumidor nao corre")
+		}
+	})
 
 	// (5) A INDISPONIBILIDADE TRANSITÓRIA NÃO FECHA O NÓ. Com o vínculo vinculativo o nó responde
 	// 503 enquanto os bytes não se lêem; o `serve` volta a ler, e entrega quando houver o quê.
@@ -775,6 +836,81 @@ func TestAOS501_RetomaComOBinarioReal(t *testing.T) {
 		aos501NuncaAparece(t, "o texto final do produtor", aos501TextoFinal, d2, f, aos499EventosDoPlano(t, s.wal, aos501Run))
 	})
 
+	// (1-bis) O NÓ DEIXA DE ANUNCIAR `binding` COM UM PLANO COM ORIGEM EM VOO (revisão adversarial de
+	// 2026-10-06, I2). É o que acontece a um nó `aos` reiniciado com `AOS_COMPLETION_VERDICT=off`,
+	// ou revertido para antes do AOS-498, com o `aos-orq` em `on`. O runbook dizia que os planos em
+	// voo fechavam `origem_sem_vinculo`; o código faz outra coisa, e é ESTA que o runbook
+	// (`deploy/server/README.md`) passa a descrever:
+	//
+	//   - a geração seguinte fecha `terminal`, código 10, `erro=no_sem_saida_por_referencia`, ANTES
+	//     da posse — sem recolher o run que já corria;
+	//   - o documento guardado é apagado; o nó do plano fica como estava (`running`) no grafo; o
+	//     run filho fica órfão no nó `aos`; nada se publica e o consumidor não corre;
+	//   - é DE VEZ: com o anúncio reposto, a geração seguinte não retoma o plano.
+	//
+	// NÃO SE MUDA O COMPORTAMENTO: este teste prende o que o operador vê.
+	for nome, catalogo := range map[string][]byte{
+		"no-que-deixa-de-anunciar-a-origem": bytes.Replace(p.catalogo, []byte(`,"output_source":{"bindings":["measure","binding"],"max_bytes":131072}`), nil, 1),
+		"no-que-so-anuncia-measure":         bytes.Replace(p.catalogo, []byte(`"bindings":["measure","binding"]`), []byte(`"bindings":["measure"]`), 1),
+	} {
+		t.Run("ONoDeixaDeAnunciarBindingComPlanoEmVoo/"+nome, func(t *testing.T) {
+			if bytes.Equal(catalogo, p.catalogo) || bytes.Contains(catalogo, []byte(`"binding"]`)) {
+				t.Fatal("pre-condicao: este catalogo nao anuncia o vinculo binding")
+			}
+			f := &aos495No{catalogo: p.catalogo, respostas: map[string][]byte{"read_notes": aCorrer}}
+			s := aos501Abrir(t, bin, f, comOrigem, p.snapshot)
+			d1 := s.drenar(t, 1, "on", "1s")
+			if d1.codigo != exitNosEmVoo || f.corpo(aos501Run, "read_notes") == nil {
+				t.Fatalf("pre-condicao: a primeira drenagem submete o produtor e sai com ele em voo (8); saiu %s/%d %q", d1.classe, d1.codigo, d1.detalhe)
+			}
+			if guardados, _ := os.ReadDir(filepath.Join(s.dir, "planos")); len(guardados) != 1 {
+				t.Fatalf("pre-condicao: o documento do plano em voo esta guardado (%d ficheiros)", len(guardados))
+			}
+			eventosAntes := aos499EventosDoPlano(t, s.wal, aos501Run)
+			// O run do produtor CONCLUIU entretanto, com a âncora e os bytes: havia o que entregar.
+			f.mu.Lock()
+			f.respostas["read_notes"] = designada
+			f.catalogo = catalogo
+			f.mu.Unlock()
+			d2 := s.drenar(t, 2, "on", "30s")
+			if d2.classe != "terminal" || d2.codigo != exitDocumentoRecusado || !strings.HasSuffix(d2.detalhe, " erro=no_sem_saida_por_referencia") {
+				t.Fatalf("com o no sem binding a geracao seguinte fecha terminal/10 no_sem_saida_por_referencia; saiu %s/%d %q\n%s", d2.classe, d2.codigo, d2.detalhe, d2.stdout)
+			}
+			if !strings.Contains(d2.stdout, "saida por referencia (AOS-501): modo on, ENTREGA NAO ACTIVA") {
+				t.Fatalf("o banner diz que a entrega nao esta activa:\n%s", d2.stdout)
+			}
+			// ANTES DA POSSE: não toma o run, não recolhe o nó, não reconstrói nem publica nada.
+			for _, proibido := range []string{"posse:", "execucao:", "POR REFERENCIA", causaOrigemSemVinculo} {
+				if strings.Contains(d2.stdout, proibido) || strings.Contains(d2.detalhe, proibido) {
+					t.Fatalf("a recusa e antes da posse e nao e origem_sem_vinculo; o log tem %q:\n%s", proibido, d2.stdout)
+				}
+			}
+			eventosDepois := aos499EventosDoPlano(t, s.wal, aos501Run)
+			if len(eventosDepois) != len(eventosAntes) {
+				t.Fatalf("a geracao recusada nao escreve no log do plano: %d eventos antes, %d depois", len(eventosAntes), len(eventosDepois))
+			}
+			if len(aos501Eventos(eventosDepois, plannerevents.EventPayloadPublished)) != 0 || f.corpo(aos501Run, "summarize") != nil {
+				t.Fatal("nada se publica e o consumidor nao corre")
+			}
+			// O DOCUMENTO É APAGADO, e o run filho fica no nó `aos`, sem ninguém que o recolha.
+			if guardados, _ := os.ReadDir(filepath.Join(s.dir, "planos")); len(guardados) != 0 {
+				t.Fatalf("o documento do plano recusado e apagado; ficaram %d", len(guardados))
+			}
+			if f.corpo(aos501Run, "read_notes") == nil {
+				t.Fatal("pre-condicao: o run filho do produtor continua a existir no no aos (orfao)")
+			}
+			// É DE VEZ: com o anúncio reposto, o plano não volta.
+			f.mu.Lock()
+			f.catalogo = p.catalogo
+			f.mu.Unlock()
+			d3 := s.drenar(t, 3, "on", "30s")
+			if d3.classe != "terminal" || d3.codigo == exitOK || f.corpo(aos501Run, "summarize") != nil {
+				t.Fatalf("com o anuncio reposto o plano nao retoma: fica terminal, e o consumidor nao corre; saiu %s/%d %q\n%s", d3.classe, d3.codigo, d3.detalhe, d3.stdout)
+			}
+			t.Logf("depois de repor o anuncio: %s/%d %q", d3.classe, d3.codigo, d3.detalhe)
+		})
+	}
+
 	// O PLANO DE TRÊS NÓS da reidratação: `rever` consome a saída por referência de `read_notes` e
 	// só corre DEPOIS de `summarize`. Deixa o primeiro `serve` acabar com o payload publicado e um
 	// consumidor ainda por despachar — e a largar a posse (sai com 8), para a retoma não ter de
@@ -922,10 +1058,33 @@ func TestAOS501_ExtrairEntrega(t *testing.T) {
 	}
 }
 
-// TestAOS501_EntregaDoRun: a ordem das garantias — a âncora (vínculo e tool), o estado, os bytes
-// inteiros contra a âncora, e só então a extracção. Nunca devolve entrega E causa.
+// aos501RunDoLeitor é o run filho do nó `ler` nos testes de unidade (o run do plano é `run-418`,
+// o de [executorReidratado]).
+const aos501RunDoLeitor = "run-418~ler"
+
+// aos501NoLeitor é o nó `ler` do documento aprovado: uma tool, uma saída `conteudo`, com a origem
+// dada (vazia ⇒ o contrato não declara a origem).
+func aos501NoLeitor(origem string) plan.Node {
+	return plan.Node{NodeID: "ler", Role: "reader", Objective: "ler o documento",
+		Tools:   []plan.ToolRef{{Name: "doc_read", Version: "1", Digest: "sha256:a"}},
+		Outputs: []plan.Output{{Name: "conteudo", Type: plan.PayloadRecord, FromTool: origem}}}
+}
+
+// aos501Facto é o facto `plan.output_source_declared` que o executor escreve para o nó `n`: a
+// tool e o digest do contrato da saída com origem, com o vínculo dado.
+func aos501Facto(n plan.Node, vinculo plannerevents.OutputSourceBinding) declaracaoDeOrigem {
+	saida, _ := saidaComOrigem(n)
+	return declaracaoDeOrigem{tool: saida.FromTool, vinculo: vinculo, digestDoContrato: plan.OutputDigest(n, saida)}
+}
+
+// TestAOS501_EntregaDoRun: a ordem das garantias — a resposta é sobre o run pedido, a âncora
+// (vínculo, tool e passo), o estado, os bytes inteiros contra a âncora, e só então a extracção.
+// Nunca devolve entrega E causa.
 func TestAOS501_EntregaDoRun(t *testing.T) {
 	envelope, documento := aos499Envelope(t, "notas")
+	envelopeFalhou, _ := aos499Envelope(t, "saida-3")
+	envelopeVazio, _ := aos499Envelope(t, "vazio")
+	envelopeBinario, _ := aos499Envelope(t, "binario")
 	ancora := func(mexer func(*agentruntime.OutputSource)) *agentruntime.OutputSource {
 		a := &agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceBinds, State: agentruntime.OutputSourceDesignated,
 			StepID: "step-000001-tool-1", Digest: digestDoConteudo(envelope), Bytes: len(envelope)}
@@ -935,11 +1094,17 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 		return a
 	}
 	estado := func(a *agentruntime.OutputSource, servido *string, marca string) estadoDoRun {
-		return estadoDoRun{Status: "completed", Terminated: true, FinalText: aos501TextoFinal, OutputSource: a, Output: servido, OutputOmitted: marca}
+		return estadoDoRun{RunID: aos501RunDoLeitor, Status: "completed", Terminated: true, FinalText: aos501TextoFinal, OutputSource: a, Output: servido, OutputOmitted: marca}
+	}
+	deOutroRun := func(id string) estadoDoRun {
+		st := estado(ancora(nil), &envelope, "")
+		st.RunID = id
+		return st
 	}
 	outro := strings.Replace(envelope, "1250", "9999", 1)
+	soEspacos := " \n\t "
 	// O caso bom.
-	ent, causa := entregaDoRun("doc_read", estado(ancora(nil), &envelope, ""))
+	ent, causa := entregaDoRun("doc_read", aos501RunDoLeitor, estado(ancora(nil), &envelope, ""))
 	if causa != "" || ent.conteudo != documento || ent.extraccao != plannerevents.PayloadExtractionSandboxStdoutText ||
 		ent.digestDaAncora != digestDoConteudo(envelope) || ent.bytesDaAncora != len(envelope) || ent.passo != "step-000001-tool-1" {
 		t.Fatalf("a entrega de um envelope que confere e o documento, com a ancora do envelope: %+v (%q)", ent, causa)
@@ -947,7 +1112,16 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 	if strings.Contains(ent.conteudo, aos501TextoFinal) {
 		t.Fatal("o texto final entrou na entrega")
 	}
-	for nome, c := range map[string]struct {
+	// PRÉ-CONDIÇÃO dos casos do passo (M3): a âncora ACEITA estes passos — o kernel não os limita
+	// — e o construtor do evento de publicação recusa-os. É o desacordo que abortava o `serve`.
+	passosQueOEventoRecusa := []string{strings.Repeat("a", 200) + "-tool-1", "passo com espaco-tool-1", "x\ny-tool-1"}
+	for _, passo := range passosQueOEventoRecusa {
+		a := ancora(func(a *agentruntime.OutputSource) { a.StepID = passo })
+		if !a.BemFormada() || plannerevents.ValidSourceStepID(passo) {
+			t.Fatalf("pre-condicao: o passo de %d bytes e aceite pela ancora e recusado pelo evento (BemFormada=%v, evento=%v)", len(passo), a.BemFormada(), plannerevents.ValidSourceStepID(passo))
+		}
+	}
+	casos := map[string]struct {
 		st    estadoDoRun
 		causa string
 	}{
@@ -967,13 +1141,53 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 		"outros bytes":             {estado(ancora(nil), &outro, ""), causaOrigemNaoConfere},
 		"tamanho diferente":        {estado(ancora(func(a *agentruntime.OutputSource) { a.Bytes-- }), &envelope, ""), causaOrigemNaoConfere},
 		"digest de outros bytes":   {estado(ancora(func(a *agentruntime.OutputSource) { a.Digest = digestDoConteudo(outro) }), &envelope, ""), causaOrigemNaoConfere},
-	} {
-		ent, causa := entregaDoRun("doc_read", c.st)
+		// CONFERIR ANTES DE EXTRAIR (revisão adversarial, M1). Os bytes servidos NÃO são os que o
+		// kernel selou, e têm uma forma que a extracção recusaria por conta própria: um envelope
+		// de uma execução falhada, um envelope vazio, um binário, só espaços. A causa é SEMPRE a
+		// de não conferirem — extrair primeiro dava `origem_tool_falhou`, `origem_vazia` ou
+		// `origem_nao_transportavel` a bytes que ninguém selou, e a série de `origem_nao_confere`,
+		// a que tem de ser zero, subcontava.
+		"nao conferem, e sao um envelope que falhou": {estado(ancora(nil), &envelopeFalhou, ""), causaOrigemNaoConfere},
+		"nao conferem, e sao um envelope vazio":      {estado(ancora(nil), &envelopeVazio, ""), causaOrigemNaoConfere},
+		"nao conferem, e sao um envelope binario":    {estado(ancora(nil), &envelopeBinario, ""), causaOrigemNaoConfere},
+		"nao conferem, e sao so espacos":             {estado(ancora(nil), &soEspacos, ""), causaOrigemNaoConfere},
+		// A RESPOSTA É SOBRE O RUN PEDIDO (M4). A âncora e os bytes conferem entre si — e são de
+		// outro run, ou a resposta não diz de que run é.
+		"resposta de outro run":           {deOutroRun("OUTRO-RUN~x"), causaOrigemSemVinculo},
+		"resposta de outro no do plano":   {deOutroRun("run-418~resumir"), causaOrigemSemVinculo},
+		"resposta sem run_id":             {deOutroRun(""), causaOrigemSemVinculo},
+		"resposta com o run_id noutra cx": {deOutroRun(strings.ToUpper(aos501RunDoLeitor)), causaOrigemSemVinculo},
+	}
+	// O PASSO (M3): o que a âncora aceita e o evento recusa fecha com causa.
+	for _, passo := range passosQueOEventoRecusa {
+		casos[fmt.Sprintf("passo de %d bytes que o evento recusa", len(passo))] = struct {
+			st    estadoDoRun
+			causa string
+		}{estado(ancora(func(a *agentruntime.OutputSource) { a.StepID = passo }), &envelope, ""), causaOrigemSemVinculo}
+	}
+	for nome, c := range casos {
+		ent, causa := entregaDoRun("doc_read", aos501RunDoLeitor, c.st)
 		if causa != c.causa {
 			t.Errorf("%s: causa=%q; quero %q", nome, causa, c.causa)
 		}
 		if ent != (entregaPorReferencia{}) {
 			t.Errorf("%s: com causa nao ha entrega; veio %+v", nome, ent)
+		}
+	}
+	// NÃO-VACUIDADE do M1: cada um desses bytes, COM a âncora deles, dá a causa da extracção.
+	for nome, c := range map[string]struct {
+		servido string
+		causa   string
+	}{
+		"envelope que falhou": {envelopeFalhou, causaOrigemToolFalhou},
+		"envelope vazio":      {envelopeVazio, causaOrigemVazia},
+		"envelope binario":    {envelopeBinario, causaOrigemNaoTransportavel},
+		"so espacos":          {soEspacos, causaOrigemVazia},
+	} {
+		servido := c.servido
+		a := ancora(func(a *agentruntime.OutputSource) { a.Digest, a.Bytes = digestDoConteudo(servido), len(servido) })
+		if _, causa := entregaDoRun("doc_read", aos501RunDoLeitor, estado(a, &servido, "")); causa != c.causa {
+			t.Errorf("%s, com a ancora dos proprios bytes: causa=%q; quero %q", nome, causa, c.causa)
 		}
 	}
 	// As causas são do vocabulário fechado, e todas contam como «a conclusão não se cumpriu».
@@ -987,37 +1201,59 @@ func TestAOS501_EntregaDoRun(t *testing.T) {
 	}
 }
 
-// aos501Executor compõe um executor só com o que [executorDeNos.resolverEntrega] lê.
+// aos501Executor compõe um executor só com o que [executorDeNos.resolverEntrega] lê: o run do
+// plano, e os factos do log.
 func aos501Executor(declaradas map[string]declaracaoDeOrigem) *executorDeNos {
-	return &executorDeNos{declaradas: declaradas, medicao: &medicaoDoContrato{}}
+	return &executorDeNos{runID: "run-418", declaradas: declaradas, medicao: &medicaoDoContrato{}}
 }
 
 // TestAOS501_SemOFactoVinculativoNaoSeEntrega: a prova do LOG. Um run cuja resposta é perfeita —
 // âncora `binding`, designada, bytes que conferem — NÃO se entrega por referência se o log do
-// plano não disser que foi pedido com o vínculo vinculativo para essa tool. É o que impede um
-// `serve` em `on` de entregar um run que outro submeteu em «só medição».
+// plano não disser que foi pedido com o vínculo vinculativo para essa tool E PARA ESSE CONTRATO.
+// É o que impede um `serve` em `on` de entregar um run que outro submeteu em «só medição».
 func TestAOS501_SemOFactoVinculativoNaoSeEntrega(t *testing.T) {
 	envelope, documento := aos499Envelope(t, "notas")
 	a := &agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceBinds, State: agentruntime.OutputSourceDesignated,
 		StepID: "step-000001-tool-1", Digest: digestDoConteudo(envelope), Bytes: len(envelope)}
-	st := estadoDoRun{Status: "completed", Terminated: true, FinalText: aos501TextoFinal, OutputSource: a, Output: &envelope}
-	saida := plan.Output{Name: "conteudo", Type: plan.PayloadRecord, FromTool: "doc_read"}
+	st := estadoDoRun{RunID: aos501RunDoLeitor, Status: "completed", Terminated: true, FinalText: aos501TextoFinal, OutputSource: a, Output: &envelope}
+	leitor := aos501NoLeitor("doc_read")
+	bom := aos501Facto(leitor, plannerevents.OutputSourceBindingBinds)
+	// O mesmo nó com o contrato da saída mudado (outro tipo): o digest do contrato é outro.
+	outroContrato := aos501NoLeitor("doc_read")
+	outroContrato.Outputs[0].Type = plan.PayloadArtifact
+	if plan.OutputDigest(outroContrato, outroContrato.Outputs[0]) == bom.digestDoContrato {
+		t.Fatal("pre-condicao: mudar o tipo da saida muda o digest do contrato")
+	}
+	// Os dois nós que o validador recusa e que aqui não são entregáveis: duas saídas com origem,
+	// e o NÓ MISTO (uma saída de texto ao lado da origem).
+	duasOrigens := aos501NoLeitor("doc_read")
+	duasOrigens.Outputs = append(duasOrigens.Outputs, plan.Output{Name: "copia", Type: plan.PayloadRecord, FromTool: "doc_read"})
+	misto := aos501NoLeitor("doc_read")
+	misto.Outputs = append(misto.Outputs, plan.Output{Name: "resumo", Type: plan.PayloadSummary})
+	comMetricas := aos501NoLeitor("doc_read")
+	comMetricas.Outputs = append(comMetricas.Outputs, plan.Output{Name: "medidas", Type: plan.PayloadMetrics})
+	semDigest := bom
+	semDigest.digestDoContrato = ""
 	for nome, c := range map[string]struct {
+		no         plan.Node
 		declaradas map[string]declaracaoDeOrigem
-		unica      bool
 		causa      string
 	}{
-		"facto binding":          {map[string]declaracaoDeOrigem{"ler": {tool: "doc_read", vinculo: plannerevents.OutputSourceBindingBinds}}, true, ""},
-		"facto measure":          {map[string]declaracaoDeOrigem{"ler": {tool: "doc_read", vinculo: plannerevents.OutputSourceBindingMeasure}}, true, causaOrigemSemVinculo},
-		"sem facto":              {map[string]declaracaoDeOrigem{}, true, causaOrigemSemVinculo},
-		"facto de outro no":      {map[string]declaracaoDeOrigem{"outro": {tool: "doc_read", vinculo: plannerevents.OutputSourceBindingBinds}}, true, causaOrigemSemVinculo},
-		"facto de outra tool":    {map[string]declaracaoDeOrigem{"ler": {tool: "web_post", vinculo: plannerevents.OutputSourceBindingBinds}}, true, causaOrigemSemVinculo},
-		"facto sem vinculo":      {map[string]declaracaoDeOrigem{"ler": {tool: "doc_read"}}, true, causaOrigemSemVinculo},
-		"duas saidas com origem": {map[string]declaracaoDeOrigem{"ler": {tool: "doc_read", vinculo: plannerevents.OutputSourceBindingBinds}}, false, causaOrigemSemVinculo},
+		"facto binding":                     {leitor, map[string]declaracaoDeOrigem{"ler": bom}, ""},
+		"facto binding, com metrics":        {comMetricas, map[string]declaracaoDeOrigem{"ler": aos501Facto(comMetricas, plannerevents.OutputSourceBindingBinds)}, ""},
+		"facto measure":                     {leitor, map[string]declaracaoDeOrigem{"ler": aos501Facto(leitor, plannerevents.OutputSourceBindingMeasure)}, causaOrigemSemVinculo},
+		"sem facto":                         {leitor, map[string]declaracaoDeOrigem{}, causaOrigemSemVinculo},
+		"facto de outro no":                 {leitor, map[string]declaracaoDeOrigem{"outro": bom}, causaOrigemSemVinculo},
+		"facto de outra tool":               {leitor, map[string]declaracaoDeOrigem{"ler": {tool: "web_post", vinculo: plannerevents.OutputSourceBindingBinds, digestDoContrato: bom.digestDoContrato}}, causaOrigemSemVinculo},
+		"facto sem vinculo":                 {leitor, map[string]declaracaoDeOrigem{"ler": {tool: "doc_read", digestDoContrato: bom.digestDoContrato}}, causaOrigemSemVinculo},
+		"facto sem o digest do contrato":    {leitor, map[string]declaracaoDeOrigem{"ler": semDigest}, causaOrigemSemVinculo},
+		"facto com o digest de outro":       {leitor, map[string]declaracaoDeOrigem{"ler": aos501Facto(outroContrato, plannerevents.OutputSourceBindingBinds)}, causaOrigemSemVinculo},
+		"duas saidas com origem":            {duasOrigens, map[string]declaracaoDeOrigem{"ler": bom}, causaOrigemSemVinculo},
+		"no misto: origem e saida de texto": {misto, map[string]declaracaoDeOrigem{"ler": aos501Facto(misto, plannerevents.OutputSourceBindingBinds)}, causaOrigemSemVinculo},
 	} {
 		e := aos501Executor(c.declaradas)
 		var entrega *entregaPorReferencia
-		causa := e.resolverEntrega("ler", saida, c.unica, st, &entrega)
+		causa := e.resolverEntrega(c.no, st, &entrega)
 		if causa != c.causa {
 			t.Errorf("%s: causa=%q; quero %q", nome, causa, c.causa)
 		}
@@ -1027,13 +1263,63 @@ func TestAOS501_SemOFactoVinculativoNaoSeEntrega(t *testing.T) {
 		if c.causa == "" && entrega.conteudo != documento {
 			t.Errorf("%s: a entrega e o documento; veio %q", nome, entrega.conteudo)
 		}
-		quer := resultadoEntregue
-		if c.causa != "" {
-			quer = c.causa
+		// RESOLVER NÃO CONTA (M9): a métrica é do desfecho do nó, e só se escreve depois dele.
+		if len(e.medicao.entregas) != 0 || len(e.medicao.extraccoes) != 0 {
+			t.Errorf("%s: resolver a entrega nao conta nada; contou %v / %v", nome, e.medicao.entregas, e.medicao.extraccoes)
 		}
-		if e.medicao.entregas[quer] != 1 || len(e.medicao.entregas) != 1 {
-			t.Errorf("%s: a medicao conta o resultado %q uma vez; contou %v", nome, quer, e.medicao.entregas)
+	}
+	// O MESMO RUN, PEDIDO POR OUTRO PLANO: a resposta é sobre o run de `run-418`, e este executor
+	// é de outro run do plano — o `run_id` não é o que ele pediria.
+	outroPlano := aos501Executor(map[string]declaracaoDeOrigem{"ler": bom})
+	outroPlano.runID = "run-999"
+	var entrega *entregaPorReferencia
+	if causa := outroPlano.resolverEntrega(leitor, st, &entrega); causa != causaOrigemSemVinculo || entrega != nil {
+		t.Errorf("a resposta de um run de outro plano nao se entrega; causa=%q entrega=%v", causa, entrega != nil)
+	}
+}
+
+// TestAOS501_AMetricaContaODesfechoDoNo (revisão adversarial, M9): `entregue` só se conta num nó
+// que fechou `complete` com a saída publicada. Uma entrega resolvida num nó que acaba `failed`
+// conta a causa dele, e nunca `entregue`.
+func TestAOS501_AMetricaContaODesfechoDoNo(t *testing.T) {
+	entrega := &entregaPorReferencia{conteudo: "x", extraccao: plannerevents.PayloadExtractionRaw}
+	for nome, c := range map[string]struct {
+		destino   string
+		causa     string
+		entrega   *entregaPorReferencia
+		entregas  map[string]int
+		extraccao int
+	}{
+		"concluiu com entrega":                     {"complete", "", entrega, map[string]int{resultadoEntregue: 1}, 1},
+		"falhou com a causa da origem":             {"failed", causaOrigemVazia, nil, map[string]int{causaOrigemVazia: 1}, 0},
+		"entrega resolvida e o no fechou failed":   {"failed", causaSaidaVazia, entrega, map[string]int{causaSaidaVazia: 1}, 0},
+		"entrega resolvida, failed e sem causa":    {"failed", "", entrega, map[string]int{}, 0},
+		"concluiu sem entrega (nao e desta serie)": {"complete", "", nil, map[string]int{}, 0},
+	} {
+		e := aos501Executor(nil)
+		e.contarEntrega(arstate.State(c.destino), c.causa, c.entrega)
+		if !reflect.DeepEqual(e.medicao.entregas, c.entregas) && !(len(e.medicao.entregas) == 0 && len(c.entregas) == 0) {
+			t.Errorf("%s: entregas=%v; quero %v", nome, e.medicao.entregas, c.entregas)
 		}
+		if e.medicao.entregas[resultadoEntregue] > 0 && c.destino != "complete" {
+			t.Errorf("%s: contou `entregue` num no que nao concluiu", nome)
+		}
+		if got := e.medicao.extraccoes[string(plannerevents.PayloadExtractionRaw)]; got != c.extraccao {
+			t.Errorf("%s: extraccoes=%d; quero %d", nome, got, c.extraccao)
+		}
+	}
+	if arstate.Complete != "complete" || arstate.Failed != "failed" {
+		t.Fatalf("pre-condicao: os estados terminais do no sao complete e failed (%q, %q)", arstate.Complete, arstate.Failed)
+	}
+	// Só as causas do vocabulário fechado chegam ao ficheiro de métricas: `saida_vazia` não é
+	// desta série, e a contagem dela não vira uma série `entregue`.
+	m := &metricasDoConsumo{series: map[string]float64{}}
+	c := &medicaoDoContrato{}
+	e := &executorDeNos{medicao: c}
+	e.contarEntrega(arstate.Failed, causaSaidaVazia, entrega)
+	m.registarEntrega(c)
+	if texto := string(m.texto()); strings.Contains(texto, resultadoEntregue) {
+		t.Fatalf("um no que fechou failed nao escreve a serie entregue:\n%s", texto)
 	}
 }
 
@@ -1054,50 +1340,80 @@ func (c *aos501Cliente) Status(context.Context, string) (estadoDoRun, bool, erro
 	return c.st, c.existe, c.erro
 }
 
-// TestAOS501_Reidratacao: do log saem (a) os factos da declaração, incluindo o vínculo — o
-// primeiro de cada nó é o que fica —, e (b) os payloads por referência, relidos do run filho e
-// conferidos contra TUDO o que o evento registou.
+// aos501Reidratado compõe o executor pelo CONSTRUTOR — que é quem reidrata —, com o DOCUMENTO
+// APROVADO dado: desde a revisão adversarial (I1) a reidratação consulta-o.
+func aos501Reidratado(t *testing.T, cli nodeRunner, store runlifecycle.EventStore, nos ...plan.Node) *executorDeNos {
+	t.Helper()
+	e, err := novoExecutorDeNos(context.Background(), cli, nil, nil, "run-418", plan.PlanDocument{Nodes: nos}, nil, nil, store, "plan-418")
+	if err != nil {
+		t.Fatalf("novoExecutorDeNos: %v", err)
+	}
+	return e
+}
+
+// TestAOS501_Reidratacao: do log saem (a) os factos da declaração, incluindo o vínculo e o digest
+// do contrato — o primeiro de cada nó é o que fica —, e (b) os payloads por referência, relidos
+// do run filho e conferidos contra o DOCUMENTO, contra o facto e contra TUDO o que o evento
+// registou.
 func TestAOS501_Reidratacao(t *testing.T) {
 	envelope, documento := aos499Envelope(t, "notas")
+	leitor := aos501NoLeitor("doc_read")
+	digestDoContrato := plan.OutputDigest(leitor, leitor.Outputs[0])
 	a := agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceBinds, State: agentruntime.OutputSourceDesignated,
 		StepID: "step-000001-tool-1", Digest: digestDoConteudo(envelope), Bytes: len(envelope)}
 	publicado := plannerevents.PayloadPublishedPayload{
 		NodeID: "ler", Output: "conteudo", Type: plan.PayloadRecord, Taint: plan.TaintUntrusted,
-		Record: plannerevents.PayloadRecordRef{Store: plannerevents.PayloadStoreEventStore, Stream: "run-418~ler", Digest: digestDoConteudo(documento)},
+		Record: plannerevents.PayloadRecordRef{Store: plannerevents.PayloadStoreEventStore, Stream: aos501RunDoLeitor, Digest: digestDoConteudo(documento)},
 		Source: &plannerevents.PayloadSource{Kind: plannerevents.PayloadSourceToolResult, Tool: "doc_read", StepID: a.StepID,
 			AnchorDigest: a.Digest, AnchorBytes: a.Bytes, Extraction: plannerevents.PayloadExtractionSandboxStdoutText},
 	}
 	bom := func() estadoDoRun {
 		copia := a
-		return estadoDoRun{Status: "completed", Terminated: true, FinalText: aos501TextoFinal, OutputSource: &copia, Output: &envelope}
+		return estadoDoRun{RunID: aos501RunDoLeitor, Status: "completed", Terminated: true, FinalText: aos501TextoFinal, OutputSource: &copia, Output: &envelope}
 	}
 	chave := chaveDePayload{no: "ler", output: "conteudo"}
+	facto := func(no string, vinculo plannerevents.OutputSourceBinding) eventoDeTeste {
+		return eventoDeTeste{tipo: plannerevents.EventOutputSourceDeclared, payload: plannerevents.OutputSourceDeclaredPayload{
+			NodeID: no, Output: "conteudo", Tool: "doc_read", Binding: vinculo, ContractDigest: digestDoContrato}}
+	}
+	// O log de um plano que correu em `on`: o facto vinculativo, e depois a publicação.
 	store := func(p plannerevents.PayloadPublishedPayload) *storeDePayloads {
 		return &storeDePayloads{eventos: []eventoDeTeste{
-			{tipo: plannerevents.EventOutputSourceDeclared, payload: plannerevents.OutputSourceDeclaredPayload{NodeID: "ler", Output: "conteudo", Tool: "doc_read", Binding: plannerevents.OutputSourceBindingMeasure}},
-			{tipo: plannerevents.EventOutputSourceDeclared, payload: plannerevents.OutputSourceDeclaredPayload{NodeID: "ler", Output: "conteudo", Tool: "doc_read", Binding: plannerevents.OutputSourceBindingBinds}},
-			{tipo: plannerevents.EventOutputSourceDeclared, payload: plannerevents.OutputSourceDeclaredPayload{NodeID: "outro", Output: "x", Tool: "doc_read", Binding: plannerevents.OutputSourceBindingBinds}},
+			facto("ler", plannerevents.OutputSourceBindingBinds),
+			facto("outro", plannerevents.OutputSourceBindingBinds),
 			{tipo: plannerevents.EventPayloadPublished, payload: p},
 		}}
 	}
 
 	// (a) Os factos: o PRIMEIRO de cada nó. Um facto `measure` no log não é apagado por um
-	// `binding` posterior — e com ele o nó não se entrega por referência.
-	cli := &aos501Cliente{st: bom(), existe: true}
-	e := executorReidratado(t, cli, store(publicado))
-	if d := e.declaradas["ler"]; d.vinculo != plannerevents.OutputSourceBindingMeasure || d.tool != "doc_read" {
-		t.Fatalf("o facto que vale e o primeiro do log (measure); ficou %+v", d)
+	// `binding` posterior — e com ele o nó não se entrega por referência, nem o payload dele se
+	// reconstrói.
+	cliMeasure := &aos501Cliente{st: bom(), existe: true}
+	eMeasure := aos501Reidratado(t, cliMeasure, &storeDePayloads{eventos: []eventoDeTeste{
+		facto("ler", plannerevents.OutputSourceBindingMeasure),
+		facto("ler", plannerevents.OutputSourceBindingBinds),
+		facto("outro", plannerevents.OutputSourceBindingBinds),
+		{tipo: plannerevents.EventPayloadPublished, payload: publicado},
+	}}, leitor)
+	if d := eMeasure.declaradas["ler"]; d.vinculo != plannerevents.OutputSourceBindingMeasure || d.tool != "doc_read" || d.digestDoContrato != digestDoContrato {
+		t.Fatalf("o facto que vale e o primeiro do log (measure), com a tool e o digest do contrato; ficou %+v", d)
 	}
-	if d := e.declaradas["outro"]; !d.vinculativa("doc_read") {
+	if d := eMeasure.declaradas["outro"]; !d.vinculativa("doc_read", digestDoContrato) {
 		t.Fatalf("o facto binding de outro no le-se do log: %+v", d)
 	}
 	var entrega *entregaPorReferencia
-	e.medicao = &medicaoDoContrato{}
-	if causa := e.resolverEntrega("ler", plan.Output{Name: "conteudo", Type: plan.PayloadRecord, FromTool: "doc_read"}, true, bom(), &entrega); causa != causaOrigemSemVinculo || entrega != nil {
+	eMeasure.medicao = &medicaoDoContrato{}
+	if causa := eMeasure.resolverEntrega(leitor, bom(), &entrega); causa != causaOrigemSemVinculo || entrega != nil {
 		t.Fatalf("um run cujo facto no log diz measure NAO se entrega por um serve em on; causa=%q entrega=%v", causa, entrega != nil)
 	}
+	if _, ok := eMeasure.payloads[chave]; ok || eMeasure.rehidratados != 0 || cliMeasure.consultas != 0 {
+		t.Fatalf("com o facto measure o payload por referencia NAO se reconstroi, e nem se chega a perguntar ao no (ok=%v, rehidratados=%d, consultas=%d)", ok, eMeasure.rehidratados, cliMeasure.consultas)
+	}
 
-	// (b) O payload por referência confirma-se e entra — com o documento, e não com o texto final.
+	// (b) Com o facto vinculativo, o payload por referência confirma-se e entra — com o
+	// documento, e não com o texto final.
+	cli := &aos501Cliente{st: bom(), existe: true}
+	e := aos501Reidratado(t, cli, store(publicado), leitor)
 	if got, ok := e.payloads[chave]; !ok || got != documento || e.rehidratados != 1 || cli.consultas != 1 {
 		t.Fatalf("o payload por referencia tinha de ser reconstruido com o documento (ok=%v, %d bytes, rehidratados=%d, consultas=%d)", ok, len(got), e.rehidratados, cli.consultas)
 	}
@@ -1110,11 +1426,12 @@ func TestAOS501_Reidratacao(t *testing.T) {
 	}{
 		"o no responde 503":         {&aos501Cliente{erro: errors.New("estado no no: HTTP 503")}, nil},
 		"o no ja nao conhece o run": {&aos501Cliente{existe: false}, nil},
-		"so o texto final":          {&aos501Cliente{existe: true, st: estadoDoRun{Status: "completed", Terminated: true, FinalText: documento}}, nil},
+		"so o texto final":          {&aos501Cliente{existe: true, st: estadoDoRun{RunID: aos501RunDoLeitor, Status: "completed", Terminated: true, FinalText: documento}}, nil},
 		"run que nao concluiu":      {&aos501Cliente{existe: true, st: func() estadoDoRun { s := bom(); s.Status = "failed"; return s }()}, nil},
 		"bytes que nao conferem":    {&aos501Cliente{existe: true, st: func() estadoDoRun { s := bom(); s.Output = &outro; return s }()}, nil},
 		"ancora measure":            {&aos501Cliente{existe: true, st: func() estadoDoRun { s := bom(); s.OutputSource.Binding = agentruntime.OutputSourceMeasure; return s }()}, nil},
 		"bytes indisponiveis":       {&aos501Cliente{existe: true, st: func() estadoDoRun { s := bom(); s.Output = nil; s.OutputOmitted = "unavailable"; return s }()}, nil},
+		"resposta de outro run":     {&aos501Cliente{existe: true, st: func() estadoDoRun { s := bom(); s.RunID = "OUTRO-RUN~x"; return s }()}, nil},
 		"outro passo no evento": {&aos501Cliente{existe: true, st: bom()}, func(p plannerevents.PayloadPublishedPayload) plannerevents.PayloadPublishedPayload {
 			s := *p.Source
 			s.StepID = "step-000002-tool-1"
@@ -1133,6 +1450,12 @@ func TestAOS501_Reidratacao(t *testing.T) {
 			p.Source = &s
 			return p
 		}},
+		"extraccao desconhecida no evento": {&aos501Cliente{existe: true, st: bom()}, func(p plannerevents.PayloadPublishedPayload) plannerevents.PayloadPublishedPayload {
+			s := *p.Source
+			s.Extraction = "sandbox_artifact"
+			p.Source = &s
+			return p
+		}},
 		"outro digest entregue": {&aos501Cliente{existe: true, st: bom()}, func(p plannerevents.PayloadPublishedPayload) plannerevents.PayloadPublishedPayload {
 			p.Record.Digest = digestDoConteudo(envelope)
 			return p
@@ -1143,12 +1466,16 @@ func TestAOS501_Reidratacao(t *testing.T) {
 			p.Source = &s
 			return p
 		}},
+		"o evento refere o run de outro no": {&aos501Cliente{existe: true, st: func() estadoDoRun { s := bom(); s.RunID = "run-418~outro"; return s }()}, func(p plannerevents.PayloadPublishedPayload) plannerevents.PayloadPublishedPayload {
+			p.Record.Stream = "run-418~outro"
+			return p
+		}},
 	} {
 		p := publicado
 		if c.pub != nil {
 			p = c.pub(p)
 		}
-		e := executorReidratado(t, c.cli, store(p))
+		e := aos501Reidratado(t, c.cli, store(p), leitor)
 		if got, ok := e.payloads[chave]; ok {
 			t.Errorf("%s: o payload entrou sem se confirmar (%d bytes)", nome, len(got))
 		}
@@ -1162,6 +1489,119 @@ func TestAOS501_Reidratacao(t *testing.T) {
 	// documento entregue —, pelo que o consumidor falhava fechado em vez de receber o texto.
 	if digestDoConteudo(aos501TextoFinal) == publicado.Record.Digest {
 		t.Fatal("o digest publicado bate com o do texto final: um leitor anterior entregava o texto do modelo")
+	}
+}
+
+// TestAOS501_AReidratacaoConsultaODocumentoAprovado (revisão adversarial de 2026-10-06, I1): na
+// reconstrução dos payloads a partir do log, o CONTRATO DA SAÍDA NO DOCUMENTO é a autoridade.
+//
+//   - uma saída cujo contrato DECLARA `from_tool` só entra de um `plan.payload_published` COM
+//     `source`, com o facto `plan.output_source_declared` vinculativo no log para esse nó e essa
+//     tool, e com o `contract_digest` do facto igual ao do contrato;
+//   - uma saída cujo contrato NÃO declara a origem só entra de um evento SEM `source`.
+//
+// O construtor do evento não escreve nenhuma das combinações recusadas (a regra simétrica); o
+// que aqui se prende é a LEITURA, contra um evento que tenha entrado no stream do plano por
+// outra via. Era por aí — e só por aí — que o texto do modelo chegava a um consumidor sob um
+// contrato com origem. O consumidor fecha `entrada_por_cumprir`, a regra do AOS-418.
+func TestAOS501_AReidratacaoConsultaODocumentoAprovado(t *testing.T) {
+	const textoDoModelo = "RESUMO-DO-MODELO sem o numero"
+	envelope, documento := aos499Envelope(t, "notas")
+	comOrigem, semOrigem := aos501NoLeitor("doc_read"), aos501NoLeitor("")
+	consumidor := plan.Node{NodeID: "resumir", Role: "summarizer", Objective: "resumir", DependsOn: []string{"ler"},
+		Consumes: []plan.PayloadEdge{{From: "ler", Output: "conteudo", Type: plan.PayloadRecord}}}
+	chave := chaveDePayload{no: "ler", output: "conteudo"}
+	a := agentruntime.OutputSource{Tool: "doc_read", Binding: agentruntime.OutputSourceBinds, State: agentruntime.OutputSourceDesignated,
+		StepID: "step-000001-tool-1", Digest: digestDoConteudo(envelope), Bytes: len(envelope)}
+	// O nó responde com TUDO: o texto final do modelo, a âncora designada e os bytes que conferem.
+	// É a resposta com que seria mais fácil deixar entrar qualquer um dos dois.
+	resposta := estadoDoRun{RunID: aos501RunDoLeitor, Status: "completed", Terminated: true, FinalText: textoDoModelo, OutputSource: &a, Output: &envelope}
+	doTexto := plannerevents.PayloadPublishedPayload{NodeID: "ler", Output: "conteudo", Type: plan.PayloadRecord, Taint: plan.TaintUntrusted,
+		Record: plannerevents.PayloadRecordRef{Store: plannerevents.PayloadStoreEventStore, Stream: aos501RunDoLeitor, Digest: digestDoConteudo(textoDoModelo)}}
+	porReferencia := plannerevents.PayloadPublishedPayload{NodeID: "ler", Output: "conteudo", Type: plan.PayloadRecord, Taint: plan.TaintUntrusted,
+		Record: plannerevents.PayloadRecordRef{Store: plannerevents.PayloadStoreEventStore, Stream: aos501RunDoLeitor, Digest: digestDoConteudo(documento)},
+		Source: &plannerevents.PayloadSource{Kind: plannerevents.PayloadSourceToolResult, Tool: "doc_read", StepID: a.StepID,
+			AnchorDigest: a.Digest, AnchorBytes: a.Bytes, Extraction: plannerevents.PayloadExtractionSandboxStdoutText}}
+	facto := func(mexer func(*plannerevents.OutputSourceDeclaredPayload)) eventoDeTeste {
+		d := plannerevents.OutputSourceDeclaredPayload{NodeID: "ler", Output: "conteudo", Tool: "doc_read",
+			Binding: plannerevents.OutputSourceBindingBinds, ContractDigest: plan.OutputDigest(comOrigem, comOrigem.Outputs[0])}
+		if mexer != nil {
+			mexer(&d)
+		}
+		return eventoDeTeste{tipo: plannerevents.EventOutputSourceDeclared, payload: d}
+	}
+	publicacao := func(p plannerevents.PayloadPublishedPayload) eventoDeTeste {
+		return eventoDeTeste{tipo: plannerevents.EventPayloadPublished, payload: p}
+	}
+	fechado := plannerevents.PayloadPublishedPayload{NodeID: "ler", Output: "conteudo",
+		Closed: &plannerevents.ClosedPayload{Outcome: "pass", Reasons: []string{"documento_lido"}}}
+
+	for nome, c := range map[string]struct {
+		produtor plan.Node
+		eventos  []eventoDeTeste
+		entra    string // o conteúdo que tem de entrar; vazio ⇒ NÃO entra
+	}{
+		// OS DOIS CASOS DA REVISÃO (`TestREV_Reidratacao`): entravam os dois.
+		"(a) contrato COM origem, evento SEM source: o texto do modelo NAO entra": {comOrigem,
+			[]eventoDeTeste{facto(nil), publicacao(doTexto)}, ""},
+		"(b) contrato SEM origem, evento COM source e sem facto: NAO entra": {semOrigem,
+			[]eventoDeTeste{publicacao(porReferencia)}, ""},
+		// E as variantes à volta deles.
+		"(a') contrato COM origem, evento SEM source e sem facto": {comOrigem,
+			[]eventoDeTeste{publicacao(doTexto)}, ""},
+		"(b') contrato SEM origem, evento COM source e COM facto": {semOrigem,
+			[]eventoDeTeste{facto(nil), publicacao(porReferencia)}, ""},
+		"contrato COM origem, evento de forma fechada": {comOrigem,
+			[]eventoDeTeste{facto(nil), publicacao(fechado)}, ""},
+		"contrato COM origem, evento COM source, SEM facto": {comOrigem,
+			[]eventoDeTeste{publicacao(porReferencia)}, ""},
+		"contrato COM origem, facto measure": {comOrigem,
+			[]eventoDeTeste{facto(func(d *plannerevents.OutputSourceDeclaredPayload) {
+				d.Binding = plannerevents.OutputSourceBindingMeasure
+			}), publicacao(porReferencia)}, ""},
+		"contrato COM origem, facto de outra tool": {comOrigem,
+			[]eventoDeTeste{facto(func(d *plannerevents.OutputSourceDeclaredPayload) { d.Tool = "web_fetch" }), publicacao(porReferencia)}, ""},
+		"contrato COM origem, facto com outro contract_digest": {comOrigem,
+			[]eventoDeTeste{facto(func(d *plannerevents.OutputSourceDeclaredPayload) {
+				d.ContractDigest = plan.OutputDigest(semOrigem, semOrigem.Outputs[0])
+			}), publicacao(porReferencia)}, ""},
+		"contrato COM origem, facto sem contract_digest": {comOrigem,
+			[]eventoDeTeste{facto(func(d *plannerevents.OutputSourceDeclaredPayload) { d.ContractDigest = "" }), publicacao(porReferencia)}, ""},
+		"contrato COM origem, facto de outro no": {comOrigem,
+			[]eventoDeTeste{facto(func(d *plannerevents.OutputSourceDeclaredPayload) { d.NodeID = "outro" }), publicacao(porReferencia)}, ""},
+		"contrato COM origem, o facto vem DEPOIS da publicacao": {comOrigem,
+			[]eventoDeTeste{publicacao(porReferencia), facto(nil)}, ""},
+		// NÃO-VACUIDADE: as duas combinações certas entram, cada uma com o seu conteúdo.
+		"contrato COM origem, evento COM source e facto vinculativo: entra o DOCUMENTO": {comOrigem,
+			[]eventoDeTeste{facto(nil), publicacao(porReferencia)}, documento},
+		"contrato SEM origem, evento SEM source: entra o texto final, como sempre": {semOrigem,
+			[]eventoDeTeste{publicacao(doTexto)}, textoDoModelo},
+	} {
+		cli := &aos501Cliente{existe: true, st: resposta}
+		e := aos501Reidratado(t, cli, &storeDePayloads{eventos: c.eventos}, c.produtor, consumidor)
+		got, entrou := e.payloads[chave]
+		if entrou != (c.entra != "") || got != c.entra {
+			t.Errorf("%s: entrou=%v com %q; quero entrou=%v com %q", nome, entrou, got, c.entra != "", c.entra)
+		}
+		if quer := map[bool]int{true: 1, false: 0}[c.entra != ""]; e.rehidratados != quer {
+			t.Errorf("%s: contou %d payloads reconstruidos; quero %d", nome, e.rehidratados, quer)
+		}
+		// O CONSUMIDOR: sem o payload fica com o contrato por cumprir — é o que o fecha
+		// `entrada_por_cumprir` (AOS-418) em vez de correr com o que não se confirmou.
+		aresta, porCumprir := e.contratoPorCumprir("resumir")
+		if porCumprir != (c.entra == "") {
+			t.Errorf("%s: o consumidor tem o contrato por cumprir = %v; quero %v", nome, porCumprir, c.entra == "")
+		}
+		if porCumprir && (aresta.From != "ler" || aresta.Output != "conteudo") {
+			t.Errorf("%s: o contrato por cumprir e o de ler/conteudo; veio %+v", nome, aresta)
+		}
+		if _, err := e.entradasDe(consumidor); (err != nil) != (c.entra == "") || (err != nil && !errors.Is(err, ErrPayloadPerdido)) {
+			t.Errorf("%s: montar as entradas do consumidor devolveu %v", nome, err)
+		}
+		// Em NENHUM caso recusado o texto do modelo, nem o documento, ficam em memória.
+		if c.entra == "" && len(e.payloads) != 0 {
+			t.Errorf("%s: ficou conteudo em memoria sem se confirmar: %d payload(s)", nome, len(e.payloads))
+		}
 	}
 }
 
@@ -1375,7 +1815,8 @@ func TestAOS501_Metricas_SoVocabularioFechado(t *testing.T) {
 	}
 	// As razões do validador que se contam são as que o `planvalidate` tem para a origem.
 	for _, r := range []planvalidate.Reason{planvalidate.ReasonFromToolOnVerifier, planvalidate.ReasonFromToolWithConsumes, planvalidate.ReasonFromToolMultiple,
-		planvalidate.ReasonFromToolOutputType, planvalidate.ReasonFromToolUnknownTool, planvalidate.ReasonFromToolAmbiguousTool} {
+		planvalidate.ReasonFromToolOutputType, planvalidate.ReasonFromToolUnknownTool, planvalidate.ReasonFromToolAmbiguousTool,
+		planvalidate.ReasonFromToolWithTextOutput} {
 		tem := false
 		for _, s := range razoesDaOrigemNoValidador {
 			tem = tem || s == string(r)
@@ -1384,8 +1825,8 @@ func TestAOS501_Metricas_SoVocabularioFechado(t *testing.T) {
 			t.Errorf("a razao %q do validador nao se conta", r)
 		}
 	}
-	if len(razoesDaOrigemNoValidador) != 6 {
-		t.Errorf("as razoes da origem contadas sao seis; sao %d", len(razoesDaOrigemNoValidador))
+	if len(razoesDaOrigemNoValidador) != 7 {
+		t.Errorf("as razoes da origem contadas sao sete; sao %d", len(razoesDaOrigemNoValidador))
 	}
 }
 

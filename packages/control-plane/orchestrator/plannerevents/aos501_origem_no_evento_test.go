@@ -209,3 +209,40 @@ func TestAOS501_Declaracao_UmFactoPorNoEAPrimeiraFica(t *testing.T) {
 		t.Fatal("o tipo novo tem de pertencer ao catalogo e a familia plan.*")
 	}
 }
+
+// TestAOS501_Source_OTaintDoEventoESempreUntrusted: o `taint` que fica no evento de um payload
+// por referência é `untrusted`, diga o documento o que disser. O advisory `trusted` de uma saída
+// com origem não a desclassifica: o que se entrega é o que uma tool devolveu — conteúdo de
+// terceiros —, e é pelo taint do evento que um leitor do log sabe o que aquela aresta levou.
+//
+// A revisão adversarial de 2026-10-06 (M6) mostrou que só [plan.Node.EffectiveOutputTaint]
+// estava testada; o campo do evento aceitava o advisory sem nenhum teste dar por isso (R05).
+func TestAOS501_Source_OTaintDoEventoESempreUntrusted(t *testing.T) {
+	for _, advisory := range []plan.PayloadTaint{"", plan.TaintUntrusted, plan.TaintTrusted} {
+		for _, tipo := range []plan.PayloadType{plan.PayloadRecord, plan.PayloadArtifact} {
+			produtor := aos501Produtor("doc_read")
+			produtor.Outputs[0].Taint, produtor.Outputs[0].Type = advisory, tipo
+			p, err := NewPayloadPublished(aos501RefPorReferencia(), produtor)
+			if err != nil {
+				t.Fatalf("advisory %q, tipo %q: NewPayloadPublished: %v", advisory, tipo, err)
+			}
+			if p.Taint != plan.TaintUntrusted {
+				t.Fatalf("advisory %q, tipo %q: o evento de um payload por referencia diz taint=%q; e sempre untrusted", advisory, tipo, p.Taint)
+			}
+			if p.Source == nil || p.Type != tipo {
+				t.Fatalf("advisory %q, tipo %q: pre-condicao: o evento e o de uma saida por referencia desse tipo: %+v", advisory, tipo, p)
+			}
+		}
+	}
+	// E o passo: a pergunta exportada é a do construtor.
+	for passo, quer := range map[string]bool{"step-000001-tool-1": true, "": false, "passo com espaco": false, "x\ny": false, strings.Repeat("a", 128): true, strings.Repeat("a", 129): false} {
+		if ValidSourceStepID(passo) != quer {
+			t.Errorf("ValidSourceStepID(%d bytes) = %v; quero %v", len(passo), !quer, quer)
+		}
+		ref := aos501RefPorReferencia()
+		ref.Source.StepID = passo
+		if _, err := NewPayloadPublished(ref, aos501Produtor("doc_read")); (err == nil) != quer {
+			t.Errorf("o construtor e a pergunta exportada discordam no passo de %d bytes: err=%v", len(passo), err)
+		}
+	}
+}

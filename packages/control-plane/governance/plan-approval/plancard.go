@@ -210,7 +210,9 @@ func (c PlanCard) Validate() error {
 	}
 	// AOS-501: um cartão que mostra a origem de uma saída usa o contrato 1.2.0, e tem de o
 	// carimbar. Com um carimbo abaixo, a versão deixava de identificar o que o aprovador viu.
-	if extensionsDeclareOutputSource(c.NodeExtensions) && c.SchemaVersion.Compare(CurrentVersion) < 0 {
+	// O piso é a versão em que a origem ENTROU, fixa, e não a corrente: ver
+	// [versionOutputSourceSince].
+	if extensionsDeclareOutputSource(c.NodeExtensions) && c.SchemaVersion.Compare(versionOutputSourceSince) < 0 {
 		return ErrOutputSourceBelowVersion
 	}
 	if c.RunID == "" || c.Agent == "" {

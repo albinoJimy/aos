@@ -239,8 +239,13 @@ var formasDaOrigem = []string{formaEnvelope, formaEnvelopeFalhou, formaEnvelopeB
 var chavesDoEnvelope = map[string]bool{"stdout_text": true, "stdout": true, "artifacts": true, "exit_code": true}
 
 // desembrulharEnvelope reconhece nos bytes servidos pelo nó a forma do envelope da sandbox e
-// devolve o conteúdo a comparar e a forma. SÓ SERVE A MEDIÇÃO: nada do que devolve é publicado,
-// entregue ou guardado.
+// devolve o conteúdo do envelope e a forma.
+//
+// TEM DOIS CHAMADORES. A medição do AOS-499 ([medirOrigem]) compara o conteúdo com o texto final
+// e não o publica. A ENTREGA do AOS-501 ([extrairEntrega]) usa a MESMA leitura para derivar o
+// que o nó seguinte recebe: com o interruptor em `on`, o conteúdo que esta função devolve para
+// um envelope com `exit_code` zero É o que se publica e se entrega. As duas têm de ler o
+// envelope da mesma maneira — é por isso que é uma só função.
 //
 // # A forma exacta, lida de forma tolerante
 //

@@ -471,7 +471,15 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 	// submete: um run sem o vínculo acabava com o texto do modelo no lugar do resultado da tool.
 	saidaPorRef, porReferencia := saidaComOrigem(n)
 	if n.DeclaresOutputSource() {
-		if !porReferencia || !e.entregaActiva {
+		if !porReferencia {
+			// O documento declara a origem de uma forma que o validador recusa (mais de uma
+			// saída com origem, ou o NÓ MISTO). Não chega aqui por um plano validado; se chegar,
+			// não se submete — um run destes acabava com o texto do modelo publicado ao lado do
+			// resultado da tool. É a MESMA sentinela, de propósito: é determinista para o
+			// documento, e tem de ser terminal (saída 10) e não um erro que se repete.
+			return fmt.Errorf("%w — o no %q declara a origem de uma forma que nao se entrega (mais de uma saida com origem, ou uma saida de texto ao lado dela) e nao e submetido", errNoSemEntregaPorReferencia, nodeID)
+		}
+		if !e.entregaActiva {
 			return fmt.Errorf("%w — o no %q nao e submetido", errNoSemEntregaPorReferencia, nodeID)
 		}
 		if _, err := e.rec.RecordOutputSourceDeclared(ctx, plannerevents.OutputSourceDeclaredPayload{
@@ -482,7 +490,8 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 		if _, ja := e.declaradas[nodeID]; !ja {
 			// A PRIMEIRA declaração é o facto (o passo é um por nó). Uma submissão repetida não
 			// substitui o que o log já diz.
-			e.declaradas[nodeID] = declaracaoDeOrigem{tool: saidaPorRef.FromTool, vinculo: plannerevents.OutputSourceBindingBinds}
+			e.declaradas[nodeID] = declaracaoDeOrigem{tool: saidaPorRef.FromTool, vinculo: plannerevents.OutputSourceBindingBinds,
+				digestDoContrato: digestDoContratoComOrigem(n, saidaPorRef)}
 		}
 		p.OutputFromTool, p.OutputBinding = saidaPorRef.FromTool, agentruntime.OutputSourceBinds
 		fmt.Printf("  execucao: no %s saida por referencia: a saida %s declara a origem (a tool %s) — o run leva o vinculo binding, e o facto fica no log do plano\n", nodeID, saidaPorRef.Name, saidaPorRef.FromTool)
@@ -691,10 +700,19 @@ func digestDoConteudo(conteudo string) string {
 // UMA SAÍDA COM ORIGEM DECLARADA (AOS-501) publica-se da `entrega` — os bytes designados pelo
 // kernel, já conferidos contra a âncora — e de mais lado nenhum. Sem entrega não se publica: o
 // ramo dela vem ANTES dos do texto final, e não cai para eles.
+//
+// DE UM NÓ QUE DECLARA A ORIGEM, NADA SE PUBLICA DO TEXTO FINAL. O nó misto (uma saída com
+// origem e outra de texto) é recusado pelo validador do plano e não é entregável
+// ([saidaComOrigem]); o ramo `comOrigem` abaixo é a última linha, e fecha: se um nó assim
+// chegasse aqui, a sua saída de texto ficava por publicar e o consumidor dela não corria.
 func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st estadoDoRun, v *plannerevents.VerdictRecordedPayload, entrega *entregaPorReferencia) error {
-	// As saídas que se publicam do TEXTO FINAL: as abertas sem origem. Num plano sem `from_tool`
-	// é a contagem de sempre.
-	abertos := saidasDeTexto(n)
+	abertos := 0
+	for _, c := range n.Outputs {
+		if !c.Type.ClosedForm() {
+			abertos++
+		}
+	}
+	comOrigem := n.DeclaresOutputSource()
 	for _, contrato := range n.Outputs {
 		p := plannerevents.PayloadPublishedPayload{NodeID: n.NodeID, Output: contrato.Name}
 		var conteudo string
@@ -729,6 +747,9 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 				AnchorBytes:  entrega.bytesDaAncora,
 				Extraction:   entrega.extraccao,
 			}
+		case comOrigem:
+			// Uma saída de TEXTO num nó que declara a origem: nunca se publica. Ver o topo.
+			continue
 		case abertos > 1:
 			// DOIS contratos de forma aberta no mesmo nó: um run devolve UMA saída final, e
 			// atribuí-la aos dois publicaria bytes iguais sob nomes diferentes — o tipo que o
@@ -823,7 +844,7 @@ func (e *executorDeNos) rehidratarPayloads(ctx context.Context, store runlifecyc
 			var d plannerevents.OutputSourceDeclaredPayload
 			if err := json.Unmarshal(ev.Payload, &d); err == nil {
 				if _, ja := e.declaradas[d.NodeID]; !ja {
-					e.declaradas[d.NodeID] = declaracaoDeOrigem{tool: d.Tool, vinculo: d.Binding}
+					e.declaradas[d.NodeID] = declaracaoDeOrigem{tool: d.Tool, vinculo: d.Binding, digestDoContrato: d.ContractDigest}
 				}
 			}
 			continue
@@ -845,6 +866,26 @@ func (e *executorDeNos) rehidratarPayloads(ctx context.Context, store runlifecyc
 		if _, ja := e.payloads[chave]; ja {
 			continue
 		}
+		// O CONTRATO DO DOCUMENTO APROVADO É A AUTORIDADE (AOS-501, revisão adversarial de
+		// 2026-10-06, achado I1). O construtor do evento impõe a regra simétrica na ESCRITA
+		// (`from_tool` obriga a `source`; sem ele, `source` é proibido); esta é a mesma regra
+		// na LEITURA, contra o documento, para um evento que tenha entrado no stream do plano
+		// por outra via:
+		//
+		//   - o contrato DECLARA a origem ⇒ o payload só entra de um evento COM `source`, e só
+		//     por [relerPorReferencia] — nunca pelo texto final do run filho;
+		//   - o contrato NÃO declara a origem ⇒ só entra de um evento SEM `source`.
+		//
+		// Qualquer outra combinação não entra, e o consumidor fecha `entrada_por_cumprir`.
+		origem, declara := e.origemDoContrato(p.NodeID, p.Output)
+		switch {
+		case declara && (p.Source == nil || p.Closed != nil):
+			fmt.Printf("  execucao: payload %s/%s NAO rehidratado (o contrato do documento declara a origem e o evento publicado nao e por referencia)\n", p.NodeID, p.Output)
+			continue
+		case !declara && p.Source != nil:
+			fmt.Printf("  execucao: payload %s/%s NAO rehidratado (o evento publicado e por referencia e o contrato do documento nao declara a origem)\n", p.NodeID, p.Output)
+			continue
+		}
 		switch {
 		case p.Closed != nil:
 			conteudo, err := conteudoFechado(p.Closed.Outcome, p.Closed.Reasons)
@@ -856,7 +897,7 @@ func (e *executorDeNos) rehidratarPayloads(ctx context.Context, store runlifecyc
 		case p.Source != nil:
 			// POR REFERÊNCIA (AOS-501): relê-se o resultado designado e refaz-se a derivação. O
 			// texto final do run filho NUNCA serve de substituto.
-			conteudo, ok := e.relerPorReferencia(ctx, p)
+			conteudo, ok := e.relerPorReferencia(ctx, p, origem)
 			if !ok {
 				continue
 			}
@@ -911,17 +952,33 @@ func (e *executorDeNos) relerDoRunFilho(ctx context.Context, p plannerevents.Pay
 }
 
 // relerPorReferencia relê do run filho o resultado designado de um payload publicado POR
-// REFERÊNCIA e refaz a derivação. Devolve (conteudo, true) só quando TUDO o que o evento registou
-// se confirma: a âncora (vínculo, tool, passo, digest e tamanho), os bytes inteiros contra ela, a
-// forma da extracção e o digest do que foi entregue.
+// REFERÊNCIA e refaz a derivação. `tool` é a origem que o CONTRATO do documento aprovado declara
+// — e não a que o evento diz. Devolve (conteudo, true) só quando TUDO se confirma:
+//
+//   - o FACTO `plan.output_source_declared` do log, para este nó: vinculativo, para a tool do
+//     contrato, e com o `contract_digest` igual ao do contrato do documento;
+//   - o evento diz a mesma tool, e o run filho que ele refere é o DESTE nó;
+//   - a âncora (vínculo, tool, passo, digest e tamanho), os bytes inteiros contra ela, a forma
+//     da extracção e o digest do que foi entregue.
 //
 // O QUE NÃO SE CONFIRMA NÃO ENTRA, incluindo uma leitura que falhou agora (rede, 503): o
 // consumidor não corre. É a regra de [relerDoRunFilho], e a direcção segura — a alternativa era
 // correr o consumidor com bytes que ninguém conferiu, ou com o texto do modelo.
-func (e *executorDeNos) relerPorReferencia(ctx context.Context, p plannerevents.PayloadPublishedPayload) (string, bool) {
+func (e *executorDeNos) relerPorReferencia(ctx context.Context, p plannerevents.PayloadPublishedPayload, tool string) (string, bool) {
 	naoEntra := func(porque string) (string, bool) {
 		fmt.Printf("  execucao: payload %s/%s NAO rehidratado por referencia (%s)\n", p.NodeID, p.Output, porque)
 		return "", false
+	}
+	n := e.nos[p.NodeID]
+	contrato, _ := n.FindOutput(p.Output)
+	if d, declarada := e.declaradas[p.NodeID]; !declarada || !d.vinculativa(tool, digestDoContratoComOrigem(n, contrato)) {
+		return naoEntra("o log do plano nao tem, para este no, o facto da declaracao com o vinculo binding, a tool e o digest do contrato do documento")
+	}
+	if p.Source.Tool != tool {
+		return naoEntra("a tool do evento publicado nao e a que o contrato do documento declara")
+	}
+	if p.Record.Stream != childRunID(e.runID, p.NodeID) {
+		return naoEntra("o run filho que o evento refere nao e o deste no do plano")
 	}
 	st, existe, err := e.cli.Status(ctx, p.Record.Stream)
 	if err != nil {
@@ -933,7 +990,7 @@ func (e *executorDeNos) relerPorReferencia(ctx context.Context, p plannerevents.
 	if !st.concluiu() {
 		return naoEntra("o run filho " + p.Record.Stream + " nao responde como concluido")
 	}
-	entrega, causa := entregaDoRun(p.Source.Tool, st)
+	entrega, causa := entregaDoRun(tool, p.Record.Stream, st)
 	if causa != "" {
 		return naoEntra("o resultado designado do run filho " + p.Record.Stream + " nao se entrega: " + causa)
 	}
@@ -944,6 +1001,20 @@ func (e *executorDeNos) relerPorReferencia(ctx context.Context, p plannerevents.
 		return naoEntra("o que se deriva do run filho " + p.Record.Stream + " nao e o que foi publicado")
 	}
 	return entrega.conteudo, true
+}
+
+// origemDoContrato devolve a origem que o DOCUMENTO APROVADO declara para a saída `output` do nó
+// `nodeID`, e se a declara. É a autoridade da reidratação ([rehidratarPayloads]).
+//
+// Um nó ou uma saída que o documento não tem conta como «não declara»: o payload só entra de um
+// evento sem `source`, como sempre entrou — e ninguém o pode consumir, porque o `consumes` de um
+// plano validado só refere saídas que o produtor declara.
+func (e *executorDeNos) origemDoContrato(nodeID, output string) (string, bool) {
+	contrato, tem := e.nos[nodeID].FindOutput(output)
+	if !tem || contrato.FromTool == "" {
+		return "", false
+	}
+	return contrato.FromTool, true
 }
 
 // nomesDasTools converte as capabilities pinadas (`cap:tool:<nome>`) nos nomes de tool que a
@@ -1007,7 +1078,7 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	destino, causa := arstate.Failed, ""
 	// AOS-501: a saída cuja origem o plano declara, e o que dela se entrega.
 	var entrega *entregaPorReferencia
-	saidaPorRef, porReferencia := saidaComOrigem(n)
+	porReferencia := false
 	switch {
 	case !existe || !st.concluiu():
 		// O critério é o de sempre: `completed`, `terminated`, sem erro. A razão do veredicto do
@@ -1016,12 +1087,10 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	case n.DeclaresOutputSource():
 		// POR REFERÊNCIA (AOS-501). O run concluiu; a saída é o resultado que o kernel designou,
 		// e não o texto final. Ou há entrega, ou o nó fecha `failed` com a causa — NUNCA se cai
-		// para o ramo do texto.
-		causa = e.resolverEntrega(nodeID, saidaPorRef, porReferencia, st, &entrega)
-		if causa == "" && saidasDeTexto(n) > 0 && strings.TrimSpace(st.FinalText) == "" {
-			// O nó declara TAMBÉM uma saída de texto: a regra da saída vazia vale para ela.
-			causa, entrega = causaSaidaVazia, nil
-		}
+		// para o ramo do texto. Um nó misto não é entregável ([saidaComOrigem]) e fecha aqui,
+		// sem publicar nada.
+		porReferencia = true
+		causa = e.resolverEntrega(n, st, &entrega)
 		if causa == "" {
 			destino = arstate.Complete
 		}
@@ -1091,6 +1160,13 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	if err := e.g.MarkTerminal(ctx, nodeID, destino); err != nil && !errors.Is(err, orchestrator.ErrLogAhead) {
 		return fmt.Errorf("conclusão de %q: %w", nodeID, err)
 	}
+	if porReferencia {
+		// A MÉTRICA CONTA O DESFECHO DO NÓ, e por isso só aqui — depois de a saída estar
+		// publicada e a conclusão escrita (revisão adversarial, M9). Contar `entregue` no momento
+		// em que a entrega se resolve contava-o num nó que depois fechava `failed`, ou cuja
+		// publicação falhava.
+		e.contarEntrega(destino, causa, entrega)
+	}
 	if err := e.headroom.Release(ctx); err != nil {
 		return err
 	}
@@ -1103,30 +1179,44 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	return nil
 }
 
-// resolverEntrega decide o que se entrega da saída por referência de um nó cujo run CONCLUIU, e
-// conta-o. Devolve a causa (vazia ⇒ `*entrega` fica preenchida).
+// resolverEntrega decide o que se entrega da saída por referência de um nó cujo run CONCLUIU.
+// Devolve a causa (vazia ⇒ `*entrega` fica preenchida). NÃO CONTA NADA: quem conta é
+// [executorDeNos.contarEntrega], depois de o desfecho do nó estar escrito.
 //
-// DUAS PROVAS, E AS DUAS SÃO PRECISAS:
+// TRÊS PROVAS, E TODAS SÃO PRECISAS:
 //
+//   - o DOCUMENTO: o nó é entregável ([saidaComOrigem]) — uma só saída com origem, e nenhuma de
+//     texto ao lado dela;
 //   - o FACTO do log do plano ([executorDeNos.declaradas]): o run foi pedido com a origem
-//     declarada, para a tool do contrato, com o vínculo vinculativo. Um run pedido em «só
-//     medição» — por outro `serve`, noutro modo — não se entrega por referência;
-//   - a ÂNCORA selada pelo kernel do nó ([entregaDoRun]): o mesmo vínculo, a mesma tool, o estado
-//     `designated`, e os bytes inteiros a conferir com ela.
-func (e *executorDeNos) resolverEntrega(nodeID string, saida plan.Output, unica bool, st estadoDoRun, entrega **entregaPorReferencia) string {
-	causa := causaOrigemSemVinculo
-	var ent entregaPorReferencia
-	if d, declarada := e.declaradas[nodeID]; unica && declarada && d.vinculativa(saida.FromTool) {
-		ent, causa = entregaDoRun(saida.FromTool, st)
+//     declarada, para a tool e o contrato do documento, com o vínculo vinculativo. Um run pedido
+//     em «só medição» — por outro `serve`, noutro modo — não se entrega por referência;
+//   - a ÂNCORA selada pelo kernel do nó ([entregaDoRun]): a resposta é sobre este run, o mesmo
+//     vínculo, a mesma tool, o estado `designated`, e os bytes inteiros a conferir com ela.
+func (e *executorDeNos) resolverEntrega(n plan.Node, st estadoDoRun, entrega **entregaPorReferencia) string {
+	saida, entregavel := saidaComOrigem(n)
+	d, declarada := e.declaradas[n.NodeID]
+	if !entregavel || !declarada || !d.vinculativa(saida.FromTool, digestDoContratoComOrigem(n, saida)) {
+		return causaOrigemSemVinculo
 	}
+	ent, causa := entregaDoRun(saida.FromTool, childRunID(e.runID, n.NodeID), st)
 	if causa != "" {
-		e.medicao.entregaResolvida(causa)
 		return causa
 	}
-	e.medicao.entregaResolvida(resultadoEntregue)
-	e.medicao.extraccaoFeita(string(ent.extraccao))
 	*entrega = &ent
 	return ""
+}
+
+// contarEntrega conta o desfecho de um nó com saída por referência cujo run concluiu: `entregue`
+// (e a forma da extracção) só quando o nó fechou `complete` com a saída publicada; de outro
+// modo, a causa. Um nó cujo run não concluiu fecha com a causa do run, que não é desta série.
+func (e *executorDeNos) contarEntrega(destino arstate.State, causa string, entrega *entregaPorReferencia) {
+	switch {
+	case destino == arstate.Complete && entrega != nil:
+		e.medicao.entregaResolvida(resultadoEntregue)
+		e.medicao.extraccaoFeita(string(entrega.extraccao))
+	case destino != arstate.Complete && causa != "":
+		e.medicao.entregaResolvida(causa)
+	}
 }
 
 // registarOrigemMedida escreve no log da drenagem e na medição o que o kernel do nó designou para
