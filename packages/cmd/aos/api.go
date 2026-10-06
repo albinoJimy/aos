@@ -1240,7 +1240,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		h.tentativas.admitidas.Add(1)
 		h.logf("submit (AOS-502): nova tentativa ADMITIDA run=%q plano=%q no=%q tentativa=%d anterior=%q",
 			req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, tentativaProvada.anterior)
-		go h.medirPromptDaTentativa(req.RunID, *tentativaProvada)
+		go h.medirPromptDaTentativa(r.Context(), req.RunID, *tentativaProvada)
 	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }

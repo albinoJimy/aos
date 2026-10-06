@@ -427,11 +427,11 @@ const prazoDaMedicaoDoPrompt = 15 * time.Minute
 // depois de o run ter sido hospedado. O que ela vigia é a promessa de que a tentativa repete o
 // MESMO pedido. Vive na memória do processo: um reinício entre a admissão e o fim da tentativa
 // perde a comparação desse run. O log não leva os hashes.
-func (h *apiHandler) medirPromptDaTentativa(runID string, prova provaDaTentativa) {
+func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string, prova provaDaTentativa) {
 	if prova.promptHash == "" || h.svc == nil || h.node == nil || h.node.EventStore == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), prazoDaMedicaoDoPrompt)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(pedido), prazoDaMedicaoDoPrompt)
 	defer cancel()
 	if _, _, err := h.svc.Wait(ctx, runID); err != nil {
 		return
