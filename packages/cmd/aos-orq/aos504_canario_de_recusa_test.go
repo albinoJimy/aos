@@ -197,6 +197,45 @@ func TestAOS504_VocabularioDoProtocolo(t *testing.T) {
 	}
 }
 
+// UM NÓ DE RESUMO QUE FECHA `failed` NÃO ENTRA NO DENOMINADOR — com o binário real (revisão do
+// AOS-504, M1). O run do nó de resumo acaba `failed` no nó `aos`, com um texto final que usa as
+// palavras do protocolo: o nó do plano fecha `failed`, e nenhuma das duas séries do canário se
+// escreve. É a CABLAGEM que isto prende: no executor, o canário recebe «o nó concluiu» do
+// desfecho decidido. Com `true` fixo nesse argumento, este nó contava 1 e 1.
+func TestAOS504ComOBinarioReal_NoDeResumoFalhadoNaoConta(t *testing.T) {
+	bin := construir(t)
+	const run = "plan-aos495-boa"
+	falhado, err := json.Marshal(map[string]any{"run_id": run + "~n2", "status": "failed", "terminated": true, "final_text": aos504TextoDeRecusa})
+	if err != nil {
+		t.Fatalf("resposta do n2: %v", err)
+	}
+	f := &aos495No{anuncio: "enforce", respostas: map[string][]byte{
+		"n1": aos495Fio(t, "boa-enforce"),
+		"n2": falhado,
+	}}
+	d := aos499Consumir(t, bin, f, run, aos484PlanoLerEResumir, aos408SnapshotComPerigo, "")
+	if !strings.Contains(d.stdout, "execucao: n1=complete n2=failed") {
+		t.Fatalf("pre-condicao: o no de resumo tinha de fechar failed:\n%s", d.stdout)
+	}
+	// O ficheiro de métricas escreveu-se (tem as séries de sempre), e do canário não tem nada.
+	if !strings.Contains(d.metricas, metricaUltimaDrenagem) {
+		t.Fatalf("pre-condicao: a drenagem tinha de escrever o ficheiro de metricas:\n%s", d.metricas)
+	}
+	if strings.Contains(d.metricas, "canario") {
+		t.Fatalf("um no de resumo failed entrou no canario:\n%s", d.metricas)
+	}
+	// CONTROLO: o mesmo plano com o nó de resumo a CONCLUIR com o mesmo texto conta 1 e 1 — a
+	// ausência acima vem do desfecho, e não de o canário estar desligado neste plano.
+	f2 := &aos495No{anuncio: "enforce", respostas: map[string][]byte{
+		"n1": aos495Fio(t, "boa-enforce"),
+		"n2": aos504RespostaDoN2(t, run, aos504TextoDeRecusa),
+	}}
+	d2 := aos499Consumir(t, bin, f2, run, aos484PlanoLerEResumir, aos408SnapshotComPerigo, "")
+	if !temSerie(d2.metricas, metricaCanarioDeRecusaNos, 1) || !temSerie(d2.metricas, metricaCanarioDeRecusa, 1) {
+		t.Fatalf("controlo: com o no a concluir, o canario tinha de contar 1 e 1:\n%s", d2.metricas)
+	}
+}
+
 // O QUE CONTA: só um nó da classe que CONCLUIU. Um nó que não concluiu, ou fora da classe, não
 // entra no denominador nem no numerador; e sem medição (um `serve` manual) nada rebenta.
 func TestAOS504_RegistarCanario_SoONoDaClasseQueConcluiu(t *testing.T) {

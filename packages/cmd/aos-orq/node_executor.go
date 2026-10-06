@@ -1243,9 +1243,6 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	// AOS-499: a ORIGEM MEDIDA de um nó candidato. Depois de o desfecho estar decidido, e sem
 	// mexer nele: `destino` e `causa` já não mudam, e o que se publica abaixo é o texto final.
 	e.registarOrigemMedida(nodeID, st, existe)
-	// AOS-504: o CANÁRIO da recusa do próprio objectivo. Só medição, e também depois de o
-	// desfecho estar decidido: não devolve nada, e nada abaixo lê o que ele contou.
-	e.registarCanarioDeRecusa(n, destino == arstate.Complete, st.FinalText)
 	var veredicto *plannerevents.VerdictRecordedPayload
 	if n.IsVerifier() && destino == arstate.Complete {
 		v := veredictoDaSaida(st.FinalText)
@@ -1281,6 +1278,11 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	if err := e.g.MarkTerminal(ctx, nodeID, destino); err != nil && !errors.Is(err, orchestrator.ErrLogAhead) {
 		return fmt.Errorf("conclusão de %q: %w", nodeID, err)
 	}
+	// AOS-504: o CANÁRIO da recusa do próprio objectivo. Só medição: não devolve nada, e nada
+	// abaixo lê o que ele contou. Conta-se AQUI — depois de a saída estar publicada e a conclusão
+	// escrita —, pela razão do `contarEntrega` logo abaixo: contado antes, um nó cuja publicação
+	// falhasse ficava no denominador, e a retoma voltava a contá-lo (revisão do AOS-504, M2).
+	e.registarCanarioDeRecusa(n, destino == arstate.Complete, st.FinalText)
 	if porReferencia {
 		// A MÉTRICA CONTA O DESFECHO DO NÓ, e por isso só aqui — depois de a saída estar
 		// publicada e a conclusão escrita (revisão adversarial, M9). Contar `entregue` no momento
