@@ -115,11 +115,19 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 	if err != nil {
 		return port.ChatResponse{}, err
 	}
-	respBody, err := a.do(ctx, "/chat/completions", body, cred)
+	respBody, header, err := a.doWithHeader(ctx, "/chat/completions", body, cred)
 	if err != nil {
 		return port.ChatResponse{}, err
 	}
-	return port.UnmarshalChatResponse(respBody)
+	resp, err := port.UnmarshalChatResponse(respBody)
+	if err != nil {
+		return port.ChatResponse{}, err
+	}
+	// AOS-505 — a rota que o proxy declarou, lida dos cabeçalhos da resposta: o modelo e o host
+	// do endpoint do deployment que serviu. Só estes dois ([port.ServedRouteFromHeaders]); o
+	// resto dos cabeçalhos não sai daqui. Ausentes ⇒ a rota fica por reportar.
+	resp.Route = port.ServedRouteFromHeaders(header.Get)
+	return resp, nil
 }
 
 // ChatStream implementa [Adapter]: POST com stream=true e leitura de SSE
@@ -183,23 +191,29 @@ func (a *OpenAIHTTPAdapter) newRequest(ctx context.Context, path string, body []
 
 // do executa uma chamada síncrona e devolve o corpo da resposta.
 func (a *OpenAIHTTPAdapter) do(ctx context.Context, path string, body []byte, cred Credential) ([]byte, error) {
+	respBody, _, err := a.doWithHeader(ctx, path, body, cred)
+	return respBody, err
+}
+
+// doWithHeader é [OpenAIHTTPAdapter.do] que devolve também os cabeçalhos da resposta (AOS-505).
+func (a *OpenAIHTTPAdapter) doWithHeader(ctx context.Context, path string, body []byte, cred Credential) ([]byte, http.Header, error) {
 	httpReq, err := a.newRequest(ctx, path, body, cred)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp, err := a.client.Do(httpReq)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, sanitizeProviderBody(respBody))
+		return nil, nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, sanitizeProviderBody(respBody))
 	}
-	return respBody, nil
+	return respBody, resp.Header, nil
 }
 
 // sseStream é um [port.ChatStream] sobre um corpo SSE (text/event-stream) do wire

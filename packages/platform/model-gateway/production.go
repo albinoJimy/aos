@@ -183,6 +183,11 @@ type ProductionConfig struct {
 	// sem regressão). Declarar [RoutingConfig.Tiers] é o que ARMA a cadeia — ver
 	// production_routing.go.
 	Routing RoutingConfig
+	// Route é a governação da rota (AOS-505): a comparação, por turno de chat, do modelo que o
+	// proxy declara ter servido com o perfil do nome pedido. Zero-valor ⇒ desligada, e o gateway
+	// comporta-se como antes. Um modo fora do vocabulário ⇒ [ErrBadRouteGovernance], sem gateway.
+	// Cada variância é selada no MESMO audit de governação ([ProductionConfig.Audit]).
+	Route RouteGovernance
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -210,6 +215,13 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	}
 	if cfg.Authn == nil {
 		return nil, ErrNoAuthnStage
+	}
+	routeMode := cfg.Route.Mode
+	if routeMode == "" {
+		routeMode = RouteGovernanceOff
+	}
+	if _, err := ParseRouteGovernance(routeMode); err != nil {
+		return nil, err
 	}
 	clock := cfg.Clock
 	if clock == nil {
@@ -292,7 +304,11 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	if cfg.Cost != nil {
 		opts = append(opts, WithCost(cfg.Cost))
 	}
-	return New(adapter, opts...), nil
+	gw := New(adapter, opts...)
+	// AOS-505: a governação da rota, com o recorder de governação como selador das variâncias.
+	// Desligada ⇒ nil, e nada muda.
+	gw.route = newRouteGovernor(cfg.Route, govRec)
+	return gw, nil
 }
 
 // inventoryFromAccounts projecta as contas de infra no inventário de endpoints do

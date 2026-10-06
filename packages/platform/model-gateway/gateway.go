@@ -103,6 +103,11 @@ type VarianceEvent struct {
 	// region_swap denota um failover cross-border (preocupação de soberania).
 	RequestedRegion string
 	ResolvedRegion  string
+	// ExpectedModel/ServedModel só vêm numa variância de ROTA (Kind "served_route", AOS-505):
+	// o modelo que o perfil da rota espera e o que o proxy declarou ter servido (vazio se não o
+	// declarou). Nesse Kind, Reason é a causa em vocabulário fechado (RouteCause*).
+	ExpectedModel string
+	ServedModel   string
 	// Reason descreve porquê (razão do estágio de roteamento).
 	Reason string
 	// Principal e Board tornam a variância atribuível.
@@ -179,6 +184,11 @@ type Gateway struct {
 	// região e alimenta a porta de burn-down. É estado EXTERNO (GW stateless).
 	// Fail-closed: um custo NÃO-calculável (sem preço) aborta a chamada síncrona.
 	cost *cost.Recorder
+	// --- AOS-505: rota sob governação ---
+	// route, quando definido, compara em cada chamada de chat a rota que o proxy declarou ter
+	// servido com o perfil do nome pedido. nil ⇒ desligada: nada do que o adaptador leu dos
+	// cabeçalhos sai do gateway. Ver route.go.
+	route *routeGovernor
 }
 
 // Compile-time: o Gateway satisfaz a porta compatível OpenAI.
@@ -359,6 +369,10 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 			return err
 		}
 		resp = r
+		// AOS-505: o host do endpoint que o proxy declarou fica AQUI. Sai da resposta antes de
+		// qualquer outro passo e só volta a ser lido pela comparação da rota, abaixo.
+		routeHost := resp.Route.APIHost
+		resp.Route.APIHost = ""
 		ex.Usage = r.Usage
 		// AOS-062: deriva o custo em micro-USD do usage (4 tipos de token × tabela de
 		// preços versionada), agrega por run/árvore e emite no span. Fail-closed: um
@@ -373,7 +387,9 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		// de provider preenche este campo (ver [port.Usage]): é escrito aqui, depois de o
 		// usage medido estar em mão e de o custo ter sido calculado fail-closed.
 		resp.Usage.CostMicroUSD = ex.Usage.CostMicroUSD
-		return nil
+		// AOS-505: a rota declarada pelo proxy é comparada com o perfil DEPOIS de o custo estar
+		// contado — a resposta foi paga, mesmo que em imposição se recuse usá-la.
+		return g.governRoute(ctx, span, ex, &resp, routeHost)
 	})
 	if runErr != nil {
 		span.SetAttribute(agentruntime.AttrErrorType, errType(runErr))
@@ -840,6 +856,9 @@ func errType(err error) string {
 	var se *pipeline.StageError
 	if errors.As(err, &se) {
 		return "stage:" + se.Stage
+	}
+	if errors.Is(err, ErrRouteVariance) {
+		return "route_variance"
 	}
 	return "provider_error"
 }

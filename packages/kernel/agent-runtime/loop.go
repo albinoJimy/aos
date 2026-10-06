@@ -972,6 +972,9 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 			ServedModelID: resp.Model,
 			Params:        goal.Model.Params,
 			Seed:          goal.Model.Seed,
+			// AOS-505: o digest do perfil da rota, declarado pelo cliente. Vazio com a
+			// governação da rota desligada, e o manifesto fica com os bytes de antes.
+			RouteProfileDigest: resp.RouteProfileDigest,
 		},
 		Tools:  pinnedDeps(goal.Tools),
 		Skills: pinnedDeps(goal.Skills),
@@ -997,7 +1000,9 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		// os dois declarados pelo cliente na resposta.
 		StopReason:   resp.StopReason,
 		ToolsOffered: resp.ToolsOffered,
-		Producer:     producer,
+		// AOS-505: o resultado da comparação da rota, declarado pelo cliente.
+		RouteCheck: resp.RouteCheck,
+		Producer:   producer,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("%w: turno %d: %w", ErrTurnRecord, turn, err)

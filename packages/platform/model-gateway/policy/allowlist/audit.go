@@ -157,11 +157,42 @@ func (r *Recorder) Annotate(span agentruntime.Span, rec GovRecord) {
 // registo selado. Sem store é no-op. Fail-closed: um registo sem board ou sem
 // principal é RECUSADO (a decisão de soberania tem de ser atribuível a ambos).
 func (r *Recorder) Seal(ctx context.Context, rec GovRecord) (audit.AuditRecord, error) {
+	return r.seal(ctx, rec, nil)
+}
+
+// SealRouteVariance sela no audit WORM uma VARIÂNCIA DE ROTA (AOS-505): o modelo que o proxy
+// declarou ter servido não é o do perfil da rota pedida, ou não foi reportado. É o registo de
+// governação de [Recorder.Seal] — a mesma partição por board, o mesmo principal, o mesmo run e
+// passo —, com dois parâmetros a mais na obligation: o modelo esperado e o modelo servido. A
+// razão ([GovRecord.Reason]) é a causa, em vocabulário fechado, e [GovRecord.Decision] diz se o
+// turno seguiu (allow, em observação) ou falhou (deny, em imposição).
+//
+// Só o NOME do modelo servido entra, já saneado por quem o leu. O endpoint não entra, e o
+// identificador do deployment que o proxy emite nunca é lido.
+func (r *Recorder) SealRouteVariance(ctx context.Context, rec GovRecord, expectedModel, servedModel string) (audit.AuditRecord, error) {
+	return r.seal(ctx, rec, map[string]string{
+		"variance":       "served_route",
+		"expected_model": expectedModel,
+		"served_model":   servedModel,
+	})
+}
+
+// seal é o corpo de [Recorder.Seal]. `extra` acrescenta parâmetros à obligation de governação;
+// nil deixa o registo com os bytes de sempre.
+func (r *Recorder) seal(ctx context.Context, rec GovRecord, extra map[string]string) (audit.AuditRecord, error) {
 	if err := rec.validate(); err != nil {
 		return audit.AuditRecord{}, err
 	}
 	if r.store == nil {
 		return audit.AuditRecord{}, nil
+	}
+	params := map[string]string{
+		"board":          rec.Board,
+		"reason":         rec.Reason,
+		"principal_user": rec.PrincipalUser,
+	}
+	for k, v := range extra {
+		params[k] = v
 	}
 	ar := audit.AuditRecord{
 		Partition:     partitionOf(rec.Board),
@@ -177,12 +208,8 @@ func (r *Recorder) Seal(ctx context.Context, rec GovRecord) (audit.AuditRecord, 
 		// A obligation sela BOARD + razão + utilizador na cadeia (tamper-evident):
 		// a decisão é atribuível a partir de UM registo, não só pela partição.
 		Obligations: []audit.Obligation{{
-			Type: obligationGovernance,
-			Params: map[string]string{
-				"board":          rec.Board,
-				"reason":         rec.Reason,
-				"principal_user": rec.PrincipalUser,
-			},
+			Type:   obligationGovernance,
+			Params: params,
 		}},
 	}
 	return r.store.Append(ctx, ar)

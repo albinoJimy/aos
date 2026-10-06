@@ -34,6 +34,13 @@ type ModelManifest struct {
 	ServedModelID string            `json:"served_model_id,omitempty"`
 	Params        map[string]string `json:"params,omitempty"`
 	Seed          int64             `json:"seed"`
+	// RouteProfileDigest é o digest do PERFIL DA ROTA com que o cliente de modelo comparou o
+	// modelo servido neste turno (AOS-505). Campo aditivo e `omitempty`: só existe num turno
+	// cuja rota foi comparada E tem perfil; um turno com a governação da rota desligada — e todo
+	// o turno gravado antes do campo — grava os bytes de sempre. Num turno comparado,
+	// `served_model_id` é o modelo que o proxy declarou (ausente se não o declarou), e não o
+	// `model` do corpo da resposta.
+	RouteProfileDigest string `json:"route_profile_digest,omitempty"`
 }
 
 // PinnedDep é uma dependência pinada no manifesto (tool ou skill): nome+versão+
@@ -119,6 +126,12 @@ type turnPayload struct {
 	// bytes de sempre. AUSENTE não distingue por isso «zero tools oferecidas» de «não
 	// declarado» — nem de um turno gravado antes do campo.
 	ToolsOffered int `json:"tools_offered,omitempty"`
+	// RouteCheck é o resultado da comparação da rota deste turno com o perfil esperado, no
+	// vocabulário fechado de [RouteCheck] (AOS-505): `igual`, `diferente` ou `nao_reportado`.
+	// `omitempty`: um turno cuja rota não foi comparada grava os bytes de sempre. Um
+	// `diferente` aqui é o registo durável, no stream do run, de uma variância de rota em
+	// observação; em imposição o turno falha e não chega a ser gravado.
+	RouteCheck RouteCheck `json:"route_check,omitempty"`
 }
 
 // TurnRecord é o input que o [Runtime] passa ao [TurnRecorder] por turno.
@@ -137,7 +150,9 @@ type TurnRecord struct {
 	// StopReason e ToolsOffered — ver os campos homónimos de [turnPayload] (AOS-491).
 	StopReason   StopReason
 	ToolsOffered int
-	Producer     eventstore.Producer
+	// RouteCheck — ver [turnPayload.RouteCheck] (AOS-505).
+	RouteCheck RouteCheck
+	Producer   eventstore.Producer
 }
 
 // TurnRecorder grava cada turno como um evento "turn.recorded" no Event Store,
@@ -158,6 +173,8 @@ func NewTurnRecorder(store EventAppender) *TurnRecorder {
 // do Event Store (run_id:step_id). Devolve o seq atribuído.
 func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, error) {
 	m := rec.Manifest
+	// AOS-505: o digest do perfil da rota só entra com a forma certa.
+	m.Model.RouteProfileDigest = NormalizeRouteProfileDigest(m.Model.RouteProfileDigest)
 	if m.SchemaVersion == "" {
 		m.SchemaVersion = ManifestSchemaVersion
 	}
@@ -179,6 +196,8 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 		// que não seja o loop não pode pôr texto livre num evento em claro.
 		StopReason:   rec.StopReason.Normalizado(),
 		ToolsOffered: rec.ToolsOffered,
+		// AOS-505: vocabulário fechado, pela mesma razão.
+		RouteCheck: rec.RouteCheck.Normalizado(),
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

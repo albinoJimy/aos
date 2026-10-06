@@ -355,6 +355,17 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 		// provider que fica em claro em cada evento: ver [modeloServido].
 		Model: modeloServido(resp.Model),
 	}
+	// AOS-505 — A ROTA SOB GOVERNAÇÃO. Quando o gateway comparou a rota deste turno
+	// (resp.Route.Check preenchido), o modelo que SERVIU passa a ser o que o proxy declarou nos
+	// cabeçalhos, e não o `model` do corpo — que o proxy carimba com o nome pedido. Se o proxy
+	// não o declarou fica VAZIO: nunca se preenche com o nome pedido nem com o do corpo. O
+	// resultado da comparação e o digest do perfil seguem com ele para o registo do turno.
+	// Com a governação desligada este bloco não corre, e o turno sai como saía.
+	if resp.Route.Check != "" {
+		out.Model = modeloServido(resp.Route.Model)
+		out.RouteCheck = agentruntime.RouteCheck(resp.Route.Check)
+		out.RouteProfileDigest = resp.Route.ProfileDigest
+	}
 	if len(resp.Choices) == 0 {
 		// FAIL-CLOSED. Ver [ErrRespostaSemChoices]: isto NAO e um turno vazio.
 		return agentruntime.ModelResponse{}, fmt.Errorf("%w (modelo %q)", ErrRespostaSemChoices, resp.Model)
