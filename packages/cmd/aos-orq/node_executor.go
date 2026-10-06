@@ -703,8 +703,11 @@ func digestDoConteudo(conteudo string) string {
 //
 // DE UM NÓ QUE DECLARA A ORIGEM, NADA SE PUBLICA DO TEXTO FINAL. O nó misto (uma saída com
 // origem e outra de texto) é recusado pelo validador do plano e não é entregável
-// ([saidaComOrigem]); o ramo `comOrigem` abaixo é a última linha, e fecha: se um nó assim
-// chegasse aqui, a sua saída de texto ficava por publicar e o consumidor dela não corria.
+// ([saidaComOrigem]). Se um nó assim chegasse aqui, a sua saída de texto ficava por publicar e o
+// consumidor dela não corria, por DUAS linhas: a contagem das saídas abertas (o nó misto comum
+// tem duas, e com duas nenhuma se publica do texto), e o ramo `comOrigem` abaixo, que fecha o
+// caso que a contagem não vê — uma origem declarada numa saída de forma FECHADA ao lado de uma
+// só saída de texto. O validador também recusa esse nó; a regra aqui não depende disso.
 func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st estadoDoRun, v *plannerevents.VerdictRecordedPayload, entrega *entregaPorReferencia) error {
 	abertos := 0
 	for _, c := range n.Outputs {
@@ -748,7 +751,8 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 				Extraction:   entrega.extraccao,
 			}
 		case comOrigem:
-			// Uma saída de TEXTO num nó que declara a origem: nunca se publica. Ver o topo.
+			// Uma saída de TEXTO num nó que declara a origem: nunca se publica, seja qual for a
+			// forma da saída que declara a origem. Ver o topo.
 			continue
 		case abertos > 1:
 			// DOIS contratos de forma aberta no mesmo nó: um run devolve UMA saída final, e

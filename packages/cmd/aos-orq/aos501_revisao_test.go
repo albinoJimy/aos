@@ -174,6 +174,36 @@ func TestAOS501_NoMisto_NadaSePublicaDoTextoFinal(t *testing.T) {
 			}
 		}
 	}
+	// A ORIGEM NUMA SAÍDA DE FORMA FECHADA, ao lado de UMA saída de texto. O validador recusa-o
+	// (a origem só cabe em `record` ou `artifact`), e a contagem das saídas abertas não o vê: é
+	// uma só. Sem o ramo próprio do executor, a saída de texto publicava-se do texto final de um nó
+	// que declara a origem (a mutação que sobrevivia sem este caso). Nada se publica, com ou sem
+	// entrega.
+	for _, fechada := range []plan.PayloadType{plan.PayloadMetrics, plan.PayloadVerdict} {
+		for nome, ent := range map[string]*entregaPorReferencia{"com a entrega resolvida": entrega, "sem entrega": nil} {
+			store, rec := aos501RecorderComStore(t, "run-418", "plan-418")
+			e := &executorDeNos{rec: rec, runID: "run-418", payloads: map[chaveDePayload]string{}}
+			no := plan.Node{NodeID: "ler", Role: "reader", Objective: "ler o documento",
+				Tools: []plan.ToolRef{{Name: "doc_read", Version: "1", Digest: "sha256:a"}},
+				Outputs: []plan.Output{
+					{Name: "conteudo", Type: fechada, FromTool: "doc_read"},
+					{Name: "resumo", Type: plan.PayloadSummary},
+				}}
+			if !no.DeclaresOutputSource() {
+				t.Fatalf("pre-condicao: o no declara a origem numa saida %s", fechada)
+			}
+			if err := e.publicarSaidas(context.Background(), no, st, nil, ent); err != nil {
+				t.Fatalf("origem em %s/%s: publicarSaidas: %v", fechada, nome, err)
+			}
+			if len(e.payloads) != 0 || len(aos501DoLog(t, store, "plan-418", plannerevents.EventPayloadPublished)) != 0 {
+				t.Fatalf("origem em %s/%s: de um no que declara a origem publicou-se do texto final: %v", fechada, nome, e.payloads)
+			}
+			if _, ok := saidaComOrigem(no); ok {
+				t.Fatalf("origem em %s: um no com uma saida de texto ao lado da origem nao e entregavel", fechada)
+			}
+		}
+	}
+
 	// NÃO-VACUIDADE: um nó SEM origem, com a mesma saída de texto, publica o texto final — a
 	// defesa é do nó que declara a origem, e não um «nunca se publica texto».
 	store, rec := aos501RecorderComStore(t, "run-418", "plan-418")
