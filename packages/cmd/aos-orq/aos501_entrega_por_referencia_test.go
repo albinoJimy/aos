@@ -170,19 +170,19 @@ func aos501MetricasSemRelogio(metricas string) string {
 func aos501NuncaAparece(t *testing.T, oQue, proibido string, d aos499Drenagem, f *aos495No, eventos []aos499Evento) {
 	t.Helper()
 	for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": aos501MetricasSemRelogio(d.metricas), "detalhe": d.detalhe} {
-		if strings.Contains(texto, proibido) {
+		if levaProibido(texto, proibido) {
 			t.Fatalf("%s aparece em %s:\n%s", oQue, onde, texto)
 		}
 	}
 	for _, e := range eventos {
-		if strings.Contains(e.Payload, proibido) {
+		if levaProibido(e.Payload, proibido) {
 			t.Fatalf("%s aparece no evento %s do plano:\n%s", oQue, e.Tipo, e.Payload)
 		}
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for id, cru := range f.crus {
-		if strings.Contains(string(cru), proibido) {
+		if levaProibido(string(cru), proibido) {
 			t.Fatalf("%s aparece no POST /runs de %s:\n%s", oQue, id, cru)
 		}
 	}
@@ -327,7 +327,7 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 		aos501NuncaAparece(t, "o texto final do produtor", strings.TrimSpace(st.FinalText), d, f, eventos)
 		for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": aos501MetricasSemRelogio(d.metricas), "detalhe": d.detalhe} {
 			for _, proibido := range []string{"1250", "tarefa 12", st.OutputSource.Digest, pub.Record.Digest} {
-				if strings.Contains(texto, proibido) {
+				if levaProibido(texto, proibido) {
 					t.Fatalf("o %s leva %q — conteudo do titular, ou um digest dele:\n%s", onde, proibido, texto)
 				}
 			}

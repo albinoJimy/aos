@@ -404,7 +404,7 @@ func TestAOS499_Medida_NuncaLevaConteudo(t *testing.T) {
 	m.registarContrato(c)
 	texto := string(m.texto())
 	for _, proibido := range []string{"segredo", "7391", "555", "0199", "4471", "1250", "falsa", "日本"} {
-		if strings.Contains(texto, proibido) {
+		if levaProibido(texto, proibido) {
 			t.Fatalf("o ficheiro de metricas leva %q:\n%s", proibido, texto)
 		}
 	}
@@ -638,7 +638,7 @@ func TestAOS499_Envelope_ComOBinarioReal(t *testing.T) {
 			// SEM CONTEÚDO: nem uma linha, nem um número, nem o digest do que o nó serviu.
 			for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": d.metricas, "detalhe": d.detalhe} {
 				for _, proibido := range []string{"4471", "17h30", "orçamento", "gVisor", "fornecedor", "parcelas", st.OutputSource.Digest} {
-					if strings.Contains(texto, proibido) {
+					if levaProibido(texto, proibido) {
 						t.Fatalf("o %s leva %q, que e conteudo do titular ou veio do no:\n%s", onde, proibido, texto)
 					}
 				}
