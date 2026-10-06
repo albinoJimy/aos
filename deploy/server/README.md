@@ -794,6 +794,32 @@ O nó envia a conversa de um run ao modelo numa de duas formas, escolhida no `.e
 O `docker-compose.prod.yml` passa a variável só ao serviço do nó. O orquestrador `aos-orq` não a
 lê: o planeador dele fala com o modelo com mensagens `system` e `user` próprias.
 
+#### A versão da projecção nativa — `AOS_MODEL_PROJECTION_VERSION` (AOS-504)
+
+| Valor | O que muda no pedido |
+|---|---|
+| *(vazio)* ou `1.0.0` | Nada: a projecção nativa de sempre, byte a byte |
+| `1.1.0` | Cada segmento das mensagens `user` e `tool` termina com a linha de fim `</kind>`, e a mensagem `system` leva o texto de protocolo novo (o objectivo é a tarefa, mesmo depois de segmentos de dados; um rótulo `taint=untrusted` vale só até ao fim do segmento que o leva) |
+
+- **A `1.1.0` entra desligada e mede-se antes de ligar.** O texto do protocolo é lido por todos os
+  runs: corrigir o nó de resumo que recusa o próprio objectivo pode mexer na taxa de «não chamou
+  a tool» do nó de leitura, em qualquer sentido. Selecciona-se para uma série de pelo menos 60
+  planos e volta-se a `1.0.0` no fim, até à decisão (critério no AOS-504).
+- **Outro valor recusa o arranque** (`ErrBadModelProjectionVersion`), com o gateway ligado. Com
+  `AOS_MODEL_PROJECTION=text` a variável é validada e não tem efeito; o banner di-lo.
+- **Onde se vê:** `manifest.projection_version` do `turn.recorded` de cada turno. Um run em curso
+  quando o nó é recriado pode ter turnos nas duas versões; cada um grava a sua.
+- **Não muda** o layout, o tail nem o `prompt_hash`: o mesmo run dá os mesmos `prompt_hash` nas
+  duas versões.
+- **Cache de prefixo:** a mensagem `system` muda, e os tokens servidos de cache
+  (`cache_read_tokens` do `turn.recorded`) caem na troca, nos dois sentidos. Lê-se no registo de
+  turnos antes e depois.
+- **Recuo:** remover a variável (ou `1.0.0`) e recriar o nó.
+
+**O canário da série** está no ficheiro de métricas do `aos-orq`:
+`aos_orq_consume_canario_de_recusa_total` sobre `aos_orq_consume_canario_de_recusa_nos_total`
+(ver a secção do orquestrador). Não depende desta variável: conta nas duas versões.
+
 ---
 
 ## Orquestrador multi-nó (`aos-orq`)
@@ -1304,6 +1330,20 @@ Séries novas no ficheiro de métricas da drenagem (só com valores em `on`):
 | `aos_orq_consume_entrega_extraccao_total` | `extraccao`: `sandbox_stdout_text`, `raw` | saídas entregues, pela forma |
 | `aos_orq_consume_candidatos_sem_origem_total` | — | nós candidatos por estrutura cujo plano **não** declarou a origem: a taxa de omissão do planeador. Esses nós entregam o texto final, como sempre |
 | `aos_orq_consume_origem_recusas_do_validador_total` | `razao`: os sete `from_tool_*` | tentativas do planeador recusadas por uma regra da origem |
+
+O **canário da recusa do próprio objectivo** (AOS-504) escreve duas séries, em qualquer modo do
+interruptor, sempre que um plano tem um nó **sem tools e com `consumes`** (o nó de resumo) que
+concluiu:
+
+| Série | Rótulo | O que conta |
+|---|---|---|
+| `aos_orq_consume_canario_de_recusa_nos_total` | — | o denominador: nós sem tools e com `consumes` que concluíram |
+| `aos_orq_consume_canario_de_recusa_total` | — | o numerador: desses, os que têm vocabulário do protocolo da projecção (`plan_input`, `taint=untrusted`) no texto final. Escreve-se a zero quando há denominador |
+
+É **só medição**: não muda o estado do nó, a saída publicada, os eventos do plano, o `detail` nem
+o código de saída, e o texto não entra em métrica, log nem evento. É um **limite inferior** — uma
+recusa que não use essas palavras não conta. Sobre as cópias locais das séries de 2026-10-05 e
+2026-10-06 marcou as duas recusas medidas e nenhum dos outros nós de resumo (AOS-504).
 
 **O nó misto não existe.** Um nó do plano que declare a origem de uma saída **não pode** declarar
 outra saída de forma aberta (`summary`, `record` ou `artifact` sem `from_tool`): o validador

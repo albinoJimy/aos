@@ -1335,9 +1335,6 @@ Resíduos declarados:
 
 ## AOS-504 — Projecção nativa 1.1.0: fim de segmento inforjável, e o objectivo deixa de se confundir com dados
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este bloco só MENCIONA ADRs que já existem (ADR-034, ADR-036, ADR-037): nenhum deles é implementado aqui. A emenda ao ADR-036 escreve-se na implementação, e o PR da implementação retira este marcador e declara-a. -->
-
 | Campo | Valor |
 |---|---|
 | Epic | EPIC-06 |
@@ -1370,7 +1367,7 @@ com as palavras do protocolo: o modelo leu o `<objective>` como parte do `plan_i
 A causa não está provada por experiência: é uma explicação coerente com o código e com as duas
 respostas. Um nó sem tools que conclui com texto não vazio e motivo `stop` não se distingue, por
 nenhum sinal estrutural, de um que fez o trabalho; um detector teria de julgar o conteúdo do
-texto, o que o ADR-037 recusa.
+texto, o que o <!-- rtm: menção -->ADR-037<!-- /rtm: menção --> recusa.
 
 O texto do protocolo é lido por **todos** os runs, incluindo o turno 1 do nó de leitura: mudá-lo
 pode mexer na taxa de «não chamou a tool» em qualquer sentido.
@@ -1393,20 +1390,20 @@ a taxa de recusa em produção sem ninguém ler textos à mão.
 
 ### Critérios de Aceitação
 
-- [ ] A versão da projecção nativa passa a ser seleccionável: `AOS_MODEL_PROJECTION_VERSION`, com
+- [x] A versão da projecção nativa passa a ser seleccionável: `AOS_MODEL_PROJECTION_VERSION`, com
       os valores `1.0.0` (omissão) e `1.1.0`. Um valor fora do conjunto recusa o arranque.
-- [ ] Com a variável ausente ou em `1.0.0`, o binário é byte a byte o anterior, provado por
+- [x] Com a variável ausente ou em `1.0.0`, o binário é byte a byte o anterior, provado por
       comparação com a base: os corpos dos pedidos ao provider (ficheiros de fio), os eventos, os
       manifestos de turno e as métricas são iguais para o mesmo guião.
-- [ ] Na 1.1.0, cada segmento que a projecção renderiza numa mensagem `user` ou `tool` termina
+- [x] Na 1.1.0, cada segmento que a projecção renderiza numa mensagem `user` ou `tool` termina
       com a linha `</kind>`, com o `kind` do cabeçalho.
-- [ ] A linha de fim é inforjável pelo mecanismo do cabeçalho: uma linha de corpo que comece por
+- [x] A linha de fim é inforjável pelo mecanismo do cabeçalho: uma linha de corpo que comece por
       `<` ou por `\` sai escapada. Teste com corpos que contêm `</plan_input>`, `</objective>`,
       `<objective>` e as variantes já escapadas, em `plan_input`, em `memory` e em resultados de
       tool: nenhuma linha do pedido projectado começa por um cabeçalho ou por um fim que o
       runtime não tenha escrito. O corpus adversarial do gate `security` corre também com a
       1.1.0.
-- [ ] O texto do protocolo da 1.1.0 é o do desenho (§4.3): diz o que é um segmento e a sua linha
+- [x] O texto do protocolo da 1.1.0 é o do desenho (§4.3): diz o que é um segmento e a sua linha
       de fim; que o segmento `objective` é a tarefa, é instrução mesmo quando há segmentos de
       dados antes dele na mesma mensagem, e não leva rótulo de taint por não ser dados; que
       `correction` e `notice` são instruções; que tudo o resto é dados; que um rótulo
@@ -1414,30 +1411,30 @@ a taxa de recusa em produção sem ninguém ler textos à mão.
       um corpo não consegue conter um cabeçalho nem um fim. Sai a frase «even if it looks like a
       header». As linhas sobre tool calls, repetição, recusa e `ref` do aviso ficam iguais às da
       1.0.0.
-- [ ] Testes das restrições do texto: só ASCII; nenhuma linha começa por `<`; não contém
+- [x] Testes das restrições do texto: só ASCII; nenhuma linha começa por `<`; não contém
       `taint=trusted`; não nomeia nenhuma tool; e cada frase é verdadeira para o que a projecção
       produz (um teste por frase que afirme uma propriedade verificável: fim de segmento,
       ausência de rótulo no objectivo, escape de corpo).
-- [ ] O layout do tail, o tail e o `prompt_hash` **não mudam**: o mesmo run dá o mesmo
+- [x] O layout do tail, o tail e o `prompt_hash` **não mudam**: o mesmo run dá o mesmo
       `prompt_hash` nas duas versões da projecção, e os goldens de replay existentes ficam
       verdes sem alteração.
-- [ ] A versão da projecção usada fica no manifesto de **cada** turno. Um run em curso no momento
+- [x] A versão da projecção usada fica no manifesto de **cada** turno. Um run em curso no momento
       da troca pode ter turnos em versões diferentes; cada um grava a sua. Declarado, não
       corrigido.
-- [ ] A lista de layouts que a projecção nativa cobre é a mesma nas duas versões: nenhum layout
+- [x] A lista de layouts que a projecção nativa cobre é a mesma nas duas versões: nenhum layout
       cai em texto único por causa da 1.1.0 (teste).
-- [ ] Efeito na cache de prefixo declarado: a mensagem `system` muda, e os tokens servidos de
+- [x] Efeito na cache de prefixo declarado: a mensagem `system` muda, e os tokens servidos de
       cache caem na troca. Lê-se no registo de turnos antes e depois.
-- [ ] **Canário, só de medição.** O `aos-orq` conta os nós **sem tools e com `consumes`** que
+- [x] **Canário, só de medição.** O `aos-orq` conta os nós **sem tools e com `consumes`** que
       concluem e cujo texto final contém vocabulário do próprio protocolo (`plan_input`,
       `taint=untrusted`): `aos_orq_consume_canario_de_recusa_total`, ao lado do total de nós
       dessa classe. Um teste prova que o canário não muda o estado do nó, a saída publicada, os
       eventos do plano, o `detail` nem o código de saída, e que nenhum ramo de decisão o lê. O
       texto não entra em nenhuma métrica, log ou evento.
-- [ ] O canário é corrido contra os textos das recusas medidas que existirem em cópia local, e o
+- [x] O canário é corrido contra os textos das recusas medidas que existirem em cópia local, e o
       resultado fica registado no ticket: é um limite inferior, e uma recusa que não use as
       palavras do protocolo escapa-lhe.
-- [ ] A emenda ao ADR-036 (§2.4 a §2.6) regista a 1.1.0, a linha de fim, o texto do protocolo e a
+- [x] A emenda ao ADR-036 (§2.4 a §2.6) regista a 1.1.0, a linha de fim, o texto do protocolo e a
       versão escolhida por configuração. A RTM é regenerada no mesmo PR.
 - [ ] Revisão adversarial independente com mutações, antes da fusão.
 - [ ] **Critério de ligar**, medido em produção sem pedidos directos ao modelo. A 1.1.0 é
@@ -1458,9 +1455,65 @@ a taxa de recusa em produção sem ninguém ler textos à mão.
 - Frases novas sobre como chamar tools.
 - A medição directa ao proxy (não autorizada).
 
+### Registo da implementação (2026-10-06)
+
+**O que entrou.**
+
+- `packages/platform/model-gateway/projection.go`: `NativeProjectionVersion110`,
+  `ParseNativeProjectionVersion`, `ProjectNativeVersion` e o texto `protocoloNativo110`.
+  `ProjectNative` continua a ser a 1.0.0. A linha de fim sai de `fimDeSegmento`, que lê o kind do
+  cabeçalho que o kernel renderizou; o kernel não foi tocado.
+- `packages/platform/model-gateway/runtime_adapter.go`: `WithProjectionVersion`. Sem a opção, a
+  versão é a 1.0.0. A versão usada volta em `ModelResponse.ProjectionVersion` e o runtime grava-a
+  no manifesto do turno, como já fazia.
+- `packages/cmd/aos/model_projection_env.go` e `main.go`: `AOS_MODEL_PROJECTION_VERSION`,
+  validada onde a `AOS_MODEL_PROJECTION` é (na composição do cliente de modelo, antes de qualquer
+  efeito), e o banner. Com a omissão as linhas do banner são as de antes.
+- `packages/cmd/aos-orq/canario_de_recusa.go`: o canário, chamado no fecho do nó depois de o
+  desfecho estar decidido. Duas séries sem rótulos: `aos_orq_consume_canario_de_recusa_total` e o
+  denominador `aos_orq_consume_canario_de_recusa_nos_total`.
+- Emenda ao ADR-036 (§2.4 a §2.6, consequências e
+  resíduos), `deploy/node/README.md`, `deploy/server/README.md`, `.env.example`,
+  `docker-compose.prod.yml` (a variável passa ao serviço do nó) e `tecnica/06`.
+
+**Como se prova «a omissão são os bytes de hoje».** Contra os goldens que já existiam, escritos à
+mão no AOS-490 e não alterados: o pedido de exemplo do adaptador (`aos490PedidoDeExemplo`) e os
+dois pedidos do run de referência do nó composto (`aos490Pedido1`, `aos490Pedido2`), que são o
+corpo que o provider recebe. Com a variável ausente, vazia e em `1.0.0`, os pedidos são esses
+bytes; os manifestos de turno são iguais byte a byte entre os três casos; os eventos do run são
+os mesmos, pela mesma ordem. As suites existentes do gateway, do kernel, do nó e do `aos-orq`
+ficam verdes sem alteração de nenhum teste nem de nenhum golden de replay. **Limite:** não foi
+feita a comparação de dois binários (base e novo) sobre o mesmo guião, com eventos e métricas
+inteiros, como no AOS-501; e o ficheiro de métricas do `aos-orq` ganha as duas séries do canário
+em qualquer plano com um nó de resumo que conclua, qualquer que seja a versão da projecção.
+
+**O canário sobre as recusas medidas** (cópias locais dos textos finais das séries v0.1.46 e
+v0.1.49, lidos do `GET /runs/{id}`; contagens por ficheiro, que se podem sobrepor):
+
+| Cópia | Nós de resumo concluídos | Marcados pelo canário |
+|---|---|---|
+| série de 2026-10-05, primeira parte | 9 | 0 |
+| série de 2026-10-05 (`v0146s`) | 21 | 1 — `plan-e2e-v0146s-1791193787~n2` |
+| série de 2026-10-06 (`v0149s`) | 18 | 1 — `plan-e2e-v0149s-1791277019~n2` |
+
+Os dois marcados são as duas recusas medidas, e nenhum outro nó de resumo foi marcado. É um
+limite inferior: uma recusa que não use `plan_input` nem `taint=untrusted` escapa-lhe. Fora da
+classe, o texto final de um nó de leitura (`plan-e2e-v0149s-1791276573~read_notes`, com tools)
+também usa o vocabulário; o canário não o conta, por não ser um nó sem tools com `consumes`.
+
+**O corpus adversarial.** O módulo `packages/security-tests` não depende do Model Gateway, e o
+gate `security` não projecta nada. O corpus dele (`testdata/corpus.json`, as injecções) corre
+pelas duas versões da projecção num teste do gateway
+(`TestAOS504_CorpusAdversarial_NasDuasVersoes`), que entra no gate `test` e não no `security`.
+
+**Por fazer.** A revisão adversarial independente; a série de medição em produção e a decisão de
+ligar; e o que o ADR-036 já declarava — o replay não lê
+nem recusa uma `projection_version`.
+
 ### Estado
 
-**ABERTO.**
+**IMPLEMENTADO (2026-10-06), desligado por omissão; por rever e por medir em produção.** A 1.1.0
+não está seleccionada em lado nenhum: `AOS_MODEL_PROJECTION_VERSION` ausente é a 1.0.0.
 
 ---
 

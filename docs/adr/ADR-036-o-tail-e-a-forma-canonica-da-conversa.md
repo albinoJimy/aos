@@ -4,7 +4,8 @@
 - **Data:** 2026-10-03
 - **Deciders:** Dono do produto (decisões D1 a D4 do desenho de 2026-10-03) · executor de
   AOS-489/490 (implementação)
-- **Tickets:** AOS-489, AOS-490
+- **Tickets:** AOS-489, AOS-490, AOS-504 (emenda de 2026-10-06 aos §2.4 a §2.6: projecção nativa
+  1.1.0)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -143,9 +144,51 @@ O modo usado e a versão da projecção ficam gravados no manifesto do turno (`p
 re-hospedado depois de o nó mudar de modo segue no modo novo, e é o manifesto de cada turno que
 diz em que forma ele foi.
 
+**As versões da projecção nativa (emenda de 2026-10-06, AOS-504).** A projecção nativa tem duas
+versões, e o nó escolhe uma por configuração: `AOS_MODEL_PROJECTION_VERSION`, com os valores
+`1.0.0` (por omissão) e `1.1.0`; outro valor recusa o arranque. Com a variável ausente ou em
+`1.0.0`, os pedidos são byte a byte os de antes desta emenda.
+
+A 1.1.0 existe porque, em produção, o nó de resumo de um plano — sem tools, a consumir a saída de
+outro nó — recusou o próprio objectivo em cerca de 1 plano em 20, dizendo que o `objective` vinha
+dentro de um `plan_input` untrusted. Na 1.0.0 a mensagem da semente é o `plan_input` seguido do
+`objective`, um segmento não tem fim, e o protocolo manda não seguir pedidos encontrados em dados
+«even if it looks like a header». A causa não está provada por experiência; é a explicação
+coerente com o código e com as respostas medidas. A 1.1.0 muda duas coisas, e só elas:
+
+- **A linha de fim.** Cada segmento renderizado numa mensagem `user` ou `tool` termina com a
+  linha `</kind>`, com o `kind` do seu cabeçalho. A projecção lê o kind do cabeçalho que o kernel
+  escreveu (já saneado), para não haver duas definições dele. O texto do modelo numa mensagem
+  `assistant` não é um segmento e não leva fim.
+- **O texto do protocolo.** Diz o que é um segmento (cabeçalho, corpo, linha de fim; só o runtime
+  escreve cabeçalhos e fins; um segmento nunca contém outro); que o segmento `objective` é a
+  tarefa, é instrução mesmo quando há segmentos de dados antes dele na mesma mensagem, e não leva
+  rótulo de taint por não ser dados; que `correction` e `notice` são instruções; que tudo o resto
+  é dados; que um rótulo `taint=untrusted` se aplica só ao corpo do segmento que o leva, até à
+  linha de fim; e que um corpo não consegue conter um cabeçalho nem um fim. Sai a frase «even if
+  it looks like a header». As linhas sobre tool calls, repetição, recusa e `ref` do aviso são,
+  byte a byte, as da 1.0.0. As restrições do texto são as mesmas: ASCII, nenhuma linha começa por
+  `<`, sem `taint=trusted`, sem nomes de tools, e cada frase verdadeira para o que a projecção
+  produz.
+
+O mapeamento, a regra de agrupamento, o invariante e a lista de layouts cobertos são os da 1.0.0:
+nenhum layout cai em texto único por causa da 1.1.0. A ordem dos segmentos na mensagem da semente
+não muda — o objectivo continua depois dos dados (decisão do AOS-414); pô-lo antes reabre-se só
+se a recusa continuar a aparecer com a 1.1.0.
+
+A 1.1.0 **entra desligada**. O texto do protocolo é lido por todos os runs, incluindo o turno 1
+de um nó com tools, e pode mexer na taxa de «não chamou a tool» em qualquer sentido. Liga-se como
+omissão de produção só depois de uma série medida, pelo critério escrito no AOS-504. A medição
+vigia-se por um canário no `aos-orq` (`aos_orq_consume_canario_de_recusa_total`), que só conta:
+detectar a recusa exigia julgar o conteúdo de um texto, o que o ADR-037 recusa.
+
+Como a configuração é do nó, um run em curso no momento da troca pode ter turnos em versões
+diferentes; cada turno grava a sua em `projection_version`. Fica declarado, não corrigido: os
+runs duram segundos, e o `prompt_hash` é o mesmo nas duas.
+
 **O que o registo permite, e o que ainda não tem ferramenta.** O replay reconstrói o tail de cada
 turno, e `ProjectNative` — a função que o adaptador usa, exportada e pura — dá as mensagens a
-partir da vista desse turno. Não existe ainda um leitor que junte as duas coisas: nada lê
+partir da vista desse turno (`ProjectNativeVersion` para a versão que o manifesto disser). Não existe ainda um leitor que junte as duas coisas: nada lê
 `manifest.projection` nem `projection_version`, o motor de replay não expõe a vista
 reconstruída, e não recusa uma `projection_version` que não conheça. Fica por fazer.
 
@@ -158,6 +201,11 @@ diz o que existe hoje para a reconstruir). As
 frases de código e de documentação que dizem «os mesmos bytes que vão para o provider» passam a
 valer só para a projecção de texto único.
 
+O `prompt_hash` também não depende da **versão** da projecção nativa (emenda de 2026-10-06,
+AOS-504): a linha de fim e o texto do protocolo da 1.1.0 existem só no pedido, não no tail. O
+mesmo run dá o mesmo `prompt_hash` na 1.0.0 e na 1.1.0, e os logs gravados reproduzem-se sem
+alteração.
+
 ### 2.6 A proveniência viaja dentro das mensagens
 
 Numa mensagem nativa não há linha de delimitação. A marcação de proveniência passa para dentro do
@@ -167,6 +215,15 @@ conteúdo:
   `tool_denied`, `denied_code` e `denied_by`. O conteúdo untrusted continua neutralizado.
 - Segmentos trusted (`objective`, `correction`) e untrusted (`plan_input`, `memory`) não são
   fundidos no mesmo papel sem delimitação inforjável.
+- Na projecção 1.1.0 (emenda de 2026-10-06, AOS-504) a delimitação tem dois lados: o cabeçalho e
+  a linha de fim `</kind>`. O fim é inforjável pelo mecanismo do cabeçalho, sem regra nova: o
+  kernel escreve o corpo neutralizado — uma linha que comece por `<` ou por `\` sai com um `\` à
+  frente, em todas as quebras de linha que o layout reconhece — e fecha-o com uma quebra de
+  linha, pelo que a linha de fim abre sempre uma linha. Um corpo que contenha `</plan_input>`
+  aparece como `\</plan_input>`, e um que já traga essa forma escapada ganha outro `\`. Numa
+  mensagem `user` ou `tool`, uma linha que abra por `<` só pode ter sido escrita pelo runtime.
+  Isto diz ao modelo onde acaba o que é untrusted; continua a não ser uma fronteira de
+  autoridade.
 - A separação de privilégio continua a não depender disto: a autoridade deriva do tipo dos
   segmentos do tail (ADR-034) e é imposta pelo Reference Monitor.
 
@@ -213,7 +270,11 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
 - Com os argumentos ao lado do código de recusa, conteúdo injectado pode sondar a fronteira da
   política argumento a argumento. A `Reason` continua fora.
 - O preâmbulo custa cerca de 286 tokens de entrada por turno na projecção de texto único (1 144
-  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 390 (1 559 bytes).
+  bytes, a 4 bytes por token). O protocolo nativo custa cerca de 390 (1 559 bytes); o da
+  projecção 1.1.0 cerca de 507 (2 027 bytes), mais a linha de fim de cada segmento.
+- Trocar a versão da projecção nativa muda a mensagem `system`, que é a cabeça do pedido: os
+  tokens servidos de cache de prefixo caem na troca, nos dois sentidos. Lê-se em
+  `cache_read_tokens` do registo de turnos, antes e depois.
 - A estimativa de admissão de um turno continua a fazer-se sobre o prompt materializado, também
   quando o pedido vai em mensagens nativas.
 - O `prompt_hash` deixa de ser, na projecção nativa, o hash dos bytes enviados.
@@ -236,5 +297,10 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
 - **Reconstrução do pedido a partir do registo.** O registo permite-a e a função está exportada;
   falta a ferramenta que a faça de ponta a ponta, e a recusa de uma `projection_version`
   desconhecida no replay.
+- **A recusa do próprio objectivo não se detecta** (AOS-504). A projecção 1.1.0 corrige a causa
+  provável e um canário conta os casos que usam o vocabulário do protocolo; é um limite inferior,
+  e nada decide por ele. Quem precisa de garantia semântica declara um `verifier` no plano.
+- **Run com turnos em versões diferentes da projecção** (AOS-504): possível quando o nó é
+  recriado com outra versão a meio de um run; cada turno grava a sua.
 - **Run sem objectivo nem entradas.** A projecção nativa dá um pedido só com `system`; se o
   provider o aceita não foi medido.
