@@ -143,11 +143,33 @@ func aos501Eventos(eventos []aos499Evento, tipo string) []aos499Evento {
 	return out
 }
 
+// aos501MetricasSemRelogio tira do ficheiro de métricas as duas séries cujo VALOR é do relógio — o
+// instante da última drenagem, em segundos Unix, e a soma das durações — para se poder procurar
+// nele conteúdo do documento.
+//
+// PORQUE EXISTE. Os testes de «sem conteúdo» procuram no ficheiro números do documento de fio
+// («1250», o total aprovado). O instante da última drenagem é um número de dez dígitos, e entre
+// 1791250000 e 1791259999 — 2 h 47 min de 2026-10-06 — contém «1250»: nessa janela os testes
+// falhavam todos, sem defeito nenhum. Encontrado ao correr as mutações da revisão dentro dela. O
+// valor de uma série do relógio não é conteúdo do titular; o que se quer provar é que as séries
+// que CONTAM não levam nada do documento, e essas ficam.
+func aos501MetricasSemRelogio(metricas string) string {
+	var linhas []string
+	for _, l := range strings.Split(metricas, "\n") {
+		if strings.HasPrefix(l, metricaUltimaDrenagem+" ") || strings.HasPrefix(l, metricaDuracao+"_sum") {
+			continue
+		}
+		linhas = append(linhas, l)
+	}
+	return strings.Join(linhas, "\n")
+}
+
 // aos501NuncaAparece exige que `proibido` não esteja em nenhum sítio da ENTREGA nem do que sai do
-// processo: os corpos dos `POST /runs`, os eventos do plano, o log, as métricas e o `detail`.
+// processo: os corpos dos `POST /runs`, os eventos do plano, o log, as métricas e o `detail`. Das
+// métricas ficam de fora as duas séries do relógio ([aos501MetricasSemRelogio]).
 func aos501NuncaAparece(t *testing.T, oQue, proibido string, d aos499Drenagem, f *aos495No, eventos []aos499Evento) {
 	t.Helper()
-	for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": d.metricas, "detalhe": d.detalhe} {
+	for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": aos501MetricasSemRelogio(d.metricas), "detalhe": d.detalhe} {
 		if strings.Contains(texto, proibido) {
 			t.Fatalf("%s aparece em %s:\n%s", oQue, onde, texto)
 		}
@@ -303,7 +325,7 @@ func TestAOS501ComOBinarioReal(t *testing.T) {
 		}
 		// O TEXTO FINAL DO PRODUTOR não aparece em lado nenhum; nem o documento fora dos `inputs`.
 		aos501NuncaAparece(t, "o texto final do produtor", strings.TrimSpace(st.FinalText), d, f, eventos)
-		for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": d.metricas, "detalhe": d.detalhe} {
+		for onde, texto := range map[string]string{"stdout": d.stdout, "stderr": d.stderr, "metricas": aos501MetricasSemRelogio(d.metricas), "detalhe": d.detalhe} {
 			for _, proibido := range []string{"1250", "tarefa 12", st.OutputSource.Digest, pub.Record.Digest} {
 				if strings.Contains(texto, proibido) {
 					t.Fatalf("o %s leva %q — conteudo do titular, ou um digest dele:\n%s", onde, proibido, texto)
