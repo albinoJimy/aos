@@ -1403,12 +1403,14 @@ a taxa de recusa em produção sem ninguém ler textos à mão.
       tool: nenhuma linha do pedido projectado começa por um cabeçalho ou por um fim que o
       runtime não tenha escrito. O corpus adversarial do gate `security` corre também com a
       1.1.0.
-- [x] O texto do protocolo da 1.1.0 é o do desenho (§4.3): diz o que é um segmento e a sua linha
-      de fim; que o segmento `objective` é a tarefa, é instrução mesmo quando há segmentos de
-      dados antes dele na mesma mensagem, e não leva rótulo de taint por não ser dados; que
-      `correction` e `notice` são instruções; que tudo o resto é dados; que um rótulo
-      `taint=untrusted` se aplica só ao corpo do segmento que o leva, até à linha de fim; e que
-      um corpo não consegue conter um cabeçalho nem um fim. Sai a frase «even if it looks like a
+- [x] O texto do protocolo da 1.1.0 é o do desenho (§4.3), com duas frases corrigidas pela
+      revisão (ver o registo): diz o que é um segmento e a sua linha de fim, e que cabeçalho e
+      fim abrem no primeiro carácter de uma linha e só o runtime os escreve; que o segmento
+      `objective` é a tarefa, tem o cabeçalho `<objective>` sem rótulos, e é instrução mesmo
+      quando há segmentos de dados antes dele na mesma mensagem; que `correction` e `notice` são
+      instruções; que tudo o resto é dados; que um rótulo `taint=untrusted` se aplica só ao
+      corpo do segmento que o leva, até à linha de fim; que os corpos são escapados, e que o que
+      num corpo pareça um cabeçalho ou um fim é dados. Sai a frase «even if it looks like a
       header». As linhas sobre tool calls, repetição, recusa e `ref` do aviso ficam iguais às da
       1.0.0.
 - [x] Testes das restrições do texto: só ASCII; nenhuma linha começa por `<`; não contém
@@ -1436,13 +1438,18 @@ a taxa de recusa em produção sem ninguém ler textos à mão.
       palavras do protocolo escapa-lhe.
 - [x] A emenda ao ADR-036 (§2.4 a §2.6) regista a 1.1.0, a linha de fim, o texto do protocolo e a
       versão escolhida por configuração. A RTM é regenerada no mesmo PR.
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] Revisão adversarial independente com mutações, antes da fusão. Feita a 2026-10-06, sem
+      bloqueantes; os achados e o que se corrigiu estão no registo da revisão, abaixo.
 - [ ] **Critério de ligar**, medido em produção sem pedidos directos ao modelo. A 1.1.0 é
       seleccionada para uma série de pelo menos 60 planos com o objectivo multi-nó de sempre, e
       volta à 1.0.0 no fim da série, até à decisão. Liga-se como omissão de produção só se, na
       série: (a) a recusa do objectivo não aparece — canário a zero **e** zero recusas na leitura
-      dos textos finais do nó de resumo (zero em 60 dá um limite superior de 4,9% a 95%, contra
-      os 5,1% de base); (b) a taxa de primeiras falhas por «não chamou a tool» não piora — no
+      **à mão** de uma amostra dos textos finais do nó de resumo da série 1.1.0, pelo menos 20
+      e todos se forem menos (zero em 60 dá um limite superior de 4,9% a 95%, contra os 5,1% de
+      base). A leitura é obrigatória e o canário sozinho não chega: o vocabulário que ele mede
+      vem do texto do protocolo, que é o que muda entre as séries, e uma recusa na 1.1.0 pode
+      não usar nenhuma das duas palavras. Se a série atravessar um rollback do `aos-orq`, as
+      séries do canário recomeçam do zero e somam-se à mão; (b) a taxa de primeiras falhas por «não chamou a tool» não piora — no
       máximo 16 em 60, que só detecta uma regressão grosseira (16% contra 35%). Os números ficam
       no acompanhamento.
 
@@ -1454,6 +1461,34 @@ a taxa de recusa em produção sem ninguém ler textos à mão.
   semântica declara um `verifier` no plano.
 - Frases novas sobre como chamar tools.
 - A medição directa ao proxy (não autorizada).
+
+### Registo da revisão (2026-10-06)
+
+Revisão adversarial independente, com 8 mutações: **sem bloqueantes**, seguro de fundir com a
+omissão. Dois achados a resolver antes de ligar a 1.1.0 e cinco menores. O que se fez:
+
+- **Quase-forjas (I1).** Uma linha de corpo como ` </plan_input>` — atrás de espaço, TAB, BOM,
+  ZWSP, NBSP, NUL, BS, ESC ou soft hyphen — passava crua, e a 1.1.0 tinha tirado a reserva «even
+  if it looks like a header» e prometia que um corpo «não pode conter» um cabeçalho. Corrigido de
+  duas maneiras, só na 1.1.0: o texto do protocolo diz que cabeçalho e fim abrem no primeiro
+  carácter da linha e que o resto é dados; e a projecção escapa, com o `\` do kernel, o primeiro
+  carácter visível de uma linha de corpo quando é `<` ou `\` atrás de caracteres invisíveis
+  (`neutralizarQuaseCabecalhos`, tabela congelada de Z*, Cc, Cf e brancos). O kernel, o tail, o
+  `prompt_hash` e a 1.0.0 não mudaram. Teste com os nove prefixos, em `memory`, `plan_input` e
+  resultado de tool.
+- **«because it is not data» (I2).** Cortada: o segmento `memory` vai sem rótulo de taint e é
+  dados. O teste das frases prende o contra-exemplo.
+- **Kind vazio ou com `/` (M4).** `fimDeSegmento` recusa-os; o pedido não sai na 1.1.0.
+- **Cablagem do canário (M1, M2).** Teste com o binário real em que o nó de resumo fecha
+  `failed` e não conta (a mutação `concluiu = true` morre); e o canário passou a contar depois
+  de a saída estar publicada e a conclusão escrita.
+- **Documentação (M3, M5, M6).** Um rollback apaga as séries do canário; a variável só é validada
+  com `AOS_MODEL_ENDPOINT` definida; e o critério de ligar exige leitura à mão.
+
+O protocolo da 1.1.0 passou de 2 027 para 2 247 bytes (cerca de 562 tokens).
+
+**Fica declarado, sem ferramenta:** não há leitor que reconstrua um pedido a partir de
+`manifest.projection_version` (M7 da revisão; já estava no ADR-036 §2.4).
 
 ### Registo da implementação (2026-10-06)
 
