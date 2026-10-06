@@ -164,9 +164,13 @@ O `scope` existente fica como está: os clientes actuais já o enviam com capabi
       digest calculado por quem executou a tool;
     - o texto final do run filho **não é publicado nem entregue**; sem origem designável o
       produtor fecha `failed` com causa própria e o consumidor não corre. Nunca se cai para o
-      texto;
+      texto — nem numa segunda saída do mesmo nó: um nó que declara a origem não tem outra
+      saída de forma aberta (o validador do plano recusa-o);
     - o canal de entrada do consumidor, os tectos e o taint `untrusted` não mudam; o conteúdo
-      continua na memória do `serve` e reconstrói-se do log relendo o resultado designado.
+      continua na memória do `serve` e reconstrói-se do log relendo o resultado designado. Na
+      reconstrução, o contrato da saída no documento aprovado é a autoridade: uma saída com
+      origem só entra de um evento com `source` e com o facto da declaração vinculativo no log;
+      uma saída sem origem só entra de um evento sem `source`.
     Fora de `on`, um plano que declare a origem não corre.
   - **Não fecha a separação de planos (DEF-806/AOS-069):** o conteúdo untrusted passa a ter canal
     próprio e marcado, mas continua a ser lido pelo MESMO plano que planeia.

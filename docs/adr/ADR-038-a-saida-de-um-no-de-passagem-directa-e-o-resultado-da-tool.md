@@ -15,8 +15,8 @@
   bytes na API do nó) e AOS-499 (o `aos-orq` mede com o vínculo «só medição»), os três
   implementados e revistos; AOS-500 (a declaração no plano: `outputs[].from_tool`, schema 1.3.0,
   validador e cartão de aprovação), implementado e revisto; AOS-501 (a publicação e a entrega
-  pelos bytes designados, atrás do interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=on`), implementado,
-  por rever e por verificar em produção — §10.
+  pelos bytes designados, atrás do interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=on`), implementado e
+  revisto; a entrega só liga por decisão do dono, e está por verificar em produção — §10 e §11.
 - **Relacionados:** ADR-001 (execução durável ao nível do passo), ADR-002 (Reference Monitor),
   ADR-005 (taint), ADR-010 (manifesto por trajectória e replay), ADR-022 (extensões ao grafo de
   plano), ADR-027 (cada nó do plano é um run do nó), ADR-034 (autorização derivada do contexto),
@@ -471,9 +471,18 @@ origem (saída 10, `no_sem_saida_por_referencia`); não cai para o texto.
   do consumidor. Tira-se o modelo do caminho do produtor; não se cria um handle. O consumidor
   passa a receber os bytes exactos do atacante — o texto do documento, sem o modelo do produtor
   de permeio —: as defesas são as de hoje (`plan_input` é dados, autoridade untrusted, gate de
-  taint). **Não foram exercitadas por este caminho em AOS-501**: o corpus adversarial do gate
-  `security` não corre pela entrega por referência, e deve correr antes de se ligar `on` em
-  produção.
+  taint). **Exercitadas por este caminho na revisão do AOS-501** (§11): as 11 entradas de injecção
+  do corpus do gate `security` (25 documentos: o payload efectivo, o cru quando difere, e cada
+  um dentro de um documento que forja os cabeçalhos de segmento do prompt) passam por uma cadeia
+  de ficheiros de fio — o envelope escrito pelo codificador real da sandbox, o `aos-orq consume`
+  real em `on`, e o corpo do `POST /runs` entregue ao nó real. O documento chega byte a byte,
+  como `plan_input` `taint=untrusted`; os cabeçalhos forjados ficam escapados; e uma tool call
+  privilegiada pedida no turno 1 por um modelo que leu o documento é negada pelo gate de taint.
+  **O que isso não cobre:** é um corpus de 11 entradas e não uma prova; o modelo é um modelo
+  falso que obedece à injecção, e não o de produção; a tool é a de leitura da sandbox, lida pelo
+  driver de referência; e a cadeia é de ficheiros, sem um nó e um `aos-orq` a falar um com o
+  outro em processo. A defesa contra um texto que não forja cabeçalhos nem pede uma tool
+  privilegiada — «resume isto assim» — continua a ser a instrução do prefixo, e não é medida.
 - **Em `off` não há âncora.** A declaração vive com o contrato em `manifest.completion`, que não
   existe com o veredicto desligado. Um nó em `off` não serve saídas por referência.
 - **Em observação, uma declaração vinculativa não deixa razão no veredicto.** O que a imposição
@@ -527,19 +536,72 @@ origem (saída 10, `no_sem_saida_por_referencia`); não cai para o texto.
   chamada tem de ser a única da tool no primeiro turno com tools, pelo que um nó que escreve duas
   vezes não tem origem. **O caminho não foi exercitado em produção**: as tools de produção com
   origem medida são de leitura.
-- **Reconhecer o envelope não prova a sandbox.** Uma tool que devolva um JSON só com as chaves do
-  envelope é lida como envelope, e entrega-se o seu `stdout_text`. O resultado é dela de qualquer
-  modo; o evento diz a forma da extracção.
+- **O envelope é reconhecido só pela forma, e qualquer tool pode ser origem.** Uma tool que
+  devolva um JSON só com as chaves do envelope é lida como envelope. Com a decisão de permitir
+  qualquer tool do nó como origem, isto dá a quem controla a resposta de uma tool CRUA — uma que
+  não corre na sandbox, por exemplo um serviço externo chamado por uma tool de egress — três
+  coisas: **escolher o texto entregue** (o `stdout_text` do JSON que devolve); **esconder o
+  resto** (em `artifacts`, que não se lêem nem se validam); e **fazer o nó falhar** (`exit_code`
+  diferente de zero fecha o nó `origem_tool_falhou`, e o consumidor não corre). O evento diz
+  `sandbox_stdout_text` de um resultado que não veio da sandbox, e a derivação só é reproduzível
+  por quem leia o JSON como este binário (com uma chave repetida, ganha a última). O conteúdo é
+  do terceiro de qualquer modo, e chega untrusted; o que ele ganha é a forma, e a capacidade de
+  parar o plano. Não se muda o código: fecha-se quando a origem levar a classe da tool, ou
+  quando o nó disser que os bytes são de uma execução da sandbox.
 - **Na reidratação, uma leitura que falha agora é definitiva para o consumidor.** O payload por
   referência reconstrói-se relendo o run filho; se o nó responder 503 nesse momento (ou 404, ou
   bytes que já não conferem), o payload não entra e o consumidor fecha `entrada_por_cumprir`. É a
   regra que o texto final já tem (AOS-418): o que não se confirma não entra.
-- **`derived_from` continua por preencher.** Preenchê-lo na saída de texto de um nó com
-  `consumes` mudava o evento de planos sem origem, e ficou fora do AOS-501.
-- **O planeador pode declarar mal.** Omitir `from_tool` num nó de leitura (e o defeito medido
-  fica), ou declará-lo num nó cujo trabalho é transformar (e o consumidor recebe o documento
-  cru). A omissão conta-se (`aos_orq_consume_candidatos_sem_origem_total`); o segundo caso não se
-  mede.
+- **`derived_from` continua por preencher**, e o critério do AOS-501 que o pedia fica por
+  cumprir. A razão: o campo diz de que payloads uma saída DERIVA, e as saídas que derivam de
+  outras são as de TEXTO de um nó com `consumes` — precisamente as que um plano sem origem
+  publica. Preenchê-lo mudava os bytes do `plan.payload_published` de planos que não usam
+  `from_tool`, fora de `on`, e este ticket obriga-se a não mudar um byte aí. Uma saída por
+  referência não deriva de payload nenhum (o nó com origem não tem `consumes`). Fica para o
+  ticket que tratar a proveniência ao longo da cadeia.
+- **Com `on`, o defeito medido fica aberto em três casos.** A entrega fecha-o onde a origem é
+  declarada, e em mais lado nenhum:
+  1. **o planeador omite `from_tool`** num nó de leitura — conta-se
+     (`aos_orq_consume_candidatos_sem_origem_total`), e o nó entrega o texto do modelo, como
+     hoje;
+  2. **o planeador declara o nó de leitura como `summary`** (3 dos 21 planos medidos): o
+     validador não deixa pôr origem num `summary`, o nó não é candidato por estrutura a mais
+     nada, e nem a série da omissão o apanha por essa razão;
+  3. **leituras encadeadas**: um nó de leitura com `consumes` nunca tem origem (§2.2), e a saída
+     dele é o texto do modelo.
+
+  O quarto caso que a revisão encontrou — o **nó misto**, uma saída com origem e outra de texto
+  no mesmo nó — deixou de existir: o validador recusa-o (`from_tool_with_text_output`, §11).
+  O inverso também não se mede: **declarar a origem num nó cujo trabalho é transformar** não
+  falha, e o consumidor recebe o documento cru.
+- **Planos legítimos que passam a falhar com `on`.** Um nó com origem só conclui se a designação
+  for limpa, e por isso fecha `failed`, com causa, em situações que hoje concluem:
+  - o modelo chama a tool **duas vezes** no primeiro turno, ou chama **outra tool antes**, ou a
+    primeira tentativa **falha e a segunda acerta** (`origem_ambigua`, `origem_em_falta`);
+  - o documento está **vazio** (`origem_vazia`) ou **não existe** (`origem_tool_falhou`) — antes
+    o modelo explicava-o e o plano seguia;
+  - o documento passa **cerca de 50 KiB** lido com artefacto, ou **não é texto**
+    (`origem_nao_transportavel`);
+  - a tool **escreve o documento num ficheiro e imprime outra coisa** no stdout: não falha, e o
+    consumidor recebe o stdout;
+  - o run tem **memória untrusted no primeiro turno** (`origem_inaplicavel`).
+
+  Quantos são mede-se em `observe` (os estados `missing` e `ambiguous`, e os tamanhos), antes de
+  ligar.
+- **Um nó `aos` que deixa de anunciar `binding` mata os planos com origem em voo.** Com o
+  `aos-orq` em `on`, um anúncio que se LEU e não traz `binding` (o nó reiniciado com o veredicto
+  desligado, ou revertido) fecha o plano na geração seguinte, antes da posse: terminal, saída 10,
+  `no_sem_saida_por_referencia`; o documento é apagado, o nó do plano fica `running` e o run
+  filho órfão. Um anúncio ILEGÍVEL é transitório. É coerente com «nunca cair para o texto», e
+  custa planos: para um plano que já tem o facto vinculativo no log, podia ser transitório. Não
+  se mudou; o runbook tem a ordem segura.
+- **Um `on` posto por engano liga a entrega.** Antes do AOS-501 o valor era inválido e parava o
+  `consume`; agora é válido, e um engano no `.env` passa a mudar o que flui entre nós em vez de
+  se ver no arranque. O banner é a única coisa que o diz.
+- **A mensagem de `origem_sem_entrega` deixou de ser exacta.** Diz que o binário «ainda nao
+  entrega por referencia»; a causa é o interruptor fora de `on` no processo que leu o documento
+  (incluindo um `decide` sem a variável do `consume`). Não se corrigiu: sai precisamente fora de
+  `on`, onde o binário tem de ser byte a byte o anterior. O runbook diz a causa certa.
 
 ## 6. O que cada ticket implementa
 
@@ -553,7 +615,7 @@ origem (saída 10, `no_sem_saida_por_referencia`); não cai para o texto.
 | Campo no `POST /runs`, âncora e bytes no `GET /runs/{id}`, anúncio no `GET /tools` (implementado e revisto) | §2.1, §2.6 | AOS-498 |
 | Medição pelo `aos-orq` com o vínculo `measure`, sem mudar a entrega (implementado e revisto: interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=observe`; só declara num pedido que já leva o contrato sobre a mesma tool; compara o texto final com o conteúdo desembrulhado do resultado e publica só classes) | §2.4 | AOS-499 |
 | `outputs[].from_tool` no plano, schema 1.3.0, validador, cartão de aprovação (implementado e revisto. O prompt do planeador não muda, e o `aos-orq` não corre a linha 1.3.0 do plano até à entrega) | §2.1 | AOS-500 |
-| Publicação e entrega pelos bytes designados (de um envelope da sandbox, só o texto); origem no evento do plano; a declaração e o vínculo no log do plano; texto final não publicado; causas de falha; prompt do planeador 1.5.0; versão do cartão com origem (implementado, por rever; interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=on`) | §2.4, §2.6 a §2.9, §10 | AOS-501 |
+| Publicação e entrega pelos bytes designados (de um envelope da sandbox, só o texto); origem no evento do plano; a declaração e o vínculo no log do plano; texto final não publicado; causas de falha; prompt do planeador 1.5.0; versão do cartão com origem (implementado e revisto; interruptor `AOS_ORQ_SAIDA_POR_REFERENCIA=on`, que só liga por decisão do dono) | §2.4, §2.6 a §2.9, §10, §11 | AOS-501 |
 
 ## 7. Emendas a outros ADR
 
@@ -617,11 +679,40 @@ valor `on`. A omissão continua a ser `off`.
 | O carimbo 1.3.0 sem o campo | Volta a ser aceite em `on`: decide o validador (piso das funcionalidades, tecto da linha corrente). Fora de `on` continua recusado |
 | O prompt do planeador | O binário conhece duas versões: a corrente (1.4.0, a de omissão, byte a byte a de antes) e a 1.5.0, que nomeia `from_tool`, a linha 1.3.0 e a regra 13. O `aos-orq` só usa a 1.5.0 com a entrega activa. Os dois fingerprints estão fixados por teste |
 | A declaração e o vínculo | No evento `plan.output_source_declared`, escrito antes do pedido ao nó (§2.4). Quem decide se um nó é por referência é o documento aprovado; o interruptor governa a admissão do plano |
-| A reidratação | O payload com `source` relê-se do run filho e só entra se tudo o que o evento registou se confirmar; uma leitura que falha não entra (§5) |
+| A reidratação | O contrato da saída no documento aprovado é a autoridade: uma saída com `from_tool` só entra de um evento com `source`, com o facto vinculativo no log para esse nó, essa tool e esse contrato (`contract_digest`); uma saída sem origem só entra de um evento sem `source`. O payload com `source` relê-se do run filho e só entra se tudo o que o evento registou se confirmar; uma leitura que falha não entra (§5, §11) |
+| O nó misto | Não existe: um nó com uma saída com origem não declara outra de forma aberta. O validador recusa-o com `from_tool_with_text_output`; o executor não o submete nem publica nada dele do texto final (§11) |
 | `output_unavailable` | Separado na causa: `origem_indisponivel` e `saida_indisponivel` (§2.9, §5) |
 | O cartão de aprovação | A versão do contrato sobe a 1.2.0 nos cartões que mostram a origem; os outros continuam a carimbar 1.1.0, com os mesmos bytes. Um cartão com origem carimbado abaixo de 1.2.0 é recusado |
-| Rollback | O `aos-orq` anterior recusa com a saída 10 um documento 1.3.0 guardado e a retoma de um plano com origem. Antes de voltar atrás: pôr o interruptor em `off`, deixar acabar (ou fechar) os planos com origem em voo e os pendentes de humano, e só então trocar o binário. Ordem: o `aos-orq` antes do nó |
+| Rollback | O `aos-orq` anterior, e este com o interruptor fora de `on`, recusam com a saída 10 um documento 1.3.0 guardado e a retoma de um plano com origem. Antes de voltar atrás: parar a entrada de pedidos, deixar acabar COM `on` (ou fechar) os planos com origem em voo e os pendentes de humano, e só então mudar o interruptor ou trocar o binário — mudá-lo primeiro mata os que estão em voo. Ordem: o `aos-orq` antes do nó; e um nó que deixe de anunciar `binding` com o `aos-orq` em `on` mata-os também (§5) |
 
-O que este ticket **não** fez, e fica declarado: `derived_from`; o corpus adversarial do gate
-`security` a correr pelo caminho por referência; a revisão do custo da leitura; a verificação em
-produção, primeiro em `observe` e depois em `on`.
+O que este ticket **não** fez, e fica declarado: `derived_from` (§5, com a razão); a revisão do
+custo da leitura; pôr o prompt 1.5.0 diante de um modelo; a verificação em produção, primeiro em
+`observe` e depois em `on`.
+
+## 11. O que a revisão adversarial de AOS-501 mudou
+
+A revisão independente de 2026-10-06 não encontrou bloqueantes: fora de `on` o binário é byte a
+byte o anterior (refeito pelo revisor, e outra vez depois das correcções). Levou a estas
+alterações, feitas no mesmo ticket.
+
+| Achado | O que mudou | Secção |
+|---|---|---|
+| A reidratação não consultava o documento aprovado: um evento sem `source` para uma saída com origem entrava pelo texto final do run filho, e um evento com `source` entrava para uma saída sem origem | O contrato do documento é a autoridade na leitura, como já era na escrita; exige-se o facto vinculativo, para a tool e para o `contract_digest` do contrato | §2.4, §10 |
+| Um nó podia ter uma saída com origem e outra de texto: o consumidor da segunda recebia o resumo do modelo, e nenhuma métrica o contava | O nó misto é recusado pelo validador, com código próprio; o prompt 1.5.0 di-lo (e deixa de dizer que o executor «não transporta nenhum»); o golden-set ganhou o caso; o executor falha fechado | §2.1, §10 |
+| O runbook dizia que os planos em voo fechavam `origem_sem_vinculo` quando o nó deixa de anunciar `binding` | O runbook diz o que o código faz (terminal, saída 10, antes da posse, de vez), com a ordem segura; preso por teste. O comportamento não mudou | §5 |
+| «Sem queda para o texto» não tinha teste com os bytes presentes | Run `failed`, `timed_out` e `completed` sem `terminated`, com âncora designada e bytes que conferem: nunca se entrega | §2.9 |
+| O corpus adversarial não passava pela extracção do `aos-orq` | Cadeia de ficheiros de fio pelas 11 entradas do corpus, até ao prompt e ao gate de taint do nó real | §5 |
+| A ordem «conferir antes de extrair» e «o facto antes do pedido» não estavam presas | Testes; bytes que não conferem dão sempre `origem_nao_confere` | §2.4, §2.7 |
+| A âncora aceita um passo que o evento de publicação recusa: o `serve` abortava em todas as gerações | O nó fecha com causa (`origem_sem_vinculo`) | §2.9 |
+| O `run_id` da resposta do nó não era conferido | Outro `run_id` não se entrega (`origem_sem_vinculo`) | §2.6 |
+| O taint do evento de um payload por referência não estava preso | Teste: é sempre `untrusted`, diga o documento o que disser | §2.6 |
+| O piso da versão do cartão com origem era a versão corrente | É a versão em que a origem entrou (1.2.0), fixa | §10 |
+| A métrica contava `entregue` antes de o nó fechar | Conta o desfecho do nó, depois de publicado | §10 |
+| O prompt não dizia que `from_tool` tem de ser o nome exacto de uma tool, com a forma de identificador | O prompt 1.5.0 di-lo | §2.1 |
+| Limites em falta | O envelope reconhecido pela forma com qualquer tool como origem; os planos legítimos que passam a falhar; os três casos em que o defeito fica aberto; `derived_from`, com a razão; o nó que deixa de anunciar `binding`; `on` por engano; a mensagem de `origem_sem_entrega` | §5 |
+
+Por fazer antes de ligar `on` em produção: pôr o prompt 1.5.0 diante do modelo de produção (a
+taxa de declaração nos nós de leitura, e as declarações em nós que transformam — o golden-set
+avalia documentos de amostra, não o prompt); ler a série de `observe` (quantos nós de leitura
+dariam `missing` ou `ambiguous`, e o tamanho dos envelopes contra os 128 KiB); ensaiar o
+rollback do runbook; e garantir que o `decide` corre com a mesma variável do `consume`.

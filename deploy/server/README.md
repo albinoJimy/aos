@@ -1293,16 +1293,24 @@ entrega o texto do modelo no lugar do resultado da tool. A causa vai no `detail`
 | `origem_nao_transportavel` | o resultado passa os 128 KiB (o envelope leva o documento duas vezes: cerca de 50 KiB de documento já não cabem), ou não é texto | `output_omitted` do run filho |
 | `origem_indisponivel` | os bytes designados não se lêem, de vez (titular apagado, log danificado) | o log do nó `aos` |
 | `origem_nao_confere` | o nó serviu bytes que não são os que o kernel selou. **Tem de ser zero**: é um incidente | o log do nó `aos` e o step-ledger do run |
-| `origem_sem_vinculo` | falta a prova de que o run foi pedido com o vínculo `binding` (o facto do log do plano, ou a âncora) | o log do plano e o run filho |
+| `origem_sem_vinculo` | falta a prova de que **este** run foi pedido com o vínculo `binding` para o contrato do plano aprovado: o facto do log do plano (ausente, `measure`, de outra tool ou com outro `contract_digest`), a âncora (ausente, mal formada, de outra tool, ou com um passo que o log do plano não admite), ou o `run_id` da resposta do nó, que não é o do run pedido | o log do plano e o run filho |
+| `run_nao_concluido` (e as outras causas do run) | o run do nó produtor **não concluiu** (`failed`, `timed_out`, `completed` sem `terminated`). Fecha com a causa do run **mesmo que a resposta traga a âncora `designated` e os bytes**: de um run que não concluiu nunca se entrega | o run filho |
 
 Séries novas no ficheiro de métricas da drenagem (só com valores em `on`):
 
 | Série | Rótulo | O que conta |
 |---|---|---|
-| `aos_orq_consume_entrega_por_referencia_total` | `resultado`: `entregue`, ou uma das causas `origem_*` | nós com saída de origem declarada cujo run concluiu |
+| `aos_orq_consume_entrega_por_referencia_total` | `resultado`: `entregue`, ou uma das causas `origem_*` | nós com saída de origem declarada cujo run concluiu. `entregue` só conta num nó que fechou `complete` com a saída publicada |
 | `aos_orq_consume_entrega_extraccao_total` | `extraccao`: `sandbox_stdout_text`, `raw` | saídas entregues, pela forma |
 | `aos_orq_consume_candidatos_sem_origem_total` | — | nós candidatos por estrutura cujo plano **não** declarou a origem: a taxa de omissão do planeador. Esses nós entregam o texto final, como sempre |
-| `aos_orq_consume_origem_recusas_do_validador_total` | `razao`: os seis `from_tool_*` | tentativas do planeador recusadas por uma regra da origem |
+| `aos_orq_consume_origem_recusas_do_validador_total` | `razao`: os sete `from_tool_*` | tentativas do planeador recusadas por uma regra da origem |
+
+**O nó misto não existe.** Um nó do plano que declare a origem de uma saída **não pode** declarar
+outra saída de forma aberta (`summary`, `record` ou `artifact` sem `from_tool`): o validador
+recusa o plano com `from_tool_with_text_output`, e o planeador tenta de novo (o prompt 1.5.0
+diz-lho). Sem esta regra, o consumidor que lesse a segunda saída recebia o resumo do modelo vindo
+de um nó que declarou a origem. Uma subida desta razão na série acima quer dizer que o planeador
+está a tentar pôr «o documento e o que eu concluí dele» no mesmo nó — são dois nós.
 
 **`on` contra um nó que não anuncia `binding`** (anterior ao AOS-498, ou com
 `AOS_COMPLETION_VERDICT=off`): o banner diz `ENTREGA NAO ACTIVA`, o planeador fica com o prompt
@@ -1328,7 +1336,63 @@ de crescer.
 > do `consume`** (o valor é inválido para ela): a drenagem pára inteira até se tirar o valor.
 > **Ordem de rollback: o `aos-orq` antes do nó.** Um nó revertido para antes
 > do AOS-498 com o `aos-orq` ainda em `on` deixa de anunciar `binding`: os planos novos com origem
-> são recusados (não caem para o texto), e os que estavam em voo fecham `origem_sem_vinculo`.
+> são recusados (não caem para o texto), **e os que estavam em voo perdem-se** — ver a seguir.
+
+> ⚠️ **Um nó `aos` que deixa de anunciar `binding` mata, de vez, os planos com origem em voo.**
+> Acontece com o nó revertido para antes do AOS-498 e — o caso fácil de fazer por engano — com o
+> nó **reiniciado com `AOS_COMPLETION_VERDICT=off`** (sem o veredicto o nó não anuncia
+> `output_source`), enquanto o `aos-orq` continua em `on`. **Não fecham `origem_sem_vinculo`**,
+> como este runbook dizia. O que acontece, medido e preso por teste
+> (`TestAOS501_RetomaComOBinarioReal/ONoDeixaDeAnunciarBindingComPlanoEmVoo`):
+>
+> - na geração seguinte do pedido o `serve` diz `saida por referencia (AOS-501): modo on, ENTREGA
+>   NAO ACTIVA` e fecha o plano **antes da posse**: `desfecho: run=… codigo=10 classe=terminal …
+>   erro=no_sem_saida_por_referencia`, e `aviso: run=… classe=terminal codigo=10`. Não há linhas
+>   `execucao:` — o run que já corria **não é recolhido**, mesmo que tenha concluído com a origem
+>   designada;
+> - o documento guardado em `planos/` é **apagado**; o nó do plano fica `running` no grafo, para
+>   sempre; o run filho (`<run>~<nó>`) fica **órfão** no nó `aos`; nada se publica e o consumidor
+>   não corre;
+> - **não tem volta**: repor o anúncio não retoma o plano. A geração seguinte fecha `classe=terminal
+>   codigo=7 … origem=sem_serve … erro=decisao_recusada` (já não há documento). O pedido tem de ser
+>   submetido de novo.
+>
+> A distinção que importa: um anúncio que **não se leu** (rede, `5xx`) é transitório, e o pedido
+> volta à fila; um anúncio que **se leu e não traz `binding`** é terminal para todos os planos com
+> origem que apareçam nessa drenagem, em voo ou novos.
+
+**Desligar a entrega, ou reiniciar o nó, sem perder planos — a ordem segura.**
+
+1. **Parar a entrada de planos novos com origem.** Parar o temporizador do `aos-orq consume`
+   (`systemctl stop aos-drenar-planos.timer`) e deixar acabar a drenagem em curso. Não mudar ainda
+   nenhuma variável.
+2. **Esvaziar os planos com origem.** Na pasta `planos/` ao lado do WAL da drenagem, procurar os
+   documentos com `"from_tool"`. Enquanto houver algum, correr drenagens à mão **com `on` e com o
+   nó a anunciar `binding`** até cada um fechar (`classe=terminal`, com `codigo=0` ou `13`), e
+   decidir os que esperam por humano — **com a mesma variável**: `aos-orq decide` corrido sem
+   `AOS_ORQ_SAIDA_POR_REFERENCIA=on` recusa um plano com origem com a saída `10` e deixa-o
+   pendente.
+3. **Só então mexer.** Para desligar a entrega: mudar `AOS_ORQ_SAIDA_POR_REFERENCIA` para
+   `observe` ou `off` no `.env` do `aos-orq`. Para reiniciar ou reverter o nó `aos`: fazê-lo
+   agora, e antes de religar o temporizador confirmar no `GET /tools` do nó que
+   `output_source.bindings` traz `binding` (ou então desligar primeiro a entrega no `aos-orq`).
+4. **Religar o temporizador** e ler a primeira drenagem: o banner tem de dizer o modo que se
+   quis, e nenhum desfecho pode trazer `erro=no_sem_saida_por_referencia` nem
+   `erro=origem_sem_entrega`.
+
+O que o operador vê quando a ordem não foi cumprida:
+
+| No log da drenagem | O que aconteceu | O que fazer |
+|---|---|---|
+| `codigo=10 … erro=no_sem_saida_por_referencia`, banner `ENTREGA NAO ACTIVA` | o `aos-orq` está em `on` e o nó não anuncia `binding`. O plano com origem dessa geração perdeu-se | repor o veredicto no nó (`observe` ou `enforce`); submeter de novo os pedidos perdidos; limpar à mão os runs órfãos, se for preciso |
+| `codigo=10 … erro=origem_sem_entrega`, e no stderr `este binario ainda nao entrega por referencia (AOS-501)` | **a mensagem é a do AOS-500 e já não é exacta**: o binário entrega; quem leu o documento tinha o interruptor **fora de `on`** — o `consume` em `off`/`observe`, ou um `decide` sem a variável. O plano com origem em voo perdeu-se (no `decide`, ficou pendente) | pôr a variável igual nos dois (`consume` e `decide`); submeter de novo |
+| `codigo=7 … origem=sem_serve … erro=decisao_recusada` numa geração a seguir a uma das de cima | o documento já tinha sido apagado pela recusa anterior | submeter de novo |
+
+> ⚠️ **`on` posto por engano liga a entrega.** Antes deste ticket, `AOS_ORQ_SAIDA_POR_REFERENCIA=on`
+> era um valor inválido e **parava** o `consume`: um engano no `.env` via-se logo. Agora é um valor
+> válido: a drenagem arranca, o planeador passa a receber o prompt 1.5.0 e os planos que
+> declarem a origem correm com a entrega. O banner do arranque é a única coisa que o diz — ler a
+> primeira drenagem depois de qualquer mudança do `.env`.
 
 **Um anúncio que não se leu não é um «não».** Se o `GET /tools` do anúncio falhar (rede, `429`,
 `5xx`, corpo ilegível), o plano **não corre sem contrato**: o `serve` pára antes da posse, o
