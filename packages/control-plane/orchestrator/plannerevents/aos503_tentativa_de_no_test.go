@@ -130,3 +130,42 @@ func TestAOS503_Facto_UmPorTentativaEAPrimeiraFica(t *testing.T) {
 		t.Fatal("o tipo novo tem de pertencer ao catalogo e a familia plan.*")
 	}
 }
+
+// TestAOS503_Facto_ORetryOfTemOTectoDeUmIdDeRun (revisão adversarial, I1): o `retry_of` é um id
+// de run — `<pedido>~<nó escapado>[~<n>]` — e não um passo. O construtor usava o validador de
+// passos, de 128 bytes: um `node_id` de 121 bytes num pedido de 15 fazia o facto ser recusado, e
+// o `serve` abortava em todas as gerações. O tecto é o declarado, [maxRetryOfBytes], e é o único.
+func TestAOS503_Facto_ORetryOfTemOTectoDeUmIdDeRun(t *testing.T) {
+	no := aos503Leitor()
+	no.NodeID = "read_notes_" + strings.Repeat("x", 110)
+	for _, n := range []int{maxSourceStepIDBytes, maxSourceStepIDBytes + 1, 137, 400, maxRetryOfBytes} {
+		p := aos503Facto(2)
+		p.NodeID = no.NodeID
+		p.RetryOf = strings.Repeat("r", n)
+		if _, err := NewNodeAttemptStarted(p, no); err != nil {
+			t.Errorf("um retry_of de %d bytes e um id de run admissivel; veio %v", n, err)
+		}
+		if !ValidAttemptRunID(p.RetryOf) {
+			t.Errorf("ValidAttemptRunID tem de dizer o mesmo que o construtor aos %d bytes", n)
+		}
+	}
+	// O pior caso de um `node_id` do plano: 128 bytes, todos escapados (`.` vira `+2e`), na
+	// terceira tentativa de um pedido com um id comprido.
+	pior := strings.Repeat("p", 500) + "~" + strings.Repeat("+2e", 128) + "~2"
+	if !ValidAttemptRunID(pior) {
+		t.Fatalf("o pior caso do escape do node_id (%d bytes) tem de caber no tecto de %d", len(pior), maxRetryOfBytes)
+	}
+	for nome, s := range map[string]string{
+		"vazio": "", "acima-do-tecto": strings.Repeat("r", maxRetryOfBytes+1),
+		"espaco": "run 1~n", "quebra": "run\n~n", "del": "run\x7f~n",
+	} {
+		if ValidAttemptRunID(s) {
+			t.Errorf("%s: ValidAttemptRunID tinha de recusar", nome)
+		}
+		p := aos503Facto(2)
+		p.RetryOf = s
+		if _, err := NewNodeAttemptStarted(p, aos503Leitor()); !errors.Is(err, ErrInvalidNodeAttempt) {
+			t.Errorf("%s: o construtor tinha de recusar com ErrInvalidNodeAttempt; veio %v", nome, err)
+		}
+	}
+}

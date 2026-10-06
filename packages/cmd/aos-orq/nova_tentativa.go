@@ -192,10 +192,20 @@ const (
 	// recusaPeloNo — o nó `aos` recusou a submissão da tentativa (403: a prova dele não passou, ou
 	// o vínculo ao pedido já não é o vivo; 409: já existe um run com esse id que não é deste plano).
 	recusaPeloNo = "recusada_pelo_no"
+	// recusaRunDeOutraOrigem — o nó `aos` tem um run com o id da tentativa que este processo não
+	// submeteu e que NÃO declara ser a tentativa deste nó deste pedido (`plan_attempt` ausente ou
+	// de outro pedido, nó ou tentativa). Não se segue: o nó do plano fecha `failed` com a causa
+	// do run anterior. Revisão adversarial do AOS-503, I2.
+	recusaRunDeOutraOrigem = "run_de_outra_origem"
+	// recusaFactoInvalido — o facto da tentativa não tem forma que o log do plano admita (o id do
+	// run anterior passa do tecto de um id de run). É determinista para o plano: fecha o nó, em
+	// vez de abortar o `serve` em todas as gerações. Revisão adversarial do AOS-503, I1.
+	recusaFactoInvalido = "facto_invalido"
 )
 
 // recusasDeTentativa é a lista fechada dos motivos, pela ordem em que se documentam.
-var recusasDeTentativa = []string{recusaQuota, recusaTectoDoNo, recusaTectoDoPlano, recusaPrazo, recusaNaoAnunciado, recusaPeloNo}
+var recusasDeTentativa = []string{recusaQuota, recusaTectoDoNo, recusaTectoDoPlano, recusaPrazo, recusaNaoAnunciado, recusaPeloNo,
+	recusaRunDeOutraOrigem, recusaFactoInvalido}
 
 // Desfechos de uma tentativa a mais — o rótulo `desfecho` de [metricaTentativas].
 const (
@@ -326,11 +336,21 @@ func (e *executorDeNos) novaTentativa(ctx context.Context, nodeID string, st est
 		return recusar(recusaPrazo)
 	}
 	proxima := actual + 1
+	// UM FACTO QUE O LOG NÃO ADMITE NÃO É UM ERRO DO `serve` (revisão adversarial, I1). A forma do
+	// facto é determinista para o plano — os ids são os mesmos em todas as gerações —, e um erro
+	// aqui repetia-se para sempre: um plano que em `off` saía terminal/13 passava, em `on`, a
+	// abortar a drenagem. Quem diz se o facto tem forma é o construtor, e só ele: a recusa dele
+	// fecha o nó com causa (abaixo), e qualquer outro erro continua a ser um erro.
+	anterior := idDaTentativa(e.runID, nodeID, actual)
 	// O FACTO, ANTES DO PEDIDO.
 	if _, err := e.rec.RecordNodeAttemptStarted(ctx, plannerevents.NodeAttemptStartedPayload{
-		NodeID: nodeID, Attempt: proxima, RetryOf: idDaTentativa(e.runID, nodeID, actual),
+		NodeID: nodeID, Attempt: proxima, RetryOf: anterior,
 		Reason: plannerevents.AttemptReasonContractUnmetNoCall,
 	}, n); err != nil {
+		if errors.Is(err, plannerevents.ErrInvalidNodeAttempt) {
+			fmt.Printf("  execucao: no %s o facto da tentativa %d nao tem forma admissivel (%v)\n", nodeID, proxima, err)
+			return recusar(recusaFactoInvalido)
+		}
 		return false, fmt.Errorf("facto da tentativa %d de %q: %w", proxima, nodeID, err)
 	}
 	e.tentativas[nodeID] = proxima
@@ -359,8 +379,10 @@ func (e *executorDeNos) novaTentativa(ctx context.Context, nodeID string, st est
 // pedido. Submete-a — uma vez. Devolve true quando o nó continua em voo.
 //
 // NUNCA REENVIA ÀS CEGAS: só se chega aqui depois de ler o estado do id da tentativa e de o nó
-// responder 404. Um 409 nesta submissão é o pedido do `serve` anterior a ter chegado entretanto:
-// o run existe, e segue-se.
+// responder 404. Um 409 nesta submissão diz que passou a existir um run com esse id — o pedido do
+// `serve` anterior a ter chegado entretanto, OU um run que outro criou. O nó do plano fica em
+// voo, e é a passagem seguinte que decide: como este processo não o submeteu, só o segue com a
+// origem conferida ([executorDeNos.tentativaDestePedido]).
 func (e *executorDeNos) retomarTentativa(ctx context.Context, nodeID string) (bool, error) {
 	actual := e.tentativaDe(nodeID)
 	e.retomadas[nodeID] = true
@@ -373,33 +395,117 @@ func (e *executorDeNos) retomarTentativa(ctx context.Context, nodeID string) (bo
 	if !recusada {
 		return false, err
 	}
-	// Recusada: o nó do plano fecha com a causa do run anterior, que se lê agora.
+	return false, e.fecharTentativaRecusada(ctx, nodeID, motivo, fmt.Sprintf("retoma da tentativa %d", actual))
+}
+
+// fecharTentativaRecusada fecha o nó do plano cuja tentativa CORRENTE — a que o log regista — não
+// se fez nem se segue: o nó `aos` recusou-a na retoma, ou o run que existe com o id dela não é
+// deste pedido. O nó fecha `failed` com a causa do run ANTERIOR, que se lê agora; a tentativa
+// corrente, em memória, volta a ser a dele.
+//
+// NUNCA FECHA `complete`. O run anterior é, pelo facto do log, um run que falhou; se o nó `aos`
+// responder outra coisa por ele, não é desse run que o plano vai tirar uma saída: fecha como run
+// perdido.
+func (e *executorDeNos) fecharTentativaRecusada(ctx context.Context, nodeID, motivo, porque string) error {
+	actual := e.tentativaDe(nodeID)
 	e.tentativas[nodeID] = actual - 1
 	e.tentativaContada[nodeID] = true
 	e.recusasDeTentativa[nodeID] = motivo
 	e.medicao.tentativaRecusada(motivo)
-	fmt.Printf("  execucao: no %s NOVA TENTATIVA NAO FEITA tentativa_recusada=%s (retoma da tentativa %d) — o no fecha failed com a causa do run anterior\n", nodeID, motivo, actual)
+	fmt.Printf("  execucao: no %s NOVA TENTATIVA NAO FEITA tentativa_recusada=%s (%s) — o no fecha failed com a causa do run anterior\n", nodeID, motivo, porque)
 	st, existe, serr := e.cli.Status(ctx, e.runDoNo(nodeID))
 	if serr != nil {
-		return false, fmt.Errorf("estado do run anterior de %q: %w", nodeID, serr)
+		return fmt.Errorf("estado do run anterior de %q: %w", nodeID, serr)
 	}
-	return false, e.fechar(ctx, nodeID, st, existe)
+	if existe && st.concluiu() {
+		st, existe = estadoDoRun{}, false
+	}
+	return e.fechar(ctx, nodeID, st, existe)
+}
+
+// O que a origem que o nó `aos` declara diz sobre o run de uma tentativa que este processo não
+// submeteu.
+const (
+	// origemConfere — o run é a tentativa corrente deste nó deste pedido: segue-se.
+	origemConfere = iota
+	// origemPorDeclarar — o run está em curso e ainda não traz a origem: o nó `aos` grava-a logo
+	// depois de o hospedar, e uma leitura pode cair nessa janela. Espera-se, por pouco tempo.
+	origemPorDeclarar
+	// origemAlheia — o run não é desta tentativa deste pedido, ou não o diz: não se segue.
+	origemAlheia
+)
+
+// toleranciaSemOrigem é quanto tempo um run de tentativa EM CURSO pode responder sem a origem
+// antes de contar como alheio. O nó `aos` grava-a no mesmo pedido que hospeda o run, com um prazo
+// de segundos; um run que ao fim disto não a tem não a vai ter.
+const toleranciaSemOrigem = 30 * time.Second
+
+// tentativaDestePedido confere, pelo que o NÓ `aos` declara na resposta (`plan_attempt`, lido do
+// `run.plan_origin` que só ele escreve, e só depois da prova), que o run com o id da tentativa
+// corrente de `nodeID` é a tentativa DESTE nó DESTE pedido (revisão adversarial do AOS-503, I2).
+//
+// PORQUE É PRECISO. O id `<pedido>~<nó>~<n>` não é reservado: quem tem credencial de submissão na
+// mesma região cria um run com ele por um `POST /runs` directo. Um `serve` que morra entre o facto
+// e o pedido deixava a geração seguinte a ler o estado desse id — e, se existisse, a segui-lo: o
+// nó do plano fechava «recuperado» com a saída de um run que este plano nunca pediu, e o nó
+// consumidor recebia-a.
+//
+// O QUE SE CONFERE: o pedido (verificado pelo nó contra a reclamação viva de quem o submeteu), o
+// plano, o nó e o número da tentativa; e que a geração da reclamação não é posterior à deste
+// `serve`. Um run terminal sem a origem não é desta tentativa. Só se chama para um run que ESTE
+// processo não submeteu: um `POST` a que o nó respondeu 201 é ele a dizer que o hospedou agora.
+func (e *executorDeNos) tentativaDestePedido(nodeID string, st estadoDoRun) int {
+	o := st.PlanAttempt
+	if o == nil {
+		if st.terminal() {
+			return origemAlheia
+		}
+		desde, visto := e.semOrigemDesde[nodeID]
+		if !visto {
+			e.semOrigemDesde[nodeID] = e.agora()
+			return origemPorDeclarar
+		}
+		if e.agora().Sub(desde) < toleranciaSemOrigem {
+			return origemPorDeclarar
+		}
+		return origemAlheia
+	}
+	switch {
+	case st.RunID != e.runDoNo(nodeID):
+		return origemAlheia
+	case o.PlanRequest != e.runID || o.NodeID != nodeID || o.Attempt != e.tentativaDe(nodeID):
+		return origemAlheia
+	case e.rec == nil || o.PlanID != e.rec.PlanID():
+		return origemAlheia
+	case o.Generation < 1 || (e.geracaoDoPedido > 0 && o.Generation > e.geracaoDoPedido):
+		return origemAlheia
+	}
+	return origemConfere
 }
 
 // contarFechoDaTentativa conta, no fecho DEFINITIVO de um nó do plano que teve tentativas a mais,
 // o desfecho da última — a não ser que ela já tenha sido contada ([executorDeNos.novaTentativa]).
-func (e *executorDeNos) contarFechoDaTentativa(nodeID string, concluiu bool) {
+//
+// `st` e `existe` são o estado do run da tentativa. Com o interruptor em `off` (ou sem o vínculo
+// ao pedido) [executorDeNos.novaTentativa] sai antes de contar, e é AQUI que uma tentativa que
+// voltou a falhar do mesmo modo se distingue das outras: sem isto, o plano que ficou a meio de uma
+// tentativa quando o operador desligou o interruptor contava `outra_causa`, e a recorrência — a
+// série que diz se a recuperação vale a pena — ficava por baixo (revisão adversarial, M3).
+func (e *executorDeNos) contarFechoDaTentativa(nodeID string, concluiu bool, st estadoDoRun, existe bool) {
 	actual := e.tentativaDe(nodeID)
 	if actual < 2 || e.tentativaContada[nodeID] {
 		return
 	}
 	n := e.nos[nodeID]
-	if concluiu {
+	switch {
+	case concluiu:
 		e.medicao.tentativaFeita(actual, tentativaRecuperou, rotuloComConsumes(n))
 		e.medicao.noRecuperado(rotuloComConsumes(n))
-		return
+	case elegivelParaNovaTentativa(n, nomesDasTools(e.tools[nodeID]), e.runDoNo(nodeID), st, existe):
+		e.medicao.tentativaFeita(actual, tentativaVoltouAFalhar, rotuloComConsumes(n))
+	default:
+		e.medicao.tentativaFeita(actual, tentativaOutraCausa, rotuloComConsumes(n))
 	}
-	e.medicao.tentativaFeita(actual, tentativaOutraCausa, rotuloComConsumes(n))
 }
 
 // sufixoDasTentativas é o que a linha de fecho de um nó `failed` acrescenta quando houve

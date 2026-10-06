@@ -136,9 +136,27 @@ gravar não o duplica. Escreve-se **antes** do `POST /runs` da tentativa.
 
 **A retoma lê primeiro.** A tentativa corrente de cada nó é a maior que o log regista. Um `serve`
 que encontre um nó `running` com uma tentativa registada lê o estado do id dessa tentativa: se o
-run existe, segue-o; se o nó `aos` responde 404, o processo anterior morreu entre o facto e o
-pedido, e submete-a — uma vez. Nunca reenvia às cegas. Os factos lêem-se com o interruptor em
-qualquer valor; o que `off` e `observe` deixam de fazer é começar tentativas.
+nó `aos` responde 404, o processo anterior morreu entre o facto e o pedido, e submete-a — uma
+vez. Nunca reenvia às cegas. Os factos lêem-se com o interruptor em qualquer valor; o que `off` e
+`observe` deixam de fazer é começar tentativas.
+
+**Um run de tentativa que este processo não submeteu só se segue com a origem conferida.** O id
+`<plano>~<nó>~<n>` não é reservado no nó (§5): existir um run com ele não diz que foi este pedido
+a criá-lo. O `GET /runs/{id}` de um run que o nó hospedou como nova tentativa leva `plan_attempt`
+— o pedido, a geração, o plano, o nó e a tentativa do `run.plan_origin` que só o nó escreve, e só
+depois da prova do §2.3. Quem retoma confere-o contra o seu pedido, o seu plano, o seu nó e a
+tentativa que o log regista, e exige que a geração não seja posterior à sua. Se o run não o traz
+(um run terminal sem `plan_attempt`, ou em curso sem ele passados 30 s), ou o traz de outro
+pedido, nó ou tentativa, **não o segue**: o nó do plano fecha `failed` com a causa do run
+anterior e `tentativa_recusada=run_de_outra_origem`. O mesmo vale quando a re-submissão da
+retoma responde 409. Um `POST` a que o nó respondeu 201 neste processo não precisa da conferência:
+é o nó a dizer que hospedou o run agora.
+
+**Um facto que o log não admite fecha o nó, e não o `serve`.** O `retry_of` é um id de run, com
+o tecto de um id de run (1024 bytes: os 128 do `node_id`, triplicados no pior caso do escape, os
+separadores, e o resto para o id do pedido). Se mesmo assim o construtor do facto o recusar, o
+nó do plano fecha `failed` com `tentativa_recusada=facto_invalido` — a forma é determinista para
+o plano, e um erro repetia-se em todas as gerações.
 
 ### 2.7 O pedido repetido é o mesmo
 
@@ -242,26 +260,60 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
   pode repetir.
 - **Um nó sem tools não se repete.** O nó que recusa o próprio objectivo não tem sinal
   estrutural, e não se julga a forma do texto (AOS-504).
+- **A recusa do próprio objectivo num nó COM tools é repetida — custo aceite.** Um modelo que
+  responde «não consigo» num turno, sem chamar a tool, num nó com tools atribuídas fecha por
+  `contract_unmet_no_call` com zero chamadas: é, para a regra, o mesmo caso do nó que se esqueceu
+  de a chamar. O mesmo pedido volta a ser submetido, com o mesmo prompt, até duas vezes a mais.
+  Se a recusa for estável, são dois runs de um turno gastos por nó; não há efeito (nenhuma tool
+  foi pedida) nem autoridade nova. Distingui-los exigia julgar o texto, que é o que esta fase não
+  faz.
+- **O pior caso de custo, medido.** Um plano de 6 nós elegíveis que falham sempre sem chamar a
+  tool, com os tectos por omissão: 10 `POST /runs` em vez de 6 — as 4 tentativas a mais do tecto
+  por plano —, 4 factos no log, e os nós seguintes fecham com `tentativa_recusada=tecto_do_plano`.
+  O tecto por plano é o que limita: sem ele seriam 18. O orçamento do plano **não** debita os
+  runs filhos (§2.9): quem limita o custo de cada run é o nó.
 - **A forma do id não é injectiva entre pedidos.** O id da tentativa `n` do nó `N` do pedido `P`
   é o da primeira tentativa do nó `"n"` de um pedido cujo id seja literalmente `P~N` (o
-  `POST /plans` admite `~` no id). A prova não é afectada — a origem do run anterior tem de ser a
-  do mesmo pedido e do mesmo nó —, e a colisão cai na regra de re-submissão do nó: 409 com
-  credencial forte e a mesma região, que o `aos-orq` trata como recusa da tentativa. Não é classe
-  nova: o `POST /runs` nunca reservou a forma `<plano>~<nó>`.
+  `POST /plans` admite `~` no id). E não é preciso um pedido com `~`: quem tem credencial de
+  submissão na mesma região cria um run com o id de uma tentativa por um `POST /runs` directo. A
+  prova do nó não é afectada — a origem do run anterior tem de ser a do mesmo pedido e do mesmo
+  nó, pelo que uma tentativa nunca é admitida sobre um run alheio. Do lado do `aos-orq`, a colisão
+  tem dois caminhos, e os dois fecham o nó do plano `failed`: no caminho normal, o nó responde
+  409 (com credencial forte e a mesma região) à submissão da tentativa, que conta como
+  `recusada_pelo_no`; na retoma, o run que existe com o id só é seguido com a origem conferida
+  (§2.6), e um run alheio conta como `run_de_outra_origem`. A primeira versão seguia-o na retoma
+  sem conferir — a revisão adversarial reproduziu o nó consumidor a receber o texto de um run
+  que o plano nunca pediu. O que sobra é uma negação de serviço dirigida: quem pré-criar os ids
+  das tentativas de um plano desliga a recuperação desse nó, e precisa para isso de credencial de
+  submissão na região e de conhecer o pedido e o nó. Não é classe nova: o `POST /runs` nunca
+  reservou a forma `<plano>~<nó>`, e a primeira tentativa em retoma tem o mesmo limite.
+- **A conferência da origem exige um nó que a declare.** Um nó `aos` anterior a esta correcção
+  não devolve `plan_attempt`: um `aos-orq` novo que retome, contra ele, uma tentativa que não
+  submeteu fecha o nó do plano `failed` com `run_de_outra_origem`. É a direcção segura, e só
+  acontece se a imagem do nó for revertida com tentativas em voo.
 - **A medição do `prompt_hash` vive na memória do nó.** Um reinício entre a admissão e o fim da
   tentativa perde a comparação desse run.
 - **A validade do NHI não se lê à parte.** O prazo do `serve` fica abaixo dela por construção; um
   NHI expirado é uma 403 do nó e conta como `recusada_pelo_no`.
 - **Um binário `aos-orq` anterior não segue as tentativas.** Medido com o binário da base sobre
-  um plano (sem ramos condicionais) que ficou com a tentativa 2 em voo: o binário anterior não lê
-  o facto `plan.node_attempt_started`, sonda o run da PRIMEIRA tentativa — que está `failed` —,
-  fecha o nó do plano `failed` com a causa desse run e o plano sai 13, sem publicar nada. A
-  tentativa em voo fica órfã no nó `aos`: corre até ao fim, e ninguém a recolhe. Num plano COM
-  ramos condicionais o despacho lê as decisões de ramo pela reconstrução do domínio do plano, que
-  falha fechado num tipo `plan.*` desconhecido (inferido do código, não medido): aí o `serve` sai
-  com erro e o pedido volta à fila até o tecto de gerações o fechar. Nos dois casos nada de uma
+  um plano que ficou com a tentativa 2 em voo, em duas topologias — um plano sem ramos, e
+  leitor → verificador → nó condicional: o binário anterior não lê o facto
+  `plan.node_attempt_started`, sonda o run da PRIMEIRA tentativa — que está `failed` —, fecha o
+  nó do plano `failed` com a causa desse run e o plano sai terminal 13
+  (`contract_unmet_no_call:1,entrada_por_cumprir:1`), sem publicar nada. A tentativa em voo fica
+  órfã no nó `aos`: corre até ao fim, e ninguém a recolhe. A primeira redacção afirmava que num
+  plano com ramos o `serve` anterior saía com erro, por a leitura das decisões de ramo falhar
+  fechado no tipo desconhecido; era inferência do código, e a medição não a confirmou nessa
+  topologia. **Não foi medida** a topologia em que uma decisão de ramo é lida DEPOIS do facto (um
+  outro ramo do plano a concluir com a tentativa em voo): aí a inferência pode valer, e o `serve`
+  sair com erro até o tecto de gerações fechar o pedido. Um plano com ramos e sem tentativas no
+  log corre normalmente no binário anterior (medido: terminal 0). Em nenhum caso algo de uma
   tentativa é publicado. O rollback faz-se pelo interruptor, e não pela imagem, enquanto houver
   planos com tentativas em curso.
+- **`observe` sobrestima o que `on` faria.** Conta «tentaria» pela elegibilidade do §2.5, e não
+  aplica o anúncio do nó, os tectos por nó e por plano, nem o prazo do `serve`: aplicá-los
+  escrevia `tentativa_recusada=` no desfecho, e `observe` deixava de ser, byte a byte, o `off`.
+  A série de `observe` é um majorante das tentativas de `on`.
 - **Um `serve` que aborta não larga a posse.** A retoma de um plano cujo `serve` saiu com erro
   espera pelo TTL da posse (ADR-023); a recuperação não muda isso.
 
@@ -269,11 +321,12 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
 
 - **AOS-502 — o nó.** `plan_request.attempt`; a forma `<plano>~<nó>~<n>`; a prova do §2.3; o
   tecto `AOS_RUN_RETRY_MAX`; o anúncio no `GET /tools`; `attempt` e `retry_of` no
-  `run.plan_origin`; as três séries `aos_runs_retry_*`.
+  `run.plan_origin`; o `plan_attempt` no `GET /runs/{id}` de uma tentativa hospedada (§2.6); as
+  três séries `aos_runs_retry_*`.
 - **AOS-503 — o `aos-orq`.** O interruptor `AOS_ORQ_NOVA_TENTATIVA` (`off`, `observe`, `on`); a
   elegibilidade do §2.5; o facto `plan.node_attempt_started` antes do pedido; a retoma do §2.6; o
-  tecto por plano; a entrega por referência sobre a tentativa que teve êxito; as métricas e o
-  `detail` do desfecho.
+  tecto por plano; a conferência da origem de uma tentativa que o processo não submeteu (§2.6);
+  a entrega por referência sobre a tentativa que teve êxito; as métricas e o `detail` do desfecho.
 
 ## 7. Emendas a outros ADR
 

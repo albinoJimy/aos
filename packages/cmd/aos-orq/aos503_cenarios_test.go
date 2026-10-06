@@ -31,6 +31,19 @@ func aos503ComId(t *testing.T, cru []byte, de, para string) []byte {
 	return append([]byte(`{"run_id":"`+para+`",`), cru[len(velho):]...)
 }
 
+// aos503NaTentativa devolve a resposta de fio de uma tentativa com o numero da tentativa que o no
+// declara (`plan_attempt.attempt`) trocado: e o que faz de uma resposta gravada para a tentativa
+// `de` a resposta da tentativa `para`. Sem isto, uma retoma que confere a origem recusava-a — e
+// bem: o run diria ser outra tentativa.
+func aos503NaTentativa(t *testing.T, cru []byte, de, para int) []byte {
+	t.Helper()
+	velho := []byte(fmt.Sprintf(`"attempt":%d}}`, de))
+	if !bytes.HasSuffix(cru, velho) {
+		t.Fatalf("pre-condicao: a resposta de uma tentativa acaba com o plan_attempt que o no declara (%s); veio ...%s", velho, cru[max(0, len(cru)-80):])
+	}
+	return append(append([]byte(nil), cru[:len(cru)-len(velho)]...), []byte(fmt.Sprintf(`"attempt":%d}}`, para))...)
+}
+
 // aos503EsperarAPosse espera que a posse de um `serve` que ABORTOU expire. Um `serve` que sai com
 // um erro verdadeiro não larga a posse (só a larga no fim do trabalho): o lease a expirar é a
 // informação de que alguém caiu a meio, e o processo seguinte tem de esperar por ele. É o que
@@ -57,7 +70,7 @@ func TestAOS503_CenariosComOBinarioReal(t *testing.T) {
 	p := aos495FormaDeProducao(t, "enforce")
 	cat2 := aos503Catalogo(t, 2)
 	falhada1, falhada2 := aos503FioDoNo(t, "tentativa-1-falhada"), aos503FioDoNo(t, "tentativa-2-falhada")
-	recuperada2 := aos503ComId(t, aos503FioDoNo(t, "tentativa-3-recuperada"), aos503Leitor3, aos503Leitor2)
+	recuperada2 := aos503NaTentativa(t, aos503ComId(t, aos503FioDoNo(t, "tentativa-3-recuperada"), aos503Leitor3, aos503Leitor2), 3, 2)
 
 	// offDe corre o plano em `off` contra as mesmas respostas: é a referência de «como hoje».
 	offDe := func(t *testing.T, catalogo []byte, respostas map[string][]byte) (aos499Drenagem, *aos503No, []aos499Evento) {
@@ -365,6 +378,12 @@ func TestAOS503_CenariosComOBinarioReal(t *testing.T) {
 		}
 		if !strings.Contains(d2.stdout, "(run "+aos503Leitor2+") causa=contract_unmet_no_call") {
 			t.Fatalf("o no fecha sobre o run da tentativa que o log regista:\n%s", d2.stdout)
+		}
+		// Revisão adversarial, M3: a tentativa que voltou a falhar do mesmo modo conta como
+		// recorrência também em off — e não como `outra_causa`.
+		if !temSerie(d2.metricas, serie(metricaTentativas, "tentativa", "2", "desfecho", tentativaVoltouAFalhar, "com_consumes", "false"), 1) ||
+			strings.Contains(d2.metricas, `desfecho="`+tentativaOutraCausa+`"`) {
+			t.Fatalf("em off a tentativa 2 que voltou a falhar sem chamar a tool conta voltou_a_falhar:\n%s", d2.metricas)
 		}
 	})
 }

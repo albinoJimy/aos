@@ -66,6 +66,21 @@ type estadoDoRun struct {
 	OutputSource  *agentruntime.OutputSource `json:"output_source,omitempty"`
 	Output        *string                    `json:"output,omitempty"`
 	OutputOmitted string                     `json:"output_omitted,omitempty"`
+	// PlanAttempt é o que o nó `aos` declara sobre um run que ELE hospedou como nova tentativa
+	// (AOS-502): o pedido, o plano, o nó e a tentativa do `run.plan_origin` que escreveu depois
+	// da prova. Ausente em qualquer outro run. É por ele que uma retoma confere que o run com o
+	// id da tentativa é DESTE pedido antes de o seguir ([executorDeNos.tentativaDestePedido]).
+	PlanAttempt *origemDaTentativa `json:"plan_attempt,omitempty"`
+}
+
+// origemDaTentativa espelha o `plan_attempt` do `GET /runs/{id}` do nó (`tentativaNaAPI` em
+// `packages/cmd/aos/tentativa_na_api.go`), que este módulo não pode importar.
+type origemDaTentativa struct {
+	PlanRequest string `json:"plan_request"`
+	Generation  int    `json:"generation"`
+	PlanID      string `json:"plan_id"`
+	NodeID      string `json:"node_id"`
+	Attempt     int    `json:"attempt"`
 }
 
 // terminal diz se o run acabou: o nó marca `terminated` num run que concluiu nesta vida do

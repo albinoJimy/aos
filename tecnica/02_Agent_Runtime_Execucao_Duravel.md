@@ -200,7 +200,9 @@ tool calls pedidas; nenhum evento `tool.call.*`; e um só `turn.recorded`, sem t
 corpo. As recusas respondem a 403 uniforme da rota, com a causa no log e em
 `aos_runs_retry_refused_total{causa}`; um log que não se leu agora responde 503. O tecto é do nó
 (`AOS_RUN_RETRY_MAX`, 0 por omissão, até 2) e anuncia-se no `GET /tools` (`run_retry.max`), só
-acima de zero. O `run.plan_origin` de uma tentativa leva `attempt` e `retry_of`. Do lado do plano,
+acima de zero. O `run.plan_origin` de uma tentativa leva `attempt` e `retry_of`, e o
+`GET /runs/{id}` dela devolve-o em `plan_attempt` (pedido, geração, plano, nó e tentativa) — é
+por aí que um `aos-orq` que retoma confere que o run é do seu pedido antes de o seguir. Do lado do plano,
 o `aos-orq` (`AOS_ORQ_NOVA_TENTATIVA=off|observe|on`) pede a tentativa só para um nó
 não-verificador com tools cujo run fechou por essa razão com zero tool calls pedidas, grava o
 facto `plan.node_attempt_started` no log do plano antes do pedido, e envia o mesmo corpo — muda o

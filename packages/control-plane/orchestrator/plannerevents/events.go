@@ -1019,8 +1019,33 @@ const AttemptReasonContractUnmetNoCall AttemptReason = "contract_unmet_no_call"
 // dono de 2026-10-06.
 const MaxNodeAttempt = 3
 
-// maxRetryOfBytes é o tecto do id do run anterior no facto.
-const maxRetryOfBytes = 512
+// maxRetryOfBytes é o tecto do id do run anterior no facto. É o tecto de um ID DE RUN, e não o de
+// um passo: `<pedido>~<nó escapado>[~<n>]`. O `node_id` do plano tem até 128 bytes e o escape
+// triplica-o no pior caso (384); somam-se os dois separadores e o algarismo da tentativa, e o
+// resto fica para o id do pedido, que o nó `aos` não limita. Acima disto o facto recusa-se, e
+// quem o ia gravar fecha o nó do plano com causa.
+const maxRetryOfBytes = 1024
+
+// ValidAttemptRunID diz se `s` tem a forma que [NodeAttemptStartedPayload.RetryOf] admite: não
+// vazio, até [maxRetryOfBytes], sem espaços nem controlo. Um id que o nó `aos` aceita e este
+// construtor recusa devolve [ErrInvalidNodeAttempt], e quem ia gravar fecha o nó do plano com
+// causa em vez de abortar o `serve` com um erro que se repetia em todas as gerações (revisão
+// adversarial do AOS-503, I1).
+//
+// NÃO É [validStepID]. A primeira versão usava-o, e ele impõe os 128 bytes de um passo: um
+// `node_id` de 121 bytes num pedido de 15 já não cabia, e o tecto declarado para o id nunca se
+// aplicava.
+func ValidAttemptRunID(s string) bool {
+	if s == "" || len(s) > maxRetryOfBytes {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] <= ' ' || s[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
 
 // NodeAttemptStartedPayload — corpo de `plan.node_attempt_started` (ADR-039, AOS-503): o
 // executor vai pedir ao nó a tentativa `attempt` do run de `node_id`; a anterior, `retry_of`,
@@ -1062,7 +1087,7 @@ func NewNodeAttemptStarted(p NodeAttemptStartedPayload, producer plan.Node) (Nod
 	if p.Reason != AttemptReasonContractUnmetNoCall {
 		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: razao fora do enum", ErrInvalidNodeAttempt)
 	}
-	if len(p.RetryOf) > maxRetryOfBytes || !validStepID(p.RetryOf) {
+	if !ValidAttemptRunID(p.RetryOf) {
 		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: retry_of sem a forma de um id de run", ErrInvalidNodeAttempt)
 	}
 	return p, nil

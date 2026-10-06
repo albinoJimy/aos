@@ -1429,7 +1429,11 @@ decisão não lê texto nenhum do modelo.
    log da drenagem diz `NOVA TENTATIVA EM OBSERVACAO — tentaria outra vez` e conta em
    `aos_orq_consume_tentativas_em_observacao_total`. **Ler:** o que ele diz que tentaria tem de
    coincidir com os runs `failed` por `contract_unmet_no_call` com zero chamadas, e com mais
-   nenhum.
+   nenhum. **`observe` sobrestima o que `on` fará:** conta pela elegibilidade do nó e do run, e
+   não aplica o anúncio do nó (`AOS_RUN_RETRY_MAX`), os tectos por nó e por plano, nem o prazo do
+   `serve` — aplicá-los mudava o `detail`, e `observe` deixava de ser igual a `off`. O número é
+   um tecto superior das tentativas de `on`, e não uma previsão: num plano com mais de quatro nós
+   a falhar, `on` pára no tecto por plano e `observe` conta-os todos.
 4. `AOS_RUN_RETRY_MAX=2` no nó (reinício do nó), e só depois `AOS_ORQ_NOVA_TENTATIVA=on`.
 5. Ler a recorrência nos primeiros 100 planos (abaixo).
 
@@ -1451,6 +1455,8 @@ que não se fez aparece como `tentativa_recusada=<motivo>`:
 | `quota` | o nó respondeu `429` à tentativa: a quota de quem pediu, a taxa ou o tecto de runs em curso | nada: a tentativa conta no orçamento de quem pediu. O plano sai `13`, **não** `8` |
 | `prazo` | o `--plan-timeout` do `serve` acabou | — |
 | `recusada_pelo_no` | o nó respondeu `403` (a prova dele não passou, ou a reclamação já não é a viva) ou `409` (já existe um run com esse id que não é deste plano) | ler `aos_runs_retry_refused_total{causa}` no nó. `anterior_pediu_tools` acima de zero é um defeito do `aos-orq` |
+| `run_de_outra_origem` | numa retoma, o nó tem um run com o id da tentativa que **este `serve` não submeteu** e que não declara, no `plan_attempt` do `GET /runs/{id}`, ser a tentativa deste nó deste pedido. O `aos-orq` não o segue, e o nó do plano fecha `failed` com a causa do run anterior | ler no nó quem criou o run (`run.plan_origin` do run, se o tiver, e o selo de criação): ou alguém submeteu um run com esse id por `POST /runs`, ou a imagem do nó foi revertida para uma que não devolve `plan_attempt` |
+| `facto_invalido` | o facto da tentativa não tem forma que o log do plano admita — o id do run anterior passa de 1024 bytes (um id de pedido desmedido) | é do pedido, e é igual em todas as gerações: o plano sai `13` em vez de abortar |
 
 **As métricas.** No nó: `aos_runs_retry_admitted_total`, `aos_runs_retry_refused_total{causa}` e
 `aos_runs_retry_prompt_hash_diferente_total` (tem de ser zero: a tentativa repete o mesmo
@@ -1491,15 +1497,36 @@ do nó a `0`. Os runs de tentativa já gravados continuam legíveis — são run
 > sobre um plano com a tentativa 2 em voo: sonda o run da **primeira** tentativa, que está
 > `failed`, fecha o nó do plano com `causa=contract_unmet_no_call` e o plano sai `13` — mesmo que
 > a tentativa 2 viesse a concluir. Nada é publicado, e a tentativa fica órfã no nó `aos` (corre
-> até ao fim sem ninguém a recolher). Num plano com ramos condicionais o `serve` anterior sai com
-> erro em vez de fechar o nó (a leitura das decisões de ramo recusa o tipo que não conhece) e o
-> pedido volta à fila até ao tecto de gerações. Desligar pelo interruptor, deixar acabar os planos
-> em voo, e só então reverter.
+> até ao fim sem ninguém a recolher). **Medido em duas topologias, com o mesmo resultado:** um
+> plano sem ramos, e leitor → verificador → nó condicional — o plano sai terminal `13`
+> (`causa=contract_unmet_no_call:1,entrada_por_cumprir:1`), sem nada publicado. **Não medido:** o
+> plano em que uma decisão de ramo é lida depois do facto (outro ramo a concluir com a tentativa
+> em voo); aí o `serve` anterior pode sair com erro em vez de fechar o nó, e o pedido voltar à
+> fila até ao tecto de gerações. Um plano com ramos e sem tentativas no log corre normalmente no
+> binário anterior. Desligar pelo interruptor, deixar acabar os planos em voo, e só então
+> reverter. **O mesmo para a imagem do NÓ:** um nó anterior à correcção da revisão não devolve
+> `plan_attempt`, e um `aos-orq` que retome contra ele uma tentativa que não submeteu fecha o nó
+> do plano com `tentativa_recusada=run_de_outra_origem`.
 
 > ⚠️ **Um `serve` que aborta a meio de uma tentativa não larga a posse.** Se o `POST /runs` da
 > tentativa falhar por rede ou `5xx`, o `serve` sai com erro e o facto fica no log sem run. A
 > drenagem seguinte só retoma depois de a posse expirar (30 s); lê então o estado do id da
 > tentativa, vê `404` e submete-a — `execucao: no <id> RETOMA da tentativa 2` —, sem gastar outra.
+> Se em vez de `404` encontrar um run com esse id, só o segue se o nó declarar que é a tentativa
+> deste nó deste pedido (`plan_attempt`); senão, `tentativa_recusada=run_de_outra_origem`.
+
+**O que a recuperação custa, no pior caso (medido).** Um plano de 6 nós elegíveis que falham
+sempre sem chamar a tool, com os tectos por omissão: **10 runs em vez de 6** — as 4 tentativas a
+mais de `AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO` —, e os nós seguintes fecham com
+`tentativa_recusada=tecto_do_plano`. O orçamento do plano **não** debita os runs filhos: o que
+limita o custo é este tecto e, por run, os travões do nó. Subir o tecto por plano sobe este
+número na mesma proporção.
+
+**A recusa do próprio objectivo também se repete.** Um modelo que responde «não consigo» sem
+chamar a tool, num nó **com** tools, fecha pela mesma razão e com zero chamadas: o `aos-orq` não
+o distingue do nó que se esqueceu de chamar a tool (não lê o texto), e volta a submetê-lo até
+duas vezes. Se a recusa for estável, são dois runs de um turno gastos por nó — sem efeito e sem
+autoridade nova. É custo aceite (ADR-039 §5).
 
 **Um anúncio que não se leu não é um «não».** Se o `GET /tools` do anúncio falhar (rede, `429`,
 `5xx`, corpo ilegível), o plano **não corre sem contrato**: o `serve` pára antes da posse, o

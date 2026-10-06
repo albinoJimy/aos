@@ -362,6 +362,12 @@ type executorDeNos struct {
 	retomadas map[string]bool
 	// submetidosAqui marca os nós cujo run corrente foi ESTE processo a submeter.
 	submetidosAqui map[string]bool
+	// conferidas marca os nós cuja tentativa corrente, submetida por OUTRO processo, já foi
+	// conferida pela origem que o nó `aos` declara ([executorDeNos.tentativaDestePedido]).
+	conferidas map[string]bool
+	// semOrigemDesde marca desde quando o run de uma tentativa que este processo não submeteu
+	// responde em curso e SEM a origem — a janela entre o nó hospedar o run e gravar-lha.
+	semOrigemDesde map[string]time.Time
 	// rehidratados conta os payloads reconstruídos do log neste arranque (AOS-418), e é
 	// impresso no fim da reidratação — não no banner do executor, que é escrito muito antes de
 	// o executor existir.
@@ -412,7 +418,8 @@ func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.Pl
 		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now, causas: map[string]string{},
 		payloads: map[chaveDePayload]string{}, candidatos: map[string]bool{}, declaradas: map[string]declaracaoDeOrigem{},
 		tentativas: map[string]int{}, tentativaContada: map[string]bool{}, esgotados: map[string]bool{},
-		recusasDeTentativa: map[string]string{}, retomadas: map[string]bool{}, submetidosAqui: map[string]bool{}}
+		recusasDeTentativa: map[string]string{}, retomadas: map[string]bool{}, submetidosAqui: map[string]bool{},
+		conferidas: map[string]bool{}, semOrigemDesde: map[string]time.Time{}}
 	if store != nil && planID != "" {
 		if err := e.rehidratarPayloads(ctx, store, planID); err != nil {
 			return nil, err
@@ -1126,6 +1133,26 @@ func (e *executorDeNos) recolher(ctx context.Context) (int, error) {
 			}
 			continue
 		}
+		if existe && e.tentativaDe(nodeID) > 1 && !e.submetidosAqui[nodeID] && !e.conferidas[nodeID] {
+			// AOS-503 (revisão adversarial, I2) — UM RUN DE TENTATIVA QUE ESTE PROCESSO NÃO SUBMETEU
+			// SÓ SE SEGUE COM A ORIGEM CONFERIDA. O id da tentativa não é reservado no nó `aos`:
+			// existir um run com ele não diz que foi este pedido a criá-lo. Antes de ler dele o
+			// que quer que seja — o desfecho, a saída —, confere-se o que o NÓ declara.
+			switch e.tentativaDestePedido(nodeID, st) {
+			case origemPorDeclarar:
+				continue
+			case origemAlheia:
+				if err := e.fecharTentativaRecusada(ctx, nodeID, recusaRunDeOutraOrigem,
+					"o no aos tem um run com o id da tentativa que nao declara ser a tentativa deste no deste pedido (plan_attempt), e este processo nao o submeteu: NAO se segue"); err != nil {
+					return fechados, err
+				}
+				delete(e.emVoo, nodeID)
+				delete(e.sumidos, nodeID)
+				fechados++
+				continue
+			}
+			e.conferidas[nodeID] = true
+		}
 		if !existe {
 			// 404 de um run que foi submetido. Só conta como perdido se persistir: ver
 			// [toleranciaA404]. Perdido, fica `failed` — esperar por ele era esperar para sempre.
@@ -1262,7 +1289,7 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 		return err
 	}
 	// AOS-503: o desfecho da última tentativa a mais, se as houve. Depois da conclusão escrita.
-	e.contarFechoDaTentativa(nodeID, destino == arstate.Complete)
+	e.contarFechoDaTentativa(nodeID, destino == arstate.Complete, st, existe)
 	if destino == arstate.Failed {
 		e.causas[nodeID] = causa
 		fmt.Printf("  execucao: no %s %s (run %s) causa=%s vector %s%s\n", nodeID, destino, e.runDoNo(nodeID), causa, e.vectorDe(nodeID, st.Verdict), e.sufixoDasTentativas(nodeID))
