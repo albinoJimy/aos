@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-06 (v0.1.49 em produção; entrega por referência ligada; série de 21 planos).
+Última actualização: 2026-10-06 (fase A1 aberta: tickets AOS-502 a AOS-505 e decisões do dono sobre a recuperação; v0.1.49 em produção com a entrega por referência ligada).
 
 ## 1. Objectivo e promessa
 
@@ -27,7 +27,7 @@ Uma fase só passa a **provada** quando o critério de prova está medido e regi
 |---|---|---|---|---|
 | **A0** | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão; o `aos-orq` trata «não cumprido» como nó falhado | Zero verdes falsos em pelo menos 150 runs com tools na oferta | — | **em produção por verificar** (v0.1.46, imposição ligada a 2026-10-05; falta o critério de prova) |
 | **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **provada** (2026-10-06, v0.1.49 com a entrega ligada: série de 21 planos, 18 entregas por referência, todas byte a byte iguais ao resultado selado; os outros 3 falharam antes da entrega por o modelo não chamar a tool) |
-| **A1** | Recuperação do run (aviso ou repetição do pedido) e rota sob governação (nome real do modelo, proxy sem descartar parâmetros, modelo servido comparado por turno) | «Não cumprido» abaixo de 2%; uma troca de modelo por baixo é detectada | A0; medição de até 150 pedidos | por começar |
+| **A1 — Recuperação** | Nova tentativa ao nível do plano: um nó que terminou sem chamar a tool volta a ser submetido, até duas vezes a mais, em qualquer nó com tools, e o nó `aos` só aceita a tentativa depois de provar no seu log que a anterior não pediu tool nenhuma. Projecção nativa 1.1.0 (fim de segmento inforjável e texto do protocolo reescrito), desligada por omissão e medida antes de ligar. Rota sob governação (nome real do modelo, proxy sem descartar parâmetros, modelo servido comparado por turno) | «Não cumprido» abaixo de 2% numa série de pelo menos 40 planos com a recuperação ligada; uma troca de modelo por baixo é detectada | A0 | **em curso** (2026-10-06: desenho feito, decisões tomadas, tickets AOS-502 a AOS-505 abertos; nada implementado) |
 | **A2** | Estado opaco do provider por turno (raciocínio, assinaturas, identificadores), com sondas de protocolo deterministas | Duas famílias de modelos completam runs com tools | A0; escolha da segunda família | por começar |
 | **A3** | Entrada automática: arnês de qualificação, perfil do modelo como artefacto do registo, mais de um modelo por nó, canary, disjuntor | O terceiro modelo entra com zero PRs e uma assinatura em menos de uma hora; um modelo mau é recusado sozinho | A1, A2 | por começar |
 | **A4** | Cascata: estimar a capacidade que o passo exige e eleger o modelo por roteamento determinista, com limiares num `decision pack` | A divisão entre modelos baratos e caros é medida e ajustada sem deploy | A3 | por começar |
@@ -105,7 +105,33 @@ origem inútil; os dois sentidos de `output_unavailable` com o vínculo vinculat
 do plano que o nó declarou a origem e com que vínculo; o custo de ler o stream inteiro por
 `GET`.
 
-### A1 a A6
+### A1 — Recuperação
+
+Desenho: `desenho-a1-recuperacao-2026-10-06.md`. Onde o desenho e os tickets divergirem, valem os
+tickets.
+
+| Ticket | Epic | Título curto | Depende de | Estado |
+|---|---|---|---|---|
+| AOS-502 | EPIC-19 | O nó aceita a nova tentativa de um nó do plano e prova, no seu próprio log, que a anterior não pediu tools. Escreve o ADR novo da recuperação e as emendas ao ADR-027, ao ADR-035 e ao ADR-037 | AOS-493, AOS-494 | aberto |
+| AOS-503 | EPIC-19 | O `aos-orq` volta a submeter um nó do plano que terminou sem chamar a tool (`off`, `observe`, `on`; até duas tentativas a mais; métricas e alerta) | AOS-502, AOS-495 | aberto |
+| AOS-504 | EPIC-06 | Projecção nativa 1.1.0: fim de segmento inforjável, e o objectivo deixa de se confundir com dados; canário de medição | — (independente) | aberto |
+| AOS-505 | EPIC-06 | Rota sob governação: o proxy deixa de descartar parâmetros e o modelo que serviu cada turno é comparado com o esperado | — (independente; cada mudança de configuração de produção liga-se por decisão do dono) | aberto |
+
+Ordem de entrega: o AOS-502 no nó, com o tecto a zero (invisível); depois o AOS-503 em `off`, em
+`observe` durante uma série de pelo menos 20 planos, e em `on`. O nó sai antes do `aos-orq`. O
+AOS-504 e o AOS-505 não dependem dos outros dois nem um do outro. Em nenhum passo o sistema fica
+pior do que hoje: uma tentativa que falha deixa o plano onde hoje fica (saída 13), alguns segundos
+mais tarde.
+
+**O que a decisão do âmbito largo muda em relação ao desenho.** O desenho limitava a primeira fase
+aos nós sem `consumes`, para a tentativa não poder ser provocada por conteúdo untrusted. Com o
+âmbito largo, a prova do nó é a mesma (zero tool calls, `contract_unmet_no_call`, motivo `stop`) e
+continua a garantir que nenhum efeito se repete; o que deixa de valer é «não provocável». As
+contas do residual (2,6% e 0,4%) vêm só de nós sem `consumes`: num nó com entradas a tentativa
+reapresenta o mesmo conteúdo, e a recorrência pode ser mais alta. As métricas do AOS-503 separam
+as duas classes. As séries de produção até hoje não têm nenhum nó com tools e `consumes`.
+
+### A2 a A6
 
 Sem tickets abertos. Abrem-se quando a fase anterior estiver em produção e as decisões da §4
 correspondentes estiverem tomadas.
@@ -130,9 +156,17 @@ correspondentes estiverem tomadas.
 | 2026-10-05 | Saída por referência: o texto final do nó produtor continua a ser capturado mas não é publicado nem entregue | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
 | 2026-10-05 | Saída por referência: um nó candidato sem declaração não é recusado pelo validador por agora; decide-se com a taxa de omissão medida em observação (AOS-499, AOS-501) | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
 | — | Validar a classe alargada do contrato de conclusão antes de ligar `enforce`: os nós com tools e **sem** saída de forma aberta declarada (`com_contrato_sem_saida`; o alargamento veio da revisão adversarial do AOS-495, não da decisão de 2026-10-04). Lê-se em `aos_orq_consume_nos_por_contrato_total` e `aos_orq_consume_veredictos_observados_total` quantos são e quantos `enforce` fechava `failed` | Por tomar |
-| — | Autorizar a medição de até 150 pedidos ao LiteLLM de produção e pôr `drop_params: false` (condiciona A1) | Por tomar |
+| 2026-10-06 | Autorizar a medição directa ao LiteLLM de produção (pedida como até 150 pedidos; o desenho da A1 pedia até 580) | **Não autorizada:** mede-se com séries de planos em observação, como nas fases anteriores |
+| — | Pôr `drop_params: false` no proxy de produção e passar a pedir o nome real do modelo (AOS-505) | Por tomar: liga-se por decisão do dono, com um pedido de verificação antes e depois |
 | — | O que a saga de compensação faz, num run não cumprido, aos efeitos das tools que correram bem (ADR-037 §4). Hoje não há compensações registadas e o efeito fica aplicado; decide-se antes de a primeira tool registar a sua | Por tomar |
-| — | Recuperação por aviso ou por repetição do pedido (depois da medição) | Por tomar |
+| 2026-10-06 | Recuperação por aviso ou por repetição do pedido | **Resolvida:** nova tentativa ao nível do plano, com o mesmo pedido (linhas seguintes). O aviso fica adiado com gatilho |
+| 2026-10-06 | Recuperação: o sistema tenta outra vez sozinho um passo em que o modelo não usou a ferramenta | Tomada (AOS-502, AOS-503) |
+| 2026-10-06 | Recuperação: **até duas tentativas a mais** (no máximo três runs do mesmo nó do plano) | Tomada (AOS-502, AOS-503) |
+| 2026-10-06 | Recuperação: aplica-se a **todos os nós com tools**, incluindo os que recebem material de outros nós (`consumes`). O desenho recomendava começar só pelos nós sem `consumes`. Risco aceite: num nó com `consumes`, conteúdo untrusted do passo anterior pode levar o modelo a não chamar a tool e gastar as tentativas; o dano é limitado pelo tecto de tentativas e pelo orçamento, e a tentativa nunca dá autoridade | Tomada (AOS-502, AOS-503) |
+| 2026-10-06 | A correcção do texto de instruções (o nó que recusa o próprio objectivo) entra na fase A1, desligada por omissão e medida antes de ligar | Tomada (AOS-504) |
+| 2026-10-06 | Recuperação: as tentativas contam no orçamento de quem pediu, com um tecto de tentativas a mais por plano; um sucesso à segunda ou à terceira aparece como sucesso normal, com a contagem de tentativas registada e visível nas métricas | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
+| 2026-10-06 | Recuperação: o «aviso e mais um turno» fica adiado, com o gatilho do desenho (seis ou mais das primeiras falhas voltam a falhar na tentativa seguinte, ou a entrada de uma rota determinista); a decisão toma-se com os números dos primeiros 100 planos com a recuperação ligada | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
+| 2026-10-06 | A recusa do próprio objectivo não se detecta com segurança: corrige-se a causa provável e vigia-se por um contador | Por omissão (recomendação do desenho; o dono não decidiu em contrário) |
 | — | Qual é a segunda família de modelos (condiciona A2) | Por tomar |
 | — | O Jev: enumerar primeiro as combinações reais de state do risk gate; só depois decidir um teste offline | Por tomar |
 
@@ -160,6 +194,7 @@ correspondentes estiverem tomadas.
 | 2026-10-06 | Texto final do nó de leitura nos 18 planos entregues | Em 2, uma frase sem nenhum facto do documento («lido integralmente com sucesso»); o consumidor recebeu o documento inteiro na mesma | `GET /runs` |
 | 2026-10-06 | Resumo final nos 18 planos entregues | 16 com todos os factos; 1 omite os dois nomes e mantém os números; 1 em que o nó de resumo recusou o próprio objectivo | `GET /runs` |
 | 2026-10-06 | Taxa de «o modelo não chamou a tool», acumulada | 12 em 74 (16%): 2/10, 1/22, 6/21, 3/21 | `turn.recorded` |
+| 2026-10-06 | Análise dos dados locais para o desenho da A1 (53 runs do nó de leitura com `prompt_hash`, v0.1.45 a v0.1.47; sem pedidos ao modelo) | O mesmo `prompt_hash` dá os dois desfechos (um pedido: 5 chamaram e 2 não; outro: 2 e 1, com 33 s entre a falha e o sucesso). Recorrência no mesmo pedido: 2 em 14 pares (14%), igual à taxa de base; a amostra directa «falhou, a seguinte recupera?» é de 2, e os dois recuperaram. Residual estimado sob independência: 2,6% com uma tentativa a mais (0,75% a 7,1%) e 0,4% com duas (0,07% a 1,9%). Sem evidência de rajadas; nem os tokens de saída nem a cache predizem a falha | `desenho-a1-recuperacao-2026-10-06.md` §1 |
 
 Por medir: o vocabulário de motivos de paragem que o provider de produção envia; taxa de vermelhos falsos do contrato em modo de observação; eficácia da recuperação;
 o que o proxy devolve no campo `model`.
@@ -185,7 +220,7 @@ Não fechados por nenhuma fase até decisão em contrário:
 
 - Tool call em texto num turno posterior a uma chamada efectiva.
 - Tool chamada e saída fabricada, em nós que transformam conteúdo. **Medido a 2026-10-05: 2 em 21 planos** perderam factos do documento no nó de leitura. Só a saída por referência o fecha, e só para os nós de passagem directa (fase A0.5, AOS-497 a AOS-501).
-- Nó sem tools que conclui a dizer que não conseguiu. **Medido a 2026-10-05: 1 em 21 planos**, por o nó tratar o próprio objectivo como dados untrusted — o texto do protocolo nativo pode estar a induzi-lo.
+- Nó sem tools que conclui a dizer que não conseguiu. **Medido a 2026-10-05: 1 em 21 planos**, por o nó tratar o próprio objectivo como dados untrusted — o texto do protocolo nativo pode estar a induzi-lo. O AOS-504 corrige a causa provável e conta os casos; não o detecta nem o recupera.
 - O `prompt_hash` não cobre a projecção nativa.
 - Run que acaba sobre uma recusa ou uma falha de tool com o contrato cumprido, ou sem contrato:
   veredicto positivo. É medido (`aos_runs_finished_by_last_tool_outcome_total`), não é fechado.
