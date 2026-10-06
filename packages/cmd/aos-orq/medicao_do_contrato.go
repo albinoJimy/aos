@@ -41,6 +41,15 @@ type medicaoDoContrato struct {
 	extraccoes          map[string]int // forma da extracção → saídas entregues
 	recusasDaOrigem     map[string]int // razão do validador → tentativas do planeador recusadas
 	candidatosSemOrigem int            // candidatos por estrutura cujo plano não declarou a origem
+	// AOS-503 — a nova tentativa (nova_tentativa.go). Só fora de `off`; vazios em `off`.
+	primeirasFalhas        map[string]int           // com_consumes → nós cujo PRIMEIRO run fechou sem chamar a tool
+	tentativasFeitas       map[chaveDeTentativa]int // (tentativa, desfecho, com_consumes) → tentativas a mais
+	nosRecuperados         map[string]int           // com_consumes → nós que concluíram numa tentativa a mais
+	tentativasRecusadas    map[string]int           // motivo → tentativas que não se fizeram
+	tentativasEmObservacao map[string]int           // com_consumes → as que `observe` tentaria
+	// tentativasDoPlano é o que o plano fica a dizer sobre as tentativas quando o `serve` acaba.
+	// nil com o interruptor desligado e sem tentativas no log.
+	tentativasDoPlano *resumoDasTentativas
 }
 
 // contratoNaoAplicado conta uma execução de plano em que o contrato não foi aplicado.
@@ -107,4 +116,5 @@ func (m *metricasDoConsumo) registarContrato(c *medicaoDoContrato) {
 	somar(metricaNosPorContrato, "classe", classesDoContrato, c.classes)
 	m.registarOrigem(c)
 	m.registarEntrega(c)
+	m.registarNovaTentativa(c)
 }

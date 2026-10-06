@@ -35,6 +35,10 @@ Monitor, pela mesma PDP e pela mesma sandbox que qualquer run de produção.
 - O **id do run filho** é `<run>~<node_id>`. Não `/` (o `/runs/{id}` casa um só segmento) nem `.`
   ou `:`, que a gramática de `node_id` admite — com eles, o run `a` + nó `b.c` e o run `a.b` + nó
   `c` davam o mesmo id. O `~` não é carácter de `node_id` e o `serve` recusa um run que o contenha.
+  **EMENDADO a 2026-10-06 pelo AOS-502 (ADR-039):** o id admite um sufixo de tentativa —
+  `<run>~<node_id>~<n>`, com `n ≥ 2` em decimal — para o run que é uma **nova tentativa** do
+  mesmo nó do plano. Só com `plan_request.attempt` no pedido, e só depois de o nó `aos` provar no
+  log dele que a tentativa anterior não pediu tool nenhuma. Sem o campo, a forma é a de sempre.
 - Um **409** na submissão é um run que ESTE plano não criou (o executor só submete nós pendentes):
   recusa-se, em vez de aceitar o desfecho — e o veredicto — de um run alheio.
 - Um run só **conclui** com `completed`, `terminated` e sem erro: um run que parou por orçamento
@@ -116,6 +120,14 @@ O `scope` existente fica como está: os clientes actuais já o enviam com capabi
 - **Conclusão:** um run filho em estado terminal leva o nó a `complete` (run `completed`,
   `terminated` e sem erro) ou a `failed` (tudo o resto), por uma transição durável `running→complete|failed` escrita pelo
   `aos-orq` sob o lease do run (ADR-023).
+  **EMENDADO a 2026-10-06 pelo AOS-503 (ADR-039), atrás de `AOS_ORQ_NOVA_TENTATIVA=on`:** um run
+  filho `failed` deixa de fechar SEMPRE o nó do plano. Quando o run de um nó não-verificador com
+  tools fecha por `contract_unmet_no_call` sem nenhuma tool call pedida, o `aos-orq` grava o facto
+  `plan.node_attempt_started` no log do plano e volta a submeter o mesmo pedido como um run novo
+  — até duas vezes a mais por nó, dentro de um tecto por plano. O nó do plano fica `running`
+  entre tentativas; só a última decide `complete` ou `failed`, e o consumidor só corre depois de
+  uma tentativa que concluiu. Qualquer outro desfecho fecha o nó como acima. Fora de `on`, e
+  contra um nó `aos` que não anuncie o suporte, nada muda.
 - **Veredicto de um `verifier`:** lê-se da saída final do run por uma gramática **fechada**
   (`{"outcome":"pass|fail","reasons":[<identificador>...]}`). Tudo o que não se ler — saída livre,
   JSON inválido, run falhado — é **`fail`** com a razão `verdict_unparseable`. Os `subjects` vêm do

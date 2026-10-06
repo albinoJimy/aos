@@ -63,6 +63,10 @@ type vinculoAoPedido struct {
 	// run, sem os poder confrontar com o documento (ADR-018). Ver `plan_origem.go`.
 	PlanID string `json:"plan_id,omitempty"`
 	NodeID string `json:"node_id,omitempty"`
+	// Attempt declara que o run é a TENTATIVA `n` (≥ 2) do nó do plano (AOS-502, ADR-039). O nó
+	// não a aceita por estar declarada: prova no seu log que a tentativa anterior não pediu tool
+	// nenhuma ([apiHandler.provarTentativa]). Ausente ⇒ a primeira tentativa, como sempre.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // codigoRequerenteForaDoMandato é o código do corpo da recusa em que o vínculo PASSOU mas o
@@ -102,9 +106,19 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 	// O QUE A FORMA NÃO PROVA: que `<nó>` é um nó do documento aprovado — o nó não conhece o
 	// documento (ADR-018). Uma reclamação viva serve para `<plano>~<qualquer-coisa>`, todos com o
 	// mesmo submissor; declarado no ADR-035 §5.
-	prefixo := v.RunID + separadorDoRunFilho
-	if !strings.HasPrefix(runID, prefixo) || len(runID) == len(prefixo) || strings.Contains(runID[len(prefixo):], separadorDoRunFilho) {
-		return recusa("run_id nao tem a forma <plano>" + separadorDoRunFilho + "<no> do plano nomeado")
+	//
+	// COM `attempt` (AOS-502) a forma é outra, e só essa: `<plano>~<nó>~<n>`, conferida por
+	// igualdade com o id que o nó compõe dos campos. Sem `attempt` nada muda — um segundo `~`
+	// continua a ser recusado.
+	if v.Attempt != 0 {
+		if err := formaDaTentativa(v, runID); err != nil {
+			return "", errors.Join(errVinculoRecusado, err)
+		}
+	} else {
+		prefixo := v.RunID + separadorDoRunFilho
+		if !strings.HasPrefix(runID, prefixo) || len(runID) == len(prefixo) || strings.Contains(runID[len(prefixo):], separadorDoRunFilho) {
+			return recusa("run_id nao tem a forma <plano>" + separadorDoRunFilho + "<no> do plano nomeado")
+		}
 	}
 
 	// A marca de água só corta o prefixo de pedidos TERMINADOS — e um pedido com reclamação viva não

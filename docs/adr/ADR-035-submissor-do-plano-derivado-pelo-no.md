@@ -6,6 +6,8 @@
   de AOS-439/440 (implementação)
 - **Tickets:** AOS-439, AOS-440
 - **Emenda:** ADR-033 §2.1 (o mandato enumera `requesters`) — a emenda vive no próprio ADR-033, §7.
+- **Emendado:** 2026-10-06, por AOS-502 (ADR-039): §2.2 (a forma `<plano>~<nó>~<n>` de uma nova
+  tentativa, e o que o nó prova para `n ≥ 2`) e §5 (o resíduo 5 não se alarga às tentativas)
 - **Relacionados:** ADR-003 (cadeia `on-behalf-of` com raiz humana), ADR-018 (o nó não conhece a
   semântica do orquestrador), ADR-027 (cada nó do plano é um run do nó), ADR-030 (a fila e a
   reclamação), ADR-031 (a titularidade do pedido), ADR-010 (a hash-chain do WORM e a versão
@@ -48,6 +50,19 @@ log** da fila:
 3. a região do pedido é a do chamador;
 4. o `run_id` tem a forma `<plano>~<nó>` — o separador `~` passa a **contrato do nó**
    (`separadorDoRunFilho`, com um teste a amarrá-lo à constante do `aos-orq`).
+
+**EMENDADO a 2026-10-06 pelo AOS-502 (ADR-039) — a nova tentativa.** O vínculo ganha `attempt`
+(inteiro, `n ≥ 2`). Com ele, a forma do `run_id` é `<plano>~<nó>~<n>`, conferida por igualdade com
+o id que o nó compõe a partir de `run_id`, `node_id` e `attempt` do vínculo (que passa a exigir
+`plan_id` e `node_id`). Sem `attempt` a regra 4 é a de sempre, e um segundo `~` continua a ser
+recusado. As regras 1 a 3 valem para a tentativa como para a primeira: o submissor é derivado do
+mesmo pedido, a reclamação tem de ser a viva da última geração e do chamador, e a região tem de
+coincidir. A geração do run ANTERIOR pode ser anterior à do pedido (um `serve` morreu e outro
+retomou). **Para `n ≥ 2` o nó prova mais**, no seu próprio log e antes de hospedar: que o run da
+tentativa `n − 1` foi hospedado com o vínculo verificado ao mesmo pedido e ao mesmo nó, que
+fechou `failed` por `contract_unmet_no_call`, que não pediu tool nenhuma, que teve um só turno e
+que esse turno parou com o motivo `stop` — ADR-039 §2.3. O tecto é do nó (`AOS_RUN_RETRY_MAX`,
+zero por omissão).
 
 Se tudo bate, o `requested_by` do run é o principal gravado no pedido; se falha, 403 uniforme e a
 causa no log. Sem o campo, nada muda.
@@ -198,7 +213,10 @@ outros; a fila deixa de entregar objectivos a quem não drena.
 5. **Uma reclamação viva serve para runs `<plano>~*` arbitrários** (§2.2): o nó não conhece o
    documento do plano (ADR-018), logo não sabe que nós existem. Um drenador com a reclamação viva
    pode abrir runs com nomes de nó inventados, todos com o `requested_by` do mesmo submissor — mas
-   só sob o mandato que o nomeia, e só enquanto a reclamação vive.
+   só sob o mandato que o nomeia, e só enquanto a reclamação vive. **As tentativas não alargam
+   isto (AOS-502):** `<plano>~<nó>~<n>` só é aceite com `attempt`, e só sobre um run anterior que
+   o próprio nó hospedou com o vínculo a esse pedido e a esse nó e que provou não ter pedido
+   tools; o drenador não abre tentativas de nós que não correram.
 6. **O `requested_by` fica em claro no WORM e no evento de mediação, e sobrevive ao DSAR** — é o
    `sub` do submissor, um pseudónimo, como o NHIID dos humanos que o WORM já guarda. O WORM é
    append-only por desenho; o crypto-shredding não o alcança.

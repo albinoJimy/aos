@@ -197,6 +197,10 @@ type anuncioDoNo struct {
 	// de a entrega por referência estar activa (AOS-501). Um nó que só anunciasse `measure` não
 	// julga a origem, e por ele não se entrega.
 	vinculativa bool
+	// tentativas (AOS-503) é o tecto de tentativas a mais por nó do plano que o nó `aos` anuncia
+	// (`run_retry.max` do `GET /tools`, AOS-502). Zero ⇒ o nó não anuncia o suporte — um nó anterior,
+	// ou com o tecto a zero —, e nenhuma tentativa é pedida. Lê-se na MESMA resposta.
+	tentativas int
 }
 
 // ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
@@ -237,11 +241,21 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 		OutputSource *struct {
 			Bindings []string `json:"bindings"`
 		} `json:"output_source"`
+		RunRetry *struct {
+			Max int `json:"max"`
+		} `json:"run_retry"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
 		return anuncioDoNo{}, fmt.Errorf("anúncio do contrato de conclusão: resposta ilegível: %w", err)
 	}
 	var anuncio anuncioDoNo
+	if corpo.RunRetry != nil && corpo.RunRetry.Max > 0 {
+		// O valor vem de outro processo: fica dentro do que este binário sabe usar.
+		anuncio.tentativas = corpo.RunRetry.Max
+		if anuncio.tentativas > maxTentativasAMaisPorNo {
+			anuncio.tentativas = maxTentativasAMaisPorNo
+		}
+	}
 	if corpo.OutputSource != nil {
 		// A presença é o anúncio; o vínculo que este binário envia tem de constar dos aceites.
 		for _, v := range corpo.OutputSource.Bindings {

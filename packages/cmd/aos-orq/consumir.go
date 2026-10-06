@@ -278,6 +278,8 @@ func cmdConsume(args []string) (err error) {
 		// um documento recusado.
 		origem, erroDoServe := origemDoPedido(sub, pasta, pedido.RunID, *decomposeFixture, *snapshot, inicio.UTC())
 		serveCorreu := erroDoServe == nil
+		// AOS-503: o que o plano diz sobre as tentativas a mais, quando o `serve` correu.
+		var tentativasDoPlano *resumoDasTentativas
 		if serveCorreu {
 			fmt.Printf("origem do plano: run=%s %s\n", pedido.RunID, origem.descrever())
 			// AOS-495: o que o `serve` mede sobre o contrato de conclusão soma-se às métricas
@@ -285,6 +287,7 @@ func cmdConsume(args []string) (err error) {
 			medicao := &medicaoDoContrato{}
 			erroDoServe = correrPedido(*snapshot, pedido, sub, *planTimeout, *pollInterval, *worker, origem, medidor, medicao)
 			metricas.registarContrato(medicao)
+			tentativasDoPlano = medicao.tentativasDoPlano
 		}
 		codigo, classe, tipo := desfechoDoServe(erroDoServe)
 		// AOS-443: o resumo vai TAMBÉM em sucesso — antes, o `detail` só existia com erro, e
@@ -304,6 +307,12 @@ func cmdConsume(args []string) (err error) {
 		if errors.As(erroDoServe, &falhados) {
 			causasDosNos = falhados.causas
 			resumo.causas = linhaDasCausas(causasDosNos)
+		}
+		if t := tentativasDoPlano; t != nil && (t.tentativas > 0 || t.esgotados > 0 || len(t.recusadas) > 0) {
+			resumo.tentativas = t
+		}
+		if tentativasDoPlano != nil && classe == "terminal" {
+			metricas.registarPlanoComTentativas(tentativasDoPlano, codigo)
 		}
 		detalhe := detalheDoDesfecho(resumo)
 		fmt.Printf("desfecho: run=%s codigo=%d classe=%s %s\n", pedido.RunID, codigo, classe, resumo.linha())

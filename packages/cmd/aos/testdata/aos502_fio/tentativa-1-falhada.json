@@ -1,0 +1,1 @@
+{"run_id":"plan-aos503-fio~read_notes","status":"failed","turns":1,"outcome_reason":"contract_unmet_no_call","verdict":{"mode":"enforce","fulfilled":false,"reason":"contract_unmet_no_call","tools":[{"tool":"doc_read","requested":0,"effective":0,"denied":0,"failed":0}],"tool_calls_requested":0}}

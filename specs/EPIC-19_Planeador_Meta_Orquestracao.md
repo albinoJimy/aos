@@ -10089,8 +10089,10 @@ feita, sem bloqueantes, e os seus achados corrigidos ou declarados. Por fazer: o
 
 ## AOS-502 — O nó aceita a nova tentativa de um nó do plano e prova, no seu próprio log, que a anterior não pediu tools
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este bloco só MENCIONA ADRs que já existem (ADR-018, ADR-027, ADR-035, ADR-037, ADR-038): nenhum deles é implementado aqui. O ticket escreve um ADR novo, que ainda não tem número; o número é atribuído na implementação, e o PR da implementação retira este marcador e declara o ADR novo e as emendas como implementados. -->
+<!-- Este ticket escreve e implementa o ADR-039 (a recuperação é uma nova tentativa do nó do plano, autorizada pela prova do nó) e emenda o ADR-027, o ADR-035 e o ADR-037. -->
+<!-- rtm: menção -->
+<!-- O ADR-018 e o ADR-038 são citados como contexto e NÃO são implementados nem emendados aqui. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -10243,8 +10245,10 @@ tecto a zero (a omissão), o nó é o de hoje.
 
 ## AOS-503 — O `aos-orq` volta a submeter um nó do plano que terminou sem chamar a tool
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este bloco só MENCIONA ADRs que já existem (ADR-022, ADR-027, ADR-035, ADR-037, ADR-038): nenhum deles é implementado aqui. O ADR novo da recuperação ainda não tem número (é atribuído na implementação do AOS-502); o PR da implementação retira este marcador e declara o que implementa. -->
+<!-- Este ticket implementa o lado do plano do ADR-039 (o aos-orq pede a nova tentativa; o facto fica no log do plano) e emenda o ADR-027. -->
+<!-- rtm: menção -->
+<!-- O ADR-022, o ADR-035, o ADR-037 e o ADR-038 são citados como contexto e NÃO são implementados nem emendados aqui. -->
+<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
@@ -10256,7 +10260,7 @@ tecto a zero (a omissão), o nó é o de hoje.
 | Dependências | AOS-502, AOS-495; relaciona AOS-501 |
 | Bloqueia | — |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `docs/reports/desenho-a1-recuperacao-2026-10-06.md` §2.1, §3, §5 e §7.5, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md`, `docs/adr/ADR-038-a-saida-de-um-no-de-passagem-directa-e-o-resultado-da-tool.md`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/contrato_de_conclusao.go`, `packages/cmd/aos-orq/entrega_por_referencia.go`, `packages/control-plane/orchestrator/plannerevents/events.go`, `deploy/server/README.md` |
+| Documentos de referência | `docs/reports/desenho-a1-recuperacao-2026-10-06.md` §2.1, §3, §5 e §7.5, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/contrato_de_conclusao.go`, `packages/cmd/aos-orq/entrega_por_referencia.go`, `packages/control-plane/orchestrator/plannerevents/events.go`, `deploy/server/README.md` |
 
 ### Contexto
 
@@ -10338,7 +10342,11 @@ mudança entra atrás de um interruptor próprio, desligado por omissão, com um
       primeiro o estado do id da tentativa: se o run existe, segue-o; se o nó responde 404,
       submete. Nunca reenvia às cegas. Testes em que o primeiro `serve` acaba entre o facto e a
       submissão, e entre a submissão e a recolha, e outro processo continua de onde ficou sem
-      gastar uma tentativa a mais.
+      gastar uma tentativa a mais. Um run que este processo não submeteu só se segue depois de
+      conferida a origem que o nó declara (`plan_attempt`: pedido, plano, nó, tentativa e
+      geração); sem ela, ou com outra, o nó fecha `failed` com
+      `tentativa_recusada=run_de_outra_origem`. Um facto que não possa ser gravado fecha o nó com
+      `tentativa_recusada=facto_invalido`.
 - [ ] **Orçamento.** Cada tentativa conta para a quota do submissor do plano. Um 429 na submissão
       de uma tentativa pára as tentativas: o nó fecha `failed` com a causa original e
       `tentativa_recusada=quota`, e o plano **não** sai com o código 8. O mesmo para o prazo do

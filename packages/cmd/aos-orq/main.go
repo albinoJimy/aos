@@ -416,6 +416,16 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 	}
 	// AOS-499: o interruptor da saída por referência, também antes da posse. Um valor que este
 	// binário não aceita recusa o arranque.
+	// AOS-503: o interruptor e o tecto por plano da nova tentativa. Valores inválidos recusam o
+	// arranque, antes de qualquer efeito.
+	modoDaTentativa, err := modoDaNovaTentativaDoAmbiente()
+	if err != nil {
+		return err
+	}
+	tectoDoPlanoDeTentativas, err := tectoDeTentativasPorPlanoDoAmbiente()
+	if err != nil {
+		return err
+	}
 	modoDaSaida, err := modoDaSaidaPorReferenciaDoAmbiente()
 	if err != nil {
 		return err
@@ -459,6 +469,10 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		// AOS-499: o modo da saída por referência, contra o que ESTE nó anuncia — lido na mesma
 		// resposta, pelo que um anúncio ilegível já parou o `serve` acima.
 		fmt.Println(bannerDaSaidaPorReferencia(modoDaSaida, anuncio))
+		// AOS-503: a nova tentativa, contra o que ESTE nó anuncia. Em `off` não se imprime nada.
+		if modoDaTentativa != novaTentativaOff {
+			fmt.Println(bannerDaNovaTentativa(configDaNovaTentativa{modo: modoDaTentativa, tectoDoNo: anuncio.tentativas, tectoDoPlano: tectoDoPlanoDeTentativas}))
+		}
 	}
 	// AOS-501: a POSTURA da entrega por referência neste `serve` — o interruptor contra o que o nó
 	// anuncia (o zero, sem executor composto). Vai no contexto até à materialização, ao laço do
@@ -584,7 +598,9 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 			// AOS-499: só em `observe`, e só declara a um nó que anuncie (ver [executorDeNos.submeter]).
 			medirOrigem: modoDaSaida == saidaPorReferenciaObserve, origemAnunciada: anuncio.origem,
 			// AOS-501: só com a postura activa um nó com origem declarada é submetido.
-			entregaActiva: postura == entregaActiva}
+			entregaActiva: postura == entregaActiva,
+			// AOS-503: só fora de `off` um nó que terminou sem chamar a tool é contado ou tentado.
+			novaTentativa: configDaNovaTentativa{modo: modoDaTentativa, tectoDoNo: anuncio.tentativas, tectoDoPlano: tectoDoPlanoDeTentativas}}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse

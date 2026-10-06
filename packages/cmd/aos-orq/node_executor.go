@@ -111,6 +111,9 @@ type configDoExecutor struct {
 	// entregaActiva (AOS-501): a postura do `serve` é [entregaActiva] — o interruptor em `on` e um
 	// nó que anuncia o vínculo vinculativo. É a condição para submeter um nó com origem declarada.
 	entregaActiva bool
+	// novaTentativa (AOS-503): o interruptor, o tecto que o nó anuncia e o tecto por plano. O zero
+	// é `off`: um nó cujo run não concluiu fecha `failed`, como sempre.
+	novaTentativa configDaNovaTentativa
 }
 
 // bannerDoExecutor declara no arranque se o trabalho dos nós é executado — e onde.
@@ -339,6 +342,32 @@ type executorDeNos struct {
 	// nó. O custo, declarado: um `serve` que morra perde-o, e a retoma recusa-se a correr um
 	// consumidor sem o material — alto, em vez de o correr às cegas.
 	payloads map[chaveDePayload]string
+	// nt — ver [configDoExecutor.novaTentativa] (AOS-503).
+	nt configDaNovaTentativa
+	// tentativas guarda, por nó do plano, a tentativa CORRENTE quando não é a primeira (AOS-503).
+	// Enche-se do LOG no arranque ([executorDeNos.lerFactoDeTentativa]) e quando este processo
+	// grava o facto: o id do run que se sonda, publica e confere é sempre o da tentativa corrente
+	// ([executorDeNos.runDoNo]).
+	tentativas map[string]int
+	// factosDeTentativa é o número de `plan.node_attempt_started` do plano: o contador do tecto
+	// por plano. Vem do log, pelo que uma retoma não o repõe.
+	factosDeTentativa int
+	// tentativaContada marca os nós cuja tentativa corrente já foi contada nas métricas.
+	tentativaContada map[string]bool
+	// esgotados e recusasDeTentativa guardam, por nó que ESTE processo fechou, porque não houve
+	// mais tentativas: esgotaram-se, ou uma foi recusada (o motivo, em vocabulário fechado).
+	esgotados          map[string]bool
+	recusasDeTentativa map[string]string
+	// retomadas marca os nós cuja tentativa corrente este processo já tentou submeter na retoma.
+	retomadas map[string]bool
+	// submetidosAqui marca os nós cujo run corrente foi ESTE processo a submeter.
+	submetidosAqui map[string]bool
+	// conferidas marca os nós cuja tentativa corrente, submetida por OUTRO processo, já foi
+	// conferida pela origem que o nó `aos` declara ([executorDeNos.tentativaDestePedido]).
+	conferidas map[string]bool
+	// semOrigemDesde marca desde quando o run de uma tentativa que este processo não submeteu
+	// responde em curso e SEM a origem — a janela entre o nó hospedar o run e gravar-lha.
+	semOrigemDesde map[string]time.Time
 	// rehidratados conta os payloads reconstruídos do log neste arranque (AOS-418), e é
 	// impresso no fim da reidratação — não no banner do executor, que é escrito muito antes de
 	// o executor existir.
@@ -387,7 +416,10 @@ func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.Pl
 	}
 	e := &executorDeNos{cli: cli, rec: rec, g: g, runID: runID, nos: nos, tools: pinadas, headroom: headroom,
 		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now, causas: map[string]string{},
-		payloads: map[chaveDePayload]string{}, candidatos: map[string]bool{}, declaradas: map[string]declaracaoDeOrigem{}}
+		payloads: map[chaveDePayload]string{}, candidatos: map[string]bool{}, declaradas: map[string]declaracaoDeOrigem{},
+		tentativas: map[string]int{}, tentativaContada: map[string]bool{}, esgotados: map[string]bool{},
+		recusasDeTentativa: map[string]string{}, retomadas: map[string]bool{}, submetidosAqui: map[string]bool{},
+		conferidas: map[string]bool{}, semOrigemDesde: map[string]time.Time{}}
 	if store != nil && planID != "" {
 		if err := e.rehidratarPayloads(ctx, store, planID); err != nil {
 			return nil, err
@@ -415,6 +447,15 @@ func (e *executorDeNos) retomar(ctx context.Context, running []string) error {
 
 // submeter pede ao nó o run do nó do plano. Idempotente (ver [nodeClient.Submit]).
 func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
+	return e.submeterTentativa(ctx, nodeID, 1)
+}
+
+// submeterTentativa pede ao nó o run da tentativa `tentativa` do nó do plano (AOS-503). A
+// primeira é o pedido de sempre. As seguintes saem do MESMO código, e por isso levam o mesmo
+// objectivo, as mesmas tools, o mesmo contrato, a mesma origem declarada e os mesmos `inputs`:
+// o corpo difere só no id do run e em `plan_request.attempt`. As contagens por nó (classe do
+// contrato, estrutura) fazem-se uma vez, na primeira.
+func (e *executorDeNos) submeterTentativa(ctx context.Context, nodeID string, tentativa int) error {
 	n, ok := e.nos[nodeID]
 	if !ok {
 		return fmt.Errorf("executor: nó %q fora do documento aprovado", nodeID)
@@ -428,7 +469,7 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 		return err
 	}
 	p := pedidoDeRun{
-		RunID:     childRunID(e.runID, nodeID),
+		RunID:     idDaTentativa(e.runID, nodeID, tentativa),
 		Objective: objectivo,
 		Tools:     nomesDasTools(e.tools[nodeID]),
 		Inputs:    entradas,
@@ -506,9 +547,26 @@ func (e *executorDeNos) submeter(ctx context.Context, nodeID string) error {
 		if e.declararOrigem {
 			p.PlanRequest.PlanID, p.PlanRequest.NodeID = e.rec.PlanID(), nodeID
 		}
+		// AOS-503: a tentativa declara-se no vínculo. Sem ele não há tentativa (um `serve` manual
+		// não tem pedido de plano): o nó `aos` recusava o id.
+		if tentativa > 1 {
+			p.PlanRequest.Attempt = tentativa
+		}
+	}
+	if tentativa > 1 && (p.PlanRequest == nil || p.PlanRequest.NodeID == "") {
+		return &erroDeSubmissao{status: 403, msg: fmt.Sprintf("submeter %s ao nó: a tentativa exige o vínculo ao pedido de plano com o plano e o nó declarados", p.RunID)}
 	}
 	if err := e.cli.Submit(ctx, p); err != nil {
 		return err
+	}
+	if e.submetidosAqui == nil {
+		e.submetidosAqui = map[string]bool{}
+	}
+	e.submetidosAqui[nodeID] = true
+	if tentativa > 1 {
+		// As contagens por nó já se fizeram na primeira tentativa.
+		e.emVoo[nodeID] = struct{}{}
+		return nil
 	}
 	e.medicao.noSubmetido(classe)
 	if e.entregaActiva && !porReferencia && classeEstrutural(n, p.Tools) == classeCandidato {
@@ -741,7 +799,7 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 			conteudo = entrega.conteudo
 			p.Record = plannerevents.PayloadRecordRef{
 				Store:  plannerevents.PayloadStoreEventStore,
-				Stream: childRunID(e.runID, n.NodeID),
+				Stream: e.runDoNo(n.NodeID),
 				Digest: digestDoConteudo(conteudo),
 			}
 			p.Source = &plannerevents.PayloadSource{
@@ -765,7 +823,7 @@ func (e *executorDeNos) publicarSaidas(ctx context.Context, n plan.Node, st esta
 			conteudo = st.FinalText
 			p.Record = plannerevents.PayloadRecordRef{
 				Store:  plannerevents.PayloadStoreEventStore,
-				Stream: childRunID(e.runID, n.NodeID),
+				Stream: e.runDoNo(n.NodeID),
 				Digest: digestDoConteudo(conteudo),
 			}
 		}
@@ -839,6 +897,17 @@ func (e *executorDeNos) rehidratarPayloads(ctx context.Context, store runlifecyc
 	eventos, err := store.Read(ctx, planID, 0)
 	if err != nil {
 		return fmt.Errorf("rehidratar payloads: ler o stream do plano %q: %w", planID, err)
+	}
+	// AOS-503: os factos de tentativa lêem-se ANTES de tudo o resto — é por eles que se sabe que run
+	// faz o trabalho de cada nó, e a conferência de um payload por referência depende disso.
+	for _, ev := range eventos {
+		if ev.Type != plannerevents.EventNodeAttemptStarted {
+			continue
+		}
+		var a plannerevents.NodeAttemptStartedPayload
+		if err := json.Unmarshal(ev.Payload, &a); err == nil {
+			e.lerFactoDeTentativa(a)
+		}
 	}
 	for _, ev := range eventos {
 		if ev.Type == plannerevents.EventOutputSourceDeclared {
@@ -981,7 +1050,9 @@ func (e *executorDeNos) relerPorReferencia(ctx context.Context, p plannerevents.
 	if p.Source.Tool != tool {
 		return naoEntra("a tool do evento publicado nao e a que o contrato do documento declara")
 	}
-	if p.Record.Stream != childRunID(e.runID, p.NodeID) {
+	// AOS-503: o run deste nó é o da tentativa CORRENTE segundo o log do plano — a que concluiu.
+	// Um evento que refira outra tentativa (uma que falhou) não entra.
+	if p.Record.Stream != e.runDoNo(p.NodeID) {
 		return naoEntra("o run filho que o evento refere nao e o deste no do plano")
 	}
 	st, existe, err := e.cli.Status(ctx, p.Record.Stream)
@@ -1040,12 +1111,47 @@ func nomesDasTools(caps []string) []string {
 func (e *executorDeNos) recolher(ctx context.Context) (int, error) {
 	fechados := 0
 	for nodeID := range e.emVoo {
-		st, existe, err := e.cli.Status(ctx, childRunID(e.runID, nodeID))
+		st, existe, err := e.cli.Status(ctx, e.runDoNo(nodeID))
 		if err != nil {
 			// Uma leitura falhada (rede, IdP, 5xx, 429) não diz nada sobre o run: volta-se a ler na
 			// passagem seguinte, e o prazo do serve limita a espera.
 			fmt.Printf("  execucao: estado de %s ilegivel nesta passagem: %v\n", nodeID, err)
 			continue
+		}
+		if !existe && e.nt.ligada() && e.tentativaDe(nodeID) > 1 && !e.submetidosAqui[nodeID] && !e.retomadas[nodeID] {
+			// AOS-503 — A RETOMA DE UMA TENTATIVA. O log do plano regista a tentativa e o nó `aos`
+			// não conhece o run: o `serve` anterior morreu entre o facto e o pedido. Lê-se primeiro
+			// (foi o que se acabou de fazer) e só então se submete — uma vez.
+			emVoo, rerr := e.retomarTentativa(ctx, nodeID)
+			if rerr != nil {
+				return fechados, rerr
+			}
+			if !emVoo {
+				delete(e.emVoo, nodeID)
+				delete(e.sumidos, nodeID)
+				fechados++
+			}
+			continue
+		}
+		if existe && e.tentativaDe(nodeID) > 1 && !e.submetidosAqui[nodeID] && !e.conferidas[nodeID] {
+			// AOS-503 (revisão adversarial, I2) — UM RUN DE TENTATIVA QUE ESTE PROCESSO NÃO SUBMETEU
+			// SÓ SE SEGUE COM A ORIGEM CONFERIDA. O id da tentativa não é reservado no nó `aos`:
+			// existir um run com ele não diz que foi este pedido a criá-lo. Antes de ler dele o
+			// que quer que seja — o desfecho, a saída —, confere-se o que o NÓ declara.
+			switch e.tentativaDestePedido(nodeID, st) {
+			case origemPorDeclarar:
+				continue
+			case origemAlheia:
+				if err := e.fecharTentativaRecusada(ctx, nodeID, recusaRunDeOutraOrigem,
+					"o no aos tem um run com o id da tentativa que nao declara ser a tentativa deste no deste pedido (plan_attempt), e este processo nao o submeteu: NAO se segue"); err != nil {
+					return fechados, err
+				}
+				delete(e.emVoo, nodeID)
+				delete(e.sumidos, nodeID)
+				fechados++
+				continue
+			}
+			e.conferidas[nodeID] = true
 		}
 		if !existe {
 			// 404 de um run que foi submetido. Só conta como perdido se persistir: ver
@@ -1063,6 +1169,14 @@ func (e *executorDeNos) recolher(ctx context.Context) (int, error) {
 			if !st.terminal() {
 				continue
 			}
+		}
+		// AOS-503: antes de fechar, a nova tentativa. Com ela submetida o nó do plano continua
+		// `running` e em voo — nada se escreve sobre o run que falhou, e nada dele se publica.
+		if outra, terr := e.novaTentativa(ctx, nodeID, st, existe); terr != nil {
+			return fechados, terr
+		} else if outra {
+			delete(e.sumidos, nodeID)
+			continue
 		}
 		if err := e.fechar(ctx, nodeID, st, existe); err != nil {
 			return fechados, err
@@ -1174,12 +1288,18 @@ func (e *executorDeNos) fechar(ctx context.Context, nodeID string, st estadoDoRu
 	if err := e.headroom.Release(ctx); err != nil {
 		return err
 	}
+	// AOS-503: o desfecho da última tentativa a mais, se as houve. Depois da conclusão escrita.
+	e.contarFechoDaTentativa(nodeID, destino == arstate.Complete, st, existe)
 	if destino == arstate.Failed {
 		e.causas[nodeID] = causa
-		fmt.Printf("  execucao: no %s %s (run %s) causa=%s vector %s\n", nodeID, destino, childRunID(e.runID, nodeID), causa, e.vectorDe(nodeID, st.Verdict))
+		fmt.Printf("  execucao: no %s %s (run %s) causa=%s vector %s%s\n", nodeID, destino, e.runDoNo(nodeID), causa, e.vectorDe(nodeID, st.Verdict), e.sufixoDasTentativas(nodeID))
 		return nil
 	}
-	fmt.Printf("  execucao: no %s %s (run %s)\n", nodeID, destino, childRunID(e.runID, nodeID))
+	if t := e.tentativaDe(nodeID); t > 1 {
+		fmt.Printf("  execucao: no %s %s (run %s) RECUPERADO na tentativa %d\n", nodeID, destino, e.runDoNo(nodeID), t)
+		return nil
+	}
+	fmt.Printf("  execucao: no %s %s (run %s)\n", nodeID, destino, e.runDoNo(nodeID))
 	return nil
 }
 
@@ -1202,7 +1322,8 @@ func (e *executorDeNos) resolverEntrega(n plan.Node, st estadoDoRun, entrega **e
 	if !entregavel || !declarada || !d.vinculativa(saida.FromTool, digestDoContratoComOrigem(n, saida)) {
 		return causaOrigemSemVinculo
 	}
-	ent, causa := entregaDoRun(saida.FromTool, childRunID(e.runID, n.NodeID), st)
+	// AOS-503: a âncora confere-se contra o run da tentativa CORRENTE — a que concluiu.
+	ent, causa := entregaDoRun(saida.FromTool, e.runDoNo(n.NodeID), st)
 	if causa != "" {
 		return causa
 	}

@@ -84,6 +84,16 @@ const (
 	metricaEntregaExtraccao         = "aos_orq_consume_entrega_extraccao_total"
 	metricaCandidatosSemOrigem      = "aos_orq_consume_candidatos_sem_origem_total"
 	metricaOrigemRecusasDoValidador = "aos_orq_consume_origem_recusas_do_validador_total"
+	// AOS-503 — a nova tentativa de um nó do plano (nova_tentativa.go). Rótulos de vocabulário
+	// FECHADO e nenhum conteúdo. Só têm valores com AOS_ORQ_NOVA_TENTATIVA fora de `off`.
+	metricaPrimeirasFalhas        = "aos_orq_consume_primeiras_falhas_total"
+	metricaTentativas             = "aos_orq_consume_tentativas_total"
+	metricaNosRecuperados         = "aos_orq_consume_nos_recuperados_total"
+	metricaPlanosRecuperados      = "aos_orq_consume_planos_recuperados_total"
+	metricaPlanosEsgotados        = "aos_orq_consume_planos_com_tentativas_esgotadas_total"
+	metricaTentativasPorPlano     = "aos_orq_consume_tentativas_por_plano_total"
+	metricaTentativasRecusadas    = "aos_orq_consume_tentativas_recusadas_total"
+	metricaTentativasEmObservacao = "aos_orq_consume_tentativas_em_observacao_total"
 )
 
 // catalogoDeMetricas é a lista FECHADA do que o ficheiro contém, pela ordem em que é escrito. Uma
@@ -114,6 +124,14 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaEntregaExtraccao, "counter", "Entrega por referencia: saidas entregues, pela forma da extraccao (sandbox_stdout_text: o texto do envelope da sandbox | raw: o resultado tal como a tool o devolveu)."},
 	{metricaCandidatosSemOrigem, "counter", "Entrega por referencia: nos submetidos com a entrega activa que sao candidatos por estrutura (nao-verificador, uma tool, uma saida aberta, sem consumes) e cujo plano NAO declarou a origem. E a taxa de omissao do planeador: esses nos entregam o texto final, como sempre."},
 	{metricaOrigemRecusasDoValidador, "counter", "Entrega por referencia: tentativas do planeador recusadas por uma regra da origem do validador do plano, por razao (from_tool_on_verifier|from_tool_with_consumes|from_tool_multiple|from_tool_output_type|from_tool_unknown_tool|from_tool_ambiguous_tool)."},
+	{metricaPrimeirasFalhas, "counter", "Nova tentativa (AOS-503): nos do plano nao-verificadores com tools cujo PRIMEIRO run fechou failed por contract_unmet_no_call sem nenhuma tool call pedida, por com_consumes (true|false: o no recebe material de outros nos). E a taxa que a recuperacao NAO pode esconder: alerta acima de 30% dos planos numa janela de pelo menos 20."},
+	{metricaTentativas, "counter", "Nova tentativa: tentativas a mais que chegaram ao fim, por tentativa (2|3), desfecho (recuperado: o no do plano concluiu | voltou_a_falhar: fechou outra vez por contract_unmet_no_call sem tool calls | outra_causa) e com_consumes. voltou_a_falhar sobre o total da tentativa e a RECORRENCIA."},
+	{metricaNosRecuperados, "counter", "Nova tentativa: nos do plano que concluiram numa tentativa a mais, por com_consumes."},
+	{metricaPlanosRecuperados, "counter", "Nova tentativa: planos que sairam com 0 tendo pelo menos um no concluido numa tentativa a mais. Sem a recuperacao saiam 13."},
+	{metricaPlanosEsgotados, "counter", "Nova tentativa: planos em que pelo menos um no esgotou as tentativas a mais e fechou failed."},
+	{metricaTentativasPorPlano, "counter", "Nova tentativa: planos terminados com o interruptor ligado, pelo numero de tentativas a mais que o log do plano regista (0|1|2|3|4_ou_mais)."},
+	{metricaTentativasRecusadas, "counter", "Nova tentativa: tentativas a que o no do plano tinha direito e que NAO se fizeram, por causa (quota: o no aos respondeu 429 | tecto_do_no | tecto_do_plano | prazo | nao_anunciado: o no aos nao anuncia o suporte | recusada_pelo_no: 403 ou 409 na submissao). O no do plano fecha failed com a causa do run."},
+	{metricaTentativasEmObservacao, "counter", "Nova tentativa: em observe, os nos que o aos-orq tentaria outra vez (run failed por contract_unmet_no_call sem tool calls), por com_consumes. Nao tenta: tem de coincidir com os runs nesse estado, e com mais nenhum."},
 	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do CONTEUDO do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2|nao_comparado). E so tamanho: nao diz se o que se escreveu e o que se leu."},
 }
 
@@ -385,6 +403,9 @@ type resumoDoPedido struct {
 	// causas são as causas dos nós `failed` de um plano que saiu com 13 (AOS-495), na forma de
 	// [linhaDasCausas]: nomes de vocabulário fechado e contagens. Vazio nos outros desfechos.
 	causas string
+	// tentativas é o que o plano diz sobre a nova tentativa (AOS-503): nil sem tentativas a mais e
+	// sem nenhuma recusada — e a linha do resumo é então a de sempre.
+	tentativas *resumoDasTentativas
 }
 
 // linha é o formato do resumo: pares `chave=valor` separados por espaço, sem aspas, para se ler a
@@ -401,6 +422,19 @@ func (r resumoDoPedido) linha() string {
 	}
 	if r.causas != "" {
 		l += " causa=" + r.causas
+	}
+	if t := r.tentativas; t != nil {
+		// AOS-503: um 0 depois de recuperação distingue-se de um 0 à primeira. Só números e nomes
+		// de vocabulário fechado.
+		if t.tentativas > 0 {
+			l += fmt.Sprintf(" tentativas=%d recuperados=%d", t.tentativas, t.recuperados)
+		}
+		if t.esgotados > 0 {
+			l += fmt.Sprintf(" tentativas_esgotadas=%d", t.esgotados)
+		}
+		if len(t.recusadas) > 0 {
+			l += " tentativa_recusada=" + strings.Join(t.recusadas, ",")
+		}
 	}
 	return l
 }

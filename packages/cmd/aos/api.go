@@ -279,6 +279,9 @@ var (
 
 // apiConfig é a configuração resolvida da API.
 type apiConfig struct {
+	// runRetryMax é o tecto de tentativas A MAIS por nó do plano que este nó aceita (AOS-502,
+	// [WithRunRetryMax]). Zero — a omissão — recusa todo o pedido com `attempt`.
+	runRetryMax    int
 	maxBodyBytes   int64
 	rateBurst      float64
 	ratePerSec     float64
@@ -630,6 +633,8 @@ type apiHandler struct {
 	// `MediationRecord` selado no WORM, com métrica; depois, passou a ser uma linha de log. Uma
 	// campanha de submissões com tokens roubados ficou invisível a qualquer série.
 	credRecusadas atomic.Int64
+	// tentativas conta as novas tentativas de nós do plano admitidas e recusadas (AOS-502).
+	tentativas contagemDasTentativas
 	// controlMTLS indica se o mTLS do plano de controlo está LIGADO (DEF-012, EIXO 1). Quando
 	// true, os handlers de controlo exigem um certificado de cliente verificado — ADITIVO à
 	// assinatura ed25519. O ClientCAs/ClientAuth vive no listener ([NewAPIServer]); este flag é
@@ -952,6 +957,8 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		credDoRunVerifica bool
 		// AOS-477: o vínculo ao pedido foi verificado — a condição para o run declarar a origem.
 		vinculoVerificado bool
+		// AOS-502: a prova da nova tentativa, quando o pedido a declara e o nó a admitiu.
+		tentativaProvada *provaDaTentativa
 	)
 	// SEM GATE SOBERANO NÃO HÁ VÍNCULO (AOS-439). O vínculo exige um chamador autenticado — é ele
 	// que tem de ter a reclamação viva —, e um nó sem gate não autentica ninguém. Aceitar o campo
@@ -1048,12 +1055,35 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		if req.PlanRequest != nil {
 			rb, verr := h.submissorDoPedido(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
 			if verr != nil {
+				if errors.Is(verr, errFormaDaTentativa) {
+					h.tentativas.recusar(causaRetryForma)
+				}
 				h.logf("submit RECUSADO (AOS-439): vinculo ao pedido de plano chamador=%q run=%q plano=%q geracao=%d: %v",
 					submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.Geracao, verr)
 				writeError(w, http.StatusForbidden, "nao autorizado")
 				return
 			}
 			requestedBy, vinculoVerificado = rb, true
+			// AOS-502 — A NOVA TENTATIVA PROVA-SE AQUI: com o vínculo verificado (quem chama é o
+			// drenador com a reclamação viva do pedido) e antes da primeira escrita durável. O nó lê
+			// do SEU log que a tentativa anterior não pediu tool nenhuma; do corpo não aceita nada.
+			// As recusas da prova têm todas a MESMA resposta, e a causa fica no log e na métrica. O
+			// log que não se leu agora responde 503: não se hospeda, e não se dá por recusado.
+			if req.PlanRequest.Attempt != 0 {
+				prova, causa, transitoria := h.provarTentativa(r.Context(), submitter, *req.PlanRequest)
+				if causa != "" {
+					h.tentativas.recusar(causa)
+					h.logf("submit RECUSADO (AOS-502): nova tentativa chamador=%q run=%q plano=%q no=%q tentativa=%d causa=%s",
+						submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, causa)
+					if transitoria {
+						writeError(w, http.StatusServiceUnavailable, "indisponivel")
+						return
+					}
+					writeError(w, http.StatusForbidden, "nao autorizado")
+					return
+				}
+				tentativaProvada = &prova
+			}
 		}
 		// AOS-439 — O MANDATO DA CREDENCIAL TEM DE NOMEAR O SUBMISSOR. Um mandato v2 só autoriza o
 		// emissor a agir pelos `requesters` que o humano assinou; um run sem submissor derivado,
@@ -1203,6 +1233,15 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if req.PlanRequest != nil && vinculoVerificado {
 		h.gravarOrigemDoRunFilho(r.Context(), req.RunID, *req.PlanRequest)
 	}
+	// AOS-502: a tentativa foi hospedada por ESTA chamada. Conta-se aqui, e não na prova — uma
+	// re-submissão do mesmo id passa a prova e não hospeda nada. A comparação do prompt é medição
+	// e corre fora do pedido.
+	if tentativaProvada != nil {
+		h.tentativas.admitidas.Add(1)
+		h.logf("submit (AOS-502): nova tentativa ADMITIDA run=%q plano=%q no=%q tentativa=%d anterior=%q",
+			req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, tentativaProvada.anterior)
+		go h.medirPromptDaTentativa(r.Context(), req.RunID, *tentativaProvada)
+	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }
 
@@ -1304,6 +1343,12 @@ type runStateResponse struct {
 	// vocabulário fechado: `too_large`, `not_utf8`, `unavailable`, `unavailable_now`. É distinto de
 	// OutputUnavailable, que fala da saída do run. Ver [apiHandler.origemNaResposta].
 	OutputOmitted string `json:"output_omitted,omitempty"`
+	// PlanAttempt declara que o run é uma NOVA TENTATIVA de um nó do plano hospedada por este nó
+	// (AOS-502): o pedido, o plano, o nó e a tentativa do `run.plan_origin` que o nó escreveu
+	// depois da prova. Ausente em qualquer outro run — os bytes de sempre. É por ele que o
+	// `aos-orq` que retoma um plano confere que o run é do seu pedido antes de o seguir. Ver
+	// [apiHandler.tentativaNaResposta].
+	PlanAttempt *tentativaNaAPI `json:"plan_attempt,omitempty"`
 }
 
 // pendingApprovalWire é a face de wire de uma aprovação pendente. Descreve O QUE vai
@@ -1505,26 +1550,36 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 		// O selo da leitura sensível já foi feito acima, para os DOIS ramos — selá-lo outra
 		// vez aqui poria dois registos na cadeia WORM para uma leitura só.
 		if oc.Result.Paused {
-			writeJSON(w, http.StatusOK, runStateResponse{
+			resp := runStateResponse{
 				RunID:  runID,
 				Status: string(state.Paused),
 				Paused: true,
 				Turns:  oc.Result.Turns,
-			})
+			}
+			if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 		// As DUAS decisões humanas que suspendem um run saem por aqui: a aprovação de uma tool
 		// call escalada (AOS-021) e o prompt de exaustão de orçamento (AOS-263). Uma leitura
 		// só, cada tipo na sua face de wire.
 		aprovacoes, exaustoes, indisponivel := h.pendingFor(r.Context(), runID)
-		writeJSON(w, http.StatusOK, runStateResponse{
+		resp := runStateResponse{
 			RunID:              runID,
 			Status:             "waiting_on_human",
 			Turns:              oc.Result.Turns,
 			PendingApprovals:   aprovacoes,
 			PendingExhaustion:  exaustoes,
 			PendingUnavailable: indisponivel,
-		})
+		}
+		if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 	// Terminado (desfecho retido)?
@@ -1589,6 +1644,11 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "indisponivel")
 			return
 		}
+		// AOS-502: uma nova tentativa diz de que pedido é — depois do selo, como o resto.
+		if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+			writeError(w, http.StatusServiceUnavailable, "indisponivel")
+			return
+		}
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -1603,13 +1663,18 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// preview a assinar em POST /runs/{id}/approve (AOS-021, polling) — e, com ela, os
 			// prompts de exaustão por responder (AOS-263).
 			aprovacoes, exaustoes, indisponivel := h.pendingFor(r.Context(), runID)
-			writeJSON(w, http.StatusOK, runStateResponse{
+			resp := runStateResponse{
 				RunID:              runID,
 				Status:             "in_progress",
 				PendingApprovals:   aprovacoes,
 				PendingExhaustion:  exaustoes,
 				PendingUnavailable: indisponivel,
-			})
+			}
+			if !h.tentativaNaResposta(r.Context(), runID, &resp) {
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
@@ -1691,6 +1756,11 @@ func (h *apiHandler) handleGet(w http.ResponseWriter, r *http.Request) {
 			// transição que deu o estado, e os bytes do step-ledger. Depois do selo e, num run
 			// `complete`, depois da trava do AOS-426 acima.
 			if !h.origemNaResposta(r, reader, &resp, desfecho.OutputSource, st == state.Complete) {
+				writeError(w, http.StatusServiceUnavailable, "indisponivel")
+				return
+			}
+			// AOS-502: o MESMO `plan_attempt` que o ramo em memória.
+			if !h.tentativaNaResposta(r.Context(), runID, &resp) {
 				writeError(w, http.StatusServiceUnavailable, "indisponivel")
 				return
 			}
@@ -2280,6 +2350,24 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// razão, declarada no seu godoc.
 	g("aos_trajectory_streams_active", "Streams SSE de trajectoria VIVOS nesta replica. Comparar com AOS_TRAJECTORY_MAX_CONNS: perto do tecto, novas ligacoes levam 429. POR PROCESSO.",
 		"gauge", float64(h.trajConns.Load()), "")
+
+	// AOS-502: as novas tentativas de nós do plano. Só com o tecto acima de zero, ou depois de
+	// algum pedido com `attempt` ter chegado: sem uma coisa nem outra o `/metrics` é o de antes.
+	if h.cfg.runRetryMax > 0 || h.tentativas.houve() {
+		g("aos_runs_retry_admitted_total", "Novas tentativas de nos do plano HOSPEDADAS desde o arranque (AOS-502): runs com plan_request.attempt que passaram a prova do no (a tentativa anterior fechou failed por contract_unmet_no_call, sem nenhuma tool call pedida e com o motivo stop). POR PROCESSO.",
+			"counter", float64(h.tentativas.admitidas.Load()), "")
+		for i, causa := range causasDeRecusaDaTentativa {
+			rotulo := `{causa="` + causa + `"}`
+			if i > 0 {
+				amostra("aos_runs_retry_refused_total", rotulo, float64(h.tentativas.recusadasPor(causa)))
+				continue
+			}
+			g("aos_runs_retry_refused_total", "Novas tentativas RECUSADAS desde o arranque, por causa em vocabulario fechado (AOS-502). anterior_pediu_tools e a que protege de repetir um efeito: um valor acima de zero diz que alguem pediu a repeticao de um run que chamou tools. indisponivel respondeu 503; as outras, a 403 uniforme. POR PROCESSO.",
+				"counter", float64(h.tentativas.recusadasPor(causa)), rotulo)
+		}
+		g("aos_runs_retry_prompt_hash_diferente_total", "Tentativas cujo prompt do primeiro turno NAO teve o hash do da tentativa anterior (AOS-502). TEM DE SER ZERO: a tentativa repete o mesmo pedido. E medicao e alerta, nao condicao de hospedagem; um reinicio do no entre a admissao e o fim da tentativa perde a comparacao desse run. POR PROCESSO.",
+			"counter", float64(h.tentativas.promptDiferente.Load()), "")
+	}
 
 	g("aos_ingress_credential_denials_total", "Pedidos RECUSADOS a porta por a credencial do run nao verificar (POST /runs e POST /runs/{id}/resume) desde o arranque. Um DEGRAU sugere uso de credenciais roubadas ou caducadas em volume. POR PROCESSO — um restart repoe. NAO e auditoria: nao diz quem nem quando.",
 		"counter", float64(h.credRecusadas.Load()), "")

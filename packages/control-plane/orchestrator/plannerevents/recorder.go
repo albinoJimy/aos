@@ -32,6 +32,7 @@ const (
 	stepVerdictRecorded  = "planstep:verdict_recorded"
 	stepPayloadPublished = "planstep:payload_published"
 	stepOutputSourceDecl = "planstep:output_source_declared"
+	stepNodeAttempt      = "planstep:node_attempt_started"
 	stepCapabilityGap    = "planstep:capability_gap"
 	stepReplan           = "planstep:replan"
 )
@@ -292,6 +293,22 @@ func (r *Recorder) RecordOutputSourceDeclared(ctx context.Context, p OutputSourc
 	}
 	stepID := stepOutputSourceDecl + ":" + payload.NodeID
 	return r.emit(ctx, payload.PlanID, EventOutputSourceDeclared, stepID, payload)
+}
+
+// RecordNodeAttemptStarted apensa `plan.node_attempt_started` (ADR-039, AOS-503): o executor vai
+// pedir ao nó uma nova tentativa do run de um nó do plano.
+//
+// Passa SEMPRE por [NewNodeAttemptStarted]. O step id é
+// `planstep:node_attempt_started:<node_id>:<attempt>` — UM por (nó, tentativa): a
+// idempotency_key do Event Store faz da primeira escrita o facto, e uma retoma que o volte a
+// gravar não o duplica nem o substitui.
+func (r *Recorder) RecordNodeAttemptStarted(ctx context.Context, p NodeAttemptStartedPayload, producer plan.Node) (uint64, error) {
+	payload, err := NewNodeAttemptStarted(p, producer)
+	if err != nil {
+		return 0, err
+	}
+	stepID := stepNodeAttempt + ":" + payload.NodeID + ":" + strconv.Itoa(payload.Attempt)
+	return r.emit(ctx, payload.PlanID, EventNodeAttemptStarted, stepID, payload)
 }
 
 // RecordCapabilityGap apensa `plan.capability_gap_opened`/`resolved`. Fail-closed:

@@ -1,0 +1,1 @@
+{"completion_requires":["doc_read"],"credential":"nhi-do-operador","inputs":null,"objective":"ler o documento notes","plan_request":{"run_id":"plan-aos503-fio","generation":1,"plan_id":"plan-aos503-fio-plan","node_id":"read_notes","attempt":2},"principal_nhi":"agent:aos-orq","run_id":"plan-aos503-fio~read_notes~2","tools":["doc_read"]}

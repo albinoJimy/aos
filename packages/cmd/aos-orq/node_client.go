@@ -66,6 +66,21 @@ type estadoDoRun struct {
 	OutputSource  *agentruntime.OutputSource `json:"output_source,omitempty"`
 	Output        *string                    `json:"output,omitempty"`
 	OutputOmitted string                     `json:"output_omitted,omitempty"`
+	// PlanAttempt é o que o nó `aos` declara sobre um run que ELE hospedou como nova tentativa
+	// (AOS-502): o pedido, o plano, o nó e a tentativa do `run.plan_origin` que escreveu depois
+	// da prova. Ausente em qualquer outro run. É por ele que uma retoma confere que o run com o
+	// id da tentativa é DESTE pedido antes de o seguir ([executorDeNos.tentativaDestePedido]).
+	PlanAttempt *origemDaTentativa `json:"plan_attempt,omitempty"`
+}
+
+// origemDaTentativa espelha o `plan_attempt` do `GET /runs/{id}` do nó (`tentativaNaAPI` em
+// `packages/cmd/aos/tentativa_na_api.go`), que este módulo não pode importar.
+type origemDaTentativa struct {
+	PlanRequest string `json:"plan_request"`
+	Generation  int    `json:"generation"`
+	PlanID      string `json:"plan_id"`
+	NodeID      string `json:"node_id"`
+	Attempt     int    `json:"attempt"`
 }
 
 // terminal diz se o run acabou: o nó marca `terminated` num run que concluiu nesta vida do
@@ -125,6 +140,10 @@ type vinculoAoPedido struct {
 	// `run.plan_origin` do run filho. Omitidos quando vazios — um nó anterior recusa-os.
 	PlanID string `json:"plan_id,omitempty"`
 	NodeID string `json:"node_id,omitempty"`
+	// Attempt (AOS-503) declara que o run é a TENTATIVA `n` (≥ 2) do nó do plano. Omitido na
+	// primeira — um nó anterior ao AOS-502 recusa o campo. O nó não a aceita por estar declarada:
+	// prova no log dele que a tentativa anterior não pediu tool nenhuma.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // errRequerenteForaDoMandato — o nó recusou o run porque o submissor do pedido não consta dos
@@ -367,6 +386,16 @@ func (c *nodeClient) autenticar(ctx context.Context, req *http.Request) error {
 // outras tools — e aceitar o seu desfecho era aceitar um veredicto alheio.
 var errRunFilhoJaExiste = errors.New("aos-orq: o no ja tem um run com o id do run filho, e nao foi este plano que o criou")
 
+// erroDeSubmissao é a recusa do `POST /runs` com um estado HTTP que este cliente não trata à
+// parte. O texto é o de sempre; o estado viaja para quem precisa de distinguir uma recusa do nó
+// (403, 429) de uma avaria (5xx) — a nova tentativa (AOS-503, nova_tentativa.go).
+type erroDeSubmissao struct {
+	status int
+	msg    string
+}
+
+func (e *erroDeSubmissao) Error() string { return e.msg }
+
 // Submit pede ao nó que hospede o run do nó do plano. Um 409 devolve [errRunFilhoJaExiste]: o
 // executor só submete um nó que estava pendente, pelo que o run não pode ser seu. (Num nó SEM
 // gate soberano a colisão responde 201 e não é detectável — fora de produção.)
@@ -430,7 +459,7 @@ func (c *nodeClient) Submit(ctx context.Context, p pedidoDeRun) error {
 				return fmt.Errorf("%w: %s", errRequerenteForaDoMandato, p.RunID)
 			}
 		}
-		return fmt.Errorf("submeter %s ao nó: HTTP %d %s", p.RunID, resp.StatusCode, strings.TrimSpace(string(msg)))
+		return &erroDeSubmissao{status: resp.StatusCode, msg: fmt.Sprintf("submeter %s ao nó: HTTP %d %s", p.RunID, resp.StatusCode, strings.TrimSpace(string(msg)))}
 	}
 }
 
