@@ -5538,6 +5538,7 @@ são o mesmo processo.
 | 1.20 | 2026-09-25 | AOS-436 refeito depois de uma revisão adversarial independente que o reprovou para produção: registo autenticado por HMAC, portão de conteúdo na custódia, fontes independentes, legal hold consultado, LIST em vez de GET por chave. Tabela «revisão → correcção → sensor» no ticket. | Equipa AOS |
 | 1.21 | 2026-09-25 | AOS-436, terceira ronda: a segunda revisão adversarial confirmou os oito achados fechados (o 1 parcial) e mediu novos — MAC encadeado, importado mais antigo do que o bundle recusado, chave nunca recriada, importado fundido deixa de ser exigido, «indisponível» distinto de «apagado» no step-ledger. Segunda tabela no ticket. | Equipa AOS |
 | 1.22 | 2026-10-05 | +AOS-498, +AOS-499, +AOS-500 e +AOS-501 (saída por referência ao resultado da tool): o nó devolve a origem e a saída designadas, o `aos-orq` mede sem mudar a entrega, o plano declara `outputs[].from_tool` (schema 1.3.0) e o `aos-orq` entrega por referência as saídas declaradas. Em 2 de 21 planos em produção o nó de leitura entregou um resumo em vez do conteúdo. | Equipa AOS |
+| 1.23 | 2026-10-06 | +AOS-502 e +AOS-503 (fase A1, recuperação): o nó `aos` aceita a nova tentativa de um nó do plano e prova no seu log que a anterior não pediu tools; o `aos-orq` volta a submeter, até duas vezes a mais, um nó que terminou sem chamar a tool. Em 12 de 74 planos em produção (16%) o nó terminou sem chamar a tool. | Equipa AOS |
 
 ---
 
@@ -10083,3 +10084,326 @@ atrás de `AOS_ORQ_SAIDA_POR_REFERENCIA=on`, que nasce desligado. A revisão adv
 feita, sem bloqueantes, e os seus achados corrigidos ou declarados. Por fazer: o que está em
 «Antes de ligar `on` em produção», a verificação em produção (primeiro em `observe`), e
 `DerivedFrom`.
+
+---
+
+## AOS-502 — O nó aceita a nova tentativa de um nó do plano e prova, no seu próprio log, que a anterior não pediu tools
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este bloco só MENCIONA ADRs que já existem (ADR-018, ADR-027, ADR-035, ADR-037, ADR-038): nenhum deles é implementado aqui. O ticket escreve um ADR novo, que ainda não tem número; o número é atribuído na implementação, e o PR da implementação retira este marcador e declara o ADR novo e as emendas como implementados. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A1 (recuperação) |
+| Tipo | feat |
+| Prioridade | P0: sem isto o `aos-orq` não tem como voltar a submeter um nó — o nó `aos` recusa o id da tentativa em dois sítios |
+| Estimativa | M |
+| Dependências | AOS-493, AOS-494 |
+| Bloqueia | AOS-503 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a1-recuperacao-2026-10-06.md` §2.1, §3 e §7.5, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md`, `docs/adr/ADR-035-submissor-do-plano-derivado-pelo-no.md`, `docs/adr/ADR-037-o-desfecho-de-um-run-e-um-veredicto-do-kernel.md`, `packages/cmd/aos/submissor_do_plano.go`, `packages/cmd/aos/plan_origem.go`, `packages/cmd/aos/api.go`, `packages/cmd/aos-orq/node_executor.go` |
+
+### Contexto
+
+Medido em produção de 2026-10-04 a 2026-10-06 (v0.1.45 a v0.1.49): em **12 de 74 planos (16%)** o
+nó de leitura terminou sem chamar a tool — 2 em 10, 1 em 22, 6 em 21 e 3 em 21, por série. O
+pedido não determina o desfecho: o mesmo `prompt_hash` do turno 1 dá os dois (um pedido
+observado sete vezes teve 5 chamadas e 2 falhas). Na mesma janela o nó de resumo, sem tools,
+recusou o próprio objectivo em 1 de 21 e em 1 de 18 planos (`plan-e2e-v0146s-1791193787`,
+`plan-e2e-v0149s-1791277019`).
+
+Um nó do plano cujo run fecha `failed` com `contract_unmet_no_call` fica `failed` no grafo, e o
+plano sai com o código 13. Voltar a submeter o mesmo nó é a recuperação que os dados favorecem, e
+hoje é impossível: o id do run filho é `<plano>~<nó>`, e o nó `aos` recusa qualquer outra forma em
+dois sítios.
+
+- `packages/cmd/aos/submissor_do_plano.go:105-108`: um `POST /runs` com vínculo ao plano cujo id
+  tenha um segundo `~` responde 403.
+- `packages/cmd/aos/plan_origem.go:188-190`: com o `node_id` declarado, o id tem de ser exactamente
+  `idDoRunFilho(plano, nó)`.
+
+Não há forma de codificar a tentativa dentro do `node_id` sem partir a injectividade do escape
+(`packages/cmd/aos-orq/node_executor.go:228-262`). As chaves de idempotência são
+`f(run_id, step_id)`: um run novo tem chaves novas e **repetiria** um efeito já aplicado. A nova
+tentativa só é segura se a anterior não tiver pedido tool nenhuma, e quem tem esse facto selado é
+o nó, não o `aos-orq` (lição do AOS-408: um gate recalculado do que o chamador fornece não é
+gate).
+
+### Decidido pelo dono (2026-10-06)
+
+1. O sistema tenta outra vez, sozinho, um passo em que o modelo não usou a ferramenta.
+2. **Até duas tentativas a mais**: no máximo três runs do mesmo nó do plano.
+3. **Aplica-se a todos os nós com tools**, incluindo os que recebem material de outros nós
+   (`consumes`). O desenho recomendava começar só pelos nós sem `consumes`; o dono escolheu o
+   âmbito largo. **Risco aceite:** num nó com `consumes`, conteúdo untrusted do passo anterior
+   pode levar o modelo a não chamar a tool e gastar as tentativas. O dano é limitado pelo tecto
+   de tentativas e pelo orçamento, e a tentativa nunca dá autoridade.
+4. (Por omissão, recomendação do desenho.) As tentativas contam no orçamento de quem pediu.
+
+### Objectivo
+
+O nó `aos` aceita um run filho que seja a tentativa `n` (2 ou 3) de um nó do plano, e só o aceita
+depois de provar, **no seu próprio log**, que a tentativa anterior desse nó não pediu tool
+nenhuma, fechou `failed` por `contract_unmet_no_call` e parou com o motivo `stop`. O `aos-orq`
+pede; o nó autoriza. O tecto de tentativas é imposto pelo nó. Sem um pedido de tentativa, e com o
+tecto a zero (a omissão), o nó é o de hoje.
+
+### Critérios de Aceitação
+
+- [ ] O `plan_request` do `POST /runs` ganha o campo opcional `attempt` (inteiro, `n ≥ 2`). Sem o
+      campo, o nó faz o que faz hoje: um id com segundo `~` continua a responder 403 e um id
+      diferente de `idDoRunFilho(plano, nó)` continua recusado (os dois testes de hoje ficam
+      verdes sem alteração).
+- [ ] Com `attempt = n`, o id aceite é exactamente `<plano>~<nó escapado>~<n>`, com `n` em
+      decimal, sem zeros à esquerda nem sinal. Qualquer outra forma é recusada. Teste de
+      injectividade: nenhum par (`node_id`, tentativa) produz o id de outro par, incluindo
+      `node_id` com `~`, `:`, `.` e sufixos numéricos.
+- [ ] Tecto imposto pelo nó: `AOS_RUN_RETRY_MAX`, valores `0` (omissão), `1` ou `2`. Um valor
+      fora deste conjunto recusa o arranque. Com `0`, todo o pedido com `attempt` é recusado.
+      `n` acima de `tecto + 1` é recusado.
+- [ ] Antes de hospedar a tentativa `n`, o nó lê o stream do run da tentativa `n − 1` (o id sem
+      sufixo quando `n = 2`) e exige **tudo** o que se segue; a falta de qualquer ponto recusa:
+  - o run existe e o seu `run.plan_origin` nomeia o mesmo pedido de plano (stream e `run_id`) e o
+    mesmo `node_id`; o submissor derivado (ADR-035) é o mesmo;
+  - está terminal `failed`, com `outcome_reason` exactamente `contract_unmet_no_call`;
+  - o stream não tem nenhum `tool.call.mediated` nem `tool.call.denied`;
+  - tem um só `turn.recorded`, com `tool_calls_requested=0` e `stop_reason=stop`;
+  - quando `n = 3`, a tentativa 2 foi ela própria admitida como tentativa (o `run.plan_origin`
+    dela leva `attempt=2`).
+- [ ] Um teste por causa de recusa, cada um com o log real de um run nesse estado: run anterior
+      inexistente; ainda em curso; `completed`; `failed` com `contract_unmet_after_denial`, com
+      `contract_unmet_after_tool_error`, com `truncated` e sem razão; `timed_out`; `stop_reason`
+      `length`, `content_filter`, `other` e não reportado; uma tool call mediada; uma tool call
+      negada; mais de um turno; outro plano; outro nó; outro submissor; tecto excedido; nó em
+      observação do veredicto (o run anterior fica `completed` e nunca é elegível).
+- [ ] Fail-closed na leitura: se o stream da tentativa anterior não se lê (substrato indisponível,
+      log podado, titular apagado), o nó **não** hospeda. Indisponibilidade transitória responde
+      503; o resto é recusa.
+- [ ] A geração da reclamação do plano no pedido da tentativa pode ser posterior à da tentativa
+      anterior (retoma por outro `serve`); a reclamação tem de estar viva, como hoje. Teste com
+      a tentativa 1 submetida numa geração e a 2 na seguinte.
+- [ ] As recusas são uniformes para quem pede (o mesmo estado HTTP e o mesmo corpo para todas as
+      causas da prova); a causa fica no log do nó e em
+      `aos_runs_retry_refused_total{causa}`, em vocabulário fechado. As admissões contam em
+      `aos_runs_retry_admitted_total`.
+- [ ] O `run.plan_origin` de uma tentativa leva `attempt` e `retry_of` (o id do run anterior).
+      Os dois campos são aditivos: o evento de um run sem tentativa é byte a byte o de hoje, e
+      quem lê eventos antigos não parte.
+- [ ] Dois pedidos concorrentes para a mesma tentativa: um é hospedado e o outro recebe a
+      resposta que hoje recebe uma re-submissão do mesmo id.
+- [ ] A tentativa é um run como os outros: passa pela admissão por turno, pelo tecto por run e
+      pela quota do principal (AOS-457). Quota esgotada responde 429, como hoje.
+- [ ] **Runs com `inputs` (âmbito largo).** A prova acima é a mesma para um run com entradas: não
+      depende do conteúdo do pedido. O teste com `inputs` untrusted mostra que a tentativa é
+      hospedada com a mesma autoridade untrusted desde o turno 1, e que uma tool call privilegiada
+      pedida na tentativa é negada pelo gate de taint como na primeira.
+- [ ] **O pedido repetido é o mesmo.** O nó compara o `prompt_hash` do turno 1 da tentativa com o
+      do turno 1 da anterior e conta as diferenças em
+      `aos_runs_retry_prompt_hash_diferente_total`, que tem de ser zero. É medição e alerta, e
+      não condição de hospedagem: o hash só existe depois de o prompt estar montado. O limite
+      fica declarado no ADR novo deste ticket.
+- [ ] O `GET /tools` anuncia o suporte e o tecto em vigor, e só quando o tecto é maior do que
+      zero. Com o tecto a zero a resposta é byte a byte a de hoje.
+- [ ] Com `AOS_RUN_RETRY_MAX` ausente ou a `0` e sem pedidos com `attempt`, o binário é byte a
+      byte o anterior, provado por comparação com a base pelo guião dos tickets anteriores
+      (corpos de resposta, eventos, métricas e desfechos, depois de normalizar pastas temporárias
+      e durações).
+- [ ] Compatibilidade nos dois sentidos provada por teste: nó novo com `aos-orq` anterior (que
+      nunca envia `attempt`) e `aos-orq` novo com nó anterior (que não anuncia o suporte).
+- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: os vectores da forma do id e
+      o corpo do `POST /runs` de uma tentativa são gerados pelo `aos-orq` e consumidos byte a byte
+      pelo nó real; a resposta do `GET /tools` é gerada pelo nó e lida pelo `aos-orq`.
+- [ ] Smoke sobre JetStream, e não só sobre o substrato de ficheiro: um run com o id
+      `<plano>~<nó>~2` é hospedado, corre e lê-se.
+- [ ] O ADR novo deste ticket regista: a recuperação é uma nova tentativa ao nível do plano,
+      autorizada pelo nó; a reamostragem dentro do run fica rejeitada; o que o nó prova; o tecto;
+      o âmbito largo e o risco aceite da decisão 3. Emendas: ADR-027 (a forma do id do run filho
+      admite o sufixo de tentativa), ADR-035 (a forma `<plano>~<nó>~<n>` e o que o nó prova para
+      `n ≥ 2`) e ADR-037 («sem reparação» continua verdadeiro no kernel; a recuperação vive no
+      plano e não muda o veredicto de nenhum run). A RTM é regenerada no mesmo PR.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [ ] Verificação em produção com o tecto a zero: numa série de pelo menos 20 planos,
+      `aos_runs_retry_admitted_total` fica a zero e os desfechos são os da série anterior; um
+      pedido com `attempt` feito à mão é recusado.
+
+### Fora de âmbito
+
+- Decidir quando tentar outra vez, e o facto no log do plano (AOS-503).
+- Reamostragem do turno dentro do run, aviso ao modelo e `tool_choice`: rejeitada a primeira e
+  adiadas as outras duas, com os gatilhos do desenho.
+- Nova tentativa de um `POST /runs` directo, sem plano: quem o chama pode repetir.
+- Mudar o kernel, o layout do prompt ou a projecção.
+
+### Estado
+
+**ABERTO.**
+
+---
+
+## AOS-503 — O `aos-orq` volta a submeter um nó do plano que terminou sem chamar a tool
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este bloco só MENCIONA ADRs que já existem (ADR-022, ADR-027, ADR-035, ADR-037, ADR-038): nenhum deles é implementado aqui. O ADR novo da recuperação ainda não tem número (é atribuído na implementação do AOS-502); o PR da implementação retira este marcador e declara o que implementa. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-19 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A1 (recuperação) |
+| Tipo | feat |
+| Prioridade | P0: é aqui que um plano em que o modelo não chamou a tool à primeira deixa de sair 13 |
+| Estimativa | M |
+| Dependências | AOS-502, AOS-495; relaciona AOS-501 |
+| Bloqueia | — |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a1-recuperacao-2026-10-06.md` §2.1, §3, §5 e §7.5, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1), `docs/adr/ADR-027-execucao-dos-nos-do-plano-como-runs-do-no.md`, `docs/adr/ADR-038-a-saida-de-um-no-de-passagem-directa-e-o-resultado-da-tool.md`, `packages/cmd/aos-orq/node_executor.go`, `packages/cmd/aos-orq/node_client.go`, `packages/cmd/aos-orq/contrato_de_conclusao.go`, `packages/cmd/aos-orq/entrega_por_referencia.go`, `packages/control-plane/orchestrator/plannerevents/events.go`, `deploy/server/README.md` |
+
+### Contexto
+
+Medido em produção de 2026-10-04 a 2026-10-06 (v0.1.45 a v0.1.49): em **12 de 74 planos (16%)** o
+nó de leitura terminou sem chamar a tool — 2 em 10, 1 em 22, 6 em 21 e 3 em 21, por série. O
+pedido não determina o desfecho: o mesmo `prompt_hash` do turno 1 dá os dois (um pedido
+observado sete vezes teve 5 chamadas e 2 falhas). Na mesma janela o nó de resumo, sem tools,
+recusou o próprio objectivo em 1 de 21 e em 1 de 18 planos (`plan-e2e-v0146s-1791193787`,
+`plan-e2e-v0149s-1791277019`).
+
+A imposição do veredicto (AOS-493 a AOS-495) transformou o verde falso num vermelho com razão: o
+plano sai 13 com `causa=contract_unmet_no_call`. É honesto e deixa cerca de um plano em seis por
+cumprir. Sob independência entre tentativas, uma tentativa a mais deixa um residual de 2,6%
+(intervalo 0,75% a 7,1%), acima do critério da fase; duas deixam 0,4% (0,07% a 1,9%). A amostra
+que responde directamente a «repetir logo a seguir recupera?» é de dois casos, e os dois
+recuperaram: os dados são compatíveis com a independência e não a provam. A entrada em produção
+mede-a.
+
+Hoje um nó cujo run não concluiu fecha `failed`, e `failed` é terminal no grafo
+(`packages/cmd/aos-orq/node_executor.go`); um 409 na submissão é erro e não idempotência
+(`packages/cmd/aos-orq/node_client.go`).
+
+### Decidido pelo dono (2026-10-06)
+
+1. O sistema tenta outra vez, sozinho, um passo em que o modelo não usou a ferramenta.
+2. **Até duas tentativas a mais**: no máximo três runs do mesmo nó do plano.
+3. **Aplica-se a todos os nós com tools**, incluindo os que recebem material de outros nós
+   (`consumes`). O desenho recomendava começar só pelos nós sem `consumes`; o dono escolheu o
+   âmbito largo. **Risco aceite:** num nó com `consumes`, conteúdo untrusted do passo anterior
+   pode levar o modelo a não chamar a tool e gastar as tentativas. O dano é limitado pelo tecto
+   de tentativas e pelo orçamento, e a tentativa nunca dá autoridade.
+4. (Por omissão, recomendação do desenho.) As tentativas contam no orçamento de quem pediu, com
+   um tecto de tentativas a mais por plano. Um sucesso à segunda ou à terceira aparece como
+   sucesso normal, com a contagem de tentativas registada e visível nas métricas.
+5. (Por omissão.) O «aviso e mais um turno» fica adiado, com o gatilho do desenho; a decisão
+   toma-se com os números dos primeiros 100 planos com a recuperação ligada.
+6. A medição directa ao modelo **não está autorizada**: mede-se com séries de planos em produção
+   em modo de observação, como nas fases anteriores.
+
+### Objectivo
+
+Quando o run de um nó do plano fecha `failed` por `contract_unmet_no_call` sem ter pedido tool
+nenhuma, o `aos-orq` não fecha o nó do plano: grava o facto no log do plano, volta a submeter o
+mesmo pedido como tentativa nova (AOS-502) e só a última tentativa decide o estado do nó. A
+mudança entra atrás de um interruptor próprio, desligado por omissão, com um modo de observação.
+
+### Critérios de Aceitação
+
+- [ ] Interruptor `AOS_ORQ_NOVA_TENTATIVA` com três valores: `off` (omissão), `observe` e `on`.
+      Um valor inválido recusa o arranque.
+- [ ] Com `off` ou sem a variável, o binário é byte a byte o anterior, provado por comparação com
+      a base pelo guião dos tickets anteriores (corpos de `POST /runs`, eventos do plano,
+      métricas, desfechos e documentos guardados, depois de normalizar pastas temporárias,
+      durações e ids de lease).
+- [ ] Em `observe`, o `aos-orq` regista que tentaria (contador e linha de log, com o nó e a
+      causa) e **não tenta**: os estados dos nós, o código de saída, os eventos do plano e os
+      corpos de `POST /runs` são os de `off`.
+- [ ] **Elegibilidade**, lida só do vocabulário fechado do veredicto: nó não-verificador, com
+      tools atribuídas, com ou sem `consumes`; run filho `failed` com `outcome_reason`
+      exactamente `contract_unmet_no_call` e `tool_calls_requested=0`. Um teste por caso não
+      elegível, que prova que não há tentativa: `contract_unmet_after_denial`,
+      `contract_unmet_after_tool_error`, `truncated`, `timed_out`, run que não concluiu, cada
+      causa `origem_*` do AOS-501 que não venha do kernel, nó verificador, nó sem tools, 503 do
+      nó.
+- [ ] Em `on`, o `aos-orq` tenta até duas vezes a mais por nó. Tecto por plano: quatro tentativas
+      a mais por omissão, configurável. Vence o mais apertado entre o tecto do nó `aos`
+      (anunciado no `GET /tools`) e o do `aos-orq`. Contra um nó que não anuncia o suporte não há
+      tentativa, e a causa conta como `nao_anunciado`.
+- [ ] O facto de cada tentativa fica no log do plano **antes** da submissão:
+      `plan.node_attempt_started{node_id, attempt, retry_of, reason}`, com construtor validado e
+      entrada no catálogo de eventos. A ordem (facto antes do pedido ao nó) está presa por teste.
+- [ ] O pedido repetido é o mesmo: o corpo do `POST /runs` da tentativa difere do da primeira só
+      no id do run e em `attempt` — o objectivo, as tools, o contrato, a origem declarada e os
+      `inputs` (conteúdo e digests) são iguais byte a byte. Teste sobre os ficheiros de fio.
+- [ ] O nó do grafo fica `running` entre tentativas. Um nó consumidor **só corre depois de uma
+      tentativa bem-sucedida** do produtor; se as tentativas se esgotarem, o produtor fecha
+      `failed` e os consumidores não correm, como hoje.
+- [ ] **Retoma.** A tentativa corrente de cada nó lê-se do facto. Um `serve` que retome lê
+      primeiro o estado do id da tentativa: se o run existe, segue-o; se o nó responde 404,
+      submete. Nunca reenvia às cegas. Testes em que o primeiro `serve` acaba entre o facto e a
+      submissão, e entre a submissão e a recolha, e outro processo continua de onde ficou sem
+      gastar uma tentativa a mais.
+- [ ] **Orçamento.** Cada tentativa conta para a quota do submissor do plano. Um 429 na submissão
+      de uma tentativa pára as tentativas: o nó fecha `failed` com a causa original e
+      `tentativa_recusada=quota`, e o plano **não** sai com o código 8. O mesmo para o prazo do
+      plano e para a validade do NHI (`tentativa_recusada=prazo`).
+- [ ] **Saída por referência (AOS-501).** Num nó com `from_tool`, a entrega funciona sobre a
+      tentativa que teve êxito: a âncora, os bytes e o `run_id` conferem-se contra o run dessa
+      tentativa; o `plan.payload_published` aponta para ele; a reidratação no arranque de um
+      `serve` lê a tentativa que concluiu. Teste com a tool real da sandbox em que a primeira
+      tentativa não chama a tool e a segunda chama: o consumidor recebe o `stdout_text` selado
+      no run da segunda. O texto final de uma tentativa falhada nunca é publicado nem entregue.
+- [ ] **Âmbito largo (decisão 3).** Teste com um nó com tools e `consumes` cujo modelo nunca
+      chama a tool: gasta exactamente o tecto, não há efeito nenhum, o nó fecha `failed` e o
+      plano sai 13. As métricas separam os nós com e sem `consumes`
+      (`com_consumes="true|false"`), para a taxa da classe nova não se esconder na da classe
+      medida.
+- [ ] **Desfecho.** Um plano recuperado sai com o código 0 e os estados de um plano que correu
+      bem à primeira; o `detail` do `GET /plans/{id}` leva `tentativas=` e `recuperados=`. Com as
+      tentativas esgotadas o plano sai 13, com `causa=contract_unmet_no_call` e
+      `tentativas_esgotadas` no `detail` e no log da drenagem; o aviso de planos mantém o valor
+      fixo de hoje.
+- [ ] Métricas no ficheiro da drenagem, em vocabulário fechado e sem conteúdo: primeiras falhas;
+      `aos_orq_consume_tentativas_total{tentativa="2|3", desfecho="recuperado|voltou_a_falhar|outra_causa"}`;
+      `aos_orq_consume_planos_recuperados_total`; planos que esgotaram as tentativas; tentativas
+      por plano; tentativas recusadas por causa (`quota`, `tecto_do_no`, `tecto_do_plano`,
+      `prazo`, `nao_anunciado`); em `observe`, as que tentaria.
+- [ ] **A recuperação não esconde um modelo a degradar.** Regra de alerta sobre a taxa de
+      **primeiras** falhas (não sobre os planos falhados): dispara acima de 30% numa janela de
+      pelo menos 20 planos. O limiar e a leitura ficam no runbook, junto com a nota de que o
+      alarme de runs `failed` do nó sobe com as tentativas descartadas.
+- [ ] A decisão não lê texto nenhum do modelo: o `aos-orq` não recebe nem usa o texto final do
+      run falhado (teste).
+- [ ] Compatibilidade nos dois sentidos provada por teste: `aos-orq` novo com nó anterior (sem o
+      anúncio: nenhuma tentativa, desfechos de hoje) e nó novo com `aos-orq` anterior; e um
+      `aos-orq` anterior a retomar um plano com um `plan.node_attempt_started` no log (fecha o
+      nó como hoje fecharia, sem publicar nada da tentativa).
+- [ ] Ficheiros de fio gerados por um lado e consumidos pelo outro: o corpo do `POST /runs` da
+      tentativa (gerado pelo `aos-orq`, consumido byte a byte pelo nó real); as respostas do
+      `GET /runs/{id}` de uma tentativa falhada e de uma bem-sucedida (geradas pelo nó, lidas
+      pelo `aos-orq`); a resposta do `GET /tools` com o anúncio.
+- [ ] O ADR novo da recuperação (escrito no AOS-502) é completado com o lado do plano: o facto,
+      os tectos, a regra de retoma, o âmbito largo e o risco aceite. O ADR-027 é emendado onde
+      diz que `failed` fecha o nó do plano.
+- [ ] O runbook de deploy regista a ordem de saída (nó primeiro, com o tecto a zero; depois o
+      `aos-orq` em `off`, `observe` e `on`) e a de rollback (`aos-orq` para `off`, depois o tecto
+      do nó a zero; os runs de tentativa já gravados continuam legíveis).
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [ ] Verificação em produção, primeiro em `observe`: numa série de pelo menos 20 planos, o que o
+      `aos-orq` diz que tentaria coincide com os runs `contract_unmet_no_call` com zero chamadas,
+      e com mais nenhum.
+- [ ] Verificação em produção em `on`: numa série de pelo menos 40 planos com a recuperação
+      ligada, a taxa de planos que terminam sem cumprir fica **abaixo de 2%**, e **nenhuma
+      tentativa é feita depois de uma tool call pedida** (`aos_runs_retry_admitted_total` igual à
+      soma das tentativas do `aos-orq`; zero tentativas sobre runs com chamadas no log). A
+      recorrência lê-se da mesma série e regista-se no acompanhamento.
+
+### Fora de âmbito
+
+- O «aviso e mais um turno» (layout novo). Gatilho para o abrir: nos primeiros 100 planos com a
+  recuperação ligada, seis ou mais das primeiras falhas voltam a falhar na tentativa seguinte; ou
+  a entrada de uma rota determinista.
+- `tool_choice` forçado: depende da rota sob governação (AOS-505).
+- Repetir um nó sem tools, ou um nó cujo texto recusa o objectivo: não há sinal estrutural e não
+  se julga a forma do texto (AOS-504 corrige a causa provável e conta).
+- Um intervalo entre tentativas. Experimenta-se só se a recorrência medida o pedir.
+
+### Estado
+
+**ABERTO.**
