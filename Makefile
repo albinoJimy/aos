@@ -12,7 +12,7 @@ VARFILE := env/$(ENV).tfvars
 
 .DEFAULT_GOAL := help
 .PHONY: help bootstrap bootstrap-down init plan apply destroy fmt validate output check-env \
-        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-isolation-live ci-dormencia ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-nats ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
+        ci ci-secrets ci-build ci-lint ci-layer-lint ci-rtm ci-ref-lint ci-test ci-replay ci-memory ci-supplychain ci-routing ci-apex ci-security ci-isolation-live ci-rota-live ci-dormencia ci-evalgate ci-scale ci-dr-e2e ci-ux-dx ci-nats ci-sast ci-sca ci-policy ci-package ci-sbom ci-selftest ci-all ci-cache-prime \
         cover test-unit
 
 help: ## Lista os alvos disponíveis
@@ -115,6 +115,9 @@ ci-security: ## Gate: 4 cenários adversariais de segurança (prompt injection/e
 
 ci-isolation-live: ## Gate OPCIONAL: isolamento contra o executor gVisor REAL (fronteira, não contrato) — AOS-358; salta RUIDOSAMENTE sem o componente
 	$(CI)/isolation-live.sh
+
+ci-rota-live: ## Gate OPCIONAL: rota sob governação contra a imagem de produção do proxy (troca de modelo por baixo detectada) — AOS-505; salta RUIDOSAMENTE sem Docker ou sem a imagem
+	$(CI)/rota-live.sh
 
 ci-nats: ## Gate: substrato replicado REAL — levanta um cluster JetStream de 4 nos e corre as suites que sem ele SALTAM (AOS-431, fail-closed)
 	$(CI)/nats.sh

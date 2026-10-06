@@ -184,6 +184,12 @@ func (nodeModelAuthority) ClassAuthority(context.Context, string) ([]string, err
 // onde entra a projecção do pedido ([modelgateway.WithProjection], AOS-490): quem lê o ambiente
 // ([parseModelFromEnv]) decide o modo, e sem a opção o adaptador fala em texto único.
 func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration, extra ...modelgateway.RuntimeAdapterOption) (agentruntime.ModelClient, error) {
+	return newGatewayModelClientComRota(verifier, baseURL, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout, modelgateway.RouteGovernance{}, extra...)
+}
+
+// newGatewayModelClientComRota é [newGatewayModelClient] com a governação da rota dada (AOS-505).
+// A configuração a zero é a governação desligada: o gateway composto é o de sempre.
+func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration, rota modelgateway.RouteGovernance, extra ...modelgateway.RuntimeAdapterOption) (agentruntime.ModelClient, error) {
 	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
 	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
 	if verifier == nil {
@@ -261,6 +267,9 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 		// projecta-o no turno (span + evento durável que o burn-down lê). nil ⇒ o canal
 		// existe e transporta zero — ausência de preço para este par, declarada no banner.
 		Cost: costRec,
+		// ROTA SOB GOVERNAÇÃO (AOS-505): a comparação do modelo que o proxy declara ter servido
+		// com o perfil do nome pedido. A zero ⇒ desligada.
+		Route: rota,
 	}
 	// EGRESS (AOS-366) — deixar o HTTPClient nil é o que ARMA o caminho endurecido do gateway:
 	// `newProviderAdapter` só corre `validateEgressURL` (https + allowlist) e constrói o transporte

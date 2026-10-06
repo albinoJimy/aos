@@ -467,6 +467,16 @@ func run(w io.Writer) error {
 		}
 	}
 
+	// A ROTA SOB GOVERNAÇÃO (AOS-505). Validada em [parseModelFromEnv]; relê-se para a declarar.
+	// Com `off` não sai linha nenhuma.
+	if routeMode, rmerr := parseModelRouteGovernanceFromEnv(); rmerr == nil {
+		if routeHost, rherr := parseModelRouteAPIHostFromEnv(); rherr == nil {
+			for _, line := range modelRouteBanner(cfg.Model != nil, routeMode, modelNameFromEnv(), routeHost != "") {
+				fmt.Fprintf(w, "[aos] %s\n", line)
+			}
+		}
+	}
+
 	// CANAL DE CUSTO (AOS-259): declara se o custo por turno é DERIVADO de uma tabela de
 	// preços que cobre o par (modelo, região) deste nó — e portanto flui até ao ledger que o
 	// burn-down lê — ou se o canal transporta ZERO por o par não ter preço. A distinção
@@ -2297,6 +2307,12 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if pverr != nil {
 		return nil, nil, pverr
 	}
+	// A ROTA SOB GOVERNAÇÃO (AOS-505). Vocabulário fechado, validado aqui pela mesma razão; com a
+	// governação ligada, um modelo sem perfil de rota também aborta o arranque.
+	rota, rotaContadores, rerr := modelRouteFromEnv(model)
+	if rerr != nil {
+		return nil, nil, rerr
+	}
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
@@ -2366,10 +2382,15 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 			return nil, nil, err
 		}
 	}
-	client, err := newGatewayModelClient(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
-		modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion))
+	client, err := newGatewayModelClientComRota(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
+		rota, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion))
 	if err != nil {
 		return nil, nil, err
+	}
+	// AOS-505: com a governação da rota ligada, o cliente leva os contadores para o Bootstrap os
+	// publicar no /metrics. Desligada ⇒ o cliente é o de sempre, sem invólucro.
+	if rotaContadores != nil {
+		client = clienteComRota{inner: client, contadores: rotaContadores}
 	}
 	// SEM FONTE DE PREÇO (AOS-406): cada turno sai marcado como custo NÃO DERIVADO, para o span e
 	// o turn.recorded não dizerem «gratuito» e o SLI de custo não se dar por cumprido com zeros.

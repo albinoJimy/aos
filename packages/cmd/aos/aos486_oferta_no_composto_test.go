@@ -55,6 +55,9 @@ type aos486Upstream struct {
 	// responde, quando definido, substitui o corpo da resposta (AOS-490: respostas com
 	// raciocínio e tokens em cache). Recebe se o pedido é o que leva a tool call.
 	responde func(pedeTool bool, tool string) []byte
+	// cabecalhos, quando definido, devolve os cabecalhos de resposta de cada pedido (AOS-505: os
+	// que o proxy emite sobre a rota). Recebe o indice do pedido, a contar de zero.
+	cabecalhos func(pedido int) map[string]string
 }
 
 func (u *aos486Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -62,8 +65,14 @@ func (u *aos486Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	u.corpos = append(u.corpos, corpo)
 	pede, responde := u.pede, u.responde
+	cabecalhos, indice := u.cabecalhos, len(u.corpos)-1
 	u.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
+	if cabecalhos != nil {
+		for k, v := range cabecalhos(indice) {
+			w.Header().Set(k, v)
+		}
+	}
 	if responde != nil {
 		// O mesmo delimitador do ramo de baixo, na forma do wire (escrito por partes).
 		_, _ = w.Write(responde(pede != "" && !strings.Contains(string(corpo), `\`+`u003ctool_result`), pede))

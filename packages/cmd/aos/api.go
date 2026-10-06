@@ -2217,6 +2217,27 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-505 — COMPARAÇÕES DA ROTA DO MODELO. Só sai com a governação da rota ligada: com `off`
+	// a família não existe, e o /metrics é o de antes. Uma amostra por par dos dois vocabulários
+	// fechados, sempre presentes: o zero é um zero verdadeiro.
+	if h.node != nil && h.node.rotaDoModelo != nil {
+		c := h.node.rotaDoModelo
+		primeira := true
+		for _, r := range c.resultados {
+			for _, s := range c.servidos {
+				labels := `{result="` + r + `",served="` + s + `"}`
+				if primeira {
+					primeira = false
+					g("aos_model_route_checks_total",
+						"Turnos de modelo comparados com o perfil da rota desde o arranque, por resultado (AOS-505): igual, diferente (o proxy declarou outro modelo ou outro endpoint, ou o nome pedido nao tem perfil) e nao_reportado (o proxy nao declarou o que era preciso). served e o modelo que o proxy declarou, num conjunto fechado: os modelos esperados dos perfis, outro (um nome que nenhum perfil espera) ou nao_reportado. Conta chamadas ao vivo ao gateway; um turno reproduzido de uma captura nao volta a contar. diferente > 0 e uma troca de configuracao no proxy.",
+						"counter", float64(c.lido(r, s)), labels)
+					continue
+				}
+				amostra("aos_model_route_checks_total", labels, float64(c.lido(r, s)))
+			}
+		}
+	}
+
 	// AOS-493 — RUNS TERMINADOS POR DESFECHO E RAZÃO DO VEREDICTO. Uma amostra por par dos dois
 	// vocabulários fechados, sempre presentes: o zero é um zero verdadeiro.
 	if h.svc != nil && h.svc.desfechos != nil {
