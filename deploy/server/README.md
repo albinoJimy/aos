@@ -910,16 +910,14 @@ visível em vez de descarte silencioso. O nó não envia hoje nenhum parâmetro 
 `messages` e `tools` — preso por teste), e foi medido que, para `openai/<nome>` com `api_base`
 próprio, o LiteLLM 1.96.2 reencaminha tudo com `true` ou com `false`: não se espera diferença.
 
-```
-# antes: um plano de verificação pela fila; anota o código de saída
-# em /opt/aos/litellm/config.yaml:   drop_params: false
-docker compose -f docker-compose.prod.yml up -d --force-recreate litellm
-# depois: o mesmo plano, com o mesmo objectivo; tem de terminar com o mesmo código
-docker compose -f docker-compose.prod.yml logs --since 15m litellm | grep -ci 'UnsupportedParams'   # 0
-```
-
-O `grep` é só o primeiro olhar: lê as linhas do `litellm` desse intervalo e confirma que nenhum
-pedido foi recusado por um parâmetro.
+1. **Antes:** um plano de verificação pela fila; anota o código de saída.
+2. Em `/opt/aos/litellm/config.yaml`, `drop_params: false`, e **recria** o serviço `litellm`.
+   Editar o ficheiro não chega: um bind-mount de ficheiro fica agarrado ao inode antigo, e o
+   contentor continua a ler a configuração de antes até ser recriado.
+3. **Depois:** o mesmo plano, com o mesmo objectivo. Tem de terminar com o mesmo código.
+4. Lê o log do `litellm` desse intervalo e confirma que nenhum pedido foi recusado por um
+   parâmetro (a excepção do LiteLLM chama-se `UnsupportedParamsError`; o nome é um primeiro
+   olhar, não a verificação).
 
 Rollback, uma linha: repõe `drop_params: true` e recria o `litellm`.
 

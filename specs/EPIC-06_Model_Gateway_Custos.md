@@ -1780,6 +1780,16 @@ aparecem nos selos, nas observações ou nos eventos de variância.
 está fora do que é governado. O arranque recusa-a para o modelo do nó; só é alcançável com uma
 escada de tiers, que o nó de referência não declara.
 
+**Mutações à mão (2026-10-07), cada uma contra o teste dirigido: 17 em 17 mortas.** Entre elas:
+`off` não limpa a rota lida dos cabeçalhos; o turno usa o modelo dos cabeçalhos sem comparação;
+`nao_reportado` preenchido com o `model` do corpo; `enforce` não falha; o identificador do
+deployment lido quando o nome falta; o `api_base` guardado inteiro; o host a sair do gateway; um
+nome fora do perfil no rótulo; um modelo por reportar a passar por `igual`; o endpoint não
+comparado; um modo ilegível a observar em vez de impor; a variância não selada; a captura a
+guardar o modelo de um turno não comparado; o recorder sem fechar o vocabulário; e, no nó, `off`
+a publicar a família da rota, `off` tratado como `observe`, e um valor inválido a cair para
+`off`. Não substitui a revisão adversarial independente.
+
 **Por fazer.** A revisão adversarial independente; os passos de produção, por decisão do dono; e
 confirmar contra o provider real o que ele devolve sobre si próprio.
 
