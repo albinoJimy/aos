@@ -27,12 +27,22 @@
 
 > **Resumo, depois da emenda de 2026-10-07 (AOS-510, AOS-511).** A recuperação é uma nova
 > tentativa do nó do plano, como um run novo, e quem a autoriza é o nó `aos`, com uma prova lida
-> do seu log. Tem **duas classes de causa**, que nunca se confundem: (1) o run de um nó **com**
-> tools que fechou `contract_unmet_no_call` sem pedir tool nenhuma (AOS-502/503); (2) o run de um
-> nó **sem** tools que fechou `empty_output` sem pedir tool nenhuma (AOS-510/511). Cada classe
-> tem a sua prova (§2.3) e os seus interruptores, desligados por omissão; os tectos são os
-> mesmos e partilhados (§2.4). O pedido não escolhe a classe: decide-a o nó, pela razão do
-> veredicto que leu.
+> do seu log. Tem **duas classes de causa**, que nunca se confundem: (1) o run que fechou
+> `contract_unmet_no_call` sem pedir tool nenhuma (AOS-502/503); (2) o run que fechou
+> `empty_output` sem pedir tool nenhuma, **sem contrato de tools e sem origem vinculativa da
+> saída** (AOS-510/511). Cada classe tem a sua prova (§2.3) e os seus interruptores, desligados
+> por omissão; os tectos são os mesmos e partilhados (§2.4). O pedido não escolhe a classe:
+> decide-a o nó, pela razão do veredicto que leu.
+>
+> **A prova do nó e a elegibilidade do `aos-orq` não são a mesma condição.** A prova da segunda
+> classe exige «sem contrato de tools», e não «sem tools oferecidas»: um run com tools na
+> lista-branca, sem contrato, que respondeu vazio sem pedir nenhuma é admitido pelo nó — é seguro,
+> porque as três fontes dizem zero tool calls. «Nó do plano **sem** tools» (e sem `from_tool`) é a
+> elegibilidade do `aos-orq` (§2.5), que é mais estreita e serve para não pedir o que não faz
+> sentido pedir. Por isso o nó admite **cadeias de classe mista** que o `aos-orq` nunca produz
+> (uma tentativa com contrato sobre uma anterior sem ele, e o inverso): cada elo prova-se na
+> classe da razão dele, o tecto de três runs é um só, e o aviso entra só no elo da primeira
+> classe.
 
 ## 1. Contexto
 
@@ -508,6 +518,14 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
   privilegiada é negada pelo gate de taint como na primeira. É o risco que o dono aceitou a
   2026-10-06 para a primeira classe, agora numa classe em que se materializa (o nó com tools e
   `consumes` é negado antes pelo gate de taint; o nó sem tools não tem o que lhe seja negado).
+- **Reverter a imagem do `aos-orq` com uma tentativa por vazio registada contamina a medição**
+  (medido na revisão de 2026-10-08). O binário anterior lê o facto sem interpretar a razão:
+  volta a submeter a tentativa que encontra no log sem run enquanto o nó tiver
+  `AOS_RUN_RETRY_EMPTY=on`, conta-a nas séries da primeira classe, e apaga do ficheiro de
+  métricas as séries desta (não são do catálogo dele). Os desfechos dos planos ficam certos; o
+  que se perde é a leitura da recorrência e da igualdade entre as admissões do nó e as
+  tentativas do `aos-orq`. O recuo de imagem faz-se por esta ordem: os interruptores das duas
+  pontas a `off`, os planos com tentativas em curso drenados, e só depois a imagem.
 - **Repetir pode não recuperar** (AOS-511). Se o vazio for determinado pelo pedido, as tentativas
   queimam orçamento sem recuperar: a fase A1 mediu recorrências de 32% a 50%. Por isso a classe
   entra em `observe` antes de `on`, e a recorrência (`voltou_a_falhar` sobre o total da tentativa

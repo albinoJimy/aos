@@ -1834,7 +1834,9 @@ no `aos-orq` em `observe` antes de `on` (decisão do dono de 2026-10-07).
 
 **O que se tenta, e o que nunca se tenta.** Só um nó **não-verificador, sem tools atribuídas e
 sem `from_tool`** cujo run fechou `failed` com a razão exactamente `empty_output` **e zero tool
-calls pedidas**. Nunca um nó com tools que respondeu vazio depois de chamar uma, um nó
+calls pedidas** — **com ou sem `consumes`**: os três casos medidos têm `consumes`, mas a
+elegibilidade não o exige, e as séries desta classe **não** levam o rótulo `com_consumes` (ao
+contrário das da outra): quem ler a taxa lê as duas populações juntas. Nunca um nó com tools que respondeu vazio depois de chamar uma, um nó
 verificador, um nó com origem de saída declarada (`origem_vazia`), uma resposta cortada
 (`truncated`), um `timed_out`, um run perdido ou que não concluiu. A decisão não lê texto nenhum
 do modelo, e o raciocínio nunca é usado como resposta.
@@ -1904,6 +1906,29 @@ AOS-511 que retome esse plano lê o facto (a razão é um campo que ele não int
 mesma tentativa pelas regras do AOS-503; vale o aviso acima sobre não reverter a imagem com
 planos com tentativas em curso. Com o nó em `off` e o `aos-orq` ainda em `on`, as tentativas
 deixam de ser pedidas (`tentativa_recusada=nao_anunciado`).
+
+> ⚠️ **Reverter a IMAGEM do `aos-orq` com uma tentativa por vazio registada estraga os números
+> da decisão** (medido na revisão de 2026-10-08: geração 1 com a imagem nova e as duas classes
+> em `on`; geração 2 com a imagem anterior e `AOS_ORQ_NOVA_TENTATIVA=on`). Os desfechos ficam
+> certos — a tentativa em voo que conclui dá `0`, a que volta a responder vazio dá `13` sem
+> tentativa 3, um run alheio não é adoptado —, mas o binário anterior:
+>
+> 1. **volta a submeter** a tentativa por vazio que encontra no log sem run (`RETOMA da
+>    tentativa 2`, e o nó aceita-a) — reverter a imagem **não pára** essa tentativa enquanto o
+>    nó tiver `AOS_RUN_RETRY_EMPTY=on`;
+> 2. **conta-a nas séries da outra classe** (`aos_orq_consume_tentativas_total{…}`,
+>    `…_nos_recuperados_total`, `…_planos_recuperados_total`, `…_tentativas_por_plano_total`; e
+>    `outra_causa` quando volta a falhar): a série `com_consumes="true"` ganha falsos recuperados;
+> 3. **apaga do ficheiro de métricas as séries desta classe** ao reescrevê-lo (não são do
+>    catálogo dele): `aos_orq_consume_primeiras_respostas_vazias_total` e as `*_vazia_*`
+>    desaparecem.
+>
+> Depois disso a recorrência e a igualdade «admitidas no nó = tentativas desta classe no
+> `aos-orq`» deixam de se poder ler. **A ordem do recuo de imagem:** (1)
+> `AOS_ORQ_NOVA_TENTATIVA_VAZIA` a `off` no `aos-orq`; (2) `AOS_RUN_RETRY_EMPTY` a `off` no nó;
+> (3) esperar que os planos com tentativas em curso acabem (nenhum `plan.node_attempt_started`
+> com `reason=empty_output` num plano por terminar) e **guardar o ficheiro de métricas**; (4) só
+> então reverter a imagem.
 
 > ⚠️ **Por fazer antes de ligar em produção:** o smoke da tentativa `<plano>~<nó>~2` de um run
 > `empty_output` **sobre JetStream** (hospedada, corre e lê-se). Os testes deste ticket correm
