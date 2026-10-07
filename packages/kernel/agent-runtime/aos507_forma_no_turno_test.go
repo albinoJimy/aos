@@ -54,6 +54,8 @@ func TestAOS507_Turno_ForaDoVocabulario(t *testing.T) {
 		"reasoning_form":       func(s *ResponseShape) { s.ReasoningForm = "TEXTO-LIVRE" },
 		"reasoning_signed":     func(s *ResponseShape) { s.ReasoningSigned = "TEXTO-LIVRE" },
 		"refusal":              func(s *ResponseShape) { s.Refusal = "TEXTO-LIVRE" },
+		"psf_refusal":          func(s *ResponseShape) { s.ProviderFieldsRefusal = "TEXTO-LIVRE" },
+		"psf_reasoning":        func(s *ResponseShape) { s.ProviderFieldsReasoning = "TEXTO-LIVRE" },
 		"tool_call_id":         func(s *ResponseShape) { s.ToolCallID = "TEXTO-LIVRE" },
 		"arguments_form":       func(s *ResponseShape) { s.ArgumentsForm = "TEXTO-LIVRE" },
 		"legacy_function_call": func(s *ResponseShape) { s.LegacyFunctionCall = "TEXTO-LIVRE" },

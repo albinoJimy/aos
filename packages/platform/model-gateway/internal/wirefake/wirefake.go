@@ -47,6 +47,43 @@ func Corpo(nome string) []byte {
 	return b
 }
 
+//go:embed casos_pos_proxy/*.json
+var casosPosProxy embed.FS
+
+// NomesPosProxy devolve os nomes dos casos PÓS-PROXY, por ordem alfabética: os corpos que a imagem
+// de produção do proxy ENTREGOU, na corrida do gate `ci-wire-live`, para cada caso de [Nomes] a
+// que respondeu 200. São o que o gateway vê de facto por trás do proxy — com as chaves que ele
+// acrescenta, renomeia e retira —, congelados para o CI os exercitar sem Docker. Regeneram-se com
+// `AOS_WIRE_LIVE_CORPOS=<esta pasta>` no teste do gate.
+func NomesPosProxy() []string {
+	entradas, err := casosPosProxy.ReadDir("casos_pos_proxy")
+	if err != nil {
+		panic("wirefake: casos pos-proxy ilegiveis: " + err.Error())
+	}
+	var out []string
+	for _, e := range entradas {
+		out = append(out, strings.TrimSuffix(e.Name(), ".json"))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CorpoPosProxy devolve o corpo que o proxy entregou para um caso.
+func CorpoPosProxy(nome string) []byte {
+	b, err := casosPosProxy.ReadFile("casos_pos_proxy/" + nome + ".json")
+	if err != nil {
+		panic("wirefake: caso pos-proxy desconhecido: " + nome)
+	}
+	return b
+}
+
+//go:embed comportamento_pos_proxy.json
+var comportamentoPosProxy []byte
+
+// ComportamentoPosProxy é o que o gateway faz HOJE a cada corpo entregue pelo proxy, preso por
+// teste (TestAOS508_PosProxy_OQueOGatewayFazAoQueOProxyEntrega).
+func ComportamentoPosProxy() map[string]Comportamento { return ler(comportamentoPosProxy) }
+
 // Pedido é um pedido que o falso recebeu.
 type Pedido struct {
 	Caminho string

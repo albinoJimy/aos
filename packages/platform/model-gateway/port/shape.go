@@ -41,6 +41,15 @@ type ResponseShape struct {
 	ReasoningSigned bool
 	// Refusal é a presença de `message.refusal` (ShapeRefusal*).
 	Refusal string
+	// PSFRefusal e PSFReasoning são a recusa e o raciocínio DENTRO de
+	// `message.provider_specific_fields`, nos mesmos vocabulários de Refusal e Reasoning; vazios
+	// quando a mensagem não traz esse objecto. Existem porque o proxy de produção MOVE para lá
+	// os campos de `message` que não conhece — medido: `refusal`, `thinking` e
+	// `reasoning_details` —, e sem eles uma recusa e um raciocínio nesses nomes chegavam ao
+	// gateway iguais a «nada». A sonda só procura os nomes que já conhece; as outras chaves do
+	// objecto não são lidas nem contadas.
+	PSFRefusal   string
+	PSFReasoning string
 	// ToolCallsN, ToolCallID (ShapeID*), ToolCallIDMaxBytes e ArgumentsForm (ShapeForm*; vazio
 	// sem tool calls) descrevem `message.tool_calls`.
 	ToolCallsN         int64
@@ -182,6 +191,12 @@ func ProbeResponseShape(data []byte) (shape ResponseShape) {
 	shape.Content, shape.ContentBytes = formaDoConteudo(msg)
 	sondarRaciocinio(msg, &shape)
 	shape.Refusal = formaDaRecusa(msg)
+	var psf map[string]json.RawMessage
+	if json.Unmarshal(msg["provider_specific_fields"], &psf) == nil && psf != nil {
+		var dentro ResponseShape
+		sondarRaciocinio(psf, &dentro)
+		shape.PSFRefusal, shape.PSFReasoning = formaDaRecusa(psf), dentro.Reasoning
+	}
 	sondarToolCalls(msg["tool_calls"], &shape)
 	shape.LegacyFunctionCall = presente(msg["function_call"])
 	for k := range msg {

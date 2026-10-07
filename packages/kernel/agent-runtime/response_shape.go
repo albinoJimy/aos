@@ -38,6 +38,12 @@ type ResponseShape struct {
 	ReasoningSigned string `json:"reasoning_signed"`
 	// Refusal é a presença de `message.refusal`.
 	Refusal string `json:"refusal"`
+	// ProviderFieldsRefusal e ProviderFieldsReasoning são a recusa e o raciocínio DENTRO de
+	// `message.provider_specific_fields`, nos vocabulários de Refusal e de Reasoning; ausentes
+	// quando a mensagem não traz esse objecto. Um proxy move para lá os campos de `message` que
+	// não conhece, e sem estes dois uma recusa chegava igual a «nada».
+	ProviderFieldsRefusal   string `json:"psf_refusal,omitempty"`
+	ProviderFieldsReasoning string `json:"psf_reasoning,omitempty"`
 	// ToolCallsN é o número de tool calls; ToolCallID a classe da forma dos ids;
 	// ToolCallIDMaxBytes o maior id; ArgumentsForm a forma JSON dos argumentos (ausente sem tool
 	// calls).
@@ -167,6 +173,8 @@ func (s *ResponseShape) Normalizado() *ResponseShape {
 		(s.ReasoningForm == "" || dentroDe(s.ReasoningForm, formas...)) &&
 		dentroDe(s.ReasoningSigned, simNao...) &&
 		dentroDe(s.Refusal, ShapeRefusalAbsent, ShapeRefusalNull, ShapeRefusalText) &&
+		(s.ProviderFieldsRefusal == "" || dentroDe(s.ProviderFieldsRefusal, ShapeRefusalAbsent, ShapeRefusalNull, ShapeRefusalText)) &&
+		(s.ProviderFieldsReasoning == "" || dentroDe(s.ProviderFieldsReasoning, ShapeReasonings()...)) &&
 		dentroDe(s.ToolCallID, ShapeIDNone, ShapeIDCall, ShapeIDFunctions, ShapeIDUUID, ShapeIDNumeric, ShapeIDEmpty, ShapeIDOther) &&
 		(s.ArgumentsForm == "" || dentroDe(s.ArgumentsForm, ShapeFormString, ShapeFormObject, ShapeFormOther)) &&
 		dentroDe(s.LegacyFunctionCall, simNao...) &&

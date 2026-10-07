@@ -97,6 +97,12 @@ type aos508Medida struct {
 	FunctionCall     bool   `json:"function_call_depois"`
 	FinishAntes      string `json:"finish_antes"`
 	FinishDepois     string `json:"finish_depois"`
+	// Os tokens de raciocinio do usage (-1 = nao reportados) e a presenca de uma chave de
+	// assinatura na mensagem, antes e depois.
+	TokensRacAntes  int64 `json:"reasoning_tokens_antes"`
+	TokensRacDepois int64 `json:"reasoning_tokens_depois"`
+	AssinadaAntes   bool  `json:"assinada_antes"`
+	AssinadaDepois  bool  `json:"assinada_depois"`
 	// Gateway é o que o gateway faz ao corpo entregue: `turno`, ou `recusada:<causa>`.
 	Gateway string `json:"gateway"`
 }
@@ -209,7 +215,14 @@ func TestAOS508_ProxyReal_OQueOProxyEntregaACadaCaso(t *testing.T) {
 		origem := wirefake.Corpo(n)
 		antes, depois := port.ProbeResponseShape(origem), port.ProbeResponseShape(entregue)
 		topoA, msgA, finA := aos508Partes(origem)
-		m := aos508Medida{Caso: n, Status: resp.StatusCode, ContentAntes: antes.Content, RaciocinioAntes: antes.Reasoning, ChoicesAntes: antes.ChoicesN, FinishAntes: finA}
+		tokens := func(s port.ResponseShape) int64 {
+			if !s.HasReasoningTokens {
+				return -1
+			}
+			return s.ReasoningTokens
+		}
+		m := aos508Medida{Caso: n, Status: resp.StatusCode, ContentAntes: antes.Content, RaciocinioAntes: antes.Reasoning, ChoicesAntes: antes.ChoicesN, FinishAntes: finA,
+			TokensRacAntes: tokens(antes), TokensRacDepois: -1, AssinadaAntes: antes.ReasoningSigned}
 		if resp.StatusCode != http.StatusOK {
 			m.Gateway = "o proxy nao entregou resposta (status " + fmt.Sprint(resp.StatusCode) + ")"
 			medidas = append(medidas, m)
@@ -223,6 +236,13 @@ func TestAOS508_ProxyReal_OQueOProxyEntregaACadaCaso(t *testing.T) {
 		m.MsgMais, m.MsgMenos = aos508Diferenca(msgD, msgA), aos508Diferenca(msgA, msgD)
 		m.ContentDepois, m.RaciocinioDepois, m.ChoicesDepois, m.FinishDepois = depois.Content, depois.Reasoning, depois.ChoicesN, finD
 		m.ToolCallsDepois, m.IDDepois, m.ArgsDepois, m.Recusa, m.FunctionCall = depois.ToolCallsN, depois.ToolCallID, depois.ArgumentsForm, depois.Refusal, depois.LegacyFunctionCall
+		m.TokensRacDepois, m.AssinadaDepois = tokens(depois), depois.ReasoningSigned
+		if dir := os.Getenv("AOS_WIRE_LIVE_CORPOS"); dir != "" {
+			// Os corpos ENTREGUES ficam em ficheiro, para serem congelados como casos de teste.
+			if err := os.WriteFile(filepath.Join(dir, n+".json"), entregue, 0o644); err != nil {
+				t.Errorf("%s: gravar o corpo entregue: %v", n, err)
+			}
+		}
 		m.Gateway = "turno"
 		if r, err := port.UnmarshalChatResponse(entregue); err != nil {
 			m.Gateway = "recusada:" + modelgateway.ResponseRejectionCause(err)
