@@ -1084,6 +1084,7 @@ o nó grava, em cada `turn.recorded`, a **ficha** desse corpo no campo `response
 | `content`, `content_bytes` | `ausente`, `nulo`, `vazio`, `so_brancos`, `texto`, `partes`, `outro`; bytes do texto (ou do valor JSON, nas formas que não são string) |
 | `reasoning`, `reasoning_form`, `reasoning_bytes`, `reasoning_signed` | o campo em que veio o raciocínio com conteúdo (`nenhum`, `reasoning_content`, `reasoning`, `thinking`, `thinking_blocks`, `reasoning_details`, `varios`; ou `vazio`, quando há um campo de raciocínio presente e vazio — `""`, `[]`, `{}` — e nenhum com conteúdo); a forma JSON (`string`, `objecto`, `lista`, `outro`); os bytes do valor JSON (uma string vazia conta 2, as aspas); `sim`/`nao` |
 | `refusal` | `ausente`, `nulo`, `texto` |
+| `psf_refusal`, `psf_reasoning` | a recusa e o raciocínio DENTRO de `message.provider_specific_fields`, nos vocabulários de `refusal` e de `reasoning`; ausentes quando a mensagem não traz esse objecto |
 | `tool_calls_n`, `tool_call_id`, `tool_call_id_max_bytes`, `arguments_form` | número; `nenhum`, `call_`, `functions_ponto`, `uuid`, `numerico`, `vazio`, `outro`; bytes; `string`, `objecto`, `outro` |
 | `legacy_function_call`, `choices_n`, `finish_reason_mapped`, `system_fingerprint` | `sim`/`nao`; número; `sim`/`nao`; `sim`/`nao` |
 | `reasoning_tokens` | inteiro; ausente quando o provider não o reporta |
@@ -1110,11 +1111,13 @@ Só o nó é medido (as chamadas do `aos-orq` ao LiteLLM não), e só o caminho 
 `nenhum` nem `vazio`). O `shape_digest` não cobre o interior de `arguments`, do raciocínio, de
 `content` em partes nem de `provider_specific_fields`: desses campos entra só o tipo do valor.
 
-**O que a ficha NÃO separa pela rota de produção** (medido com a imagem do proxy,
-`docs/reports/wire-live-aos508-2026-10-07.md`): o proxy renomeia `reasoning` para
-`reasoning_content` (as duas chegam iguais), retira `thinking`, `reasoning_details` e `refusal`
-(chegam como «nada») e normaliza o `finish_reason`. Uma ficha com `reasoning="nenhum"` não exclui
-por isso essas formas.
+**O que o proxy faz antes de a resposta chegar ao nó** (medido com a imagem do proxy,
+`docs/reports/wire-live-aos508-2026-10-07.md`): copia `reasoning` para `reasoning_content`, e
+MOVE `refusal`, `thinking` e `reasoning_details` para `message.provider_specific_fields`. A ficha
+lê esses nomes também lá dentro, em dois campos que só existem quando a mensagem traz o objecto:
+`psf_refusal` (`ausente`, `nulo`, `texto`) e `psf_reasoning` (o vocabulário de `reasoning`). Uma
+recusa do modelo aparece por isso como `refusal="ausente"` e `psf_refusal="texto"`. O
+`finish_reason` chega já normalizado pelo proxy.
 
 **O `/metrics` com a medição desligada.** A família `aos_model_response_rejected_total{causa}`
 (AOS-509, cinco séries) existe sempre que o gateway de modelo está composto, com `off` também: é a
