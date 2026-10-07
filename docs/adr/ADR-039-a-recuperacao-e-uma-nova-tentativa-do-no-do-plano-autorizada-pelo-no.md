@@ -1,4 +1,4 @@
-# ADR-039 — A recuperação de um nó que não chamou a tool é uma nova tentativa do nó do plano, autorizada pelo nó
+# ADR-039 — A recuperação é uma nova tentativa do nó do plano, autorizada pelo nó
 
 - **Estado:** Aceite
 - **Data:** 2026-10-06
@@ -9,7 +9,10 @@
   um sucesso à segunda ou à terceira aparece como sucesso normal, com a contagem registada; não
   há «aviso e mais um turno» nesta fase; a medição directa ao modelo não está autorizada) ·
   executor de AOS-502 e AOS-503
-- **Tickets:** AOS-506 (emenda de 2026-10-07 aos §2.1, §2.7 e §2.11: a tentativa pode levar um
+- **Tickets:** AOS-510 e AOS-511 (emenda de 2026-10-07 aos §2.3, §2.5, §2.6, §2.7, §2.8 e §5: a
+  recuperação passa a ter **duas classes de causa**, cada uma com a sua prova e o seu
+  interruptor — o run que não chamou a tool, e o run sem tools que respondeu vazio; decisão D2 do
+  dono de 2026-10-07, «primeiro só a contar»); AOS-506 (emenda de 2026-10-07 aos §2.1, §2.7 e §2.11: a tentativa pode levar um
   aviso constante do runtime, desligado por omissão); AOS-502 (o nó `aos` aceita a tentativa e
   prova, no seu log, que a anterior não pediu tools) e AOS-503 (o `aos-orq` grava o facto e volta
   a submeter o nó do plano), implementados; por rever de forma independente e por verificar em produção. As duas metades
@@ -21,6 +24,15 @@
   do plano é um run do nó), ADR-030 (não-oracularidade das rotas do nó), ADR-034 (autorização
   derivada do contexto), ADR-035 (o submissor do plano é derivado pelo nó), ADR-037 (o desfecho
   de um run é um veredicto do kernel), ADR-038 (a saída por referência)
+
+> **Resumo, depois da emenda de 2026-10-07 (AOS-510, AOS-511).** A recuperação é uma nova
+> tentativa do nó do plano, como um run novo, e quem a autoriza é o nó `aos`, com uma prova lida
+> do seu log. Tem **duas classes de causa**, que nunca se confundem: (1) o run de um nó **com**
+> tools que fechou `contract_unmet_no_call` sem pedir tool nenhuma (AOS-502/503); (2) o run de um
+> nó **sem** tools que fechou `empty_output` sem pedir tool nenhuma (AOS-510/511). Cada classe
+> tem a sua prova (§2.3) e os seus interruptores, desligados por omissão; os tectos são os
+> mesmos e partilhados (§2.4). O pedido não escolhe a classe: decide-a o nó, pela razão do
+> veredicto que leu.
 
 ## 1. Contexto
 
@@ -113,6 +125,53 @@ em vocabulário fechado. Um log que não se leu *agora* (substrato, WORM) respon
 hospeda. As admissões contam em `aos_runs_retry_admitted_total`, quando o run foi de facto
 hospedado.
 
+#### Emenda de 2026-10-07 (AOS-510): a segunda prova — o run que respondeu vazio
+
+Medido em produção a 2026-10-07 (v0.1.51), com a recuperação acima ligada: **3 planos em 140
+(2,1%)** saíram 13 por `empty_output`, sempre no nó de resumo, que não tem tools — um só turno,
+`stop_reason=stop`, texto final vazio. A prova acima exige `contract_unmet_no_call`, que um run
+sem contrato de conclusão nunca dá.
+
+É uma **segunda classe de tentativa**, e não um alargamento da primeira. **O pedido não escolhe a
+classe:** o `plan_request.attempt` é o mesmo, e nada do corpo diz porque se pede a tentativa. O
+nó lê a razão do veredicto da tentativa anterior no seu log e aplica a prova dessa razão —
+`contract_unmet_no_call` ⇒ a tabela acima, sem alteração; `empty_output` ⇒ a tabela abaixo, e só
+com `AOS_RUN_RETRY_EMPTY=on`; qualquer outra ⇒ recusa. Com o interruptor desligado (a omissão),
+um run `empty_output` é recusado como sempre, com a causa de sempre (`anterior_outra_razao`).
+
+| Facto exigido sobre a tentativa `n − 1` | De onde se lê |
+|---|---|
+| O run existe, com o vínculo ao **mesmo pedido** e ao **mesmo nó**; é a tentativa imediatamente anterior; está `failed`; a residência é a de quem pede | como na primeira prova: `run.plan_origin`, a última `run.state.transition`, o selo de residência |
+| Fechou por **`empty_output`** | o veredicto selado nessa transição |
+| **Zero tool calls pedidas**, pelas três fontes | o total do vector selado; nenhum evento `tool.call.*` no stream; `tool_calls_requested = 0` no turno |
+| **Um só** `turn.recorded`, com `stop_reason = stop` | o único turno do stream |
+| **Sem contrato de tools** | o `completion` do manifesto do turno, gravado pelo kernel: `requires` vazio, e o vector selado sem linhas de tool |
+| **Sem origem vinculativa da saída** | o mesmo `completion` (`output_binding` diferente de `binding`) e a âncora selada |
+
+**Porque é que `empty_output`, sozinha, não chega.** O kernel fecha com essa razão em dois casos
+(ADR-037, ADR-038). Sem origem vinculativa, é o texto do turno final que veio vazio: num run que
+não pediu tool nenhuma, nada aconteceu, e nada se pode repetir. Com origem vinculativa, é a tool
+designada que devolveu zero bytes — houve uma tool call. E um run que chamou uma tool e depois
+respondeu vazio fecha com a mesma razão, com um efeito aplicado.
+
+**O estado impossível recusa-se com causa própria.** Um run com contrato de tools, zero chamadas
+e `empty_output` é um log que o kernel não escreve (o contrato tem precedência e fechava
+`contract_unmet_no_call`). Se aparecer, o nó não o interpreta nem o repete: `estado_impossivel`.
+
+**O tecto é um só** (§2.4): as tentativas das duas classes contam para o mesmo
+`AOS_RUN_RETRY_MAX`. A prova decide-se por elo — cada tentativa prova a imediatamente anterior,
+na classe da razão dela.
+
+**As séries são próprias.** As recusas posteriores à leitura da razão contam em
+`aos_runs_retry_empty_refused_total{causa}` e as admissões em
+`aos_runs_retry_empty_admitted_total`; as séries da primeira classe não ganham rótulos nem mudam
+de valor. As recusas anteriores a essa leitura (tecto, forma, origem, sequência, estado) não têm
+classe, e contam onde sempre contaram. A resposta a quem pede é a mesma 403 uniforme.
+
+**O `run.plan_origin`** de uma tentativa desta classe leva, além de `attempt` e `retry_of`, o
+campo aditivo `retry_reason=empty_output`. O `GET /tools` anuncia a classe em
+`run_retry.empty_output`, só com o interruptor ligado e o tecto acima de zero.
+
 ### 2.4 Os tectos
 
 - **No nó:** `AOS_RUN_RETRY_MAX` ∈ {0, 1, 2}, a omissão é 0. Com 0 todo o pedido com `attempt` é
@@ -133,6 +192,17 @@ atribuídas (com ou sem `consumes`); a resposta é sobre o run da tentativa corr
 Esta condição serve para **não pedir** o que o nó ia recusar. Não é ela que protege de repetir
 um efeito: é a prova do §2.3. A decisão não lê texto nenhum do modelo — o nó nem devolve o texto
 de um run que não concluiu.
+
+*Emenda de 2026-10-07 (AOS-511): a elegibilidade da segunda classe.* Lida do mesmo vocabulário
+fechado e da estrutura do plano: o nó do plano não é verificador, **não tem tools atribuídas**
+(logo, não leva contrato de conclusão) e **não declara a origem de nenhuma saída** (`from_tool`);
+a resposta é sobre o run da tentativa corrente; o run está `failed` com a razão exactamente
+`empty_output`; e o vector diz zero tool calls pedidas. As duas elegibilidades são disjuntas —
+uma exige tools, a outra exige não as ter. Interruptor próprio, `AOS_ORQ_NOVA_TENTATIVA_VAZIA`
+(`off`, `observe`, `on`; a omissão é `off`), independente do `AOS_ORQ_NOVA_TENTATIVA`. **Os
+tectos do §2.4 são partilhados:** duas tentativas a mais por nó e o mesmo tecto por plano, a
+somar as das duas classes — um plano não ganha tentativas por ter as duas. Contra um nó que não
+anuncia `run_retry.empty_output` não se pede esta tentativa (`nao_anunciado`).
 
 ### 2.6 O facto fica no log do plano antes do pedido
 
@@ -163,6 +233,12 @@ o tecto de um id de run (1024 bytes: os 128 do `node_id`, triplicados no pior ca
 separadores, e o resto para o id do pedido). Se mesmo assim o construtor do facto o recusar, o
 nó do plano fecha `failed` com `tentativa_recusada=facto_invalido` — a forma é determinista para
 o plano, e um erro repetia-se em todas as gerações.
+
+*Emenda de 2026-10-07 (AOS-511): o facto diz a classe.* O `reason` do
+`plan.node_attempt_started` passa a ter dois valores, `contract_unmet_no_call` e `empty_output`;
+o construtor recusa qualquer outro. É pela razão do facto — e não pelo interruptor que estiver
+ligado — que quem retoma sabe de que classe a tentativa é: que interruptor a retoma, e em que
+séries conta. A retoma e a conferência da origem (`plan_attempt`) são as mesmas das duas classes.
 
 ### 2.7 O pedido repetido é o mesmo
 
@@ -245,6 +321,23 @@ variável primeiro, esperar que não haja tentativas com aviso em voo, e só dep
 única forma de um binário antigo **recusar** em vez de divergir calado é a semente-com-aviso ser
 uma versão de layout; a decisão e a condição em que passa a ser devida estão no ADR-036 §2.4.
 
+#### Emenda de 2026-10-07 (AOS-510): a tentativa por resposta vazia NÃO leva aviso
+
+Uma tentativa admitida pela segunda classe é hospedada **sem** segmento `notice`, mesmo com
+`AOS_RUN_RETRY_NOTICE=on`: o pedido repetido é o mesmo, byte a byte, o `prompt_hash` do turno 1
+é igual ao da tentativa anterior, e `aos_runs_retry_notice_total` não conta. Porquê:
+
+- o texto do AOS-506 diz ao modelo como se pede uma tool; num nó sem tools não se aplica, e pode
+  induzir uma tool call onde não há nenhuma;
+- um texto próprio para o vazio teria de dizer ao modelo o que fez mal, e **a causa do vazio não
+  é conhecida** (o AOS-507 mede a forma da resposta): seria afinado às cegas, e para um só
+  modelo;
+- sem aviso, a medição «`prompt_hash` igual entre tentativas» mantém a forma simples.
+
+**Gatilho para reabrir:** com o AOS-511 em `on`, três ou mais das primeiras dez tentativas por
+vazio voltam a fechar `empty_output`, **e** o AOS-507 nomeia uma causa sobre a qual um texto
+constante, de vocabulário fechado, possa actuar. A decisão é então do dono, num ticket novo.
+
 ### 2.8 Nunca há nova tentativa depois de uma tool call, de uma resposta cortada ou de outra razão
 
 - **Uma tool call pedida** — efectiva, negada, falhada ou escalada — fecha a porta. Depois de
@@ -258,6 +351,13 @@ uma versão de layout; a decisão e a condição em que passa a ser devida estã
   fecha o nó do plano como antes.
 - **Um nó em observação do veredicto** (`AOS_COMPLETION_VERDICT=observe`) deixa o run
   `completed`: nunca é elegível.
+
+*Emenda de 2026-10-07 (AOS-510).* `empty_output` sai da lista do que nunca se repete **só** sob a
+segunda prova do §2.3, e só com os interruptores dessa classe ligados. Continua a nunca se
+repetir: um `empty_output` depois de qualquer tool call pedida; um `empty_output` com origem
+vinculativa da saída (a tool designada devolveu zero bytes); um `empty_output` com mais de um
+turno, ou cujo turno não parou com `stop`; e, do lado do plano, o de um nó verificador, de um nó
+com tools ou de um nó com `from_tool`.
 
 ### 2.9 O orçamento
 
@@ -400,6 +500,26 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
 - **Um `serve` que aborta não larga a posse.** A retoma de um plano cujo `serve` saiu com erro
   espera pelo TTL da posse (ADR-023); a recuperação não muda isso.
 
+- **O conteúdo untrusted pode gastar as tentativas da segunda classe** (emenda de 2026-10-07,
+  AOS-510). O nó sem tools de um plano recebe quase sempre material de outro nó: conteúdo
+  untrusted do passo anterior pode induzir a resposta vazia e gastar as tentativas. O dano é
+  limitado pelo tecto por nó, pelo tecto por plano e pelo orçamento de quem pediu, e a tentativa
+  nunca dá autoridade — corre com o mesmo contexto untrusted desde o turno 1, e uma tool call
+  privilegiada é negada pelo gate de taint como na primeira. É o risco que o dono aceitou a
+  2026-10-06 para a primeira classe, agora numa classe em que se materializa (o nó com tools e
+  `consumes` é negado antes pelo gate de taint; o nó sem tools não tem o que lhe seja negado).
+- **Repetir pode não recuperar** (AOS-511). Se o vazio for determinado pelo pedido, as tentativas
+  queimam orçamento sem recuperar: a fase A1 mediu recorrências de 32% a 50%. Por isso a classe
+  entra em `observe` antes de `on`, e a recorrência (`voltou_a_falhar` sobre o total da tentativa
+  2) lê-se na série própria antes de se decidir mantê-la.
+- **A causa do vazio não é tratada.** Esta classe trata o sintoma seja qual for a causa, e não
+  interpreta texto nenhum. O raciocínio do modelo nunca é usado como resposta (decisão D3 do
+  dono, AOS-509).
+- **O smoke sobre JetStream não foi feito neste ticket.** A prova lê o stream pelas mesmas
+  chamadas do AOS-502 (`Read`, a máquina de estados, o selo de residência), que já correm sobre
+  JetStream em produção; mas a tentativa `<plano>~<nó>~2` de um run `empty_output` só foi
+  exercitada sobre o substrato de ficheiro. Fica por fazer no cluster, antes de ligar.
+
 ## 6. O que cada ticket implementa
 
 - **AOS-502 — o nó.** `plan_request.attempt`; a forma `<plano>~<nó>~<n>`; a prova do §2.3; o
@@ -413,6 +533,15 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
   elegibilidade do §2.5; o facto `plan.node_attempt_started` antes do pedido; a retoma do §2.6; o
   tecto por plano; a conferência da origem de uma tentativa que o processo não submeteu (§2.6);
   a entrega por referência sobre a tentativa que teve êxito; as métricas e o `detail` do desfecho.
+
+- **AOS-510 — o nó, segunda classe.** `AOS_RUN_RETRY_EMPTY` (`off`, `on`); a classe decidida
+  pela razão lida no log; a segunda prova do §2.3; `retry_reason` no `run.plan_origin`; o anúncio
+  `run_retry.empty_output`; a tentativa sem aviso (§2.7); as séries
+  `aos_runs_retry_empty_admitted_total` e `aos_runs_retry_empty_refused_total{causa}`.
+- **AOS-511 — o `aos-orq`, segunda classe.** `AOS_ORQ_NOVA_TENTATIVA_VAZIA` (`off`, `observe`,
+  `on`); a elegibilidade do §2.5; o facto com `reason=empty_output`; os tectos partilhados; a
+  retoma pela classe do facto; as séries `aos_orq_consume_*_vazia_*` e
+  `aos_orq_consume_primeiras_respostas_vazias_total`, separadas das do AOS-503.
 
 ## 7. Emendas a outros ADR
 

@@ -536,6 +536,13 @@ services:
       # recebe esta variável. Sem efeito com AOS_RUN_RETRY_MAX a zero. Outro valor ⇒ o nó recusa
       # arrancar (ErrBadRunRetryNotice).
       AOS_RUN_RETRY_NOTICE: "${AOS_RUN_RETRY_NOTICE:-}"
+      # A NOVA TENTATIVA POR RESPOSTA VAZIA (AOS-510, ADR-039 §2.3). Vazio ou `off` ⇒ o nó recusa
+      # a tentativa de um run que fechou empty_output, como sempre. `on` ⇒ admite-a depois de
+      # PROVAR no seu log zero tool calls pedidas, um só turno com stop, e um manifesto sem
+      # contrato de tools e sem origem vinculativa. Conta para o MESMO tecto, e não leva o aviso
+      # do AOS-506. Sem efeito com AOS_RUN_RETRY_MAX a zero. Outro valor ⇒ o nó recusa arrancar
+      # (ErrBadRunRetryEmpty).
+      AOS_RUN_RETRY_EMPTY: "${AOS_RUN_RETRY_EMPTY:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
@@ -753,6 +760,12 @@ services:
       AOS_ORQ_NOVA_TENTATIVA: "${AOS_ORQ_NOVA_TENTATIVA:-}"
       # O tecto de tentativas a mais POR PLANO. Vazio ⇒ 4. Um inteiro de 0 a 64.
       AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO: "${AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO:-}"
+      # A NOVA TENTATIVA POR RESPOSTA VAZIA (AOS-511, ADR-039). Vazio ⇒ `off`. Independente da
+      # variável acima; `observe` conta sem tentar; `on` volta a submeter um nó SEM tools cujo
+      # run fechou por empty_output sem tool calls, dentro dos MESMOS tectos (partilhados) e só
+      # contra um nó que anuncie run_retry.empty_output (AOS_RUN_RETRY_EMPTY=on). Qualquer outro
+      # valor recusa o arranque do `consume`.
+      AOS_ORQ_NOVA_TENTATIVA_VAZIA: "${AOS_ORQ_NOVA_TENTATIVA_VAZIA:-}"
     volumes:
       - aos-orq-data:/var/lib/aos-orq                    # WAL dos runs + WORM de governação
       - ./orq:/etc/aos-orq:ro                            # entradas do operador (snapshot, plan-doc, approvers)
