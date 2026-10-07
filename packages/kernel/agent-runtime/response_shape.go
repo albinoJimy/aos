@@ -27,10 +27,11 @@ type ResponseShape struct {
 	// string, já descodificada) ou do valor JSON (das outras formas).
 	Content      string `json:"content"`
 	ContentBytes int64  `json:"content_bytes"`
-	// Reasoning diz em que campo veio o raciocínio; ReasoningForm a forma JSON do primeiro
-	// presente (ausente sem raciocínio); ReasoningBytes a soma dos bytes dos VALORES JSON
-	// presentes (uma string vazia conta 2: as aspas); ReasoningSigned se a mensagem traz alguma
-	// chave de assinatura.
+	// Reasoning diz em que campo veio o raciocínio — só conta um campo COM conteúdo; um campo
+	// presente e vazio dá `vazio`, distinto de `nenhum`. ReasoningForm é a forma JSON desse
+	// campo (ausente sem campo nenhum); ReasoningBytes a soma dos bytes dos VALORES JSON de
+	// todos os campos presentes (uma string vazia conta 2: as aspas); ReasoningSigned se a
+	// mensagem traz alguma chave de assinatura.
 	Reasoning       string `json:"reasoning"`
 	ReasoningForm   string `json:"reasoning_form,omitempty"`
 	ReasoningBytes  int64  `json:"reasoning_bytes"`
@@ -82,6 +83,9 @@ const (
 	ShapeReasoningBlocks    = "thinking_blocks"
 	ShapeReasoningDetails   = "reasoning_details"
 	ShapeReasoningSeveral   = "varios"
+	// ShapeReasoningEmpty — há um campo de raciocínio presente e VAZIO (`""`, `[]`, `{}`), e
+	// nenhum com conteúdo. Não é raciocínio; é distinto de ausente.
+	ShapeReasoningEmpty = "vazio"
 
 	// [ResponseShape.ReasoningForm] e [ResponseShape.ArgumentsForm].
 	ShapeFormString = "string"
@@ -118,7 +122,7 @@ func ShapeContents() []string {
 
 // ShapeReasonings devolve o vocabulário de [ResponseShape.Reasoning], numa ordem fixa.
 func ShapeReasonings() []string {
-	return []string{ShapeReasoningNone, ShapeReasoningContent, ShapeReasoningReasoning, ShapeReasoningThinking, ShapeReasoningBlocks, ShapeReasoningDetails, ShapeReasoningSeveral}
+	return []string{ShapeReasoningNone, ShapeReasoningContent, ShapeReasoningReasoning, ShapeReasoningThinking, ShapeReasoningBlocks, ShapeReasoningDetails, ShapeReasoningSeveral, ShapeReasoningEmpty}
 }
 
 // maxShapeInt é o tecto de qualquer inteiro da ficha. O corpo de uma resposta está limitado a

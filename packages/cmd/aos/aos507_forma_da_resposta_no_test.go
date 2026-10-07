@@ -163,8 +163,8 @@ func TestAOS507_No_Observe_FichaEmCadaTurno(t *testing.T) {
 			t.Errorf("amostra inesperada: %s", l)
 		}
 	}
-	if series != 300 || soma != 2 {
-		t.Errorf("aos_model_response_shape_total: %d series e %d com 1; quero 300 (a cardinalidade maxima) e 2", series, soma)
+	if series != 342 || soma != 2 {
+		t.Errorf("aos_model_response_shape_total: %d series e %d com 1; quero 342 (a cardinalidade maxima) e 2", series, soma)
 	}
 	for _, quer := range []string{
 		`aos_model_response_shape_total{content="vazio",reasoning="reasoning_content",stop_reason="tool_calls"} 1`,
@@ -268,19 +268,19 @@ func TestAOS507_Env_VocabularioFechadoEBanner(t *testing.T) {
 	}
 }
 
-// OS CONTADORES: 300 séries, todas de vocabulário fechado; um trio fora dele conta como ficha
+// OS CONTADORES: 342 séries, todas de vocabulário fechado; um trio fora dele conta como ficha
 // ilegível e nunca com o texto recebido.
 func TestAOS507_Contadores_VocabularioFechado(t *testing.T) {
 	c := novosContadoresDaForma()
 	series := c.series()
-	if len(series) != 300 || len(c.total) != 300 {
-		t.Fatalf("cardinalidade = %d series (%d contadores), quero 300", len(series), len(c.total))
+	if len(series) != 342 || len(c.total) != 342 {
+		t.Fatalf("cardinalidade = %d series (%d contadores), quero 342", len(series), len(c.total))
 	}
 	c.observar("texto", "nenhum", agentruntime.StopStop)
 	c.observar("TEXTO-DO-PROVIDER", "nenhum", agentruntime.StopStop)
 	c.observar("texto", "TEXTO-DO-PROVIDER", "MOTIVO-BRUTO")
 	c.observar(agentruntime.ShapeUnreadable, agentruntime.ShapeReasoningNone, agentruntime.StopUnreported)
-	if len(c.total) != 300 {
+	if len(c.total) != 342 {
 		t.Fatalf("um valor fora do vocabulario criou uma serie: %d", len(c.total))
 	}
 	for chave, quer := range map[[3]string]int64{

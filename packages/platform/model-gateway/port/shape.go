@@ -27,10 +27,14 @@ type ResponseShape struct {
 	// do texto descodificado (string) ou do valor JSON (outras formas).
 	Content      string
 	ContentBytes int64
-	// Reasoning é o campo em que veio o raciocínio (ShapeReasoning*); ReasoningForm a forma JSON
-	// do primeiro presente, pela ordem de [nomesDoRaciocinio] (vazio sem raciocínio);
-	// ReasoningBytes a soma dos bytes dos VALORES JSON presentes; ReasoningSigned se a mensagem
-	// traz alguma chave `signature` ou `thought_signature`.
+	// Reasoning é o campo em que veio o raciocínio (ShapeReasoning*). Só conta um campo COM
+	// conteúdo ([RaciocinioComConteudo]): uma string, lista ou objecto não vazios. Um campo
+	// presente e vazio (`""`, `[]`, `{}`, `false`, `0`) não é raciocínio: se for tudo o que há,
+	// o valor é [ShapeReasoningEmpty] — distinto de ausente e de presente. ReasoningForm é a
+	// forma JSON do primeiro campo com conteúdo, pela ordem de [nomesDoRaciocinio] (ou do
+	// primeiro presente, em `vazio`; vazio sem campo nenhum); ReasoningBytes a soma dos bytes
+	// dos VALORES JSON de todos os campos presentes; ReasoningSigned se a mensagem traz alguma
+	// chave `signature` ou `thought_signature`.
 	Reasoning       string
 	ReasoningForm   string
 	ReasoningBytes  int64
@@ -58,7 +62,8 @@ type ResponseShape struct {
 	// UnknownKeysN é o número de chaves de `message` que a sonda não conhece.
 	UnknownKeysN int64
 	// Digest é `sha256:` + o hash da lista ordenada de pares (caminho da chave, tipo JSON) da
-	// resposta. Vazio quando a resposta excede os limites da sonda.
+	// resposta. Vazio quando a resposta excede os limites da sonda. NÃO cobre o interior dos
+	// campos cujo conteúdo é escrito pelo modelo ([chavesOpacasDoDigest]): desses entra só o tipo.
 	Digest string
 }
 
@@ -79,6 +84,7 @@ const (
 	ShapeReasoningBlocks    = "thinking_blocks"
 	ShapeReasoningDetails   = "reasoning_details"
 	ShapeReasoningSeveral   = "varios"
+	ShapeReasoningEmpty     = "vazio"
 
 	ShapeFormString = "string"
 	ShapeFormObject = "objecto"
@@ -112,6 +118,18 @@ var nomesDoRaciocinio = []struct{ chave, valor string }{
 // [ResponseShape.UnknownKeysN].
 var chavesConhecidasDaMensagem = map[string]bool{
 	"role": true, "content": true, "tool_calls": true, "function_call": true, "refusal": true,
+	"reasoning_content": true, "reasoning": true, "reasoning_details": true, "thinking_blocks": true, "thinking": true,
+}
+
+// chavesOpacasDoDigest são as chaves a cujo INTERIOR o digest não desce: delas entra só o tipo
+// JSON do valor. São os campos cujo conteúdo é escrito pelo MODELO a partir do material do
+// titular — os argumentos de uma tool call, o raciocínio em qualquer nome, o `content` em partes
+// — e o saco `provider_specific_fields`, onde um proxy guarda o que quiser. Os nomes de chave lá
+// dentro não são «do provider»: um digest que os cobrisse deixava confirmar um palpite de chave
+// por força bruta (o hash não tem sal), e deixava de agrupar formas iguais mal o modelo mudasse
+// os argumentos. Vale em qualquer profundidade.
+var chavesOpacasDoDigest = map[string]bool{
+	"arguments": true, "content": true, "provider_specific_fields": true,
 	"reasoning_content": true, "reasoning": true, "reasoning_details": true, "thinking_blocks": true, "thinking": true,
 }
 
@@ -224,21 +242,48 @@ func formaJSON(raw json.RawMessage) string {
 
 func sondarRaciocinio(msg map[string]json.RawMessage, shape *ResponseShape) {
 	shape.Reasoning = ShapeReasoningNone
-	n := 0
+	comConteudo, vazios := 0, 0
 	for _, nome := range nomesDoRaciocinio {
 		raw := msg[nome.chave]
 		if !presente(raw) {
 			continue
 		}
-		n++
 		shape.ReasoningBytes += int64(len(raw))
-		if n == 1 {
+		if !RaciocinioComConteudo(raw) {
+			if vazios++; comConteudo == 0 && vazios == 1 {
+				shape.Reasoning, shape.ReasoningForm = ShapeReasoningEmpty, formaJSON(raw)
+			}
+			continue
+		}
+		if comConteudo++; comConteudo == 1 {
 			shape.Reasoning, shape.ReasoningForm = nome.valor, formaJSON(raw)
 		}
 	}
-	if n > 1 {
+	if comConteudo > 1 {
 		shape.Reasoning = ShapeReasoningSeveral
 	}
+}
+
+// RaciocinioComConteudo diz se o valor JSON de um campo de raciocínio traz conteúdo: uma string,
+// uma lista ou um objecto NÃO VAZIOS. `null`, `""`, `[]`, `{}`, um número ou um booleano não
+// trazem — um provider que mande `thinking: false` ou `reasoning_details: []` não mandou
+// raciocínio.
+func RaciocinioComConteudo(raw json.RawMessage) bool {
+	if !presente(raw) {
+		return false
+	}
+	switch raw[0] {
+	case '"':
+		return string(raw) != `""`
+	case '[', '{':
+		var lista []json.RawMessage
+		if raw[0] == '[' {
+			return json.Unmarshal(raw, &lista) == nil && len(lista) > 0
+		}
+		var obj map[string]json.RawMessage
+		return json.Unmarshal(raw, &obj) == nil && len(obj) > 0
+	}
+	return false
 }
 
 func formaDaRecusa(msg map[string]json.RawMessage) string {
@@ -384,8 +429,9 @@ func temAssinatura(v any, depth int) bool {
 
 // digestDaForma devolve `sha256:` + o hash da lista ordenada de pares (caminho, tipo JSON). Os
 // elementos de uma lista partilham o mesmo caminho, pelo que o comprimento das listas não muda o
-// digest; os VALORES nunca entram. Os nomes das chaves entram só no que é hashed. Devolve vazio
-// se a resposta exceder [shapeMaxPairs].
+// digest; os VALORES nunca entram. Os nomes das chaves entram só no que é hashed, e só os da
+// estrutura do wire: ver [chavesOpacasDoDigest]. Devolve vazio se a resposta exceder
+// [shapeMaxPairs].
 func digestDaForma(v any) string {
 	pares := map[string]struct{}{}
 	if !paresDaForma(v, "", 0, pares) {
@@ -404,21 +450,24 @@ func digestDaForma(v any) string {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil))
 }
 
-func paresDaForma(v any, caminho string, depth int, pares map[string]struct{}) bool {
-	tipo := "null"
+func tipoJSON(v any) string {
 	switch v.(type) {
 	case map[string]any:
-		tipo = "object"
+		return "object"
 	case []any:
-		tipo = "array"
+		return "array"
 	case string:
-		tipo = "string"
+		return "string"
 	case float64:
-		tipo = "number"
+		return "number"
 	case bool:
-		tipo = "bool"
+		return "bool"
 	}
-	pares[caminho+"\x1e"+tipo] = struct{}{}
+	return "null"
+}
+
+func paresDaForma(v any, caminho string, depth int, pares map[string]struct{}) bool {
+	pares[caminho+"\x1e"+tipoJSON(v)] = struct{}{}
 	if len(pares) > shapeMaxPairs {
 		return false
 	}
@@ -428,6 +477,11 @@ func paresDaForma(v any, caminho string, depth int, pares map[string]struct{}) b
 	switch x := v.(type) {
 	case map[string]any:
 		for k, f := range x {
+			if chavesOpacasDoDigest[k] {
+				// Só o tipo do valor; o interior não entra.
+				pares[caminho+"\x1f"+k+"\x1e"+tipoJSON(f)] = struct{}{}
+				continue
+			}
 			if !paresDaForma(f, caminho+"\x1f"+k, depth+1, pares) {
 				return false
 			}

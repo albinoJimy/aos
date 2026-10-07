@@ -2281,14 +2281,14 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	// AOS-507 — TURNOS PELA FORMA DA RESPOSTA DO PROVIDER. Só sai com a medição ligada: com `off` a
 	// família não existe, e o /metrics é o de antes. Uma amostra por série dos três vocabulários
-	// fechados (300 no máximo), sempre presentes: o zero é um zero verdadeiro.
+	// fechados (342 no máximo), sempre presentes: o zero é um zero verdadeiro.
 	if h.node != nil && h.node.formaDaResposta != nil {
 		c := h.node.formaDaResposta
 		for i, s := range c.series() {
 			labels := `{content="` + s[0] + `",reasoning="` + s[1] + `",stop_reason="` + s[2] + `"}`
 			if i == 0 {
 				g("aos_model_response_shape_total",
-					"Turnos de modelo ao vivo desde o arranque, pela forma da resposta do provider (AOS-507). content e a forma de choices[0].message.content: ausente, nulo, vazio, so_brancos, texto, partes, outro, ou ilegivel (a sonda nao leu o corpo). reasoning e o campo em que veio o raciocinio: nenhum, reasoning_content, reasoning, thinking, thinking_blocks, reasoning_details ou varios. stop_reason e o do turno. Vocabulario fechado nos tres: nenhum texto do provider. Um turno reproduzido de uma captura nao conta. A ficha completa de cada turno esta em response_shape do turn.recorded.",
+					"Turnos de modelo ao vivo desde o arranque, pela forma da resposta do provider (AOS-507). content e a forma de choices[0].message.content: ausente, nulo, vazio, so_brancos, texto, partes, outro, ou ilegivel (a sonda nao leu o corpo). reasoning e o campo em que veio o raciocinio COM conteudo: nenhum, reasoning_content, reasoning, thinking, thinking_blocks, reasoning_details, varios, ou vazio (ha um campo de raciocinio presente e vazio, e nenhum com conteudo: nao e raciocinio). stop_reason e o do turno. Vocabulario fechado nos tres: nenhum texto do provider. Um turno reproduzido de uma captura nao conta. A ficha completa de cada turno esta em response_shape do turn.recorded.",
 					"counter", float64(c.lido(s)), labels)
 				continue
 			}

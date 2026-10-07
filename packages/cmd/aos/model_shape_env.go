@@ -86,8 +86,8 @@ func modelResponseShapeBannerFromEnv(gatewayComposed bool) []string {
 // contadoresDaForma conta, por processo, os turnos ao vivo por (forma do conteúdo, campo do
 // raciocínio, motivo de paragem) — a família `aos_model_response_shape_total`.
 //
-// CARDINALIDADE MÁXIMA: 300 séries. São 7 formas de conteúdo × 7 campos de raciocínio × 6 motivos
-// de paragem (294), mais a ficha ilegível, que só existe com `reasoning="nenhum"` (6). Os três
+// CARDINALIDADE MÁXIMA: 342 séries. São 7 formas de conteúdo × 8 valores do raciocínio × 6 motivos
+// de paragem (336), mais a ficha ilegível, que só existe com `reasoning="nenhum"` (6). Os três
 // rótulos são de vocabulário fechado; um valor fora dele não é contado com o texto recebido.
 type contadoresDaForma struct {
 	conteudos   []string
