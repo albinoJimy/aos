@@ -5,7 +5,7 @@
 > de prova ou que regista uma decisão do dono actualiza este ficheiro no mesmo commit. Um estado
 > aqui que não bata com o ticket na EPIC é um defeito do PR.
 
-Última actualização: 2026-10-07 (fase A1, v0.1.51 em produção: aviso na nova tentativa e projecção 1.2.0 ligados (AOS-506); duas séries medidas, `v0151a` e `v0151b`; o critério «não cumprido abaixo de 2%» foi cumprido pela primeira vez na série `v0151b` — 1 em 62 planos, 1,6% —, com a ressalva de que a única causa que resta, `empty_output` num nó sem tools, não é coberta pela recuperação. As duas verificações que faltavam correram no mesmo dia: o plano de três passos (`v0151t`), em que o Reference Monitor negou por taint a tool do nó com `consumes` e não houve nova tentativa; e o AOS-505 em `observe` (série `v0151g`, 20 planos, 60 turnos com o modelo servido igual ao esperado). **Fase A1 fechada a 2026-10-07, por decisão do dono, com os resíduos nomeados. Fase A2 aberta no mesmo dia, com o desenho por fazer**).
+Última actualização: 2026-10-07 (fase A1, v0.1.51 em produção: aviso na nova tentativa e projecção 1.2.0 ligados (AOS-506); duas séries medidas, `v0151a` e `v0151b`; o critério «não cumprido abaixo de 2%» foi cumprido pela primeira vez na série `v0151b` — 1 em 62 planos, 1,6% —, com a ressalva de que a única causa que resta, `empty_output` num nó sem tools, não é coberta pela recuperação. As duas verificações que faltavam correram no mesmo dia: o plano de três passos (`v0151t`), em que o Reference Monitor negou por taint a tool do nó com `consumes` e não houve nova tentativa; e o AOS-505 em `observe` (série `v0151g`, 20 planos, 60 turnos com o modelo servido igual ao esperado). **Fase A1 fechada a 2026-10-07, por decisão do dono, com os resíduos nomeados. Fase A2 aberta no mesmo dia: desenho feito, decisões D1 a D3 tomadas, D4 e D5 por tomar, AOS-507 a AOS-511 abertos, e o resto planeado, por numerar**).
 
 ## 1. Objectivo e promessa
 
@@ -29,7 +29,7 @@ na §5, e só passa a **fechada** por decisão do dono, registada na §4.
 | **A0** | O desfecho de um run é um veredicto do kernel sobre um contrato de conclusão; o `aos-orq` trata «não cumprido» como nó falhado | Zero verdes falsos em pelo menos 150 runs com tools na oferta | — | **em produção por verificar** (v0.1.46, imposição ligada a 2026-10-05; falta o critério de prova. A contagem dos 150 runs sem verde falso recomeça desde a projecção 1.1.0: as 3 recusas do próprio objectivo da série `v0150r`, com a 1.0.0, foram verdes sem cumprir) |
 | **A0.5 — Saída por referência** | A saída de um nó de passagem directa é o resultado da tool, e não o texto do modelo: o plano declara a origem (`outputs[].from_tool`), o kernel designa e sela qual chamada é a origem, e o `aos-orq` publica e entrega esses bytes, conferidos contra o digest selado. O texto final continua capturado e deixa de ser a saída | Numa série de pelo menos 20 planos, a saída entregue ao nó seguinte é byte a byte o resultado selado da tool e nenhum facto do documento se perde | A0 | **provada** (2026-10-06, v0.1.49 com a entrega ligada: série de 21 planos, 18 entregas por referência, todas byte a byte iguais ao resultado selado; os outros 3 falharam antes da entrega por o modelo não chamar a tool) |
 | **A1 — Recuperação** | Nova tentativa ao nível do plano: um nó que terminou sem chamar a tool volta a ser submetido, até duas vezes a mais, em qualquer nó com tools, e o nó `aos` só aceita a tentativa depois de provar no seu log que a anterior não pediu tool nenhuma. Projecção nativa 1.1.0 (fim de segmento inforjável e texto do protocolo reescrito), desligada por omissão e medida antes de ligar. Projecção nativa 1.2.0 e aviso constante na nova tentativa, para o modelo que escreve a tool call como texto (AOS-506), desligados por omissão. Rota sob governação (nome real do modelo, proxy sem descartar parâmetros, modelo servido comparado por turno) | «Não cumprido» abaixo de 2% numa série de pelo menos 40 planos com a recuperação ligada; uma troca de modelo por baixo é detectada | A0 | **fechada** (2026-10-07, por decisão do dono, com os resíduos nomeados). Provada em produção na v0.1.51. «Não cumprido» abaixo de 2%: cumprido na série `v0151b` (1 em 62, 1,6%) e na série `v0151g` (0 em 20); antes, 2,5%, 3,3% e 3,4%. Acumulado com a 1.2.0: 82 planos, 1 falha à primeira tentativa (1,2%), 1 `empty_output`. Troca de modelo por baixo: detectável na forma estreita (uma troca de configuração no proxy), e a comparação por turno corre em produção em `observe` — 60 turnos em 60 com o modelo servido igual ao esperado. Resíduos nomeados (§7): `empty_output` num nó sem tools (passa à A2); um nó com tools e `consumes` é negado pelo gate de taint enquanto a capacidade da tool estiver armada, e a recuperação não o alcança; os separadores `<kind>` como risco aberto; AOS-505 por impor (`enforce`) |
-| **A2** | Estado opaco do provider por turno (raciocínio, assinaturas, identificadores), com sondas de protocolo deterministas | Duas famílias de modelos completam runs com tools | A0; escolha da segunda família | **em curso** (2026-10-07: aberta; desenho por fazer). Herda da A1 o `empty_output` (§7): a única causa de «não cumprido» que resta nas séries da v0.1.51 |
+| **A2** | Estado opaco do provider por turno (raciocínio, assinaturas, identificadores), com sondas de protocolo deterministas | Duas famílias de modelos completam runs com tools | A0; escolha da segunda família | **em curso** (2026-10-07: desenho feito, `desenho-a2-estado-opaco-2026-10-07.md`; decisões D1 a D5 tomadas; AOS-507 a AOS-511 abertos; o banco de ensaio, o estado opaco e a segunda família estão planeados, por numerar, à espera das chaves que o dono fornece — §3). Herda da A1 o `empty_output` (§7): a única causa de «não cumprido» que resta nas séries da v0.1.51 |
 | **A3** | Entrada automática: arnês de qualificação, perfil do modelo como artefacto do registo, mais de um modelo por nó, canary, disjuntor | O terceiro modelo entra com zero PRs e uma assinatura em menos de uma hora; um modelo mau é recusado sozinho | A1, A2 | por começar. Proposta por decidir (§4): antecipar daqui um banco de ensaio de qualificação por modelo |
 | **A4** | Cascata: estimar a capacidade que o passo exige e eleger o modelo por roteamento determinista, com limiares num `decision pack` | A divisão entre modelos baratos e caros é medida e ajustada sem deploy | A3 | por começar |
 | **A5** | Multimodal de entrada (media por referência) | Um modelo recebe imagem ou áudio num run, com replay | A2 | por começar |
@@ -191,11 +191,65 @@ detecta-se na forma estreita, e em produção só em `observe`. A fase fecha com
 nomeados e por resolver; nenhum deles ficou fechado pelo fecho. O dono mandou abrir a fase A2
 no mesmo dia: o desenho está por fazer, e não há tickets abertos.
 
-### A2 a A6
+### A2 — Estado opaco do provider
 
-A fase A2 foi aberta pelo dono a 2026-10-07; o desenho está por fazer e ainda não tem tickets.
-Nas outras, sem tickets abertos: abrem-se quando a fase anterior estiver em produção e as
-decisões da §4 correspondentes estiverem tomadas.
+Desenho: `desenho-a2-estado-opaco-2026-10-07.md`. Onde o desenho e os tickets divergirem, valem os
+tickets.
+
+**O que a leitura do código mudou** (conferido contra a base a 2026-10-07, desenho §10). O
+adaptador **já lê** `reasoning_content`, e o valor vai para a captura do turno: a hipótese «o
+conteúdo veio no campo de raciocínio, que o adaptador não lê» está errada nessa forma. O que não
+é lido são os outros nomes do raciocínio. Uma resposta com `content` em lista de partes ou com
+`function.arguments` em objecto é recusada **inteira**. E o id de tool call do provider é
+descartado: o que volta é o do runtime.
+
+| Ticket | Epic | Título curto | Depende de | Estado |
+|---|---|---|---|---|
+| AOS-507 | EPIC-06 | A forma da resposta do provider fica registada em cada turno, em vocabulário fechado e sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE=off\|observe`, omissão `off`) | AOS-491 | aberto (2026-10-07) |
+| AOS-508 | EPIC-06 | Providers falsos de wire para CI, e um gate opcional que os põe atrás da imagem real do proxy | AOS-505 | aberto (2026-10-07) |
+| AOS-509 | EPIC-06 | O gateway deixa de recusar a resposta inteira por `content` em partes de texto e por `arguments` em objecto, e lê os outros nomes do raciocínio como raciocínio — nunca como resposta. Sem interruptor | AOS-507, AOS-508 | aberto (2026-10-07) |
+| AOS-510 | EPIC-19 | O nó aceita a nova tentativa de um nó do plano que fechou `empty_output`, com prova própria no seu log (`AOS_RUN_RETRY_EMPTY=off\|on`, omissão `off`). Emenda o ADR-039. A tentativa não leva aviso | AOS-502, AOS-506 | aberto (2026-10-07) |
+| AOS-511 | EPIC-19 | O `aos-orq` volta a submeter um nó do plano que fechou `empty_output` (`AOS_ORQ_NOVA_TENTATIVA_VAZIA=off\|observe\|on`, omissão `off`; os mesmos tectos, 2 por nó e 4 por plano) | AOS-510, AOS-503 | aberto (2026-10-07) |
+
+**Planeados, por numerar.** Dependiam das decisões D4 e D5, que o dono tomou a 2026-10-07 (§4);
+ficam à espera das chaves e dos tectos de despesa, que o dono fornece num ficheiro seu. Não têm
+ticket nem número: a gama `AOS-NNN` só cresce quando um ticket é aberto. Os rótulos são os do
+desenho §6 e não são identificadores.
+
+| Rótulo | Conteúdo | Depende de |
+|---|---|---|
+| «A2-banco» | Banco de ensaio mínimo (bateria de casos sintéticos, relatório de taxas), com a experiência dos separadores `<kind>` como primeira corrida | AOS-507, AOS-508; D5 |
+| «A2-perfil» | O perfil de rota declara parâmetros do pedido e a classe de estado (devolver: nunca, opcional, obrigatório) | AOS-505; o resultado do AOS-507 |
+| «A2-estado» e «A2-projecção» | Estado opaco: ADR novo; o estado do turno (raciocínio em qualquer nome, assinaturas, id do provider) capturado selado e referido no tail por digest; depois a projecção nativa 1.3.0, que o devolve ao provider quando o perfil da rota o exige, e só à rota que o produziu | AOS-509; «A2-perfil»; D4 |
+| «A2-família» | Qualificação da segunda família: série real, matriz de suporte e este documento actualizados | «A2-banco», «A2-projecção»; D4 |
+
+**Critério de prova da fase A2** (desenho §8). A fase passa a **provada** quando os sete pontos
+estiverem medidos e registados na §5.
+
+| # | Critério | Medida |
+|---|---|---|
+| P1 | A causa do `empty_output` tem nome | Com o AOS-507 em `observe`, 100% dos turnos fechados `empty_output` têm a forma registada, em pelo menos 3 ocorrências; a classe dominante fica escrita |
+| P2 | A resposta vazia deixa de falhar planos | Planos falhados por `empty_output` abaixo de 1% em pelo menos 120 planos com o AOS-511 em `on` (hoje 3 em 140, 2,1%), e zero eventos `tool.call.*` nos runs que antecederam uma tentativa admitida |
+| P3 | Duas famílias completam runs com tools | Cada família: pelo menos 40 planos em que o nó com tools chega ao segundo turno, «não cumprido» abaixo de 2%, e zero respostas 4xx do provider nesses segundos turnos |
+| P4 | O estado opaco é exercitado, não só tolerado | Pelo menos uma das duas famílias tem perfil com devolução obrigatória; nos seus turnos a forma registada mostra estado recebido, e o pedido seguinte levou-o |
+| P5 | Sondas de protocolo deterministas | A bateria de falsos passa a 100% em CI para cada classe marcada «qualificada» na matriz, e cada sonda tem o controlo negativo: retirado o estado, fica vermelha |
+| P6 | Replay e segredo | Fidelidade de replay de 100% em runs das duas famílias, incluindo um retomado a meio com estado; zero sentinelas de raciocínio em `turn.recorded`, métricas, spans e logs |
+| P7 | Sem regressão na rota de produção | Com tudo o que for ligado, a taxa de primeiras falhas e o «não cumprido» do Kimi não pioram face à última série anterior |
+
+P1 e P2 fecham o defeito medido; P3 a P6 são a fase propriamente dita; P7 é a salvaguarda.
+
+Ordem de entrega: o AOS-507 e o AOS-508 primeiro (ver, sem mudança de comportamento); depois o
+AOS-509 (não cair); depois o AOS-510 no nó, com o interruptor desligado, e o AOS-511 em `off`, em
+`observe` até o número ser lido aqui, e em `on` por decisão do dono. O nó sai antes do
+`aos-orq`. Tudo entra desligado ou aditivo. Em nenhum passo o sistema fica pior do que hoje: o
+AOS-509 só converte erros em turnos, e uma tentativa por vazio que falha deixa o plano onde hoje
+fica (saída 13), alguns segundos mais tarde. O trabalho planeado abre-se depois, pela ordem da
+tabela acima.
+
+### A3 a A6
+
+Sem tickets abertos: abrem-se quando a fase anterior estiver em produção e as decisões da §4
+correspondentes estiverem tomadas.
 
 ## 4. Decisões do dono
 
@@ -242,9 +296,15 @@ decisões da §4 correspondentes estiverem tomadas.
 | 2026-10-07 | Encaminhamento proposto: a fase A2 ganha prioridade, por causa do `empty_output` — a única causa de «não cumprido» que resta | **Resolvida:** o dono abriu a fase A2 (linhas abaixo) |
 | 2026-10-07 | Ligar a rota sob governação em `observe` em produção (`AOS_MODEL_ROUTE_GOVERNANCE=observe`, `AOS_MODEL_ROUTE_API_HOST=api.kimi.com`) | Tomada (AOS-505); série `v0151g` lida |
 | 2026-10-07 | **A fase A1 está fechada**, com os resíduos nomeados na §7: `empty_output` num nó sem tools; o nó com tools e `consumes` negado por taint; os separadores `<kind>` como risco aberto; AOS-505 por impor | Tomada |
-| 2026-10-07 | Abrir a fase A2 | Tomada; desenho por fazer |
+| 2026-10-07 | Abrir a fase A2 | Tomada; desenho feito no mesmo dia (`desenho-a2-estado-opaco-2026-10-07.md`) |
+| 2026-10-07 | **D1 — sim.** Medir a forma das respostas do provider em produção durante uma ou duas séries: que partes vieram e o tamanho de cada uma, nunca o texto | Tomada (AOS-507) |
+| 2026-10-07 | **D2 — sim, primeiro só a contar.** Quando um passo sem ferramentas devolve uma resposta vazia, o sistema tenta outra vez sozinho, com o mesmo limite (duas tentativas a mais por nó, quatro por plano). O `aos-orq` entra em `observe` e só passa a `on` com o número lido | Tomada (AOS-510, AOS-511) |
+| 2026-10-07 | **D3 — não.** O raciocínio do modelo nunca é usado como resposta. Porquê: o veredicto `empty_output` está certo (o modelo não respondeu) e promover a resposta um texto que o modelo não deu como resposta refaz o verde falso que a A0 fechou; o raciocínio é deliberação, com hipóteses abandonadas e cópias do material untrusted do passo anterior; o contrato existente dá-lhe a captura como único destino; seria uma regra nova de conclusão, com layout novo; e alargava a saída a um canal que o provider controla. As respostas vazias tratam-se pela D2; se a causa for um servidor que não separa raciocínio de resposta, corrige-se na rota | Tomada (registada no AOS-509) |
+| 2026-10-07 | **D4 — o segundo modelo é o Claude (Anthropic), com o raciocínio ligado, pelo mesmo proxy.** Escolhido por obrigar a devolver-lhe o raciocínio assinado no passo seguinte quando há tools: é a parte difícil do estado opaco, e um modelo que não exigisse nada cumpria o critério no papel sem a provar. O Kimi `k3` (já configurado) serve para estrear o banco de ensaio e **não** conta como segunda família. As regras de cada fornecedor sobre devolver o raciocínio confirmam-se na documentação do fornecedor antes de se abrir o ticket | Tomada. Por fornecer pelo dono: a chave, o tecto de despesa diário e a região em que a conta processa os dados (produção está selada para `eu-west`; fora da UE o modelo só serve para ensaio com documentos de teste) |
+| 2026-10-07 | **D5 — autorizado um posto de ensaio à parte, com o modelo real e uma chave com limite próprio.** Revê a recusa de medição directa de 2026-10-06, só para o posto de ensaio: com tecto diário de pedidos, documentos de teste, e chaves num ficheiro do dono fora do repositório, que o posto lê pelo caminho e nunca imprime nem regista | Tomada. Por fornecer pelo dono: a chave de ensaio do Kimi e o tecto diário |
+| 2026-10-07 | A tentativa por resposta vazia **não leva aviso**: o texto do AOS-506 fala de function calling e não se aplica a um nó sem tools, e a causa do vazio não é conhecida. Gatilho para reabrir no AOS-510 | Por omissão (decidido no ticket AOS-510; o dono não decidiu em contrário) |
 | — | Levantar o limite do nó com tools e `consumes` (negado por taint com a capacidade armada): forma forte do ADR-005 (opção A, dual-LLM) ou aprovação humana. Fora da fase A1 | Por tomar |
-| — | Qual é a segunda família de modelos (condiciona A2) | Por tomar |
+| 2026-10-07 | Qual é a segunda família de modelos (condiciona A2) | Tomada: é a decisão D4, acima |
 | — | O Jev: enumerar primeiro as combinações reais de state do risk gate; só depois decidir um teste offline | Por tomar |
 
 ## 5. Medições
@@ -295,7 +355,7 @@ decisões da §4 correspondentes estiverem tomadas.
 
 Por medir: a projecção 1.2.0 sem o aviso (não se mediu, por decisão do dono); um nó com tools e
 `consumes` recuperado por nova tentativa (não realizável em produção com a política de hoje,
-§3); o AOS-505 em `enforce`; a causa do `empty_output` (a hipótese do campo de raciocínio não foi confirmada); se a
+§3); o AOS-505 em `enforce`; a causa do `empty_output` (a hipótese do campo de raciocínio foi corrigida pela leitura do código — o adaptador lê `reasoning_content` —, e a causa continua por medir: AOS-507); se a
 notação de cabeçalhos e linhas de fim induz o modelo a imitar marcação (hipótese, não testada
 isoladamente); o que o provider real devolve sobre o modelo que serviu; e o critério da fase A0,
 cuja contagem dos 150 runs recomeça desde a projecção 1.1.0.
@@ -331,8 +391,12 @@ Não fechados por nenhuma fase até decisão em contrário:
   planos** (2 em 58 e 1 em 62), sempre no nó de resumo, com um turno, motivo de paragem `stop` e
   tokens de saída contados. É a única causa de «não cumprido» que resta nas séries da v0.1.51.
   O plano sai 13, e portanto não é um verde falso; a recuperação não o cobre, porque o nó não
-  tem contrato de conclusão. Hipótese não confirmada: o conteúdo veio no campo de raciocínio,
-  que o adaptador não lê. Passa à fase A2.
+  tem contrato de conclusão. Passou à fase A2. **Corrigido a 2026-10-07 pela leitura do
+  código:** a hipótese «o conteúdo veio no campo de raciocínio, que o adaptador não lê» está
+  errada nessa forma — o adaptador lê `reasoning_content` e grava-o na captura; não lê os outros
+  nomes do raciocínio. Oito formas de resposta dão este mesmo registo (desenho A2, §2.2), e não
+  há dados para escolher. O AOS-507 mede a causa; o AOS-510 e o AOS-511 repetem o nó; o
+  raciocínio nunca é usado como resposta (decisão D3).
 - **Risco de desenho aberto, não provado:** os separadores `<kind>` e `</kind>` do protocolo
   podem ser a causa de fundo da tool call escrita como texto — o modelo imitaria a marcação que
   lê. A 1.2.0 corrige com uma instrução e mantém os separadores; a hipótese não foi testada
