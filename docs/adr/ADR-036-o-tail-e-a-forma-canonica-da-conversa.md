@@ -303,6 +303,15 @@ parâmetros do deployment, incluindo a chave do provider — um derivado de segr
 ausente deixa o campo **por reportar**; nunca se preenche com o nome pedido nem com o `model` do
 corpo.
 
+**Compara-se o valor cru; grava-se o saneado.** O nome que o proxy declara é texto de terceiros
+que acaba em claro num evento, e por isso é saneado (sem caracteres não imprimíveis, cortado a 256
+bytes). A comparação **não** se faz sobre esse texto: se o saneamento alterar o valor — um
+carácter de largura zero, uma marca de direcção do texto, o corte —, o resultado é `diferente`,
+com a causa `modelo_diferente`, e nunca `igual`. Lêem-se **todas** as ocorrências de cada
+cabeçalho: repetido com valores diferentes entre si é `diferente`. O host compara-se normalizado
+dos dois lados — minúsculas e sem o ponto final do nome absoluto —, e a **porta compara-se como
+está**: se o proxy a declara, o host esperado leva-a.
+
 **O perfil da rota.** Vive em código (`route.go` do gateway): nome pedido, modelo esperado, classe
 de wire e capacidades declaradas. Não contém segredos nem endereços; o host esperado do endpoint
 é configuração do nó. O digest do perfil (`sha256:` sobre o JSON canónico) fica em
@@ -325,7 +334,9 @@ registo é da fase A3.
   que não se prova não passa.
 
 Um valor fora do vocabulário recusa o arranque; com a governação ligada, um modelo sem perfil
-também. O nome do modelo servido só entra num rótulo de métrica se for um dos modelos esperados
+também. **`enforce` sem o host esperado do endpoint recusa o arranque**: sem ele uma troca só de
+endpoint passaria por `igual` num modo que promete falhar o que não se prova. `observe` aceita-o
+por definir e declara no arranque que o endpoint não é comparado. O nome do modelo servido só entra num rótulo de métrica se for um dos modelos esperados
 dos perfis; qualquer outro texto conta como `outro`.
 
 **A captura e o replay.** Num turno comparado, a captura guarda o modelo servido, o resultado e o
@@ -340,6 +351,13 @@ troca feita pelo provider por trás do mesmo nome e do mesmo endpoint: os cabeç
 proxy está configurado para pedir, não o que o provider serviu. E **não são atestação**: quem os
 emite é o proxy, sem prova de origem, e valem enquanto o canal entre o nó e o proxy for de
 confiança. O que o provider real devolve sobre si próprio não foi medido.
+
+**Fora da comparação, por decisão deste ticket.** As chamadas ao modelo feitas pelo `aos-orq` (o
+planeador, AOS-391/395): esse binário compõe o seu próprio gateway, sem governação da rota, e as
+suas chamadas passam pelo mesmo proxy sem serem comparadas — em nenhum dos modos, `enforce`
+incluído. `enforce` no nó não impede que um plano seja decomposto por outro modelo. É um limite
+escrito e um resíduo nomeado, não uma propriedade provada. O streaming e os embeddings também não
+são comparados.
 
 ## 3. Alternativas rejeitadas
 

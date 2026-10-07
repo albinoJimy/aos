@@ -512,7 +512,9 @@ services:
       # antes. `observe` compara em cada turno o modelo que o LiteLLM declara ter servido com o
       # perfil da rota e regista a variância; `enforce` faz falhar o turno cuja rota não se prove
       # igual. Outro valor ⇒ o nó recusa arrancar (ErrBadModelRouteGovernance). O host é o do
-      # endpoint esperado (só o host); vazio ⇒ o endpoint não é comparado.
+      # endpoint esperado (só o host; a porta compara-se como está); vazio ⇒ o endpoint não é
+      # comparado, o que só `observe` aceita — `enforce` sem o host recusa o arranque. Estas duas
+      # variáveis só vão para o nó: as chamadas do serviço `aos-orq` ao LiteLLM NÃO são comparadas.
       AOS_MODEL_ROUTE_GOVERNANCE: "${AOS_MODEL_ROUTE_GOVERNANCE:-}"
       AOS_MODEL_ROUTE_API_HOST: "${AOS_MODEL_ROUTE_API_HOST:-}"
       # O VEREDICTO DE CONCLUSÃO (AOS-493, ADR-037). Vazio ⇒ `observe`: o kernel calcula se o run

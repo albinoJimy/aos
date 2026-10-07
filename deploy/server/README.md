@@ -861,7 +861,23 @@ Com a governação ligada, o nó compara em cada turno o que o LiteLLM **declara
 |---|---|
 | *(vazio)* ou `off` | Nada: pedidos, eventos, manifestos, capturas e `/metrics` são byte a byte os de antes |
 | `observe` | Compara cada turno. Grava `route_check` (`igual`, `diferente`, `nao_reportado`) no `turn.recorded`; o `served_model_id` passa a ser o modelo que o LiteLLM declarou (ausente se não o declarou); o digest do perfil fica em `manifest.model.route_profile_digest`. Uma variância é selada no audit de governação do gateway e contada. **O turno segue** |
-| `enforce` | O mesmo registo, e um turno cuja rota não se prove igual à do perfil — diferente **ou** não reportada — **falha**, com causa em vocabulário fechado (`modelo_diferente`, `modelo_nao_reportado`, `endpoint_diferente`, `endpoint_nao_reportado`, `rota_sem_perfil`) |
+| `enforce` | O mesmo registo, e um turno cuja rota não se prove igual à do perfil — diferente **ou** não reportada — **falha**, com causa em vocabulário fechado (`modelo_diferente`, `modelo_nao_reportado`, `endpoint_diferente`, `endpoint_nao_reportado`, `rota_sem_perfil`). **Exige `AOS_MODEL_ROUTE_API_HOST`**: sem ela o nó recusa arrancar |
+
+**O host do endpoint — `AOS_MODEL_ROUTE_API_HOST`.** Só o host do `api_base` do `config.yaml`.
+
+- Em `enforce` é **obrigatória**: sem ela uma troca só de endpoint passaria por `igual` num modo
+  que promete falhar, e o nó recusa arrancar com uma mensagem que nomeia a variável.
+- Em `observe` pode ficar vazia; o banner diz então que o endpoint **não é comparado**.
+- Com `off` não é usada: um valor inválido não aborta o arranque, fica um aviso no banner.
+- Compara-se em **minúsculas e sem o ponto final**, dos dois lados (`API.Kimi.com.` é
+  `api.kimi.com`). **A porta compara-se como está:** se o `api_base` do `config.yaml` tem porta
+  (`https://api.exemplo.test:8443/v1`), a variável leva a porta (`api.exemplo.test:8443`); se
+  não tem, não leva. `api.kimi.com:443` **não** é `api.kimi.com`.
+
+**Como se compara.** O valor **cru** de cada cabeçalho, exactamente. Um nome com caracteres
+invisíveis (não imprimíveis, de largura zero, de direcção do texto) ou maior do que 256 bytes é
+`diferente`, mesmo que o texto limpo coincida com o esperado; o que se grava é o texto limpo. Um
+cabeçalho que venha **repetido com valores diferentes** também é `diferente`.
 
 **O que fica governado, e o que não fica.**
 
@@ -872,6 +888,11 @@ Com a governação ligada, o nó compara em cada turno o que o LiteLLM **declara
   O nó lê o que o LiteLLM está configurado para pedir, não o que o provider serviu.
 - **Não é atestação.** Os cabeçalhos são emitidos pelo LiteLLM sem prova de origem; valem
   enquanto o canal entre o nó e o LiteLLM for de confiança (a rede interna do compose, com TLS).
+- **As chamadas do `aos-orq` (o planeador) não são comparadas.** O serviço `aos-orq` compõe o seu
+  próprio gateway e fala com o mesmo LiteLLM; as duas variáveis só vão para o nó. A decomposição
+  de um plano pode ser servida por outro modelo sem rasto nenhum, em qualquer dos modos —
+  incluindo `enforce`. Fica como limite escrito deste ticket.
+- **O streaming e os embeddings** também não são comparados.
 - **O `litellm/config.yaml` continua sem assinatura.**
 - **O que o provider real devolve sobre si próprio não foi medido.** A medição foi local, com a
   imagem de produção (`litellm` 1.96.2, pelo digest) contra providers falsos.
@@ -891,9 +912,17 @@ deployment, incluindo a chave do provider. Não o ponhas num log nem num painel 
 - No arranque, a linha `rota do modelo sob governacao` (não sai com `off`).
 
 **O alerta** — [`alerta-rota.sh`](alerta-rota.sh), no molde do `alerta-ancora.sh` e com o mesmo
-tópico ntfy: avisa quando a soma de `result="diferente"` é maior do que zero. O contador é por
-processo e só sobe: fica em alerta até o nó reiniciar. Não avisa por `nao_reportado` nem com a
-família ausente (governação desligada). Instala-se como os outros:
+tópico ntfy. Duas regras independentes, cada uma com o seu aviso:
+
+| Regra | Título do aviso | O que quer dizer |
+|---|---|---|
+| soma de `result="diferente"` > 0 | `AOS: rota do modelo em ALERTA` | O LiteLLM declarou outro modelo ou outro endpoint: troca de configuração |
+| soma de `result="nao_reportado"` > 0 | `AOS: rota do modelo NAO REPORTADA` | O LiteLLM não declarou o modelo ou o endpoint: outro proxy à frente do provider, ou uma versão que renomeou ou desligou os cabeçalhos. A rota deixou de ser comparada |
+
+Os contadores são por processo e só sobem: cada regra fica em alerta até o nó reiniciar, avisa
+uma vez, relembra de 24 h em 24 h, e avisa quando volta a zero. Uma não cala nem repete a outra
+(o estado são dois ficheiros em `/opt/aos/.alerta-rota/`). Não avisa com a família ausente
+(governação desligada) nem sem resposta das métricas. Instala-se como os outros:
 
 ```
 # como aos: crontab -e  →  */15 * * * * /bin/bash /opt/aos/alerta-rota.sh >/dev/null 2>&1
@@ -923,13 +952,22 @@ Rollback, uma linha: repõe `drop_params: true` e recria o `litellm`.
 
 **2. Ligar a observação.** No `.env`: `AOS_MODEL_ROUTE_GOVERNANCE=observe` e
 `AOS_MODEL_ROUTE_API_HOST=<host do api_base do config.yaml>` (só o host: `api.kimi.com`), e
-recria o nó. Confirma a linha do banner e instala o cron do `alerta-rota.sh`. Critério do ticket:
+recria o nó. O host escreve-se como está no `api_base`: com a porta se ele a tiver, sem ela se
+não tiver. Confirma a linha do banner — tem de dizer que o host do endpoint **é** comparado — e
+instala o cron do `alerta-rota.sh`. Critério do ticket:
 numa série de pelo menos **20 planos**, todos os turnos com `result="igual"` — `diferente` e
 `nao_reportado` a **zero** — e a taxa de planos falhados sem subir em relação à série anterior.
 Recuo: remove as duas variáveis e recria o nó.
 
 Se `nao_reportado` não ficar a zero, o LiteLLM de produção não está a emitir os cabeçalhos (outra
-versão, ou uma opção que os desliga): **não passes a `enforce`**, que falharia todos os turnos.
+versão, ou uma opção que os desliga): o `alerta-rota.sh` avisa («rota do modelo NAO REPORTADA»), e
+**não passes a `enforce`**, que falharia todos os turnos. Se `diferente` subir com a causa
+`endpoint_diferente` logo no primeiro turno, o mais provável é a porta: compara a variável com o
+`api_base`.
+
+**Antes de `enforce`.** O nó só arranca em `enforce` com `AOS_MODEL_ROUTE_API_HOST` definida. E
+lembra o limite: as chamadas do `aos-orq` não são comparadas, pelo que `enforce` no nó não impede
+um plano decomposto por outro modelo.
 
 **3. Passar a pedir o nome real do modelo** (opcional, e independente de 2). Hoje o nó pede
 `gpt-4o-mini` e o LiteLLM serve `openai/kimi-for-coding`. Para o nó pedir `kimi-for-coding`, sem
