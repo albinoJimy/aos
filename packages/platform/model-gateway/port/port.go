@@ -31,7 +31,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.4.0"
+const Version = "1.5.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -333,6 +333,11 @@ type ChatResponse struct {
 	// e por isso não vai no wire (`json:"-"`). Ver [ServedRoute]. O caminho de streaming não o
 	// preenche.
 	Route ServedRoute `json:"-"`
+	// Shape é a ficha da forma do corpo desta resposta (AOS-507; campo aditivo, MINOR 1.5.0): ver
+	// [ResponseShape]. Não é do corpo — é uma medição SOBRE o corpo —, e por isso não vai no wire
+	// (`json:"-"`). nil quando o adaptador não a mede, que é a omissão. O caminho de streaming
+	// não a preenche.
+	Shape *ResponseShape `json:"-"`
 }
 
 // ChatStreamDelta é um incremento (delta) do streaming de chat. Content é o

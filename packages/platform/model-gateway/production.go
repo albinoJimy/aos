@@ -188,6 +188,11 @@ type ProductionConfig struct {
 	// comporta-se como antes. Um modo fora do vocabulário ⇒ [ErrBadRouteGovernance], sem gateway.
 	// Cada variância é selada no MESMO audit de governação ([ProductionConfig.Audit]).
 	Route RouteGovernance
+	// ResponseShape é o modo da medição da forma da resposta (AOS-507): [ResponseShapeOff] — a
+	// omissão, e o do valor-zero — ou [ResponseShapeObserve], em que cada resposta de chat
+	// síncrona leva a ficha do seu corpo cru. Um modo fora do vocabulário ⇒
+	// [ErrBadResponseShape], sem gateway.
+	ResponseShape string
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -223,6 +228,15 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	if _, err := ParseRouteGovernance(routeMode); err != nil {
 		return nil, err
 	}
+	shapeMode := cfg.ResponseShape
+	if shapeMode == "" {
+		shapeMode = ResponseShapeOff
+	}
+	shapeMode, serr := ParseResponseShape(shapeMode)
+	if serr != nil {
+		return nil, serr
+	}
+	cfg.ResponseShape = shapeMode
 	clock := cfg.Clock
 	if clock == nil {
 		clock = time.Now
@@ -280,6 +294,12 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	adapter, err := newProviderAdapter(cfg.Provider, cfg.BaseURL, cfg.HTTPClient, cfg.AllowedEgressHosts, cfg.EgressTimeout)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.ResponseShape == ResponseShapeObserve {
+		// AOS-507: a sonda da forma só existe no adaptador HTTP — é ele que tem o corpo cru.
+		if h, ok := adapter.(*adapters.OpenAIHTTPAdapter); ok {
+			h.ObserveResponseShape()
+		}
 	}
 	creds := &credProviderSource{p: cfg.Credentials}
 
