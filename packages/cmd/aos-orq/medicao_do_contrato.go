@@ -47,6 +47,12 @@ type medicaoDoContrato struct {
 	nosRecuperados         map[string]int           // com_consumes → nós que concluíram numa tentativa a mais
 	tentativasRecusadas    map[string]int           // motivo → tentativas que não se fizeram
 	tentativasEmObservacao map[string]int           // com_consumes → as que `observe` tentaria
+	// AOS-511 — a nova tentativa por resposta vazia (tentativa_vazia.go). Séries PRÓPRIAS: as do
+	// AOS-503, acima, não contam nada desta classe. Só fora de `off`; a zero em `off`.
+	primeirasVazias              int                      // nós sem tools cujo PRIMEIRO run fechou empty_output sem tool calls
+	tentativasVaziasFeitas       map[chaveDeTentativa]int // (tentativa, desfecho) → tentativas a mais desta classe
+	tentativasVaziasRecusadas    map[string]int           // motivo → tentativas desta classe que não se fizeram
+	tentativasVaziasEmObservacao int                      // as que `observe` tentaria
 	// tentativasDoPlano é o que o plano fica a dizer sobre as tentativas quando o `serve` acaba.
 	// nil com o interruptor desligado e sem tentativas no log.
 	tentativasDoPlano *resumoDasTentativas

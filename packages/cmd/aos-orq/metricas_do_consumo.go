@@ -94,6 +94,15 @@ const (
 	metricaTentativasPorPlano     = "aos_orq_consume_tentativas_por_plano_total"
 	metricaTentativasRecusadas    = "aos_orq_consume_tentativas_recusadas_total"
 	metricaTentativasEmObservacao = "aos_orq_consume_tentativas_em_observacao_total"
+	// AOS-511 — a nova tentativa por RESPOSTA VAZIA (tentativa_vazia.go), em séries próprias: as
+	// do AOS-503, acima, não mudam de nome nem de valor. Rótulos de vocabulário FECHADO e nenhum
+	// conteúdo. Só têm valores com AOS_ORQ_NOVA_TENTATIVA_VAZIA fora de `off`.
+	metricaPrimeirasVazias             = "aos_orq_consume_primeiras_respostas_vazias_total"
+	metricaTentativasVazia             = "aos_orq_consume_tentativas_vazia_total"
+	metricaPlanosRecuperadosVazia      = "aos_orq_consume_planos_recuperados_vazia_total"
+	metricaPlanosEsgotadosVazia        = "aos_orq_consume_planos_com_tentativas_vazia_esgotadas_total"
+	metricaTentativasVaziaRecusadas    = "aos_orq_consume_tentativas_vazia_recusadas_total"
+	metricaTentativasVaziaEmObservacao = "aos_orq_consume_tentativas_vazia_em_observacao_total"
 	// AOS-504 — o canário da recusa do próprio objectivo (canario_de_recusa.go). Sem rótulos e sem
 	// conteúdo: duas contagens, que só fazem sentido juntas.
 	metricaCanarioDeRecusaNos = "aos_orq_consume_canario_de_recusa_nos_total"
@@ -136,6 +145,12 @@ var catalogoDeMetricas = []struct{ nome, tipo, ajuda string }{
 	{metricaTentativasPorPlano, "counter", "Nova tentativa: planos terminados com o interruptor ligado, pelo numero de tentativas a mais que o log do plano regista (0|1|2|3|4_ou_mais)."},
 	{metricaTentativasRecusadas, "counter", "Nova tentativa: tentativas a que o no do plano tinha direito e que NAO se fizeram, por causa (quota: o no aos respondeu 429 | tecto_do_no | tecto_do_plano | prazo | nao_anunciado: o no aos nao anuncia o suporte | recusada_pelo_no: 403 ou 409 na submissao). O no do plano fecha failed com a causa do run."},
 	{metricaTentativasEmObservacao, "counter", "Nova tentativa: em observe, os nos que o aos-orq tentaria outra vez (run failed por contract_unmet_no_call sem tool calls), por com_consumes. Nao tenta: tem de coincidir com os runs nesse estado, e com mais nenhum."},
+	{metricaPrimeirasVazias, "counter", "Nova tentativa por resposta vazia (AOS-511): nos do plano nao-verificadores SEM tools e sem origem de saida declarada cujo PRIMEIRO run fechou failed por empty_output sem nenhuma tool call pedida. E a taxa que a recuperacao NAO pode esconder: o alerta e sobre ESTA serie, e nao sobre os planos falhados."},
+	{metricaTentativasVazia, "counter", "Nova tentativa por resposta vazia: tentativas a mais desta classe que chegaram ao fim, por tentativa (2|3) e desfecho (recuperado: o no do plano concluiu | voltou_a_falhar: fechou outra vez por empty_output sem tool calls | outra_causa). voltou_a_falhar sobre o total da tentativa e a RECORRENCIA. Nao soma na serie das tentativas do AOS-503."},
+	{metricaPlanosRecuperadosVazia, "counter", "Nova tentativa por resposta vazia: planos que sairam com 0 tendo pelo menos um no concluido numa tentativa a mais desta classe. Sem a recuperacao saiam 13."},
+	{metricaPlanosEsgotadosVazia, "counter", "Nova tentativa por resposta vazia: planos em que pelo menos um no esgotou as tentativas a mais a responder vazio e fechou failed."},
+	{metricaTentativasVaziaRecusadas, "counter", "Nova tentativa por resposta vazia: tentativas desta classe a que o no do plano tinha direito e que NAO se fizeram, por causa (o vocabulario das recusas do AOS-503; nao_anunciado: o no aos nao anuncia run_retry.empty_output). O no do plano fecha failed com a causa do run."},
+	{metricaTentativasVaziaEmObservacao, "counter", "Nova tentativa por resposta vazia: em observe, os nos que o aos-orq tentaria outra vez (run failed por empty_output sem tool calls, no sem tools). Nao tenta: tem de coincidir com os runs nesse estado, e com mais nenhum."},
 	{metricaOrigemRazao, "counter", "Saida por referencia, medida: razao entre o tamanho do texto final e o do CONTEUDO do resultado designado, em classes (origem_vazia|texto_vazio|abaixo_de_0_5|de_0_5_a_0_9|de_0_9_a_1_1|de_1_1_a_2|acima_de_2|nao_comparado). E so tamanho: nao diz se o que se escreveu e o que se leu."},
 	{metricaCanarioDeRecusaNos, "counter", "Canario da recusa do proprio objectivo (AOS-504), denominador: nos do plano SEM tools e COM consumes (o no de resumo) que concluiram."},
 	{metricaCanarioDeRecusa, "counter", "Canario da recusa do proprio objectivo (AOS-504), numerador: dos nos sem tools e com consumes que concluiram, os que tem vocabulario do protocolo da projeccao (plan_input, taint=untrusted) no texto final. SO MEDICAO: nao muda desfecho nenhum, e o texto nao e publicado. E um limite inferior: uma recusa que nao use essas palavras nao conta."},

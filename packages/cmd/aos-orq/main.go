@@ -426,6 +426,11 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 	if err != nil {
 		return err
 	}
+	// AOS-511: o interruptor da nova tentativa por resposta vazia, independente do anterior.
+	modoDaTentativaVazia, err := modoDaTentativaVaziaDoAmbiente()
+	if err != nil {
+		return err
+	}
 	modoDaSaida, err := modoDaSaidaPorReferenciaDoAmbiente()
 	if err != nil {
 		return err
@@ -472,6 +477,10 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 		// AOS-503: a nova tentativa, contra o que ESTE nó anuncia. Em `off` não se imprime nada.
 		if modoDaTentativa != novaTentativaOff {
 			fmt.Println(bannerDaNovaTentativa(configDaNovaTentativa{modo: modoDaTentativa, tectoDoNo: anuncio.tentativas, tectoDoPlano: tectoDoPlanoDeTentativas}))
+		}
+		// AOS-511: e a da resposta vazia, contra o que ESTE nó anuncia. Em `off` não se imprime nada.
+		if modoDaTentativaVazia != novaTentativaOff {
+			fmt.Println(bannerDaTentativaVazia(configDaNovaTentativa{modoVazia: modoDaTentativaVazia, vaziaAnunciada: anuncio.tentativaVazia, tectoDoNo: anuncio.tentativas, tectoDoPlano: tectoDoPlanoDeTentativas}))
 		}
 	}
 	// AOS-501: a POSTURA da entrega por referência neste `serve` — o interruptor contra o que o nó
@@ -600,7 +609,9 @@ func cmdServeCom(args []string, medidor *medidorDoPlaneamento, medicao *medicaoD
 			// AOS-501: só com a postura activa um nó com origem declarada é submetido.
 			entregaActiva: postura == entregaActiva,
 			// AOS-503: só fora de `off` um nó que terminou sem chamar a tool é contado ou tentado.
-			novaTentativa: configDaNovaTentativa{modo: modoDaTentativa, tectoDoNo: anuncio.tentativas, tectoDoPlano: tectoDoPlanoDeTentativas}}
+			// AOS-511: a classe da resposta vazia tem o seu interruptor, e os MESMOS tectos.
+			novaTentativa: configDaNovaTentativa{modo: modoDaTentativa, tectoDoNo: anuncio.tentativas, tectoDoPlano: tectoDoPlanoDeTentativas,
+				modoVazia: modoDaTentativaVazia, vaziaAnunciada: anuncio.tentativaVazia}}
 	}
 
 	// (3) RE-HIDRATAÇÃO. O grafo vem do log; num run novo vem vazio. Quem toma posse

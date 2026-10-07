@@ -1007,13 +1007,25 @@ func NewOutputSourceDeclared(p OutputSourceDeclaredPayload, producer plan.Node) 
 	}, nil
 }
 
-// AttemptReason é a razão por que uma nova tentativa de um nó do plano começou. Enum FECHADO, e
-// de um só valor: a recuperação só existe para o run que terminou sem pedir tool nenhuma.
+// AttemptReason é a razão por que uma nova tentativa de um nó do plano começou. Enum FECHADO, de
+// dois valores — as duas classes de causa da recuperação (ADR-039, emenda do AOS-510): o run que
+// terminou sem pedir a tool que tinha de pedir, e o run sem tools que respondeu vazio. Em ambas o
+// run anterior não pediu tool nenhuma.
 type AttemptReason string
 
 // AttemptReasonContractUnmetNoCall — o run anterior fechou `failed` com a razão
 // `contract_unmet_no_call` do veredicto do kernel do nó, e sem nenhuma tool call pedida.
 const AttemptReasonContractUnmetNoCall AttemptReason = "contract_unmet_no_call"
+
+// AttemptReasonEmptyOutput — o run anterior fechou `failed` com a razão `empty_output` do
+// veredicto do kernel do nó, sem nenhuma tool call pedida, num nó do plano sem tools e sem origem
+// de saída declarada (AOS-511).
+const AttemptReasonEmptyOutput AttemptReason = "empty_output"
+
+// AttemptReasons devolve o enum, numa ordem fixa.
+func AttemptReasons() []AttemptReason {
+	return []AttemptReason{AttemptReasonContractUnmetNoCall, AttemptReasonEmptyOutput}
+}
 
 // MaxNodeAttempt é a maior tentativa que o facto admite: a terceira (duas a mais), a decisão do
 // dono de 2026-10-06.
@@ -1084,7 +1096,7 @@ func NewNodeAttemptStarted(p NodeAttemptStartedPayload, producer plan.Node) (Nod
 	if p.Attempt < 2 || p.Attempt > MaxNodeAttempt {
 		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: tentativa fora de 2..%d", ErrInvalidNodeAttempt, MaxNodeAttempt)
 	}
-	if p.Reason != AttemptReasonContractUnmetNoCall {
+	if p.Reason != AttemptReasonContractUnmetNoCall && p.Reason != AttemptReasonEmptyOutput {
 		return NodeAttemptStartedPayload{}, fmt.Errorf("%w: razao fora do enum", ErrInvalidNodeAttempt)
 	}
 	if !ValidAttemptRunID(p.RetryOf) {

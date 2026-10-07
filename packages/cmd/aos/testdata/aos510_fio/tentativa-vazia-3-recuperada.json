@@ -1,0 +1,1 @@
+{"run_id":"plan-aos503-fio~summarize~3","status":"completed","terminated":true,"final_text":"Resumo: o documento tem tres notas.","turns":1,"verdict":{"mode":"enforce","fulfilled":true,"tool_calls_requested":0},"plan_attempt":{"plan_request":"plan-aos503-fio","generation":1,"plan_id":"plan-aos503-fio-plan","node_id":"summarize","attempt":3}}

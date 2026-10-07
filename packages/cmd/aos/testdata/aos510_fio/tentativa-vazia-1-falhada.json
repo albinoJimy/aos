@@ -1,0 +1,1 @@
+{"run_id":"plan-aos503-fio~summarize","status":"failed","turns":1,"outcome_reason":"empty_output","verdict":{"mode":"enforce","fulfilled":false,"reason":"empty_output","tool_calls_requested":0}}

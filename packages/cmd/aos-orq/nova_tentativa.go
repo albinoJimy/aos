@@ -117,6 +117,12 @@ type configDaNovaTentativa struct {
 	tectoDoPlano int
 	// prazo é o fim do prazo do `serve`: uma tentativa não começa depois dele.
 	prazo time.Time
+	// modoVazia é o interruptor da SEGUNDA classe (AOS-511): a tentativa de um nó sem tools cujo
+	// run fechou `empty_output`. Independente de `modo`; o zero ("") porta-se como `off`. Os
+	// tectos e o prazo são os MESMOS das duas classes.
+	modoVazia string
+	// vaziaAnunciada diz que o nó `aos` anuncia essa classe (`run_retry.empty_output`).
+	vaziaAnunciada bool
 }
 
 // ligada diz se o `serve` começa tentativas.
@@ -251,8 +257,12 @@ func (e *executorDeNos) lerFactoDeTentativa(a plannerevents.NodeAttemptStartedPa
 		return
 	}
 	e.factosDeTentativa++
+	if a.Reason == plannerevents.AttemptReasonEmptyOutput {
+		e.factosDeTentativaVazia++
+	}
 	if a.Attempt > e.tentativas[a.NodeID] {
 		e.tentativas[a.NodeID] = a.Attempt
+		e.fixarRazaoDaTentativa(a.NodeID, a.Reason)
 	}
 }
 
@@ -283,6 +293,11 @@ func motivoDaRecusaDaTentativa(err error) (string, bool) {
 // ao nó. Um processo que morra entre os dois deixa um facto sem run, que a retoma resolve lendo
 // o estado do id da tentativa ([executorDeNos.retomarTentativa]).
 func (e *executorDeNos) novaTentativa(ctx context.Context, nodeID string, st estadoDoRun, existe bool) (bool, error) {
+	// AOS-511: a classe da resposta vazia decide-se PRIMEIRO, e só trata o run que é dela. Com o
+	// interruptor dela desligado não trata nenhum, e o que se segue é o código de antes.
+	if outra, tratado, err := e.novaTentativaVazia(ctx, nodeID, st, existe); tratado {
+		return outra, err
+	}
 	if e.nt.modo != novaTentativaObserve && e.nt.modo != novaTentativaOn {
 		return false, nil
 	}
@@ -354,6 +369,7 @@ func (e *executorDeNos) novaTentativa(ctx context.Context, nodeID string, st est
 		return false, fmt.Errorf("facto da tentativa %d de %q: %w", proxima, nodeID, err)
 	}
 	e.tentativas[nodeID] = proxima
+	e.fixarRazaoDaTentativa(nodeID, plannerevents.AttemptReasonContractUnmetNoCall)
 	e.factosDeTentativa++
 	delete(e.tentativaContada, nodeID)
 	fmt.Printf("  execucao: no %s NOVA TENTATIVA %d — o run %s fechou failed por %s sem nenhuma tool call pedida; o facto esta no log do plano e o mesmo pedido volta a ser submetido como %s\n",
@@ -408,10 +424,17 @@ func (e *executorDeNos) retomarTentativa(ctx context.Context, nodeID string) (bo
 // perdido.
 func (e *executorDeNos) fecharTentativaRecusada(ctx context.Context, nodeID, motivo, porque string) error {
 	actual := e.tentativaDe(nodeID)
+	// A classe lê-se ANTES de a tentativa corrente voltar a ser a anterior (AOS-511).
+	porVazio := e.tentativaPorVazio(nodeID)
 	e.tentativas[nodeID] = actual - 1
 	e.tentativaContada[nodeID] = true
 	e.recusasDeTentativa[nodeID] = motivo
-	e.medicao.tentativaRecusada(motivo)
+	if porVazio {
+		// AOS-511: a tentativa que não se fez era da classe da resposta vazia; conta na série dela.
+		e.medicao.tentativaVaziaRecusada(motivo)
+	} else {
+		e.medicao.tentativaRecusada(motivo)
+	}
 	fmt.Printf("  execucao: no %s NOVA TENTATIVA NAO FEITA tentativa_recusada=%s (%s) — o no fecha failed com a causa do run anterior\n", nodeID, motivo, porque)
 	st, existe, serr := e.cli.Status(ctx, e.runDoNo(nodeID))
 	if serr != nil {
@@ -497,6 +520,19 @@ func (e *executorDeNos) contarFechoDaTentativa(nodeID string, concluiu bool, st 
 		return
 	}
 	n := e.nos[nodeID]
+	if e.tentativaPorVazio(nodeID) {
+		// AOS-511: a tentativa corrente é da classe da resposta vazia. Conta nas séries dela, e as
+		// do AOS-503 não mudam de valor.
+		switch {
+		case concluiu:
+			e.medicao.tentativaVaziaFeita(actual, tentativaRecuperou)
+		case elegivelParaTentativaVazia(n, nomesDasTools(e.tools[nodeID]), e.runDoNo(nodeID), st, existe):
+			e.medicao.tentativaVaziaFeita(actual, tentativaVoltouAFalhar)
+		default:
+			e.medicao.tentativaVaziaFeita(actual, tentativaOutraCausa)
+		}
+		return
+	}
 	switch {
 	case concluiu:
 		e.medicao.tentativaFeita(actual, tentativaRecuperou, rotuloComConsumes(n))
@@ -532,13 +568,17 @@ func (e *executorDeNos) fecharMedicaoDasTentativas(concluido func(nodeID string)
 	if e == nil || e.medicao == nil {
 		return
 	}
-	if !e.nt.ligada() && e.factosDeTentativa == 0 {
+	if !e.nt.ligada() && !e.nt.vaziaLigada() && e.factosDeTentativa == 0 {
 		return
 	}
-	r := &resumoDasTentativas{ligada: e.nt.ligada(), tentativas: e.factosDeTentativa, esgotados: len(e.esgotados)}
+	r := &resumoDasTentativas{ligada: e.nt.ligada(), tentativas: e.factosDeTentativa, esgotados: len(e.esgotados),
+		ligadaVazia: e.nt.vaziaLigada(), tentativasVazias: e.factosDeTentativaVazia, esgotadosPorVazio: len(e.esgotadosPorVazio)}
 	for id, t := range e.tentativas {
 		if t > 1 && concluido(id) {
 			r.recuperados++
+			if e.tentativaPorVazio(id) {
+				r.recuperadosPorVazio++
+			}
 		}
 	}
 	vistos := map[string]bool{}
@@ -565,6 +605,13 @@ type resumoDasTentativas struct {
 	esgotados int
 	// recusadas são os motivos, sem repetição e por ordem, das tentativas que não se fizeram.
 	recusadas []string
+	// AOS-511 — a parte desses números que é da classe da RESPOSTA VAZIA. Os de cima são os
+	// totais das duas classes (é o que o log do plano regista, e o que a linha do desfecho diz);
+	// as séries de cada classe contam só a sua parte ([metricasDoConsumo.registarPlanoComTentativas]).
+	ligadaVazia         bool
+	tentativasVazias    int
+	recuperadosPorVazio int
+	esgotadosPorVazio   int
 }
 
 // classeDeTentativasPorPlano é o rótulo `tentativas` de [metricaTentativasPorPlano].
@@ -668,6 +715,7 @@ func (m *metricasDoConsumo) registarNovaTentativa(c *medicaoDoContrato) {
 			m.somar(serie(metricaTentativasRecusadas, "causa", motivo), float64(n))
 		}
 	}
+	m.registarTentativaVazia(c)
 }
 
 // registarPlanoComTentativas soma as séries POR PLANO, quando o pedido chega a um desfecho
@@ -678,11 +726,22 @@ func (m *metricasDoConsumo) registarPlanoComTentativas(r *resumoDasTentativas, c
 	if r == nil {
 		return
 	}
-	if codigo == exitOK && r.recuperados > 0 {
-		m.somar(metricaPlanosRecuperados, 1)
+	// AOS-511: as séries do AOS-503 contam a parte da SUA classe. Sem tentativas por resposta
+	// vazia — sempre, com esse interruptor desligado e sem factos dela no log — as contas abaixo
+	// são as de antes.
+	if r.ligada || r.tentativas-r.tentativasVazias > 0 {
+		if codigo == exitOK && r.recuperados-r.recuperadosPorVazio > 0 {
+			m.somar(metricaPlanosRecuperados, 1)
+		}
+		if r.esgotados-r.esgotadosPorVazio > 0 {
+			m.somar(metricaPlanosEsgotados, 1)
+		}
+		m.somar(serie(metricaTentativasPorPlano, "tentativas", classeDeTentativasPorPlano(r.tentativas-r.tentativasVazias)), 1)
 	}
-	if r.esgotados > 0 {
-		m.somar(metricaPlanosEsgotados, 1)
+	if codigo == exitOK && r.recuperadosPorVazio > 0 {
+		m.somar(metricaPlanosRecuperadosVazia, 1)
 	}
-	m.somar(serie(metricaTentativasPorPlano, "tentativas", classeDeTentativasPorPlano(r.tentativas)), 1)
+	if r.esgotadosPorVazio > 0 {
+		m.somar(metricaPlanosEsgotadosVazia, 1)
+	}
 }
