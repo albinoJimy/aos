@@ -10,7 +10,9 @@ type Comportamento struct {
 	// Desfecho é `turno` (a resposta deu um turno) ou `recusada` (a resposta inteira foi
 	// recusada e o turno falhou).
 	Desfecho string `json:"desfecho"`
-	// Erro é a mensagem do erro de uma resposta recusada.
+	// Erro é a CAUSA de uma resposta recusada, no vocabulário fechado do gateway
+	// (`json_invalido`, `sem_choices`, `content_parte_nao_texto`, …) — e não o texto do erro,
+	// que no caso do `encoding/json` muda com a versão do toolchain.
 	Erro string `json:"erro,omitempty"`
 	// O turno, tal como o runtime o recebe.
 	Text       string          `json:"text"`

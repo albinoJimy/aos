@@ -1,7 +1,7 @@
 {
   "args_lista": {
     "desfecho": "recusada",
-    "erro": "port: function.arguments numa forma que nao e string, null nem objecto",
+    "erro": "arguments_forma",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -25,7 +25,7 @@
   },
   "args_numero": {
     "desfecho": "recusada",
-    "erro": "port: function.arguments numa forma que nao e string, null nem objecto",
+    "erro": "arguments_forma",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -94,7 +94,7 @@
   },
   "choices_vazio": {
     "desfecho": "recusada",
-    "erro": "model-gateway: o gateway respondeu sem nenhuma escolha — resposta malformada, nao um turno vazio (um 200 com corpo de erro do provider chega aqui assim) (modelo \"modelo-falso\")",
+    "erro": "sem_choices",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -151,7 +151,7 @@
   },
   "content_numero": {
     "desfecho": "recusada",
-    "erro": "port: content numa forma que nao e string, null nem lista de partes",
+    "erro": "content_forma",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -160,7 +160,7 @@
   },
   "content_objecto": {
     "desfecho": "recusada",
-    "erro": "port: content numa forma que nao e string, null nem lista de partes",
+    "erro": "content_forma",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -169,7 +169,7 @@
   },
   "content_partes_com_imagem": {
     "desfecho": "recusada",
-    "erro": "port: content em partes com uma parte que nao e de texto",
+    "erro": "content_parte_nao_texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -178,7 +178,7 @@
   },
   "content_partes_com_recusa": {
     "desfecho": "recusada",
-    "erro": "port: content em partes com uma parte que nao e de texto",
+    "erro": "content_parte_nao_texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -205,7 +205,7 @@
   },
   "content_partes_sem_type": {
     "desfecho": "recusada",
-    "erro": "port: content em partes com uma parte que nao e de texto",
+    "erro": "content_parte_nao_texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -238,7 +238,7 @@
   },
   "content_partes_texto_nao_string": {
     "desfecho": "recusada",
-    "erro": "port: content em partes com uma parte que nao e de texto",
+    "erro": "content_parte_nao_texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -247,7 +247,7 @@
   },
   "content_partes_tipo_desconhecido": {
     "desfecho": "recusada",
-    "erro": "port: content em partes com uma parte que nao e de texto",
+    "erro": "content_parte_nao_texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -525,7 +525,7 @@
   },
   "id_numero_json": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal number into Go struct field .tool_calls.0.id of type string",
+    "erro": "json_invalido",
     "text": "",
     "stop_reason": "",
     "final": false,

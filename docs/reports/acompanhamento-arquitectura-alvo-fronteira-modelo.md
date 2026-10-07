@@ -205,9 +205,9 @@ descartado: o que volta é o do runtime.
 
 | Ticket | Epic | Título curto | Depende de | Estado |
 |---|---|---|---|---|
-| AOS-507 | EPIC-06 | A forma da resposta do provider fica registada em cada turno, em vocabulário fechado e sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE=off\|observe`, omissão `off`) | AOS-491 | aberto (2026-10-07) |
-| AOS-508 | EPIC-06 | Providers falsos de wire para CI, e um gate opcional que os põe atrás da imagem real do proxy | AOS-505 | aberto (2026-10-07) |
-| AOS-509 | EPIC-06 | O gateway deixa de recusar a resposta inteira por `content` em partes de texto e por `arguments` em objecto, e lê os outros nomes do raciocínio como raciocínio — nunca como resposta. Sem interruptor | AOS-507, AOS-508 | aberto (2026-10-07) |
+| AOS-507 | EPIC-06 | A forma da resposta do provider fica registada em cada turno, em vocabulário fechado e sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE=off\|observe`, omissão `off`) | AOS-491 | implementado, desligado (2026-10-07): ficha em `response_shape` do `turn.recorded` e `aos_model_response_shape_total` (300 séries no máximo); produção e critério P1 por verificar |
+| AOS-508 | EPIC-06 | Providers falsos de wire para CI, e um gate opcional que os põe atrás da imagem real do proxy | AOS-505 | implementado (2026-10-07): 87 casos e linha de base em `internal/wirefake`; uma corrida do `ci-wire-live` em `docs/reports/wire-live-aos508-2026-10-07.md` (o proxy renomeia `reasoning` para `reasoning_content`, retira `thinking`, `reasoning_details` e `refusal`, e dá 500 a `content` em partes); a matriz de suporte por referir os casos |
+| AOS-509 | EPIC-06 | O gateway deixa de recusar a resposta inteira por `content` em partes de texto e por `arguments` em objecto, e lê os outros nomes do raciocínio como raciocínio — nunca como resposta. Sem interruptor | AOS-507, AOS-508 | implementado (2026-10-07): os 69 casos que já davam um turno ficam byte a byte, com a excepção declarada (24 casos, só o raciocínio); `aos_model_response_rejected_total{causa}`; produção por verificar |
 | AOS-510 | EPIC-19 | O nó aceita a nova tentativa de um nó do plano que fechou `empty_output`, com prova própria no seu log (`AOS_RUN_RETRY_EMPTY=off\|on`, omissão `off`). Emenda o ADR-039. A tentativa não leva aviso | AOS-502, AOS-506 | aberto (2026-10-07) |
 | AOS-511 | EPIC-19 | O `aos-orq` volta a submeter um nó do plano que fechou `empty_output` (`AOS_ORQ_NOVA_TENTATIVA_VAZIA=off\|observe\|on`, omissão `off`; os mesmos tectos, 2 por nó e 4 por plano) | AOS-510, AOS-503 | aberto (2026-10-07) |
 

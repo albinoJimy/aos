@@ -29,7 +29,13 @@ func wirefakeComportamento(t *testing.T, caso string) wirefake.Comportamento {
 	t.Helper()
 	out, err := wirefakeCompor(t, caso, "").turno()
 	if err != nil {
-		return wirefake.Comportamento{Desfecho: wirefake.DesfechoRecusada, Erro: err.Error()}
+		// A CAUSA, e nao o texto do erro: o texto de um erro do `encoding/json` muda com a versao
+		// do toolchain de Go, e o registo tem de ser o mesmo em qualquer uma.
+		causa := modelgateway.ResponseRejectionCause(err)
+		if causa == "" {
+			causa = err.Error()
+		}
+		return wirefake.Comportamento{Desfecho: wirefake.DesfechoRecusada, Erro: causa}
 	}
 	c := wirefake.Comportamento{
 		Desfecho: wirefake.DesfechoTurno, Text: out.Text, StopReason: string(out.StopReason), Final: out.Final,
