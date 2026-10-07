@@ -164,7 +164,9 @@ func WithProjection(mode string) RuntimeAdapterOption {
 
 // WithProjectionVersion escolhe a VERSÃO da projecção nativa (AOS-504, emenda ao ADR-036 §2.4):
 // [NativeProjectionVersion] — a de sempre, e a do adaptador sem esta opção — ou
-// [NativeProjectionVersion110] — linha de fim por segmento e o texto de protocolo novo.
+// [NativeProjectionVersion110] — linha de fim por segmento e o texto de protocolo novo —, ou
+// [NativeProjectionVersion120] (AOS-506) — a 1.1.0 com o texto de protocolo que diz que uma tool
+// só se pede pelo mecanismo nativo de function calling.
 //
 // Só tem efeito num turno que vá em projecção nativa ([WithProjection] e um layout coberto): em
 // texto único não há projecção nem versão dela. A versão EFECTIVAMENTE usada em cada turno

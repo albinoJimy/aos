@@ -1547,8 +1547,14 @@ nem recusa uma `projection_version`.
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-06), desligado por omissão; por rever e por medir em produção.** A 1.1.0
-não está seleccionada em lado nenhum: `AOS_MODEL_PROJECTION_VERSION` ausente é a 1.0.0.
+**EM PRODUÇÃO, LIGADO (v0.1.50, 2026-10-07).** `AOS_MODEL_PROJECTION_VERSION=1.1.0` em produção,
+por decisão do dono, depois da série `v0150p`: 60 planos, 58 com código 0 e 2 com código 13; zero
+recusas do próprio objectivo em 58 resumos lidos à mão (contra 3 em 39 na série `v0150r`, com a
+1.0.0). **A outra metade do critério de ligar não foi cumprida:** a primeira tentativa acabou sem
+tool call em 19 de 60 planos (32%), contra 4 de 40 (10%) com a 1.0.0 — acima do máximo de 16 em
+60. O dono ligou-a na mesma, por a recuperação estar ligada (17 dos 19 recuperaram), e abriu o
+AOS-506 para a causa. O canário marcou 4 nós na série `v0150r` e a leitura à mão deu 3 recusas:
+um falso positivo em 4. O código continua com a 1.0.0 como omissão.
 
 ---
 
@@ -1865,11 +1871,298 @@ tabela de perfis corresponde ao `config.yaml` real do servidor.
 
 ### Estado
 
-**IMPLEMENTADO E REVISTO (2026-10-07, sem bloqueantes), desligado por omissão; por ligar e por
-verificar em produção.** `AOS_MODEL_ROUTE_GOVERNANCE` ausente é `off`. Os passos de produção (o
+**EM PRODUÇÃO, DESLIGADO (v0.1.50, 2026-10-07).** O código está em produção com
+`AOS_MODEL_ROUTE_GOVERNANCE` ausente (`off`): nada é comparado. Implementado e revisto a 2026-10-07, sem bloqueantes. Os passos de produção (o
 `config.yaml` do servidor, `observe`, a troca do nome pedido e `enforce`) ligam-se por decisão do
 dono. Limites: não detecta uma troca feita pelo provider; as chamadas do `aos-orq` ficam de fora;
 `enforce` exige o host do endpoint.
+
+---
+
+## AOS-506 — O modelo escreve a tool call como texto: projecção nativa 1.2.0 e aviso constante na nova tentativa
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A1 (recuperação) |
+| Tipo | fix |
+| Prioridade | P1: o critério da fase A1 não foi cumprido (2,5% e 3,3% de «não cumprido», contra menos de 2%), e a causa medida é uma só |
+| Estimativa | M |
+| Dependências | AOS-502, AOS-504 |
+| Bloqueia | O critério de prova da fase A1 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A1, medições de 2026-10-07), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.4, `docs/adr/ADR-039-a-recuperacao-e-uma-nova-tentativa-do-no-do-plano-autorizada-pelo-no.md` §2.7, `packages/platform/model-gateway/projection.go`, `packages/kernel/agent-runtime/layout.go`, `packages/kernel/agent-runtime/loop.go`, `packages/cmd/aos/nova_tentativa.go`, `packages/cmd/aos/aviso_da_tentativa.go` |
+
+**Porque na EPIC-06 e não na EPIC-19.** O defeito está na fronteira com o modelo: o que o nó diz
+ao modelo sobre como pedir uma tool. A parte A é só do Model Gateway. A parte B acrescenta um
+segmento ao prompt de uma tentativa; o contrato do `POST /runs`, a prova do nó e o `aos-orq`
+(o que a EPIC-19 descreve) não mudam.
+
+### Contexto
+
+Medido em produção a 2026-10-07, na v0.1.50, com o modelo real por trás do alias (Kimi,
+`kimi-for-coding`), em três séries com o objectivo multi-nó de sempre:
+
+| Série | Configuração | Planos | Código 0 | Código 13 | 1.ª tentativa sem tool call | Novas tentativas (feitas / voltaram a falhar) | Recuperados | Resumos que recusaram o próprio objectivo (lidos à mão) |
+|---|---|---|---|---|---|---|---|---|
+| `v0150o` | recuperação em `observe`, projecção 1.0.0 | 10 | 9 | 1 | 1 | — | — | 0 de 9 |
+| `v0150r` | recuperação em `on` (tecto 2), projecção 1.0.0 | 40 | 39 | 1 | 4 (10%) | 6 / 3 | 3 | 3 de 39 (os planos saíram 0: verde sem cumprir); o canário marcou 4, um falso positivo |
+| `v0150p` | recuperação em `on`, projecção 1.1.0 | 60 | 58 | 2 | 19 (32%) | 25 / 8 | 17 | 0 de 58 |
+
+No nó, na série `v0150r`: 6 tentativas admitidas, 0 recusadas, e
+`aos_runs_retry_prompt_hash_diferente_total` a zero.
+
+**A causa das falhas é uma só.** Lidas, por `GET /runs/{id}/reconstruct` e com autorização do
+dono, as respostas dos 34 runs falhados das duas séries com recuperação: em **33** o texto
+inteiro do turno é uma tool call **escrita como texto**, com a tool e o argumento certos, em mais
+de dez notações inventadas pelo modelo — todas marcação com sinais de menor e de maior, com nomes
+como `functions.<tool>`, `tool_call`, `invoke` e `tool_use`. Uma foi outra coisa (`<correct>`). O
+motivo de paragem é `stop`, e a resposta não tem nenhuma tool call nativa.
+
+**Hipótese, não testada isoladamente.** O texto do protocolo mostra ao modelo uma notação de
+cabeçalhos `<kind ...>` e, na 1.1.0, de linhas de fim `</kind>`, e fala-lhe de tool calls; o
+modelo imita a notação quando quer pedir uma tool. A 1.1.0 triplicou a taxa de primeiras falhas
+(de 10% para 32%) e acabou com as recusas do próprio objectivo (de 3 em 39 para 0 em 58).
+
+**O critério da fase A1 não foi cumprido:** «não cumprido» em 2,5% dos planos com a 1.0.0 e em
+3,3% com a 1.1.0, contra menos de 2%. A promessa da troca de modelo fica na forma estreita:
+detecta-se uma troca de configuração no proxy.
+
+**Estado de produção a 2026-10-07:** v0.1.50, com `AOS_COMPLETION_VERDICT=enforce`,
+`AOS_ORQ_SAIDA_POR_REFERENCIA=on`, `AOS_ORQ_NOVA_TENTATIVA=on`, `AOS_RUN_RETRY_MAX=2` e
+`AOS_MODEL_PROJECTION_VERSION=1.1.0` (decisão do dono: fica ligada); `AOS_MODEL_ROUTE_GOVERNANCE`
+por ligar.
+
+### Decidido pelo dono (2026-10-07)
+
+1. Abre-se este ticket com duas partes, **as duas desligadas por omissão e medidas antes de
+   ligar**: (A) uma projecção nativa **1.2.0** que diz, de forma explícita, que uma tool só se
+   pede pelo mecanismo nativo de function calling e nunca escrita como texto ou marcação,
+   mantendo tudo o que a 1.1.0 corrigiu; (B) um **aviso na nova tentativa**: quando a tentativa
+   anterior fechou `contract_unmet_no_call`, a tentativa seguinte leva um aviso de texto
+   constante a dizer que a resposta anterior não pediu a tool pelo mecanismo nativo.
+2. **Rejeitado, e fica escrito:** interpretar a tool call escrita em texto (um parser
+   tolerante). Um documento lido pode conter esse mesmo texto.
+3. **Critério para ligar:** uma série de pelo menos 60 planos com menos de 10% de falhas à
+   primeira tentativa, zero recusas do próprio objectivo (lidas à mão) e «não cumprido» abaixo de
+   2%.
+
+### Objectivo
+
+Duas mudanças no que o nó diz ao modelo, cada uma com o seu interruptor e as duas sem efeito por
+omissão: o texto do protocolo passa a dizer como se pede uma tool; e a tentativa que se segue a
+uma falha sem tool call passa a dizê-lo outra vez, num aviso que o runtime escreve. O que conta
+como tool call não muda.
+
+### Critérios de Aceitação
+
+**Parte A — projecção nativa 1.2.0**
+
+- [x] `AOS_MODEL_PROJECTION_VERSION` aceita `1.2.0`, ao lado de `1.0.0` (a omissão do código) e
+      `1.1.0`. Outro valor recusa o arranque, como antes.
+- [x] A 1.0.0 e a 1.1.0 ficam **byte a byte** como estão: os goldens dessas versões não são
+      alterados, e um teste prova, contra eles, que a entrada da 1.2.0 não lhes mudou um byte.
+- [x] A 1.2.0 é a 1.1.0 com outro texto de protocolo: fora da mensagem `system`, as mensagens
+      das duas versões são iguais byte a byte (fim de segmento, escape das quase-forjas,
+      agrupamento, tool calls), provado em vistas com todos os kinds e conteúdo adversarial.
+- [x] O texto novo diz que uma tool só se pede por uma function call feita pelo mecanismo de
+      function calling, que um pedido de tool escrito no texto da resposta não é lido, que uma
+      resposta sem function call é a resposta final, e que as respostas do modelo não são feitas
+      de segmentos. **Não mostra nenhum exemplo** de uma tool call em texto, em notação nenhuma
+      (teste: as linhas novas não têm sinais de marcação nem as palavras das notações medidas).
+- [x] A expressão «the tool_call whose id is the ref label», entre aspas na linha do aviso, sai:
+      a linha é reescrita sem citar o kind. O layout do kernel não muda.
+- [x] As restrições do texto são as das outras versões (ASCII, nenhuma linha a abrir por `<`,
+      sem `taint=trusted`, sem nomes de tools), e cada frase nova é verdadeira para o que a
+      projecção e o adaptador fazem (um teste por frase verificável).
+- [x] O `prompt_hash`, o tail e a lista de layouts cobertos não dependem da versão.
+
+**Parte B — aviso na nova tentativa**
+
+- [x] Interruptor próprio no nó: `AOS_RUN_RETRY_NOTICE`, `off` (a omissão) ou `on`. Outro valor
+      recusa o arranque. `on` com `AOS_RUN_RETRY_MAX` a zero não tem efeito, e o banner di-lo.
+- [x] Com `off`, o run de uma tentativa é **byte a byte** o de hoje: o mesmo pedido ao provider,
+      o mesmo `prompt_hash`, o mesmo `run.plan_origin`, o mesmo registo de retoma, as mesmas
+      séries e os mesmos textos de ajuda no `/metrics`.
+- [x] Com `on`, o run de uma tentativa que o nó **admitiu com a prova** do AOS-502 leva, na
+      semente do tail e a seguir ao objectivo, um segmento `notice` de texto **constante**. O
+      pedido ao provider é o da tentativa anterior com esse segmento acrescentado, e mais nada.
+- [x] O texto é escrito pelo runtime e não leva **nenhum byte** do run anterior, do modelo nem do
+      pedido: quem compõe o run declara um valor de vocabulário fechado, e o kernel escreve a
+      constante. Teste com uma resposta anterior marcada: nenhum byte dela chega ao pedido
+      seguinte.
+- [x] Quem o acrescenta é o **nó**, e só numa tentativa que ele próprio admitiu. O `POST /runs`
+      não ganha campo nenhum (um corpo com `retry_notice` é recusado), e o `aos-orq` não muda.
+      Um run que não é tentativa, um `POST /runs` directo e uma tentativa recusada nunca o levam.
+- [x] O segmento é o `notice` que o layout 1.4.0 já tem — um aviso do runtime. O `correction`,
+      que é de um humano autenticado, não se usa. **Sem versão nova de layout.** A autoridade do
+      contexto (<!-- rtm: menção -->ADR-034<!-- /rtm: menção -->) é a de antes, com e sem
+      entradas.
+- [x] A medição `aos_runs_retry_prompt_hash_diferente_total` continua a ter de ser zero e a
+      detectar qualquer outra diferença: com aviso, compara com o hash **esperado** — o nó
+      recalcula o prompt com o aviso da tentativa anterior (tem de dar o hash que ela gravou) e
+      com o desta (tem de dar o que esta gravou). Teste com outro objectivo, outras entradas,
+      outro system, outras tools e outro layout.
+- [x] A prova do nó (zero tool calls, um turno, `stop`, `contract_unmet_no_call`) não muda: uma
+      tentativa 3 é admitida sobre uma tentativa 2 com aviso.
+- [x] A retoma e o replay de uma tentativa com aviso reproduzem sem divergir: o registo de retoma
+      leva o valor, e a semente do replay também.
+- [x] Um valor de aviso fora do vocabulário, ou um layout sem `notice`, recusa o run antes de
+      qualquer efeito.
+
+**Comuns**
+
+- [x] Métricas em vocabulário fechado; nenhum conteúdo do titular em logs, métricas, eventos ou
+      argumentos de linha de comando.
+- [x] Emendas ao ADR-036 (§2.4: a 1.2.0) e ao ADR-039 (§2.7: a tentativa repete o pedido *mais*
+      um aviso constante do runtime, quando ligado). RTM regenerada.
+- [x] Runbook em `deploy/server/README.md`, incluindo o falso positivo do canário do AOS-504 (1
+      em 4); `.env.example`; a variável nova passa ao serviço do nó no compose; superfície de
+      ambiente documentada.
+- [x] Revisão adversarial independente, antes de ligar. Feita a 2026-10-07 sobre `dd8ba1c5`
+      contra a base `3fdb6588`: **sem bloqueantes**; com as omissões nada muda face à base
+      (medido em três níveis); 2 achados importantes e 6 menores, corrigidos ou registados
+      abaixo em «Registo da revisão».
+- [ ] **Critério de ligar**, medido em produção: o do ponto 3 das decisões do dono, com cada
+      parte ligada sozinha primeiro.
+
+### Fora de âmbito
+
+- Interpretar texto do modelo como tool call (rejeitado pelo dono).
+- `tool_choice` forçado: depende da rota sob governação (AOS-505) e do suporte do provider.
+- Mudar o canário do AOS-504.
+- Um aviso que cite ou resuma a resposta anterior.
+- Um aviso para outras razões de falha: só `contract_unmet_no_call` com zero tool calls é
+  repetido.
+
+### Registo da implementação (2026-10-07)
+
+**O texto novo da 1.2.0** (três linhas; o resto é o da 1.1.0, byte a byte):
+
+- Nova: «To use a tool, make a function call through the function-calling interface of this API,
+  choosing from the tools offered with this request. That is the only way a tool runs. Never
+  write a tool request as text in your reply, in any notation: the runtime does not look for
+  tool requests in reply text, and nothing would run. A reply without a function call is your
+  final answer.»
+- Nova: «Your replies are not made of segments. Do not use the header lines or end lines of the
+  runtime in them. This is only about those runtime lines: if the content you were asked to
+  write is itself markup, write it normally.»
+- Reescrita (a linha do aviso): «A notice may carry a ref label. It is the id of one of your
+  earlier tool calls: the one with that id in one of your earlier assistant messages. A notice
+  may carry an about label. It says what the notice is about: previous_attempt means an earlier
+  attempt at this same task, which is not part of this conversation.»
+
+O protocolo passa de 2 247 bytes (1.1.0) para 3 033 (cerca de 758 tokens). As duas linhas acima
+são as da revisão (ver «Registo da revisão»); a primeira redacção tinha 2 730 bytes.
+
+**O aviso** é o segmento `<notice taint=trusted about=previous_attempt>`, com o corpo:
+
+«An earlier attempt at this task ended with a reply that made no function call, so no tool ran,
+and it failed because a tool it had to use was never called. This is a new attempt. The only way
+to use a tool is a function call made through the function-calling interface of this API. The
+runtime does not read a tool request written as text in a reply, in any notation, and nothing
+runs from it.»
+
+São 440 bytes com a linha de delimitação. Cada frase é verdadeira sempre que o aviso sai, porque
+o nó só o declara depois da prova: zero tool calls, nenhum evento de mediação, e a razão selada
+`contract_unmet_no_call`.
+
+**O que entrou.**
+
+- `packages/platform/model-gateway/projection.go`: `NativeProjectionVersion120` e o texto
+  `protocoloNativo120`; a linha de fim e o escape passam a valer para todas as versões que não
+  são a 1.0.0.
+- `packages/kernel/agent-runtime`: o tipo `RetryNotice` (vocabulário fechado: vazio,
+  `no_function_call`), `Goal.RetryNotice`, o texto constante, e a semente do tail construída num
+  só sítio (`seedDoRun`, exposta por `SeedTail`). O replay semeia com a mesma construção
+  (`TrajectorySpec.RetryNotice`).
+- `packages/integration/resume_records.go`: o registo de retoma leva o valor (`omitempty`).
+- `packages/cmd/aos/aviso_da_tentativa.go`: `AOS_RUN_RETRY_NOTICE`, a decisão
+  (`avisoDaTentativa`: o interruptor **e** a prova deste pedido), e a medição do hash esperado.
+  O `run.plan_origin` de uma tentativa com aviso leva `retry_notice`; a série
+  `aos_runs_retry_notice_total` conta-as.
+
+**Sem versão nova de layout, e porquê.** O layout 1.4.0 já tem o kind `notice`, e o preâmbulo
+diz que é instrução sem lhe exigir o rótulo `ref`. O que muda é a **semente** do tail, que é
+função do `Goal`: ganha um segmento opcional, como ganhou os payloads do plano no AOS-414. A
+forma de um segmento, o preâmbulo e a neutralização são os de antes, e um run sem aviso
+materializa os mesmos bytes. Custo aceite: um binário anterior não conhece o campo, e a retoma
+de uma tentativa com aviso feita por ele **diverge em silêncio** — semeia o tail sem o aviso,
+envia o turno seguinte sem ele, o run pode fechar `complete` e nada alerta (medido na revisão).
+O recuo de imagem faz-se por isso com a variável primeiro e sem tentativas com aviso em voo.
+**Resíduo nomeado:** não se cria a 1.5.0 agora; se o aviso passar a ligado em permanência (ou a
+ser a omissão), a semente-com-aviso é promovida a versão de layout nesse ticket (ADR-036 §2.4).
+
+**Como se prova que a omissão e as versões anteriores não mudaram.** A 1.0.0 contra o pedido
+golden do AOS-490 e a 1.1.0 contra o protocolo e as mensagens goldens do AOS-504, não alterados.
+O prompt de um run sem aviso contra o que o assembler monta sobre a semente escrita à mão. No nó
+composto, com `off`, o corpo do primeiro pedido da tentativa 2 é igual ao da primeira, e o
+`run.plan_origin` é a cadeia de bytes de antes. As listas de versões **inválidas** de dois
+testes do AOS-504 trocaram `1.2.0` por `1.3.0` — a 1.2.0 passou a ser válida.
+
+**Limites.**
+
+- A eficácia não está medida: nem a do texto novo, nem a do aviso. As duas entram desligadas.
+- A hipótese da imitação da notação não foi testada isoladamente; a 1.2.0 mantém os cabeçalhos e
+  as linhas de fim, que são o que a 1.1.0 corrigiu.
+- O aviso é um segmento trusted que conteúdo untrusted consegue **provocar** (num nó com
+  entradas, levando o modelo a não chamar a tool). Não lhe consegue escrever nada, e não dá
+  autoridade: o contexto de um run com entradas já é untrusted.
+- A medição do hash vive na memória do nó, como antes; um reinício entre a admissão e o fim da
+  tentativa perde a comparação desse run.
+- A recusa de arrancar com `AOS_RUN_RETRY_NOTICE` inválido está provada na leitura da variável;
+  não há teste que levante o nó inteiro com o valor errado.
+
+### Registo da revisão (2026-10-07)
+
+Revisão adversarial independente, em worktrees descartáveis, com sete mutações (todas mortas).
+Veredicto: seguro fundir com as omissões; **não ligar o aviso antes do I-1** (corrigido).
+
+- **I-1 (corrigido).** Com o aviso ligado, `aos_runs_retry_prompt_hash_diferente_total` dava
+  falso positivo em qualquer nó cujo objectivo a ingestão redige: o handler tirava a semente do
+  Goal do pedido, e o serviço minimiza o objectivo depois. A medição passa a recalcular sobre o
+  Goal que o serviço **hospeda** (`NodeService.SubmitObservando`). Teste com um objectivo com
+  e-mail e telefone: com `on` a série fica a zero numa tentativa que só difere pelo aviso, e sobe
+  com uma diferença real. O registo de retoma, sugerido na revisão como fonte, não serve: só é
+  composto num nó com four-eyes.
+- **M-2 (corrigido com o I-1).** A medição retinha o objectivo em claro e as entradas até ao fim
+  do run, também com `off`. Sem aviso em jogo não guarda nada do pedido; com aviso guarda a
+  semente hospedada, com o objectivo já redigido.
+- **I-2 (corrigido, documental).** O runbook e os ADR diziam que um binário anterior «diverge no
+  `prompt_hash` do turno 1». Medido: diverge **em silêncio**. Frases corrigidas, e a ordem do
+  recuo passa a incluir esperar pelas tentativas com aviso em voo.
+- **M-1 (corrigido).** Duas verificações negativas dos testes do nó procuravam `<notice` no corpo
+  JSON cru, onde o `<` vai escapado: passavam com qualquer pedido. Procuram agora no conteúdo
+  descodificado das mensagens; confirmado com uma mutação à mão que mordem.
+- **M-3 (corrigido).** `gravarOrigemDoRunFilho` tinha ficado sem chamador de produção. Passa a
+  ser a única função, com o aviso por parâmetro, e os testes do AOS-477 exercitam a que o
+  `POST /runs` chama.
+- **M-4 (fica).** `harness/fixtures.go` passou a copiar `Inputs` para a spec de replay. Não é do
+  âmbito do ticket, mas é **correcção necessária** ao replay das tentativas: os nós de um plano
+  têm entradas, e sem elas na spec o replay de qualquer tentativa divergia no turno 1.
+- **M-5 (corrigido).** A linha das respostas da 1.2.0 lia-se como proibição de marcação no
+  produto; fala agora só das linhas do runtime. A linha do aviso descreve o rótulo `about`.
+  `AOS_RUN_RETRY_NOTICE` apara espaços como as variáveis irmãs — fica, e está documentado.
+- **M-6 (corrigido).** O motor de replay tratava um aviso desconhecido como «sem aviso»; recusa
+  agora com `ErrUnknownRetryNotice`, pela decisão do kernel.
+- **Ponto em aberto da revisão, verificado.** Uma function call nativa a uma tool desconhecida,
+  não oferecida ou de nome inválido fecha o run com a razão `contract_unmet_no_call` (a razão é
+  por tool do contrato: a tool exigida nunca foi chamada) **mas com `tool_calls_requested` = 1**,
+  no veredicto e no turno, e `stop_reason = tool_calls`; a tentativa seguinte é recusada (403) e
+  o aviso não sai. A frase «made no function call» é verdadeira sempre que o aviso sai, porque
+  quem o condiciona é a prova (zero tool calls, um turno, `stop`), e não a razão. Fica igual.
+- **Decisão sobre o layout.** Não se cria a 1.5.0 agora; a condição em que passa a ser devida
+  está em «Sem versão nova de layout» e no ADR-036 §2.4.
+
+**Por verificar depois desta revisão:** a via durável sobre JetStream (tudo correu sobre o Event
+Store em memória); a re-submissão do mesmo id de tentativa depois de um reinício com o
+interruptor trocado; e o efeito dos textos no modelo, que só a série em produção mede.
+
+### Estado
+
+**IMPLEMENTADO E REVISTO (2026-10-07, sem bloqueantes), desligado por omissão; por medir em
+produção.**
+`AOS_RUN_RETRY_NOTICE` ausente é `off`, e a 1.2.0 não está seleccionada em lado nenhum.
 
 ---
 
@@ -1888,3 +2181,6 @@ dono. Limites: não detecta uma troca feita pelo provider; as chamadas do `aos-o
 | 1.8 | 2026-10-04 | +AOS-491: o motivo de paragem do modelo chega ao runtime, à captura e ao registo do turno (fase A0 da arquitectura-alvo da fronteira) | Equipa AOS |
 | 1.9 | 2026-10-06 | +AOS-504 e +AOS-505 (fase A1, recuperação): projecção nativa 1.1.0 (fim de segmento inforjável e texto do protocolo reescrito, desligada por omissão) com o canário de medição da recusa do objectivo; e a rota sob governação (o proxy deixa de descartar parâmetros, o nome pedido é o do modelo real, o modelo servido é comparado por turno) | Equipa AOS |
 | 2.0 | 2026-10-07 | AOS-505 implementado, desligado por omissão: medição local do que o proxy expõe (o `model` do corpo é o nome pedido; o modelo e o endpoint configurados vêm em cabeçalhos), perfil da rota em código, comparação por turno com `AOS_MODEL_ROUTE_GOVERNANCE` (`off`, `observe`, `enforce`), contrato da porta `1.4.0`, emenda ao ADR-036 §2.8; os passos de produção ficam por decisão do dono | Equipa AOS |
+| 2.1 | 2026-10-07 | +AOS-506 (fase A1): o modelo escreve a tool call como texto — projecção nativa 1.2.0 e aviso constante na nova tentativa, as duas desligadas por omissão. AOS-504 em produção, ligado (v0.1.50); AOS-505 em produção, desligado | Equipa AOS |
+| 2.2 | 2026-10-07 | AOS-506 implementado, desligado por omissão: `AOS_MODEL_PROJECTION_VERSION=1.2.0` e `AOS_RUN_RETRY_NOTICE`; emendas ao ADR-036 §2.4 e ao ADR-039 §2.7; sem versão nova de layout | Equipa AOS |
+| 2.3 | 2026-10-07 | AOS-506 revisto (sem bloqueantes) e corrigido: a medição do hash recalcula sobre o Goal hospedado; o recuo de imagem diverge em silêncio (frase corrigida, ordem do recuo); duas linhas da 1.2.0 reescritas; resíduo nomeado sobre a versão de layout | Equipa AOS |

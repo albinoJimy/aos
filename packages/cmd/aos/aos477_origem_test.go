@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -336,7 +337,7 @@ func TestAOS477OrigemGravaComOClienteDesligado(t *testing.T) {
 	h := &apiHandler{node: f.node}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	h.gravarOrigemDoRunFilho(ctx, "plano-477-ctx~n1", vinculoAoPedido{RunID: "plano-477-ctx", Geracao: 1, PlanID: "plano-477-ctx-plan", NodeID: "n1"})
+	h.gravarOrigemDoRunFilho(ctx, "plano-477-ctx~n1", vinculoAoPedido{RunID: "plano-477-ctx", Geracao: 1, PlanID: "plano-477-ctx-plan", NodeID: "n1"}, agentruntime.RetryNoticeNone)
 	if _, ok := origemDe(t, eventosDoRun(t, f.node, "plano-477-ctx~n1")); !ok {
 		t.Fatal("com o contexto do pedido cancelado a origem tem de ser gravada na mesma")
 	}
@@ -425,7 +426,7 @@ func TestAOS477OrigemTemPrazoProprio(t *testing.T) {
 	h := &apiHandler{node: &Node{EventStore: storeQueBloqueia{}}}
 	feito := make(chan struct{})
 	go func() {
-		h.gravarOrigemDoRunFilho(context.Background(), "p~n1", vinculoAoPedido{RunID: "p", Geracao: 1})
+		h.gravarOrigemDoRunFilho(context.Background(), "p~n1", vinculoAoPedido{RunID: "p", Geracao: 1}, agentruntime.RetryNoticeNone)
 		close(feito)
 	}()
 	select {

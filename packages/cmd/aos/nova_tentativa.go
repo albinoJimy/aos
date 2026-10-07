@@ -221,6 +221,10 @@ type quesitoDaTentativa struct {
 type turnoDaProva struct {
 	Manifest struct {
 		PromptHash string `json:"prompt_hash"`
+		// O layout e o tool set oferecido do turno: é com eles que a medição do prompt de uma
+		// tentativa com aviso remonta o prefixo (AOS-506). A prova não os lê.
+		AssemblyVersion string                   `json:"assembly_version"`
+		Tools           []agentruntime.PinnedDep `json:"tools"`
 	} `json:"manifest"`
 	ToolCallsRequested int                     `json:"tool_calls_requested"`
 	StopReason         agentruntime.StopReason `json:"stop_reason"`
@@ -321,6 +325,9 @@ func julgarTentativaAnterior(eventos []eventstore.Event, estado state.State, des
 type provaDaTentativa struct {
 	anterior   string
 	promptHash string
+	// avisoAnterior é o aviso com que o run ANTERIOR foi semeado (AOS-506): a medição do prompt
+	// precisa dele para saber que hash o anterior tinha de ter. Vazio numa primeira tentativa.
+	avisoAnterior agentruntime.RetryNotice
 }
 
 // provarTentativa faz a prova no log do nó. Devolve a causa da recusa (vazia ⇒ admite) e se ela
@@ -364,7 +371,7 @@ func (h *apiHandler) provarTentativa(ctx context.Context, chamador readerIdentit
 	if !selada || regiao == "" || regiao != chamador.region {
 		return provaDaTentativa{}, causaRetryResidencia, false
 	}
-	return provaDaTentativa{anterior: q.anterior, promptHash: hash}, "", false
+	return provaDaTentativa{anterior: q.anterior, promptHash: hash, avisoAnterior: avisoDaOrigem(eventos)}, "", false
 }
 
 // contagemDasTentativas conta, por processo, as tentativas admitidas e as recusadas por causa, e
@@ -372,8 +379,10 @@ func (h *apiHandler) provarTentativa(ctx context.Context, chamador readerIdentit
 type contagemDasTentativas struct {
 	admitidas       atomic.Int64
 	promptDiferente atomic.Int64
-	once            sync.Once
-	recusadas       map[string]*atomic.Int64
+	// comAviso conta as tentativas hospedadas com o aviso constante na semente (AOS-506).
+	comAviso  atomic.Int64
+	once      sync.Once
+	recusadas map[string]*atomic.Int64
 }
 
 func (c *contagemDasTentativas) iniciar() {
@@ -405,7 +414,7 @@ func (c *contagemDasTentativas) recusadasPor(causa string) int64 {
 // houve diz se algum contador já saiu de zero.
 func (c *contagemDasTentativas) houve() bool {
 	c.iniciar()
-	if c.admitidas.Load() != 0 || c.promptDiferente.Load() != 0 {
+	if c.admitidas.Load() != 0 || c.promptDiferente.Load() != 0 || c.comAviso.Load() != 0 {
 		return true
 	}
 	for _, n := range c.recusadas {
@@ -421,13 +430,19 @@ func (c *contagemDasTentativas) houve() bool {
 const prazoDaMedicaoDoPrompt = 15 * time.Minute
 
 // medirPromptDaTentativa compara, quando a tentativa acaba, o `prompt_hash` do seu primeiro turno
-// com o do turno da tentativa anterior, e conta a diferença.
+// com o ESPERADO, e conta a diferença.
 //
 // É MEDIÇÃO E ALERTA, NÃO CONDIÇÃO: o hash só existe depois de o prompt estar montado, isto é,
 // depois de o run ter sido hospedado. O que ela vigia é a promessa de que a tentativa repete o
 // MESMO pedido. Vive na memória do processo: um reinício entre a admissão e o fim da tentativa
 // perde a comparação desse run. O log não leva os hashes.
-func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string, prova provaDaTentativa) {
+//
+// O ESPERADO depende do aviso (AOS-506, [promptDaTentativaDifere]): sem aviso é o hash da
+// tentativa anterior, como sempre; com aviso, a única diferença entre os dois prompts tem de ser
+// o segmento do aviso. `semente` é o que o SERVIÇO hospedou — o Goal depois da ingestão, visto por
+// [NodeService.SubmitObservando] — e só existe com aviso em jogo: `nil` ⇒ nem esta tentativa nem a
+// anterior o levaram, e a medição é a do AOS-502, sem recálculo e sem nada do pedido em memória.
+func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string, prova provaDaTentativa, semente *sementeDaTentativa) {
 	if prova.promptHash == "" || h.svc == nil || h.node == nil || h.node.EventStore == nil {
 		return
 	}
@@ -448,9 +463,23 @@ func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string
 		if json.Unmarshal(ev.Payload, &turno) != nil {
 			return
 		}
-		if turno.Manifest.PromptHash != prova.promptHash {
+		if semente == nil {
+			if prova.avisoAnterior != agentruntime.RetryNoticeNone {
+				// A anterior levou aviso e não há semente com que recalcular: é um defeito de
+				// cablagem do handler. O que não se consegue comparar não se lê como «igual».
+				h.tentativas.promptDiferente.Add(1)
+				h.logf("submit (AOS-506): o prompt do primeiro turno da tentativa %q NAO se conseguiu comparar com o do run anterior %q (que levou aviso): falta a semente hospedada — conta como diferente", runID, prova.anterior)
+				return
+			}
+			semente = &sementeDaTentativa{}
+		}
+		if promptDaTentativaDifere(*semente, prova.avisoAnterior, prova.promptHash, turno) {
 			h.tentativas.promptDiferente.Add(1)
-			h.logf("submit (AOS-502): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q — a tentativa devia repetir o mesmo pedido", runID, prova.anterior)
+			if semente.aviso != agentruntime.RetryNoticeNone || prova.avisoAnterior != agentruntime.RetryNoticeNone {
+				h.logf("submit (AOS-506): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q mais o aviso — a tentativa devia repetir o mesmo pedido e acrescentar so o aviso", runID, prova.anterior)
+			} else {
+				h.logf("submit (AOS-502): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q — a tentativa devia repetir o mesmo pedido", runID, prova.anterior)
+			}
 		}
 		return
 	}

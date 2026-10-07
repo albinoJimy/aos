@@ -1315,6 +1315,16 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if runRetryMax > 0 {
 		fmt.Fprintf(w, "[aos] %s\n", runRetryBanner(runRetryMax))
 	}
+	// AVISO NA NOVA TENTATIVA (AOS-506): AOS_RUN_RETRY_NOTICE ∈ {off, on}, a omissão é off. Um
+	// valor fora do vocabulário aborta o arranque. Com off nada se compõe e nada se imprime; com
+	// on e o tecto a zero o banner diz que não tem efeito.
+	runRetryNoticeOpt, runRetryNotice, err := apiRunRetryNoticeOptionFromEnv()
+	if err != nil {
+		return err
+	}
+	if runRetryNotice {
+		fmt.Fprintf(w, "[aos] %s\n", runRetryNoticeBanner(runRetryMax))
+	}
 	// CATÁLOGO DE TOOLS (AOS-441): o que `GET /tools` serve ao `aos-orq`, composto UMA vez e do
 	// MESMO manifesto que o nó oferece ao modelo. Resolvido antes de compor o serviço: um eixo de
 	// risco ilegível aborta o arranque em vez de servir um adivinhado.
@@ -1376,6 +1386,9 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	apiOpts = append(apiOpts, WithToolCatalog(toolCatalog))
 	if maxTurnsOpt != nil {
 		apiOpts = append(apiOpts, maxTurnsOpt)
+	}
+	if runRetryNoticeOpt != nil {
+		apiOpts = append(apiOpts, runRetryNoticeOpt)
 	}
 	if runRetryOpt != nil {
 		apiOpts = append(apiOpts, runRetryOpt)

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -344,6 +345,137 @@ func tailFromRepeatNotice(refID string) TailSegment {
 		},
 		Content: []byte(avisoDeRepeticao140),
 	}
+}
+
+// RetryNotice é o AVISO DE NOVA TENTATIVA de um run (AOS-506, emenda ao ADR-039 §2.7): um valor
+// de vocabulário FECHADO que quem compõe o run declara no [Goal.RetryNotice] quando o run é a
+// nova tentativa de um trabalho cuja tentativa anterior acabou de uma forma que ele PROVOU.
+// O kernel traduz o valor num segmento `notice` de texto CONSTANTE ([tailFromRetryNotice]), na
+// semente do tail. Quem compõe o run escolhe um valor; nunca escreve um byte do prompt.
+type RetryNotice string
+
+const (
+	// RetryNoticeNone — o run não leva aviso. É o valor zero: o tail é o de sempre, byte a byte.
+	RetryNoticeNone RetryNotice = ""
+	// RetryNoticeNoFunctionCall — a tentativa anterior acabou num turno sem nenhuma tool call
+	// e falhou por o contrato de conclusão exigir uma tool que nunca foi chamada
+	// (`contract_unmet_no_call`). O nó só o declara depois de ler esses factos do seu próprio log
+	// (ADR-039 §2.3).
+	RetryNoticeNoFunctionCall RetryNotice = "no_function_call"
+)
+
+// ErrUnknownRetryNotice — o [Goal.RetryNotice] não é do vocabulário fechado, ou o layout do run
+// não tem o segmento `notice` (a 1.3.0). Fail-closed: o run não arranca. Um valor desconhecido
+// tratado como «sem aviso» punha o run a correr com um prompt que não é o que quem o compôs
+// declarou.
+var ErrUnknownRetryNotice = errors.New("agentruntime: aviso de nova tentativa desconhecido, ou layout sem o segmento notice (aceites: vazio, no_function_call; layout 1.4.0)")
+
+// avisoDeNovaTentativa140 é o corpo FIXO do segmento `notice` de um run que é a nova tentativa de
+// um trabalho cuja tentativa anterior acabou sem nenhuma tool call ([RetryNoticeNoFunctionCall],
+// AOS-506). ASCII, sem um byte do run anterior nem do modelo: é uma constante, igual em todos
+// os runs que o levam.
+//
+// # PORQUE NÃO LEVA NADA DA TENTATIVA ANTERIOR
+//
+// Medido em produção a 2026-10-07: o que a tentativa anterior respondeu é, em 33 de 34 casos, uma
+// tool call escrita como texto. Ecoá-la era (a) mostrar ao modelo, num segmento trusted, a forma
+// errada que se quer evitar, e (b) pôr num segmento trusted bytes cuja origem pode ser um
+// documento lido (num nó com entradas, o texto do modelo deriva de conteúdo untrusted). O aviso
+// diz o FACTO, que o nó provou, e a regra.
+//
+// # CADA FRASE TEM DE SER VERDADEIRA sempre que o aviso sai
+//
+// Quem o declara é o nó, depois da prova do ADR-039 §2.3: a tentativa anterior do MESMO nó do
+// plano fechou `failed` por `contract_unmet_no_call`, com zero tool calls pedidas e um só turno.
+// Logo: «ended with a reply that made no function call» (zero tool calls), «so no tool ran»
+// (nenhum evento de mediação), «it failed because a tool it had to use was never called» (a
+// razão selada). «The runtime does not read a tool request written as text» é verdade por
+// construção: as tool calls de um turno saem só do campo de tool calls da resposta do provider.
+//
+// # O QUE NÃO TEM
+//
+// Nenhum exemplo de uma chamada, em notação nenhuma; nenhum nome de tool; nenhuma linha a abrir
+// por '<'. Como o preâmbulo, é parte do layout: mudar um byte dele muda o `prompt_hash` dos runs
+// que o levam.
+const avisoDeNovaTentativa140 = "An earlier attempt at this task ended with a reply that made no function call, so no tool ran, and it failed because a tool it had to use was never called. This is a new attempt. The only way to use a tool is a function call made through the function-calling interface of this API. The runtime does not read a tool request written as text in a reply, in any notation, and nothing runs from it."
+
+// rotuloDoAvisoDeNovaTentativa é o rótulo `about` do aviso de nova tentativa: diz a que facto do
+// runtime o aviso se refere. Vocabulário fechado, um valor por [RetryNotice].
+const rotuloDoAvisoDeNovaTentativa = "previous_attempt"
+
+// tailFromRetryNotice constrói o aviso de nova tentativa: um segmento `notice`, TRUSTED, de corpo
+// fixo. Devolve false para um valor fora do vocabulário (incluindo o vazio).
+//
+// # PORQUE É UM `notice`, E NÃO UMA `correction`
+//
+// Pela razão do aviso de repetição ([tailFromRepeatNotice]): quem o escreve é o runtime, por um
+// facto que ele próprio observou, e não um humano autenticado pelo canal de controlo.
+//
+// # PORQUE É SEGURO SER TRUSTED
+//
+// Conteúdo untrusted consegue PROVOCAR o aviso (num nó com entradas, levando o modelo a não
+// chamar a tool na tentativa anterior), mas não lhe escreve nada: o corpo é uma constante e o
+// rótulo também. Na autoridade ([SegmentAuthority]) entra como trusted e o join não o deixa
+// elevar nada: num run com entradas o contexto já é untrusted antes dele; num run sem entradas
+// vem a seguir ao objectivo, que já era trusted.
+func tailFromRetryNotice(aviso RetryNotice) (TailSegment, bool) {
+	if aviso != RetryNoticeNoFunctionCall {
+		return TailSegment{}, false
+	}
+	return TailSegment{
+		Kind: TailNotice,
+		Meta: []TailMeta{
+			{Key: "taint", Value: TaintTrusted},
+			{Key: "about", Value: rotuloDoAvisoDeNovaTentativa},
+		},
+		Content: []byte(avisoDeNovaTentativa140),
+	}, true
+}
+
+// TailFromRetryNotice é a MESMA construção, exportada para o motor de replay semear o tail
+// byte-idêntico (como [TailFromPlanInput]).
+func TailFromRetryNotice(aviso RetryNotice) (TailSegment, bool) { return tailFromRetryNotice(aviso) }
+
+// seedDoRun devolve os segmentos com que o tail de um run é SEMEADO, pela ordem: a memória, os
+// payloads do plano, o objectivo e, se o run o declara, o aviso de nova tentativa. É a construção
+// ÚNICA da semente: o loop semeia a janela com ela, e [SeedTail] expõe-na.
+//
+// O AVISO VEM NO FIM (AOS-506). Depois dos dados, como o objectivo (AOS-414: o conteúdo untrusted
+// nunca tem a última palavra), e depois do objectivo, porque fala da tarefa que ele acabou de dar.
+// Sem aviso a semente é a de sempre, byte a byte.
+func seedDoRun(goal Goal, lay layout) ([]TailSegment, error) {
+	segs := make([]TailSegment, 0, len(goal.Inputs)+3)
+	if len(goal.MemoryContext) > 0 {
+		segs = append(segs, TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
+	}
+	for _, in := range goal.Inputs {
+		segs = append(segs, tailFromPlanInput(in))
+	}
+	if goal.Objective != "" {
+		segs = append(segs, TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})
+	}
+	if goal.RetryNotice != RetryNoticeNone {
+		aviso, ok := tailFromRetryNotice(goal.RetryNotice)
+		// O `notice` é um kind da 1.4.0: a 1.3.0 não tem o preâmbulo que diz ao modelo o que ele é.
+		if !ok || !lay.avisoDeRepeticao {
+			return nil, fmt.Errorf("%w: %q no layout %s", ErrUnknownRetryNotice, string(goal.RetryNotice), lay.version)
+		}
+		segs = append(segs, aviso)
+	}
+	return segs, nil
+}
+
+// SeedTail devolve a semente do tail de um run com este [Goal], no layout da versão dada — os
+// mesmos segmentos, pela mesma ordem, com que [Runtime.Run] semeia a janela antes do turno 1.
+// Existe para quem tem de saber que prompt um run TERIA no primeiro turno sem o correr: o nó
+// compara-o com o que o run gravou (AOS-506). Versão desconhecida ⇒ [ErrUnknownAssemblyVersion];
+// aviso fora do vocabulário ⇒ [ErrUnknownRetryNotice].
+func SeedTail(assemblyVersion string, goal Goal) ([]TailSegment, error) {
+	lay, err := layoutFor(assemblyVersion)
+	if err != nil {
+		return nil, err
+	}
+	return seedDoRun(goal, lay)
 }
 
 // ---------------------------------------------------------------------------

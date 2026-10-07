@@ -9,9 +9,10 @@
   um sucesso à segunda ou à terceira aparece como sucesso normal, com a contagem registada; não
   há «aviso e mais um turno» nesta fase; a medição directa ao modelo não está autorizada) ·
   executor de AOS-502 e AOS-503
-- **Tickets:** AOS-502 (o nó `aos` aceita a tentativa e prova, no seu log, que a anterior não
-  pediu tools) e AOS-503 (o `aos-orq` grava o facto e volta a submeter o nó do plano),
-  implementados; por rever de forma independente e por verificar em produção. As duas metades
+- **Tickets:** AOS-506 (emenda de 2026-10-07 aos §2.1, §2.7 e §2.11: a tentativa pode levar um
+  aviso constante do runtime, desligado por omissão); AOS-502 (o nó `aos` aceita a tentativa e
+  prova, no seu log, que a anterior não pediu tools) e AOS-503 (o `aos-orq` grava o facto e volta
+  a submeter o nó do plano), implementados; por rever de forma independente e por verificar em produção. As duas metades
   nascem desligadas (`AOS_RUN_RETRY_MAX` a zero no nó; `AOS_ORQ_NOVA_TENTATIVA=off` no `aos-orq`)
   e só ligam por decisão do dono.
 - **Relacionados:** ADR-001 (execução durável ao nível do passo; a chave de idempotência é
@@ -52,6 +53,11 @@ novo — a tentativa seguinte. O nó do grafo fica `running` entre tentativas, e
 Não muda o kernel, a regra de terminação, o layout do prompt nem a projecção: cada tentativa é um
 run como os outros, com o seu log, e reproduz-se sozinha byte a byte. O veredicto de nenhum run
 muda — a tentativa que falhou fica `failed`, com a razão e o vector selados.
+
+*Emenda de 2026-10-07 (AOS-506).* «Não muda o kernel» deixou de ser inteiramente verdade: o
+kernel ganhou um campo no que quem compõe o run declara e um segmento opcional na semente do tail
+(§2.7). A regra de terminação, a versão do layout, a prova do §2.3 e o veredicto não mudam, e com
+o interruptor desligado — a omissão — nada disto se vê.
 
 ### 2.2 A forma: `plan_request.attempt` e o id `<plano>~<nó>~<n>`
 
@@ -170,6 +176,75 @@ anterior, e conta as diferenças em `aos_runs_retry_prompt_hash_diferente_total`
 zero. É medição e alerta, e não condição de hospedagem — o hash só existe depois de o prompt
 estar montado.
 
+#### Emenda de 2026-10-07 (AOS-506): o pedido repetido é o mesmo, *mais* um aviso constante do runtime, quando ligado
+
+**Porquê.** Na v0.1.50, 3 de 6 tentativas (projecção 1.0.0) e 8 de 25 (1.1.0) voltaram a falhar
+como a anterior — acima do que a independência previa, e acima do gatilho escrito no §3. E a
+causa das falhas é uma só: o modelo escreve a tool call como texto, em vez de a pedir pelo
+mecanismo de function calling.
+
+**O que muda.** Com `AOS_RUN_RETRY_NOTICE=on` no nó (a omissão é `off`), o run de uma tentativa
+leva, na semente do tail e a seguir ao objectivo, um segmento `notice` com o rótulo
+`about=previous_attempt` e um corpo de **texto constante**: a tentativa anterior acabou com uma
+resposta sem nenhuma function call, pelo que nenhuma tool correu, e falhou por uma tool de que
+dependia nunca ter sido chamada; esta é uma nova tentativa; uma tool só se pede por uma function
+call; o runtime não lê um pedido de tool escrito como texto.
+
+**«A recuperação não escreve nada ao modelo» passa a valer só com o interruptor desligado.** Com
+ele ligado há uma instrução nova. Continua a não haver autoridade nova nem eco:
+
+- **Quem o acrescenta é o nó, e só ele.** A decisão é a conjunção do interruptor com a prova do
+  §2.3 que *este* pedido passou. O `POST /runs` não ganha campo nenhum — um corpo que traga um é
+  recusado —, e o `aos-orq` continua a enviar o mesmo pedido: não o pede, não o recusa, não lhe
+  escreve. Um run que não é uma tentativa admitida nunca o leva.
+- **O texto é do kernel.** O nó declara um valor de vocabulário fechado (`no_function_call`), e o
+  kernel escreve a constante. Um valor desconhecido recusa o run antes de qualquer efeito.
+- **Nenhum byte do run anterior.** O que a tentativa anterior respondeu não é lido. Ecoá-lo era
+  mostrar, num segmento trusted, a forma errada que se quer evitar, e pôr nesse segmento bytes
+  cuja origem pode ser um documento lido.
+- **É um `notice`, e não uma `correction`.** A `correction` é de um humano autenticado pelo canal
+  de controlo. A autoridade do contexto (ADR-034) fica como estava: num run sem entradas o aviso
+  vem depois do objectivo, que já era trusted; num run com entradas o contexto já era untrusted
+  antes dele, e o join não o eleva.
+- **Cada frase é verdadeira sempre que o aviso sai**, porque assenta nos factos da prova: zero
+  tool calls pedidas, nenhum evento de mediação, e a razão selada `contract_unmet_no_call`.
+  Conteúdo untrusted consegue *provocar* o aviso (num nó com entradas, levando o modelo a não
+  chamar a tool); não lhe consegue escrever nada.
+
+**A prova do §2.3 não muda.** Uma tentativa 3 é admitida sobre uma tentativa 2 com aviso pelos
+mesmos sete factos.
+
+**A medição passa a comparar com o hash esperado.** Com aviso, o prompt da tentativa difere do
+anterior de propósito, e a comparação directa deixava de dizer alguma coisa. O que tem de
+continuar verdadeiro é que a **única** diferença é o aviso. Um hash não se estende, pelo que o
+nó recalcula o prompt do primeiro turno a partir da semente que o serviço **hospedou** nesta
+tentativa — o Goal depois da ingestão, que minimiza o objectivo, e não o do pedido —, com o
+layout e o tool set que ela gravou no manifesto: com o aviso da tentativa anterior (lido do
+`run.plan_origin` dela) tem de dar o hash que a anterior gravou, e com o aviso desta tem de dar o
+que esta gravou. Outro objectivo, outras entradas, outro system, outras tools ou um aviso com
+outros bytes falham uma das duas igualdades; um recálculo que falhe conta como diferença.
+`aos_runs_retry_prompt_hash_diferente_total` continua a ter de ser zero. Sem aviso em nenhuma das
+duas tentativas, a comparação é a directa de sempre. `aos_runs_retry_notice_total` conta as
+tentativas hospedadas com aviso.
+
+A semente é a hospedada, e não a do pedido, porque as duas diferem sempre que o objectivo tem
+dados que a ingestão redige (um e-mail, um telefone): a primeira redacção recalculava com o texto
+do pedido e a série subia numa tentativa que só diferia pelo aviso (revisão do AOS-506, I-1). O
+serviço mostra ao handler o Goal que entrega ao run; sem aviso em nenhuma das duas tentativas
+nada se observa e nada do pedido fica em memória até ao fim do run.
+
+**A retoma e o replay reproduzem.** O registo de retoma leva o valor declarado, e a semente do
+replay também; a construção da semente é uma só, a do kernel. O motor de replay recusa um aviso
+fora do vocabulário, ou num layout sem `notice`, com o erro do loop — não o lê como «sem aviso».
+
+**Um binário anterior diverge em silêncio.** Um binário anterior ao AOS-506 que retome uma
+tentativa com aviso não conhece o campo do registo de retoma: semeia o tail sem o aviso, reproduz
+o turno 1 pela resposta gravada sem o voltar a comparar, e envia o turno seguinte ao modelo sem o
+aviso. O run pode fechar `complete`, e nada alerta. O recuo faz-se por isso nesta ordem: a
+variável primeiro, esperar que não haja tentativas com aviso em voo, e só depois a imagem. A
+única forma de um binário antigo **recusar** em vez de divergir calado é a semente-com-aviso ser
+uma versão de layout; a decisão e a condição em que passa a ser devida estão no ADR-036 §2.4.
+
 ### 2.8 Nunca há nova tentativa depois de uma tool call, de uma resposta cortada ou de outra razão
 
 - **Uma tool call pedida** — efectiva, negada, falhada ou escalada — fecha a porta. Depois de
@@ -206,7 +281,8 @@ tentativa falhada nunca é publicado nem entregue — o `aos-orq` nem o recebe.
 
 No nó: um run `failed` inteiro, com as transições, a razão e o vector selados, o `turn.recorded`
 com o `prompt_hash` e o motivo de paragem, a captura cifrada por titular, a residência selada, e
-o `run.plan_origin` — que a partir da segunda tentativa leva `attempt` e `retry_of`. No plano: um
+o `run.plan_origin` — que a partir da segunda tentativa leva `attempt` e `retry_of` e, numa
+tentativa hospedada com aviso, `retry_notice` (emenda de 2026-10-07, AOS-506). No plano: um
 `plan.node_attempt_started` por tentativa. No desfecho: `tentativas=` e `recuperados=`, que
 distinguem um 0 depois de recuperação de um 0 à primeira.
 
@@ -222,7 +298,10 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
   determinista. Custa um layout novo, uma versão da projecção, emendas aos ADR-034 e ADR-037, e a
   sua eficácia nunca foi medida. **Gatilho:** nos primeiros 100 planos com a recuperação ligada,
   seis ou mais das primeiras falhas voltam a falhar na tentativa seguinte; ou a entrada de uma
-  rota determinista.
+  rota determinista. *Emenda de 2026-10-07:* o gatilho foi atingido (11 de 31 tentativas voltaram
+  a falhar em 100 planos). O dono decidiu um aviso na **nova tentativa** (§2.7, AOS-506), que é
+  um run novo com a semente acrescentada — sem layout novo nem emenda ao ADR-034 ou ao ADR-037.
+  «Mais um turno» no mesmo run continua adiado: era o que tocava na regra de terminação.
 - **`tool_choice` forçado — adiado, com dependência.** É prevenção e não recuperação; o suporte
   no provider é incerto; e o proxy de produção descarta parâmetros não suportados, pelo que o
   envio podia não ter efeito sem o AOS saber. Depende da rota sob governação (AOS-505).
@@ -291,6 +370,10 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
   não devolve `plan_attempt`: um `aos-orq` novo que retome, contra ele, uma tentativa que não
   submeteu fecha o nó do plano `failed` com `run_de_outra_origem`. É a direcção segura, e só
   acontece se a imagem do nó for revertida com tentativas em voo.
+- **A eficácia do aviso não está medida** (AOS-506). Entra desligado; liga-se depois de uma
+  série, pelo critério do ticket. Numa rota determinista, é a única peça que muda o pedido.
+- **Interpretar a tool call escrita como texto fica rejeitado** (decisão do dono de 2026-10-07):
+  um documento lido pode conter esse mesmo texto.
 - **A medição do `prompt_hash` vive na memória do nó.** Um reinício entre a admissão e o fim da
   tentativa perde a comparação desse run.
 - **A validade do NHI não se lê à parte.** O prazo do `serve` fica abaixo dela por construção; um
@@ -323,6 +406,9 @@ distinguem um 0 depois de recuperação de um 0 à primeira.
   tecto `AOS_RUN_RETRY_MAX`; o anúncio no `GET /tools`; `attempt` e `retry_of` no
   `run.plan_origin`; o `plan_attempt` no `GET /runs/{id}` de uma tentativa hospedada (§2.6); as
   três séries `aos_runs_retry_*`.
+- **AOS-506 — o aviso.** `AOS_RUN_RETRY_NOTICE` no nó; a decisão no ponto em que a prova passou;
+  o valor de vocabulário fechado e o texto constante no kernel; `retry_notice` no
+  `run.plan_origin`; a medição com o hash esperado; `aos_runs_retry_notice_total`.
 - **AOS-503 — o `aos-orq`.** O interruptor `AOS_ORQ_NOVA_TENTATIVA` (`off`, `observe`, `on`); a
   elegibilidade do §2.5; o facto `plan.node_attempt_started` antes do pedido; a retoma do §2.6; o
   tecto por plano; a conferência da origem de uma tentativa que o processo não submeteu (§2.6);

@@ -73,6 +73,13 @@ type Goal struct {
 	// [TailPlanInput], marcados `taint=untrusted` e com a proveniência do contrato. Vazio ⇒
 	// nada muda no prompt (um run que não é nó de um plano nunca os tem).
 	Inputs []PlanInput
+	// RetryNotice declara que este run é a NOVA TENTATIVA de um trabalho cuja tentativa anterior
+	// acabou de uma forma que quem compõe o run provou (AOS-506, ADR-039 §2.7). Vazio ⇒ nada
+	// muda no prompt. Não vazio ⇒ a semente do tail ganha, a seguir ao objectivo, um segmento
+	// `notice` de texto CONSTANTE escrito pelo kernel ([RetryNotice]): quem compõe o run escolhe
+	// um valor de vocabulário fechado e não escreve um byte do prompt. Um valor desconhecido, ou
+	// um layout sem `notice` ⇒ o run não arranca ([ErrUnknownRetryNotice]).
+	RetryNotice RetryNotice
 	// MaxTurns limita o nº de iterações (0 ⇒ [DefaultMaxTurns]).
 	MaxTurns int
 	// AssemblyVersion FIXA o layout de montagem do prompt deste run (AOS-489): o prefixo, a
@@ -440,6 +447,12 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// A SEMENTE DO TAIL resolve-se aqui, antes de qualquer efeito (AOS-506): um aviso de nova
+	// tentativa fora do vocabulário recusa o run antes de haver janela, evento ou span.
+	semente, err := seedDoRun(goal, lay)
+	if err != nil {
+		return Result{}, err
+	}
 	win, err := rt.openWindow(goal, lay)
 	if err != nil {
 		return Result{}, err
@@ -534,17 +547,13 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// untrusted, FAIL-CLOSED, pelo que nenhuma tool call privilegiada pode ser pedida depois
 	// dele. Isso não é a defesa contra o envenenamento — é só a garantia de que memória sem
 	// proveniência verificada não autoriza nada.
-	if len(goal.MemoryContext) > 0 {
-		win.Append(TailSegment{Kind: TailMemory, Content: goal.MemoryContext})
-	}
+	//
 	// AOS-414: os payloads do plano ANTES do objectivo — primeiro o material sobre o qual se
 	// trabalha (untrusted), depois a instrução (trusted). A ordem é a mesma do par
-	// resultado-de-tool → turno seguinte, e mantém o objectivo como o último a falar.
-	for _, in := range goal.Inputs {
-		win.Append(tailFromPlanInput(in))
-	}
-	if goal.Objective != "" {
-		win.Append(TailSegment{Kind: TailObjective, Content: []byte(goal.Objective)})
+	// resultado-de-tool → turno seguinte, e mantém as instruções do runtime como as últimas a
+	// falar. A construção é a de [seedDoRun] — a mesma que [SeedTail] expõe.
+	for _, seg := range semente {
+		win.Append(seg)
 	}
 
 	// pendingCorrection carrega a correcção de steer TRUSTED injectada no tail no FIM do

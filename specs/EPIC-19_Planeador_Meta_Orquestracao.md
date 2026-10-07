@@ -10239,7 +10239,11 @@ tecto a zero (a omissão), o nó é o de hoje.
 
 ### Estado
 
-**ABERTO.**
+**EM PRODUÇÃO, LIGADO (v0.1.50, 2026-10-07).** `AOS_RUN_RETRY_MAX=2` no nó. Na série `v0150r` (40
+planos, projecção 1.0.0): 6 tentativas admitidas, 0 recusadas, e
+`aos_runs_retry_prompt_hash_diferente_total` a zero. Implementado e revisto a 2026-10-06, sem
+bloqueantes (registo acima). O AOS-506 acrescenta à tentativa, desligado por omissão, um aviso
+constante do runtime.
 
 ---
 
@@ -10414,4 +10418,10 @@ mudança entra atrás de um interruptor próprio, desligado por omissão, com um
 
 ### Estado
 
-**ABERTO.**
+**EM PRODUÇÃO, LIGADO (v0.1.50, 2026-10-07).** `AOS_ORQ_NOVA_TENTATIVA=on`. Série `v0150r` (40
+planos, projecção 1.0.0): 4 primeiras falhas (10%), 6 tentativas feitas, 3 voltaram a falhar, 3
+nós recuperados; 39 planos com código 0 e 1 com código 13. Série `v0150p` (60 planos, projecção
+1.1.0): 19 primeiras falhas (32%), 25 tentativas, 8 voltaram a falhar, 17 recuperados; 58 com
+código 0 e 2 com código 13. **O critério da fase A1 não foi cumprido** («não cumprido» em 2,5% e
+em 3,3% dos planos, contra menos de 2%): a causa medida e o que se segue estão no AOS-506.
+Implementado e revisto a 2026-10-06, sem bloqueantes (registo acima).

@@ -507,6 +507,8 @@ services:
       # fim `</kind>` por segmento e o texto do protocolo reescrito; entra desligada e mede-se
       # antes de ligar. Outro valor ⇒ o nó recusa arrancar (ErrBadModelProjectionVersion) — com
       # AOS_MODEL_ENDPOINT definida; sem gateway a variável não é lida nem validada.
+      # `1.2.0` (AOS-506) ⇒ a 1.1.0 com o texto de protocolo que diz que uma tool só se pede pelo
+      # mecanismo nativo de function calling; também entra desligada.
       AOS_MODEL_PROJECTION_VERSION: "${AOS_MODEL_PROJECTION_VERSION:-}"
       # A ROTA DO MODELO SOB GOVERNAÇÃO (AOS-505). Vazio ⇒ `off`: nada é comparado, e o nó é o de
       # antes. `observe` compara em cada turno o modelo que o LiteLLM declara ter servido com o
@@ -528,6 +530,12 @@ services:
       # no SEU log que a tentativa anterior fechou failed por contract_unmet_no_call sem nenhuma
       # tool call pedida. Outro valor ⇒ o nó recusa arrancar (ErrBadRunRetryMax).
       AOS_RUN_RETRY_MAX: "${AOS_RUN_RETRY_MAX:-}"
+      # O AVISO NA NOVA TENTATIVA (AOS-506, ADR-039 §2.7). Vazio ou `off` ⇒ a tentativa repete o
+      # pedido tal e qual. `on` ⇒ o run de uma tentativa ADMITIDA leva, a seguir ao objectivo, um
+      # segmento `notice` de texto constante do runtime. Só o nó o acrescenta; o `aos-orq` não
+      # recebe esta variável. Sem efeito com AOS_RUN_RETRY_MAX a zero. Outro valor ⇒ o nó recusa
+      # arrancar (ErrBadRunRetryNotice).
+      AOS_RUN_RETRY_NOTICE: "${AOS_RUN_RETRY_NOTICE:-}"
       # Bearer para o LiteLLM, por FICHEIRO montado (nunca por variável). Só necessário se o
       # LiteLLM tiver LITELLM_MASTER_KEY definida.
       AOS_MODEL_API_KEY_PATH: "${AOS_MODEL_API_KEY_PATH:-}"
