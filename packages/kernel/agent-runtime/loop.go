@@ -1011,7 +1011,10 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		ToolsOffered: resp.ToolsOffered,
 		// AOS-505: o resultado da comparação da rota, declarado pelo cliente.
 		RouteCheck: resp.RouteCheck,
-		Producer:   producer,
+		// AOS-507: a ficha da forma da resposta, declarada pelo cliente. nil com a medição
+		// desligada, e o evento fica com os bytes de antes.
+		ResponseShape: resp.Shape,
+		Producer:      producer,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("%w: turno %d: %w", ErrTurnRecord, turn, err)
