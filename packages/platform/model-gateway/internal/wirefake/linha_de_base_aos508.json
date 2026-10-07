@@ -932,5 +932,68 @@
     "input_tokens": 0,
     "output_tokens": 0,
     "usage_ausente": true
+  },
+  "content_partes_type_repetido": {
+    "desfecho": "recusada",
+    "erro": "json_invalido",
+    "text": "",
+    "stop_reason": "",
+    "final": false,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "dup_content_nulo_depois_texto": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "dup_content_texto_depois_nulo": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_lista_vazia": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_zero": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_falso": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "vazio_com_reasoning_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   }
 }

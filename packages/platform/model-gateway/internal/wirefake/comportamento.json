@@ -254,6 +254,15 @@
     "input_tokens": 0,
     "output_tokens": 0
   },
+  "content_partes_type_repetido": {
+    "desfecho": "recusada",
+    "erro": "content_parte_nao_texto",
+    "text": "",
+    "stop_reason": "",
+    "final": false,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
   "content_partes_varias": {
     "desfecho": "turno",
     "text": "resposta final",
@@ -307,6 +316,24 @@
     ],
     "stop_reason": "tool_calls",
     "final": false,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "dup_content_nulo_depois_texto": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "dup_content_texto_depois_nulo": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -734,6 +761,15 @@
     "input_tokens": 11,
     "output_tokens": 7
   },
+  "rac_reasoning_details_lista_vazia": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
   "rac_reasoning_details_objecto": {
     "desfecho": "turno",
     "text": "resposta final",
@@ -780,6 +816,15 @@
     "stop_reason": "stop",
     "final": true,
     "reasoning": "primeiro penso; depois concluo",
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_zero": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -862,6 +907,15 @@
     "stop_reason": "stop",
     "final": true,
     "reasoning": "primeiro penso; depois concluo",
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_falso": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -974,5 +1028,14 @@
     "input_tokens": 0,
     "output_tokens": 0,
     "usage_ausente": true
+  },
+  "vazio_com_reasoning_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   }
 }

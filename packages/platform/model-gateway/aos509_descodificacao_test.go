@@ -80,8 +80,8 @@ func TestAOS509_OQueJaPassavaFicaByteAByte(t *testing.T) {
 	if !reflect.DeepEqual(mudaram, aos509Excepcao) {
 		t.Errorf("os casos que mudaram nao sao os da excepcao declarada:\n mudaram:  %v\n excepcao: %v", mudaram, aos509Excepcao)
 	}
-	if aceites != 69 {
-		t.Errorf("a linha de base tem 69 turnos aceites; este teste viu %d", aceites)
+	if aceites != 75 {
+		t.Errorf("a linha de base tem 75 turnos aceites; este teste viu %d", aceites)
 	}
 }
 

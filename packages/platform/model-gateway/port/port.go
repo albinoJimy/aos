@@ -24,6 +24,7 @@
 package port
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -114,7 +115,7 @@ type Message struct {
 // [ErrContentForm].
 //
 // O RACIOCÍNIO NUNCA É A RESPOSTA. `Content` vem SÓ de `content`. Quando `reasoning_content`
-// está ausente ou é `null`, [Message.ReasoningContent] é o primeiro presente de `reasoning`,
+// está ausente ou é `null`, [Message.ReasoningContent] é o primeiro COM CONTEÚDO de `reasoning`,
 // `reasoning_details`, `thinking_blocks`, `thinking`, por esta ordem fixa, pela mesma regra de
 // carga opaca; quando está presente vale só ele, como antes. O destino continua a ser só a
 // captura do turno, e [ChatRequest.MarshalWire] continua a retirá-lo de todos os pedidos.
@@ -122,30 +123,26 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	type semMetodos Message // o mesmo layout, sem este UnmarshalJSON (evita a recursão)
 	aux := struct {
 		*semMetodos
-		Content          json.RawMessage `json:"content"`
+		Content          conteudoWire    `json:"content"`
 		ReasoningContent json.RawMessage `json:"reasoning_content"`
 		Reasoning        json.RawMessage `json:"reasoning"`
 		ReasoningDetails json.RawMessage `json:"reasoning_details"`
 		ThinkingBlocks   json.RawMessage `json:"thinking_blocks"`
 		Thinking         json.RawMessage `json:"thinking"`
-	}{semMetodos: (*semMetodos)(m)}
+	}{semMetodos: (*semMetodos)(m), Content: conteudoWire{texto: m.Content}}
 	m.ReasoningContent = ""
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if len(aux.Content) > 0 {
-		// Um `content` presente substitui o que lá estivesse; `null` deixa o valor como estava,
-		// que é o que o `encoding/json` fazia ao campo string.
-		texto, err := textoDoConteudo(aux.Content, m.Content)
-		if err != nil {
-			return err
-		}
-		m.Content = texto
-	}
+	m.Content = aux.Content.texto
 	raciocinio := aux.ReasoningContent
 	if !valorPresente(raciocinio) {
+		// Dos outros nomes só conta um campo COM conteúdo ([RaciocinioComConteudo]): um provider
+		// que mande `thinking: false`, `reasoning: 0` ou `reasoning_details: []` não mandou
+		// raciocínio, e a captura não guarda "false", "0" nem "[]" como se fosse.
+		raciocinio = nil
 		for _, outro := range []json.RawMessage{aux.Reasoning, aux.ReasoningDetails, aux.ThinkingBlocks, aux.Thinking} {
-			if valorPresente(outro) {
+			if RaciocinioComConteudo(outro) {
 				raciocinio = outro
 				break
 			}
@@ -171,36 +168,99 @@ func valorPresente(raw json.RawMessage) bool {
 	return len(raw) > 0 && string(raw) != "null"
 }
 
-// textoDoConteudo lê o valor JSON de `content`. `anterior` é devolvido para um `null`.
-func textoDoConteudo(raw json.RawMessage, anterior string) (string, error) {
+// conteudoWire lê o valor JSON de `content`, UMA OCORRÊNCIA DE CADA VEZ. O `encoding/json` chama
+// este método por cada chave `content` do objecto, pela ordem — incluindo para `null` —, que é
+// exactamente o que fazia ao campo string: uma string substitui o valor, `null` deixa-o como
+// estava. Um corpo com a chave repetida (`{"content":"a","content":null}`) dá por isso o mesmo
+// texto que dava antes de o campo aceitar partes.
+type conteudoWire struct{ texto string }
+
+// UnmarshalJSON aplica uma ocorrência de `content` ao texto.
+func (c *conteudoWire) UnmarshalJSON(raw []byte) error {
+	raw = bytes.TrimSpace(raw)
 	switch {
-	case string(raw) == "null":
-		return anterior, nil
+	case len(raw) == 0 || string(raw) == "null":
+		return nil
 	case raw[0] == '"':
-		var s string
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return "", err
-		}
-		return s, nil
+		return json.Unmarshal(raw, &c.texto)
 	case raw[0] != '[':
-		return "", ErrContentForm
+		return ErrContentForm
 	}
 	var partes []json.RawMessage
 	if err := json.Unmarshal(raw, &partes); err != nil {
-		return "", err
+		return err
 	}
 	var b strings.Builder
 	for _, cru := range partes {
-		var parte struct {
-			Type *string `json:"type"`
-			Text *string `json:"text"`
+		texto, ok := parteDeTexto(cru)
+		if !ok {
+			return ErrContentPartNotText
 		}
-		if len(cru) == 0 || cru[0] != '{' || json.Unmarshal(cru, &parte) != nil || parte.Type == nil || *parte.Type != "text" || parte.Text == nil {
-			return "", ErrContentPartNotText
-		}
-		b.WriteString(*parte.Text)
+		b.WriteString(texto)
 	}
-	return b.String(), nil
+	c.texto = b.String()
+	return nil
+}
+
+// parteDeTexto lê uma parte de `content` e devolve o texto dela se — e só se — for um objecto
+// com UMA chave `type` de valor "text" e UMA chave `text` de valor string. As chaves lêem-se uma
+// a uma: uma parte com `type` (ou `text`) REPETIDO não é de texto, qualquer que seja a ordem —
+// com a leitura normal do `encoding/json` ganhava a última ocorrência, e
+// `{"type":"thinking","type":"text",…}` passava por texto.
+func parteDeTexto(cru json.RawMessage) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(cru))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return "", false
+	}
+	var tipo, texto *string
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		chave, _ := t.(string)
+		var valor json.RawMessage
+		if err := dec.Decode(&valor); err != nil {
+			return "", false
+		}
+		var destino **string
+		switch chave {
+		case "type":
+			destino = &tipo
+		case "text":
+			destino = &texto
+		default:
+			continue
+		}
+		var v string
+		if *destino != nil || len(valor) == 0 || valor[0] != '"' || json.Unmarshal(valor, &v) != nil {
+			return "", false
+		}
+		*destino = &v
+	}
+	if tipo == nil || *tipo != "text" || texto == nil {
+		return "", false
+	}
+	return *texto, true
+}
+
+// argumentosWire lê o valor JSON de `function.arguments`, uma ocorrência de cada vez, pela mesma
+// razão de [conteudoWire].
+type argumentosWire struct{ valor string }
+
+// UnmarshalJSON aplica uma ocorrência de `arguments`.
+func (a *argumentosWire) UnmarshalJSON(raw []byte) error {
+	raw = bytes.TrimSpace(raw)
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
+		return nil
+	case raw[0] == '"':
+		return json.Unmarshal(raw, &a.valor)
+	case raw[0] == '{':
+		a.valor = string(raw)
+		return nil
+	}
+	return ErrArgumentsForm
 }
 
 // UnmarshalJSON lê uma invocação de função do wire (AOS-509). `arguments` é, no wire OpenAI, uma
@@ -213,28 +273,13 @@ func textoDoConteudo(raw json.RawMessage, anterior string) (string, error) {
 // a chamada.
 func (f *FunctionCall) UnmarshalJSON(data []byte) error {
 	aux := struct {
-		Name      *string         `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-	}{}
+		Name      string         `json:"name"`
+		Arguments argumentosWire `json:"arguments"`
+	}{Name: f.Name, Arguments: argumentosWire{valor: f.Arguments}}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	if aux.Name != nil {
-		f.Name = *aux.Name
-	}
-	switch {
-	case !valorPresente(aux.Arguments):
-	case aux.Arguments[0] == '"':
-		var s string
-		if err := json.Unmarshal(aux.Arguments, &s); err != nil {
-			return err
-		}
-		f.Arguments = s
-	case aux.Arguments[0] == '{':
-		f.Arguments = string(aux.Arguments)
-	default:
-		return ErrArgumentsForm
-	}
+	f.Name, f.Arguments = aux.Name, aux.Arguments.valor
 	return nil
 }
 
