@@ -889,10 +889,24 @@ menos de 10% de falhas à primeira tentativa, zero recusas do próprio objectivo
 «não cumprido» abaixo de 2%.
 
 **Recuo.** Remover a variável e recriar o nó. Uma tentativa com aviso que esteja em curso
-acaba com o aviso com que começou (fica no registo de retoma); as seguintes não o levam. Um
-binário anterior ao AOS-506 que retome um run com aviso não conhece o campo e semeia o tail sem
-ele: o turno 1 reproduzido diverge no `prompt_hash`. Os runs de tentativa duram segundos; fazer
-o recuo pela variável antes de reverter a imagem.
+acaba com o aviso com que começou (fica no registo de retoma); as seguintes não o levam.
+
+**Recuo da imagem: a variável primeiro, a imagem depois, e só sem tentativas com aviso em voo.**
+Um binário anterior ao AOS-506 que retome uma tentativa com aviso **diverge em silêncio**: não
+conhece o campo do registo de retoma, semeia o tail sem o aviso, reproduz o turno 1 pela resposta
+gravada sem o voltar a comparar, e envia o turno seguinte ao modelo **sem** o aviso. O run pode
+fechar `complete`, e **nada alerta** — nem erro, nem log, nem métrica; o `prompt_hash` gravado do
+turno 1 é o de um tail com aviso e o do turno seguinte o de um tail sem ele, e a trajectória
+deixa de ser reproduzível pela spec (medido na revisão do AOS-506). A ordem é, por isso:
+
+1. `AOS_RUN_RETRY_NOTICE` removida (ou `off`) e o nó recriado **na imagem actual**;
+2. esperar que não haja tentativas com aviso em voo: os runs de tentativa duram segundos, pelo
+   que basta deixar fechar os planos em curso; e confirmar `aos_runs_suspended` a zero — uma
+   tentativa suspensa à espera de humano é a que um binário anterior retomaria;
+3. só então reverter a imagem.
+
+**Espaços à volta do valor não contam** (` on ` liga; só espaços é a omissão), como em
+`AOS_RUN_RETRY_MAX` e `AOS_MODEL_PROJECTION_VERSION`. A caixa conta: `On` recusa o arranque.
 
 ---
 

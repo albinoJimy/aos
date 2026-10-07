@@ -217,7 +217,8 @@ mesmos sete factos.
 **A medição passa a comparar com o hash esperado.** Com aviso, o prompt da tentativa difere do
 anterior de propósito, e a comparação directa deixava de dizer alguma coisa. O que tem de
 continuar verdadeiro é que a **única** diferença é o aviso. Um hash não se estende, pelo que o
-nó recalcula o prompt do primeiro turno a partir da semente do pedido desta tentativa, com o
+nó recalcula o prompt do primeiro turno a partir da semente que o serviço **hospedou** nesta
+tentativa — o Goal depois da ingestão, que minimiza o objectivo, e não o do pedido —, com o
 layout e o tool set que ela gravou no manifesto: com o aviso da tentativa anterior (lido do
 `run.plan_origin` dela) tem de dar o hash que a anterior gravou, e com o aviso desta tem de dar o
 que esta gravou. Outro objectivo, outras entradas, outro system, outras tools ou um aviso com
@@ -226,8 +227,23 @@ outros bytes falham uma das duas igualdades; um recálculo que falhe conta como 
 duas tentativas, a comparação é a directa de sempre. `aos_runs_retry_notice_total` conta as
 tentativas hospedadas com aviso.
 
+A semente é a hospedada, e não a do pedido, porque as duas diferem sempre que o objectivo tem
+dados que a ingestão redige (um e-mail, um telefone): a primeira redacção recalculava com o texto
+do pedido e a série subia numa tentativa que só diferia pelo aviso (revisão do AOS-506, I-1). O
+serviço mostra ao handler o Goal que entrega ao run; sem aviso em nenhuma das duas tentativas
+nada se observa e nada do pedido fica em memória até ao fim do run.
+
 **A retoma e o replay reproduzem.** O registo de retoma leva o valor declarado, e a semente do
-replay também; a construção da semente é uma só, a do kernel.
+replay também; a construção da semente é uma só, a do kernel. O motor de replay recusa um aviso
+fora do vocabulário, ou num layout sem `notice`, com o erro do loop — não o lê como «sem aviso».
+
+**Um binário anterior diverge em silêncio.** Um binário anterior ao AOS-506 que retome uma
+tentativa com aviso não conhece o campo do registo de retoma: semeia o tail sem o aviso, reproduz
+o turno 1 pela resposta gravada sem o voltar a comparar, e envia o turno seguinte ao modelo sem o
+aviso. O run pode fechar `complete`, e nada alerta. O recuo faz-se por isso nesta ordem: a
+variável primeiro, esperar que não haja tentativas com aviso em voo, e só depois a imagem. A
+única forma de um binário antigo **recusar** em vez de divergir calado é a semente-com-aviso ser
+uma versão de layout; a decisão e a condição em que passa a ser devida estão no ADR-036 §2.4.
 
 ### 2.8 Nunca há nova tentativa depois de uma tool call, de uma resposta cortada ou de outra razão
 

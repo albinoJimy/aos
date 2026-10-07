@@ -241,11 +241,16 @@ as mensagens das duas versões são iguais byte a byte.
   function calling da API, entre as tools oferecidas no pedido; que um pedido de tool escrito no
   texto da resposta não é lido pelo runtime e não corre nada; e que uma resposta sem function
   call é a resposta final.
-- Uma linha nova diz que as respostas do modelo não são feitas de segmentos, e que não levam
-  cabeçalhos nem linhas de fim.
+- Uma linha nova diz que as respostas do modelo não são feitas de segmentos, e que não usam os
+  cabeçalhos nem as linhas de fim **do runtime**. Diz também que a frase é só sobre essas linhas:
+  se o conteúdo pedido é ele próprio marcação, escreve-se normalmente. A primeira redacção («do
+  not write header lines or end lines in them») lia-se como proibição de qualquer linha a abrir
+  por `<`, o que apanhava um nó cujo produto é XML ou HTML (revisão do AOS-506).
 - A linha do aviso é reescrita: diz o que é o rótulo `ref` sem citar o kind `tool_call` entre
-  aspas, que era a única expressão do texto com a forma de uma marcação de chamada. O texto do
-  aviso de repetição, que é do layout do kernel, não muda.
+  aspas, que era a única expressão do texto com a forma de uma marcação de chamada; e diz, numa
+  frase e sem exemplo, o que é o rótulo `about` — o aviso de nova tentativa leva
+  `about=previous_attempt`, uma tentativa anterior do mesmo trabalho que não faz parte desta
+  conversa. O texto do aviso de repetição, que é do layout do kernel, não muda.
 
 **O texto não mostra nenhum exemplo** de uma tool call escrita como texto, em notação nenhuma:
 mostrar a forma errada era semeá-la. As três linhas não têm sinais de menor nem de maior,
@@ -272,6 +277,18 @@ projecção trata-o como qualquer `notice` fora de um turno: sai na mensagem `us
 os bytes do kernel e, a partir da 1.1.0, a sua linha de fim. **Não há versão nova de layout:** a
 forma de um segmento, o preâmbulo e a neutralização são os de antes, e um run sem aviso
 materializa os mesmos bytes. O aviso entra no `prompt_hash`, porque está no tail.
+
+**Decisão sobre o layout, e o resíduo que fica nomeado (revisão do AOS-506, 2026-10-07).** Não
+se cria a 1.5.0 agora. Com as omissões nada muda; a 1.4.0 já define `notice` como instrução do
+runtime sem dizer que só existe a meio do tail, pelo que o aviso não torna falso nenhum byte do
+preâmbulo; e uma versão só para os runs com aviso obrigava a estender a projecção nativa, as
+métricas por layout e a medição do hash por uma peça que ainda vai ser medida e pode ser
+retirada. O custo aceite é conhecido e está medido: um binário anterior que retome uma tentativa
+com aviso **diverge em silêncio** (ADR-039 §2.7), porque nada no registo lhe diz que a semente é
+outra. **Se o aviso passar a ligado em permanência — ou a ser a omissão —, a semente-com-aviso é
+promovida a versão de layout nesse ticket:** é a única forma de um binário antigo recusar a
+retoma em vez de a fazer com outro prompt. Até lá, o recuo de imagem faz-se pela ordem do
+runbook (a variável, esperar pelas tentativas em voo, a imagem).
 
 **O que o registo permite, e o que ainda não tem ferramenta.** O replay reconstrói o tail de cada
 turno, e `ProjectNative` — a função que o adaptador usa, exportada e pura — dá as mensagens a
@@ -443,7 +460,7 @@ são comparados.
 - O preâmbulo custa cerca de 286 tokens de entrada por turno na projecção de texto único (1 144
   bytes, a 4 bytes por token). O protocolo nativo custa cerca de 390 (1 559 bytes); o da
   projecção 1.1.0 cerca de 562 (2 247 bytes), mais a linha de fim de cada segmento e um `\` por
-  linha de corpo com quase-forja. O da 1.2.0 cerca de 683 (2 730 bytes). O aviso de nova
+  linha de corpo com quase-forja. O da 1.2.0 cerca de 758 (3 033 bytes). O aviso de nova
   tentativa (AOS-506) custa cerca de 110 tokens (440 bytes), só nos runs de tentativa e só com o
   interruptor ligado.
 - Trocar a versão da projecção nativa muda a mensagem `system`, que é a cabeça do pedido: os
@@ -478,9 +495,12 @@ são comparados.
   mudam o que se diz ao modelo; a eficácia de um e de outro não está medida, e a hipótese de que a
   notação de cabeçalhos induz a imitação não foi testada isoladamente. Um modelo que continue a
   escrever a chamada como texto fecha o run como não cumprido, como antes.
-- **Um binário anterior ao AOS-506 não conhece o aviso de nova tentativa.** Se retomar ou
-  reproduzir um run que o levou, semeia o tail sem ele e diverge no `prompt_hash` do turno 1, sem
-  que a versão do layout o explique. O recuo faz-se pelo interruptor antes da imagem.
+- **Um binário anterior ao AOS-506 não conhece o aviso de nova tentativa, e diverge em
+  silêncio.** Se retomar um run que o levou, semeia o tail sem ele, reproduz o turno 1 pela
+  resposta gravada sem o comparar e envia o turno seguinte sem o aviso; o run pode fechar
+  `complete` e nada alerta. A versão do layout não o explica, porque não mudou (§2.4: fica
+  devida se o aviso passar a ligado em permanência). O recuo faz-se pelo interruptor, espera-se
+  pelas tentativas em voo, e só depois a imagem.
 - **Run com turnos em versões diferentes da projecção** (AOS-504): possível quando o nó é
   recriado com outra versão a meio de um run; cada turno grava a sua.
 - **A rota sob governação não vê o provider** (AOS-505). Uma troca feita pelo provider por trás
