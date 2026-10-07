@@ -2264,6 +2264,382 @@ Recuo: as cópias do `.env` de cada passo estão em `/opt/aos`
 
 ---
 
+## AOS-507 — A forma da resposta do provider fica registada em cada turno, em vocabulário fechado e sem conteúdo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é instrumentação. Acrescenta um campo de medição ao registo do turno; não muda o que o runtime decide. O ADR-036 e o ADR-037 são citados só como contexto. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider) |
+| Tipo | feat |
+| Prioridade | P0: a única causa de «não cumprido» que resta em produção (`empty_output`) não tem causa conhecida, e nada do que hoje se grava a distingue |
+| Estimativa | M |
+| Dependências | AOS-491 |
+| Bloqueia | AOS-509; o critério P1 da fase A2 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §1, §2 e §8, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2), `packages/platform/model-gateway/port/port.go`, `packages/platform/model-gateway/port/normalize.go`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/platform/model-gateway/internal/adapters/openai_http.go`, `packages/kernel/agent-runtime/model.go`, `packages/kernel/agent-runtime/turn.go`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
+
+### Contexto
+
+Medido em produção a 2026-10-07, na v0.1.51, com a recuperação ligada: **3 planos em 140 (2,1%)**
+saíram com o código 13 por `empty_output` — 2 em 58 na série `v0151a`
+(`plan-e2e-v0151a-1791385126~n2` e `plan-e2e-v0151a-1791385255~n2`), 1 em 62 na série `v0151b` e
+0 em 20 na série `v0151g`. Os três são o nó de resumo, que não tem tools: um só turno,
+`stop_reason=stop`, `output_tokens` contados (161 e 77 nos dois da `v0151a`) e texto vazio. É a
+única causa de «não cumprido» que resta nessas séries.
+
+O modelo gastou tokens de saída e a resposta visível veio vazia. Lido no código da base
+(`docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §1 e §10):
+
+- O adaptador **lê** `reasoning_content` (`packages/platform/model-gateway/port/port.go:92`,
+  `runtime_adapter.go:379`) e o valor vai para a captura do turno, como conteúdo. A hipótese
+  registada a 2026-10-07 — «o conteúdo veio no campo de raciocínio, que o adaptador não lê» —
+  está errada nessa forma: se veio em `reasoning_content`, foi lido.
+- O que o adaptador **não** descodifica: os outros nomes do raciocínio (`reasoning`,
+  `thinking`, `thinking_blocks`, `reasoning_details`), `refusal`, `message.function_call`, as
+  `choices` além da primeira, `usage.completion_tokens_details.reasoning_tokens` e
+  `system_fingerprint`. Um `finish_reason` fora do mapa vira `other` e o valor bruto perde-se.
+- Oito formas de resposta diferentes dão hoje o mesmo registo (desenho §2.2, H1 a H8): um turno,
+  `stop`, zero tool calls, tokens de saída, texto vazio. Nada do que se grava as separa.
+
+### Decidido pelo dono (2026-10-07)
+
+1. **D1 — sim.** Mede-se a forma das respostas em produção durante uma ou duas séries: que
+   partes vieram e o tamanho de cada uma, **nunca o texto**.
+
+### Objectivo
+
+Em cada turno, o gateway calcula do corpo cru da resposta uma **ficha da forma** — presença,
+forma JSON e tamanho de cada campo, em vocabulário fechado e em inteiros — e o runtime grava-a no
+`turn.recorded`. A ficha não leva nenhum byte de valor nem nenhum nome de chave do provider.
+Atrás de um interruptor, desligado por omissão; com ele desligado, os bytes são os de antes.
+
+### Critérios de Aceitação
+
+- [ ] Interruptor `AOS_MODEL_RESPONSE_SHAPE` com dois valores: `off` (a omissão) e `observe`. Um
+      valor inválido recusa o arranque. Não há `enforce`: é medição e não decide nada.
+- [ ] Com `off` ou sem a variável, a sonda não corre e o binário é byte a byte o anterior, provado
+      por comparação com a base pelo guião dos tickets anteriores (eventos `turn.recorded`,
+      captura, métricas, corpos de resposta e desfechos, depois de normalizar pastas temporárias
+      e durações).
+- [ ] A ficha é calculada por uma **sonda própria** sobre o corpo cru, no molde das duas que já
+      existem (`wireUsageProbe` e `wireCachedProbe`): conhece só os campos que lhe interessam e
+      **não pode fazer falhar a resposta**. Um corpo que a sonda não consiga ler dá a ficha
+      `ilegivel`, e o turno segue como hoje. Teste com corpo truncado, com JSON inválido e com
+      tipos inesperados em todos os campos.
+- [ ] Campos da ficha, todos de vocabulário fechado ou inteiros:
+  - `content`: `ausente`, `nulo`, `vazio`, `so_brancos`, `texto`, `partes`, `outro`; e
+    `content_bytes`;
+  - `reasoning`: `nenhum`, `reasoning_content`, `reasoning`, `thinking`, `thinking_blocks`,
+    `reasoning_details`, `varios`; `reasoning_form` (`string`, `objecto`, `lista`, `outro`);
+    `reasoning_bytes` (bytes do valor JSON); `reasoning_signed` (`sim`, `nao`);
+  - `refusal`: `ausente`, `nulo`, `texto`;
+  - `tool_calls_n`; `tool_call_id` (`nenhum`, `call_`, `functions_ponto`, `uuid`, `numerico`,
+    `vazio`, `outro`) e `tool_call_id_max_bytes`; `arguments_form` (`string`, `objecto`,
+    `outro`);
+  - `legacy_function_call` (`sim`, `nao`); `choices_n`;
+  - `finish_reason_mapped` (`sim`, `nao`): se o valor bruto está no mapa do AOS-491;
+  - `reasoning_tokens` (inteiro, ou ausente); `system_fingerprint` (`sim`, `nao`);
+  - `unknown_keys_n`: quantas chaves de `message` a sonda não conhece;
+  - `shape_digest`: `sha256` da lista ordenada de pares (caminho da chave, tipo JSON) da
+    resposta. Agrupa formas iguais sem guardar texto do provider.
+- [ ] Cada uma das formas H1 a H8 do desenho §2.2 dá uma **classe distinta** na ficha. Um teste
+      por forma, com o corpo de resposta em ficheiro.
+- [ ] **Sem conteúdo.** Um corpo com sentinelas em todos os valores e em nomes de chave
+      desconhecidos não deixa nenhuma sentinela no `turn.recorded`, na captura, nas métricas, em
+      spans nem em logs. O `shape_digest` é calculado sobre caminhos e tipos; o teste prova que
+      dois corpos que só diferem nos valores têm o mesmo digest, e que um nome de chave
+      desconhecido não aparece em claro em lado nenhum.
+- [ ] A ficha grava-se no `turn.recorded` como campo opcional (`omitempty`), ao lado de
+      `stop_reason` e `tools_offered`. **Não entra na captura**: segue o precedente do
+      `ToolsOffered` — a captura não muda de bytes nem de digest, nenhuma golden muda, e um turno
+      reproduzido numa retoma volta sem o campo. O replay de um run gravado com a ficha é fiel
+      (teste diferencial loop/replay do AOS-492).
+- [ ] Atravessa a fronteira como um campo de `ModelResponse` declarado por quem fez o pedido, no
+      molde de `Projection` e `RouteCheck`; na porta é um campo `json:"-"` de `ChatResponse`,
+      como o `Route`. Versão da porta MINOR. O runtime não lê a ficha para decidir nada (teste:
+      a regra de terminação e o veredicto são os mesmos com e sem ficha).
+- [ ] Métrica do nó `aos_model_response_shape_total{content,reasoning,stop_reason}`, só com os
+      valores do vocabulário fechado; a cardinalidade máxima fica escrita no ticket e presa por
+      teste. Com o interruptor desligado, o `/metrics` é byte a byte o de antes.
+- [ ] O caminho de streaming não é alterado e fica declarado como não coberto (os runs não o
+      usam).
+- [ ] O `.env.example`, o `docker-compose.prod.yml` e o runbook de deploy registam a variável, a
+      omissão e a ordem de recuo (voltar a `off`; os eventos já gravados com a ficha continuam
+      legíveis por um binário anterior, provado por teste de leitura).
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [ ] **Verificação em produção, critério P1 da fase:** com `observe` ligado, uma série em
+      produção em que 100% dos turnos fechados `empty_output` têm a ficha gravada, em pelo menos
+      3 ocorrências, e **a classe dominante fica escrita no acompanhamento** — a série nomeia a
+      causa de um `empty_output`. Com a taxa medida, uma série de 60 planos tem cerca de 73% de
+      probabilidade de conter um vazio e duas séries cerca de 93%; os turnos não vazios da mesma
+      série respondem logo a metade da pergunta (se o nó de resumo traz ou não raciocínio).
+
+### Fora de âmbito
+
+- Ler os campos que a ficha conta (AOS-509 trata os que hoje fazem recusar a resposta e os
+  outros nomes do raciocínio).
+- Decidir o que quer que seja com a ficha: recusar um modelo, escolher uma rota, repetir um
+  turno.
+- Decifrar a captura dos três runs já gravados para ler o tamanho do raciocínio (o «passo zero»
+  do desenho §2.3): exige autorização do dono e uma ferramenta de leitura; fica de fora enquanto
+  este ticket puder responder pela mesma pergunta.
+- Guardar o valor bruto de um `finish_reason` fora do mapa.
+- Streaming.
+
+### Estado
+
+**ABERTO (2026-10-07).** Por implementar. Decisão D1 do dono tomada no mesmo dia.
+
+---
+
+## AOS-508 — Providers falsos de wire para CI, e um gate opcional que os põe atrás da imagem real do proxy
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: são fixtures e um gate de CI. O ADR-036 é citado só como contexto do contrato do gateway. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider) |
+| Tipo | test |
+| Prioridade | P1: sem isto, cada diferença de wire de um modelo novo só se descobre em produção |
+| Estimativa | M |
+| Dependências | AOS-505 (o molde do gate opcional com a imagem do proxy) |
+| Bloqueia | AOS-509; o critério P5 da fase A2 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §1, §4 e §5.2, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2, §6), `scripts/ci/rota-live.sh`, `packages/testkit/README.md`, `packages/platform/model-gateway/port/port.go`, `packages/platform/model-gateway/internal/adapters/openai_http.go` |
+
+### Contexto
+
+A promessa da arquitectura-alvo é que um modelo de uma classe de wire qualificada entra sem
+código. Hoje só uma rota foi exercitada (Kimi por LiteLLM), e as diferenças de wire conhecidas
+entre providers não têm teste nenhum: descobriu-se em produção, a 2026-10-07, que **3 planos em
+140** fecham `empty_output` no nó de resumo (`plan-e2e-v0151a-1791385126~n2`,
+`plan-e2e-v0151a-1791385255~n2` e um na série `v0151b`; um turno, `stop`, `output_tokens` 161 e
+77), sem que se saiba que forma tinha a resposta.
+
+Lido no código da base (desenho §1.1 e §10): uma resposta com `content` em lista de partes, ou
+com `function.arguments` em objecto, faz recusar a resposta **inteira**; os outros nomes do
+raciocínio, `refusal` e `function_call` não são descodificados; só a primeira `choice` é lida; o
+id de tool call do provider é descartado e o que volta é o do runtime, `<passo>-tool-<n>`.
+
+O `scripts/ci/rota-live.sh` (AOS-505) já corre a imagem de produção do proxy num gate opcional.
+Falta o outro lado: um provider falso por trás dela, que devolva cada forma conhecida, para se
+ver o que o proxy faz a cada uma antes de uma série em produção.
+
+### Decidido pelo dono (2026-10-07)
+
+1. **D1 — sim** (medir a forma das respostas). Este ticket é a metade local dessa medição: não
+   toca no modelo real nem em produção.
+2. A medição directa ao modelo real ficou autorizada **só para o posto de ensaio** (decisão D5,
+   2026-10-07, que revê a de 2026-10-06). Este ticket não depende dela.
+
+### Objectivo
+
+Um conjunto de providers falsos, deterministas e sem rede, que respondem no wire de chat
+completions com cada variação conhecida, utilizáveis pelos testes do gateway; e um gate opcional
+que os põe **atrás da imagem real do proxy**, para registar o que o proxy entrega ao gateway em
+cada caso. Só CI: nenhum binário de produção muda.
+
+### Critérios de Aceitação
+
+- [ ] Os falsos vivem em `packages/testkit` (ou num pacote de teste do gateway, se o `layer-lint`
+      o exigir — decide-se na implementação e fica escrito), respondem por `net/http` da stdlib,
+      sem rede externa e sem relógio real. Cada um é um caso nomeado, com o corpo de resposta em
+      ficheiro versionado.
+- [ ] Variações cobertas, uma por caso, cada uma com e sem tool calls quando faz sentido:
+  - `content`: `null`, ausente, `""`, só brancos, texto, **lista de partes** (só texto; texto e
+    uma parte que não é texto);
+  - `function.arguments`: string JSON, **objecto JSON**, string que não é JSON, vazio;
+  - raciocínio em cada nome — `reasoning_content`, `reasoning`, `thinking`, `thinking_blocks`,
+    `reasoning_details` — em string, objecto e lista, com e sem assinatura
+    (`signature`, `thought_signature`), e vários nomes na mesma resposta;
+  - `refusal` preenchido com `content` nulo;
+  - `message.function_call` (a forma antiga), com `finish_reason` `function_call` e com `stop`;
+  - **várias `choices`**, com a resposta na segunda;
+  - **ids de tool call**: `call_…`, `functions.<tool>:<n>`, numérico, UUID, vazio, ausente,
+    repetido na mesma resposta, e de comprimento fixo;
+  - `finish_reason` fora do mapa (`end_turn`, `tool_use`, `STOP`, ausente, `null`);
+  - `usage` ausente, vazio, só com o total, e com `completion_tokens_details.reasoning_tokens`;
+  - tool calls paralelas.
+- [ ] As oito formas H1 a H8 do desenho §2.2 (as que encaixam num `empty_output`) têm cada uma o
+      seu caso, e os casos são os que o AOS-507 usa para provar que dá classes distintas.
+- [ ] **Falsos que validam o pedido**, para o segundo turno: um que recusa com 400 um
+      `tool_call_id` que não emitiu ou que excede um comprimento; e um que dá 400 ao segundo
+      turno se o `assistant` com tool calls não trouxer o raciocínio ou a assinatura do
+      primeiro. Com **controlo negativo real**: o teste que hoje prova que o gateway não devolve
+      esse estado fica vermelho contra o falso (regista-se como comportamento esperado de hoje,
+      classe «não suportada»), e passa a verde só quando o trabalho do estado opaco existir.
+- [ ] Para cada caso fica registado, num ficheiro versionado, **o que o gateway faz hoje**:
+      turno aceite (com que texto, tool calls e motivo de paragem), resposta recusada (com que
+      erro) ou turno com veredicto negativo. É a linha de base que o AOS-509 muda, e só nos
+      casos que ele nomeia.
+- [ ] Gate opcional `ci-wire-live`, no molde de `scripts/ci/rota-live.sh`: sobe a imagem do
+      proxy com o digest fixado, com os falsos como provider, e regista para cada caso o corpo
+      que o proxy entrega (nomes de campo, `content: null` reescrito ou não, campos
+      acrescentados). Salta sem Docker e **redeclara o salto** no veredicto
+      (`AOS_SKIPPED_STEP`); não entra no `run.sh` como gate obrigatório. O resultado de uma
+      corrida fica num relatório em `docs/reports/`, com o digest da imagem.
+- [ ] Nenhum caso contém dados de titular nem texto de produção: os corpos são escritos à mão.
+- [ ] Os falsos não são alcançáveis por código de produção: o `layer-lint` e um teste de
+      importações provam que nenhum pacote fora de testes os importa.
+- [ ] A matriz de suporte (§6 do acompanhamento) ganha, por classe, a referência ao caso que a
+      representa. Uma classe só pode ser marcada «qualificada» com o seu caso verde (critério P5
+      da fase).
+
+### Fora de âmbito
+
+- Mudar o que o gateway faz a qualquer forma (AOS-509).
+- Um provider falso que valide assinaturas criptográficas: um falso não as valida; isso só o
+  modelo real prova.
+- Taxas de comportamento do modelo (tool call em texto, resposta vazia, recusa): são do banco de
+  ensaio, planeado e por numerar.
+- Streaming.
+
+### Estado
+
+**ABERTO (2026-10-07).** Por implementar.
+
+---
+
+## AOS-509 — O gateway deixa de recusar a resposta inteira por formas válidas do wire, e lê os outros nomes do raciocínio como raciocínio
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum e não emenda nenhum: corrige a descodificação da porta do gateway dentro do contrato já decidido. O ADR-036 (§2.7: o raciocínio é carga opaca e o seu único destino é a captura) e o ADR-037 (o veredicto `empty_output`) são citados como o contrato que este ticket NÃO muda. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider) |
+| Tipo | fix |
+| Prioridade | P1: um provider que mande `content` em partes ou `arguments` em objecto perde hoje a resposta inteira — a mensagem, as tool calls e o usage |
+| Estimativa | M |
+| Dependências | AOS-507 (a medição diz que formas existem em produção), AOS-508 (os casos e a linha de base) |
+| Bloqueia | O trabalho do estado opaco, planeado e por numerar |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §0, §1.1 e §3(b), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.7, `packages/platform/model-gateway/port/port.go`, `packages/platform/model-gateway/port/normalize.go`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/kernel/agent-runtime/model.go`, `packages/kernel/agent-runtime/completion.go`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
+
+### Contexto
+
+Lido no código da base e conferido a 2026-10-07 (desenho §0 e §10):
+
+- `Message.Content` é `string` (`packages/platform/model-gateway/port/port.go:72`) e
+  `FunctionCall.Arguments` é `string` (`port.go:56`). Uma resposta com `content` em lista de
+  partes, ou com `arguments` em objecto JSON, faz o `encoding/json` devolver erro
+  (`port.go:110-112`), `UnmarshalChatResponse` devolve a resposta vazia com esse erro
+  (`port/normalize.go:165-169`) e o adaptador propaga-o (`internal/adapters/openai_http.go:122-125`).
+  O turno falha. É o mesmo defeito que o AOS-490 fechou para o `reasoning_content`
+  (`port.go:98-102`), ainda aberto para estes dois campos.
+- O raciocínio só é lido quando vem em `reasoning_content`. Nos outros nomes (`reasoning`,
+  `thinking`, `thinking_blocks`, `reasoning_details`) a chave não é declarada e o valor
+  perde-se em silêncio.
+
+Em produção não se observou nenhuma resposta recusada por estas formas. O que se observou, a
+2026-10-07, foram **3 `empty_output` em 140 planos** (`plan-e2e-v0151a-1791385126~n2`,
+`plan-e2e-v0151a-1791385255~n2` e um na série `v0151b`): um turno, `stop`, `output_tokens` 161 e
+77, texto vazio. Se a causa for o texto ter vindo num campo de raciocínio (hipóteses H1 e H2 do
+desenho), este ticket **não** a resolve, e não deve: ver a decisão D3 abaixo.
+
+### Decidido pelo dono (2026-10-07)
+
+1. **D3 — não: o raciocínio nunca é usado como resposta.** Se a resposta vier vazia e o modelo
+   tiver deixado raciocínio, a resposta continua vazia e o run fecha `empty_output`. Porquê:
+   - **O veredicto está certo.** O modelo não respondeu. Promover a resposta um texto que o
+     modelo não deu como resposta refaz o verde falso que a fase A0 fechou.
+   - **O raciocínio não é a resposta.** É deliberação: hipóteses abandonadas, cópias literais do
+     `plan_input` untrusted, instruções que o modelo decidiu não seguir. Publicado como saída do
+     nó, passava ao nó seguinte e a quem pediu material que o modelo excluiu.
+   - **O contrato existente.** O runtime não lê nem interpreta o raciocínio; o único destino é a
+     captura. O campo aceita qualquer forma JSON: a «resposta» podia ser um objecto de um
+     fornecedor.
+   - **O replay.** «Se o texto vier vazio, usa o raciocínio» seria uma regra nova de conclusão,
+     com layout novo.
+   - **O canal.** Alargava o que conta como saída a um canal que o provider controla.
+
+   As respostas vazias tratam-se pela nova tentativa (decisão D2: AOS-510 e AOS-511). Se a
+   medição do AOS-507 mostrar que o texto em `reasoning_content` é a resposta bem formada (um
+   servidor que falhou a separar raciocínio de resposta), a correcção é **na rota** —
+   configuração do proxy ou parâmetro do pedido —, e não uma regra do runtime.
+
+### Objectivo
+
+As formas do wire que são válidas e que hoje derrubam a resposta inteira passam a dar um turno:
+`content` em partes de texto e `function.arguments` em objecto. Os outros nomes do raciocínio
+passam a ser lidos **como raciocínio** — carga opaca, só para a captura, nunca como resposta.
+Sem interruptor: a mudança só alcança respostas que hoje dão erro, com uma excepção delimitada e
+declarada abaixo.
+
+### Critérios de Aceitação
+
+- [ ] **`content` em lista de partes.** Uma lista em que todas as partes são de texto
+      (`{"type":"text","text":"…"}`) é lida como a concatenação dos textos, pela ordem, **sem
+      separador**. Lista vazia é texto vazio. Testes: uma parte, várias, parte de texto vazia.
+- [ ] **Partes que não são texto continuam a recusar, com causa própria.** Uma lista com
+      qualquer parte que não seja texto (imagem, áudio, recusa em parte, tipo desconhecido,
+      parte sem `type`) recusa a resposta com um erro nomeado e distinto do erro de JSON de
+      hoje. Porquê: aceitar a resposta deitando fora a parte entregava como completa uma
+      resposta a que falta conteúdo. A recusa conta em
+      `aos_model_response_rejected_total{causa}`, em vocabulário fechado, sem nenhum byte da
+      resposta.
+- [ ] **`function.arguments` em objecto.** Um objecto JSON é lido como os **bytes JSON crus**
+      que vieram, sem re-serializar. `null` continua a ser vazio, como hoje. Outra forma (lista,
+      número, booleano) recusa a resposta com causa própria. Daí em diante os argumentos seguem
+      o caminho de hoje: o schema da tool valida-os e o Reference Monitor medeia a chamada.
+      Teste: a mesma chamada com os argumentos em string e em objecto dá o mesmo `Input`,
+      byte a byte, quando o texto é o mesmo.
+- [ ] **Outros nomes do raciocínio.** Quando `reasoning_content` está ausente ou é `null`, o
+      gateway lê o primeiro que estiver presente de `reasoning`, `reasoning_details`,
+      `thinking_blocks`, `thinking`, por esta ordem fixa, como carga opaca — a mesma regra do
+      AOS-490 (string descodificada; qualquer outra forma, os bytes JSON crus). Nunca é erro.
+      Quando `reasoning_content` está presente, vale só ele, **como hoje**.
+- [ ] **O raciocínio nunca é a resposta (D3).** Em todos os casos, `Text` vem só de `content`.
+      Testes, um por nome de campo e por forma: `content` nulo, vazio ou só com brancos, com
+      raciocínio preenchido ⇒ `Text` vazio e o run fecha `empty_output`. Um teste de mutação
+      prova que trocar a origem do `Text` para o raciocínio fica vermelho.
+- [ ] **O raciocínio continua a não sair e a não aparecer.** O valor lido de qualquer nome vai
+      só para a captura (selado com cifra por titular; referência em modo sensível), não entra
+      no tail, no prompt, no `turn.recorded`, em spans nem em logs, e `MarshalWire` continua a
+      retirá-lo de todos os pedidos. Teste com sentinelas em cada nome.
+- [ ] **As respostas que hoje passam ficam byte a byte.** Para todo o caso da linha de base do
+      AOS-508 que hoje dá um turno aceite: `Text`, tool calls, motivo de paragem, tokens,
+      `turn.recorded`, tail, `prompt_hash`, veredicto **e captura** são byte a byte os de antes.
+      Nenhuma golden muda. **Excepção única, declarada:** uma resposta que hoje passa e traz o
+      raciocínio noutro nome **sem** `reasoning_content` passa a ter o campo `reasoning` na
+      captura, onde hoje se perde; tudo o resto dela fica igual. A linha de base do AOS-508
+      lista os casos em que isso acontece, e o AOS-507 diz se algum ocorre em produção antes
+      de este ticket sair.
+- [ ] Captura antiga: uma captura gravada antes deste ticket descodifica e reproduz como antes
+      (teste de replay com goldens existentes).
+- [ ] As formas que este ticket **não** passa a aceitar ficam com teste de que o comportamento é
+      o de hoje: `refusal`, `message.function_call`, `choices` além da primeira, `finish_reason`
+      fora do mapa, id de tool call do provider (continua descartado).
+- [ ] Versão da porta do gateway: MINOR, aditiva; registada no contrato da porta e no
+      `CHANGELOG.md`.
+- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [ ] Verificação em produção: numa série de pelo menos 40 planos depois da entrada,
+      `aos_model_response_rejected_total` fica a zero e os desfechos são os da série anterior.
+
+### Fora de âmbito
+
+- **Usar o raciocínio como resposta: rejeitado** (decisão D3).
+- Guardar o raciocínio de **todos** os nomes quando vêm vários, as assinaturas e o id de tool
+  call do provider, e devolvê-los ao provider: é o trabalho do estado opaco, planeado e por
+  numerar, para a segunda família escolhida na decisão D4 (Claude, 2026-10-07).
+- Ler `refusal` e `message.function_call`, e escolher entre várias `choices`: abre-se ticket se
+  a medição do AOS-507 mostrar que ocorrem.
+- Conteúdo multimodal na resposta (fases A5 e A6).
+- Streaming.
+
+### Estado
+
+**ABERTO (2026-10-07).** Por implementar. Decisão D3 do dono registada aqui e no acompanhamento
+(§4).
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2284,3 +2660,4 @@ Recuo: as cópias do `.env` de cada passo estão em `/opt/aos`
 | 2.3 | 2026-10-07 | AOS-506 revisto (sem bloqueantes) e corrigido: a medição do hash recalcula sobre o Goal hospedado; o recuo de imagem diverge em silêncio (frase corrigida, ordem do recuo); duas linhas da 1.2.0 reescritas; resíduo nomeado sobre a versão de layout | Equipa AOS |
 | 2.4 | 2026-10-07 | AOS-506 em produção e ligado (v0.1.51): verificação das séries `v0151a` (aviso sobre a 1.1.0) e `v0151b` (1.2.0 com aviso); critério de ligar cumprido para a combinação, com o desvio declarado; AOS-504 substituída em produção pela 1.2.0; AOS-505 continua desligado | Equipa AOS |
 | 2.5 | 2026-10-07 | AOS-505 em produção em `observe`: série `v0151g` (20 planos, 60 turnos com o modelo servido igual ao esperado); `drop_params`, nome real, `enforce` e o cron do alerta por fazer. AOS-506: registo do plano de três passos, negado por taint no nó com `consumes` | Equipa AOS |
+| 2.6 | 2026-10-07 | +AOS-507, +AOS-508 e +AOS-509 (fase A2, estado opaco do provider): a forma da resposta registada por turno, sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE`, desligada por omissão); providers falsos de wire para CI e um gate opcional atrás da imagem do proxy; e a descodificação tolerante de `content` em partes de texto e de `arguments` em objecto, com os outros nomes do raciocínio lidos como raciocínio. Decisão D3 do dono registada no AOS-509: o raciocínio nunca é usado como resposta | Equipa AOS |
