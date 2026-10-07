@@ -10,8 +10,10 @@
 > 2. **D2 — sim, primeiro só a contar.** Um passo sem ferramentas que devolve uma resposta vazia
 >    é repetido pelo sistema; o `aos-orq` entra em `observe` antes de `on` (AOS-510, AOS-511).
 > 3. **D3 — não.** O raciocínio do modelo nunca é usado como resposta (§3b; registado no AOS-509).
-> 4. **D4** (qual é o segundo modelo) e **D5** (posto de ensaio com o modelo real) estão **por
->    tomar**. O trabalho que depende delas fica planeado e **sem número**: a gama `AOS-NNN` só
+> 4. **D4** e **D5** foram **tomadas pelo dono a 2026-10-07**, depois de esta nota ser escrita: o
+>    segundo modelo é o Claude (Anthropic) com o raciocínio ligado, pelo mesmo proxy; e o posto de
+>    ensaio com o modelo real fica autorizado, com chave e tecto diário próprios. A §7 guarda a
+>    pergunta tal como foi posta. O trabalho que dependia delas fica planeado e **sem número**: a gama `AOS-NNN` só
 >    cresce quando um ticket é aberto. Neste documento esses itens têm rótulos provisórios —
 >    «A2-banco», «A2-perfil», «A2-estado», «A2-projecção» e «A2-família» — que não são
 >    identificadores de ticket.

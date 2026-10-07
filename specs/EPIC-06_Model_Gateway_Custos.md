@@ -2434,8 +2434,8 @@ ver o que o proxy faz a cada uma antes de uma série em produção.
 
 1. **D1 — sim** (medir a forma das respostas). Este ticket é a metade local dessa medição: não
    toca no modelo real nem em produção.
-2. A medição directa ao modelo real continua **não autorizada** (decisão de 2026-10-06); a
-   decisão D5 (posto de ensaio) está por tomar. Este ticket não depende dela.
+2. A medição directa ao modelo real ficou autorizada **só para o posto de ensaio** (decisão D5,
+   2026-10-07, que revê a de 2026-10-06). Este ticket não depende dela.
 
 ### Objectivo
 
@@ -2627,7 +2627,7 @@ declarada abaixo.
 - **Usar o raciocínio como resposta: rejeitado** (decisão D3).
 - Guardar o raciocínio de **todos** os nomes quando vêm vários, as assinaturas e o id de tool
   call do provider, e devolvê-los ao provider: é o trabalho do estado opaco, planeado e por
-  numerar, que depende da decisão D4.
+  numerar, para a segunda família escolhida na decisão D4 (Claude, 2026-10-07).
 - Ler `refusal` e `message.function_call`, e escolher entre várias `choices`: abre-se ticket se
   a medição do AOS-507 mostrar que ocorrem.
 - Conteúdo multimodal na resposta (fases A5 e A6).
