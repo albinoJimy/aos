@@ -282,6 +282,10 @@ type apiConfig struct {
 	// runRetryMax é o tecto de tentativas A MAIS por nó do plano que este nó aceita (AOS-502,
 	// [WithRunRetryMax]). Zero — a omissão — recusa todo o pedido com `attempt`.
 	runRetryMax int
+	// runRetryEmpty liga a SEGUNDA classe de nova tentativa (AOS-510, [WithRunRetryEmpty]): a do
+	// run que fechou `empty_output` sem pedir tool nenhuma. Falso — a omissão — ⇒ esse run é
+	// recusado como sempre. Só tem efeito com `runRetryMax` acima de zero.
+	runRetryEmpty bool
 	// runRetryNotice liga o aviso constante na nova tentativa (AOS-506, [WithRunRetryNotice]).
 	// false — a omissão — deixa a tentativa a repetir o pedido tal e qual.
 	runRetryNotice bool
@@ -638,6 +642,9 @@ type apiHandler struct {
 	credRecusadas atomic.Int64
 	// tentativas conta as novas tentativas de nós do plano admitidas e recusadas (AOS-502).
 	tentativas contagemDasTentativas
+	// tentativasVazias conta as tentativas da classe da resposta vazia (AOS-510), em séries
+	// próprias: as do AOS-502 não mudam de valor por causa dela.
+	tentativasVazias contagemDasTentativasVazias
 	// controlMTLS indica se o mTLS do plano de controlo está LIGADO (DEF-012, EIXO 1). Quando
 	// true, os handlers de controlo exigem um certificado de cliente verificado — ADITIVO à
 	// assinatura ed25519. O ClientCAs/ClientAuth vive no listener ([NewAPIServer]); este flag é
@@ -1075,9 +1082,17 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			if req.PlanRequest.Attempt != 0 {
 				prova, causa, transitoria := h.provarTentativa(r.Context(), submitter, *req.PlanRequest)
 				if causa != "" {
-					h.tentativas.recusar(causa)
-					h.logf("submit RECUSADO (AOS-502): nova tentativa chamador=%q run=%q plano=%q no=%q tentativa=%d causa=%s",
-						submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, causa)
+					if prova.vazia {
+						// AOS-510: a recusa de uma tentativa da classe da resposta vazia conta nas
+						// séries DESSA classe; as do AOS-502 não mudam de valor por causa dela.
+						h.tentativasVazias.recusar(causa)
+						h.logf("submit RECUSADO (AOS-510): nova tentativa por resposta vazia chamador=%q run=%q plano=%q no=%q tentativa=%d causa=%s",
+							submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, causa)
+					} else {
+						h.tentativas.recusar(causa)
+						h.logf("submit RECUSADO (AOS-502): nova tentativa chamador=%q run=%q plano=%q no=%q tentativa=%d causa=%s",
+							submitter.principal, req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, causa)
+					}
 					if transitoria {
 						writeError(w, http.StatusServiceUnavailable, "indisponivel")
 						return
@@ -1253,15 +1268,22 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// o run sem origem — e o retry desse cliente cai na re-submissão idempotente, que não a volta a
 	// escrever.
 	if req.PlanRequest != nil && vinculoVerificado {
-		h.gravarOrigemDoRunFilho(r.Context(), req.RunID, *req.PlanRequest, goal.RetryNotice)
+		h.gravarOrigemDaTentativa(r.Context(), req.RunID, *req.PlanRequest, goal.RetryNotice, razaoDaClasse(tentativaProvada))
 	}
 	// AOS-502: a tentativa foi hospedada por ESTA chamada. Conta-se aqui, e não na prova — uma
 	// re-submissão do mesmo id passa a prova e não hospeda nada. A comparação do prompt é medição
 	// e corre fora do pedido.
 	if tentativaProvada != nil {
-		h.tentativas.admitidas.Add(1)
-		h.logf("submit (AOS-502): nova tentativa ADMITIDA run=%q plano=%q no=%q tentativa=%d anterior=%q",
-			req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, tentativaProvada.anterior)
+		if tentativaProvada.vazia {
+			// AOS-510: a tentativa por resposta vazia conta na sua série, e não na do AOS-502.
+			h.tentativasVazias.admitidas.Add(1)
+			h.logf("submit (AOS-510): nova tentativa por resposta vazia ADMITIDA run=%q plano=%q no=%q tentativa=%d anterior=%q",
+				req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, tentativaProvada.anterior)
+		} else {
+			h.tentativas.admitidas.Add(1)
+			h.logf("submit (AOS-502): nova tentativa ADMITIDA run=%q plano=%q no=%q tentativa=%d anterior=%q",
+				req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, tentativaProvada.anterior)
+		}
 		if goal.RetryNotice != agentruntime.RetryNoticeNone {
 			h.tentativas.comAviso.Add(1)
 		}
@@ -2424,6 +2446,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.runRetryNotice || h.tentativas.comAviso.Load() != 0 {
 			g("aos_runs_retry_notice_total", "Novas tentativas HOSPEDADAS com o aviso constante do runtime na semente do tail (AOS-506, AOS_RUN_RETRY_NOTICE=on). E um subconjunto de aos_runs_retry_admitted_total; com o aviso ligado desde o arranque as duas series sao iguais. POR PROCESSO.",
 				"counter", float64(h.tentativas.comAviso.Load()), "")
+		}
+	}
+	// AOS-510: a segunda classe de nova tentativa, em séries PRÓPRIAS. Só com o interruptor
+	// ligado e o tecto acima de zero, ou depois de algum pedido ter sido julgado por ela: com o
+	// interruptor desligado nenhum pedido o é, e o `/metrics` é o de antes, byte a byte.
+	if (h.cfg.runRetryEmpty && h.cfg.runRetryMax > 0) || h.tentativasVazias.houve() {
+		g("aos_runs_retry_empty_admitted_total", "Novas tentativas HOSPEDADAS pela classe da resposta vazia desde o arranque (AOS-510, AOS_RUN_RETRY_EMPTY=on): a tentativa anterior fechou failed por empty_output, sem nenhuma tool call pedida, com um so turno e o motivo stop, sem contrato de tools e sem origem vinculativa da saida. NAO soma em aos_runs_retry_admitted_total, que e so da classe do AOS-502. POR PROCESSO.",
+			"counter", float64(h.tentativasVazias.admitidas.Load()), "")
+		for i, causa := range causasDeRecusaDaTentativaVazia {
+			rotulo := `{causa="` + causa + `"}`
+			if i > 0 {
+				amostra("aos_runs_retry_empty_refused_total", rotulo, float64(h.tentativasVazias.recusadasPor(causa)))
+				continue
+			}
+			g("aos_runs_retry_empty_refused_total", "Novas tentativas RECUSADAS depois de o no ler que a anterior fechou failed por empty_output, por causa em vocabulario fechado (AOS-510). As recusas anteriores a essa leitura (tecto, forma, origem, sequencia, estado) contam em aos_runs_retry_refused_total, como sempre. anterior_pediu_tools e a que protege de repetir um efeito. indisponivel respondeu 503; as outras, a 403 uniforme. POR PROCESSO.",
+				"counter", float64(h.tentativasVazias.recusadasPor(causa)), rotulo)
 		}
 	}
 
