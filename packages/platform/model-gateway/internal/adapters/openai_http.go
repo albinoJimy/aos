@@ -125,8 +125,9 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 	}
 	// AOS-505 — a rota que o proxy declarou, lida dos cabeçalhos da resposta: o modelo e o host
 	// do endpoint do deployment que serviu. Só estes dois ([port.ServedRouteFromHeaders]); o
-	// resto dos cabeçalhos não sai daqui. Ausentes ⇒ a rota fica por reportar.
-	resp.Route = port.ServedRouteFromHeaders(header.Get)
+	// resto dos cabeçalhos não sai daqui. Ausentes ⇒ a rota fica por reportar. Lêem-se TODAS as
+	// ocorrências de cada um (`Values`): repetido com valores diferentes, não se prova igual.
+	resp.Route = port.ServedRouteFromHeaders(header.Values)
 	return resp, nil
 }
 

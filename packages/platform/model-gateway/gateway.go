@@ -369,10 +369,11 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 			return err
 		}
 		resp = r
-		// AOS-505: o host do endpoint que o proxy declarou fica AQUI. Sai da resposta antes de
-		// qualquer outro passo e só volta a ser lido pela comparação da rota, abaixo.
-		routeHost := resp.Route.APIHost
-		resp.Route.APIHost = ""
+		// AOS-505: o que o proxy declarou fica AQUI. O host do endpoint e as marcas de valor
+		// inexacto saem da resposta antes de qualquer outro passo e só voltam a ser lidos pela
+		// comparação da rota, abaixo.
+		declarada := resp.Route
+		resp.Route = port.ServedRoute{Model: declarada.Model}
 		ex.Usage = r.Usage
 		// AOS-062: deriva o custo em micro-USD do usage (4 tipos de token × tabela de
 		// preços versionada), agrega por run/árvore e emite no span. Fail-closed: um
@@ -389,7 +390,7 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		resp.Usage.CostMicroUSD = ex.Usage.CostMicroUSD
 		// AOS-505: a rota declarada pelo proxy é comparada com o perfil DEPOIS de o custo estar
 		// contado — a resposta foi paga, mesmo que em imposição se recuse usá-la.
-		return g.governRoute(ctx, span, ex, &resp, routeHost)
+		return g.governRoute(ctx, span, ex, &resp, declarada)
 	})
 	if runErr != nil {
 		span.SetAttribute(agentruntime.AttrErrorType, errType(runErr))

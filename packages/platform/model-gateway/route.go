@@ -188,19 +188,36 @@ func ServedModelLabel(served string) string {
 //
 // A ordem das regras é a da gravidade: uma rota sem perfil e um modelo diferente ganham a um
 // modelo por reportar, e este ao endpoint.
+//
+// Os valores comparam-se EXACTAMENTE como chegam: quem chama passa o valor que o proxy declarou e
+// não um valor saneado. Quando só tem o saneado, usa [CompareServedRoute], que conta com as
+// marcas de valor inexacto.
 func CompareRoute(profile RouteProfile, hasProfile bool, servedModel, servedHost, expectedHost string) (check, cause string) {
+	return CompareServedRoute(profile, hasProfile, port.ServedRoute{Model: servedModel, APIHost: servedHost}, expectedHost)
+}
+
+// CompareServedRoute é a comparação sobre a rota como o adaptador a leu. A diferença para
+// [CompareRoute] são as marcas de valor inexacto: um nome que o saneamento alterou, ou um
+// cabeçalho repetido com valores diferentes, é `diferente` mesmo que o texto saneado coincida com
+// o esperado — o proxy declarou outra coisa, e o que ficou em [port.ServedRoute.Model] é só o que
+// se pode gravar.
+func CompareServedRoute(profile RouteProfile, hasProfile bool, served port.ServedRoute, expectedHost string) (check, cause string) {
 	switch {
 	case !hasProfile:
 		return port.RouteCheckDifferent, RouteCauseNoProfile
-	case servedModel == "":
+	case served.ModelInexact:
+		return port.RouteCheckDifferent, RouteCauseModelDifferent
+	case served.Model == "":
 		return port.RouteCheckUnreported, RouteCauseModelUnreported
-	case servedModel != profile.ExpectedModel:
+	case served.Model != profile.ExpectedModel:
 		return port.RouteCheckDifferent, RouteCauseModelDifferent
 	case expectedHost == "":
 		return port.RouteCheckEqual, ""
-	case servedHost == "":
+	case served.APIHostInexact:
+		return port.RouteCheckDifferent, RouteCauseEndpointDifferent
+	case served.APIHost == "":
 		return port.RouteCheckUnreported, RouteCauseEndpointUnreported
-	case servedHost != expectedHost:
+	case served.APIHost != expectedHost:
 		return port.RouteCheckDifferent, RouteCauseEndpointDifferent
 	default:
 		return port.RouteCheckEqual, ""
@@ -248,7 +265,8 @@ type RouteGovernance struct {
 	Mode string
 	// ExpectedAPIHost é o host (com a porta, se a tiver) do endpoint que o proxy deve declarar.
 	// Vazio ⇒ o endpoint não é comparado. É configuração do nó e não do perfil; só se compara,
-	// e não é gravado em lado nenhum.
+	// e não é gravado em lado nenhum. Normalizado como o declarado ([port.NormalizeAPIHost]):
+	// minúsculas e sem ponto final; a porta compara-se como está.
 	ExpectedAPIHost string
 	// Observer recebe o resultado de cada comparação. Opcional.
 	Observer func(RouteObservation)
@@ -301,8 +319,13 @@ const (
 const varianceKindServedRoute = "served_route"
 
 // governRoute compara a rota que o proxy declarou para esta resposta com o perfil do nome que o
-// gateway lhe pediu, e escreve o resultado em resp.Route. `host` é o host do endpoint declarado,
-// já retirado da resposta por quem chama: não sai daqui.
+// gateway lhe pediu, e escreve o resultado em resp.Route. `declared` é a rota como o adaptador a
+// leu — com o host do endpoint e as marcas de valor inexacto —, já retirada da resposta por quem
+// chama: desses campos nada sai daqui.
+//
+// COMPARA-SE O VALOR CRU, GRAVA-SE O SANEADO. Um nome que o saneamento altere (caracteres não
+// imprimíveis, de largura zero, de direcção do texto, ou o corte no tecto) é `diferente`, venha
+// a marca do adaptador ou seja este o primeiro saneamento do valor.
 //
 // Desligada (g.route == nil), apaga o que o adaptador leu dos cabeçalhos e não faz mais nada: a
 // resposta sai como saía antes de o campo existir.
@@ -310,7 +333,7 @@ const varianceKindServedRoute = "served_route"
 // Em observação devolve sempre nil. Em imposição devolve [*RouteVarianceError] quando o resultado
 // não é `igual` — a resposta do provider já foi paga e o seu custo já foi contado; o que se
 // recusa é usá-la.
-func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange, resp *port.ChatResponse, host string) error {
+func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *pipeline.Exchange, resp *port.ChatResponse, declared port.ServedRoute) error {
 	if g.route == nil {
 		resp.Route = port.ServedRoute{}
 		return nil
@@ -320,8 +343,12 @@ func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *p
 		requested = ex.RequestedModel
 	}
 	profile, ok := RouteProfileFor(requested)
-	served := port.SanitizeServedModel(resp.Route.Model)
-	check, cause := CompareRoute(profile, ok, served, host, g.route.expectedHost)
+	served := port.SanitizeServedModel(declared.Model)
+	if served != declared.Model {
+		declared.ModelInexact = true
+	}
+	declared.Model = served
+	check, cause := CompareServedRoute(profile, ok, declared, g.route.expectedHost)
 	digest := ""
 	if ok {
 		digest = profile.Digest()

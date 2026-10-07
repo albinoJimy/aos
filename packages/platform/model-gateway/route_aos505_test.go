@@ -48,6 +48,17 @@ type aos505Proxy struct {
 	mu      sync.Mutex
 	corpos  [][]byte
 	headers map[string]string
+	// repetidos são ocorrências A MAIS de um cabeçalho, acrescentadas depois das de `headers`.
+	repetidos map[string][]string
+}
+
+func (p *aos505Proxy) repetir(nome string, valores ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.repetidos == nil {
+		p.repetidos = map[string][]string{}
+	}
+	p.repetidos[nome] = append(p.repetidos[nome], valores...)
 }
 
 func (p *aos505Proxy) definir(h map[string]string) {
@@ -71,9 +82,15 @@ func (p *aos505Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	p.corpos = append(p.corpos, corpo)
 	h := p.headers
+	mais := p.repetidos
 	p.mu.Unlock()
 	for k, v := range h {
 		w.Header().Set(k, v)
+	}
+	for k, vs := range mais {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	modelo, _ := json.Marshal(pedido.Model)
@@ -590,6 +607,160 @@ func TestAOS505_NomeRealDoModelo_EmTudoOQueCompoeNomes(t *testing.T) {
 			}
 			if errors.Is(eerr, modelgateway.ErrRoutingModelNaoRepresentavel) {
 				t.Fatalf("a escada recusou o nome real %q: %v", nome, eerr)
+			}
+		})
+	}
+}
+
+// E1 — COMPARA-SE O VALOR CRU DO CABEÇALHO. O proxy declara `openai/k<largura zero>3<inversão de
+// direcção>`: saneado, o texto é o esperado do perfil; cru, não é. Em observação o turno segue com
+// `diferente` e a variância selada; em imposição falha com `modelo_diferente`. O que se grava é o
+// saneado. O mesmo para um nome que só coincide com o esperado depois do corte no tecto, e para
+// um host com caracteres invisíveis (que nunca chega a ser um host).
+func TestAOS505_ValorCruDoCabecalho_OSaneamentoNaoFazIgual(t *testing.T) {
+	const invisiveis = "openai/k\u200b3\u202e"
+	for _, c := range []struct {
+		nome, declarado, gravado string
+	}{
+		{"largura zero e direccao do texto", invisiveis, "openai/k3"},
+		{"largura zero no fim", "openai/k3\u200b", "openai/k3"},
+		{"espaco nao separavel no fim", "openai/k3\u00a0", "openai/k3"},
+	} {
+		t.Run("observe/"+c.nome, func(t *testing.T) {
+			m := aos505Compor(t, modelgateway.RouteGovernanceObserve, aos505HostA, aos505Cabecalhos(c.declarado, aos505APIBaseA))
+			resp, err := m.gw.Chat(context.Background(), aos505Pedido("gpt-4o"))
+			if err != nil {
+				t.Fatalf("em observacao o turno segue; veio %v", err)
+			}
+			perfil, _ := modelgateway.RouteProfileFor("gpt-4o")
+			if quer := (port.ServedRoute{Model: c.gravado, Check: port.RouteCheckDifferent, ProfileDigest: perfil.Digest()}); resp.Route != quer {
+				t.Fatalf("rota = %+v\n quero %+v", resp.Route, quer)
+			}
+			if len(m.visto.obs) != 1 || m.visto.obs[0] != (modelgateway.RouteObservation{Check: port.RouteCheckDifferent, Served: "openai/k3", Cause: modelgateway.RouteCauseModelDifferent}) {
+				t.Fatalf("observacao = %+v", m.visto.obs)
+			}
+			selos := aos505Selos(t, m.store)
+			if len(selos) != 1 || selos[0].Decision != audit.DecisionAllow || selos[0].Obligations[0].Params["reason"] != modelgateway.RouteCauseModelDifferent ||
+				selos[0].Obligations[0].Params["served_model"] != c.gravado {
+				t.Fatalf("queria 1 selo allow, modelo_diferente, com o nome saneado; vieram %+v", selos)
+			}
+			if raw := aos505JSON(t, selos[0]) + aos505JSON(t, m.visto.variancias); strings.Contains(raw, "\u200b") || strings.Contains(raw, "\u202e") || strings.Contains(raw, "\u00a0") {
+				t.Fatalf("o que se grava tinha de estar saneado: %q", raw)
+			}
+			// O turno, como o runtime o recebe.
+			out, err := modelgateway.NewModelClient(m.gw, "gpt-4o", modelgateway.WithPrincipal("tok"), modelgateway.WithRegionBoard("eu", "board-eu")).
+				Call(context.Background(), agentruntime.PromptView{Materialized: []byte("olá")})
+			if err != nil || out.RouteCheck != agentruntime.RouteDifferent || out.Model != c.gravado {
+				t.Fatalf("turno = check %q modelo %q err %v; quero diferente e %q", out.RouteCheck, out.Model, err, c.gravado)
+			}
+		})
+		t.Run("enforce/"+c.nome, func(t *testing.T) {
+			m := aos505Compor(t, modelgateway.RouteGovernanceEnforce, aos505HostA, aos505Cabecalhos(c.declarado, aos505APIBaseA))
+			_, err := m.gw.Chat(context.Background(), aos505Pedido("gpt-4o"))
+			var rerr *modelgateway.RouteVarianceError
+			if !errors.As(err, &rerr) || rerr.Check != port.RouteCheckDifferent || rerr.Cause != modelgateway.RouteCauseModelDifferent {
+				t.Fatalf("em imposicao um nome que so e o esperado depois de saneado FALHA com modelo_diferente; veio %v", err)
+			}
+			if selos := aos505Selos(t, m.store); len(selos) != 1 || selos[0].Decision != audit.DecisionDeny {
+				t.Fatalf("queria 1 selo deny; vieram %+v", selos)
+			}
+		})
+	}
+
+	// O corte no tecto: um nome com o esperado à frente e lixo depois dos 256 bytes não existe
+	// (o esperado é curto), mas um nome de 257 bytes cujo saneado teria 256 é `diferente` pela
+	// marca e não só pelo texto. Prova-se com o rótulo: `outro`, e `diferente`.
+	longo := aos505Compor(t, modelgateway.RouteGovernanceEnforce, "", aos505Cabecalhos(strings.Repeat("A", port.MaxServedModel+50), aos505APIBaseA))
+	if _, err := longo.gw.Chat(context.Background(), aos505Pedido("gpt-4o")); !errors.Is(err, modelgateway.ErrRouteVariance) {
+		t.Fatalf("um nome cortado no tecto nao se prova igual; veio %v", err)
+	}
+	if s := aos505Selos(t, longo.store); len(s) != 1 || len(s[0].Obligations[0].Params["served_model"]) != port.MaxServedModel {
+		t.Fatalf("o nome gravado tinha de vir cortado a %d bytes: %+v", port.MaxServedModel, s)
+	}
+
+	// O host: caracteres invisíveis no api_base deixam o endpoint por reportar — nunca igual.
+	host := aos505Compor(t, modelgateway.RouteGovernanceEnforce, "api.a.exemplo.test", aos505Cabecalhos("openai/k3", "https://api.a.exemplo\u200b.test/v1"))
+	_, err := host.gw.Chat(context.Background(), aos505Pedido("gpt-4o"))
+	var rerr *modelgateway.RouteVarianceError
+	if !errors.As(err, &rerr) || rerr.Cause != modelgateway.RouteCauseEndpointUnreported {
+		t.Fatalf("um host com caracteres invisiveis nao e um host: queria endpoint_nao_reportado, veio %v", err)
+	}
+}
+
+// E3 — CABEÇALHO REPETIDO, em imposição, pelo adaptador HTTP real. Com o valor esperado À FRENTE e
+// outro atrás, ler só a primeira ocorrência daria `igual`. Valores diferentes entre si ⇒
+// `diferente`; iguais ⇒ segue.
+func TestAOS505_Enforce_CabecalhoRepetido(t *testing.T) {
+	for _, c := range []struct {
+		nome, cabecalho string
+		valores         []string
+		causa           string // vazia ⇒ o turno passa
+	}{
+		{"modelo: o esperado a frente, outro atras", "x-litellm-model-name", []string{"openai/outro"}, modelgateway.RouteCauseModelDifferent},
+		{"modelo: repetido com o mesmo valor", "x-litellm-model-name", []string{"openai/k3", "openai/k3"}, ""},
+		{"modelo: repetido com um vazio", "x-litellm-model-name", []string{""}, modelgateway.RouteCauseModelDifferent},
+		{"endpoint: o esperado a frente, outro atras", "x-litellm-model-api-base", []string{aos505APIBaseB}, modelgateway.RouteCauseEndpointDifferent},
+		{"endpoint: repetido com o mesmo host", "x-litellm-model-api-base", []string{"https://API.a.exemplo.test.:8443/outro-caminho"}, ""},
+	} {
+		t.Run(c.nome, func(t *testing.T) {
+			m := aos505Compor(t, modelgateway.RouteGovernanceEnforce, aos505HostA, aos505Cabecalhos("openai/k3", aos505APIBaseA))
+			m.proxy.repetir(c.cabecalho, c.valores...)
+			_, err := m.gw.Chat(context.Background(), aos505Pedido("gpt-4o"))
+			if c.causa == "" {
+				if err != nil {
+					t.Fatalf("repetido com o mesmo valor segue; veio %v", err)
+				}
+				if n := len(aos505Selos(t, m.store)); n != 0 {
+					t.Fatalf("uma rota igual nao sela: %d selos", n)
+				}
+				return
+			}
+			var rerr *modelgateway.RouteVarianceError
+			if !errors.As(err, &rerr) || rerr.Check != port.RouteCheckDifferent || rerr.Cause != c.causa {
+				t.Fatalf("valores diferentes entre si: queria diferente/%s, veio %v", c.causa, err)
+			}
+			selos := aos505Selos(t, m.store)
+			if len(selos) != 1 || selos[0].Decision != audit.DecisionDeny || selos[0].Obligations[0].Params["reason"] != c.causa {
+				t.Fatalf("queria 1 selo deny com a causa %s; vieram %+v", c.causa, selos)
+			}
+			aos505SemMarcas(t, "o selo", aos505JSON(t, selos[0]))
+		})
+	}
+	// Em observação, o mesmo caso conta como `diferente` e o turno segue.
+	m := aos505Compor(t, modelgateway.RouteGovernanceObserve, "", aos505Cabecalhos("openai/k3", aos505APIBaseA))
+	m.proxy.repetir("x-litellm-model-name", "openai/outro")
+	resp, err := m.gw.Chat(context.Background(), aos505Pedido("gpt-4o"))
+	if err != nil || resp.Route.Check != port.RouteCheckDifferent || resp.Route.Model != "openai/k3" {
+		t.Fatalf("observacao: quero diferente, com a primeira ocorrencia gravada; veio %+v err=%v", resp.Route, err)
+	}
+}
+
+// M4 — O HOST COMPARA-SE NORMALIZADO DOS DOIS LADOS (minúsculas, sem ponto final), em imposição:
+// uma diferença só de escrita não pára os runs. A PORTA compara-se como está.
+func TestAOS505_Enforce_HostNormalizadoDosDoisLados(t *testing.T) {
+	for _, c := range []struct {
+		nome, esperado, apiBase string
+		causa                   string
+	}{
+		{"ponto final no declarado", "api.kimi.com", "https://api.kimi.com./coding/v1", ""},
+		{"ponto final no esperado", "api.kimi.com.", "https://api.kimi.com/coding/v1", ""},
+		{"maiusculas nos dois", "API.Kimi.com", "https://Api.KIMI.Com./coding/v1", ""},
+		{"porta nos dois", "api.kimi.com:443", "https://api.kimi.com.:443/coding/v1", ""},
+		{"porta so no declarado", "api.kimi.com", "https://api.kimi.com:443/coding/v1", modelgateway.RouteCauseEndpointDifferent},
+		{"porta so no esperado", "api.kimi.com:443", "https://api.kimi.com/coding/v1", modelgateway.RouteCauseEndpointDifferent},
+	} {
+		t.Run(c.nome, func(t *testing.T) {
+			m := aos505Compor(t, modelgateway.RouteGovernanceEnforce, c.esperado, aos505Cabecalhos("openai/k3", c.apiBase))
+			_, err := m.gw.Chat(context.Background(), aos505Pedido("gpt-4o"))
+			if c.causa == "" {
+				if err != nil {
+					t.Fatalf("uma diferenca so de escrita do host nao pode parar o run; veio %v", err)
+				}
+				return
+			}
+			var rerr *modelgateway.RouteVarianceError
+			if !errors.As(err, &rerr) || rerr.Cause != c.causa {
+				t.Fatalf("a porta compara-se como esta: queria %s, veio %v", c.causa, err)
 			}
 		})
 	}
