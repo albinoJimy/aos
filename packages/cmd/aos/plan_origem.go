@@ -254,14 +254,11 @@ type apensadorDaOrigem interface {
 //
 // `aviso` é o aviso com que o run foi semeado (AOS-506); só fica gravado numa tentativa
 // (`attempt >= 2`), e vazio dá os bytes de sempre.
-func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice) error {
-	return declararOrigemDaTentativa(ctx, es, runID, v, aviso, "")
-}
-
-// declararOrigemDaTentativa é o [declararOrigemDoRunFilho] com a razão da classe da tentativa
-// (AOS-510): `razao` é o valor de vocabulário fechado que o NÓ decidiu na prova
-// ([razaoDaTentativaVazia], ou vazio na classe do AOS-502), e só fica gravado numa tentativa.
-func declararOrigemDaTentativa(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice, razao string) error {
+//
+// `razao` é a razão da classe da tentativa (AOS-510): o valor de vocabulário fechado que o NÓ
+// decidiu na prova ([razaoDaClasse]), ou vazio na classe do AOS-502 e num run sem tentativa. Só
+// fica gravada numa tentativa.
+func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice, razao string) error {
 	origem := origemDoRunFilho{
 		Versao: versaoDaOrigem,
 		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, RunID: v.RunID, Geracao: v.Geracao},
@@ -308,7 +305,7 @@ func (h *apiHandler) gravarOrigemDoRunFilho(ctx context.Context, runID string, v
 func (h *apiHandler) gravarOrigemDaTentativa(ctx context.Context, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice, razao string) {
 	origemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
 	defer cancel()
-	if err := declararOrigemDaTentativa(origemCtx, h.node.EventStore, runID, v, aviso, razao); err != nil {
+	if err := declararOrigemDoRunFilho(origemCtx, h.node.EventStore, runID, v, aviso, razao); err != nil {
 		h.logf("submit (AOS-477): o run %q foi hospedado mas a ORIGEM nao ficou gravada (plano=%q geracao=%d): %v",
 			runID, v.RunID, v.Geracao, err)
 	}
