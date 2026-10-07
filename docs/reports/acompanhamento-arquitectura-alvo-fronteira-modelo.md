@@ -208,8 +208,8 @@ descartado: o que volta é o do runtime.
 | AOS-507 | EPIC-06 | A forma da resposta do provider fica registada em cada turno, em vocabulário fechado e sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE=off\|observe`, omissão `off`) | AOS-491 | aberto (2026-10-07) |
 | AOS-508 | EPIC-06 | Providers falsos de wire para CI, e um gate opcional que os põe atrás da imagem real do proxy | AOS-505 | aberto (2026-10-07) |
 | AOS-509 | EPIC-06 | O gateway deixa de recusar a resposta inteira por `content` em partes de texto e por `arguments` em objecto, e lê os outros nomes do raciocínio como raciocínio — nunca como resposta. Sem interruptor | AOS-507, AOS-508 | aberto (2026-10-07) |
-| AOS-510 | EPIC-19 | O nó aceita a nova tentativa de um nó do plano que fechou `empty_output`, com prova própria no seu log (`AOS_RUN_RETRY_EMPTY=off\|on`, omissão `off`). Emenda o ADR-039. A tentativa não leva aviso | AOS-502, AOS-506 | aberto (2026-10-07) |
-| AOS-511 | EPIC-19 | O `aos-orq` volta a submeter um nó do plano que fechou `empty_output` (`AOS_ORQ_NOVA_TENTATIVA_VAZIA=off\|observe\|on`, omissão `off`; os mesmos tectos, 2 por nó e 4 por plano) | AOS-510, AOS-503 | aberto (2026-10-07) |
+| AOS-510 | EPIC-19 | O nó aceita a nova tentativa de um nó do plano que fechou `empty_output`, com prova própria no seu log (`AOS_RUN_RETRY_EMPTY=off\|on`, omissão `off`). Emenda o ADR-039. A tentativa não leva aviso | AOS-502, AOS-506 | implementado e desligado por omissão (2026-10-07); por rever de forma independente, por fazer o smoke sobre JetStream e por verificar em produção |
+| AOS-511 | EPIC-19 | O `aos-orq` volta a submeter um nó do plano que fechou `empty_output` (`AOS_ORQ_NOVA_TENTATIVA_VAZIA=off\|observe\|on`, omissão `off`; os mesmos tectos, 2 por nó e 4 por plano) | AOS-510, AOS-503 | implementado e desligado por omissão (2026-10-07); por rever de forma independente e por verificar em produção (`observe` primeiro) |
 
 **Planeados, por numerar.** Dependiam das decisões D4 e D5, que o dono tomou a 2026-10-07 (§4);
 ficam à espera das chaves e dos tectos de despesa, que o dono fornece num ficheiro seu. Não têm
