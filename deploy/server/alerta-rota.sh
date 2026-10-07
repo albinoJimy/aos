@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # alerta-rota.sh — avisa por push (ntfy) quando o modelo que o proxy declara ter servido deixa de
-# ser o do perfil da rota (AOS-505): a regra de alerta sobre `diferente` maior do que zero.
+# ser o do perfil da rota, ou quando o proxy deixa de o declarar (AOS-505): duas regras, sobre
+# `diferente` e sobre `nao_reportado` maiores do que zero, cada uma com o seu aviso.
 #
 #   cron do `aos`:   */15 * * * * /bin/bash /opt/aos/alerta-rota.sh >/dev/null 2>&1
 #   à mão:           bash /opt/aos/alerta-rota.sh            (avalia e mostra o estado)
@@ -11,18 +12,23 @@
 # com `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`. Soma as amostras por resultado.
 #
 # ─── O QUE DISPARA ──────────────────────────────────────────────────────────────────────────
+# Duas regras INDEPENDENTES, cada uma com o seu aviso, o seu lembrete e a sua recuperação:
 #   soma de result="diferente" > 0     o proxy declarou outro modelo ou outro endpoint, ou o nome
 #                                      pedido não tem perfil: uma troca de CONFIGURAÇÃO no proxy
+#   soma de result="nao_reportado" > 0 o proxy NÃO declarou o modelo ou o endpoint: outro proxy
+#                                      à frente do provider, uma versão que renomeou ou desligou
+#                                      os cabeçalhos — a comparação deixou de ter com que comparar.
+#                                      Sem este aviso, um proxy trocado por outro que não emita
+#                                      os cabeçalhos passava calado em `observe`
 #
 # O QUE NÃO DISPARA, e porquê:
 #   família ausente                    a governação da rota está desligada — é o estado por omissão
-#   result="nao_reportado" > 0         fica no estado mostrado e não avisa: a regra pedida é sobre
-#                                      `diferente`; quem quiser segui-lo lê o contador
 #   métricas sem resposta              nó ou collector em baixo — é o alerta-ancora.sh que avisa
 #
-# O contador é por processo e só sobe: uma vez acima de zero, fica até o nó reiniciar. Avisa à
-# primeira leitura, relembra de 24 h em 24 h enquanto durar, e avisa quando volta a zero (o nó
-# reiniciou; se a troca continuar, volta a disparar no turno seguinte).
+# Os contadores são por processo e só sobem: uma vez acima de zero, ficam até o nó reiniciar. Cada
+# regra avisa à primeira leitura, relembra de 24 h em 24 h enquanto durar, e avisa quando volta a
+# zero (o nó reiniciou; se a causa continuar, volta a disparar no turno seguinte). Uma regra em
+# alerta não cala nem repete a outra: os estados são dois ficheiros.
 #
 # O QUE NÃO DETECTA: uma troca feita pelo provider por trás do mesmo nome e do mesmo endpoint. O
 # que o nó compara é o que o proxy DECLARA nos cabeçalhos, e isso só muda com a configuração dele.
@@ -66,7 +72,7 @@ soma() {
 }
 
 avaliar() {
-  CLASSE=ok
+  CLASSE=ok; MAU_DIFERENTE=0; MAU_NAO_REPORTADO=0
   if ! TXT="$(metricas 2>/dev/null)" || [[ -z "${TXT}" ]]; then
     CLASSE=sem_leitura
     MOTIVO="as métricas não responderam — sem leitura (o alerta-ancora.sh avisa de nó ou collector em baixo)"
@@ -81,7 +87,11 @@ avaliar() {
   iguais="${iguais:-0}"; diferentes="${diferentes:-0}"; por_reportar="${por_reportar:-0}"
   MOTIVO="turnos comparados desde o arranque do nó: ${iguais} iguais, ${diferentes} diferentes, ${por_reportar} não reportados"
   if (( diferentes > 0 )); then
-    CLASSE=mau
+    MAU_DIFERENTE=1; CLASSE=diferente
+  fi
+  if (( por_reportar > 0 )); then
+    MAU_NAO_REPORTADO=1
+    if [[ "${CLASSE}" == diferente ]]; then CLASSE=diferente+nao_reportado; else CLASSE=nao_reportado; fi
   fi
 }
 
@@ -121,39 +131,61 @@ mkdir -p "${ESTADO_DIR}" && chmod 700 "${ESTADO_DIR}"
 exec 9>"${ESTADO_DIR}/lock"
 flock -n 9 || { log "outra execução em curso — esta termina"; exit 0; }
 
-disparado=0; ultimo_aviso=0
-if [[ -f "${ESTADO_DIR}/estado" ]]; then
-  read -r disparado ultimo_aviso < "${ESTADO_DIR}/estado" || true
-fi
-[[ "${disparado}" =~ ^[01]$ ]] || disparado=0
-[[ "${ultimo_aviso}" =~ ^[0-9]+$ ]] || ultimo_aviso=0
 agora="$(date +%s)"
 
-if [[ "${CLASSE}" == mau ]]; then
-  if [[ "${disparado}" == 0 ]]; then
-    if notificar "AOS: rota do modelo em ALERTA" high "rotating_light" \
-        "O proxy declarou uma rota que não é a do perfil — ${MOTIVO}. Host: ${HOST_ID}. Ver deploy/server/README.md, secção «Rota do modelo sob governação»."; then
-      disparado=1; ultimo_aviso="${agora}"
-      log "ALERTA enviado: ${MOTIVO}"
-    fi
-  elif (( agora - ultimo_aviso >= LEMBRETE_S )); then
-    if notificar "AOS: rota do modelo continua em ALERTA" high "rotating_light" \
-        "Há mais de 24 h: ${MOTIVO}. Host: ${HOST_ID}."; then
-      ultimo_aviso="${agora}"
-      log "LEMBRETE enviado: ${MOTIVO}"
-    fi
-  else
-    log "em alerta (já avisado): ${MOTIVO}"
+# seguir <ficheiro de estado> <em alerta: 0|1> <rótulo do log> <título do alerta> <mensagem do
+#        alerta> <título do lembrete> <título da recuperação> <mensagem da recuperação>
+# Uma regra: avisa à primeira leitura em alerta, relembra de 24 h em 24 h, avisa quando recupera.
+# Um aviso que não saiu não muda o estado: tenta-se na execução seguinte.
+seguir() {
+  local ficheiro="${ESTADO_DIR}/$1" mau="$2" rotulo="$3"
+  local disparado=0 ultimo_aviso=0
+  if [[ -f "${ficheiro}" ]]; then
+    read -r disparado ultimo_aviso < "${ficheiro}" || true
   fi
-elif [[ "${disparado}" == 1 ]]; then
-  if notificar "AOS: rota do modelo sem diferencas" default "white_check_mark" \
-      "O contador de rotas diferentes voltou a zero (o nó reiniciou) — ${MOTIVO}. Host: ${HOST_ID}."; then
-    disparado=0; ultimo_aviso="${agora}"
-    log "RECUPERADO: ${MOTIVO}"
+  [[ "${disparado}" =~ ^[01]$ ]] || disparado=0
+  [[ "${ultimo_aviso}" =~ ^[0-9]+$ ]] || ultimo_aviso=0
+
+  if [[ "${mau}" == 1 ]]; then
+    if [[ "${disparado}" == 0 ]]; then
+      if notificar "$4" high "rotating_light" "$5"; then
+        disparado=1; ultimo_aviso="${agora}"
+        log "ALERTA enviado (${rotulo}): ${MOTIVO}"
+      fi
+    elif (( agora - ultimo_aviso >= LEMBRETE_S )); then
+      if notificar "$6" high "rotating_light" "Há mais de 24 h: ${MOTIVO}. Host: ${HOST_ID}."; then
+        ultimo_aviso="${agora}"
+        log "LEMBRETE enviado (${rotulo}): ${MOTIVO}"
+      fi
+    else
+      log "em alerta (${rotulo}, já avisado): ${MOTIVO}"
+    fi
+  elif [[ "${disparado}" == 1 ]]; then
+    if notificar "$7" default "white_check_mark" "$8"; then
+      disparado=0; ultimo_aviso="${agora}"
+      log "RECUPERADO (${rotulo}): ${MOTIVO}"
+    fi
   fi
-else
+
+  printf '%s %s\n' "${disparado}" "${ultimo_aviso}" > "${ficheiro}.novo" \
+    && mv -f "${ficheiro}.novo" "${ficheiro}"
+}
+
+# O ficheiro `estado` é o da regra sobre `diferente` desde a primeira versão: mantém o nome.
+seguir estado "${MAU_DIFERENTE}" "diferente" \
+  "AOS: rota do modelo em ALERTA" \
+  "O proxy declarou uma rota que não é a do perfil — ${MOTIVO}. Host: ${HOST_ID}. Ver deploy/server/README.md, secção «Rota do modelo sob governação»." \
+  "AOS: rota do modelo continua em ALERTA" \
+  "AOS: rota do modelo sem diferencas" \
+  "O contador de rotas diferentes voltou a zero (o nó reiniciou) — ${MOTIVO}. Host: ${HOST_ID}."
+
+seguir estado-nao-reportado "${MAU_NAO_REPORTADO}" "nao_reportado" \
+  "AOS: rota do modelo NAO REPORTADA" \
+  "O proxy não declarou o modelo ou o endpoint que serviu — a rota deixou de ser comparada. ${MOTIVO}. Host: ${HOST_ID}. Causas a ver: outro proxy à frente do provider, ou uma versão do LiteLLM que não emite os cabeçalhos. Não é o aviso de rota diferente. Ver deploy/server/README.md, secção «Rota do modelo sob governação»." \
+  "AOS: rota do modelo continua NAO REPORTADA" \
+  "AOS: rota do modelo voltou a ser reportada" \
+  "O contador de rotas não reportadas voltou a zero (o nó reiniciou) — ${MOTIVO}. Host: ${HOST_ID}."
+
+if [[ "${CLASSE}" == ok ]]; then
   log "ok: ${MOTIVO}"
 fi
-
-printf '%s %s\n' "${disparado}" "${ultimo_aviso}" > "${ESTADO_DIR}/estado.novo" \
-  && mv -f "${ESTADO_DIR}/estado.novo" "${ESTADO_DIR}/estado"
