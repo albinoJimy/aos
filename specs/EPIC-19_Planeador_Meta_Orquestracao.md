@@ -10245,6 +10245,16 @@ planos, projecção 1.0.0): 6 tentativas admitidas, 0 recusadas, e
 bloqueantes (registo acima). O AOS-506 acrescenta à tentativa, desligado por omissão, um aviso
 constante do runtime.
 
+**Verificação em produção da v0.1.51 (2026-10-07), com o aviso do AOS-506 ligado**
+(`AOS_RUN_RETRY_NOTICE=on`). Série `v0151a` (58 planos, projecção 1.1.0): 22 tentativas
+admitidas, as 22 com aviso, 0 recusadas, e `aos_runs_retry_prompt_hash_diferente_total` a zero.
+As 22 são as 22 que o `aos-orq` pediu. Na série `v0151b` (62 planos, projecção 1.2.0) o
+`aos-orq` pediu 1 tentativa, que recuperou; os contadores do nó dessa série não foram lidos.
+
+**Caixa de verificação em produção por marcar:** a que existe pede uma série com o tecto a
+zero e um pedido com `attempt` feito à mão e recusado. Nenhuma das séries registadas a mediu: o
+tecto está a 2 desde a v0.1.50.
+
 ---
 
 ## AOS-503 — O `aos-orq` volta a submeter um nó do plano que terminou sem chamar a tool
@@ -10425,3 +10435,20 @@ nós recuperados; 39 planos com código 0 e 1 com código 13. Série `v0150p` (6
 código 0 e 2 com código 13. **O critério da fase A1 não foi cumprido** («não cumprido» em 2,5% e
 em 3,3% dos planos, contra menos de 2%): a causa medida e o que se segue estão no AOS-506.
 Implementado e revisto a 2026-10-06, sem bloqueantes (registo acima).
+
+**Verificação em produção da v0.1.51 (2026-10-07), com o AOS-506 ligado.** Série `v0151a` (58
+planos, projecção 1.1.0, aviso ligado): 19 primeiras falhas (33%), 22 tentativas, 3 voltaram a
+falhar (14%, contra 32% sem aviso), 19 nós recuperados em 19 (16 à segunda tentativa, 3 à
+terceira); 56 com código 0 e 2 com código 13 (3,4%). O nó admitiu 22 tentativas e recusou 0: o
+número do nó é o do `aos-orq`. Série `v0151b` (62 planos, projecção 1.2.0, aviso ligado): 1
+primeira falha (1,6%), 1 tentativa, recuperada; 61 com código 0 e 1 com código 13 (**1,6%**).
+Nas duas séries, nenhum plano falhou por a tool não ter sido chamada: os 3 que saíram 13 foram
+`empty_output` no nó de resumo, que não tem tools e que a recuperação não cobre.
+
+**O critério da fase A1 («não cumprido» abaixo de 2% em pelo menos 40 planos) foi cumprido pela
+primeira vez na série `v0151b`,** com essa ressalva. **A caixa da verificação em `on` fica por
+marcar:** ela pede, da mesma série, a taxa abaixo de 2% *e* `aos_runs_retry_admitted_total`
+igual à soma das tentativas do `aos-orq`. A série `v0151b` tem a taxa e não tem os contadores do
+nó lidos; a série `v0151a` tem os contadores (22 e 22, 0 recusadas) e não tem a taxa. Marca-se
+com a leitura do contador do nó sobre a série `v0151b`. A caixa da verificação em `observe`
+também fica por marcar: a série `v0150o` teve 10 planos, e ela pede 20.

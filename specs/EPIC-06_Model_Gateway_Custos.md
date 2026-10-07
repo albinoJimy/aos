@@ -1556,6 +1556,13 @@ tool call em 19 de 60 planos (32%), contra 4 de 40 (10%) com a 1.0.0 — acima d
 AOS-506 para a causa. O canário marcou 4 nós na série `v0150r` e a leitura à mão deu 3 recusas:
 um falso positivo em 4. O código continua com a 1.0.0 como omissão.
 
+**Substituída em produção pela 1.2.0 (v0.1.51, 2026-10-07).** A 1.1.0 correu mais uma série com
+o aviso do AOS-506 ligado (`v0151a`, 58 planos): zero recusas do próprio objectivo em 56 resumos
+lidos à mão, e 19 primeiras tentativas sem tool call (33%) — a metade (b) do critério de ligar
+continua por cumprir com a 1.1.0, e a caixa fica por marcar. A produção passou depois à 1.2.0,
+que mantém o que a 1.1.0 corrigiu: na série `v0151b`, zero recusas em 61 resumos e 1 primeira
+tentativa sem tool call em 62 (AOS-506).
+
 ---
 
 ## AOS-505 — Rota sob governação: o proxy deixa de descartar parâmetros e o modelo que serviu cada turno é comparado com o esperado
@@ -1877,6 +1884,11 @@ tabela de perfis corresponde ao `config.yaml` real do servidor.
 dono. Limites: não detecta uma troca feita pelo provider; as chamadas do `aos-orq` ficam de fora;
 `enforce` exige o host do endpoint.
 
+**Na v0.1.51 (2026-10-07) continua desligado.** As séries `v0151a` e `v0151b` correram com
+`AOS_MODEL_ROUTE_GOVERNANCE` por ligar e não medem nada deste ticket: as duas caixas de produção
+ficam por marcar. A série de pelo menos 20 planos em `observe` é uma das duas coisas que faltam
+para fechar a fase A1 (acompanhamento, §3).
+
 ---
 
 ## AOS-506 — O modelo escreve a tool call como texto: projecção nativa 1.2.0 e aviso constante na nova tentativa
@@ -2023,8 +2035,12 @@ como tool call não muda.
       contra a base `3fdb6588`: **sem bloqueantes**; com as omissões nada muda face à base
       (medido em três níveis); 2 achados importantes e 6 menores, corrigidos ou registados
       abaixo em «Registo da revisão».
-- [ ] **Critério de ligar**, medido em produção: o do ponto 3 das decisões do dono, com cada
-      parte ligada sozinha primeiro.
+- [x] **Critério de ligar**, medido em produção: o do ponto 3 das decisões do dono, com cada
+      parte ligada sozinha primeiro. **Cumprido a 2026-10-07 para a combinação 1.2.0 com aviso**
+      (série `v0151b`, 62 planos: 1 falha à primeira tentativa, 1,6%; 0 recusas em 61 resumos
+      lidos à mão; «não cumprido» em 1,6%). **Desvio declarado:** o aviso foi medido sozinho
+      (série `v0151a`), a 1.2.0 foi medida com o aviso já ligado, por decisão do dono. Os números
+      estão em «Verificação em produção».
 
 ### Fora de âmbito
 
@@ -2160,9 +2176,67 @@ interruptor trocado; e o efeito dos textos no modelo, que só a série em produ�
 
 ### Estado
 
-**IMPLEMENTADO E REVISTO (2026-10-07, sem bloqueantes), desligado por omissão; por medir em
-produção.**
-`AOS_RUN_RETRY_NOTICE` ausente é `off`, e a 1.2.0 não está seleccionada em lado nenhum.
+**EM PRODUÇÃO, AS DUAS PARTES LIGADAS (v0.1.51, 2026-10-07).** `AOS_RUN_RETRY_NOTICE=on` e
+`AOS_MODEL_PROJECTION_VERSION=1.2.0` no `.env` de produção. Implementado e revisto a 2026-10-07,
+sem bloqueantes. No código, as duas continuam desligadas por omissão: `AOS_RUN_RETRY_NOTICE`
+ausente é `off`, e a omissão da projecção é a 1.0.0.
+
+### Verificação em produção (2026-10-07, v0.1.51)
+
+Imagem `ghcr.io/albinojimy/aos-node@sha256:a3d06030ad173736eef94dd1943caf38605058b38099f3571d139edcf55b7e29`
+(PR #454, release 37636422928). O modelo real por trás do alias é o Kimi (`kimi-for-coding`).
+Recuperação ligada nas duas séries (`AOS_ORQ_NOVA_TENTATIVA=on`, `AOS_RUN_RETRY_MAX=2`). As
+séries da v0.1.50 (`v0150o`, `v0150r`, `v0150p`) estão no Contexto e não se repetem aqui.
+
+| | `v0151a` | `v0151b` |
+|---|---|---|
+| Projecção | 1.1.0 | **1.2.0** |
+| Aviso na nova tentativa | ligado | ligado |
+| Planos | 58 (2 das 60 submissões não saíram do cliente) | 62 |
+| Código 0 / código 13 | 56 / 2 (3,4%) | 61 / 1 (**1,6%**) |
+| Primeira tentativa sem tool call | 19 de 58 (33%) | **1 de 62 (1,6%)** |
+| Novas tentativas / voltaram a falhar | 22 / 3 (14%) | 1 / 0 |
+| Nós recuperados | 19 de 19 (16 à segunda, 3 à terceira) | 1 de 1 |
+| Planos falhados por tool não chamada | 0 | 0 |
+| Recusas do próprio objectivo (resumos lidos à mão) | 0 em 56 | 0 em 61 |
+| Causa dos planos falhados | `empty_output` no nó de resumo (2) | `empty_output` no nó de resumo (1) |
+
+**Parte B, o aviso (série `v0151a`).** Sem aviso, na série `v0150p`, 8 de 25 tentativas
+voltaram a falhar (32%); com aviso, 3 de 22 (14%). O nó admitiu 22 tentativas, as 22 com aviso,
+recusou 0, e `aos_runs_retry_prompt_hash_diferente_total` ficou a zero. A primeira tentativa não
+muda, e não era de esperar: o aviso só entra na segunda.
+
+**Parte A, a 1.2.0 (série `v0151b`).** A primeira tentativa sem tool call passa de 33% para
+1,6%. Os 61 resumos contêm os três factos do documento (gVisor, 89 pods, Kimi) e nenhum recusa
+o objectivo: a 1.2.0 mantém o que a 1.1.0 corrigiu. Tempo médio por plano: 40 s, contra 45 a
+47 s nas séries anteriores.
+
+**O critério de ligar** (pelo menos 60 planos, menos de 10% de falhas à primeira tentativa, zero
+recusas lidas à mão, «não cumprido» abaixo de 2%) **está cumprido para a combinação 1.2.0 com
+aviso.** Desvio declarado: o ticket previa cada parte ligada sozinha. O aviso foi medido
+sozinho; a 1.2.0 foi medida com o aviso já ligado, por decisão do dono de 2026-10-07. Como o
+aviso só actua na segunda tentativa, a taxa à primeira mede só a 1.2.0; a recorrência e o «não
+cumprido» medem a combinação. A 1.2.0 sem aviso não foi medida.
+
+**O critério da fase A1** («não cumprido» abaixo de 2% em pelo menos 40 planos) foi cumprido
+pela primeira vez na série `v0151b`, com 1 em 62.
+
+**O que estes números não fecham.**
+
+- As 3 falhas das duas séries são `empty_output` no nó de resumo, que não tem tools:
+  `plan-e2e-v0151a-1791385126~n2` e `plan-e2e-v0151a-1791385255~n2` (um turno,
+  `stop_reason=stop`, 161 e 77 tokens de saída, texto vazio), e uma na série `v0151b` com o
+  mesmo padrão. A recuperação não as cobre. Hipótese não confirmada: o conteúdo veio no campo
+  de raciocínio, que o adaptador não lê. É matéria da fase A2.
+- Com 1 falha em 62, mais uma na mesma série dava 3,2%: a margem sobre os 2% é de um plano.
+- As séries não têm nenhum nó com tools e `consumes`. O plano de três passos está por correr.
+- Risco de desenho aberto, não provado: os separadores `<kind>` e `</kind>` do protocolo podem
+  ser a causa de fundo da tool call escrita como texto. A 1.2.0 corrige com uma instrução e
+  mantém os separadores; a hipótese não foi testada isoladamente. O texto foi afinado para um
+  só modelo.
+
+Recuo: as cópias do `.env` de cada passo estão em `/opt/aos`
+(`.env.antes-aviso-20261007`, `.env.antes-projeccao-120-20261007`).
 
 ---
 
@@ -2184,3 +2258,4 @@ produção.**
 | 2.1 | 2026-10-07 | +AOS-506 (fase A1): o modelo escreve a tool call como texto — projecção nativa 1.2.0 e aviso constante na nova tentativa, as duas desligadas por omissão. AOS-504 em produção, ligado (v0.1.50); AOS-505 em produção, desligado | Equipa AOS |
 | 2.2 | 2026-10-07 | AOS-506 implementado, desligado por omissão: `AOS_MODEL_PROJECTION_VERSION=1.2.0` e `AOS_RUN_RETRY_NOTICE`; emendas ao ADR-036 §2.4 e ao ADR-039 §2.7; sem versão nova de layout | Equipa AOS |
 | 2.3 | 2026-10-07 | AOS-506 revisto (sem bloqueantes) e corrigido: a medição do hash recalcula sobre o Goal hospedado; o recuo de imagem diverge em silêncio (frase corrigida, ordem do recuo); duas linhas da 1.2.0 reescritas; resíduo nomeado sobre a versão de layout | Equipa AOS |
+| 2.4 | 2026-10-07 | AOS-506 em produção e ligado (v0.1.51): verificação das séries `v0151a` (aviso sobre a 1.1.0) e `v0151b` (1.2.0 com aviso); critério de ligar cumprido para a combinação, com o desvio declarado; AOS-504 substituída em produção pela 1.2.0; AOS-505 continua desligado | Equipa AOS |
