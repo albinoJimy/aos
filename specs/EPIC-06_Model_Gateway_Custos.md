@@ -1714,10 +1714,12 @@ segundo lê-se na verificação em `observe`: `nao_reportado` a zero.
       à base, medido de forma independente; 7 mutações novas, 5 mortas e 2 vivas, ambas com teste
       dirigido agora; os achados a corrigir antes de `observe` e de `enforce` foram corrigidos, e
       o que ficou de fora está escrito como limite.
-- [ ] Verificação em produção, em `observe`: numa série de pelo menos 20 planos, todos os turnos
+- [x] Verificação em produção, em `observe`: numa série de pelo menos 20 planos, todos os turnos
       têm o modelo servido reportado e igual ao esperado (`diferente` e `nao_reportado` a zero),
       e a taxa de planos falhados não sobe em relação à série anterior. A passagem a `enforce` é
-      decisão do dono, com estes números.
+      decisão do dono, com estes números. **Cumprido a 2026-10-07 na série `v0151g`:** 20
+      planos, 60 turnos `igual`, `diferente` e `nao_reportado` a zero; 0 planos falhados em 20
+      (1 em 62 na série anterior).
 
 ### Fora de âmbito
 
@@ -1884,10 +1886,26 @@ tabela de perfis corresponde ao `config.yaml` real do servidor.
 dono. Limites: não detecta uma troca feita pelo provider; as chamadas do `aos-orq` ficam de fora;
 `enforce` exige o host do endpoint.
 
-**Na v0.1.51 (2026-10-07) continua desligado.** As séries `v0151a` e `v0151b` correram com
-`AOS_MODEL_ROUTE_GOVERNANCE` por ligar e não medem nada deste ticket: as duas caixas de produção
-ficam por marcar. A série de pelo menos 20 planos em `observe` é uma das duas coisas que faltam
-para fechar a fase A1 (acompanhamento, §3).
+**EM PRODUÇÃO, EM `observe` (v0.1.51, 2026-10-07).** As séries `v0151a` e `v0151b` ainda
+correram com a rota por ligar. Depois, por decisão do dono, o `.env` de produção passou a ter
+`AOS_MODEL_ROUTE_GOVERNANCE=observe` e `AOS_MODEL_ROUTE_API_HOST=api.kimi.com` (cópia anterior em
+`/opt/aos/.env.antes-rota-observe-20261007`). O banner do nó declara o perfil da rota:
+`gpt-4o-mini` pedido, `openai/kimi-for-coding` esperado.
+
+Série `v0151g`: 20 planos, 20 com código 0.
+`aos_model_route_checks_total{result="igual",served="openai/kimi-for-coding"}` = 60, e todas as
+outras séries da métrica a zero (`diferente` 0, `nao_reportado` 0). Zero novas tentativas:
+nenhuma das 20 primeiras tentativas falhou, com a projecção 1.2.0. Tempo médio por plano: 39 s.
+O proxy de produção (`litellm:main-stable`, a mesma imagem medida localmente) envia os
+cabeçalhos em todos os turnos.
+
+O que a série prova e o que não prova: a comparação corre em produção e não dá falsos alarmes.
+Nenhuma troca de modelo ocorreu, pelo que a detecção em si continua provada só com o proxy real
+em `make ci-rota-live`. Em `observe` uma diferença seria contada e não recusada.
+
+**Por fazer, por decisão do dono:** `drop_params: false` no `config.yaml` do servidor (a caixa
+fica por marcar), o nome real na allowlist assinada, a passagem a `enforce`, e instalar o cron
+do `alerta-rota.sh`.
 
 ---
 
@@ -2229,7 +2247,13 @@ pela primeira vez na série `v0151b`, com 1 em 62.
   mesmo padrão. A recuperação não as cobre. Hipótese não confirmada: o conteúdo veio no campo
   de raciocínio, que o adaptador não lê. É matéria da fase A2.
 - Com 1 falha em 62, mais uma na mesma série dava 3,2%: a margem sobre os 2% é de um plano.
-- As séries não têm nenhum nó com tools e `consumes`. O plano de três passos está por correr.
+- As séries não têm nenhum nó com tools e `consumes`. O plano de três passos correu depois
+  (`plan-e2e-v0151t-1791401536`, código 13): o nó com `consumes` pediu a tool por function call
+  nativa — a 1.2.0 fez o seu papel — e o Reference Monitor negou-a por taint, com `cap:fs.read`
+  armada (<!-- rtm: menção -->ADR-034<!-- /rtm: menção -->, fase 1). Não houve nova tentativa nem aviso: a negação não é o caso que este
+  ticket trata. O registo está no AOS-503 e no acompanhamento.
+- Acumulado com a 1.2.0, contando a série `v0151g` do AOS-505: 82 planos, 1 falha à primeira
+  tentativa (1,2%), 1 `empty_output`.
 - Risco de desenho aberto, não provado: os separadores `<kind>` e `</kind>` do protocolo podem
   ser a causa de fundo da tool call escrita como texto. A 1.2.0 corrige com uma instrução e
   mantém os separadores; a hipótese não foi testada isoladamente. O texto foi afinado para um
@@ -2259,3 +2283,4 @@ Recuo: as cópias do `.env` de cada passo estão em `/opt/aos`
 | 2.2 | 2026-10-07 | AOS-506 implementado, desligado por omissão: `AOS_MODEL_PROJECTION_VERSION=1.2.0` e `AOS_RUN_RETRY_NOTICE`; emendas ao ADR-036 §2.4 e ao ADR-039 §2.7; sem versão nova de layout | Equipa AOS |
 | 2.3 | 2026-10-07 | AOS-506 revisto (sem bloqueantes) e corrigido: a medição do hash recalcula sobre o Goal hospedado; o recuo de imagem diverge em silêncio (frase corrigida, ordem do recuo); duas linhas da 1.2.0 reescritas; resíduo nomeado sobre a versão de layout | Equipa AOS |
 | 2.4 | 2026-10-07 | AOS-506 em produção e ligado (v0.1.51): verificação das séries `v0151a` (aviso sobre a 1.1.0) e `v0151b` (1.2.0 com aviso); critério de ligar cumprido para a combinação, com o desvio declarado; AOS-504 substituída em produção pela 1.2.0; AOS-505 continua desligado | Equipa AOS |
+| 2.5 | 2026-10-07 | AOS-505 em produção em `observe`: série `v0151g` (20 planos, 60 turnos com o modelo servido igual ao esperado); `drop_params`, nome real, `enforce` e o cron do alerta por fazer. AOS-506: registo do plano de três passos, negado por taint no nó com `consumes` | Equipa AOS |
