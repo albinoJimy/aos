@@ -519,6 +519,12 @@ services:
       # variáveis só vão para o nó: as chamadas do serviço `aos-orq` ao LiteLLM NÃO são comparadas.
       AOS_MODEL_ROUTE_GOVERNANCE: "${AOS_MODEL_ROUTE_GOVERNANCE:-}"
       AOS_MODEL_ROUTE_API_HOST: "${AOS_MODEL_ROUTE_API_HOST:-}"
+      # A FORMA DA RESPOSTA DO PROVIDER (AOS-507). Vazio ⇒ `off`: a sonda não corre, e o nó é o de
+      # antes. `observe` grava em cada turn.recorded a ficha do corpo da resposta (presença, forma
+      # JSON e bytes de cada campo, em vocabulário fechado — nunca o texto) e conta em
+      # aos_model_response_shape_total. Não decide nada. Outro valor ⇒ o nó recusa arrancar
+      # (ErrBadModelResponseShape). Recuo: voltar a vazio. Só vai para o nó.
+      AOS_MODEL_RESPONSE_SHAPE: "${AOS_MODEL_RESPONSE_SHAPE:-}"
       # O VEREDICTO DE CONCLUSÃO (AOS-493, ADR-037). Vazio ⇒ `observe`: o kernel calcula se o run
       # concluiu, regista-o e conta-o, sem mudar o desfecho. `enforce` fecha em `failed` um run
       # com veredicto negativo; `off` não calcula. Outro valor ⇒ o nó recusa arrancar

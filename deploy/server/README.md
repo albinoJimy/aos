@@ -1073,6 +1073,37 @@ antes de trocar de modelo. Recuo imediato: `AOS_MODEL_ROUTE_GOVERNANCE=observe` 
 
 ---
 
+### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
+
+Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo
+é o mesmo qualquer que tenha sido o corpo que o provider mandou. Com `AOS_MODEL_RESPONSE_SHAPE=observe`
+o nó grava, em cada `turn.recorded`, a **ficha** desse corpo no campo `response_shape`:
+
+| Campo | Valores |
+|---|---|
+| `content`, `content_bytes` | `ausente`, `nulo`, `vazio`, `so_brancos`, `texto`, `partes`, `outro`; bytes do texto (ou do valor JSON, nas formas que não são string) |
+| `reasoning`, `reasoning_form`, `reasoning_bytes`, `reasoning_signed` | o campo em que veio o raciocínio (`nenhum`, `reasoning_content`, `reasoning`, `thinking`, `thinking_blocks`, `reasoning_details`, `varios`); a forma JSON (`string`, `objecto`, `lista`, `outro`); os bytes do valor JSON (uma string vazia conta 2, as aspas); `sim`/`nao` |
+| `refusal` | `ausente`, `nulo`, `texto` |
+| `tool_calls_n`, `tool_call_id`, `tool_call_id_max_bytes`, `arguments_form` | número; `nenhum`, `call_`, `functions_ponto`, `uuid`, `numerico`, `vazio`, `outro`; bytes; `string`, `objecto`, `outro` |
+| `legacy_function_call`, `choices_n`, `finish_reason_mapped`, `system_fingerprint` | `sim`/`nao`; número; `sim`/`nao`; `sim`/`nao` |
+| `reasoning_tokens` | inteiro; ausente quando o provider não o reporta |
+| `unknown_keys_n` | chaves de `message` que a sonda não conhece |
+| `shape_digest` | `sha256` da lista ordenada de (caminho da chave, tipo JSON) |
+
+Uma ficha que a sonda não consiga ler grava-se como `{"ilegivel":true}`. **Nenhum campo leva
+conteúdo**: só vocabulário fechado e inteiros. A ficha não entra na captura, não muda o replay e
+não decide nada. A métrica `aos_model_response_shape_total{content,reasoning,stop_reason}` conta os
+turnos ao vivo (300 séries no máximo).
+
+```bash
+# ligar (por decisão do dono, para uma ou duas séries)
+#   /opt/aos/.env:  AOS_MODEL_RESPONSE_SHAPE=observe      e recriar o serviço `aos`
+# o arranque declara:  [aos] forma da resposta do provider em medicao (EPIC-06/AOS-507) …
+# recuo: voltar a vazio (ou off) e recriar. Os eventos já gravados com a ficha continuam legíveis:
+# o campo é aditivo e um binário anterior ignora-o.
+```
+
+Só o nó é medido (as chamadas do `aos-orq` ao LiteLLM não), e só o caminho síncrono.
 ## Orquestrador multi-nó (`aos-orq`)
 
 Desde o **AOS-403** o `aos-orq` vem **na mesma imagem** que o nó, atestado como subject próprio
