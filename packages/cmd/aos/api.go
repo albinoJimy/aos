@@ -281,7 +281,10 @@ var (
 type apiConfig struct {
 	// runRetryMax é o tecto de tentativas A MAIS por nó do plano que este nó aceita (AOS-502,
 	// [WithRunRetryMax]). Zero — a omissão — recusa todo o pedido com `attempt`.
-	runRetryMax    int
+	runRetryMax int
+	// runRetryNotice liga o aviso constante na nova tentativa (AOS-506, [WithRunRetryNotice]).
+	// false — a omissão — deixa a tentativa a repetir o pedido tal e qual.
+	runRetryNotice bool
 	maxBodyBytes   int64
 	rateBurst      float64
 	ratePerSec     float64
@@ -1149,6 +1152,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// volta a verificá-los no arranque, contra o tool set que só ele conhece.
 		OutputFromTool:      req.OutputFromTool,
 		OutputSourceBinding: agentruntime.OutputSourceBinding(req.OutputSourceBinding),
+		// AOS-506: o aviso da nova tentativa. Decide-o o nó, do interruptor e da prova que ESTE
+		// pedido passou; do corpo não vem nada. Vazio em qualquer run que não seja uma tentativa
+		// admitida, e sempre com o interruptor desligado.
+		RetryNotice: h.avisoDaTentativa(tentativaProvada),
 	}
 	goal.Principal.NHIID = req.PrincipalNHI
 	// AOS-439: quem pediu o run, para o selo de cada decisão. Vazio num run que não é de um plano.
@@ -1231,7 +1238,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// o run sem origem — e o retry desse cliente cai na re-submissão idempotente, que não a volta a
 	// escrever.
 	if req.PlanRequest != nil && vinculoVerificado {
-		h.gravarOrigemDoRunFilho(r.Context(), req.RunID, *req.PlanRequest)
+		h.gravarOrigemDoRunFilhoComAviso(r.Context(), req.RunID, *req.PlanRequest, goal.RetryNotice)
 	}
 	// AOS-502: a tentativa foi hospedada por ESTA chamada. Conta-se aqui, e não na prova — uma
 	// re-submissão do mesmo id passa a prova e não hospeda nada. A comparação do prompt é medição
@@ -1240,7 +1247,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		h.tentativas.admitidas.Add(1)
 		h.logf("submit (AOS-502): nova tentativa ADMITIDA run=%q plano=%q no=%q tentativa=%d anterior=%q",
 			req.RunID, req.PlanRequest.RunID, req.PlanRequest.NodeID, req.PlanRequest.Attempt, tentativaProvada.anterior)
-		go h.medirPromptDaTentativa(r.Context(), req.RunID, *tentativaProvada)
+		if goal.RetryNotice != agentruntime.RetryNoticeNone {
+			h.tentativas.comAviso.Add(1)
+		}
+		go h.medirPromptDaTentativa(r.Context(), req.RunID, *tentativaProvada, sementeDoGoal(goal))
 	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }
@@ -2386,8 +2396,20 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			g("aos_runs_retry_refused_total", "Novas tentativas RECUSADAS desde o arranque, por causa em vocabulario fechado (AOS-502). anterior_pediu_tools e a que protege de repetir um efeito: um valor acima de zero diz que alguem pediu a repeticao de um run que chamou tools. indisponivel respondeu 503; as outras, a 403 uniforme. POR PROCESSO.",
 				"counter", float64(h.tentativas.recusadasPor(causa)), rotulo)
 		}
-		g("aos_runs_retry_prompt_hash_diferente_total", "Tentativas cujo prompt do primeiro turno NAO teve o hash do da tentativa anterior (AOS-502). TEM DE SER ZERO: a tentativa repete o mesmo pedido. E medicao e alerta, nao condicao de hospedagem; um reinicio do no entre a admissao e o fim da tentativa perde a comparacao desse run. POR PROCESSO.",
+		// AOS-506: com o aviso ligado o prompt da tentativa difere do anterior de propósito, e a
+		// série passa a comparar com o hash ESPERADO. O texto de ajuda di-lo; com o aviso
+		// desligado é o de antes, byte a byte.
+		ajudaDoHash := "Tentativas cujo prompt do primeiro turno NAO teve o hash do da tentativa anterior (AOS-502). TEM DE SER ZERO: a tentativa repete o mesmo pedido. E medicao e alerta, nao condicao de hospedagem; um reinicio do no entre a admissao e o fim da tentativa perde a comparacao desse run. POR PROCESSO."
+		if h.cfg.runRetryNotice {
+			ajudaDoHash = "Tentativas cujo prompt do primeiro turno NAO teve o hash ESPERADO (AOS-502, AOS-506). Com o aviso ligado, o esperado e o prompt da tentativa anterior mais o segmento do aviso, e nada mais: o no recalcula o prompt sem o aviso (tem de ser o da anterior) e com ele (tem de ser o que a tentativa gravou). TEM DE SER ZERO. E medicao e alerta, nao condicao de hospedagem; um reinicio do no entre a admissao e o fim da tentativa perde a comparacao desse run. POR PROCESSO."
+		}
+		g("aos_runs_retry_prompt_hash_diferente_total", ajudaDoHash,
 			"counter", float64(h.tentativas.promptDiferente.Load()), "")
+		// AOS-506: só com o aviso ligado, ou depois de alguma tentativa o ter levado.
+		if h.cfg.runRetryNotice || h.tentativas.comAviso.Load() != 0 {
+			g("aos_runs_retry_notice_total", "Novas tentativas HOSPEDADAS com o aviso constante do runtime na semente do tail (AOS-506, AOS_RUN_RETRY_NOTICE=on). E um subconjunto de aos_runs_retry_admitted_total; com o aviso ligado desde o arranque as duas series sao iguais. POR PROCESSO.",
+				"counter", float64(h.tentativas.comAviso.Load()), "")
+		}
 	}
 
 	g("aos_ingress_credential_denials_total", "Pedidos RECUSADOS a porta por a credencial do run nao verificar (POST /runs e POST /runs/{id}/resume) desde o arranque. Um DEGRAU sugere uso de credenciais roubadas ou caducadas em volume. POR PROCESSO — um restart repoe. NAO e auditoria: nao diz quem nem quando.",

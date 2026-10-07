@@ -56,9 +56,12 @@ func modelProjectionOption(mode string) modelgateway.RuntimeAdapterOption {
 //
 //   - `1.0.0` (por omissão) — a projecção de sempre, byte a byte;
 //   - `1.1.0` — cada segmento de uma mensagem `user` ou `tool` termina com a linha de fim
-//     `</kind>`, e o texto do protocolo é reescrito para o objectivo não se confundir com dados.
+//     `</kind>`, e o texto do protocolo é reescrito para o objectivo não se confundir com dados;
+//   - `1.2.0` (AOS-506) — a 1.1.0 com outro texto de protocolo: uma tool só se pede pelo
+//     mecanismo nativo de function calling, nunca escrita no texto da resposta. As mensagens
+//     `user`, `assistant` e `tool` são, byte a byte, as da 1.1.0.
 //
-// A 1.1.0 entra DESLIGADA: o texto do protocolo é lido por todos os runs, e só passa a omissão
+// A 1.1.0 e a 1.2.0 entram DESLIGADAS: o texto do protocolo é lido por todos os runs, e só passa a omissão
 // depois de medida numa série de planos em produção. A versão usada em cada turno fica em
 // `manifest.projection_version` do `turn.recorded`. Não muda o layout, o tail nem o
 // `prompt_hash`. Só tem efeito com `AOS_MODEL_PROJECTION=native`: em texto único não há
@@ -72,7 +75,7 @@ const defaultModelProjectionVersion = modelgateway.NativeProjectionVersion
 // vocabulário fechado. Fail-closed: o nó não arranca. Cair para uma das versões em silêncio
 // deixaria o operador a medir uma série de planos convencido de que o modelo recebia um texto de
 // protocolo e a receber o outro.
-var ErrBadModelProjectionVersion = errors.New("aos: AOS_MODEL_PROJECTION_VERSION invalida — valores aceites: 1.0.0 (a projeccao nativa de sempre; por omissao) ou 1.1.0 (linha de fim por segmento e texto de protocolo novo, AOS-504)")
+var ErrBadModelProjectionVersion = errors.New("aos: AOS_MODEL_PROJECTION_VERSION invalida — valores aceites: 1.0.0 (a projeccao nativa de sempre; por omissao) 1.1.0 (linha de fim por segmento e texto de protocolo novo, AOS-504) ou 1.2.0 (a 1.1.0 com o texto de protocolo que diz que uma tool so se pede por function calling, AOS-506)")
 
 // parseModelProjectionVersionFromEnv lê AOS_MODEL_PROJECTION_VERSION. Vazia ⇒
 // [defaultModelProjectionVersion]. Um valor fora do vocabulário ⇒ [ErrBadModelProjectionVersion].
@@ -119,6 +122,10 @@ func modelProjectionBannerFor(gatewayComposed bool, mode, version string) []stri
 	}
 	lines := []string{
 		fmt.Sprintf("projeccao do pedido ao modelo (EPIC-06/AOS-490): MENSAGENS NATIVAS (versao %s) — system/user/assistant com tool_calls/tool, derivadas do tail; aplica-se a runs no layout 1.4.0 (um run retomado na 1.3.0 segue em texto unico) e o modo de cada turno fica em manifest.projection do turn.recorded. O prompt_hash continua a ser o do tail canonico, nao o dos bytes enviados. AOS_MODEL_PROJECTION=text repoe o texto unico", version),
+	}
+	if version == modelgateway.NativeProjectionVersion120 {
+		// AOS-506: a 1.2.0 tem a sua linha. As da omissão e da 1.1.0 ficam como estavam.
+		return append(lines, fmt.Sprintf("versao da projeccao nativa (EPIC-06/AOS-506): AOS_MODEL_PROJECTION_VERSION=%s — a 1.1.0 (linha de fim </kind> por segmento, escape das quase-forjas) com OUTRO texto de protocolo na mensagem system: uma tool so se pede por uma function call feita pelo mecanismo de function calling, nunca escrita no texto da resposta; as respostas do modelo nao sao feitas de segmentos. O runtime NAO interpreta texto do modelo como tool call. As mensagens user, assistant e tool sao as da 1.1.0; o layout, o tail e o prompt_hash nao mudam, e a versao de cada turno fica em manifest.projection_version. A mensagem system muda: os tokens servidos de cache de prefixo caem na troca. Remova a variavel ou defina %s para repor a projeccao de sempre", version, defaultModelProjectionVersion))
 	}
 	if version != defaultModelProjectionVersion {
 		lines = append(lines, fmt.Sprintf("versao da projeccao nativa (EPIC-06/AOS-504): AOS_MODEL_PROJECTION_VERSION=%s — cada segmento das mensagens user e tool termina com a linha de fim </kind>, e o texto do protocolo (a mensagem system) e o da %s; o layout, o tail e o prompt_hash nao mudam, e a versao de cada turno fica em manifest.projection_version. A mensagem system muda: os tokens servidos de cache de prefixo caem na troca. Remova a variavel ou defina %s para repor a projeccao de sempre", version, version, defaultModelProjectionVersion))

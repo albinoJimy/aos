@@ -56,7 +56,13 @@ type ResumeRecord struct {
 	AllowedTools []string
 	// Inputs são os payloads do plano (AOS-414): um run re-hospedado sem eles perderia o
 	// material sobre o qual o nó trabalha, e o modelo veria só o objectivo.
-	Inputs            []agentruntime.PlanInput
+	Inputs []agentruntime.PlanInput
+	// RetryNotice é o aviso de nova tentativa do run (AOS-506, [agentruntime.Goal.RetryNotice]).
+	// Tem de sobreviver à retoma: a retoma re-hospeda o run desde o turno 1 e REPRODUZ os turnos
+	// já dados, e sem o aviso a semente era outra e o prompt do turno 1 divergia. Um registo
+	// anterior não o tem e decodifica vazio. `omitempty`: um run sem aviso serializa os bytes de
+	// sempre.
+	RetryNotice       agentruntime.RetryNotice `json:"RetryNotice,omitempty"`
 	Skills            []agentruntime.ToolSpec
 	Objective         string
 	MemoryContext     []byte
@@ -137,6 +143,7 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		Tools:             r.Tools,
 		AllowedTools:      r.AllowedTools,
 		Inputs:            r.Inputs,
+		RetryNotice:       r.RetryNotice, // AOS-506: a semente da retoma é a do run
 		Skills:            r.Skills,
 		Objective:         r.Objective,
 		MemoryContext:     r.MemoryContext,

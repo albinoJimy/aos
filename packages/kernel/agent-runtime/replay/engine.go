@@ -59,6 +59,11 @@ type TrajectorySpec struct {
 	// MESMA ordem e com a MESMA construção do loop ([agentruntime.TailFromPlanInput]); sem eles,
 	// um run que consumiu payloads divergia logo no turno 1 e a fidelidade dava zero.
 	Inputs []agentruntime.PlanInput
+	// RetryNotice é o aviso de nova tentativa que o run levou (AOS-506): entra na semente a
+	// seguir ao objectivo, com a MESMA construção do loop ([agentruntime.TailFromRetryNotice]).
+	// Vazio ⇒ a semente de sempre. Sem ele, o replay de uma tentativa com aviso divergia no
+	// `prompt_hash` do turno 1.
+	RetryNotice agentruntime.RetryNotice
 	// Model é a configuração de modelo ESPERADA (model_id/params/seed) — os inputs
 	// não-determinísticos que o manifesto pina (ADR-010) mas que NÃO entram nos bytes
 	// materializados do prompt. Se ModelID != "", o replay compara-a com a gravada no
@@ -878,7 +883,7 @@ func (e *ReplayEngine) emitMarker(ctx context.Context, res ReplayResult) {
 }
 
 // seedTail semeia o tail append-only tal como o loop base (memory_context, payloads do
-// plano e objectivo, por esta ordem). Na autoridade (ADR-034) só o objectivo é trusted: a
+// plano, objectivo e aviso de nova tentativa, por esta ordem). Na autoridade (ADR-034) só o objectivo é trusted: a
 // memória e os payloads tornam o contexto untrusted, exactamente como no loop.
 func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
 	tail := make([]agentruntime.TailSegment, 0, 8)
@@ -890,6 +895,11 @@ func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
 	}
 	if spec.Objective != "" {
 		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailObjective, Content: []byte(spec.Objective)})
+	}
+	// AOS-506: o aviso de nova tentativa, no fim, como no loop. Um valor que o kernel não
+	// conhece não dá segmento: um run com ele nunca arrancou, e não há log seu para reproduzir.
+	if aviso, ok := agentruntime.TailFromRetryNotice(spec.RetryNotice); ok {
+		tail = append(tail, aviso)
 	}
 	return tail
 }

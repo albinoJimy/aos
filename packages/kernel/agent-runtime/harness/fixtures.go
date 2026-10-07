@@ -125,6 +125,8 @@ func specFromGoal(g agentruntime.Goal) replay.TrajectorySpec {
 		Tools:           g.Tools,
 		Objective:       g.Objective,
 		MemoryContext:   g.MemoryContext,
+		Inputs:          g.Inputs,
+		RetryNotice:     g.RetryNotice,
 		Model:           g.Model,
 		AssemblyVersion: agentruntime.AssemblyVersion,
 	}

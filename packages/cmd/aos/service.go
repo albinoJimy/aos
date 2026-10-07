@@ -1324,6 +1324,7 @@ func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, err
 		Tools:             goal.Tools,
 		AllowedTools:      goal.AllowedTools,
 		Inputs:            goal.Inputs,
+		RetryNotice:       goal.RetryNotice, // AOS-506: a retoma semeia o tail com o mesmo aviso
 		Skills:            goal.Skills,
 		Objective:         goal.Objective,
 		MemoryContext:     goal.MemoryContext,

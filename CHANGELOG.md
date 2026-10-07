@@ -7,6 +7,13 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-06 (AOS-506) Projecção nativa 1.2.0 e aviso na nova tentativa, desligados por omissão
+- `feat(AOS-506)` — medido na v0.1.50: em 33 de 34 runs que fecharam sem chamar a tool, o modelo escreveu a tool call como texto, em marcação inventada. Entram duas peças que mudam o que se diz ao modelo, **nenhuma ligada**. O nó continua a não interpretar texto do modelo como tool call.
+  - **`AOS_MODEL_PROJECTION_VERSION=1.2.0`**: a `1.1.0` com três linhas do protocolo mudadas (uma tool só se pede por function calling; as respostas não são feitas de segmentos; a linha do aviso deixa de citar `tool_call`). Sem nenhum exemplo de chamada em texto. A `1.0.0` (a omissão) e a `1.1.0` ficam byte a byte.
+  - **`AOS_RUN_RETRY_NOTICE`** (`off` por omissão, `on`; outro valor recusa o arranque): o run de uma tentativa que o nó admitiu com a prova do AOS-502 leva, a seguir ao objectivo, um segmento `notice` de texto constante escrito pelo kernel, sem um byte do run anterior. O `POST /runs` não ganha campo nenhum e o `aos-orq` não muda. Com `off` a tentativa é byte a byte a de antes. Sem efeito com `AOS_RUN_RETRY_MAX` a zero.
+  - **Medição:** `aos_runs_retry_prompt_hash_diferente_total` passa a comparar com o hash esperado quando há aviso, e continua a ter de ser zero; `aos_runs_retry_notice_total` conta as tentativas com aviso; o `run.plan_origin` delas leva `retry_notice`.
+  - **Sem versão nova de layout:** a semente do tail ganha um segmento opcional. Um binário anterior que retome uma tentativa com aviso diverge no `prompt_hash` do turno 1; o recuo faz-se pelo interruptor antes da imagem.
+  - Emendas ao ADR-036 (§2.4) e ao ADR-039 (§2.7). Runbook em `deploy/server/README.md`.
 ### Added — EPIC-06 (AOS-505) Rota do modelo sob governação, desligada por omissão
 - `feat(AOS-505)` — o nó não sabia que modelo servia um turno: o `served_model_id` era o nome pedido, porque o proxy carimba o campo `model` da resposta com ele, e trocar o modelo por baixo do nome não mudava nenhum evento. O gateway passa a comparar, por turno, a rota que o proxy **declara** ter servido com um perfil em código. **Desligado por omissão.**
   - **`AOS_MODEL_ROUTE_GOVERNANCE`** (`off` por omissão, `observe`, `enforce`; com o gateway ligado, outro valor recusa o arranque, e ligada com um modelo sem perfil também). Com `off`, os pedidos ao provider, os eventos, os manifestos, as capturas e o `/metrics` são byte a byte os de antes, provado contra goldens medidos na base do ticket.

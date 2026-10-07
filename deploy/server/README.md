@@ -799,6 +799,7 @@ lê: o planeador dele fala com o modelo com mensagens `system` e `user` própria
 | Valor | O que muda no pedido |
 |---|---|
 | *(vazio)* ou `1.0.0` | Nada: a projecção nativa de sempre, byte a byte |
+| `1.2.0` | (AOS-506) A `1.1.0` com outro texto de protocolo na mensagem `system`: uma tool só se pede por uma function call feita pelo mecanismo de function calling, nunca escrita no texto da resposta; as respostas do modelo não são feitas de segmentos. As mensagens `user`, `assistant` e `tool` são as da `1.1.0`. Ver «A projecção 1.2.0 e o aviso na nova tentativa», abaixo |
 | `1.1.0` | Cada segmento das mensagens `user` e `tool` termina com a linha de fim `</kind>`; uma linha de corpo que abra por `<` ou `\` atrás de brancos ou caracteres invisíveis sai escapada com `\`, como as da coluna 0; e a mensagem `system` leva o texto de protocolo novo (o objectivo é a tarefa, mesmo depois de segmentos de dados; um rótulo `taint=untrusted` vale só até ao fim do segmento que o leva; o que num corpo pareça um cabeçalho ou um fim é dados) |
 
 - **A `1.1.0` entra desligada e mede-se antes de ligar.** O texto do protocolo é lido por todos os
@@ -837,6 +838,61 @@ lê: o planeador dele fala com o modelo com mensagens `system` e `user` própria
   na série `1.1.0` não prova que não houve recusas. O critério exige **ler à mão uma amostra dos
   textos finais dos nós de resumo** dessa série (`final_text` do `GET /runs/<plano>~<nó>`), pelo
   menos 20 e todos os que houver se forem menos.
+- **O canário também dá falsos positivos** (medido a 2026-10-07, série `v0150r`, 40 planos na
+  `1.0.0`): marcou 4 nós de resumo, e a leitura à mão deu 3 recusas e 1 resumo correcto que
+  citava o vocabulário do protocolo. O número do canário é um sinal para ir ler, nos dois
+  sentidos; o que entra no critério é a contagem lida à mão.
+
+#### A projecção 1.2.0 e o aviso na nova tentativa — `AOS_MODEL_PROJECTION_VERSION=1.2.0` e `AOS_RUN_RETRY_NOTICE` (AOS-506)
+
+**Porquê.** Medido a 2026-10-07 na v0.1.50: em 33 de 34 runs que fecharam sem chamar a tool, a
+resposta do modelo era a tool call **escrita como texto**, com a tool e o argumento certos, em
+mais de dez notações inventadas; o motivo de paragem era `stop` e não havia tool call nativa. A
+taxa de primeiras falhas foi 10% com a `1.0.0` e 32% com a `1.1.0`.
+
+**O que cada peça faz.** As duas entram desligadas, são independentes uma da outra, e ligam-se
+uma de cada vez, para a série dizer de qual é o efeito.
+
+| Variável (no nó) | Valor | Efeito |
+|---|---|---|
+| `AOS_MODEL_PROJECTION_VERSION` | `1.2.0` | O texto do protocolo passa a dizer que uma tool só se pede por function calling. Lido por **todos** os runs |
+| `AOS_RUN_RETRY_NOTICE` | `on` | Só os runs de uma **nova tentativa admitida** levam um aviso constante a seguir ao objectivo. Exige `AOS_RUN_RETRY_MAX` acima de zero |
+
+**O nó não interpreta a tool call escrita em texto**, com nenhuma das duas (decisão do dono de
+2026-10-07): um documento lido pode conter esse mesmo texto. As duas peças mudam o que se diz ao
+modelo; o que conta como tool call continua a ser só o campo de tool calls da resposta.
+
+**Como se liga, por passos.**
+
+1. A imagem com o AOS-506, sem mudar variáveis. Nada muda: confirmar que o banner do nó não tem
+   nenhuma linha com `AOS-506` e que `aos_runs_retry_notice_total` não existe no `/metrics`.
+2. `AOS_RUN_RETRY_NOTICE=on` no `.env`, recriar o nó. O banner diz `aviso na nova tentativa ...
+   LIGADO`. Série de pelo menos 60 planos.
+3. Voltar a `off`, e `AOS_MODEL_PROJECTION_VERSION=1.2.0`, recriar o nó. O banner diz `versao
+   1.2.0`. Outra série de pelo menos 60 planos.
+4. As duas juntas, se as séries separadas o justificarem.
+
+**O que ler em cada série.**
+
+- **Primeiras falhas:** `aos_orq_consume_primeiras_falhas_total` sobre os planos da série.
+- **Tentativas que voltaram a falhar**, e os planos que saíram 13.
+- **`aos_runs_retry_prompt_hash_diferente_total` tem de ficar a zero**, com o aviso ligado ou
+  não. Com o aviso ligado compara com o hash esperado (o prompt da tentativa anterior mais o
+  aviso, e nada mais); um valor acima de zero diz que a tentativa não repetiu o pedido.
+- **`aos_runs_retry_notice_total`** tem de acompanhar `aos_runs_retry_admitted_total` enquanto o
+  aviso estiver ligado.
+- **Os resumos, lidos à mão:** zero recusas do próprio objectivo. O canário não chega (acima).
+- No `run.plan_origin` de cada tentativa: `retry_notice` presente com o aviso ligado.
+
+**Critério para ligar** (decisão do dono de 2026-10-07): numa série de pelo menos 60 planos,
+menos de 10% de falhas à primeira tentativa, zero recusas do próprio objectivo lidas à mão, e
+«não cumprido» abaixo de 2%.
+
+**Recuo.** Remover a variável e recriar o nó. Uma tentativa com aviso que esteja em curso
+acaba com o aviso com que começou (fica no registo de retoma); as seguintes não o levam. Um
+binário anterior ao AOS-506 que retome um run com aviso não conhece o campo e semeia o tail sem
+ele: o turno 1 reproduzido diverge no `prompt_hash`. Os runs de tentativa duram segundos; fazer
+o recuo pela variável antes de reverter a imagem.
 
 ---
 

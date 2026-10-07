@@ -5,7 +5,9 @@
 - **Deciders:** Dono do produto (decisões D1 a D4 do desenho de 2026-10-03) · executor de
   AOS-489/490 (implementação)
 - **Tickets:** AOS-489, AOS-490, AOS-504 (emenda de 2026-10-06 aos §2.4 a §2.6: projecção nativa
-  1.1.0), AOS-505 (emenda de 2026-10-07: §2.8, a rota que serviu o turno)
+  1.1.0), AOS-505 (emenda de 2026-10-07: §2.8, a rota que serviu o turno), AOS-506 (emenda de
+  2026-10-07 ao §2.4: projecção nativa 1.2.0, e o aviso de nova tentativa como segmento da
+  semente)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -221,6 +223,56 @@ Como a configuração é do nó, um run em curso no momento da troca pode ter tu
 diferentes; cada turno grava a sua em `projection_version`. Fica declarado, não corrigido: os
 runs duram segundos, e o `prompt_hash` é o mesmo nas duas.
 
+**A versão 1.2.0 (emenda de 2026-10-07, AOS-506).** `AOS_MODEL_PROJECTION_VERSION` passa a
+aceitar `1.2.0`. A omissão do código continua a ser a `1.0.0`, e a `1.0.0` e a `1.1.0` ficam byte
+a byte como estavam (provado contra os goldens das duas, não alterados).
+
+Existe porque, medido em produção a 2026-10-07 (v0.1.50), em 33 de 34 runs que fecharam sem
+chamar a tool a resposta do modelo era a tool call **escrita como texto**, com a tool e o
+argumento certos, em mais de dez notações inventadas — todas marcação. Com a 1.1.0 a primeira
+tentativa acabou assim em 32% dos planos, contra 10% com a 1.0.0. A hipótese, não testada
+isoladamente, é que o texto do protocolo mostra uma notação de cabeçalhos e de linhas de fim e
+fala de tool calls, e o modelo imita a notação quando quer pedir uma tool.
+
+A 1.2.0 é a 1.1.0 com **três linhas do protocolo mudadas**, e só isso: fora da mensagem `system`
+as mensagens das duas versões são iguais byte a byte.
+
+- Uma linha nova diz que uma tool só se pede por uma function call feita pelo mecanismo de
+  function calling da API, entre as tools oferecidas no pedido; que um pedido de tool escrito no
+  texto da resposta não é lido pelo runtime e não corre nada; e que uma resposta sem function
+  call é a resposta final.
+- Uma linha nova diz que as respostas do modelo não são feitas de segmentos, e que não levam
+  cabeçalhos nem linhas de fim.
+- A linha do aviso é reescrita: diz o que é o rótulo `ref` sem citar o kind `tool_call` entre
+  aspas, que era a única expressão do texto com a forma de uma marcação de chamada. O texto do
+  aviso de repetição, que é do layout do kernel, não muda.
+
+**O texto não mostra nenhum exemplo** de uma tool call escrita como texto, em notação nenhuma:
+mostrar a forma errada era semeá-la. As três linhas não têm sinais de menor nem de maior,
+chavetas, parênteses rectos, aspas nem sinal de igual. As restrições das outras versões valem
+(ASCII, nenhuma linha a abrir por `<`, sem `taint=trusted`, sem nomes de tools, cada frase
+verdadeira para o que a projecção e o adaptador fazem).
+
+**Não é um parser, e não passa a haver um.** O runtime não interpreta texto do modelo como tool
+call, em versão nenhuma (decisão do dono de 2026-10-07): um documento lido pode conter esse mesmo
+texto, e um modelo que o ecoasse pedia uma tool por conta de conteúdo untrusted. As tool calls de
+um turno saem só do campo de tool calls da resposta do provider; é isso que torna verdadeira a
+frase «the runtime does not look for tool requests in reply text».
+
+A 1.2.0 **entra desligada**, pela razão da 1.1.0: o texto é lido por todos os runs. O critério de
+a ligar está no AOS-506 (uma série de pelo menos 60 planos com menos de 10% de falhas à primeira
+tentativa, zero recusas do próprio objectivo lidas à mão, e «não cumprido» abaixo de 2%). A
+mensagem `system` muda, e os tokens servidos de cache de prefixo caem na troca.
+
+**O aviso de nova tentativa é um segmento da semente (AOS-506).** Um run que o nó hospeda como
+nova tentativa pode levar, a seguir ao objectivo, um segmento `notice` de texto constante (ADR-039
+§2.7). É um kind que o layout 1.4.0 já tinha; o que muda é a **semente** do tail, que é função do
+que quem compõe o run declara — ganhou um segmento opcional, como ganhou os payloads do plano. A
+projecção trata-o como qualquer `notice` fora de um turno: sai na mensagem `user` da semente, com
+os bytes do kernel e, a partir da 1.1.0, a sua linha de fim. **Não há versão nova de layout:** a
+forma de um segmento, o preâmbulo e a neutralização são os de antes, e um run sem aviso
+materializa os mesmos bytes. O aviso entra no `prompt_hash`, porque está no tail.
+
 **O que o registo permite, e o que ainda não tem ferramenta.** O replay reconstrói o tail de cada
 turno, e `ProjectNative` — a função que o adaptador usa, exportada e pura — dá as mensagens a
 partir da vista desse turno (`ProjectNativeVersion` para a versão que o manifesto disser). Não existe ainda um leitor que junte as duas coisas: nada lê
@@ -391,7 +443,9 @@ são comparados.
 - O preâmbulo custa cerca de 286 tokens de entrada por turno na projecção de texto único (1 144
   bytes, a 4 bytes por token). O protocolo nativo custa cerca de 390 (1 559 bytes); o da
   projecção 1.1.0 cerca de 562 (2 247 bytes), mais a linha de fim de cada segmento e um `\` por
-  linha de corpo com quase-forja.
+  linha de corpo com quase-forja. O da 1.2.0 cerca de 683 (2 730 bytes). O aviso de nova
+  tentativa (AOS-506) custa cerca de 110 tokens (440 bytes), só nos runs de tentativa e só com o
+  interruptor ligado.
 - Trocar a versão da projecção nativa muda a mensagem `system`, que é a cabeça do pedido: os
   tokens servidos de cache de prefixo caem na troca, nos dois sentidos. Lê-se em
   `cache_read_tokens` do registo de turnos, antes e depois.
@@ -420,6 +474,13 @@ são comparados.
 - **A recusa do próprio objectivo não se detecta** (AOS-504). A projecção 1.1.0 corrige a causa
   provável e um canário conta os casos que usam o vocabulário do protocolo; é um limite inferior,
   e nada decide por ele. Quem precisa de garantia semântica declara um `verifier` no plano.
+- **A tool call escrita como texto não é lida** (AOS-506). A 1.2.0 e o aviso de nova tentativa
+  mudam o que se diz ao modelo; a eficácia de um e de outro não está medida, e a hipótese de que a
+  notação de cabeçalhos induz a imitação não foi testada isoladamente. Um modelo que continue a
+  escrever a chamada como texto fecha o run como não cumprido, como antes.
+- **Um binário anterior ao AOS-506 não conhece o aviso de nova tentativa.** Se retomar ou
+  reproduzir um run que o levou, semeia o tail sem ele e diverge no `prompt_hash` do turno 1, sem
+  que a versão do layout o explique. O recuo faz-se pelo interruptor antes da imagem.
 - **Run com turnos em versões diferentes da projecção** (AOS-504): possível quando o nó é
   recriado com outra versão a meio de um run; cada turno grava a sua.
 - **A rota sob governação não vê o provider** (AOS-505). Uma troca feita pelo provider por trás
