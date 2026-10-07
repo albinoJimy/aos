@@ -2402,8 +2402,10 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 			return nil, nil, err
 		}
 	}
+	// AOS-509: as respostas recusadas contam por causa. Sem interruptor.
+	rejeicoes, rejeicaoOpcao := modelResponseRejected()
 	client, err := newGatewayModelClientComRota(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
-		rota, forma, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao)
+		rota, forma, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2412,6 +2414,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if rotaContadores != nil {
 		client = clienteComRota{inner: client, contadores: rotaContadores}
 	}
+	client = clienteComRejeicoes{inner: client, contadores: rejeicoes}
 	// AOS-507: o mesmo para os contadores da forma da resposta. Desligada ⇒ sem invólucro.
 	if formaContadores != nil {
 		client = clienteComForma{inner: client, contadores: formaContadores}

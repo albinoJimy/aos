@@ -2263,6 +2263,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-509 — RESPOSTAS DO PROVIDER RECUSADAS, POR CAUSA. Uma amostra por causa do vocabulário
+	// fechado, sempre presentes com o gateway de modelo composto: o zero é um zero verdadeiro.
+	if h.node != nil && h.node.respostasRecusadas != nil {
+		c := h.node.respostasRecusadas
+		for i, causa := range c.causas {
+			labels := `{causa="` + causa + `"}`
+			if i == 0 {
+				g("aos_model_response_rejected_total",
+					"Respostas do provider de modelo que o gateway recusou desde o arranque, por causa (AOS-509): content_parte_nao_texto (content em partes com uma parte que nao e de texto), content_forma, arguments_forma, json_invalido (o corpo nao e o JSON de uma resposta de chat) e sem_choices. O turno falha. Vocabulario fechado: nenhum byte da resposta. Um status que nao e 200 e um erro de rede nao contam aqui. Acima de zero, o provider esta a mandar uma forma que o gateway nao le.",
+					"counter", float64(c.lido(causa)), labels)
+				continue
+			}
+			amostra("aos_model_response_rejected_total", labels, float64(c.lido(causa)))
+		}
+	}
+
 	// AOS-507 — TURNOS PELA FORMA DA RESPOSTA DO PROVIDER. Só sai com a medição ligada: com `off` a
 	// família não existe, e o /metrics é o de antes. Uma amostra por série dos três vocabulários
 	// fechados (300 no máximo), sempre presentes: o zero é um zero verdadeiro.

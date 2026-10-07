@@ -85,6 +85,13 @@ func aos505NoMetrics(t *testing.T, n *aos486No) string {
 func aos505NoFamilias(texto string) []string {
 	var out []string
 	for _, l := range strings.Split(texto, "\n") {
+		// AOS-509: `aos_model_response_rejected_total` é a ÚNICA família que entrou sem
+		// interruptor depois de os goldens da base terem sido medidos. Fica de fora desta lista
+		// e tem o seu próprio teste (TestAOS509_No_RespostasRecusadasPorCausa), que exige que
+		// exista.
+		if l == "# TYPE aos_model_response_rejected_total counter" {
+			continue
+		}
 		if strings.HasPrefix(l, "# TYPE ") {
 			out = append(out, strings.TrimPrefix(l, "# TYPE "))
 		}

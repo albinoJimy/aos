@@ -162,6 +162,11 @@ func (c clienteComForma) formaDaResposta() *contadoresDaForma { return c.contado
 // rotaDoModelo passa adiante os contadores da rota do cliente envolvido (AOS-505).
 func (c clienteComForma) rotaDoModelo() *contadoresDaRota { return rotaDoCliente(c.inner) }
 
+// respostasRecusadas passa adiante os contadores das respostas recusadas (AOS-509).
+func (c clienteComForma) respostasRecusadas() *contadoresDeRejeicao {
+	return rejeicoesDoCliente(c.inner)
+}
+
 // fonteDaForma é o que um cliente de modelo (ou um decorador dele) expõe para os contadores da
 // forma serem encontrados.
 type fonteDaForma interface {
