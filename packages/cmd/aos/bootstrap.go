@@ -1054,6 +1054,11 @@ type Node struct {
 	// Vem do cliente de modelo que o nó recebe ([rotaDoCliente]). Ver model_route_env.go.
 	rotaDoModelo *contadoresDaRota
 
+	// formaDaResposta conta os turnos ao vivo pela forma da resposta do provider (AOS-507), por
+	// processo, para o `/metrics`. nil com a medição desligada — e a família não é publicada.
+	// Vem do cliente de modelo que o nó recebe ([formaDoCliente]). Ver model_shape_env.go.
+	formaDaResposta *contadoresDaForma
+
 	// completionVerdict é o modo de aplicação do veredicto de conclusão dos runs novos
 	// (AOS-493). Vazio num nó montado à mão ⇒ [defaultCompletionVerdict]. Ver
 	// completion_verdict.go.
@@ -3299,18 +3304,19 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		titularApagado:          titularApagado, // AOS-496: o apagamento chega ao registo de desfechos em memória
 		apagamentos:             apagamentos,    // AOS-436: re-tentado pelo laço de manutenção da custódia
 		ExpirationJob:           expirationJob,
-		Retention:               cfg.Retention,     // AOS-267: o loop de serviço decide o scheduler por ela
-		IssuerID:                cfg.IssuerID,      // AOS-267: nomeia o nó no selo em nome próprio
-		contentOpener:           contentCipher,     // AOS-214: o MESMO cifrador que sela decifra o replay soberano
-		toolCalls:               toolCalls,         // AOS-489: tool calls despachadas e repetidas, para o /metrics
-		turnosPorMotivo:         motivosDeParagem,  // AOS-491: turnos por motivo de paragem, para o /metrics
-		rotaDoModelo:            rotaDoModelo,      // AOS-505: comparações da rota do modelo, para o /metrics (nil ⇒ desligada)
-		completionVerdict:       completionVerdict, // AOS-493: modo do veredicto de conclusão dos runs novos
-		stateGates:              stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
-		breakers:                breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
-		anomaliaAutonomia:       anomaliaAutonomia, // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)
-		fiabilidade:             fiabilidade,       // AOS-090/ADR-025: promoção automática por fiabilidade medida (arrancada no loop de serviço)
-		progress:                progress,          // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
+		Retention:               cfg.Retention,             // AOS-267: o loop de serviço decide o scheduler por ela
+		IssuerID:                cfg.IssuerID,              // AOS-267: nomeia o nó no selo em nome próprio
+		contentOpener:           contentCipher,             // AOS-214: o MESMO cifrador que sela decifra o replay soberano
+		toolCalls:               toolCalls,                 // AOS-489: tool calls despachadas e repetidas, para o /metrics
+		turnosPorMotivo:         motivosDeParagem,          // AOS-491: turnos por motivo de paragem, para o /metrics
+		rotaDoModelo:            rotaDoModelo,              // AOS-505: comparações da rota do modelo, para o /metrics (nil ⇒ desligada)
+		formaDaResposta:         formaDoCliente(cfg.Model), // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
+		completionVerdict:       completionVerdict,         // AOS-493: modo do veredicto de conclusão dos runs novos
+		stateGates:              stateGates,                // AOS-218: fonte do StateGate durável por-run para o steer
+		breakers:                breakers,                  // AOS-080/081/251: disjuntores por-run (libertados no fim do run)
+		anomaliaAutonomia:       anomaliaAutonomia,         // AOS-090/DEF-908: demoção automática por anomalia (arrancada no loop de serviço)
+		fiabilidade:             fiabilidade,               // AOS-090/ADR-025: promoção automática por fiabilidade medida (arrancada no loop de serviço)
+		progress:                progress,                  // AOS-261/262: burn-down + aviso por-run (libertado no fim do run)
 
 		ownsEventStore: ownsES,
 		posseWAL:       posse,

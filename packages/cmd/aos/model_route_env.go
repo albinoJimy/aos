@@ -237,6 +237,9 @@ func (c clienteComRota) Call(ctx context.Context, view agentruntime.PromptView) 
 
 func (c clienteComRota) rotaDoModelo() *contadoresDaRota { return c.contadores }
 
+// formaDaResposta passa adiante os contadores da forma do cliente envolvido (AOS-507).
+func (c clienteComRota) formaDaResposta() *contadoresDaForma { return formaDoCliente(c.inner) }
+
 // fonteDaRota é o que um cliente de modelo (ou um decorador dele) expõe para os contadores da
 // rota serem encontrados.
 type fonteDaRota interface {
