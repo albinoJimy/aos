@@ -50,6 +50,9 @@ type ModelClientAdapter struct {
 	// formaObs recebe os rótulos da ficha da forma de cada turno que a traz
 	// ([WithResponseShapeObserver], AOS-507). nil ⇒ ninguém observa.
 	formaObs ResponseShapeObserver
+	// rejeicaoObs recebe a causa de cada resposta recusada ([WithResponseRejectedObserver],
+	// AOS-509). nil ⇒ ninguém observa.
+	rejeicaoObs ResponseRejectedObserver
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -250,10 +253,13 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	}
 	resp, err := a.gw.Chat(ctx, req)
 	if err != nil {
+		// AOS-509: uma resposta recusada conta com a sua causa; o erro sobe como subia.
+		a.observarRejeicao(err)
 		return agentruntime.ModelResponse{}, err
 	}
 	out, err := translateResponse(resp)
 	if err != nil {
+		a.observarRejeicao(err)
 		return agentruntime.ModelResponse{}, err
 	}
 	if nativa {

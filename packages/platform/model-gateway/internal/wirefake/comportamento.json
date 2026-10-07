@@ -1,7 +1,7 @@
 {
   "args_lista": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .tool_calls.0.function.arguments of type string",
+    "erro": "port: function.arguments numa forma que nao e string, null nem objecto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -25,7 +25,7 @@
   },
   "args_numero": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal number into Go struct field .tool_calls.0.function.arguments of type string",
+    "erro": "port: function.arguments numa forma que nao e string, null nem objecto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -33,22 +33,34 @@
     "output_tokens": 0
   },
   "args_objecto": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal object into Go struct field .tool_calls.0.function.arguments of type string",
+    "desfecho": "turno",
     "text": "",
-    "stop_reason": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
     "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "args_objecto_aninhado": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal object into Go struct field .tool_calls.0.function.arguments of type string",
+    "desfecho": "turno",
     "text": "",
-    "stop_reason": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"filtro\":{\"de\":[1,2,{\"x\":null}]},\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
     "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "args_string_nao_json": {
     "desfecho": "turno",
@@ -139,7 +151,7 @@
   },
   "content_numero": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal number into Go struct field .content of type string",
+    "erro": "port: content numa forma que nao e string, null nem lista de partes",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -148,7 +160,7 @@
   },
   "content_objecto": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal object into Go struct field .content of type string",
+    "erro": "port: content numa forma que nao e string, null nem lista de partes",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -157,7 +169,7 @@
   },
   "content_partes_com_imagem": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
+    "erro": "port: content em partes com uma parte que nao e de texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -166,7 +178,7 @@
   },
   "content_partes_com_recusa": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
+    "erro": "port: content em partes com uma parte que nao e de texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -174,26 +186,26 @@
     "output_tokens": 0
   },
   "content_partes_lista_vazia": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
+    "desfecho": "turno",
     "text": "",
-    "stop_reason": "",
-    "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "content_partes_parte_vazia": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
-    "text": "",
-    "stop_reason": "",
-    "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "content_partes_sem_type": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
+    "erro": "port: content em partes com uma parte que nao e de texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -201,26 +213,32 @@
     "output_tokens": 0
   },
   "content_partes_texto": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
-    "text": "",
-    "stop_reason": "",
-    "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "content_partes_texto_com_tool": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
-    "text": "",
-    "stop_reason": "",
+    "desfecho": "turno",
+    "text": "vou ler o ficheiro",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
     "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "content_partes_texto_nao_string": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
+    "erro": "port: content em partes com uma parte que nao e de texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -229,7 +247,7 @@
   },
   "content_partes_tipo_desconhecido": {
     "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
+    "erro": "port: content em partes com uma parte que nao e de texto",
     "text": "",
     "stop_reason": "",
     "final": false,
@@ -237,13 +255,13 @@
     "output_tokens": 0
   },
   "content_partes_varias": {
-    "desfecho": "recusada",
-    "erro": "json: cannot unmarshal array into Go struct field .content of type string",
-    "text": "",
-    "stop_reason": "",
-    "final": false,
-    "input_tokens": 0,
-    "output_tokens": 0
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "modelo-falso",
+    "input_tokens": 11,
+    "output_tokens": 7
   },
   "content_texto": {
     "desfecho": "turno",
@@ -386,6 +404,7 @@
     "text": "",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 161
@@ -582,6 +601,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"bloco\",\"signature\":\"c2ln\"}]",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -597,6 +617,7 @@
     ],
     "stop_reason": "tool_calls",
     "final": false,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -642,6 +663,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -671,6 +693,7 @@
     "text": "",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -686,6 +709,7 @@
     ],
     "stop_reason": "tool_calls",
     "final": false,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -695,6 +719,7 @@
     "text": "",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -704,6 +729,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"primeiro penso; depois concluo\"}]",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -713,6 +739,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "{\"text\":\"primeiro penso; depois concluo\"}",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -722,6 +749,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -731,6 +759,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"primeiro penso; depois concluo\"}]",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -740,6 +769,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "{\"text\":\"primeiro penso; depois concluo\"}",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -749,6 +779,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -764,6 +795,7 @@
     ],
     "stop_reason": "tool_calls",
     "final": false,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -773,6 +805,7 @@
     "text": "",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -782,6 +815,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"primeiro penso; depois concluo\"}]",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -791,6 +825,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "{\"text\":\"primeiro penso; depois concluo\"}",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -800,6 +835,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -815,6 +851,7 @@
     ],
     "stop_reason": "tool_calls",
     "final": false,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -824,6 +861,7 @@
     "text": "",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -833,6 +871,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"primeiro penso; depois concluo\"}]",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -842,6 +881,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "{\"text\":\"primeiro penso; depois concluo\"}",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -851,6 +891,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "primeiro penso; depois concluo",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7
@@ -870,6 +911,7 @@
     "text": "resposta final",
     "stop_reason": "stop",
     "final": true,
+    "reasoning": "[{\"type\":\"reasoning.text\",\"text\":\"o segundo da ordem\"}]",
     "model": "modelo-falso",
     "input_tokens": 11,
     "output_tokens": 7

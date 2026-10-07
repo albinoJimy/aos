@@ -26,12 +26,14 @@ package port
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 )
 
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.5.0"
+const Version = "1.6.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -50,7 +52,9 @@ const (
 
 // FunctionCall é a invocação de função pretendida pelo modelo. Arguments é uma
 // STRING JSON (forma wire OpenAI), não um objecto — o modelo emite-a como texto e
-// o chamador desserializa-a contra o schema da tool.
+// o chamador desserializa-a contra o schema da tool. Numa RESPOSTA em que o provider
+// mande o objecto, guardam-se os bytes JSON crus dele ([FunctionCall.UnmarshalJSON],
+// AOS-509; MINOR 1.6.0); num pedido sai sempre como string.
 type FunctionCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
@@ -92,25 +96,145 @@ type Message struct {
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
-// UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com UMA diferença:
-// `reasoning_content` aceita qualquer valor JSON (AOS-490).
+// UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com três
+// tolerâncias: `reasoning_content` aceita qualquer valor JSON (AOS-490); `content` aceita uma
+// lista de partes de texto; e o raciocínio lê-se dos outros nomes quando `reasoning_content` não
+// vem (as duas últimas do AOS-509).
 //
-// O DEFEITO QUE FECHA. Com o campo declarado como string, uma resposta cujo `reasoning_content`
-// fosse um objecto, uma lista ou um número fazia o `encoding/json` recusar a resposta INTEIRA —
-// a mensagem, as tool calls e o usage iam com ela. Antes de o campo existir essas respostas eram
-// aceites (o campo era ignorado). Afectava todos os consumidores da porta, em qualquer forma de
-// pedido.
+// O DEFEITO QUE FECHA. Com um campo declarado como string, uma resposta que o trouxesse noutra
+// forma JSON válida fazia o `encoding/json` recusar a resposta INTEIRA — a mensagem, as tool
+// calls e o usage iam com ela. O AOS-490 fechou-o para `reasoning_content`; o AOS-509 fecha-o
+// para `content` em partes de texto (e [FunctionCall.UnmarshalJSON] para `arguments` em objecto).
+//
+// `content`: uma string é o texto; `null` ou ausente é vazio, como sempre; uma lista em que TODAS
+// as partes são `{"type":"text","text":"…"}` é a concatenação dos textos, pela ordem e sem
+// separador (lista vazia ⇒ vazio). Uma lista com qualquer parte que não seja de texto recusa a
+// resposta com [ErrContentPartNotText]: aceitá-la deitando a parte fora entregava como completa
+// uma resposta a que falta conteúdo. Outra forma (número, objecto, booleano) recusa com
+// [ErrContentForm].
+//
+// O RACIOCÍNIO NUNCA É A RESPOSTA. `Content` vem SÓ de `content`. Quando `reasoning_content`
+// está ausente ou é `null`, [Message.ReasoningContent] é o primeiro presente de `reasoning`,
+// `reasoning_details`, `thinking_blocks`, `thinking`, por esta ordem fixa, pela mesma regra de
+// carga opaca; quando está presente vale só ele, como antes. O destino continua a ser só a
+// captura do turno, e [ChatRequest.MarshalWire] continua a retirá-lo de todos os pedidos.
 func (m *Message) UnmarshalJSON(data []byte) error {
 	type semMetodos Message // o mesmo layout, sem este UnmarshalJSON (evita a recursão)
 	aux := struct {
 		*semMetodos
+		Content          json.RawMessage `json:"content"`
 		ReasoningContent json.RawMessage `json:"reasoning_content"`
+		Reasoning        json.RawMessage `json:"reasoning"`
+		ReasoningDetails json.RawMessage `json:"reasoning_details"`
+		ThinkingBlocks   json.RawMessage `json:"thinking_blocks"`
+		Thinking         json.RawMessage `json:"thinking"`
 	}{semMetodos: (*semMetodos)(m)}
 	m.ReasoningContent = ""
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	m.ReasoningContent = raciocinioOpaco(aux.ReasoningContent)
+	if len(aux.Content) > 0 {
+		// Um `content` presente substitui o que lá estivesse; `null` deixa o valor como estava,
+		// que é o que o `encoding/json` fazia ao campo string.
+		texto, err := textoDoConteudo(aux.Content, m.Content)
+		if err != nil {
+			return err
+		}
+		m.Content = texto
+	}
+	raciocinio := aux.ReasoningContent
+	if !valorPresente(raciocinio) {
+		for _, outro := range []json.RawMessage{aux.Reasoning, aux.ReasoningDetails, aux.ThinkingBlocks, aux.Thinking} {
+			if valorPresente(outro) {
+				raciocinio = outro
+				break
+			}
+		}
+	}
+	m.ReasoningContent = raciocinioOpaco(raciocinio)
+	return nil
+}
+
+// Erros de forma de uma resposta (AOS-509). Nenhum leva bytes da resposta.
+var (
+	// ErrContentPartNotText — `content` veio em lista de partes e uma delas não é de texto
+	// (imagem, áudio, recusa, tipo desconhecido, parte sem `type`, ou `text` que não é string).
+	ErrContentPartNotText = errors.New("port: content em partes com uma parte que nao e de texto")
+	// ErrContentForm — `content` não é string, `null` nem lista de partes.
+	ErrContentForm = errors.New("port: content numa forma que nao e string, null nem lista de partes")
+	// ErrArgumentsForm — `function.arguments` não é string, `null` nem objecto.
+	ErrArgumentsForm = errors.New("port: function.arguments numa forma que nao e string, null nem objecto")
+)
+
+// valorPresente diz se um valor JSON existe e não é `null`.
+func valorPresente(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
+// textoDoConteudo lê o valor JSON de `content`. `anterior` é devolvido para um `null`.
+func textoDoConteudo(raw json.RawMessage, anterior string) (string, error) {
+	switch {
+	case string(raw) == "null":
+		return anterior, nil
+	case raw[0] == '"':
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return "", err
+		}
+		return s, nil
+	case raw[0] != '[':
+		return "", ErrContentForm
+	}
+	var partes []json.RawMessage
+	if err := json.Unmarshal(raw, &partes); err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, cru := range partes {
+		var parte struct {
+			Type *string `json:"type"`
+			Text *string `json:"text"`
+		}
+		if len(cru) == 0 || cru[0] != '{' || json.Unmarshal(cru, &parte) != nil || parte.Type == nil || *parte.Type != "text" || parte.Text == nil {
+			return "", ErrContentPartNotText
+		}
+		b.WriteString(*parte.Text)
+	}
+	return b.String(), nil
+}
+
+// UnmarshalJSON lê uma invocação de função do wire (AOS-509). `arguments` é, no wire OpenAI, uma
+// STRING com JSON dentro; há providers que mandam o OBJECTO. Uma string é lida como sempre; um
+// objecto é lido como os BYTES JSON CRUS que vieram, sem re-serializar — a mesma chamada dá os
+// mesmos bytes nas duas formas quando o texto é o mesmo, e o que se guarda não depende de uma
+// ordem de chaves escolhida aqui. `null` ou ausente deixa o valor como estava. Outra forma
+// (lista, número, booleano) recusa a resposta com [ErrArgumentsForm]. Daí em diante os
+// argumentos seguem o caminho de sempre: o schema da tool valida-os e o Reference Monitor medeia
+// a chamada.
+func (f *FunctionCall) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		Name      *string         `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}{}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if aux.Name != nil {
+		f.Name = *aux.Name
+	}
+	switch {
+	case !valorPresente(aux.Arguments):
+	case aux.Arguments[0] == '"':
+		var s string
+		if err := json.Unmarshal(aux.Arguments, &s); err != nil {
+			return err
+		}
+		f.Arguments = s
+	case aux.Arguments[0] == '{':
+		f.Arguments = string(aux.Arguments)
+	default:
+		return ErrArgumentsForm
+	}
 	return nil
 }
 
