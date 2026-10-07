@@ -1,0 +1,196 @@
+package port
+
+import (
+	"net/url"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+// A ROTA SERVIDA (AOS-505, contrato 1.4.0).
+//
+// O campo `model` do corpo de uma resposta não identifica o modelo que serviu: um proxy
+// OpenAI-compatível à frente do provider carimba nele o nome que o cliente pediu (medido com o
+// LiteLLM 1.96.2 — o corpo devolve sempre o alias). O que o proxy sabe sobre a rota vem nos
+// CABEÇALHOS da resposta, e é isso que [ServedRoute] transporta.
+//
+// O QUE ISTO É E O QUE NÃO É. Os cabeçalhos dizem o que o proxy está CONFIGURADO para pedir: o
+// modelo e o endpoint do deployment que escolheu. Mudam quando a configuração do proxy muda. Não
+// dizem o que o provider serviu de facto por trás desse nome e desse endpoint, e não são
+// atestação: quem os emite é o proxy, sem prova de origem, e valem enquanto o canal entre o nó e
+// o proxy for de confiança.
+
+// Cabeçalhos de resposta lidos. São os do LiteLLM; um proxy que não os emita deixa a rota por
+// reportar ([ServedRoute] vazio), e nunca se preenche com o que foi pedido.
+const (
+	// HeaderServedModel — o `litellm_params.model` do deployment que serviu (ex.:
+	// `openai/kimi-for-coding`): o nome que o proxy pede ao provider, com o prefixo da classe.
+	HeaderServedModel = "x-litellm-model-name"
+	// HeaderServedAPIBase — o `api_base` do deployment que serviu. Lê-se SÓ o host.
+	HeaderServedAPIBase = "x-litellm-model-api-base"
+)
+
+// O cabeçalho de identificador do deployment que o mesmo proxy emite NÃO É LIDO, de propósito, e
+// não tem constante aqui. É um SHA-256 sem sal de todos os parâmetros do deployment, incluindo a
+// chave do provider: é um derivado de segredo. Não se grava, não se regista e não entra em
+// métricas — e a maneira de o garantir é nenhum código do gateway lhe tocar.
+
+// MaxServedModel é o tecto em bytes do nome de modelo servido que se aceita de um cabeçalho.
+const MaxServedModel = 256
+
+// maxServedHost é o tecto em bytes de um host (253 de um nome DNS, mais a porta).
+const maxServedHost = 260
+
+// ServedRoute é a rota que o proxy declarou para uma resposta, mais o resultado da comparação
+// com o perfil esperado quando o gateway a governa.
+type ServedRoute struct {
+	// Model é o nome do modelo servido tal como o proxy o declarou ([HeaderServedModel]),
+	// saneado ([SanitizeServedModel]). Vazio ⇒ NÃO REPORTADO.
+	Model string
+	// ModelInexact diz que [ServedRoute.Model] NÃO é exactamente o que o proxy declarou: o
+	// saneamento alterou o valor cru (caracteres não imprimíveis, de largura zero ou de direcção
+	// do texto, ou o corte no tecto), ou o cabeçalho veio repetido com valores diferentes. Um nome
+	// assim nunca se compara como `igual`: o que se compara é o valor CRU, e o saneado serve só
+	// para gravar. O gateway lê-o na comparação e apaga-o antes de devolver a resposta.
+	ModelInexact bool
+	// APIHost é o HOST (com a porta, se vier) do endpoint que o proxy declarou
+	// ([HeaderServedAPIBase]): sem esquema, sem credenciais, sem caminho e sem query. Vazio ⇒
+	// não reportado. Serve só para comparar dentro do gateway, que o apaga antes de devolver a
+	// resposta: não chega ao runtime, a eventos, a métricas nem a logs.
+	APIHost string
+	// APIHostInexact diz que o cabeçalho do endpoint veio repetido com valores diferentes: não há
+	// UM endpoint declarado. Nunca se compara como `igual`. Apagado pelo gateway como o host.
+	APIHostInexact bool
+	// Check é o resultado da comparação com o perfil da rota, no vocabulário fechado
+	// RouteCheck*. Vazio ⇒ a rota NÃO está sob governação (o interruptor está desligado), e
+	// quem lê a resposta trata-a como sempre tratou.
+	Check string
+	// ProfileDigest é o digest do perfil da rota com que a comparação foi feita. Vazio quando a
+	// rota não está sob governação ou não tem perfil.
+	ProfileDigest string
+}
+
+// Resultados da comparação do modelo servido com o esperado ([ServedRoute.Check]). Vocabulário
+// FECHADO: são também os valores do rótulo da métrica e do campo `route_check` do turno.
+const (
+	// RouteCheckEqual — o proxy reportou a rota e ela é a do perfil.
+	RouteCheckEqual = "igual"
+	// RouteCheckDifferent — o proxy reportou uma rota que não é a do perfil, ou a rota pedida
+	// não tem perfil.
+	RouteCheckDifferent = "diferente"
+	// RouteCheckUnreported — o proxy não reportou o que era preciso para comparar.
+	RouteCheckUnreported = "nao_reportado"
+)
+
+// ServedRouteFromHeaders lê a rota servida dos cabeçalhos de uma resposta. `values` é a leitura
+// de TODAS as ocorrências de um cabeçalho pelo nome (a de [net/http.Header.Values]) — ler só a
+// primeira deixaria um cabeçalho repetido com outro valor passar pelo que vinha à frente. Um
+// cabeçalho ausente, vazio ou ilegível deixa o campo correspondente vazio.
+//
+// O nome do modelo sai saneado, e [ServedRoute.ModelInexact] diz se o saneado deixou de ser o
+// valor cru (só com os espaços e tabulações das pontas aparados, que o HTTP não considera parte do
+// valor) ou se as ocorrências não dizem todas o mesmo. O mesmo para o endpoint
+// ([ServedRoute.APIHostInexact]), cujas ocorrências se comparam pelo host normalizado.
+func ServedRouteFromHeaders(values func(name string) []string) ServedRoute {
+	if values == nil {
+		return ServedRoute{}
+	}
+	var out ServedRoute
+	for i, v := range values(HeaderServedModel) {
+		cru := strings.Trim(v, " \t")
+		saneado := SanitizeServedModel(cru)
+		if saneado != cru {
+			out.ModelInexact = true
+		}
+		if i == 0 {
+			out.Model = saneado
+		} else if saneado != out.Model {
+			out.ModelInexact = true
+		}
+	}
+	for i, v := range values(HeaderServedAPIBase) {
+		host := HostOfAPIBase(v)
+		if i == 0 {
+			out.APIHost = host
+		} else if host != out.APIHost {
+			out.APIHostInexact = true
+		}
+	}
+	return out
+}
+
+// SanitizeServedModel saneia um nome de modelo servido antes de ele sair do adaptador: retira os
+// caracteres não imprimíveis, apara e corta em [MaxServedModel] bytes sem partir um carácter
+// UTF-8. É texto de terceiros que acaba em claro num evento.
+func SanitizeServedModel(s string) string {
+	s = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if !unicode.IsPrint(r) {
+			return -1
+		}
+		return r
+	}, s))
+	if len(s) <= MaxServedModel {
+		return s
+	}
+	corte := MaxServedModel
+	for corte > 0 && !utf8.RuneStart(s[corte]) {
+		corte--
+	}
+	return s[:corte]
+}
+
+// HostOfAPIBase devolve SÓ o host (normalizado por [NormalizeAPIHost], com a porta se vier) de um `api_base`. O
+// esquema, as credenciais (`user:pass@`), o caminho, a query e o fragmento são deitados fora
+// aqui, à entrada: nada a jusante os chega a ver. Um valor que não seja um URL com host, ou
+// cujo host tenha caracteres fora de um nome DNS, de um IP ou de uma porta, devolve vazio.
+func HostOfAPIBase(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || len(raw) > 2048 {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		// Sem esquema (`host:8080/v1`), o url.Parse leria o host como esquema ou como caminho.
+		raw = "//" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return NormalizeAPIHost(u.Host)
+}
+
+// NormalizeAPIHost valida e normaliza um host já isolado (`nome`, `nome:porta`, `[ipv6]:porta`):
+// minúsculas, sem o ponto final do nome absoluto (`api.exemplo.test.` é o mesmo nome que
+// `api.exemplo.test`), e só caracteres de um nome DNS, de um IP ou de uma porta. Qualquer outra
+// coisa — um esquema, uma barra, um `@`, um espaço — devolve vazio.
+//
+// É a MESMA normalização dos dois lados da comparação: o host que o proxy declara e o que o nó
+// espera. A PORTA COMPARA-SE COMO ESTÁ: `nome:443` não é `nome`, porque uma porta por omissão
+// depende do esquema, que aqui já não existe. Se o proxy declara a porta, o esperado leva a porta.
+func NormalizeAPIHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" || len(host) > maxServedHost {
+		return ""
+	}
+	// O ponto final do nome, antes da porta se a houver. Um literal IPv6 (`[...]`) não o tem.
+	nome, porta := host, ""
+	if i := strings.LastIndexByte(host, ':'); i >= 0 && !strings.HasSuffix(host, "]") && !strings.Contains(host[i:], "]") {
+		nome, porta = host[:i], host[i:]
+	}
+	if !strings.HasPrefix(nome, "[") {
+		nome = strings.TrimSuffix(nome, ".")
+	}
+	if nome == "" || strings.HasSuffix(nome, ".") {
+		return ""
+	}
+	host = nome + porta
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+		case r == '.', r == '-', r == ':', r == '[', r == ']':
+		default:
+			return ""
+		}
+	}
+	return host
+}

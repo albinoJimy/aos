@@ -186,6 +186,7 @@ jobs:
             deploy/server/cunhar-nhi.sh \
             deploy/server/drenar-planos.sh \
             deploy/server/alerta-nhi.sh \
+            deploy/server/alerta-rota.sh \
             deploy/server/avisar-planos.sh \
             deploy/server/medir-latencia-fila.sh \
             deploy/server/.env.example \

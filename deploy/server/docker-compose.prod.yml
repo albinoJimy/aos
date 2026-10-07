@@ -508,6 +508,15 @@ services:
       # antes de ligar. Outro valor ⇒ o nó recusa arrancar (ErrBadModelProjectionVersion) — com
       # AOS_MODEL_ENDPOINT definida; sem gateway a variável não é lida nem validada.
       AOS_MODEL_PROJECTION_VERSION: "${AOS_MODEL_PROJECTION_VERSION:-}"
+      # A ROTA DO MODELO SOB GOVERNAÇÃO (AOS-505). Vazio ⇒ `off`: nada é comparado, e o nó é o de
+      # antes. `observe` compara em cada turno o modelo que o LiteLLM declara ter servido com o
+      # perfil da rota e regista a variância; `enforce` faz falhar o turno cuja rota não se prove
+      # igual. Outro valor ⇒ o nó recusa arrancar (ErrBadModelRouteGovernance). O host é o do
+      # endpoint esperado (só o host; a porta compara-se como está); vazio ⇒ o endpoint não é
+      # comparado, o que só `observe` aceita — `enforce` sem o host recusa o arranque. Estas duas
+      # variáveis só vão para o nó: as chamadas do serviço `aos-orq` ao LiteLLM NÃO são comparadas.
+      AOS_MODEL_ROUTE_GOVERNANCE: "${AOS_MODEL_ROUTE_GOVERNANCE:-}"
+      AOS_MODEL_ROUTE_API_HOST: "${AOS_MODEL_ROUTE_API_HOST:-}"
       # O VEREDICTO DE CONCLUSÃO (AOS-493, ADR-037). Vazio ⇒ `observe`: o kernel calcula se o run
       # concluiu, regista-o e conta-o, sem mudar o desfecho. `enforce` fecha em `failed` um run
       # com veredicto negativo; `off` não calcula. Outro valor ⇒ o nó recusa arrancar
@@ -868,7 +877,9 @@ services:
 
   # --- LiteLLM: gateway de modelos externo e config-driven ------------------------------------
   # Trocar de provider ou de modelo faz-se em litellm/config.yaml + secrets/model.env, SEM tocar
-  # no nó. Nunca publica porta no host: só é alcançável na rede interna do compose, o que é o
+  # no nó — e é por isso que o nó pode COMPARAR o que o LiteLLM declara ter servido com o perfil
+  # da rota (AOS_MODEL_ROUTE_GOVERNANCE, AOS-505): com a governação ligada, uma troca feita aqui
+  # deixa rasto em cada turno, ou falha-o. Nunca publica porta no host: só é alcançável na rede interna do compose, o que é o
   # que torna aceitável falar sem master key.
   litellm:
     image: ghcr.io/berriai/litellm:main-stable

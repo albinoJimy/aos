@@ -104,6 +104,20 @@ type responseCapture struct {
 	// já o tem em claro, e esse evento nunca foi selado. Quem apagar o titular fica com «houve
 	// um turno, custou tanto, parou por este motivo», como já ficava com os tokens e o custo.
 	StopReason string `json:"stop_reason,omitempty"`
+	// ServedModel, RouteCheck e RouteProfileDigest (AOS-505) são a ROTA do turno: o modelo que
+	// o proxy declarou ter servido, o resultado da comparação com o perfil (vocabulário fechado
+	// de [agentruntime.RouteCheck]) e o digest desse perfil. São MEDIÇÃO, não conteúdo — os
+	// mesmos três valores estão em claro no `turn.recorded` do mesmo turno —, pelo que ficam no
+	// resumo de consumo ([responseCapture.consumo]).
+	//
+	// SÓ SE GRAVAM NUM TURNO CUJA ROTA FOI COMPARADA (`route_check` preenchido). Com a
+	// governação da rota desligada a captura não guarda o modelo servido, como nunca guardou, e
+	// tem os bytes de sempre; uma captura anterior aos campos descodifica com os três vazios. É
+	// por eles que a retoma e o replay devolvem o mesmo modelo servido e a mesma variância que o
+	// turno original registou.
+	ServedModel        string `json:"served_model,omitempty"`
+	RouteCheck         string `json:"route_check,omitempty"`
+	RouteProfileDigest string `json:"route_profile_digest,omitempty"`
 }
 
 // consumo devolve SÓ a medição do turno — tokens, custo, as duas marcas que os qualificam e,
@@ -138,6 +152,10 @@ func (r responseCapture) consumo() responseCapture {
 		UsageAusente:     r.UsageAusente,
 		CacheReadTokens:  r.CacheReadTokens,
 		StopReason:       r.StopReason,
+		// AOS-505: a rota do turno é medição.
+		ServedModel:        r.ServedModel,
+		RouteCheck:         r.RouteCheck,
+		RouteProfileDigest: r.RouteProfileDigest,
 	}
 }
 
@@ -450,6 +468,14 @@ func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) respon
 		// sensível há o que redigir.
 		StopReason: string(r.StopReason.Normalizado()),
 	}
+	// AOS-505: a rota só entra na captura de um turno cuja rota foi comparada. O modelo servido
+	// é o nome que o proxy declarou, já saneado e limitado por quem o leu; não é conteúdo do
+	// titular, e é o mesmo valor que o `turn.recorded` tem em claro.
+	if check := r.RouteCheck.Normalizado(); check != agentruntime.RouteUngoverned {
+		rc.ServedModel = r.Model
+		rc.RouteCheck = string(check)
+		rc.RouteProfileDigest = agentruntime.NormalizeRouteProfileDigest(r.RouteProfileDigest)
+	}
 	if c.sensitive && rc.Text != "" {
 		// NUNCA persistir o texto do modelo em claro em modo sensível — pode ecoar PII.
 		rc.Text = redactRef([]byte(r.Text))
@@ -538,6 +564,13 @@ func (r responseCapture) decode() agentruntime.ModelResponse {
 		// AOS-491: o motivo de paragem volta como foi capturado; uma captura sem o campo dá o
 		// vazio ([agentruntime.StopUnreported]).
 		StopReason: agentruntime.StopReason(r.StopReason).Normalizado(),
+	}
+	// AOS-505: a rota volta como foi capturada. Sem `route_check` — a governação desligada, ou
+	// uma captura anterior ao campo — os três ficam vazios, como sempre ficaram.
+	if check := agentruntime.RouteCheck(r.RouteCheck).Normalizado(); check != agentruntime.RouteUngoverned {
+		resp.Model = r.ServedModel
+		resp.RouteCheck = check
+		resp.RouteProfileDigest = agentruntime.NormalizeRouteProfileDigest(r.RouteProfileDigest)
 	}
 	for _, tc := range r.ToolCalls {
 		resp.ToolCalls = append(resp.ToolCalls, agentruntime.ToolInvocation{

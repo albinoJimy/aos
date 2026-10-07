@@ -7,6 +7,19 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-06 (AOS-505) Rota do modelo sob governação, desligada por omissão
+- `feat(AOS-505)` — o nó não sabia que modelo servia um turno: o `served_model_id` era o nome pedido, porque o proxy carimba o campo `model` da resposta com ele, e trocar o modelo por baixo do nome não mudava nenhum evento. O gateway passa a comparar, por turno, a rota que o proxy **declara** ter servido com um perfil em código. **Desligado por omissão.**
+  - **`AOS_MODEL_ROUTE_GOVERNANCE`** (`off` por omissão, `observe`, `enforce`; com o gateway ligado, outro valor recusa o arranque, e ligada com um modelo sem perfil também). Com `off`, os pedidos ao provider, os eventos, os manifestos, as capturas e o `/metrics` são byte a byte os de antes, provado contra goldens medidos na base do ticket.
+  - **O que se lê:** os cabeçalhos `x-litellm-model-name` e `x-litellm-model-api-base` (deste só o host, e só para comparar: `AOS_MODEL_ROUTE_API_HOST`). O `x-litellm-model-id` **não é lido** — é um hash que inclui a chave do provider.
+  - **Em `observe`:** `route_check` (`igual`, `diferente`, `nao_reportado`) no `turn.recorded`; o `served_model_id` passa a ser o modelo declarado, e fica ausente se o proxy não o declarou (nunca o nome pedido); `manifest.model.route_profile_digest`; um selo por variância no audit de governação do gateway; `aos_model_route_checks_total{result,served}`, com `served` num conjunto fechado. O turno segue. **Em `enforce`** o turno falha com causa em vocabulário fechado.
+  - **A captura** de um turno comparado guarda o modelo servido e o resultado, e o replay devolve-os iguais.
+  - **O alerta:** `deploy/server/alerta-rota.sh` (ntfy), duas regras com avisos distintos: `diferente` maior do que zero e `nao_reportado` maior do que zero.
+  - **Depois da revisão adversarial (2026-10-07):** compara-se o valor **cru** do cabeçalho (um nome que o saneamento altere, ou um cabeçalho repetido com valores diferentes, é `diferente`); `enforce` exige `AOS_MODEL_ROUTE_API_HOST` e recusa o arranque sem ela; o host compara-se em minúsculas e sem ponto final, com a porta como está; com `off`, um host inválido é ignorado com aviso.
+  - **Fora da comparação:** as chamadas ao modelo feitas pelo `aos-orq` (o planeador), o streaming e os embeddings.
+  - **Provado com o proxy real:** `make ci-rota-live` levanta a imagem de produção do LiteLLM (pelo digest) à frente de dois providers falsos e troca o modelo e o endpoint por baixo do nome a meio de um run. Sem Docker salta, e di-lo.
+  - **O que não detecta:** uma troca feita pelo provider por trás do mesmo nome e endpoint. Os cabeçalhos do proxy não são atestação, e o que o provider real devolve não foi medido.
+  - **Semente do LiteLLM:** `drop_params: false` em `deploy/server/litellm/config.yaml`, que só vale para instalações novas (o deploy nunca reescreve o do servidor).
+  - **Passos de produção, por decisão do dono** (runbook no `deploy/server/README.md`): `drop_params: false` no servidor, ligar `observe`, a troca do nome pedido pelo nome real (exige re-assinar a allowlist) e a passagem a `enforce`. Contrato da porta do gateway `1.4.0`. Emenda ao ADR-036 (§2.8).
 ### Added — EPIC-06 (AOS-504) Projecção nativa 1.1.0, desligada por omissão, e o canário da recusa do objectivo
 - `feat(AOS-504)` — o nó de resumo de um plano recusava o próprio objectivo em cerca de 1 plano em 20, por o ler como parte do `plan_input` untrusted que vem antes dele na mesma mensagem. Entra uma versão nova da projecção nativa que corrige a causa provável, **sem ser ligada**, e um contador que mede os casos.
   - **`AOS_MODEL_PROJECTION_VERSION`** (`1.0.0` por omissão, `1.1.0`; com o gateway ligado, outro valor recusa o arranque). Com a variável ausente ou em `1.0.0`, os pedidos ao modelo são byte a byte os de antes (`prompt_hash` incluído), provado contra os goldens do AOS-490.

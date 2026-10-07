@@ -102,7 +102,7 @@ func TestChatRequest_Normalize(t *testing.T) {
 // própria e deixava a versão mudar em silêncio, enquanto a prosa de tecnica/06 §5 a afirma.
 func TestVersion_ValorFixado(t *testing.T) {
 	t.Parallel()
-	const quer = "1.3.0"
+	const quer = "1.4.0"
 	if port.Version != quer {
 		t.Fatalf("port.Version = %q, quer %q — se a mudança é deliberada, actualize tecnica/06 §5 e este teste", port.Version, quer)
 	}

@@ -1049,6 +1049,11 @@ type Node struct {
 	// aos491_metricas.go.
 	turnosPorMotivo *turnosPorMotivo
 
+	// rotaDoModelo conta as comparações da rota do modelo por resultado (AOS-505), por processo,
+	// para o `/metrics`. nil com a governação da rota desligada — e a família não é publicada.
+	// Vem do cliente de modelo que o nó recebe ([rotaDoCliente]). Ver model_route_env.go.
+	rotaDoModelo *contadoresDaRota
+
 	// completionVerdict é o modo de aplicação do veredicto de conclusão dos runs novos
 	// (AOS-493). Vazio num nó montado à mão ⇒ [defaultCompletionVerdict]. Ver
 	// completion_verdict.go.
@@ -2314,6 +2319,9 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	runtimeOpts = append(runtimeOpts, agentruntime.WithToolCallStats(toolCalls.observar))
 	// AOS-491: os turnos por motivo de paragem. Leitura, como a de cima.
 	motivosDeParagem := novoTurnosPorMotivo()
+	// AOS-505: os contadores da comparação da rota vêm com o cliente de modelo (nil com a
+	// governação da rota desligada, com o modelo de referência ou com um cliente injectado).
+	rotaDoModelo := rotaDoCliente(cfg.Model)
 	runtimeOpts = append(runtimeOpts, agentruntime.WithStopReasonStats(motivosDeParagem.observar))
 	// AOS-493: o modo do veredicto de conclusão dos runs novos. Vocabulário fechado, validado
 	// aqui também — um Config construído em código não passa por [parseCompletionVerdictFromEnv].
@@ -3296,6 +3304,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		contentOpener:           contentCipher,     // AOS-214: o MESMO cifrador que sela decifra o replay soberano
 		toolCalls:               toolCalls,         // AOS-489: tool calls despachadas e repetidas, para o /metrics
 		turnosPorMotivo:         motivosDeParagem,  // AOS-491: turnos por motivo de paragem, para o /metrics
+		rotaDoModelo:            rotaDoModelo,      // AOS-505: comparações da rota do modelo, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict, // AOS-493: modo do veredicto de conclusão dos runs novos
 		stateGates:              stateGates,        // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,          // AOS-080/081/251: disjuntores por-run (libertados no fim do run)

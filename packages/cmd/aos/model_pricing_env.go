@@ -204,6 +204,9 @@ func (c custoNaoDerivadoClient) Call(ctx context.Context, view agentruntime.Prom
 	return resp, nil
 }
 
+// rotaDoModelo passa adiante os contadores da rota do cliente envolvido (AOS-505).
+func (c custoNaoDerivadoClient) rotaDoModelo() *contadoresDaRota { return rotaDoCliente(c.inner) }
+
 // modelPricingPostureBanner declara o MODO da contabilidade de custo do nó (AOS-259).
 // Só sai quando há gateway composto: sem gateway não há custo de modelo a declarar.
 func modelPricingPostureBanner(gatewayComposed bool, p modelPricingPosture) []string {

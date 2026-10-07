@@ -162,6 +162,63 @@ type ModelResponse struct {
 	// reproduzido numa retoma volta com zero em memória, e no log fica o evento original,
 	// porque o Event Store descarta a regravação do mesmo passo.
 	ToolsOffered int
+	// RouteCheck é o resultado da comparação da ROTA deste turno com o perfil esperado, feita
+	// por quem fez o pedido (AOS-505) — no gateway, o modelo que o proxy declarou ter servido
+	// contra o do perfil do nome pedido. Vocabulário fechado ([RouteCheck]). Vazio ⇒ a rota não
+	// está sob governação (ou o cliente não compara), e o turno regista-se como sempre.
+	//
+	// Quando vem preenchido, [ModelResponse.Model] é o modelo que o proxy DECLAROU — e fica
+	// vazio se não o declarou; não é o nome pedido. RouteProfileDigest é o digest do perfil com
+	// que se comparou (vazio se a rota não tem perfil). Os dois vão para o `turn.recorded`
+	// (`route_check` e `manifest.model.route_profile_digest`) e para a captura do turno, que
+	// neste caso guarda também o modelo servido. É medição declarada pelo cliente: não decide
+	// nada no runtime.
+	RouteCheck         RouteCheck
+	RouteProfileDigest string
+}
+
+// RouteCheck é o resultado da comparação da rota de um turno com o perfil esperado, num
+// vocabulário FECHADO (AOS-505). O texto de cada valor é o que fica gravado no `turn.recorded` e
+// na captura, e o rótulo da métrica do nó.
+type RouteCheck string
+
+const (
+	// RouteUngoverned — a rota não foi comparada. É o valor-zero, e o de qualquer turno gravado
+	// antes do AOS-505.
+	RouteUngoverned RouteCheck = ""
+	// RouteEqual — a rota declarada é a do perfil.
+	RouteEqual RouteCheck = "igual"
+	// RouteDifferent — a rota declarada não é a do perfil, ou o nome pedido não tem perfil.
+	RouteDifferent RouteCheck = "diferente"
+	// RouteUnreported — quem serviu não declarou o que era preciso para comparar.
+	RouteUnreported RouteCheck = "nao_reportado"
+)
+
+// Normalizado devolve o resultado DENTRO do vocabulário fechado: um valor conhecido fica como
+// está; qualquer outro texto vira [RouteUnreported] — um resultado ilegível não prova igualdade.
+func (c RouteCheck) Normalizado() RouteCheck {
+	switch c {
+	case RouteUngoverned, RouteEqual, RouteDifferent, RouteUnreported:
+		return c
+	default:
+		return RouteUnreported
+	}
+}
+
+// NormalizeRouteProfileDigest devolve o digest de um perfil de rota se ele tiver a forma
+// `sha256:` + 64 dígitos hexadecimais minúsculos, e vazio caso contrário. É um campo declarado
+// pelo cliente de modelo que fica em claro num evento: só a forma certa lá chega.
+func NormalizeRouteProfileDigest(d string) string {
+	const prefixo = "sha256:"
+	if len(d) != len(prefixo)+64 || d[:len(prefixo)] != prefixo {
+		return ""
+	}
+	for _, c := range d[len(prefixo):] {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return ""
+		}
+	}
+	return d
 }
 
 // StopReason é o motivo de paragem de um turno de modelo, num vocabulário FECHADO (AOS-491).

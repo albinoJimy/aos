@@ -5,7 +5,7 @@
 - **Deciders:** Dono do produto (decisões D1 a D4 do desenho de 2026-10-03) · executor de
   AOS-489/490 (implementação)
 - **Tickets:** AOS-489, AOS-490, AOS-504 (emenda de 2026-10-06 aos §2.4 a §2.6: projecção nativa
-  1.1.0)
+  1.1.0), AOS-505 (emenda de 2026-10-07: §2.8, a rota que serviu o turno)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -283,6 +283,82 @@ raciocínio chega na resposta e sobrevive no pedido seguinte, e **não é exigid
 — o turno nativo sem ele foi aceite. Os blocos de raciocínio assinados e os itens cifrados de
 outros fornecedores ficam fora desta decisão; o contrato fica preparado para carga opaca.
 
+### 2.8 A rota que serviu o turno é comparada com um perfil (AOS-505, emenda de 2026-10-07)
+
+O registo de cada turno diz o que foi pedido (o `prompt_hash`, a projecção) e passa a dizer **que
+rota o serviu**, comparada com o que o nó esperava dela.
+
+**O problema.** A allowlist assinada governa que **nome** o nó pode pedir ao proxy de modelos. O
+que esse nome significa — que modelo e que endpoint o servem — decide-se na configuração do proxy,
+fora de qualquer assinatura. E o `served_model_id` do manifesto não o dizia: medido com a imagem de
+produção do proxy (LiteLLM 1.96.2), o campo `model` do corpo da resposta é sempre o nome pedido,
+porque o proxy o carimba. Trocar o modelo por baixo do nome não mudava nenhum evento.
+
+**O que se lê, e de onde.** Dois cabeçalhos da resposta do proxy: `x-litellm-model-name` (o modelo
+que o proxy está configurado a pedir ao provider) e `x-litellm-model-api-base` (o endpoint). Do
+segundo fica **só o host** — o esquema, as credenciais, o caminho e a query são deitados fora à
+leitura —, e o host só se compara dentro do gateway: não chega ao runtime, a eventos, a métricas
+nem a logs. O cabeçalho `x-litellm-model-id` **não é lido**: é um SHA-256 sem sal de todos os
+parâmetros do deployment, incluindo a chave do provider — um derivado de segredo. Um cabeçalho
+ausente deixa o campo **por reportar**; nunca se preenche com o nome pedido nem com o `model` do
+corpo.
+
+**Compara-se o valor cru; grava-se o saneado.** O nome que o proxy declara é texto de terceiros
+que acaba em claro num evento, e por isso é saneado (sem caracteres não imprimíveis, cortado a 256
+bytes). A comparação **não** se faz sobre esse texto: se o saneamento alterar o valor — um
+carácter de largura zero, uma marca de direcção do texto, o corte —, o resultado é `diferente`,
+com a causa `modelo_diferente`, e nunca `igual`. Lêem-se **todas** as ocorrências de cada
+cabeçalho: repetido com valores diferentes entre si é `diferente`. O host compara-se normalizado
+dos dois lados — minúsculas e sem o ponto final do nome absoluto —, e a **porta compara-se como
+está**: se o proxy a declara, o host esperado leva-a.
+
+**O perfil da rota.** Vive em código (`route.go` do gateway): nome pedido, modelo esperado, classe
+de wire e capacidades declaradas. Não contém segredos nem endereços; o host esperado do endpoint
+é configuração do nó. O digest do perfil (`sha256:` sobre o JSON canónico) fica em
+`manifest.model.route_profile_digest` de cada turno comparado. O perfil como artefacto assinado do
+registo é da fase A3.
+
+**A comparação, por turno.** Um interruptor de três valores, `AOS_MODEL_ROUTE_GOVERNANCE`:
+
+- `off` (por omissão) — nada é comparado. O gateway apaga o que o adaptador leu dos cabeçalhos, e
+  os pedidos, os eventos, os manifestos, as capturas e o `/metrics` são byte a byte os de antes.
+- `observe` — o resultado (`igual`, `diferente` ou `nao_reportado`) fica em `route_check` do
+  `turn.recorded`; o `served_model_id` passa a ser o modelo que o proxy declarou (ausente se não
+  o declarou); uma variância é selada no audit de governação do gateway, com o run, o passo, o
+  modelo esperado e o servido; e o contador `aos_model_route_checks_total` conta-a. O turno
+  segue.
+- `enforce` — um turno cuja rota não se prove igual à do perfil **falha**, com causa em
+  vocabulário fechado (`modelo_diferente`, `modelo_nao_reportado`, `endpoint_diferente`,
+  `endpoint_nao_reportado`, `rota_sem_perfil`), depois de selada a variância. A resposta já foi
+  paga e o seu custo já foi contado; o que se recusa é usá-la. `nao_reportado` também falha: o
+  que não se prova não passa.
+
+Um valor fora do vocabulário recusa o arranque; com a governação ligada, um modelo sem perfil
+também. **`enforce` sem o host esperado do endpoint recusa o arranque**: sem ele uma troca só de
+endpoint passaria por `igual` num modo que promete falhar o que não se prova. `observe` aceita-o
+por definir e declara no arranque que o endpoint não é comparado. O nome do modelo servido só entra num rótulo de métrica se for um dos modelos esperados
+dos perfis; qualquer outro texto conta como `outro`.
+
+**A captura e o replay.** Num turno comparado, a captura guarda o modelo servido, o resultado e o
+digest do perfil, e a retoma e o replay devolvem-nos iguais. Num turno não comparado a captura
+não guarda nenhum dos três, como nunca guardou, e uma captura anterior reproduz-se sem
+divergência: a rota não entra no `prompt_hash` nem na âncora `model` do replay.
+
+**O que isto detecta, e o que não detecta.** Detecta uma **troca de configuração no proxy**: outro
+modelo por baixo do mesmo nome pedido, ou outro endpoint (este, só com o host esperado definido).
+Provado com a imagem de produção do proxy à frente de dois providers falsos. **Não detecta** uma
+troca feita pelo provider por trás do mesmo nome e do mesmo endpoint: os cabeçalhos dizem o que o
+proxy está configurado para pedir, não o que o provider serviu. E **não são atestação**: quem os
+emite é o proxy, sem prova de origem, e valem enquanto o canal entre o nó e o proxy for de
+confiança. O que o provider real devolve sobre si próprio não foi medido.
+
+**Fora da comparação, por decisão deste ticket.** As chamadas ao modelo feitas pelo `aos-orq` (o
+planeador, AOS-391/395): esse binário compõe o seu próprio gateway, sem governação da rota, e as
+suas chamadas passam pelo mesmo proxy sem serem comparadas — em nenhum dos modos, `enforce`
+incluído. `enforce` no nó não impede que um plano seja decomposto por outro modelo. É um limite
+escrito e um resíduo nomeado, não uma propriedade provada. O streaming e os embeddings também não
+são comparados.
+
 ## 3. Alternativas rejeitadas
 
 - **Só o preâmbulo de protocolo no `system`.** É uma instrução ao modelo sobre um facto que ele
@@ -296,6 +372,14 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
 - **Invalidar o replay dos runs gravados**, como nas subidas 1.2 e 1.3 do assembler. A mudança é
   aditiva e o layout por versão é barato; a recuperação de desastre continua a funcionar sobre
   backups anteriores ao deploy.
+- **Ler o modelo servido do `model` do corpo.** É o que se fazia. O proxy carimba-o com o nome
+  pedido; não distingue nada.
+- **Usar o `x-litellm-model-id` como identidade da rota.** Muda com qualquer alteração do
+  deployment num só valor, mas é derivado da chave do provider, dispara com uma rotação de chave
+  sem o modelo ter mudado, e fica cego se a configuração fixar um id.
+- **Pedir ao proxy o `model` cru do provider** por uma chave interna de metadados do pedido. É o
+  único sinal que atravessa o proxy vindo do provider, mas a chave não tem contrato, muda o corpo
+  do pedido, e em streaming devolve o nome da configuração.
 
 ## 4. Consequências
 
@@ -338,5 +422,15 @@ outros fornecedores ficam fora desta decisão; o contrato fica preparado para ca
   e nada decide por ele. Quem precisa de garantia semântica declara um `verifier` no plano.
 - **Run com turnos em versões diferentes da projecção** (AOS-504): possível quando o nó é
   recriado com outra versão a meio de um run; cada turno grava a sua.
+- **A rota sob governação não vê o provider** (AOS-505). Uma troca feita pelo provider por trás
+  do mesmo nome e endpoint não muda nenhum cabeçalho do proxy. O `system_fingerprint`, o `id` e
+  os cabeçalhos que o provider emita são auto-declarados por ele e não são lidos.
+- **O endpoint só é comparado com o host esperado definido** (`AOS_MODEL_ROUTE_API_HOST`). Sem
+  ele, uma troca só de endpoint, com o mesmo nome de modelo, passa por `igual`.
+- **Streaming e embeddings** não são comparados: o adaptador do runtime usa a chamada síncrona de
+  chat, e só essa lê os cabeçalhos.
+- **Com escada de tiers**, o perfil procura-se pelo nome que o gateway de facto pede ao proxy (o
+  resolvido pelo roteamento). O arranque só verifica o perfil do modelo do nó; um tier sem perfil
+  conta como `diferente` em observação e falha em imposição.
 - **Run sem objectivo nem entradas.** A projecção nativa dá um pedido só com `system`; se o
   provider o aceita não foi medido.
