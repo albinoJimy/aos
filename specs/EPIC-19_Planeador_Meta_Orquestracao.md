@@ -10245,6 +10245,24 @@ planos, projecção 1.0.0): 6 tentativas admitidas, 0 recusadas, e
 bloqueantes (registo acima). O AOS-506 acrescenta à tentativa, desligado por omissão, um aviso
 constante do runtime.
 
+**Verificação em produção da v0.1.51 (2026-10-07), com o aviso do AOS-506 ligado**
+(`AOS_RUN_RETRY_NOTICE=on`). Série `v0151a` (58 planos, projecção 1.1.0): 22 tentativas
+admitidas, as 22 com aviso, 0 recusadas, e `aos_runs_retry_prompt_hash_diferente_total` a zero.
+As 22 são as 22 que o `aos-orq` pediu. Na série `v0151b` (62 planos, projecção 1.2.0) o
+`aos-orq` pediu 1 tentativa, que recuperou; o nó, recriado antes da série, conta 1 admitida, 0
+recusadas e `prompt_hash` diferente a zero.
+
+**Nó com `inputs` em produção (2026-10-07, `plan-e2e-v0151t-1791401536`).** O nó `n2` do plano
+de três passos, com `doc_read` e `consumes`, pediu a tool no turno 1 e o gate de taint negou-a
+(`cap:fs.read`, `taint=untrusted`); o run fechou `contract_unmet_after_denial`. Nenhuma
+tentativa foi pedida nem admitida. Com a capacidade da tool armada (<!-- rtm: menção -->ADR-034<!-- /rtm: menção -->, fase 1), um run
+com entradas não chega a um «não chamou a tool» que o nó tivesse de provar: a admissão de uma
+tentativa de um run com `inputs` continua provada só por teste.
+
+**Caixa de verificação em produção por marcar:** a que existe pede uma série com o tecto a
+zero e um pedido com `attempt` feito à mão e recusado. Nenhuma das séries registadas a mediu: o
+tecto está a 2 desde a v0.1.50.
+
 ---
 
 ## AOS-503 — O `aos-orq` volta a submeter um nó do plano que terminou sem chamar a tool
@@ -10400,11 +10418,14 @@ mudança entra atrás de um interruptor próprio, desligado por omissão, com um
 - [ ] Verificação em produção, primeiro em `observe`: numa série de pelo menos 20 planos, o que o
       `aos-orq` diz que tentaria coincide com os runs `contract_unmet_no_call` com zero chamadas,
       e com mais nenhum.
-- [ ] Verificação em produção em `on`: numa série de pelo menos 40 planos com a recuperação
+- [x] Verificação em produção em `on`: numa série de pelo menos 40 planos com a recuperação
       ligada, a taxa de planos que terminam sem cumprir fica **abaixo de 2%**, e **nenhuma
       tentativa é feita depois de uma tool call pedida** (`aos_runs_retry_admitted_total` igual à
       soma das tentativas do `aos-orq`; zero tentativas sobre runs com chamadas no log). A
-      recorrência lê-se da mesma série e regista-se no acompanhamento.
+      recorrência lê-se da mesma série e regista-se no acompanhamento. **Cumprido a 2026-10-07
+      na série `v0151b`** (62 planos, 1,6%; contador do nó a 1, igual à 1 tentativa do
+      `aos-orq`; 0 recusadas). No plano `v0151t`, um run com uma chamada pedida e negada não
+      teve tentativa nenhuma.
 
 ### Fora de âmbito
 
@@ -10425,3 +10446,29 @@ nós recuperados; 39 planos com código 0 e 1 com código 13. Série `v0150p` (6
 código 0 e 2 com código 13. **O critério da fase A1 não foi cumprido** («não cumprido» em 2,5% e
 em 3,3% dos planos, contra menos de 2%): a causa medida e o que se segue estão no AOS-506.
 Implementado e revisto a 2026-10-06, sem bloqueantes (registo acima).
+
+**Verificação em produção da v0.1.51 (2026-10-07), com o AOS-506 ligado.** Série `v0151a` (58
+planos, projecção 1.1.0, aviso ligado): 19 primeiras falhas (33%), 22 tentativas, 3 voltaram a
+falhar (14%, contra 32% sem aviso), 19 nós recuperados em 19 (16 à segunda tentativa, 3 à
+terceira); 56 com código 0 e 2 com código 13 (3,4%). O nó admitiu 22 tentativas e recusou 0: o
+número do nó é o do `aos-orq`. Série `v0151b` (62 planos, projecção 1.2.0, aviso ligado): 1
+primeira falha (1,6%), 1 tentativa, recuperada; 61 com código 0 e 1 com código 13 (**1,6%**).
+Nas duas séries, nenhum plano falhou por a tool não ter sido chamada: os 3 que saíram 13 foram
+`empty_output` no nó de resumo, que não tem tools e que a recuperação não cobre.
+
+**O critério da fase A1 («não cumprido» abaixo de 2% em pelo menos 40 planos) foi cumprido pela
+primeira vez na série `v0151b`,** com essa ressalva. **A caixa da verificação em `on` está
+marcada:** a mesma série tem a taxa abaixo de 2% e `aos_runs_retry_admitted_total` a 1, igual à
+única tentativa do `aos-orq`, com 0 recusadas e `prompt_hash` diferente a zero. O nó foi
+recriado antes da série, pelo que o contador é só dela. A recorrência da série é de 0 em 1. A
+caixa da verificação em `observe` fica por marcar: a série `v0150o` teve 10 planos, e ela pede
+20.
+
+**Plano de três passos (2026-10-07, `plan-e2e-v0151t-1791401536`, código 13 em 82 s).** O `n1`
+completou. O `n2` (`doc_read` e `consumes` de `n1`) pediu a tool por function call nativa e o
+Reference Monitor negou-a por taint; o run fechou `contract_unmet_after_denial`, o `n3` ficou
+`entrada_por_cumprir`, e **o `aos-orq` não pediu nova tentativa** — a elegibilidade só cobre
+`contract_unmet_no_call`. O critério do âmbito largo (um nó com tools e `consumes` a esgotar as
+tentativas) continua provado só por teste: em produção, com `cap:fs.read` armada, esse nó é
+negado antes, e a decisão 3 do dono não tem efeito prático. O limite de produto que daí resulta
+está no acompanhamento (§7).
