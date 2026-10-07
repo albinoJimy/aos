@@ -281,13 +281,11 @@ func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID s
 // molde do `control_seal.go`). Com o contexto do pedido, um cliente que desligasse ou esgotasse o
 // prazo depois do `Submit` deixava o run sem origem — e o retry dele cai na re-submissão
 // idempotente, que não a volta a escrever. Uma falha fica no log do operador: o run já corre.
-func (h *apiHandler) gravarOrigemDoRunFilho(ctx context.Context, runID string, v vinculoAoPedido) {
-	h.gravarOrigemDoRunFilhoComAviso(ctx, runID, v, agentruntime.RetryNoticeNone)
-}
-
-// gravarOrigemDoRunFilhoComAviso é a chamada do `POST /runs` desde o AOS-506: a origem leva o
-// aviso com que o run foi semeado, quando o levou.
-func (h *apiHandler) gravarOrigemDoRunFilhoComAviso(ctx context.Context, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice) {
+//
+// `aviso` é o aviso com que o run foi semeado (AOS-506); vazio num run sem ele. É a ÚNICA função
+// que grava a origem pelo handler — os testes do AOS-477 exercitam esta, a que o `POST /runs`
+// chama (revisão do AOS-506, M-3: havia uma segunda, sem aviso, só com chamadores de teste).
+func (h *apiHandler) gravarOrigemDoRunFilho(ctx context.Context, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice) {
 	origemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
 	defer cancel()
 	if err := declararOrigemDoRunFilho(origemCtx, h.node.EventStore, runID, v, aviso); err != nil {

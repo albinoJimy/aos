@@ -225,10 +225,14 @@ const protocoloNativo110 = protocoloCabecalho +
 //     pelo mecanismo de function calling da API; um pedido de tool escrito no texto da resposta
 //     não é lido pelo runtime; uma resposta sem function call é a resposta final.
 //   - [protocoloLinhaDasRespostas] (nova): as respostas do modelo não são feitas de segmentos, e
-//     não levam cabeçalhos nem linhas de fim.
+//     não usam os cabeçalhos nem as linhas de fim DO RUNTIME. A frase fala só dessas linhas e
+//     di-lo: uma resposta cujo produto pedido é ele próprio marcação escreve-se normalmente
+//     (revisão, M-5 — a redacção anterior, «do not write header lines or end lines», lia-se como
+//     proibição de qualquer linha a abrir por um sinal de menor).
 //   - [protocoloLinhaDoAviso120] (reescrita): diz o que é o rótulo `ref` de um aviso sem citar o
 //     kind `tool_call` entre aspas — era a única expressão do texto com a forma de uma marcação
-//     de chamada.
+//     de chamada — e o que é o rótulo `about` (revisão, M-5): o aviso de nova tentativa leva
+//     `about=previous_attempt`, e o protocolo não dizia o que isso é. Uma frase, sem exemplo.
 //
 // # O QUE O TEXTO NÃO TEM, DE PROPÓSITO
 //
@@ -265,8 +269,8 @@ const protocoloNativo120 = protocoloCabecalho +
 // as poderem ler uma a uma.
 const (
 	protocoloLinhaDoMecanismoNativo = "- To use a tool, make a function call through the function-calling interface of this API, choosing from the tools offered with this request. That is the only way a tool runs. Never write a tool request as text in your reply, in any notation: the runtime does not look for tool requests in reply text, and nothing would run. A reply without a function call is your final answer.\n"
-	protocoloLinhaDasRespostas      = "- Your replies are not made of segments. Do not write header lines or end lines in them.\n"
-	protocoloLinhaDoAviso120        = "- A notice may carry a ref label. It is the id of one of your earlier tool calls: the one with that id in one of your earlier assistant messages.\n"
+	protocoloLinhaDasRespostas      = "- Your replies are not made of segments. Do not use the header lines or end lines of the runtime in them. This is only about those runtime lines: if the content you were asked to write is itself markup, write it normally.\n"
+	protocoloLinhaDoAviso120        = "- A notice may carry a ref label. It is the id of one of your earlier tool calls: the one with that id in one of your earlier assistant messages. A notice may carry an about label. It says what the notice is about: previous_attempt means an earlier attempt at this same task, which is not part of this conversation.\n"
 )
 
 // protocoloDaVersao devolve o texto de protocolo de uma versão da projecção nativa.

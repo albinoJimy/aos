@@ -739,7 +739,11 @@ func novasDobras(tr trajectory, spec TrajectorySpec) (*dobrasPorLayout, error) {
 		if err != nil {
 			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
 		}
-		nova := &dobra{version: v, asm: asm, seq: seq, tail: seedTail(spec)}
+		semente, err := seedTail(spec, v)
+		if err != nil {
+			return nil, fmt.Errorf("replay: turno %d (%s): %w", turn, tr.stepByTurn[turn], err)
+		}
+		nova := &dobra{version: v, asm: asm, seq: seq, tail: semente}
 		d.ordem = append(d.ordem, nova)
 		d.porVersao[v] = nova
 	}
@@ -885,7 +889,10 @@ func (e *ReplayEngine) emitMarker(ctx context.Context, res ReplayResult) {
 // seedTail semeia o tail append-only tal como o loop base (memory_context, payloads do
 // plano, objectivo e aviso de nova tentativa, por esta ordem). Na autoridade (ADR-034) só o objectivo é trusted: a
 // memória e os payloads tornam o contexto untrusted, exactamente como no loop.
-func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
+//
+// `version` é o layout da dobra que se semeia: o aviso de nova tentativa só existe num layout com
+// o segmento `notice`, e a regra é a do loop.
+func seedTail(spec TrajectorySpec, version string) ([]agentruntime.TailSegment, error) {
 	tail := make([]agentruntime.TailSegment, 0, 8)
 	if len(spec.MemoryContext) > 0 {
 		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailMemory, Content: spec.MemoryContext})
@@ -896,12 +903,20 @@ func seedTail(spec TrajectorySpec) []agentruntime.TailSegment {
 	if spec.Objective != "" {
 		tail = append(tail, agentruntime.TailSegment{Kind: agentruntime.TailObjective, Content: []byte(spec.Objective)})
 	}
-	// AOS-506: o aviso de nova tentativa, no fim, como no loop. Um valor que o kernel não
-	// conhece não dá segmento: um run com ele nunca arrancou, e não há log seu para reproduzir.
-	if aviso, ok := agentruntime.TailFromRetryNotice(spec.RetryNotice); ok {
-		tail = append(tail, aviso)
+	// AOS-506: o aviso de nova tentativa, no fim, como no loop — e RECUSADO como no loop
+	// (revisão, M-6). Um valor fora do vocabulário, ou um layout sem `notice`, devolve
+	// [agentruntime.ErrUnknownRetryNotice] e o replay não corre: tratá-lo como «sem aviso»
+	// reproduzia o run com uma semente que não é a que a spec declara, e a divergência (ou a
+	// fidelidade) que saísse daí media outra coisa. A decisão é a do kernel
+	// ([agentruntime.SeedTail]), e não uma segunda cópia dela; sem aviso, nada se pergunta.
+	if spec.RetryNotice != agentruntime.RetryNoticeNone {
+		aviso, err := agentruntime.SeedTail(version, agentruntime.Goal{RetryNotice: spec.RetryNotice})
+		if err != nil {
+			return nil, err
+		}
+		tail = append(tail, aviso...)
 	}
-	return tail
+	return tail, nil
 }
 
 // tailHash é o fingerprint determinístico do tail (o ESTADO do run num ponto). Um

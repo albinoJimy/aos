@@ -1253,7 +1253,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	// o run sem origem — e o retry desse cliente cai na re-submissão idempotente, que não a volta a
 	// escrever.
 	if req.PlanRequest != nil && vinculoVerificado {
-		h.gravarOrigemDoRunFilhoComAviso(r.Context(), req.RunID, *req.PlanRequest, goal.RetryNotice)
+		h.gravarOrigemDoRunFilho(r.Context(), req.RunID, *req.PlanRequest, goal.RetryNotice)
 	}
 	// AOS-502: a tentativa foi hospedada por ESTA chamada. Conta-se aqui, e não na prova — uma
 	// re-submissão do mesmo id passa a prova e não hospeda nada. A comparação do prompt é medição

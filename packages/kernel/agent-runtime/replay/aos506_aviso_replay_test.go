@@ -6,6 +6,7 @@ package replay
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -74,5 +75,30 @@ func TestAOS506_ReplayComASementeErradaDiverge(t *testing.T) {
 	// E o run sem aviso reproduz-se com a spec de sempre: a semente dele não mudou.
 	if res, err := mustEngine(t, sem).Replay(context.Background(), sem.goal.RunID, Options{Spec: sem.spec}); err != nil || res.Divergence != nil || res.Fidelity != 1.0 {
 		t.Fatalf("um run sem aviso reproduz-se como sempre: err=%v res=%+v", err, res)
+	}
+}
+
+// UM AVISO QUE O KERNEL NÃO CONHECE É RECUSADO PELO REPLAY, COMO PELO LOOP (revisão, M-6). Antes,
+// o motor tratava-o como «sem aviso» e reproduzia o run com outra semente.
+func TestAOS506_ReplayComAvisoDesconhecidoERecusado(t *testing.T) {
+	sem := aos506Original(t, "plano~read_notes", agentruntime.RetryNoticeNone)
+	spec := sem.spec
+	spec.RetryNotice = "um_aviso_que_nao_existe"
+	res, err := mustEngine(t, sem).Replay(context.Background(), sem.goal.RunID, Options{Spec: spec})
+	if !errors.Is(err, agentruntime.ErrUnknownRetryNotice) {
+		t.Fatalf("um aviso fora do vocabulario tinha de recusar o replay com ErrUnknownRetryNotice; veio err=%v res=%+v", err, res)
+	}
+	// Controlo: o loop recusa o mesmo valor, com o mesmo erro.
+	goal := sem.goal
+	goal.RunID, goal.RetryNotice = "plano~read_notes~9", "um_aviso_que_nao_existe"
+	if _, lerr := agentruntime.SeedTail(agentruntime.AssemblyVersion, goal); !errors.Is(lerr, agentruntime.ErrUnknownRetryNotice) {
+		t.Fatalf("controlo: o kernel recusa o mesmo valor; veio %v", lerr)
+	}
+	// E um aviso CONHECIDO num layout sem `notice` (a 1.3.0) é recusado pela mesma regra.
+	if _, lerr := seedTail(TrajectorySpec{RetryNotice: agentruntime.RetryNoticeNoFunctionCall}, agentruntime.AssemblyVersion130); !errors.Is(lerr, agentruntime.ErrUnknownRetryNotice) {
+		t.Fatalf("um aviso num layout sem notice e recusado; veio %v", lerr)
+	}
+	if segs, lerr := seedTail(TrajectorySpec{Objective: "x"}, agentruntime.AssemblyVersion130); lerr != nil || len(segs) != 1 {
+		t.Fatalf("sem aviso a semente e a de sempre, em qualquer layout: %v %d", lerr, len(segs))
 	}
 }

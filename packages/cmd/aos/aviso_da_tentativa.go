@@ -51,6 +51,11 @@ var ErrBadRunRetryNotice = errors.New("aos: AOS_RUN_RETRY_NOTICE invalido — va
 // apiRunRetryNoticeOptionFromEnv lê AOS_RUN_RETRY_NOTICE. Vazia ou `off` ⇒ (nil, false, nil):
 // nenhuma opção. Sem normalização de caixa: `On` não é `on`, pela regra das outras variáveis de
 // vocabulário fechado do nó.
+//
+// OS ESPAÇOS À VOLTA DO VALOR NÃO CONTAM (revisão, M-5): ` on ` liga e um valor só de espaços é a
+// omissão. É o comportamento das variáveis irmãs — `AOS_RUN_RETRY_MAX`,
+// `AOS_MODEL_PROJECTION_VERSION`, `AOS_COMPLETION_VERDICT` —, que passam todas por `TrimSpace`:
+// um `.env` com um espaço a seguir ao valor não pode ligar umas e recusar outras.
 func apiRunRetryNoticeOptionFromEnv() (APIOption, bool, error) {
 	switch v := strings.TrimSpace(os.Getenv("AOS_RUN_RETRY_NOTICE")); v {
 	case "", "off":
