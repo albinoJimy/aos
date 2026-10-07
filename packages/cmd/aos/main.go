@@ -468,13 +468,9 @@ func run(w io.Writer) error {
 	}
 
 	// A ROTA SOB GOVERNAÇÃO (AOS-505). Validada em [parseModelFromEnv]; relê-se para a declarar.
-	// Com `off` não sai linha nenhuma.
-	if routeMode, rmerr := parseModelRouteGovernanceFromEnv(); rmerr == nil {
-		if routeHost, rherr := parseModelRouteAPIHostFromEnv(); rherr == nil {
-			for _, line := range modelRouteBanner(cfg.Model != nil, routeMode, modelNameFromEnv(), routeHost != "") {
-				fmt.Fprintf(w, "[aos] %s\n", line)
-			}
-		}
+	// Com `off` não sai linha nenhuma (salvo o aviso de um host inválido que foi ignorado).
+	for _, line := range modelRouteBannerFromEnv(cfg.Model != nil, modelNameFromEnv()) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
 	// CANAL DE CUSTO (AOS-259): declara se o custo por turno é DERIVADO de uma tabela de
@@ -2308,7 +2304,8 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 		return nil, nil, pverr
 	}
 	// A ROTA SOB GOVERNAÇÃO (AOS-505). Vocabulário fechado, validado aqui pela mesma razão; com a
-	// governação ligada, um modelo sem perfil de rota também aborta o arranque.
+	// governação ligada, um modelo sem perfil de rota também aborta o arranque, e `enforce` sem o
+	// host esperado do endpoint também.
 	rota, rotaContadores, rerr := modelRouteFromEnv(model)
 	if rerr != nil {
 		return nil, nil, rerr

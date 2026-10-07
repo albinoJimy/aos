@@ -466,7 +466,9 @@ func TestAOS505_Env_VocabularioFechadoEBanner(t *testing.T) {
 			t.Errorf("%q: o arranque tinha de recusar; veio %v", mau, err)
 		}
 	}
-	for entra, sai := range map[string]string{"api.kimi.com": "api.kimi.com", " API.Kimi.com:443 ": "api.kimi.com:443", "": ""} {
+	for entra, sai := range map[string]string{"api.kimi.com": "api.kimi.com", " API.Kimi.com:443 ": "api.kimi.com:443", "": "",
+		// M4: o ponto final sai; a porta fica como vem.
+		"api.kimi.com.": "api.kimi.com", "API.Kimi.Com.:443": "api.kimi.com:443"} {
 		t.Setenv("AOS_MODEL_ROUTE_API_HOST", entra)
 		if got, err := parseModelRouteAPIHostFromEnv(); err != nil || got != sai {
 			t.Errorf("host %q: veio %q %v, quero %q", entra, got, err, sai)
@@ -490,7 +492,8 @@ func TestAOS505_Env_VocabularioFechadoEBanner(t *testing.T) {
 		if len(linhas) != 1 {
 			t.Fatalf("%s: queria 1 linha, vieram %d", modo, len(linhas))
 		}
-		for _, quer := range []string{"AOS_MODEL_ROUTE_GOVERNANCE=" + modo, aos505NoEsperado, "NAO detecta", "nao sao atestacao", "NAO e comparado"} {
+		for _, quer := range []string{"AOS_MODEL_ROUTE_GOVERNANCE=" + modo, aos505NoEsperado, "NAO detecta", "nao sao atestacao", "NAO e comparado",
+			"aos-orq (planeador) NAO sao comparadas"} {
 			if !strings.Contains(linhas[0], quer) {
 				t.Errorf("%s: o banner nao diz %q: %s", modo, quer, linhas[0])
 			}
@@ -523,5 +526,96 @@ func TestAOS505_Contadores_VocabularioFechado(t *testing.T) {
 	}
 	if rotaDoCliente(nil) != nil || rotaDoCliente(&countingModel{}) != nil {
 		t.Fatal("um cliente sem contadores devolve nil")
+	}
+}
+
+// E4 — `enforce` SEM O HOST ESPERADO RECUSA O ARRANQUE. Sem ele, uma troca só de endpoint no
+// proxy daria `igual` num modo que promete falhar. `observe` sem ele continua permitido, e o
+// banner diz que o endpoint não é comparado.
+func TestAOS505_Env_EnforceExigeOHostDoEndpoint(t *testing.T) {
+	t.Setenv("AOS_MODEL_ENDPOINT", "http://127.0.0.1:1")
+	t.Setenv("AOS_MODEL_NAME", aos486Modelo)
+	t.Setenv("AOS_MODEL_ROUTE_GOVERNANCE", "enforce")
+	for _, vazio := range []string{"", "   "} {
+		t.Setenv("AOS_MODEL_ROUTE_API_HOST", vazio)
+		cfg, contadores, err := modelRouteFromEnv(aos486Modelo)
+		if !errors.Is(err, ErrModelRouteEnforceWithoutHost) || contadores != nil || !reflect.DeepEqual(cfg, modelgateway.RouteGovernance{}) {
+			t.Fatalf("host %q: enforce sem host tinha de recusar; veio %+v %v %v", vazio, cfg, contadores, err)
+		}
+		if !strings.Contains(err.Error(), "AOS_MODEL_ROUTE_API_HOST") || !strings.Contains(err.Error(), "enforce") {
+			t.Fatalf("a mensagem tem de nomear a variavel e o modo: %v", err)
+		}
+		// E pelo caminho do arranque, antes de qualquer efeito da composição.
+		if client, binder, err := parseModelFromEnv(false); !errors.Is(err, ErrModelRouteEnforceWithoutHost) || client != nil || binder != nil {
+			t.Fatalf("host %q: o arranque tinha de recusar; veio %v", vazio, err)
+		}
+	}
+	// Com o host, `enforce` compõe-se e leva-o normalizado.
+	t.Setenv("AOS_MODEL_ROUTE_API_HOST", "API.Kimi.Com.")
+	cfg, contadores, err := modelRouteFromEnv(aos486Modelo)
+	if err != nil || contadores == nil || cfg.Mode != "enforce" || cfg.ExpectedAPIHost != "api.kimi.com" {
+		t.Fatalf("enforce com host: %+v %v %v", cfg, contadores, err)
+	}
+	if linhas := modelRouteBannerFromEnv(true, aos486Modelo); len(linhas) != 1 || !strings.Contains(linhas[0], "IMPOSICAO") || strings.Contains(linhas[0], "NAO e comparado") {
+		t.Fatalf("banner de enforce com host: %v", linhas)
+	}
+
+	// `observe` sem host: permitido, e o banner di-lo.
+	t.Setenv("AOS_MODEL_ROUTE_GOVERNANCE", "observe")
+	t.Setenv("AOS_MODEL_ROUTE_API_HOST", "")
+	cfg, contadores, err = modelRouteFromEnv(aos486Modelo)
+	if err != nil || contadores == nil || cfg.Mode != "observe" || cfg.ExpectedAPIHost != "" {
+		t.Fatalf("observe sem host continua permitido: %+v %v %v", cfg, contadores, err)
+	}
+	linhas := modelRouteBannerFromEnv(true, aos486Modelo)
+	if len(linhas) != 1 || !strings.Contains(linhas[0], "o endpoint NAO e comparado (AOS_MODEL_ROUTE_API_HOST por definir)") || !strings.Contains(linhas[0], "passa por igual") {
+		t.Fatalf("o banner de observe sem host tem de dizer que o endpoint nao e comparado: %v", linhas)
+	}
+}
+
+// M5 — COM `off`, UM HOST INVÁLIDO NÃO ABORTA O ARRANQUE: a variável não é usada. Fica um aviso,
+// sem o valor. Com a variável vazia ou válida, `off` não escreve linha nenhuma — o arranque é o
+// de antes.
+func TestAOS505_Env_OffIgnoraHostInvalidoComAviso(t *testing.T) {
+	const mau = "https://u:segredo-505@api.exemplo.test/v1"
+	for _, modo := range []struct {
+		definir bool
+		valor   string
+	}{{false, ""}, {true, ""}, {true, "off"}} {
+		if modo.definir {
+			t.Setenv("AOS_MODEL_ROUTE_GOVERNANCE", modo.valor)
+		} else {
+			aos504SemVariavel(t, "AOS_MODEL_ROUTE_GOVERNANCE")
+		}
+		t.Setenv("AOS_MODEL_ROUTE_API_HOST", mau)
+		cfg, contadores, err := modelRouteFromEnv("modelo-sem-perfil")
+		if err != nil || contadores != nil || !reflect.DeepEqual(cfg, modelgateway.RouteGovernance{}) {
+			t.Fatalf("modo %+v: desligada, um host invalido nao aborta e a configuracao fica a zero; veio %+v %v %v", modo, cfg, contadores, err)
+		}
+		for _, composto := range []bool{true, false} {
+			linhas := modelRouteBannerFromEnv(composto, aos486Modelo)
+			if len(linhas) != 1 || !strings.Contains(linhas[0], "AOS_MODEL_ROUTE_API_HOST") || !strings.Contains(linhas[0], "IGNORADA") {
+				t.Fatalf("modo %+v: queria uma linha de aviso a nomear a variavel; veio %v", modo, linhas)
+			}
+			if strings.Contains(linhas[0], "segredo-505") || strings.Contains(linhas[0], "exemplo.test") {
+				t.Fatalf("o aviso repete o valor recusado: %s", linhas[0])
+			}
+		}
+		// Vazia ou válida: nem uma linha.
+		for _, bom := range []string{"", "api.exemplo.test", "api.exemplo.test:8443"} {
+			t.Setenv("AOS_MODEL_ROUTE_API_HOST", bom)
+			if linhas := modelRouteBannerFromEnv(true, aos486Modelo); linhas != nil {
+				t.Fatalf("modo %+v, host %q: com off nao sai linha nenhuma; veio %v", modo, bom, linhas)
+			}
+		}
+	}
+	// Ligada, o mesmo valor recusa — e sem banner.
+	t.Setenv("AOS_MODEL_ROUTE_GOVERNANCE", "observe")
+	t.Setenv("AOS_MODEL_ROUTE_API_HOST", mau)
+	if _, _, err := modelRouteFromEnv(aos486Modelo); !errors.Is(err, ErrBadModelRouteAPIHost) {
+		t.Fatalf("ligada, um host invalido recusa o arranque; veio %v", err)
+	}
+	if linhas := modelRouteBannerFromEnv(true, aos486Modelo); linhas != nil {
+		t.Fatalf("variaveis invalidas nao tem banner: %v", linhas)
 	}
 }

@@ -18,6 +18,15 @@ package main
 // O QUE DETECTA: uma troca de configuração no proxy. O QUE NÃO DETECTA: uma troca feita pelo
 // provider por trás do mesmo nome e do mesmo endpoint. Os cabeçalhos não são atestação — valem
 // enquanto o canal entre o nó e o proxy for de confiança.
+//
+// O QUE FICA DE FORA: as chamadas ao modelo feitas pelo `aos-orq` (o planeador). Esse binário
+// compõe o seu próprio gateway, sem governação da rota, e as suas chamadas passam pelo mesmo
+// proxy sem serem comparadas — em nenhum dos modos. Estas variáveis só governam o nó.
+//
+// O ENDPOINT: `enforce` exige `AOS_MODEL_ROUTE_API_HOST` — sem ela, uma troca só de endpoint
+// passaria por `igual` num modo que promete falhar. `observe` aceita-a por definir, e declara no
+// arranque que o endpoint não é comparado. Com `off` a variável não é usada: um valor inválido é
+// ignorado com um aviso, e não aborta o arranque de um nó que não liga a governação.
 
 import (
 	"context"
@@ -44,6 +53,12 @@ var ErrBadModelRouteGovernance = errors.New("aos: AOS_MODEL_ROUTE_GOVERNANCE inv
 // valor NÃO vai na mensagem: quem colou ali um URL com credenciais não as vê repetidas num log.
 var ErrBadModelRouteAPIHost = errors.New("aos: AOS_MODEL_ROUTE_API_HOST invalida — tem de ser so o host do endpoint que o proxy deve declarar (nome ou nome:porta), sem esquema, credenciais, caminho nem query; o valor recebido nao e repetido aqui")
 
+// ErrModelRouteEnforceWithoutHost — AOS_MODEL_ROUTE_GOVERNANCE=enforce sem
+// AOS_MODEL_ROUTE_API_HOST. Fail-closed: o nó não arranca. Sem o host esperado, uma troca só de
+// endpoint no proxy daria `igual` em todos os turnos, num modo cuja promessa é falhar o que não se
+// prove igual.
+var ErrModelRouteEnforceWithoutHost = errors.New("aos: AOS_MODEL_ROUTE_GOVERNANCE=enforce exige AOS_MODEL_ROUTE_API_HOST — sem o host esperado do endpoint, uma troca so de endpoint no proxy passaria por igual; defina AOS_MODEL_ROUTE_API_HOST (nome ou nome:porta, tal como o proxy o declara) ou use observe")
+
 // ErrModelRouteWithoutProfile — a governação da rota está ligada e o modelo do nó
 // (AOS_MODEL_NAME) não tem perfil de rota. Fail-closed: sem perfil não há esperado com que
 // comparar, e cada turno seria uma variância.
@@ -66,7 +81,9 @@ func parseModelRouteGovernanceFromEnv() (string, error) {
 
 // parseModelRouteAPIHostFromEnv lê AOS_MODEL_ROUTE_API_HOST: o host do endpoint que o proxy deve
 // declarar. Vazia ⇒ "" (o endpoint não é comparado). Tem de ser só um host; qualquer outra coisa
-// ⇒ [ErrBadModelRouteAPIHost].
+// ⇒ [ErrBadModelRouteAPIHost]. Sai normalizado como o que o proxy declara
+// ([port.NormalizeAPIHost]): minúsculas e sem ponto final. A PORTA compara-se como está — se o
+// proxy declara `nome:443`, a variável leva `nome:443`.
 func parseModelRouteAPIHostFromEnv() (string, error) {
 	raw := strings.TrimSpace(os.Getenv("AOS_MODEL_ROUTE_API_HOST"))
 	if raw == "" {
@@ -86,14 +103,18 @@ func modelRouteFromEnv(model string) (modelgateway.RouteGovernance, *contadoresD
 	if err != nil {
 		return modelgateway.RouteGovernance{}, nil, err
 	}
+	if mode == modelgateway.RouteGovernanceOff {
+		// Desligada: a configuração a zero é a de um gateway anterior ao AOS-505. O host não é
+		// lido — um valor inválido numa variável que não é usada não aborta o arranque; fica
+		// declarado no arranque ([modelRouteBannerFromEnv]).
+		return modelgateway.RouteGovernance{}, nil, nil
+	}
 	host, err := parseModelRouteAPIHostFromEnv()
 	if err != nil {
 		return modelgateway.RouteGovernance{}, nil, err
 	}
-	if mode == modelgateway.RouteGovernanceOff {
-		// Desligada: a configuração a zero é a de um gateway anterior ao AOS-505. O host, se
-		// vier, foi validado e não é usado.
-		return modelgateway.RouteGovernance{}, nil, nil
+	if mode == modelgateway.RouteGovernanceEnforce && host == "" {
+		return modelgateway.RouteGovernance{}, nil, ErrModelRouteEnforceWithoutHost
 	}
 	if _, ok := modelgateway.RouteProfileFor(model); !ok {
 		return modelgateway.RouteGovernance{}, nil, fmt.Errorf("%w (modelo %q)", ErrModelRouteWithoutProfile, model)
@@ -109,18 +130,42 @@ func modelRouteBanner(gatewayComposed bool, mode, model string, hostDefinido boo
 		return nil
 	}
 	perfil, _ := modelgateway.RouteProfileFor(model)
-	endpoint := "o endpoint NAO e comparado (AOS_MODEL_ROUTE_API_HOST por definir)"
+	endpoint := "o endpoint NAO e comparado (AOS_MODEL_ROUTE_API_HOST por definir) — uma troca so de endpoint no proxy passa por igual"
 	if hostDefinido {
-		endpoint = "o host do endpoint declarado e comparado com AOS_MODEL_ROUTE_API_HOST"
+		endpoint = "o host do endpoint declarado e comparado com AOS_MODEL_ROUTE_API_HOST (minusculas e sem ponto final dos dois lados; a porta compara-se como esta)"
 	}
 	efeito := "OBSERVACAO — uma variancia fica em route_check do turn.recorded, num selo do audit de governacao do gateway e em aos_model_route_checks_total; o turno segue"
 	if mode == modelgateway.RouteGovernanceEnforce {
 		efeito = "IMPOSICAO — um turno cuja rota nao se prove igual a do perfil (diferente ou nao reportada) FALHA com causa em vocabulario fechado, depois de selada a variancia"
 	}
 	return []string{
-		fmt.Sprintf("rota do modelo sob governacao (EPIC-06/AOS-505): AOS_MODEL_ROUTE_GOVERNANCE=%s — %s. Perfil da rota %q: modelo esperado %q, digest %s; %s. Detecta uma troca de CONFIGURACAO no proxy; NAO detecta uma troca feita pelo provider por tras do mesmo nome e endpoint, e os cabecalhos do proxy nao sao atestacao. Remova a variavel ou defina off para repor o comportamento anterior",
+		fmt.Sprintf("rota do modelo sob governacao (EPIC-06/AOS-505): AOS_MODEL_ROUTE_GOVERNANCE=%s — %s. Perfil da rota %q: modelo esperado %q, digest %s; %s. Detecta uma troca de CONFIGURACAO no proxy; NAO detecta uma troca feita pelo provider por tras do mesmo nome e endpoint, e os cabecalhos do proxy nao sao atestacao. As chamadas ao modelo feitas pelo aos-orq (planeador) NAO sao comparadas: so o no e governado. Remova a variavel ou defina off para repor o comportamento anterior",
 			mode, efeito, model, perfil.ExpectedModel, perfil.Digest(), endpoint),
 	}
+}
+
+// modelRouteBannerFromEnv relê o ambiente e devolve as linhas do arranque sobre a governação da
+// rota. As variáveis já foram validadas em [parseModelFromEnv]; aqui só se declara.
+//
+// Com `off`, sai linha nenhuma — a não ser que AOS_MODEL_ROUTE_API_HOST esteja definida com um
+// valor que não é um host: a variável não é usada e o nó arranca, mas o operador fica a saber que
+// o valor não serviria se ligasse a governação. O valor NÃO é repetido.
+func modelRouteBannerFromEnv(gatewayComposed bool, model string) []string {
+	mode, err := parseModelRouteGovernanceFromEnv()
+	if err != nil {
+		return nil
+	}
+	host, herr := parseModelRouteAPIHostFromEnv()
+	if mode == modelgateway.RouteGovernanceOff {
+		if herr != nil {
+			return []string{"AVISO (EPIC-06/AOS-505): AOS_MODEL_ROUTE_API_HOST esta definida com um valor que nao e um host (nome ou nome:porta) e foi IGNORADA — a governacao da rota esta desligada (AOS_MODEL_ROUTE_GOVERNANCE=off) e a variavel nao e usada. Com observe ou enforce este valor recusaria o arranque. O valor recebido nao e repetido aqui"}
+		}
+		return nil
+	}
+	if herr != nil {
+		return nil
+	}
+	return modelRouteBanner(gatewayComposed, mode, model, host != "")
 }
 
 // contadoresDaRota conta, por processo, as comparações da rota por resultado e por modelo

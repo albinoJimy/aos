@@ -63,7 +63,12 @@ func TestAOS505_No_NomeRealDoModelo(t *testing.T) {
 			dir, anchor := aos505BundleDeTeste(t, []string{c.nome})
 			runID := "run-505-nome-real"
 			t.Setenv("AOS_MODEL_ROUTE_GOVERNANCE", c.modo)
-			t.Setenv("AOS_MODEL_ROUTE_API_HOST", "")
+			// `enforce` exige o host esperado do endpoint (E4); os outros modos correm sem ele.
+			host := ""
+			if c.modo == "enforce" {
+				host = aos505NoHostA
+			}
+			t.Setenv("AOS_MODEL_ROUTE_API_HOST", host)
 			aos504SemVariavel(t, "AOS_MODEL_PROJECTION_VERSION")
 			t.Setenv("AOS_MODEL_ALLOWLIST_TRUST_ANCHOR", anchor)
 			real := aos486ComporCom(t, "native", func(cfg *Config) {
