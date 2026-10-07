@@ -90,8 +90,18 @@ func (h *apiHandler) avisoDaTentativa(prova *provaDaTentativa) agentruntime.Retr
 	return agentruntime.RetryNoticeNoFunctionCall
 }
 
-// sementeDaTentativa é o que a medição do prompt guarda do run de uma tentativa com aviso: o que
-// semeia o tail, e mais nada (a credencial e o resto do Goal não ficam à espera do fim do run).
+// sementeDaTentativa é o que a medição do prompt guarda do run de uma tentativa com aviso em jogo
+// (nesta ou na anterior): o que semeia o tail, e mais nada (a credencial e o resto do Goal não
+// ficam à espera do fim do run).
+//
+// É A SEMENTE QUE O SERVIÇO HOSPEDOU, e não a do pedido (revisão do AOS-506, I-1). Entre o
+// `POST /runs` e o primeiro turno o serviço MINIMIZA o objectivo na ingestão (AOS-208): um
+// objectivo com um e-mail ou um telefone chega ao modelo redigido. Recalcular o prompt com o texto
+// do pedido dava outro hash, e a série subia numa tentativa que só diferia pelo aviso. O handler
+// tira-a do Goal que [NodeService.SubmitObservando] lhe mostra — o objectivo já vem redigido, e é
+// esse (e não o texto em claro) que fica em memória até a tentativa acabar.
+//
+// SEM AVISO EM JOGO NÃO EXISTE (M-2): a medição só leva a prova, como antes do AOS-506.
 type sementeDaTentativa struct {
 	system    string
 	objective string
@@ -100,7 +110,7 @@ type sementeDaTentativa struct {
 	aviso     agentruntime.RetryNotice
 }
 
-// sementeDoGoal tira do Goal o que a medição precisa.
+// sementeDoGoal tira do Goal HOSPEDADO o que a medição precisa.
 func sementeDoGoal(goal agentruntime.Goal) sementeDaTentativa {
 	return sementeDaTentativa{
 		system: goal.System, objective: goal.Objective, memory: goal.MemoryContext,
@@ -141,8 +151,8 @@ func hashDaSementeCom(s sementeDaTentativa, aviso agentruntime.RetryNotice, turn
 //
 // Com aviso em alguma, os dois prompts diferem DE PROPÓSITO, e a comparação directa deixava de
 // dizer alguma coisa. O que continua a ter de ser verdade é que a ÚNICA diferença é o aviso. Um
-// hash não se estende, pelo que o nó recalcula os dois prompts a partir da MESMA semente — a do
-// pedido desta tentativa — e exige ambos: com o aviso da anterior dá o hash que a anterior gravou
+// hash não se estende, pelo que o nó recalcula os dois prompts a partir da MESMA semente — a que
+// o serviço hospedou nesta tentativa — e exige ambos: com o aviso da anterior dá o hash que a anterior gravou
 // (o pedido é o mesmo), e com o aviso desta dá o hash que esta gravou (não entrou mais nada).
 // Qualquer outra diferença — outro objectivo, outras entradas, outro system, outras tools, um
 // aviso com outros bytes — falha uma das duas igualdades. Um erro no recálculo conta como

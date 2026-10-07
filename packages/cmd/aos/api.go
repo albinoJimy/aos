@@ -1179,7 +1179,22 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// (3) SUBMETE ao loop de serviço. O ctx do pedido governa SÓ a aquisição do lease; o run
 	// sobrevive ao retorno (é cancelado só por Shutdown).
-	err := h.svc.Submit(r.Context(), goal)
+	//
+	// AOS-506 (revisão, I-1): a medição do prompt de uma tentativa COM AVISO EM JOGO (nesta ou na
+	// anterior) recalcula o prompt, e tem de o fazer sobre o que o serviço HOSPEDA — depois da
+	// ingestão, que minimiza o objectivo — e não sobre o Goal deste handler. Só nesse caso se
+	// observa a hospedagem; em todos os outros a chamada é a de sempre e nada do pedido fica à
+	// espera do fim do run.
+	var sementeHospedada *sementeDaTentativa
+	var err error
+	if tentativaProvada != nil && (goal.RetryNotice != agentruntime.RetryNoticeNone || tentativaProvada.avisoAnterior != agentruntime.RetryNoticeNone) {
+		err = h.svc.SubmitObservando(r.Context(), goal, func(hospedado agentruntime.Goal) {
+			s := sementeDoGoal(hospedado)
+			sementeHospedada = &s
+		})
+	} else {
+		err = h.svc.Submit(r.Context(), goal)
+	}
 	if err != nil {
 		// COLISÃO DE run_id COM CHAMADOR AUTENTICADO (achado A2 da auditoria de 2026-08-17).
 		//
@@ -1250,7 +1265,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		if goal.RetryNotice != agentruntime.RetryNoticeNone {
 			h.tentativas.comAviso.Add(1)
 		}
-		go h.medirPromptDaTentativa(r.Context(), req.RunID, *tentativaProvada, sementeDoGoal(goal))
+		go h.medirPromptDaTentativa(r.Context(), req.RunID, *tentativaProvada, sementeHospedada)
 	}
 	writeJSON(w, http.StatusCreated, submitResponse{RunID: req.RunID, Status: "accepted"})
 }

@@ -439,8 +439,10 @@ const prazoDaMedicaoDoPrompt = 15 * time.Minute
 //
 // O ESPERADO depende do aviso (AOS-506, [promptDaTentativaDifere]): sem aviso é o hash da
 // tentativa anterior, como sempre; com aviso, a única diferença entre os dois prompts tem de ser
-// o segmento do aviso. `semente` é o que o nó deu ao run para semear o tail.
-func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string, prova provaDaTentativa, semente sementeDaTentativa) {
+// o segmento do aviso. `semente` é o que o SERVIÇO hospedou — o Goal depois da ingestão, visto por
+// [NodeService.SubmitObservando] — e só existe com aviso em jogo: `nil` ⇒ nem esta tentativa nem a
+// anterior o levaram, e a medição é a do AOS-502, sem recálculo e sem nada do pedido em memória.
+func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string, prova provaDaTentativa, semente *sementeDaTentativa) {
 	if prova.promptHash == "" || h.svc == nil || h.node == nil || h.node.EventStore == nil {
 		return
 	}
@@ -461,7 +463,17 @@ func (h *apiHandler) medirPromptDaTentativa(pedido context.Context, runID string
 		if json.Unmarshal(ev.Payload, &turno) != nil {
 			return
 		}
-		if promptDaTentativaDifere(semente, prova.avisoAnterior, prova.promptHash, turno) {
+		if semente == nil {
+			if prova.avisoAnterior != agentruntime.RetryNoticeNone {
+				// A anterior levou aviso e não há semente com que recalcular: é um defeito de
+				// cablagem do handler. O que não se consegue comparar não se lê como «igual».
+				h.tentativas.promptDiferente.Add(1)
+				h.logf("submit (AOS-506): o prompt do primeiro turno da tentativa %q NAO se conseguiu comparar com o do run anterior %q (que levou aviso): falta a semente hospedada — conta como diferente", runID, prova.anterior)
+				return
+			}
+			semente = &sementeDaTentativa{}
+		}
+		if promptDaTentativaDifere(*semente, prova.avisoAnterior, prova.promptHash, turno) {
 			h.tentativas.promptDiferente.Add(1)
 			if semente.aviso != agentruntime.RetryNoticeNone || prova.avisoAnterior != agentruntime.RetryNoticeNone {
 				h.logf("submit (AOS-506): o prompt do primeiro turno da tentativa %q NAO e o do run anterior %q mais o aviso — a tentativa devia repetir o mesmo pedido e acrescentar so o aviso", runID, prova.anterior)

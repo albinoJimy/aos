@@ -698,6 +698,24 @@ func imputadoA(goal agentruntime.Goal) string {
 // vazio (a derivação só corre com o gate soberano composto) — e é também aí que o tecto não está
 // em vigor, pelo que as duas condições coincidem por construção.
 func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resuming bool) error {
+	return s.submitObservando(ctx, goal, resuming, nil)
+}
+
+// SubmitObservando é o [NodeService.Submit] com um observador do Goal HOSPEDADO (AOS-506).
+//
+// `aoHospedar` é chamado UMA vez, em síncrono e antes de o run arrancar, com o Goal tal como o
+// serviço o entrega ao run — isto é, DEPOIS da ingestão, que minimiza o objectivo (AOS-208). Não
+// é chamado quando a submissão é recusada. Quem precisa de saber o que o run semeou (a medição do
+// prompt de uma nova tentativa) lê-o daqui, e não do Goal que submeteu: os dois diferem sempre
+// que o objectivo tem dados que a ingestão redige.
+//
+// O observador só lê: recebe uma cópia do Goal e nada do que faça muda o run.
+func (s *NodeService) SubmitObservando(ctx context.Context, goal agentruntime.Goal, aoHospedar func(agentruntime.Goal)) error {
+	return s.submitObservando(ctx, goal, false, aoHospedar)
+}
+
+// submitObservando é o corpo do [NodeService.submit]; `aoHospedar` nil ⇒ sem observador.
+func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Goal, resuming bool, aoHospedar func(agentruntime.Goal)) error {
 	if goal.RunID == "" {
 		return ErrEmptyRunID
 	}
@@ -915,6 +933,9 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 		goal.Objective = ing.Redacted // o run vê o objectivo MINIMIZADO
 	}
 
+	if aoHospedar != nil {
+		aoHospedar(goal) // AOS-506: o Goal que o run vai ver, já com o objectivo minimizado
+	}
 	go s.hostRun(runCtx, rs, goal)
 	return nil
 }

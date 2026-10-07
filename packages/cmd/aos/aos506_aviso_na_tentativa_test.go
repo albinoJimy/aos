@@ -79,6 +79,19 @@ func aos506Pedidos(t *testing.T, n *aos502No) ([][]aos506Mensagem, [][]byte) {
 	return out, corpos
 }
 
+// aos506LevaAviso diz se alguma mensagem do pedido leva o segmento do aviso. Procura-se no
+// CONTEÚDO DESCODIFICADO das mensagens, e não no corpo JSON cru: o wire escapa `<` como `\u003c`,
+// pelo que `<notice` nunca é substring do corpo — a verificação negativa feita sobre ele passava
+// com qualquer pedido (revisão do AOS-506, M-1).
+func aos506LevaAviso(pedido []aos506Mensagem) bool {
+	for _, m := range pedido {
+		if strings.Contains(m.Content, "<notice") || strings.Contains(m.Content, "previous_attempt") {
+			return true
+		}
+	}
+	return false
+}
+
 // aos506PrimeiroTurno lê o primeiro `turn.recorded` de um run, na forma que a prova usa.
 func aos506PrimeiroTurno(t *testing.T, n *aos502No, runID string) turnoDaProva {
 	t.Helper()
@@ -127,7 +140,7 @@ func TestAOS506_Off_ATentativaEADeHoje(t *testing.T) {
 	if len(corpos) < 2 || string(corpos[1]) != string(corpos[0]) {
 		t.Fatalf("com o aviso desligado, o primeiro pedido da tentativa 2 e o da primeira, byte a byte:\n 1: %s\n 2: %s", corpos[0], corpos[1])
 	}
-	if strings.Contains(string(corpos[1]), "<notice") || strings.Contains(string(corpos[1]), "previous_attempt") {
+	if pedidos, _ := aos506Pedidos(t, n); aos506LevaAviso(pedidos[1]) {
 		t.Fatalf("com o aviso desligado a tentativa nao leva aviso: %s", corpos[1])
 	}
 	if a, b := aos506PrimeiroTurno(t, n, id1), aos506PrimeiroTurno(t, n, id2); a.Manifest.PromptHash != b.Manifest.PromptHash {
@@ -187,7 +200,7 @@ func TestAOS506_On_ATentativaLevaOAvisoConstante(t *testing.T) {
 	if len(p1) != 2 || len(p2) != 2 || len(p3) != 2 || p1[0].Role != "system" || p1[1].Role != "user" {
 		t.Fatalf("o primeiro pedido de cada run e system + user; vieram %d, %d e %d mensagens", len(p1), len(p2), len(p3))
 	}
-	if strings.Contains(string(corpos[0]), "<notice") {
+	if aos506LevaAviso(p1) {
 		t.Fatalf("a PRIMEIRA tentativa nao leva aviso, mesmo com o interruptor ligado: %s", corpos[0])
 	}
 	for i, p := range [][]aos506Mensagem{p2, p3} {
@@ -324,9 +337,9 @@ func TestAOS506_On_SoNumaTentativaProvada(t *testing.T) {
 	if len(depois) != len(antes) {
 		t.Fatal("uma tentativa recusada nao chega ao modelo")
 	}
-	for i, corpo := range corpos {
-		if strings.Contains(string(corpo), "<notice") || strings.Contains(string(corpo), "previous_attempt") {
-			t.Fatalf("o pedido %d leva um aviso e nenhum destes runs e uma tentativa provada: %s", i, corpo)
+	for i, pedido := range depois {
+		if aos506LevaAviso(pedido) {
+			t.Fatalf("o pedido %d leva um aviso e nenhum destes runs e uma tentativa provada: %s", i, corpos[i])
 		}
 	}
 	if m := n.metricas(t); !aos502TemSerie(m, "aos_runs_retry_notice_total", 0) {
