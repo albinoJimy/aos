@@ -82,7 +82,7 @@
   },
   "choices_vazio": {
     "desfecho": "recusada",
-    "erro": "sem_choices"modelo-falso\")",
+    "erro": "sem_choices",
     "text": "",
     "stop_reason": "",
     "final": false,
