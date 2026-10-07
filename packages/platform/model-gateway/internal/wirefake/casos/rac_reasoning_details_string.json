@@ -1,0 +1,1 @@
+{"id":"chatcmpl-falso","object":"chat.completion","created":1700000000,"model":"modelo-falso","choices":[{"index":0,"message":{"role":"assistant","content":"resposta final","reasoning_details":"primeiro penso; depois concluo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}
