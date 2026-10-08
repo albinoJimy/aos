@@ -190,6 +190,9 @@ type CfgDaCorrida struct {
 	Extra map[string]string
 	// Relogio dá a data do relatório. nil ⇒ time.Now.
 	Relogio func() time.Time
+	// Pausa é o intervalo entre dois passos da corrida. Zero ⇒ sem pausa. Serve para não bater
+	// num limite de taxa do fornecedor; não entra no digest da configuração.
+	Pausa time.Duration
 	// Progresso, se presente, recebe uma linha a cada vinte passos: só contagens.
 	Progresso io.Writer
 }
@@ -235,6 +238,12 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 	passos := cfg.Plano.sequencia(cfg.Bateria)
 ciclo:
 	for i, ps := range passos {
+		if i > 0 && cfg.Pausa > 0 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(cfg.Pausa):
+			}
+		}
 		if ctx.Err() != nil {
 			terminou = TerminouInterrompid
 			break

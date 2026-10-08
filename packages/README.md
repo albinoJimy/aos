@@ -14,7 +14,7 @@ ainda têm seams condicionais documentados nos respectivos epics.
 | `integration/` | Composition-root / wiring / ápice de enforcement composto |
 | `kernel/` | Plano de execução: RM (Reference Monitor), RT (Agent Runtime) |
 | `platform/` | Serviços de plataforma: MEM, REG, GW, BRK, identity, audit, … |
-| `qa/` | Testes de qualidade (dr-e2e, ux-dx) |
+| `qa/` | Testes de qualidade (dr-e2e, ux-dx) e o banco de ensaio da fronteira runtime↔modelo (`banco-ensaio`, AOS-512 — ferramenta de medição, fora do nó) |
 | `security-tests/` | Cenários adversariais de segurança |
 | `substrate/` | Log & substrato: ES, bus, sandbox, otel-genai, redaction |
 | `testkit/` | Fixtures, mocks deterministas e conversor cov2lcov (AOS-109) |

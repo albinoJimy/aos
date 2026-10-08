@@ -77,6 +77,7 @@ type opcoes struct {
 	escuta      string
 	chaveSha    string
 	silencioso  bool
+	pausa       time.Duration
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
@@ -94,6 +95,7 @@ opcoes comuns:
   --braco A|B|C|D                     braco da bateria (omissao A)
   --saida PASTA                       onde escrever o relatorio
   --silencioso                        nao mostra o resumo, so os caminhos
+  --pausa DURACAO                     intervalo entre dois passos (ex.: 2s), para um limite de taxa
 so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FICHEIRO
 so real:            --modelo M  --precos FICHEIRO  --contador FICHEIRO  --so-plano
 `
@@ -145,6 +147,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	fs.StringVar(&o.escuta, "escuta", "", "")
 	fs.StringVar(&o.chaveSha, "chave-sha256", "", "")
 	fs.BoolVar(&o.silencioso, "silencioso", false, "")
+	fs.DurationVar(&o.pausa, "pausa", 0, "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -184,7 +187,11 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaUso
 	}
-	cfg := CfgDaCorrida{Modo: modo, Plano: plano, Bateria: bateria, Relogio: amb.Relogio, Extra: map[string]string{}}
+	if o.pausa < 0 || o.pausa > time.Minute {
+		fmt.Fprintln(stderr, "aos-ensaio: --pausa tem de estar entre 0 e 1m")
+		return SaidaUso
+	}
+	cfg := CfgDaCorrida{Modo: modo, Plano: plano, Bateria: bateria, Relogio: amb.Relogio, Extra: map[string]string{}, Pausa: o.pausa}
 	if !o.silencioso {
 		cfg.Progresso = stderr
 	}

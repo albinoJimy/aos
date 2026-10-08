@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -595,5 +596,53 @@ func TestAOS512_Redactor(t *testing.T) {
 	nulo.Acrescentar("x")
 	if nulo.Texto("segredo-comprido") != "segredo-comprido" {
 		t.Error("um redactor nil nao altera o texto")
+	}
+}
+
+// Os segredos chegam ao contentor do proxy pelo AMBIENTE do processo docker: não estão nos
+// argumentos do `docker run` nem na configuração do proxy.
+func TestAOS512_Proxy_SegredosSoNoAmbiente(t *testing.T) {
+	args, ambiente := arranqueDoContentorDoProxy("contentor", "rede", chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi)
+	linha := strings.Join(args, " ")
+	verSemFugas(t, "argumentos do docker run", linha, []string{chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi, "sentinela-base-kimi"})
+	for _, nome := range []string{envChaveMestra, envChaveDaRota, envBaseDaRota} {
+		if !strings.Contains(linha, "-e "+nome+" ") {
+			t.Errorf("os argumentos tinham de passar a variavel %s pelo nome", nome)
+		}
+		if strings.Contains(linha, nome+"=") {
+			t.Errorf("os argumentos levam um valor para %s", nome)
+		}
+	}
+	if quer := []string{envChaveMestra + "=" + chaveMestraDeTeste, envChaveDaRota + "=" + sentinelaChaveKimi, envBaseDaRota + "=" + sentinelaBaseKimi}; strings.Join(ambiente, "|") != strings.Join(quer, "|") {
+		t.Errorf("o ambiente do processo docker nao leva os tres segredos")
+	}
+	// Sem base (a rota da Anthropic), a variável da base não é passada.
+	args, ambiente = arranqueDoContentorDoProxy("contentor", "rede", chaveMestraDeTeste, sentinelaChaveAnthropic, "")
+	if strings.Contains(strings.Join(args, " "), envBaseDaRota) || len(ambiente) != 2 {
+		t.Errorf("sem base da API, a variavel da base nao pode ser passada")
+	}
+
+	cfg, err := configDoProxy("openai", modeloKimiDeTeste, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verSemFugas(t, "configuracao do proxy", cfg, []string{chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi})
+	for _, quer := range []string{"model_name: " + AliasDaRota, "model: openai/" + modeloKimiDeTeste, "api_key: os.environ/" + envChaveDaRota,
+		"api_base: os.environ/" + envBaseDaRota, "num_retries: 0"} {
+		if !strings.Contains(cfg, quer) {
+			t.Errorf("a configuracao do proxy nao tem %q", quer)
+		}
+	}
+	if cfg, _ := configDoProxy("anthropic", modeloAnthropicDeTeste, false); strings.Contains(cfg, "api_base") || !strings.Contains(cfg, "model: anthropic/"+modeloAnthropicDeTeste) {
+		t.Errorf("a rota da Anthropic nao leva base e usa o adaptador anthropic")
+	}
+	// Um nome de modelo que escapasse da linha do YAML é recusado.
+	for _, mau := range []string{"m\n  api_key: x", "m odelo", "m\"x", ""} {
+		if _, err := configDoProxy("openai", mau, true); !errors.Is(err, ErrProxy) {
+			t.Errorf("nome de modelo %q: err = %v, quer ErrProxy", mau, err)
+		}
+	}
+	if _, err := configDoProxy("outro", "m", true); !errors.Is(err, ErrProxy) {
+		t.Errorf("adaptador desconhecido: err = %v, quer ErrProxy", err)
 	}
 }

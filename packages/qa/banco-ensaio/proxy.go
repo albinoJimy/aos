@@ -192,6 +192,21 @@ func configDoProxy(prefixo, modelo string, comBase bool) (string, error) {
 	return b.String(), nil
 }
 
+// arranqueDoContentorDoProxy devolve os ARGUMENTOS do `docker run` do proxy e o AMBIENTE a
+// acrescentar ao processo docker. Os segredos vão SÓ no ambiente: os argumentos levam os nomes
+// das variáveis (`-e NOME`, sem valor), e por isso não aparecem na linha de comandos de
+// processo nenhum.
+func arranqueDoContentorDoProxy(contentor, rede, chaveMestra, apiKey, apiBase string) (args, ambiente []string) {
+	ambiente = []string{envChaveMestra + "=" + chaveMestra, envChaveDaRota + "=" + apiKey}
+	args = []string{"run", "-d", "--name", contentor, "--network", rede, "-p", "127.0.0.1::" + portaDoProxy,
+		"-e", envChaveMestra, "-e", envChaveDaRota}
+	if apiBase != "" {
+		ambiente = append(ambiente, envBaseDaRota+"="+apiBase)
+		args = append(args, "-e", envBaseDaRota)
+	}
+	return append(args, "--entrypoint", "python", ImagemDoProxy, "-c", arranqueDoProxy), ambiente
+}
+
 // Lancar implementa [LancadorDeProxy].
 func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyVivo, error) {
 	if ok, motivo := DockerDisponivel(ctx); !ok {
@@ -258,15 +273,7 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 	if err := os.WriteFile(caminhoDaCfg, []byte(cfg), 0o600); err != nil {
 		return falhar(err)
 	}
-	// Os segredos vão no AMBIENTE do processo docker; os argumentos só levam os nomes.
-	ambiente := []string{envChaveMestra + "=" + chaveMestra, envChaveDaRota + "=" + p.apiKey}
-	args := []string{"run", "-d", "--name", proxy, "--network", rede, "-p", "127.0.0.1::" + portaDoProxy,
-		"-e", envChaveMestra, "-e", envChaveDaRota}
-	if apiBase != "" {
-		ambiente = append(ambiente, envBaseDaRota+"="+apiBase)
-		args = append(args, "-e", envBaseDaRota)
-	}
-	args = append(args, "--entrypoint", "python", ImagemDoProxy, "-c", arranqueDoProxy)
+	args, ambiente := arranqueDoContentorDoProxy(proxy, rede, chaveMestra, p.apiKey, apiBase)
 	if _, err := l.docker(ctx, ambiente, args...); err != nil {
 		return falhar(err)
 	}
