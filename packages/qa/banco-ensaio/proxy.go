@@ -84,6 +84,11 @@ type PedidoDeProxy struct {
 	// Vida é o prazo MÁXIMO de vida dos contentores, derivado do plano da corrida: passado
 	// ele, morrem sozinhos, haja ou não quem os desmonte. Zero ⇒ [VidaMaximaDoProxy].
 	Vida time.Duration
+	// Estado, quando não vazio ([EstadoExige] ou [EstadoProibe]), põe a fazer de fornecedor o
+	// provider falso do ESTADO OPACO em vez do do roteiro (AOS-516); TurnosDoFalso é o número de
+	// turnos com tool call dele (zero ⇒ 2). Só com BinarioDoFalso.
+	Estado        string
+	TurnosDoFalso int
 
 	apiKey  string
 	apiBase string
@@ -107,6 +112,9 @@ type ProxyVivo struct {
 	BaseURL string
 	// Fechar desmonta o proxy. Chama-se sempre.
 	Fechar func()
+	// EnderecoDoFalso é a raiz (`http://127.0.0.1:<porta>`) do provider falso do estado, quando
+	// é ele o fornecedor: serve só para lhe ler a forma dos pedidos ([LerFormaDoFalso]).
+	EnderecoDoFalso string
 
 	chaveMestra string
 }
@@ -372,15 +380,12 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 		return falhar(err)
 	}
 
-	apiBase := p.apiBase
+	apiBase, enderecoDoFalso := p.apiBase, ""
 	if p.BinarioDoFalso != "" {
 		// O provider falso, num contentor da mesma imagem (só pelo sistema de ficheiros: o
 		// binário é estático). Exige a chave da rota — pelo seu sha256, que não é segredo.
 		soma := sha256.Sum256([]byte(p.apiKey))
-		if _, err := l.docker(ctx, nil, "run", "-d", "--rm", "--name", falso, "--network", rede, "--entrypoint", "python",
-			ImagemDoProxy, "-c", arranqueDoFalso, "falso-provider", "--escuta", "0.0.0.0:"+portaDoFalso,
-			"--roteiro", EscreverRoteiro(p.Roteiro), "--chave-sha256", hex.EncodeToString(soma[:]),
-			"--vida", vida.String()); err != nil {
+		if _, err := l.docker(ctx, nil, argumentosDoContentorDoFalso(falso, rede, p, hex.EncodeToString(soma[:]), vida)...); err != nil {
 			return falhar(err)
 		}
 		if _, err := l.docker(ctx, nil, "cp", p.BinarioDoFalso, falso+":/tmp/aos-ensaio"); err != nil {
@@ -389,7 +394,15 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 		if _, err := l.docker(ctx, nil, "cp", pronto, falso+":/tmp/falso.pronto"); err != nil {
 			return falhar(err)
 		}
-		apiBase = "http://" + falso + ":" + portaDoFalso + "/v1"
+		apiBase = baseDoFalso(falso, p.Prefixo)
+		if p.Estado != "" {
+			mapeada, err := l.docker(ctx, nil, "port", falso, portaDoFalso+"/tcp")
+			if err != nil {
+				return falhar(err)
+			}
+			primeira := strings.TrimSpace(strings.Split(mapeada, "\n")[0])
+			enderecoDoFalso = "http://127.0.0.1:" + primeira[strings.LastIndex(primeira, ":")+1:]
+		}
 	}
 
 	cfg, err := configDoProxy(p.Prefixo, p.Modelo, apiBase != "")
@@ -463,7 +476,34 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 		}
 		time.Sleep(time.Second)
 	}
-	return &ProxyVivo{BaseURL: endereco + "/v1", Fechar: fechar, chaveMestra: chaveMestra}, nil
+	return &ProxyVivo{BaseURL: endereco + "/v1", Fechar: fechar, EnderecoDoFalso: enderecoDoFalso, chaveMestra: chaveMestra}, nil
+}
+
+// baseDoFalso é a base da API que o proxy usa para chegar ao provider falso no contentor. O
+// adaptador `anthropic` do proxy acrescenta ele o `/v1/messages`; o `openai` espera o `/v1`.
+func baseDoFalso(contentor, prefixo string) string {
+	base := "http://" + contentor + ":" + portaDoFalso
+	if prefixo == "anthropic" {
+		return base
+	}
+	return base + "/v1"
+}
+
+// argumentosDoContentorDoFalso devolve os argumentos do `docker run` do provider falso. Com o
+// falso do estado ([PedidoDeProxy.Estado]) a porta fica publicada em 127.0.0.1, para o banco lhe
+// ler a forma dos pedidos no fim da corrida; com o do roteiro, como sempre, não é publicada.
+func argumentosDoContentorDoFalso(contentor, rede string, p PedidoDeProxy, chaveSha string, vida time.Duration) []string {
+	args := []string{"run", "-d", "--rm", "--name", contentor, "--network", rede}
+	if p.Estado != "" {
+		args = append(args, "-p", "127.0.0.1::"+portaDoFalso)
+	}
+	args = append(args, "--entrypoint", "python", ImagemDoProxy, "-c", arranqueDoFalso, "falso-provider", "--escuta", "0.0.0.0:"+portaDoFalso)
+	if p.Estado != "" {
+		args = append(args, "--estado", p.Estado, "--turnos-do-falso", fmt.Sprint(p.TurnosDoFalso))
+	} else {
+		args = append(args, "--roteiro", EscreverRoteiro(p.Roteiro))
+	}
+	return append(args, "--chave-sha256", chaveSha, "--vida", vida.String())
 }
 
 // Redactor substitui os segredos conhecidos por `[oculto]` em tudo o que o banco escreve. É uma

@@ -1,0 +1,12 @@
+{
+  "requested": "rota-de-ensaio",
+  "expected_model": "anthropic/PREENCHER-NOME-DO-MODELO",
+  "wire_class": "openai-chat-completions",
+  "capabilities": ["tools"],
+  "params": {
+    "thinking": {"type": "enabled", "budget_tokens": 2048},
+    "max_tokens": 16000
+  },
+  "projection_version": "1.3.0",
+  "devolver": "obrigatorio"
+}

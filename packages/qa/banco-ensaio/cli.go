@@ -91,6 +91,11 @@ type opcoes struct {
 	reconstruir bool
 	vida        time.Duration
 	perfil      string
+	// As quatro abaixo são da qualificação da devolução do estado opaco (AOS-516).
+	estado        string
+	turnosDoFalso int
+	exigeID       bool
+	hostEsperado  string
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
@@ -114,7 +119,14 @@ opcoes comuns:
   --pausa DURACAO                     intervalo entre dois passos (ex.: 2s), para um limite de taxa
   --perfil FICHEIRO                   perfil de rota CANDIDATO em JSON (AOS-513): parametros do pedido, versao
                                       da projeccao, classe de estado; o digest vai no relatorio
+  --host-esperado HOST                so com um perfil que devolve estado: o host do endpoint que o proxy deve
+                                      declarar ter servido (sem ele compara-se so o modelo servido)
 so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FICHEIRO
+                    --estado exige|proibe        o provider falso do ESTADO OPACO (AOS-516) em vez do do roteiro:
+                                                 exige de volta o estado que emitiu em cada turno com tools, ou
+                                                 recusa qualquer estado; no modo proxy pede --perfil com um
+                                                 expected_model anthropic/<modelo> e a rota do proxy e essa
+                    --turnos-do-falso N          turnos com tool call do provider falso do estado (omissao 2)
 so real:            --modelo M  --precos FICHEIRO  --so-plano
                     --destino-fora-da-lista HOST   aceita um destino da chave fora da lista do fornecedor;
                                                    HOST tem de ser exactamente o host do ficheiro (https na mesma)
@@ -173,6 +185,10 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	fs.BoolVar(&o.reconstruir, "reconstruir-contador", false, "")
 	fs.DurationVar(&o.vida, "vida", 0, "")
 	fs.StringVar(&o.perfil, "perfil", "", "")
+	fs.StringVar(&o.estado, "estado", "", "")
+	fs.IntVar(&o.turnosDoFalso, "turnos-do-falso", 0, "")
+	fs.BoolVar(&o.exigeID, "exige-id", false, "")
+	fs.StringVar(&o.hostEsperado, "host-esperado", "", "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -236,6 +252,25 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		cfg.PerfilDigest = perfil.Digest()
 		cfg.Extra["perfil"] = cfg.PerfilDigest
 	}
+	// A QUALIFICAÇÃO DA DEVOLUÇÃO (AOS-516). O host esperado só tem leitor quando o perfil devolve
+	// estado: fora disso seria uma opção sem efeito, e recusa-se em vez de a ignorar.
+	devolve := perfil != nil && perfil.StateReturn != modelgateway.StateReturnNever
+	o.hostEsperado = strings.ToLower(strings.TrimSpace(o.hostEsperado))
+	if o.hostEsperado != "" && (!devolve || !hostAceite(o.hostEsperado)) {
+		fmt.Fprintln(stderr, "aos-ensaio: --host-esperado e um nome de host (sem esquema nem caminho) e so vale com um --perfil que devolva estado")
+		return SaidaUso
+	}
+	if o.estado != "" && o.estado != EstadoExige && o.estado != EstadoProibe {
+		fmt.Fprintf(stderr, "aos-ensaio: --estado aceita %s ou %s\n", EstadoExige, EstadoProibe)
+		return SaidaUso
+	}
+	if o.turnosDoFalso < 0 || o.turnosDoFalso > 15 || (o.turnosDoFalso != 0 && o.estado == "") || o.exigeID {
+		fmt.Fprintln(stderr, "aos-ensaio: --turnos-do-falso (1 a 15) so vale com --estado; --exige-id e so do subcomando interno falso-provider")
+		return SaidaUso
+	}
+	if devolve {
+		cfg.Extra["host_esperado"] = fmt.Sprint(o.hostEsperado != "")
+	}
 	if !o.silencioso {
 		cfg.Progresso = stderr
 	}
@@ -271,6 +306,10 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			fmt.Fprintln(stderr, "aos-ensaio: --chaves, --fornecedor, --precos, --so-plano, --destino-fora-da-lista e --reconstruir-contador sao so do modo real")
 			return SaidaUso
 		}
+		if o.estado != "" && o.roteiro != "" {
+			fmt.Fprintln(stderr, "aos-ensaio: --estado e --roteiro escolhem o provider falso: so um deles")
+			return SaidaUso
+		}
 		roteiro := RoteiroPorOmissao()
 		if o.roteiro != "" {
 			if roteiro, err = LerRoteiro(o.roteiro); err != nil {
@@ -279,6 +318,11 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			}
 		}
 		cfg.Extra["roteiro"] = EscreverRoteiro(roteiro)
+		if o.estado != "" {
+			// O provider falso do estado não tem roteiro: o que decide a corrida é o modo dele.
+			delete(cfg.Extra, "roteiro")
+			cfg.Extra["falso_do_estado"] = fmt.Sprintf("%s/%d", o.estado, o.turnosDoFalso)
+		}
 		cfg.Rota = RotaDoRelatorio{Fornecedor: string(FornecedorFalso), Modelo: "modelo-falso-do-banco"}
 		if o.tecto != 0 || o.contador != "" {
 			// O tecto nos modos sem modelo real existe para ensaiar o próprio tecto.
@@ -300,7 +344,18 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			}
 		}
 		if modo == ModoFalso {
-			falso := NovoProviderFalso(roteiro)
+			var falso http.Handler = NovoProviderFalso(roteiro)
+			if o.estado != "" {
+				// Sem proxy, é o falso que declara o modelo servido — com o nome que o perfil
+				// espera. Sem perfil não declara nada.
+				doEstado := &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso}
+				if perfil != nil {
+					doEstado.ServidoComo = perfil.ExpectedModel
+					doEstado.ExigeID = perfil.ToolCallID == modelgateway.ToolCallIDProvider
+				}
+				cfg.FormaNoFornecedor = func() (*FormaNoFornecedor, error) { return doEstado.Forma(), nil }
+				falso = doEstado
+			}
 			ouvinte, lerr := net.Listen("tcp", "127.0.0.1:0")
 			if lerr != nil {
 				fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
@@ -324,9 +379,23 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		chaveDoFalso := "sk-falso-" + hex.EncodeToString(aleatorio)
 		red.Acrescentar(chaveDoFalso)
-		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{
-			Prefixo: "openai", Modelo: "modelo-falso-do-banco", BinarioDoFalso: o.binario, Roteiro: roteiro, Vida: vida,
-		}.ComSegredos(chaveDoFalso, ""))
+		pedidoDeProxy := PedidoDeProxy{Prefixo: "openai", Modelo: "modelo-falso-do-banco", BinarioDoFalso: o.binario, Roteiro: roteiro, Vida: vida}
+		if o.estado != "" {
+			// A rota do proxy é a que o perfil ESPERA — é esse o nome que o proxy vai declarar ter
+			// servido —, e tem de ser uma rota anthropic/…: é o caminho de tradução que se mede.
+			modelo, eAnthropic := "", false
+			if perfil != nil {
+				modelo, eAnthropic = strings.CutPrefix(perfil.ExpectedModel, "anthropic/")
+			}
+			if !eAnthropic || !nomeDeModeloAceite(modelo) {
+				fmt.Fprintln(stderr, "aos-ensaio: o modo proxy com --estado exige --perfil com expected_model anthropic/<modelo> (a rota openai/ atras do proxy mede-se em scripts/ci/wire-live.sh)")
+				return SaidaUso
+			}
+			pedidoDeProxy.Prefixo, pedidoDeProxy.Modelo, pedidoDeProxy.Roteiro = "anthropic", modelo, nil
+			pedidoDeProxy.Estado, pedidoDeProxy.TurnosDoFalso = o.estado, o.turnosDoFalso
+			cfg.Rota.Modelo = perfil.ExpectedModel
+		}
+		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, pedidoDeProxy.ComSegredos(chaveDoFalso, ""))
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
 			return SaidaSemInfra
@@ -335,12 +404,19 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fechar = vivo.Fechar
 		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
 		cfg.Rota.Digest = DigestDaRota(cfg.Rota.Fornecedor, cfg.Rota.Modelo, "proxy:"+ImagemDoProxy)
+		if o.estado != "" && vivo.EnderecoDoFalso != "" {
+			cfg.FormaNoFornecedor = func() (*FormaNoFornecedor, error) { return LerFormaDoFalso(ctx, vivo.EnderecoDoFalso) }
+		}
 
 	case ModoReal:
 		if o.roteiro != "" || o.tecto != 0 || o.binario != "" || o.contador != "" {
 			// O contador do modo real é SEMPRE o que está ao lado do ficheiro de chaves: uma
 			// flag que apontasse para outro ficheiro punha a contagem do dia a zero.
 			fmt.Fprintln(stderr, "aos-ensaio: --roteiro, --tecto-pedidos, --binario-do-falso e --contador nao sao do modo real (o tecto vem do ficheiro de chaves, e o contador fica ao lado dele)")
+			return SaidaUso
+		}
+		if o.estado != "" {
+			fmt.Fprintln(stderr, "aos-ensaio: --estado escolhe um provider falso: nao e do modo real")
 			return SaidaUso
 		}
 		// Só arranca com um caminho EXPLÍCITO para o ficheiro de chaves: não há omissão.
@@ -368,6 +444,17 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			return SaidaRecusada
 		}
 		red.Acrescentar(rota.Segredos()...)
+		prefixo := "openai"
+		if fornecedor == FornecedorAnthropic {
+			prefixo = "anthropic"
+		}
+		if devolve && perfil.ExpectedModel != prefixo+"/"+rota.Modelo {
+			// O proxy declara ter servido `<adaptador>/<modelo>`. Com outro nome no perfil a rota
+			// nunca se provava igual, o estado nunca era devolvido, e cada run gastava um pedido do
+			// tecto para parar no segundo. Recusa-se antes de enviar seja o que for.
+			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — o perfil devolve estado e o seu expected_model nao e a rota desta corrida (%s/%s): o estado so volta a rota que o produziu\n", prefixo, rota.Modelo)
+			return SaidaRecusada
+		}
 		var precos *TabelaDePrecos
 		if o.precos != "" {
 			if precos, err = LerTabelaDePrecos(o.precos); err != nil {
@@ -432,10 +519,6 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			fmt.Fprintln(stderr, "aos-ensaio: --so-plano: nenhum pedido foi enviado")
 			return SaidaOK
 		}
-		prefixo := "openai"
-		if fornecedor == FornecedorAnthropic {
-			prefixo = "anthropic"
-		}
 		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase))
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
@@ -453,7 +536,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		pastaDaSaida = filepath.Join(amb.PastaDoDono, "relatorios")
 	}
-	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil})
+	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil, HostEsperado: o.hostEsperado})
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaErro
@@ -609,7 +692,15 @@ func servirFalso(ctx context.Context, o opcoes, stderr io.Writer) int {
 		ctx, cancelar = context.WithTimeout(ctx, o.vida)
 		defer cancelar()
 	}
-	falso := NovoProviderFalso(roteiro)
+	if o.estado != "" && o.estado != EstadoExige && o.estado != EstadoProibe {
+		fmt.Fprintf(stderr, "aos-ensaio: --estado aceita %s ou %s\n", EstadoExige, EstadoProibe)
+		return SaidaUso
+	}
+	doRoteiro, doEstado := NovoProviderFalso(roteiro), &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso, ExigeID: o.exigeID}
+	var falso http.Handler = doRoteiro
+	if o.estado != "" {
+		falso = doEstado
+	}
 	if o.chaveSha != "" {
 		cru, err := hex.DecodeString(strings.TrimSpace(o.chaveSha))
 		if err != nil || len(cru) != sha256.Size {
@@ -618,7 +709,8 @@ func servirFalso(ctx context.Context, o opcoes, stderr io.Writer) int {
 		}
 		var soma [sha256.Size]byte
 		copy(soma[:], cru)
-		falso.ExigirChave(soma)
+		doRoteiro.ExigirChave(soma)
+		doEstado.ExigirChave(soma)
 	}
 	srv := &http.Server{Addr: o.escuta, Handler: falso, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

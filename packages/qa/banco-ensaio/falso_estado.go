@@ -2,6 +2,7 @@ package bancoensaio
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
@@ -54,6 +56,53 @@ type FalsoDeEstado struct {
 	mu       sync.Mutex
 	conversa *wiretest.Exigente
 	forma    FormaNoFornecedor
+}
+
+// Os modos do provider falso do estado, como se escrevem em `--estado`.
+const (
+	// EstadoExige — o falso exige de volta o estado que emitiu.
+	EstadoExige = "exige"
+	// EstadoProibe — o falso recusa qualquer estado no pedido.
+	EstadoProibe = "proibe"
+)
+
+// hostAceite diz se h tem a forma de um nome de host: letras minúsculas, dígitos, `.`, `-` e,
+// para a porta, `:` — sem esquema, sem caminho e sem credenciais.
+func hostAceite(h string) bool {
+	if h == "" || len(h) > 253 {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == ':') {
+			return false
+		}
+	}
+	return true
+}
+
+// LerFormaDoFalso lê, por GET, a forma que um provider falso do estado registou (modo `proxy`:
+// o falso corre num contentor, e a sua porta está publicada só em 127.0.0.1).
+func LerFormaDoFalso(ctx context.Context, endereco string) (*FormaNoFornecedor, error) {
+	ctx, cancelar := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelar()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endereco, "/")+CaminhoDaForma, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("banco-ensaio: o provider falso do estado respondeu %d ao pedido da forma", resp.StatusCode)
+	}
+	var f FormaNoFornecedor
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&f); err != nil {
+		return nil, err
+	}
+	return &f, nil
 }
 
 // Os wires do falso do estado, como vão em [FormaNoFornecedor.Wire].
