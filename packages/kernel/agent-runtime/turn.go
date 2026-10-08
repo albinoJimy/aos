@@ -132,6 +132,12 @@ type turnPayload struct {
 	// `diferente` aqui é o registo durável, no stream do run, de uma variância de rota em
 	// observação; em imposição o turno falha e não chega a ser gravado.
 	RouteCheck RouteCheck `json:"route_check,omitempty"`
+	// ResponseShape é a ficha da forma da resposta do provider neste turno, declarada pelo
+	// cliente de modelo ([ModelResponse.Shape], AOS-507): presença, forma JSON e tamanho de cada
+	// campo, em vocabulário fechado e sem conteúdo. `omitempty` sobre um ponteiro: um turno sem
+	// ficha — a medição desligada, e todo o turno gravado antes deste campo — grava os bytes de
+	// sempre. É medição: nada no runtime a lê.
+	ResponseShape *ResponseShape `json:"response_shape,omitempty"`
 }
 
 // TurnRecord é o input que o [Runtime] passa ao [TurnRecorder] por turno.
@@ -152,7 +158,9 @@ type TurnRecord struct {
 	ToolsOffered int
 	// RouteCheck — ver [turnPayload.RouteCheck] (AOS-505).
 	RouteCheck RouteCheck
-	Producer   eventstore.Producer
+	// ResponseShape — ver [turnPayload.ResponseShape] (AOS-507).
+	ResponseShape *ResponseShape
+	Producer      eventstore.Producer
 }
 
 // TurnRecorder grava cada turno como um evento "turn.recorded" no Event Store,
@@ -198,6 +206,8 @@ func (r *TurnRecorder) Record(ctx context.Context, rec TurnRecord) (uint64, erro
 		ToolsOffered: rec.ToolsOffered,
 		// AOS-505: vocabulário fechado, pela mesma razão.
 		RouteCheck: rec.RouteCheck.Normalizado(),
+		// AOS-507: a ficha fecha-se no vocabulário, pela mesma razão. nil fica nil.
+		ResponseShape: rec.ResponseShape.Normalizado(),
 	}
 	raw, err := json.Marshal(payload)
 	if err != nil {

@@ -24,14 +24,17 @@
 package port
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 )
 
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.4.0"
+const Version = "1.6.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -50,7 +53,9 @@ const (
 
 // FunctionCall é a invocação de função pretendida pelo modelo. Arguments é uma
 // STRING JSON (forma wire OpenAI), não um objecto — o modelo emite-a como texto e
-// o chamador desserializa-a contra o schema da tool.
+// o chamador desserializa-a contra o schema da tool. Numa RESPOSTA em que o provider
+// mande o objecto, guardam-se os bytes JSON crus dele ([FunctionCall.UnmarshalJSON],
+// AOS-509; MINOR 1.6.0); num pedido sai sempre como string.
 type FunctionCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
@@ -92,25 +97,189 @@ type Message struct {
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
-// UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com UMA diferença:
-// `reasoning_content` aceita qualquer valor JSON (AOS-490).
+// UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com três
+// tolerâncias: `reasoning_content` aceita qualquer valor JSON (AOS-490); `content` aceita uma
+// lista de partes de texto; e o raciocínio lê-se dos outros nomes quando `reasoning_content` não
+// vem (as duas últimas do AOS-509).
 //
-// O DEFEITO QUE FECHA. Com o campo declarado como string, uma resposta cujo `reasoning_content`
-// fosse um objecto, uma lista ou um número fazia o `encoding/json` recusar a resposta INTEIRA —
-// a mensagem, as tool calls e o usage iam com ela. Antes de o campo existir essas respostas eram
-// aceites (o campo era ignorado). Afectava todos os consumidores da porta, em qualquer forma de
-// pedido.
+// O DEFEITO QUE FECHA. Com um campo declarado como string, uma resposta que o trouxesse noutra
+// forma JSON válida fazia o `encoding/json` recusar a resposta INTEIRA — a mensagem, as tool
+// calls e o usage iam com ela. O AOS-490 fechou-o para `reasoning_content`; o AOS-509 fecha-o
+// para `content` em partes de texto (e [FunctionCall.UnmarshalJSON] para `arguments` em objecto).
+//
+// `content`: uma string é o texto; `null` ou ausente é vazio, como sempre; uma lista em que TODAS
+// as partes são `{"type":"text","text":"…"}` é a concatenação dos textos, pela ordem e sem
+// separador (lista vazia ⇒ vazio). Uma lista com qualquer parte que não seja de texto recusa a
+// resposta com [ErrContentPartNotText]: aceitá-la deitando a parte fora entregava como completa
+// uma resposta a que falta conteúdo. Outra forma (número, objecto, booleano) recusa com
+// [ErrContentForm].
+//
+// O RACIOCÍNIO NUNCA É A RESPOSTA. `Content` vem SÓ de `content`. Quando `reasoning_content`
+// está ausente ou é `null`, [Message.ReasoningContent] é o primeiro COM CONTEÚDO de `reasoning`,
+// `reasoning_details`, `thinking_blocks`, `thinking`, por esta ordem fixa, pela mesma regra de
+// carga opaca; quando está presente vale só ele, como antes. O destino continua a ser só a
+// captura do turno, e [ChatRequest.MarshalWire] continua a retirá-lo de todos os pedidos.
 func (m *Message) UnmarshalJSON(data []byte) error {
 	type semMetodos Message // o mesmo layout, sem este UnmarshalJSON (evita a recursão)
 	aux := struct {
 		*semMetodos
+		Content          conteudoWire    `json:"content"`
 		ReasoningContent json.RawMessage `json:"reasoning_content"`
-	}{semMetodos: (*semMetodos)(m)}
+		Reasoning        json.RawMessage `json:"reasoning"`
+		ReasoningDetails json.RawMessage `json:"reasoning_details"`
+		ThinkingBlocks   json.RawMessage `json:"thinking_blocks"`
+		Thinking         json.RawMessage `json:"thinking"`
+	}{semMetodos: (*semMetodos)(m), Content: conteudoWire{texto: m.Content}}
 	m.ReasoningContent = ""
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	m.ReasoningContent = raciocinioOpaco(aux.ReasoningContent)
+	m.Content = aux.Content.texto
+	raciocinio := aux.ReasoningContent
+	if !valorPresente(raciocinio) {
+		// Dos outros nomes só conta um campo COM conteúdo ([RaciocinioComConteudo]): um provider
+		// que mande `thinking: false`, `reasoning: 0` ou `reasoning_details: []` não mandou
+		// raciocínio, e a captura não guarda "false", "0" nem "[]" como se fosse.
+		raciocinio = nil
+		for _, outro := range []json.RawMessage{aux.Reasoning, aux.ReasoningDetails, aux.ThinkingBlocks, aux.Thinking} {
+			if RaciocinioComConteudo(outro) {
+				raciocinio = outro
+				break
+			}
+		}
+	}
+	m.ReasoningContent = raciocinioOpaco(raciocinio)
+	return nil
+}
+
+// Erros de forma de uma resposta (AOS-509). Nenhum leva bytes da resposta.
+var (
+	// ErrContentPartNotText — `content` veio em lista de partes e uma delas não é de texto
+	// (imagem, áudio, recusa, tipo desconhecido, parte sem `type`, ou `text` que não é string).
+	ErrContentPartNotText = errors.New("port: content em partes com uma parte que nao e de texto")
+	// ErrContentForm — `content` não é string, `null` nem lista de partes.
+	ErrContentForm = errors.New("port: content numa forma que nao e string, null nem lista de partes")
+	// ErrArgumentsForm — `function.arguments` não é string, `null` nem objecto.
+	ErrArgumentsForm = errors.New("port: function.arguments numa forma que nao e string, null nem objecto")
+)
+
+// valorPresente diz se um valor JSON existe e não é `null`.
+func valorPresente(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
+// conteudoWire lê o valor JSON de `content`, UMA OCORRÊNCIA DE CADA VEZ. O `encoding/json` chama
+// este método por cada chave `content` do objecto, pela ordem — incluindo para `null` —, que é
+// exactamente o que fazia ao campo string: uma string substitui o valor, `null` deixa-o como
+// estava. Um corpo com a chave repetida (`{"content":"a","content":null}`) dá por isso o mesmo
+// texto que dava antes de o campo aceitar partes.
+type conteudoWire struct{ texto string }
+
+// UnmarshalJSON aplica uma ocorrência de `content` ao texto.
+func (c *conteudoWire) UnmarshalJSON(raw []byte) error {
+	raw = bytes.TrimSpace(raw)
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
+		return nil
+	case raw[0] == '"':
+		return json.Unmarshal(raw, &c.texto)
+	case raw[0] != '[':
+		return ErrContentForm
+	}
+	var partes []json.RawMessage
+	if err := json.Unmarshal(raw, &partes); err != nil {
+		return err
+	}
+	var b strings.Builder
+	for _, cru := range partes {
+		texto, ok := parteDeTexto(cru)
+		if !ok {
+			return ErrContentPartNotText
+		}
+		b.WriteString(texto)
+	}
+	c.texto = b.String()
+	return nil
+}
+
+// parteDeTexto lê uma parte de `content` e devolve o texto dela se — e só se — for um objecto
+// com UMA chave `type` de valor "text" e UMA chave `text` de valor string. As chaves lêem-se uma
+// a uma: uma parte com `type` (ou `text`) REPETIDO não é de texto, qualquer que seja a ordem —
+// com a leitura normal do `encoding/json` ganhava a última ocorrência, e
+// `{"type":"thinking","type":"text",…}` passava por texto.
+func parteDeTexto(cru json.RawMessage) (string, bool) {
+	dec := json.NewDecoder(bytes.NewReader(cru))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return "", false
+	}
+	var tipo, texto *string
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			return "", false
+		}
+		chave, _ := t.(string)
+		var valor json.RawMessage
+		if err := dec.Decode(&valor); err != nil {
+			return "", false
+		}
+		var destino **string
+		switch chave {
+		case "type":
+			destino = &tipo
+		case "text":
+			destino = &texto
+		default:
+			continue
+		}
+		var v string
+		if *destino != nil || len(valor) == 0 || valor[0] != '"' || json.Unmarshal(valor, &v) != nil {
+			return "", false
+		}
+		*destino = &v
+	}
+	if tipo == nil || *tipo != "text" || texto == nil {
+		return "", false
+	}
+	return *texto, true
+}
+
+// argumentosWire lê o valor JSON de `function.arguments`, uma ocorrência de cada vez, pela mesma
+// razão de [conteudoWire].
+type argumentosWire struct{ valor string }
+
+// UnmarshalJSON aplica uma ocorrência de `arguments`.
+func (a *argumentosWire) UnmarshalJSON(raw []byte) error {
+	raw = bytes.TrimSpace(raw)
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
+		return nil
+	case raw[0] == '"':
+		return json.Unmarshal(raw, &a.valor)
+	case raw[0] == '{':
+		a.valor = string(raw)
+		return nil
+	}
+	return ErrArgumentsForm
+}
+
+// UnmarshalJSON lê uma invocação de função do wire (AOS-509). `arguments` é, no wire OpenAI, uma
+// STRING com JSON dentro; há providers que mandam o OBJECTO. Uma string é lida como sempre; um
+// objecto é lido como os BYTES JSON CRUS que vieram, sem re-serializar — a mesma chamada dá os
+// mesmos bytes nas duas formas quando o texto é o mesmo, e o que se guarda não depende de uma
+// ordem de chaves escolhida aqui. `null` ou ausente deixa o valor como estava. Outra forma
+// (lista, número, booleano) recusa a resposta com [ErrArgumentsForm]. Daí em diante os
+// argumentos seguem o caminho de sempre: o schema da tool valida-os e o Reference Monitor medeia
+// a chamada.
+func (f *FunctionCall) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		Name      string         `json:"name"`
+		Arguments argumentosWire `json:"arguments"`
+	}{Name: f.Name, Arguments: argumentosWire{valor: f.Arguments}}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	f.Name, f.Arguments = aux.Name, aux.Arguments.valor
 	return nil
 }
 
@@ -333,6 +502,11 @@ type ChatResponse struct {
 	// e por isso não vai no wire (`json:"-"`). Ver [ServedRoute]. O caminho de streaming não o
 	// preenche.
 	Route ServedRoute `json:"-"`
+	// Shape é a ficha da forma do corpo desta resposta (AOS-507; campo aditivo, MINOR 1.5.0): ver
+	// [ResponseShape]. Não é do corpo — é uma medição SOBRE o corpo —, e por isso não vai no wire
+	// (`json:"-"`). nil quando o adaptador não a mede, que é a omissão. O caminho de streaming
+	// não a preenche.
+	Shape *ResponseShape `json:"-"`
 }
 
 // ChatStreamDelta é um incremento (delta) do streaming de chat. Content é o

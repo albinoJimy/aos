@@ -1,0 +1,784 @@
+{
+  "args_nulo": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": ""
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-args_nulo",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "args_objecto": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\": \"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-args_objecto",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "args_objecto_aninhado": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"filtro\": {\"de\": [1, 2, {\"x\": null}]}, \"path\": \"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-args_objecto_aninhado",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "args_string_nao_json": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "path=notas.txt"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-args_string_nao_json",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "args_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": ""
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-args_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_ausente": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-content_ausente",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_ausente_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-content_ausente_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_nulo": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-content_nulo",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_nulo_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-content_nulo_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_texto": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-content_texto",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_texto_com_tool": {
+    "desfecho": "turno",
+    "text": "vou ler o ficheiro",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-content_texto_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-content_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "content_vazio_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-content_vazio_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "dup_content_nulo_depois_texto": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-dup_content_nulo_depois_texto",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "dup_content_texto_depois_nulo": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-dup_content_texto_depois_nulo",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "extra_system_fingerprint_e_chaves": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-extra_system_fingerprint_e_chaves",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "fc_antigo_finish_function_call": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-fc_antigo_finish_function_call",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "finish_ausente": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-finish_ausente",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "finish_end_turn": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-finish_end_turn",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "finish_length": {
+    "desfecho": "turno",
+    "text": "resposta cort",
+    "stop_reason": "length",
+    "final": false,
+    "model": "caso-finish_length",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "finish_nulo": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-finish_nulo",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "finish_stop_maiusculas": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-finish_stop_maiusculas",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "finish_tool_use": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-finish_tool_use",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "h1_raciocinio_em_reasoning_content": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-h1_raciocinio_em_reasoning_content",
+    "input_tokens": 11,
+    "output_tokens": 161
+  },
+  "h2_raciocinio_noutro_campo": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-h2_raciocinio_noutro_campo",
+    "input_tokens": 11,
+    "output_tokens": 161
+  },
+  "h3_raciocinio_escondido": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-h3_raciocinio_escondido",
+    "input_tokens": 11,
+    "output_tokens": 77
+  },
+  "h4_so_brancos": {
+    "desfecho": "turno",
+    "text": "\n\n  \t",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-h4_so_brancos",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "h5_recusa": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-h5_recusa",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "h6_nada": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-h6_nada",
+    "input_tokens": 11,
+    "output_tokens": 77
+  },
+  "h7_function_call_antigo_stop": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-h7_function_call_antigo_stop",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "h8_resposta_na_segunda_choice": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-h8_resposta_na_segunda_choice",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_ausente": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_ausente",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_comprimento_fixo": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_comprimento_fixo",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_functions_ponto": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_functions_ponto",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_numerico": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_numerico",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_numero_json": {
+    "desfecho": "recusada",
+    "erro": "json_invalido",
+    "text": "",
+    "stop_reason": "",
+    "final": false,
+    "input_tokens": 0,
+    "output_tokens": 0
+  },
+  "id_repetido": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      },
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"outras.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_repetido",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_uuid": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_uuid",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "id_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-id_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_assinatura_na_tool_call": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-rac_assinatura_na_tool_call",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_blocos_assinados": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"bloco\",\"signature\":\"c2ln\"}]",
+    "model": "caso-rac_blocos_assinados",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-rac_reasoning_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_content_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-rac_reasoning_content_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_content_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-rac_reasoning_content_content_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_content_nulo_e_reasoning": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_reasoning_content_nulo_e_reasoning",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_content_string": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-rac_reasoning_content_string",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-rac_reasoning_content_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-rac_reasoning_details_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_reasoning_details_content_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_lista": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_reasoning_details_lista",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_lista_vazia": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_reasoning_details_lista_vazia",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_objecto": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_reasoning_details_objecto",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_details_string": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_reasoning_details_string",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_reasoning_string": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "primeiro penso; depois concluo",
+    "model": "caso-rac_reasoning_string",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_blocks_lista": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "[{\"type\":\"thinking\",\"thinking\":\"primeiro penso; depois concluo\"}]",
+    "model": "caso-rac_thinking_blocks_lista",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_com_tool": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-rac_thinking_com_tool",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_thinking_content_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_falso": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_thinking_falso",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_lista": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_thinking_lista",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_objecto": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_thinking_objecto",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_thinking_string": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_thinking_string",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_varios_nomes": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "reasoning": "o do campo de sempre",
+    "model": "caso-rac_varios_nomes",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "rac_varios_sem_reasoning_content": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-rac_varios_sem_reasoning_content",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "tools_paralelas": {
+    "desfecho": "turno",
+    "text": "",
+    "tool_calls": [
+      {
+        "tool": "arquivo",
+        "input": "{\"path\":\"notas.txt\"}"
+      },
+      {
+        "tool": "counter",
+        "input": "{}"
+      }
+    ],
+    "stop_reason": "tool_calls",
+    "final": false,
+    "model": "caso-tools_paralelas",
+    "input_tokens": 11,
+    "output_tokens": 7
+  },
+  "usage_ausente": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-usage_ausente",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "usage_ausente": true
+  },
+  "usage_com_reasoning_tokens": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-usage_com_reasoning_tokens",
+    "input_tokens": 11,
+    "output_tokens": 40,
+    "cache_read_tokens": 8
+  },
+  "usage_so_total": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-usage_so_total",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "usage_ausente": true
+  },
+  "usage_vazio": {
+    "desfecho": "turno",
+    "text": "resposta final",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-usage_vazio",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "usage_ausente": true
+  },
+  "vazio_com_reasoning_content_vazio": {
+    "desfecho": "turno",
+    "text": "",
+    "stop_reason": "stop",
+    "final": true,
+    "model": "caso-vazio_com_reasoning_content_vazio",
+    "input_tokens": 11,
+    "output_tokens": 7
+  }
+}

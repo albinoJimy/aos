@@ -1,0 +1,1 @@
+{"id":"chatcmpl-falso","object":"chat.completion","created":1700000000,"model":"modelo-falso","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"","type":"function","function":{"name":"arquivo","arguments":"{\"path\":\"notas.txt\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}

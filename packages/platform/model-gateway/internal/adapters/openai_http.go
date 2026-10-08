@@ -55,7 +55,16 @@ type OpenAIHTTPAdapter struct {
 	provider string
 	baseURL  string
 	client   *http.Client
+	// forma: a sonda da forma da resposta corre em cada chat síncrono ([ObserveResponseShape],
+	// AOS-507). false — o valor-zero — é o adaptador de sempre: a sonda não corre.
+	forma bool
 }
+
+// ObserveResponseShape liga a sonda da forma da resposta (AOS-507): cada resposta de chat
+// síncrona passa a levar a ficha do seu corpo cru em [port.ChatResponse.Shape]. A sonda corre
+// DEPOIS de a resposta ter sido descodificada e não a pode fazer falhar. Chama-se na
+// construção, antes de o adaptador servir tráfego.
+func (a *OpenAIHTTPAdapter) ObserveResponseShape() { a.forma = true }
 
 // defaultEgressTimeout e defaultMaxRedirects endurecem o cliente HTTP DEFAULT do
 // adaptador (usado quando nenhum client é injectado). O http.DefaultClient nu não
@@ -128,6 +137,12 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 	// resto dos cabeçalhos não sai daqui. Ausentes ⇒ a rota fica por reportar. Lêem-se TODAS as
 	// ocorrências de cada um (`Values`): repetido com valores diferentes, não se prova igual.
 	resp.Route = port.ServedRouteFromHeaders(header.Values)
+	if a.forma {
+		// AOS-507 — a ficha da forma do corpo cru: presença, forma JSON e tamanho de cada campo,
+		// sem nenhum byte de valor. Só com a medição ligada.
+		ficha := port.ProbeResponseShape(respBody)
+		resp.Shape = &ficha
+	}
 	return resp, nil
 }
 

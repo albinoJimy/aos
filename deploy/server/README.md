@@ -1073,6 +1073,55 @@ antes de trocar de modelo. Recuo imediato: `AOS_MODEL_ROUTE_GOVERNANCE=observe` 
 
 ---
 
+### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
+
+Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo
+é o mesmo qualquer que tenha sido o corpo que o provider mandou. Com `AOS_MODEL_RESPONSE_SHAPE=observe`
+o nó grava, em cada `turn.recorded`, a **ficha** desse corpo no campo `response_shape`:
+
+| Campo | Valores |
+|---|---|
+| `content`, `content_bytes` | `ausente`, `nulo`, `vazio`, `so_brancos`, `texto`, `partes`, `outro`; bytes do texto (ou do valor JSON, nas formas que não são string) |
+| `reasoning`, `reasoning_form`, `reasoning_bytes`, `reasoning_signed` | o campo em que veio o raciocínio com conteúdo (`nenhum`, `reasoning_content`, `reasoning`, `thinking`, `thinking_blocks`, `reasoning_details`, `varios`; ou `vazio`, quando há um campo de raciocínio presente e vazio — `""`, `[]`, `{}` — e nenhum com conteúdo); a forma JSON (`string`, `objecto`, `lista`, `outro`); os bytes do valor JSON (uma string vazia conta 2, as aspas); `sim`/`nao` |
+| `refusal` | `ausente`, `nulo`, `texto` |
+| `psf_refusal`, `psf_reasoning` | a recusa e o raciocínio DENTRO de `message.provider_specific_fields`, nos vocabulários de `refusal` e de `reasoning`; ausentes quando a mensagem não traz esse objecto |
+| `tool_calls_n`, `tool_call_id`, `tool_call_id_max_bytes`, `arguments_form` | número; `nenhum`, `call_`, `functions_ponto`, `uuid`, `numerico`, `vazio`, `outro`; bytes; `string`, `objecto`, `outro` |
+| `legacy_function_call`, `choices_n`, `finish_reason_mapped`, `system_fingerprint` | `sim`/`nao`; número; `sim`/`nao`; `sim`/`nao` |
+| `reasoning_tokens` | inteiro; ausente quando o provider não o reporta |
+| `unknown_keys_n` | chaves de `message` que a sonda não conhece |
+| `shape_digest` | `sha256` da lista ordenada de (caminho da chave, tipo JSON) |
+
+Uma ficha que a sonda não consiga ler grava-se como `{"ilegivel":true}`. **Nenhum campo leva
+conteúdo**: só vocabulário fechado e inteiros. A ficha não entra na captura, não muda o replay e
+não decide nada. A métrica `aos_model_response_shape_total{content,reasoning,stop_reason}` conta os
+turnos ao vivo (342 séries no máximo).
+
+```bash
+# ligar (por decisão do dono, para uma ou duas séries)
+#   /opt/aos/.env:  AOS_MODEL_RESPONSE_SHAPE=observe      e recriar o serviço `aos`
+# o arranque declara:  [aos] forma da resposta do provider em medicao (EPIC-06/AOS-507) …
+# recuo: voltar a vazio (ou off) e recriar. Os eventos já gravados com a ficha continuam legíveis:
+# o campo é aditivo e um binário anterior ignora-o.
+```
+
+Só o nó é medido (as chamadas do `aos-orq` ao LiteLLM não), e só o caminho síncrono.
+
+**Como ler a ficha de um turno `empty_output`.** A classe «o texto veio no raciocínio» é
+`content` em `nulo`, `vazio` ou `so_brancos` com `reasoning` igual a um nome de campo (não
+`nenhum` nem `vazio`). O `shape_digest` não cobre o interior de `arguments`, do raciocínio, de
+`content` em partes nem de `provider_specific_fields`: desses campos entra só o tipo do valor.
+
+**O que o proxy faz antes de a resposta chegar ao nó** (medido com a imagem do proxy,
+`docs/reports/wire-live-aos508-2026-10-07.md`): copia `reasoning` para `reasoning_content`, e
+MOVE `refusal`, `thinking` e `reasoning_details` para `message.provider_specific_fields`. A ficha
+lê esses nomes também lá dentro, em dois campos que só existem quando a mensagem traz o objecto:
+`psf_refusal` (`ausente`, `nulo`, `texto`) e `psf_reasoning` (o vocabulário de `reasoning`). Uma
+recusa do modelo aparece por isso como `refusal="ausente"` e `psf_refusal="texto"`. O
+`finish_reason` chega já normalizado pelo proxy.
+
+**O `/metrics` com a medição desligada.** A família `aos_model_response_rejected_total{causa}`
+(AOS-509, cinco séries) existe sempre que o gateway de modelo está composto, com `off` também: é a
+única diferença do `/metrics` face à versão anterior que não depende de um interruptor.
 ## Orquestrador multi-nó (`aos-orq`)
 
 Desde o **AOS-403** o `aos-orq` vem **na mesma imagem** que o nó, atestado como subject próprio
