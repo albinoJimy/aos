@@ -71,7 +71,6 @@ type lancadorDeTeste struct {
 	lancamentos int
 	pedido      PedidoDeProxy
 	falso       *ProviderFalso
-	chaveMestra string
 }
 
 const chaveMestraDeTeste = "SENTINELA-CHAVE-MESTRA-DO-PROXY-4d2c"

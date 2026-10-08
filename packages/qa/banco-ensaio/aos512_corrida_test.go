@@ -317,7 +317,8 @@ func TestAOS512_Separadores_PlanoEIntercalacao(t *testing.T) {
 		}
 		return s.String()
 	}
-	if ordemDe(1) != ordemDe(1) || ordemDe(1) == ordemDe(2) {
+	primeira, repetida, outra := ordemDe(1), ordemDe(1), ordemDe(2)
+	if primeira != repetida || primeira == outra {
 		t.Errorf("a ordem tem de ser funcao da semente")
 	}
 }

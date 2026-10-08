@@ -1209,75 +1209,75 @@ dos separadores.
 
 **A bateria**
 
-- [ ] Casos T1 a T6 do desenho §5.1, com documentos e objectivos escritos por nós e versionados:
+- [x] Casos T1 a T6 do desenho §5.1, com documentos e objectivos escritos por nós e versionados:
       T1 nó de leitura com uma tool; T2 plano de dois nós, leitura e resumo; T3 nó sem tools
       com `plan_input`; T4 duas tool calls no mesmo turno; T5 tool negada e continuação; T6
       argumentos grandes. A bateria tem um digest, e o relatório leva-o.
-- [ ] Um teste percorre todos os documentos da bateria e falha se algum não tiver a marca de
+- [x] Um teste percorre todos os documentos da bateria e falha se algum não tiver a marca de
       documento sintético. Nenhum caso lê ficheiros fora da pasta da bateria.
-- [ ] As tools dos casos são falsas e locais (devolvem o documento de teste): nenhuma tem
+- [x] As tools dos casos são falsas e locais (devolvem o documento de teste): nenhuma tem
       efeito externo, e todas passam pelo Reference Monitor do nó de ensaio como em produção.
 
 **As taxas**, todas deterministas e em vocabulário fechado
 
-- [ ] **Chegada ao 2.º turno com tools**: o pedido que leva o `assistant` com tool calls e a
+- [x] **Chegada ao 2.º turno com tools**: o pedido que leva o `assistant` com tool calls e a
       mensagem `tool` foi aceite (código HTTP) e deu um turno — a medida do critério P3.
-- [ ] **Tool call em texto**: primeiras tentativas com `tool_calls_requested = 0` e motivo
+- [x] **Tool call em texto**: primeiras tentativas com `tool_calls_requested = 0` e motivo
       `stop` num caso que exige tool (o `contract_unmet_no_call` de hoje). Não se lê texto.
-- [ ] **Recusa do próprio objectivo**: medida pelo substituto determinista do desenho §5.1 — os
+- [x] **Recusa do próprio objectivo**: medida pelo substituto determinista do desenho §5.1 — os
       factos conhecidos do documento sintético (números e nomes exactos) estão ou não na
       saída. É verificação de factos sobre dados nossos; não há juiz probabilístico. O
       relatório regista só «presentes» ou «ausentes» por caso.
-- [ ] **Resposta vazia** (`empty_output`), cortada, erro do provider por código HTTP,
+- [x] **Resposta vazia** (`empty_output`), cortada, erro do provider por código HTTP,
       distribuição dos motivos de paragem, recuperado à 2.ª ou 3.ª tentativa.
-- [ ] **Forma das respostas**: a ficha do AOS-507, reutilizada sem cópia de código, agregada
+- [x] **Forma das respostas**: a ficha do AOS-507, reutilizada sem cópia de código, agregada
       por classe.
-- [ ] Cada taxa sai com numerador, denominador e intervalo de confiança a 95%.
+- [x] Cada taxa sai com numerador, denominador e intervalo de confiança a 95%.
 
 **Os três modos**
 
-- [ ] **Falsos (CI).** A bateria corre contra os providers falsos do AOS-508 com **taxas
+- [x] **Falsos (CI).** A bateria corre contra os providers falsos do AOS-508 com **taxas
       esperadas exactas**, presas por teste. Corre em cada PR, sem rede e sem Docker.
-- [ ] **Proxy real com falsos (Docker).** O mesmo, atrás da imagem de produção do proxy, no
+- [x] **Proxy real com falsos (Docker).** O mesmo, atrás da imagem de produção do proxy, no
       molde do `ci-wire-live`: opcional, salta sem Docker e redeclara o salto. Não entra no
       `run.sh` como gate obrigatório.
-- [ ] **Modelo real, pelo posto local.** Um nó de ensaio local, o proxy real e o modelo real.
+- [x] **Modelo real, pelo posto local.** Um nó de ensaio local, o proxy real e o modelo real.
       Só arranca com um caminho explícito para o ficheiro de chaves; sem ficheiro, ou com um
       campo obrigatório em falta ou ainda com o marcador do exemplo, recusa com exit próprio e
       uma mensagem que nomeia o **campo** e nunca o valor.
-- [ ] O modo com modelo real **nunca corre em CI**: recusa se a variável de ambiente de CI
+- [x] O modo com modelo real **nunca corre em CI**: recusa se a variável de ambiente de CI
       estiver definida, e não é chamado por nenhum script de `scripts/ci`.
 
 **Tectos e contador**
 
-- [ ] Os tectos vêm do ficheiro do dono (`TECTO_PEDIDOS_DIA_*`, `TECTO_USD_DIA_ANTHROPIC`). Um
+- [x] Os tectos vêm do ficheiro do dono (`TECTO_PEDIDOS_DIA_*`, `TECTO_USD_DIA_ANTHROPIC`). Um
       tecto ausente, zero ou ilegível **recusa o arranque** — não há tecto por omissão.
-- [ ] Contador **persistente**, por fornecedor e por dia (UTC), num ficheiro na pasta do dono,
+- [x] Contador **persistente**, por fornecedor e por dia (UTC), num ficheiro na pasta do dono,
       fora do repositório; sobrevive a reinícios. O pedido é contado **antes** de ser enviado.
       Um contador corrompido ou ilegível recusa o arranque (não recomeça do zero).
-- [ ] Atingido o tecto, a corrida **pára**: o pedido seguinte não sai, o relatório parcial é
+- [x] Atingido o tecto, a corrida **pára**: o pedido seguinte não sai, o relatório parcial é
       escrito com a causa `tecto_atingido`, e o exit é distinto de sucesso. Teste: tecto de 3
       e uma bateria de 5 ⇒ exactamente 3 pedidos no falso.
-- [ ] O tecto em USD usa os tokens devolvidos no `usage` e uma tabela de preços declarada na
+- [x] O tecto em USD usa os tokens devolvidos no `usage` e uma tabela de preços declarada na
       configuração do banco. **Sem preço declarado para o modelo, o arranque é recusado.** O
       gasto é estimado, e o relatório diz que é estimativa.
-- [ ] Antes de começar, a corrida calcula o número de pedidos que vai fazer e recusa se não
+- [x] Antes de começar, a corrida calcula o número de pedidos que vai fazer e recusa se não
       couber no que resta do tecto do dia.
 
 **Segredos e conteúdo**
 
-- [ ] Os valores do ficheiro de chaves não aparecem em nenhuma saída: relatório, logs, stdout,
+- [x] Os valores do ficheiro de chaves não aparecem em nenhuma saída: relatório, logs, stdout,
       stderr, mensagens de erro, argumentos de processo, nomes de ficheiro. Teste com
       sentinelas em todos os campos, incluindo no caminho de erro do proxy.
-- [ ] O relatório não contém texto de respostas nem de raciocínio: só contagens, fichas, os
+- [x] O relatório não contém texto de respostas nem de raciocínio: só contagens, fichas, os
       digests da bateria, da rota e da configuração, e o nome do modelo. Teste com sentinelas
       nas respostas do falso.
-- [ ] A região declarada pelo dono (`ANTHROPIC_REGIAO_DE_PROCESSAMENTO`) é copiada para o
+- [x] A região declarada pelo dono (`ANTHROPIC_REGIAO_DE_PROCESSAMENTO`) é copiada para o
       relatório como **declaração**, sem efeito no ensaio.
 
 **A experiência dos separadores** (primeira corrida obrigatória com modelo real)
 
-- [ ] Quatro braços sobre o caso T1, uma variável por eixo:
+- [x] Quatro braços sobre o caso T1, uma variável por eixo:
 
       | Braço | Separadores | Texto do protocolo |
       |---|---|---|
@@ -1288,13 +1288,13 @@ dos separadores.
 
       A contra B mede os sinais de menor e maior; A contra C, a linha de fim; D é a linha de
       base medida em produção (10%).
-- [ ] **As variantes B e C existem só no código do banco.** Não são versões de projecção
+- [x] **As variantes B e C existem só no código do banco.** Não são versões de projecção
       publicadas: `ParseNativeProjectionVersion` continua a recusá-las, nenhum interruptor do
       nó as selecciona, e um teste prova que o binário do nó não as contém.
-- [ ] Métrica: primeiras tentativas sem tool call. Amostra: **53 pedidos por braço, 212 no
+- [x] Métrica: primeiras tentativas sem tool call. Amostra: **53 pedidos por braço, 212 no
       total** (distingue 10% de 32% com 80% de potência a 5%; efeitos menores não se vêem —
       desenho §5.3). Cabe no tecto diário do Kimi.
-- [ ] Os braços correm **intercalados** (não um braço de cada vez), com a ordem fixada por uma
+- [x] Os braços correm **intercalados** (não um braço de cada vez), com a ordem fixada por uma
       semente registada no relatório.
 - [ ] O resultado fica registado na §5 do acompanhamento, por braço, com intervalo de
       confiança, e com a frase exacta do que **não** ficou provado. A experiência corre
@@ -1319,7 +1319,38 @@ dos separadores.
 
 ### Estado
 
-**ABERTO (2026-10-08).** Decisão D5 tomada; chaves e tectos fornecidos pelo dono. Sem código.
+**IMPLEMENTADO (2026-10-08); primeira corrida com modelo real e revisão adversarial por fazer.**
+
+- **Onde.** Módulo-folha `packages/qa/banco-ensaio` (o 50.º módulo; ninguém o importa), binário
+  `aos-ensaio` em `cmd/aos-ensaio`. Não é parte do nó nem da imagem de produção
+  (`TestAOS512_ONoNaoContemOBanco`). Como correr cada modo: `packages/qa/banco-ensaio/README.md`
+  e `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`.
+- **O que é medido é o que o nó enviaria.** Cada caso é um run do Agent Runtime, com as tools
+  pelo Reference Monitor, e o pedido sai por `modelgateway.NewProduction` com a projecção
+  nativa. Do banco são só um decorador da porta do gateway (variantes e observação) e o
+  transporte HTTP que conta o pedido antes de o enviar. O nó de ensaio é mínimo: sem PDP, WORM,
+  sandbox nem `aos-orq`; a allowlist e o emissor de identidade são efémeros, criados no arranque.
+- **Providers falsos.** O provider falso do banco serve, byte a byte, os corpos do AOS-508 nas
+  formas anormais (vazia com `reasoning_content`, cortada, texto sem factos) por uma porta
+  pública nova, `packages/platform/model-gateway/wiretest`, que só reexporta `internal/wirefake`.
+- **Taxas exactas.** Os números de `TestAOS512_Falso_BateriaInteira_TaxasExactas` (16 runs, 13
+  unidades, 27 pedidos) foram derivados à mão do roteiro antes de o teste correr.
+- **Modo proxy.** Gate opcional `scripts/ci/banco-ensaio-proxy.sh` (`make ci-banco-ensaio-proxy`),
+  fora do `run.sh`. Corrida local de 2026-10-08 com a imagem de produção do proxy: os mesmos
+  desfechos do modo falso, 25 pedidos com 200, um 400 e um 500, nenhum 401.
+- **Modo real.** Implementado e ensaiado só contra um fornecedor falso
+  (`TestAOS512_Real_*`). **Nenhum pedido a um fornecedor real saiu desta entrega.**
+- **O que os critérios dizem e o código faz de outra maneira, declarado.** (1) O tecto em
+  dólares é opcional — o ficheiro de exemplo do dono di-lo —: ausente, não há tecto em dólares;
+  presente e ilegível, a zero ou sem preço declarado, o arranque é recusado. O tecto de pedidos
+  é sempre obrigatório. (2) «Tecto de 3 e uma bateria de 5 ⇒ 3 pedidos» está provado ao nível
+  do nó de ensaio: pela corrida inteira não se chega lá, porque ela é recusada antes de começar
+  quando não cabe no tecto. A paragem a meio da corrida está provada com o tecto em dólares.
+  (3) O gasto em dólares só se conhece depois de cada resposta: o tecto pode ser ultrapassado
+  pelo custo de um pedido. (4) O canário de recusa do AOS-504 vive no `aos-orq` e não é
+  reutilizado: a medida é a dos factos, como este ticket manda.
+- **Por fazer.** A experiência dos separadores contra a rota de produção (212 pedidos), o registo
+  do resultado na §5 do acompanhamento, e a revisão adversarial independente.
 
 ---
 
@@ -1335,3 +1366,4 @@ dos separadores.
 | 1.5 | Setembro 2026 | AOS-405: a janela da política partida por hook no span `execute_tool` e no `/metrics` do nó, sem SLO | Equipa AOS |
 | 1.6 | Setembro 2026 | AOS-405 validado em produção (v0.1.21): nove hooks no `/metrics`, a revalidação com quase toda a política; soma por call ainda por verificar numa janela de uma mediação | Equipa AOS |
 | 1.7 | 2026-10-08 | +AOS-512 (fase A2 da fronteira runtime↔modelo): banco de ensaio mínimo — bateria de casos sintéticos contra uma rota, relatório de taxas sem texto das respostas, três modos (falsos, proxy real com falsos, modelo real pelo posto local com tectos diários do dono), e a experiência dos separadores do protocolo como primeira corrida | Equipa AOS |
+| 1.8 | 2026-10-08 | AOS-512 implementado: módulo `packages/qa/banco-ensaio`, três modos, tectos e contador, experiência dos separadores pronta; a primeira corrida com modelo real e a revisão adversarial ficam por fazer | Equipa AOS |
