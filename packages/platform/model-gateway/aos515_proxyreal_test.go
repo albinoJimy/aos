@@ -76,9 +76,25 @@ class H(BaseHTTPRequestHandler):
         else:
             self.responder({"id":"c1","object":"chat.completion","created":1700000000,"model":"modelo-falso","choices":[{"index":0,"message":{"role":"assistant","content":None,
                 "reasoning_content":"S-RACIOCINIO-0","thinking_blocks":BLOCOS,
-                "tool_calls":[{"id":"toolu_Exigente00","type":"function","thought_signature":"S-ASSINATURA-0/+=","function":{"name":"doc_read","arguments":"{\\"doc_id\\":\\"notas\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}})
+                "tool_calls":[{"id":"toolu_Exigente00","type":"function","thought_signature":"S-ASSINATURA-0/+=","function":{"name":"doc_read","arguments":'{"doc_id":"notas"}'}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}})
 ThreadingHTTPServer(("0.0.0.0", 8080), H).serve_forever()
 `
+
+// aos515ModeloAnthropic é o nome que a rota anthropic/ do ensaio pede ao falso. Tem de ser um
+// nome que a imagem fixada do proxy CONHEÇA como modelo com raciocínio: com um nome desconhecido
+// o proxy recusa o parâmetro `thinking` antes de contactar o provider (medido).
+const aos515ModeloAnthropic = "anthropic/claude-sonnet-4-5"
+
+// aos515Sonda é o que o proxy fez a um parâmetro do pedido numa rota de sonda.
+type aos515Sonda struct {
+	Rota    string `json:"rota"`
+	Enviado string `json:"enviado"`
+	Status  int    `json:"status"`
+	// ChegouAoProvider diz se o proxy chegou a contactar o provider.
+	ChegouAoProvider bool `json:"chegou_ao_provider"`
+	// Chegou é o valor cru de cada parâmetro tal como o provider o recebeu.
+	Chegou map[string]string `json:"chegou,omitempty"`
+}
 
 // aos515Medida é o que chegou ao provider no segundo turno de uma rota.
 type aos515Medida struct {
@@ -117,9 +133,20 @@ func TestAOS515_ProxyReal_OQueChegaAoProviderNoSegundoTurno(t *testing.T) {
 	})
 	e.dockerOuFalha("network", "create", e.rede)
 	// Duas rotas: os nomes pedidos são os da allowlist embebida; o que está por baixo é do ensaio.
+	// As duas rotas do gateway, e as rotas de SONDA dos parâmetros (pedidos crus, sem gateway):
+	// a mesma classe de modelo com e sem `allowed_openai_params`, e com `drop_params` por rota.
+	rota := func(nome, modelo, base, extra string) string {
+		return "  - model_name: " + nome + "\n    litellm_params:\n      model: " + modelo + "\n      api_key: sk-ensaio-provider\n      api_base: http://" + e.falsoA + ":8080" + base + "\n" + extra
+	}
+	const permitidos = "      allowed_openai_params: [\"thinking\", \"reasoning_effort\"]\n"
 	cfg := "model_list:\n" +
-		"  - model_name: gpt-4o\n    litellm_params:\n      model: openai/k3\n      api_key: sk-ensaio-provider\n      api_base: http://" + e.falsoA + ":8080/v1\n" +
-		"  - model_name: gpt-4o-mini\n    litellm_params:\n      model: anthropic/claude-ensaio\n      api_key: sk-ensaio-provider\n      api_base: http://" + e.falsoA + ":8080\n" +
+		rota("gpt-4o", "openai/k3", "/v1", permitidos) +
+		rota("gpt-4o-mini", aos515ModeloAnthropic, "", "") +
+		rota("sonda-openai", "openai/k3", "/v1", "") +
+		rota("sonda-openai-permitidos", "openai/k3", "/v1", permitidos) +
+		rota("sonda-openai-drop", "openai/k3", "/v1", "      drop_params: true\n") +
+		rota("sonda-anthropic", aos515ModeloAnthropic, "", "") +
+		rota("sonda-anthropic-desconhecido", "anthropic/claude-ensaio", "", "") +
 		"litellm_settings:\n  drop_params: false\n  telemetry: false\n  num_retries: 0\ngeneral_settings:\n  background_health_checks: false\n"
 	dir := t.TempDir()
 	for nome, conteudo := range map[string][]byte{"config.yaml": []byte(cfg), "pronto": []byte("1")} {
@@ -170,9 +197,41 @@ func TestAOS515_ProxyReal_OQueChegaAoProviderNoSegundoTurno(t *testing.T) {
 
 	const params = `,"params":{"thinking":{"type":"enabled","budget_tokens":2048},"max_tokens":16000},"devolver":"obrigatorio"`
 	perfis := map[string]string{
-		"gpt-4o":      `{"requested":"gpt-4o","expected_model":"openai/k3","wire_class":"openai-chat-completions","capabilities":["tools"]` + params + `}`,
-		"gpt-4o-mini": `{"requested":"gpt-4o-mini","expected_model":"anthropic/claude-ensaio","wire_class":"openai-chat-completions","capabilities":["tools"]` + params + `}`,
+		// Na rota openai/ o proxy fixado recusa `thinking` (medido pelas sondas): o perfil leva
+		// `reasoning_effort`, que passa com `allowed_openai_params`.
+		"gpt-4o":      `{"requested":"gpt-4o","expected_model":"openai/k3","wire_class":"openai-chat-completions","capabilities":["tools"],"params":{"reasoning_effort":"high","max_tokens":16000},"devolver":"obrigatorio"}`,
+		"gpt-4o-mini": `{"requested":"gpt-4o-mini","expected_model":"` + aos515ModeloAnthropic + `","wire_class":"openai-chat-completions","capabilities":["tools"]` + params + `}`,
 	}
+	// AS SONDAS DOS PARÂMETROS (AOS-513): um pedido cru por rota de sonda e por parâmetro; regista-se
+	// o status do proxy e o valor com que o parâmetro chegou ao provider (ausente se não chegou).
+	var sondas []aos515Sonda
+	for _, nome := range []string{"sonda-openai", "sonda-openai-permitidos", "sonda-openai-drop", "sonda-anthropic", "sonda-anthropic-desconhecido"} {
+		for _, param := range []string{`"thinking":{"type":"enabled","budget_tokens":2048},"max_tokens":16000`, `"thinking":{"type":"disabled"}`, `"reasoning_effort":"high"`, `"max_tokens":16000`} {
+			antes := len(recebidos())
+			req, _ := http.NewRequest(http.MethodPost, proxy+"/v1/chat/completions", strings.NewReader(`{"model":"`+nome+`","messages":[{"role":"user","content":"ola"}],`+param+`}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+aos505ChaveMestra)
+			resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
+			if err != nil {
+				t.Fatalf("sonda %s: %v", nome, err)
+			}
+			_ = resp.Body.Close()
+			sd := aos515Sonda{Rota: nome, Enviado: param, Status: resp.StatusCode, Chegou: map[string]string{}}
+			if novos := recebidos()[antes:]; len(novos) > 0 {
+				var topo map[string]json.RawMessage
+				_ = json.Unmarshal([]byte(novos[0].Corpo), &topo)
+				for _, k := range []string{"thinking", "reasoning_effort", "max_tokens", "max_completion_tokens", "output_config"} {
+					if v, tem := topo[k]; tem {
+						sd.Chegou[k] = string(v)
+					}
+				}
+				sd.ChegouAoProvider = true
+			}
+			sondas = append(sondas, sd)
+			t.Logf("AOS513_SONDA %s", func() string { b, _ := json.Marshal(sd); return string(b) }())
+		}
+	}
+
 	var medidas []aos515Medida
 	for _, rota := range []string{"gpt-4o", "gpt-4o-mini"} {
 		antes := len(recebidos())
@@ -253,7 +312,7 @@ func TestAOS515_ProxyReal_OQueChegaAoProviderNoSegundoTurno(t *testing.T) {
 	if medidas[0].Erro != "" || medidas[0].Pedidos != 2 {
 		t.Errorf("a rota openai/ nao completou os dois turnos atras do proxy: %+v", medidas[0])
 	}
-	raw, _ := json.Marshal(map[string]any{"imagem": aos505ImagemDoProxy, "medidas": medidas, "pass": !t.Failed()})
+	raw, _ := json.Marshal(map[string]any{"imagem": aos505ImagemDoProxy, "medidas": medidas, "sondas_de_parametros": sondas, "pass": !t.Failed()})
 	if destino := os.Getenv("AOS_WIRE_LIVE_OUT_515"); destino != "" {
 		if err := os.WriteFile(destino, raw, 0o644); err != nil {
 			t.Errorf("gravar as medidas em %s: %v", destino, err)
