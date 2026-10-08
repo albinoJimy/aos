@@ -1140,6 +1140,189 @@ verificar.
 
 ---
 
+## AOS-512 — Banco de ensaio mínimo: uma bateria de casos sintéticos corre contra uma rota e devolve taxas, e a primeira corrida testa os separadores do protocolo
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é uma ferramenta de medição fora do nó. O ADR-036 (a projecção do tail e as suas versões publicadas) e o ADR-039 (a nova tentativa) são citados só como o contrato que o banco mede e NÃO altera: as variantes de protocolo do banco não são versões de projecção. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals (código em `packages/qa`) |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider); antecipa da A3 o banco de qualificação |
+| Tipo | feat |
+| Prioridade | P1: sem ele, cada pergunta sobre o comportamento de um modelo custa uma série de uma hora na fila de produção, e a hipótese dos separadores não se consegue testar de forma isolada |
+| Estimativa | L |
+| Dependências | AOS-507 (a ficha da forma da resposta, reutilizada), AOS-508 (os providers falsos e o padrão do gate atrás do proxy), AOS-506 (a projecção 1.2.0, o braço de referência). Decisão D5 do dono (tomada) para o modo com modelo real |
+| Bloqueia | AOS-513 (a qualificação de um perfil de rota faz-se no banco), AOS-516 (a segunda família é ensaiada aqui antes de produção) |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §5 e §6, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2; decisão D5), `docs/reports/wire-live-aos508-2026-10-07.md`, `scripts/ci/wire-live.sh`, `scripts/ci/rota-live.sh`, `packages/platform/model-gateway/projection.go` |
+
+### Contexto
+
+- **Tudo o que se sabe do comportamento do modelo veio da fila de produção.** Uma série de 60
+  planos demora cerca de uma hora, gasta o orçamento de produção e não isola variáveis: a versão
+  da projecção e os interruptores são do nó inteiro (desenho §5.2).
+- **A hipótese dos separadores nunca foi testada isoladamente.** A projecção 1.1.0 trouxe ao
+  mesmo tempo a linha de fim de segmento e texto de protocolo novo, e a taxa de primeiras
+  tentativas sem tool call passou de 10% para 32% (medido, acompanhamento §5). Em 33 de 34
+  falhas da fase A1 o modelo escreveu a tool call como texto. O diagnóstico acordado com o
+  dono a 2026-10-08: os separadores `<kind>` e `</kind>` do protocolo são a causa provável —
+  **não testada isoladamente** —, e o texto do protocolo foi afinado para um só modelo.
+- **O sintoma não é só deste modelo.** A documentação da Anthropic descreve o mesmo defeito num
+  dos seus modelos com o raciocínio desligado: a resposta «writes a tool call into its text
+  instead of emitting a `tool_use` block»
+  (`https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting`, consultada
+  a 2026-10-08). É indício, não prova, de que o defeito depende da combinação de modelo,
+  raciocínio e texto do protocolo — o que só um banco por rota mede.
+- **A resposta vazia.** Nas capturas seladas dos 3 runs `empty_output` (tamanho do criptograma,
+  sem decifrar, 2026-10-08) há 5,3 a 5,8 bytes por token de saída, contra 3,5 a 4,8 nos resumos
+  bem-sucedidos: a resposta veio toda no raciocínio com `content` vazio. Hipótese fortemente
+  apoiada, não provada; a ficha do AOS-507 confirma-a em produção. O banco mede a mesma taxa
+  em minutos, com a mesma ficha.
+- **O que o proxy faz às formas** (`wire-live`): dá 500 a `content` em partes e a raciocínio em
+  objecto; `thinking_blocks` em lista, `reasoning_tokens` e as assinaturas sobrevivem;
+  `refusal`, `thinking` e `reasoning_details` vão para `message.provider_specific_fields`.
+
+### Decidido pelo dono
+
+1. **D5 (2026-10-07) — autorizado um posto de ensaio local com o modelo real**, com tecto
+   diário. Revê a recusa de medição directa de 2026-10-06, só para o posto.
+2. **Chaves e tectos (2026-10-08).** O dono preencheu um ficheiro **fora do repositório**
+   (`%USERPROFILE%\.aos-ensaio\chaves.env`). Campos: `KIMI_API_KEY`, `KIMI_API_BASE`,
+   `KIMI_MODELOS`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODELO`, `TECTO_PEDIDOS_DIA_KIMI`,
+   `TECTO_PEDIDOS_DIA_ANTHROPIC`, `TECTO_USD_DIA_ANTHROPIC`,
+   `ANTHROPIC_REGIAO_DE_PROCESSAMENTO`. Tectos escolhidos: **1000 pedidos por dia por
+   fornecedor** e **5 USD por dia na Anthropic**. O posto lê o ficheiro pelo caminho e nunca
+   imprime nem regista os valores.
+3. **Só documentos de teste.** Nenhum caso contém conteúdo de titular. O ensaio não toca em
+   produção.
+
+### Objectivo
+
+Uma ferramenta, fora do nó, que corre uma bateria fixa e versionada de casos sintéticos contra
+**uma rota** e devolve um relatório de **taxas** — só contagens e fichas, sem texto das
+respostas. Três modos, a mesma bateria: providers falsos (CI), proxy real com falsos (Docker), e
+modelo real pelo posto local. A primeira corrida obrigatória com modelo real é a experiência
+dos separadores.
+
+### Critérios de Aceitação
+
+**A bateria**
+
+- [ ] Casos T1 a T6 do desenho §5.1, com documentos e objectivos escritos por nós e versionados:
+      T1 nó de leitura com uma tool; T2 plano de dois nós, leitura e resumo; T3 nó sem tools
+      com `plan_input`; T4 duas tool calls no mesmo turno; T5 tool negada e continuação; T6
+      argumentos grandes. A bateria tem um digest, e o relatório leva-o.
+- [ ] Um teste percorre todos os documentos da bateria e falha se algum não tiver a marca de
+      documento sintético. Nenhum caso lê ficheiros fora da pasta da bateria.
+- [ ] As tools dos casos são falsas e locais (devolvem o documento de teste): nenhuma tem
+      efeito externo, e todas passam pelo Reference Monitor do nó de ensaio como em produção.
+
+**As taxas**, todas deterministas e em vocabulário fechado
+
+- [ ] **Chegada ao 2.º turno com tools**: o pedido que leva o `assistant` com tool calls e a
+      mensagem `tool` foi aceite (código HTTP) e deu um turno — a medida do critério P3.
+- [ ] **Tool call em texto**: primeiras tentativas com `tool_calls_requested = 0` e motivo
+      `stop` num caso que exige tool (o `contract_unmet_no_call` de hoje). Não se lê texto.
+- [ ] **Recusa do próprio objectivo**: medida pelo substituto determinista do desenho §5.1 — os
+      factos conhecidos do documento sintético (números e nomes exactos) estão ou não na
+      saída. É verificação de factos sobre dados nossos; não há juiz probabilístico. O
+      relatório regista só «presentes» ou «ausentes» por caso.
+- [ ] **Resposta vazia** (`empty_output`), cortada, erro do provider por código HTTP,
+      distribuição dos motivos de paragem, recuperado à 2.ª ou 3.ª tentativa.
+- [ ] **Forma das respostas**: a ficha do AOS-507, reutilizada sem cópia de código, agregada
+      por classe.
+- [ ] Cada taxa sai com numerador, denominador e intervalo de confiança a 95%.
+
+**Os três modos**
+
+- [ ] **Falsos (CI).** A bateria corre contra os providers falsos do AOS-508 com **taxas
+      esperadas exactas**, presas por teste. Corre em cada PR, sem rede e sem Docker.
+- [ ] **Proxy real com falsos (Docker).** O mesmo, atrás da imagem de produção do proxy, no
+      molde do `ci-wire-live`: opcional, salta sem Docker e redeclara o salto. Não entra no
+      `run.sh` como gate obrigatório.
+- [ ] **Modelo real, pelo posto local.** Um nó de ensaio local, o proxy real e o modelo real.
+      Só arranca com um caminho explícito para o ficheiro de chaves; sem ficheiro, ou com um
+      campo obrigatório em falta ou ainda com o marcador do exemplo, recusa com exit próprio e
+      uma mensagem que nomeia o **campo** e nunca o valor.
+- [ ] O modo com modelo real **nunca corre em CI**: recusa se a variável de ambiente de CI
+      estiver definida, e não é chamado por nenhum script de `scripts/ci`.
+
+**Tectos e contador**
+
+- [ ] Os tectos vêm do ficheiro do dono (`TECTO_PEDIDOS_DIA_*`, `TECTO_USD_DIA_ANTHROPIC`). Um
+      tecto ausente, zero ou ilegível **recusa o arranque** — não há tecto por omissão.
+- [ ] Contador **persistente**, por fornecedor e por dia (UTC), num ficheiro na pasta do dono,
+      fora do repositório; sobrevive a reinícios. O pedido é contado **antes** de ser enviado.
+      Um contador corrompido ou ilegível recusa o arranque (não recomeça do zero).
+- [ ] Atingido o tecto, a corrida **pára**: o pedido seguinte não sai, o relatório parcial é
+      escrito com a causa `tecto_atingido`, e o exit é distinto de sucesso. Teste: tecto de 3
+      e uma bateria de 5 ⇒ exactamente 3 pedidos no falso.
+- [ ] O tecto em USD usa os tokens devolvidos no `usage` e uma tabela de preços declarada na
+      configuração do banco. **Sem preço declarado para o modelo, o arranque é recusado.** O
+      gasto é estimado, e o relatório diz que é estimativa.
+- [ ] Antes de começar, a corrida calcula o número de pedidos que vai fazer e recusa se não
+      couber no que resta do tecto do dia.
+
+**Segredos e conteúdo**
+
+- [ ] Os valores do ficheiro de chaves não aparecem em nenhuma saída: relatório, logs, stdout,
+      stderr, mensagens de erro, argumentos de processo, nomes de ficheiro. Teste com
+      sentinelas em todos os campos, incluindo no caminho de erro do proxy.
+- [ ] O relatório não contém texto de respostas nem de raciocínio: só contagens, fichas, os
+      digests da bateria, da rota e da configuração, e o nome do modelo. Teste com sentinelas
+      nas respostas do falso.
+- [ ] A região declarada pelo dono (`ANTHROPIC_REGIAO_DE_PROCESSAMENTO`) é copiada para o
+      relatório como **declaração**, sem efeito no ensaio.
+
+**A experiência dos separadores** (primeira corrida obrigatória com modelo real)
+
+- [ ] Quatro braços sobre o caso T1, uma variável por eixo:
+
+      | Braço | Separadores | Texto do protocolo |
+      |---|---|---|
+      | A | `<kind>` … `</kind>` (os da 1.2.0) | 1.2.0 |
+      | B | sem `<` nem `>` (por exemplo `[[kind]]` … `[[/kind]]`) | 1.2.0, com a mesma frase a nomear o separador |
+      | C | `<kind>`, **sem linhas de fim** | 1.2.0 sem a frase da linha de fim |
+      | D (controlo) | os da projecção 1.0.0 | 1.0.0 |
+
+      A contra B mede os sinais de menor e maior; A contra C, a linha de fim; D é a linha de
+      base medida em produção (10%).
+- [ ] **As variantes B e C existem só no código do banco.** Não são versões de projecção
+      publicadas: `ParseNativeProjectionVersion` continua a recusá-las, nenhum interruptor do
+      nó as selecciona, e um teste prova que o binário do nó não as contém.
+- [ ] Métrica: primeiras tentativas sem tool call. Amostra: **53 pedidos por braço, 212 no
+      total** (distingue 10% de 32% com 80% de potência a 5%; efeitos menores não se vêem —
+      desenho §5.3). Cabe no tecto diário do Kimi.
+- [ ] Os braços correm **intercalados** (não um braço de cada vez), com a ordem fixada por uma
+      semente registada no relatório.
+- [ ] O resultado fica registado na §5 do acompanhamento, por braço, com intervalo de
+      confiança, e com a frase exacta do que **não** ficou provado. A experiência corre
+      primeiro contra a rota de produção (`kimi-for-coding`).
+
+**Geral**
+
+- [ ] Revisão adversarial independente antes da fusão, com mutações sobre o contador, o tecto
+      e as sentinelas.
+
+### Fora de âmbito
+
+- **Decidir sozinho.** O banco devolve taxas; não aceita nem recusa um modelo. O arnês de
+  qualificação com recusa automática é da fase A3.
+- **Publicar uma projecção nova.** Se um braço ganhar, a versão de projecção correspondente
+  abre-se em ticket próprio, com emenda ao ADR-036; este ticket só mede.
+- Qualquer corrida em produção ou contra dados de titular; `ssh`; a fila de produção.
+- Um juiz probabilístico para a recusa do objectivo ou para a tool call em texto.
+- Streaming e conteúdo multimodal.
+- Gerir as chaves: são do dono, ficam no ficheiro dele, e não passam a ser segredo do
+  repositório nem do Vault de produção.
+
+### Estado
+
+**ABERTO (2026-10-08).** Decisão D5 tomada; chaves e tectos fornecidos pelo dono. Sem código.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -1151,3 +1334,4 @@ verificar.
 | 1.4 | Setembro 2026 | AOS-404: os ~31 ms da v0.1.15 explicados por duas tool calls lentas em todos os troços num p95 de poucas amostras; residual da política acima de 15 ms nomeado | Equipa AOS |
 | 1.5 | Setembro 2026 | AOS-405: a janela da política partida por hook no span `execute_tool` e no `/metrics` do nó, sem SLO | Equipa AOS |
 | 1.6 | Setembro 2026 | AOS-405 validado em produção (v0.1.21): nove hooks no `/metrics`, a revalidação com quase toda a política; soma por call ainda por verificar numa janela de uma mediação | Equipa AOS |
+| 1.7 | 2026-10-08 | +AOS-512 (fase A2 da fronteira runtime↔modelo): banco de ensaio mínimo — bateria de casos sintéticos contra uma rota, relatório de taxas sem texto das respostas, três modos (falsos, proxy real com falsos, modelo real pelo posto local com tectos diários do dono), e a experiência dos separadores do protocolo como primeira corrida | Equipa AOS |

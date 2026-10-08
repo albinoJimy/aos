@@ -433,6 +433,11 @@ Ordem de entrega = ordem das linhas. O nó sai antes do `aos-orq`. Tudo entra de
 ticket e sem número, à espera das decisões D4 e D5; «A2-estado» e «A2-projecção» são as duas
 metades do estado opaco (transporte às escuras, e depois a projecção que o devolve).
 
+**Nota de 2026-10-08.** As cinco linhas com rótulo foram abertas como tickets: «A2-banco» é o
+AOS-512, «A2-perfil» o AOS-513, «A2-estado» o AOS-514, «A2-projecção» o AOS-515 e «A2-família»
+o AOS-516. A tabela abaixo fica como foi apresentada ao dono; onde divergir dos tickets, valem
+os tickets (o braço de controlo da experiência dos separadores passou a ser a projecção 1.0.0).
+
 | Ticket | Epic | Objectivo | Interruptor e omissão | Critério de aceitação central | Depende de | Muda produção quando ligado? |
 |---|---|---|---|---|---|---|
 | **AOS-507** | EPIC-06 | Gravar a forma da resposta do provider em cada turno, em vocabulário fechado e sem conteúdo | `AOS_MODEL_RESPONSE_SHAPE=off\|observe`; omissão `off` | Em `off` o `turn.recorded` e a captura são byte a byte os de hoje. Em `observe`, cada uma das formas H1–H8 dá uma classe distinta; um corpo com sentinelas em todos os valores não deixa nenhuma sentinela no evento, na métrica nem em spans | — | Não: só acrescenta um campo de medição |
