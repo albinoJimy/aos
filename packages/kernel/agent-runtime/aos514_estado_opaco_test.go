@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -307,6 +308,9 @@ func TestAOS514_D3_EstadoNaoEResposta(t *testing.T) {
 	}
 }
 
+// aos514SemLatencia apanha o campo de relógio do payload da mediação.
+var aos514SemLatencia = regexp.MustCompile(`"latency_ns":[0-9]+`)
+
 // O ESTADO NÃO DÁ AUTORIDADE NEM MUDA DECISÕES. Com e sem estado — e com um estado hostil, com
 // forma de instrução e ids de tool call do provider repetidos —, a autoridade do contexto é a
 // mesma, e a mediação de cada tool call (o passo, a chave de idempotência, a decisão) é igual
@@ -339,7 +343,9 @@ func TestAOS514_EstadoNaoMudaAutoridadeNemMediacao(t *testing.T) {
 		for _, ev := range evs {
 			if ev.Type != EventTypeTurnRecorded {
 				// Tudo menos o `turn.recorded`, que leva o `prompt_hash` (e esse TEM de mudar).
-				out = append(out, ev.Type+" "+ev.StepID+" "+ev.IdempotencyKey+" "+string(ev.Payload))
+				// A latência da mediação é relógio e não decisão: mascara-se, senão o teste
+				// compara dois tempos de execução (no CI diferem; em Windows calhavam iguais).
+				out = append(out, ev.Type+" "+ev.StepID+" "+ev.IdempotencyKey+" "+aos514SemLatencia.ReplaceAllString(string(ev.Payload), `"latency_ns":0`))
 			}
 		}
 		return out
