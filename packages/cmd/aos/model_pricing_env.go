@@ -215,6 +215,11 @@ func (c custoNaoDerivadoClient) respostasRecusadas() *contadoresDeRejeicao {
 	return rejeicoesDoCliente(c.inner)
 }
 
+// estadoDoProvider passa adiante os contadores do estado opaco do provider (AOS-514).
+func (c custoNaoDerivadoClient) estadoDoProvider() *contadoresDoEstado {
+	return estadoDoCliente(c.inner)
+}
+
 // modelPricingPostureBanner declara o MODO da contabilidade de custo do nó (AOS-259).
 // Só sai quando há gateway composto: sem gateway não há custo de modelo a declarar.
 func modelPricingPostureBanner(gatewayComposed bool, p modelPricingPosture) []string {

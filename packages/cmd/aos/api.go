@@ -2318,6 +2318,23 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-514 — TURNOS COM ESTADO OPACO DO PROVIDER, PELO RESULTADO DA CAPTURA. Só sai com a
+	// captura ligada: com `off` a família não existe, e o /metrics é o de antes. Três séries de
+	// vocabulário fechado, sempre presentes: o zero é um zero verdadeiro.
+	if h.node != nil && h.node.estadoDoProvider != nil {
+		c := h.node.estadoDoProvider
+		for i, r := range c.resultados {
+			labels := `{resultado="` + r + `"}`
+			if i == 0 {
+				g("aos_model_provider_state_total",
+					"Turnos de modelo ao vivo desde o arranque cuja resposta trouxe estado opaco do provider (raciocinio em qualquer nome, blocos assinados ou redigidos, id ou assinatura de tool call), pelo resultado da captura (AOS-514, ADR-040). capturado: o estado ficou selado na captura do turno. nao_devolvivel_tecto: excedia AOS_MODEL_PROVIDER_STATE_MAX_BYTES e NAO foi guardado nem truncado. nao_devolvivel_nonce: nao foi possivel obter o nonce do envelope e o estado nao foi guardado. Um turno sem estado na resposta nao conta, e um turno reproduzido de uma captura tambem nao. Nenhum byte do estado, e nada e reenviado ao provider.",
+					"counter", float64(c.lido(r)), labels)
+				continue
+			}
+			amostra("aos_model_provider_state_total", labels, float64(c.lido(r)))
+		}
+	}
+
 	// AOS-493 — RUNS TERMINADOS POR DESFECHO E RAZÃO DO VEREDICTO. Uma amostra por par dos dois
 	// vocabulários fechados, sempre presentes: o zero é um zero verdadeiro.
 	if h.svc != nil && h.svc.desfechos != nil {

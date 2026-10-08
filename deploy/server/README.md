@@ -1073,6 +1073,38 @@ antes de trocar de modelo. Recuo imediato: `AOS_MODEL_ROUTE_GOVERNANCE=observe` 
 
 ---
 
+### O estado opaco do provider — `AOS_MODEL_PROVIDER_STATE` (AOS-514, ADR-040)
+
+Um provider devolve com cada resposta material que o runtime não interpreta e que o mesmo
+provider pode exigir de volta no turno seguinte: o raciocínio (em vários nomes de campo), os
+blocos de raciocínio assinados e os redigidos, e o id que deu a cada tool call. Com
+`AOS_MODEL_PROVIDER_STATE=capture` o nó guarda-o, **sem o devolver a ninguém**:
+
+| O quê | Onde fica | Em claro? |
+|---|---|---|
+| Os bytes do estado, tal como vieram no corpo (sem re-serializar) | Na captura do turno (`replay.captured`), dentro do envelope cifrado por titular | Não. Em modo sensível fica só uma referência; com o apagamento do titular desaparece |
+| O digest do estado (`sha256` de um envelope com um nonce de 256 bits) | No tail do run, no rótulo `state_digest` do primeiro segmento do turno (layout `1.5.0`) | O rótulo vai no prompt em texto único; em projecção nativa não vai em mensagem nenhuma. Nunca em eventos |
+| Que o turno trouxe estado, e o tamanho | `response_shape` do `turn.recorded` (`provider_state`, `provider_state_bytes`), se a medição da forma estiver ligada; e `aos_model_provider_state_total{resultado}` | Sim: vocabulário fechado e inteiros |
+
+**Nada é reenviado ao provider** (isso é trabalho posterior, o AOS-515): os pedidos em projecção
+nativa são byte a byte os de antes. O raciocínio nunca é usado como resposta e não dá autoridade.
+
+`AOS_MODEL_PROVIDER_STATE_MAX_BYTES` (1024 a 262144; por omissão 65536) é o tecto do estado de um
+turno. Acima dele o estado **não é truncado** — um bloco assinado cortado é inválido —: não é
+guardado, o turno fica marcado como «não devolvível»
+(`aos_model_provider_state_total{resultado="nao_devolvivel_tecto"}`) e o run segue.
+
+```bash
+# ligar (por decisão do dono)
+#   /opt/aos/.env:  AOS_MODEL_PROVIDER_STATE=capture      e recriar o serviço `aos`
+# o arranque declara:  [aos] estado opaco do provider em captura (EPIC-06/AOS-514, ADR-040) …
+# recuo: voltar a vazio (ou off) e recriar. Os runs já começados em 1.5.0 continuam nela até ao fim
+# e reproduzem-se como foram gravados; NÃO se volta a uma imagem anterior a este ticket com runs
+# em 1.5.0 por acabar ou por auditar — ela não conhece o layout.
+```
+
+Só o nó captura (as chamadas do `aos-orq` ao LiteLLM não), e só o caminho síncrono.
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo
@@ -1090,6 +1122,7 @@ o nó grava, em cada `turn.recorded`, a **ficha** desse corpo no campo `response
 | `reasoning_tokens` | inteiro; ausente quando o provider não o reporta |
 | `unknown_keys_n` | chaves de `message` que a sonda não conhece |
 | `shape_digest` | `sha256` da lista ordenada de (caminho da chave, tipo JSON) |
+| `provider_state`, `provider_state_bytes` | só com `AOS_MODEL_PROVIDER_STATE=capture` e um turno com estado (AOS-514): `capturado` ou `nao_devolvivel`; bytes do envelope |
 
 Uma ficha que a sonda não consiga ler grava-se como `{"ilegivel":true}`. **Nenhum campo leva
 conteúdo**: só vocabulário fechado e inteiros. A ficha não entra na captura, não muda o replay e
