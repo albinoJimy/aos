@@ -92,6 +92,10 @@ type Digests struct {
 	Bateria      string `json:"bateria"`
 	Rota         string `json:"rota"`
 	Configuracao string `json:"configuracao"`
+	// Perfil é o digest do perfil de rota candidato com que a corrida foi feita (AOS-513). É a
+	// referência que o runbook da rota exige antes de o perfil ser assinado para produção.
+	// Ausente quando a corrida não levou perfil.
+	Perfil string `json:"perfil,omitempty"`
 }
 
 // Pedidos é a contabilidade de pedidos da corrida e do dia.
@@ -204,6 +208,7 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 		Digests: Digests{
 			Bateria: cfg.Bateria.Digest(), Rota: cfg.Rota.Digest,
 			Configuracao: digestDaConfiguracao(cfg.Plano, cfg.Extra),
+			Perfil:       cfg.PerfilDigest,
 		},
 		Plano:       cfg.Plano,
 		Taxas:       CalcularTaxas(obs),
@@ -437,6 +442,9 @@ func ResumoEmTexto(r *Relatorio) string {
 	}
 	fmt.Fprintf(&b, "protocolo: projeccao %s, layout %s\n", r.Protocolo.Projeccao, r.Protocolo.Layout)
 	fmt.Fprintf(&b, "digests: bateria=%s\n         rota=%s\n         configuracao=%s\n", r.Digests.Bateria, r.Digests.Rota, r.Digests.Configuracao)
+	if r.Digests.Perfil != "" {
+		fmt.Fprintf(&b, "         perfil candidato=%s\n", r.Digests.Perfil)
+	}
 	fmt.Fprintf(&b, "plano: %d amostras por braco, semente %d, ate %d tentativas, ate %d turnos, casos %s\n",
 		r.Plano.Amostras, r.Plano.Semente, r.Plano.Tentativas, r.Plano.MaxTurnos, strings.Join(r.Plano.Casos, ","))
 	fmt.Fprintf(&b, "pedidos: previstos (maximo) %d, enviados %d", r.Pedidos.PrevistosMax, r.Pedidos.Enviados)

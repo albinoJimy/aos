@@ -104,6 +104,25 @@ type ResumeRecord struct {
 	// declaração serializa sem os campos.
 	OutputFromTool      string                           `json:"OutputFromTool,omitempty"`
 	OutputSourceBinding agentruntime.OutputSourceBinding `json:"OutputSourceBinding,omitempty"`
+	// ProjectionVersion é a versão da projecção nativa em que o run está fixado (AOS-513,
+	// [agentruntime.Goal.ProjectionVersion]) — a que o perfil da rota declarava quando o run
+	// começou. Tem de sobreviver à retoma pela razão do layout: a projecção de um run não muda
+	// a meio. AUSENTE ⇒ o run começou SEM versão fixada, e continua sem ela: a retoma não lhe
+	// fixa a que o perfil declare agora ([ResumeRecord.GoalWith] devolve
+	// [agentruntime.ProjectionVersionUnpinned]). `omitempty`: um run sem versão fixada — todos,
+	// enquanto nenhum perfil declarar uma — serializa os bytes de sempre.
+	ProjectionVersion string `json:"ProjectionVersion,omitempty"`
+}
+
+// ProjeccaoDoRun devolve o [agentruntime.Goal.ProjectionVersion] com que o run do registo é
+// re-hospedado: a versão gravada, ou [agentruntime.ProjectionVersionUnpinned] quando o run
+// começou sem nenhuma. Nunca vazio — um Goal de retoma com a versão vazia seria lido como um
+// run novo, e ficaria fixado na versão que o perfil da rota declare agora.
+func (r ResumeRecord) ProjeccaoDoRun() string {
+	if r.ProjectionVersion == "" {
+		return agentruntime.ProjectionVersionUnpinned
+	}
+	return r.ProjectionVersion
 }
 
 // ResumeRecordLegacyAssemblyVersion é o layout de um registo de retoma que NÃO traz
@@ -159,6 +178,8 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		// AOS-497: a origem declarada da saída e o vínculo com que o run começou.
 		OutputFromTool:      r.OutputFromTool,
 		OutputSourceBinding: r.OutputSourceBinding,
+		// AOS-513: a versão da projecção em que o run começou, ou a marca de que não fixou nenhuma.
+		ProjectionVersion: r.ProjeccaoDoRun(),
 	}
 }
 

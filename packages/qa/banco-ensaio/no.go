@@ -68,6 +68,28 @@ type CfgDoNo struct {
 	Timeout time.Duration
 	// Transporte é o transporte HTTP de base. nil ⇒ [http.DefaultTransport].
 	Transporte http.RoundTripper
+	// Perfil é um PERFIL DE ROTA CANDIDATO (AOS-513): o que se quer qualificar antes de o dono o
+	// assinar para produção — parâmetros do pedido, versão da projecção, classe de estado. O seu
+	// nome pedido tem de ser [AliasDaRota]. nil ⇒ a rota de ensaio não tem perfil, como sempre.
+	// Não precisa de existir na tabela de perfis do nó: é esse o ponto.
+	Perfil *modelgateway.RouteProfile
+}
+
+// ErrPerfilDoEnsaio — o perfil candidato não serve o nó de ensaio.
+var ErrPerfilDoEnsaio = errors.New("banco-ensaio: o perfil candidato tem de ter como nome pedido o alias da rota de ensaio (" + AliasDaRota + ")")
+
+// LerPerfilCandidato lê um perfil de rota candidato de JSON, pela leitura fechada do gateway
+// ([modelgateway.ParseRouteProfile]: uma chave ou um valor fora do conjunto recusa), e confere
+// que é o da rota de ensaio.
+func LerPerfilCandidato(doc []byte) (*modelgateway.RouteProfile, error) {
+	p, err := modelgateway.ParseRouteProfile(doc)
+	if err != nil {
+		return nil, err
+	}
+	if p.Requested != AliasDaRota {
+		return nil, ErrPerfilDoEnsaio
+	}
+	return &p, nil
 }
 
 // NoDeEnsaio é o nó de ensaio montado.
@@ -186,8 +208,23 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		return nil, fmt.Errorf("banco-ensaio: allowlist do no de ensaio: %w", err)
 	}
 
+	// O perfil candidato (AOS-513): o MESMO conjunto para o gateway (os parâmetros do pedido) e
+	// para o adaptador do runtime (a versão da projecção).
+	var candidatos []modelgateway.RouteProfile
+	if cfg.Perfil != nil {
+		if cfg.Perfil.Requested != AliasDaRota {
+			return nil, ErrPerfilDoEnsaio
+		}
+		candidatos = append(candidatos, *cfg.Perfil)
+	}
+	perfis, err := modelgateway.NewRouteProfileSet(candidatos...)
+	if err != nil {
+		return nil, fmt.Errorf("banco-ensaio: perfil candidato: %w", err)
+	}
+
 	cliente := &http.Client{Timeout: timeout, Transport: &transporteContado{base: transporte, contador: cfg.Contador}}
 	gw, err := modelgateway.NewProduction(ctx, modelgateway.ProductionConfig{
+		RouteProfiles: candidatos,
 		Provider:      "openai",
 		BaseURL:       base,
 		HTTPClient:    cliente,
@@ -236,6 +273,8 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 			modelgateway.WithRegionBoard(regiaoDoEnsaio, boardDoEnsaio),
 			modelgateway.WithProjection(modelgateway.ProjectionNative),
 			modelgateway.WithProjectionVersion(VersaoPublicadaDoBraco(b)),
+			// AOS-513: a versão que o perfil candidato declare prevalece sobre a do braço.
+			modelgateway.WithRouteProfileSet(perfis),
 			modelgateway.WithToolOfferFromContext(func(ctx context.Context) (func(string) bool, bool) {
 				nomes, _ := ctx.Value(chaveDasToolsDoRun).(map[string]bool)
 				return func(nome string) bool { return nomes[nome] }, true

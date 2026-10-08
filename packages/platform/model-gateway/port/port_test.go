@@ -98,11 +98,12 @@ func TestChatRequest_Normalize(t *testing.T) {
 // TestVersion_ValorFixado fixa o LITERAL da versão do contrato: 1.1.0 desde que o StepID entrou
 // (campo aditivo, MINOR — AOS-394); 1.2.0 desde que a mensagem transporta o raciocínio
 // (`reasoning_content`, campo aditivo — AOS-490); 1.3.0 desde que o contrato nomeia os valores
-// conhecidos de `finish_reason` (constantes Finish*, aditivas — AOS-491). O teste de formato sozinho compara a constante consigo
+// conhecidos de `finish_reason` (constantes Finish*, aditivas — AOS-491); 1.8.0 desde que o pedido leva os parâmetros de
+// raciocínio que o perfil da rota declara e a resposta diz quais foram enviados (AOS-513). O teste de formato sozinho compara a constante consigo
 // própria e deixava a versão mudar em silêncio, enquanto a prosa de tecnica/06 §5 a afirma.
 func TestVersion_ValorFixado(t *testing.T) {
 	t.Parallel()
-	const quer = "1.7.0"
+	const quer = "1.8.0"
 	if port.Version != quer {
 		t.Fatalf("port.Version = %q, quer %q — se a mudança é deliberada, actualize tecnica/06 §5 e este teste", port.Version, quer)
 	}

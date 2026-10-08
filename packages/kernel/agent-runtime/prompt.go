@@ -167,6 +167,12 @@ type PromptView struct {
 	// fronteira — um Content pode conter linhas que imitam delimitadores, e um `name` é
 	// texto do modelo.
 	Tail []TailSegment
+
+	// ProjectionVersion é a versão da projecção em que o RUN está fixado (AOS-513,
+	// [Goal.ProjectionVersion]), para quem projecta o prompt noutra forma. Vazia ⇒ o run não
+	// fixou nenhuma, e quem projecta usa a sua. Não é do assembler: o loop escreve-a na vista
+	// depois de a montar. Não entra em Materialized nem no `prompt_hash`.
+	ProjectionVersion string
 }
 
 // PromptAssembler monta prompts cache-estáveis (ADR-009). É construído uma vez

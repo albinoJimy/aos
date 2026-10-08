@@ -31,6 +31,10 @@ type wireChatRequest struct {
 	Temperature *float64  `json:"temperature,omitempty"`
 	Seed        *int64    `json:"seed,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
+	// AOS-513 — os parâmetros de raciocínio que o perfil da rota declara. `omitempty`, e no FIM
+	// da struct: um pedido sem eles serializa os bytes de sempre.
+	Thinking        *ThinkingParam `json:"thinking,omitempty"`
+	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 }
 
 // Normalize valida e canoniza um [ChatRequest] de forma DETERMINISTA: os mesmos
@@ -93,6 +97,9 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 		Temperature: r.Temperature,
 		Seed:        r.Seed,
 		MaxTokens:   r.MaxTokens,
+		// AOS-513 — só o que o gateway lá pôs a partir do perfil da rota.
+		Thinking:        r.Thinking,
+		ReasoningEffort: r.ReasoningEffort,
 	}
 	return json.Marshal(w)
 }

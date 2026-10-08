@@ -93,6 +93,20 @@ type Goal struct {
 	// do que os gravados. Versão desconhecida ⇒ o run não arranca
 	// ([ErrUnknownAssemblyVersion]).
 	AssemblyVersion string
+	// ProjectionVersion FIXA a versão da projecção nativa deste run (AOS-513), quando o perfil
+	// da rota do run declara uma. Vazia — a omissão, e o caso de todos os runs enquanto nenhum
+	// perfil a declarar — ⇒ quem projecta usa a versão que tem configurada, como sempre.
+	//
+	// Quem a preenche é quem HOSPEDA o run: num run novo, a versão do perfil da rota; numa
+	// retoma, a do registo de retoma — para o run continuar na versão em que começou, mesmo que
+	// a configuração tenha mudado entretanto ou o pedido vá, num failover, para outra rota. O
+	// runtime só a transporta ([PromptView.ProjectionVersion]): não conhece as versões
+	// publicadas, e um valor que não tenha a forma `N.N.N` não é transportado.
+	//
+	// [ProjectionVersionUnpinned] é o valor de um run RE-HOSPEDADO que começou sem versão
+	// fixada: diz a quem hospeda que não a fixe agora, a meio do run. Não tem a forma `N.N.N`,
+	// pelo que a vista vai sem versão, como em todos os turnos anteriores desse run.
+	ProjectionVersion string
 	// CompletionRequires é o CONTRATO DE CONCLUSÃO do run (AOS-493, ADR-037): os nomes (o
 	// `ToolID`) das tools de que a conclusão depende. O run só conclui cumprido com pelo menos
 	// uma chamada EFECTIVA de cada uma — despachada, sem recusa e sem erro de tool. Vazio ⇒ sem
@@ -577,6 +591,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			return res, fmt.Errorf("%w: a janela montou o turno %d no layout %q e o run esta fixado em %q",
 				ErrWindow, turn, view.AssemblyVersion, lay.version)
 		}
+		// A VERSÃO DA PROJECÇÃO EM QUE O RUN ESTÁ FIXADO (AOS-513) segue na vista para quem faz o
+		// pedido. Vazia na omissão: a vista é a de sempre.
+		view.ProjectionVersion = NormalizeProjectionVersion(goal.ProjectionVersion)
 		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
 		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
 		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
@@ -643,6 +660,8 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// é nil ou uma das três formas de [ProviderState.Normalizado] — a mesma que a captura
 		// devolve. O loop não o lê: entrega-o à captura e refere-o no tail por digest.
 		resp.State = resp.State.Normalizado()
+		// OS PARÂMETROS DO PEDIDO ENTRAM JÁ FECHADOS (AOS-513), pela razão do motivo de paragem.
+		resp.RequestParams = NormalizeRequestParams(resp.RequestParams)
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseModelCalled); err != nil {
 			return res, err
 		}
@@ -984,8 +1003,10 @@ func (rt *Runtime) recordTurn(ctx context.Context, goal Goal, systemHash, assemb
 		Model: ModelManifest{
 			ModelID:       goal.Model.ModelID,
 			ServedModelID: resp.Model,
-			Params:        goal.Model.Params,
-			Seed:          goal.Model.Seed,
+			// AOS-513: os parâmetros do Goal e, por cima, os que o perfil da rota enviou no
+			// pedido. Sem estes, o mapa do Goal tal como está.
+			Params: paramsDoTurno(goal.Model.Params, resp.RequestParams),
+			Seed:   goal.Model.Seed,
 			// AOS-505: o digest do perfil da rota, declarado pelo cliente. Vazio com a
 			// governação da rota desligada, e o manifesto fica com os bytes de antes.
 			RouteProfileDigest: resp.RouteProfileDigest,

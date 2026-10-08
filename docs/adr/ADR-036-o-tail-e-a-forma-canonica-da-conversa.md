@@ -8,7 +8,8 @@
   1.1.0), AOS-505 (emenda de 2026-10-07: §2.8, a rota que serviu o turno), AOS-506 (emenda de
   2026-10-07 ao §2.4: projecção nativa 1.2.0, e o aviso de nova tentativa como segmento da
   semente), AOS-514 (emenda de 2026-10-08 aos §2.3 e §2.7, feita pelo ADR-040: o layout 1.5.0
-  e o estado opaco do provider)
+  e o estado opaco do provider), AOS-513 (emenda de 2026-10-08 ao §2.8: o que o perfil da rota
+  passa a poder declarar)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -449,6 +450,59 @@ suas chamadas passam pelo mesmo proxy sem serem comparadas — em nenhum dos mod
 incluído. `enforce` no nó não impede que um plano seja decomposto por outro modelo. É um limite
 escrito e um resíduo nomeado, não uma propriedade provada. O streaming e os embeddings também não
 são comparados.
+
+#### O que o perfil passa a poder declarar (AOS-513, emenda de 2026-10-08)
+
+O perfil da rota ganha três campos, **todos opcionais**. Um perfil que não declare nenhum — os
+quatro da tabela de hoje — dá o pedido, o digest, o manifesto, a captura e o `/metrics` de antes,
+byte a byte.
+
+| Campo | O que declara | Vocabulário |
+|---|---|---|
+| `params` | Os parâmetros a enviar no pedido a essa rota | Conjunto **fechado e com tipo**: `thinking` (`type` em `enabled`, `disabled` ou `adaptive`; `budget_tokens` só com `enabled`, de 1024 a 1 048 576), `reasoning_effort` (`none`, `minimal`, `low`, `medium`, `high`) e `max_tokens` (de 1 a 1 048 576). Não há parâmetros livres: um nome fora do conjunto não tem onde ser escrito |
+| `projection_version` | A versão da projecção nativa (§2.4) a usar nos runs dessa rota | Uma versão **publicada**. O perfil escolhe uma versão; não transporta texto de protocolo |
+| `devolver` | A classe de estado: se o estado opaco de um turno (ADR-040) se devolve ao provider | `nunca` (a omissão; é também a classe de uma rota que o proíbe), `opcional`, `obrigatorio`. Quem a consome é a projecção 1.3.0 (AOS-515) |
+
+**De onde vêm, e de onde não vêm.** Só do perfil. O perfil continua a viver **em código**, na
+tabela do gateway: muda com uma imagem nova do nó, e é essa a «configuração assinada». O nó não lê
+perfis de ficheiro, de ambiente, de um plano, de um manifesto de run, do corpo de um pedido HTTP,
+do conteúdo de um run nem da resposta de um modelo. Os campos de raciocínio do pedido da porta não
+se lêem de JSON, e o gateway **sobrepõe-nos** em cada pedido com os do perfil — o que um chamador
+lá tenha posto é deitado fora.
+
+**Decide-se depois do roteamento.** Os parâmetros são os do perfil da rota **a que o pedido vai**
+(o nome resolvido), e não os da rota que o chamador pediu: num failover, a segunda rota recebe os
+seus parâmetros, ou nenhum.
+
+**O perfil candidato.** Quem compõe um gateway fora do nó — o banco de ensaio (AOS-512), que
+qualifica um perfil **antes** de ele entrar na tabela — pode acrescentar perfis candidatos, lidos
+por uma leitura fechada (uma chave fora do conjunto, um valor de tipo errado ou um texto com forma
+de credencial recusam, e a mensagem não repete o valor). Um candidato passa pela validação da
+tabela e substitui a entrada com o mesmo nome pedido. O relatório do banco leva o digest do perfil.
+
+**O digest.** Cobre os campos novos **quando declaram alguma coisa**: `params` sem nenhum valor e
+`devolver` em `nunca` são a omissão, e a omissão não muda o digest. Mudar um parâmetro muda-o.
+
+**No registo do turno.** Os parâmetros enviados ficam em `manifest.model.params`, por cima dos do
+Goal, em chaves e valores de vocabulário fechado (`thinking` é o modo, com `:` e o orçamento quando
+o tem). O runtime fecha a forma à entrada, como faz ao motivo de paragem.
+
+**A versão fica presa ao run.** Um run novo numa rota cujo perfil declara versão fica **fixado**
+nela: o nó escreve-a no Goal e no registo de retoma, e o runtime leva-a na vista de cada turno. A
+ordem, em cada turno: a versão em que o run está fixado; senão a do perfil da rota do run; senão o
+interruptor do nó (`AOS_MODEL_PROJECTION_VERSION`), que passa a ser a omissão. O perfil lido é o da
+rota **do run**, e não o da rota a que o gateway mande o pedido: a projecção de um run não muda num
+failover. Um run que começou sem versão fixada continua sem ela depois de uma retoma, mesmo que o
+perfil entretanto declare uma. Um run fixado numa versão que o binário não conhece falha fechado,
+sem pedido.
+
+**Um 4xx num turno com parâmetros tem nome, e o nó não o contorna.** Medido atrás da imagem de
+produção do proxy: o que o perfil manda chega ao provider (o proxy reencaminha), e um parâmetro que
+o provider não aceite dá 4xx em todos os turnos da rota. Cada um conta em
+`aos_model_route_params_rejected_total{rota,codigo}` — a rota é uma das que têm parâmetros, o
+código é de um conjunto fechado, e nenhum byte do corpo do erro sai do gateway. O nó **nunca**
+retira o parâmetro para repetir o pedido sozinho. Por isso um perfil com parâmetros, ou com versão
+própria, só entra na tabela depois de uma corrida do banco com esse perfil.
 
 ## 3. Alternativas rejeitadas
 

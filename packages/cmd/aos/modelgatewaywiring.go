@@ -277,6 +277,10 @@ func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKe
 		// ESTADO OPACO DO PROVIDER (AOS-514): a sonda que tira do corpo cru o que o provider pode
 		// exigir de volta. Vazio ⇒ desligada.
 		ProviderState: estado,
+		// PARÂMETROS DO PERFIL DA ROTA (AOS-513): um 4xx do provider num turno em que o perfil
+		// enviou parâmetros conta por rota e código. O nó usa só a tabela de perfis em código —
+		// não passa perfis candidatos.
+		RouteParamsObserver: parametrosRecusados.observar,
 	}
 	// EGRESS (AOS-366) — deixar o HTTPClient nil é o que ARMA o caminho endurecido do gateway:
 	// `newProviderAdapter` só corre `validateEgressURL` (https + allowlist) e constrói o transporte

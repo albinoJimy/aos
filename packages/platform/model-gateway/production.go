@@ -198,6 +198,15 @@ type ProductionConfig struct {
 	// cada resposta de chat síncrona leva o estado tirado do corpo cru. Um valor fora do
 	// vocabulário ⇒ [ErrBadProviderState], sem gateway.
 	ProviderState string
+	// RouteProfiles são perfis de rota CANDIDATOS (AOS-513): acrescentam-se à tabela em código e
+	// substituem a entrada com o mesmo nome pedido ([NewRouteProfileSet]). Vazio — a omissão, e
+	// o que o nó usa — ⇒ só a tabela em código. Quem os fornece é quem qualifica um perfil antes
+	// de ele entrar na tabela (o banco de ensaio). Um perfil inválido — na tabela ou candidato —
+	// ⇒ [ErrBadRouteProfile], sem gateway.
+	RouteProfiles []RouteProfile
+	// RouteParamsObserver conta os 4xx do provider nos turnos em que o perfil da rota enviou
+	// parâmetros (AOS-513). Opcional.
+	RouteParamsObserver func(RouteParamsRejection)
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -251,6 +260,13 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 		return nil, sterr
 	}
 	cfg.ProviderState = stateMode
+	// AOS-513: a tabela dos perfis e os candidatos são validados ANTES de qualquer efeito (a
+	// activação da allowlist sela no audit): um perfil com um parâmetro fora do conjunto fechado
+	// não compõe gateway.
+	perfis, perr := NewRouteProfileSet(cfg.RouteProfiles...)
+	if perr != nil {
+		return nil, perr
+	}
 	clock := cfg.Clock
 	if clock == nil {
 		clock = time.Now
@@ -348,6 +364,8 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	// AOS-505: a governação da rota, com o recorder de governação como selador das variâncias.
 	// Desligada ⇒ nil, e nada muda.
 	gw.route = newRouteGovernor(cfg.Route, govRec)
+	// AOS-513: os perfis com que o gateway trabalha e quem conta os 4xx dos turnos com parâmetros.
+	gw.perfis, gw.paramsObs = perfis, cfg.RouteParamsObserver
 	return gw, nil
 }
 

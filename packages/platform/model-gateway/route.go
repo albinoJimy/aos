@@ -107,16 +107,42 @@ type RouteProfile struct {
 	WireClass string `json:"wire_class"`
 	// Capabilities são as capacidades declaradas da rota, por ordem alfabética.
 	Capabilities []string `json:"capabilities"`
+
+	// OS TRÊS CAMPOS ABAIXO SÃO OPCIONAIS (AOS-513). Um perfil que não declare nenhum dá o
+	// pedido, o digest e o manifesto de sempre, byte a byte. Ver route_profile.go.
+
+	// Params são os parâmetros a enviar no pedido a esta rota, de um conjunto FECHADO e com
+	// tipo ([port.RequestParams]). nil ⇒ nenhum.
+	Params *port.RequestParams `json:"params,omitempty"`
+	// ProjectionVersion é a versão PUBLICADA da projecção nativa a usar nos runs desta rota.
+	// Vazia ⇒ vale o interruptor do nó. O perfil escolhe uma versão; não transporta texto.
+	ProjectionVersion string `json:"projection_version,omitempty"`
+	// StateReturn é a CLASSE DE ESTADO da rota — se o estado opaco de um turno (ADR-040) se
+	// devolve ao provider: [StateReturnNever] (a omissão), [StateReturnOptional] ou
+	// [StateReturnRequired].
+	StateReturn string `json:"devolver,omitempty"`
 }
 
-// Digest é o digest do perfil: `sha256:` sobre o JSON canónico dos quatro campos, com as
+// Digest é o digest do perfil: `sha256:` sobre o JSON canónico dos seus campos, com as
 // capacidades ordenadas. É o que fica no manifesto de cada turno comparado.
+//
+// Os campos opcionais do AOS-513 só entram quando DECLARAM alguma coisa: parâmetros sem nenhum
+// valor e a classe `nunca` são a omissão, e a omissão não muda o digest. Um perfil de antes do
+// AOS-513 tem o digest de antes.
 func (p RouteProfile) Digest() string {
 	caps := append([]string(nil), p.Capabilities...)
 	sort.Strings(caps)
-	canon, err := json.Marshal(RouteProfile{Requested: p.Requested, ExpectedModel: p.ExpectedModel, WireClass: p.WireClass, Capabilities: caps})
+	canonico := RouteProfile{Requested: p.Requested, ExpectedModel: p.ExpectedModel, WireClass: p.WireClass, Capabilities: caps,
+		ProjectionVersion: p.ProjectionVersion}
+	if p.Params != nil && !p.Params.IsZero() {
+		canonico.Params = p.Params
+	}
+	if p.StateReturn != StateReturnNever {
+		canonico.StateReturn = p.StateReturn
+	}
+	canon, err := json.Marshal(canonico)
 	if err != nil {
-		// Quatro campos de texto: o Marshal não falha. Um digest vazio seria lido como «sem
+		// Campos de texto e inteiros: o Marshal não falha. Um digest vazio seria lido como «sem
 		// perfil», pelo que se devolve um valor que não casa com nenhum.
 		return "sha256:invalido"
 	}
@@ -342,7 +368,7 @@ func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *p
 	if requested == "" {
 		requested = ex.RequestedModel
 	}
-	profile, ok := RouteProfileFor(requested)
+	profile, ok := g.perfis.For(requested)
 	served := port.SanitizeServedModel(declared.Model)
 	if served != declared.Model {
 		declared.ModelInexact = true

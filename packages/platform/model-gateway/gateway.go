@@ -189,6 +189,12 @@ type Gateway struct {
 	// servido com o perfil do nome pedido. nil ⇒ desligada: nada do que o adaptador leu dos
 	// cabeçalhos sai do gateway. Ver route.go.
 	route *routeGovernor
+	// --- AOS-513: o que o perfil da rota declara ---
+	// perfis é o conjunto de perfis de rota com que este gateway trabalha. nil ⇒ a tabela em
+	// código. paramsObs conta os 4xx dos turnos em que o perfil enviou parâmetros. Ver
+	// route_profile.go.
+	perfis    *RouteProfileSet
+	paramsObs func(RouteParamsRejection)
 }
 
 // Compile-time: o Gateway satisfaz a porta compatível OpenAI.
@@ -364,11 +370,17 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		}
 		g.annotateAllowlist(span, ex)
 		req.Model = ex.ResolvedModel
+		// AOS-513: os parâmetros do pedido são os do perfil da ROTA A QUE O PEDIDO VAI — decide-se
+		// aqui, depois do roteamento, e não em quem fez o pedido. Sem perfil que os declare o
+		// pedido sai como saía.
+		enviados := g.aplicarPerfilDaRota(&req)
 		r, err := g.adapter.Chat(ctx, req, cred)
 		if err != nil {
+			g.contarRecusaDeParametros(req.Model, enviados, err)
 			return err
 		}
 		resp = r
+		resp.SentParams = enviados
 		// AOS-505: o que o proxy declarou fica AQUI. O host do endpoint e as marcas de valor
 		// inexacto saem da resposta antes de qualquer outro passo e só voltam a ser lidos pela
 		// comparação da rota, abaixo.
@@ -436,6 +448,8 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		}
 		g.annotateAllowlist(span, ex)
 		req.Model = ex.ResolvedModel
+		// AOS-513: os mesmos parâmetros do perfil da rota, também no caminho de streaming.
+		g.aplicarPerfilDaRota(&req)
 		s, err := g.adapter.ChatStream(ctx, req, cred)
 		if err != nil {
 			return err

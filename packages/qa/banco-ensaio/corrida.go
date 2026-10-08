@@ -216,6 +216,9 @@ type CfgDaCorrida struct {
 	RegiaoDeclarada string
 	// Extra entra no digest da configuração (o roteiro do falso, a tabela de preços).
 	Extra map[string]string
+	// PerfilDigest é o digest do perfil de rota candidato da corrida (AOS-513); vai para o
+	// relatório. Vazio quando a corrida não leva perfil.
+	PerfilDigest string
 	// Relogio dá a data do relatório. nil ⇒ time.Now.
 	Relogio func() time.Time
 	// AbortarAposRecusasDeChave, quando positivo, pára a corrida se os PRIMEIROS pedidos — este

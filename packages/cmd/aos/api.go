@@ -2335,6 +2335,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-513 — 4XX DO PROVIDER EM TURNOS COM PARÂMETROS DO PERFIL DA ROTA. Uma série por rota
+	// cujo perfil declara parâmetros e por código. Sem nenhum perfil com parâmetros — a tabela de
+	// hoje — a família não existe, e o /metrics é o de antes.
+	for i, rota := range parametrosRecusados.rotas {
+		for j, codigo := range parametrosRecusados.codigos {
+			labels := `{rota="` + rota + `",codigo="` + codigo + `"}`
+			if i == 0 && j == 0 {
+				g("aos_model_route_params_rejected_total",
+					"Respostas 4xx do provider desde o arranque em turnos em que o perfil da rota enviou parametros do pedido (thinking, reasoning_effort, max_tokens), por rota e por codigo HTTP (AOS-513). O no nao retira o parametro nem repete o pedido: o turno falha. Um valor acima de zero numa rota quer dizer que o provider nao aceita o que o perfil declara. Nenhum byte do corpo do erro.",
+					"counter", float64(parametrosRecusados.lido(rota, codigo)), labels)
+				continue
+			}
+			amostra("aos_model_route_params_rejected_total", labels, float64(parametrosRecusados.lido(rota, codigo)))
+		}
+	}
+
 	// AOS-493 — RUNS TERMINADOS POR DESFECHO E RAZÃO DO VEREDICTO. Uma amostra por par dos dois
 	// vocabulários fechados, sempre presentes: o zero é um zero verdadeiro.
 	if h.svc != nil && h.svc.desfechos != nil {

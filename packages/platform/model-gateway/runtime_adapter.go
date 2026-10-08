@@ -56,6 +56,9 @@ type ModelClientAdapter struct {
 	// estado: a captura do estado opaco do provider ([WithProviderStateCapture], AOS-514). nil —
 	// o valor-zero — é o adaptador de sempre: o estado que a resposta traga não atravessa.
 	estado *capturaDoEstado
+	// perfis: o conjunto de perfis de rota de onde o adaptador lê a versão da projecção da rota
+	// ([WithRouteProfileSet], AOS-513). nil — o valor-zero — é a tabela em código.
+	perfis *RouteProfileSet
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -194,6 +197,45 @@ func WithProjectionVersion(version string) RuntimeAdapterOption {
 	}
 }
 
+// WithRouteProfileSet dá ao adaptador o conjunto de perfis de rota de onde lê o que o perfil do
+// seu modelo declara (AOS-513) — o MESMO conjunto do gateway que ele chama
+// ([ProductionConfig.RouteProfiles]). Sem a opção, ou com nil, é a tabela em código, que é o que
+// o nó usa.
+func WithRouteProfileSet(set *RouteProfileSet) RuntimeAdapterOption {
+	return func(a *ModelClientAdapter) { a.perfis = set }
+}
+
+// ErrPinnedProjectionVersion — o run está fixado numa versão da projecção que este binário não
+// publica. Fail-closed: o turno não sai noutra versão.
+var ErrPinnedProjectionVersion = errors.New("model-gateway: o run esta fixado numa versao da projeccao nativa que este binario nao conhece")
+
+// versaoDaProjeccao devolve a versão da projecção nativa de um turno (AOS-513), por esta ordem:
+//
+//  1. a versão em que o RUN está fixado ([agentruntime.PromptView.ProjectionVersion]) — um run
+//     que começou numa versão continua nela, depois de uma retoma e qualquer que seja a rota a
+//     que o gateway mande o pedido;
+//  2. a que o PERFIL DA ROTA do modelo do adaptador declara;
+//  3. o interruptor do nó ([WithProjectionVersion]), e sem ele a de sempre.
+//
+// O perfil lido é o do modelo do ADAPTADOR — a rota do run —, e não o da rota a que o gateway
+// acabe por mandar o pedido: a projecção de um run não muda num failover.
+func (a *ModelClientAdapter) versaoDaProjeccao(view agentruntime.PromptView) (string, error) {
+	if fixada := view.ProjectionVersion; fixada != "" {
+		v, err := ParseNativeProjectionVersion(fixada)
+		if err != nil {
+			return "", fmt.Errorf("%w: %q", ErrPinnedProjectionVersion, fixada)
+		}
+		return v, nil
+	}
+	if perfil, ok := a.perfis.For(a.model); ok && perfil.ProjectionVersion != "" {
+		return perfil.ProjectionVersion, nil
+	}
+	if a.versaoNativa != "" {
+		return a.versaoNativa, nil
+	}
+	return NativeProjectionVersion, nil
+}
+
 // NewModelClient constrói o adaptador RT→GW para um modelo dado.
 func NewModelClient(gw port.Gateway, model string, opts ...RuntimeAdapterOption) *ModelClientAdapter {
 	a := &ModelClientAdapter{gw: gw, model: model}
@@ -234,12 +276,12 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	// forma a meio sem que nada o registe.
 	msgs := []port.Message{{Role: port.RoleUser, Content: string(view.Materialized)}}
 	nativa := a.nativa && projecaoNativaSuporta(view.AssemblyVersion)
-	versaoNativa := a.versaoNativa
-	if versaoNativa == "" {
-		versaoNativa = NativeProjectionVersion
-	}
+	versaoNativa := ""
 	if nativa {
 		var perr error
+		if versaoNativa, perr = a.versaoDaProjeccao(view); perr != nil {
+			return agentruntime.ModelResponse{}, perr
+		}
 		if msgs, perr = ProjectNativeVersion(versaoNativa, view); perr != nil {
 			return agentruntime.ModelResponse{}, perr
 		}
@@ -389,6 +431,9 @@ func translateResponse(resp port.ChatResponse) (agentruntime.ModelResponse, erro
 	// AOS-507 — a ficha da forma do corpo, quando o adaptador a mediu. nil com a medição
 	// desligada, e o turno sai como saía. É transporte: nada abaixo a lê.
 	out.Shape = fichaDoRuntime(resp.Shape)
+	// AOS-513 — os parâmetros que o perfil da rota mandou enviar neste pedido, para o manifesto
+	// do turno. nil sem perfil que os declare.
+	out.RequestParams = resp.SentParams
 	if len(resp.Choices) == 0 {
 		// FAIL-CLOSED. Ver [ErrRespostaSemChoices]: isto NAO e um turno vazio.
 		return agentruntime.ModelResponse{}, fmt.Errorf("%w (modelo %q)", ErrRespostaSemChoices, resp.Model)
