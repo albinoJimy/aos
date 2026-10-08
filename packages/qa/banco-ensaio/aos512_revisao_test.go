@@ -365,7 +365,7 @@ func TestAOS512_Real_DestinoDaChave(t *testing.T) {
 		{"host fora da lista", "https://" + hostMau + "/v1", "nao e do fornecedor"},
 		{"host parecido", "https://api.kimi.com.evil.example/v1", "nao e do fornecedor"},
 		{"subdominio que nao esta na lista", "https://x.api.kimi.com/v1", "nao e do fornecedor"},
-		{"host de outro fornecedor", "https://api.anthropic.com/v1", "nao e do fornecedor"},
+		{"host de outro fornecedor", "https://api.exemplo-de-outro-fornecedor.com/v1", "nao e do fornecedor"},
 	} {
 		t.Run(caso.nome, func(t *testing.T) {
 			lanc := &lancadorDeTeste{t: t}
@@ -417,12 +417,12 @@ func TestAOS512_Real_DestinoDaChave(t *testing.T) {
 	if e := executar(t, Ambiente{Lancador: lanc}, "real", "--chaves", escreverChaves(t, chavesDeTeste()), "--fornecedor", "kimi", "--so-plano", "--destino-fora-da-lista", "api.kimi.com"); e.codigo != SaidaRecusada {
 		t.Errorf("a flag com um host da lista: codigo %d, quer %d", e.codigo, SaidaRecusada)
 	}
-	// A Anthropic não tem base no ficheiro: o destino é fixo, e mostra-se.
+	// A Anthropic não tem base no ficheiro: o destino é o do adaptador do proxy, e o banco di-lo.
 	if e := executar(t, Ambiente{Lancador: lanc}, "real", "--chaves", escreverChaves(t, func() map[string]string {
 		c := chavesDeTeste()
 		delete(c, CampoTectoUSDAnthropic)
 		return c
-	}()), "--fornecedor", "anthropic", "--so-plano"); e.codigo != SaidaOK || !strings.Contains(e.stderr, "DESTINO DA CHAVE: https://api.anthropic.com  ") {
+	}()), "--fornecedor", "anthropic", "--so-plano"); e.codigo != SaidaOK || !strings.Contains(e.stderr, "DESTINO DA CHAVE: "+DestinoDaAnthropic+"  ") {
 		t.Errorf("anthropic: codigo %d: %q", e.codigo, e.stderr)
 	}
 	if lanc.lancamentos != 0 {

@@ -181,7 +181,8 @@ pasta). Só o programa o lê, pelo caminho que lhe dão.
   não é «ganha o último»).
 - **Destino da chave.** A base do Kimi tem de ser `https`, sem utilizador, porta, query nem
   fragmento, e o host tem de estar na lista embutida no banco: `api.kimi.com`,
-  `api.moonshot.ai`, `api.moonshot.cn` (Anthropic: `api.anthropic.com`, fixo). Outro host só
+  `api.moonshot.ai`, `api.moonshot.cn`. A Anthropic não tem base no ficheiro: o destino é o
+  endpoint por omissão do adaptador `anthropic` do proxy, e o banco di-lo. Outro host só
   com `--destino-fora-da-lista <host exacto>`. O `--so-plano` e o início da corrida mostram
   `DESTINO DA CHAVE: https://<host>` — o host de um fornecedor público não é segredo; o caminho
   da base e as chaves continuam fora de todas as saídas.

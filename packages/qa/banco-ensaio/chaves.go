@@ -75,10 +75,16 @@ const (
 
 // hostsDoFornecedor é a lista dos hosts para onde a chave de cada fornecedor pode ir. Está no
 // código de propósito: o destino da chave não depende só do que estiver escrito no ficheiro.
+//
+// A Anthropic não tem entrada: o ficheiro de chaves não traz base para ela, e quem escolhe o
+// endpoint é o adaptador `anthropic` do proxy. O banco não escreve esse host em lado nenhum —
+// o no-bypass do Model Gateway (archlint, AOS-055) proíbe endpoints de provider fora do gateway.
 var hostsDoFornecedor = map[Fornecedor][]string{
-	FornecedorKimi:      {"api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"},
-	FornecedorAnthropic: {"api.anthropic.com"},
+	FornecedorKimi: {"api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"},
 }
+
+// DestinoDaAnthropic é o que o banco mostra como destino da chave da Anthropic.
+const DestinoDaAnthropic = "o endpoint por omissao do adaptador anthropic do proxy (o ficheiro de chaves nao tem base para a Anthropic)"
 
 // HostsDoFornecedor devolve os hosts aceites para um fornecedor.
 func HostsDoFornecedor(f Fornecedor) []string {
@@ -316,7 +322,8 @@ type RotaReal struct {
 	// RegiaoDeclarada é a região que o dono declarou (só Anthropic). É copiada para o
 	// relatório como DECLARAÇÃO e não tem efeito no ensaio.
 	RegiaoDeclarada string
-	// Destino é para onde a chave vai: `https://host`, já validado. O host de um fornecedor
+	// Destino é para onde a chave vai: `https://host`, já validado (Kimi), ou a frase
+	// [DestinoDaAnthropic]. O host de um fornecedor
 	// público não é segredo, e o banco mostra-o antes de enviar; o caminho da base não vai.
 	Destino string
 
@@ -386,7 +393,7 @@ func (c *Chaves) Rota(f Fornecedor, modelo string, d Destino) (RotaReal, error) 
 			// A rota da Anthropic não tem base no ficheiro: o destino é o do adaptador do proxy.
 			return RotaReal{}, errors.New("banco-ensaio: --destino-fora-da-lista nao se aplica a Anthropic (o destino e fixo)")
 		}
-		r.Destino = "https://" + hostsDoFornecedor[FornecedorAnthropic][0]
+		r.Destino = DestinoDaAnthropic
 		if r.Tectos.PedidosDia, err = c.inteiroPositivo(CampoTectoPedidosAnthro); err != nil {
 			return RotaReal{}, err
 		}
