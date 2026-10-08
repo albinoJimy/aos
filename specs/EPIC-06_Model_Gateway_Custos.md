@@ -3273,9 +3273,9 @@ confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id 
 - **Por fazer:** a revisão adversarial independente; um run com devolução **no nó composto**
   (o nó só usa a tabela de perfis em código, que não tem rota com `devolver`: a devolução está
   provada no gateway e no loop do kernel, em separado); o teste de autoridade com estado
-  hostil no Reference Monitor além do que o AOS-514 já prova; o runbook da rota `obrigatorio`
-  (drenar antes de recuar; `modify_params` e `drop_params` proibidos) em
-  `deploy/server/README.md`; a propriedade do prefixo sobre a bateria do AOS-512.
+  hostil no Reference Monitor além do que o AOS-514 já prova; a propriedade do prefixo sobre a
+  bateria do AOS-512. O runbook da rota está em `deploy/server/README.md` («O perfil da rota e a
+  devolução do estado»).
 
 ---
 
