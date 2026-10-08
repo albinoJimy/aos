@@ -92,7 +92,14 @@ gate_threshold EVENTSTORE_COVERAGE_MIN 75 0 100 "%" always || exit 1
 # não o CI. Num posto Windows (2026-09-26) o `cmd/aos-orq` passou só 17 testes em 5 min, contra
 # 167 em ~25 s no CI: ali é preciso subir (NATS_GO_TEST_TIMEOUT=60 make ci-nats). No CI fica o
 # default, bem abaixo do `timeout-minutes` do job, que mata sem dizer que teste estava pendurado.
-gate_threshold NATS_GO_TEST_TIMEOUT 5 1 60 "m" always || exit 1
+#
+# O default passou de 5 para 10 no AOS-511 (2026-10-08), com medição e não por folga: o
+# `cmd/aos-orq` cresceu com os testes de binário real dos AOS-497 a AOS-506 e fechava na base
+# em 279 s (run 37706807735, commit dc95cb0c) — 93% dos 300 s; os testes do AOS-511 passaram-no e o
+# gate avermelhou por TIMEOUT sem nenhum teste pendurado (o que corria tinha 33 s). Dez minutos
+# são cerca de 2× o pior módulo de hoje. Não é uma barra de qualidade: é o tempo ao fim do qual
+# um binário se dá por pendurado. Encurtar a suite do `cmd/aos-orq` é trabalho próprio.
+gate_threshold NATS_GO_TEST_TIMEOUT 10 1 60 "m" always || exit 1
 
 # QUANTAS VEZES SEGUIDAS correm os sensores da janela do stream fresco (AOS-455, bloco 1b).
 #
