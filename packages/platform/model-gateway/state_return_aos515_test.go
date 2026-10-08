@@ -611,7 +611,7 @@ func TestAOS515_F1_RotaNaoProvadaNaoRecebeOEstado(t *testing.T) {
 	}{
 		"endpoint diferente":     {aos515Modelo, "https://outro-provider.example/v1", esperado},
 		"endpoint nao reportado": {aos515Modelo, "", esperado},
-		"modelo inexacto":        {aos515Modelo + "​", "", ""},
+		"modelo inexacto":        {aos515Modelo + "\u200b", "", ""},
 	} {
 		t.Run(nome, func(t *testing.T) {
 			for _, classe := range []string{"obrigatorio", "opcional"} {
