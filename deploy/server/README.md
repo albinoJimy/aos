@@ -1859,6 +1859,130 @@ do nó a `0`. Os runs de tentativa já gravados continuam legíveis — são run
 > Se em vez de `404` encontrar um run com esse id, só o segue se o nó declarar que é a tentativa
 > deste nó deste pedido (`plan_attempt`); senão, `tentativa_recusada=run_de_outra_origem`.
 
+**A nova tentativa por resposta vazia (AOS-510 e AOS-511, emenda ao ADR-039) —
+`AOS_RUN_RETRY_EMPTY` e `AOS_ORQ_NOVA_TENTATIVA_VAZIA`.** Medido a 2026-10-07 na v0.1.51, com a
+recuperação acima ligada: **3 planos em 140 (2,1%)** saíram `13` por `empty_output`, sempre no nó
+de resumo, que não tem tools — um só turno, `stop`, texto final vazio. A recuperação acima não os
+cobre (exige `contract_unmet_no_call`). Esta é uma **segunda classe**, com prova própria e
+interruptores próprios; a primeira não muda. **Desligada por omissão, nos dois lados**, e entra
+no `aos-orq` em `observe` antes de `on` (decisão do dono de 2026-10-07).
+
+- **No nó, `AOS_RUN_RETRY_EMPTY`** (`off`, `on`; vazio é `off`). Com `on` e `AOS_RUN_RETRY_MAX`
+  acima de zero, o arranque diz `nova tentativa por resposta vazia (EPIC-19/AOS-510, ADR-039
+  §2.3): ACEITE` e o `GET /tools` anuncia `"run_retry":{"max":N,"empty_output":true}`; com o tecto
+  a zero diz `SEM EFEITO`. O nó só hospeda a tentativa depois de **provar no log dele** que a
+  anterior fechou `failed` por `empty_output`, sem nenhuma tool call pedida, com um só turno que
+  parou com `stop`, sem contrato de tools e sem origem vinculativa da saída. **O pedido não
+  escolhe a classe:** é o nó que lê a razão no log. Esta tentativa **não leva o aviso** do
+  AOS-506.
+- **No `aos-orq`, `AOS_ORQ_NOVA_TENTATIVA_VAZIA`** (`off`, `observe`, `on`; vazio é `off`),
+  **independente** de `AOS_ORQ_NOVA_TENTATIVA`. Fora de `off` o `serve` diz `nova tentativa por
+  resposta vazia (AOS-511, ADR-039): EM OBSERVACAO`, `LIGADA` ou `LIGADA E NAO APLICADA` (o nó
+  não anuncia a classe). **Os tectos são os mesmos e são partilhados:** duas tentativas a mais
+  por nó e `AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO` por plano, a somar as das duas classes.
+
+**O que se tenta, e o que nunca se tenta.** Só um nó **não-verificador, sem tools atribuídas e
+sem `from_tool`** cujo run fechou `failed` com a razão exactamente `empty_output` **e zero tool
+calls pedidas** — **com ou sem `consumes`**: os três casos medidos têm `consumes`, mas a
+elegibilidade não o exige, e as séries desta classe **não** levam o rótulo `com_consumes` (ao
+contrário das da outra): quem ler a taxa lê as duas populações juntas. Nunca um nó com tools que respondeu vazio depois de chamar uma, um nó
+verificador, um nó com origem de saída declarada (`origem_vazia`), uma resposta cortada
+(`truncated`), um `timed_out`, um run perdido ou que não concluiu. A decisão não lê texto nenhum
+do modelo, e o raciocínio nunca é usado como resposta.
+
+**A ordem de saída** — o nó sempre antes do `aos-orq`:
+
+1. A imagem nova no nó, com `AOS_RUN_RETRY_EMPTY` por definir (`off`). Nada muda: confirmar que o
+   `GET /tools` não tem `empty_output` e que o `/metrics` não tem `aos_runs_retry_empty_`. Numa
+   série de pelo menos 20 planos, os desfechos são os da série anterior.
+2. O `aos-orq` com `AOS_ORQ_NOVA_TENTATIVA_VAZIA` por definir (`off`). Nada muda.
+3. `AOS_ORQ_NOVA_TENTATIVA_VAZIA=observe`, em séries que somem **pelo menos 120 planos ou 3
+   ocorrências**, o que vier primeiro. Nada é tentado; o log da drenagem diz `NOVA TENTATIVA POR
+   RESPOSTA VAZIA EM OBSERVACAO — tentaria outra vez (causa=empty_output, …)` e conta em
+   `aos_orq_consume_tentativas_vazia_em_observacao_total`. **Ler:** o que ele diz que tentaria
+   coincide com os runs `failed` por `empty_output` com zero chamadas, e com mais nenhum. Como na
+   outra classe, `observe` não aplica o anúncio do nó, os tectos nem o prazo: é um majorante.
+4. Por decisão do dono, com o número de `observe` lido: `AOS_RUN_RETRY_EMPTY=on` no nó (reinício
+   do nó), e só depois `AOS_ORQ_NOVA_TENTATIVA_VAZIA=on`.
+5. Ler a recorrência e o critério da fase (abaixo).
+
+**O que o operador vê.** No log da drenagem: `execucao: no <id> NOVA TENTATIVA 2 POR RESPOSTA
+VAZIA — o run <run>~<id> fechou failed por empty_output sem nenhuma tool call pedida; …`. No
+`detail` de um plano recuperado: `… tentativas=1 recuperados=1` (as contagens somam as duas
+classes: são os factos do log do plano). Com as tentativas esgotadas: `… erro=nos_falhados
+causa=empty_output:1 tentativas=2 recuperados=0 tentativas_esgotadas=1`, saída `13`. Uma
+tentativa que não se fez aparece como `tentativa_recusada=<motivo>`, com os motivos da tabela
+acima; `nao_anunciado` quer aqui dizer que o nó não anuncia `run_retry.empty_output`
+(`AOS_RUN_RETRY_EMPTY` desligado, tecto a zero, ou nó anterior ao AOS-510).
+
+**As métricas — próprias desta classe; as da outra não mudam de nome nem de valor.** No nó:
+`aos_runs_retry_empty_admitted_total` e `aos_runs_retry_empty_refused_total{causa}`
+(`anterior_pediu_tools`, `anterior_turnos`, `anterior_paragem`, `estado_impossivel`,
+`anterior_origem_vinculativa`, `anterior_residencia`, `indisponivel`). As recusas anteriores à
+leitura da razão (tecto, forma, origem, sequência, estado) contam em
+`aos_runs_retry_refused_total`, como sempre; com o interruptor desligado, um pedido sobre um run
+`empty_output` conta lá em `anterior_outra_razao`. `aos_runs_retry_prompt_hash_diferente_total`
+é comum às duas classes e continua a ter de ser zero. No ficheiro da drenagem:
+`aos_orq_consume_primeiras_respostas_vazias_total`,
+`aos_orq_consume_tentativas_vazia_total{tentativa="2|3",desfecho="recuperado|voltou_a_falhar|outra_causa"}`,
+`aos_orq_consume_planos_recuperados_vazia_total`,
+`aos_orq_consume_planos_com_tentativas_vazia_esgotadas_total`,
+`aos_orq_consume_tentativas_vazia_recusadas_total{causa}` e, em `observe`,
+`aos_orq_consume_tentativas_vazia_em_observacao_total`. Nenhuma leva conteúdo.
+
+- **A recorrência** é `voltou_a_falhar / (recuperado + voltou_a_falhar + outra_causa)` da
+  tentativa 2, na série desta classe. **Três ou mais das primeiras dez tentativas a voltar a
+  fechar `empty_output`** é metade do gatilho para reabrir o aviso (ADR-039 §2.7); a outra metade
+  é o AOS-507 nomear uma causa.
+- **`aos_runs_retry_empty_admitted_total` do nó tem de ser igual à soma das tentativas desta
+  classe no `aos-orq`**, e `aos_runs_retry_empty_refused_total{causa="anterior_pediu_tools"}` tem
+  de ser zero: acima de zero, alguém pediu a repetição de um run que chamou tools.
+- **A recuperação não esconde um modelo a degradar.** A taxa a vigiar é a das **primeiras**
+  respostas vazias — `aos_orq_consume_primeiras_respostas_vazias_total` sobre os planos
+  terminados, em deltas —, e não a dos planos falhados. A taxa de base medida é **2,1%** (3 em
+  140). **O limiar fixa-se com os números do modo `observe`**; até lá, o valor de trabalho é
+  **acima de 5% numa janela de pelo menos 60 planos, parar e olhar** — o modelo ou a rota
+  mudaram, e os planos continuam a sair `0` com mais tentativas e mais custo. Como a regra da
+  outra classe, está escrita aqui e **não** está num alerta automático.
+- **Critério da fase (P2):** planos falhados por `empty_output` **abaixo de 1%** em pelo menos
+  120 planos, com zero eventos `tool.call.*` nos runs que antecederam uma tentativa admitida.
+
+**Rollback.** Primeiro o `aos-orq` para `off` (ou tirar a variável), depois
+`AOS_RUN_RETRY_EMPTY` do nó a `off`. Com o `aos-orq` em `off` e um plano com uma tentativa desta
+classe em voo, a geração seguinte **segue a tentativa que o log regista** e não começa mais
+nenhuma; a recorrência dela continua a contar na série desta classe. Um `aos-orq` **anterior** ao
+AOS-511 que retome esse plano lê o facto (a razão é um campo que ele não interpreta) e segue a
+mesma tentativa pelas regras do AOS-503; vale o aviso acima sobre não reverter a imagem com
+planos com tentativas em curso. Com o nó em `off` e o `aos-orq` ainda em `on`, as tentativas
+deixam de ser pedidas (`tentativa_recusada=nao_anunciado`).
+
+> ⚠️ **Reverter a IMAGEM do `aos-orq` com uma tentativa por vazio registada estraga os números
+> da decisão** (medido na revisão de 2026-10-08: geração 1 com a imagem nova e as duas classes
+> em `on`; geração 2 com a imagem anterior e `AOS_ORQ_NOVA_TENTATIVA=on`). Os desfechos ficam
+> certos — a tentativa em voo que conclui dá `0`, a que volta a responder vazio dá `13` sem
+> tentativa 3, um run alheio não é adoptado —, mas o binário anterior:
+>
+> 1. **volta a submeter** a tentativa por vazio que encontra no log sem run (`RETOMA da
+>    tentativa 2`, e o nó aceita-a) — reverter a imagem **não pára** essa tentativa enquanto o
+>    nó tiver `AOS_RUN_RETRY_EMPTY=on`;
+> 2. **conta-a nas séries da outra classe** (`aos_orq_consume_tentativas_total{…}`,
+>    `…_nos_recuperados_total`, `…_planos_recuperados_total`, `…_tentativas_por_plano_total`; e
+>    `outra_causa` quando volta a falhar): a série `com_consumes="true"` ganha falsos recuperados;
+> 3. **apaga do ficheiro de métricas as séries desta classe** ao reescrevê-lo (não são do
+>    catálogo dele): `aos_orq_consume_primeiras_respostas_vazias_total` e as `*_vazia_*`
+>    desaparecem.
+>
+> Depois disso a recorrência e a igualdade «admitidas no nó = tentativas desta classe no
+> `aos-orq`» deixam de se poder ler. **A ordem do recuo de imagem:** (1)
+> `AOS_ORQ_NOVA_TENTATIVA_VAZIA` a `off` no `aos-orq`; (2) `AOS_RUN_RETRY_EMPTY` a `off` no nó;
+> (3) esperar que os planos com tentativas em curso acabem (nenhum `plan.node_attempt_started`
+> com `reason=empty_output` num plano por terminar) e **guardar o ficheiro de métricas**; (4) só
+> então reverter a imagem.
+
+> ⚠️ **Por fazer antes de ligar em produção:** o smoke da tentativa `<plano>~<nó>~2` de um run
+> `empty_output` **sobre JetStream** (hospedada, corre e lê-se). Os testes deste ticket correm
+> sobre o substrato de ficheiro.
+
 **O que a recuperação custa, no pior caso (medido).** Um plano de 6 nós elegíveis que falham
 sempre sem chamar a tool, com os tectos por omissão: **10 runs em vez de 6** — as 4 tentativas a
 mais de `AOS_ORQ_NOVA_TENTATIVA_MAX_POR_PLANO` —, e os nós seguintes fecham com

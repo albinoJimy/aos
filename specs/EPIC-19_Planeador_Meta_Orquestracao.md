@@ -10632,7 +10632,13 @@ nó é o de hoje.
       autoridade — é o risco que o dono aceitou a 2026-10-06 para a primeira classe, agora numa
       classe em que se materializa (ao contrário do nó com tools e `consumes`, que o gate de
       taint nega antes).
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] Revisão adversarial independente com mutações, antes da fusão. *Feita a 2026-10-08 sobre o
+      commit `3c99e5bd`: zero bloqueantes; o mesmo ficheiro de teste corrido na base e no HEAD
+      dá diferença nula (respostas, eventos, `/metrics`, `GET /tools`, pedidos ao provider);
+      8 mutações do revisor, 7 mortas e 1 sobrevivente (a cablagem da variável no entrypoint,
+      M-1). Corrigido depois dela: o teste da cablagem (que mata essa mutação), os testes das
+      cadeias de classe mista (M-3), o Resumo do ADR-039 (M-2) e o parágrafo do recuo de imagem
+      (I-1). O smoke sobre JetStream continua por fazer (I-2).*
 - [ ] Verificação em produção com o interruptor desligado: numa série de pelo menos 20 planos,
       `aos_runs_retry_empty_admitted_total` fica a zero e os desfechos são os da série anterior.
 
@@ -10649,7 +10655,40 @@ nó é o de hoje.
 
 ### Estado
 
-**ABERTO (2026-10-07).** Por implementar. Decisão D2 do dono tomada no mesmo dia.
+**IMPLEMENTADO, DESLIGADO POR OMISSÃO (2026-10-07) — por rever e por verificar em produção.**
+Decisão D2 do dono tomada no mesmo dia.
+
+- **Feito:** `AOS_RUN_RETRY_EMPTY` (`off`/`on`, inválido recusa o arranque, banner `SEM EFEITO`
+  com o tecto a zero); a classe decidida pela razão lida no log
+  (`packages/cmd/aos/tentativa_por_vazio.go`, `provarTentativa` em `nova_tentativa.go`); a prova
+  ponto a ponto, com um teste por causa de recusa (log real sempre que um run real o produz, e
+  um facto de cada vez sobre o log real para os estados que o kernel não escreve); o tecto
+  único; `retry_reason` no `run.plan_origin`; o anúncio `run_retry.empty_output`; as séries
+  `aos_runs_retry_empty_*`; a tentativa sem aviso com `AOS_RUN_RETRY_NOTICE=on`; os ficheiros de
+  fio nos dois sentidos (`packages/cmd/aos/testdata/aos510_fio`,
+  `packages/cmd/aos-orq/testdata/aos511_fio`); a emenda ao ADR-039; runbook, `.env.example` e
+  compose.
+- **«Byte a byte o anterior» com `off`:** provado por teste contra os bytes esperados (a 403
+  uniforme, a causa `anterior_outra_razao` na série do AOS-502, o `GET /tools` igual ao fio do
+  AOS-502, o `/metrics` sem séries novas) e pelos testes do AOS-502 e do AOS-506 verdes sem
+  alteração. **Não** foi feita a comparação com um binário construído da base.
+- **A medição que sustenta a classe (2026-10-08).** Nas capturas seladas dos 3 runs
+  `empty_output` — pelo tamanho do criptograma, **sem decifrar** — há 5,3 a 5,8 bytes por token
+  de saída, contra 3,5 a 4,8 nos 117 resumos bem-sucedidos: o conteúdo veio no raciocínio, com
+  `content` vazio. É uma hipótese **fortemente apoiada, não provada**; a ficha do AOS-507
+  confirma-a ou desmente-a. Por isso repetir o passo é o tratamento certo, e a decisão D3 (o
+  raciocínio nunca é resposta) mantém-se.
+- **O AOS-509 alarga ligeiramente a classe.** Desde o AOS-509 (fundido a 2026-10-08), uma
+  resposta com `content: []` deixou de ser um erro de descodificação do gateway e passou a
+  fechar o run `empty_output`: esses runs entram na classe que este ticket cobre, com a mesma
+  prova (zero tool calls, um turno, `stop`). A prova não mudou; o que mudou foi quantas respostas
+  chegam a ela.
+- **A prova é mais larga do que a elegibilidade do `aos-orq`** (revisão, M-2): exige «sem
+  contrato de tools», e não «sem tools oferecidas». O nó admite por isso cadeias de classe mista
+  que o `aos-orq` nunca produz; estão presas por teste (`aos510_revisao_test.go`).
+- **Por fazer:** o **smoke sobre JetStream** (revisão, I-2: pré-condição de `on`, não feito —
+  tudo o que correu foi sobre o substrato de ficheiro); a verificação em produção com o
+  interruptor desligado.
 
 ---
 
@@ -10768,7 +10807,13 @@ desligado por omissão, com um modo de observação que entra primeiro.
       elegibilidade), no mesmo PR. O runbook de deploy regista a ordem de saída (nó primeiro,
       com `AOS_RUN_RETRY_EMPTY=off`; depois o `aos-orq` em `off`, `observe` e `on`) e a de
       recuo (`aos-orq` para `off`, depois o nó).
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] Revisão adversarial independente com mutações, antes da fusão. *Feita a 2026-10-08 sobre o
+      commit `3c99e5bd`: zero bloqueantes; binário da base contra binário do HEAD em 6 cenários,
+      só a duração difere; `observe` só acrescenta duas séries, o banner e uma linha de log.
+      Achado I-1, importante antes de `on`: reverter a IMAGEM do `aos-orq` com uma tentativa por
+      vazio registada faz o binário anterior voltar a submetê-la, contá-la nas séries do AOS-503
+      e apagar as desta classe — o runbook e o ADR-039 §5 passaram a dizê-lo, com a ordem do
+      recuo.*
 - [ ] **Verificação em produção, primeiro em `observe` (decisão D2):** séries que somem pelo
       menos 120 planos **ou** pelo menos 3 ocorrências, o que vier primeiro; o que o `aos-orq`
       diz que tentaria coincide com os runs `empty_output` com zero chamadas, e com mais nenhum.
@@ -10790,5 +10835,32 @@ desligado por omissão, com um modo de observação que entra primeiro.
 
 ### Estado
 
-**ABERTO (2026-10-07).** Por implementar. Decisão D2 do dono tomada no mesmo dia; entra em
-`observe` antes de `on`.
+**IMPLEMENTADO, DESLIGADO POR OMISSÃO (2026-10-07) — por rever e por verificar em produção.**
+Decisão D2 do dono tomada no mesmo dia; entra em `observe` antes de `on`.
+
+- **Feito:** `AOS_ORQ_NOVA_TENTATIVA_VAZIA` (`off`/`observe`/`on`), independente do
+  `AOS_ORQ_NOVA_TENTATIVA`; a elegibilidade (`packages/cmd/aos-orq/tentativa_vazia.go`), com um
+  teste por caso não elegível; os tectos por nó e por plano partilhados com o AOS-503; o facto
+  com `reason=empty_output` antes do pedido (enum de dois valores no construtor); a retoma pela
+  classe do facto, entre o facto e a submissão e entre a submissão e a recolha, com a origem
+  conferida; as métricas próprias sem tocar nas do AOS-503; o corpo da tentativa igual ao da
+  primeira a menos do id e de `attempt` (ficheiros de fio); o runbook com a ordem de saída e de
+  recuo e a regra de alerta sobre as primeiras respostas vazias.
+- **«Byte a byte o anterior» com `off`:** provado pelo binário real contra um `serve` sem a
+  variável (os mesmos `POST /runs`, eventos do plano, código, `detail` e ficheiro de métricas) e
+  pela suite do AOS-503 verde sem alteração. **Não** foi feita a comparação com um binário
+  construído da base.
+- **Por decidir com números:** o limiar do alerta (o runbook leva um valor de trabalho, 5% em 60
+  planos, até o modo `observe` dar a taxa).
+- **Sem o rótulo `com_consumes`, de propósito** (revisão, M-4). A elegibilidade aceita qualquer
+  nó não-verificador sem tools e sem `from_tool`, com ou sem `consumes`, e as séries desta classe
+  não separam as duas populações — ao contrário das do AOS-503. A razão: os rótulos são os que
+  este ticket fixa (`tentativa`, `desfecho`); os três casos medidos têm todos `consumes`, e um nó
+  sem tools e sem `consumes` é um nó que só reescreve o seu objectivo, raro num plano. Quem ler
+  a taxa lê as duas juntas; o runbook di-lo. Se o modo `observe` mostrar as duas populações, o
+  rótulo acrescenta-se num ticket próprio (é aditivo).
+- **Um binário anterior a retomar um plano com um facto `reason=empty_output`** foi medido pela
+  revisão com o binário de `cc1d15f8`: os desfechos ficam certos, mas ele volta a submeter a
+  tentativa, conta-a nas séries do AOS-503 e apaga as desta classe (I-1). A ordem do recuo de
+  imagem está no runbook.
+- **Por fazer:** as duas verificações em produção (`observe`, depois `on`).

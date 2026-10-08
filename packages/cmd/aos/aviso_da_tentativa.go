@@ -92,6 +92,12 @@ func (h *apiHandler) avisoDaTentativa(prova *provaDaTentativa) agentruntime.Retr
 	if !h.cfg.runRetryNotice || prova == nil {
 		return agentruntime.RetryNoticeNone
 	}
+	if prova.vazia {
+		// AOS-510 (ADR-039 §2.7): a tentativa por resposta vazia NÃO leva aviso. O texto do
+		// AOS-506 diz como se pede uma tool, e o run que respondeu vazio não tinha de pedir
+		// nenhuma; a causa do vazio não é conhecida, e um texto para ela seria afinado às cegas.
+		return agentruntime.RetryNoticeNone
+	}
 	return agentruntime.RetryNoticeNoFunctionCall
 }
 

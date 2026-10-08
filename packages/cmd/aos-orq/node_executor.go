@@ -352,12 +352,22 @@ type executorDeNos struct {
 	// factosDeTentativa é o número de `plan.node_attempt_started` do plano: o contador do tecto
 	// por plano. Vem do log, pelo que uma retoma não o repõe.
 	factosDeTentativa int
+	// factosDeTentativaVazia é a parte desses factos cuja razão é `empty_output` (AOS-511). Só
+	// serve as métricas por classe: o tecto por plano conta TODOS os factos.
+	factosDeTentativaVazia int
 	// tentativaContada marca os nós cuja tentativa corrente já foi contada nas métricas.
 	tentativaContada map[string]bool
 	// esgotados e recusasDeTentativa guardam, por nó que ESTE processo fechou, porque não houve
 	// mais tentativas: esgotaram-se, ou uma foi recusada (o motivo, em vocabulário fechado).
 	esgotados          map[string]bool
 	recusasDeTentativa map[string]string
+	// razoesDeTentativa guarda, por nó do plano, a razão do facto da sua tentativa CORRENTE
+	// (AOS-511): é por ela que se sabe de que classe a tentativa é — em que séries conta, e que
+	// interruptor a retoma. Enche-se do log e quando este processo grava o facto.
+	razoesDeTentativa map[string]plannerevents.AttemptReason
+	// esgotadosPorVazio marca os nós que este processo fechou com as tentativas esgotadas na
+	// classe da resposta vazia; são um subconjunto de `esgotados`.
+	esgotadosPorVazio map[string]bool
 	// retomadas marca os nós cuja tentativa corrente este processo já tentou submeter na retoma.
 	retomadas map[string]bool
 	// submetidosAqui marca os nós cujo run corrente foi ESTE processo a submeter.
@@ -418,6 +428,7 @@ func novoExecutorDeNos(ctx context.Context, cli nodeRunner, rec *runlifecycle.Pl
 		emVoo: map[string]struct{}{}, sumidos: map[string]time.Time{}, agora: time.Now, causas: map[string]string{},
 		payloads: map[chaveDePayload]string{}, candidatos: map[string]bool{}, declaradas: map[string]declaracaoDeOrigem{},
 		tentativas: map[string]int{}, tentativaContada: map[string]bool{}, esgotados: map[string]bool{},
+		razoesDeTentativa: map[string]plannerevents.AttemptReason{}, esgotadosPorVazio: map[string]bool{},
 		recusasDeTentativa: map[string]string{}, retomadas: map[string]bool{}, submetidosAqui: map[string]bool{},
 		conferidas: map[string]bool{}, semOrigemDesde: map[string]time.Time{}}
 	if store != nil && planID != "" {
@@ -1118,7 +1129,7 @@ func (e *executorDeNos) recolher(ctx context.Context) (int, error) {
 			fmt.Printf("  execucao: estado de %s ilegivel nesta passagem: %v\n", nodeID, err)
 			continue
 		}
-		if !existe && e.nt.ligada() && e.tentativaDe(nodeID) > 1 && !e.submetidosAqui[nodeID] && !e.retomadas[nodeID] {
+		if !existe && e.classeLigada(nodeID) && e.tentativaDe(nodeID) > 1 && !e.submetidosAqui[nodeID] && !e.retomadas[nodeID] {
 			// AOS-503 — A RETOMA DE UMA TENTATIVA. O log do plano regista a tentativa e o nó `aos`
 			// não conhece o run: o `serve` anterior morreu entre o facto e o pedido. Lê-se primeiro
 			// (foi o que se acabou de fazer) e só então se submete — uma vez.

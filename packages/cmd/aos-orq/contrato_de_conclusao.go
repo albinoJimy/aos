@@ -201,6 +201,10 @@ type anuncioDoNo struct {
 	// (`run_retry.max` do `GET /tools`, AOS-502). Zero ⇒ o nó não anuncia o suporte — um nó anterior,
 	// ou com o tecto a zero —, e nenhuma tentativa é pedida. Lê-se na MESMA resposta.
 	tentativas int
+	// tentativaVazia (AOS-511): o mesmo anúncio diz que o nó admite a nova tentativa de um run que
+	// fechou `empty_output` (`run_retry.empty_output`, AOS-510). Falso ⇒ um nó anterior, ou com
+	// esse interruptor desligado: essa tentativa não é pedida.
+	tentativaVazia bool
 }
 
 // ContratoDeConclusao lê do `GET /tools` se o nó aceita o contrato de conclusão.
@@ -242,7 +246,8 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 			Bindings []string `json:"bindings"`
 		} `json:"output_source"`
 		RunRetry *struct {
-			Max int `json:"max"`
+			Max         int  `json:"max"`
+			EmptyOutput bool `json:"empty_output"`
 		} `json:"run_retry"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&corpo); err != nil {
@@ -255,6 +260,8 @@ func (c *nodeClient) ContratoDeConclusao(ctx context.Context) (anuncioDoNo, erro
 		if anuncio.tentativas > maxTentativasAMaisPorNo {
 			anuncio.tentativas = maxTentativasAMaisPorNo
 		}
+		// AOS-511: a segunda classe só existe dentro do anúncio do tecto.
+		anuncio.tentativaVazia = corpo.RunRetry.EmptyOutput
 	}
 	if corpo.OutputSource != nil {
 		// A presença é o anúncio; o vínculo que este binário envia tem de constar dos aceites.

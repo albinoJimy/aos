@@ -108,14 +108,19 @@ func runRetryBanner(n int) string {
 type anuncioDaNovaTentativa struct {
 	// Max é o tecto de tentativas a mais por nó do plano em vigor neste nó.
 	Max int `json:"max"`
+	// EmptyOutput anuncia a SEGUNDA classe (AOS-510): este nó admite a tentativa de um run que
+	// fechou `empty_output`, com a prova própria dela. `omitempty`: com o interruptor desligado
+	// o anúncio tem os bytes de antes, e quem submete não pede essa tentativa.
+	EmptyOutput bool `json:"empty_output,omitempty"`
 }
 
-// anuncioDaNovaTentativaDoNo compõe o anúncio, ou nil com o tecto a zero.
-func anuncioDaNovaTentativaDoNo(tecto int) *anuncioDaNovaTentativa {
+// anuncioDaNovaTentativaDoNo compõe o anúncio, ou nil com o tecto a zero. `vazia` é o
+// interruptor da segunda classe (AOS-510): só se anuncia com o tecto acima de zero.
+func anuncioDaNovaTentativaDoNo(tecto int, vazia bool) *anuncioDaNovaTentativa {
 	if tecto <= 0 {
 		return nil
 	}
-	return &anuncioDaNovaTentativa{Max: tecto}
+	return &anuncioDaNovaTentativa{Max: tecto, EmptyOutput: vazia}
 }
 
 // idDaTentativa é o id do run da tentativa `n` do nó `nodeID` do pedido `plano`: o id do run
@@ -225,6 +230,10 @@ type turnoDaProva struct {
 		// tentativa com aviso remonta o prefixo (AOS-506). A prova não os lê.
 		AssemblyVersion string                   `json:"assembly_version"`
 		Tools           []agentruntime.PinnedDep `json:"tools"`
+		// O modo do veredicto, o contrato de conclusão e a origem declarada da saída com que o
+		// run correu, como o kernel os gravou no manifesto do turno. Só a prova da tentativa por
+		// resposta vazia os lê (AOS-510, [julgarTentativaVazia]).
+		Completion *agentruntime.Completion `json:"completion"`
 	} `json:"manifest"`
 	ToolCallsRequested int                     `json:"tool_calls_requested"`
 	StopReason         agentruntime.StopReason `json:"stop_reason"`
@@ -246,19 +255,54 @@ func runJaNaoMuda(st state.State) bool {
 // estados reconstrói dele ([NodeService.DurableOutcome]). A função é pura: não lê nada, e não
 // recebe nada do corpo do pedido além do que está em `q`.
 func julgarTentativaAnterior(eventos []eventstore.Event, estado state.State, desfecho state.Outcome, q quesitoDaTentativa) (string, string) {
-	if !streamDeRun(q.anterior, eventos) {
-		return causaRetryInexistente, ""
+	f, causa := factosDoElo(eventos, estado, q)
+	if causa != "" {
+		return causa, ""
 	}
-	var (
-		origem     *origemDoRunFilho
-		turnos     int
-		turno      turnoDaProva
-		pediuTools bool
-	)
+	v := desfecho.Verdict
+	if v == nil || v.Fulfilled || v.Reason != agentruntime.OutcomeContractNoCall {
+		return causaRetryOutraRazao, ""
+	}
+	// ZERO TOOL CALLS PEDIDAS, por três fontes: o vector selado, os eventos de mediação e o turno.
+	if v.ToolCallsRequested != 0 || f.pediuTools {
+		return causaRetryPediuTools, ""
+	}
+	if f.turnos != 1 {
+		return causaRetryTurnos, ""
+	}
+	if f.turno.ToolCallsRequested != 0 {
+		return causaRetryPediuTools, ""
+	}
+	if f.turno.StopReason != agentruntime.StopStop {
+		return causaRetryParagem, ""
+	}
+	return "", f.turno.Manifest.PromptHash
+}
+
+// factosDoRunAnterior é o que a prova lê do stream do run anterior e que não depende da classe
+// da tentativa: quantos turnos gravou, o último deles, e se o stream tem algum evento de tool
+// call. As duas classes (AOS-502 e AOS-510) decidem sobre os MESMOS factos, lidos uma vez.
+type factosDoRunAnterior struct {
+	turnos     int
+	turno      turnoDaProva
+	pediuTools bool
+}
+
+// factosDoElo lê o stream do run anterior e confere o que é COMUM a qualquer classe de tentativa:
+// o run existe, foi o nó a declarar-lhe a origem, a origem é a do mesmo pedido e do mesmo nó, a
+// sequência é a certa e o run está terminal em `failed`. Devolve a causa da recusa (vazia ⇒ o elo
+// é o certo, e quem chama decide pela RAZÃO do veredicto). É pura, como
+// [julgarTentativaAnterior], de onde saiu sem mudar uma condição nem a ordem delas.
+func factosDoElo(eventos []eventstore.Event, estado state.State, q quesitoDaTentativa) (factosDoRunAnterior, string) {
+	var f factosDoRunAnterior
+	if !streamDeRun(q.anterior, eventos) {
+		return f, causaRetryInexistente
+	}
+	var origem *origemDoRunFilho
 	for _, ev := range eventos {
 		switch {
 		case strings.HasPrefix(ev.Type, prefixoDeToolCall):
-			pediuTools = true
+			f.pediuTools = true
 		case ev.Type == EventTypeRunPlanOrigin:
 			if ev.Producer.NHIID != origemNHI || origem != nil {
 				// Uma origem que não foi o nó a escrever não prova nada; e a primeira é o facto.
@@ -266,59 +310,46 @@ func julgarTentativaAnterior(eventos []eventstore.Event, estado state.State, des
 			}
 			var o origemDoRunFilho
 			if json.Unmarshal(ev.Payload, &o) != nil {
-				return causaRetryIlegivel, ""
+				return f, causaRetryIlegivel
 			}
 			origem = &o
 		case ev.Type == agentruntime.EventTypeTurnRecorded:
-			turnos++
+			f.turnos++
+			// O turno descodifica-se para um valor NOVO: um campo ausente no último turno não
+			// pode herdar o de um turno anterior.
+			var turno turnoDaProva
 			if json.Unmarshal(ev.Payload, &turno) != nil {
-				return causaRetryIlegivel, ""
+				return f, causaRetryIlegivel
 			}
+			f.turno = turno
 		}
 	}
 	switch {
 	case origem == nil:
-		return causaRetrySemOrigem, ""
+		return f, causaRetrySemOrigem
 	case origem.Pedido.Stream != planRequestStream || origem.Pedido.RunID != q.plano || origem.NodeID != q.nodeID:
-		return causaRetryOutroPedido, ""
+		return f, causaRetryOutroPedido
 	case origem.Pedido.Geracao < 1 || origem.Pedido.Geracao > q.geracao:
 		// A geração do run anterior pode ser ANTERIOR à do pedido (um `serve` morreu e outro
 		// retomou); posterior é impossível num log honesto.
-		return causaRetryOutroPedido, ""
+		return f, causaRetryOutroPedido
 	}
 	// A SEQUÊNCIA: a anterior da tentativa 2 é a primeira (sem `attempt`); a de `n ≥ 3` foi ela
 	// própria admitida como tentativa `n − 1`, sobre a que a precede.
 	if q.tentativa == 2 {
 		if origem.Attempt != 0 || origem.RetryOf != "" {
-			return causaRetrySequencia, ""
+			return f, causaRetrySequencia
 		}
 	} else if origem.Attempt != q.tentativa-1 || origem.RetryOf != idDaTentativa(q.plano, q.nodeID, q.tentativa-2) {
-		return causaRetrySequencia, ""
+		return f, causaRetrySequencia
 	}
 	switch {
 	case !runJaNaoMuda(estado):
-		return causaRetryEmCurso, ""
+		return f, causaRetryEmCurso
 	case estado != state.Failed:
-		return causaRetryNaoFalhou, ""
+		return f, causaRetryNaoFalhou
 	}
-	v := desfecho.Verdict
-	if v == nil || v.Fulfilled || v.Reason != agentruntime.OutcomeContractNoCall {
-		return causaRetryOutraRazao, ""
-	}
-	// ZERO TOOL CALLS PEDIDAS, por três fontes: o vector selado, os eventos de mediação e o turno.
-	if v.ToolCallsRequested != 0 || pediuTools {
-		return causaRetryPediuTools, ""
-	}
-	if turnos != 1 {
-		return causaRetryTurnos, ""
-	}
-	if turno.ToolCallsRequested != 0 {
-		return causaRetryPediuTools, ""
-	}
-	if turno.StopReason != agentruntime.StopStop {
-		return causaRetryParagem, ""
-	}
-	return "", turno.Manifest.PromptHash
+	return f, ""
 }
 
 // provaDaTentativa é o que a prova deixa a quem hospeda: o run anterior e o hash do prompt dele.
@@ -328,6 +359,11 @@ type provaDaTentativa struct {
 	// avisoAnterior é o aviso com que o run ANTERIOR foi semeado (AOS-506): a medição do prompt
 	// precisa dele para saber que hash o anterior tinha de ter. Vazio numa primeira tentativa.
 	avisoAnterior agentruntime.RetryNotice
+	// vazia diz que a classe da tentativa é a da RESPOSTA VAZIA (AOS-510): o run anterior fechou
+	// `empty_output` e foi julgado por [julgarTentativaVazia]. Quem a decide é o nó, pela razão
+	// que leu no seu log; vem preenchida também numa RECUSA dessa classe, para a contagem saber
+	// em que série somar. Sempre false com o interruptor desligado.
+	vazia bool
 }
 
 // provarTentativa faz a prova no log do nó. Devolve a causa da recusa (vazia ⇒ admite) e se ela
@@ -361,17 +397,25 @@ func (h *apiHandler) provarTentativa(ctx context.Context, chamador readerIdentit
 		return provaDaTentativa{}, causaRetryIndisponivel, true
 	}
 	causa, hash := julgarTentativaAnterior(eventos, estado, desfecho, q)
+	// AOS-510 — A SEGUNDA CLASSE. O pedido não a escolhe: é a razão do veredicto, lida do log,
+	// que a decide. Só se chega aqui com o elo conferido (a recusa `anterior_outra_razao` é a
+	// primeira que depende da razão) e só com o interruptor ligado: desligado, o run que fechou
+	// `empty_output` é recusado como sempre, com a causa de sempre.
+	vazia := causa == causaRetryOutraRazao && h.cfg.runRetryEmpty && fechouPorRespostaVazia(desfecho)
+	if vazia {
+		causa, hash = julgarTentativaVazia(eventos, estado, desfecho, q)
+	}
 	if causa != "" {
-		return provaDaTentativa{}, causa, false
+		return provaDaTentativa{vazia: vazia}, causa, false
 	}
 	regiao, selada, err := h.readGov.runResidency(ctx, q.anterior)
 	if err != nil {
-		return provaDaTentativa{}, causaRetryIndisponivel, true
+		return provaDaTentativa{vazia: vazia}, causaRetryIndisponivel, true
 	}
 	if !selada || regiao == "" || regiao != chamador.region {
-		return provaDaTentativa{}, causaRetryResidencia, false
+		return provaDaTentativa{vazia: vazia}, causaRetryResidencia, false
 	}
-	return provaDaTentativa{anterior: q.anterior, promptHash: hash, avisoAnterior: avisoDaOrigem(eventos)}, "", false
+	return provaDaTentativa{anterior: q.anterior, promptHash: hash, avisoAnterior: avisoDaOrigem(eventos), vazia: vazia}, "", false
 }
 
 // contagemDasTentativas conta, por processo, as tentativas admitidas e as recusadas por causa, e

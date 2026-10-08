@@ -1330,6 +1330,16 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	if runRetryNotice {
 		fmt.Fprintf(w, "[aos] %s\n", runRetryNoticeBanner(runRetryMax))
 	}
+	// NOVA TENTATIVA POR RESPOSTA VAZIA (AOS-510): AOS_RUN_RETRY_EMPTY ∈ {off, on}, a omissão é
+	// off. Um valor fora do vocabulário aborta o arranque. Com off nada se compõe e nada se
+	// imprime; com on e o tecto a zero o banner diz que não tem efeito.
+	runRetryEmptyOpt, runRetryEmpty, err := apiRunRetryEmptyOptionFromEnv()
+	if err != nil {
+		return err
+	}
+	if runRetryEmpty {
+		fmt.Fprintf(w, "[aos] %s\n", runRetryEmptyBanner(runRetryMax))
+	}
 	// CATÁLOGO DE TOOLS (AOS-441): o que `GET /tools` serve ao `aos-orq`, composto UMA vez e do
 	// MESMO manifesto que o nó oferece ao modelo. Resolvido antes de compor o serviço: um eixo de
 	// risco ilegível aborta o arranque em vez de servir um adivinhado.
@@ -1394,6 +1404,9 @@ func serveAPI(ctx context.Context, w io.Writer, node *Node, addr string) error {
 	}
 	if runRetryNoticeOpt != nil {
 		apiOpts = append(apiOpts, runRetryNoticeOpt)
+	}
+	if runRetryEmptyOpt != nil {
+		apiOpts = append(apiOpts, runRetryEmptyOpt)
 	}
 	if runRetryOpt != nil {
 		apiOpts = append(apiOpts, runRetryOpt)

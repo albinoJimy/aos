@@ -161,6 +161,11 @@ type origemDoRunFilho struct {
 	// ([agentruntime.RetryNotice]). É por ele que quem audita ou reproduz o run sabe que a
 	// semente levou o aviso. Aditivo e `omitempty`: uma tentativa sem aviso tem os bytes de antes.
 	RetryNotice string `json:"retry_notice,omitempty"`
+	// RetryReason existe só numa tentativa que o nó admitiu pela classe da RESPOSTA VAZIA
+	// (AOS-510): `empty_output`, a razão do veredicto do run anterior, que o nó leu no seu log.
+	// Uma tentativa do AOS-502 não o leva. Aditivo e `omitempty`: o evento de uma tentativa da
+	// primeira classe e o de um run sem tentativa têm os bytes de antes.
+	RetryReason string `json:"retry_reason,omitempty"`
 }
 
 // errOrigemMalformada — o vínculo traz um `plan_id`/`node_id` que não tem forma de id.
@@ -249,7 +254,11 @@ type apensadorDaOrigem interface {
 //
 // `aviso` é o aviso com que o run foi semeado (AOS-506); só fica gravado numa tentativa
 // (`attempt >= 2`), e vazio dá os bytes de sempre.
-func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice) error {
+//
+// `razao` é a razão da classe da tentativa (AOS-510): o valor de vocabulário fechado que o NÓ
+// decidiu na prova ([razaoDaClasse]), ou vazio na classe do AOS-502 e num run sem tentativa. Só
+// fica gravada numa tentativa.
+func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice, razao string) error {
 	origem := origemDoRunFilho{
 		Versao: versaoDaOrigem,
 		Pedido: refDoPedidoDeOrigem{Stream: planRequestStream, RunID: v.RunID, Geracao: v.Geracao},
@@ -261,6 +270,8 @@ func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID s
 		origem.Attempt, origem.RetryOf = v.Attempt, idDaTentativa(v.RunID, v.NodeID, v.Attempt-1)
 		// AOS-506: e o aviso com que o run foi semeado, se o levou. Só numa tentativa.
 		origem.RetryNotice = string(aviso)
+		// AOS-510: e a razão da classe, quando a tentativa é a da resposta vazia.
+		origem.RetryReason = razao
 	}
 	raw, err := json.Marshal(origem)
 	if err != nil {
@@ -286,9 +297,15 @@ func declararOrigemDoRunFilho(ctx context.Context, es apensadorDaOrigem, runID s
 // que grava a origem pelo handler — os testes do AOS-477 exercitam esta, a que o `POST /runs`
 // chama (revisão do AOS-506, M-3: havia uma segunda, sem aviso, só com chamadores de teste).
 func (h *apiHandler) gravarOrigemDoRunFilho(ctx context.Context, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice) {
+	h.gravarOrigemDaTentativa(ctx, runID, v, aviso, "")
+}
+
+// gravarOrigemDaTentativa é o corpo do [apiHandler.gravarOrigemDoRunFilho], com a razão da classe
+// da tentativa (AOS-510). É esta que o `POST /runs` chama; `razao` vazia dá os bytes de sempre.
+func (h *apiHandler) gravarOrigemDaTentativa(ctx context.Context, runID string, v vinculoAoPedido, aviso agentruntime.RetryNotice, razao string) {
 	origemCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), controlSealTimeout)
 	defer cancel()
-	if err := declararOrigemDoRunFilho(origemCtx, h.node.EventStore, runID, v, aviso); err != nil {
+	if err := declararOrigemDoRunFilho(origemCtx, h.node.EventStore, runID, v, aviso, razao); err != nil {
 		h.logf("submit (AOS-477): o run %q foi hospedado mas a ORIGEM nao ficou gravada (plano=%q geracao=%d): %v",
 			runID, v.RunID, v.Geracao, err)
 	}

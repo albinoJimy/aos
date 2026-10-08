@@ -379,13 +379,14 @@ jobs:
   # que e o que os testes de perda e de reconexao exigem.
   #
   # `timeout-minutes` é a REDE, não o limite (AOS-452). O limite é o `-timeout` de cada binário
-  # de teste (`NATS_GO_TEST_TIMEOUT`, 5 min), que ao disparar diz QUE teste estava pendurado; o
+  # de teste (`NATS_GO_TEST_TIMEOUT`, 10 min), que ao disparar diz QUE teste estava pendurado; o
   # do job só mata, e sem ele valia o do GitHub — 6 h. Pior caso com todos os binários
-  # pendurados: 4 módulos + a medição de cobertura × 5 min ≈ 25 min, mais o cluster. Medido a
-  # 2026-09-26: o job inteiro fecha em ~3,5 min.
+  # pendurados: 4 módulos + a medição de cobertura × 10 min ≈ 50 min, mais o cluster. Medido a
+  # 2026-09-26: o job inteiro fechava em ~3,5 min; a 2026-10-08 só o `cmd/aos-orq` leva ~4,7 min
+  # (AOS-511: o limite por binário subiu de 5 para 10, e este de 40 para 70).
   nats:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
