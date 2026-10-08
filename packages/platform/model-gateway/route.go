@@ -121,6 +121,11 @@ type RouteProfile struct {
 	// devolve ao provider: [StateReturnNever] (a omissão), [StateReturnOptional] ou
 	// [StateReturnRequired].
 	StateReturn string `json:"devolver,omitempty"`
+	// ToolCallID diz como os ids das tool calls vão no wire desta rota (AOS-515):
+	// [ToolCallIDRuntime] (a omissão) — o id do runtime, como sempre — ou [ToolCallIDProvider] —
+	// o id que o provider deu, nos turnos cujo estado é devolvido. Só com uma classe de estado
+	// que não seja `nunca`.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // Digest é o digest do perfil: `sha256:` sobre o JSON canónico dos seus campos, com as
@@ -139,6 +144,9 @@ func (p RouteProfile) Digest() string {
 	}
 	if p.StateReturn != StateReturnNever {
 		canonico.StateReturn = p.StateReturn
+	}
+	if p.ToolCallID != ToolCallIDRuntime {
+		canonico.ToolCallID = p.ToolCallID
 	}
 	canon, err := json.Marshal(canonico)
 	if err != nil {

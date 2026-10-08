@@ -81,14 +81,31 @@ const NativeProjectionVersion110 = "1.1.0"
 // numa série de planos antes de ser ligado.
 const NativeProjectionVersion120 = "1.2.0"
 
+// NativeProjectionVersion130 é a versão 1.3.0 da projecção nativa (AOS-515, emenda ao ADR-036
+// §2.4; ADR-040 §2.9 e §2.11). É a 1.2.0 — o texto do protocolo, a linha de fim, o escape, o
+// mapeamento, o agrupamento e o invariante são os dela, e as MENSAGENS QUE SAEM PARA O WIRE são,
+// byte a byte, as dela — mais uma coisa que não é texto: a mensagem `assistant` de cada turno do
+// modelo leva AGARRADO o estado opaco desse turno ([port.Message.State], que não se serializa
+// por si).
+//
+// A projecção é função pura de (a vista do tail, os estados por turno): junta o estado ao turno
+// pelo rótulo `state_digest` do primeiro segmento do turno, e só depois de conferir que o
+// `sha256` dos bytes é o rótulo ([estadoDoTurno]). Não decide se o estado SAI — isso é do
+// gateway, depois do roteamento, pela classe de estado do perfil da rota e pela rota do envelope
+// ([armarDevolucao]). Com a classe `nunca`, que é a omissão, um pedido da 1.3.0 é o da 1.2.0.
+//
+// NÃO É A OMISSÃO. Só tem efeito com a captura do estado ligada (AOS-514) e o layout 1.5.0, que
+// é onde o rótulo existe.
+const NativeProjectionVersion130 = "1.3.0"
+
 // ErrBadProjectionVersion — a versão pedida da projecção nativa não é do vocabulário fechado.
-var ErrBadProjectionVersion = errors.New("model-gateway: versao da projeccao nativa desconhecida (aceites: 1.0.0, 1.1.0, 1.2.0)")
+var ErrBadProjectionVersion = errors.New("model-gateway: versao da projeccao nativa desconhecida (aceites: 1.0.0, 1.1.0, 1.2.0, 1.3.0)")
 
 // ParseNativeProjectionVersion valida uma versão da projecção nativa. Vocabulário fechado, sem
 // normalização e sem valor por omissão: quem decide o que vale o vazio é o chamador.
 func ParseNativeProjectionVersion(version string) (string, error) {
 	switch version {
-	case NativeProjectionVersion, NativeProjectionVersion110, NativeProjectionVersion120:
+	case NativeProjectionVersion, NativeProjectionVersion110, NativeProjectionVersion120, NativeProjectionVersion130:
 		return version, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrBadProjectionVersion, version)
@@ -286,7 +303,8 @@ func protocoloDaVersao(version string) (string, error) {
 		return protocoloNativo, nil
 	case NativeProjectionVersion110:
 		return protocoloNativo110, nil
-	case NativeProjectionVersion120:
+	case NativeProjectionVersion120, NativeProjectionVersion130:
+		// A 1.3.0 não muda uma palavra do protocolo: o que ela acrescenta não é texto.
 		return protocoloNativo120, nil
 	default:
 		return "", fmt.Errorf("%w: %q", ErrBadProjectionVersion, version)
@@ -471,6 +489,10 @@ type turnoNativo struct {
 	// chamadas, pela ordem do tail, e a mensagem `tool` de cada uma (nil enquanto não chegou).
 	chamadas   []port.ToolCall
 	resultados []*port.Message
+	// estado é o valor do rótulo `state_digest` do PRIMEIRO segmento do turno — o `history`, ou
+	// a primeira `tool_call` quando o modelo não escreveu texto (AOS-514). Vazio ⇒ o tail não
+	// refere estado para este turno. Só a 1.3.0 o usa.
+	estado string
 	// depois são os segmentos que o tail tem ENTRE os resultados do turno (o aviso de
 	// repetição), já renderizados: saem numa mensagem `user` a seguir à última mensagem `tool`.
 	depois []byte
@@ -553,6 +575,9 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 	// A linha de fim e o escape das quase-forjas são da 1.1.0 e de todas as que lhe sucedem; a
 	// 1.0.0 fica sem eles, byte a byte. `protocoloDaVersao` já recusou o que não é do vocabulário.
 	comFim := version != NativeProjectionVersion
+	// A 1.3.0 agarra a cada `assistant` o estado opaco do seu turno (AOS-515). As outras não
+	// tocam em [port.Message.State]: nelas o campo fica nil em todas as mensagens.
+	comEstado := version == NativeProjectionVersion130
 	versao := view.AssemblyVersion
 	if view.System != "" {
 		system += cabecalhoDoSystem + view.System
@@ -586,7 +611,11 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 			}
 		}
 		despejarUser()
-		msgs = append(msgs, port.Message{Role: port.RoleAssistant, Content: turno.texto, ToolCalls: turno.chamadas})
+		assistente := port.Message{Role: port.RoleAssistant, Content: turno.texto, ToolCalls: turno.chamadas}
+		if comEstado {
+			assistente.State = estadoDoTurno(view.ProviderStates, turno.estado, len(turno.chamadas))
+		}
+		msgs = append(msgs, assistente)
 		for _, r := range turno.resultados {
 			msgs = append(msgs, *r)
 		}
@@ -633,6 +662,7 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 				return nil, fmt.Errorf("%w: %w", ErrNativeProjection, err)
 			}
 			turno = &turnoNativo{texto: string(texto)}
+			turno.estado, _ = rotulo(seg, agentruntime.StateDigestLabel)
 
 		case agentruntime.TailToolCall:
 			id, _ := rotulo(seg, "id")
@@ -650,7 +680,10 @@ func ProjectNativeVersion(version string, view agentruntime.PromptView) ([]port.
 				}
 			}
 			if turno == nil {
+				// Um turno sem texto: o seu primeiro segmento é esta `tool_call`, e é ela que
+				// leva o rótulo do estado.
 				turno = &turnoNativo{}
+				turno.estado, _ = rotulo(seg, agentruntime.StateDigestLabel)
 			}
 			turno.pai = pai
 			args, err := argumentosDaChamada(seg)

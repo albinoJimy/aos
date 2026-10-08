@@ -577,6 +577,12 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// ligado permanece nil e a captura fica byte-idêntica (retro-compat).
 	var pendingCorrection []byte
 
+	// estadosDoRun são os envelopes de estado opaco do provider dos turnos já dados, pelo digest
+	// com que o tail os refere (AOS-515). Enche-se a cada turno com estado capturado — ao vivo
+	// ou reproduzido da captura numa retoma, que passam os dois por aqui — e segue na vista do
+	// turno seguinte para quem o devolve ao provider. nil enquanto nenhum turno trouxer estado.
+	var estadosDoRun map[string][]byte
+
 	for turn := 1; turn <= maxTurns; turn++ {
 		stepID := rt.stepIdentity.StepID(goal.RunID, turn)
 
@@ -594,6 +600,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// A VERSÃO DA PROJECÇÃO EM QUE O RUN ESTÁ FIXADO (AOS-513) segue na vista para quem faz o
 		// pedido. Vazia na omissão: a vista é a de sempre.
 		view.ProjectionVersion = NormalizeProjectionVersion(goal.ProjectionVersion)
+		// OS ESTADOS OPACOS DOS TURNOS ANTERIORES (AOS-515) seguem na vista, pelo digest do tail.
+		// nil num run sem estado: a vista é a de sempre.
+		view.ProviderStates = copiaDosEstados(estadosDoRun)
 		// O rótulo do contexto que o modelo vai ver NESTE turno. Autoriza todas as tool calls
 		// que o turno pedir — lido aqui, antes de a resposta existir, para que nada do que o
 		// modelo devolva (texto, tool calls, resultados) o possa mudar retroactivamente.
@@ -660,6 +669,14 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// é nil ou uma das três formas de [ProviderState.Normalizado] — a mesma que a captura
 		// devolve. O loop não o lê: entrega-o à captura e refere-o no tail por digest.
 		resp.State = resp.State.Normalizado()
+		if resp.State != nil && resp.State.Status == ProviderStateCaptured {
+			// AOS-515: o estado deste turno fica à mão para o pedido dos turnos seguintes, pela
+			// MESMA chave que o tail lhe dá. O digest é o que o runtime acabou de calcular.
+			if estadosDoRun == nil {
+				estadosDoRun = map[string][]byte{}
+			}
+			estadosDoRun[resp.State.Digest] = resp.State.Bytes
+		}
 		// OS PARÂMETROS DO PEDIDO ENTRAM JÁ FECHADOS (AOS-513), pela razão do motivo de paragem.
 		resp.RequestParams = NormalizeRequestParams(resp.RequestParams)
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseModelCalled); err != nil {

@@ -92,6 +92,15 @@ func (p RouteProfile) Validate() error {
 	default:
 		return fmt.Errorf("%w: devolver fora do vocabulario (aceites: %s, %s, %s)", ErrBadRouteProfile, StateReturnNeverName, StateReturnOptional, StateReturnRequired)
 	}
+	switch p.ToolCallID {
+	case ToolCallIDRuntime:
+	case ToolCallIDProvider:
+		if p.StateReturn == StateReturnNever {
+			return fmt.Errorf("%w: tool_call_id em %s exige uma classe de estado que nao seja %s (o id do provider faz parte do estado)", ErrBadRouteProfile, ToolCallIDProvider, StateReturnNeverName)
+		}
+	default:
+		return fmt.Errorf("%w: tool_call_id fora do vocabulario (aceites: %s, %s)", ErrBadRouteProfile, ToolCallIDRuntimeName, ToolCallIDProvider)
+	}
 	return nil
 }
 
@@ -143,7 +152,8 @@ func formaDeChave(v string) bool {
 // ParseRouteProfile lê UM perfil de rota de JSON, na forma dos campos de [RouteProfile]. É a
 // leitura FECHADA: uma chave que não seja um campo — do perfil ou dos seus parâmetros — é erro
 // (não há «parâmetros livres»), um valor de tipo errado é erro, e o perfil lido passa por
-// [RouteProfile.Validate]. `devolver` aceita também a forma escrita `nunca`.
+// [RouteProfile.Validate]. `devolver` aceita também a forma escrita `nunca`, e `tool_call_id` a
+// forma escrita `runtime`.
 func ParseRouteProfile(data []byte) (RouteProfile, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -156,6 +166,9 @@ func ParseRouteProfile(data []byte) (RouteProfile, error) {
 	}
 	if p.StateReturn == StateReturnNeverName {
 		p.StateReturn = StateReturnNever
+	}
+	if p.ToolCallID == ToolCallIDRuntimeName {
+		p.ToolCallID = ToolCallIDRuntime
 	}
 	if err := p.Validate(); err != nil {
 		return RouteProfile{}, err

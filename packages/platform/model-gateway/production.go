@@ -207,6 +207,9 @@ type ProductionConfig struct {
 	// RouteParamsObserver conta os 4xx do provider nos turnos em que o perfil da rota enviou
 	// parâmetros (AOS-513). Opcional.
 	RouteParamsObserver func(RouteParamsRejection)
+	// StateReturnObserver conta, por pedido a uma rota cuja classe de estado não é `nunca`, o que
+	// a devolução do estado opaco fez (AOS-515). Opcional.
+	StateReturnObserver func(StateReturnObservation)
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -366,6 +369,8 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	gw.route = newRouteGovernor(cfg.Route, govRec)
 	// AOS-513: os perfis com que o gateway trabalha e quem conta os 4xx dos turnos com parâmetros.
 	gw.perfis, gw.paramsObs = perfis, cfg.RouteParamsObserver
+	// AOS-515: quem conta as devoluções do estado opaco.
+	gw.estadoObs = cfg.StateReturnObserver
 	return gw, nil
 }
 

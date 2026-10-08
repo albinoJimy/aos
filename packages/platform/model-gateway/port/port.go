@@ -34,7 +34,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.8.0"
+const Version = "1.9.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -95,6 +95,12 @@ type Message struct {
 	// JSON crus que vieram; `null` ou ausente é vazio. Nunca é erro: uma carga que o gateway
 	// não interpreta não pode derrubar a resposta que a transporta.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// State é o estado opaco do provider do turno desta mensagem `assistant`, num PEDIDO
+	// (AOS-515, ADR-040 §2.9; campo aditivo, MINOR 1.9.0): ver [MessageState]. Não se lê de JSON
+	// nem se serializa por si (`json:"-"`): só [ChatRequest.MarshalWire] o escreve, e só quando
+	// o gateway o marcou para sair. nil em todas as mensagens de uma resposta, e em todas as de
+	// um pedido que não venha da projecção nativa 1.3.0.
+	State *MessageState `json:"-"`
 }
 
 // UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com três

@@ -195,6 +195,9 @@ type Gateway struct {
 	// route_profile.go.
 	perfis    *RouteProfileSet
 	paramsObs func(RouteParamsRejection)
+	// --- AOS-515: a devolução do estado opaco ---
+	// estadoObs conta, por pedido a uma rota que devolve estado, o que saiu. Ver state_return.go.
+	estadoObs func(StateReturnObservation)
 }
 
 // Compile-time: o Gateway satisfaz a porta compatível OpenAI.
@@ -374,9 +377,20 @@ func (g *Gateway) Chat(ctx context.Context, req port.ChatRequest) (port.ChatResp
 		// aqui, depois do roteamento, e não em quem fez o pedido. Sem perfil que os declare o
 		// pedido sai como saía.
 		enviados := g.aplicarPerfilDaRota(&req)
+		// AOS-515: o estado opaco dos turnos anteriores só sai se o perfil DESTA rota o pedir e
+		// se foi esta rota que o produziu. Numa rota que o exige, um turno sem estado devolvível
+		// faz o pedido não sair: o erro sobe daqui, antes do provider.
+		comEstado, derr := g.devolverEstado(&req)
+		if derr != nil {
+			return derr
+		}
 		r, err := g.adapter.Chat(ctx, req, cred)
 		if err != nil {
 			g.contarRecusaDeParametros(req.Model, enviados, err)
+			if comEstado > 0 {
+				// O pedido levou estado: o corpo do erro do provider pode ecoá-lo, e não sobe.
+				return semCorpoDoErro(err)
+			}
 			return err
 		}
 		resp = r
@@ -450,6 +464,9 @@ func (g *Gateway) ChatStream(ctx context.Context, req port.ChatRequest) (port.Ch
 		req.Model = ex.ResolvedModel
 		// AOS-513: os mesmos parâmetros do perfil da rota, também no caminho de streaming.
 		g.aplicarPerfilDaRota(&req)
+		// AOS-515: o caminho de streaming não devolve estado (nem o captura): o que as mensagens
+		// tragam é retirado, qualquer que seja o perfil.
+		_, _, _, _ = armarDevolucao(&req, RouteProfile{}, false)
 		s, err := g.adapter.ChatStream(ctx, req, cred)
 		if err != nil {
 			return err

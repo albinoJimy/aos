@@ -87,6 +87,10 @@ func validRole(r Role) bool {
 // único sítio por onde um pedido chega ao wire, e não em cada chamador: um adaptador que
 // reencaminhasse a mensagem `assistant` de uma resposta tal como a recebeu devolveria o
 // raciocínio ao provider sem que ninguém o tivesse decidido.
+//
+// O ESTADO OPACO É OUTRA COISA (AOS-515). O raciocínio só volta a um provider como carga opaca do
+// estado do turno ([Message.State]), byte a byte, e só nas mensagens que o gateway marcou para
+// sair depois de conferir que a rota do pedido é a que o produziu. Ver [MessageState].
 func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 	w := wireChatRequest{
 		Model:       r.Model,
@@ -100,6 +104,11 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 		// AOS-513 — só o que o gateway lá pôs a partir do perfil da rota.
 		Thinking:        r.Thinking,
 		ReasoningEffort: r.ReasoningEffort,
+	}
+	// AOS-515 — O ESTADO OPACO SÓ SAI QUANDO O GATEWAY O MARCOU ([MessageState.Return]). Sem
+	// nenhuma mensagem marcada, o caminho é o de sempre e os bytes são os de sempre.
+	if temEstadoParaSair(w.Messages) {
+		return marshalComEstado(w)
 	}
 	return json.Marshal(w)
 }
