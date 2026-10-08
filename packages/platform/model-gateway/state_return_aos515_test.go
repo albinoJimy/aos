@@ -74,13 +74,20 @@ func aos515Compor(t *testing.T, h http.Handler, servido string, perfis ...modelg
 // real). credencial vazia ⇒ a de teste de sempre.
 func aos515ComporEm(t *testing.T, base string, cliente *http.Client, credencial string, perfis ...modelgateway.RouteProfile) *aos515Run {
 	t.Helper()
+	return aos515ComporComHost(t, base, cliente, credencial, "", perfis...)
+}
+
+// aos515ComporComHost é o [aos515ComporEm] com o host esperado do endpoint da rota (vazio ⇒ o
+// endpoint não é comparado).
+func aos515ComporComHost(t *testing.T, base string, cliente *http.Client, credencial, hostEsperado string, perfis ...modelgateway.RouteProfile) *aos515Run {
+	t.Helper()
 	run := &aos515Run{t: t, versao: modelgateway.NativeProjectionVersion130, maxBytes: modelgateway.DefaultProviderStateMaxBytes, estados: map[string][]byte{}}
 	cfg := prodConfig(audit.NewMemStore(), base, cliente, []modelgateway.InfraAccount{{KeyID: "acct-eu-1", Provider: "openai", Region: "eu"}})
 	if credencial != "" {
 		cfg.Credentials = testCreds{"openai|eu": credencial}
 	}
 	cfg.ProviderState = modelgateway.ProviderStateCapture
-	cfg.Route = modelgateway.RouteGovernance{Mode: modelgateway.RouteGovernanceObserve}
+	cfg.Route = modelgateway.RouteGovernance{Mode: modelgateway.RouteGovernanceObserve, ExpectedAPIHost: hostEsperado}
 	cfg.RouteProfiles = perfis
 	cfg.StateReturnObserver = func(o modelgateway.StateReturnObservation) { run.obs = append(run.obs, o) }
 	gw, err := modelgateway.NewProduction(context.Background(), cfg)
@@ -394,8 +401,8 @@ func TestAOS515_OutraRota_NaoRecebeOEstado(t *testing.T) {
 		t.Fatal(err)
 	}
 	var se *modelgateway.StateReturnError
-	if _, err := run.passo("gpt-4o"); !errors.As(err, &se) || se.Cause != modelgateway.StateCauseOtherRoute {
-		t.Fatalf("estado servido por outro modelo: queria a recusa; veio %v", err)
+	if _, err := run.passo("gpt-4o"); !errors.As(err, &se) || se.Cause != modelgateway.StateCauseRouteUnproven {
+		t.Fatalf("estado servido por outro modelo (rota `diferente` no turno que o produziu): queria a recusa; veio %v", err)
 	}
 	// Com a governação da rota desligada o envelope não diz de que rota é: não se devolve.
 	if _, _, causa, err := modelgateway.ArmarDevolucaoParaTeste(port.ChatRequest{Messages: []port.Message{{Role: port.RoleAssistant, ToolCalls: []port.ToolCall{{ID: "s-tool-1"}}, State: &port.MessageState{}}}}, aos515Rota(t, "gpt-4o", `,"devolver":"obrigatorio"`)); err == nil || causa != modelgateway.StateCauseNoRoute {
@@ -592,5 +599,58 @@ func TestAOS515_ConfiguracaoDoProxy_SemModifyParams(t *testing.T) {
 	}
 	if vistos != 2 || !ligado.MatchString("litellm_settings:\n  modify_params: true\n") || ligado.MatchString("  # modify_params: true\n") {
 		t.Fatalf("o teste nao esta a ver o que diz ver")
+	}
+}
+
+// F1 (revisão) — SÓ SE DEVOLVE O ESTADO DE UM TURNO CUJA ROTA SE PROVOU IGUAL. Em `observe` um
+// turno com a rota `diferente` ou por reportar segue — e o seu estado tem o digest do perfil e o
+// nome do modelo certos. Não chega: o endpoint era outro, não foi reportado, ou o nome do modelo
+// só coincide depois de saneado. Esse estado não sai: `obrigatorio` falha fechado, `opcional`
+// segue sem ele.
+func TestAOS515_F1_RotaNaoProvadaNaoRecebeOEstado(t *testing.T) {
+	const esperado = "api.esperado.example"
+	for nome, c := range map[string]struct {
+		modelo, apiBase, host string
+	}{
+		"endpoint diferente":     {aos515Modelo, "https://outro-provider.example/v1", esperado},
+		"endpoint nao reportado": {aos515Modelo, "", esperado},
+		"modelo inexacto":        {aos515Modelo + "​", "", ""},
+	} {
+		t.Run(nome, func(t *testing.T) {
+			for _, classe := range []string{"obrigatorio", "opcional"} {
+				falso := &wirefake.Exigente{Proibe: true}
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set(port.HeaderServedModel, c.modelo)
+					if c.apiBase != "" {
+						w.Header().Set(port.HeaderServedAPIBase, c.apiBase)
+					}
+					falso.ServeHTTP(w, r)
+				}))
+				t.Cleanup(srv.Close)
+				run := aos515ComporComHost(t, srv.URL, srv.Client(), "", c.host, aos515Rota(t, "gpt-4o", `,"devolver":"`+classe+`"`))
+				out, err := run.passo("gpt-4o")
+				if err != nil || out.RouteCheck == agentruntime.RouteEqual || out.RouteCheck == agentruntime.RouteUngoverned {
+					t.Fatalf("%s: o primeiro turno tinha de seguir com a rota NAO provada; check=%q err=%v", classe, out.RouteCheck, err)
+				}
+				if len(run.estados) != 1 {
+					t.Fatalf("%s: o turno tinha de deixar estado capturado", classe)
+				}
+				_, err = run.passo("gpt-4o")
+				var se *modelgateway.StateReturnError
+				if classe == "obrigatorio" {
+					if !errors.As(err, &se) || se.Cause != modelgateway.StateCauseRouteUnproven || len(falso.Pedidos()) != 1 {
+						t.Fatalf("obrigatorio: queria a recusa por rota nao provada e nenhum pedido; veio %v (%d pedidos)", err, len(falso.Pedidos()))
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("opcional: o pedido segue sem estado; veio %v", err)
+				}
+				aos515SemSentinelas(t, "pedido seguinte a um turno de rota nao provada", falso.Pedidos()[1].Corpo)
+				if len(run.obs) != 1 || run.obs[0] != (modelgateway.StateReturnObservation{Result: modelgateway.StateReturnNone, Cause: modelgateway.StateCauseRouteUnproven}) {
+					t.Fatalf("contado %+v", run.obs)
+				}
+			}
+		})
 	}
 }

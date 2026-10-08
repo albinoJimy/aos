@@ -39,6 +39,9 @@ type MessageState struct {
 	// a gravou: o digest do perfil com que o turno foi comparado e o modelo que o serviu.
 	RouteProfileDigest string
 	ServedModel        string
+	// RouteCheck é o resultado da comparação da rota do turno que produziu o estado, tal como
+	// o envelope o gravou ([ProviderStateEnvelope.RouteCheck]).
+	RouteCheck string
 	// Fields são os campos de raciocínio do turno, pela ordem em que vieram — os de `message`
 	// ([StateWhereMessage]) e os de `message.provider_specific_fields` ([StateWherePSF]).
 	Fields []ProviderStateField

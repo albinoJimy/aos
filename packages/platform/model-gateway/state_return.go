@@ -59,6 +59,9 @@ const (
 	// StateCauseNoRoute — o envelope não diz a que rota pertence (o turno correu com a
 	// governação da rota desligada): não se prova que é desta.
 	StateCauseNoRoute = "estado_sem_rota"
+	// StateCauseRouteUnproven — o turno que produziu o estado não teve a rota comparada como
+	// `igual` (diferente, ou por reportar): não se prova que o estado é desta rota.
+	StateCauseRouteUnproven = "estado_de_rota_nao_provada"
 	// StateCauseOtherRoute — o estado foi produzido por outra rota ou servido por outro modelo.
 	StateCauseOtherRoute = "estado_de_outra_rota"
 	// StateCauseProviderID — a rota pede os ids do provider e os deste turno não servem: em
@@ -69,7 +72,7 @@ const (
 // StateReturnCauses devolve o vocabulário das causas, numa ordem fixa.
 func StateReturnCauses() []string {
 	return []string{port.StateMissingAbsent, port.StateMissingReference, port.StateMissingDigest, port.StateMissingUnreadable,
-		port.StateMissingMisaligned, StateCauseNoProjection, StateCauseNoRoute, StateCauseOtherRoute, StateCauseProviderID}
+		port.StateMissingMisaligned, StateCauseNoProjection, StateCauseNoRoute, StateCauseRouteUnproven, StateCauseOtherRoute, StateCauseProviderID}
 }
 
 // Resultados da devolução num pedido ([StateReturnObservation.Result]). Vocabulário FECHADO.
@@ -157,6 +160,7 @@ func estadoDoTurno(estados map[string][]byte, rotulo string, chamadas int) *port
 	return &port.MessageState{
 		RouteProfileDigest: env.RouteProfileDigest,
 		ServedModel:        env.ServedModel,
+		RouteCheck:         env.RouteCheck,
 		Fields:             env.Fields,
 		ToolCalls:          env.ToolCalls,
 	}
@@ -213,6 +217,12 @@ func armarDevolucao(req *port.ChatRequest, perfil RouteProfile, temPerfil bool) 
 			motivo = original.Missing
 		case original.RouteProfileDigest == "":
 			motivo = StateCauseNoRoute
+		case original.RouteCheck != port.RouteCheckEqual:
+			// O turno que produziu o estado NÃO provou a rota: o endpoint era outro ou não foi
+			// reportado, ou o nome do modelo só coincide depois de saneado. O digest do perfil e
+			// o nome saneado casavam na mesma — por isso a decisão lê o resultado gravado, e não
+			// o recalcula de entradas mais fracas. Vale em `observe` como em `enforce`.
+			motivo = StateCauseRouteUnproven
 		case original.RouteProfileDigest != digest || original.ServedModel != perfil.ExpectedModel:
 			motivo = StateCauseOtherRoute
 		case perfil.ToolCallID == ToolCallIDProvider && !idsDoProviderServem(original, len(m.ToolCalls), usados):

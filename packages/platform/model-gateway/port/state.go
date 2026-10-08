@@ -328,6 +328,13 @@ type ProviderStateEnvelope struct {
 	RouteProfileDigest string `json:"route_profile_digest,omitempty"`
 	RequestedModel     string `json:"requested_model,omitempty"`
 	ServedModel        string `json:"served_model,omitempty"`
+	// RouteCheck é o RESULTADO da comparação da rota do turno que produziu o estado (AOS-515,
+	// revisão F1): um dos valores RouteCheck*, ou vazio quando a rota não estava sob governação.
+	// É o que diz se a rota se PROVOU igual à do perfil — o digest do perfil e o nome do modelo
+	// não chegam: um turno com o endpoint diferente, por reportar, ou com o nome do modelo só
+	// igual depois de saneado tem o mesmo digest e o mesmo nome. Só um estado com `igual` pode
+	// vir a ser devolvido. `omitempty`: sem governação da rota o envelope tem a forma de sempre.
+	RouteCheck string `json:"route_check,omitempty"`
 	ProviderState
 }
 
