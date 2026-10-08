@@ -348,3 +348,69 @@ func TestAOS514_Retoma_EstadoIgual_EDepoisDoApagamentoFalhaFechada(t *testing.T)
 		t.Fatalf("o erro leva bytes do estado: %v", err)
 	}
 }
+
+// RETOMA A MEIO DE UM RUN. Um run interrompido depois do turno 2 e re-hospedado desde o turno 1
+// — os turnos ja dados reproduzidos da captura, o terceiro ao vivo — monta o turno 3 sobre o
+// MESMO tail que um run que nunca parou: o mesmo `prompt_hash`. O estado dos turnos reproduzidos
+// volta da captura com o mesmo digest, e o tail refere-o como referia.
+func TestAOS514_Retoma_AMeioDoRun_MesmoPromptHash(t *testing.T) {
+	guiao := aos514Guiao()
+	const runID = "run-aos514-retoma-a-meio"
+
+	// (A) O run que nunca parou.
+	inteiro, _ := aos514BancadaSelada(t)
+	goal := aos489Goal(runID)
+	goal.AssemblyVersion = agentruntime.AssemblyVersion150
+	if _, err := inteiro.correr(goal, guiao); err != nil {
+		t.Fatal(err)
+	}
+	querHashes := manifestosDe(t, inteiro.eventos(runID))
+	if len(querHashes) != 3 {
+		t.Fatalf("o run inteiro tinha de ter 3 turnos, tem %d", len(querHashes))
+	}
+
+	// (B) O mesmo run, interrompido: o modelo falha ao terceiro turno.
+	b, cipher := aos514BancadaSelada(t)
+	if _, err := b.correr(goal, guiao[:2]); err == nil {
+		t.Fatalf("o run interrompido tinha de falhar no turno 3")
+	}
+	motor, err := NewEngine(b.store, WithContentOpener(cipher, authorizedAccessor()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dados, err := motor.ReconstructResumable(context.Background(), runID)
+	if err != nil || len(dados) != 2 {
+		t.Fatalf("a retoma tinha de reconstruir os 2 turnos dados: %d, err=%v", len(dados), err)
+	}
+	// A retoma: os turnos dados vem da captura; o terceiro e ao vivo.
+	retomado := []agentruntime.ModelResponse{dados[0].Response, dados[1].Response, guiao[2]}
+	for i := 0; i < 2; i++ {
+		if retomado[i].State == nil || retomado[i].State.Digest != guiao[i].State.Normalizado().Digest {
+			t.Fatalf("turno %d: o estado reidratado nao tem o digest do gravado", i+1)
+		}
+	}
+	res, err := b.correr(goal, retomado)
+	if err != nil || !res.Terminated || res.FinalText != "lido" {
+		t.Fatalf("a retoma tinha de concluir o run: %+v err=%v", res, err)
+	}
+	got := manifestosDe(t, b.eventos(runID))
+	if len(got) != 3 {
+		t.Fatalf("o run retomado tinha de ter 3 turn.recorded, tem %d", len(got))
+	}
+	for i := range got {
+		if got[i].PromptHash != querHashes[i].PromptHash {
+			t.Fatalf("turno %d: prompt_hash do run retomado %s, do run inteiro %s", i+1, got[i].PromptHash, querHashes[i].PromptHash)
+		}
+	}
+	// CONTROLO NEGATIVO: retomar SEM o estado dos turnos dados muda o tail — o turno 3 teria
+	// outro prompt_hash. E por isso que a retoma tem de o reidratar.
+	c, _ := aos514BancadaSelada(t)
+	semEstado := []agentruntime.ModelResponse{guiao[0], guiao[1], guiao[2]}
+	semEstado[0].State, semEstado[1].State = nil, nil
+	if _, err := c.correr(goal, semEstado); err != nil {
+		t.Fatal(err)
+	}
+	if outro := manifestosDe(t, c.eventos(runID)); outro[2].PromptHash == querHashes[2].PromptHash {
+		t.Fatalf("sem o estado dos turnos anteriores o prompt_hash do turno 3 tinha de ser outro")
+	}
+}
