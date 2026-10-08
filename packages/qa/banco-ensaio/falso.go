@@ -227,6 +227,15 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			doUtilizador = append(doUtilizador, m.texto())
 		}
 	}
+	if len(p.Messages) == 1 && len(p.Tools) == 0 && len(doUtilizador) == 1 && doUtilizador[0] == TextoDaSonda {
+		// A SONDA do modo real: conta como pedido, responde 200 e NÃO consome o roteiro — as
+		// conversas da corrida começam na primeira posição dele, com ou sem sonda.
+		f.mu.Lock()
+		f.pedidos++
+		f.mu.Unlock()
+		_, _ = w.Write(respostaDeTexto("ok", int64(len(corpo)/4+1)))
+		return
+	}
 	f.mu.Lock()
 	f.pedidos++
 	if f.guardar {

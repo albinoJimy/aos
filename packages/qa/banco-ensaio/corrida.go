@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -167,7 +168,27 @@ const (
 	// TerminouChaveRecusada — os primeiros pedidos da corrida foram todos recusados por
 	// autenticação: a corrida parou para não gastar o tecto com uma chave que não serve.
 	TerminouChaveRecusada = "chave_recusada"
+	// TerminouSaldoInsuficiente — a conta do fornecedor não tem saldo ou quota: os primeiros
+	// pedidos foram todos 429 com esse tipo, ou foi isso que a sonda recebeu.
+	TerminouSaldoInsuficiente = "saldo_insuficiente"
+	// TerminouLimiteDeRitmo — idem, com o tipo de limite de ritmo: uma pausa entre pedidos resolve.
+	TerminouLimiteDeRitmo = "limite_de_ritmo"
+	// TerminouSo429 — os primeiros pedidos foram todos 429, com um tipo que o banco não conhece.
+	TerminouSo429 = "so_respostas_429"
+	// TerminouSerieDe429 — uma série longa de 429 seguidos a meio da corrida.
+	TerminouSerieDe429 = "serie_de_429"
+	// TerminouModeloDesconhecido — a sonda: o fornecedor não conhece o modelo.
+	TerminouModeloDesconhecido = "modelo_desconhecido"
+	// TerminouSondaFalhou — a sonda não teve 200, por uma causa fora do vocabulário.
+	TerminouSondaFalhou = "sonda_falhou"
 )
+
+// Respostas429QueAbortam é o número de respostas 429 seguidas, desde o primeiro pedido (sem um
+// 200 ainda), que faz o modo com modelo real abortar.
+const Respostas429QueAbortam = 3
+
+// SerieDe429QueAborta é o comprimento da série de 429 seguidos que, a meio da corrida, a pára.
+const SerieDe429QueAborta = 10
 
 // RecusasDeChaveQueAbortam é o número de recusas de autenticação seguidas, desde o primeiro
 // pedido, que faz o modo com modelo real abortar.
@@ -201,6 +222,16 @@ type CfgDaCorrida struct {
 	// número deles, seguidos, desde o início — forem todos recusados por autenticação (401 ou
 	// 403): a chave não serve, e continuar só gastava o tecto do dia. Zero ⇒ não aborta.
 	AbortarAposRecusasDeChave int
+	// AbortarApos429Iniciais, quando positivo, pára a corrida se os PRIMEIROS pedidos — este
+	// número deles, desde o início — tiverem todos resposta 429. A causa sai do tipo do erro:
+	// saldo insuficiente, limite de ritmo, ou só «429». Zero ⇒ não aborta.
+	AbortarApos429Iniciais int
+	// AbortarAposSerieDe429, quando positivo, pára a corrida ao fim deste número de respostas 429
+	// SEGUIDAS, em qualquer ponto dela. Zero ⇒ não aborta.
+	AbortarAposSerieDe429 int
+	// Sondar faz UM pedido mínimo à rota antes do primeiro caso ([NoDeEnsaio.Sondar]). Conta no
+	// tecto. Se não der 200, a corrida não começa: o relatório sai sem observações, com a causa.
+	Sondar bool
 	// Pausa é o intervalo entre dois passos da corrida. Zero ⇒ sem pausa. Serve para não bater
 	// num limite de taxa do fornecedor; não entra no digest da configuração.
 	Pausa time.Duration
@@ -212,7 +243,8 @@ type CfgDaCorrida struct {
 var ErrModoRealSemTecto = errors.New("banco-ensaio: o modo com modelo real nao corre sem o contador e o tecto do dia")
 
 // Correr corre o plano e devolve o relatório. Um relatório parcial é devolvido também quando a
-// corrida pára a meio (tecto atingido, contador inutilizável, interrupção): [Relatorio.Terminou]
+// corrida pára a meio (tecto atingido, contador inutilizável, interrupção, chave recusada, conta
+// sem saldo, limite de ritmo) ou quando a sonda não a deixa começar: [Relatorio.Terminou]
 // diz porquê. Só há erro sem relatório quando a corrida nem chegou a arrancar.
 func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 	if cfg.Bateria == nil || cfg.No == nil {
@@ -234,8 +266,13 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 		return nil, fmt.Errorf("%w: modo desconhecido", ErrPlano)
 	}
 	if cfg.Contador != nil {
-		// Antes de começar: a corrida inteira tem de caber no que resta do tecto do dia.
-		if err := cfg.Contador.Cabe(previstos); err != nil {
+		// Antes de começar: a corrida inteira — e a sonda, se houver — tem de caber no que resta
+		// do tecto do dia.
+		aEnviar := previstos
+		if cfg.Sondar {
+			aEnviar++
+		}
+		if err := cfg.Contador.Cabe(aEnviar); err != nil {
 			return nil, err
 		}
 	}
@@ -246,8 +283,16 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 
 	var obs []Observacao
 	terminou := TerminouCompleta
-	// soRecusasDeChave: todos os pedidos vistos até agora foram 401 ou 403.
-	pedidosVistos, soRecusasDeChave := 0, true
+	var sonda *Sonda
+	if cfg.Sondar {
+		s := cfg.No.Sondar(ctx)
+		sonda = &s
+		if s.Resultado != SondaOK {
+			// A rota não responde: nenhum caso corre. Gastou-se, no máximo, um pedido.
+			return construirRelatorio(cfg, relogio().UTC(), previstos, terminouDaSonda(s), sonda, nil)
+		}
+	}
+	vigia := novoVigiaDeErros()
 	passos := cfg.Plano.sequencia(cfg.Bateria)
 ciclo:
 	for i, ps := range passos {
@@ -280,14 +325,19 @@ ciclo:
 				pedido.Tentativa = tentativa
 				o, saida := cfg.No.Correr(ctx, pedido)
 				obs = append(obs, o)
+				semDuzentos := 0
 				for _, status := range o.HTTP {
-					pedidosVistos++
-					if status != 401 && status != 403 {
-						soRecusasDeChave = false
+					tipo := ""
+					if status != 0 && status != http.StatusOK {
+						if semDuzentos < len(o.TiposDeErro) {
+							tipo = o.TiposDeErro[semDuzentos]
+						}
+						semDuzentos++
 					}
+					vigia.ver(status, tipo)
 				}
-				if cfg.AbortarAposRecusasDeChave > 0 && soRecusasDeChave && pedidosVistos >= cfg.AbortarAposRecusasDeChave {
-					terminou = TerminouChaveRecusada
+				if causa := vigia.causa(cfg); causa != "" {
+					terminou = causa
 					break ciclo
 				}
 				switch o.Desfecho {
@@ -312,7 +362,7 @@ ciclo:
 			fmt.Fprintf(cfg.Progresso, "banco-ensaio: %d de %d passos\n", i+1, len(passos))
 		}
 	}
-	return construirRelatorio(cfg, relogio().UTC(), previstos, terminou, obs)
+	return construirRelatorio(cfg, relogio().UTC(), previstos, terminou, sonda, obs)
 }
 
 // digestDaConfiguracao é o digest de tudo o que, além da bateria e da rota, decide o que a

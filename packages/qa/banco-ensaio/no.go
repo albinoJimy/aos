@@ -80,6 +80,10 @@ type NoDeEnsaio struct {
 	runtimes map[Braco]*agentruntime.Runtime
 	emissor  *identity.Issuer
 	contador *Contador
+	// base, credencial e cliente servem a sonda ([NoDeEnsaio.Sondar]): a mesma rota, a mesma
+	// credencial e o mesmo transporte contado dos pedidos da corrida.
+	base, credencial string
+	cliente          *http.Client
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -182,10 +186,11 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		return nil, fmt.Errorf("banco-ensaio: allowlist do no de ensaio: %w", err)
 	}
 
+	cliente := &http.Client{Timeout: timeout, Transport: &transporteContado{base: transporte, contador: cfg.Contador}}
 	gw, err := modelgateway.NewProduction(ctx, modelgateway.ProductionConfig{
 		Provider:      "openai",
 		BaseURL:       base,
-		HTTPClient:    &http.Client{Timeout: timeout, Transport: &transporteContado{base: transporte, contador: cfg.Contador}},
+		HTTPClient:    cliente,
 		DefaultRegion: regiaoDoEnsaio,
 		Authn:         authn.New(verificador, autoridadeDoEnsaio{}, politica),
 		Audit:         audit.NewMemStore(),
@@ -212,6 +217,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	n := &NoDeEnsaio{
 		bateria: cfg.Bateria, porta: &portaDeEnsaio{dentro: gw, contador: cfg.Contador},
 		mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
+		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},
 	}
 	var doNo []port.Tool
@@ -360,6 +366,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	for i, c := range chamadas {
 		obs.Pedidos++
 		obs.HTTP = append(obs.HTTP, c.status)
+		if c.tipoDeErro != "" {
+			obs.TiposDeErro = append(obs.TiposDeErro, c.tipoDeErro)
+		}
 		obs.Fichas = append(obs.Fichas, c.ficha)
 		obs.TokensDeEntrada += c.tokensDeEntrada
 		obs.TokensDeSaida += c.tokensDeSaida
@@ -425,12 +434,14 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 type chamadaObservada struct {
 	levaMensagemTool bool
 	status           int
-	erro             string
-	ficha            Ficha
-	tokensDeEntrada  int64
-	tokensDeSaida    int64
-	toolCalls        int
-	texto            string
+	// tipoDeErro é o tipo, em vocabulário fechado, de um pedido com resposta HTTP sem 200.
+	tipoDeErro      string
+	erro            string
+	ficha           Ficha
+	tokensDeEntrada int64
+	tokensDeSaida   int64
+	toolCalls       int
+	texto           string
 }
 
 // portaDeEnsaio é o decorador da porta do gateway: aplica o braço às mensagens que a projecção
@@ -492,7 +503,7 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 	}
 	pedido := &pedidoHTTP{}
 	resp, err := p.dentro.Chat(context.WithValue(ctx, chaveDaChamada, pedido), req)
-	obs.status = pedido.lerStatus()
+	obs.status, obs.tipoDeErro = pedido.lerStatus(), pedido.lerTipo()
 	if err != nil {
 		obs.erro = classeDoErro(err, obs.status)
 		obs.ficha = Ficha{Classe: FichaSemResposta}
@@ -561,10 +572,18 @@ func desfechoDoErro(classe string) string {
 	}
 }
 
-// pedidoHTTP recebe do transporte o código HTTP do pedido de uma chamada ao gateway.
+// pedidoHTTP recebe do transporte o código HTTP do pedido de uma chamada ao gateway e, quando
+// não é 200, o tipo do erro em vocabulário fechado.
 type pedidoHTTP struct {
 	mu     sync.Mutex
 	status int
+	tipo   string
+}
+
+func (p *pedidoHTTP) lerTipo() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.tipo
 }
 
 func (p *pedidoHTTP) lerStatus() int {
@@ -574,7 +593,8 @@ func (p *pedidoHTTP) lerStatus() int {
 }
 
 // transporteContado é o transporte HTTP do nó de ensaio. ANTES de cada pedido reserva-o no
-// contador do dia; se a reserva falha, o pedido não sai. Depois, anota o código HTTP.
+// contador do dia; se a reserva falha, o pedido não sai. Depois, anota o código HTTP e o tipo
+// do erro.
 type transporteContado struct {
 	base     http.RoundTripper
 	contador *Contador
@@ -591,8 +611,13 @@ func (t *transporteContado) RoundTrip(req *http.Request) (*http.Response, error)
 	resp, err := t.base.RoundTrip(req)
 	if err == nil {
 		if p, ok := req.Context().Value(chaveDaChamada).(*pedidoHTTP); ok {
+			// O corpo de um erro lê-se AQUI, só para o classificar: o texto não sai do transporte.
+			tipo := ""
+			if resp.StatusCode != http.StatusOK {
+				tipo = tipoDaResposta(resp)
+			}
 			p.mu.Lock()
-			p.status = resp.StatusCode
+			p.status, p.tipo = resp.StatusCode, tipo
 			p.mu.Unlock()
 		}
 	}
