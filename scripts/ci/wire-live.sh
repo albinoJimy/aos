@@ -92,6 +92,25 @@ if ! printf '%s' "$relatorio" | grep -q '"pass":true'; then
   log_fail "wire-live: o relatório não declara pass=true"
   exit 1
 fi
+
+# (3) AOS-515/AOS-513 — o que o GATEWAY ENVIA atravessa o proxy? Dois turnos por rota (openai/… e
+# anthropic/…) com um perfil que declara parâmetros e `devolver: obrigatorio`; o falso grava o
+# que recebe. A rota openai/… tem de completar os dois turnos; a anthropic/… é medição.
+TESTE_515="TestAOS515_ProxyReal_OQueChegaAoProviderNoSegundoTurno"
+log_step "AOS_WIRE_LIVE=1 go test -run $TESTE_515 (arranca o proxy outra vez; cerca de 1 a 3 min)"
+saida515="$( cd "$REPO_ROOT/$MOD" && AOS_WIRE_LIVE=1 go test -run "^${TESTE_515}\$" -v -count=1 -timeout 20m . 2>&1 )" || {
+  printf '%s
+' "$saida515" | tail -40 | sed 's/^/       /' >&2
+  log_fail "wire-live: o cenário da devolução do estado contra o proxy real falhou"
+  exit 1
+}
+if ! printf '%s
+' "$saida515" | grep -q -- "--- PASS: $TESTE_515"; then
+  log_fail "wire-live: sem '--- PASS: $TESTE_515' (um salto não conta)"
+  exit 1
+fi
+printf '%s
+' "$saida515" | grep 'AOS515_MEDIDA' | sed 's/.*AOS515_MEDIDA /   /'
 gate_skip_report || true
 log_ok "wire-live: verde contra o proxy real (todos os casos medidos)"
 log_warn "LEMBRETE: isto mede o que o PROXY faz a corpos fixos de um provider falso. O que o provider real devolve fica por confirmar."

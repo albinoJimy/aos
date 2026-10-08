@@ -67,8 +67,18 @@ func aos515Compor(t *testing.T, h http.Handler, servido string, perfis ...modelg
 		h.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
+	return aos515ComporEm(t, srv.URL, srv.Client(), "", perfis...)
+}
+
+// aos515ComporEm monta o gateway à frente do endereço dado (um servidor de teste, ou o proxy
+// real). credencial vazia ⇒ a de teste de sempre.
+func aos515ComporEm(t *testing.T, base string, cliente *http.Client, credencial string, perfis ...modelgateway.RouteProfile) *aos515Run {
+	t.Helper()
 	run := &aos515Run{t: t, versao: modelgateway.NativeProjectionVersion130, maxBytes: modelgateway.DefaultProviderStateMaxBytes, estados: map[string][]byte{}}
-	cfg := prodConfig(audit.NewMemStore(), srv.URL, srv.Client(), []modelgateway.InfraAccount{{KeyID: "acct-eu-1", Provider: "openai", Region: "eu"}})
+	cfg := prodConfig(audit.NewMemStore(), base, cliente, []modelgateway.InfraAccount{{KeyID: "acct-eu-1", Provider: "openai", Region: "eu"}})
+	if credencial != "" {
+		cfg.Credentials = testCreds{"openai|eu": credencial}
+	}
 	cfg.ProviderState = modelgateway.ProviderStateCapture
 	cfg.Route = modelgateway.RouteGovernance{Mode: modelgateway.RouteGovernanceObserve}
 	cfg.RouteProfiles = perfis
