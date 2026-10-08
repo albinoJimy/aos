@@ -558,7 +558,7 @@ func TestAOS489_LayoutFixadoPeloGoal(t *testing.T) {
 			chamadas++
 			return ModelResponse{Final: true}, nil
 		})
-		for _, v := range []string{"1.2.0", "1.5.0", "latest"} {
+		for _, v := range []string{"1.2.0", "1.6.0", "latest"} {
 			g := sampleGoal()
 			g.AssemblyVersion = v
 			if _, err := New(model, h.rm, h.recorder).Run(context.Background(), g); !errors.Is(err, ErrUnknownAssemblyVersion) {

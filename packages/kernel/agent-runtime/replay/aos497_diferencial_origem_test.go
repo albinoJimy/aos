@@ -196,7 +196,7 @@ func aos497PassoDoTurno(t *testing.T, evs []eventstore.Event, n int) string {
 }
 
 func TestAOS497_Diferencial_OReplayDesignaAOrigemDoLoop(t *testing.T) {
-	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140}
+	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150}
 	if got := agentruntime.SupportedAssemblyVersions(); len(got) != len(versoes) {
 		t.Fatalf("o assembler monta %v e este teste so cobre %v: um layout novo tem de entrar na tabela", got, versoes)
 	}

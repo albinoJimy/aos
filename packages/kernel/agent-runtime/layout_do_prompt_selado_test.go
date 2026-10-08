@@ -417,7 +417,7 @@ func TestLayout_OCorrenteEODaConstante(t *testing.T) {
 // vazia e uma FUTURA — é recusada em todas as portas de entrada, com o sentinela atribuível. Nunca
 // se monta «no mais recente».
 func TestLayout_VersaoDesconhecidaFalhaFechada(t *testing.T) {
-	for _, v := range []string{"", "1.2.0", "1.5.0", "2.0.0", "1.4", " 1.4.0", "latest"} {
+	for _, v := range []string{"", "1.2.0", "1.6.0", "2.0.0", "1.4", " 1.4.0", "latest"} {
 		if err := ValidateAssemblyVersion(v); !errors.Is(err, ErrUnknownAssemblyVersion) {
 			t.Errorf("ValidateAssemblyVersion(%q) = %v, quero ErrUnknownAssemblyVersion", v, err)
 		}

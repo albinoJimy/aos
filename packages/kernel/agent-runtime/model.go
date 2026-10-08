@@ -182,6 +182,14 @@ type ModelResponse struct {
 	// `response_shape` do `turn.recorded`. NÃO decide nada no runtime e NÃO entra na captura do
 	// turno: um turno reproduzido numa retoma volta com nil.
 	Shape *ResponseShape
+	// State é o ESTADO OPACO que o provider devolveu com este turno (AOS-514, ADR-040): o
+	// raciocínio em todos os nomes em que veio, os blocos assinados e os redigidos, e o id que
+	// o provider deu a cada tool call, num envelope de bytes construído por quem fez o pedido —
+	// ver [ProviderState]. nil quando o cliente não o captura (a omissão) ou o turno não o
+	// trouxe. O runtime não o abre: vai para a captura do turno, selado com o resto do
+	// conteúdo, e o tail refere-o por digest (layout 1.5.0). NÃO é resposta, não entra no
+	// `turn.recorded` nem em spans, e não é devolvido ao provider.
+	State *ProviderState
 }
 
 // RouteCheck é o resultado da comparação da rota de um turno com o perfil esperado, num

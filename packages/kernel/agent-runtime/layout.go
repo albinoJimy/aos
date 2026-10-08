@@ -38,6 +38,11 @@ const (
 	// AssemblyVersion140 — AOS-489: preâmbulo de protocolo, segmento `tool_call`, resultado
 	// identificado e neutralização sobre todas as quebras de linha.
 	AssemblyVersion140 = "1.4.0"
+	// AssemblyVersion150 — AOS-514: a 1.4.0, byte a byte, mais o rótulo `state_digest` no
+	// primeiro segmento de um turno cujo provider devolveu estado opaco ([ProviderState]). Um
+	// turno sem estado materializa os mesmos bytes que na 1.4.0 — o mesmo `prompt_hash`. Não é
+	// o layout dos runs novos: só o usa quem liga a captura do estado.
+	AssemblyVersion150 = "1.5.0"
 )
 
 // layout é o que UMA versão do assembler monta. Só se obtém por [layoutFor] (ou
@@ -55,6 +60,9 @@ type layout struct {
 	quebrasAlargadas bool
 	// avisoDeRepeticao: à terceira tool call idêntica do run, o tail ganha um `notice`.
 	avisoDeRepeticao bool
+	// estadoPorDigest: o primeiro segmento que um turno acrescenta leva `state_digest` quando
+	// o turno tem estado opaco do provider (AOS-514).
+	estadoPorDigest bool
 }
 
 func layout130() layout { return layout{version: AssemblyVersion130} }
@@ -67,6 +75,15 @@ func layout140() layout {
 		quebrasAlargadas: true,
 		avisoDeRepeticao: true,
 	}
+}
+
+// layout150 é o [layout140] com o rótulo do estado. Constrói-se A PARTIR dele de propósito: o
+// preâmbulo, a neutralização e a sequência não têm por onde divergir da 1.4.0.
+func layout150() layout {
+	l := layout140()
+	l.version = AssemblyVersion150
+	l.estadoPorDigest = true
+	return l
 }
 
 // layoutCorrente é o layout de [AssemblyVersion] — o dos runs novos.
@@ -83,8 +100,10 @@ func layoutFor(version string) (layout, error) {
 		return layout130(), nil
 	case AssemblyVersion140:
 		return layout140(), nil
+	case AssemblyVersion150:
+		return layout150(), nil
 	default:
-		return layout{}, fmt.Errorf("%w: %q (suportadas: %s, %s)", ErrUnknownAssemblyVersion, version, AssemblyVersion130, AssemblyVersion140)
+		return layout{}, fmt.Errorf("%w: %q (suportadas: %s, %s, %s)", ErrUnknownAssemblyVersion, version, AssemblyVersion130, AssemblyVersion140, AssemblyVersion150)
 	}
 }
 
@@ -92,7 +111,7 @@ func layoutFor(version string) (layout, error) {
 // antiga para a mais recente. É o vocabulário FECHADO de quem rotula por layout (a métrica de
 // runs hospedados do nó).
 func SupportedAssemblyVersions() []string {
-	return []string{AssemblyVersion130, AssemblyVersion140}
+	return []string{AssemblyVersion130, AssemblyVersion140, AssemblyVersion150}
 }
 
 // ValidateAssemblyVersion diz se este assembler sabe montar a versão dada. É o que o motor de
@@ -634,6 +653,40 @@ func campoDeHash(h hash.Hash, b []byte) {
 // desfecho diferente recomeça a série nessa ocorrência. `repetidas` é outra conta, e é medição:
 // toda a chamada idêntica a uma já feita, qualquer que seja o desfecho, em todos os layouts.
 func (s *TailSequence) Turn(stepID, text string, results []CapturedToolResult) (segs []TailSegment, repetidas int) {
+	return s.TurnWithState(stepID, text, "", results)
+}
+
+// StateDigestLabel é a chave do rótulo com que o tail refere o estado opaco do provider de um
+// turno (AOS-514): `state_digest=sha256:<hex>`.
+const StateDigestLabel = "state_digest"
+
+// TurnWithState é a [TailSequence.Turn] de um turno com ESTADO OPACO do provider (AOS-514,
+// ADR-040): stateDigest é o [ProviderState.TailDigest] do turno (vazio ⇒ sem estado, e o
+// resultado é o de [TailSequence.Turn], byte a byte).
+//
+// Num layout que o tem (a 1.5.0), o PRIMEIRO segmento que o turno acrescenta — o `history`, ou
+// a primeira `tool_call` quando o modelo não escreveu texto — ganha, no fim da linha de
+// delimitação, o rótulo
+//
+//	state_digest=sha256:<hex>
+//
+// no molde do `args_digest`: está na linha de delimitação, onde só o runtime escreve, e não no
+// corpo. O `prompt_hash` dos turnos seguintes compromete-se assim com o estado sem o conter.
+// O valor é reduzido à forma `sha256:` + 64 hexadecimais antes de entrar; outra coisa não entra.
+//
+// Um turno que não acrescenta segmento nenhum (o turno que acaba o run) não tem onde levar o
+// rótulo, nem precisa: o seu tail não volta a ser montado. Nos layouts sem o rótulo (1.3.0,
+// 1.4.0) stateDigest é ignorado. O rótulo não muda a autoridade de nada: vai num segmento que
+// já é `taint=untrusted`, e [SegmentAuthority] não o lê.
+func (s *TailSequence) TurnWithState(stepID, text, stateDigest string, results []CapturedToolResult) (segs []TailSegment, repetidas int) {
+	defer func() {
+		if !s.lay.estadoPorDigest || len(segs) == 0 {
+			return
+		}
+		if d := NormalizeRouteProfileDigest(stateDigest); d != "" {
+			segs[0].Meta = append(segs[0].Meta, TailMeta{Key: StateDigestLabel, Value: d})
+		}
+	}()
 	n := len(results)
 	if s.lay.trocaDeTool {
 		n *= 2

@@ -68,6 +68,13 @@ type ResponseShape struct {
 	// resposta: agrupa formas iguais sem guardar texto do provider. Ausente quando a resposta
 	// excede os limites da sonda.
 	ShapeDigest string `json:"shape_digest,omitempty"`
+	// ProviderState diz se este turno trouxe ESTADO OPACO do provider e o que lhe aconteceu
+	// (AOS-514): [ProviderStateCaptured] — foi para a captura — ou [ProviderStateNotReturnable]
+	// — excedia o tecto e não foi guardado. Vazio (e omitido) quando o cliente não captura o
+	// estado ou o turno não o trouxe: a ficha fica com os bytes de sempre. ProviderStateBytes é
+	// o tamanho do envelope, nos dois casos. Nenhum byte do estado, e nem o seu digest.
+	ProviderState      string `json:"provider_state,omitempty"`
+	ProviderStateBytes int64  `json:"provider_state_bytes,omitempty"`
 }
 
 // Vocabulário FECHADO da ficha (AOS-507). O texto de cada valor é o que fica no `turn.recorded`.
@@ -179,7 +186,8 @@ func (s *ResponseShape) Normalizado() *ResponseShape {
 		(s.ArgumentsForm == "" || dentroDe(s.ArgumentsForm, ShapeFormString, ShapeFormObject, ShapeFormOther)) &&
 		dentroDe(s.LegacyFunctionCall, simNao...) &&
 		dentroDe(s.FinishReasonMapped, simNao...) &&
-		dentroDe(s.SystemFingerprint, simNao...)
+		dentroDe(s.SystemFingerprint, simNao...) &&
+		(s.ProviderState == "" || dentroDe(s.ProviderState, string(ProviderStateCaptured), string(ProviderStateNotReturnable)))
 	if !ok {
 		return &ResponseShape{Unreadable: true}
 	}
@@ -195,6 +203,11 @@ func (s *ResponseShape) Normalizado() *ResponseShape {
 		out.ReasoningTokens = &v
 	}
 	out.ShapeDigest = NormalizeRouteProfileDigest(s.ShapeDigest)
+	out.ProviderStateBytes = inteiroDaFicha(s.ProviderStateBytes)
+	if out.ProviderState == "" {
+		// Sem estado declarado não há tamanho a gravar.
+		out.ProviderStateBytes = 0
+	}
 	return &out
 }
 

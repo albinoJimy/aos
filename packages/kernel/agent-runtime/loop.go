@@ -638,6 +638,11 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 			// Uma contagem negativa não existe; não chega ao registo.
 			resp.ToolsOffered = 0
 		}
+		// O ESTADO OPACO DO PROVIDER ENTRA NO RUNTIME JÁ DENTRO DO CONTRATO (AOS-514): o digest
+		// é recalculado aqui, o tecto absoluto é aplicado aqui, e daqui para baixo `resp.State`
+		// é nil ou uma das três formas de [ProviderState.Normalizado] — a mesma que a captura
+		// devolve. O loop não o lê: entrega-o à captura e refere-o no tail por digest.
+		resp.State = resp.State.Normalizado()
 		if err := rt.cp(ctx, goal.RunID, stepID, turn, PhaseModelCalled); err != nil {
 			return res, err
 		}
@@ -703,7 +708,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// Corre UMA vez por turno (a escalada retorna logo a seguir), e é isso que deixa a
 		// medição de repetições ([ToolCallStats]) sair daqui sem contar um turno duas vezes.
 		fecharTail := func() {
-			segs, repetidas := sequencia.Turn(stepID, resp.Text, turnCaptured)
+			segs, repetidas := sequencia.TurnWithState(stepID, resp.Text, resp.State.TailDigest(), turnCaptured)
 			for _, seg := range segs {
 				win.Append(seg)
 			}

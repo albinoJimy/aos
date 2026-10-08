@@ -650,7 +650,9 @@ func (e *ReplayEngine) Replay(ctx context.Context, runID string, opts Options) (
 			value, toolErr, denial := dispatcher.Dispatch(turn, idx)
 			results[idx] = agentruntime.CapturedToolResult{Invocation: inv, Result: value, ToolError: toolErr, Denial: denial}
 		}
-		dobras.turno(stepID, resp.Text, results)
+		// AOS-514: o digest do estado opaco do turno é o que a captura devolveu — o mesmo que o
+		// loop entregou à sequência.
+		dobras.turno(stepID, resp.Text, resp.State.TailDigest(), results)
 		// O passo e a autoridade do turno são os que o loop entregou: o `step_id` gravado e a
 		// dobra de [agentruntime.ContextAuthority] sobre o tail antes deste turno (AOS-497). A
 		// origem que a evidência segue é a que o manifesto DESTE turno gravou, como no loop.
@@ -759,9 +761,9 @@ func (d *dobrasPorLayout) correccao(correction []byte) {
 
 // turno dobra o que um turno acrescenta ao tail em todas as dobras, cada uma na sequência do
 // seu layout.
-func (d *dobrasPorLayout) turno(stepID, text string, results []agentruntime.CapturedToolResult) {
+func (d *dobrasPorLayout) turno(stepID, text, stateDigest string, results []agentruntime.CapturedToolResult) {
 	for _, f := range d.ordem {
-		segs, _ := f.seq.Turn(stepID, text, results)
+		segs, _ := f.seq.TurnWithState(stepID, text, stateDigest, results)
 		f.tail = append(f.tail, segs...)
 	}
 }
