@@ -34,7 +34,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.6.0"
+const Version = "1.7.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -507,6 +507,12 @@ type ChatResponse struct {
 	// (`json:"-"`). nil quando o adaptador não a mede, que é a omissão. O caminho de streaming
 	// não a preenche.
 	Shape *ResponseShape `json:"-"`
+	// State é o estado opaco que o provider devolveu com esta resposta (AOS-514, ADR-040; campo
+	// aditivo, MINOR 1.7.0): ver [ProviderState]. Não é um campo do corpo — é tirado DO corpo
+	// cru por uma sonda —, e por isso não vai no wire (`json:"-"`). nil quando o adaptador não o
+	// captura, que é a omissão, ou quando a resposta não o traz. O caminho de streaming não o
+	// preenche.
+	State *ProviderState `json:"-"`
 }
 
 // ChatStreamDelta é um incremento (delta) do streaming de chat. Content é o

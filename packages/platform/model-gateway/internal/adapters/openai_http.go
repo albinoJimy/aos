@@ -58,7 +58,17 @@ type OpenAIHTTPAdapter struct {
 	// forma: a sonda da forma da resposta corre em cada chat síncrono ([ObserveResponseShape],
 	// AOS-507). false — o valor-zero — é o adaptador de sempre: a sonda não corre.
 	forma bool
+	// estado: a sonda do estado opaco do provider corre em cada chat síncrono
+	// ([CaptureProviderState], AOS-514). false — o valor-zero — é o adaptador de sempre.
+	estado bool
 }
+
+// CaptureProviderState liga a sonda do estado opaco do provider (AOS-514, ADR-040): cada
+// resposta de chat síncrona passa a levar em [port.ChatResponse.State] o que o provider mandou
+// e pode exigir de volta — os campos de raciocínio e, por tool call, o id e a assinatura —,
+// como os bytes crus do corpo. A sonda corre DEPOIS de a resposta ter sido descodificada e não
+// a pode fazer falhar. Chama-se na construção, antes de o adaptador servir tráfego.
+func (a *OpenAIHTTPAdapter) CaptureProviderState() { a.estado = true }
 
 // ObserveResponseShape liga a sonda da forma da resposta (AOS-507): cada resposta de chat
 // síncrona passa a levar a ficha do seu corpo cru em [port.ChatResponse.Shape]. A sonda corre
@@ -142,6 +152,10 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 		// sem nenhum byte de valor. Só com a medição ligada.
 		ficha := port.ProbeResponseShape(respBody)
 		resp.Shape = &ficha
+	}
+	if a.estado {
+		// AOS-514 — o estado opaco do provider, tirado do corpo cru. Só com a captura ligada.
+		resp.State = port.ProbeProviderState(respBody)
 	}
 	return resp, nil
 }

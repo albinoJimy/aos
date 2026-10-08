@@ -193,6 +193,11 @@ type ProductionConfig struct {
 	// síncrona leva a ficha do seu corpo cru. Um modo fora do vocabulário ⇒
 	// [ErrBadResponseShape], sem gateway.
 	ResponseShape string
+	// ProviderState é o modo da captura do estado opaco do provider (AOS-514, ADR-040):
+	// [ProviderStateOff] — a omissão, e o do valor-zero — ou [ProviderStateCapture], em que
+	// cada resposta de chat síncrona leva o estado tirado do corpo cru. Um valor fora do
+	// vocabulário ⇒ [ErrBadProviderState], sem gateway.
+	ProviderState string
 }
 
 // NewProduction monta um GW de produção FAIL-CLOSED por construção a partir de seams
@@ -237,6 +242,15 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 		return nil, serr
 	}
 	cfg.ResponseShape = shapeMode
+	stateMode := cfg.ProviderState
+	if stateMode == "" {
+		stateMode = ProviderStateOff
+	}
+	stateMode, sterr := ParseProviderState(stateMode)
+	if sterr != nil {
+		return nil, sterr
+	}
+	cfg.ProviderState = stateMode
 	clock := cfg.Clock
 	if clock == nil {
 		clock = time.Now
@@ -299,6 +313,12 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 		// AOS-507: a sonda da forma só existe no adaptador HTTP — é ele que tem o corpo cru.
 		if h, ok := adapter.(*adapters.OpenAIHTTPAdapter); ok {
 			h.ObserveResponseShape()
+		}
+	}
+	if cfg.ProviderState == ProviderStateCapture {
+		// AOS-514: a sonda do estado só existe no adaptador HTTP, pela mesma razão.
+		if h, ok := adapter.(*adapters.OpenAIHTTPAdapter); ok {
+			h.CaptureProviderState()
 		}
 	}
 	creds := &credProviderSource{p: cfg.Credentials}
