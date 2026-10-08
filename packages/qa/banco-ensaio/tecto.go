@@ -385,11 +385,18 @@ func (c *Contador) gravar(f ficheiroDoContador) error {
 	if err := os.WriteFile(tmp, append(cru, '\n'), 0o600); err != nil {
 		return fmt.Errorf("%w: %v", ErrContador, err)
 	}
-	if err := os.Rename(tmp, c.caminho); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("%w: %v", ErrContador, err)
+	// No Windows, um antivirus ou o indexador podem ter o ficheiro aberto por uns milissegundos
+	// e o rename falha com uma violacao de partilha. Insiste-se um pouco; se nao passar, o erro
+	// sobe e o pedido nao sai (continua fail-closed).
+	var rerr error
+	for tentativa := 0; tentativa < 20; tentativa++ {
+		if rerr = os.Rename(tmp, c.caminho); rerr == nil {
+			return nil
+		}
+		time.Sleep(15 * time.Millisecond)
 	}
-	return nil
+	_ = os.Remove(tmp)
+	return fmt.Errorf("%w: %v", ErrContador, rerr)
 }
 
 // Reservar conta UM pedido, ANTES de ele ser enviado. Devolve nil só depois de o ficheiro ter

@@ -55,6 +55,8 @@ const (
 	ComportamentoSemFactos Comportamento = "sem_factos"
 	// ComportamentoErro500 — responde 500 a todos os pedidos da conversa.
 	ComportamentoErro500 Comportamento = "erro_500"
+	// ComportamentoErro401 — responde 401 a todos os pedidos da conversa: a chave recusada.
+	ComportamentoErro401 Comportamento = "erro_401"
 	// ComportamentoRejeitaSegundo — pede as tools e responde 400 ao pedido que as devolve: o
 	// provider que não aceita o segundo turno.
 	ComportamentoRejeitaSegundo Comportamento = "rejeita_segundo"
@@ -64,7 +66,7 @@ const (
 func Comportamentos() []Comportamento {
 	return []Comportamento{
 		ComportamentoCumpre, ComportamentoTexto, ComportamentoVazia, ComportamentoCortada,
-		ComportamentoSemFactos, ComportamentoErro500, ComportamentoRejeitaSegundo,
+		ComportamentoSemFactos, ComportamentoErro500, ComportamentoErro401, ComportamentoRejeitaSegundo,
 	}
 }
 
@@ -245,6 +247,9 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case comportamento == ComportamentoErro500:
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":{"message":"erro interno do provider falso","type":"server_error"}}`))
+	case comportamento == ComportamentoErro401:
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"chave recusada pelo provider falso (roteiro)","type":"authentication_error"}}`))
 	case comportamento == ComportamentoTexto && temTools:
 		// A tool call ESCRITA COMO TEXTO: o nome da tool no texto, nenhuma tool call nativa.
 		texto := SentinelaDeTexto + " I will now call " + p.Tools[0].Function.Name + " with the document name as its argument."

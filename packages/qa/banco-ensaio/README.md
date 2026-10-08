@@ -31,7 +31,8 @@ não a governação do nó.
 | 2.º turno com tools aceite | O pedido com o `assistant` das tool calls e a mensagem `tool` teve HTTP 200 e deu um turno. |
 | Factos ausentes | Substituto determinista da recusa do objectivo: os números e nomes exactos do documento sintético estão ou não na saída. |
 | Resposta vazia, cortada | Os desfechos `empty_output` e `truncated` do kernel. |
-| Erro do provider | Pedidos sem HTTP 200, e a distribuição dos códigos. |
+| Erro do provider | Pedidos sem HTTP 200 nem 429, e a distribuição dos códigos. |
+| Limite de taxa (429) | Contado à parte: tanto o dá o fornecedor como o próprio proxy, e pelo código não se distinguem. |
 | Recuperado à 2.ª ou 3.ª tentativa | Nova tentativa do nó, como o `aos-orq` (com o aviso do kernel quando faltou a tool call). |
 | Forma das respostas | A ficha do AOS-507 (`port.ProbeResponseShape`, pelo adaptador de produção), agregada por classe. |
 
@@ -110,6 +111,15 @@ O modo real levanta a imagem de produção do proxy num contentor só para a cor
 rota para o fornecedor (`openai/<modelo>` para o Kimi, `anthropic/<modelo>` para a Anthropic),
 e desmonta-a no fim.
 
+### `limpar` — remover o que ficou de uma corrida anterior
+
+```powershell
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe limpar --chaves $env:USERPROFILE\.aos-ensaio\chaves.env
+```
+
+Remove os contentores e as redes `aos512-*` que existirem e, se o processo que a criou já não
+existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órfãos», abaixo.
+
 ## Opções
 
 | Opção | Modos | O que faz |
@@ -128,8 +138,12 @@ e desmonta-a no fim.
 | `--fornecedor kimi\|anthropic` | real | O fornecedor. |
 | `--modelo M` | real | Um dos modelos do ficheiro (omissão: o primeiro). |
 | `--precos F` | real | Tabela de preços. Obrigatória quando há tecto em dólares. |
-| `--contador F` | real | Ficheiro do contador (omissão: ao lado do ficheiro de chaves). |
-| `--so-plano` | real | Valida tudo, diz quantos pedidos faria e não envia nenhum. |
+| `--so-plano` | real | Valida tudo, mostra o destino da chave e quantos pedidos faria, e não envia nenhum. |
+| `--destino-fora-da-lista HOST` | real | Aceita um destino da chave que não é um host do fornecedor. `HOST` tem de ser exactamente o host do ficheiro; o `https` continua a ser exigido. |
+| `--reconstruir-contador` | real | Recria um contador desaparecido a partir dos relatórios de hoje. |
+
+No modo real **não há `--contador`**: o contador é sempre `contador.json`, ao lado do ficheiro
+de chaves. Uma flag que apontasse para outro ficheiro punha a contagem do dia a zero.
 
 ### Variáveis de ambiente
 
@@ -149,7 +163,7 @@ O banco não lê mais nenhuma variável, e nenhuma destas chega ao nó `aos`.
 | 0 | A corrida completou e o relatório foi escrito. |
 | 2 | Argumentos inválidos. |
 | 3 | Recusada antes de arrancar: ficheiro de chaves, tecto, preço, contador, ou a corrida não cabe no tecto. Nenhum pedido saiu. |
-| 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`). O relatório parcial foi escrito e diz a causa. |
+| 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`, `chave_recusada`). O relatório parcial foi escrito e diz a causa. |
 | 5 | Modo `real` pedido em CI. |
 | 6 | Falta o Docker ou a imagem do proxy, ou o proxy não arrancou. |
 | 1 | Outra falha. |
@@ -160,14 +174,33 @@ O ficheiro de chaves é do dono e vive **fora do repositório**
 (`%USERPROFILE%\.aos-ensaio\chaves.env`; o modelo está em `chaves.env.exemplo`, na mesma
 pasta). Só o programa o lê, pelo caminho que lhe dão.
 
-- **Recusas.** Sem ficheiro, com um campo obrigatório em falta ou ainda com o marcador `<…>`
-  do exemplo, o modo real sai com 3 e uma mensagem que nomeia o **campo** — nunca o valor.
+- **Recusas.** Sem ficheiro, com um campo obrigatório em falta ou ainda com o marcador do
+  exemplo (`<…>`, inteiro ou só com um dos sinais), o modo real sai com 3 e uma mensagem que
+  nomeia o **campo** — nunca o valor. Também recusa: um valor **entre aspas** (as aspas iriam
+  para o fornecedor); um **campo repetido** (a mensagem diz o nome e os números das linhas —
+  não é «ganha o último»).
+- **Destino da chave.** A base do Kimi tem de ser `https`, sem utilizador, porta, query nem
+  fragmento, e o host tem de estar na lista embutida no banco: `api.kimi.com`,
+  `api.moonshot.ai`, `api.moonshot.cn` (Anthropic: `api.anthropic.com`, fixo). Outro host só
+  com `--destino-fora-da-lista <host exacto>`. O `--so-plano` e o início da corrida mostram
+  `DESTINO DA CHAVE: https://<host>` — o host de um fornecedor público não é segredo; o caminho
+  da base e as chaves continuam fora de todas as saídas.
 - **Tectos.** `TECTO_PEDIDOS_DIA_KIMI`, `TECTO_PEDIDOS_DIA_ANTHROPIC` e
   `TECTO_USD_DIA_ANTHROPIC`. Não há tecto por omissão: ausente, zero ou ilegível recusa o
-  arranque. As opções da linha de comandos não mexem nos tectos do modo real.
-- **Contador.** `contador.json`, ao lado do ficheiro de chaves (ou `--contador`). Persistente,
-  por fornecedor e por dia (UTC). Cada pedido é contado **antes** de ser enviado. Um contador
-  que existe e não se lê recusa tudo — não recomeça do zero; repara-se à mão.
+  arranque. Um tecto escreve-se só com algarismos (`+500`, `5 00`, `1e3` são recusados) e tem
+  máximo: 100 000 pedidos e 1000 USD por dia. As opções da linha de comandos não mexem nos
+  tectos do modo real.
+- **Contador.** `contador.json`, ao lado do ficheiro de chaves. Persistente, por fornecedor e
+  por dia (UTC). Cada pedido é contado **antes** de ser enviado. Um contador que existe e não
+  se lê recusa tudo — não recomeça do zero; repara-se à mão. Um contador que **desapareceu**,
+  havendo relatórios de corridas reais de hoje na pasta, recusa também: só
+  `--reconstruir-contador` o recria, com a soma dos pedidos desses relatórios.
+- **Um processo de cada vez.** Ao abrir o contador o banco cria `contador.json.trava` (com o
+  PID e a hora); um segundo processo recusa arrancar, com exit 3. A trava de um processo que
+  morreu não se remove sozinha: `aos-ensaio limpar --chaves <ficheiro>` remove-a, depois de
+  confirmar que o processo já não existe.
+- **Chave recusada.** Se os três primeiros pedidos da corrida real forem todos 401 ou 403, a
+  corrida aborta (`chave_recusada`, exit 4) em vez de gastar o tecto do dia.
 - **Antes de começar**, a corrida calcula o máximo de pedidos que pode fazer e recusa se não
   couber no que resta do dia.
 - **Tecto em dólares.** Usa os tokens do `usage` e a tabela de `--precos`:
@@ -181,7 +214,26 @@ pasta). Só o programa o lê, pelo caminho que lhe dão.
   modelo, o arranque é recusado. O gasto é uma **estimativa**, e o relatório di-lo; como só se
   conhece depois de cada resposta, o tecto em dólares pode ser ultrapassado pelo custo de um
   pedido.
-- **Um processo de cada vez.** O contador não coordena dois ensaios sobre o mesmo ficheiro.
+
+## O proxy efémero e os órfãos
+
+Enquanto o contentor do proxy existir, **a chave do fornecedor está em claro no seu ambiente**
+(`docker inspect`), e o proxy aceita pedidos — fora do contador — de quem lá for buscar a chave
+mestra. Numa corrida que acaba normalmente (incluindo `Ctrl+C`, `SIGTERM` e, no Windows, o
+fecho da janela, na medida em que o sistema dê tempo) o banco remove-o. Para o caso de o
+processo morrer à força, a limpeza não depende dele:
+
+- o contentor é criado com `--rm` e leva um **vigia**: o banco manda-lhe um sinal de vida de 10
+  em 10 segundos, e se o vigia passar 90 segundos sem o ver — ou se passar o prazo máximo de
+  vida, derivado do plano da corrida — mata o proxy e o contentor apaga-se;
+- os modos `proxy` e `real` **varrem**, ao arrancar, os contentores e as redes `aos512-*` de
+  corridas anteriores, e dizem quantos removeram;
+- `aos-ensaio limpar` faz só essa varredura.
+
+O proxy do ensaio **não tem a configuração de produção**: corre com `num_retries: 0` (um pedido
+do banco é um pedido ao fornecedor — é o que faz o tecto contar o que sai), `drop_params: true`
+e `disable_cooldowns: true` (sem isto, depois de um erro do fornecedor o proxy responde ele
+próprio 429 aos pedidos seguintes). O relatório di-lo nos limites.
 
 ## O relatório
 
@@ -223,5 +275,7 @@ abre-se em ticket próprio, com emenda ao ADR-036.
 Métrica: primeiras tentativas sem tool call. Com 53 por braço só se distingue 10% de 32%
 (potência de 80% a 5%); diferenças menores não se vêem, e não as ver não prova que não existem.
 O relatório dá, por braço, a taxa com o intervalo de 95% e, para cada braço contra o A, a
-diferença, se os intervalos se sobrepõem e o p-valor do teste de duas proporções — aritmética
-sobre as contagens, não conclusões.
+diferença, se os intervalos se sobrepõem, o p-valor do **teste exacto de Fisher** (bilateral) e
+o p-valor **corrigido pelo método de Holm** para as três comparações — é o corrigido que decide
+o campo `distingue_a_5_por_cento`. É aritmética sobre as contagens, não conclusões. (Uma
+aproximação normal dava 0,041 para 0 em 53 contra 4 em 53; o teste exacto dá 0,118.)
