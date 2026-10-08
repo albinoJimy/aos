@@ -114,9 +114,11 @@ type Observacao struct {
 	ExigeTool bool `json:"exige_tool"`
 	// Desfecho é o desfecho do run, no vocabulário fechado.
 	Desfecho string `json:"desfecho"`
-	Turnos   int    `json:"turnos"`
-	Pedidos  int    `json:"pedidos"`
-	// ToolCalls é o total de tool calls NATIVAS que o modelo pediu e o loop despachou.
+	// Turnos são os pedidos do run que deram um turno (resposta aceite pelo gateway).
+	Turnos  int `json:"turnos"`
+	Pedidos int `json:"pedidos"`
+	// ToolCalls é o total de tool calls NATIVAS que o modelo pediu (o campo `tool_calls` das
+	// respostas), contadas na porta do gateway.
 	ToolCalls int `json:"tool_calls_nativas"`
 	// SemToolCall — o nó exige uma tool, o run não pediu nenhuma e o último turno parou com o
 	// motivo `stop` (o `contract_unmet_no_call` do kernel). Não se lê texto para o decidir.
@@ -290,16 +292,19 @@ func CalcularTaxas(obs []Observacao) Taxas {
 			}
 		}
 	}
-	var repetiveis, aSegunda, aTerceira int
+	var comSegunda, aSegunda, comTerceira, aTerceira int
 	for _, tentativas := range porUnidade {
-		if !desfechoRepetivel(tentativas[1]) {
-			continue
+		if d, houve := tentativas[2]; houve {
+			comSegunda++
+			if d == DesfechoCumprido {
+				aSegunda++
+			}
 		}
-		repetiveis++
-		if tentativas[2] == DesfechoCumprido {
-			aSegunda++
-		} else if tentativas[3] == DesfechoCumprido {
-			aTerceira++
+		if d, houve := tentativas[3]; houve {
+			comTerceira++
+			if d == DesfechoCumprido {
+				aTerceira++
+			}
 		}
 	}
 	t.Unidades = len(porUnidade)
@@ -311,8 +316,8 @@ func CalcularTaxas(obs []Observacao) Taxas {
 	t.Cortada = NovaTaxa("runs com pelo menos um turno que fecharam truncated", cortadas, comTurno)
 	t.ErroDoProvider = NovaTaxa("pedidos HTTP cuja resposta nao foi 200 (inclui os que nao tiveram resposta HTTP)", pedidosComErro, pedidos)
 	t.CumpridoAPrimeira = NovaTaxa("primeiras tentativas que fecharam cumprido", cumpridasAPrimeira, primeiras)
-	t.RecuperadoASegunda = NovaTaxa("unidades cuja primeira tentativa fechou contract_unmet_no_call ou empty_output, que fecharam cumprido a segunda", aSegunda, repetiveis)
-	t.RecuperadoATerceira = NovaTaxa("as mesmas unidades, que so fecharam cumprido a terceira", aTerceira, repetiveis)
+	t.RecuperadoASegunda = NovaTaxa("unidades que tiveram segunda tentativa (a primeira fechou contract_unmet_no_call ou empty_output), em que a segunda fechou cumprido", aSegunda, comSegunda)
+	t.RecuperadoATerceira = NovaTaxa("unidades que tiveram terceira tentativa, em que a terceira fechou cumprido", aTerceira, comTerceira)
 	return t
 }
 

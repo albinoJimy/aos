@@ -190,7 +190,7 @@ type CfgDaCorrida struct {
 	Extra map[string]string
 	// Relogio dá a data do relatório. nil ⇒ time.Now.
 	Relogio func() time.Time
-	// Progresso, se presente, recebe uma linha por bloco: só contagens.
+	// Progresso, se presente, recebe uma linha a cada vinte passos: só contagens.
 	Progresso io.Writer
 }
 
@@ -276,7 +276,7 @@ ciclo:
 				pedido.AvisoDeNovaTentativa = o.Desfecho == string(agentruntime.OutcomeContractNoCall)
 			}
 		}
-		if cfg.Progresso != nil && ((i+1)%len(cfg.Plano.Bracos) == 0 || i == len(passos)-1) {
+		if cfg.Progresso != nil && ((i+1)%20 == 0 || i == len(passos)-1) {
 			fmt.Fprintf(cfg.Progresso, "banco-ensaio: %d de %d passos\n", i+1, len(passos))
 		}
 	}

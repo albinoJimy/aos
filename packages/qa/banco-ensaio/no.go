@@ -345,8 +345,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	delete(n.motivos, runID)
 	n.mu.Unlock()
 
-	obs.Turnos = res.Turns
-	obs.ToolCalls = res.ToolCallsRequested
+	// Os turnos e as tool calls contam-se pelo que o banco VIU passar na porta do gateway, e
+	// não pelo [agentruntime.Result]: um run que falha a meio (o provider recusa o segundo
+	// pedido) devolve um Result vazio, e o primeiro turno — com a sua tool call — aconteceu.
 	obs.UltimoDesfechoDeTool = res.LastToolOutcome
 	var ultimoTexto string
 	for i, c := range chamadas {
@@ -355,6 +356,10 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 		obs.Fichas = append(obs.Fichas, c.ficha)
 		obs.TokensDeEntrada += c.tokensDeEntrada
 		obs.TokensDeSaida += c.tokensDeSaida
+		obs.ToolCalls += c.toolCalls
+		if c.erro == "" {
+			obs.Turnos++
+		}
 		if c.levaMensagemTool && obs.SegundoTurno == SegundoTurnoNaoTentado {
 			obs.SegundoTurno = SegundoTurnoRecusado
 			if c.erro == "" && c.status == http.StatusOK {
@@ -366,7 +371,7 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 			obs.erroDaUltimaChamada = c.erro
 		}
 	}
-	semChamada := obs.ExigeTool && err == nil && res.ToolCallsRequested == 0 &&
+	semChamada := obs.ExigeTool && err == nil && obs.ToolCalls == 0 && res.ToolCallsRequested == 0 &&
 		len(obs.MotivosDeParagem) > 0 && obs.MotivosDeParagem[len(obs.MotivosDeParagem)-1] == string(agentruntime.StopStop)
 	obs.SemToolCall = semChamada
 	if semChamada {
@@ -417,6 +422,7 @@ type chamadaObservada struct {
 	ficha            Ficha
 	tokensDeEntrada  int64
 	tokensDeSaida    int64
+	toolCalls        int
 	texto            string
 }
 
@@ -488,6 +494,7 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 		obs.tokensDeEntrada, obs.tokensDeSaida = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
 		if len(resp.Choices) > 0 {
 			obs.texto = resp.Choices[0].Message.Content
+			obs.toolCalls = len(resp.Choices[0].Message.ToolCalls)
 		}
 		if p.contador != nil {
 			// O gasto estimado conta-se com os tokens que o fornecedor devolveu. Se o contador
