@@ -31,8 +31,9 @@ const (
 	// SaidaRecusada — a corrida foi recusada antes de arrancar: ficheiro de chaves, tecto,
 	// preço ou contador. Nenhum pedido saiu.
 	SaidaRecusada = 3
-	// SaidaParouAMeio — a corrida parou a meio (tecto atingido, contador, interrupção). O
-	// relatório parcial foi escrito e diz a causa.
+	// SaidaParouAMeio — a corrida parou a meio (tecto atingido, contador, interrupção, chave
+	// recusada, conta sem saldo, limite de ritmo) ou a sonda não a deixou começar. O relatório
+	// parcial foi escrito e diz a causa.
 	SaidaParouAMeio = 4
 	// SaidaEmCI — o modo com modelo real foi pedido em CI. Recusado, sem ler nada.
 	SaidaEmCI = 5
@@ -384,19 +385,22 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			return SaidaRecusada
 		}
 		defer cfg.Contador.Fechar()
-		if err := cfg.Contador.Cabe(previstos); err != nil {
+		// Mais um: a sonda antes da corrida conta no tecto como um pedido.
+		if err := cfg.Contador.Cabe(previstos + 1); err != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
 			return SaidaRecusada
 		}
 		cfg.Rota = RotaDoRelatorio{Fornecedor: string(fornecedor), Modelo: rota.Modelo, Digest: DigestDaRota(string(fornecedor), rota.Modelo, rota.apiBase)}
 		cfg.RegiaoDeclarada = rota.RegiaoDeclarada
 		cfg.AbortarAposRecusasDeChave = RecusasDeChaveQueAbortam
+		cfg.AbortarApos429Iniciais, cfg.AbortarAposSerieDe429 = Respostas429QueAbortam, SerieDe429QueAborta
+		cfg.Sondar = true
 		estado, eerr := cfg.Contador.Estado()
 		if eerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", eerr)
 			return SaidaRecusada
 		}
-		fmt.Fprintf(stderr, "aos-ensaio: modo REAL — fornecedor %s, modelo %s; a corrida faz ate %d pedidos; hoje (%s UTC) restam %d de %d\n",
+		fmt.Fprintf(stderr, "aos-ensaio: modo REAL — fornecedor %s, modelo %s; a corrida faz ate %d pedidos, mais 1 de sonda antes de comecar; hoje (%s UTC) restam %d de %d\n",
 			fornecedor, rota.Modelo, previstos, estado.Dia, estado.PedidosRestantes, estado.TectoPedidos)
 		// O destino mostra-se ANTES de enviar seja o que for: é onde o dono confirma para onde a
 		// chave vai. O host de um fornecedor público não é segredo; o caminho da base não vai.
@@ -452,10 +456,43 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	}
 	fmt.Fprintf(stdout, "relatorio: %s\nresumo:    %s\n", emJSON, emTexto)
 	if relatorio.Terminou != TerminouCompleta {
+		if relatorio.Sonda != nil && relatorio.Sonda.Resultado != SondaOK {
+			fmt.Fprintf(stderr, "aos-ensaio: a SONDA nao teve 200 (HTTP %d, %s): a corrida NAO COMECOU; gastou-se no maximo 1 pedido do tecto\n", relatorio.Sonda.HTTP, relatorio.Sonda.Resultado)
+		}
 		fmt.Fprintf(stderr, "aos-ensaio: a corrida PAROU A MEIO (%s); o relatorio e parcial\n", relatorio.Terminou)
+		if conselho := conselhoDaParagem(relatorio); conselho != "" {
+			fmt.Fprintf(stderr, "aos-ensaio: %s\n", conselho)
+		}
 		return SaidaParouAMeio
 	}
 	return SaidaOK
+}
+
+// conselhoDaParagem diz ao dono, em frases fixas, o que fazer com uma corrida que parou por um
+// erro do fornecedor. Não leva nada do corpo do erro.
+func conselhoDaParagem(r *Relatorio) string {
+	const (
+		semSaldo = "a conta do fornecedor nao tem saldo ou quota (saldo_insuficiente): carregue a conta; repetir a corrida nao adianta e gasta o tecto do dia"
+		ritmo    = "limite de ritmo do fornecedor (limite_de_ritmo): repita com --pausa (por exemplo --pausa 5s) para espacar os pedidos"
+	)
+	switch r.Terminou {
+	case TerminouChaveRecusada:
+		return "o fornecedor recusou a chave (chave_recusada): confirme que a chave e deste produto e deste destino"
+	case TerminouSaldoInsuficiente:
+		return semSaldo
+	case TerminouLimiteDeRitmo:
+		return ritmo
+	case TerminouModeloDesconhecido:
+		return "o fornecedor nao conhece o modelo (modelo_desconhecido): confirme o nome do modelo no ficheiro de chaves ou em --modelo"
+	case TerminouSondaFalhou:
+		return "a rota nao respondeu 200 a sonda por uma causa fora do vocabulario (outro): veja o codigo HTTP acima"
+	case TerminouSo429, TerminouSerieDe429:
+		if r.Taxas.TiposDeErro[TipoSaldoInsuficiente] > 0 {
+			return semSaldo
+		}
+		return "respostas 429 seguidas; se for limite de ritmo, repita com --pausa (por exemplo --pausa 5s) — a contagem por tipo de erro esta no relatorio"
+	}
+	return ""
 }
 
 func lancadorDe(amb Ambiente, red *Redactor) LancadorDeProxy {
