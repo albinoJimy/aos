@@ -169,8 +169,10 @@ type PromptView struct {
 	Tail []TailSegment
 
 	// ProjectionVersion é a versão da projecção em que o RUN está fixado (AOS-513,
-	// [Goal.ProjectionVersion]), para quem projecta o prompt noutra forma. Vazia ⇒ o run não
-	// fixou nenhuma, e quem projecta usa a sua. Não é do assembler: o loop escreve-a na vista
+	// [Goal.ProjectionVersion]), para quem projecta o prompt noutra forma. Vazia ⇒ um run novo
+	// sem versão fixada: quem projecta usa a sua regra (a do perfil da rota, ou a do nó).
+	// [ProjectionVersionUnpinned] ⇒ um run RETOMADO que começou sem versão fixada: quem projecta
+	// usa a do nó e ignora a que o perfil declare agora ([ProjectionVersionForView]). Não é do assembler: o loop escreve-a na vista
 	// depois de a montar. Não entra em Materialized nem no `prompt_hash`.
 	ProjectionVersion string
 	// ProviderStates são os ESTADOS OPACOS do provider dos turnos anteriores deste run (AOS-515,

@@ -104,8 +104,8 @@ type Goal struct {
 	// publicadas, e um valor que não tenha a forma `N.N.N` não é transportado.
 	//
 	// [ProjectionVersionUnpinned] é o valor de um run RE-HOSPEDADO que começou sem versão
-	// fixada: diz a quem hospeda que não a fixe agora, a meio do run. Não tem a forma `N.N.N`,
-	// pelo que a vista vai sem versão, como em todos os turnos anteriores desse run.
+	// fixada: diz a quem hospeda que não a fixe agora, a meio do run, e SEGUE NA VISTA tal e
+	// qual, para que quem projecta também não vá buscar a que o perfil da rota declare agora.
 	ProjectionVersion string
 	// CompletionRequires é o CONTRATO DE CONCLUSÃO do run (AOS-493, ADR-037): os nomes (o
 	// `ToolID`) das tools de que a conclusão depende. O run só conclui cumprido com pelo menos
@@ -599,7 +599,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		}
 		// A VERSÃO DA PROJECÇÃO EM QUE O RUN ESTÁ FIXADO (AOS-513) segue na vista para quem faz o
 		// pedido. Vazia na omissão: a vista é a de sempre.
-		view.ProjectionVersion = NormalizeProjectionVersion(goal.ProjectionVersion)
+		view.ProjectionVersion = ProjectionVersionForView(goal.ProjectionVersion)
 		// OS ESTADOS OPACOS DOS TURNOS ANTERIORES (AOS-515) seguem na vista, pelo digest do tail.
 		// nil num run sem estado: a vista é a de sempre.
 		view.ProviderStates = copiaDosEstados(estadosDoRun)

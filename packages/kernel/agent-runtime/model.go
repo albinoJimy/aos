@@ -270,6 +270,22 @@ func paramsDoTurno(doGoal, doPedido map[string]string) map[string]string {
 // versão de projecção fixada (AOS-513).
 const ProjectionVersionUnpinned = "none"
 
+// ProjectionVersionForView devolve o que a vista de um turno leva como versão da projecção do
+// run: a versão fixada, se tiver a forma `N.N.N`; a marca [ProjectionVersionUnpinned], se o run
+// foi re-hospedado sem versão fixada; e vazio em qualquer outro caso (um run novo sem versão, ou
+// um valor sem forma).
+//
+// A MARCA TEM DE CHEGAR A QUEM PROJECTA (revisão do AOS-513, F2). Vazio quer dizer «run novo: usa
+// a versão que o perfil da rota declarar»; a marca quer dizer «este run já deu turnos sem versão
+// fixada: continua na do nó, e ignora a que o perfil declare agora». Reduzir a marca a vazio fazia
+// um run retomado mudar de projecção a meio quando a imagem nova declarava uma versão no perfil.
+func ProjectionVersionForView(v string) string {
+	if v == ProjectionVersionUnpinned {
+		return v
+	}
+	return NormalizeProjectionVersion(v)
+}
+
 // NormalizeProjectionVersion devolve a versão de projecção em que um run está fixado se ela
 // tiver a forma `N.N.N` (dígitos e pontos, até 16 bytes), e vazio caso contrário. O runtime não
 // conhece as versões publicadas — isso é de quem projecta —; só garante a forma do que

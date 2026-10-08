@@ -214,20 +214,25 @@ var ErrPinnedProjectionVersion = errors.New("model-gateway: o run esta fixado nu
 //  1. a versão em que o RUN está fixado ([agentruntime.PromptView.ProjectionVersion]) — um run
 //     que começou numa versão continua nela, depois de uma retoma e qualquer que seja a rota a
 //     que o gateway mande o pedido;
-//  2. a que o PERFIL DA ROTA do modelo do adaptador declara;
+//  2. a que o PERFIL DA ROTA do modelo do adaptador declara — excepto num run retomado que
+//     começou sem versão fixada ([agentruntime.ProjectionVersionUnpinned]), que salta este passo;
 //  3. o interruptor do nó ([WithProjectionVersion]), e sem ele a de sempre.
 //
 // O perfil lido é o do modelo do ADAPTADOR — a rota do run —, e não o da rota a que o gateway
 // acabe por mandar o pedido: a projecção de um run não muda num failover.
 func (a *ModelClientAdapter) versaoDaProjeccao(view agentruntime.PromptView) (string, error) {
-	if fixada := view.ProjectionVersion; fixada != "" {
+	// Um run RETOMADO que começou sem versão fixada (revisão, F2): os seus turnos anteriores foram
+	// na versão do nó, e continua nela — a que o perfil da rota declare AGORA não se aplica a
+	// meio do run.
+	retomadoSemVersao := view.ProjectionVersion == agentruntime.ProjectionVersionUnpinned
+	if fixada := view.ProjectionVersion; fixada != "" && !retomadoSemVersao {
 		v, err := ParseNativeProjectionVersion(fixada)
 		if err != nil {
 			return "", fmt.Errorf("%w: %q", ErrPinnedProjectionVersion, fixada)
 		}
 		return v, nil
 	}
-	if perfil, ok := a.perfis.For(a.model); ok && perfil.ProjectionVersion != "" {
+	if perfil, ok := a.perfis.For(a.model); ok && perfil.ProjectionVersion != "" && !retomadoSemVersao {
 		return perfil.ProjectionVersion, nil
 	}
 	if a.versaoNativa != "" {

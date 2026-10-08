@@ -9,6 +9,7 @@ package main
 // /metrics. Aqui prova-se o que este ticket acrescenta.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/port"
 )
 
 // A VERSÃO DA PROJECÇÃO FICA PRESA AO RUN. Um run novo numa rota cujo perfil não declara versão —
@@ -50,8 +52,33 @@ func TestAOS513_No_AVersaoDaProjeccaoFicaPresaAoRun(t *testing.T) {
 	if again := fixarProjeccao(retomado); again.ProjectionVersion != agentruntime.ProjectionVersionUnpinned {
 		t.Fatalf("a hospedagem de uma retoma fixou uma versao a meio do run: %q", again.ProjectionVersion)
 	}
-	if v := agentruntime.NormalizeProjectionVersion(retomado.ProjectionVersion); v != "" {
-		t.Fatalf("a marca chegou a vista como versao: %q", v)
+	// A VERSÃO EFECTIVAMENTE PROJECTADA (revisão, F2). A imagem nova declara 1.3.0 no perfil da
+	// rota; o nó está em 1.2.0. O run retomado, que deu os seus turnos na 1.2.0, continua nela; um
+	// run NOVO vai na do perfil.
+	set, err := modelgateway.NewRouteProfileSet(modelgateway.RouteProfile{Requested: "gpt-4o", ExpectedModel: "openai/k3",
+		WireClass: modelgateway.WireOpenAIChat, Capabilities: []string{modelgateway.CapabilityTools}, ProjectionVersion: modelgateway.NativeProjectionVersion130})
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectada := func(goal agentruntime.Goal) string {
+		asm, err := agentruntime.NewPromptAssemblerFor(agentruntime.AssemblyVersion140, "s", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		view := asm.Assemble(1, []agentruntime.TailSegment{{Kind: agentruntime.TailObjective, Content: []byte("o")}})
+		view.ProjectionVersion = agentruntime.ProjectionVersionForView(goal.ProjectionVersion)
+		out, err := modelgateway.NewModelClient(aos513Gateway{}, "gpt-4o", modelgateway.WithProjection(modelgateway.ProjectionNative),
+			modelgateway.WithProjectionVersion(modelgateway.NativeProjectionVersion120), modelgateway.WithRouteProfileSet(set)).Call(context.Background(), view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.ProjectionVersion
+	}
+	if v := projectada(retomado); v != "1.2.0" {
+		t.Fatalf("o run retomado sem versao fixada foi projectado na %q: mudou de projeccao a meio (queria a do no, 1.2.0)", v)
+	}
+	if v := projectada(base); v != "1.3.0" {
+		t.Fatalf("um run novo vai na versao do perfil; foi na %q", v)
 	}
 	// A re-escrita do registo na retoma tem os bytes do original.
 	reescrito, err := resumeRecordFromGoal(fixarProjeccao(retomado))
@@ -71,6 +98,13 @@ func TestAOS513_No_AVersaoDaProjeccaoFicaPresaAoRun(t *testing.T) {
 	if rec.ProjectionVersion != "1.2.0" || rec.GoalWith("cred").ProjectionVersion != "1.2.0" || fixarProjeccao(rec.GoalWith("cred")).ProjectionVersion != "1.2.0" {
 		t.Fatalf("a versao fixada nao sobreviveu a retoma: registo %q, retomado %q", rec.ProjectionVersion, rec.GoalWith("cred").ProjectionVersion)
 	}
+}
+
+// aos513Gateway é um gateway que responde sempre um turno final.
+type aos513Gateway struct{ port.Gateway }
+
+func (aos513Gateway) Chat(context.Context, port.ChatRequest) (port.ChatResponse, error) {
+	return port.ChatResponse{Choices: []port.Choice{{Message: port.Message{Role: port.RoleAssistant, Content: "ok"}, FinishReason: "stop"}}}, nil
 }
 
 // OS 4XX DOS TURNOS COM PARÂMETROS: uma série por rota com parâmetros e por código; uma rota ou um

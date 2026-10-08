@@ -399,6 +399,20 @@ func TestAOS513_Projeccao_PerfilSobreOInterruptorERunSobreOPerfil(t *testing.T) 
 			t.Fatalf("%s: o turno foi na versao %q (quero %q)", nome, versao, c.quero)
 		}
 	}
+	// F2 (revisão): um run RETOMADO que começou sem versão fixada continua na do nó — a versão que
+	// o perfil declare agora não se aplica a meio do run.
+	for nome, c := range map[string]struct {
+		opts  []modelgateway.RuntimeAdapterOption
+		quero string
+	}{
+		"retomado sem versao, perfil declara 1.2.0, no em 1.1.0":   {[]modelgateway.RuntimeAdapterOption{no, modelgateway.WithRouteProfileSet(set)}, "1.1.0"},
+		"retomado sem versao, perfil declara 1.2.0, no na omissao": {[]modelgateway.RuntimeAdapterOption{modelgateway.WithRouteProfileSet(set)}, "1.0.0"},
+	} {
+		sys, versao, err := system(agentruntime.ProjectionVersionUnpinned, c.opts...)
+		if err != nil || versao != c.quero || sys != referencia(c.quero) {
+			t.Fatalf("%s: o turno foi na versao %q (quero %q) err=%v", nome, versao, c.quero, err)
+		}
+	}
 	if _, _, err := system("9.9.9"); !errors.Is(err, modelgateway.ErrPinnedProjectionVersion) {
 		t.Fatalf("um run fixado numa versao desconhecida tinha de falhar fechado; veio %v", err)
 	}

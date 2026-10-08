@@ -79,13 +79,14 @@ func TestAOS513_Loop_ParametrosNoManifestoEVersaoNaVista(t *testing.T) {
 			t.Fatalf("a vista de um run sem versao fixada leva %q", v.ProjectionVersion)
 		}
 	}
-	// A marca de «retomado sem versão» e o texto livre não chegam à vista, e o registo não muda.
-	for _, v := range []string{ProjectionVersionUnpinned, "texto livre", "9"} {
+	// O texto livre não chega à vista; a marca de «retomado sem versão» CHEGA, tal e qual (F2),
+	// para quem projecta não ir buscar a versão do perfil a meio do run. O registo não muda.
+	for v, naVista := range map[string]string{ProjectionVersionUnpinned: ProjectionVersionUnpinned, "texto livre": "", "9": ""} {
 		goal := sampleGoal()
 		goal.ProjectionVersion = v
 		turnos, vistas := aos513Run(t, goal, map[string]string{"Texto Livre": "x"})
-		if !reflect.DeepEqual(turnos, base) || vistas[0].ProjectionVersion != "" {
-			t.Fatalf("versao %q: o registo ou a vista mudaram", v)
+		if !reflect.DeepEqual(turnos, base) || vistas[0].ProjectionVersion != naVista || vistas[1].ProjectionVersion != naVista {
+			t.Fatalf("versao %q: o registo mudou, ou a vista leva %q (quero %q)", v, vistas[0].ProjectionVersion, naVista)
 		}
 	}
 	goal := sampleGoal()
