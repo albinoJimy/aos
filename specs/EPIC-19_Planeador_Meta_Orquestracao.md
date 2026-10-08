@@ -10678,6 +10678,11 @@ Decisão D2 do dono tomada no mesmo dia.
   `content` vazio. É uma hipótese **fortemente apoiada, não provada**; a ficha do AOS-507
   confirma-a ou desmente-a. Por isso repetir o passo é o tratamento certo, e a decisão D3 (o
   raciocínio nunca é resposta) mantém-se.
+- **O AOS-509 alarga ligeiramente a classe.** Desde o AOS-509 (fundido a 2026-10-08), uma
+  resposta com `content: []` deixou de ser um erro de descodificação do gateway e passou a
+  fechar o run `empty_output`: esses runs entram na classe que este ticket cobre, com a mesma
+  prova (zero tool calls, um turno, `stop`). A prova não mudou; o que mudou foi quantas respostas
+  chegam a ela.
 - **A prova é mais larga do que a elegibilidade do `aos-orq`** (revisão, M-2): exige «sem
   contrato de tools», e não «sem tools oferecidas». O nó admite por isso cadeias de classe mista
   que o `aos-orq` nunca produz; estão presas por teste (`aos510_revisao_test.go`).

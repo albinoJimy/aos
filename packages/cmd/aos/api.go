@@ -2285,6 +2285,39 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-509 — RESPOSTAS DO PROVIDER RECUSADAS, POR CAUSA. Uma amostra por causa do vocabulário
+	// fechado, sempre presentes com o gateway de modelo composto: o zero é um zero verdadeiro.
+	if h.node != nil && h.node.respostasRecusadas != nil {
+		c := h.node.respostasRecusadas
+		for i, causa := range c.causas {
+			labels := `{causa="` + causa + `"}`
+			if i == 0 {
+				g("aos_model_response_rejected_total",
+					"Respostas do provider de modelo que o gateway recusou desde o arranque, por causa (AOS-509): content_parte_nao_texto (content em partes com uma parte que nao e de texto), content_forma, arguments_forma, json_invalido (o corpo nao e o JSON de uma resposta de chat) e sem_choices. O turno falha. Vocabulario fechado: nenhum byte da resposta. Um status que nao e 200 e um erro de rede nao contam aqui. Acima de zero, o provider esta a mandar uma forma que o gateway nao le.",
+					"counter", float64(c.lido(causa)), labels)
+				continue
+			}
+			amostra("aos_model_response_rejected_total", labels, float64(c.lido(causa)))
+		}
+	}
+
+	// AOS-507 — TURNOS PELA FORMA DA RESPOSTA DO PROVIDER. Só sai com a medição ligada: com `off` a
+	// família não existe, e o /metrics é o de antes. Uma amostra por série dos três vocabulários
+	// fechados (342 no máximo), sempre presentes: o zero é um zero verdadeiro.
+	if h.node != nil && h.node.formaDaResposta != nil {
+		c := h.node.formaDaResposta
+		for i, s := range c.series() {
+			labels := `{content="` + s[0] + `",reasoning="` + s[1] + `",stop_reason="` + s[2] + `"}`
+			if i == 0 {
+				g("aos_model_response_shape_total",
+					"Turnos de modelo ao vivo desde o arranque, pela forma da resposta do provider (AOS-507). content e a forma de choices[0].message.content: ausente, nulo, vazio, so_brancos, texto, partes, outro, ou ilegivel (a sonda nao leu o corpo). reasoning e o campo em que veio o raciocinio COM conteudo: nenhum, reasoning_content, reasoning, thinking, thinking_blocks, reasoning_details, varios, ou vazio (ha um campo de raciocinio presente e vazio, e nenhum com conteudo: nao e raciocinio). stop_reason e o do turno. Vocabulario fechado nos tres: nenhum texto do provider. Um turno reproduzido de uma captura nao conta. A ficha completa de cada turno esta em response_shape do turn.recorded.",
+					"counter", float64(c.lido(s)), labels)
+				continue
+			}
+			amostra("aos_model_response_shape_total", labels, float64(c.lido(s)))
+		}
+	}
+
 	// AOS-493 — RUNS TERMINADOS POR DESFECHO E RAZÃO DO VEREDICTO. Uma amostra por par dos dois
 	// vocabulários fechados, sempre presentes: o zero é um zero verdadeiro.
 	if h.svc != nil && h.svc.desfechos != nil {

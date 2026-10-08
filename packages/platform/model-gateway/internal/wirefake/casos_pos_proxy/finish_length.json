@@ -1,0 +1,1 @@
+{"id":"chatcmpl-falso","created":1700000000,"model":"caso-finish_length","object":"chat.completion","choices":[{"finish_reason":"length","index":0,"message":{"content":"resposta cort","role":"assistant","provider_specific_fields":{"refusal":null}},"provider_specific_fields":{}}],"usage":{"completion_tokens":7,"prompt_tokens":11,"total_tokens":18}}

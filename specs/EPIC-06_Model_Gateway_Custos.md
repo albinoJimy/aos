@@ -2369,7 +2369,7 @@ Atrás de um interruptor, desligado por omissão; com ele desligado, os bytes s�
 - [ ] O `.env.example`, o `docker-compose.prod.yml` e o runbook de deploy registam a variável, a
       omissão e a ordem de recuo (voltar a `off`; os eventos já gravados com a ficha continuam
       legíveis por um binário anterior, provado por teste de leitura).
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] Revisão adversarial independente com mutações, antes da fusão. *(2026-10-08, sobre `5cac15f3`: sem bloqueantes; diferencial de 152 corpos entre a base e o ramo, 8 mutações mortas em 8. Dois achados a fechar antes de ligar `observe` — o digest e o raciocínio vazio —, corrigidos no mesmo ramo; ver Estado.)*
 - [ ] **Verificação em produção, critério P1 da fase:** com `observe` ligado, uma série em
       produção em que 100% dos turnos fechados `empty_output` têm a ficha gravada, em pelo menos
       3 ocorrências, e **a classe dominante fica escrita no acompanhamento** — a série nomeia a
@@ -2391,7 +2391,71 @@ Atrás de um interruptor, desligado por omissão; com ele desligado, os bytes s�
 
 ### Estado
 
-**ABERTO (2026-10-07).** Por implementar. Decisão D1 do dono tomada no mesmo dia.
+**IMPLEMENTADO, DESLIGADO POR OMISSÃO (2026-10-07); produção por verificar.** Decisão D1 do dono
+tomada no mesmo dia.
+
+- **Sonda e travessia.** `port.ProbeResponseShape` (`packages/platform/model-gateway/port/shape.go`)
+  calcula a ficha do corpo cru; o adaptador HTTP corre-a só com a medição ligada, depois de a
+  resposta estar descodificada; segue por `port.ChatResponse.Shape` (`json:"-"`, contrato `1.5.0`)
+  e `agentruntime.ModelResponse.Shape` até `response_shape` do `turn.recorded`. Não entra na
+  captura. O runtime fecha o vocabulário outra vez à entrada do registo: um valor fora dele torna
+  a ficha `{"ilegivel":true}`.
+- **Interruptor.** `AOS_MODEL_RESPONSE_SHAPE=off|observe`; vazio é `off`; outro valor recusa o
+  arranque (`ErrBadModelResponseShape`).
+- **Métrica.** `aos_model_response_shape_total{content,reasoning,stop_reason}`, **342 séries no
+  máximo** desde a revisão (eram 300): 7 formas de conteúdo × 8 valores do raciocínio × 6 motivos
+  de paragem (336), mais a ficha ilegível, que só existe com `reasoning="nenhum"` (6). Preso por
+  teste.
+- **Prova de `off`.** O run de referência do AOS-490 no nó composto, com a variável ausente,
+  vazia e em `off`: pedidos, `turn.recorded`, parte em claro das capturas, sequência de eventos e
+  famílias do `/metrics` são os goldens medidos na base pelo AOS-505
+  (`TestAOS507_No_Off_SaoOsBytesDaBase`); e, para os 87 casos de wire, o turno é o mesmo com e
+  sem medição, tirando a ficha (`TestAOS507_Off_ASondaNaoCorre`).
+- **Desvios e decisões de implementação, a confirmar.** (1) `reasoning_bytes` são os bytes do
+  valor JSON, como o critério diz: um raciocínio em string vazia conta 2 (as aspas);
+  `content_bytes` são os bytes do texto já descodificado. (2) `refusal` em string vazia conta
+  `nulo`. (3) `tool_call_id` e `arguments_form` de uma resposta com tool calls de classes
+  diferentes dão `outro`. (4) O `shape_digest` fica ausente acima de 4096 pares distintos
+  (caminho, tipo); a sonda desce até 32 níveis. (5) `ilegivel` só acontece com um corpo que não é
+  um objecto JSON — que a descodificação também recusa —, pelo que na prática não chega a um
+  `turn.recorded`; fica coberto por teste na sonda. (6) A prova «sem sentinelas» cobre os eventos
+  do run e o `/metrics`; spans e logs não foram varridos por teste (a ficha não é escrita em
+  nenhum dos dois).
+- **Revisão adversarial (2026-10-08) e correcções.** (O-1) O `shape_digest` deixou de cobrir
+  nomes de chave escritos pelo modelo: do interior de `arguments`, dos campos de raciocínio, de
+  `content` em partes e de `provider_specific_fields` entra só o tipo do valor (dois corpos com
+  `arguments:{"iban":…}` e `{"nif":…}` têm o mesmo digest). (O-2) Um campo de raciocínio presente
+  e vazio (`""`, `[]`, `{}`, `false`, `0`) não é raciocínio: `reasoning` ganha o valor `vazio`,
+  distinto de `nenhum` e de um nome de campo — sem isto, `content=""` com
+  `reasoning_content=""` caía na série de H1. A métrica passa a ter **342 séries no máximo**
+  (7 × 8 × 6, mais 6 da ficha ilegível). Resíduos registados e não corrigidos: uma resposta
+  RECUSADA não tem ficha (a sonda corre depois da descodificação; fica o contador por causa); um
+  valor inválido da variável só recusa o arranque com `AOS_MODEL_ENDPOINT` definida, como as
+  variáveis irmãs.
+- **A ficha pela rota de produção** (medido com a imagem do proxy, duas corridas:
+  `docs/reports/wire-live-aos508-2026-10-07.md`). A primeira corrida concluiu que o proxy
+  «retira» `refusal`, `thinking` e `reasoning_details`, e que a ficha não separava por isso
+  H2-`thinking`, H2-`reasoning_details` e H5 de H6. **A segunda (2026-10-08) corrigiu-o:** o proxy
+  MOVE esses campos, com o valor, para `message.provider_specific_fields`, e copia `reasoning`
+  para `reasoning_content` deixando o original no mesmo objecto. A ficha ganhou por isso dois
+  campos, fora da lista do critério e nos mesmos vocabulários fechados: **`psf_refusal`** e
+  **`psf_reasoning`** (a recusa e o raciocínio dentro de `provider_specific_fields`; ausentes
+  quando a mensagem não traz o objecto). Com eles as formas H1 a H8 continuam separadas depois do
+  proxy, preso por teste sobre os corpos que ele entregou
+  (`TestAOS507_PosProxy_AsFormasDoVazioContinuamSeparadas`). Medido na mesma corrida:
+  `usage.completion_tokens_details.reasoning_tokens` e as chaves de assinatura **sobrevivem** ao
+  proxy. O que continua invisível ao gateway por esta rota: o `finish_reason` bruto (o proxy
+  normaliza-o), e `content` em partes ou raciocínio em objecto (o proxy responde 500).
+- **Medição de 2026-10-08 sobre as capturas seladas dos 3 runs `empty_output`** (feita pela
+  coordenação; **sem decifrar nada — só o tamanho do criptograma**): 852, 450 e 628 bytes para
+  161, 77 e 114 tokens de saída, isto é, 5,3 a 5,8 bytes por token, contra 3,5 a 4,8 (mediana 4,1
+  a 4,2) nos 117 resumos bem-sucedidos das mesmas séries. A captura dos turnos vazios tem
+  conteúdo proporcional aos tokens: a resposta veio toda no raciocínio (`reasoning_content`, que
+  é também para onde o proxy leva `reasoning`), com `content` vazio. **H1 ou H2-`reasoning` é a
+  hipótese fortemente apoiada; não é prova** — não se decifrou nada. A ficha em `observe`
+  confirma-o numa série: a classe esperada é `content` em `nulo` ou `vazio` com
+  `reasoning="reasoning_content"`.
+- **Por fazer.** Ligar `observe` em produção e a verificação do critério P1 (decisão do dono).
 
 ---
 
@@ -2501,7 +2565,36 @@ cada caso. Só CI: nenhum binário de produção muda.
 
 ### Estado
 
-**ABERTO (2026-10-07).** Por implementar.
+**IMPLEMENTADO (2026-10-07).**
+
+- **Onde vivem.** Em `packages/platform/model-gateway/internal/wirefake`, e não em
+  `packages/testkit`: o `layer-lint` não deixa uma camada de produção importar o testkit, e são
+  os testes da porta e do gateway que usam os casos. `internal/` impede a importação de fora do
+  módulo, e `TestAOS508_NenhumCodigoDeProducaoImportaOsFalsos` varre o módulo.
+- **Casos.** 94 corpos em ficheiro (`casos/*.json`; 87 na entrega e sete da revisão), um servidor `net/http` (`Servidor`) e três
+  falsos que validam o segundo turno (`Validador`: id emitido e comprimento, raciocínio,
+  assinatura), com controlo negativo — o estado reposto à mão é aceite, sem ele dá 400. O teste
+  regista o 400 como o comportamento de hoje (`TestAOS508_SegundoTurno_EstadoOpacoNaoSuportadoHoje`).
+- **Linha de base.** `linha_de_base_aos508.json` é o que o gateway fazia a cada caso antes do
+  AOS-509 (75 turnos, 19 recusas; os sete casos da revisão entraram com o que o campo string da
+  base lhes fazia), gerado na base e congelado; `comportamento.json` é o de hoje,
+  preso por teste.
+- **Gate `ci-wire-live`** (`scripts/ci/wire-live.sh`, fora do `run.sh`). Uma corrida, com a imagem
+  de produção do proxy: `docs/reports/wire-live-aos508-2026-10-07.md`. O proxy entregou 200 em 64
+  casos e 500 em 23 (69 e 25 na segunda corrida, com 94 casos); copia `reasoning` para
+  `reasoning_content`, move `thinking`, `reasoning_details` e `refusal` para
+  `provider_specific_fields`, entrega `arguments` em objecto como string, normaliza o
+  `finish_reason` e responde 500 a `content` em partes.
+- **Revisão (2026-10-08), M-8.** Os falsos são fiéis como PROVIDER, e não como «o que o gateway
+  vê em produção». Os 69 corpos que a imagem de produção do proxy ENTREGOU na segunda corrida do
+  gate ficaram congelados em `casos_pos_proxy/`, e o que o gateway faz a cada um está em
+  `comportamento_pos_proxy.json` (68 turnos, uma recusa), preso por
+  `TestAOS508_PosProxy_OQueOGatewayFazAoQueOProxyEntrega`. A segunda corrida regista também os
+  tokens de raciocínio e as assinaturas (sobrevivem os dois), e corrige a leitura da primeira:
+  `refusal`, `thinking` e `reasoning_details` são movidos para `provider_specific_fields`, não
+  retirados.
+- **Por fazer.** A matriz de suporte (§6 do acompanhamento) ainda não refere os casos por
+  classe; os casos não cobrem streaming (fora de âmbito).
 
 ---
 
@@ -2618,7 +2711,7 @@ declarada abaixo.
       fora do mapa, id de tool call do provider (continua descartado).
 - [ ] Versão da porta do gateway: MINOR, aditiva; registada no contrato da porta e no
       `CHANGELOG.md`.
-- [ ] Revisão adversarial independente com mutações, antes da fusão.
+- [x] Revisão adversarial independente com mutações, antes da fusão. *(2026-10-08, sobre `5cac15f3`: sem bloqueantes; em 151 de 152 corpos nenhuma resposta que já passava muda fora da excepção declarada; a 152.ª — `content` com a chave repetida e `null` no fim — foi corrigida no mesmo ramo; ver Estado.)*
 - [ ] Verificação em produção: numa série de pelo menos 40 planos depois da entrada,
       `aos_model_response_rejected_total` fica a zero e os desfechos são os da série anterior.
 
@@ -2635,8 +2728,62 @@ declarada abaixo.
 
 ### Estado
 
-**ABERTO (2026-10-07).** Por implementar. Decisão D3 do dono registada aqui e no acompanhamento
-(§4).
+**IMPLEMENTADO (2026-10-07); produção por verificar.** Decisão D3 do dono registada aqui e no
+acompanhamento (§4).
+
+- **Onde.** `Message.UnmarshalJSON` e `FunctionCall.UnmarshalJSON`
+  (`packages/platform/model-gateway/port/port.go`), contrato da porta `1.6.0`. Erros nomeados
+  `ErrContentPartNotText`, `ErrContentForm` e `ErrArgumentsForm`, sem bytes da resposta.
+- **Métrica.** `aos_model_response_rejected_total{causa}`, cinco causas: `content_parte_nao_texto`,
+  `content_forma`, `arguments_forma`, `json_invalido`, `sem_choices`. Existe sempre que o gateway
+  está composto — é a única família que entra no `/metrics` sem interruptor.
+- **Prova do «byte a byte».** Contra a linha de base do AOS-508: os 69 casos que já davam um
+  turno dão hoje o mesmo turno (texto, tool calls, motivo, `Final`, modelo, tokens), e os 24 em
+  que algo muda são exactamente a excepção declarada — só o raciocínio, de vazio a preenchido
+  (`TestAOS509_OQueJaPassavaFicaByteAByte`). No nó, a resposta de referência dita nas formas
+  novas dá os goldens da base no pedido seguinte, nos `turn.recorded` e nas capturas
+  (`TestAOS509_No_FormasNovas_MesmosBytesDaBase`).
+- **Casos da excepção** (resposta que já passava e traz raciocínio noutro nome sem
+  `reasoning_content`): `h2_raciocinio_noutro_campo`, `rac_blocos_assinados`,
+  `rac_reasoning_content_nulo_e_reasoning`, `rac_varios_sem_reasoning_content` e os casos
+  `rac_reasoning_*`, `rac_reasoning_details_*`, `rac_thinking_blocks_*` e `rac_thinking_*`. Por
+  trás do proxy de produção só `thinking_blocks` em lista chega com outro nome
+  (`docs/reports/wire-live-aos508-2026-10-07.md`).
+- **Decisões de implementação, a confirmar.** (1) `content` numa forma que não é string, `null`
+  nem lista recusa com causa própria (`content_forma`), como as partes que não são texto. (2)
+  Uma parte de texto sem `text`, ou com `text` que não é string, conta como parte que não é
+  texto. (3) `arguments` em objecto guarda os bytes crus, sem re-serializar nem compactar: a
+  ordem das chaves e os espaços são os que vieram. (4) `reasoning_content` presente e vazio vale
+  sozinho, como antes.
+- **Revisão adversarial (2026-10-08) e correcções.** (M-1) `content` e `function.arguments` com
+  a chave REPETIDA lêem-se uma ocorrência de cada vez, como o campo string da base: uma string
+  substitui, `null` não altera (`{"content":"a","content":null}` volta a dar `a`). (M-2) Uma
+  parte com `type` ou `text` repetido não é de texto, e recusa. (M-3) Nos outros nomes do
+  raciocínio só conta um campo COM conteúdo: `thinking:false`, `reasoning:0`,
+  `reasoning_details:[]` e `""` não gravam nada na captura. `reasoning_content` fica como o
+  AOS-490 o lia, em qualquer forma. Os sete casos entraram no wirefake e na linha de base.
+- **`content: []` muda de classe de falha.** Uma lista de partes vazia era um erro de
+  descodificação (o turno falhava) e passa a ser um turno com texto vazio, que fecha
+  `empty_output`. Interessa ao AOS-510: uma resposta que antes falhava o turno passa a ser
+  elegível para a nova tentativa por vazio. Pela rota de produção não acontece — o proxy
+  responde 500 a `content` em lista.
+- **O `/metrics` com tudo desligado.** `aos_model_response_rejected_total{causa}` (cinco séries)
+  existe sempre que o gateway de modelo está composto, também com
+  `AOS_MODEL_RESPONSE_SHAPE=off`: é a única diferença do `/metrics` face à base que não depende
+  de um interruptor.
+- **Alcance real pela rota de produção.** Medido com a imagem do proxy: `content` em partes e
+  raciocínio em objecto dão 500 no proxy, e `arguments` em objecto chega em string. Por esta
+  rota o ticket é quase inerte — o ganho é `thinking_blocks` em lista lido como raciocínio (o
+  raciocínio em `thinking` e em `reasoning_details` chega dentro de `provider_specific_fields`, que
+  o gateway não lê). O
+  ganho inteiro é para uma rota sem este proxy e para a segunda família de modelos.
+- **Resíduos da revisão, não corrigidos.** `reasoning_content:""` com `reasoning` preenchido
+  continua a perder o raciocínio (é a letra do critério: «ausente ou `null`»; pelo proxy de
+  produção não acontece). `arguments` em objecto com UTF-8 inválido dentro de uma string segue
+  em bytes crus, sem a substituição que a forma string sofria (raciocinado, não testado). Os
+  consumidores directos da porta fora do nó (o planeador do `aos-orq`, as evals) herdam a
+  descodificação tolerante sem a métrica.
+- **Por fazer.** A série de 40 planos em produção.
 
 ---
 
@@ -2661,3 +2808,5 @@ declarada abaixo.
 | 2.4 | 2026-10-07 | AOS-506 em produção e ligado (v0.1.51): verificação das séries `v0151a` (aviso sobre a 1.1.0) e `v0151b` (1.2.0 com aviso); critério de ligar cumprido para a combinação, com o desvio declarado; AOS-504 substituída em produção pela 1.2.0; AOS-505 continua desligado | Equipa AOS |
 | 2.5 | 2026-10-07 | AOS-505 em produção em `observe`: série `v0151g` (20 planos, 60 turnos com o modelo servido igual ao esperado); `drop_params`, nome real, `enforce` e o cron do alerta por fazer. AOS-506: registo do plano de três passos, negado por taint no nó com `consumes` | Equipa AOS |
 | 2.6 | 2026-10-07 | +AOS-507, +AOS-508 e +AOS-509 (fase A2, estado opaco do provider): a forma da resposta registada por turno, sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE`, desligada por omissão); providers falsos de wire para CI e um gate opcional atrás da imagem do proxy; e a descodificação tolerante de `content` em partes de texto e de `arguments` em objecto, com os outros nomes do raciocínio lidos como raciocínio. Decisão D3 do dono registada no AOS-509: o raciocínio nunca é usado como resposta | Equipa AOS |
+| 2.7 | 2026-10-07 | AOS-507, AOS-508 e AOS-509 implementados: ficha da forma em `response_shape` do `turn.recorded` (desligada por omissão, contrato da porta `1.5.0`); 87 casos de wire, linha de base e gate `ci-wire-live` com uma corrida contra a imagem de produção do proxy; descodificação tolerante e `aos_model_response_rejected_total` (contrato `1.6.0`). Produção por verificar | Equipa AOS |
+| 2.8 | 2026-10-08 | AOS-507, AOS-508 e AOS-509 revistos (sem bloqueantes) e corrigidos: o digest da ficha não cobre chaves escritas pelo modelo; raciocínio presente e vazio dá `vazio` (342 séries); chaves repetidas lêem-se como na base e `type` repetido recusa; segunda corrida do `ci-wire-live` — o proxy move `refusal`, `thinking` e `reasoning_details` para `provider_specific_fields`, e a ficha lê-os lá (`psf_refusal`, `psf_reasoning`); corpos entregues pelo proxy congelados como casos; medição das capturas seladas dos três `empty_output` registada no AOS-507 | Equipa AOS |

@@ -175,6 +175,13 @@ type ModelResponse struct {
 	// nada no runtime.
 	RouteCheck         RouteCheck
 	RouteProfileDigest string
+	// Shape é a FICHA DA FORMA da resposta do provider neste turno (AOS-507): que campos vieram,
+	// em que forma JSON e com quantos bytes, em vocabulário fechado e sem conteúdo — ver
+	// [ResponseShape]. Declarada por quem fez o pedido, como [ModelResponse.Projection]; nil
+	// quando o cliente não a mede (a medição desligada, que é a omissão). Vai para
+	// `response_shape` do `turn.recorded`. NÃO decide nada no runtime e NÃO entra na captura do
+	// turno: um turno reproduzido numa retoma volta com nil.
+	Shape *ResponseShape
 }
 
 // RouteCheck é o resultado da comparação da rota de um turno com o perfil esperado, num

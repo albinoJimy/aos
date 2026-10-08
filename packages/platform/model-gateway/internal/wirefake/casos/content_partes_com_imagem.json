@@ -1,0 +1,1 @@
+{"id":"chatcmpl-falso","object":"chat.completion","created":1700000000,"model":"modelo-falso","choices":[{"index":0,"message":{"role":"assistant","content":[{"type":"text","text":"resposta final"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}

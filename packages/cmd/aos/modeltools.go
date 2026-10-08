@@ -307,6 +307,14 @@ var _ agentruntime.ModelClient = (*toolEnrichingClient)(nil)
 // rotaDoModelo passa adiante os contadores da rota do cliente envolvido (AOS-505).
 func (c *toolEnrichingClient) rotaDoModelo() *contadoresDaRota { return rotaDoCliente(c.inner) }
 
+// formaDaResposta passa adiante os contadores da forma do cliente envolvido (AOS-507).
+func (c *toolEnrichingClient) formaDaResposta() *contadoresDaForma { return formaDoCliente(c.inner) }
+
+// respostasRecusadas passa adiante os contadores das respostas recusadas (AOS-509).
+func (c *toolEnrichingClient) respostasRecusadas() *contadoresDeRejeicao {
+	return rejeicoesDoCliente(c.inner)
+}
+
 func (c *toolEnrichingClient) Call(ctx context.Context, view agentruntime.PromptView) (agentruntime.ModelResponse, error) {
 	resp, err := c.inner.Call(ctx, view)
 	if err != nil {
