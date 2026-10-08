@@ -240,6 +240,10 @@ type CfgDaCorrida struct {
 	Pausa time.Duration
 	// Progresso, se presente, recebe uma linha a cada vinte passos: só contagens.
 	Progresso io.Writer
+	// FormaNoFornecedor, se presente, é perguntada no fim da corrida: devolve a FORMA — nunca o
+	// conteúdo — com que as mensagens `assistant` com tool calls chegaram ao provider falso
+	// (AOS-516). Só os modos sem modelo real a têm: um fornecedor real não a mostra.
+	FormaNoFornecedor func() (*FormaNoFornecedor, error)
 }
 
 // ErrModoRealSemTecto — o modo com modelo real não corre sem contador e tecto do dia.
@@ -365,16 +369,33 @@ ciclo:
 			fmt.Fprintf(cfg.Progresso, "banco-ensaio: %d de %d passos\n", i+1, len(passos))
 		}
 	}
-	return construirRelatorio(cfg, relogio().UTC(), previstos, terminou, sonda, obs)
+	r, err := construirRelatorio(cfg, relogio().UTC(), previstos, terminou, sonda, obs)
+	if err != nil || cfg.FormaNoFornecedor == nil {
+		return r, err
+	}
+	// A forma lê-se DEPOIS do último pedido. Se não se conseguir ler, o relatório sai sem ela e
+	// di-lo: a corrida não se perde por isso.
+	if forma, ferr := cfg.FormaNoFornecedor(); ferr == nil {
+		r.FormaNoFornecedor = forma
+	} else {
+		r.Limites = append(r.Limites, "A forma do que chegou ao provider falso nao se conseguiu ler no fim da corrida: o relatorio nao a tem.")
+	}
+	return r, nil
 }
 
 // digestDaConfiguracao é o digest de tudo o que, além da bateria e da rota, decide o que a
 // corrida mede: o plano, o texto das variantes, as versões publicadas e o que vier em Extra.
-func digestDaConfiguracao(p Plano, extra map[string]string) string {
+//
+// `estado` é a composição do estado opaco do nó de ensaio (nil quando o perfil não devolve
+// estado): muda o layout, e entra inteira no digest. Com nil o digest é o de antes do AOS-516.
+func digestDaConfiguracao(p Plano, extra map[string]string, estado *ComposicaoDoEstado) string {
 	doc := map[string]any{
 		"plano": p, "alias": AliasDaRota, "extra": extra,
 		"trocas_b": fmt.Sprint(trocasDoBracoB), "trocas_c": fmt.Sprint(trocasDoBracoC),
 		"assembly": agentruntime.AssemblyVersion140,
+	}
+	if estado != nil {
+		doc["assembly"], doc["estado_opaco"] = estado.Layout, estado
 	}
 	versoes := map[string]string{}
 	for _, b := range Bracos() {
