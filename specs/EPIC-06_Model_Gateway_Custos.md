@@ -2920,7 +2920,11 @@ perfil da tabela declara os campos novos).
   ficam em `manifest.model.params` do turno, e o que um chamador ponha nos campos de raciocínio é
   apagado. Um 4xx num turno com parâmetros conta em
   `aos_model_route_params_rejected_total{rota,codigo}`; o nó não repete sem o parâmetro.
-- **A versão da projecção** fica presa ao run (Goal, vista, registo de retoma).
+- **A versão da projecção** fica presa ao run (Goal, vista, registo de retoma). Corrigido na
+  revisão (F2): um run retomado que começou sem versão fixada continua na do nó — a marca chega
+  ao adaptador, que antes ia buscar a versão que o perfil declarasse agora.
+- **A validação** recusa ainda `devolver` sem `projection_version` `1.3.0`, um orçamento de
+  raciocínio maior ou igual a `max_tokens`, e chaves repetidas ou noutra caixa no perfil candidato.
 - **Medição (b), atrás da imagem fixada do proxy (`ci-wire-live`, 2026-10-08) — corrige o
   contexto deste ticket: o proxy NÃO reencaminha tudo.** Numa rota `openai/…` (a de produção),
   com `drop_params: false`: `thinking` e `reasoning_effort` dão **400 do proxy**
@@ -2934,7 +2938,7 @@ perfil da tabela declara os campos novos).
   só `reasoning_effort`, e só com `allowed_openai_params` na configuração do proxy. E
   `drop_params: true` numa rota com parâmetros dá verde falso — fica proibido no runbook.
 - **Por fazer:** a medição (a), com o `kimi-for-coding` real (não corrida: nenhum pedido a um
-  fornecedor real nesta entrega); a revisão adversarial independente; o teste de que um plano do
+  fornecedor real nesta entrega); o teste de que um plano do
   `aos-orq` não declara parâmetros (o `aos-orq` não tem campo por onde entrem, mas não há teste
   próprio).
 
@@ -3270,7 +3274,16 @@ confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id 
   reconstroem-se byte a byte dos segmentos e dos envelopes; 17 mutações mortas.
 - **Atrás da imagem fixada do proxy** (`ci-wire-live`): ver o ADR-040 §2.11. Na rota
   `anthropic/…` o proxy acrescenta um bloco de texto ao `assistant` quando o `content` é vazio.
-- **Por fazer:** a revisão adversarial independente; um run com devolução **no nó composto**
+- **Revisão adversarial (2026-10-08): três defeitos corrigidos, cada um com um teste que falha
+  sem a correcção.** F1 — o estado de um turno cuja rota não se provou `igual` (endpoint
+  diferente ou por reportar, nome do modelo só igual depois de saneado) era devolvido: o
+  envelope passa a gravar o `route_check` e a devolução exige `igual` (causa
+  `estado_de_rota_nao_provada`). F3 — em modo sensível o run devolvia o estado ao vivo e não
+  depois de retomado: o capturer diz se guarda os bytes, e o loop só junta os que a captura
+  guarda. As lacunas de teste (ids do provider repetidos, devolução parcial, streaming, estado
+  desalinhado, tecto pelo caminho real) ficaram fechadas; um id do provider com a forma de um id
+  do runtime deixou de servir.
+- **Por fazer:** um run com devolução **no nó composto**
   (o nó só usa a tabela de perfis em código, que não tem rota com `devolver`: a devolução está
   provada no gateway e no loop do kernel, em separado); o teste de autoridade com estado
   hostil no Reference Monitor além do que o AOS-514 já prova; a propriedade do prefixo sobre a

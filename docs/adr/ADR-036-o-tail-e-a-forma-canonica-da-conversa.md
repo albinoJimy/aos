@@ -505,6 +505,13 @@ por uma leitura fechada (uma chave fora do conjunto, um valor de tipo errado ou 
 de credencial recusam, e a mensagem não repete o valor). Um candidato passa pela validação da
 tabela e substitui a entrada com o mesmo nome pedido. O relatório do banco leva o digest do perfil.
 
+**O que a validação recusa.** Além dos valores fora do vocabulário: `devolver` diferente de
+`nunca` sem `projection_version` `1.3.0` (uma rota que devolve estado declara a projecção que o
+devolve, em vez de depender do interruptor do nó); `tool_call_id: provider` com `devolver:
+nunca`; e `thinking.budget_tokens` maior ou igual a `max_tokens`, quando os dois são declarados.
+A leitura de um perfil candidato recusa ainda chaves repetidas e chaves que não estejam em
+minúsculas — o descodificador aceitava as duas em silêncio.
+
 **O digest.** Cobre os campos novos **quando declaram alguma coisa**: `params` sem nenhum valor e
 `devolver` em `nunca` são a omissão, e a omissão não muda o digest. Mudar um parâmetro muda-o.
 
@@ -518,7 +525,9 @@ ordem, em cada turno: a versão em que o run está fixado; senão a do perfil da
 interruptor do nó (`AOS_MODEL_PROJECTION_VERSION`), que passa a ser a omissão. O perfil lido é o da
 rota **do run**, e não o da rota a que o gateway mande o pedido: a projecção de um run não muda num
 failover. Um run que começou sem versão fixada continua sem ela depois de uma retoma, mesmo que o
-perfil entretanto declare uma. Um run fixado numa versão que o binário não conhece falha fechado,
+perfil entretanto declare uma: o registo de retoma devolve uma marca («sem versão fixada») que
+segue na vista até quem projecta, e com ela o passo do perfil é saltado — vale o interruptor do
+nó, que é a versão em que os turnos anteriores desse run foram. Um run fixado numa versão que o binário não conhece falha fechado,
 sem pedido.
 
 **Um 4xx num turno com parâmetros tem nome, e o nó não o contorna.** Medido atrás da imagem de

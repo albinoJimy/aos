@@ -89,6 +89,9 @@ Quem faz o pedido — o adaptador do gateway — fecha o estado num **envelope**
 - **a rota a que pertence**: o digest do perfil da rota com que o turno foi comparado (vazio com
   a governação da rota desligada), o nome do modelo pedido e o modelo que serviu. **O estado é
   da rota que o produziu**: só a ela pode vir a ser devolvido (§2.9);
+- **o resultado da comparação da rota** desse turno (`route_check`: `igual`, `diferente` ou
+  `nao_reportado`; ausente com a governação desligada) — acrescentado pelo AOS-515, depois da
+  revisão: o digest do perfil e o nome do modelo não dizem se a rota se **provou** (§2.11);
 - **um nonce de 256 bits**, aleatório, por turno;
 - os valores, em base64 (é o que guarda bytes arbitrários sem os tocar).
 
@@ -277,7 +280,11 @@ pela posição.
 **São precisas três coisas, todas.** O estado de um turno só sai num pedido com (a) a projecção
 nativa **1.3.0** (ADR-036 §2.4), (b) um perfil de rota com `devolver` diferente de `nunca`
 (ADR-036 §2.8), e (c) o envelope a dizer que foi **essa rota** que o produziu: o digest do perfil
-e o modelo servido que o envelope gravou são os da rota a que o pedido vai. A decisão (b) e (c)
+e o modelo servido que o envelope gravou são os da rota a que o pedido vai, **e o turno que o
+produziu teve a rota comparada como `igual`**. Esta última condição lê-se do `route_check` que o
+envelope gravou, e não se recalcula: em `observe` um turno com o endpoint diferente, com o
+endpoint por reportar, ou com o nome do modelo só igual depois de saneado segue — e deixava um
+envelope com o digest e o nome certos (achado F1 da revisão). Esse estado não se devolve. A decisão (b) e (c)
 toma-se no gateway **depois do roteamento**: num failover, a segunda rota não recebe um byte do
 que a primeira produziu. Como o envelope só leva o digest do perfil com a governação da rota
 ligada, **a devolução exige `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`**.
@@ -297,6 +304,7 @@ estado desse turno, e conta-se.
 | `estado_desalinhado` | O envelope tem outro número de tool calls (o turno escalou a meio) |
 | `projeccao_sem_estado` | O pedido não vem da projecção 1.3.0 |
 | `estado_sem_rota` | O envelope não diz de que rota é (governação da rota desligada) |
+| `estado_de_rota_nao_provada` | O turno que produziu o estado não teve a rota comparada como `igual` |
 | `estado_de_outra_rota` | Outro perfil, ou outro modelo servido |
 | `id_do_provider_inutilizavel` | A rota pede os ids do provider e os do turno não servem |
 
@@ -312,7 +320,8 @@ estado: um envelope não escreve `content`, `role` nem `tool_calls`.
 `tool_call_id: provider`: nos turnos cujo estado é devolvido, o `id` da tool call e o
 `tool_call_id` da mensagem `tool` passam a ser o id que o provider deu — o valor descodificado e
 já limitado (§2.6), e só se todos os do turno forem utilizáveis, diferentes entre si e de todos
-os ids já usados no pedido. O id do provider continua a não ser identidade de nada no runtime.
+os ids já usados no pedido, e nenhum tiver a forma de um id do runtime (`<passo>-tool-<n>`): um
+turno posterior que fosse com os ids do runtime podia repeti-lo. O id do provider continua a não ser identidade de nada no runtime.
 Resíduo: com o id do provider no wire, o rótulo `id=` do cabeçalho da mensagem `tool` e o `ref`
 de um aviso continuam a ser os do runtime.
 
@@ -328,6 +337,27 @@ a fechar `empty_output`. O campo `reasoning_content` de sempre continua a ser re
 os pedidos; o raciocínio só volta a um provider como carga opaca do estado. Quando o pedido
 levou estado, o corpo de um erro 4xx do provider **não sobe** na mensagem de erro (o provider
 pode ecoar o que recebeu).
+
+**Modo sensível.** A captura em modo sensível guarda só a referência do estado. Para a devolução
+o estado **não existe**, ao vivo como na retoma: o capturer diz ao loop que não guarda os bytes, e
+o loop não os entrega a quem faz o pedido (achado F3 da revisão — antes, o run devolvia o estado
+enquanto corria e deixava de o devolver depois de retomado). Uma rota `obrigatorio` falha fechado
+nesse modo, com `estado_so_referencia`.
+
+**Mudar um perfil `obrigatorio`.** Qualquer alteração ao perfil muda o seu digest, e os estados
+já capturados deixam de ser «desta rota»: os runs em curso nessa rota falham no turno seguinte
+(`estado_de_outra_rota`). É por desenho. A mudança faz-se com a rota drenada — sem runs em
+`running` nem à espera de aprovação —, como o recuo da projecção.
+
+**Limite: o fallback dentro do proxy.** Se o próprio proxy reencaminhar um pedido para outro
+deployment, o estado que o pedido leva chega a esse deployment antes de o gateway saber quem
+serviu. Detecta-se na resposta, pelo `route_check` desse turno; e o estado que esse turno
+produzir já não é devolvido (não é `igual`). Rotas `obrigatorio` configuram-se no proxy sem
+fallbacks.
+
+**Por medir (AOS-516).** Um fornecedor que numere os ids de tool call por índice repete-os entre
+turnos; com `tool_call_id: provider` o segundo turno com um id já usado não leva estado
+(`id_do_provider_inutilizavel`), e numa rota `obrigatorio` o run falha.
 
 **Replay e retoma.** A retoma reproduz os turnos já dados pela captura, que devolve o estado
 igual; o loop junta-os pelo digest, e o pedido do primeiro turno ao vivo é o que teria sido. O
