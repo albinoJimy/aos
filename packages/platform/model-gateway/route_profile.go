@@ -92,6 +92,14 @@ func (p RouteProfile) Validate() error {
 	default:
 		return fmt.Errorf("%w: devolver fora do vocabulario (aceites: %s, %s, %s)", ErrBadRouteProfile, StateReturnNeverName, StateReturnOptional, StateReturnRequired)
 	}
+	// UMA ROTA QUE DEVOLVE ESTADO DECLARA A PROJECÇÃO QUE O DEVOLVE (revisão). Com `devolver`
+	// diferente de `nunca`, o perfil tem de nomear uma versão da projecção que agarre o estado ao
+	// turno — hoje só a 1.3.0. Sem versão, ou com uma anterior, a rota dependia do interruptor do
+	// nó: numa `obrigatorio` todos os runs falhavam com `projeccao_sem_estado`, e numa `opcional`
+	// o perfil prometia uma devolução que nunca acontecia.
+	if p.StateReturn != StateReturnNever && p.ProjectionVersion != NativeProjectionVersion130 {
+		return fmt.Errorf("%w: devolver diferente de %s exige projection_version %s", ErrBadRouteProfile, StateReturnNeverName, NativeProjectionVersion130)
+	}
 	switch p.ToolCallID {
 	case ToolCallIDRuntime:
 	case ToolCallIDProvider:
@@ -155,6 +163,9 @@ func formaDeChave(v string) bool {
 // [RouteProfile.Validate]. `devolver` aceita também a forma escrita `nunca`, e `tool_call_id` a
 // forma escrita `runtime`.
 func ParseRouteProfile(data []byte) (RouteProfile, error) {
+	if err := chavesEstritas(data); err != nil {
+		return RouteProfile{}, fmt.Errorf("%w: %w", ErrBadRouteProfile, err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var p RouteProfile
@@ -174,6 +185,70 @@ func ParseRouteProfile(data []byte) (RouteProfile, error) {
 		return RouteProfile{}, err
 	}
 	return p, nil
+}
+
+// chavesEstritas recusa um documento em que algum objecto tenha uma chave REPETIDA ou uma chave
+// que não esteja em minúsculas. O `encoding/json` aceita as duas coisas em silêncio: de duas
+// chaves iguais fica a última, e `"Params"` casa com o campo `params`. Num perfil, as duas são
+// uma forma de o que se lê não ser o que se julga ter escrito (ou revisto).
+func chavesEstritas(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	type nivel struct {
+		objecto bool
+		chave   bool // num objecto: o próximo token é uma chave
+		vistas  map[string]bool
+	}
+	var pilha []*nivel
+	for {
+		tok, err := dec.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return errors.New("nao e JSON valido de um perfil")
+		}
+		topo := func() *nivel {
+			if len(pilha) == 0 {
+				return nil
+			}
+			return pilha[len(pilha)-1]
+		}
+		if t := topo(); t != nil && t.objecto && t.chave {
+			if d, fecha := tok.(json.Delim); fecha && d == '}' {
+				pilha = pilha[:len(pilha)-1]
+				if p := topo(); p != nil && p.objecto {
+					p.chave = true
+				}
+				continue
+			}
+			k, _ := tok.(string)
+			if k != strings.ToLower(k) {
+				return errors.New("tem uma chave que nao esta em minusculas")
+			}
+			if t.vistas[k] {
+				return errors.New("tem uma chave repetida")
+			}
+			t.vistas[k] = true
+			t.chave = false
+			continue
+		}
+		if d, ok := tok.(json.Delim); ok {
+			switch d {
+			case '{':
+				pilha = append(pilha, &nivel{objecto: true, chave: true, vistas: map[string]bool{}})
+				continue
+			case '[':
+				pilha = append(pilha, &nivel{})
+				continue
+			default: // '}' de um objecto vazio já foi tratado acima; aqui é ']'
+				pilha = pilha[:len(pilha)-1]
+			}
+		}
+		// Acabou um valor: se o nível de cima é um objecto, segue-se uma chave.
+		if t := topo(); t != nil && t.objecto {
+			t.chave = true
+		}
+	}
 }
 
 // erroDeLeituraSemValor reduz um erro do descodificador ao que NÃO repete conteúdo do ficheiro:

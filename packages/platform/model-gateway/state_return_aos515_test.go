@@ -38,6 +38,10 @@ func aos515Rota(t *testing.T, pedido, extra string) modelgateway.RouteProfile {
 	if pedido == "gpt-4o-mini" {
 		esperado = "openai/kimi-for-coding"
 	}
+	if strings.Contains(extra, `"devolver":"o`) {
+		// Uma rota que devolve estado declara a projecção que o devolve.
+		extra += `,"projection_version":"1.3.0"`
+	}
 	return aos513Perfil(t, `{"requested":"`+pedido+`","expected_model":"`+esperado+`","wire_class":"openai-chat-completions","capabilities":["tools"]`+extra+`}`)
 }
 
@@ -54,7 +58,9 @@ type aos515Run struct {
 	// versao e maxBytes configuram o adaptador; servido é o modelo que o «proxy» declara.
 	versao   string
 	maxBytes int
-	obs      []modelgateway.StateReturnObservation
+	// fixada é a versão da projecção em que o run está fixado (vazia ⇒ nenhuma).
+	fixada string
+	obs    []modelgateway.StateReturnObservation
 }
 
 // aos515Compor monta o gateway à frente do handler dado, com os perfis candidatos.
@@ -113,6 +119,7 @@ func (r *aos515Run) passo(modelo string) (agentruntime.ModelResponse, error) {
 	r.turno++
 	view := aos490Vista(r.t, agentruntime.AssemblyVersion150, "You are a careful assistant.", r.segs)
 	view.Turn = r.turno
+	view.ProjectionVersion = r.fixada
 	if len(r.estados) > 0 {
 		view.ProviderStates = r.estados
 	}
@@ -267,13 +274,17 @@ func TestAOS515_Obrigatorio_SemEstadoOPedidoNaoSai(t *testing.T) {
 		causa    string
 	}{
 		"captura desligada no adaptador": {modelgateway.NativeProjectionVersion130, 0, port.StateMissingAbsent},
-		"projeccao 1.2.0":                {modelgateway.NativeProjectionVersion120, modelgateway.DefaultProviderStateMaxBytes, modelgateway.StateCauseNoProjection},
+		"run fixado na projeccao 1.2.0":  {modelgateway.NativeProjectionVersion120, modelgateway.DefaultProviderStateMaxBytes, modelgateway.StateCauseNoProjection},
 	} {
 		t.Run(nome, func(t *testing.T) {
 			for _, classe := range []string{"obrigatorio", "opcional"} {
 				falso := &wirefake.Exigente{}
 				run := aos515Compor(t, falso, aos515Modelo, aos515Rota(t, "gpt-4o", `,"devolver":"`+classe+`"`))
-				run.versao, run.maxBytes = c.versao, c.maxBytes
+				run.maxBytes = c.maxBytes
+				if c.versao != modelgateway.NativeProjectionVersion130 {
+					// Um run que começou FIXADO numa versão anterior (o perfil declara a 1.3.0).
+					run.fixada = c.versao
+				}
 				if _, err := run.passo("gpt-4o"); err != nil {
 					t.Fatalf("%s: primeiro turno: %v", classe, err)
 				}

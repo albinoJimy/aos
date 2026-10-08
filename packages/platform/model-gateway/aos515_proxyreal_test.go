@@ -195,11 +195,11 @@ func TestAOS515_ProxyReal_OQueChegaAoProviderNoSegundoTurno(t *testing.T) {
 		return out
 	}
 
-	const params = `,"params":{"thinking":{"type":"enabled","budget_tokens":2048},"max_tokens":16000},"devolver":"obrigatorio"`
+	const params = `,"params":{"thinking":{"type":"enabled","budget_tokens":2048},"max_tokens":16000},"projection_version":"1.3.0","devolver":"obrigatorio"`
 	perfis := map[string]string{
 		// Na rota openai/ o proxy fixado recusa `thinking` (medido pelas sondas): o perfil leva
 		// `reasoning_effort`, que passa com `allowed_openai_params`.
-		"gpt-4o":      `{"requested":"gpt-4o","expected_model":"openai/k3","wire_class":"openai-chat-completions","capabilities":["tools"],"params":{"reasoning_effort":"high","max_tokens":16000},"devolver":"obrigatorio"}`,
+		"gpt-4o":      `{"requested":"gpt-4o","expected_model":"openai/k3","wire_class":"openai-chat-completions","capabilities":["tools"],"params":{"reasoning_effort":"high","max_tokens":16000},"projection_version":"1.3.0","devolver":"obrigatorio"}`,
 		"gpt-4o-mini": `{"requested":"gpt-4o-mini","expected_model":"` + aos515ModeloAnthropic + `","wire_class":"openai-chat-completions","capabilities":["tools"]` + params + `}`,
 	}
 	// AS SONDAS DOS PARÂMETROS (AOS-513): um pedido cru por rota de sonda e por parâmetro; regista-se

@@ -103,6 +103,11 @@ func (p RequestParams) Validate() error {
 	if p.MaxTokens < 0 || p.MaxTokens > MaxRequestParamTokens {
 		return fmt.Errorf("%w: max_tokens (aceite: de 1 a %d)", ErrBadRequestParams, MaxRequestParamTokens)
 	}
+	// O orçamento de raciocínio conta para o `max_tokens`: com os dois declarados, um orçamento
+	// que não caiba deixa zero tokens para a resposta (e há fornecedores que recusam o pedido).
+	if p.Thinking != nil && p.Thinking.BudgetTokens != 0 && p.MaxTokens != 0 && p.Thinking.BudgetTokens >= p.MaxTokens {
+		return fmt.Errorf("%w: thinking.budget_tokens tem de ser menor do que max_tokens", ErrBadRequestParams)
+	}
 	return nil
 }
 

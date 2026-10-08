@@ -140,8 +140,10 @@ func TestAOS513_Inerte_DigestsDosPerfisDeHoje(t *testing.T) {
 		`{` + aos513Base + `,"params":{"thinking":{"type":"adaptive"}}}`,
 		`{` + aos513Base + `,"projection_version":"1.2.0"}`,
 		`{` + aos513Base + `,"projection_version":"1.1.0"}`,
-		`{` + aos513Base + `,"devolver":"opcional"}`,
-		`{` + aos513Base + `,"devolver":"obrigatorio"}`,
+		`{` + aos513Base + `,"projection_version":"1.3.0"}`,
+		`{` + aos513Base + `,"projection_version":"1.3.0","devolver":"opcional"}`,
+		`{` + aos513Base + `,"projection_version":"1.3.0","devolver":"obrigatorio"}`,
+		`{` + aos513Base + `,"projection_version":"1.3.0","devolver":"obrigatorio","tool_call_id":"provider"}`,
 	} {
 		d := aos513Perfil(t, doc).Digest()
 		if outro, repetido := vistos[d]; repetido {
@@ -223,6 +225,18 @@ func TestAOS513_Perfil_LeituraFechada(t *testing.T) {
 		"chave de API no nome esperado":     `{"requested":"gpt-4o","expected_model":"openai/sk-VALORRECUSADO513abcdef0123456789","wire_class":"openai-chat-completions","capabilities":["tools"]}`,
 		"segredo longo no nome pedido":      `{"requested":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8","expected_model":"openai/k3","wire_class":"openai-chat-completions","capabilities":["tools"]}`,
 		"conteudo depois do perfil":         `{` + aos513Base + `} {"x":1}`,
+		"devolver sem versao da projeccao":  `{` + aos513Base + `,"devolver":"obrigatorio"}`,
+		"devolver com a projeccao 1.2.0":    `{` + aos513Base + `,"devolver":"opcional","projection_version":"1.2.0"}`,
+		"id do provider sem devolver":       `{` + aos513Base + `,"tool_call_id":"provider"}`,
+		"tool_call_id fora do vocabulario":  `{` + aos513Base + `,"projection_version":"1.3.0","devolver":"opcional","tool_call_id":"` + marca + `"}`,
+		"orcamento igual ao max_tokens":     `{` + aos513Base + `,"params":{"thinking":{"type":"enabled","budget_tokens":4096},"max_tokens":4096}}`,
+		"orcamento acima do max_tokens":     `{` + aos513Base + `,"params":{"thinking":{"type":"enabled","budget_tokens":8192},"max_tokens":4096}}`,
+		"chave repetida":                    `{` + aos513Base + `,"devolver":"nunca","devolver":"nunca"}`,
+		"chave repetida nos parametros":     `{` + aos513Base + `,"params":{"max_tokens":2000,"max_tokens":16000}}`,
+		"chave repetida em thinking":        `{` + aos513Base + `,"params":{"thinking":{"type":"disabled","type":"enabled"}}}`,
+		"chave noutra caixa":                `{` + aos513Base + `,"Params":{"max_tokens":16000}}`,
+		"chave noutra caixa nos parametros": `{` + aos513Base + `,"params":{"Max_Tokens":16000}}`,
+		"nome pedido repetido noutra caixa": `{"Requested":"outro",` + aos513Base + `}`,
 		"nao e JSON":                        marca,
 		"lista em vez de objecto":           `[{` + aos513Base + `}]`,
 	}
@@ -234,6 +248,18 @@ func TestAOS513_Perfil_LeituraFechada(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), marca) || strings.Contains(err.Error(), "VALORRECUSADO") {
 			t.Errorf("%s: a mensagem repete o valor recusado: %v", nome, err)
+		}
+	}
+	// O que continua a ser aceite: os valores no limite e os objectos e listas aninhados.
+	for nome, doc := range map[string]string{
+		"orcamento abaixo do max_tokens": `{` + aos513Base + `,"params":{"thinking":{"type":"enabled","budget_tokens":4095},"max_tokens":4096}}`,
+		"orcamento sem max_tokens":       `{` + aos513Base + `,"params":{"thinking":{"type":"enabled","budget_tokens":4096}}}`,
+		"devolver com a 1.3.0":           `{` + aos513Base + `,"projection_version":"1.3.0","devolver":"obrigatorio","tool_call_id":"provider"}`,
+		"nunca e runtime por extenso":    `{` + aos513Base + `,"devolver":"nunca","tool_call_id":"runtime","params":{}}`,
+		"sem capacidades":                `{"requested":"gpt-4o","expected_model":"openai/k3","wire_class":"openai-chat-completions","capabilities":[]}`,
+	} {
+		if _, err := modelgateway.ParseRouteProfile([]byte(doc)); err != nil {
+			t.Errorf("%s: tinha de ser aceite; veio %v", nome, err)
 		}
 	}
 	// Um perfil recusado não compõe gateway, venha como candidato ou em duplicado.
