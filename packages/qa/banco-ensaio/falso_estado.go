@@ -374,6 +374,10 @@ func pensamentoDoTurno(n int) string { return fmt.Sprintf("S-PENSA-%d <b> & e", 
 func assinaturaDoTurno(n int) string { return fmt.Sprintf("U0lH-%d+/==", n) }
 func redigidoDoTurno(n int) string   { return fmt.Sprintf("UkVE-%d", n) }
 
+// vazioDoTurno é a assinatura do bloco de raciocínio de TEXTO VAZIO do turno n: um bloco que só
+// tem assinatura, e que o fornecedor exige de volta como os outros.
+func vazioDoTurno(n int) string { return fmt.Sprintf("VkFaSU8-%d", n) }
+
 // SentinelasDoEstado são os textos que os falsos do estado emitem como raciocínio, assinaturas e
 // blocos redigidos. Os testes de fuga procuram-nos em tudo o que o banco escreve.
 func SentinelasDoEstado() []string {
@@ -391,7 +395,7 @@ func (f *FalsoDeEstado) servirMensagens(w http.ResponseWriter, corpo []byte, top
 			continue
 		}
 		var tipos []string
-		temChamada, pensou, redigiu := false, false, false
+		temChamada, pensou, redigiu, vazio := false, false, false, false
 		for _, b := range blocos {
 			var tipo, texto, assinatura, dados, id string
 			_ = json.Unmarshal(b["type"], &tipo)
@@ -405,6 +409,18 @@ func (f *FalsoDeEstado) servirMensagens(w http.ResponseWriter, corpo []byte, top
 			switch tipo {
 			case "thinking":
 				presente = true
+				if _, temTexto := b["thinking"]; texto == "" && temTexto {
+					// O bloco de texto vazio, só com assinatura.
+					tipo = "thinking(vazio)"
+					if assinatura == vazioDoTurno(turnos) {
+						vazio = true
+						f.contar(&f.forma.Estado, "thinking_vazio.intacto")
+					} else {
+						alterado = true
+						f.contar(&f.forma.Estado, "thinking_vazio.alterado")
+					}
+					break
+				}
 				if texto == pensamentoDoTurno(turnos) && assinatura == assinaturaDoTurno(turnos) {
 					pensou = true
 					f.contar(&f.forma.Estado, "thinking.intacto")
@@ -445,7 +461,7 @@ func (f *FalsoDeEstado) servirMensagens(w http.ResponseWriter, corpo []byte, top
 		}
 		f.forma.Turnos++
 		f.contar(&f.forma.Assistant, strings.Join(tipos, ","))
-		if !pensou || !redigiu {
+		if !pensou || !redigiu || !vazio {
 			emFalta = true
 		}
 		turnos++
@@ -484,6 +500,7 @@ func (f *FalsoDeEstado) servirMensagens(w http.ResponseWriter, corpo []byte, top
 		"content": []any{
 			map[string]any{"type": "thinking", "thinking": pensamentoDoTurno(turnos), "signature": assinaturaDoTurno(turnos)},
 			map[string]any{"type": "redacted_thinking", "data": redigidoDoTurno(turnos)},
+			map[string]any{"type": "thinking", "thinking": "", "signature": vazioDoTurno(turnos)},
 			map[string]any{"type": "tool_use", "id": fmt.Sprintf("toolu_Banco%02d", turnos), "name": tool, "input": json.RawMessage(args)},
 		},
 		"stop_reason": "tool_use", "usage": map[string]any{"input_tokens": entrada, "output_tokens": 16},

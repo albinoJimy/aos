@@ -238,6 +238,7 @@ func TestAOS516_FalsoDeEstado_WireDeMensagens(t *testing.T) {
 		`"tools":[{"name":"arquivo","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}],"messages":[{"role":"user","content":"Read notas-armazem.txt"}`
 	pensa := `{"type":"thinking","thinking":"` + pensamentoDoTurno(0) + `","signature":"` + assinaturaDoTurno(0) + `"}`
 	redigido := `{"type":"redacted_thinking","data":"` + redigidoDoTurno(0) + `"}`
+	vazio := `{"type":"thinking","thinking":"","signature":"` + vazioDoTurno(0) + `"}`
 	const chamada = `{"type":"tool_use","id":"step-000001-tool-0","name":"arquivo","input":{"path":"notas-armazem.txt"}}`
 	const resultado = `,{"role":"user","content":[{"type":"tool_result","tool_use_id":"step-000001-tool-0","content":"x"}]}]}`
 	turno := func(blocos ...string) string {
@@ -259,7 +260,7 @@ func TestAOS516_FalsoDeEstado_WireDeMensagens(t *testing.T) {
 	// O primeiro pedido: o falso emite raciocinio assinado, um bloco redigido e a tool call.
 	exige := &FalsoDeEstado{Turnos: 1}
 	codigo, resp := pedir(exige, cabeca+`]}`)
-	if codigo != http.StatusOK || resp["stop_reason"] != "tool_use" || len(resp["content"].([]any)) != 3 {
+	if codigo != http.StatusOK || resp["stop_reason"] != "tool_use" || len(resp["content"].([]any)) != 4 {
 		t.Fatalf("primeiro pedido: %d %v", codigo, resp)
 	}
 	for nome, c := range map[string]struct {
@@ -269,13 +270,14 @@ func TestAOS516_FalsoDeEstado_WireDeMensagens(t *testing.T) {
 		forma  string
 		causa  string
 	}{
-		"estado de volta, intacto":                    {turno(pensa, redigido, chamada), false, 200, "thinking,redacted_thinking,tool_use", ""},
-		"com o bloco de texto que o proxy acrescenta": {turno(pensa, redigido, `{"type":"text","text":"[System: aviso]"}`, chamada), false, 200, "thinking,redacted_thinking,text(aviso_do_proxy),tool_use", ""},
-		"com um bloco de texto vazio":                 {turno(pensa, redigido, `{"type":"text","text":""}`, chamada), false, 200, "thinking,redacted_thinking,text(vazio),tool_use", ""},
+		"estado de volta, intacto":                    {turno(pensa, redigido, vazio, chamada), false, 200, "thinking,redacted_thinking,thinking(vazio),tool_use", ""},
+		"com o bloco de texto que o proxy acrescenta": {turno(pensa, redigido, vazio, `{"type":"text","text":"[System: aviso]"}`, chamada), false, 200, "thinking,redacted_thinking,thinking(vazio),text(aviso_do_proxy),tool_use", ""},
+		"com um bloco de texto vazio":                 {turno(pensa, redigido, vazio, `{"type":"text","text":""}`, chamada), false, 200, "thinking,redacted_thinking,thinking(vazio),text(vazio),tool_use", ""},
 		"sem o estado":                                {turno(chamada), false, 400, "tool_use", RecusaEstadoEmFalta},
 		"sem o bloco redigido":                        {turno(pensa, chamada), false, 400, "thinking,tool_use", RecusaEstadoEmFalta},
-		"com um byte da assinatura alterado":          {turno(strings.Replace(pensa, "U0lH-0", "U0lH-1", 1), redigido, chamada), false, 400, "thinking,redacted_thinking,tool_use", RecusaEstadoAlterado},
-		"o que proibe, com estado":                    {turno(pensa, redigido, chamada), true, 400, "thinking,redacted_thinking,tool_use", RecusaEstadoPresente},
+		"sem o bloco de texto vazio":                  {turno(pensa, redigido, chamada), false, 400, "thinking,redacted_thinking,tool_use", RecusaEstadoEmFalta},
+		"com um byte da assinatura alterado":          {turno(strings.Replace(pensa, "U0lH-0", "U0lH-1", 1), redigido, vazio, chamada), false, 400, "thinking,redacted_thinking,thinking(vazio),tool_use", RecusaEstadoAlterado},
+		"o que proibe, com estado":                    {turno(pensa, redigido, vazio, chamada), true, 400, "thinking,redacted_thinking,thinking(vazio),tool_use", RecusaEstadoPresente},
 		"o que proibe, sem estado":                    {turno(chamada), true, 200, "tool_use", ""},
 	} {
 		f := &FalsoDeEstado{Turnos: 1, Proibe: c.proibe}
