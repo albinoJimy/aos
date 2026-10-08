@@ -142,13 +142,19 @@ func TestAOS508_NenhumCodigoDeProducaoImportaOsFalsos(t *testing.T) {
 		if strings.HasPrefix(filepath.ToSlash(caminho), "internal/wirefake/") {
 			return nil
 		}
+		// A porta pública dos falsos (AOS-512) reexporta-os para o banco de ensaio, fora do
+		// módulo. É o ÚNICO ficheiro que os pode importar, e ele próprio não pode ser importado
+		// por código de produção do gateway (verificado abaixo).
+		if filepath.ToSlash(caminho) == "wiretest/wiretest.go" {
+			return nil
+		}
 		f, perr := parser.ParseFile(token.NewFileSet(), caminho, nil, parser.ImportsOnly)
 		if perr != nil {
 			return perr
 		}
 		vistos++
 		for _, imp := range f.Imports {
-			if strings.Contains(imp.Path.Value, "internal/wirefake") {
+			if strings.Contains(imp.Path.Value, "internal/wirefake") || strings.Contains(imp.Path.Value, "model-gateway/wiretest") {
 				t.Errorf("%s importa os providers falsos — so os testes o podem fazer", caminho)
 			}
 		}

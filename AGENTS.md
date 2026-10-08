@@ -19,7 +19,7 @@ As fontes de verdade canónicas são: [`specs/00_AOS_Carta.md`](specs/00_AOS_Car
 | Camada | Tecnologia de referência |
 |---|---|
 | Linguagem | **Go 1.24** (`go 1.24` nos `go.mod`) |
-| Orquestração de dependências | Módulos Go locais (`replace` por path) — 49 módulos em `packages/` (inclui `platform/attestation` de EPIC-16/AOS-177 e, de AOS-281, `control-plane/runlifecycle` + `cmd/aos-orq`) |
+| Orquestração de dependências | Módulos Go locais (`replace` por path) — 50 módulos em `packages/` (inclui `platform/attestation` de EPIC-16/AOS-177, de AOS-281 `control-plane/runlifecycle` + `cmd/aos-orq`, e de AOS-512 `qa/banco-ensaio`) |
 | Infraestrutura | **OpenTofu** ≥ 1.10 (ou Terraform ≥ 1.11) + provider Docker |
 | Estado remoto | S3-compatível (MinIO local em dev) com `use_lockfile` nativo |
 | Event Store / transporte | **NATS JetStream** (dev/staging via Docker); alternativas: Redis/Postgres |
