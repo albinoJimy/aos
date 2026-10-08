@@ -2,6 +2,7 @@ package bancoensaio
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -304,7 +305,8 @@ func TestAOS512_Separadores_PlanoEIntercalacao(t *testing.T) {
 		t.Fatalf("comparacoes com o braco A: %d, quer 3 (B, C e D)", len(r.Comparacoes))
 	}
 	for _, c := range r.Comparacoes {
-		if c.Diferenca == nil || c.PValor == nil || c.IntervalosSobrepostos == nil || *c.PValor < 0 || *c.PValor > 1 {
+		if c.Diferenca == nil || c.PValor == nil || c.PValorCorrigido == nil || c.DistingueA5 == nil || c.IntervalosSobrepostos == nil ||
+			*c.PValor < 0 || *c.PValor > 1 || *c.PValorCorrigido < *c.PValor || *c.PValorCorrigido > 1 || *c.DistingueA5 != (*c.PValorCorrigido < 0.05) {
 			t.Errorf("comparacao %s mal formada", c.Braco)
 		}
 	}
@@ -340,15 +342,62 @@ func TestAOS512_Wilson_ValoresConhecidos(t *testing.T) {
 	if tx := NovaTaxa("t", 0, 0); tx.Valor != nil {
 		t.Error("0/0 nao tem taxa")
 	}
-	// 10% contra 32% com 53 por braço (5 e 17 falhas): é a diferença que a amostra foi
-	// dimensionada para ver, e o teste de duas proporções tem de a distinguir a 5%.
-	if p := pValorDeDuasProporcoes(5, 53, 17, 53); p >= 0.05 || p < 0.001 {
-		t.Errorf("p(5/53 contra 17/53) = %.4f, quer abaixo de 0,05", p)
+}
+
+// O p-valor é o do teste EXACTO de Fisher (bilateral), com a correcção de Holm para as três
+// comparações com o braço A. Os valores de referência foram calculados à parte, com
+// combinações inteiras exactas.
+func TestAOS512_Fisher_EHolm(t *testing.T) {
+	perto := func(a, b float64) bool { return math.Abs(a-b) < 0.0005 }
+	for _, c := range []struct {
+		x1, n1, x2, n2 int
+		quer           float64
+	}{
+		// O caso da revisão: a aproximação normal dava 0,041 e «distingue»; o exacto não.
+		{0, 53, 4, 53, 0.1179},
+		{4, 53, 0, 53, 0.1179},
+		// 10% contra 32%: a diferença que a amostra foi dimensionada para ver.
+		{5, 53, 17, 53, 0.0075},
+		{10, 53, 20, 53, 0.0513},
+		{5, 53, 6, 53, 1},
+		{0, 53, 0, 53, 1},
+		{53, 53, 53, 53, 1},
+		{3, 10, 3, 10, 1},
+	} {
+		if got := pValorDeFisher(c.x1, c.n1, c.x2, c.n2); !perto(got, c.quer) {
+			t.Errorf("Fisher(%d/%d contra %d/%d) = %.4f, quer %.4f", c.x1, c.n1, c.x2, c.n2, got, c.quer)
+		}
 	}
-	if p := pValorDeDuasProporcoes(5, 53, 6, 53); p < 0.5 {
-		t.Errorf("p(5/53 contra 6/53) = %.4f: uma diferenca destas nao se distingue", p)
+	if p := pValorDeFisher(1, 0, 1, 5); p != 1 {
+		t.Errorf("sem denominador o p-valor e 1, veio %.4f", p)
 	}
-	if p := pValorDeDuasProporcoes(0, 53, 0, 53); p != 1 {
-		t.Errorf("sem variancia o p-valor e 1, veio %.4f", p)
+	// Holm: 0,01, 0,04 e 0,03 ⇒ 0,03 (×3), 0,06 (0,03×2) e 0,06 (0,04×1, que não desce abaixo
+	// do anterior).
+	got := corrigirPorHolm([]float64{0.01, 0.04, 0.03})
+	for i, quer := range []float64{0.03, 0.06, 0.06} {
+		if !perto(got[i], quer) {
+			t.Errorf("Holm = %v, quer [0.03 0.06 0.06]", got)
+			break
+		}
+	}
+	if got := corrigirPorHolm([]float64{0.5, 0.9}); got[0] != 1 || got[1] != 1 {
+		t.Errorf("o p-valor corrigido nao passa de 1: %v", got)
+	}
+
+	// No relatório: 0/53 contra 4/53 NÃO distingue; e um p de 0,03 isolado, com três
+	// comparações, também não (0,03 × 3 = 0,09).
+	braco := func(nome string, falhas int) TaxasDoBraco {
+		return TaxasDoBraco{Braco: nome, Taxas: Taxas{SemToolCallNaPrimeira: NovaTaxa("t", falhas, 53)}}
+	}
+	cs := compararComA([]TaxasDoBraco{braco("A", 4), braco("B", 0), braco("C", 4), braco("D", 17)})
+	if len(cs) != 3 {
+		t.Fatalf("comparacoes: %d", len(cs))
+	}
+	if *cs[0].DistingueA5 || !perto(*cs[0].PValor, 0.1179) || !perto(*cs[0].PValorCorrigido, 0.2358) {
+		t.Errorf("B (0/53) contra A (4/53): p=%.4f corrigido=%.4f distingue=%v; quer 0,1179, 0,2358 e false", *cs[0].PValor, *cs[0].PValorCorrigido, *cs[0].DistingueA5)
+	}
+	// D (17/53) contra A (4/53) tem o menor p-valor dos três, logo o corrigido é o triplo.
+	if !*cs[2].DistingueA5 || !perto(*cs[2].PValorCorrigido, 3**cs[2].PValor) {
+		t.Errorf("D contra A: p=%.4f corrigido=%.4f distingue=%v", *cs[2].PValor, *cs[2].PValorCorrigido, *cs[2].DistingueA5)
 	}
 }

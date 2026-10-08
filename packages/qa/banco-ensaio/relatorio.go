@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -140,9 +141,16 @@ type Comparacao struct {
 	Diferenca *float64 `json:"diferenca_de_taxas"`
 	// IntervalosSobrepostos diz se os intervalos de 95% dos dois braços se tocam.
 	IntervalosSobrepostos *bool `json:"intervalos_de_95_sobrepostos"`
-	// PValor é o do teste de duas proporções (bilateral, variância agrupada).
-	PValor *float64 `json:"p_valor_duas_proporcoes"`
-	// DistingueA5 diz se o p-valor fica abaixo de 0,05. É o que a amostra deixa afirmar.
+	// PValor é o do teste EXACTO de Fisher, bilateral. Não é uma aproximação normal: com
+	// contagens baixas num dos braços — o cenário esperado se uma variante funcionar — a
+	// aproximação declara diferença onde o teste exacto não declara (0/53 contra 4/53: 0,041
+	// pela aproximação, 0,118 pelo exacto).
+	PValor *float64 `json:"p_valor_fisher_exacto"`
+	// PValorCorrigido é o p-valor corrigido pelo método de Holm para o conjunto das comparações
+	// com o braço A (três, na experiência dos separadores).
+	PValorCorrigido *float64 `json:"p_valor_corrigido_holm"`
+	// DistingueA5 diz se o p-valor CORRIGIDO fica abaixo de 0,05. É o que a amostra deixa
+	// afirmar com as três comparações feitas ao mesmo tempo.
 	DistingueA5 *bool `json:"distingue_a_5_por_cento"`
 }
 
@@ -166,6 +174,8 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 		l = append(l,
 			fmt.Sprintf("Com %d amostras por braco so se distingue uma taxa de 10%% de uma de 32%% (potencia de 80%% a 5%%). Diferencas menores nao se veem com esta amostra: nao as ver nao prova que nao existem.", cfg.Plano.Amostras),
 			"Intervalos de 95% que se sobrepoem nao mostram diferenca entre bracos.",
+			"O p-valor de cada braco contra o A e o do teste exacto de Fisher (bilateral). Sao tres comparacoes com o mesmo braco A: o p-valor corrigido (Holm) e o que decide o campo distingue_a_5_por_cento, e so esse controla a 5% o erro do conjunto.",
+			"A potencia declarada vale para uma base perto de 10%: com uma base de 40 a 50% a diferenca que se ve e de cerca de 27 pontos.",
 			"A experiencia corre sobre um so caso (T1) e um turno por amostra: nao mede o segundo turno, a resposta vazia nem a recuperacao.",
 			"As variantes B e C existem so no banco. Um braco com menos falhas nao e uma versao de projeccao: publicar uma exige ticket proprio e emenda ao ADR-036.",
 		)
@@ -269,29 +279,77 @@ func compararComA(bracos []TaxasDoBraco) []Comparacao {
 		if t.Valor != nil && a.Valor != nil {
 			d := *t.Valor - *a.Valor
 			sobrepostos := !(*t.IC95Inferior > *a.IC95Superior || *a.IC95Inferior > *t.IC95Superior)
-			p := pValorDeDuasProporcoes(t.Numerador, t.Denominador, a.Numerador, a.Denominador)
-			distingue := p < 0.05
-			c.Diferenca, c.IntervalosSobrepostos, c.PValor, c.DistingueA5 = &d, &sobrepostos, &p, &distingue
+			p := pValorDeFisher(t.Numerador, t.Denominador, a.Numerador, a.Denominador)
+			c.Diferenca, c.IntervalosSobrepostos, c.PValor = &d, &sobrepostos, &p
 		}
 		out = append(out, c)
+	}
+	// A correcção de Holm sobre as comparações que têm p-valor.
+	var ps []float64
+	var onde []int
+	for i := range out {
+		if out[i].PValor != nil {
+			ps = append(ps, *out[i].PValor)
+			onde = append(onde, i)
+		}
+	}
+	for k, corrigido := range corrigirPorHolm(ps) {
+		corrigido := corrigido
+		distingue := corrigido < 0.05
+		out[onde[k]].PValorCorrigido, out[onde[k]].DistingueA5 = &corrigido, &distingue
 	}
 	return out
 }
 
-// pValorDeDuasProporcoes é o p-valor bilateral do teste z de duas proporções, com a variância
-// agrupada. Com as duas proporções iguais a 0 ou a 1 não há variância: devolve 1.
-func pValorDeDuasProporcoes(x1, n1, x2, n2 int) float64 {
-	if n1 <= 0 || n2 <= 0 {
+// pValorDeFisher é o p-valor bilateral do teste exacto de Fisher para a tabela 2×2 de dois
+// braços (x1 em n1 contra x2 em n2): a soma das probabilidades hipergeométricas de todas as
+// tabelas com as mesmas margens que são tão ou menos prováveis do que a observada. Calcula-se
+// em logaritmos, para não transbordar.
+func pValorDeFisher(x1, n1, x2, n2 int) float64 {
+	if n1 <= 0 || n2 <= 0 || x1 < 0 || x2 < 0 || x1 > n1 || x2 > n2 {
 		return 1
 	}
-	p1, p2 := float64(x1)/float64(n1), float64(x2)/float64(n2)
-	agrupada := float64(x1+x2) / float64(n1+n2)
-	variancia := agrupada * (1 - agrupada) * (1/float64(n1) + 1/float64(n2))
-	if variancia <= 0 {
-		return 1
+	k := x1 + x2
+	logComb := func(n, r int) float64 {
+		a, _ := math.Lgamma(float64(n + 1))
+		b, _ := math.Lgamma(float64(r + 1))
+		c, _ := math.Lgamma(float64(n - r + 1))
+		return a - b - c
 	}
-	z := math.Abs(p1-p2) / math.Sqrt(variancia)
-	return math.Erfc(z / math.Sqrt2)
+	total := logComb(n1+n2, k)
+	prob := func(a int) float64 { return math.Exp(logComb(n1, a) + logComb(n2, k-a) - total) }
+	observada := prob(x1)
+	soma := 0.0
+	for a := max(0, k-n2); a <= min(k, n1); a++ {
+		// A tolerância relativa segura as tabelas simétricas, que têm a mesma probabilidade a
+		// menos do arredondamento.
+		if p := prob(a); p <= observada*(1+1e-7) {
+			soma += p
+		}
+	}
+	return math.Min(1, soma)
+}
+
+// corrigirPorHolm devolve os p-valores corrigidos pelo método de Holm, na ordem de entrada: o
+// menor multiplica-se pelo número de comparações, o seguinte por menos uma, e assim por diante,
+// sem nunca descer abaixo do corrigido anterior nem passar de 1.
+func corrigirPorHolm(ps []float64) []float64 {
+	m := len(ps)
+	ordem := make([]int, m)
+	for i := range ordem {
+		ordem[i] = i
+	}
+	sort.SliceStable(ordem, func(a, b int) bool { return ps[ordem[a]] < ps[ordem[b]] })
+	out := make([]float64, m)
+	anterior := 0.0
+	for posicao, i := range ordem {
+		v := math.Min(1, ps[i]*float64(m-posicao))
+		if v < anterior {
+			v = anterior
+		}
+		out[i], anterior = v, v
+	}
+	return out
 }
 
 // EscreverRelatorio grava o relatório em dois ficheiros na pasta dada — `<base>.json` e
@@ -397,8 +455,8 @@ func ResumoEmTexto(r *Relatorio) string {
 				fmt.Fprintf(&b, "  %s contra A (%s): sem denominador\n", c.Braco, c.Mede)
 				continue
 			}
-			fmt.Fprintf(&b, "  %s contra A (%s): diferenca %+.1f pontos; intervalos de 95%% sobrepostos: %v; p = %.4f; distingue a 5%%: %v\n",
-				c.Braco, c.Mede, 100**c.Diferenca, *c.IntervalosSobrepostos, *c.PValor, *c.DistingueA5)
+			fmt.Fprintf(&b, "  %s contra A (%s): diferenca %+.1f pontos; intervalos de 95%% sobrepostos: %v; p (Fisher exacto) = %.4f; p corrigido (Holm, %d comparacoes) = %.4f; distingue a 5%%: %v\n",
+				c.Braco, c.Mede, 100**c.Diferenca, *c.IntervalosSobrepostos, *c.PValor, len(r.Comparacoes), *c.PValorCorrigido, *c.DistingueA5)
 		}
 	}
 	if len(r.PorCaso) > 1 {
