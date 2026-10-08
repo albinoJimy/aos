@@ -2351,6 +2351,22 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-515 — PEDIDOS A ROTAS QUE DEVOLVEM O ESTADO OPACO, PELO RESULTADO. Só existe quando
+	// algum perfil da tabela tem uma classe de estado que não seja `nunca`; com a tabela de hoje
+	// a família não existe, e o /metrics é o de antes.
+	if estadoDevolvido.activo {
+		for i, r := range estadoDevolvido.resultados {
+			labels := `{resultado="` + r + `"}`
+			if i == 0 {
+				g("aos_model_provider_state_returned_total",
+					"Pedidos ao modelo desde o arranque, com pelo menos um turno anterior com tool calls, feitos a uma rota cujo perfil devolve o estado opaco do provider (AOS-515, ADR-040), pelo resultado. devolvido: todos os turnos anteriores levaram o seu estado. parcial e sem_estado: rota opcional, e o pedido saiu sem o estado de alguns ou de todos. recusado: rota obrigatorio, faltava o estado de um turno e o pedido NAO foi enviado (o run falhou). Nenhum byte do estado.",
+					"counter", float64(estadoDevolvido.lido(r)), labels)
+				continue
+			}
+			amostra("aos_model_provider_state_returned_total", labels, float64(estadoDevolvido.lido(r)))
+		}
+	}
+
 	// AOS-493 — RUNS TERMINADOS POR DESFECHO E RAZÃO DO VEREDICTO. Uma amostra por par dos dois
 	// vocabulários fechados, sempre presentes: o zero é um zero verdadeiro.
 	if h.svc != nil && h.svc.desfechos != nil {

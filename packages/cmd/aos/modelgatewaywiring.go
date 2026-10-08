@@ -281,6 +281,9 @@ func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKe
 		// enviou parâmetros conta por rota e código. O nó usa só a tabela de perfis em código —
 		// não passa perfis candidatos.
 		RouteParamsObserver: parametrosRecusados.observar,
+		// DEVOLUÇÃO DO ESTADO OPACO (AOS-515): cada pedido a uma rota cujo perfil devolve estado
+		// conta pelo resultado.
+		StateReturnObserver: estadoDevolvido.observar,
 	}
 	// EGRESS (AOS-366) — deixar o HTTPClient nil é o que ARMA o caminho endurecido do gateway:
 	// `newProviderAdapter` só corre `validateEgressURL` (https + allowlist) e constrói o transporte

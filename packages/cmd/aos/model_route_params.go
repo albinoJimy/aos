@@ -59,3 +59,51 @@ func (c *contadoresDeParametros) lido(rota, codigo string) int64 {
 // parametrosRecusados são os contadores do processo. O nó trabalha só com a tabela de perfis em
 // código, pelo que as rotas com parâmetros se conhecem no arranque.
 var parametrosRecusados = novosContadoresDeParametros((*modelgateway.RouteProfileSet)(nil).WithParams())
+
+// contadoresDaDevolucao conta, por processo, os pedidos a rotas que devolvem o estado opaco do
+// provider, pelo resultado (AOS-515) — a família `aos_model_provider_state_returned_total`.
+type contadoresDaDevolucao struct {
+	// activo diz que algum perfil da tabela devolve estado: só então a família existe.
+	activo     bool
+	resultados []string
+	total      map[string]*atomic.Int64
+}
+
+func novosContadoresDaDevolucao(activo bool) *contadoresDaDevolucao {
+	c := &contadoresDaDevolucao{activo: activo, resultados: modelgateway.StateReturnResults(), total: map[string]*atomic.Int64{}}
+	for _, r := range c.resultados {
+		c.total[r] = new(atomic.Int64)
+	}
+	return c
+}
+
+// observar conta um pedido. Um resultado fora do vocabulário não conta.
+func (c *contadoresDaDevolucao) observar(o modelgateway.StateReturnObservation) {
+	if c == nil {
+		return
+	}
+	if n := c.total[o.Result]; n != nil {
+		n.Add(1)
+	}
+}
+
+func (c *contadoresDaDevolucao) lido(resultado string) int64 {
+	if c == nil || c.total[resultado] == nil {
+		return 0
+	}
+	return c.total[resultado].Load()
+}
+
+// algumPerfilDevolveEstado diz se a tabela de perfis em código tem alguma rota cuja classe de
+// estado não seja `nunca`.
+func algumPerfilDevolveEstado() bool {
+	for _, p := range modelgateway.RouteProfiles() {
+		if p.StateReturn != modelgateway.StateReturnNever {
+			return true
+		}
+	}
+	return false
+}
+
+// estadoDevolvido são os contadores do processo.
+var estadoDevolvido = novosContadoresDaDevolucao(algumPerfilDevolveEstado())

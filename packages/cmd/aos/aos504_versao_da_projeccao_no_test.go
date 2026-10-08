@@ -242,7 +242,7 @@ func TestAOS504_Env_VocabularioFechadoEBanner(t *testing.T) {
 		t.Fatalf("sem a variavel: veio (%q, %v), quero 1.0.0", got, err)
 	}
 	t.Setenv("AOS_MODEL_PROJECTION", "")
-	for _, mau := range []string{"1.1", "1", "v1.1.0", "1.3.0", "2.0.0", "1.0.0,1.1.0", "1.1.0-rc1", "latest", "native", "1.0"} {
+	for _, mau := range []string{"1.1", "1", "v1.1.0", "1.4.0", "2.0.0", "1.0.0,1.1.0", "1.1.0-rc1", "latest", "native", "1.0"} {
 		t.Setenv("AOS_MODEL_PROJECTION_VERSION", mau)
 		if got, err := parseModelProjectionVersionFromEnv(); !errors.Is(err, ErrBadModelProjectionVersion) || got != "" {
 			t.Fatalf("AOS_MODEL_PROJECTION_VERSION=%q devia recusar, veio (%q, %v)", mau, got, err)

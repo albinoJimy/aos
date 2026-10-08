@@ -75,7 +75,7 @@ const defaultModelProjectionVersion = modelgateway.NativeProjectionVersion
 // vocabulário fechado. Fail-closed: o nó não arranca. Cair para uma das versões em silêncio
 // deixaria o operador a medir uma série de planos convencido de que o modelo recebia um texto de
 // protocolo e a receber o outro.
-var ErrBadModelProjectionVersion = errors.New("aos: AOS_MODEL_PROJECTION_VERSION invalida — valores aceites: 1.0.0 (a projeccao nativa de sempre; por omissao) 1.1.0 (linha de fim por segmento e texto de protocolo novo, AOS-504) ou 1.2.0 (a 1.1.0 com o texto de protocolo que diz que uma tool so se pede por function calling, AOS-506)")
+var ErrBadModelProjectionVersion = errors.New("aos: AOS_MODEL_PROJECTION_VERSION invalida — valores aceites: 1.0.0 (a projeccao nativa de sempre; por omissao) 1.1.0 (linha de fim por segmento e texto de protocolo novo, AOS-504) 1.2.0 (a 1.1.0 com o texto de protocolo que diz que uma tool so se pede por function calling, AOS-506) ou 1.3.0 (a 1.2.0 que devolve ao provider o estado opaco de cada turno, so a rota que o produziu e so se o perfil dessa rota o pedir, AOS-515)")
 
 // parseModelProjectionVersionFromEnv lê AOS_MODEL_PROJECTION_VERSION. Vazia ⇒
 // [defaultModelProjectionVersion]. Um valor fora do vocabulário ⇒ [ErrBadModelProjectionVersion].
@@ -122,6 +122,9 @@ func modelProjectionBannerFor(gatewayComposed bool, mode, version string) []stri
 	}
 	lines := []string{
 		fmt.Sprintf("projeccao do pedido ao modelo (EPIC-06/AOS-490): MENSAGENS NATIVAS (versao %s) — system/user/assistant com tool_calls/tool, derivadas do tail; aplica-se a runs no layout 1.4.0 (um run retomado na 1.3.0 segue em texto unico) e o modo de cada turno fica em manifest.projection do turn.recorded. O prompt_hash continua a ser o do tail canonico, nao o dos bytes enviados. AOS_MODEL_PROJECTION=text repoe o texto unico", version),
+	}
+	if version == modelgateway.NativeProjectionVersion130 {
+		return append(lines, fmt.Sprintf("versao da projeccao nativa (EPIC-06/AOS-515, ADR-040): AOS_MODEL_PROJECTION_VERSION=%s — a 1.2.0, com o mesmo texto de protocolo e as mesmas mensagens, que DEVOLVE ao provider o estado opaco de cada turno anterior (raciocinio, blocos assinados e redigidos, assinatura por tool call), byte a byte, na mensagem assistant desse turno. So sai para uma rota cujo perfil declare devolver=opcional ou obrigatorio, e so o estado que essa mesma rota produziu; com devolver=nunca (todos os perfis de hoje) os pedidos sao os da 1.2.0, byte a byte. Exige AOS_MODEL_PROVIDER_STATE=capture e AOS_MODEL_ROUTE_GOVERNANCE=observe ou enforce: sem a captura nao ha estado, e sem a governacao da rota o estado nao diz de que rota e. Numa rota obrigatorio, um turno sem estado devolvivel faz o pedido NAO sair, e o run falha com a causa. O raciocinio nunca e resposta nem texto do tail. Remova a variavel ou defina %s para repor a projeccao de sempre", version, defaultModelProjectionVersion))
 	}
 	if version == modelgateway.NativeProjectionVersion120 {
 		// AOS-506: a 1.2.0 tem a sua linha. As da omissão e da 1.1.0 ficam como estavam.
