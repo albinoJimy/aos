@@ -40,10 +40,10 @@ func LerFornecedor(s string) (Fornecedor, error) {
 
 // Os campos do ficheiro de chaves.
 const (
-	CampoKimiAPIKey           = "KIMI_API_KEY"
+	CampoChaveKimi            = "KIMI_API_KEY"
 	CampoKimiAPIBase          = "KIMI_API_BASE"
 	CampoKimiModelos          = "KIMI_MODELOS"
-	CampoAnthropicAPIKey      = "ANTHROPIC_API_KEY"
+	CampoChaveAnthropic       = "ANTHROPIC_API_KEY"
 	CampoAnthropicModelo      = "ANTHROPIC_MODELO"
 	CampoTectoPedidosKimi     = "TECTO_PEDIDOS_DIA_KIMI"
 	CampoTectoPedidosAnthro   = "TECTO_PEDIDOS_DIA_ANTHROPIC"
@@ -222,7 +222,7 @@ func (c *Chaves) Rota(f Fornecedor, modelo string) (RotaReal, error) {
 	var err error
 	switch f {
 	case FornecedorKimi:
-		if r.apiKey, err = c.valor(CampoKimiAPIKey); err != nil {
+		if r.apiKey, err = c.valor(CampoChaveKimi); err != nil {
 			return RotaReal{}, err
 		}
 		if r.apiBase, err = c.valor(CampoKimiAPIBase); err != nil {
@@ -239,7 +239,7 @@ func (c *Chaves) Rota(f Fornecedor, modelo string) (RotaReal, error) {
 			return RotaReal{}, err
 		}
 	case FornecedorAnthropic:
-		if r.apiKey, err = c.valor(CampoAnthropicAPIKey); err != nil {
+		if r.apiKey, err = c.valor(CampoChaveAnthropic); err != nil {
 			return RotaReal{}, err
 		}
 		unico, lerr := c.valor(CampoAnthropicModelo)

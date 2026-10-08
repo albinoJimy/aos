@@ -131,7 +131,7 @@ func (p Plano) sequencia(b *Bateria) []passo {
 	for amostra := 0; amostra < p.Amostras; amostra++ {
 		ordem := append([]Braco(nil), p.Bracos...)
 		for i := len(ordem) - 1; i > 0; i-- {
-			j := int(gerador.proximo() % uint64(i+1))
+			j := int(gerador.proximo() % uint64(i+1)) // #nosec G115 -- o resto e menor do que i+1, que e um int positivo
 			ordem[i], ordem[j] = ordem[j], ordem[i]
 		}
 		for _, braco := range ordem {

@@ -34,9 +34,9 @@ const (
 // chavesDeTeste devolve os campos de um ficheiro de chaves de teste completo.
 func chavesDeTeste() map[string]string {
 	return map[string]string{
-		CampoKimiAPIKey: sentinelaChaveKimi, CampoKimiAPIBase: sentinelaBaseKimi,
-		CampoKimiModelos:     modeloKimiDeTeste + "," + segundoModeloKimi,
-		CampoAnthropicAPIKey: sentinelaChaveAnthropic, CampoAnthropicModelo: modeloAnthropicDeTeste,
+		CampoChaveKimi: sentinelaChaveKimi, CampoKimiAPIBase: sentinelaBaseKimi,
+		CampoKimiModelos:    modeloKimiDeTeste + "," + segundoModeloKimi,
+		CampoChaveAnthropic: sentinelaChaveAnthropic, CampoAnthropicModelo: modeloAnthropicDeTeste,
 		CampoTectoPedidosKimi: "1000", CampoTectoPedidosAnthro: "1000", CampoTectoUSDAnthropic: "5",
 		CampoAnthropicRegiaoProc: regiaoDeTeste,
 	}
@@ -47,7 +47,7 @@ func escreverChaves(t *testing.T, campos map[string]string) string {
 	t.Helper()
 	var b strings.Builder
 	b.WriteString("# ficheiro de chaves de TESTE (AOS-512): nenhuma chave e verdadeira\n\n")
-	for _, campo := range []string{CampoKimiAPIKey, CampoKimiAPIBase, CampoKimiModelos, CampoAnthropicAPIKey, CampoAnthropicModelo,
+	for _, campo := range []string{CampoChaveKimi, CampoKimiAPIBase, CampoKimiModelos, CampoChaveAnthropic, CampoAnthropicModelo,
 		CampoTectoPedidosKimi, CampoTectoPedidosAnthro, CampoTectoUSDAnthropic, CampoAnthropicRegiaoProc} {
 		if v, ok := campos[campo]; ok {
 			b.WriteString(campo + "=" + v + "\n")
@@ -386,9 +386,9 @@ func TestAOS512_Real_RecusasDoFicheiroDeChaves(t *testing.T) {
 		extra      []string
 		nomeia     string
 	}{
-		{"chave do Kimi em falta", sem(CampoKimiAPIKey), "kimi", nil, CampoKimiAPIKey},
-		{"chave do Kimi vazia", com(CampoKimiAPIKey, ""), "kimi", nil, CampoKimiAPIKey},
-		{"chave do Kimi com o marcador do exemplo", com(CampoKimiAPIKey, "<cole aqui a chave do Kimi>"), "kimi", nil, CampoKimiAPIKey},
+		{"chave do Kimi em falta", sem(CampoChaveKimi), "kimi", nil, CampoChaveKimi},
+		{"chave do Kimi vazia", com(CampoChaveKimi, ""), "kimi", nil, CampoChaveKimi},
+		{"chave do Kimi com o marcador do exemplo", com(CampoChaveKimi, "<cole aqui a chave do Kimi>"), "kimi", nil, CampoChaveKimi},
 		{"base do Kimi em falta", sem(CampoKimiAPIBase), "kimi", nil, CampoKimiAPIBase},
 		{"modelos do Kimi em falta", sem(CampoKimiModelos), "kimi", nil, CampoKimiModelos},
 		{"modelo com caracteres recusados", com(CampoKimiModelos, valorMau+" com espacos\""), "kimi", nil, CampoKimiModelos},
@@ -398,7 +398,7 @@ func TestAOS512_Real_RecusasDoFicheiroDeChaves(t *testing.T) {
 		{"tecto do Kimi negativo", com(CampoTectoPedidosKimi, "-5"), "kimi", nil, CampoTectoPedidosKimi},
 		{"tecto do Kimi ilegivel", com(CampoTectoPedidosKimi, valorMau), "kimi", nil, CampoTectoPedidosKimi},
 		{"modelo da Anthropic com o marcador do exemplo", com(CampoAnthropicModelo, "<por definir>"), "anthropic", nil, CampoAnthropicModelo},
-		{"chave da Anthropic em falta", sem(CampoAnthropicAPIKey), "anthropic", nil, CampoAnthropicAPIKey},
+		{"chave da Anthropic em falta", sem(CampoChaveAnthropic), "anthropic", nil, CampoChaveAnthropic},
 		{"tecto de pedidos da Anthropic em falta", sem(CampoTectoPedidosAnthro), "anthropic", nil, CampoTectoPedidosAnthro},
 		{"tecto em dolares ilegivel", com(CampoTectoUSDAnthropic, valorMau), "anthropic", nil, CampoTectoUSDAnthropic},
 		{"tecto em dolares a zero", com(CampoTectoUSDAnthropic, "0"), "anthropic", nil, CampoTectoUSDAnthropic},

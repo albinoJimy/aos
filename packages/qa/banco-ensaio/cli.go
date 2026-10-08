@@ -197,8 +197,8 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	}
 	pastaDaSaida := o.saida
 	var (
-		baseURL, credencial string
-		fechar              = func() {}
+		baseURL, segredoDaRota string
+		fechar                 = func() {}
 	)
 	defer func() { fechar() }()
 
@@ -245,7 +245,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			srv := &http.Server{Handler: falso, ReadHeaderTimeout: 10 * time.Second}
 			go func() { _ = srv.Serve(ouvinte) }()
 			fechar = func() { _ = srv.Close() }
-			baseURL, credencial = "http://"+ouvinte.Addr().String()+"/v1", "credencial-do-modo-falso"
+			baseURL, segredoDaRota = "http://"+ouvinte.Addr().String()+"/v1", "credencial-do-modo-falso"
 			cfg.Rota.Digest = DigestDaRota(cfg.Rota.Fornecedor, cfg.Rota.Modelo, "em-processo")
 			break
 		}
@@ -269,7 +269,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		red.Acrescentar(vivo.ChaveMestra())
 		fechar = vivo.Fechar
-		baseURL, credencial = vivo.BaseURL, vivo.ChaveMestra()
+		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
 		cfg.Rota.Digest = DigestDaRota(cfg.Rota.Fornecedor, cfg.Rota.Modelo, "proxy:"+ImagemDoProxy)
 
 	case ModoReal:
@@ -355,7 +355,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		red.Acrescentar(vivo.ChaveMestra())
 		fechar = vivo.Fechar
-		baseURL, credencial = vivo.BaseURL, vivo.ChaveMestra()
+		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
 	}
 
 	if pastaDaSaida == "" {
@@ -365,7 +365,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		pastaDaSaida = filepath.Join(amb.PastaDoDono, "relatorios")
 	}
-	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: credencial, Contador: cfg.Contador})
+	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador})
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaErro
