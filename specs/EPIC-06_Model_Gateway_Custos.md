@@ -2787,6 +2787,128 @@ acompanhamento (§4).
 
 ---
 
+## AOS-513 — O perfil da rota declara os parâmetros do pedido, a versão da projecção e a classe de estado; sem perfil que os declare, o pedido é o de hoje
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum. Estende o perfil da rota do AOS-505 dentro do contrato já decidido; se a emenda ao ADR-036 §2.8 (o perfil da rota) for necessária, é entregável deste ticket e fica escrita no ADR, não aqui. O ADR-036 e o ADR-034 são citados como o contrato que se mantém. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider) |
+| Tipo | feat |
+| Prioridade | P1: hoje o wire não tem onde levar um parâmetro de raciocínio, e a versão da projecção e o texto do protocolo são do nó inteiro — afinados para um só modelo |
+| Estimativa | M |
+| Dependências | AOS-505 (o perfil da rota e o seu digest), AOS-506 (as versões de projecção publicadas), AOS-507 (a ficha que mostra o efeito), AOS-512 (a qualificação de um perfil faz-se no banco) |
+| Bloqueia | AOS-515 (a projecção só devolve estado se o perfil o exigir), AOS-516 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §3(c) e §6, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.8, `packages/kernel/agent-runtime/model.go`, `packages/platform/model-gateway/projection.go`, `packages/platform/model-gateway/port/normalize.go` |
+
+### Contexto
+
+- **O pedido não leva parâmetros de raciocínio.** O wire não tem onde os levar (desenho §1.2 e
+  §3c). Se a resposta vazia se confirmar como «tudo no raciocínio, `content` vazio» (medição
+  das capturas, 2026-10-08: 5,3 a 5,8 bytes por token de saída contra 3,5 a 4,8), a correcção
+  na origem é um parâmetro do pedido — a ressalva da decisão D3 já o dizia: corrige-se **na
+  rota**, não no runtime.
+- **A versão da projecção é do nó inteiro** (`AOS_MODEL_PROJECTION_VERSION`). O texto do
+  protocolo foi afinado para um só modelo (diagnóstico acordado com o dono, 2026-10-08). Com
+  duas famílias, o que serve uma pode prejudicar a outra.
+- **O proxy reencaminha tudo.** `drop_params` não fez diferença (medido no AOS-505): um
+  parâmetro que o provider não conheça pode dar 400 em **todos** os turnos da rota.
+
+**O que os fornecedores documentam** (consultado a 2026-10-08; o ticket assume só o que está
+marcado «confirmado»):
+
+| Regra | Estado | Fonte |
+|---|---|---|
+| Kimi: o `kimi-k2.6` aceita `thinking` com `type` `enabled` (omissão) ou `disabled`; o `kimi-k2.7-code` só aceita `enabled` e dá erro a `disabled`; o `kimi-k3` raciocina sempre, sem parâmetro `thinking`, e regula-se por `reasoning_effort` | confirmado na página | `https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model` |
+| Kimi: os tokens do `reasoning_content` contam para o `max_tokens`; a página recomenda `max_tokens` de 16000 ou mais e não definir `temperature` nos modelos com raciocínio | confirmado na página | idem |
+| Kimi: o que o `kimi-for-coding` (a rota de produção, em `api.kimi.com/coding`) aceita para desligar ou regular o raciocínio | **por confirmar** — a página não nomeia este modelo; mede-se no banco (AOS-512) | — |
+| Anthropic: nos modelos mais recentes o raciocínio é adaptativo (`thinking` com `type` `adaptive`) e a profundidade regula-se por `output_config.effort`; `type` `enabled` com `budget_tokens` é recusado com 400 nos modelos 4.7 e posteriores; em vários modelos o raciocínio está sempre ligado e `disabled` dá 400 | confirmado | `https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting`, `https://platform.claude.com/docs/en/build-with-claude/extended-thinking` |
+| Anthropic: com raciocínio manual (`enabled`), `tool_choice` só pode ser `auto` ou `none` | confirmado | `https://platform.claude.com/docs/en/build-with-claude/thinking` («Thinking with tool use») |
+| Anthropic: por omissão, nos modelos mais recentes, o texto do raciocínio vem **vazio** (`display` `omitted`) e só a assinatura vem preenchida | confirmado | idem («Controlling thinking display») |
+| LiteLLM: o raciocínio liga-se por `reasoning_effort` ou por `thinking`; nos modelos Claude 4.6 e posteriores `reasoning_effort` é traduzido para raciocínio adaptativo mais `output_config.effort`; o nome do modelo leva o prefixo `anthropic/` | confirmado na documentação actual | `https://docs.litellm.ai/docs/providers/anthropic`, `https://docs.litellm.ai/docs/reasoning_content` |
+| LiteLLM: a versão **fixada em produção** (1.96.2, pelo digest) faz essa tradução | **por confirmar** — a documentação descreve a versão corrente; mede-se atrás da imagem fixada | — |
+
+### Decidido pelo dono
+
+1. **D4 (2026-10-07) — o segundo modelo é o Claude, com o raciocínio ligado, pelo mesmo proxy.**
+   Logo há pelo menos duas rotas com parâmetros diferentes.
+2. **Diagnóstico de 2026-10-08:** o texto do protocolo passa a ser parte do perfil por modelo,
+   e um perfil qualifica-se no banco de ensaio antes de ser ligado.
+3. **D3 mantém-se:** nenhum parâmetro faz do raciocínio uma resposta.
+
+### Objectivo
+
+O perfil da rota (AOS-505) passa a poder declarar três coisas, todas opcionais: os
+**parâmetros a enviar no pedido**, a **versão da projecção** a usar nessa rota, e a **classe de
+estado** (`devolver`: `nunca`, `opcional`, `obrigatório`). Um perfil que não declare nenhuma dá
+o pedido de hoje, byte a byte.
+
+### Critérios de Aceitação
+
+- [ ] **Inerte sem declaração.** Sem perfil, ou com um perfil que não declare parâmetros,
+      versão nem classe, o corpo do pedido, o tail, o `prompt_hash`, o `turn.recorded`, a
+      captura e o digest do perfil são byte a byte os de hoje. Nenhuma golden muda. A rota de
+      produção fica assim até o dono assinar outro perfil.
+- [ ] **Parâmetros do pedido em lista fechada.** O perfil declara parâmetros de um conjunto
+      fechado e com tipo, validado no arranque (no mínimo `thinking`, `reasoning_effort` e
+      `max_tokens`); um nome fora do conjunto ou um valor de tipo errado **recusa o arranque**
+      (fail-closed). Não há «parâmetros livres».
+- [ ] **Só do perfil assinado.** Os parâmetros vêm só da configuração assinada do nó. Nenhum
+      caminho os aceita de um plano, de um manifesto de run, do corpo de um pedido HTTP, de
+      conteúdo de um run nem de uma resposta do modelo. Teste por cada origem: o valor é
+      ignorado ou recusado, e o pedido sai igual.
+- [ ] **No manifesto do turno.** Os parâmetros enviados ficam em `ModelConfig.Params` do turno
+      e entram no digest do perfil: mudar um parâmetro muda o digest. O replay reproduz o turno
+      com os parâmetros com que correu, e uma captura antiga (sem parâmetros) reproduz como
+      antes.
+- [ ] **Versão da projecção por rota.** O perfil pode nomear uma versão **publicada** da
+      projecção; vale para os turnos servidos por essa rota e prevalece sobre o interruptor do
+      nó, que passa a ser a omissão. Uma versão desconhecida recusa o arranque. O texto do
+      protocolo continua a ser função da versão: o perfil **escolhe** uma versão publicada, não
+      transporta texto livre.
+- [ ] **A versão fica presa ao run.** Um run que comece numa versão continua nela até ao fim,
+      incluindo depois de uma retoma e depois de um failover para outra rota: a projecção de um
+      run nunca muda a meio. Teste diferencial loop e replay igual.
+- [ ] **Classe de estado declarada, sem efeito ainda.** `devolver` é lido, validado, entra no
+      digest e fica no manifesto; neste ticket nada o consome (o AOS-515 é quem devolve).
+      Omissão: `nunca`.
+- [ ] **400 por parâmetro não aceite tem nome.** Uma resposta 4xx do provider num turno em que
+      o perfil enviou parâmetros conta em métrica própria, em vocabulário fechado (rota e
+      código), sem nenhum byte do corpo do erro. Em caso nenhum o nó retira o parâmetro e
+      repete sozinho.
+- [ ] **Qualificação no banco, antes de ligar.** Um perfil com parâmetros ou com versão própria
+      só é assinado para produção depois de uma corrida do AOS-512 com esse perfil; o
+      relatório leva o digest do perfil, e o runbook da rota exige a referência a esse
+      relatório. O banco aceita um perfil candidato sem que ele exista em produção.
+- [ ] **Medições obrigatórias no banco** (resolvem os dois «por confirmar» acima): (a) o que o
+      `kimi-for-coding` responde a `thinking` com `type` `disabled` e a `reasoning_effort` —
+      aceita, ignora ou dá 4xx —, e o efeito na taxa de resposta vazia e na de tool call em
+      texto; (b) o que a imagem fixada do proxy envia ao fornecedor para cada parâmetro (atrás
+      de um falso que regista o corpo recebido). Os resultados ficam na §5 do acompanhamento.
+- [ ] Os valores dos parâmetros não aparecem em spans nem em logs além do nome e do digest; não
+      são segredo, mas o perfil nunca transporta credenciais (teste: um campo com forma de
+      chave recusa o arranque).
+- [ ] Versão da porta do gateway: MINOR, aditiva; `CHANGELOG.md` e contrato da porta.
+- [ ] Revisão adversarial independente antes da fusão.
+
+### Fora de âmbito
+
+- **Devolver estado ao provider**: AOS-515. Aqui a classe só é declarada.
+- **Texto de protocolo livre no perfil.** Uma variante que ganhe no banco entra como versão de
+  projecção publicada, com emenda ao ADR-036, em ticket próprio.
+- Escolher os valores para a rota de produção: é decisão do dono, depois do banco.
+- Mais de um modelo por nó com selecção automática, canary e disjuntor (fase A3).
+- O perfil como artefacto do registo, assinado e versionado fora do código (fase A3).
+
+### Estado
+
+**ABERTO (2026-10-08).** Sem código.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2810,3 +2932,4 @@ acompanhamento (§4).
 | 2.6 | 2026-10-07 | +AOS-507, +AOS-508 e +AOS-509 (fase A2, estado opaco do provider): a forma da resposta registada por turno, sem conteúdo (`AOS_MODEL_RESPONSE_SHAPE`, desligada por omissão); providers falsos de wire para CI e um gate opcional atrás da imagem do proxy; e a descodificação tolerante de `content` em partes de texto e de `arguments` em objecto, com os outros nomes do raciocínio lidos como raciocínio. Decisão D3 do dono registada no AOS-509: o raciocínio nunca é usado como resposta | Equipa AOS |
 | 2.7 | 2026-10-07 | AOS-507, AOS-508 e AOS-509 implementados: ficha da forma em `response_shape` do `turn.recorded` (desligada por omissão, contrato da porta `1.5.0`); 87 casos de wire, linha de base e gate `ci-wire-live` com uma corrida contra a imagem de produção do proxy; descodificação tolerante e `aos_model_response_rejected_total` (contrato `1.6.0`). Produção por verificar | Equipa AOS |
 | 2.8 | 2026-10-08 | AOS-507, AOS-508 e AOS-509 revistos (sem bloqueantes) e corrigidos: o digest da ficha não cobre chaves escritas pelo modelo; raciocínio presente e vazio dá `vazio` (342 séries); chaves repetidas lêem-se como na base e `type` repetido recusa; segunda corrida do `ci-wire-live` — o proxy move `refusal`, `thinking` e `reasoning_details` para `provider_specific_fields`, e a ficha lê-os lá (`psf_refusal`, `psf_reasoning`); corpos entregues pelo proxy congelados como casos; medição das capturas seladas dos três `empty_output` registada no AOS-507 | Equipa AOS |
+| 2.9 | 2026-10-08 | +AOS-513 (fase A2): o perfil da rota passa a poder declarar parâmetros do pedido em lista fechada, a versão da projecção por rota e a classe de estado; inerte sem perfil que os declare; regras dos fornecedores consultadas a 2026-10-08 e citadas no ticket | Equipa AOS |
