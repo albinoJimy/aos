@@ -2905,7 +2905,38 @@ o pedido de hoje, byte a byte.
 
 ### Estado
 
-**ABERTO (2026-10-08).** Sem código.
+**IMPLEMENTADO (2026-10-08); por rever de forma independente; inerte em produção** (nenhum
+perfil da tabela declara os campos novos).
+
+- **O que o perfil ganhou:** `params` (`thinking` com `type` e `budget_tokens`,
+  `reasoning_effort`, `max_tokens` — conjunto fechado e tipado), `projection_version` e
+  `devolver` (`nunca`, `opcional`, `obrigatorio`). O digest só os cobre quando declaram alguma
+  coisa: os quatro digests de hoje são os medidos na base (`TestAOS513_Inerte_DigestsDosPerfisDeHoje`).
+- **Onde vive o perfil:** em código, na tabela do gateway, como no AOS-505. O nó não lê perfis de
+  fora. O banco de ensaio aceita um **perfil candidato** (`aos-ensaio … --perfil FICHEIRO`), lido
+  por uma leitura fechada, e o relatório leva o digest. O perfil assinado como artefacto do
+  registo continua na fase A3.
+- **Os parâmetros** aplicam-se no gateway depois do roteamento (os da rota a que o pedido vai),
+  ficam em `manifest.model.params` do turno, e o que um chamador ponha nos campos de raciocínio é
+  apagado. Um 4xx num turno com parâmetros conta em
+  `aos_model_route_params_rejected_total{rota,codigo}`; o nó não repete sem o parâmetro.
+- **A versão da projecção** fica presa ao run (Goal, vista, registo de retoma).
+- **Medição (b), atrás da imagem fixada do proxy (`ci-wire-live`, 2026-10-08) — corrige o
+  contexto deste ticket: o proxy NÃO reencaminha tudo.** Numa rota `openai/…` (a de produção),
+  com `drop_params: false`: `thinking` e `reasoning_effort` dão **400 do proxy**
+  (`UnsupportedParamsError`), sem contactar o provider; `max_tokens` passa. Com
+  `allowed_openai_params` na rota, `reasoning_effort` passa e `thinking` dá **500** (o cliente
+  OpenAI do proxy não o aceita). Com `drop_params: true` os dois são **retirados em silêncio** e
+  o pedido passa. Numa rota `anthropic/…` com um modelo que o proxy conhece: `thinking` chega
+  como foi enviado; `reasoning_effort: high` é traduzido em `thinking` `enabled` com
+  `budget_tokens` 4096 e `max_tokens` 8192; com um nome de modelo que o proxy não conhece, 400.
+  **Consequência:** para o Kimi pela rota `openai/…`, `thinking` não chega pelo proxy fixado;
+  só `reasoning_effort`, e só com `allowed_openai_params` na configuração do proxy. E
+  `drop_params: true` numa rota com parâmetros dá verde falso — fica proibido no runbook.
+- **Por fazer:** a medição (a), com o `kimi-for-coding` real (não corrida: nenhum pedido a um
+  fornecedor real nesta entrega); a revisão adversarial independente; o teste de que um plano do
+  `aos-orq` não declara parâmetros (o `aos-orq` não tem campo por onde entrem, mas não há teste
+  próprio).
 
 ---
 
@@ -3221,8 +3252,30 @@ quando, o perfil da rota o exige e o estado foi produzido por essa mesma rota.
 
 ### Estado
 
-**ABERTO (2026-10-08).** Sem código. Não se começa antes de o AOS-514 ter o ADR escrito e de o
-AOS-512 ter respondido aos «por confirmar».
+**IMPLEMENTADO (2026-10-08); por rever de forma independente; inerte em produção** (nenhum
+perfil da tabela devolve estado). Começou sem as medições do AOS-512 com o modelo real: os «por
+confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id configuráveis.
+
+- **Condição da revisão do AOS-514, confirmada:** o estado junta-se ao turno pelo rótulo
+  `state_digest` do tail, com `sha256(envelope) == rótulo` conferido; em desacordo o turno vai
+  sem estado, e numa rota `obrigatorio` o pedido não sai (ADR-040 §2.11).
+- **A decisão por rota** é do gateway, depois do roteamento: classe do perfil, digest do perfil
+  e modelo servido do envelope. Exige a governação da rota ligada.
+- **O id de tool call:** por omissão o do runtime; `tool_call_id: provider` no perfil devolve o
+  do provider (campo novo do perfil, para o AOS-516 medir as duas formas).
+- **Provas:** o falso que exige o estado e o prefixo inalterados (`wirefake.Exigente`) aceita
+  quatro pedidos seguidos, com o id do runtime e com o do provider; o mesmo pedido com um byte
+  da assinatura alterado, sem os blocos ou com os blocos re-serializados dá 400; o falso que
+  proíbe estado completa o run numa rota `nunca`, onde a 1.3.0 é a 1.2.0 byte a byte; os pedidos
+  reconstroem-se byte a byte dos segmentos e dos envelopes; 17 mutações mortas.
+- **Atrás da imagem fixada do proxy** (`ci-wire-live`): ver o ADR-040 §2.11. Na rota
+  `anthropic/…` o proxy acrescenta um bloco de texto ao `assistant` quando o `content` é vazio.
+- **Por fazer:** a revisão adversarial independente; um run com devolução **no nó composto**
+  (o nó só usa a tabela de perfis em código, que não tem rota com `devolver`: a devolução está
+  provada no gateway e no loop do kernel, em separado); o teste de autoridade com estado
+  hostil no Reference Monitor além do que o AOS-514 já prova; o runbook da rota `obrigatorio`
+  (drenar antes de recuar; `modify_params` e `drop_params` proibidos) em
+  `deploy/server/README.md`; a propriedade do prefixo sobre a bateria do AOS-512.
 
 ---
 
@@ -3384,4 +3437,5 @@ pelo AOS-512 a AOS-515 e pelo nome do modelo; o passo 3 espera pela decisão da 
 | 2.9 | 2026-10-08 | +AOS-513 (fase A2): o perfil da rota passa a poder declarar parâmetros do pedido em lista fechada, a versão da projecção por rota e a classe de estado; inerte sem perfil que os declare; regras dos fornecedores consultadas a 2026-10-08 e citadas no ticket | Equipa AOS |
 | 3.0 | 2026-10-08 | +AOS-514 (fase A2): o estado opaco do turno (raciocínio em todos os nomes, blocos assinados e redigidos, id de tool call do provider) capturado selado e referido no tail por digest, às escuras; ADR novo como entregável, por numerar; regras da Anthropic, do LiteLLM e do Kimi sobre devolver o raciocínio consultadas a 2026-10-08 | Equipa AOS |
 | 3.1 | 2026-10-08 | +AOS-515 (fase A2): projecção nativa 1.3.0, que devolve o estado do turno ao provider só à rota que o produziu e só se o perfil o exigir; estável por prefixo; a decisão D3 é critério de aceitação | Equipa AOS |
+| 3.3 | 2026-10-08 | AOS-513 e AOS-515 implementados, inertes: o perfil da rota declara parâmetros, versão da projecção e classe de estado (contrato da porta `1.8.0`, emenda ao ADR-036 §2.8); projecção nativa 1.3.0 que devolve o estado opaco só à rota que o produziu (contrato `1.9.0`, ADR-040 §2.11, emenda ao ADR-036 §2.4). Medido atrás do proxy fixado: numa rota `openai/…` o proxy recusa `thinking` | Equipa AOS |
 | 3.2 | 2026-10-08 | +AOS-516 (fase A2): qualificação da segunda família — o Claude pelo mesmo proxy, primeiro no banco de ensaio, produção só por decisão do dono; registado que a API directa da Anthropic não documenta forma de fixar a inferência na UE (`inference_geo` só `global` ou `us`), o que bloqueia a rota de produção no board `eu-west` | Equipa AOS |
