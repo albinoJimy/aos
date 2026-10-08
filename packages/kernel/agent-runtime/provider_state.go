@@ -43,9 +43,18 @@ const (
 // runtime aceita de um cliente de modelo. O tecto que o operador configura vive em quem faz o
 // pedido e é menor ou igual a este; este existe porque o cliente de modelo é uma porta, e um
 // que não aplicasse tecto nenhum poria na captura — um evento do Event Store, com o limite de
-// mensagem do transporte — o que o provider quisesse mandar. 256 KiB: selado e serializado
-// fica abaixo de metade do limite de 1 MiB por mensagem do NATS de produção.
-const MaxProviderStateBytes = 256 << 10
+// mensagem do transporte — o que o provider quisesse mandar.
+//
+// PORQUE 96 KiB, MEDIDO (revisão do AOS-514, achado A1). Entre o envelope e o evento há TRÊS
+// passagens por base64 — o envelope dentro do conteúdo do turno, o conteúdo cifrado dentro do
+// envelope de cifra, e esse dentro do payload do evento —, cerca de 2,37 vezes; e o raciocínio
+// fica DUAS vezes na captura, porque o primeiro campo de raciocínio também vai para o
+// `reasoning` de sempre. Com o selador real, um envelope de 65536 bytes com o mesmo raciocínio
+// ao lado dá um evento de cerca de 285 KB, e um de 262144 dá 1 140 565 bytes — acima do limite
+// de 1 MiB por mensagem do NATS de produção, e a captura falhava. A 96 KiB o mesmo caso fica
+// abaixo de metade desse limite (TestAOS514_No_Tecto_OEventoSeladoCabeNoTransporte, que sela de
+// facto). O `reasoning` de sempre não tem tecto próprio e não é limitado por este.
+const MaxProviderStateBytes = 96 << 10
 
 // ProviderState é o estado opaco do provider num turno. Ver o comentário que abre este
 // ficheiro.
@@ -54,9 +63,13 @@ type ProviderState struct {
 	Bytes []byte
 	// Digest é `sha256:` + o hash de Bytes. É o runtime que o calcula ([ProviderState.Normalizado])
 	// — o que um cliente declare aqui não é lido —, excepto em [ProviderStateReference], onde
-	// é tudo o que há e vem da captura. O envelope leva um nonce de 256 bits escolhido por
-	// quem o constrói, pelo que o digest não deixa confirmar um palpite sobre um raciocínio
-	// curto.
+	// é tudo o que há e vem da captura.
+	//
+	// O NONCE É CONTRATO DE QUEM CONSTRÓI O ENVELOPE, não do runtime: o runtime faz o `sha256`
+	// do que qualquer cliente de modelo lhe entregue, e o digest vai para o tail. Um cliente
+	// que entregue estado TEM de pôr no envelope pelo menos 256 bits aleatórios por turno —
+	// sem eles o digest de um raciocínio curto confirma-se por tentativas. O adaptador do
+	// gateway fá-lo, e não guarda estado sem nonce; no nó é o único cliente que produz estado.
 	Digest string
 	// Status — ver [ProviderStateStatus].
 	Status ProviderStateStatus

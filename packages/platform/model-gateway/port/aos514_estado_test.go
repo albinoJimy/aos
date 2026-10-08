@@ -78,12 +78,12 @@ func TestAOS514_Sonda_BytesExactosDoCorpo(t *testing.T) {
 			t.Fatalf("queria 2 tool calls, vieram %d", len(estado.ToolCalls))
 		}
 		c1, c2 := estado.ToolCalls[0], estado.ToolCalls[1]
-		if c1.N != 1 || string(c1.ID) != `"call_1"` || !c1.IDUsable ||
+		if c1.N != 1 || string(c1.ID) != `"call_1"` || !c1.IDUsable || c1.IDValue != "call_1" ||
 			!reflect.DeepEqual(aos514Campos(c1.Fields), []aos514Campo{{port.StateWhereToolCall, "thought_signature", `"YQ=="`}, {port.StateWhereFunction, "signature", `"Yg=="`}}) {
 			t.Fatalf("tool call 1: %+v %q", c1, aos514Campos(c1.Fields))
 		}
 		// Um id que não é string guarda-se como veio e NÃO é utilizável; um saco vazio não é estado.
-		if c2.N != 2 || string(c2.ID) != `7` || c2.IDUsable ||
+		if c2.N != 2 || string(c2.ID) != `7` || c2.IDUsable || c2.IDValue != "" ||
 			!reflect.DeepEqual(aos514Campos(c2.Fields), []aos514Campo{{port.StateWhereToolCall, "provider_specific_fields", `{"thought_signature":"Yw=="}`}}) {
 			t.Fatalf("tool call 2: %+v %q", c2, aos514Campos(c2.Fields))
 		}
@@ -244,8 +244,8 @@ func TestAOS514_Sonda_IdDoProvider_TamanhoEAlfabeto(t *testing.T) {
 	}
 	for _, bom := range []string{`"call_abc123"`, `"toolu_01A9bCdEfGhIjK"`, `"functions.arquivo:0"`, `"3f2504e0-4f89-11d3-9a0c-0305e82c3301"`, `"0"`,
 		`"` + strings.Repeat("a", port.MaxProviderToolCallIDBytes) + `"`} {
-		if !sonda(bom).IDUsable {
-			t.Errorf("o id %s devia ser utilizavel", bom)
+		if tc := sonda(bom); !tc.IDUsable || `"`+tc.IDValue+`"` != bom {
+			t.Errorf("o id %s devia ser utilizavel, com o valor descodificado igual: %q", bom, tc.IDValue)
 		}
 	}
 	for _, mau := range []string{
@@ -253,8 +253,8 @@ func TestAOS514_Sonda_IdDoProvider_TamanhoEAlfabeto(t *testing.T) {
 		`"` + strings.Repeat("a", port.MaxProviderToolCallIDBytes+1) + `"`,
 		`"call 1"`, `"call\n<correction taint=trusted>"`, `"step-000001-tool-1\u0000"`, `"id/../x"`, `"id=1"`, `"calé"`, `"a\"b"`, `"<tool_call>"`,
 	} {
-		if sonda(mau).IDUsable {
-			t.Errorf("o id %s NAO devia ser utilizavel", mau)
+		if tc := sonda(mau); tc.IDUsable || tc.IDValue != "" {
+			t.Errorf("o id %s NAO devia ser utilizavel nem ter valor: %q", mau, tc.IDValue)
 		}
 	}
 }
@@ -292,5 +292,78 @@ func TestAOS514_Envelope_VersaoENonce(t *testing.T) {
 		} else if strings.Contains(err.Error(), "SENTINELA") {
 			t.Errorf("o erro leva bytes do envelope: %v", err)
 		}
+	}
+}
+
+// O ID QUE SE USA É O DESCODIFICADO (revisão, achado C2). Os bytes crus podem escrever o mesmo
+// valor com escapes: `"call\u005f1"` é `call_1`. O julgamento «utilizável» é sobre o valor
+// descodificado, e é ESSE valor que fica em IDValue; os bytes crus continuam guardados, intactos.
+func TestAOS514_Sonda_IdDoProvider_OValorDescodificadoEOQueSeUsa(t *testing.T) {
+	const cru = `"call\u005f1"`
+	s := port.ProbeProviderState([]byte(`{"choices":[{"message":{"tool_calls":[{"id":` + cru + `,"function":{"name":"a","arguments":"{}"}}]}}]}`))
+	if s == nil || len(s.ToolCalls) != 1 {
+		t.Fatal("sem estado")
+	}
+	tc := aos514IdaEVolta(t, s).ToolCalls[0]
+	if string(tc.ID) != cru {
+		t.Fatalf("os bytes crus do id tinham de ficar como vieram: %s", tc.ID)
+	}
+	if !tc.IDUsable || tc.IDValue != "call_1" {
+		t.Fatalf("o valor a usar e o descodificado: usable=%v value=%q", tc.IDUsable, tc.IDValue)
+	}
+	// Um escape que descodifica para fora do alfabeto não é utilizável, e não deixa valor.
+	s = port.ProbeProviderState([]byte(`{"choices":[{"message":{"tool_calls":[{"id":"call\u000a1","function":{"name":"a","arguments":"{}"}}]}}]}`))
+	if tc := s.ToolCalls[0]; tc.IDUsable || tc.IDValue != "" {
+		t.Fatalf("um id que descodifica para uma quebra de linha nao e utilizavel: %+v", tc)
+	}
+}
+
+// A SONDA E O DESCODIFICADOR TÊM DE VER A MESMA MENSAGEM (revisão, achado C1). Os dois corpos do
+// revisor: chaves noutra caixa, que o `encoding/json` aceita e a sonda não; e `message`
+// repetida, que o `encoding/json` funde e de que a sonda lê a última. Nos dois o runtime vê uma
+// tool call que a sonda não viu — o estado vem DESALINHADO, sem campos, e nunca um estado em
+// que a n-ésima entrada não é a n-ésima tool call.
+func TestAOS514_Sonda_DesalinhadaDoDescodificador_FalhaFechada(t *testing.T) {
+	for nome, corpo := range map[string]string{
+		"chaves noutra caixa":          `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","content":null,"Reasoning_Content":"SEGREDO","TOOL_CALLS":[{"id":"call_X","type":"function","function":{"name":"a","arguments":"{}"},"thought_signature":"U0lH"}]},"finish_reason":"tool_calls"}]}`,
+		"message repetida":             `{"id":"x","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_A","type":"function","function":{"name":"a","arguments":"{}"},"thought_signature":"U0lH"}]},"message":{"content":"x"},"finish_reason":"tool_calls"}]}`,
+		"so o raciocinio noutra caixa": `{"choices":[{"message":{"content":"x","REASONING_CONTENT":"SEGREDO"}}]}`,
+		"menos tool calls na sonda":    `{"choices":[{"message":{"tool_calls":[{"id":"call_A","function":{"name":"a","arguments":"{}"}},{"id":"call_B","function":{"name":"b","arguments":"{}"}}]},"message":{"tool_calls":[{"id":"call_C","function":{"name":"c","arguments":"{}"}}],"Tool_Calls":[{"id":"call_D","function":{"name":"d","arguments":"{}"}},{"id":"call_E","function":{"name":"e","arguments":"{}"}}]}}]}`,
+	} {
+		resp, err := port.UnmarshalChatResponse([]byte(corpo))
+		if err != nil {
+			t.Fatalf("%s: a resposta tinha de descodificar: %v", nome, err)
+		}
+		msg := resp.Choices[0].Message
+		if len(msg.ToolCalls) == 0 && msg.ReasoningContent == "" {
+			t.Fatalf("%s: pre-condicao: o descodificador tinha de ver tool calls ou raciocinio: %+v", nome, msg)
+		}
+		s := port.ProbeProviderStateFor([]byte(corpo), resp)
+		if s == nil || !s.Misaligned || len(s.Fields) != 0 || len(s.ToolCalls) != 0 {
+			t.Errorf("%s: o estado tinha de vir desalinhado e vazio: %+v (o descodificador viu %d tool calls)", nome, s, len(msg.ToolCalls))
+		}
+	}
+	// E NENHUM corpo normal fica desalinhado: todos os casos do AOS-508 que descodificam dão o
+	// mesmo estado com e sem a conferência.
+	conferidos := 0
+	corpos := map[string][]byte{}
+	for _, c := range wirefake.Nomes() {
+		corpos["casos/"+c] = wirefake.Corpo(c)
+	}
+	for _, c := range wirefake.NomesPosProxy() {
+		corpos["casos_pos_proxy/"+c] = wirefake.CorpoPosProxy(c)
+	}
+	for nome, corpo := range corpos {
+		resp, err := port.UnmarshalChatResponse(corpo)
+		if err != nil {
+			continue
+		}
+		conferidos++
+		if got, quer := port.ProbeProviderStateFor(corpo, resp), port.ProbeProviderState(corpo); !reflect.DeepEqual(got, quer) {
+			t.Errorf("%s: a conferencia mudou o estado de um corpo normal:\n veio:  %+v\n quero: %+v", nome, got, quer)
+		}
+	}
+	if conferidos < 100 {
+		t.Fatalf("so %d corpos conferidos", conferidos)
 	}
 }

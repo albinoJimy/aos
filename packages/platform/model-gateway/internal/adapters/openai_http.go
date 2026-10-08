@@ -155,7 +155,9 @@ func (a *OpenAIHTTPAdapter) Chat(ctx context.Context, req port.ChatRequest, cred
 	}
 	if a.estado {
 		// AOS-514 — o estado opaco do provider, tirado do corpo cru. Só com a captura ligada.
-		resp.State = port.ProbeProviderState(respBody)
+		// Conferido contra a resposta descodificada: se as duas leituras não viram a mesma
+		// mensagem, o estado vem marcado como desalinhado e não é guardado.
+		resp.State = port.ProbeProviderStateFor(respBody, resp)
 	}
 	return resp, nil
 }

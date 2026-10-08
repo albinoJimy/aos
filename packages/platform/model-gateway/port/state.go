@@ -37,6 +37,10 @@ type ProviderState struct {
 	// ToolCalls tem uma entrada por tool call da resposta, pela ordem — a n-ésima é a tool call
 	// a que o runtime dá o id `<passo>-tool-<n>`. Vazio quando nenhuma traz `id` nem assinatura.
 	ToolCalls []ProviderStateToolCall `json:"tool_calls,omitempty"`
+	// Misaligned diz que a sonda e o descodificador da resposta NÃO VIRAM A MESMA MENSAGEM
+	// ([ProbeProviderStateFor]): o estado não é de confiança e não tem campos. Não vai no
+	// envelope — um estado desalinhado nunca é guardado.
+	Misaligned bool `json:"-"`
 }
 
 // ProviderStateField é um campo do estado: onde estava, com que nome, e os bytes do valor.
@@ -55,13 +59,19 @@ type ProviderStateToolCall struct {
 	// N é a posição da tool call na resposta, a contar de 1.
 	N int `json:"n"`
 	// ID são os bytes JSON do `id` que o provider deu (uma string com aspas, um número, …);
-	// nil quando não veio ou veio `null`.
+	// nil quando não veio ou veio `null`. É carga opaca GUARDADA: nunca se usa como chave nem se
+	// cola num pedido — para isso há [ProviderStateToolCall.IDValue].
 	ID []byte `json:"id,omitempty"`
-	// IDUsable diz que o `id` é uma string JSON de 1 a [MaxProviderToolCallIDBytes] bytes no
-	// alfabeto de [idDoProviderUtilizavel]. É a ÚNICA forma em que o id pode vir a ser posto
-	// num pedido ou usado como chave (AOS-515): é escolhido pelo provider ou pelo modelo, e
-	// fora dela é só carga opaca guardada.
+	// IDUsable diz que o `id` é uma string JSON cujo valor DESCODIFICADO tem de 1 a
+	// [MaxProviderToolCallIDBytes] bytes no alfabeto de [idDoProviderUtilizavel]. É a ÚNICA
+	// forma em que o id pode vir a ser posto num pedido ou usado como chave (AOS-515): é
+	// escolhido pelo provider ou pelo modelo, e fora dela é só carga opaca guardada.
 	IDUsable bool `json:"id_usable,omitempty"`
+	// IDValue é o valor descodificado do `id` — o MESMO que [ProviderStateToolCall.IDUsable]
+	// julgou —, preenchido só quando é utilizável. Os bytes crus de ID podem escrever o mesmo
+	// valor com escapes (`"call\u005f1"` é `call_1`): quem usa o id usa este campo, e nunca os
+	// bytes de ID só porque IDUsable é verdadeiro.
+	IDValue string `json:"id_value,omitempty"`
 	// Fields são os campos de assinatura da chamada, pela ordem em que vieram.
 	Fields []ProviderStateField `json:"fields,omitempty"`
 }
@@ -90,13 +100,15 @@ const MaxProviderToolCallIDBytes = 128
 // [MaxProviderToolCallIDBytes] bytes só com letras e dígitos ASCII e `_ - . :`. Allowlist: os
 // formatos conhecidos (`call_…`, `toolu_…`, `functions.<tool>:<n>`, UUID, numérico em string)
 // cabem todos, e nada que feche uma linha, abra um cabeçalho ou precise de escape cabe.
-func idDoProviderUtilizavel(raw []byte) bool {
+//
+// Devolve o valor DESCODIFICADO e se é utilizável; o valor só vale com true.
+func idDoProviderUtilizavel(raw []byte) (string, bool) {
 	if len(raw) < 3 || raw[0] != '"' {
-		return false
+		return "", false
 	}
 	var id string
 	if json.Unmarshal(raw, &id) != nil || id == "" || len(id) > MaxProviderToolCallIDBytes {
-		return false
+		return "", false
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
@@ -104,10 +116,10 @@ func idDoProviderUtilizavel(raw []byte) bool {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		case c == '_', c == '-', c == '.', c == ':':
 		default:
-			return false
+			return "", false
 		}
 	}
-	return true
+	return id, true
 }
 
 // parJSON é uma chave de um objecto JSON e os bytes crus do seu valor.
@@ -219,6 +231,48 @@ func ProbeProviderState(data []byte) (state *ProviderState) {
 	return out
 }
 
+// ProbeProviderStateFor é a [ProbeProviderState] do corpo de uma resposta JÁ DESCODIFICADA, e
+// confere que as duas leituras viram a mesma mensagem.
+//
+// PORQUE É PRECISO (revisão do AOS-514, achado C1). A sonda lê as chaves com a caixa exacta e
+// a ÚLTIMA ocorrência de `message`; o `encoding/json`, que descodifica a resposta, aceita chaves
+// noutra caixa (`"TOOL_CALLS"`) e FUNDE objectos `message` repetidos. Num corpo anómalo ou
+// hostil as duas leituras discordam — o runtime vê uma tool call que a sonda não viu —, e
+// quebrava-se o invariante de que tudo depende: a n-ésima entrada do estado é a n-ésima tool
+// call do turno. Em vez de pôr a sonda a imitar as regras do descodificador, falha-se fechado:
+// quando não batem, o estado do turno é [ProviderState.Misaligned] — quem o recebe não o guarda.
+//
+// Confere-se, contra a primeira escolha de resp:
+//
+//   - o número de tool calls, quando a sonda tem entradas;
+//   - que uma tool call com `id` no descodificador tem entradas na sonda;
+//   - que o raciocínio que o descodificador leu ([Message.ReasoningContent], só de `message`)
+//     corresponde a um campo de raciocínio com conteúdo que a sonda encontrou em `message`.
+func ProbeProviderStateFor(data []byte, resp ChatResponse) *ProviderState {
+	state := ProbeProviderState(data)
+	if len(resp.Choices) == 0 {
+		return state
+	}
+	msg := resp.Choices[0].Message
+	var entradas []ProviderStateToolCall
+	raciocinioNaSonda := false
+	if state != nil {
+		entradas = state.ToolCalls
+		for _, f := range state.Fields {
+			raciocinioNaSonda = raciocinioNaSonda || (f.Where == StateWhereMessage && RaciocinioComConteudo(f.Raw))
+		}
+	}
+	desalinhado := len(entradas) != 0 && len(entradas) != len(msg.ToolCalls)
+	for _, tc := range msg.ToolCalls {
+		desalinhado = desalinhado || (tc.ID != "" && len(entradas) == 0)
+	}
+	desalinhado = desalinhado || (msg.ReasoningContent != "" && !raciocinioNaSonda)
+	if desalinhado {
+		return &ProviderState{Misaligned: true}
+	}
+	return state
+}
+
 // estadoDasChamadas devolve uma entrada por tool call, e se alguma traz `id` ou assinatura.
 func estadoDasChamadas(raw json.RawMessage) (out []ProviderStateToolCall, temEstado bool) {
 	var calls []json.RawMessage
@@ -230,7 +284,7 @@ func estadoDasChamadas(raw json.RawMessage) (out []ProviderStateToolCall, temEst
 		pares, _ := paresEmOrdem(c)
 		if id := ultimo(pares, "id"); valorPresente(id) {
 			entrada.ID = id
-			entrada.IDUsable = idDoProviderUtilizavel(id)
+			entrada.IDValue, entrada.IDUsable = idDoProviderUtilizavel(id)
 		}
 		for _, p := range pares {
 			if camposDeEstadoDaChamada[p.chave] && RaciocinioComConteudo(p.valor) {

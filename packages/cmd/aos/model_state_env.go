@@ -42,7 +42,7 @@ var ErrBadModelProviderState = errors.New("aos: AOS_MODEL_PROVIDER_STATE invalid
 
 // ErrBadModelProviderStateMaxBytes — AOS_MODEL_PROVIDER_STATE_MAX_BYTES não é um inteiro dentro
 // do intervalo aceite.
-var ErrBadModelProviderStateMaxBytes = errors.New("aos: AOS_MODEL_PROVIDER_STATE_MAX_BYTES invalida — um inteiro de 1024 a 262144 (bytes do envelope de estado por turno; por omissao 65536)")
+var ErrBadModelProviderStateMaxBytes = errors.New("aos: AOS_MODEL_PROVIDER_STATE_MAX_BYTES invalida — um inteiro de 1024 a 98304 (bytes do envelope de estado por turno; por omissao 65536)")
 
 // parseModelProviderStateFromEnv lê AOS_MODEL_PROVIDER_STATE e AOS_MODEL_PROVIDER_STATE_MAX_BYTES.
 // Vazias ⇒ [defaultModelProviderState] e [modelgateway.DefaultProviderStateMaxBytes]. O tecto é
@@ -83,10 +83,23 @@ func modelProviderStateFromEnv() (string, *contadoresDoEstado, []modelgateway.Ru
 
 // modelProviderStateBanner é a linha de arranque da captura. Com `off`, ou sem gateway composto,
 // não sai linha nenhuma.
-func modelProviderStateBanner(gatewayComposed bool, mode string, maxBytes int) []string {
+//
+// Com a projecção em TEXTO ÚNICO sai uma segunda linha, de aviso: nessa projecção o rótulo
+// `state_digest` vai no prompt, e o preâmbulo de protocolo não o explica ao modelo. A combinação
+// não é suportada em produção (ADR-040 §5); o nó não a recusa, porque o texto único é o recuo da
+// projecção e recusar aqui impedia-o.
+func modelProviderStateBanner(gatewayComposed bool, mode string, maxBytes int, projection string) []string {
 	if !gatewayComposed || mode != modelgateway.ProviderStateCapture {
 		return nil
 	}
+	linhas := modelProviderStateBannerDaCaptura(maxBytes)
+	if projection == modelgateway.ProjectionText {
+		linhas = append(linhas, "AVISO (AOS-514, ADR-040 §5): AOS_MODEL_PROVIDER_STATE=capture com AOS_MODEL_PROJECTION=text — em texto unico o rotulo state_digest (um digest, nunca o estado) vai na linha de delimitacao do prompt, e o preambulo de protocolo nao o explica ao modelo. Combinacao NAO SUPORTADA em producao: o efeito no modelo nao esta medido. Use a projeccao nativa, ou desligue a captura")
+	}
+	return linhas
+}
+
+func modelProviderStateBannerDaCaptura(maxBytes int) []string {
 	return []string{fmt.Sprintf("estado opaco do provider em captura (EPIC-06/AOS-514, ADR-040): AOS_MODEL_PROVIDER_STATE=capture — o raciocinio em todos os nomes, os blocos assinados e redigidos e o id de tool call do provider ficam SELADOS na captura de cada turno ao vivo, byte a byte, e o tail refere-os por digest (runs novos no layout %s). Nada e reenviado ao provider. Tecto por turno: %d bytes; acima dele o estado nao e truncado, fica marcado como nao devolvivel e conta em aos_model_provider_state_total. So o caminho sincrono; so o no. Recuo: off",
 		agentruntime.AssemblyVersion150, maxBytes)}
 }
@@ -98,11 +111,15 @@ func modelProviderStateBannerFromEnv(gatewayComposed bool) []string {
 	if err != nil {
 		return nil
 	}
-	return modelProviderStateBanner(gatewayComposed, mode, maxBytes)
+	projection, perr := parseModelProjectionFromEnv()
+	if perr != nil {
+		return nil
+	}
+	return modelProviderStateBanner(gatewayComposed, mode, maxBytes, projection)
 }
 
 // contadoresDoEstado conta, por processo, os turnos ao vivo cuja resposta trouxe estado opaco,
-// pelo resultado da captura — a família `aos_model_provider_state_total`. Três séries, de
+// pelo resultado da captura — a família `aos_model_provider_state_total`. Quatro séries, de
 // vocabulário fechado ([modelgateway.ProviderStateResults]).
 type contadoresDoEstado struct {
 	resultados []string

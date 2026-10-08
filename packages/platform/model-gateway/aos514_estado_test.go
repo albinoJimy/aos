@@ -193,7 +193,9 @@ func TestAOS514_Capture_SentinelasSoNoEnvelope(t *testing.T) {
 			if strings.Contains(resto, s) {
 				t.Errorf("content=%s: a sentinela %s esta fora do envelope: %s", c.content, s, resto)
 			}
-			if bytes.Contains(out.State.Bytes, []byte(s)) {
+			// O id utilizavel fica tambem descodificado (id_value), em texto: e o unico valor do
+			// envelope que nao vai so em base64. O envelope inteiro e selado na captura.
+			if s != "S-ID1" && bytes.Contains(out.State.Bytes, []byte(s)) {
 				t.Errorf("content=%s: a sentinela %s esta em texto no envelope (tinha de ir em base64)", c.content, s)
 			}
 		}
@@ -389,5 +391,30 @@ func TestAOS514_AsEscuras_MarshalWireNaoLevaEstado(t *testing.T) {
 	enviados := m.pedidos()
 	if !bytes.Equal(enviados[len(enviados)-1], cru) {
 		t.Fatalf("o que chegou ao provider nao e o MarshalWire do pedido")
+	}
+}
+
+// DESALINHADO ⇒ NÃO DEVOLVÍVEL, COM CAUSA PRÓPRIA (revisão, achado C1). Um corpo em que a sonda
+// e o descodificador não vêem a mesma mensagem dá um turno como dava — as tool calls e o texto
+// são os do descodificador —, com o estado marcado «não devolvível», sem bytes, e a causa
+// contada em vocabulário fechado.
+func TestAOS514_Capture_CorpoAnomaloFicaNaoDevolvivel(t *testing.T) {
+	corpo := `{"id":"x","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":null,"Reasoning_Content":"SEGREDO-C1","TOOL_CALLS":[{"id":"call_X","type":"function","function":{"name":"arquivo","arguments":"{}"},"thought_signature":"U0lH"}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}`
+	m := aos514ComporCorpo(t, corpo, modelgateway.ProviderStateCapture)
+	out, err := m.turno(modelgateway.DefaultProviderStateMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.ToolCalls) != 1 || out.ToolCalls[0].ToolID != "arquivo" {
+		t.Fatalf("pre-condicao: o descodificador le a tool call: %+v", out.ToolCalls)
+	}
+	if out.State == nil || out.State.Status != agentruntime.ProviderStateNotReturnable || len(out.State.Bytes) != 0 {
+		t.Fatalf("o estado de um corpo anomalo tinha de ficar nao devolvivel, sem bytes: %+v", out.State)
+	}
+	if !reflect.DeepEqual(m.resultados, []string{modelgateway.ProviderStateResultMisaligned}) {
+		t.Fatalf("a causa tinha de ser contada: %v", m.resultados)
+	}
+	if got := modelgateway.ProviderStateResults(); len(got) != 4 {
+		t.Fatalf("o vocabulario de resultados tem quatro valores: %v", got)
 	}
 }

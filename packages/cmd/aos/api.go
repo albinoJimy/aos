@@ -2223,7 +2223,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		// hospedado nesse layout desde o arranque». Um valor a subir no layout antigo são runs
 		// retomados que continuam sem a tool call do modelo no prompt.
 		if h.svc.layouts != nil {
-			for i, v := range h.svc.layouts.versoes {
+			for i, v := range h.svc.layouts.publicadas() {
 				labels := `{assembly_version="` + v + `"}`
 				if i == 0 {
 					g("aos_runs_hosted_total",
@@ -2319,7 +2319,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// AOS-514 — TURNOS COM ESTADO OPACO DO PROVIDER, PELO RESULTADO DA CAPTURA. Só sai com a
-	// captura ligada: com `off` a família não existe, e o /metrics é o de antes. Três séries de
+	// captura ligada: com `off` a família não existe, e o /metrics é o de antes. Quatro séries de
 	// vocabulário fechado, sempre presentes: o zero é um zero verdadeiro.
 	if h.node != nil && h.node.estadoDoProvider != nil {
 		c := h.node.estadoDoProvider
@@ -2327,7 +2327,7 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			labels := `{resultado="` + r + `"}`
 			if i == 0 {
 				g("aos_model_provider_state_total",
-					"Turnos de modelo ao vivo desde o arranque cuja resposta trouxe estado opaco do provider (raciocinio em qualquer nome, blocos assinados ou redigidos, id ou assinatura de tool call), pelo resultado da captura (AOS-514, ADR-040). capturado: o estado ficou selado na captura do turno. nao_devolvivel_tecto: excedia AOS_MODEL_PROVIDER_STATE_MAX_BYTES e NAO foi guardado nem truncado. nao_devolvivel_nonce: nao foi possivel obter o nonce do envelope e o estado nao foi guardado. Um turno sem estado na resposta nao conta, e um turno reproduzido de uma captura tambem nao. Nenhum byte do estado, e nada e reenviado ao provider.",
+					"Turnos de modelo ao vivo desde o arranque cuja resposta trouxe estado opaco do provider (raciocinio em qualquer nome, blocos assinados ou redigidos, id ou assinatura de tool call), pelo resultado da captura (AOS-514, ADR-040). capturado: o estado ficou selado na captura do turno. nao_devolvivel_tecto: excedia AOS_MODEL_PROVIDER_STATE_MAX_BYTES e NAO foi guardado nem truncado. nao_devolvivel_nonce: nao foi possivel obter o nonce do envelope e o estado nao foi guardado. nao_devolvivel_desalinhado: a sonda do estado e o descodificador da resposta nao viram a mesma mensagem (corpo anomalo) e o estado nao foi guardado. Um turno sem estado na resposta nao conta, e um turno reproduzido de uma captura tambem nao. Nenhum byte do estado, e nada e reenviado ao provider.",
 					"counter", float64(c.lido(r)), labels)
 				continue
 			}

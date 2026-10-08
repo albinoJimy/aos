@@ -19,6 +19,7 @@ import (
 	"github.com/aos-ref/kernel/agent-runtime/replay"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 // aos514Compor compõe o nó com a captura do estado dada no ambiente (a governação da rota e a
@@ -87,7 +88,7 @@ func TestAOS514_No_Off_SaoOsBytesDaBase(t *testing.T) {
 			}
 		})
 	}
-	if got := modelProviderStateBanner(true, "off", modelgateway.DefaultProviderStateMaxBytes); got != nil {
+	if got := modelProviderStateBanner(true, "off", modelgateway.DefaultProviderStateMaxBytes, "native"); got != nil {
 		t.Errorf("com off o banner nao tem linha nenhuma; veio %v", got)
 	}
 }
@@ -228,6 +229,7 @@ func TestAOS514_No_Capture_AsEscurasEComOTailComprometido(t *testing.T) {
 		`aos_model_provider_state_total{resultado="capturado"} 2`,
 		`aos_model_provider_state_total{resultado="nao_devolvivel_tecto"} 0`,
 		`aos_model_provider_state_total{resultado="nao_devolvivel_nonce"} 0`,
+		`aos_model_provider_state_total{resultado="nao_devolvivel_desalinhado"} 0`,
 		`aos_runs_hosted_total{assembly_version="1.5.0"} 1`,
 		`aos_runs_hosted_total{assembly_version="1.4.0"} 0`,
 	} {
@@ -399,7 +401,7 @@ func TestAOS514_Env_VocabularioFechadoTectoEBanner(t *testing.T) {
 	if err != nil || modo != "capture" || max != 65536 || modelgateway.DefaultProviderStateMaxBytes != 65536 {
 		t.Fatalf("capture: modo=%q tecto=%d err=%v", modo, max, err)
 	}
-	for _, mau := range []string{"0", "-1", "1023", "262145", "64k", "1e5", "abc", "1024.0"} {
+	for _, mau := range []string{"0", "-1", "1023", "98305", "262144", "64k", "1e5", "abc", "1024.0"} {
 		t.Setenv("AOS_MODEL_PROVIDER_STATE_MAX_BYTES", mau)
 		if _, _, err := parseModelProviderStateFromEnv(); !errors.Is(err, ErrBadModelProviderStateMaxBytes) {
 			t.Errorf("tecto %q devia recusar o arranque: %v", mau, err)
@@ -411,18 +413,27 @@ func TestAOS514_Env_VocabularioFechadoTectoEBanner(t *testing.T) {
 		}
 		t.Setenv("AOS_MODEL_PROVIDER_STATE", "capture")
 	}
-	for _, bom := range []string{"1024", " 262144 ", "65536"} {
+	for _, bom := range []string{"1024", " 98304 ", "65536"} {
 		t.Setenv("AOS_MODEL_PROVIDER_STATE_MAX_BYTES", bom)
 		if _, _, err := parseModelProviderStateFromEnv(); err != nil {
 			t.Errorf("tecto %q devia ser aceite: %v", bom, err)
 		}
 	}
-	linhas := modelProviderStateBanner(true, "capture", 2048)
+	linhas := modelProviderStateBanner(true, "capture", 2048, "native")
 	if len(linhas) != 1 || !strings.Contains(linhas[0], "AOS_MODEL_PROVIDER_STATE=capture") || !strings.Contains(linhas[0], "2048 bytes") || !strings.Contains(linhas[0], "1.5.0") {
 		t.Fatalf("banner: %v", linhas)
 	}
-	if modelProviderStateBanner(false, "capture", 2048) != nil {
+	if modelProviderStateBanner(false, "capture", 2048, "native") != nil || modelProviderStateBanner(false, "capture", 2048, "text") != nil {
 		t.Fatalf("sem gateway composto nao ha banner")
+	}
+	// Em TEXTO UNICO o rotulo vai no prompt: a combinacao nao e suportada em producao, e o
+	// arranque avisa. Com off nao ha aviso nenhum.
+	emTexto := modelProviderStateBanner(true, "capture", 2048, "text")
+	if len(emTexto) != 2 || !strings.Contains(emTexto[1], "AVISO") || !strings.Contains(emTexto[1], "AOS_MODEL_PROJECTION=text") || !strings.Contains(emTexto[1], "NAO SUPORTADA") {
+		t.Fatalf("capture em texto unico tinha de avisar: %v", emTexto)
+	}
+	if modelProviderStateBanner(true, "off", 2048, "text") != nil {
+		t.Fatalf("com off nao ha aviso")
 	}
 	if layoutDosRunsNovos(false) != agentruntime.AssemblyVersion || layoutDosRunsNovos(true) != agentruntime.AssemblyVersion150 {
 		t.Fatalf("o layout dos runs novos so muda com a captura ligada")
@@ -432,7 +443,91 @@ func TestAOS514_Env_VocabularioFechadoTectoEBanner(t *testing.T) {
 	c.observar(modelgateway.ProviderStateResultCaptured)
 	c.observar("TEXTO-LIVRE")
 	(*contadoresDoEstado)(nil).observar("capturado")
-	if c.lido(modelgateway.ProviderStateResultCaptured) != 1 || len(c.total) != 3 || c.lido("TEXTO-LIVRE") != 0 {
+	if c.lido(modelgateway.ProviderStateResultCaptured) != 1 || len(c.total) != 4 || c.lido("TEXTO-LIVRE") != 0 {
 		t.Fatalf("contadores: %+v", c.total)
+	}
+}
+
+// aos514Coletor guarda o payload do último evento que o capturer gravou.
+type aos514Coletor struct{ payload []byte }
+
+func (c *aos514Coletor) Append(_ context.Context, _ string, in eventstore.EventInput, _ ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	c.payload = append([]byte(nil), in.Payload...)
+	return eventstore.AppendResult{Seq: 1}, nil
+}
+
+// O TECTO CABE NO TRANSPORTE — MEDIDO, SELANDO DE FACTO (revisão do AOS-514, achado A1). Entre
+// o envelope do estado e o evento há três passagens por base64, e o raciocínio fica duas vezes
+// na captura (no `reasoning` de sempre e no estado). Este teste grava um turno pelo capturer
+// real, com o CIFRADOR REAL do nó, com o estado no tecto e o mesmo raciocínio ao lado, e mede o
+// payload do `replay.captured`: no tecto por omissão e no máximo configurável tem de ficar
+// abaixo de METADE do limite de 1 MiB por mensagem do NATS de produção (`deploy/nats/aos-nats.sh`).
+// E o controlo: com 262144 bytes — o máximo que a primeira versão deste ticket aceitava — o
+// evento passava o limite, que é o defeito que a revisão mediu.
+func TestAOS514_No_Tecto_OEventoSeladoCabeNoTransporte(t *testing.T) {
+	const limiteDoTransporte = 1 << 20
+	n := aos514Compor(t, "capture", true)
+	selador, ok := n.node.contentOpener.(agentruntime.ContentSealer)
+	if !ok {
+		t.Fatalf("o cifrador do no nao sela")
+	}
+	medir := func(envelope int) int {
+		t.Helper()
+		// O raciocínio que deu origem a um envelope de `envelope` bytes: o envelope leva-o em
+		// base64 (4/3), pelo que o texto tem 3/4 do tamanho. Blocos com aspas, `<` e `&`, que o
+		// JSON da captura escapa — o caso que a revisão mediu.
+		bloco := []byte(`{"type":"thinking","thinking":"<a> & \"b\" e","signature":"QUJD"},`)
+		raciocinio := bytes.Repeat(bloco, envelope*3/4/len(bloco))
+		col := &aos514Coletor{}
+		cap, err := replay.NewCapturer(col, replay.WithContentSealer(selador))
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = cap.Capture(context.Background(), agentruntime.TurnCapture{
+			RunID: "run-514-tamanho", StepID: "step-000001", Turn: 1, Subject: durAgent,
+			Response: agentruntime.ModelResponse{
+				Text: "feito", Reasoning: string(raciocinio), Usage: agentruntime.Usage{InputTokens: 11, OutputTokens: 7},
+				State: &agentruntime.ProviderState{Bytes: bytes.Repeat([]byte("x"), envelope)},
+			},
+		})
+		if err != nil {
+			t.Fatalf("Capture(%d): %v", envelope, err)
+		}
+		if bytes.Contains(col.payload, []byte("thinking")) {
+			t.Fatalf("pre-condicao: a captura tinha de estar selada")
+		}
+		return len(col.payload)
+	}
+	for _, tecto := range []int{modelgateway.DefaultProviderStateMaxBytes, modelgateway.MaxProviderStateMaxBytes} {
+		got := medir(tecto)
+		t.Logf("envelope de %d bytes com o mesmo raciocinio ao lado: evento selado de %d bytes (%.0f%% do limite de 1 MiB)", tecto, got, 100*float64(got)/limiteDoTransporte)
+		if got >= limiteDoTransporte/2 {
+			t.Errorf("com o tecto em %d o evento selado tem %d bytes: tinha de ficar abaixo de metade (%d) do limite do transporte", tecto, got, limiteDoTransporte/2)
+		}
+	}
+	if modelgateway.MaxProviderStateMaxBytes != 96<<10 || agentruntime.MaxProviderStateBytes != 96<<10 {
+		t.Errorf("o maximo configuravel e o tecto absoluto do runtime sao 96 KiB; mudar um deles obriga a voltar a medir aqui")
+	}
+	// CONTROLO: o antigo máximo não cabia. (O runtime já nem o deixa chegar à captura — fica
+	// «não devolvível» —, pelo que se mede com o raciocínio ao lado e um estado no tecto de hoje
+	// mais o que faltava: o que conta é que a conta de 262144 passava o limite.)
+	if antigo := medir(modelgateway.MaxProviderStateMaxBytes) * 262144 / modelgateway.MaxProviderStateMaxBytes; antigo <= limiteDoTransporte {
+		t.Errorf("controlo: a 262144 bytes o evento devia passar 1 MiB; a conta da %d", antigo)
+	}
+}
+
+// UM RUN EM 1.5.0 NUM NÓ EM `off` TEM SÉRIE (revisão, achado C4). No recuo, um run começado com
+// a captura ligada é re-hospedado por um nó que já a desligou: a série da 1.5.0 não existe a
+// zero — o `/metrics` de `off` é o de antes —, mas aparece assim que o nó hospeda um.
+func TestAOS514_No_Off_RunEm150TemSerie(t *testing.T) {
+	n := aos514Compor(t, "off", true)
+	if strings.Contains(aos505NoMetrics(t, n), agentruntime.AssemblyVersion150) {
+		t.Fatalf("num no em off acabado de arrancar nao ha serie da 1.5.0")
+	}
+	if !n.svc.layouts.contar(agentruntime.AssemblyVersion150) {
+		t.Fatalf("um run em 1.5.0 tem de contar")
+	}
+	if metrics := aos505NoMetrics(t, n); !strings.Contains(metrics, `aos_runs_hosted_total{assembly_version="1.5.0"} 1`) {
+		t.Fatalf("o run em 1.5.0 hospedado num no em off tinha de ter serie")
 	}
 }

@@ -433,8 +433,11 @@ func TestAOS489_MetricasDoLayoutEDasRepeticoes(t *testing.T) {
 	if n := strings.Count(corpo, "aos_runs_hosted_total{"); n != len(agentruntime.SupportedAssemblyVersions())-1 || strings.Contains(corpo, agentruntime.AssemblyVersion150) {
 		t.Fatalf("a familia tem %d amostras; queria uma por layout suportado, sem a 1.5.0", n)
 	}
-	// Um run em 1.5.0 re-hospedado num no sem a captura conta na mesma; so nao tem serie.
+	// Um run em 1.5.0 re-hospedado num no sem a captura conta, e a serie aparece com ele.
 	if !h.svc.layouts.contar(agentruntime.AssemblyVersion150) || h.svc.layouts.lido(agentruntime.AssemblyVersion150) != 1 {
-		t.Fatal("um run em 1.5.0 tem de contar mesmo sem serie publicada")
+		t.Fatal("um run em 1.5.0 tem de contar")
+	}
+	if corpo = metricasDe(t, h); !strings.Contains(corpo, `aos_runs_hosted_total{assembly_version="1.5.0"} 1`+"\n") {
+		t.Fatal("um run em 1.5.0 hospedado tem de ter serie, mesmo num no sem a captura")
 	}
 }

@@ -53,13 +53,15 @@ const (
 	// bloco assinado pequeno cabia, e a captura ligada não capturava nada.
 	MinProviderStateMaxBytes = 1 << 10
 	// MaxProviderStateMaxBytes é o maior tecto configurável: o tecto absoluto do runtime
-	// ([agentruntime.MaxProviderStateBytes]), acima do qual o estado nem chegaria à captura.
+	// ([agentruntime.MaxProviderStateBytes], 96 KiB), acima do qual o estado nem chegaria à
+	// captura. A razão do número — três passagens por base64 e o raciocínio duas vezes na
+	// captura, medido com o selador real — está no comentário dessa constante.
 	MaxProviderStateMaxBytes = agentruntime.MaxProviderStateBytes
 )
 
 // ErrBadProviderStateMaxBytes — o tecto está fora de
 // [[MinProviderStateMaxBytes], [MaxProviderStateMaxBytes]].
-var ErrBadProviderStateMaxBytes = errors.New("modelgateway: tecto de bytes do estado opaco do provider fora do intervalo aceite (1024 a 262144)")
+var ErrBadProviderStateMaxBytes = errors.New("modelgateway: tecto de bytes do estado opaco do provider fora do intervalo aceite (1024 a 98304)")
 
 // Resultados da captura do estado de um turno, no vocabulário FECHADO que a métrica do nó
 // rotula. Um turno cuja resposta não traz estado não tem resultado: não é contado.
@@ -72,11 +74,15 @@ const (
 	// ProviderStateResultNoNonce — não foi possível obter o nonce do envelope. Sem nonce o
 	// digest seria confirmável por tentativas, pelo que o estado não é guardado.
 	ProviderStateResultNoNonce = "nao_devolvivel_nonce"
+	// ProviderStateResultMisaligned — a sonda do estado e o descodificador da resposta não
+	// viram a mesma mensagem ([port.ProbeProviderStateFor]): um corpo anómalo, com chaves
+	// noutra caixa ou `message` repetida. Um estado desalinhado nunca é guardado.
+	ProviderStateResultMisaligned = "nao_devolvivel_desalinhado"
 )
 
 // ProviderStateResults devolve o vocabulário de resultados, numa ordem fixa.
 func ProviderStateResults() []string {
-	return []string{ProviderStateResultCaptured, ProviderStateResultOverCeiling, ProviderStateResultNoNonce}
+	return []string{ProviderStateResultCaptured, ProviderStateResultOverCeiling, ProviderStateResultNoNonce, ProviderStateResultMisaligned}
 }
 
 // ProviderStateObserver recebe, por cada turno cuja resposta trouxe estado, o resultado da
@@ -145,6 +151,10 @@ func (c *capturaDoEstado) capturar(out *agentruntime.ModelResponse, resp port.Ch
 
 func (c *capturaDoEstado) fechar(out *agentruntime.ModelResponse, resp port.ChatResponse, pedido string) (resultado string, tamanho int) {
 	naoDevolvivel := &agentruntime.ProviderState{Status: agentruntime.ProviderStateNotReturnable}
+	if resp.State.Misaligned {
+		out.State = naoDevolvivel
+		return ProviderStateResultMisaligned, 0
+	}
 	env := port.ProviderStateEnvelope{
 		Version:            port.ProviderStateEnvelopeVersion,
 		Nonce:              make([]byte, port.ProviderStateNonceBytes),
