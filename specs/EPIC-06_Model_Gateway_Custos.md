@@ -2909,6 +2909,390 @@ o pedido de hoje, byte a byte.
 
 ---
 
+## AOS-514 — O estado opaco do turno é capturado selado e referido no tail por digest; nada é reenviado
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nenhum ADR existente. Tem como entregável um ADR NOVO (o estado opaco do provider), cujo número se reserva no catálogo no momento em que for escrito — não está escrito nem numerado aqui. O ADR-036 (§2.7: o raciocínio é carga opaca e o seu único destino é a captura), o ADR-034 (a autoridade do turno vem dos segmentos do tail) e o ADR-039 são citados como o contrato de partida; a emenda ao ADR-036 §2.7, se o ADR novo a exigir, é entregável deste ticket e fica escrita lá. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 (com alterações em EPIC-02: tail e captura do runtime) |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider) |
+| Tipo | feat |
+| Prioridade | P1: é a metade de transporte do estado opaco; sem ela a segunda família (decisão D4) não pode completar o segundo turno com tools |
+| Estimativa | L |
+| Dependências | AOS-509 (os outros nomes do raciocínio já são lidos como carga opaca), AOS-507 (a ficha diz que estado veio), AOS-508 (os falsos com blocos assinados) |
+| Bloqueia | AOS-515 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §3(d) e §6, `docs/reports/wire-live-aos508-2026-10-07.md`, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2; §6 matriz), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.7, `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md`, `packages/platform/model-gateway/port/port.go`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/kernel/agent-runtime/model.go`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
+
+### Contexto
+
+Lido no código e conferido a 2026-10-07 (desenho §10):
+
+- O raciocínio é capturado quando vem em `reasoning_content` e, desde o AOS-509, no **primeiro**
+  dos outros nomes que estiver presente. Quando vêm vários, só um fica. As assinaturas dentro
+  de `thinking_blocks` ficam por acaso, como bytes crus do valor, sem ninguém saber que lá
+  estão.
+- O **id de tool call do provider é descartado**: o tradutor copia só o nome e os argumentos, e
+  o que volta ao provider é o id do runtime, `<passo>-tool-<n>`.
+- Em modo sensível a captura guarda uma referência no lugar do raciocínio.
+- Pela rota de produção (`wire-live`): `thinking_blocks` em lista, `reasoning_tokens` e as
+  assinaturas **sobrevivem** ao proxy; `thinking`, `reasoning_details` e `refusal` são movidos
+  para `message.provider_specific_fields`; raciocínio em objecto dá 500 no proxy.
+
+**O que os fornecedores exigem** (consultado a 2026-10-08):
+
+| Regra | Estado | Fonte |
+|---|---|---|
+| Anthropic: ao devolver o resultado de uma tool, os blocos de raciocínio da mensagem do `assistant` têm de voltar **completos e sem alteração**, ao lado do bloco `tool_use` que acompanhavam. Dentro de um ciclo de tools é obrigatório; entre turnos é recomendado; fora do uso de tools podem omitir-se os de turnos anteriores | confirmado | `https://platform.claude.com/docs/en/build-with-claude/thinking` («Thinking with tool use», «Preserving thinking blocks») |
+| Anthropic: na última mensagem do `assistant`, a sequência de blocos não pode ser reordenada, editada nem parcialmente retirada; inclui os blocos `redacted_thinking` | confirmado | idem |
+| Anthropic: um bloco **alterado** é recusado com 400 (`invalid_request_error`: os blocos `thinking` ou `redacted_thinking` da última mensagem do `assistant` não podem ser modificados) | confirmado | `https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting` |
+| Anthropic: raciocínio **redigido** vem num bloco `redacted_thinking` com um campo `data` cifrado e opaco, sem texto legível, e devolve-se sem alteração; filtrar só por `thinking` perde-o e parte o protocolo | confirmado | `https://platform.claude.com/docs/en/build-with-claude/thinking` («Redacted thinking blocks») |
+| Anthropic: um bloco com o texto **vazio** e só a assinatura (a omissão nos modelos mais recentes) está completo e devolve-se como os outros | confirmado | `https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting` |
+| Anthropic: em quatro modelos recentes (nomeados na página) um bloco reenviado só é aceite enquanto o `system`, as `tools` e as mensagens anteriores estiverem **inalterados**; senão, 400 por assinatura inválida («bound to a different conversation»). Aplicado a contas criadas a partir de 2026-08-31 | confirmado | idem |
+| Anthropic: blocos **em falta** (não alterados: ausentes) no pedido que devolve o resultado da tool — dá 400 ou o raciocínio é desligado em silêncio? A página diz que são obrigatórios, que mudar o raciocínio a meio de um turno **não dá erro** e o desliga em silêncio, e que a API pode retirar blocos | **por confirmar** — as duas leituras são compatíveis com o texto; mede-se no banco (AOS-512) e decide o controlo negativo do critério P4 | — |
+| LiteLLM: a resposta traz `reasoning_content` (string, todos os fornecedores) e `thinking_blocks` (lista de blocos com `type`, `thinking` e `signature`, só nos modelos da Anthropic); com tools, os `thinking_blocks` da resposta anterior **têm de ir** na mensagem do `assistant` ao devolver o resultado | confirmado na documentação actual | `https://docs.litellm.ai/docs/reasoning_content` |
+| LiteLLM: como expõe um bloco `redacted_thinking`, e se a versão fixada em produção (1.96.2) se comporta como a documentação corrente | **por confirmar** — mede-se atrás da imagem fixada | — |
+| Kimi: a página manda guardar o `reasoning_content` do contexto e devolvê-lo no pedido, dentro de um ciclo de tools | confirmado na página; **em produção não é exigido** (medido a 2026-10-03, ADR-036 §2.7: os runs completam sem o devolver) | `https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model` |
+| Anthropic pelo proxy: o id de tool call do provider tem de voltar tal como veio, ou basta um id coerente entre o `assistant` e a mensagem `tool`? Que forma de id é aceite? | **por confirmar** — não consultado; mede-se no banco | — |
+
+### Decidido pelo dono
+
+1. **D4 (2026-10-07):** o segundo modelo é o Claude, com o raciocínio ligado, pelo mesmo proxy —
+   escolhido por obrigar a devolver o raciocínio assinado.
+2. **D3 (2026-10-07) mantém-se:** o raciocínio nunca é resposta e nunca entra no texto do tail.
+3. Forma recomendada no desenho e adoptada aqui: **por referência** — os bytes ficam na captura
+   selada e o tail leva só um digest.
+
+### Objectivo
+
+Decidir por ADR o que é o estado opaco de um turno, e transportá-lo: tudo o que o provider
+devolveu e pode exigir de volta — o raciocínio em **todos** os nomes em que veio, os blocos
+assinados e os redigidos, e o id de tool call do provider — fica na captura selada do turno,
+byte a byte, e o tail refere-o por digest. **Às escuras:** nada é reenviado ao provider;
+`MarshalWire` continua a retirar o raciocínio de todos os pedidos.
+
+### Critérios de Aceitação
+
+- [ ] **ADR novo, em formato MADR**, com o número seguinte livre do catálogo
+      (`docs/adr/README.md` e `specs/00_System_Spec.md` §11) reservado quando for escrito, e a
+      RTM regenerada. Decide, no mínimo: o que entra no estado; que é carga opaca e
+      `untrusted`, nunca lida como instrução nem como resposta; que não altera a autoridade do
+      turno; a quem pode ser devolvido (só à rota e ao modelo que o produziram); o que acontece
+      em modo sensível e depois do apagamento do titular; e a emenda, se houver, ao ADR-036
+      §2.7.
+- [ ] **O que se captura**, sem interpretar: (a) o valor cru de cada campo de raciocínio
+      presente, incluindo os que o proxy move para `provider_specific_fields`; (b) os blocos
+      assinados e os redigidos como vieram, na ordem em que vieram; (c) por tool call, o id do
+      provider e a assinatura por chamada, se houver. Os bytes guardados são os recebidos: sem
+      re-serializar, sem normalizar espaços nem ordem de chaves, sem neutralizar. Teste: o
+      estado reidratado é igual ao recebido, byte a byte, para cada caso com raciocínio do
+      AOS-508, incluindo os corpos pós-proxy.
+- [ ] **Selado como o raciocínio de hoje**: envelope com cifra por titular, no mesmo destino;
+      nunca em `turn.recorded`, métricas, spans, logs ou mensagens de erro. Teste com
+      sentinelas em cada campo, cada assinatura e cada id.
+- [ ] **Referido no tail por digest.** O segmento do turno ganha um rótulo `state_digest` com o
+      `sha256` do estado, no molde do `args_digest`. O `prompt_hash` passa a comprometer-se com
+      o estado sem o conter. Entra por **versão nova de layout**, com o diferencial loop e
+      replay do AOS-492.
+- [ ] **Um turno sem estado é byte a byte o de hoje**: sem rótulo, a mesma captura, o mesmo
+      `prompt_hash`. Nenhuma golden existente muda, e uma captura antiga reproduz como antes.
+- [ ] **O id do provider é carga opaca, não identidade.** `ToolInvocation` continua sem id de
+      autorização vindo do provider; o Reference Monitor, a idempotência e os eventos usam o
+      id do runtime, como hoje. Teste: dois ids de provider iguais em tool calls diferentes, ou
+      um id hostil, não mudam nenhuma decisão nem nenhuma chave de idempotência.
+- [ ] **Ligado à rota.** O estado guarda o digest do perfil da rota e o modelo que serviu o
+      turno — é o que o AOS-515 usa para nunca o enviar a outra rota.
+- [ ] **Tecto de bytes por turno**, configurado no nó. Acima do tecto, o estado **não é
+      truncado** (uma assinatura truncada é inválida): fica marcado como «não devolvível», com
+      causa em métrica de vocabulário fechado, e o turno segue como hoje.
+- [ ] **Modo sensível.** Fica a referência, como hoje para o raciocínio; o estado conta como
+      inexistente para efeitos de devolução. Teste.
+- [ ] **Retoma.** A retoma reidrata o estado da captura igual ao gravado. Depois do apagamento
+      do titular não há estado, e a retoma falha fechada com causa própria (não continua sem
+      ele em silêncio).
+- [ ] **Às escuras, provado.** Com este ticket e sem o AOS-515, os pedidos ao provider são byte
+      a byte os de hoje em todas as versões de projecção publicadas: teste sobre os corpos
+      enviados, com estado capturado em todos os turnos anteriores.
+- [ ] A ficha do AOS-507 e a métrica contam os turnos com estado capturado e com estado «não
+      devolvível», sem conteúdo.
+- [ ] Versão da porta do gateway: MINOR, aditiva; `CHANGELOG.md`.
+- [ ] Revisão adversarial independente antes da fusão, com mutações (trocar a origem do `Text`,
+      deixar o estado sair, deixar um byte em claro).
+
+### Fora de âmbito
+
+- **Devolver o estado ao provider**: AOS-515.
+- **Usar o raciocínio como resposta, ou pô-lo no texto do tail**: rejeitado (decisão D3).
+- Interpretar, validar ou verificar assinaturas: o runtime não as lê; só o fornecedor as
+  valida.
+- Um segmento novo no tail com os bytes do estado (a forma «d1» do desenho): rejeitada a favor
+  do digest.
+- Streaming; conteúdo multimodal.
+
+### Estado
+
+**ABERTO (2026-10-08).** Sem código. O ADR novo é entregável e ainda não tem número.
+
+---
+
+## AOS-515 — A projecção nativa devolve o estado do turno ao provider, só à rota que o produziu e só se o perfil o exigir
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nenhum ADR existente: implementa a metade de devolução do ADR novo que o AOS-514 entrega (ainda sem número). A versão nova da projecção entra por emenda ao ADR-036 §2.4, que é entregável deste ticket e fica escrita lá. O ADR-036, o ADR-034 e o ADR-039 são citados como o contrato que se mantém. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider) |
+| Tipo | feat |
+| Prioridade | P1: é o que faz a segunda família completar o segundo turno com tools; sem isto o critério P4 da fase não se cumpre |
+| Estimativa | L |
+| Dependências | AOS-514 (o estado capturado e o ADR novo), AOS-513 (a classe de estado e a versão da projecção por rota), AOS-508 (o falso que dá 400 ao segundo turno sem estado), AOS-512 (as medições que fecham os «por confirmar») |
+| Bloqueia | AOS-516 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §3(d), §6 e §8, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.4 e §2.7, `packages/platform/model-gateway/projection.go`, `packages/platform/model-gateway/port/normalize.go` |
+
+### Contexto
+
+- `MarshalWire` retira hoje o raciocínio de **todos** os pedidos, sem condição
+  (`port/normalize.go:86-98`). É o comportamento certo para a rota de produção, que não o
+  exige (medido a 2026-10-03), e o errado para um fornecedor que o exige.
+- **As regras que este ticket assume** são as da tabela do AOS-514, consultadas a 2026-10-08.
+  As que pesam aqui:
+  - *confirmado* — a Anthropic exige os blocos de raciocínio completos e sem alteração ao
+    devolver o resultado de uma tool, incluindo os redigidos e os de texto vazio; um bloco
+    alterado dá 400 (`https://platform.claude.com/docs/en/build-with-claude/thinking`,
+    `https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting`);
+  - *confirmado* — em modelos recentes o bloco só é aceite enquanto o `system`, as `tools` e
+    as mensagens anteriores estiverem inalterados (idem). **Consequência de desenho:** a
+    projecção tem de ser estável por prefixo — o pedido do turno N+1 é o do turno N com
+    mensagens acrescentadas no fim, e nada antes muda um byte;
+  - *confirmado* — no formato do proxy, os `thinking_blocks` da resposta anterior vão na
+    mensagem do `assistant` (`https://docs.litellm.ai/docs/reasoning_content`);
+  - *por confirmar* — o que acontece quando os blocos **faltam** (400 ou raciocínio desligado
+    em silêncio); a regra do id de tool call; a forma de um bloco redigido atrás do proxy; e o
+    comportamento da versão fixada do proxy. A documentação do proxy descreve ainda uma opção
+    (`modify_params`) que retira o parâmetro de raciocínio quando os blocos faltam: se
+    estivesse ligada, um pedido sem estado passava em silêncio e o critério P4 dava verde
+    falso.
+
+### Decidido pelo dono
+
+1. **D3 (2026-10-07) mantém-se, e é critério de aceitação:** o raciocínio nunca é resposta e
+   nunca entra no texto do tail.
+2. **D4 (2026-10-07):** a rota que exige estado é a do Claude; a rota de produção de hoje fica
+   com `devolver` em `nunca`.
+
+### Objectivo
+
+Uma versão nova da projecção nativa (1.3.0), função pura de `(vista do tail, estado por
+turno)`, que anexa à mensagem do `assistant` de cada turno o estado desse turno — quando, e só
+quando, o perfil da rota o exige e o estado foi produzido por essa mesma rota.
+
+### Critérios de Aceitação
+
+- [ ] **Duas condições, as duas necessárias.** O estado só sai com a projecção 1.3.0 **e** um
+      perfil com `devolver` diferente de `nunca`. Com `nunca` — a omissão — as mensagens da
+      1.3.0 são byte a byte as da 1.2.0, e `MarshalWire` continua a retirar o raciocínio.
+- [ ] **Só à rota que o produziu.** O estado de um turno só é anexado se o digest do perfil da
+      rota e o modelo que serviu esse turno forem os do pedido que vai sair. Num failover, o
+      estado produzido pela outra rota **não sai**: teste com duas rotas e sentinelas, em que o
+      falso da segunda rota não recebe nenhum byte de raciocínio da primeira.
+- [ ] **`obrigatório` falha fechado.** Com `devolver` em `obrigatório`, se o estado de um turno
+      com tool calls não existir (modo sensível, acima do tecto de bytes, titular apagado,
+      rota diferente), o turno seguinte **não é enviado** a essa rota: o run fecha com uma
+      causa própria, em vocabulário fechado. Nunca se envia o pedido sem o estado à espera de
+      que passe. Com `opcional`, envia-se sem ele e conta-se.
+- [ ] **Sem alteração de um byte.** O estado é anexado tal como foi capturado: sem neutralizar,
+      sem re-serializar, sem reordenar blocos, sem filtrar por tipo (os redigidos e os de texto
+      vazio vão). O que se anexa: os blocos de raciocínio no campo que o proxy espera, e o id
+      de tool call do provider nas mensagens `assistant` e `tool` se a medição do AOS-512
+      mostrar que é exigido.
+- [ ] **Estável por prefixo.** Para todo o run, o pedido do turno N+1 tem o do turno N como
+      prefixo exacto ao nível das mensagens, e `system` e `tools` não mudam entre turnos do
+      mesmo run. Teste de propriedade sobre a bateria do AOS-512. O que hoje altera mensagens
+      anteriores (a omissão de argumentos por `args_digest`, o aviso da nova tentativa) fica
+      listado, e para rotas com `obrigatório` ou é desligado ou é provado acrescentar só no
+      fim.
+- [ ] **D3, por teste.** O raciocínio devolvido nunca é `Text`, nunca entra no texto de nenhum
+      segmento do tail, nunca é saída do nó nem `plan_input` do nó seguinte. Um run com
+      `content` vazio e estado preenchido continua a fechar `empty_output`. Teste de mutação.
+- [ ] **O estado não dá autoridade.** A autoridade do turno é a de antes, com e sem estado; o
+      estado é `untrusted`, nunca é lido pelo gateway nem pelo runtime, e um estado hostil (com
+      texto de instruções, com forma de tool call) não muda nenhuma decisão do Reference
+      Monitor. Teste.
+- [ ] **As sondas de protocolo, com controlo negativo real** (critério P5): os falsos do
+      AOS-508 que exigem estado completam o segundo turno com a 1.3.0 e o perfil
+      `obrigatório`; o mesmo teste com o estado retirado, e com um byte da assinatura
+      alterado, fica **vermelho** (o falso dá 400). Atrás da imagem fixada do proxy, o mesmo,
+      no gate opcional.
+- [ ] **`modify_params` e afins.** A configuração do proxy para rotas com `obrigatório` não pode
+      ter ligada nenhuma opção que retire o raciocínio do pedido quando os blocos faltam: fica
+      verificado por um teste sobre a configuração e escrito no runbook da rota.
+- [ ] **Replay e retoma.** Diferencial loop e replay igual em runs com estado, incluindo um
+      retomado a meio: a retoma reidrata o estado antes de projectar o turno seguinte, e o
+      pedido reproduzido é byte a byte o original. Fidelidade de replay de 100% (critério P6).
+- [ ] **Custo.** Os tokens do estado reenviado contam no orçamento do run como os outros tokens
+      de entrada; o tecto de bytes do AOS-514 limita-os. Um contador por turno diz «estado
+      recebido» e «estado enviado no pedido seguinte» — a medida do critério P4.
+- [ ] **Segredo.** Zero sentinelas de raciocínio em `turn.recorded`, métricas, spans, logs e
+      mensagens de erro (incluindo o corpo de um 4xx do provider, que não é registado).
+- [ ] Emenda ao ADR-036 §2.4 com a versão 1.3.0; RTM regenerada. Versão da porta: MINOR.
+- [ ] `AOS_MODEL_PROJECTION_VERSION` aceita `1.3.0`; a omissão não muda. Recuo: voltar à 1.2.0
+      é seguro a qualquer momento para rotas com `nunca`; para um run em curso numa rota com
+      `obrigatório`, o runbook manda drenar primeiro.
+- [ ] Revisão adversarial independente antes da fusão, com mutações.
+
+### Fora de âmbito
+
+- Ligar uma rota real com `obrigatório` em produção: AOS-516, por decisão do dono.
+- **Ler o raciocínio como resposta, ou pô-lo no tail**: rejeitado (decisão D3).
+- Converter o estado de uma família para outra, ou reaproveitá-lo depois de um failover.
+- Retirar blocos antigos para poupar tokens: a documentação diz que o fornecedor o faz
+  sozinho; o runtime devolve tudo ou nada.
+- Streaming; multimodal.
+
+### Estado
+
+**ABERTO (2026-10-08).** Sem código. Não se começa antes de o AOS-514 ter o ADR escrito e de o
+AOS-512 ter respondido aos «por confirmar».
+
+---
+
+## AOS-516 — Qualificação da segunda família: o Claude pelo mesmo proxy, primeiro no banco de ensaio e depois em produção por decisão do dono
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é qualificação e registo. Mede o que o AOS-513, o AOS-514 e o AOS-515 entregam e actualiza a matriz de suporte e o acompanhamento. O ADR-036 e o ADR-039 são citados só como contexto. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A2 (estado opaco do provider). É o ticket que fecha os critérios P3 e P4 da fase |
+| Tipo | feat |
+| Prioridade | P1: sem uma segunda família a completar runs com tools e a exigir estado, a fase A2 não está provada |
+| Estimativa | L |
+| Dependências | AOS-512 (o banco), AOS-513 (o perfil da rota), AOS-514 e AOS-515 (o estado opaco). Decisão D4 do dono (tomada). Para o passo de produção: a decisão do dono sobre a região de processamento, abaixo |
+| Bloqueia | O fecho da fase A2; a fase A3 (entrada automática) |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §4 e §8, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2; §5 medições; §6 matriz de suporte), `docs/reports/wire-live-aos508-2026-10-07.md`, `deploy/server/docker-compose.prod.yml`, `deploy/server/README.md` |
+
+### Contexto
+
+- O critério da fase é «duas famílias de modelos completam runs com tools». Com uma segunda
+  família que não exigisse estado, cumpria-se a letra sem provar o que o título promete
+  (desenho §4). O dono escolheu a difícil.
+- O `kimi-k3`, já configurado, serve para estrear o banco e **não** conta como segunda família.
+- Produção está selada para `eu-west`: os runs e o histórico foram selados nessa região.
+
+**O que os fornecedores documentam** (consultado a 2026-10-08):
+
+| Regra | Estado | Fonte |
+|---|---|---|
+| Anthropic: o sítio onde a inferência corre controla-se pelo parâmetro `inference_geo`, com dois valores — `global` (a omissão: qualquer geografia disponível) e `us`. A página diz, nas limitações actuais, que só estes dois existem, e que a geografia do espaço de trabalho (dados em repouso) só pode ser `us` | confirmado | `https://platform.claude.com/docs/en/manage-claude/data-residency` |
+| Anthropic: nas plataformas de parceiros (Amazon Bedrock, Google Cloud) a região de inferência é determinada pelo endpoint ou pelo perfil de inferência, e `inference_geo` não se aplica | confirmado | idem |
+| **Consequência:** pela API directa da Anthropic **não há forma documentada de fixar a inferência na UE**. Uma rota de produção para o Claude dentro do board `eu-west` exigiria um endpoint regional de um parceiro, com outra conta e outras credenciais | deduzido das duas linhas acima; a existência e os termos de um endpoint da UE num parceiro estão **por confirmar** (não consultado) | — |
+| LiteLLM: o modelo configura-se no `model_list` do proxy com o nome do fornecedor (prefixo `anthropic/`) e a chave lida de variável de ambiente | confirmado na documentação actual | `https://docs.litellm.ai/docs/providers/anthropic` |
+| O identificador exacto do modelo e o seu preço por token | **por confirmar** — não consultados; fixam-se pela página de modelos e de preços do fornecedor no dia da corrida (o AOS-512 recusa correr sem preço declarado) | — |
+| As regras de devolução do raciocínio assinado | ver a tabela do AOS-514 | — |
+
+### Decidido pelo dono
+
+1. **D4 (2026-10-07) — o segundo modelo é o Claude (Anthropic), com o raciocínio ligado, pelo
+   mesmo proxy LiteLLM.**
+2. **D5 (2026-10-07) e tectos (2026-10-08):** o ensaio faz-se no posto local, com 1000 pedidos
+   por dia e 5 USD por dia na Anthropic. Fora da UE, o Claude só serve para ensaio com
+   documentos de teste.
+3. **Por decidir pelo dono, e é o que este ticket lhe leva:**
+   - o **nome do modelo** (`ANTHROPIC_MODELO`, hoje por definir no ficheiro dele). Recomendação:
+     um modelo da classe intermédia com raciocínio ligado por omissão, pelo tecto de 5 USD por
+     dia; o identificador confirma-se na página de modelos do fornecedor. Se o modelo for um
+     dos que só aceitam um bloco reenviado com o prefixo inalterado (tabela do AOS-514), a
+     prova é mais exigente — e vale mais;
+   - a **região**: com a API directa a inferência não fica na UE. As opções são (a) o Claude
+     fica só no banco de ensaio, com documentos de teste, e os critérios P3 e P4 medem-se aí;
+     (b) uma rota de produção por um endpoint regional da UE num parceiro, com conta própria;
+     (c) uma emenda explícita ao board de soberania. Recomendação: **(a) agora**, e (b) como
+     decisão separada, se o dono quiser o Claude a servir runs reais.
+
+### Objectivo
+
+Provar, com medições registadas, que uma segunda família — o Claude, com raciocínio ligado,
+pelo mesmo proxy — completa runs com tools **devolvendo o estado opaco**, primeiro no banco de
+ensaio e, se o dono o decidir e a região o permitir, em produção.
+
+### Critérios de Aceitação
+
+**Passo 1 — atrás do proxy, sem modelo real**
+
+- [ ] A configuração do proxy para a rota do Claude existe como ficheiro de ensaio (não o de
+      produção), e o gate opcional do AOS-508 corre-a contra o falso com blocos assinados:
+      regista o que a **imagem fixada** envia ao fornecedor (parâmetro de raciocínio, forma dos
+      blocos no pedido) e o que entrega ao gateway (bloco redigido, bloco de texto vazio, id
+      de tool call). Fecha os «por confirmar» sobre o proxy do AOS-513 e do AOS-514.
+
+**Passo 2 — no banco de ensaio, com o modelo real** (documentos de teste; tectos do dono)
+
+- [ ] Perfil da rota do Claude com os parâmetros de raciocínio e `devolver` em `obrigatório`,
+      qualificado pelo AOS-512; o relatório leva o digest do perfil.
+- [ ] **Controlo negativo com o modelo real**, antes de tudo: o segundo turno **sem** o estado
+      e **com um byte da assinatura alterado**. Regista-se o que o fornecedor responde a cada
+      um (4xx, ou resposta sem raciocínio). Fecha o «por confirmar» sobre blocos em falta, e
+      define como o critério P4 se verifica: se a falta **não** der erro, P4 mede-se pela
+      presença de raciocínio na resposta ao segundo turno, e não só pelo código HTTP.
+- [ ] **A regra do id de tool call**, medida: com o id do provider e com o id do runtime.
+- [ ] **P3 para a segunda família:** pelo menos 40 planos em que o nó com tools chega ao
+      segundo turno, «não cumprido» abaixo de 2%, e **zero** respostas 4xx do provider nesses
+      segundos turnos.
+- [ ] **P4:** em 100% desses turnos a ficha (AOS-507) mostra estado recebido e o contador do
+      AOS-515 mostra que o pedido seguinte o levou.
+- [ ] **P6 para a segunda família:** fidelidade de replay de 100%, incluindo um run retomado a
+      meio com estado; zero sentinelas de raciocínio fora da captura.
+- [ ] As taxas do banco para o Claude — tool call em texto, resposta vazia, forma das
+      respostas — ficam na §5 do acompanhamento, ao lado das do Kimi, com a versão de
+      projecção de cada rota.
+- [ ] O gasto real da corrida (pedidos e USD estimados) fica registado; a corrida coube nos
+      tectos.
+
+**Passo 3 — produção, só por decisão do dono**
+
+- [ ] Não se dá nenhum passo de produção sem a decisão da região registada na §4 do
+      acompanhamento. Com a API directa da Anthropic e o board em `eu-west`, o passo **não se
+      dá**.
+- [ ] Se o dono decidir uma rota de produção: rota nova na **allowlist de modelos assinada**
+      (re-assinada pelo dono), credencial entregue pelo Broker/Vault e nunca em ficheiro, a
+      região do endpoint dentro do board verificada no arranque (fail-closed), o perfil da
+      rota assinado com a referência ao relatório do banco, e a rota do Kimi inalterada.
+- [ ] Série de produção para a segunda família com as medidas de P3 e P4, e a de P7 para o
+      Kimi: a taxa de primeiras falhas e o «não cumprido» da rota de hoje não pioram face à
+      última série anterior do mesmo tamanho.
+
+**Registo**
+
+- [ ] **Matriz de suporte** (§6 do acompanhamento): as linhas «raciocínio a devolver» e
+      «assinaturas» passam a referir os casos do AOS-508, o modelo qualificado, a data e o
+      sítio onde foi qualificado (banco ou produção — as duas coisas não se confundem).
+- [ ] **Acompanhamento:** a tabela da fase A2, a §5 e o critério de prova actualizados, com a
+      frase exacta do que ficou provado e do que não ficou.
+- [ ] Se P3 e P4 forem medidos só no banco, o fecho da fase diz **«provada em ensaio, não em
+      produção»**, e é o dono que decide se isso fecha a fase.
+
+### Fora de âmbito
+
+- Uma terceira família; a entrada automática de modelos, o canary e o disjuntor (fase A3).
+- Ligação directa ao fornecedor sem o proxy (um adaptador novo).
+- Contratar um parceiro com endpoint na UE: é decisão e acto do dono.
+- Dados de titular em qualquer corrida fora da UE.
+- Mudar a região do board de produção.
+
+### Estado
+
+**ABERTO (2026-10-08).** Sem código. O passo 1 pode começar com o AOS-508; o passo 2 espera
+pelo AOS-512 a AOS-515 e pelo nome do modelo; o passo 3 espera pela decisão da região.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2933,3 +3317,6 @@ o pedido de hoje, byte a byte.
 | 2.7 | 2026-10-07 | AOS-507, AOS-508 e AOS-509 implementados: ficha da forma em `response_shape` do `turn.recorded` (desligada por omissão, contrato da porta `1.5.0`); 87 casos de wire, linha de base e gate `ci-wire-live` com uma corrida contra a imagem de produção do proxy; descodificação tolerante e `aos_model_response_rejected_total` (contrato `1.6.0`). Produção por verificar | Equipa AOS |
 | 2.8 | 2026-10-08 | AOS-507, AOS-508 e AOS-509 revistos (sem bloqueantes) e corrigidos: o digest da ficha não cobre chaves escritas pelo modelo; raciocínio presente e vazio dá `vazio` (342 séries); chaves repetidas lêem-se como na base e `type` repetido recusa; segunda corrida do `ci-wire-live` — o proxy move `refusal`, `thinking` e `reasoning_details` para `provider_specific_fields`, e a ficha lê-os lá (`psf_refusal`, `psf_reasoning`); corpos entregues pelo proxy congelados como casos; medição das capturas seladas dos três `empty_output` registada no AOS-507 | Equipa AOS |
 | 2.9 | 2026-10-08 | +AOS-513 (fase A2): o perfil da rota passa a poder declarar parâmetros do pedido em lista fechada, a versão da projecção por rota e a classe de estado; inerte sem perfil que os declare; regras dos fornecedores consultadas a 2026-10-08 e citadas no ticket | Equipa AOS |
+| 3.0 | 2026-10-08 | +AOS-514 (fase A2): o estado opaco do turno (raciocínio em todos os nomes, blocos assinados e redigidos, id de tool call do provider) capturado selado e referido no tail por digest, às escuras; ADR novo como entregável, por numerar; regras da Anthropic, do LiteLLM e do Kimi sobre devolver o raciocínio consultadas a 2026-10-08 | Equipa AOS |
+| 3.1 | 2026-10-08 | +AOS-515 (fase A2): projecção nativa 1.3.0, que devolve o estado do turno ao provider só à rota que o produziu e só se o perfil o exigir; estável por prefixo; a decisão D3 é critério de aceitação | Equipa AOS |
+| 3.2 | 2026-10-08 | +AOS-516 (fase A2): qualificação da segunda família — o Claude pelo mesmo proxy, primeiro no banco de ensaio, produção só por decisão do dono; registado que a API directa da Anthropic não documenta forma de fixar a inferência na UE (`inference_geo` só `global` ou `us`), o que bloqueia a rota de produção no board `eu-west` | Equipa AOS |
