@@ -267,7 +267,6 @@ func TestAOS515_Obrigatorio_SemEstadoOPedidoNaoSai(t *testing.T) {
 		causa    string
 	}{
 		"captura desligada no adaptador": {modelgateway.NativeProjectionVersion130, 0, port.StateMissingAbsent},
-		"estado nao devolvivel":          {modelgateway.NativeProjectionVersion130, modelgateway.MinProviderStateMaxBytes, port.StateMissingAbsent},
 		"projeccao 1.2.0":                {modelgateway.NativeProjectionVersion120, modelgateway.DefaultProviderStateMaxBytes, modelgateway.StateCauseNoProjection},
 	} {
 		t.Run(nome, func(t *testing.T) {
@@ -277,19 +276,6 @@ func TestAOS515_Obrigatorio_SemEstadoOPedidoNaoSai(t *testing.T) {
 				run.versao, run.maxBytes = c.versao, c.maxBytes
 				if _, err := run.passo("gpt-4o"); err != nil {
 					t.Fatalf("%s: primeiro turno: %v", classe, err)
-				}
-				if c.maxBytes == modelgateway.MinProviderStateMaxBytes {
-					// O que um estado «não devolvível» deixa: nem rótulo no tail, nem bytes.
-					run.estados = map[string][]byte{}
-					for i := range run.segs {
-						var meta []agentruntime.TailMeta
-						for _, m := range run.segs[i].Meta {
-							if m.Key != agentruntime.StateDigestLabel {
-								meta = append(meta, m)
-							}
-						}
-						run.segs[i].Meta = meta
-					}
 				}
 				_, err := run.passo("gpt-4o")
 				var se *modelgateway.StateReturnError

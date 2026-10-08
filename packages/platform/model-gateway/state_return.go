@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
@@ -258,7 +259,7 @@ func armarDevolucao(req *port.ChatRequest, perfil RouteProfile, temPerfil bool) 
 
 // idsDoProviderServem diz se os ids que o provider deu às tool calls de um turno podem ir no
 // wire: um por chamada, todos utilizáveis ([port.ProviderStateToolCall.IDUsable]), diferentes
-// entre si e de todos os ids já usados no pedido.
+// entre si e de todos os ids já usados no pedido, e nenhum com a forma de um id do runtime.
 func idsDoProviderServem(st *port.MessageState, chamadas int, usados map[string]bool) bool {
 	if len(st.ToolCalls) != chamadas {
 		return false
@@ -266,6 +267,13 @@ func idsDoProviderServem(st *port.MessageState, chamadas int, usados map[string]
 	doTurno := map[string]bool{}
 	for _, tc := range st.ToolCalls {
 		if !tc.IDUsable || tc.IDValue == "" || usados[tc.IDValue] || doTurno[tc.IDValue] {
+			return false
+		}
+		// Um id do provider com a FORMA de um id do runtime (`<passo>-tool-<n>`) não serve: um
+		// turno posterior que vá com os ids do runtime podia ter exactamente esse, e o pedido
+		// ficava com dois ids iguais. A regra olha só para o próprio id — não para os turnos
+		// seguintes —, pelo que a decisão de um turno continua a não depender do que vem depois.
+		if _, _, forma := agentruntime.ToolStepParent(tc.IDValue); forma {
 			return false
 		}
 		doTurno[tc.IDValue] = true
