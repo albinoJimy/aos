@@ -259,7 +259,7 @@ func TestAOS512_Sonda_SemDuzentosACorridaNaoComeca(t *testing.T) {
 // corrida que só cabe sem ela não arranca.
 func TestAOS512_Sonda_ContaNoTecto(t *testing.T) {
 	a := novoAmbienteFalso(t, []Comportamento{ComportamentoCumpre}, nil)
-	correr := func(tecto int64, respostas []respostaDeTeste) (*Relatorio, error, *fornecedorDeTeste, string) {
+	correr := func(tecto int64, respostas []respostaDeTeste) (*Relatorio, *fornecedorDeTeste, string, error) {
 		contador, caminho := abrirContadorDeTeste(t, tecto)
 		f := novoFornecedorDeTeste(respostas)
 		srv := httptest.NewServer(f)
@@ -270,14 +270,14 @@ func TestAOS512_Sonda_ContaNoTecto(t *testing.T) {
 		}
 		t.Cleanup(no.Fechar)
 		r, err := Correr(context.Background(), CfgDaCorrida{Modo: ModoReal, Plano: planoDeUmPedido(a.bateria, 3), Bateria: a.bateria, No: no, Contador: contador, Relogio: relogioFixo, Sondar: true})
-		return r, err, f, caminho
+		return r, f, caminho, err
 	}
 	// Tecto de 3 para um plano de 3: com a sonda são 4, e não cabe. Nada sai.
-	if _, err, f, _ := correr(3, nil); !errors.Is(err, ErrNaoCabe) || f.recebidos() != 0 {
+	if _, f, _, err := correr(3, nil); !errors.Is(err, ErrNaoCabe) || f.recebidos() != 0 {
 		t.Fatalf("a sonda tinha de contar para o que cabe: err=%v, %d pedidos", err, f.recebidos())
 	}
 	// Tecto de 4: cabe. A sonda falha por saldo — o contador fica em 1 e mais nada sai.
-	r, err, f, caminho := correr(4, []respostaDeTeste{semSaldo})
+	r, f, caminho, err := correr(4, []respostaDeTeste{semSaldo})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestAOS512_Sonda_ContaNoTecto(t *testing.T) {
 		t.Errorf("o contador tinha de ter 1 pedido (a sonda): %v", dias)
 	}
 	// Tecto de 4 e a sonda com 200: os quatro pedidos contam.
-	r, err, f, _ = correr(4, nil)
+	r, f, _, err = correr(4, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
