@@ -50,6 +50,13 @@ código; a lista fica porque é o dono que confirma.
 
 6. **Ler a comparação entre braços pelos intervalos e pelo p-valor corrigido** (Fisher exacto,
    Holm). Uma série de 429 a seguir a outro erro é do proxy, não do fornecedor.
+7. **A sonda.** Antes do primeiro caso, o modo `real` faz **um** pedido mínimo ao modelo — conta
+   no tecto do dia como um pedido, e o `--so-plano` anuncia-o («mais 1 de sonda»). Se a resposta
+   não for 200, a corrida **não começa**: exit 4, um relatório sem observações com o campo
+   `sonda`, e a causa em vocabulário fechado — `chave_recusada`, `saldo_insuficiente`,
+   `limite_de_ritmo`, `modelo_desconhecido` ou `outro`. O `--so-plano` continua a não enviar
+   nada, nem a sonda. Existe porque a primeira corrida real (2026-10-08) encontrou a conta sem
+   saldo e gastou 212 pedidos do tecto a receber 429.
 
 ## Passos
 
@@ -120,11 +127,18 @@ no README do banco). A Anthropic só entra no banco depois de o dono preencher
 | Exit 3, «o contador esta em uso por outro processo» | Há outro ensaio a correr, ou um que morreu deixou `contador.json.trava` | Se não houver outro a correr: `aos-ensaio limpar --chaves <ficheiro>` remove a trava do processo morto |
 | Exit 3, «o contador nao existe e ha relatorios de corridas reais de hoje» | O contador foi apagado; a contagem do dia perdeu-se | Repetir o comando com `--reconstruir-contador`: recria-o com a soma dos pedidos dos relatórios de hoje |
 | Exit 3, «o campo KIMI_API_BASE esta … com um host que nao e do fornecedor» | A base no ficheiro não é `https` de um host do fornecedor | Corrigir o ficheiro. `--destino-fora-da-lista <host>` só para um destino que o dono conhece e quer |
-| Exit 4, `chave_recusada` | Os três primeiros pedidos levaram 401 ou 403 | A chave não é aceite nessa base: confirmar a chave e `KIMI_API_BASE` no ficheiro (sem os mostrar a ninguém) |
+| Exit 4, `chave_recusada` | A sonda, ou os três primeiros pedidos, levaram 401 ou 403 (por exemplo, a chave é de outro produto do mesmo fornecedor) | A chave não é aceite nessa base: confirmar a chave e `KIMI_API_BASE` no ficheiro (sem os mostrar a ninguém) |
+| Exit 4, «a SONDA nao teve 200 … a corrida NAO COMECOU» | O pedido de sonda não teve 200. A causa vem na mesma linha e no campo `sonda` do relatório | Seguir a linha da causa, abaixo. Gastou-se um pedido do tecto |
+| Exit 4, `saldo_insuficiente` | A conta do fornecedor não tem saldo ou quota: foi o que a sonda recebeu, ou os três primeiros pedidos levaram 429 com esse tipo | Carregar a conta no fornecedor. **Repetir a corrida não adianta** e gasta o tecto. `--pausa` não resolve |
+| Exit 4, `limite_de_ritmo` | Pedidos a mais por unidade de tempo: a sonda, ou os três primeiros pedidos, levaram 429 com esse tipo | Repetir com `--pausa 5s` (ou mais) |
+| Exit 4, `so_respostas_429` | Os três primeiros pedidos levaram 429 com um tipo que o banco não conhece | Ver «tipos de erro» no relatório. Se for ritmo, `--pausa`; se for saldo, carregar a conta |
+| Exit 4, `serie_de_429` | Dez respostas 429 seguidas a meio da corrida (o saldo acabou, ou o ritmo apertou) | Ver «tipos de erro» no relatório: com `saldo_insuficiente`, carregar a conta; com `limite_de_ritmo`, repetir com `--pausa` |
+| Exit 4, `modelo_desconhecido` | A sonda: o fornecedor não conhece o modelo | Corrigir o nome do modelo no ficheiro de chaves, ou `--modelo` |
+| Exit 4, `sonda_falhou` | A sonda não teve 200, por uma causa fora do vocabulário (`outro`) | Ver o código HTTP na linha da sonda; repetir com `--so-plano` para confirmar o destino |
 | Exit 4, `tecto_atingido` | O tecto foi atingido a meio (o de dólares só se conhece depois de cada resposta) | O relatório parcial está escrito. Nada a repor |
 | Exit 6 | Sem Docker, sem a imagem, ou o proxy não arrancou | Arrancar o Docker; `docker pull` da imagem acima. A mensagem traz as últimas linhas do proxy, com os segredos ocultados |
 | Contentores `aos512-*` a correr depois de uma corrida interrompida à força | A limpeza não chegou a correr. **Um proxy órfão guarda a chave do fornecedor em claro no ambiente do contentor** (`docker inspect`) e aceita pedidos fora do contador | `aos-ensaio limpar` (remove contentores e redes `aos512-*` e diz quantos). O proxy também se mata sozinho ao fim de cerca de 90 s sem sinal de vida, e a corrida seguinte varre o que restar. À mão: `docker ps -a --filter name=aos512- --format "{{.Names}}"` e `docker rm -f` de cada um |
-| Códigos 429 no relatório | Limite de taxa do fornecedor (o proxy do ensaio tem o arrefecimento desligado) | Repetir noutra altura com `--pausa 2s` |
+| Códigos 429 no relatório | Limite de ritmo **ou** conta sem saldo: o código é o mesmo (o proxy do ensaio tem o arrefecimento desligado) | Ver «tipos de erro» no relatório. `limite_de_ritmo`: repetir com `--pausa 2s`. `saldo_insuficiente`: carregar a conta |
 
 ## O que este procedimento não faz
 
