@@ -7,8 +7,10 @@
   com o raciocínio ligado, pelo mesmo proxy; e a forma «por referência» recomendada no desenho:
   os bytes ficam na captura selada e o tail leva só um digest) · executor de AOS-514
 - **Tickets:** AOS-514 (a captura e a referência, **às escuras**: nada é reenviado ao
-  provider), implementado; por rever de forma independente e por verificar em produção. Nasce
-  desligado (`AOS_MODEL_PROVIDER_STATE=off`) e só liga por decisão do dono. A **devolução** do
+  provider), implementado e revisto de forma independente (2026-10-08, sem bloqueantes; as
+  correcções da revisão estão neste texto); por verificar em produção. Nasce desligado
+  (`AOS_MODEL_PROVIDER_STATE=off`) e só liga por decisão do dono, **com as duas condições do
+  §2.10**. A **devolução** do
   estado ao provider é do AOS-515 e não está decidida aqui (§2.9).
 - **Relacionados:** ADR-001 (execução durável; replay `resume-from-step`), ADR-002 (Reference
   Monitor), ADR-005 (untrusted é dados, nunca instruções), ADR-007 (Event Store), ADR-010
@@ -149,30 +151,61 @@ O estado é escrito pelo modelo e pelo provider. Por definição é `untrusted` 
    a ser a do ADR-039.
 2. **Nunca é instrução.** Não entra no texto de nenhum segmento do tail; o runtime e o gateway
    não o interpretam.
-3. **Não altera a autoridade do turno.** A autoridade deriva do tipo dos segmentos do tail
-   (ADR-034). O rótulo vai num segmento que já é `untrusted` e não é lido por essa derivação.
+3. **Não altera a autoridade do turno.** A autoridade deriva do **tipo** (`Kind`) dos segmentos
+   do tail (ADR-034), e essa derivação não lê rótulos. O segmento que leva o rótulo (`history`
+   ou `tool_call`) tem a marca textual `taint=untrusted`, mas na autoridade vale o que valia o
+   contexto em que foi produzido — que no primeiro turno de um run sem entradas pode ser
+   trusted. O rótulo não muda isso em nenhum dos sentidos: é por a derivação só ler o tipo, e
+   não por o segmento ser untrusted, que o estado não dá autoridade.
 4. **O id do provider não é identidade.** A tool call do runtime não tem id de autorização
    vindo do provider. O Reference Monitor, a chave de idempotência (`f(run_id, step_id)`), o
    step-ledger, os checkpoints e os eventos usam o id do runtime, como sempre. O id do provider
    liga-se a ele pela **posição** (`n`), nunca como chave.
-5. **O id do provider é limitado antes de qualquer uso.** Guarda-se como veio, e fica marcado
-   como **utilizável** só se for uma string JSON de 1 a 128 bytes no alfabeto
-   `[A-Za-z0-9_.:-]`. Só um id utilizável pode vir a ser posto num pedido ou usado como chave.
+5. **O id do provider é limitado antes de qualquer uso.** Os bytes guardam-se como vieram, e
+   o id fica marcado como **utilizável** só se for uma string JSON cujo valor **descodificado**
+   tem de 1 a 128 bytes no alfabeto `[A-Za-z0-9_.:-]`. O valor descodificado guarda-se ao lado
+   (`id_value`), e é **ele** — nunca os bytes crus, que podem escrever o mesmo valor com
+   escapes — que pode vir a ser posto num pedido ou usado como chave.
+6. **A sonda e o descodificador têm de ver a mesma mensagem.** A sonda do estado lê o corpo
+   cru; a resposta do turno é descodificada pelo `encoding/json`, que aceita chaves noutra
+   caixa e funde objectos repetidos. Num corpo anómalo as duas leituras discordam. Quando o
+   número de tool calls ou o raciocínio não batem, o estado do turno **não é guardado**
+   (`nao_devolvivel_desalinhado`): nunca fica um estado em que a n-ésima entrada não é a
+   n-ésima tool call do turno.
+7. **O nonce é contrato de quem constrói o envelope.** O runtime faz o `sha256` do que qualquer
+   cliente de modelo lhe entregue. Um cliente que entregue estado tem de pôr no envelope 256
+   bits aleatórios por turno; o adaptador do gateway fá-lo e é, no nó, o único que produz
+   estado. Um cliente novo sem nonce reabria o oráculo do §2.5 sem o runtime o notar.
 
 ### 2.7 O tecto, e o que acontece acima dele
 
 O envelope de um turno tem um **tecto de bytes**, configurado no nó
-(`AOS_MODEL_PROVIDER_STATE_MAX_BYTES`, de 1024 a 262144; por omissão 65536) e aplicado por quem
-faz o pedido. O runtime aplica ainda o tecto absoluto de 262144 bytes a qualquer cliente.
+(`AOS_MODEL_PROVIDER_STATE_MAX_BYTES`, de 1024 a 98304; por omissão 65536) e aplicado por quem
+faz o pedido. O runtime aplica ainda o tecto absoluto de 98304 bytes (96 KiB) a qualquer cliente.
 
 **Acima do tecto o estado não é truncado** — um bloco assinado cortado é inválido. Ou cabe
 inteiro, ou **não é guardado**: o turno leva a marca `nao_devolvivel` (na captura e na ficha),
 sem um byte e sem digest, a causa conta em `aos_model_provider_state_total`
-(`nao_devolvivel_tecto`, ou `nao_devolvivel_nonce`), e o run segue como um turno sem estado.
+(`nao_devolvivel_tecto`, `nao_devolvivel_nonce` ou `nao_devolvivel_desalinhado`), e o run segue
+como um turno sem estado.
 
-O máximo é 256 KiB porque a captura é um evento do Event Store: selado e serializado (duas
-passagens por base64), um envelope desse tamanho ocupa menos de metade do limite de 1 MiB por
-mensagem do NATS de produção. O corpo de uma resposta já é limitado a 1 MiB.
+**Porque o máximo é 96 KiB — medido, e não estimado** (revisão do ticket, achado A1). A captura
+é um evento do Event Store, e o NATS de produção limita a mensagem a 1 MiB. Entre o envelope e
+o evento há **três** passagens por base64 (o envelope dentro do conteúdo do turno; o conteúdo
+cifrado dentro do envelope de cifra; esse dentro do payload do evento), cerca de 2,37 vezes; e
+**o raciocínio fica duas vezes na captura**, porque o primeiro campo de raciocínio com conteúdo
+também vai para o `reasoning` de sempre (ADR-036 §2.7). Com o cifrador real do nó e o mesmo
+raciocínio ao lado do estado (`TestAOS514_No_Tecto_OEventoSeladoCabeNoTransporte`):
+
+| Envelope | Evento selado | Do limite de 1 MiB |
+|---|---|---|
+| 65 536 (a omissão) | 284 328 bytes | 27% |
+| 98 304 (o máximo) | 426 316 bytes | 41% |
+| 262 144 (o máximo da primeira versão) | 1 140 565 bytes (medido pela revisão) | **acima** — a captura falhava, e com ela o run |
+
+O tecto conta só o envelope. O `reasoning` de sempre **não tem tecto próprio** (é limitado pelo
+corpo da resposta, 1 MiB) e não é limitado por este: um raciocínio muito maior do que o estado,
+ou com muitos caracteres que o JSON escapa, já podia não caber antes deste ADR.
 
 ### 2.8 Quem o pode ler; o replay; a retoma; o apagamento
 
@@ -182,7 +215,10 @@ mensagem do NATS de produção. O corpo de uma resposta já é limitado a 1 MiB.
 - **Replay.** O motor reconstrói o rótulo a partir do estado que leu da captura — o mesmo
   digest que o loop pôs no tail. Um run com estado reproduz sem divergir; uma captura anterior
   a este ADR, sem os campos, reproduz como antes. Um estado trocado na captura diverge no
-  `prompt_hash` do turno seguinte: é o que o compromisso do §2.5 quer dizer.
+  `prompt_hash` do turno seguinte — **num turno não-final de um run em 1.5.0**, que é onde o
+  compromisso do §2.5 existe. O estado do turno que acaba o run, e o de turnos de um run em
+  1.4.0 retomado com a captura ligada, ficam guardados sem rótulo e sem compromisso: não há
+  turno seguinte que os refira.
 - **Retoma.** A retoma reidrata o estado da captura igual ao gravado, byte a byte.
 - **Apagamento do titular.** O estado está dentro do envelope cifrado do turno. Destruída a
   chave do titular, **não há estado** — nem turno: a leitura falha fechada com a causa do
@@ -203,6 +239,28 @@ devolução terá de cumprir, e por decidir a devolução em si:
   **não tem estado para devolver**;
 - a devolução entra por uma versão nova da projecção e por emenda ao ADR-036 §2.4, e só para
   rotas cujo perfil o exija (AOS-513).
+
+### 2.10 Quando se pode ligar `capture`
+
+Com `off` este ADR não muda um byte, e a decisão do layout 1.5.0 é **reversível**. A partir do
+primeiro run gravado em 1.5.0 deixa de o ser: o assembler, o replay e a projecção têm de saber
+montá-la para sempre. Por isso `capture` **não se liga em produção** antes de duas coisas: (1) o desenho do AOS-515 confirmar que USA o rótulo — junção por digest com verificação (`sha256` dos bytes igual ao rótulo), e «sem estado» em caso de desacordo; (2) o smoke sobre JetStream com um turno com estado **no tecto** passar (§2.7). Se o
+AOS-515 acabar por juntar o estado ao turno pelo passo, e não pelo digest, o rótulo é peso
+morto permanente, e é mais barato retirá-lo **antes** do primeiro run em 1.5.0.
+
+**`capture` com a projecção em texto único não é suportado em produção**: nessa projecção o
+rótulo vai no prompt e o preâmbulo de protocolo não o explica ao modelo; o efeito não está
+medido. O nó não recusa a combinação — o texto único é o recuo da projecção —, mas o arranque
+avisa.
+
+**A ordem**, com um ou mais nós (runbook em `deploy/server/README.md`):
+
+- *Ligar:* a imagem nova em **todos** os nós; só depois `capture`. Com `capture` num nó e a
+  imagem antiga noutro, o run em 1.5.0 que o segundo tente retomar fica órfão (falha fechado:
+  o layout é desconhecido para ele).
+- *Recuar:* `off` e recriar; esperar que não haja runs em 1.5.0 em `running` nem à espera de
+  aprovação; só então a imagem anterior — aceitando que os runs em 1.5.0 já terminados deixam
+  de ser reproduzíveis por ela.
 
 ## 3. Alternativas
 
@@ -229,18 +287,23 @@ devolução terá de cumprir, e por decidir a devolução em si:
 - **Positivas.** O runtime passa a ter, intacto, o que a segunda família exige de volta. O
   `prompt_hash` passa a cobrir o estado. Com a captura desligada nada muda: pedidos,
   `turn.recorded`, capturas, `prompt_hash` e `/metrics` são byte a byte os de antes.
-- **Custos.** A captura de um turno com estado cresce até ao tecto. Um layout novo (1.5.0)
-  entra no vocabulário do assembler, do replay e da projecção.
+- **Custos.** A captura de um turno com estado cresce: o envelope pesa no evento selado cerca
+  de 2,37 vezes o seu tamanho, e **o raciocínio fica duas vezes na captura** — no `reasoning`
+  de sempre e dentro do estado —, o que dobra o custo de armazenamento de um turno com
+  raciocínio (§2.7). Um layout novo (1.5.0) entra no vocabulário do assembler, do replay e da
+  projecção, e fica lá para sempre a partir do primeiro run (§2.10).
 - **Recuo.** Voltar a `off`. Os runs começados em 1.5.0 continuam nela e reproduzem-se. **Um
   binário anterior a este ADR não conhece a 1.5.0**: não se recua de imagem com runs em 1.5.0
-  por acabar ou por auditar.
+  por acabar ou por auditar. A ordem está no §2.10. Um run em 1.5.0 hospedado por um nó em
+  `off` tem série em `aos_runs_hosted_total` assim que é hospedado.
 
 ## 5. Resíduos, riscos aceites e limites
 
 1. **Só o caminho síncrono, e só o nó.** O streaming não captura estado (os runs não o usam), e
    as chamadas do `aos-orq` ao modelo também não.
 2. **Em texto único o digest vai no prompt.** É um digest com nonce, mas é texto que o modelo
-   vê e que o preâmbulo de protocolo não explica. A projecção nativa não o envia.
+   vê e que o preâmbulo de protocolo não explica. A projecção nativa não o envia. A combinação
+   `capture` + texto único não é suportada em produção, e o arranque avisa (§2.10).
 3. **A ligação do rótulo ao turno é posicional.** O rótulo vai no primeiro segmento do turno;
    quem vier a devolver o estado (AOS-515) localiza-o por esse segmento e pelo passo.
 4. **Em modo sensível o replay de um run não é fiel de qualquer forma** (os argumentos das
@@ -249,6 +312,17 @@ devolução terá de cumprir, e por decidir a devolução em si:
    ADR guarda tudo o que a documentação diz poder ser exigido; o AOS-512 mede.
 6. **Não há tecto por run**, só por turno. Um run de muitos turnos com estado grande ocupa o
    Event Store na proporção; o orçamento em tokens do run já limita quantos turnos há.
+7. **Com estado, o `prompt_hash` dos turnos a partir do segundo deixa de ser reprodutível
+   entre duas execuções do mesmo run.** O nonce é novo em cada captura, o digest muda, e o
+   rótulo entra no tail. A propriedade «o mesmo run re-executado dá os mesmos `prompt_hash`»
+   só se mantém para o **primeiro** turno. O que isto **não** parte: (a) o **replay** e a
+   retoma, que relêem a captura e reconstroem o mesmo digest; (b) a **medição das tentativas**
+   (ADR-039), que compara só o prompt do turno 1, e esse nunca leva rótulo — o hash do turno 1
+   é o mesmo em 1.4.0, em 1.5.0 sem estado e em 1.5.0 com estado; (c) a **estabilidade da
+   cache** (ADR-009): o prefixo não muda e o rótulo é escrito quando o segmento entra e nunca
+   mais muda, e em projecção nativa nem vai no pedido. Não há hoje consumidor que compare o
+   `prompt_hash` de turnos seguintes entre runs; um que apareça tem de saber disto.
+8. **Ninguém lê o rótulo neste ticket.** É escrita sem leitor até ao AOS-515 (§2.10).
 
 ## 6. Emendas a outros ADR
 

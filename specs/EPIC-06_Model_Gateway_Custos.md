@@ -3017,8 +3017,12 @@ byte a byte, e o tail refere-o por digest. **Às escuras:** nada é reenviado ao
 - [ ] A ficha do AOS-507 e a métrica contam os turnos com estado capturado e com estado «não
       devolvível», sem conteúdo.
 - [ ] Versão da porta do gateway: MINOR, aditiva; `CHANGELOG.md`.
-- [ ] Revisão adversarial independente antes da fusão, com mutações (trocar a origem do `Text`,
-      deixar o estado sair, deixar um byte em claro).
+- [x] Revisão adversarial independente antes da fusão, com mutações (trocar a origem do `Text`,
+      deixar o estado sair, deixar um byte em claro). **Feita a 2026-10-08 sobre `b4f6cca9`:
+      sem bloqueantes; seguro fundir com `off`.** Diferencial independente contra a base (120
+      eventos com `sha256` idênticos), 8 mutações do revisor mortas, fidelidade byte a byte e
+      replay em 8 combinações de estado e layout. Um achado importante (A1, a aritmética do
+      tecto) e oito menores, corrigidos — ver o Estado.
 
 ### Fora de âmbito
 
@@ -3032,8 +3036,8 @@ byte a byte, e o tail refere-o por digest. **Às escuras:** nada é reenviado ao
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-08); por rever de forma independente e por verificar em produção.** O
-entregável é o **ADR-040** (`docs/adr/ADR-040-o-estado-opaco-do-provider-e-um-artefacto-selado-do-turno.md`).
+**IMPLEMENTADO E REVISTO (2026-10-08, sem bloqueantes); por verificar em produção. `capture`
+condicionado ao AOS-515 e ao smoke sobre JetStream.** O entregável é o **ADR-040** (`docs/adr/ADR-040-o-estado-opaco-do-provider-e-um-artefacto-selado-do-turno.md`).
 Nasce desligado: `AOS_MODEL_PROVIDER_STATE=off`.
 
 - **Onde.** A sonda e o envelope: `packages/platform/model-gateway/port/state.go` (contrato da
@@ -3043,7 +3047,7 @@ Nasce desligado: `AOS_MODEL_PROVIDER_STATE=off`.
   `replay/nondeterminism_capture.go` (`provider_state`, `provider_state_ref`,
   `provider_state_status`). O interruptor, o tecto e a métrica: `packages/cmd/aos/model_state_env.go`.
 - **Interruptor.** `AOS_MODEL_PROVIDER_STATE=off|capture` (omissão `off`; outro valor recusa o
-  arranque) e `AOS_MODEL_PROVIDER_STATE_MAX_BYTES` (1024 a 262144; omissão 65536). O critério
+  arranque) e `AOS_MODEL_PROVIDER_STATE_MAX_BYTES` (1024 a 98304; omissão 65536). O critério
   pedia o tecto «configurado no nó»; o interruptor da captura não estava nos critérios e foi
   acrescentado para o ticket entrar inerte.
 - **Como se guarda.** O adaptador do gateway fecha o estado num envelope (a rota — digest do
@@ -3067,9 +3071,34 @@ Nasce desligado: `AOS_MODEL_PROVIDER_STATE=off`.
   é publicada com a captura ligada. (9) `specs/00_System_Spec.md` §11 não foi tocada: é
   referência de enunciado e parou no ADR-023 (GAP-08 da RTM); o registo canónico é
   `docs/adr/README.md`.
-- **Por fazer.** Revisão adversarial independente (o último critério); smoke sobre JetStream
-  com a captura ligada e um estado perto do tecto; a medição em produção. A devolução é o
-  AOS-515.
+- **Revisão adversarial (2026-10-08) e correcções.** (A1) A aritmética do tecto estava errada
+  no ADR, no comentário do runtime e no README do nó: são **três** passagens por base64
+  (≈2,37×) e o raciocínio fica **duas vezes** na captura; com o cifrador real, um envelope de
+  262144 bytes dava um evento de 1 140 565 bytes, acima do 1 MiB do NATS, e a captura falhava.
+  O máximo configurável e o tecto absoluto do runtime passam a **98304** (96 KiB): 426 316
+  bytes selados, 41% do limite; a omissão 65536 dá 284 328 (27%) e mantém-se. Provado por um
+  teste que sela de facto (`TestAOS514_No_Tecto_OEventoSeladoCabeNoTransporte`). (C1) A sonda e
+  o descodificador discordavam em corpos anómalos (chaves noutra caixa, `message` repetida):
+  quando não vêem a mesma mensagem, o estado fica `nao_devolvivel`, com a causa
+  `nao_devolvivel_desalinhado` — a métrica tem agora quatro séries. (C2) O id utilizável
+  guarda-se também **descodificado** (`id_value`); os bytes crus continuam no estado. (C3) A
+  documentação diz que as variáveis só são validadas com `AOS_MODEL_ENDPOINT` definida. (C4)
+  Um run em 1.5.0 hospedado num nó em `off` passa a ter série em `aos_runs_hosted_total`. (C5 a
+  C8, B3) O ADR ganha o custo do raciocínio duplicado, a frase certa sobre a autoridade do
+  segmento, o alcance do compromisso (turnos não-finais de runs em 1.5.0), o nonce como
+  contrato do adaptador, a não-reprodutibilidade do `prompt_hash` dos turnos a partir do
+  segundo (e o que não parte), e a ordem de ligar e de recuar. (B4) `capture` com projecção em
+  texto único fica não suportado em produção; o arranque avisa.
+- **Condição para ligar `capture` em produção.** `capture` **não se liga em produção** antes de duas coisas: (1) o desenho do AOS-515 confirmar que USA o rótulo — junção por digest com verificação (`sha256` dos bytes igual ao rótulo), e «sem estado» em caso de desacordo; (2) o smoke sobre JetStream com um turno com estado **no tecto** passar (ADR-040 §2.10).
+  Até ao primeiro run em 1.5.0 a decisão do layout é reversível; depois é vocabulário
+  permanente. Decisão do dono de 2026-10-08: o layout 1.5.0 **fica**.
+- **`TestAOS465DespejaAMenosRecentementeUsada` não é regressão deste ticket.** Falhou uma vez
+  na suite `-race` do `cmd/aos`. A revisão mediu: é instabilidade pré-existente sob carga — a
+  **base** falha 1 em 360 com seis processos de teste em paralelo; em sossego, 0 em 80 nas duas
+  árvores. O código sob teste e o ficheiro de teste não estão no diff do ramo.
+- **Por fazer.** O smoke sobre JetStream com a captura ligada e um turno com estado no tecto;
+  a retoma real no nó a meio de um run com estado e o apagamento por titular no nó (cobertos
+  no kernel, não no nó composto); a medição em produção. A devolução é o AOS-515.
 
 ---
 
