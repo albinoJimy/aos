@@ -582,6 +582,12 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 	// ou reproduzido da captura numa retoma, que passam os dois por aqui — e segue na vista do
 	// turno seguinte para quem o devolve ao provider. nil enquanto nenhum turno trouxer estado.
 	var estadosDoRun map[string][]byte
+	// Só contam os estados cujos bytes a CAPTURA guarda (F3): em modo sensível fica só a
+	// referência, e o estado conta como inexistente para a devolução — ao vivo como na retoma.
+	capturaGuardaOEstado := true
+	if k, ok := rt.capturer.(ProviderStateKeeper); ok {
+		capturaGuardaOEstado = k.KeepsProviderStateBytes()
+	}
 
 	for turn := 1; turn <= maxTurns; turn++ {
 		stepID := rt.stepIdentity.StepID(goal.RunID, turn)
@@ -669,7 +675,7 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// é nil ou uma das três formas de [ProviderState.Normalizado] — a mesma que a captura
 		// devolve. O loop não o lê: entrega-o à captura e refere-o no tail por digest.
 		resp.State = resp.State.Normalizado()
-		if resp.State != nil && resp.State.Status == ProviderStateCaptured {
+		if capturaGuardaOEstado && resp.State != nil && resp.State.Status == ProviderStateCaptured {
 			// AOS-515: o estado deste turno fica à mão para o pedido dos turnos seguintes, pela
 			// MESMA chave que o tail lhe dá. O digest é o que o runtime acabou de calcular.
 			if estadosDoRun == nil {
