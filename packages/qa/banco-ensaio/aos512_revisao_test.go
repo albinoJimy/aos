@@ -300,12 +300,12 @@ func TestAOS512_Real_ContadorNaoSeContorna(t *testing.T) {
 		t.Fatalf("--contador no modo real: codigo %d (quer %d): %q", e.codigo, SaidaUso, e.stderr)
 	}
 
-	// Uma corrida real: 12 pedidos, relatório em `relatorios/`, contador em 12.
+	// Uma corrida real: 12 pedidos e 1 de sonda, relatório em `relatorios/`, contador em 13.
 	lanc = &lancadorDeTeste{t: t, roteiro: []Comportamento{ComportamentoCumpre}}
 	if e := executar(t, Ambiente{Lancador: lanc}, "real", "--chaves", chaves, "--fornecedor", "kimi", "--silencioso"); e.codigo != SaidaOK {
 		t.Fatalf("a primeira corrida: codigo %d\n%s", e.codigo, e.stderr)
 	}
-	if lerContador(t, contador)[diaDosTestes]["kimi"].Pedidos != 12 {
+	if lerContador(t, contador)[diaDosTestes]["kimi"].Pedidos != 13 {
 		t.Fatalf("contador depois da primeira corrida: %v", lerContador(t, contador))
 	}
 	// O contador desaparece. A corrida seguinte é RECUSADA: há um relatório de hoje.
@@ -320,13 +320,13 @@ func TestAOS512_Real_ContadorNaoSeContorna(t *testing.T) {
 	if _, err := os.Stat(contador); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("uma corrida recusada nao pode recriar o contador a zero")
 	}
-	// Com a flag explícita, reconstrói-se dos relatórios: os 12 pedidos voltam a contar.
+	// Com a flag explícita, reconstrói-se dos relatórios: os 13 pedidos voltam a contar.
 	e = executar(t, Ambiente{Lancador: lanc}, "real", "--chaves", chaves, "--fornecedor", "kimi", "--so-plano", "--reconstruir-contador")
-	if e.codigo != SaidaOK || !strings.Contains(e.stderr, "RECONSTRUIDO") || !strings.Contains(e.stderr, "restam 988 de 1000") {
+	if e.codigo != SaidaOK || !strings.Contains(e.stderr, "RECONSTRUIDO") || !strings.Contains(e.stderr, "restam 987 de 1000") {
 		t.Fatalf("reconstrucao: codigo %d: %q", e.codigo, e.stderr)
 	}
-	if got := lerContador(t, contador)[diaDosTestes]["kimi"].Pedidos; got != 12 {
-		t.Fatalf("contador reconstruido: %d pedidos, quer 12", got)
+	if got := lerContador(t, contador)[diaDosTestes]["kimi"].Pedidos; got != 13 {
+		t.Fatalf("contador reconstruido: %d pedidos, quer 13", got)
 	}
 	// Um relatório de OUTRO dia ou de outro fornecedor não conta, e sem relatórios de hoje um
 	// contador ausente é o primeiro uso.

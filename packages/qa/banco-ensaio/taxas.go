@@ -136,6 +136,9 @@ type Observacao struct {
 	MotivosDeParagem []string `json:"motivos_de_paragem,omitempty"`
 	// HTTP são os códigos HTTP dos pedidos do run (0 = sem resposta HTTP).
 	HTTP []int `json:"http,omitempty"`
+	// TiposDeErro são os tipos, em vocabulário fechado ([TiposDeErro]), dos pedidos do run com
+	// resposta HTTP que não foi 200 — um por cada, pela ordem em que aparecem em HTTP.
+	TiposDeErro []string `json:"tipos_de_erro,omitempty"`
 	// Fichas, uma por pedido.
 	Fichas          []Ficha `json:"fichas,omitempty"`
 	TokensDeEntrada int64   `json:"tokens_de_entrada"`
@@ -203,7 +206,9 @@ type Taxas struct {
 	Desfechos        map[string]int `json:"desfechos"`
 	MotivosDeParagem map[string]int `json:"motivos_de_paragem"`
 	HTTP             map[string]int `json:"http"`
-	Fichas           map[string]int `json:"fichas"`
+	// TiposDeErro conta, por tipo do vocabulário fechado, os pedidos com resposta sem 200.
+	TiposDeErro map[string]int `json:"tipos_de_erro"`
+	Fichas      map[string]int `json:"fichas"`
 }
 
 // desfechoRepetivel diz se um desfecho é dos que o banco volta a tentar: o run que acabou sem
@@ -217,7 +222,7 @@ func desfechoRepetivel(d string) bool {
 func CalcularTaxas(obs []Observacao) Taxas {
 	t := Taxas{
 		N: len(obs), Desfechos: map[string]int{}, MotivosDeParagem: map[string]int{},
-		HTTP: map[string]int{}, Fichas: map[string]int{},
+		HTTP: map[string]int{}, Fichas: map[string]int{}, TiposDeErro: map[string]int{},
 	}
 	type unidade struct {
 		caso, no, braco string
@@ -239,6 +244,9 @@ func CalcularTaxas(obs []Observacao) Taxas {
 		}
 		for _, f := range o.Fichas {
 			t.Fichas[f.Classe]++
+		}
+		for _, tipo := range o.TiposDeErro {
+			t.TiposDeErro[tipoDoVocabulario(tipo)]++
 		}
 		for _, s := range o.HTTP {
 			pedidos++
@@ -326,6 +334,16 @@ func CalcularTaxas(obs []Observacao) Taxas {
 	t.RecuperadoASegunda = NovaTaxa("unidades que tiveram segunda tentativa (a primeira fechou contract_unmet_no_call ou empty_output), em que a segunda fechou cumprido", aSegunda, comSegunda)
 	t.RecuperadoATerceira = NovaTaxa("unidades que tiveram terceira tentativa, em que a terceira fechou cumprido", aTerceira, comTerceira)
 	return t
+}
+
+// tipoDoVocabulario deixa passar um tipo de erro só se for do vocabulário fechado.
+func tipoDoVocabulario(tipo string) string {
+	for _, t := range TiposDeErro() {
+		if tipo == t {
+			return t
+		}
+	}
+	return TipoOutro
 }
 
 // chavesOrdenadas devolve as chaves de um mapa de contagens, por ordem.

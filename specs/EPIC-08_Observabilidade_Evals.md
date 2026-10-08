@@ -1366,7 +1366,19 @@ dos separadores.
   relatório declaram a configuração do proxy. As duas mutações que tinham sobrevivido têm teste.
   Ficam como notas, sem alteração: as permissões `0o600` não valem no Windows (m6), e o
   redactor é por coincidência literal (m8).
-- **Por fazer.** A experiência dos separadores contra a rota de produção (212 pedidos) e o
+- **Primeira corrida real (2026-10-08) — medição, defeito e correcção.** A experiência dos
+  separadores foi lançada duas vezes e **não teve nenhuma resposta do modelo**: 3 pedidos com
+  401 (a chave era de outro produto do fornecedor; a corrida abortou com `chave_recusada`, como
+  desenhado) e, com a chave certa, 212 pedidos com 429 por saldo insuficiente na conta. Defeito:
+  o banco só abortava com recusas de autenticação, percorreu os 212 pedidos, gastou 212
+  unidades do tecto do dia e o relatório só dizia «429». Correcção (`fix(AOS-512)`): o tipo do
+  erro lê-se do `error.type` contra uma lista fechada (`chave_recusada`, `saldo_insuficiente`,
+  `limite_de_ritmo`, `modelo_desconhecido`, `outro`; a `message` nunca é guardada) e é contado
+  no relatório; três 429 desde o primeiro pedido abortam com a causa própria; dez 429 seguidos
+  a meio param a corrida; e o modo real faz uma sonda de um pedido antes do primeiro caso — sem
+  200, a corrida não começa.
+- **Por fazer.** A experiência dos separadores contra a rota de produção (212 pedidos, mais 1
+  de sonda) continua por correr — depende de a conta do fornecedor ter saldo — e, com ela, o
   registo do resultado na §5 do acompanhamento.
 
 ---
@@ -1385,3 +1397,4 @@ dos separadores.
 | 1.7 | 2026-10-08 | +AOS-512 (fase A2 da fronteira runtime↔modelo): banco de ensaio mínimo — bateria de casos sintéticos contra uma rota, relatório de taxas sem texto das respostas, três modos (falsos, proxy real com falsos, modelo real pelo posto local com tectos diários do dono), e a experiência dos separadores do protocolo como primeira corrida | Equipa AOS |
 | 1.8 | 2026-10-08 | AOS-512 implementado: módulo `packages/qa/banco-ensaio`, três modos, tectos e contador, experiência dos separadores pronta; a primeira corrida com modelo real e a revisão adversarial ficam por fazer | Equipa AOS |
 | 1.9 | 2026-10-08 | AOS-512: revisão adversarial feita (sem bloqueantes) e os seus cinco achados importantes e cinco menores corrigidos; falta a primeira corrida com modelo real | Equipa AOS |
+| 1.10 | 2026-10-08 | AOS-512: primeira corrida real sem respostas do modelo (3 pedidos com 401, 212 com 429 por saldo insuficiente); o banco passa a abortar em conta sem saldo ou limite de ritmo e a sondar a rota antes da corrida; a experiência dos separadores continua por correr | Equipa AOS |

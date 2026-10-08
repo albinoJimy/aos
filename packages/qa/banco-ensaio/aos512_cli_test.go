@@ -202,8 +202,8 @@ func TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma(t *testing.T) {
 		lanc.pedido.Prefixo != "openai" || lanc.pedido.Modelo != modeloKimiDeTeste || lanc.pedido.BinarioDoFalso != "" {
 		t.Fatalf("o lancador nao recebeu a rota do ficheiro de chaves")
 	}
-	if lanc.falso.Pedidos() != 27 {
-		t.Fatalf("o fornecedor falso recebeu %d pedidos, quer 27 (a bateria, duas passagens)", lanc.falso.Pedidos())
+	if lanc.falso.Pedidos() != 28 {
+		t.Fatalf("o fornecedor falso recebeu %d pedidos, quer 28 (a sonda e a bateria, duas passagens)", lanc.falso.Pedidos())
 	}
 	tudo := tudoOQueFoiEscrito(t, e, pasta)
 	segredos := []string{sentinelaChaveKimi, sentinelaBaseKimi, sentinelaCaminhoDaBase, sentinelaChaveAnthropic, chaveMestraDeTeste,
@@ -247,7 +247,7 @@ func TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma(t *testing.T) {
 	if r.Rota.Digest != DigestDaRota("kimi", modeloKimiDeTeste, sentinelaBaseKimi) || r.Digests.Rota != r.Rota.Digest {
 		t.Errorf("o digest da rota tem de cobrir o fornecedor, o modelo e o endereco")
 	}
-	if r.Pedidos.Enviados != 27 || r.Pedidos.TectoDoDia == nil || *r.Pedidos.TectoDoDia != 1000 || *r.Pedidos.GastosHoje != 27 || *r.Pedidos.RestantesHoje != 973 {
+	if r.Pedidos.Enviados != 28 || r.Pedidos.TectoDoDia == nil || *r.Pedidos.TectoDoDia != 1000 || *r.Pedidos.GastosHoje != 28 || *r.Pedidos.RestantesHoje != 972 {
 		t.Errorf("pedidos no relatorio: %+v", r.Pedidos)
 	}
 	if r.RegiaoDeclarada != nil {
@@ -256,8 +256,12 @@ func TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma(t *testing.T) {
 	if len(r.Limites) == 0 || r.Taxas.N != 16 {
 		t.Errorf("o relatorio tem de levar os limites e as 16 observacoes")
 	}
+	// A sonda: um pedido, com 200, registado à parte — não é uma observação.
+	if r.Sonda == nil || r.Sonda.HTTP != 200 || r.Sonda.Resultado != SondaOK {
+		t.Errorf("a sonda tinha de ir no relatorio com 200: %+v", r.Sonda)
+	}
 	// O contador ficou ao lado do ficheiro de chaves, fora do repositório.
-	if dias := lerContador(t, filepath.Join(pasta, "contador.json")); dias[diaDosTestes]["kimi"].Pedidos != 27 {
+	if dias := lerContador(t, filepath.Join(pasta, "contador.json")); dias[diaDosTestes]["kimi"].Pedidos != 28 {
 		t.Errorf("contador: %v", dias)
 	}
 	// Nomes de ficheiro: só o modo, a experiência e a data.
@@ -291,18 +295,18 @@ func TestAOS512_Real_SegredosNoCaminhoDeErroDoProxy(t *testing.T) {
 			eco.ServeHTTP(w, r)
 		})
 		e := executar(t, Ambiente{Lancador: &lancadorDeTeste{t: t, devolver: contado}}, "real", "--chaves", chaves, "--fornecedor", "kimi", "--saida", saida)
-		// CHAVE RECUSADA: os três primeiros pedidos levam 401 e a corrida aborta, com exit
-		// próprio, em vez de gastar o tecto do dia com uma chave que não serve.
-		if e.codigo != SaidaParouAMeio || pedidos != RecusasDeChaveQueAbortam {
-			t.Fatalf("chave recusada: codigo %d (quer %d), pedidos %d (quer %d)\n%s", e.codigo, SaidaParouAMeio, pedidos, RecusasDeChaveQueAbortam, e.stderr)
+		// CHAVE RECUSADA: a sonda leva 401 e a corrida nem começa — um pedido, exit próprio —
+		// em vez de gastar o tecto do dia com uma chave que não serve.
+		if e.codigo != SaidaParouAMeio || pedidos != 1 {
+			t.Fatalf("chave recusada: codigo %d (quer %d), pedidos %d (quer 1)\n%s", e.codigo, SaidaParouAMeio, pedidos, e.stderr)
 		}
 		if !strings.Contains(e.stderr, TerminouChaveRecusada) {
 			t.Errorf("a causa da paragem tinha de ser dita: %q", e.stderr)
 		}
 		tudo := tudoOQueFoiEscrito(t, e, pasta)
 		verSemFugas(t, "erro HTTP do proxy", tudo, append(segredos, SentinelaDeTexto, "AuthenticationError"))
-		if !strings.Contains(tudo, `"401"`) || !strings.Contains(tudo, DesfechoErroHTTP) {
-			t.Errorf("o relatorio tinha de contar os 401 em vocabulario fechado")
+		if !strings.Contains(tudo, `"http": 401`) || !strings.Contains(tudo, `"resultado": "`+TipoChaveRecusada+`"`) {
+			t.Errorf("o relatorio tinha de registar a sonda com o 401, em vocabulario fechado")
 		}
 	})
 

@@ -33,6 +33,7 @@ não a governação do nó.
 | Resposta vazia, cortada | Os desfechos `empty_output` e `truncated` do kernel. |
 | Erro do provider | Pedidos sem HTTP 200 nem 429, e a distribuição dos códigos. |
 | Limite de taxa (429) | Contado à parte: tanto o dá o fornecedor como o próprio proxy, e pelo código não se distinguem. |
+| Tipos de erro | Os pedidos com resposta sem 200, por tipo, em vocabulário fechado: `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido`, `outro`. Lê-se o `error.type` do corpo contra uma lista fechada; a `message` nunca é guardada. |
 | Recuperado à 2.ª ou 3.ª tentativa | Nova tentativa do nó, como o `aos-orq` (com o aviso do kernel quando faltou a tool call). |
 | Forma das respostas | A ficha do AOS-507 (`port.ProbeResponseShape`, pelo adaptador de produção), agregada por classe. |
 
@@ -111,6 +112,13 @@ O modo real levanta a imagem de produção do proxy num contentor só para a cor
 rota para o fornecedor (`openai/<modelo>` para o Kimi, `anthropic/<modelo>` para a Anthropic),
 e desmonta-a no fim.
 
+**A sonda.** Antes do primeiro caso, o modo real faz um único pedido mínimo ao modelo. Conta no
+tecto do dia como um pedido (o plano anuncia «mais 1 de sonda») e fica no relatório, no campo
+`sonda` — não é uma observação e não entra em taxa nenhuma. Se não der 200, a corrida não
+começa: exit 4, relatório sem observações, e a causa em vocabulário fechado
+(`chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido`, `outro`).
+O `--so-plano` não envia nada, nem a sonda.
+
 ### `limpar` — remover o que ficou de uma corrida anterior
 
 ```powershell
@@ -163,7 +171,7 @@ O banco não lê mais nenhuma variável, e nenhuma destas chega ao nó `aos`.
 | 0 | A corrida completou e o relatório foi escrito. |
 | 2 | Argumentos inválidos. |
 | 3 | Recusada antes de arrancar: ficheiro de chaves, tecto, preço, contador, ou a corrida não cabe no tecto. Nenhum pedido saiu. |
-| 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`, `chave_recusada`). O relatório parcial foi escrito e diz a causa. |
+| 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`, `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `so_respostas_429`, `serie_de_429`) ou a sonda não a deixou começar (as três primeiras, mais `modelo_desconhecido` e `sonda_falhou`). O relatório parcial foi escrito e diz a causa. |
 | 5 | Modo `real` pedido em CI. |
 | 6 | Falta o Docker ou a imagem do proxy, ou o proxy não arrancou. |
 | 1 | Outra falha. |
@@ -202,6 +210,13 @@ pasta). Só o programa o lê, pelo caminho que lhe dão.
   confirmar que o processo já não existe.
 - **Chave recusada.** Se os três primeiros pedidos da corrida real forem todos 401 ou 403, a
   corrida aborta (`chave_recusada`, exit 4) em vez de gastar o tecto do dia.
+- **Conta sem saldo e limite de ritmo.** Os dois chegam com HTTP 429; distingue-os o
+  `error.type` do corpo, lido contra uma lista fechada (qualquer outro valor é `outro`; a
+  `message`, que traz identificadores da conta, nunca é guardada). Se os três primeiros pedidos
+  da corrida real forem todos 429, a corrida aborta com `saldo_insuficiente`, `limite_de_ritmo`
+  ou — com um tipo desconhecido — `so_respostas_429`. Dez 429 seguidos a meio da corrida
+  param-na com `serie_de_429`. A mensagem final diz o que fazer: carregar a conta (repetir não
+  adianta), ou `--pausa`.
 - **Antes de começar**, a corrida calcula o máximo de pedidos que pode fazer e recusa se não
   couber no que resta do dia.
 - **Tecto em dólares.** Usa os tokens do `usage` e a tabela de `--precos`:
@@ -246,7 +261,9 @@ Campos do JSON: `data_utc`, `modo`, `experiencia`, `terminou`, `rota` (fornecedo
 digest), `regiao_de_processamento_declarada` (uma declaração do dono, sem efeito),
 `protocolo` (projecção, layout, versão publicada por braço), `digests` (bateria, rota,
 configuração), `plano` (amostras, semente, tentativas, turnos, casos, braços), `pedidos`
-(previstos, enviados, tecto do dia, gastos, restantes), `custo` (estimativa), `taxas`,
+(previstos, enviados, tecto do dia, gastos, restantes), `custo` (estimativa), `sonda` (só no
+modo real: o código HTTP e o resultado do pedido de sonda), `taxas` (com `http`, os códigos por
+pedido, e `tipos_de_erro`, os pedidos sem 200 por tipo),
 `por_braco`, `por_caso`, `comparacoes` (só nos separadores), `limites` (o que a corrida **não**
 prova) e `observacoes` (uma linha por run, em vocabulário fechado).
 
@@ -254,7 +271,8 @@ prova) e `observacoes` (uma linha por run, em vocabulário fechado).
 pedidos, de respostas ou de raciocínio. Está preso por teste, com sentinelas em todos os campos
 do ficheiro de chaves e no texto de todas as respostas do provider falso
 (`TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma`,
-`TestAOS512_Real_SegredosNoCaminhoDeErroDoProxy`).
+`TestAOS512_Real_SegredosNoCaminhoDeErroDoProxy`), e com um identificador de conta na
+`message` dos erros do fornecedor (`TestAOS512_Real_SaldoERitmo_AMensagemDoFornecedorNaoSai`).
 
 ## A experiência dos separadores
 

@@ -56,6 +56,9 @@ type Relatorio struct {
 	Plano           Plano       `json:"plano"`
 	Pedidos         Pedidos     `json:"pedidos"`
 	Custo           Custo       `json:"custo"`
+	// Sonda é o pedido de sonda feito antes da corrida (só quando houve). Uma sonda sem 200
+	// significa que nenhum caso correu.
+	Sonda *Sonda `json:"sonda,omitempty"`
 	// Taxas de todas as observações da corrida.
 	Taxas Taxas `json:"taxas"`
 	// PorBraco: as mesmas taxas, por braço.
@@ -189,7 +192,7 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 	return l
 }
 
-func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, terminou string, obs []Observacao) (*Relatorio, error) {
+func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, terminou string, sonda *Sonda, obs []Observacao) (*Relatorio, error) {
 	r := &Relatorio{
 		Versao: VersaoDoRelatorio, Ticket: "AOS-512", DataUTC: agora.Format(time.RFC3339),
 		Modo: cfg.Modo, Experiencia: string(cfg.Plano.Experiencia), Terminou: terminou,
@@ -211,12 +214,21 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 			Nota:       "gasto estimado pelos tokens do usage e pela tabela de precos declarada; nao e a factura do fornecedor",
 		},
 		Pedidos: Pedidos{PrevistosMax: previstos},
+		Sonda:   sonda,
 	}
 	if r.Observacoes == nil {
 		r.Observacoes = []Observacao{}
 	}
 	if cfg.RegiaoDeclarada != "" {
 		r.RegiaoDeclarada = &Declaracao{Valor: cfg.RegiaoDeclarada, Nota: "declarada pelo dono no ficheiro de chaves; sem efeito no ensaio e nao verificada"}
+	}
+	if sonda != nil {
+		// A sonda é um pedido enviado e pago como os outros; não é uma observação.
+		if sonda.enviada {
+			r.Pedidos.Enviados++
+		}
+		r.Custo.TokensDeEntrada += sonda.tokensDeEntrada
+		r.Custo.TokensDeSaida += sonda.tokensDeSaida
 	}
 	for _, o := range obs {
 		r.Pedidos.Enviados += int64(o.Pedidos)
@@ -439,13 +451,18 @@ func ResumoEmTexto(r *Relatorio) string {
 		fmt.Fprintf(&b, "; gasto ESTIMADO hoje %.4f USD de %.2f USD, restam %.4f USD",
 			float64(*r.Custo.MicroUSDHoje)/1e6, float64(*r.Custo.TectoMicroUSD)/1e6, float64(*r.Custo.MicroUSDRestante)/1e6)
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if r.Sonda != nil {
+		fmt.Fprintf(&b, "sonda antes da corrida (1 pedido, conta no tecto): HTTP %d, resultado %s\n", r.Sonda.HTTP, r.Sonda.Resultado)
+	}
+	b.WriteString("\n")
 
 	fmt.Fprintf(&b, "TODAS AS OBSERVACOES (%d runs, %d unidades)\n", r.Taxas.N, r.Taxas.Unidades)
 	blocoDeTaxas(&b, r.Taxas)
 	blocoDeContagens(&b, "desfechos", r.Taxas.Desfechos)
 	blocoDeContagens(&b, "motivos de paragem (por turno)", r.Taxas.MotivosDeParagem)
 	blocoDeContagens(&b, "codigos HTTP (por pedido)", r.Taxas.HTTP)
+	blocoDeContagens(&b, "tipos de erro (por pedido com resposta sem 200; vocabulario fechado)", r.Taxas.TiposDeErro)
 	blocoDeContagens(&b, "fichas da forma da resposta (por pedido)", r.Taxas.Fichas)
 
 	if len(r.PorBraco) > 1 {
