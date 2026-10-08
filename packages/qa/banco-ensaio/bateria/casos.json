@@ -1,0 +1,99 @@
+{
+  "versao": "1.0.0",
+  "marca": "DOCUMENTO SINTETICO AOS-512",
+  "system": "You are a careful assistant working inside an automated runtime. Do exactly what the objective asks, using the tools offered when the objective needs a document. Answer in plain text.",
+  "casos": [
+    {
+      "id": "T1",
+      "descricao": "no de leitura com uma tool: um turno com tool call, um turno final",
+      "nos": [
+        {
+          "id": "ler",
+          "objectivo": "Read the document notas-armazem.txt with the arquivo tool. Then answer with the batch code, the name of the shift lead, and the number of boxes counted.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["notas-armazem.txt"],
+          "factos": ["LT-4817", "Marta Quintela-Ferraz", "2356"]
+        }
+      ]
+    },
+    {
+      "id": "T2",
+      "descricao": "plano de dois nos: leitura e resumo (o cenario do empty_output)",
+      "nos": [
+        {
+          "id": "ler",
+          "objectivo": "Read the document escala-turnos.txt with the arquivo tool. Then reply with the full text of the document, unchanged.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["escala-turnos.txt"],
+          "factos": ["Tomas Albergaria-Pinto", "5538"]
+        },
+        {
+          "id": "resumir",
+          "objectivo": "Summarise the document given as plan input in two sentences. Include the name of the night shift coordinator and the internal number of the control room.",
+          "entrada_de": "ler",
+          "factos_de": ["escala-turnos.txt"],
+          "factos": ["Tomas Albergaria-Pinto", "5538"]
+        }
+      ]
+    },
+    {
+      "id": "T3",
+      "descricao": "no sem tools com plan_input, isolado",
+      "nos": [
+        {
+          "id": "resumir",
+          "objectivo": "Summarise the document given as plan input in two sentences. Include the batch code and the claim reference.",
+          "entrada_doc": "notas-armazem.txt",
+          "factos_de": ["notas-armazem.txt"],
+          "factos": ["LT-4817", "RC-90212"]
+        }
+      ]
+    },
+    {
+      "id": "T4",
+      "descricao": "duas tool calls no mesmo turno",
+      "nos": [
+        {
+          "id": "ler-dois",
+          "objectivo": "Read the documents notas-armazem.txt and escala-turnos.txt with the arquivo tool, making both calls in the same step. Then answer with the batch code and the name of the night shift coordinator.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["notas-armazem.txt", "escala-turnos.txt"],
+          "factos": ["LT-4817", "Tomas Albergaria-Pinto"]
+        }
+      ]
+    },
+    {
+      "id": "T5",
+      "descricao": "tool negada e continuacao",
+      "nos": [
+        {
+          "id": "ler-com-recusa",
+          "objectivo": "Read the documents reservado-cofre.txt and notas-armazem.txt with the arquivo tool. If one of the reads is not allowed, do not insist: answer with the batch code from the document you could read.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "nega": "reservado-cofre.txt",
+          "factos_de": ["notas-armazem.txt"],
+          "factos": ["LT-4817"]
+        }
+      ]
+    },
+    {
+      "id": "T6",
+      "descricao": "argumentos grandes: a tool call leva o documento inteiro nos argumentos",
+      "nos": [
+        {
+          "id": "guardar",
+          "objectivo": "Call the guardar tool once, passing in its texto argument the full text of the document given as plan input, unchanged. Then answer with the report code that appears at the end of the document.",
+          "tools": ["guardar"],
+          "exige": ["guardar"],
+          "entrada_doc": "relatorio-longo.txt",
+          "factos_de": ["relatorio-longo.txt"],
+          "factos": ["RL-66031"]
+        }
+      ]
+    }
+  ]
+}

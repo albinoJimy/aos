@@ -47,6 +47,7 @@ use (
 	./packages/platform/model-gateway
 	./packages/platform/registry
 	./packages/platform/runbooks
+	./packages/qa/banco-ensaio
 	./packages/qa/dr-e2e
 	./packages/qa/ux-dx
 	./packages/security-tests
