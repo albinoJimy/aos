@@ -9,7 +9,8 @@
   2026-10-07 ao §2.4: projecção nativa 1.2.0, e o aviso de nova tentativa como segmento da
   semente), AOS-514 (emenda de 2026-10-08 aos §2.3 e §2.7, feita pelo ADR-040: o layout 1.5.0
   e o estado opaco do provider), AOS-513 (emenda de 2026-10-08 ao §2.8: o que o perfil da rota
-  passa a poder declarar)
+  passa a poder declarar), AOS-515 (emenda de 2026-10-08 ao §2.4: projecção nativa 1.3.0, que
+  devolve o estado opaco do turno; a decisão está no ADR-040 §2.11)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -307,6 +308,30 @@ turno, e `ProjectNative` — a função que o adaptador usa, exportada e pura �
 partir da vista desse turno (`ProjectNativeVersion` para a versão que o manifesto disser). Não existe ainda um leitor que junte as duas coisas: nada lê
 `manifest.projection` nem `projection_version`, o motor de replay não expõe a vista
 reconstruída, e não recusa uma `projection_version` que não conheça. Fica por fazer.
+
+#### A projecção 1.3.0 (AOS-515, emenda de 2026-10-08)
+
+A **1.3.0** é a 1.2.0 — o mesmo texto de protocolo, a mesma linha de fim, o mesmo escape, o
+mesmo mapeamento, agrupamento e invariante — mais uma coisa que **não é texto**: a mensagem
+`assistant` de cada turno do modelo leva agarrado o **estado opaco** desse turno (ADR-040). É
+função pura de (a vista do tail, os estados por turno): junta o estado ao turno pelo rótulo
+`state_digest` do primeiro segmento do turno, depois de conferir que o `sha256` dos bytes é o
+rótulo.
+
+A projecção **não decide se o estado sai**. Isso é do gateway, depois do roteamento, pela classe
+de estado do perfil da rota (§2.8) e pela rota que o envelope gravou (ADR-040 §2.11). Com a classe
+`nunca` — a omissão, e a de todos os perfis de hoje — **um pedido da 1.3.0 é o da 1.2.0, byte a
+byte**. A versão só tem efeito com a captura do estado ligada e o layout 1.5.0, que é onde o
+rótulo existe; exige ainda a governação da rota ligada.
+
+O §2.7 mantém-se: o campo de raciocínio de sempre (`reasoning_content` da mensagem da porta) é
+retirado de todos os pedidos, em todas as versões. O raciocínio só volta a um provider como carga
+opaca do estado, byte a byte, à rota que o produziu, e nunca como texto de uma mensagem. Não é a
+omissão: `AOS_MODEL_PROJECTION_VERSION` aceita `1.3.0`, e um perfil de rota pode nomeá-la.
+
+**Recuo.** Voltar à 1.2.0 é seguro a qualquer momento para rotas com `nunca`. Para um run em
+curso numa rota `obrigatorio`, drena-se primeiro: o turno seguinte na 1.2.0 falharia com
+`projeccao_sem_estado` (o pedido não sai sem o estado).
 
 ### 2.5 O `prompt_hash` é o hash do tail canónico
 
