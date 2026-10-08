@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -57,6 +58,11 @@ type Ambiente struct {
 	Lancador LancadorDeProxy
 	// Relogio dá a hora. nil ⇒ time.Now.
 	Relogio func() time.Time
+
+	// destinoDeTeste é uma base da API aceite sem validação de esquema nem de host. Só os
+	// testes do próprio pacote a definem (o campo não é exportado): não há flag nem variável
+	// de ambiente que cá chegue, e por isso um operador não a consegue usar por engano.
+	destinoDeTeste string
 }
 
 type opcoes struct {
@@ -78,6 +84,9 @@ type opcoes struct {
 	chaveSha    string
 	silencioso  bool
 	pausa       time.Duration
+	foraDaLista string
+	reconstruir bool
+	vida        time.Duration
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
@@ -87,6 +96,9 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
   aos-ensaio real    --chaves F --fornecedor kimi|anthropic [opcoes]
                                                    modelo real pelo proxy efemero (Docker); tectos do ficheiro
   aos-ensaio bateria                               mostra o digest e os casos da bateria
+  aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
+                                                   corrida anterior (um proxy orfao guarda a chave no ambiente)
+                                                   e a trava do contador de um processo que ja morreu
 
 opcoes comuns:
   --experiencia bateria|separadores   (omissao: bateria)
@@ -97,7 +109,10 @@ opcoes comuns:
   --silencioso                        nao mostra o resumo, so os caminhos
   --pausa DURACAO                     intervalo entre dois passos (ex.: 2s), para um limite de taxa
 so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FICHEIRO
-so real:            --modelo M  --precos FICHEIRO  --contador FICHEIRO  --so-plano
+so real:            --modelo M  --precos FICHEIRO  --so-plano
+                    --destino-fora-da-lista HOST   aceita um destino da chave fora da lista do fornecedor;
+                                                   HOST tem de ser exactamente o host do ficheiro (https na mesma)
+                    --reconstruir-contador         recria um contador desaparecido a partir dos relatorios de hoje
 `
 
 // Executar corre a linha de comandos e devolve o código de saída.
@@ -148,6 +163,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	fs.StringVar(&o.chaveSha, "chave-sha256", "", "")
 	fs.BoolVar(&o.silencioso, "silencioso", false, "")
 	fs.DurationVar(&o.pausa, "pausa", 0, "")
+	fs.StringVar(&o.foraDaLista, "destino-fora-da-lista", "", "")
+	fs.BoolVar(&o.reconstruir, "reconstruir-contador", false, "")
+	fs.DurationVar(&o.vida, "vida", 0, "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -171,6 +189,8 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		return SaidaOK
 	case "falso-provider":
 		return servirFalso(ctx, o, stderr)
+	case "limpar":
+		return limpar(ctx, o, amb, stdout, stderr)
 	case ModoFalso, ModoProxy, ModoReal:
 	default:
 		fmt.Fprint(stderr, usoDoBanco)
@@ -202,10 +222,29 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	)
 	defer func() { fechar() }()
 
+	// O prazo máximo de vida dos contentores, derivado do plano: o pior caso de cada pedido (o
+	// timeout de 120 s mais a pausa) vezes o máximo de pedidos, com folga para o arranque. É a
+	// última rede: antes dele actua o vigia do sinal de vida.
+	vida := time.Duration(previstos)*(120*time.Second+o.pausa) + 15*time.Minute
+	if vida > 12*time.Hour {
+		vida = 12 * time.Hour
+	}
+	if modo != ModoFalso && amb.Lancador == nil && !o.soPlano {
+		// ANTES de levantar um proxy, remove-se o que tenha ficado de uma corrida anterior.
+		contentores, redes, verr := VarrerOrfaos(ctx)
+		if verr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio: %v\n", verr)
+			return SaidaSemInfra
+		}
+		if contentores+redes > 0 {
+			fmt.Fprintf(stderr, "aos-ensaio: VARRIDOS %d contentor(es) e %d rede(s) aos512-* de uma corrida anterior (um proxy orfao guarda a chave no ambiente)\n", contentores, redes)
+		}
+	}
+
 	switch modo {
 	case ModoFalso, ModoProxy:
-		if o.chaves != "" || o.fornecedor != "" || o.precos != "" || o.soPlano {
-			fmt.Fprintln(stderr, "aos-ensaio: --chaves, --fornecedor, --precos e --so-plano sao so do modo real")
+		if o.chaves != "" || o.fornecedor != "" || o.precos != "" || o.soPlano || o.foraDaLista != "" || o.reconstruir {
+			fmt.Fprintln(stderr, "aos-ensaio: --chaves, --fornecedor, --precos, --so-plano, --destino-fora-da-lista e --reconstruir-contador sao so do modo real")
 			return SaidaUso
 		}
 		roteiro := RoteiroPorOmissao()
@@ -228,6 +267,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
 				return SaidaRecusada
 			}
+			defer cfg.Contador.Fechar()
 		}
 		if cfg.Contador != nil {
 			if err := cfg.Contador.Cabe(previstos); err != nil {
@@ -261,7 +301,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		chaveDoFalso := "sk-falso-" + hex.EncodeToString(aleatorio)
 		red.Acrescentar(chaveDoFalso)
 		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{
-			Prefixo: "openai", Modelo: "modelo-falso-do-banco", BinarioDoFalso: o.binario, Roteiro: roteiro,
+			Prefixo: "openai", Modelo: "modelo-falso-do-banco", BinarioDoFalso: o.binario, Roteiro: roteiro, Vida: vida,
 		}.ComSegredos(chaveDoFalso, ""))
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
@@ -273,8 +313,10 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		cfg.Rota.Digest = DigestDaRota(cfg.Rota.Fornecedor, cfg.Rota.Modelo, "proxy:"+ImagemDoProxy)
 
 	case ModoReal:
-		if o.roteiro != "" || o.tecto != 0 || o.binario != "" {
-			fmt.Fprintln(stderr, "aos-ensaio: --roteiro, --tecto-pedidos e --binario-do-falso nao sao do modo real (o tecto vem do ficheiro de chaves)")
+		if o.roteiro != "" || o.tecto != 0 || o.binario != "" || o.contador != "" {
+			// O contador do modo real é SEMPRE o que está ao lado do ficheiro de chaves: uma
+			// flag que apontasse para outro ficheiro punha a contagem do dia a zero.
+			fmt.Fprintln(stderr, "aos-ensaio: --roteiro, --tecto-pedidos, --binario-do-falso e --contador nao sao do modo real (o tecto vem do ficheiro de chaves, e o contador fica ao lado dele)")
 			return SaidaUso
 		}
 		// Só arranca com um caminho EXPLÍCITO para o ficheiro de chaves: não há omissão.
@@ -296,7 +338,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", cerr)
 			return SaidaRecusada
 		}
-		rota, rerr := chaves.Rota(fornecedor, o.modelo)
+		rota, rerr := chaves.Rota(fornecedor, o.modelo, Destino{ForaDaLista: strings.ToLower(strings.TrimSpace(o.foraDaLista)), deTeste: amb.destinoDeTeste})
 		if rerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", rerr)
 			return SaidaRecusada
@@ -312,27 +354,43 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 				cfg.Extra["preco"] = fmt.Sprintf("%d/%d", p.EntradaMicroUSDPorMTok, p.SaidaMicroUSDPorMTok)
 			}
 		}
-		caminhoDoContador := o.contador
-		if caminhoDoContador == "" {
-			// Ao lado do ficheiro de chaves: na pasta do dono, fora do repositório.
-			caminhoDoContador = filepath.Join(filepath.Dir(caminho), "contador.json")
+		// Ao lado do ficheiro de chaves: na pasta do dono, fora do repositório. Não há flag.
+		caminhoDoContador := filepath.Join(filepath.Dir(caminho), "contador.json")
+		if pastaDaSaida == "" {
+			pastaDaSaida = filepath.Join(filepath.Dir(caminho), "relatorios")
 		}
-		// FAIL-CLOSED: sem tecto, sem preço para um tecto em dólares, ou com um contador que
-		// não se lê, o contador não abre e a corrida não arranca.
+		if _, serr := os.Stat(caminhoDoContador); errors.Is(serr, os.ErrNotExist) {
+			// Um contador que não existe só é o primeiro uso se não houver relatórios de corridas
+			// reais de hoje: havendo, a contagem do dia perdeu-se, e não se recomeça do zero.
+			dia := amb.Relogio().UTC().Format("2006-01-02")
+			pedidos, microUSD, n := UsoDosRelatoriosDeHoje([]string{filepath.Join(filepath.Dir(caminho), "relatorios"), pastaDaSaida}, fornecedor, dia)
+			if n > 0 {
+				if !o.reconstruir {
+					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ErrContadorDesaparecido)
+					return SaidaRecusada
+				}
+				if rerr := ReconstruirContador(caminhoDoContador, fornecedor, dia, pedidos, microUSD); rerr != nil {
+					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", rerr)
+					return SaidaRecusada
+				}
+				fmt.Fprintf(stderr, "aos-ensaio: contador RECONSTRUIDO a partir de %d relatorio(s) de hoje: %d pedidos\n", n, pedidos)
+			}
+		}
+		// FAIL-CLOSED: sem tecto, sem preço para um tecto em dólares, com um contador que não
+		// se lê ou em uso por outro processo, o contador não abre e a corrida não arranca.
 		cfg.Contador, err = AbrirContador(caminhoDoContador, fornecedor, rota.Tectos, precos, rota.Modelo, amb.Relogio)
 		if err != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
 			return SaidaRecusada
 		}
+		defer cfg.Contador.Fechar()
 		if err := cfg.Contador.Cabe(previstos); err != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
 			return SaidaRecusada
 		}
 		cfg.Rota = RotaDoRelatorio{Fornecedor: string(fornecedor), Modelo: rota.Modelo, Digest: DigestDaRota(string(fornecedor), rota.Modelo, rota.apiBase)}
 		cfg.RegiaoDeclarada = rota.RegiaoDeclarada
-		if pastaDaSaida == "" {
-			pastaDaSaida = filepath.Join(filepath.Dir(caminho), "relatorios")
-		}
+		cfg.AbortarAposRecusasDeChave = RecusasDeChaveQueAbortam
 		estado, eerr := cfg.Contador.Estado()
 		if eerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", eerr)
@@ -340,6 +398,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		fmt.Fprintf(stderr, "aos-ensaio: modo REAL — fornecedor %s, modelo %s; a corrida faz ate %d pedidos; hoje (%s UTC) restam %d de %d\n",
 			fornecedor, rota.Modelo, previstos, estado.Dia, estado.PedidosRestantes, estado.TectoPedidos)
+		// O destino mostra-se ANTES de enviar seja o que for: é onde o dono confirma para onde a
+		// chave vai. O host de um fornecedor público não é segredo; o caminho da base não vai.
+		fmt.Fprintf(stderr, "aos-ensaio: DESTINO DA CHAVE: %s  (contador: %s)\n", rota.Destino, caminhoDoContador)
 		if o.soPlano {
 			fmt.Fprintln(stderr, "aos-ensaio: --so-plano: nenhum pedido foi enviado")
 			return SaidaOK
@@ -348,7 +409,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		if fornecedor == FornecedorAnthropic {
 			prefixo = "anthropic"
 		}
-		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo}.ComSegredos(rota.apiKey, rota.apiBase))
+		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase))
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
 			return SaidaSemInfra
@@ -404,6 +465,44 @@ func lancadorDe(amb Ambiente, red *Redactor) LancadorDeProxy {
 	return &LancadorDocker{Redactor: red}
 }
 
+// limpar é o subcomando `limpar`: remove os contentores e as redes `aos512-*` que existirem e,
+// se lhe disserem onde está o contador, a trava de um processo que já morreu. Não envia nada.
+func limpar(ctx context.Context, o opcoes, amb Ambiente, stdout, stderr io.Writer) int {
+	codigo := SaidaOK
+	contentores, redes, err := VarrerOrfaos(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
+		codigo = SaidaSemInfra
+	} else {
+		fmt.Fprintf(stdout, "limpar: removidos %d contentor(es) e %d rede(s) aos512-*\n", contentores, redes)
+	}
+	caminho := o.contador
+	if caminho == "" {
+		chaves := o.chaves
+		if chaves == "" {
+			chaves = amb.Getenv(EnvDasChaves)
+		}
+		if chaves != "" {
+			caminho = filepath.Join(filepath.Dir(chaves), "contador.json")
+		}
+	}
+	if caminho == "" {
+		fmt.Fprintln(stdout, "limpar: sem --chaves nem --contador, a trava do contador nao foi verificada")
+		return codigo
+	}
+	removida, terr := RemoverTravaMorta(caminho)
+	switch {
+	case terr != nil:
+		fmt.Fprintf(stderr, "aos-ensaio: %v\n", terr)
+		return SaidaRecusada
+	case removida:
+		fmt.Fprintln(stdout, "limpar: removida a trava do contador (o processo que a criou ja nao existe)")
+	default:
+		fmt.Fprintln(stdout, "limpar: o contador nao tem trava")
+	}
+	return codigo
+}
+
 // planoDasOpcoes constrói o plano da corrida a partir das opções.
 func planoDasOpcoes(b *Bateria, o opcoes) (Plano, error) {
 	switch Experiencia(o.experiencia) {
@@ -443,6 +542,12 @@ func servirFalso(ctx context.Context, o opcoes, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 			return SaidaUso
 		}
+	}
+	if o.vida > 0 {
+		// O prazo de vida do provider falso dentro do contentor: passado ele, sai sozinho.
+		var cancelar context.CancelFunc
+		ctx, cancelar = context.WithTimeout(ctx, o.vida)
+		defer cancelar()
 	}
 	falso := NovoProviderFalso(roteiro)
 	if o.chaveSha != "" {

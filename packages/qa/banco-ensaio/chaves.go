@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -55,7 +56,46 @@ const (
 	problemaZero              = "zero ou negativo"
 	problemaForaDaLista       = "nao esta na lista do ficheiro"
 	problemaCaracteres        = "com caracteres que o banco nao aceita"
+	problemaAspas             = "entre aspas (o valor escreve-se sem aspas)"
+	problemaNaoEInteiro       = "escrito de uma forma que o banco nao aceita (so algarismos, sem sinal nem espacos)"
+	problemaAcimaDoMaximo     = "acima do maximo que o banco aceita"
+	problemaSemHTTPS          = "sem https, ou nao e um URL"
+	problemaURLComExtras      = "com utilizador, porta, query ou fragmento no URL"
+	problemaHostForaDaLista   = "com um host que nao e do fornecedor (para o aceitar, --destino-fora-da-lista com o host exacto)"
 )
+
+// Os máximos que o banco aceita num tecto do ficheiro de chaves. Um valor acima deles é quase
+// de certeza um engano de escrita, e um tecto que não limita nada não é um tecto.
+const (
+	// MaxTectoDePedidosDia é o maior tecto de pedidos por dia que o banco aceita.
+	MaxTectoDePedidosDia = 100_000
+	// MaxTectoUSDDia é o maior tecto de gasto por dia, em dólares, que o banco aceita.
+	MaxTectoUSDDia = 1000
+)
+
+// hostsDoFornecedor é a lista dos hosts para onde a chave de cada fornecedor pode ir. Está no
+// código de propósito: o destino da chave não depende só do que estiver escrito no ficheiro.
+var hostsDoFornecedor = map[Fornecedor][]string{
+	FornecedorKimi:      {"api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"},
+	FornecedorAnthropic: {"api.anthropic.com"},
+}
+
+// HostsDoFornecedor devolve os hosts aceites para um fornecedor.
+func HostsDoFornecedor(f Fornecedor) []string {
+	return append([]string(nil), hostsDoFornecedor[f]...)
+}
+
+// Destino diz como validar o destino da chave.
+type Destino struct {
+	// ForaDaLista é o host, escrito à mão pelo operador (`--destino-fora-da-lista`), de um
+	// destino que não está na lista do fornecedor. Tem de ser EXACTAMENTE o host do ficheiro;
+	// continua a exigir https. Vazio ⇒ só os hosts da lista.
+	ForaDaLista string
+
+	// deTeste é uma base aceite tal e qual, sem validação. Só os testes do próprio pacote a
+	// conseguem definir: não há flag nem variável de ambiente que cá chegue.
+	deTeste string
+}
 
 // ErrCampoDasChaves — um campo do ficheiro de chaves não serve. A mensagem nomeia o CAMPO e o
 // problema; nunca leva o valor.
@@ -74,6 +114,8 @@ var ErrFicheiroDeChaves = errors.New("banco-ensaio: ficheiro de chaves ilegivel"
 // Chaves é o conteúdo do ficheiro de chaves. Os valores ficam em campos não exportados.
 type Chaves struct {
 	campos map[string]string
+	// comAspas são os campos cujo valor veio entre aspas: recusados quando forem pedidos.
+	comAspas map[string]bool
 }
 
 // String não mostra nada: um `%v` acidental sobre as chaves não as imprime.
@@ -99,7 +141,8 @@ func LerChaves(caminho string) (*Chaves, error) {
 		return nil, fmt.Errorf("%w: %v", ErrFicheiroDeChaves, err)
 	}
 	defer f.Close()
-	c := &Chaves{campos: map[string]string{}}
+	c := &Chaves{campos: map[string]string{}, comAspas: map[string]bool{}}
+	linhaDoCampo := map[string]int{}
 	leitor := bufio.NewScanner(f)
 	leitor.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	n := 0
@@ -115,7 +158,17 @@ func LerChaves(caminho string) (*Chaves, error) {
 			// Só o número da linha: a linha pode ser um valor colado sem o nome do campo.
 			return nil, fmt.Errorf("%w: a linha %d nao tem a forma CAMPO=valor", ErrFicheiroDeChaves, n)
 		}
-		c.campos[campo] = strings.TrimSpace(valor)
+		if anterior, repetido := linhaDoCampo[campo]; repetido {
+			// Um campo repetido não é «ganha o último»: com dois tectos no ficheiro, o tecto
+			// seria o que a última linha dissesse. O erro leva o nome e as linhas, nunca valores.
+			return nil, &ErrCampoDasChaves{Campo: campo, Problema: fmt.Sprintf("repetido (linhas %d e %d)", anterior, n)}
+		}
+		linhaDoCampo[campo] = n
+		valor = strings.TrimSpace(valor)
+		if len(valor) > 0 && (strings.ContainsAny(valor[:1], "\"'`") || strings.ContainsAny(valor[len(valor)-1:], "\"'`")) {
+			c.comAspas[campo] = true
+		}
+		c.campos[campo] = valor
 	}
 	if err := leitor.Err(); err != nil {
 		return nil, fmt.Errorf("%w: erro de leitura", ErrFicheiroDeChaves)
@@ -132,7 +185,63 @@ func (c *Chaves) valor(campo string) (string, error) {
 	if marcadorDoExemplo(v) {
 		return "", &ErrCampoDasChaves{Campo: campo, Problema: problemaMarcadorDoExemplo}
 	}
+	if c.comAspas[campo] {
+		// As aspas iriam tal e qual para o fornecedor (`Bearer "sk-…"`), que responderia 401.
+		return "", &ErrCampoDasChaves{Campo: campo, Problema: problemaAspas}
+	}
 	return v, nil
+}
+
+// soAlgarismos diz se s é uma sequência não vazia de algarismos, e mais nada.
+func soAlgarismos(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// validarDestino valida a base da API de um fornecedor e devolve o destino público
+// (`https://host`) que o banco mostra antes de enviar seja o que for.
+//
+// Exige https; recusa utilizador, porta, query e fragmento; e o host tem de estar na lista do
+// fornecedor ([hostsDoFornecedor]) ou ser, letra a letra, o que o operador escreveu em
+// `--destino-fora-da-lista`. Um erro de escrita ou uma linha colada do sítio errado não manda a
+// chave para outro lado. Os erros nomeiam o campo e nunca o valor.
+func validarDestino(f Fornecedor, campo, base string, d Destino) (string, error) {
+	u, err := url.Parse(base)
+	if d.deTeste != "" && base == d.deTeste {
+		if err != nil || u.Host == "" {
+			return "", &ErrCampoDasChaves{Campo: campo, Problema: problemaSemHTTPS}
+		}
+		return u.Scheme + "://" + u.Host, nil
+	}
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.Opaque != "" {
+		return "", &ErrCampoDasChaves{Campo: campo, Problema: problemaSemHTTPS}
+	}
+	if u.User != nil || u.Port() != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(base, "#") {
+		return "", &ErrCampoDasChaves{Campo: campo, Problema: problemaURLComExtras}
+	}
+	host := strings.ToLower(u.Hostname())
+	naLista := false
+	for _, h := range hostsDoFornecedor[f] {
+		if h == host {
+			naLista = true
+		}
+	}
+	switch {
+	case naLista && d.ForaDaLista == "":
+	case !naLista && d.ForaDaLista == host:
+	case naLista:
+		return "", fmt.Errorf("banco-ensaio: --destino-fora-da-lista foi dado, e o destino do ficheiro de chaves ja e um host do fornecedor: retire a opcao")
+	default:
+		return "", &ErrCampoDasChaves{Campo: campo, Problema: problemaHostForaDaLista}
+	}
+	return "https://" + host, nil
 }
 
 // marcadorDoExemplo diz se o valor ainda é o do ficheiro de exemplo: `<…>`.
@@ -147,9 +256,16 @@ func (c *Chaves) inteiroPositivo(campo string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	if strings.HasPrefix(v, "-") && soAlgarismos(v[1:]) {
+		return 0, &ErrCampoDasChaves{Campo: campo, Problema: problemaZero}
+	}
+	if !soAlgarismos(v) {
+		// `+500`, `5 00`, `1e3`, `500 # nota`: nada disto é um tecto escrito com clareza.
+		return 0, &ErrCampoDasChaves{Campo: campo, Problema: problemaNaoEInteiro}
+	}
 	n, perr := strconv.ParseInt(v, 10, 64)
-	if perr != nil {
-		return 0, &ErrCampoDasChaves{Campo: campo, Problema: problemaIlegivel}
+	if perr != nil || n > MaxTectoDePedidosDia {
+		return 0, &ErrCampoDasChaves{Campo: campo, Problema: problemaAcimaDoMaximo}
 	}
 	if n <= 0 {
 		return 0, &ErrCampoDasChaves{Campo: campo, Problema: problemaZero}
@@ -168,12 +284,22 @@ func (c *Chaves) microUSDOpcional(campo string) (int64, bool, error) {
 	if marcadorDoExemplo(v) {
 		return 0, false, &ErrCampoDasChaves{Campo: campo, Problema: problemaMarcadorDoExemplo}
 	}
+	if c.comAspas[campo] {
+		return 0, false, &ErrCampoDasChaves{Campo: campo, Problema: problemaAspas}
+	}
+	inteira, decimal, temDecimal := strings.Cut(strings.ReplaceAll(v, ",", "."), ".")
+	if !soAlgarismos(inteira) || (temDecimal && !soAlgarismos(decimal)) {
+		return 0, false, &ErrCampoDasChaves{Campo: campo, Problema: problemaIlegivel}
+	}
 	usd, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", "."), 64)
 	if err != nil || math.IsNaN(usd) || math.IsInf(usd, 0) {
 		return 0, false, &ErrCampoDasChaves{Campo: campo, Problema: problemaIlegivel}
 	}
 	if usd <= 0 {
 		return 0, false, &ErrCampoDasChaves{Campo: campo, Problema: problemaZero}
+	}
+	if usd > MaxTectoUSDDia {
+		return 0, false, &ErrCampoDasChaves{Campo: campo, Problema: problemaAcimaDoMaximo}
 	}
 	return int64(math.Round(usd * 1e6)), true, nil
 }
@@ -190,6 +316,9 @@ type RotaReal struct {
 	// RegiaoDeclarada é a região que o dono declarou (só Anthropic). É copiada para o
 	// relatório como DECLARAÇÃO e não tem efeito no ensaio.
 	RegiaoDeclarada string
+	// Destino é para onde a chave vai: `https://host`, já validado. O host de um fornecedor
+	// público não é segredo, e o banco mostra-o antes de enviar; o caminho da base não vai.
+	Destino string
 
 	apiKey  string
 	apiBase string
@@ -217,7 +346,8 @@ func (r RotaReal) Segredos() []string {
 
 // Rota valida os campos que o fornecedor exige e devolve a rota. `modelo` vazio ⇒ o primeiro
 // da lista do ficheiro (Kimi) ou o único (Anthropic); não vazio ⇒ tem de ser um dos do ficheiro.
-func (c *Chaves) Rota(f Fornecedor, modelo string) (RotaReal, error) {
+// O destino da chave é validado contra a lista de hosts do fornecedor ([validarDestino]).
+func (c *Chaves) Rota(f Fornecedor, modelo string, d Destino) (RotaReal, error) {
 	r := RotaReal{Fornecedor: f}
 	var err error
 	switch f {
@@ -226,6 +356,9 @@ func (c *Chaves) Rota(f Fornecedor, modelo string) (RotaReal, error) {
 			return RotaReal{}, err
 		}
 		if r.apiBase, err = c.valor(CampoKimiAPIBase); err != nil {
+			return RotaReal{}, err
+		}
+		if r.Destino, err = validarDestino(f, CampoKimiAPIBase, r.apiBase, d); err != nil {
 			return RotaReal{}, err
 		}
 		lista, lerr := c.valor(CampoKimiModelos)
@@ -249,6 +382,11 @@ func (c *Chaves) Rota(f Fornecedor, modelo string) (RotaReal, error) {
 		if r.Modelo, err = escolherModelo(CampoAnthropicModelo, []string{unico}, modelo); err != nil {
 			return RotaReal{}, err
 		}
+		if d.ForaDaLista != "" {
+			// A rota da Anthropic não tem base no ficheiro: o destino é o do adaptador do proxy.
+			return RotaReal{}, errors.New("banco-ensaio: --destino-fora-da-lista nao se aplica a Anthropic (o destino e fixo)")
+		}
+		r.Destino = "https://" + hostsDoFornecedor[FornecedorAnthropic][0]
 		if r.Tectos.PedidosDia, err = c.inteiroPositivo(CampoTectoPedidosAnthro); err != nil {
 			return RotaReal{}, err
 		}
@@ -256,7 +394,7 @@ func (c *Chaves) Rota(f Fornecedor, modelo string) (RotaReal, error) {
 			return RotaReal{}, err
 		}
 		// A região é uma declaração livre do dono; um marcador do exemplo fica «nao declarada».
-		if v := c.campos[CampoAnthropicRegiaoProc]; v != "" && !marcadorDoExemplo(v) {
+		if v := c.campos[CampoAnthropicRegiaoProc]; v != "" && !marcadorDoExemplo(v) && !c.comAspas[CampoAnthropicRegiaoProc] {
 			r.RegiaoDeclarada = textoDeclarado(v)
 		}
 	default:

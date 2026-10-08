@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // AOS-512 — A LINHA DE COMANDOS: o ficheiro de chaves, as recusas do modo com modelo real, e a
@@ -22,8 +23,11 @@ import (
 
 // As sentinelas do ficheiro de chaves de TESTE. Nenhuma é uma chave verdadeira.
 const (
-	sentinelaChaveKimi      = "SENTINELA-CHAVE-KIMI-7f3a91c2d4e6"
-	sentinelaBaseKimi       = "https://sentinela-base-kimi.invalid/coding/v1"
+	sentinelaChaveKimi = "SENTINELA-CHAVE-KIMI-7f3a91c2d4e6"
+	// A base é de um host da lista do fornecedor (o destino é validado); a sentinela vai no
+	// CAMINHO, que não pode aparecer em saída nenhuma — o host, esse, é mostrado de propósito.
+	sentinelaCaminhoDaBase  = "SENTINELA-CAMINHO-DA-BASE-KIMI-5c1d"
+	sentinelaBaseKimi       = "https://api.kimi.com/" + sentinelaCaminhoDaBase + "/v1"
 	sentinelaChaveAnthropic = "SENTINELA-CHAVE-ANTHROPIC-0b8e55a1c9f7"
 	modeloKimiDeTeste       = "modelo-kimi-de-teste"
 	segundoModeloKimi       = "SENTINELA-SEGUNDO-MODELO-KIMI"
@@ -202,7 +206,7 @@ func TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma(t *testing.T) {
 		t.Fatalf("o fornecedor falso recebeu %d pedidos, quer 27 (a bateria, duas passagens)", lanc.falso.Pedidos())
 	}
 	tudo := tudoOQueFoiEscrito(t, e, pasta)
-	segredos := []string{sentinelaChaveKimi, sentinelaBaseKimi, "sentinela-base-kimi", sentinelaChaveAnthropic, chaveMestraDeTeste,
+	segredos := []string{sentinelaChaveKimi, sentinelaBaseKimi, sentinelaCaminhoDaBase, sentinelaChaveAnthropic, chaveMestraDeTeste,
 		segundoModeloKimi, modeloAnthropicDeTeste, regiaoDeTeste, "Bearer ", "Authorization"}
 	verSemFugas(t, "modo real", tudo, segredos)
 	verSemFugas(t, "modo real", tudo, proibidosDeTexto(t))
@@ -211,7 +215,7 @@ func TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rota, err := c.Rota(FornecedorKimi, "")
+	rota, err := c.Rota(FornecedorKimi, "", Destino{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,9 +285,19 @@ func TestAOS512_Real_SegredosNoCaminhoDeErroDoProxy(t *testing.T) {
 				sentinelaChaveKimi, sentinelaBaseKimi, r.Header.Get("Authorization"), SentinelaDeTexto)
 		})
 		saida := filepath.Join(pasta, "relatorios-erro")
-		e := executar(t, Ambiente{Lancador: &lancadorDeTeste{t: t, devolver: eco}}, "real", "--chaves", chaves, "--fornecedor", "kimi", "--saida", saida)
-		if e.codigo != SaidaOK {
-			t.Fatalf("a corrida completa (todos os runs com erro HTTP): codigo %d\n%s", e.codigo, e.stderr)
+		pedidos := 0
+		contado := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			pedidos++
+			eco.ServeHTTP(w, r)
+		})
+		e := executar(t, Ambiente{Lancador: &lancadorDeTeste{t: t, devolver: contado}}, "real", "--chaves", chaves, "--fornecedor", "kimi", "--saida", saida)
+		// CHAVE RECUSADA: os três primeiros pedidos levam 401 e a corrida aborta, com exit
+		// próprio, em vez de gastar o tecto do dia com uma chave que não serve.
+		if e.codigo != SaidaParouAMeio || pedidos != RecusasDeChaveQueAbortam {
+			t.Fatalf("chave recusada: codigo %d (quer %d), pedidos %d (quer %d)\n%s", e.codigo, SaidaParouAMeio, pedidos, RecusasDeChaveQueAbortam, e.stderr)
+		}
+		if !strings.Contains(e.stderr, TerminouChaveRecusada) {
+			t.Errorf("a causa da paragem tinha de ser dita: %q", e.stderr)
 		}
 		tudo := tudoOQueFoiEscrito(t, e, pasta)
 		verSemFugas(t, "erro HTTP do proxy", tudo, append(segredos, SentinelaDeTexto, "AuthenticationError"))
@@ -601,9 +615,19 @@ func TestAOS512_Redactor(t *testing.T) {
 // Os segredos chegam ao contentor do proxy pelo AMBIENTE do processo docker: não estão nos
 // argumentos do `docker run` nem na configuração do proxy.
 func TestAOS512_Proxy_SegredosSoNoAmbiente(t *testing.T) {
-	args, ambiente := arranqueDoContentorDoProxy("contentor", "rede", chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi)
+	args, ambiente := arranqueDoContentorDoProxy("contentor", "rede", chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi, 90*time.Minute, 75*time.Second)
 	linha := strings.Join(args, " ")
-	verSemFugas(t, "argumentos do docker run", linha, []string{chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi, "sentinela-base-kimi"})
+	verSemFugas(t, "argumentos do docker run", linha, []string{chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi, sentinelaCaminhoDaBase})
+	// O contentor apaga-se sozinho quando pára (`--rm`), e o guião recebe, em segundos, o prazo
+	// de vida e a tolerância sem sinal de vida — e é ele que vigia.
+	if !strings.Contains(linha, "run -d --rm --name contentor ") || !strings.HasSuffix(linha, " 5400 75") {
+		t.Errorf("o docker run do proxy tinha de levar --rm, o prazo de vida e a tolerancia: %q", linha[:60]+" ... "+linha[len(linha)-20:])
+	}
+	for _, quer := range []string{"sys.argv[1]", "/tmp/vivo", "agora - inicio > vida", "agora - visto > tolerancia", "p.kill()"} {
+		if !strings.Contains(arranqueDoProxy, quer) {
+			t.Errorf("o guiao do contentor do proxy perdeu o vigia (%q)", quer)
+		}
+	}
 	for _, nome := range []string{envChaveMestra, envChaveDaRota, envBaseDaRota} {
 		if !strings.Contains(linha, "-e "+nome+" ") {
 			t.Errorf("os argumentos tinham de passar a variavel %s pelo nome", nome)
@@ -616,7 +640,7 @@ func TestAOS512_Proxy_SegredosSoNoAmbiente(t *testing.T) {
 		t.Errorf("o ambiente do processo docker nao leva os tres segredos")
 	}
 	// Sem base (a rota da Anthropic), a variável da base não é passada.
-	args, ambiente = arranqueDoContentorDoProxy("contentor", "rede", chaveMestraDeTeste, sentinelaChaveAnthropic, "")
+	args, ambiente = arranqueDoContentorDoProxy("contentor", "rede", chaveMestraDeTeste, sentinelaChaveAnthropic, "", time.Hour, time.Minute)
 	if strings.Contains(strings.Join(args, " "), envBaseDaRota) || len(ambiente) != 2 {
 		t.Errorf("sem base da API, a variavel da base nao pode ser passada")
 	}
@@ -627,7 +651,8 @@ func TestAOS512_Proxy_SegredosSoNoAmbiente(t *testing.T) {
 	}
 	verSemFugas(t, "configuracao do proxy", cfg, []string{chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi})
 	for _, quer := range []string{"model_name: " + AliasDaRota, "model: openai/" + modeloKimiDeTeste, "api_key: os.environ/" + envChaveDaRota,
-		"api_base: os.environ/" + envBaseDaRota, "num_retries: 0"} {
+		"api_base: os.environ/" + envBaseDaRota, "litellm_settings:\n  drop_params: true\n  telemetry: false\n  num_retries: 0\n",
+		"router_settings:\n  num_retries: 0\n  disable_cooldowns: true\n"} {
 		if !strings.Contains(cfg, quer) {
 			t.Errorf("a configuracao do proxy nao tem %q", quer)
 		}

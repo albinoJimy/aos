@@ -41,6 +41,7 @@ func abrirContadorDeTeste(t *testing.T, tecto int64) (*Contador, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(c.Fechar)
 	return c, caminho
 }
 
@@ -234,7 +235,9 @@ func TestAOS512_Tecto_PersistePorFornecedorEPorDia(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// «Reinício»: outro Contador sobre o mesmo ficheiro vê os 2 e só deixa sair mais 1.
+	// «Reinício»: o processo fecha o contador; outro Contador sobre o mesmo ficheiro vê os 2 e
+	// só deixa sair mais 1.
+	kimi.Fechar()
 	outro := abrir(FornecedorKimi)
 	if err := outro.Reservar(); err != nil {
 		t.Fatalf("o terceiro pedido cabia: %v", err)
@@ -242,12 +245,17 @@ func TestAOS512_Tecto_PersistePorFornecedorEPorDia(t *testing.T) {
 	if err := outro.Reservar(); !errors.Is(err, ErrTectoAtingido) {
 		t.Fatalf("o quarto pedido: err = %v, quer ErrTectoAtingido", err)
 	}
-	if err := kimi.Reservar(); !errors.Is(err, ErrTectoAtingido) {
-		t.Fatalf("o primeiro contador tambem tinha de ver o tecto: %v", err)
-	}
+	outro.Fechar()
 	// Outro fornecedor tem a sua contagem.
-	if err := abrir(FornecedorAnthropic).Reservar(); err != nil {
+	anthropic := abrir(FornecedorAnthropic)
+	if err := anthropic.Reservar(); err != nil {
 		t.Fatalf("o tecto e por fornecedor: %v", err)
+	}
+	anthropic.Fechar()
+	kimi = abrir(FornecedorKimi)
+	defer kimi.Fechar()
+	if err := kimi.Reservar(); !errors.Is(err, ErrTectoAtingido) {
+		t.Fatalf("depois de reaberto, o contador tinha de ver o tecto: %v", err)
 	}
 	// 23:59:59 UTC ainda é o mesmo dia; um segundo depois é outro.
 	agora = time.Date(2026, 10, 8, 23, 59, 59, 0, time.UTC)

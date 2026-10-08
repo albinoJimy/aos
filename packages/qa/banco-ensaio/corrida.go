@@ -164,7 +164,14 @@ const (
 	TerminouTecto       = "tecto_atingido"
 	TerminouContador    = "contador_inutilizavel"
 	TerminouInterrompid = "interrompida"
+	// TerminouChaveRecusada — os primeiros pedidos da corrida foram todos recusados por
+	// autenticação: a corrida parou para não gastar o tecto com uma chave que não serve.
+	TerminouChaveRecusada = "chave_recusada"
 )
+
+// RecusasDeChaveQueAbortam é o número de recusas de autenticação seguidas, desde o primeiro
+// pedido, que faz o modo com modelo real abortar.
+const RecusasDeChaveQueAbortam = 3
 
 // Os modos de uma corrida.
 const (
@@ -190,6 +197,10 @@ type CfgDaCorrida struct {
 	Extra map[string]string
 	// Relogio dá a data do relatório. nil ⇒ time.Now.
 	Relogio func() time.Time
+	// AbortarAposRecusasDeChave, quando positivo, pára a corrida se os PRIMEIROS pedidos — este
+	// número deles, seguidos, desde o início — forem todos recusados por autenticação (401 ou
+	// 403): a chave não serve, e continuar só gastava o tecto do dia. Zero ⇒ não aborta.
+	AbortarAposRecusasDeChave int
 	// Pausa é o intervalo entre dois passos da corrida. Zero ⇒ sem pausa. Serve para não bater
 	// num limite de taxa do fornecedor; não entra no digest da configuração.
 	Pausa time.Duration
@@ -235,6 +246,8 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 
 	var obs []Observacao
 	terminou := TerminouCompleta
+	// soRecusasDeChave: todos os pedidos vistos até agora foram 401 ou 403.
+	pedidosVistos, soRecusasDeChave := 0, true
 	passos := cfg.Plano.sequencia(cfg.Bateria)
 ciclo:
 	for i, ps := range passos {
@@ -267,6 +280,16 @@ ciclo:
 				pedido.Tentativa = tentativa
 				o, saida := cfg.No.Correr(ctx, pedido)
 				obs = append(obs, o)
+				for _, status := range o.HTTP {
+					pedidosVistos++
+					if status != 401 && status != 403 {
+						soRecusasDeChave = false
+					}
+				}
+				if cfg.AbortarAposRecusasDeChave > 0 && soRecusasDeChave && pedidosVistos >= cfg.AbortarAposRecusasDeChave {
+					terminou = TerminouChaveRecusada
+					break ciclo
+				}
 				switch o.Desfecho {
 				case DesfechoTectoAtingido:
 					terminou = TerminouTecto

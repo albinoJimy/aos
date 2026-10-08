@@ -170,6 +170,12 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 	case ModoReal:
 		l = append(l, "Uma corrida, uma rota, um dia: as taxas sao desta corrida e nao de producao (outro prompt de sistema, outras tools, outros documentos).")
 	}
+	if cfg.Modo == ModoProxy || cfg.Modo == ModoReal {
+		l = append(l,
+			"O proxy do ensaio nao tem a configuracao de producao: corre com num_retries: 0 (um pedido do banco e um pedido ao fornecedor; producao deixa o proxy repetir), drop_params: true e disable_cooldowns: true (o proxy nao poe a rota em arrefecimento depois de um erro).",
+			"Os 429 contam-se a parte dos erros do provider: tanto os da o fornecedor como o proprio proxy, e pelo codigo HTTP nao se distinguem. Uma serie de 429 a seguir a outro erro e sinal de arrefecimento do proxy, nao do fornecedor.",
+		)
+	}
 	if cfg.Plano.Experiencia == ExperienciaSeparadores {
 		l = append(l,
 			fmt.Sprintf("Com %d amostras por braco so se distingue uma taxa de 10%% de uma de 32%% (potencia de 80%% a 5%%). Diferencas menores nao se veem com esta amostra: nao as ver nao prova que nao existem.", cfg.Plano.Amostras),
@@ -389,7 +395,8 @@ func blocoDeTaxas(b *strings.Builder, t Taxas) {
 	b.WriteString(linhaDaTaxa("factos ausentes da saida", t.FactosAusentes))
 	b.WriteString(linhaDaTaxa("resposta vazia (empty_output)", t.RespostaVazia))
 	b.WriteString(linhaDaTaxa("cortada (truncated)", t.Cortada))
-	b.WriteString(linhaDaTaxa("erro do provider (HTTP != 200)", t.ErroDoProvider))
+	b.WriteString(linhaDaTaxa("erro do provider (HTTP != 200, 429)", t.ErroDoProvider))
+	b.WriteString(linhaDaTaxa("limite de taxa (HTTP 429)", t.LimiteDeTaxa429))
 	b.WriteString(linhaDaTaxa("cumprido a 1.a tentativa", t.CumpridoAPrimeira))
 	b.WriteString(linhaDaTaxa("recuperado a 2.a tentativa", t.RecuperadoASegunda))
 	b.WriteString(linhaDaTaxa("recuperado a 3.a tentativa", t.RecuperadoATerceira))

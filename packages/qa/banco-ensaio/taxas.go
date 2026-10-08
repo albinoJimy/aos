@@ -195,6 +195,7 @@ type Taxas struct {
 	RespostaVazia         Taxa `json:"resposta_vazia"`
 	Cortada               Taxa `json:"cortada"`
 	ErroDoProvider        Taxa `json:"erro_do_provider"`
+	LimiteDeTaxa429       Taxa `json:"limite_de_taxa_429"`
 	CumpridoAPrimeira     Taxa `json:"cumprido_a_primeira_tentativa"`
 	RecuperadoASegunda    Taxa `json:"recuperado_a_segunda_tentativa"`
 	RecuperadoATerceira   Taxa `json:"recuperado_a_terceira_tentativa"`
@@ -228,7 +229,7 @@ func CalcularTaxas(obs []Observacao) Taxas {
 		segTentado, segAceite                int
 		comFactos, factosAusentes            int
 		comTurno, vazias, cortadas           int
-		pedidos, pedidosComErro              int
+		pedidos, pedidosComErro, pedidos429  int
 		primeiras, cumpridasAPrimeira        int
 	)
 	for _, o := range obs {
@@ -246,7 +247,12 @@ func CalcularTaxas(obs []Observacao) Taxas {
 				chave = strconv.Itoa(s)
 			}
 			t.HTTP[chave]++
-			if s != http.StatusOK {
+			// Os 429 contam-se À PARTE: tanto os dá o fornecedor (limite de taxa) como o
+			// próprio proxy (uma rota em arrefecimento), e pelo código não se distinguem.
+			switch {
+			case s == http.StatusTooManyRequests:
+				pedidos429++
+			case s != http.StatusOK:
 				pedidosComErro++
 			}
 		}
@@ -314,7 +320,8 @@ func CalcularTaxas(obs []Observacao) Taxas {
 	t.FactosAusentes = NovaTaxa("runs concluidos de nos com factos, em que pelo menos um facto do documento sintetico nao esta na saida (substituto determinista da recusa do proprio objectivo)", factosAusentes, comFactos)
 	t.RespostaVazia = NovaTaxa("runs com pelo menos um turno que fecharam empty_output", vazias, comTurno)
 	t.Cortada = NovaTaxa("runs com pelo menos um turno que fecharam truncated", cortadas, comTurno)
-	t.ErroDoProvider = NovaTaxa("pedidos HTTP cuja resposta nao foi 200 (inclui os que nao tiveram resposta HTTP)", pedidosComErro, pedidos)
+	t.ErroDoProvider = NovaTaxa("pedidos HTTP cuja resposta nao foi 200 nem 429 (inclui os que nao tiveram resposta HTTP)", pedidosComErro, pedidos)
+	t.LimiteDeTaxa429 = NovaTaxa("pedidos HTTP com resposta 429: limite de taxa do fornecedor ou, se o proxy puser a rota em arrefecimento, do proprio proxy — pelo codigo nao se distinguem", pedidos429, pedidos)
 	t.CumpridoAPrimeira = NovaTaxa("primeiras tentativas que fecharam cumprido", cumpridasAPrimeira, primeiras)
 	t.RecuperadoASegunda = NovaTaxa("unidades que tiveram segunda tentativa (a primeira fechou contract_unmet_no_call ou empty_output), em que a segunda fechou cumprido", aSegunda, comSegunda)
 	t.RecuperadoATerceira = NovaTaxa("unidades que tiveram terceira tentativa, em que a terceira fechou cumprido", aTerceira, comTerceira)
