@@ -83,6 +83,7 @@ type NoDeEnsaio struct {
 
 	mu      sync.Mutex
 	motivos map[string][]string
+	ordem   int
 }
 
 type chaveDeContexto int
@@ -284,7 +285,13 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 		obs.Desfecho = DesfechoErroOutro
 		return obs, ""
 	}
-	runID := fmt.Sprintf("ensaio-%s-%s-%s-%05d-t%d", p.Caso.ID, p.No.ID, p.Braco, p.Amostra, p.Tentativa)
+	// O número de ordem torna o RunID único neste nó de ensaio mesmo que o mesmo passo corra
+	// duas vezes (duas corridas sobre o mesmo nó): cada run tem o seu stream no Event Store.
+	n.mu.Lock()
+	n.ordem++
+	ordem := n.ordem
+	n.mu.Unlock()
+	runID := fmt.Sprintf("ensaio-%s-%s-%s-%05d-t%d-r%d", p.Caso.ID, p.No.ID, p.Braco, p.Amostra, p.Tentativa, ordem)
 	doRun := map[string]bool{}
 	var specs []agentruntime.ToolSpec
 	for _, t := range ToolsDoBanco() {
