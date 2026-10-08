@@ -49,16 +49,40 @@ func (m *medicaoDeToolCalls) observar(_ string, despachadas, repetidas int) {
 // texto de terceiros: um run que chegasse com outra versão não é contado (e não corre: o runtime
 // recusa-o).
 type runsPorLayout struct {
-	versoes []string
-	total   map[string]*atomic.Int64
+	// todas são os layouts que o assembler monta, pela ordem; sempre diz quais têm a série
+	// publicada mesmo a zero; total conta todos.
+	todas  []string
+	sempre map[string]bool
+	total  map[string]*atomic.Int64
 }
 
-func novoRunsPorLayout() *runsPorLayout {
-	r := &runsPorLayout{versoes: agentruntime.SupportedAssemblyVersions(), total: map[string]*atomic.Int64{}}
-	for _, v := range r.versoes {
+// novoRunsPorLayout abre os contadores. A série da 1.5.0 (AOS-514) só é publicada A ZERO num nó
+// com a captura do estado opaco ligada: desligada, nenhum run novo fica nesse layout e o
+// `/metrics` tem as séries de sempre. Mas um run em 1.5.0 re-hospedado num nó que entretanto a
+// desligou — o recuo — NÃO fica invisível: a série aparece assim que conta um (ver
+// [runsPorLayout.publicadas]).
+func novoRunsPorLayout(capturaDoEstado bool) *runsPorLayout {
+	r := &runsPorLayout{todas: agentruntime.SupportedAssemblyVersions(), sempre: map[string]bool{}, total: map[string]*atomic.Int64{}}
+	for _, v := range r.todas {
 		r.total[v] = new(atomic.Int64)
+		r.sempre[v] = v != agentruntime.AssemblyVersion150 || capturaDoEstado
 	}
 	return r
+}
+
+// publicadas devolve os layouts cuja série sai no `/metrics` agora, pela ordem: os de sempre, e
+// qualquer outro que já tenha hospedado pelo menos um run.
+func (r *runsPorLayout) publicadas() []string {
+	if r == nil {
+		return nil
+	}
+	var out []string
+	for _, v := range r.todas {
+		if r.sempre[v] || r.total[v].Load() > 0 {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // contar soma um run hospedado no layout dado; devolve false se o layout não é um dos suportados.

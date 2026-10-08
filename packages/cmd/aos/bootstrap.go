@@ -1063,6 +1063,11 @@ type Node struct {
 	// (AOS-509), para o `/metrics`. nil sem gateway de modelo composto. Ver model_rejected.go.
 	respostasRecusadas *contadoresDeRejeicao
 
+	// estadoDoProvider conta os turnos ao vivo cuja resposta trouxe estado opaco do provider, pelo
+	// resultado da captura (AOS-514), para o `/metrics`. nil com a captura desligada — a família
+	// não é publicada, e os runs novos ficam no layout de sempre. Ver model_state_env.go.
+	estadoDoProvider *contadoresDoEstado
+
 	// completionVerdict é o modo de aplicação do veredicto de conclusão dos runs novos
 	// (AOS-493). Vazio num nó montado à mão ⇒ [defaultCompletionVerdict]. Ver
 	// completion_verdict.go.
@@ -3316,6 +3321,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		rotaDoModelo:            rotaDoModelo,                  // AOS-505: comparações da rota do modelo, para o /metrics (nil ⇒ desligada)
 		formaDaResposta:         formaDoCliente(cfg.Model),     // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
 		respostasRecusadas:      rejeicoesDoCliente(cfg.Model), // AOS-509: respostas recusadas por causa, para o /metrics
+		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)
 		completionVerdict:       completionVerdict,             // AOS-493: modo do veredicto de conclusão dos runs novos
 		stateGates:              stateGates,                    // AOS-218: fonte do StateGate durável por-run para o steer
 		breakers:                breakers,                      // AOS-080/081/251: disjuntores por-run (libertados no fim do run)

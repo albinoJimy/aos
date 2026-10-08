@@ -118,8 +118,14 @@ func ParseProjection(mode string) (string, error) {
 // EXPLÍCITA: a 1.3.0 não tem o segmento `tool_call` (não há de onde tirar o `assistant`), e um
 // layout futuro tem de ser acrescentado aqui por quem verificou que a projecção o cobre. Um
 // layout fora da lista vai em texto único.
+//
+// A 1.5.0 (AOS-514) é a 1.4.0 com o rótulo `state_digest` no `history` ou na primeira
+// `tool_call` de um turno com estado opaco. A projecção não escreve o cabeçalho de nenhum dos
+// dois — o texto do modelo vai no papel `assistant` e a tool call no campo `tool_calls` —, pelo
+// que as mensagens de um tail da 1.5.0 são, byte a byte, as do mesmo tail na 1.4.0, com ou sem
+// o rótulo (TestAOS514_AsEscuras_OPedidoNativoNaoMudaComOEstado).
 func projecaoNativaSuporta(assemblyVersion string) bool {
-	return assemblyVersion == agentruntime.AssemblyVersion140
+	return assemblyVersion == agentruntime.AssemblyVersion140 || assemblyVersion == agentruntime.AssemblyVersion150
 }
 
 // protocoloNativo é o texto FIXO com que a mensagem `system` da projecção nativa abre. É o

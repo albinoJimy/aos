@@ -315,6 +315,11 @@ func (c *toolEnrichingClient) respostasRecusadas() *contadoresDeRejeicao {
 	return rejeicoesDoCliente(c.inner)
 }
 
+// estadoDoProvider passa adiante os contadores do estado opaco do provider (AOS-514).
+func (c *toolEnrichingClient) estadoDoProvider() *contadoresDoEstado {
+	return estadoDoCliente(c.inner)
+}
+
 func (c *toolEnrichingClient) Call(ctx context.Context, view agentruntime.PromptView) (agentruntime.ModelResponse, error) {
 	resp, err := c.inner.Call(ctx, view)
 	if err != nil {

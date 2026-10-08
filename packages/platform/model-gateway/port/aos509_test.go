@@ -149,7 +149,7 @@ func TestAOS509_FormasNaoLidasFicamComoEstavam(t *testing.T) {
 	if err != nil || m.Content != "" || len(m.ToolCalls) != 0 || m.ReasoningContent != "" {
 		t.Errorf("refusal e function_call nao sao lidos: %+v (%v)", m, err)
 	}
-	if port.Version != "1.6.0" {
+	if port.Version != "1.6.0" && port.Version != "1.7.0" {
 		t.Errorf("a descodificacao tolerante entrou na porta na 1.6.0; a versao e %s", port.Version)
 	}
 }

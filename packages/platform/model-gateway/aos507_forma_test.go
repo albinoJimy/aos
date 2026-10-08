@@ -161,7 +161,7 @@ func TestAOS507_ModoInvalidoRecusaAComposicao(t *testing.T) {
 			t.Errorf("modo %q: queria ErrBadResponseShape e nenhum gateway; veio %v", modo, err)
 		}
 	}
-	if port.Version != "1.5.0" && port.Version != "1.6.0" {
+	if port.Version != "1.5.0" && port.Version != "1.6.0" && port.Version != "1.7.0" {
 		t.Errorf("a ficha entrou na porta na 1.5.0; a versao e %s", port.Version)
 	}
 }

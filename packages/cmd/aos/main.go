@@ -478,6 +478,11 @@ func run(w io.Writer) error {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
+	// O ESTADO OPACO DO PROVIDER (AOS-514). Validado em [parseModelFromEnv]; com `off` não sai linha.
+	for _, line := range modelProviderStateBannerFromEnv(cfg.Model != nil) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+
 	// CANAL DE CUSTO (AOS-259): declara se o custo por turno é DERIVADO de uma tabela de
 	// preços que cobre o par (modelo, região) deste nó — e portanto flui até ao ledger que o
 	// burn-down lê — ou se o canal transporta ZERO por o par não ter preço. A distinção
@@ -2346,6 +2351,12 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if ferr != nil {
 		return nil, nil, ferr
 	}
+	// O ESTADO OPACO DO PROVIDER (AOS-514). Vocabulário fechado e tecto de bytes, validados aqui
+	// pela mesma razão.
+	estado, estadoContadores, estadoOpcoes, eerr := modelProviderStateFromEnv()
+	if eerr != nil {
+		return nil, nil, eerr
+	}
 	// Compõe o Model Gateway REAL (EPIC-06) apontado ao endpoint; a API key (opcional) é lida do
 	// ficheiro pelo builder. Ver modelgatewaywiring.go.
 	apiKeyPath := strings.TrimSpace(os.Getenv("AOS_MODEL_API_KEY_PATH"))
@@ -2418,7 +2429,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// AOS-509: as respostas recusadas contam por causa. Sem interruptor.
 	rejeicoes, rejeicaoOpcao := modelResponseRejected()
 	client, err := newGatewayModelClientComRota(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
-		rota, forma, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)
+		rota, forma, estado, append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2431,6 +2442,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// AOS-507: o mesmo para os contadores da forma da resposta. Desligada ⇒ sem invólucro.
 	if formaContadores != nil {
 		client = clienteComForma{inner: client, contadores: formaContadores}
+	}
+	// AOS-514: o mesmo para os contadores do estado opaco do provider. Desligada ⇒ sem invólucro,
+	// e é pela ausência deles que o nó sabe que os runs novos ficam no layout de sempre.
+	if estadoContadores != nil {
+		client = clienteComEstado{inner: client, contadores: estadoContadores}
 	}
 	// SEM FONTE DE PREÇO (AOS-406): cada turno sai marcado como custo NÃO DERIVADO, para o span e
 	// o turn.recorded não dizerem «gratuito» e o SLI de custo não se dar por cumprido com zeros.

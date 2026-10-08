@@ -53,6 +53,9 @@ type ModelClientAdapter struct {
 	// rejeicaoObs recebe a causa de cada resposta recusada ([WithResponseRejectedObserver],
 	// AOS-509). nil ⇒ ninguém observa.
 	rejeicaoObs ResponseRejectedObserver
+	// estado: a captura do estado opaco do provider ([WithProviderStateCapture], AOS-514). nil —
+	// o valor-zero — é o adaptador de sempre: o estado que a resposta traga não atravessa.
+	estado *capturaDoEstado
 }
 
 // Compile-time: o adaptador satisfaz a porta do runtime.
@@ -271,6 +274,10 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	// `tools`, depois do corte pela lista-branca do run. É o que separa, no registo, um turno
 	// sem tool calls de um modelo que as tinha à disposição de um que não tinha nenhuma.
 	out.ToolsOffered = len(req.Tools)
+	// AOS-514 — o estado opaco do provider, fechado num envelope com a rota a que pertence. Só
+	// com a captura ligada; não muda mais nada na resposta (o texto e as tool calls já estão
+	// traduzidos, e não vêm daqui).
+	a.estado.capturar(&out, resp, a.model)
 	// AOS-507 — a ficha da forma (nil com a medição desligada) conta na métrica de quem observa.
 	observarForma(a.formaObs, out.Shape, out.StopReason)
 	return out, nil

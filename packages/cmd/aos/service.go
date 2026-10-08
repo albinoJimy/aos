@@ -533,7 +533,7 @@ func NewNodeService(node *Node, opts ...NodeServiceOption) (*NodeService, error)
 	}
 
 	s := &NodeService{
-		layouts:      novoRunsPorLayout(),
+		layouts:      novoRunsPorLayout(node.estadoDoProvider != nil),
 		desfechos:    novoDesfechosDeRuns(),
 		node:         node,
 		assigner:     assigner,
@@ -1158,6 +1158,13 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// monta e o que o manifesto de cada turno grava são o mesmo valor. Um run NOVO chega aqui
 	// sem versão e fica na dos runs novos; um run RETOMADO (aprovação ou crash-resume) chega
 	// com a do seu registo de retoma ([integration.ResumeRecord.GoalWith]) e não é tocado.
+	//
+	// AOS-514: com a captura do estado opaco do provider ligada, o layout dos runs novos deste
+	// nó é a 1.5.0 (a de sempre mais o rótulo `state_digest`); desligada, é a de sempre.
+	layoutNovo := layoutDosRunsNovos(s.node.estadoDoProvider != nil)
+	if goal.AssemblyVersion == "" {
+		goal.AssemblyVersion = layoutNovo
+	}
 	goal = fixarLayout(goal)
 	// AOS-493: o MODO DE APLICAÇÃO do veredicto de conclusão fica fixado no Goal no mesmo ponto
 	// e pela mesma razão: o registo de retoma, o runtime e o manifesto de cada turno têm o
@@ -1168,9 +1175,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// re-hospedado agora (o registo de retoma não tem o campo, ou tem o layout antigo) — o run
 	// que continua a ver o prompt sem a sua própria tool call. Sem isto só o WAL o dizia.
 	s.layouts.contar(goal.AssemblyVersion)
-	if goal.AssemblyVersion != agentruntime.AssemblyVersion {
+	if goal.AssemblyVersion != layoutNovo {
 		s.log("run %q hospedado no layout de prompt %s, e nao no dos runs novos (%s): o layout e fixado por run e veio do registo de retoma (AOS-489) — o run continua no layout em que os seus turnos foram gravados",
-			rs.runID, goal.AssemblyVersion, agentruntime.AssemblyVersion)
+			rs.runID, goal.AssemblyVersion, layoutNovo)
 	}
 	s.persistCrashResumeRecord(ctx, goal)
 

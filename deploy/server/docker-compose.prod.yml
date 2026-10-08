@@ -525,6 +525,16 @@ services:
       # aos_model_response_shape_total. Não decide nada. Outro valor ⇒ o nó recusa arrancar
       # (ErrBadModelResponseShape). Recuo: voltar a vazio. Só vai para o nó.
       AOS_MODEL_RESPONSE_SHAPE: "${AOS_MODEL_RESPONSE_SHAPE:-}"
+      # O ESTADO OPACO DO PROVIDER (AOS-514, ADR-040). Vazio ⇒ `off`: a sonda não corre, e o nó é o
+      # de antes. `capture` guarda selado na captura de cada turno o raciocínio em todos os nomes,
+      # os blocos assinados e o id de tool call do provider, byte a byte, e os runs novos ficam no
+      # layout 1.5.0. Nada é reenviado ao provider. Outro valor ⇒ o nó recusa arrancar
+      # (ErrBadModelProviderState). O tecto por turno (1024 a 98304 bytes; vazio ⇒ 65536): acima
+      # dele o estado não é truncado, fica marcado como não devolvível. As duas só são validadas
+      # com AOS_MODEL_ENDPOINT definida. NÃO LIGAR em produção antes das condições do ADR-040
+      # §2.10 (runbook: deploy/server/README.md). Só vão para o nó.
+      AOS_MODEL_PROVIDER_STATE: "${AOS_MODEL_PROVIDER_STATE:-}"
+      AOS_MODEL_PROVIDER_STATE_MAX_BYTES: "${AOS_MODEL_PROVIDER_STATE_MAX_BYTES:-}"
       # O VEREDICTO DE CONCLUSÃO (AOS-493, ADR-037). Vazio ⇒ `observe`: o kernel calcula se o run
       # concluiu, regista-o e conta-o, sem mudar o desfecho. `enforce` fecha em `failed` um run
       # com veredicto negativo; `off` não calcula. Outro valor ⇒ o nó recusa arrancar

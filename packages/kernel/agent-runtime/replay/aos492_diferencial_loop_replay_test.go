@@ -110,7 +110,7 @@ func aos492Casos() []aos492Caso {
 }
 
 func TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou(t *testing.T) {
-	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140}
+	versoes := []string{agentruntime.AssemblyVersion130, agentruntime.AssemblyVersion140, agentruntime.AssemblyVersion150}
 	if got := agentruntime.SupportedAssemblyVersions(); len(got) != len(versoes) {
 		t.Fatalf("o assembler monta %v e este teste so cobre %v: um layout novo tem de entrar na tabela", got, versoes)
 	}
@@ -121,6 +121,13 @@ func TestAOS492_Diferencial_OReplayTerminaOndeOLoopTerminou(t *testing.T) {
 				// O run_id não leva a versão: um ponto não é representável num stream_id.
 				goal := aos489Goal("run-aos492-dif-" + itoa(v) + "-" + itoa(i))
 				goal.AssemblyVersion = versao
+
+				// AOS-514: no layout com o rótulo do estado, TODOS os turnos do guião trazem estado
+				// opaco do provider — o tail de cada turno com tool calls leva `state_digest`, e o
+				// motor tem de o reconstruir da captura para o `prompt_hash` bater.
+				if versao == agentruntime.AssemblyVersion150 {
+					c.guiao = aos514ComEstado(c.guiao)
+				}
 
 				// (1) O LOOP real, com captura.
 				doLoop, err := b.correr(goal, c.guiao)

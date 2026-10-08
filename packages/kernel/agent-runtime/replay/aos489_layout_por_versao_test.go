@@ -302,7 +302,7 @@ func reescreverVersao(t *testing.T, eventos []eventstore.Event, turno int, versa
 // «no layout mais recente» — que daria um prompt_hash divergente sem causa à vista.
 func TestAOS489_VersaoDesconhecidaNoLogFalhaFechada(t *testing.T) {
 	r := carregarFixture130(t).Runs[0]
-	for _, versao := range []string{"1.5.0", "1.2.0", "", "9.9.9"} {
+	for _, versao := range []string{"1.6.0", "1.2.0", "", "9.9.9"} {
 		adulterado := aos489Run{RunID: r.RunID, Spec: r.Spec, Events: reescreverVersao(t, r.Events, 3, versao)}
 		res, err := motorSobre(t, adulterado).Replay(context.Background(), r.RunID, Options{Spec: r.spec()})
 		if !errors.Is(err, agentruntime.ErrUnknownAssemblyVersion) {

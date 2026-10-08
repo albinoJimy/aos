@@ -118,6 +118,25 @@ type responseCapture struct {
 	ServedModel        string `json:"served_model,omitempty"`
 	RouteCheck         string `json:"route_check,omitempty"`
 	RouteProfileDigest string `json:"route_profile_digest,omitempty"`
+	// ProviderState, ProviderStateRef e ProviderStateStatus (AOS-514, ADR-040) são o ESTADO
+	// OPACO que o provider devolveu com o turno ([agentruntime.ProviderState]): o envelope de
+	// bytes tal como chegou ao runtime. É CONTEÚDO, como o Text e o Reasoning: com cifra
+	// por-titular vai dentro do envelope selado e nunca fica em claro no evento
+	// ([responseCapture.consumo] não copia nenhum dos três); o apagamento do titular leva-o com
+	// o resto do turno.
+	//
+	//   - estado capturado ⇒ `provider_state` com os bytes (o digest NÃO se grava: recalcula-se
+	//     deles ao ler, para não haver duas fontes);
+	//   - modo sensível ⇒ `provider_state_ref` com o digest, sem bytes — a referência, como no
+	//     Text e no Reasoning. É o mesmo digest que o tail refere, pelo que o rótulo
+	//     reconstrói-se dela;
+	//   - estado que não foi guardado (acima do tecto) ⇒ só `provider_state_status`.
+	//
+	// `omitempty` nos três: um turno sem estado grava os bytes de sempre, e uma captura anterior
+	// aos campos descodifica sem estado.
+	ProviderState       []byte `json:"provider_state,omitempty"`
+	ProviderStateRef    string `json:"provider_state_ref,omitempty"`
+	ProviderStateStatus string `json:"provider_state_status,omitempty"`
 }
 
 // consumo devolve SÓ a medição do turno — tokens, custo, as duas marcas que os qualificam e,
@@ -484,6 +503,21 @@ func (c *EventStoreCapturer) encodeResponse(r agentruntime.ModelResponse) respon
 		// O raciocínio é texto livre do modelo sobre o mesmo material: a mesma guarda (AOS-490).
 		rc.Reasoning = redactRef([]byte(r.Reasoning))
 	}
+	// AOS-514: o estado opaco do provider. Normaliza-se outra vez aqui — o capturer é exportado,
+	// e quem o chame sem ser o loop não pode gravar um digest que não seja o dos bytes.
+	if st := r.State.Normalizado(); st != nil {
+		switch {
+		case st.Status == agentruntime.ProviderStateNotReturnable:
+			rc.ProviderStateStatus = string(st.Status)
+		case c.sensitive || st.Status == agentruntime.ProviderStateReference:
+			// Modo sensível: fica a REFERÊNCIA, nunca os bytes — o estado é raciocínio do modelo
+			// sobre o mesmo material. Uma referência re-capturada (a retoma de um run capturado
+			// em modo sensível) continua referência.
+			rc.ProviderStateRef = st.Digest
+		default:
+			rc.ProviderState = st.Bytes
+		}
+	}
 	for _, tc := range r.ToolCalls {
 		call := toolCallCapture{
 			ToolID:         tc.ToolID,
@@ -571,6 +605,18 @@ func (r responseCapture) decode() agentruntime.ModelResponse {
 		resp.Model = r.ServedModel
 		resp.RouteCheck = check
 		resp.RouteProfileDigest = agentruntime.NormalizeRouteProfileDigest(r.RouteProfileDigest)
+	}
+	// AOS-514: o estado opaco volta como foi capturado — os mesmos bytes, e o digest recalculado
+	// deles; a referência do modo sensível volta só com o digest; a marca de «não devolvível»
+	// volta só marca. Uma captura sem os campos dá nil, como sempre deu. Um valor fora do
+	// contrato (um digest malformado, um estado desconhecido) dá nil: não há estado a referir.
+	switch {
+	case len(r.ProviderState) > 0:
+		resp.State = (&agentruntime.ProviderState{Bytes: r.ProviderState}).Normalizado()
+	case r.ProviderStateRef != "":
+		resp.State = (&agentruntime.ProviderState{Digest: r.ProviderStateRef, Status: agentruntime.ProviderStateReference}).Normalizado()
+	case r.ProviderStateStatus == string(agentruntime.ProviderStateNotReturnable):
+		resp.State = &agentruntime.ProviderState{Status: agentruntime.ProviderStateNotReturnable}
 	}
 	for _, tc := range r.ToolCalls {
 		resp.ToolCalls = append(resp.ToolCalls, agentruntime.ToolInvocation{

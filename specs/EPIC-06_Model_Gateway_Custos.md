@@ -2911,8 +2911,7 @@ o pedido de hoje, byte a byte.
 
 ## AOS-514 — O estado opaco do turno é capturado selado e referido no tail por digest; nada é reenviado
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa nenhum ADR existente. Tem como entregável um ADR NOVO (o estado opaco do provider), cujo número se reserva no catálogo no momento em que for escrito — não está escrito nem numerado aqui. O ADR-036 (§2.7: o raciocínio é carga opaca e o seu único destino é a captura), o ADR-034 (a autoridade do turno vem dos segmentos do tail) e o ADR-039 são citados como o contrato de partida; a emenda ao ADR-036 §2.7, se o ADR novo a exigir, é entregável deste ticket e fica escrita lá. -->
+<!-- Este ticket IMPLEMENTA o ADR-040 (o estado opaco do provider é um artefacto selado do turno), que é o seu entregável: escrito e numerado a 2026-10-08. Os outros ADR citados neste bloco são menção — o contrato de partida — e vêm delimitados como tal; a emenda aos §2.3 e §2.7 do tail canónico está escrita no ADR-040 §6 e no próprio ADR emendado. -->
 
 | Campo | Valor |
 |---|---|
@@ -2924,7 +2923,7 @@ o pedido de hoje, byte a byte.
 | Dependências | AOS-509 (os outros nomes do raciocínio já são lidos como carga opaca), AOS-507 (a ficha diz que estado veio), AOS-508 (os falsos com blocos assinados) |
 | Bloqueia | AOS-515 |
 | Responsável sugerido | Arquitecto de Plataforma |
-| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §3(d) e §6, `docs/reports/wire-live-aos508-2026-10-07.md`, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2; §6 matriz), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.7, `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md`, `packages/platform/model-gateway/port/port.go`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/kernel/agent-runtime/model.go`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
+| Documentos de referência | `docs/reports/desenho-a2-estado-opaco-2026-10-07.md` §3(d) e §6, `docs/reports/wire-live-aos508-2026-10-07.md`, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A2; §6 matriz), `docs/adr/ADR-040-o-estado-opaco-do-provider-e-um-artefacto-selado-do-turno.md` (o ADR-040, que este ticket entrega), <!-- rtm: menção -->`docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.7, `docs/adr/ADR-034-autorizacao-derivada-do-contexto.md`<!-- /rtm: menção -->, `packages/platform/model-gateway/port/port.go`, `packages/platform/model-gateway/runtime_adapter.go`, `packages/kernel/agent-runtime/model.go`, `packages/kernel/agent-runtime/replay/nondeterminism_capture.go` |
 
 ### Contexto
 
@@ -2954,7 +2953,7 @@ Lido no código e conferido a 2026-10-07 (desenho §10):
 | Anthropic: blocos **em falta** (não alterados: ausentes) no pedido que devolve o resultado da tool — dá 400 ou o raciocínio é desligado em silêncio? A página diz que são obrigatórios, que mudar o raciocínio a meio de um turno **não dá erro** e o desliga em silêncio, e que a API pode retirar blocos | **por confirmar** — as duas leituras são compatíveis com o texto; mede-se no banco (AOS-512) e decide o controlo negativo do critério P4 | — |
 | LiteLLM: a resposta traz `reasoning_content` (string, todos os fornecedores) e `thinking_blocks` (lista de blocos com `type`, `thinking` e `signature`, só nos modelos da Anthropic); com tools, os `thinking_blocks` da resposta anterior **têm de ir** na mensagem do `assistant` ao devolver o resultado | confirmado na documentação actual | `https://docs.litellm.ai/docs/reasoning_content` |
 | LiteLLM: como expõe um bloco `redacted_thinking`, e se a versão fixada em produção (1.96.2) se comporta como a documentação corrente | **por confirmar** — mede-se atrás da imagem fixada | — |
-| Kimi: a página manda guardar o `reasoning_content` do contexto e devolvê-lo no pedido, dentro de um ciclo de tools | confirmado na página; **em produção não é exigido** (medido a 2026-10-03, ADR-036 §2.7: os runs completam sem o devolver) | `https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model` |
+| Kimi: a página manda guardar o `reasoning_content` do contexto e devolvê-lo no pedido, dentro de um ciclo de tools | confirmado na página; **em produção não é exigido** (medido a 2026-10-03, <!-- rtm: menção -->ADR-036 §2.7<!-- /rtm: menção -->: os runs completam sem o devolver) | `https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model` |
 | Anthropic pelo proxy: o id de tool call do provider tem de voltar tal como veio, ou basta um id coerente entre o `assistant` e a mensagem `tool`? Que forma de id é aceite? | **por confirmar** — não consultado; mede-se no banco | — |
 
 ### Decidido pelo dono
@@ -2980,8 +2979,8 @@ byte a byte, e o tail refere-o por digest. **Às escuras:** nada é reenviado ao
       RTM regenerada. Decide, no mínimo: o que entra no estado; que é carga opaca e
       `untrusted`, nunca lida como instrução nem como resposta; que não altera a autoridade do
       turno; a quem pode ser devolvido (só à rota e ao modelo que o produziram); o que acontece
-      em modo sensível e depois do apagamento do titular; e a emenda, se houver, ao ADR-036
-      §2.7.
+      em modo sensível e depois do apagamento do titular; e a emenda, se houver, ao <!-- rtm: menção -->ADR-036
+      §2.7<!-- /rtm: menção -->.
 - [ ] **O que se captura**, sem interpretar: (a) o valor cru de cada campo de raciocínio
       presente, incluindo os que o proxy move para `provider_specific_fields`; (b) os blocos
       assinados e os redigidos como vieram, na ordem em que vieram; (c) por tool call, o id do
@@ -3018,8 +3017,12 @@ byte a byte, e o tail refere-o por digest. **Às escuras:** nada é reenviado ao
 - [ ] A ficha do AOS-507 e a métrica contam os turnos com estado capturado e com estado «não
       devolvível», sem conteúdo.
 - [ ] Versão da porta do gateway: MINOR, aditiva; `CHANGELOG.md`.
-- [ ] Revisão adversarial independente antes da fusão, com mutações (trocar a origem do `Text`,
-      deixar o estado sair, deixar um byte em claro).
+- [x] Revisão adversarial independente antes da fusão, com mutações (trocar a origem do `Text`,
+      deixar o estado sair, deixar um byte em claro). **Feita a 2026-10-08 sobre `b4f6cca9`:
+      sem bloqueantes; seguro fundir com `off`.** Diferencial independente contra a base (120
+      eventos com `sha256` idênticos), 8 mutações do revisor mortas, fidelidade byte a byte e
+      replay em 8 combinações de estado e layout. Um achado importante (A1, a aritmética do
+      tecto) e oito menores, corrigidos — ver o Estado.
 
 ### Fora de âmbito
 
@@ -3033,14 +3036,76 @@ byte a byte, e o tail refere-o por digest. **Às escuras:** nada é reenviado ao
 
 ### Estado
 
-**ABERTO (2026-10-08).** Sem código. O ADR novo é entregável e ainda não tem número.
+**IMPLEMENTADO E REVISTO (2026-10-08, sem bloqueantes); por verificar em produção. `capture`
+condicionado ao AOS-515 e ao smoke sobre JetStream.** O entregável é o **ADR-040** (`docs/adr/ADR-040-o-estado-opaco-do-provider-e-um-artefacto-selado-do-turno.md`).
+Nasce desligado: `AOS_MODEL_PROVIDER_STATE=off`.
+
+- **Onde.** A sonda e o envelope: `packages/platform/model-gateway/port/state.go` (contrato da
+  porta `1.7.0`) e `packages/platform/model-gateway/provider_state.go`. O tipo, a normalização
+  e o tecto absoluto: `packages/kernel/agent-runtime/provider_state.go`. O layout `1.5.0` e o
+  rótulo: `layout.go` (`TailSequence.TurnWithState`). A captura:
+  `replay/nondeterminism_capture.go` (`provider_state`, `provider_state_ref`,
+  `provider_state_status`). O interruptor, o tecto e a métrica: `packages/cmd/aos/model_state_env.go`.
+- **Interruptor.** `AOS_MODEL_PROVIDER_STATE=off|capture` (omissão `off`; outro valor recusa o
+  arranque) e `AOS_MODEL_PROVIDER_STATE_MAX_BYTES` (1024 a 98304; omissão 65536). O critério
+  pedia o tecto «configurado no nó»; o interruptor da captura não estava nos critérios e foi
+  acrescentado para o ticket entrar inerte.
+- **Como se guarda.** O adaptador do gateway fecha o estado num envelope (a rota — digest do
+  perfil, modelo pedido, modelo servido —, um nonce de 256 bits e os valores em base64) e o
+  runtime guarda os bytes do envelope na captura do turno, dentro do conteúdo cifrado por
+  titular. O digest é `sha256` do envelope, calculado pelo runtime.
+- **Decisões de implementação, a confirmar.** (1) **O digest leva nonce.** O critério dizia «o
+  `sha256` do estado, no molde do `args_digest`»; o tail é enviado ao provider do turno
+  seguinte, que depois de um failover não é o que produziu o estado, e o `sha256` de um
+  raciocínio curto confirmava-se por tentativas. Com o nonce no envelope o digest continua a
+  ser o `sha256` do que fica guardado, e deixa de ser um oráculo. (2) **O rótulo vai no
+  primeiro segmento do turno** (o `history`, ou a primeira `tool_call`), uma vez por turno. (3)
+  **Em texto único o rótulo vai no prompt** (é a linha de delimitação do segmento); em projecção
+  nativa, que é a de produção, os pedidos são byte a byte os de antes em todas as versões. (4)
+  **Modo sensível:** a referência guardada é o próprio digest, pelo que o rótulo se reconstrói
+  dela; o estado conta como inexistente para devolução. (5) **Apagamento do titular:** não há
+  causa separada para o estado — ele vive dentro do conteúdo cifrado do turno, e a leitura
+  falha fechada com a causa do apagamento. (6) **Não há evento novo nem stream novo.** (7) O id
+  do provider guarda-se como veio e fica marcado «utilizável» só se for uma string de 1 a 128
+  bytes em `[A-Za-z0-9_.:-]`. (8) A série `aos_runs_hosted_total{assembly_version="1.5.0"}` só
+  é publicada com a captura ligada. (9) `specs/00_System_Spec.md` §11 não foi tocada: é
+  referência de enunciado e parou no ADR-023 (GAP-08 da RTM); o registo canónico é
+  `docs/adr/README.md`.
+- **Revisão adversarial (2026-10-08) e correcções.** (A1) A aritmética do tecto estava errada
+  no ADR, no comentário do runtime e no README do nó: são **três** passagens por base64
+  (≈2,37×) e o raciocínio fica **duas vezes** na captura; com o cifrador real, um envelope de
+  262144 bytes dava um evento de 1 140 565 bytes, acima do 1 MiB do NATS, e a captura falhava.
+  O máximo configurável e o tecto absoluto do runtime passam a **98304** (96 KiB): 426 316
+  bytes selados, 41% do limite; a omissão 65536 dá 284 328 (27%) e mantém-se. Provado por um
+  teste que sela de facto (`TestAOS514_No_Tecto_OEventoSeladoCabeNoTransporte`). (C1) A sonda e
+  o descodificador discordavam em corpos anómalos (chaves noutra caixa, `message` repetida):
+  quando não vêem a mesma mensagem, o estado fica `nao_devolvivel`, com a causa
+  `nao_devolvivel_desalinhado` — a métrica tem agora quatro séries. (C2) O id utilizável
+  guarda-se também **descodificado** (`id_value`); os bytes crus continuam no estado. (C3) A
+  documentação diz que as variáveis só são validadas com `AOS_MODEL_ENDPOINT` definida. (C4)
+  Um run em 1.5.0 hospedado num nó em `off` passa a ter série em `aos_runs_hosted_total`. (C5 a
+  C8, B3) O ADR ganha o custo do raciocínio duplicado, a frase certa sobre a autoridade do
+  segmento, o alcance do compromisso (turnos não-finais de runs em 1.5.0), o nonce como
+  contrato do adaptador, a não-reprodutibilidade do `prompt_hash` dos turnos a partir do
+  segundo (e o que não parte), e a ordem de ligar e de recuar. (B4) `capture` com projecção em
+  texto único fica não suportado em produção; o arranque avisa.
+- **Condição para ligar `capture` em produção.** `capture` **não se liga em produção** antes de duas coisas: (1) o desenho do AOS-515 confirmar que USA o rótulo — junção por digest com verificação (`sha256` dos bytes igual ao rótulo), e «sem estado» em caso de desacordo; (2) o smoke sobre JetStream com um turno com estado **no tecto** passar (ADR-040 §2.10).
+  Até ao primeiro run em 1.5.0 a decisão do layout é reversível; depois é vocabulário
+  permanente. Decisão do dono de 2026-10-08: o layout 1.5.0 **fica**.
+- **`TestAOS465DespejaAMenosRecentementeUsada` não é regressão deste ticket.** Falhou uma vez
+  na suite `-race` do `cmd/aos`. A revisão mediu: é instabilidade pré-existente sob carga — a
+  **base** falha 1 em 360 com seis processos de teste em paralelo; em sossego, 0 em 80 nas duas
+  árvores. O código sob teste e o ficheiro de teste não estão no diff do ramo.
+- **Por fazer.** O smoke sobre JetStream com a captura ligada e um turno com estado no tecto;
+  a retoma real no nó a meio de um run com estado e o apagamento por titular no nó (cobertos
+  no kernel, não no nó composto); a medição em produção. A devolução é o AOS-515.
 
 ---
 
 ## AOS-515 — A projecção nativa devolve o estado do turno ao provider, só à rota que o produziu e só se o perfil o exigir
 
 <!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa nenhum ADR existente: implementa a metade de devolução do ADR novo que o AOS-514 entrega (ainda sem número). A versão nova da projecção entra por emenda ao ADR-036 §2.4, que é entregável deste ticket e fica escrita lá. O ADR-036, o ADR-034 e o ADR-039 são citados como o contrato que se mantém. -->
+<!-- Este ticket NÃO implementa nenhum ADR existente: implementa a metade de devolução do ADR-040, que o AOS-514 entregou a 2026-10-08. A versão nova da projecção entra por emenda ao ADR-036 §2.4, que é entregável deste ticket e fica escrita lá. O ADR-036, o ADR-034 e o ADR-039 são citados como o contrato que se mantém. -->
 
 | Campo | Valor |
 |---|---|

@@ -7,7 +7,8 @@
 - **Tickets:** AOS-489, AOS-490, AOS-504 (emenda de 2026-10-06 aos §2.4 a §2.6: projecção nativa
   1.1.0), AOS-505 (emenda de 2026-10-07: §2.8, a rota que serviu o turno), AOS-506 (emenda de
   2026-10-07 ao §2.4: projecção nativa 1.2.0, e o aviso de nova tentativa como segmento da
-  semente)
+  semente), AOS-514 (emenda de 2026-10-08 aos §2.3 e §2.7, feita pelo ADR-040: o layout 1.5.0
+  e o estado opaco do provider)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -68,6 +69,16 @@ O assembler monta mais do que um layout. O layout de um run é decidido no arran
 registo de retoma; uma retoma continua no layout em que o run começou. O replay escolhe o layout
 por turno, pelo `assembly_version` gravado em cada `turn.recorded`. Uma versão desconhecida falha
 fechada. Uma subida do assembler deixa de invalidar o replay dos runs gravados.
+
+#### Emenda de 2026-10-08 (AOS-514, ADR-040): o layout 1.5.0
+
+O assembler monta um terceiro layout, o **1.5.0**: é o 1.4.0, byte a byte, mais o rótulo
+`state_digest=sha256:<hex>` no fim da linha de delimitação do primeiro segmento que um turno
+acrescenta (o `history`, ou a primeira `tool_call`), quando o provider devolveu estado opaco com
+esse turno. Um turno sem estado materializa os bytes do 1.4.0 e tem o mesmo `prompt_hash`. **Não
+é o layout dos runs novos**: só o é num nó com a captura do estado ligada
+(`AOS_MODEL_PROVIDER_STATE=capture`). A regra, o digest e o que o rótulo não pode fazer estão no
+ADR-040 §2.5 e §2.6.
 
 ### 2.4 O que vai para o provider é uma projecção do tail (AOS-490)
 
@@ -351,6 +362,17 @@ Medido a 2026-10-03 contra o LiteLLM de produção (alias `gpt-4o-mini` → `kim
 raciocínio chega na resposta e sobrevive no pedido seguinte, e **não é exigido** por este provider
 — o turno nativo sem ele foi aceite. Os blocos de raciocínio assinados e os itens cifrados de
 outros fornecedores ficam fora desta decisão; o contrato fica preparado para carga opaca.
+
+#### Emenda de 2026-10-08 (AOS-514, ADR-040): os blocos assinados deixam de estar fora
+
+A última frase do parágrafo acima deixa de valer. Com a captura do estado ligada, **tudo** o que
+o provider manda e pode exigir de volta — o raciocínio em todos os nomes de campo, os blocos
+assinados e os redigidos, o id e a assinatura de cada tool call — é capturado byte a byte, como
+o **estado opaco do turno**: o que é, onde fica, quem o lê e o tecto estão no ADR-040. O campo
+`reasoning` da captura, de que este parágrafo fala, não muda: continua a ser o primeiro campo de
+raciocínio com conteúdo, sem tecto próprio. O resto mantém-se, e o ADR-040 repete-o como regra:
+**nada é devolvido ao provider**, e o raciocínio não entra no texto do tail, em spans nem em
+eventos em claro. O que passa a entrar no tail é um **digest** do estado, nunca o estado.
 
 ### 2.8 A rota que serviu o turno é comparada com um perfil (AOS-505, emenda de 2026-10-07)
 

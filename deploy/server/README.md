@@ -1073,6 +1073,63 @@ antes de trocar de modelo. Recuo imediato: `AOS_MODEL_ROUTE_GOVERNANCE=observe` 
 
 ---
 
+### O estado opaco do provider — `AOS_MODEL_PROVIDER_STATE` (AOS-514, ADR-040)
+
+Um provider devolve com cada resposta material que o runtime não interpreta e que o mesmo
+provider pode exigir de volta no turno seguinte: o raciocínio (em vários nomes de campo), os
+blocos de raciocínio assinados e os redigidos, e o id que deu a cada tool call. Com
+`AOS_MODEL_PROVIDER_STATE=capture` o nó guarda-o, **sem o devolver a ninguém**:
+
+| O quê | Onde fica | Em claro? |
+|---|---|---|
+| Os bytes do estado, tal como vieram no corpo (sem re-serializar) | Na captura do turno (`replay.captured`), dentro do envelope cifrado por titular | Não. Em modo sensível fica só uma referência; com o apagamento do titular desaparece |
+| O digest do estado (`sha256` de um envelope com um nonce de 256 bits) | No tail do run, no rótulo `state_digest` do primeiro segmento do turno (layout `1.5.0`) | O rótulo vai no prompt em texto único; em projecção nativa não vai em mensagem nenhuma. Nunca em eventos |
+| Que o turno trouxe estado, e o tamanho | `response_shape` do `turn.recorded` (`provider_state`, `provider_state_bytes`), se a medição da forma estiver ligada; e `aos_model_provider_state_total{resultado}` | Sim: vocabulário fechado e inteiros |
+
+**Nada é reenviado ao provider** (isso é trabalho posterior, o AOS-515): os pedidos em projecção
+nativa são byte a byte os de antes. O raciocínio nunca é usado como resposta e não dá autoridade.
+
+`AOS_MODEL_PROVIDER_STATE_MAX_BYTES` (1024 a 98304; por omissão 65536) é o tecto do estado de um
+turno. Acima dele o estado **não é truncado** — um bloco assinado cortado é inválido —: não é
+guardado, o turno fica marcado como «não devolvível»
+(`aos_model_provider_state_total{resultado="nao_devolvivel_tecto"}`) e o run segue. O máximo é
+96 KiB por medição, não por estimativa: entre o estado e o evento há três passagens por base64
+(≈2,37×) e o raciocínio fica duas vezes na captura; com o cifrador real, 65536 dá um evento de
+284 328 bytes e 98304 dá 426 316 (41% do limite de 1 MiB por mensagem do NATS). Com 262144 dava
+1 140 565 bytes e a captura falhava, falhando o run.
+
+As duas variáveis só são lidas — e só recusam o arranque — **com o gateway de modelo ligado**
+(`AOS_MODEL_ENDPOINT` definida), como as outras `AOS_MODEL_*`.
+
+**Antes de ligar em produção — duas condições, as duas por cumprir a 2026-10-08.** `capture` **não se liga em produção** antes de duas coisas: (1) o desenho do AOS-515 confirmar que USA o rótulo — junção por digest com verificação (`sha256` dos bytes igual ao rótulo), e «sem estado» em caso de desacordo; (2) o smoke sobre JetStream com um turno com estado **no tecto** passar.
+Até ao primeiro run gravado em `1.5.0` a decisão do layout é reversível; depois, `1.5.0` é
+vocabulário permanente do assembler, do replay e da projecção.
+
+**Não suportado em produção:** `capture` com `AOS_MODEL_PROJECTION=text`. Em texto único o rótulo
+`state_digest` vai no prompt e o protocolo não o explica ao modelo; o arranque avisa.
+
+**A ordem — ligar:**
+
+1. A imagem com este ticket em **todos** os nós que hospedam ou retomam runs. Confirmar a versão
+   em cada um.
+2. Só depois, `/opt/aos/.env`: `AOS_MODEL_PROVIDER_STATE=capture`, e recriar o serviço `aos`. O
+   arranque declara `[aos] estado opaco do provider em captura (EPIC-06/AOS-514, ADR-040) …`.
+
+Com `capture` num nó e a imagem antiga noutro, um run em `1.5.0` que o segundo tente retomar
+fica **órfão**: esse binário não conhece o layout e recusa-o (falha fechado, sem divergir).
+
+**A ordem — recuar:**
+
+1. `AOS_MODEL_PROVIDER_STATE` vazio (ou `off`) e recriar. Os runs novos voltam a `1.4.0`; os já
+   começados em `1.5.0` continuam nela até ao fim e reproduzem-se como foram gravados.
+2. Esperar que não haja nenhum run em `1.5.0` em `running` nem à espera de aprovação.
+   `aos_runs_hosted_total{assembly_version="1.5.0"}` mostra os que este processo hospedou (a
+   série aparece num nó em `off` assim que hospeda um).
+3. Só então, se for preciso, a imagem anterior — aceitando que os runs em `1.5.0` já terminados
+   deixam de ser reproduzíveis e auditáveis por ela.
+
+Só o nó captura (as chamadas do `aos-orq` ao LiteLLM não), e só o caminho síncrono.
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo
@@ -1090,6 +1147,7 @@ o nó grava, em cada `turn.recorded`, a **ficha** desse corpo no campo `response
 | `reasoning_tokens` | inteiro; ausente quando o provider não o reporta |
 | `unknown_keys_n` | chaves de `message` que a sonda não conhece |
 | `shape_digest` | `sha256` da lista ordenada de (caminho da chave, tipo JSON) |
+| `provider_state`, `provider_state_bytes` | só com `AOS_MODEL_PROVIDER_STATE=capture` e um turno com estado (AOS-514): `capturado` ou `nao_devolvivel`; bytes do envelope |
 
 Uma ficha que a sonda não consiga ler grava-se como `{"ilegivel":true}`. **Nenhum campo leva
 conteúdo**: só vocabulário fechado e inteiros. A ficha não entra na captura, não muda o replay e
