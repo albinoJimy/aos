@@ -27,6 +27,30 @@
 
 - Nunca em CI: com `CI` ou `GITHUB_ACTIONS` definidas, o modo `real` recusa (exit 5).
 
+## Antes da primeira corrida real
+
+Lista de verificação da revisão adversarial (REV-512). Cada ponto tem hoje um mecanismo no
+código; a lista fica porque é o dono que confirma.
+
+1. **Um só processo.** Nenhum outro `aos-ensaio` a correr. Se houver, o segundo recusa (exit 3,
+   «o contador esta em uso por outro processo»).
+2. **Confirmar o destino impresso pelo `--so-plano`.** A linha
+   `DESTINO DA CHAVE: https://api.kimi.com` tem de mostrar o host do fornecedor. Se o banco
+   recusar o campo `KIMI_API_BASE`, é o ficheiro que está errado — não usar
+   `--destino-fora-da-lista` para o fazer passar.
+3. **Ficheiro de chaves sem aspas e sem campos repetidos.** O banco recusa os dois e diz o campo.
+4. **Não fechar a janela nem matar o processo.** `Ctrl+C` pára entre dois pedidos e desmonta o
+   proxy. Se o processo morrer à força, o proxy mata-se sozinho ao fim de cerca de 90 segundos
+   sem sinal de vida — mas até lá guarda a chave em claro no ambiente do contentor.
+5. **`limpar` no fim**, sempre, e ver que diz `removidos 0 contentor(es) e 0 rede(s)`:
+
+   ```powershell
+   & $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe limpar --chaves $env:USERPROFILE\.aos-ensaio\chaves.env
+   ```
+
+6. **Ler a comparação entre braços pelos intervalos e pelo p-valor corrigido** (Fisher exacto,
+   Holm). Uma série de 429 a seguir a outro erro é do proxy, não do fornecedor.
+
 ## Passos
 
 1. **Compilar o binário para fora do repositório.**
@@ -44,7 +68,8 @@
    ```
 
    Saída esperada (em `stderr`): `modo REAL — fornecedor kimi, modelo <nome>; a corrida faz ate
-   212 pedidos; hoje (<dia> UTC) restam N de 1000` e `--so-plano: nenhum pedido foi enviado`.
+   212 pedidos; hoje (<dia> UTC) restam N de 1000`, `DESTINO DA CHAVE: https://api.kimi.com
+   (contador: <caminho>)` e `--so-plano: nenhum pedido foi enviado`. **Conferir o destino.**
    Exit 3 ⇒ a mensagem nomeia o campo do ficheiro a corrigir.
 
 3. **Correr a experiência dos separadores** (a primeira corrida obrigatória): quatro braços sobre
@@ -91,11 +116,15 @@ no README do banco). A Anthropic só entra no banco depois de o dono preencher
 |---|---|---|
 | Exit 3, «o campo X esta em falta / ainda com o marcador do exemplo» | Ficheiro de chaves incompleto | Preencher o campo X no ficheiro. A mensagem nunca mostra o valor |
 | Exit 3, «nao cabe no que resta do tecto do dia» | A corrida precisa de mais pedidos do que restam hoje | Esperar pelo dia seguinte (UTC) ou reduzir `--amostras`. O tecto só muda no ficheiro de chaves |
-| Exit 3, «contador de pedidos inutilizavel» | `contador.json` não se lê | **Não o apagar às cegas**: abrir, ver o que tem, repor a contagem de hoje à mão. Apagá-lo zera a contagem do dia |
+| Exit 3, «contador de pedidos inutilizavel» | `contador.json` não se lê | **Não o apagar às cegas**: abrir, ver o que tem, repor a contagem de hoje à mão |
+| Exit 3, «o contador esta em uso por outro processo» | Há outro ensaio a correr, ou um que morreu deixou `contador.json.trava` | Se não houver outro a correr: `aos-ensaio limpar --chaves <ficheiro>` remove a trava do processo morto |
+| Exit 3, «o contador nao existe e ha relatorios de corridas reais de hoje» | O contador foi apagado; a contagem do dia perdeu-se | Repetir o comando com `--reconstruir-contador`: recria-o com a soma dos pedidos dos relatórios de hoje |
+| Exit 3, «o campo KIMI_API_BASE esta … com um host que nao e do fornecedor» | A base no ficheiro não é `https` de um host do fornecedor | Corrigir o ficheiro. `--destino-fora-da-lista <host>` só para um destino que o dono conhece e quer |
+| Exit 4, `chave_recusada` | Os três primeiros pedidos levaram 401 ou 403 | A chave não é aceite nessa base: confirmar a chave e `KIMI_API_BASE` no ficheiro (sem os mostrar a ninguém) |
 | Exit 4, `tecto_atingido` | O tecto foi atingido a meio (o de dólares só se conhece depois de cada resposta) | O relatório parcial está escrito. Nada a repor |
 | Exit 6 | Sem Docker, sem a imagem, ou o proxy não arrancou | Arrancar o Docker; `docker pull` da imagem acima. A mensagem traz as últimas linhas do proxy, com os segredos ocultados |
-| Contentores `aos512-*` a correr depois de uma corrida interrompida à força | A limpeza não chegou a correr | `docker ps -a --filter name=aos512- --format "{{.Names}}"` e `docker rm -f` de cada um; `docker network ls --filter name=aos512-` e `docker network rm` |
-| Muitos 401 no relatório | A chave não é aceite pelo fornecedor nessa base | Confirmar `KIMI_API_BASE` e a chave no ficheiro (sem os mostrar a ninguém) |
+| Contentores `aos512-*` a correr depois de uma corrida interrompida à força | A limpeza não chegou a correr. **Um proxy órfão guarda a chave do fornecedor em claro no ambiente do contentor** (`docker inspect`) e aceita pedidos fora do contador | `aos-ensaio limpar` (remove contentores e redes `aos512-*` e diz quantos). O proxy também se mata sozinho ao fim de cerca de 90 s sem sinal de vida, e a corrida seguinte varre o que restar. À mão: `docker ps -a --filter name=aos512- --format "{{.Names}}"` e `docker rm -f` de cada um |
+| Códigos 429 no relatório | Limite de taxa do fornecedor (o proxy do ensaio tem o arrefecimento desligado) | Repetir noutra altura com `--pausa 2s` |
 
 ## O que este procedimento não faz
 

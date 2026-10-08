@@ -1302,7 +1302,7 @@ dos separadores.
 
 **Geral**
 
-- [ ] Revisão adversarial independente antes da fusão, com mutações sobre o contador, o tecto
+- [x] Revisão adversarial independente antes da fusão, com mutações sobre o contador, o tecto
       e as sentinelas.
 
 ### Fora de âmbito
@@ -1319,7 +1319,7 @@ dos separadores.
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-08); primeira corrida com modelo real e revisão adversarial por fazer.**
+**IMPLEMENTADO (2026-10-08); revisão adversarial feita e corrigida; primeira corrida com modelo real por fazer.**
 
 - **Onde.** Módulo-folha `packages/qa/banco-ensaio` (o 50.º módulo; ninguém o importa), binário
   `aos-ensaio` em `cmd/aos-ensaio`. Não é parte do nó nem da imagem de produção
@@ -1349,8 +1349,25 @@ dos separadores.
   (3) O gasto em dólares só se conhece depois de cada resposta: o tecto pode ser ultrapassado
   pelo custo de um pedido. (4) O canário de recusa do AOS-504 vive no `aos-orq` e não é
   reutilizado: a medida é a dos factos, como este ticket manda.
-- **Por fazer.** A experiência dos separadores contra a rota de produção (212 pedidos), o registo
-  do resultado na §5 do acompanhamento, e a revisão adversarial independente.
+- **Revisão adversarial (2026-10-08, sobre `6fbf2173`).** Sem bloqueantes; cinco achados
+  importantes e cinco menores, todos corrigidos antes da primeira corrida real. (I1) O proxy
+  efémero corre com `--rm` e um vigia: sem sinal de vida do banco durante 90 s, ou passado o
+  prazo derivado do plano, mata-se; os modos com Docker varrem os órfãos `aos512-*` ao arrancar;
+  há o subcomando `limpar`; trata-se o SIGTERM. (I2) O destino da chave é validado — `https`,
+  sem utilizador, porta, query nem fragmento, host numa lista embutida por fornecedor, ou
+  `--destino-fora-da-lista` com o host exacto — e mostrado antes de enviar. (I3) Ficheiro de
+  exclusão no contador (`O_EXCL`, PID e hora): um segundo processo recusa arrancar; temporário
+  de nome único. (I4) No modo real não há `--contador`; contador desaparecido com relatórios
+  reais de hoje recusa (só `--reconstruir-contador`); campo repetido, tecto acima do máximo,
+  `+500` e espaços interiores são erro. (I5) P-valor pelo teste exacto de Fisher e correcção de
+  Holm nas três comparações. Menores: os 429 contam-se à parte e o arrefecimento do proxy está
+  desligado; três recusas de chave seguidas abortam a corrida; aspas à volta de um valor são
+  erro; a guarda «ninguém importa a porta dos falsos» lê os imports pelo parser; os limites do
+  relatório declaram a configuração do proxy. As duas mutações que tinham sobrevivido têm teste.
+  Ficam como notas, sem alteração: as permissões `0o600` não valem no Windows (m6), e o
+  redactor é por coincidência literal (m8).
+- **Por fazer.** A experiência dos separadores contra a rota de produção (212 pedidos) e o
+  registo do resultado na §5 do acompanhamento.
 
 ---
 
@@ -1367,3 +1384,4 @@ dos separadores.
 | 1.6 | Setembro 2026 | AOS-405 validado em produção (v0.1.21): nove hooks no `/metrics`, a revalidação com quase toda a política; soma por call ainda por verificar numa janela de uma mediação | Equipa AOS |
 | 1.7 | 2026-10-08 | +AOS-512 (fase A2 da fronteira runtime↔modelo): banco de ensaio mínimo — bateria de casos sintéticos contra uma rota, relatório de taxas sem texto das respostas, três modos (falsos, proxy real com falsos, modelo real pelo posto local com tectos diários do dono), e a experiência dos separadores do protocolo como primeira corrida | Equipa AOS |
 | 1.8 | 2026-10-08 | AOS-512 implementado: módulo `packages/qa/banco-ensaio`, três modos, tectos e contador, experiência dos separadores pronta; a primeira corrida com modelo real e a revisão adversarial ficam por fazer | Equipa AOS |
+| 1.9 | 2026-10-08 | AOS-512: revisão adversarial feita (sem bloqueantes) e os seus cinco achados importantes e cinco menores corrigidos; falta a primeira corrida com modelo real | Equipa AOS |
