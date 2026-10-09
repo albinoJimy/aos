@@ -108,6 +108,20 @@ type Capturer interface {
 	Capture(ctx context.Context, c TurnCapture) error
 }
 
+// ProviderStateKeeper é a capacidade OPCIONAL de um [Capturer] de dizer se guarda os BYTES do
+// estado opaco do provider de um turno (AOS-515, revisão F3). Um capturer em modo sensível guarda
+// só a referência: numa retoma esse estado não existe, e por isso também não pode existir ao
+// vivo — senão o run devolvia o estado enquanto corria e deixava de o devolver depois de
+// retomado, e os pedidos que fez não se reconstruíam do que ficou selado.
+//
+// O loop pergunta-o uma vez por run. Um capturer que não implemente a interface conta como
+// guardando os bytes: é o caso do capturer por omissão, que não grava nada e com o qual não há
+// retoma nem replay a que ser fiel.
+type ProviderStateKeeper interface {
+	// KeepsProviderStateBytes diz se a captura de um turno fica com os bytes do estado.
+	KeepsProviderStateBytes() bool
+}
+
 // noopCapturer é o default: não persiste nada. Preserva o comportamento de
 // AOS-013 quando nenhum capturer é injectado.
 type noopCapturer struct{}

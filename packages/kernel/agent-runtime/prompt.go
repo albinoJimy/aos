@@ -167,6 +167,32 @@ type PromptView struct {
 	// fronteira — um Content pode conter linhas que imitam delimitadores, e um `name` é
 	// texto do modelo.
 	Tail []TailSegment
+
+	// ProjectionVersion é a versão da projecção em que o RUN está fixado (AOS-513,
+	// [Goal.ProjectionVersion]), para quem projecta o prompt noutra forma. Vazia ⇒ um run novo
+	// sem versão fixada: quem projecta usa a sua regra (a do perfil da rota, ou a do nó).
+	// [ProjectionVersionUnpinned] ⇒ um run RETOMADO que começou sem versão fixada: quem projecta
+	// usa a do nó e ignora a que o perfil declare agora ([ProjectionVersionForView]). Não é do assembler: o loop escreve-a na vista
+	// depois de a montar. Não entra em Materialized nem no `prompt_hash`.
+	ProjectionVersion string
+	// ProviderStates são os ESTADOS OPACOS do provider dos turnos anteriores deste run (AOS-515,
+	// ADR-040 §2.9), para quem os devolve ao provider: os bytes de cada envelope capturado, pela
+	// chave do DIGEST com que o tail o refere (o valor do rótulo `state_digest`, `sha256:` + 64
+	// hexadecimais). Só os estados [ProviderStateCaptured] cá estão — um turno cujo estado é
+	// «não devolvível» ou só referência não tem entrada. nil num run sem estado capturado, que é
+	// a omissão: a vista é a de sempre.
+	//
+	// COMO SE JUNTA AO TURNO. Pelo rótulo do tail, e só por ele: quem projecta lê o
+	// `state_digest` do primeiro segmento do turno, procura aqui os bytes com essa chave, e
+	// CONFERE que o `sha256` deles é o rótulo antes de os usar. Em caso de desacordo o turno
+	// vai sem estado. O runtime preenche o mapa com o digest que ele próprio calculou, mas a
+	// vista é uma porta: quem a lê não confia na chave.
+	//
+	// É carga opaca e untrusted: o runtime não abre os envelopes. Não é do assembler — o loop
+	// escreve o mapa na vista depois de a montar —, e não entra em Materialized nem no
+	// `prompt_hash` (o que lá entra é o rótulo). O mapa e os bytes são do run: quem recebe a
+	// vista não os altera.
+	ProviderStates map[string][]byte
 }
 
 // PromptAssembler monta prompts cache-estáveis (ADR-009). É construído uma vez

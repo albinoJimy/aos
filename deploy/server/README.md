@@ -1130,6 +1130,44 @@ fica **órfão**: esse binário não conhece o layout e recusa-o (falha fechado,
 
 Só o nó captura (as chamadas do `aos-orq` ao LiteLLM não), e só o caminho síncrono.
 
+### O perfil da rota e a devolução do estado (AOS-513, AOS-515) — nada ligado hoje
+
+O perfil de cada rota vive **em código** (a tabela do gateway) e muda com uma imagem nova. Pode
+declarar parâmetros do pedido (`thinking`, `reasoning_effort`, `max_tokens`), a versão da
+projecção e a classe de estado (`devolver`). **Os quatro perfis de hoje não declaram nada**, e o
+nó comporta-se como antes. Antes de um perfil com algum destes campos entrar na tabela:
+
+1. **Qualificar no banco de ensaio** (`aos-ensaio … --perfil FICHEIRO`) e guardar o relatório: o
+   PR que altera a tabela cita o `digests.perfil` desse relatório.
+2. **Configuração do proxy para a rota** (`/opt/aos/litellm/config.yaml`), medida atrás da imagem
+   fixada a 2026-10-08:
+   - `drop_params` tem de ficar `false`. Com `true` o proxy **retira em silêncio** `thinking` e
+     `reasoning_effort` numa rota `openai/…`, e o perfil parece funcionar sem ter efeito.
+   - Numa rota `openai/…` (a do Kimi), `thinking` **não passa** pelo proxy fixado (400, ou 500 com
+     `allowed_openai_params`); `reasoning_effort` passa só com
+     `allowed_openai_params: ["reasoning_effort"]` nos `litellm_params` da rota; `max_tokens` passa.
+   - Numa rota `anthropic/…`, o nome do modelo tem de ser um que o proxy conheça; `thinking` chega
+     como é enviado, e `reasoning_effort` é traduzido pelo proxy em `thinking` com orçamento.
+   - **`modify_params` nunca se liga** numa rota com `devolver: obrigatorio`: retira o parâmetro
+     de raciocínio quando faltam os blocos, e um pedido sem estado passava em silêncio
+     (`TestAOS515_ConfiguracaoDoProxy_SemModifyParams` recusa-o nas configurações versionadas).
+3. **Para devolver estado** (`devolver` em `opcional` ou `obrigatorio`), no `/opt/aos/.env`:
+   `AOS_MODEL_PROVIDER_STATE=capture` (com as condições da secção anterior),
+   `AOS_MODEL_ROUTE_GOVERNANCE=observe` ou `enforce` (sem ela o estado não diz de que rota é, e
+   não se devolve), e a projecção `1.3.0` — pelo perfil, ou `AOS_MODEL_PROJECTION_VERSION=1.3.0`.
+   O modo sensível da captura não é suportado numa rota `obrigatorio`: guarda só a referência.
+
+O que vigiar: `aos_model_route_params_rejected_total{rota,codigo}` (um 4xx num turno com
+parâmetros: o provider, ou o proxy, não aceita o que o perfil declara — o nó **não** repete sem o
+parâmetro) e `aos_model_provider_state_returned_total{resultado}` (`recusado` é um run que falhou
+porque faltava o estado de um turno numa rota `obrigatorio`). As duas famílias só existem quando
+algum perfil da tabela as usa.
+
+**Recuo.** Voltar à projecção `1.2.0` é seguro a qualquer momento para rotas com `devolver:
+nunca`. Com runs em curso numa rota `obrigatorio`, **drenar primeiro** (esperar que não haja runs
+em `running` nem à espera de aprovação): na `1.2.0` o turno seguinte desses runs falha com
+`projeccao_sem_estado`, porque o pedido não sai sem o estado.
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo

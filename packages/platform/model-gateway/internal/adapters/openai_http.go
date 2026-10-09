@@ -243,9 +243,34 @@ func (a *OpenAIHTTPAdapter) doWithHeader(ctx context.Context, path string, body 
 		return nil, nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("adapters: provider %s devolveu status %d: %s", a.provider, resp.StatusCode, sanitizeProviderBody(respBody))
+		return nil, nil, &StatusError{Provider: a.provider, Status: resp.StatusCode, corpo: sanitizeProviderBody(respBody)}
 	}
 	return respBody, resp.Header, nil
+}
+
+// StatusError é o erro de uma resposta do provider com um status diferente de 200 no caminho
+// síncrono (AOS-513). A mensagem é a de sempre — `adapters: provider <p> devolveu status <n>:
+// <corpo saneado>` —; o tipo existe para que o gateway leia o STATUS sem o tirar do texto.
+type StatusError struct {
+	// Provider é o nome do provider do adaptador.
+	Provider string
+	// Status é o status HTTP da resposta.
+	Status int
+	// corpo é o corpo da resposta, já truncado e redigido ([sanitizeProviderBody]). Vazio depois
+	// de [StatusError.SemCorpo].
+	corpo string
+}
+
+// Error implementa error.
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("adapters: provider %s devolveu status %d: %s", e.Provider, e.Status, e.corpo)
+}
+
+// SemCorpo devolve o mesmo erro sem o corpo da resposta: só o provider e o status. É o que sobe
+// quando o pedido levava conteúdo que o provider pode ecoar no erro e que não pode aparecer numa
+// mensagem de erro.
+func (e *StatusError) SemCorpo() *StatusError {
+	return &StatusError{Provider: e.Provider, Status: e.Status, corpo: "(corpo do erro omitido)"}
 }
 
 // sseStream é um [port.ChatStream] sobre um corpo SSE (text/event-stream) do wire

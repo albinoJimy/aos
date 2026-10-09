@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
 // modelNameFromEnv é a ÚNICA leitura de `AOS_MODEL_NAME`: o nome que o adaptador do gateway
@@ -46,4 +47,31 @@ func (n *Node) fixarModelo(goal agentruntime.Goal) agentruntime.Goal {
 		goal.Model.ModelID = n.modelID
 	}
 	return goal
+}
+
+// fixarProjeccao escreve no Goal a versão da projecção nativa em que o run fica FIXADO (AOS-513):
+// a que o perfil da rota do modelo do run declara ([modelgateway.RouteProfile.ProjectionVersion]).
+//
+// Um Goal sem versão é um run NOVO. Se o perfil da sua rota não declara versão — o caso de todos
+// os perfis de hoje — o Goal fica como está: sem versão fixada, a projecção de cada turno é a do
+// interruptor do nó (`AOS_MODEL_PROJECTION_VERSION`), e o registo de retoma grava os bytes de
+// sempre. Um Goal que já traz versão, ou a marca [agentruntime.ProjectionVersionUnpinned] de um
+// run retomado que começou sem nenhuma, não é tocado: a projecção de um run não muda a meio,
+// mesmo que a imagem do nó tenha mudado o perfil entretanto.
+func fixarProjeccao(goal agentruntime.Goal) agentruntime.Goal {
+	if goal.ProjectionVersion != "" {
+		return goal
+	}
+	if perfil, ok := modelgateway.RouteProfileFor(goal.Model.ModelID); ok {
+		goal.ProjectionVersion = perfil.ProjectionVersion
+	}
+	return goal
+}
+
+// versaoDaProjeccaoParaORegisto devolve o que o registo de retoma grava como versão da projecção
+// do run: a versão fixada, ou vazio quando o run não tem nenhuma — incluindo o run retomado que
+// traz a marca [agentruntime.ProjectionVersionUnpinned], para que a re-escrita do registo na
+// retoma tenha os bytes do registo original.
+func versaoDaProjeccaoParaORegisto(goal agentruntime.Goal) string {
+	return agentruntime.NormalizeProjectionVersion(goal.ProjectionVersion)
 }

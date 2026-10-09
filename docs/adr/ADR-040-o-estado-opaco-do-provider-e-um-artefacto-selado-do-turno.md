@@ -11,7 +11,8 @@
   correcções da revisão estão neste texto); por verificar em produção. Nasce desligado
   (`AOS_MODEL_PROVIDER_STATE=off`) e só liga por decisão do dono, **com as duas condições do
   §2.10**. A **devolução** do
-  estado ao provider é do AOS-515 e não está decidida aqui (§2.9).
+  estado ao provider é do AOS-515 (implementado a 2026-10-08, por rever): as regras estão no
+  §2.9 e a decisão no §2.11.
 - **Relacionados:** ADR-001 (execução durável; replay `resume-from-step`), ADR-002 (Reference
   Monitor), ADR-005 (untrusted é dados, nunca instruções), ADR-007 (Event Store), ADR-010
   (replay determinístico), ADR-011 (apagamento por titular), ADR-034 (autorização derivada do
@@ -88,6 +89,9 @@ Quem faz o pedido — o adaptador do gateway — fecha o estado num **envelope**
 - **a rota a que pertence**: o digest do perfil da rota com que o turno foi comparado (vazio com
   a governação da rota desligada), o nome do modelo pedido e o modelo que serviu. **O estado é
   da rota que o produziu**: só a ela pode vir a ser devolvido (§2.9);
+- **o resultado da comparação da rota** desse turno (`route_check`: `igual`, `diferente` ou
+  `nao_reportado`; ausente com a governação desligada) — acrescentado pelo AOS-515, depois da
+  revisão: o digest do perfil e o nome do modelo não dizem se a rota se **provou** (§2.11);
 - **um nonce de 256 bits**, aleatório, por turno;
 - os valores, em base64 (é o que guarda bytes arbitrários sem os tocar).
 
@@ -262,6 +266,113 @@ avisa.
   aprovação; só então a imagem anterior — aceitando que os runs em 1.5.0 já terminados deixam
   de ser reproduzíveis por ela.
 
+### 2.11 A devolução (AOS-515)
+
+**A junção é pelo rótulo do tail, com verificação.** É a condição (1) do §2.10, e fica
+confirmada: o AOS-515 **usa** o rótulo. O loop entrega a quem faz o pedido os envelopes dos
+turnos anteriores, pela chave do digest; a projecção lê o `state_digest` do primeiro segmento de
+cada turno, procura os bytes com essa chave, e só os usa se o `sha256` **deles** for o rótulo. A
+chave do mapa não é de confiança; o rótulo é — só o runtime o escreve, e é com ele que o
+`prompt_hash` se comprometeu. Em caso de desacordo, de bytes em falta (modo sensível) ou de
+envelope ilegível, **o turno vai sem estado**. O estado não se junta ao turno pelo passo nem
+pela posição.
+
+**São precisas três coisas, todas.** O estado de um turno só sai num pedido com (a) a projecção
+nativa **1.3.0** (ADR-036 §2.4), (b) um perfil de rota com `devolver` diferente de `nunca`
+(ADR-036 §2.8), e (c) o envelope a dizer que foi **essa rota** que o produziu: o digest do perfil
+e o modelo servido que o envelope gravou são os da rota a que o pedido vai, **e o turno que o
+produziu teve a rota comparada como `igual`**. Esta última condição lê-se do `route_check` que o
+envelope gravou, e não se recalcula: em `observe` um turno com o endpoint diferente, com o
+endpoint por reportar, ou com o nome do modelo só igual depois de saneado segue — e deixava um
+envelope com o digest e o nome certos (achado F1 da revisão). Esse estado não se devolve. A decisão (b) e (c)
+toma-se no gateway **depois do roteamento**: num failover, a segunda rota não recebe um byte do
+que a primeira produziu. Como o envelope só leva o digest do perfil com a governação da rota
+ligada, **a devolução exige `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`**.
+
+**`obrigatorio` falha fechado.** Numa rota que exige o estado, um turno com tool calls sem estado
+devolvível faz o pedido **não sair**: o gateway devolve um erro com a causa em vocabulário fechado
+e o run falha de forma atribuível. Nunca se envia sem o estado à espera de que o provider
+aceite — ou de que desligue o raciocínio em silêncio. Numa rota `opcional` o pedido segue sem o
+estado desse turno, e conta-se.
+
+| Causa | Quando |
+|---|---|
+| `estado_ausente` | O tail não refere estado para o turno: o provider não o mandou, ou ficou «não devolvível» (tecto, nonce, desalinhado) |
+| `estado_so_referencia` | Há rótulo e não há bytes (captura em modo sensível) |
+| `estado_digest_diferente` | O `sha256` dos bytes não é o rótulo |
+| `estado_ilegivel` | Os bytes conferem e não são um envelope |
+| `estado_desalinhado` | O envelope tem outro número de tool calls (o turno escalou a meio) |
+| `projeccao_sem_estado` | O pedido não vem da projecção 1.3.0 |
+| `estado_sem_rota` | O envelope não diz de que rota é (governação da rota desligada) |
+| `estado_de_rota_nao_provada` | O turno que produziu o estado não teve a rota comparada como `igual` |
+| `estado_de_outra_rota` | Outro perfil, ou outro modelo servido |
+| `id_do_provider_inutilizavel` | A rota pede os ids do provider e os do turno não servem |
+
+**O que sai, e onde.** Cada campo volta ao **sítio** de onde veio, com o **nome** com que veio e
+os **bytes** que vieram, copiados para o corpo do pedido sem passar por nenhum codificador: os
+campos de raciocínio na mensagem `assistant` do turno (`reasoning_content`, `thinking_blocks`, …),
+os que o proxy entregou em `provider_specific_fields` dentro de um objecto com esse nome, e as
+assinaturas por chamada na tool call ou na sua `function`. Não se filtra por tipo: os blocos
+redigidos e os de texto vazio vão. Os nomes são os das listas fechadas com que a sonda leu o
+estado: um envelope não escreve `content`, `role` nem `tool_calls`.
+
+**O id de tool call.** Por omissão continua a ir o id do runtime. Um perfil pode declarar
+`tool_call_id: provider`: nos turnos cujo estado é devolvido, o `id` da tool call e o
+`tool_call_id` da mensagem `tool` passam a ser o id que o provider deu — o valor descodificado e
+já limitado (§2.6), e só se todos os do turno forem utilizáveis, diferentes entre si e de todos
+os ids já usados no pedido, e nenhum tiver a forma de um id do runtime (`<passo>-tool-<n>`): um
+turno posterior que fosse com os ids do runtime podia repeti-lo. O id do provider continua a não ser identidade de nada no runtime.
+Resíduo: com o id do provider no wire, o rótulo `id=` do cabeçalho da mensagem `tool` e o `ref`
+de um aviso continuam a ser os do runtime.
+
+**Estável por prefixo.** O pedido do turno N+1 é o do turno N com mensagens acrescentadas no fim.
+O tail é append-only; cada turno abre uma mensagem `assistant` nova; a omissão de argumentos por
+tamanho decide-se quando o segmento é criado; o aviso de nova tentativa está na semente; e a
+decisão de devolução de um turno só depende desse turno e dos anteriores. Preso por teste com um
+provider falso que recusa um pedido cujo anterior não seja prefixo exacto.
+
+**O que não muda (D3).** O estado nunca é texto: não entra no `content` de nenhuma mensagem, no
+tail, em `turn.recorded`, em spans nem em métricas. Um run com `content` vazio e estado continua
+a fechar `empty_output`. O campo `reasoning_content` de sempre continua a ser retirado de todos
+os pedidos; o raciocínio só volta a um provider como carga opaca do estado. Quando o pedido
+levou estado, o corpo de um erro 4xx do provider **não sobe** na mensagem de erro (o provider
+pode ecoar o que recebeu).
+
+**Modo sensível.** A captura em modo sensível guarda só a referência do estado. Para a devolução
+o estado **não existe**, ao vivo como na retoma: o capturer diz ao loop que não guarda os bytes, e
+o loop não os entrega a quem faz o pedido (achado F3 da revisão — antes, o run devolvia o estado
+enquanto corria e deixava de o devolver depois de retomado). Uma rota `obrigatorio` falha fechado
+nesse modo, com `estado_so_referencia`.
+
+**Mudar um perfil `obrigatorio`.** Qualquer alteração ao perfil muda o seu digest, e os estados
+já capturados deixam de ser «desta rota»: os runs em curso nessa rota falham no turno seguinte
+(`estado_de_outra_rota`). É por desenho. A mudança faz-se com a rota drenada — sem runs em
+`running` nem à espera de aprovação —, como o recuo da projecção.
+
+**Limite: o fallback dentro do proxy.** Se o próprio proxy reencaminhar um pedido para outro
+deployment, o estado que o pedido leva chega a esse deployment antes de o gateway saber quem
+serviu. Detecta-se na resposta, pelo `route_check` desse turno; e o estado que esse turno
+produzir já não é devolvido (não é `igual`). Rotas `obrigatorio` configuram-se no proxy sem
+fallbacks.
+
+**Por medir (AOS-516).** Um fornecedor que numere os ids de tool call por índice repete-os entre
+turnos; com `tool_call_id: provider` o segundo turno com um id já usado não leva estado
+(`id_do_provider_inutilizavel`), e numa rota `obrigatorio` o run falha.
+
+**Replay e retoma.** A retoma reproduz os turnos já dados pela captura, que devolve o estado
+igual; o loop junta-os pelo digest, e o pedido do primeiro turno ao vivo é o que teria sido. O
+nonce do envelope não vai no pedido, pelo que os pedidos de um run se reconstroem byte a byte dos
+segmentos do tail e dos envelopes capturados.
+
+**Medido atrás da imagem de produção do proxy (2026-10-08, `ci-wire-live`).** Numa rota
+`openai/…`, o `reasoning_content`, os `thinking_blocks` (assinados, redigidos e de texto vazio),
+o `provider_specific_fields` e a `thought_signature` da tool call chegam ao provider. Numa rota
+`anthropic/…`, o proxy traduz os `thinking_blocks` da mensagem `assistant` em blocos `thinking` e
+`redacted_thinking` do wire da Anthropic, com o texto e a assinatura; e **acrescenta um bloco de
+texto** («Empty message content sanitised…») quando o `content` do `assistant` é a string vazia.
+O proxy re-serializa o JSON: a igualdade byte a byte vale até ao proxy, e daí em diante vale a
+igualdade dos valores. O que o fornecedor real aceita só o AOS-516 mede.
+
 ## 3. Alternativas
 
 1. **Um segmento novo no tail com os bytes do estado** (a forma «d1» do desenho). Rejeitada:
@@ -340,4 +451,4 @@ avisa.
 | Ticket | O quê |
 |---|---|
 | AOS-514 | A sonda do estado e o envelope na porta do gateway (contrato 1.7.0); a captura selada, o layout 1.5.0 e o rótulo `state_digest` no kernel; o replay e a retoma; o interruptor, o tecto e a métrica no nó. Nada é devolvido |
-| AOS-515 | (por fazer) A devolução do estado ao provider, pelas regras do §2.9 |
+| AOS-515 | A devolução do estado ao provider (§2.11): a projecção nativa 1.3.0, a decisão por rota no gateway depois do roteamento, e a serialização que copia os bytes (contrato da porta 1.9.0). Inerte com os perfis de hoje |

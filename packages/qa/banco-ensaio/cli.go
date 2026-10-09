@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
 // A LINHA DE COMANDOS do banco (`aos-ensaio`). Vive aqui, na biblioteca, para os testes a
@@ -88,6 +90,7 @@ type opcoes struct {
 	foraDaLista string
 	reconstruir bool
 	vida        time.Duration
+	perfil      string
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
@@ -109,6 +112,8 @@ opcoes comuns:
   --saida PASTA                       onde escrever o relatorio
   --silencioso                        nao mostra o resumo, so os caminhos
   --pausa DURACAO                     intervalo entre dois passos (ex.: 2s), para um limite de taxa
+  --perfil FICHEIRO                   perfil de rota CANDIDATO em JSON (AOS-513): parametros do pedido, versao
+                                      da projeccao, classe de estado; o digest vai no relatorio
 so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FICHEIRO
 so real:            --modelo M  --precos FICHEIRO  --so-plano
                     --destino-fora-da-lista HOST   aceita um destino da chave fora da lista do fornecedor;
@@ -167,6 +172,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	fs.StringVar(&o.foraDaLista, "destino-fora-da-lista", "", "")
 	fs.BoolVar(&o.reconstruir, "reconstruir-contador", false, "")
 	fs.DurationVar(&o.vida, "vida", 0, "")
+	fs.StringVar(&o.perfil, "perfil", "", "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -213,6 +219,23 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		return SaidaUso
 	}
 	cfg := CfgDaCorrida{Modo: modo, Plano: plano, Bateria: bateria, Relogio: amb.Relogio, Extra: map[string]string{}, Pausa: o.pausa}
+	// O PERFIL CANDIDATO (AOS-513). Lido pela leitura fechada do gateway: uma chave ou um valor
+	// fora do conjunto recusa a corrida antes de qualquer pedido. O digest entra no relatório e
+	// no digest da configuração.
+	var perfil *modelgateway.RouteProfile
+	if o.perfil != "" {
+		doc, lerr := os.ReadFile(o.perfil) // #nosec G304 -- caminho dado pelo operador na linha de comandos
+		if lerr != nil {
+			fmt.Fprintln(stderr, "aos-ensaio: nao foi possivel ler o ficheiro de --perfil")
+			return SaidaUso
+		}
+		if perfil, err = LerPerfilCandidato(doc); err != nil {
+			fmt.Fprintf(stderr, "aos-ensaio: --perfil: %v\n", err)
+			return SaidaUso
+		}
+		cfg.PerfilDigest = perfil.Digest()
+		cfg.Extra["perfil"] = cfg.PerfilDigest
+	}
 	if !o.silencioso {
 		cfg.Progresso = stderr
 	}
@@ -430,7 +453,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		pastaDaSaida = filepath.Join(amb.PastaDoDono, "relatorios")
 	}
-	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador})
+	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil})
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaErro

@@ -109,6 +109,19 @@ func (s *ProviderState) Normalizado() *ProviderState {
 	return nil
 }
 
+// copiaDosEstados devolve uma cópia do MAPA dos estados do run (os bytes de cada envelope são
+// partilhados: ninguém os altera). nil para um mapa vazio.
+func copiaDosEstados(estados map[string][]byte) map[string][]byte {
+	if len(estados) == 0 {
+		return nil
+	}
+	out := make(map[string][]byte, len(estados))
+	for k, v := range estados {
+		out[k] = v
+	}
+	return out
+}
+
 // TailDigest devolve o digest com que o tail refere este estado, ou vazio quando o turno não
 // tem estado a referir (nil, ou [ProviderStateNotReturnable]). Só vale sobre um estado
 // [ProviderState.Normalizado].

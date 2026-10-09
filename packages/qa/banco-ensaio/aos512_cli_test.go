@@ -178,11 +178,26 @@ func proibidosDeTexto(t *testing.T) []string {
 func verSemFugas(t *testing.T, onde, tudo string, proibidos []string) {
 	t.Helper()
 	for _, p := range proibidos {
-		if p != "" && strings.Contains(tudo, p) {
+		if p == "" {
+			continue
+		}
+		// Um facto curto só de dígitos hexadecimais (o «2356» da bateria) aparece por acaso
+		// dentro de um digest ou de um carimbo de tempo — cerca de 1 vez em cada 65 mil
+		// posições, o que avermelhou o gate sem fuga nenhuma. Texto que foge chega como
+		// palavra: para estes, a fuga é a ocorrência NÃO colada a outra letra ou algarismo.
+		if soHexCurto.MatchString(p) {
+			if regexp.MustCompile(`(^|[^0-9A-Za-z])` + p + `($|[^0-9A-Za-z])`).MatchString(tudo) {
+				t.Errorf("%s: FUGA — aparece %q", onde, p)
+			}
+			continue
+		}
+		if strings.Contains(tudo, p) {
 			t.Errorf("%s: FUGA — aparece %q", onde, p)
 		}
 	}
 }
+
+var soHexCurto = regexp.MustCompile(`^[0-9a-f]{1,8}$`)
 
 // O MODO COM MODELO REAL, de ponta a ponta, contra um servidor falso que faz de fornecedor: com
 // sentinelas em TODOS os campos do ficheiro de chaves e no texto de TODAS as respostas, nada

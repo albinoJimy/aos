@@ -414,3 +414,54 @@ func TestAOS514_Retoma_AMeioDoRun_MesmoPromptHash(t *testing.T) {
 		t.Fatalf("sem o estado dos turnos anteriores o prompt_hash do turno 3 tinha de ser outro")
 	}
 }
+
+// F3 (revisão do AOS-515) — EM MODO SENSÍVEL O ESTADO NÃO EXISTE PARA A DEVOLUÇÃO, AO VIVO COMO
+// NA RETOMA. A captura sensível guarda só a referência; se o loop entregasse ao cliente os bytes
+// que recebeu ao vivo, o run devolvia o estado enquanto corria e deixava de o devolver depois de
+// retomado. Com o capturer sensível a vista de cada turno vai sem estados — e o rótulo do tail
+// continua lá, que é o que dá `estado_so_referencia` a quem devolve. Com o capturer normal, os
+// bytes seguem.
+func TestAOS515_F3_ModoSensivel_AVistaAoVivoNaoLevaOEstado(t *testing.T) {
+	for _, sensivel := range []bool{false, true} {
+		b := novaBancada(t)
+		if sensivel {
+			cap, err := NewCapturer(b.store, WithClock(fixedClock()), WithSensitiveResults())
+			if err != nil {
+				t.Fatal(err)
+			}
+			b.cap = cap
+		}
+		guiao := aos514Guiao()
+		var vistas []agentruntime.PromptView
+		model := agentruntime.ModelClientFunc(func(_ context.Context, v agentruntime.PromptView) (agentruntime.ModelResponse, error) {
+			vistas = append(vistas, v)
+			return guiao[v.Turn-1], nil
+		})
+		goal := aos489Goal("run-515-f3")
+		goal.AssemblyVersion = agentruntime.AssemblyVersion150
+		if _, err := agentruntime.New(model, b.rm, agentruntime.NewTurnRecorder(b.store), agentruntime.WithCapturer(b.cap)).Run(context.Background(), goal); err != nil {
+			t.Fatalf("sensivel=%v: Run: %v", sensivel, err)
+		}
+		if len(vistas) != 3 {
+			t.Fatalf("sensivel=%v: queria 3 turnos, vieram %d", sensivel, len(vistas))
+		}
+		rotulos := 0
+		for _, seg := range vistas[2].Tail {
+			for _, m := range seg.Meta {
+				if m.Key == agentruntime.StateDigestLabel {
+					rotulos++
+				}
+			}
+		}
+		if rotulos != 2 {
+			t.Fatalf("sensivel=%v: o tail do terceiro turno tinha de referir os dois estados; refere %d", sensivel, rotulos)
+		}
+		quero := 2
+		if sensivel {
+			quero = 0
+		}
+		if got := len(vistas[2].ProviderStates); got != quero {
+			t.Fatalf("sensivel=%v: a vista do terceiro turno leva %d estados; queria %d", sensivel, got, quero)
+		}
+	}
+}

@@ -1166,6 +1166,11 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 		goal.AssemblyVersion = layoutNovo
 	}
 	goal = fixarLayout(goal)
+	// AOS-513: a VERSÃO DA PROJECÇÃO que o perfil da rota do run declara fica fixada no Goal no
+	// mesmo ponto e pela mesma razão. Sem perfil que a declare — todos os de hoje — o Goal fica
+	// sem versão e a projecção é a do interruptor do nó, como sempre. Um run retomado traz a do
+	// seu registo, ou a marca de que começou sem nenhuma, e não é tocado.
+	goal = fixarProjeccao(goal)
 	// AOS-493: o MODO DE APLICAÇÃO do veredicto de conclusão fica fixado no Goal no mesmo ponto
 	// e pela mesma razão: o registo de retoma, o runtime e o manifesto de cada turno têm o
 	// mesmo valor. Um run novo fica no modo do nó; um retomado traz o do seu registo.
@@ -1365,6 +1370,9 @@ func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, err
 		// AOS-497: a origem declarada da saída e o seu vínculo sobrevivem à retoma.
 		OutputFromTool:      goal.OutputFromTool,
 		OutputSourceBinding: goal.OutputSourceBinding,
+		// AOS-513: a versão da projecção em que o run está fixado sobrevive à retoma. Um run
+		// sem versão fixada grava o campo vazio — os bytes de sempre.
+		ProjectionVersion: versaoDaProjeccaoParaORegisto(goal),
 	}, nil
 }
 

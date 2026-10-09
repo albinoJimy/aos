@@ -755,7 +755,7 @@ func TestAOS504_ParseNativeProjectionVersion(t *testing.T) {
 		}
 	}
 	view := aos490VistaDeExemplo(t, aos490Layout)
-	for _, v := range []string{"", "1.1", "1.1.0 ", " 1.1.0", "v1.1.0", "1.3.0", "2.0.0", "1.0.0,1.1.0", "native", "latest", "1.1.0\n"} {
+	for _, v := range []string{"", "1.1", "1.1.0 ", " 1.1.0", "v1.1.0", "1.4.0", "2.0.0", "1.0.0,1.1.0", "native", "latest", "1.1.0\n"} {
 		if got, err := modelgateway.ParseNativeProjectionVersion(v); !errors.Is(err, modelgateway.ErrBadProjectionVersion) || got != "" {
 			t.Fatalf("ParseNativeProjectionVersion(%q) tinha de recusar; veio (%q, %v)", v, got, err)
 		}

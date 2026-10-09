@@ -190,6 +190,124 @@ type ModelResponse struct {
 	// conteúdo, e o tail refere-o por digest (layout 1.5.0). NÃO é resposta, não entra no
 	// `turn.recorded` nem em spans, e não é devolvido ao provider.
 	State *ProviderState
+	// RequestParams são os parâmetros que o PERFIL DA ROTA mandou enviar no pedido deste turno
+	// (AOS-513) — no gateway, `thinking`, `reasoning_effort` e `max_tokens`, em chaves e valores
+	// de vocabulário fechado. Como [ModelResponse.Projection], é um facto sobre o PEDIDO,
+	// declarado por quem o fez. nil quando o perfil não declara nenhum (a omissão). O loop fecha
+	// a forma à entrada ([NormalizeRequestParams]) e junta-os a `manifest.model.params` do
+	// `turn.recorded`, para que o registo diga com que parâmetros o turno correu. Não decide
+	// nada no runtime e não entra na captura do turno.
+	RequestParams map[string]string
+}
+
+// Limites de [NormalizeRequestParams].
+const (
+	maxRequestParams          = 8
+	maxRequestParamKeyBytes   = 32
+	maxRequestParamValueBytes = 48
+)
+
+// NormalizeRequestParams devolve os parâmetros do pedido DENTRO da forma que o registo aceita:
+// no máximo oito, com a chave em minúsculas e `_` (até 32 bytes) e o valor em minúsculas,
+// dígitos e `: . _ -` (até 48 bytes). O que não couber é deitado fora, e sem nenhum que caiba
+// devolve nil. O cliente de modelo é uma porta: um que pusesse aqui texto de terceiros pô-lo-ia
+// em claro em cada `turn.recorded`.
+func NormalizeRequestParams(in map[string]string) map[string]string {
+	if len(in) == 0 || len(in) > maxRequestParams {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		if dentroDoAlfabeto(k, maxRequestParamKeyBytes, "_") && dentroDoAlfabeto(v, maxRequestParamValueBytes, "0123456789:._-") {
+			out[k] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// dentroDoAlfabeto diz se s tem de 1 a max bytes, todos letras minúsculas ASCII ou de extra.
+func dentroDoAlfabeto(s string, max int, extra string) bool {
+	if s == "" || len(s) > max {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' {
+			continue
+		}
+		dentro := false
+		for j := 0; j < len(extra); j++ {
+			dentro = dentro || extra[j] == c
+		}
+		if !dentro {
+			return false
+		}
+	}
+	return true
+}
+
+// paramsDoTurno devolve o `manifest.model.params` de um turno: os parâmetros do Goal e, por
+// cima, os que o perfil da rota enviou no pedido. Sem parâmetros do pedido devolve o mapa do
+// Goal TAL COMO ESTÁ — o manifesto fica com os bytes de sempre.
+func paramsDoTurno(doGoal, doPedido map[string]string) map[string]string {
+	if len(doPedido) == 0 {
+		return doGoal
+	}
+	out := make(map[string]string, len(doGoal)+len(doPedido))
+	for k, v := range doGoal {
+		out[k] = v
+	}
+	for k, v := range doPedido {
+		out[k] = v
+	}
+	return out
+}
+
+// ProjectionVersionUnpinned é o [Goal.ProjectionVersion] de um run re-hospedado que começou sem
+// versão de projecção fixada (AOS-513).
+const ProjectionVersionUnpinned = "none"
+
+// ProjectionVersionForView devolve o que a vista de um turno leva como versão da projecção do
+// run: a versão fixada, se tiver a forma `N.N.N`; a marca [ProjectionVersionUnpinned], se o run
+// foi re-hospedado sem versão fixada; e vazio em qualquer outro caso (um run novo sem versão, ou
+// um valor sem forma).
+//
+// A MARCA TEM DE CHEGAR A QUEM PROJECTA (revisão do AOS-513, F2). Vazio quer dizer «run novo: usa
+// a versão que o perfil da rota declarar»; a marca quer dizer «este run já deu turnos sem versão
+// fixada: continua na do nó, e ignora a que o perfil declare agora». Reduzir a marca a vazio fazia
+// um run retomado mudar de projecção a meio quando a imagem nova declarava uma versão no perfil.
+func ProjectionVersionForView(v string) string {
+	if v == ProjectionVersionUnpinned {
+		return v
+	}
+	return NormalizeProjectionVersion(v)
+}
+
+// NormalizeProjectionVersion devolve a versão de projecção em que um run está fixado se ela
+// tiver a forma `N.N.N` (dígitos e pontos, até 16 bytes), e vazio caso contrário. O runtime não
+// conhece as versões publicadas — isso é de quem projecta —; só garante a forma do que
+// transporta.
+func NormalizeProjectionVersion(v string) string {
+	if v == "" || len(v) > 16 {
+		return ""
+	}
+	pontos := 0
+	for i := 0; i < len(v); i++ {
+		switch c := v[i]; {
+		case c >= '0' && c <= '9':
+		case c == '.' && i > 0 && i < len(v)-1 && v[i-1] != '.':
+			pontos++
+		default:
+			return ""
+		}
+	}
+	if pontos != 2 {
+		return ""
+	}
+	return v
 }
 
 // RouteCheck é o resultado da comparação da rota de um turno com o perfil esperado, num

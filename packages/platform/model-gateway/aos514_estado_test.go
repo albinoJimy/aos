@@ -294,7 +294,7 @@ func TestAOS514_ModoInvalidoRecusaAComposicao(t *testing.T) {
 	if _, err := modelgateway.ParseProviderState(""); err == nil {
 		t.Errorf("o vazio nao e aceite pelo parser: quem le a configuracao decide a omissao")
 	}
-	if port.Version != "1.7.0" {
+	if port.Version < "1.7.0" {
 		t.Errorf("o estado entrou na porta na 1.7.0; a versao e %s", port.Version)
 	}
 }

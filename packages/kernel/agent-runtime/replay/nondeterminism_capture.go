@@ -351,6 +351,10 @@ func WithContentSealer(sealer agentruntime.ContentSealer) CapturerOption {
 }
 
 // NewCapturer constrói um capturer sobre o Event Store dado. store é obrigatório.
+// KeepsProviderStateBytes implementa [agentruntime.ProviderStateKeeper]: em modo sensível a
+// captura guarda só a referência do estado opaco, e os bytes não ficam.
+func (c *EventStoreCapturer) KeepsProviderStateBytes() bool { return !c.sensitive }
+
 func NewCapturer(store EventStore, opts ...CapturerOption) (*EventStoreCapturer, error) {
 	if store == nil {
 		return nil, ErrNilStore

@@ -161,7 +161,10 @@ func (c *capturaDoEstado) fechar(out *agentruntime.ModelResponse, resp port.Chat
 		RouteProfileDigest: agentruntime.NormalizeRouteProfileDigest(out.RouteProfileDigest),
 		RequestedModel:     modeloServido(pedido),
 		ServedModel:        out.Model,
-		ProviderState:      *resp.State,
+		// O resultado da comparação da rota DESTE turno (vazio sem governação). Fechado no
+		// vocabulário do runtime antes de entrar no envelope.
+		RouteCheck:    string(out.RouteCheck.Normalizado()),
+		ProviderState: *resp.State,
 	}
 	if err := c.nonce(env.Nonce); err != nil {
 		out.State = naoDevolvivel

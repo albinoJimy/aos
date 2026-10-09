@@ -78,7 +78,7 @@ func TestAOS506_A100EA110_FicamByteAByte(t *testing.T) {
 		"omissao":            nil,
 		"1.0.0":              {modelgateway.WithProjectionVersion(aos504V100)},
 		"1.2.0 e volta":      {modelgateway.WithProjectionVersion(aos506V120), modelgateway.WithProjectionVersion(aos504V100)},
-		"desconhecida 1.3.0": {modelgateway.WithProjectionVersion("1.3.0")},
+		"desconhecida 1.4.0": {modelgateway.WithProjectionVersion("1.4.0")},
 	} {
 		req, resp, err := aos490Pedir(t, view, append(append([]modelgateway.RuntimeAdapterOption(nil), base...), extra...)...)
 		if err != nil {
@@ -373,7 +373,7 @@ func TestAOS506_VocabularioLayoutsEVista(t *testing.T) {
 		}
 	}
 	view := aos490VistaDeExemplo(t, aos490Layout)
-	for _, v := range []string{"", "1.2", "1.2.0 ", "v1.2.0", "1.2.1", "1.3.0", "2.0.0", "1.1.0,1.2.0"} {
+	for _, v := range []string{"", "1.2", "1.2.0 ", "v1.2.0", "1.2.1", "1.4.0", "2.0.0", "1.1.0,1.2.0"} {
 		if got, err := modelgateway.ParseNativeProjectionVersion(v); !errors.Is(err, modelgateway.ErrBadProjectionVersion) || got != "" {
 			t.Fatalf("ParseNativeProjectionVersion(%q) tinha de recusar; veio (%q, %v)", v, got, err)
 		}

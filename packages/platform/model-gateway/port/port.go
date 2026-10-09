@@ -34,7 +34,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.7.0"
+const Version = "1.9.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -95,6 +95,12 @@ type Message struct {
 	// JSON crus que vieram; `null` ou ausente é vazio. Nunca é erro: uma carga que o gateway
 	// não interpreta não pode derrubar a resposta que a transporta.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
+	// State é o estado opaco do provider do turno desta mensagem `assistant`, num PEDIDO
+	// (AOS-515, ADR-040 §2.9; campo aditivo, MINOR 1.9.0): ver [MessageState]. Não se lê de JSON
+	// nem se serializa por si (`json:"-"`): só [ChatRequest.MarshalWire] o escreve, e só quando
+	// o gateway o marcou para sair. nil em todas as mensagens de uma resposta, e em todas as de
+	// um pedido que não venha da projecção nativa 1.3.0.
+	State *MessageState `json:"-"`
 }
 
 // UnmarshalJSON lê uma mensagem do wire. É a leitura de sempre, campo a campo, com três
@@ -458,6 +464,14 @@ type ChatRequest struct {
 	// (ADR-008, EPIC-03). Vazio se o chamador não o fornece (a agregação por run
 	// mantém-se).
 	TreeID string `json:"-"`
+
+	// --- Parâmetros do pedido declarados pela ROTA (AOS-513; campos aditivos, MINOR 1.8.0) ---
+	// Thinking e ReasoningEffort são os parâmetros de raciocínio do pedido. NÃO se lêem de JSON
+	// e NÃO são do chamador: o gateway sobrepõe-nos em cada pedido com os do perfil da rota a
+	// que o pedido vai ([RequestParams.Apply]) — sem perfil que os declare ficam vazios e o
+	// pedido é o de sempre. Vão no wire, pela serialização do pedido, só quando preenchidos.
+	Thinking        *ThinkingParam `json:"-"`
+	ReasoningEffort string         `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).
@@ -513,6 +527,11 @@ type ChatResponse struct {
 	// captura, que é a omissão, ou quando a resposta não o traz. O caminho de streaming não o
 	// preenche.
 	State *ProviderState `json:"-"`
+	// SentParams são os parâmetros que o perfil da rota mandou enviar no pedido desta resposta
+	// (AOS-513; campo aditivo, MINOR 1.8.0), na forma de [RequestParams.Manifest]: chaves e
+	// valores de vocabulário fechado. nil quando o perfil não declara nenhum, que é a omissão.
+	// Não é do corpo — é um facto sobre o PEDIDO, escrito pelo gateway —, e não vai no wire.
+	SentParams map[string]string `json:"-"`
 }
 
 // ChatStreamDelta é um incremento (delta) do streaming de chat. Content é o
