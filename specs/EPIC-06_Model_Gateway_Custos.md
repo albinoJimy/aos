@@ -3448,6 +3448,16 @@ passo 3 espera pela decisão da região.
   `redacted_thinking`, `thinking` de texto vazio, `text`, `tool_use`): o gateway envia o `content` do `assistant` como
   string vazia. Com `devolver: nunca` o proxy **não** retirou o `thinking` nem inventou blocos:
   o pedido chegou sem estado e levou 400 (10 em 10).
+- **Revisão adversarial (2026-10-09): o banco dava verde falso, corrigido.** Contava como
+  «devolvido» a decisão do gateway, tomada antes de o pedido sair (com o provider a responder
+  500 a tudo: 3 de 3 «devolvidos», zero recebidos), e como «estado capturado» um envelope só
+  com ids de tool call (provider sem raciocínio nenhum: taxa a 100%). Agora só conta o que o
+  fornecedor **aceitou** (2xx), mede-se sobre os turnos que trouxeram raciocínio ou assinatura,
+  o 429, o 5xx, o erro de transporte e o pedido não enviado têm contador próprio, e o relatório
+  traz o veredicto calculado (`qualificacao_da_devolucao`: `cumprida`, `nao_cumprida`,
+  `sem_raciocinio`, `inconclusiva`). Os números acima repetiram-se com os contadores novos:
+  atrás do proxy, 30 de 30 aceites e veredicto `cumprida`; com `devolver: nunca`,
+  `nao_cumprida`. Oito mutações dos contadores e do veredicto, todas vermelhas.
 - **Por fazer.** O passo 2 inteiro: a corrida com o Claude (comando no
   `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`), que é quem diz se o fornecedor aceita o bloco de
   texto acrescentado pelo proxy e o que responde a blocos em falta. O controlo negativo com um

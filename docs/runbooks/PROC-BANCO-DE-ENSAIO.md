@@ -155,9 +155,25 @@ bash scripts/ci/banco-ensaio-proxy.sh
 Oito passagens pela bateria são 40 nós com tools (critério P3) e, no máximo, 672 pedidos mais a
 sonda: cabe no tecto de 1000 por dia. O tecto em dólares pára a corrida a meio se for atingido.
 
-**Como ler o resultado.** P4 é `taxa_de_devolucao` a 100% com `recusas_por_falta_de_estado` e
-`http_4xx_em_pedidos_com_estado` a zero. Uma recusa com a causa `estado_de_rota_nao_provada` não
-é do fornecedor: o proxy não declarou o modelo servido igual ao do perfil (ver o passo 2).
+**Como ler o resultado.** Lê-se **um campo**: `qualificacao_da_devolucao.veredicto`. É o banco
+que o calcula; as contagens só o explicam.
+
+| Veredicto | O que quer dizer |
+|---|---|
+| `cumprida` | Houve turnos com raciocínio, todos os pedidos que o deviam levar foram **aceites pelo fornecedor** (2xx), e nada falhou pelo caminho. Só este qualifica P4 |
+| `nao_cumprida` | A devolução falhou: há recusas do gateway, respostas 4xx a pedidos com estado, ou nós com tools que não fecharam `cumprido` |
+| `sem_raciocinio` | Nenhum turno trouxe raciocínio nem assinatura: não havia nada a devolver, e a corrida **não prova nada** (o `thinking` não chegou ao fornecedor — ver o passo 2) |
+| `inconclusiva` | Só há razões passageiras (429, 5xx, erro de transporte, tecto do dia, corrida a meio): repete-se |
+
+`razoes` diz porquê, em vocabulário fechado. O banco conta como devolvido **só o que o
+fornecedor aceitou**: a decisão do gateway (`decididos_a_devolver`) toma-se antes de o pedido
+sair e, sozinha, não conta. Um envelope só com os ids das tool calls conta em
+`turnos_so_com_ids_capturados` e fica fora da medida. Uma recusa com a causa
+`estado_de_rota_nao_provada` não é do fornecedor: o proxy não declarou o modelo servido igual ao
+do perfil (ver o passo 2).
+
+Na corrida contra o Claude não se passa `--host-esperado`: o relatório leva
+`endpoint_comparado: false`, e a rota prova-se só pelo modelo servido que o proxy declara.
 
 **O que o banco ainda não mede.** O segundo turno com **um byte da assinatura alterado** contra o
 modelo real (o controlo negativo do AOS-516) não tem opção no banco: o controlo «sem o estado»

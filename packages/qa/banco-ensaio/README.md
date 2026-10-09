@@ -291,10 +291,15 @@ O relatório ganha, na corrida, por braço e por caso (`devolucao_do_estado`), s
 |---|---|
 | `turnos_com_estado_capturado` | Turnos cuja resposta trouxe estado e a captura o guardou |
 | `pedidos_com_turnos_anteriores` | Pedidos que levavam pelo menos um turno anterior com tool calls |
-| `devolvidos` / `taxa_de_devolucao` | Os que saíram com o estado de todos esses turnos (critério P4) |
+| `turnos_com_raciocinio_capturado` / `turnos_so_com_ids_capturados` | Os turnos capturados que trouxeram raciocínio ou assinatura, e os que só trouxeram ids de tool call (fora da medida) |
+| `decididos_a_devolver` | Pedidos em que o gateway armou o estado de todos os turnos — uma **decisão**, antes do envio |
+| `aceites_pelo_fornecedor` / `taxa_de_devolucao` | Dos pedidos que deviam levar raciocínio, os armados **e** respondidos com 2xx (critério P4) |
 | `nao_devolvido_por_causa` | A causa, no vocabulário do AOS-515 (inclui `estado_de_rota_nao_provada`) |
 | `recusas_por_falta_de_estado` | Pedidos que o gateway **não enviou** (`StateReturnError`); o run fecha `estado_nao_devolvido` |
-| `http_4xx_em_pedidos_com_estado` | Respostas 4xx do provider a pedidos que levaram estado |
+| `pedidos_com_estado` | O que aconteceu no transporte aos pedidos com estado, por tentativa: `http_2xx`, `http_4xx` (sem o 429), `http_429`, `http_5xx`, `erro_de_transporte`, `nao_enviado` |
+
+O veredicto está em `qualificacao_da_devolucao` (`cumprida`, `nao_cumprida`, `sem_raciocinio`,
+`inconclusiva`, com as `razoes`): é esse campo que se lê.
 
 Nos modos sem modelo real, `forma_no_fornecedor` diz com que **forma** as mensagens `assistant`
 com tool calls chegaram ao provider falso — chaves e tipos de bloco, nunca valores. Um perfil de
