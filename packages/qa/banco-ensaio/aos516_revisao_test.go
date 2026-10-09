@@ -268,3 +268,16 @@ func TestAOS516_Revisao_ContarPedido(t *testing.T) {
 		})
 	}
 }
+
+// A5 — o host esperado tem a forma de um nome de host, com porta opcional.
+func TestAOS516_Revisao_A5_HostEsperado(t *testing.T) {
+	for h, quer := range map[string]bool{
+		"api.exemplo.test": true, "api.exemplo.test:8443": true, "localhost": true, "a-b.c": true,
+		"": false, ":::": false, ":443": false, "api..test": false, "api.test:": false, "api.test:porta": false,
+		"-api.test": false, "api-.test": false, "https://api.test": false, "api.test/v1": false, "API.test": false, "a:1:2": false,
+	} {
+		if hostAceite(h) != quer {
+			t.Errorf("hostAceite(%q) = %v, quer %v", h, !quer, quer)
+		}
+	}
+}

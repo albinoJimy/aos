@@ -60,10 +60,18 @@ func TestAOS516_ProxyReal_ADevolucaoPelaRotaAnthropic(t *testing.T) {
 		if r.Taxas.HTTP["401"] != 0 {
 			t.Errorf("%s: um 401 e a chave da rota a nao chegar ao fornecedor: %v", c.nome, r.Taxas.HTTP)
 		}
+		// A devolucao JULGA-SE: o veredicto do banco, e nao so a forma do que chegou.
+		quer := QualificacaoCumprida
+		if c.perfil == sem {
+			quer = QualificacaoNaoCumprida
+		}
+		if q := r.Qualificacao; q == nil || q.Veredicto != quer {
+			t.Errorf("%s: qualificacao = %+v, quer %s", c.nome, q, quer)
+		}
 		verSemFugas(t, c.nome, tudoOQueFoiEscrito(t, e, saida), append(append(proibidosDeTexto(t), SentinelasDoEstado()...), "sk-falso-", "sk-ensaio-", "Bearer "))
 		medidas[c.nome] = map[string]any{
 			"runs": r.Taxas.N, "desfechos": r.Taxas.Desfechos, "http": r.Taxas.HTTP, "tipos_de_erro": r.Taxas.TiposDeErro,
-			"devolucao": r.Taxas.Devolucao, "forma_no_fornecedor": f,
+			"devolucao": r.Taxas.Devolucao, "qualificacao": r.Qualificacao, "forma_no_fornecedor": f,
 		}
 	}
 	medidas["pass"] = !t.Failed()

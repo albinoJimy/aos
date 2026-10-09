@@ -72,10 +72,27 @@ func hostAceite(h string) bool {
 	if h == "" || len(h) > 253 {
 		return false
 	}
-	for i := 0; i < len(h); i++ {
-		c := h[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '-' || c == ':') {
+	nome, porta, temPorta := strings.Cut(h, ":")
+	if temPorta {
+		if porta == "" || len(porta) > 5 {
 			return false
+		}
+		for i := 0; i < len(porta); i++ {
+			if porta[i] < '0' || porta[i] > '9' {
+				return false
+			}
+		}
+	}
+	// Cada rótulo: não vazio, só letras minúsculas, dígitos e `-`, sem `-` nas pontas.
+	for _, rotulo := range strings.Split(nome, ".") {
+		if rotulo == "" || len(rotulo) > 63 || rotulo[0] == '-' || rotulo[len(rotulo)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(rotulo); i++ {
+			c := rotulo[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
 		}
 	}
 	return true
