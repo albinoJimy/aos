@@ -101,7 +101,7 @@ func TestAOS516_Falso_ObrigatorioComOExigente_Passa(t *testing.T) {
 			if d == nil {
 				t.Fatal("o relatorio nao tem as contagens da devolucao")
 			}
-			if d.TurnosComEstadoCapturado != 3*amostras || d.PedidosComTurnosAnteriores != 3*amostras || d.Devolvidos != 3*amostras || d.Recusas != 0 || d.HTTP4xxComEstado != 0 {
+			if d.TurnosComEstadoCapturado != 3*amostras || d.PedidosComTurnosAnteriores != 3*amostras || d.AceitesPeloFornecedor != 3*amostras || d.Recusas != 0 || d.ComEstado.HTTP4xx != 0 {
 				t.Errorf("devolucao = %+v; quer %d turnos capturados, %d pedidos e todos devolvidos", d, 3*amostras, 3*amostras)
 			}
 			aos516Contagens(t, "nao devolvido por causa", d.NaoDevolvidoPorCausa, nil)
@@ -152,7 +152,7 @@ func TestAOS516_Falso_ControlosNegativos(t *testing.T) {
 		aos516Contagens(t, "desfechos", r.Taxas.Desfechos, map[string]int{DesfechoErroHTTP: amostras})
 		aos516Contagens(t, "http", r.Taxas.HTTP, map[string]int{"200": amostras, "400": amostras})
 		d := r.Taxas.Devolucao
-		if d == nil || d.TurnosComEstadoCapturado != amostras || d.Devolvidos != amostras || d.HTTP4xxComEstado != amostras || d.Recusas != 0 {
+		if d == nil || d.TurnosComEstadoCapturado != amostras || d.AceitesPeloFornecedor != 0 || d.DecididosADevolver != amostras || d.ComEstado.HTTP4xx != amostras || d.Recusas != 0 {
 			t.Errorf("devolucao = %+v; quer %d pedidos devolvidos e %d respostas 4xx neles", d, amostras, amostras)
 		}
 		aos516Contagens(t, "recusas do falso", forma.Recusas, map[string]int{RecusaEstadoPresente: amostras})
@@ -175,7 +175,7 @@ func TestAOS516_Falso_ControlosNegativos(t *testing.T) {
 			// So o primeiro pedido de cada run chegou ao provider: o segundo nao foi enviado.
 			aos516Contagens(t, "http", r.Taxas.HTTP, map[string]int{"200": amostras, "sem_resposta_http": amostras})
 			d := r.Taxas.Devolucao
-			if d == nil || d.Recusas != amostras || d.Devolvidos != 0 || d.HTTP4xxComEstado != 0 || d.TurnosComEstadoCapturado != amostras {
+			if d == nil || d.Recusas != amostras || d.AceitesPeloFornecedor != 0 || d.ComEstado.HTTP4xx != 0 || d.TurnosComEstadoCapturado != amostras {
 				t.Fatalf("devolucao = %+v; quer %d recusas e nenhum pedido devolvido", d, amostras)
 			}
 			aos516Contagens(t, "nao devolvido por causa", d.NaoDevolvidoPorCausa, map[string]int{modelgateway.StateCauseRouteUnproven: amostras})

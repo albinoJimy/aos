@@ -90,7 +90,7 @@ func TestAOS516_LinhaDeComandos_Falso(t *testing.T) {
 	// Os 5 nos com tools da bateria fazem 3 turnos com tool call cada: 15 turnos com estado, e
 	// os 15 pedidos seguintes levam-no. Nenhum 4xx; nenhuma recusa.
 	d := r.Taxas.Devolucao
-	if d == nil || d.TurnosComEstadoCapturado != 15 || d.PedidosComTurnosAnteriores != 15 || d.Devolvidos != 15 || d.Recusas != 0 || d.HTTP4xxComEstado != 0 {
+	if d == nil || d.TurnosComEstadoCapturado != 15 || d.PedidosComTurnosAnteriores != 15 || d.AceitesPeloFornecedor != 15 || d.Recusas != 0 || d.ComEstado.HTTP4xx != 0 {
 		t.Fatalf("devolucao da bateria = %+v", d)
 	}
 	aos516Contagens(t, "http", r.Taxas.HTTP, map[string]int{"200": 22})
@@ -101,7 +101,7 @@ func TestAOS516_LinhaDeComandos_Falso(t *testing.T) {
 	porCaso := map[string]int{}
 	for _, c := range r.PorCaso {
 		if c.Taxas.Devolucao != nil {
-			porCaso[c.Caso] = c.Taxas.Devolucao.Devolvidos
+			porCaso[c.Caso] = c.Taxas.Devolucao.AceitesPeloFornecedor
 		}
 	}
 	aos516Contagens(t, "devolvidos por caso", porCaso, map[string]int{"T1": 3, "T2": 3, "T3": 0, "T4": 3, "T5": 3, "T6": 3})
@@ -127,7 +127,7 @@ func TestAOS516_LinhaDeComandos_Falso(t *testing.T) {
 		t.Fatalf("codigo %d\n%s", e.codigo, e.stderr)
 	}
 	r = aos516Relatorio(t, saida)
-	if d := r.Taxas.Devolucao; d == nil || d.HTTP4xxComEstado != 5 || d.Devolvidos != 5 || r.FormaNoFornecedor.Recusas[RecusaEstadoPresente] != 5 {
+	if d := r.Taxas.Devolucao; d == nil || d.ComEstado.HTTP4xx != 5 || d.AceitesPeloFornecedor != 0 || d.DecididosADevolver != 5 || r.FormaNoFornecedor.Recusas[RecusaEstadoPresente] != 5 {
 		t.Errorf("perfil obrigatorio contra o que proibe: devolucao=%+v forma=%+v", d, r.FormaNoFornecedor)
 	}
 	verSemFugas(t, "falso que proibe", tudoOQueFoiEscrito(t, e, saida), proibidos)
@@ -170,7 +170,7 @@ func TestAOS516_Proxy_ORotaEADoPerfil(t *testing.T) {
 			Turnos                  int
 		}{p.Prefixo, p.Modelo, p.Estado, p.TurnosDoFalso})
 	}
-	if r := aos516Relatorio(t, saida); r.Rota.Modelo != "anthropic/claude-de-ensaio" || r.Taxas.Devolucao == nil || r.Taxas.Devolucao.Devolvidos != 10 {
+	if r := aos516Relatorio(t, saida); r.Rota.Modelo != "anthropic/claude-de-ensaio" || r.Taxas.Devolucao == nil || r.Taxas.Devolucao.AceitesPeloFornecedor != 10 {
 		t.Errorf("relatorio do modo proxy: rota %+v, devolucao %+v", r.Rota, r.Taxas.Devolucao)
 	}
 
@@ -221,7 +221,7 @@ func TestAOS516_Real_OPerfilTemDeEsperarARotaDaCorrida(t *testing.T) {
 		t.Fatalf("codigo %d\n%s", e.codigo, e.stderr)
 	}
 	r := aos516Relatorio(t, saida)
-	if d := r.Taxas.Devolucao; d == nil || d.Devolvidos != 10 || d.PedidosComTurnosAnteriores != 10 || d.Recusas != 0 || d.HTTP4xxComEstado != 0 {
+	if d := r.Taxas.Devolucao; d == nil || d.AceitesPeloFornecedor != 10 || d.PedidosComTurnosAnteriores != 10 || d.Recusas != 0 || d.ComEstado.HTTP4xx != 0 {
 		t.Errorf("devolucao no modo real (lancador de teste) = %+v", d)
 	}
 	// Um fornecedor real nao mostra a forma do que recebeu: o relatorio do modo real nao a tem.
