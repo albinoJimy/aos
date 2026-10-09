@@ -417,6 +417,14 @@ func qualificarDevolucao(devolve, completa bool, d *Devolucao, obs []Observacao)
 			} else {
 				interrompidos = true
 			}
+		case DesfechoErroOutro:
+			// Um erro sem resposta HTTP no último pedido (ligação recusada ou fechada) é do
+			// transporte, e passageiro; qualquer outro erro não o é.
+			if len(o.HTTP) > 0 && o.HTTP[len(o.HTTP)-1] == 0 {
+				interrompidos = true
+			} else {
+				naoCumpridos = true
+			}
 		default:
 			naoCumpridos = true
 		}
