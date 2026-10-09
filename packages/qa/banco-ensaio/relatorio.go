@@ -74,6 +74,10 @@ type Relatorio struct {
 	// FormaNoFornecedor é a forma com que os turnos com tool calls chegaram ao provider FALSO
 	// (AOS-516): nomes de chaves e tipos de bloco, nunca valores. Só nos modos sem modelo real.
 	FormaNoFornecedor *FormaNoFornecedor `json:"forma_no_fornecedor,omitempty"`
+	// Qualificacao é o VEREDICTO do banco sobre a devolução do estado opaco (AOS-516). Existe
+	// quando o perfil da corrida devolve estado, ou quando a corrida foi feita contra o provider
+	// falso do estado. É este campo que se lê; as contagens explicam-no.
+	Qualificacao *QualificacaoDaDevolucao `json:"qualificacao_da_devolucao,omitempty"`
 }
 
 // Declaracao é um valor declarado por alguém e não verificado pelo banco.
@@ -201,7 +205,8 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 	}
 	if cfg.No != nil && cfg.No.devolucao != nil {
 		l = append(l,
-			"Devolucao do estado opaco: o banco conta o que o gateway decidiu em cada pedido e o codigo HTTP da resposta. Nao le o estado, e nao prova que o fornecedor o validou: um provider falso nao verifica assinaturas, e so o modelo real o faz.",
+			"Devolucao do estado opaco: so conta como devolvido o pedido em que o gateway armou o estado de todos os turnos E a que o fornecedor respondeu 2xx. A decisao do gateway toma-se antes do envio e, sozinha, nao conta. O banco nao le o estado, e nao prova que o fornecedor o validou: um provider falso nao verifica assinaturas, e so o modelo real o faz.",
+			"Um turno com raciocinio e um turno cuja resposta trouxe pelo menos um campo de raciocinio ou de assinatura, pelos nomes dos campos que a sonda do gateway leu; o banco nao le os valores, e um campo presente com valor vazio conta. Um envelope so com os ids das tool calls conta a parte e nao entra na taxa.",
 			"A governacao da rota corre em observe: compara o modelo que o proxy DECLARA ter servido com o do perfil. Nao e atestacao. No modo falso nao ha proxy: quem declara o modelo servido e o proprio provider falso, com o nome que o perfil espera.",
 			"Com devolver em obrigatorio, um turno cujo estado nao se pode devolver para o run (estado_nao_devolvido): o pedido seguinte nao e enviado. Esses runs contam em recusas_por_falta_de_estado, nao em erros do provider.",
 		)
@@ -241,6 +246,9 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 	}
 	if r.Observacoes == nil {
 		r.Observacoes = []Observacao{}
+	}
+	if estado != nil || cfg.QualificaDevolucao {
+		r.Qualificacao = qualificarDevolucao(estado != nil, terminou == TerminouCompleta, r.Taxas.Devolucao, obs)
 	}
 	if cfg.RegiaoDeclarada != "" {
 		r.RegiaoDeclarada = &Declaracao{Valor: cfg.RegiaoDeclarada, Nota: "declarada pelo dono no ficheiro de chaves; sem efeito no ensaio e nao verificada"}
@@ -442,13 +450,16 @@ func blocoDaDevolucao(b *strings.Builder, d *Devolucao) {
 	if d == nil {
 		return
 	}
-	fmt.Fprintf(b, "  DEVOLUCAO DO ESTADO OPACO: %d turno(s) com estado capturado; %d pedido(s) com turnos anteriores\n",
-		d.TurnosComEstadoCapturado, d.PedidosComTurnosAnteriores)
-	b.WriteString(linhaDaTaxa("  pedidos que levaram o estado (P4)", d.TaxaDeDevolucao))
-	fmt.Fprintf(b, "    recusas por falta de estado (pedido NAO enviado): %d;  4xx do provider em pedidos com estado: %d\n",
-		d.Recusas, d.HTTP4xxComEstado)
+	fmt.Fprintf(b, "  DEVOLUCAO DO ESTADO OPACO: %d turno(s) com estado capturado, dos quais %d com raciocinio ou assinatura e %d so com ids; %d pedido(s) com turnos anteriores\n",
+		d.TurnosComEstadoCapturado, d.TurnosComRaciocinioCapturado, d.TurnosSoComIDs, d.PedidosComTurnosAnteriores)
+	b.WriteString(linhaDaTaxa("  aceites pelo fornecedor (P4)", d.TaxaDeDevolucao))
+	fmt.Fprintf(b, "    decididos a devolver pelo gateway (ANTES do envio; nao e resultado): %d;  recusas por falta de estado (pedido NAO enviado): %d\n",
+		d.DecididosADevolver, d.Recusas)
+	c := d.ComEstado
+	fmt.Fprintf(b, "    pedidos com estado: %d — tentativas: 2xx %d, 4xx (sem 429) %d, 429 %d, 5xx %d, outro %d, erro de transporte %d, nao enviados %d\n",
+		c.Pedidos, c.HTTP2xx, c.HTTP4xx, c.HTTP429, c.HTTP5xx, c.HTTPOutro, c.ErroDeTransporte, c.NaoEnviado)
 	blocoDeContagens(b, "  capturas (por turno com estado)", d.CapturasPorResultado)
-	blocoDeContagens(b, "  pedidos por devolucao", d.PedidosPorDevolucao)
+	blocoDeContagens(b, "  pedidos por decisao do gateway", d.PedidosPorDecisao)
 	blocoDeContagens(b, "  nao devolvido, por causa", d.NaoDevolvidoPorCausa)
 }
 
@@ -510,6 +521,13 @@ func ResumoEmTexto(r *Relatorio) string {
 	blocoDeContagens(&b, "tipos de erro (por pedido com resposta sem 200; vocabulario fechado)", r.Taxas.TiposDeErro)
 	blocoDeContagens(&b, "fichas da forma da resposta (por pedido)", r.Taxas.Fichas)
 	blocoDaDevolucao(&b, r.Taxas.Devolucao)
+	if q := r.Qualificacao; q != nil {
+		razoes := "(nenhuma)"
+		if len(q.Razoes) > 0 {
+			razoes = strings.Join(q.Razoes, ", ")
+		}
+		fmt.Fprintf(&b, "  QUALIFICACAO DA DEVOLUCAO: %s — razoes: %s\n", strings.ToUpper(q.Veredicto), razoes)
+	}
 	if f := r.FormaNoFornecedor; f != nil {
 		fmt.Fprintf(&b, "  FORMA NO PROVIDER FALSO (wire %s; so nomes e tipos, nunca valores): %d turno(s) com tool calls recebidos de volta\n", f.Wire, f.Turnos)
 		blocoDeContagens(&b, "  forma do assistant com tool calls", f.Assistant)

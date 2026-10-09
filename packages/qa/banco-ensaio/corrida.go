@@ -244,6 +244,10 @@ type CfgDaCorrida struct {
 	// conteúdo — com que as mensagens `assistant` com tool calls chegaram ao provider falso
 	// (AOS-516). Só os modos sem modelo real a têm: um fornecedor real não a mostra.
 	FormaNoFornecedor func() (*FormaNoFornecedor, error)
+	// QualificaDevolucao faz o relatório trazer o veredicto da devolução mesmo que o perfil não
+	// devolva estado (o controlo negativo contra o provider falso do estado): aí o veredicto é
+	// `nao_cumprida`. Com um perfil que devolve estado o veredicto sai sempre.
+	QualificaDevolucao bool
 }
 
 // ErrModoRealSemTecto — o modo com modelo real não corre sem contador e tecto do dia.

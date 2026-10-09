@@ -422,6 +422,8 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	res, err := rt.Run(ctx, goal)
 
 	chamadas, capturas := n.porta.fechar(runID)
+	// haviaRaciocinio: algum turno ANTERIOR do run trouxe raciocínio ou assinatura (AOS-516).
+	haviaRaciocinio := false
 	n.mu.Lock()
 	obs.MotivosDeParagem = n.motivos[runID]
 	delete(n.motivos, runID)
@@ -455,8 +457,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 			}
 		}
 		if obs.Estado != nil {
-			obs.Estado.contarPedido(c)
+			obs.Estado.contarPedido(c, haviaRaciocinio)
 		}
+		haviaRaciocinio = haviaRaciocinio || c.classeDoEstado == estadoComRaciocinio
 		if i == len(chamadas)-1 {
 			ultimoTexto = c.texto
 			obs.erroDaUltimaChamada = c.erro
@@ -520,6 +523,12 @@ type chamadaObservada struct {
 	// devolucao e causaDaDevolucao são o que o gateway reportou da devolução do estado opaco
 	// neste pedido ([modelgateway.StateReturnObservation]); vazios quando não reportou nada.
 	devolucao, causaDaDevolucao string
+	// tentativas são os códigos HTTP de CADA tentativa de transporte do pedido, pela ordem (0 =
+	// sem resposta HTTP); naoEnviados, as tentativas que o tecto do dia não deixou sair.
+	tentativas  []int
+	naoEnviados int
+	// classeDoEstado é o que a resposta trouxe de estado opaco ([classeDoEstadoDaResposta]).
+	classeDoEstado string
 }
 
 // portaDeEnsaio é o decorador da porta do gateway: aplica o braço às mensagens que a projecção
@@ -533,7 +542,10 @@ type portaDeEnsaio struct {
 	// O banco corre um run de cada vez: emCurso é o pedido que está no gateway, e capturas o
 	// resultado da captura do estado de cada turno do run aberto.
 	emCurso  *chamadaObservada
-	capturas map[string]int
+	capturas *capturasDoRun
+	// classeDaUltima é a classe do estado da última resposta: a captura desse turno é reportada
+	// pelo adaptador logo a seguir, e é por ela que se sabe o que foi capturado.
+	classeDaUltima string
 }
 
 func (p *portaDeEnsaio) abrir(runID string) {
@@ -543,15 +555,19 @@ func (p *portaDeEnsaio) abrir(runID string) {
 		p.porRun = map[string][]chamadaObservada{}
 	}
 	p.porRun[runID] = nil
-	p.capturas = map[string]int{}
+	p.capturas, p.classeDaUltima = &capturasDoRun{porResultado: map[string]int{}}, ""
 }
 
-// fechar devolve os pedidos do run e, por resultado, as capturas do estado dos seus turnos.
-func (p *portaDeEnsaio) fechar(runID string) ([]chamadaObservada, map[string]int) {
+// fechar devolve os pedidos do run e as capturas do estado dos seus turnos.
+func (p *portaDeEnsaio) fechar(runID string) ([]chamadaObservada, capturasDoRun) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	out, capturas := p.porRun[runID], p.capturas
+	out := p.porRun[runID]
 	delete(p.porRun, runID)
+	var capturas capturasDoRun
+	if p.capturas != nil {
+		capturas = *p.capturas
+	}
 	p.capturas = nil
 	return out, capturas
 }
@@ -561,8 +577,18 @@ func (p *portaDeEnsaio) fechar(runID string) ([]chamadaObservada, map[string]int
 func (p *portaDeEnsaio) verCaptura(resultado string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.capturas != nil {
-		p.capturas[doVocabulario(resultado, modelgateway.ProviderStateResults())]++
+	if p.capturas == nil {
+		return
+	}
+	p.capturas.porResultado[doVocabulario(resultado, modelgateway.ProviderStateResults())]++
+	if resultado != modelgateway.ProviderStateResultCaptured {
+		return
+	}
+	switch p.classeDaUltima {
+	case estadoComRaciocinio:
+		p.capturas.comRaciocinio++
+	case estadoSoComIDs:
+		p.capturas.soComIDs++
 	}
 }
 
@@ -619,6 +645,11 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 	p.emCurso = nil
 	p.mu.Unlock()
 	obs.status, obs.tipoDeErro = pedido.lerStatus(), pedido.lerTipo()
+	obs.tentativas, obs.naoEnviados = pedido.lerTentativas()
+	obs.classeDoEstado = classeDoEstadoDaResposta(resp.State)
+	p.mu.Lock()
+	p.classeDaUltima = obs.classeDoEstado
+	p.mu.Unlock()
 	if err != nil {
 		obs.erro = classeDoErro(err, obs.status)
 		obs.ficha = Ficha{Classe: FichaSemResposta}
@@ -700,6 +731,27 @@ type pedidoHTTP struct {
 	mu     sync.Mutex
 	status int
 	tipo   string
+	// tentativas são os códigos de todas as tentativas de transporte (0 = sem resposta HTTP);
+	// naoEnviados, as que a reserva do tecto recusou antes de sair.
+	tentativas  []int
+	naoEnviados int
+}
+
+func (p *pedidoHTTP) lerTentativas() ([]int, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]int(nil), p.tentativas...), p.naoEnviados
+}
+
+// anotar regista uma tentativa de transporte: o código (0 = sem resposta), ou a recusa do tecto.
+func (p *pedidoHTTP) anotar(status int, naoEnviado bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if naoEnviado {
+		p.naoEnviados++
+		return
+	}
+	p.tentativas = append(p.tentativas, status)
 }
 
 func (p *pedidoHTTP) lerTipo() string {
@@ -724,13 +776,26 @@ type transporteContado struct {
 
 // RoundTrip implementa [http.RoundTripper].
 func (t *transporteContado) RoundTrip(req *http.Request) (*http.Response, error) {
+	doPedido, _ := req.Context().Value(chaveDaChamada).(*pedidoHTTP)
 	if t.contador != nil {
 		// FAIL-CLOSED: a reserva vem primeiro, e qualquer erro dela impede o envio.
 		if err := t.contador.Reservar(); err != nil {
+			if doPedido != nil {
+				doPedido.anotar(0, true)
+			}
 			return nil, err
 		}
 	}
 	resp, err := t.base.RoundTrip(req)
+	if doPedido != nil {
+		// CADA tentativa de transporte fica anotada: se o gateway repetir o pedido, um erro
+		// intermédio não se perde atrás do código da última.
+		if err != nil {
+			doPedido.anotar(0, false)
+		} else {
+			doPedido.anotar(resp.StatusCode, false)
+		}
+	}
 	if err == nil {
 		if p, ok := req.Context().Value(chaveDaChamada).(*pedidoHTTP); ok {
 			// O corpo de um erro lê-se AQUI, só para o classificar: o texto não sai do transporte.

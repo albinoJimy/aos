@@ -271,6 +271,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	if devolve {
 		cfg.Extra["host_esperado"] = fmt.Sprint(o.hostEsperado != "")
 	}
+	cfg.QualificaDevolucao = o.estado != ""
 	if !o.silencioso {
 		cfg.Progresso = stderr
 	}

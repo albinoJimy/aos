@@ -184,6 +184,14 @@ func (f *FalsoDeEstado) turnos() int {
 	return f.Turnos
 }
 
+// chavesDoAssistant é a lista fechada das chaves de uma mensagem `assistant` do wire de chat que
+// o falso nomeia em [FormaNoFornecedor.Assistant].
+var chavesDoAssistant = map[string]bool{
+	"role": true, "content": true, "name": true, "tool_calls": true, "tool_call_id": true, "refusal": true,
+	"reasoning_content": true, "reasoning": true, "reasoning_details": true, "thinking_blocks": true, "thinking": true,
+	"provider_specific_fields": true,
+}
+
 // parametrosDeRaciocinio são as chaves do topo de um pedido que o falso conta.
 var parametrosDeRaciocinio = []string{"thinking", "reasoning_effort", "max_tokens", "max_completion_tokens", "output_config"}
 
@@ -257,9 +265,10 @@ func chamadaDoFalso(corpo []byte, nome string, propriedades map[string]json.RawM
 		return "", ""
 	}
 	if _, tem := propriedades["path"]; tem {
-		doc := nomeDeDocumento.FindString(string(corpo))
-		if doc == "" {
-			doc = "documento-nao-nomeado.txt"
+		// O ÚLTIMO documento que o pedido nomeia (no caso da tool negada, o que se pode ler).
+		doc := "documento-nao-nomeado.txt"
+		if nomes := nomeDeDocumento.FindAllString(string(corpo), -1); len(nomes) > 0 {
+			doc = nomes[len(nomes)-1]
 		}
 		args, _ := json.Marshal(map[string]string{"path": doc})
 		return nome, string(args)
@@ -284,9 +293,18 @@ func (f *FalsoDeEstado) servirChat(w http.ResponseWriter, r *http.Request, corpo
 			continue
 		}
 		f.forma.Turnos++
-		chaves := make([]string, 0, len(m))
+		// Os nomes das chaves passam por uma lista FECHADA: uma chave que não seja do wire de
+		// chat nem um dos nomes do estado conta como `outra`, uma vez, e o seu nome não vai.
+		chaves, outra := make([]string, 0, len(m)), false
 		for k := range m {
-			chaves = append(chaves, k)
+			if chavesDoAssistant[k] {
+				chaves = append(chaves, k)
+			} else {
+				outra = true
+			}
+		}
+		if outra {
+			chaves = append(chaves, "outra")
 		}
 		sort.Strings(chaves)
 		conteudo := "texto"
