@@ -52,7 +52,8 @@ func escreverChaves(t *testing.T, campos map[string]string) string {
 	var b strings.Builder
 	b.WriteString("# ficheiro de chaves de TESTE (AOS-512): nenhuma chave e verdadeira\n\n")
 	for _, campo := range []string{CampoChaveKimi, CampoKimiAPIBase, CampoKimiModelos, CampoChaveAnthropic, CampoAnthropicModelo,
-		CampoTectoPedidosKimi, CampoTectoPedidosAnthro, CampoTectoUSDAnthropic, CampoAnthropicRegiaoProc} {
+		CampoTectoPedidosKimi, CampoTectoPedidosAnthro, CampoTectoUSDAnthropic, CampoAnthropicRegiaoProc,
+		CampoChaveOpenRouter, CampoOpenRouterModelo, CampoTectoPedidosOpenR, CampoTectoUSDOpenRouter} {
 		if v, ok := campos[campo]; ok {
 			b.WriteString(campo + "=" + v + "\n")
 		}

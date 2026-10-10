@@ -45,6 +45,10 @@ type FalsoDeEstado struct {
 	Turnos int
 	// ExigeID exige de volta o id de tool call que o falso emitiu (só no wire de chat).
 	ExigeID bool
+	// Forma escolhe a forma do estado no wire de chat: vazio ⇒ a do falso exigente do AOS-515
+	// (`thinking_blocks`, `reasoning_content`, assinatura por chamada); [FormaOpenRouter] ⇒ a da
+	// OpenRouter (`reasoning` e `reasoning_details`). Não muda o wire de mensagens.
+	FormaDoEstado string
 	// ServidoComo, quando não vazio, faz o falso declarar-se como o proxy se declara: o nome vai
 	// no cabeçalho do modelo servido ([port.HeaderServedModel]). É para o modo `falso`, que não
 	// tem proxy; atrás do proxy real fica vazio, e quem declara é o proxy.
@@ -210,7 +214,7 @@ var chavesDoAssistant = map[string]bool{
 }
 
 // parametrosDeRaciocinio são as chaves do topo de um pedido que o falso conta.
-var parametrosDeRaciocinio = []string{"thinking", "reasoning_effort", "max_tokens", "max_completion_tokens", "output_config"}
+var parametrosDeRaciocinio = []string{"thinking", "reasoning_effort", "reasoning", "max_tokens", "max_completion_tokens", "output_config", "usage"}
 
 // CaminhoDaForma é o caminho em que o falso do estado devolve, por GET, o que registou.
 const CaminhoDaForma = "/forma"
@@ -247,11 +251,7 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.recusar(w, RecusaPedidoIlegivel, false)
 		return
 	}
-	for _, p := range parametrosDeRaciocinio {
-		if _, tem := topo[p]; tem {
-			f.contar(&f.forma.Parametros, p)
-		}
-	}
+	f.contarParametros(r, topo)
 	var msgs []map[string]json.RawMessage
 	_ = json.Unmarshal(topo["messages"], &msgs)
 	if strings.HasSuffix(r.URL.Path, "/messages") {
@@ -260,6 +260,10 @@ func (f *FalsoDeEstado) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.forma.Wire = WireDeChat
+	if f.FormaDoEstado == FormaOpenRouter {
+		f.servirOpenRouter(w, corpo, topo, msgs)
+		return
+	}
 	f.servirChat(w, r, corpo, msgs)
 }
 

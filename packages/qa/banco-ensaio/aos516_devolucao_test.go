@@ -117,7 +117,7 @@ func TestAOS516_Falso_ObrigatorioComOExigente_Passa(t *testing.T) {
 			aos516Contagens(t, "forma do assistant", forma.Assistant, map[string]int{
 				"content=vazio chaves=content,reasoning_content,role,thinking_blocks,tool_calls": 6 * amostras,
 			})
-			aos516Contagens(t, "parametros", forma.Parametros, map[string]int{"thinking": 4 * amostras, "max_tokens": 4 * amostras})
+			aos516Contagens(t, "parametros", forma.Parametros, map[string]int{"thinking": 4 * amostras, "thinking.type": 4 * amostras, "thinking.budget_tokens": 4 * amostras, "max_tokens": 4 * amostras})
 			// O relatorio diz o que foi ligado.
 			e := r.Protocolo.Estado
 			if e == nil || e.Captura != "capture" || e.GovernacaoDaRota != "observe" || e.Layout != "1.5.0" || e.Projeccao != "1.3.0" || e.Devolver != "obrigatorio" || r.Protocolo.Layout != "1.5.0" {

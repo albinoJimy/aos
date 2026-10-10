@@ -532,6 +532,7 @@ func ResumoEmTexto(r *Relatorio) string {
 		fmt.Fprintf(&b, "  FORMA NO PROVIDER FALSO (wire %s; so nomes e tipos, nunca valores): %d turno(s) com tool calls recebidos de volta\n", f.Wire, f.Turnos)
 		blocoDeContagens(&b, "  forma do assistant com tool calls", f.Assistant)
 		blocoDeContagens(&b, "  o estado que voltou, por campo", f.Estado)
+		blocoDeContagens(&b, "  parametros de raciocinio dos pedidos, por nome", f.Parametros)
 		blocoDeContagens(&b, "  respostas 400 do provider falso, por causa", f.Recusas)
 	}
 

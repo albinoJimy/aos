@@ -26,6 +26,9 @@ const (
 	FornecedorKimi Fornecedor = "kimi"
 	// FornecedorAnthropic — a segunda família, pela rota `anthropic/…` do proxy.
 	FornecedorAnthropic Fornecedor = "anthropic"
+	// FornecedorOpenRouter — a segunda família servida por um agregador, pela rota
+	// `openrouter/…` do proxy (decisão do dono de 2026-10-10: só no banco de ensaio).
+	FornecedorOpenRouter Fornecedor = "openrouter"
 	// FornecedorFalso — o provider falso do banco (modos `falso` e `proxy`).
 	FornecedorFalso Fornecedor = "falso"
 )
@@ -33,10 +36,10 @@ const (
 // LerFornecedor valida o nome de um fornecedor do modo com modelo real.
 func LerFornecedor(s string) (Fornecedor, error) {
 	switch Fornecedor(s) {
-	case FornecedorKimi, FornecedorAnthropic:
+	case FornecedorKimi, FornecedorAnthropic, FornecedorOpenRouter:
 		return Fornecedor(s), nil
 	}
-	return "", fmt.Errorf("banco-ensaio: fornecedor desconhecido: %q (aceites: kimi, anthropic)", s)
+	return "", fmt.Errorf("banco-ensaio: fornecedor desconhecido: %q (aceites: kimi, anthropic, openrouter)", s)
 }
 
 // Os campos do ficheiro de chaves.
@@ -50,6 +53,10 @@ const (
 	CampoTectoPedidosAnthro   = "TECTO_PEDIDOS_DIA_ANTHROPIC"
 	CampoTectoUSDAnthropic    = "TECTO_USD_DIA_ANTHROPIC"
 	CampoAnthropicRegiaoProc  = "ANTHROPIC_REGIAO_DE_PROCESSAMENTO"
+	CampoChaveOpenRouter      = "OPENROUTER_API_KEY"
+	CampoOpenRouterModelo     = "OPENROUTER_MODELO"
+	CampoTectoPedidosOpenR    = "TECTO_PEDIDOS_DIA_OPENROUTER"
+	CampoTectoUSDOpenRouter   = "TECTO_USD_DIA_OPENROUTER"
 	problemaEmFalta           = "em falta"
 	problemaMarcadorDoExemplo = "ainda com o marcador do exemplo"
 	problemaIlegivel          = "ilegivel"
@@ -61,6 +68,7 @@ const (
 	problemaAcimaDoMaximo     = "acima do maximo que o banco aceita"
 	problemaSemHTTPS          = "sem https, ou nao e um URL"
 	problemaURLComExtras      = "com utilizador, porta, query ou fragmento no URL"
+	problemaSemAutor          = "sem a forma autor/modelo da OpenRouter (por exemplo anthropic/<modelo>, sem o prefixo openrouter/)"
 	problemaHostForaDaLista   = "com um host que nao e do fornecedor (para o aceitar, --destino-fora-da-lista com o host exacto)"
 )
 
@@ -80,8 +88,17 @@ const (
 // endpoint é o adaptador `anthropic` do proxy. O banco não escreve esse host em lado nenhum —
 // o no-bypass do Model Gateway (archlint, AOS-055) proíbe endpoints de provider fora do gateway.
 var hostsDoFornecedor = map[Fornecedor][]string{
-	FornecedorKimi: {"api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"},
+	FornecedorKimi:       {"api.kimi.com", "api.moonshot.ai", "api.moonshot.cn"},
+	FornecedorOpenRouter: {hostDaOpenRouter},
 }
+
+// A OpenRouter tem UM destino, e quem o escreve é o banco: o ficheiro de chaves não traz base
+// para ela. A base vai explícita para o proxy (`api_base`), para o destino da chave não depender
+// do valor por omissão de adaptador nenhum.
+const (
+	hostDaOpenRouter = "openrouter.ai"
+	baseDaOpenRouter = "https://" + hostDaOpenRouter + "/api/v1"
+)
 
 // DestinoDaAnthropic é o que o banco mostra como destino da chave da Anthropic.
 const DestinoDaAnthropic = "o endpoint por omissao do adaptador anthropic do proxy (o ficheiro de chaves nao tem base para a Anthropic)"
@@ -322,7 +339,7 @@ type RotaReal struct {
 	// RegiaoDeclarada é a região que o dono declarou (só Anthropic). É copiada para o
 	// relatório como DECLARAÇÃO e não tem efeito no ensaio.
 	RegiaoDeclarada string
-	// Destino é para onde a chave vai: `https://host`, já validado (Kimi), ou a frase
+	// Destino é para onde a chave vai: `https://host`, já validado (Kimi, OpenRouter), ou a frase
 	// [DestinoDaAnthropic]. O host de um fornecedor
 	// público não é segredo, e o banco mostra-o antes de enviar; o caminho da base não vai.
 	Destino string
@@ -404,10 +421,45 @@ func (c *Chaves) Rota(f Fornecedor, modelo string, d Destino) (RotaReal, error) 
 		if v := c.campos[CampoAnthropicRegiaoProc]; v != "" && !marcadorDoExemplo(v) && !c.comAspas[CampoAnthropicRegiaoProc] {
 			r.RegiaoDeclarada = textoDeclarado(v)
 		}
+	case FornecedorOpenRouter:
+		if r.apiKey, err = c.valor(CampoChaveOpenRouter); err != nil {
+			return RotaReal{}, err
+		}
+		unico, lerr := c.valor(CampoOpenRouterModelo)
+		if lerr != nil {
+			return RotaReal{}, lerr
+		}
+		if r.Modelo, err = escolherModelo(CampoOpenRouterModelo, []string{unico}, modelo); err != nil {
+			return RotaReal{}, err
+		}
+		if !modeloDaOpenRouterAceite(r.Modelo) {
+			return RotaReal{}, &ErrCampoDasChaves{Campo: CampoOpenRouterModelo, Problema: problemaSemAutor}
+		}
+		if d.ForaDaLista != "" {
+			return RotaReal{}, errors.New("banco-ensaio: --destino-fora-da-lista nao se aplica a OpenRouter (o destino e fixo)")
+		}
+		r.apiBase = baseDaOpenRouter
+		if r.Destino, err = validarDestino(f, CampoChaveOpenRouter, r.apiBase, d); err != nil {
+			return RotaReal{}, err
+		}
+		if r.Tectos.PedidosDia, err = c.inteiroPositivo(CampoTectoPedidosOpenR); err != nil {
+			return RotaReal{}, err
+		}
+		if r.Tectos.MicroUSDDia, r.Tectos.TemUSD, err = c.microUSDOpcional(CampoTectoUSDOpenRouter); err != nil {
+			return RotaReal{}, err
+		}
 	default:
 		return RotaReal{}, fmt.Errorf("banco-ensaio: fornecedor desconhecido: %q", string(f))
 	}
 	return r, nil
+}
+
+// modeloDaOpenRouterAceite diz se o nome tem a forma `<autor>/<modelo>` da OpenRouter, sem o
+// prefixo do adaptador do proxy: é o banco que escreve `openrouter/` à frente, e um nome que já
+// o trouxesse (ou que não tivesse autor) dava uma rota que o proxy lê de outra maneira.
+func modeloDaOpenRouterAceite(m string) bool {
+	autor, resto, ok := strings.Cut(m, "/")
+	return ok && autor != "" && resto != "" && autor != "openrouter" && !strings.Contains(resto, "/")
 }
 
 // escolherModelo escolhe o modelo da lista do ficheiro e valida o seu alfabeto: o nome vai para

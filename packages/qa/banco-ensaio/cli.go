@@ -96,13 +96,14 @@ type opcoes struct {
 	turnosDoFalso int
 	exigeID       bool
 	hostEsperado  string
+	formaDoFalso  string
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
 
   aos-ensaio falso   [opcoes]                     provider falso em processo (sem rede, sem Docker)
   aos-ensaio proxy   --binario-do-falso F [opcoes] imagem real do proxy a frente do provider falso (Docker)
-  aos-ensaio real    --chaves F --fornecedor kimi|anthropic [opcoes]
+  aos-ensaio real    --chaves F --fornecedor kimi|anthropic|openrouter [opcoes]
                                                    modelo real pelo proxy efemero (Docker); tectos do ficheiro
   aos-ensaio bateria                               mostra o digest e os casos da bateria
   aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
@@ -127,6 +128,9 @@ so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FI
                                                  recusa qualquer estado; no modo proxy pede --perfil com um
                                                  expected_model anthropic/<modelo> e a rota do proxy e essa
                     --turnos-do-falso N          turnos com tool call do provider falso do estado (omissao 2)
+                    --forma-do-falso openrouter  so com --estado: o falso emite e exige a forma da OpenRouter
+                                                 (reasoning e reasoning_details); no modo proxy o expected_model
+                                                 do perfil e entao openrouter/<autor>/<modelo> ou openai/<autor>/<modelo>
 so real:            --modelo M  --precos FICHEIRO  --so-plano
                     --destino-fora-da-lista HOST   aceita um destino da chave fora da lista do fornecedor;
                                                    HOST tem de ser exactamente o host do ficheiro (https na mesma)
@@ -189,6 +193,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	fs.IntVar(&o.turnosDoFalso, "turnos-do-falso", 0, "")
 	fs.BoolVar(&o.exigeID, "exige-id", false, "")
 	fs.StringVar(&o.hostEsperado, "host-esperado", "", "")
+	fs.StringVar(&o.formaDoFalso, "forma-do-falso", "", "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -268,6 +273,10 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprintln(stderr, "aos-ensaio: --turnos-do-falso (1 a 15) so vale com --estado; --exige-id e so do subcomando interno falso-provider")
 		return SaidaUso
 	}
+	if o.formaDoFalso != "" && (o.formaDoFalso != FormaOpenRouter || o.estado == "") {
+		fmt.Fprintf(stderr, "aos-ensaio: --forma-do-falso aceita %s e so vale com --estado\n", FormaOpenRouter)
+		return SaidaUso
+	}
 	if devolve {
 		cfg.Extra["host_esperado"] = fmt.Sprint(o.hostEsperado != "")
 	}
@@ -323,6 +332,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			// O provider falso do estado não tem roteiro: o que decide a corrida é o modo dele.
 			delete(cfg.Extra, "roteiro")
 			cfg.Extra["falso_do_estado"] = fmt.Sprintf("%s/%d", o.estado, o.turnosDoFalso)
+			if o.formaDoFalso != "" {
+				cfg.Extra["forma_do_falso"] = o.formaDoFalso
+			}
 		}
 		cfg.Rota = RotaDoRelatorio{Fornecedor: string(FornecedorFalso), Modelo: "modelo-falso-do-banco"}
 		if o.tecto != 0 || o.contador != "" {
@@ -349,7 +361,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			if o.estado != "" {
 				// Sem proxy, é o falso que declara o modelo servido — com o nome que o perfil
 				// espera. Sem perfil não declara nada.
-				doEstado := &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso}
+				doEstado := &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso, FormaDoEstado: o.formaDoFalso}
 				if perfil != nil {
 					doEstado.ServidoComo = perfil.ExpectedModel
 					doEstado.ExigeID = perfil.ToolCallID == modelgateway.ToolCallIDProvider
@@ -383,17 +395,25 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		pedidoDeProxy := PedidoDeProxy{Prefixo: "openai", Modelo: "modelo-falso-do-banco", BinarioDoFalso: o.binario, Roteiro: roteiro, Vida: vida}
 		if o.estado != "" {
 			// A rota do proxy é a que o perfil ESPERA — é esse o nome que o proxy vai declarar ter
-			// servido —, e tem de ser uma rota anthropic/…: é o caminho de tradução que se mede.
-			modelo, eAnthropic := "", false
-			if perfil != nil {
-				modelo, eAnthropic = strings.CutPrefix(perfil.ExpectedModel, "anthropic/")
+			// servido. Com o falso do AOS-515 tem de ser uma rota anthropic/…: é o caminho de
+			// tradução que se mede. Com a forma da OpenRouter é openrouter/… (o adaptador próprio
+			// do proxy) ou openai/… (o adaptador genérico com a base da OpenRouter).
+			prefixos := []string{"anthropic"}
+			if o.formaDoFalso == FormaOpenRouter {
+				prefixos = []string{PrefixoDaOpenRouter, "openai"}
 			}
-			if !eAnthropic || !nomeDeModeloAceite(modelo) {
-				fmt.Fprintln(stderr, "aos-ensaio: o modo proxy com --estado exige --perfil com expected_model anthropic/<modelo> (a rota openai/ atras do proxy mede-se em scripts/ci/wire-live.sh)")
+			prefixo, modelo := "", ""
+			for _, p := range prefixos {
+				if m, tem := strings.CutPrefix(perfilEsperado(perfil), p+"/"); tem && nomeDeModeloAceite(m) {
+					prefixo, modelo = p, m
+				}
+			}
+			if prefixo == "" || (o.formaDoFalso == FormaOpenRouter && !modeloDaOpenRouterAceite(modelo)) {
+				fmt.Fprintln(stderr, "aos-ensaio: o modo proxy com --estado exige --perfil com expected_model anthropic/<modelo> ou, com --forma-do-falso openrouter, openrouter/<autor>/<modelo> ou openai/<autor>/<modelo> (a rota openai/ do falso do AOS-515 mede-se em scripts/ci/wire-live.sh)")
 				return SaidaUso
 			}
-			pedidoDeProxy.Prefixo, pedidoDeProxy.Modelo, pedidoDeProxy.Roteiro = "anthropic", modelo, nil
-			pedidoDeProxy.Estado, pedidoDeProxy.TurnosDoFalso = o.estado, o.turnosDoFalso
+			pedidoDeProxy.Prefixo, pedidoDeProxy.Modelo, pedidoDeProxy.Roteiro = prefixo, modelo, nil
+			pedidoDeProxy.Estado, pedidoDeProxy.TurnosDoFalso, pedidoDeProxy.FormaDoFalso = o.estado, o.turnosDoFalso, o.formaDoFalso
 			cfg.Rota.Modelo = perfil.ExpectedModel
 		}
 		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, pedidoDeProxy.ComSegredos(chaveDoFalso, ""))
@@ -445,10 +465,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			return SaidaRecusada
 		}
 		red.Acrescentar(rota.Segredos()...)
-		prefixo := "openai"
-		if fornecedor == FornecedorAnthropic {
-			prefixo = "anthropic"
-		}
+		prefixo := prefixoDoProxy(fornecedor)
 		if devolve && perfil.ExpectedModel != prefixo+"/"+rota.Modelo {
 			// O proxy declara ter servido `<adaptador>/<modelo>`. Com outro nome no perfil a rota
 			// nunca se provava igual, o estado nunca era devolvido, e cada run gastava um pedido do
@@ -602,6 +619,30 @@ func conselhoDaParagem(r *Relatorio) string {
 	return ""
 }
 
+// PrefixoDaOpenRouter é o adaptador do proxy para a OpenRouter. A escolha entre ele e o
+// adaptador genérico `openai/` com a base da OpenRouter foi MEDIDA atrás da imagem fixada do
+// proxy (TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter): ver o README do banco.
+const PrefixoDaOpenRouter = "openrouter"
+
+// prefixoDoProxy devolve o adaptador do proxy para a rota real de um fornecedor.
+func prefixoDoProxy(f Fornecedor) string {
+	switch f {
+	case FornecedorAnthropic:
+		return "anthropic"
+	case FornecedorOpenRouter:
+		return PrefixoDaOpenRouter
+	}
+	return "openai"
+}
+
+// perfilEsperado devolve o expected_model de um perfil, ou vazio sem perfil.
+func perfilEsperado(p *modelgateway.RouteProfile) string {
+	if p == nil {
+		return ""
+	}
+	return p.ExpectedModel
+}
+
 func lancadorDe(amb Ambiente, red *Redactor) LancadorDeProxy {
 	if amb.Lancador != nil {
 		return amb.Lancador
@@ -697,7 +738,11 @@ func servirFalso(ctx context.Context, o opcoes, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "aos-ensaio: --estado aceita %s ou %s\n", EstadoExige, EstadoProibe)
 		return SaidaUso
 	}
-	doRoteiro, doEstado := NovoProviderFalso(roteiro), &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso, ExigeID: o.exigeID}
+	if o.formaDoFalso != "" && o.formaDoFalso != FormaOpenRouter {
+		fmt.Fprintf(stderr, "aos-ensaio: --forma-do-falso aceita %s\n", FormaOpenRouter)
+		return SaidaUso
+	}
+	doRoteiro, doEstado := NovoProviderFalso(roteiro), &FalsoDeEstado{Proibe: o.estado == EstadoProibe, Turnos: o.turnosDoFalso, ExigeID: o.exigeID, FormaDoEstado: o.formaDoFalso}
 	var falso http.Handler = doRoteiro
 	if o.estado != "" {
 		falso = doEstado

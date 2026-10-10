@@ -75,7 +75,38 @@ var tiposConhecidos = []struct{ token, tipo string }{
 // saldo. Só se procuram quando nem o tipo nem o código são conhecidos (ver [classificarErro]).
 // A Anthropic responde 400 `invalid_request_error` a uma conta sem créditos: só a frase o diz
 // (medido a 2026-10-10: a sonda da corrida do AOS-516 deu 400 e o banco só dizia «outro»).
-var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota", "credit balance is too low"}
+//
+// A OpenRouter não manda `error.type`: manda `error.code` com o código HTTP como NÚMERO e uma
+// mensagem. Uma conta sem créditos responde 402 — «insufficient credits» ou «requires more
+// credits» —, e é o código que decide ([codigoDePagamento]); as frases servem quando um proxy no
+// meio muda o código.
+var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota", "credit balance is too low", "insufficient credits", "requires more credits"}
+
+// frasesDeRitmo e frasesDeModelo são as frases fixas da OpenRouter para o limite de ritmo e
+// para um modelo que ela não serve. Procuram-se DEPOIS das de saldo, pela razão de sempre: a
+// confusão a evitar é tomar uma conta sem saldo por um limite de ritmo.
+var (
+	frasesDeRitmo  = []string{"rate limit exceeded", "rate-limited"}
+	frasesDeModelo = []string{"is not a valid model id", "no endpoints found"}
+)
+
+// codigoDePagamento é o 402 (Payment Required): em qualquer fornecedor quer dizer que a conta
+// não paga o pedido.
+const codigoDePagamento = http.StatusPaymentRequired
+
+// codigoNumerico lê um `error.code` que seja um código HTTP, escrito como número ou como texto
+// (a OpenRouter manda `402`; o proxy, ao reembrulhar, manda `"402"`). Zero se não for.
+func codigoNumerico(cru json.RawMessage) int {
+	var n int
+	if json.Unmarshal(cru, &n) == nil && n >= 100 && n <= 599 {
+		return n
+	}
+	var s string
+	if json.Unmarshal(cru, &s) == nil && len(s) == 3 && soAlgarismos(s) {
+		return int(s[0]-'0')*100 + int(s[1]-'0')*10 + int(s[2]-'0')
+	}
+	return 0
+}
 
 // prefixoDeFacturacao: qualquer tipo `billing_*` é falta de saldo ou de facturação activa.
 const prefixoDeFacturacao = "billing_"
@@ -103,8 +134,9 @@ func tipoDoToken(token string) (string, bool) {
 // fechado. Lê, por esta ordem: `error.type`; `error.code`; e — porque um proxy no meio pode
 // reembrulhar o erro do fornecedor e deixar o tipo original só dentro da mensagem — a presença,
 // na mensagem, de um dos tipos conhecidos ou de uma das frases fixas de saldo. Da mensagem só
-// sai um valor desta lista; o texto dela não é devolvido nem guardado. Sem nada reconhecido, um
-// 401 ou um 403 são [TipoChaveRecusada] e o resto é [TipoOutro].
+// sai um valor desta lista; o texto dela não é devolvido nem guardado. Depois, o 402 — no código
+// HTTP ou em `error.code` — é [TipoSaldoInsuficiente]; as frases fixas de ritmo e de modelo; e,
+// sem nada reconhecido, um 401 ou um 403 (idem) são [TipoChaveRecusada] e o resto é [TipoOutro].
 func classificarErro(status int, corpo []byte) string {
 	var doc struct {
 		Error json.RawMessage `json:"error"`
@@ -129,19 +161,29 @@ func classificarErro(status int, corpo []byte) string {
 			return tipo
 		}
 	}
-	if mensagem := strings.ToLower(texto(erro.Message)); mensagem != "" {
-		for _, c := range tiposConhecidos {
-			if strings.Contains(mensagem, c.token) {
-				return c.tipo
+	mensagem := strings.ToLower(texto(erro.Message))
+	contem := func(frases []string) bool {
+		for _, frase := range frases {
+			if mensagem != "" && strings.Contains(mensagem, frase) {
+				return true
 			}
 		}
-		for _, frase := range frasesDeSaldo {
-			if strings.Contains(mensagem, frase) {
-				return TipoSaldoInsuficiente
-			}
+		return false
+	}
+	for _, c := range tiposConhecidos {
+		if mensagem != "" && strings.Contains(mensagem, c.token) {
+			return c.tipo
 		}
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+	codigo := codigoNumerico(erro.Code)
+	switch {
+	case contem(frasesDeSaldo), status == codigoDePagamento, codigo == codigoDePagamento:
+		return TipoSaldoInsuficiente
+	case contem(frasesDeRitmo):
+		return TipoLimiteDeRitmo
+	case contem(frasesDeModelo):
+		return TipoModeloDesconhecido
+	case status == http.StatusUnauthorized, status == http.StatusForbidden, codigo == http.StatusUnauthorized, codigo == http.StatusForbidden:
 		return TipoChaveRecusada
 	}
 	return TipoOutro
