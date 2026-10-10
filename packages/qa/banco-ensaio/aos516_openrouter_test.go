@@ -1,7 +1,13 @@
 package bancoensaio
 
 import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
+
+	"github.com/aos-ref/platform/model-gateway/port"
 
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
@@ -104,5 +110,63 @@ func TestAOS516_Falso_OpenRouter_AFormaCabeNasListasDoGateway(t *testing.T) {
 	}
 	if mesmosValores(esperado, detalhesDoTurno(1)) || mesmosValores(esperado, []byte(`[]`)) {
 		t.Error("a comparacao por valores aceita o que nao e igual")
+	}
+}
+
+// O VERDE FALSO QUE A CORRIDA REAL PODIA DAR. Atrás do proxy, a resposta da OpenRouter chega ao
+// gateway com `reasoning_details` SÓ dentro de `provider_specific_fields` (medido), e o gateway
+// devolve-o lá. Um fornecedor real que ignore esse saco responde 2xx sem ter lido o estado — e
+// o banco, que só vê o código, contava o pedido como aceite. Aqui o handler faz de proxy mais
+// fornecedor tolerante: aceita tudo. O veredicto NÃO pode ser `cumprida`.
+func TestAOS516_OpenRouter_EstadoSoNoSacoDoProxyNaoDaCumprida(t *testing.T) {
+	const amostras = 3
+	perfil := aos516PerfilDaOpenRouter(t, aos516ParamsEffort, "obrigatorio")
+	tolerante := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		corpo, _ := io.ReadAll(r.Body)
+		var pedido struct {
+			Messages []struct {
+				Role      string            `json:"role"`
+				ToolCalls []json.RawMessage `json:"tool_calls"`
+			} `json:"messages"`
+			pedidoAoFalso
+		}
+		_ = json.Unmarshal(corpo, &pedido)
+		_ = json.Unmarshal(corpo, &pedido.pedidoAoFalso)
+		turnos := 0
+		for _, m := range pedido.Messages {
+			if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+				turnos++
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(port.HeaderServedModel, perfil.ExpectedModel)
+		if len(pedido.Tools) == 0 || turnos >= 2 {
+			_, _ = w.Write([]byte(`{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"` + SentinelaDeTexto + ` fim"}}],"usage":{"prompt_tokens":5,"completion_tokens":5}}`))
+			return
+		}
+		tool, args := chamadaDoFalso(corpo, pedido.Tools[0].Function.Name, pedido.Tools[0].Function.Parameters.Properties)
+		argumentos, _ := json.Marshal(args)
+		texto, _ := json.Marshal(pensamentoDoTurno(turnos))
+		// A forma em que a imagem fixada do proxy entrega a resposta da OpenRouter.
+		_, _ = w.Write([]byte(`{"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"reasoning_content":` + string(texto) +
+			`,"tool_calls":[{"id":"` + idDoTurnoOpenRouter(turnos) + `","type":"function","function":{"name":"` + tool + `","arguments":` + string(argumentos) + `}}],` +
+			`"provider_specific_fields":{"reasoning":` + string(texto) + `,"reasoning_details":` + string(detalhesDoTurno(turnos)) + `}}}],"usage":{"prompt_tokens":5,"completion_tokens":5}}`))
+	})
+	r := aos516CorrerContra(t, perfil, tolerante, amostras)
+	d := r.Taxas.Devolucao
+	if d == nil || d.TurnosComRaciocinioCapturado != 2*amostras || d.TurnosSoNoSaco != 2*amostras || d.AceitesPeloFornecedor != 2*amostras {
+		t.Fatalf("devolucao = %+v; quer %d turnos com raciocinio, todos so no saco, e todos os pedidos com 2xx", d, 2*amostras)
+	}
+	aos516Veredicto(t, r, QualificacaoInconclusiva, RazaoEstadoSoNoSaco)
+	if !strings.Contains(ResumoEmTexto(r), "so veio no saco do proxy") {
+		t.Error("o resumo em texto nao avisa que o estado so voltou no saco do proxy")
+	}
+	// Com o mesmo campo TAMBEM em `message`, o saco nao conta: o campo volta onde o fornecedor o le.
+	if estadoSoNoSaco(&port.ProviderState{Fields: []port.ProviderStateField{
+		{Where: port.StateWhereMessage, Name: "reasoning_details"}, {Where: port.StateWherePSF, Name: "reasoning_details"},
+	}}) || !estadoSoNoSaco(&port.ProviderState{Fields: []port.ProviderStateField{
+		{Where: port.StateWhereMessage, Name: "reasoning_content"}, {Where: port.StateWherePSF, Name: "reasoning_details"},
+	}}) || estadoSoNoSaco(nil) || estadoSoNoSaco(&port.ProviderState{Misaligned: true}) {
+		t.Error("estadoSoNoSaco: so conta um campo que venha no saco e nao em message")
 	}
 }

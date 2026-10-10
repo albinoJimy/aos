@@ -546,6 +546,8 @@ type portaDeEnsaio struct {
 	// classeDaUltima é a classe do estado da última resposta: a captura desse turno é reportada
 	// pelo adaptador logo a seguir, e é por ela que se sabe o que foi capturado.
 	classeDaUltima string
+	// soNoSacoDaUltima diz se a última resposta trouxe estado só no saco do proxy.
+	soNoSacoDaUltima bool
 }
 
 func (p *portaDeEnsaio) abrir(runID string) {
@@ -555,7 +557,7 @@ func (p *portaDeEnsaio) abrir(runID string) {
 		p.porRun = map[string][]chamadaObservada{}
 	}
 	p.porRun[runID] = nil
-	p.capturas, p.classeDaUltima = &capturasDoRun{porResultado: map[string]int{}}, ""
+	p.capturas, p.classeDaUltima, p.soNoSacoDaUltima = &capturasDoRun{porResultado: map[string]int{}}, "", false
 }
 
 // fechar devolve os pedidos do run e as capturas do estado dos seus turnos.
@@ -589,6 +591,9 @@ func (p *portaDeEnsaio) verCaptura(resultado string) {
 		p.capturas.comRaciocinio++
 	case estadoSoComIDs:
 		p.capturas.soComIDs++
+	}
+	if p.soNoSacoDaUltima {
+		p.capturas.soNoSaco++
 	}
 }
 
@@ -648,7 +653,7 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 	obs.tentativas, obs.naoEnviados = pedido.lerTentativas()
 	obs.classeDoEstado = classeDoEstadoDaResposta(resp.State)
 	p.mu.Lock()
-	p.classeDaUltima = obs.classeDoEstado
+	p.classeDaUltima, p.soNoSacoDaUltima = obs.classeDoEstado, estadoSoNoSaco(resp.State)
 	p.mu.Unlock()
 	if err != nil {
 		obs.erro = classeDoErro(err, obs.status)

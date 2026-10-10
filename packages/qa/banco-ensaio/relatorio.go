@@ -452,6 +452,9 @@ func blocoDaDevolucao(b *strings.Builder, d *Devolucao) {
 	}
 	fmt.Fprintf(b, "  DEVOLUCAO DO ESTADO OPACO: %d turno(s) com estado capturado, dos quais %d com raciocinio ou assinatura e %d so com ids; %d pedido(s) com turnos anteriores\n",
 		d.TurnosComEstadoCapturado, d.TurnosComRaciocinioCapturado, d.TurnosSoComIDs, d.PedidosComTurnosAnteriores)
+	if d.TurnosSoNoSaco > 0 {
+		fmt.Fprintf(b, "    ATENCAO: em %d turno(s) o estado so veio no saco do proxy (provider_specific_fields) e volta la: um 2xx nao diz que o fornecedor o leu\n", d.TurnosSoNoSaco)
+	}
 	b.WriteString(linhaDaTaxa("  aceites pelo fornecedor (P4)", d.TaxaDeDevolucao))
 	fmt.Fprintf(b, "    decididos a devolver pelo gateway (ANTES do envio; nao e resultado): %d;  recusas por falta de estado (pedido NAO enviado): %d\n",
 		d.DecididosADevolver, d.Recusas)
