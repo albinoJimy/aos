@@ -73,7 +73,9 @@ var tiposConhecidos = []struct{ token, tipo string }{
 
 // frasesDeSaldo são as frases fixas que, na mensagem de um erro, dizem que a conta não tem
 // saldo. Só se procuram quando nem o tipo nem o código são conhecidos (ver [classificarErro]).
-var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota"}
+// A Anthropic responde 400 `invalid_request_error` a uma conta sem créditos: só a frase o diz
+// (medido a 2026-10-10: a sonda da corrida do AOS-516 deu 400 e o banco só dizia «outro»).
+var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota", "credit balance is too low"}
 
 // prefixoDeFacturacao: qualquer tipo `billing_*` é falta de saldo ou de facturação activa.
 const prefixoDeFacturacao = "billing_"

@@ -365,3 +365,17 @@ func TestAOS512_Real_SoPlanoNaoSonda(t *testing.T) {
 		t.Errorf("o plano tinha de anunciar a sonda: %q", e.stderr)
 	}
 }
+
+// A Anthropic responde 400 `invalid_request_error` a uma conta sem créditos; o proxy
+// reembrulha-o. Só a frase fixa o distingue de um pedido mal formado.
+func TestAOS516_ClassificarErro_SaldoDaAnthropic(t *testing.T) {
+	for corpo, quer := range map[string]string{
+		`{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}`:                                                                                           TipoSaldoInsuficiente,
+		`{"error":{"message":"litellm.BadRequestError: AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low\"}}","type":null,"code":"400"}}`: TipoSaldoInsuficiente,
+		`{"error":{"type":"invalid_request_error","message":"max_tokens: must be greater than thinking.budget_tokens"}}`:                                                                                                    TipoOutro,
+	} {
+		if tem := classificarErro(400, []byte(corpo)); tem != quer {
+			t.Errorf("classificarErro = %s, quer %s", tem, quer)
+		}
+	}
+}
