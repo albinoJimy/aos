@@ -402,3 +402,64 @@ func TestAOS516_OpenRouter_FormaDoNomeDoModelo(t *testing.T) {
 		}
 	}
 }
+
+// O LIMITE DO INSTRUMENTO NO MODO REAL, escrito no relatório e ao lado do veredicto: `cumprida`
+// é 2xx a pedidos que levavam o raciocínio, não é prova de que o fornecedor o leu. Nos modos
+// sem modelo real a frase não aparece — aí há um provider falso que diz o que recebeu.
+func TestAOS516_Real_OLimiteDoVeredictoVaiAoLadoDele(t *testing.T) {
+	chaves := escreverChaves(t, chavesComOpenRouter())
+	pasta := filepath.Dir(chaves)
+	precos := filepath.Join(pasta, "precos.json")
+	if err := os.WriteFile(precos, []byte(`{"modelos":{"`+modeloOpenRouterDeTeste+`":{"entrada_micro_usd_por_mtok":3000000,"saida_micro_usd_por_mtok":15000000}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rota := PrefixoDaOpenRouter + "/" + modeloOpenRouterDeTeste
+	for nome, c := range map[string]struct {
+		em   string
+		topo bool
+	}{"com devolver_em topo": {"topo", true}, "sem devolver_em": {"", false}} {
+		lanc := &lancadorDeTeste{t: t, devolver: &FalsoDeEstado{Turnos: 2, FormaDoEstado: FormaOpenRouter, ServidoComo: rota}}
+		saida := filepath.Join(pasta, "r-"+c.em)
+		e := executar(t, Ambiente{Lancador: lanc}, "real", "--chaves", chaves, "--fornecedor", "openrouter", "--precos", precos,
+			"--perfil", aos516Ficheiro(t, aos516PerfilOpenRouterEm(rota, aos516ParamsReasoning, "obrigatorio", c.em)), "--saida", saida)
+		if e.codigo != SaidaOK {
+			t.Fatalf("%s: codigo %d\n%s", nome, e.codigo, e.stderr)
+		}
+		r := aos516Relatorio(t, saida)
+		if r.Qualificacao == nil || r.Qualificacao.Veredicto != QualificacaoCumprida {
+			t.Fatalf("%s: qualificacao %+v", nome, r.Qualificacao)
+		}
+		temLimite, temTopo := false, false
+		for _, l := range r.Limites {
+			temLimite = temLimite || l == LimiteDoVeredictoNoModoReal
+			temTopo = temTopo || l == LimiteDoTopoNoModoReal
+		}
+		if !temLimite || temTopo != c.topo {
+			t.Errorf("%s: limites do relatorio: veredicto %v, topo %v (quer %v)", nome, temLimite, temTopo, c.topo)
+		}
+		// No resumo em texto, a frase vem logo a seguir a linha do veredicto.
+		i := strings.Index(e.stdout, "QUALIFICACAO DA DEVOLUCAO: CUMPRIDA")
+		if i < 0 {
+			t.Fatalf("%s: o resumo nao mostra o veredicto:\n%s", nome, e.stdout)
+		}
+		depois := strings.SplitN(e.stdout[i:], "\n", 4)
+		if len(depois) < 3 || !strings.Contains(depois[1], "LIMITE DESTE VEREDICTO") || !strings.Contains(depois[1], "NAO prova que o fornecedor o leu") || !strings.Contains(depois[1], "CONTROLO NEGATIVO") {
+			t.Errorf("%s: a linha a seguir ao veredicto nao e o seu limite:\n%s", nome, strings.Join(depois[:len(depois)-1], "\n"))
+		}
+		if strings.Contains(depois[2], "so resta o codigo HTTP") != c.topo {
+			t.Errorf("%s: a frase do topo ao lado do veredicto: quer %v\n%s", nome, c.topo, depois[2])
+		}
+	}
+	// Num modo sem modelo real, nem o relatorio nem o resumo levam a frase.
+	saida := t.TempDir()
+	e := executar(t, Ambiente{}, "falso", "--estado", "exige", "--forma-do-falso", "openrouter",
+		"--perfil", aos516Ficheiro(t, aos516PerfilOpenRouterEm("openrouter/autor-de-ensaio/modelo-de-ensaio", aos516ParamsReasoning, "obrigatorio", "topo")), "--saida", saida)
+	if e.codigo != SaidaOK || strings.Contains(e.stdout, "LIMITE DESTE VEREDICTO") {
+		t.Errorf("modo falso: codigo %d; a frase do modo real nao e daqui", e.codigo)
+	}
+	for _, l := range aos516Relatorio(t, saida).Limites {
+		if l == LimiteDoVeredictoNoModoReal || l == LimiteDoTopoNoModoReal {
+			t.Error("o relatorio do modo falso leva o limite do modo real")
+		}
+	}
+}
