@@ -117,6 +117,70 @@ A tabela de preços escreve-a quem corre, com a página de preços do fornecedor
 no README do banco). A Anthropic só entra no banco depois de o dono preencher
 `ANTHROPIC_MODELO` (AOS-516); até lá o modo real recusa e nomeia o campo.
 
+## A qualificação da devolução do estado opaco (AOS-516)
+
+Um perfil candidato com `devolver` diferente de `nunca` faz o banco ligar, sozinho, o que a
+devolução exige (ADR-040 §2.11): a captura do estado, a governação da rota em `observe`, o
+layout 1.5.0 e a projecção que o perfil nomeia (1.3.0). Sem um perfil desses o banco é o de
+sempre. O relatório ganha o bloco «DEVOLUCAO DO ESTADO OPACO» (`taxas.devolucao_do_estado` no
+JSON, também por caso): turnos com estado capturado, pedidos que o levaram, causas de não
+devolução, recusas (o pedido **não saiu**) e respostas 4xx em pedidos que levaram estado.
+
+**Sem modelo real** (não gasta tecto, não precisa do ficheiro de chaves):
+
+```powershell
+# Modo falso: o provider falso EXIGE de volta, byte a byte, o estado que emitiu.
+go run ./packages/qa/banco-ensaio/cmd/aos-ensaio falso --estado exige --turnos-do-falso 3 --perfil <perfil.json> --saida <pasta>
+# Controlos negativos: --estado exige com um perfil `nunca` (400 ao segundo pedido), e
+# --estado proibe com um perfil `obrigatorio` (400 em pedidos que levaram estado).
+
+# Modo proxy: a imagem de produção do proxy, rota anthropic/<modelo> do perfil, falso num contentor.
+bash scripts/ci/banco-ensaio-proxy.sh
+```
+
+**Com o Claude** (só o dono; gasta o tecto do dia):
+
+1. Preencher `ANTHROPIC_MODELO` no ficheiro de chaves e a tabela de preços desse modelo.
+2. Copiar `packages/qa/banco-ensaio/perfis/claude-devolucao.exemplo.json` para a pasta do dono
+   e trocar `PREENCHER-NOME-DO-MODELO` pelo **mesmo** nome. O `expected_model` tem de ser
+   `anthropic/<ANTHROPIC_MODELO>`: é o que o proxy declara ter servido, e com outro nome o banco
+   recusa antes de enviar (exit 3).
+3. Ver o plano, sem enviar nada, e depois correr:
+
+```powershell
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor anthropic --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude.json --amostras 8 --pausa 2s --so-plano
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor anthropic --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude.json --amostras 8 --pausa 2s
+```
+
+Oito passagens pela bateria são 40 nós com tools (critério P3) e, no máximo, 672 pedidos mais a
+sonda: cabe no tecto de 1000 por dia. O tecto em dólares pára a corrida a meio se for atingido.
+
+**Como ler o resultado.** Lê-se **um campo**: `qualificacao_da_devolucao.veredicto`. É o banco
+que o calcula; as contagens só o explicam.
+
+| Veredicto | O que quer dizer |
+|---|---|
+| `cumprida` | Houve turnos com raciocínio, todos os pedidos que o deviam levar foram **aceites pelo fornecedor** (2xx), e nada falhou pelo caminho. Só este qualifica P4 |
+| `nao_cumprida` | A devolução falhou: há recusas do gateway, respostas 4xx a pedidos com estado, ou nós com tools que não fecharam `cumprido` |
+| `sem_raciocinio` | Nenhum turno trouxe raciocínio nem assinatura: não havia nada a devolver, e a corrida **não prova nada** (o `thinking` não chegou ao fornecedor — ver o passo 2) |
+| `inconclusiva` | Só há razões passageiras (429, 5xx, erro de transporte, tecto do dia, corrida a meio): repete-se |
+
+`razoes` diz porquê, em vocabulário fechado. O banco conta como devolvido **só o que o
+fornecedor aceitou**: a decisão do gateway (`decididos_a_devolver`) toma-se antes de o pedido
+sair e, sozinha, não conta. Um envelope só com os ids das tool calls conta em
+`turnos_so_com_ids_capturados` e fica fora da medida. Uma recusa com a causa
+`estado_de_rota_nao_provada` não é do fornecedor: o proxy não declarou o modelo servido igual ao
+do perfil (ver o passo 2).
+
+Na corrida contra o Claude não se passa `--host-esperado`: o relatório leva
+`endpoint_comparado: false`, e a rota prova-se só pelo modelo servido que o proxy declara.
+
+**O que o banco ainda não mede.** O segundo turno com **um byte da assinatura alterado** contra o
+modelo real (o controlo negativo do AOS-516) não tem opção no banco: o controlo «sem o estado»
+faz-se com um perfil igual e `devolver: nunca` (com `projection_version` 1.2.0). E um provider
+falso não valida assinaturas: o bloco de texto que o proxy acrescenta ao `assistant` de
+`content` vazio, entre o raciocínio e a tool call, só o Claude diz se é aceite.
+
 ## Se correr mal
 
 | Sintoma | Causa | O que fazer |
@@ -136,6 +200,8 @@ no README do banco). A Anthropic só entra no banco depois de o dono preencher
 | Exit 4, `modelo_desconhecido` | A sonda: o fornecedor não conhece o modelo | Corrigir o nome do modelo no ficheiro de chaves, ou `--modelo` |
 | Exit 4, `sonda_falhou` | A sonda não teve 200, por uma causa fora do vocabulário (`outro`) | Ver o código HTTP na linha da sonda; repetir com `--so-plano` para confirmar o destino |
 | Exit 4, `tecto_atingido` | O tecto foi atingido a meio (o de dólares só se conhece depois de cada resposta) | O relatório parcial está escrito. Nada a repor |
+| Exit 3, «o perfil devolve estado e o seu expected_model nao e a rota desta corrida» | O `expected_model` do perfil não é `anthropic/<ANTHROPIC_MODELO>` (ou `openai/<modelo>` no Kimi) | Corrigir o perfil. Nenhum pedido saiu |
+| Desfecho `estado_nao_devolvido` no relatório | A rota exige o estado e o de um turno não se podia devolver: o pedido seguinte não foi enviado | Ver `nao_devolvido_por_causa`: `estado_de_rota_nao_provada` é a rota (modelo ou endpoint declarados pelo proxy); `estado_ausente` é o fornecedor não ter mandado estado nesse turno |
 | Exit 6 | Sem Docker, sem a imagem, ou o proxy não arrancou | Arrancar o Docker; `docker pull` da imagem acima. A mensagem traz as últimas linhas do proxy, com os segredos ocultados |
 | Contentores `aos512-*` a correr depois de uma corrida interrompida à força | A limpeza não chegou a correr. **Um proxy órfão guarda a chave do fornecedor em claro no ambiente do contentor** (`docker inspect`) e aceita pedidos fora do contador | `aos-ensaio limpar` (remove contentores e redes `aos512-*` e diz quantos). O proxy também se mata sozinho ao fim de cerca de 90 s sem sinal de vida, e a corrida seguinte varre o que restar. À mão: `docker ps -a --filter name=aos512- --format "{{.Names}}"` e `docker rm -f` de cada um |
 | Códigos 429 no relatório | Limite de ritmo **ou** conta sem saldo: o código é o mesmo (o proxy do ensaio tem o arrefecimento desligado) | Ver «tipos de erro» no relatório. `limite_de_ritmo`: repetir com `--pausa 2s`. `saldo_insuficiente`: carregar a conta |

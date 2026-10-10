@@ -31,6 +31,11 @@ type Exigente struct {
 	ExigeID bool
 	// Proibe faz do falso um provider que recusa qualquer estado no pedido.
 	Proibe bool
+	// Tool e Argumentos são a tool call que o falso emite em cada turno: o nome da tool e os
+	// argumentos, em JSON. Vazios ⇒ `doc_read` com `{"doc_id":"notas"}`, como sempre. Servem a
+	// quem corre o falso atrás de um runtime com outras tools (o banco de ensaio, AOS-516).
+	Tool       string
+	Argumentos string
 
 	mu       sync.Mutex
 	pedidos  []Pedido
@@ -107,11 +112,21 @@ func (e *Exigente) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(Corpo("content_texto"))
 		return
 	}
+	tool, argumentos := e.Tool, e.Argumentos
+	if tool == "" {
+		tool = "doc_read"
+	}
+	if argumentos == "" {
+		argumentos = `{"doc_id":"notas"}`
+	}
+	// O nome e os argumentos vão pelo codificador: os argumentos são uma STRING com JSON dentro.
+	nome, _ := json.Marshal(tool)
+	args, _ := json.Marshal(argumentos)
 	_, _ = w.Write([]byte(`{"id":"chatcmpl-exigente","object":"chat.completion","created":1700000000,"model":"modelo-falso",` +
 		`"choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":` + string(RaciocinioEmitidoNoTurno(turnos)) + `,` +
 		`"thinking_blocks":` + string(BlocosEmitidos(turnos)) + `,` +
 		`"tool_calls":[{"id":"` + IDEmitidoNoTurno(turnos) + `","type":"function","thought_signature":` + string(AssinaturaEmitidaNoTurno(turnos)) + `,` +
-		`"function":{"name":"doc_read","arguments":"{\"doc_id\":\"notas\"}"}}]},"finish_reason":"tool_calls"}],` +
+		`"function":{"name":` + string(nome) + `,"arguments":` + string(args) + `}}]},"finish_reason":"tool_calls"}],` +
 		`"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}`))
 }
 

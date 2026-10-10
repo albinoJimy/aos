@@ -71,6 +71,13 @@ type Relatorio struct {
 	Limites []string `json:"limites"`
 	// Observacoes: uma linha por run, em vocabulário fechado.
 	Observacoes []Observacao `json:"observacoes"`
+	// FormaNoFornecedor é a forma com que os turnos com tool calls chegaram ao provider FALSO
+	// (AOS-516): nomes de chaves e tipos de bloco, nunca valores. Só nos modos sem modelo real.
+	FormaNoFornecedor *FormaNoFornecedor `json:"forma_no_fornecedor,omitempty"`
+	// Qualificacao é o VEREDICTO do banco sobre a devolução do estado opaco (AOS-516). Existe
+	// quando o perfil da corrida devolve estado, ou quando a corrida foi feita contra o provider
+	// falso do estado. É este campo que se lê; as contagens explicam-no.
+	Qualificacao *QualificacaoDaDevolucao `json:"qualificacao_da_devolucao,omitempty"`
 }
 
 // Declaracao é um valor declarado por alguém e não verificado pelo banco.
@@ -85,6 +92,9 @@ type Protocolo struct {
 	Layout    string `json:"layout_do_prompt"`
 	// VersaoPorBraco é a versão PUBLICADA da projecção nativa de que cada braço parte.
 	VersaoPorBraco map[string]string `json:"versao_publicada_por_braco"`
+	// Estado é o que o nó de ensaio ligou por o perfil candidato devolver estado (AOS-516):
+	// nesse caso a versão da projecção é a do perfil, e não a do braço. Ausente sem devolução.
+	Estado *ComposicaoDoEstado `json:"estado_opaco,omitempty"`
 }
 
 // Digests são os três digests que fixam o que foi medido.
@@ -193,21 +203,34 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 			"As variantes B e C existem so no banco. Um braco com menos falhas nao e uma versao de projeccao: publicar uma exige ticket proprio e emenda ao ADR-036.",
 		)
 	}
+	if cfg.No != nil && cfg.No.devolucao != nil {
+		l = append(l,
+			"Devolucao do estado opaco: so conta como devolvido o pedido em que o gateway armou o estado de todos os turnos E a que o fornecedor respondeu 2xx. A decisao do gateway toma-se antes do envio e, sozinha, nao conta. O banco nao le o estado, e nao prova que o fornecedor o validou: um provider falso nao verifica assinaturas, e so o modelo real o faz.",
+			"Um turno com raciocinio e um turno cuja resposta trouxe pelo menos um campo de raciocinio ou de assinatura, pelos nomes dos campos que a sonda do gateway leu; o banco nao le os valores, e um campo presente com valor vazio conta. Um envelope so com os ids das tool calls conta a parte e nao entra na taxa.",
+			"A governacao da rota corre em observe: compara o modelo que o proxy DECLARA ter servido com o do perfil. Nao e atestacao. No modo falso nao ha proxy: quem declara o modelo servido e o proprio provider falso, com o nome que o perfil espera.",
+			"Com devolver em obrigatorio, um turno cujo estado nao se pode devolver para o run (estado_nao_devolvido): o pedido seguinte nao e enviado. Esses runs contam em recusas_por_falta_de_estado, nao em erros do provider.",
+		)
+	}
 	return l
 }
 
 func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, terminou string, sonda *Sonda, obs []Observacao) (*Relatorio, error) {
+	var estado *ComposicaoDoEstado
+	layout := agentruntime.AssemblyVersion140
+	if cfg.No != nil && cfg.No.devolucao != nil {
+		estado, layout = cfg.No.devolucao, cfg.No.devolucao.Layout
+	}
 	r := &Relatorio{
 		Versao: VersaoDoRelatorio, Ticket: "AOS-512", DataUTC: agora.Format(time.RFC3339),
 		Modo: cfg.Modo, Experiencia: string(cfg.Plano.Experiencia), Terminou: terminou,
 		Rota: cfg.Rota,
 		Protocolo: Protocolo{
-			Projeccao: modelgateway.ProjectionNative, Layout: agentruntime.AssemblyVersion140,
-			VersaoPorBraco: map[string]string{},
+			Projeccao: modelgateway.ProjectionNative, Layout: layout,
+			VersaoPorBraco: map[string]string{}, Estado: estado,
 		},
 		Digests: Digests{
 			Bateria: cfg.Bateria.Digest(), Rota: cfg.Rota.Digest,
-			Configuracao: digestDaConfiguracao(cfg.Plano, cfg.Extra),
+			Configuracao: digestDaConfiguracao(cfg.Plano, cfg.Extra, estado),
 			Perfil:       cfg.PerfilDigest,
 		},
 		Plano:       cfg.Plano,
@@ -223,6 +246,9 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 	}
 	if r.Observacoes == nil {
 		r.Observacoes = []Observacao{}
+	}
+	if estado != nil || cfg.QualificaDevolucao {
+		r.Qualificacao = qualificarDevolucao(estado != nil, terminou == TerminouCompleta, r.Taxas.Devolucao, obs)
 	}
 	if cfg.RegiaoDeclarada != "" {
 		r.RegiaoDeclarada = &Declaracao{Valor: cfg.RegiaoDeclarada, Nota: "declarada pelo dono no ficheiro de chaves; sem efeito no ensaio e nao verificada"}
@@ -419,6 +445,24 @@ func blocoDeTaxas(b *strings.Builder, t Taxas) {
 	b.WriteString(linhaDaTaxa("recuperado a 3.a tentativa", t.RecuperadoATerceira))
 }
 
+// blocoDaDevolucao escreve as contagens da devolução do estado opaco (AOS-516).
+func blocoDaDevolucao(b *strings.Builder, d *Devolucao) {
+	if d == nil {
+		return
+	}
+	fmt.Fprintf(b, "  DEVOLUCAO DO ESTADO OPACO: %d turno(s) com estado capturado, dos quais %d com raciocinio ou assinatura e %d so com ids; %d pedido(s) com turnos anteriores\n",
+		d.TurnosComEstadoCapturado, d.TurnosComRaciocinioCapturado, d.TurnosSoComIDs, d.PedidosComTurnosAnteriores)
+	b.WriteString(linhaDaTaxa("  aceites pelo fornecedor (P4)", d.TaxaDeDevolucao))
+	fmt.Fprintf(b, "    decididos a devolver pelo gateway (ANTES do envio; nao e resultado): %d;  recusas por falta de estado (pedido NAO enviado): %d\n",
+		d.DecididosADevolver, d.Recusas)
+	c := d.ComEstado
+	fmt.Fprintf(b, "    pedidos com estado: %d — tentativas: 2xx %d, 4xx (sem 429) %d, 429 %d, 5xx %d, outro %d, erro de transporte %d, nao enviados %d\n",
+		c.Pedidos, c.HTTP2xx, c.HTTP4xx, c.HTTP429, c.HTTP5xx, c.HTTPOutro, c.ErroDeTransporte, c.NaoEnviado)
+	blocoDeContagens(b, "  capturas (por turno com estado)", d.CapturasPorResultado)
+	blocoDeContagens(b, "  pedidos por decisao do gateway", d.PedidosPorDecisao)
+	blocoDeContagens(b, "  nao devolvido, por causa", d.NaoDevolvidoPorCausa)
+}
+
 func blocoDeContagens(b *strings.Builder, titulo string, m map[string]int) {
 	b.WriteString("  " + titulo + ":")
 	if len(m) == 0 {
@@ -441,6 +485,10 @@ func ResumoEmTexto(r *Relatorio) string {
 		fmt.Fprintf(&b, "regiao de processamento DECLARADA pelo dono (sem efeito no ensaio): %s\n", r.RegiaoDeclarada.Valor)
 	}
 	fmt.Fprintf(&b, "protocolo: projeccao %s, layout %s\n", r.Protocolo.Projeccao, r.Protocolo.Layout)
+	if e := r.Protocolo.Estado; e != nil {
+		fmt.Fprintf(&b, "estado opaco: captura %s, governacao da rota %s (endpoint comparado: %v), projeccao do perfil %s, devolver %s, tool_call_id %s\n",
+			e.Captura, e.GovernacaoDaRota, e.EndpointComparado, e.Projeccao, e.Devolver, e.ToolCallID)
+	}
 	fmt.Fprintf(&b, "digests: bateria=%s\n         rota=%s\n         configuracao=%s\n", r.Digests.Bateria, r.Digests.Rota, r.Digests.Configuracao)
 	if r.Digests.Perfil != "" {
 		fmt.Fprintf(&b, "         perfil candidato=%s\n", r.Digests.Perfil)
@@ -472,6 +520,20 @@ func ResumoEmTexto(r *Relatorio) string {
 	blocoDeContagens(&b, "codigos HTTP (por pedido)", r.Taxas.HTTP)
 	blocoDeContagens(&b, "tipos de erro (por pedido com resposta sem 200; vocabulario fechado)", r.Taxas.TiposDeErro)
 	blocoDeContagens(&b, "fichas da forma da resposta (por pedido)", r.Taxas.Fichas)
+	blocoDaDevolucao(&b, r.Taxas.Devolucao)
+	if q := r.Qualificacao; q != nil {
+		razoes := "(nenhuma)"
+		if len(q.Razoes) > 0 {
+			razoes = strings.Join(q.Razoes, ", ")
+		}
+		fmt.Fprintf(&b, "  QUALIFICACAO DA DEVOLUCAO: %s — razoes: %s\n", strings.ToUpper(q.Veredicto), razoes)
+	}
+	if f := r.FormaNoFornecedor; f != nil {
+		fmt.Fprintf(&b, "  FORMA NO PROVIDER FALSO (wire %s; so nomes e tipos, nunca valores): %d turno(s) com tool calls recebidos de volta\n", f.Wire, f.Turnos)
+		blocoDeContagens(&b, "  forma do assistant com tool calls", f.Assistant)
+		blocoDeContagens(&b, "  o estado que voltou, por campo", f.Estado)
+		blocoDeContagens(&b, "  respostas 400 do provider falso, por causa", f.Recusas)
+	}
 
 	if len(r.PorBraco) > 1 {
 		for _, br := range r.PorBraco {
@@ -496,6 +558,7 @@ func ResumoEmTexto(r *Relatorio) string {
 		for _, c := range r.PorCaso {
 			fmt.Fprintf(&b, " %s (%d runs)\n", c.Caso, c.Taxas.N)
 			blocoDeContagens(&b, "desfechos", c.Taxas.Desfechos)
+			blocoDaDevolucao(&b, c.Taxas.Devolucao)
 		}
 	}
 	b.WriteString("\nO QUE ESTA CORRIDA NAO PROVA\n")

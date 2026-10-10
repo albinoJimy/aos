@@ -73,6 +73,10 @@ type CfgDoNo struct {
 	// nome pedido tem de ser [AliasDaRota]. nil ⇒ a rota de ensaio não tem perfil, como sempre.
 	// Não precisa de existir na tabela de perfis do nó: é esse o ponto.
 	Perfil *modelgateway.RouteProfile
+	// HostEsperado é o host do endpoint que o proxy deve declarar ter servido, para a governação
+	// da rota (AOS-505). Só é lido quando o perfil devolve estado (AOS-516). Vem de quem corre o
+	// ensaio (`--host-esperado`); vazio ⇒ o endpoint não é comparado, só o modelo servido.
+	HostEsperado string
 }
 
 // ErrPerfilDoEnsaio — o perfil candidato não serve o nó de ensaio.
@@ -106,6 +110,8 @@ type NoDeEnsaio struct {
 	// credencial e o mesmo transporte contado dos pedidos da corrida.
 	base, credencial string
 	cliente          *http.Client
+	// devolucao é a composição do estado opaco (AOS-516); nil quando o perfil não devolve estado.
+	devolucao *ComposicaoDoEstado
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -222,18 +228,35 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		return nil, fmt.Errorf("banco-ensaio: perfil candidato: %w", err)
 	}
 
+	porta := &portaDeEnsaio{contador: cfg.Contador}
+	// A DEVOLUÇÃO DO ESTADO OPACO (AOS-516). Só quando o perfil candidato a declara: sem isso os
+	// três campos abaixo ficam a zero e o gateway, o adaptador e o layout são os de sempre.
+	devolucao := composicaoDoEstado(cfg.Perfil, cfg.HostEsperado)
+	var (
+		rota     modelgateway.RouteGovernance
+		captura  string
+		verSaida func(modelgateway.StateReturnObservation)
+	)
+	if devolucao != nil {
+		rota = modelgateway.RouteGovernance{Mode: devolucao.GovernacaoDaRota, ExpectedAPIHost: cfg.HostEsperado}
+		captura, verSaida = devolucao.Captura, porta.verDevolucao
+	}
+
 	cliente := &http.Client{Timeout: timeout, Transport: &transporteContado{base: transporte, contador: cfg.Contador}}
 	gw, err := modelgateway.NewProduction(ctx, modelgateway.ProductionConfig{
-		RouteProfiles: candidatos,
-		Provider:      "openai",
-		BaseURL:       base,
-		HTTPClient:    cliente,
-		DefaultRegion: regiaoDoEnsaio,
-		Authn:         authn.New(verificador, autoridadeDoEnsaio{}, politica),
-		Audit:         audit.NewMemStore(),
-		Credentials:   credencialEstatica{segredo: cfg.Credencial},
-		Accounts:      []modelgateway.InfraAccount{{KeyID: "rota-de-ensaio", Provider: "openai", Region: regiaoDoEnsaio}},
-		Allowlist:     pol,
+		Route:               rota,
+		ProviderState:       captura,
+		StateReturnObserver: verSaida,
+		RouteProfiles:       candidatos,
+		Provider:            "openai",
+		BaseURL:             base,
+		HTTPClient:          cliente,
+		DefaultRegion:       regiaoDoEnsaio,
+		Authn:               authn.New(verificador, autoridadeDoEnsaio{}, politica),
+		Audit:               audit.NewMemStore(),
+		Credentials:         credencialEstatica{segredo: cfg.Credencial},
+		Accounts:            []modelgateway.InfraAccount{{KeyID: "rota-de-ensaio", Provider: "openai", Region: regiaoDoEnsaio}},
+		Allowlist:           pol,
 		// A ficha da forma da resposta (AOS-507) vem do adaptador de produção, sem cópia.
 		ResponseShape: modelgateway.ResponseShapeObserve,
 	})
@@ -252,17 +275,24 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	}
 
 	n := &NoDeEnsaio{
-		bateria: cfg.Bateria, porta: &portaDeEnsaio{dentro: gw, contador: cfg.Contador},
+		bateria: cfg.Bateria, porta: porta, devolucao: devolucao,
 		mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
 		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},
+	}
+	porta.dentro = gw
+	layout := agentruntime.AssemblyVersion140
+	var doEstado []modelgateway.RuntimeAdapterOption
+	if devolucao != nil {
+		layout = devolucao.Layout
+		doEstado = append(doEstado, modelgateway.WithProviderStateCapture(modelgateway.DefaultProviderStateMaxBytes, porta.verCaptura))
 	}
 	var doNo []port.Tool
 	for _, t := range ToolsDoBanco() {
 		doNo = append(doNo, port.Tool{Type: "function", Function: port.FunctionDef{Name: t.Nome, Description: t.Descricao, Parameters: t.Parametros}})
 	}
 	for _, b := range Bracos() {
-		mc := modelgateway.NewModelClient(n.porta, AliasDaRota,
+		mc := modelgateway.NewModelClient(n.porta, AliasDaRota, append([]modelgateway.RuntimeAdapterOption{
 			modelgateway.WithTools(doNo),
 			// O token NHI é cunhado POR RUN (o emissor limita o TTL a uma hora, e uma corrida
 			// pode durar mais): chega ao estágio de identidade do gateway pelo contexto da chamada.
@@ -279,9 +309,9 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 				nomes, _ := ctx.Value(chaveDasToolsDoRun).(map[string]bool)
 				return func(nome string) bool { return nomes[nome] }, true
 			}),
-		)
+		}, doEstado...)...)
 		n.runtimes[b] = agentruntime.New(mc, mon, agentruntime.NewTurnRecorder(store),
-			agentruntime.WithAssemblyVersion(agentruntime.AssemblyVersion140),
+			agentruntime.WithAssemblyVersion(layout),
 			agentruntime.WithStopReasonStats(n.contarMotivo),
 		)
 	}
@@ -391,7 +421,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	ctx = context.WithValue(ctx, chaveDasToolsDoRun, doRun)
 	res, err := rt.Run(ctx, goal)
 
-	chamadas := n.porta.fechar(runID)
+	chamadas, capturas := n.porta.fechar(runID)
+	// haviaRaciocinio: algum turno ANTERIOR do run trouxe raciocínio ou assinatura (AOS-516).
+	haviaRaciocinio := false
 	n.mu.Lock()
 	obs.MotivosDeParagem = n.motivos[runID]
 	delete(n.motivos, runID)
@@ -401,6 +433,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	// não pelo [agentruntime.Result]: um run que falha a meio (o provider recusa o segundo
 	// pedido) devolve um Result vazio, e o primeiro turno — com a sua tool call — aconteceu.
 	obs.UltimoDesfechoDeTool = res.LastToolOutcome
+	if n.devolucao != nil {
+		obs.Estado = novoEstadoDoRun(capturas)
+	}
 	var ultimoTexto string
 	for i, c := range chamadas {
 		obs.Pedidos++
@@ -421,6 +456,10 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 				obs.SegundoTurno = SegundoTurnoAceite
 			}
 		}
+		if obs.Estado != nil {
+			obs.Estado.contarPedido(c, haviaRaciocinio)
+		}
+		haviaRaciocinio = haviaRaciocinio || c.classeDoEstado == estadoComRaciocinio
 		if i == len(chamadas)-1 {
 			ultimoTexto = c.texto
 			obs.erroDaUltimaChamada = c.erro
@@ -481,6 +520,15 @@ type chamadaObservada struct {
 	tokensDeSaida   int64
 	toolCalls       int
 	texto           string
+	// devolucao e causaDaDevolucao são o que o gateway reportou da devolução do estado opaco
+	// neste pedido ([modelgateway.StateReturnObservation]); vazios quando não reportou nada.
+	devolucao, causaDaDevolucao string
+	// tentativas são os códigos HTTP de CADA tentativa de transporte do pedido, pela ordem (0 =
+	// sem resposta HTTP); naoEnviados, as tentativas que o tecto do dia não deixou sair.
+	tentativas  []int
+	naoEnviados int
+	// classeDoEstado é o que a resposta trouxe de estado opaco ([classeDoEstadoDaResposta]).
+	classeDoEstado string
 }
 
 // portaDeEnsaio é o decorador da porta do gateway: aplica o braço às mensagens que a projecção
@@ -491,6 +539,13 @@ type portaDeEnsaio struct {
 
 	mu     sync.Mutex
 	porRun map[string][]chamadaObservada
+	// O banco corre um run de cada vez: emCurso é o pedido que está no gateway, e capturas o
+	// resultado da captura do estado de cada turno do run aberto.
+	emCurso  *chamadaObservada
+	capturas *capturasDoRun
+	// classeDaUltima é a classe do estado da última resposta: a captura desse turno é reportada
+	// pelo adaptador logo a seguir, e é por ela que se sabe o que foi capturado.
+	classeDaUltima string
 }
 
 func (p *portaDeEnsaio) abrir(runID string) {
@@ -500,14 +555,55 @@ func (p *portaDeEnsaio) abrir(runID string) {
 		p.porRun = map[string][]chamadaObservada{}
 	}
 	p.porRun[runID] = nil
+	p.capturas, p.classeDaUltima = &capturasDoRun{porResultado: map[string]int{}}, ""
 }
 
-func (p *portaDeEnsaio) fechar(runID string) []chamadaObservada {
+// fechar devolve os pedidos do run e as capturas do estado dos seus turnos.
+func (p *portaDeEnsaio) fechar(runID string) ([]chamadaObservada, capturasDoRun) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := p.porRun[runID]
 	delete(p.porRun, runID)
-	return out
+	var capturas capturasDoRun
+	if p.capturas != nil {
+		capturas = *p.capturas
+	}
+	p.capturas = nil
+	return out, capturas
+}
+
+// verCaptura é o [modelgateway.ProviderStateObserver] do nó de ensaio: conta, no run aberto, o
+// resultado da captura do estado de um turno. Só vocabulário fechado.
+func (p *portaDeEnsaio) verCaptura(resultado string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.capturas == nil {
+		return
+	}
+	p.capturas.porResultado[doVocabulario(resultado, modelgateway.ProviderStateResults())]++
+	if resultado != modelgateway.ProviderStateResultCaptured {
+		return
+	}
+	switch p.classeDaUltima {
+	case estadoComRaciocinio:
+		p.capturas.comRaciocinio++
+	case estadoSoComIDs:
+		p.capturas.soComIDs++
+	}
+}
+
+// verDevolucao recebe do gateway o resultado da devolução do estado no pedido em curso.
+func (p *portaDeEnsaio) verDevolucao(o modelgateway.StateReturnObservation) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.emCurso == nil {
+		return
+	}
+	p.emCurso.devolucao = doVocabulario(o.Result, modelgateway.StateReturnResults())
+	p.emCurso.causaDaDevolucao = ""
+	if o.Cause != "" {
+		p.emCurso.causaDaDevolucao = doVocabulario(o.Cause, modelgateway.StateReturnCauses())
+	}
 }
 
 // PortVersion implementa [port.Gateway].
@@ -541,8 +637,19 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 		}
 	}
 	pedido := &pedidoHTTP{}
+	p.mu.Lock()
+	p.emCurso = &obs
+	p.mu.Unlock()
 	resp, err := p.dentro.Chat(context.WithValue(ctx, chaveDaChamada, pedido), req)
+	p.mu.Lock()
+	p.emCurso = nil
+	p.mu.Unlock()
 	obs.status, obs.tipoDeErro = pedido.lerStatus(), pedido.lerTipo()
+	obs.tentativas, obs.naoEnviados = pedido.lerTentativas()
+	obs.classeDoEstado = classeDoEstadoDaResposta(resp.State)
+	p.mu.Lock()
+	p.classeDaUltima = obs.classeDoEstado
+	p.mu.Unlock()
 	if err != nil {
 		obs.erro = classeDoErro(err, obs.status)
 		obs.ficha = Ficha{Classe: FichaSemResposta}
@@ -579,10 +686,15 @@ const (
 	erroContador         = "contador"
 	erroTempo            = "tempo_esgotado"
 	erroOutro            = "outro"
+	// erroEstado — o gateway NÃO enviou o pedido: a rota exige o estado opaco de volta e o de
+	// um turno não se pode devolver ([modelgateway.StateReturnError], AOS-515).
+	erroEstado = "estado_nao_devolvido"
 )
 
 func classeDoErro(err error, status int) string {
 	switch {
+	case errors.Is(err, modelgateway.ErrStateReturnRequired):
+		return erroEstado
 	case errors.Is(err, ErrTectoAtingido):
 		return erroTecto
 	case errors.Is(err, ErrContador):
@@ -606,6 +718,8 @@ func desfechoDoErro(classe string) string {
 		return DesfechoRespostaRecusada
 	case erroTempo:
 		return DesfechoTempoEsgotado
+	case erroEstado:
+		return DesfechoEstadoNaoDevolvido
 	default:
 		return DesfechoErroOutro
 	}
@@ -617,6 +731,27 @@ type pedidoHTTP struct {
 	mu     sync.Mutex
 	status int
 	tipo   string
+	// tentativas são os códigos de todas as tentativas de transporte (0 = sem resposta HTTP);
+	// naoEnviados, as que a reserva do tecto recusou antes de sair.
+	tentativas  []int
+	naoEnviados int
+}
+
+func (p *pedidoHTTP) lerTentativas() ([]int, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]int(nil), p.tentativas...), p.naoEnviados
+}
+
+// anotar regista uma tentativa de transporte: o código (0 = sem resposta), ou a recusa do tecto.
+func (p *pedidoHTTP) anotar(status int, naoEnviado bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if naoEnviado {
+		p.naoEnviados++
+		return
+	}
+	p.tentativas = append(p.tentativas, status)
 }
 
 func (p *pedidoHTTP) lerTipo() string {
@@ -641,13 +776,26 @@ type transporteContado struct {
 
 // RoundTrip implementa [http.RoundTripper].
 func (t *transporteContado) RoundTrip(req *http.Request) (*http.Response, error) {
+	doPedido, _ := req.Context().Value(chaveDaChamada).(*pedidoHTTP)
 	if t.contador != nil {
 		// FAIL-CLOSED: a reserva vem primeiro, e qualquer erro dela impede o envio.
 		if err := t.contador.Reservar(); err != nil {
+			if doPedido != nil {
+				doPedido.anotar(0, true)
+			}
 			return nil, err
 		}
 	}
 	resp, err := t.base.RoundTrip(req)
+	if doPedido != nil {
+		// CADA tentativa de transporte fica anotada: se o gateway repetir o pedido, um erro
+		// intermédio não se perde atrás do código da última.
+		if err != nil {
+			doPedido.anotar(0, false)
+		} else {
+			doPedido.anotar(resp.StatusCode, false)
+		}
+	}
 	if err == nil {
 		if p, ok := req.Context().Value(chaveDaChamada).(*pedidoHTTP); ok {
 			// O corpo de um erro lê-se AQUI, só para o classificar: o texto não sai do transporte.

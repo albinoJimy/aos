@@ -147,6 +147,9 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--modelo M` | real | Um dos modelos do ficheiro (omissão: o primeiro). |
 | `--precos F` | real | Tabela de preços. Obrigatória quando há tecto em dólares. |
 | `--perfil F` | todos | **Perfil de rota candidato** (AOS-513), em JSON, na forma dos campos de um perfil do gateway: `requested` (tem de ser `rota-de-ensaio`), `expected_model`, `wire_class`, `capabilities` e, opcionais, `params` (`thinking`, `reasoning_effort`, `max_tokens`), `projection_version` e `devolver`. A leitura é fechada: uma chave ou um valor fora do conjunto recusa a corrida antes de qualquer pedido. O digest do perfil vai no relatório (`digests.perfil`) e entra no digest da configuração. É assim que um perfil se qualifica **antes** de entrar na tabela de perfis do nó. |
+| `--estado exige\|proibe` | falso, proxy | O provider falso do **estado opaco** (AOS-516) em vez do do roteiro: emite raciocínio assinado em cada turno com tools e exige-o de volta (no modo falso, byte a byte, pelo falso exigente do AOS-515), ou recusa qualquer estado. No modo proxy pede `--perfil` com `expected_model` `anthropic/<modelo>`: a rota do proxy é essa, e o falso fala o wire de mensagens da Anthropic. |
+| `--turnos-do-falso N` | falso, proxy | Turnos com tool call do provider falso do estado (omissão 2). |
+| `--host-esperado HOST` | todos | Só com um perfil que devolve estado: o host do endpoint que o proxy deve declarar ter servido. Sem ele compara-se só o modelo servido. O host não vai para o relatório. |
 | `--so-plano` | real | Valida tudo, mostra o destino da chave e quantos pedidos faria, e não envia nenhum. |
 | `--destino-fora-da-lista HOST` | real | Aceita um destino da chave que não é um host do fornecedor. `HOST` tem de ser exactamente o host do ficheiro; o `https` continua a ser exigido. |
 | `--reconstruir-contador` | real | Recria um contador desaparecido a partir dos relatórios de hoje. |
@@ -274,6 +277,34 @@ do ficheiro de chaves e no texto de todas as respostas do provider falso
 (`TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma`,
 `TestAOS512_Real_SegredosNoCaminhoDeErroDoProxy`), e com um identificador de conta na
 `message` dos erros do fornecedor (`TestAOS512_Real_SaldoERitmo_AMensagemDoFornecedorNaoSai`).
+
+## A devolução do estado opaco (AOS-516)
+
+Com um perfil candidato cujo `devolver` não seja `nunca`, o nó de ensaio compõe o gateway com a
+captura do estado (`capture`), a governação da rota em `observe` e o layout 1.5.0, e a projecção
+é a do perfil (1.3.0). Sem esse perfil nada disto se liga: os pedidos e o relatório são, byte a
+byte, os de antes (`TestAOS516_SemPerfilQueDevolva_PedidosERelatorioSaoOsDeAntes`).
+
+O relatório ganha, na corrida, por braço e por caso (`devolucao_do_estado`), só contagens:
+
+| Campo | O que conta |
+|---|---|
+| `turnos_com_estado_capturado` | Turnos cuja resposta trouxe estado e a captura o guardou |
+| `pedidos_com_turnos_anteriores` | Pedidos que levavam pelo menos um turno anterior com tool calls |
+| `turnos_com_raciocinio_capturado` / `turnos_so_com_ids_capturados` | Os turnos capturados que trouxeram raciocínio ou assinatura, e os que só trouxeram ids de tool call (fora da medida) |
+| `decididos_a_devolver` | Pedidos em que o gateway armou o estado de todos os turnos — uma **decisão**, antes do envio |
+| `aceites_pelo_fornecedor` / `taxa_de_devolucao` | Dos pedidos que deviam levar raciocínio, os armados **e** respondidos com 2xx (critério P4) |
+| `nao_devolvido_por_causa` | A causa, no vocabulário do AOS-515 (inclui `estado_de_rota_nao_provada`) |
+| `recusas_por_falta_de_estado` | Pedidos que o gateway **não enviou** (`StateReturnError`); o run fecha `estado_nao_devolvido` |
+| `pedidos_com_estado` | O que aconteceu no transporte aos pedidos com estado, por tentativa: `http_2xx`, `http_4xx` (sem o 429), `http_429`, `http_5xx`, `erro_de_transporte`, `nao_enviado` |
+
+O veredicto está em `qualificacao_da_devolucao` (`cumprida`, `nao_cumprida`, `sem_raciocinio`,
+`inconclusiva`, com as `razoes`): é esse campo que se lê.
+
+Nos modos sem modelo real, `forma_no_fornecedor` diz com que **forma** as mensagens `assistant`
+com tool calls chegaram ao provider falso — chaves e tipos de bloco, nunca valores. Um perfil de
+exemplo para o Claude está em `perfis/claude-devolucao.exemplo.json` (sem chaves; o nome do
+modelo é um marcador). O procedimento está em `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`.
 
 ## A experiência dos separadores
 

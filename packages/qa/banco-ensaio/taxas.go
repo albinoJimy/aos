@@ -143,6 +143,9 @@ type Observacao struct {
 	Fichas          []Ficha `json:"fichas,omitempty"`
 	TokensDeEntrada int64   `json:"tokens_de_entrada"`
 	TokensDeSaida   int64   `json:"tokens_de_saida"`
+	// Estado é o que o banco viu do estado opaco do provider neste run (AOS-516). Só existe em
+	// corridas cujo perfil candidato devolve estado.
+	Estado *EstadoDoRun `json:"estado_opaco,omitempty"`
 
 	erroDaUltimaChamada string
 }
@@ -209,6 +212,9 @@ type Taxas struct {
 	// TiposDeErro conta, por tipo do vocabulário fechado, os pedidos com resposta sem 200.
 	TiposDeErro map[string]int `json:"tipos_de_erro"`
 	Fichas      map[string]int `json:"fichas"`
+	// Devolucao são as contagens da devolução do estado opaco (AOS-516). Ausente em corridas
+	// cujo perfil não devolve estado.
+	Devolucao *Devolucao `json:"devolucao_do_estado,omitempty"`
 }
 
 // desfechoRepetivel diz se um desfecho é dos que o banco volta a tentar: o run que acabou sem
@@ -223,6 +229,7 @@ func CalcularTaxas(obs []Observacao) Taxas {
 	t := Taxas{
 		N: len(obs), Desfechos: map[string]int{}, MotivosDeParagem: map[string]int{},
 		HTTP: map[string]int{}, Fichas: map[string]int{}, TiposDeErro: map[string]int{},
+		Devolucao: calcularDevolucao(obs),
 	}
 	type unidade struct {
 		caso, no, braco string

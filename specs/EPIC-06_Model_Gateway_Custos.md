@@ -3419,8 +3419,53 @@ ensaio e, se o dono o decidir e a região o permitir, em produção.
 
 ### Estado
 
-**ABERTO (2026-10-08).** Sem código. O passo 1 pode começar com o AOS-508; o passo 2 espera
-pelo AOS-512 a AOS-515 e pelo nome do modelo; o passo 3 espera pela decisão da região.
+**EM CURSO (2026-10-08): o banco de ensaio já mede a devolução, sem modelo real; a corrida com
+o Claude está por fazer.** O passo 2 espera pelo nome do modelo e pela autorização do dono; o
+passo 3 espera pela decisão da região.
+
+- **Feito — o banco (`packages/qa/banco-ensaio`).** Com um perfil candidato cujo `devolver` não
+  seja `nunca`, o nó de ensaio compõe a captura do estado, a governação da rota em `observe`, o
+  layout 1.5.0 e a projecção do perfil. Sem esse perfil os pedidos e o relatório são, byte a
+  byte, os de antes (presos por digest). O relatório conta, por corrida, braço e caso: turnos
+  com estado capturado, pedidos que o levaram, causas de não devolução, pedidos não enviados por
+  falta de estado e respostas 4xx em pedidos com estado — contagens, nunca conteúdo. O modo real
+  recusa, antes de enviar, um perfil cujo `expected_model` não seja a rota da corrida. Perfil de
+  exemplo: `packages/qa/banco-ensaio/perfis/claude-devolucao.exemplo.json`.
+- **Medido no modo falso** (wire de chat; o falso exigente do AOS-515, que confere o estado byte
+  a byte): uma passagem pela bateria faz 22 pedidos, todos com 200; 15 turnos com estado
+  capturado, e os 15 pedidos seguintes levaram-no. Controlos negativos: com `devolver: nunca`, 5
+  respostas 400 (uma por nó com tools); com `obrigatorio` contra um provider que proíbe estado,
+  5 respostas 400 em pedidos que o levaram; com a rota por provar, o segundo pedido não sai
+  (`estado_de_rota_nao_provada`).
+- **Medido atrás da imagem fixada do proxy** (passo 1, em parte; rota
+  `anthropic/claude-sonnet-4-5`, provider falso no wire de mensagens, duas passagens pela
+  bateria): 44 pedidos, todos com 200; 30 turnos com estado capturado e 30 de 30 pedidos
+  seguintes com o estado; ao provider chegaram 60 mensagens `assistant` com tool call, todas com
+  o texto e a assinatura do bloco de raciocínio, os dados do bloco redigido e a assinatura do
+  bloco de raciocínio de texto vazio iguais aos emitidos;
+  o parâmetro `thinking` chegou em 44 de 44 pedidos. **Em 60 de 60 o proxy acrescentou um bloco
+  de texto entre o raciocínio e a tool call** (a sequência é `thinking`,
+  `redacted_thinking`, `thinking` de texto vazio, `text`, `tool_use`): o gateway envia o `content` do `assistant` como
+  string vazia. Com `devolver: nunca` o proxy **não** retirou o `thinking` nem inventou blocos:
+  o pedido chegou sem estado e levou 400 (10 em 10).
+- **Revisão adversarial (2026-10-09): o banco dava verde falso, corrigido.** Contava como
+  «devolvido» a decisão do gateway, tomada antes de o pedido sair (com o provider a responder
+  500 a tudo: 3 de 3 «devolvidos», zero recebidos), e como «estado capturado» um envelope só
+  com ids de tool call (provider sem raciocínio nenhum: taxa a 100%). Agora só conta o que o
+  fornecedor **aceitou** (2xx), mede-se sobre os turnos que trouxeram raciocínio ou assinatura,
+  o 429, o 5xx, o erro de transporte e o pedido não enviado têm contador próprio, e o relatório
+  traz o veredicto calculado (`qualificacao_da_devolucao`: `cumprida`, `nao_cumprida`,
+  `sem_raciocinio`, `inconclusiva`). Os números acima repetiram-se com os contadores novos:
+  atrás do proxy, 30 de 30 aceites e veredicto `cumprida`; com `devolver: nunca`,
+  `nao_cumprida`. Oito mutações dos contadores e do veredicto, todas vermelhas.
+- **Por fazer.** O passo 2 inteiro: a corrida com o Claude (comando no
+  `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`), que é quem diz se o fornecedor aceita o bloco de
+  texto acrescentado pelo proxy e o que responde a blocos em falta. O controlo negativo com um
+  byte da assinatura alterado contra o modelo real não tem opção no banco. A fidelidade de
+  replay (P6) não se mede no banco: o nó de ensaio não tem captura selada nem retoma. A
+  configuração do proxy do ensaio é gerada pelo banco, não é um ficheiro versionado. A regra do
+  id de tool call só foi medida com o id do runtime atrás do proxy. A matriz de suporte e a §5 com o modelo real; o
+  passo 3.
 
 ---
 
@@ -3452,3 +3497,4 @@ pelo AOS-512 a AOS-515 e pelo nome do modelo; o passo 3 espera pela decisão da 
 | 3.1 | 2026-10-08 | +AOS-515 (fase A2): projecção nativa 1.3.0, que devolve o estado do turno ao provider só à rota que o produziu e só se o perfil o exigir; estável por prefixo; a decisão D3 é critério de aceitação | Equipa AOS |
 | 3.3 | 2026-10-08 | AOS-513 e AOS-515 implementados, inertes: o perfil da rota declara parâmetros, versão da projecção e classe de estado (contrato da porta `1.8.0`, emenda ao ADR-036 §2.8); projecção nativa 1.3.0 que devolve o estado opaco só à rota que o produziu (contrato `1.9.0`, ADR-040 §2.11, emenda ao ADR-036 §2.4). Medido atrás do proxy fixado: numa rota `openai/…` o proxy recusa `thinking` | Equipa AOS |
 | 3.2 | 2026-10-08 | +AOS-516 (fase A2): qualificação da segunda família — o Claude pelo mesmo proxy, primeiro no banco de ensaio, produção só por decisão do dono; registado que a API directa da Anthropic não documenta forma de fixar a inferência na UE (`inference_geo` só `global` ou `us`), o que bloqueia a rota de produção no board `eu-west` | Equipa AOS |
+| 3.4 | 2026-10-08 | AOS-516 em curso: o banco de ensaio liga a captura, a governação da rota e o layout 1.5.0 quando o perfil candidato devolve estado, e conta as devoluções; medido no modo falso e atrás da imagem fixada do proxy pela rota `anthropic/…` (o proxy acrescenta um bloco de texto antes da tool call quando o `content` é vazio); a corrida com o Claude está por fazer | Equipa AOS |
