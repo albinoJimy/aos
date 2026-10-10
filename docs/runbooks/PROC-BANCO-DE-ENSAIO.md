@@ -181,6 +181,80 @@ faz-se com um perfil igual e `devolver: nunca` (com `projection_version` 1.2.0).
 falso não valida assinaturas: o bloco de texto que o proxy acrescenta ao `assistant` de
 `content` vazio, entre o raciocínio e a tool call, só o Claude diz se é aceite.
 
+## O Claude pela OpenRouter (AOS-516)
+
+Decisão do dono de 2026-10-10: o Claude qualifica-se pela OpenRouter, só no banco de ensaio e
+com documentos de teste. A rota no proxy efémero é `openrouter/<autor>/<modelo>`; o destino da
+chave é fixo (`https://openrouter.ai`) e o contador do dia é o do fornecedor `openrouter`.
+
+**O perfil de exemplo já declara o que esta rota precisa** (medido atrás da imagem fixada do
+proxy, com um provider falso, a 2026-10-10): `"devolver_em": "topo"` — o estado do turno
+(`reasoning_details`) volta no topo da mensagem, onde a OpenRouter o lê, e não dentro de
+`provider_specific_fields` — e `"params": {"reasoning": {"effort": "medium"}}`, a forma em que
+ela documenta o pedido do raciocínio. Com este perfil o veredicto pode ser `cumprida`. Sem
+`devolver_em` não pode: o melhor possível é `inconclusiva`, com a razão
+`estado_devolvido_so_no_saco_do_proxy`.
+
+1. O dono acrescenta ao seu ficheiro de chaves, à mão (sem aspas):
+
+   ```
+   OPENROUTER_API_KEY=<a chave da OpenRouter>
+   OPENROUTER_MODELO=anthropic/claude-sonnet-4.5
+   TECTO_PEDIDOS_DIA_OPENROUTER=200
+   TECTO_USD_DIA_OPENROUTER=3
+   ```
+
+   `OPENROUTER_MODELO` é o nome na OpenRouter (`<autor>/<modelo>`), **sem** o prefixo
+   `openrouter/`. Os tectos acima são um exemplo: são do dono. O tecto em dólares é opcional;
+   com ele, a tabela de preços tem de ter uma entrada com a chave igual a `OPENROUTER_MODELO`
+   (os preços confirmam-se na página do modelo na OpenRouter).
+2. Copiar `packages/qa/banco-ensaio/perfis/claude-openrouter.exemplo.json` para a pasta do dono
+   (por exemplo `perfil-claude-openrouter.json`) e trocar `PREENCHER-NOME-DO-MODELO`, de modo
+   que `expected_model` fique `openrouter/<OPENROUTER_MODELO>` — com o modelo acima,
+   `openrouter/anthropic/claude-sonnet-4.5`. É o que o proxy declara ter servido (medido); com
+   outro nome o banco recusa antes de enviar (exit 3).
+3. Ver o plano, sem enviar nada, e confirmar a linha `DESTINO DA CHAVE: https://openrouter.ai`.
+   Depois correr, primeiro com uma passagem (no máximo 84 pedidos mais a sonda):
+
+```powershell
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor openrouter --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude-openrouter.json --amostras 1 --pausa 2s --so-plano
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor openrouter --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude-openrouter.json --amostras 1 --pausa 2s
+```
+
+4. **O controlo negativo — faz parte da qualificação, não é opcional.** No modo real o banco só
+   vê códigos HTTP: `cumprida` quer dizer que a OpenRouter respondeu 2xx a todos os pedidos que
+   levavam o raciocínio devolvido, e **não** que o leu ou validou — um fornecedor que ignore o
+   campo responde 2xx na mesma. Com `devolver_em: topo` a guarda do saco não se aplica e só
+   resta o código. O indício possível sem ler conteúdo é correr a **mesma** corrida com um
+   perfil igual que não devolve: copiar o perfil, pôr `"devolver": "nunca"`,
+   `"projection_version": "1.2.0"` e tirar a linha `devolver_em`.
+
+   | Corrida principal | Controlo (`devolver: nunca`) | Leitura |
+   |---|---|---|
+   | `cumprida` | 4xx nos segundos turnos (`nao_cumprida`) | A OpenRouter exige o raciocínio de volta e aceitou o que o gateway devolveu. É a qualificação |
+   | `cumprida` | 2xx em tudo | A OpenRouter não exige o raciocínio de volta nesta rota: a corrida principal **não prova** a devolução |
+   | `nao_cumprida` | qualquer | A devolução falhou; o código está no relatório |
+
+   O relatório e o resumo em texto da corrida real trazem esta frase ao lado do veredicto.
+
+**Como ler.** `saldo_insuficiente` na sonda: a conta da OpenRouter não tem créditos (402).
+`rota_indisponivel` na sonda: a OpenRouter conhece o modelo mas não tem endpoint que sirva o
+pedido com as definições da conta — ver a política de dados e os fornecedores permitidos na
+conta, e se o modelo suporta tools; repetir não adianta.
+`cumprida`: houve turnos com raciocínio e a OpenRouter aceitou todos os pedidos que levaram o
+estado no topo. `sem_raciocinio`: o `reasoning` do perfil chegou à OpenRouter (medido) mas não
+ligou o raciocínio — experimentar `{"max_tokens": 2048}` em vez de `{"effort": "medium"}`.
+`nao_cumprida` com 4xx em pedidos com estado: a OpenRouter recusou o segundo turno; o código
+está no relatório. `inconclusiva` com `estado_devolvido_so_no_saco_do_proxy`: o perfil não tem
+`devolver_em: topo`.
+
+**O que esta corrida não prova:** a rota `anthropic/` directa, nem o bloco de texto que o proxy
+acrescenta nessa rota; e o adaptador `openrouter` do proxy identifica-se à OpenRouter com dois cabeçalhos que são do
+LiteLLM, não do banco — medido na imagem fixada: `HTTP-Referer: https://litellm.ai` e
+`X-Title: liteLLM`, em todos os pedidos. São os valores por omissão da imagem; o banco não passa
+ao contentor nenhuma variável de onde pudessem vir outros, e o cenário atrás do proxy fica
+vermelho se chegar outro valor.
+
 ## Se correr mal
 
 | Sintoma | Causa | O que fazer |
@@ -198,9 +272,10 @@ falso não valida assinaturas: o bloco de texto que o proxy acrescenta ao `assis
 | Exit 4, `so_respostas_429` | Os três primeiros pedidos levaram 429 com um tipo que o banco não conhece | Ver «tipos de erro» no relatório. Se for ritmo, `--pausa`; se for saldo, carregar a conta |
 | Exit 4, `serie_de_429` | Dez respostas 429 seguidas a meio da corrida (o saldo acabou, ou o ritmo apertou) | Ver «tipos de erro» no relatório: com `saldo_insuficiente`, carregar a conta; com `limite_de_ritmo`, repetir com `--pausa` |
 | Exit 4, `modelo_desconhecido` | A sonda: o fornecedor não conhece o modelo | Corrigir o nome do modelo no ficheiro de chaves, ou `--modelo` |
+| Exit 4, `rota_indisponivel` | A sonda: o fornecedor conhece o modelo mas não tem endpoint que sirva o pedido com as definições da conta (na OpenRouter: política de dados, fornecedores permitidos, suporte de tools) | Corrigir as definições na conta do fornecedor. Repetir não adianta |
 | Exit 4, `sonda_falhou` | A sonda não teve 200, por uma causa fora do vocabulário (`outro`) | Ver o código HTTP na linha da sonda; repetir com `--so-plano` para confirmar o destino |
 | Exit 4, `tecto_atingido` | O tecto foi atingido a meio (o de dólares só se conhece depois de cada resposta) | O relatório parcial está escrito. Nada a repor |
-| Exit 3, «o perfil devolve estado e o seu expected_model nao e a rota desta corrida» | O `expected_model` do perfil não é `anthropic/<ANTHROPIC_MODELO>` (ou `openai/<modelo>` no Kimi) | Corrigir o perfil. Nenhum pedido saiu |
+| Exit 3, «o perfil devolve estado e o seu expected_model nao e a rota desta corrida» | O `expected_model` do perfil não é `anthropic/<ANTHROPIC_MODELO>` (ou `openai/<modelo>` no Kimi, ou `openrouter/<OPENROUTER_MODELO>` na OpenRouter) | Corrigir o perfil. Nenhum pedido saiu |
 | Desfecho `estado_nao_devolvido` no relatório | A rota exige o estado e o de um turno não se podia devolver: o pedido seguinte não foi enviado | Ver `nao_devolvido_por_causa`: `estado_de_rota_nao_provada` é a rota (modelo ou endpoint declarados pelo proxy); `estado_ausente` é o fornecedor não ter mandado estado nesse turno |
 | Exit 6 | Sem Docker, sem a imagem, ou o proxy não arrancou | Arrancar o Docker; `docker pull` da imagem acima. A mensagem traz as últimas linhas do proxy, com os segredos ocultados |
 | Contentores `aos512-*` a correr depois de uma corrida interrompida à força | A limpeza não chegou a correr. **Um proxy órfão guarda a chave do fornecedor em claro no ambiente do contentor** (`docker inspect`) e aceita pedidos fora do contador | `aos-ensaio limpar` (remove contentores e redes `aos512-*` e diz quantos). O proxy também se mata sozinho ao fim de cerca de 90 s sem sinal de vida, e a corrida seguinte varre o que restar. À mão: `docker ps -a --filter name=aos512- --format "{{.Names}}"` e `docker rm -f` de cada um |

@@ -34,7 +34,7 @@ import (
 // Version é a versão SemVer do contrato de porta do GW. Incrementar segundo a
 // semântica ancorada a contrato: MAJOR quebra a forma pública dos tipos/métodos,
 // MINOR acrescenta de forma retro-compatível, PATCH corrige sem alterar contrato.
-const Version = "1.9.0"
+const Version = "1.10.0"
 
 // Role é o papel de uma mensagem na conversa (forma OpenAI).
 type Role string
@@ -472,6 +472,10 @@ type ChatRequest struct {
 	// pedido é o de sempre. Vão no wire, pela serialização do pedido, só quando preenchidos.
 	Thinking        *ThinkingParam `json:"-"`
 	ReasoningEffort string         `json:"-"`
+	// Reasoning é o parâmetro `reasoning` do pedido, na forma dos agregadores que o têm (AOS-516;
+	// campo aditivo, MINOR 1.10.0). As mesmas regras dos dois acima: não se lê de JSON, não é do
+	// chamador, e só o perfil da rota o preenche.
+	Reasoning *ReasoningParam `json:"-"`
 }
 
 // Choice é uma escolha da resposta de chat (forma OpenAI).

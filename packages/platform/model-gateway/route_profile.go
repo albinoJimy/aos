@@ -18,7 +18,8 @@ import (
 // Três coisas, todas opcionais, e todas INERTES enquanto nenhum perfil as declarar:
 //
 //   - os PARÂMETROS DO PEDIDO a enviar a essa rota ([RouteProfile.Params]), de um conjunto
-//     fechado e com tipo ([port.RequestParams]): `thinking`, `reasoning_effort`, `max_tokens`;
+//     fechado e com tipo ([port.RequestParams]): `thinking`, `reasoning_effort`, `max_tokens`
+//     e, desde o AOS-516, `reasoning`;
 //   - a VERSÃO DA PROJECÇÃO nativa a usar nos runs dessa rota ([RouteProfile.ProjectionVersion]),
 //     que prevalece sobre o interruptor do nó;
 //   - a CLASSE DE ESTADO ([RouteProfile.StateReturn]): se o estado opaco de um turno (ADR-040)
@@ -51,6 +52,20 @@ const (
 	StateReturnOptional = "opcional"
 	// StateReturnRequired — o provider exige o estado de volta: sem ele, o pedido não é enviado.
 	StateReturnRequired = "obrigatorio"
+)
+
+// Sítios onde volta o estado que veio no saco do proxy ([RouteProfile.StateReturnAt], AOS-516).
+// Vocabulário FECHADO. É o perfil — e não o nome de um fornecedor — que diz como a rota recebe o
+// estado: um modelo novo, servido por outro agregador, entra por aqui.
+const (
+	// StateReturnAtOrigin — cada campo volta ao sítio de onde veio (ADR-040 §2.9). É a omissão.
+	StateReturnAtOrigin = port.StatePlacementOrigin
+	// StateReturnAtOriginName é a forma escrita de [StateReturnAtOrigin] num perfil lido de JSON.
+	StateReturnAtOriginName = "origem"
+	// StateReturnAtTop — os campos de raciocínio que vieram em
+	// `message.provider_specific_fields` voltam no topo da mensagem `assistant`, e esse objecto
+	// não volta ([port.StatePlacementTop]).
+	StateReturnAtTop = port.StatePlacementTop
 )
 
 // ErrBadRouteProfile — um perfil de rota não passa na validação. Fail-closed: um perfil
@@ -109,6 +124,16 @@ func (p RouteProfile) Validate() error {
 	default:
 		return fmt.Errorf("%w: tool_call_id fora do vocabulario (aceites: %s, %s)", ErrBadRouteProfile, ToolCallIDRuntimeName, ToolCallIDProvider)
 	}
+	switch p.StateReturnAt {
+	case StateReturnAtOrigin:
+	case StateReturnAtTop:
+		// O sítio só tem leitor numa rota que devolve estado (e essa, acima, exige a 1.3.0).
+		if p.StateReturn == StateReturnNever {
+			return fmt.Errorf("%w: devolver_em em %s exige uma classe de estado que nao seja %s", ErrBadRouteProfile, StateReturnAtTop, StateReturnNeverName)
+		}
+	default:
+		return fmt.Errorf("%w: devolver_em fora do vocabulario (aceites: %s, %s)", ErrBadRouteProfile, StateReturnAtOriginName, StateReturnAtTop)
+	}
 	return nil
 }
 
@@ -161,7 +186,7 @@ func formaDeChave(v string) bool {
 // leitura FECHADA: uma chave que não seja um campo — do perfil ou dos seus parâmetros — é erro
 // (não há «parâmetros livres»), um valor de tipo errado é erro, e o perfil lido passa por
 // [RouteProfile.Validate]. `devolver` aceita também a forma escrita `nunca`, e `tool_call_id` a
-// forma escrita `runtime`.
+// forma escrita `runtime`, e `devolver_em` a forma escrita `origem`.
 func ParseRouteProfile(data []byte) (RouteProfile, error) {
 	if err := chavesEstritas(data); err != nil {
 		return RouteProfile{}, fmt.Errorf("%w: %w", ErrBadRouteProfile, err)
@@ -180,6 +205,9 @@ func ParseRouteProfile(data []byte) (RouteProfile, error) {
 	}
 	if p.ToolCallID == ToolCallIDRuntimeName {
 		p.ToolCallID = ToolCallIDRuntime
+	}
+	if p.StateReturnAt == StateReturnAtOriginName {
+		p.StateReturnAt = StateReturnAtOrigin
 	}
 	if err := p.Validate(); err != nil {
 		return RouteProfile{}, err

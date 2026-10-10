@@ -3294,8 +3294,7 @@ confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id 
 
 ## AOS-516 — Qualificação da segunda família: o Claude pelo mesmo proxy, primeiro no banco de ensaio e depois em produção por decisão do dono
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é qualificação e registo. Mede o que o AOS-513, o AOS-514 e o AOS-515 entregam e actualiza a matriz de suporte e o acompanhamento. O ADR-036 e o ADR-039 são citados só como contexto. -->
+<!-- Desde 2026-10-10 este ticket EMENDA dois ADR, por decisão do dono: o ADR-040 §2.11 (onde volta o estado: `devolver_em`) e o ADR-036 §2.8 (o que o perfil da rota declara: `devolver_em` e `params.reasoning`), com o contrato da porta do gateway a subir para 1.10.0. Nasceu como qualificação e registo, sem ADR; o bloco deixou por isso de ser só menção, e a RTM liga-o aos dois. -->
 
 | Campo | Valor |
 |---|---|
@@ -3331,7 +3330,9 @@ confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id 
 ### Decidido pelo dono
 
 1. **D4 (2026-10-07) — o segundo modelo é o Claude (Anthropic), com o raciocínio ligado, pelo
-   mesmo proxy LiteLLM.**
+   mesmo proxy LiteLLM.** **Alterada a 2026-10-10:** o Claude qualifica-se **pela OpenRouter**
+   (rota `openrouter/<autor>/<modelo>` do mesmo proxy), e não pela API directa da Anthropic,
+   cuja conta não tem créditos. Só no banco de ensaio, com documentos de teste.
 2. **D5 (2026-10-07) e tectos (2026-10-08):** o ensaio faz-se no posto local, com 1000 pedidos
    por dia e 5 USD por dia na Anthropic. Fora da UE, o Claude só serve para ensaio com
    documentos de teste.
@@ -3458,6 +3459,71 @@ passo 3 espera pela decisão da região.
   `sem_raciocinio`, `inconclusiva`). Os números acima repetiram-se com os contadores novos:
   atrás do proxy, 30 de 30 aceites e veredicto `cumprida`; com `devolver: nunca`,
   `nao_cumprida`. Oito mutações dos contadores e do veredicto, todas vermelhas.
+- **A OpenRouter no banco (2026-10-10; D4 alterada).** O modo real aceita
+  `--fornecedor openrouter`: campos próprios no ficheiro de chaves, destino fixo
+  `openrouter.ai`, contador do dia próprio, sonda, e os erros dela (código numérico, sem `type`)
+  no vocabulário fechado — 402 é `saldo_insuficiente`. O provider falso do estado ganhou a forma
+  da OpenRouter (`reasoning` e `reasoning_details` com assinatura). Perfil de exemplo:
+  `packages/qa/banco-ensaio/perfis/claude-openrouter.exemplo.json`.
+- **Medido com a forma da OpenRouter, sem modelo real.** Modo falso (sem proxy), uma passagem
+  pela bateria: 22 pedidos com 200, 15 de 15 pedidos seguintes aceites, `reasoning_details` de
+  volta byte a byte em 30 de 30 mensagens, veredicto `cumprida`; com `devolver: nunca`, 5
+  respostas 400 e `nao_cumprida`. Atrás da imagem fixada do proxy, rota
+  `openrouter/anthropic/claude-sonnet-4.5`, duas passagens: o `thinking` e o `reasoning_effort`
+  do perfil chegaram ao fornecedor em 22 de 22 pedidos (pela rota `openai/` com a base da
+  OpenRouter, em 0 de 22: por isso se escolheu `openrouter/`); o proxy declarou ter servido
+  `openrouter/anthropic/claude-sonnet-4.5` e a rota provou-se igual; **e a devolução falhou em
+  10 de 10 segundos turnos**: o proxy entrega `reasoning_details` dentro de
+  `message.provider_specific_fields`, o gateway devolve-o ao mesmo sítio (ADR-040 §2.9), e o
+  proxy manda o saco tal e qual ao fornecedor, que só o lê no topo da mensagem. Veredicto
+  `nao_cumprida`, preso por teste. Posto à mão no topo da mensagem, o `reasoning_details`
+  atravessa o proxy com os valores intactos, pelas duas rotas.
+- **O gateway passou a declarar no perfil o que muda de um agregador para outro (2026-10-10,
+  por decisão do dono; contrato da porta 1.10.0; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8).**
+  (1) `devolver_em`: `origem` (a omissão, o comportamento de sempre) ou `topo` — os campos de
+  raciocínio capturados em `provider_specific_fields` voltam no topo da mensagem `assistant`,
+  com os bytes recebidos, e o saco não volta. (2) `params.reasoning`, com `effort` ou
+  `max_tokens`: a terceira forma tipada de pedir o raciocínio, nunca ao lado de `thinking` ou
+  de `reasoning_effort`. Inerte: os digests dos quatro perfis da tabela e de dois perfis
+  candidatos de antes são os mesmos, presos por teste, e o pedido a uma rota que não declara
+  nada não muda um byte. `topo` com `devolver: nunca` é recusado na validação. Nenhuma rota de
+  produção declara nenhum dos dois.
+- **Medido com o perfil novo, atrás da imagem fixada do proxy** (`scripts/ci/banco-ensaio-proxy.sh`
+  inteiro, verde; rota `openrouter/anthropic/claude-sonnet-4.5`, duas passagens por cenário): com
+  `devolver_em: topo`, 44 pedidos com 200, `reasoning_details` no topo e intacto em 60 de 60
+  turnos, 30 de 30 pedidos aceites, o saco em nenhum, veredicto `cumprida` — com cada uma das
+  quatro formas do parâmetro (`reasoning` com `effort`, `reasoning` com `max_tokens`,
+  `reasoning_effort`, `thinking`), e cada uma chegou ao fornecedor em 44 de 44 pedidos.
+  Controlo, o mesmo perfil sem `devolver_em`: 10 respostas 400, `nao_cumprida`. Treze mutações
+  dirigidas nos pontos novos, todas vermelhas.
+- **Revisão adversarial (2026-10-10), seis achados fechados.** (1) Com `topo`, um nome de
+  campo de raciocínio repetido — duas vezes em `message`, duas no saco, ou nos dois sítios com
+  bytes diferentes — torna o estado do turno não devolvível, com a causa
+  `estado_com_nome_repetido` (antes escrevia-se o primeiro do saco, e a sonda lê o último); o
+  mesmo nome com os mesmos bytes escreve-se uma vez; com `origem` nada muda. (2) Os erros da
+  OpenRouter: «no endpoints found» com um qualificador é o tipo novo `rota_indisponivel`, um
+  403 de moderação não é `chave_recusada`, a frase de ritmo só conta num 429 e `error.code` 429
+  lê-se como o código HTTP. (3) `OPENROUTER_MODELO` recusa `../x`, `anthropic/..` e o prefixo
+  `openrouter/` em qualquer caixa. (4) O relatório do modo real diz, ao lado do veredicto, que
+  `cumprida` é 2xx e não prova de leitura, e a qualificação passa a ter um controlo negativo
+  como passo (runbook). (5) Testes novos: o perfil mudado de `origem` para `topo` a meio de um
+  run é outra rota (`estado_de_outra_rota`), e o replay com `topo` reproduz os pedidos byte a
+  byte. (6) Este ticket passou a constar como implementador do ADR-040 e do ADR-036 na RTM.
+  Dezassete mutações dirigidas, todas vermelhas. Medido na imagem fixada: o adaptador `openrouter`
+  do proxy envia `HTTP-Referer: https://litellm.ai` e `X-Title: liteLLM` em todos os pedidos.
+- **Guarda no veredicto.** Numa corrida cujo perfil não declara `devolver_em: topo`, um turno
+  cujo estado só veio no saco do proxy conta em `turnos_com_estado_so_no_saco_do_proxy`, e com
+  algum o veredicto não é `cumprida` (`inconclusiva`, razão
+  `estado_devolvido_so_no_saco_do_proxy`): um fornecedor real que ignore o saco respondia 2xx e
+  o banco contava-o como aceite.
+- **O que a corrida pela OpenRouter prova e não prova.** Prova a devolução do estado de um
+  modelo da Anthropic servido por um agregador, no wire de chat. Não prova a rota `anthropic/`
+  directa (o wire de mensagens e o bloco de texto que o proxy lá acrescenta), nem o bloco
+  «sanitised», nem nada sobre produção. Por medir, e só o modelo real o diz: se a OpenRouter
+  aceita o segundo turno com `reasoning_content` ao lado de `reasoning_details`, e os ids de
+  tool call do runtime.
+- **Tentativas pela Anthropic (2026-10-10).** Duas corridas, as duas paradas na sonda com 400:
+  `saldo_insuficiente` (a conta não tem créditos). 2 pedidos gastos do tecto.
 - **Por fazer.** O passo 2 inteiro: a corrida com o Claude (comando no
   `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`), que é quem diz se o fornecedor aceita o bloco de
   texto acrescentado pelo proxy e o que responde a blocos em falta. O controlo negativo com um
@@ -3498,3 +3564,4 @@ passo 3 espera pela decisão da região.
 | 3.3 | 2026-10-08 | AOS-513 e AOS-515 implementados, inertes: o perfil da rota declara parâmetros, versão da projecção e classe de estado (contrato da porta `1.8.0`, emenda ao ADR-036 §2.8); projecção nativa 1.3.0 que devolve o estado opaco só à rota que o produziu (contrato `1.9.0`, ADR-040 §2.11, emenda ao ADR-036 §2.4). Medido atrás do proxy fixado: numa rota `openai/…` o proxy recusa `thinking` | Equipa AOS |
 | 3.2 | 2026-10-08 | +AOS-516 (fase A2): qualificação da segunda família — o Claude pelo mesmo proxy, primeiro no banco de ensaio, produção só por decisão do dono; registado que a API directa da Anthropic não documenta forma de fixar a inferência na UE (`inference_geo` só `global` ou `us`), o que bloqueia a rota de produção no board `eu-west` | Equipa AOS |
 | 3.4 | 2026-10-08 | AOS-516 em curso: o banco de ensaio liga a captura, a governação da rota e o layout 1.5.0 quando o perfil candidato devolve estado, e conta as devoluções; medido no modo falso e atrás da imagem fixada do proxy pela rota `anthropic/…` (o proxy acrescenta um bloco de texto antes da tool call quando o `content` é vazio); a corrida com o Claude está por fazer | Equipa AOS |
+| 3.5 | 2026-10-10 | AOS-516: D4 alterada (o Claude qualifica-se pela OpenRouter, só em ensaio); o banco ganha o fornecedor `openrouter`; o perfil da rota passa a declarar `devolver_em` (`origem` ou `topo`) e `params.reasoning` (contrato da porta `1.10.0`; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8), inertes por omissão; medido atrás do proxy fixado, com provider falso: com `devolver_em: topo` a devolução pela rota `openrouter/…` cumpre-se, e sem ele não; a corrida com o modelo real está por fazer | Equipa AOS |

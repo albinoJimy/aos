@@ -29,13 +29,17 @@ const (
 	TipoLimiteDeRitmo = "limite_de_ritmo"
 	// TipoModeloDesconhecido — o fornecedor não conhece o modelo pedido.
 	TipoModeloDesconhecido = "modelo_desconhecido"
+	// TipoRotaIndisponivel — o fornecedor conhece o modelo mas não tem, para esta conta e este
+	// pedido, quem o sirva: as definições da conta (política de dados, fornecedores permitidos)
+	// ou o que o pedido exige (tools) excluem todos os endpoints. Repetir não adianta.
+	TipoRotaIndisponivel = "rota_indisponivel"
 	// TipoOutro — qualquer outro erro, incluindo um corpo que não se lê.
 	TipoOutro = "outro"
 )
 
 // TiposDeErro devolve o vocabulário fechado dos tipos de erro.
 func TiposDeErro() []string {
-	return []string{TipoChaveRecusada, TipoSaldoInsuficiente, TipoLimiteDeRitmo, TipoModeloDesconhecido, TipoOutro}
+	return []string{TipoChaveRecusada, TipoSaldoInsuficiente, TipoLimiteDeRitmo, TipoModeloDesconhecido, TipoRotaIndisponivel, TipoOutro}
 }
 
 // tiposConhecidos é a lista FECHADA dos valores de `error.type` (ou `error.code`) que o banco
@@ -75,7 +79,80 @@ var tiposConhecidos = []struct{ token, tipo string }{
 // saldo. Só se procuram quando nem o tipo nem o código são conhecidos (ver [classificarErro]).
 // A Anthropic responde 400 `invalid_request_error` a uma conta sem créditos: só a frase o diz
 // (medido a 2026-10-10: a sonda da corrida do AOS-516 deu 400 e o banco só dizia «outro»).
-var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota", "credit balance is too low"}
+//
+// A OpenRouter não manda `error.type`: manda `error.code` com o código HTTP como NÚMERO e uma
+// mensagem. Uma conta sem créditos responde 402 — «insufficient credits» ou «requires more
+// credits» —, e é o código que decide ([codigoDePagamento]); as frases servem quando um proxy no
+// meio muda o código.
+var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota", "credit balance is too low", "insufficient credits", "requires more credits"}
+
+// frasesDeRitmo são as frases fixas da OpenRouter para o limite de ritmo. Procuram-se DEPOIS das
+// de saldo, pela razão de sempre — a confusão a evitar é tomar uma conta sem saldo por um limite
+// de ritmo —, e SÓ contam numa resposta 429 (no código HTTP ou em `error.code`): a mesma frase
+// dentro de outro erro é texto, não um limite.
+var frasesDeRitmo = []string{"rate limit exceeded", "rate-limited"}
+
+// fraseDeModeloInvalido e fraseSemEndpoints são as duas frases da OpenRouter para um pedido que
+// ela não tem quem sirva. A segunda só é «modelo desconhecido» na forma que NOMEIA o modelo e
+// mais nada («no endpoints found for <modelo>.»): com um qualificador («matching your data
+// policy», «that support tool use») o modelo existe, e o que o exclui são as definições da conta
+// ou o que o pedido exige — [TipoRotaIndisponivel].
+const (
+	fraseDeModeloInvalido = "is not a valid model id"
+	fraseSemEndpoints     = "no endpoints found"
+)
+
+// frasesDeModeracao: um 403 com uma destas frases é a moderação do fornecedor a recusar o
+// conteúdo, e não a chave.
+var frasesDeModeracao = []string{"requires moderation", "input was flagged", "flagged for"}
+
+// semEndpoints classifica uma mensagem com a [fraseSemEndpoints]. tem é false sem a frase.
+//
+// A forma que nomeia o modelo é «no endpoints found for <modelo>» seguida do FIM da frase: um
+// ponto final, o fim do texto, ou — quando um proxy no meio embrulha o erro do fornecedor dentro
+// da sua própria mensagem (medido atrás da imagem fixada) — as aspas que fecham a mensagem
+// original. Se ao nome do modelo se seguir um espaço e mais texto («… matching your data
+// policy»), é um qualificador, e o tipo é [TipoRotaIndisponivel].
+func semEndpoints(mensagem string) (tipo string, tem bool) {
+	i := strings.Index(mensagem, fraseSemEndpoints)
+	if i < 0 {
+		return "", false
+	}
+	resto, nomeia := strings.CutPrefix(mensagem[i+len(fraseSemEndpoints):], " for ")
+	if !nomeia {
+		return TipoRotaIndisponivel, true
+	}
+	n := 0
+	for n < len(resto) && strings.IndexByte("abcdefghijklmnopqrstuvwxyz0123456789._:/-", resto[n]) >= 0 {
+		n++
+	}
+	modelo, depois := resto[:n], resto[n:]
+	switch {
+	case strings.Trim(modelo, ".") == "":
+		return TipoRotaIndisponivel, true
+	case strings.HasSuffix(modelo, "."), depois == "", depois[0] != ' ':
+		return TipoModeloDesconhecido, true
+	}
+	return TipoRotaIndisponivel, true
+}
+
+// codigoDePagamento é o 402 (Payment Required): em qualquer fornecedor quer dizer que a conta
+// não paga o pedido.
+const codigoDePagamento = http.StatusPaymentRequired
+
+// codigoNumerico lê um `error.code` que seja um código HTTP, escrito como número ou como texto
+// (a OpenRouter manda `402`; o proxy, ao reembrulhar, manda `"402"`). Zero se não for.
+func codigoNumerico(cru json.RawMessage) int {
+	var n int
+	if json.Unmarshal(cru, &n) == nil && n >= 100 && n <= 599 {
+		return n
+	}
+	var s string
+	if json.Unmarshal(cru, &s) == nil && len(s) == 3 && soAlgarismos(s) {
+		return int(s[0]-'0')*100 + int(s[1]-'0')*10 + int(s[2]-'0')
+	}
+	return 0
+}
 
 // prefixoDeFacturacao: qualquer tipo `billing_*` é falta de saldo ou de facturação activa.
 const prefixoDeFacturacao = "billing_"
@@ -103,8 +180,11 @@ func tipoDoToken(token string) (string, bool) {
 // fechado. Lê, por esta ordem: `error.type`; `error.code`; e — porque um proxy no meio pode
 // reembrulhar o erro do fornecedor e deixar o tipo original só dentro da mensagem — a presença,
 // na mensagem, de um dos tipos conhecidos ou de uma das frases fixas de saldo. Da mensagem só
-// sai um valor desta lista; o texto dela não é devolvido nem guardado. Sem nada reconhecido, um
-// 401 ou um 403 são [TipoChaveRecusada] e o resto é [TipoOutro].
+// sai um valor desta lista; o texto dela não é devolvido nem guardado. Depois, por esta ordem:
+// o 402 é [TipoSaldoInsuficiente]; uma frase fixa de ritmo NUM 429 é [TipoLimiteDeRitmo]; as
+// frases de modelo e de falta de endpoints ([semEndpoints]); um 403 com uma frase de moderação é
+// [TipoOutro]; um 401 ou um 403 são [TipoChaveRecusada]; e o resto é [TipoOutro]. O código conta
+// igual venha no estado HTTP ou em `error.code` — um proxy no meio pode mudar o primeiro.
 func classificarErro(status int, corpo []byte) string {
 	var doc struct {
 		Error json.RawMessage `json:"error"`
@@ -129,19 +209,35 @@ func classificarErro(status int, corpo []byte) string {
 			return tipo
 		}
 	}
-	if mensagem := strings.ToLower(texto(erro.Message)); mensagem != "" {
-		for _, c := range tiposConhecidos {
-			if strings.Contains(mensagem, c.token) {
-				return c.tipo
+	mensagem := strings.ToLower(texto(erro.Message))
+	contem := func(frases []string) bool {
+		for _, frase := range frases {
+			if mensagem != "" && strings.Contains(mensagem, frase) {
+				return true
 			}
 		}
-		for _, frase := range frasesDeSaldo {
-			if strings.Contains(mensagem, frase) {
-				return TipoSaldoInsuficiente
-			}
+		return false
+	}
+	for _, c := range tiposConhecidos {
+		if mensagem != "" && strings.Contains(mensagem, c.token) {
+			return c.tipo
 		}
 	}
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+	codigo := codigoNumerico(erro.Code)
+	e := func(c int) bool { return status == c || codigo == c }
+	doEndpoint, semEndpoint := semEndpoints(mensagem)
+	switch {
+	case contem(frasesDeSaldo), e(codigoDePagamento):
+		return TipoSaldoInsuficiente
+	case e(http.StatusTooManyRequests) && contem(frasesDeRitmo):
+		return TipoLimiteDeRitmo
+	case mensagem != "" && strings.Contains(mensagem, fraseDeModeloInvalido):
+		return TipoModeloDesconhecido
+	case semEndpoint:
+		return doEndpoint
+	case e(http.StatusForbidden) && contem(frasesDeModeracao):
+		return TipoOutro
+	case e(http.StatusUnauthorized), e(http.StatusForbidden):
 		return TipoChaveRecusada
 	}
 	return TipoOutro
@@ -288,6 +384,8 @@ func terminouDaSonda(s Sonda) string {
 		return TerminouLimiteDeRitmo
 	case TipoModeloDesconhecido:
 		return TerminouModeloDesconhecido
+	case TipoRotaIndisponivel:
+		return TerminouRotaIndisponivel
 	case SondaTecto:
 		return TerminouTecto
 	case SondaContador:

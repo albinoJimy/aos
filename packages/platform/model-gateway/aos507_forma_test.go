@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -161,7 +162,9 @@ func TestAOS507_ModoInvalidoRecusaAComposicao(t *testing.T) {
 			t.Errorf("modo %q: queria ErrBadResponseShape e nenhum gateway; veio %v", modo, err)
 		}
 	}
-	if port.Version < "1.5.0" {
+	// Por componentes: como texto, "1.10.0" fica antes de "1.5.0".
+	var maior, menor int
+	if _, err := fmt.Sscanf(port.Version, "%d.%d.", &maior, &menor); err != nil || maior < 1 || (maior == 1 && menor < 5) {
 		t.Errorf("a ficha entrou na porta na 1.5.0; a versao e %s", port.Version)
 	}
 }

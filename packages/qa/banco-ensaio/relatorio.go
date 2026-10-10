@@ -172,6 +172,14 @@ type Comparacao struct {
 }
 
 // limitesDaCorrida devolve as frases do que a corrida não prova.
+// LimiteDoVeredictoNoModoReal é o que o veredicto da devolução quer dizer — e não quer dizer —
+// numa corrida com modelo real. Vai nos limites do relatório e, no resumo em texto, ao lado do
+// veredicto: no modo real não há provider falso a dizer o que recebeu, e o banco só vê códigos.
+const LimiteDoVeredictoNoModoReal = "Modo real: `cumprida` quer dizer que o fornecedor respondeu 2xx a todos os pedidos que levavam o raciocinio devolvido. NAO prova que o fornecedor o leu nem que o validou: um fornecedor que ignore o campo responde 2xx na mesma. O indicio possivel sem ler conteudo e o CONTROLO NEGATIVO — a mesma corrida com um perfil igual que nao devolve (devolver: nunca, projeccao 1.2.0), ou que devolve no saco do proxy (sem devolver_em): se o controlo tambem der 2xx em tudo, o fornecedor nao exige o raciocinio de volta, e esta corrida nao prova a devolucao; se o controlo der 4xx nos turnos seguintes e esta nao, o fornecedor exige-o e aceitou-o."
+
+// LimiteDoTopoNoModoReal acrescenta-se ao anterior quando o perfil declara `devolver_em: topo`.
+const LimiteDoTopoNoModoReal = "Com devolver_em: topo a guarda do saco do proxy nao se aplica (o estado volta no topo da mensagem): sobre a devolucao, so resta o codigo HTTP e o controlo negativo."
+
 func limitesDaCorrida(cfg CfgDaCorrida) []string {
 	l := []string{
 		"O banco devolve taxas; nao aceita nem recusa um modelo.",
@@ -210,6 +218,12 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 			"A governacao da rota corre em observe: compara o modelo que o proxy DECLARA ter servido com o do perfil. Nao e atestacao. No modo falso nao ha proxy: quem declara o modelo servido e o proprio provider falso, com o nome que o perfil espera.",
 			"Com devolver em obrigatorio, um turno cujo estado nao se pode devolver para o run (estado_nao_devolvido): o pedido seguinte nao e enviado. Esses runs contam em recusas_por_falta_de_estado, nao em erros do provider.",
 		)
+		if cfg.Modo == ModoReal {
+			l = append(l, LimiteDoVeredictoNoModoReal)
+			if cfg.No.devolucao.DevolverEm != "" {
+				l = append(l, LimiteDoTopoNoModoReal)
+			}
+		}
 	}
 	return l
 }
@@ -452,6 +466,9 @@ func blocoDaDevolucao(b *strings.Builder, d *Devolucao) {
 	}
 	fmt.Fprintf(b, "  DEVOLUCAO DO ESTADO OPACO: %d turno(s) com estado capturado, dos quais %d com raciocinio ou assinatura e %d so com ids; %d pedido(s) com turnos anteriores\n",
 		d.TurnosComEstadoCapturado, d.TurnosComRaciocinioCapturado, d.TurnosSoComIDs, d.PedidosComTurnosAnteriores)
+	if d.TurnosSoNoSaco > 0 {
+		fmt.Fprintf(b, "    ATENCAO: em %d turno(s) o estado so veio no saco do proxy (provider_specific_fields) e volta la: um 2xx nao diz que o fornecedor o leu (o perfil nao declara devolver_em: topo)\n", d.TurnosSoNoSaco)
+	}
 	b.WriteString(linhaDaTaxa("  aceites pelo fornecedor (P4)", d.TaxaDeDevolucao))
 	fmt.Fprintf(b, "    decididos a devolver pelo gateway (ANTES do envio; nao e resultado): %d;  recusas por falta de estado (pedido NAO enviado): %d\n",
 		d.DecididosADevolver, d.Recusas)
@@ -527,11 +544,19 @@ func ResumoEmTexto(r *Relatorio) string {
 			razoes = strings.Join(q.Razoes, ", ")
 		}
 		fmt.Fprintf(&b, "  QUALIFICACAO DA DEVOLUCAO: %s — razoes: %s\n", strings.ToUpper(q.Veredicto), razoes)
+		if r.Modo == ModoReal {
+			// No modo real o veredicto le-se com o seu limite ao lado, e nao so no fim do resumo.
+			fmt.Fprintf(&b, "    LIMITE DESTE VEREDICTO: %s\n", LimiteDoVeredictoNoModoReal)
+			if e := r.Protocolo.Estado; e != nil && e.DevolverEm != "" {
+				fmt.Fprintf(&b, "    %s\n", LimiteDoTopoNoModoReal)
+			}
+		}
 	}
 	if f := r.FormaNoFornecedor; f != nil {
 		fmt.Fprintf(&b, "  FORMA NO PROVIDER FALSO (wire %s; so nomes e tipos, nunca valores): %d turno(s) com tool calls recebidos de volta\n", f.Wire, f.Turnos)
 		blocoDeContagens(&b, "  forma do assistant com tool calls", f.Assistant)
 		blocoDeContagens(&b, "  o estado que voltou, por campo", f.Estado)
+		blocoDeContagens(&b, "  parametros de raciocinio dos pedidos, por nome", f.Parametros)
 		blocoDeContagens(&b, "  respostas 400 do provider falso, por causa", f.Recusas)
 	}
 

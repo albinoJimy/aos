@@ -68,12 +68,16 @@ const (
 	// StateCauseProviderID — a rota pede os ids do provider e os deste turno não servem: em
 	// falta, fora do alfabeto aceite, repetidos, ou iguais a um id já usado no pedido.
 	StateCauseProviderID = "id_do_provider_inutilizavel"
+	// StateCauseRepeatedName — a rota pede o estado no topo da mensagem (`devolver_em: topo`) e
+	// o do turno tem um nome de campo de raciocínio repetido que obrigava a escolher entre
+	// valores ([port.TopPlacementAmbiguous]). O gateway não escolhe pelo fornecedor (AOS-516).
+	StateCauseRepeatedName = "estado_com_nome_repetido"
 )
 
 // StateReturnCauses devolve o vocabulário das causas, numa ordem fixa.
 func StateReturnCauses() []string {
 	return []string{port.StateMissingAbsent, port.StateMissingReference, port.StateMissingDigest, port.StateMissingUnreadable,
-		port.StateMissingMisaligned, StateCauseNoProjection, StateCauseNoRoute, StateCauseRouteUnproven, StateCauseOtherRoute, StateCauseProviderID}
+		port.StateMissingMisaligned, StateCauseNoProjection, StateCauseNoRoute, StateCauseRouteUnproven, StateCauseOtherRoute, StateCauseProviderID, StateCauseRepeatedName}
 }
 
 // Resultados da devolução num pedido ([StateReturnObservation.Result]). Vocabulário FECHADO.
@@ -228,6 +232,8 @@ func armarDevolucao(req *port.ChatRequest, perfil RouteProfile, temPerfil bool) 
 			motivo = StateCauseOtherRoute
 		case perfil.ToolCallID == ToolCallIDProvider && !idsDoProviderServem(original, len(m.ToolCalls), usados):
 			motivo = StateCauseProviderID
+		case perfil.StateReturnAt == StateReturnAtTop && port.TopPlacementAmbiguous(original.Fields):
+			motivo = StateCauseRepeatedName
 		}
 		if motivo != "" {
 			if classe == StateReturnRequired {
@@ -243,6 +249,8 @@ func armarDevolucao(req *port.ChatRequest, perfil RouteProfile, temPerfil bool) 
 		}
 		st := *original
 		st.Return, st.ProviderIDs = true, perfil.ToolCallID == ToolCallIDProvider
+		// O sítio é o do perfil da rota, e só o dele: o que o estado trouxesse é sobreposto.
+		st.Placement = perfil.StateReturnAt
 		m.State = &st
 		devolvidos++
 		for n, tc := range m.ToolCalls {

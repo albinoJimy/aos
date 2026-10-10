@@ -100,11 +100,12 @@ func TestChatRequest_Normalize(t *testing.T) {
 // (`reasoning_content`, campo aditivo — AOS-490); 1.3.0 desde que o contrato nomeia os valores
 // conhecidos de `finish_reason` (constantes Finish*, aditivas — AOS-491); 1.8.0 desde que o pedido leva os parâmetros de
 // raciocínio que o perfil da rota declara e a resposta diz quais foram enviados (AOS-513); 1.9.0
-// desde que a mensagem de um pedido pode levar o estado opaco do seu turno (AOS-515). O teste de formato sozinho compara a constante consigo
+// desde que a mensagem de um pedido pode levar o estado opaco do seu turno (AOS-515). 1.10.0 desde que o perfil da rota
+// pode declarar onde volta o estado que veio no saco do proxy e o parametro `reasoning` (AOS-516). O teste de formato sozinho compara a constante consigo
 // própria e deixava a versão mudar em silêncio, enquanto a prosa de tecnica/06 §5 a afirma.
 func TestVersion_ValorFixado(t *testing.T) {
 	t.Parallel()
-	const quer = "1.9.0"
+	const quer = "1.10.0"
 	if port.Version != quer {
 		t.Fatalf("port.Version = %q, quer %q — se a mudança é deliberada, actualize tecnica/06 §5 e este teste", port.Version, quer)
 	}

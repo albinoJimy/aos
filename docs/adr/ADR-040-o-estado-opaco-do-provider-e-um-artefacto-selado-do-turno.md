@@ -12,7 +12,7 @@
   (`AOS_MODEL_PROVIDER_STATE=off`) e só liga por decisão do dono, **com as duas condições do
   §2.10**. A **devolução** do
   estado ao provider é do AOS-515 (implementado a 2026-10-08, por rever): as regras estão no
-  §2.9 e a decisão no §2.11.
+  §2.9 e a decisão no §2.11. AOS-516 (emenda de 2026-10-10 ao §2.11: `devolver_em`).
 - **Relacionados:** ADR-001 (execução durável; replay `resume-from-step`), ADR-002 (Reference
   Monitor), ADR-005 (untrusted é dados, nunca instruções), ADR-007 (Event Store), ADR-010
   (replay determinístico), ADR-011 (apagamento por titular), ADR-034 (autorização derivada do
@@ -307,6 +307,7 @@ estado desse turno, e conta-se.
 | `estado_de_rota_nao_provada` | O turno que produziu o estado não teve a rota comparada como `igual` |
 | `estado_de_outra_rota` | Outro perfil, ou outro modelo servido |
 | `id_do_provider_inutilizavel` | A rota pede os ids do provider e os do turno não servem |
+| `estado_com_nome_repetido` | A rota pede o estado no topo (`devolver_em: topo`) e o do turno tem um nome de campo repetido que obrigava a escolher entre valores (emenda de 2026-10-10) |
 
 **O que sai, e onde.** Cada campo volta ao **sítio** de onde veio, com o **nome** com que veio e
 os **bytes** que vieram, copiados para o corpo do pedido sem passar por nenhum codificador: os
@@ -373,6 +374,32 @@ texto** («Empty message content sanitised…») quando o `content` do `assistan
 O proxy re-serializa o JSON: a igualdade byte a byte vale até ao proxy, e daí em diante vale a
 igualdade dos valores. O que o fornecedor real aceita só o AOS-516 mede.
 
+**Emenda de 2026-10-10 (AOS-516, decisão do dono) — o perfil da rota diz onde o estado volta.**
+A regra do §2.9, «cada campo volta ao sítio de onde veio», passa a ser a **omissão**, e deixa de
+ser a única forma. Medido atrás da imagem fixada do proxy, numa rota de um agregador
+(`openrouter/…`): o proxy entrega `reasoning_details` dentro de
+`message.provider_specific_fields` — o saco onde põe os campos que não conhece —, reenvia esse
+saco ao fornecedor tal e qual, e o fornecedor só lê `reasoning_details` no topo da mensagem. O
+estado «voltava» em 10 de 10 turnos e não era lido em nenhum.
+
+O perfil da rota ganha o campo `devolver_em`, de vocabulário fechado: `origem` (a omissão: o
+§2.9, sem mudar um byte) ou `topo`. Com `topo`, os campos de raciocínio das listas fechadas que
+vieram em `message.provider_specific_fields` voltam como chaves da própria mensagem `assistant`,
+com o nome e os **bytes** com que vieram, e o saco **não volta**: o fornecedor nunca o mandou, e
+a medição mostra que, enviado, lhe chegaria em duplicado. **Nomes repetidos:** no topo cada
+nome aparece uma vez. Um nome que venha em `message` e no saco com os mesmos bytes escreve-se uma
+vez; qualquer outro nome repetido — duas vezes em `message`, duas vezes no saco, ou nos dois
+sítios com bytes diferentes — torna o estado desse turno **não devolvível**, com a causa
+`estado_com_nome_repetido` (em `obrigatorio` o pedido não sai; em `opcional` conta-se e o pedido
+segue sem ele). O gateway não escolhe entre dois valores pelo fornecedor. Com `origem` a regra
+não se aplica: os campos voltam como vieram, repetidos ou não, como desde o AOS-515. Tudo o resto do §2.11
+vale igual: a junção pelo rótulo com `sha256` conferido, as três condições, a rota provada, o
+fail-closed de `obrigatorio`. `topo` só se declara numa rota que devolve estado; só entra no
+digest do perfil quando declarado; e é o gateway que o escreve em cada pedido — o que um chamador
+ponha no estado é sobreposto. Contrato da porta `1.10.0` (`MessageState.Placement`). Não há
+nome de fornecedor no código: um modelo novo, servido por outro agregador com a mesma forma,
+entra pelo perfil.
+
 ## 3. Alternativas
 
 1. **Um segmento novo no tail com os bytes do estado** (a forma «d1» do desenho). Rejeitada:
@@ -437,6 +464,9 @@ igualdade dos valores. O que o fornecedor real aceita só o AOS-516 mede.
 
 ## 6. Emendas a outros ADR
 
+- **ADR-036 §2.8** (o que o perfil da rota declara): acrescentam-se `devolver_em` (§2.11 deste
+  ADR, emenda de 2026-10-10) e o parâmetro `reasoning`. A emenda vive no próprio ADR-036.
+
 - **ADR-036 §2.7** («O raciocínio do modelo é carga opaca»). A frase «Os blocos de raciocínio
   assinados e os itens cifrados de outros fornecedores ficam fora desta decisão» deixa de valer:
   passam a ser capturados, por este ADR. A frase «Sem tecto próprio» continua a valer para o
@@ -451,4 +481,5 @@ igualdade dos valores. O que o fornecedor real aceita só o AOS-516 mede.
 | Ticket | O quê |
 |---|---|
 | AOS-514 | A sonda do estado e o envelope na porta do gateway (contrato 1.7.0); a captura selada, o layout 1.5.0 e o rótulo `state_digest` no kernel; o replay e a retoma; o interruptor, o tecto e a métrica no nó. Nada é devolvido |
+| AOS-516 | A emenda de 2026-10-10 ao §2.11: o perfil da rota declara onde volta o estado que o proxy entregou em `provider_specific_fields` (`devolver_em`: `origem` ou `topo`; contrato da porta 1.10.0, `MessageState.Placement`), com a regra dos nomes repetidos; e a medição atrás do proxy fixado, no banco de ensaio |
 | AOS-515 | A devolução do estado ao provider (§2.11): a projecção nativa 1.3.0, a decisão por rota no gateway depois do roteamento, e a serialização que copia os bytes (contrato da porta 1.9.0). Inerte com os perfis de hoje |

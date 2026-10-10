@@ -126,6 +126,11 @@ type RouteProfile struct {
 	// o id que o provider deu, nos turnos cujo estado é devolvido. Só com uma classe de estado
 	// que não seja `nunca`.
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	// StateReturnAt diz ONDE volta o estado que o proxy entregou dentro de
+	// `message.provider_specific_fields` (AOS-516): [StateReturnAtOrigin] (a omissão) — no
+	// mesmo sítio, como sempre — ou [StateReturnAtTop] — no topo da mensagem `assistant`. Só com
+	// uma classe de estado que não seja `nunca`.
+	StateReturnAt string `json:"devolver_em,omitempty"`
 }
 
 // Digest é o digest do perfil: `sha256:` sobre o JSON canónico dos seus campos, com as
@@ -147,6 +152,9 @@ func (p RouteProfile) Digest() string {
 	}
 	if p.ToolCallID != ToolCallIDRuntime {
 		canonico.ToolCallID = p.ToolCallID
+	}
+	if p.StateReturnAt != StateReturnAtOrigin {
+		canonico.StateReturnAt = p.StateReturnAt
 	}
 	canon, err := json.Marshal(canonico)
 	if err != nil {

@@ -72,7 +72,7 @@ const (
 
 // PedidoDeProxy é o que o lançador precisa para levantar o proxy à frente de uma rota.
 type PedidoDeProxy struct {
-	// Prefixo é o adaptador do proxy: `openai` (a rota de produção) ou `anthropic`.
+	// Prefixo é o adaptador do proxy: `openai` (a rota de produção), `anthropic` ou `openrouter`.
 	Prefixo string
 	// Modelo é o nome do modelo no fornecedor.
 	Modelo string
@@ -89,6 +89,9 @@ type PedidoDeProxy struct {
 	// turnos com tool call dele (zero ⇒ 2). Só com BinarioDoFalso.
 	Estado        string
 	TurnosDoFalso int
+	// FormaDoFalso é a forma do estado no wire de chat do falso do estado ([FormaOpenRouter] ou
+	// vazio). Só com Estado.
+	FormaDoFalso string
 
 	apiKey  string
 	apiBase string
@@ -281,7 +284,7 @@ os.execv("/tmp/aos-ensaio", ["/tmp/aos-ensaio"] + sys.argv[1:])
 // configDoProxy devolve a configuração do proxy para a rota. Os segredos NÃO entram: são
 // referidos pelo nome da variável de ambiente.
 func configDoProxy(prefixo, modelo string, comBase bool) (string, error) {
-	if prefixo != "openai" && prefixo != "anthropic" {
+	if prefixo != "openai" && prefixo != "anthropic" && prefixo != PrefixoDaOpenRouter {
 		return "", fmt.Errorf("%w: adaptador do proxy desconhecido", ErrProxy)
 	}
 	if !nomeDeModeloAceite(modelo) {
@@ -500,6 +503,9 @@ func argumentosDoContentorDoFalso(contentor, rede string, p PedidoDeProxy, chave
 	args = append(args, "--entrypoint", "python", ImagemDoProxy, "-c", arranqueDoFalso, "falso-provider", "--escuta", "0.0.0.0:"+portaDoFalso)
 	if p.Estado != "" {
 		args = append(args, "--estado", p.Estado, "--turnos-do-falso", fmt.Sprint(p.TurnosDoFalso))
+		if p.FormaDoFalso != "" {
+			args = append(args, "--forma-do-falso", p.FormaDoFalso)
+		}
 	} else {
 		args = append(args, "--roteiro", EscreverRoteiro(p.Roteiro))
 	}

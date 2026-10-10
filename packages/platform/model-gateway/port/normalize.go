@@ -35,6 +35,8 @@ type wireChatRequest struct {
 	// da struct: um pedido sem eles serializa os bytes de sempre.
 	Thinking        *ThinkingParam `json:"thinking,omitempty"`
 	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
+	// AOS-516 — `reasoning`, depois dos outros dois e com `omitempty`, pela mesma razão.
+	Reasoning *ReasoningParam `json:"reasoning,omitempty"`
 }
 
 // Normalize valida e canoniza um [ChatRequest] de forma DETERMINISTA: os mesmos
@@ -104,6 +106,7 @@ func (r ChatRequest) MarshalWire(stream bool) ([]byte, error) {
 		// AOS-513 — só o que o gateway lá pôs a partir do perfil da rota.
 		Thinking:        r.Thinking,
 		ReasoningEffort: r.ReasoningEffort,
+		Reasoning:       r.Reasoning,
 	}
 	// AOS-515 — O ESTADO OPACO SÓ SAI QUANDO O GATEWAY O MARCOU ([MessageState.Return]). Sem
 	// nenhuma mensagem marcada, o caminho é o de sempre e os bytes são os de sempre.

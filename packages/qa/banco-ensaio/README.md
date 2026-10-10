@@ -109,14 +109,15 @@ go build -o "$HOME/.aos-ensaio/aos-ensaio" ./cmd/aos-ensaio
 ```
 
 O modo real levanta a imagem de produção do proxy num contentor só para a corrida, com uma
-rota para o fornecedor (`openai/<modelo>` para o Kimi, `anthropic/<modelo>` para a Anthropic),
-e desmonta-a no fim.
+rota para o fornecedor (`openai/<modelo>` para o Kimi, `anthropic/<modelo>` para a Anthropic,
+`openrouter/<autor>/<modelo>` para a OpenRouter), e desmonta-a no fim.
 
 **A sonda.** Antes do primeiro caso, o modo real faz um único pedido mínimo ao modelo. Conta no
 tecto do dia como um pedido (o plano anuncia «mais 1 de sonda») e fica no relatório, no campo
 `sonda` — não é uma observação e não entra em taxa nenhuma. Se não der 200, a corrida não
 começa: exit 4, relatório sem observações, e a causa em vocabulário fechado
-(`chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido`, `outro`).
+(`chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido`,
+`rota_indisponivel`, `outro`).
 O `--so-plano` não envia nada, nem a sonda.
 
 ### `limpar` — remover o que ficou de uma corrida anterior
@@ -143,11 +144,12 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--tecto-pedidos N --contador F` | falso, proxy | Ensaia o próprio tecto. |
 | `--binario-do-falso F` | proxy | Binário Linux do banco, para o contentor do provider falso. |
 | `--chaves F` | real | Caminho do ficheiro de chaves. Obrigatório (ou `AOS_ENSAIO_CHAVES`). |
-| `--fornecedor kimi\|anthropic` | real | O fornecedor. |
+| `--fornecedor kimi\|anthropic\|openrouter` | real | O fornecedor. |
 | `--modelo M` | real | Um dos modelos do ficheiro (omissão: o primeiro). |
 | `--precos F` | real | Tabela de preços. Obrigatória quando há tecto em dólares. |
 | `--perfil F` | todos | **Perfil de rota candidato** (AOS-513), em JSON, na forma dos campos de um perfil do gateway: `requested` (tem de ser `rota-de-ensaio`), `expected_model`, `wire_class`, `capabilities` e, opcionais, `params` (`thinking`, `reasoning_effort`, `max_tokens`), `projection_version` e `devolver`. A leitura é fechada: uma chave ou um valor fora do conjunto recusa a corrida antes de qualquer pedido. O digest do perfil vai no relatório (`digests.perfil`) e entra no digest da configuração. É assim que um perfil se qualifica **antes** de entrar na tabela de perfis do nó. |
 | `--estado exige\|proibe` | falso, proxy | O provider falso do **estado opaco** (AOS-516) em vez do do roteiro: emite raciocínio assinado em cada turno com tools e exige-o de volta (no modo falso, byte a byte, pelo falso exigente do AOS-515), ou recusa qualquer estado. No modo proxy pede `--perfil` com `expected_model` `anthropic/<modelo>`: a rota do proxy é essa, e o falso fala o wire de mensagens da Anthropic. |
+| `--forma-do-falso openrouter` | falso, proxy | Só com `--estado`: o falso emite e exige a forma da **OpenRouter** (`reasoning` e `reasoning_details` com assinatura, no topo da mensagem). No modo proxy o `expected_model` do perfil é então `openrouter/<autor>/<modelo>` ou `openai/<autor>/<modelo>`. |
 | `--turnos-do-falso N` | falso, proxy | Turnos com tool call do provider falso do estado (omissão 2). |
 | `--host-esperado HOST` | todos | Só com um perfil que devolve estado: o host do endpoint que o proxy deve declarar ter servido. Sem ele compara-se só o modelo servido. O host não vai para o relatório. |
 | `--so-plano` | real | Valida tudo, mostra o destino da chave e quantos pedidos faria, e não envia nenhum. |
@@ -194,12 +196,15 @@ pasta). Só o programa o lê, pelo caminho que lhe dão.
 - **Destino da chave.** A base do Kimi tem de ser `https`, sem utilizador, porta, query nem
   fragmento, e o host tem de estar na lista embutida no banco: `api.kimi.com`,
   `api.moonshot.ai`, `api.moonshot.cn`. A Anthropic não tem base no ficheiro: o destino é o
-  endpoint por omissão do adaptador `anthropic` do proxy, e o banco di-lo. Outro host só
+  endpoint por omissão do adaptador `anthropic` do proxy, e o banco di-lo. A OpenRouter também
+  não tem base no ficheiro: o destino é fixo, `https://openrouter.ai`, escrito pelo banco e
+  passado explícito ao proxy. Outro host só
   com `--destino-fora-da-lista <host exacto>`. O `--so-plano` e o início da corrida mostram
   `DESTINO DA CHAVE: https://<host>` — o host de um fornecedor público não é segredo; o caminho
   da base e as chaves continuam fora de todas as saídas.
-- **Tectos.** `TECTO_PEDIDOS_DIA_KIMI`, `TECTO_PEDIDOS_DIA_ANTHROPIC` e
-  `TECTO_USD_DIA_ANTHROPIC`. Não há tecto por omissão: ausente, zero ou ilegível recusa o
+- **Tectos.** `TECTO_PEDIDOS_DIA_KIMI`, `TECTO_PEDIDOS_DIA_ANTHROPIC`,
+  `TECTO_USD_DIA_ANTHROPIC`, `TECTO_PEDIDOS_DIA_OPENROUTER` e `TECTO_USD_DIA_OPENROUTER` (os
+  dois em dólares são opcionais; com um deles, `--precos` é obrigatório). Não há tecto por omissão: ausente, zero ou ilegível recusa o
   arranque. Um tecto escreve-se só com algarismos (`+500`, `5 00`, `1e3` são recusados) e tem
   máximo: 100 000 pedidos e 1000 USD por dia. As opções da linha de comandos não mexem nos
   tectos do modo real.
@@ -305,6 +310,86 @@ Nos modos sem modelo real, `forma_no_fornecedor` diz com que **forma** as mensag
 com tool calls chegaram ao provider falso — chaves e tipos de bloco, nunca valores. Um perfil de
 exemplo para o Claude está em `perfis/claude-devolucao.exemplo.json` (sem chaves; o nome do
 modelo é um marcador). O procedimento está em `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`.
+
+## A OpenRouter (AOS-516)
+
+O Claude qualifica-se pela OpenRouter, só em ensaio (decisão do dono de 2026-10-10). Campos do
+ficheiro de chaves: `OPENROUTER_API_KEY`, `OPENROUTER_MODELO` (na forma `<autor>/<modelo>` da
+OpenRouter, **sem** o prefixo `openrouter/`), `TECTO_PEDIDOS_DIA_OPENROUTER` e, opcional,
+`TECTO_USD_DIA_OPENROUTER`. O contador do dia é o do fornecedor `openrouter`. Perfil de exemplo:
+`perfis/claude-openrouter.exemplo.json`; o `expected_model` é `openrouter/<OPENROUTER_MODELO>`,
+que é o que o proxy declara ter servido (medido).
+
+**A forma da rota foi medida** atrás da imagem fixada do proxy, com o provider falso na forma
+da OpenRouter (`TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter`, 2026-10-10; 22 pedidos e 10
+turnos com tool calls por cenário):
+
+| | `openrouter/<autor>/<modelo>` (escolhida) | `openai/<autor>/<modelo>` com a base da OpenRouter |
+|---|---|---|
+| `thinking` do perfil chega ao fornecedor | 22 de 22, com `type` e `budget_tokens` | 0 de 22 (o proxy deita-o fora) |
+| `reasoning_effort` do perfil chega ao fornecedor | 22 de 22 | 0 de 22 |
+| `reasoning` do perfil (`effort` ou `max_tokens`) chega ao fornecedor | 44 de 44 | 44 de 44 |
+| Onde o gateway recebe o estado | `reasoning_content` em `message`; `reasoning` e `reasoning_details` em `provider_specific_fields` | igual |
+| `reasoning_details` no segundo turno, sem `devolver_em` no perfil | 0 de 10 no topo; 10 de 10 dentro de `provider_specific_fields` | igual |
+| `reasoning_details` no segundo turno, com `devolver_em: topo` | 60 de 60 no topo, intacto; o saco não volta | igual |
+| `reasoning_details` posto à mão no topo da mensagem | chega com os valores intactos | igual |
+| Modelo que o proxy declara ter servido | `openrouter/<autor>/<modelo>` | `openai/<autor>/<modelo>` |
+| Extras do adaptador | `usage` no pedido; `HTTP-Referer: https://litellm.ai` e `X-Title: liteLLM` (valores por omissão da imagem, em todos os pedidos) | nenhum |
+| Erros 401, 402, 429, 404 e 400 na forma da OpenRouter | passam com o código; `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido` | igual |
+
+Os erros dela classificam-se pelo código (HTTP ou `error.code`, que valem o mesmo) e por frases
+fixas: «no endpoints found» só é `modelo_desconhecido` quando nomeia o modelo e mais nada — com
+«matching your data policy» ou «that support tool use» é `rota_indisponivel` (o modelo existe; o
+que o exclui são as definições da conta); um 403 com frase de moderação é `outro`, não
+`chave_recusada`; e «rate limit exceeded» só conta num 429.
+
+Escolheu-se `openrouter/`: é a única das duas em que **todas** as formas do parâmetro de
+raciocínio do perfil chegam ao fornecedor.
+
+**O perfil declara duas coisas para esta rota** (contrato da porta 1.10.0; ADR-040 §2.11 e
+ADR-036 §2.8, emendas de 2026-10-10):
+
+- `"devolver_em": "topo"` — os campos de raciocínio que o proxy entrega dentro de
+  `provider_specific_fields` voltam no topo da mensagem `assistant`, e o saco não volta. Sem
+  isto o gateway devolve-os ao sítio de onde vieram, e a OpenRouter não os lê.
+- `"params": {"reasoning": {"effort": "medium"}}` (ou `{"max_tokens": N}`) — a forma em que a
+  OpenRouter documenta o pedido do raciocínio.
+
+Medido com o gate inteiro (`bash scripts/ci/banco-ensaio-proxy.sh`, 2026-10-10), rota
+`openrouter/anthropic/claude-sonnet-4.5`, duas passagens pela bateria por cenário:
+
+| Perfil | Pedidos | `reasoning_details` no topo, intacto | Parâmetro que chegou ao fornecedor | Veredicto |
+|---|---|---|---|---|
+| `topo` + `reasoning: {effort}` | 44, todos 200 | 60 de 60 turnos; 30 de 30 aceites | `reasoning.effort`, 44 de 44 | `cumprida` |
+| `topo` + `reasoning: {max_tokens}` | 44, todos 200 | 60 de 60 | `reasoning.max_tokens`, 44 de 44 | `cumprida` |
+| `topo` + `reasoning_effort` | 44, todos 200 | 60 de 60 | `reasoning_effort`, 44 de 44 | `cumprida` |
+| `topo` + `thinking` | 44, todos 200 | 60 de 60 | `thinking` (`type`, `budget_tokens`), 44 de 44 | `cumprida` |
+| sem `devolver_em` (controlo) | 12 com 200, 10 com 400 | 0 de 10 (10 de 10 só no saco) | `reasoning.effort`, 22 de 22 | `nao_cumprida` |
+| `devolver: nunca` | 12 com 200, 10 com 400 | não foi | `reasoning.effort`, 22 de 22 | `nao_cumprida` |
+
+Com `topo` o saco não chegou ao fornecedor em nenhum turno. Posto à mão no topo **e** no saco,
+chega nos dois sítios: por isso, com `topo`, o gateway não manda o saco. Pela rota `openai/` com
+`topo` a devolução também se cumpre, mas dos parâmetros só o `reasoning` chega.
+
+**A guarda contra o verde falso.** Um fornecedor real que ignore o saco responde 2xx sem ter
+lido o estado, e o banco só vê o código. Por isso, numa corrida cujo perfil **não** declara
+`devolver_em: topo`, o relatório conta os turnos cujo estado só veio dentro de
+`provider_specific_fields` (`turnos_com_estado_so_no_saco_do_proxy`, lido pelos nomes dos
+campos) e, havendo algum, o veredicto não pode ser `cumprida`: fica `inconclusiva` com a razão
+`estado_devolvido_so_no_saco_do_proxy`
+(`TestAOS516_OpenRouter_EstadoSoNoSacoDoProxyNaoDaCumprida`).
+
+**No modo real, `cumprida` não é prova de leitura.** O banco só vê códigos: `cumprida` é 2xx a
+todos os pedidos que levavam o raciocínio devolvido. A qualificação faz-se com a corrida
+principal **e** um controlo negativo (o mesmo perfil com `devolver: nunca`): só se o controlo
+levar 4xx nos segundos turnos é que a corrida principal mostra que o fornecedor exige o estado e
+o aceitou. O relatório e o resumo trazem esta frase ao lado do veredicto; o procedimento está no
+runbook.
+
+**O que não se sabe sem o modelo real:** se a OpenRouter aceita o segundo turno com
+`reasoning_details` no topo e `reasoning_content` ao lado (o proxy cria este último a partir de
+`reasoning`), e se valida as assinaturas como o falso não valida. O falso emite a forma
+documentada, escrita à mão.
 
 ## A experiência dos separadores
 

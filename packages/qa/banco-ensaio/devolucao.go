@@ -80,6 +80,30 @@ func classeDoEstadoDaResposta(st *port.ProviderState) string {
 	return ""
 }
 
+// estadoSoNoSaco diz se a resposta trouxe algum campo de raciocínio SÓ dentro de
+// `message.provider_specific_fields` — o saco onde o proxy põe os campos que não conhece —, sem
+// um campo do mesmo nome em `message`. O gateway devolve cada campo ao sítio de onde veio, e o
+// saco do proxy não é um campo que um fornecedor leia: um 2xx a um pedido desses não diz que o
+// fornecedor recebeu o estado (medido com a forma da OpenRouter, 2026-10-10). Lê só os nomes.
+// Não se aplica a um perfil com `devolver_em: topo`, que manda repor esses campos no topo.
+func estadoSoNoSaco(st *port.ProviderState) bool {
+	if st == nil || st.Misaligned {
+		return false
+	}
+	naMensagem := map[string]bool{}
+	for _, f := range st.Fields {
+		if f.Where == port.StateWhereMessage {
+			naMensagem[f.Name] = true
+		}
+	}
+	for _, f := range st.Fields {
+		if f.Where == port.StateWherePSF && !naMensagem[f.Name] {
+			return true
+		}
+	}
+	return false
+}
+
 // ComposicaoDoEstado é o que o nó de ensaio ligou por o perfil candidato devolver estado. Vai no
 // relatório, em `protocolo.estado_opaco`.
 type ComposicaoDoEstado struct {
@@ -96,6 +120,9 @@ type ComposicaoDoEstado struct {
 	// Devolver é a classe de estado do perfil; ToolCallID, o id de tool call que vai no wire.
 	Devolver   string `json:"devolver"`
 	ToolCallID string `json:"tool_call_id"`
+	// DevolverEm é onde volta o estado que veio no saco do proxy, quando o perfil o declara
+	// (`topo`); vazio ⇒ no sítio de onde veio.
+	DevolverEm string `json:"devolver_em,omitempty"`
 }
 
 // composicaoDoEstado devolve a composição para o perfil dado, ou nil se ele não devolve estado.
@@ -111,6 +138,7 @@ func composicaoDoEstado(perfil *modelgateway.RouteProfile, hostEsperado string) 
 		Captura: modelgateway.ProviderStateCapture, GovernacaoDaRota: modelgateway.RouteGovernanceObserve,
 		EndpointComparado: hostEsperado != "", Layout: agentruntime.AssemblyVersion150,
 		Projeccao: perfil.ProjectionVersion, Devolver: perfil.StateReturn, ToolCallID: id,
+		DevolverEm: perfil.StateReturnAt,
 	}
 }
 
@@ -158,6 +186,9 @@ type EstadoDoRun struct {
 	// de assinatura; TurnosSoComIDs, os capturados que só trouxeram ids de tool call.
 	TurnosComRaciocinio int `json:"turnos_com_raciocinio_capturado"`
 	TurnosSoComIDs      int `json:"turnos_so_com_ids_capturados"`
+	// TurnosSoNoSaco são os turnos capturados com algum campo de raciocínio que só veio dentro
+	// do saco do proxy ([estadoSoNoSaco]).
+	TurnosSoNoSaco int `json:"turnos_com_estado_so_no_saco_do_proxy,omitempty"`
 	// Decisoes conta os pedidos do run que levavam pelo menos um turno anterior com tool calls,
 	// pela DECISÃO do gateway ([modelgateway.StateReturnResults]), tomada antes do envio.
 	Decisoes map[string]int `json:"pedidos_por_decisao_do_gateway,omitempty"`
@@ -177,10 +208,11 @@ type EstadoDoRun struct {
 type capturasDoRun struct {
 	porResultado            map[string]int
 	comRaciocinio, soComIDs int
+	soNoSaco                int
 }
 
 func novoEstadoDoRun(c capturasDoRun) *EstadoDoRun {
-	e := &EstadoDoRun{TurnosComRaciocinio: c.comRaciocinio, TurnosSoComIDs: c.soComIDs}
+	e := &EstadoDoRun{TurnosComRaciocinio: c.comRaciocinio, TurnosSoComIDs: c.soComIDs, TurnosSoNoSaco: c.soNoSaco}
 	if len(c.porResultado) > 0 {
 		e.Capturas = c.porResultado
 	}
@@ -253,6 +285,9 @@ type Devolucao struct {
 	// assinatura: é sobre eles que há alguma coisa a devolver. TurnosSoComIDs são os restantes.
 	TurnosComRaciocinioCapturado int `json:"turnos_com_raciocinio_capturado"`
 	TurnosSoComIDs               int `json:"turnos_so_com_ids_capturados"`
+	// TurnosSoNoSaco são os turnos capturados com algum campo de raciocínio que só veio dentro
+	// de `provider_specific_fields`: o gateway devolve-o lá, onde nenhum fornecedor o lê.
+	TurnosSoNoSaco int `json:"turnos_com_estado_so_no_saco_do_proxy,omitempty"`
 	// PedidosComTurnosAnteriores são os pedidos que levavam pelo menos um turno anterior com
 	// tool calls; PedidosPorDecisao reparte-os pela DECISÃO do gateway, antes do envio.
 	PedidosComTurnosAnteriores int            `json:"pedidos_com_turnos_anteriores"`
@@ -296,6 +331,7 @@ func calcularDevolucao(obs []Observacao) *Devolucao {
 		}
 		d.TurnosComRaciocinioCapturado += o.Estado.TurnosComRaciocinio
 		d.TurnosSoComIDs += o.Estado.TurnosSoComIDs
+		d.TurnosSoNoSaco += o.Estado.TurnosSoNoSaco
 		d.PedidosQueDeviamLevarRaciocinio += o.Estado.DeviamLevarRaciocinio
 		d.AceitesPeloFornecedor += o.Estado.Aceites
 		d.ComEstado.somar(o.Estado.ComEstado)
@@ -344,6 +380,10 @@ const (
 	RazaoRunsInterrompidos   = "runs_com_tools_interrompidos_por_erro_passageiro"
 	RazaoCorridaIncompleta   = "corrida_incompleta"
 	RazaoSemPedidosSeguintes = "nenhum_pedido_que_devesse_levar_raciocinio"
+	// RazaoEstadoSoNoSaco não é passageira, mas também não condena sozinha: o estado saiu, e o
+	// banco não tem como saber se o fornecedor o leu. Repetir a corrida não a tira; tira-a o
+	// perfil da rota declarar `devolver_em: topo`.
+	RazaoEstadoSoNoSaco = "estado_devolvido_so_no_saco_do_proxy"
 )
 
 // razoesPassageiras são as que, sozinhas, não condenam a devolução.
@@ -352,6 +392,7 @@ var razoesPassageiras = map[string]bool{
 	RazaoNaoEnviadoComEstado: true, RazaoRunsInterrompidos: true, RazaoCorridaIncompleta: true, RazaoSemPedidosSeguintes: true,
 	// Um pedido não aceite tem sempre outra razão ao lado que diz porquê; sozinha não condena.
 	RazaoPedidosNaoAceites: true,
+	RazaoEstadoSoNoSaco:    true,
 }
 
 // QualificacaoDaDevolucao é o VEREDICTO do banco sobre a devolução do estado opaco numa corrida
@@ -366,7 +407,7 @@ type QualificacaoDaDevolucao struct {
 	Regra string `json:"regra"`
 }
 
-const regraDaQualificacao = "cumprida so com pelo menos um turno com raciocinio capturado, todos os pedidos que o deviam levar aceites pelo fornecedor (2xx), zero recusas, zero respostas 4xx, 429 ou 5xx, zero erros de transporte e zero pedidos nao enviados entre os pedidos com estado, e a ultima tentativa de todos os nos que exigem uma tool fechada cumprido; razoes passageiras sozinhas dao inconclusiva; sem nenhum turno com raciocinio, sem_raciocinio"
+const regraDaQualificacao = "cumprida so com pelo menos um turno com raciocinio capturado, nenhum turno com estado que so veio no saco do proxy (provider_specific_fields), todos os pedidos que o deviam levar aceites pelo fornecedor (2xx), zero recusas, zero respostas 4xx, 429 ou 5xx, zero erros de transporte e zero pedidos nao enviados entre os pedidos com estado, e a ultima tentativa de todos os nos que exigem uma tool fechada cumprido; razoes passageiras sozinhas dao inconclusiva; sem nenhum turno com raciocinio, sem_raciocinio"
 
 // qualificarDevolucao calcula o veredicto. `devolve` diz se o perfil da corrida devolve estado;
 // `completa`, se a corrida correu o plano até ao fim.
@@ -440,6 +481,7 @@ func qualificarDevolucao(devolve, completa bool, d *Devolucao, obs []Observacao)
 	juntar(d.ComEstado.NaoEnviado > 0, RazaoNaoEnviadoComEstado)
 	juntar(interrompidos, RazaoRunsInterrompidos)
 	juntar(!completa, RazaoCorridaIncompleta)
+	juntar(d.TurnosSoNoSaco > 0, RazaoEstadoSoNoSaco)
 	juntar(d.TurnosComRaciocinioCapturado > 0 && d.PedidosQueDeviamLevarRaciocinio == 0, RazaoSemPedidosSeguintes)
 
 	firme := false

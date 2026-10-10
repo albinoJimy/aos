@@ -16,6 +16,12 @@
 #      corre num cenário à parte (AOS-516), que MEDE e não julga: regista o que o proxy faz ao
 #      estado opaco na tradução para o wire de mensagens, e só fica vermelho se o ensaio não se
 #      montar, se o proxy não chegar ao falso ou se um byte do estado aparecer numa saída.
+#   N3 A forma da OpenRouter (AOS-516) corre pelas duas rotas que o proxy tem para ela
+#      (`openrouter/…` e `openai/…`) contra um falso que emite a forma DOCUMENTADA dela. Julga
+#      a rota escolhida pelo veredicto do banco: `cumprida` com um perfil que declara
+#      `devolver_em: topo`, e `nao_cumprida` no controlo sem ele (o proxy devolve
+#      `reasoning_details` ao fornecedor dentro de `provider_specific_fields`).
+#      Não diz o que a OpenRouter real aceita.
 #
 # ─── PORQUE É OPCIONAL, E O QUE CORRE SEMPRE ─────────────────────────────────────────────────
 # Precisa de Docker e da imagem já descarregada (não a descarrega). Por isso NÃO está nos
@@ -42,6 +48,10 @@ TESTE_OFFLINE="TestAOS512_Falso_BateriaInteira_TaxasExactas"
 # estado a falar o wire de mensagens; e o seu equivalente offline, no wire de chat.
 TESTE_DEVOLUCAO="TestAOS516_ProxyReal_ADevolucaoPelaRotaAnthropic"
 TESTE_DEVOLUCAO_OFFLINE="TestAOS516_Falso_ObrigatorioComOExigente_Passa"
+# AOS-516: o mesmo na forma da OpenRouter (`reasoning` + `reasoning_details`), pelas duas formas
+# de rota do proxy, com as medições directas dos parâmetros e dos erros; e o seu equivalente offline.
+TESTE_OPENROUTER="TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter"
+TESTE_OPENROUTER_OFFLINE="TestAOS516_Falso_OpenRouter_ObrigatorioCumpre"
 FONTE="$REPO_ROOT/$MOD/proxy.go"
 
 log_gate "banco-ensaio-proxy (AOS-512) · a bateria do banco atrás da imagem de produção do proxy"
@@ -49,7 +59,7 @@ log_gate "banco-ensaio-proxy (AOS-512) · a bateria do banco atrás da imagem de
 # (0) Corre sempre: os cenários existem por nome, e o offline passa.
 log_step "go test -list (os cenários existem por nome)"
 listed="$( cd "$REPO_ROOT/$MOD" && go test -list '^TestAOS51[26]_' . )"
-for t in "$TESTE_REAL" "$TESTE_ORFAO" "$TESTE_COOLDOWN" "$TESTE_OFFLINE" "$TESTE_DEVOLUCAO" "$TESTE_DEVOLUCAO_OFFLINE"; do
+for t in "$TESTE_REAL" "$TESTE_ORFAO" "$TESTE_COOLDOWN" "$TESTE_OFFLINE" "$TESTE_DEVOLUCAO" "$TESTE_DEVOLUCAO_OFFLINE" "$TESTE_OPENROUTER" "$TESTE_OPENROUTER_OFFLINE"; do
   if ! printf '%s\n' "$listed" | grep -qx "$t"; then
     log_fail "cenário ausente (renomeado/removido?): $t"
     exit 1
@@ -59,6 +69,8 @@ log_step "equivalente offline ($TESTE_OFFLINE)"
 require_tests "$REPO_ROOT/$MOD" "." "^${TESTE_OFFLINE}\$" "$TESTE_OFFLINE" || exit 1
 log_step "equivalente offline da devolução ($TESTE_DEVOLUCAO_OFFLINE)"
 require_tests "$REPO_ROOT/$MOD" "." "^${TESTE_DEVOLUCAO_OFFLINE}\$" "$TESTE_DEVOLUCAO_OFFLINE" || exit 1
+log_step "equivalente offline da forma da OpenRouter ($TESTE_OPENROUTER_OFFLINE)"
+require_tests "$REPO_ROOT/$MOD" "." "^${TESTE_OPENROUTER_OFFLINE}\$" "$TESTE_OPENROUTER_OFFLINE" || exit 1
 
 # (1) Há Docker e a imagem? (a imagem é a do AOS-505 e do AOS-508: a mesma, pelo mesmo digest)
 IMAGEM="$( sed -n 's/^const ImagemDoProxy = "\(.*\)"$/\1/p' "$FONTE" )"
@@ -107,20 +119,20 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 
 # (3) O cenário real. Exige `--- PASS` por nome e o relatório com o veredicto agregado.
-log_step "AOS_BANCO_PROXY=1 go test -run TestAOS51[26]_ProxyReal_ (arranca o proxy seis vezes; cerca de 6 a 14 min)"
-saida="$( cd "$REPO_ROOT/$MOD" && AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN="$BIN" go test -run "^(${TESTE_REAL}|${TESTE_ORFAO}|${TESTE_COOLDOWN}|${TESTE_DEVOLUCAO})\$" -v -count=1 -timeout 40m . 2>&1 )" || {
+log_step "AOS_BANCO_PROXY=1 go test -run TestAOS51[26]_ProxyReal_ (arranca o proxy dezasseis vezes; cerca de 15 a 30 min)"
+saida="$( cd "$REPO_ROOT/$MOD" && AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN="$BIN" go test -run "^(${TESTE_REAL}|${TESTE_ORFAO}|${TESTE_COOLDOWN}|${TESTE_DEVOLUCAO}|${TESTE_OPENROUTER})\$" -v -count=1 -timeout 60m . 2>&1 )" || {
   printf '%s\n' "$saida" | tail -40 | sed 's/^/       /' >&2
   log_fail "banco-ensaio-proxy: um cenário contra o proxy real falhou"
   exit 1
 }
-for t in "$TESTE_REAL" "$TESTE_ORFAO" "$TESTE_COOLDOWN" "$TESTE_DEVOLUCAO"; do
+for t in "$TESTE_REAL" "$TESTE_ORFAO" "$TESTE_COOLDOWN" "$TESTE_DEVOLUCAO" "$TESTE_OPENROUTER"; do
   if ! printf '%s\n' "$saida" | grep -q -- "--- PASS: $t"; then
     printf '%s\n' "$saida" | tail -20 | sed 's/^/       /' >&2
     log_fail "banco-ensaio-proxy: sem '--- PASS: $t' (um salto não conta)"
     exit 1
   fi
 done
-printf '%s\n' "$saida" | grep -E 'AOS_BANCO_(ORFAO|COOLDOWN|DEVOLUCAO)_REPORT' | sed 's/.*AOS_BANCO_/   AOS_BANCO_/' || true
+printf '%s\n' "$saida" | grep -E 'AOS_BANCO_(ORFAO|COOLDOWN|DEVOLUCAO|OPENROUTER)_REPORT' | sed 's/.*AOS_BANCO_/   AOS_BANCO_/' || true
 relatorio="$( printf '%s\n' "$saida" | grep 'AOS_BANCO_PROXY_REPORT' | sed 's/.*AOS_BANCO_PROXY_REPORT //' | head -1 )"
 printf '   %s\n' "$relatorio"
 if ! printf '%s' "$relatorio" | grep -q '"pass":true'; then
