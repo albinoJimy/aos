@@ -60,26 +60,75 @@ func TestAOS516_Placement_OSacoVoltaNoTopoESemOSaco(t *testing.T) {
 	}
 }
 
-// UMA MENSAGEM NÃO LEVA DUAS CHAVES IGUAIS: um campo do saco com o nome de um que já está no
-// topo — porque veio também em `message`, ou repetido no saco — não se escreve.
-func TestAOS516_Placement_NomeRepetidoNaoSeEscreveDuasVezes(t *testing.T) {
-	topo := aos516Wire(t, &MessageState{Return: true, Placement: StatePlacementTop, Fields: []ProviderStateField{
-		{Where: StateWhereMessage, Name: "thinking_blocks", Raw: []byte(`["da mensagem"]`)},
-		{Where: StateWherePSF, Name: "thinking_blocks", Raw: []byte(`["do saco"]`)},
-		{Where: StateWherePSF, Name: "reasoning_details", Raw: []byte(`["primeiro"]`)},
-		{Where: StateWherePSF, Name: "reasoning_details", Raw: []byte(`["segundo"]`)},
-	}})
-	for texto, vezes := range map[string]int{`"thinking_blocks":["da mensagem"]`: 1, `do saco`: 0, `"reasoning_details":["primeiro"]`: 1, `segundo`: 0} {
-		if n := strings.Count(topo, texto); n != vezes {
-			t.Errorf("%q aparece %d vez(es), quero %d: %s", texto, n, vezes, topo)
+// NOMES REPETIDOS COM `topo` (revisão do AOS-516). No topo cada nome aparece uma vez: o mesmo
+// nome em `message` e no saco com os MESMOS bytes escreve-se uma vez; qualquer outra repetição é
+// ambígua e NÃO se serializa — o gateway não escolhe entre dois valores pelo fornecedor. Com a
+// omissão nada muda: os campos saem como vieram, repetidos ou não.
+func TestAOS516_Placement_NomesRepetidos(t *testing.T) {
+	m, s := StateWhereMessage, StateWherePSF
+	campo := func(onde, nome, cru string) ProviderStateField {
+		return ProviderStateField{Where: onde, Name: nome, Raw: []byte(cru)}
+	}
+	for nome, c := range map[string]struct {
+		campos  []ProviderStateField
+		ambiguo bool
+	}{
+		"mesmo nome nos dois sitios, mesmos bytes":   {[]ProviderStateField{campo(m, "thinking_blocks", `["a"]`), campo(s, "thinking_blocks", `["a"]`), campo(s, "reasoning_details", `["d"]`)}, false},
+		"repetido em message":                        {[]ProviderStateField{campo(m, "reasoning", `"um"`), campo(m, "reasoning", `"dois"`)}, true},
+		"repetido em message, bytes iguais":          {[]ProviderStateField{campo(m, "reasoning", `"um"`), campo(m, "reasoning", `"um"`)}, true},
+		"repetido no saco":                           {[]ProviderStateField{campo(s, "reasoning_details", `["primeiro"]`), campo(s, "reasoning_details", `["segundo"]`)}, true},
+		"nos dois sitios, bytes diferentes":          {[]ProviderStateField{campo(m, "thinking_blocks", `["da mensagem"]`), campo(s, "thinking_blocks", `["do saco"]`)}, true},
+		"nos dois sitios, so um espaco de diferenca": {[]ProviderStateField{campo(m, "thinking_blocks", `["a"]`), campo(s, "thinking_blocks", `[ "a"]`)}, true},
+		"nomes diferentes":                           {[]ProviderStateField{campo(m, "reasoning_content", `"r"`), campo(s, "reasoning", `"r"`), campo(s, "reasoning_details", `[]`)}, false},
+	} {
+		if got := TopPlacementAmbiguous(c.campos); got != c.ambiguo {
+			t.Errorf("%s: TopPlacementAmbiguous = %v, quero %v", nome, got, c.ambiguo)
+		}
+		wire, err := (ChatRequest{Model: "m", Messages: []Message{aos516Mensagem(&MessageState{Return: true, Placement: StatePlacementTop, Fields: c.campos})}}).MarshalWire(false)
+		if c.ambiguo {
+			if !errors.Is(err, ErrStateReturnWire) {
+				t.Errorf("%s: com topo tinha de recusar; deu %v: %s", nome, err, wire)
+			}
+		} else {
+			if err != nil {
+				t.Fatalf("%s: %v", nome, err)
+			}
+			// Nenhuma chave repetida na mensagem que saiu, e nenhum saco.
+			var doc struct {
+				Messages []json.RawMessage `json:"messages"`
+			}
+			if err := json.Unmarshal(wire, &doc); err != nil || len(doc.Messages) != 1 {
+				t.Fatalf("%s: %v", nome, err)
+			}
+			pares, _ := paresEmOrdem(doc.Messages[0])
+			vistas := map[string]bool{}
+			for _, par := range pares {
+				if vistas[par.chave] || par.chave == "provider_specific_fields" {
+					t.Errorf("%s: chave %q repetida ou indevida: %s", nome, par.chave, wire)
+				}
+				vistas[par.chave] = true
+			}
+		}
+		// Com a omissao, o MESMO estado sai sempre, e como vinha: todos os campos, pela ordem.
+		origem, err := (ChatRequest{Model: "m", Messages: []Message{aos516Mensagem(&MessageState{Return: true, Fields: c.campos})}}).MarshalWire(false)
+		if err != nil {
+			t.Fatalf("%s: com a omissao tinha de sair como sempre: %v", nome, err)
+		}
+		for _, f := range c.campos {
+			if n := strings.Count(string(origem), `"`+f.Name+`":`+string(f.Raw)); n < 1 {
+				t.Errorf("%s: com a omissao falta %s: %s", nome, f.Name, origem)
+			}
 		}
 	}
-	// O descodificador de sempre le o pedido sem chaves repetidas.
-	var doc struct {
-		Messages []map[string]json.RawMessage `json:"messages"`
+	// A forma exacta de sempre com um nome repetido em `message` (contrato 1.9.0): as duas vezes.
+	origem := aos516Wire(t, &MessageState{Return: true, Fields: []ProviderStateField{campo(m, "reasoning", `"um"`), campo(m, "reasoning", `"dois"`)}})
+	if !strings.HasSuffix(origem, `,"reasoning":"um","reasoning":"dois"}]}`) {
+		t.Errorf("a omissao mudou os bytes de um pedido que ja saia: %s", origem)
 	}
-	if err := json.Unmarshal([]byte(topo), &doc); err != nil || len(doc.Messages) != 1 {
-		t.Fatalf("%v: %s", err, topo)
+	// E a forma exacta do caso que se escreve uma vez.
+	topo := aos516Wire(t, &MessageState{Return: true, Placement: StatePlacementTop, Fields: []ProviderStateField{campo(m, "thinking_blocks", `["a"]`), campo(s, "thinking_blocks", `["a"]`), campo(s, "reasoning_details", `["d"]`)}})
+	if !strings.HasSuffix(topo, `}}],"thinking_blocks":["a"],"reasoning_details":["d"]}]}`) {
+		t.Errorf("o mesmo nome com os mesmos bytes escreve-se uma vez: %s", topo)
 	}
 }
 

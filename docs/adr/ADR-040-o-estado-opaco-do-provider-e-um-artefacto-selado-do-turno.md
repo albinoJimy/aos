@@ -307,6 +307,7 @@ estado desse turno, e conta-se.
 | `estado_de_rota_nao_provada` | O turno que produziu o estado não teve a rota comparada como `igual` |
 | `estado_de_outra_rota` | Outro perfil, ou outro modelo servido |
 | `id_do_provider_inutilizavel` | A rota pede os ids do provider e os do turno não servem |
+| `estado_com_nome_repetido` | A rota pede o estado no topo (`devolver_em: topo`) e o do turno tem um nome de campo repetido que obrigava a escolher entre valores (emenda de 2026-10-10) |
 
 **O que sai, e onde.** Cada campo volta ao **sítio** de onde veio, com o **nome** com que veio e
 os **bytes** que vieram, copiados para o corpo do pedido sem passar por nenhum codificador: os
@@ -385,8 +386,13 @@ O perfil da rota ganha o campo `devolver_em`, de vocabulário fechado: `origem` 
 §2.9, sem mudar um byte) ou `topo`. Com `topo`, os campos de raciocínio das listas fechadas que
 vieram em `message.provider_specific_fields` voltam como chaves da própria mensagem `assistant`,
 com o nome e os **bytes** com que vieram, e o saco **não volta**: o fornecedor nunca o mandou, e
-a medição mostra que, enviado, lhe chegaria em duplicado. Um campo do saco com o nome de um que
-já está no topo não se escreve (uma mensagem não leva duas chaves iguais). Tudo o resto do §2.11
+a medição mostra que, enviado, lhe chegaria em duplicado. **Nomes repetidos:** no topo cada
+nome aparece uma vez. Um nome que venha em `message` e no saco com os mesmos bytes escreve-se uma
+vez; qualquer outro nome repetido — duas vezes em `message`, duas vezes no saco, ou nos dois
+sítios com bytes diferentes — torna o estado desse turno **não devolvível**, com a causa
+`estado_com_nome_repetido` (em `obrigatorio` o pedido não sai; em `opcional` conta-se e o pedido
+segue sem ele). O gateway não escolhe entre dois valores pelo fornecedor. Com `origem` a regra
+não se aplica: os campos voltam como vieram, repetidos ou não, como desde o AOS-515. Tudo o resto do §2.11
 vale igual: a junção pelo rótulo com `sha256` conferido, as três condições, a rota provada, o
 fail-closed de `obrigatorio`. `topo` só se declara numa rota que devolve estado; só entra no
 digest do perfil quando declarado; e é o gateway que o escreve em cada pedido — o que um chamador

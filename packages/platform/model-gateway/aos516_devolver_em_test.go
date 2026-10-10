@@ -215,6 +215,64 @@ func TestAOS516_DevolverEm_OChamadorNaoEscolheOSitio(t *testing.T) {
 	}
 }
 
+// UM NOME DE CAMPO REPETIDO, COM `topo`, TORNA O ESTADO DO TURNO NÃO DEVOLVÍVEL (revisão do
+// AOS-516): em `obrigatorio` o pedido não sai, em `opcional` conta-se e segue sem o estado desse
+// turno. Com a omissão o mesmo estado é armado, como sempre.
+func TestAOS516_DevolverEm_NomeRepetidoNaoEDevolvido(t *testing.T) {
+	campo := func(onde, nome, cru string) port.ProviderStateField {
+		return port.ProviderStateField{Where: onde, Name: nome, Raw: []byte(cru)}
+	}
+	repetidos := map[string][]port.ProviderStateField{
+		"repetido em message":        {campo(port.StateWhereMessage, "reasoning", `"um"`), campo(port.StateWhereMessage, "reasoning", `"dois"`)},
+		"repetido no saco":           {campo(port.StateWherePSF, "reasoning_details", `["um"]`), campo(port.StateWherePSF, "reasoning_details", `["dois"]`)},
+		"nos dois, bytes diferentes": {campo(port.StateWhereMessage, "thinking_blocks", `["m"]`), campo(port.StateWherePSF, "thinking_blocks", `["s"]`)},
+	}
+	pedido := func(perfil modelgateway.RouteProfile, campos []port.ProviderStateField) port.ChatRequest {
+		return port.ChatRequest{Model: "gpt-4o", Messages: []port.Message{
+			{Role: port.RoleUser, Content: "x"},
+			{Role: port.RoleAssistant, ToolCalls: []port.ToolCall{{ID: "s-tool-1", Type: "function", Function: port.FunctionCall{Name: "f", Arguments: "{}"}}},
+				State: &port.MessageState{RouteProfileDigest: perfil.Digest(), ServedModel: perfil.ExpectedModel, RouteCheck: port.RouteCheckEqual, Fields: campos}},
+		}}
+	}
+	obrigatorio := aos515Rota(t, "gpt-4o", `,"devolver":"obrigatorio","devolver_em":"topo"`)
+	opcional := aos515Rota(t, "gpt-4o", `,"devolver":"opcional","devolver_em":"topo"`)
+	origem := aos515Rota(t, "gpt-4o", `,"devolver":"obrigatorio"`)
+	for nome, campos := range repetidos {
+		_, devolvidos, causa, err := modelgateway.ArmarDevolucaoParaTeste(pedido(obrigatorio, campos), obrigatorio)
+		var recusa *modelgateway.StateReturnError
+		if !errors.As(err, &recusa) || recusa.Cause != modelgateway.StateCauseRepeatedName || causa != modelgateway.StateCauseRepeatedName || devolvidos != 0 {
+			t.Errorf("%s, obrigatorio: err %v, causa %q, devolvidos %d", nome, err, causa, devolvidos)
+		}
+		turnos, devolvidos, causa, err := modelgateway.ArmarDevolucaoParaTeste(pedido(opcional, campos), opcional)
+		if err != nil || turnos != 1 || devolvidos != 0 || causa != modelgateway.StateCauseRepeatedName {
+			t.Errorf("%s, opcional: turnos %d, devolvidos %d, causa %q, err %v", nome, turnos, devolvidos, causa, err)
+		}
+		// Em `opcional` o pedido sai, sem um byte do estado desse turno.
+		wire, err := modelgateway.ArmarEEscreverParaTeste(pedido(opcional, campos), opcional)
+		if err != nil || strings.Contains(string(wire), "reasoning") || strings.Contains(string(wire), "thinking_blocks") {
+			t.Errorf("%s, opcional: o pedido tinha de sair sem o estado: %v %s", nome, err, wire)
+		}
+		// Com a omissao, o mesmo estado e armado e sai como sempre.
+		if _, devolvidos, causa, err := modelgateway.ArmarDevolucaoParaTeste(pedido(origem, campos), origem); err != nil || devolvidos != 1 || causa != "" {
+			t.Errorf("%s, origem: devolvidos %d, causa %q, err %v", nome, devolvidos, causa, err)
+		}
+	}
+	// O mesmo nome nos dois sitios com os MESMOS bytes nao e ambiguo: arma-se e escreve-se uma vez.
+	iguais := []port.ProviderStateField{campo(port.StateWhereMessage, "thinking_blocks", `["a"]`), campo(port.StateWherePSF, "thinking_blocks", `["a"]`)}
+	wire, err := modelgateway.ArmarEEscreverParaTeste(pedido(obrigatorio, iguais), obrigatorio)
+	if err != nil || strings.Count(string(wire), `"thinking_blocks":["a"]`) != 1 || strings.Contains(string(wire), "provider_specific_fields") {
+		t.Errorf("mesmos bytes nos dois sitios: %v %s", err, wire)
+	}
+	// A causa nova esta no vocabulario fechado.
+	conhecida := false
+	for _, c := range modelgateway.StateReturnCauses() {
+		conhecida = conhecida || c == modelgateway.StateCauseRepeatedName
+	}
+	if !conhecida {
+		t.Error("a causa nova nao esta no vocabulario fechado")
+	}
+}
+
 // O PERFIL: `devolver_em` é vocabulário fechado, só tem leitor numa rota que devolve estado, e
 // só entra no digest quando declara alguma coisa.
 func TestAOS516_Perfil_DevolverEm(t *testing.T) {

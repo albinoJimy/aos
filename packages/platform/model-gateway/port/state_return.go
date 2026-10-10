@@ -73,13 +73,50 @@ type MessageState struct {
 // tal e qual, e o fornecedor só lê os campos no topo da mensagem: o estado «voltava» e não era
 // lido. Com [StatePlacementTop] cada campo do saco volta no topo, com o NOME e os BYTES com que
 // veio, e o saco NÃO volta — o fornecedor nunca o mandou, e um duplicado do estado dentro de um
-// campo que ele não conhece não lhe diz nada. Um campo do saco com o nome de um campo que já
-// está no topo (porque veio também em `message`, ou porque veio repetido) não se escreve:
-// uma mensagem não leva duas chaves iguais.
+// campo que ele não conhece não lhe diz nada.
+//
+// NOMES REPETIDOS, com [StatePlacementTop] ([TopPlacementAmbiguous]). No topo de uma mensagem
+// cada nome de campo aparece UMA vez. Um nome que venha tanto em `message` como no saco com os
+// MESMOS bytes escreve-se uma vez. Qualquer outro nome repetido — duas vezes em `message`, duas
+// vezes no saco, ou em `message` e no saco com bytes diferentes — é ambíguo: não se sabe qual
+// dos valores o fornecedor quis, e o resto do gateway lê o último enquanto um escritor ingénuo
+// escreveria o primeiro. O gateway não escolhe por ele: o estado desse turno não é devolvido
+// (a causa está no vocabulário do gateway), e esta serialização recusa-o se lhe chegar.
+//
+// Com [StatePlacementOrigin] nada disto muda: os campos voltam como vieram, repetidos ou não,
+// byte a byte como desde o contrato 1.9.0.
 const (
 	StatePlacementOrigin = ""
 	StatePlacementTop    = "topo"
 )
+
+// TopPlacementAmbiguous diz se os campos de raciocínio de um turno têm um nome repetido que
+// impede escrevê-los no topo da mensagem sem escolher entre valores: repetido dentro de
+// `message`, repetido dentro de `message.provider_specific_fields`, ou presente nos dois sítios
+// com bytes diferentes. Compara bytes, não valores: o gateway não interpreta o estado.
+func TopPlacementAmbiguous(fields []ProviderStateField) bool {
+	naMensagem, noSaco := map[string][]byte{}, map[string][]byte{}
+	for _, f := range fields {
+		onde := naMensagem
+		switch f.Where {
+		case StateWhereMessage:
+		case StateWherePSF:
+			onde = noSaco
+		default:
+			continue
+		}
+		if _, repetido := onde[f.Name]; repetido {
+			return true
+		}
+		onde[f.Name] = f.Raw
+	}
+	for nome, cru := range noSaco {
+		if outro, tem := naMensagem[nome]; tem && !bytes.Equal(outro, cru) {
+			return true
+		}
+	}
+	return false
+}
 
 // Causas de um turno sem estado devolvível ([MessageState.Missing]). Vocabulário FECHADO.
 const (
@@ -233,6 +270,10 @@ func escreverMensagemComEstado(b *bytes.Buffer, m Message) error {
 		}
 		b.WriteByte(']')
 	}
+	if st.Placement == StatePlacementTop && TopPlacementAmbiguous(st.Fields) {
+		// O gateway não arma um estado destes; se cá chegar, não se escreve.
+		return ErrStateReturnWire
+	}
 	// Os campos de raciocínio de `message`, pela ordem em que vieram.
 	for _, f := range st.Fields {
 		if f.Where == StateWhereMessage {
@@ -245,6 +286,8 @@ func escreverMensagemComEstado(b *bytes.Buffer, m Message) error {
 	case StatePlacementOrigin:
 	case StatePlacementTop:
 		// Os que vieram dentro de `provider_specific_fields` voltam no topo, e o saco não volta.
+		// Um nome que já foi escrito a partir de `message` tem, aqui, os mesmos bytes (o resto
+		// foi recusado acima): escreve-se uma vez.
 		noTopo := map[string]bool{}
 		for _, f := range st.Fields {
 			if f.Where == StateWhereMessage {
@@ -258,7 +301,6 @@ func escreverMensagemComEstado(b *bytes.Buffer, m Message) error {
 				if noTopo[f.Name] {
 					continue
 				}
-				noTopo[f.Name] = true
 				if err := escreverCampoCru(b, f); err != nil {
 					return err
 				}
