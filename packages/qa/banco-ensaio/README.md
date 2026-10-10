@@ -116,7 +116,8 @@ rota para o fornecedor (`openai/<modelo>` para o Kimi, `anthropic/<modelo>` para
 tecto do dia como um pedido (o plano anuncia «mais 1 de sonda») e fica no relatório, no campo
 `sonda` — não é uma observação e não entra em taxa nenhuma. Se não der 200, a corrida não
 começa: exit 4, relatório sem observações, e a causa em vocabulário fechado
-(`chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido`, `outro`).
+(`chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido`,
+`rota_indisponivel`, `outro`).
 O `--so-plano` não envia nada, nem a sonda.
 
 ### `limpar` — remover o que ficou de uma corrida anterior
@@ -333,8 +334,14 @@ turnos com tool calls por cenário):
 | `reasoning_details` no segundo turno, com `devolver_em: topo` | 60 de 60 no topo, intacto; o saco não volta | igual |
 | `reasoning_details` posto à mão no topo da mensagem | chega com os valores intactos | igual |
 | Modelo que o proxy declara ter servido | `openrouter/<autor>/<modelo>` | `openai/<autor>/<modelo>` |
-| Extras do adaptador | `usage` no pedido; cabeçalhos `HTTP-Referer` e `X-Title` do LiteLLM | nenhum |
+| Extras do adaptador | `usage` no pedido; `HTTP-Referer: https://litellm.ai` e `X-Title: liteLLM` (valores por omissão da imagem, em todos os pedidos) | nenhum |
 | Erros 401, 402, 429, 404 e 400 na forma da OpenRouter | passam com o código; `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido` | igual |
+
+Os erros dela classificam-se pelo código (HTTP ou `error.code`, que valem o mesmo) e por frases
+fixas: «no endpoints found» só é `modelo_desconhecido` quando nomeia o modelo e mais nada — com
+«matching your data policy» ou «that support tool use» é `rota_indisponivel` (o modelo existe; o
+que o exclui são as definições da conta); um 403 com frase de moderação é `outro`, não
+`chave_recusada`; e «rate limit exceeded» só conta num 429.
 
 Escolheu-se `openrouter/`: é a única das duas em que **todas** as formas do parâmetro de
 raciocínio do perfil chegam ao fornecedor.
@@ -371,6 +378,13 @@ lido o estado, e o banco só vê o código. Por isso, numa corrida cujo perfil *
 campos) e, havendo algum, o veredicto não pode ser `cumprida`: fica `inconclusiva` com a razão
 `estado_devolvido_so_no_saco_do_proxy`
 (`TestAOS516_OpenRouter_EstadoSoNoSacoDoProxyNaoDaCumprida`).
+
+**No modo real, `cumprida` não é prova de leitura.** O banco só vê códigos: `cumprida` é 2xx a
+todos os pedidos que levavam o raciocínio devolvido. A qualificação faz-se com a corrida
+principal **e** um controlo negativo (o mesmo perfil com `devolver: nunca`): só se o controlo
+levar 4xx nos segundos turnos é que a corrida principal mostra que o fornecedor exige o estado e
+o aceitou. O relatório e o resumo trazem esta frase ao lado do veredicto; o procedimento está no
+runbook.
 
 **O que não se sabe sem o modelo real:** se a OpenRouter aceita o segundo turno com
 `reasoning_details` no topo e `reasoning_content` ao lado (o proxy cria este último a partir de

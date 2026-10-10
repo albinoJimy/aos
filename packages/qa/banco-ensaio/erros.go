@@ -107,17 +107,31 @@ const (
 var frasesDeModeracao = []string{"requires moderation", "input was flagged", "flagged for"}
 
 // semEndpoints classifica uma mensagem com a [fraseSemEndpoints]. tem é false sem a frase.
+//
+// A forma que nomeia o modelo é «no endpoints found for <modelo>» seguida do FIM da frase: um
+// ponto final, o fim do texto, ou — quando um proxy no meio embrulha o erro do fornecedor dentro
+// da sua própria mensagem (medido atrás da imagem fixada) — as aspas que fecham a mensagem
+// original. Se ao nome do modelo se seguir um espaço e mais texto («… matching your data
+// policy»), é um qualificador, e o tipo é [TipoRotaIndisponivel].
 func semEndpoints(mensagem string) (tipo string, tem bool) {
 	i := strings.Index(mensagem, fraseSemEndpoints)
 	if i < 0 {
 		return "", false
 	}
-	resto := strings.TrimSpace(mensagem[i+len(fraseSemEndpoints):])
-	if modelo, nomeia := strings.CutPrefix(resto, "for "); nomeia {
-		// Só o nome do modelo, com ou sem ponto final, e mais nada.
-		if modelo = strings.TrimSuffix(strings.TrimSpace(modelo), "."); modelo != "" && !strings.ContainsAny(modelo, " \t\n") {
-			return TipoModeloDesconhecido, true
-		}
+	resto, nomeia := strings.CutPrefix(mensagem[i+len(fraseSemEndpoints):], " for ")
+	if !nomeia {
+		return TipoRotaIndisponivel, true
+	}
+	n := 0
+	for n < len(resto) && strings.IndexByte("abcdefghijklmnopqrstuvwxyz0123456789._:/-", resto[n]) >= 0 {
+		n++
+	}
+	modelo, depois := resto[:n], resto[n:]
+	switch {
+	case strings.Trim(modelo, ".") == "":
+		return TipoRotaIndisponivel, true
+	case strings.HasSuffix(modelo, "."), depois == "", depois[0] != ' ':
+		return TipoModeloDesconhecido, true
 	}
 	return TipoRotaIndisponivel, true
 }

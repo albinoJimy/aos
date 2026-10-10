@@ -336,9 +336,14 @@ func TestAOS516_Erros_DaOpenRouter_Revisao(t *testing.T) {
 		"sem endpoints pela politica de dados":      {404, msg("No endpoints found matching your data policy. Enable prompt training here", "404"), TipoRotaIndisponivel},
 		"sem endpoints com tools":                   {404, msg("No endpoints found that support tool use. To learn more about provider routing", "404"), TipoRotaIndisponivel},
 		"sem endpoints, modelo e politica":          {404, msg("No endpoints found for autor/modelo-x matching your data policy", "404"), TipoRotaIndisponivel},
-		"sem endpoints, sem mais nada":              {404, msg("No endpoints found", "404"), TipoRotaIndisponivel},
-		"sem endpoints, for sem modelo":             {404, msg("No endpoints found for ", "404"), TipoRotaIndisponivel},
-		"modelo invalido":                           {400, msg("autor/modelo-x is not a valid model ID", "400"), TipoModeloDesconhecido},
+		// A forma em que o proxy embrulha o erro do fornecedor na sua propria mensagem.
+		"sem endpoints, embrulhado pelo proxy":     {404, msg(`litellm.NotFoundError: NotFoundError: OpenrouterException - {\"error\":{\"message\":\"No endpoints found for autor/modelo-x.\",\"code\":404}}. Received Model Group=rota-de-ensaio`, `"404"`), TipoModeloDesconhecido},
+		"politica de dados, embrulhado pelo proxy": {404, msg(`litellm.NotFoundError: OpenrouterException - {\"error\":{\"message\":\"No endpoints found matching your data policy.\",\"code\":404}}. Received Model Group=rota-de-ensaio`, `"404"`), TipoRotaIndisponivel},
+		"modelo e politica, embrulhado pelo proxy": {404, msg(`OpenrouterException - {\"error\":{\"message\":\"No endpoints found for autor/modelo-x matching your data policy\"}}`, `"404"`), TipoRotaIndisponivel},
+		"sem endpoints, modelo e frase a seguir":   {404, msg("No endpoints found for autor/modelo-x. Try another model", "404"), TipoModeloDesconhecido},
+		"sem endpoints, sem mais nada":             {404, msg("No endpoints found", "404"), TipoRotaIndisponivel},
+		"sem endpoints, for sem modelo":            {404, msg("No endpoints found for ", "404"), TipoRotaIndisponivel},
+		"modelo invalido":                          {400, msg("autor/modelo-x is not a valid model ID", "400"), TipoModeloDesconhecido},
 		// (b) um 403 de moderacao nao e a chave.
 		"403 de moderacao":                         {403, msg("autor/modelo-x requires moderation and your input was flagged", "403"), TipoOutro},
 		"403 de moderacao so no codigo do corpo":   {500, msg("Your input was flagged for a category", `"403"`), TipoOutro},
