@@ -2,7 +2,7 @@ module github.com/aos-ref/cmd/aos
 
 go 1.25
 
-toolchain go1.25.13
+toolchain go1.26.9
 
 require (
 	github.com/aos-ref/control-plane/budget v0.0.0

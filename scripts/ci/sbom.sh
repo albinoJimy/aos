@@ -59,13 +59,13 @@ IMAGE_TAG="${IMAGE_TAG:-aos-node:local}"
 mkdir -p "$OUT_DIR"
 
 # Bases pinadas por digest (têm de casar com deploy/node/Dockerfile — proveniência honesta).
-BUILDER_IMAGE="golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48"
+BUILDER_IMAGE="golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c"
 RUNTIME_IMAGE="gcr.io/distroless/static-debian12:nonroot@sha256:f5b485ea962d9bd1186b2f6b3a061191539b905b82ec395de78cbfae51f20e35"
 
 # --- GATE: a proveniência tem de declarar as imagens que o Dockerfile USA ----------------------
 #
 # O DEFEITO QUE ISTO FECHA, descoberto a 2026-08-21: o Dockerfile constrói com
-# `golang:1.25.13` e esta proveniência — ASSINADA — declarava `golang:1.24.5`. Assim desde a
+# `golang:1.26.9` e esta proveniência — ASSINADA — declarava `golang:1.24.5`. Assim desde a
 # v0.1.2. O comentário acima dizia «têm de casar com deploy/node/Dockerfile»: era uma frase, não
 # um gate, e duas actualizações do Go passaram por cima dela.
 #

@@ -1862,7 +1862,7 @@ log_gate "self-test GW · o go.work cobre a árvore, a guarda morde, e os gates 
 # resultado de cada uma estão na Entrega do AOS-387.
 # Árvore sintética fora do repo, com o go.work gerado pelo MESMO gerador:
 #   a, b     — módulos go 1.24, só stdlib;
-#   t        — go 1.25 + toolchain go1.25.13 (é o que fixa as directivas máximas);
+#   t        — go 1.25 + toolchain go1.26.9 (é o que fixa as directivas máximas);
 #   n/x/y    — módulo ANINHADO (profundidade 4), que um `find -maxdepth` deixaria de ver.
 GOWORK_TMP="$(mktemp -d)"
 GOWORK_SH="$CI_DIR/gowork.sh"
@@ -1872,7 +1872,7 @@ gw_modulo() {
   [ -n "${3:-}" ] && printf '\ntoolchain %s\n' "$3" >> "$GOWORK_TMP/packages/$1/go.mod"
   printf 'package m\n\nfunc F() int { return 1 }\n' > "$GOWORK_TMP/packages/$1/m.go"
 }
-gw_modulo a; gw_modulo b; gw_modulo t 1.25 go1.25.13; gw_modulo n/x/y
+gw_modulo a; gw_modulo b; gw_modulo t 1.25 go1.26.9; gw_modulo n/x/y
 # gw_verificar_vermelho <id> <padrão do diagnóstico> <descrição> — exige verificar VERMELHO, e
 # pela razão certa (um vermelho por outra razão não mata a mutação que o caso nomeia).
 gw_verificar_vermelho() {
@@ -1893,8 +1893,8 @@ gw_edit() { ( cd "$GOWORK_TMP" && GOWORK=off go work edit "$@" go.work ); }
 # as directivas máximas). Sem isto, os vermelhos abaixo podiam sê-lo por qualquer razão.
 if gw_regerar && bash "$GOWORK_SH" verificar --root "$GOWORK_TMP" >/dev/null 2>&1 \
    && grep -qx $'\t./packages/n/x/y' "$GOWORK_TMP/go.work" \
-   && grep -qx 'go 1.25' "$GOWORK_TMP/go.work" && grep -qx 'toolchain go1.25.13' "$GOWORK_TMP/go.work"; then
-  pass "GW1: controlo — o go.work gerado (com o módulo aninhado, go 1.25, toolchain go1.25.13) passa a verificação"
+   && grep -qx 'go 1.25' "$GOWORK_TMP/go.work" && grep -qx 'toolchain go1.26.9' "$GOWORK_TMP/go.work"; then
+  pass "GW1: controlo — o go.work gerado (com o módulo aninhado, go 1.25, toolchain go1.26.9) passa a verificação"
 else
   bad "GW1: o go.work gerado pelo próprio gerador foi recusado, ou não tem o módulo aninhado / as directivas máximas"
 fi

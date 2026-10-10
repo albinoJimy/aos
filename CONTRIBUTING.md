@@ -31,7 +31,7 @@ Correr um gate isolado: `make ci-secrets | ci-build | ci-lint | ci-test | ci-rep
 
 | Ferramenta | Versão | Notas |
 |---|---|---|
-| **Go** | 1.25.13 | a da imagem de produção (`FROM golang:` do `deploy/node/Dockerfile`); os gates fixam-na por `GOTOOLCHAIN` e o `toolchain-lint` guarda-o. Módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
+| **Go** | 1.26.9 | a da imagem de produção (`FROM golang:` do `deploy/node/Dockerfile`); os gates fixam-na por `GOTOOLCHAIN` e o `toolchain-lint` guarda-o. Módulos em `packages/**` (descobertos por `find packages -name go.mod`) |
 | **gcc** | qualquer | exigido pelo `go test -race` (CGO). Windows: mingw do scoop; Linux: gcc do sistema |
 | **bash** | 4+ | Git Bash em Windows |
 | staticcheck / gosec / govulncheck | pinadas | **auto-instaladas** por `go install` (idempotente) em `$(go env GOPATH)/bin`; nunca committadas |

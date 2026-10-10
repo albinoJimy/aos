@@ -1,7 +1,7 @@
 # Componente de autoridade de attestation WebAuthn (AOS-177) — corre o descodificador CBOR que o
 # binário do nó NUNCA pode importar (ADR-017). Build a partir da raiz do repo (contexto = repo root,
 # como o do nó), módulo próprio packages/cmd/aos-attestation.
-FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS build
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS build
 # GOWORK=off (AOS-387): o `COPY . .` traz a árvore inteira, e um go.work na raiz poria o build em
 # modo workspace — binário diferente do da resolução standalone (o `go version -m` perde o
 # `=> ../../platform/attestation`). O .dockerignore já exclui go.work/go.work.sum; isto fecha o

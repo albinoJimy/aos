@@ -29,9 +29,9 @@
 
 # ----------------------------------------------------------------------------
 # STAGE 1 — builder: compila os binários ESTÁTICOS zero-dep (nó, aos-orq, aos-issuer) + o healthprobe.
-# golang:1.25.13-bookworm  (go 1.25.13, casa com `go 1.25` / `toolchain go1.25.13` dos módulos)
+# golang:1.26.9-bookworm  (go 1.26.9, casa com `go 1.25` / `toolchain go1.26.9` dos módulos)
 # ----------------------------------------------------------------------------
-FROM golang:1.25.13-bookworm@sha256:e401dae1bf814e29204a8cb7915682e1780951e609ca0dd8865ee1937f510c48 AS builder
+FROM golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c AS builder
 
 # CGO OFF => binário estático puro (sem libc dinâmica), pré-condição do distroless static.
 ENV CGO_ENABLED=0 \
