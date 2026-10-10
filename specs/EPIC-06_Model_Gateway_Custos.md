@@ -3496,6 +3496,21 @@ passo 3 espera pela decisão da região.
   `reasoning_effort`, `thinking`), e cada uma chegou ao fornecedor em 44 de 44 pedidos.
   Controlo, o mesmo perfil sem `devolver_em`: 10 respostas 400, `nao_cumprida`. Treze mutações
   dirigidas nos pontos novos, todas vermelhas.
+- **Revisão adversarial (2026-10-10), seis achados fechados.** (1) Com `topo`, um nome de
+  campo de raciocínio repetido — duas vezes em `message`, duas no saco, ou nos dois sítios com
+  bytes diferentes — torna o estado do turno não devolvível, com a causa
+  `estado_com_nome_repetido` (antes escrevia-se o primeiro do saco, e a sonda lê o último); o
+  mesmo nome com os mesmos bytes escreve-se uma vez; com `origem` nada muda. (2) Os erros da
+  OpenRouter: «no endpoints found» com um qualificador é o tipo novo `rota_indisponivel`, um
+  403 de moderação não é `chave_recusada`, a frase de ritmo só conta num 429 e `error.code` 429
+  lê-se como o código HTTP. (3) `OPENROUTER_MODELO` recusa `../x`, `anthropic/..` e o prefixo
+  `openrouter/` em qualquer caixa. (4) O relatório do modo real diz, ao lado do veredicto, que
+  `cumprida` é 2xx e não prova de leitura, e a qualificação passa a ter um controlo negativo
+  como passo (runbook). (5) Testes novos: o perfil mudado de `origem` para `topo` a meio de um
+  run é outra rota (`estado_de_outra_rota`), e o replay com `topo` reproduz os pedidos byte a
+  byte. (6) Este ticket passou a constar como implementador do ADR-040 e do ADR-036 na RTM.
+  Dezassete mutações dirigidas, todas vermelhas. Medido na imagem fixada: o adaptador `openrouter`
+  do proxy envia `HTTP-Referer: https://litellm.ai` e `X-Title: liteLLM` em todos os pedidos.
 - **Guarda no veredicto.** Numa corrida cujo perfil não declara `devolver_em: topo`, um turno
   cujo estado só veio no saco do proxy conta em `turnos_com_estado_so_no_saco_do_proxy`, e com
   algum o veredicto não é `cumprida` (`inconclusiva`, razão

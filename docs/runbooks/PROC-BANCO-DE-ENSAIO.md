@@ -221,7 +221,26 @@ ela documenta o pedido do raciocínio. Com este perfil o veredicto pode ser `cum
 & $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor openrouter --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude-openrouter.json --amostras 1 --pausa 2s
 ```
 
+4. **O controlo negativo — faz parte da qualificação, não é opcional.** No modo real o banco só
+   vê códigos HTTP: `cumprida` quer dizer que a OpenRouter respondeu 2xx a todos os pedidos que
+   levavam o raciocínio devolvido, e **não** que o leu ou validou — um fornecedor que ignore o
+   campo responde 2xx na mesma. Com `devolver_em: topo` a guarda do saco não se aplica e só
+   resta o código. O indício possível sem ler conteúdo é correr a **mesma** corrida com um
+   perfil igual que não devolve: copiar o perfil, pôr `"devolver": "nunca"`,
+   `"projection_version": "1.2.0"` e tirar a linha `devolver_em`.
+
+   | Corrida principal | Controlo (`devolver: nunca`) | Leitura |
+   |---|---|---|
+   | `cumprida` | 4xx nos segundos turnos (`nao_cumprida`) | A OpenRouter exige o raciocínio de volta e aceitou o que o gateway devolveu. É a qualificação |
+   | `cumprida` | 2xx em tudo | A OpenRouter não exige o raciocínio de volta nesta rota: a corrida principal **não prova** a devolução |
+   | `nao_cumprida` | qualquer | A devolução falhou; o código está no relatório |
+
+   O relatório e o resumo em texto da corrida real trazem esta frase ao lado do veredicto.
+
 **Como ler.** `saldo_insuficiente` na sonda: a conta da OpenRouter não tem créditos (402).
+`rota_indisponivel` na sonda: a OpenRouter conhece o modelo mas não tem endpoint que sirva o
+pedido com as definições da conta — ver a política de dados e os fornecedores permitidos na
+conta, e se o modelo suporta tools; repetir não adianta.
 `cumprida`: houve turnos com raciocínio e a OpenRouter aceitou todos os pedidos que levaram o
 estado no topo. `sem_raciocinio`: o `reasoning` do perfil chegou à OpenRouter (medido) mas não
 ligou o raciocínio — experimentar `{"max_tokens": 2048}` em vez de `{"effort": "medium"}`.
@@ -230,8 +249,11 @@ está no relatório. `inconclusiva` com `estado_devolvido_so_no_saco_do_proxy`: 
 `devolver_em: topo`.
 
 **O que esta corrida não prova:** a rota `anthropic/` directa, nem o bloco de texto que o proxy
-acrescenta nessa rota; e o adaptador `openrouter` do proxy identifica-se à OpenRouter com os
-cabeçalhos `HTTP-Referer` e `X-Title` do LiteLLM, que o banco não escolhe.
+acrescenta nessa rota; e o adaptador `openrouter` do proxy identifica-se à OpenRouter com dois cabeçalhos que são do
+LiteLLM, não do banco — medido na imagem fixada: `HTTP-Referer: https://litellm.ai` e
+`X-Title: liteLLM`, em todos os pedidos. São os valores por omissão da imagem; o banco não passa
+ao contentor nenhuma variável de onde pudessem vir outros, e o cenário atrás do proxy fica
+vermelho se chegar outro valor.
 
 ## Se correr mal
 
@@ -250,6 +272,7 @@ cabeçalhos `HTTP-Referer` e `X-Title` do LiteLLM, que o banco não escolhe.
 | Exit 4, `so_respostas_429` | Os três primeiros pedidos levaram 429 com um tipo que o banco não conhece | Ver «tipos de erro» no relatório. Se for ritmo, `--pausa`; se for saldo, carregar a conta |
 | Exit 4, `serie_de_429` | Dez respostas 429 seguidas a meio da corrida (o saldo acabou, ou o ritmo apertou) | Ver «tipos de erro» no relatório: com `saldo_insuficiente`, carregar a conta; com `limite_de_ritmo`, repetir com `--pausa` |
 | Exit 4, `modelo_desconhecido` | A sonda: o fornecedor não conhece o modelo | Corrigir o nome do modelo no ficheiro de chaves, ou `--modelo` |
+| Exit 4, `rota_indisponivel` | A sonda: o fornecedor conhece o modelo mas não tem endpoint que sirva o pedido com as definições da conta (na OpenRouter: política de dados, fornecedores permitidos, suporte de tools) | Corrigir as definições na conta do fornecedor. Repetir não adianta |
 | Exit 4, `sonda_falhou` | A sonda não teve 200, por uma causa fora do vocabulário (`outro`) | Ver o código HTTP na linha da sonda; repetir com `--so-plano` para confirmar o destino |
 | Exit 4, `tecto_atingido` | O tecto foi atingido a meio (o de dólares só se conhece depois de cada resposta) | O relatório parcial está escrito. Nada a repor |
 | Exit 3, «o perfil devolve estado e o seu expected_model nao e a rota desta corrida» | O `expected_model` do perfil não é `anthropic/<ANTHROPIC_MODELO>` (ou `openai/<modelo>` no Kimi, ou `openrouter/<OPENROUTER_MODELO>` na OpenRouter) | Corrigir o perfil. Nenhum pedido saiu |
