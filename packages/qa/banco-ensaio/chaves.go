@@ -454,12 +454,23 @@ func (c *Chaves) Rota(f Fornecedor, modelo string, d Destino) (RotaReal, error) 
 	return r, nil
 }
 
-// modeloDaOpenRouterAceite diz se o nome tem a forma `<autor>/<modelo>` da OpenRouter, sem o
-// prefixo do adaptador do proxy: é o banco que escreve `openrouter/` à frente, e um nome que já
-// o trouxesse (ou que não tivesse autor) dava uma rota que o proxy lê de outra maneira.
+// modeloDaOpenRouterAceite diz se o nome tem a forma `<autor>/<modelo>` da OpenRouter:
+// exactamente dois segmentos, cada um a começar por uma letra ou um algarismo (`..`, `.`, `-` e
+// afins não são nomes), e sem o prefixo do adaptador do proxy, em qualquer caixa — é o banco que
+// escreve `openrouter/` à frente, e um nome que já o trouxesse, ou que não tivesse autor, dava
+// uma rota que o proxy lê de outra maneira.
 func modeloDaOpenRouterAceite(m string) bool {
-	autor, resto, ok := strings.Cut(m, "/")
-	return ok && autor != "" && resto != "" && autor != "openrouter" && !strings.Contains(resto, "/")
+	autor, modelo, ok := strings.Cut(m, "/")
+	return ok && segmentoDeNomeAceite(autor) && segmentoDeNomeAceite(modelo) && !strings.Contains(modelo, "/") && !strings.EqualFold(autor, PrefixoDaOpenRouter)
+}
+
+// segmentoDeNomeAceite diz se s não é vazio e começa por uma letra ou um algarismo ASCII.
+func segmentoDeNomeAceite(s string) bool {
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
 }
 
 // escolherModelo escolhe o modelo da lista do ficheiro e valida o seu alfabeto: o nome vai para
