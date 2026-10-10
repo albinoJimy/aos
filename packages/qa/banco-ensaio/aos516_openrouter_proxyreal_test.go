@@ -129,6 +129,13 @@ func TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter(t *testing.T) {
 					t.Errorf("%s: o parametro %s chegou em %d de %d pedidos", c.nome, parametro, f.Parametros[parametro], f.Pedidos)
 				}
 			}
+			// Os cabecalhos que o adaptador openrouter do proxy acrescenta vao em todos os pedidos
+			// com o valor por omissao da imagem: nada do ambiente local chega ao fornecedor por ai.
+			for _, cab := range []string{"cabecalho:http-referer", "cabecalho:x-title"} {
+				if f.Parametros[cab+"="+ValorDoLiteLLM] != f.Pedidos || f.Parametros[cab+"="+OutroValor] != 0 {
+					t.Errorf("%s: %s com o valor do LiteLLM em %d de %d pedidos, com outro valor em %d", c.nome, cab, f.Parametros[cab+"="+ValorDoLiteLLM], f.Pedidos, f.Parametros[cab+"="+OutroValor])
+				}
+			}
 			d := r.Taxas.Devolucao
 			switch {
 			case c.em == "topo":

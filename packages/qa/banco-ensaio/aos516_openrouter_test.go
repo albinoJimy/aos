@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aos-ref/platform/model-gateway/port"
 
@@ -210,5 +212,48 @@ func TestAOS516_OpenRouter_EstadoSoNoSacoDoProxyNaoDaCumprida(t *testing.T) {
 		{Where: port.StateWhereMessage, Name: "reasoning_content"}, {Where: port.StateWherePSF, Name: "reasoning_details"},
 	}}) || estadoSoNoSaco(nil) || estadoSoNoSaco(&port.ProviderState{Misaligned: true}) {
 		t.Error("estadoSoNoSaco: so conta um campo que venha no saco e nao em message")
+	}
+}
+
+// OS CABEÇALHOS DO ADAPTADOR. O falso diz se o valor é o da omissão do LiteLLM ou outro, sem o
+// guardar; e o contentor do proxy não recebe do banco nenhuma variável de onde esse valor pudesse
+// vir (o adaptador lê-o de `OR_SITE_URL` e `OR_APP_NAME`).
+func TestAOS516_OpenRouter_CabecalhosDoAdaptador(t *testing.T) {
+	falso := &FalsoDeEstado{FormaDoEstado: FormaOpenRouter}
+	srv := httptest.NewServer(falso)
+	defer srv.Close()
+	pedir := func(referer, titulo string) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"x"}]}`))
+		if referer != "" {
+			req.Header.Set("HTTP-Referer", referer)
+		}
+		if titulo != "" {
+			req.Header.Set("X-Title", titulo)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	pedir("https://litellm.ai", "liteLLM")
+	pedir("https://posto-do-dono.exemplo.test/segredo", "aplicacao-local")
+	pedir("", "")
+	aos516Contagens(t, "parametros", falso.Forma().Parametros, map[string]int{
+		"cabecalho:http-referer": 2, "cabecalho:http-referer=" + ValorDoLiteLLM: 1, "cabecalho:http-referer=" + OutroValor: 1,
+		"cabecalho:x-title": 2, "cabecalho:x-title=" + ValorDoLiteLLM: 1, "cabecalho:x-title=" + OutroValor: 1,
+	})
+	if cru := string(mustJSON(t, falso.Forma())); strings.Contains(cru, "posto-do-dono") || strings.Contains(cru, "aplicacao-local") {
+		t.Errorf("a forma leva o valor de um cabecalho: %s", cru)
+	}
+	// O contentor do proxy so recebe as tres variaveis do banco, pelo nome.
+	args, ambiente := arranqueDoContentorDoProxy("c", "r", "mestra", "chave", "http://base", time.Hour, time.Minute)
+	for _, a := range append(append([]string(nil), args...), ambiente...) {
+		if strings.Contains(a, "OR_SITE_URL") || strings.Contains(a, "OR_APP_NAME") || strings.Contains(a, "OPENROUTER_") {
+			t.Errorf("o contentor do proxy recebe uma variavel do adaptador openrouter: %q", a)
+		}
+	}
+	if len(ambiente) != 3 {
+		t.Errorf("o contentor do proxy recebe %d variaveis do banco; quero 3", len(ambiente))
 	}
 }

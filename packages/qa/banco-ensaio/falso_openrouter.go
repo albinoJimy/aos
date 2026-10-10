@@ -36,8 +36,20 @@ const FormaOpenRouter = "openrouter"
 var subchavesDeRaciocinio = []string{"effort", "max_tokens", "exclude", "enabled", "type", "budget_tokens"}
 
 // cabecalhosDoAdaptador são os cabeçalhos que o adaptador `openrouter` do proxy acrescenta por
-// conta própria; o falso conta os pedidos que os trazem (o valor não vai).
-var cabecalhosDoAdaptador = []string{"HTTP-Referer", "X-Title"}
+// conta própria, com o valor que a imagem fixada lhes dá por omissão (lido do código dela e
+// medido: são do LiteLLM, não do banco). O falso conta os pedidos que os trazem e, sem guardar o
+// valor, se ele é esse ([ValorDoLiteLLM]) ou outro ([OutroValor]) — um valor que não fosse o da
+// omissão vinha do ambiente do contentor do proxy, e o banco não lhe passa nenhum.
+var cabecalhosDoAdaptador = []struct{ nome, valor string }{
+	{"HTTP-Referer", "https://litellm.ai"},
+	{"X-Title", "liteLLM"},
+}
+
+// Os dois rótulos do valor de um cabeçalho do adaptador em [FormaNoFornecedor.Parametros].
+const (
+	ValorDoLiteLLM = "valor_por_omissao_do_litellm"
+	OutroValor     = "outro_valor"
+)
 
 // contarParametros regista, por NOME, os parâmetros de raciocínio de um pedido: os do topo, as
 // subchaves de `reasoning` e de `thinking`, e os cabeçalhos do adaptador. Nenhum valor.
@@ -60,8 +72,14 @@ func (f *FalsoDeEstado) contarParametros(r *http.Request, topo map[string]json.R
 		}
 	}
 	for _, c := range cabecalhosDoAdaptador {
-		if r.Header.Get(c) != "" {
-			f.contar(&f.forma.Parametros, "cabecalho:"+strings.ToLower(c))
+		switch v := r.Header.Get(c.nome); v {
+		case "":
+		case c.valor:
+			f.contar(&f.forma.Parametros, "cabecalho:"+strings.ToLower(c.nome))
+			f.contar(&f.forma.Parametros, "cabecalho:"+strings.ToLower(c.nome)+"="+ValorDoLiteLLM)
+		default:
+			f.contar(&f.forma.Parametros, "cabecalho:"+strings.ToLower(c.nome))
+			f.contar(&f.forma.Parametros, "cabecalho:"+strings.ToLower(c.nome)+"="+OutroValor)
 		}
 	}
 }
