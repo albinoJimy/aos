@@ -12,7 +12,7 @@
   (`AOS_MODEL_PROVIDER_STATE=off`) e só liga por decisão do dono, **com as duas condições do
   §2.10**. A **devolução** do
   estado ao provider é do AOS-515 (implementado a 2026-10-08, por rever): as regras estão no
-  §2.9 e a decisão no §2.11.
+  §2.9 e a decisão no §2.11. AOS-516 (emenda de 2026-10-10 ao §2.11: `devolver_em`).
 - **Relacionados:** ADR-001 (execução durável; replay `resume-from-step`), ADR-002 (Reference
   Monitor), ADR-005 (untrusted é dados, nunca instruções), ADR-007 (Event Store), ADR-010
   (replay determinístico), ADR-011 (apagamento por titular), ADR-034 (autorização derivada do
@@ -475,4 +475,5 @@ entra pelo perfil.
 | Ticket | O quê |
 |---|---|
 | AOS-514 | A sonda do estado e o envelope na porta do gateway (contrato 1.7.0); a captura selada, o layout 1.5.0 e o rótulo `state_digest` no kernel; o replay e a retoma; o interruptor, o tecto e a métrica no nó. Nada é devolvido |
+| AOS-516 | A emenda de 2026-10-10 ao §2.11: o perfil da rota declara onde volta o estado que o proxy entregou em `provider_specific_fields` (`devolver_em`: `origem` ou `topo`; contrato da porta 1.10.0, `MessageState.Placement`), com a regra dos nomes repetidos; e a medição atrás do proxy fixado, no banco de ensaio |
 | AOS-515 | A devolução do estado ao provider (§2.11): a projecção nativa 1.3.0, a decisão por rota no gateway depois do roteamento, e a serialização que copia os bytes (contrato da porta 1.9.0). Inerte com os perfis de hoje |

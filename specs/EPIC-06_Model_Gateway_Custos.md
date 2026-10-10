@@ -3294,8 +3294,7 @@ confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id 
 
 ## AOS-516 — Qualificação da segunda família: o Claude pelo mesmo proxy, primeiro no banco de ensaio e depois em produção por decisão do dono
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é qualificação e registo. Mede o que o AOS-513, o AOS-514 e o AOS-515 entregam e actualiza a matriz de suporte e o acompanhamento. O ADR-036 e o ADR-039 são citados só como contexto. -->
+<!-- Desde 2026-10-10 este ticket EMENDA dois ADR, por decisão do dono: o ADR-040 §2.11 (onde volta o estado: `devolver_em`) e o ADR-036 §2.8 (o que o perfil da rota declara: `devolver_em` e `params.reasoning`), com o contrato da porta do gateway a subir para 1.10.0. Nasceu como qualificação e registo, sem ADR; o bloco deixou por isso de ser só menção, e a RTM liga-o aos dois. -->
 
 | Campo | Valor |
 |---|---|
@@ -3550,3 +3549,4 @@ passo 3 espera pela decisão da região.
 | 3.3 | 2026-10-08 | AOS-513 e AOS-515 implementados, inertes: o perfil da rota declara parâmetros, versão da projecção e classe de estado (contrato da porta `1.8.0`, emenda ao ADR-036 §2.8); projecção nativa 1.3.0 que devolve o estado opaco só à rota que o produziu (contrato `1.9.0`, ADR-040 §2.11, emenda ao ADR-036 §2.4). Medido atrás do proxy fixado: numa rota `openai/…` o proxy recusa `thinking` | Equipa AOS |
 | 3.2 | 2026-10-08 | +AOS-516 (fase A2): qualificação da segunda família — o Claude pelo mesmo proxy, primeiro no banco de ensaio, produção só por decisão do dono; registado que a API directa da Anthropic não documenta forma de fixar a inferência na UE (`inference_geo` só `global` ou `us`), o que bloqueia a rota de produção no board `eu-west` | Equipa AOS |
 | 3.4 | 2026-10-08 | AOS-516 em curso: o banco de ensaio liga a captura, a governação da rota e o layout 1.5.0 quando o perfil candidato devolve estado, e conta as devoluções; medido no modo falso e atrás da imagem fixada do proxy pela rota `anthropic/…` (o proxy acrescenta um bloco de texto antes da tool call quando o `content` é vazio); a corrida com o Claude está por fazer | Equipa AOS |
+| 3.5 | 2026-10-10 | AOS-516: D4 alterada (o Claude qualifica-se pela OpenRouter, só em ensaio); o banco ganha o fornecedor `openrouter`; o perfil da rota passa a declarar `devolver_em` (`origem` ou `topo`) e `params.reasoning` (contrato da porta `1.10.0`; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8), inertes por omissão; medido atrás do proxy fixado, com provider falso: com `devolver_em: topo` a devolução pela rota `openrouter/…` cumpre-se, e sem ele não; a corrida com o modelo real está por fazer | Equipa AOS |
