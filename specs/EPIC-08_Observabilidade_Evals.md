@@ -1319,7 +1319,7 @@ dos separadores.
 
 ### Estado
 
-**IMPLEMENTADO (2026-10-08); revisão adversarial feita e corrigida; primeira corrida com modelo real por fazer.**
+**IMPLEMENTADO (2026-10-08); revisão adversarial feita e corrigida; experiência dos separadores corrida com o modelo real a 2026-10-10.**
 
 - **Onde.** Módulo-folha `packages/qa/banco-ensaio` (o 50.º módulo; ninguém o importa), binário
   `aos-ensaio` em `cmd/aos-ensaio`. Não é parte do nó nem da imagem de produção
@@ -1377,9 +1377,13 @@ dos separadores.
   no relatório; três 429 desde o primeiro pedido abortam com a causa própria; dez 429 seguidos
   a meio param a corrida; e o modo real faz uma sonda de um pedido antes do primeiro caso — sem
   200, a corrida não começa.
-- **Por fazer.** A experiência dos separadores contra a rota de produção (212 pedidos, mais 1
-  de sonda) continua por correr — depende de a conta do fornecedor ter saldo — e, com ela, o
-  registo do resultado na §5 do acompanhamento.
+- **A experiência dos separadores correu (2026-10-10), com o Kimi real** (`kimi-for-coding`,
+  chave do plano): 212 pedidos e a sonda, todos com 200, sem nenhum limite de ritmo. Falhas de
+  tool call à primeira: braço A (1.2.0, `<kind>`) 0 de 53; B (`[[kind]]`) 0 de 53; C (sem
+  linhas de fim) 2 de 53; D (1.0.0) 1 de 53. Nenhuma comparação distingue a 5% (Fisher exacto,
+  com a correcção de Holm); as três falhas têm o nome da tool no texto. A forma dos separadores
+  não é a causa da tool call escrita como texto: a hipótese foi retirada. Limite: um caso (T1)
+  e um turno. Registado na §5 do acompanhamento.
 
 ---
 
@@ -1398,3 +1402,4 @@ dos separadores.
 | 1.8 | 2026-10-08 | AOS-512 implementado: módulo `packages/qa/banco-ensaio`, três modos, tectos e contador, experiência dos separadores pronta; a primeira corrida com modelo real e a revisão adversarial ficam por fazer | Equipa AOS |
 | 1.9 | 2026-10-08 | AOS-512: revisão adversarial feita (sem bloqueantes) e os seus cinco achados importantes e cinco menores corrigidos; falta a primeira corrida com modelo real | Equipa AOS |
 | 1.10 | 2026-10-08 | AOS-512: primeira corrida real sem respostas do modelo (3 pedidos com 401, 212 com 429 por saldo insuficiente); o banco passa a abortar em conta sem saldo ou limite de ritmo e a sondar a rota antes da corrida; a experiência dos separadores continua por correr | Equipa AOS |
+| 1.11 | 2026-10-11 | AOS-512: a experiência dos separadores correu a 2026-10-10 com o Kimi real (212 pedidos; nenhum braço se distingue a 5%; hipótese retirada) | Equipa AOS |
