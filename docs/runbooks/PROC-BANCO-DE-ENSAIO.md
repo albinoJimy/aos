@@ -187,14 +187,13 @@ Decisão do dono de 2026-10-10: o Claude qualifica-se pela OpenRouter, só no ba
 com documentos de teste. A rota no proxy efémero é `openrouter/<autor>/<modelo>`; o destino da
 chave é fixo (`https://openrouter.ai`) e o contador do dia é o do fornecedor `openrouter`.
 
-**Ler antes de correr.** Medido atrás da imagem fixada do proxy, com um provider falso
-(2026-10-10): o estado do turno (`reasoning_details`) volta ao fornecedor dentro de
-`provider_specific_fields`, e não no topo da mensagem, que é onde a OpenRouter o lê. Enquanto o
-gateway não o repuser no topo (está descrito no Estado do AOS-516), **esta corrida não pode dar
-`cumprida`**: o melhor veredicto possível é `inconclusiva`, com a razão
-`estado_devolvido_so_no_saco_do_proxy`. O que a corrida mede hoje: se a sonda passa (chave,
-créditos, nome do modelo), se o raciocínio liga (`turnos_com_raciocinio_capturado` maior do que
-zero) e o que a OpenRouter responde a um segundo turno sem `reasoning_details`.
+**O perfil de exemplo já declara o que esta rota precisa** (medido atrás da imagem fixada do
+proxy, com um provider falso, a 2026-10-10): `"devolver_em": "topo"` — o estado do turno
+(`reasoning_details`) volta no topo da mensagem, onde a OpenRouter o lê, e não dentro de
+`provider_specific_fields` — e `"params": {"reasoning": {"effort": "medium"}}`, a forma em que
+ela documenta o pedido do raciocínio. Com este perfil o veredicto pode ser `cumprida`. Sem
+`devolver_em` não pode: o melhor possível é `inconclusiva`, com a razão
+`estado_devolvido_so_no_saco_do_proxy`.
 
 1. O dono acrescenta ao seu ficheiro de chaves, à mão (sem aspas):
 
@@ -223,11 +222,12 @@ zero) e o que a OpenRouter responde a um segundo turno sem `reasoning_details`.
 ```
 
 **Como ler.** `saldo_insuficiente` na sonda: a conta da OpenRouter não tem créditos (402).
-`sem_raciocinio`: o `reasoning_effort` do perfil chegou à OpenRouter (medido) mas não ligou o
-raciocínio — a forma que ela documenta é `reasoning: {…}`, que o perfil de uma rota ainda não
-sabe exprimir. `nao_cumprida` com 4xx em pedidos com estado: a OpenRouter recusou o segundo
-turno sem `reasoning_details`. `inconclusiva` com `estado_devolvido_so_no_saco_do_proxy`: ela
-aceitou-o, e o banco não sabe se leu o estado.
+`cumprida`: houve turnos com raciocínio e a OpenRouter aceitou todos os pedidos que levaram o
+estado no topo. `sem_raciocinio`: o `reasoning` do perfil chegou à OpenRouter (medido) mas não
+ligou o raciocínio — experimentar `{"max_tokens": 2048}` em vez de `{"effort": "medium"}`.
+`nao_cumprida` com 4xx em pedidos com estado: a OpenRouter recusou o segundo turno; o código
+está no relatório. `inconclusiva` com `estado_devolvido_so_no_saco_do_proxy`: o perfil não tem
+`devolver_em: topo`.
 
 **O que esta corrida não prova:** a rota `anthropic/` directa, nem o bloco de texto que o proxy
 acrescenta nessa rota; e o adaptador `openrouter` do proxy identifica-se à OpenRouter com os

@@ -327,36 +327,55 @@ turnos com tool calls por cenário):
 |---|---|---|
 | `thinking` do perfil chega ao fornecedor | 22 de 22, com `type` e `budget_tokens` | 0 de 22 (o proxy deita-o fora) |
 | `reasoning_effort` do perfil chega ao fornecedor | 22 de 22 | 0 de 22 |
-| `reasoning` nativo, posto directamente no pedido ao proxy | chega (`effort` e `max_tokens`) | chega |
+| `reasoning` do perfil (`effort` ou `max_tokens`) chega ao fornecedor | 44 de 44 | 44 de 44 |
 | Onde o gateway recebe o estado | `reasoning_content` em `message`; `reasoning` e `reasoning_details` em `provider_specific_fields` | igual |
-| `reasoning_details` no segundo turno, como o gateway o devolve | 0 de 10 no topo; 10 de 10 dentro de `provider_specific_fields` | igual |
+| `reasoning_details` no segundo turno, sem `devolver_em` no perfil | 0 de 10 no topo; 10 de 10 dentro de `provider_specific_fields` | igual |
+| `reasoning_details` no segundo turno, com `devolver_em: topo` | 60 de 60 no topo, intacto; o saco não volta | igual |
 | `reasoning_details` posto à mão no topo da mensagem | chega com os valores intactos | igual |
 | Modelo que o proxy declara ter servido | `openrouter/<autor>/<modelo>` | `openai/<autor>/<modelo>` |
 | Extras do adaptador | `usage` no pedido; cabeçalhos `HTTP-Referer` e `X-Title` do LiteLLM | nenhum |
 | Erros 401, 402, 429, 404 e 400 na forma da OpenRouter | passam com o código; `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `modelo_desconhecido` | igual |
 
-Escolheu-se `openrouter/`: é a única das duas em que um parâmetro de raciocínio do perfil chega
-ao fornecedor.
+Escolheu-se `openrouter/`: é a única das duas em que **todas** as formas do parâmetro de
+raciocínio do perfil chegam ao fornecedor.
 
-**Lacuna medida — o veredicto atrás do proxy é `nao_cumprida`.** O proxy entrega a resposta da
-OpenRouter com `reasoning_details` dentro de `message.provider_specific_fields`; o gateway
-devolve cada campo ao sítio de onde veio (ADR-040 §2.9); e o proxy manda esse saco tal e qual ao
-fornecedor, que só lê `reasoning_details` no topo da mensagem. O falso recusa por
-`estado_em_falta` (10 de 10). Sem proxy, no modo `falso`, a mesma forma dá `cumprida` (os
-`reasoning_details` voltam byte a byte). Fechar a lacuna muda o contrato da porta do gateway e
-não foi feito aqui; está descrito no Estado do AOS-516.
+**O perfil declara duas coisas para esta rota** (contrato da porta 1.10.0; ADR-040 §2.11 e
+ADR-036 §2.8, emendas de 2026-10-10):
+
+- `"devolver_em": "topo"` — os campos de raciocínio que o proxy entrega dentro de
+  `provider_specific_fields` voltam no topo da mensagem `assistant`, e o saco não volta. Sem
+  isto o gateway devolve-os ao sítio de onde vieram, e a OpenRouter não os lê.
+- `"params": {"reasoning": {"effort": "medium"}}` (ou `{"max_tokens": N}`) — a forma em que a
+  OpenRouter documenta o pedido do raciocínio.
+
+Medido com o gate inteiro (`bash scripts/ci/banco-ensaio-proxy.sh`, 2026-10-10), rota
+`openrouter/anthropic/claude-sonnet-4.5`, duas passagens pela bateria por cenário:
+
+| Perfil | Pedidos | `reasoning_details` no topo, intacto | Parâmetro que chegou ao fornecedor | Veredicto |
+|---|---|---|---|---|
+| `topo` + `reasoning: {effort}` | 44, todos 200 | 60 de 60 turnos; 30 de 30 aceites | `reasoning.effort`, 44 de 44 | `cumprida` |
+| `topo` + `reasoning: {max_tokens}` | 44, todos 200 | 60 de 60 | `reasoning.max_tokens`, 44 de 44 | `cumprida` |
+| `topo` + `reasoning_effort` | 44, todos 200 | 60 de 60 | `reasoning_effort`, 44 de 44 | `cumprida` |
+| `topo` + `thinking` | 44, todos 200 | 60 de 60 | `thinking` (`type`, `budget_tokens`), 44 de 44 | `cumprida` |
+| sem `devolver_em` (controlo) | 12 com 200, 10 com 400 | 0 de 10 (10 de 10 só no saco) | `reasoning.effort`, 22 de 22 | `nao_cumprida` |
+| `devolver: nunca` | 12 com 200, 10 com 400 | não foi | `reasoning.effort`, 22 de 22 | `nao_cumprida` |
+
+Com `topo` o saco não chegou ao fornecedor em nenhum turno. Posto à mão no topo **e** no saco,
+chega nos dois sítios: por isso, com `topo`, o gateway não manda o saco. Pela rota `openai/` com
+`topo` a devolução também se cumpre, mas dos parâmetros só o `reasoning` chega.
 
 **A guarda contra o verde falso.** Um fornecedor real que ignore o saco responde 2xx sem ter
-lido o estado, e o banco só vê o código. Por isso o relatório conta os turnos cujo estado só
-veio dentro de `provider_specific_fields` (`turnos_com_estado_so_no_saco_do_proxy`, lido pelos
-nomes dos campos) e, havendo algum, o veredicto não pode ser `cumprida`: fica `inconclusiva`
-com a razão `estado_devolvido_so_no_saco_do_proxy`
+lido o estado, e o banco só vê o código. Por isso, numa corrida cujo perfil **não** declara
+`devolver_em: topo`, o relatório conta os turnos cujo estado só veio dentro de
+`provider_specific_fields` (`turnos_com_estado_so_no_saco_do_proxy`, lido pelos nomes dos
+campos) e, havendo algum, o veredicto não pode ser `cumprida`: fica `inconclusiva` com a razão
+`estado_devolvido_so_no_saco_do_proxy`
 (`TestAOS516_OpenRouter_EstadoSoNoSacoDoProxyNaoDaCumprida`).
 
-**O que não se sabe sem o modelo real:** se a OpenRouter liga o raciocínio com `thinking` ou
-`reasoning_effort` no topo do pedido (a forma que documenta é `reasoning: {…}`), e o que
-responde a um segundo turno sem `reasoning_details`. O falso emite a forma documentada, escrita
-à mão.
+**O que não se sabe sem o modelo real:** se a OpenRouter aceita o segundo turno com
+`reasoning_details` no topo e `reasoning_content` ao lado (o proxy cria este último a partir de
+`reasoning`), e se valida as assinaturas como o falso não valida. O falso emite a forma
+documentada, escrita à mão.
 
 ## A experiência dos separadores
 

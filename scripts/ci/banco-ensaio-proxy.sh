@@ -18,8 +18,9 @@
 #      montar, se o proxy não chegar ao falso ou se um byte do estado aparecer numa saída.
 #   N3 A forma da OpenRouter (AOS-516) corre pelas duas rotas que o proxy tem para ela
 #      (`openrouter/…` e `openai/…`) contra um falso que emite a forma DOCUMENTADA dela. Julga
-#      a rota escolhida pelo veredicto do banco, que HOJE é `nao_cumprida` por uma lacuna medida
-#      (o proxy devolve `reasoning_details` ao fornecedor dentro de `provider_specific_fields`).
+#      a rota escolhida pelo veredicto do banco: `cumprida` com um perfil que declara
+#      `devolver_em: topo`, e `nao_cumprida` no controlo sem ele (o proxy devolve
+#      `reasoning_details` ao fornecedor dentro de `provider_specific_fields`).
 #      Não diz o que a OpenRouter real aceita.
 #
 # ─── PORQUE É OPCIONAL, E O QUE CORRE SEMPRE ─────────────────────────────────────────────────
@@ -118,7 +119,7 @@ if command -v cygpath >/dev/null 2>&1; then
 fi
 
 # (3) O cenário real. Exige `--- PASS` por nome e o relatório com o veredicto agregado.
-log_step "AOS_BANCO_PROXY=1 go test -run TestAOS51[26]_ProxyReal_ (arranca o proxy treze vezes; cerca de 12 a 25 min)"
+log_step "AOS_BANCO_PROXY=1 go test -run TestAOS51[26]_ProxyReal_ (arranca o proxy dezasseis vezes; cerca de 15 a 30 min)"
 saida="$( cd "$REPO_ROOT/$MOD" && AOS_BANCO_PROXY=1 AOS_BANCO_FALSO_BIN="$BIN" go test -run "^(${TESTE_REAL}|${TESTE_ORFAO}|${TESTE_COOLDOWN}|${TESTE_DEVOLUCAO}|${TESTE_OPENROUTER})\$" -v -count=1 -timeout 60m . 2>&1 )" || {
   printf '%s\n' "$saida" | tail -40 | sed 's/^/       /' >&2
   log_fail "banco-ensaio-proxy: um cenário contra o proxy real falhou"

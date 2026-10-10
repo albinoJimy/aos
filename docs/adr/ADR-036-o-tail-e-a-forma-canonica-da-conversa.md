@@ -10,7 +10,8 @@
   semente), AOS-514 (emenda de 2026-10-08 aos §2.3 e §2.7, feita pelo ADR-040: o layout 1.5.0
   e o estado opaco do provider), AOS-513 (emenda de 2026-10-08 ao §2.8: o que o perfil da rota
   passa a poder declarar), AOS-515 (emenda de 2026-10-08 ao §2.4: projecção nativa 1.3.0, que
-  devolve o estado opaco do turno; a decisão está no ADR-040 §2.11)
+  devolve o estado opaco do turno; a decisão está no ADR-040 §2.11), AOS-516 (emenda de
+  2026-10-10 ao §2.8: `devolver_em` e o parâmetro `reasoning`)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -537,6 +538,23 @@ o provider não aceite dá 4xx em todos os turnos da rota. Cada um conta em
 código é de um conjunto fechado, e nenhum byte do corpo do erro sai do gateway. O nó **nunca**
 retira o parâmetro para repetir o pedido sozinho. Por isso um perfil com parâmetros, ou com versão
 própria, só entra na tabela depois de uma corrida do banco com esse perfil.
+
+**Emenda de 2026-10-10 (AOS-516) — mais duas coisas que o perfil declara, ambas inertes por
+omissão.** O gateway serve modelos de fornecedores e agregadores diferentes, e o que muda de uns
+para os outros declara-se no perfil, em vocabulário fechado, e não em código por fornecedor.
+
+- **Onde o estado volta: `devolver_em`**, `origem` (a omissão) ou `topo`. A decisão e a medição
+  estão no ADR-040 §2.11. Só com `devolver` diferente de `nunca`.
+- **Como o raciocínio se pede: `params.reasoning`**, com exactamente um de `effort` (o
+  vocabulário de `reasoning_effort`) e `max_tokens`. É a terceira forma tipada, ao lado de
+  `thinking` e de `reasoning_effort`, e não se declara com nenhuma delas: uma rota pede o
+  raciocínio de uma só maneira. Medido atrás da imagem fixada do proxy, na rota `openrouter/…`:
+  as três chegam ao fornecedor com o nome que o perfil lhes dá. Vai no fim do pedido, só quando
+  declarado; o que um chamador ponha no pedido é apagado; e no manifesto do turno fica
+  `reasoning: effort:<valor>` ou `reasoning: max_tokens:<n>`.
+
+Os digests dos perfis que não declaram nenhum dos dois são os de antes (presos por teste), e o
+pedido a essas rotas não muda um byte. Contrato da porta `1.10.0`.
 
 ## 3. Alternativas rejeitadas
 

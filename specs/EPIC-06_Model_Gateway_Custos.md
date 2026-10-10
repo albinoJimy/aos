@@ -3479,23 +3479,35 @@ passo 3 espera pela decisão da região.
   proxy manda o saco tal e qual ao fornecedor, que só o lê no topo da mensagem. Veredicto
   `nao_cumprida`, preso por teste. Posto à mão no topo da mensagem, o `reasoning_details`
   atravessa o proxy com os valores intactos, pelas duas rotas.
-- **Por decidir — a alteração mínima ao gateway, que não foi feita.** (1) A devolução: um campo
-  fechado no perfil da rota que mande repor no topo da mensagem `assistant` os campos de
-  raciocínio capturados em `provider_specific_fields`; muda o contrato da porta (1.9.0 → 1.10.0)
-  e a regra «cada campo volta ao sítio de onde veio» do ADR-040 §2.9, logo pede emenda ao ADR.
-  (2) O parâmetro: o perfil só exprime `thinking` e `reasoning_effort`, que chegam à OpenRouter
-  com esses nomes; a forma que ela documenta é `reasoning: {effort | max_tokens}`, que atravessa
-  o proxy se for posta no pedido (medido) e pediria um campo tipado novo em `RequestParams`. Só
-  a corrida real diz se (2) é precisa: se der `sem_raciocinio`, é.
-- **Guarda nova no veredicto.** Um turno cujo estado só veio no saco do proxy conta em
-  `turnos_com_estado_so_no_saco_do_proxy`, e com algum o veredicto não é `cumprida`
-  (`inconclusiva`, razão `estado_devolvido_so_no_saco_do_proxy`): um fornecedor real que ignore
-  o saco respondia 2xx e o banco contava-o como aceite.
-- **O que a corrida pela OpenRouter prova e não prova.** Prova, quando a lacuna fechar, a
-  devolução do estado de um modelo da Anthropic servido por um agregador, no wire de chat. Não
-  prova a rota `anthropic/` directa (o wire de mensagens e o bloco de texto que o proxy lá
-  acrescenta), nem o bloco «sanitised», nem nada sobre produção. Antes de a lacuna fechar não
-  pode dar `cumprida`.
+- **O gateway passou a declarar no perfil o que muda de um agregador para outro (2026-10-10,
+  por decisão do dono; contrato da porta 1.10.0; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8).**
+  (1) `devolver_em`: `origem` (a omissão, o comportamento de sempre) ou `topo` — os campos de
+  raciocínio capturados em `provider_specific_fields` voltam no topo da mensagem `assistant`,
+  com os bytes recebidos, e o saco não volta. (2) `params.reasoning`, com `effort` ou
+  `max_tokens`: a terceira forma tipada de pedir o raciocínio, nunca ao lado de `thinking` ou
+  de `reasoning_effort`. Inerte: os digests dos quatro perfis da tabela e de dois perfis
+  candidatos de antes são os mesmos, presos por teste, e o pedido a uma rota que não declara
+  nada não muda um byte. `topo` com `devolver: nunca` é recusado na validação. Nenhuma rota de
+  produção declara nenhum dos dois.
+- **Medido com o perfil novo, atrás da imagem fixada do proxy** (`scripts/ci/banco-ensaio-proxy.sh`
+  inteiro, verde; rota `openrouter/anthropic/claude-sonnet-4.5`, duas passagens por cenário): com
+  `devolver_em: topo`, 44 pedidos com 200, `reasoning_details` no topo e intacto em 60 de 60
+  turnos, 30 de 30 pedidos aceites, o saco em nenhum, veredicto `cumprida` — com cada uma das
+  quatro formas do parâmetro (`reasoning` com `effort`, `reasoning` com `max_tokens`,
+  `reasoning_effort`, `thinking`), e cada uma chegou ao fornecedor em 44 de 44 pedidos.
+  Controlo, o mesmo perfil sem `devolver_em`: 10 respostas 400, `nao_cumprida`. Treze mutações
+  dirigidas nos pontos novos, todas vermelhas.
+- **Guarda no veredicto.** Numa corrida cujo perfil não declara `devolver_em: topo`, um turno
+  cujo estado só veio no saco do proxy conta em `turnos_com_estado_so_no_saco_do_proxy`, e com
+  algum o veredicto não é `cumprida` (`inconclusiva`, razão
+  `estado_devolvido_so_no_saco_do_proxy`): um fornecedor real que ignore o saco respondia 2xx e
+  o banco contava-o como aceite.
+- **O que a corrida pela OpenRouter prova e não prova.** Prova a devolução do estado de um
+  modelo da Anthropic servido por um agregador, no wire de chat. Não prova a rota `anthropic/`
+  directa (o wire de mensagens e o bloco de texto que o proxy lá acrescenta), nem o bloco
+  «sanitised», nem nada sobre produção. Por medir, e só o modelo real o diz: se a OpenRouter
+  aceita o segundo turno com `reasoning_content` ao lado de `reasoning_details`, e os ids de
+  tool call do runtime.
 - **Tentativas pela Anthropic (2026-10-10).** Duas corridas, as duas paradas na sonda com 400:
   `saldo_insuficiente` (a conta não tem créditos). 2 pedidos gastos do tecto.
 - **Por fazer.** O passo 2 inteiro: a corrida com o Claude (comando no

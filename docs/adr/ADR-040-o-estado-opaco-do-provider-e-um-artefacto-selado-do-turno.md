@@ -373,6 +373,27 @@ texto** («Empty message content sanitised…») quando o `content` do `assistan
 O proxy re-serializa o JSON: a igualdade byte a byte vale até ao proxy, e daí em diante vale a
 igualdade dos valores. O que o fornecedor real aceita só o AOS-516 mede.
 
+**Emenda de 2026-10-10 (AOS-516, decisão do dono) — o perfil da rota diz onde o estado volta.**
+A regra do §2.9, «cada campo volta ao sítio de onde veio», passa a ser a **omissão**, e deixa de
+ser a única forma. Medido atrás da imagem fixada do proxy, numa rota de um agregador
+(`openrouter/…`): o proxy entrega `reasoning_details` dentro de
+`message.provider_specific_fields` — o saco onde põe os campos que não conhece —, reenvia esse
+saco ao fornecedor tal e qual, e o fornecedor só lê `reasoning_details` no topo da mensagem. O
+estado «voltava» em 10 de 10 turnos e não era lido em nenhum.
+
+O perfil da rota ganha o campo `devolver_em`, de vocabulário fechado: `origem` (a omissão: o
+§2.9, sem mudar um byte) ou `topo`. Com `topo`, os campos de raciocínio das listas fechadas que
+vieram em `message.provider_specific_fields` voltam como chaves da própria mensagem `assistant`,
+com o nome e os **bytes** com que vieram, e o saco **não volta**: o fornecedor nunca o mandou, e
+a medição mostra que, enviado, lhe chegaria em duplicado. Um campo do saco com o nome de um que
+já está no topo não se escreve (uma mensagem não leva duas chaves iguais). Tudo o resto do §2.11
+vale igual: a junção pelo rótulo com `sha256` conferido, as três condições, a rota provada, o
+fail-closed de `obrigatorio`. `topo` só se declara numa rota que devolve estado; só entra no
+digest do perfil quando declarado; e é o gateway que o escreve em cada pedido — o que um chamador
+ponha no estado é sobreposto. Contrato da porta `1.10.0` (`MessageState.Placement`). Não há
+nome de fornecedor no código: um modelo novo, servido por outro agregador com a mesma forma,
+entra pelo perfil.
+
 ## 3. Alternativas
 
 1. **Um segmento novo no tail com os bytes do estado** (a forma «d1» do desenho). Rejeitada:
@@ -436,6 +457,9 @@ igualdade dos valores. O que o fornecedor real aceita só o AOS-516 mede.
 8. **Ninguém lê o rótulo neste ticket.** É escrita sem leitor até ao AOS-515 (§2.10).
 
 ## 6. Emendas a outros ADR
+
+- **ADR-036 §2.8** (o que o perfil da rota declara): acrescentam-se `devolver_em` (§2.11 deste
+  ADR, emenda de 2026-10-10) e o parâmetro `reasoning`. A emenda vive no próprio ADR-036.
 
 - **ADR-036 §2.7** («O raciocínio do modelo é carga opaca»). A frase «Os blocos de raciocínio
   assinados e os itens cifrados de outros fornecedores ficam fora desta decisão» deixa de valer:
