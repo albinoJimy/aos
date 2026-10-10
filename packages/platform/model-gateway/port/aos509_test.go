@@ -3,6 +3,7 @@ package port_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -149,7 +150,9 @@ func TestAOS509_FormasNaoLidasFicamComoEstavam(t *testing.T) {
 	if err != nil || m.Content != "" || len(m.ToolCalls) != 0 || m.ReasoningContent != "" {
 		t.Errorf("refusal e function_call nao sao lidos: %+v (%v)", m, err)
 	}
-	if port.Version < "1.6.0" {
+	// A comparacao e por componentes: como texto, "1.10.0" fica antes de "1.6.0".
+	var maior, menor int
+	if _, err := fmt.Sscanf(port.Version, "%d.%d.", &maior, &menor); err != nil || maior < 1 || (maior == 1 && menor < 6) {
 		t.Errorf("a descodificacao tolerante entrou na porta na 1.6.0; a versao e %s", port.Version)
 	}
 }

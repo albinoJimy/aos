@@ -57,6 +57,19 @@ const (
 	MaxRequestParamTokens = 1 << 20
 )
 
+// ReasoningParam é o parâmetro `reasoning` do pedido (AOS-516): a forma com que um agregador de
+// modelos pede o raciocínio, seja qual for o fornecedor por trás. Declara-se EXACTAMENTE um dos
+// dois campos: o esforço, no vocabulário de [RequestParams.ReasoningEffort], ou o orçamento em
+// tokens. As outras chaves que essa forma tem nos fornecedores não existem aqui: não foram
+// medidas.
+type ReasoningParam struct {
+	// Effort é o esforço de raciocínio, no vocabulário fechado ReasoningEffort*.
+	Effort string `json:"effort,omitempty"`
+	// MaxTokens é o orçamento de tokens de raciocínio, de [MinThinkingBudgetTokens] a
+	// [MaxRequestParamTokens].
+	MaxTokens int `json:"max_tokens,omitempty"`
+}
+
 // RequestParams são os parâmetros que o perfil de uma rota manda enviar no pedido. O valor-zero
 // não envia nada, e o pedido é o de sempre, byte a byte.
 type RequestParams struct {
@@ -67,6 +80,10 @@ type RequestParams struct {
 	// MaxTokens é o `max_tokens` do pedido. Zero ⇒ o perfil não o declara, e vale o que o
 	// pedido já trazia.
 	MaxTokens int `json:"max_tokens,omitempty"`
+	// Reasoning é o `reasoning` do pedido (AOS-516). nil ⇒ o campo não vai. Não se declara ao
+	// lado de Thinking nem de ReasoningEffort: são três formas de pedir a mesma coisa, e uma
+	// rota pede-a de uma só maneira.
+	Reasoning *ReasoningParam `json:"reasoning,omitempty"`
 }
 
 // ErrBadRequestParams — um parâmetro do pedido está fora do conjunto fechado. A mensagem só
@@ -75,7 +92,7 @@ var ErrBadRequestParams = errors.New("port: parametro do pedido fora do conjunto
 
 // IsZero diz se o perfil não declara parâmetro nenhum.
 func (p RequestParams) IsZero() bool {
-	return p.Thinking == nil && p.ReasoningEffort == "" && p.MaxTokens == 0
+	return p.Thinking == nil && p.ReasoningEffort == "" && p.MaxTokens == 0 && p.Reasoning == nil
 }
 
 // Validate recusa qualquer valor fora do vocabulário de cada campo. Fail-closed: quem carrega um
@@ -103,6 +120,25 @@ func (p RequestParams) Validate() error {
 	if p.MaxTokens < 0 || p.MaxTokens > MaxRequestParamTokens {
 		return fmt.Errorf("%w: max_tokens (aceite: de 1 a %d)", ErrBadRequestParams, MaxRequestParamTokens)
 	}
+	if r := p.Reasoning; r != nil {
+		if p.Thinking != nil || p.ReasoningEffort != "" {
+			return fmt.Errorf("%w: reasoning nao se declara ao lado de thinking nem de reasoning_effort", ErrBadRequestParams)
+		}
+		if (r.Effort == "") == (r.MaxTokens == 0) {
+			return fmt.Errorf("%w: reasoning declara exactamente um de effort e max_tokens", ErrBadRequestParams)
+		}
+		switch r.Effort {
+		case "", ReasoningEffortNone, ReasoningEffortMinimal, ReasoningEffortLow, ReasoningEffortMedium, ReasoningEffortHigh:
+		default:
+			return fmt.Errorf("%w: reasoning.effort (aceites: none, minimal, low, medium, high)", ErrBadRequestParams)
+		}
+		if r.MaxTokens != 0 && (r.MaxTokens < MinThinkingBudgetTokens || r.MaxTokens > MaxRequestParamTokens) {
+			return fmt.Errorf("%w: reasoning.max_tokens (aceite: de %d a %d)", ErrBadRequestParams, MinThinkingBudgetTokens, MaxRequestParamTokens)
+		}
+		if r.MaxTokens != 0 && p.MaxTokens != 0 && r.MaxTokens >= p.MaxTokens {
+			return fmt.Errorf("%w: reasoning.max_tokens tem de ser menor do que max_tokens", ErrBadRequestParams)
+		}
+	}
 	// O orçamento de raciocínio conta para o `max_tokens`: com os dois declarados, um orçamento
 	// que não caiba deixa zero tokens para a resposta (e há fornecedores que recusam o pedido).
 	if p.Thinking != nil && p.Thinking.BudgetTokens != 0 && p.MaxTokens != 0 && p.Thinking.BudgetTokens >= p.MaxTokens {
@@ -117,11 +153,13 @@ const (
 	ParamKeyThinking        = "thinking"
 	ParamKeyReasoningEffort = "reasoning_effort"
 	ParamKeyMaxTokens       = "max_tokens"
+	ParamKeyReasoning       = "reasoning"
 )
 
 // Manifest devolve os parâmetros na forma em que o turno os grava: chaves do conjunto fechado
 // acima e valores de vocabulário fechado ou inteiros — `thinking` é o modo, seguido de `:` e do
-// orçamento quando o tem (`enabled:4096`). nil quando o perfil não declara nenhum.
+// orçamento quando o tem (`enabled:4096`); `reasoning` é o nome do campo declarado, `:` e o seu
+// valor (`effort:medium`, `max_tokens:2048`). nil quando o perfil não declara nenhum.
 func (p RequestParams) Manifest() map[string]string {
 	if p.IsZero() {
 		return nil
@@ -140,14 +178,25 @@ func (p RequestParams) Manifest() map[string]string {
 	if p.MaxTokens != 0 {
 		out[ParamKeyMaxTokens] = strconv.Itoa(p.MaxTokens)
 	}
+	if r := p.Reasoning; r != nil {
+		if r.MaxTokens != 0 {
+			out[ParamKeyReasoning] = "max_tokens:" + strconv.Itoa(r.MaxTokens)
+		} else {
+			out[ParamKeyReasoning] = "effort:" + r.Effort
+		}
+	}
 	return out
 }
 
-// Apply escreve os parâmetros do perfil no pedido que vai sair para a rota. `thinking` e
-// `reasoning_effort` são SEMPRE os do perfil — os que o pedido trouxesse são apagados, mesmo
+// Apply escreve os parâmetros do perfil no pedido que vai sair para a rota. `thinking`,
+// `reasoning_effort` e `reasoning` são SEMPRE os do perfil — os que o pedido trouxesse são apagados, mesmo
 // quando o perfil não declara nenhum —; `max_tokens` só é sobreposto quando o perfil o declara.
 func (p RequestParams) Apply(req *ChatRequest) {
-	req.Thinking, req.ReasoningEffort = nil, p.ReasoningEffort
+	req.Thinking, req.ReasoningEffort, req.Reasoning = nil, p.ReasoningEffort, nil
+	if p.Reasoning != nil {
+		copia := *p.Reasoning
+		req.Reasoning = &copia
+	}
 	if p.Thinking != nil {
 		copia := *p.Thinking
 		req.Thinking = &copia

@@ -21,7 +21,8 @@ import (
 //     `reasoning_details`, `thinking_blocks`, `thinking`) voltam como chaves da mensagem
 //     `assistant`;
 //   - os que vieram em `message.provider_specific_fields` voltam dentro de um objecto
-//     `provider_specific_fields` da mensagem;
+//     `provider_specific_fields` da mensagem — ou, quando o perfil da rota o declara
+//     ([MessageState.Placement], contrato 1.10.0), no topo da mensagem, sem o objecto;
 //   - as assinaturas de cada tool call voltam na tool call (ou na sua `function`), na posição
 //     dela;
 //   - o id que o provider deu a cada tool call volta em `tool_calls[n].id` e no `tool_call_id`
@@ -56,7 +57,29 @@ type MessageState struct {
 	// ProviderIDs diz que os ids das tool calls deste turno vão no wire como o provider os deu.
 	// Só vale com Return, e só o gateway o escreve.
 	ProviderIDs bool
+	// Placement diz ONDE os campos de raciocínio que vieram em
+	// `message.provider_specific_fields` voltam (AOS-516; campo aditivo, MINOR 1.10.0):
+	// [StatePlacementOrigin] (a omissão) — dentro de um `provider_specific_fields`, de onde
+	// vieram — ou [StatePlacementTop] — como chaves da própria mensagem `assistant`. Só vale com
+	// Return, e só o gateway o escreve, a partir do perfil da rota.
+	Placement string
 }
+
+// Sítios onde volta o estado que veio em `message.provider_specific_fields`
+// ([MessageState.Placement]). Vocabulário FECHADO.
+//
+// PORQUE EXISTE O SEGUNDO (medido a 2026-10-10, AOS-516). Esse objecto é o saco onde o proxy
+// põe os campos da resposta que não conhece. Há rotas em que o proxy o reenvia ao fornecedor
+// tal e qual, e o fornecedor só lê os campos no topo da mensagem: o estado «voltava» e não era
+// lido. Com [StatePlacementTop] cada campo do saco volta no topo, com o NOME e os BYTES com que
+// veio, e o saco NÃO volta — o fornecedor nunca o mandou, e um duplicado do estado dentro de um
+// campo que ele não conhece não lhe diz nada. Um campo do saco com o nome de um campo que já
+// está no topo (porque veio também em `message`, ou porque veio repetido) não se escreve:
+// uma mensagem não leva duas chaves iguais.
+const (
+	StatePlacementOrigin = ""
+	StatePlacementTop    = "topo"
+)
 
 // Causas de um turno sem estado devolvível ([MessageState.Missing]). Vocabulário FECHADO.
 const (
@@ -100,15 +123,16 @@ func marshalComEstado(w wireChatRequest) ([]byte, error) {
 	}
 	// O resto do pedido — tudo menos `model` e `messages` — pelo codificador de sempre.
 	cauda, err := json.Marshal(struct {
-		Tools           []Tool         `json:"tools,omitempty"`
-		ToolChoice      string         `json:"tool_choice,omitempty"`
-		Stream          bool           `json:"stream,omitempty"`
-		Temperature     *float64       `json:"temperature,omitempty"`
-		Seed            *int64         `json:"seed,omitempty"`
-		MaxTokens       int            `json:"max_tokens,omitempty"`
-		Thinking        *ThinkingParam `json:"thinking,omitempty"`
-		ReasoningEffort string         `json:"reasoning_effort,omitempty"`
-	}{w.Tools, w.ToolChoice, w.Stream, w.Temperature, w.Seed, w.MaxTokens, w.Thinking, w.ReasoningEffort})
+		Tools           []Tool          `json:"tools,omitempty"`
+		ToolChoice      string          `json:"tool_choice,omitempty"`
+		Stream          bool            `json:"stream,omitempty"`
+		Temperature     *float64        `json:"temperature,omitempty"`
+		Seed            *int64          `json:"seed,omitempty"`
+		MaxTokens       int             `json:"max_tokens,omitempty"`
+		Thinking        *ThinkingParam  `json:"thinking,omitempty"`
+		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+		Reasoning       *ReasoningParam `json:"reasoning,omitempty"`
+	}{w.Tools, w.ToolChoice, w.Stream, w.Temperature, w.Seed, w.MaxTokens, w.Thinking, w.ReasoningEffort, w.Reasoning})
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +240,36 @@ func escreverMensagemComEstado(b *bytes.Buffer, m Message) error {
 				return err
 			}
 		}
+	}
+	switch st.Placement {
+	case StatePlacementOrigin:
+	case StatePlacementTop:
+		// Os que vieram dentro de `provider_specific_fields` voltam no topo, e o saco não volta.
+		noTopo := map[string]bool{}
+		for _, f := range st.Fields {
+			if f.Where == StateWhereMessage {
+				noTopo[f.Name] = true
+			}
+		}
+		for _, f := range st.Fields {
+			switch f.Where {
+			case StateWhereMessage:
+			case StateWherePSF:
+				if noTopo[f.Name] {
+					continue
+				}
+				noTopo[f.Name] = true
+				if err := escreverCampoCru(b, f); err != nil {
+					return err
+				}
+			default:
+				return ErrStateReturnWire
+			}
+		}
+		b.WriteByte('}')
+		return nil
+	default:
+		return ErrStateReturnWire
 	}
 	// Os que vieram dentro de `provider_specific_fields`, no mesmo sítio.
 	aberto := false

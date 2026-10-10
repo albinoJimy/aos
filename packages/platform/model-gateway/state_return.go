@@ -243,6 +243,8 @@ func armarDevolucao(req *port.ChatRequest, perfil RouteProfile, temPerfil bool) 
 		}
 		st := *original
 		st.Return, st.ProviderIDs = true, perfil.ToolCallID == ToolCallIDProvider
+		// O sítio é o do perfil da rota, e só o dele: o que o estado trouxesse é sobreposto.
+		st.Placement = perfil.StateReturnAt
 		m.State = &st
 		devolvidos++
 		for n, tc := range m.ToolCalls {
