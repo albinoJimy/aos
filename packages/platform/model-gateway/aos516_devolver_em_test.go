@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
@@ -368,6 +369,86 @@ func TestAOS516_Inercia_OsDigestsDeAntes(t *testing.T) {
 	} {
 		if p := aos513Perfil(t, doc); p.Digest() != quer {
 			t.Errorf("o digest de um perfil de antes mudou: %s, quero %s", p.Digest(), quer)
+		}
+	}
+}
+
+// O ESTADO CAPTURADO COM O PERFIL EM `origem` NÃO VOLTA DEPOIS DE O PERFIL PASSAR A `topo`.
+// `devolver_em` entra no digest do perfil, e o envelope gravou o digest de antes: é o estado de
+// OUTRA rota. Em `obrigatorio` o pedido seguinte não sai; em `opcional` sai sem estado.
+func TestAOS516_DevolverEm_PerfilMudadoAMeioERotaDiferente(t *testing.T) {
+	for _, classe := range []string{"obrigatorio", "opcional"} {
+		antes := aos515Rota(t, "gpt-4o", `,"devolver":"`+classe+`"`)
+		depois := aos515Rota(t, "gpt-4o", `,"devolver":"`+classe+`","devolver_em":"topo"`)
+		if antes.Digest() == depois.Digest() {
+			t.Fatal("os dois perfis tem o mesmo digest")
+		}
+		falso := &aos516Agregador{Turnos: 3}
+		run := aos515Compor(t, falso, aos515Modelo, antes)
+		if _, err := run.passo("gpt-4o"); err != nil {
+			t.Fatal(err)
+		}
+		// O MESMO run — os mesmos segmentos e os mesmos envelopes — numa composicao com o perfil mudado.
+		gravador := &aos513Provider{}
+		outro := aos515Compor(t, gravador, aos515Modelo, depois)
+		outro.segs, outro.estados, outro.turno = append([]agentruntime.TailSegment(nil), run.segs...), run.estados, run.turno
+		_, err := outro.passo("gpt-4o")
+		var recusa *modelgateway.StateReturnError
+		if classe == "obrigatorio" {
+			if !errors.As(err, &recusa) || recusa.Cause != modelgateway.StateCauseOtherRoute || len(gravador.pedidos()) != 0 {
+				t.Fatalf("obrigatorio: queria a recusa por outra rota e nenhum pedido; veio %v (%d pedidos)", err, len(gravador.pedidos()))
+			}
+			continue
+		}
+		if err != nil || len(gravador.pedidos()) != 1 {
+			t.Fatalf("opcional: o pedido sai sem estado; veio %v (%d pedidos)", err, len(gravador.pedidos()))
+		}
+		aos515SemSentinelas(t, "pedido com o perfil mudado", gravador.pedidos()[0])
+		if len(outro.obs) != 1 || outro.obs[0].Result != modelgateway.StateReturnNone || outro.obs[0].Cause != modelgateway.StateCauseOtherRoute {
+			t.Fatalf("opcional: contado %+v", outro.obs)
+		}
+	}
+}
+
+// REPRODUÇÃO A PARTIR DA CAPTURA, COM `topo`. Os segmentos do tail e os envelopes por digest dão,
+// numa composição nova, os MESMOS pedidos, byte a byte — com o estado no topo e sem o saco.
+func TestAOS516_DevolverEm_Replay_OsPedidosReproduzemSeByteAByte(t *testing.T) {
+	perfil := aos515Rota(t, "gpt-4o", `,"devolver":"obrigatorio","devolver_em":"topo","params":{"reasoning":{"effort":"medium"},"max_tokens":16000}`)
+	falso := &aos516Agregador{Turnos: 3}
+	run := aos515Compor(t, falso, aos515Modelo, perfil)
+	var cortes []int
+	for i := 1; i <= 4; i++ {
+		cortes = append(cortes, len(run.segs))
+		if _, err := run.passo("gpt-4o"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	originais, recusas := falso.visto()
+	if len(originais) != 4 || len(recusas) != 0 {
+		t.Fatalf("pedidos %d, recusas %v", len(originais), recusas)
+	}
+	// A «captura»: os envelopes passam por JSON, como na captura do turno, e voltam.
+	gravado, err := json.Marshal(run.estados)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var estados map[string][]byte
+	if err := json.Unmarshal(gravado, &estados); err != nil {
+		t.Fatal(err)
+	}
+	for turno := 2; turno <= 4; turno++ {
+		gravador := &aos513Provider{}
+		outro := aos515Compor(t, gravador, aos515Modelo, perfil)
+		outro.segs, outro.estados, outro.turno = append([]agentruntime.TailSegment(nil), run.segs[:cortes[turno-1]]...), estados, turno-1
+		if _, err := outro.passo("gpt-4o"); err != nil {
+			t.Fatalf("turno %d reproduzido: %v", turno, err)
+		}
+		got := gravador.pedidos()[0]
+		if !bytes.Equal(got, originais[turno-1]) {
+			t.Fatalf("turno %d: o pedido reproduzido diverge do original:\n veio:  %s\n quero: %s", turno, got, originais[turno-1])
+		}
+		if !bytes.Contains(got, append([]byte(`"reasoning_details":`), aos516Detalhes(turno-2)...)) || bytes.Contains(got, []byte("provider_specific_fields")) {
+			t.Fatalf("turno %d: o pedido reproduzido nao leva o estado no topo, ou leva o saco:\n%s", turno, got)
 		}
 	}
 }
