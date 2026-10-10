@@ -2,7 +2,7 @@ module github.com/aos-ref/cmd/aos-issuer
 
 go 1.25
 
-toolchain go1.25.13
+toolchain go1.26.9
 
 require (
 	github.com/aos-ref/control-plane/governance/hitl v0.0.0-00010101000000-000000000000

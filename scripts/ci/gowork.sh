@@ -33,7 +33,7 @@
 #       nenhum módulo declara;
 #   (3) a directiva `toolchain` == a MAIOR directiva `toolchain` dos módulos (ausente se nenhum a
 #       tiver). Em modo workspace o Go IGNORA as `toolchain` dos go.mod e só lê a do go.work: sem
-#       esta linha, os módulos que pedem `toolchain go1.25.13` (os cmd/*) perdiam essa exigência
+#       esta linha, os módulos que pedem `toolchain go1.26.9` (os cmd/*) perdiam essa exigência
 #       para quem usasse o workspace, e um Go local 1.24 com GOTOOLCHAIN=auto mudaria para
 #       go1.25.0 — uma toolchain que não é a de produção, também descarregada da rede. Com ela, o
 #       workspace pede exactamente o que o módulo mais exigente já pede em modo clássico, nem
