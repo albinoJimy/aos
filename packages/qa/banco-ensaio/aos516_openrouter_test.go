@@ -152,6 +152,48 @@ func TestAOS516_OpenRouter_EstadoSoNoSacoDoProxyNaoDaCumprida(t *testing.T) {
 			`,"tool_calls":[{"id":"` + idDoTurnoOpenRouter(turnos) + `","type":"function","function":{"name":"` + tool + `","arguments":` + string(argumentos) + `}}],` +
 			`"provider_specific_fields":{"reasoning":` + string(texto) + `,"reasoning_details":` + string(detalhesDoTurno(turnos)) + `}}}],"usage":{"prompt_tokens":5,"completion_tokens":5}}`))
 	})
+	// COM `devolver_em: topo`, O MESMO FORNECEDOR, AGORA EXIGENTE: so aceita o segundo turno com
+	// `reasoning_details` no topo e sem o saco. O veredicto e `cumprida`, e a guarda nao dispara.
+	exigiu := 0
+	exigente := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		corpo, _ := io.ReadAll(r.Body)
+		var pedido struct {
+			Messages []map[string]json.RawMessage `json:"messages"`
+		}
+		_ = json.Unmarshal(corpo, &pedido)
+		turnos := 0
+		for _, m := range pedido.Messages {
+			if string(m["role"]) != `"assistant"` || m["tool_calls"] == nil {
+				continue
+			}
+			if m["provider_specific_fields"] != nil || !mesmosValores(m["reasoning_details"], detalhesDoTurno(turnos)) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":{"message":"estado fora do topo","code":400}}`))
+				return
+			}
+			turnos++
+			exigiu++
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(corpo)))
+		tolerante.ServeHTTP(w, r)
+	})
+	noTopo, err := LerPerfilCandidato([]byte(aos516PerfilOpenRouterEm("openrouter/autor-de-ensaio/modelo-de-ensaio", aos516ParamsReasoning, "obrigatorio", "topo")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := aos516CorrerContra(t, noTopo, exigente, amostras)
+	aos516Veredicto(t, rt, QualificacaoCumprida)
+	if dt := rt.Taxas.Devolucao; dt == nil || dt.TurnosSoNoSaco != 0 || dt.AceitesPeloFornecedor != 2*amostras || exigiu != 3*amostras {
+		t.Fatalf("com devolver_em topo: devolucao = %+v, turnos conferidos %d (quero %d)", dt, exigiu, 3*amostras)
+	}
+	if e := rt.Protocolo.Estado; e == nil || e.DevolverEm != "topo" {
+		t.Errorf("o relatorio nao diz onde o estado volta: %+v", e)
+	}
+	// E o mesmo fornecedor exigente, com o perfil SEM `devolver_em`, recusa: e o controlo.
+	if rc := aos516CorrerContra(t, perfil, exigente, amostras); rc.Qualificacao == nil || rc.Qualificacao.Veredicto != QualificacaoNaoCumprida {
+		t.Fatalf("controlo sem devolver_em contra o exigente: %+v", rc.Qualificacao)
+	}
+
 	r := aos516CorrerContra(t, perfil, tolerante, amostras)
 	d := r.Taxas.Devolucao
 	if d == nil || d.TurnosComRaciocinioCapturado != 2*amostras || d.TurnosSoNoSaco != 2*amostras || d.AceitesPeloFornecedor != 2*amostras {

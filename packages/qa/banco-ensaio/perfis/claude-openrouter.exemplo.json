@@ -4,9 +4,10 @@
   "wire_class": "openai-chat-completions",
   "capabilities": ["tools"],
   "params": {
-    "reasoning_effort": "medium",
+    "reasoning": {"effort": "medium"},
     "max_tokens": 16000
   },
   "projection_version": "1.3.0",
-  "devolver": "obrigatorio"
+  "devolver": "obrigatorio",
+  "devolver_em": "topo"
 }

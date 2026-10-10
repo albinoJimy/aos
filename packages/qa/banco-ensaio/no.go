@@ -229,6 +229,9 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	}
 
 	porta := &portaDeEnsaio{contador: cfg.Contador}
+	// Com `devolver_em: topo` o perfil manda repor no topo da mensagem o estado que veio no saco
+	// do proxy: esse estado volta onde o fornecedor o lê, e a guarda do saco não se aplica.
+	porta.sacoVoltaNoTopo = cfg.Perfil != nil && cfg.Perfil.StateReturnAt == modelgateway.StateReturnAtTop
 	// A DEVOLUÇÃO DO ESTADO OPACO (AOS-516). Só quando o perfil candidato a declara: sem isso os
 	// três campos abaixo ficam a zero e o gateway, o adaptador e o layout são os de sempre.
 	devolucao := composicaoDoEstado(cfg.Perfil, cfg.HostEsperado)
@@ -548,6 +551,8 @@ type portaDeEnsaio struct {
 	classeDaUltima string
 	// soNoSacoDaUltima diz se a última resposta trouxe estado só no saco do proxy.
 	soNoSacoDaUltima bool
+	// sacoVoltaNoTopo diz que o perfil da corrida declara `devolver_em: topo`.
+	sacoVoltaNoTopo bool
 }
 
 func (p *portaDeEnsaio) abrir(runID string) {
@@ -653,7 +658,7 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 	obs.tentativas, obs.naoEnviados = pedido.lerTentativas()
 	obs.classeDoEstado = classeDoEstadoDaResposta(resp.State)
 	p.mu.Lock()
-	p.classeDaUltima, p.soNoSacoDaUltima = obs.classeDoEstado, estadoSoNoSaco(resp.State)
+	p.classeDaUltima, p.soNoSacoDaUltima = obs.classeDoEstado, !p.sacoVoltaNoTopo && estadoSoNoSaco(resp.State)
 	p.mu.Unlock()
 	if err != nil {
 		obs.erro = classeDoErro(err, obs.status)

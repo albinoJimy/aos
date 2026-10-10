@@ -9,17 +9,20 @@ package bancoensaio
 // `openai/<autor>/<modelo>` (o adaptador genérico com a base da OpenRouter) — e, em cada uma,
 // com os dois parâmetros de raciocínio que o perfil de uma rota sabe exprimir.
 //
-// JULGA a rota escolhida ([PrefixoDaOpenRouter]) pelo veredicto do banco. Com o perfil que não
-// devolve estado tem de ser `nao_cumprida`. Com o que devolve, HOJE também é `nao_cumprida`, e o
-// teste prende a causa MEDIDA (2026-10-10): o proxy entrega a resposta da OpenRouter com
-// `reasoning_details` dentro de `message.provider_specific_fields`; o gateway devolve cada campo
-// ao sítio de onde veio (ADR-040 §2.9); e o proxy manda esse saco tal e qual ao fornecedor, que
-// só lê `reasoning_details` no topo da mensagem. No dia em que o gateway souber repor o campo no
-// topo, este teste fica vermelho de propósito, para se trocar o veredicto esperado.
+// JULGA a rota escolhida ([PrefixoDaOpenRouter]) pelo veredicto do banco:
 //
-// A outra forma de rota e as MEDIÇÕES DIRECTAS ao proxy (o parâmetro `reasoning` nativo, os
-// `reasoning_details` no topo da mensagem e os erros na forma da OpenRouter) ficam no relatório
-// do teste — nomes de chaves e códigos, nunca valores.
+//   - com um perfil que devolve estado e declara `devolver_em: topo`, `cumprida` — com cada uma
+//     das formas de pedir o raciocínio que o perfil sabe exprimir (`thinking`,
+//     `reasoning_effort`, `reasoning` com `effort` e com `max_tokens`), e cada uma tem de chegar
+//     ao fornecedor com o nome que o perfil lhe dá;
+//   - CONTROLO: o mesmo perfil SEM `devolver_em`, `nao_cumprida` — o proxy entrega
+//     `reasoning_details` dentro de `message.provider_specific_fields`, o gateway devolve-o ao
+//     mesmo sítio, e o fornecedor só o lê no topo da mensagem (a lacuna medida a 2026-10-10,
+//     que `devolver_em` fecha);
+//   - com um perfil que não devolve estado, `nao_cumprida`.
+//
+// A outra forma de rota e as MEDIÇÕES DIRECTAS ao proxy ficam no relatório do teste — nomes de
+// chaves e códigos, nunca valores.
 //
 // PRECISA DE DOCKER, da imagem já descarregada e de um binário LINUX do banco. Só a pedido:
 //
@@ -46,19 +49,31 @@ import (
 // deixar passar os parâmetros `thinking` e `reasoning_effort`.
 const aos516ModeloOpenRouter = "anthropic/claude-sonnet-4.5"
 
-// aos516PerfilOpenRouter devolve um perfil candidato com a rota e os parâmetros dados.
+// aos516PerfilOpenRouter devolve um perfil candidato com a rota e os parâmetros dados, sem
+// `devolver_em`: o estado volta ao sítio de onde veio.
 func aos516PerfilOpenRouter(rota, params, devolver string) string {
+	return aos516PerfilOpenRouterEm(rota, params, devolver, "")
+}
+
+// aos516PerfilOpenRouterEm é o [aos516PerfilOpenRouter] com `devolver_em` (vazio ⇒ sem o campo).
+func aos516PerfilOpenRouterEm(rota, params, devolver, em string) string {
 	versao := "1.3.0"
 	if devolver == "nunca" {
 		versao = "1.2.0"
 	}
+	if em != "" {
+		em = `,"devolver_em":"` + em + `"`
+	}
 	return `{"requested":"rota-de-ensaio","expected_model":"` + rota + `","wire_class":"openai-chat-completions","capabilities":["tools"],` +
-		`"params":` + params + `,"projection_version":"` + versao + `","devolver":"` + devolver + `"}`
+		`"params":` + params + `,"projection_version":"` + versao + `","devolver":"` + devolver + `"` + em + `}`
 }
 
 const (
 	aos516ParamsThinking = `{"thinking":{"type":"enabled","budget_tokens":2048},"max_tokens":16000}`
 	aos516ParamsEffort   = `{"reasoning_effort":"medium","max_tokens":16000}`
+	// As duas formas do parametro `reasoning` (AOS-516, contrato 1.10.0).
+	aos516ParamsReasoning       = `{"reasoning":{"effort":"medium"},"max_tokens":16000}`
+	aos516ParamsReasoningTokens = `{"reasoning":{"max_tokens":2048},"max_tokens":16000}`
 )
 
 func TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter(t *testing.T) {
@@ -69,15 +84,23 @@ func TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter(t *testing.T) {
 			"O mesmo, sem proxy, correu (TestAOS516_Falso_OpenRouter_ObrigatorioCumpre).")
 	}
 	medidas := map[string]any{"imagem": ImagemDoProxy, "rota_escolhida": PrefixoDaOpenRouter + "/" + aos516ModeloOpenRouter}
-	for _, c := range []struct{ nome, prefixo, params, devolver string }{
-		{"openrouter_thinking_obrigatorio", "openrouter", aos516ParamsThinking, "obrigatorio"},
-		{"openrouter_effort_obrigatorio", "openrouter", aos516ParamsEffort, "obrigatorio"},
-		{"openrouter_effort_nunca", "openrouter", aos516ParamsEffort, "nunca"},
-		{"openai_thinking_obrigatorio", "openai", aos516ParamsThinking, "obrigatorio"},
-		{"openai_effort_obrigatorio", "openai", aos516ParamsEffort, "obrigatorio"},
+	// O parametro que cada forma tem de por no pedido que chega ao fornecedor.
+	chega := map[string][]string{
+		aos516ParamsThinking: {"thinking", "thinking.type", "thinking.budget_tokens"}, aos516ParamsEffort: {"reasoning_effort"},
+		aos516ParamsReasoning: {"reasoning", "reasoning.effort"}, aos516ParamsReasoningTokens: {"reasoning", "reasoning.max_tokens"},
+	}
+	for _, c := range []struct{ nome, prefixo, params, devolver, em string }{
+		{"openrouter_topo_thinking", "openrouter", aos516ParamsThinking, "obrigatorio", "topo"},
+		{"openrouter_topo_reasoning_effort", "openrouter", aos516ParamsEffort, "obrigatorio", "topo"},
+		{"openrouter_topo_reasoning", "openrouter", aos516ParamsReasoning, "obrigatorio", "topo"},
+		{"openrouter_topo_reasoning_max_tokens", "openrouter", aos516ParamsReasoningTokens, "obrigatorio", "topo"},
+		{"openrouter_origem_reasoning", "openrouter", aos516ParamsReasoning, "obrigatorio", ""},
+		{"openrouter_nunca_reasoning", "openrouter", aos516ParamsReasoning, "nunca", ""},
+		{"openai_topo_reasoning", "openai", aos516ParamsReasoning, "obrigatorio", "topo"},
+		{"openai_topo_thinking", "openai", aos516ParamsThinking, "obrigatorio", "topo"},
 	} {
 		saida := t.TempDir()
-		perfil := aos516Ficheiro(t, aos516PerfilOpenRouter(c.prefixo+"/"+aos516ModeloOpenRouter, c.params, c.devolver))
+		perfil := aos516Ficheiro(t, aos516PerfilOpenRouterEm(c.prefixo+"/"+aos516ModeloOpenRouter, c.params, c.devolver, c.em))
 		e := executar(t, Ambiente{}, "proxy", "--binario-do-falso", binario, "--estado", EstadoExige, "--forma-do-falso", FormaOpenRouter,
 			"--turnos-do-falso", "3", "--perfil", perfil, "--amostras", "2", "--saida", saida)
 		if e.codigo != SaidaOK {
@@ -93,22 +116,39 @@ func TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter(t *testing.T) {
 		}
 		if c.prefixo == PrefixoDaOpenRouter {
 			// A rota escolhida JULGA-SE pelo veredicto do banco.
-			if q := r.Qualificacao; q == nil || q.Veredicto != QualificacaoNaoCumprida {
-				t.Errorf("%s: qualificacao = %+v, quer %s (se passou a cumprida, a lacuna da devolucao fechou: troque o veredicto esperado e actualize o README do banco)", c.nome, q, QualificacaoNaoCumprida)
+			quer := QualificacaoNaoCumprida
+			if c.em == "topo" {
+				quer = QualificacaoCumprida
+			}
+			if q := r.Qualificacao; q == nil || q.Veredicto != quer {
+				t.Errorf("%s: qualificacao = %+v, quer %s", c.nome, q, quer)
 			}
 			// O parametro de raciocinio do perfil chega ao fornecedor com o nome que o perfil lhe da.
-			parametro := "thinking"
-			if c.params == aos516ParamsEffort {
-				parametro = "reasoning_effort"
+			for _, parametro := range chega[c.params] {
+				if f.Parametros[parametro] != f.Pedidos {
+					t.Errorf("%s: o parametro %s chegou em %d de %d pedidos", c.nome, parametro, f.Parametros[parametro], f.Pedidos)
+				}
 			}
-			if f.Parametros[parametro] != f.Pedidos {
-				t.Errorf("%s: o parametro %s chegou em %d de %d pedidos", c.nome, parametro, f.Parametros[parametro], f.Pedidos)
-			}
-			if c.devolver == "obrigatorio" {
-				// A LACUNA, presa: a rota provou-se igual e o gateway armou o estado; ele chegou ao
-				// fornecedor, mas so dentro do saco do proxy.
-				d := r.Taxas.Devolucao
-				if d == nil || d.TurnosComRaciocinioCapturado == 0 || d.DecididosADevolver == 0 || len(d.NaoDevolvidoPorCausa) != 0 {
+			d := r.Taxas.Devolucao
+			switch {
+			case c.em == "topo":
+				// O estado voltou no topo da mensagem, com os valores emitidos, em TODOS os turnos;
+				// o saco nao voltou; o falso nao recusou nada.
+				if d == nil || d.TurnosComRaciocinioCapturado == 0 || d.TurnosSoNoSaco != 0 || d.AceitesPeloFornecedor != d.PedidosQueDeviamLevarRaciocinio {
+					t.Errorf("%s: devolucao = %+v", c.nome, d)
+				}
+				if f.Turnos == 0 || f.Estado["reasoning_details.intacto"] != f.Turnos || len(f.Recusas) != 0 {
+					t.Errorf("%s: estado %v em %d turnos, recusas %v", c.nome, f.Estado, f.Turnos, f.Recusas)
+				}
+				for campo := range f.Estado {
+					if strings.HasPrefix(campo, "provider_specific_fields.") {
+						t.Errorf("%s: o saco do proxy voltou ao fornecedor (%s)", c.nome, campo)
+					}
+				}
+			case c.devolver == "obrigatorio":
+				// O CONTROLO: a rota provou-se igual e o gateway armou o estado; ele chegou ao
+				// fornecedor, mas so dentro do saco do proxy — e o banco di-lo.
+				if d == nil || d.TurnosComRaciocinioCapturado == 0 || d.DecididosADevolver == 0 || d.TurnosSoNoSaco == 0 || len(d.NaoDevolvidoPorCausa) != 0 {
 					t.Errorf("%s: o gateway tinha de capturar e armar o estado: %+v", c.nome, d)
 				}
 				if f.Estado["provider_specific_fields.reasoning_details"] == 0 || f.Estado["reasoning_details.intacto"] != 0 || f.Recusas[RecusaEstadoEmFalta] == 0 {
@@ -134,8 +174,9 @@ func TestAOS516_ProxyReal_ADevolucaoPelaOpenRouter(t *testing.T) {
 //   - o parâmetro `reasoning` da OpenRouter na sua forma nativa, que o perfil de uma rota hoje
 //     não sabe exprimir;
 //   - um segundo turno escrito à mão com os `reasoning_details` no TOPO da mensagem `assistant`
-//     (com e sem `reasoning` e `reasoning_content` ao lado), e só dentro do saco do proxy: a
-//     primeira é a forma que a devolução teria de ter para a OpenRouter a ler;
+//     (com e sem `reasoning` e `reasoning_content` ao lado), só dentro do saco do proxy, e nos
+//     dois sítios — é o que diz se, com `devolver_em: topo`, o saco chegaria ao fornecedor em
+//     duplicado se o gateway o mandasse também;
 //   - os erros 400, 401, 402, 404 e 429 na forma da OpenRouter, e o tipo com que o banco os
 //     classifica depois de o proxy os reembrulhar. Estes JULGAM-SE na rota escolhida.
 func aos516MedicoesDirectas(t *testing.T, binario string) map[string]any {
@@ -157,6 +198,7 @@ func aos516MedicoesDirectas(t *testing.T, binario string) map[string]any {
 		{"segundo_turno_detalhes_no_topo", segundoTurno(detalhes)},
 		{"segundo_turno_detalhes_e_textos_no_topo", segundoTurno(detalhes + `"reasoning":` + string(texto) + `,"reasoning_content":` + string(texto) + `,`)},
 		{"segundo_turno_detalhes_so_no_saco", segundoTurno(`"provider_specific_fields":{` + strings.TrimSuffix(detalhes, ",") + `},`)},
+		{"segundo_turno_detalhes_no_topo_e_no_saco", segundoTurno(detalhes + `"provider_specific_fields":{` + strings.TrimSuffix(detalhes, ",") + `},`)},
 	}
 	for _, codigo := range []string{"400", "401", "402", "404", "429"} {
 		pedidos = append(pedidos, struct{ nome, corpo string }{"erro_" + codigo, simples(PrefixoDoPedidoDeErro+codigo, "")})

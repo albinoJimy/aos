@@ -85,6 +85,7 @@ func classeDoEstadoDaResposta(st *port.ProviderState) string {
 // um campo do mesmo nome em `message`. O gateway devolve cada campo ao sítio de onde veio, e o
 // saco do proxy não é um campo que um fornecedor leia: um 2xx a um pedido desses não diz que o
 // fornecedor recebeu o estado (medido com a forma da OpenRouter, 2026-10-10). Lê só os nomes.
+// Não se aplica a um perfil com `devolver_em: topo`, que manda repor esses campos no topo.
 func estadoSoNoSaco(st *port.ProviderState) bool {
 	if st == nil || st.Misaligned {
 		return false
@@ -119,6 +120,9 @@ type ComposicaoDoEstado struct {
 	// Devolver é a classe de estado do perfil; ToolCallID, o id de tool call que vai no wire.
 	Devolver   string `json:"devolver"`
 	ToolCallID string `json:"tool_call_id"`
+	// DevolverEm é onde volta o estado que veio no saco do proxy, quando o perfil o declara
+	// (`topo`); vazio ⇒ no sítio de onde veio.
+	DevolverEm string `json:"devolver_em,omitempty"`
 }
 
 // composicaoDoEstado devolve a composição para o perfil dado, ou nil se ele não devolve estado.
@@ -134,6 +138,7 @@ func composicaoDoEstado(perfil *modelgateway.RouteProfile, hostEsperado string) 
 		Captura: modelgateway.ProviderStateCapture, GovernacaoDaRota: modelgateway.RouteGovernanceObserve,
 		EndpointComparado: hostEsperado != "", Layout: agentruntime.AssemblyVersion150,
 		Projeccao: perfil.ProjectionVersion, Devolver: perfil.StateReturn, ToolCallID: id,
+		DevolverEm: perfil.StateReturnAt,
 	}
 }
 
@@ -377,7 +382,7 @@ const (
 	RazaoSemPedidosSeguintes = "nenhum_pedido_que_devesse_levar_raciocinio"
 	// RazaoEstadoSoNoSaco não é passageira, mas também não condena sozinha: o estado saiu, e o
 	// banco não tem como saber se o fornecedor o leu. Repetir a corrida não a tira; tira-a o
-	// gateway passar a repor o campo onde o fornecedor o lê.
+	// perfil da rota declarar `devolver_em: topo`.
 	RazaoEstadoSoNoSaco = "estado_devolvido_so_no_saco_do_proxy"
 )
 

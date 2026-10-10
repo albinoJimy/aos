@@ -272,6 +272,11 @@ func TestAOS516_PerfilDeExemploDaOpenRouter(t *testing.T) {
 	if p.StateReturn != modelgateway.StateReturnRequired || p.ProjectionVersion != modelgateway.NativeProjectionVersion130 || p.Params == nil || p.Params.MaxTokens == 0 {
 		t.Errorf("o perfil de exemplo tem de devolver estado (obrigatorio, 1.3.0) com um parametro de raciocinio: %+v", p)
 	}
+	// Declara as duas coisas que a medicao atras do proxy mostrou serem precisas nesta rota: o
+	// estado volta no topo da mensagem, e o raciocinio pede-se na forma `reasoning`.
+	if p.StateReturnAt != modelgateway.StateReturnAtTop || p.Params.Reasoning == nil || p.Params.Thinking != nil || p.Params.ReasoningEffort != "" {
+		t.Errorf("o perfil de exemplo tem de declarar devolver_em topo e params.reasoning: %+v / %+v", p, p.Params)
+	}
 	modelo, daOpenRouter := strings.CutPrefix(p.ExpectedModel, PrefixoDaOpenRouter+"/anthropic/")
 	if !daOpenRouter || !strings.Contains(modelo, "PREENCHER") {
 		t.Errorf("expected_model = %q: quer %s/anthropic/<marcador>", p.ExpectedModel, PrefixoDaOpenRouter)
