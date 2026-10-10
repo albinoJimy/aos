@@ -179,6 +179,9 @@ const (
 	TerminouSerieDe429 = "serie_de_429"
 	// TerminouModeloDesconhecido — a sonda: o fornecedor não conhece o modelo.
 	TerminouModeloDesconhecido = "modelo_desconhecido"
+	// TerminouRotaIndisponivel — a sonda: o fornecedor conhece o modelo e não tem endpoint que
+	// sirva este pedido com as definições da conta.
+	TerminouRotaIndisponivel = "rota_indisponivel"
 	// TerminouSondaFalhou — a sonda não teve 200, por uma causa fora do vocabulário.
 	TerminouSondaFalhou = "sonda_falhou"
 )

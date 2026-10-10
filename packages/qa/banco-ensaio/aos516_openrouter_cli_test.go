@@ -315,3 +315,90 @@ func TestAOS516_Erros_DaOpenRouter(t *testing.T) {
 		}
 	}
 }
+
+// A REVISÃO DA CLASSIFICAÇÃO (AOS-516): o que NÃO é modelo desconhecido, o que NÃO é chave
+// recusada, e a frase de ritmo fora de um 429.
+func TestAOS516_Erros_DaOpenRouter_Revisao(t *testing.T) {
+	msg := func(m string, codigo string) string {
+		if codigo == "" {
+			return `{"error":{"message":"` + m + `"}}`
+		}
+		return `{"error":{"message":"` + m + `","code":` + codigo + `}}`
+	}
+	for nome, c := range map[string]struct {
+		status int
+		corpo  string
+		quer   string
+	}{
+		// (a) «no endpoints found»: so a forma que nomeia o modelo, e mais nada, e modelo desconhecido.
+		"sem endpoints, nomeia o modelo":            {404, msg("No endpoints found for autor/modelo-x.", "404"), TipoModeloDesconhecido},
+		"sem endpoints, nomeia o modelo, sem ponto": {404, msg("No endpoints found for autor/modelo-x", "404"), TipoModeloDesconhecido},
+		"sem endpoints pela politica de dados":      {404, msg("No endpoints found matching your data policy. Enable prompt training here", "404"), TipoRotaIndisponivel},
+		"sem endpoints com tools":                   {404, msg("No endpoints found that support tool use. To learn more about provider routing", "404"), TipoRotaIndisponivel},
+		"sem endpoints, modelo e politica":          {404, msg("No endpoints found for autor/modelo-x matching your data policy", "404"), TipoRotaIndisponivel},
+		"sem endpoints, sem mais nada":              {404, msg("No endpoints found", "404"), TipoRotaIndisponivel},
+		"sem endpoints, for sem modelo":             {404, msg("No endpoints found for ", "404"), TipoRotaIndisponivel},
+		"modelo invalido":                           {400, msg("autor/modelo-x is not a valid model ID", "400"), TipoModeloDesconhecido},
+		// (b) um 403 de moderacao nao e a chave.
+		"403 de moderacao":                         {403, msg("autor/modelo-x requires moderation and your input was flagged", "403"), TipoOutro},
+		"403 de moderacao so no codigo do corpo":   {500, msg("Your input was flagged for a category", `"403"`), TipoOutro},
+		"403 sem frase de moderacao":               {403, msg("Key disabled", "403"), TipoChaveRecusada},
+		"moderacao num 401 continua a ser a chave": {401, msg("input was flagged", "401"), TipoChaveRecusada},
+		// (c) a frase de ritmo so conta num 429.
+		"frase de ritmo num 400":                {400, msg("Rate limit exceeded: limit_rpm", ""), TipoOutro},
+		"frase de ritmo num 500 com codigo 400": {500, msg("Rate limit exceeded: limit_rpm", "400"), TipoOutro},
+		"frase de ritmo num 403":                {403, msg("Rate limit exceeded for this key", "403"), TipoChaveRecusada},
+		"frase de ritmo num 429":                {429, msg("Rate limit exceeded: limit_rpm", ""), TipoLimiteDeRitmo},
+		// (d) error.code 429 le-se como o codigo HTTP.
+		"frase de ritmo, 429 so no corpo (numero)": {500, msg("Rate limit exceeded: limit_rpm", "429"), TipoLimiteDeRitmo},
+		"frase de ritmo, 429 so no corpo (texto)":  {400, msg("Rate limit exceeded: limit_rpm", `"429"`), TipoLimiteDeRitmo},
+		"429 no corpo sem frase":                   {500, msg("Provider returned error", "429"), TipoOutro},
+		"saldo com 429 so no corpo":                {500, msg("Rate limit exceeded: insufficient credits", "429"), TipoSaldoInsuficiente},
+	} {
+		if tem := classificarErro(c.status, []byte(c.corpo)); tem != c.quer {
+			t.Errorf("%s: classificado %q, quer %q", nome, tem, c.quer)
+		}
+	}
+	// O tipo novo esta no vocabulario, tem estado final proprio na sonda e um conselho que diz
+	// o que verificar na conta.
+	noVocabulario := false
+	for _, v := range TiposDeErro() {
+		noVocabulario = noVocabulario || v == TipoRotaIndisponivel
+	}
+	if !noVocabulario || terminouDaSonda(Sonda{Resultado: TipoRotaIndisponivel}) != TerminouRotaIndisponivel {
+		t.Errorf("rota_indisponivel: no vocabulario %v, estado final %q", noVocabulario, terminouDaSonda(Sonda{Resultado: TipoRotaIndisponivel}))
+	}
+	if c := conselhoDaParagem(&Relatorio{Terminou: TerminouRotaIndisponivel}); !strings.Contains(c, "politica de dados") || !strings.Contains(c, "nao adianta") {
+		t.Errorf("conselho da paragem: %q", c)
+	}
+}
+
+// `OPENROUTER_MODELO` é exactamente `<autor>/<modelo>`, cada segmento a começar por letra ou
+// algarismo, e o prefixo do adaptador do proxy é recusado sem distinguir maiúsculas.
+func TestAOS516_OpenRouter_FormaDoNomeDoModelo(t *testing.T) {
+	for nome, aceite := range map[string]bool{
+		"anthropic/claude-sonnet-4.5": true, "autor-1/modelo_2:thinking": true, "a/b": true, "0x/9y": true,
+		"../x": false, "./x": false, "anthropic/..": false, "anthropic/.": false, "anthropic/-": false, "-/x": false, ".autor/x": false, "autor/.modelo": false,
+		"autor/-modelo": false, "autor/_modelo": false, ":autor/x": false, "autor/:x": false,
+		"OpenRouter/x": false, "OPENROUTER/x": false, "openrouter/x": false, "openRouter/anthropic": false,
+		"modelo-sem-autor": false, "/x": false, "x/": false, "a/b/c": false, "": false, "/": false,
+	} {
+		if got := modeloDaOpenRouterAceite(nome); got != aceite {
+			t.Errorf("modeloDaOpenRouterAceite(%q) = %v, quer %v", nome, got, aceite)
+		}
+	}
+	// Pelo ficheiro de chaves: o erro nomeia o campo e nao repete o valor.
+	for _, mau := range []string{"../x", "./x", "anthropic/..", "anthropic/-", "OpenRouter/x"} {
+		campos := chavesComOpenRouter()
+		campos[CampoOpenRouterModelo] = mau
+		c, err := LerChaves(escreverChaves(t, campos))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.Rota(FornecedorOpenRouter, "", Destino{})
+		var doCampo *ErrCampoDasChaves
+		if !errors.As(err, &doCampo) || doCampo.Campo != CampoOpenRouterModelo || doCampo.Problema != problemaSemAutor || strings.Contains(err.Error(), mau) {
+			t.Errorf("%q: erro = %v", mau, err)
+		}
+	}
+}

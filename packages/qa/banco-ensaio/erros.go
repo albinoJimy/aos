@@ -29,13 +29,17 @@ const (
 	TipoLimiteDeRitmo = "limite_de_ritmo"
 	// TipoModeloDesconhecido — o fornecedor não conhece o modelo pedido.
 	TipoModeloDesconhecido = "modelo_desconhecido"
+	// TipoRotaIndisponivel — o fornecedor conhece o modelo mas não tem, para esta conta e este
+	// pedido, quem o sirva: as definições da conta (política de dados, fornecedores permitidos)
+	// ou o que o pedido exige (tools) excluem todos os endpoints. Repetir não adianta.
+	TipoRotaIndisponivel = "rota_indisponivel"
 	// TipoOutro — qualquer outro erro, incluindo um corpo que não se lê.
 	TipoOutro = "outro"
 )
 
 // TiposDeErro devolve o vocabulário fechado dos tipos de erro.
 func TiposDeErro() []string {
-	return []string{TipoChaveRecusada, TipoSaldoInsuficiente, TipoLimiteDeRitmo, TipoModeloDesconhecido, TipoOutro}
+	return []string{TipoChaveRecusada, TipoSaldoInsuficiente, TipoLimiteDeRitmo, TipoModeloDesconhecido, TipoRotaIndisponivel, TipoOutro}
 }
 
 // tiposConhecidos é a lista FECHADA dos valores de `error.type` (ou `error.code`) que o banco
@@ -82,13 +86,41 @@ var tiposConhecidos = []struct{ token, tipo string }{
 // meio muda o código.
 var frasesDeSaldo = []string{"insufficient balance", "insufficient quota", "exceeded your current quota", "credit balance is too low", "insufficient credits", "requires more credits"}
 
-// frasesDeRitmo e frasesDeModelo são as frases fixas da OpenRouter para o limite de ritmo e
-// para um modelo que ela não serve. Procuram-se DEPOIS das de saldo, pela razão de sempre: a
-// confusão a evitar é tomar uma conta sem saldo por um limite de ritmo.
-var (
-	frasesDeRitmo  = []string{"rate limit exceeded", "rate-limited"}
-	frasesDeModelo = []string{"is not a valid model id", "no endpoints found"}
+// frasesDeRitmo são as frases fixas da OpenRouter para o limite de ritmo. Procuram-se DEPOIS das
+// de saldo, pela razão de sempre — a confusão a evitar é tomar uma conta sem saldo por um limite
+// de ritmo —, e SÓ contam numa resposta 429 (no código HTTP ou em `error.code`): a mesma frase
+// dentro de outro erro é texto, não um limite.
+var frasesDeRitmo = []string{"rate limit exceeded", "rate-limited"}
+
+// fraseDeModeloInvalido e fraseSemEndpoints são as duas frases da OpenRouter para um pedido que
+// ela não tem quem sirva. A segunda só é «modelo desconhecido» na forma que NOMEIA o modelo e
+// mais nada («no endpoints found for <modelo>.»): com um qualificador («matching your data
+// policy», «that support tool use») o modelo existe, e o que o exclui são as definições da conta
+// ou o que o pedido exige — [TipoRotaIndisponivel].
+const (
+	fraseDeModeloInvalido = "is not a valid model id"
+	fraseSemEndpoints     = "no endpoints found"
 )
+
+// frasesDeModeracao: um 403 com uma destas frases é a moderação do fornecedor a recusar o
+// conteúdo, e não a chave.
+var frasesDeModeracao = []string{"requires moderation", "input was flagged", "flagged for"}
+
+// semEndpoints classifica uma mensagem com a [fraseSemEndpoints]. tem é false sem a frase.
+func semEndpoints(mensagem string) (tipo string, tem bool) {
+	i := strings.Index(mensagem, fraseSemEndpoints)
+	if i < 0 {
+		return "", false
+	}
+	resto := strings.TrimSpace(mensagem[i+len(fraseSemEndpoints):])
+	if modelo, nomeia := strings.CutPrefix(resto, "for "); nomeia {
+		// Só o nome do modelo, com ou sem ponto final, e mais nada.
+		if modelo = strings.TrimSuffix(strings.TrimSpace(modelo), "."); modelo != "" && !strings.ContainsAny(modelo, " \t\n") {
+			return TipoModeloDesconhecido, true
+		}
+	}
+	return TipoRotaIndisponivel, true
+}
 
 // codigoDePagamento é o 402 (Payment Required): em qualquer fornecedor quer dizer que a conta
 // não paga o pedido.
@@ -134,9 +166,11 @@ func tipoDoToken(token string) (string, bool) {
 // fechado. Lê, por esta ordem: `error.type`; `error.code`; e — porque um proxy no meio pode
 // reembrulhar o erro do fornecedor e deixar o tipo original só dentro da mensagem — a presença,
 // na mensagem, de um dos tipos conhecidos ou de uma das frases fixas de saldo. Da mensagem só
-// sai um valor desta lista; o texto dela não é devolvido nem guardado. Depois, o 402 — no código
-// HTTP ou em `error.code` — é [TipoSaldoInsuficiente]; as frases fixas de ritmo e de modelo; e,
-// sem nada reconhecido, um 401 ou um 403 (idem) são [TipoChaveRecusada] e o resto é [TipoOutro].
+// sai um valor desta lista; o texto dela não é devolvido nem guardado. Depois, por esta ordem:
+// o 402 é [TipoSaldoInsuficiente]; uma frase fixa de ritmo NUM 429 é [TipoLimiteDeRitmo]; as
+// frases de modelo e de falta de endpoints ([semEndpoints]); um 403 com uma frase de moderação é
+// [TipoOutro]; um 401 ou um 403 são [TipoChaveRecusada]; e o resto é [TipoOutro]. O código conta
+// igual venha no estado HTTP ou em `error.code` — um proxy no meio pode mudar o primeiro.
 func classificarErro(status int, corpo []byte) string {
 	var doc struct {
 		Error json.RawMessage `json:"error"`
@@ -176,14 +210,20 @@ func classificarErro(status int, corpo []byte) string {
 		}
 	}
 	codigo := codigoNumerico(erro.Code)
+	e := func(c int) bool { return status == c || codigo == c }
+	doEndpoint, semEndpoint := semEndpoints(mensagem)
 	switch {
-	case contem(frasesDeSaldo), status == codigoDePagamento, codigo == codigoDePagamento:
+	case contem(frasesDeSaldo), e(codigoDePagamento):
 		return TipoSaldoInsuficiente
-	case contem(frasesDeRitmo):
+	case e(http.StatusTooManyRequests) && contem(frasesDeRitmo):
 		return TipoLimiteDeRitmo
-	case contem(frasesDeModelo):
+	case mensagem != "" && strings.Contains(mensagem, fraseDeModeloInvalido):
 		return TipoModeloDesconhecido
-	case status == http.StatusUnauthorized, status == http.StatusForbidden, codigo == http.StatusUnauthorized, codigo == http.StatusForbidden:
+	case semEndpoint:
+		return doEndpoint
+	case e(http.StatusForbidden) && contem(frasesDeModeracao):
+		return TipoOutro
+	case e(http.StatusUnauthorized), e(http.StatusForbidden):
 		return TipoChaveRecusada
 	}
 	return TipoOutro
@@ -330,6 +370,8 @@ func terminouDaSonda(s Sonda) string {
 		return TerminouLimiteDeRitmo
 	case TipoModeloDesconhecido:
 		return TerminouModeloDesconhecido
+	case TipoRotaIndisponivel:
+		return TerminouRotaIndisponivel
 	case SondaTecto:
 		return TerminouTecto
 	case SondaContador:

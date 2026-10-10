@@ -34,7 +34,7 @@ const (
 	// preço ou contador. Nenhum pedido saiu.
 	SaidaRecusada = 3
 	// SaidaParouAMeio — a corrida parou a meio (tecto atingido, contador, interrupção, chave
-	// recusada, conta sem saldo, limite de ritmo) ou a sonda não a deixou começar. O relatório
+	// recusada, conta sem saldo, limite de ritmo, rota indisponível) ou a sonda não a deixou começar. O relatório
 	// parcial foi escrito e diz a causa.
 	SaidaParouAMeio = 4
 	// SaidaEmCI — o modo com modelo real foi pedido em CI. Recusado, sem ler nada.
@@ -608,6 +608,8 @@ func conselhoDaParagem(r *Relatorio) string {
 		return ritmo
 	case TerminouModeloDesconhecido:
 		return "o fornecedor nao conhece o modelo (modelo_desconhecido): confirme o nome do modelo no ficheiro de chaves ou em --modelo"
+	case TerminouRotaIndisponivel:
+		return "o fornecedor conhece o modelo mas nao tem endpoint que sirva este pedido (rota_indisponivel): veja, na conta do fornecedor, a politica de dados e os fornecedores permitidos, e se o modelo suporta tools; repetir a corrida nao adianta"
 	case TerminouSondaFalhou:
 		return "a rota nao respondeu 200 a sonda por uma causa fora do vocabulario (outro): veja o codigo HTTP acima"
 	case TerminouSo429, TerminouSerieDe429:
