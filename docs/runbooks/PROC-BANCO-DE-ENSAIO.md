@@ -181,6 +181,58 @@ faz-se com um perfil igual e `devolver: nunca` (com `projection_version` 1.2.0).
 falso não valida assinaturas: o bloco de texto que o proxy acrescenta ao `assistant` de
 `content` vazio, entre o raciocínio e a tool call, só o Claude diz se é aceite.
 
+## O Claude pela OpenRouter (AOS-516)
+
+Decisão do dono de 2026-10-10: o Claude qualifica-se pela OpenRouter, só no banco de ensaio e
+com documentos de teste. A rota no proxy efémero é `openrouter/<autor>/<modelo>`; o destino da
+chave é fixo (`https://openrouter.ai`) e o contador do dia é o do fornecedor `openrouter`.
+
+**Ler antes de correr.** Medido atrás da imagem fixada do proxy, com um provider falso
+(2026-10-10): o estado do turno (`reasoning_details`) volta ao fornecedor dentro de
+`provider_specific_fields`, e não no topo da mensagem, que é onde a OpenRouter o lê. Enquanto o
+gateway não o repuser no topo (está descrito no Estado do AOS-516), **esta corrida não pode dar
+`cumprida`**: o melhor veredicto possível é `inconclusiva`, com a razão
+`estado_devolvido_so_no_saco_do_proxy`. O que a corrida mede hoje: se a sonda passa (chave,
+créditos, nome do modelo), se o raciocínio liga (`turnos_com_raciocinio_capturado` maior do que
+zero) e o que a OpenRouter responde a um segundo turno sem `reasoning_details`.
+
+1. O dono acrescenta ao seu ficheiro de chaves, à mão (sem aspas):
+
+   ```
+   OPENROUTER_API_KEY=<a chave da OpenRouter>
+   OPENROUTER_MODELO=anthropic/claude-sonnet-4.5
+   TECTO_PEDIDOS_DIA_OPENROUTER=200
+   TECTO_USD_DIA_OPENROUTER=3
+   ```
+
+   `OPENROUTER_MODELO` é o nome na OpenRouter (`<autor>/<modelo>`), **sem** o prefixo
+   `openrouter/`. Os tectos acima são um exemplo: são do dono. O tecto em dólares é opcional;
+   com ele, a tabela de preços tem de ter uma entrada com a chave igual a `OPENROUTER_MODELO`
+   (os preços confirmam-se na página do modelo na OpenRouter).
+2. Copiar `packages/qa/banco-ensaio/perfis/claude-openrouter.exemplo.json` para a pasta do dono
+   (por exemplo `perfil-claude-openrouter.json`) e trocar `PREENCHER-NOME-DO-MODELO`, de modo
+   que `expected_model` fique `openrouter/<OPENROUTER_MODELO>` — com o modelo acima,
+   `openrouter/anthropic/claude-sonnet-4.5`. É o que o proxy declara ter servido (medido); com
+   outro nome o banco recusa antes de enviar (exit 3).
+3. Ver o plano, sem enviar nada, e confirmar a linha `DESTINO DA CHAVE: https://openrouter.ai`.
+   Depois correr, primeiro com uma passagem (no máximo 84 pedidos mais a sonda):
+
+```powershell
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor openrouter --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude-openrouter.json --amostras 1 --pausa 2s --so-plano
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor openrouter --precos $env:USERPROFILE\.aos-ensaio\precos.json --perfil $env:USERPROFILE\.aos-ensaio\perfil-claude-openrouter.json --amostras 1 --pausa 2s
+```
+
+**Como ler.** `saldo_insuficiente` na sonda: a conta da OpenRouter não tem créditos (402).
+`sem_raciocinio`: o `reasoning_effort` do perfil chegou à OpenRouter (medido) mas não ligou o
+raciocínio — a forma que ela documenta é `reasoning: {…}`, que o perfil de uma rota ainda não
+sabe exprimir. `nao_cumprida` com 4xx em pedidos com estado: a OpenRouter recusou o segundo
+turno sem `reasoning_details`. `inconclusiva` com `estado_devolvido_so_no_saco_do_proxy`: ela
+aceitou-o, e o banco não sabe se leu o estado.
+
+**O que esta corrida não prova:** a rota `anthropic/` directa, nem o bloco de texto que o proxy
+acrescenta nessa rota; e o adaptador `openrouter` do proxy identifica-se à OpenRouter com os
+cabeçalhos `HTTP-Referer` e `X-Title` do LiteLLM, que o banco não escolhe.
+
 ## Se correr mal
 
 | Sintoma | Causa | O que fazer |
@@ -200,7 +252,7 @@ falso não valida assinaturas: o bloco de texto que o proxy acrescenta ao `assis
 | Exit 4, `modelo_desconhecido` | A sonda: o fornecedor não conhece o modelo | Corrigir o nome do modelo no ficheiro de chaves, ou `--modelo` |
 | Exit 4, `sonda_falhou` | A sonda não teve 200, por uma causa fora do vocabulário (`outro`) | Ver o código HTTP na linha da sonda; repetir com `--so-plano` para confirmar o destino |
 | Exit 4, `tecto_atingido` | O tecto foi atingido a meio (o de dólares só se conhece depois de cada resposta) | O relatório parcial está escrito. Nada a repor |
-| Exit 3, «o perfil devolve estado e o seu expected_model nao e a rota desta corrida» | O `expected_model` do perfil não é `anthropic/<ANTHROPIC_MODELO>` (ou `openai/<modelo>` no Kimi) | Corrigir o perfil. Nenhum pedido saiu |
+| Exit 3, «o perfil devolve estado e o seu expected_model nao e a rota desta corrida» | O `expected_model` do perfil não é `anthropic/<ANTHROPIC_MODELO>` (ou `openai/<modelo>` no Kimi, ou `openrouter/<OPENROUTER_MODELO>` na OpenRouter) | Corrigir o perfil. Nenhum pedido saiu |
 | Desfecho `estado_nao_devolvido` no relatório | A rota exige o estado e o de um turno não se podia devolver: o pedido seguinte não foi enviado | Ver `nao_devolvido_por_causa`: `estado_de_rota_nao_provada` é a rota (modelo ou endpoint declarados pelo proxy); `estado_ausente` é o fornecedor não ter mandado estado nesse turno |
 | Exit 6 | Sem Docker, sem a imagem, ou o proxy não arrancou | Arrancar o Docker; `docker pull` da imagem acima. A mensagem traz as últimas linhas do proxy, com os segredos ocultados |
 | Contentores `aos512-*` a correr depois de uma corrida interrompida à força | A limpeza não chegou a correr. **Um proxy órfão guarda a chave do fornecedor em claro no ambiente do contentor** (`docker inspect`) e aceita pedidos fora do contador | `aos-ensaio limpar` (remove contentores e redes `aos512-*` e diz quantos). O proxy também se mata sozinho ao fim de cerca de 90 s sem sinal de vida, e a corrida seguinte varre o que restar. À mão: `docker ps -a --filter name=aos512- --format "{{.Names}}"` e `docker rm -f` de cada um |

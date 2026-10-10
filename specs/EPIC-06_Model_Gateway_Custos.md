@@ -3331,7 +3331,9 @@ confirmar» continuam por confirmar, e a entrega deixa as duas hipóteses do id 
 ### Decidido pelo dono
 
 1. **D4 (2026-10-07) — o segundo modelo é o Claude (Anthropic), com o raciocínio ligado, pelo
-   mesmo proxy LiteLLM.**
+   mesmo proxy LiteLLM.** **Alterada a 2026-10-10:** o Claude qualifica-se **pela OpenRouter**
+   (rota `openrouter/<autor>/<modelo>` do mesmo proxy), e não pela API directa da Anthropic,
+   cuja conta não tem créditos. Só no banco de ensaio, com documentos de teste.
 2. **D5 (2026-10-07) e tectos (2026-10-08):** o ensaio faz-se no posto local, com 1000 pedidos
    por dia e 5 USD por dia na Anthropic. Fora da UE, o Claude só serve para ensaio com
    documentos de teste.
@@ -3458,6 +3460,44 @@ passo 3 espera pela decisão da região.
   `sem_raciocinio`, `inconclusiva`). Os números acima repetiram-se com os contadores novos:
   atrás do proxy, 30 de 30 aceites e veredicto `cumprida`; com `devolver: nunca`,
   `nao_cumprida`. Oito mutações dos contadores e do veredicto, todas vermelhas.
+- **A OpenRouter no banco (2026-10-10; D4 alterada).** O modo real aceita
+  `--fornecedor openrouter`: campos próprios no ficheiro de chaves, destino fixo
+  `openrouter.ai`, contador do dia próprio, sonda, e os erros dela (código numérico, sem `type`)
+  no vocabulário fechado — 402 é `saldo_insuficiente`. O provider falso do estado ganhou a forma
+  da OpenRouter (`reasoning` e `reasoning_details` com assinatura). Perfil de exemplo:
+  `packages/qa/banco-ensaio/perfis/claude-openrouter.exemplo.json`.
+- **Medido com a forma da OpenRouter, sem modelo real.** Modo falso (sem proxy), uma passagem
+  pela bateria: 22 pedidos com 200, 15 de 15 pedidos seguintes aceites, `reasoning_details` de
+  volta byte a byte em 30 de 30 mensagens, veredicto `cumprida`; com `devolver: nunca`, 5
+  respostas 400 e `nao_cumprida`. Atrás da imagem fixada do proxy, rota
+  `openrouter/anthropic/claude-sonnet-4.5`, duas passagens: o `thinking` e o `reasoning_effort`
+  do perfil chegaram ao fornecedor em 22 de 22 pedidos (pela rota `openai/` com a base da
+  OpenRouter, em 0 de 22: por isso se escolheu `openrouter/`); o proxy declarou ter servido
+  `openrouter/anthropic/claude-sonnet-4.5` e a rota provou-se igual; **e a devolução falhou em
+  10 de 10 segundos turnos**: o proxy entrega `reasoning_details` dentro de
+  `message.provider_specific_fields`, o gateway devolve-o ao mesmo sítio (ADR-040 §2.9), e o
+  proxy manda o saco tal e qual ao fornecedor, que só o lê no topo da mensagem. Veredicto
+  `nao_cumprida`, preso por teste. Posto à mão no topo da mensagem, o `reasoning_details`
+  atravessa o proxy com os valores intactos, pelas duas rotas.
+- **Por decidir — a alteração mínima ao gateway, que não foi feita.** (1) A devolução: um campo
+  fechado no perfil da rota que mande repor no topo da mensagem `assistant` os campos de
+  raciocínio capturados em `provider_specific_fields`; muda o contrato da porta (1.9.0 → 1.10.0)
+  e a regra «cada campo volta ao sítio de onde veio» do ADR-040 §2.9, logo pede emenda ao ADR.
+  (2) O parâmetro: o perfil só exprime `thinking` e `reasoning_effort`, que chegam à OpenRouter
+  com esses nomes; a forma que ela documenta é `reasoning: {effort | max_tokens}`, que atravessa
+  o proxy se for posta no pedido (medido) e pediria um campo tipado novo em `RequestParams`. Só
+  a corrida real diz se (2) é precisa: se der `sem_raciocinio`, é.
+- **Guarda nova no veredicto.** Um turno cujo estado só veio no saco do proxy conta em
+  `turnos_com_estado_so_no_saco_do_proxy`, e com algum o veredicto não é `cumprida`
+  (`inconclusiva`, razão `estado_devolvido_so_no_saco_do_proxy`): um fornecedor real que ignore
+  o saco respondia 2xx e o banco contava-o como aceite.
+- **O que a corrida pela OpenRouter prova e não prova.** Prova, quando a lacuna fechar, a
+  devolução do estado de um modelo da Anthropic servido por um agregador, no wire de chat. Não
+  prova a rota `anthropic/` directa (o wire de mensagens e o bloco de texto que o proxy lá
+  acrescenta), nem o bloco «sanitised», nem nada sobre produção. Antes de a lacuna fechar não
+  pode dar `cumprida`.
+- **Tentativas pela Anthropic (2026-10-10).** Duas corridas, as duas paradas na sonda com 400:
+  `saldo_insuficiente` (a conta não tem créditos). 2 pedidos gastos do tecto.
 - **Por fazer.** O passo 2 inteiro: a corrida com o Claude (comando no
   `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`), que é quem diz se o fornecedor aceita o bloco de
   texto acrescentado pelo proxy e o que responde a blocos em falta. O controlo negativo com um
