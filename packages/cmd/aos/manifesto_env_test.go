@@ -89,6 +89,13 @@ var excluidasComRazao = map[string]string{
 		"deploy, quando o dono decidir ligar; nessa altura esta entrada sai.",
 	"AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR": "o par de AOS_MODEL_ROUTE_PROFILES_DIR — sem a pasta " +
 		"a ancora nao e lida. Entra no compose no mesmo PR de deploy.",
+	// AOS-520. Sai daqui no MESMO PR de deploy que puser no compose a pasta de perfis assinados.
+	"AOS_MODEL_CANDIDATE": "ainda nao (AOS-520): o interruptor do modelo candidato so tem efeito " +
+		"com a pasta de perfis de rota assinados (AOS_MODEL_ROUTE_PROFILES_DIR), que o compose ainda " +
+		"nao passa nem monta — sem ela a variavel e validada e nao liga nada. Passa-la sozinha era " +
+		"oferecer um interruptor que, a `on`, nao serve candidato nenhum e deixa o operador a julgar " +
+		"que serve. Entra com a pasta e a ancora, no PR de deploy em que o dono decidir ligar, " +
+		"depois da revisao adversarial que o ticket exige.",
 }
 
 var reGetenv = regexp.MustCompile(`os\.Getenv\("(AOS_[A-Z0-9_]+)"\)`)

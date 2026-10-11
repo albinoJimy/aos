@@ -58,6 +58,10 @@ type aos486Upstream struct {
 	// cabecalhos, quando definido, devolve os cabecalhos de resposta de cada pedido (AOS-505: os
 	// que o proxy emite sobre a rota). Recebe o indice do pedido, a contar de zero.
 	cabecalhos func(pedido int) map[string]string
+	// avaria, quando definida, pode fazer um pedido FALHAR (AOS-520): recebe o corpo do pedido e
+	// devolve o estado HTTP com que o provider responde — zero ⇒ o pedido é servido como sempre;
+	// negativo ⇒ a ligação é cortada sem resposta.
+	avaria func(corpo []byte) int
 }
 
 func (u *aos486Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +70,19 @@ func (u *aos486Upstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.corpos = append(u.corpos, corpo)
 	pede, responde := u.pede, u.responde
 	cabecalhos, indice := u.cabecalhos, len(u.corpos)-1
+	avaria := u.avaria
 	u.mu.Unlock()
+	if avaria != nil {
+		switch estado := avaria(corpo); {
+		case estado < 0:
+			panic(http.ErrAbortHandler) // corta a ligação, sem resposta
+		case estado > 0:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(estado)
+			_, _ = w.Write([]byte(`{"error":{"message":"indisponivel","type":"server_error"}}`))
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if cabecalhos != nil {
 		for k, v := range cabecalhos(indice) {

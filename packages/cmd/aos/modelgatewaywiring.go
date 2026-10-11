@@ -363,5 +363,48 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 		opts = append(opts, modelgateway.WithRouteProfileSet(conjunto))
 	}
 	opts = append(opts, extra...)
-	return modelgateway.NewModelClient(gw, model, opts...), nil
+	titular := modelgateway.NewModelClient(gw, model, opts...)
+	// AOS-520 (ADR-041 §2.5): UM GATEWAY, UM ADAPTADOR POR ALIAS. Com um perfil assinado para um
+	// alias que NÃO é o do titular, o cliente de modelo passa a ser um despachante: o adaptador do
+	// titular e um por cada alias assinado não-titular, todos sobre ESTE gateway e com as MESMAS
+	// opções, escolhidos pelo alias que a hospedagem fixou no run. Existe mesmo com o interruptor do
+	// candidato desligado, para um run já fixado acabar enquanto o perfil estiver carregado. Sem
+	// nenhum perfil não-titular — o caso de sempre — devolve-se o adaptador do titular, sem
+	// despachante.
+	naoTitulares := assinados.naoTitulares(model)
+	if len(naoTitulares) == 0 {
+		return titular, nil
+	}
+	// O fim do canary sela-se no audit de governação DESTE gateway, na cadeia dos perfis de rota.
+	assinados.selarFimDoCanary, assinados.selosDoFimDoCanary = seladorDoFimDoCanary(govAudit)
+	porAlias := map[string]agentruntime.ModelClient{model: titular}
+	for _, e := range naoTitulares {
+		porAlias[e.Profile.Requested] = modelgateway.NewModelClient(gw, e.Profile.Requested, opts...)
+	}
+	return &clientePorModelo{titular: model, porAlias: porAlias}, nil
+}
+
+// seladorDoFimDoCanary devolve as duas funções com que o nó sela o fim de um canary no audit de
+// governação dado (AOS-520): `garantir`, que sela o fim SE o audit ainda não o tiver — lê o audit
+// antes, e por isso pode ser chamada as vezes que for preciso, por quem escreveu o fim no livro ou
+// por quem o encontrou lá sem selo —, e `contar`, que diz quantos selos desse registo o audit tem.
+//
+// O AUDIT É LOCAL À RÉPLICA (salvo um audit partilhado, que o nó não tem): «selado» quer dizer
+// selado NESTE audit. Com duas réplicas, cada uma sela o fim no seu, uma vez; a fonte da contagem
+// e do fim é o livro, que é partilhado.
+func seladorDoFimDoCanary(store audit.Store) (garantir func(context.Context, fimDoCanary) error, contar func(context.Context, string) (int, error)) {
+	selos := allowlist.NewRecorder(store)
+	contar = selos.CanaryClosedSeals
+	garantir = func(ctx context.Context, f fimDoCanary) error {
+		n, err := contar(ctx, f.entryDigest)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		_, err = selos.SealCanaryClosed(ctx, time.Now().UTC(), f.alias, f.profileDigest, f.entryDigest, f.atribuidos, f.limite)
+		return err
+	}
+	return garantir, contar
 }

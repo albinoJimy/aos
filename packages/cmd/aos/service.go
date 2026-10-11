@@ -127,6 +127,16 @@ type runState struct {
 	// memória (AOS-496).
 	titular string
 
+	// existente diz que esta hospedagem é a de um run que JÁ EXISTE no estado durável do nó, e não a
+	// de um run novo (AOS-520): a retoma pela API e a varredura de crash-resume (`resuming`), ou um
+	// `POST /runs` de um `run_id` cujo estado durável, lido por [NodeService.submitObservando] antes
+	// de hospedar, já não é o inicial. Escrito uma vez, antes de a goroutine do run arrancar. Um run
+	// que já existe não é escolhido: o seu Goal foi conferido com o que está selado.
+	existente bool
+	// plano é o pedido de plano de que o run é trabalho, VERIFICADO pelo nó no `POST /runs`
+	// (AOS-520, [origemDoPlano]). O valor-zero é um run que não é trabalho de um pedido verificado.
+	plano origemDoPlano
+
 	// outcome — escrito UMA vez sob o mutex do serviço, antes de close(done).
 	result   agentruntime.Result
 	err      error
@@ -698,7 +708,7 @@ func imputadoA(goal agentruntime.Goal) string {
 // vazio (a derivação só corre com o gate soberano composto) — e é também aí que o tecto não está
 // em vigor, pelo que as duas condições coincidem por construção.
 func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resuming bool) error {
-	return s.submitObservando(ctx, goal, resuming, nil)
+	return s.submitObservando(ctx, goal, resuming, origemDoPlano{}, nil)
 }
 
 // SubmitObservando é o [NodeService.Submit] com um observador do Goal HOSPEDADO (AOS-506).
@@ -711,11 +721,21 @@ func (s *NodeService) submit(ctx context.Context, goal agentruntime.Goal, resumi
 //
 // O observador só lê: recebe uma cópia do Goal e nada do que faça muda o run.
 func (s *NodeService) SubmitObservando(ctx context.Context, goal agentruntime.Goal, aoHospedar func(agentruntime.Goal)) error {
-	return s.submitObservando(ctx, goal, false, aoHospedar)
+	return s.submitObservando(ctx, goal, false, origemDoPlano{}, aoHospedar)
 }
 
-// submitObservando é o corpo do [NodeService.submit]; `aoHospedar` nil ⇒ sem observador.
-func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Goal, resuming bool, aoHospedar func(agentruntime.Goal)) error {
+// submitDoPlano é o [NodeService.SubmitObservando] de um run NOVO que o `POST /runs` provou ser
+// trabalho do pedido de plano `plano` (AOS-520). É a ÚNICA via por que a origem do plano chega à
+// hospedagem: quem a compõe é o handler, do que o nó verificou no seu log, e ela fica no estado do
+// run — não viaja no Goal nem no contexto. `aoHospedar` nil ⇒ sem observador.
+func (s *NodeService) submitDoPlano(ctx context.Context, goal agentruntime.Goal, plano origemDoPlano, aoHospedar func(agentruntime.Goal)) error {
+	return s.submitObservando(ctx, goal, false, plano, aoHospedar)
+}
+
+// submitObservando é o corpo do [NodeService.submit]; `aoHospedar` nil ⇒ sem observador. `plano` é
+// a origem verificada do run num pedido de plano; o valor-zero em todas as vias menos a do
+// `POST /runs` com o vínculo verificado.
+func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Goal, resuming bool, plano origemDoPlano, aoHospedar func(agentruntime.Goal)) error {
 	if goal.RunID == "" {
 		return ErrEmptyRunID
 	}
@@ -787,7 +807,7 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			}
 		}
 	}
-	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular()}
+	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular(), plano: plano}
 	s.runs[runID] = rs // RESERVA — bloqueia duplicados enquanto adquirimos o lease
 	s.mu.Unlock()
 
@@ -821,6 +841,30 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			s.unreserve(rs)
 			return &desfechoDuravelError{runID: runID, estado: st}
 		}
+		// (2-ter-ter) UM `run_id` QUE JÁ EXISTE (AOS-520). O estado durável que se acabou de ler não é
+		// o inicial, não é suspenso e não é terminal: o run está EM CURSO — deu turnos, ou foi
+		// reclamado, e o nó caiu. Hospedá-lo por esta via é uma retoma por outro nome, e tem o
+		// contrato da retoma: confere-se o Goal com o que está SELADO para o run, e se este nó não o
+		// pode continuar a submissão é recusada AQUI, antes de hospedar — sem lease, sem quota, sem
+		// uma escrita. O run fica como estava. É neste caminho, e só neste, que se lê a história do
+		// run; um run novo (estado inicial) segue sem uma leitura a mais.
+		//
+		// Sem máquina de estados composta o estado vem vazio e o run é tratado como novo: esse nó
+		// não tem como saber que o run existe (nem o sabia antes).
+		if st != "" && st != state.Ready && s.node != nil {
+			existente, gerr := s.node.goalDoRunExistente(ctx, goal)
+			if gerr != nil {
+				s.unreserve(rs)
+				s.log("POST de um run que ja existe RECUSADO antes de hospedar (AOS-520): run %q, estado duravel %q, causa=%s — nada foi escrito e o run fica como estava (recuperavel: reponha o perfil ou o registo em que o run esta fixado, ou retome-o num no que o sirva): %v",
+					runID, st, causaDoRunExistenteRecusado(gerr), gerr)
+				return gerr
+			}
+			goal = existente
+			rs.existente = true
+		}
+	}
+	if resuming {
+		rs.existente = true
 	}
 
 	// (2-quater) QUOTA DE DESPESA POR PRINCIPAL (AOS-457). Reserva o tecto por-run inteiro contra a
@@ -1152,7 +1196,22 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// turno, pelo que o manifesto de cada turno, o span `chat` e a admissão falam do mesmo
 	// modelo. Esta é a via única por onde passam a submissão, a retoma e a varredura de
 	// crash-resume.
-	goal = s.node.fixarModelo(goal)
+	//
+	// AOS-520 (ADR-041 §2.4): com um candidato a servir, é AQUI que o modelo de um run novo é
+	// escolhido — uma vez, pelo livro do canary — e gravado, em fail-closed, antes do registo de
+	// retoma e do primeiro turno. «Novo» é o run que o LOG diz não ter história; um run que já deu
+	// turnos ou já tem registo de retoma fica com o que está selado, venha por que via vier. Sem candidato a servir é o [Node.fixarModelo] de sempre. Uma
+	// recusa fecha o run `failed` sem dar um turno: nunca é servido pelo titular «na dúvida».
+	var ferr error
+	if goal, ferr = s.escolherModeloDoRun(ctx, rs, goal); ferr != nil {
+		err = fmt.Errorf("aos: run %q: %w", rs.runID, ferr)
+		s.mu.Lock()
+		rs.err = err
+		s.mu.Unlock()
+		s.log("run %q RECUSADO pela fixacao do modelo (AOS-520): causa=%s — o run fecha failed (%s) sem dar um turno; nao e servido pelo titular: %v",
+			rs.runID, causaDaFixacaoDoModelo(ferr), reasonModelPinRefused, ferr)
+		return
+	}
 	// AOS-489: o LAYOUT de montagem do prompt fica fixado no Goal ANTES do registo de retoma e
 	// do primeiro turno, pela mesma razão do modelo: o que o registo guarda, o que o runtime
 	// monta e o que o manifesto de cada turno grava são o mesmo valor. Um run NOVO chega aqui
@@ -1192,7 +1251,15 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	}
 	s.persistCrashResumeRecord(ctx, goal)
 
-	res, _, err = s.node.Runtime.Run(ctx, goal, nil)
+	// AOS-520: o alias de um run FIXADO POR ESCOLHA vai no contexto com que o runtime é chamado, para
+	// o despachante escolher o adaptador desse alias ([clientePorModelo]). Um run sem a marca não
+	// anexa nada, e é servido pelo adaptador do titular, como sempre. Numa variável NOVA: a goroutine
+	// do heartbeat fecha sobre `ctx`, que não se reatribui (ver o cimo desta função).
+	ctxDoRun := ctx
+	if goal.ModelPinnedBy != "" {
+		ctxDoRun = withModeloDoRun(ctx, goal.Model.ModelID)
+	}
+	res, _, err = s.node.Runtime.Run(ctxDoRun, goal, nil)
 
 	// DEGRADAÇÃO DECLARADA POR ORÇAMENTO (AOS-260): o run parou porque a admissão do turno de
 	// modelo negou headroom, SEM erro e SEM resposta final. Sem esta linha o desfecho seria
@@ -1382,6 +1449,9 @@ func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, err
 		// AOS-520: o digest do perfil da rota em que o run está fixado sobrevive à retoma. Um run
 		// sem perfil fixado grava o campo vazio — os bytes de sempre.
 		RouteProfileDigest: digestDoPerfilParaORegisto(goal),
+		// AOS-520: a marca de modelo fixado por escolha sobrevive à retoma. Um run sem ela grava o
+		// campo vazio — os bytes de sempre.
+		ModelPinnedBy: goal.ModelPinnedBy,
 	}, nil
 }
 

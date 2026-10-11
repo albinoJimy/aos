@@ -476,6 +476,11 @@ func run(w io.Writer) error {
 	for _, line := range modelRouteProfilesBanner(assinados) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
+	// O TITULAR E O CANDIDATO (AOS-520, ADR-041). Sem um registo assinado para um alias que não seja
+	// o do titular, e com o interruptor desligado, não sai linha nenhuma.
+	for _, line := range modelCandidateBanner(assinados, modelNameFromEnv()) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
 	for _, line := range modelRouteBannerFromEnvCom(cfg.Model != nil, modelNameFromEnv(), assinados.perfis()) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
@@ -2320,6 +2325,13 @@ func parseModelEgressTimeoutFromEnv() (time.Duration, error) {
 // binder — a closure que o Bootstrap chama com esse verifier (Config.ModelIdentityBinder).
 // Sem gateway (endpoint vazio) ⇒ (nil, nil, nil): sem modelo e sem binder.
 func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identity.Verifier), error) {
+	// O INTERRUPTOR DO CANDIDATO (AOS-520) valida-se ANTES de qualquer retorno antecipado — incluindo
+	// o de um nó sem gateway de modelo: um valor fora do vocabulário aborta o arranque em qualquer
+	// composição, em vez de passar por `off` onde ninguém o lê.
+	candidatoLigado, cerr := modelCandidateFromEnv()
+	if cerr != nil {
+		return nil, nil, cerr
+	}
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
 		// AOS-519: em produção, uma pasta de perfis assinados declarada SEM gateway aborta — o
@@ -2360,6 +2372,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	assinados, aerr := loadSignedRouteProfilesFromEnv()
 	if aerr != nil {
 		return nil, nil, aerr
+	}
+	// O CANDIDATO (AOS-520, ADR-041 §2.7): o interruptor, já validado no cimo desta função. Sem a
+	// pasta de perfis não há onde o guardar nem candidato a quem ele se aplique.
+	if assinados != nil {
+		assinados.candidatoLigado = candidatoLigado
 	}
 	// A ROTA SOB GOVERNAÇÃO (AOS-505). Vocabulário fechado, validado aqui pela mesma razão; com a
 	// governação ligada, um modelo sem perfil de rota também aborta o arranque, e `enforce` sem o
@@ -2427,6 +2444,16 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// tabela que não carrega (ErrBadModelPricing). Ver model_pricing_env.go.
 	costRec, _, err := parseModelPricingFromEnv(model, region)
 	if err != nil {
+		return nil, nil, err
+	}
+	// AOS-520: com o interruptor do candidato ligado — no máximo UM candidato, e, com a
+	// contabilidade de custo composta, o par do candidato tem de ter preço: a cobertura acima só foi
+	// verificada para o par do titular, e a contabilidade recusa uma chamada a um par sem preço.
+	// Com o interruptor desligado não confere nada.
+	if err := assinados.conferirCandidato(model, costRec != nil, func(alias string) (bool, error) {
+		_, postura, perr := resolveModelPricing(alias, region)
+		return postura.Armed, perr
+	}); err != nil {
 		return nil, nil, err
 	}
 	// CUTOVER DURO (AOS-278): o gateway compõe-se com um verifier LIGADO TARDIAMENTE. Nasce a

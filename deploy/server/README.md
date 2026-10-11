@@ -1513,8 +1513,9 @@ Ao voltar à imagem nova, os runs que a antiga tenha continuado mantêm o digest
 - **O rótulo não está assinado.** O nome do ficheiro é só um nome; o que identifica o registo é o
   `digest do registo` que o banner mostra. Confere-o com o que o `route-profile-sign` imprimiu.
 
-**O que isto não faz.** A fatia do registo é lida, validada e mostrada, e **não tem efeito**: o
-nó serve um só modelo (o canary é do AOS-520). Um perfil que devolve estado (`devolver` diferente
+**O que isto não faz.** A fatia do registo é lida, validada e mostrada, e **só tem efeito** no
+registo de um **candidato** com `AOS_MODEL_CANDIDATE=on` (a secção seguinte); num registo para o
+alias do titular não faz nada. Um perfil que devolve estado (`devolver` diferente
 de `nunca`) é recusado. O perfil não autoriza um nome: só carrega para um alias que a allowlist
 assinada já autoriza para o board e a região do nó. A assinatura prova que o dono assinou aquele
 registo; não prova que o banco de ensaio correu. Uma actualização da imagem do proxy (AOS-517)
@@ -1522,6 +1523,155 @@ invalida os registos que citam a imagem anterior: requalifica-se e assina-se de 
 `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`, `served` em
 `aos_model_route_checks_total` passa a incluir os modelos esperados dos perfis assinados (no
 máximo 42 séries).
+
+### O modelo candidato e o canary — `AOS_MODEL_CANDIDATE` (AOS-520, ADR-041) — nada ligado hoje
+
+O nó serve o **titular** (`AOS_MODEL_NAME`) e, no máximo, um **candidato**: o perfil de um
+registo assinado da pasta acima cujo alias **não é** o do titular. Com `AOS_MODEL_CANDIDATE=on`,
+uma percentagem dos **planos novos** — a fatia assinada no registo — vai para o candidato, até
+**40 planos**. Quem escolhe é uma função do identificador do plano; quem submete não escolhe. O
+modelo fica **fixado por run**, e todos os nós e tentativas de um plano usam o mesmo. Um run sem
+plano conta como um plano de um nó.
+
+**A variável ainda não está no compose** (nem a pasta de perfis): entram juntas, num PR de deploy,
+depois da revisão adversarial que o ticket exige. Os passos abaixo são para essa altura.
+
+**Uma réplica do nó, se o Event Store for JetStream.** O backend JetStream tem um defeito
+conhecido na escrita com concorrência optimista (a vista local do stream não é refrescada quando
+outra réplica escreve). Com duas réplicas do nó e o candidato a servir, a que ficar atrás passa a
+recusar **todos os planos novos do candidato** (`livro_do_canary_em_contencao`) até reiniciar.
+Nenhum plano é servido pelo modelo errado; perde-se disponibilidade. Até esse defeito estar
+corrigido, `AOS_MODEL_CANDIDATE=on` só com **uma** réplica do nó sobre JetStream. O nó não sabe
+quantas réplicas partilham o Event Store: **avisa** no arranque («SO E SUPORTADO COM UMA REPLICA
+DO NO») e não recusa — a conferência é tua.
+
+**Ligar o candidato.**
+
+1. O registo do candidato está na pasta, assinado, com a fatia que queres (10%). O alias é um
+   que a allowlist assinada já autoriza e que não é o de `AOS_MODEL_NAME`.
+2. **Só um.** Com `on` e dois registos que não sejam o do titular, o nó não arranca.
+3. Se o nó tem tabela de preços (o custo por turno é derivado), o candidato tem de ter preço
+   nela para a região do nó — senão o nó não arranca.
+4. Drena a rota (passo 5 da secção anterior), põe `AOS_MODEL_CANDIDATE=on` no `.env` **de todas
+   as réplicas** e recria o nó.
+5. Confirma no arranque:
+
+   ```bash
+   docker logs aos-aos-1 2>&1 | grep -E 'modelo candidato|canary do modelo candidato' | tail -5
+   ```
+
+   Tem de dizer `modelo candidato A SERVIR`, com o titular, o candidato, a fatia e o digest do
+   registo — confere-o com o que o `route-profile-sign` imprimiu —, e `canary … ABERTO`, com
+   `0 de 40 planos`. Se disser `NAO SERVIDO`, o interruptor não chegou ao contentor ou a fatia é 0.
+
+**Ler o canary.**
+
+```bash
+curl -s … /metrics | grep aos_model_canary
+#   aos_model_canary_plans_assigned  — planos atribuídos ao candidato (última leitura desta réplica)
+#   aos_model_canary_closed          — 1 quando o canary terminou
+#   aos_model_canary_newer_events    — eventos do livro que este binário não conhece (deve ser 0)
+```
+
+**«Atribuído» não é «servido».** O livro conta os planos que foram **atribuídos** ao candidato, e
+grava a atribuição antes de o run começar. Um run que seja recusado logo a seguir (o livro não se
+conseguiu ler, a fixação não se gravou) já gastou um lugar dos 40. Por isso o número de planos que
+o candidato **serviu de facto** pode ser menor do que o contador: conta os `run.model_pinned` com
+`role: candidato` cujos runs deram turnos. O erro é para o lado de fechar o canary mais cedo,
+nunca de dar ao candidato mais de 40 planos.
+
+Que modelo serviu um run, e porquê, está no stream do run: o evento `run.model_pinned` (o papel,
+o alias, o digest do perfil, o digest do registo, a fatia e a razão — `funcao`,
+`plano_ja_atribuido`, `plano_anterior_a_abertura` ou `canary_fechado`). Os planos do candidato
+estão no livro durável `aos-internal/model-canary` (`model.canary.plan_assigned`). Para os ler
+no WAL, o procedimento é o de sempre (busybox `:ro` no volume, `grep -a`).
+
+Um plano pedido **antes** de o canary abrir é sempre do titular: os nós que já correu foram dele.
+
+**O que fazer ao 40.º plano.** O nó escreve `CANARY DO MODELO CANDIDATO TERMINADO` no log,
+`aos_model_canary_closed` passa a `1`, e o facto fica no livro e selado no audit de governação do
+gateway. O selo é **reconciliado**: se falhar, ou o nó morrer antes de selar, o arranque seguinte
+e a decisão seguinte voltam a tentar, lendo primeiro o audit — **num nó com o candidato a
+servir**. Com `off`, a fatia a 0 ou o registo retirado o nó só lê o livro, e não reconcilia: se
+puseres `off` logo a seguir ao 40.º plano, a marca de fecho ou o selo que tenham ficado por
+gravar ficam por gravar até um nó voltar a servir esse registo. O audit é de cada réplica — cada
+uma sela o fim no seu, uma vez; a fonte da contagem é o livro. O candidato deixa de receber planos **novos**; os que já lhe foram atribuídos acabam
+com ele. **Não passa a titular sozinho.** Com os números, decides uma de três:
+
+- **passa a titular** — mudas `AOS_MODEL_NAME` (e a allowlist, se for preciso), com a rota drenada;
+- **continua em canary** — assinas um **registo novo** (outra fatia, ou a mesma): é outro digest
+  de registo, a contagem recomeça em zero;
+- **sai** — o procedimento abaixo.
+
+Um reinício não reabre o canary nem repõe a contagem: é o livro que conta.
+
+**Desligar — drenar primeiro.** Com `AOS_MODEL_CANDIDATE=off` (ou o registo retirado), os runs
+**em curso** fixados no candidato acabam com ele enquanto o perfil estiver na pasta; os runs
+**novos** de um plano que já tinha sido atribuído ao candidato são **recusados** (fecham `failed`,
+`model_pin_refused`, causa `plano_do_candidato_sem_candidato`) — o plano falha, não continua no
+titular. Por isso:
+
+1. pára de submeter planos e espera que os planos do candidato acabem (`aos_runs_suspended 0` e
+   nenhum plano em curso);
+2. põe `off` em todas as réplicas e recria o nó;
+3. só depois de não haver runs fixados no candidato por acabar é que retiras o registo da pasta.
+   Um run fixado no candidato, retomado num nó sem o registo, **não continua**: a retoma responde
+   `409` com `modelo_fixado_nao_servido` e o crash-resume deixa-o órfão (o mesmo procedimento do
+   «run recusado pelo perfil fixado», acima). Repor o registo deixa-o acabar.
+
+**Não tires a variável da pasta** (`AOS_MODEL_ROUTE_PROFILES_DIR`) para desligar um candidato:
+sem ela o nó não lê o livro, e um run novo de um plano do candidato seria servido pelo titular.
+
+**Recuo de imagem.** Uma imagem anterior a este ticket não conhece a marca de modelo fixado: retoma
+um run do candidato com o titular, em silêncio. Recua-se com a rota drenada e o candidato
+desligado.
+
+**Recuo de uma imagem MAIS RECENTE para esta, e deploy rolante.** O livro do canary é um stream
+append-only: o que uma versão mais recente lá escrever (os eventos do disjuntor, AOS-521) fica.
+Esta versão não cai por isso: ignora os tipos de evento que não conhece, e passa a tratar o
+canary como **não decidível** — não atribui nenhum plano novo ao candidato, recusa os runs novos
+de planos que já eram do candidato (`livro_de_versao_mais_recente`), e serve o titular como
+sempre. Com `off`, arranca e é inerte. Vê-se no arranque (`AVISO … VERSAO MAIS RECENTE`) e em
+`aos_model_canary_newer_events` maior que zero. Para o candidato voltar a receber planos, o nó
+tem de correr a versão que escreveu esses eventos. (Um evento **malformado** de um tipo que esta
+versão conhece é outra coisa: o livro fica ilegível e o nó não arranca com a pasta de perfis
+configurada — não há reparação do stream; sai-se retirando a pasta.)
+
+**Repor um registo antigo.** Se trocares o registo do candidato e depois voltares ao anterior, o
+nó grava uma **época** nova da abertura, com a marca actual da fila: os planos pedidos entretanto
+ficam no titular, e a contagem do registo reposto continua de onde estava (não volta a zero).
+
+**Um run re-submetido não muda de modelo, e não morre.** Um `POST /runs` de um `run_id` que já
+está em curso (`running`) é uma retoma por outro nome. O nó lê o que está selado para o run: se o
+pode continuar, continua-o com o modelo em que começou; se não pode — o run está fixado num
+candidato que este nó não serve, noutro perfil, ou por uma versão mais recente do nó, ou o nó não
+tem a pasta de perfis — responde **409** e não lhe toca. O run fica `running`, como estava:
+
+```bash
+docker logs aos-aos-1 2>&1 | grep 'RECUSADO antes de hospedar' | tail -5   # o run, o estado e a causa
+```
+
+Sai-se como do «run recusado pelo perfil fixado», acima: repõe o perfil ou o registo em que o run
+está fixado e volta a submeter (ou retoma), ou abandona-o. Um run **novo** não passa por isto, nem
+paga nada por isto.
+
+**Quem pode submeter runs avulsos pode esgotar o canary.** Um run sem plano conta como um plano,
+e quem escolhe o `run_id` sabe de que lado a função o põe: quarenta ids escolhidos gastam os 40
+lugares, e os planos a sério ficam no titular. Não é negação de serviço — ninguém é servido pelo
+modelo errado —, é o canary a acabar sem medir nada. Vê-se nas atribuições do livro
+(`plan_key_kind: run` onde esperavas `pedido`). Se acontecer, o canary reabre-se com um registo
+novo; quem submete runs avulsos é uma decisão de quem dá credenciais.
+
+**Réplicas com a mesma configuração.** `AOS_MODEL_CANDIDATE` e a pasta de perfis têm de ser iguais
+em todas as réplicas. Com configurações diferentes, o mesmo plano pode ir para modelos diferentes;
+e cada arranque de uma réplica cujo registo não é o da última abertura grava uma época nova no
+livro — em crash-loop com configuração mista, o livro cresce sem tecto.
+
+**O que isto não cobre.** O planeador do `aos-orq` chama o modelo por conta própria: a
+decomposição de um plano não passa pelo canary. Quem escolhe o identificador de um plano pode
+calcular de que lado ele cai (a função não tem segredo). O `aos-orq serve` manual não traz pedido
+de plano: cada nó conta como um run independente. O disjuntor — tirar a fatia a um candidato que
+falha antes do 40.º plano — é o AOS-521; as métricas por modelo são o PR 2 deste ticket.
 
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 

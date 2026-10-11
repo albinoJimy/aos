@@ -98,6 +98,10 @@ func (g *runGate) sealTerminal(ctx context.Context, res agentruntime.Result, run
 		// resposta final. Sem este ramo cairia no `default` e o log diria `failed` — a causa
 		// errada, e ainda por cima a única que dispara a saga de compensação.
 		to, reason = state.TimedOut, reasonBudgetExhausted
+	case errors.Is(runErr, ErrModelPinRefused):
+		// AOS-520: o run foi recusado pela fixação do modelo, antes do primeiro turno. É `failed`,
+		// com razão própria — quem lê o log durável distingue-o de um run que correu e falhou.
+		to, reason = state.Failed, reasonModelPinRefused
 	case errors.Is(runErr, agentruntime.ErrMaxTurnsExceeded):
 		// ORÇAMENTO DE TURNOS ESGOTADO ⇒ `timed_out`, NÃO `failed`. A distinção não é
 		// cosmética: na tabela de AOS-017 `failed` é a falha RECUPERÁVEL cuja única aresta

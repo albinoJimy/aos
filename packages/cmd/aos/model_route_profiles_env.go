@@ -42,7 +42,9 @@ package main
 // não é fixado a meio e continua como sempre: a troca da tabela em código entre duas imagens do
 // nó, sem pasta de perfis, não é detectada.
 //
-// A FATIA do canary que o registo traz é lida, validada e mostrada; não tem efeito nesta versão.
+// A FATIA do canary que o registo traz é lida, validada e mostrada. Só tem efeito no registo do
+// CANDIDATO que o nó serve — um registo para um alias que não é o do titular, com
+// `AOS_MODEL_CANDIDATE=on` e a fatia maior que zero (AOS-520, ADR-041; `modelo_candidato.go`).
 
 import (
 	"context"
@@ -89,6 +91,16 @@ type perfisAssinados struct {
 	// externa é a allowlist externa com que os registos foram conferidos (nil ⇒ a embebida). É a
 	// MESMA que o gateway recebe: a que autorizou os nomes é a que os vai julgar em cada pedido.
 	externa *allowlist.Policy
+	// candidatoLigado é o interruptor `AOS_MODEL_CANDIDATE=on` (AOS-520), lido uma vez no arranque.
+	// false — a omissão — ⇒ nenhum candidato é servido, haja ou não um registo não-titular.
+	candidatoLigado bool
+	// selarFimDoCanary GARANTE o selo do fim do canary no audit de governação do MESMO gateway que
+	// serve os modelos (AOS-520): sela se o audit ainda não o tiver ([seladorDoFimDoCanary]).
+	// Ligado na composição do gateway; nil ⇒ não há onde selar.
+	selarFimDoCanary func(context.Context, fimDoCanary) error
+	// selosDoFimDoCanary conta, nesse mesmo audit, os selos do fim do canary de um registo de
+	// entrada. nil ⇒ não há onde ler.
+	selosDoFimDoCanary func(context.Context, string) (int, error)
 }
 
 // perfis devolve o conjunto de perfis do nó: a tabela em código (nil) sem pasta ou sem registos.
@@ -213,14 +225,21 @@ func modelRouteProfilesBanner(p *perfisAssinados) []string {
 	if len(p.entradas) == 0 {
 		return []string{"perfis de rota assinados (EPIC-06/AOS-519): AOS_MODEL_ROUTE_PROFILES_DIR definida e a pasta esta vazia — zero perfis assinados; o no usa a tabela de perfis em codigo, como sem a pasta. A pasta so e lida no arranque"}
 	}
+	// AOS-520: a fatia do registo do candidato que este nó SERVE tem efeito, e a linha di-lo. Em
+	// todos os outros casos — sem candidato a servir — a linha é, byte a byte, a de antes.
+	candidato, serve := p.candidatoAServir(modelNameFromEnv())
 	linhas := make([]string, 0, len(p.entradas))
 	for _, e := range p.entradas {
+		fatia := fmt.Sprintf("%d%% — lida e validada, SEM EFEITO nesta versao (AOS-520)", e.InitialSharePercent)
+		if serve && e.EntryDigest == candidato.entryDigest {
+			fatia = fmt.Sprintf("%d%% — EM VIGOR: este registo e o do candidato que o no serve (AOS-520, ADR-041; ver a linha do modelo candidato)", e.InitialSharePercent)
+		}
 		origem := "ACRESCENTA-SE a tabela de perfis em codigo, que nao tem este alias"
 		if antes, tem := modelgateway.RouteProfileFor(e.Profile.Requested); tem {
 			origem = fmt.Sprintf("SUBSTITUI a entrada da tabela de perfis em codigo para este alias, para o no inteiro: modelo esperado de antes %q (digest %s)", antes.ExpectedModel, antes.Digest())
 		}
-		linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO carregado (EPIC-06/AOS-519): registo %q, alias %q — %s; modelo esperado de agora %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio de qualificacao citado %s (veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia inicial do canary: %d%% — lida e validada, SEM EFEITO nesta versao (AOS-520). O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque: mudar a pasta com o no a correr nao tem efeito ate o no ser recriado. PERFIL FIXADO POR RUN (AOS-520): com perfis assinados carregados, cada run novo fica fixado pelo digest no perfil em vigor para o seu alias; retomado num no com outro perfil para o alias, ou sem nenhum, nao continua (retoma recusada, ou orfao declarado no crash-resume). A assinatura prova que o dono assinou este registo, nao que o banco de ensaio correu",
-			e.Label, e.Profile.Requested, origem, e.Profile.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest, e.InitialSharePercent))
+		linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO carregado (EPIC-06/AOS-519): registo %q, alias %q — %s; modelo esperado de agora %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio de qualificacao citado %s (veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia inicial do canary: %s. O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque: mudar a pasta com o no a correr nao tem efeito ate o no ser recriado. PERFIL FIXADO POR RUN (AOS-520): com perfis assinados carregados, cada run novo fica fixado pelo digest no perfil em vigor para o seu alias; retomado num no com outro perfil para o alias, ou sem nenhum, nao continua (retoma recusada, ou orfao declarado no crash-resume). A assinatura prova que o dono assinou este registo, nao que o banco de ensaio correu",
+			e.Label, e.Profile.Requested, origem, e.Profile.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest, fatia))
 	}
 	return linhas
 }
