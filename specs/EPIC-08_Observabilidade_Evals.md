@@ -1718,8 +1718,14 @@ de entrada para o dono assinar. E um procedimento escrito, com o tempo esperado 
       pasta de saída tem o relatório e o resumo e **não tem** registo de entrada — nem
       parcial, nem com outro nome. O código de saída distingue os três veredictos.
 - [x] Uma corrida interrompida a meio não deixa registo de entrada.
-- [x] **Mutação dirigida:** retirar a condição do veredicto faz aparecer um registo com
-      `recusado` e avermelha o teste.
+- [x] **Mutações dirigidas, uma por barreira** (critério reescrito a 2026-10-11, depois da revisão:
+      o texto original — «retirar a condição do veredicto faz aparecer um registo com
+      `recusado`» — não é o que acontece, porque a conferência do nó recusa esse relatório a
+      seguir). Entre a corrida e o pacote há quatro barreiras **independentes**: o código de saída
+      e o relatório dizem os dois `qualificado`; o relatório no disco é o da corrida; o registo e
+      o relatório passam nas conferências do nó; o que ficou escrito é o que se conferiu. Cada
+      uma tem um teste que a ataca com as outras satisfeitas, e retirar qualquer uma avermelha o
+      seu teste. Retirar a primeira **e** a terceira faz aparecer um registo com `recusado`.
 - [x] O registo de entrada preparado cita o digest do relatório **que está na pasta**: um
       teste recalcula-o. O comando não aceita um relatório vindo de fora nem um veredicto por
       argumento: só prepara o registo da corrida que acabou de fazer.
@@ -1808,33 +1814,41 @@ de entrada para o dono assinar. E um procedimento escrito, com o tempo esperado 
 
 ### Estado
 
-**Implementado em ensaio (2026-10-11); o ensaio a seco com Docker e nó local e a corrida real
-ficam por fazer, no posto do dono.** Ramo `feature/AOS-522-comando-qualificar`, assente no do
-AOS-519 (PR #472, por fundir).
+**Implementado em ensaio, com as correcções da revisão adversarial (2026-10-11); o ensaio a seco
+com Docker e nó local e a corrida real ficam por fazer, no posto do dono.** Ramo
+`feature/AOS-522-comando-qualificar`, sobre a base com o AOS-519 fundido.
 
 - **O que existe.** `aos-ensaio qualificar <falso|proxy|real>` e `aos-ensaio conferir`
-  (`packages/qa/banco-ensaio/qualificar.go`, `resumo_de_uma_pagina.go`). O `qualificar` confere o
-  registo pela leitura do nó **antes de enviar**, corre a experiência `qualificacao` pela linha de
+  (`packages/qa/banco-ensaio/qualificar.go`, `resumo_de_uma_pagina.go`). O `qualificar` faz o
+  plano **antes de enviar** — o registo pela leitura do nó e o alias contra a allowlist (a
+  embebida, ou a externa de `--allowlist-dir`) —, corre a experiência `qualificacao` pela linha de
   comandos de sempre, escreve o `resumo-de-uma-pagina.txt` e, só com `qualificado` do modo real
   com a corrida completa, a pasta `pacote/` com o registo por assinar e o relatório citado. Pára
   aí: não assina. O `conferir` passa o pacote assinado por `routeentry.LoadDir`.
 - **Uma só conferência.** Antes da assinatura: `routeentry.ParseEntry`, a imagem do proxy
-  declarada e `routeentry.CheckReport`. Depois: `routeentry.LoadDir`, com a allowlist embebida ou
-  a externa, e `NewRouteProfileSet`, como o nó. Não há cópia de nenhuma delas no banco.
+  declarada, a allowlist e `routeentry.CheckReport`. Depois: `routeentry.LoadDir` e a composição
+  dos perfis, como o nó. Não há cópia de nenhuma delas no banco.
+- **Quatro barreiras entre a corrida e o pacote**, independentes, cada uma com teste próprio
+  (`aos522_barreiras_test.go`): o código de saída e o relatório; o digest do relatório relido do
+  disco contra o da corrida; as conferências do nó; a comparação byte a byte do que ficou escrito.
+  O comando nunca sai com 0 sem pacote.
+- **O resumo mostra o que ficou escrito.** O bloco «o que vais assinar» sai do registo lido de
+  volta do pacote e traz o perfil inteiro (wire, capacidades, versão da projecção, parâmetros do
+  pedido), o ambiente, a fatia e os quatro digests. «SUBSTITUI» ou «ACRESCENTA-SE» é dito segundo
+  a tabela do binário do posto, com a revisão.
+- **Um defeito do AOS-518, corrigido aqui.** Uma corrida interrompida podia sair `recusado`: o
+  cancelamento apanhava um run depois de um pedido com 200, o runtime devolvia um erro sem classe
+  e a regra contava o nó como por cumprir (L1 ou L6). Medido: 3 e 7 falhas em duas séries de 200
+  corridas; reproduzido de forma determinista com um contexto que só se diz cancelado por `Err()`.
+  Agora o run apanhado leva `corrida_cancelada`, o nó fica interrompido por
+  `cancelamento_da_corrida` e o run não alimenta nenhum limiar. Depois da correcção: 200 em 200,
+  no teste do AOS-518 e no do AOS-522.
 - **Inerte.** Os subcomandos de sempre passam pela mesma função, que agora devolve também o
   relatório que escreveu; a suite de antes passa sem alterações, e o texto de uso geral não mudou
-  de um byte (preso por teste).
-- **Testes** (`aos522_qualificar_test.go`, provider falso e lançador falso): o caminho feliz até
-  ao `LoadDir` com uma chave gerada no teste; `recusado`, `inconclusivo`, um ensaio e uma corrida
-  interrompida sem registo; as recusas antes de enviar com a causa do nó; o `conferir` com um
-  pacote bom e seis recusas do AOS-519; a página de 60 por 100 e a ordem; o controlo não corrido;
-  a lista fechada de opções e de variáveis lidas; a terceira qualificação do dia. Dezasseis
-  mutações dirigidas, todas vermelhas.
+  de um byte (preso por teste). O campo `corrida_cancelada` só aparece num run de qualificação
+  apanhado por um cancelamento.
 - **Como se leram três critérios.**
-  1. *«Retirar a condição do veredicto faz aparecer um registo com `recusado`».* Há duas barreiras:
-     a condição e o `CheckReport`. Sem a condição, o `CheckReport` ainda recusa — não aparece
-     registo, e o teste avermelha pelo código de saída (11 em vez de 7). Sem as duas, aparece o
-     registo e o teste avermelha por isso. As duas mutações foram corridas.
+  1. *As mutações.* Ver o critério reescrito, acima.
   2. *«A conferência antes da cópia pela mesma função».* O `LoadDir` exige a assinatura; por isso
      o `qualificar` usa as funções que ele chama por dentro e que não dependem dela, e é o
      `conferir`, depois de o dono assinar, que corre o `LoadDir` inteiro.
@@ -1845,12 +1859,17 @@ AOS-519 (PR #472, por fundir).
      resultado desconhecido sai «CONTROLO NAO CORRIDO».
 - **Critério por cumprir.** *O ensaio do procedimento a seco*, com provider falso atrás do proxy
   fixado e um nó local até ao banner: **não foi feito**, e os tempos por passo não estão medidos.
-  O nó só aceita um relatório do modo `real`, e esse modo fica reservado ao posto do dono. O que
-  existe no seu lugar é o teste do caminho feliz, que vai do perfil ao `LoadDir` sem Docker e sem
-  nó. Os tempos do runbook são os do desenho, por medir no AOS-523.
-- **Limites que ficam.** O resumo não é garantia. O `conferir` não sabe se a âncora, o board e a
-  região que recebe são os do servidor. O board e a região têm um tecto de 64 bytes só neste
-  comando. Os dois subcomandos não aparecem no texto de uso geral do banco.
+  O nó só aceita um relatório do modo `real`, e esse modo fica reservado ao posto do dono: o
+  ensaio depende da qualificação real. O que existe no seu lugar é o teste do caminho feliz, que
+  vai do perfil ao `LoadDir` sem Docker e sem nó. Os tempos do runbook são os do desenho, por
+  medir no AOS-523.
+- **Limites que ficam.** O resumo não é garantia. O plano e o `conferir` não sabem se a âncora, o
+  board, a região e a allowlist que recebem são os do servidor. O alfabeto do board e da região
+  (1 a 64 letras, dígitos, `_` e `-`) é só deste comando. A criação exclusiva da pasta de saída
+  não tem teste de concorrência verdadeira: está presa a recusa de uma pasta que já existe. A
+  reconferência pelo nó do pacote relido é redundante com a comparação byte a byte (bytes iguais
+  aos conferidos passam sempre): retirá-la sozinha não muda nada, e por isso não tem mutação que
+  a mate. Os dois subcomandos não aparecem no texto de uso geral do banco.
 
 ## AOS-523 — A prova da fase A3: o terceiro modelo entra em menos de uma hora, com zero PRs e uma assinatura; um modelo mau é recusado sozinho
 
@@ -2044,3 +2063,4 @@ intervenção.
 | 1.13 | 2026-10-11 | +AOS-522 (fase A3): um comando do banco encadeia a qualificação, o resumo de uma página e a preparação do registo de entrada para o dono assinar — sem veredicto `qualificado` não fica nada por assinar, e a chave privada nunca entra no arnês; conferência local do pacote pela função que o nó usa; runbook com relógio | Equipa AOS |
 | 1.14 | 2026-10-11 | +AOS-523 (fase A3): a medição do critério da fase — o terceiro modelo (outro modelo do Kimi, pela mesma conta) entra em produção em menos de uma hora, com zero PRs e uma assinatura; um modelo mau é recusado pelo arnês e pelo nó, em ensaio; um candidato que degrada perde a fatia, em ensaio (D9) | Equipa AOS |
 | 1.15 | 2026-10-11 | AOS-522 implementado em ensaio: `aos-ensaio qualificar` e `conferir`, o resumo de uma página e o runbook com relógio; o ensaio a seco com Docker e nó local e a corrida real ficam por fazer | Equipa AOS |
+| 1.16 | 2026-10-11 | AOS-522: correcções da revisão adversarial — quatro barreiras com teste próprio, o resumo a partir do registo escrito, o plano confere a allowlist; e a correcção de um defeito do AOS-518 (uma corrida interrompida podia sair `recusado`) | Equipa AOS |
