@@ -250,8 +250,10 @@ func TestAOS517_ProxyDeProducaoEOProxyEmQueSeMede(t *testing.T) {
 	if want := 3 + len(aos517Guioes); c.Nomeados != want {
 		t.Errorf("sítios nomeados conferidos: %d; esperava %d", c.Nomeados, want)
 	}
-	t.Logf("imagem do proxy: %s — %d sítios nomeados e %d referências escritas em %d ficheiros, todos iguais",
-		c.Declarada, c.Nomeados, c.Ocorrencias, c.Ficheiros)
+	if !t.Failed() {
+		t.Logf("imagem do proxy: %s — %d sítios nomeados e %d referências escritas em %d ficheiros, todos iguais",
+			c.Declarada, c.Nomeados, c.Ocorrencias, c.Ficheiros)
+	}
 }
 
 // aos517CopiaDosSitios copia para uma pasta temporária os ficheiros dos sítios, nos mesmos
