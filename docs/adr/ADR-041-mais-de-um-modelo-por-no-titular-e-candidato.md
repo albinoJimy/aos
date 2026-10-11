@@ -10,7 +10,8 @@
   e o crash-resume) · executor de AOS-520
 - **Tickets:** AOS-520 (PR 0, o perfil fixado por run — ADR-036 §2.8; **PR 1, este ADR**: a
   função de escolha, o modelo fixado por run, o despachante por alias e o livro do canary;
-  **PR 2**, as séries por modelo — §2.8). AOS-521 (o disjuntor — §2.9, reservado). Nasce
+  **PR 2**, as séries por modelo — §2.8). AOS-521 (o disjuntor — §2.9; nasce desligado,
+  `AOS_MODEL_BREAKER=off`). Nasce
   desligado (`AOS_MODEL_CANDIDATE=off`) e só liga por decisão do dono, depois de uma revisão
   adversarial independente; por verificar em produção e sobre JetStream.
 - **Relacionados:** ADR-010 (replay determinístico), ADR-012 (auto-modificação: canary e
@@ -202,7 +203,8 @@ O que fica gravado:
   gravado, o run não arranca): o papel (`titular` ou `candidato`), o alias, o digest do perfil,
   o digest do registo de entrada do candidato, a fatia em vigor, a versão da função, a chave do
   plano com o seu tipo, e a razão — de vocabulário fechado: `funcao`, `plano_ja_atribuido`,
-  `plano_anterior_a_abertura`, `canary_fechado`, `livro_de_versao_mais_recente`.
+  `plano_anterior_a_abertura`, `canary_fechado`, `livro_de_versao_mais_recente` e, desde o
+  AOS-521, `disjuntor_aberto` (§2.9).
 - **No registo de retoma**, o campo `ModelPinnedBy` (ausente num run não fixado por escolha —
   os bytes de sempre), ao lado do modelo e do digest do perfil.
 
@@ -332,8 +334,8 @@ lê o relógio.
 `model_pin_refused` na transição terminal e a causa no log do nó; o `aos-orq` trata-o como a
 falha terminal de um nó do plano. As causas, em vocabulário fechado:
 `plano_do_candidato_sem_candidato`, `livro_do_canary_ilegivel`, `livro_do_canary_em_contencao`,
-`livro_de_versao_mais_recente`, `fixacao_nao_gravada`, `fixacao_diferente_da_gravada` e
-`marca_sem_fixacao_gravada`.
+`livro_de_versao_mais_recente`, `fixacao_nao_gravada`, `fixacao_diferente_da_gravada`,
+`marca_sem_fixacao_gravada` e, desde o AOS-521, `plano_do_candidato_com_disjuntor_aberto` (§2.9).
 
 Um run que **já existe** e que o nó não pode continuar — pela retoma, pelo crash-resume ou por
 um `POST /runs` do mesmo id (§2.4) — é recusado **antes de hospedar** e fica `running`,
@@ -391,15 +393,97 @@ mudam de nome, de rótulos nem de valor:
   modelos é `aos_runs_finished_total` enquanto todos os runs selados tiverem modelo.
 - `deploy/server/alerta-rota.sh` e as métricas que lê não mudaram.
 
-### 2.9 O disjuntor — reservado ao AOS-521
+### 2.9 O disjuntor do candidato (AOS-521)
 
-Este ADR só fecha a fatia pelo fim do canary. Tirar a fatia a um candidato que falha, antes do
-40.º plano, é o AOS-521, que entrega esta secção por emenda: onde vive o estado do disjuntor, o
-que o abre e que só o dono o volta a fechar. O que o AOS-521 encontra feito: o livro durável
-com CAS, o evento `closed`, a regra «canary fechado ⇒ titular» no ponto único da escolha, e o
-**contrato de evolução do livro** (§2.6): os factos do disjuntor entram por tipos novos da
-família `model.*`, e um nó desta versão que os encontre deixa de atribuir planos ao candidato
-em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
+O canary só fecha a fatia ao 40.º plano. O disjuntor tira-a **antes**, sozinho, a um candidato
+que falha (decisão D5), e não a devolve sozinho.
+
+**A regra.** Dispara com **3 falhas nas últimas 20 unidades** do candidato, ou à **primeira
+observação de um turno com o modelo servido diferente** do esperado. É uma função pura da
+sequência das observações de um registo, pela ordem do livro (`avaliarDisjuntor`); disparada,
+fica disparada, com a janela e os contadores do momento do disparo. Não compara com o titular
+nem usa o relógio.
+
+**A unidade** da janela é o nó do plano: uma nova tentativa (ADR-039) substitui o desfecho da
+anterior e vai para o fim. Um run sem plano é uma unidade. A tentativa falhada conta enquanto a
+seguinte não fechar — se entretanto a regra disparou, disparou.
+
+**Os sinais**, lidos do que o nó tem quando sela o run, sem ler texto do modelo:
+
+| Sinal | O que é |
+|---|---|
+| `cumprido` | selado `complete` sem veredicto negativo. Entra na janela; não é falha |
+| `nao_cumprido` (F1) | veredicto do kernel negativo, por qualquer razão que não a resposta vazia — com o nó a impor o veredicto ou só a observá-lo |
+| `resposta_vazia` (F2) | veredicto negativo com a razão `empty_output` |
+| `resposta_rejeitada` (F3) | o run falhou com o erro de uma resposta que o gateway recusou (as causas do AOS-509) |
+| `erro_do_provider` (F4) | o run falhou com um status do provider que não é 200 nem 429 |
+| `modelo_servido_diferente` (F5) | a governação da rota viu `diferente`: num turno (abre logo), ou como causa da falha do run em imposição |
+
+**Não entram na janela** — nem como falha, nem como run bom: o limite de ritmo (429, que é da
+conta); o run recusado pela fixação (não deu um turno); o cancelamento, o pânico, o tecto de
+turnos e o orçamento esgotado; um erro de transporte **sem resposta** (o nó não sabe se foi o
+modelo ou o caminho até ao proxy, que o titular também usa — o proxy que esgota o tempo do
+provider responde com um status, e esse conta); a rota `nao_reportado`; e um desfecho que não
+ficou selado.
+
+**O estado vive no livro do canary**, em quatro tipos novos da família `model.*` (o contrato do
+§2.6), todos com o digest do registo de entrada:
+
+| Tipo | Um por | O que sela |
+|---|---|---|
+| `model.breaker.run_outcome` | run do candidato | o run, a unidade e o sinal |
+| `model.breaker.route_mismatch` | run | um turno com o modelo servido diferente |
+| `model.breaker.opened` | registo | a regra que disparou, os cinco contadores e a janela (runs e sinais) — nó em `enforce` |
+| `model.breaker.would_open` | registo | o mesmo — nó em `observe` |
+
+Escritos com `WithExpectedSeq` e com a chave de idempotência do run ou do registo: uma marca de
+cada tipo por registo, escreva quem escrever. Quem diz que um run é do candidato, sob que
+registo e de que unidade, é o **stream do run** (`run.model_pinned` e `run.plan_origin`), lido
+uma vez quando o run do candidato acaba. Depois do disparo não se grava mais nenhuma observação.
+O custo: o livro, que já se lia em cada run novo, cresce um evento por run do candidato até ao
+disparo; ler o estado no arranque é a leitura do livro que o arranque já fazia, mais uma.
+
+**O estado é por registo.** Um registo assinado novo não tem observações nem marcas: **começa
+fechado** — é esse o acto do dono que reabre, e o único. Repor o mesmo registo não reabre; repor
+um registo antigo cujo disjuntor abriu deixa-o aberto.
+
+**Os modos** — `AOS_MODEL_BREAKER=off|observe|enforce`, omissão `off`; outro valor não arranca:
+
+- `off` — não avalia, não grava, não publica métricas e não faz uma leitura a mais: byte a byte
+  o nó do AOS-520. **Mas a marca `opened` que já esteja no livro para o registo em vigor vale na
+  mesma**: desligar o disjuntor não o reabre (o arranque avisa).
+- `observe` — grava as observações, avalia, e ao disparo grava `would_open` e di-lo em
+  `aos_model_breaker_would_open`. **Não corta**: reparte os planos como `off`.
+- `enforce` — o mesmo, e ao disparo grava `opened` e corta. A decisão é a da regra sobre as
+  observações do livro, tenham sido gravadas em `observe` ou em `enforce`: **passar a `enforce`
+  com um registo cujo `observe` teria aberto abre na primeira leitura**. Um `would_open` não é
+  lido como aberto por nenhum modo; as observações é que são as mesmas.
+
+**O sinal F5 vem da governação da rota** (ADR-036 §2.8). Com ela desligada o sinal não existe:
+em `observe` o arranque di-lo; em `enforce` **o nó não arranca**.
+
+**Aberto** (a marca no livro, ou a regra disparada com o nó em `enforce`), no ponto único da
+escolha (§2.6), depois da regra 1:
+
+- um run novo de um **plano novo** ⇒ titular, com a razão `disjuntor_aberto`;
+- um run novo de um **plano já atribuído ao candidato** ⇒ recusado, com a causa
+  `plano_do_candidato_com_disjuntor_aberto` — o plano falha, não passa os nós que faltam ao
+  titular;
+- os runs **em curso** do candidato acabam, e a retoma de um run já fixado continua: o
+  disjuntor não lê nem mata o que já está fixado.
+
+A decisão não depende de a marca ficar gravada: a marca em falta é reposta na decisão seguinte
+ou no arranque. **O titular nunca é tocado**: nenhuma observação de um run do titular chega ao
+livro. O candidato nunca passa a titular.
+
+**Métricas**, só com o disjuntor ligado e um candidato a servir, da última leitura do livro por
+essa réplica: `aos_model_breaker_open`, `aos_model_breaker_would_open`,
+`aos_model_breaker_window_failures`, `aos_model_breaker_window_units`,
+`aos_model_breaker_signals{signal}` (cinco séries) e `aos_model_breaker_unrecorded_total`. O
+aviso é `deploy/server/alerta-disjuntor.sh`.
+
+**Um nó de versão anterior** (o do AOS-520) que encontre estes eventos não cai: conta-os como de
+uma versão mais recente e deixa de atribuir planos ao candidato (§2.6) — o lado fechado.
 
 ## 3. Alternativas rejeitadas
 
@@ -492,9 +576,25 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
 - **Um livro com um evento malformado de um tipo conhecido não se repara** (o stream é
   append-only): o nó não arranca com a pasta de perfis configurada, mesmo com o interruptor a
   `off`. Sai-se retirando a variável da pasta, que é desligar os perfis assinados todos.
+- **O disjuntor herda o defeito do CAS do JetStream** (AOS-524), como o canary: com mais de uma
+  réplica do nó sobre JetStream, a réplica que fica atrás não consegue gravar observações nem
+  marcas (`aos_model_breaker_unrecorded_total` sobe) — as observações dessa réplica não entram
+  na janela. Não é suportado; o substrato não foi tocado.
+- **Uma observação que não ficou no livro não entra na janela** (o livro ilegível ou em
+  contenção quando o run do candidato acabou, ou o nó a morrer entre o selo do run e a escrita):
+  erra para o lado de não abrir. Conta-se e diz-se no log; não se reconstrói a partir dos runs.
+- **A abertura do disjuntor não é selada no audit de governação do gateway** (ao contrário do
+  fim do canary): fica no livro durável, que é a fonte. Por decidir se também vai para o audit.
+- **A leitura de calibração sobre o titular** (a mesma regra, só em métrica) **não foi feita**:
+  para ser exacta precisava de ler o log de cada run do titular, e o titular não paga nada pelo
+  disjuntor. Sem ela, «3 em 20 dispara por azar?» mede-se com o `observe` sobre o candidato.
+- **Com o nó a não servir candidato** (interruptor a `off`, fatia a 0), o disjuntor não avalia
+  nem grava: um run já fixado no candidato que acabe nesse estado não deixa desfecho.
+- **O `alerta-disjuntor.sh` não é copiado para o servidor pelo deploy**: instala-se à mão até um
+  PR de deploy o acrescentar.
 - **As séries por modelo são por processo** e desde o arranque, como as de sempre: um reinício
   repõe-nas a zero. Não são a fonte de nenhuma decisão.
-- **Por fazer:** o smoke sobre JetStream; o disjuntor (AOS-521).
+- **Por fazer:** o smoke sobre JetStream (do canary e do disjuntor).
 
 ## 6. Relação com outros ADR
 
@@ -514,7 +614,8 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
   run, um run não muda de rota; e pela via assinada só entram perfis que não devolvem estado (D8).
 - **ADR-010** — o replay de um run do candidato reproduz-se das capturas, como qualquer outro;
   o `run.model_pinned` é um facto do log, não uma entrada do replay.
-- **ADR-025** — o precedente de «despromove sozinho, só um humano devolve», que o AOS-521 segue.
+- **ADR-025** — o precedente de «despromove sozinho, só um humano devolve», que o disjuntor
+  (§2.9) segue: aqui o acto humano é a assinatura de um registo de entrada novo.
 - **ADR-027, ADR-035, ADR-039** — cada nó do plano é um run do nó; o nó deriva o pedido de que
   o run é trabalho; a nova tentativa é um run novo do mesmo pedido — e por isso do mesmo modelo.
 - **ADR-029** — o nome do stream do livro não tem pontos; **ADR-030** — a marca de abertura é um
@@ -528,4 +629,4 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
 | AOS-520, PR 0 | O digest do perfil fixado por run (ADR-036 §2.8) |
 | AOS-520, PR 1 | §2.1 a §2.7, e as duas métricas do canary do §2.8 |
 | AOS-520, PR 2 | As séries por modelo do §2.8 |
-| AOS-521 | §2.9, o disjuntor (por fazer) |
+| AOS-521 | §2.9, o disjuntor |
