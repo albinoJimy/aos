@@ -3630,14 +3630,14 @@ parâmetros em silêncio.
 
 **No repositório**
 
-- [ ] `deploy/server/docker-compose.prod.yml` refere a imagem do proxy por `@sha256:`; não
+- [x] `deploy/server/docker-compose.prod.yml` refere a imagem do proxy por `@sha256:`; não
       resta nenhuma referência por tag móvel à imagem do proxy em `deploy/server/`.
-- [ ] Um teste em CI falha se o digest do compose de produção for diferente do digest em que o
+- [x] Um teste em CI falha se o digest do compose de produção for diferente do digest em que o
       banco e os gates atrás do proxy medem. **Mutação dirigida:** trocar um carácter do digest
       em qualquer um dos sítios avermelha o teste; fica registado quantos sítios o teste cobre.
 - [ ] O gate opcional atrás da imagem do proxy (`scripts/ci/banco-ensaio-proxy.sh`) corre
       verde contra o digest declarado, depois da última edição.
-- [ ] O `deploy/server/README.md` descreve a actualização do proxy como mudança de digest por
+- [x] O `deploy/server/README.md` descreve a actualização do proxy como mudança de digest por
       PR, com a ordem: gates atrás da imagem nova, requalificação das rotas em uso, só depois
       o servidor. E diz o que a mudança invalida: os veredictos que citam o digest anterior.
 
@@ -3701,7 +3701,66 @@ parâmetros em silêncio.
 
 ### Estado
 
-**Aberto (2026-10-11).** Nada implementado. Pode começar já, em paralelo com o AOS-518.
+**IMPLEMENTADO NO REPOSITÓRIO (2026-10-11); os passos do servidor estão por fazer, e são do
+dono.** O ticket não fecha enquanto os cinco critérios «No servidor» não estiverem medidos e
+registados na §5 do acompanhamento.
+
+**O que ficou feito no repositório.**
+
+- **O compose de produção refere o proxy por digest** — o serviço `litellm` de
+  `deploy/server/docker-compose.prod.yml`, com `ghcr.io/berriai/litellm@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63`
+  (`litellm` 1.96.2). Em `deploy/server/` não resta referência por tag móvel.
+- **Uma declaração e um guarda.** A declaração é `ImagemDoProxy`
+  (`packages/qa/banco-ensaio/proxy.go`). A leitura partilhada não é praticável (o compose é
+  YAML, o teste do gateway vive noutro módulo, os guiões são shell), e por isso ficou a
+  segunda forma do âmbito: `TestAOS517_ProxyDeProducaoEOProxyEmQueSeMede`, em
+  `packages/qa/banco-ensaio/aos517_digest_do_proxy_test.go`. Corre no gate `test` de cada PR,
+  com os outros testes do módulo; **não há gate novo**. Cobre **seis sítios nomeados** — o
+  compose, a declaração, a constante `aos505ImagemDoProxy` do teste do gateway e os três
+  guiões que lançam o proxy (`banco-ensaio-proxy.sh`, `wire-live.sh`, `rota-live.sh`, que têm
+  de continuar a ler a imagem da constante e de mais lado nenhum) — e uma **varredura** de
+  toda a referência escrita à imagem do proxy em `deploy/server`, `scripts/ci`,
+  `docs/runbooks` e nos dois módulos que o lançam: à data, seis referências em cinco
+  ficheiros, com piso de quatro ficheiros.
+- **Mutação dirigida, presa como teste**
+  (`TestAOS517_MutacaoDeUmCaracterAvermelhaEmCadaSitio`, sobre uma cópia dos sítios): um
+  carácter do digest trocado no compose, na declaração, na constante do gateway ou no runbook
+  do banco avermelha o guarda, e a falha nomeia o ficheiro. Repetida à mão na árvore real
+  para o compose, a constante do gateway e a declaração: vermelho nas três.
+- **Controlo negativo** (`TestAOS517_TagEmVezDeDigestFalhaComMensagemPropria`): com a tag
+  móvel no compose a falha diz «TAG MÓVEL» e nomeia a tag. E
+  `TestAOS517_OutrasFugasAvermelham`: um guião com a imagem escrita à mão, a ler de outra
+  fonte ou a reatribuí-la; o serviço fora do compose; um digest truncado; uma referência nova
+  por tag num runbook; a varredura abaixo do piso.
+- **O runbook** — `deploy/server/README.md`, «O proxy do modelo, fixado pelo digest
+  (AOS-517)»: a actualização como mudança de digest por PR, com a ordem e o que invalida, e
+  os passos de produção com comandos, medição antes e depois e recuo.
+
+**Lido no servidor a 2026-10-11, só leitura, antes de qualquer mudança.** O contentor
+`aos-litellm-1` corre exactamente o digest declarado: a tag `main-stable` resolveu para ele
+quando o contentor foi criado, três semanas antes. O risco «a imagem de produção de hoje pode
+não ser a medida» não se verificou — fixar não troca de proxy. O `config.yaml` do servidor tem
+`drop_params: true`. O runbook repete a leitura no dia da mudança, e é essa que fecha o
+primeiro critério do servidor.
+
+**O que falta, e é do dono** (runbook, passos 1 a 5): repetir a leitura do digest; aplicar o
+compose novo, com um plano antes e outro depois; `drop_params: false` com a cópia, a
+recriação e a leitura do log; a série de 20 planos; o registo na §5 do acompanhamento.
+
+**O que o dono tem de saber antes de aprovar o próximo deploy.** O compose é copiado em cada
+deploy e o `deploy.sh` corre `up -d`: como a definição do serviço mudou (a referência da
+imagem), **a primeira release com este ticket recria o `litellm` sozinha**. Aprovar esse
+deploy é executar o passo 2. A imagem é a mesma, mas o contentor novo volta a ler o
+`config.yaml` e o `secrets/model.env` que estiverem no servidor nesse momento.
+
+**Limites declarados.**
+
+- `deploy/node/dev-hardened/` continua na tag móvel: é o ambiente de desenvolvimento, fora do
+  âmbito («em `deploy/server/`») e fora do guarda, de propósito.
+- O tempo de arranque do proxy no servidor não foi medido: o runbook diz «dezenas de
+  segundos» e manda medi-lo.
+- Os relatórios datados em `docs/reports/` citam o digest e não entram no guarda: são registo
+  do que se mediu num dia.
 
 ## AOS-519 — O nó carrega perfis de rota assinados de uma pasta e confere o veredicto que citam; sem pasta, é o binário de hoje
 

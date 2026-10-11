@@ -7,6 +7,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Changed — EPIC-06 (AOS-517) Fase A3: o proxy de produção fixa-se pelo digest em que se mede
+
+- `feat(AOS-517)` — o serviço `litellm` de `deploy/server/docker-compose.prod.yml` deixa a tag móvel `main-stable` e refere a imagem por digest (`litellm` 1.96.2): a mesma em que o banco de ensaio e os gates atrás do proxy medem. Lido no servidor a 2026-10-11, é o digest que produção já corre: a mudança não troca de proxy, impede que uma recriação o troque. **Efeito no deploy:** a definição do serviço mudou, pelo que a primeira release com esta alteração **recria o `litellm`** (o nó fica sem modelo enquanto o proxy arranca), e o contentor novo volta a ler o `config.yaml` e o `secrets/model.env` do servidor.
+- `test(AOS-517)` — `TestAOS517_ProxyDeProducaoEOProxyEmQueSeMede` (módulo do banco de ensaio, gate `test`): falha se o compose de produção, a constante do teste do gateway, os três guiões que lançam o proxy ou qualquer referência escrita à imagem em `deploy/server`, `scripts/ci` e `docs/runbooks` deixarem de ser a declarada em `ImagemDoProxy`. Uma referência abreviada à imagem nessas pastas também o avermelha.
+- `docs(AOS-517)` — `deploy/server/README.md`: actualizar o proxy é uma mudança de digest por PR (gates atrás da imagem nova, requalificação das rotas, só depois o servidor), e os passos de produção do dono — fixar a imagem e `drop_params: false` — com medição antes e depois e recuo. **Por fazer no servidor.**
+
 ### Added — EPIC-06 (AOS-516) Fase A2: o perfil da rota declara onde o estado volta e como o raciocínio se pede
 
 - `feat(AOS-516)` — o Model Gateway serve modelos por agregadores, e o que muda de uns para os outros declara-se no **perfil da rota**, em vocabulário fechado. **`devolver_em`** (`origem`, a omissão, ou `topo`): com `topo`, os campos de raciocínio que o proxy entregou dentro de `message.provider_specific_fields` voltam no topo da mensagem `assistant`, com os bytes recebidos, e o saco não volta. **`params.reasoning`** (`effort` ou `max_tokens`): a forma `reasoning: {…}` de pedir o raciocínio, ao lado de `thinking` e de `reasoning_effort` e nunca com eles. Inerte por omissão: os digests dos perfis de hoje e os pedidos às rotas de hoje não mudam um byte. Contrato da porta **`1.10.0`**; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8. Nenhuma rota de produção declara nenhum dos dois. Com `topo`, um nome de campo de raciocínio repetido no estado de um turno não é devolvido (causa `estado_com_nome_repetido`).
