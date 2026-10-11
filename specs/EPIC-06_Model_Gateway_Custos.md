@@ -4293,9 +4293,9 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 **Em curso (2026-10-11).** Feitos o **PR 0 — o perfil fixado por run** (ramo
 `feature/AOS-520-perfil-fixado-por-run`) e o **PR 1 — titular, candidato e canary** (ramo
 `feature/AOS-520-titular-e-candidato`, por cima do PR 0). **Por fazer:** o PR 2 (as séries por
-modelo — o bloco «Métricas»), o smoke sobre JetStream, e a revisão adversarial independente, que
-é condição para ligar o interruptor. Os critérios marcados acima são os que o PR 1 cumpre em
-ensaio; nada está ligado.
+modelo — o bloco «Métricas») e o smoke sobre JetStream. O PR 1 teve **duas revisões adversariais
+independentes** (2026-10-11), corrigidas no mesmo ramo — ver «Correcções das revisões», abaixo.
+Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada está ligado.
 
 **O que o PR 1 entregou** (ADR-041).
 
@@ -4328,6 +4328,45 @@ PR 0** com o mesmo ficheiro de teste (`aos520_inercia_test.go`). Os goldens do n
 **Uma diferença, de propósito (acerto do dono):** com um registo não-titular na pasta, o arranque
 ganha UMA linha a dizer «candidato não servido»; as que já existiam são as de antes.
 
+**Correcções das revisões adversariais do PR 1 (2026-10-11).** A inércia, a chave do plano, a
+escolha num só sítio e a contagem (nunca mais de 40; um plano conta um) aguentaram. O que se
+corrigiu, um commit por ponto:
+
+- *«É um run novo?» responde-se pelo log.* Um `POST /runs` de um run que já estava `running` era
+  escolhido como novo: turno 1 no titular, turno 2 no candidato, um `run.model_pinned` gravado
+  depois de um turno e um lugar dos 40 gasto. A escolha deixou de depender do caminho de chamada:
+  o nó lê a história do run (turno gravado, registo de retoma, fixação); com história e sem
+  fixação é o modelo do nó, como sempre; com fixação gravada vale o selado.
+- *As chaves de pedido e de run avulso ficaram em espaços separados* no livro (a suspeita dos
+  dois revisores confirmou-se por teste): um run avulso com o nome de um pedido de plano anterior
+  à abertura atribuía o plano ao candidato. O tipo da chave não entra na função: **os vectores do
+  ADR não mudaram**.
+- *A marca no Goal só vale se estiver selada* para o run, e é de um conjunto fechado. Um Goal com
+  a marca para um run sem fixação gravada é recusado (`marca_sem_fixacao_gravada`).
+- *O livro evolui por tipos novos.* Um evento de um tipo desconhecido da família `model.*`
+  (o que o AOS-521 vai escrever) impedia o arranque com `off` e recusava todos os runs novos com
+  `on`. Agora é ignorado na contagem e deixa o canary «não decidível por esta versão»: nada de
+  novo para o candidato, o titular é servido, e o nó arranca. Malformado de tipo conhecido
+  continua ilegível.
+- *Repor um registo antigo abre uma época* com a marca actual da fila: na sequência A → B → A,
+  um plano pedido sob B deixou de ir ao candidato sob A reposto. A contagem é por registo.
+- *O selo do fim é reconciliado pelo audit*, no arranque e em cada decisão (era «no máximo uma
+  vez»); a marca de fecho em falta grava-se no arranque.
+- *Menores:* o interruptor inválido aborta também sem gateway; a causa inalcançável
+  `candidato_sem_o_perfil_do_registo` saiu; o log e o banner dizem «atribuído», não «servido»; a
+  espera pela vez no livro respeita o contexto; e os testes em falta (o limite gravado, o
+  candidato indisponível, a concorrência real com goroutines).
+
+**Limite novo, que NÃO foi corrigido aqui — o candidato sobre JetStream só com uma réplica do
+nó.** O backend JetStream do Event Store compara o `seq` esperado de uma escrita com CAS com a
+vista local do stream, que não é refrescada quando outra réplica escreve: com duas réplicas, a
+que fica atrás recusa todos os planos novos do candidato (`livro_do_canary_em_contencao`) até
+reiniciar. É anterior a este ticket e apanha também a quota por principal. Está reproduzido por
+um teste que afirma o comportamento de hoje
+(`packages/substrate/eventstore/jetstream/aos520_cas_vista_atrasada_test.go`), escrito no
+ADR-041 §5 e no runbook, e o arranque avisa. **Ticket próprio por abrir.** O nó não recusa
+arrancar: não tem como saber quantas réplicas partilham o Event Store.
+
 **Limites e pontos que ficaram escritos (PR 1).**
 
 - *Por fazer:* o smoke sobre JetStream (a escolha, a fixação e a contagem), e o teste sobre o
@@ -4336,27 +4375,48 @@ ganha UMA linha a dizer «candidato não servido»; as que já existiam são as 
 - *A recusa pela fixação não tem série própria:* o run fecha `failed` com a razão
   `model_pin_refused` na transição terminal e a causa no log; conta nas séries de desfecho que já
   existem. As séries por causa e por modelo são do PR 2.
-- *O `run.model_pinned` que já lá estava vale:* um run re-submetido com o mesmo id depois de um
-  crash antes do registo de retoma é recusado se o que o nó escolheria agora não for o gravado.
+- *O `run.model_pinned` que já lá estava vale:* um run re-submetido com o mesmo id fica com a
+  fixação que o log tem; se o modelo fixado já não é servido, é recusado.
+- *O teste do candidato indisponível* cobre o 503 e a ligação cortada; o timeout em si não (o
+  arnês do nó composto fixa o tempo máximo do pedido em 60 s).
+- *Um evento malformado de um tipo conhecido no livro* não se repara (o stream é append-only): o
+  nó não arranca com a pasta de perfis configurada, mesmo com `off`. ADR-041 §5.
 - *Os runs fixados como titular durante um canary também levam a marca:* retomados num nó cujo
   titular mudou, não continuam (`modelo_fixado_nao_servido`).
 - *Um nó sem a pasta de perfis não lê o livro*, e réplicas com configurações diferentes decidem
   de maneira diferente: ADR-041 §5.
 - *O ponto «por confirmar pelo dono» do PR 0* (um run fixado pode descer de tier?) não foi tocado.
 
-**Mutações dirigidas do PR 1.** 26, todas vermelhas. As oito do plano: repor a
-sobreposição do modelo do nó num run com a marca; `<` por `<=` na função; mudar o prefixo de
-domínio (e tirar-lhe o byte separador); o `plan_id` em vez do `plan_request.run_id`; retirar o CAS
-da atribuição; o limite 40 → 41; ignorar a marca de abertura (e a marca com `<`); o despachante a
-cair no titular com um alias desconhecido. E mais dezasseis sobre o que este PR afirma: o run
-retomado sem a marca a passar pela escolha; o plano do candidato sem candidato a não ser recusado;
-a fixação que não se grava a não recusar; a retoma a não perguntar se o alias fixado é servido; o
-alias fixado fora do contexto do run; a fatia a zero e o interruptor a `off` a deixarem de travar;
-dois candidatos e o candidato sem preço a arrancarem; um valor inválido do interruptor a passar
-por `off`; o plano atribuído a outro candidato a não ser recusado; o fecho só pela marca, sem a
-contagem; o plano já atribuído a voltar à função; a abertura com outra fatia a não ser recusada; a
-razão própria fora da transição terminal; e a marca fora do registo de retoma. Em cada uma
-alterou-se uma linha, correram-se os testes do pacote, e repôs-se o ficheiro.
+**Mutações dirigidas do PR 1.** 46, todas vermelhas (uma linha alterada de cada vez,
+os testes do pacote corridos, o ficheiro reposto).
+
+- *As 26 da primeira entrega*, repetidas depois das correcções: as oito do plano — repor a
+  sobreposição do modelo do nó num run com a marca; `<` por `<=` na função; mudar o prefixo de
+  domínio (e tirar-lhe o byte separador); o `plan_id` em vez do `plan_request.run_id`; retirar o
+  CAS da atribuição; o limite 40 → 41; ignorar a marca de abertura (e a marca com `<`); o
+  despachante a cair no titular com um alias desconhecido — e dezasseis sobre o que o PR afirma
+  (o run com história a passar pela escolha; o plano do candidato sem candidato a não ser
+  recusado; a fixação que não se grava a não recusar; a retoma a não perguntar se o alias fixado
+  é servido; o alias fora do contexto do run; a fatia a zero e o `off` a deixarem de travar; dois
+  candidatos e o candidato sem preço a arrancarem; um valor inválido a passar por `off`; o plano
+  atribuído a outro candidato a não ser recusado; o fecho só pela marca; o plano já atribuído a
+  voltar à função; a abertura com outra fatia a não ser recusada; a razão própria fora da
+  transição terminal; a marca fora do registo de retoma).
+- *Vinte sobre as correcções das revisões*, incluindo as que tinham sobrevivido aos revisores: a
+  chave do livro sem o tipo; a marca no Goal a valer sem estar selada; a retoma a aceitar uma
+  marca de versão desconhecida; o run fixado re-submetido a não ir buscar a fixação ao log; a
+  história do run lida só dos turnos, e só do registo de retoma; o evento futuro ignorado sem
+  ficar registado; o plano já atribuído servido com eventos futuros no livro; um tipo de fora da
+  família tolerado; repor o registo sem abrir época; a marca da primeira abertura em vez da da
+  época mais recente; **o selo pedido uma só vez** (sem reconciliação na decisão, e sem ela no
+  arranque); o selador a selar sem ler o audit; a contagem dos selos sem distinguir o registo;
+  **o limite gravado** trocado pela constante do binário (no fecho e na época nova); a espera
+  pela vez no livro sem ouvir o contexto; o interruptor inválido a não abortar; e o arranque sem
+  o aviso do candidato sobre JetStream.
+- Duas sobreviveram à primeira passagem e ganharam teste: o fecho pela contagem contra o limite
+  gravado quando a marca de fecho não se grava, e o run que tem um turno dado e **não** tem
+  registo de retoma. A causa inalcançável `candidato_sem_o_perfil_do_registo` foi retirada, e a
+  mutação que lhe sobrevivia deixou de existir.
 
 **O que o PR 0 entregou.**
 
