@@ -1162,6 +1162,196 @@ levar um relógio pelo `Bootstrap`, e o teste já não depende dele.
 
 ---
 
+## AOS-524 — Sobre JetStream, o `Append` com CAS decide contra a vista local: com duas réplicas, quem leu do servidor fica preso em `ErrSeqConflict`
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa ADR nenhum: corrige um defeito do backend JetStream do Event Store. O ADR 041 (do AOS-520) é citado só porque declara o limite que este ticket levanta. Escreve-se «ADR 041», sem hífen, porque esse ADR chega com o PR #475 e ainda não está no catálogo desta base: com hífen, o `ref-lint` recusa a citação. Quando o PR #475 fundir, passa a escrever-se na forma canónica. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-01 (Event Store e Reference Monitor) |
+| Fase | Prontidão para utilizadores reais |
+| Tipo | fix |
+| Prioridade | P2: bloqueia ligar o candidato (AOS-520) com mais de uma réplica do nó sobre JetStream; não bloqueia a fase A3 em produção de um só nó |
+| Estimativa | M |
+| Dependências | AOS-100 (backend JetStream), AOS-431 (gate `nats` e cluster de CI), AOS-470 (o cluster de CI exige nkey), AOS-520 (PR #475: traz o teste que reproduz o defeito, o livro do canary e o limite declarado), AOS-457 (quota por principal) |
+| Bloqueia | `AOS_MODEL_CANDIDATE=on` com mais de uma réplica do nó sobre JetStream |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `packages/substrate/eventstore/jetstream/store.go`, `packages/substrate/eventstore/conformance/arbitragem.go`, `packages/cmd/aos/quota_por_principal.go`, `scripts/ci/nats.sh`, `scripts/ci/nats-cluster.sh`; no PR #475 (por fundir a 2026-10-11): `packages/substrate/eventstore/jetstream/aos520_cas_vista_atrasada_test.go`, `packages/cmd/aos/modelo_canary_livro.go`, ADR 041 §5 |
+
+### Contexto
+
+Achado pela revisão adversarial do AOS-520 (ponto 4). As linhas são as da base `43d56ca5`.
+
+**O que o código faz (lido a 2026-10-11).** O `Store` do backend JetStream guarda por stream uma
+vista local, `estado` (`store.go:61-72`), que o próprio comentário chama «uma cache, não a
+verdade». O `hidratar` (`store.go:838-848`) lê-a do servidor só enquanto `hidratado` for falso.
+No `Append` (`store.go:339-371`), um `WithExpectedSeq(n)` é comparado com `st.aosSeq` antes de
+qualquer contacto com o servidor:
+
+- `n == st.aosSeq`: publica, com CAS sobre o token do servidor (`st.jsSeq`);
+- `n < st.aosSeq`: devolve `ErrAppendOnlyViolation`;
+- `n > st.aosSeq`: devolve `ErrSeqConflict` (`store.go:366-369`), sem publicar e sem pôr
+  `hidratado` a falso.
+
+O `Read` (`store.go:470-504`) lê sempre do servidor e descarta o token, o índice de deduplicação
+e o último seq que o `lerSubject` lhe devolve: não toca no `estado`.
+
+**A consequência.** Quando outro processo escreve no mesmo stream, a vista deste handle fica
+atrás. Um chamador que faça «ler, decidir, escrever com CAS» lê do servidor o seq verdadeiro e
+apresenta um `n` maior do que a vista. Recebe `ErrSeqConflict`, relê, apresenta o mesmo `n`,
+recebe o mesmo erro. Nada no ciclo refresca a vista, e o chamador fica preso até o processo
+reiniciar ou até outro caminho a refrescar.
+
+**Precisão sobre «só avança com as escritas do próprio handle».** A vista é relida em quatro
+situações, nenhuma delas alcançada por este ciclo: uma publicação recusada pelo servidor com
+`ErrWrongLastSeq` (`store.go:405-409`), um ack `Duplicate` (`store.go:389-393`), uma escrita
+indeterminada (`escritaAplicada`, `store.go:449-455`) e as operações de `backup.go`. Um `Append`
+sem `WithExpectedSeq` sobre o mesmo stream desbloqueava o handle por acaso, pela primeira
+destas vias; os streams afectados só recebem escritas com CAS.
+
+**Segunda consequência, só por leitura de código.** A deduplicação é verificada primeiro
+(`store.go:344-356`), mas contra o índice da mesma vista. Um evento que outra réplica gravou com
+a mesma chave de idempotência não está no índice local: se o `expected` vier à frente da vista,
+a resposta é `ErrSeqConflict` e não `duplicate`, contra a ordem que o contrato C2 fixa
+(«o duplicado ganha»).
+
+**Quem é apanhado.**
+
+- O livro do canary do AOS-520 (`packages/cmd/aos/modelo_canary_livro.go`, no PR #475): lê com
+  `Read` e escreve com `WithExpectedSeq(st.ultimoSeq)`.
+- A quota por principal do AOS-457 (`packages/cmd/aos/quota_por_principal.go:460-487`): o mesmo
+  ciclo, com `quotaMaxTentativas` voltas. Com a vista atrasada esgota-as todas e devolve
+  `ErrPrincipalQuotaContention`. O comentário em `:482-483` conta com o `ErrSeqConflict` do
+  JetStream como sinal de «relê e decide de novo»; reler não chega.
+- Por inventariar: os outros chamadores de `WithExpectedSeq` fora de testes
+  (`control-plane/governance/hitl/challenge_issuer.go` e `nonce_store.go`,
+  `control-plane/scheduler/admission.go`, `platform/registry/registry.go` e
+  `adapters/eventstore.go`). Não foi lido se algum escreve num stream partilhado entre réplicas.
+
+Com uma só réplica o defeito não aparece: o handle é o único escritor e a vista nunca se atrasa.
+
+**Estado da prova.**
+
+| Afirmação | Como se sabe |
+|---|---|
+| Com a vista atrasada, o `Append` devolve `ErrSeqConflict` em oito tentativas seguidas, sem publicar e sem voltar a perguntar ao servidor | Teste `TestAOS520_DefeitoConhecido_CASComAVistaLocalAtrasadaNaoPublicaNemRefresca`, no PR #475, com o servidor de brincar do pacote (`servidorEleicao`), que aceita qualquer publicação e responde sempre que o stream está vazio |
+| O `Read` não refresca a vista | Leitura de código (`store.go:487`) |
+| A deduplicação falha para o evento de outra réplica | Leitura de código |
+| O chamador fica preso com dois processos sobre um cluster real | **Por medir.** Nada correu contra um cluster NATS com duas ligações |
+
+**Porque a suite de conformidade não o apanha.** A sonda `cas-entre-handles`
+(`conformance/arbitragem.go:145-173`) abre dois handles e escreve com `WithExpectedSeq(0)` num
+stream fresco: as duas vistas estão em zero e o `expected` nunca fica à frente de nenhuma. A
+corrida (`measureRace`) usa o mesmo `0`.
+
+**Produção.** Observado a 2026-10-11: um só nó, Event Store em ficheiro. Não é afectada hoje;
+passa a ser no dia em que houver mais de uma réplica sobre JetStream.
+
+### Objectivo
+
+Dois processos que escrevem alternadamente no mesmo stream, cada um com o seq que acabou de ler
+do servidor, nunca ficam presos; e o CAS e a deduplicação continuam a recusar o que hoje recusam.
+
+### Âmbito
+
+- `packages/substrate/eventstore/jetstream/store.go`: a decisão do `Append` quando o `expected`
+  está à frente da vista local.
+- `packages/substrate/eventstore/conformance/`: a sonda nova.
+- Testes de duas réplicas dos dois consumidores, no gate `nats`.
+- O inventário dos outros chamadores de `WithExpectedSeq`, com veredicto por chamador.
+- Depois da correcção: o aviso de arranque, o ADR 041 §5 e o runbook.
+
+### Critérios de Aceitação
+
+- [ ] **Reprodução antes da correcção.** Um teste do gate `nats` abre duas ligações ao cluster de
+      CI (dois `Store`, com a nkey do cluster): a primeira escreve; a segunda lê com `Read` e
+      escreve com `WithExpectedSeq` do seq lido. Corre vermelho no código de hoje, e o registo
+      desse vermelho fica no PR. Se correr verde, a descrição deste ticket está errada: pára-se
+      e corrige-se o ticket antes do código.
+- [ ] **Correcção.** Com `expected` à frente da vista local, o `Append` relê o estado do servidor
+      antes de decidir, ou usa outra forma que o implementador justifique por escrito. Só depois
+      responde: aceita se `expected` for o último seq do servidor, `ErrSeqConflict` se continuar
+      à frente, `ErrAppendOnlyViolation` se ficar atrás.
+- [ ] **O CAS não afrouxa.** Dois escritores com o mesmo `expected` continuam a ter um só
+      vencedor; as quatro sondas actuais de `conformance` ficam verdes sem alteração.
+- [ ] **A deduplicação não se perde e passa a ver a outra réplica.** Um `Append` com a chave de
+      idempotência de um evento gravado por outro handle, e com `expected` à frente da vista,
+      responde `duplicate` com o evento original.
+- [ ] **Custo declarado.** A releitura só acontece no ramo `expected > vista`; o caminho em que
+      a vista está certa não ganha round-trips. Medido e escrito no PR (round-trips por `Append`
+      antes e depois, nos dois ramos).
+- [ ] **`Read`: decidir e justificar.** Fica como está ou passa a refrescar a vista. A decisão
+      fica no comentário do `Read` e no PR, com o que se ganha e o que custa (a vista é guardada
+      por `st.mu`, que o `Append` segura durante a publicação).
+- [ ] **Conformidade.** A suite ganha uma sonda com dois `Store`, CAS com seq maior que zero e
+      escritas alternadas (cada handle lê e escreve por cima do que o outro escreveu, em mais de
+      uma volta). Corre em todos os backends que hoje correm `RunArbitration`
+      (`conformance/referencia_test.go`, `jetstream/conformidade_test.go`), e falha sozinha
+      contra o código de hoje no JetStream.
+- [ ] **Livro do canary, duas réplicas.** Dois nós sobre o mesmo JetStream atribuem planos
+      alternadamente; nenhum esgota as tentativas e a contagem do livro bate com o número de
+      atribuições. No gate `nats`.
+- [ ] **Quota por principal, duas réplicas.** Dois nós reservam alternadamente para o mesmo
+      principal; nenhuma reserva devolve `ErrPrincipalQuotaContention` e o gasto somado bate. No
+      gate `nats`.
+- [ ] **Inventário.** Cada chamador de `WithExpectedSeq` fora de testes fica com uma linha no PR:
+      partilha stream entre réplicas ou não, e que teste o cobre.
+- [ ] **O teste «defeito conhecido» é invertido no mesmo PR.**
+      `TestAOS520_DefeitoConhecido_CASComAVistaLocalAtrasadaNaoPublicaNemRefresca` passa a
+      afirmar o comportamento certo e muda de nome; não é apagado nem saltado.
+- [ ] **Depois de tudo o que está acima, e só depois:** retira-se o aviso de arranque e o limite
+      «candidato não suportado com mais de uma réplica sobre JetStream» do ADR 041 §5 e do
+      runbook (`deploy/server/README.md`, «Uma réplica do nó, se o Event Store for JetStream»),
+      e fecha-se a linha da §7 do
+      `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`.
+
+### Testes exigidos
+
+| Teste | Onde corre | O que prova |
+|---|---|---|
+| Duas ligações, uma escreve e a outra lê e escreve com CAS | gate `nats`, cluster de CI | O defeito existe num servidor real (vermelho antes), e deixou de existir (verde depois) |
+| Sonda nova de `conformance` | todos os backends | A propriedade faz parte do contrato do Event Store, não de um backend |
+| Mesmo `expected` em dois handles | `conformance`, já existente | O CAS continua a ter um só vencedor |
+| Duplicado de outra réplica com `expected` à frente | `jetstream`, cluster de CI | A ordem do contrato C2 vale entre réplicas |
+| Livro do canary e quota, duas réplicas | gate `nats` | Os dois consumidores conhecidos saem do limite |
+| O teste invertido do PR #475 | `jetstream`, servidor de brincar | A releitura acontece (o número de pedidos de estado ao servidor sobe) |
+
+O gate `nats` corre-se com `NATS_GO_TEST_TIMEOUT` explícito e lê-se o log: desde o AOS-452 um
+pacote que morre por timeout avermelha, e um vermelho intermitente depois de matar um nó do
+cluster pode ser o consumidor órfão do AOS-449, não este defeito.
+
+### Fora de âmbito
+
+- Trocar a vista local por uma leitura do servidor em todos os `Append`: paga um round-trip no
+  caminho mais quente para fechar um ramo raro.
+- Alinhar o erro entre backends: o de referência responde `ErrAppendOnlyViolation` quando o
+  stream avançou e o JetStream `ErrSeqConflict`; os consumidores tratam os dois.
+- Tornar o nó capaz de saber quantas réplicas tem.
+- Ligar o candidato em produção, ou pôr produção sobre JetStream.
+
+### Riscos
+
+- **A descrição pode estar errada no servidor real.** Metade da prova é leitura de código e a
+  outra usa um servidor de brincar. O primeiro critério existe para o medir antes de escrever a
+  correcção.
+- **Corrigir afrouxando.** Aceitar um `expected` só porque está à frente da vista, sem o
+  confirmar no servidor, trocava um bloqueio por uma escrita aceite por engano. A publicação
+  continua a levar o token do servidor; a sonda do mesmo `expected` em dois handles é o sensor.
+- **Releitura em ciclo.** Um chamador com um `expected` errado e sempre à frente paga uma
+  leitura do subject inteiro por tentativa. A leitura é em lotes, e os chamadores conhecidos têm
+  tecto de tentativas; um chamador sem tecto fica por olhar no inventário.
+- **O defeito pode ser partilhado.** Cinco ficheiros além dos dois consumidores usam
+  `WithExpectedSeq`. Se algum partilhar stream entre réplicas, está exposto hoje, sem aviso.
+- **Retirar o limite cedo demais.** O aviso e o ADR 041 §5 são a única protecção enquanto o
+  defeito existir; saem no fim, com os testes de duas réplicas verdes no CI.
+
+### Estado
+
+**Aberto, 2026-10-11.** Sem código. A reprodução parcial vive no PR #475.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
