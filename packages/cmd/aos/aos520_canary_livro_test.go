@@ -848,6 +848,20 @@ func TestAOS520_Livro_OLimiteGravadoNaAberturaDecide(t *testing.T) {
 	if len(fechos) != 1 || fechos[0].Limit != 2 || fechos[0].Assigned != 2 {
 		t.Fatalf("o fecho leva o limite gravado: %+v", fechos)
 	}
+	// SEM A MARCA DE FECHO (a escrita falha sempre): quem fecha é a CONTAGEM contra o limite GRAVADO.
+	es2 := aos520Store(t)
+	if _, err := es2.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelCanaryOpened, Payload: aberta, RunID: canaryRunID, StepID: "opened-" + aos520Cand.entryDigest + "-1"}); err != nil {
+		t.Fatal(err)
+	}
+	semFecho := &livroDoCanary{es: &aos520StoreComIntruso{EventStore: es2, soNoTipo: EventTypeModelCanaryClosed, sempre: errors.New("o fecho nao se grava")}}
+	for i, quer := range []canary.Role{canary.RoleCandidate, canary.RoleCandidate, canary.RoleIncumbent, canary.RoleIncumbent} {
+		if d := aos520Decidir(t, semFecho, aos520Cand, fmt.Sprintf("plano-%d", i), 0); d.papel != quer {
+			t.Fatalf("sem a marca de fecho, plano %d com o limite gravado 2: %+v; quer %s", i, d, quer)
+		}
+	}
+	if n := len(aos520EventosDoLivro(t, es2, EventTypeModelCanaryPlanAssigned)); n != 2 {
+		t.Fatalf("sem a marca de fecho o candidato ficou com %d planos; o limite gravado e 2", n)
+	}
 	// Outro registo entra e este volta: a época nova conserva o limite gravado.
 	outro := aos520Cand
 	outro.entryDigest = "sha256:" + strings.Repeat("c", 64)

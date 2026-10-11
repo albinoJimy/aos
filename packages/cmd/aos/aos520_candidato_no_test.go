@@ -490,17 +490,21 @@ func TestAOS520_No_OPlanoAnteriorAAberturaEDoTitular(t *testing.T) {
 // E o caso do run que tem registo de retoma mas ainda não deu turno nenhum: também não é novo.
 func TestAOS520_No_RunEmCursoReSubmetidoNaoENovo(t *testing.T) {
 	ctx := context.Background()
-	for _, comTurno := range []bool{true, false} {
-		nome := "com um turno dado"
-		if !comTurno {
-			nome = "so com o registo de retoma"
-		}
-		t.Run(nome, func(t *testing.T) {
+	for _, caso := range []struct {
+		nome                 string
+		comTurno, comRegisto bool
+	}{
+		{"com um turno dado e o registo de retoma", true, true},
+		{"so com um turno dado, sem registo de retoma", true, false},
+		{"so com o registo de retoma", false, true},
+	} {
+		comTurno, comRegisto := caso.comTurno, caso.comRegisto
+		t.Run(caso.nome, func(t *testing.T) {
 			sub := aos520NovoSubstrato(t)
 			const runID = "run-520-re-submetido"
 			a := aos520cNo(t, sub, "off", aos520cCand(100))
 			if comTurno {
-				if goal := aos520cTurnoUmECrash(t, a, runID); goal.ModelPinnedBy != "" || goal.Model.ModelID != aos486Modelo {
+				if goal := aos520cTurnoUmECrashCom(t, a, runID, comRegisto); goal.ModelPinnedBy != "" || goal.Model.ModelID != aos486Modelo {
 					t.Fatalf("o turno 1 tinha de ser do titular, sem marca: %+v", goal.Model)
 				}
 			} else {
@@ -924,6 +928,13 @@ func (s *aos520cStoreComAvaria) Append(ctx context.Context, streamID string, in 
 // provam-no os testes que submetem por `POST /runs` e correm o run até ao fim.
 func aos520cTurnoUmECrash(t *testing.T, n *aos520No, runID string) agentruntime.Goal {
 	t.Helper()
+	return aos520cTurnoUmECrashCom(t, n, runID, true)
+}
+
+// aos520cTurnoUmECrashCom é o [aos520cTurnoUmECrash] com ou sem o registo de retoma: sem ele, é o
+// run cujo registo de arranque não se gravou (é fail-soft) e que caiu depois do primeiro turno.
+func aos520cTurnoUmECrashCom(t *testing.T, n *aos520No, runID string, comRegisto bool) agentruntime.Goal {
+	t.Helper()
 	ctx := context.Background()
 	goal := agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3}
 	goal, err := n.svc.escolherModeloDoRun(ctx, &runState{runID: runID}, goal)
@@ -953,6 +964,9 @@ func aos520cTurnoUmECrash(t *testing.T, n *aos520No, runID string) agentruntime.
 	}
 	if err := mq.Transition(ctx, state.Running, state.TransitionEvent{Token: state.Uint64Token(1), Reason: "crash_simulado"}); err != nil {
 		t.Fatalf("claim do crash simulado: %v", err)
+	}
+	if !comRegisto {
+		return goal
 	}
 	if err := n.svc.putResumeRecord(ctx, goal); err != nil {
 		t.Fatalf("registo de retoma: %v", err)

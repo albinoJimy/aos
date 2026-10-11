@@ -247,6 +247,11 @@ type livroDoCanary struct {
 // [ErrCanaryContention]: o run que a pediu não é decidido — e por isso não arranca.
 func (l *livroDoCanary) entrar(ctx context.Context) error {
 	l.vezInit.Do(func() { l.vez = make(chan struct{}, 1) })
+	// Um contexto que já acabou não toma a vez, mesmo que ela esteja livre: sem isto, o `select`
+	// abaixo escolhia ao acaso entre os dois ramos prontos.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: a espera pela vez no livro foi cancelada: %w", ErrCanaryContention, err)
+	}
 	select {
 	case l.vez <- struct{}{}:
 		return nil
