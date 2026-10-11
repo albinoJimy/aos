@@ -71,3 +71,55 @@ func TestAOS520_Adaptador_NumTurnoComparadoFicaODigestDoGateway(t *testing.T) {
 		t.Fatalf("turno nao comparado de um run fixado: digest=%q check=%q err=%v; quer o fixado e nenhuma comparacao", out.RouteProfileDigest, out.RouteCheck, err)
 	}
 }
+
+// O ENVELOPE DO ESTADO OPACO DE UM RUN FIXADO É O DE UM RUN NÃO FIXADO (A2). Governação da rota
+// DESLIGADA, captura LIGADA: o gateway não comparou nada, e o envelope do estado fecha-se SEM
+// digest de perfil — é por esse campo vazio que a devolução decide `estado_sem_rota`
+// ([StateCauseNoRoute]): um estado de um turno que não provou a rota não volta ao provider. O
+// digest fixado é declarado para o manifesto DEPOIS de o envelope fechar; declarado antes,
+// entrava no envelope, mudava-lhe os bytes e o digest, e fazia passar por «da rota» um estado
+// cuja rota ninguém comparou.
+func TestAOS520_Adaptador_OEnvelopeDoEstadoNaoLevaODigestFixado(t *testing.T) {
+	const alias = "alias-do-run"
+	set, fixado := aos520ConjuntoDoAlias(t, alias)
+	turno := func(naVista string) agentruntime.ModelResponse {
+		t.Helper()
+		resp := aos520RespostaFinal()
+		resp.State = aos514RespostaComEstado().State
+		a := NewModelClient(&aos520GatewayFixo{resp: resp}, alias, WithRouteProfileSet(set))
+		// O nonce é fixo: com o mesmo conteúdo, o envelope é byte a byte o mesmo.
+		a.estado = &capturaDoEstado{maxBytes: DefaultProviderStateMaxBytes, nonce: func(n []byte) error {
+			for i := range n {
+				n[i] = 7
+			}
+			return nil
+		}}
+		out, err := a.Call(context.Background(), agentruntime.PromptView{Materialized: []byte("ola"), RouteProfileDigest: naVista})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.State == nil || out.State.Status != agentruntime.ProviderStateCaptured || len(out.State.Bytes) == 0 {
+			t.Fatalf("o estado tinha de ficar capturado: %+v", out.State)
+		}
+		return out
+	}
+	naoFixado, comFixacao := turno(""), turno(fixado)
+	if comFixacao.RouteProfileDigest != fixado || naoFixado.RouteProfileDigest != "" {
+		t.Fatalf("digest declarado: fixado=%q nao fixado=%q", comFixacao.RouteProfileDigest, naoFixado.RouteProfileDigest)
+	}
+	if string(comFixacao.State.Bytes) != string(naoFixado.State.Bytes) {
+		t.Fatalf("o envelope do estado mudou com a fixacao:\n fixado:     %s\n nao fixado: %s", comFixacao.State.Bytes, naoFixado.State.Bytes)
+	}
+	env, err := port.UnmarshalProviderStateEnvelope(comFixacao.State.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sem digest e sem comparação no envelope: a devolução continua a recusá-lo por
+	// `estado_sem_rota`, como recusava antes da fixação.
+	if env.RouteProfileDigest != "" || env.RouteCheck != "" {
+		t.Fatalf("o envelope de um turno NAO comparado ganhou rota: digest=%q check=%q", env.RouteProfileDigest, env.RouteCheck)
+	}
+	if StateCauseNoRoute != "estado_sem_rota" {
+		t.Fatalf("a causa mudou de nome: %q", StateCauseNoRoute)
+	}
+}
