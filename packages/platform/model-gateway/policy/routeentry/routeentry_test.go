@@ -340,6 +340,12 @@ func TestAOS519_Registo(t *testing.T) {
 		{nome: "perfil com campo desconhecido", causa: routeentry.CauseBadProfile, registo: func(d map[string]any) {
 			d["perfil"] = json.RawMessage(strings.Replace(rt.ProfileJSON, `{"requested"`, `{"temperature":1,"requested"`, 1))
 		}},
+		// A chave-sombra (revisão): `requeſted`, com U+017F, que o encoding/json casa com `requested`.
+		// O registo é assinado e o digest declarado é o do perfil «à vista»: sem a leitura fechada
+		// por conjunto de nomes, o nó carregava o perfil com o nome da sombra.
+		{nome: "perfil com chave-sombra por fold", causa: routeentry.CauseBadProfile, registo: func(d map[string]any) {
+			d["perfil"] = json.RawMessage(strings.Replace(rt.ProfileJSON, `"capabilities":["tools"]`, `"capabilities":["tools"],"requeſted":"gpt-4o-mini"`, 1))
+		}},
 		{nome: "perfil com wire desconhecido", causa: routeentry.CauseBadProfile, registo: func(d map[string]any) {
 			d["perfil"] = json.RawMessage(strings.Replace(rt.ProfileJSON, "openai-chat-completions", "outro-wire", 1))
 		}},
