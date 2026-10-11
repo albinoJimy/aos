@@ -204,6 +204,14 @@ type ProductionConfig struct {
 	// de ele entrar na tabela (o banco de ensaio). Um perfil inválido — na tabela ou candidato —
 	// ⇒ [ErrBadRouteProfile], sem gateway.
 	RouteProfiles []RouteProfile
+	// RouteProfileEntries diz de que REGISTOS DE ENTRADA ASSINADOS vieram perfis de RouteProfiles
+	// (AOS-519). Cada um tem de corresponder a um perfil candidato com o mesmo nome pedido e o
+	// mesmo digest, e fica SELADO no audit de governação do gateway — «perfil carregado», com o
+	// digest do perfil, o do registo e o do relatório de qualificação — uma vez por composição do
+	// gateway, que no nó é uma vez por arranque. Um registo sem perfil que lhe corresponda, ou um
+	// selo que não se escreve ⇒ sem gateway. Vazio — a omissão — ⇒ nada é selado. O gateway NÃO
+	// confere assinaturas nem relatórios: quem lhos entrega já os conferiu (policy/routeentry).
+	RouteProfileEntries []RouteProfileEntry
 	// RouteParamsObserver conta os 4xx do provider nos turnos em que o perfil da rota enviou
 	// parâmetros (AOS-513). Opcional.
 	RouteParamsObserver func(RouteParamsRejection)
@@ -296,6 +304,11 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	}
 	if err != nil {
 		return nil, fmt.Errorf("modelgateway: allowlist nao activada (fail-closed): %w", err)
+	}
+	// AOS-519: cada perfil vindo de um registo de entrada assinado fica selado no mesmo audit, a
+	// seguir à activação da allowlist. Fail-closed: sem o selo não há gateway.
+	if err := sealRouteProfileEntries(ctx, govRec, at, perfis, cfg.RouteProfileEntries); err != nil {
+		return nil, err
 	}
 
 	// (3) Router de failover: fronteira de soberania derivada da MESMA policy; inventário

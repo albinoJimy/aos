@@ -248,6 +248,52 @@ func (r *Recorder) SealChangelog(ctx context.Context, policyVersion string, at t
 	return r.store.Append(ctx, ar)
 }
 
+// routeProfilesPartition é a cadeia dedicada aos PERFIS DE ROTA carregados de registos de entrada
+// assinados (AOS-519): cada carregamento sela aqui, numa cadeia à parte das decisões por chamada.
+const routeProfilesPartition = "modelgw-gov:route-profiles"
+
+// ErrRouteProfileSeal — o selo do carregamento de um perfil de rota não tem o que identifica o
+// perfil: o nome pedido ou um dos três digests. Fail-closed: não se sela um carregamento anónimo.
+var ErrRouteProfileSeal = errors.New("allowlist: selo de perfil de rota sem nome pedido ou sem um dos tres digests (fail-closed)")
+
+// SealRouteProfileLoaded sela no audit WORM o CARREGAMENTO de um perfil de rota que veio de um
+// registo de entrada assinado (AOS-519): o nome pedido, o modelo esperado, e os três digests — o
+// do perfil, o do registo (o que a assinatura do dono cobre) e o do relatório de qualificação que
+// o registo cita. É o que deixa reconstruir do log que perfil serviu que nome, e desde quando.
+// Chamado uma vez por perfil em cada composição do gateway. Sem store é no-op.
+//
+// Só identificadores e digests: nenhum conteúdo do registo nem do relatório.
+func (r *Recorder) SealRouteProfileLoaded(ctx context.Context, at time.Time, requested, expectedModel, profileDigest, entryDigest, reportDigest string) (audit.AuditRecord, error) {
+	if requested == "" || profileDigest == "" || entryDigest == "" || reportDigest == "" {
+		return audit.AuditRecord{}, ErrRouteProfileSeal
+	}
+	if r.store == nil {
+		return audit.AuditRecord{}, nil
+	}
+	ar := audit.AuditRecord{
+		Partition:     routeProfilesPartition,
+		Timestamp:     at,
+		Decision:      audit.DecisionAllow,
+		Principal:     audit.Principal{NHIID: "route-profile-entry"},
+		Capability:    "route-profile:load",
+		PolicyVersion: "route-profile/" + profileDigest,
+		ToolID:        "model." + requested,
+		Resource:      audit.Resource{Type: "route-profile", Value: requested},
+		Obligations: []audit.Obligation{{
+			Type: obligationGovernance,
+			Params: map[string]string{
+				"route_profile":  "loaded",
+				"requested":      requested,
+				"expected_model": expectedModel,
+				"profile_digest": profileDigest,
+				"entry_digest":   entryDigest,
+				"report_digest":  reportDigest,
+			},
+		}},
+	}
+	return r.store.Append(ctx, ar)
+}
+
 // Record ANOTA o span, emite para o [Sink] (se configurado) e SELA no WORM. É o
 // ponto único que o estágio de allowlist chama por chamada. Fail-closed ANTES de
 // qualquer efeito observável: uma decisão sem board/principal nunca chega a anotar

@@ -26,13 +26,16 @@ import (
 //     se devolve ao provider. Quem a consome é a projecção 1.3.0 (AOS-515).
 //
 // ONDE VIVE O PERFIL. Em código, na tabela [routeProfiles], como desde o AOS-505: muda com uma
-// imagem nova do nó. O perfil como artefacto assinado do registo é da fase A3. O nó não lê
-// perfis de ficheiro, de ambiente, de um plano, de um run nem de um pedido HTTP.
+// imagem nova do nó. Desde o AOS-519 (fase A3) um perfil pode também chegar ao nó por um REGISTO
+// DE ENTRADA ASSINADO pelo dono, lido de uma pasta e conferido no arranque (pacote
+// policy/routeentry); fora disso o nó não lê perfis de ficheiro, de ambiente, de um plano, de um
+// run nem de um pedido HTTP.
 //
-// O PERFIL CANDIDATO. Quem compõe um gateway fora do nó — o banco de ensaio (AOS-512), que
-// qualifica um perfil ANTES de ele entrar na tabela — pode acrescentar perfis candidatos
-// ([ProductionConfig.RouteProfiles], lidos por [ParseRouteProfile]). Um candidato passa pela
-// mesma validação da tabela e substitui a entrada com o mesmo nome pedido.
+// O PERFIL CANDIDATO. Quem compõe um gateway pode acrescentar perfis à tabela
+// ([ProductionConfig.RouteProfiles], lidos por [ParseRouteProfile]): o banco de ensaio (AOS-512),
+// que qualifica um perfil ANTES de ele entrar, e o nó, com os perfis dos registos assinados que
+// conferiu. Um candidato passa pela mesma validação da tabela e substitui a entrada com o mesmo
+// nome pedido.
 //
 // O PROXY REENCAMINHA TUDO. Medido atrás da imagem de produção do proxy: um parâmetro que o
 // provider não conheça chega-lhe e pode dar 4xx em todos os turnos da rota. Por isso um perfil
@@ -340,15 +343,50 @@ func (s *RouteProfileSet) For(requested string) (RouteProfile, bool) {
 	return RouteProfile{}, false
 }
 
+// todos devolve os perfis do conjunto; os da tabela em código quando o conjunto é nil.
+func (s *RouteProfileSet) todos() []RouteProfile {
+	if s == nil {
+		return routeProfiles
+	}
+	return s.perfis
+}
+
+// ServedModelLabels devolve o conjunto FECHADO de valores que o rótulo do modelo servido pode ter
+// numa métrica, para ESTE conjunto de perfis: os modelos esperados dos seus perfis (sem
+// repetições, pela ordem do conjunto), seguidos de [ServedLabelOther] e [ServedLabelUnreported].
+// Com o conjunto nil é o da tabela em código, como sempre.
+func (s *RouteProfileSet) ServedModelLabels() []string {
+	var out []string
+	visto := map[string]bool{}
+	for _, p := range s.todos() {
+		if !visto[p.ExpectedModel] {
+			visto[p.ExpectedModel] = true
+			out = append(out, p.ExpectedModel)
+		}
+	}
+	return append(out, ServedLabelOther, ServedLabelUnreported)
+}
+
+// ServedModelLabel fecha o nome do modelo servido no conjunto de [RouteProfileSet.ServedModelLabels]:
+// um nome que nenhum perfil do conjunto espera é `outro`, e a ausência é `nao_reportado`. O texto
+// que o proxy declarou nunca chega a um rótulo.
+func (s *RouteProfileSet) ServedModelLabel(served string) string {
+	if served == "" {
+		return ServedLabelUnreported
+	}
+	for _, p := range s.todos() {
+		if p.ExpectedModel == served {
+			return served
+		}
+	}
+	return ServedLabelOther
+}
+
 // WithParams devolve os nomes pedidos dos perfis do conjunto que declaram parâmetros, pela ordem
 // da tabela. É o conjunto FECHADO de valores do rótulo `rota` de [RouteParamsRejection].
 func (s *RouteProfileSet) WithParams() []string {
-	perfis := routeProfiles
-	if s != nil {
-		perfis = s.perfis
-	}
 	var out []string
-	for _, p := range perfis {
+	for _, p := range s.todos() {
 		if p.Params != nil && !p.Params.IsZero() {
 			out = append(out, p.Requested)
 		}
