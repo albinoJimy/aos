@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -260,6 +261,48 @@ func TestAOS521_Livro_OReinicioNaoPerdeOEstado(t *testing.T) {
 	}
 	if n := len(aos521Marcas(t, es, EventTypeModelBreakerOpened)); n != 1 {
 		t.Fatalf("marcas de abertura depois de dois reinicios = %d; quer 1", n)
+	}
+}
+
+// O REINÍCIO SOBRE FICHEIRO. O mesmo, com o Event Store em disco: o ficheiro fecha-se e abre-se outra
+// vez, como num reinício do nó. O disjuntor continua aberto, a marca é a mesma, byte a byte, e as
+// decisões são as de antes.
+func TestAOS521_Livro_OReinicioSobreFicheiro(t *testing.T) {
+	ctx := context.Background()
+	caminho := filepath.Join(t.TempDir(), "events.wal")
+	es, err := eventstore.Open(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := aos521Livro(t, es, aos520Cand, modelBreakerEnforce)
+	aos520Decidir(t, l, aos520Cand, "plano-a-meio", 0)
+	aos521TresFalhas(t, l, aos520Cand)
+	antes := aos521Marcas(t, es, EventTypeModelBreakerOpened)
+	if len(antes) != 1 {
+		t.Fatalf("marcas antes do reinicio = %d", len(antes))
+	}
+	if err := es.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	es2, err := eventstore.Open(caminho)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = es2.Close() }()
+	l2 := aos521Livro(t, es2, aos520Cand, modelBreakerEnforce)
+	aberto, regra, err := l2.conferirDisjuntor(ctx, aos520Cand)
+	if err != nil || !aberto || regra.regra != regraFalhasNaJanela || regra.falhasNaJanela() != 3 || len(regra.janela) != 4 || regra.contadores[sinalErroDoProvider] != 1 {
+		t.Fatalf("depois de reabrir o ficheiro: aberto=%v regra=%+v err=%v", aberto, regra, err)
+	}
+	if depois := aos521Marcas(t, es2, EventTypeModelBreakerOpened); !reflect.DeepEqual(antes, depois) {
+		t.Fatalf("a marca mudou com o reinicio:\n antes:  %+v\n depois: %+v", antes, depois)
+	}
+	if d := aos520Decidir(t, l2, aos520Cand, "plano-novo", 0); d.papel != canary.RoleIncumbent || d.razao != razaoDisjuntorAberto {
+		t.Fatalf("depois do reinicio o plano novo foi para %+v", d)
+	}
+	if _, err := l2.decidir(ctx, aos520Cand, chaveDeRun("plano-a-meio"), 0); !errors.Is(err, ErrCandidateBreakerOpen) {
+		t.Fatalf("depois do reinicio o plano a meio: %v", err)
 	}
 }
 

@@ -809,3 +809,46 @@ func TestAOS521_Arranque_DizOEstadoEFalhaFechado(t *testing.T) {
 		}
 	}
 }
+
+// A LEITURA DO DISJUNTOR NO ARRANQUE FALHA FECHADO — E DESLIGADO NÃO EXISTE. O livro lê-se bem na
+// abertura do canary e falha na leitura seguinte: com o disjuntor ligado o nó não arranca (não se
+// arranca sem saber se o disjuntor está aberto); com ele desligado não há leitura seguinte, e o nó
+// arranca como no AOS-520.
+func TestAOS521_Arranque_ALeituraDoDisjuntorFalhaFechado(t *testing.T) {
+	ctx := context.Background()
+	arrancar := func(t *testing.T, modo string) (leituras int, err error) {
+		aos519AmbienteDoGateway(t)
+		aos520PastaCom(t, aos520cCand(10))
+		assinados, lerr := loadSignedRouteProfilesFromEnv()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		assinados.candidatoLigado, assinados.disjuntor = true, modo
+		conta := &aos520StoreQueConta{Store: aos520Store(t)}
+		doLivro := 0
+		conta.falha = func(streamID string) error {
+			if streamID != canaryStream {
+				return nil
+			}
+			if doLivro++; doLivro >= 2 {
+				return errors.New("disco avariado")
+			}
+			return nil
+		}
+		_, err = comporCanaryDoNo(ctx, conta, assinados, aos486Modelo, false, func(string, ...any) {})
+		return conta.lidas(canaryStream), err
+	}
+	for _, modo := range []string{modelBreakerObserve, modelBreakerEnforce} {
+		if lidas, err := arrancar(t, modo); !errors.Is(err, ErrCanaryUnreadable) || lidas < 2 {
+			t.Fatalf("modo %q: a leitura do disjuntor falhou e o no arrancou (leituras=%d): %v", modo, lidas, err)
+		}
+	}
+	lidas, err := arrancar(t, "")
+	if err != nil {
+		t.Fatalf("desligado, o arranque nao le o disjuntor e nao pode falhar por ele: %v", err)
+	}
+	ligado, _ := arrancar(t, modelBreakerObserve)
+	if ligado != lidas+1 {
+		t.Fatalf("o disjuntor ligado le o livro %d vez(es) no arranque e desligado %d; quer exactamente uma a mais", ligado, lidas)
+	}
+}
