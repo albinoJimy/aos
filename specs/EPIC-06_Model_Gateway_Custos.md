@@ -4381,7 +4381,7 @@ fixado está preso aos bytes medidos no commit da base.
   runbook: recuar a imagem com perfis assinados instalados faz-se com a rota drenada.
 - *Por fazer neste bloco:* o smoke sobre JetStream.
 
-**Mutações dirigidas.** 19, todas vermelhas (ver o PR).
+**Mutações dirigidas.** 23, todas vermelhas: as 19 do PR e as 4 que tinham sobrevivido à revisão adversarial (o digest fixado por cima do do gateway; declarado antes de o envelope do estado fechar; o caso da rota com estado só para `obrigatorio`; a conferência do adaptador retirada, ao nível do nó).
 
 ## AOS-521 — O candidato perde a fatia sozinho: um disjuntor por modelo, durável e selado, que só o dono volta a fechar
 
