@@ -3962,9 +3962,28 @@ erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
 
 ### Estado
 
-**Em revisão (2026-10-11).** Núcleo entregue no ramo `feature/AOS-519-perfis-assinados`, assente
-no ramo do AOS-518 (PR #471, por fundir). Falta a revisão adversarial independente, que é
-pré-condição de qualquer perfil assinado ir a produção.
+**Em revisão (2026-10-11).** Núcleo entregue no ramo `feature/AOS-519-perfis-assinados`, sobre a
+base com o AOS-518 fundido. A revisão adversarial independente foi feita e as suas correcções
+estão no ramo (abaixo); nenhum caminho de entrada sem assinatura foi encontrado.
+
+**Correcções da revisão adversarial (2026-10-11).**
+
+- *Leitura fechada do perfil.* `ParseRouteProfile` recusava nomes repetidos e com maiúsculas, mas
+  o descodificador de JSON casa nomes por «fold» de Unicode: `requeſted` (U+017F) casava com
+  `requested` e ganhava. Os nomes de membro do perfil passam a ter de ser, byte a byte, os do
+  conjunto fechado de cada nível (topo, `params`, `thinking`, `reasoning`), tirados dos campos do
+  tipo. Os digests dos quatro perfis da tabela e dos dois perfis de exemplo do banco não mudaram
+  (preso por teste).
+- *A garantia sobre o run retomado* era falsa: ver «Limite conhecido».
+- *O selo «perfil carregado»* escrevia-se antes de o gateway existir. Passou a ser o último passo
+  da composição; sem audit onde selar falha; e em `AOS_MODE=production` perfis assinados exigem o
+  audit durável (`AOS_MODEL_AUDIT_PATH`). A partição cabe num nome de stream.
+- *A pasta sem gateway* aborta o arranque em produção (fora dela, avisa); a âncora definida sem a
+  pasta é avisada.
+- *Menores:* um teste por tecto de tamanho; a âncora da allowlist externa medida no nó; o alias
+  entre aspas na configuração do proxy do banco; e no `route-profile-sign`, mensagens próprias
+  que não repetem bytes da seed, `--out` que não escreve por cima das entradas, e o resumo do que
+  se assina (parâmetros, versão da projecção, fatia) antes de a chave ser lida.
 
 **O que foi entregue.**
 
