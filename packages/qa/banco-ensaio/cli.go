@@ -41,6 +41,12 @@ const (
 	SaidaEmCI = 5
 	// SaidaSemInfra — falta o Docker ou a imagem do proxy, ou o proxy não arrancou.
 	SaidaSemInfra = 6
+	// SaidaModeloRecusado — a experiência `qualificacao` deu o veredicto `recusado` (AOS-518).
+	SaidaModeloRecusado = 7
+	// SaidaInconclusivo — a experiência `qualificacao` correu até ao fim e deu `inconclusivo`.
+	// (Uma qualificação que parou a meio sai com [SaidaParouAMeio]; uma que não coube no tecto,
+	// com [SaidaRecusada]. Só `qualificado` sai com [SaidaOK].)
+	SaidaInconclusivo = 8
 )
 
 // EnvDasChaves é a variável de ambiente com o caminho do ficheiro de chaves, quando não vem
@@ -66,6 +72,9 @@ type Ambiente struct {
 	// testes do próprio pacote a definem (o campo não é exportado): não há flag nem variável
 	// de ambiente que cá chegue, e por isso um operador não a consegue usar por engano.
 	destinoDeTeste string
+	// imagemDoProxyDeTeste, quando não vazia, faz de imagem do proxy EM USO na conferência da
+	// qualificação. Só os testes do próprio pacote a definem, para provar a recusa.
+	imagemDoProxyDeTeste string
 }
 
 type opcoes struct {
@@ -111,7 +120,11 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
                                                    e a trava do contador de um processo que ja morreu
 
 opcoes comuns:
-  --experiencia bateria|separadores   (omissao: bateria)
+  --experiencia bateria|separadores|qualificacao   (omissao: bateria)
+                                      qualificacao (AOS-518): a bateria 8 vezes com --perfil (obrigatorio) e um
+                                      VEREDICTO calculado — qualificado (saida 0), recusado (7) ou inconclusivo
+                                      (8; 4 se parou a meio; 3 se o pior caso nao cabe no tecto). Nao aceita
+                                      --amostras nem --braco. O relatorio traz o digest de si proprio.
   --amostras N                        passagens pela bateria (omissao 1); nos separadores sao 53 por braco
   --semente N                         fixa a ordem dos bracos (vai no relatorio)
   --braco A|B|C|D                     braco da bateria (omissao A)
@@ -240,6 +253,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		return SaidaUso
 	}
 	cfg := CfgDaCorrida{Modo: modo, Plano: plano, Bateria: bateria, Relogio: amb.Relogio, Extra: map[string]string{}, Pausa: o.pausa}
+	qualifica := plano.Experiencia == ExperienciaQualificacao
 	// O PERFIL CANDIDATO (AOS-513). Lido pela leitura fechada do gateway: uma chave ou um valor
 	// fora do conjunto recusa a corrida antes de qualquer pedido. O digest entra no relatório e
 	// no digest da configuração.
@@ -260,9 +274,42 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	// A QUALIFICAÇÃO DA DEVOLUÇÃO (AOS-516). O host esperado só tem leitor quando o perfil devolve
 	// estado: fora disso seria uma opção sem efeito, e recusa-se em vez de a ignorar.
 	devolve := perfil != nil && perfil.StateReturn != modelgateway.StateReturnNever
+	// A QUALIFICAÇÃO DO MODELO (AOS-518). É de uma rota com o seu perfil, atrás da imagem do proxy
+	// declarada para produção, com um tecto próprio de pedidos.
+	imagemEmUso := ImagemDoProxy
+	if amb.imagemDoProxyDeTeste != "" {
+		imagemEmUso = amb.imagemDoProxyDeTeste
+	}
+	var perfilDeControlo *modelgateway.RouteProfile
+	if qualifica {
+		if perfil == nil {
+			fmt.Fprintf(stderr, "aos-ensaio: %v\n", ErrQualificacaoSemPerfil)
+			return SaidaUso
+		}
+		cfg.Qualificacao = &CfgDaQualificacao{
+			ModeloEsperado: perfil.ExpectedModel, Limite: NovoLimiteDaQualificacao(TectoDePedidosDaQualificacao),
+			TectoMicroUSD: TectoMicroUSDDaQualificacao,
+		}
+		if modo != ModoFalso {
+			// ANTES de enviar seja o que for: outra imagem do proxy é outra rota.
+			if ierr := conferirImagemDoProxy(imagemEmUso, ImagemDoProxyDeProducao); ierr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ierr)
+				return SaidaRecusada
+			}
+			cfg.Qualificacao.ImagemDoProxy = imagemEmUso
+		}
+		if perfil.StateReturn == modelgateway.StateReturnRequired {
+			// «Aceite» separa-se de «exigido»: a qualificação inclui a corrida de controlo sem devolução.
+			doControlo := PerfilDeControlo(*perfil)
+			perfilDeControlo = &doControlo
+			cfg.Qualificacao.ControloAplicavel, cfg.Qualificacao.ControloPerfilDigest = true, doControlo.Digest()
+			cfg.Extra["perfil_de_controlo"] = cfg.Qualificacao.ControloPerfilDigest
+			previstos += cfg.pedidosDoControlo()
+		}
+	}
 	o.hostEsperado = strings.ToLower(strings.TrimSpace(o.hostEsperado))
-	if o.hostEsperado != "" && (!devolve || !hostAceite(o.hostEsperado)) {
-		fmt.Fprintln(stderr, "aos-ensaio: --host-esperado e um nome de host (sem esquema nem caminho) e so vale com um --perfil que devolva estado")
+	if o.hostEsperado != "" && ((!devolve && !qualifica) || !hostAceite(o.hostEsperado)) {
+		fmt.Fprintln(stderr, "aos-ensaio: --host-esperado e um nome de host (sem esquema nem caminho) e so vale com um --perfil que devolva estado, ou na experiencia qualificacao")
 		return SaidaUso
 	}
 	if o.estado != "" && o.estado != EstadoExige && o.estado != EstadoProibe {
@@ -277,7 +324,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprintf(stderr, "aos-ensaio: --forma-do-falso aceita %s e so vale com --estado\n", FormaOpenRouter)
 		return SaidaUso
 	}
-	if devolve {
+	if devolve || (qualifica && o.hostEsperado != "") {
 		cfg.Extra["host_esperado"] = fmt.Sprint(o.hostEsperado != "")
 	}
 	cfg.QualificaDevolucao = o.estado != ""
@@ -290,6 +337,38 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fechar                 = func() {}
 	)
 	defer func() { fechar() }()
+	// naoCoube trata uma corrida cujo pior caso não cabe no tecto do dia. Uma qualificação não é
+	// só recusada: fica escrita, com o veredicto `inconclusivo`. Nenhum pedido saiu.
+	naoCoube := func(cerr error) int {
+		fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", cerr)
+		if !qualifica || !errors.Is(cerr, ErrNaoCabe) {
+			return SaidaRecusada
+		}
+		pasta := pastaDaSaida
+		if pasta == "" && amb.PastaDoDono != "" {
+			pasta = filepath.Join(amb.PastaDoDono, "relatorios")
+		}
+		if pasta == "" {
+			fmt.Fprintln(stderr, "aos-ensaio: sem pasta do dono conhecida: indique --saida PASTA")
+			return SaidaUso
+		}
+		relatorio, rerr := RelatorioDaQualificacaoQueNaoCoube(cfg)
+		if rerr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio: %v\n", rerr)
+			return SaidaErro
+		}
+		emJSON, emTexto, eerr := EscreverRelatorio(pasta, relatorio)
+		if eerr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio: %v\n", eerr)
+			return SaidaErro
+		}
+		if !o.silencioso {
+			fmt.Fprint(stdout, ResumoEmTexto(relatorio))
+		}
+		fmt.Fprintf(stdout, "relatorio: %s\nresumo:    %s\n", emJSON, emTexto)
+		fmt.Fprintf(stderr, "aos-ensaio: VEREDICTO DA QUALIFICACAO: %s — o pior caso nao cabe no tecto do dia; nenhum pedido foi enviado\n", strings.ToUpper(relatorio.QualificacaoDoModelo.Veredicto))
+		return SaidaRecusada
+	}
 
 	// O prazo máximo de vida dos contentores, derivado do plano: o pior caso de cada pedido (o
 	// timeout de 120 s mais a pausa) vezes o máximo de pedidos, com folga para o arranque. É a
@@ -337,6 +416,12 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			}
 		}
 		cfg.Rota = RotaDoRelatorio{Fornecedor: string(FornecedorFalso), Modelo: "modelo-falso-do-banco"}
+		// O digest da rota fica já escrito (abaixo é reescrito, com o mesmo valor ou com o da rota
+		// do perfil): um relatório de recusa por tecto sai antes de haver rota levantada.
+		cfg.Rota.Digest = DigestDaRota(cfg.Rota.Fornecedor, cfg.Rota.Modelo, "em-processo")
+		if modo == ModoProxy {
+			cfg.Rota.Digest = DigestDaRota(cfg.Rota.Fornecedor, cfg.Rota.Modelo, "proxy:"+ImagemDoProxy)
+		}
 		if o.tecto != 0 || o.contador != "" {
 			// O tecto nos modos sem modelo real existe para ensaiar o próprio tecto.
 			if o.contador == "" {
@@ -352,12 +437,17 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		if cfg.Contador != nil {
 			if err := cfg.Contador.Cabe(previstos); err != nil {
-				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
-				return SaidaRecusada
+				return naoCoube(err)
 			}
 		}
 		if modo == ModoFalso {
-			var falso http.Handler = NovoProviderFalso(roteiro)
+			doRoteiro := NovoProviderFalso(roteiro)
+			if qualifica {
+				// Sem proxy, é o falso que declara o modelo servido, com o nome que o perfil espera
+				// (o comportamento `troca_modelo` declara outro).
+				doRoteiro.DeclararModeloServido(perfil.ExpectedModel)
+			}
+			var falso http.Handler = doRoteiro
 			if o.estado != "" {
 				// Sem proxy, é o falso que declara o modelo servido — com o nome que o perfil
 				// espera. Sem perfil não declara nada.
@@ -466,6 +556,10 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		red.Acrescentar(rota.Segredos()...)
 		prefixo := prefixoDoProxy(fornecedor)
+		if qualifica && perfil.ExpectedModel != prefixo+"/"+rota.Modelo {
+			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — o expected_model do perfil nao e a rota desta corrida (%s/%s): a qualificacao e da rota, e o modelo servido tem de ser o que o perfil espera\n", prefixo, rota.Modelo)
+			return SaidaRecusada
+		}
 		if devolve && perfil.ExpectedModel != prefixo+"/"+rota.Modelo {
 			// O proxy declara ter servido `<adaptador>/<modelo>`. Com outro nome no perfil a rota
 			// nunca se provava igual, o estado nunca era devolvido, e cada run gastava um pedido do
@@ -513,16 +607,31 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			return SaidaRecusada
 		}
 		defer cfg.Contador.Fechar()
-		// Mais um: a sonda antes da corrida conta no tecto como um pedido.
-		if err := cfg.Contador.Cabe(previstos + 1); err != nil {
-			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
-			return SaidaRecusada
-		}
 		cfg.Rota = RotaDoRelatorio{Fornecedor: string(fornecedor), Modelo: rota.Modelo, Digest: DigestDaRota(string(fornecedor), rota.Modelo, rota.apiBase)}
 		cfg.RegiaoDeclarada = rota.RegiaoDeclarada
+		// Mais um: a sonda antes da corrida conta no tecto como um pedido.
+		cfg.Sondar = true
+		if err := cfg.Contador.Cabe(previstos + 1); err != nil {
+			return naoCoube(err)
+		}
+		// AS QUALIFICAÇÕES DO DIA (decisão D7): no máximo duas por perfil. O registo fica ao lado
+		// do ficheiro de chaves; confere-se antes de enviar e escreve-se com o proxy já de pé.
+		caminhoDasQualificacoes := filepath.Join(filepath.Dir(caminho), NomeDoRegistoDeQualificacoes)
+		diaDeHoje := amb.Relogio().UTC().Format("2006-01-02")
+		if qualifica {
+			feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, diaDeHoje, cfg.PerfilDigest)
+			if qerr == nil && feitas >= QualificacoesPorPerfilPorDia {
+				qerr = ErrQualificacoesDoDia
+			}
+			if qerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", qerr)
+				return SaidaRecusada
+			}
+			fmt.Fprintf(stderr, "aos-ensaio: QUALIFICACAO — pior caso declarado: %d pedidos (com a sonda e, se o perfil devolve estado por obrigacao, o controlo); tecto proprio: %d pedidos e %.2f USD estimados; este perfil ja foi qualificado %d vez(es) hoje, de um maximo de %d\n",
+				previstos+1, int64(TectoDePedidosDaQualificacao), float64(TectoMicroUSDDaQualificacao)/1e6, feitas, QualificacoesPorPerfilPorDia)
+		}
 		cfg.AbortarAposRecusasDeChave = RecusasDeChaveQueAbortam
 		cfg.AbortarApos429Iniciais, cfg.AbortarAposSerieDe429 = Respostas429QueAbortam, SerieDe429QueAborta
-		cfg.Sondar = true
 		estado, eerr := cfg.Contador.Estado()
 		if eerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", eerr)
@@ -545,6 +654,14 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		red.Acrescentar(vivo.ChaveMestra())
 		fechar = vivo.Fechar
 		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
+		if qualifica {
+			ordem, qerr := RegistarQualificacao(caminhoDasQualificacoes, diaDeHoje, cfg.PerfilDigest)
+			if qerr != nil {
+				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", qerr)
+				return SaidaRecusada
+			}
+			cfg.Qualificacao.QualificacoesHoje = &ordem
+		}
 	}
 
 	if pastaDaSaida == "" {
@@ -554,13 +671,29 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		pastaDaSaida = filepath.Join(amb.PastaDoDono, "relatorios")
 	}
-	no, err := NovoNoDeEnsaio(ctx, CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil, HostEsperado: o.hostEsperado})
+	cfgDoNo := CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil, HostEsperado: o.hostEsperado}
+	if qualifica {
+		cfgDoNo.Qualificacao, cfgDoNo.Limite = true, cfg.Qualificacao.Limite
+	}
+	no, err := NovoNoDeEnsaio(ctx, cfgDoNo)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaErro
 	}
 	defer no.Fechar()
 	cfg.No = no
+	if perfilDeControlo != nil {
+		// O nó da corrida de controlo: a mesma rota, o mesmo contador e o mesmo tecto, com o
+		// perfil que NÃO devolve estado.
+		cfgDoNo.Perfil = perfilDeControlo
+		doControlo, cerr := NovoNoDeEnsaio(ctx, cfgDoNo)
+		if cerr != nil {
+			fmt.Fprintf(stderr, "aos-ensaio: %v\n", cerr)
+			return SaidaErro
+		}
+		defer doControlo.Fechar()
+		cfg.Qualificacao.Controlo = doControlo
+	}
 
 	relatorio, err := Correr(ctx, cfg)
 	if err != nil {
@@ -579,6 +712,22 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprint(stdout, ResumoEmTexto(relatorio))
 	}
 	fmt.Fprintf(stdout, "relatorio: %s\nresumo:    %s\n", emJSON, emTexto)
+	veredicto := ""
+	if q := relatorio.QualificacaoDoModelo; q != nil {
+		veredicto = q.Veredicto
+		for _, a := range q.Avisos {
+			fmt.Fprintf(stderr, "aos-ensaio: AVISO DA QUALIFICACAO — %s\n", a)
+		}
+		fmt.Fprintf(stderr, "aos-ensaio: VEREDICTO DA QUALIFICACAO: %s (digest do relatorio: %s)\n", strings.ToUpper(q.Veredicto), relatorio.DigestDoRelatorio)
+	}
+	if veredicto == VeredictoRecusado {
+		// Um veredicto firme vale mesmo que a corrida tenha parado a meio.
+		return SaidaModeloRecusado
+	}
+	if relatorio.Terminou == TerminouNaoCoube {
+		fmt.Fprintln(stderr, "aos-ensaio: RECUSADO — o pior caso da qualificacao nao cabe no tecto do dia; nenhum pedido foi enviado")
+		return SaidaRecusada
+	}
 	if relatorio.Terminou != TerminouCompleta {
 		if relatorio.Sonda != nil && relatorio.Sonda.Resultado != SondaOK {
 			fmt.Fprintf(stderr, "aos-ensaio: a SONDA nao teve 200 (HTTP %d, %s): a corrida NAO COMECOU; gastou-se no maximo 1 pedido do tecto\n", relatorio.Sonda.HTTP, relatorio.Sonda.Resultado)
@@ -588,6 +737,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			fmt.Fprintf(stderr, "aos-ensaio: %s\n", conselho)
 		}
 		return SaidaParouAMeio
+	}
+	if veredicto == VeredictoInconclusivo {
+		return SaidaInconclusivo
 	}
 	return SaidaOK
 }
@@ -711,8 +863,14 @@ func planoDasOpcoes(b *Bateria, o opcoes) (Plano, error) {
 		p := PlanoDaBateria(b, braco, amostras)
 		p.Semente = o.semente
 		return p, nil
+	case ExperienciaQualificacao:
+		// A amostra e o braço são os da decisão D2: não se escolhem na linha de comandos.
+		if o.amostras != 0 || (o.braco != "" && o.braco != string(BracoA)) {
+			return Plano{}, fmt.Errorf("banco-ensaio: a experiencia qualificacao nao aceita --amostras nem --braco (sao %d passagens no braco A)", PassagensDaQualificacao)
+		}
+		return PlanoDaQualificacao(b, o.semente), nil
 	}
-	return Plano{}, fmt.Errorf("banco-ensaio: experiencia desconhecida: %q (aceites: bateria, separadores)", o.experiencia)
+	return Plano{}, fmt.Errorf("banco-ensaio: experiencia desconhecida: %q (aceites: bateria, separadores, qualificacao)", o.experiencia)
 }
 
 // servirFalso é o subcomando interno `falso-provider`: o provider falso do banco a ouvir num
