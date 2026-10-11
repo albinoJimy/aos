@@ -567,3 +567,79 @@ func TestAOS520_Livro_IlegivelRecusa(t *testing.T) {
 		t.Fatalf("livro vazio: %v %v", m, err)
 	}
 }
+
+// aos520EventoFuturo escreve no livro um evento de um tipo que este binário não conhece, da família
+// do livro — o que uma versão mais recente do nó (o disjuntor do AOS-521) lá poria.
+func aos520EventoFuturo(t *testing.T, es eventstore.EventStore, passo string) {
+	t.Helper()
+	if _, err := es.Append(context.Background(), canaryStream, eventstore.EventInput{
+		Type: "model.breaker.opened", Payload: []byte(`{"v":"9.0","coisa_que_nao_conheco":true}`), RunID: canaryRunID, StepID: passo,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// O LIVRO EVOLUI POR TIPOS NOVOS. Um evento de um tipo desconhecido, da família do livro, não torna
+// o livro ilegível: é ignorado na contagem e fica registado. Com ele visto, o canary não é decidível
+// por esta versão — um plano novo é do titular (com a razão própria) e NADA se atribui; um plano já
+// atribuído ao candidato é recusado (não se serve, e não passa para o titular); e a abertura de um
+// registo novo não se escreve. Um tipo de FORA da família, e um evento malformado de um tipo
+// conhecido, continuam a ser ilegíveis.
+func TestAOS520_Livro_EventoDeVersaoMaisRecente_NaoDecidivel(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	l := aos520Livro(t, es, aos520Cand)
+	aos520Decidir(t, l, aos520Cand, "plano-antes", 0)
+	aos520EventoFuturo(t, es, "futuro-1")
+
+	st, err := l.ler(ctx)
+	if err != nil || st.futuros != 1 || st.porAbertura[aos520Cand.entryDigest] != 1 {
+		t.Fatalf("o evento futuro tinha de ser ignorado na contagem e registado: futuros=%d atribuidos=%d err=%v", st.futuros, st.porAbertura[aos520Cand.entryDigest], err)
+	}
+	if d := aos520Decidir(t, l, aos520Cand, "plano-depois", 0); d.papel != canary.RoleIncumbent || d.razao != razaoLivroMaisRecente {
+		t.Fatalf("com um evento futuro, um plano novo a 100%%: %+v; quer o titular", d)
+	}
+	if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)); n != 1 {
+		t.Fatalf("com um evento futuro atribuiu-se um plano: %d atribuicoes", n)
+	}
+	if _, err := l.decidir(ctx, aos520Cand, chaveDeRun("plano-antes"), 0); !errors.Is(err, ErrCanaryNewerVersion) {
+		t.Fatalf("um plano ja atribuido, com um evento futuro: %v; quer a recusa", err)
+	}
+	if l.futurosVistos.Load() != 1 {
+		t.Fatalf("o que o /metrics publica: %d", l.futurosVistos.Load())
+	}
+	// A abertura de OUTRO registo não se escreve; e o arranque não falha.
+	novo := aos520Cand
+	novo.entryDigest = "sha256:" + strings.Repeat("9", 64)
+	l2 := &livroDoCanary{es: es}
+	if err := l2.abrir(ctx, novo, aos520Marca(0, nil)); err != nil {
+		t.Fatalf("abrir com um evento futuro: %v", err)
+	}
+	if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryOpened)); n != 1 {
+		t.Fatalf("com um evento futuro abriu-se um canary: %d aberturas", n)
+	}
+	if d, err := l2.decidir(ctx, novo, chaveDeRun("plano-do-registo-novo"), 0); err != nil || d.papel != canary.RoleIncumbent || d.razao != razaoLivroMaisRecente {
+		t.Fatalf("registo sem abertura, com um evento futuro: %+v %v", d, err)
+	}
+	// O nó sem candidato a servir lê os planos atribuídos na mesma.
+	if m, err := l.planosAtribuidos(ctx); err != nil || !m[chaveDeRun("plano-antes").indice()] {
+		t.Fatalf("planosAtribuidos com um evento futuro: %v %v", m, err)
+	}
+	// FORA da família: ilegível.
+	if _, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: "modelo.canary.opened", Payload: []byte(`{}`), RunID: canaryRunID, StepID: "fora"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.ler(ctx); !errors.Is(err, ErrCanaryUnreadable) {
+		t.Fatalf("um tipo de fora da familia do livro: %v", err)
+	}
+	// Um evento MALFORMADO de um tipo conhecido: ilegível, mesmo com eventos futuros ao lado.
+	es2 := aos520Store(t)
+	aos520Livro(t, es2, aos520Cand)
+	aos520EventoFuturo(t, es2, "futuro-1")
+	if _, err := es2.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelCanaryPlanAssigned, Payload: []byte(`{"v":`), RunID: canaryRunID, StepID: "lixo"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&livroDoCanary{es: es2}).decidir(ctx, aos520Cand, chaveDeRun("p"), 0); !errors.Is(err, ErrCanaryUnreadable) {
+		t.Fatalf("um evento malformado de um tipo conhecido: %v", err)
+	}
+}

@@ -25,7 +25,13 @@ package main
 // os que o nó tem em memória; um `opened` que não case com o registo assinado em vigor (o mesmo
 // digest de registo com outro alias, perfil ou fatia) não é reinterpretado — recusa.
 //
-// FAIL-CLOSED. Um evento que não se sabe ler, um stream ilegível, ou o ciclo de concorrência
+// O LIVRO EVOLUI POR TIPOS NOVOS. Um evento de um tipo que este binário não conhece, dentro da
+// família `model.*`, não derruba o nó nem recusa os runs do titular: é ignorado na contagem, e o
+// canary passa a «não decidível por esta versão» — nenhum plano novo vai para o candidato. É o que
+// deixa uma versão mais recente escrever aqui (o disjuntor do AOS-521) durante um deploy rolante
+// ou antes de um recuo de imagem, num stream que é append-only e não se repara.
+//
+// FAIL-CLOSED. Um evento de um tipo CONHECIDO que não se sabe ler, um stream ilegível, ou o ciclo de concorrência
 // esgotado: a decisão falha, e o run que a pediu não arranca. Nunca «na dúvida, o titular» — um
 // plano do candidato servido pelo titular por causa de uma leitura falhada é o defeito que este
 // livro existe para impedir. Nenhuma decisão lê o relógio.
@@ -37,6 +43,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -53,6 +60,12 @@ const (
 	// EventTypeModelCanaryClosed — o candidato serviu o limite de planos e deixou de receber novos.
 	EventTypeModelCanaryClosed = "model.canary.closed"
 )
+
+// familiaDoLivro é o prefixo dos tipos de evento que podem existir no stream do livro. É o CONTRATO
+// DE EVOLUÇÃO do livro (ADR-041 §2.6): quem acrescentar factos a este stream — o disjuntor do
+// AOS-521 — usa tipos NOVOS desta família, e nunca muda o significado nem a forma de um tipo que já
+// existe. Um binário que não conheça um tipo da família ignora-o e deixa de atribuir planos novos.
+const familiaDoLivro = "model."
 
 // canaryStream é o stream do livro. Sob o espaço reservado, que o `POST /runs` e o `POST /plans`
 // recusam como `run_id`; sem pontos (ADR-029).
@@ -85,6 +98,9 @@ const (
 	razaoPlanoAnteriorAAbertura = "plano_anterior_a_abertura"
 	// razaoCanaryFechado — o candidato já serviu o limite de planos.
 	razaoCanaryFechado = "canary_fechado"
+	// razaoLivroMaisRecente — o livro tem eventos de uma versão mais recente do nó, e esta versão
+	// não sabe se o candidato ainda pode receber planos: não atribui.
+	razaoLivroMaisRecente = "livro_de_versao_mais_recente"
 )
 
 // Erros do livro. Todos recusam o run que pediu a decisão.
@@ -99,6 +115,10 @@ var (
 	ErrCanaryInconsistent = errors.New("aos: a abertura do canary gravada no livro nao e a do registo assinado em vigor (AOS-520)")
 	// ErrPlanAssignedToAbsentCandidate — o plano foi atribuído a um candidato que este nó não está a
 	// servir (outro alias, outro perfil, o interruptor desligado, ou o registo retirado).
+	// ErrCanaryNewerVersion — o plano está atribuído ao candidato e o livro tem eventos de uma versão
+	// mais recente do nó: esta versão não sabe se ainda o pode servir. Não o serve, e não o passa
+	// para o titular.
+	ErrCanaryNewerVersion            = errors.New("aos: o livro do canary tem eventos de uma versao mais recente do no, e o plano esta atribuido ao candidato — esta versao nao sabe se o pode servir (AOS-520)")
 	ErrPlanAssignedToAbsentCandidate = errors.New("aos: o plano foi atribuido a um candidato que este no nao esta a servir (AOS-520)")
 )
 
@@ -165,6 +185,11 @@ type estadoDoCanary struct {
 	porAbertura map[string]int           // planos atribuídos, por digest do registo
 	fechadas    map[string]bool          // por digest do registo
 	ultimoSeq   uint64
+	// futuros conta os eventos de tipos que este binário não conhece, dentro da família do livro.
+	// Maior que zero ⇒ o livro foi escrito também por uma versão mais recente do nó, e o que ela
+	// lá pôs pode mudar a decisão (um disjuntor aberto, por exemplo): o canary NÃO É DECIDÍVEL por
+	// esta versão. Não se atribui nenhum plano novo ao candidato.
+	futuros int
 }
 
 // decisaoDoCanary é o resultado de uma consulta ao livro para um run novo.
@@ -192,6 +217,8 @@ type livroDoCanary struct {
 	// candidato em vigor — o que o `/metrics` publica. Não decidem nada.
 	atribuidosVistos atomic.Int64
 	fechadoVisto     atomic.Int64
+	// futurosVistos é quantos eventos de tipos desconhecidos a última leitura viu.
+	futurosVistos atomic.Int64
 }
 
 func (l *livroDoCanary) logf(format string, args ...any) {
@@ -227,6 +254,20 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 	}
 	for _, ev := range evs {
 		st.ultimoSeq = ev.Seq
+		switch ev.Type {
+		case EventTypeModelCanaryOpened, EventTypeModelCanaryPlanAssigned, EventTypeModelCanaryClosed:
+		default:
+			// UM TIPO QUE ESTE BINÁRIO NÃO CONHECE. Dentro da família do livro (`model.*`) é um evento
+			// de uma versão mais recente do nó — o disjuntor do AOS-521 vai escrever aqui —, e não
+			// se lê nem se conta: regista-se que foi visto, e quem decide passa a não atribuir nada
+			// ([estadoDoCanary.futuros]). Fora da família é lixo no stream: ilegível, como sempre.
+			if !strings.HasPrefix(ev.Type, familiaDoLivro) {
+				return st, fmt.Errorf("%w: tipo %q no evento %d", ErrCanaryUnreadable, ev.Type, ev.Seq)
+			}
+			st.futuros++
+			continue
+		}
+		// Um evento de um tipo CONHECIDO que não se sabe ler continua a ser ilegível.
 		var p canaryPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil || p.EntryDigest == "" || p.Alias == "" || p.ProfileDigest == "" {
 			return st, fmt.Errorf("%w: evento %d", ErrCanaryUnreadable, ev.Seq)
@@ -253,8 +294,6 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 			}
 		case EventTypeModelCanaryClosed:
 			st.fechadas[p.EntryDigest] = true
-		default:
-			return st, fmt.Errorf("%w: tipo %q no evento %d", ErrCanaryUnreadable, ev.Type, ev.Seq)
 		}
 	}
 	return st, nil
@@ -301,9 +340,14 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 		if err != nil {
 			return err
 		}
+		l.futurosVistos.Store(int64(st.futuros))
 		if tem {
 			n := st.porAbertura[c.entryDigest]
 			l.publicar(n, st.fechadas[c.entryDigest] || n >= ab.Limit)
+			return nil
+		}
+		if st.futuros > 0 {
+			// O livro tem eventos de uma versão mais recente: esta versão não abre nada nele.
 			return nil
 		}
 		m, err := marca(ctx)
@@ -360,6 +404,17 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 		ab, tem, err := st.aberturaDe(c)
 		if err != nil {
 			return decisaoDoCanary{}, err
+		}
+		l.futurosVistos.Store(int64(st.futuros))
+		// (0) O LIVRO TEM EVENTOS DE UMA VERSÃO MAIS RECENTE DO NÓ. O que lá está pode mudar a
+		// decisão, e esta versão não o sabe ler: NÃO atribui nenhum plano novo ao candidato — o
+		// run é do titular, com a razão própria — e NÃO serve um plano já atribuído ao candidato,
+		// que também não passa para o titular.
+		if st.futuros > 0 {
+			if _, ja := st.atribuidos[chave.indice()]; ja {
+				return decisaoDoCanary{}, ErrCanaryNewerVersion
+			}
+			return decisaoDoCanary{papel: canary.RoleIncumbent, razao: razaoLivroMaisRecente}, nil
 		}
 		if !tem {
 			return decisaoDoCanary{}, fmt.Errorf("%w: sem abertura para o registo em vigor", ErrCanaryUnreadable)
@@ -464,6 +519,7 @@ func (l *livroDoCanary) planosAtribuidos(ctx context.Context) (map[string]bool, 
 	if err != nil {
 		return nil, err
 	}
+	l.futurosVistos.Store(int64(st.futuros))
 	out := make(map[string]bool, len(st.atribuidos))
 	for chave := range st.atribuidos {
 		out[chave] = true

@@ -81,6 +81,9 @@ const (
 	// causaFixacaoDiferenteDaGravada — o run já tinha um `run.model_pinned`, e o que lá está não é
 	// o que este nó escolheria agora. O valor gravado não é reescrito nem ignorado.
 	causaFixacaoDiferenteDaGravada = "fixacao_diferente_da_gravada"
+	// causaLivroDeVersaoMaisRecente — o plano está atribuído ao candidato e o livro tem eventos de
+	// uma versão mais recente do nó: esta versão não sabe se o pode servir.
+	causaLivroDeVersaoMaisRecente = "livro_de_versao_mais_recente"
 	// causaMarcaSemFixacaoGravada — o Goal traz a marca de modelo fixado por escolha e o log do nó
 	// não tem, para esse run, uma fixação com essa marca, esse alias e esse perfil; ou a marca não
 	// é uma versão da função de escolha que este binário conheça.
@@ -115,7 +118,7 @@ func (h historiaDoRun) fixado() (alias, digest, marca string, ok bool, err error
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
 func causasDaFixacaoDoModelo() []string {
 	return []string{causaPlanoDoCandidatoSemCandidato, causaLivroIlegivel, causaLivroEmContencao,
-		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel, causaCandidatoSemPerfil}
+		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaLivroDeVersaoMaisRecente, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel, causaCandidatoSemPerfil}
 }
 
 // ErrModelPinRefused — o run novo não pode ser hospedado com um modelo fixado. Fail-closed: não
@@ -216,6 +219,10 @@ func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *
 		if err := c.livro.abrir(ctx, candidato, marcaDaFilaDePedidos(es)); err != nil {
 			return nil, fmt.Errorf("aos: abrir o canary do modelo candidato (AOS-520): %w", err)
 		}
+		if f := c.livro.futurosVistos.Load(); f > 0 {
+			log("AVISO (AOS-520): o livro do canary (%s) tem %d evento(s) de uma VERSAO MAIS RECENTE do no, que este binario nao sabe ler — o canary NAO E DECIDIVEL por esta versao: nenhum plano novo e atribuido ao candidato (os runs novos sao do titular, com a razao %s), e um run novo de um plano ja atribuido ao candidato e recusado. Os runs ja fixados acabam como estavam. Actualize este no para a versao que escreveu esses eventos",
+				canaryStream, f, razaoLivroMaisRecente)
+		}
 		estado := "ABERTO"
 		if c.livro.fechadoVisto.Load() == 1 {
 			estado = "TERMINADO (o candidato ja nao recebe planos novos; os planos que lhe foram atribuidos acabam com ele)"
@@ -229,6 +236,9 @@ func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *
 		return nil, fmt.Errorf("aos: ler o livro do canary do modelo candidato (AOS-520): %w", err)
 	}
 	c.atribuidosNoArranque = atribuidos
+	if f := c.livro.futurosVistos.Load(); f > 0 {
+		log("AVISO (AOS-520): o livro do canary (%s) tem %d evento(s) de uma VERSAO MAIS RECENTE do no, que este binario nao sabe ler. Este no nao serve candidato: arranca e serve o titular como sempre; os planos que o livro diz atribuidos ao candidato continuam a ser recusados", canaryStream, f)
+	}
 	if len(atribuidos) > 0 {
 		log("canary do modelo candidato (AOS-520): este no NAO serve candidato e o livro duravel (%s) tem %d plano(s) atribuido(s) ao candidato — um run novo de um desses planos e RECUSADO (%s): o plano falha, nao continua no titular. Lido uma vez, no arranque",
 			canaryStream, len(atribuidos), causaPlanoDoCandidatoSemCandidato)
@@ -392,6 +402,8 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 	switch {
 	case errors.Is(err, ErrPlanAssignedToAbsentCandidate):
 		return goal, recusaDaFixacao(causaPlanoDoCandidatoSemCandidato, nil)
+	case errors.Is(err, ErrCanaryNewerVersion):
+		return goal, recusaDaFixacao(causaLivroDeVersaoMaisRecente, nil)
 	case errors.Is(err, ErrCanaryContention):
 		return goal, recusaDaFixacao(causaLivroEmContencao, err)
 	case err != nil:

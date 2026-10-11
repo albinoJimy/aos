@@ -678,6 +678,68 @@ func TestAOS520_No_AMarcaNoGoalSoValeSeEstiverSelada(t *testing.T) {
 	}
 }
 
+// UM EVENTO DE UMA VERSÃO MAIS RECENTE NO LIVRO NÃO DERRUBA O NÓ. O livro tem um plano atribuído ao
+// candidato e um evento de um tipo que este binário não conhece (o que o AOS-521 vai escrever).
+//
+//   - Com o interruptor a `off` (ou ausente): o nó ARRANCA e é inerte — um run novo é do titular,
+//     sem fixação; o plano que era do candidato continua a ser recusado.
+//   - Com `on`: o nó arranca e SERVE O TITULAR; nenhum plano novo vai para o candidato, embora a
+//     fatia seja 100%; o plano já atribuído ao candidato é recusado — não é servido por ninguém.
+//
+// Nos dois o /metrics diz que o livro tem eventos de uma versão mais recente.
+func TestAOS520_No_LivroComEventoDeVersaoMaisRecente(t *testing.T) {
+	semear := func(t *testing.T) *aos520Substrato {
+		sub := aos520NovoSubstrato(t)
+		a := aos520cNo(t, sub, "on", aos520cCand(100))
+		if _, err := a.node.canary.livro.decidir(context.Background(), a.node.canary.candidato, chaveDeRun("plano-do-candidato"), 0); err != nil {
+			t.Fatal(err)
+		}
+		a.fechar(t)
+		aos520EventoFuturo(t, sub.store, "futuro-1")
+		return sub
+	}
+	for _, interruptor := range []string{"off", ""} {
+		t.Run("interruptor "+interruptor, func(t *testing.T) {
+			n := aos520cNo(t, semear(t), interruptor, aos520cCand(100))
+			n.correr(t, "run-novo", nil)
+			if modelos := aos520cModelosPedidos(t, n.aos486No, 0); !aos520cTodos(modelos, aos486Modelo) {
+				t.Fatalf("o run novo pediu %q", modelos)
+			}
+			if _, tem := aos520cFixacao(t, n.node.EventStore, "run-novo"); tem {
+				t.Fatal("sem candidato a servir o run nao e fixado")
+			}
+			aos520cRecusado(t, n, "plano-do-candidato", causaPlanoDoCandidatoSemCandidato)
+			if !strings.Contains(aos520cMetricas(t, n.aos486No), "\naos_model_canary_newer_events 1\n") {
+				t.Fatal("o /metrics nao diz que o livro tem eventos de uma versao mais recente")
+			}
+		})
+	}
+	t.Run("on", func(t *testing.T) {
+		n := aos520cNo(t, semear(t), "on", aos520cCand(100))
+		n.correr(t, "run-novo", nil)
+		if modelos := aos520cModelosPedidos(t, n.aos486No, 0); len(modelos) != 2 || !aos520cTodos(modelos, aos486Modelo) {
+			t.Fatalf("com um evento futuro no livro, o run novo pediu %q; quer o titular", modelos)
+		}
+		if fix, tem := aos520cFixacao(t, n.node.EventStore, "run-novo"); !tem || fix.Role != "titular" || fix.Reason != "livro_de_versao_mais_recente" {
+			t.Fatalf("fixacao: tem=%v %+v", tem, fix)
+		}
+		if at := aos520EventosDoLivro(t, n.node.EventStore, EventTypeModelCanaryPlanAssigned); len(at) != 1 {
+			t.Fatalf("com um evento futuro atribuiu-se um plano novo: %+v", at)
+		}
+		aos520cRecusado(t, n, "plano-do-candidato", causaLivroDeVersaoMaisRecente)
+		if !strings.Contains(aos520cMetricas(t, n.aos486No), "\naos_model_canary_newer_events 1\n") {
+			t.Fatal("o /metrics nao diz que o livro tem eventos de uma versao mais recente")
+		}
+	})
+	// Sem eventos futuros, a série existe com o candidato a servir (a zero) e não existe sem ele.
+	if m := aos520cMetricas(t, aos520cNo(t, aos520NovoSubstrato(t), "on", aos520cCand(100)).aos486No); !strings.Contains(m, "\naos_model_canary_newer_events 0\n") {
+		t.Fatal("com o candidato a servir a serie existe, a zero")
+	}
+	if m := aos520cMetricas(t, aos520cNo(t, aos520NovoSubstrato(t), "off", aos520cCand(100)).aos486No); strings.Contains(m, "aos_model_canary") {
+		t.Fatal("sem candidato a servir e sem eventos futuros o /metrics nao tem series do canary")
+	}
+}
+
 // aos520cRecusado submete um run que a fixação do modelo tem de recusar, e confere as três coisas
 // que a recusa deixa: o run fecha `failed` com a razão própria na transição terminal, a causa fica
 // no log do nó, e o provider não vê pedido nenhum.
@@ -1391,7 +1453,7 @@ func TestAOS520_ChaveDoCanary(t *testing.T) {
 	if chaveDePedido("x").indice() == chaveDeRun("x").indice() || passoDoPlano(chaveDePedido("x")) == passoDoPlano(chaveDeRun("x")) {
 		t.Fatal("um pedido e um run com o mesmo id tem de ser duas chaves no livro")
 	}
-	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel", "candidato_sem_o_perfil_do_registo"}
+	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "livro_de_versao_mais_recente", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel", "candidato_sem_o_perfil_do_registo"}
 	if got := causasDaFixacaoDoModelo(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("o vocabulario das causas mudou: %q", got)
 	}

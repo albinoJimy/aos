@@ -2307,6 +2307,15 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"gauge", float64(l.fechadoVisto.Load()), "")
 	}
 
+	// AOS-520 — O LIVRO DO CANARY TEM EVENTOS DE UMA VERSÃO MAIS RECENTE. Sai com um candidato a
+	// servir (o zero é um zero verdadeiro) e, num nó sem candidato a servir, só quando os há — sem
+	// eles o /metrics desse nó é o de antes.
+	if h.node != nil && h.node.canary != nil && (h.node.canary.servir || h.node.canary.livro.futurosVistos.Load() > 0) {
+		g("aos_model_canary_newer_events",
+			"Eventos do livro do canary de tipos que este binario nao conhece, escritos por uma versao mais recente do no (AOS-520), da ultima leitura por esta replica. Maior que zero: o canary nao e decidivel por esta versao — nenhum plano novo e atribuido ao candidato, e um run novo de um plano ja atribuido ao candidato e recusado. Actualize o no.",
+			"gauge", float64(h.node.canary.livro.futurosVistos.Load()), "")
+	}
+
 	// AOS-509 — RESPOSTAS DO PROVIDER RECUSADAS, POR CAUSA. Uma amostra por causa do vocabulário
 	// fechado, sempre presentes com o gateway de modelo composto: o zero é um zero verdadeiro.
 	if h.node != nil && h.node.respostasRecusadas != nil {
