@@ -107,6 +107,19 @@ type Goal struct {
 	// fixada: diz a quem hospeda que não a fixe agora, a meio do run, e SEGUE NA VISTA tal e
 	// qual, para que quem projecta também não vá buscar a que o perfil da rota declare agora.
 	ProjectionVersion string
+	// RouteProfileDigest FIXA o perfil da rota deste run (AOS-520): o digest do perfil que estava em
+	// vigor para o modelo do run quando ele foi hospedado pela primeira vez. Vazio — a omissão, e o
+	// caso de todos os runs de um nó sem perfis de rota assinados — ⇒ o run não está fixado em
+	// perfil nenhum, e quem faz o pedido usa o perfil que tiver, como sempre.
+	//
+	// Quem o preenche é quem HOSPEDA o run: num run novo, o digest do perfil em vigor; numa
+	// retoma, o do registo de retoma. O runtime só o transporta ([PromptView.RouteProfileDigest]),
+	// TAL E QUAL: não o normaliza nem o descarta, porque um valor que não fosse transportado
+	// deixava de ser conferido — e quem confere recusa o que não casar.
+	//
+	// [RouteProfileDigestUnpinned] é o valor de um run RE-HOSPEDADO que começou sem perfil fixado:
+	// diz a quem hospeda que não o fixe agora, a meio do run.
+	RouteProfileDigest string
 	// CompletionRequires é o CONTRATO DE CONCLUSÃO do run (AOS-493, ADR-037): os nomes (o
 	// `ToolID`) das tools de que a conclusão depende. O run só conclui cumprido com pelo menos
 	// uma chamada EFECTIVA de cada uma — despachada, sem recusa e sem erro de tool. Vazio ⇒ sem
@@ -606,6 +619,9 @@ func (rt *Runtime) Run(ctx context.Context, goal Goal) (Result, error) {
 		// A VERSÃO DA PROJECÇÃO EM QUE O RUN ESTÁ FIXADO (AOS-513) segue na vista para quem faz o
 		// pedido. Vazia na omissão: a vista é a de sempre.
 		view.ProjectionVersion = ProjectionVersionForView(goal.ProjectionVersion)
+		// O PERFIL DA ROTA EM QUE O RUN ESTÁ FIXADO (AOS-520) segue na vista, tal e qual, para quem
+		// faz o pedido o conferir. Vazio na omissão: a vista é a de sempre.
+		view.RouteProfileDigest = goal.RouteProfileDigest
 		// OS ESTADOS OPACOS DOS TURNOS ANTERIORES (AOS-515) seguem na vista, pelo digest do tail.
 		// nil num run sem estado: a vista é a de sempre.
 		view.ProviderStates = copiaDosEstados(estadosDoRun)
