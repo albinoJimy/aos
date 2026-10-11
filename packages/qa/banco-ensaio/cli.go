@@ -615,7 +615,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			return naoCoube(err)
 		}
 		// AS QUALIFICAÇÕES DO DIA (decisão D7): no máximo duas por perfil. O registo fica ao lado
-		// do ficheiro de chaves; confere-se antes de enviar e escreve-se com o proxy já de pé.
+		// do ficheiro de chaves; confere-se antes de enviar e escreve-se quando a sonda passa.
 		caminhoDasQualificacoes := filepath.Join(filepath.Dir(caminho), NomeDoRegistoDeQualificacoes)
 		diaDeHoje := amb.Relogio().UTC().Format("2006-01-02")
 		if qualifica {
@@ -655,12 +655,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fechar = vivo.Fechar
 		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
 		if qualifica {
-			ordem, qerr := RegistarQualificacao(caminhoDasQualificacoes, diaDeHoje, cfg.PerfilDigest)
-			if qerr != nil {
-				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", qerr)
-				return SaidaRecusada
+			cfg.Qualificacao.Registar = func() (int, error) {
+				return RegistarQualificacao(caminhoDasQualificacoes, diaDeHoje, cfg.PerfilDigest)
 			}
-			cfg.Qualificacao.QualificacoesHoje = &ordem
 		}
 	}
 
@@ -698,7 +695,8 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	relatorio, err := Correr(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
-		if errors.Is(err, ErrNaoCabe) || errors.Is(err, ErrModoRealSemTecto) || errors.Is(err, ErrContador) {
+		if errors.Is(err, ErrNaoCabe) || errors.Is(err, ErrModoRealSemTecto) || errors.Is(err, ErrContador) ||
+			errors.Is(err, ErrQualificacoesDoDia) || errors.Is(err, ErrRegistoDeQualificacoes) || errors.Is(err, ErrImagemDoProxy) {
 			return SaidaRecusada
 		}
 		return SaidaErro

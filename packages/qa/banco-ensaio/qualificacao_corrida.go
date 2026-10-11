@@ -36,9 +36,14 @@ type CfgDaQualificacao struct {
 	ControloAplicavel    bool
 	Controlo             *NoDeEnsaio
 	ControloPerfilDigest string
-	// QualificacoesHoje é o número de ordem desta qualificação entre as do mesmo perfil hoje; nil
-	// fora do modo real.
-	QualificacoesHoje *int
+	// Registar, quando presente, conta esta qualificação entre as do mesmo perfil no dia
+	// ([RegistarQualificacao]) e devolve o seu número de ordem. É chamado DEPOIS de a sonda passar
+	// e ANTES do primeiro caso: uma sonda que falha (a conta, a chave) não diz nada sobre o modelo
+	// e não gasta uma das qualificações do dia. Um erro impede a corrida. nil fora do modo real.
+	Registar func() (int, error)
+
+	// qualificacoesHoje é o número de ordem que Registar devolveu; nil sem registo.
+	qualificacoesHoje *int
 
 	// microUSDAoComecar é o gasto estimado do dia antes do primeiro pedido desta qualificação.
 	microUSDAoComecar int64
@@ -136,6 +141,20 @@ func (cfg CfgDaCorrida) paragemDaQualificacao() func() string {
 		}
 		return ""
 	}
+}
+
+// registarQualificacao conta a qualificação entre as do dia, se houver quem a conte.
+func (cfg CfgDaCorrida) registarQualificacao() error {
+	q := cfg.Qualificacao
+	if q == nil || q.Registar == nil {
+		return nil
+	}
+	ordem, err := q.Registar()
+	if err != nil {
+		return err
+	}
+	q.qualificacoesHoje = &ordem
+	return nil
 }
 
 // terminouDaQualificacao distingue o tecto próprio da qualificação do tecto do dia.
@@ -323,7 +342,7 @@ func montarQualificacao(cfg CfgDaCorrida, r *Relatorio, previstos int64, obs []O
 		},
 		Orcamento: OrcamentoDaQualificacao{
 			PiorCasoDeclarado: previstos, TectoMicroUSD: q.TectoMicroUSD,
-			PedidosEnviados: r.Pedidos.Enviados, QualificacoesDoPerfilHoje: q.QualificacoesHoje,
+			PedidosEnviados: r.Pedidos.Enviados, QualificacoesDoPerfilHoje: q.qualificacoesHoje,
 			MaximoPorPerfilPorDia: QualificacoesPorPerfilPorDia,
 		},
 		NaoProva: naoProvaDaQualificacao(cfg.Modo),

@@ -331,6 +331,9 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 			return construirRelatorio(cfg, relogio().UTC(), previstos, cfg.terminouDaQualificacao(terminouDaSonda(s)), sonda, nil, nil)
 		}
 	}
+	if err := cfg.registarQualificacao(); err != nil {
+		return nil, err
+	}
 	obs, terminou := cicloDaCorrida(ctx, cfg, cfg.No, cfg.Plano, parar)
 	terminou = cfg.terminouDaQualificacao(terminou)
 	controlo := cfg.correrControlo(ctx, terminou, obs, parar)

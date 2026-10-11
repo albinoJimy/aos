@@ -145,8 +145,8 @@ func QualificacoesDeHoje(caminho, dia, perfilDigest string) (int, error) {
 
 // RegistarQualificacao conta mais uma qualificação do perfil no dia dado e devolve o seu número de
 // ordem. Com o máximo já atingido devolve [ErrQualificacoesDoDia] e não escreve nada. Chama-se
-// ANTES de enviar o primeiro pedido, com o contador do dia aberto (é a trava dele que garante um
-// processo de cada vez).
+// depois de a sonda passar e ANTES do primeiro caso, com o contador do dia aberto (é a trava dele
+// que garante um processo de cada vez).
 func RegistarQualificacao(caminho, dia, perfilDigest string) (int, error) {
 	r, err := lerRegistoDeQualificacoes(caminho)
 	if err != nil {
