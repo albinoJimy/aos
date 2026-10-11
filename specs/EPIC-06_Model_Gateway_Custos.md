@@ -3855,49 +3855,49 @@ arranca. Sem a pasta configurada, o binário é byte a byte o de hoje.
 - [ ] Sem `AOS_MODEL_ROUTE_PROFILES_DIR`, os digests dos quatro perfis da tabela, o pedido
       enviado ao provider, o manifesto do turno, o banner e o `/metrics` são byte a byte os da
       base — preso por digest, com o binário da base ao lado do novo sobre as mesmas entradas.
-- [ ] Com a pasta configurada e **vazia**, o nó arranca, diz no banner «zero perfis
+- [x] Com a pasta configurada e **vazia**, o nó arranca, diz no banner «zero perfis
       assinados» e comporta-se como sem pasta.
 
 **Falha fechado, com causa própria para cada caso** (o nó não arranca; a causa aparece no
 erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
 
-- [ ] Pasta configurada sem âncora de confiança.
-- [ ] Assinatura em falta, inválida, ou de outra chave.
-- [ ] Registo com campo desconhecido, chave repetida, versão de formato desconhecida, ou fatia
+- [x] Pasta configurada sem âncora de confiança.
+- [x] Assinatura em falta, inválida, ou de outra chave.
+- [x] Registo com campo desconhecido, chave repetida, versão de formato desconhecida, ou fatia
       fora de 0 a 100.
-- [ ] Digest do perfil no registo diferente do digest do perfil que o registo traz.
-- [ ] Relatório citado em falta; ou presente com digest diferente do citado.
-- [ ] Veredicto que não é `qualificado` (`recusado` e `inconclusivo`, um teste cada).
-- [ ] Veredicto de outro perfil (o digest do perfil no relatório não é o do registo).
-- [ ] Veredicto de outra imagem do proxy (o digest no relatório não é o declarado para
+- [x] Digest do perfil no registo diferente do digest do perfil que o registo traz.
+- [x] Relatório citado em falta; ou presente com digest diferente do citado.
+- [x] Veredicto que não é `qualificado` (`recusado` e `inconclusivo`, um teste cada).
+- [x] Veredicto de outro perfil (o digest do perfil no relatório não é o do registo).
+- [x] Veredicto de outra imagem do proxy (o digest no relatório não é o declarado para
       produção pelo AOS-517).
-- [ ] Dois registos para o mesmo nome pedido.
-- [ ] Perfil para um nome que a allowlist assinada não autoriza para o board e a região do
+- [x] Dois registos para o mesmo nome pedido.
+- [x] Perfil para um nome que a allowlist assinada não autoriza para o board e a região do
       nó: a allowlist continua a mandar, e sabe-se no arranque e não ao primeiro pedido.
-- [ ] Perfil que devolve estado (`devolver` diferente de `nunca`) com
+- [x] Perfil que devolve estado (`devolver` diferente de `nunca`) com
       `AOS_MODEL_PROVIDER_STATE` desligado.
-- [ ] **Mutação dirigida** por causa: retirar cada conferência faz arrancar um nó que devia
+- [x] **Mutação dirigida** por causa: retirar cada conferência faz arrancar um nó que devia
       recusar, e avermelha o teste dessa causa — e só esse.
 
 **Quando carrega**
 
-- [ ] Um registo válido para um alias que a tabela em código já conhece substitui essa entrada
+- [x] Um registo válido para um alias que a tabela em código já conhece substitui essa entrada
       para o nó inteiro, e o banner diz qual alias, o modelo esperado de antes e o de agora, e
       os dois digests. Sem essa linha no banner, o teste falha.
 - [ ] Com o perfil assinado do alias que o nó pede (`AOS_MODEL_NAME`), um run completa contra
       um provider falso atrás do proxy fixado, e o manifesto de cada turno traz o digest do
       perfil **assinado**, não o da tabela. É o caso estreito do desenho §4.3: trocar o modelo
       único do nó sem PR.
-- [ ] O evento «perfil carregado» fica selado uma vez por arranque e por perfil, com os três
+- [x] O evento «perfil carregado» fica selado uma vez por arranque e por perfil, com os três
       digests; reconstrói-se do log quem serviu o quê e desde quando.
 - [ ] **Só no arranque.** Mudar, acrescentar ou apagar um ficheiro da pasta com o nó a correr
       não tem efeito até ser recriado — preso por teste. Um run começado antes da troca e
       retomado depois acaba com a projecção fixada ou falha fechado com a causa que já existe
       (`estado_de_outra_rota`); nunca continua em silêncio com outro perfil.
-- [ ] O conjunto de valores do rótulo do modelo servido nas métricas continua **fechado**:
+- [x] O conjunto de valores do rótulo do modelo servido nas métricas continua **fechado**:
       passa a incluir os modelos esperados dos perfis assinados, e o número de séries tem um
       máximo escrito e testado.
-- [ ] Um `expected_model` com ponto ou barra (por exemplo `anthropic/claude-sonnet-4.5`) ou
+- [x] Um `expected_model` com ponto ou barra (por exemplo `anthropic/claude-sonnet-4.5`) ou
       carrega e serve um run de ponta a ponta, ou é recusado no arranque com causa própria.
       O ticket segue o nome por todos os sítios onde é usado e regista o que encontrou
       (desenho §8: há pelo menos um identificador de stream que não aceita ponto).
@@ -3906,8 +3906,8 @@ erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
 
 **Registo**
 
-- [ ] A emenda ao ADR-036 §2.8 está escrita e a RTM regenerada.
-- [ ] O `deploy/server/README.md` descreve os dois interruptores, a montagem da pasta só de
+- [x] A emenda ao ADR-036 §2.8 está escrita e a RTM regenerada.
+- [x] O `deploy/server/README.md` descreve os dois interruptores, a montagem da pasta só de
       leitura no serviço do nó, e o procedimento de troca com a rota drenada.
 
 ### O que fica desligado por omissão, e o que tem de ficar inerte
@@ -3957,8 +3957,73 @@ erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
 
 ### Estado
 
-**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-518 ter o formato do
-relatório e o seu digest estáveis; o AOS-522 pode andar ao lado.
+**Em revisão (2026-10-11).** Núcleo entregue no ramo `feature/AOS-519-perfis-assinados`, assente
+no ramo do AOS-518 (PR #471, por fundir). Falta a revisão adversarial independente, que é
+pré-condição de qualquer perfil assinado ir a produção.
+
+**O que foi entregue.**
+
+- **O registo de entrada e a sua conferência**, no pacote novo `policy/routeentry` do Model
+  Gateway. O registo traz `formato`, `board`, `regiao`, `perfil`, `digest_do_perfil`,
+  `digest_do_relatorio`, `digest_da_imagem_do_proxy` e `fatia_inicial_percentagem`. A assinatura
+  ed25519 é sobre os bytes exactos do ficheiro, com um prefixo de domínio. O relatório lê-se pela
+  leitura fechada (nomes exactos, sem repetidos, conjunto de membros fechado nos três objectos por
+  onde a leitura passa). O digest do relatório passou a calcular-se neste pacote, e o banco
+  delega: há uma só escrita da forma canónica.
+- **O carregamento no arranque do nó** (`model_route_profiles_env.go`), com os dois interruptores.
+  29 causas de recusa em vocabulário fechado; ou carregam todos os registos da pasta ou o nó não
+  arranca. O conjunto de perfis do nó — a tabela com os assinados por cima — serve o gateway, a
+  governação da rota, o rótulo do modelo servido, a versão da projecção dos runs novos e o banner.
+- **O selo «perfil carregado»** no audit de governação do gateway, cadeia
+  `modelgw-gov:route-profiles`, com os três digests.
+- **`aos-issuer route-profile-sign`** e **`route-profile-anchor`**: a chave vem de um ficheiro; o
+  subcomando faz ao registo e ao relatório as conferências do nó, com o mesmo código, antes de
+  assinar.
+- **O banco de ensaio qualifica com o nome pedido de produção** (decisão do dono de 2026-10-11):
+  o `requested` do perfil candidato é o alias da rota de ensaio — no pedido, na allowlist do nó de
+  ensaio e na rota efémera do proxy —, e um teste prende que o relatório cita o digest que
+  `RouteProfile.Digest()` dá ao perfil que o nó lê do mesmo documento.
+- **A emenda ao ADR-036 §2.8** e o procedimento em `deploy/server/README.md`.
+
+**Pontos do ticket que eram ambíguos, e como ficaram.**
+
+- *Perfil que devolve estado.* O critério recusa-o «com `AOS_MODEL_PROVIDER_STATE` desligado»; a
+  decisão D8, como o dono a confirmou a 2026-10-11, é que por esta via só entram perfis que não
+  devolvem estado. Ficou o lado fechado: o perfil é recusado **sempre**, com a captura ligada ou
+  desligada (`perfil_devolve_estado`). Abrir a via a perfis com estado é outro ticket.
+- *Registo de outro ambiente.* O registo ganhou `board` e `regiao`, que não estavam na lista de
+  campos do Âmbito: sem eles, um registo assinado para um nó servia noutro.
+- *As duas âncoras.* Além do controlo pedido (um registo assinado com a chave da allowlist é
+  recusado), o nó recusa arrancar se a âncora dos perfis for a da allowlist externa ou a da
+  embebida (`ancora_partilhada`).
+- *`expected_model` com ponto ou barra.* Segui o nome: entra na comparação com o cabeçalho do
+  proxy, no digest, no selo, no banner e no rótulo `served` das métricas, e em nenhum nome de
+  stream. Carrega e serve um run (`openai/modelo-novo-4.5`, por teste). O que entra num nome de
+  stream, com a escada de tiers armada, é o nome **pedido**: esse é recusado no arranque se tiver
+  ponto, barra ou dois pontos (`nome_da_rota_invalido`).
+- *Tecto de registos.* A pasta aceita no máximo 8, para o número de séries de
+  `aos_model_route_checks_total` ter um máximo escrito (42).
+- *Ficheiros a mais.* Qualquer entrada da pasta que não seja um dos três ficheiros de um registo
+  recusa o arranque.
+
+**Critérios por marcar, e porquê.**
+
+- *Inércia «com o binário da base ao lado do novo».* A inércia está presa por digest dos quatro
+  perfis e pelos goldens do nó dos AOS-490, 505, 513, 514 e 516, que correm sem a pasta e ficaram
+  verdes sem alteração; não foi feita com os dois binários lado a lado.
+- *Run «atrás do proxy fixado».* O run de ponta a ponta com o perfil assinado corre contra um
+  provider em `httptest` que emite os cabeçalhos do proxy, e não atrás da imagem do proxy.
+- *«Só no arranque», segunda metade.* Está preso que mexer na pasta com o nó a correr não tem
+  efeito e que o nó recriado sobre a pasta estragada não arranca. O run começado antes da troca e
+  retomado depois não tem teste novo: vale o mecanismo que já existia.
+- *Smoke sobre JetStream.* Por fazer.
+- *As variáveis no compose de produção.* O `environment:` do compose é uma allowlist: as duas
+  variáveis e a montagem só de leitura entram por um PR de deploy, quando o dono decidir. Até lá
+  a funcionalidade não é alcançável em produção.
+
+**Mutações dirigidas.** 33, todas vermelhas: 25 no pacote `routeentry` (uma por conferência), 1 no
+selo do gateway e 7 na cablagem do nó. Em cada uma retirou-se uma conferência, correram-se os
+testes do pacote, e repôs-se o ficheiro.
 
 ## AOS-520 — O nó serve um titular e um candidato, com o modelo fixado por run; o canary é uma percentagem de planos
 
