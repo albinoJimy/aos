@@ -1469,6 +1469,30 @@ que devolvia estado, com um run antigo em curso). O run não é selado `failed`.
 repor na pasta os três ficheiros do perfil em que o run começou — o `route_profile_digest` dos
 seus `turn.recorded` diz qual —, recriar o nó e retomar.
 
+**Como se vê um run parado pelo perfil, e o que fazer com ele.** Não há métrica própria. Um run
+que ficou em `running` sem dono (o nó morreu a meio) e está fixado noutro perfil aparece no log do
+nó **a cada passagem da varredura de órfãos** — de 2 em 2 minutos por omissão
+(`AOS_CRASH_RESUME_INTERVAL`) — em duas linhas: a do run e o resumo da passagem.
+
+```bash
+docker logs aos-aos-1 2>&1 | grep 'AOS-520' | grep 'deixado como orfao' | tail -5
+```
+
+A linha traz o identificador do run e `causa=<causa>`. Um run **suspenso** (à espera de aprovação)
+não aparece na varredura: recusa só quando alguém o retoma, com `409` e a causa na resposta, e a
+linha `retoma do run … RECUSADA` no log. Nenhum laço do nó acaba por fechar estes runs: o
+varrimento de prazos só alcança os runs que a réplica está a hospedar, e a varredura de órfãos
+limita-se a voltar a tentar. Ficam como estão, e as linhas repetem-se, até uma de duas coisas:
+
+- **Repor o perfil** em que o run começou (os três ficheiros), recriar o nó e retomar o run por
+  `POST /runs/{id}/resume` com credencial fresca. A varredura sozinha não chega para o concluir:
+  não tem credencial, e o turno seguinte do modelo é-lhe negado.
+- **Abandonar o run.** O nó não tem uma rota que sele como terminado um run que não está a
+  hospedar: o run fica `running` no log, e o que se faz é submeter o trabalho de novo com outro
+  `run_id`. Enquanto existir, continua a aparecer na varredura (o ruído é de duas linhas por
+  passagem), segura a reserva de quota do mês em que foi admitido, e o seu conteúdo expira pela
+  política de retenção como o de qualquer run.
+
 **Limites que tens de conhecer antes de ligar.**
 
 - **Um registo não expira e não há anti-recuo.** A data do relatório não é lida. Um registo

@@ -4359,6 +4359,12 @@ fixado está preso aos bytes medidos no commit da base.
   com o conjunto exacto dos campos em falta
   (`TestAOS520_No_TurnoReproduzidoNaRetoma_FicaOOriginalNoLog`). **Para o dono:** se a retoma
   não deve depender da deduplicação, é um ticket próprio sobre a captura.
+- *O órfão recusado pelo perfil repete-se a cada varredura (revisão, A6).* Duas linhas de log por
+  passagem, sem métrica — a postura do layout desconhecido. Lido o código dos laços do nó: nenhum
+  sela `failed` um run `running` sem dono — o varrimento de prazos (`deadline_sweeper.go`) só
+  percorre os runs hospedados pela réplica, e a varredura de órfãos só volta a tentar. O run fica
+  `running` até o perfil ser reposto e o run retomado, ou para sempre se for abandonado (não há
+  rota para selar um run que o nó não hospeda). O runbook diz como o ver e as duas saídas.
 - *O órfão do crash-resume é recuperável pela retoma com credencial.* A varredura não tem
   credencial fresca (limite que já existia, AOS-253): com o gateway real, o turno vivo de um run
   re-hospedado por ela é negado na identidade. Reposto o perfil, quem conclui o run é a retoma
