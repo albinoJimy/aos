@@ -178,6 +178,16 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	if amb.Relogio == nil {
 		amb.Relogio = time.Now
 	}
+	if len(args) > 0 {
+		// Os dois subcomandos do AOS-522 têm as suas opções e o seu texto de uso: os de sempre não
+		// mudam de um byte.
+		switch args[0] {
+		case "qualificar":
+			return qualificar(ctx, args[1:], stdout, stderr, amb, red)
+		case "conferir":
+			return conferir(args[1:], stdout, stderr)
+		}
+	}
 	return executarCom(ctx, args, stdout, stderr, amb, red, &corridaFeita{})
 }
 
