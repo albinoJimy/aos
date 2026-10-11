@@ -4340,6 +4340,12 @@ fixado está preso aos bytes medidos no commit da base.
   Hoje não dispara. Fica escrito junto do código (`route_pinned.go`) o que tem de rever quem
   acrescentar à tabela uma entrada que devolva estado, ou abrir a via assinada a esses perfis —
   o PR 1 não precisa de lhe mexer se não fizer nenhuma das duas coisas.
+- *A conferência do adaptador é defesa em profundidade no nó (revisão, A4).* Pelas vias do nó, um
+  run fixado noutro perfil é recusado antes de ser re-hospedado, com a mesma função; a do
+  adaptador protege quem chame o runtime sem passar por elas (um embedder que faça `Run` com um
+  Goal fixado, ou uma via de re-hospedagem futura). Está presa ao nível do runtime do nó composto
+  (`TestAOS520_No_RuntimeDirecto_OAdaptadorRecusaOGoalFixadoNoutroPerfil`), e não só no gateway
+  isolado.
 - *O órfão do crash-resume é recuperável pela retoma com credencial.* A varredura não tem
   credencial fresca (limite que já existia, AOS-253): com o gateway real, o turno vivo de um run
   re-hospedado por ela é negado na identidade. Reposto o perfil, quem conclui o run é a retoma

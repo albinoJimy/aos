@@ -624,3 +624,43 @@ func TestAOS520_No_RunAntigoRetomadoNumNoQueFixa_ContinuaComoHoje(t *testing.T) 
 		}
 	}
 }
+
+// A CONFERÊNCIA DO ADAPTADOR, PELO RUNTIME DO NÓ (revisão, A4). No nó, um run fixado noutro perfil
+// é recusado antes de ser re-hospedado, pelo que a conferência do adaptador nunca é a primeira a
+// falar — é defesa em profundidade. Aqui chama-se o runtime do nó composto DIRECTAMENTE, como um
+// embedder, sem passar pela retoma nem pelo hostRun: um Goal fixado num digest que não é o do
+// perfil em vigor falha no primeiro turno, com a causa, e NENHUM pedido chega ao provider. O
+// controlo — o mesmo Goal fixado no perfil em vigor — dá o turno.
+func TestAOS520_No_RuntimeDirecto_OAdaptadorRecusaOGoalFixadoNoutroPerfil(t *testing.T) {
+	n := aos520Compor(t, aos520NovoSubstrato(t), aos520PerfilA, "", aos520ModeloA)
+	ctx := withModelCredential(context.Background(), n.tok)
+	goal := func(runID, fixado string) agentruntime.Goal {
+		g := aos520ComoOHostRun(n.node, agentruntime.Goal{
+			RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 1,
+			RouteProfileDigest: fixado, // já vem fixado: a hospedagem não lhe toca
+		})
+		g.Credential = n.tok
+		return g
+	}
+	outro := goal("run-520-embedder", aos520Digest(t, aos520PerfilB))
+	if outro.RouteProfileDigest != aos520Digest(t, aos520PerfilB) {
+		t.Fatalf("o Goal fixado foi tocado pela hospedagem: %q", outro.RouteProfileDigest)
+	}
+	_, _, err := n.node.Runtime.Run(ctx, outro, nil)
+	if !errors.Is(err, modelgateway.ErrPinnedRouteProfile) || causaDoPerfilFixado(err) != modelgateway.PinnedCauseProfileDifferent {
+		t.Fatalf("o runtime tinha de falhar o turno com a causa %s; veio %v", modelgateway.PinnedCauseProfileDifferent, err)
+	}
+	if pedidos := len(n.upstream.pedidos()); pedidos != 0 {
+		t.Fatalf("o turno recusado fez %d pedido(s) ao provider", pedidos)
+	}
+	if turnos := aos486Contar(aos490Eventos(t, n.node.EventStore.(*eventstore.Store), "run-520-embedder"), agentruntime.EventTypeTurnRecorded); turnos != 0 {
+		t.Fatalf("o turno recusado ficou gravado: %d turn.recorded", turnos)
+	}
+	// Controlo: fixado no perfil em vigor, o turno é dado (e o run pára no tecto de 1 turno).
+	if _, _, err := n.node.Runtime.Run(ctx, goal("run-520-embedder-ok", aos520Digest(t, aos520PerfilA)), nil); err != nil && !errors.Is(err, agentruntime.ErrMaxTurnsExceeded) {
+		t.Fatalf("fixado no perfil em vigor: %v", err)
+	}
+	if pedidos := len(n.upstream.pedidos()); pedidos != 1 {
+		t.Fatalf("o controlo devia ter feito 1 pedido; fez %d", pedidos)
+	}
+}

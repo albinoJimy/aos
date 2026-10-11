@@ -278,6 +278,12 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	// turno, ANTES de o pedido ser montado e de qualquer byte sair para o provider: um run fixado
 	// noutro perfil não dá um turno com este. Sem digest na vista — todos os runs de um nó sem
 	// perfis assinados — a conferência não faz nada.
+	//
+	// NO NÓ, ISTO É DEFESA EM PROFUNDIDADE (revisão, A4). Um run fixado noutro perfil não chega
+	// aqui pelas vias do nó: a retoma pela API e a varredura de crash-resume recusam-no antes de o
+	// re-hospedar, com esta mesma função, e os perfis só mudam no arranque. Quem esta linha
+	// protege é quem chama o runtime SEM passar por essas vias — um embedder que faça `Run` com
+	// um Goal fixado, ou uma via de re-hospedagem futura que se esqueça da conferência.
 	if err := a.perfis.CheckPinnedProfile(a.model, view.RouteProfileDigest); err != nil {
 		return agentruntime.ModelResponse{}, err
 	}
