@@ -1591,7 +1591,10 @@ Um plano pedido **antes** de o canary abrir é sempre do titular: os nós que j�
 **O que fazer ao 40.º plano.** O nó escreve `CANARY DO MODELO CANDIDATO TERMINADO` no log,
 `aos_model_canary_closed` passa a `1`, e o facto fica no livro e selado no audit de governação do
 gateway. O selo é **reconciliado**: se falhar, ou o nó morrer antes de selar, o arranque seguinte
-e a decisão seguinte voltam a tentar, lendo primeiro o audit. O audit é de cada réplica — cada
+e a decisão seguinte voltam a tentar, lendo primeiro o audit — **num nó com o candidato a
+servir**. Com `off`, a fatia a 0 ou o registo retirado o nó só lê o livro, e não reconcilia: se
+puseres `off` logo a seguir ao 40.º plano, a marca de fecho ou o selo que tenham ficado por
+gravar ficam por gravar até um nó voltar a servir esse registo. O audit é de cada réplica — cada
 uma sela o fim no seu, uma vez; a fonte da contagem é o livro. O candidato deixa de receber planos **novos**; os que já lhe foram atribuídos acabam
 com ele. **Não passa a titular sozinho.** Com os números, decides uma de três:
 
@@ -1638,8 +1641,31 @@ configurada — não há reparação do stream; sai-se retirando a pasta.)
 nó grava uma **época** nova da abertura, com a marca actual da fila: os planos pedidos entretanto
 ficam no titular, e a contagem do registo reposto continua de onde estava (não volta a zero).
 
-**Um run re-submetido não muda de modelo.** Um `POST /runs` de um `run_id` que já deu turnos, ou
-que já tem registo de retoma, não é escolhido de novo: fica com o modelo em que começou.
+**Um run re-submetido não muda de modelo, e não morre.** Um `POST /runs` de um `run_id` que já
+está em curso (`running`) é uma retoma por outro nome. O nó lê o que está selado para o run: se o
+pode continuar, continua-o com o modelo em que começou; se não pode — o run está fixado num
+candidato que este nó não serve, noutro perfil, ou por uma versão mais recente do nó, ou o nó não
+tem a pasta de perfis — responde **409** e não lhe toca. O run fica `running`, como estava:
+
+```bash
+docker logs aos-aos-1 2>&1 | grep 'RECUSADO antes de hospedar' | tail -5   # o run, o estado e a causa
+```
+
+Sai-se como do «run recusado pelo perfil fixado», acima: repõe o perfil ou o registo em que o run
+está fixado e volta a submeter (ou retoma), ou abandona-o. Um run **novo** não passa por isto, nem
+paga nada por isto.
+
+**Quem pode submeter runs avulsos pode esgotar o canary.** Um run sem plano conta como um plano,
+e quem escolhe o `run_id` sabe de que lado a função o põe: quarenta ids escolhidos gastam os 40
+lugares, e os planos a sério ficam no titular. Não é negação de serviço — ninguém é servido pelo
+modelo errado —, é o canary a acabar sem medir nada. Vê-se nas atribuições do livro
+(`plan_key_kind: run` onde esperavas `pedido`). Se acontecer, o canary reabre-se com um registo
+novo; quem submete runs avulsos é uma decisão de quem dá credenciais.
+
+**Réplicas com a mesma configuração.** `AOS_MODEL_CANDIDATE` e a pasta de perfis têm de ser iguais
+em todas as réplicas. Com configurações diferentes, o mesmo plano pode ir para modelos diferentes;
+e cada arranque de uma réplica cujo registo não é o da última abertura grava uma época nova no
+livro — em crash-loop com configuração mista, o livro cresce sem tecto.
 
 **O que isto não cobre.** O planeador do `aos-orq` chama o modelo por conta própria: a
 decomposição de um plano não passa pelo canary. Quem escolhe o identificador de um plano pode

@@ -4332,11 +4332,11 @@ ganha UMA linha a dizer «candidato não servido»; as que já existiam são as 
 escolha num só sítio e a contagem (nunca mais de 40; um plano conta um) aguentaram. O que se
 corrigiu, um commit por ponto:
 
-- *«É um run novo?» responde-se pelo log.* Um `POST /runs` de um run que já estava `running` era
-  escolhido como novo: turno 1 no titular, turno 2 no candidato, um `run.model_pinned` gravado
-  depois de um turno e um lugar dos 40 gasto. A escolha deixou de depender do caminho de chamada:
-  o nó lê a história do run (turno gravado, registo de retoma, fixação); com história e sem
-  fixação é o modelo do nó, como sempre; com fixação gravada vale o selado.
+- *Um run em curso re-submetido não é um run novo.* Um `POST /runs` de um run que já estava
+  `running` era escolhido como novo: turno 1 no titular, turno 2 no candidato, um
+  `run.model_pinned` gravado depois de um turno e um lugar dos 40 gasto. A primeira correcção
+  (ler a história em toda a hospedagem) fechava-o mas partia a inércia; a regra que ficou é a da
+  segunda revisão, abaixo.
 - *As chaves de pedido e de run avulso ficaram em espaços separados* no livro (a suspeita dos
   dois revisores confirmou-se por teste): um run avulso com o nome de um pedido de plano anterior
   à abertura atribuía o plano ao candidato. O tipo da chave não entra na função: **os vectores do
@@ -4387,36 +4387,71 @@ arrancar: não tem como saber quantas réplicas partilham o Event Store.
   de maneira diferente: ADR-041 §5.
 - *O ponto «por confirmar pelo dono» do PR 0* (um run fixado pode descer de tier?) não foi tocado.
 
-**Mutações dirigidas do PR 1.** 46, todas vermelhas (uma linha alterada de cada vez,
-os testes do pacote corridos, o ficheiro reposto).
+**Segunda revisão das correcções (2026-10-11): a regra dos dois caminhos.** As correcções 3 a 7
+fecharam. A primeira não fechava por inteiro: lia o stream do run e o dos registos de retoma em
+TODA a hospedagem de um nó com a pasta (custo e erro novos com `off`), e um run fixado
+re-submetido onde não era servido acabava `failed`. O que ficou:
 
-- *As 26 da primeira entrega*, repetidas depois das correcções: as oito do plano — repor a
-  sobreposição do modelo do nó num run com a marca; `<` por `<=` na função; mudar o prefixo de
-  domínio (e tirar-lhe o byte separador); o `plan_id` em vez do `plan_request.run_id`; retirar o
-  CAS da atribuição; o limite 40 → 41; ignorar a marca de abertura (e a marca com `<`); o
-  despachante a cair no titular com um alias desconhecido — e dezasseis sobre o que o PR afirma
-  (o run com história a passar pela escolha; o plano do candidato sem candidato a não ser
-  recusado; a fixação que não se grava a não recusar; a retoma a não perguntar se o alias fixado
-  é servido; o alias fora do contexto do run; a fatia a zero e o `off` a deixarem de travar; dois
-  candidatos e o candidato sem preço a arrancarem; um valor inválido a passar por `off`; o plano
-  atribuído a outro candidato a não ser recusado; o fecho só pela marca; o plano já atribuído a
-  voltar à função; a abertura com outra fatia a não ser recusada; a razão própria fora da
-  transição terminal; a marca fora do registo de retoma).
-- *Vinte sobre as correcções das revisões*, incluindo as que tinham sobrevivido aos revisores: a
-  chave do livro sem o tipo; a marca no Goal a valer sem estar selada; a retoma a aceitar uma
-  marca de versão desconhecida; o run fixado re-submetido a não ir buscar a fixação ao log; a
-  história do run lida só dos turnos, e só do registo de retoma; o evento futuro ignorado sem
-  ficar registado; o plano já atribuído servido com eventos futuros no livro; um tipo de fora da
-  família tolerado; repor o registo sem abrir época; a marca da primeira abertura em vez da da
-  época mais recente; **o selo pedido uma só vez** (sem reconciliação na decisão, e sem ela no
-  arranque); o selador a selar sem ler o audit; a contagem dos selos sem distinguir o registo;
-  **o limite gravado** trocado pela constante do binário (no fecho e na época nova); a espera
-  pela vez no livro sem ouvir o contexto; o interruptor inválido a não abortar; e o arranque sem
-  o aviso do candidato sobre JetStream.
-- Duas sobreviveram à primeira passagem e ganharam teste: o fecho pela contagem contra o limite
-  gravado quando a marca de fecho não se grava, e o run que tem um turno dado e **não** tem
-  registo de retoma. A causa inalcançável `candidato_sem_o_perfil_do_registo` foi retirada, e a
-  mutação que lhe sobrevivia deixou de existir.
+- *(i) `run_id` sem estado durável — run novo.* Não lê história nenhuma. Sem candidato a servir é
+  o caminho de antes do PR 1, em comportamento, em custo e em erro. **Medido contra o commit da
+  base** com o ficheiro de teste da inércia: a hospedagem de um run novo faz seis leituras do
+  stream do run, uma do das aprovações e nenhuma do livro — as mesmas no PR 0 e aqui, nos cinco
+  cenários (sem pasta, `off` e ausente com registo, `on` com fatia 0, `on` sem registo). Só neste
+  caminho uma recusa é terminal.
+- *(ii) `run_id` em curso — uma retoma por outro nome.* O serviço usa o estado durável que já lia
+  antes de hospedar. Lê o selado (registo de retoma e `run.model_pinned`) e, se o nó não pode
+  continuar o run — alias não servido, outro perfil, marca de versão desconhecida, nó sem pasta,
+  história ilegível, log que se contradiz —, **recusa antes de hospedar** (409): sem lease, sem
+  quota, sem um evento, sem um registo de retoma. O run fica `running`, recuperável. Um nó sem
+  pasta deixou de poder gravar um registo sem marca para um run fixado.
+- *As três sondas do revisor*, depois da correcção: o run fixado no candidato re-submetido num nó
+  sem pasta é recusado, fica `running`, zero pedidos e nenhum registo novo, e reposto o candidato
+  continua nele; a marca de versão futura re-submetida é recusada e fica `running`; e com `off` e
+  a pasta, um Event Store que falhe qualquer leitura a mais do que as da base deixa um run novo
+  completar no titular.
+- *Os quatro ramos que tinham ficado sem teste* estão presos em
+  `TestAOS520_No_GoalDoRunExistente_RamoARamo`, e a comparação entre o registo e o evento passou
+  a incluir os digests.
+- *Limites escritos, sem mudar o código* (ADR-041 §5 e runbook): quem submete runs avulsos com
+  ids à escolha esgota os 40 lugares; réplicas com configurações diferentes abrem uma época por
+  arranque, sem tecto; e a reconciliação do fim não corre sem candidato a servir.
+- *Não tocado, e a saber:* no caminho (ii), um run com registo de retoma **sem** perfil fixado
+  volta a receber o digest do perfil em vigor na re-hospedagem, como no PR 0; só o registo com
+  perfil fixado é conferido.
+
+**Mutações dirigidas do PR 1.** 57, todas vermelhas **por asserção** (uma linha alterada de cada
+vez, os testes do pacote corridos sem tecto de tempo curto, o ficheiro reposto; o registo diz que
+teste matou cada uma, e uma mutação que só acabasse pelo tecto de tempo não contava).
+
+- *As 26 da primeira entrega*: as oito do plano — repor a sobreposição do modelo do nó num run
+  com a marca; `<` por `<=` na função; mudar o prefixo de domínio (e tirar-lhe o byte
+  separador); o `plan_id` em vez do `plan_request.run_id`; retirar o CAS da atribuição; o limite
+  40 → 41; ignorar a marca de abertura (e a marca com `<`); o despachante a cair no titular com
+  um alias desconhecido — e dezasseis sobre o que o PR afirma.
+- *Dezanove sobre as correcções da primeira ronda de revisões*: a chave do livro sem o tipo; a
+  marca no Goal a valer sem estar selada; a retoma a aceitar uma marca de versão desconhecida; o
+  run fixado re-submetido a não sair com o selado; a história lida sem o registo de retoma; o
+  evento futuro ignorado sem ficar registado; o plano já atribuído servido com eventos futuros;
+  um tipo de fora da família tolerado; repor o registo sem abrir época; a marca da primeira
+  abertura em vez da da época mais recente; o selo sem reconciliação na decisão, e sem ela no
+  arranque; o selador a selar sem ler o audit; a contagem dos selos sem distinguir o registo; o
+  limite gravado trocado pela constante do binário (no fecho e na época nova); a espera pela vez
+  no livro sem ouvir o contexto; o interruptor inválido a não abortar; o arranque sem o aviso do
+  JetStream.
+- *Doze sobre a regra dos dois caminhos*, com as quatro que tinham sobrevivido à segunda revisão:
+  o evento com a função de uma versão desconhecida servido no re-POST; «registo sem marca e
+  `run.model_pinned`» a não ser contradição; o Goal com a marca sem ter de trazer o digest
+  selado; o registo e o evento com aliases diferentes, e com digests diferentes, a não serem
+  contradição — todas mortas por `TestAOS520_No_GoalDoRunExistente_RamoARamo` —; o `POST /runs`
+  de um run em curso tratado como novo; a conferência da retoma sobre o registo a não recusar; a
+  história ilegível a não recusar; **um run novo a voltar a ler a história** (morta pela contagem
+  de leituras contra a base); a recusa sem o 409; a retoma a chegar à hospedagem como run novo;
+  e a história sem fixação a aceitar um Goal com a marca.
+- *As sete que na ronda anterior tinham ficado «vermelhas sem teste nomeado»* eram asserções, e
+  não o tecto de tempo, em seis: o registo perdia o nome do teste quando o log do nó vinha colado
+  à linha do resultado, e passou a procurá-lo em toda a saída. A sétima — a espera pela vez no
+  livro sem ouvir o contexto — **morria só pelo tecto**: o teste ficava pendurado. Passou a falhar
+  por asserção ao fim de cinco segundos.
 
 **O que o PR 0 entregou.**
 

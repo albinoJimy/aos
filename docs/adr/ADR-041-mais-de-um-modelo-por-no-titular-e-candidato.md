@@ -144,27 +144,54 @@ que devolve sempre o titular e com uma que devolve sempre o candidato.
 A escolha faz-se **uma vez**, na hospedagem do run (`hostRun`), depois do lease e do claim
 `ready→running`, antes do registo de retoma e do primeiro turno — e **só para um run novo**.
 
-**«É um run novo?» responde-se pelo log**, e não pelo caminho por que a hospedagem foi pedida.
-Um `POST /runs` de um `run_id` que já está `running` (um run que deu turnos e cujo nó caiu)
-chega pela via da submissão e **não é novo**. Com a pasta de perfis configurada, antes de
-escolher o nó lê a história do run — o seu stream e o seu registo de retoma:
+**Dois caminhos, separados por um facto do nó.** Antes de hospedar um `run_id`, o serviço lê
+o seu **estado durável** — já o lia, para recusar um run terminado. É esse facto, e não o
+caminho por que a hospedagem foi pedida, que separa:
 
-- **o run já tem uma fixação gravada** (no registo de retoma, ou no `run.model_pinned`): vale o
-  que está selado, conferido com o que este nó serve. Não se volta a escolher;
-- **o run tem história e não tem fixação** (deu um turno, ou tem registo de retoma sem a marca):
-  o modelo do nó, como sempre — sem evento, sem livro, sem marca;
-- **o run não tem história**: é novo, e escolhe-se.
+**(i) O `run_id` não tem estado durável: é um run novo.** Não se lê história nenhuma — não há.
+Sem candidato a servir, é exactamente o caminho de antes deste ADR: em comportamento, em custo
+(nenhuma leitura do Event Store a mais) e em erro (nenhuma leitura nova que possa falhar). Com
+candidato a servir, é aqui que a escolha corre. **Só neste caminho uma recusa é terminal** (o
+run fecha `failed`): o plano do candidato sem candidato a servir, o livro ilegível ou em
+contenção, a fixação que não se grava, e um Goal novo que traga uma marca que nada selou.
 
-Se a história não se consegue ler, o run é recusado (`historia_do_run_ilegivel`). Custo: uma
-leitura do stream do run e uma do stream dos registos de retoma por hospedagem, num nó com a
-pasta de perfis; sem a pasta não se lê nada.
+**(ii) O `run_id` já existe (`running`): um `POST /runs` de um run em curso.** É uma **retoma
+por outro nome**, e tem o contrato da retoma pela API e do crash-resume, com ou sem a pasta de
+perfis. Lê-se o que está **selado** para o run — o registo de retoma, e o `run.model_pinned` do
+seu stream — e:
+
+- **fixação gravada que o nó serve** ⇒ o run continua com o que está selado (o alias, o digest
+  e a marca); não se volta a escolher;
+- **fixação gravada que o nó não serve** — o alias não está carregado, o perfil é outro, a marca
+  é de uma versão da função que o binário não conhece, ou o nó não tem a pasta de perfis ⇒ a
+  submissão é **recusada antes de hospedar** (409), com a causa no log;
+- **história sem fixação** ⇒ o titular de sempre;
+- **história que não se lê**, ou **log que se contradiz** (um registo sem a marca e um
+  `run.model_pinned`; ou os dois com aliases ou digests diferentes) ⇒ recusada antes de hospedar.
+
+**Uma recusa no caminho (ii) não mata o run.** Nada é escrito — nem um evento no stream do
+run, nem um registo de retoma — e o run fica como estava, `running` e **recuperável**: repõe-se
+o perfil ou o registo em que está fixado, ou retoma-se num nó que o sirva. É a mesma decisão do
+dono para a retoma (o órfão recuperável): o re-POST não é a via que mata um run, nem a que o
+leva ao titular em silêncio. Em particular, um nó **sem** a pasta de perfis que receba o
+re-POST de um run fixado no candidato não o hospeda — e por isso não grava um registo de
+retoma sem a marca que depois envenenasse a retoma num nó com a pasta.
+
+**O custo do caminho (ii)** são duas leituras, e só ele as paga: o stream do run, e os
+registos de retoma — que é uma **varredura do stream das aprovações inteiro**, que cresce com a
+vida do nó. É por isso que não correm na hospedagem de um run novo. Medido contra o PR 0: a
+hospedagem de um run novo sem candidato a servir faz as mesmas leituras (seis ao stream do
+run, uma ao das aprovações, nenhuma ao livro), preso por teste.
+
+Um nó sem máquina de estados composta não conhece o estado durável de um run: trata todos os
+`run_id` como novos, como antes.
 
 **A marca no Goal só vale se for a que está selada para o run.** Quem chega com a marca é a
-retoma, que a leu do registo. Um Goal com a marca para um run que o log não diz fixado (um
-embedder que chame o serviço com ela) é **recusado** (`marca_sem_fixacao_gravada`): a marca, o
-alias e o digest têm de ser os gravados. E a marca é de um **conjunto fechado** — as versões da
-função que o binário conhece; um run fixado por uma versão desconhecida não é reinterpretado,
-nem na retoma.
+retoma, que a leu do registo. Um Goal com a marca para um run novo é recusado
+(`marca_sem_fixacao_gravada`, terminal: é um run novo); para um run que já existe, a marca, o
+alias e o digest têm de ser os gravados, ou a submissão é recusada antes de hospedar. A marca é
+de um **conjunto fechado** — as versões da função que o binário conhece; um run fixado por uma
+versão desconhecida não é reinterpretado, nem na retoma, nem no re-POST.
 
 O que fica gravado:
 
@@ -271,12 +298,15 @@ atribuídos acabam com ele. A contagem é a do livro, e é por registo: um rein�
 zero, e repor um registo antigo também não. **Reabrir é assinar um registo novo** — outro digest
 de registo, outro `opened`, a contagem a zero e uma marca nova.
 
-**O fim é reconciliado.** Quem vê o canary fechado pela contagem — no arranque e em cada
-decisão — garante as duas coisas que o fim deixa: a marca `closed` no livro (se o nó que
+**O fim é reconciliado — por um nó com o candidato a servir.** Quem vê o canary fechado pela
+contagem — no arranque e em cada decisão — garante as duas coisas que o fim deixa: a marca `closed` no livro (se o nó que
 atribuiu o último plano morreu antes de a gravar, grava-a o seguinte) e o **selo no audit de
 governação do gateway**. O selo pede-se a uma função que **lê o audit** e só sela se lá não
 estiver; um selo que falhou repete-se. O audit é **local à réplica**: cada réplica sela o fim
-no seu, uma vez — a fonte do fim e da contagem é o livro, que é partilhado.
+no seu, uma vez — a fonte do fim e da contagem é o livro, que é partilhado. **A reconciliação
+não corre num nó sem candidato a servir** (interruptor a `off`, fatia a 0, registo retirado):
+esse nó só lê o livro. Se o canary fechou e o nó foi logo a seguir posto a `off`, a marca ou o
+selo que tenham ficado por gravar ficam por gravar até um nó voltar a servir esse registo.
 
 **Como o livro evolui (contrato).** O stream é append-only e não se repara, e vai ter mais
 escritores (o disjuntor do AOS-521). A regra:
@@ -298,15 +328,19 @@ um recuo de imagem, sem derrubar os nós da versão anterior.
 Candidato indisponível ⇒ os runs dele falham; nenhum cai no titular. Nenhuma decisão do canary
 lê o relógio.
 
-Um run recusado pela fixação acaba `failed`, com a razão `model_pin_refused` na transição
-terminal e a causa no log do nó. O `aos-orq` trata-o como a falha terminal de um nó do plano.
-As causas, em vocabulário fechado: `plano_do_candidato_sem_candidato`,
-`livro_do_canary_ilegivel`, `livro_do_canary_em_contencao`, `fixacao_nao_gravada`,
-`fixacao_diferente_da_gravada` (o log do run contradiz-se, ou o que lá está não é o que o nó
-acabou de escolher: o gravado não se reescreve nem se ignora), `livro_de_versao_mais_recente`,
-`marca_sem_fixacao_gravada` e `historia_do_run_ilegivel`. Um run fixado que volta por
-`POST /runs` e cujo modelo este nó já não serve é recusado com as causas do PR 0
-(`modelo_fixado_nao_servido`, `perfil_diferente_do_fixado`), que são também as da retoma.
+**As recusas.** Um run **novo** recusado pela fixação acaba `failed`, com a razão
+`model_pin_refused` na transição terminal e a causa no log do nó; o `aos-orq` trata-o como a
+falha terminal de um nó do plano. As causas, em vocabulário fechado:
+`plano_do_candidato_sem_candidato`, `livro_do_canary_ilegivel`, `livro_do_canary_em_contencao`,
+`livro_de_versao_mais_recente`, `fixacao_nao_gravada`, `fixacao_diferente_da_gravada` e
+`marca_sem_fixacao_gravada`.
+
+Um run que **já existe** e que o nó não pode continuar — pela retoma, pelo crash-resume ou por
+um `POST /runs` do mesmo id (§2.4) — é recusado **antes de hospedar** e fica `running`,
+recuperável; nunca `failed`. As causas: as do PR 0 (`modelo_fixado_nao_servido`,
+`perfil_diferente_do_fixado`, `perfil_assinado_sobre_estado_sem_fixacao`) e, no re-POST,
+`fixacao_diferente_da_gravada` (o log contradiz-se), `marca_sem_fixacao_gravada` e
+`historia_do_run_ilegivel`.
 
 ### 2.7 O interruptor e a inércia
 
@@ -315,9 +349,13 @@ servir** quando, e só quando: o interruptor está a `on`, há exactamente um re
 não-titular, e a sua fatia assinada é maior que zero. A fatia é o segundo travão.
 
 Sem candidato a servir — sem pasta, com `off` (haja ou não registo), ou com `on` e a fatia a 0
-— o caminho de um run novo não passa pela função de escolha nem pelo livro, não escreve
-`run.model_pinned`, não abre o canary, e o pedido ao provider, o manifesto de cada turno, o
-registo de retoma e o `/metrics` são os de antes. No arranque, um registo não-titular na pasta
+— **o caminho de um run novo é o de antes**: não passa pela função de escolha nem pelo livro,
+não escreve `run.model_pinned`, não abre o canary, não faz uma leitura do Event Store a mais
+(e por isso não ganha uma falha nova), e o pedido ao provider, o manifesto de cada turno, o
+registo de retoma e o `/metrics` são os de antes. A única coisa a mais é uma consulta a um mapa
+em memória — os planos que o livro dizia atribuídos ao candidato no arranque —, para recusar o
+run novo de um deles. O que muda sem candidato a servir é o caminho (ii) do §2.4: o `POST /runs`
+de um run em curso passou a ler o que está selado para ele, e pode ser recusado. No arranque, um registo não-titular na pasta
 acrescenta uma linha a dizer «candidato não servido»; as linhas que já existiam não mudam.
 
 ### 2.8 Métricas
@@ -366,8 +404,9 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
 - O modelo de um run passa a ser um facto gravado, e não a configuração do nó no momento:
   reconstrói-se só do log que modelo e que perfil serviram cada run, e porquê.
 - A retoma deixa de «corrigir» o modelo para o do nó num run fixado por escolha. Um run fixado
-  num modelo que o nó já não serve fica parado — recuperável repondo o perfil — em vez de
-  mudar de modelo.
+  num modelo que o nó já não serve fica parado — `running`, recuperável repondo o perfil — em
+  vez de mudar de modelo. Vale para as três vias que re-hospedam um run que já existe: a retoma
+  pela API, o crash-resume e o `POST /runs` do mesmo id. Nenhuma o sela `failed`.
 - O Event Store ganha um stream partilhado, pequeno (por registo assinado: uma abertura por
   época, no máximo 40 atribuições e um fecho), lido em cada run novo enquanto o candidato serve.
 - **As admissões de runs novos passam uma a uma pelo livro.** Com um candidato a servir, todas
@@ -376,8 +415,9 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
   100 ms, dez runs do titular que cheguem juntos esperam um segundo. A espera respeita o
   contexto do run: cancelado, o run falha com a causa de contenção. É o preço de a contagem
   nunca passar do limite; sem candidato a servir não existe.
-- Num nó com a pasta de perfis, cada hospedagem lê a história do run (o stream do run e o dos
-  registos de retoma) antes de decidir se ele é novo.
+- O `POST /runs` de um run em curso passou a ler o que está selado para ele (o stream do run e
+  o dos registos de retoma, este uma varredura do stream das aprovações inteiro), com ou sem a
+  pasta de perfis, e pode responder 409. A hospedagem de um run **novo** não lê nada a mais.
 - O nó ganha um evento em claro por run fixado, no stream do run: só identificadores e digests.
 - Recuar para um binário anterior a este ADR com runs fixados no candidato em curso faz esses
   runs serem retomados com o titular, em silêncio (o binário antigo ignora a marca). Recua-se
@@ -390,6 +430,11 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
   canary cobre os runs do nó, não o planeamento.
 - **Quem escolhe o identificador de um plano influencia a escolha** (a função não tem segredo).
   Aceite pelo dono: o canary mede um modelo, não defende de quem dá o nome aos planos.
+- **Quem pode submeter runs avulsos com ids à escolha esgota o canary.** Quarenta ids que a
+  função dê ao candidato — calculam-se offline — bastam para gastar os 40 lugares, e os planos
+  a sério ficam todos no titular. É negação do canary, não de serviço: nenhum run é servido
+  pelo modelo errado nem recusado por isso. Aceite com a decisão anterior; o sinal é o canary
+  terminar muito antes do esperado, com runs avulsos nas atribuições (`plan_key_kind: run`).
 - **O `aos-orq serve` manual** não traz pedido de plano: cada nó é um run independente, e os
   nós de um mesmo plano manual podem cair em modelos diferentes.
 - **Retirar a variável da pasta de perfis** (e não só o registo) faz o nó deixar de ler o livro:
@@ -404,9 +449,14 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
   `packages/substrate/eventstore/jetstream/aos520_cas_vista_atrasada_test.go`; a quota por
   principal tem o mesmo padrão. O nó não sabe quantas réplicas partilham o Event Store, pelo
   que **avisa** no arranque e não recusa.
-- **Réplicas com configurações diferentes** (uma com `on`, outra com `off`) decidem de maneira
-  diferente para o mesmo plano. A réplica com `off` só conhece os planos atribuídos até ao seu
-  arranque. A configuração do candidato muda-se em todas as réplicas, com a rota drenada.
+- **Réplicas com configurações diferentes** (uma com `on`, outra com `off`; ou com registos
+  diferentes) não são suportadas, e a consequência é esta: decidem de maneira diferente para o
+  mesmo plano, e podem dá-lo a modelos diferentes. A réplica com `off` só conhece os planos
+  atribuídos até ao seu arranque. E `decidir` não olha para a época em vigor de outra réplica:
+  cada réplica usa a abertura do **seu** registo, e cada arranque de uma réplica cujo registo
+  não é o da última abertura grava uma **época nova**, sem tecto — em crash-loop com
+  configuração mista, o stream do livro deixa de ser pequeno, e é lido em cada run novo. A
+  configuração do candidato muda-se em todas as réplicas, com a rota drenada.
 - **Os runs anteriores a este ADR, e os de um nó sem candidato a servir, não são fixados**: são
   retomados com o modelo do nó, como sempre.
 - **A marca de abertura só protege os planos com pedido.** Um run sem plano é um plano de um
