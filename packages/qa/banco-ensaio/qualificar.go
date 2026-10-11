@@ -432,7 +432,9 @@ func prepararPacote(pacote, rotulo string, base registoPorAssinar, feita corrida
 		_ = os.RemoveAll(pacote)
 		return nil, "", errors.New(porque)
 	}
-	if err := os.WriteFile(citado, relatorio, 0o600); err != nil {
+	// O rótulo é o alias do perfil, que já passou pelo alfabeto fechado dos rótulos do nó (letras,
+	// dígitos, `_` e `-`; sem separador de caminho) em [routeentry.ParseEntry], acima.
+	if err := os.WriteFile(citado, relatorio, 0o600); err != nil { // #nosec G703 -- pasta de --saida do operador mais um rotulo conferido contra um alfabeto fechado
 		return falhou("nao foi possivel escrever o relatorio no pacote")
 	}
 	if err := os.WriteFile(entrada, registo, 0o600); err != nil {
