@@ -1862,7 +1862,8 @@ func TestAOS520_ChaveDoCanary(t *testing.T) {
 	if chaveDePedido("x").indice() == chaveDeRun("x").indice() || passoDoPlano(chaveDePedido("x")) == passoDoPlano(chaveDeRun("x")) {
 		t.Fatal("um pedido e um run com o mesmo id tem de ser duas chaves no livro")
 	}
-	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "livro_de_versao_mais_recente", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel"}
+	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "livro_de_versao_mais_recente", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel",
+		"plano_do_candidato_com_disjuntor_aberto"}
 	if got := causasDaFixacaoDoModelo(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("o vocabulario das causas mudou: %q", got)
 	}

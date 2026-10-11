@@ -104,6 +104,12 @@ type perfisAssinados struct {
 	// porModelo são as séries do `/metrics` por modelo (AOS-520, PR 2). Criadas na composição do
 	// gateway, e SÓ com um candidato a servir; nil ⇒ as três famílias não existem.
 	porModelo *seriesPorModelo
+	// disjuntor é o modo de `AOS_MODEL_BREAKER` (AOS-521), lido uma vez no arranque: `observe` ou
+	// `enforce`. Vazio — a omissão — é `off`.
+	disjuntor string
+	// despachante é o cliente de modelo por alias do nó, quando existe (um perfil assinado
+	// não-titular carregado). É por ele que o disjuntor LIGADO vê o resultado de cada pedido.
+	despachante *clientePorModelo
 }
 
 // perfis devolve o conjunto de perfis do nó: a tabela em código (nil) sem pasta ou sem registos.

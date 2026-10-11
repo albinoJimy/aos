@@ -382,6 +382,7 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 		porAlias[e.Profile.Requested] = modelgateway.NewModelClient(gw, e.Profile.Requested, opts...)
 	}
 	despachante := &clientePorModelo{titular: model, porAlias: porAlias}
+	assinados.despachante = despachante
 	// AOS-520 (PR 2, ADR-041 §2.8): as séries por modelo só existem com um candidato A SERVIR. Com o
 	// interruptor a `off` ou a fatia a 0 o despachante existe (para um run já fixado acabar) e não
 	// conta nada: o `/metrics` é o de antes.

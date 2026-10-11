@@ -24,6 +24,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
@@ -197,6 +198,10 @@ type clientePorModelo struct {
 	// series conta cada pedido pelo alias ESCOLHIDO AQUI (AOS-520, PR 2). nil ⇒ sem candidato a
 	// servir: não se conta nada.
 	series *seriesPorModelo
+	// aoTurno, quando ligado, recebe o resultado de cada pedido com o alias escolhido (AOS-521): é
+	// por onde o disjuntor do candidato vê um turno com o modelo servido diferente. Ligado no
+	// arranque, e só com o disjuntor em `observe` ou `enforce`; por ligar — a omissão — nada corre.
+	aoTurno atomic.Pointer[func(ctx context.Context, alias string, resp agentruntime.ModelResponse, err error)]
 }
 
 // Compile-time: o despachante é um cliente de modelo.
@@ -214,6 +219,9 @@ func (c *clientePorModelo) Call(ctx context.Context, view agentruntime.PromptVie
 	}
 	resp, err := cliente.Call(ctx, view)
 	c.series.observarTurno(alias, resp, err)
+	if f := c.aoTurno.Load(); f != nil {
+		(*f)(ctx, alias, resp, err)
+	}
 	return resp, err
 }
 

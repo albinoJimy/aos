@@ -129,7 +129,8 @@ func (h historiaDoRun) fixado() (alias, digest, marca string, ok, contradiz bool
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
 func causasDaFixacaoDoModelo() []string {
 	return []string{causaPlanoDoCandidatoSemCandidato, causaLivroIlegivel, causaLivroEmContencao,
-		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaLivroDeVersaoMaisRecente, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel}
+		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaLivroDeVersaoMaisRecente, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel,
+		causaDisjuntorAberto}
 }
 
 // ErrModelPinRefused — o run novo não pode ser hospedado com um modelo fixado. Fail-closed: não
@@ -233,6 +234,10 @@ func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *
 		return nil, nil
 	}
 	c := &canaryDoNo{livro: &livroDoCanary{es: es, selar: assinados.selarFimDoCanary, log: log}, servir: servir, candidato: candidato}
+	// AOS-521: o disjuntor só existe LIGADO (`observe` ou `enforce`) e com um candidato a servir.
+	if servir && assinados.disjuntor != "" {
+		c.livro.disjuntor = novoDisjuntorDoModelo(assinados.disjuntor, candidato.entryDigest)
+	}
 	if servir {
 		if err := c.livro.abrir(ctx, candidato, marcaDaFilaDePedidos(es)); err != nil {
 			return nil, fmt.Errorf("aos: abrir o canary do modelo candidato (AOS-520): %w", err)
@@ -250,6 +255,9 @@ func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *
 		}
 		log("canary do modelo candidato (AOS-520): %s — candidato %q, digest do registo %s, %d de %d planos ATRIBUIDOS ao candidato (lido do livro duravel %s; um reinicio nao repoe a contagem; «atribuido» nao e «servido»: um plano conta quando lhe e atribuido, mesmo que o run seja depois recusado)",
 			estado, candidato.alias, candidato.entryDigest, c.livro.atribuidosVistos.Load(), canaryLimiteDePlanos, canaryStream)
+		if err := c.arrancarDisjuntor(ctx, assinados, log); err != nil {
+			return nil, err
+		}
 		return c, nil
 	}
 	atribuidos, err := c.livro.planosAtribuidos(ctx)
@@ -472,6 +480,9 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 		return goal, recusaDaFixacao(causaPlanoDoCandidatoSemCandidato, nil)
 	case errors.Is(err, ErrCanaryNewerVersion):
 		return goal, recusaDaFixacao(causaLivroDeVersaoMaisRecente, nil)
+	case errors.Is(err, ErrCandidateBreakerOpen):
+		// AOS-521: o plano é do candidato e o disjuntor do candidato está aberto.
+		return goal, recusaDaFixacao(causaDisjuntorAberto, nil)
 	case errors.Is(err, ErrCanaryContention):
 		return goal, recusaDaFixacao(causaLivroEmContencao, err)
 	case err != nil:

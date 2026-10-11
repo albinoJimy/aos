@@ -2363,6 +2363,37 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// AOS-521 — O DISJUNTOR DO CANDIDATO. Só sai com o disjuntor LIGADO (`observe` ou `enforce`) e um
+	// candidato a servir: com `off` as famílias não existem, e o /metrics é o de antes. Os valores
+	// são os da ÚLTIMA leitura do livro durável por esta réplica, para o registo em vigor; não decidem.
+	if d := h.node.disjuntorLigado(); d != nil {
+		g("aos_model_breaker_open",
+			"1 se o disjuntor do modelo candidato esta ABERTO para este no (AOS-521, ADR-041 2.9): o candidato nao recebe runs novos. 0 se nao. Em observe so e 1 se o livro ja tiver a marca de aberto (gravada por um no em enforce). Da ultima leitura do livro duravel por esta replica. Nao volta a 0 sozinho: reabrir e assinar um registo de entrada novo.",
+			"gauge", float64(d.abertoVisto.Load()), "")
+		g("aos_model_breaker_would_open",
+			"1 se a regra do disjuntor JA DISPAROU para o registo em vigor, sobre as observacoes do livro duravel (AOS-521): em observe e o que enforce teria feito (a fatia nao muda); em enforce coincide com aos_model_breaker_open. Da ultima leitura por esta replica.",
+			"gauge", float64(d.disparouVisto.Load()), "")
+		g("aos_model_breaker_window_failures",
+			"Unidades da janela do disjuntor cujo desfecho mais recente e uma falha (AOS-521): a regra dispara as 3 em 20. No momento do disparo, se a regra ja disparou; senao, agora. Da ultima leitura do livro por esta replica.",
+			"gauge", float64(d.falhasVistas.Load()), "")
+		g("aos_model_breaker_window_units",
+			"Unidades na janela do disjuntor (AOS-521): os nos de plano (ou runs sem plano) do candidato com desfecho contado, no maximo 20. Um run que nao conta (limite de ritmo, cancelamento, recusa pela fixacao) nao entra.",
+			"gauge", float64(d.unidadesVistas.Load()), "")
+		for i, s := range sinaisDeFalha() {
+			labels := `{signal="` + s + `"}`
+			if i == 0 {
+				g("aos_model_breaker_signals",
+					"Observacoes do candidato do registo em vigor, por sinal de falha, no livro duravel (AOS-521): nao_cumprido (veredicto negativo do kernel), resposta_vazia, resposta_rejeitada (pelo gateway), erro_do_provider (status que nao e 200 nem 429) e modelo_servido_diferente. Ate ao disparo da regra; depois ficam como estavam. O limite de ritmo nao conta. Vocabulario fechado.",
+					"gauge", float64(d.sinaisVistos[s].Load()), labels)
+				continue
+			}
+			amostra("aos_model_breaker_signals", labels, float64(d.sinaisVistos[s].Load()))
+		}
+		g("aos_model_breaker_unrecorded_total",
+			"Observacoes do candidato que esta replica NAO conseguiu gravar no livro duravel desde o arranque (AOS-521): o desfecho de um run, ou um turno com o modelo servido diferente. Uma observacao que nao ficou no livro nao entra na janela. Acima de zero, ver o log do no.",
+			"counter", float64(d.naoGravadas.Load()), "")
+	}
+
 	// AOS-520 — O LIVRO DO CANARY TEM EVENTOS DE UMA VERSÃO MAIS RECENTE. Sai com um candidato a
 	// servir (o zero é um zero verdadeiro) e, num nó sem candidato a servir, só quando os há — sem
 	// eles o /metrics desse nó é o de antes.
