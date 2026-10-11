@@ -3562,6 +3562,734 @@ acompanhamento.
   imagem do proxy de produção é a tag `main-stable`, não o digest em que o banco mede. O que
   destes passa à fase A3 está em `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md`.
 
+## AOS-517 — O proxy de produção fixa-se pelo digest em que se mede, e `drop_params: false` fica aplicado no servidor
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é uma mudança de deploy e um teste que prende uma igualdade. O ADR-036 §2.8 (a rota que serviu o turno compara-se com um perfil) é citado só como o contrato que esta mudança torna verificável na imagem certa. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 (o proxy é parte da rota do modelo; precedente: AOS-505) |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-proxy» |
+| Tipo | chore |
+| Prioridade | P1: sem isto, tudo o que o arnês da A3 prova vale para outro proxy |
+| Estimativa | S |
+| Dependências | AOS-505 (a governação da rota e o runbook do `drop_params`), AOS-508 (o gate atrás da imagem do proxy), AOS-512 (o banco, que já mede por digest). Decisão D8 do dono (tomada a 2026-10-11) |
+| Bloqueia | AOS-518 (o relatório leva o digest da imagem), AOS-519 (o nó confere a imagem que o veredicto cita), AOS-523 |
+| Responsável sugerido | Engenheiro de Plataforma, com o dono a executar os passos de produção |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §4.1, §5 (lição 4) e §6 (D8), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3; §7, resíduos da A2), `deploy/server/docker-compose.prod.yml`, `deploy/server/litellm/config.yaml`, `deploy/server/README.md`, `packages/qa/banco-ensaio/proxy.go`, `docs/reports/wire-live-aos508-2026-10-07.md` |
+
+### Contexto
+
+- **Mede-se num proxy e serve-se por outro.** O banco de ensaio e os gates opcionais correm
+  atrás de uma imagem fixada por digest (`ImagemDoProxy`, em
+  `packages/qa/banco-ensaio/proxy.go`). O compose de produção refere a tag móvel
+  `ghcr.io/berriai/litellm:main-stable`. É o resíduo (g) do fecho do AOS-516 e o primeiro
+  bloqueio da D8.
+- **O proxy transforma os pedidos, e a transformação muda com a rota e com a versão** (desenho
+  §5, lição 4; medido na A2): na rota `openai/` retira ou recusa parâmetros conforme
+  `drop_params`; na `anthropic/` insere um bloco de texto; na `openrouter/` move o raciocínio
+  para um saco que o fornecedor não lê. Uma qualificação feita noutra imagem não diz nada da
+  que serve.
+- **O digest está hoje escrito em mais de um sítio do repositório** (o banco, um teste do
+  gateway, o relatório do AOS-508, o runbook do banco) e nenhum teste prende que são o mesmo.
+- **`drop_params`.** O ficheiro do repositório já traz `false`, mas o do servidor é do
+  operador e o deploy não o reescreve. Com `true`, o proxy retira em silêncio os parâmetros
+  de um perfil — e um perfil com parâmetros passaria a qualificação a fazer uma coisa e
+  serviria a fazer outra. O passo está descrito no `deploy/server/README.md` (AOS-505) e ficou
+  por fazer.
+- **Não se sabe o que a `main-stable` do servidor é hoje** (desenho §8): pode ser o digest
+  medido ou outro. Só uma leitura no servidor o diz.
+
+### Decidido pelo dono
+
+**D8 (2026-10-11), linhas 1 e 2:** a imagem do proxy de produção fixa-se por digest **antes de
+tudo o resto da fase**; `drop_params: false` aplica-se **agora** no servidor, com o plano de
+verificação antes e depois que o runbook já descreve. As outras três linhas da D8 não são deste
+ticket: a captura do estado fica por ligar (o AOS-519 recusa perfis que devolvem estado
+enquanto assim for), a governação da rota fica em `observe`, e a corrida pela API directa da
+Anthropic fica para quando o dono quiser essa classe em produção.
+
+### Objectivo
+
+O proxy que serve produção é, por digest, o proxy em que o arnês mede; a igualdade está presa
+por teste no repositório e verificada no servidor; e o proxy de produção deixa de poder retirar
+parâmetros em silêncio.
+
+### Âmbito
+
+- O serviço `litellm` do compose de produção passa a referir a imagem por `@sha256:`.
+- Uma só declaração do «digest do proxy de produção» no repositório, lida pelo banco e pelos
+  gates, ou — se a leitura partilhada não for praticável entre módulos — um teste que falha
+  quando os sítios divergem.
+- O runbook de actualização do proxy: mudar o digest é um PR que muda a declaração, volta a
+  correr os gates atrás da imagem nova e obriga a requalificar as rotas (AOS-518).
+- Os dois passos de produção, feitos pelo dono, com medição antes e depois.
+
+### Critérios de Aceitação
+
+**No repositório**
+
+- [ ] `deploy/server/docker-compose.prod.yml` refere a imagem do proxy por `@sha256:`; não
+      resta nenhuma referência por tag móvel à imagem do proxy em `deploy/server/`.
+- [ ] Um teste em CI falha se o digest do compose de produção for diferente do digest em que o
+      banco e os gates atrás do proxy medem. **Mutação dirigida:** trocar um carácter do digest
+      em qualquer um dos sítios avermelha o teste; fica registado quantos sítios o teste cobre.
+- [ ] O gate opcional atrás da imagem do proxy (`scripts/ci/banco-ensaio-proxy.sh`) corre
+      verde contra o digest declarado, depois da última edição.
+- [ ] O `deploy/server/README.md` descreve a actualização do proxy como mudança de digest por
+      PR, com a ordem: gates atrás da imagem nova, requalificação das rotas em uso, só depois
+      o servidor. E diz o que a mudança invalida: os veredictos que citam o digest anterior.
+
+**No servidor (passos do dono; nenhum é feito pelo deploy)**
+
+- [ ] **Antes de mudar:** fica registado o digest da imagem que a tag `main-stable` resolve
+      no servidor nesse momento, e se é ou não o digest medido. Se for outro, regista-se a
+      diferença de versão e a mudança trata-se como troca de proxy, não como formalidade.
+- [ ] Um plano de verificação pela fila antes e outro depois de fixar a imagem, com o mesmo
+      objectivo: o mesmo código de saída e o mesmo desfecho.
+- [ ] `drop_params: false` em vigor no servidor, pelo procedimento do `deploy/server/README.md`
+      (editar, **recriar** o serviço, plano antes e depois, leitura do log do proxy no
+      intervalo): zero pedidos recusados por parâmetro.
+- [ ] Série curta depois das duas mudanças (pelo menos 20 planos): a taxa de primeiras falhas
+      e o «não cumprido» não pioram face à última série do mesmo tamanho; o contador de
+      verificações da rota continua a mostrar o modelo servido igual ao esperado em todos os
+      turnos.
+- [ ] O digest em vigor, a data e os números das séries ficam na §5 do acompanhamento.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Não há interruptor:** é uma mudança de deploy, feita pelo dono (desenho §4.1). O recuo é
+  uma linha por passo: repor a tag anterior no compose do servidor e recriar o serviço; repor
+  `drop_params: true` e recriar.
+- **Inerte no nó:** nenhum ficheiro `.go` do nó nem do gateway muda de comportamento. O pedido
+  que o nó envia à rota de produção é, byte a byte, o de antes (o nó não envia hoje nenhum
+  parâmetro opcional — preso por teste desde o AOS-505).
+
+### Testes exigidos
+
+- O teste de igualdade dos digests, com a mutação dirigida acima.
+- O gate atrás da imagem fixada, verde.
+- Controlo negativo do próprio teste: com o compose a referir uma tag em vez de um digest, o
+  teste falha com mensagem própria (não passa por «não encontrei digest para comparar»).
+
+### Riscos
+
+- **A imagem de produção de hoje pode não ser a medida.** Fixar pode mudar o comportamento de
+  produção, para o que foi medido. Mitigação: o registo do «antes», o plano antes e depois, a
+  série curta, e o recuo de uma linha.
+- **`drop_params: false` pode tornar visível um erro que hoje é silencioso.** Foi medido no
+  AOS-505 que, para a rota `openai/<nome>` com `api_base` próprio, o proxy reencaminha tudo
+  com `true` ou com `false`; não se espera diferença, e a leitura do log confirma-o.
+- **Um digest fixado envelhece.** Fica escrito no runbook quem o actualiza e que a
+  actualização custa uma requalificação.
+
+### O que precisa do dono
+
+- Ler no servidor o digest actual da `main-stable` e colar o resultado.
+- Executar os dois passos de produção (fixar a imagem; `drop_params: false`), com os planos
+  de verificação, e aprovar o deploy do compose novo.
+- Lançar a série curta de validação.
+
+### Fora de âmbito
+
+- Trocar de versão do proxy: este ticket fixa a que já se mede.
+- `AOS_MODEL_ROUTE_GOVERNANCE=enforce` e ligar a captura do estado (D8, linhas 3 e 4).
+- O digest da imagem **dentro** do relatório do arnês e a recusa de qualificar contra outra
+  imagem: são do AOS-518.
+- Qualquer mudança ao `config.yaml` do servidor além de `drop_params`.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Pode começar já, em paralelo com o AOS-518.
+
+## AOS-519 — O nó carrega perfis de rota assinados de uma pasta e confere o veredicto que citam; sem pasta, é o binário de hoje
+
+<!-- Este ticket EMENDA o ADR-036 §2.8 (a rota que serviu o turno compara-se com um perfil): a emenda diz de onde o perfil pode vir — da tabela em código ou de um registo de entrada assinado, conferido no arranque — e não muda o que o perfil é. A emenda é entregável do ticket e escreve-se no ADR, não aqui. Os outros ADR citados no bloco são só menção e estão marcados como tal. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-perfil» |
+| Tipo | feat |
+| Prioridade | P1: enquanto o perfil for uma tabela em código, um modelo novo custa um PR e uma imagem nova do nó — e a fase não se cumpre |
+| Estimativa | L |
+| Dependências | AOS-505 e AOS-513 (o perfil da rota, o seu digest e os perfis candidatos do gateway), AOS-518 (o relatório com veredicto e digest próprio), AOS-517 (o digest declarado da imagem do proxy). Decisões D1 e D8 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-520, AOS-522, AOS-523 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §2, §3 (passos 4 e 5), §4.3 e §6 (D1, D8, D9), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.8, `packages/platform/model-gateway/route.go`, `packages/platform/model-gateway/route_profile.go`, `packages/platform/model-gateway/production.go`, `packages/platform/model-gateway/policy/allowlist/allowlist.go`, `packages/cmd/aos/modelgatewaywiring.go`, `packages/cmd/aos/modelo_do_turno.go`, `deploy/server/README.md` |
+
+### Contexto
+
+- **O perfil da rota é uma tabela em código**, com quatro entradas, todas do Kimi
+  (`packages/platform/model-gateway/route.go`). O próprio código anuncia que «o perfil como
+  artefacto assinado do registo é da fase A3», e diz que o nó não lê perfis de ficheiro, de
+  ambiente, de um plano, de um run nem de um pedido HTTP (`route_profile.go`).
+- **A porta de entrada já existe.** O gateway aceita perfis que não estão na tabela
+  (`ProductionConfig.RouteProfiles`), com leitura fechada: campos desconhecidos e chaves
+  repetidas são recusados (`ParseRouteProfile`). Hoje só o banco a usa; o nó não lhe passa
+  nada.
+- **O molde também já existe.** O nó sabe carregar uma política assinada de uma pasta e
+  conferi-la contra uma âncora dada por ambiente: a allowlist externa
+  (`AOS_MODEL_ALLOWLIST_BUNDLE_DIR` com `AOS_MODEL_ALLOWLIST_TRUST_ANCHOR`, em
+  `packages/cmd/aos/modelgatewaywiring.go`). Pasta sem âncora, ou bundle que não verifica: o
+  nó recusa arrancar.
+- **Um veredicto que se recalcula do que o chamador declara não é um gate** (desenho §3). A
+  ratificação de skills aceita hoje `canary_passed` como um booleano de quem chama. Aqui o
+  registo cita o digest de um relatório, e o nó lê o relatório.
+- **Um perfil que muda a meio falha fechado os runs em curso** (desenho §5, lição 5;
+  <!-- rtm: menção -->ADR-040 §2.11<!-- /rtm: menção -->, preso por teste). Carrega-se no
+  arranque, não a quente.
+- **O princípio que manda:** nada que mude o comportamento chega a produção sem eval-gate,
+  canary e ratificação humana assinada (`AGENTS.md` §7, n.º 9;
+  <!-- rtm: menção -->ADR-012<!-- /rtm: menção -->). Um perfil de modelo muda o comportamento.
+  Este ticket entrega a ratificação assinada e a conferência do eval-gate; o canary é do
+  AOS-520.
+
+### Decidido pelo dono (2026-10-11)
+
+- **D1 — o perfil vive num registo assinado, numa pasta do servidor** (a opção (b)), desenhado
+  para poder ser publicado no Registry mais tarde sem mudar de forma. **Assina o dono**, com
+  uma chave só para perfis de modelo, fora do nó e fora do arnês. Fica dito que é um desvio à
+  letra da fase («artefacto do registo»): o Registry não corre em nenhum binário.
+- **D1, sub-decisão — nenhum nome novo, nenhuma allowlist nova.** Os nomes pedidos são os
+  aliases que a allowlist assinada já autoriza; o modelo real muda no perfil e no proxy. Um
+  perfil assinado para um alias **substitui** a entrada da tabela em código para esse alias, e
+  o banner di-lo (D9).
+- **D8, linha 3 — a entrada automática limita-se, para já, a perfis que não devolvem estado.**
+  O nó recusa carregar um perfil que devolve estado enquanto a captura estiver desligada.
+
+### Objectivo
+
+O nó aceita perfis de rota vindos de fora do binário, por um registo de entrada assinado pelo
+dono que cita o veredicto do arnês; confere tudo no arranque e, se alguma coisa não bate, não
+arranca. Sem a pasta configurada, o binário é byte a byte o de hoje.
+
+### Âmbito
+
+- **O registo de entrada**: um ficheiro com versão de formato, o perfil da rota (os campos que
+  `ParseRouteProfile` já lê, sem nenhum novo), o digest do perfil, o digest do relatório de
+  qualificação, o digest da imagem do proxy e a fatia inicial em percentagem. Leitura fechada.
+  Ao lado: a assinatura ed25519 e o relatório citado.
+- **Dois interruptores**, no molde da allowlist externa: `AOS_MODEL_ROUTE_PROFILES_DIR` (a
+  pasta) e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR` (a chave pública do assinante, por fora).
+- **A conferência no arranque**, e a entrega dos perfis válidos ao gateway pela porta que já
+  existe.
+- **O evento selado «perfil carregado»**, com o digest do perfil, o do registo e o do
+  relatório, e a linha do banner.
+- **A forma de assinar**: com a ferramenta que o dono já usa (`aos-issuer`). Se ela não
+  assinar hoje um ficheiro deste tipo, o subcomando que falta é entregável deste ticket.
+- **A emenda ao ADR-036 §2.8** e o runbook (carregar, trocar e retirar um perfil, sempre com
+  a rota drenada).
+- O campo da fatia é lido, validado (inteiro de 0 a 100) e mostrado no banner. **Neste ticket
+  não tem efeito:** quem o usa é o AOS-520.
+
+### Critérios de Aceitação
+
+**Inerte sem a pasta**
+
+- [ ] Sem `AOS_MODEL_ROUTE_PROFILES_DIR`, os digests dos quatro perfis da tabela, o pedido
+      enviado ao provider, o manifesto do turno, o banner e o `/metrics` são byte a byte os da
+      base — preso por digest, com o binário da base ao lado do novo sobre as mesmas entradas.
+- [ ] Com a pasta configurada e **vazia**, o nó arranca, diz no banner «zero perfis
+      assinados» e comporta-se como sem pasta.
+
+**Falha fechado, com causa própria para cada caso** (o nó não arranca; a causa aparece no
+erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
+
+- [ ] Pasta configurada sem âncora de confiança.
+- [ ] Assinatura em falta, inválida, ou de outra chave.
+- [ ] Registo com campo desconhecido, chave repetida, versão de formato desconhecida, ou fatia
+      fora de 0 a 100.
+- [ ] Digest do perfil no registo diferente do digest do perfil que o registo traz.
+- [ ] Relatório citado em falta; ou presente com digest diferente do citado.
+- [ ] Veredicto que não é `qualificado` (`recusado` e `inconclusivo`, um teste cada).
+- [ ] Veredicto de outro perfil (o digest do perfil no relatório não é o do registo).
+- [ ] Veredicto de outra imagem do proxy (o digest no relatório não é o declarado para
+      produção pelo AOS-517).
+- [ ] Dois registos para o mesmo nome pedido.
+- [ ] Perfil para um nome que a allowlist assinada não autoriza para o board e a região do
+      nó: a allowlist continua a mandar, e sabe-se no arranque e não ao primeiro pedido.
+- [ ] Perfil que devolve estado (`devolver` diferente de `nunca`) com
+      `AOS_MODEL_PROVIDER_STATE` desligado.
+- [ ] **Mutação dirigida** por causa: retirar cada conferência faz arrancar um nó que devia
+      recusar, e avermelha o teste dessa causa — e só esse.
+
+**Quando carrega**
+
+- [ ] Um registo válido para um alias que a tabela em código já conhece substitui essa entrada
+      para o nó inteiro, e o banner diz qual alias, o modelo esperado de antes e o de agora, e
+      os dois digests. Sem essa linha no banner, o teste falha.
+- [ ] Com o perfil assinado do alias que o nó pede (`AOS_MODEL_NAME`), um run completa contra
+      um provider falso atrás do proxy fixado, e o manifesto de cada turno traz o digest do
+      perfil **assinado**, não o da tabela. É o caso estreito do desenho §4.3: trocar o modelo
+      único do nó sem PR.
+- [ ] O evento «perfil carregado» fica selado uma vez por arranque e por perfil, com os três
+      digests; reconstrói-se do log quem serviu o quê e desde quando.
+- [ ] **Só no arranque.** Mudar, acrescentar ou apagar um ficheiro da pasta com o nó a correr
+      não tem efeito até ser recriado — preso por teste. Um run começado antes da troca e
+      retomado depois acaba com a projecção fixada ou falha fechado com a causa que já existe
+      (`estado_de_outra_rota`); nunca continua em silêncio com outro perfil.
+- [ ] O conjunto de valores do rótulo do modelo servido nas métricas continua **fechado**:
+      passa a incluir os modelos esperados dos perfis assinados, e o número de séries tem um
+      máximo escrito e testado.
+- [ ] Um `expected_model` com ponto ou barra (por exemplo `anthropic/claude-sonnet-4.5`) ou
+      carrega e serve um run de ponta a ponta, ou é recusado no arranque com causa própria.
+      O ticket segue o nome por todos os sítios onde é usado e regista o que encontrou
+      (desenho §8: há pelo menos um identificador de stream que não aceita ponto).
+- [ ] **Sobre JetStream**, e não só sobre ficheiro: o smoke do carregamento e do evento
+      selado corre contra o cluster de CI.
+
+**Registo**
+
+- [ ] A emenda ao ADR-036 §2.8 está escrita e a RTM regenerada.
+- [ ] O `deploy/server/README.md` descreve os dois interruptores, a montagem da pasta só de
+      leitura no serviço do nó, e o procedimento de troca com a rota drenada.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptores:** `AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`.
+  Sem o primeiro, nada muda. Com o primeiro e sem o segundo, o nó não arranca.
+- **Inerte:** o primeiro critério acima. A allowlist, a soberania, o veredicto do kernel e a
+  mediação do Reference Monitor não são alcançáveis por um perfil: um teste tenta, com um
+  registo validamente assinado, cada uma das quatro coisas e falha.
+
+### Testes exigidos
+
+- A inércia por digest contra o binário da base; um teste por causa de recusa, com a sua
+  mutação; o run de ponta a ponta com o perfil assinado atrás do proxy fixado; a troca a
+  quente sem efeito; o smoke sobre JetStream.
+- **Controlo negativo da assinatura:** um registo assinado com a chave da allowlist, e não
+  com a dos perfis, é recusado. As duas âncoras não são intermutáveis.
+- Revisão adversarial independente antes de qualquer perfil assinado ir a produção. Alvo: um
+  caminho por onde um perfil chegue ao gateway sem ter passado por todas as conferências.
+
+### Riscos
+
+- **Um perfil que muda com runs em curso.** A projecção já fica fixada por run e uma rota
+  `obrigatorio` falha fechado; a regra operacional — muda-se com a rota drenada — passa a
+  estar no runbook.
+- **O nó confere um relatório produzido noutro computador.** A assinatura do dono cobre o
+  digest do relatório: prova que o dono viu aquele relatório; **não prova que o arnês correu**
+  (desenho §8). Fica escrito na emenda ao ADR como limite aceite.
+- **O nó não vê que imagem o proxy está de facto a correr.** Compara o digest do relatório com
+  o declarado no repositório; que o servidor corre essa imagem é garantido pelo compose
+  (AOS-517), não pelo nó.
+
+### O que precisa do dono
+
+- Gerar a chave dos perfis de modelo, fora do nó e fora do arnês, e entregar a pública.
+- Pôr os dois interruptores no `.env` do servidor e montar a pasta, quando decidir.
+- Assinar o primeiro registo de entrada; aprovar o deploy da versão que traz este ticket.
+
+### Fora de âmbito
+
+- Um tipo «perfil de modelo» no Registry, com staging e promoção.
+- Servir mais de um modelo, a fatia a ter efeito, o disjuntor: AOS-520 e AOS-521.
+- Carregar perfis a quente; perfis vindos de um plano, de um run ou de um pedido HTTP.
+- Perfis que devolvem estado em produção: dependem de a captura ser ligada (D8).
+- Nomes de modelo novos na allowlist; relaxar qualquer garantia por perfil.
+- O arnês a assinar o relatório com chave própria.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-518 ter o formato do
+relatório e o seu digest estáveis; o AOS-522 pode andar ao lado.
+
+## AOS-520 — O nó serve um titular e um candidato, com o modelo fixado por run; o canary é uma percentagem de planos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket ENTREGA um ADR NOVO, ainda por numerar (o número reserva-se na altura): «mais de um modelo por nó — titular e candidato, modelo fixado por run, canary por percentagem de planos». Enquanto esse ADR não existir, o bloco não implementa nenhum ADR numerado: o ADR-018, o ADR-021, o ADR-012, o ADR-036 e o ADR-040 são citados só como os contratos que o ADR novo tem de respeitar e citar. Quando o ADR novo for escrito, este marcador sai e a RTM passa a ligá-lo ao ticket. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-dois-modelos» |
+| Tipo | feat |
+| Prioridade | P1: sem segundo modelo não há fatia, e sem fatia não há para onde recuar — «um modelo mau é recusado sozinho» ficaria cumprido só antes de entrar |
+| Estimativa | XL (o maior e o mais arriscado da fase; dois PR: a escolha e a fixação do modelo, e depois as métricas por modelo) |
+| Dependências | AOS-519 (o registo de entrada assinado, com a fatia). Para trás: AOS-505 (governação da rota), AOS-513 (a projecção fixada por run), AOS-515 (estado só para a rota que o produziu), AOS-413 (cada nó do plano é um run do nó), AOS-502 e AOS-510 (as novas tentativas de um nó do plano). Decisões D4 e D6 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-521, AOS-523 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §2, §3 (passos 6 e 8), §4.4, §5 (lições 5 e 7) e §6 (D4, D6, D9), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `packages/cmd/aos/modelo_do_turno.go`, `packages/cmd/aos/modelgatewaywiring.go`, `packages/cmd/aos/api.go`, `packages/platform/model-gateway/route.go`, `packages/platform/model-gateway/state_return.go`, `packages/control-plane/orchestrator/plan/plandocument.go` |
+
+### Contexto
+
+- **Um modelo por nó.** O nó pede sempre o mesmo modelo, lido de `AOS_MODEL_NAME` numa única
+  função (`packages/cmd/aos/modelo_do_turno.go`); o adaptador do gateway constrói-se uma vez
+  (`modelgatewaywiring.go`). O `POST /runs` não tem campo de modelo, **de propósito**
+  (`api.go`).
+- **Hoje, numa retoma, o modelo do nó sobrepõe-se ao que o run gravou** (`fixarModelo`: «cobre
+  a retoma de um run gravado com outra configuração»). Com um só modelo isso é correcto. Com
+  dois, seria mudar de modelo a meio de um run — o que parte o estado opaco e torna impossível
+  atribuir uma falha.
+- **Não há guarda única «o perfil mudou entre turnos deste run»** (desenho §2,
+  `[NÃO ENCONTREI]`). A projecção fica fixada por run, e o estado de outra rota numa rota
+  `obrigatorio` não é enviado e o turno falha; com dois modelos passa a ser preciso fixar
+  também o **modelo**.
+- **Não existe canary em sítio nenhum do código**: a palavra aparece como pré-condição
+  declarada, não como máquina. Constrói-se de raiz.
+- **Um nó do plano não tem campo de modelo, tier nem classe**, e o `aos-orq` chama o modelo
+  por conta própria, fora da governação da rota. Nada disso muda aqui.
+- **O que se liga em produção mede-se com uma série antes e outra depois** (desenho §5,
+  lição 7): a fatia do candidato é a série «depois»; o titular, no mesmo período, é a «antes».
+
+### Decidido pelo dono (2026-10-11)
+
+- **D6 — o mínimo: um titular e, no máximo, um candidato.** N modelos, e a escolha por passo
+  ou pelo plano, são a fase A4.
+- **D4 — o canary.** Percentagem de **planos**: todos os nós e todas as tentativas de um
+  plano usam o mesmo modelo; um run sem plano conta como um plano de um nó; nunca por turno.
+  **Quem escolhe é uma função do identificador do plano**, não quem submete. A fatia é
+  **10%**, escrita no registo assinado; mudá-la é assinar outra vez. Dura **até 40 planos
+  servidos pelo candidato**; depois o dono decide com os números. O candidato não passa a
+  titular sozinho.
+- **D9 e D1 —** o candidato pede-se pelo segundo alias que a allowlist já autoriza; nenhum
+  nome novo.
+
+### Objectivo
+
+O nó conhece dois modelos — o titular, que é o de hoje, e no máximo um candidato vindo de um
+registo assinado — e decide uma vez, no início de cada run, qual o serve, por uma função
+determinista do identificador do plano e da fatia assinada. A decisão fica gravada e não muda.
+Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
+
+### Âmbito
+
+- **A escolha**: uma função pura `(identificador do plano, fatia) → titular ou candidato`,
+  sem relógio, sem estado e sem aleatoriedade, com vectores de teste fixos escritos no ADR.
+- **De onde vem o identificador do plano.** O ticket começa por confirmar no código como o nó
+  o conhece em cada um dos três casos — o run de um nó do plano, a nova tentativa de um nó do
+  plano, e o run sem plano — **sem mudar o `aos-orq` nem o schema do plano**. Se não for
+  derivável do que o nó já recebe, o ticket pára e reporta: não se acrescenta um campo ao
+  `POST /runs`.
+- **A fixação**: o modelo escolhido fica no manifesto de cada turno (com o digest do perfil,
+  que já lá está) e no registo de retoma do run, com uma marca de que foi fixado por escolha.
+- **O adaptador do gateway** deixa de ser um só por nó, só quando há candidato.
+- **O fim do canary**: a contagem dos planos servidos pelo candidato, durável.
+- **Métricas por modelo**: séries **novas**, com o modelo no rótulo, para turnos, desfechos
+  de run e respostas rejeitadas. As que existem não mudam de nome nem de rótulos.
+- **Um interruptor**: `AOS_MODEL_CANDIDATE=off|on`, omissão `off`.
+- **O ADR novo** e o runbook (abrir a fatia, mudar a fatia, retirar o candidato).
+
+### Critérios de Aceitação
+
+**Inerte sem candidato**
+
+- [ ] Com `AOS_MODEL_CANDIDATE` ausente ou `off` — haja ou não um registo de candidato na
+      pasta —, e com `on` e a fatia assinada a 0: o pedido ao provider, o manifesto de cada
+      turno, o registo de retoma, o banner e o `/metrics` são byte a byte os do binário da
+      base sobre as mesmas entradas. Preso por digest. As séries novas por modelo só existem
+      com um candidato a servir.
+- [ ] Um run gravado antes deste ticket, ou sem a marca de modelo fixado por escolha, é
+      retomado exactamente como hoje (o modelo do nó sobrepõe-se).
+
+**A escolha**
+
+- [ ] Determinista: a mesma entrada dá sempre a mesma escolha, em arranques diferentes e em
+      nós diferentes. Os vectores de teste do ADR estão presos por teste; mudar a função
+      avermelha-os.
+- [ ] Com a fatia a X%, numa série de pelo menos **200 identificadores de plano** distintos a
+      fracção atribuída ao candidato fica dentro do intervalo esperado para essa amostra
+      (escrito no teste, para 10% e para mais dois valores). Com 100%, todos; com 0%, nenhum.
+- [ ] **Todos os nós de um plano, e todas as tentativas de um nó, usam o mesmo modelo** —
+      incluindo a nova tentativa por falta de tool call (AOS-502) e a por resposta vazia
+      (AOS-510). Teste com um plano de três nós e duas tentativas: um só modelo em todos os
+      manifestos.
+- [ ] Quem submete não escolhe: nenhum campo do `POST /runs`, nenhum cabeçalho e nenhum campo
+      do plano altera a escolha. Um teste tenta as três vias.
+- [ ] No máximo um candidato: dois registos assinados que não sejam o do alias do titular, e
+      o nó não arranca, com causa própria.
+
+**A fixação**
+
+- [ ] O modelo de um run não muda a meio: nem de turno para turno, nem numa retoma, nem depois
+      de um reinício do nó com outra fatia ou sem candidato.
+- [ ] Um run começado com o candidato e retomado depois de o candidato sair (registo
+      retirado, interruptor a `off`, ou canary terminado) **acaba com o modelo fixado, se o
+      perfil ainda estiver carregado, ou falha com causa própria**. Nunca passa para o
+      titular em silêncio. Um teste por cada uma das três saídas.
+- [ ] **Mutação dirigida:** repor, para um run com a marca, a sobreposição do modelo do nó na
+      retoma avermelha o teste acima.
+- [ ] O manifesto de cada turno e o registo de retoma permitem reconstruir, só do log, que
+      modelo e que perfil serviram cada run, e porquê (o digest do registo de entrada e a
+      fatia em vigor na altura da escolha).
+- [ ] Fidelidade de replay de 100% num run servido pelo candidato, incluindo um run retomado
+      a meio.
+
+**O canary**
+
+- [ ] Com `on` e a fatia assinada a 10%, os planos novos repartem-se pela função; o banner
+      declara o titular, o candidato, a fatia e o digest do registo.
+- [ ] Ao **40.º plano** servido pelo candidato, o candidato deixa de receber planos novos; o
+      facto fica selado com as contagens, e há um sinal para o dono (métrica e linha de log).
+      Os runs em curso acabam com o modelo fixado. A contagem é durável: um reinício não a
+      repõe a zero. Reabrir a fatia é um registo assinado novo.
+- [ ] O candidato **nunca** passa a titular sem um acto assinado do dono; não há caminho no
+      código que o faça.
+- [ ] Sobre **JetStream**, e não só sobre ficheiro: o smoke da escolha, da fixação e da
+      contagem durável corre contra o cluster de CI.
+
+**Métricas** (segundo PR)
+
+- [ ] Turnos, desfechos de run (cumprido, não cumprido, por causa) e respostas rejeitadas têm
+      séries por modelo, com um conjunto **fechado** de valores do rótulo (os modelos
+      esperados dos perfis carregados) e um máximo de séries escrito e testado.
+- [ ] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
+      a funcionar sem alteração.
+
+**Registo**
+
+- [ ] O ADR novo está escrito, com: a função de escolha e os seus vectores; a regra de
+      fixação e a marca; o fim do canary; o que **não** é coberto (o planeador do `aos-orq`
+      chama o modelo fora da governação da rota); e a relação com os ADR citados no cabeçalho
+      deste bloco — incluindo a discrepância conhecida entre o texto do ADR da auto-modificação
+      e o código sobre a ratificação de produção (desenho §8). O marcador de menção deste
+      bloco sai nesse commit e a RTM é regenerada.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptor:** `AOS_MODEL_CANDIDATE=off|on`, omissão `off`. Com `off`, um registo de
+  candidato na pasta é conferido pelo AOS-519, aparece no banner como «candidato não
+  servido», e não recebe tráfego. A fatia assinada é o segundo travão: `on` com fatia 0 não
+  serve nada.
+- **Inerte:** os dois primeiros critérios. O caminho do titular não passa pela função de
+  escolha quando não há candidato a servir.
+
+### Testes exigidos
+
+- A inércia por digest contra o binário da base; a função de escolha (vectores, distribuição,
+  extremos); o plano de três nós com tentativas; as três saídas da retoma, com a mutação; a
+  contagem durável e o fim do canary; o replay; o smoke sobre JetStream.
+- **Controlo negativo da medição:** o teste da distribuição falha com uma função que devolve
+  sempre «titular» e com uma que devolve sempre «candidato» — não passa por intervalo largo
+  de mais.
+- Revisão adversarial independente antes de o interruptor ser ligado em produção. Alvos: um
+  run que muda de modelo; um plano com dois modelos; uma via pela qual quem submete escolhe.
+
+### Riscos
+
+- **É a peça que toca no caminho de todos os runs.** Por isso o candidato é um só, a escolha
+  é uma função pura que se testa sem rede, e a inércia prova-se contra o binário da base.
+- **Pode não haver tráfego para o canary querer dizer alguma coisa** (desenho §8): com 10%,
+  40 planos do candidato pedem cerca de 400 ao todo. Pode ser preciso uma série de validação
+  lançada de propósito; é o AOS-523 que o mede.
+- **O estado opaco e a mudança de modelo.** Mitigado pela fixação e pela guarda que já existe
+  (estado de outra rota não é enviado); e a entrada automática está limitada a perfis que não
+  devolvem estado (D8).
+- **Cardinalidade das métricas**, se o conjunto de rótulos deixasse de ser fechado.
+
+### O que precisa do dono
+
+- Assinar o registo de entrada com a fatia (10%), e voltar a assinar para a mudar ou reabrir.
+- Pôr `AOS_MODEL_CANDIDATE=on` no `.env` do servidor e aprovar o deploy, depois da revisão.
+- Decidir, ao fim dos 40 planos, se o candidato passa a titular, continua ou sai.
+
+### Fora de âmbito
+
+- Mais de dois modelos; a escolha por passo ou declarada pelo plano; tiers, scoring e custo
+  na escolha (fase A4).
+- O disjuntor: é o AOS-521. Este ticket só fecha a fatia pelo fim do canary.
+- A passagem automática de candidato a titular.
+- Um campo de modelo no `POST /runs` ou no schema do plano; qualquer mudança no `aos-orq`.
+- A governação da rota do planeador.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-519.
+
+## AOS-521 — O candidato perde a fatia sozinho: um disjuntor por modelo, durável e selado, que só o dono volta a fechar
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket ENTREGA a secção do disjuntor no ADR NOVO do AOS-520, ainda por numerar (como emenda a esse ADR, ou como parte dele se os dois tickets fecharem juntos). Enquanto esse ADR não tiver número, o bloco não implementa nenhum ADR numerado: o ADR-025 (o controlador de autonomia, que já despromove sozinho e só devolve por acto humano) é citado como precedente, e o ADR-036 §2.8 como o contrato da comparação do modelo servido. Quando o ADR novo existir, este marcador sai. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-disjuntor» |
+| Tipo | feat |
+| Prioridade | P1: é a metade «um modelo mau é recusado sozinho» **depois** de entrar. Sem ele, um candidato mau fica com a fatia até alguém reparar |
+| Estimativa | L |
+| Dependências | AOS-520 (o candidato, a fatia, o modelo fixado por run, as séries por modelo e o registo durável dos planos servidos). Para trás: AOS-493 (o veredicto do kernel sobre o run), AOS-505 (o modelo servido comparado por turno), AOS-507 e AOS-509 (resposta vazia e resposta rejeitada), AOS-090 (o precedente). Decisões D5 e D8 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-523 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §2, §3 (passo 7), §4.5, §6 (D5, D8) e §8, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `packages/platform/model-gateway/production.go`, `packages/cmd/aos/api.go`, `packages/cmd/aos/modelgatewaywiring.go`, `packages/kernel/agent-runtime/breaker/`, `deploy/server/alerta-rota.sh` |
+
+### Contexto
+
+- **Não existe disjuntor por modelo.** Os que há são de outro eixo: de orçamento e por run. A
+  saúde de uma rota é uma função injectada que ninguém preenche — sem ela, tudo é tratado
+  como saudável (`packages/platform/model-gateway/production.go`).
+- **Há sinais, mas poucos têm o modelo ao lado.** Só `aos_model_route_checks_total` e
+  `aos_model_route_params_rejected_total` o levam. Não há contador de erros HTTP por rota. O
+  veredicto do kernel por run existe, sem o modelo. As séries por modelo chegam com o AOS-520.
+- **O único alerta de rota avisa e não actua** (`deploy/server/alerta-rota.sh`).
+- **O precedente é o controlador de autonomia** (AOS-090): despromove sozinho com base em
+  fiabilidade medida e só devolve por acto humano.
+- **O disjuntor compara com um limiar fixo, não com o titular** (desenho §5, lição 7).
+- **Com pouco tráfego a janela demora a encher** (desenho §8), e não está medido se «3 em 20»
+  dispara por azar num modelo bom. Daí o `observe` primeiro.
+
+### Decidido pelo dono (2026-10-11)
+
+**D5 — o disjuntor.**
+
+| Pergunta | Decisão |
+|---|---|
+| O que conta como falha | (F1) run «não cumprido» no fim das tentativas; (F2) resposta vazia no fim das tentativas; (F3) resposta rejeitada; (F4) erro do provider que não seja limite de ritmo; (F5) modelo servido diferente do esperado. Cada uma com contador próprio. **O limite de ritmo fica de fora:** é da conta, não do modelo |
+| Quando abre | **3 falhas nos últimos 20 runs do candidato**; e ao **primeiro turno** com o modelo servido diferente do esperado |
+| O que faz ao abrir | Fatia a zero para runs novos. **Não mata os runs em curso**: acabam com o modelo fixado |
+| Como reabre | **Só por acto do dono.** Não fecha sozinho |
+| Primeiro passo | `observe` durante a primeira fatia; `enforce` depois, por decisão do dono |
+
+**D8, linha 4:** a governação da rota fica em `observe`, e o disjuntor lê o contador dela.
+
+### Objectivo
+
+O nó conta, por modelo, o que já sabe sem interpretar texto; aplica a regra da D5 a uma janela
+dos runs do candidato; e, aberto, deixa de lhe dar runs novos, sem ninguém intervir — com o
+facto selado, as contagens ao lado, um aviso ao dono, e sem volta automática.
+
+### Âmbito
+
+- **Os cinco sinais**, cada um lido de onde o nó já o tem: o veredicto do kernel, o desfecho
+  `empty_output`, a rejeição da resposta pelo gateway, o erro do provider classificado, e a
+  comparação do modelo servido. Nenhum lê o texto do modelo.
+- **A unidade da janela.** Uma tentativa falhada que a nova tentativa recupera não é uma
+  falha «no fim das tentativas»: na janela, cada nó do plano conta pelo desfecho da sua
+  tentativa mais recente. O ticket começa por confirmar no código o que o nó sabe das
+  tentativas de um nó do plano (AOS-502, AOS-510) e regista-o.
+- **O estado**: fechado ou aberto, com a janela e os cinco contadores, durável e selado,
+  lido no arranque. Preso ao digest do registo de entrada do candidato: **um registo assinado
+  novo começa fechado** — é esse o acto do dono que reabre.
+- **Um interruptor**: `AOS_MODEL_BREAKER=off|observe|enforce`, omissão `off`.
+- **O alerta**, no molde do `alerta-rota.sh`: avisa quando abre (ou, em `observe`, quando
+  teria aberto).
+- **A secção do disjuntor no ADR novo do AOS-520**, incluindo onde vive o estado durável
+  (que stream o leva e o custo de o ler no arranque — o desenho §8 deixou-o por verificar).
+
+### Critérios de Aceitação
+
+**Inerte**
+
+- [ ] Com `AOS_MODEL_BREAKER` ausente ou `off`, o nó — com ou sem candidato a servir — é byte
+      a byte o do AOS-520 sobre as mesmas entradas: pedidos, manifestos, registos, banner e
+      `/metrics`. Preso por digest.
+- [ ] Em `observe`, a repartição dos planos entre titular e candidato é idêntica à de `off`
+      para a mesma sequência de identificadores e de desfechos: o disjuntor conta e não mexe.
+
+**A regra**
+
+- [ ] Função pura da janela: dadas as mesmas entradas pela mesma ordem, o mesmo estado. Teste
+      de tabela: 2 falhas em 20 não abre; a 3.ª abre; 3 falhas espalhadas por 21 runs não
+      abrem; uma F5 abre sozinha, ao primeiro turno, com a janela vazia.
+- [ ] O limite de ritmo (429) **não conta**, por mais vezes que aconteça — um teste com 20
+      respostas 429 seguidas e o disjuntor fechado.
+- [ ] Um nó do plano que falha à primeira e cumpre na nova tentativa não fica como falha na
+      janela.
+- [ ] **Mutação dirigida** por parâmetro e por sinal: 3 para 4; 20 para 21; retirar cada um
+      dos cinco sinais; contar o 429. Cada uma avermelha pelo menos um teste. A lista e o
+      resultado ficam no Estado.
+
+**Aberto, em `enforce`**
+
+- [ ] Com um provider falso que degrada a meio (bom durante N runs, mau depois), o disjuntor
+      abre **até ao 3.º run falhado** depois da degradação, e a partir daí **nenhum plano
+      novo** vai para o candidato — zero em pelo menos 200 identificadores seguintes que a
+      função de escolha lhe daria.
+- [ ] Os runs do candidato em curso no momento da abertura acabam com o modelo fixado.
+- [ ] Um run **novo** de um plano que o candidato já estava a servir não passa em silêncio
+      para o titular: é recusado com causa própria, e o plano falha por essa causa. Nenhum
+      plano fica com nós servidos por dois modelos.
+- [ ] **O titular nunca é tocado.** Um teste faz o titular falhar de todas as cinco maneiras,
+      com o disjuntor em `enforce`: o titular continua a receber todos os runs, e nenhum
+      estado do disjuntor muda.
+- [ ] **Sobrevive a um reinício:** aberto continua aberto, com as mesmas contagens. Sobre
+      ficheiro **e sobre JetStream** (cluster de CI).
+- [ ] **Não fecha sozinho:** nem com o tempo, nem com reinícios, nem com 200 runs bons do
+      titular, nem ao pôr o interruptor em `off` e outra vez em `enforce`. Fecha com um
+      registo de entrada novo, assinado — e só com isso.
+- [ ] A abertura fica selada uma vez, com: o digest do registo de entrada, a regra que
+      disparou, os cinco contadores e a janela (identificadores de run e sinal, sem conteúdo).
+- [ ] Com um candidato bom (o falso «bom» do AOS-518), o disjuntor não abre em 200 runs.
+
+**`observe`**
+
+- [ ] Conta e, quando a regra dispararia, sela «teria aberto» com as mesmas contagens e
+      expõe-o em métrica; a fatia não muda.
+- [ ] Como leitura de calibração, e só em `observe` ou `enforce`: a mesma regra é calculada
+      também sobre os runs do titular e exposta em métrica, **sem estado que actue**. É a
+      medição que o desenho §8 pede («se 3 em 20 dispara por azar num modelo bom»).
+
+**O sinal F5 e a governação da rota**
+
+- [ ] Com `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`, um turno do candidato com o
+      modelo servido diferente do esperado abre o disjuntor nesse turno.
+- [ ] Com a governação da rota desligada o sinal F5 não existe: em `observe`, o banner di-lo;
+      em `enforce`, **o nó não arranca**, com causa própria. Um disjuntor que promete apanhar
+      a troca de modelo sem a poder ver é pior do que não o ter.
+
+**O aviso**
+
+- [ ] Um script de alerta em `deploy/server/`, com modo de teste, avisa uma vez à abertura e
+      relembra enquanto durar. O que sai do servidor: o título e as contagens; nenhum nome de
+      modelo, nenhum endereço.
+
+**Registo**
+
+- [ ] A secção do disjuntor no ADR novo, o runbook («o disjuntor abriu: o que ler, o que
+      fazer, como reabrir») e a RTM regenerada.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptor:** `AOS_MODEL_BREAKER=off|observe|enforce`, omissão `off`. Em produção
+  liga-se em `observe` durante a primeira fatia; `enforce` é uma decisão do dono, com os
+  números do `observe` à frente.
+- **Inerte:** os dois primeiros critérios.
+
+### Testes exigidos
+
+- A tabela da regra e as mutações; o provider falso que degrada a meio; o reinício sobre
+  ficheiro e sobre JetStream; o titular intocado; a não reabertura; a recusa do run novo de
+  um plano já servido; a inércia por digest.
+- **Controlo negativo do próprio teste da degradação:** com o disjuntor em `observe`, o mesmo
+  cenário continua a dar planos ao candidato — o teste do `enforce` não passa por o
+  candidato nunca ter recebido nada.
+- Revisão adversarial independente antes do `enforce` em produção. Alvos: um caminho que
+  reabre sem assinatura; um sinal que conta a favor do candidato; o titular a perder tráfego.
+
+### Riscos
+
+- **Pouco tráfego:** a janela demora a encher e um candidato mau serve mais tempo do que se
+  quer. Está limitado por cima pelo fim do canary (40 planos, AOS-520).
+- **Um limiar sensível de mais tira um modelo bom por azar** — e não volta sozinho. Daí o
+  `observe` primeiro e a leitura de calibração.
+- **A tentativa falhada que ainda não foi repetida** conta na janela até a nova tentativa
+  fechar: o disjuntor pode abrir uns runs mais cedo do que a letra de «no fim das
+  tentativas». É o lado seguro, e o `observe` mede quantas vezes acontece.
+- **Os planos em curso no momento da abertura falham** nos nós que faltam. Perde-se trabalho
+  de poucos planos; a alternativa era um plano com dois modelos, que a D4 exclui.
+
+### O que precisa do dono
+
+- Pôr `AOS_MODEL_BREAKER=observe` no servidor para a primeira fatia, e instalar o cron do
+  alerta.
+- Decidir a passagem a `enforce`, com as contagens do `observe`, e registá-la na §4 do
+  acompanhamento.
+- Reabrir, quando for o caso: assinar um registo de entrada novo.
+
+### Fora de âmbito
+
+- O disjuntor a reabrir sozinho (meia-abertura).
+- Um disjuntor para o titular; comparar o candidato com o titular; taxas com amostra mínima.
+- Matar runs em curso.
+- `AOS_MODEL_ROUTE_GOVERNANCE=enforce` em produção: é decisão separada, já por tomar.
+- Preencher a função de saúde do failover do gateway com este estado; tiers e scoring (A4).
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-520.
+
 ---
 
 ## Controlo de versões
@@ -3595,3 +4323,7 @@ acompanhamento.
 | 3.4 | 2026-10-08 | AOS-516 em curso: o banco de ensaio liga a captura, a governação da rota e o layout 1.5.0 quando o perfil candidato devolve estado, e conta as devoluções; medido no modo falso e atrás da imagem fixada do proxy pela rota `anthropic/…` (o proxy acrescenta um bloco de texto antes da tool call quando o `content` é vazio); a corrida com o Claude está por fazer | Equipa AOS |
 | 3.5 | 2026-10-10 | AOS-516: D4 alterada (o Claude qualifica-se pela OpenRouter, só em ensaio); o banco ganha o fornecedor `openrouter`; o perfil da rota passa a declarar `devolver_em` (`origem` ou `topo`) e `params.reasoning` (contrato da porta `1.10.0`; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8), inertes por omissão; medido atrás do proxy fixado, com provider falso: com `devolver_em: topo` a devolução pela rota `openrouter/…` cumpre-se, e sem ele não; a corrida com o modelo real está por fazer | Equipa AOS |
 | 3.6 | 2026-10-11 | AOS-516 fechado com a fase A2, por decisão do dono: a corrida com o modelo real fez-se pela OpenRouter a 2026-10-10 (21 de 21 runs com o raciocínio devolvido; o controlo negativo mostrou que a OpenRouter não o exige); o passo de produção não se fez; resíduos nomeados | Equipa AOS |
+| 3.7 | 2026-10-11 | +AOS-517 (fase A3, entrada automática): o proxy de produção fixa-se pelo digest em que o banco mede, com a igualdade presa por teste, e `drop_params: false` aplica-se no servidor, por decisão do dono (D8) | Equipa AOS |
+| 3.8 | 2026-10-11 | +AOS-519 (fase A3): o nó carrega perfis de rota de uma pasta, por um registo de entrada assinado pelo dono que cita o veredicto do arnês (`AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`); falha fechado no arranque com causa própria por caso; inerte sem a pasta; emenda à secção do perfil da rota no ADR do tail como entregável (D1, D8) | Equipa AOS |
+| 3.9 | 2026-10-11 | +AOS-520 (fase A3): o nó serve um titular e no máximo um candidato, escolhido uma vez por run por uma função determinista do identificador do plano e da fatia assinada (10% dos planos, até 40 planos), com o modelo fixado por run e séries novas por modelo (`AOS_MODEL_CANDIDATE=off\|on`, omissão `off`); ADR novo como entregável, por numerar (D4, D6) | Equipa AOS |
+| 3.10 | 2026-10-11 | +AOS-521 (fase A3): disjuntor por modelo — cinco sinais sem ler texto, regra de 3 falhas nos últimos 20 runs do candidato e abertura ao primeiro turno com o modelo servido diferente; aberto, o candidato não recebe runs novos, o estado é durável e selado, e só um registo assinado novo o reabre (`AOS_MODEL_BREAKER=off\|observe\|enforce`, omissão `off`); secção no ADR novo do AOS-520 como entregável (D5) | Equipa AOS |
