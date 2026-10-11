@@ -740,6 +740,51 @@ func TestAOS520_No_LivroComEventoDeVersaoMaisRecente(t *testing.T) {
 	}
 }
 
+// O CANDIDATO INDISPONÍVEL NÃO CAI NO TITULAR. O provider responde 503 a todos os pedidos do alias do
+// candidato, ou corta-lhes a ligação. O run do candidato FALHA; nenhum pedido pede o titular (nem
+// por failover de modelo, nem por nova escolha); o run continua fixado no candidato no log; e um
+// run do titular, no mesmo nó e ao mesmo tempo, é servido normalmente.
+func TestAOS520_No_CandidatoIndisponivel_ORunFalhaENaoCaiNoTitular(t *testing.T) {
+	for nome, estado := range map[string]int{"503": http.StatusServiceUnavailable, "ligacao cortada": -1} {
+		t.Run(nome, func(t *testing.T) {
+			n := aos520cNo(t, aos520NovoSubstrato(t), "on", aos520cCand(10))
+			n.upstream.mu.Lock()
+			n.upstream.avaria = func(corpo []byte) int {
+				if strings.Contains(string(corpo), `"model":"`+aos520AliasCand+`"`) {
+					return estado
+				}
+				return 0
+			}
+			n.upstream.mu.Unlock()
+			// O run "0" é do candidato (balde 168).
+			rec := postJSON(n.h, "POST", "/runs", map[string]any{"run_id": "0", "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": n.tok, "max_turns": 3})
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("POST /runs: %d %s", rec.Code, rec.Body.String())
+			}
+			oc, ok, err := n.svc.Wait(context.Background(), "0")
+			if err != nil || !ok || oc.Err == nil {
+				t.Fatalf("com o candidato indisponivel o run tinha de FALHAR: ok=%v err=%v run=%v", ok, err, oc.Err)
+			}
+			modelos := aos520cModelosPedidos(t, n.aos486No, 0)
+			if len(modelos) == 0 || !aos520cTodos(modelos, aos520AliasCand) {
+				t.Fatalf("o run do candidato pediu %q; nenhum pedido pode ir para o titular", modelos)
+			}
+			if st := aos520Estado(t, n, "0"); st != state.Failed {
+				t.Fatalf("o run ficou em %q; quer failed", st)
+			}
+			if fix, tem := aos520cFixacao(t, n.node.EventStore, "0"); !tem || fix.Role != "candidato" {
+				t.Fatalf("o run continua fixado no candidato: tem=%v %+v", tem, fix)
+			}
+			// O titular não é afectado: o run "a" (balde 8230) corre e conclui.
+			desde := len(n.upstream.pedidos())
+			n.correr(t, "a", nil)
+			if m := aos520cModelosPedidos(t, n.aos486No, desde); !aos520cTodos(m, aos486Modelo) {
+				t.Fatalf("o run do titular pediu %q", m)
+			}
+		})
+	}
+}
+
 // aos520cRecusado submete um run que a fixação do modelo tem de recusar, e confere as três coisas
 // que a recusa deixa: o run fecha `failed` com a razão própria na transição terminal, a causa fica
 // no log do nó, e o provider não vê pedido nenhum.
@@ -868,9 +913,15 @@ func (s *aos520cStoreComAvaria) Append(ctx context.Context, streamID string, in 
 	return s.EventStorePort.Append(ctx, streamID, in, opts...)
 }
 
-// aos520cTurnoUmECrash dá o turno 1 de um run nesta incarnação, pelo caminho de escolha do hostRun
-// ([NodeService.escolherModeloDoRun] e o resto do que o hostRun fixa), e «crasha»: o run fica em
-// `running`, com o registo de retoma escrito. É o molde de [aos520TurnoUmECrash], com a escolha.
+// aos520cTurnoUmECrash dá o turno 1 de um run nesta incarnação e «crasha»: o run fica em `running`,
+// com o registo de retoma escrito. É o molde de [aos520TurnoUmECrash], com a escolha.
+//
+// É ANDAIME, e diz-se: REIMPLEMENTA a sequência do [NodeService.hostRun] (a escolha, o layout, a
+// projecção, o perfil, o modo, o alias no contexto, o registo de retoma) em vez de a correr, porque
+// o hostRun não pára a meio — não há como lhe pedir «dá um turno e morre». O que é do código de
+// produção é a escolha ([NodeService.escolherModeloDoRun], chamada tal e qual) e o runtime. Que o
+// hostRun REAL faz esta sequência — e que grava a fixação antes do turno, com o alias no contexto —
+// provam-no os testes que submetem por `POST /runs` e correm o run até ao fim.
 func aos520cTurnoUmECrash(t *testing.T, n *aos520No, runID string) agentruntime.Goal {
 	t.Helper()
 	ctx := context.Background()
@@ -1235,6 +1286,17 @@ func TestAOS520_No_DoisCandidatosEValorInvalido(t *testing.T) {
 	if _, despacha := aos520cDespachante(cliente); despacha {
 		t.Fatal("sem a pasta o cliente de modelo nao e um despachante")
 	}
+	// SEM GATEWAY DE MODELO (AOS_MODEL_ENDPOINT por definir): um valor inválido aborta na mesma —
+	// a validação vem antes de qualquer retorno antecipado; um valor válido não compõe nada.
+	t.Setenv("AOS_MODEL_ENDPOINT", "")
+	t.Setenv("AOS_MODEL_CANDIDATE", "talvez")
+	if _, _, err := parseModelFromEnv(false); !errors.Is(err, ErrBadModelCandidate) {
+		t.Fatalf("sem gateway, um valor invalido tinha de abortar o arranque; veio %v", err)
+	}
+	t.Setenv("AOS_MODEL_CANDIDATE", "on")
+	if c, b, err := parseModelFromEnv(false); err != nil || c != nil || b != nil {
+		t.Fatalf("sem gateway, on nao compoe nada: %v", err)
+	}
 }
 
 // aos520cDespachante procura o despachante por baixo dos invólucros do cliente de modelo do nó.
@@ -1460,7 +1522,7 @@ func TestAOS520_ChaveDoCanary(t *testing.T) {
 	if chaveDePedido("x").indice() == chaveDeRun("x").indice() || passoDoPlano(chaveDePedido("x")) == passoDoPlano(chaveDeRun("x")) {
 		t.Fatal("um pedido e um run com o mesmo id tem de ser duas chaves no livro")
 	}
-	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "livro_de_versao_mais_recente", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel", "candidato_sem_o_perfil_do_registo"}
+	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "livro_de_versao_mais_recente", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel"}
 	if got := causasDaFixacaoDoModelo(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("o vocabulario das causas mudou: %q", got)
 	}

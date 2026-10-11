@@ -18,7 +18,10 @@ package main
 //     `seq` da fila de pedidos de plano nesse momento). Os planos pedidos até à marca da época
 //     mais recente são do titular. Há uma época nova sempre que o registo em vigor muda —
 //     incluindo um registo antigo que volta; a contagem dos planos é por registo.
-//   - `model.canary.plan_assigned` — um por plano atribuído ao CANDIDATO. A primeira escrita
+//   - `model.canary.plan_assigned` — um por plano ATRIBUÍDO ao CANDIDATO. Atribuído, e não servido:
+//     grava-se antes do `run.model_pinned` do run, e um run que seja recusado a seguir já gastou o
+//     lugar. A ordem é de propósito — erra para o lado de fechar o canary mais cedo, nunca de dar
+//     ao candidato mais planos do que o limite. A primeira escrita
 //     ganha: a chave de idempotência é a do plano, sem o registo, pelo que um plano só é
 //     atribuído uma vez, em qualquer abertura.
 //   - `model.canary.closed` — a contagem chegou ao limite.
@@ -98,7 +101,7 @@ const (
 	razaoPlanoJaAtribuido = "plano_ja_atribuido"
 	// razaoPlanoAnteriorAAbertura — o pedido de plano é anterior à abertura do canary.
 	razaoPlanoAnteriorAAbertura = "plano_anterior_a_abertura"
-	// razaoCanaryFechado — o candidato já serviu o limite de planos.
+	// razaoCanaryFechado — ao candidato já foi atribuído o limite de planos.
 	razaoCanaryFechado = "canary_fechado"
 	// razaoLivroMaisRecente — o livro tem eventos de uma versão mais recente do nó, e esta versão
 	// não sabe se o candidato ainda pode receber planos: não atribui.
@@ -222,9 +225,16 @@ type livroDoCanary struct {
 	// leituras do audit: num processo novo começa vazio, e a confirmação vem do audit.
 	seloConfirmado atomic.Value
 	log            func(string, ...any)
-	// mu serializa as decisões DESTE processo: sem ele, dois runs novos da mesma réplica perdiam
+	// vez serializa as decisões DESTE processo: sem ela, dois runs novos da mesma réplica perdiam
 	// o CAS um para o outro a cada passo. Entre réplicas, quem arbitra é o `WithExpectedSeq`.
-	mu sync.Mutex
+	//
+	// CUSTO CONHECIDO (ADR-041 §4). Com um candidato a servir, TODAS as admissões de runs novos
+	// desta réplica — as do titular incluídas — passam por aqui uma a uma, depois do lease e do
+	// claim, e cada uma lê o livro. Com a leitura a 100 ms, dez runs que cheguem juntos esperam um
+	// segundo. A espera respeita o contexto do run ([livroDoCanary.entrar]): cancelado, o run
+	// falha com a causa de contenção em vez de ficar à espera.
+	vez     chan struct{}
+	vezInit sync.Once
 	// atribuidosVistos e fechadoVisto são o que a ÚLTIMA leitura desta réplica viu para o
 	// candidato em vigor — o que o `/metrics` publica. Não decidem nada.
 	atribuidosVistos atomic.Int64
@@ -232,6 +242,20 @@ type livroDoCanary struct {
 	// futurosVistos é quantos eventos de tipos desconhecidos a última leitura viu.
 	futurosVistos atomic.Int64
 }
+
+// entrar toma a vez deste processo no livro, ou desiste quando o contexto acaba. Uma desistência é
+// [ErrCanaryContention]: o run que a pediu não é decidido — e por isso não arranca.
+func (l *livroDoCanary) entrar(ctx context.Context) error {
+	l.vezInit.Do(func() { l.vez = make(chan struct{}, 1) })
+	select {
+	case l.vez <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%w: a espera pela vez no livro foi cancelada: %w", ErrCanaryContention, ctx.Err())
+	}
+}
+
+func (l *livroDoCanary) sair() { <-l.vez }
 
 func (l *livroDoCanary) logf(format string, args ...any) {
 	if l != nil && l.log != nil {
@@ -354,8 +378,10 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 	if c.alias == "" || c.profileDigest == "" || c.entryDigest == "" || c.fatia <= 0 || c.fatia > 100 {
 		return fmt.Errorf("%w: candidato sem alias, digests ou fatia valida", ErrCanaryInconsistent)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	if err := l.entrar(ctx); err != nil {
+		return err
+	}
+	defer l.sair()
 	for tentativa := 0; tentativa < canaryMaxTentativas; tentativa++ {
 		st, err := l.ler(ctx)
 		if err != nil {
@@ -435,8 +461,10 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 	if chave.id == "" || (chave.tipo != tipoDePedido && chave.tipo != tipoDeRun) {
 		return decisaoDoCanary{}, fmt.Errorf("%w: run sem chave de plano", ErrCanaryUnreadable)
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	if err := l.entrar(ctx); err != nil {
+		return decisaoDoCanary{}, err
+	}
+	defer l.sair()
 	for tentativa := 0; tentativa < canaryMaxTentativas; tentativa++ {
 		st, err := l.ler(ctx)
 		if err != nil {
@@ -569,8 +597,10 @@ func (l *livroDoCanary) reconciliarFim(ctx context.Context, c candidatoEmVigor, 
 // planosAtribuidos devolve, por chave do plano, os planos que o livro diz atribuídos ao candidato.
 // É o que um nó SEM candidato a servir lê no arranque, para recusar os runs novos desses planos.
 func (l *livroDoCanary) planosAtribuidos(ctx context.Context) (map[string]bool, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	if err := l.entrar(ctx); err != nil {
+		return nil, err
+	}
+	defer l.sair()
 	st, err := l.ler(ctx)
 	if err != nil {
 		return nil, err

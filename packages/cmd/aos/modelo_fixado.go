@@ -91,9 +91,6 @@ const (
 	// causaHistoriaDoRunIlegivel — o nó não conseguiu ler do seu log se o run já existia (o stream
 	// do run, ou o seu registo de retoma). Sem saber se o run é novo, não se escolhe.
 	causaHistoriaDoRunIlegivel = "historia_do_run_ilegivel"
-	// causaCandidatoSemPerfil — o perfil em vigor para o alias do candidato não é o do registo com
-	// que o canary abriu.
-	causaCandidatoSemPerfil = "candidato_sem_o_perfil_do_registo"
 )
 
 // fixado devolve o modelo em que o log diz que o run está fixado por escolha: o do registo de
@@ -118,7 +115,7 @@ func (h historiaDoRun) fixado() (alias, digest, marca string, ok bool, err error
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
 func causasDaFixacaoDoModelo() []string {
 	return []string{causaPlanoDoCandidatoSemCandidato, causaLivroIlegivel, causaLivroEmContencao,
-		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaLivroDeVersaoMaisRecente, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel, causaCandidatoSemPerfil}
+		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaLivroDeVersaoMaisRecente, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel}
 }
 
 // ErrModelPinRefused — o run novo não pode ser hospedado com um modelo fixado. Fail-closed: não
@@ -227,7 +224,7 @@ func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *
 		if c.livro.fechadoVisto.Load() == 1 {
 			estado = "TERMINADO (o candidato ja nao recebe planos novos; os planos que lhe foram atribuidos acabam com ele)"
 		}
-		log("canary do modelo candidato (AOS-520): %s — candidato %q, digest do registo %s, %d de %d planos servidos pelo candidato (lido do livro duravel %s; um reinicio nao repoe a contagem)",
+		log("canary do modelo candidato (AOS-520): %s — candidato %q, digest do registo %s, %d de %d planos ATRIBUIDOS ao candidato (lido do livro duravel %s; um reinicio nao repoe a contagem; «atribuido» nao e «servido»: um plano conta quando lhe e atribuido, mesmo que o run seja depois recusado)",
 			estado, candidato.alias, candidato.entryDigest, c.livro.atribuidosVistos.Load(), canaryLimiteDePlanos, canaryStream)
 		return c, nil
 	}
@@ -415,14 +412,12 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 	if d.papel == canary.RoleCandidate {
 		goal.Model.ModelID = c.candidato.alias
 	}
-	// O digest do perfil em vigor para esse alias. Para o candidato tem de ser o do registo com que
-	// o canary abriu — é o que o livro gravou em cada atribuição.
+	// O digest do perfil em vigor para esse alias. Para o candidato é, por construção, o do registo
+	// com que o canary abriu: o candidato em vigor e o conjunto de perfis do nó saem dos MESMOS
+	// registos, lidos uma vez no arranque — não há aqui uma conferência a fazer entre os dois.
 	digest = ""
 	if perfil, tem := n.perfisDaRota.perfis().For(goal.Model.ModelID); tem {
 		digest = perfil.Digest()
-	}
-	if d.papel == canary.RoleCandidate && digest != c.candidato.profileDigest {
-		return goal, recusaDaFixacao(causaCandidatoSemPerfil, nil)
 	}
 	gravado := modeloFixadoPayload{
 		V: versaoDoModeloFixado, Role: string(d.papel), Alias: goal.Model.ModelID, ProfileDigest: digest,

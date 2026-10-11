@@ -2325,6 +2325,13 @@ func parseModelEgressTimeoutFromEnv() (time.Duration, error) {
 // binder — a closure que o Bootstrap chama com esse verifier (Config.ModelIdentityBinder).
 // Sem gateway (endpoint vazio) ⇒ (nil, nil, nil): sem modelo e sem binder.
 func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identity.Verifier), error) {
+	// O INTERRUPTOR DO CANDIDATO (AOS-520) valida-se ANTES de qualquer retorno antecipado — incluindo
+	// o de um nó sem gateway de modelo: um valor fora do vocabulário aborta o arranque em qualquer
+	// composição, em vez de passar por `off` onde ninguém o lê.
+	candidatoLigado, cerr := modelCandidateFromEnv()
+	if cerr != nil {
+		return nil, nil, cerr
+	}
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
 		// AOS-519: em produção, uma pasta de perfis assinados declarada SEM gateway aborta — o
@@ -2366,13 +2373,8 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if aerr != nil {
 		return nil, nil, aerr
 	}
-	// O CANDIDATO (AOS-520, ADR-041 §2.7). Vocabulário fechado, validado aqui pela mesma razão: um
-	// valor desconhecido aborta o arranque antes de qualquer efeito. Sem a pasta de perfis não há
-	// onde guardar o interruptor nem candidato a quem ele se aplique: o valor é só validado.
-	candidatoLigado, cerr := modelCandidateFromEnv()
-	if cerr != nil {
-		return nil, nil, cerr
-	}
+	// O CANDIDATO (AOS-520, ADR-041 §2.7): o interruptor, já validado no cimo desta função. Sem a
+	// pasta de perfis não há onde o guardar nem candidato a quem ele se aplique.
 	if assinados != nil {
 		assinados.candidatoLigado = candidatoLigado
 	}

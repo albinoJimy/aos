@@ -144,7 +144,7 @@ func modelCandidateBanner(p *perfisAssinados, titular string) []string {
 		return nil
 	}
 	if c, serve := p.candidatoAServir(titular); serve {
-		return []string{fmt.Sprintf("modelo candidato A SERVIR (EPIC-06/AOS-520, ADR-041): titular %q; candidato %q (digest do perfil %s), do registo %q (digest do registo assinado %s); fatia assinada %d%% dos PLANOS NOVOS, ate %d planos servidos pelo candidato. Quem escolhe e uma funcao do identificador do plano (%s), nao quem submete; o modelo fica fixado por run e todos os nos de um plano usam o mesmo. O candidato NAO passa a titular sozinho. O estado do canary (aberto ou terminado, e a contagem) vem numa linha propria, depois de o livro ser lido",
+		return []string{fmt.Sprintf("modelo candidato A SERVIR (EPIC-06/AOS-520, ADR-041): titular %q; candidato %q (digest do perfil %s), do registo %q (digest do registo assinado %s); fatia assinada %d%% dos PLANOS NOVOS, ate %d planos atribuidos ao candidato. Quem escolhe e uma funcao do identificador do plano (%s), nao quem submete; o modelo fica fixado por run e todos os nos de um plano usam o mesmo. O candidato NAO passa a titular sozinho. O estado do canary (aberto ou terminado, e a contagem) vem numa linha propria, depois de o livro ser lido",
 			titular, c.alias, c.profileDigest, nt[0].Label, c.entryDigest, c.fatia, canaryLimiteDePlanos, versaoDaEscolha)}
 	}
 	linhas := make([]string, 0, len(nt))

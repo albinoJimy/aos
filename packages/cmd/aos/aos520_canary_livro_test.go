@@ -15,7 +15,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/platform/model-gateway/policy/canary"
@@ -859,4 +861,132 @@ func TestAOS520_Livro_OLimiteGravadoNaAberturaDecide(t *testing.T) {
 	if len(abertas) != 3 || abertas[1].Limit != 40 || abertas[2].Limit != 2 {
 		t.Fatalf("aberturas = %+v; a epoca nova do registo conserva o limite 2, e o registo novo abre com 40", abertas)
 	}
+}
+
+// CONCORRÊNCIA REAL (com `-race`). Quatro réplicas — quatro livros sobre o MESMO Event Store em
+// memória — e trinta goroutines em cada uma, todas a decidir planos diferentes a 100%. Os testes
+// acima são intercalações deterministas num só fio; este não controla a ordem de nada, e afirma só
+// os invariantes: ao candidato são atribuídos EXACTAMENTE 40 planos, cada um uma vez; há UMA marca
+// de fecho; quem recebeu «candidato» está no livro; e ninguém recebeu um erro que não seja a
+// contenção (que recusa o run — nunca o entrega ao titular «na dúvida»).
+func TestAOS520_Livro_ConcorrenciaReal_NuncaMaisDeQuarenta(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	const replicas, porReplica = 4, 30
+	livros := make([]*livroDoCanary, replicas)
+	for i := range livros {
+		livros[i] = aos520Livro(t, es, aos520Cand)
+	}
+	var (
+		wg                           sync.WaitGroup
+		candidato, titular, contidos atomic.Int64
+		doCandidato                  sync.Map
+	)
+	for r := 0; r < replicas; r++ {
+		for k := 0; k < porReplica; k++ {
+			wg.Add(1)
+			go func(r, k int) {
+				defer wg.Done()
+				chave := fmt.Sprintf("plano-%d-%02d", r, k)
+				d, err := livros[r].decidir(ctx, aos520Cand, chaveDeRun(chave), 0)
+				switch {
+				case errors.Is(err, ErrCanaryContention):
+					contidos.Add(1)
+				case err != nil:
+					t.Errorf("decidir(%s): %v", chave, err)
+				case d.papel == canary.RoleCandidate:
+					candidato.Add(1)
+					doCandidato.Store(chave, true)
+				default:
+					titular.Add(1)
+				}
+			}(r, k)
+		}
+	}
+	wg.Wait()
+	atribuidos := aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)
+	vistos := map[string]bool{}
+	for _, a := range atribuidos {
+		if vistos[a.PlanKey] {
+			t.Fatalf("o plano %q foi atribuido duas vezes", a.PlanKey)
+		}
+		vistos[a.PlanKey] = true
+	}
+	if len(atribuidos) != 40 {
+		t.Fatalf("planos atribuidos ao candidato = %d; quer exactamente 40 (candidato=%d titular=%d contidos=%d)", len(atribuidos), candidato.Load(), titular.Load(), contidos.Load())
+	}
+	// Quem recebeu «candidato» está no livro. O contrário pode não valer: uma goroutine cuja escrita
+	// entrou e cuja resposta se perdeu não existe aqui, mas o livro é que conta.
+	doCandidato.Range(func(k, _ any) bool {
+		if !vistos[k.(string)] {
+			t.Errorf("o plano %q recebeu «candidato» e nao esta no livro", k)
+		}
+		return true
+	})
+	if candidato.Load() != 40 {
+		t.Fatalf("decisoes «candidato» = %d; quer 40", candidato.Load())
+	}
+	if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryClosed)); n != 1 {
+		t.Fatalf("marcas de fecho = %d; quer 1", n)
+	}
+	if candidato.Load()+titular.Load()+contidos.Load() != replicas*porReplica {
+		t.Fatalf("decisoes: candidato=%d titular=%d contidos=%d", candidato.Load(), titular.Load(), contidos.Load())
+	}
+}
+
+// A ESPERA PELA VEZ NO LIVRO RESPEITA O CONTEXTO. Com uma decisão presa a ler o livro, a seguinte
+// espera; se o contexto dela acaba, DESISTE com a causa de contenção — não fica pendurada, e não
+// decide. Largada a primeira, o livro continua a servir.
+func TestAOS520_Livro_AEsperaPelaVezRespeitaOContexto(t *testing.T) {
+	es := aos520Store(t)
+	aos520Livro(t, es, aos520Cand)
+	preso, largar := make(chan struct{}), make(chan struct{})
+	lento := &aos520StoreLento{EventStore: es, preso: preso, largar: largar}
+	l := &livroDoCanary{es: lento}
+	primeira := make(chan error, 1)
+	go func() {
+		_, err := l.decidir(context.Background(), aos520Cand, chaveDeRun("plano-lento"), 0)
+		primeira <- err
+	}()
+	<-preso // a primeira decisão tem a vez e está a ler
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	inicio := time.Now()
+	_, err := l.decidir(ctx, aos520Cand, chaveDeRun("plano-a-espera"), 0)
+	if !errors.Is(err, ErrCanaryContention) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a decisao a espera tinha de desistir com a causa de contencao quando o contexto acabou; veio %v", err)
+	}
+	if d := time.Since(inicio); d > 5*time.Second {
+		t.Fatalf("a espera durou %s", d)
+	}
+	if err := (&livroDoCanary{es: lento}).abrir(ctx, aos520Cand, aos520Marca(0, nil)); err == nil {
+		t.Fatal("com o contexto acabado, abrir tinha de falhar")
+	}
+	close(largar)
+	if err := <-primeira; err != nil {
+		t.Fatalf("a primeira decisao: %v", err)
+	}
+	if d := aos520Decidir(t, l, aos520Cand, "plano-a-espera", 0); d.papel != canary.RoleCandidate {
+		t.Fatalf("largada a vez, o livro continua a servir: %+v", d)
+	}
+	if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)); n != 2 {
+		t.Fatalf("atribuicoes = %d; quer 2 (a que desistiu nao escreveu nada)", n)
+	}
+}
+
+// aos520StoreLento prende a PRIMEIRA leitura do livro até o teste a largar.
+type aos520StoreLento struct {
+	eventstore.EventStore
+	uma           sync.Once
+	preso, largar chan struct{}
+}
+
+func (s *aos520StoreLento) Read(ctx context.Context, streamID string, from uint64) ([]eventstore.Event, error) {
+	if streamID == canaryStream {
+		s.uma.Do(func() {
+			close(s.preso)
+			<-s.largar
+		})
+	}
+	return s.EventStore.Read(ctx, streamID, from)
 }
