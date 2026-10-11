@@ -1577,6 +1577,165 @@ próprio e tudo o que identifica a rota qualificada.
 **Aberto (2026-10-11).** Nada implementado. Pode começar já, em paralelo com o AOS-517; o
 critério do digest da imagem do proxy fecha-se quando o AOS-517 declarar o digest de produção.
 
+## AOS-522 — Qualificar e preparar a assinatura num comando; sem veredicto positivo não há nada para assinar; runbook com relógio
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é uma ferramenta do posto do dono e um procedimento escrito. O ADR-036 §2.8 (o perfil da rota, que o registo de entrada transporta) e o ADR-012 (ratificação humana assinada) são citados só como os contratos que o comando serve e NÃO altera. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals (código em `packages/qa/banco-ensaio`) |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-comando» |
+| Tipo | feat |
+| Prioridade | P2: não acrescenta garantia nenhuma; é a peça que faz a hora do critério caber |
+| Estimativa | M |
+| Dependências | AOS-518 (a experiência `qualificacao` e o relatório com veredicto), AOS-519 (o formato do registo de entrada e a conferência que o nó faz). Decisões D3 e D4 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-523 |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §3 (passos 1 a 5), §4.6 e §6 (D3), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`, `packages/qa/banco-ensaio/cli.go`, `packages/qa/banco-ensaio/relatorio.go`, `packages/cmd/aos-issuer/main.go`, `deploy/server/README.md` |
+
+### Contexto
+
+- **O critério da fase tem um relógio:** menos de uma hora do «tenho uma chave» ao «o modelo
+  serve a primeira fatia», com a qualificação lá dentro (desenho §1 e §3). A qualificação
+  são 15 a 25 minutos de máquina (hipótese, por medir no AOS-518); o resto são passos de
+  pessoa, e é aí que a hora se perde.
+- **O dono aparece três vezes — escrever, assinar, copiar — e só assina uma** (desenho §3).
+  Entre a qualificação e a assinatura há hoje trabalho à mão: ler um relatório de taxas,
+  calcular digests, compor um ficheiro.
+- **O que o dono assina tem de mostrar o que a corrida não prova.** Na A2, `cumprida` foi
+  lida como prova de leitura e não era (desenho §5, lição 2). O resumo põe os limites à
+  frente, não em rodapé.
+- **Repetir até passar é escolher o resultado** (D7): o comando não pode ser um botão de
+  tentar outra vez.
+- **O nó falha fechado no arranque** (AOS-519): um pacote mal formado, copiado para o
+  servidor, é um nó que não arranca. O erro tem de aparecer no posto, antes da cópia.
+
+### Decidido pelo dono (2026-10-11)
+
+- **D3 — o modo real corre no posto do dono**, com o ficheiro de chaves dele; nunca em CI,
+  nunca no servidor de produção.
+- **D1 — assina o dono**, com a ferramenta que já usa e uma chave só para perfis de modelo,
+  **fora do nó e fora do arnês**.
+- **D4 — a fatia inicial é 10%**, escrita no registo assinado.
+
+### Objectivo
+
+Um comando do banco encadeia os passos 2 a 4 do caminho de um modelo novo: corre a
+qualificação, mostra o resumo de uma página e — só com `qualificado` — deixa pronto o registo
+de entrada para o dono assinar. E um procedimento escrito, com o tempo esperado de cada passo.
+
+### Âmbito
+
+- O subcomando do banco (`qualificar`) que recebe o perfil candidato e a fatia, corre a
+  experiência `qualificacao` do AOS-518 e escreve, numa pasta de saída: o relatório, o resumo,
+  e — só com veredicto positivo — o registo de entrada por assinar, no formato do AOS-519.
+- O resumo de uma página.
+- A linha de comando exacta para o dono assinar com o `aos-issuer`, impressa no fim.
+- A conferência local de um pacote já assinado, pela mesma função que o nó usa.
+- O runbook, com relógio: do perfil candidato escrito ao nó recriado.
+
+### Critérios de Aceitação
+
+**Sem veredicto positivo, nada para assinar**
+
+- [ ] Com `recusado` e com `inconclusivo` (um teste cada, contra os falsos do AOS-518), a
+      pasta de saída tem o relatório e o resumo e **não tem** registo de entrada — nem
+      parcial, nem com outro nome. O código de saída distingue os três veredictos.
+- [ ] Uma corrida interrompida a meio não deixa registo de entrada.
+- [ ] **Mutação dirigida:** retirar a condição do veredicto faz aparecer um registo com
+      `recusado` e avermelha o teste.
+- [ ] O registo de entrada preparado cita o digest do relatório **que está na pasta**: um
+      teste recalcula-o. O comando não aceita um relatório vindo de fora nem um veredicto por
+      argumento: só prepara o registo da corrida que acabou de fazer.
+
+**O resumo**
+
+- [ ] Cabe numa página (no máximo 60 linhas de 100 colunas, preso por teste) e diz, **por
+      esta ordem**: veredicto; razões; amostra; o que os controlos negativos mostraram; o que
+      a corrida não prova; o gasto. Um teste prende a ordem.
+- [ ] Com `exigencia_nao_provada` no relatório, essa linha vem antes de todas as outras,
+      incluindo o veredicto.
+- [ ] Traz os digests que o dono vai assinar (perfil, relatório, imagem do proxy), a fatia, o
+      alias pedido e o modelo esperado — e, se o alias já tiver entrada na tabela em código,
+      diz que o perfil a **substitui**.
+- [ ] Não contém texto de respostas do modelo, conteúdo de documentos, chaves, nem o caminho
+      do ficheiro de chaves.
+
+**A chave privada**
+
+- [ ] O comando não tem argumento, variável de ambiente nem leitura de ficheiro por onde uma
+      chave privada de assinatura possa entrar. Preso por teste sobre a lista de argumentos e
+      de variáveis lidas. Assinar é um passo separado, do dono, com o `aos-issuer`.
+- [ ] O comando recusa correr com `CI` ou `GITHUB_ACTIONS` definidas no modo real, como o
+      banco já faz.
+
+**A conferência antes da cópia**
+
+- [ ] Um pacote assinado (registo, assinatura, relatório) é conferido no posto pela **mesma
+      função** que o nó usa no arranque, e não por uma cópia dela: aceite aqui, é aceite pelo
+      nó; recusado aqui, a causa é a mesma palavra que o nó daria. Teste com um pacote bom e
+      com três dos casos de recusa do AOS-519.
+
+**O orçamento**
+
+- [ ] O comando não contorna os tectos do AOS-518: a terceira qualificação do mesmo perfil no
+      mesmo dia é recusada antes de enviar, e o pior caso é declarado antes do primeiro
+      pedido.
+
+**O runbook**
+
+- [ ] `docs/runbooks/PROC-BANCO-DE-ENSAIO.md` (ou um procedimento próprio ao lado) descreve
+      os passos 0 a 8 do desenho §3, com quem faz, o que fica como prova, e o tempo esperado
+      de cada um; diz onde o relógio começa e onde pára; e diz o que fazer em cada veredicto.
+- [ ] Traz a secção «antes de recriar o nó»: conferir o pacote no posto; drenar a rota;
+      copiar; recriar; ler o banner. E a de recuo: retirar o ficheiro e recriar.
+- [ ] **Ensaio do procedimento a seco**, com provider falso atrás do proxy fixado e um nó
+      local: do perfil escrito ao banner do nó a declarar o candidato. O tempo de cada passo
+      fica registado no Estado. Não substitui a medição do AOS-523, que é com modelo real e
+      em produção.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptor:** nenhum em produção — é uma ferramenta do posto do dono, que só corre
+  quando chamada. O modo real exige o ficheiro de chaves e recusa CI.
+- **Inerte:** os subcomandos e as experiências que o banco já tem dão, para as mesmas
+  entradas, a mesma saída byte a byte. O nó não muda.
+
+### Testes exigidos
+
+- Os três veredictos e a pasta de saída; a mutação da condição; a ordem e o tamanho do
+  resumo; a ausência de via para a chave privada; a conferência pela função partilhada; o
+  ensaio a seco.
+- **Controlo negativo do resumo:** um relatório com os controlos negativos em falta não dá
+  um resumo que os mostre como passados — dá a linha «controlo não corrido», e o veredicto
+  do AOS-518 para esse caso não é `qualificado`.
+
+### Riscos
+
+- **Baixo.** O risco real é o resumo ser lido como garantia: por isso «o que a corrida não
+  prova» está na página que se assina.
+- **A ferramenta de assinar pode precisar de um subcomando novo** para este tipo de ficheiro:
+  é entregável do AOS-519; se ainda não existir, este ticket fica à espera dele para o
+  ensaio a seco.
+
+### O que precisa do dono
+
+- Correr o comando no seu posto; ler o resumo; assinar com o `aos-issuer`.
+- Copiar o pacote para a pasta de perfis do servidor e recriar o nó.
+
+### Fora de âmbito
+
+- Assinar por conta do dono, guardar a chave, ou automatizar a cópia para o servidor.
+- Correr a qualificação no CI ou no servidor.
+- Repetir a qualificação sozinho quando o fornecedor actualiza o modelo por baixo do nome.
+- A regra do veredicto e os limiares: são do AOS-518.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Pode andar ao lado do AOS-519, depois de o
+AOS-518 ter o formato do relatório estável.
+
 ---
 
 ## Controlo de versões
@@ -1596,3 +1755,4 @@ critério do digest da imagem do proxy fecha-se quando o AOS-517 declarar o dige
 | 1.10 | 2026-10-08 | AOS-512: primeira corrida real sem respostas do modelo (3 pedidos com 401, 212 com 429 por saldo insuficiente); o banco passa a abortar em conta sem saldo ou limite de ritmo e a sondar a rota antes da corrida; a experiência dos separadores continua por correr | Equipa AOS |
 | 1.11 | 2026-10-11 | AOS-512: a experiência dos separadores correu a 2026-10-10 com o Kimi real (212 pedidos; nenhum braço se distingue a 5%; hipótese retirada) | Equipa AOS |
 | 1.12 | 2026-10-11 | +AOS-518 (fase A3, entrada automática): o banco de ensaio ganha a experiência `qualificacao`, que dá um veredicto calculado sobre o modelo (`qualificado`, `recusado`, `inconclusivo`) com limiares do dono, providers falsos «maus» em CI, orçamento próprio e o digest do próprio relatório | Equipa AOS |
+| 1.13 | 2026-10-11 | +AOS-522 (fase A3): um comando do banco encadeia a qualificação, o resumo de uma página e a preparação do registo de entrada para o dono assinar — sem veredicto `qualificado` não fica nada por assinar, e a chave privada nunca entra no arnês; conferência local do pacote pela função que o nó usa; runbook com relógio | Equipa AOS |
