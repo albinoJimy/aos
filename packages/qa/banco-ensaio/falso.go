@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aos-ref/platform/model-gateway/port"
 	"github.com/aos-ref/platform/model-gateway/wiretest"
 )
 
@@ -60,13 +61,21 @@ const (
 	// ComportamentoRejeitaSegundo — pede as tools e responde 400 ao pedido que as devolve: o
 	// provider que não aceita o segundo turno.
 	ComportamentoRejeitaSegundo Comportamento = "rejeita_segundo"
+	// ComportamentoTrocaModelo — cumpre, e declara ter servido OUTRO modelo (AOS-518): o
+	// cabeçalho do modelo servido leva [ModeloTrocadoDoFalso]. Só discrimina no modo `falso`:
+	// atrás do proxy real quem declara o modelo servido é o proxy.
+	ComportamentoTrocaModelo Comportamento = "troca_modelo"
 )
+
+// ModeloTrocadoDoFalso é o nome que o provider falso declara ter servido em [ComportamentoTrocaModelo].
+const ModeloTrocadoDoFalso = "falso/modelo-trocado-do-banco"
 
 // Comportamentos devolve o vocabulário, numa ordem fixa.
 func Comportamentos() []Comportamento {
 	return []Comportamento{
 		ComportamentoCumpre, ComportamentoTexto, ComportamentoVazia, ComportamentoCortada,
 		ComportamentoSemFactos, ComportamentoErro500, ComportamentoErro401, ComportamentoRejeitaSegundo,
+		ComportamentoTrocaModelo,
 	}
 }
 
@@ -127,6 +136,9 @@ type ProviderFalso struct {
 	// que a chave do fornecedor chegou ao fornecedor.
 	chaveEsperada [sha256.Size]byte
 	exigeChave    bool
+	// servidoComo, quando não vazio, é o nome que o falso declara no cabeçalho do modelo servido
+	// ([port.HeaderServedModel]), como o proxy faz. É para o modo `falso`, que não tem proxy.
+	servidoComo string
 
 	mu        sync.Mutex
 	conversas int
@@ -149,6 +161,10 @@ func NovoProviderFalso(roteiro []Comportamento) *ProviderFalso {
 func (f *ProviderFalso) ExigirChave(sha [sha256.Size]byte) {
 	f.chaveEsperada, f.exigeChave = sha, true
 }
+
+// DeclararModeloServido faz o falso declarar-se como o proxy se declara: o nome vai no cabeçalho
+// do modelo servido de cada resposta. Sem isto o falso não declara nada.
+func (f *ProviderFalso) DeclararModeloServido(nome string) { f.servidoComo = nome }
 
 // GuardarCorpos faz o falso guardar o corpo de cada pedido, para os testes os lerem.
 func (f *ProviderFalso) GuardarCorpos() { f.guardar = true }
@@ -248,6 +264,13 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	comportamento := f.actual
 	f.mu.Unlock()
 
+	servido := f.servidoComo
+	if comportamento == ComportamentoTrocaModelo {
+		servido = ModeloTrocadoDoFalso
+	}
+	if servido != "" {
+		w.Header().Set(port.HeaderServedModel, servido)
+	}
 	temTools := len(p.Tools) > 0
 	porPedir := temTools && comTool == 0
 	tokensDeEntrada := int64(len(corpo)/4 + 1)

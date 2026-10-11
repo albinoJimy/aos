@@ -146,6 +146,9 @@ type Observacao struct {
 	// Estado é o que o banco viu do estado opaco do provider neste run (AOS-516). Só existe em
 	// corridas cujo perfil candidato devolve estado.
 	Estado *EstadoDoRun `json:"estado_opaco,omitempty"`
+	// Qualificacao sao as medidas que so a experiencia `qualificacao` regista (AOS-518). Ausente
+	// nas outras experiencias.
+	Qualificacao *MedidasDoRun `json:"medidas_da_qualificacao,omitempty"`
 
 	erroDaUltimaChamada string
 }

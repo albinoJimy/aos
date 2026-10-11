@@ -77,6 +77,13 @@ type CfgDoNo struct {
 	// da rota (AOS-505). Só é lido quando o perfil devolve estado (AOS-516). Vem de quem corre o
 	// ensaio (`--host-esperado`); vazio ⇒ o endpoint não é comparado, só o modelo servido.
 	HostEsperado string
+	// Qualificacao liga o que a experiência `qualificacao` (AOS-518) mede a mais: a governação da
+	// rota em `observe` mesmo que o perfil não devolva estado (é ela que compara o modelo servido
+	// com o esperado), e as medidas por run ([MedidasDoRun]). Exige um perfil.
+	Qualificacao bool
+	// Limite, quando presente, é o tecto PRÓPRIO da qualificação: conta cada pedido antes de o
+	// enviar, ao lado do contador do dia. O mesmo limite serve a corrida e o seu controlo.
+	Limite *LimiteDaQualificacao
 }
 
 // ErrPerfilDoEnsaio — o perfil candidato não serve o nó de ensaio.
@@ -112,6 +119,10 @@ type NoDeEnsaio struct {
 	cliente          *http.Client
 	// devolucao é a composição do estado opaco (AOS-516); nil quando o perfil não devolve estado.
 	devolucao *ComposicaoDoEstado
+	// qualifica diz que o nó regista as medidas da qualificação ([CfgDoNo.Qualificacao]); limite
+	// é o tecto próprio dela, o mesmo que o transporte consulta.
+	qualifica bool
+	limite    *LimiteDaQualificacao
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -244,8 +255,17 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		rota = modelgateway.RouteGovernance{Mode: devolucao.GovernacaoDaRota, ExpectedAPIHost: cfg.HostEsperado}
 		captura, verSaida = devolucao.Captura, porta.verDevolucao
 	}
+	if cfg.Qualificacao {
+		if cfg.Perfil == nil {
+			return nil, ErrQualificacaoSemPerfil
+		}
+		if devolucao == nil {
+			// Sem devolução do estado a governação da rota estaria desligada, e L5 não se media.
+			rota = modelgateway.RouteGovernance{Mode: modelgateway.RouteGovernanceObserve, ExpectedAPIHost: cfg.HostEsperado}
+		}
+	}
 
-	cliente := &http.Client{Timeout: timeout, Transport: &transporteContado{base: transporte, contador: cfg.Contador}}
+	cliente := &http.Client{Timeout: timeout, Transport: &transporteContado{base: transporte, contador: cfg.Contador, limite: cfg.Limite}}
 	gw, err := modelgateway.NewProduction(ctx, modelgateway.ProductionConfig{
 		Route:               rota,
 		ProviderState:       captura,
@@ -278,7 +298,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	}
 
 	n := &NoDeEnsaio{
-		bateria: cfg.Bateria, porta: porta, devolucao: devolucao,
+		bateria: cfg.Bateria, porta: porta, devolucao: devolucao, qualifica: cfg.Qualificacao, limite: cfg.Limite,
 		mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
 		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},
@@ -439,6 +459,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	if n.devolucao != nil {
 		obs.Estado = novoEstadoDoRun(capturas)
 	}
+	if n.qualifica {
+		obs.Qualificacao = &MedidasDoRun{}
+	}
 	var ultimoTexto string
 	for i, c := range chamadas {
 		obs.Pedidos++
@@ -461,6 +484,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 		}
 		if obs.Estado != nil {
 			obs.Estado.contarPedido(c, haviaRaciocinio)
+		}
+		if m := obs.Qualificacao; m != nil {
+			m.contarPedido(c)
 		}
 		haviaRaciocinio = haviaRaciocinio || c.classeDoEstado == estadoComRaciocinio
 		if i == len(chamadas)-1 {
@@ -532,6 +558,9 @@ type chamadaObservada struct {
 	naoEnviados int
 	// classeDoEstado é o que a resposta trouxe de estado opaco ([classeDoEstadoDaResposta]).
 	classeDoEstado string
+	// rota é o resultado da comparação do modelo servido com o do perfil, feita pela governação
+	// da rota do gateway ([port.ServedRoute.Check]); vazio quando a resposta não foi comparada.
+	rota string
 }
 
 // portaDeEnsaio é o decorador da porta do gateway: aplica o braço às mensagens que a projecção
@@ -665,6 +694,7 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 		obs.ficha = Ficha{Classe: FichaSemResposta}
 	} else {
 		obs.ficha = fichaDaResposta(resp.Shape)
+		obs.rota = verificacaoDaRota(resp.Route.Check)
 		obs.tokensDeEntrada, obs.tokensDeSaida = resp.Usage.PromptTokens, resp.Usage.CompletionTokens
 		if len(resp.Choices) > 0 {
 			obs.texto = resp.Choices[0].Message.Content
@@ -782,11 +812,23 @@ func (p *pedidoHTTP) lerStatus() int {
 type transporteContado struct {
 	base     http.RoundTripper
 	contador *Contador
+	// limite é o tecto próprio da qualificação (AOS-518); nil fora dela.
+	limite *LimiteDaQualificacao
 }
 
 // RoundTrip implementa [http.RoundTripper].
 func (t *transporteContado) RoundTrip(req *http.Request) (*http.Response, error) {
 	doPedido, _ := req.Context().Value(chaveDaChamada).(*pedidoHTTP)
+	if t.limite != nil {
+		// O tecto da qualificação vem ANTES do contador do dia: um pedido que ele recusa não chega
+		// a ser contado no dia.
+		if err := t.limite.Reservar(); err != nil {
+			if doPedido != nil {
+				doPedido.anotar(0, true)
+			}
+			return nil, err
+		}
+	}
 	if t.contador != nil {
 		// FAIL-CLOSED: a reserva vem primeiro, e qualquer erro dela impede o envio.
 		if err := t.contador.Reservar(); err != nil {
