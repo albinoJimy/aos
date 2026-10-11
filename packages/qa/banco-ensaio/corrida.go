@@ -267,6 +267,26 @@ type CfgDaCorrida struct {
 	QualificaDevolucao bool
 	// Qualificacao configura a experiência `qualificacao` (AOS-518). Obrigatória nela, e só nela.
 	Qualificacao *CfgDaQualificacao
+
+	// fase, quando presente, é avisada do início da sonda, da corrida e do controlo (AOS-522).
+	// É só um relógio: não entra no relatório nem no digest da configuração.
+	fase func(nome string)
+}
+
+// Os nomes das fases de uma corrida de qualificação, como o relógio do `qualificar` as regista.
+const (
+	FaseDoPlano      = "plano"
+	FaseDaSonda      = "sonda"
+	FaseDaCorrida    = "corrida"
+	FaseDoControlo   = "controlo"
+	FaseDaPreparacao = "preparacao"
+)
+
+// marcarFase avisa o relógio, se houver, de que uma fase começou.
+func (cfg CfgDaCorrida) marcarFase(nome string) {
+	if cfg.fase != nil {
+		cfg.fase(nome)
+	}
 }
 
 // ErrModoRealSemTecto — o modo com modelo real não corre sem contador e tecto do dia.
@@ -324,6 +344,7 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 
 	var sonda *Sonda
 	if cfg.Sondar {
+		cfg.marcarFase(FaseDaSonda)
 		s := cfg.No.Sondar(ctx)
 		sonda = &s
 		if s.Resultado != SondaOK {
@@ -334,6 +355,7 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 	if err := cfg.registarQualificacao(); err != nil {
 		return nil, err
 	}
+	cfg.marcarFase(FaseDaCorrida)
 	obs, terminou := cicloDaCorrida(ctx, cfg, cfg.No, cfg.Plano, parar)
 	terminou = cfg.terminouDaQualificacao(terminou)
 	controlo := cfg.correrControlo(ctx, terminou, obs, parar)

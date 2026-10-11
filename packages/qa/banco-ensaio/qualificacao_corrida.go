@@ -212,6 +212,7 @@ func (cfg CfgDaCorrida) correrControlo(ctx context.Context, terminou string, obs
 		case <-time.After(cfg.Pausa):
 		}
 	}
+	cfg.marcarFase(FaseDoControlo)
 	doControlo, fim := cicloDaCorrida(ctx, cfg, q.Controlo, planoDoControlo(cfg.Bateria), parar)
 	return &corridaDeControlo{terminou: cfg.terminouDaQualificacao(fim), obs: doControlo}
 }
