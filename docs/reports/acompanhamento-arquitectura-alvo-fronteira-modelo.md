@@ -568,6 +568,11 @@ Não fechados por nenhuma fase até decisão em contrário:
 - O `/dsar/erase` não limpa o registo de desfechos em memória do nó: o `GET /runs/{id}` continua
   a servir o `final_text` de um titular apagado até ao reinício ou à poda. Visto na revisão do
   AOS-494, não reproduzido, sem ticket.
+- **Com mais de uma réplica do nó sobre JetStream, o candidato (AOS-520) não é suportado.** O
+  `Append` com CAS do backend JetStream decide contra a vista local do stream, e uma réplica que
+  leu do servidor fica presa em `ErrSeqConflict`; apanha também a quota por principal.
+  Reproduzido em parte (servidor de brincar, PR #475), por medir num cluster real. Produção, a
+  2026-10-11, corre um só nó sobre ficheiro. Ticket: AOS-524 (EPIC-01), aberto.
 
 ### Resíduos da fase A2 (fechada a 2026-10-11)
 
