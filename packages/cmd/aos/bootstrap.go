@@ -1053,6 +1053,10 @@ type Node struct {
 	// sem a pasta configurada. Vem do cliente de modelo ([perfisDoCliente]). É daqui que sai o
 	// conjunto de perfis com que um run novo fixa a versão da projecção ([fixarProjeccao]).
 	perfisDaRota *perfisAssinados
+	// canary é o que o nó sabe do modelo candidato e do seu canary (AOS-520, ADR-041): o livro
+	// durável, se há um candidato a servir, e — sem candidato a servir — os planos que o livro lhe
+	// dizia atribuídos no arranque. nil sem a pasta de perfis assinados configurada.
+	canary *canaryDoNo
 
 	// rotaDoModelo conta as comparações da rota do modelo por resultado (AOS-505), por processo,
 	// para o `/metrics`. nil com a governação da rota desligada — e a família não é publicada.
@@ -2422,6 +2426,13 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	// (7-ante-quater) O CANDIDATO E O CANARY (AOS-520, ADR-041). Sem a pasta de perfis assinados
+	// isto devolve nil sem ler nada. Com um candidato a servir, garante a abertura do canary no
+	// livro durável; sem candidato a servir, lê o livro uma vez. Fail-closed: uma falha aborta.
+	canaryDoModelo, err := comporCanaryDoNo(ctx, es, perfisDoCliente(cfg.Model), modeloDoNo, log)
+	if err != nil {
+		return nil, err
+	}
 	// (7-ante-quinquies) O TECTO POR-RUN DEIXA DE RECOMEÇAR A CADA HOSPEDAGEM (AOS-256).
 	//
 	// A árvore de orçamento vive em memória e o nó do run nascia, a cada hospedagem, com o tecto
@@ -3325,6 +3336,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		turnosPorMotivo:         motivosDeParagem,              // AOS-491: turnos por motivo de paragem, para o /metrics
 		rotaDoModelo:            rotaDoModelo,                  // AOS-505: comparações da rota do modelo, para o /metrics (nil ⇒ desligada)
 		perfisDaRota:            perfisDoCliente(cfg.Model),    // AOS-519: perfis de rota assinados carregados no arranque (nil ⇒ sem pasta)
+		canary:                  canaryDoModelo,                // AOS-520: o candidato e o livro do canary (nil ⇒ sem pasta de perfis)
 		formaDaResposta:         formaDoCliente(cfg.Model),     // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
 		respostasRecusadas:      rejeicoesDoCliente(cfg.Model), // AOS-509: respostas recusadas por causa, para o /metrics
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)

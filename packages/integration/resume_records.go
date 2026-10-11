@@ -124,6 +124,15 @@ type ResumeRecord struct {
 	// [agentruntime.RouteProfileDigestUnpinned]). `omitempty`: um run sem perfil fixado — todos os
 	// de um nó sem perfis assinados — serializa os bytes de sempre.
 	RouteProfileDigest string `json:"RouteProfileDigest,omitempty"`
+	// ModelPinnedBy é a marca de que o modelo do run ([ResumeRecord.Model]) foi FIXADO POR ESCOLHA
+	// de quem o hospedou, e por que versão da função de escolha (AOS-520, ADR-041 §2.4). Com a
+	// marca, a retoma NÃO sobrepõe o modelo do nó ao do registo: o run continua no modelo em que
+	// começou, ou não continua.
+	//
+	// `omitempty` e SEM marca de «não fixado»: um registo sem o campo — um run de antes desta
+	// versão, ou de um nó que serve um só modelo — volta com a marca vazia e é retomado como
+	// sempre (o modelo do nó sobrepõe-se), e os seus bytes são os de sempre.
+	ModelPinnedBy string `json:"ModelPinnedBy,omitempty"`
 }
 
 // PerfilDoRun devolve o [agentruntime.Goal.RouteProfileDigest] com que o run do registo é
@@ -205,6 +214,8 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		ProjectionVersion: r.ProjeccaoDoRun(),
 		// AOS-520: o perfil da rota em que o run começou, ou a marca de que não fixou nenhum.
 		RouteProfileDigest: r.PerfilDoRun(),
+		// AOS-520: a marca de modelo fixado por escolha volta tal e qual; vazia num registo sem ela.
+		ModelPinnedBy: r.ModelPinnedBy,
 	}
 }
 

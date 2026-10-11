@@ -40,7 +40,16 @@ func modelNameFromEnv() string {
 //
 // `Params` e `Seed` NÃO são tocados: nenhum cliente composto pelo nó os envia ao provider, e o
 // manifesto não pode afirmar parâmetros que não viajaram.
+//
+// UM RUN FIXADO POR ESCOLHA NÃO É TOCADO (AOS-520, ADR-041 §2.4). Um Goal com a marca
+// [agentruntime.Goal.ModelPinnedBy] traz o modelo que lhe foi fixado quando começou — do registo de
+// retoma —, e o modelo do nó NÃO se lhe sobrepõe: o nó pode ter mudado de titular, de fatia ou de
+// candidato entretanto, e o run continua no modelo em que começou, ou não continua. Sem a marca —
+// todos os runs de antes, e os de um nó sem candidato a servir — é o comportamento de sempre.
 func (n *Node) fixarModelo(goal agentruntime.Goal) agentruntime.Goal {
+	if goal.ModelPinnedBy != "" {
+		return goal
+	}
 	if n == nil || n.modelID == "" {
 		return goal
 	}
@@ -156,11 +165,21 @@ func digestDoPerfilParaORegisto(goal agentruntime.Goal) string {
 //
 // Um registo sem digest — um run de antes da fixação, ou de um nó sem perfis assinados — segue,
 // salvo o caso de [modelgateway.PinnedCauseSignedOverState].
+//
+// O ALIAS CONFERIDO É O FIXADO NO RUN (AOS-520, PR 1). Num run com a marca de modelo fixado por
+// escolha, [Node.fixarModelo] não sobrepõe o modelo do nó, e o alias é o do registo. Para esse run
+// pergunta-se primeiro se este nó SERVE o alias — o do titular, ou o de um perfil assinado
+// carregado: um alias que o despachante recusaria ([clientePorModelo]) é recusado aqui, com
+// [modelgateway.PinnedCauseModelNotServed], antes de o run ser re-hospedado. Nunca passa para o
+// titular.
 func (n *Node) conferirPerfilFixado(rec integration.ResumeRecord) error {
 	goal := n.fixarModelo(rec.GoalWith(""))
 	var assinados *perfisAssinados
 	if n != nil {
 		assinados = n.perfisDaRota
+	}
+	if goal.ModelPinnedBy != "" && !n.aliasServido(goal.Model.ModelID) {
+		return &modelgateway.PinnedRouteProfileError{Cause: modelgateway.PinnedCauseModelNotServed}
 	}
 	return assinados.perfis().CheckPinnedProfile(goal.Model.ModelID, goal.RouteProfileDigest)
 }

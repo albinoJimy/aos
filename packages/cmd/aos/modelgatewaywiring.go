@@ -363,5 +363,27 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 		opts = append(opts, modelgateway.WithRouteProfileSet(conjunto))
 	}
 	opts = append(opts, extra...)
-	return modelgateway.NewModelClient(gw, model, opts...), nil
+	titular := modelgateway.NewModelClient(gw, model, opts...)
+	// AOS-520 (ADR-041 §2.5): UM GATEWAY, UM ADAPTADOR POR ALIAS. Com um perfil assinado para um
+	// alias que NÃO é o do titular, o cliente de modelo passa a ser um despachante: o adaptador do
+	// titular e um por cada alias assinado não-titular, todos sobre ESTE gateway e com as MESMAS
+	// opções, escolhidos pelo alias que a hospedagem fixou no run. Existe mesmo com o interruptor do
+	// candidato desligado, para um run já fixado acabar enquanto o perfil estiver carregado. Sem
+	// nenhum perfil não-titular — o caso de sempre — devolve-se o adaptador do titular, sem
+	// despachante.
+	naoTitulares := assinados.naoTitulares(model)
+	if len(naoTitulares) == 0 {
+		return titular, nil
+	}
+	// O fim do canary sela-se no audit de governação DESTE gateway, na cadeia dos perfis de rota.
+	selos := allowlist.NewRecorder(govAudit)
+	assinados.selarFimDoCanary = func(ctx context.Context, f fimDoCanary) error {
+		_, serr := selos.SealCanaryClosed(ctx, time.Now().UTC(), f.alias, f.profileDigest, f.entryDigest, f.atribuidos, f.limite)
+		return serr
+	}
+	porAlias := map[string]agentruntime.ModelClient{model: titular}
+	for _, e := range naoTitulares {
+		porAlias[e.Profile.Requested] = modelgateway.NewModelClient(gw, e.Profile.Requested, opts...)
+	}
+	return &clientePorModelo{titular: model, porAlias: porAlias}, nil
 }

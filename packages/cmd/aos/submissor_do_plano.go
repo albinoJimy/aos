@@ -86,8 +86,17 @@ var errVinculoRecusado = errors.New("vinculo ao pedido de plano recusado")
 //
 // A causa de uma recusa é para o LOG DO OPERADOR; a resposta ao chamador é uniforme.
 func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdentity, runID string, v vinculoAoPedido, agora time.Time) (string, error) {
-	recusa := func(causa string) (string, error) {
-		return "", errors.Join(errVinculoRecusado, errors.New(causa))
+	principal, _, err := h.pedidoVerificado(ctx, chamador, runID, v, agora)
+	return principal, err
+}
+
+// pedidoVerificado é [apiHandler.submissorDoPedido] com o `seq`, na fila de pedidos de plano, do
+// `planrequest.submitted` do pedido verificado (AOS-520). É desse `seq` que o canary do modelo
+// candidato sabe se o plano é anterior à sua abertura. Sai da MESMA leitura e do MESMO evento de
+// onde sai o submissor: o que o nó leu do seu log, e não um campo do corpo.
+func (h *apiHandler) pedidoVerificado(ctx context.Context, chamador readerIdentity, runID string, v vinculoAoPedido, agora time.Time) (string, uint64, error) {
+	recusa := func(causa string) (string, uint64, error) {
+		return "", 0, errors.Join(errVinculoRecusado, errors.New(causa))
 	}
 	if h == nil || h.node == nil || h.node.EventStore == nil {
 		return recusa("sem Event Store onde ler a fila")
@@ -112,7 +121,7 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 	// continua a ser recusado.
 	if v.Attempt != 0 {
 		if err := formaDaTentativa(v, runID); err != nil {
-			return "", errors.Join(errVinculoRecusado, err)
+			return "", 0, errors.Join(errVinculoRecusado, err)
 		}
 	} else {
 		prefixo := v.RunID + separadorDoRunFilho
@@ -133,6 +142,7 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 
 	var (
 		pedido       planRequestPayload
+		seqDoPedido  uint64
 		submetido    bool
 		maiorGeracao int
 		reclamadoEm  = map[int]time.Time{}
@@ -148,7 +158,7 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 			if json.Unmarshal(ev.Payload, &pedido) != nil {
 				return recusa("pedido ilegivel")
 			}
-			submetido = true
+			submetido, seqDoPedido = true, ev.Seq
 		case EventTypePlanRequestClaimed:
 			ger, alvo, ok := partirChaveComGeracao(ev.StepID, prefixoReclamo)
 			if !ok || alvo != v.RunID {
@@ -216,5 +226,5 @@ func (h *apiHandler) submissorDoPedido(ctx context.Context, chamador readerIdent
 	if err := validarOrigemDeclarada(v, runID); err != nil {
 		return recusa(err.Error())
 	}
-	return pedido.Principal, nil
+	return pedido.Principal, seqDoPedido, nil
 }

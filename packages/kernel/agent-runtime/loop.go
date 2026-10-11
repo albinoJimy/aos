@@ -120,6 +120,16 @@ type Goal struct {
 	// [RouteProfileDigestUnpinned] é o valor de um run RE-HOSPEDADO que começou sem perfil fixado:
 	// diz a quem hospeda que não o fixe agora, a meio do run.
 	RouteProfileDigest string
+	// ModelPinnedBy é a MARCA de que o modelo deste run ([ModelConfig.ModelID]) foi FIXADO POR
+	// ESCOLHA de quem o hospedou (AOS-520, ADR-041 §2.4), e por que versão da função de escolha.
+	// Vazio — a omissão, e o caso de todos os runs de um nó que serve um só modelo — ⇒ o modelo
+	// do run é o que quem hospeda pedir em cada hospedagem, como sempre.
+	//
+	// Quem a preenche é quem HOSPEDA o run: num run novo que passou pela escolha, a versão da
+	// função; numa retoma, a do registo de retoma. Com a marca, quem hospeda NÃO volta a escolher
+	// nem sobrepõe o modelo: o run continua no modelo em que começou, ou não continua. O runtime
+	// não a lê nem a grava — só a transporta com o Goal.
+	ModelPinnedBy string
 	// CompletionRequires é o CONTRATO DE CONCLUSÃO do run (AOS-493, ADR-037): os nomes (o
 	// `ToolID`) das tools de que a conclusão depende. O run só conclui cumprido com pelo menos
 	// uma chamada EFECTIVA de cada uma — despachada, sem recusa e sem erro de tool. Vazio ⇒ sem

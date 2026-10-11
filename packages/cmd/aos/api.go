@@ -969,6 +969,9 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		vinculoVerificado bool
 		// AOS-502: a prova da nova tentativa, quando o pedido a declara e o nó a admitiu.
 		tentativaProvada *provaDaTentativa
+		// AOS-520: o pedido de plano de que o run é trabalho, verificado pelo nó — a chave do canary
+		// do modelo candidato. O valor-zero num run sem vínculo verificado.
+		planoDoRun origemDoPlano
 	)
 	// SEM GATE SOBERANO NÃO HÁ VÍNCULO (AOS-439). O vínculo exige um chamador autenticado — é ele
 	// que tem de ter a reclamação viva —, e um nó sem gate não autentica ninguém. Aceitar o campo
@@ -1063,7 +1066,7 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		// válida já saiu), antes da primeira escrita durável (a selagem da residência). A recusa é
 		// a MESMA 403, e a causa fica no log.
 		if req.PlanRequest != nil {
-			rb, verr := h.submissorDoPedido(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
+			rb, seqDoPedido, verr := h.pedidoVerificado(r.Context(), submitter, req.RunID, *req.PlanRequest, time.Now().UTC())
 			if verr != nil {
 				if errors.Is(verr, errFormaDaTentativa) {
 					h.tentativas.recusar(causaRetryForma)
@@ -1074,6 +1077,10 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			requestedBy, vinculoVerificado = rb, true
+			// AOS-520: o pedido de plano de que o run é trabalho, tal como o nó o acabou de PROVAR — o
+			// identificador do pedido e o `seq` do seu `planrequest.submitted`. É a chave do canary do
+			// modelo candidato. O `plan_id` declarado não entra: o nó não o prova.
+			planoDoRun = origemDoPlano{pedido: req.PlanRequest.RunID, seq: seqDoPedido}
 			// AOS-502 — A NOVA TENTATIVA PROVA-SE AQUI: com o vínculo verificado (quem chama é o
 			// drenador com a reclamação viva do pedido) e antes da primeira escrita durável. O nó lê
 			// do SEU log que a tentativa anterior não pediu tool nenhuma; do corpo não aceita nada.
@@ -1203,12 +1210,14 @@ func (h *apiHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	var sementeHospedada *sementeDaTentativa
 	var err error
 	if tentativaProvada != nil && (goal.RetryNotice != agentruntime.RetryNoticeNone || tentativaProvada.avisoAnterior != agentruntime.RetryNoticeNone) {
-		err = h.svc.SubmitObservando(r.Context(), goal, func(hospedado agentruntime.Goal) {
+		err = h.svc.submitDoPlano(r.Context(), goal, planoDoRun, func(hospedado agentruntime.Goal) {
 			s := sementeDoGoal(hospedado)
 			sementeHospedada = &s
 		})
 	} else {
-		err = h.svc.Submit(r.Context(), goal)
+		// AOS-520: a origem verificada do run num pedido de plano vai com a submissão (o valor-zero
+		// num run que não é trabalho de um pedido verificado — a chamada é a de sempre).
+		err = h.svc.submitDoPlano(r.Context(), goal, planoDoRun, nil)
 	}
 	if err != nil {
 		// COLISÃO DE run_id COM CHAMADOR AUTENTICADO (achado A2 da auditoria de 2026-08-17).
@@ -2283,6 +2292,19 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 				amostra("aos_model_route_checks_total", labels, float64(c.lido(r, s)))
 			}
 		}
+	}
+
+	// AOS-520 — O CANARY DO MODELO CANDIDATO. Só sai com um candidato A SERVIR: sem ele as duas
+	// famílias não existem, e o /metrics é o de antes. Sem rótulos. O valor é o da ÚLTIMA leitura do
+	// livro durável por esta réplica (o arranque, e cada run novo); não é o que decide.
+	if h.node != nil && h.node.canary != nil && h.node.canary.servir {
+		l := h.node.canary.livro
+		g("aos_model_canary_plans_assigned",
+			"Planos atribuidos ao modelo candidato na abertura em vigor do canary (AOS-520), da ultima leitura do livro duravel por esta replica (no arranque e em cada run novo). O canary termina aos 40 planos. O livro e partilhado entre replicas e sobrevive a um reinicio; este valor pode estar atras do livro numa replica que nao hospedou runs novos entretanto.",
+			"gauge", float64(l.atribuidosVistos.Load()), "")
+		g("aos_model_canary_closed",
+			"1 se o canary do modelo candidato terminou (o candidato serviu o limite de planos e ja nao recebe planos novos), 0 se esta aberto (AOS-520). Da ultima leitura do livro duravel por esta replica. Terminado, o candidato NAO passa a titular: e o sinal para o dono decidir. Reabrir e assinar um registo novo.",
+			"gauge", float64(l.fechadoVisto.Load()), "")
 	}
 
 	// AOS-509 — RESPOSTAS DO PROVIDER RECUSADAS, POR CAUSA. Uma amostra por causa do vocabulário
