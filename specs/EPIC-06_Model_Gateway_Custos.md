@@ -3896,6 +3896,208 @@ erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
 **Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-518 ter o formato do
 relatório e o seu digest estáveis; o AOS-522 pode andar ao lado.
 
+## AOS-520 — O nó serve um titular e um candidato, com o modelo fixado por run; o canary é uma percentagem de planos
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket ENTREGA um ADR NOVO, ainda por numerar (o número reserva-se na altura): «mais de um modelo por nó — titular e candidato, modelo fixado por run, canary por percentagem de planos». Enquanto esse ADR não existir, o bloco não implementa nenhum ADR numerado: o ADR-018, o ADR-021, o ADR-012, o ADR-036 e o ADR-040 são citados só como os contratos que o ADR novo tem de respeitar e citar. Quando o ADR novo for escrito, este marcador sai e a RTM passa a ligá-lo ao ticket. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-dois-modelos» |
+| Tipo | feat |
+| Prioridade | P1: sem segundo modelo não há fatia, e sem fatia não há para onde recuar — «um modelo mau é recusado sozinho» ficaria cumprido só antes de entrar |
+| Estimativa | XL (o maior e o mais arriscado da fase; dois PR: a escolha e a fixação do modelo, e depois as métricas por modelo) |
+| Dependências | AOS-519 (o registo de entrada assinado, com a fatia). Para trás: AOS-505 (governação da rota), AOS-513 (a projecção fixada por run), AOS-515 (estado só para a rota que o produziu), AOS-413 (cada nó do plano é um run do nó), AOS-502 e AOS-510 (as novas tentativas de um nó do plano). Decisões D4 e D6 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-521, AOS-523 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §2, §3 (passos 6 e 8), §4.4, §5 (lições 5 e 7) e §6 (D4, D6, D9), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `packages/cmd/aos/modelo_do_turno.go`, `packages/cmd/aos/modelgatewaywiring.go`, `packages/cmd/aos/api.go`, `packages/platform/model-gateway/route.go`, `packages/platform/model-gateway/state_return.go`, `packages/control-plane/orchestrator/plan/plandocument.go` |
+
+### Contexto
+
+- **Um modelo por nó.** O nó pede sempre o mesmo modelo, lido de `AOS_MODEL_NAME` numa única
+  função (`packages/cmd/aos/modelo_do_turno.go`); o adaptador do gateway constrói-se uma vez
+  (`modelgatewaywiring.go`). O `POST /runs` não tem campo de modelo, **de propósito**
+  (`api.go`).
+- **Hoje, numa retoma, o modelo do nó sobrepõe-se ao que o run gravou** (`fixarModelo`: «cobre
+  a retoma de um run gravado com outra configuração»). Com um só modelo isso é correcto. Com
+  dois, seria mudar de modelo a meio de um run — o que parte o estado opaco e torna impossível
+  atribuir uma falha.
+- **Não há guarda única «o perfil mudou entre turnos deste run»** (desenho §2,
+  `[NÃO ENCONTREI]`). A projecção fica fixada por run, e o estado de outra rota numa rota
+  `obrigatorio` não é enviado e o turno falha; com dois modelos passa a ser preciso fixar
+  também o **modelo**.
+- **Não existe canary em sítio nenhum do código**: a palavra aparece como pré-condição
+  declarada, não como máquina. Constrói-se de raiz.
+- **Um nó do plano não tem campo de modelo, tier nem classe**, e o `aos-orq` chama o modelo
+  por conta própria, fora da governação da rota. Nada disso muda aqui.
+- **O que se liga em produção mede-se com uma série antes e outra depois** (desenho §5,
+  lição 7): a fatia do candidato é a série «depois»; o titular, no mesmo período, é a «antes».
+
+### Decidido pelo dono (2026-10-11)
+
+- **D6 — o mínimo: um titular e, no máximo, um candidato.** N modelos, e a escolha por passo
+  ou pelo plano, são a fase A4.
+- **D4 — o canary.** Percentagem de **planos**: todos os nós e todas as tentativas de um
+  plano usam o mesmo modelo; um run sem plano conta como um plano de um nó; nunca por turno.
+  **Quem escolhe é uma função do identificador do plano**, não quem submete. A fatia é
+  **10%**, escrita no registo assinado; mudá-la é assinar outra vez. Dura **até 40 planos
+  servidos pelo candidato**; depois o dono decide com os números. O candidato não passa a
+  titular sozinho.
+- **D9 e D1 —** o candidato pede-se pelo segundo alias que a allowlist já autoriza; nenhum
+  nome novo.
+
+### Objectivo
+
+O nó conhece dois modelos — o titular, que é o de hoje, e no máximo um candidato vindo de um
+registo assinado — e decide uma vez, no início de cada run, qual o serve, por uma função
+determinista do identificador do plano e da fatia assinada. A decisão fica gravada e não muda.
+Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
+
+### Âmbito
+
+- **A escolha**: uma função pura `(identificador do plano, fatia) → titular ou candidato`,
+  sem relógio, sem estado e sem aleatoriedade, com vectores de teste fixos escritos no ADR.
+- **De onde vem o identificador do plano.** O ticket começa por confirmar no código como o nó
+  o conhece em cada um dos três casos — o run de um nó do plano, a nova tentativa de um nó do
+  plano, e o run sem plano — **sem mudar o `aos-orq` nem o schema do plano**. Se não for
+  derivável do que o nó já recebe, o ticket pára e reporta: não se acrescenta um campo ao
+  `POST /runs`.
+- **A fixação**: o modelo escolhido fica no manifesto de cada turno (com o digest do perfil,
+  que já lá está) e no registo de retoma do run, com uma marca de que foi fixado por escolha.
+- **O adaptador do gateway** deixa de ser um só por nó, só quando há candidato.
+- **O fim do canary**: a contagem dos planos servidos pelo candidato, durável.
+- **Métricas por modelo**: séries **novas**, com o modelo no rótulo, para turnos, desfechos
+  de run e respostas rejeitadas. As que existem não mudam de nome nem de rótulos.
+- **Um interruptor**: `AOS_MODEL_CANDIDATE=off|on`, omissão `off`.
+- **O ADR novo** e o runbook (abrir a fatia, mudar a fatia, retirar o candidato).
+
+### Critérios de Aceitação
+
+**Inerte sem candidato**
+
+- [ ] Com `AOS_MODEL_CANDIDATE` ausente ou `off` — haja ou não um registo de candidato na
+      pasta —, e com `on` e a fatia assinada a 0: o pedido ao provider, o manifesto de cada
+      turno, o registo de retoma, o banner e o `/metrics` são byte a byte os do binário da
+      base sobre as mesmas entradas. Preso por digest. As séries novas por modelo só existem
+      com um candidato a servir.
+- [ ] Um run gravado antes deste ticket, ou sem a marca de modelo fixado por escolha, é
+      retomado exactamente como hoje (o modelo do nó sobrepõe-se).
+
+**A escolha**
+
+- [ ] Determinista: a mesma entrada dá sempre a mesma escolha, em arranques diferentes e em
+      nós diferentes. Os vectores de teste do ADR estão presos por teste; mudar a função
+      avermelha-os.
+- [ ] Com a fatia a X%, numa série de pelo menos **200 identificadores de plano** distintos a
+      fracção atribuída ao candidato fica dentro do intervalo esperado para essa amostra
+      (escrito no teste, para 10% e para mais dois valores). Com 100%, todos; com 0%, nenhum.
+- [ ] **Todos os nós de um plano, e todas as tentativas de um nó, usam o mesmo modelo** —
+      incluindo a nova tentativa por falta de tool call (AOS-502) e a por resposta vazia
+      (AOS-510). Teste com um plano de três nós e duas tentativas: um só modelo em todos os
+      manifestos.
+- [ ] Quem submete não escolhe: nenhum campo do `POST /runs`, nenhum cabeçalho e nenhum campo
+      do plano altera a escolha. Um teste tenta as três vias.
+- [ ] No máximo um candidato: dois registos assinados que não sejam o do alias do titular, e
+      o nó não arranca, com causa própria.
+
+**A fixação**
+
+- [ ] O modelo de um run não muda a meio: nem de turno para turno, nem numa retoma, nem depois
+      de um reinício do nó com outra fatia ou sem candidato.
+- [ ] Um run começado com o candidato e retomado depois de o candidato sair (registo
+      retirado, interruptor a `off`, ou canary terminado) **acaba com o modelo fixado, se o
+      perfil ainda estiver carregado, ou falha com causa própria**. Nunca passa para o
+      titular em silêncio. Um teste por cada uma das três saídas.
+- [ ] **Mutação dirigida:** repor, para um run com a marca, a sobreposição do modelo do nó na
+      retoma avermelha o teste acima.
+- [ ] O manifesto de cada turno e o registo de retoma permitem reconstruir, só do log, que
+      modelo e que perfil serviram cada run, e porquê (o digest do registo de entrada e a
+      fatia em vigor na altura da escolha).
+- [ ] Fidelidade de replay de 100% num run servido pelo candidato, incluindo um run retomado
+      a meio.
+
+**O canary**
+
+- [ ] Com `on` e a fatia assinada a 10%, os planos novos repartem-se pela função; o banner
+      declara o titular, o candidato, a fatia e o digest do registo.
+- [ ] Ao **40.º plano** servido pelo candidato, o candidato deixa de receber planos novos; o
+      facto fica selado com as contagens, e há um sinal para o dono (métrica e linha de log).
+      Os runs em curso acabam com o modelo fixado. A contagem é durável: um reinício não a
+      repõe a zero. Reabrir a fatia é um registo assinado novo.
+- [ ] O candidato **nunca** passa a titular sem um acto assinado do dono; não há caminho no
+      código que o faça.
+- [ ] Sobre **JetStream**, e não só sobre ficheiro: o smoke da escolha, da fixação e da
+      contagem durável corre contra o cluster de CI.
+
+**Métricas** (segundo PR)
+
+- [ ] Turnos, desfechos de run (cumprido, não cumprido, por causa) e respostas rejeitadas têm
+      séries por modelo, com um conjunto **fechado** de valores do rótulo (os modelos
+      esperados dos perfis carregados) e um máximo de séries escrito e testado.
+- [ ] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
+      a funcionar sem alteração.
+
+**Registo**
+
+- [ ] O ADR novo está escrito, com: a função de escolha e os seus vectores; a regra de
+      fixação e a marca; o fim do canary; o que **não** é coberto (o planeador do `aos-orq`
+      chama o modelo fora da governação da rota); e a relação com os ADR citados no cabeçalho
+      deste bloco — incluindo a discrepância conhecida entre o texto do ADR da auto-modificação
+      e o código sobre a ratificação de produção (desenho §8). O marcador de menção deste
+      bloco sai nesse commit e a RTM é regenerada.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptor:** `AOS_MODEL_CANDIDATE=off|on`, omissão `off`. Com `off`, um registo de
+  candidato na pasta é conferido pelo AOS-519, aparece no banner como «candidato não
+  servido», e não recebe tráfego. A fatia assinada é o segundo travão: `on` com fatia 0 não
+  serve nada.
+- **Inerte:** os dois primeiros critérios. O caminho do titular não passa pela função de
+  escolha quando não há candidato a servir.
+
+### Testes exigidos
+
+- A inércia por digest contra o binário da base; a função de escolha (vectores, distribuição,
+  extremos); o plano de três nós com tentativas; as três saídas da retoma, com a mutação; a
+  contagem durável e o fim do canary; o replay; o smoke sobre JetStream.
+- **Controlo negativo da medição:** o teste da distribuição falha com uma função que devolve
+  sempre «titular» e com uma que devolve sempre «candidato» — não passa por intervalo largo
+  de mais.
+- Revisão adversarial independente antes de o interruptor ser ligado em produção. Alvos: um
+  run que muda de modelo; um plano com dois modelos; uma via pela qual quem submete escolhe.
+
+### Riscos
+
+- **É a peça que toca no caminho de todos os runs.** Por isso o candidato é um só, a escolha
+  é uma função pura que se testa sem rede, e a inércia prova-se contra o binário da base.
+- **Pode não haver tráfego para o canary querer dizer alguma coisa** (desenho §8): com 10%,
+  40 planos do candidato pedem cerca de 400 ao todo. Pode ser preciso uma série de validação
+  lançada de propósito; é o AOS-523 que o mede.
+- **O estado opaco e a mudança de modelo.** Mitigado pela fixação e pela guarda que já existe
+  (estado de outra rota não é enviado); e a entrada automática está limitada a perfis que não
+  devolvem estado (D8).
+- **Cardinalidade das métricas**, se o conjunto de rótulos deixasse de ser fechado.
+
+### O que precisa do dono
+
+- Assinar o registo de entrada com a fatia (10%), e voltar a assinar para a mudar ou reabrir.
+- Pôr `AOS_MODEL_CANDIDATE=on` no `.env` do servidor e aprovar o deploy, depois da revisão.
+- Decidir, ao fim dos 40 planos, se o candidato passa a titular, continua ou sai.
+
+### Fora de âmbito
+
+- Mais de dois modelos; a escolha por passo ou declarada pelo plano; tiers, scoring e custo
+  na escolha (fase A4).
+- O disjuntor: é o AOS-521. Este ticket só fecha a fatia pelo fim do canary.
+- A passagem automática de candidato a titular.
+- Um campo de modelo no `POST /runs` ou no schema do plano; qualquer mudança no `aos-orq`.
+- A governação da rota do planeador.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-519.
+
 ---
 
 ## Controlo de versões
@@ -3931,3 +4133,4 @@ relatório e o seu digest estáveis; o AOS-522 pode andar ao lado.
 | 3.6 | 2026-10-11 | AOS-516 fechado com a fase A2, por decisão do dono: a corrida com o modelo real fez-se pela OpenRouter a 2026-10-10 (21 de 21 runs com o raciocínio devolvido; o controlo negativo mostrou que a OpenRouter não o exige); o passo de produção não se fez; resíduos nomeados | Equipa AOS |
 | 3.7 | 2026-10-11 | +AOS-517 (fase A3, entrada automática): o proxy de produção fixa-se pelo digest em que o banco mede, com a igualdade presa por teste, e `drop_params: false` aplica-se no servidor, por decisão do dono (D8) | Equipa AOS |
 | 3.8 | 2026-10-11 | +AOS-519 (fase A3): o nó carrega perfis de rota de uma pasta, por um registo de entrada assinado pelo dono que cita o veredicto do arnês (`AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`); falha fechado no arranque com causa própria por caso; inerte sem a pasta; emenda à secção do perfil da rota no ADR do tail como entregável (D1, D8) | Equipa AOS |
+| 3.9 | 2026-10-11 | +AOS-520 (fase A3): o nó serve um titular e no máximo um candidato, escolhido uma vez por run por uma função determinista do identificador do plano e da fatia assinada (10% dos planos, até 40 planos), com o modelo fixado por run e séries novas por modelo (`AOS_MODEL_CANDIDATE=off\|on`, omissão `off`); ADR novo como entregável, por numerar (D4, D6) | Equipa AOS |
