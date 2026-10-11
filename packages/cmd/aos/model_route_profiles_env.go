@@ -58,6 +58,12 @@ import (
 // ([routeentry.Causes]), com o rótulo do registo.
 var ErrBadModelRouteProfiles = errors.New("aos: perfis de rota assinados recusados — AOS_MODEL_ROUTE_PROFILES_DIR exige AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR (base64 da chave publica ed25519 de quem assina os perfis, dada por fora e so para perfis) e TODOS os registos da pasta conferidos: assinatura, registo, ambiente, imagem do proxy, relatorio de qualificacao citado e allowlist. Nenhum perfil e carregado em parte; a causa e o registo vem a seguir")
 
+// ErrModelRouteProfilesWithoutDurableAudit — AOS_MODE=production, há perfis de rota assinados
+// carregados, e o audit de governação do gateway não é durável (AOS_MODEL_AUDIT_PATH por definir).
+// Fail-closed: o selo «perfil carregado» é a prova de que perfil serviu que nome e desde quando, e
+// num audit em memória desaparecia no reinício seguinte.
+var ErrModelRouteProfilesWithoutDurableAudit = errors.New("aos: perfis de rota assinados em AOS_MODE=production exigem o audit de governacao do gateway DURAVEL — defina AOS_MODEL_AUDIT_PATH; sem ele o selo de cada perfil carregado ficava em memoria e perdia-se no reinicio (fail-closed)")
+
 // maxSeriesDaRotaDoModelo é o MÁXIMO de séries de `aos_model_route_checks_total`: os três
 // resultados vezes o maior conjunto possível de valores do modelo servido — os modelos esperados
 // das quatro entradas da tabela em código, mais um por registo assinado (no máximo

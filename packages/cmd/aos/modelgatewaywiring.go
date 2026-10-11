@@ -225,6 +225,11 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 			return nil, fmt.Errorf("%w: API key vazia em %q", ErrBadModelConfig, apiKeyPath)
 		}
 	}
+	// AOS-519: em produção, um perfil assinado só entra com o audit de governação DURÁVEL — é
+	// nele que fica o selo do carregamento. Verificado antes de qualquer efeito.
+	if production && len(assinados.candidatos()) > 0 && gwAudit == nil {
+		return nil, ErrModelRouteProfilesWithoutDurableAudit
+	}
 	// AUDIT DE GOVERNAÇÃO (AOS-265). Durável quando AOS_MODEL_AUDIT_PATH resolveu um WORM
 	// ([parseModelAuditFromEnv]); caso contrário, o MemStore de referência (volátil). O
 	// gateway SELA aqui a activação da allowlist e cada decisão de soberania — durabilizá-lo

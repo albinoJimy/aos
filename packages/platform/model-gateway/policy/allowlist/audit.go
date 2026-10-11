@@ -3,6 +3,7 @@ package allowlist
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -254,13 +255,17 @@ const routeProfilesPartition = "modelgw-gov:route-profiles"
 
 // ErrRouteProfileSeal — o selo do carregamento de um perfil de rota não tem o que identifica o
 // perfil: o nome pedido ou um dos três digests. Fail-closed: não se sela um carregamento anónimo.
-var ErrRouteProfileSeal = errors.New("allowlist: selo de perfil de rota sem nome pedido ou sem um dos tres digests (fail-closed)")
+var ErrRouteProfileSeal = errors.New("allowlist: selo de perfil de rota recusado — sem nome pedido, sem um dos tres digests, ou sem audit onde selar (fail-closed)")
 
 // SealRouteProfileLoaded sela no audit WORM o CARREGAMENTO de um perfil de rota que veio de um
 // registo de entrada assinado (AOS-519): o nome pedido, o modelo esperado, e os três digests — o
 // do perfil, o do registo (o que a assinatura do dono cobre) e o do relatório de qualificação que
 // o registo cita. É o que deixa reconstruir do log que perfil serviu que nome, e desde quando.
-// Chamado uma vez por perfil em cada composição do gateway. Sem store é no-op.
+// Chamado uma vez por perfil em cada composição do gateway, DEPOIS de ele estar composto.
+//
+// SEM STORE NÃO É NO-OP, ao contrário dos outros selos deste recorder: devolve
+// [ErrRouteProfileSeal]. Um perfil que mudou o que um nome significa e não deixou prova é
+// exactamente o que este selo existe para impedir.
 //
 // Só identificadores e digests: nenhum conteúdo do registo nem do relatório.
 func (r *Recorder) SealRouteProfileLoaded(ctx context.Context, at time.Time, requested, expectedModel, profileDigest, entryDigest, reportDigest string) (audit.AuditRecord, error) {
@@ -268,7 +273,7 @@ func (r *Recorder) SealRouteProfileLoaded(ctx context.Context, at time.Time, req
 		return audit.AuditRecord{}, ErrRouteProfileSeal
 	}
 	if r.store == nil {
-		return audit.AuditRecord{}, nil
+		return audit.AuditRecord{}, fmt.Errorf("%w: nao ha audit onde selar", ErrRouteProfileSeal)
 	}
 	ar := audit.AuditRecord{
 		Partition:     routeProfilesPartition,

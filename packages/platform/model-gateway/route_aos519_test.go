@@ -164,3 +164,26 @@ func TestAOS519_RegistoQueNaoCorrespondeNaoCompoe(t *testing.T) {
 		t.Fatalf("um registo cujo digest e o do perfil em vigor compoe: %v", err)
 	}
 }
+
+// O SELO É O ÚLTIMO PASSO (revisão adversarial). Uma composição que aborta DEPOIS de a allowlist
+// estar activada — aqui, um endpoint em http no caminho endurecido — não deixa «perfil carregado»
+// no audit: o selo afirma que um gateway foi composto com o perfil, e não foi. A activação da
+// allowlist ficou selada, o que prova que o aborto foi depois do sítio onde o selo estava antes.
+func TestAOS519_UmaComposicaoQueAbortaNaoDeixaSelo(t *testing.T) {
+	ctx := context.Background()
+	perfil := aos513Perfil(t, aos519PerfilNovo)
+	store := audit.NewMemStore()
+	cfg := aos519Config(t, store)
+	cfg.RouteProfiles = []modelgateway.RouteProfile{perfil}
+	cfg.RouteProfileEntries = []modelgateway.RouteProfileEntry{aos519Registo(perfil)}
+	cfg.HTTPClient = nil // o caminho endurecido: um BaseURL em http e recusado ao compor o adaptador
+	if _, err := modelgateway.NewProduction(ctx, cfg); !errors.Is(err, modelgateway.ErrInsecureBaseURL) {
+		t.Fatalf("a composicao tinha de abortar no egress endurecido; veio %v", err)
+	}
+	if head, _ := store.Head(ctx, "modelgw-gov:allowlist-changelog"); head == 0 {
+		t.Fatal("a allowlist nao chegou a ser activada: o aborto foi antes do ponto que o teste quer medir")
+	}
+	if head, _ := store.Head(ctx, aos519Particao); head != 0 {
+		t.Fatalf("ficaram %d selos `perfil carregado` de um gateway que nao chegou a existir", head)
+	}
+}

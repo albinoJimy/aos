@@ -208,8 +208,9 @@ type ProductionConfig struct {
 	// (AOS-519). Cada um tem de corresponder a um perfil candidato com o mesmo nome pedido e o
 	// mesmo digest, e fica SELADO no audit de governação do gateway — «perfil carregado», com o
 	// digest do perfil, o do registo e o do relatório de qualificação — uma vez por composição do
-	// gateway, que no nó é uma vez por arranque. Um registo sem perfil que lhe corresponda, ou um
-	// selo que não se escreve ⇒ sem gateway. Vazio — a omissão — ⇒ nada é selado. O gateway NÃO
+	// gateway, que no nó é uma vez por arranque. O selo é o último passo da composição: afirma que
+	// um gateway foi composto com o perfil, e uma composição que aborte antes não o deixa. Um
+	// registo sem perfil que lhe corresponda, ou um selo que não se escreve ⇒ sem gateway. Vazio — a omissão — ⇒ nada é selado. O gateway NÃO
 	// confere assinaturas nem relatórios: quem lhos entrega já os conferiu (policy/routeentry).
 	RouteProfileEntries []RouteProfileEntry
 	// RouteParamsObserver conta os 4xx do provider nos turnos em que o perfil da rota enviou
@@ -278,6 +279,11 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	if perr != nil {
 		return nil, perr
 	}
+	// AOS-519: os registos de entrada conferem-se contra o conjunto AQUI, antes de qualquer efeito;
+	// o selo de cada um só se escreve no fim, com o gateway já composto.
+	if err := checkRouteProfileEntries(perfis, cfg.RouteProfileEntries); err != nil {
+		return nil, err
+	}
 	clock := cfg.Clock
 	if clock == nil {
 		clock = time.Now
@@ -304,11 +310,6 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	}
 	if err != nil {
 		return nil, fmt.Errorf("modelgateway: allowlist nao activada (fail-closed): %w", err)
-	}
-	// AOS-519: cada perfil vindo de um registo de entrada assinado fica selado no mesmo audit, a
-	// seguir à activação da allowlist. Fail-closed: sem o selo não há gateway.
-	if err := sealRouteProfileEntries(ctx, govRec, at, perfis, cfg.RouteProfileEntries); err != nil {
-		return nil, err
 	}
 
 	// (3) Router de failover: fronteira de soberania derivada da MESMA policy; inventário
@@ -384,6 +385,13 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Gateway, error) 
 	gw.perfis, gw.paramsObs = perfis, cfg.RouteParamsObserver
 	// AOS-515: quem conta as devoluções do estado opaco.
 	gw.estadoObs = cfg.StateReturnObserver
+	// AOS-519: o selo «perfil carregado» é o ÚLTIMO passo, com o gateway composto — nada abaixo
+	// desta linha pode falhar a composição. Um arranque que aborte ANTES de chegar aqui (allowlist,
+	// routing, egress, adaptador) não deixa selo nenhum. O que o selo afirma é o que é verdade
+	// neste ponto: um gateway foi composto com este perfil. Fail-closed: sem o selo, sem gateway.
+	if err := sealRouteProfileEntries(ctx, govRec, at, perfis, cfg.RouteProfileEntries); err != nil {
+		return nil, err
+	}
 	return gw, nil
 }
 

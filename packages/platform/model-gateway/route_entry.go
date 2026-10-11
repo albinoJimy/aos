@@ -34,10 +34,9 @@ type routeProfileSealer interface {
 	SealRouteProfileLoaded(ctx context.Context, at time.Time, requested, expectedModel, profileDigest, entryDigest, reportDigest string) (audit.AuditRecord, error)
 }
 
-// sealRouteProfileEntries confere que cada registo corresponde a um perfil do conjunto com o mesmo
-// nome pedido e o mesmo digest, e sela-o. Sem registos é no-op: um gateway sem perfis assinados
-// não escreve nada a mais no audit.
-func sealRouteProfileEntries(ctx context.Context, sealer routeProfileSealer, at time.Time, perfis *RouteProfileSet, entries []RouteProfileEntry) error {
+// checkRouteProfileEntries confere que cada registo corresponde a um perfil do conjunto com o mesmo
+// nome pedido e o mesmo digest, e que não há dois para o mesmo nome. Não escreve nada.
+func checkRouteProfileEntries(perfis *RouteProfileSet, entries []RouteProfileEntry) error {
 	vistos := map[string]bool{}
 	for _, e := range entries {
 		perfil, tem := perfis.For(e.Requested)
@@ -49,7 +48,13 @@ func sealRouteProfileEntries(ctx context.Context, sealer routeProfileSealer, at 
 		}
 		vistos[e.Requested] = true
 	}
-	// Só depois de TODOS conferidos é que se escreve: uma lista má não deixa selos a meio.
+	return nil
+}
+
+// sealRouteProfileEntries sela cada registo já conferido ([checkRouteProfileEntries]). Chama-se
+// com o gateway COMPOSTO: o que fica selado é que um gateway foi composto com o perfil. Sem
+// registos é no-op: um gateway sem perfis assinados não escreve nada a mais no audit.
+func sealRouteProfileEntries(ctx context.Context, sealer routeProfileSealer, at time.Time, perfis *RouteProfileSet, entries []RouteProfileEntry) error {
 	for _, e := range entries {
 		perfil, _ := perfis.For(e.Requested)
 		if _, err := sealer.SealRouteProfileLoaded(ctx, at, e.Requested, perfil.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest); err != nil {

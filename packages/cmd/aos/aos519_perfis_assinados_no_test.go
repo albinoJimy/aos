@@ -615,3 +615,42 @@ func TestAOS519_No_AAncoraDaAllowlistExternaNaoServeDeAncoraDosPerfis(t *testing
 		t.Fatalf("com uma ancora propria dos perfis o no tinha de compor: %v", err)
 	}
 }
+
+// EM PRODUÇÃO, UM PERFIL ASSINADO SÓ ENTRA COM O AUDIT DURÁVEL (revisão adversarial). Sem
+// AOS_MODEL_AUDIT_PATH o audit de governação do gateway é em memória, e o selo «perfil carregado»
+// perdia-se no reinício: o nó recusa arrancar. Fora de produção, e em produção sem perfis
+// assinados, nada muda.
+func TestAOS519_No_EmProducaoOSeloExigeAuditDuravel(t *testing.T) {
+	aos519AmbienteDoGateway(t)
+	aos519Pasta(t, rt.ProfileJSON)
+	assinados, err := loadSignedRouteProfilesFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	compor := func(producao bool, store audit.Store, p *perfisAssinados) error {
+		_, err := newGatewayModelClientComPerfis(&lateBoundModelVerifier{}, "https://modelo.exemplo.test", aos486Modelo, "", rt.Region, rt.Board, nil, nil, store, nil,
+			producao, []string{"modelo.exemplo.test"}, 0, modelgateway.RouteGovernance{}, "", "", p)
+		return err
+	}
+	if err := compor(true, nil, assinados); !errors.Is(err, ErrModelRouteProfilesWithoutDurableAudit) {
+		t.Fatalf("producao com perfis assinados e sem audit duravel tinha de abortar; veio %v", err)
+	}
+	// Controlos: com um audit dado compõe e sela; sem perfis assinados não se exige nada; fora de
+	// produção o audit em memória serve.
+	store := audit.NewMemStore()
+	if err := compor(true, store, assinados); err != nil {
+		t.Fatalf("producao com audit: %v", err)
+	}
+	if head, _ := store.Head(context.Background(), "modelgw-gov:route-profiles"); head != 1 {
+		t.Fatalf("selos em producao = %d", head)
+	}
+	if err := compor(true, nil, nil); err != nil {
+		t.Fatalf("producao sem perfis assinados nao exige o audit duravel: %v", err)
+	}
+	if err := compor(true, nil, &perfisAssinados{}); err != nil {
+		t.Fatalf("producao com a pasta vazia nao exige o audit duravel: %v", err)
+	}
+	if err := compor(false, nil, assinados); err != nil {
+		t.Fatalf("fora de producao o audit em memoria serve: %v", err)
+	}
+}
