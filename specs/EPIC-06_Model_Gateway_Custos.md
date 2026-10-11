@@ -3420,9 +3420,11 @@ ensaio e, se o dono o decidir e a região o permitir, em produção.
 
 ### Estado
 
-**EM CURSO (2026-10-08): o banco de ensaio já mede a devolução, sem modelo real; a corrida com
-o Claude está por fazer.** O passo 2 espera pelo nome do modelo e pela autorização do dono; o
-passo 3 espera pela decisão da região.
+**FECHADO COM A FASE A2 (2026-10-11, por decisão do dono), com resíduos nomeados; o passo 3
+(produção) não se fez.** O passo 2 correu a 2026-10-10 pela OpenRouter, e não pela API directa
+da Anthropic: o Claude completou 21 de 21 runs do banco com o raciocínio devolvido. A fase fica
+provada em ensaio, não em produção. Os resíduos estão no fim desta secção e na §7 do
+acompanhamento.
 
 - **Feito — o banco (`packages/qa/banco-ensaio`).** Com um perfil candidato cujo `devolver` não
   seja `nunca`, o nó de ensaio compõe a captura do estado, a governação da rota em `observe`, o
@@ -3524,14 +3526,41 @@ passo 3 espera pela decisão da região.
   tool call do runtime.
 - **Tentativas pela Anthropic (2026-10-10).** Duas corridas, as duas paradas na sonda com 400:
   `saldo_insuficiente` (a conta não tem créditos). 2 pedidos gastos do tecto.
-- **Por fazer.** O passo 2 inteiro: a corrida com o Claude (comando no
-  `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`), que é quem diz se o fornecedor aceita o bloco de
-  texto acrescentado pelo proxy e o que responde a blocos em falta. O controlo negativo com um
-  byte da assinatura alterado contra o modelo real não tem opção no banco. A fidelidade de
-  replay (P6) não se mede no banco: o nó de ensaio não tem captura selada nem retoma. A
-  configuração do proxy do ensaio é gerada pelo banco, não é um ficheiro versionado. A regra do
-  id de tool call só foi medida com o id do runtime atrás do proxy. A matriz de suporte e a §5 com o modelo real; o
-  passo 3.
+- **A corrida com o modelo real (2026-10-10, 23:35 a 23:41 UTC; passo 2, pela OpenRouter).**
+  Modelo `anthropic/claude-sonnet-4.5`, rota `openrouter/…`; perfil com
+  `reasoning: {effort: medium}`, `devolver: obrigatorio`, `devolver_em: topo`, projecção 1.3.0;
+  binário do commit 669b3f7e, igual em código ao squash 725df5e8. *Corrida 1* (uma passagem):
+  13 pedidos (12 e a sonda), todos com 200; 7 de 7 runs cumpridos à primeira; 0 de 5 nós com
+  tools sem tool call; segundo turno com tools aceite em 5 de 5; 7 turnos com estado capturado,
+  os 7 com raciocínio ou assinatura, 0 só com ids; 5 de 5 pedidos com estado aceites (2xx); 0
+  recusas; veredicto `cumprida`. *Corrida 2* (duas passagens): 25 pedidos, todos com 200; 14 de
+  14 runs cumpridos à primeira; 0 de 10 sem tool call; segundo turno aceite em 10 de 10; 14
+  turnos com raciocínio capturado; 10 de 10 pedidos com estado aceites; veredicto `cumprida`;
+  «factos ausentes da saída» em 2 de 14 (um em T2, um em T4), não lidos. *Total com devolução:*
+  21 de 21 runs, 15 de 15 nós com tools, 15 de 15 pedidos com estado aceites.
+- **Controlo negativo com o modelo real (2026-10-10).** O mesmo modelo e os mesmos parâmetros,
+  com `devolver: nunca` e a projecção 1.2.0: 13 pedidos, todos com 200; 7 de 7 runs cumpridos;
+  segundo turno aceite em 5 de 5; a mesma distribuição de formas da resposta. **A OpenRouter não
+  exige o raciocínio de volta.** O veredicto `cumprida` das duas corridas prova que devolver não
+  parte nada; não prova que seja necessário, nem que seja lido.
+- **Gasto e tecto.** 51 pedidos nas três corridas, cerca de 0,64 USD (estimativa). Uma corrida
+  de 8 passagens foi recusada pelo banco antes de enviar: 673 pedidos no pior caso, contra o
+  tecto de 200.
+- **Critérios de aceitação, o que ficou.** Pelo menos 40 nós com tools a chegar ao segundo
+  turno: ficaram 15. Devolução obrigatória exercitada: sim, em ensaio; exigida pelo fornecedor:
+  só com provider falso. Passo de produção: não feito.
+- **Resíduos, nomeados no fecho.** (a) A devolução obrigatória só está provada com provider
+  falso: a API directa da Anthropic não foi corrida, e o bloco de texto que o proxy insere na
+  rota `anthropic/` com `content` vazio fica por testar com o fornecedor real. (b) 15 nós com
+  tools, não 40. (c) Nenhuma rota de produção declara `params`, `devolver` nem `devolver_em`, e
+  `AOS_MODEL_PROVIDER_STATE=capture` continua por ligar (falta o smoke sobre JetStream com o
+  estado no tecto, ADR-040 §2.10). (d) O Claude não tem região UE por esta via: só em ensaio.
+  (e) Um run retomado com devolução no nó composto e a fidelidade de replay (P6) com modelo
+  real estão por medir; o banco não tem captura selada nem retoma. (f) O controlo negativo com
+  um byte da assinatura alterado contra o modelo real não tem opção no banco. (g) A
+  configuração do proxy do ensaio é gerada pelo banco, não é um ficheiro versionado, e a
+  imagem do proxy de produção é a tag `main-stable`, não o digest em que o banco mede. O que
+  destes passa à fase A3 está em `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md`.
 
 ---
 
@@ -3565,3 +3594,4 @@ passo 3 espera pela decisão da região.
 | 3.2 | 2026-10-08 | +AOS-516 (fase A2): qualificação da segunda família — o Claude pelo mesmo proxy, primeiro no banco de ensaio, produção só por decisão do dono; registado que a API directa da Anthropic não documenta forma de fixar a inferência na UE (`inference_geo` só `global` ou `us`), o que bloqueia a rota de produção no board `eu-west` | Equipa AOS |
 | 3.4 | 2026-10-08 | AOS-516 em curso: o banco de ensaio liga a captura, a governação da rota e o layout 1.5.0 quando o perfil candidato devolve estado, e conta as devoluções; medido no modo falso e atrás da imagem fixada do proxy pela rota `anthropic/…` (o proxy acrescenta um bloco de texto antes da tool call quando o `content` é vazio); a corrida com o Claude está por fazer | Equipa AOS |
 | 3.5 | 2026-10-10 | AOS-516: D4 alterada (o Claude qualifica-se pela OpenRouter, só em ensaio); o banco ganha o fornecedor `openrouter`; o perfil da rota passa a declarar `devolver_em` (`origem` ou `topo`) e `params.reasoning` (contrato da porta `1.10.0`; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8), inertes por omissão; medido atrás do proxy fixado, com provider falso: com `devolver_em: topo` a devolução pela rota `openrouter/…` cumpre-se, e sem ele não; a corrida com o modelo real está por fazer | Equipa AOS |
+| 3.6 | 2026-10-11 | AOS-516 fechado com a fase A2, por decisão do dono: a corrida com o modelo real fez-se pela OpenRouter a 2026-10-10 (21 de 21 runs com o raciocínio devolvido; o controlo negativo mostrou que a OpenRouter não o exige); o passo de produção não se fez; resíduos nomeados | Equipa AOS |
