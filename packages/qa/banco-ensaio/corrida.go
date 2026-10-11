@@ -25,6 +25,9 @@ const (
 	// ExperienciaSeparadores — a experiência dos separadores: os quatro braços sobre o caso T1,
 	// intercalados, um só turno por amostra.
 	ExperienciaSeparadores Experiencia = "separadores"
+	// ExperienciaQualificacao — a qualificação de uma rota (AOS-518): a bateria oito vezes, no
+	// braço A, com um perfil candidato, e um veredicto calculado. Ver qualificacao.go.
+	ExperienciaQualificacao Experiencia = "qualificacao"
 )
 
 // AmostrasDosSeparadores é o tamanho de amostra por braço da experiência dos separadores:
@@ -73,12 +76,23 @@ func PlanoDosSeparadores(semente uint64) Plano {
 	}
 }
 
+// PlanoDaQualificacao devolve o plano de uma qualificação: a bateria inteira, no braço A,
+// [PassagensDaQualificacao] vezes. Não tem parâmetros de propósito — a amostra é a da decisão D2.
+func PlanoDaQualificacao(b *Bateria, semente uint64) Plano {
+	p := PlanoDaBateria(b, BracoA, PassagensDaQualificacao)
+	p.Experiencia, p.Semente = ExperienciaQualificacao, semente
+	return p
+}
+
 // ErrPlano — o plano não é utilizável.
 var ErrPlano = errors.New("banco-ensaio: plano de corrida invalido")
 
 func (p Plano) validar(b *Bateria) error {
-	if p.Experiencia != ExperienciaBateria && p.Experiencia != ExperienciaSeparadores {
+	if p.Experiencia != ExperienciaBateria && p.Experiencia != ExperienciaSeparadores && p.Experiencia != ExperienciaQualificacao {
 		return fmt.Errorf("%w: experiencia desconhecida", ErrPlano)
+	}
+	if p.Experiencia == ExperienciaQualificacao && (p.Amostras != PassagensDaQualificacao || len(p.Bracos) != 1 || p.Bracos[0] != BracoA || p.Tentativas != 3 || len(p.Casos) != len(b.Casos)) {
+		return fmt.Errorf("%w: a qualificacao corre a bateria inteira, %d vezes, no braco A, com 3 tentativas", ErrPlano, PassagensDaQualificacao)
 	}
 	if p.Amostras <= 0 || p.Amostras > 10000 || p.Tentativas <= 0 || p.Tentativas > 3 || p.MaxTurnos <= 0 || p.MaxTurnos > 16 {
 		return fmt.Errorf("%w: amostras (1 a 10000), tentativas (1 a 3) e turnos (1 a 16) fora dos limites", ErrPlano)
@@ -251,6 +265,8 @@ type CfgDaCorrida struct {
 	// devolva estado (o controlo negativo contra o provider falso do estado): aí o veredicto é
 	// `nao_cumprida`. Com um perfil que devolve estado o veredicto sai sempre.
 	QualificaDevolucao bool
+	// Qualificacao configura a experiência `qualificacao` (AOS-518). Obrigatória nela, e só nela.
+	Qualificacao *CfgDaQualificacao
 }
 
 // ErrModoRealSemTecto — o modo com modelo real não corre sem contador e tecto do dia.
@@ -268,6 +284,11 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := cfg.validarQualificacao(); err != nil {
+		return nil, err
+	}
+	// O pior caso de uma qualificação inclui a corrida de controlo, quando o perfil a pede.
+	previstos += cfg.pedidosDoControlo()
 	switch cfg.Modo {
 	case ModoFalso, ModoProxy:
 	case ModoReal:
@@ -287,6 +308,11 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 			aEnviar++
 		}
 		if err := cfg.Contador.Cabe(aEnviar); err != nil {
+			if cfg.Qualificacao != nil && errors.Is(err, ErrNaoCabe) {
+				// Uma qualificação que não cabe no tecto não é só recusada: fica escrita, com o
+				// veredicto `inconclusivo`. Nenhum pedido saiu.
+				return RelatorioDaQualificacaoQueNaoCoube(cfg)
+			}
 			return nil, err
 		}
 	}
@@ -294,20 +320,44 @@ func Correr(ctx context.Context, cfg CfgDaCorrida) (*Relatorio, error) {
 	if relogio == nil {
 		relogio = time.Now
 	}
+	parar := cfg.paragemDaQualificacao()
 
-	var obs []Observacao
-	terminou := TerminouCompleta
 	var sonda *Sonda
 	if cfg.Sondar {
 		s := cfg.No.Sondar(ctx)
 		sonda = &s
 		if s.Resultado != SondaOK {
 			// A rota não responde: nenhum caso corre. Gastou-se, no máximo, um pedido.
-			return construirRelatorio(cfg, relogio().UTC(), previstos, terminouDaSonda(s), sonda, nil)
+			return construirRelatorio(cfg, relogio().UTC(), previstos, cfg.terminouDaQualificacao(terminouDaSonda(s)), sonda, nil, nil)
 		}
 	}
+	if err := cfg.registarQualificacao(); err != nil {
+		return nil, err
+	}
+	obs, terminou := cicloDaCorrida(ctx, cfg, cfg.No, cfg.Plano, parar)
+	terminou = cfg.terminouDaQualificacao(terminou)
+	controlo := cfg.correrControlo(ctx, terminou, obs, parar)
+	r, err := construirRelatorio(cfg, relogio().UTC(), previstos, terminou, sonda, obs, controlo)
+	if err != nil || cfg.FormaNoFornecedor == nil {
+		return r, err
+	}
+	// A forma lê-se DEPOIS do último pedido. Se não se conseguir ler, o relatório sai sem ela e
+	// di-lo: a corrida não se perde por isso.
+	if forma, ferr := cfg.FormaNoFornecedor(); ferr == nil {
+		r.FormaNoFornecedor = forma
+	} else {
+		r.Limites = append(r.Limites, "A forma do que chegou ao provider falso nao se conseguiu ler no fim da corrida: o relatorio nao a tem.")
+	}
+	return r, nil
+}
+
+// cicloDaCorrida corre os passos de um plano num nó de ensaio e devolve as observações e o estado
+// final. `parar`, se presente, é perguntado depois de cada run: uma causa não vazia pára a corrida.
+func cicloDaCorrida(ctx context.Context, cfg CfgDaCorrida, noDeEnsaio *NoDeEnsaio, plano Plano, parar func() string) ([]Observacao, string) {
+	var obs []Observacao
+	terminou := TerminouCompleta
 	vigia := novoVigiaDeErros()
-	passos := cfg.Plano.sequencia(cfg.Bateria)
+	passos := plano.sequencia(cfg.Bateria)
 ciclo:
 	for i, ps := range passos {
 		if i > 0 && cfg.Pausa > 0 {
@@ -322,7 +372,7 @@ ciclo:
 		}
 		saidas := map[string]string{}
 		for _, no := range ps.caso.Nos {
-			pedido := PedidoDeRun{Caso: ps.caso, No: no, Braco: ps.braco, Amostra: ps.amostra, MaxTurnos: cfg.Plano.MaxTurnos}
+			pedido := PedidoDeRun{Caso: ps.caso, No: no, Braco: ps.braco, Amostra: ps.amostra, MaxTurnos: plano.MaxTurnos}
 			switch {
 			case no.EntradaDe != "":
 				anterior, ok := saidas[no.EntradaDe]
@@ -335,9 +385,9 @@ ciclo:
 				doc, _ := cfg.Bateria.Documento(no.EntradaDoc)
 				pedido.Entrada, pedido.OrigemEntrada = doc, "bateria"
 			}
-			for tentativa := 1; tentativa <= cfg.Plano.Tentativas; tentativa++ {
+			for tentativa := 1; tentativa <= plano.Tentativas; tentativa++ {
 				pedido.Tentativa = tentativa
-				o, saida := cfg.No.Correr(ctx, pedido)
+				o, saida := noDeEnsaio.Correr(ctx, pedido)
 				obs = append(obs, o)
 				semDuzentos := 0
 				for _, status := range o.HTTP {
@@ -353,6 +403,12 @@ ciclo:
 				if causa := vigia.causa(cfg); causa != "" {
 					terminou = causa
 					break ciclo
+				}
+				if parar != nil {
+					if causa := parar(); causa != "" {
+						terminou = causa
+						break ciclo
+					}
 				}
 				switch o.Desfecho {
 				case DesfechoTectoAtingido:
@@ -376,18 +432,7 @@ ciclo:
 			fmt.Fprintf(cfg.Progresso, "banco-ensaio: %d de %d passos\n", i+1, len(passos))
 		}
 	}
-	r, err := construirRelatorio(cfg, relogio().UTC(), previstos, terminou, sonda, obs)
-	if err != nil || cfg.FormaNoFornecedor == nil {
-		return r, err
-	}
-	// A forma lê-se DEPOIS do último pedido. Se não se conseguir ler, o relatório sai sem ela e
-	// di-lo: a corrida não se perde por isso.
-	if forma, ferr := cfg.FormaNoFornecedor(); ferr == nil {
-		r.FormaNoFornecedor = forma
-	} else {
-		r.Limites = append(r.Limites, "A forma do que chegou ao provider falso nao se conseguiu ler no fim da corrida: o relatorio nao a tem.")
-	}
-	return r, nil
+	return obs, terminou
 }
 
 // digestDaConfiguracao é o digest de tudo o que, além da bateria e da rota, decide o que a

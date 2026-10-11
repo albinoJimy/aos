@@ -263,12 +263,19 @@ type vigiaDeErros struct {
 	// seguidos429 é o comprimento da série de 429 em curso; tipoDoUltimo429, o tipo do último.
 	seguidos429     int
 	tipoDoUltimo429 string
+	// so4xxDeParametro: todos os pedidos vistos tiveram 4xx de parâmetro ([quatroXXDeParametro]).
+	so4xxDeParametro bool
 }
 
-func novoVigiaDeErros() *vigiaDeErros { return &vigiaDeErros{soRecusasDeChave: true, so429: true} }
+func novoVigiaDeErros() *vigiaDeErros {
+	return &vigiaDeErros{soRecusasDeChave: true, so429: true, so4xxDeParametro: true}
+}
 
 func (v *vigiaDeErros) ver(status int, tipo string) {
 	v.pedidos++
+	if !quatroXXDeParametro(status, tipo) {
+		v.so4xxDeParametro = false
+	}
 	if status != http.StatusUnauthorized && status != http.StatusForbidden {
 		v.soRecusasDeChave = false
 	}
@@ -295,6 +302,8 @@ func (v *vigiaDeErros) causa(cfg CfgDaCorrida) string {
 		return TerminouSo429
 	case cfg.AbortarAposSerieDe429 > 0 && v.seguidos429 >= cfg.AbortarAposSerieDe429:
 		return TerminouSerieDe429
+	case cfg.Qualificacao != nil && v.so4xxDeParametro && v.pedidos >= RecusasDoPerfilQueAbortam:
+		return TerminouPerfilRecusado
 	}
 	return ""
 }

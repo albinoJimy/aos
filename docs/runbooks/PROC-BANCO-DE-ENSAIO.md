@@ -255,6 +255,74 @@ LiteLLM, não do banco — medido na imagem fixada: `HTTP-Referer: https://litel
 ao contentor nenhuma variável de onde pudessem vir outros, e o cenário atrás do proxy fica
 vermelho se chegar outro valor.
 
+## A qualificação de uma rota (AOS-518)
+
+A experiência `qualificacao` dá um veredicto — `qualificado`, `recusado` ou `inconclusivo` —
+calculado das contagens por uma regra fixa, que vai escrita no relatório. A regra, as razões, os
+avisos e o digest do relatório estão no README do banco, secção «A qualificação do modelo».
+**Só o modo `real` qualifica**: um `qualificado` dos modos `falso` e `proxy` leva
+`vale_para_producao: false` e sai com o código 9.
+
+**Antes da primeira qualificação, no ficheiro de chaves** (só o dono lhe mexe):
+
+- O tecto diário de pedidos do fornecedor tem de caber o **pior caso**: **673** pedidos (672 e a
+  sonda), ou **757** se o perfil declarar `devolver: obrigatorio` (mais 84 da corrida de
+  controlo). Para duas qualificações no mesmo dia, 1500 chega. O gasto real medido ronda 13
+  pedidos por passagem; a conta faz-se pelo pior caso de propósito.
+- Num fornecedor com tecto em dólares (`TECTO_USD_DIA_…`), esse tecto tem de estar acima de
+  3 USD, e `--precos` é obrigatório: a qualificação pára aos 3 USD estimados. Num fornecedor sem
+  tecto em dólares o tecto de 3 USD **não é imposto**, e o relatório di-lo.
+
+O contador do dia (`contador.json`) e o registo das qualificações (`qualificacoes.json`) vivem
+na pasta do dono, `%USERPROFILE%\.aos-ensaio`, esteja o ficheiro de chaves onde estiver.
+
+**Sem modelo real** (não gasta tecto):
+
+```powershell
+cd C:\Jimy\AOS\packages\qa\banco-ensaio
+go run .\cmd\aos-ensaio falso --experiencia qualificacao --perfil <perfil.json> --roteiro cumpre --saida $env:TEMP\ensaio
+```
+
+**Com o modelo real**, no posto do dono (o Kimi de produção, como exemplo):
+
+```powershell
+cd C:\Jimy\AOS\packages\qa\banco-ensaio
+go build -o $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe .\cmd\aos-ensaio
+
+# 1. O plano: valida o ficheiro, o perfil, a imagem do proxy, o tecto e as qualificações de hoje. Não envia nada. Sai com 10.
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor kimi --experiencia qualificacao --perfil <perfil.json> --so-plano
+
+# 2. A qualificação.
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor kimi --experiencia qualificacao --perfil <perfil.json>
+```
+
+O perfil é o JSON de sempre (`--perfil`), com `requested: rota-de-ensaio` e o `expected_model`
+igual à rota da corrida: `openai/<modelo do Kimi>`, `anthropic/<modelo>` ou
+`openrouter/<autor>/<modelo>`. Com outro nome a qualificação é recusada antes de enviar.
+
+**Ler o resultado.** As primeiras linhas do resumo (e do ficheiro `.txt`) são os avisos, se os
+houver; a seguir vem o veredicto com as razões. O código de saída diz o mesmo: 0 `qualificado`,
+7 `recusado`, 8 `inconclusivo` com a corrida completa, 4 se parou a meio, 3 se foi recusada
+antes de enviar.
+
+| Saída | O que quer dizer | O que fazer |
+|---|---|---|
+| `QUALIFICADO`, sem avisos | 40 nós com tools e 16 sem tools cumpridos, nenhum limiar violado | O relatório `.json` e o seu `digest_do_relatorio` são o que o registo de entrada cita (AOS-519, AOS-522) |
+| `AVISO — EXIGENCIA_NAO_PROVADA` | O perfil declara devolução obrigatória e o controlo sem devolução não foi recusado em todos os segundos turnos | Não bloqueia. Quem assina fica a saber que «aceite» não é «exigido» |
+| `AVISO — FACTOS_AUSENTES_EM_RESPOSTAS_CUMPRIDAS` | Há respostas cumpridas sem os factos do documento | Não bloqueia. Ver a taxa «factos ausentes da saída» antes de assinar |
+| `AVISO — TECTO_EM_DOLARES_NAO_IMPOSTO` | O fornecedor não tem tecto em dólares no ficheiro de chaves | Actuou só o tecto de 300 pedidos |
+| `RECUSADO` | Uma razão firme. Repetir não a tira | Ler as razões e a tabela de limiares. **Os limiares não se mexem para dar verde** sem decisão do dono registada na §4 do acompanhamento |
+| `INCONCLUSIVO` | Só razões passageiras: conta, ritmo, 5xx, tecto, corrida parada, devolução declarada e não medida | Resolver a causa e repetir. Uma corrida que passou da sonda conta como uma das do dia |
+| Exit 3, `qualificacoes_do_dia_esgotadas` | Duas qualificações do perfil, ou quatro da rota, hoje (UTC) | Esperar pelo dia seguinte. Apagar o registo não repõe: contam também os relatórios de hoje |
+| Exit 3, `imagem_do_proxy_nao_e_a_de_producao` | A imagem do proxy em uso não é a declarada | Não há opção que o contorne |
+| Exit 3, «o pior caso … nao cabe no tecto do dia» | O que resta do tecto diário é menos do que o pior caso | Subir o tecto no ficheiro de chaves, ou esperar pelo dia seguinte. Fica um relatório `inconclusivo`; nenhum pedido saiu |
+
+**Limites que este procedimento não fecha.** O relatório é produzido no posto de quem corre e
+não é assinado pelo banco: o digest dá integridade, não autenticidade, e não prova que a corrida
+aconteceu. Os tectos do dia protegem de enganos, não de quem apaga a pasta do dono. A
+qualificação apanha um modelo mau; se é bom mede-se com a fatia em produção (AOS-520, AOS-521).
+O modo real não corre em CI nem no servidor (D3).
+
 ## Se correr mal
 
 | Sintoma | Causa | O que fazer |
@@ -284,5 +352,6 @@ vermelho se chegar outro valor.
 ## O que este procedimento não faz
 
 - Não publica uma versão de projecção: os braços B e C existem só no banco.
-- Não decide se um modelo entra: devolve taxas.
+- Não decide se um modelo entra: devolve taxas e, na experiência `qualificacao`, um veredicto
+  calculado. Quem decide a entrada é o dono, ao assinar o registo que o cita (AOS-519).
 - Não mede produção: outro prompt de sistema, outras tools, outros documentos.

@@ -78,6 +78,12 @@ type Relatorio struct {
 	// quando o perfil da corrida devolve estado, ou quando a corrida foi feita contra o provider
 	// falso do estado. É este campo que se lê; as contagens explicam-no.
 	Qualificacao *QualificacaoDaDevolucao `json:"qualificacao_da_devolucao,omitempty"`
+	// QualificacaoDoModelo é o VEREDICTO do banco sobre a rota (AOS-518): `qualificado`,
+	// `recusado` ou `inconclusivo`, com as contagens de que saiu. Só na experiência `qualificacao`.
+	QualificacaoDoModelo *QualificacaoDoModelo `json:"qualificacao_do_modelo,omitempty"`
+	// DigestDoRelatorio é o sha256 da forma canónica deste relatório sem este campo
+	// ([DigestDoRelatorio]). Só na experiência `qualificacao`; quem o põe é [EscreverRelatorio].
+	DigestDoRelatorio string `json:"digest_do_relatorio,omitempty"`
 }
 
 // Declaracao é um valor declarado por alguém e não verificado pelo banco.
@@ -181,8 +187,12 @@ const LimiteDoVeredictoNoModoReal = "Modo real: `cumprida` quer dizer que o forn
 const LimiteDoTopoNoModoReal = "Com devolver_em: topo a guarda do saco do proxy nao se aplica (o estado volta no topo da mensagem): sobre a devolucao, so resta o codigo HTTP e o controlo negativo."
 
 func limitesDaCorrida(cfg CfgDaCorrida) []string {
+	primeira := "O banco devolve taxas; nao aceita nem recusa um modelo."
+	if cfg.Plano.Experiencia == ExperienciaQualificacao {
+		primeira = "O veredicto da qualificacao e calculado das contagens deste relatorio por uma regra fixa, que vai ao lado dele. As taxas explicam-no; nao o substituem."
+	}
 	l := []string{
-		"O banco devolve taxas; nao aceita nem recusa um modelo.",
+		primeira,
 		"A taxa de tool call em texto e medida sem ler texto: conta os runs que exigiam uma tool, nao pediram nenhuma tool call nativa e pararam com o motivo stop. O nome da tool no texto e uma heuristica de contagem, nao uma deteccao.",
 		"A recusa do proprio objectivo e medida por um substituto: os factos do documento sintetico estao ou nao na saida. Uma saida sem os factos nao e, so por isso, uma recusa.",
 		"O no de ensaio e minimo: sem PDP, WORM, sandbox nem aos-orq. Mede a fronteira com o modelo, nao a governacao do no.",
@@ -211,6 +221,9 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 			"As variantes B e C existem so no banco. Um braco com menos falhas nao e uma versao de projeccao: publicar uma exige ticket proprio e emenda ao ADR-036.",
 		)
 	}
+	if cfg.Plano.Experiencia == ExperienciaQualificacao {
+		l = append(l, limitesDaQualificacao()...)
+	}
 	if cfg.No != nil && cfg.No.devolucao != nil {
 		l = append(l,
 			"Devolucao do estado opaco: so conta como devolvido o pedido em que o gateway armou o estado de todos os turnos E a que o fornecedor respondeu 2xx. A decisao do gateway toma-se antes do envio e, sozinha, nao conta. O banco nao le o estado, e nao prova que o fornecedor o validou: um provider falso nao verifica assinaturas, e so o modelo real o faz.",
@@ -228,7 +241,7 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 	return l
 }
 
-func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, terminou string, sonda *Sonda, obs []Observacao) (*Relatorio, error) {
+func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, terminou string, sonda *Sonda, obs []Observacao, controlo *corridaDeControlo) (*Relatorio, error) {
 	var estado *ComposicaoDoEstado
 	layout := agentruntime.AssemblyVersion140
 	if cfg.No != nil && cfg.No.devolucao != nil {
@@ -280,6 +293,14 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 		r.Custo.TokensDeEntrada += o.TokensDeEntrada
 		r.Custo.TokensDeSaida += o.TokensDeSaida
 	}
+	if controlo != nil {
+		// A corrida de controlo de uma qualificação envia e paga pedidos como a principal.
+		for _, o := range controlo.obs {
+			r.Pedidos.Enviados += int64(o.Pedidos)
+			r.Custo.TokensDeEntrada += o.TokensDeEntrada
+			r.Custo.TokensDeSaida += o.TokensDeSaida
+		}
+	}
 	if cfg.Contador != nil {
 		e, err := cfg.Contador.Estado()
 		if err != nil {
@@ -312,6 +333,11 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 	}
 	if cfg.Plano.Experiencia == ExperienciaSeparadores {
 		r.Comparacoes = compararComA(r.PorBraco)
+	}
+	if cfg.Qualificacao != nil {
+		if err := montarQualificacao(cfg, r, previstos, obs, controlo); err != nil {
+			return nil, err
+		}
 	}
 	return r, nil
 }
@@ -424,9 +450,32 @@ func EscreverRelatorio(pasta string, r *Relatorio) (string, string, error) {
 	}
 	carimbo := strings.NewReplacer("-", "", ":", "").Replace(r.DataUTC)
 	base := filepath.Join(pasta, fmt.Sprintf("ensaio-%s-%s-%s", r.Modo, r.Experiencia, carimbo))
+	if r.QualificacaoDoModelo != nil {
+		// O digest do próprio relatório calcula-se sobre a forma canónica do JSON SEM o campo do
+		// digest, e só depois se põe o campo (ver digest_relatorio.go).
+		r.DigestDoRelatorio = ""
+		semDigest, merr := json.Marshal(r)
+		if merr != nil {
+			return "", "", merr
+		}
+		digest, derr := DigestDoRelatorio(semDigest)
+		if derr != nil {
+			return "", "", derr
+		}
+		r.DigestDoRelatorio = digest
+	}
 	cru, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return "", "", err
+	}
+	if r.QualificacaoDoModelo != nil {
+		// Um relatório de qualificação é citado pelo seu digest: nunca se escreve por cima de outro
+		// (duas qualificações no mesmo segundo, na mesma pasta). Falha em vez de sobrepor.
+		f, cerr := os.OpenFile(base+".json", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- pasta dos relatorios, dada por quem corre
+		if cerr != nil {
+			return "", "", fmt.Errorf("banco-ensaio: ja existe um relatorio de qualificacao com este nome (mesmo segundo, mesma pasta); nao se escreve por cima: %s", filepath.Base(base)+".json")
+		}
+		_ = f.Close()
 	}
 	if err := os.WriteFile(base+".json", append(cru, '\n'), 0o600); err != nil {
 		return "", "", err
@@ -495,6 +544,7 @@ func blocoDeContagens(b *strings.Builder, titulo string, m map[string]int) {
 // ResumoEmTexto devolve o resumo do relatório em texto simples.
 func ResumoEmTexto(r *Relatorio) string {
 	var b strings.Builder
+	cabecaDaQualificacao(&b, r)
 	fmt.Fprintf(&b, "BANCO DE ENSAIO (AOS-512) - relatorio de taxas\n")
 	fmt.Fprintf(&b, "data (UTC): %s   modo: %s   experiencia: %s   terminou: %s\n", r.DataUTC, r.Modo, r.Experiencia, r.Terminou)
 	fmt.Fprintf(&b, "rota: fornecedor=%s modelo=%s\n", r.Rota.Fornecedor, r.Rota.Modelo)
@@ -591,4 +641,69 @@ func ResumoEmTexto(r *Relatorio) string {
 		b.WriteString("  - " + l + "\n")
 	}
 	return b.String()
+}
+
+// As frases, fixas, de cada aviso de uma qualificação. Vão à cabeça do resumo.
+var frasesDosAvisos = map[string]string{
+	AvisoExigenciaNaoProvada: "o perfil declara devolucao OBRIGATORIA e a corrida de controlo SEM devolucao nao falhou como devia: «aceite» nao e «exigido». Este relatorio NAO prova que o fornecedor exige, nem que le, o estado devolvido",
+	AvisoTectoUSDNaoImposto:  "o tecto de 3 USD por qualificacao NAO foi imposto: o fornecedor nao tem tecto em dolares no ficheiro de chaves, e sem ele o banco nao estima o gasto. Actuou so o tecto de pedidos",
+	AvisoFactosAusentes:      "ha runs cumpridos cuja saida nao tem os factos do documento sintetico (taxa «factos ausentes da saida», abaixo). Os limiares L1 a L5 nao medem o conteudo da resposta",
+}
+
+// cabecaDaQualificacao escreve, À CABEÇA do resumo, os avisos e o veredicto de uma qualificação.
+// Os avisos vêm primeiro: quem lê só a primeira linha lê o aviso. Sem qualificação não escreve nada.
+func cabecaDaQualificacao(b *strings.Builder, r *Relatorio) {
+	q := r.QualificacaoDoModelo
+	if q == nil {
+		return
+	}
+	if !q.ValeParaProducao {
+		fmt.Fprintf(b, "ENSAIO SEM MODELO REAL (modo %s) — ESTE VEREDICTO NAO VALE PARA PRODUCAO: o fornecedor e um provider falso.\n", r.Modo)
+	}
+	for _, a := range q.Avisos {
+		fmt.Fprintf(b, "AVISO — %s: %s.\n", strings.ToUpper(a), frasesDosAvisos[a])
+	}
+	razoes := "(nenhuma)"
+	if len(q.Razoes) > 0 {
+		razoes = strings.Join(q.Razoes, ", ")
+	}
+	fmt.Fprintf(b, "QUALIFICACAO DO MODELO (AOS-518): %s — razoes: %s\n", strings.ToUpper(q.Veredicto), razoes)
+	rt := q.Rota
+	fmt.Fprintf(b, "  rota qualificada: fornecedor=%s modelo=%s esperado=%s\n", rt.Fornecedor, rt.Modelo, rt.ModeloEsperado)
+	imagem := "(modo falso: sem proxy)"
+	if rt.ImagemDoProxy != "" {
+		imagem = rt.DigestDaImagemDoProxy
+	}
+	fmt.Fprintf(b, "  perfil=%s\n  rota=%s\n  bateria=%s (versao %s)\n  imagem do proxy=%s\n", rt.DigestDoPerfil, rt.DigestDaRota, rt.DigestDaBateria, rt.VersaoDaBateria, imagem)
+	if r.DigestDoRelatorio != "" {
+		fmt.Fprintf(b, "  digest do relatorio (do JSON; este resumo nao e coberto)=%s\n", r.DigestDoRelatorio)
+	}
+	for _, l := range q.Limiares {
+		estado := "dentro"
+		if l.Violado {
+			estado = "VIOLADO"
+		}
+		fmt.Fprintf(b, "  %s (maximo %d, %s)%s", l.ID, l.Maximo, estado, linhaDaTaxa("", l.Medida))
+	}
+	c := q.Contagens
+	fmt.Fprintf(b, "  amostra: %d de %d nos com tools (cumpridos %d); interrompidos por causa passageira:", c.NosComToolsNaAmostra, c.NosComToolsExigidos, c.NosComToolsCumpridos)
+	if len(c.InterrompidosPorCausa) == 0 {
+		b.WriteString(" nenhum")
+	}
+	for _, k := range chavesOrdenadas(c.InterrompidosPorCausa) {
+		fmt.Fprintf(b, " %s=%d", k, c.InterrompidosPorCausa[k])
+	}
+	b.WriteString("\n")
+	if ct := q.Controlo; ct != nil {
+		fmt.Fprintf(b, "  controlo sem devolucao (%d passagem): %s\n    LIMITE DO CONTROLO: %s\n", ct.Passagens, ct.Resultado, ct.Limite)
+	}
+	o := q.Orcamento
+	fmt.Fprintf(b, "  orcamento: pior caso declarado %d pedidos; enviados %d de um tecto de %d por qualificacao", o.PiorCasoDeclarado, o.PedidosEnviados, o.TectoDePedidos)
+	if o.MicroUSDEstimado != nil {
+		fmt.Fprintf(b, "; gasto ESTIMADO %.4f USD de um tecto de %.2f USD", float64(*o.MicroUSDEstimado)/1e6, float64(o.TectoMicroUSD)/1e6)
+	}
+	if o.QualificacoesDoPerfilHoje != nil && o.QualificacoesDaRotaHoje != nil {
+		fmt.Fprintf(b, "; qualificacao %d de %d deste perfil e %d de %d desta rota hoje", *o.QualificacoesDoPerfilHoje, o.MaximoPorPerfilPorDia, *o.QualificacoesDaRotaHoje, o.MaximoPorRotaPorDia)
+	}
+	fmt.Fprintf(b, "\n  REGRA: %s\n\n", q.Regra)
 }

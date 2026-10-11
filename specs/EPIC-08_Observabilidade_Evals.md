@@ -1574,8 +1574,83 @@ próprio e tudo o que identifica a rota qualificada.
 
 ### Estado
 
-**Aberto (2026-10-11).** Nada implementado. Pode começar já, em paralelo com o AOS-517; o
-critério do digest da imagem do proxy fecha-se quando o AOS-517 declarar o digest de produção.
+**IMPLEMENTADO em ensaio (2026-10-11); duas revisões adversariais independentes feitas e corrigidas. Por fazer, e só o dono o pode fazer: a qualificação do Kimi de produção com o modelo real e a medição da sua duração.**
+
+- **Onde.** `packages/qa/banco-ensaio`: `qualificacao.go` (a regra e as contagens),
+  `qualificacao_corrida.go` (controlo, avisos, bloco do relatório), `orcamento.go` e
+  `qualificacoes_do_dia.go` (tectos), `digest_relatorio.go`. Como se usa: README do banco,
+  secção «A qualificação do modelo»; `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`.
+- **A regra.** Texto fixo em `RegraDoVeredictoDoModelo`, que vai no relatório. Função pura de
+  `qualificacao_do_modelo.contagens`. Limiares L1 a L5 da D2, mais **L6** (zero nós sem tools por
+  cumprir). Um nó, com ou sem tools, interrompido por causa passageira sai da amostra; a amostra
+  exigida é de 40 nós com tools e 16 sem tools.
+- **Decisões do dono tomadas durante o ticket (2026-10-11), que alteram a D2:**
+  - **Os nós sem tools entram na regra do veredicto** (L6, razão firme
+    `nos_sem_tools_nao_cumpridos`; por causa passageira, `inconclusivo`). A revisão mediu
+    `qualificado` com os 16 nós sem tools em 400, em 500 e cortados.
+  - **Um perfil que declara devolução só é `qualificado` com `qualificacao_da_devolucao` em
+    `cumprida`**; `nao_cumprida` é firme (`devolucao_do_estado_nao_cumprida`); `sem_raciocinio` e
+    `inconclusiva` são passageiras (`devolucao_do_estado_nao_medida`).
+  - **Os factos ausentes ficam como aviso** (`factos_ausentes_em_respostas_cumpridas`): não há
+    limiar para o conteúdo da resposta.
+- **Achados das revisões adversariais e correcções.**
+  1. *Verde falso em L2:* a contagem exigia o motivo de paragem `stop`; um provider que fecha a
+     1.ª tentativa sem tool call com `content_filter` e cumpre à 2.ª saía `qualificado` com 0 de
+     40. L2 passa a contar toda a 1.ª tentativa com zero tool calls nativas. Medido atrás da
+     imagem do proxy: o LiteLLM entrega `end_turn` e a ausência de motivo como `stop`, e
+     `content_filter` tal e qual.
+  2. *Nós sem tools fora do veredicto* e *devolução declarada e não cumprida a dar
+     `qualificado`:* ver as decisões acima.
+  3. *Controlo «aceite contra exigido»:* um só 4xx em cinco dava `falhou_como_devido`, e um
+     controlo interrompido também. Passa a exigir a corrida completa, todos os pedidos com
+     mensagem `tool` recusados e nenhum nó com tools cumprido; o resto é `inconclusivo`, e o
+     aviso mantém-se. O controlo deixou de mudar a versão da projecção (muda só `devolver`); o
+     que ainda não isola — o layout 1.4.0 em vez do 1.5.0 — vai escrito em
+     `controlo_sem_devolucao.limite`.
+  4. *Tectos contornáveis:* o contador do dia e o registo das qualificações viviam ao lado de
+     `--chaves` (copiar o ficheiro repunha-os) e a conta era só pelo digest do perfil (mudar
+     `max_tokens` dava contador novo). Vivem agora na pasta do dono; há um tecto por rota; e a
+     contagem é o maior entre o registo e os relatórios de hoje.
+  5. *Digest:* membros que só diferem na caixa, UTF-8 inválido e meios pares substitutos
+     isolados davam o mesmo digest a ficheiros diferentes; recusam. Um relatório de qualificação
+     não se escreve por cima de outro.
+  6. *Modo falso com a forma do real:* o veredicto leva `vale_para_producao`, o resumo abre por o
+     dizer, e um `qualificado` de ensaio sai com o código 9. `--so-plano` sai com 10.
+  7. *Imagem do proxy:* havia duas constantes a compararem-se uma com a outra; fica a declaração
+     única do AOS-517.
+- **Mutações dirigidas: 48, todas vermelhas.** Por limiar: L1, L3, L4, L5 (diferente e não
+  reportado) e L6 de «zero» para «no máximo um»; L2 de 4 para 5 e de `<=` para `<`; a amostra de
+  40 para 39; L2 de volta ao motivo `stop`. Na regra: a firme deixa de ganhar a passageira; um
+  5xx conta como não cumprido; um nó interrompido conta como cumprido; nó sem tools passageiro
+  tratado como firme, e firme como passageiro; nós sem tools fora da amostra completa, e os
+  interrompidos fora das razões; devolução não cumprida e não medida fora da regra; perfil
+  recusado com respostas 2xx; corrida parada fora das razões; turno sem comparação do modelo
+  fora da conta; um 401 a contar como 4xx de parâmetro. No orçamento: 300 para 301; o limite a
+  deixar sair mais um; 2 para 3 por perfil; 4 para 5 por rota; o tecto por rota sem conferência;
+  os relatórios de hoje fora da conta; o contador de volta para o lado das chaves; o pior caso
+  sem o controlo; a qualificação que não cabe a correr; a sonda falhada a gastar uma tentativa;
+  o tecto em dólares não imposto sem aviso. No controlo: um só 4xx a chegar; o aviso só quando
+  passou; o controlo interrompido a contar; a projecção a mudar. No digest: a verificação a
+  aceitar qualquer valor; os números fora da forma canónica; membros repetidos e o carácter de
+  substituição aceites; escrever por cima. No modo: um ensaio a valer para produção e a sair com
+  0; `--so-plano` a sair com 0; a imagem sem conferência; o falso a não trocar o modelo.
+- **Medido.** Modo falso: o bom sai `qualificado` com 40 de 40 e 16 de 16, em 96 pedidos; os
+  cinco falsos «maus» saem `recusado`, cada um com a sua lista de razões. Atrás da imagem fixada
+  do proxy (`bash scripts/ci/banco-ensaio-proxy.sh`, verde): o bom `qualificado` (96 pedidos, 96
+  de 96 turnos com o modelo esperado); não chama a tool, recusa o segundo turno (40 respostas
+  400), responde vazio e «o proxy serve outro modelo» (96 de 96 turnos diferentes) `recusado`.
+- **Limites que ficam.** O digest dá integridade, não autenticidade. Os tectos do dia protegem de
+  enganos: quem apaga a pasta do dono recomeça. L5 compara o que o proxy declara, não o que o
+  fornecedor serviu. O tecto de 3 USD só é imposto em fornecedores com tecto em dólares no
+  ficheiro de chaves (o relatório avisa quando não é).
+- **Por confirmar pelo dono.** O tecto de **quatro qualificações por rota por dia** (o número é
+  proposta). A ligação ao AOS-519: o digest do perfil inclui `requested`, e o banco exige
+  `requested: rota-de-ensaio`; o `digest_do_perfil` do relatório não é, por isso, o do perfil que
+  o nó carregará com o alias de produção. Recomendação, a entregar com o AOS-519 ou o AOS-522: o
+  banco aceitar o `requested` de produção e usá-lo como nome da rota efémera do proxy do ensaio.
+- **Por fazer, no posto do dono.** A qualificação do Kimi de produção (tem de sair
+  `qualificado`; se não sair, o ticket pára) e a duração real de uma qualificação, para a §5 do
+  acompanhamento. O tecto diário do Kimi tem de subir para 673 ou mais.
 
 ## AOS-522 — Qualificar e preparar a assinatura num comando; sem veredicto positivo não há nada para assinar; runbook com relógio
 
