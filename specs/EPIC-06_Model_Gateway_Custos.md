@@ -3562,6 +3562,147 @@ acompanhamento.
   imagem do proxy de produção é a tag `main-stable`, não o digest em que o banco mede. O que
   destes passa à fase A3 está em `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md`.
 
+## AOS-517 — O proxy de produção fixa-se pelo digest em que se mede, e `drop_params: false` fica aplicado no servidor
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é uma mudança de deploy e um teste que prende uma igualdade. O ADR-036 §2.8 (a rota que serviu o turno compara-se com um perfil) é citado só como o contrato que esta mudança torna verificável na imagem certa. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 (o proxy é parte da rota do modelo; precedente: AOS-505) |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-proxy» |
+| Tipo | chore |
+| Prioridade | P1: sem isto, tudo o que o arnês da A3 prova vale para outro proxy |
+| Estimativa | S |
+| Dependências | AOS-505 (a governação da rota e o runbook do `drop_params`), AOS-508 (o gate atrás da imagem do proxy), AOS-512 (o banco, que já mede por digest). Decisão D8 do dono (tomada a 2026-10-11) |
+| Bloqueia | AOS-518 (o relatório leva o digest da imagem), AOS-519 (o nó confere a imagem que o veredicto cita), AOS-523 |
+| Responsável sugerido | Engenheiro de Plataforma, com o dono a executar os passos de produção |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §4.1, §5 (lição 4) e §6 (D8), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3; §7, resíduos da A2), `deploy/server/docker-compose.prod.yml`, `deploy/server/litellm/config.yaml`, `deploy/server/README.md`, `packages/qa/banco-ensaio/proxy.go`, `docs/reports/wire-live-aos508-2026-10-07.md` |
+
+### Contexto
+
+- **Mede-se num proxy e serve-se por outro.** O banco de ensaio e os gates opcionais correm
+  atrás de uma imagem fixada por digest (`ImagemDoProxy`, em
+  `packages/qa/banco-ensaio/proxy.go`). O compose de produção refere a tag móvel
+  `ghcr.io/berriai/litellm:main-stable`. É o resíduo (g) do fecho do AOS-516 e o primeiro
+  bloqueio da D8.
+- **O proxy transforma os pedidos, e a transformação muda com a rota e com a versão** (desenho
+  §5, lição 4; medido na A2): na rota `openai/` retira ou recusa parâmetros conforme
+  `drop_params`; na `anthropic/` insere um bloco de texto; na `openrouter/` move o raciocínio
+  para um saco que o fornecedor não lê. Uma qualificação feita noutra imagem não diz nada da
+  que serve.
+- **O digest está hoje escrito em mais de um sítio do repositório** (o banco, um teste do
+  gateway, o relatório do AOS-508, o runbook do banco) e nenhum teste prende que são o mesmo.
+- **`drop_params`.** O ficheiro do repositório já traz `false`, mas o do servidor é do
+  operador e o deploy não o reescreve. Com `true`, o proxy retira em silêncio os parâmetros
+  de um perfil — e um perfil com parâmetros passaria a qualificação a fazer uma coisa e
+  serviria a fazer outra. O passo está descrito no `deploy/server/README.md` (AOS-505) e ficou
+  por fazer.
+- **Não se sabe o que a `main-stable` do servidor é hoje** (desenho §8): pode ser o digest
+  medido ou outro. Só uma leitura no servidor o diz.
+
+### Decidido pelo dono
+
+**D8 (2026-10-11), linhas 1 e 2:** a imagem do proxy de produção fixa-se por digest **antes de
+tudo o resto da fase**; `drop_params: false` aplica-se **agora** no servidor, com o plano de
+verificação antes e depois que o runbook já descreve. As outras três linhas da D8 não são deste
+ticket: a captura do estado fica por ligar (o AOS-519 recusa perfis que devolvem estado
+enquanto assim for), a governação da rota fica em `observe`, e a corrida pela API directa da
+Anthropic fica para quando o dono quiser essa classe em produção.
+
+### Objectivo
+
+O proxy que serve produção é, por digest, o proxy em que o arnês mede; a igualdade está presa
+por teste no repositório e verificada no servidor; e o proxy de produção deixa de poder retirar
+parâmetros em silêncio.
+
+### Âmbito
+
+- O serviço `litellm` do compose de produção passa a referir a imagem por `@sha256:`.
+- Uma só declaração do «digest do proxy de produção» no repositório, lida pelo banco e pelos
+  gates, ou — se a leitura partilhada não for praticável entre módulos — um teste que falha
+  quando os sítios divergem.
+- O runbook de actualização do proxy: mudar o digest é um PR que muda a declaração, volta a
+  correr os gates atrás da imagem nova e obriga a requalificar as rotas (AOS-518).
+- Os dois passos de produção, feitos pelo dono, com medição antes e depois.
+
+### Critérios de Aceitação
+
+**No repositório**
+
+- [ ] `deploy/server/docker-compose.prod.yml` refere a imagem do proxy por `@sha256:`; não
+      resta nenhuma referência por tag móvel à imagem do proxy em `deploy/server/`.
+- [ ] Um teste em CI falha se o digest do compose de produção for diferente do digest em que o
+      banco e os gates atrás do proxy medem. **Mutação dirigida:** trocar um carácter do digest
+      em qualquer um dos sítios avermelha o teste; fica registado quantos sítios o teste cobre.
+- [ ] O gate opcional atrás da imagem do proxy (`scripts/ci/banco-ensaio-proxy.sh`) corre
+      verde contra o digest declarado, depois da última edição.
+- [ ] O `deploy/server/README.md` descreve a actualização do proxy como mudança de digest por
+      PR, com a ordem: gates atrás da imagem nova, requalificação das rotas em uso, só depois
+      o servidor. E diz o que a mudança invalida: os veredictos que citam o digest anterior.
+
+**No servidor (passos do dono; nenhum é feito pelo deploy)**
+
+- [ ] **Antes de mudar:** fica registado o digest da imagem que a tag `main-stable` resolve
+      no servidor nesse momento, e se é ou não o digest medido. Se for outro, regista-se a
+      diferença de versão e a mudança trata-se como troca de proxy, não como formalidade.
+- [ ] Um plano de verificação pela fila antes e outro depois de fixar a imagem, com o mesmo
+      objectivo: o mesmo código de saída e o mesmo desfecho.
+- [ ] `drop_params: false` em vigor no servidor, pelo procedimento do `deploy/server/README.md`
+      (editar, **recriar** o serviço, plano antes e depois, leitura do log do proxy no
+      intervalo): zero pedidos recusados por parâmetro.
+- [ ] Série curta depois das duas mudanças (pelo menos 20 planos): a taxa de primeiras falhas
+      e o «não cumprido» não pioram face à última série do mesmo tamanho; o contador de
+      verificações da rota continua a mostrar o modelo servido igual ao esperado em todos os
+      turnos.
+- [ ] O digest em vigor, a data e os números das séries ficam na §5 do acompanhamento.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Não há interruptor:** é uma mudança de deploy, feita pelo dono (desenho §4.1). O recuo é
+  uma linha por passo: repor a tag anterior no compose do servidor e recriar o serviço; repor
+  `drop_params: true` e recriar.
+- **Inerte no nó:** nenhum ficheiro `.go` do nó nem do gateway muda de comportamento. O pedido
+  que o nó envia à rota de produção é, byte a byte, o de antes (o nó não envia hoje nenhum
+  parâmetro opcional — preso por teste desde o AOS-505).
+
+### Testes exigidos
+
+- O teste de igualdade dos digests, com a mutação dirigida acima.
+- O gate atrás da imagem fixada, verde.
+- Controlo negativo do próprio teste: com o compose a referir uma tag em vez de um digest, o
+  teste falha com mensagem própria (não passa por «não encontrei digest para comparar»).
+
+### Riscos
+
+- **A imagem de produção de hoje pode não ser a medida.** Fixar pode mudar o comportamento de
+  produção, para o que foi medido. Mitigação: o registo do «antes», o plano antes e depois, a
+  série curta, e o recuo de uma linha.
+- **`drop_params: false` pode tornar visível um erro que hoje é silencioso.** Foi medido no
+  AOS-505 que, para a rota `openai/<nome>` com `api_base` próprio, o proxy reencaminha tudo
+  com `true` ou com `false`; não se espera diferença, e a leitura do log confirma-o.
+- **Um digest fixado envelhece.** Fica escrito no runbook quem o actualiza e que a
+  actualização custa uma requalificação.
+
+### O que precisa do dono
+
+- Ler no servidor o digest actual da `main-stable` e colar o resultado.
+- Executar os dois passos de produção (fixar a imagem; `drop_params: false`), com os planos
+  de verificação, e aprovar o deploy do compose novo.
+- Lançar a série curta de validação.
+
+### Fora de âmbito
+
+- Trocar de versão do proxy: este ticket fixa a que já se mede.
+- `AOS_MODEL_ROUTE_GOVERNANCE=enforce` e ligar a captura do estado (D8, linhas 3 e 4).
+- O digest da imagem **dentro** do relatório do arnês e a recusa de qualificar contra outra
+  imagem: são do AOS-518.
+- Qualquer mudança ao `config.yaml` do servidor além de `drop_params`.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Pode começar já, em paralelo com o AOS-518.
+
 ---
 
 ## Controlo de versões
@@ -3595,3 +3736,4 @@ acompanhamento.
 | 3.4 | 2026-10-08 | AOS-516 em curso: o banco de ensaio liga a captura, a governação da rota e o layout 1.5.0 quando o perfil candidato devolve estado, e conta as devoluções; medido no modo falso e atrás da imagem fixada do proxy pela rota `anthropic/…` (o proxy acrescenta um bloco de texto antes da tool call quando o `content` é vazio); a corrida com o Claude está por fazer | Equipa AOS |
 | 3.5 | 2026-10-10 | AOS-516: D4 alterada (o Claude qualifica-se pela OpenRouter, só em ensaio); o banco ganha o fornecedor `openrouter`; o perfil da rota passa a declarar `devolver_em` (`origem` ou `topo`) e `params.reasoning` (contrato da porta `1.10.0`; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8), inertes por omissão; medido atrás do proxy fixado, com provider falso: com `devolver_em: topo` a devolução pela rota `openrouter/…` cumpre-se, e sem ele não; a corrida com o modelo real está por fazer | Equipa AOS |
 | 3.6 | 2026-10-11 | AOS-516 fechado com a fase A2, por decisão do dono: a corrida com o modelo real fez-se pela OpenRouter a 2026-10-10 (21 de 21 runs com o raciocínio devolvido; o controlo negativo mostrou que a OpenRouter não o exige); o passo de produção não se fez; resíduos nomeados | Equipa AOS |
+| 3.7 | 2026-10-11 | +AOS-517 (fase A3, entrada automática): o proxy de produção fixa-se pelo digest em que o banco mede, com a igualdade presa por teste, e `drop_params: false` aplica-se no servidor, por decisão do dono (D8) | Equipa AOS |
