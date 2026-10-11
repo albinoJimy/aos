@@ -194,6 +194,9 @@ func modeloDoRunFrom(ctx context.Context) string {
 type clientePorModelo struct {
 	titular  string
 	porAlias map[string]agentruntime.ModelClient
+	// series conta cada pedido pelo alias ESCOLHIDO AQUI (AOS-520, PR 2). nil ⇒ sem candidato a
+	// servir: não se conta nada.
+	series *seriesPorModelo
 }
 
 // Compile-time: o despachante é um cliente de modelo.
@@ -209,7 +212,9 @@ func (c *clientePorModelo) Call(ctx context.Context, view agentruntime.PromptVie
 	if !ok {
 		return agentruntime.ModelResponse{}, fmt.Errorf("%w: causa=%s", ErrModelNotServed, modelgateway.PinnedCauseModelNotServed)
 	}
-	return cliente.Call(ctx, view)
+	resp, err := cliente.Call(ctx, view)
+	c.series.observarTurno(alias, resp, err)
+	return resp, err
 }
 
 // aliasServido diz se este nó tem como servir um run fixado no alias dado: o do titular, ou o de

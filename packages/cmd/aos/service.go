@@ -1149,6 +1149,9 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 			// AOS-493: o run conta-se pelo estado em que o log durável ficou, e pela razão do
 			// veredicto.
 			s.desfechos.contar(selado, res)
+			// AOS-520 (PR 2): e pelo MODELO em que o run ficou — o alias do Goal, nunca o que o
+			// fornecedor declarou. Só com um candidato a servir; sem ele não há séries e nada soma.
+			s.node.seriesDoModelo().contarDesfecho(goal.Model.ModelID, selado, res)
 			// E só AGORA se diz o estado durável de um run não cumprido: depois de o selo ter
 			// sido tentado, e com o que ele devolveu (revisão M3).
 			s.dizerNaoCumprido(rs.runID, res, selado)

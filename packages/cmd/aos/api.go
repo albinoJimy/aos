@@ -2312,6 +2312,57 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"gauge", float64(l.fechadoVisto.Load()), "")
 	}
 
+	// AOS-520 (PR 2) — AS SÉRIES POR MODELO. Só saem com um candidato A SERVIR: sem ele as três
+	// famílias não existem, e o /metrics é o de antes. O rótulo `model` é de conjunto fechado — o
+	// alias do titular e o do candidato —, e todas as amostras estão sempre presentes: o zero é um
+	// zero verdadeiro. No máximo [maxSeriesPorModelo] séries.
+	if sm := h.node.seriesDoModelo(); sm != nil {
+		primeira := true
+		for _, m := range sm.modelos {
+			for _, motivo := range sm.motivos {
+				labels := `{model="` + rotuloDoModelo(m) + `",stop_reason="` + rotuloDoMotivo(motivo) + `"}`
+				if primeira {
+					primeira = false
+					g("aos_model_turns_by_model_total",
+						"Turnos de modelo AO VIVO desde o arranque, por modelo PEDIDO e por motivo de paragem (AOS-520, ADR-041 2.8). model e o alias que o no pediu (o titular ou o candidato a servir), num conjunto fechado; NUNCA o modelo que o fornecedor declarou ter servido. So existe com um candidato a servir. Conta pedidos ao gateway que devolveram um turno: um turno reproduzido de uma captura nao conta (ao contrario de aos_model_turns_total, que conta os turnos percorridos), pelo que a soma dos modelos nao e essa serie.",
+						"counter", float64(sm.lidoTurnos(m, motivo)), labels)
+					continue
+				}
+				amostra("aos_model_turns_by_model_total", labels, float64(sm.lidoTurnos(m, motivo)))
+			}
+		}
+		primeira = true
+		for _, m := range sm.modelos {
+			for _, causa := range sm.causas {
+				labels := `{model="` + rotuloDoModelo(m) + `",causa="` + causa + `"}`
+				if primeira {
+					primeira = false
+					g("aos_model_response_rejected_by_model_total",
+						"Respostas do provider que o gateway recusou desde o arranque, por modelo PEDIDO e por causa (AOS-520, ADR-041 2.8). As causas sao as de aos_model_response_rejected_total; model e o alias pedido, de conjunto fechado. So existe com um candidato a servir.",
+						"counter", float64(sm.lidoRecusadas(m, causa)), labels)
+					continue
+				}
+				amostra("aos_model_response_rejected_by_model_total", labels, float64(sm.lidoRecusadas(m, causa)))
+			}
+		}
+		primeira = true
+		for _, m := range sm.modelos {
+			for _, e := range sm.estados {
+				for _, rz := range sm.razoes {
+					labels := `{model="` + rotuloDoModelo(m) + `",outcome="` + string(e) + `",reason="` + rotuloDaRazao(rz) + `"}`
+					if primeira {
+						primeira = false
+						g("aos_runs_finished_by_model_total",
+							"Runs que este processo SELOU num estado terminal desde o arranque, por modelo em que o run ficou (o alias pedido, de conjunto fechado), por estado e por razao do veredicto de conclusao (AOS-520, ADR-041 2.8). Os estados e as razoes sao os de aos_runs_finished_total. Um run recusado pela fixacao do modelo (model_pin_refused) nao chegou a ter modelo e NAO conta aqui: conta so em aos_runs_finished_total. So existe com um candidato a servir. Por processo.",
+							"counter", float64(sm.lidoTerminados(m, e, rz)), labels)
+						continue
+					}
+					amostra("aos_runs_finished_by_model_total", labels, float64(sm.lidoTerminados(m, e, rz)))
+				}
+			}
+		}
+	}
+
 	// AOS-520 — O LIVRO DO CANARY TEM EVENTOS DE UMA VERSÃO MAIS RECENTE. Sai com um candidato a
 	// servir (o zero é um zero verdadeiro) e, num nó sem candidato a servir, só quando os há — sem
 	// eles o /metrics desse nó é o de antes.
