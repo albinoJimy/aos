@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
@@ -293,6 +294,50 @@ func (r *Recorder) SealRouteProfileLoaded(ctx context.Context, at time.Time, req
 				"profile_digest": profileDigest,
 				"entry_digest":   entryDigest,
 				"report_digest":  reportDigest,
+			},
+		}},
+	}
+	return r.store.Append(ctx, ar)
+}
+
+// ErrCanaryClosedSeal — o selo do fim de um canary não tem o que o identifica (o nome pedido ou um
+// dos dois digests), tem contagens sem sentido, ou não há audit onde selar. Fail-closed.
+var ErrCanaryClosedSeal = errors.New("allowlist: selo do fim do canary recusado — sem nome pedido, sem um dos dois digests, com contagens invalidas, ou sem audit onde selar (fail-closed)")
+
+// SealCanaryClosed sela no audit WORM o FIM do canary de um modelo candidato (AOS-520, ADR-041
+// §2.6): o nome pedido do candidato, o digest do seu perfil, o digest do registo de entrada
+// assinado que abriu o canary, quantos planos o candidato serviu e o limite. Fica na mesma cadeia
+// do carregamento dos perfis assinados, ao lado do selo que diz desde quando o perfil serviu o nome.
+//
+// É chamado por quem gravou o fim no livro durável do canary, uma vez. O livro é a fonte da
+// contagem; este selo é a prova, tamper-evident, de que o fim foi registado.
+//
+// SEM STORE NÃO É NO-OP: devolve [ErrCanaryClosedSeal]. Só identificadores, digests e contagens.
+func (r *Recorder) SealCanaryClosed(ctx context.Context, at time.Time, requested, profileDigest, entryDigest string, assigned, limit int) (audit.AuditRecord, error) {
+	if requested == "" || profileDigest == "" || entryDigest == "" || limit <= 0 || assigned < limit {
+		return audit.AuditRecord{}, ErrCanaryClosedSeal
+	}
+	if r.store == nil {
+		return audit.AuditRecord{}, fmt.Errorf("%w: nao ha audit onde selar", ErrCanaryClosedSeal)
+	}
+	ar := audit.AuditRecord{
+		Partition:     routeProfilesPartition,
+		Timestamp:     at,
+		Decision:      audit.DecisionAllow,
+		Principal:     audit.Principal{NHIID: "model-canary"},
+		Capability:    "model-canary:close",
+		PolicyVersion: "route-profile/" + profileDigest,
+		ToolID:        "model." + requested,
+		Resource:      audit.Resource{Type: "route-profile", Value: requested},
+		Obligations: []audit.Obligation{{
+			Type: obligationGovernance,
+			Params: map[string]string{
+				"model_canary":   "closed",
+				"requested":      requested,
+				"profile_digest": profileDigest,
+				"entry_digest":   entryDigest,
+				"plans_assigned": strconv.Itoa(assigned),
+				"plan_limit":     strconv.Itoa(limit),
 			},
 		}},
 	}
