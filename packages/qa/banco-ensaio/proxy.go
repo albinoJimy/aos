@@ -303,7 +303,11 @@ func configDoProxyCom(alias, prefixo, modelo string, comBase bool) (string, erro
 		return "", fmt.Errorf("%w: nome de modelo com caracteres que o banco nao aceita", ErrProxy)
 	}
 	var b strings.Builder
-	b.WriteString("model_list:\n  - model_name: " + alias + "\n    litellm_params:\n")
+	// O alias vai ENTRE ASPAS: `null`, `true`, `123` e `-` passam em [NomeDaRotaAceite] e, sem
+	// aspas, o YAML não os lê como texto — a rota ficava com outro nome (ou sem nome) e o proxy
+	// respondia «modelo desconhecido» a todos os pedidos. O alfabeto do alias não tem aspas nem
+	// barra invertida, pelo que não há nada para escapar.
+	b.WriteString("model_list:\n  - model_name: \"" + alias + "\"\n    litellm_params:\n")
 	b.WriteString("      model: " + prefixo + "/" + modelo + "\n")
 	b.WriteString("      api_key: os.environ/" + envChaveDaRota + "\n")
 	if comBase {

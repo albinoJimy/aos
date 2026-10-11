@@ -670,7 +670,7 @@ func TestAOS512_Proxy_SegredosSoNoAmbiente(t *testing.T) {
 		t.Fatal(err)
 	}
 	verSemFugas(t, "configuracao do proxy", cfg, []string{chaveMestraDeTeste, sentinelaChaveKimi, sentinelaBaseKimi})
-	for _, quer := range []string{"model_name: " + AliasDaRota, "model: openai/" + modeloKimiDeTeste, "api_key: os.environ/" + envChaveDaRota,
+	for _, quer := range []string{"model_name: \"" + AliasDaRota + "\"", "model: openai/" + modeloKimiDeTeste, "api_key: os.environ/" + envChaveDaRota,
 		"api_base: os.environ/" + envBaseDaRota, "litellm_settings:\n  drop_params: true\n  telemetry: false\n  num_retries: 0\n",
 		"router_settings:\n  num_retries: 0\n  disable_cooldowns: true\n"} {
 		if !strings.Contains(cfg, quer) {

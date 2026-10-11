@@ -96,16 +96,23 @@ func TestAOS519_Banco_ONomePedidoEValidado(t *testing.T) {
 	}
 	// O alias chega à configuração da rota efémera do proxy, e um alias mau não chega.
 	cfg, err := configDoProxyCom("gpt-4o", "openai", "modelo-x", true)
-	if err != nil || !strings.Contains(cfg, "model_name: gpt-4o\n") || strings.Contains(cfg, AliasDaRota) {
+	if err != nil || !strings.Contains(cfg, "model_name: \"gpt-4o\"\n") || strings.Contains(cfg, AliasDaRota) {
 		t.Fatalf("configuracao do proxy com o alias de producao: %v\n%s", err, cfg)
 	}
 	if _, err := configDoProxyCom("gpt-4.1", "openai", "modelo-x", true); !errors.Is(err, ErrProxy) {
 		t.Fatalf("um alias com ponto tinha de ser recusado na configuracao do proxy; veio %v", err)
 	}
+	// Os nomes que o YAML não lê como texto sem aspas: vão entre aspas, e só assim são o nome.
+	for _, traicoeiro := range []string{"null", "true", "false", "123", "-", "0x10", "1e3", "yes", "no"} {
+		cfg, err := configDoProxyCom(traicoeiro, "openai", "modelo-x", true)
+		if err != nil || !strings.Contains(cfg, "model_name: \""+traicoeiro+"\"\n") || strings.Contains(cfg, "model_name: "+traicoeiro+"\n") {
+			t.Errorf("alias %q: tinha de ir entre aspas na configuracao do proxy (%v)\n%s", traicoeiro, err, cfg)
+		}
+	}
 	// Sem alias dado, a configuração é a de sempre.
 	deSempre, _ := configDoProxy("openai", "modelo-x", true)
 	comOmissao, _ := configDoProxyCom(AliasDaRota, "openai", "modelo-x", true)
-	if deSempre != comOmissao || !strings.Contains(deSempre, "model_name: "+AliasDaRota+"\n") {
+	if deSempre != comOmissao || !strings.Contains(deSempre, "model_name: \""+AliasDaRota+"\"\n") {
 		t.Fatal("a configuracao por omissao mudou")
 	}
 }
