@@ -384,6 +384,8 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		fechar                 = func() {}
 	)
 	defer func() { fechar() }()
+	// rastoDoProxy lê, enquanto o proxy está vivo, o rasto dos seus erros sem mensagens.
+	var rastoDoProxy func() string
 	// naoCoube trata uma corrida cujo pior caso não cabe no tecto do dia. Uma qualificação não é
 	// só recusada: fica escrita, com o veredicto `inconclusivo`. Nenhum pedido saiu.
 	naoCoube := func(cerr error) int {
@@ -715,6 +717,7 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		}
 		red.Acrescentar(vivo.ChaveMestra())
 		fechar = vivo.Fechar
+		rastoDoProxy = vivo.Rasto
 		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
 		if qualifica {
 			cfg.Qualificacao.Registar = func() (OrdemDaQualificacao, error) {
@@ -792,6 +795,11 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	if relatorio.Terminou != TerminouCompleta {
 		if relatorio.Sonda != nil && relatorio.Sonda.Resultado != SondaOK {
 			fmt.Fprintf(stderr, "aos-ensaio: a SONDA nao teve 200 (HTTP %d, %s): a corrida NAO COMECOU; gastou-se no maximo 1 pedido do tecto\n", relatorio.Sonda.HTTP, relatorio.Sonda.Resultado)
+			if relatorio.Sonda.HTTP >= 500 && rastoDoProxy != nil {
+				if r := rastoDoProxy(); r != "" {
+					fmt.Fprintf(stderr, "aos-ensaio: rasto do erro NO PROXY (so ficheiro, linha, funcao e nome de excepcao; sem mensagens): %s\n", red.Texto(r))
+				}
+			}
 		}
 		fmt.Fprintf(stderr, "aos-ensaio: a corrida PAROU A MEIO (%s); o relatorio e parcial\n", relatorio.Terminou)
 		if conselho := conselhoDaParagem(relatorio); conselho != "" {

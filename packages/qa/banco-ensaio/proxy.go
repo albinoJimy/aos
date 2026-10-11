@@ -121,6 +121,9 @@ type ProxyVivo struct {
 	// EnderecoDoFalso é a raiz (`http://127.0.0.1:<porta>`) do provider falso do estado, quando
 	// é ele o fornecedor: serve só para lhe ler a forma dos pedidos ([LerFormaDoFalso]).
 	EnderecoDoFalso string
+	// Rasto devolve o rasto dos erros do proxy SEM mensagens ([rastoSemMensagens]): só nomes de
+	// excepção e de função. Pode ser nil (lançador que não o sabe ler).
+	Rasto func() string
 
 	chaveMestra string
 }
@@ -499,7 +502,11 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 		}
 		time.Sleep(time.Second)
 	}
-	return &ProxyVivo{BaseURL: endereco + "/v1", Fechar: fechar, EnderecoDoFalso: enderecoDoFalso, chaveMestra: chaveMestra}, nil
+	rasto := func() string {
+		logs, _ := l.docker(context.Background(), nil, "logs", "--tail", "400", proxy)
+		return rastoSemMensagens(logs, 14)
+	}
+	return &ProxyVivo{BaseURL: endereco + "/v1", Fechar: fechar, EnderecoDoFalso: enderecoDoFalso, Rasto: rasto, chaveMestra: chaveMestra}, nil
 }
 
 // baseDoFalso é a base da API que o proxy usa para chegar ao provider falso no contentor. O
