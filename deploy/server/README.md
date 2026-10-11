@@ -1020,6 +1020,9 @@ próprio, o LiteLLM 1.96.2 reencaminha tudo com `true` ou com `false`: não se e
 
 Rollback, uma linha: repõe `drop_params: true` e recria o `litellm`.
 
+Os comandos, a cópia antes e a leitura do log estão em «O proxy do modelo, fixado pelo digest
+(AOS-517)», passo 3 — é por lá que este passo se executa.
+
 **2. Ligar a observação.** No `.env`: `AOS_MODEL_ROUTE_GOVERNANCE=observe` e
 `AOS_MODEL_ROUTE_API_HOST=<host do api_base do config.yaml>` (só o host: `api.kimi.com`), e
 recria o nó. O host escreve-se como está no `api_base`: com a porta se ele a tiver, sem ela se
@@ -1070,6 +1073,195 @@ arranque nomeando o modelo (AOS-425). `-` e `/` passam.
 `model` ou `api_base` no `config.yaml` pára os runs** até o perfil (código, num release) e
 `AOS_MODEL_ROUTE_API_HOST` acompanharem: é esse o efeito pretendido, e é o que tens de saber
 antes de trocar de modelo. Recuo imediato: `AOS_MODEL_ROUTE_GOVERNANCE=observe` e recria o nó.
+
+---
+
+### O proxy do modelo, fixado pelo digest (AOS-517)
+
+O serviço `litellm` do compose refere a imagem por **digest**, e é o digest em que o banco de
+ensaio e os gates atrás do proxy medem:
+
+```
+ghcr.io/berriai/litellm@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63
+```
+
+É o `litellm` 1.96.2 (imagem criada a 2026-08-11). **A declaração é uma só** — a constante
+`ImagemDoProxy`, em `packages/qa/banco-ensaio/proxy.go` — e um teste do mesmo módulo
+(`TestAOS517_ProxyDeProducaoEOProxyEmQueSeMede`, corre em cada PR com os outros testes) falha se
+o compose, a constante do teste do gateway, os três guiões de CI que lançam o proxy
+(`banco-ensaio-proxy.sh`, `wire-live.sh`, `rota-live.sh`) ou qualquer referência escrita à
+imagem nesta pasta, em `scripts/ci/` e em `docs/runbooks/` deixarem de ser essa.
+
+**Porquê.** O proxy transforma os pedidos, e a transformação muda com a rota e com a versão
+(medido na fase A2: retira ou recusa parâmetros numa rota `openai/`, insere um bloco de texto
+numa `anthropic/`, move o raciocínio numa `openrouter/`). Com a tag móvel `main-stable`, um
+`pull` ou a recriação do contentor trocava de proxy sem ninguém ver, e o que se tinha medido
+passava a valer para outra imagem.
+
+**Uma referência abreviada também avermelha o teste.** Num runbook ou num guião destas pastas,
+a imagem do proxy escreve-se inteira, como acima, ou não se escreve.
+
+**Fora deste guarda, de propósito:** `deploy/node/dev-hardened/` (o ambiente de
+desenvolvimento continua na tag móvel; não é o proxy de produção nem o da medição) e os
+relatórios datados em `docs/reports/`.
+
+#### Actualizar o proxy é uma mudança de digest, por PR
+
+Quem actualiza é o Engenheiro de Plataforma, por decisão do dono. Não há actualização por
+`pull` no servidor. Pela ordem:
+
+1. **O PR muda a declaração** (`ImagemDoProxy`) e, no mesmo commit, o compose, a constante
+   `aos505ImagemDoProxy` e o runbook do banco. O teste de igualdade diz o que ficou para trás.
+2. **Os gates atrás da imagem nova**, com ela descarregada no posto de quem mede:
+   `bash scripts/ci/banco-ensaio-proxy.sh`, `bash scripts/ci/wire-live.sh` e
+   `bash scripts/ci/rota-live.sh`. Um salto por falta da imagem **não é um verde**.
+3. **A requalificação das rotas em uso** no banco de ensaio, contra a imagem nova (AOS-518).
+4. **Só depois o servidor**, pelos passos de baixo, com o digest novo.
+
+**O que a mudança invalida:** todos os veredictos de qualificação e todos os relatórios do banco
+que citam o digest anterior. Um perfil de rota que entrou com um veredicto medido no proxy
+antigo não está qualificado para o novo. E as medições do que o proxy faz a cada rota (o ponto 2
+de «O perfil da rota e a devolução do estado», abaixo) são da imagem em que foram feitas.
+
+#### Passos de produção — cada um só com confirmação do dono
+
+Nenhum é feito por quem escreve código nem por um agente. O que o deploy faz sozinho está dito
+no passo 2. `dc` é o compose do servidor, como `aos`:
+
+```bash
+dc() { docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env "$@"; }
+FIXADA=ghcr.io/berriai/litellm@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63
+```
+
+**Lido no servidor a 2026-10-11, só leitura:** o contentor `aos-litellm-1` corre exactamente
+este digest (a tag `main-stable` resolveu para ele quando o contentor foi criado, três semanas
+antes), e o `config.yaml` do servidor tem `drop_params: true`. Ou seja: fixar **não troca** de
+proxy; impede que uma recriação futura o troque. O passo 1 repete essa leitura no dia, porque é
+ela que decide se o passo 2 é uma formalidade ou uma troca de proxy.
+
+**1. Confirmar o digest em uso (só leitura).**
+
+```bash
+docker inspect aos-litellm-1 --format 'contentor: {{.Image}}  ref: {{.Config.Image}}  criado: {{.Created}}'
+docker image inspect "$FIXADA" --format 'fixada:    {{.Id}}  {{json .RepoDigests}}'
+```
+
+- Os dois identificadores (`contentor:` e `fixada:`) **iguais**: o que corre é o que se mede.
+  Anota a linha e a data para a §5 do acompanhamento.
+- **Diferentes**, ou o segundo comando a falhar com `No such image`: o servidor corre outro
+  proxy. Pára aqui. O passo 2 deixa de ser uma formalidade e passa a ser uma **troca de
+  proxy**: regista as duas imagens (`docker image inspect <id> --format '{{.Created}} {{json
+  .RepoDigests}}'` para cada identificador, só leitura) e decide com essa diferença à frente.
+
+**2. Aplicar o compose com a imagem fixada — só com confirmação do dono.**
+
+Antes: **um plano de verificação pela fila**, e anota o código de saída e o desfecho (a linha
+`fim: … exit_code=N` do script, e a linha `desfecho:` do log da drenagem):
+
+```bash
+bash /opt/aos/medir-latencia-fila.sh --ate-ao-fim
+grep 'desfecho:' /opt/aos/logs/drenar-planos.log | tail -1
+```
+
+O compose novo chega ao servidor de uma de duas maneiras, e em ambas **o serviço `litellm` é
+recriado**: a definição mudou (a referência da imagem), ainda que a imagem seja a mesma.
+
+- **Pelo deploy de uma release** (o caminho normal). O `deploy.sh` copia o compose e corre
+  `up -d`, que recria o `litellm` com o nó. Não há comando a mais; a drenagem da fila fica
+  segura pelo deploy durante a janela (AOS-450).
+- **À mão**, com o compose novo já em `/opt/aos/`, este comando recria **só** o proxy e não
+  toca em mais nenhum serviço:
+
+  ```bash
+  dc up -d --no-deps litellm
+  ```
+
+**Indisponibilidade:** enquanto o contentor novo arranca, o nó não tem modelo. O arranque do
+LiteLLM não é instantâneo e **não foi medido neste servidor**: conta com dezenas de segundos, e
+mede-o (`dc logs --since 5m litellm` mostra quando começou a servir). Um turno que caia nessa
+janela falha, e o plano dele segue o caminho de falha normal. À mão, escolhe um momento sem
+plano a correr (`tail -3 /opt/aos/logs/drenar-planos.log`).
+
+Depois:
+
+```bash
+docker inspect aos-litellm-1 --format 'contentor: {{.Image}}  ref: {{.Config.Image}}'   # a ref tem de ser a $FIXADA; o id, o do passo 1
+                                                                                         # ref ainda com a tag = não foi recriado: repete com --force-recreate
+bash /opt/aos/medir-latencia-fila.sh --ate-ao-fim                                        # o mesmo plano: o mesmo código e o mesmo desfecho
+bash /opt/aos/alerta-rota.sh                                                             # N iguais, 0 diferentes, 0 não reportados
+```
+
+**Atenção ao que a recriação arrasta:** o contentor novo volta a ler o `config.yaml` e o
+`secrets/model.env` **que estiverem no servidor nesse momento**. Se alguém os editou sem
+recriar, é agora que a edição entra em vigor. Confere os dois antes (`diff` contra a última
+cópia do backup, ou a data: `ls -l --time-style=full-iso /opt/aos/litellm/config.yaml`).
+
+Recuo, uma linha: no compose do servidor, repõe na linha `image:` do `litellm` a tag
+`main-stable` no lugar de `@sha256:…`, e `dc up -d --no-deps litellm`. O deploy seguinte volta
+a pôr o digest (o compose é copiado em cada deploy): um recuo que deva durar é um PR.
+
+**3. `drop_params: false` no servidor — só com confirmação do dono.**
+
+O que muda: um parâmetro que o provider não suporte passa a ser **erro visível** em vez de ser
+retirado em silêncio. Com os perfis de hoje não se espera diferença nenhuma: nenhum dos quatro
+declara `params`, o nó só envia `model`, `messages` e `tools` (preso por teste desde o AOS-505),
+e foi medido que para `openai/<nome>` com `api_base` próprio este proxy reencaminha tudo com
+`true` ou com `false`. Verifica-se assim, antes de mexer: `aos_model_route_params_rejected_total`
+**não existe** no `/metrics` do nó (a família só nasce quando algum perfil declara parâmetros).
+
+```bash
+grep -n 'drop_params' /opt/aos/litellm/config.yaml                                  # antes: «drop_params: true»
+cp -p /opt/aos/litellm/config.yaml /opt/aos/litellm/config.yaml.antes-aos517        # a cópia
+sed -i 's/^\(\s*\)drop_params: true\s*$/\1drop_params: false/' /opt/aos/litellm/config.yaml
+diff /opt/aos/litellm/config.yaml.antes-aos517 /opt/aos/litellm/config.yaml         # UMA linha de diferença, e é esta
+INICIO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+dc up -d --no-deps --force-recreate litellm
+```
+
+O `--force-recreate` é necessário aqui e não no passo 2: a definição do serviço não mudou, só o
+conteúdo de um ficheiro montado, e um bind-mount de ficheiro fica agarrado ao inode antigo até o
+contentor ser recriado. A indisponibilidade é a do passo 2. Se o `diff` mostrar mais do que essa
+linha, ou nenhuma (o `sed` não casou: a linha tem um comentário à frente), repõe a cópia e edita
+à mão.
+
+Depois, o mesmo plano de verificação e a leitura do log do proxy no intervalo:
+
+```bash
+bash /opt/aos/medir-latencia-fila.sh --ate-ao-fim                                   # o mesmo código e o mesmo desfecho
+dc logs --since "$INICIO" litellm 2>&1 | grep -c -i 'UnsupportedParamsError'        # 0
+dc logs --since "$INICIO" litellm 2>&1 | grep -i -E ' 4[0-9][0-9] |BadRequest' | head   # nada que nomeie um parâmetro
+```
+
+O nome da excepção é um primeiro olhar, não a verificação: a verificação é ler os 4xx do
+intervalo. Critério: **zero pedidos recusados por parâmetro**.
+
+Recuo, uma linha (e a recriação): `cp -p /opt/aos/litellm/config.yaml.antes-aos517
+/opt/aos/litellm/config.yaml && dc up -d --no-deps --force-recreate litellm`.
+
+**4. A série de validação — só com confirmação do dono.** Depois dos passos 2 e 3, pelo menos
+**20 planos** pela fila, com o objectivo da última série do mesmo tamanho (a de comparação).
+Não se lança com o `medir-latencia-fila.sh` em ciclo (pede um token por segundo ao IdP):
+submete-se como as séries anteriores. O que se compara, série contra série:
+
+| O que | Onde se lê | Critério |
+|---|---|---|
+| Primeiras falhas | `sum(aos_orq_consume_primeiras_falhas_total)` em `/opt/aos/logs/aos-orq-consume.prom`, sobre os planos da série | não piora |
+| «Não cumprido» | `outcome_reason` e `verdict` no `GET /runs/{id}` dos runs da série; os planos que saíram `13` | não piora |
+| Rota servida | `aos_model_route_checks_total{result}` no `/metrics` do nó (`bash /opt/aos/alerta-rota.sh`) | todos os turnos `igual`; `diferente` e `nao_reportado` a zero |
+| Recusas por parâmetro | o log do `litellm` no intervalo da série, como no passo 3 | zero |
+
+Os contadores do `.prom` são acumulados e os do `/metrics` recomeçam quando o nó reinicia:
+anota os valores antes do primeiro plano e subtrai.
+
+**5. Registar.** O digest em vigor, a data de cada passo, os dois pares de planos (antes e
+depois) e os números da série vão para a §5 de
+`docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md`. Só então o AOS-517 fecha.
+
+**Recuo, por passo.** Passo 1: não altera nada. Passo 2: a linha `image:` e
+`dc up -d --no-deps litellm`. Passo 3: a cópia de volta e
+`dc up -d --no-deps --force-recreate litellm`. Passo 4: uma série que piore recua primeiro o
+passo 3, repete-se, e só depois o passo 2 — um de cada vez, para a série dizer de qual é o
+efeito.
 
 ---
 
@@ -1140,7 +1332,8 @@ nó comporta-se como antes. Antes de um perfil com algum destes campos entrar na
 1. **Qualificar no banco de ensaio** (`aos-ensaio … --perfil FICHEIRO`) e guardar o relatório: o
    PR que altera a tabela cita o `digests.perfil` desse relatório.
 2. **Configuração do proxy para a rota** (`/opt/aos/litellm/config.yaml`), medida atrás da imagem
-   fixada a 2026-10-08:
+   fixada a 2026-10-08 — a mesma que o compose de produção refere desde o AOS-517; uma mudança
+   de digest obriga a medir de novo:
    - `drop_params` tem de ficar `false`. Com `true` o proxy **retira em silêncio** `thinking` e
      `reasoning_effort` numa rota `openai/…`, e o perfil parece funcionar sem ter efeito.
    - Numa rota `openai/…` (a do Kimi), `thinking` **não passa** pelo proxy fixado (400, ou 500 com

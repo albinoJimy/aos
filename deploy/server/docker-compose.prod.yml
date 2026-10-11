@@ -919,7 +919,14 @@ services:
   # deixa rasto em cada turno, ou falha-o. Nunca publica porta no host: só é alcançável na rede interna do compose, o que é o
   # que torna aceitável falar sem master key.
   litellm:
-    image: ghcr.io/berriai/litellm:main-stable
+    # FIXADA PELO DIGEST (AOS-517): `litellm` 1.96.2, imagem criada a 2026-08-11. É a MESMA em que
+    # o banco de ensaio e os gates atrás do proxy medem (`ImagemDoProxy`, em
+    # packages/qa/banco-ensaio/proxy.go) — o proxy transforma os pedidos e a transformação muda
+    # com a versão, pelo que uma rota qualificada noutra imagem não diz nada da que serve. Com a
+    # tag móvel `main-stable`, um `pull` ou uma recriação trocava de proxy sem ninguém ver.
+    # A igualdade está presa por teste (aos517_digest_do_proxy_test.go, no módulo do banco).
+    # Mudar este digest é um PR com requalificação das rotas: ver «Actualizar o proxy» no README.
+    image: ghcr.io/berriai/litellm@sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63
     restart: unless-stopped
     # 2g e não 1g: com 1 GiB o processo é morto pelo OOM killer do cgroup DURANTE o arranque
     # (medido: anon-rss 1 036 MB contra o tecto de 1 024). O contentor reaparece como `Up` e
