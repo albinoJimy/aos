@@ -339,7 +339,7 @@ type Sonda struct {
 // pelo runtime nem pelo gateway: não é uma observação e não entra em taxa nenhuma.
 func (n *NoDeEnsaio) Sondar(ctx context.Context) Sonda {
 	corpo, _ := json.Marshal(map[string]any{
-		"model":      AliasDaRota,
+		"model":      n.alias,
 		"messages":   []map[string]string{{"role": "user", "content": TextoDaSonda}},
 		"max_tokens": tokensDaSonda,
 	})
