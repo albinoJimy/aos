@@ -7,6 +7,10 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-08 (AOS-518) Fase A3: o banco de ensaio dá um veredicto sobre a rota
+
+- `feat(AOS-518)` — o banco de ensaio ganha a experiência **`qualificacao`**: a bateria 8 vezes com um perfil candidato e um veredicto **calculado** das contagens — `qualificado`, `recusado` ou `inconclusivo` —, com a regra em texto fixo no relatório e as razões em vocabulário fechado. Limiares L1 a L5 da decisão D2, mais L6 (nós sem tools) e a devolução declarada, por decisão do dono de 2026-10-11. Razões firmes dão `recusado`; passageiras (tecto, conta, ritmo, 5xx, transporte, amostra incompleta) dão `inconclusivo`. O relatório traz o **digest de si próprio** sobre uma forma canónica (integridade, não autenticidade), os digests da rota, do perfil, da bateria e da imagem do proxy, e o que a corrida não prova. Orçamento: pior caso contra o tecto do dia, 300 pedidos e 3 USD por qualificação, duas por perfil e quatro por rota por dia. Só o modo `real` qualifica: um ensaio leva `vale_para_producao: false` e código de saída próprio. **Inerte**: as experiências `bateria` e `separadores` dão os relatórios de antes, byte a byte. Uma mudança visível fora da qualificação: o contador do dia do modo real passa a viver na pasta do dono (`~/.aos-ensaio`), e não ao lado de `--chaves` — com as chaves no sítio documentado é a mesma pasta. O nó e o gateway não mudam.
+
 ### Changed — EPIC-06 (AOS-517) Fase A3: o proxy de produção fixa-se pelo digest em que se mede
 
 - `feat(AOS-517)` — o serviço `litellm` de `deploy/server/docker-compose.prod.yml` deixa a tag móvel `main-stable` e refere a imagem por digest (`litellm` 1.96.2): a mesma em que o banco de ensaio e os gates atrás do proxy medem. Lido no servidor a 2026-10-11, é o digest que produção já corre: a mudança não troca de proxy, impede que uma recriação o troque. **Efeito no deploy:** a definição do serviço mudou, pelo que a primeira release com esta alteração **recria o `litellm`** (o nó fica sem modelo enquanto o proxy arranca), e o contentor novo volta a ler o `config.yaml` e o `secrets/model.env` do servidor.
