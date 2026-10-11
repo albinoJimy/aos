@@ -643,3 +643,71 @@ func TestAOS520_Livro_EventoDeVersaoMaisRecente_NaoDecidivel(t *testing.T) {
 		t.Fatalf("um evento malformado de um tipo conhecido: %v", err)
 	}
 }
+
+// REPOR UM REGISTO ANTIGO NÃO PARTE UM PLANO EM DOIS MODELOS (a sequência da revisão). O registo A
+// abre o canary (marca 5) e atribui três planos. O dono troca-o pelo registo B (marca 10), e um
+// plano é pedido sob B (seq 12): o seu primeiro nó vai à função de B, que o dá ao titular. O dono
+// REPÕE o registo A: a abertura de A ganha uma ÉPOCA com a marca actual da fila (20). O segundo nó
+// desse plano, sob A reposto, é do titular — o plano é anterior à época em vigor —, embora a fatia
+// de A seja 100%. A contagem de A não volta a zero, e um reinício com o mesmo registo não abre
+// outra época.
+func TestAOS520_Livro_ReporUmRegistoAntigoAbreUmaEpocaComAMarcaActual(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	registoA := aos520Cand // fatia 100
+	registoB := aos520Cand
+	registoB.entryDigest, registoB.fatia = "sha256:"+strings.Repeat("c", 64), 10
+
+	a1 := &livroDoCanary{es: es}
+	if err := a1.abrir(ctx, registoA, aos520Marca(5, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		aos520Decidir(t, a1, registoA, fmt.Sprintf("plano-de-a-%d", i), 0)
+	}
+	b := &livroDoCanary{es: es}
+	if err := b.abrir(ctx, registoB, aos520Marca(10, nil)); err != nil {
+		t.Fatal(err)
+	}
+	// O plano "a" (balde 8230), pedido sob B com o seq 12: a 10% a função dá-o ao titular.
+	if d := aos520Decidir(t, b, registoB, "a", 12); d.papel != canary.RoleIncumbent || d.razao != razaoFuncao {
+		t.Fatalf("o no 1 do plano, sob o registo B: %+v", d)
+	}
+	// O registo A volta.
+	a2 := &livroDoCanary{es: es}
+	if err := a2.abrir(ctx, registoA, aos520Marca(20, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if d := aos520Decidir(t, a2, registoA, "a", 12); d.papel != canary.RoleIncumbent || d.razao != razaoPlanoAnteriorAAbertura {
+		t.Fatalf("o no 2 do plano, sob o registo A reposto: %+v — o plano comecou no titular e tem de la ficar", d)
+	}
+	abertas := aos520EventosDoLivro(t, es, EventTypeModelCanaryOpened)
+	if len(abertas) != 3 || abertas[2].EntryDigest != registoA.entryDigest || abertas[2].PlanRequestMark != 20 || abertas[2].Limit != 40 || abertas[2].SharePercent != 100 {
+		t.Fatalf("aberturas = %+v; quer A, B e uma epoca nova de A com a marca 20", abertas)
+	}
+	if a2.atribuidosVistos.Load() != 3 {
+		t.Fatalf("a contagem do registo A voltou a %d; nao volta a zero ao repor", a2.atribuidosVistos.Load())
+	}
+	// Um plano pedido DEPOIS da época nova vai à função de A; um plano de A de antes continua dele.
+	if d := aos520Decidir(t, a2, registoA, "plano-novo", 21); d.papel != canary.RoleCandidate || d.razao != razaoFuncao {
+		t.Fatalf("plano pedido depois da epoca nova: %+v", d)
+	}
+	if d := aos520Decidir(t, a2, registoA, "plano-de-a-1", 0); d.papel != canary.RoleCandidate || d.razao != razaoPlanoJaAtribuido {
+		t.Fatalf("plano ja atribuido ao registo A: %+v", d)
+	}
+	// Um reinício com o MESMO registo em vigor não abre uma época.
+	if err := (&livroDoCanary{es: es}).abrir(ctx, registoA, aos520Marca(99, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryOpened)); n != 3 {
+		t.Fatalf("um reinicio abriu uma epoca: %d aberturas", n)
+	}
+	// Duas aberturas do mesmo registo que se contradizem: ilegível.
+	mau, _ := json.Marshal(canaryPayload{V: canaryVersaoDoLivro, EntryDigest: registoA.entryDigest, Alias: registoA.alias, ProfileDigest: registoA.profileDigest, SharePercent: 50, Limit: 40})
+	if _, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelCanaryOpened, Payload: mau, RunID: canaryRunID, StepID: "contradiz"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a2.ler(ctx); !errors.Is(err, ErrCanaryUnreadable) {
+		t.Fatalf("duas aberturas do mesmo registo com fatias diferentes: %v", err)
+	}
+}

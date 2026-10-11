@@ -13,9 +13,11 @@ package main
 //
 // TRÊS FACTOS:
 //
-//   - `model.canary.opened` — um por registo de entrada assinado (pelo digest do registo): o
-//     alias, o digest do perfil, a fatia, o limite e a MARCA de abertura (o último `seq` da fila
-//     de pedidos de plano nesse momento). Os planos pedidos até à marca são do titular.
+//   - `model.canary.opened` — um por ÉPOCA de um registo de entrada assinado (pelo digest do
+//     registo): o alias, o digest do perfil, a fatia, o limite e a MARCA de abertura (o último
+//     `seq` da fila de pedidos de plano nesse momento). Os planos pedidos até à marca da época
+//     mais recente são do titular. Há uma época nova sempre que o registo em vigor muda —
+//     incluindo um registo antigo que volta; a contagem dos planos é por registo.
 //   - `model.canary.plan_assigned` — um por plano atribuído ao CANDIDATO. A primeira escrita
 //     ganha: a chave de idempotência é a do plano, sem o registo, pelo que um plano só é
 //     atribuído uma vez, em qualquer abertura.
@@ -180,7 +182,13 @@ type candidatoEmVigor struct {
 
 // estadoDoCanary é o que o livro diz.
 type estadoDoCanary struct {
-	aberturas   map[string]canaryPayload // por digest do registo
+	aberturas map[string]canaryPayload // a PRIMEIRA abertura de cada registo, por digest do registo
+	// marcas é a marca de abertura da época MAIS RECENTE de cada registo, e epocas quantas épocas
+	// o registo tem. emVigor é o registo da última abertura gravada no livro: o que estava em
+	// vigor da última vez que um nó abriu o canary.
+	marcas      map[string]uint64
+	epocas      map[string]int
+	emVigor     string
 	atribuidos  map[string]canaryPayload // por chave do plano ([chaveCanary.indice]); a primeira escrita ganha
 	porAbertura map[string]int           // planos atribuídos, por digest do registo
 	fechadas    map[string]bool          // por digest do registo
@@ -244,7 +252,8 @@ func passoDoPlano(chave chaveCanary) string {
 
 // ler devolve o estado do livro. Um stream que não existe é um livro vazio.
 func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
-	st := estadoDoCanary{aberturas: map[string]canaryPayload{}, atribuidos: map[string]canaryPayload{}, porAbertura: map[string]int{}, fechadas: map[string]bool{}}
+	st := estadoDoCanary{aberturas: map[string]canaryPayload{}, marcas: map[string]uint64{}, epocas: map[string]int{},
+		atribuidos: map[string]canaryPayload{}, porAbertura: map[string]int{}, fechadas: map[string]bool{}}
 	evs, err := l.es.Read(ctx, canaryStream, 1)
 	if errors.Is(err, eventstore.ErrStreamNotFound) {
 		return st, nil
@@ -277,9 +286,17 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 			if p.Limit <= 0 || p.SharePercent <= 0 || p.SharePercent > 100 {
 				return st, fmt.Errorf("%w: abertura sem limite ou sem fatia valida no evento %d", ErrCanaryUnreadable, ev.Seq)
 			}
-			if _, ja := st.aberturas[p.EntryDigest]; !ja {
+			// A PRIMEIRA abertura de um registo fixa o alias, o perfil, a fatia e o limite. As
+			// seguintes são ÉPOCAS do mesmo registo — o registo voltou a entrar em vigor — e só
+			// trazem uma marca nova; uma época que contradiga a primeira não se reinterpreta.
+			if primeira, ja := st.aberturas[p.EntryDigest]; !ja {
 				st.aberturas[p.EntryDigest] = p
+			} else if primeira.Alias != p.Alias || primeira.ProfileDigest != p.ProfileDigest || primeira.SharePercent != p.SharePercent || primeira.Limit != p.Limit {
+				return st, fmt.Errorf("%w: duas aberturas do mesmo registo que se contradizem, no evento %d", ErrCanaryUnreadable, ev.Seq)
 			}
+			st.marcas[p.EntryDigest] = p.PlanRequestMark
+			st.epocas[p.EntryDigest]++
+			st.emVigor = p.EntryDigest
 		case EventTypeModelCanaryPlanAssigned:
 			if p.PlanKey == "" || (p.PlanKeyKind != tipoDePedido && p.PlanKeyKind != tipoDeRun) {
 				return st, fmt.Errorf("%w: atribuicao sem plano ou sem o tipo da chave no evento %d", ErrCanaryUnreadable, ev.Seq)
@@ -299,7 +316,8 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 	return st, nil
 }
 
-// aberturaDe devolve a abertura gravada para o candidato em vigor, conferida com ele.
+// aberturaDe devolve a abertura gravada para o candidato em vigor, conferida com ele: a fatia e o
+// limite da PRIMEIRA abertura do registo, e a marca da sua época mais recente.
 func (st estadoDoCanary) aberturaDe(c candidatoEmVigor) (canaryPayload, bool, error) {
 	ab, ok := st.aberturas[c.entryDigest]
 	if !ok {
@@ -308,6 +326,8 @@ func (st estadoDoCanary) aberturaDe(c candidatoEmVigor) (canaryPayload, bool, er
 	if ab.Alias != c.alias || ab.ProfileDigest != c.profileDigest || ab.SharePercent != c.fatia {
 		return canaryPayload{}, true, ErrCanaryInconsistent
 	}
+	// A marca que decide é a da época MAIS RECENTE do registo.
+	ab.PlanRequestMark = st.marcas[c.entryDigest]
 	return ab, true, nil
 }
 
@@ -321,10 +341,11 @@ func (l *livroDoCanary) publicar(atribuidos int, fechado bool) {
 	}
 }
 
-// abrir garante que o livro tem a abertura do candidato em vigor. Idempotente: uma abertura já
-// gravada para o mesmo registo é conferida e fica como está — a contagem não volta a zero num
-// reinício. `marca` devolve o último `seq` da fila de pedidos de plano; só é chamada se a abertura
-// tiver de ser escrita.
+// abrir garante que o registo em vigor NO LIVRO é o do candidato que este nó serve. Idempotente num
+// reinício: se a última abertura gravada é a deste registo, nada se escreve. Se o registo em vigor
+// mudou — é novo, ou é um registo antigo REPOSTO depois de outro —, grava-se uma época nova com a
+// marca actual da fila. A contagem é por registo e nunca volta a zero. `marca` devolve o último
+// `seq` da fila de pedidos de plano; só é chamada se a abertura tiver de ser escrita.
 func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca func(context.Context) (uint64, error)) error {
 	if c.alias == "" || c.profileDigest == "" || c.entryDigest == "" || c.fatia <= 0 || c.fatia > 100 {
 		return fmt.Errorf("%w: candidato sem alias, digests ou fatia valida", ErrCanaryInconsistent)
@@ -341,9 +362,12 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 			return err
 		}
 		l.futurosVistos.Store(int64(st.futuros))
+		jaServidos := st.porAbertura[c.entryDigest]
 		if tem {
-			n := st.porAbertura[c.entryDigest]
-			l.publicar(n, st.fechadas[c.entryDigest] || n >= ab.Limit)
+			l.publicar(jaServidos, st.fechadas[c.entryDigest] || jaServidos >= ab.Limit)
+		}
+		// O registo em vigor no livro É este: nada a escrever. Um reinício não abre uma época.
+		if tem && st.emVigor == c.entryDigest {
 			return nil
 		}
 		if st.futuros > 0 {
@@ -354,16 +378,24 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 		if err != nil {
 			return fmt.Errorf("%w: marca de abertura: %w", ErrCanaryUnreadable, err)
 		}
+		// O REGISTO EM VIGOR MUDOU — é novo, ou voltou depois de outro. Grava-se uma ÉPOCA com a
+		// marca ACTUAL da fila: os planos pedidos enquanto outro registo (ou nenhum) esteve em
+		// vigor correram os seus primeiros nós no titular, e ficam no titular. O limite é o da
+		// primeira abertura do registo, e a contagem dos planos é por registo: não volta a zero.
+		limite, epoca := canaryLimiteDePlanos, st.epocas[c.entryDigest]+1
+		if tem {
+			limite = ab.Limit
+		}
 		payload, err := json.Marshal(canaryPayload{
 			V: canaryVersaoDoLivro, EntryDigest: c.entryDigest, Alias: c.alias, ProfileDigest: c.profileDigest,
-			SharePercent: c.fatia, PlanRequestMark: m, Limit: canaryLimiteDePlanos,
+			SharePercent: c.fatia, PlanRequestMark: m, Limit: limite,
 		})
 		if err != nil {
 			return err
 		}
 		res, err := l.es.Append(ctx, canaryStream, eventstore.EventInput{
 			Type: EventTypeModelCanaryOpened, Payload: payload,
-			RunID: canaryRunID, StepID: "opened-" + c.entryDigest,
+			RunID: canaryRunID, StepID: fmt.Sprintf("opened-%s-%d", c.entryDigest, epoca),
 			Producer: eventstore.Producer{NHIID: canaryNHI},
 		}, eventstore.WithExpectedSeq(st.ultimoSeq))
 		if conflitoDeCAS(err) {
@@ -375,9 +407,9 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 		if res.Status == eventstore.StatusDuplicate {
 			continue // outra réplica abriu primeiro: relê e confere
 		}
-		l.publicar(0, false)
-		l.logf("canary do modelo candidato ABERTO (AOS-520): alias %q, digest do perfil %s, digest do registo %s, fatia %d%%, limite %d planos, marca de abertura %d (os planos pedidos ate aqui sao do titular)",
-			c.alias, c.profileDigest, c.entryDigest, c.fatia, canaryLimiteDePlanos, m)
+		l.publicar(jaServidos, st.fechadas[c.entryDigest] || jaServidos >= limite)
+		l.logf("canary do modelo candidato ABERTO (AOS-520): alias %q, digest do perfil %s, digest do registo %s, fatia %d%%, limite %d planos, epoca %d deste registo, %d plano(s) ja atribuido(s), marca de abertura %d (os planos pedidos ate aqui sao do titular)",
+			c.alias, c.profileDigest, c.entryDigest, c.fatia, limite, epoca, jaServidos, m)
 		return nil
 	}
 	return ErrCanaryContention
