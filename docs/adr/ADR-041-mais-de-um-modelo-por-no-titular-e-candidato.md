@@ -236,6 +236,11 @@ lê o relógio.
 
 Um run recusado pela fixação acaba `failed`, com a razão `model_pin_refused` na transição
 terminal e a causa no log do nó. O `aos-orq` trata-o como a falha terminal de um nó do plano.
+As causas, em vocabulário fechado: `plano_do_candidato_sem_candidato`,
+`livro_do_canary_ilegivel`, `livro_do_canary_em_contencao`, `fixacao_nao_gravada`,
+`fixacao_diferente_da_gravada` (o run já tinha um `run.model_pinned`, e não é o que o nó
+escolheria agora: o gravado não se reescreve nem se ignora) e
+`candidato_sem_o_perfil_do_registo`. As da retoma de um run já fixado são as do PR 0.
 
 ### 2.7 O interruptor e a inércia
 

@@ -124,10 +124,16 @@ func (p *perfisAssinados) conferirCandidato(titular string, comCusto bool, temPr
 	return nil
 }
 
-// modelCandidateBanner declara o titular e o candidato. Sem pasta de perfis, ou sem nenhum registo
-// não-titular e com o interruptor a `off`, não sai linha nenhuma: o arranque é o de antes.
+// modelCandidateBanner declara o titular e o candidato. Com o interruptor ausente ou `off`, e sem registo
+// não-titular nenhum (ou sem a pasta), não sai linha nenhuma: o arranque é o de antes.
 func modelCandidateBanner(p *perfisAssinados, titular string) []string {
 	if p == nil {
+		// O interruptor está ligado e o nó não tem perfis assinados (sem a pasta, sem gateway por
+		// ambiente, ou com um cliente injectado): não há candidato, e isso não fica em silêncio.
+		// Com o interruptor ausente ou `off` não sai linha nenhuma.
+		if ligado, err := modelCandidateFromEnv(); err == nil && ligado {
+			return []string{"AVISO (EPIC-06/AOS-520): AOS_MODEL_CANDIDATE=on e este no NAO tem perfis de rota assinados carregados (AOS_MODEL_ROUTE_PROFILES_DIR por definir, ou o gateway de modelo nao foi composto a partir do ambiente) — nao ha candidato; todos os runs sao do titular. O candidato vem de um registo de entrada assinado nessa pasta"}
+		}
 		return nil
 	}
 	nt := p.naoTitulares(titular)

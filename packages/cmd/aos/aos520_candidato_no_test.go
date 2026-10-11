@@ -1076,9 +1076,18 @@ func TestAOS520_Banner_TitularECandidato(t *testing.T) {
 	if linhas := modelCandidateBanner(carregar(t, "on"), aos486Modelo); len(linhas) != 1 || !strings.Contains(linhas[0], "nao ha candidato") {
 		t.Fatalf("on sem registo nao-titular: %q", linhas)
 	}
-	if linhas := modelCandidateBanner(nil, aos486Modelo); linhas != nil {
-		t.Fatalf("sem a pasta: %q", linhas)
+	// Sem a pasta: nada com o interruptor ausente ou a off; um aviso com ele a on.
+	for _, v := range []string{"", "off"} {
+		aos520Interruptor(t, v)
+		if linhas := modelCandidateBanner(nil, aos486Modelo); linhas != nil {
+			t.Fatalf("sem a pasta, interruptor %q: %q", v, linhas)
+		}
 	}
+	aos520Interruptor(t, "on")
+	if linhas := modelCandidateBanner(nil, aos486Modelo); len(linhas) != 1 || !strings.HasPrefix(linhas[0], "AVISO") || !strings.Contains(linhas[0], "nao ha candidato") {
+		t.Fatalf("sem a pasta, com on: %q", linhas)
+	}
+	aos520Interruptor(t, "")
 	// Um registo para o alias do TITULAR não é um candidato.
 	if linhas := modelCandidateBanner(carregar(t, "off", aos520Registo{"titular", aos520PerfilA, 10}), aos486Modelo); linhas != nil {
 		t.Fatalf("um registo para o alias do titular nao e um candidato: %q", linhas)

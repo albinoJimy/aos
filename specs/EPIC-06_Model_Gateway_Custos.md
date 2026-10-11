@@ -4157,56 +4157,56 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Inerte sem candidato**
 
-- [ ] Com `AOS_MODEL_CANDIDATE` ausente ou `off` — haja ou não um registo de candidato na
+- [x] Com `AOS_MODEL_CANDIDATE` ausente ou `off` — haja ou não um registo de candidato na
       pasta —, e com `on` e a fatia assinada a 0: o pedido ao provider, o manifesto de cada
       turno, o registo de retoma, o banner e o `/metrics` são byte a byte os do binário da
       base sobre as mesmas entradas. Preso por digest. As séries novas por modelo só existem
       com um candidato a servir.
-- [ ] Um run gravado antes deste ticket, ou sem a marca de modelo fixado por escolha, é
+- [x] Um run gravado antes deste ticket, ou sem a marca de modelo fixado por escolha, é
       retomado exactamente como hoje (o modelo do nó sobrepõe-se).
 
 **A escolha**
 
-- [ ] Determinista: a mesma entrada dá sempre a mesma escolha, em arranques diferentes e em
+- [x] Determinista: a mesma entrada dá sempre a mesma escolha, em arranques diferentes e em
       nós diferentes. Os vectores de teste do ADR estão presos por teste; mudar a função
       avermelha-os.
-- [ ] Com a fatia a X%, numa série de pelo menos **200 identificadores de plano** distintos a
+- [x] Com a fatia a X%, numa série de pelo menos **200 identificadores de plano** distintos a
       fracção atribuída ao candidato fica dentro do intervalo esperado para essa amostra
       (escrito no teste, para 10% e para mais dois valores). Com 100%, todos; com 0%, nenhum.
-- [ ] **Todos os nós de um plano, e todas as tentativas de um nó, usam o mesmo modelo** —
+- [x] **Todos os nós de um plano, e todas as tentativas de um nó, usam o mesmo modelo** —
       incluindo a nova tentativa por falta de tool call (AOS-502) e a por resposta vazia
       (AOS-510). Teste com um plano de três nós e duas tentativas: um só modelo em todos os
       manifestos.
-- [ ] Quem submete não escolhe: nenhum campo do `POST /runs`, nenhum cabeçalho e nenhum campo
+- [x] Quem submete não escolhe: nenhum campo do `POST /runs`, nenhum cabeçalho e nenhum campo
       do plano altera a escolha. Um teste tenta as três vias.
-- [ ] No máximo um candidato: dois registos assinados que não sejam o do alias do titular, e
+- [x] No máximo um candidato: dois registos assinados que não sejam o do alias do titular, e
       o nó não arranca, com causa própria.
 
 **A fixação**
 
-- [ ] O modelo de um run não muda a meio: nem de turno para turno, nem numa retoma, nem depois
+- [x] O modelo de um run não muda a meio: nem de turno para turno, nem numa retoma, nem depois
       de um reinício do nó com outra fatia ou sem candidato.
-- [ ] Um run começado com o candidato e retomado depois de o candidato sair (registo
+- [x] Um run começado com o candidato e retomado depois de o candidato sair (registo
       retirado, interruptor a `off`, ou canary terminado) **acaba com o modelo fixado, se o
       perfil ainda estiver carregado, ou falha com causa própria**. Nunca passa para o
       titular em silêncio. Um teste por cada uma das três saídas.
-- [ ] **Mutação dirigida:** repor, para um run com a marca, a sobreposição do modelo do nó na
+- [x] **Mutação dirigida:** repor, para um run com a marca, a sobreposição do modelo do nó na
       retoma avermelha o teste acima.
-- [ ] O manifesto de cada turno e o registo de retoma permitem reconstruir, só do log, que
+- [x] O manifesto de cada turno e o registo de retoma permitem reconstruir, só do log, que
       modelo e que perfil serviram cada run, e porquê (o digest do registo de entrada e a
       fatia em vigor na altura da escolha).
-- [ ] Fidelidade de replay de 100% num run servido pelo candidato, incluindo um run retomado
+- [x] Fidelidade de replay de 100% num run servido pelo candidato, incluindo um run retomado
       a meio.
 
 **O canary**
 
-- [ ] Com `on` e a fatia assinada a 10%, os planos novos repartem-se pela função; o banner
+- [x] Com `on` e a fatia assinada a 10%, os planos novos repartem-se pela função; o banner
       declara o titular, o candidato, a fatia e o digest do registo.
-- [ ] Ao **40.º plano** servido pelo candidato, o candidato deixa de receber planos novos; o
+- [x] Ao **40.º plano** servido pelo candidato, o candidato deixa de receber planos novos; o
       facto fica selado com as contagens, e há um sinal para o dono (métrica e linha de log).
       Os runs em curso acabam com o modelo fixado. A contagem é durável: um reinício não a
       repõe a zero. Reabrir a fatia é um registo assinado novo.
-- [ ] O candidato **nunca** passa a titular sem um acto assinado do dono; não há caminho no
+- [x] O candidato **nunca** passa a titular sem um acto assinado do dono; não há caminho no
       código que o faça.
 - [ ] Sobre **JetStream**, e não só sobre ficheiro: o smoke da escolha, da fixação e da
       contagem durável corre contra o cluster de CI.
@@ -4234,7 +4234,7 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Registo**
 
-- [ ] O ADR novo está escrito, com: a função de escolha e os seus vectores; a regra de
+- [x] O ADR novo está escrito, com: a função de escolha e os seus vectores; a regra de
       fixação e a marca; o fim do canary; o que **não** é coberto (o planeador do `aos-orq`
       chama o modelo fora da governação da rota); e a relação com os ADR citados no cabeçalho
       deste bloco — incluindo a discrepância conhecida entre o texto do ADR da auto-modificação
@@ -4290,10 +4290,73 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 ### Estado
 
-**Em curso (2026-10-11).** Feito o **PR 0 — o perfil fixado por run**, no ramo
-`feature/AOS-520-perfil-fixado-por-run`. **Por fazer:** o PR 1 (o candidato, a função de escolha,
-o modelo fixado por escolha, o canary e a sua contagem durável, o ADR novo) e o PR 2 (as séries
-por modelo). Nenhum critério fora do bloco «O perfil fixado por run» está cumprido.
+**Em curso (2026-10-11).** Feitos o **PR 0 — o perfil fixado por run** (ramo
+`feature/AOS-520-perfil-fixado-por-run`) e o **PR 1 — titular, candidato e canary** (ramo
+`feature/AOS-520-titular-e-candidato`, por cima do PR 0). **Por fazer:** o PR 2 (as séries por
+modelo — o bloco «Métricas»), o smoke sobre JetStream, e a revisão adversarial independente, que
+é condição para ligar o interruptor. Os critérios marcados acima são os que o PR 1 cumpre em
+ensaio; nada está ligado.
+
+**O que o PR 1 entregou** (ADR-041).
+
+- *A função de escolha* (`packages/platform/model-gateway/policy/canary`): pura, por identificador
+  do plano, com os vectores e a distribuição presos por teste — em 1000 planos, 110 a 10%, 254 a
+  25% e 498 a 50%; 25 nos primeiros 200 a 10% — e os dois controlos negativos.
+- *A chave do plano*: o `plan_request.run_id` que o nó prova (com o `seq` do pedido na fila), ou o
+  id do run inteiro. O `plan_id` declarado não entra. Nenhum campo novo no `POST /runs`, nenhuma
+  mudança no `aos-orq`.
+- *A escolha e a fixação*, uma vez, em `hostRun`: o alias, o digest do perfil e a marca
+  `ModelPinnedBy` no Goal e no registo de retoma, e o evento `run.model_pinned` no stream do run,
+  em fail-closed. A retoma não sobrepõe o modelo de um run com a marca; a conferência do PR 0
+  passa a usar o alias fixado.
+- *Um gateway, um adaptador por alias e um despachante*: alias desconhecido é erro, nunca o
+  titular.
+- *O livro do canary* (`aos-internal/model-canary`, com CAS): a abertura com a marca da fila, um
+  registo por plano do candidato, o fim aos 40 — gravado, selado no audit de governação do
+  gateway, dito no log e nas métricas `aos_model_canary_plans_assigned` e
+  `aos_model_canary_closed`.
+- *As recusas*, todas pelo lado fechado: o plano do candidato sem candidato a servir; o livro
+  ilegível ou em contenção; a fixação que não se grava; dois candidatos com `on`; o candidato sem
+  preço com a contabilidade de custo composta; um valor inválido do interruptor.
+- *O runbook* em `deploy/server/README.md` e a variável em `deploy/node/README.md`.
+
+**Inércia do PR 1.** Sem candidato a servir — interruptor ausente ou `off` com um registo de
+candidato, `on` com a fatia a 0, `on` sem registo — os pedidos ao provider, os manifestos, o
+registo de retoma, a sequência de tipos de evento do run, as famílias do `/metrics`, as séries
+`aos_model_*` e as linhas do arranque dos perfis assinados têm os digests **medidos no commit do
+PR 0** com o mesmo ficheiro de teste (`aos520_inercia_test.go`). Os goldens do nó não mudaram.
+**Uma diferença, de propósito (acerto do dono):** com um registo não-titular na pasta, o arranque
+ganha UMA linha a dizer «candidato não servido»; as que já existiam são as de antes.
+
+**Limites e pontos que ficaram escritos (PR 1).**
+
+- *Por fazer:* o smoke sobre JetStream (a escolha, a fixação e a contagem), e o teste sobre o
+  binário construído — a série «`off` dá zero, 100% dá todos» está feita sobre o nó composto pelo
+  `parseModelFromEnv` e pelo `Bootstrap`, com o servidor HTTP do nó, não sobre o executável.
+- *A recusa pela fixação não tem série própria:* o run fecha `failed` com a razão
+  `model_pin_refused` na transição terminal e a causa no log; conta nas séries de desfecho que já
+  existem. As séries por causa e por modelo são do PR 2.
+- *O `run.model_pinned` que já lá estava vale:* um run re-submetido com o mesmo id depois de um
+  crash antes do registo de retoma é recusado se o que o nó escolheria agora não for o gravado.
+- *Os runs fixados como titular durante um canary também levam a marca:* retomados num nó cujo
+  titular mudou, não continuam (`modelo_fixado_nao_servido`).
+- *Um nó sem a pasta de perfis não lê o livro*, e réplicas com configurações diferentes decidem
+  de maneira diferente: ADR-041 §5.
+- *O ponto «por confirmar pelo dono» do PR 0* (um run fixado pode descer de tier?) não foi tocado.
+
+**Mutações dirigidas do PR 1.** 26, todas vermelhas. As oito do plano: repor a
+sobreposição do modelo do nó num run com a marca; `<` por `<=` na função; mudar o prefixo de
+domínio (e tirar-lhe o byte separador); o `plan_id` em vez do `plan_request.run_id`; retirar o CAS
+da atribuição; o limite 40 → 41; ignorar a marca de abertura (e a marca com `<`); o despachante a
+cair no titular com um alias desconhecido. E mais dezasseis sobre o que este PR afirma: o run
+retomado sem a marca a passar pela escolha; o plano do candidato sem candidato a não ser recusado;
+a fixação que não se grava a não recusar; a retoma a não perguntar se o alias fixado é servido; o
+alias fixado fora do contexto do run; a fatia a zero e o interruptor a `off` a deixarem de travar;
+dois candidatos e o candidato sem preço a arrancarem; um valor inválido do interruptor a passar
+por `off`; o plano atribuído a outro candidato a não ser recusado; o fecho só pela marca, sem a
+contagem; o plano já atribuído a voltar à função; a abertura com outra fatia a não ser recusada; a
+razão própria fora da transição terminal; e a marca fora do registo de retoma. Em cada uma
+alterou-se uma linha, correram-se os testes do pacote, e repôs-se o ficheiro.
 
 **O que o PR 0 entregou.**
 
