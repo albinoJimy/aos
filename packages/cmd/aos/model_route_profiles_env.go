@@ -174,6 +174,12 @@ func modelAllowlistDoNo(assinados *perfisAssinados) (*allowlist.Policy, error) {
 // arranque de um nó que não a configura é o de antes. Só leva identificadores e digests.
 func modelRouteProfilesBanner(p *perfisAssinados) []string {
 	if p == nil {
+		// A pasta está declarada e NÃO foi lida: o nó não compôs o gateway de modelo por ambiente
+		// (sem AOS_MODEL_ENDPOINT, ou com um cliente injectado). Nenhum perfil está em vigor, e
+		// isso não fica em silêncio. Sem a variável não sai linha nenhuma.
+		if strings.TrimSpace(os.Getenv("AOS_MODEL_ROUTE_PROFILES_DIR")) != "" {
+			return []string{"AVISO (EPIC-06/AOS-519): AOS_MODEL_ROUTE_PROFILES_DIR esta definida e a pasta NAO foi lida nem conferida — o no nao compos o gateway de modelo a partir do ambiente (AOS_MODEL_ENDPOINT por definir). Nenhum perfil de rota assinado esta em vigor"}
+		}
 		return nil
 	}
 	if len(p.entradas) == 0 {

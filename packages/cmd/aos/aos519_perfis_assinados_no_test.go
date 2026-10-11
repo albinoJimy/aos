@@ -549,3 +549,23 @@ func TestAOS519_No_ORunNovoFicaFixadoNaVersaoDoPerfilAssinado(t *testing.T) {
 		t.Fatalf("o registo de retoma traz a versao %q; quer 1.2.0", got)
 	}
 }
+
+// A PASTA DECLARADA E NÃO LIDA NÃO FICA EM SILÊNCIO. Sem gateway composto a partir do ambiente a
+// pasta não é lida — nem conferida —, e o arranque diz que nenhum perfil assinado está em vigor.
+func TestAOS519_No_PastaDeclaradaSemGatewayEAvisada(t *testing.T) {
+	aos504SemVariavel(t, "AOS_MODEL_ROUTE_PROFILES_DIR")
+	if linhas := modelRouteProfilesBanner(nil); linhas != nil {
+		t.Fatalf("sem a variavel nao sai linha: %v", linhas)
+	}
+	// Uma pasta que nem existe: se fosse lida, o no abortava. Sem endpoint, nao e lida.
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_DIR", filepath.Join(t.TempDir(), "nao-existe"))
+	t.Setenv("AOS_MODEL_ENDPOINT", "")
+	cliente, binder, err := parseModelFromEnv(false)
+	if cliente != nil || binder != nil || err != nil {
+		t.Fatalf("sem endpoint nao ha gateway nem erro: %v", err)
+	}
+	linhas := modelRouteProfilesBanner(perfisDoCliente(cliente))
+	if len(linhas) != 1 || !strings.HasPrefix(linhas[0], "AVISO") || !strings.Contains(linhas[0], "NAO foi lida") {
+		t.Fatalf("a pasta declarada e nao lida tinha de ser avisada: %v", linhas)
+	}
+}
