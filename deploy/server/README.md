@@ -1395,9 +1395,14 @@ Qualquer outro ficheiro na pasta faz o nó recusar arrancar.
 
 ```powershell
 # 1. UMA VEZ: a chave dos perfis de rota. So para isto; fora do no e fora do banco de ensaio.
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.aos-perfis" | Out-Null
+#    Uma chave POR AMBIENTE: a de producao nao assina registos de desenvolvimento.
+#    A pasta fica com ACL so para o teu utilizador ANTES de a seed ser escrita.
+$pasta = "$env:USERPROFILE\.aos-perfis"
+New-Item -ItemType Directory -Force $pasta | Out-Null
+icacls $pasta /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
 $b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
-[IO.File]::WriteAllText("$env:USERPROFILE\.aos-perfis\perfis.seed", (-join ($b | ForEach-Object { $_.ToString('x2') })))
+[IO.File]::WriteAllText("$pasta\perfis.seed", (-join ($b | ForEach-Object { $_.ToString('x2') })))
+icacls "$pasta\perfis.seed"   # tem de mostrar SO o teu utilizador
 
 # 2. UMA VEZ: a ancora — a chave PUBLICA — que vai para o .env do servidor.
 aos-issuer route-profile-anchor --key-file "$env:USERPROFILE\.aos-perfis\perfis.seed"
@@ -1412,7 +1417,10 @@ aos-issuer route-profile-sign --entry novo.registo.json --report novo.relatorio.
 ```
 
 Com um veredicto `recusado` ou `inconclusivo`, ou com um relatório de um ensaio (`modo` que não é
-`real`), o passo 4 falha e não fica assinatura nenhuma. A seed nunca sai do posto.
+`real`), o passo 4 falha e não fica assinatura nenhuma. A seed nunca sai do posto. Antes de
+assinar, o comando mostra **o que vais assinar** — alias, modelo esperado, parâmetros do pedido,
+versão da projecção, board, região, fatia e os três digests: lê-o. O `--out` recusa escrever por
+cima do registo, do relatório ou da chave.
 
 5. **Drenar a rota — OBRIGATÓRIO, e o nó não o faz por ti.** Hoje o nó **não detecta** a troca
    de perfil com runs em curso: um run começado com um perfil e retomado depois de o nó ser

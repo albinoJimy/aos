@@ -163,3 +163,115 @@ func TestAOS519_RouteProfileSign_Uso(t *testing.T) {
 		}
 	}
 }
+
+// AS MENSAGENS DE ERRO DA CHAVE são deste subcomando, e não repetem bytes da seed (revisão
+// adversarial): o erro do descodificador de hex dizia o byte inválido, que é um byte da seed.
+func TestAOS519_RouteProfileSign_OErroDaChaveNaoEcoaASeed(t *testing.T) {
+	p := aos519NovoPosto(t, nil, nil)
+	boa, _ := os.ReadFile(p.seed)
+	semente := strings.TrimSpace(string(boa))
+	casos := map[string]string{
+		"um caracter que nao e hex": semente[:20] + "Z" + semente[21:],
+		"curta":                     semente[:40],
+		"com lixo no fim":           semente + "!!",
+	}
+	for nome, conteudo := range casos {
+		if err := os.WriteFile(p.seed, []byte(conteudo), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{
+			{"route-profile-sign", "--entry", p.caminho(routeentry.SuffixEntry), "--report", p.caminho(routeentry.SuffixReport), "--key-file", p.seed},
+			{"route-profile-anchor", "--key-file", p.seed},
+		} {
+			var out, diag bytes.Buffer
+			err := run(args, &out, &diag)
+			if err == nil || out.Len() != 0 {
+				t.Fatalf("%s (%s): tinha de falhar sem assinar; err=%v", nome, args[0], err)
+			}
+			tudo := err.Error() + diag.String()
+			if strings.Contains(tudo, "approve-sign") || strings.Contains(tudo, "aprovador") {
+				t.Errorf("%s (%s): a mensagem e de outro subcomando: %v", nome, args[0], err)
+			}
+			// Nem a seed, nem um troço dela, nem o byte que o descodificador rejeitou.
+			for _, proibido := range []string{semente, semente[:16], "U+005A", "'Z'", "invalid byte", "!!"} {
+				if strings.Contains(tudo, proibido) {
+					t.Errorf("%s (%s): a saida repete material da seed (%q): %s", nome, args[0], proibido, tudo)
+				}
+			}
+		}
+	}
+}
+
+// O --OUT NÃO ESCREVE POR CIMA do registo, do relatório nem da chave — pelo mesmo caminho, por
+// outra caixa, ou por um caminho relativo que vai dar ao mesmo sítio.
+func TestAOS519_RouteProfileSign_OOutNaoEscrevePorCimaDasEntradas(t *testing.T) {
+	p := aos519NovoPosto(t, nil, nil)
+	registo, relatorio := p.caminho(routeentry.SuffixEntry), p.caminho(routeentry.SuffixReport)
+	alvos := map[string]string{
+		"--entry":                 registo,
+		"--report":                relatorio,
+		"--key-file":              p.seed,
+		"--entry por outro nome":  filepath.Join(p.dir, ".", "sub", "..", "novo"+routeentry.SuffixEntry),
+		"--entry com outra caixa": filepath.Join(p.dir, "NOVO"+routeentry.SuffixEntry),
+	}
+	for nome, alvo := range alvos {
+		antes := map[string][]byte{}
+		for _, f := range []string{registo, relatorio, p.seed} {
+			antes[f], _ = os.ReadFile(f)
+		}
+		_, _, err := p.assinar("--out", alvo)
+		if err == nil || !strings.Contains(err.Error(), "--out e o mesmo ficheiro") {
+			t.Fatalf("%s: tinha de recusar; veio %v", nome, err)
+		}
+		for f, conteudo := range antes {
+			if depois, _ := os.ReadFile(f); !bytes.Equal(depois, conteudo) {
+				t.Fatalf("%s: o ficheiro %s foi alterado", nome, filepath.Base(f))
+			}
+		}
+	}
+}
+
+// O DONO ASSINA O QUE VÊ: o resumo mostra os parâmetros do pedido, a versão da projecção e a
+// fatia, e sai ANTES de a chave ser lida — com a chave errada, o resumo já lá está.
+func TestAOS519_RouteProfileSign_OResumoMostraOQueSeAssina(t *testing.T) {
+	comTudo := strings.Replace(rt.ProfileJSON, `"capabilities":["tools"]`, `"capabilities":["tools"],"params":{"max_tokens":16000,"reasoning_effort":"high"},"projection_version":"1.2.0"`, 1)
+	dir := t.TempDir()
+	key := rt.NewKey(t)
+	seed := filepath.Join(t.TempDir(), "perfis.seed")
+	if err := os.WriteFile(seed, []byte(hex.EncodeToString(key.Priv.Seed())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, digest := rt.SealReport(t, rt.ReportDoc(rt.ProfileDigest(t, comTudo)))
+	edoc := rt.EntryDoc(t, comTudo, rt.Board, rt.Region, digest)
+	edoc["fatia_inicial_percentagem"] = 25
+	rt.Write(t, dir, "novo", rt.Marshal(t, edoc), "", report)
+	args := []string{"route-profile-sign", "--entry", filepath.Join(dir, "novo"+routeentry.SuffixEntry), "--report", filepath.Join(dir, "novo"+routeentry.SuffixReport)}
+
+	var out, diag bytes.Buffer
+	if err := run(append(args, "--key-file", seed), &out, &diag); err != nil {
+		t.Fatal(err)
+	}
+	for _, quer := range []string{"VAI ASSINAR", "max_tokens=16000", "reasoning_effort=high", "projection_version: 1.2.0", "fatia inicial 25%", "devolver: nunca", `modelo esperado "openai/modelo-novo-4.5"`} {
+		if !strings.Contains(diag.String(), quer) {
+			t.Errorf("o resumo nao mostra %q:\n%s", quer, diag.String())
+		}
+	}
+	if strings.Index(diag.String(), "VAI ASSINAR") > strings.Index(diag.String(), "ASSINADO —") {
+		t.Error("o resumo tinha de sair antes da confirmacao da assinatura")
+	}
+	// Com uma chave que não se lê: o resumo já saiu, e não há assinatura.
+	out.Reset()
+	diag.Reset()
+	if err := run(append(args, "--key-file", filepath.Join(dir, "nao-existe")), &out, &diag); err == nil || out.Len() != 0 {
+		t.Fatalf("sem chave tinha de falhar: %v", err)
+	}
+	if !strings.Contains(diag.String(), "VAI ASSINAR") || !strings.Contains(diag.String(), "max_tokens=16000") {
+		t.Fatalf("o resumo tinha de sair antes de a chave ser lida:\n%s", diag.String())
+	}
+	// Um perfil sem parâmetros nem versão di-lo por extenso.
+	p := aos519NovoPosto(t, nil, nil)
+	_, stderr, err := p.assinar()
+	if err != nil || !strings.Contains(stderr, "params do pedido: nenhum") || !strings.Contains(stderr, "nao declara (vale a do no)") {
+		t.Fatalf("resumo de um perfil simples: %v\n%s", err, stderr)
+	}
+}
