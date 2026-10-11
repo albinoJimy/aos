@@ -25,7 +25,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	integration "github.com/aos-ref/integration"
@@ -264,6 +266,9 @@ func TestAOS520_No_OPedidoHTTPNaoTrazPerfilFixado(t *testing.T) {
 // aos520Substrato é o que sobrevive de uma incarnação do nó à seguinte: o Event Store, o cofre das
 // chaves por-titular e os aprovadores (sem eles o nó não compõe o registo de retoma).
 type aos520Substrato struct {
+	// escuta, quando definida, é o Event Store que a incarnação recebe em vez de `store`: o mesmo
+	// store, a registar cada Append que lhe pedem (incluindo os que a deduplicação absorve).
+	escuta    *aos520StoreQueEscuta
 	store     *eventstore.Store
 	vault     audit.KeyVault
 	approvers []ApproverConfig
@@ -305,6 +310,9 @@ func aos520Compor(t *testing.T, sub *aos520Substrato, perfil, governacao, servid
 	aos504SemVariavel(t, "AOS_MODEL_PROJECTION_VERSION")
 	n := aos486ComporCom(t, "native", func(cfg *Config) {
 		cfg.EventStore, cfg.EventStorePath = sub.store, ""
+		if sub.escuta != nil {
+			cfg.EventStore = sub.escuta
+		}
 		cfg.DSARVault = sub.vault
 		cfg.Approvers = sub.approvers
 	})
@@ -663,4 +671,133 @@ func TestAOS520_No_RuntimeDirecto_OAdaptadorRecusaOGoalFixadoNoutroPerfil(t *tes
 	if pedidos := len(n.upstream.pedidos()); pedidos != 1 {
 		t.Fatalf("o controlo devia ter feito 1 pedido; fez %d", pedidos)
 	}
+}
+
+// aos520StoreQueEscuta é o Event Store do teste com um ouvido no Append: guarda o que lhe PEDEM
+// para escrever, antes de a deduplicação por (run_id, step_id) decidir se fica.
+type aos520StoreQueEscuta struct {
+	*eventstore.Store
+	mu      sync.Mutex
+	pedidos []eventstore.EventInput
+}
+
+func (s *aos520StoreQueEscuta) Append(ctx context.Context, streamID string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
+	s.mu.Lock()
+	s.pedidos = append(s.pedidos, in)
+	s.mu.Unlock()
+	return s.Store.Append(ctx, streamID, in, opts...)
+}
+
+func (s *aos520StoreQueEscuta) turnosPedidos(runID string) []eventstore.EventInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []eventstore.EventInput
+	for _, in := range s.pedidos {
+		if in.Type == agentruntime.EventTypeTurnRecorded && in.RunID == runID {
+			out = append(out, in)
+		}
+	}
+	return out
+}
+
+// aos520Folhas achata um documento JSON em caminho -> valor (os valores que não são objectos).
+func aos520Folhas(t *testing.T, cru []byte) map[string]string {
+	t.Helper()
+	var doc any
+	if err := json.Unmarshal(cru, &doc); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	var andar func(prefixo string, v any)
+	andar = func(prefixo string, v any) {
+		if obj, ok := v.(map[string]any); ok {
+			for k, filho := range obj {
+				andar(strings.TrimPrefix(prefixo+"."+k, "."), filho)
+			}
+			return
+		}
+		b, _ := json.Marshal(v)
+		out[prefixo] = string(b)
+	}
+	andar("", doc)
+	return out
+}
+
+// O TURNO REPRODUZIDO DE UM RUN FIXADO, NA RETOMA (revisão, A7) — o que acontece, medido.
+//
+// Run fixado, governação da rota DESLIGADA. O `turn.recorded` do turno 1 traz o digest fixado; a
+// captura de não-determinismo desse turno NÃO o guarda (só guarda a rota de um turno comparado).
+// Na retoma, o turno 1 é reproduzido da captura e o runtime volta a PEDIR a gravação do seu
+// `turn.recorded` — sem o digest. O que fica no log é o ORIGINAL, com digest, porque o Event Store
+// deduplica por (run_id, step_id) e o primeiro fica; e o replay dá 100%.
+//
+// ISTO NÃO É NOVO, NEM É SÓ DO DIGEST. O pedido de re-gravação de um turno reproduzido já diferia
+// do original em quatro campos que a captura não guarda ou que só o adaptador declara
+// (`served_model_id`, `projection`, `projection_version`, `tools_offered`), em QUALQUER run com o
+// gateway, fixado ou não: a retoma assenta na deduplicação, que é contrato de todas as
+// implementações do Event Store (conformance `dedup-entre-handles`). O digest fixado junta-se a
+// esse conjunto. O teste prende o conjunto EXACTO: quem lhe acrescentar um campo — ou quem passar
+// a re-gravar por cima — fá-lo de propósito.
+func TestAOS520_No_TurnoReproduzidoNaRetoma_FicaOOriginalNoLog(t *testing.T) {
+	ctx := context.Background()
+	digestA := aos520Digest(t, aos520PerfilA)
+	sub := aos520NovoSubstrato(t)
+	const runID = "run-520-reproduzido"
+
+	noA := aos520Compor(t, sub, aos520PerfilA, "", aos520ModeloA)
+	aos520TurnoUmECrash(t, noA, runID)
+	original := aos505NoTurnos(aos490Eventos(t, sub.store, runID))
+	if len(original) != 1 || !bytes.Contains(original[0], []byte(`"route_profile_digest":"`+digestA+`"`)) {
+		t.Fatalf("o turno 1 original tinha de trazer o digest fixado: %s", original)
+	}
+	// O QUE A CAPTURA GUARDA: o plano de replay do turno 1 volta SEM digest (não foi comparado).
+	rec, _, err := noA.node.ResumeRecords.Get(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plano, err := noA.svc.replayPlanFor(ctx, runID, rec.Titular())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plano) != 1 || plano[1].RouteProfileDigest != "" || plano[1].RouteCheck != "" {
+		t.Fatalf("a captura de um turno nao comparado mudou: digest=%q check=%q", plano[1].RouteProfileDigest, plano[1].RouteCheck)
+	}
+	noA.fechar(t)
+
+	// A retoma, com o ouvido no Append.
+	sub.escuta = &aos520StoreQueEscuta{Store: sub.store}
+	noA2 := aos520Compor(t, sub, aos520PerfilA, "", aos520ModeloA)
+	aos520RetomarPelaAPI(t, noA2, runID)
+	pedidos := sub.escuta.turnosPedidos(runID)
+	if len(pedidos) != 2 {
+		t.Fatalf("a retoma devia pedir a gravacao de 2 turn.recorded (o reproduzido e o vivo); pediu %d", len(pedidos))
+	}
+	// O pedido de re-gravação do turno reproduzido: os campos que tem são os do original, e
+	// faltam-lhe EXACTAMENTE estes.
+	doOriginal, doPedido := aos520Folhas(t, original[0]), aos520Folhas(t, pedidos[0].Payload)
+	var emFalta []string
+	for caminho, valor := range doOriginal {
+		noPedido, tem := doPedido[caminho]
+		if !tem {
+			emFalta = append(emFalta, caminho)
+		} else if noPedido != valor {
+			t.Errorf("o turno reproduzido pede %s=%s; o original tem %s", caminho, noPedido, valor)
+		}
+	}
+	for caminho := range doPedido {
+		if _, tem := doOriginal[caminho]; !tem {
+			t.Errorf("o turno reproduzido pede um campo que o original nao tem: %s", caminho)
+		}
+	}
+	sort.Strings(emFalta)
+	quer := []string{"manifest.model.route_profile_digest", "manifest.model.served_model_id", "manifest.projection", "manifest.projection_version", "tools_offered"}
+	if !reflect.DeepEqual(emFalta, quer) {
+		t.Fatalf("campos do original que a re-gravacao do turno reproduzido nao leva:\n veio:  %v\n quero: %v", emFalta, quer)
+	}
+	// NO LOG fica o ORIGINAL, byte a byte, e o turno vivo traz o digest fixado.
+	noLog := aos505NoTurnos(aos490Eventos(t, sub.store, runID))
+	if len(noLog) != 2 || !bytes.Equal(noLog[0], original[0]) || !bytes.Contains(noLog[1], []byte(`"route_profile_digest":"`+digestA+`"`)) {
+		t.Fatalf("os turn.recorded no log depois da retoma: %s", noLog)
+	}
+	aos505NoReplay(t, noA2.aos486No, runID, noA2.medir(t, runID, 0))
 }

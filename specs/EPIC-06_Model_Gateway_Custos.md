@@ -4346,6 +4346,19 @@ fixado está preso aos bytes medidos no commit da base.
   Goal fixado, ou uma via de re-hospedagem futura). Está presa ao nível do runtime do nó composto
   (`TestAOS520_No_RuntimeDirecto_OAdaptadorRecusaOGoalFixadoNoutroPerfil`), e não só no gateway
   isolado.
+- *O turno reproduzido de um run fixado (revisão, A7) — medido, sem correcção.* A captura de
+  não-determinismo só guarda a rota de um turno comparado; num run fixado sem governação, o turno
+  reproduzido na retoma volta sem digest e o runtime pede a re-gravação do `turn.recorded` sem
+  `route_profile_digest`. No log fica o original, com digest, porque o Event Store deduplica por
+  `run_id:step_id`; o replay dá 100%. **Não é novo nem é só do digest:** esse pedido de
+  re-gravação já diferia do original em `served_model_id`, `projection`, `projection_version` e
+  `tools_offered`, em qualquer run com o gateway — a retoma assenta na deduplicação, que é
+  contrato de todas as implementações do Event Store (sonda de conformidade
+  `dedup-entre-handles`, também sobre JetStream). Repor só o digest não tirava essa dependência,
+  e repor os cinco campos é mudar a captura de todos os runs: fica fora deste PR. Preso por teste,
+  com o conjunto exacto dos campos em falta
+  (`TestAOS520_No_TurnoReproduzidoNaRetoma_FicaOOriginalNoLog`). **Para o dono:** se a retoma
+  não deve depender da deduplicação, é um ticket próprio sobre a captura.
 - *O órfão do crash-resume é recuperável pela retoma com credencial.* A varredura não tem
   credencial fresca (limite que já existia, AOS-253): com o gateway real, o turno vivo de um run
   re-hospedado por ela é negado na identidade. Reposto o perfil, quem conclui o run é a retoma
