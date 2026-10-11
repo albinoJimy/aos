@@ -274,6 +274,19 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	if !ok {
 		runID, stepID = a.runID, ""
 	}
+	// O PERFIL EM QUE O RUN ESTÁ FIXADO É O QUE ESTE NÓ TEM EM VIGOR? (AOS-520) Conferido em cada
+	// turno, ANTES de o pedido ser montado e de qualquer byte sair para o provider: um run fixado
+	// noutro perfil não dá um turno com este. Sem digest na vista — todos os runs de um nó sem
+	// perfis assinados — a conferência não faz nada.
+	//
+	// NO NÓ, ISTO É DEFESA EM PROFUNDIDADE (revisão, A4). Um run fixado noutro perfil não chega
+	// aqui pelas vias do nó: a retoma pela API e a varredura de crash-resume recusam-no antes de o
+	// re-hospedar, com esta mesma função, e os perfis só mudam no arranque. Quem esta linha
+	// protege é quem chama o runtime SEM passar por essas vias — um embedder que faça `Run` com
+	// um Goal fixado, ou uma via de re-hospedagem futura que se esqueça da conferência.
+	if err := a.perfis.CheckPinnedProfile(a.model, view.RouteProfileDigest); err != nil {
+		return agentruntime.ModelResponse{}, err
+	}
 	// A FORMA DO PEDIDO (AOS-490). Texto único: o prompt materializado numa mensagem `user` —
 	// os bytes com hash. Nativa: as mensagens derivadas do tail, só quando o nó a configurou E
 	// o turno foi montado num layout que a projecção cobre. Uma projecção que falha não cai
@@ -325,6 +338,15 @@ func (a *ModelClientAdapter) Call(ctx context.Context, view agentruntime.PromptV
 	// com a captura ligada; não muda mais nada na resposta (o texto e as tool calls já estão
 	// traduzidos, e não vêm daqui).
 	a.estado.capturar(&out, resp, a.model)
+	// AOS-520 — NUM RUN FIXADO, o digest do perfil vai SEMPRE declarado para o manifesto do turno,
+	// mesmo com a governação da rota desligada (em que o gateway não compara e não o devolve). É o
+	// digest fixado, que a conferência acima provou ser o do perfil em vigor. Depois da captura do
+	// estado, para o envelope do estado ser o de sempre; e só quando o gateway não declarou nenhum:
+	// num turno comparado fica o do perfil com que a comparação foi feita. Num run sem perfil
+	// fixado esta linha não corre, e o turno sai como saía.
+	if fixado := perfilFixadoNoRun(view); fixado != "" && out.RouteProfileDigest == "" {
+		out.RouteProfileDigest = fixado
+	}
 	// AOS-507 — a ficha da forma (nil com a medição desligada) conta na métrica de quem observa.
 	observarForma(a.formaObs, out.Shape, out.StopReason)
 	return out, nil

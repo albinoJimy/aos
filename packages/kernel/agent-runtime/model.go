@@ -270,6 +270,10 @@ func paramsDoTurno(doGoal, doPedido map[string]string) map[string]string {
 // versão de projecção fixada (AOS-513).
 const ProjectionVersionUnpinned = "none"
 
+// RouteProfileDigestUnpinned é o [Goal.RouteProfileDigest] de um run re-hospedado que começou sem
+// perfil de rota fixado (AOS-520): um run de antes da fixação, ou de um nó que não fixava.
+const RouteProfileDigestUnpinned = "none"
+
 // ProjectionVersionForView devolve o que a vista de um turno leva como versão da projecção do
 // run: a versão fixada, se tiver a forma `N.N.N`; a marca [ProjectionVersionUnpinned], se o run
 // foi re-hospedado sem versão fixada; e vazio em qualquer outro caso (um run novo sem versão, ou

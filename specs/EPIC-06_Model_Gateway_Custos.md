@@ -4056,6 +4056,12 @@ novo. As três afirmações foram corrigidas; o comportamento ficou preso por te
 quem o mudar o faça de propósito; a drenagem passou a passo obrigatório do runbook, com a forma
 de a verificar; e a fixação do digest do perfil por run entrou como critério do AOS-520.
 
+**Fechado pelo AOS-520, PR 0 (2026-10-11), para os perfis assinados.** O digest do perfil passou a
+ficar fixado no run, e um run retomado com outro perfil para o mesmo alias falha fechado, com
+causa própria. O teste acima mudou de propósito e chama-se agora
+`TestAOS520_RunFixadoRetomadoComOutroPerfilFalhaFechado`. A drenagem continua recomendada. Fica
+aberto o que nunca teve fixação: a troca da tabela em código entre imagens, sem pasta.
+
 **Limites escritos, e dois pontos por decidir pelo dono.** A revisão adversarial não encontrou
 caminho de entrada sem assinatura; encontrou o que a assinatura não cobre, e ficou escrito no
 pacote, na emenda ao ADR-036 e no runbook: (1) um registo não tem validade no tempo — a data do
@@ -4216,14 +4222,14 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **O perfil fixado por run** (herdado do AOS-519, onde ficou como limite conhecido)
 
-- [ ] O **digest do perfil** da rota fica fixado no run, ao lado do modelo: vai para o registo
+- [x] O **digest do perfil** da rota fica fixado no run, ao lado do modelo: vai para o registo
       de retoma e é o que o manifesto de cada turno tem de trazer.
-- [ ] Uma **retoma com outro digest** — o nó foi recriado com outro perfil para o mesmo alias,
+- [x] Uma **retoma com outro digest** — o nó foi recriado com outro perfil para o mesmo alias,
       assinado ou da tabela — **falha fechado, com causa própria** em vocabulário fechado; não
       continua com o perfil novo. O teste do AOS-519 que fixa o comportamento de hoje
       (`TestAOS519_LimiteConhecido_RunRetomadoComOutroPerfilContinuaEmSilencio`) muda neste
       ticket, de propósito.
-- [ ] O caso «um perfil assinado **substitui uma entrada da tabela que devolve estado**» não
+- [x] O caso «um perfil assinado **substitui uma entrada da tabela que devolve estado**» não
       perde o estado em silêncio: os runs em curso nessa rota falham fechado com a causa
       acima, e não seguem sem o estado que o provider exige.
 
@@ -4285,7 +4291,97 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 ### Estado
 
-**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-519.
+**Em curso (2026-10-11).** Feito o **PR 0 — o perfil fixado por run**, no ramo
+`feature/AOS-520-perfil-fixado-por-run`. **Por fazer:** o PR 1 (o candidato, a função de escolha,
+o modelo fixado por escolha, o canary e a sua contagem durável, o ADR novo) e o PR 2 (as séries
+por modelo). Nenhum critério fora do bloco «O perfil fixado por run» está cumprido.
+
+**O que o PR 0 entregou.**
+
+- *A fixação.* Num nó com perfis assinados carregados (decisão do dono: só nesse), o `hostRun`
+  escreve no run novo o digest do perfil em vigor para o seu alias, no ponto em que já fixava o
+  modelo e a versão da projecção. O kernel só o transporta (`Goal.RouteProfileDigest` e a vista
+  de cada turno). O registo de retoma ganhou o campo `RouteProfileDigest`, ausente num run não
+  fixado.
+- *A conferência.* Uma só regra (`RouteProfileSet.CheckPinnedProfile`, no gateway), sobre o valor
+  selado no run, em três sítios: a retoma pela API (`409`, antes de re-hospedar), a varredura de
+  crash-resume (órfão declarado e contado, não selado `failed`) e o adaptador do gateway, em cada
+  turno, antes de qualquer pedido. Três causas em vocabulário fechado:
+  `perfil_diferente_do_fixado`, `modelo_fixado_nao_servido` e
+  `perfil_assinado_sobre_estado_sem_fixacao`.
+- *O manifesto.* Num run fixado, o digest vai declarado em cada turno mesmo com a governação da
+  rota desligada.
+- *O run antigo.* Um registo sem o campo volta com a marca de «não fixado» e continua como
+  sempre; não é fixado a meio.
+- *O teste do AOS-519* mudou, de propósito: passou a
+  `TestAOS520_RunFixadoRetomadoComOutroPerfilFalhaFechado`, com o gémeo
+  `TestAOS520_RunSemPerfilFixadoContinuaComoHoje` (ficheiro `route_aos520_perfil_fixado_test.go`).
+- *Emenda ao ADR-036 §2.8* e o runbook em `deploy/server/README.md`.
+
+**Inércia.** Sem a pasta de perfis o nó não fixa nada. Os goldens do nó dos AOS-490, 504, 505,
+507, 509, 513, 514 e 519 ficaram verdes sem alteração, e o registo de retoma de um run sem perfil
+fixado está preso aos bytes medidos no commit da base.
+
+**Limites e pontos que ficaram escritos.**
+
+- *Continua aberto:* a troca da tabela em código entre duas imagens do nó, sem pasta — esses runs
+  nunca tiveram digest fixado. Um alias sem perfil também não fixa nada.
+- *«É o que o manifesto de cada turno tem de trazer» — POR CONFIRMAR PELO DONO.* Vale para o
+  perfil do alias do run. Num turno que o gateway comparou depois de uma descida de tier, o
+  manifesto traz o digest do perfil da rota que serviu, como antes; a conferência do perfil fixado
+  é feita antes do pedido, contra o perfil do alias. **Em palavras simples:** o run fica preso ao
+  perfil do nome que pede; se o gateway, por orçamento, mandar um turno para um modelo mais
+  barato, esse turno é servido e fica gravado com o digest desse outro modelo — não é recusado
+  pela fixação. A pergunta ao dono: é isto que se quer, ou um run fixado não deve poder descer de
+  tier? O critério ficou marcado como cumprido com esta leitura; se a resposta for a segunda, é
+  trabalho para o PR 1.
+- *O perfil assinado sobre uma entrada que devolve estado* está preso por um teste interno do
+  gateway que troca a tabela pela duração do teste: nenhuma entrada da tabela de hoje devolve
+  estado, e a tabela não é substituível de fora do pacote. A regra é a mesma função que os testes
+  do nó exercitam para as outras causas. Conta para as duas classes que devolvem estado
+  (`obrigatorio` e `opcional`).
+- *Limite latente desse caso (revisão, A5).* A recusa é **por alias**: não olha para se o run tem
+  de facto estado capturado, pelo que um run antigo sem estado seria recusado sem necessidade.
+  Hoje não dispara. Fica escrito junto do código (`route_pinned.go`) o que tem de rever quem
+  acrescentar à tabela uma entrada que devolva estado, ou abrir a via assinada a esses perfis —
+  o PR 1 não precisa de lhe mexer se não fizer nenhuma das duas coisas.
+- *A conferência do adaptador é defesa em profundidade no nó (revisão, A4).* Pelas vias do nó, um
+  run fixado noutro perfil é recusado antes de ser re-hospedado, com a mesma função; a do
+  adaptador protege quem chame o runtime sem passar por elas (um embedder que faça `Run` com um
+  Goal fixado, ou uma via de re-hospedagem futura). Está presa ao nível do runtime do nó composto
+  (`TestAOS520_No_RuntimeDirecto_OAdaptadorRecusaOGoalFixadoNoutroPerfil`), e não só no gateway
+  isolado.
+- *O turno reproduzido de um run fixado (revisão, A7) — medido, sem correcção.* A captura de
+  não-determinismo só guarda a rota de um turno comparado; num run fixado sem governação, o turno
+  reproduzido na retoma volta sem digest e o runtime pede a re-gravação do `turn.recorded` sem
+  `route_profile_digest`. No log fica o original, com digest, porque o Event Store deduplica por
+  `run_id:step_id`; o replay dá 100%. **Não é novo nem é só do digest:** esse pedido de
+  re-gravação já diferia do original em `served_model_id`, `projection`, `projection_version` e
+  `tools_offered`, em qualquer run com o gateway — a retoma assenta na deduplicação, que é
+  contrato de todas as implementações do Event Store (sonda de conformidade
+  `dedup-entre-handles`, também sobre JetStream). Repor só o digest não tirava essa dependência,
+  e repor os cinco campos é mudar a captura de todos os runs: fica fora deste PR. Preso por teste,
+  com o conjunto exacto dos campos em falta
+  (`TestAOS520_No_TurnoReproduzidoNaRetoma_FicaOOriginalNoLog`). **Para o dono:** se a retoma
+  não deve depender da deduplicação, é um ticket próprio sobre a captura.
+- *O órfão recusado pelo perfil repete-se a cada varredura (revisão, A6).* Duas linhas de log por
+  passagem, sem métrica — a postura do layout desconhecido. Lido o código dos laços do nó: nenhum
+  sela `failed` um run `running` sem dono — o varrimento de prazos (`deadline_sweeper.go`) só
+  percorre os runs hospedados pela réplica, e a varredura de órfãos só volta a tentar. O run fica
+  `running` até o perfil ser reposto e o run retomado, ou para sempre se for abandonado (não há
+  rota para selar um run que o nó não hospeda). O runbook diz como o ver e as duas saídas.
+- *O órfão do crash-resume é recuperável pela retoma com credencial.* A varredura não tem
+  credencial fresca (limite que já existia, AOS-253): com o gateway real, o turno vivo de um run
+  re-hospedado por ela é negado na identidade. Reposto o perfil, quem conclui o run é a retoma
+  pela API.
+- *O teste de retoma do nó* dá o turno 1 pelo runtime e simula o crash, no molde do AOS-490; que
+  o `hostRun` fixa e grava o perfil é provado à parte, por `POST /runs`.
+- *Recuo de binário (revisão, A8).* Um binário anterior ao AOS-520 ignora o campo do registo e
+  retoma um run fixado sob outro perfil em silêncio. Escrito na emenda ao ADR-036 §2.8 e no
+  runbook: recuar a imagem com perfis assinados instalados faz-se com a rota drenada.
+- *Por fazer neste bloco:* o smoke sobre JetStream.
+
+**Mutações dirigidas.** 23, todas vermelhas: as 19 do PR e as 4 que tinham sobrevivido à revisão adversarial (o digest fixado por cima do do gateway; declarado antes de o envelope do estado fechar; o caso da rota com estado só para `obrigatorio`; a conferência do adaptador retirada, ao nível do nó).
 
 ## AOS-521 — O candidato perde a fatia sozinho: um disjuntor por modelo, durável e selado, que só o dono volta a fechar
 

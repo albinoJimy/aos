@@ -175,6 +175,12 @@ type PromptView struct {
 	// usa a do nó e ignora a que o perfil declare agora ([ProjectionVersionForView]). Não é do assembler: o loop escreve-a na vista
 	// depois de a montar. Não entra em Materialized nem no `prompt_hash`.
 	ProjectionVersion string
+	// RouteProfileDigest é o digest do perfil da rota em que o RUN está fixado (AOS-520,
+	// [Goal.RouteProfileDigest]), para quem faz o pedido o conferir com o perfil que tem em vigor.
+	// Vazio ⇒ o run não está fixado; [RouteProfileDigestUnpinned] ⇒ um run RETOMADO que começou
+	// sem perfil fixado. Não é do assembler: o loop escreve-o na vista depois de a montar. Não
+	// entra em Materialized nem no `prompt_hash`.
+	RouteProfileDigest string
 	// ProviderStates são os ESTADOS OPACOS do provider dos turnos anteriores deste run (AOS-515,
 	// ADR-040 §2.9), para quem os devolve ao provider: os bytes de cada envelope capturado, pela
 	// chave do DIGEST com que o tail o refere (o valor do rótulo `state_digest`, `sha256:` + 64

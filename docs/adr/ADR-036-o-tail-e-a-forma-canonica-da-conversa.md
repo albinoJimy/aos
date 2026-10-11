@@ -12,7 +12,8 @@
   passa a poder declarar), AOS-515 (emenda de 2026-10-08 ao §2.4: projecção nativa 1.3.0, que
   devolve o estado opaco do turno; a decisão está no ADR-040 §2.11), AOS-516 (emenda de
   2026-10-10 ao §2.8: `devolver_em` e o parâmetro `reasoning`), AOS-519 (emenda de 2026-10-11 ao
-  §2.8: de onde o perfil pode vir — a tabela em código ou um registo de entrada assinado)
+  §2.8: de onde o perfil pode vir — a tabela em código ou um registo de entrada assinado), AOS-520
+  (emenda de 2026-10-11 ao §2.8: o perfil fica fixado por run)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -588,7 +589,8 @@ no arranque do nó (decisão D1 do dono). A emenda diz **de onde o perfil vem; n
   essa entrada para o nó inteiro, e o arranque di-lo, com o modelo esperado e o digest de antes e
   de agora. O perfil não autoriza o nome: quem o autoriza continua a ser a allowlist.
 - **Só no arranque.** A pasta lê-se uma vez: trocar um perfil é recriar o nó, com a rota
-  drenada. A drenagem é uma regra **operacional**; o nó não a impõe (ver os limites, abaixo).
+  drenada. A drenagem é uma regra **operacional**, que o nó não impõe; desde o AOS-520 deixou de
+  ser a única protecção (ver «O perfil fica fixado por run», abaixo).
 - **Prova.** Cada perfil carregado fica selado no audit de governação do gateway
   (`modelgw-gov:route-profiles`) com o digest do perfil, o do registo e o do relatório.
 
@@ -598,13 +600,11 @@ corre e não é assinado pelo banco. (2) O nó não vê que imagem o proxy está
 compara o digest citado com o declarado no repositório, e que o servidor corre essa imagem é
 garantido pelo compose. (3) É um desvio à letra da fase A3 («artefacto do registo»): o Registry
 não corre em nenhum binário; o registo tem versão, digest e assinatura para poder ser publicado
-lá mais tarde sem mudar de forma. (4) **A troca de perfil com runs em curso não é detectada.**
-Por run só fica fixada a versão da projecção; o digest do perfil vai no manifesto de cada turno e
-ninguém o compara com o do turno anterior. A falha fechada do ADR-040 §2.11
-(`estado_de_outra_rota`) só existe na devolução do estado opaco, e por esta via só entram perfis
-que não devolvem estado: um run começado com um perfil e retomado com outro continua, com o
-modelo esperado e os parâmetros do novo. Está preso por teste como limite conhecido, e quem o
-fecha é o AOS-520 (o digest do perfil fixado por run). (5) **Sem validade no tempo nem
+lá mais tarde sem mudar de forma. (4) **A troca de perfil com runs em curso: fechado para os runs de um nó com perfis
+assinados** (AOS-520, abaixo), que ficam fixados no perfil pelo digest. **Continua aberto** para
+os runs sem perfil fixado — os de um nó sem a pasta, e os de antes do AOS-520: a troca da tabela
+em código entre duas imagens do nó não é detectada, e um run começado com uma entrada da tabela e
+retomado noutra imagem continua com a entrada nova. (5) **Sem validade no tempo nem
 anti-recuo.** A data do relatório não é lida e um registo não expira; não há época nem número de
 sequência por nome. Quem tem escrita na pasta não consegue criar um registo, mas consegue
 **retirar** um (e repõe a entrada da tabela em código) ou **repor um antigo**, validamente
@@ -615,6 +615,44 @@ valores e a mesma âncora, um registo de um ambiente serve noutro — usa-se uma
 
 Sem a pasta configurada o nó não lê nada disto: o conjunto de perfis é a tabela em código, e os
 digests, os pedidos, os manifestos, o arranque e o `/metrics` são os de antes (preso por teste).
+
+#### O perfil fica fixado por run (AOS-520, emenda de 2026-10-11)
+
+Fecha o limite n.º 4 acima para os perfis assinados. O molde é o da versão da projecção (§2.3).
+
+- **Quando se fixa.** Só num nó com **perfis assinados carregados** (a pasta declarada e com pelo
+  menos um registo). Ao hospedar um run novo, o nó escreve no run o **digest do perfil em vigor**
+  para o nome que o run pede — o assinado, ou a entrada da tabela que nenhum assinado substituiu.
+  Sem a pasta, ou com ela vazia, nada é fixado: o Goal, o registo de retoma, os manifestos, o
+  arranque e o `/metrics` são os de antes, byte a byte (preso por teste, contra os bytes da base).
+- **Onde fica.** No registo de retoma do run (campo novo, ausente num run não fixado) e no
+  manifesto de cada turno: num run fixado o digest vai declarado mesmo com a governação da rota
+  desligada. Num turno que o gateway comparou fica, como sempre, o digest do perfil com que a
+  comparação foi feita.
+- **Quem confere, e com quê.** O valor **selado no run** é comparado com o perfil que o nó tem em
+  vigor para o nome que o run pede; nunca se recalcula do ambiente o digest que o run «devia»
+  ter. Confere-se em três sítios: a retoma pela API, antes de re-hospedar (recusa `409`, e o run
+  fica suspenso); a varredura de crash-resume (o run fica **órfão declarado** e contado nos não
+  retomados, e não é selado `failed`: reposto o perfil, volta a poder seguir); e o adaptador do
+  gateway, em cada turno, antes de qualquer pedido ao provider.
+- **As causas**, em vocabulário fechado: `perfil_diferente_do_fixado` (o perfil em vigor para o
+  nome é outro — inclui o nó a que tiraram a pasta), `modelo_fixado_nao_servido` (o nome já não
+  tem perfil) e `perfil_assinado_sobre_estado_sem_fixacao` (ver abaixo).
+- **O run sem perfil fixado não é fixado a meio.** Um registo de retoma sem o campo volta com a
+  marca de «não fixado» e o run continua como sempre. A excepção é a terceira causa: se o perfil
+  em vigor para o nome do run **substituiu uma entrada da tabela em código que devolvia estado**
+  (ADR-040 §2.11), o run seguiria por um perfil que não o devolve — recusa-se. Nenhuma entrada da
+  tabela de hoje devolve estado.
+
+**Recuo de binário.** Um binário anterior ao AOS-520 não lê o campo do registo de retoma nem
+confere nada: retoma um run fixado sob o perfil que tiver, em silêncio — é o comportamento de
+antes. A fixação só vale entre binários que a têm. Recuar a imagem do nó com perfis assinados
+instalados faz-se com a rota drenada.
+
+**O que não cobre.** A troca da tabela em código entre imagens, sem pasta (o limite n.º 4). Um
+nome sem perfil não fixa nada. Numa descida de tier, o turno é servido por outra rota e o seu
+manifesto traz o digest dessa rota: o run está fixado no perfil do nome que pede. E quem submete
+não fixa nem desfixa — `POST /runs` não tem campo por onde o digest entre.
 
 ## 3. Alternativas rejeitadas
 

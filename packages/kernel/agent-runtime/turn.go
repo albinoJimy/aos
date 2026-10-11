@@ -40,6 +40,10 @@ type ModelManifest struct {
 	// o turno gravado antes do campo — grava os bytes de sempre. Num turno comparado,
 	// `served_model_id` é o modelo que o proxy declarou (ausente se não o declarou), e não o
 	// `model` do corpo da resposta.
+	//
+	// AOS-520: num run com o perfil da rota FIXADO, o cliente declara o digest fixado também nos
+	// turnos que não foram comparados (governação da rota desligada) — o campo existe então sem
+	// `route_check`. Num run sem perfil fixado nada muda.
 	RouteProfileDigest string `json:"route_profile_digest,omitempty"`
 }
 

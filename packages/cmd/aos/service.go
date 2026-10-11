@@ -1171,6 +1171,12 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// sem versão e a projecção é a do interruptor do nó, como sempre. Um run retomado traz a do
 	// seu registo, ou a marca de que começou sem nenhuma, e não é tocado.
 	goal = s.node.fixarProjeccaoDoRun(goal)
+	// AOS-520: o DIGEST DO PERFIL DA ROTA em vigor para o modelo do run fica fixado no Goal no
+	// mesmo ponto — depois do modelo, antes do registo de retoma e do primeiro turno. Só um nó com
+	// perfis de rota assinados fixa; sem eles o Goal fica como está. Um run retomado traz o do seu
+	// registo, ou a marca de que começou sem fixação, e não é tocado: quem o confere com o perfil
+	// em vigor é a retoma (antes de chegar aqui) e o adaptador do gateway (em cada turno).
+	goal = s.node.fixarPerfilDoRun(goal)
 	// AOS-493: o MODO DE APLICAÇÃO do veredicto de conclusão fica fixado no Goal no mesmo ponto
 	// e pela mesma razão: o registo de retoma, o runtime e o manifesto de cada turno têm o
 	// mesmo valor. Um run novo fica no modo do nó; um retomado traz o do seu registo.
@@ -1373,6 +1379,9 @@ func resumeRecordFromGoal(goal agentruntime.Goal) (integration.ResumeRecord, err
 		// AOS-513: a versão da projecção em que o run está fixado sobrevive à retoma. Um run
 		// sem versão fixada grava o campo vazio — os bytes de sempre.
 		ProjectionVersion: versaoDaProjeccaoParaORegisto(goal),
+		// AOS-520: o digest do perfil da rota em que o run está fixado sobrevive à retoma. Um run
+		// sem perfil fixado grava o campo vazio — os bytes de sempre.
+		RouteProfileDigest: digestDoPerfilParaORegisto(goal),
 	}, nil
 }
 

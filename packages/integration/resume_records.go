@@ -112,6 +112,29 @@ type ResumeRecord struct {
 	// [agentruntime.ProjectionVersionUnpinned]). `omitempty`: um run sem versão fixada — todos,
 	// enquanto nenhum perfil declarar uma — serializa os bytes de sempre.
 	ProjectionVersion string `json:"ProjectionVersion,omitempty"`
+	// RouteProfileDigest é o digest do perfil da rota em que o run está FIXADO (AOS-520,
+	// [agentruntime.Goal.RouteProfileDigest]) — o do perfil em vigor para o modelo do run quando
+	// ele foi hospedado pela primeira vez, num nó com perfis de rota assinados. Tem de sobreviver à
+	// retoma: é o valor SELADO com que a retoma, o crash-resume e cada turno conferem o perfil que
+	// o nó tem agora, e é por ele — e não pela configuração de quem retoma — que se decide se o
+	// run pode seguir.
+	//
+	// AUSENTE ⇒ o run começou SEM perfil fixado, e continua sem ele: a retoma não lhe fixa o
+	// perfil que o nó tenha agora ([ResumeRecord.GoalWith] devolve
+	// [agentruntime.RouteProfileDigestUnpinned]). `omitempty`: um run sem perfil fixado — todos os
+	// de um nó sem perfis assinados — serializa os bytes de sempre.
+	RouteProfileDigest string `json:"RouteProfileDigest,omitempty"`
+}
+
+// PerfilDoRun devolve o [agentruntime.Goal.RouteProfileDigest] com que o run do registo é
+// re-hospedado: o digest gravado, ou [agentruntime.RouteProfileDigestUnpinned] quando o run
+// começou sem perfil fixado. Nunca vazio — um Goal de retoma com o digest vazio seria lido como um
+// run novo, e ficaria fixado, a meio, no perfil que o nó tenha agora.
+func (r ResumeRecord) PerfilDoRun() string {
+	if r.RouteProfileDigest == "" {
+		return agentruntime.RouteProfileDigestUnpinned
+	}
+	return r.RouteProfileDigest
 }
 
 // ProjeccaoDoRun devolve o [agentruntime.Goal.ProjectionVersion] com que o run do registo é
@@ -180,6 +203,8 @@ func (r ResumeRecord) GoalWith(credential string) agentruntime.Goal {
 		OutputSourceBinding: r.OutputSourceBinding,
 		// AOS-513: a versão da projecção em que o run começou, ou a marca de que não fixou nenhuma.
 		ProjectionVersion: r.ProjeccaoDoRun(),
+		// AOS-520: o perfil da rota em que o run começou, ou a marca de que não fixou nenhum.
+		RouteProfileDigest: r.PerfilDoRun(),
 	}
 }
 
