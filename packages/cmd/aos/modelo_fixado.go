@@ -289,18 +289,12 @@ type modeloFixadoPayload struct {
 	PlanKeyKind string `json:"plan_key_kind"`
 }
 
-// historiaDoRun é o que o LOG do nó diz de um run que JÁ EXISTE, antes de ele ser re-hospedado: se
-// já deu um turno, se tem registo de retoma, e se tem um `run.model_pinned`. É o que está selado
-// para o run.
+// historiaDoRun é o que o LOG do nó tem SELADO para um run que já existe, antes de ele ser
+// re-hospedado: o registo de retoma, e o `run.model_pinned`. Que o run já existe sabe-se pelo seu
+// estado durável, e não daqui.
 type historiaDoRun struct {
-	temTurno bool
-	registo  *integration.ResumeRecord
-	fixacao  *modeloFixadoPayload
-}
-
-// temHistoria diz se o run já existia: um turno gravado, um registo de retoma ou uma fixação.
-func (h historiaDoRun) temHistoria() bool {
-	return h.temTurno || h.registo != nil || h.fixacao != nil
+	registo *integration.ResumeRecord
+	fixacao *modeloFixadoPayload
 }
 
 // lerHistoriaDoRun lê do Event Store a história de um run. Um stream que não existe é um run sem
@@ -319,17 +313,15 @@ func (n *Node) lerHistoriaDoRun(ctx context.Context, runID string) (historiaDoRu
 		return h, err
 	}
 	for _, ev := range evs {
-		switch ev.Type {
-		case agentruntime.EventTypeTurnRecorded:
-			h.temTurno = true
-		case EventTypeRunModelPinned:
-			var p modeloFixadoPayload
-			if err := json.Unmarshal(ev.Payload, &p); err != nil || p.Alias == "" {
-				return h, fmt.Errorf("run.model_pinned ilegivel no evento %d", ev.Seq)
-			}
-			if h.fixacao == nil {
-				h.fixacao = &p
-			}
+		if ev.Type != EventTypeRunModelPinned {
+			continue
+		}
+		var p modeloFixadoPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil || p.Alias == "" {
+			return h, fmt.Errorf("run.model_pinned ilegivel no evento %d", ev.Seq)
+		}
+		if h.fixacao == nil {
+			h.fixacao = &p
 		}
 	}
 	if n.ResumeRecords != nil {

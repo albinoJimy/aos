@@ -965,13 +965,23 @@ func TestAOS520_Livro_AEsperaPelaVezRespeitaOContexto(t *testing.T) {
 	<-preso // a primeira decisão tem a vez e está a ler
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	inicio := time.Now()
-	_, err := l.decidir(ctx, aos520Cand, chaveDeRun("plano-a-espera"), 0)
-	if !errors.Is(err, ErrCanaryContention) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("a decisao a espera tinha de desistir com a causa de contencao quando o contexto acabou; veio %v", err)
-	}
-	if d := time.Since(inicio); d > 5*time.Second {
-		t.Fatalf("a espera durou %s", d)
+	// A decisão à espera corre numa goroutine: se a espera NÃO ouvir o contexto, o teste falha por
+	// asserção ao fim de cinco segundos (e larga a primeira, para não deixar nada pendurado), em vez
+	// de ficar à espera até ao tecto de tempo da suite.
+	segunda := make(chan error, 1)
+	go func() {
+		_, err := l.decidir(ctx, aos520Cand, chaveDeRun("plano-a-espera"), 0)
+		segunda <- err
+	}()
+	select {
+	case err := <-segunda:
+		if !errors.Is(err, ErrCanaryContention) || !errors.Is(err, context.DeadlineExceeded) {
+			close(largar)
+			t.Fatalf("a decisao a espera tinha de desistir com a causa de contencao quando o contexto acabou; veio %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		close(largar)
+		t.Fatal("a decisao a espera pela vez no livro NAO ouviu o contexto: cinco segundos depois de ele acabar ainda estava a espera")
 	}
 	if err := (&livroDoCanary{es: lento}).abrir(ctx, aos520Cand, aos520Marca(0, nil)); err == nil {
 		t.Fatal("com o contexto acabado, abrir tinha de falhar")
