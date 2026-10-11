@@ -64,6 +64,12 @@ var ErrBadModelRouteProfiles = errors.New("aos: perfis de rota assinados recusad
 // num audit em memória desaparecia no reinício seguinte.
 var ErrModelRouteProfilesWithoutDurableAudit = errors.New("aos: perfis de rota assinados em AOS_MODE=production exigem o audit de governacao do gateway DURAVEL — defina AOS_MODEL_AUDIT_PATH; sem ele o selo de cada perfil carregado ficava em memoria e perdia-se no reinicio (fail-closed)")
 
+// ErrModelRouteProfilesWithoutGateway — AOS_MODE=production, AOS_MODEL_ROUTE_PROFILES_DIR está
+// definida e o nó não tem gateway de modelo (AOS_MODEL_ENDPOINT por definir). Fail-closed: a pasta
+// não seria lida nem conferida, e o nó correria com o modelo de referência enquanto a configuração
+// diz que há perfis assinados.
+var ErrModelRouteProfilesWithoutGateway = errors.New("aos: AOS_MODEL_ROUTE_PROFILES_DIR definida em AOS_MODE=production sem gateway de modelo (AOS_MODEL_ENDPOINT por definir) — a pasta nao seria lida nem conferida e nenhum perfil assinado ficaria em vigor; defina AOS_MODEL_ENDPOINT ou retire a variavel (fail-closed)")
+
 // maxSeriesDaRotaDoModelo é o MÁXIMO de séries de `aos_model_route_checks_total`: os três
 // resultados vezes o maior conjunto possível de valores do modelo servido — os modelos esperados
 // das quatro entradas da tabela em código, mais um por registo assinado (no máximo
@@ -192,7 +198,11 @@ func modelRouteProfilesBanner(p *perfisAssinados) []string {
 		// (sem AOS_MODEL_ENDPOINT, ou com um cliente injectado). Nenhum perfil está em vigor, e
 		// isso não fica em silêncio. Sem a variável não sai linha nenhuma.
 		if strings.TrimSpace(os.Getenv("AOS_MODEL_ROUTE_PROFILES_DIR")) != "" {
-			return []string{"AVISO (EPIC-06/AOS-519): AOS_MODEL_ROUTE_PROFILES_DIR esta definida e a pasta NAO foi lida nem conferida — o no nao compos o gateway de modelo a partir do ambiente (AOS_MODEL_ENDPOINT por definir). Nenhum perfil de rota assinado esta em vigor"}
+			return []string{"AVISO (EPIC-06/AOS-519): AOS_MODEL_ROUTE_PROFILES_DIR esta definida e a pasta NAO foi lida nem conferida — o no nao compos o gateway de modelo a partir do ambiente (AOS_MODEL_ENDPOINT por definir). Nenhum perfil de rota assinado esta em vigor. Em AOS_MODE=production isto aborta o arranque"}
+		}
+		// A âncora sem a pasta: não é lida, e quem a definiu pode julgar que há perfis em vigor.
+		if strings.TrimSpace(os.Getenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR")) != "" {
+			return []string{"AVISO (EPIC-06/AOS-519): AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR esta definida e AOS_MODEL_ROUTE_PROFILES_DIR nao — a ancora NAO e lida e nenhum perfil de rota assinado esta em vigor: o no usa a tabela de perfis em codigo. Defina a pasta, ou retire a ancora"}
 		}
 		return nil
 	}

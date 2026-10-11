@@ -81,10 +81,13 @@ func TestAOS519_No_SemPasta_EOBinarioDeAntes(t *testing.T) {
 			} else {
 				aos504SemVariavel(t, "AOS_MODEL_ROUTE_PROFILES_DIR")
 			}
+			// A âncora com LIXO: sem a pasta não é lida, e por isso não aborta nada.
 			t.Setenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR", "isto nao e uma chave")
 			if p, err := loadSignedRouteProfilesFromEnv(); p != nil || err != nil {
 				t.Fatalf("sem pasta nada e lido: %v %v", p, err)
 			}
+			// Daqui para baixo, o nó SEM NENHUMA das duas variáveis: é esse o binário de antes.
+			aos504SemVariavel(t, "AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR")
 			for nomePedido, quer := range aos519DigestsDaTabela {
 				perfil, tem := (*perfisAssinados)(nil).perfis().For(nomePedido)
 				if !tem || perfil.Digest() != quer {
@@ -652,5 +655,38 @@ func TestAOS519_No_EmProducaoOSeloExigeAuditDuravel(t *testing.T) {
 	}
 	if err := compor(false, nil, assinados); err != nil {
 		t.Fatalf("fora de producao o audit em memoria serve: %v", err)
+	}
+}
+
+// SEM GATEWAY, EM PRODUÇÃO, A PASTA DECLARADA ABORTA (revisão adversarial); fora de produção fica o
+// aviso. E a âncora definida sem a pasta é avisada: não é lida, e nenhum perfil está em vigor.
+func TestAOS519_No_PastaSemGatewayEmProducaoAbortaEAncoraOrfaEAvisada(t *testing.T) {
+	t.Setenv("AOS_MODEL_ENDPOINT", "")
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_DIR", t.TempDir())
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR", "")
+	if cliente, binder, err := parseModelFromEnv(true); !errors.Is(err, ErrModelRouteProfilesWithoutGateway) || cliente != nil || binder != nil {
+		t.Fatalf("em producao, a pasta sem gateway tinha de abortar; veio %v", err)
+	}
+	if _, _, err := parseModelFromEnv(false); err != nil {
+		t.Fatalf("fora de producao nao aborta (fica o aviso): %v", err)
+	}
+	// Sem a pasta, produção sem gateway é o de sempre.
+	aos504SemVariavel(t, "AOS_MODEL_ROUTE_PROFILES_DIR")
+	if _, _, err := parseModelFromEnv(true); err != nil {
+		t.Fatalf("producao sem gateway e sem a pasta nao aborta: %v", err)
+	}
+	// A âncora órfã.
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR", rt.NewKey(t).Anchor())
+	linhas := modelRouteProfilesBanner(nil)
+	if len(linhas) != 1 || !strings.HasPrefix(linhas[0], "AVISO") || !strings.Contains(linhas[0], "TRUST_ANCHOR") || !strings.Contains(linhas[0], "NAO e lida") {
+		t.Fatalf("a ancora sem a pasta tinha de ser avisada: %v", linhas)
+	}
+	// O aviso não repete o valor da âncora.
+	if strings.Contains(linhas[0], os.Getenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR")) {
+		t.Fatal("o aviso repete a ancora")
+	}
+	aos504SemVariavel(t, "AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR")
+	if linhas := modelRouteProfilesBanner(nil); linhas != nil {
+		t.Fatalf("sem nenhuma das duas variaveis nao sai linha: %v", linhas)
 	}
 }

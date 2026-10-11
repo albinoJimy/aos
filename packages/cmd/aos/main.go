@@ -2322,6 +2322,12 @@ func parseModelEgressTimeoutFromEnv() (time.Duration, error) {
 func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identity.Verifier), error) {
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
+		// AOS-519: em produção, uma pasta de perfis assinados declarada SEM gateway aborta — o
+		// operador que julga ter perfis assinados em vigor não fica com o modelo de referência e um
+		// aviso. Fora de produção fica o aviso do arranque ([modelRouteProfilesBanner]).
+		if production && strings.TrimSpace(os.Getenv("AOS_MODEL_ROUTE_PROFILES_DIR")) != "" {
+			return nil, nil, ErrModelRouteProfilesWithoutGateway
+		}
 		return nil, nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
 	}
 	model := modelNameFromEnv()
