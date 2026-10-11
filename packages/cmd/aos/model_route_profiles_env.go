@@ -29,14 +29,18 @@ package main
 // um ficheiro com o nó a correr não tem efeito até o nó ser recriado. Trocar um perfil é recriar o
 // nó, COM A ROTA DRENADA — e a drenagem é uma regra OPERACIONAL, que o nó não impõe.
 //
-// LIMITE CONHECIDO: A TROCA DE PERFIL COM RUNS EM CURSO NÃO É DETECTADA. Por run só fica fixada a
-// versão da projecção; o digest do perfil não. Um run começado com o perfil A e retomado num nó
-// que arrancou com o perfil B continua, com o modelo esperado e os parâmetros de B, e nada falha:
-// a causa `estado_de_outra_rota` só existe na devolução do estado opaco (ADR-040 §2.11), e por
-// esta via só entram perfis que não devolvem estado. A única pista é o digest do perfil no
-// manifesto de cada turno, que muda de um turno para o outro. Preso por teste no gateway
-// (TestAOS519_LimiteConhecido_RunRetomadoComOutroPerfilContinuaEmSilencio); quem o fecha é o
-// AOS-520, que fixa o digest do perfil por run.
+// O PERFIL FICA FIXADO POR RUN (AOS-520). Com perfis assinados carregados, cada run novo fica
+// fixado, pelo digest, no perfil em vigor para o seu alias ([fixarPerfilCom]); o digest vai para o
+// registo de retoma e para o manifesto de cada turno. Um run começado com o perfil A e retomado
+// num nó que arrancou com o perfil B — ou sem perfil para o alias, ou sem a pasta — NÃO continua:
+// a retoma pela API recusa antes de re-hospedar, a varredura de crash-resume deixa-o como órfão
+// declarado, e o adaptador do gateway recusa o turno antes de qualquer pedido, com a causa em
+// vocabulário fechado ([modelgateway.PinnedRouteProfileCauses]). Era o «limite conhecido» do
+// AOS-519. A drenagem deixa de ser a única protecção, e continua a ser o procedimento recomendado.
+//
+// O QUE CONTINUA ABERTO. Um run SEM perfil fixado — de um nó sem a pasta, ou de antes do AOS-520 —
+// não é fixado a meio e continua como sempre: a troca da tabela em código entre duas imagens do
+// nó, sem pasta de perfis, não é detectada.
 //
 // A FATIA do canary que o registo traz é lida, validada e mostrada; não tem efeito nesta versão.
 
@@ -215,7 +219,7 @@ func modelRouteProfilesBanner(p *perfisAssinados) []string {
 		if antes, tem := modelgateway.RouteProfileFor(e.Profile.Requested); tem {
 			origem = fmt.Sprintf("SUBSTITUI a entrada da tabela de perfis em codigo para este alias, para o no inteiro: modelo esperado de antes %q (digest %s)", antes.ExpectedModel, antes.Digest())
 		}
-		linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO carregado (EPIC-06/AOS-519): registo %q, alias %q — %s; modelo esperado de agora %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio de qualificacao citado %s (veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia inicial do canary: %d%% — lida e validada, SEM EFEITO nesta versao (AOS-520). O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque: mudar a pasta com o no a correr nao tem efeito ate o no ser recriado. A assinatura prova que o dono assinou este registo, nao que o banco de ensaio correu",
+		linhas = append(linhas, fmt.Sprintf("perfil de rota ASSINADO carregado (EPIC-06/AOS-519): registo %q, alias %q — %s; modelo esperado de agora %q (digest do perfil %s). Digest do registo assinado %s; digest do relatorio de qualificacao citado %s (veredicto qualificado, do modo real, para este perfil e para a imagem do proxy declarada). Fatia inicial do canary: %d%% — lida e validada, SEM EFEITO nesta versao (AOS-520). O perfil NAO autoriza o nome: a allowlist assinada autoriza-o para o board e a regiao deste no, conferido no arranque. Carregado so no arranque: mudar a pasta com o no a correr nao tem efeito ate o no ser recriado. PERFIL FIXADO POR RUN (AOS-520): com perfis assinados carregados, cada run novo fica fixado pelo digest no perfil em vigor para o seu alias; retomado num no com outro perfil para o alias, ou sem nenhum, nao continua (retoma recusada, ou orfao declarado no crash-resume). A assinatura prova que o dono assinou este registo, nao que o banco de ensaio correu",
 			e.Label, e.Profile.Requested, origem, e.Profile.ExpectedModel, e.ProfileDigest, e.EntryDigest, e.ReportDigest, e.InitialSharePercent))
 	}
 	return linhas

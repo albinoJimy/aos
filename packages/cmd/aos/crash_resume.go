@@ -215,6 +215,18 @@ func (s *NodeService) resumeInterruptedRuns(ctx context.Context, anuncia bool) (
 			continue
 		}
 
+		// (3-ter) O PERFIL DE ROTA EM QUE O RUN ESTÁ FIXADO É O QUE ESTE NÓ TEM EM VIGOR? (AOS-520)
+		// O nó foi recriado com outro perfil para o alias do run, ou sem perfil nenhum para ele.
+		// Re-hospedá-lo faria o primeiro turno vivo falhar no adaptador do gateway — e o run ficaria
+		// gravado como FALHADO. Deixa-se como órfão, declarado e contado, que é a postura deste
+		// varredor para o que não consegue retomar com verdade: é RECUPERÁVEL — reposto o perfil em
+		// que o run começou, a varredura seguinte retoma-o. Decide o digest SELADO no registo.
+		if perr := s.node.conferirPerfilFixado(rec); perr != nil {
+			failed++
+			s.log("crash-resume: run %q fixado num perfil de rota que nao e o que este no tem em vigor — NAO retomado, deixado como orfao (fail-closed, AOS-520; recuperavel: reponha o perfil em que o run comecou): %v", runID, perr)
+			continue
+		}
+
 		// (4) Plano de replay das capturas — a MESMA mecânica de dedup de AOS-021. Fail-closed:
 		// capturas ilegíveis (ex.: titular apagado por crypto-shredding) não se retomam.
 		// AOS-440: abertas pelo TITULAR dos dados, que é sob quem o run as selou.

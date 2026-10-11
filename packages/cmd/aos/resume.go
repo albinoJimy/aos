@@ -72,6 +72,19 @@ var (
 	// suspenso e retoma-se com um binário que conheça o layout. Continuá-lo NOUTRO layout nunca
 	// é opção: os turnos já dados seriam remontados com outros bytes do que os gravados.
 	ErrResumeLayoutDesconhecido = errors.New("aos: o run esta fixado num layout de prompt que este binario nao conhece")
+	// ErrResumePerfilFixado — o run não pode ser retomado NESTE nó pelo perfil de rota em que está
+	// fixado (AOS-520): o perfil que o nó tem em vigor para o modelo do run não é o do run, ou já
+	// não há nenhum; ou o run começou sem fixação numa rota que devolvia estado, e um perfil
+	// assinado substituiu-a. A causa, em vocabulário fechado, vem embrulhada
+	// ([modelgateway.PinnedRouteProfileCauseOf]).
+	//
+	// A retoma RECUSA, e recusa ANTES de re-hospedar, pela razão do layout desconhecido: deixar
+	// seguir levaria o run até ao primeiro turno vivo, que o adaptador do gateway recusa na mesma —
+	// mas aí o run já saiu do balde de suspensos e o desfecho seria gravado como FALHADO. Recusado
+	// aqui, o run continua suspenso, e retoma-se num nó que tenha o perfil em que ele começou.
+	// Continuá-lo com OUTRO perfil nunca é opção: seria outro modelo, ou os mesmos nomes com
+	// outros parâmetros, a meio de um run.
+	ErrResumePerfilFixado = errors.New("aos: o perfil de rota em vigor neste no nao e o do run")
 )
 
 // Resume retoma um run SUSPENSO com uma credencial NHI FRESCA.
@@ -192,6 +205,12 @@ func (s *NodeService) Resume(ctx context.Context, runID, credential string) erro
 	// [ErrResumeLayoutDesconhecido]. Um registo sem versão é um run 1.3.0, que este binário monta.
 	if lerr := agentruntime.ValidateAssemblyVersion(rec.LayoutDoRun()); lerr != nil {
 		return fmt.Errorf("%w: run %q: %w", ErrResumeLayoutDesconhecido, runID, lerr)
+	}
+
+	// (2-0-bis) O PERFIL DE ROTA EM QUE O RUN ESTÁ FIXADO É O QUE ESTE NÓ TEM EM VIGOR? (AOS-520) —
+	// ver [ErrResumePerfilFixado]. Decide o digest SELADO no registo; um registo sem ele segue.
+	if perr := s.node.conferirPerfilFixado(rec); perr != nil {
+		return fmt.Errorf("%w: run %q: %w", ErrResumePerfilFixado, runID, perr)
 	}
 
 	// (2-bis) A CREDENCIAL É DE QUEM? — a verificação que o comentário deste ficheiro afirmava

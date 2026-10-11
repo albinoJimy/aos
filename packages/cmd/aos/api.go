@@ -3758,6 +3758,12 @@ func (h *apiHandler) handleResume(w http.ResponseWriter, r *http.Request) {
 		// que a pode fazer. O run fica como estava; a versão em causa vai ao log do operador.
 		h.svc.log("retoma do run %q RECUSADA: %v", runID, err)
 		writeError(w, http.StatusConflict, "run fixado num layout de prompt que esta versao do no nao conhece — retome-o com a versao que o gravou")
+	case errors.Is(err, ErrResumePerfilFixado):
+		// 409 (AOS-520), como o layout desconhecido: o run existe e está suspenso, e a retoma é
+		// legítima — não é ESTE nó, com os perfis de rota que tem, que a pode fazer. O run fica como
+		// estava. Ao cliente vai a causa, que é de vocabulário fechado; os digests vão ao log.
+		h.svc.log("retoma do run %q RECUSADA: %v", runID, err)
+		writeError(w, http.StatusConflict, "run fixado num perfil de rota que nao e o que este no tem em vigor (causa: "+causaDoPerfilFixado(err)+") — retome-o num no com o perfil em que comecou")
 	case integration.RegistoDeRetomaRecusado(err):
 		// 409 como o ErrNoResumeRecord (AOS-069): o registo existe e foi RECUSADO por não ser o
 		// que o Put do nó escreveria — um conflito com o estado do run, não uma falha interna.
