@@ -66,7 +66,11 @@ uso:
   aos-issuer mandate-prepare --human <id> --board <b> --agent <id> --class <c> --caps <c1,c2> --requesters <s1,s2> --out <prefixo>
                           → escreve o RASCUNHO e os bytes a assinar com a chave FIDO2 (AOS-446 fase 1)
   aos-issuer mandate-attach --mandate <ficheiro> --sig <ficheiro.sig> --signer "sk-ssh-ed25519@openssh.com AAAA…" [--out <ficheiro>]
-                          → junta a assinatura do 'ssh-keygen -Y sign' e emite o mandato FIDO2 (AOS-446 fase 1)`
+                          → junta a assinatura do 'ssh-keygen -Y sign' e emite o mandato FIDO2 (AOS-446 fase 1)
+  aos-issuer route-profile-sign --entry <registo.json> --report <relatorio.json> --key-file <ficheiro> [--out <registo.sig>]
+                          → confere o registo de entrada e o relatorio que cita como o no os confere, e so entao assina (AOS-519)
+  aos-issuer route-profile-anchor --key-file <ficheiro>
+                          → imprime a chave publica (base64) da chave dos perfis de rota = o AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR do no (AOS-519)`
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -116,6 +120,11 @@ func run(args []string, out, diag io.Writer) error {
 		return cmdMandatePrepare(args[1:], out, diag)
 	case "mandate-attach":
 		return cmdMandateAttach(args[1:], out, diag)
+	// AOS-519: o dono assina o registo de entrada de um perfil de rota, com uma chave só para isso.
+	case "route-profile-sign":
+		return runRouteProfileSign(args[1:], out, diag)
+	case "route-profile-anchor":
+		return runRouteProfileAnchor(args[1:], out)
 	default:
 		return fmt.Errorf("subcomando desconhecido %q\n%s", args[0], usage)
 	}

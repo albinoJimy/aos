@@ -11,6 +11,7 @@ require (
 	github.com/aos-ref/kernel/reference-monitor v0.0.0
 	github.com/aos-ref/platform/audit v0.0.0
 	github.com/aos-ref/platform/identity v0.0.0
+	github.com/aos-ref/platform/model-gateway v0.0.0
 	github.com/aos-ref/substrate/otel-genai v0.0.0
 )
 
@@ -21,7 +22,6 @@ require (
 	github.com/aos-ref/control-plane/pdp v0.0.0 // indirect
 	github.com/aos-ref/platform/memory v0.0.0 // indirect
 	github.com/aos-ref/platform/messaging v0.0.0 // indirect
-	github.com/aos-ref/platform/model-gateway v0.0.0 // indirect
 	github.com/aos-ref/platform/registry v0.0.0 // indirect
 	github.com/aos-ref/substrate/eventstore v0.0.0 // indirect
 	github.com/aos-ref/substrate/redaction v0.0.0 // indirect
