@@ -344,6 +344,10 @@ func erroDeLeituraSemValor(err error) error {
 // os candidatos por cima. Um ponteiro nil é a tabela em código, sem candidatos.
 type RouteProfileSet struct {
 	perfis []RouteProfile
+	// substituidas são as entradas da tabela em código que um candidato substituiu, pelo nome
+	// pedido (AOS-520): é por elas que se sabe que um run sem perfil fixado começou numa rota que
+	// devolvia estado ([RouteProfileSet.CheckPinnedProfile]). nil quando nenhuma foi substituída.
+	substituidas map[string]RouteProfile
 }
 
 // NewRouteProfileSet valida a tabela em código e os candidatos, e devolve o conjunto. Um
@@ -360,6 +364,10 @@ func NewRouteProfileSet(candidatos ...RouteProfile) (*RouteProfileSet, error) {
 		substituiu := false
 		for i := range set.perfis {
 			if set.perfis[i].Requested == c.Requested {
+				if set.substituidas == nil {
+					set.substituidas = map[string]RouteProfile{}
+				}
+				set.substituidas[c.Requested] = set.perfis[i]
 				set.perfis[i], substituiu = c, true
 			}
 		}
