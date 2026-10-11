@@ -10,10 +10,9 @@
   e o crash-resume) · executor de AOS-520
 - **Tickets:** AOS-520 (PR 0, o perfil fixado por run — ADR-036 §2.8; **PR 1, este ADR**: a
   função de escolha, o modelo fixado por run, o despachante por alias e o livro do canary;
-  **PR 2**, as séries por modelo — §2.8). AOS-521 (o disjuntor — §2.9; nasce desligado,
-  `AOS_MODEL_BREAKER=off`). Nasce
-  desligado (`AOS_MODEL_CANDIDATE=off`) e só liga por decisão do dono, depois de uma revisão
-  adversarial independente; por verificar em produção e sobre JetStream.
+  **PR 2**, as séries por modelo — §2.8). AOS-521 (o disjuntor — §2.9). Nasce tudo desligado
+  (`AOS_MODEL_CANDIDATE=off`, `AOS_MODEL_BREAKER=off`) e só liga por decisão do dono, depois de
+  uma revisão adversarial independente; por verificar em produção e sobre JetStream.
 - **Relacionados:** ADR-010 (replay determinístico), ADR-012 (auto-modificação: canary e
   ratificação), ADR-018 (fronteira nó↔ORQ), ADR-021 (scoring no gateway, proposto), ADR-025
   (despromoção automática), ADR-027 (cada nó do plano é um run do nó), ADR-029 (nomes de
