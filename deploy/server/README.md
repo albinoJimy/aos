@@ -1414,9 +1414,19 @@ aos-issuer route-profile-sign --entry novo.registo.json --report novo.relatorio.
 Com um veredicto `recusado` ou `inconclusivo`, ou com um relatório de um ensaio (`modo` que não é
 `real`), o passo 4 falha e não fica assinatura nenhuma. A seed nunca sai do posto.
 
-5. **Drenar a rota.** Esperar que não haja runs em `running` nem à espera de aprovação: um run
-   começado com um perfil e retomado com outro acaba com a projecção em que ficou fixado ou falha
-   fechado (`estado_de_outra_rota`); nunca continua em silêncio com outro perfil.
+5. **Drenar a rota — OBRIGATÓRIO, e o nó não o faz por ti.** Hoje o nó **não detecta** a troca
+   de perfil com runs em curso: um run começado com um perfil e retomado depois de o nó ser
+   recriado com outro **continua**, com o modelo esperado e os parâmetros do perfil novo, e nada
+   falha. Por run só fica fixada a versão da projecção; a única pista é o
+   `manifest.model.route_profile_digest` dos `turn.recorded`, que muda a meio do run. (Fechar isto
+   é do AOS-520, que fixa o digest do perfil por run.) Antes de recriar o nó:
+   - parar o que submete: `systemctl stop aos-drenar-planos.timer` (e não submeter à mão);
+   - esperar que o último plano acabe: `tail -3 /opt/aos/logs/drenar-planos.log` tem de mostrar
+     o desfecho do último plano, e não um plano a correr;
+   - confirmar que não há runs à espera de aprovação: `aos_runs_suspended 0` no `/metrics`.
+
+   O nó não tem uma listagem de runs em curso: a verificação é esta — nada submete, o último
+   plano acabou, nada está suspenso. Depois do passo 7, voltar a ligar o timer.
 6. Copiar os **três** ficheiros para a pasta do servidor e recriar o nó
    (`docker compose -f docker-compose.prod.yml up -d --force-recreate aos`).
 7. **Verificar pelo banner**: `docker logs aos-aos-1 2>&1 | grep 'AOS-519'`. Tem de sair uma

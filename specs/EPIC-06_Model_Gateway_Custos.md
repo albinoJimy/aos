@@ -3803,7 +3803,9 @@ deploy é executar o passo 2. A imagem é a mesma, mas o contentor novo volta a 
   registo cita o digest de um relatório, e o nó lê o relatório.
 - **Um perfil que muda a meio falha fechado os runs em curso** (desenho §5, lição 5;
   <!-- rtm: menção -->ADR-040 §2.11<!-- /rtm: menção -->, preso por teste). Carrega-se no
-  arranque, não a quente.
+  arranque, não a quente. *(Nota da revisão, 2026-10-11: «falha fechado» vale para as rotas que
+  devolvem estado. Para os perfis que este ticket deixa entrar — sem estado — a troca a meio não
+  é detectada; ver o Estado.)*
 - **O princípio que manda:** nada que mude o comportamento chega a produção sem eval-gate,
   canary e ratificação humana assinada (`AGENTS.md` §7, n.º 9;
   <!-- rtm: menção -->ADR-012<!-- /rtm: menção -->). Um perfil de modelo muda o comportamento.
@@ -3894,6 +3896,9 @@ erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
       não tem efeito até ser recriado — preso por teste. Um run começado antes da troca e
       retomado depois acaba com a projecção fixada ou falha fechado com a causa que já existe
       (`estado_de_outra_rota`); nunca continua em silêncio com outro perfil.
+      **Corrigido pela revisão adversarial (2026-10-11): a segunda frase não é verdade para os
+      perfis que esta via aceita, e não se cumpre neste ticket** — ver o Estado, «Limite
+      conhecido». A primeira frase está cumprida; a segunda passou a critério do AOS-520.
 - [x] O conjunto de valores do rótulo do modelo servido nas métricas continua **fechado**:
       passa a incluir os modelos esperados dos perfis assinados, e o número de séries tem um
       máximo escrito e testado.
@@ -4014,12 +4019,23 @@ pré-condição de qualquer perfil assinado ir a produção.
 - *Run «atrás do proxy fixado».* O run de ponta a ponta com o perfil assinado corre contra um
   provider em `httptest` que emite os cabeçalhos do proxy, e não atrás da imagem do proxy.
 - *«Só no arranque», segunda metade.* Está preso que mexer na pasta com o nó a correr não tem
-  efeito e que o nó recriado sobre a pasta estragada não arranca. O run começado antes da troca e
-  retomado depois não tem teste novo: vale o mecanismo que já existia.
+  efeito e que o nó recriado sobre a pasta estragada não arranca. A segunda metade — o run
+  retomado com outro perfil — **não se cumpre**: ver «Limite conhecido», abaixo.
 - *Smoke sobre JetStream.* Por fazer.
 - *As variáveis no compose de produção.* O `environment:` do compose é uma allowlist: as duas
   variáveis e a montagem só de leitura entram por um PR de deploy, quando o dono decidir. Até lá
   a funcionalidade não é alcançável em produção.
+
+**Limite conhecido: a troca de perfil com runs em curso não é detectada.** O ticket, o cabeçalho
+do carregador e o runbook diziam que um run começado com um perfil e retomado com outro «falha
+fechado (`estado_de_outra_rota`); nunca continua em silêncio». A revisão adversarial mostrou que
+é falso para os perfis que esta via aceita: essa causa só nasce na devolução do estado opaco, a
+D8 obriga a perfis que não devolvem estado, e por run só fica fixada a versão da projecção — o
+digest do perfil não. O run retomado continua com o modelo esperado e os parâmetros do perfil
+novo. As três afirmações foram corrigidas; o comportamento ficou preso por teste
+(`TestAOS519_LimiteConhecido_RunRetomadoComOutroPerfilContinuaEmSilencio`, no gateway) para que
+quem o mudar o faça de propósito; a drenagem passou a passo obrigatório do runbook, com a forma
+de a verificar; e a fixação do digest do perfil por run entrou como critério do AOS-520.
 
 **Mutações dirigidas.** 33, todas vermelhas: 25 no pacote `routeentry` (uma por conferência), 1 no
 selo do gateway e 7 na cablagem do nó. Em cada uma retirou-se uma conferência, correram-se os
@@ -4166,6 +4182,19 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
       esperados dos perfis carregados) e um máximo de séries escrito e testado.
 - [ ] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
       a funcionar sem alteração.
+
+**O perfil fixado por run** (herdado do AOS-519, onde ficou como limite conhecido)
+
+- [ ] O **digest do perfil** da rota fica fixado no run, ao lado do modelo: vai para o registo
+      de retoma e é o que o manifesto de cada turno tem de trazer.
+- [ ] Uma **retoma com outro digest** — o nó foi recriado com outro perfil para o mesmo alias,
+      assinado ou da tabela — **falha fechado, com causa própria** em vocabulário fechado; não
+      continua com o perfil novo. O teste do AOS-519 que fixa o comportamento de hoje
+      (`TestAOS519_LimiteConhecido_RunRetomadoComOutroPerfilContinuaEmSilencio`) muda neste
+      ticket, de propósito.
+- [ ] O caso «um perfil assinado **substitui uma entrada da tabela que devolve estado**» não
+      perde o estado em silêncio: os runs em curso nessa rota falham fechado com a causa
+      acima, e não seguem sem o estado que o provider exige.
 
 **Registo**
 

@@ -26,9 +26,17 @@ package main
 // nenhum dos casos o perfil autoriza o nome: isso é da allowlist assinada, conferida aqui.
 //
 // SÓ NO ARRANQUE. A pasta lê-se uma vez, antes de o gateway existir. Mudar, acrescentar ou apagar
-// um ficheiro com o nó a correr não tem efeito até o nó ser recriado — de propósito: um perfil que
-// muda a meio falha fechado os runs em curso (ADR-040 §2.11). Trocar um perfil é recriar o nó, com
-// a rota drenada.
+// um ficheiro com o nó a correr não tem efeito até o nó ser recriado. Trocar um perfil é recriar o
+// nó, COM A ROTA DRENADA — e a drenagem é uma regra OPERACIONAL, que o nó não impõe.
+//
+// LIMITE CONHECIDO: A TROCA DE PERFIL COM RUNS EM CURSO NÃO É DETECTADA. Por run só fica fixada a
+// versão da projecção; o digest do perfil não. Um run começado com o perfil A e retomado num nó
+// que arrancou com o perfil B continua, com o modelo esperado e os parâmetros de B, e nada falha:
+// a causa `estado_de_outra_rota` só existe na devolução do estado opaco (ADR-040 §2.11), e por
+// esta via só entram perfis que não devolvem estado. A única pista é o digest do perfil no
+// manifesto de cada turno, que muda de um turno para o outro. Preso por teste no gateway
+// (TestAOS519_LimiteConhecido_RunRetomadoComOutroPerfilContinuaEmSilencio); quem o fecha é o
+// AOS-520, que fixa o digest do perfil por run.
 //
 // A FATIA do canary que o registo traz é lida, validada e mostrada; não tem efeito nesta versão.
 

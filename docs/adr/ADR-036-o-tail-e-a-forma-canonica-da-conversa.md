@@ -587,8 +587,8 @@ no arranque do nó (decisão D1 do dono). A emenda diz **de onde o perfil vem; n
 - **Precedência.** Um perfil assinado para um nome que a tabela em código conhece **substitui**
   essa entrada para o nó inteiro, e o arranque di-lo, com o modelo esperado e o digest de antes e
   de agora. O perfil não autoriza o nome: quem o autoriza continua a ser a allowlist.
-- **Só no arranque.** A pasta lê-se uma vez. Um perfil que muda a meio falha fechado os runs em
-  curso (ADR-040 §2.11): trocar um perfil é recriar o nó, com a rota drenada.
+- **Só no arranque.** A pasta lê-se uma vez: trocar um perfil é recriar o nó, com a rota
+  drenada. A drenagem é uma regra **operacional**; o nó não a impõe (ver os limites, abaixo).
 - **Prova.** Cada perfil carregado fica selado no audit de governação do gateway
   (`modelgw-gov:route-profiles`) com o digest do perfil, o do registo e o do relatório.
 
@@ -598,7 +598,13 @@ corre e não é assinado pelo banco. (2) O nó não vê que imagem o proxy está
 compara o digest citado com o declarado no repositório, e que o servidor corre essa imagem é
 garantido pelo compose. (3) É um desvio à letra da fase A3 («artefacto do registo»): o Registry
 não corre em nenhum binário; o registo tem versão, digest e assinatura para poder ser publicado
-lá mais tarde sem mudar de forma.
+lá mais tarde sem mudar de forma. (4) **A troca de perfil com runs em curso não é detectada.**
+Por run só fica fixada a versão da projecção; o digest do perfil vai no manifesto de cada turno e
+ninguém o compara com o do turno anterior. A falha fechada do ADR-040 §2.11
+(`estado_de_outra_rota`) só existe na devolução do estado opaco, e por esta via só entram perfis
+que não devolvem estado: um run começado com um perfil e retomado com outro continua, com o
+modelo esperado e os parâmetros do novo. Está preso por teste como limite conhecido, e quem o
+fecha é o AOS-520 (o digest do perfil fixado por run).
 
 Sem a pasta configurada o nó não lê nada disto: o conjunto de perfis é a tabela em código, e os
 digests, os pedidos, os manifestos, o arranque e o `/metrics` são os de antes (preso por teste).
