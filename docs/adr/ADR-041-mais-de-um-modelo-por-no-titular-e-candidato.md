@@ -10,7 +10,7 @@
   e o crash-resume) · executor de AOS-520
 - **Tickets:** AOS-520 (PR 0, o perfil fixado por run — ADR-036 §2.8; **PR 1, este ADR**: a
   função de escolha, o modelo fixado por run, o despachante por alias e o livro do canary;
-  PR 2, as séries por modelo — §2.8, por fazer). AOS-521 (o disjuntor — §2.9, reservado). Nasce
+  **PR 2**, as séries por modelo — §2.8). AOS-521 (o disjuntor — §2.9, reservado). Nasce
   desligado (`AOS_MODEL_CANDIDATE=off`) e só liga por decisão do dono, depois de uma revisão
   adversarial independente; por verificar em produção e sobre JetStream.
 - **Relacionados:** ADR-010 (replay determinístico), ADR-012 (auto-modificação: canary e
@@ -365,8 +365,31 @@ candidato pelo registo em vigor, da última leitura do livro por esta réplica) 
 `aos_model_canary_closed` (0 ou 1). Sem rótulos. `aos_model_canary_newer_events` (eventos do
 livro de tipos que o binário não conhece) sai com candidato a servir e, sem ele, só quando os há.
 
-As séries **por modelo** — turnos, desfechos de run e respostas rejeitadas, com um conjunto
-fechado de valores do rótulo — são o PR 2 do AOS-520 e entram aqui por emenda.
+**As séries por modelo (PR 2).** Três famílias **novas**, ao lado das que já existiam — que não
+mudam de nome, de rótulos nem de valor:
+
+| Família | Rótulos | O que conta |
+|---|---|---|
+| `aos_model_turns_by_model_total` | `model`, `stop_reason` | pedidos ao vivo que devolveram um turno, pelo motivo de paragem |
+| `aos_model_response_rejected_by_model_total` | `model`, `causa` | respostas que o gateway recusou (as causas do AOS-509) |
+| `aos_runs_finished_by_model_total` | `model`, `outcome`, `reason` | runs que o processo selou, por estado e razão do veredicto |
+
+- **O rótulo `model` é de conjunto fechado**: o alias do titular e o do candidato a servir — os
+  nomes **pedidos**, que vêm de `AOS_MODEL_NAME` e do registo assinado. Nunca o modelo que o
+  fornecedor declara ter servido (esse continua em `aos_model_route_checks_total`, num conjunto
+  também fechado). Quem conta os turnos e as recusas é o despachante, pelo alias que escolheu;
+  quem conta os runs é a hospedagem, pelo alias que ficou no Goal.
+- **Só existem com um candidato a servir** (§2.7). Sem pasta, com `off` ou com a fatia a 0 não se
+  cria contador nenhum e o `/metrics` é o de antes. Consequência: um run já fixado no candidato
+  que acabe depois de o interruptor passar a `off` conta só nas famílias de sempre.
+- **O tecto: 70 séries** — dois modelos × (6 motivos + 5 causas + 3 estados × 8 razões) —, todas
+  sempre presentes (o zero é um zero verdadeiro), preso por teste.
+- **O que não somam.** Um run recusado pela fixação (`model_pin_refused`) não chegou a ter modelo
+  e não conta em nenhum: fica só em `aos_runs_finished_total`. Os turnos por modelo são os **ao
+  vivo**; `aos_model_turns_total` conta os turnos percorridos, incluindo os reproduzidos numa
+  retoma — as duas não têm de somar o mesmo. Os desfechos somam: por estado e razão, a soma dos
+  modelos é `aos_runs_finished_total` enquanto todos os runs selados tiverem modelo.
+- `deploy/server/alerta-rota.sh` e as métricas que lê não mudaram.
 
 ### 2.9 O disjuntor — reservado ao AOS-521
 
@@ -469,7 +492,9 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
 - **Um livro com um evento malformado de um tipo conhecido não se repara** (o stream é
   append-only): o nó não arranca com a pasta de perfis configurada, mesmo com o interruptor a
   `off`. Sai-se retirando a variável da pasta, que é desligar os perfis assinados todos.
-- **Por fazer:** o smoke sobre JetStream; as séries por modelo (PR 2); o disjuntor (AOS-521).
+- **As séries por modelo são por processo** e desde o arranque, como as de sempre: um reinício
+  repõe-nas a zero. Não são a fonte de nenhuma decisão.
+- **Por fazer:** o smoke sobre JetStream; o disjuntor (AOS-521).
 
 ## 6. Relação com outros ADR
 
@@ -502,5 +527,5 @@ em vez de cair — que é o lado certo para um disjuntor que ele não sabe ler.
 | AOS-519 | O registo de entrada assinado, com a fatia (lida, sem efeito) |
 | AOS-520, PR 0 | O digest do perfil fixado por run (ADR-036 §2.8) |
 | AOS-520, PR 1 | §2.1 a §2.7, e as duas métricas do canary do §2.8 |
-| AOS-520, PR 2 | As séries por modelo do §2.8 (por fazer) |
+| AOS-520, PR 2 | As séries por modelo do §2.8 |
 | AOS-521 | §2.9, o disjuntor (por fazer) |

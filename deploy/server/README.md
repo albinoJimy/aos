@@ -1573,6 +1573,20 @@ curl -s … /metrics | grep aos_model_canary
 #   aos_model_canary_newer_events    — eventos do livro que este binário não conhece (deve ser 0)
 ```
 
+**Ler cada modelo, lado a lado** (só com o candidato a servir; o rótulo `model` é o alias pedido —
+o do titular ou o do candidato —, nunca o que o fornecedor declara):
+
+```bash
+curl -s … /metrics | grep _by_model_total | grep -v ' 0$'
+#   aos_model_turns_by_model_total{model,stop_reason}        — turnos ao vivo, por motivo de paragem
+#   aos_model_response_rejected_by_model_total{model,causa}  — respostas que o gateway recusou
+#   aos_runs_finished_by_model_total{model,outcome,reason}   — runs selados, por estado e razão
+```
+
+O titular é a série «antes» e o candidato a «depois», no mesmo período. São 70 séries no máximo,
+por processo e desde o arranque. Um run recusado pela fixação não conta em nenhum modelo. As
+métricas e os alertas de sempre (`alerta-rota.sh` incluído) não mudaram.
+
 **«Atribuído» não é «servido».** O livro conta os planos que foram **atribuídos** ao candidato, e
 grava a atribuição antes de o run começar. Um run que seja recusado logo a seguir (o livro não se
 conseguiu ler, a fixação não se gravou) já gastou um lugar dos 40. Por isso o número de planos que

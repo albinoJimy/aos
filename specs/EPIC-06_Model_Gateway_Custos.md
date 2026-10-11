@@ -4213,10 +4213,10 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Métricas** (segundo PR)
 
-- [ ] Turnos, desfechos de run (cumprido, não cumprido, por causa) e respostas rejeitadas têm
+- [x] Turnos, desfechos de run (cumprido, não cumprido, por causa) e respostas rejeitadas têm
       séries por modelo, com um conjunto **fechado** de valores do rótulo (os modelos
       esperados dos perfis carregados) e um máximo de séries escrito e testado.
-- [ ] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
+- [x] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
       a funcionar sem alteração.
 
 **O perfil fixado por run** (herdado do AOS-519, onde ficou como limite conhecido)
@@ -4292,10 +4292,45 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Em curso (2026-10-11).** Feitos o **PR 0 — o perfil fixado por run** (ramo
 `feature/AOS-520-perfil-fixado-por-run`) e o **PR 1 — titular, candidato e canary** (ramo
-`feature/AOS-520-titular-e-candidato`, por cima do PR 0). **Por fazer:** o PR 2 (as séries por
-modelo — o bloco «Métricas») e o smoke sobre JetStream. O PR 1 teve **duas revisões adversariais
+`feature/AOS-520-titular-e-candidato`, por cima do PR 0) e o **PR 2 — as séries por modelo** (ramo
+`feature/AOS-520-metricas-por-modelo`, por cima do PR 1; ver «O que o PR 2 entregou», abaixo).
+**Por fazer:** o smoke sobre JetStream. O PR 1 teve **duas revisões adversariais
 independentes** (2026-10-11), corrigidas no mesmo ramo — ver «Correcções das revisões», abaixo.
 Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada está ligado.
+
+**O que o PR 2 entregou** (ADR-041 §2.8).
+
+- *Três famílias novas*: `aos_model_turns_by_model_total{model,stop_reason}`,
+  `aos_model_response_rejected_by_model_total{model,causa}` e
+  `aos_runs_finished_by_model_total{model,outcome,reason}`. As que existiam não mudaram.
+- *O rótulo `model` é o alias PEDIDO* — o do titular ou o do candidato a servir —, num conjunto
+  fechado; nunca o modelo que o fornecedor declara. **Acerto ao critério, a dizer ao dono:** o
+  critério fala em «os modelos esperados dos perfis carregados»; usou-se o alias, que é a chave
+  por que o nó escolhe, fixa e despacha, e é o que faz de «o titular» e «o candidato» duas séries
+  mesmo que os dois perfis esperem o mesmo modelo.
+- *Só com um candidato a servir* (o critério da inércia já o dizia): com `off` e um registo na
+  pasta o despachante existe e não conta nada. Um run já fixado no candidato que acabe depois de
+  o interruptor passar a `off` conta só nas famílias de sempre.
+- *O tecto*: 70 séries — dois modelos × (6 motivos + 5 causas + 3 estados × 8 razões) —, preso
+  por teste, no arranque e depois de os dois modelos servirem.
+- *Quem conta*: o despachante, por pedido ao vivo, pelo alias que escolheu (turnos e recusas); a
+  hospedagem, no selo do run, pelo alias do Goal (desfechos). Um run recusado pela fixação não
+  chegou a ter modelo e não conta em nenhum — fica em `aos_runs_finished_total`.
+- *`deploy/server/alerta-rota.sh` não foi tocado.*
+
+**Inércia do PR 2.** Sem candidato a servir, o teste de inércia do PR 1
+(`aos520_inercia_test.go`) continua verde **sem alteração** — os digests são os do PR 0. Com o
+candidato a servir, as linhas das famílias que já existiam (as do modelo, as dos runs e as das
+tool calls) e a lista dos nomes das famílias, tiradas as três novas, têm os digests **medidos no
+commit do PR 1** (be8b169d) num checkout destacado, com o mesmo ficheiro
+(`aos520_series_inercia_test.go`).
+
+**Mutações dirigidas do PR 2.** 11, todas vermelhas por asserção: o rótulo com o modelo servido
+cru; o candidato contado na série do titular (nos turnos, e nos desfechos); as séries criadas sem
+candidato a servir (na composição, e no `/metrics`); um alias fora do conjunto a ganhar série
+(sobreviveu à primeira passagem — faltava a asserção — e ficou presa); o tecto 2 → 3; um erro
+qualquer contado como resposta recusada; a resposta recusada contada também como turno; a razão
+do desfecho sempre `none`; e uma família de sempre a mudar de bytes.
 
 **O que o PR 1 entregou** (ADR-041).
 
@@ -4374,7 +4409,7 @@ arrancar: não tem como saber quantas réplicas partilham o Event Store.
   `parseModelFromEnv` e pelo `Bootstrap`, com o servidor HTTP do nó, não sobre o executável.
 - *A recusa pela fixação não tem série própria:* o run fecha `failed` com a razão
   `model_pin_refused` na transição terminal e a causa no log; conta nas séries de desfecho que já
-  existem. As séries por causa e por modelo são do PR 2.
+  existem. Nas séries por modelo do PR 2 não conta em nenhum modelo: não chegou a ter um.
 - *O `run.model_pinned` que já lá estava vale:* um run re-submetido com o mesmo id fica com a
   fixação que o log tem; se o modelo fixado já não é servido, é recusado.
 - *O teste do candidato indisponível* cobre o 503 e a ligação cortada; o timeout em si não (o
