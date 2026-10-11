@@ -74,6 +74,16 @@ func fixarProjeccaoCom(goal agentruntime.Goal, perfis *modelgateway.RouteProfile
 	return goal
 }
 
+// fixarProjeccaoDoRun fixa no Goal a versão da projecção do perfil da rota, lido do conjunto de
+// perfis DESTE nó: a tabela em código, com os perfis assinados que o nó carregou no arranque por
+// cima (AOS-519). É a que a hospedagem de um run usa.
+func (n *Node) fixarProjeccaoDoRun(goal agentruntime.Goal) agentruntime.Goal {
+	if n == nil {
+		return fixarProjeccao(goal)
+	}
+	return fixarProjeccaoCom(goal, n.perfisDaRota.perfis())
+}
+
 // versaoDaProjeccaoParaORegisto devolve o que o registo de retoma grava como versão da projecção
 // do run: a versão fixada, ou vazio quando o run não tem nenhuma — incluindo o run retomado que
 // traz a marca [agentruntime.ProjectionVersionUnpinned], para que a re-escrita do registo na

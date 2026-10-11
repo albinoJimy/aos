@@ -512,3 +512,40 @@ func TestAOS519_No_AProjeccaoDoRunEADoPerfilAssinado(t *testing.T) {
 		t.Fatalf("um run com versao fixada mudou para %q", got)
 	}
 }
+
+// DE PONTA A PONTA: um run NOVO num nó cujo perfil assinado declara a versão 1.2.0 — com o
+// interruptor do nó na de omissão — é projectado na 1.2.0 em todos os turnos, e o seu registo de
+// retoma fica com essa versão: retomado, continua nela. É o nó composto a ligar o conjunto de
+// perfis ao adaptador (a projecção de cada turno) e ao Goal (o que fica fixado no run).
+func TestAOS519_No_ORunNovoFicaFixadoNaVersaoDoPerfilAssinado(t *testing.T) {
+	comVersao := strings.Replace(rt.ProfileJSON, `"capabilities":["tools"]`, `"capabilities":["tools"],"projection_version":"1.2.0"`, 1)
+	aos519Pasta(t, comVersao)
+	n := aos505NoCompor(t, "", false, "", func(int) map[string]string { return aos505NoCabecalhos(aos519Novo, aos505NoAPIBaseB) })
+	if defaultModelProjectionVersion == "1.2.0" {
+		t.Fatal("a versao de omissao do no e a do perfil: o teste nao distingue nada")
+	}
+	const runID = "run-519-projeccao"
+	m := n.correr(t, runID, nil)
+	manifestos, _ := aos490Manifestos(t, m.eventos)
+	if len(manifestos) != 2 {
+		t.Fatalf("turnos = %d", len(manifestos))
+	}
+	for i, man := range manifestos {
+		if man.ProjectionVersion != "1.2.0" {
+			t.Fatalf("turno %d projectado na %q; o perfil assinado declara 1.2.0", i+1, man.ProjectionVersion)
+		}
+	}
+	// O que a hospedagem fixa no Goal de um run novo deste nó — e que vai para o registo de retoma.
+	goal := n.node.fixarProjeccaoDoRun(agentruntime.Goal{Model: agentruntime.ModelConfig{ModelID: aos486Modelo}})
+	if goal.ProjectionVersion != "1.2.0" {
+		t.Fatalf("o no fixa o run novo na versao %q; quer 1.2.0 (a do perfil assinado)", goal.ProjectionVersion)
+	}
+	rec, err := resumeRecordFromGoal(agentruntime.Goal{RunID: runID, Objective: "o", CompletionMode: agentruntime.CompletionOff,
+		Model: agentruntime.ModelConfig{ModelID: aos486Modelo}, ProjectionVersion: goal.ProjectionVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.GoalWith("credencial").ProjectionVersion; got != "1.2.0" {
+		t.Fatalf("o registo de retoma traz a versao %q; quer 1.2.0", got)
+	}
+}

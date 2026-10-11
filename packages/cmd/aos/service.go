@@ -1170,7 +1170,7 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	// mesmo ponto e pela mesma razão. Sem perfil que a declare — todos os de hoje — o Goal fica
 	// sem versão e a projecção é a do interruptor do nó, como sempre. Um run retomado traz a do
 	// seu registo, ou a marca de que começou sem nenhuma, e não é tocado.
-	goal = fixarProjeccaoCom(goal, s.node.perfisDaRota.perfis())
+	goal = s.node.fixarProjeccaoDoRun(goal)
 	// AOS-493: o MODO DE APLICAÇÃO do veredicto de conclusão fica fixado no Goal no mesmo ponto
 	// e pela mesma razão: o registo de retoma, o runtime e o manifesto de cada turno têm o
 	// mesmo valor. Um run novo fica no modo do nó; um retomado traz o do seu registo.
