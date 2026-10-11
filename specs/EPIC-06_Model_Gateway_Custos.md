@@ -4333,7 +4333,13 @@ fixado está preso aos bytes medidos no commit da base.
 - *O perfil assinado sobre uma entrada que devolve estado* está preso por um teste interno do
   gateway que troca a tabela pela duração do teste: nenhuma entrada da tabela de hoje devolve
   estado, e a tabela não é substituível de fora do pacote. A regra é a mesma função que os testes
-  do nó exercitam para as outras causas.
+  do nó exercitam para as outras causas. Conta para as duas classes que devolvem estado
+  (`obrigatorio` e `opcional`).
+- *Limite latente desse caso (revisão, A5).* A recusa é **por alias**: não olha para se o run tem
+  de facto estado capturado, pelo que um run antigo sem estado seria recusado sem necessidade.
+  Hoje não dispara. Fica escrito junto do código (`route_pinned.go`) o que tem de rever quem
+  acrescentar à tabela uma entrada que devolva estado, ou abrir a via assinada a esses perfis —
+  o PR 1 não precisa de lhe mexer se não fizer nenhuma das duas coisas.
 - *O órfão do crash-resume é recuperável pela retoma com credencial.* A varredura não tem
   credencial fresca (limite que já existia, AOS-253): com o gateway real, o turno vivo de um run
   re-hospedado por ela é negado na identidade. Reposto o perfil, quem conclui o run é a retoma

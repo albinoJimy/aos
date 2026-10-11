@@ -98,6 +98,15 @@ func (s *RouteProfileSet) CheckPinnedProfile(requested, pinned string) error {
 	case "":
 		return nil
 	case agentruntime.RouteProfileDigestUnpinned:
+		// LIMITE LATENTE (revisão do AOS-520, A5). A recusa é POR ALIAS: não olha para se ESTE run
+		// tem de facto estado capturado. Um run antigo que nunca recebeu estado do provider é
+		// recusado sem necessidade. Hoje não dispara — nenhuma entrada da tabela em código devolve
+		// estado —, e a escolha é a do lado fechado: a conferência da retoma não tem a vista do
+		// turno, e uma regra que só o adaptador pudesse aplicar deixava o run ser re-hospedado e
+		// falhar a meio. QUEM ACRESCENTAR à tabela uma entrada com `devolver` diferente de `nunca`,
+		// ou abrir a via assinada a perfis que devolvem estado, tem de rever isto: decidir se a
+		// recusa passa a olhar para o estado do run (e então onde, antes de re-hospedar), e
+		// escrever o procedimento para os runs antigos que ficam parados.
 		antes, substituida := s.substituida(requested)
 		if !substituida || antes.StateReturn == StateReturnNever {
 			return nil

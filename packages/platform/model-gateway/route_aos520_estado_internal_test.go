@@ -34,16 +34,21 @@ func TestAOS520_PerfilAssinadoSobreEntradaQueDevolveEstado(t *testing.T) {
 	const comEstado, semEstado = "rota-com-estado", "rota-sem-estado"
 	entradaComEstado := RouteProfile{Requested: comEstado, ExpectedModel: "openai/com-estado", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools},
 		ProjectionVersion: NativeProjectionVersion130, StateReturn: StateReturnRequired}
+	// As DUAS classes que devolvem estado contam: `obrigatorio` e `opcional` (revisão, A3).
+	const comEstadoOpcional = "rota-com-estado-opcional"
+	entradaComEstadoOpcional := RouteProfile{Requested: comEstadoOpcional, ExpectedModel: "openai/com-estado-opcional", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools},
+		ProjectionVersion: NativeProjectionVersion130, StateReturn: StateReturnOptional}
 	entradaSemEstado := RouteProfile{Requested: semEstado, ExpectedModel: "openai/sem-estado", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools}}
 	original := routeProfiles
-	routeProfiles = append(append([]RouteProfile(nil), original...), entradaComEstado, entradaSemEstado)
+	routeProfiles = append(append([]RouteProfile(nil), original...), entradaComEstado, entradaComEstadoOpcional, entradaSemEstado)
 	t.Cleanup(func() { routeProfiles = original })
 
 	// Os «assinados»: um para cada alias, nenhum devolve estado (é o que a via assinada aceita).
 	assinadoSobreEstado := RouteProfile{Requested: comEstado, ExpectedModel: "openai/novo", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools}}
 	assinadoSobreSemEstado := RouteProfile{Requested: semEstado, ExpectedModel: "openai/novo", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools}}
 	assinadoNovo := RouteProfile{Requested: "alias-novo", ExpectedModel: "openai/novo", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools}}
-	set, err := NewRouteProfileSet(assinadoSobreEstado, assinadoSobreSemEstado, assinadoNovo)
+	assinadoSobreOpcional := RouteProfile{Requested: comEstadoOpcional, ExpectedModel: "openai/novo", WireClass: WireOpenAIChat, Capabilities: []string{CapabilityTools}}
+	set, err := NewRouteProfileSet(assinadoSobreEstado, assinadoSobreOpcional, assinadoSobreSemEstado, assinadoNovo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +58,10 @@ func TestAOS520_PerfilAssinadoSobreEntradaQueDevolveEstado(t *testing.T) {
 	// substituída por um perfil assinado.
 	if err := set.CheckPinnedProfile(comEstado, marca); !errors.Is(err, ErrPinnedRouteProfile) || PinnedRouteProfileCauseOf(err) != PinnedCauseSignedOverState {
 		t.Fatalf("o run sem fixacao sobre a rota que devolvia estado tinha de ser recusado com %s; veio %v", PinnedCauseSignedOverState, err)
+	}
+	// O mesmo com a classe `opcional`: o estado também era devolvido, e também se perdia.
+	if err := set.CheckPinnedProfile(comEstadoOpcional, marca); PinnedRouteProfileCauseOf(err) != PinnedCauseSignedOverState {
+		t.Fatalf("a rota que devolvia estado em `opcional` tambem conta; veio %v", err)
 	}
 	// Controlos — nenhum destes perde estado, e o run sem fixação continua como hoje:
 	for nome, c := range map[string]struct {
