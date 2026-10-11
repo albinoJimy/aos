@@ -1450,6 +1450,20 @@ ficheiros. As causas (vocabulário fechado): `pasta_sem_ancora`, `ancora_invalid
 é lida no arranque. **Recuo:** tirar os três ficheiros e recriar o nó repõe a entrada da tabela em
 código; tirar as duas variáveis do `.env` repõe o nó de antes, por inteiro.
 
+**Limites que tens de conhecer antes de ligar.**
+
+- **Um registo não expira e não há anti-recuo.** A data do relatório não é lida. Um registo
+  antigo, validamente assinado, volta a carregar se voltar à pasta; e tirar os três ficheiros
+  repõe a entrada da tabela em código (é o recuo — e é o que faria quem tivesse escrita na
+  pasta). Quem escreve na pasta não consegue **criar** um registo; consegue **retirar** um e
+  **repor** um antigo. Por isso: a pasta é do root, legível pelo uid `65532`, montada `:ro`; e os
+  registos que saem de uso **apagam-se do servidor**, não se guardam ao lado.
+- **Uma âncora por ambiente.** O registo só se liga ao ambiente pelo `board` e pela `regiao`. Com
+  os valores por omissão e a mesma chave, um registo assinado para um nó de desenvolvimento
+  carrega em produção. Gera uma chave de perfis **só para produção**.
+- **O rótulo não está assinado.** O nome do ficheiro é só um nome; o que identifica o registo é o
+  `digest do registo` que o banner mostra. Confere-o com o que o `route-profile-sign` imprimiu.
+
 **O que isto não faz.** A fatia do registo é lida, validada e mostrada, e **não tem efeito**: o
 nó serve um só modelo (o canary é do AOS-520). Um perfil que devolve estado (`devolver` diferente
 de `nunca`) é recusado. O perfil não autoriza um nome: só carrega para um alias que a allowlist

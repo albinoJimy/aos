@@ -604,7 +604,14 @@ ninguém o compara com o do turno anterior. A falha fechada do ADR-040 §2.11
 (`estado_de_outra_rota`) só existe na devolução do estado opaco, e por esta via só entram perfis
 que não devolvem estado: um run começado com um perfil e retomado com outro continua, com o
 modelo esperado e os parâmetros do novo. Está preso por teste como limite conhecido, e quem o
-fecha é o AOS-520 (o digest do perfil fixado por run).
+fecha é o AOS-520 (o digest do perfil fixado por run). (5) **Sem validade no tempo nem
+anti-recuo.** A data do relatório não é lida e um registo não expira; não há época nem número de
+sequência por nome. Quem tem escrita na pasta não consegue criar um registo, mas consegue
+**retirar** um (e repõe a entrada da tabela em código) ou **repor um antigo**, validamente
+assinado. A pasta monta-se só de leitura, e a validade máxima do relatório e a sequência por nome
+ficam por decidir pelo dono. (6) **O rótulo do ficheiro não está assinado**: o que identifica um
+registo é o seu digest. (7) **A única ligação ao ambiente são o board e a região**: com os mesmos
+valores e a mesma âncora, um registo de um ambiente serve noutro — usa-se uma âncora por ambiente.
 
 Sem a pasta configurada o nó não lê nada disto: o conjunto de perfis é a tabela em código, e os
 digests, os pedidos, os manifestos, o arranque e o `/metrics` são os de antes (preso por teste).

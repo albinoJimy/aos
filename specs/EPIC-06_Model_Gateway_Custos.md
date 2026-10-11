@@ -4037,6 +4037,18 @@ novo. As três afirmações foram corrigidas; o comportamento ficou preso por te
 quem o mudar o faça de propósito; a drenagem passou a passo obrigatório do runbook, com a forma
 de a verificar; e a fixação do digest do perfil por run entrou como critério do AOS-520.
 
+**Limites escritos, e dois pontos por decidir pelo dono.** A revisão adversarial não encontrou
+caminho de entrada sem assinatura; encontrou o que a assinatura não cobre, e ficou escrito no
+pacote, na emenda ao ADR-036 e no runbook: (1) um registo não tem validade no tempo — a data do
+relatório não é lida; (2) não há anti-recuo — quem tem escrita na pasta não cria registos, mas
+retira um (e repõe a tabela em código) ou repõe um antigo validamente assinado; (3) o rótulo do
+ficheiro não está assinado; (4) a única ligação ao ambiente são o board e a região — recomenda-se
+uma âncora por ambiente. Nada disto foi implementado. **Por decidir:** (a) uma **validade máxima
+do relatório** — o nó recusar um registo cujo relatório tenha mais de N dias, o que obriga a ler a
+data e a requalificar periodicamente; (b) um **número de sequência por alias**, assinado no
+registo e com o maior já visto guardado de forma durável, para um registo antigo não voltar a
+carregar — o que pede um sítio durável para esse número e um procedimento de recuo assinado.
+
 **Mutações dirigidas.** 33, todas vermelhas: 25 no pacote `routeentry` (uma por conferência), 1 no
 selo do gateway e 7 na cablagem do nó. Em cada uma retirou-se uma conferência, correram-se os
 testes do pacote, e repôs-se o ficheiro.

@@ -35,6 +35,21 @@
 // assinado pelo banco. E o nó não vê que imagem o proxy está de facto a correr: compara o digest
 // citado com o declarado no repositório ([ProductionProxyImage]).
 //
+// # O que este pacote NÃO defende (limites escritos, por decidir pelo dono)
+//
+//   - SEM VALIDADE NO TEMPO. A data do relatório não é lida, e um registo não expira: um registo
+//     assinado há um ano carrega hoje como carregou então.
+//   - SEM ANTI-RECUO. Não há época nem número de sequência por alias. Um registo ANTIGO, validamente
+//     assinado, volta a carregar se voltar à pasta; e tirar os três ficheiros de um registo repõe a
+//     entrada da tabela em código. É assim que se recua — e é também o que faria um atacante com
+//     escrita na pasta. Quem escreve na pasta não consegue CRIAR um registo (falta-lhe a chave),
+//     mas consegue RETIRAR um e REPOR um antigo. A pasta monta-se só de leitura por isso.
+//   - O RÓTULO NÃO ESTÁ ASSINADO. O nome do ficheiro é só um nome: mudá-lo não parte a assinatura,
+//     e é ele que aparece no arranque e nas recusas. O que identifica o registo é o seu digest.
+//   - A ÚNICA LIGAÇÃO AO AMBIENTE SÃO O BOARD E A REGIÃO. Dois nós com o mesmo board, a mesma região
+//     e a mesma âncora aceitam o mesmo registo — por exemplo um de desenvolvimento e um de produção,
+//     os dois com os valores por omissão. Recomenda-se UMA ÂNCORA POR AMBIENTE.
+//
 // # Leitura fechada
 //
 // O registo e o relatório lêem-se sem casar nomes por caixa e sem aceitar o que não se conhece
