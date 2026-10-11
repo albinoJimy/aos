@@ -1,0 +1,174 @@
+package routeentry
+
+// O VEREDICTO QUE UM REGISTO CITA.
+//
+// O relatório de qualificação é produzido pelo banco de ensaio (AOS-518), noutro computador. O nó
+// não importa o banco: lê do relatório, pela leitura fechada, só o que precisa para decidir — a
+// versão, o modo da corrida, a experiência, o veredicto, se vale para produção, e o perfil e a
+// imagem do proxy a que diz respeito. As contagens e a regra ficam por ler: o nó não refaz o
+// veredicto, confere o que o dono assinou.
+//
+// O CONJUNTO DE NOMES É FECHADO nos três objectos por onde a leitura passa (o topo, o bloco da
+// qualificação e a rota qualificada). Um membro que este nó não conhece recusa
+// ([CauseReportUnknownShape]) — é o lado fechado: um relatório de um banco mais novo não é lido
+// «no que se percebe». Quem prende as listas abaixo ao que o banco escreve é um teste do banco,
+// que passa um relatório verdadeiro por [ReadVerdict].
+
+// ReportVersion é a versão do formato do relatório que este leitor conhece.
+const ReportVersion = "1"
+
+// Os valores que o nó exige. São os do banco (corrida.go e qualificacao.go), escritos aqui porque
+// o nó não o importa; o teste do banco confere que coincidem.
+const (
+	// ModeReal é o modo de uma corrida contra o modelo real.
+	ModeReal = "real"
+	// ExperimentQualification é a experiência que dá um veredicto sobre a rota.
+	ExperimentQualification = "qualificacao"
+	// VerdictQualified é o único veredicto que deixa um perfil entrar.
+	VerdictQualified = "qualificado"
+)
+
+// Os membros que se lêem.
+const (
+	reportFieldVersion       = "versao_do_relatorio"
+	reportFieldMode          = "modo"
+	reportFieldExperiment    = "experiencia"
+	reportFieldQualification = "qualificacao_do_modelo"
+	qualFieldVerdict         = "veredicto"
+	qualFieldForProduction   = "vale_para_producao"
+	qualFieldRoute           = "rota_qualificada"
+	routeFieldProfileDigest  = "digest_do_perfil"
+	routeFieldProxyDigest    = "digest_da_imagem_do_proxy"
+)
+
+// reportTopFields são os membros do topo de um relatório da versão [ReportVersion].
+var reportTopFields = []string{
+	reportFieldVersion, "ticket", "data_utc", reportFieldMode, reportFieldExperiment, "terminou", "rota",
+	"regiao_de_processamento_declarada", "protocolo", "digests", "plano", "pedidos", "custo", "sonda", "taxas",
+	"por_braco", "por_caso", "comparacoes", "limites", "observacoes", "forma_no_fornecedor",
+	"qualificacao_da_devolucao", reportFieldQualification, ReportDigestField,
+}
+
+// qualificationFields são os membros do bloco `qualificacao_do_modelo`.
+var qualificationFields = []string{
+	qualFieldVerdict, "razoes", "avisos", "regra", qualFieldForProduction, "porque_nao_vale_para_producao",
+	"limiares", "contagens", qualFieldRoute, "controlo_sem_devolucao", "orcamento", "nao_prova",
+}
+
+// qualifiedRouteFields são os membros do bloco `rota_qualificada`.
+var qualifiedRouteFields = []string{
+	"fornecedor", "modelo", "modelo_esperado", "digest_da_rota", routeFieldProfileDigest,
+	"digest_da_bateria", "versao_da_bateria", "imagem_do_proxy", routeFieldProxyDigest,
+}
+
+// ReportTopFields, QualificationFields e QualifiedRouteFields devolvem cópias das listas fechadas
+// de nomes, para o teste do banco as comparar com o que ele escreve.
+func ReportTopFields() []string      { return append([]string(nil), reportTopFields...) }
+func QualificationFields() []string  { return append([]string(nil), qualificationFields...) }
+func QualifiedRouteFields() []string { return append([]string(nil), qualifiedRouteFields...) }
+
+// Verdict é o que o nó lê de um relatório de qualificação.
+type Verdict struct {
+	// Digest é o digest do relatório, conferido contra o seu conteúdo.
+	Digest string
+	// Mode é o modo da corrida (`falso`, `proxy` ou `real`).
+	Mode string
+	// Verdict é o veredicto sobre a rota.
+	Verdict string
+	// ValidForProduction é o que o relatório diz de si: só uma corrida do modo `real` vale.
+	ValidForProduction bool
+	// ProfileDigest é o digest do perfil que a corrida qualificou.
+	ProfileDigest string
+	// ProxyImageDigest é o digest da imagem do proxy atrás da qual a corrida foi feita; vazio
+	// quando o relatório não o traz (o modo `falso` não tem proxy).
+	ProxyImageDigest string
+}
+
+// ReadVerdict confere o digest de um relatório e lê dele o veredicto, pela leitura fechada.
+// Devolve um [*Refusal]: [CauseReportInvalid] quando o digest não confere, [CauseReportUnknownShape]
+// quando a versão, um nome ou um tipo não são os conhecidos, e [CauseReportWithoutVerdict] quando o
+// relatório não é de uma qualificação.
+//
+// NÃO decide se o veredicto serve: isso é de [CheckReport], que o compara com o registo assinado.
+func ReadVerdict(raw []byte) (Verdict, error) {
+	digest, err := VerifyReportDigest(raw)
+	if err != nil {
+		return Verdict{}, refuse(CauseReportInvalid, "")
+	}
+	top, ok := strictObject(raw)
+	if !ok || !onlyKeys(top, reportTopFields) {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	version, okV := textOf(top[reportFieldVersion])
+	mode, okM := textOf(top[reportFieldMode])
+	experiment, okE := textOf(top[reportFieldExperiment])
+	if !okV || !okM || !okE || version != ReportVersion {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	block, has := top[reportFieldQualification]
+	if !has || experiment != ExperimentQualification {
+		return Verdict{}, refuse(CauseReportWithoutVerdict, "")
+	}
+	qual, ok := strictObject(block)
+	if !ok || !onlyKeys(qual, qualificationFields) {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	v := Verdict{Digest: digest, Mode: mode}
+	var okVerdict, okFor bool
+	v.Verdict, okVerdict = textOf(qual[qualFieldVerdict])
+	v.ValidForProduction, okFor = boolOf(qual[qualFieldForProduction])
+	route, okRoute := strictObject(qual[qualFieldRoute])
+	if !okVerdict || !okFor || !okRoute || !onlyKeys(route, qualifiedRouteFields) {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	var okProfile bool
+	if v.ProfileDigest, okProfile = textOf(route[routeFieldProfileDigest]); !okProfile {
+		return Verdict{}, refuse(CauseReportUnknownShape, "")
+	}
+	if proxy, has := route[routeFieldProxyDigest]; has {
+		var okProxy bool
+		if v.ProxyImageDigest, okProxy = textOf(proxy); !okProxy {
+			return Verdict{}, refuse(CauseReportUnknownShape, "")
+		}
+	}
+	return v, nil
+}
+
+// CheckReport confere o relatório citado contra o registo de entrada. A ORDEM é fixa:
+//
+//  1. o relatório confere o seu próprio digest;
+//  2. esse digest é o que o registo ASSINADO cita — é este passo que dá autenticidade ao que se
+//     lê a seguir, e por isso vem ANTES de se ler seja o que for do relatório;
+//  3. o relatório lê-se pela leitura fechada ([ReadVerdict]);
+//  4. a corrida foi no modo `real` e o relatório diz que vale para produção;
+//  5. o veredicto é `qualificado`;
+//  6. o perfil qualificado é o do registo;
+//  7. a imagem do proxy da corrida é a que o registo cita.
+//
+// Devolve um [*Refusal] sem rótulo; [LoadDir] põe-lho.
+func CheckReport(e Entry, report []byte) error {
+	digest, err := VerifyReportDigest(report)
+	if err != nil {
+		return refuse(CauseReportInvalid, "")
+	}
+	if digest != e.ReportDigest {
+		return refuse(CauseReportNotCited, "")
+	}
+	v, err := ReadVerdict(report)
+	if err != nil {
+		return err
+	}
+	if v.Mode != ModeReal || !v.ValidForProduction {
+		return refuse(CauseVerdictNotForProduction, "")
+	}
+	if v.Verdict != VerdictQualified {
+		return refuse(CauseNotQualified, "")
+	}
+	if v.ProfileDigest != e.ProfileDigest {
+		return refuse(CauseVerdictOfOtherProfile, "")
+	}
+	if v.ProxyImageDigest != e.ProxyImageDigest {
+		return refuse(CauseVerdictOfOtherProxyImage, "")
+	}
+	return nil
+}

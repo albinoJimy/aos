@@ -11,7 +11,8 @@
   e o estado opaco do provider), AOS-513 (emenda de 2026-10-08 ao §2.8: o que o perfil da rota
   passa a poder declarar), AOS-515 (emenda de 2026-10-08 ao §2.4: projecção nativa 1.3.0, que
   devolve o estado opaco do turno; a decisão está no ADR-040 §2.11), AOS-516 (emenda de
-  2026-10-10 ao §2.8: `devolver_em` e o parâmetro `reasoning`)
+  2026-10-10 ao §2.8: `devolver_em` e o parâmetro `reasoning`), AOS-519 (emenda de 2026-10-11 ao
+  §2.8: de onde o perfil pode vir — a tabela em código ou um registo de entrada assinado)
 - **Emenda:** ADR-034 §2.1 (a tabela de segmentos ganha o `tool_call`) — a emenda vive no próprio
   ADR-034.
 - **Relacionados:** ADR-005 (conteúdo untrusted é dados, nunca instruções), ADR-009 (prefixo
@@ -555,6 +556,65 @@ para os outros declara-se no perfil, em vocabulário fechado, e não em código 
 
 Os digests dos perfis que não declaram nenhum dos dois são os de antes (presos por teste), e o
 pedido a essas rotas não muda um byte. Contrato da porta `1.10.0`.
+
+#### De onde o perfil pode vir (AOS-519, emenda de 2026-10-11)
+
+Até aqui o perfil vivia só na tabela em código: um modelo novo custava um PR e uma imagem nova do
+nó. Passa a poder vir também de um **registo de entrada assinado**, lido de uma pasta e conferido
+no arranque do nó (decisão D1 do dono). A emenda diz **de onde o perfil vem; não muda o que ele
+é**: os campos, o digest e a comparação por turno são os desta secção.
+
+- **O registo.** Um ficheiro JSON com versão de formato, o board e a região a que se destina, o
+  perfil (os campos de `ParseRouteProfile`, e nenhum outro), o digest do perfil, o digest do
+  relatório de qualificação do banco de ensaio (AOS-518), o digest da imagem do proxy em que a
+  qualificação correu (AOS-517) e a fatia inicial do canary. Ao lado: a assinatura e o relatório.
+- **Quem assina.** O dono, com uma chave ed25519 **só para perfis**. O nó recebe a pública por
+  configuração (`AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`) e recusa-a se for a de uma allowlist: as
+  duas âncoras não são intermutáveis. A mensagem assinada leva um prefixo de domínio.
+- **O que a assinatura cobre.** Os bytes exactos do registo. O registo cita o digest do
+  relatório, que é o sha256 da forma canónica do relatório inteiro; logo o veredicto, o modo da
+  corrida e o perfil e a imagem que o relatório cita ficam debaixo da assinatura. Nenhuma decisão
+  se recalcula de um campo que quem entrega os ficheiros possa mudar sem a partir. O relatório
+  lê-se pela leitura fechada: sem casar nomes por caixa, sem nomes repetidos, sem membros
+  desconhecidos.
+- **O que o nó exige**, para cada registo: assinatura válida; formato conhecido; fatia de 0 a 100;
+  digest do perfil igual ao do perfil que traz; perfil que **não devolve estado** (decisão D8, até
+  ao smoke da captura sobre JetStream); o seu board e a sua região; a imagem do proxy declarada no
+  repositório; relatório presente, íntegro e igual ao citado; veredicto `qualificado`, do modo
+  `real`, para esse perfil e essa imagem; nome que a allowlist assinada autoriza; um só registo
+  por nome; e nenhum ficheiro a mais na pasta. **À primeira que falha o nó não arranca**, com a
+  causa em vocabulário fechado, e nenhum perfil é carregado em parte.
+- **Precedência.** Um perfil assinado para um nome que a tabela em código conhece **substitui**
+  essa entrada para o nó inteiro, e o arranque di-lo, com o modelo esperado e o digest de antes e
+  de agora. O perfil não autoriza o nome: quem o autoriza continua a ser a allowlist.
+- **Só no arranque.** A pasta lê-se uma vez: trocar um perfil é recriar o nó, com a rota
+  drenada. A drenagem é uma regra **operacional**; o nó não a impõe (ver os limites, abaixo).
+- **Prova.** Cada perfil carregado fica selado no audit de governação do gateway
+  (`modelgw-gov:route-profiles`) com o digest do perfil, o do registo e o do relatório.
+
+**Limites aceites.** (1) A assinatura prova que o dono assinou aquele registo, que cita aquele
+relatório; **não prova que o banco de ensaio correu** — o relatório é produzido no posto de quem
+corre e não é assinado pelo banco. (2) O nó não vê que imagem o proxy está de facto a correr:
+compara o digest citado com o declarado no repositório, e que o servidor corre essa imagem é
+garantido pelo compose. (3) É um desvio à letra da fase A3 («artefacto do registo»): o Registry
+não corre em nenhum binário; o registo tem versão, digest e assinatura para poder ser publicado
+lá mais tarde sem mudar de forma. (4) **A troca de perfil com runs em curso não é detectada.**
+Por run só fica fixada a versão da projecção; o digest do perfil vai no manifesto de cada turno e
+ninguém o compara com o do turno anterior. A falha fechada do ADR-040 §2.11
+(`estado_de_outra_rota`) só existe na devolução do estado opaco, e por esta via só entram perfis
+que não devolvem estado: um run começado com um perfil e retomado com outro continua, com o
+modelo esperado e os parâmetros do novo. Está preso por teste como limite conhecido, e quem o
+fecha é o AOS-520 (o digest do perfil fixado por run). (5) **Sem validade no tempo nem
+anti-recuo.** A data do relatório não é lida e um registo não expira; não há época nem número de
+sequência por nome. Quem tem escrita na pasta não consegue criar um registo, mas consegue
+**retirar** um (e repõe a entrada da tabela em código) ou **repor um antigo**, validamente
+assinado. A pasta monta-se só de leitura, e a validade máxima do relatório e a sequência por nome
+ficam por decidir pelo dono. (6) **O rótulo do ficheiro não está assinado**: o que identifica um
+registo é o seu digest. (7) **A única ligação ao ambiente são o board e a região**: com os mesmos
+valores e a mesma âncora, um registo de um ambiente serve noutro — usa-se uma âncora por ambiente.
+
+Sem a pasta configurada o nó não lê nada disto: o conjunto de perfis é a tabela em código, e os
+digests, os pedidos, os manifestos, o arranque e o `/metrics` são os de antes (preso por teste).
 
 ## 3. Alternativas rejeitadas
 

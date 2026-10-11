@@ -278,6 +278,11 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		cfg.PerfilDigest = perfil.Digest()
 		cfg.Extra["perfil"] = cfg.PerfilDigest
+		// AOS-519: o alias da rota é o nome pedido do perfil. Só entra no digest da configuração
+		// quando não é o de sempre, para as corridas de antes manterem o seu.
+		if perfil.Requested != AliasDaRota {
+			cfg.Extra["alias"] = perfil.Requested
+		}
 	}
 	// A QUALIFICAÇÃO DA DEVOLUÇÃO (AOS-516). O host esperado só tem leitor quando o perfil devolve
 	// estado: fora disso seria uma opção sem efeito, e recusa-se em vez de a ignorar.
@@ -490,7 +495,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		chaveDoFalso := "sk-falso-" + hex.EncodeToString(aleatorio)
 		red.Acrescentar(chaveDoFalso)
-		pedidoDeProxy := PedidoDeProxy{Prefixo: "openai", Modelo: "modelo-falso-do-banco", BinarioDoFalso: o.binario, Roteiro: roteiro, Vida: vida}
+		pedidoDeProxy := PedidoDeProxy{Prefixo: "openai", Modelo: "modelo-falso-do-banco", Alias: aliasDoPerfil(perfil), BinarioDoFalso: o.binario, Roteiro: roteiro, Vida: vida}
 		if o.estado != "" {
 			// A rota do proxy é a que o perfil ESPERA — é esse o nome que o proxy vai declarar ter
 			// servido. Com o falso do AOS-515 tem de ser uma rota anthropic/…: é o caminho de
@@ -668,7 +673,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			}
 			return SaidaOK
 		}
-		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase))
+		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Alias: aliasDoPerfil(perfil), Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase))
 		if lerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", lerr)
 			return SaidaSemInfra

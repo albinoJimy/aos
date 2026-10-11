@@ -1361,6 +1361,127 @@ nunca`. Com runs em curso numa rota `obrigatorio`, **drenar primeiro** (esperar 
 em `running` nem à espera de aprovação): na `1.2.0` o turno seguinte desses runs falha com
 `projeccao_sem_estado`, porque o pedido não sai sem o estado.
 
+### Perfis de rota assinados — `AOS_MODEL_ROUTE_PROFILES_DIR` (AOS-519) — nada ligado hoje
+
+O perfil de uma rota era só uma tabela em código: um modelo novo custava um PR e uma imagem nova
+do nó. Com a pasta configurada, o nó carrega perfis de **registos de entrada assinados pelo
+dono**, cada um a citar o veredicto do banco de ensaio para esse perfil. Sem a pasta, o nó é byte
+a byte o de antes.
+
+| Variável | O que é |
+|---|---|
+| `AOS_MODEL_ROUTE_PROFILES_DIR` | A pasta dos registos, **dentro do contentor**. Lida uma vez, no arranque |
+| `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR` | A chave **pública** (base64) de quem assina os perfis. Obrigatória com a pasta, mesmo vazia. Não pode ser a de uma allowlist |
+
+**O que ainda falta para se poder ligar em produção.** O `environment:` do compose é uma
+allowlist (ver «Acrescentar uma variável ao `.env` não chega»): as duas variáveis e a montagem da
+pasta **não estão** no `docker-compose.prod.yml`. Entram por um PR de deploy, quando o dono
+decidir — no serviço `aos`, as duas linhas `AOS_MODEL_ROUTE_PROFILES_DIR: "${AOS_MODEL_ROUTE_PROFILES_DIR:-}"`
+e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR: "${AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR:-}"`, e um
+volume **só de leitura**, por exemplo `/opt/aos/perfis-de-rota:/etc/aos/perfis-de-rota:ro`. A
+pasta do servidor tem de ser legível pelo uid `65532` e não precisa de ser escrita por ele.
+
+**Os três ficheiros de um registo** (`<rotulo>` é livre: letras, dígitos, `_` e `-`):
+
+| Ficheiro | O que é |
+|---|---|
+| `<rotulo>.registo.json` | `formato` (`aos-registo-de-entrada-de-perfil/1`), `board`, `regiao`, `perfil` (o JSON do `--perfil` do banco), `digest_do_perfil`, `digest_do_relatorio`, `digest_da_imagem_do_proxy` e `fatia_inicial_percentagem` (0 a 100). Os três digests copiam-se do relatório |
+| `<rotulo>.registo.sig` | A assinatura do dono, escrita pelo `aos-issuer route-profile-sign` |
+| `<rotulo>.relatorio.json` | O relatório da qualificação (`aos-ensaio real --experiencia qualificacao`), tal como o banco o escreveu |
+
+Qualquer outro ficheiro na pasta faz o nó recusar arrancar.
+
+**Passos do dono — carregar um perfil.** No posto, em PowerShell.
+
+```powershell
+# 1. UMA VEZ: a chave dos perfis de rota. So para isto; fora do no e fora do banco de ensaio.
+#    Uma chave POR AMBIENTE: a de producao nao assina registos de desenvolvimento.
+#    A pasta fica com ACL so para o teu utilizador ANTES de a seed ser escrita.
+$pasta = "$env:USERPROFILE\.aos-perfis"
+New-Item -ItemType Directory -Force $pasta | Out-Null
+icacls $pasta /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" | Out-Null
+$b = New-Object byte[] 32; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+[IO.File]::WriteAllText("$pasta\perfis.seed", (-join ($b | ForEach-Object { $_.ToString('x2') })))
+icacls "$pasta\perfis.seed"   # tem de mostrar SO o teu utilizador
+
+# 2. UMA VEZ: a ancora — a chave PUBLICA — que vai para o .env do servidor.
+aos-issuer route-profile-anchor --key-file "$env:USERPROFILE\.aos-perfis\perfis.seed"
+
+# 3. POR PERFIL: qualificar (docs/runbooks/PROC-BANCO-DE-ENSAIO.md). O `requested` do perfil e o
+#    alias que o no pede em producao (hoje, AOS_MODEL_NAME), e nao `rota-de-ensaio`.
+
+# 4. POR PERFIL: escrever <rotulo>.registo.json, copiar o relatorio para <rotulo>.relatorio.json,
+#    e assinar. O comando confere o registo e o relatorio como o no os confere, e so entao assina.
+aos-issuer route-profile-sign --entry novo.registo.json --report novo.relatorio.json `
+  --key-file "$env:USERPROFILE\.aos-perfis\perfis.seed" --out novo.registo.sig
+```
+
+Com um veredicto `recusado` ou `inconclusivo`, ou com um relatório de um ensaio (`modo` que não é
+`real`), o passo 4 falha e não fica assinatura nenhuma. A seed nunca sai do posto. Antes de
+assinar, o comando mostra **o que vais assinar** — alias, modelo esperado, parâmetros do pedido,
+versão da projecção, board, região, fatia e os três digests: lê-o. O `--out` recusa escrever por
+cima do registo, do relatório ou da chave.
+
+5. **Drenar a rota — OBRIGATÓRIO, e o nó não o faz por ti.** Hoje o nó **não detecta** a troca
+   de perfil com runs em curso: um run começado com um perfil e retomado depois de o nó ser
+   recriado com outro **continua**, com o modelo esperado e os parâmetros do perfil novo, e nada
+   falha. Por run só fica fixada a versão da projecção; a única pista é o
+   `manifest.model.route_profile_digest` dos `turn.recorded`, que muda a meio do run. (Fechar isto
+   é do AOS-520, que fixa o digest do perfil por run.) Antes de recriar o nó:
+   - parar o que submete: `systemctl stop aos-drenar-planos.timer` (e não submeter à mão);
+   - esperar que o último plano acabe: `tail -3 /opt/aos/logs/drenar-planos.log` tem de mostrar
+     o desfecho do último plano, e não um plano a correr;
+   - confirmar que não há runs à espera de aprovação: `aos_runs_suspended 0` no `/metrics`.
+
+   O nó não tem uma listagem de runs em curso: a verificação é esta — nada submete, o último
+   plano acabou, nada está suspenso. Depois do passo 7, voltar a ligar o timer.
+6. Copiar os **três** ficheiros para a pasta do servidor e recriar o nó
+   (`docker compose -f docker-compose.prod.yml up -d --force-recreate aos`).
+7. **Verificar pelo banner**: `docker logs aos-aos-1 2>&1 | grep 'AOS-519'`. Tem de sair uma
+   linha por perfil — `perfil de rota ASSINADO carregado` —, com o alias, `SUBSTITUI` ou
+   `ACRESCENTA-SE`, o modelo esperado de antes e de agora, e os digests. Com a pasta vazia sai
+   `zero perfis assinados`.
+
+**Se o nó não arrancar**, o erro diz `causa=<causa> registo=<rotulo>`, e nunca o conteúdo dos
+ficheiros. As causas (vocabulário fechado): `pasta_sem_ancora`, `ancora_invalida`,
+`ancora_partilhada`, `pasta_ilegivel`, `ficheiro_nao_reconhecido`, `demasiados_registos` (mais de
+8), `assinatura_em_falta`, `assinatura_invalida`, `registo_ilegivel`, `formato_desconhecido`,
+`fatia_fora_do_intervalo`, `perfil_invalido`, `nome_da_rota_invalido`,
+`digest_do_perfil_diferente`, `perfil_devolve_estado`, `registo_de_outro_ambiente`,
+`imagem_do_proxy_nao_declarada`, `relatorio_em_falta`, `relatorio_ilegivel`, `relatorio_invalido`,
+`relatorio_nao_e_o_citado`, `relatorio_de_forma_desconhecida`, `relatorio_sem_veredicto`,
+`veredicto_nao_vale_para_producao`, `veredicto_nao_qualificado`, `veredicto_de_outro_perfil`,
+`veredicto_de_outra_imagem_do_proxy`, `nome_fora_da_allowlist`, `nome_pedido_repetido`.
+
+**Trocar ou retirar um perfil** é o mesmo procedimento: drenar, pôr na pasta os ficheiros novos
+(ou tirar os três do perfil que sai), recriar o nó, verificar o banner. Nunca a quente: a pasta só
+é lida no arranque. **Recuo:** tirar os três ficheiros e recriar o nó repõe a entrada da tabela em
+código; tirar as duas variáveis do `.env` repõe o nó de antes, por inteiro.
+
+**Limites que tens de conhecer antes de ligar.**
+
+- **Um registo não expira e não há anti-recuo.** A data do relatório não é lida. Um registo
+  antigo, validamente assinado, volta a carregar se voltar à pasta; e tirar os três ficheiros
+  repõe a entrada da tabela em código (é o recuo — e é o que faria quem tivesse escrita na
+  pasta). Quem escreve na pasta não consegue **criar** um registo; consegue **retirar** um e
+  **repor** um antigo. Por isso: a pasta é do root, legível pelo uid `65532`, montada `:ro`; e os
+  registos que saem de uso **apagam-se do servidor**, não se guardam ao lado.
+- **Uma âncora por ambiente.** O registo só se liga ao ambiente pelo `board` e pela `regiao`. Com
+  os valores por omissão e a mesma chave, um registo assinado para um nó de desenvolvimento
+  carrega em produção. Gera uma chave de perfis **só para produção**.
+- **O rótulo não está assinado.** O nome do ficheiro é só um nome; o que identifica o registo é o
+  `digest do registo` que o banner mostra. Confere-o com o que o `route-profile-sign` imprimiu.
+
+**O que isto não faz.** A fatia do registo é lida, validada e mostrada, e **não tem efeito**: o
+nó serve um só modelo (o canary é do AOS-520). Um perfil que devolve estado (`devolver` diferente
+de `nunca`) é recusado. O perfil não autoriza um nome: só carrega para um alias que a allowlist
+assinada já autoriza para o board e a região do nó. A assinatura prova que o dono assinou aquele
+registo; não prova que o banco de ensaio correu. Uma actualização da imagem do proxy (AOS-517)
+invalida os registos que citam a imagem anterior: requalifica-se e assina-se de novo. Com
+`AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`, `served` em
+`aos_model_route_checks_total` passa a incluir os modelos esperados dos perfis assinados (no
+máximo 42 séries).
+
 ### A forma da resposta do provider — `AOS_MODEL_RESPONSE_SHAPE` (AOS-507)
 
 Uma resposta que gasta tokens de saída e chega com o texto vazio fecha `empty_output`, e o registo

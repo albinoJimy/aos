@@ -9,6 +9,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
+	"github.com/aos-ref/substrate/eventstore"
 )
 
 func denyRecord() allowlist.GovRecord {
@@ -189,5 +190,36 @@ func TestSeal_StoreError_Propagates(t *testing.T) {
 	rec := allowlist.NewRecorder(failStore{})
 	if _, err := rec.Seal(context.Background(), denyRecord()); err == nil {
 		t.Fatal("falha de selagem devia propagar erro")
+	}
+}
+
+// AOS-519: o selo do carregamento de um perfil de rota NÃO é no-op sem store, e recusa um
+// carregamento sem o que o identifica.
+func TestSealRouteProfileLoaded_FailClosed(t *testing.T) {
+	ctx := context.Background()
+	at := time.Unix(1_800_000_000, 0).UTC()
+	if _, err := allowlist.NewRecorder(nil).SealRouteProfileLoaded(ctx, at, "gpt-4o", "openai/x", "sha256:p", "sha256:e", "sha256:r"); !errors.Is(err, allowlist.ErrRouteProfileSeal) {
+		t.Fatalf("sem store o selo tinha de falhar; veio %v", err)
+	}
+	store := audit.NewMemStore()
+	rec := allowlist.NewRecorder(store)
+	for _, c := range [][4]string{{"", "p", "e", "r"}, {"a", "", "e", "r"}, {"a", "p", "", "r"}, {"a", "p", "e", ""}} {
+		if _, err := rec.SealRouteProfileLoaded(ctx, at, c[0], "openai/x", c[1], c[2], c[3]); !errors.Is(err, allowlist.ErrRouteProfileSeal) {
+			t.Fatalf("%v: tinha de falhar; veio %v", c, err)
+		}
+	}
+	if head, _ := store.Head(ctx, "modelgw-gov:route-profiles"); head != 0 {
+		t.Fatalf("selos recusados deixaram %d registos", head)
+	}
+	if _, err := rec.SealRouteProfileLoaded(ctx, at, "gpt-4o", "openai/x", "sha256:p", "sha256:e", "sha256:r"); err != nil {
+		t.Fatal(err)
+	}
+	if head, _ := store.Head(ctx, "modelgw-gov:route-profiles"); head != 1 {
+		t.Fatalf("selos = %d", head)
+	}
+	// A partição do selo é representável como nome de stream do Event Store (sem ponto, AOS-425):
+	// um audit de governação sobre JetStream não a recusa.
+	if err := eventstore.ValidarStreamID("modelgw-gov:route-profiles"); err != nil {
+		t.Fatalf("a particao do selo nao cabe num nome de stream: %v", err)
 	}
 }

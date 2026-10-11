@@ -469,7 +469,14 @@ func run(w io.Writer) error {
 
 	// A ROTA SOB GOVERNAÇÃO (AOS-505). Validada em [parseModelFromEnv]; relê-se para a declarar.
 	// Com `off` não sai linha nenhuma (salvo o aviso de um host inválido que foi ignorado).
-	for _, line := range modelRouteBannerFromEnv(cfg.Model != nil, modelNameFromEnv()) {
+	// OS PERFIS DE ROTA ASSINADOS (AOS-519). Lidos e conferidos em [parseModelFromEnv]; aqui só se
+	// declara o que o cliente de modelo traz — a pasta NÃO é relida. Sem pasta não sai linha, e a
+	// linha da governação da rota é a de antes.
+	assinados := perfisDoCliente(cfg.Model)
+	for _, line := range modelRouteProfilesBanner(assinados) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
+	for _, line := range modelRouteBannerFromEnvCom(cfg.Model != nil, modelNameFromEnv(), assinados.perfis()) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
 
@@ -2315,6 +2322,12 @@ func parseModelEgressTimeoutFromEnv() (time.Duration, error) {
 func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identity.Verifier), error) {
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
+		// AOS-519: em produção, uma pasta de perfis assinados declarada SEM gateway aborta — o
+		// operador que julga ter perfis assinados em vigor não fica com o modelo de referência e um
+		// aviso. Fora de produção fica o aviso do arranque ([modelRouteProfilesBanner]).
+		if production && strings.TrimSpace(os.Getenv("AOS_MODEL_ROUTE_PROFILES_DIR")) != "" {
+			return nil, nil, ErrModelRouteProfilesWithoutGateway
+		}
 		return nil, nil, nil // não configurado ⇒ modelo de referência (comportamento actual).
 	}
 	model := modelNameFromEnv()
@@ -2339,10 +2352,19 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if pverr != nil {
 		return nil, nil, pverr
 	}
+	// OS PERFIS DE ROTA ASSINADOS (AOS-519). Sem AOS_MODEL_ROUTE_PROFILES_DIR isto devolve nil sem
+	// ler mais nada, e tudo abaixo é o de sempre. Com a pasta, lê-a UMA vez e confere cada registo;
+	// qualquer conferência que falhe aborta o arranque aqui, antes de qualquer efeito (é só
+	// leitura: a pasta, a allowlist e a âncora). Vem antes da governação da rota porque é do
+	// conjunto de perfis do nó — tabela e assinados — que ela precisa.
+	assinados, aerr := loadSignedRouteProfilesFromEnv()
+	if aerr != nil {
+		return nil, nil, aerr
+	}
 	// A ROTA SOB GOVERNAÇÃO (AOS-505). Vocabulário fechado, validado aqui pela mesma razão; com a
 	// governação ligada, um modelo sem perfil de rota também aborta o arranque, e `enforce` sem o
 	// host esperado do endpoint também.
-	rota, rotaContadores, rerr := modelRouteFromEnv(model)
+	rota, rotaContadores, rerr := modelRouteFromEnvCom(model, assinados.perfis())
 	if rerr != nil {
 		return nil, nil, rerr
 	}
@@ -2373,16 +2395,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	}
 	// Fronteira de soberania (board/região) que o nó declara ao gateway. Defaults casam com a
 	// allowlist EMBEBIDA; com um bundle externo o operador escolhe-os livremente.
-	region := defaultModelGatewayRegion
-	if v := strings.TrimSpace(os.Getenv("AOS_MODEL_REGION")); v != "" {
-		region = v
-	}
-	board := defaultModelGatewayBoard
-	if v := strings.TrimSpace(os.Getenv("AOS_MODEL_BOARD")); v != "" {
-		board = v
-	}
+	region, board := modelRegionBoardFromEnv()
 	// Allowlist EXTERNA (bundle assinado montado) se pedida; nil ⇒ embebida. Ver modelgatewaywiring.go.
-	pol, err := loadModelAllowlistFromEnv()
+	// Com perfis assinados (AOS-519) é a que eles já leram: a allowlist que autorizou os nomes no
+	// arranque é a mesma que o gateway vai aplicar em cada pedido, e o bundle não é lido duas vezes.
+	pol, err := modelAllowlistDoNo(assinados)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2428,8 +2445,14 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	}
 	// AOS-509: as respostas recusadas contam por causa. Sem interruptor.
 	rejeicoes, rejeicaoOpcao := modelResponseRejected()
-	client, err := newGatewayModelClientComRota(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
-		rota, forma, estado, append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)...)
+	// AOS-519: com perfis assinados, as rotas com parâmetros conhecem-se agora e não ao carregar
+	// o pacote — os contadores dos 4xx refazem-se para o conjunto do nó. Sem registos ficam os
+	// de sempre.
+	if conjunto := assinados.perfis(); conjunto != nil {
+		parametrosRecusados = novosContadoresDeParametros(conjunto.WithParams())
+	}
+	client, err := newGatewayModelClientComPerfis(modelVerifier, endpoint, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout,
+		rota, forma, estado, assinados, append(estadoOpcoes, modelProjectionOption(projection), modelProjectionVersionOption(projectionVersion), formaOpcao, rejeicaoOpcao)...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2458,6 +2481,12 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// nome; o RM recebe a capability do registry). Sem tools ⇒ cliente nu (comportamento inalterado).
 	if len(bindings) > 0 {
 		client = &toolEnrichingClient{inner: client, bindings: bindings}
+	}
+	// AOS-519: com a pasta de perfis assinados configurada, o cliente leva o que foi carregado
+	// para o Bootstrap e o arranque o encontrarem sem voltar a ler a pasta. Sem pasta ⇒ o cliente
+	// é o de sempre, sem invólucro.
+	if assinados != nil {
+		client = clienteComPerfis{inner: client, perfis: assinados}
 	}
 	// NOTA (AOS-021): o decorador de RETOMA já NÃO se aplica aqui. Envolver o modelo é
 	// responsabilidade da composição do nó ([Bootstrap]), para que a garantia de

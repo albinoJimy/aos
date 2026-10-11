@@ -69,10 +69,12 @@ func TestAOS513_Banco_OPerfilCandidatoChegaAoPedido(t *testing.T) {
 			t.Fatalf("pedido %d leva parametros sem perfil: %s", i, corpo)
 		}
 	}
-	// Um perfil de OUTRA rota não serve o nó de ensaio.
-	outra := strings.Replace(perfilCandidatoDeTeste, `"rota-de-ensaio"`, `"outra-rota"`, 1)
+	// Um nome pedido que não serve de alias da rota não serve o nó de ensaio (AOS-519: o nome
+	// pedido passou a ser o de produção, e deixou de ter de ser `rota-de-ensaio`; o que continua
+	// recusado é um nome com ponto, que não cabe num nome de stream).
+	outra := strings.Replace(perfilCandidatoDeTeste, `"rota-de-ensaio"`, `"outra.rota"`, 1)
 	if _, err := LerPerfilCandidato([]byte(outra)); !errors.Is(err, ErrPerfilDoEnsaio) {
-		t.Fatalf("um perfil de outra rota tinha de ser recusado; veio %v", err)
+		t.Fatalf("um perfil com um nome pedido com ponto tinha de ser recusado; veio %v", err)
 	}
 }
 
@@ -128,7 +130,9 @@ func TestAOS513_Banco_LinhaDeComandos(t *testing.T) {
 	for nome, doc := range map[string]string{
 		"parametro fora do conjunto": strings.Replace(perfilCandidatoDeTeste, `"max_tokens":16000`, `"temperature":0.1`, 1),
 		"valor de tipo errado":       strings.Replace(perfilCandidatoDeTeste, `"max_tokens":16000`, `"max_tokens":"muitos"`, 1),
-		"outra rota":                 strings.Replace(perfilCandidatoDeTeste, `"rota-de-ensaio"`, `"gpt-4o"`, 1),
+		// AOS-519: um nome de produção (`gpt-4o`) passou a ser aceite; o que se recusa é um nome
+		// que não cabe num nome de stream.
+		"nome com ponto": strings.Replace(perfilCandidatoDeTeste, `"rota-de-ensaio"`, `"gpt-4.1"`, 1),
 	} {
 		saida := t.TempDir()
 		e := executar(t, Ambiente{}, "falso", "--saida", saida, "--perfil", escrever(doc))

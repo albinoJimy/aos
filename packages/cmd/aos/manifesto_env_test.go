@@ -80,6 +80,15 @@ var excluidasComRazao = map[string]string{
 		"AOS_MODE=production não autoriza nada (o board vem das claims), mas passá-la " +
 		"convidaria a tentar e o sintoma seria uma recusa opaca.",
 	"AOS_BOARD": "o par de AOS_READER — mesma razão.",
+	// AOS-519. As duas saem daqui no PR de deploy que puser no compose, JUNTAS, as variáveis e a
+	// montagem só de leitura da pasta — decisão do dono, fora do ticket que entregou o código.
+	"AOS_MODEL_ROUTE_PROFILES_DIR": "ainda nao (AOS-519): a pasta de perfis de rota assinados so " +
+		"existe dentro do contentor com uma montagem so de leitura no servico do no, que o compose " +
+		"ainda nao tem. Passar a variavel sem a montagem era oferecer um interruptor cujo unico " +
+		"efeito possivel e impedir o arranque (pasta_ilegivel). Entram as duas juntas, por um PR de " +
+		"deploy, quando o dono decidir ligar; nessa altura esta entrada sai.",
+	"AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR": "o par de AOS_MODEL_ROUTE_PROFILES_DIR — sem a pasta " +
+		"a ancora nao e lida. Entra no compose no mesmo PR de deploy.",
 }
 
 var reGetenv = regexp.MustCompile(`os\.Getenv\("(AOS_[A-Z0-9_]+)"\)`)

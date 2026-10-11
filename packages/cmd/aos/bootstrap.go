@@ -1049,6 +1049,11 @@ type Node struct {
 	// aos491_metricas.go.
 	turnosPorMotivo *turnosPorMotivo
 
+	// perfisDaRota são os perfis de rota assinados que o nó carregou no arranque (AOS-519); nil
+	// sem a pasta configurada. Vem do cliente de modelo ([perfisDoCliente]). É daqui que sai o
+	// conjunto de perfis com que um run novo fixa a versão da projecção ([fixarProjeccao]).
+	perfisDaRota *perfisAssinados
+
 	// rotaDoModelo conta as comparações da rota do modelo por resultado (AOS-505), por processo,
 	// para o `/metrics`. nil com a governação da rota desligada — e a família não é publicada.
 	// Vem do cliente de modelo que o nó recebe ([rotaDoCliente]). Ver model_route_env.go.
@@ -3319,6 +3324,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 		toolCalls:               toolCalls,                     // AOS-489: tool calls despachadas e repetidas, para o /metrics
 		turnosPorMotivo:         motivosDeParagem,              // AOS-491: turnos por motivo de paragem, para o /metrics
 		rotaDoModelo:            rotaDoModelo,                  // AOS-505: comparações da rota do modelo, para o /metrics (nil ⇒ desligada)
+		perfisDaRota:            perfisDoCliente(cfg.Model),    // AOS-519: perfis de rota assinados carregados no arranque (nil ⇒ sem pasta)
 		formaDaResposta:         formaDoCliente(cfg.Model),     // AOS-507: turnos pela forma da resposta, para o /metrics (nil ⇒ desligada)
 		respostasRecusadas:      rejeicoesDoCliente(cfg.Model), // AOS-509: respostas recusadas por causa, para o /metrics
 		estadoDoProvider:        estadoDoCliente(cfg.Model),    // AOS-514: estado opaco do provider por resultado, para o /metrics (nil ⇒ desligada)

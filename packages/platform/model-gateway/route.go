@@ -95,7 +95,8 @@ const (
 )
 
 // RouteProfile é o PERFIL MÍNIMO de uma rota: o que o nó espera de um nome que pede ao proxy.
-// Vive em código ([routeProfiles]); o perfil como artefacto assinado do registo é da fase A3.
+// Vive em código ([routeProfiles]) ou chega por um registo de entrada assinado, conferido no
+// arranque do nó (AOS-519, pacote policy/routeentry).
 // Não contém segredos nem endereços — o host esperado do endpoint é configuração do nó
 // ([RouteGovernance.ExpectedAPIHost]) e não entra no perfil nem no seu digest.
 type RouteProfile struct {
@@ -198,30 +199,14 @@ func RouteProfiles() []RouteProfile {
 // ter numa métrica: os modelos esperados dos perfis (sem repetições, pela ordem da tabela),
 // seguidos de [ServedLabelOther] e [ServedLabelUnreported].
 func ServedModelLabels() []string {
-	var out []string
-	visto := map[string]bool{}
-	for _, p := range routeProfiles {
-		if !visto[p.ExpectedModel] {
-			visto[p.ExpectedModel] = true
-			out = append(out, p.ExpectedModel)
-		}
-	}
-	return append(out, ServedLabelOther, ServedLabelUnreported)
+	return (*RouteProfileSet)(nil).ServedModelLabels()
 }
 
 // ServedModelLabel fecha o nome do modelo servido no conjunto de [ServedModelLabels]: um nome
 // que nenhum perfil espera é `outro`, e a ausência é `nao_reportado`. O texto que o proxy
 // declarou nunca chega a um rótulo.
 func ServedModelLabel(served string) string {
-	if served == "" {
-		return ServedLabelUnreported
-	}
-	for _, p := range routeProfiles {
-		if p.ExpectedModel == served {
-			return served
-		}
-	}
-	return ServedLabelOther
+	return (*RouteProfileSet)(nil).ServedModelLabel(served)
 }
 
 // CompareRoute compara a rota declarada pelo proxy com o perfil do nome pedido. `expectedHost`
@@ -397,7 +382,9 @@ func (g *Gateway) governRoute(ctx context.Context, span agentruntime.Span, ex *p
 	}
 	resp.Route = port.ServedRoute{Model: served, Check: check, ProfileDigest: digest}
 
-	label := ServedModelLabel(served)
+	// O rótulo fecha-se no conjunto de perfis DESTE gateway (AOS-519): com perfis que não estão na
+	// tabela em código, o modelo esperado de um deles é um valor do conjunto e não `outro`.
+	label := g.perfis.ServedModelLabel(served)
 	span.SetAttribute(attrRouteCheck, check)
 	span.SetAttribute(attrRouteServed, label)
 	if g.route.observer != nil {

@@ -99,6 +99,13 @@ func parseModelRouteAPIHostFromEnv() (string, error) {
 // modelRouteFromEnv lê e valida a governação da rota para o modelo do nó. Devolve a configuração
 // para o gateway e os contadores para o `/metrics` — nil com a governação desligada.
 func modelRouteFromEnv(model string) (modelgateway.RouteGovernance, *contadoresDaRota, error) {
+	return modelRouteFromEnvCom(model, nil)
+}
+
+// modelRouteFromEnvCom é [modelRouteFromEnv] sobre o conjunto de perfis do nó (AOS-519): com
+// perfis assinados, é nele que o modelo do nó tem de ter perfil, e é dele que saem os valores do
+// rótulo do modelo servido. nil ⇒ a tabela em código.
+func modelRouteFromEnvCom(model string, perfis *modelgateway.RouteProfileSet) (modelgateway.RouteGovernance, *contadoresDaRota, error) {
 	mode, err := parseModelRouteGovernanceFromEnv()
 	if err != nil {
 		return modelgateway.RouteGovernance{}, nil, err
@@ -116,20 +123,26 @@ func modelRouteFromEnv(model string) (modelgateway.RouteGovernance, *contadoresD
 	if mode == modelgateway.RouteGovernanceEnforce && host == "" {
 		return modelgateway.RouteGovernance{}, nil, ErrModelRouteEnforceWithoutHost
 	}
-	if _, ok := modelgateway.RouteProfileFor(model); !ok {
+	if _, ok := perfis.For(model); !ok {
 		return modelgateway.RouteGovernance{}, nil, fmt.Errorf("%w (modelo %q)", ErrModelRouteWithoutProfile, model)
 	}
-	contadores := novosContadoresDaRota()
+	contadores := novosContadoresDaRotaCom(perfis)
 	return modelgateway.RouteGovernance{Mode: mode, ExpectedAPIHost: host, Observer: contadores.observar}, contadores, nil
 }
 
 // modelRouteBanner declara a governação da rota. Com `off` não sai linha nenhuma: o arranque de
 // um nó que não a liga é o de antes. Só sai com um gateway composto.
 func modelRouteBanner(gatewayComposed bool, mode, model string, hostDefinido bool) []string {
+	return modelRouteBannerCom(gatewayComposed, mode, model, hostDefinido, nil)
+}
+
+// modelRouteBannerCom é [modelRouteBanner] sobre o conjunto de perfis do nó (AOS-519): o perfil
+// que declara é o que o gateway compara, assinado ou da tabela. nil ⇒ a tabela em código.
+func modelRouteBannerCom(gatewayComposed bool, mode, model string, hostDefinido bool, perfis *modelgateway.RouteProfileSet) []string {
 	if !gatewayComposed || mode == modelgateway.RouteGovernanceOff {
 		return nil
 	}
-	perfil, _ := modelgateway.RouteProfileFor(model)
+	perfil, _ := perfis.For(model)
 	endpoint := "o endpoint NAO e comparado (AOS_MODEL_ROUTE_API_HOST por definir) — uma troca so de endpoint no proxy passa por igual"
 	if hostDefinido {
 		endpoint = "o host do endpoint declarado e comparado com AOS_MODEL_ROUTE_API_HOST (minusculas e sem ponto final dos dois lados; a porta compara-se como esta)"
@@ -151,6 +164,11 @@ func modelRouteBanner(gatewayComposed bool, mode, model string, hostDefinido boo
 // valor que não é um host: a variável não é usada e o nó arranca, mas o operador fica a saber que
 // o valor não serviria se ligasse a governação. O valor NÃO é repetido.
 func modelRouteBannerFromEnv(gatewayComposed bool, model string) []string {
+	return modelRouteBannerFromEnvCom(gatewayComposed, model, nil)
+}
+
+// modelRouteBannerFromEnvCom é [modelRouteBannerFromEnv] sobre o conjunto de perfis do nó.
+func modelRouteBannerFromEnvCom(gatewayComposed bool, model string, perfis *modelgateway.RouteProfileSet) []string {
 	mode, err := parseModelRouteGovernanceFromEnv()
 	if err != nil {
 		return nil
@@ -165,7 +183,7 @@ func modelRouteBannerFromEnv(gatewayComposed bool, model string) []string {
 	if herr != nil {
 		return nil
 	}
-	return modelRouteBanner(gatewayComposed, mode, model, host != "")
+	return modelRouteBannerCom(gatewayComposed, mode, model, host != "", perfis)
 }
 
 // contadoresDaRota conta, por processo, as comparações da rota por resultado e por modelo
@@ -182,9 +200,16 @@ type contadoresDaRota struct {
 }
 
 func novosContadoresDaRota() *contadoresDaRota {
+	return novosContadoresDaRotaCom(nil)
+}
+
+// novosContadoresDaRotaCom prepara os contadores para o conjunto de perfis do nó (AOS-519): os
+// valores do modelo servido são os modelos esperados DESSE conjunto. O conjunto continua fechado,
+// e o número de séries tem tecto ([maxSeriesDaRotaDoModelo]). nil ⇒ a tabela em código.
+func novosContadoresDaRotaCom(perfis *modelgateway.RouteProfileSet) *contadoresDaRota {
 	c := &contadoresDaRota{
 		resultados: []string{port.RouteCheckEqual, port.RouteCheckDifferent, port.RouteCheckUnreported},
-		servidos:   modelgateway.ServedModelLabels(),
+		servidos:   perfis.ServedModelLabels(),
 		total:      map[string]map[string]*atomic.Int64{},
 	}
 	for _, r := range c.resultados {

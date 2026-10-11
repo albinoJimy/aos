@@ -76,6 +76,9 @@ type PedidoDeProxy struct {
 	Prefixo string
 	// Modelo é o nome do modelo no fornecedor.
 	Modelo string
+	// Alias é o `model_name` da rota efémera: o nome que o nó de ensaio pede. Vazio ⇒
+	// [AliasDaRota]. Com um perfil candidato é o nome pedido dele (AOS-519).
+	Alias string
 	// BinarioDoFalso, quando não vazio, é o caminho de um binário LINUX do banco: o lançador
 	// põe-no num contentor a fazer de fornecedor (modo `proxy`), e a rota aponta para ele.
 	BinarioDoFalso string
@@ -284,6 +287,15 @@ os.execv("/tmp/aos-ensaio", ["/tmp/aos-ensaio"] + sys.argv[1:])
 // configDoProxy devolve a configuração do proxy para a rota. Os segredos NÃO entram: são
 // referidos pelo nome da variável de ambiente.
 func configDoProxy(prefixo, modelo string, comBase bool) (string, error) {
+	return configDoProxyCom(AliasDaRota, prefixo, modelo, comBase)
+}
+
+// configDoProxyCom é [configDoProxy] com o alias da rota efémera dado (AOS-519). Um alias que não
+// passe em [NomeDaRotaAceite] é recusado: o nome vai para uma linha do YAML.
+func configDoProxyCom(alias, prefixo, modelo string, comBase bool) (string, error) {
+	if !NomeDaRotaAceite(alias) {
+		return "", fmt.Errorf("%w: alias da rota com caracteres que o banco nao aceita", ErrProxy)
+	}
 	if prefixo != "openai" && prefixo != "anthropic" && prefixo != PrefixoDaOpenRouter {
 		return "", fmt.Errorf("%w: adaptador do proxy desconhecido", ErrProxy)
 	}
@@ -291,7 +303,11 @@ func configDoProxy(prefixo, modelo string, comBase bool) (string, error) {
 		return "", fmt.Errorf("%w: nome de modelo com caracteres que o banco nao aceita", ErrProxy)
 	}
 	var b strings.Builder
-	b.WriteString("model_list:\n  - model_name: " + AliasDaRota + "\n    litellm_params:\n")
+	// O alias vai ENTRE ASPAS: `null`, `true`, `123` e `-` passam em [NomeDaRotaAceite] e, sem
+	// aspas, o YAML não os lê como texto — a rota ficava com outro nome (ou sem nome) e o proxy
+	// respondia «modelo desconhecido» a todos os pedidos. O alfabeto do alias não tem aspas nem
+	// barra invertida, pelo que não há nada para escapar.
+	b.WriteString("model_list:\n  - model_name: \"" + alias + "\"\n    litellm_params:\n")
 	b.WriteString("      model: " + prefixo + "/" + modelo + "\n")
 	b.WriteString("      api_key: os.environ/" + envChaveDaRota + "\n")
 	if comBase {
@@ -408,7 +424,11 @@ func (l *LancadorDocker) Lancar(ctx context.Context, p PedidoDeProxy) (*ProxyViv
 		}
 	}
 
-	cfg, err := configDoProxy(p.Prefixo, p.Modelo, apiBase != "")
+	alias := p.Alias
+	if alias == "" {
+		alias = AliasDaRota
+	}
+	cfg, err := configDoProxyCom(alias, p.Prefixo, p.Modelo, apiBase != "")
 	if err != nil {
 		return falhar(err)
 	}

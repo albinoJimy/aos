@@ -296,9 +296,13 @@ go build -o $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe .\cmd\aos-ensaio
 & $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor kimi --experiencia qualificacao --perfil <perfil.json>
 ```
 
-O perfil é o JSON de sempre (`--perfil`), com `requested: rota-de-ensaio` e o `expected_model`
-igual à rota da corrida: `openai/<modelo do Kimi>`, `anthropic/<modelo>` ou
-`openrouter/<autor>/<modelo>`. Com outro nome a qualificação é recusada antes de enviar.
+O perfil é o JSON de sempre (`--perfil`), com o `expected_model` igual à rota da corrida:
+`openai/<modelo do Kimi>`, `anthropic/<modelo>` ou `openrouter/<autor>/<modelo>`. Com outro
+`expected_model` a qualificação é recusada antes de enviar. O `requested` é, desde o AOS-519, o
+**nome que o nó de produção vai pedir** (o alias, por exemplo `gpt-4o`) — o digest do perfil
+inclui-o, e só assim o `digest_do_perfil` do relatório é o do perfil que o nó carrega. Serve
+qualquer nome de 1 a 64 letras, dígitos, `_` e `-` (sem ponto: entra num nome de stream);
+`rota-de-ensaio` continua a servir para corridas que não são para assinar.
 
 **Ler o resultado.** As primeiras linhas do resumo (e do ficheiro `.txt`) são os avisos, se os
 houver; a seguir vem o veredicto com as razões. O código de saída diz o mesmo: 0 `qualificado`,

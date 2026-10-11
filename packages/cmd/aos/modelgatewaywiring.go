@@ -192,6 +192,14 @@ func newGatewayModelClient(verifier authn.Verifier, baseURL, model, apiKeyPath, 
 // modo da medição da forma da resposta (AOS-507); vazio ⇒ desligada. `estado` é o modo da captura
 // do estado opaco do provider (AOS-514); vazio ⇒ desligada.
 func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration, rota modelgateway.RouteGovernance, forma, estado string, extra ...modelgateway.RuntimeAdapterOption) (agentruntime.ModelClient, error) {
+	return newGatewayModelClientComPerfis(verifier, baseURL, model, apiKeyPath, region, board, pol, tools, gwAudit, costRec, production, egressHosts, egressTimeout, rota, forma, estado, nil, extra...)
+}
+
+// newGatewayModelClientComPerfis é [newGatewayModelClientComRota] com os perfis de rota assinados
+// que o nó carregou no arranque (AOS-519). nil — sem pasta — ou sem registos ⇒ o gateway composto
+// é o de sempre: não recebe perfis candidatos, não sela nada a mais, e o adaptador lê a versão da
+// projecção da tabela em código.
+func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, apiKeyPath, region, board string, pol *allowlist.Policy, tools []port.Tool, gwAudit audit.Store, costRec *cost.Recorder, production bool, egressHosts []string, egressTimeout time.Duration, rota modelgateway.RouteGovernance, forma, estado string, assinados *perfisAssinados, extra ...modelgateway.RuntimeAdapterOption) (agentruntime.ModelClient, error) {
 	// CUTOVER DURO: sem seam de identidade não há gateway. O estágio authn REAL substitui o
 	// antigo stub (nodeModelAuthn) que forjava o principal e devolvia allow incondicional.
 	if verifier == nil {
@@ -216,6 +224,11 @@ func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKe
 		if secret == "" {
 			return nil, fmt.Errorf("%w: API key vazia em %q", ErrBadModelConfig, apiKeyPath)
 		}
+	}
+	// AOS-519: em produção, um perfil assinado só entra com o audit de governação DURÁVEL — é
+	// nele que fica o selo do carregamento. Verificado antes de qualquer efeito.
+	if production && len(assinados.candidatos()) > 0 && gwAudit == nil {
+		return nil, ErrModelRouteProfilesWithoutDurableAudit
 	}
 	// AUDIT DE GOVERNAÇÃO (AOS-265). Durável quando AOS_MODEL_AUDIT_PATH resolveu um WORM
 	// ([parseModelAuditFromEnv]); caso contrário, o MemStore de referência (volátil). O
@@ -278,9 +291,13 @@ func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKe
 		// exigir de volta. Vazio ⇒ desligada.
 		ProviderState: estado,
 		// PARÂMETROS DO PERFIL DA ROTA (AOS-513): um 4xx do provider num turno em que o perfil
-		// enviou parâmetros conta por rota e código. O nó usa só a tabela de perfis em código —
-		// não passa perfis candidatos.
+		// enviou parâmetros conta por rota e código.
 		RouteParamsObserver: parametrosRecusados.observar,
+		// PERFIS DE ROTA ASSINADOS (AOS-519): os perfis que o nó carregou da pasta, já conferidos,
+		// entram pela porta dos candidatos, e cada um fica selado com os seus três digests. Sem
+		// pasta as duas listas são nil: o gateway trabalha só com a tabela em código.
+		RouteProfiles:       assinados.candidatos(),
+		RouteProfileEntries: assinados.registos(),
 		// DEVOLUÇÃO DO ESTADO OPACO (AOS-515): cada pedido a uma rota cujo perfil devolve estado
 		// conta pelo resultado.
 		StateReturnObserver: estadoDevolvido.observar,
@@ -339,6 +356,11 @@ func newGatewayModelClientComRota(verifier authn.Verifier, baseURL, model, apiKe
 	}
 	if len(tools) > 0 {
 		opts = append(opts, modelgateway.WithTools(tools))
+	}
+	// AOS-519: o adaptador lê a versão da projecção do perfil da rota do MESMO conjunto que o
+	// gateway usa. Sem perfis assinados não se liga: o valor-zero do adaptador é a tabela em código.
+	if conjunto := assinados.perfis(); conjunto != nil {
+		opts = append(opts, modelgateway.WithRouteProfileSet(conjunto))
 	}
 	opts = append(opts, extra...)
 	return modelgateway.NewModelClient(gw, model, opts...), nil

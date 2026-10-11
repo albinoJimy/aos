@@ -52,7 +52,40 @@ const (
 // AliasDaRota é o nome de modelo que o nó de ensaio PEDE. No modo `falso` o provider ignora-o;
 // atrás do proxy é o `model_name` da rota efémera, que o proxy traduz no modelo do fornecedor.
 // Não tem pontos: um nome de modelo entra num nome de stream do Event Store (AOS-425).
+//
+// É o nome POR OMISSÃO (AOS-519): um perfil candidato traz o seu — o nome que o nó de produção
+// vai pedir —, e é esse que o nó de ensaio pede, que a allowlist do ensaio admite e que a rota
+// efémera do proxy tem ([aliasDoPerfil]). O digest do perfil inclui o nome pedido: só assim o
+// `digest_do_perfil` do relatório é o do perfil que o nó de produção carrega.
 const AliasDaRota = "rota-de-ensaio"
+
+// maxNomeDaRota é o tecto em bytes do nome pedido de um perfil candidato.
+const maxNomeDaRota = 64
+
+// NomeDaRotaAceite diz se um nome pedido serve de alias da rota de ensaio: de 1 a 64 letras,
+// dígitos, `_` e `-`. Sem ponto (o nome entra num nome de stream do Event Store, AOS-425), e sem
+// `/` nem `:` (entra numa linha da configuração do proxy).
+func NomeDaRotaAceite(s string) bool {
+	if s == "" || len(s) > maxNomeDaRota {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// aliasDoPerfil devolve o nome que o nó de ensaio pede: o do perfil candidato, ou [AliasDaRota]
+// quando não há perfil.
+func aliasDoPerfil(p *modelgateway.RouteProfile) string {
+	if p == nil {
+		return AliasDaRota
+	}
+	return p.Requested
+}
 
 // CfgDoNo configura o nó de ensaio.
 type CfgDoNo struct {
@@ -70,7 +103,8 @@ type CfgDoNo struct {
 	Transporte http.RoundTripper
 	// Perfil é um PERFIL DE ROTA CANDIDATO (AOS-513): o que se quer qualificar antes de o dono o
 	// assinar para produção — parâmetros do pedido, versão da projecção, classe de estado. O seu
-	// nome pedido tem de ser [AliasDaRota]. nil ⇒ a rota de ensaio não tem perfil, como sempre.
+	// nome pedido é o alias da rota de ensaio ([aliasDoPerfil]) e tem de passar em
+	// [NomeDaRotaAceite]. nil ⇒ a rota de ensaio não tem perfil, como sempre.
 	// Não precisa de existir na tabela de perfis do nó: é esse o ponto.
 	Perfil *modelgateway.RouteProfile
 	// HostEsperado é o host do endpoint que o proxy deve declarar ter servido, para a governação
@@ -87,17 +121,18 @@ type CfgDoNo struct {
 }
 
 // ErrPerfilDoEnsaio — o perfil candidato não serve o nó de ensaio.
-var ErrPerfilDoEnsaio = errors.New("banco-ensaio: o perfil candidato tem de ter como nome pedido o alias da rota de ensaio (" + AliasDaRota + ")")
+var ErrPerfilDoEnsaio = errors.New("banco-ensaio: o nome pedido do perfil candidato nao serve de alias da rota de ensaio (de 1 a 64 letras, digitos, _ e -; sem ponto, porque o nome entra num nome de stream)")
 
 // LerPerfilCandidato lê um perfil de rota candidato de JSON, pela leitura fechada do gateway
 // ([modelgateway.ParseRouteProfile]: uma chave ou um valor fora do conjunto recusa), e confere
-// que é o da rota de ensaio.
+// que o seu nome pedido serve de alias da rota de ensaio ([NomeDaRotaAceite]). Desde o AOS-519 o
+// nome é o de PRODUÇÃO — o alias que o nó vai pedir —, e não um nome fixo do banco.
 func LerPerfilCandidato(doc []byte) (*modelgateway.RouteProfile, error) {
 	p, err := modelgateway.ParseRouteProfile(doc)
 	if err != nil {
 		return nil, err
 	}
-	if p.Requested != AliasDaRota {
+	if !NomeDaRotaAceite(p.Requested) {
 		return nil, ErrPerfilDoEnsaio
 	}
 	return &p, nil
@@ -125,6 +160,8 @@ type NoDeEnsaio struct {
 	limite    *LimiteDaQualificacao
 	// hostEsperado é o host do endpoint que a governação da rota compara (vazio ⇒ não compara).
 	hostEsperado string
+	// alias é o nome de modelo que este nó pede ([aliasDoPerfil]).
+	alias string
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -160,9 +197,9 @@ func (autoridadeDoEnsaio) ClassAuthority(context.Context, string) ([]string, err
 }
 
 // allowlistDoEnsaio cria e assina, com uma chave efémera, a allowlist regional que admite o
-// alias da rota de ensaio. A governação é a de produção (default-deny, assinatura verificada,
-// activação selada); só o catálogo é do banco.
-func allowlistDoEnsaio() (*allowlist.Policy, error) {
+// alias da rota de ensaio — e só ele. A governação é a de produção (default-deny, assinatura
+// verificada, activação selada); só o catálogo é do banco.
+func allowlistDoEnsaio(alias string) (*allowlist.Policy, error) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -172,7 +209,7 @@ func allowlistDoEnsaio() (*allowlist.Policy, error) {
 		"default": "deny",
 		"rules": []any{map[string]any{
 			"id": "rota-de-ensaio", "board": boardDoEnsaio,
-			"models": []string{AliasDaRota}, "regions": []string{regiaoDoEnsaio},
+			"models": []string{alias}, "regions": []string{regiaoDoEnsaio},
 		}},
 	})
 	if err != nil {
@@ -222,7 +259,11 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		return nil, fmt.Errorf("banco-ensaio: politica do estagio de identidade: %w", err)
 	}
 	verificador := identity.NewVerifier(identity.WithTrustedIssuer(emissorDoEnsaio, iss.PublicKey()))
-	pol, err := allowlistDoEnsaio()
+	alias := aliasDoPerfil(cfg.Perfil)
+	if !NomeDaRotaAceite(alias) {
+		return nil, ErrPerfilDoEnsaio
+	}
+	pol, err := allowlistDoEnsaio(alias)
 	if err != nil {
 		return nil, fmt.Errorf("banco-ensaio: allowlist do no de ensaio: %w", err)
 	}
@@ -231,9 +272,6 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	// para o adaptador do runtime (a versão da projecção).
 	var candidatos []modelgateway.RouteProfile
 	if cfg.Perfil != nil {
-		if cfg.Perfil.Requested != AliasDaRota {
-			return nil, ErrPerfilDoEnsaio
-		}
 		candidatos = append(candidatos, *cfg.Perfil)
 	}
 	perfis, err := modelgateway.NewRouteProfileSet(candidatos...)
@@ -301,7 +339,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 
 	n := &NoDeEnsaio{
 		bateria: cfg.Bateria, porta: porta, devolucao: devolucao, qualifica: cfg.Qualificacao, limite: cfg.Limite, hostEsperado: cfg.HostEsperado,
-		mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
+		alias: alias, mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
 		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},
 	}
@@ -317,7 +355,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 		doNo = append(doNo, port.Tool{Type: "function", Function: port.FunctionDef{Name: t.Nome, Description: t.Descricao, Parameters: t.Parametros}})
 	}
 	for _, b := range Bracos() {
-		mc := modelgateway.NewModelClient(n.porta, AliasDaRota, append([]modelgateway.RuntimeAdapterOption{
+		mc := modelgateway.NewModelClient(n.porta, alias, append([]modelgateway.RuntimeAdapterOption{
 			modelgateway.WithTools(doNo),
 			// O token NHI é cunhado POR RUN (o emissor limita o TTL a uma hora, e uma corrida
 			// pode durar mais): chega ao estágio de identidade do gateway pelo contexto da chamada.
@@ -421,7 +459,7 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 		RunID:              runID,
 		Principal:          referencemonitor.Principal{NHIID: "nhi:banco-ensaio"},
 		Credential:         tok.Compact,
-		Model:              agentruntime.ModelConfig{ModelID: AliasDaRota},
+		Model:              agentruntime.ModelConfig{ModelID: n.alias},
 		System:             n.bateria.System,
 		Tools:              specs,
 		Objective:          p.No.Objectivo,

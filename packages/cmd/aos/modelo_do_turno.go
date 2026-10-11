@@ -59,13 +59,29 @@ func (n *Node) fixarModelo(goal agentruntime.Goal) agentruntime.Goal {
 // run retomado que começou sem nenhuma, não é tocado: a projecção de um run não muda a meio,
 // mesmo que a imagem do nó tenha mudado o perfil entretanto.
 func fixarProjeccao(goal agentruntime.Goal) agentruntime.Goal {
+	return fixarProjeccaoCom(goal, nil)
+}
+
+// fixarProjeccaoCom é [fixarProjeccao] sobre o conjunto de perfis do nó (AOS-519): com perfis
+// assinados, a versão é a do perfil ASSINADO do alias. nil ⇒ a tabela em código, como sempre.
+func fixarProjeccaoCom(goal agentruntime.Goal, perfis *modelgateway.RouteProfileSet) agentruntime.Goal {
 	if goal.ProjectionVersion != "" {
 		return goal
 	}
-	if perfil, ok := modelgateway.RouteProfileFor(goal.Model.ModelID); ok {
+	if perfil, ok := perfis.For(goal.Model.ModelID); ok {
 		goal.ProjectionVersion = perfil.ProjectionVersion
 	}
 	return goal
+}
+
+// fixarProjeccaoDoRun fixa no Goal a versão da projecção do perfil da rota, lido do conjunto de
+// perfis DESTE nó: a tabela em código, com os perfis assinados que o nó carregou no arranque por
+// cima (AOS-519). É a que a hospedagem de um run usa.
+func (n *Node) fixarProjeccaoDoRun(goal agentruntime.Goal) agentruntime.Goal {
+	if n == nil {
+		return fixarProjeccao(goal)
+	}
+	return fixarProjeccaoCom(goal, n.perfisDaRota.perfis())
 }
 
 // versaoDaProjeccaoParaORegisto devolve o que o registo de retoma grava como versão da projecção

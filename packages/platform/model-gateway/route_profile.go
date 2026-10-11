@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -26,13 +27,16 @@ import (
 //     se devolve ao provider. Quem a consome é a projecção 1.3.0 (AOS-515).
 //
 // ONDE VIVE O PERFIL. Em código, na tabela [routeProfiles], como desde o AOS-505: muda com uma
-// imagem nova do nó. O perfil como artefacto assinado do registo é da fase A3. O nó não lê
-// perfis de ficheiro, de ambiente, de um plano, de um run nem de um pedido HTTP.
+// imagem nova do nó. Desde o AOS-519 (fase A3) um perfil pode também chegar ao nó por um REGISTO
+// DE ENTRADA ASSINADO pelo dono, lido de uma pasta e conferido no arranque (pacote
+// policy/routeentry); fora disso o nó não lê perfis de ficheiro, de ambiente, de um plano, de um
+// run nem de um pedido HTTP.
 //
-// O PERFIL CANDIDATO. Quem compõe um gateway fora do nó — o banco de ensaio (AOS-512), que
-// qualifica um perfil ANTES de ele entrar na tabela — pode acrescentar perfis candidatos
-// ([ProductionConfig.RouteProfiles], lidos por [ParseRouteProfile]). Um candidato passa pela
-// mesma validação da tabela e substitui a entrada com o mesmo nome pedido.
+// O PERFIL CANDIDATO. Quem compõe um gateway pode acrescentar perfis à tabela
+// ([ProductionConfig.RouteProfiles], lidos por [ParseRouteProfile]): o banco de ensaio (AOS-512),
+// que qualifica um perfil ANTES de ele entrar, e o nó, com os perfis dos registos assinados que
+// conferiu. Um candidato passa pela mesma validação da tabela e substitui a entrada com o mesmo
+// nome pedido.
 //
 // O PROXY REENCAMINHA TUDO. Medido atrás da imagem de produção do proxy: um parâmetro que o
 // provider não conheça chega-lhe e pode dar 4xx em todos os turnos da rota. Por isso um perfil
@@ -215,68 +219,112 @@ func ParseRouteProfile(data []byte) (RouteProfile, error) {
 	return p, nil
 }
 
-// chavesEstritas recusa um documento em que algum objecto tenha uma chave REPETIDA ou uma chave
-// que não esteja em minúsculas. O `encoding/json` aceita as duas coisas em silêncio: de duas
-// chaves iguais fica a última, e `"Params"` casa com o campo `params`. Num perfil, as duas são
-// uma forma de o que se lê não ser o que se julga ter escrito (ou revisto).
+// chavesEstritas recusa um documento de perfil em que algum objecto, em QUALQUER nível, tenha um
+// nome de membro que não seja EXACTAMENTE — byte a byte — um dos nomes conhecidos desse nível, ou
+// que o tenha repetido.
+//
+// PORQUÊ BYTE A BYTE (revisão do AOS-519). O `encoding/json` casa o nome de um membro com o de um
+// campo por «fold» de Unicode, e de dois membros que casem com o mesmo campo fica o último. A
+// primeira versão desta guarda exigia «minúsculas e sem repetidos», e isso não chega: `requeſted`
+// (com U+017F, o s longo) está em minúsculas, não repete `requested`, e o descodificador casa-o
+// com o campo `requested` — um perfil com os dois lia-se com o valor do segundo. O mesmo vale para
+// `K` (U+212A, o sinal de Kelvin) no lugar de `k`. Com o conjunto fechado por nível, nenhum nome
+// que o descodificador case por fold passa sem ser o próprio nome.
+//
+// Os conjuntos tiram-se dos campos de [RouteProfile] (e dos tipos dos seus parâmetros), pelo que
+// um campo novo entra aqui sem segunda escrita. Um objecto onde o perfil não tem nenhum — dentro
+// de uma lista, ou no lugar de um texto — é recusado.
 func chavesEstritas(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
-	type nivel struct {
-		objecto bool
-		chave   bool // num objecto: o próximo token é uma chave
-		vistas  map[string]bool
+	primeiro, err := dec.Token()
+	if err != nil || primeiro != json.Delim('{') {
+		return errors.New("nao e JSON valido de um perfil")
 	}
-	var pilha []*nivel
-	for {
-		tok, err := dec.Token()
-		if err == io.EOF {
-			return nil
+	if err := objectoEstrito(dec, reflect.TypeOf(RouteProfile{})); err != nil {
+		return err
+	}
+	// O que vier depois do objecto é de quem lê a seguir ([ParseRouteProfile] recusa-o).
+	return nil
+}
+
+// membrosDe devolve os nomes JSON dos campos de um tipo struct e o tipo de cada um (sem o
+// ponteiro). Devolve nil para um tipo que não é struct.
+func membrosDe(t reflect.Type) map[string]reflect.Type {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	out := map[string]reflect.Type{}
+	for i := 0; i < t.NumField(); i++ {
+		nome, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if nome == "" || nome == "-" {
+			continue
 		}
+		out[nome] = t.Field(i).Type
+	}
+	return out
+}
+
+// objectoEstrito percorre um objecto cujo `{` já foi lido, contra os membros do tipo dado.
+func objectoEstrito(dec *json.Decoder, tipo reflect.Type) error {
+	conhecidos := membrosDe(tipo)
+	if conhecidos == nil {
+		return errors.New("tem um objecto onde um perfil nao tem nenhum")
+	}
+	vistos := map[string]bool{}
+	for dec.More() {
+		tok, err := dec.Token()
 		if err != nil {
 			return errors.New("nao e JSON valido de um perfil")
 		}
-		topo := func() *nivel {
-			if len(pilha) == 0 {
-				return nil
-			}
-			return pilha[len(pilha)-1]
+		nome, _ := tok.(string)
+		doCampo, conhecido := conhecidos[nome] // comparação exacta, byte a byte
+		if !conhecido {
+			return errors.New("tem uma chave fora do conjunto fechado dos campos de um perfil")
 		}
-		if t := topo(); t != nil && t.objecto && t.chave {
-			if d, fecha := tok.(json.Delim); fecha && d == '}' {
-				pilha = pilha[:len(pilha)-1]
-				if p := topo(); p != nil && p.objecto {
-					p.chave = true
-				}
-				continue
-			}
-			k, _ := tok.(string)
-			if k != strings.ToLower(k) {
-				return errors.New("tem uma chave que nao esta em minusculas")
-			}
-			if t.vistas[k] {
-				return errors.New("tem uma chave repetida")
-			}
-			t.vistas[k] = true
-			t.chave = false
-			continue
+		if vistos[nome] {
+			return errors.New("tem uma chave repetida")
 		}
-		if d, ok := tok.(json.Delim); ok {
-			switch d {
-			case '{':
-				pilha = append(pilha, &nivel{objecto: true, chave: true, vistas: map[string]bool{}})
-				continue
-			case '[':
-				pilha = append(pilha, &nivel{})
-				continue
-			default: // '}' de um objecto vazio já foi tratado acima; aqui é ']'
-				pilha = pilha[:len(pilha)-1]
-			}
-		}
-		// Acabou um valor: se o nível de cima é um objecto, segue-se uma chave.
-		if t := topo(); t != nil && t.objecto {
-			t.chave = true
+		vistos[nome] = true
+		if err := valorEstrito(dec, doCampo); err != nil {
+			return err
 		}
 	}
+	if _, err := dec.Token(); err != nil { // o `}`
+		return errors.New("nao e JSON valido de um perfil")
+	}
+	return nil
+}
+
+// valorEstrito percorre o valor seguinte. Um objecto só é aceite onde o tipo do campo é uma
+// struct; dentro de uma lista não há objectos num perfil.
+func valorEstrito(dec *json.Decoder, tipo reflect.Type) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return errors.New("nao e JSON valido de um perfil")
+	}
+	d, delim := tok.(json.Delim)
+	if !delim {
+		return nil
+	}
+	switch d {
+	case '{':
+		return objectoEstrito(dec, tipo)
+	case '[':
+		for dec.More() {
+			// O tipo dos elementos não é struct em nenhuma lista de um perfil: um objecto aqui recusa.
+			if err := valorEstrito(dec, reflect.TypeOf("")); err != nil {
+				return err
+			}
+		}
+		if _, err := dec.Token(); err != nil { // o `]`
+			return errors.New("nao e JSON valido de um perfil")
+		}
+		return nil
+	}
+	return errors.New("nao e JSON valido de um perfil")
 }
 
 // erroDeLeituraSemValor reduz um erro do descodificador ao que NÃO repete conteúdo do ficheiro:
@@ -340,15 +388,50 @@ func (s *RouteProfileSet) For(requested string) (RouteProfile, bool) {
 	return RouteProfile{}, false
 }
 
+// todos devolve os perfis do conjunto; os da tabela em código quando o conjunto é nil.
+func (s *RouteProfileSet) todos() []RouteProfile {
+	if s == nil {
+		return routeProfiles
+	}
+	return s.perfis
+}
+
+// ServedModelLabels devolve o conjunto FECHADO de valores que o rótulo do modelo servido pode ter
+// numa métrica, para ESTE conjunto de perfis: os modelos esperados dos seus perfis (sem
+// repetições, pela ordem do conjunto), seguidos de [ServedLabelOther] e [ServedLabelUnreported].
+// Com o conjunto nil é o da tabela em código, como sempre.
+func (s *RouteProfileSet) ServedModelLabels() []string {
+	var out []string
+	visto := map[string]bool{}
+	for _, p := range s.todos() {
+		if !visto[p.ExpectedModel] {
+			visto[p.ExpectedModel] = true
+			out = append(out, p.ExpectedModel)
+		}
+	}
+	return append(out, ServedLabelOther, ServedLabelUnreported)
+}
+
+// ServedModelLabel fecha o nome do modelo servido no conjunto de [RouteProfileSet.ServedModelLabels]:
+// um nome que nenhum perfil do conjunto espera é `outro`, e a ausência é `nao_reportado`. O texto
+// que o proxy declarou nunca chega a um rótulo.
+func (s *RouteProfileSet) ServedModelLabel(served string) string {
+	if served == "" {
+		return ServedLabelUnreported
+	}
+	for _, p := range s.todos() {
+		if p.ExpectedModel == served {
+			return served
+		}
+	}
+	return ServedLabelOther
+}
+
 // WithParams devolve os nomes pedidos dos perfis do conjunto que declaram parâmetros, pela ordem
 // da tabela. É o conjunto FECHADO de valores do rótulo `rota` de [RouteParamsRejection].
 func (s *RouteProfileSet) WithParams() []string {
-	perfis := routeProfiles
-	if s != nil {
-		perfis = s.perfis
-	}
 	var out []string
-	for _, p := range perfis {
+	for _, p := range s.todos() {
 		if p.Params != nil && !p.Params.IsZero() {
 			out = append(out, p.Requested)
 		}
