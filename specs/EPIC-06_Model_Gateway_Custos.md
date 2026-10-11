@@ -3635,7 +3635,7 @@ parâmetros em silêncio.
 - [x] Um teste em CI falha se o digest do compose de produção for diferente do digest em que o
       banco e os gates atrás do proxy medem. **Mutação dirigida:** trocar um carácter do digest
       em qualquer um dos sítios avermelha o teste; fica registado quantos sítios o teste cobre.
-- [ ] O gate opcional atrás da imagem do proxy (`scripts/ci/banco-ensaio-proxy.sh`) corre
+- [x] O gate opcional atrás da imagem do proxy (`scripts/ci/banco-ensaio-proxy.sh`) corre
       verde contra o digest declarado, depois da última edição.
 - [x] O `deploy/server/README.md` descreve a actualização do proxy como mudança de digest por
       PR, com a ordem: gates atrás da imagem nova, requalificação das rotas em uso, só depois
@@ -3732,6 +3732,11 @@ registados na §5 do acompanhamento.
   `TestAOS517_OutrasFugasAvermelham`: um guião com a imagem escrita à mão, a ler de outra
   fonte ou a reatribuí-la; o serviço fora do compose; um digest truncado; uma referência nova
   por tag num runbook; a varredura abaixo do piso.
+- **O gate opcional atrás da imagem declarada, verde** (`scripts/ci/banco-ensaio-proxy.sh`,
+  2026-10-11, depois da última edição a código e ao compose; só documentação mudou a seguir).
+  Uma primeira corrida, feita ao mesmo tempo que o gate `lint`, falhou num cenário porque o
+  proxy não arrancou dentro do prazo; repetida sozinha, passou inteira. Fica dito porque é o
+  comportamento a esperar de quem correr os dois em paralelo no mesmo posto.
 - **O runbook** — `deploy/server/README.md`, «O proxy do modelo, fixado pelo digest
   (AOS-517)»: a actualização como mudança de digest por PR, com a ordem e o que invalida, e
   os passos de produção com comandos, medição antes e depois e recuo.
