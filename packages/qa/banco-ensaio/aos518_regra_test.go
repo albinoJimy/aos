@@ -355,11 +355,12 @@ func TestAOS518_Regra_ControloEAvisos(t *testing.T) {
 		c    ContagensDaQualificacao
 		quer string
 	}{
-		"correu tudo bem sem o estado":        {passou, ControloPassou},
-		"todos os segundos turnos recusados":  {falhou, ControloFalhouComoDevido},
-		"um so 4xx em cinco":                  {com(passou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 1, 4 }), ControloInconclusivo},
-		"quatro 4xx em cinco":                 {com(falhou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 4, 1 }), ControloInconclusivo},
-		"todos recusados, mas um no cumprido": {com(falhou, func(c *ContagensDaQualificacao) { c.NosComToolsCumpridos = 1 }), ControloInconclusivo},
+		"correu tudo bem sem o estado":                  {passou, ControloPassou},
+		"todos os segundos turnos recusados":            {falhou, ControloFalhouComoDevido},
+		"um so 4xx em cinco":                            {com(passou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 1, 4 }), ControloInconclusivo},
+		"quatro 4xx em cinco":                           {com(falhou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 4, 1 }), ControloInconclusivo},
+		"quatro 4xx e o quinto falhado por outra causa": {com(falhou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool = 4 }), ControloInconclusivo},
+		"todos recusados, mas um no cumprido":           {com(falhou, func(c *ContagensDaQualificacao) { c.NosComToolsCumpridos = 1 }), ControloInconclusivo},
 		"todos recusados, amostra incompleta": {com(falhou, func(c *ContagensDaQualificacao) {
 			c.NosComToolsNaAmostra, c.PedidosComMensagemTool, c.QuatroXXComMensagemTool = 4, 4, 4
 		}), ControloInconclusivo},

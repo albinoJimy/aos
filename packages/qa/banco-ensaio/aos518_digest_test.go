@@ -303,6 +303,17 @@ func TestAOS518_Digest_FormaCanonica(t *testing.T) {
 			t.Errorf("forma canonica de %s = %s (%v), quer %s", entrada, tem, err, quer)
 		}
 	}
+	// Tres textos DIFERENTES que o leitor de JSON reduz ao mesmo (um meio par substituto isolado
+	// vira U+FFFD): sem a recusa davam a mesma forma canonica, e portanto o mesmo digest.
+	for _, entrada := range []string{u(`{"t":"a@d800"}`), u(`{"t":"a@dfff"}`), `{"t":"a` + string(rune(0xFFFD)) + `"}`, u(`{"a@d800":1}`)} {
+		if tem, err := FormaCanonicaDoRelatorio([]byte(entrada)); !errors.Is(err, ErrDigestDoRelatorio) {
+			t.Errorf("forma canonica de %q = %s (%v); tinha de recusar", entrada, tem, err)
+		}
+	}
+	// Um par substituto INTEIRO e um caracter como os outros.
+	if tem, err := FormaCanonicaDoRelatorio([]byte(u(`{"t":"@d83d@de00"}`))); err != nil || len(tem) != len(`{"t":""}`)+4 {
+		t.Errorf("um par substituto inteiro foi recusado ou mal escrito: %q (%v)", tem, err)
+	}
 }
 
 // O DIGEST DA INTEGRIDADE, NAO AUTENTICIDADE — e o relatorio di-lo. Quem altera o veredicto e

@@ -2,7 +2,9 @@
 
 Ferramenta de **medição**, fora do nó. Corre uma bateria fixa de casos sintéticos contra **uma
 rota** e escreve um relatório de **taxas** — só contagens, fichas em vocabulário fechado e
-identificadores de caso. Não decide nada: não aceita nem recusa um modelo.
+identificadores de caso. Não decide nada: não aceita nem recusa um modelo — com uma excepção, a
+experiência `qualificacao` (AOS-518), que dá um veredicto calculado por uma regra fixa (ver «A
+qualificação do modelo»).
 
 > **O ensaio não toca em produção.** Nenhum modo fala com o nó de produção, com a fila ou com
 > o Vault. Os documentos são sintéticos (pasta `bateria/`). O binário `aos-ensaio` não faz
@@ -133,7 +135,7 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 
 | Opção | Modos | O que faz |
 |---|---|---|
-| `--experiencia bateria\|separadores` | todos | `bateria` (omissão): T1 a T6 num braço. `separadores`: quatro braços sobre T1, 53 amostras por braço, um turno e um pedido por amostra — 212 pedidos. |
+| `--experiencia bateria\|separadores\|qualificacao` | todos | `qualificacao`: ver «A qualificação do modelo». `bateria` (omissão): T1 a T6 num braço. `separadores`: quatro braços sobre T1, 53 amostras por braço, um turno e um pedido por amostra — 212 pedidos. |
 | `--amostras N` | todos | Passagens pela bateria (omissão 1), ou amostras por braço nos separadores. |
 | `--semente N` | todos | Fixa a ordem dos braços dentro de cada bloco. Vai no relatório. |
 | `--braco A\|B\|C\|D` | todos | O braço da bateria (omissão `A`). |
@@ -156,8 +158,8 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--destino-fora-da-lista HOST` | real | Aceita um destino da chave que não é um host do fornecedor. `HOST` tem de ser exactamente o host do ficheiro; o `https` continua a ser exigido. |
 | `--reconstruir-contador` | real | Recria um contador desaparecido a partir dos relatórios de hoje. |
 
-No modo real **não há `--contador`**: o contador é sempre `contador.json`, ao lado do ficheiro
-de chaves. Uma flag que apontasse para outro ficheiro punha a contagem do dia a zero.
+No modo real **não há `--contador`**: o contador é sempre `contador.json`, na pasta do dono
+(`~/.aos-ensaio`; desde o AOS-518 já não depende de onde está o ficheiro de chaves). Uma flag que apontasse para outro ficheiro punha a contagem do dia a zero.
 
 ### Variáveis de ambiente
 
@@ -208,7 +210,7 @@ pasta). Só o programa o lê, pelo caminho que lhe dão.
   arranque. Um tecto escreve-se só com algarismos (`+500`, `5 00`, `1e3` são recusados) e tem
   máximo: 100 000 pedidos e 1000 USD por dia. As opções da linha de comandos não mexem nos
   tectos do modo real.
-- **Contador.** `contador.json`, ao lado do ficheiro de chaves. Persistente, por fornecedor e
+- **Contador.** `contador.json`, na pasta do dono (`~/.aos-ensaio`), esteja o ficheiro de chaves onde estiver. Persistente, por fornecedor e
   por dia (UTC). Cada pedido é contado **antes** de ser enviado. Um contador que existe e não
   se lê recusa tudo — não recomeça do zero; repara-se à mão. Um contador que **desapareceu**,
   havendo relatórios de corridas reais de hoje na pasta, recusa também: só
@@ -390,6 +392,162 @@ runbook.
 `reasoning_details` no topo e `reasoning_content` ao lado (o proxy cria este último a partir de
 `reasoning`), e se valida as assinaturas como o falso não valida. O falso emite a forma
 documentada, escrita à mão.
+
+## A qualificação do modelo (AOS-518)
+
+A experiência `qualificacao` é a única em que o banco dá um **veredicto**: `qualificado`,
+`recusado` ou `inconclusivo`. Corre a bateria **8 vezes** no braço A (40 nós com tools e 16 sem
+tools) com um perfil candidato, que é obrigatório, e calcula o veredicto das contagens — ninguém
+o declara, e nenhum modelo avalia outro. A qualificação é da **rota**: modelo, fornecedor, imagem
+do proxy e perfil. Mudar um dos quatro é qualificar outra vez.
+
+```bash
+go run ./cmd/aos-ensaio falso --experiencia qualificacao --perfil <perfil.json> --roteiro cumpre --saida /tmp/ensaio
+```
+
+Não aceita `--amostras` nem `--braco`: a amostra é a da decisão D2 do dono (2026-10-11).
+
+**Só o modo `real` qualifica.** Nos modos `falso` e `proxy` o fornecedor é um provider falso: o
+veredicto leva `vale_para_producao: false`, o resumo abre por o dizer, e um `qualificado` sai com
+o código 9 e não com 0.
+
+### A regra
+
+Vai escrita no relatório, ao lado do veredicto (`qualificacao_do_modelo.regra`). É função pura de
+`qualificacao_do_modelo.contagens`. Limiares:
+
+| # | Contagem | Máximo |
+|---|---|---|
+| L1 | Nós com tools por cumprir no fim das tentativas | 0 |
+| L2 | Nós com tools cuja 1.ª tentativa fechou sem nenhuma tool call nativa, seja qual for o motivo de paragem | 4 |
+| L3 | Respostas 4xx de parâmetro a pedidos que levavam uma mensagem `tool` | 0 |
+| L4 | Nós (com e sem tools) com resposta vazia no fim das tentativas | 0 |
+| L5 | Turnos com o modelo servido diferente do esperado, ou não reportado | 0 |
+| L6 | Nós **sem** tools por cumprir no fim das tentativas (decisão do dono de 2026-10-11) | 0 |
+
+- **Razões firmes** dão `recusado`: `nos_com_tools_nao_cumpridos`,
+  `sem_tool_call_a_primeira_acima_do_limiar`, `http_4xx_nos_segundos_turnos`,
+  `respostas_vazias_no_fim_das_tentativas`, `modelo_servido_diferente_do_esperado`,
+  `modelo_servido_nao_reportado`, `nos_sem_tools_nao_cumpridos`,
+  `devolucao_do_estado_nao_cumprida`, `perfil_recusado_pelo_provider`.
+- **Razões passageiras**, sozinhas, dão `inconclusivo`: `pior_caso_nao_cabe_no_tecto`,
+  `tecto_do_dia_atingido`, `tecto_da_qualificacao_atingido`, `chave_recusada`,
+  `saldo_insuficiente`, `limite_de_ritmo_ou_serie_de_429`, `sonda_falhou`,
+  `corrida_interrompida`, `amostra_incompleta`, `nos_interrompidos_por_429`, `_por_5xx`,
+  `_por_erro_de_transporte`, `_por_conta_ou_rota`, `_pelo_tecto`, e
+  `devolucao_do_estado_nao_medida`.
+- Uma razão firme ganha a uma passageira: as contagens só crescem, e um limiar violado numa
+  amostra parcial continua violado na amostra inteira.
+- Um nó, com ou sem tools, só entra na amostra quando a sua última tentativa fechou `cumprido`
+  ou falhou por uma causa que não é passageira. Um 429, um 5xx, um erro de transporte, o tecto
+  ou a conta **tiram o nó da amostra**: não o dão como falhado nem como cumprido, e uma amostra
+  abaixo de 40 e 16 não qualifica. Um nó de resumo cujo nó de leitura não cumpriu não chega a
+  correr, e a amostra dos nós sem tools fica incompleta por isso.
+- Um 4xx é «de parâmetro» quando fala do pedido: não é 429 nem 408, e o tipo do erro é `outro`.
+- **Devolução declarada** (decisão do dono de 2026-10-11): um perfil com `devolver` diferente de
+  `nunca` só é `qualificado` com `qualificacao_da_devolucao` em `cumprida`. `nao_cumprida` é
+  firme; `sem_raciocinio` e `inconclusiva` são passageiras (o perfil promete o que a corrida não
+  mediu).
+- Os limiares aplicam-se às **contagens**. O intervalo de confiança vai ao lado de cada uma
+  (`limiares[].medida`) e não entra na regra.
+
+### Os avisos
+
+Não mudam o veredicto, vão no campo `qualificacao_do_modelo.avisos` e **à cabeça** do resumo:
+
+- `exigencia_nao_provada` — o perfil declara `devolver: obrigatorio` e a corrida de controlo sem
+  devolução não mostrou que o fornecedor exige o estado. A qualificação de um perfil desses
+  inclui essa corrida (uma passagem, o mesmo perfil só com `devolver: nunca`; a versão da
+  projecção não muda), que só se faz se a principal deu `qualificado`. Resultado em
+  `controlo_sem_devolucao.resultado`: `falhou_como_devido` exige a corrida completa, **todos**
+  os pedidos com mensagem `tool` com 4xx de parâmetro e nenhum nó com tools cumprido; `passou`;
+  `inconclusivo` (qualquer mistura, ou um controlo que não terminou); `nao_correu`. Só o
+  primeiro tira o aviso. O que o controlo não isola vai em `controlo_sem_devolucao.limite`.
+- `factos_ausentes_em_respostas_cumpridas` — houve runs cumpridos cuja saída não tinha os factos
+  do documento sintético. Não há limiar para o conteúdo (o dono manteve-o como aviso).
+- `tecto_em_dolares_nao_imposto` — modo real, fornecedor sem tecto em dólares no ficheiro de
+  chaves: o banco não estima o gasto, e o tecto de 3 USD não actuou.
+
+### Os controlos negativos
+
+| Provider falso | Como se pede | Veredicto e razões firmes |
+|---|---|---|
+| Bom | `--roteiro cumpre` | `qualificado`, 40 de 40 e 16 de 16 |
+| Não chama a tool | `--roteiro texto` | `recusado`: L1, L2 |
+| Responde vazio | `--roteiro vazia` | `recusado`: L1, L4, L6 |
+| Recusa o segundo turno com 4xx | `--roteiro rejeita_segundo` | `recusado`: L1, L3 |
+| Troca o modelo servido | `--roteiro troca_modelo` | `recusado`: só L5 |
+| Corta a resposta | `--roteiro cortada` | `recusado`: L1, L6, com `truncated` nos desfechos |
+| Sem tool call, com outro motivo de paragem, e cumpre à 2.ª | `--roteiro sem_tool_end_turn,cumpre` (ou `sem_tool_content_filter`, `sem_tool_sem_motivo`) | `recusado`: só L2, 40 de 40 |
+| 500 a tudo | `--roteiro erro_500` | `inconclusivo` |
+
+`troca_modelo` só discrimina no modo `falso`: atrás do proxy quem declara o modelo servido é o
+proxy, e o mesmo ensaia-se com um perfil que espera outro nome. No modo `falso` o provider
+declara o `expected_model` do perfil; no modo `proxy` o perfil tem de esperar
+`openai/modelo-falso-do-banco`.
+
+### O orçamento (decisão D7)
+
+- O **pior caso** declara-se antes do primeiro pedido e confere-se contra o que resta do tecto
+  do dia: 672 pedidos, mais 1 da sonda no modo real, mais 84 quando há corrida de controlo. Uma
+  qualificação que não cabe **não envia nada** e fica escrita, com `inconclusivo`.
+- **300 pedidos** por qualificação, contados antes de cada envio; ao chegar lá a corrida pára.
+- **3 USD estimados** por qualificação, só quando o fornecedor tem tecto em dólares no ficheiro
+  de chaves. Sem ele o relatório diz `tecto_micro_usd_imposto: false` e leva o aviso.
+- **Por dia (UTC), no modo real: duas qualificações por perfil e quatro por rota** (fornecedor e
+  modelo, com qualquer perfil — mudar um parâmetro do perfil não dá contador novo). Conta quando
+  a sonda passa. A contagem é o maior entre o registo `qualificacoes.json` e os relatórios de
+  qualificações reais de hoje.
+- O contador do dia e o registo vivem na **pasta do dono** (`~/.aos-ensaio`), e não ao lado de
+  `--chaves`: copiar o ficheiro de chaves para outra pasta não repõe nada.
+- **O que isto não fecha:** quem tem a máquina apaga o registo e os relatórios, ou muda a pasta
+  do utilizador. Os tectos protegem de enganos e de pressa, não de quem os quer contornar.
+- Três respostas 4xx de parâmetro seguidas desde o primeiro pedido param a corrida.
+
+### A imagem do proxy
+
+A declaração é uma só (`ImagemDoProxy`, em `proxy.go`), presa ao compose de produção pelo guarda
+do AOS-517. Nos modos `proxy` e `real` a qualificação recusa arrancar (exit 3, causa
+`imagem_do_proxy_nao_e_a_de_producao`) se a imagem em uso não for essa. O digest vai em
+`qualificacao_do_modelo.rota_qualificada`, com os da rota, do perfil e da bateria. O relatório
+não vê a imagem que o proxy de produção corre de facto.
+
+### O digest do próprio relatório
+
+O campo `digest_do_relatorio`, no topo do JSON, é o sha256 da **forma canónica** do relatório
+sem esse campo: o documento JSON em UTF-8, sem espaços nem quebras de linha, os membros de cada
+objecto pela ordem dos bytes do nome, as listas pela ordem em que estão, os números com o
+literal exactamente como está no ficheiro, e os textos como o `encoding/json` do Go os escreve
+com o escape de HTML desligado. Recusam: um nome de membro repetido no mesmo objecto (sem
+distinguir maiúsculas), UTF-8 inválido, e um texto com U+FFFD ou com meio par substituto isolado.
+A definição completa está em `digest_relatorio.go`; `VerificarDigestDoRelatorio` confere um
+ficheiro. Um relatório de qualificação nunca se escreve por cima de outro.
+
+**O digest dá integridade, não autenticidade.** Quem altera o veredicto pode recalcular o digest
+e o ficheiro verifica. Serve para um registo assinado citar um relatório exacto; a autenticidade
+vem da assinatura desse registo (AOS-519). O resumo `.txt` não é coberto, e o digest não prova
+que a corrida aconteceu.
+
+### Códigos de saída da qualificação
+
+| Código | Significado |
+|---|---|
+| 0 | `qualificado`, no modo `real` |
+| 9 | `qualificado` num ensaio (`falso` ou `proxy`): não vale para produção |
+| 7 | `recusado` (mesmo que a corrida tenha parado a meio) |
+| 8 | `inconclusivo`, com a corrida completa |
+| 4 | `inconclusivo`, a corrida parou a meio |
+| 3 | Recusada antes de enviar: o pior caso não cabe (com relatório `inconclusivo`), a imagem do proxy, as qualificações do dia, o `expected_model` do perfil |
+| 10 | `--so-plano` de uma qualificação: plano válido, nada enviado |
+
+### O que a qualificação não prova
+
+Está no relatório, em `qualificacao_do_modelo.nao_prova` e nos `limites`: a bateria são seis
+casos sintéticos com documentos curtos; `cumprido` e `aceite` são 2xx e não provam que o
+fornecedor leu o que recebeu; com 40 nós e zero falhas só se afirma, a 95%, uma taxa de falha
+abaixo de cerca de 9%; apanha um modelo mau e não mede se é bom; L5 compara o modelo que o
+**proxy** declara, não o que o fornecedor serviu, e sem `--host-esperado` o endpoint não é
+comparado; o veredicto vale para a rota e a versão da bateria que cita.
 
 ## A experiência dos separadores
 
