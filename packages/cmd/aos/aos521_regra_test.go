@@ -192,6 +192,8 @@ func TestAOS521_SinalDoDesfecho_Tabela(t *testing.T) {
 		{"orcamento esgotado: nao conta", state.TimedOut, agentruntime.Result{BudgetExhausted: true}, nil, false, "", false},
 		{"panico: nao conta", state.Failed, agentruntime.Result{}, nil, true, "", false},
 		{"o selo nao aconteceu: nao conta", "", agentruntime.Result{Terminated: true}, nil, false, "", false},
+		{"veredicto negativo e o selo nao aconteceu: nao conta", "", agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false, "", false},
+		{"veredicto negativo num run que parou a espera de humano: nao conta", state.WaitingOnHuman, agentruntime.Result{Escalated: true, Verdict: aos521Verdicto(agentruntime.OutcomeEmptyOutput)}, nil, false, "", false},
 		{"o run parou sem acabar (a espera de humano): nao conta", state.WaitingOnHuman, agentruntime.Result{Escalated: true}, nil, false, "", false},
 		{"pausado: nao conta", state.Paused, agentruntime.Result{}, nil, false, "", false},
 	} {
