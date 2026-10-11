@@ -127,6 +127,12 @@ type runState struct {
 	// memória (AOS-496).
 	titular string
 
+	// existente diz que esta hospedagem é a de um run que JÁ EXISTE no estado durável do nó, e não a
+	// de um run novo (AOS-520): a retoma pela API e a varredura de crash-resume (`resuming`), ou um
+	// `POST /runs` de um `run_id` cujo estado durável, lido por [NodeService.submitObservando] antes
+	// de hospedar, já não é o inicial. Escrito uma vez, antes de a goroutine do run arrancar. Um run
+	// que já existe não é escolhido: o seu Goal foi conferido com o que está selado.
+	existente bool
 	// plano é o pedido de plano de que o run é trabalho, VERIFICADO pelo nó no `POST /runs`
 	// (AOS-520, [origemDoPlano]). O valor-zero é um run que não é trabalho de um pedido verificado.
 	plano origemDoPlano
@@ -835,6 +841,30 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			s.unreserve(rs)
 			return &desfechoDuravelError{runID: runID, estado: st}
 		}
+		// (2-ter-ter) UM `run_id` QUE JÁ EXISTE (AOS-520). O estado durável que se acabou de ler não é
+		// o inicial, não é suspenso e não é terminal: o run está EM CURSO — deu turnos, ou foi
+		// reclamado, e o nó caiu. Hospedá-lo por esta via é uma retoma por outro nome, e tem o
+		// contrato da retoma: confere-se o Goal com o que está SELADO para o run, e se este nó não o
+		// pode continuar a submissão é recusada AQUI, antes de hospedar — sem lease, sem quota, sem
+		// uma escrita. O run fica como estava. É neste caminho, e só neste, que se lê a história do
+		// run; um run novo (estado inicial) segue sem uma leitura a mais.
+		//
+		// Sem máquina de estados composta o estado vem vazio e o run é tratado como novo: esse nó
+		// não tem como saber que o run existe (nem o sabia antes).
+		if st != "" && st != state.Ready && s.node != nil {
+			existente, gerr := s.node.goalDoRunExistente(ctx, goal)
+			if gerr != nil {
+				s.unreserve(rs)
+				s.log("POST de um run que ja existe RECUSADO antes de hospedar (AOS-520): run %q, estado duravel %q, causa=%s — nada foi escrito e o run fica como estava (recuperavel: reponha o perfil ou o registo em que o run esta fixado, ou retome-o num no que o sirva): %v",
+					runID, st, causaDoRunExistenteRecusado(gerr), gerr)
+				return gerr
+			}
+			goal = existente
+			rs.existente = true
+		}
+	}
+	if resuming {
+		rs.existente = true
 	}
 
 	// (2-quater) QUOTA DE DESPESA POR PRINCIPAL (AOS-457). Reserva o tecto por-run inteiro contra a

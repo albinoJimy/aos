@@ -508,7 +508,10 @@ func TestAOS520_No_RunEmCursoReSubmetidoNaoENovo(t *testing.T) {
 					t.Fatalf("o turno 1 tinha de ser do titular, sem marca: %+v", goal.Model)
 				}
 			} else {
+				// O run foi reclamado (`running`) e gravou o registo de retoma, e o nó caiu antes do
+				// primeiro turno: é a ordem do hostRun — o claim vem antes do registo.
 				goal := aos520ComoOHostRun(a.node, agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3})
+				aos520cMarcarEmCurso(t, a, runID)
 				if err := a.svc.putResumeRecord(ctx, goal); err != nil {
 					t.Fatal(err)
 				}
@@ -540,31 +543,323 @@ func TestAOS520_No_RunEmCursoReSubmetidoNaoENovo(t *testing.T) {
 	}
 }
 
-// UM RUN FIXADO RE-SUBMETIDO FICA COM O QUE ESTÁ SELADO. O run começa no candidato, dá um turno, e
-// o nó cai. O mesmo `run_id` volta por `POST /runs` num nó com o interruptor a `off` (perfil ainda
-// carregado): o Goal do pedido não traz marca nenhuma, e o nó vai buscá-la ao log — o turno seguinte
-// é do candidato. Num nó sem o registo do candidato, o run é recusado: não passa para o titular.
-func TestAOS520_No_RunFixadoReSubmetidoFicaComOSelado(t *testing.T) {
+// aos520cMarcarEmCurso põe o run em `running` no estado durável, como o claim do hostRun.
+func aos520cMarcarEmCurso(t *testing.T, n *aos520No, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	mq, err := state.NewMachine(n.node.EventStore, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mq.Rebuild(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := mq.Transition(ctx, state.Running, state.TransitionEvent{Token: state.Uint64Token(1), Reason: "crash_simulado"}); err != nil {
+		t.Fatalf("claim do crash simulado: %v", err)
+	}
+}
+
+// aos520cRegistosDeRetoma conta os registos de retoma gravados para um run (incluindo os que a
+// deduplicação do Event Store absorveria: conta eventos, não pedidos).
+func aos520cRegistosDeRetoma(t *testing.T, n *aos520No, runID string) int {
+	t.Helper()
+	evs, err := n.node.EventStore.Read(context.Background(), aos520StreamDasAprovacoes, 1)
+	if err != nil && !errors.Is(err, eventstore.ErrStreamNotFound) {
+		t.Fatal(err)
+	}
+	c := 0
+	for _, ev := range evs {
+		if ev.StepID == "resume-"+runID {
+			c++
+		}
+	}
+	return c
+}
+
+// aos520cReSubmissaoRecusada faz o `POST /runs` de um run que JÁ EXISTE e que este nó não pode
+// continuar, e confere o contrato da recusa: 409, antes de hospedar; o run continua `running`
+// (recuperável — NÃO é selado `failed`); nenhum evento novo no stream do run, nenhum registo de
+// retoma novo, nenhum pedido ao provider; e a causa fica no log do nó.
+func aos520cReSubmissaoRecusada(t *testing.T, n *aos520No, runID, causa string) {
+	t.Helper()
+	eventos, registos, pedidos := aos520NumEventos(t, n, runID), aos520cRegistosDeRetoma(t, n, runID), len(n.upstream.pedidos())
+	r := postJSON(n.h, "POST", "/runs", map[string]any{"run_id": runID, "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": n.tok, "max_turns": 3})
+	if r.Code != http.StatusConflict {
+		t.Fatalf("o POST de um run em curso que este no nao pode continuar tinha de dar 409; veio %d %s\n%s", r.Code, r.Body.String(), n.lido())
+	}
+	if strings.Contains(r.Body.String(), "sha256:") || strings.Contains(r.Body.String(), causa) {
+		t.Fatalf("o corpo da recusa e o uniforme da rota, sem causa nem digests: %s", r.Body.String())
+	}
+	n.svc.mu.Lock()
+	_, aCorrer := n.svc.runs[runID]
+	_, terminado := n.svc.completed[runID]
+	n.svc.mu.Unlock()
+	if aCorrer || terminado {
+		t.Fatalf("o run recusado foi hospedado: a_correr=%v terminado=%v", aCorrer, terminado)
+	}
+	if st := aos520Estado(t, n, runID); st != state.Running {
+		t.Fatalf("o run ficou em %q; tinha de continuar `running` (recuperavel) — o re-POST nao pode ser a via que o mata", st)
+	}
+	if got := aos520NumEventos(t, n, runID); got != eventos {
+		t.Fatalf("a recusa escreveu no stream do run: %d eventos, eram %d", got, eventos)
+	}
+	if got := aos520cRegistosDeRetoma(t, n, runID); got != registos {
+		t.Fatalf("a recusa gravou um registo de retoma: %d, eram %d — um registo sem marca envenenava a retoma num no com a pasta", got, registos)
+	}
+	if got := len(n.upstream.pedidos()); got != pedidos {
+		t.Fatalf("a recusa fez %d pedido(s) ao provider — o run nao pode ser servido pelo titular", got-pedidos)
+	}
+	if log := n.lido(); !strings.Contains(log, "RECUSADO antes de hospedar") || !strings.Contains(log, "causa="+causa) {
+		t.Fatalf("a recusa nao ficou no log com a causa %s:\n%s", causa, log)
+	}
+	if err := n.svc.Submit(context.Background(), agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3}); !errors.Is(err, ErrRunExistenteRecusado) || causaDoRunExistenteRecusado(err) != causa {
+		t.Fatalf("Submit: %v; quer ErrRunExistenteRecusado com a causa %s", err, causa)
+	}
+}
+
+// SONDA P6 — UM RUN FIXADO NO CANDIDATO, RE-SUBMETIDO NUM NÓ QUE NÃO O SERVE. O run começa no
+// candidato, dá um turno, e o nó cai. O mesmo `run_id` volta por `POST /runs`:
+//
+//   - num nó SEM a pasta de perfis — o caso que antes hospedava o run, o servia pelo titular e
+//     gravava um registo de retoma sem a marca;
+//   - num nó com a pasta e sem o registo do candidato;
+//   - num nó com OUTRO perfil para o alias do candidato.
+//
+// Em todos: recusa ANTES de hospedar, o run fica `running`, zero pedidos, nenhum registo novo. E com
+// e sem registo de retoma gravado (sem ele, o que está selado é o `run.model_pinned`). Reposto o
+// candidato, o MESMO `POST /runs` continua o run — no candidato.
+func TestAOS520_No_SondaP6_RunFixadoReSubmetidoOndeNaoEServido(t *testing.T) {
+	outroPerfil := strings.Replace(aos520PerfilCand, "modelo-novo-4.5", "modelo-b-1.0", 1)
+	for _, comRegisto := range []bool{true, false} {
+		t.Run(fmt.Sprintf("registo de retoma gravado=%v", comRegisto), func(t *testing.T) {
+			sub := aos520NovoSubstrato(t)
+			const runID = "run-520-p6"
+			a := aos520cNo(t, sub, "on", aos520cCand(100))
+			aos520cTurnoUmECrashCom(t, a, runID, comRegisto)
+			a.fechar(t)
+
+			aos520Interruptor(t, "")
+			semPasta := aos520Compor(t, sub, "", "", aos505NoEsperado)
+			aos520cReSubmissaoRecusada(t, semPasta, runID, modelgateway.PinnedCauseModelNotServed)
+			semPasta.fechar(t)
+
+			semRegisto := aos520cNo(t, sub, "on")
+			aos520cReSubmissaoRecusada(t, semRegisto, runID, modelgateway.PinnedCauseModelNotServed)
+			semRegisto.fechar(t)
+
+			outro := aos520cNo(t, sub, "off", aos520Registo{"candidato", outroPerfil, 100})
+			aos520cReSubmissaoRecusada(t, outro, runID, modelgateway.PinnedCauseProfileDifferent)
+			outro.fechar(t)
+
+			// RECUPERÁVEL: reposto o registo do candidato, o run continua — no candidato.
+			b := aos520cNo(t, sub, "off", aos520cCand(100))
+			b.correr(t, runID, nil)
+			if modelos := aos520cModelosPedidos(t, b.aos486No, 0); len(modelos) == 0 || !aos520cTodos(modelos, aos520AliasCand) {
+				t.Fatalf("reposto o candidato, o run pediu %q; quer o candidato", modelos)
+			}
+			if rec, ok, err := b.node.ResumeRecords.Get(context.Background(), runID); err != nil || !ok || rec.ModelPinnedBy != versaoDaEscolha || rec.Model.ModelID != aos520AliasCand {
+				t.Fatalf("o registo de retoma do run continuado: ok=%v err=%v marca=%q modelo=%q", ok, err, rec.ModelPinnedBy, rec.Model.ModelID)
+			}
+		})
+	}
+}
+
+// SONDA P2 — UMA MARCA DE UMA VERSÃO FUTURA, RE-SUBMETIDA. O registo de retoma do run traz a marca
+// de uma versão da função que este binário não conhece (escreveu-o um nó mais recente). O `POST
+// /runs` desse run é recusado antes de hospedar e o run fica `running`: não é reinterpretado, não é
+// servido pelo titular, e não é morto. O mesmo quando só há o `run.model_pinned`, com a função
+// desconhecida.
+func TestAOS520_No_SondaP2_MarcaDeVersaoFuturaReSubmetida(t *testing.T) {
+	ctx := context.Background()
+	for _, soEvento := range []bool{false, true} {
+		t.Run(fmt.Sprintf("so o evento=%v", soEvento), func(t *testing.T) {
+			n := aos520cNo(t, aos520NovoSubstrato(t), "on", aos520cCand(100))
+			const runID = "run-520-p2"
+			digestCand := aos520Digest(t, aos520PerfilCand)
+			aos520cMarcarEmCurso(t, n, runID)
+			if soEvento {
+				if err := gravarModeloFixado(ctx, n.node.EventStore, runID, modeloFixadoPayload{V: versaoDoModeloFixado, Role: "candidato", Alias: aos520AliasCand, ProfileDigest: digestCand, Function: "aos-canary/v9", Reason: razaoFuncao, PlanKey: runID, PlanKeyKind: tipoDeRun}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				goal := aos520ComoOHostRun(n.node, agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3})
+				goal.Model.ModelID, goal.RouteProfileDigest, goal.ModelPinnedBy = aos520AliasCand, digestCand, "aos-canary/v9"
+				if err := n.svc.putResumeRecord(ctx, goal); err != nil {
+					t.Fatal(err)
+				}
+			}
+			aos520cReSubmissaoRecusada(t, n, runID, modelgateway.PinnedCauseModelNotServed)
+		})
+	}
+}
+
+// SONDA P1 — UMA LEITURA QUE FALHA NÃO MATA UM RUN NOVO SEM CANDIDATO A SERVIR. Com o interruptor a
+// `off` e um registo de candidato na pasta, o Event Store passa a falhar qualquer leitura A MAIS do
+// que as da base — a sétima do stream do run, a segunda do stream das aprovações, e qualquer uma do
+// livro do canary. Um run NOVO completa, no titular, como antes: a sua hospedagem não lê a história
+// do run (não a tem) nem o livro.
+func TestAOS520_No_SondaP1_LeituraAMaisAFalhar_ORunNovoCompleta(t *testing.T) {
+	const runID = "run-520-p1"
+	aos520PastaCom(t, aos520cCand(100))
+	aos520Interruptor(t, "off")
 	sub := aos520NovoSubstrato(t)
-	const runID = "run-520-fixado-re-submetido"
-	a := aos520cNo(t, sub, "on", aos520cCand(100))
-	aos520cTurnoUmECrash(t, a, runID)
-	a.fechar(t)
-
-	corpo := map[string]any{"run_id": runID, "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": "", "max_turns": 3}
-
-	semRegisto := aos520cNo(t, sub, "on")
-	corpo["credential"] = semRegisto.tok
-	if r := postJSON(semRegisto.h, "POST", "/runs", corpo); r.Code != http.StatusCreated {
+	conta := &aos520StoreQueConta{Store: sub.store}
+	n := aos520ComporComPasta(t, sub, func(cfg *Config) { cfg.EventStore = conta })
+	base := map[string]int{runID: conta.lidas(runID) + 6, aos520StreamDasAprovacoes: conta.lidas(aos520StreamDasAprovacoes) + 1, aos520StreamDoLivro: conta.lidas(aos520StreamDoLivro)}
+	conta.mu.Lock()
+	conta.falha = func(streamID string) error {
+		// Chamada com o contador já incrementado e sob o mutex do contador.
+		if tecto, medido := base[streamID]; medido && conta.leituras[streamID] > tecto {
+			return errors.New("leitura a mais do que as da base")
+		}
+		return nil
+	}
+	conta.mu.Unlock()
+	r := postJSON(n.h, "POST", "/runs", map[string]any{"run_id": runID, "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": n.tok, "max_turns": 3})
+	if r.Code != http.StatusCreated {
 		t.Fatalf("POST /runs: %d %s", r.Code, r.Body.String())
 	}
-	oc, ok, err := semRegisto.svc.Wait(context.Background(), runID)
-	if err != nil || !ok || !errors.Is(oc.Err, ErrModelPinRefused) || causaDaFixacaoDoModelo(oc.Err) != modelgateway.PinnedCauseModelNotServed {
-		t.Fatalf("sem o registo do candidato o run fixado tinha de ser recusado (%s); veio ok=%v err=%v run=%v", modelgateway.PinnedCauseModelNotServed, ok, err, oc.Err)
+	oc, ok, err := n.svc.Wait(context.Background(), runID)
+	conta.mu.Lock()
+	conta.falha = nil
+	conta.mu.Unlock()
+	if err != nil || !ok || oc.Err != nil || !oc.Result.Terminated {
+		t.Fatalf("o run novo tinha de completar como antes; veio ok=%v err=%v run=%v\n%s", ok, err, oc.Err, n.lido())
 	}
-	if n := len(semRegisto.upstream.pedidos()); n != 0 {
-		t.Fatalf("o run recusado fez %d pedido(s) ao provider — nao pode ser servido pelo titular", n)
+	if modelos := aos520cModelosPedidos(t, n.aos486No, 0); len(modelos) != 2 || !aos520cTodos(modelos, aos486Modelo) {
+		t.Fatalf("o run novo pediu %q; quer o titular", modelos)
 	}
+}
+
+// O QUE ESTÁ SELADO PARA UM RUN QUE JÁ EXISTE, ramo a ramo ([Node.goalDoRunExistente]). O registo de
+// retoma e o `run.model_pinned` são semeados no Event Store do nó composto; o que se confere é o
+// Goal com que o run seria re-hospedado, ou a causa da recusa.
+func TestAOS520_No_GoalDoRunExistente_RamoARamo(t *testing.T) {
+	ctx := context.Background()
+	n := aos520cNo(t, aos520NovoSubstrato(t), "on", aos520cCand(100))
+	digestCand, digestTit := aos520Digest(t, aos520PerfilCand), aos519DigestsDaTabela[aos486Modelo]
+	outroDigest := "sha256:" + strings.Repeat("7", 64)
+	evento := func(runID, alias, digest, funcao string) {
+		t.Helper()
+		if err := gravarModeloFixado(ctx, n.node.EventStore, runID, modeloFixadoPayload{V: versaoDoModeloFixado, Role: "candidato", Alias: alias, ProfileDigest: digest, Function: funcao, Reason: razaoFuncao, PlanKey: runID, PlanKeyKind: tipoDeRun}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registo := func(runID, alias, digest, marca string) {
+		t.Helper()
+		goal := aos520ComoOHostRun(n.node, agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3})
+		goal.Model.ModelID, goal.RouteProfileDigest, goal.ModelPinnedBy = alias, digest, marca
+		if err := n.svc.putResumeRecord(ctx, goal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pedido := func(runID string) agentruntime.Goal {
+		return agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo}
+	}
+	recusa := func(nome string, goal agentruntime.Goal, causa string) {
+		t.Helper()
+		out, err := n.node.goalDoRunExistente(ctx, goal)
+		if !errors.Is(err, ErrRunExistenteRecusado) || causaDoRunExistenteRecusado(err) != causa {
+			t.Fatalf("%s: veio %v (goal %+v); quer a recusa com a causa %s", nome, err, out.Model, causa)
+		}
+		if !strings.Contains(err.Error(), "causa="+causa) || strings.Contains(err.Error(), "sha256:") {
+			t.Fatalf("%s: a recusa diz a causa e nao leva digests: %v", nome, err)
+		}
+	}
+
+	// --- Só o `run.model_pinned` (o run caiu antes do registo de retoma).
+	evento("so-evento", aos520AliasCand, digestCand, versaoDaEscolha)
+	if g, err := n.node.goalDoRunExistente(ctx, pedido("so-evento")); err != nil || g.Model.ModelID != aos520AliasCand || g.ModelPinnedBy != versaoDaEscolha || g.RouteProfileDigest != digestCand {
+		t.Fatalf("so o evento: %v %+v marca=%q digest=%q; quer o que esta selado", err, g.Model, g.ModelPinnedBy, g.RouteProfileDigest)
+	}
+	evento("evento-funcao-futura", aos520AliasCand, digestCand, "aos-canary/v9")
+	recusa("so o evento, com a funcao de uma versao desconhecida", pedido("evento-funcao-futura"), modelgateway.PinnedCauseModelNotServed)
+	evento("evento-alias-retirado", "alias-retirado", digestCand, versaoDaEscolha)
+	recusa("so o evento, com um alias que o no nao serve", pedido("evento-alias-retirado"), modelgateway.PinnedCauseModelNotServed)
+	evento("evento-outro-perfil", aos520AliasCand, outroDigest, versaoDaEscolha)
+	recusa("so o evento, com outro perfil para o alias", pedido("evento-outro-perfil"), modelgateway.PinnedCauseProfileDifferent)
+
+	// --- O log que se contradiz.
+	registo("registo-sem-marca-e-evento", aos486Modelo, digestTit, "")
+	evento("registo-sem-marca-e-evento", aos520AliasCand, digestCand, versaoDaEscolha)
+	recusa("registo de retoma sem a marca e um run.model_pinned", pedido("registo-sem-marca-e-evento"), causaFixacaoDiferenteDaGravada)
+	registo("aliases-diferentes", aos520AliasCand, digestCand, versaoDaEscolha)
+	evento("aliases-diferentes", aos486Modelo, digestCand, versaoDaEscolha)
+	recusa("o registo e o evento com aliases diferentes", pedido("aliases-diferentes"), causaFixacaoDiferenteDaGravada)
+	registo("digests-diferentes", aos520AliasCand, digestCand, versaoDaEscolha)
+	evento("digests-diferentes", aos520AliasCand, outroDigest, versaoDaEscolha)
+	recusa("o registo e o evento com digests de perfil diferentes", pedido("digests-diferentes"), causaFixacaoDiferenteDaGravada)
+
+	// --- O registo e o evento de acordo: vale o selado.
+	registo("de-acordo", aos520AliasCand, digestCand, versaoDaEscolha)
+	evento("de-acordo", aos520AliasCand, digestCand, versaoDaEscolha)
+	if g, err := n.node.goalDoRunExistente(ctx, pedido("de-acordo")); err != nil || g.Model.ModelID != aos520AliasCand || g.ModelPinnedBy != versaoDaEscolha || g.RouteProfileDigest != digestCand {
+		t.Fatalf("registo e evento de acordo: %v %+v", err, g.Model)
+	}
+	// O Goal que TRAZ a marca tem de trazer o que está selado: a marca, o alias e o digest.
+	comMarca := func(alias, digest, marca string) agentruntime.Goal {
+		g := pedido("de-acordo")
+		g.Model.ModelID, g.RouteProfileDigest, g.ModelPinnedBy = alias, digest, marca
+		return g
+	}
+	if _, err := n.node.goalDoRunExistente(ctx, comMarca(aos520AliasCand, digestCand, versaoDaEscolha)); err != nil {
+		t.Fatalf("o Goal com a marca, o alias e o digest selados: %v", err)
+	}
+	recusa("o Goal com a marca e OUTRO digest", comMarca(aos520AliasCand, outroDigest, versaoDaEscolha), causaMarcaSemFixacaoGravada)
+	recusa("o Goal com a marca e SEM digest", comMarca(aos520AliasCand, "", versaoDaEscolha), causaMarcaSemFixacaoGravada)
+	recusa("o Goal com a marca e outro alias", comMarca(aos486Modelo, digestCand, versaoDaEscolha), causaMarcaSemFixacaoGravada)
+	recusa("o Goal com outra marca", comMarca(aos520AliasCand, digestCand, "aos-canary/v0"), causaMarcaSemFixacaoGravada)
+
+	// --- O registo com a marca de uma versão desconhecida, e o registo fixado noutro perfil.
+	registo("registo-marca-futura", aos520AliasCand, digestCand, "aos-canary/v9")
+	recusa("registo com a marca de uma versao desconhecida", pedido("registo-marca-futura"), modelgateway.PinnedCauseModelNotServed)
+	registo("registo-outro-perfil", aos520AliasCand, outroDigest, versaoDaEscolha)
+	recusa("registo fixado noutro perfil", pedido("registo-outro-perfil"), modelgateway.PinnedCauseProfileDifferent)
+
+	// --- História sem fixação: o Goal sai como entrou; e com uma marca que nada selou, recusa.
+	registo("sem-fixacao", aos486Modelo, digestTit, "")
+	if g, err := n.node.goalDoRunExistente(ctx, pedido("sem-fixacao")); err != nil || g.ModelPinnedBy != "" || g.Model.ModelID != "" {
+		t.Fatalf("historia sem fixacao: %v %+v marca=%q; o Goal sai como entrou", err, g.Model, g.ModelPinnedBy)
+	}
+	forjado := pedido("sem-fixacao")
+	forjado.Model.ModelID, forjado.ModelPinnedBy = aos520AliasCand, versaoDaEscolha
+	recusa("historia sem fixacao e um Goal com a marca", forjado, causaMarcaSemFixacaoGravada)
+	if g, err := n.node.goalDoRunExistente(ctx, pedido("nunca-visto")); err != nil || g.ModelPinnedBy != "" {
+		t.Fatalf("sem historia nenhuma: %v marca=%q", err, g.ModelPinnedBy)
+	}
+
+	// --- A história que não se lê: recusa, com a causa — nunca «na dúvida, o titular».
+	for nome, falha := range map[string]string{"o stream do run": "de-acordo", "o stream dos registos de retoma": aos520StreamDasAprovacoes} {
+		cego := &Node{modelID: n.node.modelID, modeloAutoritativo: true, perfisDaRota: n.node.perfisDaRota, ResumeRecords: n.node.ResumeRecords,
+			EventStore: &aos520cStoreQueNaoLe{EventStorePort: n.node.EventStore, stream: falha}}
+		if nome == "o stream dos registos de retoma" {
+			registos, err := integration.NewResumeRecords(cego.EventStore, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cego.ResumeRecords = registos
+		}
+		_, err := cego.goalDoRunExistente(ctx, pedido("de-acordo"))
+		if !errors.Is(err, ErrRunExistenteRecusado) || causaDoRunExistenteRecusado(err) != causaHistoriaDoRunIlegivel {
+			t.Fatalf("%s ilegivel: %v; quer a recusa com a causa %s", nome, err, causaHistoriaDoRunIlegivel)
+		}
+	}
+	if causaDoRunExistenteRecusado(errors.New("outro erro")) != "" {
+		t.Fatal("causa de um erro alheio")
+	}
+}
+
+// aos520cStoreQueNaoLe falha as leituras de um stream.
+type aos520cStoreQueNaoLe struct {
+	EventStorePort
+	stream string
+}
+
+func (s *aos520cStoreQueNaoLe) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
+	if streamID == s.stream {
+		return nil, errors.New("o disco nao responde")
+	}
+	return s.EventStorePort.Read(ctx, streamID, fromSeq)
 }
 
 // O MESMO, COM O PERFIL CARREGADO: o run fixado no candidato e re-submetido num nó com o interruptor

@@ -19,10 +19,22 @@ package main
 // ([Node.conferirPerfilFixado]), o despachante ([clientePorModelo]) e o adaptador do gateway, em
 // cada turno.
 //
-// SEM CANDIDATO A SERVIR NADA DISTO CORRE. Um run novo recebe o modelo do nó como sempre, sem
-// evento e sem marca. A única coisa que um nó com a pasta de perfis e sem candidato a servir faz a
-// mais é RECUSAR o run novo de um plano que o livro do canary diz atribuído ao candidato: o plano
-// falha, não continua no titular (decisão do dono).
+// SEM CANDIDATO A SERVIR NADA DISTO CORRE PARA UM RUN NOVO. Um run novo recebe o modelo do nó como
+// sempre, sem evento, sem marca e SEM UMA LEITURA A MAIS do Event Store. A única coisa que um nó com
+// a pasta de perfis e sem candidato a servir faz a mais é RECUSAR o run novo de um plano que o livro
+// do canary dizia atribuído ao candidato no arranque (um mapa em memória): o plano falha, não
+// continua no titular (decisão do dono).
+//
+// DOIS CAMINHOS, SEPARADOS POR UM FACTO DO NÓ. O serviço lê o estado durável de um `run_id` antes
+// de o hospedar ([NodeService.submitObservando]) — já o lia, para recusar um run terminado:
+//
+//	(i)  o `run_id` não tem estado durável — é um run NOVO. Não se lê história nenhuma: não há.
+//	     É aqui que a escolha corre, e só aqui uma recusa fecha o run `failed`.
+//	(ii) o `run_id` já existe (`running`) — um `POST /runs` de um run em curso. É uma RETOMA por
+//	     outro nome, e tem o contrato da retoma: lê-se o que está selado para o run
+//	     ([Node.goalDoRunExistente]) e, se este nó não o pode continuar com o que está selado, a
+//	     submissão é RECUSADA ANTES DE HOSPEDAR — o run fica como estava, recuperável. Nunca é
+//	     selado `failed` por aqui, e nunca passa para o titular em silêncio.
 
 import (
 	"context"
@@ -94,22 +106,24 @@ const (
 )
 
 // fixado devolve o modelo em que o log diz que o run está fixado por escolha: o do registo de
-// retoma com a marca, ou — se o run ainda não tem registo — o do `run.model_pinned`. Um registo de
-// retoma SEM a marca num run que tem um `run.model_pinned`, ou os dois a dizer aliases diferentes,
-// é um log que se contradiz: recusa, não se escolhe um dos lados.
-func (h historiaDoRun) fixado() (alias, digest, marca string, ok bool, err error) {
+// retoma com a marca, ou — se o run ainda não tem registo — o do `run.model_pinned`.
+//
+// `contradiz` diz que o log se contradiz, e então não se escolhe um dos lados: um registo de retoma
+// SEM a marca num run que tem um `run.model_pinned`; ou o registo e o evento a dizer aliases ou
+// digests de perfil diferentes.
+func (h historiaDoRun) fixado() (alias, digest, marca string, ok, contradiz bool) {
 	switch {
 	case h.registo != nil && h.registo.ModelPinnedBy != "":
-		if h.fixacao != nil && h.fixacao.Alias != h.registo.Model.ModelID {
-			return "", "", "", false, recusaDaFixacao(causaFixacaoDiferenteDaGravada, nil)
+		if h.fixacao != nil && (h.fixacao.Alias != h.registo.Model.ModelID || h.fixacao.ProfileDigest != h.registo.RouteProfileDigest) {
+			return "", "", "", false, true
 		}
-		return h.registo.Model.ModelID, h.registo.RouteProfileDigest, h.registo.ModelPinnedBy, true, nil
+		return h.registo.Model.ModelID, h.registo.RouteProfileDigest, h.registo.ModelPinnedBy, true, false
 	case h.registo != nil && h.fixacao != nil:
-		return "", "", "", false, recusaDaFixacao(causaFixacaoDiferenteDaGravada, nil)
+		return "", "", "", false, true
 	case h.fixacao != nil:
-		return h.fixacao.Alias, h.fixacao.ProfileDigest, h.fixacao.Function, true, nil
+		return h.fixacao.Alias, h.fixacao.ProfileDigest, h.fixacao.Function, true, false
 	}
-	return "", "", "", false, nil
+	return "", "", "", false, false
 }
 
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
@@ -275,9 +289,9 @@ type modeloFixadoPayload struct {
 	PlanKeyKind string `json:"plan_key_kind"`
 }
 
-// historiaDoRun é o que o LOG do nó diz de um run antes de ele ser hospedado: se já deu um turno,
-// se já tem registo de retoma, e se já tem um `run.model_pinned`. É daqui — e só daqui — que sai a
-// resposta a «este run é novo?».
+// historiaDoRun é o que o LOG do nó diz de um run que JÁ EXISTE, antes de ele ser re-hospedado: se
+// já deu um turno, se tem registo de retoma, e se tem um `run.model_pinned`. É o que está selado
+// para o run.
 type historiaDoRun struct {
 	temTurno bool
 	registo  *integration.ResumeRecord
@@ -291,6 +305,10 @@ func (h historiaDoRun) temHistoria() bool {
 
 // lerHistoriaDoRun lê do Event Store a história de um run. Um stream que não existe é um run sem
 // história. Qualquer outra falha de leitura é devolvida: quem decide não decide sobre o que não leu.
+//
+// SÓ CORRE NO CAMINHO DE UM RUN QUE JÁ EXISTE ([Node.goalDoRunExistente]). São duas leituras, e a
+// segunda é cara: [integration.ResumeRecords.Get] varre o stream das aprovações INTEIRO, que cresce
+// com a vida do nó. Um run novo não as paga.
 func (n *Node) lerHistoriaDoRun(ctx context.Context, runID string) (historiaDoRun, error) {
 	var h historiaDoRun
 	if n == nil || n.EventStore == nil {
@@ -326,75 +344,127 @@ func (n *Node) lerHistoriaDoRun(ctx context.Context, runID string) (historiaDoRu
 	return h, nil
 }
 
+// ErrRunExistenteRecusado — o `run_id` submetido é o de um run que JÁ EXISTE no estado durável, e
+// este nó não o pode continuar com o que está selado para ele. A submissão é recusada ANTES de o
+// run ser hospedado: nada é escrito, e o run fica como estava (`running`, recuperável) — repõe-se o
+// perfil ou o registo do candidato, ou retoma-se num nó que o sirva. A causa, de vocabulário
+// fechado, vem a seguir.
+var ErrRunExistenteRecusado = errors.New("aos: o run ja existe e este no nao o pode continuar com o que esta selado para ele (AOS-520)")
+
+// runExistenteRecusadoError é a recusa de [ErrRunExistenteRecusado], com a causa.
+type runExistenteRecusadoError struct {
+	causa string
+	err   error
+}
+
+func (e *runExistenteRecusadoError) Error() string {
+	if e.err != nil {
+		return fmt.Sprintf("%v: causa=%s: %v", ErrRunExistenteRecusado, e.causa, e.err)
+	}
+	return fmt.Sprintf("%v: causa=%s", ErrRunExistenteRecusado, e.causa)
+}
+
+func (e *runExistenteRecusadoError) Unwrap() []error {
+	if e.err == nil {
+		return []error{ErrRunExistenteRecusado}
+	}
+	return []error{ErrRunExistenteRecusado, e.err}
+}
+
+// causaDoRunExistenteRecusado devolve a causa de uma recusa de [ErrRunExistenteRecusado], ou vazio.
+func causaDoRunExistenteRecusado(err error) string {
+	var e *runExistenteRecusadoError
+	if errors.As(err, &e) {
+		return e.causa
+	}
+	return ""
+}
+
+// goalDoRunExistente é o caminho (ii): o Goal com que um run que JÁ EXISTE pode ser re-hospedado
+// neste nó, ou a recusa. Corre ANTES de o run ser hospedado, com ou sem a pasta de perfis.
+//
+//   - A história não se lê ⇒ recusa (`historia_do_run_ilegivel`).
+//   - O log contradiz-se (registo de retoma sem a marca e um `run.model_pinned`; ou o registo e o
+//     evento com aliases ou digests diferentes) ⇒ recusa (`fixacao_diferente_da_gravada`).
+//   - O run tem registo de retoma ⇒ a conferência é A DA RETOMA ([Node.conferirPerfilFixado]): o
+//     alias fixado tem de ser servido por este nó, com o perfil fixado, e a marca tem de ser de uma
+//     versão conhecida. Um nó sem a pasta de perfis recusa o run fixado no candidato.
+//   - O run só tem o `run.model_pinned` (caiu antes do registo de retoma) ⇒ a mesma conferência,
+//     sobre o evento.
+//   - O Goal submetido traz a marca ⇒ tem de ser a selada, com o mesmo alias e o mesmo digest;
+//     senão recusa (`marca_sem_fixacao_gravada`).
+//   - Fixação gravada que o nó serve ⇒ o Goal sai com o alias, o digest e a marca SELADOS.
+//   - História sem fixação ⇒ o Goal sai como entrou: o titular de sempre.
+func (n *Node) goalDoRunExistente(ctx context.Context, goal agentruntime.Goal) (agentruntime.Goal, error) {
+	recusa := func(causa string, err error) (agentruntime.Goal, error) {
+		return goal, &runExistenteRecusadoError{causa: causa, err: err}
+	}
+	h, err := n.lerHistoriaDoRun(ctx, goal.RunID)
+	if err != nil {
+		return recusa(causaHistoriaDoRunIlegivel, err)
+	}
+	alias, digest, marca, fixado, contradiz := h.fixado()
+	if contradiz {
+		return recusa(causaFixacaoDiferenteDaGravada, nil)
+	}
+	if h.registo != nil {
+		// O MESMO contrato da retoma pela API e do crash-resume, sobre o MESMO registo.
+		if perr := n.conferirPerfilFixado(*h.registo); perr != nil {
+			return recusa(causaDoPerfilFixado(perr), nil)
+		}
+	} else if fixado {
+		if !marcaDeEscolhaConhecida(marca) || !n.aliasServido(alias) {
+			return recusa(modelgateway.PinnedCauseModelNotServed, nil)
+		}
+		var assinados *perfisAssinados
+		if n != nil {
+			assinados = n.perfisDaRota
+		}
+		if perr := assinados.perfis().CheckPinnedProfile(alias, digest); perr != nil {
+			return recusa(causaDoPerfilFixado(perr), nil)
+		}
+	}
+	if !fixado {
+		if goal.ModelPinnedBy != "" {
+			return recusa(causaMarcaSemFixacaoGravada, nil)
+		}
+		return goal, nil
+	}
+	if goal.ModelPinnedBy != "" && (goal.ModelPinnedBy != marca || goal.Model.ModelID != alias || (digest != "" && goal.RouteProfileDigest != digest)) {
+		return recusa(causaMarcaSemFixacaoGravada, nil)
+	}
+	goal.Model.ModelID, goal.ModelPinnedBy = alias, marca
+	if digest != "" {
+		goal.RouteProfileDigest = digest
+	}
+	return goal, nil
+}
+
 // escolherModeloDoRun fixa o modelo do run que está a ser hospedado. É o ponto ÚNICO por onde
 // passam a submissão, a retoma e a varredura de crash-resume.
 //
-// «É UM RUN NOVO?» RESPONDE-SE PELO LOG, e não pelo caminho por que a hospedagem foi pedida. Um
-// `POST /runs` de um `run_id` que já está `running` — um run que deu turnos e cujo nó caiu — chega
-// aqui pela via da submissão, e NÃO é novo: já tem turnos gravados com um modelo. Escolher para
-// ele era dar-lhe dois modelos. Por isso, com a pasta de perfis configurada, lê-se primeiro a
-// história do run ([Node.lerHistoriaDoRun]):
-//
-//   - o run já tem uma fixação gravada (no registo de retoma ou no `run.model_pinned`): usa-se o
-//     que está selado, conferido com o que este nó serve; não se volta a escolher. Um Goal que
-//     traga a marca só é aceite se ela for a que está gravada para o run;
-//   - o run tem história e NÃO tem fixação (deu um turno, ou tem registo de retoma sem a marca):
-//     [Node.fixarModelo], como sempre — sem evento, sem livro, sem marca;
-//   - o run não tem história: é novo. Sem candidato a servir, [Node.fixarModelo] — salvo o run de
-//     um plano já atribuído ao candidato, que é recusado; com candidato a servir, o livro do canary
+//   - Um run que JÁ EXISTE (`rs.existente`: a retoma, o crash-resume, ou um `POST /runs` de um run
+//     em curso) não é escolhido: o seu Goal já foi conferido com o que está selado, ANTES de chegar
+//     aqui. Com a marca, fica como está; sem ela, é o modelo do nó, como sempre.
+//   - Um run NOVO não tem história para ler. Um Goal novo que traga a marca é recusado: nada a
+//     selou. Sem candidato a servir, [Node.fixarModelo] — salvo o run de um plano que o livro dizia
+//     atribuído ao candidato no arranque, que é recusado. Com candidato a servir, o livro do canary
 //     decide, e o resultado fica gravado no Goal e no `run.model_pinned` antes de esta função
 //     devolver.
 //
-// Sem a pasta de perfis configurada nada disto corre nem se lê: é o [Node.fixarModelo] de sempre.
-//
-// Um erro é sempre uma recusa ([ErrModelPinRefused]) com a causa: o run não arranca.
+// Um erro é sempre uma recusa ([ErrModelPinRefused]) com a causa: o run novo não arranca, e fecha
+// `failed`.
 func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goal agentruntime.Goal) (agentruntime.Goal, error) {
 	n := s.node
-	if n == nil || (n.canary == nil && goal.ModelPinnedBy == "") {
+	if n == nil || rs.existente {
 		return n.fixarModelo(goal), nil
 	}
-	h, err := n.lerHistoriaDoRun(ctx, rs.runID)
-	if err != nil {
-		return goal, recusaDaFixacao(causaHistoriaDoRunIlegivel, err)
-	}
-	alias, digest, marca, fixado, err := h.fixado()
-	if err != nil {
-		return goal, err
-	}
-	// A MARCA NO GOAL SÓ VALE SE FOR A QUE ESTÁ SELADA PARA ESTE RUN. Quem chega aqui com a marca
-	// é a retoma, que a leu do registo de retoma — e então o log diz o mesmo. Um Goal com a marca
-	// para um run que o log não diz fixado (um embedder que chame [NodeService.Submit] com ela,
-	// para ser servido pelo candidato sem escolha, sem livro e sem evento) é RECUSADO: não é
-	// tratado como novo, porque quem o compôs afirmou uma fixação que não existe. A marca, o alias
-	// e o digest têm de ser os gravados; e a marca tem de ser uma versão da função que este
-	// binário conhece.
 	if goal.ModelPinnedBy != "" {
-		if !marcaDeEscolhaConhecida(goal.ModelPinnedBy) || !fixado || marca != goal.ModelPinnedBy || alias != goal.Model.ModelID ||
-			(digest != "" && digest != goal.RouteProfileDigest) {
-			return goal, recusaDaFixacao(causaMarcaSemFixacaoGravada, nil)
-		}
-		return goal, nil
+		return goal, recusaDaFixacao(causaMarcaSemFixacaoGravada, nil)
 	}
-	// O run já tem um modelo fixado no log, e o Goal não o traz (um `POST /runs` do mesmo id): vale
-	// o que está selado.
-	if fixado {
-		if !marcaDeEscolhaConhecida(marca) || !n.aliasServido(alias) {
-			return goal, recusaDaFixacao(modelgateway.PinnedCauseModelNotServed, nil)
-		}
-		if perr := n.perfisDaRota.perfis().CheckPinnedProfile(alias, digest); perr != nil {
-			return goal, recusaDaFixacao(modelgateway.PinnedRouteProfileCauseOf(perr), nil)
-		}
-		goal.Model.ModelID, goal.ModelPinnedBy = alias, marca
-		if digest != "" {
-			goal.RouteProfileDigest = digest
-		}
-		return goal, nil
-	}
-	if h.temHistoria() || n.canary == nil {
+	if n.canary == nil {
 		return n.fixarModelo(goal), nil
 	}
-
-	// O run não tem história: é novo.
 	c := n.canary
 	chave := chaveDoCanary(rs.runID, rs.plano)
 	if !c.servir {
@@ -404,8 +474,7 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 		return n.fixarModelo(goal), nil
 	}
 
-	var d decisaoDoCanary
-	d, err = c.livro.decidir(ctx, c.candidato, chave, rs.plano.seq)
+	d, err := c.livro.decidir(ctx, c.candidato, chave, rs.plano.seq)
 	switch {
 	case errors.Is(err, ErrPlanAssignedToAbsentCandidate):
 		return goal, recusaDaFixacao(causaPlanoDoCandidatoSemCandidato, nil)
@@ -425,7 +494,7 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 	// O digest do perfil em vigor para esse alias. Para o candidato é, por construção, o do registo
 	// com que o canary abriu: o candidato em vigor e o conjunto de perfis do nó saem dos MESMOS
 	// registos, lidos uma vez no arranque — não há aqui uma conferência a fazer entre os dois.
-	digest = ""
+	digest := ""
 	if perfil, tem := n.perfisDaRota.perfis().For(goal.Model.ModelID); tem {
 		digest = perfil.Digest()
 	}

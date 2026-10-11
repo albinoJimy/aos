@@ -1332,6 +1332,11 @@ func submitErrorStatus(err error) int {
 	case errors.Is(err, ErrPrincipalQuotaExhausted):
 		// 429: recusa por quota, não erro do pedido nem avaria do nó (AOS-457).
 		return http.StatusTooManyRequests
+	case errors.Is(err, ErrRunExistenteRecusado):
+		// 409 (AOS-520): o `run_id` é o de um run em curso que este nó não pode continuar com o que
+		// está selado para ele — o mesmo estado da retoma recusada pelo perfil fixado. O corpo é o
+		// uniforme desta rota; a causa fica no log do operador.
+		return http.StatusConflict
 	case errors.Is(err, ErrCallerInFlightCeiling):
 		// 429 como o tecto GLOBAL, e pela mesma razão: é uma recusa por saturação, não um erro
 		// do pedido. O corpo é uniforme; o log do operador nomeia qual dos dois tectos mordeu.

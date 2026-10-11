@@ -179,7 +179,10 @@ func (n *Node) conferirPerfilFixado(rec integration.ResumeRecord) error {
 		assinados = n.perfisDaRota
 	}
 	// Uma marca que não é uma versão da função que este binário conhece (um registo escrito por uma
-	// versão mais recente do nó) também não se serve: o run fica por retomar num binário que a conheça.
+	// versão mais recente do nó) também não se serve: o run fica por retomar num binário que a
+	// conheça. A recusa é ANTES de re-hospedar, pelas três vias que chegam aqui — a retoma pela API,
+	// a varredura de crash-resume e o `POST /runs` de um run em curso ([Node.goalDoRunExistente]) —,
+	// e o run fica `running`, recuperável: nenhuma delas o sela `failed`.
 	if goal.ModelPinnedBy != "" && (!marcaDeEscolhaConhecida(goal.ModelPinnedBy) || !n.aliasServido(goal.Model.ModelID)) {
 		return &modelgateway.PinnedRouteProfileError{Cause: modelgateway.PinnedCauseModelNotServed}
 	}
