@@ -4326,10 +4326,15 @@ fixado está preso aos bytes medidos no commit da base.
 
 - *Continua aberto:* a troca da tabela em código entre duas imagens do nó, sem pasta — esses runs
   nunca tiveram digest fixado. Um alias sem perfil também não fixa nada.
-- *«É o que o manifesto de cada turno tem de trazer».* Vale para o perfil do alias do run. Num
-  turno que o gateway comparou depois de uma descida de tier, o manifesto traz o digest do perfil
-  da rota que serviu, como antes; a conferência do perfil fixado é feita antes do pedido, contra o
-  perfil do alias.
+- *«É o que o manifesto de cada turno tem de trazer» — POR CONFIRMAR PELO DONO.* Vale para o
+  perfil do alias do run. Num turno que o gateway comparou depois de uma descida de tier, o
+  manifesto traz o digest do perfil da rota que serviu, como antes; a conferência do perfil fixado
+  é feita antes do pedido, contra o perfil do alias. **Em palavras simples:** o run fica preso ao
+  perfil do nome que pede; se o gateway, por orçamento, mandar um turno para um modelo mais
+  barato, esse turno é servido e fica gravado com o digest desse outro modelo — não é recusado
+  pela fixação. A pergunta ao dono: é isto que se quer, ou um run fixado não deve poder descer de
+  tier? O critério ficou marcado como cumprido com esta leitura; se a resposta for a segunda, é
+  trabalho para o PR 1.
 - *O perfil assinado sobre uma entrada que devolve estado* está preso por um teste interno do
   gateway que troca a tabela pela duração do teste: nenhuma entrada da tabela de hoje devolve
   estado, e a tabela não é substituível de fora do pacote. A regra é a mesma função que os testes
