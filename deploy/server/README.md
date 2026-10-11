@@ -1422,12 +1422,15 @@ assinar, o comando mostra **o que vais assinar** — alias, modelo esperado, par
 versão da projecção, board, região, fatia e os três digests: lê-o. O `--out` recusa escrever por
 cima do registo, do relatório ou da chave.
 
-5. **Drenar a rota — OBRIGATÓRIO, e o nó não o faz por ti.** Hoje o nó **não detecta** a troca
-   de perfil com runs em curso: um run começado com um perfil e retomado depois de o nó ser
-   recriado com outro **continua**, com o modelo esperado e os parâmetros do perfil novo, e nada
-   falha. Por run só fica fixada a versão da projecção; a única pista é o
-   `manifest.model.route_profile_digest` dos `turn.recorded`, que muda a meio do run. (Fechar isto
-   é do AOS-520, que fixa o digest do perfil por run.) Antes de recriar o nó:
+5. **Drenar a rota — recomendado, e o nó não o faz por ti.** Desde o AOS-520 a drenagem deixou
+   de ser a única protecção: com perfis assinados carregados, cada run fica **fixado no perfil**
+   pelo digest, e um run começado com um perfil **não continua** com outro — a retoma pela API
+   responde `409` com a causa, a varredura de crash-resume deixa-o como órfão declarado
+   (`fixado num perfil de rota que nao e o que este no tem em vigor`), e nada é enviado ao
+   provider. Mas um run recusado **fica parado** até o perfil em que começou voltar à pasta: sem
+   drenar, trocas um run a meio por um run preso. E os runs começados **sem a pasta** (ou antes
+   desta versão) não estão fixados e continuam com o perfil novo, como antes. Por isso, antes de
+   recriar o nó:
    - parar o que submete: `systemctl stop aos-drenar-planos.timer` (e não submeter à mão);
    - esperar que o último plano acabe: `tail -3 /opt/aos/logs/drenar-planos.log` tem de mostrar
      o desfecho do último plano, e não um plano a correr;
@@ -1457,6 +1460,14 @@ ficheiros. As causas (vocabulário fechado): `pasta_sem_ancora`, `ancora_invalid
 (ou tirar os três do perfil que sai), recriar o nó, verificar o banner. Nunca a quente: a pasta só
 é lida no arranque. **Recuo:** tirar os três ficheiros e recriar o nó repõe a entrada da tabela em
 código; tirar as duas variáveis do `.env` repõe o nó de antes, por inteiro.
+
+**Um run recusado pelo perfil fixado** (AOS-520). As causas, em vocabulário fechado:
+`perfil_diferente_do_fixado` (o nó tem outro perfil para o alias, ou perdeu a pasta),
+`modelo_fixado_nao_servido` (o alias já não tem perfil) e
+`perfil_assinado_sobre_estado_sem_fixacao` (um perfil assinado substituiu uma entrada da tabela
+que devolvia estado, com um run antigo em curso). O run não é selado `failed`. Para o destravar:
+repor na pasta os três ficheiros do perfil em que o run começou — o `route_profile_digest` dos
+seus `turn.recorded` diz qual —, recriar o nó e retomar.
 
 **Limites que tens de conhecer antes de ligar.**
 
