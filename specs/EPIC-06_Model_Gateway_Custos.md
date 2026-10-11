@@ -4098,6 +4098,198 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-519.
 
+## AOS-521 — O candidato perde a fatia sozinho: um disjuntor por modelo, durável e selado, que só o dono volta a fechar
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket ENTREGA a secção do disjuntor no ADR NOVO do AOS-520, ainda por numerar (como emenda a esse ADR, ou como parte dele se os dois tickets fecharem juntos). Enquanto esse ADR não tiver número, o bloco não implementa nenhum ADR numerado: o ADR-025 (o controlador de autonomia, que já despromove sozinho e só devolve por acto humano) é citado como precedente, e o ADR-036 §2.8 como o contrato da comparação do modelo servido. Quando o ADR novo existir, este marcador sai. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-disjuntor» |
+| Tipo | feat |
+| Prioridade | P1: é a metade «um modelo mau é recusado sozinho» **depois** de entrar. Sem ele, um candidato mau fica com a fatia até alguém reparar |
+| Estimativa | L |
+| Dependências | AOS-520 (o candidato, a fatia, o modelo fixado por run, as séries por modelo e o registo durável dos planos servidos). Para trás: AOS-493 (o veredicto do kernel sobre o run), AOS-505 (o modelo servido comparado por turno), AOS-507 e AOS-509 (resposta vazia e resposta rejeitada), AOS-090 (o precedente). Decisões D5 e D8 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-523 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §2, §3 (passo 7), §4.5, §6 (D5, D8) e §8, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `packages/platform/model-gateway/production.go`, `packages/cmd/aos/api.go`, `packages/cmd/aos/modelgatewaywiring.go`, `packages/kernel/agent-runtime/breaker/`, `deploy/server/alerta-rota.sh` |
+
+### Contexto
+
+- **Não existe disjuntor por modelo.** Os que há são de outro eixo: de orçamento e por run. A
+  saúde de uma rota é uma função injectada que ninguém preenche — sem ela, tudo é tratado
+  como saudável (`packages/platform/model-gateway/production.go`).
+- **Há sinais, mas poucos têm o modelo ao lado.** Só `aos_model_route_checks_total` e
+  `aos_model_route_params_rejected_total` o levam. Não há contador de erros HTTP por rota. O
+  veredicto do kernel por run existe, sem o modelo. As séries por modelo chegam com o AOS-520.
+- **O único alerta de rota avisa e não actua** (`deploy/server/alerta-rota.sh`).
+- **O precedente é o controlador de autonomia** (AOS-090): despromove sozinho com base em
+  fiabilidade medida e só devolve por acto humano.
+- **O disjuntor compara com um limiar fixo, não com o titular** (desenho §5, lição 7).
+- **Com pouco tráfego a janela demora a encher** (desenho §8), e não está medido se «3 em 20»
+  dispara por azar num modelo bom. Daí o `observe` primeiro.
+
+### Decidido pelo dono (2026-10-11)
+
+**D5 — o disjuntor.**
+
+| Pergunta | Decisão |
+|---|---|
+| O que conta como falha | (F1) run «não cumprido» no fim das tentativas; (F2) resposta vazia no fim das tentativas; (F3) resposta rejeitada; (F4) erro do provider que não seja limite de ritmo; (F5) modelo servido diferente do esperado. Cada uma com contador próprio. **O limite de ritmo fica de fora:** é da conta, não do modelo |
+| Quando abre | **3 falhas nos últimos 20 runs do candidato**; e ao **primeiro turno** com o modelo servido diferente do esperado |
+| O que faz ao abrir | Fatia a zero para runs novos. **Não mata os runs em curso**: acabam com o modelo fixado |
+| Como reabre | **Só por acto do dono.** Não fecha sozinho |
+| Primeiro passo | `observe` durante a primeira fatia; `enforce` depois, por decisão do dono |
+
+**D8, linha 4:** a governação da rota fica em `observe`, e o disjuntor lê o contador dela.
+
+### Objectivo
+
+O nó conta, por modelo, o que já sabe sem interpretar texto; aplica a regra da D5 a uma janela
+dos runs do candidato; e, aberto, deixa de lhe dar runs novos, sem ninguém intervir — com o
+facto selado, as contagens ao lado, um aviso ao dono, e sem volta automática.
+
+### Âmbito
+
+- **Os cinco sinais**, cada um lido de onde o nó já o tem: o veredicto do kernel, o desfecho
+  `empty_output`, a rejeição da resposta pelo gateway, o erro do provider classificado, e a
+  comparação do modelo servido. Nenhum lê o texto do modelo.
+- **A unidade da janela.** Uma tentativa falhada que a nova tentativa recupera não é uma
+  falha «no fim das tentativas»: na janela, cada nó do plano conta pelo desfecho da sua
+  tentativa mais recente. O ticket começa por confirmar no código o que o nó sabe das
+  tentativas de um nó do plano (AOS-502, AOS-510) e regista-o.
+- **O estado**: fechado ou aberto, com a janela e os cinco contadores, durável e selado,
+  lido no arranque. Preso ao digest do registo de entrada do candidato: **um registo assinado
+  novo começa fechado** — é esse o acto do dono que reabre.
+- **Um interruptor**: `AOS_MODEL_BREAKER=off|observe|enforce`, omissão `off`.
+- **O alerta**, no molde do `alerta-rota.sh`: avisa quando abre (ou, em `observe`, quando
+  teria aberto).
+- **A secção do disjuntor no ADR novo do AOS-520**, incluindo onde vive o estado durável
+  (que stream o leva e o custo de o ler no arranque — o desenho §8 deixou-o por verificar).
+
+### Critérios de Aceitação
+
+**Inerte**
+
+- [ ] Com `AOS_MODEL_BREAKER` ausente ou `off`, o nó — com ou sem candidato a servir — é byte
+      a byte o do AOS-520 sobre as mesmas entradas: pedidos, manifestos, registos, banner e
+      `/metrics`. Preso por digest.
+- [ ] Em `observe`, a repartição dos planos entre titular e candidato é idêntica à de `off`
+      para a mesma sequência de identificadores e de desfechos: o disjuntor conta e não mexe.
+
+**A regra**
+
+- [ ] Função pura da janela: dadas as mesmas entradas pela mesma ordem, o mesmo estado. Teste
+      de tabela: 2 falhas em 20 não abre; a 3.ª abre; 3 falhas espalhadas por 21 runs não
+      abrem; uma F5 abre sozinha, ao primeiro turno, com a janela vazia.
+- [ ] O limite de ritmo (429) **não conta**, por mais vezes que aconteça — um teste com 20
+      respostas 429 seguidas e o disjuntor fechado.
+- [ ] Um nó do plano que falha à primeira e cumpre na nova tentativa não fica como falha na
+      janela.
+- [ ] **Mutação dirigida** por parâmetro e por sinal: 3 para 4; 20 para 21; retirar cada um
+      dos cinco sinais; contar o 429. Cada uma avermelha pelo menos um teste. A lista e o
+      resultado ficam no Estado.
+
+**Aberto, em `enforce`**
+
+- [ ] Com um provider falso que degrada a meio (bom durante N runs, mau depois), o disjuntor
+      abre **até ao 3.º run falhado** depois da degradação, e a partir daí **nenhum plano
+      novo** vai para o candidato — zero em pelo menos 200 identificadores seguintes que a
+      função de escolha lhe daria.
+- [ ] Os runs do candidato em curso no momento da abertura acabam com o modelo fixado.
+- [ ] Um run **novo** de um plano que o candidato já estava a servir não passa em silêncio
+      para o titular: é recusado com causa própria, e o plano falha por essa causa. Nenhum
+      plano fica com nós servidos por dois modelos.
+- [ ] **O titular nunca é tocado.** Um teste faz o titular falhar de todas as cinco maneiras,
+      com o disjuntor em `enforce`: o titular continua a receber todos os runs, e nenhum
+      estado do disjuntor muda.
+- [ ] **Sobrevive a um reinício:** aberto continua aberto, com as mesmas contagens. Sobre
+      ficheiro **e sobre JetStream** (cluster de CI).
+- [ ] **Não fecha sozinho:** nem com o tempo, nem com reinícios, nem com 200 runs bons do
+      titular, nem ao pôr o interruptor em `off` e outra vez em `enforce`. Fecha com um
+      registo de entrada novo, assinado — e só com isso.
+- [ ] A abertura fica selada uma vez, com: o digest do registo de entrada, a regra que
+      disparou, os cinco contadores e a janela (identificadores de run e sinal, sem conteúdo).
+- [ ] Com um candidato bom (o falso «bom» do AOS-518), o disjuntor não abre em 200 runs.
+
+**`observe`**
+
+- [ ] Conta e, quando a regra dispararia, sela «teria aberto» com as mesmas contagens e
+      expõe-o em métrica; a fatia não muda.
+- [ ] Como leitura de calibração, e só em `observe` ou `enforce`: a mesma regra é calculada
+      também sobre os runs do titular e exposta em métrica, **sem estado que actue**. É a
+      medição que o desenho §8 pede («se 3 em 20 dispara por azar num modelo bom»).
+
+**O sinal F5 e a governação da rota**
+
+- [ ] Com `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`, um turno do candidato com o
+      modelo servido diferente do esperado abre o disjuntor nesse turno.
+- [ ] Com a governação da rota desligada o sinal F5 não existe: em `observe`, o banner di-lo;
+      em `enforce`, **o nó não arranca**, com causa própria. Um disjuntor que promete apanhar
+      a troca de modelo sem a poder ver é pior do que não o ter.
+
+**O aviso**
+
+- [ ] Um script de alerta em `deploy/server/`, com modo de teste, avisa uma vez à abertura e
+      relembra enquanto durar. O que sai do servidor: o título e as contagens; nenhum nome de
+      modelo, nenhum endereço.
+
+**Registo**
+
+- [ ] A secção do disjuntor no ADR novo, o runbook («o disjuntor abriu: o que ler, o que
+      fazer, como reabrir») e a RTM regenerada.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptor:** `AOS_MODEL_BREAKER=off|observe|enforce`, omissão `off`. Em produção
+  liga-se em `observe` durante a primeira fatia; `enforce` é uma decisão do dono, com os
+  números do `observe` à frente.
+- **Inerte:** os dois primeiros critérios.
+
+### Testes exigidos
+
+- A tabela da regra e as mutações; o provider falso que degrada a meio; o reinício sobre
+  ficheiro e sobre JetStream; o titular intocado; a não reabertura; a recusa do run novo de
+  um plano já servido; a inércia por digest.
+- **Controlo negativo do próprio teste da degradação:** com o disjuntor em `observe`, o mesmo
+  cenário continua a dar planos ao candidato — o teste do `enforce` não passa por o
+  candidato nunca ter recebido nada.
+- Revisão adversarial independente antes do `enforce` em produção. Alvos: um caminho que
+  reabre sem assinatura; um sinal que conta a favor do candidato; o titular a perder tráfego.
+
+### Riscos
+
+- **Pouco tráfego:** a janela demora a encher e um candidato mau serve mais tempo do que se
+  quer. Está limitado por cima pelo fim do canary (40 planos, AOS-520).
+- **Um limiar sensível de mais tira um modelo bom por azar** — e não volta sozinho. Daí o
+  `observe` primeiro e a leitura de calibração.
+- **A tentativa falhada que ainda não foi repetida** conta na janela até a nova tentativa
+  fechar: o disjuntor pode abrir uns runs mais cedo do que a letra de «no fim das
+  tentativas». É o lado seguro, e o `observe` mede quantas vezes acontece.
+- **Os planos em curso no momento da abertura falham** nos nós que faltam. Perde-se trabalho
+  de poucos planos; a alternativa era um plano com dois modelos, que a D4 exclui.
+
+### O que precisa do dono
+
+- Pôr `AOS_MODEL_BREAKER=observe` no servidor para a primeira fatia, e instalar o cron do
+  alerta.
+- Decidir a passagem a `enforce`, com as contagens do `observe`, e registá-la na §4 do
+  acompanhamento.
+- Reabrir, quando for o caso: assinar um registo de entrada novo.
+
+### Fora de âmbito
+
+- O disjuntor a reabrir sozinho (meia-abertura).
+- Um disjuntor para o titular; comparar o candidato com o titular; taxas com amostra mínima.
+- Matar runs em curso.
+- `AOS_MODEL_ROUTE_GOVERNANCE=enforce` em produção: é decisão separada, já por tomar.
+- Preencher a função de saúde do failover do gateway com este estado; tiers e scoring (A4).
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-520.
+
 ---
 
 ## Controlo de versões
@@ -4134,3 +4326,4 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 | 3.7 | 2026-10-11 | +AOS-517 (fase A3, entrada automática): o proxy de produção fixa-se pelo digest em que o banco mede, com a igualdade presa por teste, e `drop_params: false` aplica-se no servidor, por decisão do dono (D8) | Equipa AOS |
 | 3.8 | 2026-10-11 | +AOS-519 (fase A3): o nó carrega perfis de rota de uma pasta, por um registo de entrada assinado pelo dono que cita o veredicto do arnês (`AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`); falha fechado no arranque com causa própria por caso; inerte sem a pasta; emenda à secção do perfil da rota no ADR do tail como entregável (D1, D8) | Equipa AOS |
 | 3.9 | 2026-10-11 | +AOS-520 (fase A3): o nó serve um titular e no máximo um candidato, escolhido uma vez por run por uma função determinista do identificador do plano e da fatia assinada (10% dos planos, até 40 planos), com o modelo fixado por run e séries novas por modelo (`AOS_MODEL_CANDIDATE=off\|on`, omissão `off`); ADR novo como entregável, por numerar (D4, D6) | Equipa AOS |
+| 3.10 | 2026-10-11 | +AOS-521 (fase A3): disjuntor por modelo — cinco sinais sem ler texto, regra de 3 falhas nos últimos 20 runs do candidato e abertura ao primeiro turno com o modelo servido diferente; aberto, o candidato não recebe runs novos, o estado é durável e selado, e só um registo assinado novo o reabre (`AOS_MODEL_BREAKER=off\|observe\|enforce`, omissão `off`); secção no ADR novo do AOS-520 como entregável (D5) | Equipa AOS |
