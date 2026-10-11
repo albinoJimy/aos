@@ -1736,6 +1736,176 @@ de entrada para o dono assinar. E um procedimento escrito, com o tempo esperado 
 **Aberto (2026-10-11).** Nada implementado. Pode andar ao lado do AOS-519, depois de o
 AOS-518 ter o formato do relatório estável.
 
+## AOS-523 — A prova da fase A3: o terceiro modelo entra em menos de uma hora, com zero PRs e uma assinatura; um modelo mau é recusado sozinho
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: é uma medição, sem código. O ADR-012 (eval-gate, canary e ratificação humana assinada) é citado só como o princípio cujo caminho completo a medição percorre. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-prova». É o ticket que mede o critério da fase |
+| Tipo | test |
+| Prioridade | P1: sem esta medição a fase fica construída e por provar |
+| Estimativa | M (trabalho de medição e de registo; nenhum código) |
+| Dependências | AOS-517, AOS-518, AOS-519, AOS-520, AOS-521 e AOS-522, todos em produção na mesma versão. Decisão D9 do dono (tomada a 2026-10-11); o nome do terceiro modelo, que o dono indica |
+| Bloqueia | A passagem da fase A3 a **provada**; a fase A4 |
+| Responsável sugerido | Engenheiro de Qualidade, com o dono a executar os passos que são dele |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §1, §3, §4.7, §6 (D9) e §8, `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (§2, §4, §5 e §7), `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`, `deploy/server/README.md` |
+
+### Contexto
+
+- **O critério da fase** (acompanhamento §2): «o terceiro modelo entra com zero PRs e uma
+  assinatura em menos de uma hora; um modelo mau é recusado sozinho».
+- **Uma fase só passa a provada quando o critério está medido e registado na §5**, e só
+  passa a fechada por decisão do dono, registada na §4.
+- **A A2 fechou provada em ensaio, não em produção**, e disse-o. Esta medição diz, parte a
+  parte, onde foi feita.
+- **O que o desenho não sabe e só esta medição responde** (desenho §8): quanto tempo leva
+  uma qualificação de 8 passagens; se há tráfego para um canary querer dizer alguma coisa;
+  se «3 em 20» dispara por azar.
+- O caminho medido é o do princípio da auto-modificação com rede (`AGENTS.md` §7, n.º 9;
+  ADR-012): eval-gate, ratificação humana assinada e canary, por esta ordem.
+
+### Decidido pelo dono (2026-10-11)
+
+**D9 — o terceiro modelo é outro modelo do Kimi, pela mesma conta**, na região já aprovada.
+Tem de ser um modelo que a tabela em código **não conheça** (o `k3` já lá tem perfil e não
+serve de prova de «zero PRs»). Pede-se pelo segundo alias que a allowlist já autoriza, e o
+perfil assinado substitui a entrada da tabela para esse alias, dito no banner. O dono indica o
+modelo. Enquanto não houver endpoint na UE, o Claude continua só em ensaio.
+
+### Objectivo
+
+Medir e registar, com prova selada, as três partes do critério: (a) um modelo novo entra pelo
+caminho do desenho §3 com o relógio a contar e sem PR nenhum; (b) um modelo mau de propósito
+é recusado antes de entrar; (c) um candidato que degrada depois de entrar perde a fatia sem
+intervenção.
+
+### Âmbito
+
+- As três medições, o registo na §5 do acompanhamento, e a actualização do estado da fase.
+- Nenhum ficheiro `.go`, script ou workflow. Um defeito encontrado durante a prova abre
+  ticket novo; não se corrige aqui.
+
+### Critérios de Aceitação
+
+**Antes de o relógio começar (passo 0, fora do relógio; fica registado)**
+
+- [ ] A versão em produção contém os seis tickets anteriores; os interruptores estão como a
+      prova pede e ficam anotados: pasta e âncora dos perfis, `AOS_MODEL_CANDIDATE=on`,
+      `AOS_MODEL_BREAKER=observe`, `AOS_MODEL_ROUTE_GOVERNANCE` em `observe`.
+- [ ] O proxy de produção corre o digest declarado (AOS-517) e tem a rota do modelo novo
+      configurada pelo dono; a allowlist em vigor já autoriza o alias. **Fica dito no
+      registo que este passo existiu e quanto demorou**, apesar de estar fora do relógio.
+- [ ] Anotados, para a prova de «zero PRs»: o digest da imagem do nó em produção e o commit
+      da base, no instante em que o relógio começa.
+
+**(a) O terceiro modelo entra — em produção**
+
+- [ ] **Menos de uma hora** entre o início do passo 1 (escrever o perfil candidato) e o fim
+      do passo 6 (o primeiro run servido pelo candidato em produção). Os instantes tiram-se
+      de artefactos e não de memória: a hora de início da qualificação no relatório, a da
+      assinatura, o evento selado «perfil carregado», e o manifesto do primeiro turno do
+      candidato. O tempo de cada passo fica numa tabela, ao lado do esperado pelo desenho.
+- [ ] **Zero PRs:** o digest da imagem do nó e o commit da base são os mesmos no fim e no
+      princípio; não houve release, deploy de imagem, nem alteração de código entre os dois
+      instantes.
+- [ ] **Uma assinatura:** um só acto de assinatura do dono (o registo de entrada). A
+      allowlist não foi re-assinada.
+- [ ] O veredicto do arnês para o modelo novo é `qualificado`, e o relatório, o registo
+      assinado e os três digests ficam referidos no registo da prova.
+- [ ] O primeiro run do candidato em produção fecha «cumprido», com o digest do perfil
+      **assinado** no manifesto e o modelo servido igual ao esperado em todos os turnos.
+- [ ] Se o tráfego de produção não trouxer um plano para a fatia dentro da hora, lança-se
+      uma série de validação de propósito, e **o registo diz que foi lançada** e de que
+      tamanho. A escolha continua a ser a da função: não se força um plano para o candidato.
+- [ ] Se a hora não for cumprida, o critério **não está cumprido**: regista-se o tempo real
+      e o passo que o gastou. Não se repete a medição até dar menos de uma hora sem dizer
+      quantas vezes se tentou.
+
+**(b) Um modelo mau é recusado antes de entrar — em ensaio**
+
+- [ ] Um perfil mau de propósito — que aponte para um modelo sem tool calling, ou com um
+      parâmetro que o parte; fica dito qual — corre o comando do AOS-522 com o modelo real:
+      veredicto `recusado`, com a razão esperada, e **nenhum registo de entrada** na pasta
+      de saída. Ficam registados os pedidos gastos e que a corrida coube nos tectos.
+- [ ] **O nó também o recusa.** Num nó de ensaio (não em produção), um registo de entrada
+      assinado à mão que cite esse relatório `recusado` não carrega: o nó não arranca, com a
+      causa do AOS-519. A recusa não depende só de o comando não ter preparado o ficheiro.
+
+**(c) Um candidato que degrada perde a fatia — em ensaio, e dito que foi aí**
+
+- [ ] Com um provider falso atrás da imagem fixada do proxy, bom durante N runs e mau
+      depois, e o disjuntor em `enforce`: abre dentro da janela escrita, nenhum plano novo
+      vai para o candidato, o titular não é tocado, e não houve intervenção de ninguém. O
+      evento selado da abertura, com as contagens, fica referido no registo.
+- [ ] O registo diz, com estas palavras, que **(c) foi provado em ensaio e não em
+      produção**: em produção exigia um modelo que falhasse em produção.
+
+**O canary em produção (acompanha a prova; não é condição do critério)**
+
+- [ ] Com o candidato a servir a fatia de 10% e o disjuntor em `observe`, ficam registadas a
+      série «depois» (os planos do candidato) e a «antes» (os do titular no mesmo período):
+      planos, primeiras falhas, «não cumprido», e as vezes que o disjuntor teria aberto, para
+      cada um.
+- [ ] O critério P7 da fase anterior mantém-se: a taxa de primeiras falhas e o «não
+      cumprido» do titular não pioram face à última série anterior do mesmo tamanho.
+
+**Registo**
+
+- [ ] A §5 do acompanhamento ganha as linhas da prova; a linha da A3 na §2 passa a
+      **provada** só se (a), (b) e (c) estiverem cumpridos, com a frase exacta do que ficou
+      provado em produção e do que ficou provado em ensaio.
+- [ ] O registo lista o que a prova **não prova**: o terceiro modelo é da mesma família e da
+      mesma conta que o titular; nenhum perfil que devolve estado entrou; o planeador do
+      `aos-orq` não é coberto; a bateria são seis casos sintéticos; o disjuntor em `enforce`
+      nunca actuou em produção.
+- [ ] O fecho da fase é do dono, na §4. Este ticket não a fecha.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptores:** este ticket não cria nenhum. Usa os dos tickets anteriores, e regista
+  como estavam.
+- **Inerte:** os planos servidos pelo titular durante a prova são servidos como antes — é o
+  que a série «antes» mede.
+
+### Testes exigidos
+
+- Não há testes de código. As três medições são os testes, e cada uma tem o seu controlo:
+  em (a), os instantes vêm de artefactos selados; em (b), a recusa confere-se em dois sítios
+  (o comando e o nó); em (c), o mesmo cenário com o disjuntor em `observe` continua a dar
+  planos ao candidato — a abertura é do disjuntor e não de o candidato nunca ter servido.
+
+### Riscos
+
+- **A hora pode não caber** se a qualificação demorar mais do que a estimativa, ou se não
+  houver tráfego. Os dois casos têm resposta escrita acima; nenhum é esconder o tempo.
+- **Um candidato real em produção pode falhar com dados reais.** A fatia é 10%, o canary
+  acaba aos 40 planos, e os documentos da série de validação são os de teste.
+- **Provar (c) só em ensaio** deixa o `enforce` por actuar em produção. Fica nomeado como
+  resíduo.
+
+### O que precisa do dono
+
+- Indicar o terceiro modelo e configurar a rota no proxy do servidor (passo 0).
+- Escrever o perfil, correr o comando, assinar, copiar e recriar o nó — com o relógio.
+- Aprovar a série de validação, se for precisa.
+- Decidir, com os números: se a fase fecha; se o candidato passa a titular, continua ou sai;
+  se o disjuntor passa a `enforce`.
+
+### Fora de âmbito
+
+- Corrigir o que a prova encontrar; mexer em limiares para a prova passar.
+- A segunda família em produção (um parceiro com endpoint na UE): é o primeiro modelo «a
+  sério» depois da prova, e é o passo 0 de outra entrada.
+- A passagem do candidato a titular.
+- Um perfil que devolve estado.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada medido. Só começa com os seis tickets anteriores em produção.
+
 ---
 
 ## Controlo de versões
@@ -1756,3 +1926,4 @@ AOS-518 ter o formato do relatório estável.
 | 1.11 | 2026-10-11 | AOS-512: a experiência dos separadores correu a 2026-10-10 com o Kimi real (212 pedidos; nenhum braço se distingue a 5%; hipótese retirada) | Equipa AOS |
 | 1.12 | 2026-10-11 | +AOS-518 (fase A3, entrada automática): o banco de ensaio ganha a experiência `qualificacao`, que dá um veredicto calculado sobre o modelo (`qualificado`, `recusado`, `inconclusivo`) com limiares do dono, providers falsos «maus» em CI, orçamento próprio e o digest do próprio relatório | Equipa AOS |
 | 1.13 | 2026-10-11 | +AOS-522 (fase A3): um comando do banco encadeia a qualificação, o resumo de uma página e a preparação do registo de entrada para o dono assinar — sem veredicto `qualificado` não fica nada por assinar, e a chave privada nunca entra no arnês; conferência local do pacote pela função que o nó usa; runbook com relógio | Equipa AOS |
+| 1.14 | 2026-10-11 | +AOS-523 (fase A3): a medição do critério da fase — o terceiro modelo (outro modelo do Kimi, pela mesma conta) entra em produção em menos de uma hora, com zero PRs e uma assinatura; um modelo mau é recusado pelo arnês e pelo nó, em ensaio; um candidato que degrada perde a fatia, em ensaio (D9) | Equipa AOS |
