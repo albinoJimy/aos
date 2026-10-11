@@ -2,10 +2,12 @@ package bancoensaio
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/policy/routeentry"
 )
 
 // O RESUMO DE UMA PÁGINA (AOS-522): o que o dono lê antes de assinar.
@@ -43,20 +45,41 @@ const (
 
 // DadosDoResumo é o que o resumo leva além do relatório: o que se preparou para assinar.
 type DadosDoResumo struct {
-	// Alias é o nome pedido do perfil; Board, Regiao e Fatia, o que vai no registo.
-	Alias, Board, Regiao string
-	Fatia                int
-	// Substitui diz que o alias já tem entrada na tabela de perfis em código, que o perfil
-	// assinado SUBSTITUI; ModeloEsperadoDeAntes é o modelo esperado dessa entrada.
+	// Registo é o registo de entrada que o resumo mostra. Com Preparado, é o que foi LIDO DE VOLTA
+	// DO DISCO, do ficheiro que ficou no pacote — o dono assina o que vê, e o que vê é o que está
+	// escrito. Sem Preparado é o candidato, tal como passou na leitura do nó antes da corrida.
+	Registo routeentry.Entry
+	// Substitui diz que o alias já tem entrada na tabela de perfis em código DESTE binário, que o
+	// perfil assinado substitui; ModeloEsperadoDeAntes é o modelo esperado dessa entrada. A tabela
+	// do nó pode ser outra: RevisaoDoBinario diz de que revisão é esta.
 	Substitui             bool
 	ModeloEsperadoDeAntes string
-	// Preparado diz que ficou um registo por assinar; DigestDoRegisto é o seu digest. Sem ele,
-	// Motivo diz porque não há nada para assinar.
-	Preparado       bool
-	DigestDoRegisto string
-	Motivo          string
+	RevisaoDoBinario      string
+	// Preparado diz que ficou um registo por assinar. Sem ele, Motivo diz porque não há nada para
+	// assinar.
+	Preparado bool
+	Motivo    string
 	// Fases é o relógio do comando.
 	Fases []FaseMedida
+}
+
+// paramsDoPerfil escreve os parâmetros do pedido que o perfil declara, por ordem do nome — a
+// mesma forma do resumo do `aos-issuer route-profile-sign`.
+func paramsDoPerfil(p modelgateway.RouteProfile) string {
+	if p.Params == nil || p.Params.IsZero() {
+		return "nenhum"
+	}
+	m := p.Params.Manifest()
+	nomes := make([]string, 0, len(m))
+	for k := range m {
+		nomes = append(nomes, k)
+	}
+	sort.Strings(nomes)
+	pares := make([]string, 0, len(nomes))
+	for _, k := range nomes {
+		pares = append(pares, k+"="+m[k])
+	}
+	return strings.Join(pares, ", ")
 }
 
 // partir parte um texto em linhas de, no máximo, `largura` colunas. A primeira linha mantém o recuo
@@ -173,50 +196,68 @@ func ResumoDeUmaPagina(r *Relatorio, d DadosDoResumo) string {
 		junta("   - "+strings.ReplaceAll(n, "_", " "), "     ")
 	}
 	o := q.Orcamento
-	gasto := fmt.Sprintf("%s %d pedidos enviados, de um tecto de %d por qualificacao (pior caso declarado antes de enviar: %d)", TituloDoGasto, o.PedidosEnviados, o.TectoDePedidos, o.PiorCasoDeclarado)
+	gasto := fmt.Sprintf("%s %d pedidos enviados (tecto %d; pior caso declarado antes de enviar: %d)", TituloDoGasto, o.PedidosEnviados, o.TectoDePedidos, o.PiorCasoDeclarado)
 	if o.MicroUSDEstimado != nil {
-		gasto += fmt.Sprintf("; gasto ESTIMADO %.4f USD de um tecto de %.2f USD", float64(*o.MicroUSDEstimado)/1e6, float64(o.TectoMicroUSD)/1e6)
+		gasto += fmt.Sprintf("; gasto ESTIMADO %.4f USD (tecto %.2f)", float64(*o.MicroUSDEstimado)/1e6, float64(o.TectoMicroUSD)/1e6)
 	} else {
 		gasto += "; sem estimativa em dolares"
 	}
 	if o.QualificacoesDoPerfilHoje != nil && o.QualificacoesDaRotaHoje != nil {
-		gasto += fmt.Sprintf("; qualificacao %d de %d deste perfil e %d de %d desta rota hoje", *o.QualificacoesDoPerfilHoje, o.MaximoPorPerfilPorDia, *o.QualificacoesDaRotaHoje, o.MaximoPorRotaPorDia)
+		gasto += fmt.Sprintf("; hoje: qualificacao %d de %d do perfil, %d de %d da rota", *o.QualificacoesDoPerfilHoje, o.MaximoPorPerfilPorDia, *o.QualificacoesDaRotaHoje, o.MaximoPorRotaPorDia)
 	}
 	junta(gasto, "   ")
 
-	// O QUE SE ASSINA — ou porque não há nada para assinar.
+	// O QUE SE ASSINA — ou porque não há nada para assinar. TUDO o que o registo diz, e a partir
+	// do registo: o perfil inteiro (os parâmetros do pedido e a versão da projecção mudam o que vai
+	// para o provider), o ambiente, a fatia e os digests.
+	e := d.Registo
+	p := e.Profile
 	if d.Preparado {
-		junta(TituloDoQueSeAssina+" — o registo de entrada, que cita o relatorio. Assinas tu, com o aos-issuer.", "   ")
+		junta(TituloDoQueSeAssina+" — o registo de entrada, lido de volta do pacote. Assinas tu, com o aos-issuer.", "   ")
 	} else {
-		junta(TituloDeNadaParaAssinar+" — "+d.Motivo+". So um qualificado do modo real, com a corrida completa, deixa um registo de entrada.", "   ")
+		junta(TituloDeNadaParaAssinar+" — "+d.Motivo+". So um qualificado do modo real, com a corrida completa, deixa um registo de entrada. O candidato era:", "   ")
 	}
-	rt := q.Rota
-	junta(fmt.Sprintf("   alias pedido: %q; modelo esperado: %q; fatia inicial: %d%%", d.Alias, rt.ModeloEsperado, d.Fatia), "     ")
-	junta(fmt.Sprintf("   board: %q; regiao: %q", d.Board, d.Regiao), "     ")
+	junta(fmt.Sprintf("   alias pedido: %q; modelo esperado: %q; fatia inicial: %d%%", p.Requested, p.ExpectedModel, e.InitialSharePercent), "     ")
+	junta(fmt.Sprintf("   board: %q; regiao: %q", e.Board, e.Region), "     ")
+	projeccao := p.ProjectionVersion
+	if projeccao == "" {
+		projeccao = "nao declara (vale a do no)"
+	}
+	junta(fmt.Sprintf("   wire: %q; capacidades: %v; projection_version: %s; devolver: nunca", p.WireClass, p.Capabilities, projeccao), "     ")
+	junta("   params do pedido: "+paramsDoPerfil(p), "     ")
+	tabela := fmt.Sprintf("segundo a tabela em codigo DESTE binario (revisao %s), que pode nao ser a do no", d.RevisaoDoBinario)
 	if d.Substitui {
-		junta(fmt.Sprintf("   este perfil SUBSTITUI a entrada da tabela de perfis em codigo para este alias, para o no inteiro (modelo esperado de antes: %q)", d.ModeloEsperadoDeAntes), "     ")
+		junta(fmt.Sprintf("   SUBSTITUI a entrada deste alias na tabela de perfis, para o no inteiro (modelo esperado de antes: %q) — %s", d.ModeloEsperadoDeAntes, tabela), "     ")
 	} else {
-		junta("   este perfil ACRESCENTA-SE a tabela de perfis em codigo, que nao tem este alias", "     ")
+		junta("   ACRESCENTA-SE a tabela de perfis, que nao tem este alias — "+tabela, "     ")
 	}
-	imagem := "(modo falso: sem proxy)"
-	if rt.DigestDaImagemDoProxy != "" {
-		imagem = rt.DigestDaImagemDoProxy
+	relatorio, imagem := e.ReportDigest, e.ProxyImageDigest
+	if !d.Preparado {
+		// Sem registo escrito, o digest do relatório e o da imagem são os que o relatório traz.
+		relatorio, imagem = r.DigestDoRelatorio, q.Rota.DigestDaImagemDoProxy
+		if imagem == "" {
+			imagem = "(modo falso: sem proxy)"
+		}
 	}
 	linhas = append(linhas,
-		"   digest do perfil:    "+rt.DigestDoPerfil,
-		"   digest do relatorio: "+r.DigestDoRelatorio,
+		"   digest do perfil:    "+e.ProfileDigest,
+		"   digest do relatorio: "+relatorio,
 		"   digest imagem proxy: "+imagem)
 	if d.Preparado {
-		linhas = append(linhas, "   digest do registo:   "+d.DigestDoRegisto)
+		linhas = append(linhas, "   digest do registo:   "+e.EntryDigest)
 	}
 
 	// O RELÓGIO: a hora de início e de fim de cada fase, para a medição do critério da fase.
 	if len(d.Fases) > 0 {
 		primeira, ultima := d.Fases[0], d.Fases[len(d.Fases)-1]
-		linhas = append(linhas, fmt.Sprintf("%s — total %s -> %s  (%s)", TituloDoRelogio, primeira.Inicio.Format("15:04:05"), ultima.Fim.Format("15:04:05"), ultima.Fim.Sub(primeira.Inicio).Round(time.Second)))
-		for _, f := range d.Fases {
-			linhas = append(linhas, fmt.Sprintf("   %-11s %s -> %s  (%s)", f.Nome, f.Inicio.Format("15:04:05"), f.Fim.Format("15:04:05"), f.Fim.Sub(f.Inicio).Round(time.Second)))
+		relogio := fmt.Sprintf("%s — total %s -> %s (%s):", TituloDoRelogio, primeira.Inicio.Format("15:04:05"), ultima.Fim.Format("15:04:05"), ultima.Fim.Sub(primeira.Inicio).Round(time.Second))
+		for i, f := range d.Fases {
+			if i > 0 {
+				relogio += ";"
+			}
+			relogio += fmt.Sprintf(" %s %s->%s (%s)", f.Nome, f.Inicio.Format("15:04:05"), f.Fim.Format("15:04:05"), f.Fim.Sub(f.Inicio).Round(time.Second))
 		}
+		junta(relogio, "   ")
 	}
 	return strings.Join(linhas, "\n") + "\n"
 }

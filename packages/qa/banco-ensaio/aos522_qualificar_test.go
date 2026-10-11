@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/allowlist"
 	"github.com/aos-ref/platform/model-gateway/policy/routeentry"
 	"github.com/aos-ref/platform/model-gateway/policy/routeentry/routeentrytest"
@@ -137,7 +138,9 @@ func TestAOS522_CaminhoFeliz_PreparaOPacoteQueONoCarrega(t *testing.T) {
 	resumo, _ := os.ReadFile(filepath.Join(saida, NomeDoResumoDeUmaPagina))
 	for _, quer := range []string{
 		TituloDoVeredicto + " QUALIFICADO", TituloDoQueSeAssina, `alias pedido: "gpt-4o"`, `modelo esperado: "openai/` + modeloKimiDeTeste + `"`, "fatia inicial: 10%",
-		`board: "board-eu"; regiao: "eu"`, "SUBSTITUI a entrada da tabela de perfis em codigo", recalculado, routeentry.ProductionProxyImageDigest(),
+		`board: "board-eu"; regiao: "eu"`, "SUBSTITUI a entrada deste alias na tabela de perfis, para o no inteiro", "segundo a tabela em codigo DESTE binario (revisao ", "que pode nao ser a do no",
+		`wire: "openai-chat-completions"; capacidades: [tools]; projection_version: nao declara (vale a do no); devolver: nunca`, "params do pedido: nenhum",
+		"lido de volta do pacote", recalculado, routeentry.ProductionProxyImageDigest(),
 		routeentry.EntryDigest(registo), "AVISO — TECTO_EM_DOLARES_NAO_IMPOSTO", "pior caso declarado antes de enviar: 673",
 	} {
 		if !strings.Contains(aos522NumaLinha(string(resumo)), quer) {
@@ -148,22 +151,28 @@ func TestAOS522_CaminhoFeliz_PreparaOPacoteQueONoCarrega(t *testing.T) {
 		t.Error("o resumo escrito nao e o mostrado")
 	}
 	// O RELÓGIO: cada fase com início e fim, pela ordem, e nenhuma com duração zero.
-	relogio := string(resumo)[strings.Index(string(resumo), TituloDoRelogio):]
+	relogio := aos522NumaLinha(string(resumo)[strings.Index(string(resumo), TituloDoRelogio):]) + " "
 	ultimo := 0
-	for _, fase := range []string{"— total ", "   " + FaseDoPlano, "   " + FaseDaSonda, "   " + FaseDaCorrida, "   " + FaseDaPreparacao} {
+	for _, fase := range []string{"— total ", " " + FaseDoPlano + " ", " " + FaseDaSonda + " ", " " + FaseDaCorrida + " ", " " + FaseDaPreparacao + " "} {
 		i := strings.Index(relogio, fase)
 		if i < ultimo {
 			t.Fatalf("a fase %q falta ou esta fora de ordem no relogio:\n%s", fase, relogio)
 		}
 		ultimo = i
 	}
-	if strings.Contains(relogio, "(0s)") || strings.Contains(relogio, FaseDoControlo) {
+	if strings.Contains(relogio, "(0s)") || strings.Contains(relogio, " "+FaseDoControlo+" ") {
 		t.Errorf("relogio com uma fase de duracao zero, ou com um controlo que nao correu:\n%s", relogio)
 	}
 	// A linha de assinar, exacta, no fim — e a de conferir. Sem caminho de chave nenhuma.
 	for _, quer := range []string{"aos-issuer route-profile-sign --entry ", "gpt-4o.registo.sig", "aos-ensaio conferir --pacote ", "<FICHEIRO-DA-SEED-DOS-PERFIS>"} {
 		if !strings.Contains(e.stdout, quer) {
 			t.Errorf("a saida nao traz %q", quer)
+		}
+	}
+	// O que o dono le no terminal antes de assinar nao leva caracteres de controlo.
+	for _, c := range e.stdout {
+		if (c < 0x20 && c != '\n') || c == 0x7f {
+			t.Fatalf("a saida tem um caracter de controlo (%U)", c)
 		}
 	}
 	// Nem segredos nem texto em lado nenhum; e no que o comando ESCREVE (os ficheiros e o stdout)
@@ -289,7 +298,8 @@ func TestAOS522_ORegistoQueONoRecusariaParaAntesDeEnviar(t *testing.T) {
 		"perfil que devolve estado": {devolve, "10", routeentry.CauseProfileReturnsState},
 		"alias que nao serve":       {comPonto, "10", routeentry.CauseBadRouteName},
 		"fatia fora do intervalo":   {aos522Perfil, "101", routeentry.CauseShareOutOfRange},
-		"fatia negativa":            {aos522Perfil, "-1", routeentry.CauseShareOutOfRange},
+		"fatia de tres algarismos":  {aos522Perfil, "999", routeentry.CauseShareOutOfRange},
+		"alias fora da allowlist":   {strings.Replace(aos522Perfil, `"gpt-4o"`, `"modelo-que-a-allowlist-nao-tem"`, 1), "10", routeentry.CauseNameNotAllowlisted},
 		"perfil que nao se le":      {`{"requested":"gpt-4o","chave_a_mais":1}`, "10", routeentry.CauseBadProfile},
 	} {
 		p := aos522NovoPosto(t, ComportamentoCumpre)
@@ -333,14 +343,41 @@ func TestAOS522_ORegistoQueONoRecusariaParaAntesDeEnviar(t *testing.T) {
 			t.Errorf("sem %s: escreveu na pasta de saida", falta)
 		}
 	}
-	// Um board só de espaços é um board em falta; e um maior do que o tecto não cabe no resumo.
-	for _, board := range []string{"  ", strings.Repeat("b", TamanhoMaximoDoAmbiente+1)} {
-		p := aos522NovoPosto(t, ComportamentoCumpre)
-		args := p.real(filepath.Join(t.TempDir(), "saida"), aos522Perfil)
-		args[11] = board
-		if e := executar(t, p.amb, args...); e.codigo != SaidaUso || p.lanc.lancamentos != 0 {
-			t.Errorf("board %q: codigo %d", board, e.codigo)
+	// O QUE SE ESCREVE NA LINHA DE COMANDOS TEM ALFABETO FECHADO. O board e a região: de 1 a 64
+	// letras, dígitos, `_` e `-` — sem espaços, aspas, novas linhas nem ESC. A fatia: só algarismos
+	// decimais. A pasta de saída: sem aspas nem caracteres de controlo (é impressa na linha de
+	// assinar). E o alias não pode ser um nome de dispositivo do Windows.
+	maus := map[int][]string{
+		11: {"  ", strings.Repeat("b", TamanhoMaximoDoAmbiente+1), "board eu", "board\x1b[2Jeu", "board\neu", `board"eu`, "board.eu", "bõard"},
+		13: {" eu", "eu\x1b[1A", "eu\r", "eu'"},
+		9:  {"010", "0x0A", "0b11", "1_0", "+10", "-1", "10 ", "1e1", "10.0", "1000", "dez"},
+		15: {filepath.Join(t.TempDir(), `sai"da`), filepath.Join(t.TempDir(), "sai\x1bda"), filepath.Join(t.TempDir(), "sai\nda")},
+	}
+	for indice, valores := range maus {
+		for _, valor := range valores {
+			p := aos522NovoPosto(t, ComportamentoCumpre)
+			args := p.real(filepath.Join(t.TempDir(), "saida"), aos522Perfil)
+			args[indice] = valor
+			if e := executar(t, p.amb, args...); e.codigo != SaidaUso || p.lanc.lancamentos != 0 || strings.ContainsAny(e.stderr, "\x1b\r") {
+				t.Errorf("%s %q: codigo %d, lancamentos %d", args[indice-1], valor, e.codigo, p.lanc.lancamentos)
+			}
 		}
+	}
+	for _, reservado := range []string{"NUL", "nul", "CON", "Aux", "PRN", "COM1", "lpt9"} {
+		p := aos522NovoPosto(t, ComportamentoCumpre)
+		saida := filepath.Join(t.TempDir(), "saida")
+		e := executar(t, p.amb, p.real(saida, strings.Replace(aos522Perfil, `"gpt-4o"`, `"`+reservado+`"`, 1))...)
+		if e.codigo != SaidaUso || p.lanc.lancamentos != 0 || !strings.Contains(e.stderr, "nome de dispositivo do Windows") {
+			t.Errorf("alias %s: codigo %d\n%s", reservado, e.codigo, e.stderr)
+		}
+		if _, err := os.Stat(saida); err == nil {
+			t.Errorf("alias %s: escreveu na pasta de saida", reservado)
+		}
+	}
+	// As duas opções da allowlist externa vão juntas.
+	p := aos522NovoPosto(t, ComportamentoCumpre)
+	if e := executar(t, p.amb, p.real(filepath.Join(t.TempDir(), "saida"), aos522Perfil, "--allowlist-dir", t.TempDir())...); e.codigo != SaidaUso || p.lanc.lancamentos != 0 {
+		t.Errorf("--allowlist-dir sem a ancora: codigo %d", e.codigo)
 	}
 }
 
@@ -443,10 +480,24 @@ func TestAOS522_Resumo_UmaPaginaEAOrdem(t *testing.T) {
 		hora = hora.Add(7 * time.Minute)
 	}
 	comprido := strings.Repeat("b", TamanhoMaximoDoAmbiente)
+	perfil, err := modelgateway.ParseRouteProfile([]byte(`{"requested":"` + strings.Repeat("a", 64) + `","expected_model":"openai/` + strings.Repeat("e", 80) + `","wire_class":"openai-chat-completions","capabilities":["tools"],"projection_version":"1.3.0","params":{"max_tokens":16000,"reasoning_effort":"high"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
 	resumo := ResumoDeUmaPagina(r, DadosDoResumo{
-		Alias: strings.Repeat("a", 64), Board: comprido, Regiao: comprido, Fatia: 100, Substitui: true, ModeloEsperadoDeAntes: "openai/" + strings.Repeat("m", 90),
-		Preparado: true, DigestDoRegisto: "sha256:" + strings.Repeat("f", 64), Fases: fases,
+		Registo: routeentry.Entry{
+			Board: comprido, Region: comprido, Profile: perfil, InitialSharePercent: 100,
+			ProfileDigest: "sha256:" + strings.Repeat("a", 64), ReportDigest: "sha256:" + strings.Repeat("b", 64),
+			ProxyImageDigest: routeentry.ProductionProxyImageDigest(), EntryDigest: "sha256:" + strings.Repeat("f", 64),
+		},
+		Substitui: true, ModeloEsperadoDeAntes: "openai/" + strings.Repeat("m", 40), RevisaoDoBinario: "0123456789ab",
+		Preparado: true, Fases: fases,
 	})
+	for _, quer := range []string{"max_tokens=16000", "reasoning_effort=high", "projection_version: 1.3.0", "fatia inicial: 100%", "sha256:" + strings.Repeat("b", 64), "sha256:" + strings.Repeat("f", 64), "revisao 0123456789ab"} {
+		if !strings.Contains(aos522NumaLinha(resumo), quer) {
+			t.Errorf("o resumo nao diz %q", quer)
+		}
+	}
 	linhas := strings.Split(strings.TrimRight(resumo, "\n"), "\n")
 	if len(linhas) > LinhasDoResumoDeUmaPagina || LinhasDoResumoDeUmaPagina != 60 || ColunasDoResumoDeUmaPagina != 100 {
 		t.Errorf("o resumo do pior caso tem %d linhas; a pagina sao 60 de 100 colunas\n%s", len(linhas), resumo)
@@ -480,7 +531,7 @@ func TestAOS522_Resumo_UmaPaginaEAOrdem(t *testing.T) {
 			t.Errorf("o resumo nao traz a razao %q", razao)
 		}
 	}
-	if !strings.Contains(resumo, "limiares violados: L1, L2, L3, L4, L5, L6") || !strings.Contains(resumo, "gasto ESTIMADO 3.0000 USD") {
+	if !strings.Contains(resumo, "limiares violados: L1, L2, L3, L4, L5, L6") || !strings.Contains(aos522NumaLinha(resumo), "gasto ESTIMADO 3.0000 USD") {
 		t.Errorf("faltam os limiares violados ou o gasto:\n%s", resumo)
 	}
 }
@@ -497,7 +548,7 @@ func TestAOS522_Resumo_ControloNaoCorridoNuncaSaiComoPassado(t *testing.T) {
 		t.Fatalf("a preparacao do teste mudou: controlo %+v, veredicto %s", q.Controlo, q.Veredicto)
 	}
 	linhaDe := func(r *Relatorio) string {
-		resumo := ResumoDeUmaPagina(r, DadosDoResumo{Alias: "gpt-4o", Motivo: "teste"})
+		resumo := ResumoDeUmaPagina(r, DadosDoResumo{Motivo: "teste"})
 		i, j := strings.Index(resumo, TituloDosControlos), strings.Index(resumo, TituloDoQueNaoProva)
 		if i < 0 || j < i {
 			t.Fatalf("o resumo nao tem a seccao dos controlos:\n%s", resumo)
@@ -542,7 +593,7 @@ func TestAOS522_AChavePrivadaNaoTemPorOndeEntrar(t *testing.T) {
 		return l
 	}
 	doQualificar := nomes(novasFlagsDoQualificar(&opcoesDoQualificar{}, io.Discard))
-	if quer := []string{"binario-do-falso", "board", "chaves", "destino-fora-da-lista", "fatia", "fornecedor", "host-esperado", "modelo", "pausa", "perfil", "precos", "reconstruir-contador", "regiao", "roteiro", "saida", "so-plano"}; !reflect.DeepEqual(doQualificar, quer) {
+	if quer := []string{"allowlist-dir", "ancora-da-allowlist", "binario-do-falso", "board", "chaves", "destino-fora-da-lista", "fatia", "fornecedor", "host-esperado", "modelo", "pausa", "perfil", "precos", "reconstruir-contador", "regiao", "roteiro", "saida", "so-plano"}; !reflect.DeepEqual(doQualificar, quer) {
 		t.Errorf("opcoes do qualificar = %v", doQualificar)
 	}
 	doConferir := nomes(novasFlagsDoConferir(&opcoesDoConferir{}, io.Discard))
@@ -560,7 +611,7 @@ func TestAOS522_AChavePrivadaNaoTemPorOndeEntrar(t *testing.T) {
 	}
 	// As opções que seguem para a corrida existem todas, e nenhuma é do registo.
 	for _, n := range passamParaACorrida {
-		if !contem(doQualificar, n) || contem([]string{"perfil", "saida", "board", "regiao", "fatia"}, n) {
+		if !contem(doQualificar, n) || contem([]string{"perfil", "saida", "board", "regiao", "fatia", "allowlist-dir", "ancora-da-allowlist"}, n) {
 			t.Errorf("a opcao --%s segue para a corrida e nao devia, ou nao existe", n)
 		}
 	}
@@ -644,11 +695,21 @@ func TestAOS522_Orcamento_ATerceiraDoDiaERecusadaAntesDeEnviar(t *testing.T) {
 			}
 		}
 	}
-	// A PASTA DE SAÍDA TEM DE ESTAR VAZIA: não se corre por cima da corrida anterior.
-	antes := p.lanc.lancamentos
-	e := executar(t, p.amb, args(filepath.Join(raiz, "saida-1"))...)
-	if e.codigo != SaidaRecusada || p.lanc.lancamentos != antes || !strings.Contains(e.stderr, "vazia ou por criar") {
-		t.Errorf("pasta de saida com conteudo: codigo %d\n%s", e.codigo, e.stderr)
+	// A PASTA DE SAÍDA É DE UMA CORRIDA SÓ: se já existe — com a corrida anterior, ou vazia, acabada
+	// de criar por outra corrida — a segunda sai com 3 sem tocar em nada.
+	vazia := filepath.Join(raiz, "vazia")
+	if err := os.Mkdir(vazia, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, existente := range []string{filepath.Join(raiz, "saida-1"), vazia} {
+		antes, tinha := p.lanc.lancamentos, aos522Ficheiros(t, existente)
+		e := executar(t, p.amb, args(existente)...)
+		if e.codigo != SaidaRecusada || p.lanc.lancamentos != antes || !strings.Contains(e.stderr, "ja existe") {
+			t.Errorf("pasta de saida que ja existe: codigo %d\n%s", e.codigo, e.stderr)
+		}
+		if _, err := os.Stat(existente); err != nil || !reflect.DeepEqual(aos522Ficheiros(t, existente), tinha) {
+			t.Errorf("a segunda corrida tocou na pasta de saida da primeira: %v", err)
+		}
 	}
 }
 

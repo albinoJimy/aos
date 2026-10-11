@@ -85,6 +85,13 @@ type Ambiente struct {
 	// fase, quando presente, é avisada do início de cada fase de uma corrida (AOS-522): é o
 	// relógio do subcomando `qualificar`. Não entra no relatório nem muda a corrida.
 	fase func(nome string)
+	// entreACorridaEAPreparacao e depoisDeEscreverOPacote são COSTURAS DE TESTE do `qualificar`
+	// (AOS-522): a primeira é chamada com a corrida feita e antes de se decidir se há pacote; a
+	// segunda, entre a escrita do pacote e a sua releitura. Servem para um teste trocar o que está
+	// em memória ou no disco e provar que cada barreira actua sozinha. Não são exportadas: não há
+	// opção nem variável de ambiente que cá chegue.
+	entreACorridaEAPreparacao func(feita *corridaFeita)
+	depoisDeEscreverOPacote   func(pacote string)
 }
 
 // corridaFeita é o que uma corrida deixou escrito: o relatório, tal como foi gravado, e os dois
