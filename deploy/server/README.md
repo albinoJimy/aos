@@ -1493,6 +1493,12 @@ limita-se a voltar a tentar. Ficam como estão, e as linhas repetem-se, até uma
   passagem), segura a reserva de quota do mês em que foi admitido, e o seu conteúdo expira pela
   política de retenção como o de qualquer run.
 
+**Recuar a imagem do nó com perfis assinados instalados: drenar primeiro.** Uma imagem anterior
+ao AOS-520 não conhece a fixação: ignora o digest gravado no registo de retoma e retoma um run sob
+o perfil que tiver na altura, sem recusar nada. Antes de um recuo de imagem para uma versão
+dessas, faz a drenagem do passo 5 (nada submete, o último plano acabou, `aos_runs_suspended 0`).
+Ao voltar à imagem nova, os runs que a antiga tenha continuado mantêm o digest com que começaram.
+
 **Limites que tens de conhecer antes de ligar.**
 
 - **Um registo não expira e não há anti-recuo.** A data do relatório não é lida. Um registo

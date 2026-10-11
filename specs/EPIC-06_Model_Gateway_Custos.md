@@ -4371,6 +4371,9 @@ fixado está preso aos bytes medidos no commit da base.
   pela API.
 - *O teste de retoma do nó* dá o turno 1 pelo runtime e simula o crash, no molde do AOS-490; que
   o `hostRun` fixa e grava o perfil é provado à parte, por `POST /runs`.
+- *Recuo de binário (revisão, A8).* Um binário anterior ao AOS-520 ignora o campo do registo e
+  retoma um run fixado sob outro perfil em silêncio. Escrito na emenda ao ADR-036 §2.8 e no
+  runbook: recuar a imagem com perfis assinados instalados faz-se com a rota drenada.
 - *Por fazer neste bloco:* o smoke sobre JetStream.
 
 **Mutações dirigidas.** 19, todas vermelhas (ver o PR).

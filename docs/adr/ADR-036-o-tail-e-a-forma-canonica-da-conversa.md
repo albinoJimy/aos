@@ -644,6 +644,11 @@ Fecha o limite n.º 4 acima para os perfis assinados. O molde é o da versão da
   (ADR-040 §2.11), o run seguiria por um perfil que não o devolve — recusa-se. Nenhuma entrada da
   tabela de hoje devolve estado.
 
+**Recuo de binário.** Um binário anterior ao AOS-520 não lê o campo do registo de retoma nem
+confere nada: retoma um run fixado sob o perfil que tiver, em silêncio — é o comportamento de
+antes. A fixação só vale entre binários que a têm. Recuar a imagem do nó com perfis assinados
+instalados faz-se com a rota drenada.
+
 **O que não cobre.** A troca da tabela em código entre imagens, sem pasta (o limite n.º 4). Um
 nome sem perfil não fixa nada. Numa descida de tier, o turno é servido por outra rota e o seu
 manifesto traz o digest dessa rota: o run está fixado no perfil do nome que pede. E quem submete
