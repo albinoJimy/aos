@@ -530,10 +530,13 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 		disjuntorAberto, regraDoDisjuntor, marcaEmFalta := l.julgarDisjuntor(st, c.entryDigest)
 		l.disjuntorAbertoVisto.Store(disjuntorAberto)
 		if marcaEmFalta != "" {
-			repetir, gerr := l.gravarMarcaDoDisjuntor(ctx, c.registo(), st.ultimoSeq, marcaEmFalta, regraDoDisjuntor)
+			// UMA tentativa por volta, e só se relê se a marca FICOU: perder o CAS da marca não gasta
+			// as voltas da decisão — senão um nó em `observe` que não conseguisse gravar «teria
+			// aberto» recusava runs, e `observe` não mexe.
+			gravada, gerr := l.gravarMarcaDoDisjuntor(ctx, c.registo(), st.ultimoSeq, marcaEmFalta, regraDoDisjuntor)
 			if gerr != nil {
 				l.logf("disjuntor do modelo candidato (AOS-521): a marca %s NAO foi gravada: %v — a decisao e a da regra sobre as observacoes do livro; a marca sera tentada na proxima decisao", marcaEmFalta, gerr)
-			} else if repetir {
+			} else if gravada {
 				continue
 			}
 		}

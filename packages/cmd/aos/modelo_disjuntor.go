@@ -348,8 +348,13 @@ func passoDoDisjuntor(prefixo, runID string) string {
 
 // gravarMarcaDoDisjuntor grava `opened` ou `would_open` para o registo, com o `seq` que se leu. A
 // chave de idempotência é a do REGISTO: só uma marca de cada tipo fica, escreva quem escrever.
-// `repetir` diz que o livro mudou (a marca ficou, ou outra escrita entrou): quem chama relê.
-func (l *livroDoCanary) gravarMarcaDoDisjuntor(ctx context.Context, reg registoDoCandidato, seq uint64, tipo string, regra estadoDaRegra) (repetir bool, err error) {
+// `gravada` diz que a marca ESTÁ no livro (ficou agora, ou já lá estava): quem chama relê. Falso sem
+// erro é a perda do CAS — outra escrita entrou, e a marca fica por gravar.
+//
+// A MARCA É O SINAL, NÃO A DECISÃO. Quem decide é a regra sobre as observações; por isso um conflito
+// ou uma falha ao gravar a marca nunca recusa um run nem impede o arranque: tenta-se outra vez na
+// decisão seguinte.
+func (l *livroDoCanary) gravarMarcaDoDisjuntor(ctx context.Context, reg registoDoCandidato, seq uint64, tipo string, regra estadoDaRegra) (gravada bool, err error) {
 	contadores := map[string]int{}
 	for _, s := range sinaisDeFalha() {
 		contadores[s] = regra.contadores[s]
@@ -370,7 +375,7 @@ func (l *livroDoCanary) gravarMarcaDoDisjuntor(ctx context.Context, reg registoD
 		Producer: eventstore.Producer{NHIID: disjuntorNHI},
 	}, eventstore.WithExpectedSeq(seq))
 	if conflitoDeCAS(err) {
-		return true, nil
+		return false, nil
 	}
 	if err != nil {
 		return false, err
@@ -404,15 +409,14 @@ func (l *livroDoCanary) conferirDisjuntor(ctx context.Context, c candidatoEmVigo
 		if falta == "" || st.futuros > 0 {
 			return aberto, regra, nil
 		}
-		repetir, gerr := l.gravarMarcaDoDisjuntor(ctx, c.registo(), st.ultimoSeq, falta, regra)
-		if gerr != nil {
-			return aberto, regra, fmt.Errorf("%w: gravar a marca do disjuntor: %w", ErrCanaryUnreadable, gerr)
-		}
-		if !repetir {
+		if _, gerr := l.gravarMarcaDoDisjuntor(ctx, c.registo(), st.ultimoSeq, falta, regra); gerr != nil {
+			l.logf("disjuntor do modelo candidato (AOS-521): a marca %s NAO foi gravada no arranque: %v — o estado e o da regra sobre as observacoes do livro; a marca sera tentada na proxima decisao", falta, gerr)
 			return aberto, regra, nil
 		}
+		// Gravada, ou perdeu o CAS: relê — na volta seguinte a marca já lá está, ou tenta-se de novo.
 	}
-	return false, estadoDaRegra{}, ErrCanaryContention
+	l.logf("disjuntor do modelo candidato (AOS-521): a marca do disjuntor ficou por gravar no arranque (contencao no livro) — o estado e o da regra sobre as observacoes; a marca sera tentada na proxima decisao")
+	return aberto, regra, nil
 }
 
 // observarNoDisjuntor leva UMA observação ao livro, para o registo dado, e garante a marca se a
@@ -433,9 +437,15 @@ func (l *livroDoCanary) observarNoDisjuntor(ctx context.Context, reg registoDoCa
 		return err
 	}
 	defer l.sair()
+	// noLivro diz que uma leitura já viu que a observação não precisa de ser gravada (está lá, ou a
+	// regra já disparou): a partir daí só falta a marca, que é o melhor esforço.
+	noLivro := false
 	for tentativa := 0; tentativa < disjuntorMaxTentativas; tentativa++ {
 		st, err := l.ler(ctx)
 		if err != nil {
+			if noLivro {
+				return nil
+			}
 			return err
 		}
 		if st.futuros > 0 {
@@ -468,16 +478,17 @@ func (l *livroDoCanary) observarNoDisjuntor(ctx context.Context, reg registoDoCa
 			}
 			continue // gravada, duplicada ou em conflito: relê e segue
 		}
+		noLivro = true
 		if falta == "" {
 			return nil
 		}
-		repetir, gerr := l.gravarMarcaDoDisjuntor(ctx, reg, st.ultimoSeq, falta, regra)
-		if gerr != nil {
-			return fmt.Errorf("%w: gravar a marca do disjuntor: %w", ErrCanaryUnreadable, gerr)
-		}
-		if !repetir {
+		if _, gerr := l.gravarMarcaDoDisjuntor(ctx, reg, st.ultimoSeq, falta, regra); gerr != nil {
+			l.logf("disjuntor do modelo candidato (AOS-521): a marca %s NAO foi gravada: %v — a observacao esta no livro; a marca sera tentada na proxima decisao", falta, gerr)
 			return nil
 		}
+	}
+	if noLivro {
+		return nil
 	}
 	return ErrCanaryContention
 }

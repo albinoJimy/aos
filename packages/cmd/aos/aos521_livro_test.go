@@ -399,15 +399,67 @@ func TestAOS521_Livro_AMarcaEmFaltaEReposta_EADecisaoNaoDependeDela(t *testing.T
 	}
 }
 
+// A MARCA QUE PERDE SEMPRE O CAS NÃO RECUSA RUNS NEM IMPEDE O ARRANQUE. É o que acontece a uma réplica
+// com a vista do stream atrasada (o defeito do JetStream, AOS-524): a marca nunca fica gravada. Em
+// `observe` as decisões são as de `off`; em `enforce` a regra corta na mesma; o arranque diz o estado
+// sem falhar; e uma observação que já está no livro não é dada por perdida.
+func TestAOS521_Livro_AMarcaQuePerdeOCASNaoRecusaRuns(t *testing.T) {
+	ctx := context.Background()
+	for _, modo := range []string{modelBreakerObserve, modelBreakerEnforce} {
+		t.Run(modo, func(t *testing.T) {
+			es := aos520Store(t)
+			aos520Livro(t, es, aos520Cand)
+			atrasado := &aos521StoreSemMarca{Store: es, conflito: true}
+			l := &livroDoCanary{es: atrasado, disjuntor: novoDisjuntorDoModelo(modo, aos520Cand.entryDigest)}
+			for i, sinal := range []string{sinalNaoCumprido, sinalRespostaVazia, sinalErroDoProvider} {
+				run := fmt.Sprintf("run-%d", i)
+				if err := l.observarNoDisjuntor(ctx, aos520Cand.registo(), observacaoDoDisjuntor{run: run, unidade: run, sinal: sinal}); err != nil {
+					t.Fatalf("a observacao %d ficou no livro e foi dada por perdida: %v", i, err)
+				}
+			}
+			if n := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome)); n != 3 {
+				t.Fatalf("desfechos no livro = %d; quer 3", n)
+			}
+			aberto, regra, err := l.conferirDisjuntor(ctx, aos520Cand)
+			if err != nil || !regra.disparou || aberto != (modo == modelBreakerEnforce) {
+				t.Fatalf("o arranque com a marca por gravar: aberto=%v disparou=%v err=%v", aberto, regra.disparou, err)
+			}
+			for i := 0; i < 10; i++ {
+				d, err := l.decidir(ctx, aos520Cand, chaveDeRun(fmt.Sprintf("plano-%d", i)), 0)
+				if err != nil {
+					t.Fatalf("a marca por gravar recusou o run %d: %v", i, err)
+				}
+				if modo == modelBreakerObserve && (d.papel != canary.RoleCandidate || d.razao != razaoFuncao) {
+					t.Fatalf("em observe, com a marca por gravar, o plano %d foi para %+v", i, d)
+				}
+				if modo == modelBreakerEnforce && (d.papel != canary.RoleIncumbent || d.razao != razaoDisjuntorAberto) {
+					t.Fatalf("em enforce, com a marca por gravar, o plano %d foi para %+v", i, d)
+				}
+			}
+			if atrasado.recusadas < 10 {
+				t.Fatalf("o teste nao chegou a tentar gravar a marca em cada decisao: %d", atrasado.recusadas)
+			}
+			if n := len(aos521Marcas(t, es, EventTypeModelBreakerOpened)) + len(aos521Marcas(t, es, EventTypeModelBreakerWouldOpen)); n != 0 {
+				t.Fatalf("o store do teste deixou gravar %d marca(s)", n)
+			}
+		})
+	}
+}
+
 // aos521StoreSemMarca recusa a gravação das marcas do disjuntor.
 type aos521StoreSemMarca struct {
 	*eventstore.Store
 	recusadas int
+	// conflito faz a recusa ser a perda do CAS, e não um erro de escrita.
+	conflito bool
 }
 
 func (s *aos521StoreSemMarca) Append(ctx context.Context, streamID string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
 	if in.Type == EventTypeModelBreakerOpened || in.Type == EventTypeModelBreakerWouldOpen {
 		s.recusadas++
+		if s.conflito {
+			return eventstore.AppendResult{}, eventstore.ErrSeqConflict
+		}
 		return eventstore.AppendResult{}, errors.New("disco cheio")
 	}
 	return s.Store.Append(ctx, streamID, in, opts...)
