@@ -123,6 +123,8 @@ type NoDeEnsaio struct {
 	// é o tecto próprio dela, o mesmo que o transporte consulta.
 	qualifica bool
 	limite    *LimiteDaQualificacao
+	// hostEsperado é o host do endpoint que a governação da rota compara (vazio ⇒ não compara).
+	hostEsperado string
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -298,7 +300,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 	}
 
 	n := &NoDeEnsaio{
-		bateria: cfg.Bateria, porta: porta, devolucao: devolucao, qualifica: cfg.Qualificacao, limite: cfg.Limite,
+		bateria: cfg.Bateria, porta: porta, devolucao: devolucao, qualifica: cfg.Qualificacao, limite: cfg.Limite, hostEsperado: cfg.HostEsperado,
 		mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
 		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},

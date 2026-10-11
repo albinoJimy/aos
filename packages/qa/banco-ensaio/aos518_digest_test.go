@@ -203,10 +203,10 @@ func TestAOS518_Digest_MudarQualquerValorMudaODigestEAVerificacaoApanha(t *testi
 			t.Fatalf("depois de repor todas as folhas o documento ja nao verifica: %v", verr)
 		}
 	}
-	// As 17 contagens de que o veredicto e funcao (os dois mapas estao vazios numa corrida sem
-	// falhas) e as 5 linhas de limiares foram todas mudadas.
-	if contagens != 17 || limiares < 5*8 {
-		t.Errorf("folhas mudadas: %d nas contagens (quer 17), %d nos limiares", contagens, limiares)
+	// As 21 contagens de que o veredicto e funcao (os quatro mapas estao vazios numa corrida sem
+	// falhas) e as 6 linhas de limiares foram todas mudadas.
+	if contagens != 21 || limiares < 6*8 {
+		t.Errorf("folhas mudadas: %d nas contagens (quer 21), %d nos limiares", contagens, limiares)
 	}
 	if mudadas < 500 {
 		t.Errorf("so %d folhas mudadas", mudadas)
@@ -262,6 +262,12 @@ func TestAOS518_Digest_Recusas(t *testing.T) {
 		"campo do digest repetido":        bytes.Replace(cru, []byte(`"`+CampoDoDigestDoRelatorio+`":`), []byte(`"`+CampoDoDigestDoRelatorio+`": "`+digest+`", "`+CampoDoDigestDoRelatorio+`":`), 1),
 		"campo do digest que nao e texto": bytes.Replace(cru, []byte(`"`+digest+`"`), []byte(`123`), 1),
 		"dados depois do documento":       append(append([]byte(nil), cru...), []byte(`{"veredicto":"qualificado"}`)...),
+		// So diferem na caixa: o encoding/json do Go casa os dois com o mesmo campo, e ganha o ultimo.
+		"veredicto repetido noutra caixa": bytes.Replace(cru, []byte(`"veredicto": "qualificado"`), []byte(`"veredicto": "qualificado", "Veredicto": "recusado"`), 1),
+		"campo do digest noutra caixa":    bytes.Replace(cru, []byte(`"`+CampoDoDigestDoRelatorio+`":`), []byte(`"Digest_Do_Relatorio":`), 1),
+		"UTF-8 invalido num texto":        bytes.Replace(cru, []byte(`"modo": "falso"`), []byte("\"modo\": \"fal\xffso\""), 1),
+		"meio par substituto isolado":     bytes.Replace(cru, []byte(`"modo": "falso"`), []byte(`"modo": "falso`+"\\"+`ud800"`), 1),
+		"caracter de substituicao":        bytes.Replace(cru, []byte(`"modo": "falso"`), []byte("\"modo\": \"falso\xef\xbf\xbd\""), 1),
 		"uma lista":                       []byte(`[1,2,3]`),
 		"vazio":                           nil,
 		"JSON partido":                    cru[:len(cru)/2],
@@ -289,12 +295,55 @@ func TestAOS518_Digest_FormaCanonica(t *testing.T) {
 		// Os escapes do ficheiro nao contam: o texto e reescrito. `<`, `>` e `&` ficam directos; as
 		// aspas, a barra, a quebra de linha e o U+2028 ficam escapados.
 		u(`{"t":"a@0041<b>&\n\"\\ @00e7 @2028 @003c"}`):  u(`{"t":"aA<b>&\n\"\\ `) + "\u00e7" + u(` @2028 <"}`),
-		`{"zz":1,"e":2,"E":3,"a":{"b":[{"d":1,"c":2}]}}`: `{"E":3,"a":{"b":[{"c":2,"d":1}]},"e":2,"zz":1}`,
+		`{"zz":1,"e":2,"Z":3,"a":{"b":[{"d":1,"c":2}]}}`: `{"Z":3,"a":{"b":[{"c":2,"d":1}]},"e":2,"zz":1}`,
 		`{}`: `{}`,
 	} {
 		tem, err := FormaCanonicaDoRelatorio([]byte(entrada))
 		if err != nil || string(tem) != quer {
 			t.Errorf("forma canonica de %s = %s (%v), quer %s", entrada, tem, err, quer)
 		}
+	}
+}
+
+// O DIGEST DA INTEGRIDADE, NAO AUTENTICIDADE — e o relatorio di-lo. Quem altera o veredicto e
+// recalcula o digest fica com um ficheiro que verifica: a verificacao so prova que o ficheiro e
+// coerente consigo proprio. A autenticidade vem da assinatura do registo que o cita (AOS-519).
+func TestAOS518_Digest_IntegridadeNaoAutenticidade(t *testing.T) {
+	cru := aos518RelatorioEscrito(t)
+	original, _ := VerificarDigestDoRelatorio(cru)
+	forjado := bytes.Replace(cru, []byte(`"nos_com_tools_cumpridos": 40`), []byte(`"nos_com_tools_cumpridos": 41`), 1)
+	novo, err := DigestDoRelatorio(forjado)
+	if err != nil || novo == original {
+		t.Fatalf("digest do forjado: %q, %v", novo, err)
+	}
+	forjado = bytes.Replace(forjado, []byte(original), []byte(novo), 1)
+	if d, err := VerificarDigestDoRelatorio(forjado); err != nil || d != novo {
+		t.Fatalf("um relatorio alterado com o digest recalculado deixou de verificar (%v): o limite documentado ja nao e este", err)
+	}
+	var r Relatorio
+	if err := json.Unmarshal(cru, &r); err != nil {
+		t.Fatal(err)
+	}
+	if !contem(r.QualificacaoDoModelo.NaoProva, NaoProvaAutenticidade) || !strings.Contains(strings.Join(r.Limites, "\n"), "INTEGRIDADE, nao autenticidade") {
+		t.Errorf("o relatorio nao diz que o digest so da integridade")
+	}
+}
+
+// Dois relatorios de qualificacao com o mesmo nome (o mesmo segundo, a mesma pasta): o segundo
+// FALHA em vez de escrever por cima — um relatorio citado pelo digest nao se substitui.
+func TestAOS518_Digest_NaoSeEscrevePorCimaDeUmRelatorioDeQualificacao(t *testing.T) {
+	saida := t.TempDir()
+	args := []string{"falso", "--experiencia", "qualificacao", "--perfil", aos516Ficheiro(t, aos518PerfilSimples), "--roteiro", "cumpre", "--saida", saida, "--silencioso"}
+	if e := executar(t, Ambiente{}, args...); e.codigo != SaidaQualificadoEmEnsaio {
+		t.Fatalf("primeira: codigo %d", e.codigo)
+	}
+	antes := aos518Relatorios(t, saida)
+	cru, _ := os.ReadFile(antes[0])
+	e := executar(t, Ambiente{}, args...) // o relogio dos testes e fixo: o mesmo nome
+	if e.codigo != SaidaErro || !strings.Contains(e.stderr, "nao se escreve por cima") {
+		t.Errorf("a segunda, com o mesmo nome: codigo %d\n%s", e.codigo, e.stderr)
+	}
+	if depois, _ := os.ReadFile(antes[0]); !bytes.Equal(cru, depois) || len(aos518Relatorios(t, saida)) != 1 {
+		t.Errorf("o relatorio existente foi alterado")
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -87,7 +86,7 @@ func TestAOS518_Real_QualificaEContaAsQualificacoesDoDia(t *testing.T) {
 
 	// O plano: valida tudo, declara o pior caso, e NAO conta como qualificacao.
 	e := executar(t, amb, append(args, "--so-plano")...)
-	if e.codigo != SaidaOK || lanc.lancamentos != 0 || !strings.Contains(e.stderr, "pior caso declarado: 673 pedidos") || !strings.Contains(e.stderr, "ja foi qualificado 0 vez(es) hoje, de um maximo de 2") {
+	if e.codigo != SaidaSoPlano || SaidaSoPlano == SaidaOK || lanc.lancamentos != 0 || !strings.Contains(e.stderr, "pior caso declarado: 673 pedidos") || !strings.Contains(e.stderr, "ja foi qualificado 0 vez(es) hoje, de um maximo de 2") {
 		t.Fatalf("--so-plano: codigo %d, lancamentos %d\n%s", e.codigo, lanc.lancamentos, e.stderr)
 	}
 	if _, err := os.Stat(filepath.Join(pasta, NomeDoRegistoDeQualificacoes)); err == nil {
@@ -110,11 +109,21 @@ func TestAOS518_Real_QualificaEContaAsQualificacoesDoDia(t *testing.T) {
 	}
 	// A rota qualificada: modelo, fornecedor, perfil E a imagem do proxy, pelo digest.
 	if q.Rota.Fornecedor != "kimi" || q.Rota.Modelo != modeloKimiDeTeste || q.Rota.ModeloEsperado != "openai/"+modeloKimiDeTeste ||
-		q.Rota.ImagemDoProxy != ImagemDoProxyDeProducao || q.Rota.DigestDaImagemDoProxy != "sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63" {
+		q.Rota.ImagemDoProxy != ImagemDoProxy || q.Rota.DigestDaImagemDoProxy != digestDaImagem(ImagemDoProxy) || !strings.HasPrefix(q.Rota.DigestDaImagemDoProxy, "sha256:") {
 		t.Errorf("rota qualificada = %+v", q.Rota)
 	}
 	// O orcamento: 672 + a sonda; 97 enviados (96 + a sonda); a primeira de duas.
 	o := q.Orcamento
+	if !q.ValeParaProducao || q.PorqueNaoVale != "" {
+		t.Errorf("um veredicto do modo real vale para producao: %v %q", q.ValeParaProducao, q.PorqueNaoVale)
+	}
+	// O Kimi de teste nao tem tecto em dolares: o tecto de 3 USD nao foi imposto, e o relatorio di-lo.
+	if o := q.Orcamento; o.TectoMicroUSDImposto || !reflect.DeepEqual(q.Avisos, []string{AvisoTectoUSDNaoImposto}) || !strings.Contains(e.stderr, "NAO sera imposto") {
+		t.Errorf("tecto em dolares sem precos: imposto=%v, avisos %v", o.TectoMicroUSDImposto, q.Avisos)
+	}
+	if o.QualificacoesDaRotaHoje == nil || *o.QualificacoesDaRotaHoje != 1 || o.MaximoPorRotaPorDia != QualificacoesPorRotaPorDia {
+		t.Errorf("qualificacoes da rota no orcamento = %+v", o)
+	}
 	if o.PiorCasoDeclarado != 673 || o.PedidosEnviados != 97 || lanc.pedidos() != 97 || o.QualificacoesDoPerfilHoje == nil || *o.QualificacoesDoPerfilHoje != 1 || o.MicroUSDEstimado != nil {
 		t.Errorf("orcamento = %+v (qualificacoes hoje %v), o falso recebeu %d", o, o.QualificacoesDoPerfilHoje, lanc.pedidos())
 	}
@@ -157,6 +166,19 @@ func TestAOS518_Real_QualificaEContaAsQualificacoesDoDia(t *testing.T) {
 	if e = executar(t, amb, outro...); e.codigo != SaidaOK {
 		t.Fatalf("outro perfil: codigo %d\n%s", e.codigo, e.stderr)
 	}
+	// ...ate ao tecto DA ROTA: a quarta da rota passa, e a quinta e recusada com QUALQUER perfil —
+	// mudar um parametro do perfil nao da um contador novo.
+	hora = hora.Add(time.Minute)
+	if e = executar(t, amb, outro...); e.codigo != SaidaOK {
+		t.Fatalf("quarta da rota: codigo %d\n%s", e.codigo, e.stderr)
+	}
+	hora = hora.Add(time.Minute)
+	lancamentos = lanc.lancamentos
+	terceiro := append([]string(nil), args...)
+	terceiro[8] = aos516Ficheiro(t, aos518PerfilDoKimi(`,"params":{"max_tokens":8000}`))
+	if e = executar(t, amb, terceiro...); e.codigo != SaidaRecusada || lanc.lancamentos != lancamentos || !strings.Contains(e.stderr, "qualificacoes_do_dia_esgotadas") {
+		t.Fatalf("quinta da rota, com um perfil novo: codigo %d, lancamentos %d (eram %d)\n%s", e.codigo, lanc.lancamentos, lancamentos, e.stderr)
+	}
 	// E no dia seguinte o mesmo perfil volta a poder.
 	hora = hora.Add(24 * time.Hour)
 	if e = executar(t, amb, args...); e.codigo != SaidaOK {
@@ -178,40 +200,128 @@ func TestAOS518_Real_QualificaEContaAsQualificacoesDoDia(t *testing.T) {
 	}
 }
 
-// O registo das qualificacoes, sozinho.
+// O registo das qualificacoes, sozinho: dois tectos (por perfil e por rota), e a contagem e o MAIOR
+// entre o registo e os relatorios de hoje — apagar so o registo nao repoe nada.
 func TestAOS518_RegistoDeQualificacoes(t *testing.T) {
-	caminho := filepath.Join(t.TempDir(), NomeDoRegistoDeQualificacoes)
+	pasta := t.TempDir()
+	caminho := filepath.Join(pasta, NomeDoRegistoDeQualificacoes)
+	k := func(dia, perfil string) ChaveDaQualificacao {
+		return ChaveDaQualificacao{Dia: dia, PerfilDigest: perfil, Fornecedor: "kimi", Modelo: "m"}
+	}
 	for i := 1; i <= QualificacoesPorPerfilPorDia; i++ {
-		if n, err := RegistarQualificacao(caminho, "2026-10-11", "sha256:aa"); err != nil || n != i {
-			t.Fatalf("registo %d: %d, %v", i, n, err)
+		if n, err := RegistarQualificacao(caminho, nil, k("2026-10-11", "sha256:aa")); err != nil || n.DoPerfil != i || n.DaRota != i {
+			t.Fatalf("registo %d: %+v, %v", i, n, err)
 		}
 	}
-	if n, err := RegistarQualificacao(caminho, "2026-10-11", "sha256:aa"); err != ErrQualificacoesDoDia || n != QualificacoesPorPerfilPorDia {
-		t.Errorf("a terceira tinha de ser recusada: %d, %v", n, err)
+	if n, err := RegistarQualificacao(caminho, nil, k("2026-10-11", "sha256:aa")); err != ErrQualificacoesDoDia || n.DoPerfil != QualificacoesPorPerfilPorDia {
+		t.Errorf("a terceira do mesmo perfil tinha de ser recusada: %+v, %v", n, err)
 	}
-	if n, _ := QualificacoesDeHoje(caminho, "2026-10-11", "sha256:aa"); n != QualificacoesPorPerfilPorDia {
-		t.Errorf("a recusa nao pode contar: %d", n)
+	if n, _ := QualificacoesDeHoje(caminho, nil, k("2026-10-11", "sha256:aa")); n.DoPerfil != 2 || n.DaRota != 2 {
+		t.Errorf("a recusa nao pode contar: %+v", n)
 	}
-	if n, err := RegistarQualificacao(caminho, "2026-10-11", "sha256:bb"); err != nil || n != 1 {
-		t.Errorf("outro perfil: %d, %v", n, err)
+	// POR ROTA: outros perfis (outro digest) da mesma rota contam no tecto da rota. A 3.a e a 4.a
+	// passam; a 5.a e recusada, seja qual for o perfil.
+	for i, perfil := range []string{"sha256:bb", "sha256:cc"} {
+		if n, err := RegistarQualificacao(caminho, nil, k("2026-10-11", perfil)); err != nil || n.DoPerfil != 1 || n.DaRota != 3+i {
+			t.Errorf("perfil %s: %+v, %v", perfil, n, err)
+		}
 	}
-	if n, err := RegistarQualificacao(caminho, "2026-10-12", "sha256:aa"); err != nil || n != 1 {
-		t.Errorf("outro dia: %d, %v", n, err)
+	if n, err := RegistarQualificacao(caminho, nil, k("2026-10-11", "sha256:dd")); err != ErrQualificacoesDoDia || n.DaRota != QualificacoesPorRotaPorDia {
+		t.Errorf("a quinta da mesma rota tinha de ser recusada: %+v, %v", n, err)
+	}
+	// Outra rota (outro modelo) tem a sua conta.
+	outra := ChaveDaQualificacao{Dia: "2026-10-11", PerfilDigest: "sha256:dd", Fornecedor: "kimi", Modelo: "outro"}
+	if n, err := RegistarQualificacao(caminho, nil, outra); err != nil || n.DaRota != 1 {
+		t.Errorf("outra rota: %+v, %v", n, err)
+	}
+	if n, err := RegistarQualificacao(caminho, nil, k("2026-10-12", "sha256:aa")); err != nil || n.DoPerfil != 1 || n.DaRota != 1 {
+		t.Errorf("outro dia: %+v, %v", n, err)
 	}
 	// So fica o dia de hoje: o registo nao cresce.
-	if n, _ := QualificacoesDeHoje(caminho, "2026-10-11", "sha256:aa"); n != 0 {
-		t.Errorf("o dia anterior tinha de ter saido do registo: %d", n)
+	if n, _ := QualificacoesDeHoje(caminho, nil, k("2026-10-11", "sha256:aa")); n.DoPerfil != 0 {
+		t.Errorf("o dia anterior tinha de ter saido do registo: %+v", n)
 	}
-	for _, mau := range []string{"", "[]", `{"dias":null}`, `{"dias":{"2026-10-12":{"sha256:aa":-5}}}`, `{"dias":{},"outra":1}`} {
+	for _, mau := range []string{"", "[]", `{"dias":null}`, `{"dias":{"2026-10-12":{"perfis":{"sha256:aa":-5}}}}`, `{"dias":{},"outra":1}`, `{"dias":{"2026-10-12":{"sha256:aa":1}}}`} {
 		if err := os.WriteFile(caminho, []byte(mau), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := QualificacoesDeHoje(caminho, "2026-10-12", "sha256:aa"); err != ErrRegistoDeQualificacoes {
+		if _, err := QualificacoesDeHoje(caminho, nil, k("2026-10-12", "sha256:aa")); err != ErrRegistoDeQualificacoes {
 			t.Errorf("registo %q: %v, quer recusa", mau, err)
 		}
-		if _, err := RegistarQualificacao(caminho, "2026-10-12", "sha256:aa"); err != ErrRegistoDeQualificacoes {
+		if _, err := RegistarQualificacao(caminho, nil, k("2026-10-12", "sha256:aa")); err != ErrRegistoDeQualificacoes {
 			t.Errorf("registo %q: o registo ilegivel foi reescrito (%v)", mau, err)
 		}
+	}
+
+	// O REGISTO DESAPARECEU e ha relatorios de qualificacoes reais de hoje: contam eles.
+	_ = os.Remove(caminho)
+	relatorios := filepath.Join(pasta, "relatorios")
+	if err := os.MkdirAll(relatorios, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	escrever := func(nome, doc string) {
+		if err := os.WriteFile(filepath.Join(relatorios, nome), []byte(doc), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := `{"modo":"real","experiencia":"qualificacao","data_utc":"2026-10-12T10:00:00Z","terminou":"completa","rota":{"fornecedor":"kimi","modelo":"m"},"digests":{"perfil":"sha256:aa"},"sonda":{"resultado":"ok"}}`
+	escrever("ensaio-real-qualificacao-1.json", base)
+	escrever("ensaio-real-qualificacao-2.json", strings.Replace(base, "sha256:aa", "sha256:zz", 1))
+	// Nao contam: a que nao passou da sonda, a que nao coube, a de outro dia, a de outro modo e a bateria simples.
+	escrever("ensaio-real-qualificacao-3.json", strings.Replace(base, `"resultado":"ok"`, `"resultado":"saldo_insuficiente"`, 1))
+	escrever("ensaio-real-qualificacao-4.json", strings.Replace(base, `"terminou":"completa"`, `"terminou":"nao_coube_no_tecto"`, 1))
+	escrever("ensaio-real-qualificacao-5.json", strings.Replace(base, "2026-10-12T", "2026-10-10T", 1))
+	escrever("ensaio-falso-qualificacao-6.json", strings.Replace(base, `"modo":"real"`, `"modo":"falso"`, 1))
+	escrever("ensaio-real-bateria-7.json", strings.Replace(base, `"experiencia":"qualificacao"`, `"experiencia":"bateria"`, 1))
+	if n, err := QualificacoesDeHoje(caminho, []string{relatorios, relatorios}, k("2026-10-12", "sha256:aa")); err != nil || n.DoPerfil != 1 || n.DaRota != 2 {
+		t.Errorf("registo desaparecido com relatorios de hoje: %+v, %v; quer 1 do perfil e 2 da rota", n, err)
+	}
+	if n, err := RegistarQualificacao(caminho, []string{relatorios}, k("2026-10-12", "sha256:aa")); err != nil || n.DoPerfil != 2 || n.DaRota != 3 {
+		t.Errorf("a seguinte continua a contagem dos relatorios: %+v, %v", n, err)
+	}
+}
+
+// O CONTADOR E O REGISTO NAO DEPENDEM DE ONDE ESTA O FICHEIRO DE CHAVES. Com a pasta do dono
+// conhecida, copiar as chaves para outra pasta nao repoe a contagem do dia nem a das qualificacoes.
+func TestAOS518_Real_CopiarAsChavesNaoRepoeAContagem(t *testing.T) {
+	campos := chavesDeTeste()
+	campos[CampoTectoPedidosKimi] = "5000"
+	dono := t.TempDir()
+	perfil := aos516Ficheiro(t, aos518PerfilDoKimi(""))
+	lanc := &lancadorDaQualificacao{t: t, roteiro: []Comportamento{ComportamentoCumpre}}
+	hora := relogioFixo()
+	amb := Ambiente{Lancador: lanc, PastaDoDono: dono, Relogio: func() time.Time { return hora }}
+	for i := 1; i <= 3; i++ {
+		// Cada corrida com as chaves NUMA PASTA NOVA, e sem --saida: os relatorios vao para a pasta do dono.
+		chaves := escreverChaves(t, campos)
+		e := executar(t, amb, "real", "--chaves", chaves, "--fornecedor", "kimi", "--experiencia", "qualificacao", "--perfil", perfil, "--silencioso")
+		hora = hora.Add(time.Minute)
+		if i <= 2 {
+			if e.codigo != SaidaOK {
+				t.Fatalf("qualificacao %d: codigo %d\n%s", i, e.codigo, e.stderr)
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(chaves), "contador.json")); err == nil {
+				t.Errorf("o contador foi escrito ao lado do ficheiro de chaves, e nao na pasta do dono")
+			}
+			continue
+		}
+		if e.codigo != SaidaRecusada || !strings.Contains(e.stderr, "qualificacoes_do_dia_esgotadas") {
+			t.Fatalf("a terceira, com as chaves noutra pasta, tinha de ser recusada: codigo %d\n%s", e.codigo, e.stderr)
+		}
+	}
+	// O contador do dia e um so: 2 x 97 pedidos.
+	cru, err := os.ReadFile(filepath.Join(dono, "contador.json"))
+	if err != nil || !strings.Contains(string(cru), `"pedidos": 194`) {
+		t.Errorf("contador da pasta do dono = %s (%v); quer 194 pedidos", cru, err)
+	}
+	// Apagar o registo nao repoe: os dois relatorios de hoje continuam na pasta do dono.
+	if err := os.Remove(filepath.Join(dono, NomeDoRegistoDeQualificacoes)); err != nil {
+		t.Fatal(err)
+	}
+	lancamentos := lanc.lancamentos
+	e := executar(t, amb, "real", "--chaves", escreverChaves(t, campos), "--fornecedor", "kimi", "--experiencia", "qualificacao", "--perfil", perfil, "--silencioso")
+	if e.codigo != SaidaRecusada || lanc.lancamentos != lancamentos {
+		t.Errorf("com o registo apagado e os relatorios presentes: codigo %d, lancamentos %d (eram %d)\n%s", e.codigo, lanc.lancamentos, lancamentos, e.stderr)
 	}
 }
 
@@ -259,23 +369,24 @@ func TestAOS518_Real_PiorCasoNaoCabeNoTectoDoDia(t *testing.T) {
 // A IMAGEM DO PROXY: a qualificacao recusa arrancar, antes de enviar, se a imagem em uso nao for a
 // declarada para producao — com causa propria.
 func TestAOS518_Real_ImagemDoProxyQueNaoEADeProducao(t *testing.T) {
-	if ImagemDoProxy != ImagemDoProxyDeProducao {
-		t.Fatalf("a imagem do proxy do banco (%s) ja nao e a declarada para producao (%s): nenhuma qualificacao arranca", ImagemDoProxy, ImagemDoProxyDeProducao)
+	// A declaracao e UMA so — ImagemDoProxy —, e quem a prende ao compose de producao e o guarda
+	// do AOS-517 (aos517_digest_do_proxy_test.go). Aqui prende-se a recusa da qualificacao.
+	repositorio, _, fixada := strings.Cut(ImagemDoProxy, "@")
+	if !fixada {
+		t.Fatalf("a imagem declarada nao esta fixada pelo digest")
 	}
-	if !regexp.MustCompile(`^ghcr\.io/berriai/litellm@sha256:[0-9a-f]{64}$`).MatchString(ImagemDoProxyDeProducao) {
-		t.Fatalf("a imagem declarada para producao nao esta fixada pelo digest: %s", ImagemDoProxyDeProducao)
-	}
+	outroDigest := repositorio + "@" + "sha256:" + strings.Repeat("0", 64)
 	for nome, c := range map[string]struct {
 		emUso string
 		ok    bool
 	}{
-		"a de producao":    {ImagemDoProxyDeProducao, true},
-		"outro digest":     {"ghcr.io/berriai/litellm@sha256:" + strings.Repeat("0", 64), false},
-		"uma tag":          {"ghcr.io/berriai/litellm:main-stable", false},
+		"a de producao":    {ImagemDoProxy, true},
+		"outro digest":     {outroDigest, false},
+		"uma tag":          {repositorio + ":" + "main-stable", false},
 		"vazia":            {"", false},
-		"so o repositorio": {"ghcr.io/berriai/litellm", false},
+		"so o repositorio": {repositorio, false},
 	} {
-		if err := conferirImagemDoProxy(c.emUso, ImagemDoProxyDeProducao); (err == nil) != c.ok {
+		if err := conferirImagemDoProxy(c.emUso, ImagemDoProxy); (err == nil) != c.ok {
 			t.Errorf("%s: %v", nome, err)
 		}
 	}
@@ -291,7 +402,7 @@ func TestAOS518_Real_ImagemDoProxyQueNaoEADeProducao(t *testing.T) {
 		{"proxy", "--binario-do-falso", "nao-chega-a-ser-usado"},
 	} {
 		lanc := &lancadorDaQualificacao{t: t, roteiro: []Comportamento{ComportamentoCumpre}}
-		amb := Ambiente{Lancador: lanc, imagemDoProxyDeTeste: "ghcr.io/berriai/litellm@sha256:" + strings.Repeat("0", 64)}
+		amb := Ambiente{Lancador: lanc, imagemDoProxyDeTeste: outroDigest}
 		e := executar(t, amb, append(modo, "--experiencia", "qualificacao", "--perfil", perfil, "--saida", saida)...)
 		if e.codigo != SaidaRecusada || lanc.lancamentos != 0 || !strings.Contains(e.stderr, "imagem_do_proxy_nao_e_a_de_producao") {
 			t.Errorf("%s: codigo %d, lancamentos %d\n%s", modo[0], e.codigo, lanc.lancamentos, e.stderr)
@@ -311,28 +422,6 @@ func TestAOS518_Real_ImagemDoProxyQueNaoEADeProducao(t *testing.T) {
 	amb.cfg.Modo = ModoProxy
 	if _, err := Correr(context.Background(), amb.cfg); err != ErrImagemDoProxy {
 		t.Errorf("uma qualificacao no modo proxy sem a imagem de producao: %v", err)
-	}
-}
-
-// A imagem declarada no banco e a que o compose de producao fixa. Enquanto o compose usar uma tag
-// (antes do AOS-517), nao ha digest com que comparar e o teste di-lo — nao passa em silencio.
-func TestAOS518_ImagemDoProxyEADoComposeDeProducao(t *testing.T) {
-	compose := filepath.Join(raizDosPacotes(t), "..", "deploy", "server", "docker-compose.prod.yml")
-	cru, err := os.ReadFile(compose)
-	if err != nil {
-		t.Fatalf("nao foi possivel ler o compose de producao: %v", err)
-	}
-	imagens := regexp.MustCompile(`(?m)^\s*image:\s*(ghcr\.io/berriai/litellm\S*)\s*$`).FindAllStringSubmatch(string(cru), -1)
-	if len(imagens) != 1 {
-		t.Fatalf("o compose de producao tem %d servicos com a imagem do proxy; quer 1", len(imagens))
-	}
-	imagem := imagens[0][1]
-	if !strings.Contains(imagem, "@sha256:") {
-		t.Skipf("SALTADO: o compose de producao ainda usa uma tag (%s) e nao um digest — e o AOS-517 que o fixa. "+
-			"POR VERIFICAR nesta execucao: que a imagem declarada no banco e a do compose. O digest do banco (%s) foi lido no servidor a 2026-10-11.", imagem, digestDaImagem(ImagemDoProxyDeProducao))
-	}
-	if digestDaImagem(imagem) != digestDaImagem(ImagemDoProxyDeProducao) {
-		t.Errorf("o compose de producao fixa %s e o banco declara %s: uma qualificacao feita com o banco nao vale para producao", imagem, ImagemDoProxyDeProducao)
 	}
 }
 
@@ -413,6 +502,9 @@ func TestAOS518_Real_TectoEmDolaresDaQualificacao(t *testing.T) {
 		t.Fatalf("terminou %s, %s %v", r.Terminou, q.Veredicto, q.Razoes)
 	}
 	o := q.Orcamento
+	if !o.TectoMicroUSDImposto || contem(q.Avisos, AvisoTectoUSDNaoImposto) {
+		t.Errorf("com tecto em dolares no fornecedor o tecto da qualificacao e imposto: %+v, avisos %v", o, q.Avisos)
+	}
 	if o.MicroUSDEstimado == nil || *o.MicroUSDEstimado < TectoMicroUSDDaQualificacao || o.TectoMicroUSD != TectoMicroUSDDaQualificacao {
 		t.Fatalf("orcamento = %+v", o)
 	}

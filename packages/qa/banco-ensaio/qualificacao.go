@@ -40,6 +40,12 @@ const (
 	LimiarL4Vazias = 0
 	// LimiarL5ModeloTrocado — L5: turnos com o modelo servido diferente do esperado.
 	LimiarL5ModeloTrocado = 0
+	// NosSemToolsDaQualificacao é a amostra exigida dos nós SEM tools: os dois da bateria, oito vezes.
+	NosSemToolsDaQualificacao = 16
+	// LimiarL6SemToolsNaoCumpridos — L6: nós sem tools NÃO cumpridos no fim das tentativas. Não
+	// estava na D2 original: entrou por decisão do dono de 2026-10-11, depois de a revisão
+	// adversarial mostrar que um provider que falha só nos pedidos sem tools saía `qualificado`.
+	LimiarL6SemToolsNaoCumpridos = 0
 )
 
 // Os veredictos sobre o modelo. Vocabulário FECHADO.
@@ -63,6 +69,11 @@ const (
 	// RazaoModeloServidoNaoReportado — L5, pelo lado fechado: um turno em que o proxy não declarou
 	// o modelo servido não se prova igual ao esperado.
 	RazaoModeloServidoNaoReportado = "modelo_servido_nao_reportado"
+	// RazaoSemToolsNaoCumpridos — L6: um nó sem tools falhou por uma causa que não é passageira.
+	RazaoSemToolsNaoCumpridos = "nos_sem_tools_nao_cumpridos"
+	// RazaoDevolucaoNaoCumprida — o perfil declara devolução do estado e o veredicto da devolução
+	// (`qualificacao_da_devolucao`) é `nao_cumprida`.
+	RazaoDevolucaoNaoCumprida = "devolucao_do_estado_nao_cumprida"
 	// RazaoPerfilRecusado — o provider respondeu 4xx de parâmetro a TODOS os pedidos da corrida.
 	RazaoPerfilRecusado = "perfil_recusado_pelo_provider"
 
@@ -81,13 +92,17 @@ const (
 	RazaoInterrompidosTransporte = "nos_interrompidos_por_erro_de_transporte"
 	RazaoInterrompidosConta      = "nos_interrompidos_por_conta_ou_rota"
 	RazaoInterrompidosTecto      = "nos_interrompidos_pelo_tecto"
+	// RazaoDevolucaoNaoMedida — o perfil declara devolução do estado e a corrida não a mediu: o
+	// veredicto da devolução é `sem_raciocinio` ou `inconclusiva`. O perfil promete uma coisa que
+	// esta corrida não viu.
+	RazaoDevolucaoNaoMedida = "devolucao_do_estado_nao_medida"
 )
 
 // RazoesFirmesDoModelo devolve as razões firmes, pela ordem em que saem.
 func RazoesFirmesDoModelo() []string {
 	return []string{
 		RazaoModeloNaoCumpridos, RazaoModeloSemToolCall, RazaoModelo4xxNoSegundo, RazaoModeloRespostasVazias,
-		RazaoModeloServidoDiferente, RazaoModeloServidoNaoReportado, RazaoPerfilRecusado,
+		RazaoModeloServidoDiferente, RazaoModeloServidoNaoReportado, RazaoSemToolsNaoCumpridos, RazaoDevolucaoNaoCumprida, RazaoPerfilRecusado,
 	}
 }
 
@@ -96,7 +111,7 @@ func RazoesPassageirasDoModelo() []string {
 	return []string{
 		RazaoPiorCasoNaoCabe, RazaoTectoDoDia, RazaoTectoDaQualificacao, RazaoChaveRecusada, RazaoSaldoInsuficiente,
 		RazaoLimiteDeRitmo, RazaoSondaFalhou, RazaoCorridaInterrompida, RazaoAmostraIncompleta,
-		RazaoInterrompidos429, RazaoInterrompidos5xx, RazaoInterrompidosTransporte, RazaoInterrompidosConta, RazaoInterrompidosTecto,
+		RazaoInterrompidos429, RazaoInterrompidos5xx, RazaoInterrompidosTransporte, RazaoInterrompidosConta, RazaoInterrompidosTecto, RazaoDevolucaoNaoMedida,
 	}
 }
 
@@ -123,7 +138,7 @@ const (
 )
 
 // RegraDoVeredictoDoModelo é a regra aplicada, em texto fixo. Vai no relatório ao lado do veredicto.
-const RegraDoVeredictoDoModelo = "qualificado so com a corrida completa, os 40 nos com tools na amostra (um no entra na amostra quando a sua ultima tentativa fechou cumprido ou falhou por uma causa que nao e passageira) e nenhum limiar violado: L1 zero nos com tools por cumprir no fim das tentativas; L2 no maximo 4 nos com tools sem tool call a primeira tentativa; L3 zero respostas 4xx de parametro a pedidos que levavam uma mensagem tool; L4 zero nos com resposta vazia no fim das tentativas; L5 zero turnos com o modelo servido diferente do esperado, ou nao reportado; e o provider nao ter respondido 4xx de parametro a todos os pedidos. Uma razao firme da recusado, mesmo com razoes passageiras ao lado, porque as contagens so crescem: um limiar violado numa amostra parcial continua violado na amostra inteira. So razoes passageiras (tecto, conta, limite de ritmo, 5xx, transporte, corrida parada, amostra abaixo de 40) dao inconclusivo. Os limiares aplicam-se as contagens; o intervalo de confianca vai ao lado e nao entra na regra."
+const RegraDoVeredictoDoModelo = "qualificado so com a corrida completa, os 40 nos com tools e os 16 nos sem tools na amostra (um no entra na amostra quando a sua ultima tentativa fechou cumprido ou falhou por uma causa que nao e passageira) e nenhum limiar violado: L1 zero nos com tools por cumprir no fim das tentativas; L2 no maximo 4 nos com tools cuja primeira tentativa fechou sem nenhuma tool call nativa, seja qual for o motivo de paragem; L3 zero respostas 4xx de parametro a pedidos que levavam uma mensagem tool; L4 zero nos com resposta vazia no fim das tentativas; L5 zero turnos com o modelo servido diferente do esperado, ou nao reportado; L6 zero nos sem tools por cumprir no fim das tentativas; o provider nao ter respondido 4xx de parametro a todos os pedidos; e, num perfil que declara devolucao do estado, o veredicto da devolucao ser cumprida (nao_cumprida e razao firme; sem_raciocinio e inconclusiva sao passageiras). Uma razao firme da recusado, mesmo com razoes passageiras ao lado, porque as contagens so crescem: um limiar violado numa amostra parcial continua violado na amostra inteira. So razoes passageiras (tecto, conta, limite de ritmo, 5xx, transporte, corrida parada, amostra incompleta) dao inconclusivo: um no interrompido por uma causa passageira, com ou sem tools, sai da amostra. Os limiares aplicam-se as contagens; o intervalo de confianca vai ao lado e nao entra na regra."
 
 // MedidasDoRun é o que a qualificação precisa de um run e que as outras experiências não registam.
 // Só existe em observações de uma corrida de qualificação. Só contagens.
@@ -213,6 +228,9 @@ func estadoFinalDoNo(o Observacao) (classe, causa string) {
 type ContagensDaQualificacao struct {
 	// Terminou é o estado final da corrida ([Relatorio.Terminou]).
 	Terminou string `json:"terminou"`
+	// Devolucao é o veredicto da devolução do estado ([QualificacaoDaDevolucao.Veredicto]) quando
+	// o perfil a declara; vazio quando o perfil não devolve estado.
+	Devolucao string `json:"veredicto_da_devolucao_do_estado"`
 	// NosComToolsExigidos é a amostra exigida (40).
 	NosComToolsExigidos int `json:"nos_com_tools_exigidos"`
 	// NosComToolsNaAmostra são os nós com tools cuja última tentativa fechou `cumprido` ou falhou
@@ -223,8 +241,16 @@ type ContagensDaQualificacao struct {
 	NaoCumpridosPorDesfecho map[string]int `json:"nos_com_tools_nao_cumpridos_por_desfecho"`
 	// InterrompidosPorCausa reparte os nós com tools que ficaram FORA da amostra pela causa.
 	InterrompidosPorCausa map[string]int `json:"nos_com_tools_interrompidos_por_causa"`
+	// Os nós SEM tools, na mesma forma: a amostra exigida (16), os que entraram na amostra, os
+	// cumpridos, os por cumprir pelo desfecho e os interrompidos pela causa.
+	NosSemToolsExigidos                int            `json:"nos_sem_tools_exigidos"`
+	NosSemToolsNaAmostra               int            `json:"nos_sem_tools_na_amostra"`
+	NosSemToolsCumpridos               int            `json:"nos_sem_tools_cumpridos"`
+	NosSemToolsNaoCumpridosPorDesfecho map[string]int `json:"nos_sem_tools_nao_cumpridos_por_desfecho"`
+	NosSemToolsInterrompidosPorCausa   map[string]int `json:"nos_sem_tools_interrompidos_por_causa"`
 	// PrimeirasTentativasComTools são as primeiras tentativas de nós com tools que deram pelo
-	// menos um turno; SemToolCallAPrimeira, as que fecharam sem nenhuma tool call nativa.
+	// menos um turno; SemToolCallAPrimeira, as que fecharam com ZERO tool calls nativas — seja
+	// qual for o motivo de paragem do último turno (`stop`, `end_turn`, `content_filter`, nenhum).
 	PrimeirasTentativasComTools int `json:"primeiras_tentativas_de_nos_com_tools"`
 	SemToolCallAPrimeira        int `json:"sem_tool_call_a_primeira_tentativa"`
 	// PedidosComMensagemTool e QuatroXXComMensagemTool: ver [MedidasDoRun].
@@ -248,10 +274,11 @@ type ContagensDaQualificacao struct {
 
 // contarParaQualificacao tira das observações as contagens da qualificação. `exigidos` é a amostra
 // exigida; `terminou`, o estado final da corrida. É determinista.
-func contarParaQualificacao(terminou string, exigidos int, obs []Observacao) ContagensDaQualificacao {
+func contarParaQualificacao(terminou string, exigidos, semToolsExigidos int, obs []Observacao) ContagensDaQualificacao {
 	c := ContagensDaQualificacao{
-		Terminou: terminou, NosComToolsExigidos: exigidos,
+		Terminou: terminou, NosComToolsExigidos: exigidos, NosSemToolsExigidos: semToolsExigidos,
 		NaoCumpridosPorDesfecho: map[string]int{}, InterrompidosPorCausa: map[string]int{},
+		NosSemToolsNaoCumpridosPorDesfecho: map[string]int{}, NosSemToolsInterrompidosPorCausa: map[string]int{},
 	}
 	type unidade struct {
 		caso, no, braco string
@@ -269,7 +296,10 @@ func contarParaQualificacao(terminou string, exigidos int, obs []Observacao) Con
 		}
 		if o.ExigeTool && o.Tentativa == 1 && o.Turnos >= 1 {
 			c.PrimeirasTentativasComTools++
-			if o.SemToolCall {
+			// NÃO se usa [Observacao.SemToolCall], que exige o motivo de paragem `stop` (é a medida
+			// da tool call em texto): um provider que fecha sem tool call com `end_turn`,
+			// `content_filter` ou sem motivo falhou a primeira tentativa do mesmo modo.
+			if o.ToolCalls == 0 {
 				c.SemToolCallAPrimeira++
 			}
 		}
@@ -307,6 +337,16 @@ func contarParaQualificacao(terminou string, exigidos int, obs []Observacao) Con
 			c.RespostasVaziasNoFim++
 		}
 		if !o.ExigeTool {
+			switch classe, causa := estadoFinalDoNo(o); classe {
+			case noCumprido:
+				c.NosSemToolsNaAmostra++
+				c.NosSemToolsCumpridos++
+			case noNaoCumprido:
+				c.NosSemToolsNaAmostra++
+				c.NosSemToolsNaoCumpridosPorDesfecho[desfechoDoVocabulario(o.Desfecho)]++
+			default:
+				c.NosSemToolsInterrompidosPorCausa[causa]++
+			}
 			continue
 		}
 		switch classe, causa := estadoFinalDoNo(o); classe {
@@ -355,8 +395,22 @@ func (c ContagensDaQualificacao) violaL5() bool { return c.modeloTrocado() > Lim
 func (c ContagensDaQualificacao) perfilRecusado() bool {
 	return c.PedidosComResposta > 0 && c.PedidosCom2xx == 0 && c.Pedidos4xxDeParametro == c.PedidosComResposta
 }
-func (c ContagensDaQualificacao) amostraIncompleta() bool {
+func (c ContagensDaQualificacao) semToolsNaoCumpridos() int {
+	return c.NosSemToolsNaAmostra - c.NosSemToolsCumpridos
+}
+func (c ContagensDaQualificacao) violaL6() bool {
+	return c.semToolsNaoCumpridos() > LimiarL6SemToolsNaoCumpridos
+}
+func (c ContagensDaQualificacao) amostraComToolsIncompleta() bool {
 	return c.NosComToolsNaAmostra < c.NosComToolsExigidos
+}
+func (c ContagensDaQualificacao) amostraIncompleta() bool {
+	return c.amostraComToolsIncompleta() || c.NosSemToolsNaAmostra < c.NosSemToolsExigidos
+}
+
+// interrompidos devolve quantos nós, com e sem tools, ficaram fora da amostra por uma causa.
+func (c ContagensDaQualificacao) interrompidos(causa string) int {
+	return c.InterrompidosPorCausa[causa] + c.NosSemToolsInterrompidosPorCausa[causa]
 }
 
 // razaoDoTerminou traduz o estado final de uma corrida que não completou na sua razão.
@@ -410,6 +464,8 @@ func qualificarModelo(c ContagensDaQualificacao) VeredictoDoModelo {
 	juntar(c.violaL4(), RazaoModeloRespostasVazias)
 	juntar(c.TurnosComModeloDiferente > LimiarL5ModeloTrocado, RazaoModeloServidoDiferente)
 	juntar(c.TurnosSemModeloReportado > LimiarL5ModeloTrocado, RazaoModeloServidoNaoReportado)
+	juntar(c.violaL6(), RazaoSemToolsNaoCumpridos)
+	juntar(c.Devolucao == QualificacaoNaoCumprida, RazaoDevolucaoNaoCumprida)
 	juntar(c.perfilRecusado(), RazaoPerfilRecusado)
 	firmes := len(v.Razoes)
 
@@ -417,11 +473,13 @@ func qualificarModelo(c ContagensDaQualificacao) VeredictoDoModelo {
 		v.Razoes = append(v.Razoes, r)
 	}
 	juntar(c.amostraIncompleta(), RazaoAmostraIncompleta)
-	juntar(c.InterrompidosPorCausa[InterrompidoPor429] > 0, RazaoInterrompidos429)
-	juntar(c.InterrompidosPorCausa[InterrompidoPor5xx] > 0, RazaoInterrompidos5xx)
-	juntar(c.InterrompidosPorCausa[InterrompidoPorTransporte] > 0, RazaoInterrompidosTransporte)
-	juntar(c.InterrompidosPorCausa[InterrompidoPorConta] > 0, RazaoInterrompidosConta)
-	juntar(c.InterrompidosPorCausa[InterrompidoPeloTecto] > 0, RazaoInterrompidosTecto)
+	juntar(c.interrompidos(InterrompidoPor429) > 0, RazaoInterrompidos429)
+	juntar(c.interrompidos(InterrompidoPor5xx) > 0, RazaoInterrompidos5xx)
+	juntar(c.interrompidos(InterrompidoPorTransporte) > 0, RazaoInterrompidosTransporte)
+	juntar(c.interrompidos(InterrompidoPorConta) > 0, RazaoInterrompidosConta)
+	juntar(c.interrompidos(InterrompidoPeloTecto) > 0, RazaoInterrompidosTecto)
+	// Fechado: com devolução declarada, tudo o que não seja `cumprida` nem `nao_cumprida` é «não medida».
+	juntar(c.Devolucao != "" && c.Devolucao != QualificacaoCumprida && c.Devolucao != QualificacaoNaoCumprida, RazaoDevolucaoNaoMedida)
 
 	switch {
 	case firmes > 0:
@@ -452,13 +510,15 @@ func limiaresDaQualificacao(c ContagensDaQualificacao) []LimiarDaQualificacao {
 		{ID: "L1", Maximo: LimiarL1NaoCumpridos, Violado: c.violaL1(),
 			Medida: NovaTaxa("nos com tools na amostra cuja ultima tentativa nao fechou cumprido", c.naoCumpridos(), c.NosComToolsNaAmostra)},
 		{ID: "L2", Maximo: LimiarL2SemToolCall, Violado: c.violaL2(),
-			Medida: NovaTaxa("primeiras tentativas de nos com tools, com pelo menos um turno, sem nenhuma tool call nativa", c.SemToolCallAPrimeira, c.PrimeirasTentativasComTools)},
+			Medida: NovaTaxa("primeiras tentativas de nos com tools, com pelo menos um turno, que fecharam sem nenhuma tool call nativa (qualquer motivo de paragem)", c.SemToolCallAPrimeira, c.PrimeirasTentativasComTools)},
 		{ID: "L3", Maximo: LimiarL3QuatroXX, Violado: c.violaL3(),
 			Medida: NovaTaxa("respostas 4xx de parametro a pedidos que levavam uma mensagem tool (os segundos turnos)", c.QuatroXXComMensagemTool, c.PedidosComMensagemTool)},
 		{ID: "L4", Maximo: LimiarL4Vazias, Violado: c.violaL4(),
 			Medida: NovaTaxa("nos, com e sem tools, cuja ultima tentativa fechou empty_output", c.RespostasVaziasNoFim, c.NosObservados)},
 		{ID: "L5", Maximo: LimiarL5ModeloTrocado, Violado: c.violaL5(),
 			Medida: NovaTaxa("turnos em que o modelo que o proxy declarou ter servido nao e o do perfil, ou nao foi declarado", c.modeloTrocado(), c.Turnos)},
+		{ID: "L6", Maximo: LimiarL6SemToolsNaoCumpridos, Violado: c.violaL6(),
+			Medida: NovaTaxa("nos sem tools na amostra cuja ultima tentativa nao fechou cumprido", c.semToolsNaoCumpridos(), c.NosSemToolsNaAmostra)},
 	}
 }
 

@@ -47,6 +47,13 @@ const (
 	// (Uma qualificação que parou a meio sai com [SaidaParouAMeio]; uma que não coube no tecto,
 	// com [SaidaRecusada]. Só `qualificado` sai com [SaidaOK].)
 	SaidaInconclusivo = 8
+	// SaidaQualificadoEmEnsaio — `qualificado` nos modos `falso` ou `proxy`: o fornecedor é um
+	// provider falso e o veredicto NÃO vale para produção. Nunca é [SaidaOK], para que um
+	// encadeamento que só olhe para o código não confunda um ensaio com uma qualificação.
+	SaidaQualificadoEmEnsaio = 9
+	// SaidaSoPlano — `real --experiencia qualificacao --so-plano`: o plano é válido e nada foi
+	// enviado. Não é [SaidaOK], que na qualificação quer dizer `qualificado`.
+	SaidaSoPlano = 10
 )
 
 // EnvDasChaves é a variável de ambiente com o caminho do ficheiro de chaves, quando não vem
@@ -122,8 +129,9 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
 opcoes comuns:
   --experiencia bateria|separadores|qualificacao   (omissao: bateria)
                                       qualificacao (AOS-518): a bateria 8 vezes com --perfil (obrigatorio) e um
-                                      VEREDICTO calculado — qualificado (saida 0), recusado (7) ou inconclusivo
-                                      (8; 4 se parou a meio; 3 se o pior caso nao cabe no tecto). Nao aceita
+                                      VEREDICTO calculado — qualificado (saida 0; 9 nos modos falso e proxy, que nao
+                                      valem para producao), recusado (7) ou inconclusivo (8; 4 se parou a meio; 3 se
+                                      o pior caso nao cabe no tecto); --so-plano sai com 10. Nao aceita
                                       --amostras nem --braco. O relatorio traz o digest de si proprio.
   --amostras N                        passagens pela bateria (omissao 1); nos separadores sao 53 por braco
   --semente N                         fixa a ordem dos bracos (vai no relatorio)
@@ -292,7 +300,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		if modo != ModoFalso {
 			// ANTES de enviar seja o que for: outra imagem do proxy é outra rota.
-			if ierr := conferirImagemDoProxy(imagemEmUso, ImagemDoProxyDeProducao); ierr != nil {
+			if ierr := conferirImagemDoProxy(imagemEmUso, ImagemDoProxy); ierr != nil {
 				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ierr)
 				return SaidaRecusada
 			}
@@ -577,16 +585,24 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 				cfg.Extra["preco"] = fmt.Sprintf("%d/%d", p.EntradaMicroUSDPorMTok, p.SaidaMicroUSDPorMTok)
 			}
 		}
-		// Ao lado do ficheiro de chaves: na pasta do dono, fora do repositório. Não há flag.
-		caminhoDoContador := filepath.Join(filepath.Dir(caminho), "contador.json")
-		if pastaDaSaida == "" {
-			pastaDaSaida = filepath.Join(filepath.Dir(caminho), "relatorios")
+		// O CONTADOR E O REGISTO DAS QUALIFICAÇÕES vivem na PASTA DO DONO (`~/.aos-ensaio`), que
+		// não depende de `--chaves`: copiar o ficheiro de chaves para outra pasta não repõe a
+		// contagem do dia (AOS-518). Com as chaves no sítio documentado é a mesma pasta de sempre.
+		// Sem pasta do dono conhecida (só nos testes), fica ao lado do ficheiro de chaves. Não há flag.
+		pastaDoEstado := filepath.Dir(caminho)
+		if amb.PastaDoDono != "" {
+			pastaDoEstado = amb.PastaDoDono
 		}
+		caminhoDoContador := filepath.Join(pastaDoEstado, "contador.json")
+		if pastaDaSaida == "" {
+			pastaDaSaida = filepath.Join(pastaDoEstado, "relatorios")
+		}
+		pastasDeRelatorios := []string{filepath.Join(pastaDoEstado, "relatorios"), filepath.Join(filepath.Dir(caminho), "relatorios"), pastaDaSaida}
 		if _, serr := os.Stat(caminhoDoContador); errors.Is(serr, os.ErrNotExist) {
 			// Um contador que não existe só é o primeiro uso se não houver relatórios de corridas
 			// reais de hoje: havendo, a contagem do dia perdeu-se, e não se recomeça do zero.
 			dia := amb.Relogio().UTC().Format("2006-01-02")
-			pedidos, microUSD, n := UsoDosRelatoriosDeHoje([]string{filepath.Join(filepath.Dir(caminho), "relatorios"), pastaDaSaida}, fornecedor, dia)
+			pedidos, microUSD, n := UsoDosRelatoriosDeHoje(pastasDeRelatorios, fornecedor, dia)
 			if n > 0 {
 				if !o.reconstruir {
 					fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", ErrContadorDesaparecido)
@@ -616,19 +632,22 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		}
 		// AS QUALIFICAÇÕES DO DIA (decisão D7): no máximo duas por perfil. O registo fica ao lado
 		// do ficheiro de chaves; confere-se antes de enviar e escreve-se quando a sonda passa.
-		caminhoDasQualificacoes := filepath.Join(filepath.Dir(caminho), NomeDoRegistoDeQualificacoes)
-		diaDeHoje := amb.Relogio().UTC().Format("2006-01-02")
+		caminhoDasQualificacoes := filepath.Join(pastaDoEstado, NomeDoRegistoDeQualificacoes)
+		chaveDaQualificacao := ChaveDaQualificacao{Dia: amb.Relogio().UTC().Format("2006-01-02"), PerfilDigest: cfg.PerfilDigest, Fornecedor: string(fornecedor), Modelo: rota.Modelo}
 		if qualifica {
-			feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, diaDeHoje, cfg.PerfilDigest)
-			if qerr == nil && feitas >= QualificacoesPorPerfilPorDia {
+			feitas, qerr := QualificacoesDeHoje(caminhoDasQualificacoes, pastasDeRelatorios, chaveDaQualificacao)
+			if qerr == nil && feitas.esgotada() {
 				qerr = ErrQualificacoesDoDia
 			}
 			if qerr != nil {
 				fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", qerr)
 				return SaidaRecusada
 			}
-			fmt.Fprintf(stderr, "aos-ensaio: QUALIFICACAO — pior caso declarado: %d pedidos (com a sonda e, se o perfil devolve estado por obrigacao, o controlo); tecto proprio: %d pedidos e %.2f USD estimados; este perfil ja foi qualificado %d vez(es) hoje, de um maximo de %d\n",
-				previstos+1, int64(TectoDePedidosDaQualificacao), float64(TectoMicroUSDDaQualificacao)/1e6, feitas, QualificacoesPorPerfilPorDia)
+			fmt.Fprintf(stderr, "aos-ensaio: QUALIFICACAO — pior caso declarado: %d pedidos (com a sonda e, se o perfil devolve estado por obrigacao, o controlo); tecto proprio: %d pedidos e %.2f USD estimados; este perfil ja foi qualificado %d vez(es) hoje, de um maximo de %d; esta rota, %d de %d\n",
+				previstos+1, int64(TectoDePedidosDaQualificacao), float64(TectoMicroUSDDaQualificacao)/1e6, feitas.DoPerfil, QualificacoesPorPerfilPorDia, feitas.DaRota, QualificacoesPorRotaPorDia)
+			if !rota.Tectos.TemUSD {
+				fmt.Fprintln(stderr, "aos-ensaio: AVISO — o tecto de 3 USD da qualificacao NAO sera imposto: este fornecedor nao tem tecto em dolares no ficheiro de chaves (actua so o tecto de pedidos)")
+			}
 		}
 		cfg.AbortarAposRecusasDeChave = RecusasDeChaveQueAbortam
 		cfg.AbortarApos429Iniciais, cfg.AbortarAposSerieDe429 = Respostas429QueAbortam, SerieDe429QueAborta
@@ -644,6 +663,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprintf(stderr, "aos-ensaio: DESTINO DA CHAVE: %s  (contador: %s)\n", rota.Destino, caminhoDoContador)
 		if o.soPlano {
 			fmt.Fprintln(stderr, "aos-ensaio: --so-plano: nenhum pedido foi enviado")
+			if qualifica {
+				return SaidaSoPlano
+			}
 			return SaidaOK
 		}
 		vivo, lerr := lancadorDe(amb, red).Lancar(ctx, PedidoDeProxy{Prefixo: prefixo, Modelo: rota.Modelo, Vida: vida}.ComSegredos(rota.apiKey, rota.apiBase))
@@ -655,8 +677,8 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fechar = vivo.Fechar
 		baseURL, segredoDaRota = vivo.BaseURL, vivo.ChaveMestra()
 		if qualifica {
-			cfg.Qualificacao.Registar = func() (int, error) {
-				return RegistarQualificacao(caminhoDasQualificacoes, diaDeHoje, cfg.PerfilDigest)
+			cfg.Qualificacao.Registar = func() (OrdemDaQualificacao, error) {
+				return RegistarQualificacao(caminhoDasQualificacoes, pastasDeRelatorios, chaveDaQualificacao)
 			}
 		}
 	}
@@ -738,6 +760,9 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	}
 	if veredicto == VeredictoInconclusivo {
 		return SaidaInconclusivo
+	}
+	if veredicto == VeredictoQualificado && !relatorio.QualificacaoDoModelo.ValeParaProducao {
+		return SaidaQualificadoEmEnsaio
 	}
 	return SaidaOK
 }
@@ -821,6 +846,9 @@ func limpar(ctx context.Context, o opcoes, amb Ambiente, stdout, stderr io.Write
 		}
 		if chaves != "" {
 			caminho = filepath.Join(filepath.Dir(chaves), "contador.json")
+			if amb.PastaDoDono != "" {
+				caminho = filepath.Join(amb.PastaDoDono, "contador.json")
+			}
 		}
 	}
 	if caminho == "" {

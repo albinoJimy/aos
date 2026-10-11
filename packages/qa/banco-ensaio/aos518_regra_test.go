@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 )
 
 // AOS-518 — A REGRA DO VEREDICTO DO MODELO.
@@ -19,13 +20,21 @@ func contagensBoas() ContagensDaQualificacao {
 	return ContagensDaQualificacao{
 		Terminou: TerminouCompleta, NosComToolsExigidos: NosComToolsDaQualificacao,
 		NosComToolsNaAmostra: 40, NosComToolsCumpridos: 40,
+		NosSemToolsExigidos: NosSemToolsDaQualificacao, NosSemToolsNaAmostra: 16, NosSemToolsCumpridos: 16,
 		NaoCumpridosPorDesfecho: map[string]int{}, InterrompidosPorCausa: map[string]int{},
+		NosSemToolsNaoCumpridosPorDesfecho: map[string]int{}, NosSemToolsInterrompidosPorCausa: map[string]int{},
 		PrimeirasTentativasComTools: 40, PedidosComMensagemTool: 40, NosObservados: 56,
 		Turnos: 96, TurnosComModeloIgual: 96, PedidosComResposta: 96, PedidosCom2xx: 96,
 	}
 }
 
 func TestAOS518_Regra_OsLimiaresSaoOsDaDecisaoD2(t *testing.T) {
+	if NosSemToolsDaQualificacao != 16 || LimiarL6SemToolsNaoCumpridos != 0 || QualificacoesPorRotaPorDia != 4 {
+		t.Errorf("nos sem tools %d, L6 %d, qualificacoes por rota %d; quer 16, 0 e 4", NosSemToolsDaQualificacao, LimiarL6SemToolsNaoCumpridos, QualificacoesPorRotaPorDia)
+	}
+	if n := nosSemToolsPorPassagem(mustBateria(t)) * PassagensDaQualificacao; n != NosSemToolsDaQualificacao {
+		t.Errorf("a bateria da %d nos sem tools em 8 passagens; a regra conta com %d", n, NosSemToolsDaQualificacao)
+	}
 	if PassagensDaQualificacao != 8 || NosComToolsDaQualificacao != 40 {
 		t.Errorf("amostra da qualificacao = %d passagens, %d nos com tools; a D2 fixa 8 e 40", PassagensDaQualificacao, NosComToolsDaQualificacao)
 	}
@@ -62,6 +71,19 @@ func TestAOS518_Regra_TabelaDoVeredicto(t *testing.T) {
 		{"L4: uma resposta vazia no fim", func(c *ContagensDaQualificacao) { c.RespostasVaziasNoFim = 1 }, VeredictoRecusado, []string{RazaoModeloRespostasVazias}},
 		{"L5: um turno com outro modelo", func(c *ContagensDaQualificacao) { c.TurnosComModeloIgual, c.TurnosComModeloDiferente = 95, 1 }, VeredictoRecusado, []string{RazaoModeloServidoDiferente}},
 		{"L5: um turno sem modelo reportado", func(c *ContagensDaQualificacao) { c.TurnosComModeloIgual, c.TurnosSemModeloReportado = 95, 1 }, VeredictoRecusado, []string{RazaoModeloServidoNaoReportado}},
+		{"L6: um no sem tools por cumprir", func(c *ContagensDaQualificacao) { c.NosSemToolsCumpridos = 15 }, VeredictoRecusado, []string{RazaoSemToolsNaoCumpridos}},
+		{"devolucao declarada e cumprida", func(c *ContagensDaQualificacao) { c.Devolucao = QualificacaoCumprida }, VeredictoQualificado, []string{}},
+		{"devolucao declarada e nao cumprida", func(c *ContagensDaQualificacao) { c.Devolucao = QualificacaoNaoCumprida }, VeredictoRecusado, []string{RazaoDevolucaoNaoCumprida}},
+		{"devolucao declarada, sem raciocinio", func(c *ContagensDaQualificacao) { c.Devolucao = QualificacaoSemRaciocinio }, VeredictoInconclusivo, []string{RazaoDevolucaoNaoMedida}},
+		{"devolucao declarada, inconclusiva", func(c *ContagensDaQualificacao) { c.Devolucao = QualificacaoInconclusiva }, VeredictoInconclusivo, []string{RazaoDevolucaoNaoMedida}},
+		{"devolucao com um valor que a regra nao conhece", func(c *ContagensDaQualificacao) { c.Devolucao = "outra_coisa" }, VeredictoInconclusivo, []string{RazaoDevolucaoNaoMedida}},
+		{"amostra de 15 nos sem tools", func(c *ContagensDaQualificacao) { c.NosSemToolsNaAmostra, c.NosSemToolsCumpridos = 15, 15 }, VeredictoInconclusivo, []string{RazaoAmostraIncompleta}},
+		{"um no SEM tools interrompido por 5xx", func(c *ContagensDaQualificacao) {
+			c.NosSemToolsNaAmostra, c.NosSemToolsCumpridos, c.NosSemToolsInterrompidosPorCausa = 15, 15, map[string]int{InterrompidoPor5xx: 1}
+		}, VeredictoInconclusivo, []string{RazaoAmostraIncompleta, RazaoInterrompidos5xx}},
+		{"os 16 nos SEM tools interrompidos por 5xx", func(c *ContagensDaQualificacao) {
+			c.NosSemToolsNaAmostra, c.NosSemToolsCumpridos, c.NosSemToolsInterrompidosPorCausa = 0, 0, map[string]int{InterrompidoPor5xx: 16}
+		}, VeredictoInconclusivo, []string{RazaoAmostraIncompleta, RazaoInterrompidos5xx}},
 		{"perfil recusado em todos os pedidos", func(c *ContagensDaQualificacao) {
 			*c = ContagensDaQualificacao{Terminou: TerminouPerfilRecusado, NosComToolsExigidos: 40, NosComToolsNaAmostra: 3,
 				PedidosComResposta: 3, Pedidos4xxDeParametro: 3}
@@ -103,8 +125,8 @@ func TestAOS518_Regra_TabelaDoVeredicto(t *testing.T) {
 		}, VeredictoRecusado, []string{RazaoModeloSemToolCall, RazaoLimiteDeRitmo, RazaoAmostraIncompleta}},
 		{"todas as firmes, pela ordem", func(c *ContagensDaQualificacao) {
 			c.NosComToolsCumpridos, c.SemToolCallAPrimeira, c.QuatroXXComMensagemTool, c.RespostasVaziasNoFim = 30, 9, 2, 3
-			c.TurnosComModeloDiferente, c.TurnosSemModeloReportado = 1, 1
-		}, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloSemToolCall, RazaoModelo4xxNoSegundo, RazaoModeloRespostasVazias, RazaoModeloServidoDiferente, RazaoModeloServidoNaoReportado}},
+			c.TurnosComModeloDiferente, c.TurnosSemModeloReportado, c.NosSemToolsCumpridos, c.Devolucao = 1, 1, 14, QualificacaoNaoCumprida
+		}, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloSemToolCall, RazaoModelo4xxNoSegundo, RazaoModeloRespostasVazias, RazaoModeloServidoDiferente, RazaoModeloServidoNaoReportado, RazaoSemToolsNaoCumpridos, RazaoDevolucaoNaoCumprida}},
 	}
 	// Cada estado final que não é `completa`, sozinho, com a sua razão.
 	for terminou, razao := range map[string]string{
@@ -159,6 +181,7 @@ func TestAOS518_Regra_SemAmostraNaoHaQualificado(t *testing.T) {
 		"contagens a zero":           {},
 		"completa sem observacoes":   {Terminou: TerminouCompleta, NosComToolsExigidos: 40},
 		"completa com 39 cumpridos":  {Terminou: TerminouCompleta, NosComToolsExigidos: 40, NosComToolsNaAmostra: 39, NosComToolsCumpridos: 39},
+		"40 com tools, 15 sem tools": {Terminou: TerminouCompleta, NosComToolsExigidos: 40, NosComToolsNaAmostra: 40, NosComToolsCumpridos: 40, NosSemToolsExigidos: 16, NosSemToolsNaAmostra: 15, NosSemToolsCumpridos: 15},
 		"40 na amostra, estado nulo": {NosComToolsExigidos: 40, NosComToolsNaAmostra: 40, NosComToolsCumpridos: 40},
 	} {
 		if v := qualificarModelo(c); v.Veredicto == VeredictoQualificado {
@@ -171,10 +194,11 @@ func TestAOS518_Regra_TabelaDeLimiaresComIntervaloQueNaoEntraNaRegra(t *testing.
 	c := contagensBoas()
 	c.SemToolCallAPrimeira = 4
 	limiares := limiaresDaQualificacao(c)
-	if len(limiares) != 5 {
-		t.Fatalf("limiares = %d, quer 5", len(limiares))
+	if len(limiares) != 6 {
+		t.Fatalf("limiares = %d, quer 6", len(limiares))
 	}
-	for i, id := range []string{"L1", "L2", "L3", "L4", "L5"} {
+	verTaxa(t, "L6", limiares[5].Medida, 0, 16)
+	for i, id := range []string{"L1", "L2", "L3", "L4", "L5", "L6"} {
 		l := limiares[i]
 		if l.ID != id || l.Medida.IC95Superior == nil || l.Violado {
 			t.Errorf("limiar %d = %+v", i, l)
@@ -246,7 +270,7 @@ func TestAOS518_Regra_ContagensDasObservacoes(t *testing.T) {
 		}
 		return Observacao{Caso: caso, No: "n", Braco: "A", Amostra: amostra, Tentativa: tentativa, ExigeTool: exige,
 			Desfecho: desfecho, HTTP: http, TiposDeErro: tipos, Turnos: turnos, Pedidos: len(http), Qualificacao: m,
-			SemToolCall: desfecho == string(agentruntime.OutcomeContractNoCall)}
+			ToolCalls: map[bool]int{true: 0, false: 1}[desfecho == string(agentruntime.OutcomeContractNoCall)]}
 	}
 	igual := func(turnos, comTool, quatroXX int) *MedidasDoRun {
 		return &MedidasDoRun{TurnosComModeloIgual: turnos, PedidosComMensagemTool: comTool, QuatroXXComMensagemTool: quatroXX}
@@ -268,9 +292,11 @@ func TestAOS518_Regra_ContagensDasObservacoes(t *testing.T) {
 		// T6: cumprido, com um turno de outro modelo e um turno que ninguem comparou.
 		no("T6", 0, 1, true, DesfechoCumprido, []int{200, 200, 200}, &MedidasDoRun{TurnosComModeloIgual: 1, TurnosComModeloDiferente: 1, PedidosComMensagemTool: 2}),
 	}
-	c := contarParaQualificacao(TerminouCompleta, 5, obs)
+	c := contarParaQualificacao(TerminouCompleta, 5, 1, obs)
 	quer := ContagensDaQualificacao{
 		Terminou: TerminouCompleta, NosComToolsExigidos: 5, NosComToolsNaAmostra: 4, NosComToolsCumpridos: 2,
+		NosSemToolsExigidos: 1, NosSemToolsNaAmostra: 1, NosSemToolsCumpridos: 0,
+		NosSemToolsNaoCumpridosPorDesfecho: map[string]int{string(agentruntime.OutcomeEmptyOutput): 1}, NosSemToolsInterrompidosPorCausa: map[string]int{},
 		NaoCumpridosPorDesfecho:     map[string]int{string(agentruntime.OutcomeEmptyOutput): 1, DesfechoErroHTTP: 1},
 		InterrompidosPorCausa:       map[string]int{InterrompidoPor5xx: 1},
 		PrimeirasTentativasComTools: 4, SemToolCallAPrimeira: 1,
@@ -282,12 +308,12 @@ func TestAOS518_Regra_ContagensDasObservacoes(t *testing.T) {
 	if !reflect.DeepEqual(c, quer) {
 		t.Errorf("contagens =\n%+v\nquer\n%+v", c, quer)
 	}
-	if outra := contarParaQualificacao(TerminouCompleta, 5, obs); !reflect.DeepEqual(c, outra) {
+	if outra := contarParaQualificacao(TerminouCompleta, 5, 1, obs); !reflect.DeepEqual(c, outra) {
 		t.Errorf("a contagem nao e determinista")
 	}
 	v := qualificarModelo(c)
 	if quer := []string{RazaoModeloNaoCumpridos, RazaoModelo4xxNoSegundo, RazaoModeloRespostasVazias, RazaoModeloServidoDiferente,
-		RazaoModeloServidoNaoReportado, RazaoAmostraIncompleta, RazaoInterrompidos5xx}; v.Veredicto != VeredictoRecusado || !reflect.DeepEqual(v.Razoes, quer) {
+		RazaoModeloServidoNaoReportado, RazaoSemToolsNaoCumpridos, RazaoAmostraIncompleta, RazaoInterrompidos5xx}; v.Veredicto != VeredictoRecusado || !reflect.DeepEqual(v.Razoes, quer) {
 		t.Errorf("veredicto = %s %v, quer recusado %v", v.Veredicto, v.Razoes, quer)
 	}
 }
@@ -311,59 +337,112 @@ func TestAOS518_Regra_QuatroXXDeParametro(t *testing.T) {
 	}
 }
 
-// O controlo sem devolucao e os avisos: so `falhou_como_devido` prova a exigencia; tudo o resto
-// deixa o aviso, que nao muda o veredicto e nao pode faltar.
+// O controlo sem devolucao e os avisos. So `falhou_como_devido` prova a exigencia, e so com TODOS
+// os segundos turnos recusados, a amostra de nos com tools completa, nenhum cumprido e a corrida
+// completa: um 4xx solto entre respostas aceites, ou um controlo interrompido, e `inconclusivo`.
 func TestAOS518_Regra_ControloEAvisos(t *testing.T) {
-	base := ContagensDaQualificacao{Terminou: TerminouCompleta, NosComToolsExigidos: 5, NosComToolsNaAmostra: 5, NosComToolsCumpridos: 5, PedidosComMensagemTool: 5}
-	com := func(muda func(c *ContagensDaQualificacao)) ContagensDaQualificacao {
-		c := base
-		muda(&c)
-		return c
+	passou := ContagensDaQualificacao{Terminou: TerminouCompleta, NosComToolsExigidos: 5, NosComToolsNaAmostra: 5, NosComToolsCumpridos: 5,
+		NosSemToolsExigidos: 2, NosSemToolsNaAmostra: 2, NosSemToolsCumpridos: 2, PedidosComMensagemTool: 5}
+	// O controlo que falha como deve: os 5 segundos turnos com 4xx, os 5 nos por cumprir; o no sem
+	// tools que depende de um deles nao chega a correr (a amostra dos sem tools fica a 1 de 2).
+	falhou := ContagensDaQualificacao{Terminou: TerminouCompleta, NosComToolsExigidos: 5, NosComToolsNaAmostra: 5, NosComToolsCumpridos: 0,
+		NosSemToolsExigidos: 2, NosSemToolsNaAmostra: 1, NosSemToolsCumpridos: 1, PedidosComMensagemTool: 5, QuatroXXComMensagemTool: 5}
+	com := func(base ContagensDaQualificacao, muda func(c *ContagensDaQualificacao)) ContagensDaQualificacao {
+		muda(&base)
+		return base
 	}
 	for nome, c := range map[string]struct {
 		c    ContagensDaQualificacao
 		quer string
 	}{
-		"correu tudo bem sem o estado":   {base, ControloPassou},
-		"um 4xx num segundo turno":       {com(func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 1, 4 }), ControloFalhouComoDevido},
-		"parou a meio sem 4xx":           {com(func(c *ContagensDaQualificacao) { c.Terminou = TerminouTecto }), ControloInconclusivo},
-		"amostra incompleta sem 4xx":     {com(func(c *ContagensDaQualificacao) { c.NosComToolsNaAmostra, c.NosComToolsCumpridos = 4, 4 }), ControloInconclusivo},
-		"falhou, mas nao por 4xx":        {com(func(c *ContagensDaQualificacao) { c.NosComToolsCumpridos = 3 }), ControloInconclusivo},
-		"parou a meio ja com um 4xx":     {com(func(c *ContagensDaQualificacao) { c.Terminou, c.QuatroXXComMensagemTool = TerminouTecto, 1 }), ControloFalhouComoDevido},
-		"contagens a zero (nada correu)": {ContagensDaQualificacao{}, ControloInconclusivo},
+		"correu tudo bem sem o estado":        {passou, ControloPassou},
+		"todos os segundos turnos recusados":  {falhou, ControloFalhouComoDevido},
+		"um so 4xx em cinco":                  {com(passou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 1, 4 }), ControloInconclusivo},
+		"quatro 4xx em cinco":                 {com(falhou, func(c *ContagensDaQualificacao) { c.QuatroXXComMensagemTool, c.NosComToolsCumpridos = 4, 1 }), ControloInconclusivo},
+		"todos recusados, mas um no cumprido": {com(falhou, func(c *ContagensDaQualificacao) { c.NosComToolsCumpridos = 1 }), ControloInconclusivo},
+		"todos recusados, amostra incompleta": {com(falhou, func(c *ContagensDaQualificacao) {
+			c.NosComToolsNaAmostra, c.PedidosComMensagemTool, c.QuatroXXComMensagemTool = 4, 4, 4
+		}), ControloInconclusivo},
+		"interrompido com um 4xx":            {com(falhou, func(c *ContagensDaQualificacao) { c.Terminou = TerminouInterrompid }), ControloInconclusivo},
+		"parou no tecto com todos recusados": {com(falhou, func(c *ContagensDaQualificacao) { c.Terminou = TerminouTecto }), ControloInconclusivo},
+		"parou a meio sem 4xx":               {com(passou, func(c *ContagensDaQualificacao) { c.Terminou = TerminouTecto }), ControloInconclusivo},
+		"amostra incompleta sem 4xx":         {com(passou, func(c *ContagensDaQualificacao) { c.NosComToolsNaAmostra, c.NosComToolsCumpridos = 4, 4 }), ControloInconclusivo},
+		"falhou, mas nao por 4xx":            {com(passou, func(c *ContagensDaQualificacao) { c.NosComToolsCumpridos = 3 }), ControloInconclusivo},
+		"um no sem tools por cumprir":        {com(passou, func(c *ContagensDaQualificacao) { c.NosSemToolsCumpridos = 1 }), ControloInconclusivo},
+		"nenhum pedido com mensagem tool":    {com(falhou, func(c *ContagensDaQualificacao) { c.PedidosComMensagemTool, c.QuatroXXComMensagemTool = 0, 0 }), ControloInconclusivo},
+		"contagens a zero (nada correu)":     {ContagensDaQualificacao{}, ControloInconclusivo},
 	} {
 		if tem := resultadoDoControlo(c.c); tem != c.quer {
 			t.Errorf("%s: %s, quer %s", nome, tem, c.quer)
 		}
 	}
-	cumprida, sem := &QualificacaoDaDevolucao{Veredicto: QualificacaoCumprida}, &QualificacaoDaDevolucao{Veredicto: QualificacaoSemRaciocinio}
 	for nome, c := range map[string]struct {
-		controlo  *ControloSemDevolucao
-		devolucao *QualificacaoDaDevolucao
-		factos    int
-		quer      []string
+		controlo *ControloSemDevolucao
+		factos   int
+		semUSD   bool
+		quer     []string
 	}{
-		"perfil sem devolucao obrigatoria": {nil, nil, 0, []string{}},
-		"controlo falhou como devido":      {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, cumprida, 0, []string{}},
-		"controlo passou":                  {&ControloSemDevolucao{Resultado: ControloPassou}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
-		"controlo inconclusivo":            {&ControloSemDevolucao{Resultado: ControloInconclusivo}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
-		"controlo nao correu":              {&ControloSemDevolucao{Resultado: ControloNaoCorreu}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
-		"resultado fora do vocabulario":    {&ControloSemDevolucao{Resultado: "outra_coisa"}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
-		"devolucao sem raciocinio":         {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, sem, 0, []string{AvisoDevolucaoNaoCumprida}},
-		"factos ausentes":                  {nil, nil, 3, []string{AvisoFactosAusentes}},
-		"os tres":                          {&ControloSemDevolucao{Resultado: ControloPassou}, sem, 1, []string{AvisoExigenciaNaoProvada, AvisoDevolucaoNaoCumprida, AvisoFactosAusentes}},
-		"controlo passou e sem raciocinio": {&ControloSemDevolucao{Resultado: ControloPassou}, sem, 0, []string{AvisoExigenciaNaoProvada, AvisoDevolucaoNaoCumprida}},
+		"perfil sem devolucao obrigatoria": {nil, 0, false, []string{}},
+		"controlo falhou como devido":      {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, 0, false, []string{}},
+		"controlo passou":                  {&ControloSemDevolucao{Resultado: ControloPassou}, 0, false, []string{AvisoExigenciaNaoProvada}},
+		"controlo inconclusivo":            {&ControloSemDevolucao{Resultado: ControloInconclusivo}, 0, false, []string{AvisoExigenciaNaoProvada}},
+		"controlo nao correu":              {&ControloSemDevolucao{Resultado: ControloNaoCorreu}, 0, false, []string{AvisoExigenciaNaoProvada}},
+		"resultado fora do vocabulario":    {&ControloSemDevolucao{Resultado: "outra_coisa"}, 0, false, []string{AvisoExigenciaNaoProvada}},
+		"factos ausentes":                  {nil, 3, false, []string{AvisoFactosAusentes}},
+		"tecto em dolares nao imposto":     {nil, 0, true, []string{AvisoTectoUSDNaoImposto}},
+		"os tres":                          {&ControloSemDevolucao{Resultado: ControloPassou}, 1, true, []string{AvisoExigenciaNaoProvada, AvisoFactosAusentes, AvisoTectoUSDNaoImposto}},
 	} {
-		if tem := avisosDaQualificacao(c.controlo, c.devolucao, c.factos); !reflect.DeepEqual(tem, c.quer) {
+		if tem := avisosDaQualificacao(c.controlo, c.factos, c.semUSD); !reflect.DeepEqual(tem, c.quer) {
 			t.Errorf("%s: avisos %v, quer %v", nome, tem, c.quer)
 		}
 	}
-	for aviso := range frasesDosAvisos {
+	for _, aviso := range []string{AvisoExigenciaNaoProvada, AvisoFactosAusentes, AvisoTectoUSDNaoImposto} {
 		if strings.TrimSpace(frasesDosAvisos[aviso]) == "" {
-			t.Errorf("o aviso %q nao tem frase", aviso)
+			t.Errorf("o aviso %q nao tem frase no resumo", aviso)
 		}
 	}
-	if len(frasesDosAvisos) != 3 || frasesDosAvisos[AvisoExigenciaNaoProvada] == "" || frasesDosAvisos[AvisoDevolucaoNaoCumprida] == "" || frasesDosAvisos[AvisoFactosAusentes] == "" {
-		t.Errorf("os tres avisos tem de ter frase no resumo")
+	if len(frasesDosAvisos) != 3 {
+		t.Errorf("ha %d frases de avisos para 3 avisos", len(frasesDosAvisos))
+	}
+	// O perfil de controlo muda SO a devolucao: a versao da projeccao fica a do perfil.
+	perfil, err := LerPerfilCandidato([]byte(aos518PerfilObrigatorio))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doControlo := PerfilDeControlo(*perfil)
+	if doControlo.StateReturn != modelgateway.StateReturnNever || doControlo.StateReturnAt != "" || doControlo.ToolCallID != "" ||
+		doControlo.ProjectionVersion != perfil.ProjectionVersion || doControlo.ExpectedModel != perfil.ExpectedModel || doControlo.Requested != perfil.Requested {
+		t.Errorf("perfil de controlo = %+v", doControlo)
+	}
+	if err := doControlo.Validate(); err != nil {
+		t.Errorf("o perfil de controlo nao e um perfil valido: %v", err)
+	}
+}
+
+// L2 NAO DEPENDE DO MOTIVO DE PARAGEM. Uma primeira tentativa de um no com tools que fechou sem
+// nenhuma tool call nativa conta, feche o turno com `stop`, `end_turn`, `content_filter` ou sem
+// motivo — mesmo que o no cumpra a segunda. (A revisao adversarial mediu `qualificado` com 0 de
+// 40 em L2 para um provider assim: a contagem so via o motivo `stop`.)
+func TestAOS518_Regra_L2ContaQualquerMotivoDeParagem(t *testing.T) {
+	for _, motivo := range []string{"stop", "end_turn", "content_filter", ""} {
+		var obs []Observacao
+		for i := 0; i < 5; i++ {
+			primeira := Observacao{Caso: "T1", No: "n", Braco: "A", Amostra: i, Tentativa: 1, ExigeTool: true, Turnos: 1, Pedidos: 1,
+				HTTP: []int{200}, Desfecho: string(agentruntime.OutcomeContractNoCall), SemToolCall: motivo == "stop",
+				Qualificacao: &MedidasDoRun{TurnosComModeloIgual: 1}}
+			if motivo != "" {
+				primeira.MotivosDeParagem = []string{motivo}
+			}
+			segunda := Observacao{Caso: "T1", No: "n", Braco: "A", Amostra: i, Tentativa: 2, ExigeTool: true, Turnos: 2, Pedidos: 2,
+				HTTP: []int{200, 200}, Desfecho: DesfechoCumprido, ToolCalls: 1, Qualificacao: &MedidasDoRun{TurnosComModeloIgual: 2, PedidosComMensagemTool: 1}}
+			obs = append(obs, primeira, segunda)
+		}
+		c := contarParaQualificacao(TerminouCompleta, 5, 0, obs)
+		if c.SemToolCallAPrimeira != 5 || c.PrimeirasTentativasComTools != 5 || c.NosComToolsCumpridos != 5 {
+			t.Errorf("motivo %q: sem tool call a primeira %d de %d (cumpridos %d); quer 5 de 5", motivo, c.SemToolCallAPrimeira, c.PrimeirasTentativasComTools, c.NosComToolsCumpridos)
+		}
+		if v := qualificarModelo(c); v.Veredicto != VeredictoRecusado || !reflect.DeepEqual(v.Razoes, []string{RazaoModeloSemToolCall}) {
+			t.Errorf("motivo %q: %s %v, quer recusado so por L2", motivo, v.Veredicto, v.Razoes)
+		}
 	}
 }

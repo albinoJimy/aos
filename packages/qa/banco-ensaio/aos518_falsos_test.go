@@ -1,7 +1,9 @@
 package bancoensaio
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +17,7 @@ import (
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/port"
+	"github.com/aos-ref/platform/model-gateway/wiretest"
 )
 
 // AOS-518 — OS CONTROLOS NEGATIVOS EM CI: os providers falsos «maus», um por modo de falha, e o
@@ -47,14 +50,22 @@ func aos518Veredicto(t *testing.T, r *Relatorio) *QualificacaoDoModelo {
 // O FALSO «BOM»: qualificado, com 40 de 40 nós com tools.
 func TestAOS518_Falso_OBomSaiQualificado(t *testing.T) {
 	e, r := aos518Qualificar(t, aos518PerfilSimples, "--roteiro", "cumpre")
-	if e.codigo != SaidaOK {
-		t.Fatalf("codigo %d, quer %d\n%s", e.codigo, SaidaOK, e.stderr)
+	// Qualificado NUM ENSAIO: o codigo de saida nao e o de um `qualificado` real, e o veredicto
+	// diz, em campo proprio, que nao vale para producao.
+	if e.codigo != SaidaQualificadoEmEnsaio || SaidaQualificadoEmEnsaio == SaidaOK {
+		t.Fatalf("codigo %d, quer %d\n%s", e.codigo, SaidaQualificadoEmEnsaio, e.stderr)
 	}
 	q := aos518Veredicto(t, r)
+	if q.ValeParaProducao || q.PorqueNaoVale != NaoProvaModeloReal {
+		t.Errorf("um veredicto do modo falso tem de dizer que nao vale para producao: %v %q", q.ValeParaProducao, q.PorqueNaoVale)
+	}
 	if q.Veredicto != VeredictoQualificado || len(q.Razoes) != 0 || len(q.Avisos) != 0 || q.Regra != RegraDoVeredictoDoModelo {
 		t.Fatalf("veredicto = %s %v avisos %v", q.Veredicto, q.Razoes, q.Avisos)
 	}
 	c := q.Contagens
+	if c.NosSemToolsExigidos != 16 || c.NosSemToolsNaAmostra != 16 || c.NosSemToolsCumpridos != 16 || len(q.Limiares) != 6 {
+		t.Errorf("nos sem tools = %d de %d, cumpridos %d; limiares %d", c.NosSemToolsNaAmostra, c.NosSemToolsExigidos, c.NosSemToolsCumpridos, len(q.Limiares))
+	}
 	if c.NosComToolsNaAmostra != 40 || c.NosComToolsCumpridos != 40 || c.NosComToolsExigidos != 40 || c.NosObservados != 56 {
 		t.Errorf("amostra = %d de %d, cumpridos %d, nos observados %d; quer 40 de 40, 40, 56", c.NosComToolsNaAmostra, c.NosComToolsExigidos, c.NosComToolsCumpridos, c.NosObservados)
 	}
@@ -85,13 +96,13 @@ func TestAOS518_Falso_OBomSaiQualificado(t *testing.T) {
 		t.Errorf("um perfil sem devolucao obrigatoria nao tem corrida de controlo")
 	}
 	// O que a corrida NAO prova, em vocabulario fechado e nas frases dos limites.
-	for _, quer := range []string{NaoProvaBateriaSintetica, NaoProvaLeitura, NaoProvaAmostra, NaoProvaQueEBom, NaoProvaACorrida, NaoProvaOutraRota, NaoProvaModeloReal} {
+	for _, quer := range []string{NaoProvaBateriaSintetica, NaoProvaLeitura, NaoProvaAmostra, NaoProvaQueEBom, NaoProvaACorrida, NaoProvaAutenticidade, NaoProvaOutraRota, NaoProvaOFornecedor, NaoProvaOEndpoint, NaoProvaModeloReal} {
 		if !contem(q.NaoProva, quer) {
 			t.Errorf("nao_prova sem %q: %v", quer, q.NaoProva)
 		}
 	}
 	limites := strings.Join(r.Limites, "\n")
-	for _, quer := range []string{"seis casos sinteticos", "Nenhum dos dois prova que o fornecedor LEU", "abaixo de cerca de 9%", "NAO entra na regra", "Nao prova que a corrida aconteceu"} {
+	for _, quer := range []string{"seis casos sinteticos", "Nenhum dos dois prova que o fornecedor LEU", "abaixo de cerca de 9%", "NAO entra na regra", "Nao prova que a corrida aconteceu", "INTEGRIDADE, nao autenticidade", "nao o que o fornecedor serviu", "nao ve a imagem que o proxy de producao corre"} {
 		if !strings.Contains(limites, quer) {
 			t.Errorf("os limites nao dizem %q", quer)
 		}
@@ -99,7 +110,7 @@ func TestAOS518_Falso_OBomSaiQualificado(t *testing.T) {
 	if strings.Contains(limites, "nao aceita nem recusa um modelo") {
 		t.Errorf("uma qualificacao da um veredicto: o limite «nao aceita nem recusa» ja nao e verdade nela")
 	}
-	if !strings.HasPrefix(e.stdout, "QUALIFICACAO DO MODELO (AOS-518): QUALIFICADO") || !strings.Contains(e.stderr, "VEREDICTO DA QUALIFICACAO: QUALIFICADO") {
+	if !strings.HasPrefix(aos518SemCabecaDeEnsaio(t, e.stdout), "QUALIFICACAO DO MODELO (AOS-518): QUALIFICADO") || !strings.Contains(e.stderr, "VEREDICTO DA QUALIFICACAO: QUALIFICADO") {
 		t.Errorf("o veredicto nao vem a cabeca do resumo, ou falta no fim:\n%.300s", e.stdout)
 	}
 	// SO CONTAGENS E VOCABULARIO FECHADO: nem texto de respostas, nem conteudo de documentos.
@@ -125,17 +136,17 @@ func TestAOS518_Falso_OsCincoMausSaemRecusadosCadaUmComASuaRazao(t *testing.T) {
 		propria string
 		confere func(t *testing.T, c ContagensDaQualificacao)
 	}{
-		{"nao chama a tool", "texto", []string{RazaoModeloNaoCumpridos, RazaoModeloSemToolCall}, RazaoModeloSemToolCall, func(t *testing.T, c ContagensDaQualificacao) {
+		{"nao chama a tool", "texto", []string{RazaoModeloNaoCumpridos, RazaoModeloSemToolCall, RazaoAmostraIncompleta}, RazaoModeloSemToolCall, func(t *testing.T, c ContagensDaQualificacao) {
 			if c.SemToolCallAPrimeira != 40 || c.NaoCumpridosPorDesfecho[string(agentruntime.OutcomeContractNoCall)] != 40 {
 				t.Errorf("sem tool call a primeira %d, por desfecho %v", c.SemToolCallAPrimeira, c.NaoCumpridosPorDesfecho)
 			}
 		}},
-		{"responde vazio", "vazia", []string{RazaoModeloNaoCumpridos, RazaoModeloRespostasVazias}, RazaoModeloRespostasVazias, func(t *testing.T, c ContagensDaQualificacao) {
+		{"responde vazio", "vazia", []string{RazaoModeloNaoCumpridos, RazaoModeloRespostasVazias, RazaoSemToolsNaoCumpridos, RazaoAmostraIncompleta}, RazaoModeloRespostasVazias, func(t *testing.T, c ContagensDaQualificacao) {
 			if c.RespostasVaziasNoFim == 0 || c.NaoCumpridosPorDesfecho[string(agentruntime.OutcomeEmptyOutput)] != 40 {
 				t.Errorf("vazias no fim %d, por desfecho %v", c.RespostasVaziasNoFim, c.NaoCumpridosPorDesfecho)
 			}
 		}},
-		{"recusa o segundo turno com 4xx", "rejeita_segundo", []string{RazaoModeloNaoCumpridos, RazaoModelo4xxNoSegundo}, RazaoModelo4xxNoSegundo, func(t *testing.T, c ContagensDaQualificacao) {
+		{"recusa o segundo turno com 4xx", "rejeita_segundo", []string{RazaoModeloNaoCumpridos, RazaoModelo4xxNoSegundo, RazaoAmostraIncompleta}, RazaoModelo4xxNoSegundo, func(t *testing.T, c ContagensDaQualificacao) {
 			if c.QuatroXXComMensagemTool != 40 || c.PedidosComMensagemTool != 40 || c.NaoCumpridosPorDesfecho[DesfechoErroHTTP] != 40 {
 				t.Errorf("4xx em segundos turnos %d de %d, por desfecho %v", c.QuatroXXComMensagemTool, c.PedidosComMensagemTool, c.NaoCumpridosPorDesfecho)
 			}
@@ -146,8 +157,10 @@ func TestAOS518_Falso_OsCincoMausSaemRecusadosCadaUmComASuaRazao(t *testing.T) {
 				t.Errorf("cumpridos %d, turnos com outro modelo %d, com o esperado %d", c.NosComToolsCumpridos, c.TurnosComModeloDiferente, c.TurnosComModeloIgual)
 			}
 		}},
-		{"corta a resposta", "cortada", []string{RazaoModeloNaoCumpridos}, string(agentruntime.OutcomeTruncated), func(t *testing.T, c ContagensDaQualificacao) {
-			// A D2 nao tem limiar proprio para o corte: apanha-o L1, sozinho, e o desfecho diz porque.
+		{"corta a resposta", "cortada", []string{RazaoModeloNaoCumpridos, RazaoSemToolsNaoCumpridos, RazaoAmostraIncompleta}, string(agentruntime.OutcomeTruncated), func(t *testing.T, c ContagensDaQualificacao) {
+			// Nao ha limiar proprio para o corte: apanham-no L1 e L6, e o desfecho diz porque. (A
+			// amostra dos nos SEM tools fica incompleta nos falsos em que um no com tools falha: o
+			// no de resumo que depende dele nao chega a correr.)
 			if !reflect.DeepEqual(c.NaoCumpridosPorDesfecho, map[string]int{string(agentruntime.OutcomeTruncated): 40}) {
 				t.Errorf("nao cumpridos por desfecho = %v, quer so truncated: 40", c.NaoCumpridosPorDesfecho)
 			}
@@ -214,7 +227,7 @@ func TestAOS518_Falso_NenhumVerdeFalso(t *testing.T) {
 	// fecha `cumprido` (o contrato de conclusao nao le o conteudo) e a D2 nao tem limiar para
 	// isto. Nao muda o veredicto — mas nao passa em silencio: o aviso vem a cabeca.
 	e, r = aos518Qualificar(t, aos518PerfilSimples, "--roteiro", "sem_factos")
-	if q = aos518Veredicto(t, r); !reflect.DeepEqual(q.Avisos, []string{AvisoFactosAusentes}) || !strings.HasPrefix(e.stdout, "AVISO — FACTOS_AUSENTES_EM_RESPOSTAS_CUMPRIDAS") || r.Taxas.FactosAusentes.Numerador == 0 {
+	if q = aos518Veredicto(t, r); !reflect.DeepEqual(q.Avisos, []string{AvisoFactosAusentes}) || !strings.HasPrefix(aos518SemCabecaDeEnsaio(t, e.stdout), "AVISO — FACTOS_AUSENTES_EM_RESPOSTAS_CUMPRIDAS") || r.Taxas.FactosAusentes.Numerador == 0 {
 		t.Errorf("sem factos: %s, avisos %v, factos ausentes %d\n%.200s", q.Veredicto, q.Avisos, r.Taxas.FactosAusentes.Numerador, e.stdout)
 	}
 
@@ -236,7 +249,7 @@ func TestAOS518_Falso_NenhumVerdeFalso(t *testing.T) {
 	amb = aos518Ambiente(t, aos518PerfilSimples, recusaTudo, nil, TectoDePedidosDaQualificacao)
 	r = amb.correr(t, context.Background())
 	q = aos518Veredicto(t, r)
-	if q.Veredicto != VeredictoRecusado || !reflect.DeepEqual(q.Razoes, []string{RazaoModeloNaoCumpridos, RazaoPerfilRecusado, RazaoAmostraIncompleta}) {
+	if q.Veredicto != VeredictoRecusado || !reflect.DeepEqual(q.Razoes, []string{RazaoModeloNaoCumpridos, RazaoSemToolsNaoCumpridos, RazaoPerfilRecusado, RazaoAmostraIncompleta}) {
 		t.Errorf("400 a tudo: %s %v", q.Veredicto, q.Razoes)
 	}
 	if r.Terminou != TerminouPerfilRecusado || pedidos.Load() != RecusasDoPerfilQueAbortam {
@@ -360,7 +373,7 @@ func TestAOS518_Falso_PiorCasoQueNaoCabeNaoEnviaNada(t *testing.T) {
 	if q = aos518Veredicto(t, r); e.codigo != SaidaRecusada || q.Veredicto != VeredictoInconclusivo || r.Pedidos.Enviados != 0 || *r.Pedidos.GastosHoje != 0 {
 		t.Errorf("linha de comandos: codigo %d, %s, enviados %d, gastos hoje %d", e.codigo, q.Veredicto, r.Pedidos.Enviados, *r.Pedidos.GastosHoje)
 	}
-	if !strings.Contains(e.stderr, "nenhum pedido foi enviado") || !strings.HasPrefix(e.stdout, "QUALIFICACAO DO MODELO (AOS-518): INCONCLUSIVO") {
+	if !strings.Contains(e.stderr, "nenhum pedido foi enviado") || !strings.HasPrefix(aos518SemCabecaDeEnsaio(t, e.stdout), "QUALIFICACAO DO MODELO (AOS-518): INCONCLUSIVO") {
 		t.Errorf("a recusa por tecto nao se explica:\n%s\n%.200s", e.stderr, e.stdout)
 	}
 }
@@ -408,16 +421,16 @@ func TestAOS518_Falso_ControloSemDevolucao(t *testing.T) {
 	// O falso EXIGENTE: sem o estado de volta responde 400. O controlo falha como devia.
 	e, r := aos518Qualificar(t, aos518PerfilObrigatorio, "--estado", "exige")
 	q := aos518Veredicto(t, r)
-	if e.codigo != SaidaOK || q.Veredicto != VeredictoQualificado || contem(q.Avisos, AvisoExigenciaNaoProvada) || contem(q.Avisos, AvisoDevolucaoNaoCumprida) {
+	if e.codigo != SaidaQualificadoEmEnsaio || q.Veredicto != VeredictoQualificado || contem(q.Avisos, AvisoExigenciaNaoProvada) || q.Contagens.Devolucao != QualificacaoCumprida {
 		t.Fatalf("exigente: codigo %d, %s %v avisos %v\n%s", e.codigo, q.Veredicto, q.Razoes, q.Avisos, e.stderr)
 	}
 	ct := q.Controlo
-	if ct == nil || ct.Resultado != ControloFalhouComoDevido || ct.Passagens != 1 || ct.Contagens == nil || ct.Contagens.QuatroXXComMensagemTool != 5 {
+	if ct == nil || ct.Resultado != ControloFalhouComoDevido || ct.Passagens != 1 || ct.Contagens == nil || ct.Contagens.QuatroXXComMensagemTool != 5 || ct.Contagens.PedidosComMensagemTool != 5 || ct.Contagens.NosComToolsCumpridos != 0 || ct.Limite != LimiteDoControlo {
 		t.Fatalf("controlo do exigente = %+v", ct)
 	}
 	perfil, _ := LerPerfilCandidato([]byte(aos518PerfilObrigatorio))
 	if doControlo := PerfilDeControlo(*perfil); ct.DigestDoPerfil != doControlo.Digest() || ct.DigestDoPerfil == r.Digests.Perfil ||
-		doControlo.StateReturn != modelgateway.StateReturnNever || doControlo.ProjectionVersion != modelgateway.NativeProjectionVersion120 || doControlo.ExpectedModel != perfil.ExpectedModel {
+		doControlo.StateReturn != modelgateway.StateReturnNever || doControlo.ProjectionVersion != perfil.ProjectionVersion || doControlo.ExpectedModel != perfil.ExpectedModel {
 		t.Errorf("perfil de controlo = %+v (digest no relatorio %s)", doControlo, ct.DigestDoPerfil)
 	}
 	// O pior caso declarado inclui o controlo (672 + 84), e os pedidos dele contam nos enviados.
@@ -428,31 +441,120 @@ func TestAOS518_Falso_ControloSemDevolucao(t *testing.T) {
 		t.Errorf("com a exigencia provada nao ha aviso")
 	}
 
-	// O falso que ACEITA TUDO (nao exige nada e nunca traz raciocinio): o controlo passa.
+	// O falso que ACEITA TUDO e nunca traz raciocinio, com um perfil que declara devolucao: a
+	// corrida nao mediu o que o perfil promete. `inconclusivo` — nunca `qualificado` —, o controlo
+	// nao corre, e o aviso da exigencia continua la, A CABECA do resumo.
 	e, r = aos518Qualificar(t, aos518PerfilObrigatorio, "--roteiro", "cumpre")
 	q = aos518Veredicto(t, r)
-	if e.codigo != SaidaOK || q.Veredicto != VeredictoQualificado {
-		t.Fatalf("aceita tudo: codigo %d, %s %v", e.codigo, q.Veredicto, q.Razoes)
+	if e.codigo != SaidaInconclusivo || q.Veredicto != VeredictoInconclusivo || !reflect.DeepEqual(q.Razoes, []string{RazaoDevolucaoNaoMedida}) || q.Contagens.Devolucao != QualificacaoSemRaciocinio {
+		t.Fatalf("aceita tudo: codigo %d, %s %v (devolucao %q)", e.codigo, q.Veredicto, q.Razoes, q.Contagens.Devolucao)
 	}
-	if q.Controlo == nil || q.Controlo.Resultado != ControloPassou || !reflect.DeepEqual(q.Avisos, []string{AvisoExigenciaNaoProvada, AvisoDevolucaoNaoCumprida}) {
+	if q.Controlo == nil || q.Controlo.Resultado != ControloNaoCorreu || q.Controlo.Limite != LimiteDoControlo || !reflect.DeepEqual(q.Avisos, []string{AvisoExigenciaNaoProvada}) {
 		t.Fatalf("aceita tudo: controlo %+v, avisos %v", q.Controlo, q.Avisos)
 	}
-	// A CABECA: a primeira linha do resumo e o aviso, antes do veredicto.
-	if !strings.HasPrefix(e.stdout, "AVISO — EXIGENCIA_NAO_PROVADA") || strings.Index(e.stdout, "AVISO — EXIGENCIA_NAO_PROVADA") > strings.Index(e.stdout, "QUALIFICACAO DO MODELO") {
+	resumo := aos518SemCabecaDeEnsaio(t, e.stdout)
+	if !strings.HasPrefix(resumo, "AVISO — EXIGENCIA_NAO_PROVADA") || strings.Index(resumo, "AVISO — EXIGENCIA_NAO_PROVADA") > strings.Index(resumo, "QUALIFICACAO DO MODELO") {
 		t.Errorf("o aviso nao vem a cabeca do resumo:\n%.400s", e.stdout)
 	}
 	if !strings.Contains(e.stderr, "AVISO DA QUALIFICACAO — exigencia_nao_provada") {
 		t.Errorf("o aviso nao sai no fim da corrida:\n%s", e.stderr)
 	}
-	resumo, _ := filepath.Glob(filepath.Join(e.saida, "*.txt"))
-	if cru, _ := os.ReadFile(resumo[0]); !strings.HasPrefix(string(cru), "AVISO — EXIGENCIA_NAO_PROVADA") {
+	ficheiros, _ := filepath.Glob(filepath.Join(e.saida, "*.txt"))
+	if cru, _ := os.ReadFile(ficheiros[0]); !strings.HasPrefix(aos518SemCabecaDeEnsaio(t, string(cru)), "AVISO — EXIGENCIA_NAO_PROVADA") {
 		t.Errorf("o aviso nao vem a cabeca do ficheiro de resumo")
+	}
+
+	// O provider que PROIBE o estado, com um perfil que o devolve por obrigacao: a devolucao e
+	// `nao_cumprida`, e isso e razao firme.
+	e, r = aos518Qualificar(t, aos518PerfilObrigatorio, "--estado", "proibe", "--silencioso")
+	if q = aos518Veredicto(t, r); e.codigo != SaidaModeloRecusado || q.Veredicto != VeredictoRecusado || !contem(q.Razoes, RazaoDevolucaoNaoCumprida) || q.Contagens.Devolucao != QualificacaoNaoCumprida {
+		t.Errorf("proibe: codigo %d, %s %v (devolucao %q)", e.codigo, q.Veredicto, q.Razoes, q.Contagens.Devolucao)
 	}
 
 	// Com a corrida principal recusada o controlo nao corre — e o aviso continua la.
 	_, r = aos518Qualificar(t, aos518PerfilObrigatorio, "--roteiro", "texto", "--silencioso")
 	if q = aos518Veredicto(t, r); q.Veredicto != VeredictoRecusado || q.Controlo == nil || q.Controlo.Resultado != ControloNaoCorreu || q.Controlo.Contagens != nil || !contem(q.Avisos, AvisoExigenciaNaoProvada) {
 		t.Errorf("principal recusada: %s, controlo %+v, avisos %v", q.Veredicto, q.Controlo, q.Avisos)
+	}
+}
+
+// aos518SemCabecaDeEnsaio confere que o resumo de uma corrida SEM modelo real abre por dizer que
+// o veredicto nao vale para producao, e devolve o resto.
+func aos518SemCabecaDeEnsaio(t *testing.T, resumo string) string {
+	t.Helper()
+	primeira, resto, _ := strings.Cut(resumo, "\n")
+	if !strings.HasPrefix(primeira, "ENSAIO SEM MODELO REAL") || !strings.Contains(primeira, "NAO VALE PARA PRODUCAO") {
+		t.Errorf("a primeira linha do resumo de um ensaio sem modelo real tinha de o dizer: %q", primeira)
+	}
+	return resto
+}
+
+// OS TRES MODOS DA REVISAO ADVERSARIAL nos pedidos SEM tools (o provider cumpre tudo o que tem
+// tools): 400 de parametro e resposta cortada dao `recusado` por L6; 500 da `inconclusivo`. Antes
+// da decisao do dono de 2026-10-11 os tres saiam `qualificado`.
+func TestAOS518_Falso_NosSemToolsEntramNaRegra(t *testing.T) {
+	for _, c := range []struct {
+		nome      string
+		resposta  func(w http.ResponseWriter)
+		veredicto string
+		razoes    []string
+	}{
+		{"400 invalid_request_error", func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"x","type":"invalid_request_error"}}`))
+		}, VeredictoRecusado, []string{RazaoSemToolsNaoCumpridos}},
+		{"500", func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"x","type":"server_error"}}`))
+		}, VeredictoInconclusivo, []string{RazaoAmostraIncompleta, RazaoInterrompidos5xx}},
+		{"resposta cortada", func(w http.ResponseWriter) {
+			_, _ = w.Write(wiretest.Corpo("finish_length"))
+		}, VeredictoRecusado, []string{RazaoSemToolsNaoCumpridos}},
+	} {
+		bom := aos518FalsoBom()
+		amb := aos518Ambiente(t, aos518PerfilSimples, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			corpo, _ := io.ReadAll(req.Body)
+			if !bytes.Contains(corpo, []byte(`"tools"`)) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set(port.HeaderServedModel, "openai/modelo-falso-do-banco")
+				c.resposta(w)
+				return
+			}
+			req.Body = io.NopCloser(bytes.NewReader(corpo))
+			bom.ServeHTTP(w, req)
+		}), nil, TectoDePedidosDaQualificacao)
+		r := amb.correr(t, context.Background())
+		q := aos518Veredicto(t, r)
+		if q.Veredicto != c.veredicto || !reflect.DeepEqual(q.Razoes, c.razoes) {
+			t.Errorf("%s nos pedidos sem tools: %s %v, quer %s %v", c.nome, q.Veredicto, q.Razoes, c.veredicto, c.razoes)
+		}
+		// Os 40 nos com tools cumpriram: so os 16 sem tools decidem.
+		if k := q.Contagens; k.NosComToolsCumpridos != 40 || k.NosSemToolsExigidos != 16 || k.NosSemToolsCumpridos != 0 ||
+			k.NosSemToolsNaAmostra+k.NosSemToolsInterrompidosPorCausa[InterrompidoPor5xx] != 16 {
+			t.Errorf("%s: com tools cumpridos %d; sem tools: amostra %d, cumpridos %d, por desfecho %v, interrompidos %v", c.nome,
+				k.NosComToolsCumpridos, k.NosSemToolsNaAmostra, k.NosSemToolsCumpridos, k.NosSemToolsNaoCumpridosPorDesfecho, k.NosSemToolsInterrompidosPorCausa)
+		}
+	}
+}
+
+// L2 DE PONTA A PONTA: um provider que, na primeira tentativa de cada no com tools, responde sem
+// tool call e fecha com um motivo que NAO e `stop`, e cumpre a segunda. Os 40 nos acabam
+// cumpridos — e L2 conta os 40.
+func TestAOS518_Falso_SemToolCallComOutroMotivoDeParagemContaEmL2(t *testing.T) {
+	for _, mau := range []Comportamento{ComportamentoSemToolEndTurn, ComportamentoSemToolContentFilter, ComportamentoSemToolSemMotivo, ComportamentoTexto} {
+		// O roteiro alterna por conversa, e a bateria tem um numero par de conversas por passagem:
+		// a primeira tentativa de cada no com tools cai sempre no comportamento mau.
+		_, r := aos518Qualificar(t, aos518PerfilSimples, "--roteiro", string(mau)+",cumpre", "--silencioso")
+		q := aos518Veredicto(t, r)
+		k := q.Contagens
+		if k.SemToolCallAPrimeira == 0 {
+			t.Errorf("%s: L2 = 0 de %d — a primeira tentativa sem tool call nao foi contada (motivos de paragem vistos: %v; desfechos: %v)", mau, k.PrimeirasTentativasComTools, r.Taxas.MotivosDeParagem, r.Taxas.Desfechos)
+			continue
+		}
+		if q.Veredicto != VeredictoRecusado || !contem(q.Razoes, RazaoModeloSemToolCall) || k.SemToolCallAPrimeira != 40 || k.PrimeirasTentativasComTools != 40 {
+			t.Errorf("%s: %s %v, L2 = %d de %d (cumpridos %d; motivos %v; desfechos %v)", mau, q.Veredicto, q.Razoes, k.SemToolCallAPrimeira, k.PrimeirasTentativasComTools, k.NosComToolsCumpridos, r.Taxas.MotivosDeParagem, r.Taxas.Desfechos)
+		}
+		t.Logf("%s: %s %v; L2 %d/%d; cumpridos %d; motivos de paragem %v; desfechos %v", mau, q.Veredicto, q.Razoes, k.SemToolCallAPrimeira, k.PrimeirasTentativasComTools, k.NosComToolsCumpridos, r.Taxas.MotivosDeParagem, r.Taxas.Desfechos)
 	}
 }
 

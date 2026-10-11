@@ -67,6 +67,29 @@ const (
 	ComportamentoTrocaModelo Comportamento = "troca_modelo"
 )
 
+// Os três comportamentos abaixo (AOS-518) NUNCA fazem tool call, como [ComportamentoTexto], mas
+// fecham o turno com outro motivo de paragem — ou sem nenhum. Sem tools comportam-se como
+// [ComportamentoCumpre]. Existem para a medida «sem tool call à primeira» não depender do motivo.
+const (
+	ComportamentoSemToolEndTurn       Comportamento = "sem_tool_end_turn"
+	ComportamentoSemToolContentFilter Comportamento = "sem_tool_content_filter"
+	ComportamentoSemToolSemMotivo     Comportamento = "sem_tool_sem_motivo"
+)
+
+// motivoDoComportamento devolve o `finish_reason` de um comportamento que não faz tool call
+// (nil ⇒ o campo vai a `null`), e se o comportamento é um desses.
+func motivoDoComportamento(c Comportamento) (motivo any, eDesses bool) {
+	switch c {
+	case ComportamentoSemToolEndTurn:
+		return "end_turn", true
+	case ComportamentoSemToolContentFilter:
+		return "content_filter", true
+	case ComportamentoSemToolSemMotivo:
+		return nil, true
+	}
+	return nil, false
+}
+
 // ModeloTrocadoDoFalso é o nome que o provider falso declara ter servido em [ComportamentoTrocaModelo].
 const ModeloTrocadoDoFalso = "falso/modelo-trocado-do-banco"
 
@@ -76,6 +99,7 @@ func Comportamentos() []Comportamento {
 		ComportamentoCumpre, ComportamentoTexto, ComportamentoVazia, ComportamentoCortada,
 		ComportamentoSemFactos, ComportamentoErro500, ComportamentoErro401, ComportamentoRejeitaSegundo,
 		ComportamentoTrocaModelo,
+		ComportamentoSemToolEndTurn, ComportamentoSemToolContentFilter, ComportamentoSemToolSemMotivo,
 	}
 }
 
@@ -286,6 +310,9 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// A tool call ESCRITA COMO TEXTO: o nome da tool no texto, nenhuma tool call nativa.
 		texto := SentinelaDeTexto + " I will now call " + p.Tools[0].Function.Name + " with the document name as its argument."
 		_, _ = w.Write(respostaDeTexto(texto, tokensDeEntrada))
+	case temTools && semToolComOutroMotivo(comportamento):
+		motivo, _ := motivoDoComportamento(comportamento)
+		_, _ = w.Write(respostaDeTextoComMotivo(SentinelaDeTexto+" I have nothing to call.", tokensDeEntrada, motivo))
 	case porPedir:
 		_, _ = w.Write(respostaComToolCalls(p, strings.Join(doUtilizador, "\n"), tokensDeEntrada))
 	case comportamento == ComportamentoRejeitaSegundo && comTool > 0:
@@ -305,13 +332,23 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func semToolComOutroMotivo(c Comportamento) bool {
+	_, eDesses := motivoDoComportamento(c)
+	return eDesses
+}
+
 // respostaDeTexto constrói uma resposta final com o texto dado e motivo `stop`.
 func respostaDeTexto(texto string, tokensDeEntrada int64) []byte {
+	return respostaDeTextoComMotivo(texto, tokensDeEntrada, "stop")
+}
+
+// respostaDeTextoComMotivo constrói uma resposta final com o texto e o `finish_reason` dados.
+func respostaDeTextoComMotivo(texto string, tokensDeEntrada int64, motivo any) []byte {
 	saida := int64(len(texto)/4 + 1)
 	b, _ := json.Marshal(map[string]any{
 		"id": "chatcmpl-banco", "object": "chat.completion", "created": 1700000000, "model": "modelo-falso-do-banco",
 		"choices": []any{map[string]any{
-			"index": 0, "finish_reason": "stop",
+			"index": 0, "finish_reason": motivo,
 			"message": map[string]any{"role": "assistant", "content": texto},
 		}},
 		"usage": map[string]any{"prompt_tokens": tokensDeEntrada, "completion_tokens": saida, "total_tokens": tokensDeEntrada + saida},

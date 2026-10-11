@@ -36,10 +36,10 @@ func TestAOS518_ProxyReal_AQualificacaoAtrasDoProxy(t *testing.T) {
 		veredicto             string
 		razoes                []string
 	}{
-		{"bom", aos518PerfilSimples, "cumpre", SaidaOK, VeredictoQualificado, []string{}},
-		{"nao chama a tool", aos518PerfilSimples, "texto", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloSemToolCall}},
-		{"recusa o segundo turno", aos518PerfilSimples, "rejeita_segundo", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModelo4xxNoSegundo}},
-		{"responde vazio", aos518PerfilSimples, "vazia", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloRespostasVazias}},
+		{"bom", aos518PerfilSimples, "cumpre", SaidaQualificadoEmEnsaio, VeredictoQualificado, []string{}},
+		{"nao chama a tool", aos518PerfilSimples, "texto", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloSemToolCall, RazaoAmostraIncompleta}},
+		{"recusa o segundo turno", aos518PerfilSimples, "rejeita_segundo", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModelo4xxNoSegundo, RazaoAmostraIncompleta}},
+		{"responde vazio", aos518PerfilSimples, "vazia", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloNaoCumpridos, RazaoModeloRespostasVazias, RazaoSemToolsNaoCumpridos, RazaoAmostraIncompleta}},
 		{"o proxy serve outro modelo", outroModelo, "cumpre", SaidaModeloRecusado, VeredictoRecusado, []string{RazaoModeloServidoDiferente}},
 	}
 	medidas := map[string]any{"imagem": ImagemDoProxy}
@@ -56,7 +56,7 @@ func TestAOS518_ProxyReal_AQualificacaoAtrasDoProxy(t *testing.T) {
 		if q.Veredicto != c.veredicto || !reflect.DeepEqual(q.Razoes, c.razoes) {
 			t.Errorf("%s: %s %v, quer %s %v", c.nome, q.Veredicto, q.Razoes, c.veredicto, c.razoes)
 		}
-		if r.Modo != ModoProxy || q.Rota.ImagemDoProxy != ImagemDoProxyDeProducao || q.Contagens.NosComToolsNaAmostra != 40 || q.Contagens.TurnosSemModeloReportado != 0 {
+		if r.Modo != ModoProxy || q.Rota.ImagemDoProxy != ImagemDoProxy || q.Contagens.NosComToolsNaAmostra != 40 || q.Contagens.TurnosSemModeloReportado != 0 {
 			t.Errorf("%s: modo %s, imagem %s, amostra %d, turnos sem modelo reportado %d", c.nome, r.Modo, q.Rota.ImagemDoProxy, q.Contagens.NosComToolsNaAmostra, q.Contagens.TurnosSemModeloReportado)
 		}
 		if _, err := VerificarDigestDoRelatorio(cru); err != nil {
@@ -69,6 +69,26 @@ func TestAOS518_ProxyReal_AQualificacaoAtrasDoProxy(t *testing.T) {
 			"modelo_diferente": q.Contagens.TurnosComModeloDiferente, "4xx_nos_segundos_turnos": q.Contagens.QuatroXXComMensagemTool,
 		}
 	}
+	// O QUE CHEGA AO NO quando o fornecedor fecha um turno sem tool call com um motivo que nao e
+	// `stop` (a revisao adversarial nao o conseguiu medir sem o proxy): uma passagem da bateria por
+	// comportamento, e os motivos de paragem que o runtime registou.
+	motivos := map[string]any{}
+	for _, c := range []Comportamento{ComportamentoSemToolEndTurn, ComportamentoSemToolContentFilter, ComportamentoSemToolSemMotivo} {
+		saida := t.TempDir()
+		e := executar(t, Ambiente{}, "proxy", "--binario-do-falso", binario, "--roteiro", string(c), "--saida", saida, "--silencioso")
+		achados := aos518Relatorios(t, saida)
+		if len(achados) != 1 {
+			t.Errorf("%s atras do proxy: codigo %d, relatorios %v\n%s", c, e.codigo, achados, e.stderr)
+			continue
+		}
+		r, _ := aos518LerRelatorio(t, achados[0])
+		k := contarParaQualificacao(r.Terminou, 5, 2, r.Observacoes)
+		if k.SemToolCallAPrimeira != 5 {
+			t.Errorf("%s atras do proxy: L2 contou %d de %d primeiras tentativas; quer 5", c, k.SemToolCallAPrimeira, k.PrimeirasTentativasComTools)
+		}
+		motivos[string(c)] = map[string]any{"motivos_de_paragem": r.Taxas.MotivosDeParagem, "desfechos": r.Taxas.Desfechos, "http": r.Taxas.HTTP, "sem_tool_call_a_primeira": k.SemToolCallAPrimeira}
+	}
+	medidas["motivos_de_paragem_atras_do_proxy"] = motivos
 	medidas["pass"] = !t.Failed()
 	resumo, _ := json.Marshal(medidas)
 	t.Logf("AOS_BANCO_QUALIFICACAO_REPORT %s", resumo)

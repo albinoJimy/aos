@@ -468,6 +468,15 @@ func EscreverRelatorio(pasta string, r *Relatorio) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
+	if r.QualificacaoDoModelo != nil {
+		// Um relatório de qualificação é citado pelo seu digest: nunca se escreve por cima de outro
+		// (duas qualificações no mesmo segundo, na mesma pasta). Falha em vez de sobrepor.
+		f, cerr := os.OpenFile(base+".json", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- pasta dos relatorios, dada por quem corre
+		if cerr != nil {
+			return "", "", fmt.Errorf("banco-ensaio: ja existe um relatorio de qualificacao com este nome (mesmo segundo, mesma pasta); nao se escreve por cima: %s", filepath.Base(base)+".json")
+		}
+		_ = f.Close()
+	}
 	if err := os.WriteFile(base+".json", append(cru, '\n'), 0o600); err != nil {
 		return "", "", err
 	}
@@ -636,9 +645,9 @@ func ResumoEmTexto(r *Relatorio) string {
 
 // As frases, fixas, de cada aviso de uma qualificação. Vão à cabeça do resumo.
 var frasesDosAvisos = map[string]string{
-	AvisoExigenciaNaoProvada:  "o perfil declara devolucao OBRIGATORIA e a corrida de controlo SEM devolucao nao falhou como devia: «aceite» nao e «exigido». Este relatorio NAO prova que o fornecedor exige, nem que le, o estado devolvido",
-	AvisoDevolucaoNaoCumprida: "o perfil devolve estado e o veredicto da devolucao (QUALIFICACAO DA DEVOLUCAO, abaixo) nao e `cumprida`",
-	AvisoFactosAusentes:       "ha runs cumpridos cuja saida nao tem os factos do documento sintetico (taxa «factos ausentes da saida», abaixo). Os limiares L1 a L5 nao medem o conteudo da resposta",
+	AvisoExigenciaNaoProvada: "o perfil declara devolucao OBRIGATORIA e a corrida de controlo SEM devolucao nao falhou como devia: «aceite» nao e «exigido». Este relatorio NAO prova que o fornecedor exige, nem que le, o estado devolvido",
+	AvisoTectoUSDNaoImposto:  "o tecto de 3 USD por qualificacao NAO foi imposto: o fornecedor nao tem tecto em dolares no ficheiro de chaves, e sem ele o banco nao estima o gasto. Actuou so o tecto de pedidos",
+	AvisoFactosAusentes:      "ha runs cumpridos cuja saida nao tem os factos do documento sintetico (taxa «factos ausentes da saida», abaixo). Os limiares L1 a L5 nao medem o conteudo da resposta",
 }
 
 // cabecaDaQualificacao escreve, À CABEÇA do resumo, os avisos e o veredicto de uma qualificação.
@@ -647,6 +656,9 @@ func cabecaDaQualificacao(b *strings.Builder, r *Relatorio) {
 	q := r.QualificacaoDoModelo
 	if q == nil {
 		return
+	}
+	if !q.ValeParaProducao {
+		fmt.Fprintf(b, "ENSAIO SEM MODELO REAL (modo %s) — ESTE VEREDICTO NAO VALE PARA PRODUCAO: o fornecedor e um provider falso.\n", r.Modo)
 	}
 	for _, a := range q.Avisos {
 		fmt.Fprintf(b, "AVISO — %s: %s.\n", strings.ToUpper(a), frasesDosAvisos[a])
@@ -683,15 +695,15 @@ func cabecaDaQualificacao(b *strings.Builder, r *Relatorio) {
 	}
 	b.WriteString("\n")
 	if ct := q.Controlo; ct != nil {
-		fmt.Fprintf(b, "  controlo sem devolucao (%d passagem): %s\n", ct.Passagens, ct.Resultado)
+		fmt.Fprintf(b, "  controlo sem devolucao (%d passagem): %s\n    LIMITE DO CONTROLO: %s\n", ct.Passagens, ct.Resultado, ct.Limite)
 	}
 	o := q.Orcamento
 	fmt.Fprintf(b, "  orcamento: pior caso declarado %d pedidos; enviados %d de um tecto de %d por qualificacao", o.PiorCasoDeclarado, o.PedidosEnviados, o.TectoDePedidos)
 	if o.MicroUSDEstimado != nil {
 		fmt.Fprintf(b, "; gasto ESTIMADO %.4f USD de um tecto de %.2f USD", float64(*o.MicroUSDEstimado)/1e6, float64(o.TectoMicroUSD)/1e6)
 	}
-	if o.QualificacoesDoPerfilHoje != nil {
-		fmt.Fprintf(b, "; qualificacao %d de %d deste perfil hoje", *o.QualificacoesDoPerfilHoje, o.MaximoPorPerfilPorDia)
+	if o.QualificacoesDoPerfilHoje != nil && o.QualificacoesDaRotaHoje != nil {
+		fmt.Fprintf(b, "; qualificacao %d de %d deste perfil e %d de %d desta rota hoje", *o.QualificacoesDoPerfilHoje, o.MaximoPorPerfilPorDia, *o.QualificacoesDaRotaHoje, o.MaximoPorRotaPorDia)
 	}
 	fmt.Fprintf(b, "\n  REGRA: %s\n\n", q.Regra)
 }

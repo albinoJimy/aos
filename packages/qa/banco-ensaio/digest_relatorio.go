@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"unicode/utf8"
 )
 
 // O DIGEST DO PRÓPRIO RELATÓRIO (AOS-518).
@@ -19,9 +21,11 @@ import (
 // SOBRE QUE BYTES. O digest calcula-se sobre a FORMA CANÓNICA do documento JSON do relatório
 // ([FormaCanonicaDoRelatorio]), que se obtém do ficheiro assim:
 //
-//  1. lê-se o ficheiro como UM documento JSON cujo topo é um objecto; um nome de membro repetido
-//     no mesmo objecto, em qualquer profundidade, recusa (dois leitores podiam ler valores
-//     diferentes do mesmo ficheiro);
+//  1. lê-se o ficheiro como UM documento JSON em UTF-8 válido cujo topo é um objecto; um nome de
+//     membro repetido no mesmo objecto, em qualquer profundidade, recusa — e «repetido» conta sem
+//     distinguir maiúsculas de minúsculas (dois leitores podiam ler valores diferentes do mesmo
+//     ficheiro); um texto ou um nome com U+FFFD, ou com um escape de meio par substituto isolado
+//     (que o leitor trocaria por U+FFFD), também recusa;
 //  2. retira-se do objecto do topo o membro `digest_do_relatorio` — e só esse, e só no topo;
 //  3. escreve-se o documento sem espaços nem quebras de linha: os membros de cada objecto pela
 //     ordem dos BYTES do nome (UTF-8); as listas pela ordem em que estão; os números com o
@@ -36,8 +40,10 @@ import (
 // mudar só a indentação ou a ordem dos membros não muda. O resumo em texto (`.txt`) NÃO é coberto:
 // é derivado do JSON, e é o JSON que se confere.
 //
-// O QUE NÃO DÁ: o digest prova que o relatório não foi alterado depois de escrito. Não prova que a
-// corrida aconteceu, nem quem a correu — o relatório não é assinado pelo banco.
+// O QUE NÃO DÁ: o digest dá INTEGRIDADE, não AUTENTICIDADE. Quem altera o veredicto pode
+// recalcular o digest e pô-lo no ficheiro: a verificação passa. O digest serve para um registo
+// ASSINADO citar um relatório exacto (AOS-519) — é a assinatura desse registo que diz quem
+// responde por ele. E não prova que a corrida aconteceu: o relatório não é assinado pelo banco.
 
 // CampoDoDigestDoRelatorio é o nome do membro do topo que guarda o digest do relatório.
 const CampoDoDigestDoRelatorio = "digest_do_relatorio"
@@ -81,6 +87,11 @@ func VerificarDigestDoRelatorio(cru []byte) (string, error) {
 
 // canonizarRelatorio devolve a forma canónica e o valor do membro do digest (vazio se não houver).
 func canonizarRelatorio(cru []byte) (canonico []byte, declarado string, err error) {
+	if !utf8.Valid(cru) {
+		// O descodificador trocaria os bytes inválidos por U+FFFD em silêncio: dois ficheiros
+		// diferentes passavam a ter a mesma forma canónica.
+		return nil, "", fmt.Errorf("%w: o relatorio nao e UTF-8 valido", ErrDigestDoRelatorio)
+	}
 	dec := json.NewDecoder(bytes.NewReader(cru))
 	dec.UseNumber()
 	inicio, err := dec.Token()
@@ -109,7 +120,14 @@ func canonizarObjecto(dec *json.Decoder, b *bytes.Buffer, topo bool) (string, er
 			return "", fmt.Errorf("%w: JSON ilegivel", ErrDigestDoRelatorio)
 		}
 		nome, _ := t.(string)
-		if _, repetido := membros[nome]; repetido || (topo && nome == CampoDoDigestDoRelatorio && declarado != "") {
+		// Repetido conta SEM distinguir maiúsculas: o `encoding/json` do Go casa `Veredicto` com
+		// o campo `veredicto`, e um leitor desses leria o valor do membro que viesse por último.
+		for visto := range membros {
+			if strings.EqualFold(visto, nome) {
+				return "", fmt.Errorf("%w: nome de membro repetido", ErrDigestDoRelatorio)
+			}
+		}
+		if topo && strings.EqualFold(nome, CampoDoDigestDoRelatorio) && (declarado != "" || nome != CampoDoDigestDoRelatorio) {
 			return "", fmt.Errorf("%w: nome de membro repetido", ErrDigestDoRelatorio)
 		}
 		var valor bytes.Buffer
@@ -198,6 +216,11 @@ func canonizarValor(dec *json.Decoder, b *bytes.Buffer) error {
 
 // escreverTextoCanonico escreve um texto como o `encoding/json` o escreve, sem o escape de HTML.
 func escreverTextoCanonico(b *bytes.Buffer, s string) error {
+	if strings.ContainsRune(s, utf8.RuneError) {
+		// Um escape de meio par substituto isolado (de D800 a DFFF) chega aqui trocado por U+FFFD:
+		// textos diferentes no ficheiro dariam a mesma forma canónica. Recusa-se o carácter.
+		return fmt.Errorf("%w: texto com um caracter de substituicao (U+FFFD) ou um par substituto partido", ErrDigestDoRelatorio)
+	}
 	var t bytes.Buffer
 	enc := json.NewEncoder(&t)
 	enc.SetEscapeHTML(false)
