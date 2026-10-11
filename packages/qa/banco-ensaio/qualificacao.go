@@ -135,6 +135,9 @@ const (
 	InterrompidoPorTransporte = "erro_de_transporte"
 	InterrompidoPorConta      = "conta_ou_rota"
 	InterrompidoPeloTecto     = "tecto"
+	// InterrompidoPeloCancelamento — o run foi apanhado pelo cancelamento da corrida
+	// ([MedidasDoRun.CorridaCancelada]).
+	InterrompidoPeloCancelamento = "cancelamento_da_corrida"
 )
 
 // RegraDoVeredictoDoModelo é a regra aplicada, em texto fixo. Vai no relatório ao lado do veredicto.
@@ -152,6 +155,17 @@ type MedidasDoRun struct {
 	TurnosComModeloIgual     int `json:"turnos_com_modelo_igual"`
 	TurnosComModeloDiferente int `json:"turnos_com_modelo_diferente"`
 	TurnosSemModeloReportado int `json:"turnos_sem_modelo_reportado"`
+	// CorridaCancelada diz que o run NÃO fechou cumprido e que, quando acabou, o contexto da
+	// corrida já estava cancelado (um Ctrl-C, o fecho da consola). O que esse run deixou não diz
+	// nada sobre o modelo: o cancelamento pode ter apanhado o run DEPOIS de um pedido com 200 — o
+	// runtime devolve então um erro sem classe, e o run parecia uma falha do modelo. O nó fica
+	// interrompido por causa passageira e o run não alimenta contagem nenhuma de limiar.
+	CorridaCancelada bool `json:"corrida_cancelada,omitempty"`
+}
+
+// cancelada diz se a observação é de um run apanhado pelo cancelamento da corrida.
+func (o Observacao) cancelada() bool {
+	return o.Qualificacao != nil && o.Qualificacao.CorridaCancelada
 }
 
 // quatroXXDeParametro diz se uma resposta é um 4xx que fala do PEDIDO — e não da conta, da chave,
@@ -193,9 +207,14 @@ func estadoFinalDoNo(o Observacao) (classe, causa string) {
 	if n := len(o.HTTP); n > 0 {
 		ultimo, tipo = o.HTTP[n-1], tiposPorPedido(o)[n-1]
 	}
-	switch o.Desfecho {
-	case DesfechoCumprido:
+	if o.Desfecho == DesfechoCumprido {
 		return noCumprido, ""
+	}
+	if o.cancelada() {
+		// ANTES de olhar para o desfecho: seja ele qual for, veio depois do cancelamento.
+		return noInterrompido, InterrompidoPeloCancelamento
+	}
+	switch o.Desfecho {
 	case DesfechoTectoAtingido, DesfechoContador:
 		return noInterrompido, InterrompidoPeloTecto
 	case DesfechoTempoEsgotado:
@@ -294,6 +313,12 @@ func contarParaQualificacao(terminou string, exigidos, semToolsExigidos int, obs
 		} else if o.Tentativa >= anterior.Tentativa {
 			ultima[u] = o
 		}
+		if o.cancelada() {
+			// DEFESA EM PROFUNDIDADE: um run apanhado pelo cancelamento não alimenta L2, L3, L5 nem
+			// a recusa do perfil. Numa corrida interrompida, uma razão firme só vem de runs que
+			// fecharam ANTES da interrupção.
+			continue
+		}
 		if o.ExigeTool && o.Tentativa == 1 && o.Turnos >= 1 {
 			c.PrimeirasTentativasComTools++
 			// NÃO se usa [Observacao.SemToolCall], que exige o motivo de paragem `stop` (é a medida
@@ -333,7 +358,7 @@ func contarParaQualificacao(terminou string, exigidos, semToolsExigidos int, obs
 	for _, u := range ordem {
 		o := ultima[u]
 		c.NosObservados++
-		if o.Desfecho == string(agentruntime.OutcomeEmptyOutput) {
+		if o.Desfecho == string(agentruntime.OutcomeEmptyOutput) && !o.cancelada() {
 			c.RespostasVaziasNoFim++
 		}
 		if !o.ExigeTool {
@@ -469,7 +494,12 @@ func qualificarModelo(c ContagensDaQualificacao) VeredictoDoModelo {
 	juntar(c.perfilRecusado(), RazaoPerfilRecusado)
 	firmes := len(v.Razoes)
 
-	if r := razaoDoTerminou(c.Terminou); r != "" {
+	r := razaoDoTerminou(c.Terminou)
+	if r == "" && c.interrompidos(InterrompidoPeloCancelamento) > 0 {
+		// O cancelamento apanhou o ÚLTIMO passo: a corrida deu a volta toda e não está completa.
+		r = RazaoCorridaInterrompida
+	}
+	if r != "" {
 		v.Razoes = append(v.Razoes, r)
 	}
 	juntar(c.amostraIncompleta(), RazaoAmostraIncompleta)

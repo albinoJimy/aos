@@ -573,6 +573,11 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	default:
 		obs.Desfecho = DesfechoErroOutro
 	}
+	if obs.Qualificacao != nil && ctx.Err() != nil {
+		// O run não fechou cumprido e o contexto da corrida está cancelado: seja qual for o desfecho
+		// acima, não é do modelo ([MedidasDoRun.CorridaCancelada]).
+		obs.Qualificacao.CorridaCancelada = true
+	}
 	return obs, ""
 }
 
