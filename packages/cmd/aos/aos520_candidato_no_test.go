@@ -172,7 +172,7 @@ func TestAOS520_No_OCandidatoServeORunEFicaTudoGravado(t *testing.T) {
 	}
 	entrada := n.node.canary.candidato.entryDigest
 	quer := modeloFixadoPayload{V: "1.0", Role: "candidato", Alias: aos520AliasCand, ProfileDigest: digestCand, EntryDigest: entrada,
-		SharePercent: 100, Function: "aos-canary/v1", Reason: "funcao", PlanKey: runID}
+		SharePercent: 100, Function: "aos-canary/v1", Reason: "funcao", PlanKey: runID, PlanKeyKind: "run"}
 	if fix != quer || !strings.HasPrefix(entrada, "sha256:") {
 		t.Fatalf("run.model_pinned:\n veio:  %+v\n quero: %+v", fix, quer)
 	}
@@ -425,7 +425,7 @@ func TestAOS520_No_Plano_TresNosEDuasTentativas_UmSoModelo(t *testing.T) {
 			if c.papel == "candidato" && i > 0 {
 				querRazao = "plano_ja_atribuido"
 			}
-			if !tem || fix.Role != c.papel || fix.Alias != c.alias || fix.PlanKey != c.plano || fix.Reason != querRazao {
+			if !tem || fix.Role != c.papel || fix.Alias != c.alias || fix.PlanKey != c.plano || fix.PlanKeyKind != "pedido" || fix.Reason != querRazao {
 				t.Fatalf("plano %q, run %s: fixacao tem=%v %+v; quer papel=%s chave=%q razao=%s", c.plano, runID, tem, fix, c.papel, c.plano, querRazao)
 			}
 		}
@@ -478,6 +478,147 @@ func TestAOS520_No_OPlanoAnteriorAAberturaEDoTitular(t *testing.T) {
 	n.esperar(t, runNovo)
 	if modelos := aos520cModelosPedidos(t, n.aos486No, desde); !aos520cTodos(modelos, aos520AliasCand) {
 		t.Fatalf("o no do plano novo pediu %q; quer o candidato", modelos)
+	}
+}
+
+// UM RUN EM CURSO RE-SUBMETIDO NÃO É NOVO (a sonda da revisão). O run dá o turno 1 no titular, num
+// nó sem candidato a servir, e o nó cai. O nó é recriado com o candidato a 100%, e o MESMO `run_id`
+// volta por `POST /runs` — a via da submissão, não a da retoma. O log diz que o run já tem turno e
+// registo de retoma: não se escolhe. O turno seguinte é do titular, o run não ganha
+// `run.model_pinned`, o registo de retoma fica sem a marca, e o livro não gasta um lugar.
+//
+// E o caso do run que tem registo de retoma mas ainda não deu turno nenhum: também não é novo.
+func TestAOS520_No_RunEmCursoReSubmetidoNaoENovo(t *testing.T) {
+	ctx := context.Background()
+	for _, comTurno := range []bool{true, false} {
+		nome := "com um turno dado"
+		if !comTurno {
+			nome = "so com o registo de retoma"
+		}
+		t.Run(nome, func(t *testing.T) {
+			sub := aos520NovoSubstrato(t)
+			const runID = "run-520-re-submetido"
+			a := aos520cNo(t, sub, "off", aos520cCand(100))
+			if comTurno {
+				if goal := aos520cTurnoUmECrash(t, a, runID); goal.ModelPinnedBy != "" || goal.Model.ModelID != aos486Modelo {
+					t.Fatalf("o turno 1 tinha de ser do titular, sem marca: %+v", goal.Model)
+				}
+			} else {
+				goal := aos520ComoOHostRun(a.node, agentruntime.Goal{RunID: runID, Principal: referencemonitor.Principal{NHIID: durAgent}, Objective: aos490Objectivo, MaxTurns: 3})
+				if err := a.svc.putResumeRecord(ctx, goal); err != nil {
+					t.Fatal(err)
+				}
+			}
+			a.fechar(t)
+
+			b := aos520cNo(t, sub, "on", aos520cCand(100))
+			b.correr(t, runID, nil)
+			modelos := aos520cModelosPedidos(t, b.aos486No, 0)
+			if len(modelos) == 0 || !aos520cTodos(modelos, aos486Modelo) {
+				t.Fatalf("o run re-submetido pediu %q; ja tinha historia no titular e NAO pode passar para o candidato", modelos)
+			}
+			if _, tem := aos520cFixacao(t, b.node.EventStore, runID); tem {
+				t.Fatal("o run re-submetido ganhou um run.model_pinned — foi escolhido como se fosse novo")
+			}
+			if at := aos520EventosDoLivro(t, b.node.EventStore, EventTypeModelCanaryPlanAssigned); len(at) != 0 {
+				t.Fatalf("o run re-submetido gastou um lugar do canary: %+v", at)
+			}
+			if rec, ok, err := b.node.ResumeRecords.Get(ctx, runID); err != nil || !ok || rec.ModelPinnedBy != "" || rec.Model.ModelID != aos486Modelo {
+				t.Fatalf("registo de retoma: ok=%v err=%v marca=%q modelo=%q", ok, err, rec.ModelPinnedBy, rec.Model.ModelID)
+			}
+			// Controlo: no mesmo nó, um run SEM história é escolhido — e vai para o candidato.
+			desde := len(b.upstream.pedidos())
+			b.correr(t, "run-520-novo-de-verdade", nil)
+			if modelos := aos520cModelosPedidos(t, b.aos486No, desde); !aos520cTodos(modelos, aos520AliasCand) {
+				t.Fatalf("o run novo pediu %q; quer o candidato", modelos)
+			}
+		})
+	}
+}
+
+// UM RUN FIXADO RE-SUBMETIDO FICA COM O QUE ESTÁ SELADO. O run começa no candidato, dá um turno, e
+// o nó cai. O mesmo `run_id` volta por `POST /runs` num nó com o interruptor a `off` (perfil ainda
+// carregado): o Goal do pedido não traz marca nenhuma, e o nó vai buscá-la ao log — o turno seguinte
+// é do candidato. Num nó sem o registo do candidato, o run é recusado: não passa para o titular.
+func TestAOS520_No_RunFixadoReSubmetidoFicaComOSelado(t *testing.T) {
+	sub := aos520NovoSubstrato(t)
+	const runID = "run-520-fixado-re-submetido"
+	a := aos520cNo(t, sub, "on", aos520cCand(100))
+	aos520cTurnoUmECrash(t, a, runID)
+	a.fechar(t)
+
+	corpo := map[string]any{"run_id": runID, "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": "", "max_turns": 3}
+
+	semRegisto := aos520cNo(t, sub, "on")
+	corpo["credential"] = semRegisto.tok
+	if r := postJSON(semRegisto.h, "POST", "/runs", corpo); r.Code != http.StatusCreated {
+		t.Fatalf("POST /runs: %d %s", r.Code, r.Body.String())
+	}
+	oc, ok, err := semRegisto.svc.Wait(context.Background(), runID)
+	if err != nil || !ok || !errors.Is(oc.Err, ErrModelPinRefused) || causaDaFixacaoDoModelo(oc.Err) != modelgateway.PinnedCauseModelNotServed {
+		t.Fatalf("sem o registo do candidato o run fixado tinha de ser recusado (%s); veio ok=%v err=%v run=%v", modelgateway.PinnedCauseModelNotServed, ok, err, oc.Err)
+	}
+	if n := len(semRegisto.upstream.pedidos()); n != 0 {
+		t.Fatalf("o run recusado fez %d pedido(s) ao provider — nao pode ser servido pelo titular", n)
+	}
+}
+
+// O MESMO, COM O PERFIL CARREGADO: o run fixado no candidato e re-submetido num nó com o interruptor
+// a `off` continua no candidato — o nó foi buscar a fixação ao log, e não escolheu.
+func TestAOS520_No_RunFixadoReSubmetidoContinuaNoCandidato(t *testing.T) {
+	sub := aos520NovoSubstrato(t)
+	const runID = "run-520-fixado-re-submetido-off"
+	a := aos520cNo(t, sub, "on", aos520cCand(100))
+	aos520cTurnoUmECrash(t, a, runID)
+	a.fechar(t)
+
+	b := aos520cNo(t, sub, "off", aos520cCand(100))
+	b.correr(t, runID, nil)
+	if modelos := aos520cModelosPedidos(t, b.aos486No, 0); len(modelos) == 0 || !aos520cTodos(modelos, aos520AliasCand) {
+		t.Fatalf("o run fixado no candidato e re-submetido pediu %q; quer o candidato", modelos)
+	}
+	if at := aos520EventosDoLivro(t, b.node.EventStore, EventTypeModelCanaryPlanAssigned); len(at) != 1 {
+		t.Fatalf("a re-submissao nao pode mexer no livro: %+v", at)
+	}
+}
+
+// UM RUN AVULSO COM O NOME DE UM PEDIDO DE PLANO NÃO ATRIBUI O PLANO. O plano "plano-anterior" é
+// pedido antes de o canary abrir: é do titular. Depois da abertura, alguém submete um run AVULSO
+// cujo `run_id` é "plano-anterior": a 100% vai para o candidato, e fica no livro — como chave de
+// RUN. O nó seguinte do plano não casa com essa atribuição: continua no titular, pela marca.
+func TestAOS520_No_RunAvulsoComONomeDeUmPedidoNaoAtribuiOPlano(t *testing.T) {
+	sub := aos520NovoSubstrato(t)
+	antes := aos520cPlanoNo(t, sub, "off", aos520cCand(100))
+	const plano = "plano-anterior"
+	ger := antes.pedir(t, plano)
+	if err := antes.svc.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = antes.node.Close()
+
+	n := aos520cPlanoNo(t, sub, "on", aos520cCand(100))
+	n.modeloChama(aos502Leitura)
+	// O run avulso, com o nome do pedido. Sem `plan_request`.
+	if codigo, corpo := n.submeter(t, plano, nil, []string{aos502Leitura}, []string{aos502Leitura}); codigo != http.StatusCreated {
+		t.Fatalf("POST /runs do run avulso: %d %s", codigo, corpo)
+	}
+	n.esperar(t, plano)
+	at := aos520EventosDoLivro(t, n.node.EventStore, EventTypeModelCanaryPlanAssigned)
+	if len(at) != 1 || at[0].PlanKey != plano || at[0].PlanKeyKind != "run" {
+		t.Fatalf("o run avulso tinha de ficar no livro como chave de run: %+v", at)
+	}
+	// O nó do plano com o mesmo nome: anterior à abertura, do titular.
+	desde := len(n.upstream.pedidos())
+	runID := idDoRunFilho(plano, "no")
+	if codigo, corpo := n.submeter(t, runID, &vinculoAoPedido{RunID: plano, Geracao: ger, PlanID: aos502PlanID, NodeID: "no"}, []string{aos502Leitura}, []string{aos502Leitura}); codigo != http.StatusCreated {
+		t.Fatalf("POST /runs do no do plano: %d %s", codigo, corpo)
+	}
+	n.esperar(t, runID)
+	if modelos := aos520cModelosPedidos(t, n.aos486No, desde); !aos520cTodos(modelos, aos486Modelo) {
+		t.Fatalf("o no do plano anterior a abertura pediu %q; a atribuicao do run avulso com o mesmo nome nao vale para o plano", modelos)
+	}
+	if fix, tem := aos520cFixacao(t, n.node.EventStore, runID); !tem || fix.Role != "titular" || fix.Reason != "plano_anterior_a_abertura" || fix.PlanKeyKind != "pedido" {
+		t.Fatalf("fixacao do no do plano: tem=%v %+v", tem, fix)
 	}
 }
 
@@ -545,7 +686,7 @@ func TestAOS520_No_PlanoDoCandidatoSemCandidato_ERecusado(t *testing.T) {
 			sub := aos520NovoSubstrato(t)
 			a := aos520cNo(t, sub, "on", aos520cCand(100))
 			// O plano é atribuído ao candidato, e o run dele ainda não começou (o nó caiu antes).
-			if d, err := a.node.canary.livro.decidir(context.Background(), a.node.canary.candidato, "plano-do-candidato", 0); err != nil || d.papel != canary.RoleCandidate {
+			if d, err := a.node.canary.livro.decidir(context.Background(), a.node.canary.candidato, chaveDeRun("plano-do-candidato"), 0); err != nil || d.papel != canary.RoleCandidate {
 				t.Fatalf("atribuir o plano ao candidato: %+v %v", d, err)
 			}
 			a.fechar(t)
@@ -716,7 +857,7 @@ func TestAOS520_No_RunDoCandidatoRetomado_AsTresSaidas(t *testing.T) {
 			if i > 45 {
 				t.Fatal("o canary nao fechou")
 			}
-			if _, err := n.node.canary.livro.decidir(ctx, n.node.canary.candidato, fmt.Sprintf("enche-%02d", i), 0); err != nil {
+			if _, err := n.node.canary.livro.decidir(ctx, n.node.canary.candidato, chaveDeRun(fmt.Sprintf("enche-%02d", i)), 0); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -852,7 +993,7 @@ func TestAOS520_No_OQuadragesimoPlano_DuasReplicasEReinicio(t *testing.T) {
 	r1 := aos520cNo(t, sub, "on", aos520cCand(100))
 	r2 := aos520cNo(t, sub, "on", aos520cCand(100))
 	for i := 1; i <= 39; i++ {
-		if _, err := r1.node.canary.livro.decidir(ctx, r1.node.canary.candidato, fmt.Sprintf("plano-%02d", i), 0); err != nil {
+		if _, err := r1.node.canary.livro.decidir(ctx, r1.node.canary.candidato, chaveDeRun(fmt.Sprintf("plano-%02d", i)), 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1180,17 +1321,21 @@ func aos520cInner(c agentruntime.ModelClient) agentruntime.ModelClient {
 
 // A CHAVE DO CANARY: o pedido de plano verificado, ou o id do run INTEIRO — nunca partido pelo `~`.
 func TestAOS520_ChaveDoCanary(t *testing.T) {
-	if got := chaveDoCanary("plano~no~2", origemDoPlano{pedido: "plano", seq: 7}); got != "plano" {
-		t.Fatalf("com o vinculo verificado a chave e o pedido: %q", got)
+	if got := chaveDoCanary("plano~no~2", origemDoPlano{pedido: "plano", seq: 7}); got != chaveDePedido("plano") {
+		t.Fatalf("com o vinculo verificado a chave e o pedido: %+v", got)
 	}
-	if got := chaveDoCanary("a~b~c", origemDoPlano{}); got != "a~b~c" {
-		t.Fatalf("sem vinculo a chave e o id do run inteiro, sem o partir pelo `~`: %q", got)
+	if got := chaveDoCanary("a~b~c", origemDoPlano{}); got != chaveDeRun("a~b~c") {
+		t.Fatalf("sem vinculo a chave e o id do run inteiro, sem o partir pelo `~`: %+v", got)
 	}
 	// Um pedido cujo id contém `~`: a chave é o id inteiro do pedido.
-	if got := chaveDoCanary("pedido~com~til~no", origemDoPlano{pedido: "pedido~com~til"}); got != "pedido~com~til" {
-		t.Fatalf("a chave de um pedido com `~`: %q", got)
+	if got := chaveDoCanary("pedido~com~til~no", origemDoPlano{pedido: "pedido~com~til"}); got != chaveDePedido("pedido~com~til") {
+		t.Fatalf("a chave de um pedido com `~`: %+v", got)
 	}
-	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "candidato_sem_o_perfil_do_registo"}
+	// O tipo separa os dois espaços no livro, e NÃO entra na função de escolha.
+	if chaveDePedido("x").indice() == chaveDeRun("x").indice() || passoDoPlano(chaveDePedido("x")) == passoDoPlano(chaveDeRun("x")) {
+		t.Fatal("um pedido e um run com o mesmo id tem de ser duas chaves no livro")
+	}
+	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "historia_do_run_ilegivel", "candidato_sem_o_perfil_do_registo"}
 	if got := causasDaFixacaoDoModelo(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("o vocabulario das causas mudou: %q", got)
 	}

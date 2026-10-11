@@ -30,7 +30,9 @@ import (
 	"errors"
 	"fmt"
 
+	integration "github.com/aos-ref/integration"
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/canary"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -72,15 +74,37 @@ const (
 	// causaFixacaoDiferenteDaGravada — o run já tinha um `run.model_pinned`, e o que lá está não é
 	// o que este nó escolheria agora. O valor gravado não é reescrito nem ignorado.
 	causaFixacaoDiferenteDaGravada = "fixacao_diferente_da_gravada"
+	// causaHistoriaDoRunIlegivel — o nó não conseguiu ler do seu log se o run já existia (o stream
+	// do run, ou o seu registo de retoma). Sem saber se o run é novo, não se escolhe.
+	causaHistoriaDoRunIlegivel = "historia_do_run_ilegivel"
 	// causaCandidatoSemPerfil — o perfil em vigor para o alias do candidato não é o do registo com
 	// que o canary abriu.
 	causaCandidatoSemPerfil = "candidato_sem_o_perfil_do_registo"
 )
 
+// fixado devolve o modelo em que o log diz que o run está fixado por escolha: o do registo de
+// retoma com a marca, ou — se o run ainda não tem registo — o do `run.model_pinned`. Um registo de
+// retoma SEM a marca num run que tem um `run.model_pinned`, ou os dois a dizer aliases diferentes,
+// é um log que se contradiz: recusa, não se escolhe um dos lados.
+func (h historiaDoRun) fixado() (alias, digest, marca string, ok bool, err error) {
+	switch {
+	case h.registo != nil && h.registo.ModelPinnedBy != "":
+		if h.fixacao != nil && h.fixacao.Alias != h.registo.Model.ModelID {
+			return "", "", "", false, recusaDaFixacao(causaFixacaoDiferenteDaGravada, nil)
+		}
+		return h.registo.Model.ModelID, h.registo.RouteProfileDigest, h.registo.ModelPinnedBy, true, nil
+	case h.registo != nil && h.fixacao != nil:
+		return "", "", "", false, recusaDaFixacao(causaFixacaoDiferenteDaGravada, nil)
+	case h.fixacao != nil:
+		return h.fixacao.Alias, h.fixacao.ProfileDigest, h.fixacao.Function, true, nil
+	}
+	return "", "", "", false, nil
+}
+
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
 func causasDaFixacaoDoModelo() []string {
 	return []string{causaPlanoDoCandidatoSemCandidato, causaLivroIlegivel, causaLivroEmContencao,
-		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaCandidatoSemPerfil}
+		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaHistoriaDoRunIlegivel, causaCandidatoSemPerfil}
 }
 
 // ErrModelPinRefused — o run novo não pode ser hospedado com um modelo fixado. Fail-closed: não
@@ -136,11 +160,14 @@ type origemDoPlano struct {
 // chaveDoCanary devolve a chave do canary de um run: o identificador do pedido de plano verificado,
 // ou — num run que não é trabalho de um pedido verificado — o `run_id` INTEIRO. Um run sem plano é
 // um plano de um nó. O id nunca é partido pelo `~`: um identificador de pedido pode contê-lo.
-func chaveDoCanary(runID string, o origemDoPlano) string {
+//
+// A chave leva o TIPO ([chaveCanary]): um pedido de plano e um run avulso com o mesmo identificador
+// são dois planos, e a atribuição de um não vale para o outro.
+func chaveDoCanary(runID string, o origemDoPlano) chaveCanary {
 	if o.pedido != "" {
-		return o.pedido
+		return chaveDePedido(o.pedido)
 	}
-	return runID
+	return chaveDeRun(runID)
 }
 
 // canaryDoNo é o que o nó sabe do candidato e do canary, composto no arranque. nil ⇒ o nó não tem a
@@ -214,39 +241,131 @@ type modeloFixadoPayload struct {
 	// Function é a versão da função de escolha; Reason a razão, de vocabulário fechado.
 	Function string `json:"function"`
 	Reason   string `json:"reason"`
-	// PlanKey é a chave do plano que entrou na função.
-	PlanKey string `json:"plan_key"`
+	// PlanKey é a chave do plano que entrou na função, e PlanKeyKind o seu tipo: `pedido` (o
+	// identificador de um pedido de plano verificado) ou `run` (o id de um run sem pedido).
+	PlanKey     string `json:"plan_key"`
+	PlanKeyKind string `json:"plan_key_kind"`
+}
+
+// historiaDoRun é o que o LOG do nó diz de um run antes de ele ser hospedado: se já deu um turno,
+// se já tem registo de retoma, e se já tem um `run.model_pinned`. É daqui — e só daqui — que sai a
+// resposta a «este run é novo?».
+type historiaDoRun struct {
+	temTurno bool
+	registo  *integration.ResumeRecord
+	fixacao  *modeloFixadoPayload
+}
+
+// temHistoria diz se o run já existia: um turno gravado, um registo de retoma ou uma fixação.
+func (h historiaDoRun) temHistoria() bool {
+	return h.temTurno || h.registo != nil || h.fixacao != nil
+}
+
+// lerHistoriaDoRun lê do Event Store a história de um run. Um stream que não existe é um run sem
+// história. Qualquer outra falha de leitura é devolvida: quem decide não decide sobre o que não leu.
+func (n *Node) lerHistoriaDoRun(ctx context.Context, runID string) (historiaDoRun, error) {
+	var h historiaDoRun
+	if n == nil || n.EventStore == nil {
+		return h, errors.New("sem Event Store onde ler a historia do run")
+	}
+	evs, err := n.EventStore.Read(ctx, runID, 1)
+	if err != nil && !errors.Is(err, eventstore.ErrStreamNotFound) {
+		return h, err
+	}
+	for _, ev := range evs {
+		switch ev.Type {
+		case agentruntime.EventTypeTurnRecorded:
+			h.temTurno = true
+		case EventTypeRunModelPinned:
+			var p modeloFixadoPayload
+			if err := json.Unmarshal(ev.Payload, &p); err != nil || p.Alias == "" {
+				return h, fmt.Errorf("run.model_pinned ilegivel no evento %d", ev.Seq)
+			}
+			if h.fixacao == nil {
+				h.fixacao = &p
+			}
+		}
+	}
+	if n.ResumeRecords != nil {
+		rec, tem, err := n.ResumeRecords.Get(ctx, runID)
+		if err != nil {
+			return h, err
+		}
+		if tem {
+			h.registo = &rec
+		}
+	}
+	return h, nil
 }
 
 // escolherModeloDoRun fixa o modelo do run que está a ser hospedado. É o ponto ÚNICO por onde
 // passam a submissão, a retoma e a varredura de crash-resume.
 //
-//   - Um Goal com a marca [agentruntime.Goal.ModelPinnedBy] veio do registo de retoma: não se toca
-//     em nada.
-//   - Um run RETOMADO sem a marca, e qualquer run num nó sem candidato a servir: [Node.fixarModelo],
-//     como sempre — salvo o run novo de um plano já atribuído ao candidato, que é recusado.
-//   - Um run NOVO com candidato a servir: o livro do canary decide, e o resultado fica gravado no
-//     Goal e no `run.model_pinned` antes de esta função devolver.
+// «É UM RUN NOVO?» RESPONDE-SE PELO LOG, e não pelo caminho por que a hospedagem foi pedida. Um
+// `POST /runs` de um `run_id` que já está `running` — um run que deu turnos e cujo nó caiu — chega
+// aqui pela via da submissão, e NÃO é novo: já tem turnos gravados com um modelo. Escolher para
+// ele era dar-lhe dois modelos. Por isso, com a pasta de perfis configurada, lê-se primeiro a
+// história do run ([Node.lerHistoriaDoRun]):
+//
+//   - o run já tem uma fixação gravada (no registo de retoma ou no `run.model_pinned`): usa-se o
+//     que está selado, conferido com o que este nó serve; não se volta a escolher;
+//   - o run tem história e NÃO tem fixação (deu um turno, ou tem registo de retoma sem a marca):
+//     [Node.fixarModelo], como sempre — sem evento, sem livro, sem marca;
+//   - o run não tem história: é novo. Sem candidato a servir, [Node.fixarModelo] — salvo o run de
+//     um plano já atribuído ao candidato, que é recusado; com candidato a servir, o livro do canary
+//     decide, e o resultado fica gravado no Goal e no `run.model_pinned` antes de esta função
+//     devolver.
+//
+// Sem a pasta de perfis configurada nada disto corre nem se lê: é o [Node.fixarModelo] de sempre.
 //
 // Um erro é sempre uma recusa ([ErrModelPinRefused]) com a causa: o run não arranca.
 func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goal agentruntime.Goal) (agentruntime.Goal, error) {
 	n := s.node
+	if n == nil || (n.canary == nil && goal.ModelPinnedBy == "") {
+		return n.fixarModelo(goal), nil
+	}
+	h, err := n.lerHistoriaDoRun(ctx, rs.runID)
+	if err != nil {
+		return goal, recusaDaFixacao(causaHistoriaDoRunIlegivel, err)
+	}
 	if goal.ModelPinnedBy != "" {
 		return goal, nil
 	}
-	if n == nil || n.canary == nil || rs.retomado {
+	// O run já tem um modelo fixado no log, e o Goal não o traz (um `POST /runs` do mesmo id): vale
+	// o que está selado.
+	alias, digest, marca, fixado, err := h.fixado()
+	if err != nil {
+		return goal, err
+	}
+	if fixado {
+		if !n.aliasServido(alias) {
+			return goal, recusaDaFixacao(modelgateway.PinnedCauseModelNotServed, nil)
+		}
+		if perr := n.perfisDaRota.perfis().CheckPinnedProfile(alias, digest); perr != nil {
+			return goal, recusaDaFixacao(modelgateway.PinnedRouteProfileCauseOf(perr), nil)
+		}
+		goal.Model.ModelID, goal.ModelPinnedBy = alias, marca
+		if digest != "" {
+			goal.RouteProfileDigest = digest
+		}
+		return goal, nil
+	}
+	if h.temHistoria() || n.canary == nil {
 		return n.fixarModelo(goal), nil
 	}
+
+	// O run não tem história: é novo.
 	c := n.canary
 	chave := chaveDoCanary(rs.runID, rs.plano)
 	if !c.servir {
-		if c.atribuidosNoArranque[chave] {
+		if c.atribuidosNoArranque[chave.indice()] {
 			return goal, recusaDaFixacao(causaPlanoDoCandidatoSemCandidato, nil)
 		}
 		return n.fixarModelo(goal), nil
 	}
 
-	d, err := c.livro.decidir(ctx, c.candidato, chave, rs.plano.seq)
+	var d decisaoDoCanary
+	d, err = c.livro.decidir(ctx, c.candidato, chave, rs.plano.seq)
 	switch {
 	case errors.Is(err, ErrPlanAssignedToAbsentCandidate):
 		return goal, recusaDaFixacao(causaPlanoDoCandidatoSemCandidato, nil)
@@ -263,7 +382,7 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 	}
 	// O digest do perfil em vigor para esse alias. Para o candidato tem de ser o do registo com que
 	// o canary abriu — é o que o livro gravou em cada atribuição.
-	digest := ""
+	digest = ""
 	if perfil, tem := n.perfisDaRota.perfis().For(goal.Model.ModelID); tem {
 		digest = perfil.Digest()
 	}
@@ -273,7 +392,7 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 	gravado := modeloFixadoPayload{
 		V: versaoDoModeloFixado, Role: string(d.papel), Alias: goal.Model.ModelID, ProfileDigest: digest,
 		EntryDigest: c.candidato.entryDigest, SharePercent: c.candidato.fatia,
-		Function: versaoDaEscolha, Reason: d.razao, PlanKey: chave,
+		Function: versaoDaEscolha, Reason: d.razao, PlanKey: chave.id, PlanKeyKind: chave.tipo,
 	}
 	if err := gravarModeloFixado(ctx, n.EventStore, rs.runID, gravado); err != nil {
 		return goal, err

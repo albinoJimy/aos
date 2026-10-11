@@ -115,11 +115,40 @@ type canaryPayload struct {
 	PlanRequestMark uint64 `json:"plan_request_mark,omitempty"`
 	// Do `opened` e do `closed`.
 	Limit int `json:"limit,omitempty"`
-	// Do `plan_assigned`.
-	PlanKey string `json:"plan_key,omitempty"`
+	// Do `plan_assigned`: a chave do plano e o seu tipo ([chaveCanary]).
+	PlanKey     string `json:"plan_key,omitempty"`
+	PlanKeyKind string `json:"plan_key_kind,omitempty"`
 	// Do `closed`.
 	Assigned int `json:"assigned,omitempty"`
 }
+
+// Os tipos de chave de plano. Vocabulário FECHADO.
+const (
+	// tipoDePedido — a chave é o identificador de um pedido de plano que o nó verificou.
+	tipoDePedido = "pedido"
+	// tipoDeRun — a chave é o id de um run que não é trabalho de um pedido de plano verificado.
+	tipoDeRun = "run"
+)
+
+// chaveCanary é a chave de um plano no livro: o identificador e o TIPO.
+//
+// OS DOIS ESPAÇOS NÃO SE MISTURAM. Quem submete um run avulso escolhe o seu `run_id`, e pode
+// escolher o identificador de um pedido de plano que já existe. Se a chave fosse só o
+// identificador, a atribuição desse run ao candidato valia como «plano já atribuído» para os nós
+// seguintes do plano com o mesmo nome — mesmo de um plano anterior à abertura, cujos nós já
+// correram no titular. Com o tipo, a atribuição de um não é a do outro, e cada um conta um plano.
+//
+// O tipo NÃO entra na função de escolha (ADR-041 §2.3): a função reparte pelo identificador, e os
+// vectores do ADR são os mesmos.
+type chaveCanary struct {
+	tipo, id string
+}
+
+func chaveDePedido(id string) chaveCanary { return chaveCanary{tipo: tipoDePedido, id: id} }
+func chaveDeRun(id string) chaveCanary    { return chaveCanary{tipo: tipoDeRun, id: id} }
+
+// indice é a chave do mapa de planos atribuídos: o tipo, um byte nulo e o identificador.
+func (c chaveCanary) indice() string { return c.tipo + "\x00" + c.id }
 
 // candidatoEmVigor é o candidato que o nó está a servir, lido do registo assinado no arranque.
 type candidatoEmVigor struct {
@@ -132,7 +161,7 @@ type candidatoEmVigor struct {
 // estadoDoCanary é o que o livro diz.
 type estadoDoCanary struct {
 	aberturas   map[string]canaryPayload // por digest do registo
-	atribuidos  map[string]canaryPayload // por chave do plano; a primeira escrita ganha
+	atribuidos  map[string]canaryPayload // por chave do plano ([chaveCanary.indice]); a primeira escrita ganha
 	porAbertura map[string]int           // planos atribuídos, por digest do registo
 	fechadas    map[string]bool          // por digest do registo
 	ultimoSeq   uint64
@@ -178,11 +207,11 @@ func conflitoDeCAS(err error) bool {
 	return errors.Is(err, eventstore.ErrSeqConflict) || errors.Is(err, eventstore.ErrAppendOnlyViolation)
 }
 
-// passoDoPlano é o StepID do `plan_assigned` de um plano: um resumo da chave, porque a chave é um
-// identificador escolhido por quem pede o plano. NÃO leva o digest do registo: um plano é atribuído
+// passoDoPlano é o StepID do `plan_assigned` de um plano: um resumo da chave (com o tipo), porque a
+// chave é um identificador escolhido por quem pede o plano. NÃO leva o digest do registo: um plano é atribuído
 // no máximo uma vez, seja qual for a abertura.
-func passoDoPlano(chave string) string {
-	h := sha256.Sum256([]byte(chave))
+func passoDoPlano(chave chaveCanary) string {
+	h := sha256.Sum256([]byte(chave.indice()))
 	return "assigned-" + hex.EncodeToString(h[:])
 }
 
@@ -211,14 +240,15 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 				st.aberturas[p.EntryDigest] = p
 			}
 		case EventTypeModelCanaryPlanAssigned:
-			if p.PlanKey == "" {
-				return st, fmt.Errorf("%w: atribuicao sem plano no evento %d", ErrCanaryUnreadable, ev.Seq)
+			if p.PlanKey == "" || (p.PlanKeyKind != tipoDePedido && p.PlanKeyKind != tipoDeRun) {
+				return st, fmt.Errorf("%w: atribuicao sem plano ou sem o tipo da chave no evento %d", ErrCanaryUnreadable, ev.Seq)
 			}
+			indice := chaveCanary{tipo: p.PlanKeyKind, id: p.PlanKey}.indice()
 			// A PRIMEIRA ESCRITA GANHA. A deduplicação do Event Store já o garante para escritas
 			// deste código; uma segunda atribuição do mesmo plano que lá estivesse não muda a
 			// primeira nem conta.
-			if _, ja := st.atribuidos[p.PlanKey]; !ja {
-				st.atribuidos[p.PlanKey] = p
+			if _, ja := st.atribuidos[indice]; !ja {
+				st.atribuidos[indice] = p
 				st.porAbertura[p.EntryDigest]++
 			}
 		case EventTypeModelCanaryClosed:
@@ -316,8 +346,8 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 // A ordem das regras é a do ADR-041 §2.6: o plano já atribuído; o plano anterior à abertura; o
 // canary fechado; e só então a função. «Candidato» só é devolvido depois de a atribuição ficar
 // gravada com o `seq` que se leu.
-func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave string, seqDoPedido uint64) (decisaoDoCanary, error) {
-	if chave == "" {
+func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave chaveCanary, seqDoPedido uint64) (decisaoDoCanary, error) {
+	if chave.id == "" || (chave.tipo != tipoDePedido && chave.tipo != tipoDeRun) {
 		return decisaoDoCanary{}, fmt.Errorf("%w: run sem chave de plano", ErrCanaryUnreadable)
 	}
 	l.mu.Lock()
@@ -339,7 +369,7 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave s
 		l.publicar(atribuidosNaAbertura, fechado)
 
 		// (1) O plano já foi atribuído ao candidato — nesta ou noutra abertura.
-		if a, ja := st.atribuidos[chave]; ja {
+		if a, ja := st.atribuidos[chave.indice()]; ja {
 			if a.Alias != c.alias || a.ProfileDigest != c.profileDigest {
 				return decisaoDoCanary{}, ErrPlanAssignedToAbsentCandidate
 			}
@@ -358,11 +388,11 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave s
 			return decisaoDoCanary{papel: canary.RoleIncumbent, razao: razaoCanaryFechado}, nil
 		}
 		// (4) A função decide, com a fatia GRAVADA na abertura.
-		if canary.Choose(chave, ab.SharePercent) != canary.RoleCandidate {
+		if canary.Choose(chave.id, ab.SharePercent) != canary.RoleCandidate {
 			return decisaoDoCanary{papel: canary.RoleIncumbent, razao: razaoFuncao}, nil
 		}
 		payload, err := json.Marshal(canaryPayload{
-			V: canaryVersaoDoLivro, EntryDigest: c.entryDigest, Alias: c.alias, ProfileDigest: c.profileDigest, PlanKey: chave,
+			V: canaryVersaoDoLivro, EntryDigest: c.entryDigest, Alias: c.alias, ProfileDigest: c.profileDigest, PlanKey: chave.id, PlanKeyKind: chave.tipo,
 		})
 		if err != nil {
 			return decisaoDoCanary{}, err

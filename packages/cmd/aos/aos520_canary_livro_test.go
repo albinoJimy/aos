@@ -76,9 +76,18 @@ func aos520EventosDoLivro(t *testing.T, es eventstore.EventStore, tipo string) [
 	return out
 }
 
+// aos520Chave é a chave de um plano destes testes: de pedido quando traz o seq do pedido na fila,
+// de run avulso quando não traz — como o `POST /runs` a compõe.
+func aos520Chave(id string, seq uint64) chaveCanary {
+	if seq != 0 {
+		return chaveDePedido(id)
+	}
+	return chaveDeRun(id)
+}
+
 func aos520Decidir(t *testing.T, l *livroDoCanary, c candidatoEmVigor, chave string, seq uint64) decisaoDoCanary {
 	t.Helper()
-	d, err := l.decidir(context.Background(), c, chave, seq)
+	d, err := l.decidir(context.Background(), c, aos520Chave(chave, seq), seq)
 	if err != nil {
 		t.Fatalf("decidir(%q): %v", chave, err)
 	}
@@ -156,7 +165,7 @@ func TestAOS520_Livro_AFuncaoDecideESoOCandidatoSeGrava(t *testing.T) {
 	if len(atribuidos) != 1 || atribuidos[0].PlanKey != "0" || atribuidos[0].Alias != c.alias || atribuidos[0].ProfileDigest != c.profileDigest {
 		t.Fatalf("atribuicoes = %+v; quer so a do plano \"0\"", atribuidos)
 	}
-	if _, err := l.decidir(context.Background(), c, "", 0); !errors.Is(err, ErrCanaryUnreadable) {
+	if _, err := l.decidir(context.Background(), c, chaveDeRun(""), 0); !errors.Is(err, ErrCanaryUnreadable) {
 		t.Fatalf("um run sem chave de plano tem de ser recusado: %v", err)
 	}
 }
@@ -171,8 +180,8 @@ func TestAOS520_Livro_APrimeiraEscritaGanha(t *testing.T) {
 	if d := aos520Decidir(t, l, aos520Cand, "plano-x", 0); d.papel != canary.RoleCandidate || d.razao != razaoPlanoJaAtribuido {
 		t.Fatalf("segunda decisao do mesmo plano: %+v", d)
 	}
-	outro, _ := json.Marshal(canaryPayload{V: canaryVersaoDoLivro, EntryDigest: aos520Cand.entryDigest, Alias: "outro-alias", ProfileDigest: aos520Cand.profileDigest, PlanKey: "plano-x"})
-	res, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelCanaryPlanAssigned, Payload: outro, RunID: canaryRunID, StepID: passoDoPlano("plano-x")})
+	outro, _ := json.Marshal(canaryPayload{V: canaryVersaoDoLivro, EntryDigest: aos520Cand.entryDigest, Alias: "outro-alias", ProfileDigest: aos520Cand.profileDigest, PlanKey: "plano-x", PlanKeyKind: tipoDeRun})
+	res, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelCanaryPlanAssigned, Payload: outro, RunID: canaryRunID, StepID: passoDoPlano(chaveDeRun("plano-x"))})
 	if err != nil || res.Status != eventstore.StatusDuplicate {
 		t.Fatalf("a segunda escrita do mesmo plano tinha de ser um duplicado: status=%q err=%v", res.Status, err)
 	}
@@ -302,7 +311,7 @@ func TestAOS520_Livro_OsDoisErrosDoPerdedorDoCAS(t *testing.T) {
 		}
 
 		sempre := &aos520StoreComIntruso{EventStore: es, soNoTipo: EventTypeModelCanaryPlanAssigned, sempre: erro}
-		_, err := (&livroDoCanary{es: sempre}).decidir(ctx, aos520Cand, "outro-plano", 0)
+		_, err := (&livroDoCanary{es: sempre}).decidir(ctx, aos520Cand, chaveDeRun("outro-plano"), 0)
 		if !errors.Is(err, ErrCanaryContention) {
 			t.Fatalf("com %v em todas as escritas a decisao tinha de falhar por contencao; veio %v", erro, err)
 		}
@@ -313,7 +322,7 @@ func TestAOS520_Livro_OsDoisErrosDoPerdedorDoCAS(t *testing.T) {
 	es := aos520Store(t)
 	aos520Livro(t, es, aos520Cand)
 	avaria := &aos520StoreComIntruso{EventStore: es, soNoTipo: EventTypeModelCanaryPlanAssigned, sempre: errors.New("disco cheio")}
-	if _, err := (&livroDoCanary{es: avaria}).decidir(ctx, aos520Cand, "plano", 0); !errors.Is(err, ErrCanaryUnreadable) || avaria.appends != 1 {
+	if _, err := (&livroDoCanary{es: avaria}).decidir(ctx, aos520Cand, chaveDeRun("plano"), 0); !errors.Is(err, ErrCanaryUnreadable) || avaria.appends != 1 {
 		t.Fatalf("uma escrita que falha por outra razao recusa logo: err=%v escritas=%d", err, avaria.appends)
 	}
 	// A abertura tem o mesmo ciclo.
@@ -494,13 +503,13 @@ func TestAOS520_Livro_ReabrirEUmRegistoNovo(t *testing.T) {
 		if err := l3.abrir(ctx, outro, aos520Marca(0, nil)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := l3.decidir(ctx, outro, "plano-07", 0); !errors.Is(err, ErrPlanAssignedToAbsentCandidate) {
+		if _, err := l3.decidir(ctx, outro, chaveDeRun("plano-07"), 0); !errors.Is(err, ErrPlanAssignedToAbsentCandidate) {
 			t.Fatalf("%s: um plano atribuido a outro candidato tinha de ser recusado; veio %v", nome, err)
 		}
 	}
 	// O que um nó sem candidato a servir lê no arranque: os planos atribuídos, por chave.
 	atribuidos, err := l.planosAtribuidos(ctx)
-	if err != nil || len(atribuidos) != 41 || !atribuidos["plano-07"] || !atribuidos["0"] || atribuidos["plano-99"] {
+	if err != nil || len(atribuidos) != 41 || !atribuidos[chaveDeRun("plano-07").indice()] || !atribuidos[chaveDeRun("0").indice()] || atribuidos[chaveDeRun("plano-99").indice()] || atribuidos[chaveDePedido("plano-07").indice()] {
 		t.Fatalf("planos atribuidos = %d err=%v", len(atribuidos), err)
 	}
 }
@@ -527,7 +536,7 @@ func TestAOS520_Livro_IlegivelRecusa(t *testing.T) {
 		"evento sem o registo":  semear(t, EventTypeModelCanaryClosed, `{"v":"1.0","alias":"a","profile_digest":"p"}`),
 		"abertura fatia a mais": semear(t, EventTypeModelCanaryOpened, `{"v":"1.0","entry_digest":"e","alias":"a","profile_digest":"p","limit":40,"share_percent":101}`),
 	} {
-		if _, err := l.decidir(ctx, aos520Cand, "plano", 0); !errors.Is(err, ErrCanaryUnreadable) {
+		if _, err := l.decidir(ctx, aos520Cand, chaveDeRun("plano"), 0); !errors.Is(err, ErrCanaryUnreadable) {
 			t.Errorf("%s: decidir = %v", nome, err)
 		}
 		if err := l.abrir(ctx, aos520Cand, aos520Marca(0, nil)); !errors.Is(err, ErrCanaryUnreadable) {
@@ -546,11 +555,11 @@ func TestAOS520_Livro_IlegivelRecusa(t *testing.T) {
 	if err := l.abrir(ctx, outraFatia, aos520Marca(0, nil)); !errors.Is(err, ErrCanaryInconsistent) {
 		t.Fatalf("abrir com outra fatia para o mesmo registo: %v", err)
 	}
-	if _, err := l.decidir(ctx, outraFatia, "plano", 0); !errors.Is(err, ErrCanaryInconsistent) {
+	if _, err := l.decidir(ctx, outraFatia, chaveDeRun("plano"), 0); !errors.Is(err, ErrCanaryInconsistent) {
 		t.Fatalf("decidir com outra fatia para o mesmo registo: %v", err)
 	}
 	// Um livro sem a abertura do registo em vigor (ninguém abriu): recusa.
-	if _, err := (&livroDoCanary{es: aos520Store(t)}).decidir(ctx, aos520Cand, "plano", 0); !errors.Is(err, ErrCanaryUnreadable) {
+	if _, err := (&livroDoCanary{es: aos520Store(t)}).decidir(ctx, aos520Cand, chaveDeRun("plano"), 0); !errors.Is(err, ErrCanaryUnreadable) {
 		t.Fatalf("decidir sem abertura: %v", err)
 	}
 	// Um livro vazio não tem planos atribuídos.

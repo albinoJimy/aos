@@ -127,12 +127,6 @@ type runState struct {
 	// memória (AOS-496).
 	titular string
 
-	// retomado diz que esta hospedagem é a de um run RE-HOSPEDADO a partir do seu registo de retoma
-	// (a retoma pela API ou a varredura de crash-resume), e não a de um run novo. Escrito uma vez, em
-	// [NodeService.submitObservando], do interruptor `resuming` — que só essas duas vias ligam. É por
-	// ele que a fixação do modelo (AOS-520) sabe que não deve escolher: um run retomado traz o modelo
-	// do seu registo, ou é de antes da fixação.
-	retomado bool
 	// plano é o pedido de plano de que o run é trabalho, VERIFICADO pelo nó no `POST /runs`
 	// (AOS-520, [origemDoPlano]). O valor-zero é um run que não é trabalho de um pedido verificado.
 	plano origemDoPlano
@@ -807,7 +801,7 @@ func (s *NodeService) submitObservando(ctx context.Context, goal agentruntime.Go
 			}
 		}
 	}
-	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular(), retomado: resuming, plano: plano}
+	rs := &runState{runID: runID, done: make(chan struct{}), principal: imputadoA(goal), titular: goal.Titular(), plano: plano}
 	s.runs[runID] = rs // RESERVA — bloqueia duplicados enquanto adquirimos o lease
 	s.mu.Unlock()
 
@@ -1175,8 +1169,8 @@ func (s *NodeService) hostRun(ctx context.Context, rs *runState, goal agentrunti
 	//
 	// AOS-520 (ADR-041 §2.4): com um candidato a servir, é AQUI que o modelo de um run novo é
 	// escolhido — uma vez, pelo livro do canary — e gravado, em fail-closed, antes do registo de
-	// retoma e do primeiro turno. Um run que traz a marca de modelo fixado por escolha (do seu
-	// registo de retoma) não é tocado. Sem candidato a servir é o [Node.fixarModelo] de sempre. Uma
+	// retoma e do primeiro turno. «Novo» é o run que o LOG diz não ter história; um run que já deu
+	// turnos ou já tem registo de retoma fica com o que está selado, venha por que via vier. Sem candidato a servir é o [Node.fixarModelo] de sempre. Uma
 	// recusa fecha o run `failed` sem dar um turno: nunca é servido pelo titular «na dúvida».
 	var ferr error
 	if goal, ferr = s.escolherModeloDoRun(ctx, rs, goal); ferr != nil {
