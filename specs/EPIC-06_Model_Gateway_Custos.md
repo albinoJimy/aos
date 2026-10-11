@@ -3703,6 +3703,199 @@ parâmetros em silêncio.
 
 **Aberto (2026-10-11).** Nada implementado. Pode começar já, em paralelo com o AOS-518.
 
+## AOS-519 — O nó carrega perfis de rota assinados de uma pasta e confere o veredicto que citam; sem pasta, é o binário de hoje
+
+<!-- Este ticket EMENDA o ADR-036 §2.8 (a rota que serviu o turno compara-se com um perfil): a emenda diz de onde o perfil pode vir — da tabela em código ou de um registo de entrada assinado, conferido no arranque — e não muda o que o perfil é. A emenda é entregável do ticket e escreve-se no ADR, não aqui. Os outros ADR citados no bloco são só menção e estão marcados como tal. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-06 |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A3 (entrada automática). Rótulo no desenho: «A3-perfil» |
+| Tipo | feat |
+| Prioridade | P1: enquanto o perfil for uma tabela em código, um modelo novo custa um PR e uma imagem nova do nó — e a fase não se cumpre |
+| Estimativa | L |
+| Dependências | AOS-505 e AOS-513 (o perfil da rota, o seu digest e os perfis candidatos do gateway), AOS-518 (o relatório com veredicto e digest próprio), AOS-517 (o digest declarado da imagem do proxy). Decisões D1 e D8 do dono (tomadas a 2026-10-11) |
+| Bloqueia | AOS-520, AOS-522, AOS-523 |
+| Responsável sugerido | Arquitecto de Plataforma |
+| Documentos de referência | `docs/reports/desenho-a3-entrada-automatica-2026-10-11.md` §2, §3 (passos 4 e 5), §4.3 e §6 (D1, D8, D9), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (fase A3), `docs/adr/ADR-036-o-tail-e-a-forma-canonica-da-conversa.md` §2.8, `packages/platform/model-gateway/route.go`, `packages/platform/model-gateway/route_profile.go`, `packages/platform/model-gateway/production.go`, `packages/platform/model-gateway/policy/allowlist/allowlist.go`, `packages/cmd/aos/modelgatewaywiring.go`, `packages/cmd/aos/modelo_do_turno.go`, `deploy/server/README.md` |
+
+### Contexto
+
+- **O perfil da rota é uma tabela em código**, com quatro entradas, todas do Kimi
+  (`packages/platform/model-gateway/route.go`). O próprio código anuncia que «o perfil como
+  artefacto assinado do registo é da fase A3», e diz que o nó não lê perfis de ficheiro, de
+  ambiente, de um plano, de um run nem de um pedido HTTP (`route_profile.go`).
+- **A porta de entrada já existe.** O gateway aceita perfis que não estão na tabela
+  (`ProductionConfig.RouteProfiles`), com leitura fechada: campos desconhecidos e chaves
+  repetidas são recusados (`ParseRouteProfile`). Hoje só o banco a usa; o nó não lhe passa
+  nada.
+- **O molde também já existe.** O nó sabe carregar uma política assinada de uma pasta e
+  conferi-la contra uma âncora dada por ambiente: a allowlist externa
+  (`AOS_MODEL_ALLOWLIST_BUNDLE_DIR` com `AOS_MODEL_ALLOWLIST_TRUST_ANCHOR`, em
+  `packages/cmd/aos/modelgatewaywiring.go`). Pasta sem âncora, ou bundle que não verifica: o
+  nó recusa arrancar.
+- **Um veredicto que se recalcula do que o chamador declara não é um gate** (desenho §3). A
+  ratificação de skills aceita hoje `canary_passed` como um booleano de quem chama. Aqui o
+  registo cita o digest de um relatório, e o nó lê o relatório.
+- **Um perfil que muda a meio falha fechado os runs em curso** (desenho §5, lição 5;
+  <!-- rtm: menção -->ADR-040 §2.11<!-- /rtm: menção -->, preso por teste). Carrega-se no
+  arranque, não a quente.
+- **O princípio que manda:** nada que mude o comportamento chega a produção sem eval-gate,
+  canary e ratificação humana assinada (`AGENTS.md` §7, n.º 9;
+  <!-- rtm: menção -->ADR-012<!-- /rtm: menção -->). Um perfil de modelo muda o comportamento.
+  Este ticket entrega a ratificação assinada e a conferência do eval-gate; o canary é do
+  AOS-520.
+
+### Decidido pelo dono (2026-10-11)
+
+- **D1 — o perfil vive num registo assinado, numa pasta do servidor** (a opção (b)), desenhado
+  para poder ser publicado no Registry mais tarde sem mudar de forma. **Assina o dono**, com
+  uma chave só para perfis de modelo, fora do nó e fora do arnês. Fica dito que é um desvio à
+  letra da fase («artefacto do registo»): o Registry não corre em nenhum binário.
+- **D1, sub-decisão — nenhum nome novo, nenhuma allowlist nova.** Os nomes pedidos são os
+  aliases que a allowlist assinada já autoriza; o modelo real muda no perfil e no proxy. Um
+  perfil assinado para um alias **substitui** a entrada da tabela em código para esse alias, e
+  o banner di-lo (D9).
+- **D8, linha 3 — a entrada automática limita-se, para já, a perfis que não devolvem estado.**
+  O nó recusa carregar um perfil que devolve estado enquanto a captura estiver desligada.
+
+### Objectivo
+
+O nó aceita perfis de rota vindos de fora do binário, por um registo de entrada assinado pelo
+dono que cita o veredicto do arnês; confere tudo no arranque e, se alguma coisa não bate, não
+arranca. Sem a pasta configurada, o binário é byte a byte o de hoje.
+
+### Âmbito
+
+- **O registo de entrada**: um ficheiro com versão de formato, o perfil da rota (os campos que
+  `ParseRouteProfile` já lê, sem nenhum novo), o digest do perfil, o digest do relatório de
+  qualificação, o digest da imagem do proxy e a fatia inicial em percentagem. Leitura fechada.
+  Ao lado: a assinatura ed25519 e o relatório citado.
+- **Dois interruptores**, no molde da allowlist externa: `AOS_MODEL_ROUTE_PROFILES_DIR` (a
+  pasta) e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR` (a chave pública do assinante, por fora).
+- **A conferência no arranque**, e a entrega dos perfis válidos ao gateway pela porta que já
+  existe.
+- **O evento selado «perfil carregado»**, com o digest do perfil, o do registo e o do
+  relatório, e a linha do banner.
+- **A forma de assinar**: com a ferramenta que o dono já usa (`aos-issuer`). Se ela não
+  assinar hoje um ficheiro deste tipo, o subcomando que falta é entregável deste ticket.
+- **A emenda ao ADR-036 §2.8** e o runbook (carregar, trocar e retirar um perfil, sempre com
+  a rota drenada).
+- O campo da fatia é lido, validado (inteiro de 0 a 100) e mostrado no banner. **Neste ticket
+  não tem efeito:** quem o usa é o AOS-520.
+
+### Critérios de Aceitação
+
+**Inerte sem a pasta**
+
+- [ ] Sem `AOS_MODEL_ROUTE_PROFILES_DIR`, os digests dos quatro perfis da tabela, o pedido
+      enviado ao provider, o manifesto do turno, o banner e o `/metrics` são byte a byte os da
+      base — preso por digest, com o binário da base ao lado do novo sobre as mesmas entradas.
+- [ ] Com a pasta configurada e **vazia**, o nó arranca, diz no banner «zero perfis
+      assinados» e comporta-se como sem pasta.
+
+**Falha fechado, com causa própria para cada caso** (o nó não arranca; a causa aparece no
+erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
+
+- [ ] Pasta configurada sem âncora de confiança.
+- [ ] Assinatura em falta, inválida, ou de outra chave.
+- [ ] Registo com campo desconhecido, chave repetida, versão de formato desconhecida, ou fatia
+      fora de 0 a 100.
+- [ ] Digest do perfil no registo diferente do digest do perfil que o registo traz.
+- [ ] Relatório citado em falta; ou presente com digest diferente do citado.
+- [ ] Veredicto que não é `qualificado` (`recusado` e `inconclusivo`, um teste cada).
+- [ ] Veredicto de outro perfil (o digest do perfil no relatório não é o do registo).
+- [ ] Veredicto de outra imagem do proxy (o digest no relatório não é o declarado para
+      produção pelo AOS-517).
+- [ ] Dois registos para o mesmo nome pedido.
+- [ ] Perfil para um nome que a allowlist assinada não autoriza para o board e a região do
+      nó: a allowlist continua a mandar, e sabe-se no arranque e não ao primeiro pedido.
+- [ ] Perfil que devolve estado (`devolver` diferente de `nunca`) com
+      `AOS_MODEL_PROVIDER_STATE` desligado.
+- [ ] **Mutação dirigida** por causa: retirar cada conferência faz arrancar um nó que devia
+      recusar, e avermelha o teste dessa causa — e só esse.
+
+**Quando carrega**
+
+- [ ] Um registo válido para um alias que a tabela em código já conhece substitui essa entrada
+      para o nó inteiro, e o banner diz qual alias, o modelo esperado de antes e o de agora, e
+      os dois digests. Sem essa linha no banner, o teste falha.
+- [ ] Com o perfil assinado do alias que o nó pede (`AOS_MODEL_NAME`), um run completa contra
+      um provider falso atrás do proxy fixado, e o manifesto de cada turno traz o digest do
+      perfil **assinado**, não o da tabela. É o caso estreito do desenho §4.3: trocar o modelo
+      único do nó sem PR.
+- [ ] O evento «perfil carregado» fica selado uma vez por arranque e por perfil, com os três
+      digests; reconstrói-se do log quem serviu o quê e desde quando.
+- [ ] **Só no arranque.** Mudar, acrescentar ou apagar um ficheiro da pasta com o nó a correr
+      não tem efeito até ser recriado — preso por teste. Um run começado antes da troca e
+      retomado depois acaba com a projecção fixada ou falha fechado com a causa que já existe
+      (`estado_de_outra_rota`); nunca continua em silêncio com outro perfil.
+- [ ] O conjunto de valores do rótulo do modelo servido nas métricas continua **fechado**:
+      passa a incluir os modelos esperados dos perfis assinados, e o número de séries tem um
+      máximo escrito e testado.
+- [ ] Um `expected_model` com ponto ou barra (por exemplo `anthropic/claude-sonnet-4.5`) ou
+      carrega e serve um run de ponta a ponta, ou é recusado no arranque com causa própria.
+      O ticket segue o nome por todos os sítios onde é usado e regista o que encontrou
+      (desenho §8: há pelo menos um identificador de stream que não aceita ponto).
+- [ ] **Sobre JetStream**, e não só sobre ficheiro: o smoke do carregamento e do evento
+      selado corre contra o cluster de CI.
+
+**Registo**
+
+- [ ] A emenda ao ADR-036 §2.8 está escrita e a RTM regenerada.
+- [ ] O `deploy/server/README.md` descreve os dois interruptores, a montagem da pasta só de
+      leitura no serviço do nó, e o procedimento de troca com a rota drenada.
+
+### O que fica desligado por omissão, e o que tem de ficar inerte
+
+- **Interruptores:** `AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`.
+  Sem o primeiro, nada muda. Com o primeiro e sem o segundo, o nó não arranca.
+- **Inerte:** o primeiro critério acima. A allowlist, a soberania, o veredicto do kernel e a
+  mediação do Reference Monitor não são alcançáveis por um perfil: um teste tenta, com um
+  registo validamente assinado, cada uma das quatro coisas e falha.
+
+### Testes exigidos
+
+- A inércia por digest contra o binário da base; um teste por causa de recusa, com a sua
+  mutação; o run de ponta a ponta com o perfil assinado atrás do proxy fixado; a troca a
+  quente sem efeito; o smoke sobre JetStream.
+- **Controlo negativo da assinatura:** um registo assinado com a chave da allowlist, e não
+  com a dos perfis, é recusado. As duas âncoras não são intermutáveis.
+- Revisão adversarial independente antes de qualquer perfil assinado ir a produção. Alvo: um
+  caminho por onde um perfil chegue ao gateway sem ter passado por todas as conferências.
+
+### Riscos
+
+- **Um perfil que muda com runs em curso.** A projecção já fica fixada por run e uma rota
+  `obrigatorio` falha fechado; a regra operacional — muda-se com a rota drenada — passa a
+  estar no runbook.
+- **O nó confere um relatório produzido noutro computador.** A assinatura do dono cobre o
+  digest do relatório: prova que o dono viu aquele relatório; **não prova que o arnês correu**
+  (desenho §8). Fica escrito na emenda ao ADR como limite aceite.
+- **O nó não vê que imagem o proxy está de facto a correr.** Compara o digest do relatório com
+  o declarado no repositório; que o servidor corre essa imagem é garantido pelo compose
+  (AOS-517), não pelo nó.
+
+### O que precisa do dono
+
+- Gerar a chave dos perfis de modelo, fora do nó e fora do arnês, e entregar a pública.
+- Pôr os dois interruptores no `.env` do servidor e montar a pasta, quando decidir.
+- Assinar o primeiro registo de entrada; aprovar o deploy da versão que traz este ticket.
+
+### Fora de âmbito
+
+- Um tipo «perfil de modelo» no Registry, com staging e promoção.
+- Servir mais de um modelo, a fatia a ter efeito, o disjuntor: AOS-520 e AOS-521.
+- Carregar perfis a quente; perfis vindos de um plano, de um run ou de um pedido HTTP.
+- Perfis que devolvem estado em produção: dependem de a captura ser ligada (D8).
+- Nomes de modelo novos na allowlist; relaxar qualquer garantia por perfil.
+- O arnês a assinar o relatório com chave própria.
+
+### Estado
+
+**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-518 ter o formato do
+relatório e o seu digest estáveis; o AOS-522 pode andar ao lado.
+
 ---
 
 ## Controlo de versões
@@ -3737,3 +3930,4 @@ parâmetros em silêncio.
 | 3.5 | 2026-10-10 | AOS-516: D4 alterada (o Claude qualifica-se pela OpenRouter, só em ensaio); o banco ganha o fornecedor `openrouter`; o perfil da rota passa a declarar `devolver_em` (`origem` ou `topo`) e `params.reasoning` (contrato da porta `1.10.0`; emendas ao ADR-040 §2.11 e ao ADR-036 §2.8), inertes por omissão; medido atrás do proxy fixado, com provider falso: com `devolver_em: topo` a devolução pela rota `openrouter/…` cumpre-se, e sem ele não; a corrida com o modelo real está por fazer | Equipa AOS |
 | 3.6 | 2026-10-11 | AOS-516 fechado com a fase A2, por decisão do dono: a corrida com o modelo real fez-se pela OpenRouter a 2026-10-10 (21 de 21 runs com o raciocínio devolvido; o controlo negativo mostrou que a OpenRouter não o exige); o passo de produção não se fez; resíduos nomeados | Equipa AOS |
 | 3.7 | 2026-10-11 | +AOS-517 (fase A3, entrada automática): o proxy de produção fixa-se pelo digest em que o banco mede, com a igualdade presa por teste, e `drop_params: false` aplica-se no servidor, por decisão do dono (D8) | Equipa AOS |
+| 3.8 | 2026-10-11 | +AOS-519 (fase A3): o nó carrega perfis de rota de uma pasta, por um registo de entrada assinado pelo dono que cita o veredicto do arnês (`AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`); falha fechado no arranque com causa própria por caso; inerte sem a pasta; emenda à secção do perfil da rota no ADR do tail como entregável (D1, D8) | Equipa AOS |
