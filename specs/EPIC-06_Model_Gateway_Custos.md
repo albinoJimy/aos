@@ -4080,8 +4080,7 @@ testes do pacote, e repôs-se o ficheiro.
 
 ## AOS-520 — O nó serve um titular e um candidato, com o modelo fixado por run; o canary é uma percentagem de planos
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket ENTREGA um ADR NOVO, ainda por numerar (o número reserva-se na altura): «mais de um modelo por nó — titular e candidato, modelo fixado por run, canary por percentagem de planos». Enquanto esse ADR não existir, o bloco não implementa nenhum ADR numerado: o ADR-018, o ADR-021, o ADR-012, o ADR-036 e o ADR-040 são citados só como os contratos que o ADR novo tem de respeitar e citar. Quando o ADR novo for escrito, este marcador sai e a RTM passa a ligá-lo ao ticket. -->
+Este ticket entrega o **ADR-041** — «mais de um modelo por nó: titular e candidato, a rota fixada por run, e o canary como percentagem de planos» (`docs/adr/ADR-041-mais-de-um-modelo-por-no-titular-e-candidato.md`), escrito no PR 1 — e a emenda ao ADR-036 §2.8 do PR 0 (o perfil fixado por run). Os outros ADR que o ADR-041 respeita e cita estão na sua secção 6; este bloco não os implementa.
 
 | Campo | Valor |
 |---|---|
@@ -4385,8 +4384,7 @@ fixado está preso aos bytes medidos no commit da base.
 
 ## AOS-521 — O candidato perde a fatia sozinho: um disjuntor por modelo, durável e selado, que só o dono volta a fechar
 
-<!-- rtm: adrs-mencionados -->
-<!-- Este ticket ENTREGA a secção do disjuntor no ADR NOVO do AOS-520, ainda por numerar (como emenda a esse ADR, ou como parte dele se os dois tickets fecharem juntos). Enquanto esse ADR não tiver número, o bloco não implementa nenhum ADR numerado: o ADR-025 (o controlador de autonomia, que já despromove sozinho e só devolve por acto humano) é citado como precedente, e o ADR-036 §2.8 como o contrato da comparação do modelo servido. Quando o ADR novo existir, este marcador sai. -->
+Este ticket entrega a **secção 2.9 do ADR-041** (o disjuntor), por emenda a esse ADR. <!-- rtm: menção -->O ADR-025 (o controlador de autonomia, que já despromove sozinho e só devolve por acto humano) é citado como precedente, e o ADR-036 §2.8 como o contrato da comparação do modelo servido; este bloco não os implementa.<!-- /rtm: menção -->
 
 | Campo | Valor |
 |---|---|
