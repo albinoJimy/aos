@@ -11,6 +11,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -567,5 +569,49 @@ func TestAOS519_No_PastaDeclaradaSemGatewayEAvisada(t *testing.T) {
 	linhas := modelRouteProfilesBanner(perfisDoCliente(cliente))
 	if len(linhas) != 1 || !strings.HasPrefix(linhas[0], "AVISO") || !strings.Contains(linhas[0], "NAO foi lida") {
 		t.Fatalf("a pasta declarada e nao lida tinha de ser avisada: %v", linhas)
+	}
+}
+
+// A ÂNCORA DOS PERFIS NÃO PODE SER A DA ALLOWLIST EXTERNA (revisão adversarial). O operador monta
+// uma allowlist externa assinada com a chave K e põe a MESMA K como âncora dos perfis; o registo
+// está assinado com K e tudo o resto é válido — sem a exclusão, o nó carregava. Com outra chave
+// nos perfis, e a mesma allowlist externa, carrega: é a igualdade das âncoras que recusa.
+func TestAOS519_No_AAncoraDaAllowlistExternaNaoServeDeAncoraDosPerfis(t *testing.T) {
+	aos519AmbienteDoGateway(t)
+	chaveDaAllowlist := rt.NewKey(t)
+	// A allowlist externa: a mesma regra da embebida, assinada com K.
+	bundle := t.TempDir()
+	doc := []byte(`{"version":"externa-519/v1","default":"deny","rules":[{"id":"eu","board":"board-eu","models":["gpt-4o"],"regions":["eu"]}]}`)
+	digest, err := allowlist.Digest(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := base64.StdEncoding.EncodeToString(ed25519.Sign(chaveDaAllowlist.Priv, []byte(digest)))
+	for nome, conteudo := range map[string][]byte{allowlist.BundlePolicyFile: doc, allowlist.BundleSigFile: []byte(sig)} {
+		if err := os.WriteFile(filepath.Join(bundle, nome), conteudo, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("AOS_MODEL_ALLOWLIST_BUNDLE_DIR", bundle)
+	t.Setenv("AOS_MODEL_ALLOWLIST_TRUST_ANCHOR", chaveDaAllowlist.Anchor())
+
+	// Os perfis, assinados com a MESMA chave e com ela como âncora.
+	dir := t.TempDir()
+	rt.Good(t, dir, "modelo-novo", rt.ProfileJSON, rt.Board, rt.Region, chaveDaAllowlist)
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_DIR", dir)
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR", chaveDaAllowlist.Anchor())
+	cliente, _, err := parseModelFromEnv(false)
+	if !errors.Is(err, ErrBadModelRouteProfiles) || routeentry.CauseOf(err) != routeentry.CauseSharedTrustAnchor || cliente != nil {
+		t.Fatalf("a ancora da allowlist externa como ancora dos perfis tinha de abortar com %s; veio %v", routeentry.CauseSharedTrustAnchor, err)
+	}
+
+	// Controlo: com uma chave SÓ dos perfis, sobre a mesma allowlist externa, o nó compõe.
+	propria := rt.NewKey(t)
+	dir2 := t.TempDir()
+	rt.Good(t, dir2, "modelo-novo", rt.ProfileJSON, rt.Board, rt.Region, propria)
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_DIR", dir2)
+	t.Setenv("AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR", propria.Anchor())
+	if cliente, _, err := parseModelFromEnv(false); err != nil || cliente == nil {
+		t.Fatalf("com uma ancora propria dos perfis o no tinha de compor: %v", err)
 	}
 }
