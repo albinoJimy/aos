@@ -200,7 +200,14 @@ type canaryDoNo struct {
 // Com candidato a servir, garante a ABERTURA do canary no livro (idempotente; um reinício não repõe
 // a contagem). Sem candidato a servir, lê o livro UMA vez. Nos dois casos uma falha aborta o
 // arranque: um nó que não sabe que planos são do candidato não pode decidir nem recusar.
-func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *perfisAssinados, titular string, log func(string, ...any)) (*canaryDoNo, error) {
+//
+// `sobreJetStream` diz se o Event Store do nó é o backend JetStream. Com um candidato a servir sobre
+// esse backend, o arranque AVISA: o backend tem um defeito conhecido no CAS com a vista local
+// atrasada (reproduzido em `substrate/eventstore/jetstream/aos520_cas_vista_atrasada_test.go`) que
+// prende o livro numa réplica quando outra escreve — o candidato só é suportado com UMA réplica do
+// nó. É um aviso e não uma recusa porque o nó não tem como saber quantas réplicas partilham o
+// Event Store: o factor de replicação do stream não é o número de réplicas do nó.
+func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *perfisAssinados, titular string, sobreJetStream bool, log func(string, ...any)) (*canaryDoNo, error) {
 	if assinados == nil {
 		return nil, nil
 	}
@@ -215,6 +222,9 @@ func comporCanaryDoNo(ctx context.Context, es eventstore.EventStore, assinados *
 	if servir {
 		if err := c.livro.abrir(ctx, candidato, marcaDaFilaDePedidos(es)); err != nil {
 			return nil, fmt.Errorf("aos: abrir o canary do modelo candidato (AOS-520): %w", err)
+		}
+		if sobreJetStream {
+			log("AVISO (AOS-520): candidato a servir com o Event Store sobre JetStream — SO E SUPORTADO COM UMA REPLICA DO NO. O backend JetStream tem um defeito conhecido na escrita com concorrencia optimista (a vista local do stream nao e refrescada quando outra replica escreve): com duas replicas, a que ficar atras passa a recusar TODOS os planos novos do candidato com a causa %s, ate reiniciar. Os runs do titular decididos pela funcao nao sao afectados; nenhum plano e servido pelo modelo errado. Este no nao sabe quantas replicas partilham o Event Store: confirme que e uma so, ou ponha AOS_MODEL_CANDIDATE=off", causaLivroEmContencao)
 		}
 		if f := c.livro.futurosVistos.Load(); f > 0 {
 			log("AVISO (AOS-520): o livro do canary (%s) tem %d evento(s) de uma VERSAO MAIS RECENTE do no, que este binario nao sabe ler — o canary NAO E DECIDIVEL por esta versao: nenhum plano novo e atribuido ao candidato (os runs novos sao do titular, com a razao %s), e um run novo de um plano ja atribuido ao candidato e recusado. Os runs ja fixados acabam como estavam. Actualize este no para a versao que escreveu esses eventos",

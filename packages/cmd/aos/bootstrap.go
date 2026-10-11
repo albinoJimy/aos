@@ -2429,7 +2429,7 @@ func Bootstrap(ctx context.Context, cfg Config, logw io.Writer) (*Node, error) {
 	// (7-ante-quater) O CANDIDATO E O CANARY (AOS-520, ADR-041). Sem a pasta de perfis assinados
 	// isto devolve nil sem ler nada. Com um candidato a servir, garante a abertura do canary no
 	// livro durável; sem candidato a servir, lê o livro uma vez. Fail-closed: uma falha aborta.
-	canaryDoModelo, err := comporCanaryDoNo(ctx, es, perfisDoCliente(cfg.Model), modeloDoNo, log)
+	canaryDoModelo, err := comporCanaryDoNo(ctx, es, perfisDoCliente(cfg.Model), modeloDoNo, cfg.EventStoreNATS != "", log)
 	if err != nil {
 		return nil, err
 	}

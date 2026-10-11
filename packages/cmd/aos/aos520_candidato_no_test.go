@@ -1506,6 +1506,37 @@ func aos520cInner(c agentruntime.ModelClient) agentruntime.ModelClient {
 	return nil
 }
 
+// SOBRE JETSTREAM, O CANDIDATO A SERVIR AVISA NO ARRANQUE: só é suportado com uma réplica do nó (o
+// defeito conhecido do backend). Sobre outro Event Store, e sem candidato a servir, não avisa.
+func TestAOS520_ArranqueAvisaDoCandidatoSobreJetStream(t *testing.T) {
+	ctx := context.Background()
+	carregar := func(t *testing.T, interruptor string) *perfisAssinados {
+		aos519AmbienteDoGateway(t)
+		aos520PastaCom(t, aos520cCand(10))
+		assinados, err := loadSignedRouteProfilesFromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		assinados.candidatoLigado = interruptor == "on"
+		return assinados
+	}
+	arrancar := func(t *testing.T, interruptor string, sobreJetStream bool) string {
+		var dito []string
+		if _, err := comporCanaryDoNo(ctx, aos520Store(t), carregar(t, interruptor), aos486Modelo, sobreJetStream, func(f string, a ...any) { dito = append(dito, fmt.Sprintf(f, a...)) }); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(dito, "\n")
+	}
+	if dito := arrancar(t, "on", true); !strings.Contains(dito, "SO E SUPORTADO COM UMA REPLICA DO NO") || !strings.Contains(dito, causaLivroEmContencao) {
+		t.Fatalf("com o candidato a servir sobre JetStream o arranque tinha de avisar:\n%s", dito)
+	}
+	for nome, dito := range map[string]string{"on, outro Event Store": arrancar(t, "on", false), "off, sobre JetStream": arrancar(t, "off", true)} {
+		if strings.Contains(dito, "UMA REPLICA") {
+			t.Fatalf("%s: o aviso nao se aplica:\n%s", nome, dito)
+		}
+	}
+}
+
 // A CHAVE DO CANARY: o pedido de plano verificado, ou o id do run INTEIRO — nunca partido pelo `~`.
 func TestAOS520_ChaveDoCanary(t *testing.T) {
 	if got := chaveDoCanary("plano~no~2", origemDoPlano{pedido: "plano", seq: 7}); got != chaveDePedido("plano") {
