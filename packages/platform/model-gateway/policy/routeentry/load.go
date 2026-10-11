@@ -44,12 +44,12 @@ const (
 	// MaxEntries é o máximo de registos numa pasta. É também o que fecha o número de séries das
 	// métricas que têm o modelo servido no rótulo.
 	MaxEntries = 8
-	// maxEntryBytes é o tecto de um registo de entrada.
-	maxEntryBytes = 64 << 10
-	// maxSignatureBytes é o tecto do ficheiro da assinatura.
-	maxSignatureBytes = 1 << 10
-	// maxReportBytes é o tecto de um relatório de qualificação.
-	maxReportBytes = 8 << 20
+	// MaxEntryBytes é o tecto de um registo de entrada.
+	MaxEntryBytes = 64 << 10
+	// MaxSignatureBytes é o tecto do ficheiro da assinatura.
+	MaxSignatureBytes = 1 << 10
+	// MaxReportBytes é o tecto de um relatório de qualificação.
+	MaxReportBytes = 8 << 20
 )
 
 // Config é o que [LoadDir] precisa de quem compõe o nó.
@@ -189,12 +189,12 @@ func safeLabel(label string) string {
 
 // loadOne lê e confere um registo. As recusas saem sem rótulo; [LoadDir] põe-lho.
 func loadOne(cfg Config, pub ed25519.PublicKey, label string) (Entry, error) {
-	raw, state := readCapped(filepath.Join(cfg.Dir, label+SuffixEntry), maxEntryBytes)
+	raw, state := readCapped(filepath.Join(cfg.Dir, label+SuffixEntry), MaxEntryBytes)
 	if state != fileRead {
 		return Entry{}, refuse(CauseEntryUnreadable, "")
 	}
 	// A ASSINATURA PRIMEIRO. Nada do registo é lido antes de se saber que foi o dono a assiná-lo.
-	signature, state := readCapped(filepath.Join(cfg.Dir, label+SuffixSignature), maxSignatureBytes)
+	signature, state := readCapped(filepath.Join(cfg.Dir, label+SuffixSignature), MaxSignatureBytes)
 	switch state {
 	case fileMissing:
 		return Entry{}, refuse(CauseSignatureMissing, "")
@@ -215,7 +215,7 @@ func loadOne(cfg Config, pub ed25519.PublicKey, label string) (Entry, error) {
 	if e.ProxyImageDigest != ProductionProxyImageDigest() {
 		return Entry{}, refuse(CauseProxyImageNotDeclared, "")
 	}
-	report, state := readCapped(filepath.Join(cfg.Dir, label+SuffixReport), maxReportBytes)
+	report, state := readCapped(filepath.Join(cfg.Dir, label+SuffixReport), MaxReportBytes)
 	switch state {
 	case fileMissing:
 		return Entry{}, refuse(CauseReportMissing, "")
