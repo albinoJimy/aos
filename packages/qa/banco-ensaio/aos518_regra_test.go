@@ -340,18 +340,21 @@ func TestAOS518_Regra_ControloEAvisos(t *testing.T) {
 	for nome, c := range map[string]struct {
 		controlo  *ControloSemDevolucao
 		devolucao *QualificacaoDaDevolucao
+		factos    int
 		quer      []string
 	}{
-		"perfil sem devolucao obrigatoria": {nil, nil, []string{}},
-		"controlo falhou como devido":      {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, cumprida, []string{}},
-		"controlo passou":                  {&ControloSemDevolucao{Resultado: ControloPassou}, cumprida, []string{AvisoExigenciaNaoProvada}},
-		"controlo inconclusivo":            {&ControloSemDevolucao{Resultado: ControloInconclusivo}, cumprida, []string{AvisoExigenciaNaoProvada}},
-		"controlo nao correu":              {&ControloSemDevolucao{Resultado: ControloNaoCorreu}, cumprida, []string{AvisoExigenciaNaoProvada}},
-		"resultado fora do vocabulario":    {&ControloSemDevolucao{Resultado: "outra_coisa"}, cumprida, []string{AvisoExigenciaNaoProvada}},
-		"devolucao sem raciocinio":         {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, sem, []string{AvisoDevolucaoNaoCumprida}},
-		"controlo passou e sem raciocinio": {&ControloSemDevolucao{Resultado: ControloPassou}, sem, []string{AvisoExigenciaNaoProvada, AvisoDevolucaoNaoCumprida}},
+		"perfil sem devolucao obrigatoria": {nil, nil, 0, []string{}},
+		"controlo falhou como devido":      {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, cumprida, 0, []string{}},
+		"controlo passou":                  {&ControloSemDevolucao{Resultado: ControloPassou}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
+		"controlo inconclusivo":            {&ControloSemDevolucao{Resultado: ControloInconclusivo}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
+		"controlo nao correu":              {&ControloSemDevolucao{Resultado: ControloNaoCorreu}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
+		"resultado fora do vocabulario":    {&ControloSemDevolucao{Resultado: "outra_coisa"}, cumprida, 0, []string{AvisoExigenciaNaoProvada}},
+		"devolucao sem raciocinio":         {&ControloSemDevolucao{Resultado: ControloFalhouComoDevido}, sem, 0, []string{AvisoDevolucaoNaoCumprida}},
+		"factos ausentes":                  {nil, nil, 3, []string{AvisoFactosAusentes}},
+		"os tres":                          {&ControloSemDevolucao{Resultado: ControloPassou}, sem, 1, []string{AvisoExigenciaNaoProvada, AvisoDevolucaoNaoCumprida, AvisoFactosAusentes}},
+		"controlo passou e sem raciocinio": {&ControloSemDevolucao{Resultado: ControloPassou}, sem, 0, []string{AvisoExigenciaNaoProvada, AvisoDevolucaoNaoCumprida}},
 	} {
-		if tem := avisosDaQualificacao(c.controlo, c.devolucao); !reflect.DeepEqual(tem, c.quer) {
+		if tem := avisosDaQualificacao(c.controlo, c.devolucao, c.factos); !reflect.DeepEqual(tem, c.quer) {
 			t.Errorf("%s: avisos %v, quer %v", nome, tem, c.quer)
 		}
 	}
@@ -360,7 +363,7 @@ func TestAOS518_Regra_ControloEAvisos(t *testing.T) {
 			t.Errorf("o aviso %q nao tem frase", aviso)
 		}
 	}
-	if len(frasesDosAvisos) != 2 || frasesDosAvisos[AvisoExigenciaNaoProvada] == "" || frasesDosAvisos[AvisoDevolucaoNaoCumprida] == "" {
-		t.Errorf("os dois avisos tem de ter frase no resumo")
+	if len(frasesDosAvisos) != 3 || frasesDosAvisos[AvisoExigenciaNaoProvada] == "" || frasesDosAvisos[AvisoDevolucaoNaoCumprida] == "" || frasesDosAvisos[AvisoFactosAusentes] == "" {
+		t.Errorf("os tres avisos tem de ter frase no resumo")
 	}
 }

@@ -210,6 +210,14 @@ func TestAOS518_Falso_NenhumVerdeFalso(t *testing.T) {
 		t.Errorf("roteiro misto: codigo %d, %s %v", e.codigo, q.Veredicto, q.Razoes)
 	}
 
+	// Um provider que chama a tool e responde com um texto SEM os factos do documento: o kernel
+	// fecha `cumprido` (o contrato de conclusao nao le o conteudo) e a D2 nao tem limiar para
+	// isto. Nao muda o veredicto — mas nao passa em silencio: o aviso vem a cabeca.
+	e, r = aos518Qualificar(t, aos518PerfilSimples, "--roteiro", "sem_factos")
+	if q = aos518Veredicto(t, r); !reflect.DeepEqual(q.Avisos, []string{AvisoFactosAusentes}) || !strings.HasPrefix(e.stdout, "AVISO — FACTOS_AUSENTES_EM_RESPOSTAS_CUMPRIDAS") || r.Taxas.FactosAusentes.Numerador == 0 {
+		t.Errorf("sem factos: %s, avisos %v, factos ausentes %d\n%.200s", q.Veredicto, q.Avisos, r.Taxas.FactosAusentes.Numerador, e.stdout)
+	}
+
 	// Um provider que NAO declara o modelo servido: nenhum turno se prova igual ao esperado.
 	amb := aos518Ambiente(t, aos518PerfilSimples, NovoProviderFalso([]Comportamento{ComportamentoCumpre}), nil, TectoDePedidosDaQualificacao)
 	if q = aos518Veredicto(t, amb.correr(t, context.Background())); q.Veredicto != VeredictoRecusado || !reflect.DeepEqual(q.Razoes, []string{RazaoModeloServidoNaoReportado}) {
@@ -400,7 +408,7 @@ func TestAOS518_Falso_ControloSemDevolucao(t *testing.T) {
 	// O falso EXIGENTE: sem o estado de volta responde 400. O controlo falha como devia.
 	e, r := aos518Qualificar(t, aos518PerfilObrigatorio, "--estado", "exige")
 	q := aos518Veredicto(t, r)
-	if e.codigo != SaidaOK || q.Veredicto != VeredictoQualificado || len(q.Avisos) != 0 {
+	if e.codigo != SaidaOK || q.Veredicto != VeredictoQualificado || contem(q.Avisos, AvisoExigenciaNaoProvada) || contem(q.Avisos, AvisoDevolucaoNaoCumprida) {
 		t.Fatalf("exigente: codigo %d, %s %v avisos %v\n%s", e.codigo, q.Veredicto, q.Razoes, q.Avisos, e.stderr)
 	}
 	ct := q.Controlo
@@ -416,7 +424,7 @@ func TestAOS518_Falso_ControloSemDevolucao(t *testing.T) {
 	if q.Orcamento.PiorCasoDeclarado != 756 || r.Pedidos.PrevistosMax != 756 || q.Orcamento.PedidosEnviados != r.Pedidos.Enviados || r.Pedidos.Enviados <= 96 {
 		t.Errorf("orcamento com controlo = %+v, enviados %d", q.Orcamento, r.Pedidos.Enviados)
 	}
-	if strings.Contains(e.stdout, "AVISO") {
+	if strings.Contains(e.stdout, "EXIGENCIA_NAO_PROVADA") {
 		t.Errorf("com a exigencia provada nao ha aviso")
 	}
 

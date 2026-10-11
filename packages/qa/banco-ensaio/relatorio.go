@@ -638,6 +638,7 @@ func ResumoEmTexto(r *Relatorio) string {
 var frasesDosAvisos = map[string]string{
 	AvisoExigenciaNaoProvada:  "o perfil declara devolucao OBRIGATORIA e a corrida de controlo SEM devolucao nao falhou como devia: «aceite» nao e «exigido». Este relatorio NAO prova que o fornecedor exige, nem que le, o estado devolvido",
 	AvisoDevolucaoNaoCumprida: "o perfil devolve estado e o veredicto da devolucao (QUALIFICACAO DA DEVOLUCAO, abaixo) nao e `cumprida`",
+	AvisoFactosAusentes:       "ha runs cumpridos cuja saida nao tem os factos do documento sintetico (taxa «factos ausentes da saida», abaixo). Os limiares L1 a L5 nao medem o conteudo da resposta",
 }
 
 // cabecaDaQualificacao escreve, À CABEÇA do resumo, os avisos e o veredicto de uma qualificação.

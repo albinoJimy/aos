@@ -215,6 +215,10 @@ const (
 	// AvisoDevolucaoNaoCumprida — o perfil devolve estado e o veredicto da devolução
 	// (`qualificacao_da_devolucao`) não é `cumprida`.
 	AvisoDevolucaoNaoCumprida = "devolucao_do_estado_nao_cumprida"
+	// AvisoFactosAusentes — houve runs CUMPRIDOS cuja saída não tinha os factos do documento
+	// sintético. A decisão D2 não tem limiar para isto (o kernel fecha `cumprido` pelo contrato de
+	// conclusão, não pelo conteúdo), e por isso não muda o veredicto — mas fica à vista.
+	AvisoFactosAusentes = "factos_ausentes_em_respostas_cumpridas"
 )
 
 // ControloSemDevolucao é o registo da corrida de controlo de um perfil com devolução obrigatória.
@@ -241,13 +245,16 @@ func resultadoDoControlo(c ContagensDaQualificacao) string {
 }
 
 // avisosDaQualificacao devolve os avisos, numa ordem fixa.
-func avisosDaQualificacao(controlo *ControloSemDevolucao, devolucao *QualificacaoDaDevolucao) []string {
+func avisosDaQualificacao(controlo *ControloSemDevolucao, devolucao *QualificacaoDaDevolucao, factosAusentes int) []string {
 	avisos := []string{}
 	if controlo != nil && controlo.Resultado != ControloFalhouComoDevido {
 		avisos = append(avisos, AvisoExigenciaNaoProvada)
 	}
 	if devolucao != nil && devolucao.Veredicto != QualificacaoCumprida {
 		avisos = append(avisos, AvisoDevolucaoNaoCumprida)
+	}
+	if factosAusentes > 0 {
+		avisos = append(avisos, AvisoFactosAusentes)
 	}
 	return avisos
 }
@@ -371,7 +378,7 @@ func montarQualificacao(cfg CfgDaCorrida, r *Relatorio, previstos int64, obs []O
 		}
 		bloco.Controlo = c
 	}
-	bloco.Avisos = avisosDaQualificacao(bloco.Controlo, r.Qualificacao)
+	bloco.Avisos = avisosDaQualificacao(bloco.Controlo, r.Qualificacao, r.Taxas.FactosAusentes.Numerador)
 	r.QualificacaoDoModelo = bloco
 	return nil
 }
