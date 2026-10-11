@@ -59,10 +59,16 @@ func (n *Node) fixarModelo(goal agentruntime.Goal) agentruntime.Goal {
 // run retomado que começou sem nenhuma, não é tocado: a projecção de um run não muda a meio,
 // mesmo que a imagem do nó tenha mudado o perfil entretanto.
 func fixarProjeccao(goal agentruntime.Goal) agentruntime.Goal {
+	return fixarProjeccaoCom(goal, nil)
+}
+
+// fixarProjeccaoCom é [fixarProjeccao] sobre o conjunto de perfis do nó (AOS-519): com perfis
+// assinados, a versão é a do perfil ASSINADO do alias. nil ⇒ a tabela em código, como sempre.
+func fixarProjeccaoCom(goal agentruntime.Goal, perfis *modelgateway.RouteProfileSet) agentruntime.Goal {
 	if goal.ProjectionVersion != "" {
 		return goal
 	}
-	if perfil, ok := modelgateway.RouteProfileFor(goal.Model.ModelID); ok {
+	if perfil, ok := perfis.For(goal.Model.ModelID); ok {
 		goal.ProjectionVersion = perfil.ProjectionVersion
 	}
 	return goal

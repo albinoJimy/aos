@@ -152,6 +152,11 @@ func LoadPolicy() (*Policy, error) {
 	return LoadSignedPolicy(embeddedPolicy, strings.TrimSpace(string(embeddedSig)), pubB64)
 }
 
+// EmbeddedTrustAnchor devolve a chave PÚBLICA de confiança da allowlist embebida, em base64, tal
+// como está no binário. Não é um segredo. Serve a quem tem de garantir que outra âncora — a dos
+// perfis de rota assinados (AOS-519) — NÃO é esta: as duas não são intermutáveis.
+func EmbeddedTrustAnchor() string { return strings.TrimSpace(string(embeddedPub)) }
+
 // verifyTrustAnchor confirma que a chave pública embebida é EXACTAMENTE a do trust
 // anchor pinado em código (fingerprint sha256). É o gate que torna a assinatura
 // não-forjável por troca do ficheiro .pub: sem a privada custodiada offline, produzir
