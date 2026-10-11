@@ -53,6 +53,13 @@ const versaoDoModeloFixado = "1.0"
 // a versão da função que repartiu o plano.
 const versaoDaEscolha = canary.Version
 
+// marcaDeEscolhaConhecida diz se a marca é uma versão da função de escolha que este binário conhece.
+// Conjunto FECHADO: hoje, uma. Um run fixado por uma versão que o binário não conhece não é
+// reinterpretado — nem na retoma, nem numa re-submissão.
+func marcaDeEscolhaConhecida(marca string) bool {
+	return marca == versaoDaEscolha
+}
+
 // reasonModelPinRefused é a razão da transição terminal (`failed`) de um run recusado pela
 // fixação do modelo. A causa — de vocabulário fechado — fica no log do nó.
 const reasonModelPinRefused = "model_pin_refused"
@@ -74,6 +81,10 @@ const (
 	// causaFixacaoDiferenteDaGravada — o run já tinha um `run.model_pinned`, e o que lá está não é
 	// o que este nó escolheria agora. O valor gravado não é reescrito nem ignorado.
 	causaFixacaoDiferenteDaGravada = "fixacao_diferente_da_gravada"
+	// causaMarcaSemFixacaoGravada — o Goal traz a marca de modelo fixado por escolha e o log do nó
+	// não tem, para esse run, uma fixação com essa marca, esse alias e esse perfil; ou a marca não
+	// é uma versão da função de escolha que este binário conheça.
+	causaMarcaSemFixacaoGravada = "marca_sem_fixacao_gravada"
 	// causaHistoriaDoRunIlegivel — o nó não conseguiu ler do seu log se o run já existia (o stream
 	// do run, ou o seu registo de retoma). Sem saber se o run é novo, não se escolhe.
 	causaHistoriaDoRunIlegivel = "historia_do_run_ilegivel"
@@ -104,7 +115,7 @@ func (h historiaDoRun) fixado() (alias, digest, marca string, ok bool, err error
 // causasDaFixacaoDoModelo devolve o vocabulário fechado, pela ordem em que está escrito acima.
 func causasDaFixacaoDoModelo() []string {
 	return []string{causaPlanoDoCandidatoSemCandidato, causaLivroIlegivel, causaLivroEmContencao,
-		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaHistoriaDoRunIlegivel, causaCandidatoSemPerfil}
+		causaFixacaoNaoGravada, causaFixacaoDiferenteDaGravada, causaMarcaSemFixacaoGravada, causaHistoriaDoRunIlegivel, causaCandidatoSemPerfil}
 }
 
 // ErrModelPinRefused — o run novo não pode ser hospedado com um modelo fixado. Fail-closed: não
@@ -308,7 +319,8 @@ func (n *Node) lerHistoriaDoRun(ctx context.Context, runID string) (historiaDoRu
 // história do run ([Node.lerHistoriaDoRun]):
 //
 //   - o run já tem uma fixação gravada (no registo de retoma ou no `run.model_pinned`): usa-se o
-//     que está selado, conferido com o que este nó serve; não se volta a escolher;
+//     que está selado, conferido com o que este nó serve; não se volta a escolher. Um Goal que
+//     traga a marca só é aceite se ela for a que está gravada para o run;
 //   - o run tem história e NÃO tem fixação (deu um turno, ou tem registo de retoma sem a marca):
 //     [Node.fixarModelo], como sempre — sem evento, sem livro, sem marca;
 //   - o run não tem história: é novo. Sem candidato a servir, [Node.fixarModelo] — salvo o run de
@@ -328,17 +340,28 @@ func (s *NodeService) escolherModeloDoRun(ctx context.Context, rs *runState, goa
 	if err != nil {
 		return goal, recusaDaFixacao(causaHistoriaDoRunIlegivel, err)
 	}
-	if goal.ModelPinnedBy != "" {
-		return goal, nil
-	}
-	// O run já tem um modelo fixado no log, e o Goal não o traz (um `POST /runs` do mesmo id): vale
-	// o que está selado.
 	alias, digest, marca, fixado, err := h.fixado()
 	if err != nil {
 		return goal, err
 	}
+	// A MARCA NO GOAL SÓ VALE SE FOR A QUE ESTÁ SELADA PARA ESTE RUN. Quem chega aqui com a marca
+	// é a retoma, que a leu do registo de retoma — e então o log diz o mesmo. Um Goal com a marca
+	// para um run que o log não diz fixado (um embedder que chame [NodeService.Submit] com ela,
+	// para ser servido pelo candidato sem escolha, sem livro e sem evento) é RECUSADO: não é
+	// tratado como novo, porque quem o compôs afirmou uma fixação que não existe. A marca, o alias
+	// e o digest têm de ser os gravados; e a marca tem de ser uma versão da função que este
+	// binário conhece.
+	if goal.ModelPinnedBy != "" {
+		if !marcaDeEscolhaConhecida(goal.ModelPinnedBy) || !fixado || marca != goal.ModelPinnedBy || alias != goal.Model.ModelID ||
+			(digest != "" && digest != goal.RouteProfileDigest) {
+			return goal, recusaDaFixacao(causaMarcaSemFixacaoGravada, nil)
+		}
+		return goal, nil
+	}
+	// O run já tem um modelo fixado no log, e o Goal não o traz (um `POST /runs` do mesmo id): vale
+	// o que está selado.
 	if fixado {
-		if !n.aliasServido(alias) {
+		if !marcaDeEscolhaConhecida(marca) || !n.aliasServido(alias) {
 			return goal, recusaDaFixacao(modelgateway.PinnedCauseModelNotServed, nil)
 		}
 		if perr := n.perfisDaRota.perfis().CheckPinnedProfile(alias, digest); perr != nil {

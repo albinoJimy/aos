@@ -622,6 +622,62 @@ func TestAOS520_No_RunAvulsoComONomeDeUmPedidoNaoAtribuiOPlano(t *testing.T) {
 	}
 }
 
+// A MARCA NO GOAL NÃO VALE POR VIR NO GOAL. Um embedder chama [NodeService.Submit] com um Goal que
+// já traz a marca de modelo fixado e o alias do candidato, para um run que não existe — num nó com
+// o interruptor a `off`, num nó com o candidato a servir, e num nó SEM a pasta de perfis. Em todos o
+// run é recusado com a causa própria, sem um pedido ao provider, sem evento e sem mexer no livro. O
+// mesmo com uma marca que não é versão de função nenhuma, e com a marca certa e outro alias.
+func TestAOS520_No_AMarcaNoGoalSoValeSeEstiverSelada(t *testing.T) {
+	ctx := context.Background()
+	nos := map[string]func(t *testing.T) *aos520No{
+		"interruptor a off":  func(t *testing.T) *aos520No { return aos520cNo(t, aos520NovoSubstrato(t), "off", aos520cCand(100)) },
+		"candidato a servir": func(t *testing.T) *aos520No { return aos520cNo(t, aos520NovoSubstrato(t), "on", aos520cCand(100)) },
+		"sem a pasta": func(t *testing.T) *aos520No {
+			aos520Interruptor(t, "")
+			return aos520Compor(t, aos520NovoSubstrato(t), "", "", aos505NoEsperado)
+		},
+	}
+	for nome, compor := range nos {
+		t.Run(nome, func(t *testing.T) {
+			n := compor(t)
+			for i, g := range []agentruntime.Goal{
+				{Model: agentruntime.ModelConfig{ModelID: aos520AliasCand}, ModelPinnedBy: versaoDaEscolha},
+				{Model: agentruntime.ModelConfig{ModelID: aos520AliasCand}, ModelPinnedBy: "o-que-eu-quiser"},
+				{Model: agentruntime.ModelConfig{ModelID: aos486Modelo}, ModelPinnedBy: versaoDaEscolha},
+			} {
+				g.RunID = fmt.Sprintf("run-520-marca-forjada-%d", i)
+				g.Principal = referencemonitor.Principal{NHIID: durAgent}
+				g.Objective, g.MaxTurns, g.Credential = aos490Objectivo, 3, n.tok
+				if err := n.svc.Submit(ctx, g); err != nil {
+					t.Fatalf("Submit: %v", err)
+				}
+				oc, ok, err := n.svc.Wait(ctx, g.RunID)
+				if err != nil || !ok || !errors.Is(oc.Err, ErrModelPinRefused) || causaDaFixacaoDoModelo(oc.Err) != causaMarcaSemFixacaoGravada {
+					t.Fatalf("goal %d: uma marca sem fixacao gravada tinha de ser recusada; veio ok=%v err=%v run=%v", i, ok, err, oc.Err)
+				}
+				if _, tem := aos520cFixacao(t, n.node.EventStore, g.RunID); tem {
+					t.Fatalf("goal %d: o run recusado ganhou um run.model_pinned", i)
+				}
+			}
+			if p := len(n.upstream.pedidos()); p != 0 {
+				t.Fatalf("um run com a marca forjada fez %d pedido(s) ao provider", p)
+			}
+			if evs, _ := n.node.EventStore.Read(ctx, canaryStream, 1); len(evs) > 1 {
+				t.Fatalf("a marca forjada mexeu no livro: %d eventos", len(evs))
+			}
+		})
+	}
+	// A retoma: um registo com uma marca que este binário não conhece não se serve.
+	no := &Node{modelID: aos486Modelo, modeloAutoritativo: true}
+	rec := integration.ResumeRecord{RunID: "r", Model: agentruntime.ModelConfig{ModelID: aos486Modelo}, ModelPinnedBy: "aos-canary/v9"}
+	if err := no.conferirPerfilFixado(rec); causaDoPerfilFixado(err) != modelgateway.PinnedCauseModelNotServed {
+		t.Fatalf("um registo com uma marca de uma versao desconhecida: %v", err)
+	}
+	if !marcaDeEscolhaConhecida("aos-canary/v1") || marcaDeEscolhaConhecida("") || marcaDeEscolhaConhecida("aos-canary/v2") {
+		t.Fatal("o conjunto das marcas conhecidas e fechado: so a versao desta funcao")
+	}
+}
+
 // aos520cRecusado submete um run que a fixação do modelo tem de recusar, e confere as três coisas
 // que a recusa deixa: o run fecha `failed` com a razão própria na transição terminal, a causa fica
 // no log do nó, e o provider não vê pedido nenhum.
@@ -1335,7 +1391,7 @@ func TestAOS520_ChaveDoCanary(t *testing.T) {
 	if chaveDePedido("x").indice() == chaveDeRun("x").indice() || passoDoPlano(chaveDePedido("x")) == passoDoPlano(chaveDeRun("x")) {
 		t.Fatal("um pedido e um run com o mesmo id tem de ser duas chaves no livro")
 	}
-	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "historia_do_run_ilegivel", "candidato_sem_o_perfil_do_registo"}
+	want := []string{"plano_do_candidato_sem_candidato", "livro_do_canary_ilegivel", "livro_do_canary_em_contencao", "fixacao_nao_gravada", "fixacao_diferente_da_gravada", "marca_sem_fixacao_gravada", "historia_do_run_ilegivel", "candidato_sem_o_perfil_do_registo"}
 	if got := causasDaFixacaoDoModelo(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("o vocabulario das causas mudou: %q", got)
 	}

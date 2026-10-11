@@ -178,7 +178,9 @@ func (n *Node) conferirPerfilFixado(rec integration.ResumeRecord) error {
 	if n != nil {
 		assinados = n.perfisDaRota
 	}
-	if goal.ModelPinnedBy != "" && !n.aliasServido(goal.Model.ModelID) {
+	// Uma marca que não é uma versão da função que este binário conhece (um registo escrito por uma
+	// versão mais recente do nó) também não se serve: o run fica por retomar num binário que a conheça.
+	if goal.ModelPinnedBy != "" && (!marcaDeEscolhaConhecida(goal.ModelPinnedBy) || !n.aliasServido(goal.Model.ModelID)) {
 		return &modelgateway.PinnedRouteProfileError{Cause: modelgateway.PinnedCauseModelNotServed}
 	}
 	return assinados.perfis().CheckPinnedProfile(goal.Model.ModelID, goal.RouteProfileDigest)
