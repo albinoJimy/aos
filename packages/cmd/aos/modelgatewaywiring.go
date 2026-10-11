@@ -376,14 +376,35 @@ func newGatewayModelClientComPerfis(verifier authn.Verifier, baseURL, model, api
 		return titular, nil
 	}
 	// O fim do canary sela-se no audit de governação DESTE gateway, na cadeia dos perfis de rota.
-	selos := allowlist.NewRecorder(govAudit)
-	assinados.selarFimDoCanary = func(ctx context.Context, f fimDoCanary) error {
-		_, serr := selos.SealCanaryClosed(ctx, time.Now().UTC(), f.alias, f.profileDigest, f.entryDigest, f.atribuidos, f.limite)
-		return serr
-	}
+	assinados.selarFimDoCanary, assinados.selosDoFimDoCanary = seladorDoFimDoCanary(govAudit)
 	porAlias := map[string]agentruntime.ModelClient{model: titular}
 	for _, e := range naoTitulares {
 		porAlias[e.Profile.Requested] = modelgateway.NewModelClient(gw, e.Profile.Requested, opts...)
 	}
 	return &clientePorModelo{titular: model, porAlias: porAlias}, nil
+}
+
+// seladorDoFimDoCanary devolve as duas funções com que o nó sela o fim de um canary no audit de
+// governação dado (AOS-520): `garantir`, que sela o fim SE o audit ainda não o tiver — lê o audit
+// antes, e por isso pode ser chamada as vezes que for preciso, por quem escreveu o fim no livro ou
+// por quem o encontrou lá sem selo —, e `contar`, que diz quantos selos desse registo o audit tem.
+//
+// O AUDIT É LOCAL À RÉPLICA (salvo um audit partilhado, que o nó não tem): «selado» quer dizer
+// selado NESTE audit. Com duas réplicas, cada uma sela o fim no seu, uma vez; a fonte da contagem
+// e do fim é o livro, que é partilhado.
+func seladorDoFimDoCanary(store audit.Store) (garantir func(context.Context, fimDoCanary) error, contar func(context.Context, string) (int, error)) {
+	selos := allowlist.NewRecorder(store)
+	contar = selos.CanaryClosedSeals
+	garantir = func(ctx context.Context, f fimDoCanary) error {
+		n, err := contar(ctx, f.entryDigest)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		_, err = selos.SealCanaryClosed(ctx, time.Now().UTC(), f.alias, f.profileDigest, f.entryDigest, f.atribuidos, f.limite)
+		return err
+	}
+	return garantir, contar
 }

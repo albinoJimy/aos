@@ -344,6 +344,39 @@ func (r *Recorder) SealCanaryClosed(ctx context.Context, at time.Time, requested
 	return r.store.Append(ctx, ar)
 }
 
+// CanaryClosedSeals devolve quantos selos do fim do canary do registo de entrada dado ESTE audit
+// tem (AOS-520). É o que torna o selo reconciliável: quem tem de garantir que o fim ficou selado
+// pergunta ao audit, e não à sua memória — o processo que escreveu o fim no livro pode ter morrido
+// antes de selar, ou o selo pode ter falhado.
+//
+// O audit é LOCAL a quem o tem (um por réplica do nó, salvo um audit partilhado): a resposta é
+// sobre este audit, e não sobre os das outras réplicas.
+func (r *Recorder) CanaryClosedSeals(ctx context.Context, entryDigest string) (int, error) {
+	if r.store == nil {
+		return 0, fmt.Errorf("%w: nao ha audit onde ler", ErrCanaryClosedSeal)
+	}
+	head, err := r.store.Head(ctx, routeProfilesPartition)
+	if err != nil || head == 0 {
+		return 0, err
+	}
+	recs, err := r.store.Read(ctx, routeProfilesPartition, 1, head)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, rec := range recs {
+		if rec.Capability != "model-canary:close" {
+			continue
+		}
+		for _, o := range rec.Obligations {
+			if o.Type == obligationGovernance && o.Params["model_canary"] == "closed" && o.Params["entry_digest"] == entryDigest {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
 // Record ANOTA o span, emite para o [Sink] (se configurado) e SELA no WORM. É o
 // ponto único que o estágio de allowlist chama por chamada. Fail-closed ANTES de
 // qualquer efeito observável: uma decisão sem board/principal nunca chega a anotar

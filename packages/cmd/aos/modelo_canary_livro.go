@@ -215,9 +215,13 @@ type fimDoCanary struct {
 // livroDoCanary lê e escreve o livro. Um por nó.
 type livroDoCanary struct {
 	es eventstore.EventStore
-	// selar sela o fim do canary no audit de governação do gateway. nil ⇒ não há onde selar.
+	// selar GARANTE o selo do fim do canary no audit de governação do gateway: lê o audit e sela se
+	// lá não estiver ([seladorDoFimDoCanary]). nil ⇒ não há onde selar.
 	selar func(context.Context, fimDoCanary) error
-	log   func(string, ...any)
+	// seloConfirmado é o digest do registo cujo fim `selar` já confirmou NESTE processo. Só poupa
+	// leituras do audit: num processo novo começa vazio, e a confirmação vem do audit.
+	seloConfirmado atomic.Value
+	log            func(string, ...any)
 	// mu serializa as decisões DESTE processo: sem ele, dois runs novos da mesma réplica perdiam
 	// o CAS um para o outro a cada passo. Entre réplicas, quem arbitra é o `WithExpectedSeq`.
 	mu sync.Mutex
@@ -364,7 +368,12 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 		l.futurosVistos.Store(int64(st.futuros))
 		jaServidos := st.porAbertura[c.entryDigest]
 		if tem {
-			l.publicar(jaServidos, st.fechadas[c.entryDigest] || jaServidos >= ab.Limit)
+			fechado := st.fechadas[c.entryDigest] || jaServidos >= ab.Limit
+			l.publicar(jaServidos, fechado)
+			// O canary deste registo já fechou: no arranque, garante-se a marca e o selo.
+			if fechado && st.futuros == 0 {
+				l.reconciliarFim(ctx, c, jaServidos, ab.Limit, st.fechadas[c.entryDigest])
+			}
 		}
 		// O registo em vigor no livro É este: nada a escrever. Um reinício não abre uma época.
 		if tem && st.emVigor == c.entryDigest {
@@ -454,6 +463,11 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 		atribuidosNaAbertura := st.porAbertura[c.entryDigest]
 		fechado := st.fechadas[c.entryDigest] || atribuidosNaAbertura >= ab.Limit
 		l.publicar(atribuidosNaAbertura, fechado)
+		// O canary fechou: garante-se a marca no livro e o selo no audit, seja qual for a regra que
+		// decide este run. Se a marca falta, quem atribuiu o último plano morreu antes de a gravar.
+		if fechado {
+			l.reconciliarFim(ctx, c, atribuidosNaAbertura, ab.Limit, st.fechadas[c.entryDigest])
+		}
 
 		// (1) O plano já foi atribuído ao candidato — nesta ou noutra abertura.
 		if a, ja := st.atribuidos[chave.indice()]; ja {
@@ -466,12 +480,8 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 		if seqDoPedido != 0 && seqDoPedido <= ab.PlanRequestMark {
 			return decisaoDoCanary{papel: canary.RoleIncumbent, razao: razaoPlanoAnteriorAAbertura}, nil
 		}
-		// (3) O canary fechou. Se a marca de fecho falta (o nó que escreveu a última atribuição
-		// morreu antes de a gravar), grava-se agora.
+		// (3) O canary fechou.
 		if fechado {
-			if !st.fechadas[c.entryDigest] {
-				l.fechar(ctx, c, atribuidosNaAbertura, ab.Limit)
-			}
 			return decisaoDoCanary{papel: canary.RoleIncumbent, razao: razaoCanaryFechado}, nil
 		}
 		// (4) A função decide, com a fatia GRAVADA na abertura.
@@ -501,45 +511,59 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 		atribuidosNaAbertura++
 		l.publicar(atribuidosNaAbertura, atribuidosNaAbertura >= ab.Limit)
 		if atribuidosNaAbertura >= ab.Limit {
-			l.fechar(ctx, c, atribuidosNaAbertura, ab.Limit)
+			l.reconciliarFim(ctx, c, atribuidosNaAbertura, ab.Limit, false)
 		}
 		return decisaoDoCanary{papel: canary.RoleCandidate, razao: razaoFuncao}, nil
 	}
 	return decisaoDoCanary{}, ErrCanaryContention
 }
 
-// fechar grava o fim do canary. A chave de idempotência é a do registo: só uma escrita fica, e é
-// quem a fez que sela o facto no audit de governação e o diz no log. Uma falha aqui NÃO desfaz
-// nada nem reabre o canary: o fecho decorre da contagem, que já está no livro; a marca é o sinal.
-func (l *livroDoCanary) fechar(ctx context.Context, c candidatoEmVigor, atribuidos, limite int) {
-	payload, err := json.Marshal(canaryPayload{
-		V: canaryVersaoDoLivro, EntryDigest: c.entryDigest, Alias: c.alias, ProfileDigest: c.profileDigest,
-		Assigned: atribuidos, Limit: limite,
-	})
-	if err != nil {
-		l.logf("canary do modelo candidato (AOS-520): o fecho NAO foi gravado: %v — o candidato ja nao recebe planos novos (a contagem decide); a marca sera gravada na proxima decisao", err)
-		return
+// reconciliarFim leva o fim do canary ao estado completo: a marca `closed` no livro e o selo no
+// audit de governação. É chamada sempre que se vê o canary fechado PELA CONTAGEM — no arranque e em
+// cada decisão —, e por isso não depende de quem escreveu a última atribuição ter sobrevivido:
+//
+//   - se a marca falta no livro (o nó que atribuiu o último plano morreu, ou a escrita falhou),
+//     grava-a. A chave de idempotência é a do registo: só uma escrita fica, e quem a fez di-lo no log;
+//   - se o selo ainda não está confirmado NESTE processo, pede-o a `selar`, que LÊ o audit e só
+//     sela se lá não estiver. Um selo que falhou repete-se na chamada seguinte; depois de
+//     confirmado, não se volta a ler o audit.
+//
+// Uma falha aqui NÃO desfaz nada nem reabre o canary: o fecho decorre da contagem, que já está no
+// livro. A marca e o selo são o sinal e a prova.
+func (l *livroDoCanary) reconciliarFim(ctx context.Context, c candidatoEmVigor, atribuidos, limite int, temMarca bool) {
+	if !temMarca {
+		payload, err := json.Marshal(canaryPayload{
+			V: canaryVersaoDoLivro, EntryDigest: c.entryDigest, Alias: c.alias, ProfileDigest: c.profileDigest,
+			Assigned: atribuidos, Limit: limite,
+		})
+		var res eventstore.AppendResult
+		if err == nil {
+			res, err = l.es.Append(ctx, canaryStream, eventstore.EventInput{
+				Type: EventTypeModelCanaryClosed, Payload: payload,
+				RunID: canaryRunID, StepID: "closed-" + c.entryDigest,
+				Producer: eventstore.Producer{NHIID: canaryNHI},
+			})
+		}
+		if err != nil {
+			l.logf("canary do modelo candidato (AOS-520): o fecho NAO foi gravado: %v — o candidato ja nao recebe planos novos (a contagem decide); a marca sera gravada na proxima decisao ou no proximo arranque", err)
+			return
+		}
+		if res.Status != eventstore.StatusDuplicate {
+			l.logf("CANARY DO MODELO CANDIDATO TERMINADO (AOS-520): ao candidato %q (digest do perfil %s, digest do registo %s) foram atribuidos %d planos, o limite de %d. Deixa de receber planos novos; os planos ja atribuidos acabam com ele. O candidato NAO passa a titular: decida com os numeros. Reabrir a fatia e assinar um registo novo",
+				c.alias, c.profileDigest, c.entryDigest, atribuidos, limite)
+		}
 	}
-	res, err := l.es.Append(ctx, canaryStream, eventstore.EventInput{
-		Type: EventTypeModelCanaryClosed, Payload: payload,
-		RunID: canaryRunID, StepID: "closed-" + c.entryDigest,
-		Producer: eventstore.Producer{NHIID: canaryNHI},
-	})
-	if err != nil {
-		l.logf("canary do modelo candidato (AOS-520): o fecho NAO foi gravado: %v — o candidato ja nao recebe planos novos (a contagem decide); a marca sera gravada na proxima decisao", err)
-		return
-	}
-	if res.Status == eventstore.StatusDuplicate {
-		return // outra réplica já o gravou, selou e disse
-	}
-	l.logf("CANARY DO MODELO CANDIDATO TERMINADO (AOS-520): o candidato %q (digest do perfil %s, digest do registo %s) serviu %d planos, o limite de %d. Deixa de receber planos novos; os planos ja atribuidos acabam com ele. O candidato NAO passa a titular: decida com os numeros. Reabrir a fatia e assinar um registo novo",
-		c.alias, c.profileDigest, c.entryDigest, atribuidos, limite)
 	if l.selar == nil {
 		return
 	}
-	if serr := l.selar(ctx, fimDoCanary{alias: c.alias, profileDigest: c.profileDigest, entryDigest: c.entryDigest, atribuidos: atribuidos, limite: limite}); serr != nil {
-		l.logf("canary do modelo candidato (AOS-520): o SELO do fim no audit de governacao do gateway nao foi gravado: %v — o fim esta no livro (%s), falta a prova no audit", serr, canaryStream)
+	if confirmado, _ := l.seloConfirmado.Load().(string); confirmado == c.entryDigest {
+		return
 	}
+	if serr := l.selar(ctx, fimDoCanary{alias: c.alias, profileDigest: c.profileDigest, entryDigest: c.entryDigest, atribuidos: atribuidos, limite: limite}); serr != nil {
+		l.logf("canary do modelo candidato (AOS-520): o SELO do fim no audit de governacao do gateway nao foi gravado: %v — o fim esta no livro (%s); o selo sera tentado de novo na proxima decisao ou no proximo arranque", serr, canaryStream)
+		return
+	}
+	l.seloConfirmado.Store(c.entryDigest)
 }
 
 // planosAtribuidos devolve, por chave do plano, os planos que o livro diz atribuídos ao candidato.

@@ -94,9 +94,13 @@ type perfisAssinados struct {
 	// candidatoLigado é o interruptor `AOS_MODEL_CANDIDATE=on` (AOS-520), lido uma vez no arranque.
 	// false — a omissão — ⇒ nenhum candidato é servido, haja ou não um registo não-titular.
 	candidatoLigado bool
-	// selarFimDoCanary sela o fim do canary no audit de governação do MESMO gateway que serve os
-	// modelos (AOS-520). Ligado na composição do gateway; nil ⇒ não há onde selar.
+	// selarFimDoCanary GARANTE o selo do fim do canary no audit de governação do MESMO gateway que
+	// serve os modelos (AOS-520): sela se o audit ainda não o tiver ([seladorDoFimDoCanary]).
+	// Ligado na composição do gateway; nil ⇒ não há onde selar.
 	selarFimDoCanary func(context.Context, fimDoCanary) error
+	// selosDoFimDoCanary conta, nesse mesmo audit, os selos do fim do canary de um registo de
+	// entrada. nil ⇒ não há onde ler.
+	selosDoFimDoCanary func(context.Context, string) (int, error)
 }
 
 // perfis devolve o conjunto de perfis do nó: a tabela em código (nil) sem pasta ou sem registos.

@@ -1149,6 +1149,9 @@ func TestAOS520_No_OQuadragesimoPlano_DuasReplicasEReinicio(t *testing.T) {
 
 	// O REINÍCIO: o canary continua terminado.
 	r3 := aos520cNo(t, sub, "on", aos520cCand(100))
+	if n, err := r3.node.perfisDaRota.selosDoFimDoCanary(ctx, r3.node.canary.candidato.entryDigest); err != nil || n != 1 {
+		t.Fatalf("o no recriado tinha de selar o fim no arranque: selos=%d err=%v", n, err)
+	}
 	if r3.node.canary.livro.fechadoVisto.Load() != 1 || r3.node.canary.livro.atribuidosVistos.Load() != 40 {
 		t.Fatalf("depois do reinicio o livro diz atribuidos=%d fechado=%d", r3.node.canary.livro.atribuidosVistos.Load(), r3.node.canary.livro.fechadoVisto.Load())
 	}
@@ -1156,12 +1159,16 @@ func TestAOS520_No_OQuadragesimoPlano_DuasReplicasEReinicio(t *testing.T) {
 	if modelos := aos520cModelosPedidos(t, r3.aos486No, 0); !aos520cTodos(modelos, aos486Modelo) {
 		t.Fatalf("depois do reinicio, um plano novo pediu %q; quer o titular", modelos)
 	}
-	// E o selo do fim do canary no audit de governação do gateway está ligado a este nó.
-	if r3.node.perfisDaRota.selarFimDoCanary == nil {
-		t.Fatal("o no com um candidato nao tem onde selar o fim do canary")
-	}
-	if err := r3.node.perfisDaRota.selarFimDoCanary(ctx, fimDoCanary{alias: aos520AliasCand, profileDigest: "sha256:p", entryDigest: "sha256:e", atribuidos: 40, limite: 40}); err != nil {
-		t.Fatalf("o selo do fim do canary no audit do gateway: %v", err)
+	// O SELO DO FIM, LIDO DO AUDIT DE GOVERNAÇÃO DO GATEWAY DE CADA NÓ. O audit é local à réplica:
+	// a réplica 1 selou quando fechou o canary; a réplica 2 selou no seu quando o viu fechado, ao
+	// decidir o plano seguinte; e o nó recriado selou no seu, no ARRANQUE — sem esperar por um run.
+	// Em cada audit, exactamente um selo.
+	entrada := r3.node.canary.candidato.entryDigest
+	for nome, no := range map[string]*aos520No{"replica 1": r1, "replica 2": r2, "no recriado": r3} {
+		n, err := no.node.perfisDaRota.selosDoFimDoCanary(ctx, entrada)
+		if err != nil || n != 1 {
+			t.Fatalf("%s: selos do fim do canary no audit do gateway = %d (%v); quer 1", nome, n, err)
+		}
 	}
 }
 

@@ -257,4 +257,23 @@ func TestSealCanaryClosed_FailClosed(t *testing.T) {
 	if head, _ := store.Head(ctx, "modelgw-gov:route-profiles"); head != 1 {
 		t.Fatalf("selos = %d", head)
 	}
+	// O selo é reconhecível: conta-se por registo de entrada, e não se confunde com o selo do
+	// carregamento de um perfil na mesma cadeia nem com o fim de outro registo.
+	if _, err := rec.SealRouteProfileLoaded(ctx, at, "gpt-4o-mini", "openai/x", "sha256:p", "sha256:e", "sha256:r"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rec.SealCanaryClosed(ctx, at, "gpt-4o-mini", "sha256:p", "sha256:outro", 40, 40); err != nil {
+		t.Fatal(err)
+	}
+	for registo, quer := range map[string]int{"sha256:e": 1, "sha256:outro": 1, "sha256:nenhum": 0} {
+		if n, err := rec.CanaryClosedSeals(ctx, registo); err != nil || n != quer {
+			t.Fatalf("selos do fim do registo %s = %d (%v); quer %d", registo, n, err, quer)
+		}
+	}
+	if n, err := allowlist.NewRecorder(audit.NewMemStore()).CanaryClosedSeals(ctx, "sha256:e"); err != nil || n != 0 {
+		t.Fatalf("audit vazio: %d %v", n, err)
+	}
+	if _, err := allowlist.NewRecorder(nil).CanaryClosedSeals(ctx, "sha256:e"); !errors.Is(err, allowlist.ErrCanaryClosedSeal) {
+		t.Fatalf("sem store: %v", err)
+	}
 }

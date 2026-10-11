@@ -17,6 +17,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aos-ref/platform/audit"
 	"github.com/aos-ref/platform/model-gateway/policy/canary"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -381,7 +382,8 @@ func TestAOS520_Livro_OQuadragesimoPlanoFechaOCanary(t *testing.T) {
 	if ditos != 1 {
 		t.Fatalf("o fim do canary foi dito %d vezes no log; quer 1", ditos)
 	}
-	// REINÍCIO depois do fecho: nada reabre, nada se sela outra vez.
+	// REINÍCIO depois do fecho: nada reabre. O selo é pedido outra vez — o processo novo não sabe
+	// se ficou selado, e pergunta: quem responde é o audit (ver o teste do selo reconciliado).
 	l2 := &livroDoCanary{es: es, selar: l.selar}
 	if err := l2.abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
 		t.Fatal(err)
@@ -392,8 +394,11 @@ func TestAOS520_Livro_OQuadragesimoPlanoFechaOCanary(t *testing.T) {
 	if d := aos520Decidir(t, l2, aos520Cand, "plano-42", 0); d.papel != canary.RoleIncumbent || d.razao != razaoCanaryFechado {
 		t.Fatalf("depois do reinicio, um plano novo: %+v", d)
 	}
-	if len(selos) != 1 || len(aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)) != 40 {
-		t.Fatalf("depois do reinicio: selos=%d atribuicoes=%d", len(selos), len(aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)))
+	if len(selos) != 2 || len(aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)) != 40 {
+		t.Fatalf("depois do reinicio: pedidos de selo=%d (um por processo) atribuicoes=%d", len(selos), len(aos520EventosDoLivro(t, es, EventTypeModelCanaryPlanAssigned)))
+	}
+	if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryClosed)); n != 1 {
+		t.Fatalf("depois do reinicio ha %d marcas de fecho", n)
 	}
 }
 
@@ -709,5 +714,149 @@ func TestAOS520_Livro_ReporUmRegistoAntigoAbreUmaEpocaComAMarcaActual(t *testing
 	}
 	if _, err := a2.ler(ctx); !errors.Is(err, ErrCanaryUnreadable) {
 		t.Fatalf("duas aberturas do mesmo registo com fatias diferentes: %v", err)
+	}
+}
+
+// O SELO DO FIM É RECONCILIADO, E QUEM DIZ SE ESTÁ FEITO É O AUDIT. Com o selador real sobre um
+// audit em memória (o mesmo de [seladorDoFimDoCanary], que o nó usa):
+//
+//  1. o selo FALHA no 40.º plano: o fim está no livro, o audit não tem selo. A decisão seguinte
+//     volta a tentar, e sela — uma vez;
+//  2. depois de selado, mais decisões e um REINÍCIO (processo novo, o mesmo audit) não acrescentam
+//     selos: o audit tem um;
+//  3. o processo que fechou MORRE antes de selar (o selo nem chega a ser pedido): o processo
+//     seguinte, no arranque, encontra o fim no livro sem selo no audit e sela-o.
+func TestAOS520_Livro_OSeloDoFimEReconciliadoPeloAudit(t *testing.T) {
+	ctx := context.Background()
+	encher := func(t *testing.T, l *livroDoCanary) {
+		t.Helper()
+		for i := 1; i <= 40; i++ {
+			aos520Decidir(t, l, aos520Cand, fmt.Sprintf("plano-%02d", i), 0)
+		}
+	}
+	t.Run("o selo falha no 40.o e repete-se", func(t *testing.T) {
+		es, store := aos520Store(t), audit.NewMemStore()
+		garantir, contar := seladorDoFimDoCanary(store)
+		falhas := 1
+		l := &livroDoCanary{es: es, selar: func(ctx context.Context, f fimDoCanary) error {
+			if falhas > 0 {
+				falhas--
+				return errors.New("audit indisponivel")
+			}
+			return garantir(ctx, f)
+		}}
+		if err := l.abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+			t.Fatal(err)
+		}
+		encher(t, l)
+		if n, _ := contar(ctx, aos520Cand.entryDigest); n != 0 {
+			t.Fatalf("o selo falhou e o audit tem %d selos", n)
+		}
+		if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryClosed)); n != 1 {
+			t.Fatalf("o fim tinha de estar no livro: %d", n)
+		}
+		aos520Decidir(t, l, aos520Cand, "plano-41", 0)
+		if n, err := contar(ctx, aos520Cand.entryDigest); err != nil || n != 1 {
+			t.Fatalf("a decisao seguinte tinha de selar o fim: selos=%d err=%v", n, err)
+		}
+		// Selado: mais decisões, e um reinício, não acrescentam selos.
+		aos520Decidir(t, l, aos520Cand, "plano-42", 0)
+		aos520Decidir(t, l, aos520Cand, "plano-07", 0)
+		reinicio := &livroDoCanary{es: es, selar: garantir}
+		if err := reinicio.abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+			t.Fatal(err)
+		}
+		aos520Decidir(t, reinicio, aos520Cand, "plano-43", 0)
+		if n, _ := contar(ctx, aos520Cand.entryDigest); n != 1 {
+			t.Fatalf("o audit tem %d selos do fim; quer exactamente 1", n)
+		}
+		// O que ficou selado, lido do audit.
+		recs, err := store.Read(ctx, "modelgw-gov:route-profiles", 1, 1)
+		if err != nil || len(recs) != 1 {
+			t.Fatalf("ler o audit: %d %v", len(recs), err)
+		}
+		p := recs[0].Obligations[0].Params
+		if p["model_canary"] != "closed" || p["entry_digest"] != aos520Cand.entryDigest || p["requested"] != aos520Cand.alias || p["plans_assigned"] != "40" || p["plan_limit"] != "40" {
+			t.Fatalf("o selo do fim, lido do audit: %+v", p)
+		}
+	})
+	t.Run("o processo morre antes de selar", func(t *testing.T) {
+		es, store := aos520Store(t), audit.NewMemStore()
+		garantir, contar := seladorDoFimDoCanary(store)
+		morre := &livroDoCanary{es: es} // sem onde selar: o processo morreu entre o fim e o selo
+		if err := morre.abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+			t.Fatal(err)
+		}
+		encher(t, morre)
+		if n, _ := contar(ctx, aos520Cand.entryDigest); n != 0 {
+			t.Fatalf("selos antes do reinicio: %d", n)
+		}
+		// O arranque seguinte, sem mais nenhum run.
+		if err := (&livroDoCanary{es: es, selar: garantir}).abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if n, _ := contar(ctx, aos520Cand.entryDigest); n != 1 {
+			t.Fatalf("o arranque tinha de selar o fim que encontrou no livro sem selo: selos=%d", n)
+		}
+	})
+	t.Run("a marca de fecho falha no 40.o e nao vem mais nenhum run", func(t *testing.T) {
+		es, store := aos520Store(t), audit.NewMemStore()
+		garantir, contar := seladorDoFimDoCanary(store)
+		aos520Livro(t, es, aos520Cand)
+		semFecho := &aos520StoreComIntruso{EventStore: es, soNoTipo: EventTypeModelCanaryClosed, sempre: errors.New("o fecho nao se grava")}
+		encher(t, &livroDoCanary{es: semFecho, selar: garantir})
+		if n := len(aos520EventosDoLivro(t, es, EventTypeModelCanaryClosed)); n != 0 {
+			t.Fatalf("o fecho nao devia ter ficado gravado: %d", n)
+		}
+		if n, _ := contar(ctx, aos520Cand.entryDigest); n != 0 {
+			t.Fatalf("sem a marca no livro nao se sela: selos=%d", n)
+		}
+		// O arranque seguinte grava a marca e sela — sem esperar por um run.
+		reinicio := &livroDoCanary{es: es, selar: garantir}
+		if err := reinicio.abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+			t.Fatal(err)
+		}
+		fechos := aos520EventosDoLivro(t, es, EventTypeModelCanaryClosed)
+		if n, _ := contar(ctx, aos520Cand.entryDigest); len(fechos) != 1 || fechos[0].Assigned != 40 || n != 1 {
+			t.Fatalf("depois do arranque: fechos=%+v selos=%d", fechos, n)
+		}
+	})
+}
+
+// O LIMITE QUE DECIDE É O GRAVADO NA ABERTURA, e não a constante do binário. Uma abertura gravada
+// com o limite 2 (por um binário com outra constante): o canary fecha ao segundo plano, e a marca
+// de fecho e a época seguinte levam esse limite.
+func TestAOS520_Livro_OLimiteGravadoNaAberturaDecide(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	aberta, _ := json.Marshal(canaryPayload{V: canaryVersaoDoLivro, EntryDigest: aos520Cand.entryDigest, Alias: aos520Cand.alias, ProfileDigest: aos520Cand.profileDigest, SharePercent: aos520Cand.fatia, Limit: 2})
+	if _, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelCanaryOpened, Payload: aberta, RunID: canaryRunID, StepID: "opened-" + aos520Cand.entryDigest + "-1"}); err != nil {
+		t.Fatal(err)
+	}
+	l := &livroDoCanary{es: es}
+	if err := l.abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i, quer := range []canary.Role{canary.RoleCandidate, canary.RoleCandidate, canary.RoleIncumbent} {
+		if d := aos520Decidir(t, l, aos520Cand, fmt.Sprintf("plano-%d", i), 0); d.papel != quer {
+			t.Fatalf("plano %d com o limite gravado 2: %+v; quer %s", i, d, quer)
+		}
+	}
+	fechos := aos520EventosDoLivro(t, es, EventTypeModelCanaryClosed)
+	if len(fechos) != 1 || fechos[0].Limit != 2 || fechos[0].Assigned != 2 {
+		t.Fatalf("o fecho leva o limite gravado: %+v", fechos)
+	}
+	// Outro registo entra e este volta: a época nova conserva o limite gravado.
+	outro := aos520Cand
+	outro.entryDigest = "sha256:" + strings.Repeat("c", 64)
+	if err := (&livroDoCanary{es: es}).abrir(ctx, outro, aos520Marca(0, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&livroDoCanary{es: es}).abrir(ctx, aos520Cand, aos520Marca(0, nil)); err != nil {
+		t.Fatal(err)
+	}
+	abertas := aos520EventosDoLivro(t, es, EventTypeModelCanaryOpened)
+	if len(abertas) != 3 || abertas[1].Limit != 40 || abertas[2].Limit != 2 {
+		t.Fatalf("aberturas = %+v; a epoca nova do registo conserva o limite 2, e o registo novo abre com 40", abertas)
 	}
 }
