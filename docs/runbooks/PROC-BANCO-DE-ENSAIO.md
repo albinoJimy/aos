@@ -311,7 +311,7 @@ antes de enviar.
 
 | Saída | O que quer dizer | O que fazer |
 |---|---|---|
-| `QUALIFICADO`, sem avisos | 40 nós com tools e 16 sem tools cumpridos, nenhum limiar violado | O relatório `.json` e o seu `digest_do_relatorio` são o que o registo de entrada cita (AOS-519, AOS-522) |
+| `QUALIFICADO`, sem avisos | 40 nós com tools e 16 sem tools cumpridos, nenhum limiar violado | O relatório `.json` e o seu `digest_do_relatorio` são o que o registo de entrada cita (AOS-519). Para o preparar sem trabalho à mão: «Entrar um modelo novo, com relógio», abaixo |
 | `AVISO — EXIGENCIA_NAO_PROVADA` | O perfil declara devolução obrigatória e o controlo sem devolução não foi recusado em todos os segundos turnos | Não bloqueia. Quem assina fica a saber que «aceite» não é «exigido» |
 | `AVISO — FACTOS_AUSENTES_EM_RESPOSTAS_CUMPRIDAS` | Há respostas cumpridas sem os factos do documento | Não bloqueia. Ver a taxa «factos ausentes da saída» antes de assinar |
 | `AVISO — TECTO_EM_DOLARES_NAO_IMPOSTO` | O fornecedor não tem tecto em dólares no ficheiro de chaves | Actuou só o tecto de 300 pedidos |
@@ -326,6 +326,110 @@ não é assinado pelo banco: o digest dá integridade, não autenticidade, e nã
 aconteceu. Os tectos do dia protegem de enganos, não de quem apaga a pasta do dono. A
 qualificação apanha um modelo mau; se é bom mede-se com a fatia em produção (AOS-520, AOS-521).
 O modo real não corre em CI nem no servidor (D3).
+
+## Entrar um modelo novo, com relógio (AOS-522)
+
+Do «tenho uma chave» ao «o nó carregou o perfil». São os passos 0 a 8 do desenho da A3 (§3).
+**O relógio começa no passo 1 e pára no fim do passo 6**; o critério da fase é menos de uma hora.
+Os tempos são os **esperados** (hipótese do desenho): a medição é do AOS-523, com modelo real, e
+o resumo do passo 2 traz a hora de início e de fim de cada fase da máquina para ela.
+
+| # | Passo | Quem | Prova que fica | Tempo esperado | Onde se pára |
+|---|---|---|---|---|---|
+| 0 | Pré-condições, uma vez: fornecedor e região aprovados; a allowlist assinada autoriza o alias; o proxy de produção tem a rota e é a imagem fixada; a chave dos perfis existe e a âncora está no servidor (`deploy/server/README.md`, «Perfis de rota assinados») | dono | allowlist assinada; âncora no `.env` | fora do relógio | Sem uma delas não se começa |
+| 1 | Escrever o perfil candidato (`requested` = o alias de produção; `expected_model` = a rota) | dono | o ficheiro | 5 min | — |
+| 2 | `aos-ensaio qualificar real …` (abaixo): plano, sonda, bateria 8 vezes, veredicto, resumo de uma página | máquina | `--saida`: relatório, resumo e, só com `qualificado`, `pacote\` | 15 a 25 min | Exit 11 **antes de enviar**: o nó recusaria o registo, ou a allowlist não autoriza o alias (a causa vem na linha) |
+| 3 | Recusa automática | máquina | relatório e resumo, **sem** `pacote\` | — | Exit 7, 8, 4 ou 3: **acaba aqui** (ver a tabela dos veredictos) |
+| 4 | Ler o resumo todo e assinar, com a linha que o passo 2 imprimiu | dono | `pacote\<alias>.registo.sig` | 5 min | Se o resumo não é o que queres assinar, não assinas |
+| 5 | Conferir no posto, drenar a rota, copiar os três ficheiros, recriar o nó, ler o banner («Antes de recriar o nó», abaixo) | dono; a máquina confere | saída do `conferir`; banner `AOS-519` | 5 min, mais o tempo de drenar | `conferir` com exit 11: **não se copia** |
+| 6 | O nó serve a fatia assinada ao candidato | máquina | manifesto dos turnos | minutos, havendo tráfego | **O relógio pára aqui.** Enquanto o AOS-520 não estiver em produção a fatia é só lida e mostrada |
+| 7 | Vigiar e recuar (disjuntor) | máquina | evento selado | contínuo | É do AOS-521 |
+| 8 | Passar a titular, ou sair: outro acto assinado | dono | segundo registo | fora do relógio | — |
+
+**Passo 2 — o comando.** No posto do dono; nunca em CI nem no servidor (D3). `--board` e
+`--regiao` são os do **nó de produção** e não têm valor por omissão; `--fatia` é a fatia inicial
+(a decisão D4 é 10; só algarismos). A pasta de `--saida` **não pode existir**: é criada pela
+corrida, uma por corrida — duas corridas para a mesma pasta, a segunda sai com 3 sem tocar em
+nada. Se o nó monta uma allowlist externa, juntar `--allowlist-dir <pasta> --ancora-da-allowlist
+<base64>`; sem isso o plano confere a embebida, e di-lo.
+
+```powershell
+cd C:\Jimy\AOS\packages\qa\banco-ensaio
+go build -o $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe .\cmd\aos-ensaio
+$saida = "$env:USERPROFILE\.aos-ensaio\entradas\<alias>-<data>"
+
+# O plano: le o registo como o no o le, confere o alias na allowlist, o tecto e as qualificacoes de hoje. Nao envia nada. Sai com 10.
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe qualificar real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor kimi --perfil <perfil.json> --fatia 10 --board <board do no> --regiao <regiao do no> --saida $saida --so-plano
+
+# A qualificacao. No fim imprime o resumo e, com `qualificado`, a linha exacta de assinar e a de conferir.
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe qualificar real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor kimi --perfil <perfil.json> --fatia 10 --board <board do no> --regiao <regiao do no> --saida $saida
+```
+
+**O que o plano confere, e o que não.** Confere, com as funções do nó: o formato do registo, a
+fatia (0 a 100), o perfil pela leitura fechada, o alias, que o perfil não devolve estado, a imagem
+do proxy declarada, e que a allowlist (a embebida, ou a externa que lhe deres) autoriza o alias
+para esse board e essa região. **Não confere**, porque ainda não existem: o relatório — é
+conferido no fim da corrida, antes de haver pacote — e a assinatura, que só o `conferir` vê. E
+não sabe se o board, a região e a allowlist que lhe deste são os do servidor.
+
+O comando **não assina** e não tem opção, variável nem ficheiro por onde a chave de assinar
+entre. Só prepara o registo da corrida que acabou de fazer: não aceita um relatório de fora nem
+um veredicto por argumento. `resumo-de-uma-pagina.txt` diz, por esta ordem: os avisos; o
+veredicto; as razões; a amostra; os controlos negativos; **o que a corrida não prova**; o gasto;
+o que vais assinar — lido de volta do registo que ficou escrito no pacote: alias, modelo
+esperado, fatia, board, região, wire, capacidades, versão da projecção, parâmetros do pedido, se
+**substitui** a tabela em código (a do binário do posto, que pode não ser a do nó: a linha diz a
+revisão), e os quatro digests; e o relógio.
+
+**O que fazer em cada veredicto.**
+
+| Saída | O que ficou | O que fazer |
+|---|---|---|
+| 0, `QUALIFICADO` | relatório, resumo e `pacote\` (registo e relatório) | Ler o resumo. Se há avisos, são a primeira coisa da página: decide com eles à frente. Passo 4 |
+| 7, `RECUSADO` | relatório e resumo | Acaba aqui. Uma razão firme não sai a repetir; os limiares não se mexem sem decisão registada |
+| 8 ou 4, `INCONCLUSIVO` | relatório e resumo | Resolver a causa (conta, ritmo, tecto) e repetir **noutra pasta**. Conta como uma das duas do dia se passou da sonda. **Um Ctrl-C dá sempre `inconclusivo`, nunca `recusado`**: o run apanhado pelo cancelamento sai da amostra |
+| 3 | nada, ou um relatório `inconclusivo` | Tecto do dia, qualificações do dia esgotadas, imagem do proxy, ou a pasta de saída já existia. A linha diz qual |
+| 11, antes de enviar | nada | O nó recusaria o registo: `perfil_devolve_estado`, `nome_da_rota_invalido`, `fatia_fora_do_intervalo`, `perfil_invalido`, `nome_fora_da_allowlist`. Corrigir o perfil, a fatia ou a allowlist. Nenhum pedido saiu |
+| 11, depois da corrida | relatório e resumo, **sem** `pacote\` | O relatório que a corrida escreveu não passa nas conferências do nó (a causa vem na linha e no resumo). Não devia acontecer: guardar a pasta e não repetir às cegas — a corrida contou como uma das do dia |
+| 1 | relatório e resumo, **sem** `pacote\`; ou nada | Outra falha, e nunca fica pacote: o relatório no disco deixou de ser o da corrida (`relatorio_trocado_depois_da_corrida`), o pacote foi alterado depois de escrito (`pacote_alterado_depois_de_escrito`), o código de saída e o relatório não dizem o mesmo, ou um ficheiro não se escreveu. Alguma coisa mexeu na pasta durante a corrida: ver o quê antes de repetir |
+| 2 | nada | Argumentos: falta uma opção; `--fatia` que não é só algarismos; `--board` ou `--regiao` fora de 1 a 64 letras, dígitos, `_` e `-`; `--saida` com aspas ou caracteres de controlo; alias com nome de dispositivo do Windows (`NUL`, `CON`, `COM1`…); allowlist externa que não se carrega |
+| 9 | relatório e resumo | Foi um ensaio (`falso` ou `proxy`): não vale para produção e não há nada para assinar |
+
+**Passo 4 — assinar.** A linha vem no fim do passo 2; só falta o caminho da tua seed.
+
+```powershell
+aos-issuer route-profile-sign --entry "$saida\pacote\<alias>.registo.json" --report "$saida\pacote\<alias>.relatorio.json" --key-file "$env:USERPROFILE\.aos-perfis\perfis.seed" --out "$saida\pacote\<alias>.registo.sig"
+```
+
+### Antes de recriar o nó
+
+1. **Conferir o pacote no posto**, pela função que o nó corre no arranque. Aceite aqui, é aceite
+   pelo nó; recusado aqui, a causa é a palavra que o nó daria — e um nó que recusa **não arranca**.
+
+   ```powershell
+   & $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe conferir --pacote "$saida\pacote" --ancora <ancora dos perfis> --board <board do no> --regiao <regiao do no>
+   ```
+
+   Se o nó monta uma allowlist externa, juntar `--allowlist-dir <pasta> --ancora-da-allowlist
+   <base64>` (a linha que o `qualificar` imprimiu já os leva, se lhos deste); sem isso confere-se
+   a embebida, e a saída di-lo. Comparar o `digest do registo` com
+   o que o `route-profile-sign` imprimiu. O `conferir` não sabe se a âncora, o board e a região
+   que lhe deste são os do servidor: isso confirma-se no `.env` de lá.
+2. **Drenar a rota** — obrigatório, e o nó não o faz por ti: `deploy/server/README.md`, «Perfis de
+   rota assinados», passo 5.
+3. **Copiar** os três ficheiros de `pacote\` para a pasta de perfis do servidor. Só esses três: um
+   ficheiro a mais (o resumo, por exemplo) faz o nó recusar com `ficheiro_nao_reconhecido`.
+4. **Recriar** o nó: `docker compose -f docker-compose.prod.yml up -d --force-recreate aos`.
+5. **Ler o banner**: `docker logs aos-aos-1 2>&1 | grep 'AOS-519'` — uma linha `perfil de rota
+   ASSINADO carregado` com o alias, `SUBSTITUI` ou `ACRESCENTA-SE`, e o digest do registo, que tem
+   de ser o que o `conferir` mostrou. Voltar a ligar o que submete.
+
+**Recuo.** Drenar, retirar os três ficheiros da pasta do servidor, recriar o nó, ler o banner
+(`zero perfis assinados`, ou os que ficaram). O nó volta à entrada da tabela em código.
+
+**Limites.** O resumo é uma leitura do relatório, não uma garantia: o que a corrida não prova
+está na página. O `conferir` vê os ficheiros, não o servidor. As duas variáveis e a montagem da
+pasta ainda não estão no compose de produção (AOS-519). Um registo não expira e não há anti-recuo.
 
 ## Se correr mal
 

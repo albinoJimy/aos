@@ -182,6 +182,7 @@ O banco não lê mais nenhuma variável, e nenhuma destas chega ao nó `aos`.
 | 4 | Parou a meio (`tecto_atingido`, `contador_inutilizavel`, `interrompida`, `chave_recusada`, `saldo_insuficiente`, `limite_de_ritmo`, `so_respostas_429`, `serie_de_429`) ou a sonda não a deixou começar (as três primeiras, mais `modelo_desconhecido` e `sonda_falhou`). O relatório parcial foi escrito e diz a causa. |
 | 5 | Modo `real` pedido em CI. |
 | 6 | Falta o Docker ou a imagem do proxy, ou o proxy não arrancou. |
+| 11 | Só `qualificar` e `conferir` (AOS-522): o nó recusaria o registo de entrada, ou o pacote assinado. |
 | 1 | Outra falha. |
 
 ## O ficheiro de chaves, os tectos e o contador
@@ -528,6 +529,15 @@ e o ficheiro verifica. Serve para um registo assinado citar um relatório exacto
 vem da assinatura desse registo (AOS-519). O resumo `.txt` não é coberto, e o digest não prova
 que a corrida aconteceu.
 
+**Uma corrida interrompida nunca dá `recusado`** (correcção do AOS-522). O cancelamento da corrida
+— um Ctrl-C — podia apanhar um run depois de o pedido ao modelo ter tido 200: o runtime devolvia
+um erro sem classe, o banco lia-o como falha do modelo, e cerca de uma em quarenta corridas
+interrompidas saía `recusado` com um modelo que cumpria tudo. Um run que não fechou cumprido e
+acabou com o contexto da corrida cancelado leva agora `corrida_cancelada` nas suas medidas: o nó
+fica interrompido pela causa `cancelamento_da_corrida`, sai da amostra, e o run não alimenta
+contagem nenhuma de limiar. Uma falha firme de um run que fechou **antes** da interrupção continua
+a valer.
+
 ### Códigos de saída da qualificação
 
 | Código | Significado |
@@ -548,6 +558,68 @@ fornecedor leu o que recebeu; com 40 nós e zero falhas só se afirma, a 95%, um
 abaixo de cerca de 9%; apanha um modelo mau e não mede se é bom; L5 compara o modelo que o
 **proxy** declara, não o que o fornecedor serviu, e sem `--host-esperado` o endpoint não é
 comparado; o veredicto vale para a rota e a versão da bateria que cita.
+
+## Qualificar e preparar a assinatura (AOS-522)
+
+`aos-ensaio qualificar <modo>` encadeia a qualificação, o resumo de uma página e a preparação do
+registo de entrada do AOS-519. **Não assina**: prepara o que há para assinar e pára. O
+procedimento, com os tempos, está em `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`, «Entrar um modelo
+novo, com relógio».
+
+```bash
+# Ensaio, sem modelo real: relatório e resumo, e nada para assinar (sai com 9).
+go run ./cmd/aos-ensaio qualificar falso --perfil <perfil.json> --fatia 10 --board board-eu --regiao eu --saida /tmp/entrada --roteiro cumpre
+```
+
+O que faz, por ordem, e onde pára:
+
+1. **Plano.** No modo `real` recusa em CI antes de ler seja o que for. `--perfil`, `--fatia`,
+   `--board`, `--regiao` e `--saida` são obrigatórios e **não têm valor por omissão**; o que se
+   escreve tem alfabeto fechado (`--fatia` só algarismos decimais; `--board` e `--regiao` de 1 a
+   64 letras, dígitos, `_` e `-`; `--saida` sem aspas nem caracteres de controlo; o alias não pode
+   ser um nome de dispositivo do Windows). Monta o registo com o que já sabe e passa-o por
+   `routeentry.ParseEntry` — a leitura do nó: um perfil que devolve estado, um alias que não serve
+   ou uma fatia fora de 0 a 100 saem com **11** e a causa do nó. Confere depois o alias contra a
+   allowlist — a embebida, ou a externa de `--allowlist-dir` e `--ancora-da-allowlist` — para esse
+   board e essa região (`nome_fora_da_allowlist`, também 11). Nada disto envia um pedido. A pasta
+   de `--saida` **não pode existir**: é criada de forma exclusiva por esta corrida.
+2. **Sonda, corrida, controlo.** É a experiência `qualificacao`, pela linha de comandos de sempre:
+   os tectos, as duas qualificações por perfil por dia e a imagem do proxy conferem-se lá.
+3. **Preparação.** Quatro barreiras independentes, cada uma com o seu teste: (1) o código de
+   saída da corrida **e** o relatório dizem os dois `qualificado`, modo `real`, corrida completa,
+   vale para produção — se só o código o disser, sai com 1; (2) o relatório relido do disco tem o
+   digest do que a corrida escreveu (`relatorio_trocado_depois_da_corrida`, sai com 1); (3) o
+   registo e o relatório passam por `routeentry.ParseEntry` e `routeentry.CheckReport` (sai com 11
+   e a causa do nó); (4) o que ficou escrito em `pacote/` é, byte a byte, o que se conferiu
+   (`pacote_alterado_depois_de_escrito`, sai com 1 e o pacote é retirado). Com qualquer outro
+   desfecho escreve o resumo, diz porque não há nada para assinar, e **nunca sai com 0**.
+
+O que fica em `--saida`:
+
+| Ficheiro | O que é |
+|---|---|
+| `ensaio-<modo>-qualificacao-<data>.json` e `.txt` | O relatório da corrida e o seu resumo comprido, como sempre |
+| `resumo-de-uma-pagina.txt` | O que o dono lê antes de assinar: no máximo 60 linhas de 100 colunas, por ordem fixa — avisos (`exigencia_nao_provada` antes de tudo), veredicto, razões, amostra, controlos negativos, o que a corrida não prova, gasto, o que se assina, e o relógio das fases. O bloco «o que vais assinar» sai do registo **lido de volta do pacote**, e traz tudo o que ele diz: alias, modelo esperado, fatia, board, região, wire, capacidades, versão da projecção, parâmetros do pedido e os quatro digests. «SUBSTITUI» ou «ACRESCENTA-SE» é segundo a tabela em código do binário do posto, e a linha diz a revisão dele |
+| `pacote/<alias>.registo.json` e `pacote/<alias>.relatorio.json` | **Só com veredicto positivo.** O registo de entrada por assinar e o relatório que ele cita, byte a byte o da corrida. A assinatura (`<alias>.registo.sig`) é o dono que a põe lá, com o `aos-issuer route-profile-sign`; a linha exacta sai no fim |
+
+`aos-ensaio conferir --pacote <pasta> --ancora <base64> --board B --regiao R` passa um pacote já
+assinado por `routeentry.LoadDir`, a função que o nó corre no arranque, com a allowlist embebida
+(ou a externa, com `--allowlist-dir` e `--ancora-da-allowlist`). Sai com 0 se o nó o aceitaria e
+com **11** e `causa=<causa do nó> registo=<rótulo>` se não. Só lê material público.
+
+Códigos de saída do `qualificar`: os da qualificação (0, 7, 8, 4, 3, 9, 10, 5, 6, 2), mais **11**
+— o nó recusaria o registo, antes de enviar ou, se o relatório não passar nas conferências do nó,
+depois da corrida — e **1** para qualquer outra falha (as causas próprias acima). Com 0 ficou um
+pacote por assinar; com qualquer outro, não.
+
+**Limites.** O resumo lê o relatório e não acrescenta garantia nenhuma. O plano confere a
+allowlist que lhe dão, e a conferência antes da assinatura não vê a assinatura: é o `conferir`
+que a vê — e nenhum dos dois sabe se a âncora, o board, a região e a allowlist que recebe são os
+do servidor. O alfabeto do board e da região é deste comando (o nó só exige que não sejam
+vazios). A criação exclusiva da pasta de saída protege de duas corridas para a mesma pasta, não
+de quem mexe nela a meio: para isso há as barreiras 2 e 4, que detectam e não empacotam. O texto
+de uso geral do banco não lista os dois subcomandos: têm o seu (`aos-ensaio qualificar`,
+`aos-ensaio conferir`).
 
 ## A experiência dos separadores
 

@@ -82,6 +82,23 @@ type Ambiente struct {
 	// imagemDoProxyDeTeste, quando não vazia, faz de imagem do proxy EM USO na conferência da
 	// qualificação. Só os testes do próprio pacote a definem, para provar a recusa.
 	imagemDoProxyDeTeste string
+	// fase, quando presente, é avisada do início de cada fase de uma corrida (AOS-522): é o
+	// relógio do subcomando `qualificar`. Não entra no relatório nem muda a corrida.
+	fase func(nome string)
+	// entreACorridaEAPreparacao e depoisDeEscreverOPacote são COSTURAS DE TESTE do `qualificar`
+	// (AOS-522): a primeira é chamada com a corrida feita e antes de se decidir se há pacote; a
+	// segunda, entre a escrita do pacote e a sua releitura. Servem para um teste trocar o que está
+	// em memória ou no disco e provar que cada barreira actua sozinha. Não são exportadas: não há
+	// opção nem variável de ambiente que cá chegue.
+	entreACorridaEAPreparacao func(feita *corridaFeita)
+	depoisDeEscreverOPacote   func(pacote string)
+}
+
+// corridaFeita é o que uma corrida deixou escrito: o relatório, tal como foi gravado, e os dois
+// caminhos. Fica vazia quando a linha de comandos sai sem ter escrito relatório.
+type corridaFeita struct {
+	relatorio       *Relatorio
+	emJSON, emTexto string
 }
 
 type opcoes struct {
@@ -168,6 +185,23 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 	if amb.Relogio == nil {
 		amb.Relogio = time.Now
 	}
+	if len(args) > 0 {
+		// Os dois subcomandos do AOS-522 têm as suas opções e o seu texto de uso: os de sempre não
+		// mudam de um byte.
+		switch args[0] {
+		case "qualificar":
+			return qualificar(ctx, args[1:], stdout, stderr, amb, red)
+		case "conferir":
+			return conferir(args[1:], stdout, stderr)
+		}
+	}
+	return executarCom(ctx, args, stdout, stderr, amb, red, &corridaFeita{})
+}
+
+// executarCom é a linha de comandos das corridas, com as saídas já redigidas. Em `feita` fica o
+// relatório que tiver sido escrito: é por aí que o subcomando `qualificar` (AOS-522) lê a corrida
+// que acabou de fazer, e não um relatório vindo de fora.
+func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, amb Ambiente, red *Redactor, feita *corridaFeita) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usoDoBanco)
 		return SaidaUso
@@ -260,7 +294,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprintln(stderr, "aos-ensaio: --pausa tem de estar entre 0 e 1m")
 		return SaidaUso
 	}
-	cfg := CfgDaCorrida{Modo: modo, Plano: plano, Bateria: bateria, Relogio: amb.Relogio, Extra: map[string]string{}, Pausa: o.pausa}
+	cfg := CfgDaCorrida{Modo: modo, Plano: plano, Bateria: bateria, Relogio: amb.Relogio, Extra: map[string]string{}, Pausa: o.pausa, fase: amb.fase}
 	qualifica := plano.Experiencia == ExperienciaQualificacao
 	// O PERFIL CANDIDATO (AOS-513). Lido pela leitura fechada do gateway: uma chave ou um valor
 	// fora do conjunto recusa a corrida antes de qualquer pedido. O digest entra no relatório e
@@ -375,6 +409,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", eerr)
 			return SaidaErro
 		}
+		*feita = corridaFeita{relatorio: relatorio, emJSON: emJSON, emTexto: emTexto}
 		if !o.silencioso {
 			fmt.Fprint(stdout, ResumoEmTexto(relatorio))
 		}
@@ -733,6 +768,7 @@ func Executar(ctx context.Context, args []string, stdout, stderr io.Writer, amb 
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaErro
 	}
+	*feita = corridaFeita{relatorio: relatorio, emJSON: emJSON, emTexto: emTexto}
 	if !o.silencioso {
 		fmt.Fprint(stdout, ResumoEmTexto(relatorio))
 	}
