@@ -3648,14 +3648,17 @@ parâmetros em silêncio.
       diferença de versão e a mudança trata-se como troca de proxy, não como formalidade.
 - [ ] Um plano de verificação pela fila antes e outro depois de fixar a imagem, com o mesmo
       objectivo: o mesmo código de saída e o mesmo desfecho.
-- [ ] `drop_params: false` em vigor no servidor, pelo procedimento do `deploy/server/README.md`
+- [x] `drop_params: false` em vigor no servidor, pelo procedimento do `deploy/server/README.md`
       (editar, **recriar** o serviço, plano antes e depois, leitura do log do proxy no
       intervalo): zero pedidos recusados por parâmetro.
+      **Medido a 2026-10-11** (série `v0154d`: 76 pedidos no proxy, todos 200, zero
+      `UnsupportedParamsError`) e mantido depois do deploy da v0.1.55, a 2026-10-12.
 - [ ] Série curta depois das duas mudanças (pelo menos 20 planos): a taxa de primeiras falhas
       e o «não cumprido» não pioram face à última série do mesmo tamanho; o contador de
       verificações da rota continua a mostrar o modelo servido igual ao esperado em todos os
       turnos.
-- [ ] O digest em vigor, a data e os números das séries ficam na §5 do acompanhamento.
+- [x] O digest em vigor, a data e os números das séries ficam na §5 do acompanhamento.
+      **Registados a 2026-10-11 e a 2026-10-12** (séries `v0154d`, `v0155a` e `v0155c`).
 
 ### O que fica desligado por omissão, e o que tem de ficar inerte
 
@@ -3701,9 +3704,35 @@ parâmetros em silêncio.
 
 ### Estado
 
-**IMPLEMENTADO NO REPOSITÓRIO (2026-10-11); os passos do servidor estão por fazer, e são do
-dono.** O ticket não fecha enquanto os cinco critérios «No servidor» não estiverem medidos e
-registados na §5 do acompanhamento.
+**IMPLEMENTADO NO REPOSITÓRIO (2026-10-11); APLICADO NO SERVIDOR (2026-10-11 e 2026-10-12), com
+três dos cinco critérios do servidor por marcar.** O ticket não fecha enquanto os cinco critérios
+«No servidor» não estiverem medidos e registados na §5 do acompanhamento.
+
+**No servidor, a 2026-10-11 e a 2026-10-12.** O dono autorizou os passos do servidor a 2026-10-11
+(«O sistema ainda não está em produção, pode rodar o comando drop_params»; acompanhamento §4), e
+a sessão de trabalho aplicou `drop_params: false` nesse dia, com a cópia do ficheiro e a
+recriação só do `litellm`; a série `v0154d` correu a seguir (acompanhamento §5). A 2026-10-12, o
+deploy da v0.1.55 (tag sobre `25b85e9d`, em produção desde as 10:36:37 UTC) aplicou o compose
+novo e recriou o `litellm`, agora com a referência por digest
+`sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63`; `drop_params: false`
+manteve-se. O nó ficou `healthy` um minuto depois. O tempo sem modelo durante a recriação não foi
+medido.
+
+**Os três critérios do servidor que ficam por marcar, e porquê.**
+
+- *A leitura do digest «nesse momento».* O digest que a tag resolvia foi lido a 2026-10-11, duas
+  vezes, e era o medido; não há registo de a leitura ter sido repetida a 2026-10-12, antes do
+  deploy que fixou a imagem.
+- *O par de planos antes e depois de fixar a imagem, com o mesmo objectivo.* Há uma série antes
+  (`v0154d`, 19 planos, a 2026-10-11) e uma depois (`v0155a`, 5 de 5 planos concluídos, todos os
+  turnos com `route_check: igual`); não ficou registado um par com o mesmo objectivo, comparado
+  pelo código de saída e pelo desfecho.
+- *A série «não piora».* Há mais de 20 planos depois das duas mudanças (série `v0155c`, 40
+  planos, todos concluídos, «não cumprido» a 0), mas a taxa de primeiras falhas do titular
+  **subiu**: 2 em 5 na série `v0155a` e 4 em 33 nós com tools na `v0155c`, contra 0 em 19 na
+  `v0154d`. Todas recuperaram à nova tentativa. A série `v0154d` já corria com
+  `drop_params: false`, pelo que a subida não se lê como efeito dessa mudança; a causa não foi
+  procurada. O critério fica por marcar até haver uma série lida com esse fim.
 
 **O que ficou feito no repositório.**
 
@@ -3748,7 +3777,7 @@ não ser a medida» não se verificou — fixar não troca de proxy. O `config.y
 `drop_params: true`. O runbook repete a leitura no dia da mudança, e é essa que fecha o
 primeiro critério do servidor.
 
-**O que falta, e é do dono** (runbook, passos 1 a 5): repetir a leitura do digest; aplicar o
+**O que faltava a 2026-10-11, e era do dono** (runbook, passos 1 a 5; o que se fez depois está em «No servidor», acima): repetir a leitura do digest; aplicar o
 compose novo, com um plano antes e outro depois; `drop_params: false` com a cópia, a
 recriação e a leitura do log; a série de 20 planos; o registo na §5 do acompanhamento.
 
@@ -3966,6 +3995,27 @@ erro de arranque em vocabulário fechado, e cada uma tem o seu teste)
 base com o AOS-518 fundido. A revisão adversarial independente foi feita e as suas correcções
 estão no ramo (abaixo); nenhum caminho de entrada sem assinatura foi encontrado.
 
+**Em produção desde 2026-10-12 (v0.1.55).** O dono gerou a chave dos perfis no seu posto e assinou
+o registo de entrada do `k3` (alias `gpt-4o`, `openai/k3`); a âncora pública é
+`GR78qbnszHiu0JlFuW7fxDRcAZ36l1zQ5Lv3QzEdcF4=`. `aos-ensaio conferir`, com essa âncora, disse «o
+nó aceitaria este pacote»: digest do registo
+`sha256:59e3d1b295aa743764026b0f75ecf8e7c57a29c614c1b7c579ab18547437d558`, digest do perfil
+`sha256:efdd13fbdba0b96a8bc83cad7e2fb3f30f7e3ce5553a4eb0f736d7ab69efba36`. Os três ficheiros
+foram copiados para `/opt/aos/perfis-de-rota` (o `sha256sum` do registo no servidor é o digest
+assinado), o `.env` ganhou `AOS_MODEL_ROUTE_PROFILES_DIR` e
+`AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR` (cópia `.env.antes-da-a3`), e o nó foi recriado às
+10:49:33 UTC: `healthy`, com o banner «perfil de rota ASSINADO carregado … registo "gpt-4o"» e
+«modelo candidato NAO SERVIDO».
+
+O que a passagem por produção **não** acrescenta aos critérios: os quatro por marcar continuam
+por marcar (abaixo). O run «com o perfil assinado do alias que o nó pede» não é o que correu — em
+produção o perfil assinado é o do candidato, e o nó continua a pedir o alias do titular —, e o
+digest do perfil assinado no manifesto dos turnos não foi lido.
+
+Dois pontos do servidor: a instalação foi feita pelo utilizador `aos`, sem root, e a pasta ficou
+do `aos`, e não do root como o runbook pede (endurecimento por fazer; a escolha é do dono); e os
+registos continuam sem validade no tempo e sem anti-recuo (abaixo, «Limites escritos»).
+
 **Correcções da revisão adversarial (2026-10-11).**
 
 - *Leitura fechada do perfil.* `ParseRouteProfile` recusava nomes repetidos e com maiúsculas, mas
@@ -4046,8 +4096,8 @@ estão no ramo (abaixo); nenhum caminho de entrada sem assinatura foi encontrado
   omissão, e monta `./perfis-de-rota` em `/etc/aos/perfis-de-rota`, só de leitura; o `deploy.sh`
   cria a pasta; as duas saíram das exclusões de `TestManifestoDeDeployPassaTodaAConfigQueONoLe`.
   Com o `.env` de hoje o nó é o de antes (o compose resolvido só difere da base nas variáveis
-  vazias e na montagem). **Continua por fazer, pelo dono:** aplicar no servidor — os passos estão
-  no runbook, «Ligar a fase A3 em produção» (`deploy/server/README.md`).
+  vazias e na montagem). Aplicar no servidor — os passos estão no runbook, «Ligar a fase A3 em
+  produção» (`deploy/server/README.md`) — **ficou feito a 2026-10-12** (acima, «Em produção»).
 
 **Limite conhecido: a troca de perfil com runs em curso não é detectada.** O ticket, o cabeçalho
 do carregador e o runbook diziam que um run começado com um perfil e retomado com outro «falha
@@ -4303,7 +4353,28 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 e saiu das exclusões do teste do manifesto; ligá-la no servidor é do dono (runbook, «Ligar a fase
 A3 em produção», passo e). O PR 1 teve **duas revisões adversariais
 independentes** (2026-10-11), corrigidas no mesmo ramo — ver «Correcções das revisões», abaixo.
-Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada está ligado.
+Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada estava ligado a 2026-10-11.
+
+**Em produção desde 2026-10-12 (v0.1.55), com o candidato a servir.** Com o perfil assinado do
+`k3` já carregado (AOS-519), o `.env` ganhou `AOS_MODEL_CANDIDATE=on` (cópia
+`.env.antes-do-candidato`) e o nó foi recriado: `healthy`, com o banner a declarar o canary
+ABERTO, fatia 10%, limite 40, época 1, 0 atribuídos, marca de abertura 1312. Antes de ligar, a
+série `v0155a` (5 planos, sem variáveis novas) teve 0 eventos `run.model_pinned`.
+
+Série `v0155c`, 40 planos pela fila real: 40 concluídos. No livro do canary, 1
+`model.canary.opened`, 7 `model.canary.plan_assigned` e 0 `closed`. 84 runs com
+`run.model_pinned`: 70 do titular (razão `funcao`) e 14 do candidato (7 `funcao` e 7
+`plano_ja_atribuido`). **0 planos com dois modelos.** São 7 planos em 40 no candidato — 17,5%
+para uma fatia de 10%; com 40 planos cabe no acaso, e a função deu 110 em 1000 no teste. O
+candidato: 14 de 14 runs `complete`, 21 turnos, todos com `model_id gpt-4o` servidos por
+`openai/k3`, 0 falhas à 1.ª tentativa. O titular: 70 runs, 66 `complete` e 4 `failed` com
+`contract_unmet_no_call` — primeiras tentativas, recuperadas —, 103 turnos servidos por
+`openai/kimi-for-coding`. As séries por modelo apareceram no `/metrics` com o candidato a servir.
+
+**O que produção ainda não mostrou.** O canary não chegou ao 40.º plano (7 de 40): o fim do
+canary e o sinal ao dono só estão vistos em teste. Produção corre um só nó sobre ficheiro: o
+smoke sobre JetStream continua por fazer, e com mais de uma réplica o candidato não é suportado
+(AOS-524). Decidir se o candidato passa a titular, continua ou sai é do dono, e não foi decidido.
 
 **O que o PR 2 entregou** (ADR-041 §2.8).
 
@@ -4407,7 +4478,7 @@ que fica atrás recusa todos os planos novos do candidato (`livro_do_canary_em_c
 reiniciar. É anterior a este ticket e apanha também a quota por principal. Está reproduzido por
 um teste que afirma o comportamento de hoje
 (`packages/substrate/eventstore/jetstream/aos520_cas_vista_atrasada_test.go`), escrito no
-ADR-041 §5 e no runbook, e o arranque avisa. **Ticket próprio por abrir.** O nó não recusa
+ADR-041 §5 e no runbook, e o arranque avisa. **Ticket: AOS-524 (EPIC-01), aberto.** O nó não recusa
 arrancar: não tem como saber quantas réplicas partilham o Event Store.
 
 **Limites e pontos que ficaram escritos (PR 1).**
@@ -4779,6 +4850,24 @@ A3 em produção», passos f e g). Falta a revisão adversarial
 antes do `enforce`. Os critérios marcados são os cumpridos em ensaio; os dois por marcar estão em
 «Por fazer».
 
+**Em produção desde 2026-10-12 (v0.1.55), em `observe`.** `AOS_MODEL_BREAKER=observe` entrou no
+`.env` com `AOS_MODEL_CANDIDATE=on` (cópia `.env.antes-do-candidato`); o banner do nó recriado
+declara o disjuntor FECHADO em `observe`. Na série `v0155c` (40 planos, 7 no candidato): 7
+`model.breaker.run_outcome`, todos `cumprido` — os 7 nós com contrato; os nós de resumo, sem
+contrato, não entram na janela —, 0 `would_open`, e `aos_model_breaker_unrecorded_total` a 0.
+
+**O que produção não mostrou, com todas as letras.** O disjuntor nunca correu em `enforce` em
+produção, e nunca abriu — nem «teria aberto» — com um candidato real: o único candidato que
+serviu é um modelo bom. Que um candidato que degrada perde a fatia sozinho está provado só com
+providers falsos, em teste. O `alerta-disjuntor.sh` está copiado no servidor e **sem cron**. A
+leitura de calibração sobre o titular continua por fazer: com as primeiras falhas do titular a
+2026-10-12 (4 em 33 nós com tools na série `v0155c`, recuperadas), era ela que dizia se «3 em
+20» dispara por azar.
+
+**Por confirmar pelo dono** (acompanhamento §4, por tomar): 5xx e 408 contam e 401 e 403 não
+contam; `observe` continua a medir depois de «teria aberto»; um `complete` sem contrato fica
+fora da janela; a abertura não é selada no audit do gateway.
+
 **O que foi entregue** (ADR-041 §2.9).
 
 - *A regra, pura* (`modelo_disjuntor_regra.go`): `avaliarDisjuntor` sobre a sequência das
@@ -4994,3 +5083,4 @@ entra na janela; com o nó a não servir candidato o disjuntor não avalia nem g
 | 3.9 | 2026-10-11 | +AOS-520 (fase A3): o nó serve um titular e no máximo um candidato, escolhido uma vez por run por uma função determinista do identificador do plano e da fatia assinada (10% dos planos, até 40 planos), com o modelo fixado por run e séries novas por modelo (`AOS_MODEL_CANDIDATE=off\|on`, omissão `off`); ADR novo como entregável, por numerar (D4, D6) | Equipa AOS |
 | 3.10 | 2026-10-11 | +AOS-521 (fase A3): disjuntor por modelo — cinco sinais sem ler texto, regra de 3 falhas nos últimos 20 runs do candidato e abertura ao primeiro turno com o modelo servido diferente; aberto, o candidato não recebe runs novos, o estado é durável e selado, e só um registo assinado novo o reabre (`AOS_MODEL_BREAKER=off\|observe\|enforce`, omissão `off`); secção no ADR novo do AOS-520 como entregável (D5) | Equipa AOS |
 | 3.11 | 2026-10-12 | AOS-519, AOS-520 e AOS-521: o compose de produção passa as quatro variáveis da fase A3, vazias por omissão, e monta a pasta dos perfis só de leitura; o deploy copia o `alerta-disjuntor.sh`; runbook dos passos do dono. Aplicar no servidor continua por fazer | Equipa AOS |
+| 3.12 | 2026-10-12 | AOS-517, AOS-519, AOS-520 e AOS-521 em produção na v0.1.55: o proxy referido pelo digest e `drop_params: false` (dois dos cinco critérios do servidor do AOS-517 marcados); o perfil assinado do `k3` carregado; o candidato a servir 10% dos planos (série `v0155c`: 7 planos em 40, 0 com dois modelos); o disjuntor em `observe`, sem nunca ter aberto. Nada foi provado com um modelo mau real | Equipa AOS |
