@@ -212,9 +212,25 @@ type estadoDaRegra struct {
 	disparou bool
 	regra    string
 	// contadores são as observações por sinal de falha, e janela as últimas unidades — os dois NO
-	// MOMENTO DO DISPARO, ou no fim da sequência se a regra não disparou.
+	// MOMENTO DO DISPARO, ou no fim da sequência se a regra não disparou. É o que a marca sela, e
+	// o que decide.
 	contadores map[string]int
 	janela     []itemDaJanela
+	// contadoresAgora e janelaAgora são os mesmos dois NO FIM da sequência, tenha a regra disparado
+	// ou não: é o que um nó em observação continua a medir depois do «teria aberto». Não decidem.
+	contadoresAgora map[string]int
+	janelaAgora     []itemDaJanela
+}
+
+// falhasAgora conta as unidades da janela do FIM da sequência cujo sinal é uma falha.
+func (e estadoDaRegra) falhasAgora() int {
+	n := 0
+	for _, it := range e.janelaAgora {
+		if it.Signal != sinalCumprido {
+			n++
+		}
+	}
+	return n
 }
 
 // falhasNaJanela conta as unidades da janela cujo sinal é uma falha.
@@ -231,31 +247,44 @@ func (e estadoDaRegra) falhasNaJanela() int {
 // avaliarDisjuntor aplica a regra à sequência das observações de UM registo de entrada, pela ordem
 // do livro. É uma função pura: a mesma sequência dá sempre o mesmo estado.
 func avaliarDisjuntor(obs []observacaoDoDisjuntor) estadoDaRegra {
-	st := estadoDaRegra{contadores: map[string]int{}}
+	var st estadoDaRegra
 	type unidade struct {
 		id   string
 		item itemDaJanela
 	}
 	var janela []unidade
-	fotografar := func() {
-		st.janela = make([]itemDaJanela, 0, len(janela))
+	contadores := map[string]int{}
+	fotografia := func() ([]itemDaJanela, map[string]int) {
+		itens := make([]itemDaJanela, 0, len(janela))
 		for _, u := range janela {
-			st.janela = append(st.janela, u.item)
+			itens = append(itens, u.item)
 		}
+		copia := make(map[string]int, len(contadores))
+		for s, n := range contadores {
+			copia[s] = n
+		}
+		return itens, copia
+	}
+	// DISPARADA, FICA DISPARADA: só o PRIMEIRO disparo fixa a regra, a janela e os contadores.
+	disparar := func(regra string) {
+		if st.disparou {
+			return
+		}
+		st.disparou, st.regra = true, regra
+		st.janela, st.contadores = fotografia()
 	}
 	for _, o := range obs {
 		if o.turno {
 			// F5 DISPARA SOZINHO, ao primeiro turno, com a janela como estiver — vazia que seja.
-			st.contadores[sinalModeloDiferente]++
-			st.disparou, st.regra = true, regraModeloDiferente
-			fotografar()
-			return st
+			contadores[sinalModeloDiferente]++
+			disparar(regraModeloDiferente)
+			continue
 		}
 		if !sinalDeRunConhecido(o.sinal) || o.unidade == "" {
 			continue
 		}
 		if o.sinal != sinalCumprido {
-			st.contadores[o.sinal]++
+			contadores[o.sinal]++
 		}
 		// A tentativa mais recente de uma unidade SUBSTITUI a anterior, e vai para o fim.
 		for i := range janela {
@@ -275,11 +304,12 @@ func avaliarDisjuntor(obs []observacaoDoDisjuntor) estadoDaRegra {
 			}
 		}
 		if falhas >= disjuntorFalhasParaAbrir {
-			st.disparou, st.regra = true, regraFalhasNaJanela
-			fotografar()
-			return st
+			disparar(regraFalhasNaJanela)
 		}
 	}
-	fotografar()
+	st.janelaAgora, st.contadoresAgora = fotografia()
+	if !st.disparou {
+		st.janela, st.contadores = st.janelaAgora, st.contadoresAgora
+	}
 	return st
 }

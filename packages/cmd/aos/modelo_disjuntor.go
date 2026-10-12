@@ -82,6 +82,13 @@ const disjuntorVersaoDoPayload = "1.0"
 // (a observação, a marca) consome uma volta, e cada conflito outra.
 const disjuntorMaxTentativas = 16
 
+// disjuntorMaxObservacoes é o tecto de observações que o livro guarda POR REGISTO de entrada. O livro
+// lê-se em cada run novo, e em observação as observações continuam depois do «teria aberto»: sem
+// tecto crescia com a vida do registo. 400 são os 40 planos do canary com dez runs cada (nós e
+// tentativas) — muito acima do que um canary produz. Atingido, não se grava mais nada para esse
+// registo: a janela e os contadores ficam como estavam, e o arranque di-lo.
+const disjuntorMaxObservacoes = 400
+
 // Os valores de `AOS_MODEL_BREAKER`. Vocabulário FECHADO.
 const (
 	modelBreakerOff     = "off"
@@ -324,10 +331,12 @@ func (l *livroDoCanary) julgarDisjuntor(st estadoDoCanary, entryDigest string) (
 		v := l.disjuntor
 		v.abertoVisto.Store(boolParaInt(aberto))
 		v.disparouVisto.Store(boolParaInt(regra.disparou || d.aberto != nil))
-		v.falhasVistas.Store(int64(regra.falhasNaJanela()))
-		v.unidadesVistas.Store(int64(len(regra.janela)))
+		// A janela e os contadores do FIM da sequência: em `enforce` e com a marca de aberto são os
+		// do disparo (não se grava mais nada); em `observe` continuam a andar.
+		v.falhasVistas.Store(int64(regra.falhasAgora()))
+		v.unidadesVistas.Store(int64(len(regra.janelaAgora)))
 		for s, c := range v.sinaisVistos {
-			c.Store(int64(regra.contadores[s]))
+			c.Store(int64(regra.contadoresAgora[s]))
 		}
 	}
 	return aberto, regra, falta
@@ -458,7 +467,12 @@ func (l *livroDoCanary) observarNoDisjuntor(ctx context.Context, reg registoDoCa
 		if o.turno {
 			gravada = d.turnos[o.run]
 		}
-		if !gravada && !regra.disparou && d.aberto == nil {
+		// QUANDO JÁ NÃO SE GRAVA: com a marca de aberto no livro; em `enforce`, depois de a regra
+		// disparar (o estado é o do disparo, e o conjunto das observações fica estável); e atingido o
+		// tecto do registo. Em `observe` a regra disparada NÃO pára a medição: o modo de medir
+		// continua a medir, e a janela do fim da sequência é a que o `/metrics` mostra.
+		parada := d.aberto != nil || (regra.disparou && l.disjuntor.modo == modelBreakerEnforce) || len(d.obs) >= disjuntorMaxObservacoes
+		if !gravada && !parada {
 			p := disjuntorPayload{V: disjuntorVersaoDoPayload, EntryDigest: reg.entryDigest, Alias: reg.alias, ProfileDigest: reg.profileDigest, RunID: o.run}
 			tipo, passo := EventTypeModelBreakerRouteMismatch, passoDoDisjuntor("breaker-f5-", o.run)
 			if !o.turno {
