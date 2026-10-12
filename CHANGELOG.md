@@ -7,6 +7,12 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Changed — EPIC-06 (AOS-519, AOS-520, AOS-521) Fase A3: o compose de produção
+
+- `feat(AOS-519)` — `deploy/server/docker-compose.prod.yml` passa ao nó `AOS_MODEL_ROUTE_PROFILES_DIR`, `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`, `AOS_MODEL_CANDIDATE` e `AOS_MODEL_BREAKER`, **vazias por omissão**, e monta `./perfis-de-rota` em `/etc/aos/perfis-de-rota`, só de leitura; o `deploy.sh` cria a pasta. Com o `.env` de hoje o nó é o de antes. As quatro saíram das exclusões de `TestManifestoDeDeployPassaTodaAConfigQueONoLe`.
+- `feat(AOS-521)` — o deploy copia o `alerta-disjuntor.sh` para o servidor; o cron não é instalado pelo deploy.
+- `docs(AOS-519)` — runbook «Ligar a fase A3 em produção»: os passos do dono no servidor, por ordem, com o recuo de cada um. **Por fazer, pelo dono:** aplicá-los.
+
 ### Added — EPIC-08 (AOS-522) Fase A3: qualificar e preparar a assinatura num comando
 
 - `feat(AOS-522)` — `aos-ensaio qualificar <modo>`: corre a experiência `qualificacao`, escreve um **resumo de uma página** (60 linhas de 100 colunas, por ordem fixa, com os avisos à cabeça e o que a corrida não prova na página) e, **só com `qualificado` do modo real e a corrida completa**, deixa em `pacote/` o registo de entrada do AOS-519 e o relatório que ele cita. Não assina, e não tem opção, variável nem ficheiro por onde a chave de assinar entre. O registo é conferido pela leitura do nó **antes de enviar** (um perfil que devolve estado, um alias inválido ou uma fatia fora do intervalo saem com 11 e a causa do nó); `--board`, `--regiao` e `--fatia` não têm valor por omissão. O resumo traz a hora de início e de fim de cada fase. **Inerte**: os subcomandos e as experiências de sempre não mudam.

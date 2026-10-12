@@ -4041,9 +4041,13 @@ estão no ramo (abaixo); nenhum caminho de entrada sem assinatura foi encontrado
   efeito e que o nó recriado sobre a pasta estragada não arranca. A segunda metade — o run
   retomado com outro perfil — **não se cumpre**: ver «Limite conhecido», abaixo.
 - *Smoke sobre JetStream.* Por fazer.
-- *As variáveis no compose de produção.* O `environment:` do compose é uma allowlist: as duas
-  variáveis e a montagem só de leitura entram por um PR de deploy, quando o dono decidir. Até lá
-  a funcionalidade não é alcançável em produção.
+- *As variáveis no compose de produção.* **Feito no repositório (2026-10-12)**, no ramo
+  `feature/AOS-519-compose-de-producao`: o compose passa as duas variáveis ao nó, vazias por
+  omissão, e monta `./perfis-de-rota` em `/etc/aos/perfis-de-rota`, só de leitura; o `deploy.sh`
+  cria a pasta; as duas saíram das exclusões de `TestManifestoDeDeployPassaTodaAConfigQueONoLe`.
+  Com o `.env` de hoje o nó é o de antes (o compose resolvido só difere da base nas variáveis
+  vazias e na montagem). **Continua por fazer, pelo dono:** aplicar no servidor — os passos estão
+  no runbook, «Ligar a fase A3 em produção» (`deploy/server/README.md`).
 
 **Limite conhecido: a troca de perfil com runs em curso não é detectada.** O ticket, o cabeçalho
 do carregador e o runbook diziam que um run começado com um perfil e retomado com outro «falha
@@ -4294,7 +4298,10 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 `feature/AOS-520-perfil-fixado-por-run`) e o **PR 1 — titular, candidato e canary** (ramo
 `feature/AOS-520-titular-e-candidato`, por cima do PR 0) e o **PR 2 — as séries por modelo** (ramo
 `feature/AOS-520-metricas-por-modelo`, por cima do PR 1; ver «O que o PR 2 entregou», abaixo).
-**Por fazer:** o smoke sobre JetStream. O PR 1 teve **duas revisões adversariais
+**Por fazer:** o smoke sobre JetStream. **No compose desde 2026-10-12**
+(`feature/AOS-519-compose-de-producao`): `AOS_MODEL_CANDIDATE` é passada ao nó, vazia por omissão,
+e saiu das exclusões do teste do manifesto; ligá-la no servidor é do dono (runbook, «Ligar a fase
+A3 em produção», passo e). O PR 1 teve **duas revisões adversariais
 independentes** (2026-10-11), corrigidas no mesmo ramo — ver «Correcções das revisões», abaixo.
 Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada está ligado.
 
@@ -4766,7 +4773,9 @@ facto selado, as contagens ao lado, um aviso ao dono, e sem volta automática.
 ### Estado
 
 **Feito, por rever (2026-10-11).** Ramo `feature/AOS-521-disjuntor`, por cima do PR 2 do AOS-520.
-Nada ligado: `AOS_MODEL_BREAKER` nasce `off` e não está no compose. Falta a revisão adversarial
+Nada ligado: `AOS_MODEL_BREAKER` nasce `off`; desde 2026-10-12 está no compose, vazia por omissão
+(`feature/AOS-519-compose-de-producao`), e ligá-la no servidor é do dono (runbook, «Ligar a fase
+A3 em produção», passos f e g). Falta a revisão adversarial
 antes do `enforce`. Os critérios marcados são os cumpridos em ensaio; os dois por marcar estão em
 «Por fazer».
 
@@ -4934,8 +4943,9 @@ observação que já está no livro não é dada por perdida. Três mutações s
   com a unidade da janela — precisava de ler o log de cada run do titular, e o titular não paga
   nada pelo disjuntor; uma versão só em memória contava tentativas e não unidades, e media mal.
   Sem ela, «3 em 20 dispara por azar?» mede-se com o `observe` sobre o candidato.
-- *O `alerta-disjuntor.sh` não é copiado pelo deploy* (o workflow não foi tocado), e foi
-  exercitado à mão com métricas falsas, não em CI.
+- *O `alerta-disjuntor.sh`* é copiado pelo deploy desde 2026-10-12 (a lista do `rsync` do
+  workflow, ao lado do `alerta-rota.sh`); o cron é passo do dono. Foi exercitado à mão com
+  métricas falsas, não em CI.
 - *«O candidato bom não abre em 200 runs»* está preso na regra (200 desfechos bons) e não no nó: o
   canary fecha aos 40 planos, pelo que 200 runs do candidato no nó pedem planos com vários nós.
 - *«O nó do plano que cumpre na nova tentativa»* está preso na regra e na leitura da unidade do
@@ -4983,3 +4993,4 @@ entra na janela; com o nó a não servir candidato o disjuntor não avalia nem g
 | 3.8 | 2026-10-11 | +AOS-519 (fase A3): o nó carrega perfis de rota de uma pasta, por um registo de entrada assinado pelo dono que cita o veredicto do arnês (`AOS_MODEL_ROUTE_PROFILES_DIR` e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`); falha fechado no arranque com causa própria por caso; inerte sem a pasta; emenda à secção do perfil da rota no ADR do tail como entregável (D1, D8) | Equipa AOS |
 | 3.9 | 2026-10-11 | +AOS-520 (fase A3): o nó serve um titular e no máximo um candidato, escolhido uma vez por run por uma função determinista do identificador do plano e da fatia assinada (10% dos planos, até 40 planos), com o modelo fixado por run e séries novas por modelo (`AOS_MODEL_CANDIDATE=off\|on`, omissão `off`); ADR novo como entregável, por numerar (D4, D6) | Equipa AOS |
 | 3.10 | 2026-10-11 | +AOS-521 (fase A3): disjuntor por modelo — cinco sinais sem ler texto, regra de 3 falhas nos últimos 20 runs do candidato e abertura ao primeiro turno com o modelo servido diferente; aberto, o candidato não recebe runs novos, o estado é durável e selado, e só um registo assinado novo o reabre (`AOS_MODEL_BREAKER=off\|observe\|enforce`, omissão `off`); secção no ADR novo do AOS-520 como entregável (D5) | Equipa AOS |
+| 3.11 | 2026-10-12 | AOS-519, AOS-520 e AOS-521: o compose de produção passa as quatro variáveis da fase A3, vazias por omissão, e monta a pasta dos perfis só de leitura; o deploy copia o `alerta-disjuntor.sh`; runbook dos passos do dono. Aplicar no servidor continua por fazer | Equipa AOS |

@@ -1361,6 +1361,122 @@ nunca`. Com runs em curso numa rota `obrigatorio`, **drenar primeiro** (esperar 
 em `running` nem à espera de aprovação): na `1.2.0` o turno seguinte desses runs falha com
 `projeccao_sem_estado`, porque o pedido não sai sem o estado.
 
+### Ligar a fase A3 em produção — os passos do dono, por ordem (AOS-519, AOS-520, AOS-521)
+
+O repositório já tem tudo o que o servidor precisa: o compose passa as quatro variáveis
+(`AOS_MODEL_ROUTE_PROFILES_DIR`, `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`, `AOS_MODEL_CANDIDATE`,
+`AOS_MODEL_BREAKER`), vazias por omissão, e monta `/opt/aos/perfis-de-rota` em
+`/etc/aos/perfis-de-rota`, só de leitura; o deploy cria a pasta e copia o `alerta-disjuntor.sh`.
+**Nada disto liga nada**: com o `.env` de hoje o nó é o de antes. O que liga são os passos
+abaixo, no servidor, e **cada passo marcado ⚠ altera produção e só se faz com confirmação do
+dono**. O que cada interruptor faz, os limites e as causas de recusa estão nas três secções
+seguintes; aqui fica só a ordem.
+
+Um passo de cada vez, e o seguinte só depois de o anterior estar confirmado pelo banner. Em todos
+os que recriam o nó: **drenar antes de recriar** (passo 5 de «Perfis de rota assinados») — parar o
+`aos-drenar-planos.timer`, esperar o último plano, `aos_runs_suspended 0` — e voltar a ligar o
+timer depois de o banner estar conferido.
+
+```bash
+# no servidor, como aos, em /opt/aos. O `aos` não tem sudo: os comandos marcados «como root»
+# correm numa sessão de root (a mesma de «Instalar como root — o pacote do root»).
+dc() { docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env "$@"; }
+recriar() { dc up -d --no-deps --force-recreate aos; }     # o arranque passa dos 100 s: esperar por `healthy`
+```
+
+**0. Pré-condição (só leitura).** O servidor corre uma versão com este compose:
+
+```bash
+grep -c 'perfis-de-rota' /opt/aos/docker-compose.prod.yml     # >= 1
+ls -l /opt/aos/alerta-disjuntor.sh                             # existe
+grep -cE '^AOS_MODEL_(ROUTE_PROFILES|CANDIDATE|BREAKER)' /opt/aos/.env   # 0: nada ligado
+```
+
+**a. ⚠ A pasta, do root.** O deploy cria-a (do `aos`, vazia); este passo passa-a para o root, que
+é o que a secção dos perfis pede — quem tem escrita na pasta pode retirar ou repor um registo.
+O nó corre com o uid `65532` e lê-a como «outros»: pasta `0755`, ficheiros `0644`.
+
+```bash
+install -d -o root -g root -m 0755 /opt/aos/perfis-de-rota     # como root
+stat -c '%U:%G %a' /opt/aos/perfis-de-rota                     # root:root 755
+```
+
+**b. ⚠ A âncora e a pasta no `.env`** (cópia do `.env` antes; a cópia tem os mesmos segredos e
+fica com as mesmas permissões). A âncora é a chave pública do passo 2 de «Perfis de rota
+assinados» (`aos-issuer route-profile-anchor`), e a pasta é sempre a de dentro do contentor.
+
+```bash
+cp -p /opt/aos/.env /opt/aos/.env.antes-da-a3
+printf '%s\n' 'AOS_MODEL_ROUTE_PROFILES_DIR=/etc/aos/perfis-de-rota' \
+              'AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR=<a chave publica, em base64>' >> /opt/aos/.env
+```
+
+**c. ⚠ Os três ficheiros de um registo assinado.** Do posto para uma pasta de passagem do `aos`,
+e daí para a pasta do root. Só os três — qualquer outro ficheiro na pasta impede o arranque.
+
+```bash
+mkdir -p /opt/aos/.perfis-entrada                              # como aos
+# no posto:   scp <rotulo>.registo.json <rotulo>.registo.sig <rotulo>.relatorio.json aos@<servidor>:/opt/aos/.perfis-entrada/
+# como root:
+install -o root -g root -m 0644 /opt/aos/.perfis-entrada/<rotulo>.registo.json \
+  /opt/aos/.perfis-entrada/<rotulo>.registo.sig /opt/aos/.perfis-entrada/<rotulo>.relatorio.json /opt/aos/perfis-de-rota/
+rm -r /opt/aos/.perfis-entrada
+ls -l /opt/aos/perfis-de-rota                                  # três ficheiros, root, -rw-r--r--
+```
+
+**d. ⚠ Recriar o nó e ler o banner.** Drenar primeiro.
+
+```bash
+recriar
+docker inspect -f '{{.State.Health.Status}}' aos-aos-1         # healthy
+docker logs aos-aos-1 2>&1 | grep 'AOS-519'                    # uma linha por perfil: `perfil de rota ASSINADO carregado`
+```
+
+O digest do registo no banner tem de ser o que o `route-profile-sign` imprimiu. Se o nó não
+arrancar, o log diz `causa=<causa> registo=<rotulo>` (a lista está em «Perfis de rota
+assinados»), e o recuo é o de (b). Com a pasta ainda vazia o banner diz `zero perfis assinados`.
+
+**e. ⚠ O candidato — só depois de (d) confirmado.** Pré-condições em «O modelo candidato e o
+canary»: um só registo que não seja o do titular, preço na tabela, e **uma** réplica do nó.
+
+```bash
+echo 'AOS_MODEL_CANDIDATE=on' >> /opt/aos/.env && recriar
+docker logs aos-aos-1 2>&1 | grep -E 'modelo candidato|canary do modelo candidato' | tail -5   # `A SERVIR` e `ABERTO`, 0 de 40
+```
+
+**f. ⚠ O disjuntor — `observe` primeiro; `enforce` mais tarde, por decisão própria.** Os dois
+exigem `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce` (sem ela, `observe` não tem o sinal
+do modelo servido e `enforce` não arranca).
+
+```bash
+grep '^AOS_MODEL_ROUTE_GOVERNANCE=' /opt/aos/.env              # observe ou enforce
+echo 'AOS_MODEL_BREAKER=observe' >> /opt/aos/.env && recriar
+docker logs aos-aos-1 2>&1 | grep 'disjuntor do modelo candidato' | tail -5
+```
+
+Passar a `enforce` é editar essa linha e recriar, com os números do `observe` à frente: um
+registo cujo `observe` já «teria aberto» abre logo. **Sair de `enforce`** (para `observe` ou
+`off`) só depois de confirmar a marca no livro — o resíduo do ADR-041 §5; os três comandos estão
+em «Antes de mudar de `enforce` para `off` ou `observe`: confirma a marca», na secção do disjuntor.
+
+**g. ⚠ O cron do aviso.** O deploy copia o script; não instala o cron.
+
+```bash
+bash /opt/aos/alerta-disjuntor.sh --teste                      # tem de chegar ao telemóvel
+( crontab -l; echo '*/15 * * * * /bin/bash /opt/aos/alerta-disjuntor.sh >/dev/null 2>&1' ) | crontab -
+```
+
+**h. O recuo de cada passo** — sempre drenar antes de recriar, e pela ordem inversa à de ligar.
+
+| Passo | Recuo |
+|---|---|
+| g | `crontab -e` e apagar a linha |
+| f | `enforce` → `observe` ou `off`: **primeiro a marca** (acima). `observe` → `off`: apagar a linha `AOS_MODEL_BREAKER` do `.env` e recriar. Um disjuntor aberto continua aberto com `off` |
+| e | «Desligar — drenar primeiro», na secção do candidato: esperar os planos do candidato, `AOS_MODEL_CANDIDATE=off`, recriar. **Não** retirar a pasta nem o registo para desligar um candidato |
+| c, d | Tirar os três ficheiros (como root) e recriar: volta a entrada da tabela em código. Só sem runs fixados nesse perfil |
+| b | Apagar do `.env` as duas linhas acrescentadas (ou repor a cópia, `cp -p /opt/aos/.env.antes-da-a3 /opt/aos/.env`, se o `.env` não mudou entretanto) e recriar: o nó de antes, por inteiro. Só com o candidato já desligado e sem runs fixados. Depois de a A3 estar assente, apagar a cópia |
+| a | Nenhum: a pasta vazia e sem a variável não é lida |
+
 ### Perfis de rota assinados — `AOS_MODEL_ROUTE_PROFILES_DIR` (AOS-519) — nada ligado hoje
 
 O perfil de uma rota era só uma tabela em código: um modelo novo custava um PR e uma imagem nova
@@ -1373,13 +1489,11 @@ a byte o de antes.
 | `AOS_MODEL_ROUTE_PROFILES_DIR` | A pasta dos registos, **dentro do contentor**. Lida uma vez, no arranque |
 | `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR` | A chave **pública** (base64) de quem assina os perfis. Obrigatória com a pasta, mesmo vazia. Não pode ser a de uma allowlist |
 
-**O que ainda falta para se poder ligar em produção.** O `environment:` do compose é uma
-allowlist (ver «Acrescentar uma variável ao `.env` não chega»): as duas variáveis e a montagem da
-pasta **não estão** no `docker-compose.prod.yml`. Entram por um PR de deploy, quando o dono
-decidir — no serviço `aos`, as duas linhas `AOS_MODEL_ROUTE_PROFILES_DIR: "${AOS_MODEL_ROUTE_PROFILES_DIR:-}"`
-e `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR: "${AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR:-}"`, e um
-volume **só de leitura**, por exemplo `/opt/aos/perfis-de-rota:/etc/aos/perfis-de-rota:ro`. A
-pasta do servidor tem de ser legível pelo uid `65532` e não precisa de ser escrita por ele.
+**No compose, desligado.** O `docker-compose.prod.yml` passa as duas variáveis ao serviço `aos`,
+vazias por omissão, e monta `/opt/aos/perfis-de-rota` em `/etc/aos/perfis-de-rota`, só de leitura
+(a pasta é criada pelo `deploy.sh`). O valor de `AOS_MODEL_ROUTE_PROFILES_DIR` no `.env` é sempre
+`/etc/aos/perfis-de-rota`. A pasta do servidor tem de ser legível pelo uid `65532` e não precisa
+de ser escrita por ele. Os passos no servidor, por ordem, estão em «Ligar a fase A3 em produção».
 
 **Os três ficheiros de um registo** (`<rotulo>` é livre: letras, dígitos, `_` e `-`):
 
@@ -1533,8 +1647,8 @@ uma percentagem dos **planos novos** — a fatia assinada no registo — vai par
 modelo fica **fixado por run**, e todos os nós e tentativas de um plano usam o mesmo. Um run sem
 plano conta como um plano de um nó.
 
-**A variável ainda não está no compose** (nem a pasta de perfis): entram juntas, num PR de deploy,
-depois da revisão adversarial que o ticket exige. Os passos abaixo são para essa altura.
+**A variável está no compose, vazia por omissão** (como a pasta de perfis). Liga-se no passo (e) de
+«Ligar a fase A3 em produção», depois de o perfil estar carregado e conferido pelo banner.
 
 **Uma réplica do nó, se o Event Store for JetStream.** O backend JetStream tem um defeito
 conhecido na escrita com concorrência optimista (a vista local do stream não é refrescada quando
@@ -1656,8 +1770,8 @@ configurada — não há reparação do stream; sai-se retirando a pasta.)
 Tira a fatia ao candidato **sozinho** quando ele falha: 3 falhas nas últimas 20 unidades do
 candidato (um nó de plano conta pela sua tentativa mais recente; um run sem plano é uma
 unidade), ou o primeiro turno com o modelo servido diferente do esperado. **Não a devolve
-sozinho.** Valores: `off` (a omissão), `observe`, `enforce`. A variável ainda não está no
-compose: entra com a pasta de perfis e o interruptor do candidato.
+sozinho.** Valores: `off` (a omissão), `observe`, `enforce`. A variável está no compose, vazia
+por omissão: liga-se no passo (f) de «Ligar a fase A3 em produção».
 
 **Ligar — `observe` primeiro.** Na primeira fatia põe `AOS_MODEL_BREAKER=observe` em todas as
 réplicas (com `AOS_MODEL_ROUTE_GOVERNANCE=observe`, senão o sinal «modelo servido diferente» não
@@ -1694,7 +1808,8 @@ abrem-no, e reabrir é assinar um registo novo. É de propósito — o lado fech
 uma vez quando abre (ou, em `observe`, quando teria aberto), relembra de 24 h em 24 h, e avisa
 quando um registo novo o fecha. Avisa também quando `aos_model_breaker_unrecorded_total` passa de
 zero: o nó não conseguiu gravar uma observação ou a marca. Sai o título e as contagens; nenhum
-nome de modelo. **O deploy ainda não o copia para o servidor**: copia-o à mão para `/opt/aos/`.
+nome de modelo. O deploy copia-o para `/opt/aos/`; o cron instala-se à mão (passo (g) de «Ligar a
+fase A3 em produção»).
 **Com `AOS_MODEL_BREAKER=off` as famílias não existem e o script não vê nada** — nem um
 disjuntor aberto, nem escritas por gravar: cai em «ausente», sem aviso.
 

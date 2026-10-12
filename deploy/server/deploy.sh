@@ -195,6 +195,10 @@ mkdir -p "${APP_DIR}/ancoras" "${APP_DIR}/pisos"
 # `orq/` é a pasta de entradas do serviço `aos-orq` (AOS-403: snapshot e plan-doc). Pela mesma
 # razão: sem ela, o primeiro `--profile orq run` deixava o Docker criá-la como root.
 mkdir -p "${APP_DIR}/orq"
+# `perfis-de-rota/` é a pasta dos registos de perfil assinados (AOS-519), montada só de leitura
+# no nó. Cria-se sempre, pela mesma razão das de cima; vazia e com AOS_MODEL_ROUTE_PROFILES_DIR
+# por definir, o nó nem a abre. Se já existir (o runbook passa-a para o root), isto não lhe toca.
+mkdir -p "${APP_DIR}/perfis-de-rota"
 if [ -n "${AOS_WORM_TRUST_ANCHOR:-}" ]; then
   [ -s "${APP_DIR}/ancoras/checkpoints.json" ] \
     || fail "AOS_WORM_TRUST_ANCHOR está ligada mas ${APP_DIR}/ancoras/checkpoints.json não existe (ou está vazio) — o nó abortaria no arranque. Corra a selagem e entregue o ficheiro ANTES de ligar a âncora"

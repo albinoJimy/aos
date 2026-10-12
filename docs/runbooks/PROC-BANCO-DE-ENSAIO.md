@@ -429,7 +429,8 @@ aos-issuer route-profile-sign --entry "$saida\pacote\<alias>.registo.json" --rep
 
 **Limites.** O resumo é uma leitura do relatório, não uma garantia: o que a corrida não prova
 está na página. O `conferir` vê os ficheiros, não o servidor. As duas variáveis e a montagem da
-pasta ainda não estão no compose de produção (AOS-519). Um registo não expira e não há anti-recuo.
+pasta estão no compose de produção, desligadas; ligá-las no servidor é do dono
+(`deploy/server/README.md`, «Ligar a fase A3 em produção»). Um registo não expira e não há anti-recuo.
 
 ## Se correr mal
 
