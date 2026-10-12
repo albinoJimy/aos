@@ -94,6 +94,8 @@ const usoDoQualificar = `aos-ensaio qualificar — qualifica uma rota e prepara 
                       contra a allowlist embebida
   opcoes: --modelo M  --precos F  --pausa D  --host-esperado H  --destino-fora-da-lista H
           --reconstruir-contador  --so-plano
+          --guardar-respostas   grava em PASTA/respostas-<nome do relatorio>/ um ficheiro por run com o texto
+                                do modelo e os argumentos das tool calls (AOS-525); fica fora de pacote/
 
 So um "qualificado" do modo real, com a corrida completa, deixa um registo por assinar. O comando
 NAO assina e nao le chave de assinar nenhuma: assina o dono, com o aos-issuer route-profile-sign.
@@ -126,7 +128,7 @@ type opcoesDoQualificar struct {
 // passamParaACorrida são as opções do `qualificar` que seguem para a experiência `qualificacao`.
 var passamParaACorrida = []string{
 	"chaves", "fornecedor", "modelo", "precos", "pausa", "host-esperado", "destino-fora-da-lista",
-	"reconstruir-contador", "so-plano", "roteiro", "binario-do-falso",
+	"reconstruir-contador", "so-plano", "roteiro", "binario-do-falso", "guardar-respostas",
 }
 
 // novasFlagsDoQualificar declara o conjunto FECHADO de opções do `qualificar`.
@@ -152,6 +154,7 @@ func novasFlagsDoQualificar(o *opcoesDoQualificar, stderr io.Writer) *flag.FlagS
 	fs.Bool("so-plano", false, "")
 	fs.String("roteiro", "", "")
 	fs.String("binario-do-falso", "", "")
+	fs.Bool("guardar-respostas", false, "")
 	return fs
 }
 

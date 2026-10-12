@@ -2276,11 +2276,30 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 
 ### Critérios de Aceitação
 
-- [ ] Com a opção ligada, uma corrida deixa um ficheiro por run com o texto final e os
+- [x] Com a opção ligada, uma corrida deixa um ficheiro por run com o texto final e os
       argumentos das tool calls; com ela desligada, a pasta de saída é igual à de hoje, byte a
       byte no relatório. Provado por teste nos modos falso e proxy.
+      *Nota de 2026-10-12:* a opção é `--guardar-respostas` (`respostas.go`,
+      `aos525_respostas_test.go`). O teste do modo proxy corre o caminho do modo proxy com o
+      lançador de teste a fazer de proxy; a imagem real do proxy (Docker) não foi corrida com a
+      opção. **O que prova o «igual à de hoje», exactamente:** (1) por teste, só o sha256 de
+      referência do AOS-516 (`TestAOS516_SemPerfilQueDevolva_PedidosERelatorioSaoOsDeAntes`),
+      e só no modo falso sem perfil; (2) os `TestAOS525_…` comparam a corrida sem a opção com
+      a corrida com ela, no mesmo código — não apanham uma mudança que afecte as duas por
+      igual (um campo novo sempre serializado numa observação passa por eles); (3) o resto foi
+      conferência manual contra o código de antes, feita duas vezes (pela implementação e pela
+      revisão adversarial): o mesmo sha256 do relatório, do resumo e das saídas em falso,
+      proxy com lançador de teste, qualificação com controlo, `qualificar falso` e
+      separadores. Não há hashes novos pinados. **Os modos 0700 e 0600** só são verificados em
+      Linux (CI): no posto, que é Windows, a asserção não corre.
 - [ ] A opção é recusada fora da bateria sintética, e o texto guardado não aparece no
       relatório, no resumo, nos logs nem no rasto do proxy. Provado por teste de fuga.
+      *Nota de 2026-10-12:* a segunda metade está provada (`TestAOS525_Fuga_…`: um marcador no
+      texto e outro nos argumentos de uma tool call, com dois controlos negativos; o rasto do
+      proxy só ao nível da função que o reduz a nomes). A primeira **não se aplica hoje**: a
+      linha de comandos só conhece a bateria embebida, e não há outra origem de casos de que
+      recusar a opção — está escrito em `respostas.go` e no README. A caixa fica por marcar até
+      o dono dizer se isso chega.
 - [ ] A hipótese da grafia fica **confirmada ou desmentida** com respostas lidas, e o resultado
       registado na §5 com a contagem: quantas das ausências eram grafia e quantas eram conteúdo.
 - [ ] A regra nova dos factos tem testes com acentos, maiúsculas e espaços, e um controlo
@@ -2325,3 +2344,4 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 | 1.16 | 2026-10-11 | AOS-522: correcções da revisão adversarial — quatro barreiras com teste próprio, o resumo a partir do registo escrito, o plano confere a allowlist; e a correcção de um defeito do AOS-518 (uma corrida interrompida podia sair `recusado`) | Equipa AOS |
 | 1.17 | 2026-10-12 | AOS-523 medido: o `k3` saiu `qualificado` no exame real, foi assinado pelo dono e serve 10% dos planos na v0.1.55 (série `v0155c`: 7 planos em 40, 14 de 14 runs do candidato cumpridos); a primeira metade do critério da fase fica cumprida em produção, a segunda só com modelos maus simulados — nenhum modelo mau real foi recusado; a fase foi fechada pelo dono no mesmo dia, com os resíduos nomeados. AOS-518 e AOS-522: a qualificação e a corrida reais registadas | Equipa AOS |
 | 1.18 | 2026-10-12 | +AOS-525 (fase A4): a bateria que separa modelos — dificuldade crescente por degraus, a regra dos factos sem depender da grafia e as respostas guardadas a pedido. Nasce da medição de seis modelos pela OpenRouter, em que a bateria 1.0.0 não distinguiu modelos baratos de caros | Equipa AOS |
+| 1.19 | 2026-10-12 | AOS-525, primeiro ponto: as respostas guardadas a pedido (`aos-ensaio --guardar-respostas`), fora do relatório e do seu digest; a regra dos factos, a bateria 2.0.0 e a medição ficam por fazer | Equipa AOS |

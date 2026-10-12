@@ -7,6 +7,11 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 
 ## [Unreleased]
 
+### Added — EPIC-08 (AOS-525) Fase A4: as respostas do banco de ensaio, guardadas a pedido
+
+- `feat(AOS-525)` — `aos-ensaio --guardar-respostas` (desligada por omissão; fora da imagem do nó): grava, ao lado do relatório, a pasta `respostas-<nome do relatório>/` com um ficheiro por run — o texto do modelo e os argumentos das tool calls nativas — e um `indice.json` com o sha256 do relatório a que pertence. O texto não entra no relatório, no resumo, no digest, em stdout nem em stderr; sem a opção, a saída é a de antes. Uma falha a guardar avisa e não muda o código de saída. Nasce da medição de 2026-10-12, em que não havia respostas para ler.
+- `docs(AOS-525)` — ticket aberto: a bateria com dificuldade crescente e a regra dos factos sem depender da grafia ficam **por fazer**.
+
 ### Changed — EPIC-06 (AOS-519, AOS-520, AOS-521) Fase A3: o compose de produção
 
 - `feat(AOS-519)` — `deploy/server/docker-compose.prod.yml` passa ao nó `AOS_MODEL_ROUTE_PROFILES_DIR`, `AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR`, `AOS_MODEL_CANDIDATE` e `AOS_MODEL_BREAKER`, **vazias por omissão**, e monta `./perfis-de-rota` em `/etc/aos/perfis-de-rota`, só de leitura; o `deploy.sh` cria a pasta. Com o `.env` de hoje o nó é o de antes. As quatro saíram das exclusões de `TestManifestoDeDeployPassaTodaAConfigQueONoLe`.

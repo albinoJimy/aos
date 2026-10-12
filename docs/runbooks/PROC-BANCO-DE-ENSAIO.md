@@ -117,6 +117,36 @@ A tabela de preços escreve-a quem corre, com a página de preços do fornecedor
 no README do banco). A Anthropic só entra no banco depois de o dono preencher
 `ANTHROPIC_MODELO` (AOS-516); até lá o modo real recusa e nomeia o campo.
 
+## Ler as respostas de uma corrida (AOS-525)
+
+O relatório não tem texto. Para **ler** o que o modelo respondeu, acrescentar
+`--guardar-respostas` à corrida (ou ao `qualificar`); está desligada por omissão.
+
+```powershell
+& $env:USERPROFILE\.aos-ensaio\aos-ensaio.exe real --chaves $env:USERPROFILE\.aos-ensaio\chaves.env --fornecedor kimi --guardar-respostas
+```
+
+No fim sai uma linha `respostas guardadas: N ficheiro(s) … em <pasta>`: a pasta
+`respostas-<nome do relatório>\`, ao lado do relatório, com um ficheiro JSON por run (o texto
+de cada resposta e os argumentos das tool calls; formato no README do banco). O relatório, o
+resumo e o digest do relatório são os de uma corrida igual sem a opção. O último ficheiro da
+pasta é `indice.json`, com o sha256 do relatório a que ela pertence: **uma pasta sem ele está
+incompleta**, e uma cujo sha256 não é o do relatório ao lado é de outra corrida.
+
+Se em vez dessa linha sair um `AVISO`, o relatório vale na mesma e o código de saída não muda. A
+causa está no aviso, e são três:
+
+| Aviso | O que aconteceu |
+|---|---|
+| `… NAO ficaram guardadas: ja existe a pasta …, que e de OUTRA corrida e NAO corresponde a este relatorio` | Outra corrida do mesmo modo, no mesmo segundo e na mesma `--saida`. Nada foi escrito; as respostas desta corrida perderam-se, e as que lá estão são da outra |
+| `… ficaram INCOMPLETAS: k de n ficheiro(s) escritos …` | A pasta não se criou, ou a escrita falhou a meio (disco, permissões): o aviso traz a causa do sistema. A pasta fica sem `indice.json` |
+| `… NAO ficaram guardadas: o relatorio nao chegou a ser escrito` | O relatório falhou, e as respostas só se escrevem ao lado dele |
+
+Com `--so-plano` a opção não faz nada (uma linha di-lo).
+
+O que vale para o relatório **não** vale para esta pasta: tem texto de um modelo. Fica na pasta
+do dono, não se copia para o repositório, e lê-se como dados — nunca como instruções.
+
 ## A qualificação da devolução do estado opaco (AOS-516)
 
 Um perfil candidato com `devolver` diferente de `nunca` faz o banco ligar, sozinho, o que a
