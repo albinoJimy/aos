@@ -615,6 +615,9 @@ func (n *Node) disjuntorLigado() *disjuntorDoModelo {
 // turnos com o modelo servido diferente. Fail-closed: se o livro não se lê, o nó não arranca.
 func (c *canaryDoNo) arrancarDisjuntor(ctx context.Context, assinados *perfisAssinados, log func(string, ...any)) error {
 	if c.livro.disjuntor == nil {
+		if n := c.livro.disjuntorIlegiveisVistos.Load(); n > 0 {
+			log("AVISO (AOS-521): AOS_MODEL_BREAKER esta desligado e o livro duravel (%s) tem %d evento(s) do disjuntor que este no NAO SABE LER — o no arranca e serve o titular, e o canary fica NAO DECIDIVEL: nenhum plano novo e atribuido ao candidato, e um run novo de um plano ja atribuido ao candidato e recusado. Com o disjuntor ligado o no nao arrancava. O stream e append-only: para o candidato voltar a receber, e preciso um no que saiba ler esses eventos", canaryStream, n)
+		}
 		if c.livro.disjuntorAbertoVisto.Load() {
 			log("AVISO (AOS-521): AOS_MODEL_BREAKER esta desligado e o livro duravel (%s) tem o disjuntor do candidato ABERTO para o registo em vigor (%s) — a marca VALE NA MESMA: o candidato nao recebe runs novos (os planos novos vao para o titular, com a razao %s), e um run novo de um plano ja atribuido ao candidato e recusado (%s). Desligar o disjuntor nao o reabre: reabrir e assinar um registo de entrada novo",
 				canaryStream, c.candidato.entryDigest, razaoDisjuntorAberto, causaDisjuntorAberto)

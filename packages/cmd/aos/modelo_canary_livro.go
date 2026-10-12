@@ -204,6 +204,9 @@ type estadoDoCanary struct {
 	// disjuntores é o que o livro tem sobre o disjuntor do candidato (AOS-521), por digest do
 	// registo de entrada. nil enquanto o livro não tiver nenhum evento do disjuntor.
 	disjuntores map[string]*disjuntorNoLivro
+	// disjuntorIlegiveis conta os eventos do disjuntor que não se souberam ler, com o disjuntor
+	// DESLIGADO (ligado, o livro fica ilegível). Estão também contados em `futuros`.
+	disjuntorIlegiveis int
 }
 
 // decisaoDoCanary é o resultado de uma consulta ao livro para um run novo.
@@ -251,6 +254,8 @@ type livroDoCanary struct {
 	// disjuntorAbertoVisto diz se a última leitura desta réplica viu o disjuntor do candidato em
 	// vigor aberto para as decisões deste nó. Só serve para o dizer no arranque; não decide nada.
 	disjuntorAbertoVisto atomic.Bool
+	// disjuntorIlegiveisVistos é quantos eventos do disjuntor a abertura do canary não soube ler.
+	disjuntorIlegiveisVistos atomic.Int64
 }
 
 // entrar toma a vez deste processo no livro, ou desiste quando o contexto acaba. Uma desistência é
@@ -310,7 +315,16 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 		// do disjuntor do seu registo, e não contam como eventos de uma versão mais recente.
 		if tipoDoDisjuntor(ev.Type) {
 			if err := st.lerDoDisjuntor(ev); err != nil {
-				return st, err
+				// COM O DISJUNTOR DESLIGADO, um evento do disjuntor que não se sabe ler NÃO torna o
+				// livro ilegível: o nó do AOS-520 tratava-o como um evento de uma versão mais
+				// recente, e `off` é esse nó. Conta como tal — o canary fica «não decidível» (nenhum
+				// plano novo para o candidato), o titular é servido, e o nó arranca. Com o disjuntor
+				// LIGADO continua a ser ilegível: não se decide sobre um estado que não se leu.
+				if l.disjuntor != nil {
+					return st, err
+				}
+				st.futuros++
+				st.disjuntorIlegiveis++
 			}
 			continue
 		}
@@ -416,6 +430,7 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 		}
 		l.futurosVistos.Store(int64(st.futuros))
 		l.disjuntorAbertoVisto.Store(st.disjuntorDe(c.entryDigest).aberto != nil)
+		l.disjuntorIlegiveisVistos.Store(int64(st.disjuntorIlegiveis))
 		jaServidos := st.porAbertura[c.entryDigest]
 		if tem {
 			fechado := st.fechadas[c.entryDigest] || jaServidos >= ab.Limit
