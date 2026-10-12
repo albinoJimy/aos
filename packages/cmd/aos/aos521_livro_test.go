@@ -295,6 +295,13 @@ func TestAOS521_Livro_Residuo_SemMarcaNoLivroOffDevolveAFatia_EConta(t *testing.
 			t.Fatalf("em enforce, sem conseguir gravar a marca, corta na mesma: %+v %v", d, err)
 		}
 	}
+	// EM `enforce`, DEPOIS DO DISPARO, NÃO SE GRAVA MAIS NADA — mesmo sem a marca no livro: o
+	// conjunto das observações de um registo que disparou em `enforce` fica estável.
+	observadas := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome))
+	aos521Desfecho(t, l, aos520Cand, "run-depois-do-disparo", sinalNaoCumprido)
+	if n := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome)); n != observadas {
+		t.Fatalf("em enforce, depois do disparo e sem marca, gravaram-se %d observacao(oes)", n-observadas)
+	}
 	// (a) A MARCA É RECONCILIADA: tentada em cada decisão, e cada falha conta.
 	if avariado.recusadas < 6 || l.disjuntor.naoGravadas.Load() != int64(avariado.recusadas) {
 		t.Fatalf("tentativas de gravar a marca = %d, contadas = %d; quer uma por decisao, todas contadas", avariado.recusadas, l.disjuntor.naoGravadas.Load())
@@ -414,6 +421,16 @@ func TestAOS521_OEventStorePenduradoNaoPrendeOTurno(t *testing.T) {
 			}
 			if modo == modelBreakerObserve && d.papel != canary.RoleCandidate {
 				t.Fatalf("em observe nao corta: %+v", d)
+			}
+			// EM `observe` NADA CORTA, nem que a réplica tivesse o sinal de pé: quem o lê é o `enforce`.
+			if modo == modelBreakerObserve {
+				l.disjuntor.turnoPorGravar.Store(true)
+				if d := aos520Decidir(t, l, aos520Cand, "plano-novo-2", 0); d.papel != canary.RoleCandidate {
+					t.Fatalf("em observe, o turno trocado por gravar cortou: %+v", d)
+				}
+				l.disjuntor.turnoPorGravar.Store(false)
+			} else if !l.disjuntor.turnoPorGravar.Load() {
+				t.Fatal("em enforce, o turno trocado que nao se gravou tem de deixar o sinal de pe")
 			}
 			// Um turno do TITULAR, ou sem o modelo trocado, não faz nada.
 			antes := es.lidasDoRun.Load()
