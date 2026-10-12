@@ -93,8 +93,16 @@ func TestAOS521_Regra_Tabela(t *testing.T) {
 func TestAOS521_Regra_DisparadaFicaComOEstadoDoDisparo(t *testing.T) {
 	ate := avaliarDisjuntor(aos521Seq(t, "..1.2.3"))
 	depois := avaliarDisjuntor(aos521Seq(t, "..1.2.3"+aos521Repetir(".", 200)+"44T"))
-	if !ate.disparou || !reflect.DeepEqual(ate, depois) {
-		t.Fatalf("o estado mudou depois do disparo:\n no disparo: %+v\n depois:     %+v", ate, depois)
+	if !ate.disparou || !depois.disparou || ate.regra != depois.regra || !reflect.DeepEqual(ate.contadores, depois.contadores) || !reflect.DeepEqual(ate.janela, depois.janela) {
+		t.Fatalf("o estado do disparo mudou com as observacoes seguintes:\n no disparo: %+v\n depois:     %+v", ate, depois)
+	}
+	// E CONTINUA A MEDIR: a janela e os contadores do FIM da sequência andam — é o que um nó em
+	// observação mostra depois do «teria aberto». No disparo, os dois são os mesmos.
+	if !reflect.DeepEqual(ate.janelaAgora, ate.janela) || !reflect.DeepEqual(ate.contadoresAgora, ate.contadores) {
+		t.Fatalf("no momento do disparo, o «agora» e o do disparo: %+v", ate)
+	}
+	if len(depois.janelaAgora) != 20 || depois.falhasAgora() != 2 || depois.contadoresAgora[sinalErroDoProvider] != 2 || depois.contadoresAgora[sinalModeloDiferente] != 1 || depois.contadoresAgora[sinalNaoCumprido] != 1 {
+		t.Fatalf("a medicao depois do disparo: janela=%d falhas=%d contadores=%v", len(depois.janelaAgora), depois.falhasAgora(), depois.contadoresAgora)
 	}
 	quer := map[string]int{sinalNaoCumprido: 1, sinalRespostaVazia: 1, sinalRespostaRejeitada: 1}
 	if !reflect.DeepEqual(ate.contadores, quer) {

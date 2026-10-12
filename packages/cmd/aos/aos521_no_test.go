@@ -659,6 +659,11 @@ func TestAOS521_CandidatoDoRun_LidoDoLog(t *testing.T) {
 	fixar("do-titular", "titular")
 	fixar("origem-forjada~x~2", "candidato")
 	origem("origem-forjada~x~2", 2, "nhi:outro/emissor")
+	// Um `run.model_pinned` que NÃO é do nó (outro emissor) não faz de um run um run do candidato.
+	forjado, _ := json.Marshal(modeloFixadoPayload{V: "1.0", Role: "candidato", Alias: aos520Cand.alias, ProfileDigest: aos520Cand.profileDigest, EntryDigest: aos520Cand.entryDigest, Function: versaoDaEscolha, Reason: razaoFuncao, PlanKey: "p", PlanKeyKind: tipoDeRun})
+	if _, err := es.Append(ctx, "fixacao-forjada", eventstore.EventInput{Type: EventTypeRunModelPinned, Payload: forjado, RunID: "fixacao-forjada", StepID: "x", Producer: eventstore.Producer{NHIID: "nhi:outro/emissor"}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := es.Append(ctx, "sem-fixacao", eventstore.EventInput{Type: "outra.coisa", Payload: []byte(`{}`), RunID: "sem-fixacao", StepID: "x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -672,6 +677,7 @@ func TestAOS521_CandidatoDoRun_LidoDoLog(t *testing.T) {
 		"avulso":             {"avulso", true},
 		"do-titular":         {"", false},
 		"sem-fixacao":        {"", false},
+		"fixacao-forjada":    {"", false},
 		"origem-forjada~x~2": {"origem-forjada~x~2", true}, // um `run.plan_origin` que não é do nó não conta
 	} {
 		reg, unidade, ok, err := candidatoDoRun(ctx, es, runID)
@@ -804,10 +810,14 @@ func TestAOS521_Arranque_DizOEstadoEFalhaFechado(t *testing.T) {
 	if _, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelBreakerOpened, Payload: []byte(`{"v":"1.0"}`), RunID: canaryRunID, StepID: "estragado"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, modo := range []string{modelBreakerEnforce, modelBreakerObserve, ""} {
+	for _, modo := range []string{modelBreakerEnforce, modelBreakerObserve} {
 		if _, _, _, err := arrancar(t, modo); !errors.Is(err, ErrCanaryUnreadable) {
 			t.Fatalf("modo %q: com um evento do disjuntor ilegivel o no nao arranca: %v", modo, err)
 		}
+	}
+	// DESLIGADO, o nó é o do AOS-520: arranca, e avisa.
+	if _, _, dito, err = arrancar(t, ""); err != nil || !strings.Contains(dito, "NAO SABE LER") || !strings.Contains(dito, "NAO DECIDIVEL") {
+		t.Fatalf("desligado, um evento do disjuntor ilegivel nao impede o arranque, e o arranque avisa: %v\n%s", err, dito)
 	}
 }
 

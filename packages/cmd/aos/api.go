@@ -2374,23 +2374,23 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"1 se a regra do disjuntor JA DISPAROU para o registo em vigor, sobre as observacoes do livro duravel (AOS-521): em observe e o que enforce teria feito (a fatia nao muda); em enforce coincide com aos_model_breaker_open. Da ultima leitura por esta replica.",
 			"gauge", float64(d.disparouVisto.Load()), "")
 		g("aos_model_breaker_window_failures",
-			"Unidades da janela do disjuntor cujo desfecho mais recente e uma falha (AOS-521): a regra dispara as 3 em 20. No momento do disparo, se a regra ja disparou; senao, agora. Da ultima leitura do livro por esta replica.",
+			"Unidades da janela do disjuntor cujo desfecho mais recente e uma falha (AOS-521): a regra dispara as 3 em 20. E a janela de AGORA: em observe continua a andar depois do «teria aberto» (com aos_model_breaker_window_units da a taxa); em enforce, depois de abrir, fica como estava no disparo. Da ultima leitura do livro por esta replica.",
 			"gauge", float64(d.falhasVistas.Load()), "")
 		g("aos_model_breaker_window_units",
-			"Unidades na janela do disjuntor (AOS-521): os nos de plano (ou runs sem plano) do candidato com desfecho contado, no maximo 20. Um run que nao conta (limite de ritmo, cancelamento, recusa pela fixacao) nao entra.",
+			"Unidades na janela do disjuntor (AOS-521): os nos de plano (ou runs sem plano) do candidato com desfecho contado, no maximo 20. Um run que nao conta nao entra: a lista fechada esta no ADR-041 2.9 (limite de ritmo e credencial da conta, cancelamento, recusa pela fixacao, transporte sem resposta, complete sem contrato declarado, entre outros).",
 			"gauge", float64(d.unidadesVistas.Load()), "")
 		for i, s := range sinaisDeFalha() {
 			labels := `{signal="` + s + `"}`
 			if i == 0 {
 				g("aos_model_breaker_signals",
-					"Observacoes do candidato do registo em vigor, por sinal de falha, no livro duravel (AOS-521): nao_cumprido (veredicto negativo do kernel), resposta_vazia, resposta_rejeitada (pelo gateway), erro_do_provider (status que nao e 200 nem 429) e modelo_servido_diferente. Ate ao disparo da regra; depois ficam como estavam. O limite de ritmo nao conta. Vocabulario fechado.",
+					"Observacoes do candidato do registo em vigor, por sinal de falha, no livro duravel (AOS-521): nao_cumprido (veredicto negativo do kernel), resposta_vazia, resposta_rejeitada (pelo gateway), erro_do_provider (status que nao e 200 nem da conta: 5xx e 408 contam), modelo_servido_diferente, nao_convergiu (tecto de turnos, ou o disjuntor por-run) e falha_nao_classificada (o run acabou mal por uma causa que nao esta na lista do que nao e do modelo). O limite de ritmo (429) e a credencial da conta (401, 403) nao contam. Vocabulario fechado.",
 					"gauge", float64(d.sinaisVistos[s].Load()), labels)
 				continue
 			}
 			amostra("aos_model_breaker_signals", labels, float64(d.sinaisVistos[s].Load()))
 		}
 		g("aos_model_breaker_unrecorded_total",
-			"Observacoes do candidato que esta replica NAO conseguiu gravar no livro duravel desde o arranque (AOS-521): o desfecho de um run, ou um turno com o modelo servido diferente. Uma observacao que nao ficou no livro nao entra na janela. Acima de zero, ver o log do no.",
+			"Escritas do disjuntor que esta replica NAO conseguiu fazer no livro duravel desde o arranque (AOS-521): o desfecho de um run, um turno com o modelo servido diferente, ou uma tentativa de gravar a marca de aberto. Uma observacao que nao ficou no livro nao entra na janela; uma marca de aberto por gravar deixa de valer se o no passar de enforce para off ou observe. Acima de zero, ver o log do no ANTES de mudar de modo. O alerta-disjuntor.sh avisa.",
 			"counter", float64(d.naoGravadas.Load()), "")
 	}
 

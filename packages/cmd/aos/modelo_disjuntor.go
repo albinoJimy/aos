@@ -29,7 +29,8 @@ package main
 //     marca `opened` que JÁ esteja no livro para o registo em vigor continua a valer: `off` desliga
 //     o disjuntor, não desfaz o que ele selou. Só um registo novo reabre.
 //   - `observe` — grava as observações, avalia, e quando a regra dispara grava `would_open` e
-//     di-lo em métrica. NÃO corta a fatia.
+//     di-lo em métrica. NÃO corta a fatia, e CONTINUA A MEDIR: as observações seguintes gravam-se
+//     (até ao tecto do registo) e o `/metrics` mostra a janela de agora.
 //   - `enforce` — o mesmo, e quando a regra dispara grava `opened` e corta: a decisão é a da regra
 //     sobre as observações que o livro tem, tenham sido gravadas em `observe` ou em `enforce`. Passar
 //     a `enforce` com um registo cujo `observe` teria aberto abre na primeira leitura.
@@ -474,9 +475,10 @@ func (l *livroDoCanary) conferirDisjuntor(ctx context.Context, c candidatoEmVigo
 // regra disparar com ela. Com o disjuntor desligado não faz nada.
 //
 // Cada volta relê o livro e faz no máximo UMA escrita, com o `seq` que leu: primeiro a observação —
-// se o run ainda não a tem, e se a regra ainda não disparou (depois do disparo o estado é o do
-// disparo, e não se grava mais nada) —, depois a marca que falte. Idempotente: a chave de cada
-// evento é a do run, ou a do registo.
+// se o run ainda não a tem e ainda se grava —, depois a marca que falte. Deixa de se gravar com a
+// marca de aberto no livro, em `enforce` depois de a regra disparar, e atingido o tecto do registo;
+// em `observe` a regra disparada não pára a medição. Idempotente: a chave de cada evento é a do run,
+// ou a do registo.
 func (l *livroDoCanary) observarNoDisjuntor(ctx context.Context, reg registoDoCandidato, o observacaoDoDisjuntor) error {
 	if l == nil || l.disjuntor == nil {
 		return nil

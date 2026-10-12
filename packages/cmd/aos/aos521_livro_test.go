@@ -13,11 +13,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	agentruntime "github.com/aos-ref/kernel/agent-runtime"
+	"github.com/aos-ref/kernel/agent-runtime/state"
 
 	"github.com/aos-ref/platform/model-gateway/policy/canary"
 	"github.com/aos-ref/substrate/eventstore"
@@ -162,11 +168,305 @@ func TestAOS521_Livro_Observe_RegistaENaoCorta(t *testing.T) {
 	if v := l.disjuntor; v.abertoVisto.Load() != 0 || v.disparouVisto.Load() != 1 {
 		t.Fatalf("em observe: aberto=%d (quer 0) teria aberto=%d (quer 1)", v.abertoVisto.Load(), v.disparouVisto.Load())
 	}
-	// Depois do disparo não se grava mais nada: o estado é o do disparo.
+	// EM `observe`, DEPOIS DO «TERIA ABERTO», CONTINUA A MEDIR: o desfecho seguinte grava-se, o
+	// `/metrics` mostra a janela de agora, e a marca — o estado do primeiro disparo — não muda.
 	antes := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome))
 	aos521Desfecho(t, l, aos520Cand, "run-depois", sinalNaoCumprido)
-	if depois := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome)); depois != antes {
-		t.Fatalf("depois do disparo gravaram-se %d desfecho(s)", depois-antes)
+	aos521Desfecho(t, l, aos520Cand, "run-depois-bom", sinalCumprido)
+	if depois := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome)); depois != antes+2 {
+		t.Fatalf("em observe, depois do disparo, gravaram-se %d desfecho(s); quer 2", depois-antes)
+	}
+	if v := l.disjuntor; v.falhasVistas.Load() != 4 || v.unidadesVistas.Load() != 6 || v.sinaisVistos[sinalNaoCumprido].Load() != 2 {
+		t.Fatalf("a medicao depois do disparo: falhas=%d unidades=%d nao_cumprido=%d; quer 4, 6 e 2", v.falhasVistas.Load(), v.unidadesVistas.Load(), v.sinaisVistos[sinalNaoCumprido].Load())
+	}
+	if agora := aos521Marcas(t, es, EventTypeModelBreakerWouldOpen); len(agora) != 1 || !reflect.DeepEqual(agora[0], teria[0]) {
+		t.Fatalf("a marca mudou com as observacoes seguintes: %+v", agora)
+	}
+}
+
+// O TECTO DO LIVRO. Em observação as observações continuam depois do disparo, e o livro lê-se em cada
+// run novo: por registo guardam-se no máximo [disjuntorMaxObservacoes]. Atingido, não se grava mais
+// nada — sem erro, e sem contar como observação perdida.
+func TestAOS521_Livro_OTectoDeObservacoesPorRegisto(t *testing.T) {
+	if disjuntorMaxObservacoes != 400 {
+		t.Fatalf("o tecto e %d; o ADR-041 2.9 escreve 400", disjuntorMaxObservacoes)
+	}
+	es := aos520Store(t)
+	l := aos521Livro(t, es, aos520Cand, modelBreakerObserve)
+	for i := 0; i < disjuntorMaxObservacoes+7; i++ {
+		aos521Desfecho(t, l, aos520Cand, fmt.Sprintf("run-%04d", i), sinalNaoCumprido)
+	}
+	if n := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome)); n != disjuntorMaxObservacoes {
+		t.Fatalf("observacoes no livro = %d; quer o tecto, %d", n, disjuntorMaxObservacoes)
+	}
+	if l.disjuntor.naoGravadas.Load() != 0 {
+		t.Fatal("uma observacao acima do tecto nao e uma observacao perdida")
+	}
+	// O tecto é POR REGISTO: outro registo grava.
+	outro := aos520Cand
+	outro.entryDigest = "sha256:" + strings.Repeat("e", 64)
+	lo := aos521Livro(t, es, outro, modelBreakerObserve)
+	aos521Desfecho(t, lo, outro, "run-do-outro", sinalCumprido)
+	if n := len(aos521Marcas(t, es, EventTypeModelBreakerRunOutcome)); n != disjuntorMaxObservacoes+1 {
+		t.Fatalf("o tecto de um registo calou outro: %d", n)
+	}
+}
+
+// A PRIMEIRA ESCRITA GANHA, na leitura. Dois desfechos do mesmo run no livro (que a chave de
+// idempotência não deixa este código escrever) contam UM; e dois turnos com o modelo trocado do mesmo
+// run contam um.
+func TestAOS521_Livro_APrimeiraEscritaGanhaNaLeitura(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	l := aos521Livro(t, es, aos520Cand, modelBreakerObserve)
+	gravar := func(tipo, passo string, p disjuntorPayload) {
+		t.Helper()
+		p.V, p.EntryDigest, p.Alias, p.ProfileDigest = "1.0", aos520Cand.entryDigest, aos520Cand.alias, aos520Cand.profileDigest
+		payload, _ := json.Marshal(p)
+		if _, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: tipo, Payload: payload, RunID: canaryRunID, StepID: passo, Producer: eventstore.Producer{NHIID: disjuntorNHI}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gravar(EventTypeModelBreakerRunOutcome, "a", disjuntorPayload{RunID: "run-1", Unit: "run-1", Signal: sinalNaoCumprido})
+	gravar(EventTypeModelBreakerRunOutcome, "b", disjuntorPayload{RunID: "run-1", Unit: "outra-unidade", Signal: sinalErroDoProvider})
+	gravar(EventTypeModelBreakerRunOutcome, "c", disjuntorPayload{RunID: "run-1", Unit: "terceira-unidade", Signal: sinalRespostaVazia})
+	st, err := l.ler(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regra := avaliarDisjuntor(st.disjuntorDe(aos520Cand.entryDigest).obs)
+	if regra.disparou || len(regra.janela) != 1 || regra.janela[0] != (itemDaJanela{"run-1", sinalNaoCumprido}) || regra.contadores[sinalNaoCumprido] != 1 || len(regra.contadores) != 1 {
+		t.Fatalf("tres desfechos do mesmo run contaram mais de um: %+v", regra)
+	}
+	gravar(EventTypeModelBreakerRouteMismatch, "d", disjuntorPayload{RunID: "run-2"})
+	gravar(EventTypeModelBreakerRouteMismatch, "e", disjuntorPayload{RunID: "run-2"})
+	st, _ = l.ler(ctx)
+	if regra := avaliarDisjuntor(st.disjuntorDe(aos520Cand.entryDigest).obs); regra.contadoresAgora[sinalModeloDiferente] != 1 {
+		t.Fatalf("dois turnos trocados do mesmo run contaram %d", regra.contadoresAgora[sinalModeloDiferente])
+	}
+}
+
+// A MARCA QUE PERDE O CAS GRAVA-SE SEM ELE — e por isso `off` não devolve o que o `enforce` cortou.
+// Uma réplica com a vista do stream atrasada perde TODAS as escritas com CAS; as outras passam. As
+// três falhas em `enforce` cortam, a marca de aberto FICA no livro, e um nó depois posto em `off`,
+// ou em `observe`, continua a não dar planos ao candidato.
+func TestAOS521_Livro_AMarcaQuePerdeOCASGravaSeSemEle_EOffNaoReabre(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	aos520Livro(t, es, aos520Cand)
+	for i, sinal := range []string{sinalNaoCumprido, sinalRespostaVazia, sinalErroDoProvider} {
+		run := fmt.Sprintf("run-%d", i)
+		payload, _ := json.Marshal(disjuntorPayload{V: "1.0", EntryDigest: aos520Cand.entryDigest, Alias: aos520Cand.alias, ProfileDigest: aos520Cand.profileDigest, RunID: run, Unit: run, Signal: sinal})
+		if _, err := es.Append(ctx, canaryStream, eventstore.EventInput{Type: EventTypeModelBreakerRunOutcome, Payload: payload, RunID: canaryRunID, StepID: passoDoDisjuntor("breaker-run-", run), Producer: eventstore.Producer{NHIID: disjuntorNHI}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	atrasado := &aos521StoreSemMarca{Store: es, conflito: true, soComCAS: true}
+	l := &livroDoCanary{es: atrasado, disjuntor: novoDisjuntorDoModelo(modelBreakerEnforce, aos520Cand.entryDigest)}
+	if aberto, _, err := l.conferirDisjuntor(ctx, aos520Cand); err != nil || !aberto {
+		t.Fatalf("em enforce a regra corta: aberto=%v err=%v", aberto, err)
+	}
+	if n := len(aos521Marcas(t, es, EventTypeModelBreakerOpened)); n != 1 || atrasado.recusadas == 0 {
+		t.Fatalf("a marca que perdeu o CAS tinha de ficar gravada sem ele: marcas=%d, escritas com CAS recusadas=%d", n, atrasado.recusadas)
+	}
+	for _, modo := range []string{"", modelBreakerObserve} {
+		depois := aos521Livro(t, es, aos520Cand, modo)
+		for i := 0; i < 20; i++ {
+			if d := aos520Decidir(t, depois, aos520Cand, fmt.Sprintf("plano-%q-%02d", modo, i), 0); d.papel != canary.RoleIncumbent || d.razao != razaoDisjuntorAberto {
+				t.Fatalf("modo %q depois do corte em enforce: o plano %d foi para %+v — a fatia voltou ao candidato sem registo novo", modo, i, d)
+			}
+		}
+	}
+}
+
+// O RESÍDUO, AFIRMADO: se o Event Store recusa a escrita da marca de TODAS as maneiras, o `enforce`
+// corta na mesma (decide a regra), cada tentativa falhada conta em `aos_model_breaker_unrecorded_total`
+// — e é só por isso que se vê: sem a marca no livro, um nó posto depois em `off` volta a dar planos
+// ao candidato. ADR-041 §5 e o runbook dizem como o confirmar antes de mudar de modo.
+func TestAOS521_Livro_Residuo_SemMarcaNoLivroOffDevolveAFatia_EConta(t *testing.T) {
+	ctx := context.Background()
+	es := aos520Store(t)
+	aos520Livro(t, es, aos520Cand)
+	avariado := &aos521StoreSemMarca{Store: es}
+	l := &livroDoCanary{es: avariado, disjuntor: novoDisjuntorDoModelo(modelBreakerEnforce, aos520Cand.entryDigest)}
+	aos521TresFalhas(t, l, aos520Cand)
+	for i := 0; i < 5; i++ {
+		if d, err := l.decidir(ctx, aos520Cand, chaveDeRun(fmt.Sprintf("plano-%d", i)), 0); err != nil || d.razao != razaoDisjuntorAberto {
+			t.Fatalf("em enforce, sem conseguir gravar a marca, corta na mesma: %+v %v", d, err)
+		}
+	}
+	// (a) A MARCA É RECONCILIADA: tentada em cada decisão, e cada falha conta.
+	if avariado.recusadas < 6 || l.disjuntor.naoGravadas.Load() != int64(avariado.recusadas) {
+		t.Fatalf("tentativas de gravar a marca = %d, contadas = %d; quer uma por decisao, todas contadas", avariado.recusadas, l.disjuntor.naoGravadas.Load())
+	}
+	// (b) O RESÍDUO: sem a marca, `off` não tem como saber.
+	if d := aos520Decidir(t, aos521Livro(t, es, aos520Cand, ""), aos520Cand, "plano-com-off", 0); d.papel != canary.RoleCandidate {
+		t.Fatalf("residuo conhecido (ADR-041 5): sem a marca no livro, off devolve a fatia; veio %+v — se isto mudou, actualiza o ADR e o runbook", d)
+	}
+	// E reparado o Event Store, a decisão seguinte em `enforce` grava a marca, e `off` passa a respeitá-la.
+	aos520Decidir(t, aos521Livro(t, es, aos520Cand, modelBreakerEnforce), aos520Cand, "plano-reparado", 0)
+	if d := aos520Decidir(t, aos521Livro(t, es, aos520Cand, ""), aos520Cand, "plano-com-off-2", 0); d.razao != razaoDisjuntorAberto {
+		t.Fatalf("com a marca reposta, off respeita-a: %+v", d)
+	}
+}
+
+// A MARCA DE UM REGISTO FORA DE VIGOR DI-LO. Um run antigo, fixado sob o registo A, acaba num nó cujo
+// registo em vigor é B (o mesmo alias): a regra dispara para A, a marca grava-se para A com
+// `out_of_force`, o log diz o digest e «fora de vigor» — e NÃO diz que o candidato deixa de receber —,
+// e o `/metrics` e as decisões de B não mudam.
+func TestAOS521_Livro_AMarcaDeUmRegistoForaDeVigorDiLo(t *testing.T) {
+	es := aos520Store(t)
+	a := aos520Cand
+	b := aos520Cand
+	b.entryDigest = "sha256:" + strings.Repeat("c", 64)
+	aos520Livro(t, es, a)
+	l := aos521Livro(t, es, b, modelBreakerEnforce)
+	var dito []string
+	l.log = func(f string, args ...any) { dito = append(dito, fmt.Sprintf(f, args...)) }
+	aos521TresFalhas(t, l, a)
+	marcas := aos521Marcas(t, es, EventTypeModelBreakerOpened)
+	if len(marcas) != 1 || marcas[0].EntryDigest != a.entryDigest || !marcas[0].OutOfForce {
+		t.Fatalf("a marca do registo fora de vigor: %+v", marcas)
+	}
+	log := strings.Join(dito, "\n")
+	if !strings.Contains(log, "REGISTO FORA DE VIGOR") || !strings.Contains(log, a.entryDigest) || !strings.Contains(log, b.entryDigest) || strings.Contains(log, "DEIXA DE RECEBER RUNS NOVOS") {
+		t.Fatalf("o log da marca de um registo fora de vigor:\n%s", log)
+	}
+	if v := l.disjuntor; v.abertoVisto.Load() != 0 || v.disparouVisto.Load() != 0 || v.falhasVistas.Load() != 0 {
+		t.Fatalf("o /metrics do registo em vigor mudou por causa de outro registo: aberto=%d disparou=%d falhas=%d", v.abertoVisto.Load(), v.disparouVisto.Load(), v.falhasVistas.Load())
+	}
+	if d := aos520Decidir(t, l, b, "plano-de-b", 0); d.papel != canary.RoleCandidate {
+		t.Fatalf("o registo em vigor continua a receber: %+v", d)
+	}
+	// E a marca do registo EM VIGOR não leva o campo.
+	for i := 0; i < 3; i++ {
+		aos521Desfecho(t, l, b, fmt.Sprintf("run-de-b-%d", i), sinalErroDoProvider)
+	}
+	for _, m := range aos521Marcas(t, es, EventTypeModelBreakerOpened) {
+		if m.EntryDigest == b.entryDigest && m.OutOfForce {
+			t.Fatalf("a marca do registo em vigor diz fora de vigor: %+v", m)
+		}
+	}
+	if !strings.Contains(strings.Join(dito, "\n"), "DEIXA DE RECEBER RUNS NOVOS") {
+		t.Fatal("a abertura do registo em vigor tem de dizer que o candidato deixa de receber")
+	}
+}
+
+// aos521StoreQuePendura é um Event Store cujas leituras do livro ficam penduradas até o contexto
+// acabar — um Event Store avariado que não responde.
+type aos521StoreQuePendura struct {
+	*eventstore.Store
+	pendurado  atomic.Bool
+	lidasDoRun atomic.Int64
+}
+
+func (s *aos521StoreQuePendura) Read(ctx context.Context, streamID string, fromSeq uint64) ([]eventstore.Event, error) {
+	if streamID != canaryStream {
+		s.lidasDoRun.Add(1)
+	} else if s.pendurado.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.Store.Read(ctx, streamID, fromSeq)
+}
+
+// aos521RunDoCandidato grava no stream de um run o `run.model_pinned` que o nó escreve num run do
+// candidato dado.
+func aos521RunDoCandidato(t *testing.T, es eventstore.EventStore, runID string, c candidatoEmVigor) {
+	t.Helper()
+	p, _ := json.Marshal(modeloFixadoPayload{V: "1.0", Role: "candidato", Alias: c.alias, ProfileDigest: c.profileDigest, EntryDigest: c.entryDigest, SharePercent: c.fatia, Function: versaoDaEscolha, Reason: razaoFuncao, PlanKey: runID, PlanKeyKind: tipoDeRun})
+	if _, err := es.Append(context.Background(), runID, eventstore.EventInput{Type: EventTypeRunModelPinned, Payload: p, RunID: runID, StepID: passoDoModeloFixado, Producer: eventstore.Producer{NHIID: modeloFixadoNHI}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// O EVENT STORE PENDURADO NÃO PRENDE O TURNO, E O MODELO TROCADO NÃO PASSA EM SILÊNCIO. Um turno do
+// candidato com o modelo servido diferente, com o livro a não responder: a chamada volta dentro do
+// prazo de I/O, a observação conta como não gravada — e, em `enforce`, esta réplica passa a tratar o
+// disjuntor como aberto (os planos novos vão para o titular). Em `observe` não corta. Reposto o Event
+// Store, o turno seguinte com o modelo trocado grava-se; e o mesmo run não volta a ler o seu log.
+func TestAOS521_OEventStorePenduradoNaoPrendeOTurno(t *testing.T) {
+	for _, modo := range []string{modelBreakerEnforce, modelBreakerObserve} {
+		t.Run(modo, func(t *testing.T) {
+			es := &aos521StoreQuePendura{Store: aos520Store(t)}
+			l := aos521Livro(t, es, aos520Cand, modo)
+			l.disjuntor.prazoDeIO = 200 * time.Millisecond
+			c := &canaryDoNo{livro: l, servir: true, candidato: aos520Cand}
+			aos521RunDoCandidato(t, es, "run-trocado", aos520Cand)
+			trocado := agentruntime.ModelResponse{RouteCheck: agentruntime.RouteDifferent}
+			ctx := agentruntime.ContextWithModelCall(context.Background(), "run-trocado", "passo-1")
+
+			es.pendurado.Store(true)
+			feito := make(chan struct{})
+			go func() { defer close(feito); c.observarTurnoNoDisjuntor(ctx, aos520Cand.alias, trocado, nil) }()
+			select {
+			case <-feito:
+			case <-time.After(10 * time.Second):
+				t.Fatal("o Event Store pendurado prendeu o turno")
+			}
+			if l.disjuntor.naoGravadas.Load() != 1 {
+				t.Fatalf("o turno que nao se gravou tem de contar: %d", l.disjuntor.naoGravadas.Load())
+			}
+			es.pendurado.Store(false)
+			d := aos520Decidir(t, l, aos520Cand, "plano-novo", 0)
+			if modo == modelBreakerEnforce && (d.papel != canary.RoleIncumbent || d.razao != razaoDisjuntorAberto) {
+				t.Fatalf("em enforce, o modelo trocado que nao se gravou tem de cortar nesta replica: %+v", d)
+			}
+			if modo == modelBreakerObserve && d.papel != canary.RoleCandidate {
+				t.Fatalf("em observe nao corta: %+v", d)
+			}
+			// Um turno do TITULAR, ou sem o modelo trocado, não faz nada.
+			antes := es.lidasDoRun.Load()
+			c.observarTurnoNoDisjuntor(ctx, "gpt-4o", trocado, nil)
+			c.observarTurnoNoDisjuntor(ctx, aos520Cand.alias, agentruntime.ModelResponse{RouteCheck: agentruntime.RouteEqual}, nil)
+			c.observarTurnoNoDisjuntor(ctx, aos520Cand.alias, agentruntime.ModelResponse{RouteCheck: agentruntime.RouteUnreported}, nil)
+			if es.lidasDoRun.Load() != antes {
+				t.Fatal("um turno que nao e do candidato com o modelo trocado leu o log do run")
+			}
+			// Reposto o Event Store, o turno seguinte grava-se — e depois disso o run não volta a ler.
+			c.observarTurnoNoDisjuntor(ctx, aos520Cand.alias, trocado, nil)
+			if n := len(aos521Marcas(t, es.Store, EventTypeModelBreakerRouteMismatch)); n != 1 {
+				t.Fatalf("o turno trocado, com o Event Store reposto, tinha de ficar no livro: %d", n)
+			}
+			lidas := es.lidasDoRun.Load()
+			c.observarTurnoNoDisjuntor(ctx, aos520Cand.alias, trocado, nil)
+			c.observarTurnoNoDisjuntor(ctx, aos520Cand.alias, trocado, nil)
+			if es.lidasDoRun.Load() != lidas {
+				t.Fatalf("o run ja tratado voltou a ler o seu log %d vez(es)", es.lidasDoRun.Load()-lidas)
+			}
+		})
+	}
+}
+
+// O DESFECHO QUE NÃO SE GRAVA CONTA, E NÃO PRENDE A SAÍDA DA HOSPEDAGEM.
+func TestAOS521_ODesfechoQueNaoSeGravaConta(t *testing.T) {
+	es := &aos521StoreQuePendura{Store: aos520Store(t)}
+	l := aos521Livro(t, es, aos520Cand, modelBreakerEnforce)
+	l.disjuntor.prazoDeIO = 200 * time.Millisecond
+	var dito []string
+	l.log = func(f string, args ...any) { dito = append(dito, fmt.Sprintf(f, args...)) }
+	aos521RunDoCandidato(t, es, "run-1", aos520Cand)
+	svc := &NodeService{node: &Node{EventStore: es, canary: &canaryDoNo{livro: l, servir: true, candidato: aos520Cand}}, logw: io.Discard}
+	goal := agentruntime.Goal{RunID: "run-1", ModelPinnedBy: versaoDaEscolha}
+	goal.Model.ModelID = aos520Cand.alias
+	es.pendurado.Store(true)
+	feito := make(chan struct{})
+	go func() {
+		defer close(feito)
+		svc.observarDesfechoNoDisjuntor("run-1", goal, state.Failed, agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false)
+	}()
+	select {
+	case <-feito:
+	case <-time.After(10 * time.Second):
+		t.Fatal("o Event Store pendurado prendeu a saida da hospedagem")
+	}
+	if l.disjuntor.naoGravadas.Load() != 1 {
+		t.Fatalf("o desfecho que nao se gravou tem de contar: %d", l.disjuntor.naoGravadas.Load())
+	}
+	es.pendurado.Store(false)
+	svc.observarDesfechoNoDisjuntor("run-1", goal, state.Failed, agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false)
+	if d := aos521Marcas(t, es.Store, EventTypeModelBreakerRunOutcome); len(d) != 1 || d[0].Signal != sinalNaoCumprido || l.disjuntor.naoGravadas.Load() != 1 {
+		t.Fatalf("reposto o Event Store, o desfecho grava-se: %+v", d)
 	}
 }
 
@@ -439,6 +739,10 @@ func TestAOS521_Livro_AMarcaQuePerdeOCASNaoRecusaRuns(t *testing.T) {
 			if atrasado.recusadas < 10 {
 				t.Fatalf("o teste nao chegou a tentar gravar a marca em cada decisao: %d", atrasado.recusadas)
 			}
+			// CADA TENTATIVA FALHADA CONTA: é por aqui que se vê uma marca por gravar.
+			if l.disjuntor.naoGravadas.Load() == 0 {
+				t.Fatal("as tentativas falhadas de gravar a marca nao contaram em aos_model_breaker_unrecorded_total")
+			}
 			if n := len(aos521Marcas(t, es, EventTypeModelBreakerOpened)) + len(aos521Marcas(t, es, EventTypeModelBreakerWouldOpen)); n != 0 {
 				t.Fatalf("o store do teste deixou gravar %d marca(s)", n)
 			}
@@ -452,10 +756,12 @@ type aos521StoreSemMarca struct {
 	recusadas int
 	// conflito faz a recusa ser a perda do CAS, e não um erro de escrita.
 	conflito bool
+	// soComCAS recusa só as escritas feitas COM concorrência optimista: as outras passam.
+	soComCAS bool
 }
 
 func (s *aos521StoreSemMarca) Append(ctx context.Context, streamID string, in eventstore.EventInput, opts ...eventstore.AppendOption) (eventstore.AppendResult, error) {
-	if in.Type == EventTypeModelBreakerOpened || in.Type == EventTypeModelBreakerWouldOpen {
+	if (in.Type == EventTypeModelBreakerOpened || in.Type == EventTypeModelBreakerWouldOpen) && (!s.soComCAS || len(opts) > 0) {
 		s.recusadas++
 		if s.conflito {
 			return eventstore.AppendResult{}, eventstore.ErrSeqConflict
@@ -652,13 +958,32 @@ func TestAOS521_Livro_EventoDoDisjuntorMalformadoRecusa(t *testing.T) {
 	} {
 		t.Run(nome, func(t *testing.T) {
 			es := aos520Store(t)
-			l := aos520Livro(t, es, aos520Cand)
+			aos520Decidir(t, aos520Livro(t, es, aos520Cand), aos520Cand, "plano-ja-atribuido", 0)
 			payload, _ := json.Marshal(c.p)
 			if _, err := es.Append(context.Background(), canaryStream, eventstore.EventInput{Type: c.tipo, Payload: payload, RunID: canaryRunID, StepID: "x", Producer: eventstore.Producer{NHIID: disjuntorNHI}}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := l.decidir(context.Background(), aos520Cand, chaveDeRun("plano"), 0); !errors.Is(err, ErrCanaryUnreadable) {
-				t.Fatalf("decidir sobre um livro com um evento do disjuntor malformado: %v; quer ilegivel", err)
+			for _, modo := range []string{modelBreakerEnforce, modelBreakerObserve} {
+				l := &livroDoCanary{es: es, disjuntor: novoDisjuntorDoModelo(modo, aos520Cand.entryDigest)}
+				if _, err := l.decidir(context.Background(), aos520Cand, chaveDeRun("plano"), 0); !errors.Is(err, ErrCanaryUnreadable) {
+					t.Fatalf("modo %q: decidir sobre um livro com um evento do disjuntor malformado: %v; quer ilegivel", modo, err)
+				}
+			}
+			// COM O DISJUNTOR DESLIGADO o nó é o do AOS-520, para quem este evento era de uma versão
+			// mais recente: não cai, serve o titular, e não dá planos novos ao candidato.
+			desligado := &livroDoCanary{es: es}
+			if err := desligado.abrir(context.Background(), aos520Cand, aos520Marca(0, nil)); err != nil {
+				t.Fatalf("desligado, um evento do disjuntor malformado impediu o arranque: %v", err)
+			}
+			d, err := desligado.decidir(context.Background(), aos520Cand, chaveDeRun("plano"), 0)
+			if err != nil || d.papel != canary.RoleIncumbent || d.razao != razaoLivroMaisRecente {
+				t.Fatalf("desligado: o plano novo tinha de ser do titular, sem erro: %+v %v", d, err)
+			}
+			if _, err := desligado.decidir(context.Background(), aos520Cand, chaveDeRun("plano-ja-atribuido"), 0); !errors.Is(err, ErrCanaryNewerVersion) {
+				t.Fatalf("desligado: o plano ja atribuido ao candidato e recusado, nao passa para o titular: %v", err)
+			}
+			if desligado.disjuntorIlegiveisVistos.Load() != 1 || desligado.futurosVistos.Load() != 1 {
+				t.Fatalf("desligado: o evento ilegivel tem de ficar contado: %d, %d", desligado.disjuntorIlegiveisVistos.Load(), desligado.futurosVistos.Load())
 			}
 		})
 	}

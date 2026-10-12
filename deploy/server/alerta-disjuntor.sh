@@ -12,24 +12,32 @@
 # durável por essa réplica (o arranque, cada run novo e cada run do candidato que acaba).
 #
 # ─── O QUE DISPARA ──────────────────────────────────────────────────────────────────────────
-# Duas regras INDEPENDENTES, cada uma com o seu aviso, o seu lembrete e a sua recuperação:
+# Três regras INDEPENDENTES, cada uma com o seu aviso, o seu lembrete e a sua recuperação:
 #   aos_model_breaker_open = 1          o disjuntor ABRIU: o candidato deixou de receber runs novos.
 #                                       Não volta sozinho — reabrir é assinar um registo novo
 #   aos_model_breaker_would_open = 1    com aos_model_breaker_open = 0: o nó está em observação e a
 #     e aos_model_breaker_open = 0      regra disparou — é o que `enforce` teria feito. A fatia não
 #                                       mudou; o candidato continua a receber
+#   aos_model_breaker_unrecorded_total  o nó NÃO conseguiu gravar no livro uma observação ou a marca
+#     > 0                               de aberto. É a via pela qual falhas reais não abrem o
+#                                       disjuntor, e pela qual um corte feito em `enforce` deixa de
+#                                       valer ao mudar para `off` ou `observe`. O contador é por
+#                                       processo: volta a zero quando o nó reinicia
 #
 # O QUE NÃO DISPARA, e porquê:
 #   famílias ausentes                   o disjuntor está desligado, ou o nó não serve candidato — é o
 #                                       estado por omissão. NÃO se dá por recuperado: um disjuntor
 #                                       aberto não fecha por se desligar a variável, e a marca de
-#                                       aberto continua a valer (o arranque do nó avisa)
+#                                       aberto continua a valer (o arranque do nó avisa). ATENÇÃO:
+#                                       com `off` este script NÃO VÊ NADA — nem o disjuntor aberto,
+#                                       nem escritas por gravar. Confirmar a marca antes de desligar
 #   métricas sem resposta               nó ou collector em baixo — é o alerta-ancora.sh que avisa
 #
 # Cada regra avisa à primeira leitura, relembra de 24 h em 24 h enquanto durar, e avisa quando volta
-# a zero — o que só acontece com um registo de entrada novo em vigor. Os estados são dois ficheiros.
+# a zero — o que, nas duas primeiras, só acontece com um registo de entrada novo em vigor. Os
+# estados são três ficheiros.
 #
-# O QUE SAI DO SERVIDOR: título, as contagens (falhas e unidades da janela, e os cinco sinais) e o
+# O QUE SAI DO SERVIDOR: título, as contagens (falhas e unidades da janela, e os sete sinais) e o
 # nome do host. Nenhum nome de modelo, nenhum digest, nenhum endereço. O tópico é o segredo (o mesmo
 # do alerta-ancora.sh).
 set -uo pipefail
@@ -76,13 +84,13 @@ sinal() {
 }
 
 avaliar() {
-  CLASSE=ok; MAU_ABERTO=0; MAU_TERIA=0
+  CLASSE=ok; MAU_ABERTO=0; MAU_TERIA=0; MAU_POR_GRAVAR=0
   if ! TXT="$(metricas 2>/dev/null)" || [[ -z "${TXT}" ]]; then
     CLASSE=sem_leitura
     MOTIVO="as métricas não responderam — sem leitura (o alerta-ancora.sh avisa de nó ou collector em baixo)"
     return
   fi
-  local aberto teria falhas unidades
+  local aberto teria falhas unidades por_gravar
   aberto="$(valor aos_model_breaker_open)"; teria="$(valor aos_model_breaker_would_open)"
   if [[ -z "${aberto}" && -z "${teria}" ]]; then
     CLASSE=ausente
@@ -91,11 +99,16 @@ avaliar() {
   fi
   aberto="${aberto:-0}"; teria="${teria:-0}"
   falhas="$(valor aos_model_breaker_window_failures)"; unidades="$(valor aos_model_breaker_window_units)"
-  MOTIVO="janela: ${falhas:-0} falha(s) em ${unidades:-0} unidade(s); sinais: nao_cumprido $(sinal nao_cumprido), resposta_vazia $(sinal resposta_vazia), resposta_rejeitada $(sinal resposta_rejeitada), erro_do_provider $(sinal erro_do_provider), modelo_servido_diferente $(sinal modelo_servido_diferente); observações por gravar: $(valor aos_model_breaker_unrecorded_total)"
+  por_gravar="$(valor aos_model_breaker_unrecorded_total)"; por_gravar="${por_gravar:-0}"
+  MOTIVO="janela: ${falhas:-0} falha(s) em ${unidades:-0} unidade(s); sinais: nao_cumprido $(sinal nao_cumprido), resposta_vazia $(sinal resposta_vazia), resposta_rejeitada $(sinal resposta_rejeitada), erro_do_provider $(sinal erro_do_provider), modelo_servido_diferente $(sinal modelo_servido_diferente), nao_convergiu $(sinal nao_convergiu), falha_nao_classificada $(sinal falha_nao_classificada); escritas por gravar: ${por_gravar}"
   if (( aberto > 0 )); then
     MAU_ABERTO=1; CLASSE=aberto
   elif (( teria > 0 )); then
     MAU_TERIA=1; CLASSE=teria_aberto
+  fi
+  if (( por_gravar > 0 )); then
+    MAU_POR_GRAVAR=1
+    if [[ "${CLASSE}" == ok ]]; then CLASSE=por_gravar; else CLASSE="${CLASSE}+por_gravar"; fi
   fi
 }
 
@@ -188,6 +201,13 @@ seguir teria-aberto "${MAU_TERIA}" "teria_aberto" \
   "AOS: disjuntor do candidato continua em TERIA ABERTO" \
   "AOS: disjuntor do candidato sem disparo em observacao" \
   "A regra do disjuntor do modelo candidato já não está disparada em observação (um registo novo em vigor, ou o disjuntor abriu em enforce) — ${MOTIVO}. Host: ${HOST_ID}."
+
+seguir por-gravar "${MAU_POR_GRAVAR}" "por_gravar" \
+  "AOS: disjuntor do candidato com escritas POR GRAVAR" \
+  "O nó não conseguiu gravar no livro uma observação do candidato ou a marca do disjuntor — ${MOTIVO}. Host: ${HOST_ID}. Falhas reais podem não estar a contar, e um corte feito em enforce pode não ter a marca: NÃO mudar AOS_MODEL_BREAKER para off ou observe sem confirmar a marca no livro. Ver deploy/server/README.md, secção «O disjuntor do candidato»." \
+  "AOS: disjuntor do candidato continua com escritas POR GRAVAR" \
+  "AOS: disjuntor do candidato sem escritas por gravar" \
+  "O contador de escritas por gravar do disjuntor voltou a zero (o nó reiniciou) — ${MOTIVO}. Host: ${HOST_ID}. Confirmar no arranque do nó o estado do disjuntor."
 
 if [[ "${CLASSE}" == ok ]]; then
   log "ok: ${MOTIVO}"
