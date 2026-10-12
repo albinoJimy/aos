@@ -154,6 +154,25 @@ func TestAOS520_Series_OTectoDeSeries(t *testing.T) {
 	n.correr(t, "0", nil)
 	n.correr(t, "a", nil)
 	conferir("depois de os dois modelos servirem")
+
+	// UM ALIAS FORA DO CONJUNTO E DESCARTADO, SEM SERIE «OUTROS». Entregue aos contadores do proprio
+	// no um turno, uma recusa e um desfecho de um nome que nao e nenhum dos dois aliases: o /metrics
+	// fica com as mesmas 70 series, os mesmos valores e os mesmos dois valores do rotulo.
+	antes, _, _ := aos520sSeparar(aos520cMetricas(t, n.aos486No))
+	sm := n.node.seriesDoModelo()
+	for _, fora := range []string{"fornecedor/modelo-cru", "outros", "other", ""} {
+		sm.observarTurno(fora, agentruntime.ModelResponse{StopReason: agentruntime.StopStop}, nil)
+		sm.observarTurno(fora, agentruntime.ModelResponse{}, modelgateway.ErrRespostaSemChoices)
+		sm.contarDesfecho(fora, state.Complete, agentruntime.Result{})
+	}
+	conferir("depois de um alias fora do conjunto")
+	depois, _, _ := aos520sSeparar(aos520cMetricas(t, n.aos486No))
+	if strings.Join(antes, "\n") != strings.Join(depois, "\n") {
+		t.Fatalf("um alias fora do conjunto mudou as series por modelo:\n%s", strings.Join(depois, "\n"))
+	}
+	if m := aos520sModelos(t, aos520cMetricas(t, n.aos486No)); len(m) != 2 || !m[aos486Modelo] || !m[aos520AliasCand] {
+		t.Fatalf("os valores do rotulo model sao %v; nao ha serie para o que fica de fora", m)
+	}
 }
 
 // A RESPOSTA RECUSADA CONTA NO MODELO QUE A PEDIU. O provider devolve um corpo que não é JSON a um

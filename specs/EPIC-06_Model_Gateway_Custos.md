@@ -4308,7 +4308,8 @@ Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada está lig
   critério fala em «os modelos esperados dos perfis carregados»; usou-se o alias, que é a chave
   por que o nó escolhe, fixa e despacha, e é o que faz de «o titular» e «o candidato» duas séries
   mesmo que os dois perfis esperem o mesmo modelo.
-- *Só com um candidato a servir* (o critério da inércia já o dizia): com `off` e um registo na
+- *Só com um candidato a servir* — **POR CONFIRMAR PELO DONO** (o critério da inércia já o dizia,
+  e o teste de inércia do PR 1 obriga a isso; a alternativa era «com um candidato carregado»): com `off` e um registo na
   pasta o despachante existe e não conta nada. Um run já fixado no candidato que acabe depois de
   o interruptor passar a `off` conta só nas famílias de sempre.
 - *O tecto*: 70 séries — dois modelos × (6 motivos + 5 causas + 3 estados × 8 razões) —, preso
