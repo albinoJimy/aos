@@ -20,6 +20,7 @@ import (
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/state"
+	modelgateway "github.com/aos-ref/platform/model-gateway"
 	"github.com/aos-ref/platform/model-gateway/policy/canary"
 	"github.com/aos-ref/substrate/eventstore"
 )
@@ -110,7 +111,7 @@ func aos521Avariar(n *aos486No, alias string, estado int) {
 // aos521Submeter submete um run e espera que acabe, bem ou mal. Devolve o erro do run.
 func aos521Submeter(t *testing.T, n *aos520No, runID string) error {
 	t.Helper()
-	rec := postJSON(n.h, "POST", "/runs", map[string]any{"run_id": runID, "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": n.tok, "max_turns": 3})
+	rec := postJSON(n.h, "POST", "/runs", map[string]any{"run_id": runID, "objective": aos490Objectivo, "principal_nhi": durAgent, "credential": n.tok, "max_turns": 3, "tools": []string{"arquivo"}, "completion_requires": []string{"arquivo"}})
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /runs %s: %d %s", runID, rec.Code, rec.Body.String())
 	}
@@ -850,5 +851,65 @@ func TestAOS521_Arranque_ALeituraDoDisjuntorFalhaFechado(t *testing.T) {
 	ligado, _ := arrancar(t, modelBreakerObserve)
 	if ligado != lidas+1 {
 		t.Fatalf("o disjuntor ligado le o livro %d vez(es) no arranque e desligado %d; quer exactamente uma a mais", ligado, lidas)
+	}
+}
+
+// A FALHA QUE O NÓ NÃO SABE CLASSIFICAR CONTA — é o lado fechado. Um run do candidato fixado, cujo
+// desfecho selado é `failed` com um erro que não é de nenhuma classe conhecida nem está na lista do
+// que não é do modelo (aqui, o 200 sem `usage` como o gateway o devolve), entra na janela pela via
+// do nó — a função que a hospedagem chama depois do selo —, e três abrem o disjuntor. (Antes desta
+// correcção nenhum entrava, e um candidato que falhasse sempre assim nunca abria.)
+func TestAOS521_No_AFalhaNaoClassificadaAbre(t *testing.T) {
+	n := aos521No(t, aos520NovoSubstrato(t), "enforce", "observe", aos520cCand(100))
+	semUsage := fmt.Errorf("aos: run: %w", fmt.Errorf("%w: turno 1: %w", agentruntime.ErrModelCall, modelgateway.ErrUsageAusente))
+	for i := 1; i <= 3; i++ {
+		if aberto, _ := aos521Gauge(t, n, "aos_model_breaker_open"); aberto != "0" {
+			t.Fatalf("antes do %d.o run o disjuntor ja estava aberto", i)
+		}
+		// Um run do candidato a sério, para o seu stream ter o `run.model_pinned` que o nó escreveu.
+		id := fmt.Sprintf("sem-usage-%d", i)
+		goal := aos520cTurnoUmECrash(t, n, id)
+		n.svc.observarDesfechoNoDisjuntor(id, goal, state.Failed, agentruntime.Result{}, semUsage, false)
+	}
+	for id, sinal := range aos521Desfechos(t, n) {
+		if sinal != sinalFalhaNaoClassificada {
+			t.Fatalf("desfecho de %s = %q; quer %s", id, sinal, sinalFalhaNaoClassificada)
+		}
+	}
+	abertas := aos521Marcas(t, n.node.EventStore, EventTypeModelBreakerOpened)
+	if len(abertas) != 1 || abertas[0].Counters[sinalFalhaNaoClassificada] != 3 || len(abertas[0].Window) != 3 {
+		t.Fatalf("tres falhas nao classificadas tinham de abrir: %+v", abertas)
+	}
+	if !strings.Contains(aos520cMetricas(t, n.aos486No), `aos_model_breaker_signals{signal="falha_nao_classificada"} 3`) {
+		t.Fatal("o contador do sinal falha_nao_classificada nao esta a 3 no /metrics")
+	}
+}
+
+// A CREDENCIAL DA CONTA NÃO É DO MODELO. Vinte respostas 401, e vinte 403: os runs falham, nenhum
+// entra na janela, o disjuntor fica fechado — como com o 429. O 408 e o 500 contam.
+func TestAOS521_No_ACredencialDaContaNaoConta(t *testing.T) {
+	n := aos521No(t, aos520NovoSubstrato(t), "enforce", "observe", aos520cCand(100))
+	for _, estado := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		aos521Avariar(n.aos486No, aos520AliasCand, estado)
+		for i := 1; i <= 6; i++ {
+			if err := aos521Submeter(t, n, fmt.Sprintf("conta-%d-%d", estado, i)); err == nil {
+				t.Fatalf("o run %d tinha de falhar com o %d", i, estado)
+			}
+		}
+	}
+	if d := aos521Desfechos(t, n); len(d) != 0 {
+		t.Fatalf("um 401 ou um 403 entrou na janela: %v", d)
+	}
+	if len(aos521Marcas(t, n.node.EventStore, EventTypeModelBreakerOpened)) != 0 {
+		t.Fatal("a credencial da conta abriu o disjuntor")
+	}
+	// CONTROLO: o 408 conta, e três abrem.
+	aos521Avariar(n.aos486No, aos520AliasCand, http.StatusRequestTimeout)
+	for i := 1; i <= 3; i++ {
+		_ = aos521Submeter(t, n, fmt.Sprintf("tempo-%d", i))
+	}
+	abertas := aos521Marcas(t, n.node.EventStore, EventTypeModelBreakerOpened)
+	if len(abertas) != 1 || abertas[0].Counters[sinalErroDoProvider] != 3 {
+		t.Fatalf("tres 408 tinham de abrir: %+v", abertas)
 	}
 }

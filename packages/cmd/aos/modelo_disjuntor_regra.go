@@ -20,6 +20,9 @@ package main
 // regra disparou, disparou. Num run sem plano, a unidade é o run.
 
 import (
+	"context"
+	"errors"
+
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
@@ -45,18 +48,26 @@ const (
 	// sinalRespostaRejeitada (F3) — o run falhou porque o gateway recusou a resposta do provider.
 	sinalRespostaRejeitada = "resposta_rejeitada"
 	// sinalErroDoProvider (F4) — o run falhou porque o provider respondeu com um status que não é
-	// 200 nem 429.
+	// 200 e que não é da conta (429, 401, 403).
 	sinalErroDoProvider = "erro_do_provider"
 	// sinalModeloDiferente (F5) — a governação da rota viu o modelo servido diferente do esperado.
 	sinalModeloDiferente = "modelo_servido_diferente"
+	// sinalNaoConvergiu (F6) — o run não chegou a uma resposta: esgotou o tecto de turnos, ou o
+	// disjuntor por-run interrompeu-o (sem progresso, ciclo de recusas, tempo ou velocidade de gasto).
+	sinalNaoConvergiu = "nao_convergiu"
+	// sinalFalhaNaoClassificada (F7) — o run fechou `failed` (ou `timed_out`) por uma causa que não
+	// é nenhuma das acima NEM está na lista fechada do que não é do modelo. É o lado fechado: o que
+	// o nó não sabe classificar conta contra o candidato.
+	sinalFalhaNaoClassificada = "falha_nao_classificada"
 )
 
-// sinaisDeFalha devolve os cinco sinais de falha, pela ordem F1..F5.
+// sinaisDeFalha devolve os sinais de falha, pela ordem F1..F7.
 func sinaisDeFalha() []string {
-	return []string{sinalNaoCumprido, sinalRespostaVazia, sinalRespostaRejeitada, sinalErroDoProvider, sinalModeloDiferente}
+	return []string{sinalNaoCumprido, sinalRespostaVazia, sinalRespostaRejeitada, sinalErroDoProvider, sinalModeloDiferente,
+		sinalNaoConvergiu, sinalFalhaNaoClassificada}
 }
 
-// sinalDeRunConhecido diz se o sinal é um dos seis que um desfecho de run pode ter.
+// sinalDeRunConhecido diz se o sinal é um dos que um desfecho de run pode ter.
 func sinalDeRunConhecido(s string) bool {
 	if s == sinalCumprido {
 		return true
@@ -83,30 +94,51 @@ const (
 // `selado` é o estado em que o log durável ficou; `res`, `runErr` e `panicked` são o que a
 // hospedagem tem na mão quando sela — o veredicto é o MESMO valor que vai na transição terminal.
 //
-// O QUE CONTA:
+// O PRINCÍPIO: O QUE NÃO ESTÁ NA LISTA DE EXCLUSÕES CONTA. Um run do candidato que acabou mal conta
+// como falha, salvo se a causa for uma das da lista FECHADA do que não é do modelo. Um candidato
+// que falhe sempre de uma maneira que o nó não conhece abre o disjuntor na mesma.
 //
+// O QUE CONTA, pela ordem em que se decide:
+//
+//   - o disjuntor POR-RUN interrompeu o run (`res.Tripped`: sem progresso, ciclo de recusas, tempo,
+//     velocidade de gasto) ⇒ F6, fique o run pausado ou `timed_out`: a interrupção já é um facto do
+//     log, e o modelo não convergiu;
 //   - veredicto do kernel negativo ⇒ F2 se a razão é `empty_output`, F1 por qualquer outra razão —
-//     com o nó a impor o veredicto (o run fechou `failed`) ou só a observá-lo (fechou `complete`):
-//     o veredicto é o mesmo, e é ele o sinal;
-//   - sem veredicto negativo e selado `complete` ⇒ cumprido;
+//     com o nó a impor o veredicto (o run fechou `failed`) ou só a observá-lo (fechou `complete`);
+//   - selado `complete` com um veredicto POSITIVO sobre um CONTRATO declarado ⇒ cumprido;
 //   - o run falhou com o erro de uma resposta recusada pelo gateway ⇒ F3;
-//   - falhou com um status do provider que não é 200 nem 429 ⇒ F4;
-//   - falhou porque a governação da rota, em imposição, viu o modelo servido DIFERENTE ⇒ F5.
+//   - falhou com um status do provider que não é 200 nem da conta ⇒ F4 (5xx e 408 incluídos: uma
+//     indisponibilidade curta do fornecedor conta, e três seguidas abrem — é o lado fechado);
+//   - falhou porque a governação da rota, em imposição, viu o modelo servido DIFERENTE ⇒ F5;
+//   - esgotou o tecto de turnos ⇒ F6;
+//   - qualquer OUTRO desfecho selado que não seja `complete` ⇒ F7 — um 200 sem `usage`, uma falha
+//     da contabilidade de custo, um erro do loop que o nó não sabe de quem é.
 //
-// O QUE NÃO CONTA, e porquê:
+// A LISTA FECHADA DO QUE NÃO CONTA ([causaForaDoModelo] e as três primeiras linhas da função):
 //
-//   - o limite de ritmo (429): é da conta, não do modelo (D5);
+//   - o pânico da hospedagem: é do nó;
+//   - o desfecho que NÃO ficou selado, e o run que parou sem acabar (à espera de humano, pausado
+//     por um operador);
+//   - o `complete` SEM veredicto, ou com veredicto positivo SEM contrato declarado: o nó não sabe
+//     se o run fez o que devia, e um candidato sem contrato não «lava» a janela com runs bons;
+//   - o orçamento esgotado (`res.BudgetExhausted`);
 //   - o run recusado pela fixação do modelo: não deu um turno;
-//   - o pânico, o cancelamento, o tecto de turnos e o orçamento esgotado: não dizem nada do modelo
-//     que o nó saiba sem ler texto;
-//   - um erro de transporte SEM resposta (ligação recusada ou cortada, tempo esgotado antes de
-//     qualquer status): o nó não sabe se foi o modelo ou o caminho até ao proxy, que o titular
-//     também usa. O proxy que esgota o tempo do provider responde com um status — e esse conta;
-//   - a rota `nao_reportado` em imposição: o proxy deixou de declarar, o que não prova outro modelo
-//     (é o `alerta-rota.sh` que o avisa);
-//   - um desfecho que NÃO ficou selado, ou um run que parou sem acabar (suspenso, pausado).
+//   - o cancelamento (o nó a desligar, o run cancelado);
+//   - o limite de ritmo (429) e a credencial da conta (401, 403): são da conta, não do modelo;
+//   - o erro de transporte SEM resposta HTTP: o nó não sabe se foi o modelo ou o caminho até ao
+//     proxy, que o titular também usa;
+//   - a negação por um estágio da pipeline do gateway, antes de o pedido sair (identidade,
+//     allowlist, soberania): não depende do que o modelo fez;
+//   - a rota `nao_reportado` em imposição: não prova outro modelo (é o `alerta-rota.sh` que avisa);
+//   - o run fixado num perfil que o nó não tem em vigor: é configuração do nó.
 func sinalDoDesfecho(selado state.State, res agentruntime.Result, runErr error, panicked bool) (sinal string, conta bool) {
-	if panicked || !desfechoDuravelRegistado(selado) {
+	if panicked {
+		return "", false
+	}
+	if res.Tripped {
+		return sinalNaoConvergiu, true
+	}
+	if !desfechoDuravelRegistado(selado) {
 		return "", false
 	}
 	if runErr == nil {
@@ -116,9 +148,18 @@ func sinalDoDesfecho(selado state.State, res agentruntime.Result, runErr error, 
 			}
 			return sinalNaoCumprido, true
 		}
-		if selado == state.Complete {
-			return sinalCumprido, true
+		if res.BudgetExhausted {
+			return "", false
 		}
+		if selado == state.Complete {
+			if v := res.Verdict; v != nil && len(v.Tools) > 0 {
+				return sinalCumprido, true
+			}
+			return "", false
+		}
+		return sinalFalhaNaoClassificada, true
+	}
+	if causaForaDoModelo(runErr) {
 		return "", false
 	}
 	switch modelgateway.ClassifyTurnFailure(runErr) {
@@ -129,7 +170,23 @@ func sinalDoDesfecho(selado state.State, res agentruntime.Result, runErr error, 
 	case modelgateway.TurnFailureRouteDifferent:
 		return sinalModeloDiferente, true
 	}
-	return "", false
+	if errors.Is(runErr, agentruntime.ErrMaxTurnsExceeded) {
+		return sinalNaoConvergiu, true
+	}
+	return sinalFalhaNaoClassificada, true
+}
+
+// causaForaDoModelo diz se o erro de um run está na lista FECHADA do que não é do modelo.
+func causaForaDoModelo(runErr error) bool {
+	switch {
+	case errors.Is(runErr, ErrModelPinRefused), errors.Is(runErr, ErrModelNotServed):
+		return true
+	case modelgateway.TurnFailureNotOfTheModel(modelgateway.ClassifyTurnFailure(runErr)):
+		return true
+	case errors.Is(runErr, context.Canceled), errors.Is(runErr, context.DeadlineExceeded):
+		return true
+	}
+	return false
 }
 
 // observacaoDoDisjuntor é uma observação do livro sobre o candidato de um registo de entrada.

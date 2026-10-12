@@ -9,12 +9,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"reflect"
 	"testing"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/state"
 	modelgateway "github.com/aos-ref/platform/model-gateway"
+	"github.com/aos-ref/platform/model-gateway/pipeline"
 )
 
 // aos521Seq constrói uma sequência de desfechos: uma letra por run, cada um na sua unidade.
@@ -148,23 +151,34 @@ func TestAOS521_Regra_OQueNaoEDoVocabularioNaoEntra(t *testing.T) {
 	if got.disparou || len(got.janela) != 0 || len(got.contadores) != 0 {
 		t.Fatalf("entrou o que nao e do vocabulario: %+v", got)
 	}
-	if n := len(sinaisDeFalha()); n != 5 {
-		t.Fatalf("os sinais de falha sao %d; a D5 tem cinco", n)
+	if n := len(sinaisDeFalha()); n != 7 {
+		t.Fatalf("os sinais de falha sao %d; quer os cinco da D5, o que nao convergiu e a falha nao classificada", n)
 	}
 	if disjuntorFalhasParaAbrir != 3 || disjuntorJanela != 20 {
 		t.Fatalf("a regra e %d em %d; a D5 e 3 em 20", disjuntorFalhasParaAbrir, disjuntorJanela)
 	}
 }
 
-// aos521Verdicto é um veredicto do kernel com a razão dada.
+// aos521Verdicto é um veredicto do kernel com a razão dada, sobre um CONTRATO declarado (uma tool).
 func aos521Verdicto(razao agentruntime.OutcomeReason) *agentruntime.Verdict {
+	return &agentruntime.Verdict{Fulfilled: razao == agentruntime.OutcomeFulfilled, Reason: razao, Tools: []agentruntime.ToolEvidence{{Tool: "arquivo"}}}
+}
+
+// aos521SemContrato é o veredicto de um run que não declarou contrato de conclusão.
+func aos521SemContrato(razao agentruntime.OutcomeReason) *agentruntime.Verdict {
 	return &agentruntime.Verdict{Fulfilled: razao == agentruntime.OutcomeFulfilled, Reason: razao}
 }
 
-// O SINAL QUE O FIM DE UM RUN DEIXA. O que conta e o que não conta, caso a caso.
+// O SINAL QUE O FIM DE UM RUN DEIXA — uma linha por entrada das duas listas do ADR-041 §2.9: o que
+// conta, e a lista FECHADA do que não conta. O princípio: o que não está na lista de exclusões conta.
+// (Os status do provider — 5xx, 408, 429, 401, 403 — e o 200 sem `usage` como o gateway o devolve
+// estão presos no gateway, em `TestAOS521_ClassifyTurnFailure`, e no nó composto.)
 func TestAOS521_SinalDoDesfecho_Tabela(t *testing.T) {
+	doTurno := func(err error) error {
+		return fmt.Errorf("aos: run: %w", fmt.Errorf("%w: turno 2: %w", agentruntime.ErrModelCall, err))
+	}
 	rota := func(check string) error {
-		return fmt.Errorf("agent-runtime: turno: %w", &modelgateway.RouteVarianceError{Check: check, Cause: "x"})
+		return doTurno(&modelgateway.RouteVarianceError{Check: check, Cause: "x"})
 	}
 	for _, c := range []struct {
 		nome     string
@@ -175,32 +189,50 @@ func TestAOS521_SinalDoDesfecho_Tabela(t *testing.T) {
 		sinal    string
 		conta    bool
 	}{
-		{"concluido sem veredicto", state.Complete, agentruntime.Result{Terminated: true}, nil, false, sinalCumprido, true},
-		{"concluido com veredicto positivo", state.Complete, agentruntime.Result{Terminated: true, Verdict: aos521Verdicto(agentruntime.OutcomeFulfilled)}, nil, false, sinalCumprido, true},
+		// ── O QUE CONTA ──────────────────────────────────────────────────────────────────────
+		{"cumprido: contrato declarado e veredicto positivo", state.Complete, agentruntime.Result{Terminated: true, Verdict: aos521Verdicto(agentruntime.OutcomeFulfilled)}, nil, false, sinalCumprido, true},
 		{"F1: nao cumprido, imposto (failed)", state.Failed, agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false, sinalNaoCumprido, true},
 		{"F1: nao cumprido, so observado (complete)", state.Complete, agentruntime.Result{Terminated: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false, sinalNaoCumprido, true},
-		{"F1: truncado", state.Failed, agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeTruncated)}, nil, false, sinalNaoCumprido, true},
+		{"F1: truncado, num run sem contrato", state.Failed, agentruntime.Result{Unfulfilled: true, Verdict: aos521SemContrato(agentruntime.OutcomeTruncated)}, nil, false, sinalNaoCumprido, true},
 		{"F2: resposta vazia, imposta", state.Failed, agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeEmptyOutput)}, nil, false, sinalRespostaVazia, true},
-		{"F2: resposta vazia, so observada", state.Complete, agentruntime.Result{Terminated: true, Verdict: aos521Verdicto(agentruntime.OutcomeEmptyOutput)}, nil, false, sinalRespostaVazia, true},
-		{"F3: resposta rejeitada pelo gateway", state.Failed, agentruntime.Result{}, fmt.Errorf("turno: %w", modelgateway.ErrRespostaSemChoices), false, sinalRespostaRejeitada, true},
+		{"F2: resposta vazia, so observada, num run sem contrato", state.Complete, agentruntime.Result{Terminated: true, Verdict: aos521SemContrato(agentruntime.OutcomeEmptyOutput)}, nil, false, sinalRespostaVazia, true},
+		{"F3: resposta rejeitada pelo gateway", state.Failed, agentruntime.Result{}, doTurno(modelgateway.ErrRespostaSemChoices), false, sinalRespostaRejeitada, true},
 		{"F5: rota diferente em imposicao", state.Failed, agentruntime.Result{}, rota("diferente"), false, sinalModeloDiferente, true},
-		{"rota nao reportada em imposicao: nao conta", state.Failed, agentruntime.Result{}, rota("nao_reportado"), false, "", false},
-		{"recusado pela fixacao do modelo: nao conta", state.Failed, agentruntime.Result{}, fmt.Errorf("run: %w", recusaDaFixacao(causaLivroIlegivel, nil)), false, "", false},
-		{"cancelado: nao conta", state.Failed, agentruntime.Result{}, context.Canceled, false, "", false},
-		{"erro de transporte sem resposta: nao conta", state.Failed, agentruntime.Result{}, errors.New("dial tcp: connection refused"), false, "", false},
-		{"tecto de turnos: nao conta", state.TimedOut, agentruntime.Result{}, agentruntime.ErrMaxTurnsExceeded, false, "", false},
-		{"orcamento esgotado: nao conta", state.TimedOut, agentruntime.Result{BudgetExhausted: true}, nil, false, "", false},
-		{"panico: nao conta", state.Failed, agentruntime.Result{}, nil, true, "", false},
-		{"o selo nao aconteceu: nao conta", "", agentruntime.Result{Terminated: true}, nil, false, "", false},
-		{"veredicto negativo e o selo nao aconteceu: nao conta", "", agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false, "", false},
-		{"veredicto negativo num run que parou a espera de humano: nao conta", state.WaitingOnHuman, agentruntime.Result{Escalated: true, Verdict: aos521Verdicto(agentruntime.OutcomeEmptyOutput)}, nil, false, "", false},
-		{"o run parou sem acabar (a espera de humano): nao conta", state.WaitingOnHuman, agentruntime.Result{Escalated: true}, nil, false, "", false},
-		{"pausado: nao conta", state.Paused, agentruntime.Result{}, nil, false, "", false},
+		{"F6: tecto de turnos", state.TimedOut, agentruntime.Result{}, agentruntime.ErrMaxTurnsExceeded, false, sinalNaoConvergiu, true},
+		{"F6: o disjuntor por-run interrompeu (timed_out)", state.TimedOut, agentruntime.Result{Tripped: true, BreakerTarget: "timed_out"}, nil, false, sinalNaoConvergiu, true},
+		{"F6: o disjuntor por-run interrompeu (pausado: sem progresso, ciclo de recusas)", state.Paused, agentruntime.Result{Tripped: true, BreakerTarget: "paused"}, nil, false, sinalNaoConvergiu, true},
+		{"F7: 200 sem usage", state.Failed, agentruntime.Result{}, doTurno(modelgateway.ErrUsageAusente), false, sinalFalhaNaoClassificada, true},
+		{"F7: um erro do turno que o no nao conhece", state.Failed, agentruntime.Result{}, doTurno(errors.New("qualquer coisa nova")), false, sinalFalhaNaoClassificada, true},
+		{"F7: um erro do loop que o no nao conhece", state.Failed, agentruntime.Result{}, errors.New("agent-runtime: ledger"), false, sinalFalhaNaoClassificada, true},
+		{"F7: failed sem erro e sem veredicto", state.Failed, agentruntime.Result{}, nil, false, sinalFalhaNaoClassificada, true},
+		// ── A LISTA FECHADA DO QUE NAO CONTA ────────────────────────────────────────────────
+		{"panico", state.Failed, agentruntime.Result{}, nil, true, "", false},
+		{"o selo nao aconteceu", "", agentruntime.Result{Terminated: true, Verdict: aos521Verdicto(agentruntime.OutcomeFulfilled)}, nil, false, "", false},
+		{"veredicto negativo e o selo nao aconteceu", "", agentruntime.Result{Unfulfilled: true, Verdict: aos521Verdicto(agentruntime.OutcomeContractNoCall)}, nil, false, "", false},
+		{"erro e o selo nao aconteceu", "", agentruntime.Result{}, doTurno(modelgateway.ErrUsageAusente), false, "", false},
+		{"parou a espera de humano", state.WaitingOnHuman, agentruntime.Result{Escalated: true, Verdict: aos521Verdicto(agentruntime.OutcomeEmptyOutput)}, nil, false, "", false},
+		{"pausado por um operador", state.Paused, agentruntime.Result{Paused: true}, nil, false, "", false},
+		{"complete sem veredicto", state.Complete, agentruntime.Result{Terminated: true}, nil, false, "", false},
+		{"complete com veredicto positivo e SEM contrato", state.Complete, agentruntime.Result{Terminated: true, Verdict: aos521SemContrato(agentruntime.OutcomeFulfilled)}, nil, false, "", false},
+		{"orcamento esgotado", state.TimedOut, agentruntime.Result{BudgetExhausted: true}, nil, false, "", false},
+		{"recusado pela fixacao do modelo", state.Failed, agentruntime.Result{}, fmt.Errorf("run: %w", recusaDaFixacao(causaLivroIlegivel, nil)), false, "", false},
+		{"modelo fixado nao servido", state.Failed, agentruntime.Result{}, doTurno(fmt.Errorf("%w: causa=x", ErrModelNotServed)), false, "", false},
+		{"cancelado", state.Failed, agentruntime.Result{}, doTurno(context.Canceled), false, "", false},
+		{"prazo do contexto esgotado", state.Failed, agentruntime.Result{}, doTurno(context.DeadlineExceeded), false, "", false},
+		{"transporte sem resposta: ligacao recusada", state.Failed, agentruntime.Result{}, doTurno(&url.Error{Op: "Post", URL: "http://proxy", Err: errors.New("connection refused")}), false, "", false},
+		{"transporte sem resposta: ligacao cortada", state.Failed, agentruntime.Result{}, doTurno(&url.Error{Op: "Post", URL: "http://proxy", Err: io.ErrUnexpectedEOF}), false, "", false},
+		{"negado por um estagio da pipeline do gateway", state.Failed, agentruntime.Result{}, doTurno(&pipeline.StageError{Stage: "authn", Err: errors.New("token expirado")}), false, "", false},
+		{"rota nao reportada em imposicao", state.Failed, agentruntime.Result{}, rota("nao_reportado"), false, "", false},
+		{"run fixado num perfil que o no nao tem", state.Failed, agentruntime.Result{}, doTurno(&modelgateway.PinnedRouteProfileError{Cause: modelgateway.PinnedCauseModelNotServed}), false, "", false},
+		{"a rota exige estado que nao ha", state.Failed, agentruntime.Result{}, doTurno(&modelgateway.StateReturnError{Cause: "x"}), false, "", false},
 	} {
 		t.Run(c.nome, func(t *testing.T) {
 			sinal, conta := sinalDoDesfecho(c.selado, c.res, c.err, c.panicked)
 			if sinal != c.sinal || conta != c.conta {
 				t.Fatalf("sinal=%q conta=%v; quer %q %v", sinal, conta, c.sinal, c.conta)
+			}
+			if conta && !sinalDeRunConhecido(sinal) {
+				t.Fatalf("o sinal %q nao e do vocabulario do livro", sinal)
 			}
 		})
 	}

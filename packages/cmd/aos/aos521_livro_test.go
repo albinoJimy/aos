@@ -101,7 +101,7 @@ func TestAOS521_Livro_Enforce_ATerceiraFalhaAbreECorta(t *testing.T) {
 	quer := disjuntorPayload{
 		V: "1.0", EntryDigest: aos520Cand.entryDigest, Alias: aos520Cand.alias, ProfileDigest: aos520Cand.profileDigest,
 		Rule:     regraFalhasNaJanela,
-		Counters: map[string]int{sinalNaoCumprido: 1, sinalRespostaVazia: 0, sinalRespostaRejeitada: 1, sinalErroDoProvider: 1, sinalModeloDiferente: 0},
+		Counters: map[string]int{sinalNaoCumprido: 1, sinalRespostaVazia: 0, sinalRespostaRejeitada: 1, sinalErroDoProvider: 1, sinalModeloDiferente: 0, sinalNaoConvergiu: 0, sinalFalhaNaoClassificada: 0},
 		Window:   []itemDaJanela{{"run-f1", sinalNaoCumprido}, {"run-ok", sinalCumprido}, {"run-f3", sinalRespostaRejeitada}, {"run-f4", sinalErroDoProvider}},
 	}
 	if len(marcas) != 1 || !reflect.DeepEqual(marcas[0], quer) {

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"testing"
 
 	"github.com/aos-ref/platform/model-gateway/internal/adapters"
+	"github.com/aos-ref/platform/model-gateway/pipeline"
 	"github.com/aos-ref/platform/model-gateway/port"
 )
 
@@ -24,7 +27,9 @@ func TestAOS521_ClassifyTurnFailure(t *testing.T) {
 		{"500", status(500), TurnFailureProviderStatus},
 		{"503", status(503), TurnFailureProviderStatus},
 		{"400", status(400), TurnFailureProviderStatus},
-		{"401", status(401), TurnFailureProviderStatus},
+		{"401 e da conta (credencial), nao do modelo", status(401), TurnFailureCredential},
+		{"403 e da conta (permissao), nao do modelo", status(403), TurnFailureCredential},
+		{"402", status(402), TurnFailureProviderStatus},
 		{"404", status(404), TurnFailureProviderStatus},
 		{"408", status(408), TurnFailureProviderStatus},
 		{"504", status(504), TurnFailureProviderStatus},
@@ -34,16 +39,29 @@ func TestAOS521_ClassifyTurnFailure(t *testing.T) {
 		{"content numa forma que nao se le", embrulhar(port.ErrContentForm), TurnFailureResponseRejected},
 		{"corpo que nao e JSON", embrulhar(&json.SyntaxError{}), TurnFailureResponseRejected},
 		{"rota diferente em imposicao", embrulhar(&RouteVarianceError{Check: port.RouteCheckDifferent, Cause: RouteCauseModelDifferent}), TurnFailureRouteDifferent},
-		{"rota nao reportada em imposicao nao e rota diferente", embrulhar(&RouteVarianceError{Check: port.RouteCheckUnreported, Cause: RouteCauseModelUnreported}), ""},
-		{"cancelamento", embrulhar(context.Canceled), ""},
-		{"tempo esgotado sem resposta", embrulhar(context.DeadlineExceeded), ""},
-		{"erro de transporte", embrulhar(errors.New("dial tcp 127.0.0.1:4000: connect: connection refused")), ""},
+		{"rota nao reportada em imposicao nao e rota diferente", embrulhar(&RouteVarianceError{Check: port.RouteCheckUnreported, Cause: RouteCauseModelUnreported}), TurnFailureRouteUnreported},
+		{"cancelamento", embrulhar(context.Canceled), TurnFailureTransport},
+		{"tempo esgotado sem resposta", embrulhar(context.DeadlineExceeded), TurnFailureTransport},
+		{"erro de transporte do cliente HTTP", embrulhar(&url.Error{Op: "Post", URL: "http://x", Err: errors.New("connection refused")}), TurnFailureTransport},
+		{"erro de rede", embrulhar(&net.OpError{Op: "dial", Err: errors.New("connection refused")}), TurnFailureTransport},
+		{"negacao de um estagio da pipeline", embrulhar(&pipeline.StageError{Stage: "authn", Err: errors.New("token expirado")}), TurnFailureGatewayDenied},
+		{"perfil fixado que o no nao tem", embrulhar(&PinnedRouteProfileError{Cause: PinnedCauseModelNotServed}), TurnFailurePinnedProfile},
+		{"estado que a rota exige e nao ha", embrulhar(&StateReturnError{Cause: "x"}), TurnFailurePinnedProfile},
+		// SEM CLASSE E SEM EXCLUSAO: quem conta trata como falha nao classificada.
 		{"um texto que parece um status nao e um status", embrulhar(errors.New("adapters: provider openai devolveu status 500: x")), ""},
-		{"200 sem usage nao e uma resposta rejeitada", embrulhar(ErrUsageAusente), ""},
+		{"200 sem usage", embrulhar(&costError{err: ErrUsageAusente}), ""},
+		{"200 sem usage dentro de um estagio da pipeline", embrulhar(&pipeline.StageError{Stage: "metering", Err: &costError{err: ErrUsageAusente}}), ""},
+		{"falha da atribuicao depois da resposta", embrulhar(&attributionError{err: errors.New("worm")}), ""},
 	} {
 		t.Run(c.nome, func(t *testing.T) {
-			if got := ClassifyTurnFailure(c.err); got != c.quer {
+			got := ClassifyTurnFailure(c.err)
+			if got != c.quer {
 				t.Fatalf("ClassifyTurnFailure = %q; quer %q", got, c.quer)
+			}
+			// As duas familias nao se misturam: uma classe do modelo nunca e uma exclusao.
+			doModelo := got == TurnFailureResponseRejected || got == TurnFailureProviderStatus || got == TurnFailureRouteDifferent
+			if TurnFailureNotOfTheModel(got) == (doModelo || got == "") {
+				t.Fatalf("a classe %q esta nas duas familias, ou em nenhuma", got)
 			}
 		})
 	}
