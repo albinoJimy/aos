@@ -2066,15 +2066,16 @@ intervenção.
       provado em produção e do que ficou provado em ensaio.
       **Por marcar:** a §5 tem as linhas da prova, e a linha da A3 na §2 diz o que ficou provado
       em produção e o que ficou provado com modelos simulados. Mas (b) e (c) não estão cumpridos
-      como este ticket os escreve: pela regra deste critério, a palavra «provada» na §2 vale só
-      para a primeira metade, e é isso que lá está escrito.
+      como este ticket os escreve. A linha da §2 passou a **fechada** por decisão do dono, a
+      2026-10-12, e não por esta regra: «provada em produção» vale só para a primeira metade, e
+      é isso que lá está escrito.
 - [x] O registo lista o que a prova **não prova**: o terceiro modelo é da mesma família e da
       mesma conta que o titular; nenhum perfil que devolve estado entrou; o planeador do
       `aos-orq` não é coberto; a bateria são seis casos sintéticos; o disjuntor em `enforce`
       nunca actuou em produção.
       **Escrito** na §3 do acompanhamento («O que a prova não prova») e no Estado, abaixo.
 - [x] O fecho da fase é do dono, na §4. Este ticket não a fecha.
-      **A fase não está fechada.** A decisão está na §4 do acompanhamento, por tomar.
+      **Fechada pelo dono a 2026-10-12**, na §4 do acompanhamento; não por este ticket.
 
 ### O que fica desligado por omissão, e o que tem de ficar inerte
 
@@ -2117,8 +2118,8 @@ intervenção.
 
 ### Estado
 
-**Medido a 2026-10-12; a fase fica por fechar pelo dono.** O critério da fase tem duas metades,
-e ficaram em sítios diferentes.
+**Medido a 2026-10-12; a fase A3 foi fechada pelo dono no mesmo dia, com os resíduos nomeados.**
+O critério da fase tem duas metades, e ficaram em sítios diferentes.
 
 **Decisões do dono que valem para esta medição** (acompanhamento §4).
 
@@ -2133,6 +2134,7 @@ e ficaram em sítios diferentes.
   isso como prova de «zero PRs».
 - 2026-10-12: o dono gerou a chave dos perfis no seu posto e assinou o registo do `k3`. Âncora
   pública: `GR78qbnszHiu0JlFuW7fxDRcAZ36l1zQ5Lv3QzEdcF4=`.
+- 2026-10-12: «dou a fase A3 por fechada, abre a A4» — o fecho, com a medição abaixo à vista.
 
 **Passo 0.** v0.1.55 (tag sobre `25b85e9d`) em produção desde 2026-10-12, 10:36:37 UTC; imagem do
 nó `sha256:67a9f70e2836…`. O deploy recriou o `litellm`, agora referido pelo digest
@@ -2197,9 +2199,14 @@ titular, e o binário já o conhecia por este alias. Nenhum perfil que devolve e
 planeador do `aos-orq` não é coberto. A bateria são seis casos sintéticos. O disjuntor em
 `enforce` nunca actuou em produção. O canary ficou em 7 planos dos 40 do limite.
 
-**Por decidir pelo dono** (acompanhamento §4): se a fase fecha, e se «um modelo mau é recusado
-sozinho» provado só com modelos maus simulados chega para o critério; se o candidato passa a
-titular, continua ou sai; se o disjuntor passa a `enforce`. Este ticket não fecha a fase.
+**O fecho.** O dono fechou a fase A3 a 2026-10-12 (acompanhamento §4), com a primeira metade do
+critério provada em produção com o `k3` e a segunda provada só com modelos maus simulados. Os
+critérios por marcar acima continuam por marcar: o fecho da fase é uma decisão do dono com os
+resíduos nomeados, e não os dá por cumpridos. À data, o `k3` continua ligado em produção a 10%
+dos planos, com o disjuntor em `observe`.
+
+**Por decidir pelo dono** (acompanhamento §4): se o candidato passa a titular, continua ou sai;
+se o disjuntor passa a `enforce`.
 
 **Resíduos**, na §7 do acompanhamento («Resíduos da fase A3»).
 
@@ -2226,4 +2233,4 @@ titular, continua ou sai; se o disjuntor passa a `enforce`. Este ticket não fec
 | 1.14 | 2026-10-11 | +AOS-523 (fase A3): a medição do critério da fase — o terceiro modelo (outro modelo do Kimi, pela mesma conta) entra em produção em menos de uma hora, com zero PRs e uma assinatura; um modelo mau é recusado pelo arnês e pelo nó, em ensaio; um candidato que degrada perde a fatia, em ensaio (D9) | Equipa AOS |
 | 1.15 | 2026-10-11 | AOS-522 implementado em ensaio: `aos-ensaio qualificar` e `conferir`, o resumo de uma página e o runbook com relógio; o ensaio a seco com Docker e nó local e a corrida real ficam por fazer | Equipa AOS |
 | 1.16 | 2026-10-11 | AOS-522: correcções da revisão adversarial — quatro barreiras com teste próprio, o resumo a partir do registo escrito, o plano confere a allowlist; e a correcção de um defeito do AOS-518 (uma corrida interrompida podia sair `recusado`) | Equipa AOS |
-| 1.17 | 2026-10-12 | AOS-523 medido: o `k3` saiu `qualificado` no exame real, foi assinado pelo dono e serve 10% dos planos na v0.1.55 (série `v0155c`: 7 planos em 40, 14 de 14 runs do candidato cumpridos); a primeira metade do critério da fase fica cumprida em produção, a segunda só com modelos maus simulados — nenhum modelo mau real foi recusado; a fase fica por fechar pelo dono. AOS-518 e AOS-522: a qualificação e a corrida reais registadas | Equipa AOS |
+| 1.17 | 2026-10-12 | AOS-523 medido: o `k3` saiu `qualificado` no exame real, foi assinado pelo dono e serve 10% dos planos na v0.1.55 (série `v0155c`: 7 planos em 40, 14 de 14 runs do candidato cumpridos); a primeira metade do critério da fase fica cumprida em produção, a segunda só com modelos maus simulados — nenhum modelo mau real foi recusado; a fase foi fechada pelo dono no mesmo dia, com os resíduos nomeados. AOS-518 e AOS-522: a qualificação e a corrida reais registadas | Equipa AOS |
