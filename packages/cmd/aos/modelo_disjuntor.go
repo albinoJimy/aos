@@ -52,6 +52,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	agentruntime "github.com/aos-ref/kernel/agent-runtime"
 	"github.com/aos-ref/kernel/agent-runtime/state"
@@ -88,6 +89,14 @@ const disjuntorMaxTentativas = 16
 // tentativas) — muito acima do que um canary produz. Atingido, não se grava mais nada para esse
 // registo: a janela e os contadores ficam como estavam, e o arranque di-lo.
 const disjuntorMaxObservacoes = 400
+
+// disjuntorPrazoDeIO é quanto tempo o disjuntor espera pelo Event Store nos dois sítios em que escreve
+// fora de uma decisão: dentro de um turno (o turno com o modelo servido diferente) e na saída da
+// hospedagem (o desfecho). Sem prazo, um Event Store pendurado prendia o turno e o fim do run. Cinco
+// segundos: uma observação são duas leituras e duas escritas pequenas, que em produção levam
+// milissegundos — o prazo só se esgota com o Event Store avariado. NÃO é uma decisão: esgotado, a
+// observação conta como não gravada, e o turno e o run seguem.
+const disjuntorPrazoDeIO = 5 * time.Second
 
 // Os valores de `AOS_MODEL_BREAKER`. Vocabulário FECHADO.
 const (
@@ -291,13 +300,20 @@ type disjuntorDoModelo struct {
 	sinaisVistos                                             map[string]*atomic.Int64
 	// naoGravadas conta as observações que esta réplica NÃO conseguiu gravar no livro.
 	naoGravadas atomic.Int64
+	// prazoDeIO é o prazo das escritas fora de uma decisão ([disjuntorPrazoDeIO]).
+	prazoDeIO time.Duration
+	// turnoPorGravar diz que esta réplica VIU um turno do candidato em vigor com o modelo servido
+	// diferente e NÃO o conseguiu gravar no livro. Em `enforce` é o lado fechado: enquanto estiver
+	// de pé, esta réplica trata o disjuntor como aberto — um turno com o modelo trocado não passa em
+	// silêncio por o registo ter falhado. Vive em memória: um reinício perde-o (ADR-041 §5).
+	turnoPorGravar atomic.Bool
 	// turnosTratados são os runs cujo turno F5 esta réplica já levou ao livro: poupa uma leitura por
 	// turno a um run que continua a ser servido por outro modelo.
 	turnosTratados sync.Map
 }
 
 func novoDisjuntorDoModelo(modo, emVigor string) *disjuntorDoModelo {
-	d := &disjuntorDoModelo{modo: modo, emVigor: emVigor, sinaisVistos: map[string]*atomic.Int64{}}
+	d := &disjuntorDoModelo{modo: modo, emVigor: emVigor, prazoDeIO: disjuntorPrazoDeIO, sinaisVistos: map[string]*atomic.Int64{}}
 	for _, s := range sinaisDeFalha() {
 		d.sinaisVistos[s] = new(atomic.Int64)
 	}
@@ -318,6 +334,9 @@ func (l *livroDoCanary) julgarDisjuntor(st estadoDoCanary, entryDigest string) (
 		return aberto, estadoDaRegra{}, ""
 	}
 	regra = avaliarDisjuntor(d.obs)
+	if l.disjuntor.modo == modelBreakerEnforce && entryDigest == l.disjuntor.emVigor && l.disjuntor.turnoPorGravar.Load() {
+		aberto = true
+	}
 	if regra.disparou {
 		switch l.disjuntor.modo {
 		case modelBreakerEnforce:
@@ -642,8 +661,10 @@ func (s *NodeService) observarDesfechoNoDisjuntor(runID string, goal agentruntim
 	if !conta {
 		return
 	}
-	// Com context.Background(), como o selo do estado terminal: o contexto do run pode já ter acabado.
-	ctx := context.Background()
+	// Sem o contexto do run, que pode já ter acabado — mas com um prazo: um Event Store pendurado
+	// não prende a saída da hospedagem.
+	ctx, cancelar := context.WithTimeout(context.Background(), d.prazoDeIO)
+	defer cancelar()
 	reg, unidade, ok, err := candidatoDoRun(ctx, s.node.EventStore, runID)
 	if err == nil && !ok {
 		return
@@ -680,8 +701,10 @@ func (c *canaryDoNo) observarTurnoNoDisjuntor(ctx context.Context, alias string,
 	if _, ja := d.turnosTratados.LoadOrStore(runID, true); ja {
 		return
 	}
-	// O facto sela-se mesmo que o run seja cancelado a seguir.
-	bg := context.WithoutCancel(ctx)
+	// O facto sela-se mesmo que o run seja cancelado a seguir — mas com um prazo: isto corre DENTRO do
+	// turno, e um Event Store pendurado não o pode prender.
+	bg, cancelar := context.WithTimeout(context.WithoutCancel(ctx), d.prazoDeIO)
+	defer cancelar()
 	reg, _, ok, err := candidatoDoRun(bg, c.livro.es, runID)
 	if err == nil && !ok {
 		return
@@ -692,6 +715,12 @@ func (c *canaryDoNo) observarTurnoNoDisjuntor(ctx context.Context, alias string,
 	if err != nil {
 		d.turnosTratados.Delete(runID)
 		d.naoGravadas.Add(1)
-		c.livro.logf("disjuntor do modelo candidato (AOS-521): o turno com o modelo servido diferente do run %q NAO ficou no livro: %v", runID, err)
+		porque := ""
+		if d.modo == modelBreakerEnforce && (reg.entryDigest == "" || reg.entryDigest == d.emVigor) {
+			// O LADO FECHADO: o nó viu o modelo trocado e não o conseguiu gravar. Corta na mesma.
+			d.turnoPorGravar.Store(true)
+			porque = " — em enforce, ESTA REPLICA PASSA A TRATAR O DISJUNTOR COMO ABERTO ate reiniciar (os planos novos vao para o titular); o registo e tentado de novo no proximo turno com o modelo trocado"
+		}
+		c.livro.logf("disjuntor do modelo candidato (AOS-521): o turno com o modelo servido diferente do run %q NAO ficou no livro: %v%s", runID, err, porque)
 	}
 }
