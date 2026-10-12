@@ -201,6 +201,12 @@ type estadoDoCanary struct {
 	// lá pôs pode mudar a decisão (um disjuntor aberto, por exemplo): o canary NÃO É DECIDÍVEL por
 	// esta versão. Não se atribui nenhum plano novo ao candidato.
 	futuros int
+	// disjuntores é o que o livro tem sobre o disjuntor do candidato (AOS-521), por digest do
+	// registo de entrada. nil enquanto o livro não tiver nenhum evento do disjuntor.
+	disjuntores map[string]*disjuntorNoLivro
+	// disjuntorIlegiveis conta os eventos do disjuntor que não se souberam ler, com o disjuntor
+	// DESLIGADO (ligado, o livro fica ilegível). Estão também contados em `futuros`.
+	disjuntorIlegiveis int
 }
 
 // decisaoDoCanary é o resultado de uma consulta ao livro para um run novo.
@@ -241,6 +247,15 @@ type livroDoCanary struct {
 	fechadoVisto     atomic.Int64
 	// futurosVistos é quantos eventos de tipos desconhecidos a última leitura viu.
 	futurosVistos atomic.Int64
+	// disjuntor é o disjuntor do candidato (AOS-521), LIGADO: `observe` ou `enforce`. nil — a
+	// omissão — é `off`: não se avalia nem se grava nada. A marca de aberto que já esteja no livro
+	// vale na mesma ([livroDoCanary.julgarDisjuntor]).
+	disjuntor *disjuntorDoModelo
+	// disjuntorAbertoVisto diz se a última leitura desta réplica viu o disjuntor do candidato em
+	// vigor aberto para as decisões deste nó. Só serve para o dizer no arranque; não decide nada.
+	disjuntorAbertoVisto atomic.Bool
+	// disjuntorIlegiveisVistos é quantos eventos do disjuntor a abertura do canary não soube ler.
+	disjuntorIlegiveisVistos atomic.Int64
 }
 
 // entrar toma a vez deste processo no livro, ou desiste quando o contexto acaba. Uma desistência é
@@ -296,6 +311,23 @@ func (l *livroDoCanary) ler(ctx context.Context) (estadoDoCanary, error) {
 	}
 	for _, ev := range evs {
 		st.ultimoSeq = ev.Seq
+		// OS QUATRO TIPOS DO DISJUNTOR (AOS-521) são conhecidos desta versão: lêem-se para o estado
+		// do disjuntor do seu registo, e não contam como eventos de uma versão mais recente.
+		if tipoDoDisjuntor(ev.Type) {
+			if err := st.lerDoDisjuntor(ev); err != nil {
+				// COM O DISJUNTOR DESLIGADO, um evento do disjuntor que não se sabe ler NÃO torna o
+				// livro ilegível: o nó do AOS-520 tratava-o como um evento de uma versão mais
+				// recente, e `off` é esse nó. Conta como tal — o canary fica «não decidível» (nenhum
+				// plano novo para o candidato), o titular é servido, e o nó arranca. Com o disjuntor
+				// LIGADO continua a ser ilegível: não se decide sobre um estado que não se leu.
+				if l.disjuntor != nil {
+					return st, err
+				}
+				st.futuros++
+				st.disjuntorIlegiveis++
+			}
+			continue
+		}
 		switch ev.Type {
 		case EventTypeModelCanaryOpened, EventTypeModelCanaryPlanAssigned, EventTypeModelCanaryClosed:
 		default:
@@ -397,6 +429,8 @@ func (l *livroDoCanary) abrir(ctx context.Context, c candidatoEmVigor, marca fun
 			return err
 		}
 		l.futurosVistos.Store(int64(st.futuros))
+		l.disjuntorAbertoVisto.Store(st.disjuntorDe(c.entryDigest).aberto != nil)
+		l.disjuntorIlegiveisVistos.Store(int64(st.disjuntorIlegiveis))
 		jaServidos := st.porAbertura[c.entryDigest]
 		if tem {
 			fechado := st.fechadas[c.entryDigest] || jaServidos >= ab.Limit
@@ -502,12 +536,41 @@ func (l *livroDoCanary) decidir(ctx context.Context, c candidatoEmVigor, chave c
 			l.reconciliarFim(ctx, c, atribuidosNaAbertura, ab.Limit, st.fechadas[c.entryDigest])
 		}
 
+		// O DISJUNTOR DO CANDIDATO (AOS-521, ADR-041 §2.9). Está aberto se o livro tem a marca
+		// `opened` para o registo em vigor — em QUALQUER modo, `off` incluído — ou, com o nó em
+		// `enforce`, se a regra dispara sobre as observações que o livro tem. Com o disjuntor
+		// desligado isto é uma consulta ao que já se leu: nem uma leitura, nem uma escrita a mais.
+		// A marca que falte grava-se aqui (quem observou o último desfecho pode ter morrido antes);
+		// a decisão não depende de ela ficar gravada.
+		disjuntorAberto, regraDoDisjuntor, marcaEmFalta := l.julgarDisjuntor(st, c.entryDigest)
+		l.disjuntorAbertoVisto.Store(disjuntorAberto)
+		if marcaEmFalta != "" {
+			// UMA tentativa por volta, e só se relê se a marca FICOU: perder o CAS da marca não gasta
+			// as voltas da decisão — senão um nó em `observe` que não conseguisse gravar «teria
+			// aberto» recusava runs, e `observe` não mexe.
+			gravada, gerr := l.gravarMarcaDoDisjuntor(ctx, c.registo(), st.ultimoSeq, marcaEmFalta, regraDoDisjuntor)
+			if gerr != nil {
+				l.logf("disjuntor do modelo candidato (AOS-521): a marca %s NAO foi gravada: %v — a decisao e a da regra sobre as observacoes do livro; a marca sera tentada na proxima decisao", marcaEmFalta, gerr)
+			} else if gravada {
+				continue
+			}
+		}
+
 		// (1) O plano já foi atribuído ao candidato — nesta ou noutra abertura.
 		if a, ja := st.atribuidos[chave.indice()]; ja {
 			if a.Alias != c.alias || a.ProfileDigest != c.profileDigest {
 				return decisaoDoCanary{}, ErrPlanAssignedToAbsentCandidate
 			}
+			// Com o disjuntor ABERTO o plano do candidato não continua nele, e não passa para o
+			// titular: o run novo é recusado, e o plano falha (um plano não troca de modelo a meio).
+			if disjuntorAberto {
+				return decisaoDoCanary{}, ErrCandidateBreakerOpen
+			}
 			return decisaoDoCanary{papel: canary.RoleCandidate, razao: razaoPlanoJaAtribuido}, nil
+		}
+		// (1-bis) O disjuntor está aberto: nenhum plano novo vai para o candidato.
+		if disjuntorAberto {
+			return decisaoDoCanary{papel: canary.RoleIncumbent, razao: razaoDisjuntorAberto}, nil
 		}
 		// (2) O pedido de plano é anterior à abertura: os nós que já correu foram do titular.
 		if seqDoPedido != 0 && seqDoPedido <= ab.PlanRequestMark {

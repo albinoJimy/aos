@@ -1573,6 +1573,20 @@ curl -s … /metrics | grep aos_model_canary
 #   aos_model_canary_newer_events    — eventos do livro que este binário não conhece (deve ser 0)
 ```
 
+**Ler cada modelo, lado a lado** (só com o candidato a servir; o rótulo `model` é o alias pedido —
+o do titular ou o do candidato —, nunca o que o fornecedor declara):
+
+```bash
+curl -s … /metrics | grep _by_model_total | grep -v ' 0$'
+#   aos_model_turns_by_model_total{model,stop_reason}        — turnos ao vivo, por motivo de paragem
+#   aos_model_response_rejected_by_model_total{model,causa}  — respostas que o gateway recusou
+#   aos_runs_finished_by_model_total{model,outcome,reason}   — runs selados, por estado e razão
+```
+
+O titular é a série «antes» e o candidato a «depois», no mesmo período. São 70 séries no máximo,
+por processo e desde o arranque. Um run recusado pela fixação não conta em nenhum modelo. As
+métricas e os alertas de sempre (`alerta-rota.sh` incluído) não mudaram.
+
 **«Atribuído» não é «servido».** O livro conta os planos que foram **atribuídos** ao candidato, e
 grava a atribuição antes de o run começar. Um run que seja recusado logo a seguir (o livro não se
 conseguiu ler, a fixação não se gravou) já gastou um lugar dos 40. Por isso o número de planos que
@@ -1636,6 +1650,111 @@ sempre. Com `off`, arranca e é inerte. Vê-se no arranque (`AVISO … VERSAO MA
 tem de correr a versão que escreveu esses eventos. (Um evento **malformado** de um tipo que esta
 versão conhece é outra coisa: o livro fica ilegível e o nó não arranca com a pasta de perfis
 configurada — não há reparação do stream; sai-se retirando a pasta.)
+
+### O disjuntor do candidato — `AOS_MODEL_BREAKER` (AOS-521, ADR-041 §2.9) — nada ligado hoje
+
+Tira a fatia ao candidato **sozinho** quando ele falha: 3 falhas nas últimas 20 unidades do
+candidato (um nó de plano conta pela sua tentativa mais recente; um run sem plano é uma
+unidade), ou o primeiro turno com o modelo servido diferente do esperado. **Não a devolve
+sozinho.** Valores: `off` (a omissão), `observe`, `enforce`. A variável ainda não está no
+compose: entra com a pasta de perfis e o interruptor do candidato.
+
+**Ligar — `observe` primeiro.** Na primeira fatia põe `AOS_MODEL_BREAKER=observe` em todas as
+réplicas (com `AOS_MODEL_ROUTE_GOVERNANCE=observe`, senão o sinal «modelo servido diferente» não
+existe — o arranque di-lo). Em `observe` o nó conta e **não corta**: quando a regra dispara,
+grava «teria aberto» e põe `aos_model_breaker_would_open` a 1. `enforce` é uma decisão tua, com
+esses números à frente — e **com `enforce` a governação da rota desligada não deixa o nó
+arrancar**. Atenção: passar a `enforce` com um registo cujo `observe` já «teria aberto» **abre
+logo**; para dar fatia ao candidato em `enforce`, assina um registo novo.
+
+```bash
+docker logs aos-aos-1 2>&1 | grep 'disjuntor do modelo candidato' | tail -5
+curl -s … /metrics | grep aos_model_breaker
+#   aos_model_breaker_open             — 1: aberto, o candidato não recebe runs novos
+#   aos_model_breaker_would_open       — 1: a regra já disparou (em observe, o que enforce teria feito)
+#   aos_model_breaker_window_failures  — falhas na janela (dispara às 3)
+#   aos_model_breaker_window_units     — unidades na janela (no máximo 20)
+#   aos_model_breaker_signals{signal}  — por sinal: nao_cumprido, resposta_vazia, resposta_rejeitada,
+#                                        erro_do_provider, modelo_servido_diferente, nao_convergiu,
+#                                        falha_nao_classificada
+#   aos_model_breaker_unrecorded_total — escritas que não ficaram no livro (deve ser 0)
+```
+
+A janela e os sinais são os de **agora**: em `observe` continuam a andar depois do «teria aberto»
+(falhas sobre unidades dá a taxa); em `enforce`, depois de abrir, ficam como estavam.
+
+**O que conta como falha.** Um run do candidato que acabou mal conta, salvo se a causa estiver na
+lista fechada do que não é do modelo (ADR-041 §2.9): o 429 e o 401/403 (são da conta), o
+cancelamento, o orçamento, a recusa pela fixação, o transporte sem resposta, a negação da
+pipeline do gateway, a rota não reportada, e o `complete` sem contrato declarado. **Uma
+indisponibilidade curta do fornecedor pode abrir o disjuntor**: três 503 (ou 408) seguidos
+abrem-no, e reabrir é assinar um registo novo. É de propósito — o lado fechado.
+
+**O aviso** — [`alerta-disjuntor.sh`](alerta-disjuntor.sh), no molde do `alerta-rota.sh`: avisa
+uma vez quando abre (ou, em `observe`, quando teria aberto), relembra de 24 h em 24 h, e avisa
+quando um registo novo o fecha. Avisa também quando `aos_model_breaker_unrecorded_total` passa de
+zero: o nó não conseguiu gravar uma observação ou a marca. Sai o título e as contagens; nenhum
+nome de modelo. **O deploy ainda não o copia para o servidor**: copia-o à mão para `/opt/aos/`.
+**Com `AOS_MODEL_BREAKER=off` as famílias não existem e o script não vê nada** — nem um
+disjuntor aberto, nem escritas por gravar: cai em «ausente», sem aviso.
+
+```bash
+# como aos: crontab -e  →  */15 * * * * /bin/bash /opt/aos/alerta-disjuntor.sh >/dev/null 2>&1
+bash /opt/aos/alerta-disjuntor.sh           # «ok: janela: N falha(s) em M unidade(s); sinais: …»
+bash /opt/aos/alerta-disjuntor.sh --teste   # envia um aviso de TESTE, não mexe no estado
+```
+
+**O disjuntor abriu — o que ler.**
+
+1. O log: `DISJUNTOR DO MODELO CANDIDATO ABERTO`, com a regra (`falhas_na_janela` ou
+   `modelo_servido_diferente`), as falhas na janela e os contadores por sinal.
+2. O facto selado, no livro durável `aos-internal/model-canary`: o evento `model.breaker.opened`
+   traz o digest do registo, a regra, os contadores e a **janela** — os ids dos runs e o sinal de
+   cada um. Os desfechos, um a um, são os `model.breaker.run_outcome`; o turno com o modelo
+   trocado é o `model.breaker.route_mismatch`. (No WAL: busybox `:ro` no volume, `grep -a`.)
+3. Cada run da janela: `GET /runs/{id}` e o stream do run — o veredicto na transição terminal,
+   ou o erro do turno. Um `erro_do_provider` vê-se também em
+   `aos_model_route_params_rejected_total` e no log do proxy; um `modelo_servido_diferente`, em
+   `aos_model_route_checks_total` (secção «Rota do modelo sob governação»).
+
+**O que acontece enquanto está aberto.** Os planos **novos** vão para o titular (no
+`run.model_pinned`: `reason: disjuntor_aberto`). Um run novo de um plano que **já era do
+candidato** é recusado (`failed`, `model_pin_refused`, causa
+`plano_do_candidato_com_disjuntor_aberto`): o plano falha, não continua no titular. Os runs do
+candidato **em curso** acabam com ele. O titular não é afectado.
+
+**O que fazer, e como reabrir.** Não há comando para fechar o disjuntor, e ele **não fecha**: nem
+com o tempo, nem com um reinício, nem com `AOS_MODEL_BREAKER=off` (desligado, a marca de aberto
+continua a valer, e o arranque avisa). Decides uma de duas:
+
+- **o candidato sai** — o procedimento «Desligar — drenar primeiro», acima;
+- **o candidato volta a ter fatia** — corrigida a causa, **assinas um registo de entrada novo**
+  (outro digest: muda a fatia, ou volta a qualificar e cita o relatório novo) e recrias o nó. O
+  registo novo começa fechado, com a janela vazia. Repor o **mesmo** registo, ou um registo
+  antigo cujo disjuntor abriu, não reabre.
+
+**Antes de mudar de `enforce` para `off` ou `observe`: confirma a marca.** Em `enforce` quem
+corta é a regra; em `off` e `observe`, só a marca `model.breaker.opened` que está no livro. Se o
+nó cortou e a marca não ficou gravada, mudar de modo **devolve a fatia ao candidato** sem registo
+novo. Confirma as duas coisas, com o nó ainda em `enforce`:
+
+```bash
+curl -s … /metrics | grep -E 'aos_model_breaker_(open|unrecorded_total)'
+#   aos_model_breaker_open 1  e  aos_model_breaker_unrecorded_total 0
+# e a marca no livro durável (busybox :ro no volume, grep -a), com o digest do registo em vigor:
+grep -a -c '"type":"model.breaker.opened"' /var/lib/aos/events.wal     # tem de ser >= 1
+docker logs aos-aos-1 2>&1 | grep 'DISJUNTOR DO MODELO CANDIDATO ABERTO' | tail -1
+```
+
+Com `unrecorded_total` acima de zero, ou sem a marca, **não mudes de modo**: vê no log porque é
+que a escrita falhou, repara, e espera pela decisão seguinte (o nó volta a tentar em cada run
+novo e no arranque). Uma marca para um registo que não é o em vigor diz `REGISTO FORA DE VIGOR`
+no log e `out_of_force` no evento: não é o candidato de agora.
+
+**Limites.** Com mais de uma réplica do nó sobre JetStream não é suportado (o mesmo defeito do
+canary: a réplica que fica atrás não grava, e `aos_model_breaker_unrecorded_total` sobe). Uma
+observação que não ficou no livro não entra na janela. Um nó de imagem anterior que encontre os
+eventos do disjuntor deixa de atribuir planos ao candidato (`aos_model_canary_newer_events`).
 
 **Repor um registo antigo.** Se trocares o registo do candidato e depois voltares ao anterior, o
 nó grava uma **época** nova da abertura, com a marca actual da fila: os planos pedidos entretanto

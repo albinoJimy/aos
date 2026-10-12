@@ -96,6 +96,12 @@ var excluidasComRazao = map[string]string{
 		"oferecer um interruptor que, a `on`, nao serve candidato nenhum e deixa o operador a julgar " +
 		"que serve. Entra com a pasta e a ancora, no PR de deploy em que o dono decidir ligar, " +
 		"depois da revisao adversarial que o ticket exige.",
+	// AOS-521. Sai daqui no MESMO PR de deploy: sem candidato a servir o disjuntor nao tem o que vigiar.
+	"AOS_MODEL_BREAKER": "ainda nao (AOS-521): o disjuntor do modelo candidato so avalia com um " +
+		"candidato a servir (AOS_MODEL_CANDIDATE=on e a pasta de perfis assinados), que o compose " +
+		"ainda nao passa. Sozinha, a variavel e validada e nao liga nada — e a `enforce`, sem a " +
+		"governacao da rota, impede o arranque. Entra com a pasta e o interruptor do candidato, em " +
+		"`observe`, no PR de deploy em que o dono decidir ligar.",
 }
 
 var reGetenv = regexp.MustCompile(`os\.Getenv\("(AOS_[A-Z0-9_]+)"\)`)

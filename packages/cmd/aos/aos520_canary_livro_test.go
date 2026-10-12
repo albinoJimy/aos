@@ -576,11 +576,13 @@ func TestAOS520_Livro_IlegivelRecusa(t *testing.T) {
 }
 
 // aos520EventoFuturo escreve no livro um evento de um tipo que este binário não conhece, da família
-// do livro — o que uma versão mais recente do nó (o disjuntor do AOS-521) lá poria.
+// do livro — o que uma versão mais recente do nó lá poria. Até ao AOS-521 o tipo usado aqui era
+// `model.breaker.opened`; desde que o disjuntor existe esse tipo é CONHECIDO, e o «futuro» passou a
+// ser outro.
 func aos520EventoFuturo(t *testing.T, es eventstore.EventStore, passo string) {
 	t.Helper()
 	if _, err := es.Append(context.Background(), canaryStream, eventstore.EventInput{
-		Type: "model.breaker.opened", Payload: []byte(`{"v":"9.0","coisa_que_nao_conheco":true}`), RunID: canaryRunID, StepID: passo,
+		Type: "model.vindouro.facto", Payload: []byte(`{"v":"9.0","coisa_que_nao_conheco":true}`), RunID: canaryRunID, StepID: passo,
 	}); err != nil {
 		t.Fatal(err)
 	}

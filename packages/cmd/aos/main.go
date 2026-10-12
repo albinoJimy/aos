@@ -484,6 +484,12 @@ func run(w io.Writer) error {
 	for _, line := range modelRouteBannerFromEnvCom(cfg.Model != nil, modelNameFromEnv(), assinados.perfis()) {
 		fmt.Fprintf(w, "[aos] %s\n", line)
 	}
+	// O DISJUNTOR DO CANDIDATO (AOS-521). Com `off` — a omissão — não sai linha nenhuma. O modo da
+	// rota foi validado em [parseModelFromEnv]; relê-se para dizer se o sinal F5 existe.
+	modoDaRota, _ := parseModelRouteGovernanceFromEnv()
+	for _, line := range modelBreakerBanner(assinados, modelNameFromEnv(), modoDaRota) {
+		fmt.Fprintf(w, "[aos] %s\n", line)
+	}
 
 	// A FORMA DA RESPOSTA (AOS-507). Validada em [parseModelFromEnv]; com `off` não sai linha.
 	for _, line := range modelResponseShapeBannerFromEnv(cfg.Model != nil) {
@@ -2332,6 +2338,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	if cerr != nil {
 		return nil, nil, cerr
 	}
+	// O DISJUNTOR DO CANDIDATO (AOS-521): validado no mesmo sítio e pela mesma razão.
+	disjuntor, derr := modelBreakerFromEnv()
+	if derr != nil {
+		return nil, nil, derr
+	}
 	endpoint := strings.TrimSpace(os.Getenv("AOS_MODEL_ENDPOINT"))
 	if endpoint == "" {
 		// AOS-519: em produção, uma pasta de perfis assinados declarada SEM gateway aborta — o
@@ -2377,6 +2388,7 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	// pasta de perfis não há onde o guardar nem candidato a quem ele se aplique.
 	if assinados != nil {
 		assinados.candidatoLigado = candidatoLigado
+		assinados.disjuntor = disjuntor
 	}
 	// A ROTA SOB GOVERNAÇÃO (AOS-505). Vocabulário fechado, validado aqui pela mesma razão; com a
 	// governação ligada, um modelo sem perfil de rota também aborta o arranque, e `enforce` sem o
@@ -2384,6 +2396,11 @@ func parseModelFromEnv(production bool) (agentruntime.ModelClient, func(*identit
 	rota, rotaContadores, rerr := modelRouteFromEnvCom(model, assinados.perfis())
 	if rerr != nil {
 		return nil, nil, rerr
+	}
+	// AOS-521: o disjuntor em `enforce` exige a governação da rota ligada — é dela que vem o sinal
+	// «modelo servido diferente». Sem ela o nó não arranca.
+	if err := conferirDisjuntorComARota(disjuntor, rota.Mode); err != nil {
+		return nil, nil, err
 	}
 	// A FORMA DA RESPOSTA (AOS-507). Vocabulário fechado, validado aqui pela mesma razão.
 	forma, formaContadores, formaOpcao, ferr := modelResponseShapeFromEnv()

@@ -4213,10 +4213,10 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Métricas** (segundo PR)
 
-- [ ] Turnos, desfechos de run (cumprido, não cumprido, por causa) e respostas rejeitadas têm
+- [x] Turnos, desfechos de run (cumprido, não cumprido, por causa) e respostas rejeitadas têm
       séries por modelo, com um conjunto **fechado** de valores do rótulo (os modelos
       esperados dos perfis carregados) e um máximo de séries escrito e testado.
-- [ ] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
+- [x] As métricas e os alertas que existem (`deploy/server/alerta-rota.sh` incluído) continuam
       a funcionar sem alteração.
 
 **O perfil fixado por run** (herdado do AOS-519, onde ficou como limite conhecido)
@@ -4292,10 +4292,46 @@ Sem candidato, ou com a fatia a zero, o nó é byte a byte o de hoje.
 
 **Em curso (2026-10-11).** Feitos o **PR 0 — o perfil fixado por run** (ramo
 `feature/AOS-520-perfil-fixado-por-run`) e o **PR 1 — titular, candidato e canary** (ramo
-`feature/AOS-520-titular-e-candidato`, por cima do PR 0). **Por fazer:** o PR 2 (as séries por
-modelo — o bloco «Métricas») e o smoke sobre JetStream. O PR 1 teve **duas revisões adversariais
+`feature/AOS-520-titular-e-candidato`, por cima do PR 0) e o **PR 2 — as séries por modelo** (ramo
+`feature/AOS-520-metricas-por-modelo`, por cima do PR 1; ver «O que o PR 2 entregou», abaixo).
+**Por fazer:** o smoke sobre JetStream. O PR 1 teve **duas revisões adversariais
 independentes** (2026-10-11), corrigidas no mesmo ramo — ver «Correcções das revisões», abaixo.
 Os critérios marcados acima são os que o PR 1 cumpre em ensaio; nada está ligado.
+
+**O que o PR 2 entregou** (ADR-041 §2.8).
+
+- *Três famílias novas*: `aos_model_turns_by_model_total{model,stop_reason}`,
+  `aos_model_response_rejected_by_model_total{model,causa}` e
+  `aos_runs_finished_by_model_total{model,outcome,reason}`. As que existiam não mudaram.
+- *O rótulo `model` é o alias PEDIDO* — o do titular ou o do candidato a servir —, num conjunto
+  fechado; nunca o modelo que o fornecedor declara. **Acerto ao critério, a dizer ao dono:** o
+  critério fala em «os modelos esperados dos perfis carregados»; usou-se o alias, que é a chave
+  por que o nó escolhe, fixa e despacha, e é o que faz de «o titular» e «o candidato» duas séries
+  mesmo que os dois perfis esperem o mesmo modelo.
+- *Só com um candidato a servir* — **POR CONFIRMAR PELO DONO** (o critério da inércia já o dizia,
+  e o teste de inércia do PR 1 obriga a isso; a alternativa era «com um candidato carregado»): com `off` e um registo na
+  pasta o despachante existe e não conta nada. Um run já fixado no candidato que acabe depois de
+  o interruptor passar a `off` conta só nas famílias de sempre.
+- *O tecto*: 70 séries — dois modelos × (6 motivos + 5 causas + 3 estados × 8 razões) —, preso
+  por teste, no arranque e depois de os dois modelos servirem.
+- *Quem conta*: o despachante, por pedido ao vivo, pelo alias que escolheu (turnos e recusas); a
+  hospedagem, no selo do run, pelo alias do Goal (desfechos). Um run recusado pela fixação não
+  chegou a ter modelo e não conta em nenhum — fica em `aos_runs_finished_total`.
+- *`deploy/server/alerta-rota.sh` não foi tocado.*
+
+**Inércia do PR 2.** Sem candidato a servir, o teste de inércia do PR 1
+(`aos520_inercia_test.go`) continua verde **sem alteração** — os digests são os do PR 0. Com o
+candidato a servir, as linhas das famílias que já existiam (as do modelo, as dos runs e as das
+tool calls) e a lista dos nomes das famílias, tiradas as três novas, têm os digests **medidos no
+commit do PR 1** (be8b169d) num checkout destacado, com o mesmo ficheiro
+(`aos520_series_inercia_test.go`).
+
+**Mutações dirigidas do PR 2.** 11, todas vermelhas por asserção: o rótulo com o modelo servido
+cru; o candidato contado na série do titular (nos turnos, e nos desfechos); as séries criadas sem
+candidato a servir (na composição, e no `/metrics`); um alias fora do conjunto a ganhar série
+(sobreviveu à primeira passagem — faltava a asserção — e ficou presa); o tecto 2 → 3; um erro
+qualquer contado como resposta recusada; a resposta recusada contada também como turno; a razão
+do desfecho sempre `none`; e uma família de sempre a mudar de bytes.
 
 **O que o PR 1 entregou** (ADR-041).
 
@@ -4374,7 +4410,7 @@ arrancar: não tem como saber quantas réplicas partilham o Event Store.
   `parseModelFromEnv` e pelo `Bootstrap`, com o servidor HTTP do nó, não sobre o executável.
 - *A recusa pela fixação não tem série própria:* o run fecha `failed` com a razão
   `model_pin_refused` na transição terminal e a causa no log; conta nas séries de desfecho que já
-  existem. As séries por causa e por modelo são do PR 2.
+  existem. Nas séries por modelo do PR 2 não conta em nenhum modelo: não chegou a ter um.
 - *O `run.model_pinned` que já lá estava vale:* um run re-submetido com o mesmo id fica com a
   fixação que o log tem; se o modelo fixado já não é servido, é recusado.
 - *O teste do candidato indisponível* cobre o 503 e a ligação cortada; o timeout em si não (o
@@ -4613,50 +4649,50 @@ facto selado, as contagens ao lado, um aviso ao dono, e sem volta automática.
 
 **Inerte**
 
-- [ ] Com `AOS_MODEL_BREAKER` ausente ou `off`, o nó — com ou sem candidato a servir — é byte
+- [x] Com `AOS_MODEL_BREAKER` ausente ou `off`, o nó — com ou sem candidato a servir — é byte
       a byte o do AOS-520 sobre as mesmas entradas: pedidos, manifestos, registos, banner e
       `/metrics`. Preso por digest.
-- [ ] Em `observe`, a repartição dos planos entre titular e candidato é idêntica à de `off`
+- [x] Em `observe`, a repartição dos planos entre titular e candidato é idêntica à de `off`
       para a mesma sequência de identificadores e de desfechos: o disjuntor conta e não mexe.
 
 **A regra**
 
-- [ ] Função pura da janela: dadas as mesmas entradas pela mesma ordem, o mesmo estado. Teste
+- [x] Função pura da janela: dadas as mesmas entradas pela mesma ordem, o mesmo estado. Teste
       de tabela: 2 falhas em 20 não abre; a 3.ª abre; 3 falhas espalhadas por 21 runs não
       abrem; uma F5 abre sozinha, ao primeiro turno, com a janela vazia.
-- [ ] O limite de ritmo (429) **não conta**, por mais vezes que aconteça — um teste com 20
+- [x] O limite de ritmo (429) **não conta**, por mais vezes que aconteça — um teste com 20
       respostas 429 seguidas e o disjuntor fechado.
-- [ ] Um nó do plano que falha à primeira e cumpre na nova tentativa não fica como falha na
+- [x] Um nó do plano que falha à primeira e cumpre na nova tentativa não fica como falha na
       janela.
-- [ ] **Mutação dirigida** por parâmetro e por sinal: 3 para 4; 20 para 21; retirar cada um
+- [x] **Mutação dirigida** por parâmetro e por sinal: 3 para 4; 20 para 21; retirar cada um
       dos cinco sinais; contar o 429. Cada uma avermelha pelo menos um teste. A lista e o
       resultado ficam no Estado.
 
 **Aberto, em `enforce`**
 
-- [ ] Com um provider falso que degrada a meio (bom durante N runs, mau depois), o disjuntor
+- [x] Com um provider falso que degrada a meio (bom durante N runs, mau depois), o disjuntor
       abre **até ao 3.º run falhado** depois da degradação, e a partir daí **nenhum plano
       novo** vai para o candidato — zero em pelo menos 200 identificadores seguintes que a
       função de escolha lhe daria.
-- [ ] Os runs do candidato em curso no momento da abertura acabam com o modelo fixado.
-- [ ] Um run **novo** de um plano que o candidato já estava a servir não passa em silêncio
+- [x] Os runs do candidato em curso no momento da abertura acabam com o modelo fixado.
+- [x] Um run **novo** de um plano que o candidato já estava a servir não passa em silêncio
       para o titular: é recusado com causa própria, e o plano falha por essa causa. Nenhum
       plano fica com nós servidos por dois modelos.
-- [ ] **O titular nunca é tocado.** Um teste faz o titular falhar de todas as cinco maneiras,
+- [x] **O titular nunca é tocado.** Um teste faz o titular falhar de todas as cinco maneiras,
       com o disjuntor em `enforce`: o titular continua a receber todos os runs, e nenhum
       estado do disjuntor muda.
 - [ ] **Sobrevive a um reinício:** aberto continua aberto, com as mesmas contagens. Sobre
       ficheiro **e sobre JetStream** (cluster de CI).
-- [ ] **Não fecha sozinho:** nem com o tempo, nem com reinícios, nem com 200 runs bons do
+- [x] **Não fecha sozinho:** nem com o tempo, nem com reinícios, nem com 200 runs bons do
       titular, nem ao pôr o interruptor em `off` e outra vez em `enforce`. Fecha com um
       registo de entrada novo, assinado — e só com isso.
-- [ ] A abertura fica selada uma vez, com: o digest do registo de entrada, a regra que
+- [x] A abertura fica selada uma vez, com: o digest do registo de entrada, a regra que
       disparou, os cinco contadores e a janela (identificadores de run e sinal, sem conteúdo).
-- [ ] Com um candidato bom (o falso «bom» do AOS-518), o disjuntor não abre em 200 runs.
+- [x] Com um candidato bom (o falso «bom» do AOS-518), o disjuntor não abre em 200 runs.
 
 **`observe`**
 
-- [ ] Conta e, quando a regra dispararia, sela «teria aberto» com as mesmas contagens e
+- [x] Conta e, quando a regra dispararia, sela «teria aberto» com as mesmas contagens e
       expõe-o em métrica; a fatia não muda.
 - [ ] Como leitura de calibração, e só em `observe` ou `enforce`: a mesma regra é calculada
       também sobre os runs do titular e exposta em métrica, **sem estado que actue**. É a
@@ -4664,21 +4700,21 @@ facto selado, as contagens ao lado, um aviso ao dono, e sem volta automática.
 
 **O sinal F5 e a governação da rota**
 
-- [ ] Com `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`, um turno do candidato com o
+- [x] Com `AOS_MODEL_ROUTE_GOVERNANCE` em `observe` ou `enforce`, um turno do candidato com o
       modelo servido diferente do esperado abre o disjuntor nesse turno.
-- [ ] Com a governação da rota desligada o sinal F5 não existe: em `observe`, o banner di-lo;
+- [x] Com a governação da rota desligada o sinal F5 não existe: em `observe`, o banner di-lo;
       em `enforce`, **o nó não arranca**, com causa própria. Um disjuntor que promete apanhar
       a troca de modelo sem a poder ver é pior do que não o ter.
 
 **O aviso**
 
-- [ ] Um script de alerta em `deploy/server/`, com modo de teste, avisa uma vez à abertura e
+- [x] Um script de alerta em `deploy/server/`, com modo de teste, avisa uma vez à abertura e
       relembra enquanto durar. O que sai do servidor: o título e as contagens; nenhum nome de
       modelo, nenhum endereço.
 
 **Registo**
 
-- [ ] A secção do disjuntor no ADR novo, o runbook («o disjuntor abriu: o que ler, o que
+- [x] A secção do disjuntor no ADR novo, o runbook («o disjuntor abriu: o que ler, o que
       fazer, como reabrir») e a RTM regenerada.
 
 ### O que fica desligado por omissão, e o que tem de ficar inerte
@@ -4729,7 +4765,186 @@ facto selado, as contagens ao lado, um aviso ao dono, e sem volta automática.
 
 ### Estado
 
-**Aberto (2026-10-11).** Nada implementado. Começa depois do AOS-520.
+**Feito, por rever (2026-10-11).** Ramo `feature/AOS-521-disjuntor`, por cima do PR 2 do AOS-520.
+Nada ligado: `AOS_MODEL_BREAKER` nasce `off` e não está no compose. Falta a revisão adversarial
+antes do `enforce`. Os critérios marcados são os cumpridos em ensaio; os dois por marcar estão em
+«Por fazer».
+
+**O que foi entregue** (ADR-041 §2.9).
+
+- *A regra, pura* (`modelo_disjuntor_regra.go`): `avaliarDisjuntor` sobre a sequência das
+  observações de um registo, e `sinalDoDesfecho` sobre o que o nó tem quando sela um run. Dispara
+  com 3 falhas nas últimas 20 unidades, ou à primeira observação de um turno com o modelo servido
+  diferente. Disparada, fica com o estado do disparo.
+- *O estado no livro do canary*, em quatro tipos novos presos ao digest do registo:
+  `model.breaker.run_outcome`, `model.breaker.route_mismatch`, `model.breaker.opened` e
+  `model.breaker.would_open`. Com CAS e chave de idempotência do run ou do registo. Um reinício
+  não perde nada; duas réplicas abrem uma vez.
+- *Os modos*: `off` não lê nem grava nada a mais; `observe` grava e não corta; `enforce` corta.
+- *Aberto*: o plano novo é do titular (razão `disjuntor_aberto`); o run novo de um plano já
+  atribuído ao candidato é recusado (causa `plano_do_candidato_com_disjuntor_aberto`); o run em
+  curso acaba, e o run já fixado que é re-submetido continua.
+- *O sinal F5* chega pelo despachante, no turno, com a governação da rota em `observe` (na
+  resposta) ou em `enforce` (no erro). `enforce` do disjuntor sem a governação da rota não arranca.
+- *`modelgateway.ClassifyTurnFailure`*: a classe da falha de um turno, lida dos tipos do erro.
+- *Métricas* `aos_model_breaker_*` (só com o disjuntor ligado), *`deploy/server/alerta-disjuntor.sh`*
+  e o runbook.
+
+**Correcções da revisão adversarial (2026-10-12).** Nada bloqueante; dois achados importantes e
+vários menores, corrigidos no ramo, um commit por ponto. As definições abaixo já são as corrigidas.
+
+- *(1) Com a marca `opened` por gravar, `off` e `observe` devolviam a fatia que o `enforce`
+  cortou.* Ficou a via (a), mais uma: a marca é reconciliada em cada decisão e no arranque, sem
+  recusar runs; **uma marca que perde o CAS grava-se sem ele** (é o que a deixa ficar numa réplica
+  com a vista atrasada); e cada tentativa falhada conta em `aos_model_breaker_unrecorded_total`,
+  que o `alerta-disjuntor.sh` passou a avisar. **Resíduo, escrito no ADR-041 §5 e no runbook:** se
+  o Event Store recusar a escrita da marca de todas as maneiras, mudar de `enforce` para `off` ou
+  `observe` devolve a fatia — não há forma limpa de o saber sem a marca. Antes de mudar de modo
+  confirma-se a marca (o runbook tem o comando). Preso por um teste que afirma o resíduo.
+- *(2) Uma falha fora das classes conhecidas não entrava na janela.* A omissão passou para o lado
+  fechado: **o que não está na lista de exclusões conta.** Dois sinais novos — `nao_convergiu`
+  (F6: tecto de turnos, disjuntor por-run) e `falha_nao_classificada` (F7: o 200 sem `usage`
+  incluído). As duas listas estão no ADR-041 §2.9 e em «As definições», abaixo.
+- *(3) POR CONFIRMAR PELO DONO — o 401 e o 403 são da conta*, como o 429: saem da janela. O 5xx
+  e o 408 continuam a contar: **uma indisponibilidade curta do fornecedor pode abrir o disjuntor**
+  (três 503 seguidos abrem), aceite por ser o lado fechado.
+- *(3) POR CONFIRMAR PELO DONO — em `observe`, depois do «teria aberto», continua a medir*: as
+  observações continuam a gravar-se, com um **tecto de 400 por registo**, e as métricas mostram a
+  janela de agora. Passar a `enforce` com esse registo continua a abrir de imediato.
+- *Menor — POR CONFIRMAR PELO DONO: o `complete` sem contrato de conclusão declarado não entra na
+  janela* (nem bom, nem mau): `cumprido` é só o veredicto positivo sobre um contrato declarado.
+  Consequência: com runs sem contrato a janela só recebe falhas, e três abrem.
+- *Menor: a marca de um registo fora de vigor di-lo*, no evento (`out_of_force`) e no log, e o
+  log não diz que o candidato de agora deixa de receber.
+- *Menor: prazo de I/O de cinco segundos* nas duas escritas fora de uma decisão. **POR CONFIRMAR
+  PELO DONO:** em `enforce`, um turno com o modelo trocado que não se grava põe essa réplica a
+  tratar o disjuntor como aberto, em memória, até reiniciar.
+- *Menor: o `run.model_pinned` só vale se for o que o nó emitiu.*
+- *Menor: com `off`, um evento do disjuntor malformado não impede o arranque* — conta como evento
+  de uma versão mais recente, e o arranque avisa. Com o disjuntor ligado continua a ser ilegível.
+- *As cinco mutações que o revisor não correu* estão no total: três estavam mortas; duas ganharam
+  teste (a primeira escrita ganha, na leitura; o `turnosTratados`).
+
+**As definições, exactas.**
+
+- *Falha* é um destes sinais num run do candidato: `nao_cumprido` (F1, veredicto do kernel
+  negativo por uma razão que não a resposta vazia — imposto ou só observado), `resposta_vazia`
+  (F2), `resposta_rejeitada` (F3), `erro_do_provider` (F4, um status que não é 200 nem da conta:
+  5xx e 408 contam), `modelo_servido_diferente` (F5), `nao_convergiu` (F6, tecto de turnos ou
+  disjuntor por-run) e `falha_nao_classificada` (F7, qualquer outro desfecho selado `failed` ou
+  `timed_out` cuja causa não esteja na lista seguinte).
+- *Não entra na janela*, nem como falha nem como run bom — a lista é FECHADA: o pânico da
+  hospedagem; o desfecho não selado e o run que parou sem acabar; o `complete` sem veredicto ou
+  sem contrato declarado; o orçamento esgotado; a recusa pela fixação e o run fixado num perfil
+  que o nó não tem; o cancelamento; o 429 e o 401/403; o erro de transporte sem resposta HTTP; a
+  negação por um estágio da pipeline do gateway; a rota `nao_reportado`.
+- *`cumprido`* é só o `complete` com veredicto positivo sobre um contrato declarado.
+- *A janela* são as últimas 20 **unidades** com desfecho contado. A unidade é o nó do plano — o id
+  da primeira tentativa, lido do `run.plan_origin` do run —, ou o run, se não tem plano. A nova
+  tentativa substitui a anterior e vai para o fim.
+
+**O que se confirmou no código sobre as tentativas (o ticket pedia).** A nova tentativa de um nó
+do plano é um run novo, com o id `<plano>~<nó>~<n>`, e o nó grava no `run.plan_origin` dela
+`attempt` e `retry_of`. A primeira tentativa não tem esses campos. É desse evento, escrito pelo
+nó, que sai a unidade — não do id do run, que nunca se parte pelo `~`.
+
+**Pontos ambíguos, e como ficaram.**
+
+- *Um «teria aberto» lido por um nó em `enforce`.* Não é lido como aberto por modo nenhum. Mas a
+  regra é função das observações do livro, e não do modo em que foram gravadas: em `enforce`, um
+  registo cujo `observe` teria aberto **abre na primeira leitura**. É o lado fechado. Para dar
+  fatia ao candidato em `enforce` depois de um `observe` que disparou, assina-se um registo novo.
+- *`off` com o disjuntor já aberto.* A marca `opened` **vale em todos os modos**. `off` deixa de
+  avaliar e de gravar, e não desfaz o que está selado: senão, mudar uma variável reabria, e a D5
+  diz que só o dono reabre, assinando. A inércia não é tocada: sobre as mesmas entradas (um livro
+  sem marcas) o nó é o do AOS-520.
+- *O erro passageiro do provider.* Conta se o provider (ou o proxy) **respondeu** com um status
+  que não é 200 nem da conta (429, 401, 403) — 5xx e 408 incluídos; não conta se não houve
+  resposta. O nó não sabe se uma ligação que caiu foi o modelo ou o caminho até ao proxy, que o
+  titular também usa. Uma indisponibilidade curta do fornecedor pode, por isso, abrir.
+- *O veredicto negativo só observado* (`AOS_COMPLETION_VERDICT=observe`, o run fecha `complete`)
+  conta como F1 ou F2: o sinal é o veredicto do kernel, não o que o nó fez com ele.
+- *A rota não reportada* não abre: o proxy deixou de declarar, o que não prova outro modelo. É o
+  `alerta-rota.sh` que o avisa.
+- *«Com pelo menos um turno».* Não há contador de turnos: a recusa pela fixação, que é o run sem
+  turnos, está na lista de exclusões pelo nome.
+- *Os contadores selados* contam todas as observações por sinal até ao disparo; a janela conta
+  unidades. Uma tentativa falhada que a seguinte recuperou está no contador e não na janela.
+- *Depois do disparo*, em `enforce` (e com a marca de aberto no livro) não se grava mais nenhuma
+  observação; em `observe` continua a gravar-se, até ao tecto de 400 por registo. A marca e a
+  decisão são sempre as do primeiro disparo.
+- *Uma interrupção pelo disjuntor por-run conta (F6) mesmo que o run seja depois retomado e
+  conclua*: um run tem um desfecho no livro, e é o primeiro.
+- *«Selada».* A abertura fica no livro durável do Event Store. **Não** foi selada também no audit
+  de governação do gateway (como o fim do canary): por decidir pelo dono.
+
+**Inércia.** Com `AOS_MODEL_BREAKER` ausente ou `off` e um candidato a servir, os pedidos ao
+provider, os manifestos, os registos de retoma, os tipos de evento de cada run e do livro, as
+famílias e as linhas do `/metrics`, e as leituras do Event Store por hospedagem (seis ao stream do
+run, uma ao das aprovações, uma ao livro — no run do candidato e no do titular) têm os valores
+**medidos no commit do PR 2 do AOS-520** (e85108dc) num checkout destacado, com o mesmo ficheiro
+(`aos521_inercia_test.go`). Sem candidato a servir vale a inércia do PR 1, sem alteração.
+
+**Um teste do AOS-520 mudou, de propósito:** o «evento de uma versão mais recente» dos testes do
+livro usava o tipo `model.breaker.opened`, que passou a ser conhecido; usa agora outro tipo da
+família. E a lista fechada das causas de recusa ganhou uma.
+
+**Mutações dirigidas.** 75, repetidas todas depois das correcções da revisão, todas vermelhas por
+asserção (uma alteração de cada vez, os testes do disjuntor corridos sem tecto de tempo curto, o
+ficheiro reposto). As do critério: 3 → 4; 20 → 21; cada um dos cinco sinais retirado (o F5 duas
+vezes: do desfecho e do turno); o 429 a contar. As das correcções da revisão: o 401/403 a contar;
+a omissão de volta ao lado aberto; cada exclusão retirada (pânico, desfecho não selado, orçamento,
+fixação, as classes do gateway, o transporte, a pipeline, a rota não reportada, o perfil fixado);
+o `complete` sem contrato, e sem veredicto, a contar como cumprido; a interrupção por-run e o
+tecto de turnos a não contar; `observe` a deixar de medir depois do disparo, `enforce` a continuar
+a gravar, o livro sem tecto, o `/metrics` com a janela do disparo; a marca sem a tentativa sem
+CAS, e a tentativa falhada sem contar; a marca de um registo fora de vigor sem o dizer (no evento,
+e no log); as métricas de um registo que não é o em vigor; a primeira escrita a não ganhar (nos
+desfechos, e nos turnos); o run já tratado a reler o seu log; o desfecho e o turno que não se
+gravam a não contar; sem prazo de I/O (no turno, e na saída da hospedagem); o turno trocado por
+gravar a passar em silêncio em `enforce`, e a cortar em `observe`; o `run.model_pinned` de outro
+emissor a valer; e o evento malformado com o disjuntor desligado a impedir o arranque, ligado a
+ser tolerado, e desligado a não deixar o canary «não decidível». Duas sobreviveram à repetição
+(em `enforce` sem marca continuava a poder gravar-se; o sinal de turno por gravar em `observe`) e
+ficaram presas. E ainda, da primeira entrega: o turno com o modelo diferente a não disparar sozinho; o estado a mudar depois
+do disparo; a nova tentativa a não substituir; qualquer erro do run a contar; o desfecho a contar
+sem selo; `observe` a cortar; `enforce` a não cortar; o plano a meio a continuar no candidato, e a
+passar para o titular; a marca de aberto a não valer com `off`; «teria aberto» lido como aberto;
+a regra a não abrir sem a marca; o estado a não estar preso ao digest do registo; observações
+gravadas depois do disparo; o titular tocado; um run fixado como titular lido como do candidato; a
+unidade de uma tentativa a ser o próprio run; a marca em falta por repor; a decisão a depender da
+marca; `enforce` a arrancar sem a governação da rota; um valor inválido aceite; um evento
+malformado tolerado; o arranque a não falhar fechado; e três de inércia (o disjuntor a existir
+desligado; uma observação gravada desligado; as métricas a aparecer desligado). Uma sobreviveu à
+primeira passagem — o arranque a não falhar fechado quando a leitura do disjuntor falha — e ficou
+presa por um teste novo, com a sua gémea (desligado, o arranque não faz essa leitura).
+
+**Um defeito encontrado na releitura, e corrigido no ramo.** A marca (`opened` ou `would_open`)
+gravava-se dentro do ciclo da decisão, e perder o CAS gastava uma volta: um nó que nunca a
+conseguisse gravar — a réplica com a vista atrasada do JetStream — esgotava as voltas e **recusava
+todos os runs novos, os do titular incluídos, mesmo em `observe`**. A marca passou a ser o melhor
+esforço: uma tentativa por volta, e só se relê se ficou gravada; não impede o arranque; e uma
+observação que já está no livro não é dada por perdida. Três mutações sobre isto, no total acima.
+
+**Por fazer.**
+
+- *O reinício sobre JetStream* (cluster de CI): o critério «sobrevive a um reinício» está cumprido
+  sobre o Event Store em memória e em ficheiro, e por marcar por causa do JetStream.
+- *A leitura de calibração sobre o titular* (critério por marcar): não foi feita. Para ser exacta —
+  com a unidade da janela — precisava de ler o log de cada run do titular, e o titular não paga
+  nada pelo disjuntor; uma versão só em memória contava tentativas e não unidades, e media mal.
+  Sem ela, «3 em 20 dispara por azar?» mede-se com o `observe` sobre o candidato.
+- *O `alerta-disjuntor.sh` não é copiado pelo deploy* (o workflow não foi tocado), e foi
+  exercitado à mão com métricas falsas, não em CI.
+- *«O candidato bom não abre em 200 runs»* está preso na regra (200 desfechos bons) e não no nó: o
+  canary fecha aos 40 planos, pelo que 200 runs do candidato no nó pedem planos com vários nós.
+- *«O nó do plano que cumpre na nova tentativa»* está preso na regra e na leitura da unidade do
+  log do run; não foi corrido com um plano e o `aos-orq` a pedir a tentativa.
+- *A revisão adversarial independente*, antes do `enforce`.
+
+**Limites** (ADR-041 §5): com mais de uma réplica do nó sobre JetStream o disjuntor herda o
+defeito do CAS com a vista local atrasada (AOS-524); uma observação que não ficou no livro não
+entra na janela; com o nó a não servir candidato o disjuntor não avalia nem grava.
 
 ---
 

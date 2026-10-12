@@ -2312,6 +2312,88 @@ func (h *apiHandler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 			"gauge", float64(l.fechadoVisto.Load()), "")
 	}
 
+	// AOS-520 (PR 2) — AS SÉRIES POR MODELO. Só saem com um candidato A SERVIR: sem ele as três
+	// famílias não existem, e o /metrics é o de antes. O rótulo `model` é de conjunto fechado — o
+	// alias do titular e o do candidato —, e todas as amostras estão sempre presentes: o zero é um
+	// zero verdadeiro. No máximo [maxSeriesPorModelo] séries.
+	if sm := h.node.seriesDoModelo(); sm != nil {
+		primeira := true
+		for _, m := range sm.modelos {
+			for _, motivo := range sm.motivos {
+				labels := `{model="` + rotuloDoModelo(m) + `",stop_reason="` + rotuloDoMotivo(motivo) + `"}`
+				if primeira {
+					primeira = false
+					g("aos_model_turns_by_model_total",
+						"Turnos de modelo AO VIVO desde o arranque, por modelo PEDIDO e por motivo de paragem (AOS-520, ADR-041 2.8). model e o alias que o no pediu (o titular ou o candidato a servir), num conjunto fechado; NUNCA o modelo que o fornecedor declarou ter servido. So existe com um candidato a servir. Conta pedidos ao gateway que devolveram um turno: um turno reproduzido de uma captura nao conta (ao contrario de aos_model_turns_total, que conta os turnos percorridos), pelo que a soma dos modelos nao e essa serie.",
+						"counter", float64(sm.lidoTurnos(m, motivo)), labels)
+					continue
+				}
+				amostra("aos_model_turns_by_model_total", labels, float64(sm.lidoTurnos(m, motivo)))
+			}
+		}
+		primeira = true
+		for _, m := range sm.modelos {
+			for _, causa := range sm.causas {
+				labels := `{model="` + rotuloDoModelo(m) + `",causa="` + causa + `"}`
+				if primeira {
+					primeira = false
+					g("aos_model_response_rejected_by_model_total",
+						"Respostas do provider que o gateway recusou desde o arranque, por modelo PEDIDO e por causa (AOS-520, ADR-041 2.8). As causas sao as de aos_model_response_rejected_total; model e o alias pedido, de conjunto fechado. So existe com um candidato a servir.",
+						"counter", float64(sm.lidoRecusadas(m, causa)), labels)
+					continue
+				}
+				amostra("aos_model_response_rejected_by_model_total", labels, float64(sm.lidoRecusadas(m, causa)))
+			}
+		}
+		primeira = true
+		for _, m := range sm.modelos {
+			for _, e := range sm.estados {
+				for _, rz := range sm.razoes {
+					labels := `{model="` + rotuloDoModelo(m) + `",outcome="` + string(e) + `",reason="` + rotuloDaRazao(rz) + `"}`
+					if primeira {
+						primeira = false
+						g("aos_runs_finished_by_model_total",
+							"Runs que este processo SELOU num estado terminal desde o arranque, por modelo em que o run ficou (o alias pedido, de conjunto fechado), por estado e por razao do veredicto de conclusao (AOS-520, ADR-041 2.8). Os estados e as razoes sao os de aos_runs_finished_total. Um run recusado pela fixacao do modelo (model_pin_refused) nao chegou a ter modelo e NAO conta aqui: conta so em aos_runs_finished_total. So existe com um candidato a servir. Por processo.",
+							"counter", float64(sm.lidoTerminados(m, e, rz)), labels)
+						continue
+					}
+					amostra("aos_runs_finished_by_model_total", labels, float64(sm.lidoTerminados(m, e, rz)))
+				}
+			}
+		}
+	}
+
+	// AOS-521 — O DISJUNTOR DO CANDIDATO. Só sai com o disjuntor LIGADO (`observe` ou `enforce`) e um
+	// candidato a servir: com `off` as famílias não existem, e o /metrics é o de antes. Os valores
+	// são os da ÚLTIMA leitura do livro durável por esta réplica, para o registo em vigor; não decidem.
+	if d := h.node.disjuntorLigado(); d != nil {
+		g("aos_model_breaker_open",
+			"1 se o disjuntor do modelo candidato esta ABERTO para este no (AOS-521, ADR-041 2.9): o candidato nao recebe runs novos. 0 se nao. Em observe so e 1 se o livro ja tiver a marca de aberto (gravada por um no em enforce). Da ultima leitura do livro duravel por esta replica. Nao volta a 0 sozinho: reabrir e assinar um registo de entrada novo.",
+			"gauge", float64(d.abertoVisto.Load()), "")
+		g("aos_model_breaker_would_open",
+			"1 se a regra do disjuntor JA DISPAROU para o registo em vigor, sobre as observacoes do livro duravel (AOS-521): em observe e o que enforce teria feito (a fatia nao muda); em enforce coincide com aos_model_breaker_open. Da ultima leitura por esta replica.",
+			"gauge", float64(d.disparouVisto.Load()), "")
+		g("aos_model_breaker_window_failures",
+			"Unidades da janela do disjuntor cujo desfecho mais recente e uma falha (AOS-521): a regra dispara as 3 em 20. E a janela de AGORA: em observe continua a andar depois do «teria aberto» (com aos_model_breaker_window_units da a taxa); em enforce, depois de abrir, fica como estava no disparo. Da ultima leitura do livro por esta replica.",
+			"gauge", float64(d.falhasVistas.Load()), "")
+		g("aos_model_breaker_window_units",
+			"Unidades na janela do disjuntor (AOS-521): os nos de plano (ou runs sem plano) do candidato com desfecho contado, no maximo 20. Um run que nao conta nao entra: a lista fechada esta no ADR-041 2.9 (limite de ritmo e credencial da conta, cancelamento, recusa pela fixacao, transporte sem resposta, complete sem contrato declarado, entre outros).",
+			"gauge", float64(d.unidadesVistas.Load()), "")
+		for i, s := range sinaisDeFalha() {
+			labels := `{signal="` + s + `"}`
+			if i == 0 {
+				g("aos_model_breaker_signals",
+					"Observacoes do candidato do registo em vigor, por sinal de falha, no livro duravel (AOS-521): nao_cumprido (veredicto negativo do kernel), resposta_vazia, resposta_rejeitada (pelo gateway), erro_do_provider (status que nao e 200 nem da conta: 5xx e 408 contam), modelo_servido_diferente, nao_convergiu (tecto de turnos, ou o disjuntor por-run) e falha_nao_classificada (o run acabou mal por uma causa que nao esta na lista do que nao e do modelo). O limite de ritmo (429) e a credencial da conta (401, 403) nao contam. Vocabulario fechado.",
+					"gauge", float64(d.sinaisVistos[s].Load()), labels)
+				continue
+			}
+			amostra("aos_model_breaker_signals", labels, float64(d.sinaisVistos[s].Load()))
+		}
+		g("aos_model_breaker_unrecorded_total",
+			"Escritas do disjuntor que esta replica NAO conseguiu fazer no livro duravel desde o arranque (AOS-521): o desfecho de um run, um turno com o modelo servido diferente, ou uma tentativa de gravar a marca de aberto. Uma observacao que nao ficou no livro nao entra na janela; uma marca de aberto por gravar deixa de valer se o no passar de enforce para off ou observe. Acima de zero, ver o log do no ANTES de mudar de modo. O alerta-disjuntor.sh avisa.",
+			"counter", float64(d.naoGravadas.Load()), "")
+	}
+
 	// AOS-520 — O LIVRO DO CANARY TEM EVENTOS DE UMA VERSÃO MAIS RECENTE. Sai com um candidato a
 	// servir (o zero é um zero verdadeiro) e, num nó sem candidato a servir, só quando os há — sem
 	// eles o /metrics desse nó é o de antes.
