@@ -4847,7 +4847,7 @@ run, uma ao das aprovações, uma ao livro — no run do candidato e no do titul
 livro usava o tipo `model.breaker.opened`, que passou a ser conhecido; usa agora outro tipo da
 família. E a lista fechada das causas de recusa ganhou uma.
 
-**Mutações dirigidas.** 36, todas vermelhas por asserção (uma alteração de cada vez, os
+**Mutações dirigidas.** 39, todas vermelhas por asserção (uma alteração de cada vez, os
 testes do disjuntor corridos sem tecto de tempo curto, o ficheiro reposto). As do critério: 3 → 4;
 20 → 21; cada um dos cinco sinais retirado (o F5 duas vezes: do desfecho e do turno); o 429 a
 contar. E ainda: o turno com o modelo diferente a não disparar sozinho; o estado a mudar depois
@@ -4859,7 +4859,16 @@ gravadas depois do disparo; o titular tocado; um run fixado como titular lido co
 unidade de uma tentativa a ser o próprio run; a marca em falta por repor; a decisão a depender da
 marca; `enforce` a arrancar sem a governação da rota; um valor inválido aceite; um evento
 malformado tolerado; o arranque a não falhar fechado; e três de inércia (o disjuntor a existir
-desligado; uma observação gravada desligado; as métricas a aparecer desligado).
+desligado; uma observação gravada desligado; as métricas a aparecer desligado). Uma sobreviveu à
+primeira passagem — o arranque a não falhar fechado quando a leitura do disjuntor falha — e ficou
+presa por um teste novo, com a sua gémea (desligado, o arranque não faz essa leitura).
+
+**Um defeito encontrado na releitura, e corrigido no ramo.** A marca (`opened` ou `would_open`)
+gravava-se dentro do ciclo da decisão, e perder o CAS gastava uma volta: um nó que nunca a
+conseguisse gravar — a réplica com a vista atrasada do JetStream — esgotava as voltas e **recusava
+todos os runs novos, os do titular incluídos, mesmo em `observe`**. A marca passou a ser o melhor
+esforço: uma tentativa por volta, e só se relê se ficou gravada; não impede o arranque; e uma
+observação que já está no livro não é dada por perdida. Três mutações sobre isto, no total acima.
 
 **Por fazer.**
 
