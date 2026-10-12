@@ -190,6 +190,10 @@ type disjuntorPayload struct {
 	Rule     string         `json:"rule,omitempty"`
 	Counters map[string]int `json:"counters,omitempty"`
 	Window   []itemDaJanela `json:"window,omitempty"`
+	// Do `opened` e do `would_open`: o registo NÃO era o que o nó que gravou a marca tinha em vigor
+	// (um run antigo, fixado sob um registo anterior, acabou depois de o registo mudar). A marca vale
+	// para o registo dela; a fatia do candidato em vigor não muda por ela.
+	OutOfForce bool `json:"out_of_force,omitempty"`
 }
 
 // registoDoCandidato identifica o candidato de um registo de entrada: é a que o estado do disjuntor
@@ -371,6 +375,7 @@ func (l *livroDoCanary) gravarMarcaDoDisjuntor(ctx context.Context, reg registoD
 	payload, err := json.Marshal(disjuntorPayload{
 		V: disjuntorVersaoDoPayload, EntryDigest: reg.entryDigest, Alias: reg.alias, ProfileDigest: reg.profileDigest,
 		Rule: regra.regra, Counters: contadores, Window: regra.janela,
+		OutOfForce: reg.entryDigest != l.disjuntor.emVigor,
 	})
 	if err != nil {
 		return false, err
@@ -401,7 +406,13 @@ func (l *livroDoCanary) gravarMarcaDoDisjuntor(ctx context.Context, reg registoD
 		}
 		return false, err
 	}
-	if res.Status != eventstore.StatusDuplicate {
+	if res.Status != eventstore.StatusDuplicate && reg.entryDigest != l.disjuntor.emVigor {
+		// O REGISTO NÃO É O EM VIGOR. O alias pode ser o mesmo do candidato que este nó serve: a
+		// linha diz o digest e diz que NÃO é o registo em vigor, para ninguém ler aqui que o
+		// candidato de agora perdeu a fatia.
+		l.logf("disjuntor do modelo candidato (AOS-521): a regra %q disparou para um REGISTO FORA DE VIGOR neste no (digest do registo %s, alias %q; o registo em vigor e %s) — marca %s gravada para ESSE registo, com %d falha(s) em %d unidade(s). O candidato do registo em vigor NAO e afectado: a sua fatia nao muda por esta marca",
+			regra.regra, reg.entryDigest, reg.alias, l.disjuntor.emVigor, tipo, regra.falhasNaJanela(), len(regra.janela))
+	} else if res.Status != eventstore.StatusDuplicate {
 		if tipo == EventTypeModelBreakerOpened {
 			l.logf("DISJUNTOR DO MODELO CANDIDATO ABERTO (AOS-521): regra %q, %d falha(s) em %d unidade(s) da janela, contadores %v — o candidato %q (digest do registo %s) DEIXA DE RECEBER RUNS NOVOS: os planos novos vao para o titular (%s), um run novo de um plano ja atribuido ao candidato e recusado (%s), os runs em curso acabam. NAO volta sozinho: reabrir e assinar um registo de entrada novo",
 				regra.regra, regra.falhasNaJanela(), len(regra.janela), contadores, reg.alias, reg.entryDigest, razaoDisjuntorAberto, causaDisjuntorAberto)
