@@ -118,6 +118,10 @@ type CfgDoNo struct {
 	// Limite, quando presente, é o tecto PRÓPRIO da qualificação: conta cada pedido antes de o
 	// enviar, ao lado do contador do dia. O mesmo limite serve a corrida e o seu controlo.
 	Limite *LimiteDaQualificacao
+	// GuardarRespostas, quando presente, recebe de cada run o texto das respostas do modelo e os
+	// argumentos das suas tool calls nativas (AOS-525, ver respostas.go). nil ⇒ o texto não sai do
+	// nó de ensaio, como sempre.
+	GuardarRespostas func(RespostaDoRun)
 }
 
 // ErrPerfilDoEnsaio — o perfil candidato não serve o nó de ensaio.
@@ -162,6 +166,8 @@ type NoDeEnsaio struct {
 	hostEsperado string
 	// alias é o nome de modelo que este nó pede ([aliasDoPerfil]).
 	alias string
+	// guardar é o receptor das respostas ([CfgDoNo.GuardarRespostas]); nil ⇒ não se guardam.
+	guardar func(RespostaDoRun)
 
 	mu      sync.Mutex
 	motivos map[string][]string
@@ -339,7 +345,7 @@ func NovoNoDeEnsaio(ctx context.Context, cfg CfgDoNo) (*NoDeEnsaio, error) {
 
 	n := &NoDeEnsaio{
 		bateria: cfg.Bateria, porta: porta, devolucao: devolucao, qualifica: cfg.Qualificacao, limite: cfg.Limite, hostEsperado: cfg.HostEsperado,
-		alias: alias, mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
+		alias: alias, guardar: cfg.GuardarRespostas, mon: mon, recusa: recusa, store: store, emissor: iss, contador: cfg.Contador,
 		base: base, credencial: cfg.Credencial, cliente: cliente,
 		runtimes: map[Braco]*agentruntime.Runtime{}, motivos: map[string][]string{},
 	}
@@ -412,11 +418,18 @@ const MaxTurnosPorOmissao = 4
 
 // Correr corre um run e devolve a sua observação e a saída do run. A saída é texto do modelo:
 // fica em memória, serve para alimentar o nó seguinte do caso e para a verificação de factos,
-// e NUNCA vai para o relatório.
-func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, string) {
-	obs := Observacao{
+// e NUNCA vai para o relatório. Só com [CfgDoNo.GuardarRespostas] é que o texto sai do nó de
+// ensaio, e é para o receptor que lá estiver (AOS-525).
+func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao, saida string) {
+	obs = Observacao{
 		Caso: p.Caso.ID, No: p.No.ID, Braco: string(p.Braco), Amostra: p.Amostra, Tentativa: p.Tentativa,
 		ExigeTool: len(p.No.Exige) > 0, Factos: FactosNaoAplicavel,
+	}
+	var chamadas []chamadaObservada
+	if n.guardar != nil {
+		// Um registo por run, seja qual for o caminho por que ele acaba: o que se entrega é a
+		// observação já fechada e a saída que o run devolve.
+		defer func() { n.guardar(respostaDoRun(obs, chamadas, saida)) }()
 	}
 	rt, ok := n.runtimes[p.Braco]
 	if !ok {
@@ -484,7 +497,8 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	ctx = context.WithValue(ctx, chaveDasToolsDoRun, doRun)
 	res, err := rt.Run(ctx, goal)
 
-	chamadas, capturas := n.porta.fechar(runID)
+	var capturas capturasDoRun
+	chamadas, capturas = n.porta.fechar(runID)
 	// haviaRaciocinio: algum turno ANTERIOR do run trouxe raciocínio ou assinatura (AOS-516).
 	haviaRaciocinio := false
 	n.mu.Lock()
@@ -581,8 +595,9 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (Observacao, str
 	return obs, ""
 }
 
-// chamadaObservada é o que o banco guarda de UM pedido ao gateway. O texto fica em memória, só
-// para a heurística do nome da tool; nunca sai daqui para um relatório.
+// chamadaObservada é o que o banco guarda de UM pedido ao gateway. O texto e as tool calls pedidas
+// ficam em memória — o texto para a heurística do nome da tool, os dois para as respostas
+// guardadas a pedido (AOS-525) — e nunca saem daqui para um relatório.
 type chamadaObservada struct {
 	levaMensagemTool bool
 	status           int
@@ -594,6 +609,8 @@ type chamadaObservada struct {
 	tokensDeSaida   int64
 	toolCalls       int
 	texto           string
+	// pedidas são as tool calls nativas da resposta: o nome e os argumentos, como vieram.
+	pedidas []ToolCallGuardada
 	// devolucao e causaDaDevolucao são o que o gateway reportou da devolução do estado opaco
 	// neste pedido ([modelgateway.StateReturnObservation]); vazios quando não reportou nada.
 	devolucao, causaDaDevolucao string
@@ -744,6 +761,9 @@ func (p *portaDeEnsaio) Chat(ctx context.Context, req port.ChatRequest) (port.Ch
 		if len(resp.Choices) > 0 {
 			obs.texto = resp.Choices[0].Message.Content
 			obs.toolCalls = len(resp.Choices[0].Message.ToolCalls)
+			for _, tc := range resp.Choices[0].Message.ToolCalls {
+				obs.pedidas = append(obs.pedidas, ToolCallGuardada{Nome: tc.Function.Name, Argumentos: tc.Function.Arguments})
+			}
 		}
 		if p.contador != nil {
 			// O gasto estimado conta-se com os tokens que o fornecedor devolveu. Se o contador

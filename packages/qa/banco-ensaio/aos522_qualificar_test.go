@@ -593,7 +593,7 @@ func TestAOS522_AChavePrivadaNaoTemPorOndeEntrar(t *testing.T) {
 		return l
 	}
 	doQualificar := nomes(novasFlagsDoQualificar(&opcoesDoQualificar{}, io.Discard))
-	if quer := []string{"allowlist-dir", "ancora-da-allowlist", "binario-do-falso", "board", "chaves", "destino-fora-da-lista", "fatia", "fornecedor", "host-esperado", "modelo", "pausa", "perfil", "precos", "reconstruir-contador", "regiao", "roteiro", "saida", "so-plano"}; !reflect.DeepEqual(doQualificar, quer) {
+	if quer := []string{"allowlist-dir", "ancora-da-allowlist", "binario-do-falso", "board", "chaves", "destino-fora-da-lista", "fatia", "fornecedor", "guardar-respostas", "host-esperado", "modelo", "pausa", "perfil", "precos", "reconstruir-contador", "regiao", "roteiro", "saida", "so-plano"}; !reflect.DeepEqual(doQualificar, quer) {
 		t.Errorf("opcoes do qualificar = %v", doQualificar)
 	}
 	doConferir := nomes(novasFlagsDoConferir(&opcoesDoConferir{}, io.Discard))

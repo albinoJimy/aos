@@ -142,6 +142,7 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 | `--saida PASTA` | todos | Onde escrever o relatório. |
 | `--pausa DURACAO` | todos | Intervalo entre dois passos (por exemplo `2s`). |
 | `--silencioso` | todos | Não mostra o resumo, só os caminhos. |
+| `--guardar-respostas` | todos | **Desligada por omissão** (AOS-525). Grava, ao lado do relatório, um ficheiro por run com o texto das respostas do modelo e os argumentos das tool calls. Ver «As respostas guardadas, a pedido». |
 | `--roteiro a,b,…` | falso, proxy | O roteiro do provider falso. |
 | `--tecto-pedidos N --contador F` | falso, proxy | Ensaia o próprio tecto. |
 | `--binario-do-falso F` | proxy | Binário Linux do banco, para o contentor do provider falso. |
@@ -285,6 +286,89 @@ do ficheiro de chaves e no texto de todas as respostas do provider falso
 (`TestAOS512_Real_SemSegredosNemTextoEmSaidaNenhuma`,
 `TestAOS512_Real_SegredosNoCaminhoDeErroDoProxy`), e com um identificador de conta na
 `message` dos erros do fornecedor (`TestAOS512_Real_SaldoERitmo_AMensagemDoFornecedorNaoSai`).
+
+## As respostas guardadas, a pedido (AOS-525)
+
+O relatório não tem texto, e por isso não deixa **ler** o que um modelo respondeu. Com
+`--guardar-respostas` (desligada por omissão; aceite nos modos `falso`, `proxy` e `real` e no
+`qualificar`) a corrida deixa, ao lado do relatório, a pasta
+`respostas-<nome do relatório, sem a extensão>/` (modo 0700) com **um ficheiro JSON por run**
+(modo 0600), pela ordem da corrida:
+`<ordem>-<corrida>-<caso>-<nó>-<braço>-a<amostra>-t<tentativa>.json`.
+
+```json
+{
+  "formato": "aos-ensaio/respostas/v1",
+  "corrida": "principal",
+  "ordem": 1,
+  "caso": "T1",
+  "no": "ler",
+  "braco": "A",
+  "amostra": 0,
+  "tentativa": 1,
+  "desfecho": "cumprido",
+  "texto_final": "…o texto com que o run fechou…",
+  "turnos": [
+    { "turno": 1, "texto": "", "tool_calls": [ { "nome": "arquivo", "argumentos": "{\"path\":\"notas-armazem.txt\"}" } ] },
+    { "turno": 2, "texto": "…o texto com que o run fechou…", "tool_calls": [] }
+  ]
+}
+```
+
+- `caso`, `no`, `braco`, `amostra`, `tentativa` e `desfecho` são os da linha do run em
+  `observacoes`; `ordem` é a posição dela (a contar de 1). `corrida` é `principal` ou `controlo`
+  (a corrida de controlo sem devolução de uma qualificação).
+- `turnos` tem uma entrada por cada pedido que o banco deu por **bem sucedido**: houve resposta
+  do modelo e o seu uso ficou contado. Não entra um pedido que falhou (não há o que guardar),
+  nem um turno cuja resposta chegou mas cuja contagem no contador do dia falhou — esse é
+  tratado como pedido falhado, e o texto dele não fica guardado. `argumentos` é o texto que o
+  modelo escreveu, tal como veio (pode nem ser JSON).
+- `texto_final` é a saída do run, onde os factos são procurados; fica vazio quando o run não
+  fechou `cumprido` (o texto de cada resposta está em `turnos`).
+- **Não se guarda:** o prompt de sistema, os pedidos, os cabeçalhos, as credenciais nem os
+  resultados das tools (os documentos sintéticos, que já estão em `bateria/`).
+
+**Sem a opção nada muda:** a pasta de saída tem o relatório e o resumo, byte a byte os de
+antes. **Com ela**, o relatório, o resumo e o `digest_do_relatorio` são os de uma corrida igual
+sem ela; o texto guardado não vai para a saída normal nem para a de erros — onde só aparece uma
+linha com o caminho da pasta e o número de ficheiros —, nem para o rasto do proxy, nem para
+argumentos de processo nenhum. Está preso por teste (`aos525_respostas_test.go`), com um
+marcador no texto e outro nos argumentos de uma tool call.
+
+**O índice.** O último ficheiro a ser escrito é `indice.json` (modo 0600): o nome do ficheiro
+do relatório, o sha256 dos seus bytes tal como ficaram em disco, e o número de runs.
+
+```json
+{ "formato": "aos-ensaio/respostas-indice/v1", "relatorio": "ensaio-falso-bateria-20261008T120000Z.json", "sha256_do_relatorio": "sha256:…", "runs": 8 }
+```
+
+É por ele que se confere que a pasta é do relatório que está ao lado — o nome não chega: um
+relatório que não é de qualificação é **reescrito** por outra corrida do mesmo modo, no mesmo
+segundo e na mesma `--saida`. **Uma pasta sem `indice.json` está incompleta** (a escrita falhou
+a meio).
+
+A pasta é criada de novo, e uma falha a guardar **não muda o código de saída** (o relatório já
+está escrito); sai um aviso que diz qual foi:
+
+- `AVISO — as respostas desta corrida NAO ficaram guardadas: ja existe a pasta …, que e de OUTRA
+  corrida e NAO corresponde a este relatorio` — nada foi escrito; a pasta que lá está é de outra
+  corrida, e o `sha256_do_relatorio` do índice dela não é o do relatório actual se este foi
+  escrito por cima.
+- `AVISO — as respostas ficaram INCOMPLETAS: k de n ficheiro(s) escritos …` — com a causa do
+  sistema (a pasta não se criou, um ficheiro ou o índice não se escreveu). Não há `indice.json`.
+- `AVISO — as respostas de n run(s) NAO ficaram guardadas: o relatorio nao chegou a ser escrito`
+  — as respostas esperam em memória pelo nome do relatório, e perderam-se com ele.
+
+Com `--so-plano` a opção não tem efeito, e uma linha di-lo. No `qualificar` a pasta fica em
+`--saida`, **fora** de `pacote/`.
+
+**Só a bateria sintética.** O ticket pede que a opção seja recusada fora dela. Não há o que
+recusar: a linha de comandos só conhece a bateria embebida no binário — não tem opção, variável
+de ambiente nem ficheiro por onde entrem outros casos ou documentos. Quem acrescentar outra
+origem de casos acrescenta, no mesmo passo, a recusa.
+
+**O que está nos ficheiros é texto de um modelo:** são dados, não instruções. Ao contrário do
+relatório, a pasta das respostas **não** é para copiar para o repositório.
 
 ## A devolução do estado opaco (AOS-516)
 

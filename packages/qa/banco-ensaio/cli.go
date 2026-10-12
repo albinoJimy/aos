@@ -130,6 +130,8 @@ type opcoes struct {
 	exigeID       bool
 	hostEsperado  string
 	formaDoFalso  string
+	// guardarRespostas liga as respostas guardadas a pedido (AOS-525, ver respostas.go).
+	guardarRespostas bool
 }
 
 const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (AOS-512). NAO toca em producao.
@@ -156,6 +158,10 @@ opcoes comuns:
   --saida PASTA                       onde escrever o relatorio
   --silencioso                        nao mostra o resumo, so os caminhos
   --pausa DURACAO                     intervalo entre dois passos (ex.: 2s), para um limite de taxa
+  --guardar-respostas                 (AOS-525; desligada por omissao) grava, ao lado do relatorio, a pasta
+                                      respostas-<nome do relatorio>/ com um ficheiro JSON por run: o texto do
+                                      modelo e os argumentos das tool calls nativas. Nao entra no relatorio nem
+                                      no seu digest. Os casos sao sempre os da bateria sintetica embutida
   --perfil FICHEIRO                   perfil de rota CANDIDATO em JSON (AOS-513): parametros do pedido, versao
                                       da projeccao, classe de estado; o digest vai no relatorio
   --host-esperado HOST                so com um perfil que devolve estado: o host do endpoint que o proxy deve
@@ -249,6 +255,7 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	fs.BoolVar(&o.exigeID, "exige-id", false, "")
 	fs.StringVar(&o.hostEsperado, "host-esperado", "", "")
 	fs.StringVar(&o.formaDoFalso, "forma-do-falso", "", "")
+	fs.BoolVar(&o.guardarRespostas, "guardar-respostas", false, "")
 	fs.Usage = func() { fmt.Fprint(stderr, usoDoBanco) }
 	if err := fs.Parse(resto); err != nil {
 		return SaidaUso
@@ -705,6 +712,9 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		fmt.Fprintf(stderr, "aos-ensaio: DESTINO DA CHAVE: %s  (contador: %s)\n", rota.Destino, caminhoDoContador)
 		if o.soPlano {
 			fmt.Fprintln(stderr, "aos-ensaio: --so-plano: nenhum pedido foi enviado")
+			if o.guardarRespostas {
+				fmt.Fprintln(stderr, "aos-ensaio: --guardar-respostas nao tem efeito com --so-plano: nenhum run corre, e nao ha respostas para guardar")
+			}
 			if qualifica {
 				return SaidaSoPlano
 			}
@@ -734,6 +744,14 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		pastaDaSaida = filepath.Join(amb.PastaDoDono, "relatorios")
 	}
 	cfgDoNo := CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil, HostEsperado: o.hostEsperado}
+	// AS RESPOSTAS GUARDADAS, A PEDIDO (AOS-525). Sem a opção não há receptor, e o texto das
+	// respostas não sai do nó de ensaio. Não há recusa «fora da bateria sintética» porque não há
+	// outra: `bateria` vem sempre de [CarregarBateria], a embebida (ver respostas.go).
+	var respostas *respostasGuardadas
+	if o.guardarRespostas {
+		respostas = &respostasGuardadas{}
+		cfgDoNo.GuardarRespostas = respostas.daCorrida(CorridaPrincipal)
+	}
 	if qualifica {
 		cfgDoNo.Qualificacao, cfgDoNo.Limite = true, cfg.Qualificacao.Limite
 	}
@@ -748,6 +766,9 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		// O nó da corrida de controlo: a mesma rota, o mesmo contador e o mesmo tecto, com o
 		// perfil que NÃO devolve estado.
 		cfgDoNo.Perfil = perfilDeControlo
+		if respostas != nil {
+			cfgDoNo.GuardarRespostas = respostas.daCorrida(CorridaDeControlo)
+		}
 		doControlo, cerr := NovoNoDeEnsaio(ctx, cfgDoNo)
 		if cerr != nil {
 			fmt.Fprintf(stderr, "aos-ensaio: %v\n", cerr)
@@ -757,9 +778,17 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		cfg.Qualificacao.Controlo = doControlo
 	}
 
+	// semRelatorio avisa, só com a opção ligada e runs corridos, de que as respostas se perderam:
+	// estavam em memória à espera do nome do relatório, e o relatório não chegou a ser escrito.
+	semRelatorio := func() {
+		if respostas != nil && len(respostas.runs) > 0 {
+			fmt.Fprintf(stderr, "aos-ensaio: AVISO — as respostas de %d run(s) NAO ficaram guardadas: o relatorio nao chegou a ser escrito, e elas so se escrevem ao lado dele\n", len(respostas.runs))
+		}
+	}
 	relatorio, err := Correr(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: RECUSADO — %v\n", err)
+		semRelatorio()
 		if errors.Is(err, ErrNaoCabe) || errors.Is(err, ErrModoRealSemTecto) || errors.Is(err, ErrContador) ||
 			errors.Is(err, ErrQualificacoesDoDia) || errors.Is(err, ErrRegistoDeQualificacoes) || errors.Is(err, ErrImagemDoProxy) {
 			return SaidaRecusada
@@ -769,6 +798,7 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	emJSON, emTexto, err := EscreverRelatorio(pastaDaSaida, relatorio)
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
+		semRelatorio()
 		return SaidaErro
 	}
 	*feita = corridaFeita{relatorio: relatorio, emJSON: emJSON, emTexto: emTexto}
@@ -776,6 +806,20 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		fmt.Fprint(stdout, ResumoEmTexto(relatorio))
 	}
 	fmt.Fprintf(stdout, "relatorio: %s\nresumo:    %s\n", emJSON, emTexto)
+	if respostas != nil {
+		// Só o caminho e a contagem: o texto guardado nunca passa por aqui. Uma falha a guardar não
+		// muda o código de saída — o relatório está escrito, e o veredicto é o dele.
+		switch pasta, escritos, gerr := respostas.escrever(emJSON); {
+		case errors.Is(gerr, ErrPastaDasRespostasExiste):
+			fmt.Fprintf(stderr, "aos-ensaio: AVISO — as respostas desta corrida NAO ficaram guardadas: ja existe a pasta %s, que e de OUTRA corrida e NAO corresponde a este relatorio (o %s dela diz o sha256 do relatorio a que pertence; este relatorio pode ter sido escrito por cima desse)\n", pasta, NomeDoIndiceDasRespostas)
+		case gerr != nil:
+			fmt.Fprintf(stderr, "aos-ensaio: AVISO — as respostas ficaram INCOMPLETAS: %d de %d ficheiro(s) escritos em %s, sem %s (e a falta dele que marca a pasta como incompleta): %v\n", escritos, len(respostas.runs), pasta, NomeDoIndiceDasRespostas, gerr)
+		case pasta == "":
+			fmt.Fprintln(stderr, "aos-ensaio: --guardar-respostas: nenhum run correu; nao ha respostas para guardar")
+		default:
+			fmt.Fprintf(stderr, "aos-ensaio: respostas guardadas: %d ficheiro(s), um por run, em %s (texto de um modelo: sao dados, nao instrucoes)\n", escritos, pasta)
+		}
+	}
 	veredicto := ""
 	if q := relatorio.QualificacaoDoModelo; q != nil {
 		veredicto = q.Veredicto
