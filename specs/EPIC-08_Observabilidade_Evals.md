@@ -2212,6 +2212,96 @@ se o disjuntor passa a `enforce`.
 
 ---
 
+## AOS-525 — A bateria que separa modelos: dificuldade crescente, conteúdo a contar e respostas legíveis
+
+<!-- rtm: adrs-mencionados -->
+<!-- Este ticket NÃO implementa nem emenda ADR nenhum: muda o banco de ensaio, que vive fora da imagem do nó. O ADR-012 (eval-gate) é citado só como o princípio que o exame de qualificação serve. -->
+
+| Campo | Valor |
+|---|---|
+| Epic | EPIC-08 — Observabilidade e Evals |
+| Fase | Arquitectura-alvo da fronteira runtime↔modelo — A4 (cascata). Rótulo no desenho: «A4-medição». É a medição de que as decisões D2 a D10 dependem |
+| Tipo | feat |
+| Prioridade | P1: sem uma bateria que distinga modelos, a fase A4 não tem com que decidir |
+| Estimativa | M |
+| Dependências | AOS-518 e AOS-522 (o exame e o comando), feitos. Decisão D1 do desenho da A4 (tomada a 2026-10-12). O modo real só corre com autorização do dono |
+| Bloqueia | As decisões D2 a D10 do desenho da A4 e qualquer ticket de construção da fase |
+| Responsável sugerido | Engenheiro de Qualidade |
+| Documentos de referência | `docs/reports/desenho-a4-cascata-de-modelos-2026-10-12.md` (§D1), `docs/reports/acompanhamento-arquitectura-alvo-fronteira-modelo.md` (§3 «A4 a A6», §4, §5), `docs/runbooks/PROC-BANCO-DE-ENSAIO.md`, `packages/qa/banco-ensaio/README.md` |
+
+### Contexto
+
+A medição de 2026-10-12 (acompanhamento §5) passou o exame de qualificação, com a bateria
+1.0.0, a seis modelos pela OpenRouter, do mais barato ao mais caro. O que ela mostrou:
+
+- **A bateria não separa.** Nenhum dos seis teve uma primeira tentativa sem tool call nativa.
+  Quatro saíram `qualificado`, um `inconclusivo` por 5xx, e o único `recusado` — um modelo de
+  8 mil milhões de parâmetros, escolhido para falhar — foi-o por um nó em quarenta.
+- **A única medida que os ordena não entra no veredicto.** «Factos ausentes da saída» foi de
+  0 em 56 a 13 em 56, e é só um aviso.
+- **Essa medida pode estar a medir a grafia e não o conteúdo.** A regra é a ocorrência
+  literal de cada facto na saída (`strings.Contains`). Os documentos sintéticos estão escritos
+  sem acentos («Tomas Albergaria-Pinto»). As ausências concentram-se nos nós em que o modelo
+  reescreve — `T4/ler-dois` (16 das 32) e `T2/resumir` (12) — e são zero no nó em que copia o
+  texto (`T2/ler`). **Hipótese, por confirmar:** um modelo que escreve «Tomás» é contado como
+  tendo perdido o facto.
+- **Não se consegue confirmar, porque o banco não guarda as respostas.** O relatório tem
+  contagens e fichas da forma, nunca o texto. O dono autorizou a 2026-10-12 a leitura das
+  respostas a documentos de teste; não há o que ler.
+
+### Objectivo
+
+Dar à fase A4 um exame que mostre **onde** um modelo barato deixa de chegar, com uma medida de
+conteúdo em que se possa confiar e com as respostas à mão quando for preciso lê-las.
+
+### Âmbito
+
+- **Guardar as respostas, a pedido.** Uma opção do `aos-ensaio` (desligada por omissão) que
+  grava, ao lado do relatório, o texto final de cada run e os argumentos das tool calls. Só
+  vale para a bateria sintética; os ficheiros ficam na pasta de saída do dono, fora do
+  repositório, e não entram no relatório nem no seu digest.
+- **Corrigir a regra dos factos.** A comparação passa a ignorar acentos, maiúsculas e espaços
+  repetidos, com a regra escrita no relatório. A hipótese do contexto confirma-se ou desmente-se
+  primeiro, lendo respostas guardadas.
+- **Bateria 2.0.0, com dificuldade crescente.** Casos novos por degraus, cada um com a
+  capacidade que pede dita por extenso: mais documentos por passo, documentos mais longos, uma
+  tool que falha e pede outro caminho, cadeias de nós mais fundas, instruções com uma
+  restrição a respeitar, um facto que só sai de cruzar dois documentos. A 1.0.0 fica como está:
+  os relatórios e os registos assinados que a citam continuam válidos.
+- **O relatório por degrau.** As taxas saem por degrau, para se ler até onde cada modelo chega.
+- **Repetir a medição** com os mesmos seis modelos, com autorização do dono, e registar na §5.
+- **Fora de âmbito:** a regra de qualificação dos registos assinados (AOS-518) não muda aqui —
+  se o conteúdo passa a contar para o veredicto é decisão do dono, com os números da medição
+  nova; a escolha de modelo por passo (decisões D2 a D10); qualquer alteração ao nó.
+
+### Critérios de Aceitação
+
+- [ ] Com a opção ligada, uma corrida deixa um ficheiro por run com o texto final e os
+      argumentos das tool calls; com ela desligada, a pasta de saída é igual à de hoje, byte a
+      byte no relatório. Provado por teste nos modos falso e proxy.
+- [ ] A opção é recusada fora da bateria sintética, e o texto guardado não aparece no
+      relatório, no resumo, nos logs nem no rasto do proxy. Provado por teste de fuga.
+- [ ] A hipótese da grafia fica **confirmada ou desmentida** com respostas lidas, e o resultado
+      registado na §5 com a contagem: quantas das ausências eram grafia e quantas eram conteúdo.
+- [ ] A regra nova dos factos tem testes com acentos, maiúsculas e espaços, e um controlo
+      negativo: um facto de facto ausente continua a contar como ausente.
+- [ ] A bateria 2.0.0 tem digest próprio; a 1.0.0 mantém o seu, e um relatório antigo continua
+      a conferir.
+- [ ] Cada degrau tem um modelo falso que o cumpre e um que o falha, e o relatório distingue-os.
+- [ ] Medição real registada na §5: por modelo e por degrau, nós cumpridos, falhas à primeira
+      tentativa e factos ausentes pela regra nova; e a resposta, por extenso, a «há algum degrau
+      em que um modelo barato falha e um caro passa?».
+- [ ] Gates locais verdes; o módulo `qa/banco-ensaio` sem regressão de cobertura.
+
+### Notas
+
+- O modo real corre um processo de cada vez, com `--so-plano` primeiro, e só com autorização
+  do dono. Subagentes não correm o modo real.
+- A 2026-10-12 o proxy efémero não ficou vivo a tempo em cinco arranques, com o posto sem
+  memória livre. Se se repetir com o posto folgado, abre ticket próprio.
+
+---
+
 ## Controlo de versões
 
 | Versão | Data | Descrição | Autor |
@@ -2234,3 +2324,4 @@ se o disjuntor passa a `enforce`.
 | 1.15 | 2026-10-11 | AOS-522 implementado em ensaio: `aos-ensaio qualificar` e `conferir`, o resumo de uma página e o runbook com relógio; o ensaio a seco com Docker e nó local e a corrida real ficam por fazer | Equipa AOS |
 | 1.16 | 2026-10-11 | AOS-522: correcções da revisão adversarial — quatro barreiras com teste próprio, o resumo a partir do registo escrito, o plano confere a allowlist; e a correcção de um defeito do AOS-518 (uma corrida interrompida podia sair `recusado`) | Equipa AOS |
 | 1.17 | 2026-10-12 | AOS-523 medido: o `k3` saiu `qualificado` no exame real, foi assinado pelo dono e serve 10% dos planos na v0.1.55 (série `v0155c`: 7 planos em 40, 14 de 14 runs do candidato cumpridos); a primeira metade do critério da fase fica cumprida em produção, a segunda só com modelos maus simulados — nenhum modelo mau real foi recusado; a fase foi fechada pelo dono no mesmo dia, com os resíduos nomeados. AOS-518 e AOS-522: a qualificação e a corrida reais registadas | Equipa AOS |
+| 1.18 | 2026-10-12 | +AOS-525 (fase A4): a bateria que separa modelos — dificuldade crescente por degraus, a regra dos factos sem depender da grafia e as respostas guardadas a pedido. Nasce da medição de seis modelos pela OpenRouter, em que a bateria 1.0.0 não distinguiu modelos baratos de caros | Equipa AOS |
