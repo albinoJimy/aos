@@ -519,6 +519,21 @@ services:
       # variáveis só vão para o nó: as chamadas do serviço `aos-orq` ao LiteLLM NÃO são comparadas.
       AOS_MODEL_ROUTE_GOVERNANCE: "${AOS_MODEL_ROUTE_GOVERNANCE:-}"
       AOS_MODEL_ROUTE_API_HOST: "${AOS_MODEL_ROUTE_API_HOST:-}"
+      # PERFIS DE ROTA ASSINADOS, CANDIDATO E DISJUNTOR (AOS-519, AOS-520, AOS-521; ADR-041). As
+      # quatro vazias ⇒ o nó é o de antes: a pasta não é lida, não há candidato, não há disjuntor.
+      # A pasta é a de DENTRO do contentor, e só há uma montada: /etc/aos/perfis-de-rota (ver
+      # `volumes:`). Com a pasta definida a âncora é obrigatória, mesmo com a pasta vazia — sem ela
+      # o nó recusa arrancar (ErrBadModelRouteProfiles, causa `pasta_sem_ancora`); e em produção a
+      # pasta sem AOS_MODEL_ENDPOINT também (ErrModelRouteProfilesWithoutGateway).
+      # AOS_MODEL_CANDIDATE: `off` (omissão) ou `on`; só serve um candidato com a pasta e um registo
+      # assinado para outro alias. AOS_MODEL_BREAKER: `off` (omissão), `observe` ou `enforce`;
+      # `enforce` sem a governação da rota recusa o arranque. Outro valor em qualquer das duas ⇒ o
+      # nó recusa arrancar. Ligam-se por esta ordem, um passo de cada vez (runbook:
+      # deploy/server/README.md, «Ligar a fase A3 em produção»). Só vão para o nó.
+      AOS_MODEL_ROUTE_PROFILES_DIR: "${AOS_MODEL_ROUTE_PROFILES_DIR:-}"
+      AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR: "${AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR:-}"
+      AOS_MODEL_CANDIDATE: "${AOS_MODEL_CANDIDATE:-}"
+      AOS_MODEL_BREAKER: "${AOS_MODEL_BREAKER:-}"
       # A FORMA DA RESPOSTA DO PROVIDER (AOS-507). Vazio ⇒ `off`: a sonda não corre, e o nó é o de
       # antes. `observe` grava em cada turn.recorded a ficha do corpo da resposta (presença, forma
       # JSON e bytes de cada campo, em vocabulário fechado — nunca o texto) e conta em
@@ -632,6 +647,13 @@ services:
       #    a entrega seguinte escreveria um inode novo que o contentor nunca veria.
       - ./ancoras:/etc/aos/ancoras:ro
       - ./pisos:/etc/aos/pisos:ro
+      # PERFIS DE ROTA ASSINADOS (AOS-519). Montada SEMPRE, no molde das duas de cima: o que
+      # decide se é LIDA é AOS_MODEL_ROUTE_PROFILES_DIR, vazia por omissão. DIRECTÓRIO e não
+      # ficheiros, e criado pelo deploy.sh (passo 0b) — vazio, é inócuo. `:ro` porque o nó confere
+      # os registos e nunca os escreve. O conteúdo NÃO vem do deploy: são os três ficheiros de cada
+      # registo assinado, postos pelo dono (README, «Ligar a fase A3 em produção»). Tem de ser
+      # legível pelo uid 65532: pasta 0755, ficheiros 0644, dono root.
+      - ./perfis-de-rota:/etc/aos/perfis-de-rota:ro
       # CA interna (bundle) + material privado por FICHEIRO. Os três são montados sempre; o que
       # decide se são USADOS são as envs acima. Montar um ficheiro que o nó ignora é inócuo —
       # já um `volumes:` condicional não existe em compose, e um bind em falta impede o arranque.
