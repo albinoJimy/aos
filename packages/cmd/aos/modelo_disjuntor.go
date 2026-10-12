@@ -379,14 +379,26 @@ func (l *livroDoCanary) gravarMarcaDoDisjuntor(ctx context.Context, reg registoD
 	if tipo == EventTypeModelBreakerWouldOpen {
 		passo = "breaker-would-open-" + reg.entryDigest
 	}
-	res, err := l.es.Append(ctx, canaryStream, eventstore.EventInput{
+	evento := eventstore.EventInput{
 		Type: tipo, Payload: payload, RunID: canaryRunID, StepID: passo,
 		Producer: eventstore.Producer{NHIID: disjuntorNHI},
-	}, eventstore.WithExpectedSeq(seq))
+	}
+	res, err := l.es.Append(ctx, canaryStream, evento, eventstore.WithExpectedSeq(seq))
 	if conflitoDeCAS(err) {
-		return false, nil
+		// PERDEU O CAS: TENTA SEM ELE. A marca não precisa do `seq` para ser única — a chave de
+		// idempotência é a do registo, e o que ela sela é o estado do PRIMEIRO disparo, que é o
+		// mesmo seja qual for a escrita que entrou entretanto. É o que deixa a marca ficar gravada
+		// numa réplica cuja vista do stream está atrasada (AOS-524), onde nenhum CAS passa — o
+		// molde da marca de fecho do canary.
+		res, err = l.es.Append(ctx, canaryStream, evento)
 	}
 	if err != nil {
+		// CADA TENTATIVA FALHADA CONTA. Uma marca de aberto por gravar é a via pela qual um corte
+		// feito em `enforce` deixava de valer ao mudar para `off` ou `observe`: tem de se ver.
+		l.disjuntor.naoGravadas.Add(1)
+		if conflitoDeCAS(err) {
+			return false, nil
+		}
 		return false, err
 	}
 	if res.Status != eventstore.StatusDuplicate {
