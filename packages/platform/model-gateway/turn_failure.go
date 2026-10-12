@@ -38,9 +38,9 @@ const (
 const (
 	// TurnFailureRateLimited — o provider respondeu 429: o limite de ritmo, que é da conta.
 	TurnFailureRateLimited = "limite_de_ritmo"
-	// TurnFailureCredential — o provider respondeu 401 ou 403: a credencial ou a permissão da
+	// TurnFailureAccountAccess — o provider respondeu 401 ou 403: a credencial ou a permissão da
 	// conta, não o modelo.
-	TurnFailureCredential = "credencial_da_conta"
+	TurnFailureAccountAccess = "acesso_da_conta"
 	// TurnFailureTransport — não houve resposta HTTP: ligação recusada ou cortada, tempo esgotado,
 	// pedido cancelado. O nó não sabe se foi o modelo ou o caminho até ao proxy.
 	TurnFailureTransport = "transporte_sem_resposta"
@@ -58,7 +58,7 @@ const (
 // TurnFailureNotOfTheModel diz se a classe é uma das exclusões: a falha não é do modelo.
 func TurnFailureNotOfTheModel(classe string) bool {
 	switch classe {
-	case TurnFailureRateLimited, TurnFailureCredential, TurnFailureTransport, TurnFailureGatewayDenied,
+	case TurnFailureRateLimited, TurnFailureAccountAccess, TurnFailureTransport, TurnFailureGatewayDenied,
 		TurnFailureRouteUnreported, TurnFailurePinnedProfile:
 		return true
 	}
@@ -96,7 +96,7 @@ func ClassifyTurnFailure(err error) string {
 		case http.StatusTooManyRequests:
 			return TurnFailureRateLimited
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return TurnFailureCredential
+			return TurnFailureAccountAccess
 		}
 		return TurnFailureProviderStatus
 	case errors.As(err, &custo), errors.As(err, &atribuido):
