@@ -80,28 +80,9 @@ var excluidasComRazao = map[string]string{
 		"AOS_MODE=production não autoriza nada (o board vem das claims), mas passá-la " +
 		"convidaria a tentar e o sintoma seria uma recusa opaca.",
 	"AOS_BOARD": "o par de AOS_READER — mesma razão.",
-	// AOS-519. As duas saem daqui no PR de deploy que puser no compose, JUNTAS, as variáveis e a
-	// montagem só de leitura da pasta — decisão do dono, fora do ticket que entregou o código.
-	"AOS_MODEL_ROUTE_PROFILES_DIR": "ainda nao (AOS-519): a pasta de perfis de rota assinados so " +
-		"existe dentro do contentor com uma montagem so de leitura no servico do no, que o compose " +
-		"ainda nao tem. Passar a variavel sem a montagem era oferecer um interruptor cujo unico " +
-		"efeito possivel e impedir o arranque (pasta_ilegivel). Entram as duas juntas, por um PR de " +
-		"deploy, quando o dono decidir ligar; nessa altura esta entrada sai.",
-	"AOS_MODEL_ROUTE_PROFILES_TRUST_ANCHOR": "o par de AOS_MODEL_ROUTE_PROFILES_DIR — sem a pasta " +
-		"a ancora nao e lida. Entra no compose no mesmo PR de deploy.",
-	// AOS-520. Sai daqui no MESMO PR de deploy que puser no compose a pasta de perfis assinados.
-	"AOS_MODEL_CANDIDATE": "ainda nao (AOS-520): o interruptor do modelo candidato so tem efeito " +
-		"com a pasta de perfis de rota assinados (AOS_MODEL_ROUTE_PROFILES_DIR), que o compose ainda " +
-		"nao passa nem monta — sem ela a variavel e validada e nao liga nada. Passa-la sozinha era " +
-		"oferecer um interruptor que, a `on`, nao serve candidato nenhum e deixa o operador a julgar " +
-		"que serve. Entra com a pasta e a ancora, no PR de deploy em que o dono decidir ligar, " +
-		"depois da revisao adversarial que o ticket exige.",
-	// AOS-521. Sai daqui no MESMO PR de deploy: sem candidato a servir o disjuntor nao tem o que vigiar.
-	"AOS_MODEL_BREAKER": "ainda nao (AOS-521): o disjuntor do modelo candidato so avalia com um " +
-		"candidato a servir (AOS_MODEL_CANDIDATE=on e a pasta de perfis assinados), que o compose " +
-		"ainda nao passa. Sozinha, a variavel e validada e nao liga nada — e a `enforce`, sem a " +
-		"governacao da rota, impede o arranque. Entra com a pasta e o interruptor do candidato, em " +
-		"`observe`, no PR de deploy em que o dono decidir ligar.",
+	// As quatro da fase A3 (AOS_MODEL_ROUTE_PROFILES_DIR e a sua âncora, AOS_MODEL_CANDIDATE e
+	// AOS_MODEL_BREAKER) estiveram aqui enquanto o compose não montava a pasta dos perfis. Saíram
+	// quando o manifesto passou a montá-la só de leitura e a passar as quatro, vazias por omissão.
 }
 
 var reGetenv = regexp.MustCompile(`os\.Getenv\("(AOS_[A-Z0-9_]+)"\)`)
