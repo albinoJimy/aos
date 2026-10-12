@@ -1496,16 +1496,24 @@ próprio e tudo o que identifica a rota qualificada.
 
 **Controlos negativos com o modelo real, no posto do dono**
 
-- [ ] **O Kimi de produção sai `qualificado`.** Se o modelo que já serve bem não passa, o
+- [x] **O Kimi de produção sai `qualificado`.** Se o modelo que já serve bem não passa, o
       arnês ou os limiares estão errados: nesse caso o ticket pára e os números vão ao dono
       antes de qualquer ajuste. Os limiares não se mexem para o resultado dar verde sem
       decisão registada na §4 do acompanhamento.
+      **Medido a 2026-10-11:** `qualificado` — 40 de 40 nós com tools, 16 de 16 sem tools, 3 de 40
+      sem tool call à 1.ª tentativa (limite 4), 99 de 99 turnos com o modelo esperado
+      (acompanhamento §5). Nenhum limiar foi mexido.
 - [ ] **«Aceite» separa-se de «exigido».** Num perfil que declara devolução obrigatória, a
       qualificação inclui a corrida de controlo sem devolução; se essa corrida passar, o
       relatório traz `exigencia_nao_provada` e essa linha vem **à cabeça** do resumo. Não
       bloqueia o `qualificado` (D2); não pode ser omitida.
-- [ ] A duração real de uma qualificação de 8 passagens com os controlos fica medida e
+- [x] A duração real de uma qualificação de 8 passagens com os controlos fica medida e
       registada na §5 do acompanhamento (a estimativa do desenho, 15 a 25 minutos, é hipótese).
+      **Medida duas vezes:** 23 min 5 s a 2026-10-11 (Kimi de produção; 7 min 58 s foram o plano,
+      com o arranque do proxy em Docker) e 15 min 37 s a 2026-10-12 (`k3`: plano 1 min 26 s, sonda
+      10 s, corrida 14 min 1 s). Nenhuma das duas teve a corrida de controlo sem devolução, que só
+      existe num perfil que declara devolução obrigatória: a duração «com os controlos» desse caso
+      continua por medir.
 
 **O relatório**
 
@@ -1574,7 +1582,7 @@ próprio e tudo o que identifica a rota qualificada.
 
 ### Estado
 
-**IMPLEMENTADO em ensaio (2026-10-11); duas revisões adversariais independentes feitas e corrigidas. Por fazer, e só o dono o pode fazer: a qualificação do Kimi de produção com o modelo real e a medição da sua duração.**
+**IMPLEMENTADO em ensaio (2026-10-11); duas revisões adversariais independentes feitas e corrigidas. A qualificação com o modelo real está feita e medida: o Kimi de produção a 2026-10-11 e o `k3` a 2026-10-12, os dois `qualificado`. Nenhum modelo mau real foi examinado.**
 
 - **Onde.** `packages/qa/banco-ensaio`: `qualificacao.go` (a regra e as contagens),
   `qualificacao_corrida.go` (controlo, avisos, bloco do relatório), `orcamento.go` e
@@ -1648,9 +1656,24 @@ próprio e tudo o que identifica a rota qualificada.
   `requested: rota-de-ensaio`; o `digest_do_perfil` do relatório não é, por isso, o do perfil que
   o nó carregará com o alias de produção. Recomendação, a entregar com o AOS-519 ou o AOS-522: o
   banco aceitar o `requested` de produção e usá-lo como nome da rota efémera do proxy do ensaio.
-- **Por fazer, no posto do dono.** A qualificação do Kimi de produção (tem de sair
-  `qualificado`; se não sair, o ticket pára) e a duração real de uma qualificação, para a §5 do
-  acompanhamento. O tecto diário do Kimi tem de subir para 673 ou mais.
+- **Feito com o modelo real (2026-10-11 e 2026-10-12), com autorização do dono.** O Kimi de
+  produção saiu `qualificado` a 2026-10-11, em 23 min 5 s, à quarta tentativa: as três primeiras
+  pararam na sonda com HTTP 500, sem causa determinada. O `k3` (alias `gpt-4o`, `openai/k3`)
+  saiu `qualificado` a 2026-10-12, em 15 min 37 s: 40 de 40 nós com tools e 16 de 16 sem tools
+  cumpridos, 0 de 40 sem tool call à 1.ª tentativa, 0 respostas vazias, 96 de 96 turnos com o
+  modelo esperado, 96 pedidos, todos 200; digest do relatório
+  `sha256:87addc0a095987250ca55c8c7172da4e39321fcadf3d35f8fab8b20671ad086f`. Números na §5 do
+  acompanhamento.
+- **O aviso dos factos ausentes, no `k3`:** 15 de 56 respostas cumpridas (27%); o titular teve
+  2 de 56 na véspera. É aviso e não limiar, por decisão do dono; a medida não lê o texto, e o
+  que falta nessas respostas está por investigar. O dono escolheu o `k3` com este aviso à vista.
+- **O que o modelo real não provou.** Os dois modelos examinados são bons. Os veredictos
+  `recusado` vêm todos de providers falsos, no modo falso e atrás do proxy real: **nenhum
+  modelo mau real foi recusado pelo exame.**
+- **Critérios por marcar.** «Aceite separa-se de exigido» não foi corrido com o modelo real por
+  esta via: nenhum perfil com devolução obrigatória foi examinado. Os critérios de CI deste
+  bloco continuam por marcar, apesar de o texto acima os dar como implementados em ensaio: não
+  foram conferidos um a um na passagem de 2026-10-12, que só registou medições.
 
 ## AOS-522 — Qualificar e preparar a assinatura num comando; sem veredicto positivo não há nada para assinar; runbook com relógio
 
@@ -1814,8 +1837,8 @@ de entrada para o dono assinar. E um procedimento escrito, com o tempo esperado 
 
 ### Estado
 
-**Implementado em ensaio, com as correcções da revisão adversarial (2026-10-11); o ensaio a seco
-com Docker e nó local e a corrida real ficam por fazer, no posto do dono.** Ramo
+**Implementado em ensaio, com as correcções da revisão adversarial (2026-10-11); a corrida real
+está feita (2026-10-11 e 2026-10-12); o ensaio a seco com Docker e nó local fica por fazer.** Ramo
 `feature/AOS-522-comando-qualificar`, sobre a base com o AOS-519 fundido.
 
 - **O que existe.** `aos-ensaio qualificar <falso|proxy|real>` e `aos-ensaio conferir`
@@ -1857,6 +1880,17 @@ com Docker e nó local e a corrida real ficam por fazer, no posto do dono.** Ram
      recusado antes de enviar (D8). No caminho deste comando a linha diz, por isso, «não se
      aplica»; a função do resumo trata os outros casos, e um controlo em falta, não corrido ou de
      resultado desconhecido sai «CONTROLO NAO CORRIDO».
+- **A corrida real (2026-10-11 e 2026-10-12).** `aos-ensaio qualificar real` correu duas vezes
+  com veredicto `qualificado` e deixou o pacote por assinar: com o Kimi de produção (23 min 5 s;
+  assinado só com uma chave de teste descartável) e com o `k3` (15 min 37 s: plano 1 min 26 s,
+  sonda 10 s, corrida 14 min 1 s). O pacote do `k3` foi assinado pelo dono, no seu posto, com a
+  chave dos perfis que gerou; `aos-ensaio conferir`, com a âncora do dono, disse «o nó aceitaria
+  este pacote», e o nó de produção carregou-o (AOS-519). O comando não viu a chave privada.
+  Nenhum `recusado` nem `inconclusivo` saiu de um modelo mau real: as três tentativas
+  `inconclusivo` de 2026-10-11 foram sondas com HTTP 500, e não deixaram nada por assinar.
+- **O relógio do runbook.** Tempo de máquina da entrada do `k3`: 15 min 37 s de exame mais
+  cerca de 3 min de instalação e duas recriações do nó. O tempo humano — ler o resumo, assinar —
+  não foi medido, e nenhuma revisão do passo-a-passo do runbook foi cronometrada com o dono.
 - **Critério por cumprir.** *O ensaio do procedimento a seco*, com provider falso atrás do proxy
   fixado e um nó local até ao banner: **não foi feito**, e os tempos por passo não estão medidos.
   O nó só aceita um relatório do modo `real`, e esse modo fica reservado ao posto do dono: o
@@ -1927,14 +1961,22 @@ intervenção.
 
 **Antes de o relógio começar (passo 0, fora do relógio; fica registado)**
 
-- [ ] A versão em produção contém os seis tickets anteriores; os interruptores estão como a
+- [x] A versão em produção contém os seis tickets anteriores; os interruptores estão como a
       prova pede e ficam anotados: pasta e âncora dos perfis, `AOS_MODEL_CANDIDATE=on`,
       `AOS_MODEL_BREAKER=observe`, `AOS_MODEL_ROUTE_GOVERNANCE` em `observe`.
+      **Anotado (2026-10-12):** v0.1.55, tag sobre `25b85e9d`, com os seis tickets; pasta e âncora
+      dos perfis ligadas, `AOS_MODEL_CANDIDATE=on`, `AOS_MODEL_BREAKER=observe`, e a governação da
+      rota em `observe` (todos os turnos com `route_check: igual`).
 - [ ] O proxy de produção corre o digest declarado (AOS-517) e tem a rota do modelo novo
       configurada pelo dono; a allowlist em vigor já autoriza o alias. **Fica dito no
       registo que este passo existiu e quanto demorou**, apesar de estar fora do relógio.
+      **Por marcar:** o proxy corre o digest declarado desde o deploy da v0.1.55 e o alias `gpt-4o`
+      já estava autorizado e com rota; mas a duração do passo 0 não foi medida.
 - [ ] Anotados, para a prova de «zero PRs»: o digest da imagem do nó em produção e o commit
       da base, no instante em que o relógio começa.
+      **Por marcar:** estão anotados a imagem do nó (`sha256:67a9f70e2836…`) e o commit
+      (`25b85e9d`), mas não «no instante em que o relógio começa»: a hora de início do exame não
+      ficou registada.
 
 **(a) O terceiro modelo entra — em produção**
 
@@ -1943,21 +1985,37 @@ intervenção.
       de artefactos e não de memória: a hora de início da qualificação no relatório, a da
       assinatura, o evento selado «perfil carregado», e o manifesto do primeiro turno do
       candidato. O tempo de cada passo fica numa tabela, ao lado do esperado pelo desenho.
+      **Por marcar:** o tempo de máquina foi de cerca de 19 min (15 min 37 s de exame mais cerca
+      de 3 min de instalação e duas recriações). O tempo humano — ler o resumo, assinar — não foi
+      medido, e os instantes não foram tirados dos artefactos para a tabela por passo.
 - [ ] **Zero PRs:** o digest da imagem do nó e o commit da base são os mesmos no fim e no
       princípio; não houve release, deploy de imagem, nem alteração de código entre os dois
       instantes.
-- [ ] **Uma assinatura:** um só acto de assinatura do dono (o registo de entrada). A
+      **Por marcar, pela letra:** não houve PR nenhum para este modelo. Mas a v0.1.55 entrou em
+      produção no mesmo dia (10:36:37 UTC), 13 minutos antes de o nó ser recriado com os perfis
+      (10:49:33 UTC), e o exame durou 15 min 37 s: «sem release nem deploy entre os dois
+      instantes» não fica estabelecido. E o `k3` já tinha perfil na tabela em código — ver o
+      Estado.
+- [x] **Uma assinatura:** um só acto de assinatura do dono (o registo de entrada). A
       allowlist não foi re-assinada.
-- [ ] O veredicto do arnês para o modelo novo é `qualificado`, e o relatório, o registo
+      **Medido (2026-10-12):** o dono assinou o registo de entrada do `k3`, e só esse.
+- [x] O veredicto do arnês para o modelo novo é `qualificado`, e o relatório, o registo
       assinado e os três digests ficam referidos no registo da prova.
+      **Medido (2026-10-12):** `qualificado`; os digests do relatório, do registo e do perfil
+      estão no Estado e na §5 do acompanhamento; o da imagem do proxy é o do AOS-517.
 - [ ] O primeiro run do candidato em produção fecha «cumprido», com o digest do perfil
       **assinado** no manifesto e o modelo servido igual ao esperado em todos os turnos.
-- [ ] Se o tráfego de produção não trouxer um plano para a fatia dentro da hora, lança-se
+      **Por marcar:** 14 de 14 runs do candidato `complete`, e os 21 turnos servidos por
+      `openai/k3`; o digest do perfil assinado no manifesto não foi lido.
+- [x] Se o tráfego de produção não trouxer um plano para a fatia dentro da hora, lança-se
       uma série de validação de propósito, e **o registo diz que foi lançada** e de que
       tamanho. A escolha continua a ser a da função: não se força um plano para o candidato.
+      **Lançada de propósito (2026-10-12):** a série `v0155c`, de 40 planos, pela fila real. A
+      escolha foi a da função: 7 planos no candidato, nenhum forçado.
 - [ ] Se a hora não for cumprida, o critério **não está cumprido**: regista-se o tempo real
       e o passo que o gastou. Não se repete a medição até dar menos de uma hora sem dizer
       quantas vezes se tentou.
+      **Por marcar:** depende do critério da hora, acima. Houve uma só tentativa de entrada.
 
 **(b) Um modelo mau é recusado antes de entrar — em ensaio**
 
@@ -1965,9 +2023,13 @@ intervenção.
       parâmetro que o parte; fica dito qual — corre o comando do AOS-522 com o modelo real:
       veredicto `recusado`, com a razão esperada, e **nenhum registo de entrada** na pasta
       de saída. Ficam registados os pedidos gastos e que a corrida coube nos tectos.
+      **Não medido.** Nenhum perfil mau correu com o modelo real. Os `recusado` que existem são
+      de providers falsos (AOS-518), no modo falso e atrás do proxy real.
 - [ ] **O nó também o recusa.** Num nó de ensaio (não em produção), um registo de entrada
       assinado à mão que cite esse relatório `recusado` não carrega: o nó não arranca, com a
       causa do AOS-519. A recusa não depende só de o comando não ter preparado o ficheiro.
+      **Não medido** como aqui se descreve. O que existe é o teste do AOS-519 (veredicto que não
+      é `qualificado`: o nó não arranca).
 
 **(c) Um candidato que degrada perde a fatia — em ensaio, e dito que foi aí**
 
@@ -1975,8 +2037,12 @@ intervenção.
       depois, e o disjuntor em `enforce`: abre dentro da janela escrita, nenhum plano novo
       vai para o candidato, o titular não é tocado, e não houve intervenção de ninguém. O
       evento selado da abertura, com as contagens, fica referido no registo.
+      **Não medido** atrás da imagem fixada do proxy. O que existe é o teste do AOS-521 com um
+      provider falso que degrada a meio.
 - [ ] O registo diz, com estas palavras, que **(c) foi provado em ensaio e não em
       produção**: em produção exigia um modelo que falhasse em produção.
+      **Por marcar:** o registo diz mais do que isto — (c) está provado só em teste, com um
+      provider falso; em produção o disjuntor só correu em `observe`, com um candidato bom.
 
 **O canary em produção (acompanha a prova; não é condição do critério)**
 
@@ -1984,19 +2050,31 @@ intervenção.
       série «depois» (os planos do candidato) e a «antes» (os do titular no mesmo período):
       planos, primeiras falhas, «não cumprido», e as vezes que o disjuntor teria aberto, para
       cada um.
+      **Em parte (série `v0155c`):** candidato — 7 planos, 0 primeiras falhas, 0 «não cumprido»,
+      0 «teria aberto»; titular, no mesmo período — 33 planos, 4 primeiras falhas, 0 «não
+      cumprido». Falta a leitura do disjuntor sobre o titular (a calibração do AOS-521).
 - [ ] O critério P7 da fase anterior mantém-se: a taxa de primeiras falhas e o «não
       cumprido» do titular não pioram face à última série anterior do mesmo tamanho.
+      **Por marcar: as primeiras falhas do titular subiram.** 2 em 5 (`v0155a`) e 4 em 33
+      (`v0155c`), contra 0 em 19 (`v0154d`) e 1 em 82 (2026-10-07). O «não cumprido» continua a
+      0. A causa não foi procurada.
 
 **Registo**
 
 - [ ] A §5 do acompanhamento ganha as linhas da prova; a linha da A3 na §2 passa a
       **provada** só se (a), (b) e (c) estiverem cumpridos, com a frase exacta do que ficou
       provado em produção e do que ficou provado em ensaio.
-- [ ] O registo lista o que a prova **não prova**: o terceiro modelo é da mesma família e da
+      **Por marcar:** a §5 tem as linhas da prova, e a linha da A3 na §2 diz o que ficou provado
+      em produção e o que ficou provado com modelos simulados. Mas (b) e (c) não estão cumpridos
+      como este ticket os escreve: pela regra deste critério, a palavra «provada» na §2 vale só
+      para a primeira metade, e é isso que lá está escrito.
+- [x] O registo lista o que a prova **não prova**: o terceiro modelo é da mesma família e da
       mesma conta que o titular; nenhum perfil que devolve estado entrou; o planeador do
       `aos-orq` não é coberto; a bateria são seis casos sintéticos; o disjuntor em `enforce`
       nunca actuou em produção.
-- [ ] O fecho da fase é do dono, na §4. Este ticket não a fecha.
+      **Escrito** na §3 do acompanhamento («O que a prova não prova») e no Estado, abaixo.
+- [x] O fecho da fase é do dono, na §4. Este ticket não a fecha.
+      **A fase não está fechada.** A decisão está na §4 do acompanhamento, por tomar.
 
 ### O que fica desligado por omissão, e o que tem de ficar inerte
 
@@ -2039,7 +2117,91 @@ intervenção.
 
 ### Estado
 
-**Aberto (2026-10-11).** Nada medido. Só começa com os seis tickets anteriores em produção.
+**Medido a 2026-10-12; a fase fica por fechar pelo dono.** O critério da fase tem duas metades,
+e ficaram em sítios diferentes.
+
+**Decisões do dono que valem para esta medição** (acompanhamento §4).
+
+- 2026-10-11: «O passo 5 também está autorizado» / «Prossiga com o que é possível, no que
+  depender de mim é só sinalizar» — a tag, os passos do AOS-517 no servidor, o exame real do Kimi
+  e a verificação de produção foram autorizados; aprovar o deploy, gerar a chave e assinar, e
+  escolher o terceiro modelo continuaram a ser do dono.
+- 2026-10-12: o terceiro modelo é o **`k3`** (Kimi, alias `gpt-4o`, `openai/k3`), com o aviso dos
+  factos ausentes à vista («avança com o k3»). **Esta escolha afasta-se do que este ticket
+  escrevia** em «Decidido pelo dono»: o `k3` já tem perfil na tabela em código
+  (`packages/platform/model-gateway/route.go`, `gpt-4o` → `openai/k3`), e o ticket excluía-o por
+  isso como prova de «zero PRs».
+- 2026-10-12: o dono gerou a chave dos perfis no seu posto e assinou o registo do `k3`. Âncora
+  pública: `GR78qbnszHiu0JlFuW7fxDRcAZ36l1zQ5Lv3QzEdcF4=`.
+
+**Passo 0.** v0.1.55 (tag sobre `25b85e9d`) em produção desde 2026-10-12, 10:36:37 UTC; imagem do
+nó `sha256:67a9f70e2836…`. O deploy recriou o `litellm`, agora referido pelo digest
+`sha256:154e23bb5f31b1f10e16392a8ef299bd2cde08de3a64a6849002cfcc25ce3c63`, com
+`drop_params: false` mantido; criou `/opt/aos/perfis-de-rota` (dono `aos`); copiou o
+`alerta-disjuntor.sh`, sem cron. Nó `healthy` um minuto depois; o tempo sem modelo não foi
+medido. Série `v0155a`, sem variáveis novas: 5 de 5 planos concluídos; 2 de 5 nós com tools
+falharam à 1.ª tentativa e recuperaram à 2.ª; todos os turnos com `route_check: igual`;
+projecção 1.2.0; 0 eventos `run.model_pinned`.
+
+**(a) O terceiro modelo entrou — em produção.**
+
+| Passo | O que ficou | Tempo |
+|---|---|---|
+| Exame (`aos-ensaio qualificar real --fornecedor kimi --modelo k3`, binário da base `25b85e9d`; perfil `requested: gpt-4o`, `expected_model: openai/k3`, sem parâmetros; board `board-eu`, região `eu`, fatia 10%) | **`qualificado`**: 40 de 40 nós com tools e 16 de 16 sem tools cumpridos; 0 de 40 sem tool call à 1.ª tentativa; 0 respostas vazias; 96 de 96 turnos com o modelo esperado; 96 pedidos, todos 200. Avisos: factos ausentes em 15 de 56 respostas cumpridas (27%; o titular teve 2 de 56 na véspera); tecto em dólares não imposto. Digest do relatório `sha256:87addc0a095987250ca55c8c7172da4e39321fcadf3d35f8fab8b20671ad086f` | plano 1 min 26 s, sonda 10 s, corrida 14 min 1 s: **15 min 37 s** |
+| Assinatura e conferência | O dono assinou o registo. `aos-ensaio conferir`, com a âncora do dono: «o nó aceitaria este pacote». Digest do registo `sha256:59e3d1b295aa743764026b0f75ecf8e7c57a29c614c1b7c579ab18547437d558`; digest do perfil `sha256:efdd13fbdba0b96a8bc83cad7e2fb3f30f7e3ce5553a4eb0f736d7ab69efba36` | não medido (tempo humano) |
+| Instalação e primeira recriação | Os três ficheiros em `/opt/aos/perfis-de-rota` (o `sha256sum` do registo no servidor é o digest assinado); `.env` com as duas variáveis dos perfis (cópia `.env.antes-da-a3`); nó recriado às 10:49:33 UTC, `healthy`; banner «perfil de rota ASSINADO carregado … registo "gpt-4o"» e «modelo candidato NAO SERVIDO» | cerca de 3 min, com a linha seguinte |
+| Candidato e disjuntor | `AOS_MODEL_CANDIDATE=on` e `AOS_MODEL_BREAKER=observe` (cópia `.env.antes-do-candidato`); nó recriado, `healthy`; banner: canary ABERTO, fatia 10%, limite 40, época 1, 0 atribuídos, marca de abertura 1312; disjuntor FECHADO em `observe` | incluído acima |
+
+Zero PRs para este modelo. Uma assinatura. Cerca de 19 min de máquina. Feito pelo utilizador
+`aos`, sem root: a pasta dos perfis ficou do `aos`, e não do root como o runbook pede. **Nenhuma
+revisão do passo-a-passo do runbook foi cronometrada com o dono, e o tempo humano — ler o resumo,
+assinar — não foi medido.**
+
+**Série `v0155c`** (40 planos pela fila real, lançada de propósito, com o candidato a servir). 40
+de 40 planos concluídos (código 0). Livro do canary: 1 `model.canary.opened`, 7
+`model.canary.plan_assigned`, 0 `closed`. 84 runs com `run.model_pinned`: 70 do titular (razão
+`funcao`) e 14 do candidato (7 `funcao` e 7 `plano_ja_atribuido`). 40 planos, 7 no candidato —
+17,5% para uma fatia de 10%; com 40 planos cabe no acaso (a função deu 110 em 1000 no teste) —,
+e 0 planos com dois modelos.
+
+| | Planos | Runs | Primeiras falhas | «Não cumprido» | «Teria aberto» |
+|---|---|---|---|---|---|
+| Candidato (`gpt-4o`, servido por `openai/k3`) | 7 | 14 de 14 `complete`; 21 turnos | 0 | 0 | 0 (7 `model.breaker.run_outcome`, todos `cumprido`) |
+| Titular (servido por `openai/kimi-for-coding`) | 33 | 70: 66 `complete` e 4 `failed` com `contract_unmet_no_call`; 103 turnos | 4, recuperadas | 0 | não lido (calibração do AOS-521 por fazer) |
+
+Os nós de resumo, sem contrato, não entram na janela do disjuntor.
+`aos_model_breaker_unrecorded_total` ficou a 0, e as séries por modelo apareceram no `/metrics`
+com o candidato a servir.
+
+**O critério da fase, com todas as letras.**
+
+- *«O terceiro modelo entra com zero PRs e uma assinatura em menos de uma hora»:* **cumprida em
+  produção com o `k3`** — zero PRs, uma assinatura, cerca de 19 min de máquina; o tempo humano
+  não foi medido.
+- *«Um modelo mau é recusado sozinho»:* **provada no exame com modelos maus simulados** — o que
+  não chama a tool, o que responde vazio, o que recusa o 2.º turno e o que serve outro modelo
+  saem todos `recusado`, no modo falso e atrás do proxy real. Em produção, o disjuntor só correu
+  em `observe`, com um candidato bom. **Nenhum modelo mau real foi recusado, nem no exame nem em
+  produção.**
+
+**O que ficou por marcar nos critérios, em resumo.** Em (a): a hora e o «zero PRs» pela letra
+(instantes não tirados dos artefactos, tempo humano por medir, deploy da v0.1.55 no mesmo dia), e
+o digest do perfil assinado no manifesto, que não foi lido. (b) e (c) inteiros: não houve modelo
+mau real, nem nó de ensaio com um relatório `recusado` assinado à mão, nem o cenário de
+degradação atrás da imagem fixada do proxy. No canary: a leitura do disjuntor sobre o titular, e
+o P7 — as primeiras falhas do titular subiram (2 em 5 e 4 em 33, contra 0 em 19 na véspera), com
+o «não cumprido» a 0 e sem causa procurada.
+
+**O que a prova não prova.** O terceiro modelo é da mesma família e da mesma conta que o
+titular, e o binário já o conhecia por este alias. Nenhum perfil que devolve estado entrou. O
+planeador do `aos-orq` não é coberto. A bateria são seis casos sintéticos. O disjuntor em
+`enforce` nunca actuou em produção. O canary ficou em 7 planos dos 40 do limite.
+
+**Por decidir pelo dono** (acompanhamento §4): se a fase fecha, e se «um modelo mau é recusado
+sozinho» provado só com modelos maus simulados chega para o critério; se o candidato passa a
+titular, continua ou sai; se o disjuntor passa a `enforce`. Este ticket não fecha a fase.
+
+**Resíduos**, na §7 do acompanhamento («Resíduos da fase A3»).
 
 ---
 
@@ -2064,3 +2226,4 @@ intervenção.
 | 1.14 | 2026-10-11 | +AOS-523 (fase A3): a medição do critério da fase — o terceiro modelo (outro modelo do Kimi, pela mesma conta) entra em produção em menos de uma hora, com zero PRs e uma assinatura; um modelo mau é recusado pelo arnês e pelo nó, em ensaio; um candidato que degrada perde a fatia, em ensaio (D9) | Equipa AOS |
 | 1.15 | 2026-10-11 | AOS-522 implementado em ensaio: `aos-ensaio qualificar` e `conferir`, o resumo de uma página e o runbook com relógio; o ensaio a seco com Docker e nó local e a corrida real ficam por fazer | Equipa AOS |
 | 1.16 | 2026-10-11 | AOS-522: correcções da revisão adversarial — quatro barreiras com teste próprio, o resumo a partir do registo escrito, o plano confere a allowlist; e a correcção de um defeito do AOS-518 (uma corrida interrompida podia sair `recusado`) | Equipa AOS |
+| 1.17 | 2026-10-12 | AOS-523 medido: o `k3` saiu `qualificado` no exame real, foi assinado pelo dono e serve 10% dos planos na v0.1.55 (série `v0155c`: 7 planos em 40, 14 de 14 runs do candidato cumpridos); a primeira metade do critério da fase fica cumprida em produção, a segunda só com modelos maus simulados — nenhum modelo mau real foi recusado; a fase fica por fechar pelo dono. AOS-518 e AOS-522: a qualificação e a corrida reais registadas | Equipa AOS |
