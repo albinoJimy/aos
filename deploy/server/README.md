@@ -1675,14 +1675,28 @@ curl -s … /metrics | grep aos_model_breaker
 #   aos_model_breaker_window_failures  — falhas na janela (dispara às 3)
 #   aos_model_breaker_window_units     — unidades na janela (no máximo 20)
 #   aos_model_breaker_signals{signal}  — por sinal: nao_cumprido, resposta_vazia, resposta_rejeitada,
-#                                        erro_do_provider, modelo_servido_diferente
-#   aos_model_breaker_unrecorded_total — observações que não ficaram no livro (deve ser 0)
+#                                        erro_do_provider, modelo_servido_diferente, nao_convergiu,
+#                                        falha_nao_classificada
+#   aos_model_breaker_unrecorded_total — escritas que não ficaram no livro (deve ser 0)
 ```
+
+A janela e os sinais são os de **agora**: em `observe` continuam a andar depois do «teria aberto»
+(falhas sobre unidades dá a taxa); em `enforce`, depois de abrir, ficam como estavam.
+
+**O que conta como falha.** Um run do candidato que acabou mal conta, salvo se a causa estiver na
+lista fechada do que não é do modelo (ADR-041 §2.9): o 429 e o 401/403 (são da conta), o
+cancelamento, o orçamento, a recusa pela fixação, o transporte sem resposta, a negação da
+pipeline do gateway, a rota não reportada, e o `complete` sem contrato declarado. **Uma
+indisponibilidade curta do fornecedor pode abrir o disjuntor**: três 503 (ou 408) seguidos
+abrem-no, e reabrir é assinar um registo novo. É de propósito — o lado fechado.
 
 **O aviso** — [`alerta-disjuntor.sh`](alerta-disjuntor.sh), no molde do `alerta-rota.sh`: avisa
 uma vez quando abre (ou, em `observe`, quando teria aberto), relembra de 24 h em 24 h, e avisa
-quando um registo novo o fecha. Sai o título e as contagens; nenhum nome de modelo. **O deploy
-ainda não o copia para o servidor**: copia-o à mão para `/opt/aos/`.
+quando um registo novo o fecha. Avisa também quando `aos_model_breaker_unrecorded_total` passa de
+zero: o nó não conseguiu gravar uma observação ou a marca. Sai o título e as contagens; nenhum
+nome de modelo. **O deploy ainda não o copia para o servidor**: copia-o à mão para `/opt/aos/`.
+**Com `AOS_MODEL_BREAKER=off` as famílias não existem e o script não vê nada** — nem um
+disjuntor aberto, nem escritas por gravar: cai em «ausente», sem aviso.
 
 ```bash
 # como aos: crontab -e  →  */15 * * * * /bin/bash /opt/aos/alerta-disjuntor.sh >/dev/null 2>&1
@@ -1693,7 +1707,7 @@ bash /opt/aos/alerta-disjuntor.sh --teste   # envia um aviso de TESTE, não mexe
 **O disjuntor abriu — o que ler.**
 
 1. O log: `DISJUNTOR DO MODELO CANDIDATO ABERTO`, com a regra (`falhas_na_janela` ou
-   `modelo_servido_diferente`), as falhas na janela e os cinco contadores.
+   `modelo_servido_diferente`), as falhas na janela e os contadores por sinal.
 2. O facto selado, no livro durável `aos-internal/model-canary`: o evento `model.breaker.opened`
    traz o digest do registo, a regra, os contadores e a **janela** — os ids dos runs e o sinal de
    cada um. Os desfechos, um a um, são os `model.breaker.run_outcome`; o turno com o modelo
@@ -1718,6 +1732,24 @@ continua a valer, e o arranque avisa). Decides uma de duas:
   (outro digest: muda a fatia, ou volta a qualificar e cita o relatório novo) e recrias o nó. O
   registo novo começa fechado, com a janela vazia. Repor o **mesmo** registo, ou um registo
   antigo cujo disjuntor abriu, não reabre.
+
+**Antes de mudar de `enforce` para `off` ou `observe`: confirma a marca.** Em `enforce` quem
+corta é a regra; em `off` e `observe`, só a marca `model.breaker.opened` que está no livro. Se o
+nó cortou e a marca não ficou gravada, mudar de modo **devolve a fatia ao candidato** sem registo
+novo. Confirma as duas coisas, com o nó ainda em `enforce`:
+
+```bash
+curl -s … /metrics | grep -E 'aos_model_breaker_(open|unrecorded_total)'
+#   aos_model_breaker_open 1  e  aos_model_breaker_unrecorded_total 0
+# e a marca no livro durável (busybox :ro no volume, grep -a), com o digest do registo em vigor:
+grep -a -c '"type":"model.breaker.opened"' /var/lib/aos/events.wal     # tem de ser >= 1
+docker logs aos-aos-1 2>&1 | grep 'DISJUNTOR DO MODELO CANDIDATO ABERTO' | tail -1
+```
+
+Com `unrecorded_total` acima de zero, ou sem a marca, **não mudes de modo**: vê no log porque é
+que a escrita falhou, repara, e espera pela decisão seguinte (o nó volta a tentar em cada run
+novo e no arranque). Uma marca para um registo que não é o em vigor diz `REGISTO FORA DE VIGOR`
+no log e `out_of_force` no evento: não é o candidato de agora.
 
 **Limites.** Com mais de uma réplica do nó sobre JetStream não é suportado (o mesmo defeito do
 canary: a réplica que fica atrás não grava, e `aos_model_breaker_unrecorded_total` sobe). Uma

@@ -415,15 +415,40 @@ seguinte não fechar — se entretanto a regra disparou, disparou.
 | `nao_cumprido` (F1) | veredicto do kernel negativo, por qualquer razão que não a resposta vazia — com o nó a impor o veredicto ou só a observá-lo |
 | `resposta_vazia` (F2) | veredicto negativo com a razão `empty_output` |
 | `resposta_rejeitada` (F3) | o run falhou com o erro de uma resposta que o gateway recusou (as causas do AOS-509) |
-| `erro_do_provider` (F4) | o run falhou com um status do provider que não é 200 nem 429 |
+| `erro_do_provider` (F4) | o run falhou com um status do provider que não é 200 nem da conta (429, 401, 403). **5xx e 408 contam** |
 | `modelo_servido_diferente` (F5) | a governação da rota viu `diferente`: num turno (abre logo), ou como causa da falha do run em imposição |
+| `nao_convergiu` (F6) | o run esgotou o tecto de turnos, ou o disjuntor por-run interrompeu-o (sem progresso, ciclo de recusas, tempo, velocidade de gasto) — fique pausado ou `timed_out` |
+| `falha_nao_classificada` (F7) | o run acabou `failed` ou `timed_out` por uma causa que não é nenhuma das acima **nem está na lista de exclusões**: um 200 sem `usage`, uma falha da contabilidade de custo, um erro do loop que o nó não conhece |
 
-**Não entram na janela** — nem como falha, nem como run bom: o limite de ritmo (429, que é da
-conta); o run recusado pela fixação (não deu um turno); o cancelamento, o pânico, o tecto de
-turnos e o orçamento esgotado; um erro de transporte **sem resposta** (o nó não sabe se foi o
-modelo ou o caminho até ao proxy, que o titular também usa — o proxy que esgota o tempo do
-provider responde com um status, e esse conta); a rota `nao_reportado`; e um desfecho que não
-ficou selado.
+**O princípio: o que não está na lista de exclusões conta.** Um run do candidato que acabou mal
+é uma falha, salvo se a causa for uma das da lista **fechada** do que não é do modelo. Um
+candidato que falhe sempre de uma maneira que o nó não sabe classificar abre na mesma (F7).
+
+**A lista fechada do que não entra na janela** — nem como falha, nem como run bom:
+
+- o pânico da hospedagem (é do nó);
+- o desfecho que **não ficou selado**, e o run que parou sem acabar (à espera de humano, pausado
+  por um operador);
+- o `complete` **sem veredicto**, ou com veredicto positivo **sem contrato de conclusão
+  declarado**: o nó não sabe se o run fez o que devia, e um candidato sem contrato não «lava» a
+  janela com runs bons. `cumprido` é só o veredicto positivo sobre um contrato declarado;
+- o orçamento esgotado;
+- o run recusado pela fixação do modelo (não deu um turno), e o run fixado num perfil que o nó
+  não tem em vigor;
+- o cancelamento (o nó a desligar, o run cancelado);
+- o limite de ritmo (429) e a credencial da conta (401, 403): são da conta, não do modelo;
+- o erro de transporte **sem resposta HTTP** (o nó não sabe se foi o modelo ou o caminho até ao
+  proxy, que o titular também usa — o proxy que esgota o tempo do provider responde com um
+  status, e esse conta);
+- a negação por um estágio da pipeline do gateway antes de o pedido sair (identidade, allowlist,
+  soberania);
+- a rota `nao_reportado` em imposição (não prova outro modelo; é o `alerta-rota.sh` que avisa).
+
+**Uma indisponibilidade curta do fornecedor pode abrir o disjuntor, e isso é aceite.** Três
+respostas 503 (ou 408) em três unidades seguidas abrem-no, e reabrir é assinar um registo novo. É
+o lado fechado: o nó não distingue «o fornecedor esteve em baixo dois minutos» de «este modelo
+está a falhar», e na dúvida tira a fatia. **Com runs sem contrato declarado a janela só recebe
+falhas**: três falhas em três unidades diferentes abrem, sem runs bons que as diluam.
 
 **O estado vive no livro do canary**, em quatro tipos novos da família `model.*` (o contrato do
 §2.6), todos com o digest do registo de entrada:
@@ -432,15 +457,33 @@ ficou selado.
 |---|---|---|
 | `model.breaker.run_outcome` | run do candidato | o run, a unidade e o sinal |
 | `model.breaker.route_mismatch` | run | um turno com o modelo servido diferente |
-| `model.breaker.opened` | registo | a regra que disparou, os cinco contadores e a janela (runs e sinais) — nó em `enforce` |
+| `model.breaker.opened` | registo | a regra que disparou, os contadores por sinal e a janela (runs e sinais) do **primeiro disparo** — nó em `enforce`. `out_of_force` quando o registo não era o que esse nó tinha em vigor |
 | `model.breaker.would_open` | registo | o mesmo — nó em `observe` |
 
 Escritos com `WithExpectedSeq` e com a chave de idempotência do run ou do registo: uma marca de
 cada tipo por registo, escreva quem escrever. Quem diz que um run é do candidato, sob que
-registo e de que unidade, é o **stream do run** (`run.model_pinned` e `run.plan_origin`), lido
-uma vez quando o run do candidato acaba. Depois do disparo não se grava mais nenhuma observação.
-O custo: o livro, que já se lia em cada run novo, cresce um evento por run do candidato até ao
-disparo; ler o estado no arranque é a leitura do livro que o arranque já fazia, mais uma.
+registo e de que unidade, é o **stream do run** — o `run.model_pinned` e o `run.plan_origin` que
+**o nó emitiu** (o emissor é conferido nos dois) —, lido uma vez quando o run do candidato acaba.
+
+**Quando deixa de se gravar.** Com a marca `opened` no livro; em `enforce`, depois de a regra
+disparar (o conjunto das observações de um registo que disparou em `enforce` fica estável); e
+atingido o **tecto de 400 observações por registo** (os 40 planos do canary com dez runs cada).
+**Em `observe` a regra disparada não pára a medição**: as observações continuam, e as métricas
+mostram a janela de agora — a marca e a decisão continuam a ser as do primeiro disparo. O custo:
+o livro, que já se lia em cada run novo, cresce no máximo 400 eventos por registo; ler o estado no
+arranque é a leitura do livro que o arranque já fazia, mais uma.
+
+**A marca é reconciliada, e é o melhor esforço.** Em `enforce`, cada decisão e o arranque que
+vejam «a regra dispara e não há marca» voltam a tentar gravá-la, sem recusar runs nem impedir o
+arranque. Uma marca que perde o CAS **grava-se sem ele** (a chave é a do registo, e o que sela é
+o estado do primeiro disparo): é o que a deixa ficar numa réplica com a vista do stream atrasada.
+Cada tentativa falhada conta em `aos_model_breaker_unrecorded_total`. O resíduo está no §5.
+
+**As duas escritas fora de uma decisão têm um prazo de I/O** de cinco segundos (o turno com o
+modelo trocado, e o desfecho na saída da hospedagem): um Event Store pendurado não prende o
+turno. Esgotado, conta como não gravada e o turno segue. Não é uma decisão. **Em `enforce`, um
+turno com o modelo trocado que não se consegue gravar não passa em silêncio:** essa réplica
+passa a tratar o disjuntor como aberto, em memória, até reiniciar.
 
 **O estado é por registo.** Um registo assinado novo não tem observações nem marcas: **começa
 fechado** — é esse o acto do dono que reabre, e o único. Repor o mesmo registo não reabre; repor
@@ -450,9 +493,13 @@ um registo antigo cujo disjuntor abriu deixa-o aberto.
 
 - `off` — não avalia, não grava, não publica métricas e não faz uma leitura a mais: byte a byte
   o nó do AOS-520. **Mas a marca `opened` que já esteja no livro para o registo em vigor vale na
-  mesma**: desligar o disjuntor não o reabre (o arranque avisa).
+  mesma**: desligar o disjuntor não o reabre (o arranque avisa). E um evento do disjuntor que
+  não se saiba ler não impede o arranque com `off`: conta como evento de uma versão mais recente
+  (§2.6) — candidato sem planos novos, titular servido — e o arranque avisa. Com o disjuntor
+  ligado esse evento torna o livro ilegível, e o nó não arranca.
 - `observe` — grava as observações, avalia, e ao disparo grava `would_open` e di-lo em
-  `aos_model_breaker_would_open`. **Não corta**: reparte os planos como `off`.
+  `aos_model_breaker_would_open`. **Não corta**: reparte os planos como `off`. E continua a
+  medir depois do disparo.
 - `enforce` — o mesmo, e ao disparo grava `opened` e corta. A decisão é a da regra sobre as
   observações do livro, tenham sido gravadas em `observe` ou em `enforce`: **passar a `enforce`
   com um registo cujo `observe` teria aberto abre na primeira leitura**. Um `would_open` não é
@@ -478,8 +525,9 @@ livro. O candidato nunca passa a titular.
 **Métricas**, só com o disjuntor ligado e um candidato a servir, da última leitura do livro por
 essa réplica: `aos_model_breaker_open`, `aos_model_breaker_would_open`,
 `aos_model_breaker_window_failures`, `aos_model_breaker_window_units`,
-`aos_model_breaker_signals{signal}` (cinco séries) e `aos_model_breaker_unrecorded_total`. O
-aviso é `deploy/server/alerta-disjuntor.sh`.
+`aos_model_breaker_signals{signal}` (sete séries) e `aos_model_breaker_unrecorded_total`. A
+janela e os sinais são os de **agora**. O aviso é `deploy/server/alerta-disjuntor.sh`, que avisa
+do disjuntor aberto, do «teria aberto» e de escritas por gravar.
 
 **Um nó de versão anterior** (o do AOS-520) que encontre estes eventos não cai: conta-os como de
 uma versão mais recente e deixa de atribuir planos ao candidato (§2.6) — o lado fechado.
@@ -580,8 +628,26 @@ uma versão mais recente e deixa de atribuir planos ao candidato (§2.6) — o l
   marcas (`aos_model_breaker_unrecorded_total` sobe) — as observações dessa réplica não entram
   na janela. Não é suportado; o substrato não foi tocado.
 - **Uma observação que não ficou no livro não entra na janela** (o livro ilegível ou em
-  contenção quando o run do candidato acabou, ou o nó a morrer entre o selo do run e a escrita):
-  erra para o lado de não abrir. Conta-se e diz-se no log; não se reconstrói a partir dos runs.
+  contenção quando o run do candidato acabou, o prazo de I/O esgotado, ou o nó a morrer entre o
+  selo do run e a escrita): erra para o lado de não abrir. Conta-se, diz-se no log e o alerta
+  avisa; não se reconstrói a partir dos runs.
+- **Resíduo: sem a marca `opened` no livro, `off` e `observe` devolvem a fatia que o `enforce`
+  cortou.** Em `enforce` o corte vem da regra; em `off` e `observe`, só da marca. Se o Event
+  Store recusar a escrita da marca de todas as maneiras (com e sem CAS), o nó em `enforce` corta
+  na mesma e fica a tentar em cada decisão — mas enquanto a marca não ficar, mudar para `off` ou
+  `observe` devolve a fatia sem um registo novo. Não há forma limpa de o saber sem a marca: um
+  «sinal de que um nó em `enforce` actuou» teria de ser outra escrita no mesmo livro, com a mesma
+  falha. Fica: cada tentativa falhada conta em `aos_model_breaker_unrecorded_total`, o alerta
+  avisa, e **antes de mudar de `enforce` para `off` ou `observe` confirma-se a marca** (runbook).
+  Preso por um teste que afirma o resíduo.
+- **O «disjuntor tratado como aberto» por um turno trocado que não se gravou vive em memória**:
+  um reinício perde-o, e o turno perdido não volta à janela.
+- **Uma interrupção pelo disjuntor por-run conta (F6) mesmo que o run seja depois retomado por
+  um humano e conclua**: um run tem um desfecho no livro, e é o primeiro.
+- **O prazo de relógio de um run esgotado pelo varrimento de prazos** chega à hospedagem como um
+  cancelamento, e não conta. O tecto de turnos e o disjuntor por-run contam.
+- **Um `failed` por uma avaria do próprio nó depois de o provider responder** (a selagem da
+  atribuição, por exemplo) conta como F7: é o lado fechado, e o titular falharia igual.
 - **A abertura do disjuntor não é selada no audit de governação do gateway** (ao contrário do
   fim do canary): fica no livro durável, que é a fonte. Por decidir se também vai para o audit.
 - **A leitura de calibração sobre o titular** (a mesma regra, só em métrica) **não foi feita**:

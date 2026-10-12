@@ -4790,16 +4790,55 @@ antes do `enforce`. Os critérios marcados são os cumpridos em ensaio; os dois 
 - *Métricas* `aos_model_breaker_*` (só com o disjuntor ligado), *`deploy/server/alerta-disjuntor.sh`*
   e o runbook.
 
+**Correcções da revisão adversarial (2026-10-12).** Nada bloqueante; dois achados importantes e
+vários menores, corrigidos no ramo, um commit por ponto. As definições abaixo já são as corrigidas.
+
+- *(1) Com a marca `opened` por gravar, `off` e `observe` devolviam a fatia que o `enforce`
+  cortou.* Ficou a via (a), mais uma: a marca é reconciliada em cada decisão e no arranque, sem
+  recusar runs; **uma marca que perde o CAS grava-se sem ele** (é o que a deixa ficar numa réplica
+  com a vista atrasada); e cada tentativa falhada conta em `aos_model_breaker_unrecorded_total`,
+  que o `alerta-disjuntor.sh` passou a avisar. **Resíduo, escrito no ADR-041 §5 e no runbook:** se
+  o Event Store recusar a escrita da marca de todas as maneiras, mudar de `enforce` para `off` ou
+  `observe` devolve a fatia — não há forma limpa de o saber sem a marca. Antes de mudar de modo
+  confirma-se a marca (o runbook tem o comando). Preso por um teste que afirma o resíduo.
+- *(2) Uma falha fora das classes conhecidas não entrava na janela.* A omissão passou para o lado
+  fechado: **o que não está na lista de exclusões conta.** Dois sinais novos — `nao_convergiu`
+  (F6: tecto de turnos, disjuntor por-run) e `falha_nao_classificada` (F7: o 200 sem `usage`
+  incluído). As duas listas estão no ADR-041 §2.9 e em «As definições», abaixo.
+- *(3) POR CONFIRMAR PELO DONO — o 401 e o 403 são da conta*, como o 429: saem da janela. O 5xx
+  e o 408 continuam a contar: **uma indisponibilidade curta do fornecedor pode abrir o disjuntor**
+  (três 503 seguidos abrem), aceite por ser o lado fechado.
+- *(3) POR CONFIRMAR PELO DONO — em `observe`, depois do «teria aberto», continua a medir*: as
+  observações continuam a gravar-se, com um **tecto de 400 por registo**, e as métricas mostram a
+  janela de agora. Passar a `enforce` com esse registo continua a abrir de imediato.
+- *Menor — POR CONFIRMAR PELO DONO: o `complete` sem contrato de conclusão declarado não entra na
+  janela* (nem bom, nem mau): `cumprido` é só o veredicto positivo sobre um contrato declarado.
+  Consequência: com runs sem contrato a janela só recebe falhas, e três abrem.
+- *Menor: a marca de um registo fora de vigor di-lo*, no evento (`out_of_force`) e no log, e o
+  log não diz que o candidato de agora deixa de receber.
+- *Menor: prazo de I/O de cinco segundos* nas duas escritas fora de uma decisão. **POR CONFIRMAR
+  PELO DONO:** em `enforce`, um turno com o modelo trocado que não se grava põe essa réplica a
+  tratar o disjuntor como aberto, em memória, até reiniciar.
+- *Menor: o `run.model_pinned` só vale se for o que o nó emitiu.*
+- *Menor: com `off`, um evento do disjuntor malformado não impede o arranque* — conta como evento
+  de uma versão mais recente, e o arranque avisa. Com o disjuntor ligado continua a ser ilegível.
+- *As cinco mutações que o revisor não correu* estão no total: três estavam mortas; duas ganharam
+  teste (a primeira escrita ganha, na leitura; o `turnosTratados`).
+
 **As definições, exactas.**
 
-- *Falha* é um destes sinais num run do candidato cujo desfecho ficou selado: `nao_cumprido` (F1,
-  veredicto do kernel negativo por uma razão que não a resposta vazia — com o veredicto imposto ou
-  só observado), `resposta_vazia` (F2, veredicto negativo `empty_output`), `resposta_rejeitada`
-  (F3, o run falhou com uma resposta que o gateway recusou), `erro_do_provider` (F4, o run falhou
-  com um status do provider que não é 200 nem 429) e `modelo_servido_diferente` (F5).
-- *Não entra na janela*, nem como falha nem como run bom: o 429; o run recusado pela fixação; o
-  cancelamento, o pânico, o tecto de turnos e o orçamento esgotado; o erro de transporte sem
-  resposta; a rota `nao_reportado`; o desfecho não selado; o run que parou sem acabar.
+- *Falha* é um destes sinais num run do candidato: `nao_cumprido` (F1, veredicto do kernel
+  negativo por uma razão que não a resposta vazia — imposto ou só observado), `resposta_vazia`
+  (F2), `resposta_rejeitada` (F3), `erro_do_provider` (F4, um status que não é 200 nem da conta:
+  5xx e 408 contam), `modelo_servido_diferente` (F5), `nao_convergiu` (F6, tecto de turnos ou
+  disjuntor por-run) e `falha_nao_classificada` (F7, qualquer outro desfecho selado `failed` ou
+  `timed_out` cuja causa não esteja na lista seguinte).
+- *Não entra na janela*, nem como falha nem como run bom — a lista é FECHADA: o pânico da
+  hospedagem; o desfecho não selado e o run que parou sem acabar; o `complete` sem veredicto ou
+  sem contrato declarado; o orçamento esgotado; a recusa pela fixação e o run fixado num perfil
+  que o nó não tem; o cancelamento; o 429 e o 401/403; o erro de transporte sem resposta HTTP; a
+  negação por um estágio da pipeline do gateway; a rota `nao_reportado`.
+- *`cumprido`* é só o `complete` com veredicto positivo sobre um contrato declarado.
 - *A janela* são as últimas 20 **unidades** com desfecho contado. A unidade é o nó do plano — o id
   da primeira tentativa, lido do `run.plan_origin` do run —, ou o run, se não tem plano. A nova
   tentativa substitui a anterior e vai para o fim.
@@ -4820,19 +4859,22 @@ nó, que sai a unidade — não do id do run, que nunca se parte pelo `~`.
   diz que só o dono reabre, assinando. A inércia não é tocada: sobre as mesmas entradas (um livro
   sem marcas) o nó é o do AOS-520.
 - *O erro passageiro do provider.* Conta se o provider (ou o proxy) **respondeu** com um status
-  que não é 200 nem 429; não conta se não houve resposta. O nó não sabe se uma ligação que caiu foi
-  o modelo ou o caminho até ao proxy, que o titular também usa.
+  que não é 200 nem da conta (429, 401, 403) — 5xx e 408 incluídos; não conta se não houve
+  resposta. O nó não sabe se uma ligação que caiu foi o modelo ou o caminho até ao proxy, que o
+  titular também usa. Uma indisponibilidade curta do fornecedor pode, por isso, abrir.
 - *O veredicto negativo só observado* (`AOS_COMPLETION_VERDICT=observe`, o run fecha `complete`)
   conta como F1 ou F2: o sinal é o veredicto do kernel, não o que o nó fez com ele.
 - *A rota não reportada* não abre: o proxy deixou de declarar, o que não prova outro modelo. É o
   `alerta-rota.sh` que o avisa.
-- *«Com pelo menos um turno».* Não há contador de turnos: só contam sinais que pressupõem um
-  pedido ao modelo (um veredicto, uma resposta recusada, um status), e a recusa pela fixação está
-  excluída pelo nome.
+- *«Com pelo menos um turno».* Não há contador de turnos: a recusa pela fixação, que é o run sem
+  turnos, está na lista de exclusões pelo nome.
 - *Os contadores selados* contam todas as observações por sinal até ao disparo; a janela conta
   unidades. Uma tentativa falhada que a seguinte recuperou está no contador e não na janela.
-- *Depois do disparo não se grava mais nenhuma observação*: o estado é o do disparo, e o livro,
-  lido em cada run novo, não cresce sem tecto.
+- *Depois do disparo*, em `enforce` (e com a marca de aberto no livro) não se grava mais nenhuma
+  observação; em `observe` continua a gravar-se, até ao tecto de 400 por registo. A marca e a
+  decisão são sempre as do primeiro disparo.
+- *Uma interrupção pelo disjuntor por-run conta (F6) mesmo que o run seja depois retomado e
+  conclua*: um run tem um desfecho no livro, e é o primeiro.
 - *«Selada».* A abertura fica no livro durável do Event Store. **Não** foi selada também no audit
   de governação do gateway (como o fim do canary): por decidir pelo dono.
 
@@ -4847,10 +4889,24 @@ run, uma ao das aprovações, uma ao livro — no run do candidato e no do titul
 livro usava o tipo `model.breaker.opened`, que passou a ser conhecido; usa agora outro tipo da
 família. E a lista fechada das causas de recusa ganhou uma.
 
-**Mutações dirigidas.** 39, todas vermelhas por asserção (uma alteração de cada vez, os
-testes do disjuntor corridos sem tecto de tempo curto, o ficheiro reposto). As do critério: 3 → 4;
-20 → 21; cada um dos cinco sinais retirado (o F5 duas vezes: do desfecho e do turno); o 429 a
-contar. E ainda: o turno com o modelo diferente a não disparar sozinho; o estado a mudar depois
+**Mutações dirigidas.** 75, repetidas todas depois das correcções da revisão, todas vermelhas por
+asserção (uma alteração de cada vez, os testes do disjuntor corridos sem tecto de tempo curto, o
+ficheiro reposto). As do critério: 3 → 4; 20 → 21; cada um dos cinco sinais retirado (o F5 duas
+vezes: do desfecho e do turno); o 429 a contar. As das correcções da revisão: o 401/403 a contar;
+a omissão de volta ao lado aberto; cada exclusão retirada (pânico, desfecho não selado, orçamento,
+fixação, as classes do gateway, o transporte, a pipeline, a rota não reportada, o perfil fixado);
+o `complete` sem contrato, e sem veredicto, a contar como cumprido; a interrupção por-run e o
+tecto de turnos a não contar; `observe` a deixar de medir depois do disparo, `enforce` a continuar
+a gravar, o livro sem tecto, o `/metrics` com a janela do disparo; a marca sem a tentativa sem
+CAS, e a tentativa falhada sem contar; a marca de um registo fora de vigor sem o dizer (no evento,
+e no log); as métricas de um registo que não é o em vigor; a primeira escrita a não ganhar (nos
+desfechos, e nos turnos); o run já tratado a reler o seu log; o desfecho e o turno que não se
+gravam a não contar; sem prazo de I/O (no turno, e na saída da hospedagem); o turno trocado por
+gravar a passar em silêncio em `enforce`, e a cortar em `observe`; o `run.model_pinned` de outro
+emissor a valer; e o evento malformado com o disjuntor desligado a impedir o arranque, ligado a
+ser tolerado, e desligado a não deixar o canary «não decidível». Duas sobreviveram à repetição
+(em `enforce` sem marca continuava a poder gravar-se; o sinal de turno por gravar em `observe`) e
+ficaram presas. E ainda, da primeira entrega: o turno com o modelo diferente a não disparar sozinho; o estado a mudar depois
 do disparo; a nova tentativa a não substituir; qualquer erro do run a contar; o desfecho a contar
 sem selo; `observe` a cortar; `enforce` a não cortar; o plano a meio a continuar no candidato, e a
 passar para o titular; a marca de aberto a não valer com `off`; «teria aberto» lido como aberto;
