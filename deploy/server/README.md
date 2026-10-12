@@ -1378,7 +1378,8 @@ os que recriam o nó: **drenar antes de recriar** (passo 5 de «Perfis de rota a
 timer depois de o banner estar conferido.
 
 ```bash
-# no servidor, como aos, em /opt/aos
+# no servidor, como aos, em /opt/aos. O `aos` não tem sudo: os comandos marcados «como root»
+# correm numa sessão de root (a mesma de «Instalar como root — o pacote do root»).
 dc() { docker compose -f /opt/aos/docker-compose.prod.yml --env-file /opt/aos/.env --env-file /opt/aos/image.env "$@"; }
 recriar() { dc up -d --no-deps --force-recreate aos; }     # o arranque passa dos 100 s: esperar por `healthy`
 ```
@@ -1396,7 +1397,7 @@ grep -cE '^AOS_MODEL_(ROUTE_PROFILES|CANDIDATE|BREAKER)' /opt/aos/.env   # 0: na
 O nó corre com o uid `65532` e lê-a como «outros»: pasta `0755`, ficheiros `0644`.
 
 ```bash
-sudo install -d -o root -g root -m 0755 /opt/aos/perfis-de-rota
+install -d -o root -g root -m 0755 /opt/aos/perfis-de-rota     # como root
 stat -c '%U:%G %a' /opt/aos/perfis-de-rota                     # root:root 755
 ```
 
@@ -1414,9 +1415,10 @@ printf '%s\n' 'AOS_MODEL_ROUTE_PROFILES_DIR=/etc/aos/perfis-de-rota' \
 e daí para a pasta do root. Só os três — qualquer outro ficheiro na pasta impede o arranque.
 
 ```bash
-mkdir -p /opt/aos/.perfis-entrada
+mkdir -p /opt/aos/.perfis-entrada                              # como aos
 # no posto:   scp <rotulo>.registo.json <rotulo>.registo.sig <rotulo>.relatorio.json aos@<servidor>:/opt/aos/.perfis-entrada/
-sudo install -o root -g root -m 0644 /opt/aos/.perfis-entrada/<rotulo>.registo.json \
+# como root:
+install -o root -g root -m 0644 /opt/aos/.perfis-entrada/<rotulo>.registo.json \
   /opt/aos/.perfis-entrada/<rotulo>.registo.sig /opt/aos/.perfis-entrada/<rotulo>.relatorio.json /opt/aos/perfis-de-rota/
 rm -r /opt/aos/.perfis-entrada
 ls -l /opt/aos/perfis-de-rota                                  # três ficheiros, root, -rw-r--r--
@@ -1471,7 +1473,7 @@ bash /opt/aos/alerta-disjuntor.sh --teste                      # tem de chegar a
 | g | `crontab -e` e apagar a linha |
 | f | `enforce` → `observe` ou `off`: **primeiro a marca** (acima). `observe` → `off`: apagar a linha `AOS_MODEL_BREAKER` do `.env` e recriar. Um disjuntor aberto continua aberto com `off` |
 | e | «Desligar — drenar primeiro», na secção do candidato: esperar os planos do candidato, `AOS_MODEL_CANDIDATE=off`, recriar. **Não** retirar a pasta nem o registo para desligar um candidato |
-| c, d | Tirar os três ficheiros (`sudo rm`) e recriar: volta a entrada da tabela em código. Só sem runs fixados nesse perfil |
+| c, d | Tirar os três ficheiros (como root) e recriar: volta a entrada da tabela em código. Só sem runs fixados nesse perfil |
 | b | Apagar do `.env` as duas linhas acrescentadas (ou repor a cópia, `cp -p /opt/aos/.env.antes-da-a3 /opt/aos/.env`, se o `.env` não mudou entretanto) e recriar: o nó de antes, por inteiro. Só com o candidato já desligado e sem runs fixados. Depois de a A3 estar assente, apagar a cópia |
 | a | Nenhum: a pasta vazia e sem a variável não é lida |
 
