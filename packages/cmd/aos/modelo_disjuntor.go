@@ -550,7 +550,8 @@ func (l *livroDoCanary) observarNoDisjuntor(ctx context.Context, reg registoDoCa
 }
 
 // candidatoDoRun lê do stream do run o que o nó SELOU sobre ele: o registo do candidato em que
-// ficou fixado (`run.model_pinned`, com o papel `candidato`) e a unidade da janela a que pertence —
+// ficou fixado (`run.model_pinned`, com o papel `candidato`, e SÓ o que o nó emitiu — o emissor é
+// conferido como no `run.plan_origin`) e a unidade da janela a que pertence —
 // o id da PRIMEIRA tentativa do nó do plano (`run.plan_origin`), ou o id do run. `ok` falso ⇒ o log
 // não diz que o run é do candidato.
 func candidatoDoRun(ctx context.Context, es eventstore.EventStore, runID string) (reg registoDoCandidato, unidade string, ok bool, err error) {
@@ -565,7 +566,7 @@ func candidatoDoRun(ctx context.Context, es eventstore.EventStore, runID string)
 	var fixacao *modeloFixadoPayload
 	for _, ev := range evs {
 		switch {
-		case ev.Type == EventTypeRunModelPinned && fixacao == nil:
+		case ev.Type == EventTypeRunModelPinned && ev.Producer.NHIID == modeloFixadoNHI && fixacao == nil:
 			var p modeloFixadoPayload
 			if uerr := json.Unmarshal(ev.Payload, &p); uerr != nil {
 				return reg, "", false, fmt.Errorf("run.model_pinned ilegivel no evento %d", ev.Seq)
