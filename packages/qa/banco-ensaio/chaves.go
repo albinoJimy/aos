@@ -429,7 +429,10 @@ func (c *Chaves) Rota(f Fornecedor, modelo string, d Destino) (RotaReal, error) 
 		if lerr != nil {
 			return RotaReal{}, lerr
 		}
-		if r.Modelo, err = escolherModelo(CampoOpenRouterModelo, []string{unico}, modelo); err != nil {
+		// O campo aceita uma LISTA separada por virgulas (como KIMI_MODELOS): o primeiro e o da
+		// omissao e `--modelo` escolhe outro DA LISTA. Quem autoriza cada modelo continua a ser o
+		// dono, no ficheiro (medicao da fase A4: varios modelos pela mesma conta).
+		if r.Modelo, err = escolherModelo(CampoOpenRouterModelo, strings.Split(unico, ","), modelo); err != nil {
 			return RotaReal{}, err
 		}
 		if !modeloDaOpenRouterAceite(r.Modelo) {
