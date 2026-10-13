@@ -2349,7 +2349,10 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
       nos relatórios, na pasta do dono, e não foram transcritas. Resposta: sim para o modelo
       mais barato (volume e documento longo por inteiro); entre os outros cinco a bateria não
       separa.
-- [ ] Gates locais verdes; o módulo `qa/banco-ensaio` sem regressão de cobertura.
+- [x] Gates locais verdes; o módulo `qa/banco-ensaio` sem regressão de cobertura.
+      **Medido (2026-10-13)**: cobertura do pacote 86,8% antes do ticket (commit `a33cdc1a`) e
+      88,1% depois (`go test -cover .`); lint, scan de segredos, referências e deferimentos
+      verdes antes de cada PR, e os 30 gates do CI verdes nos quatro PRs (#484 a #487).
 
 ### Notas
 
@@ -2387,3 +2390,4 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 | 1.20 | 2026-10-13 | AOS-525: a hipótese da grafia confirmada com respostas lidas (12 de 12 ausências do DeepSeek eram o acento de «Tomás») e a regra dos factos corrigida — compara sem acentos, sem maiúsculas e com espaços e hífenes dobrados; a grafia de milhares continua a contar. A bateria 2.0.0 e a medição por degraus continuam por fazer | Equipa AOS |
 | 1.21 | 2026-10-13 | AOS-525: a bateria 2.0.0 por degraus (sete casos de dificuldade crescente, com factos proibidos) e a experiência `degraus`, que dá as taxas por degrau e não dá veredicto; a 1.0.0 e o seu digest não mudam; cada degrau tem um modelo falso que o cumpre e um que o falha. Com as correcções da revisão adversarial: uma passagem com um erro passageiro sai das taxas do degrau, seis turnos por run (pior caso 180 pedidos por passagem), factos proibidos em todos os degraus e comparados sem hífenes nem espaços. A medição com modelos reais continua por fazer | Equipa AOS |
 | 1.22 | 2026-10-13 | AOS-525 medido: a bateria 2.0.0 passada a seis modelos reais (5 passagens cada). Separa o modelo mais barato (falha volume e documento longo por inteiro) dos outros cinco, e não separa os cinco entre si; as falhas do Haiku em D5 e do DeepSeek em D7 são o limite do proibido citado numa negação, não conteúdo errado. Registo na §5 do acompanhamento | Equipa AOS |
+| 1.23 | 2026-10-13 | AOS-525: cobertura do módulo medida (86,8% → 88,1%) e o critério dos gates marcado. Fica por marcar só o critério 2, na metade «recusada fora da bateria sintética», que não se aplica (o banco só tem baterias embebidas) e espera pela palavra do dono | Equipa AOS |
