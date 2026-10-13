@@ -549,8 +549,8 @@ Não mudam o veredicto, vão no campo `qualificacao_do_modelo.avisos` e **à cab
   `inconclusivo` (qualquer mistura, ou um controlo que não terminou); `nao_correu`. Só o
   primeiro tira o aviso. O que o controlo não isola vai em `controlo_sem_devolucao.limite`.
 - `factos_ausentes_em_respostas_cumpridas` — houve runs cumpridos cuja saída não tinha os factos
-  do documento sintético. Desde o AOS-525 a comparação não conta acentos, maiúsculas nem
-  espaços repetidos (`factos.go`): os documentos estão escritos sem acentos, e um modelo que
+  do documento sintético. Desde o AOS-525 a comparação não conta acentos, maiúsculas, a forma
+  dos espaços nem a do hífen (`factos.go`, com os limites conhecidos): os documentos estão escritos sem acentos, e um modelo que
   escrevia «Tomás» por «Tomas» era contado como tendo perdido o facto. Um relatório anterior
   foi medido com a regra literal. Não há limiar para o conteúdo (o dono manteve-o como aviso).
 - `tecto_em_dolares_nao_imposto` — modo real, fornecedor sem tecto em dólares no ficheiro de

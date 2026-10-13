@@ -2310,7 +2310,9 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 - [x] A regra nova dos factos tem testes com acentos, maiúsculas e espaços, e um controlo
       negativo: um facto de facto ausente continua a contar como ausente.
       **Feito (2026-10-13)**: `factos.go` e `TestAOS525_RegraDosFactos`. A regra não perdoa um
-      nome trocado, um número diferente, um hífen a mais ou a menos nem uma letra em falta. A
+      nome trocado, um número diferente, um hífen a mais ou a menos nem uma letra em falta; os
+      hífenes tipográficos valem o simples. **Limites declarados**, que continuam a contar como
+      ausência: separador de milhares, formatação a meio do facto, ordem trocada. A
       definição da taxa no relatório diz a regra; um relatório anterior a esta versão foi
       medido com a regra literal, e os dois não se comparam nesta taxa.
 - [ ] A bateria 2.0.0 tem digest próprio; a 1.0.0 mantém o seu, e um relatório antigo continua
@@ -2354,4 +2356,4 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 | 1.17 | 2026-10-12 | AOS-523 medido: o `k3` saiu `qualificado` no exame real, foi assinado pelo dono e serve 10% dos planos na v0.1.55 (série `v0155c`: 7 planos em 40, 14 de 14 runs do candidato cumpridos); a primeira metade do critério da fase fica cumprida em produção, a segunda só com modelos maus simulados — nenhum modelo mau real foi recusado; a fase foi fechada pelo dono no mesmo dia, com os resíduos nomeados. AOS-518 e AOS-522: a qualificação e a corrida reais registadas | Equipa AOS |
 | 1.18 | 2026-10-12 | +AOS-525 (fase A4): a bateria que separa modelos — dificuldade crescente por degraus, a regra dos factos sem depender da grafia e as respostas guardadas a pedido. Nasce da medição de seis modelos pela OpenRouter, em que a bateria 1.0.0 não distinguiu modelos baratos de caros | Equipa AOS |
 | 1.19 | 2026-10-12 | AOS-525, primeiro ponto: as respostas guardadas a pedido (`aos-ensaio --guardar-respostas`), fora do relatório e do seu digest; a regra dos factos, a bateria 2.0.0 e a medição ficam por fazer | Equipa AOS |
-| 1.20 | 2026-10-13 | AOS-525: a hipótese da grafia confirmada com respostas lidas (12 de 12 ausências do DeepSeek eram o acento de «Tomás») e a regra dos factos corrigida — compara sem acentos, sem maiúsculas e sem espaços repetidos. A bateria 2.0.0 e a medição por degraus continuam por fazer | Equipa AOS |
+| 1.20 | 2026-10-13 | AOS-525: a hipótese da grafia confirmada com respostas lidas (12 de 12 ausências do DeepSeek eram o acento de «Tomás») e a regra dos factos corrigida — compara sem acentos, sem maiúsculas e com espaços e hífenes dobrados; a grafia de milhares continua a contar. A bateria 2.0.0 e a medição por degraus continuam por fazer | Equipa AOS |

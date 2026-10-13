@@ -576,12 +576,7 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao,
 	case res.Terminated:
 		obs.Desfecho = DesfechoCumprido
 		if len(p.No.Factos) > 0 {
-			obs.Factos = FactosPresentes
-			for _, f := range p.No.Factos {
-				if !factoNaSaida(res.FinalText, f) {
-					obs.Factos = FactosAusentes
-				}
-			}
+			obs.Factos = verificarFactos(res.FinalText, p.No.Factos)
 		}
 		return obs, res.FinalText
 	default:

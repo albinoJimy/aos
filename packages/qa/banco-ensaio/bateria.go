@@ -222,6 +222,11 @@ func (b *Bateria) validarCasos() error {
 						achado = true
 					}
 				}
+				// Um facto com espaços nas pontas perdia-os na comparação (factos.go), e um que
+				// fique vazio depois de dobrado não se pode verificar.
+				if f != strings.TrimSpace(f) || dobrarParaComparar(f) == "" {
+					return fmt.Errorf("%w: %s/%s tem um facto vazio ou com espacos nas pontas", ErrBateria, c.ID, n.ID)
+				}
 				if f == "" || !achado {
 					return fmt.Errorf("%w: %s/%s tem um facto que nao esta nos seus documentos", ErrBateria, c.ID, n.ID)
 				}

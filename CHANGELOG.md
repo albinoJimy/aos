@@ -10,7 +10,7 @@ Todas as alterações relevantes deste repositório. Formato baseado em
 ### Added — EPIC-08 (AOS-525) Fase A4: as respostas do banco de ensaio, guardadas a pedido
 
 - `feat(AOS-525)` — `aos-ensaio --guardar-respostas` (desligada por omissão; fora da imagem do nó): grava, ao lado do relatório, a pasta `respostas-<nome do relatório>/` com um ficheiro por run — o texto do modelo e os argumentos das tool calls nativas — e um `indice.json` com o sha256 do relatório a que pertence. O texto não entra no relatório, no resumo, no digest, em stdout nem em stderr; sem a opção, a saída é a de antes. Uma falha a guardar avisa e não muda o código de saída. Nasce da medição de 2026-10-12, em que não havia respostas para ler.
-- `fix(AOS-525)` — **a regra dos factos deixa de contar a grafia**: compara sem acentos, sem maiúsculas e sem espaços repetidos. Medido a 2026-10-13 com respostas guardadas: 12 de 12 «factos ausentes» do DeepSeek eram o acento de «Tomás», que o documento sintético escreve «Tomas». Um nome ou um número diferente continua ausente. Um relatório anterior foi medido com a regra literal.
+- `fix(AOS-525)` — **a regra dos factos deixa de contar acentos, maiúsculas, a forma dos espaços e a do hífen**. Limites que continuam a contar como ausência, presos por teste: separador de milhares num número, formatação a meio do facto, ordem trocada. Medido a 2026-10-13 com respostas guardadas: 12 de 12 «factos ausentes» do DeepSeek eram o acento de «Tomás», que o documento sintético escreve «Tomas». Um nome ou um número diferente continua ausente. Um relatório anterior foi medido com a regra literal.
 - `docs(AOS-525)` — a bateria com dificuldade crescente fica **por fazer**.
 
 ### Changed — EPIC-06 (AOS-519, AOS-520, AOS-521) Fase A3: o compose de produção
