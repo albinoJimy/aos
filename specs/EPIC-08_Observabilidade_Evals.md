@@ -2315,9 +2315,32 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
       ausência: separador de milhares, formatação a meio do facto, ordem trocada. A
       definição da taxa no relatório diz a regra; um relatório anterior a esta versão foi
       medido com a regra literal, e os dois não se comparam nesta taxa.
-- [ ] A bateria 2.0.0 tem digest próprio; a 1.0.0 mantém o seu, e um relatório antigo continua
+- [x] A bateria 2.0.0 tem digest próprio; a 1.0.0 mantém o seu, e um relatório antigo continua
       a conferir.
-- [ ] Cada degrau tem um modelo falso que o cumpre e um que o falha, e o relatório distingue-os.
+      *Nota de 2026-10-13:* a 2.0.0 vive em `bateria2/` (sete casos, doze documentos), com o
+      digest `sha256:fcc9bd8d…0c5a`, e só a experiência nova, `degraus`, a corre. A 1.0.0
+      mantém `sha256:9f78316b…9a72`: o valor foi calculado dos ficheiros do commit anterior por
+      um programa à parte e está preso em
+      `TestAOS525_Degraus_ABateria2TemDigestProprioEA1MantemODeAntes`. **O que prova o
+      «continua a conferir», exactamente:** o digest da 1.0.0 é o de antes, e o sha256 de
+      referência do AOS-516 — os pedidos e o relatório de uma corrida da bateria sem perfil —
+      não mudou nem foi tocado. **Não** foi conferido um relatório real antigo nem um registo
+      assinado: a pasta do dono não se lê daqui.
+- [x] Cada degrau tem um modelo falso que o cumpre e um que o falha, e o relatório distingue-os.
+      *Nota de 2026-10-13:* `TestAOS525_Degraus_CadaDegrauTemQuemOCumpraEQuemOFalhe`. O
+      comportamento `degrau_cumpre` cumpre os sete; cada degrau tem um roteiro que o falha —
+      e só a ele —, e o relatório diz a razão: o contrato (degraus 1 e 5), um facto ausente
+      (1, 2 e 7) ou uma resposta errada, com um facto proibido na saída (1 a 6). O provider
+      falso de sempre, que despeja o que as tools entregaram, falha os sete por resposta errada,
+      e um erro passageiro (um 500) tira a passagem das taxas em vez de contar como falha
+      (correcções da revisão adversarial, no mesmo dia). Na segunda ronda: o que é proibido
+      passou a estar vedado no próprio objectivo (degraus 1, 2 e 5), uma falha firme observada
+      antes de uma interrupção conta como não cumprida, e o resumo marca o degrau com metade ou
+      mais das passagens interrompidas. O cancelamento de uma corrida a meio está provado com
+      um cancelamento verdadeiro, fora da qualificação
+      (`TestAOS525_Degraus_UmaCorridaCanceladaNaoFalhaODegrauEmCurso`). Só no modo
+      `falso`: o modo `proxy` desta experiência não foi corrido. Os modelos falsos provam que a
+      medida distingue; não dizem nada de um modelo real.
 - [ ] Medição real registada na §5: por modelo e por degrau, nós cumpridos, falhas à primeira
       tentativa e factos ausentes pela regra nova; e a resposta, por extenso, a «há algum degrau
       em que um modelo barato falha e um caro passa?».
@@ -2357,3 +2380,4 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 | 1.18 | 2026-10-12 | +AOS-525 (fase A4): a bateria que separa modelos — dificuldade crescente por degraus, a regra dos factos sem depender da grafia e as respostas guardadas a pedido. Nasce da medição de seis modelos pela OpenRouter, em que a bateria 1.0.0 não distinguiu modelos baratos de caros | Equipa AOS |
 | 1.19 | 2026-10-12 | AOS-525, primeiro ponto: as respostas guardadas a pedido (`aos-ensaio --guardar-respostas`), fora do relatório e do seu digest; a regra dos factos, a bateria 2.0.0 e a medição ficam por fazer | Equipa AOS |
 | 1.20 | 2026-10-13 | AOS-525: a hipótese da grafia confirmada com respostas lidas (12 de 12 ausências do DeepSeek eram o acento de «Tomás») e a regra dos factos corrigida — compara sem acentos, sem maiúsculas e com espaços e hífenes dobrados; a grafia de milhares continua a contar. A bateria 2.0.0 e a medição por degraus continuam por fazer | Equipa AOS |
+| 1.21 | 2026-10-13 | AOS-525: a bateria 2.0.0 por degraus (sete casos de dificuldade crescente, com factos proibidos) e a experiência `degraus`, que dá as taxas por degrau e não dá veredicto; a 1.0.0 e o seu digest não mudam; cada degrau tem um modelo falso que o cumpre e um que o falha. Com as correcções da revisão adversarial: uma passagem com um erro passageiro sai das taxas do degrau, seis turnos por run (pior caso 180 pedidos por passagem), factos proibidos em todos os degraus e comparados sem hífenes nem espaços. A medição com modelos reais continua por fazer | Equipa AOS |

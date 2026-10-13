@@ -1,0 +1,10 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Auto ficticio de avaria do entreposto ficticio de Castro Meao.
+
+A avaria com a referencia AV-3157 foi registada no empilhador da nave 2: a bomba hidraulica
+perde pressao em carga. A reparacao ficou entregue ao tecnico Baltasar Girao-Neves e esta
+estimada em 12 dias. Ate la, a nave 2 trabalha com o empilhador de reserva.
+
+O refeitorio do entreposto fecha as 15 horas e a ementa da semana tem a referencia EM-2290.
+O parque de bicicletas tem 40 lugares e abre com o cartao de acesso PB-6612.

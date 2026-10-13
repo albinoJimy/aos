@@ -44,7 +44,8 @@ var ficheirosDaBateria embed.FS
 // pastaDaBateria é a ÚNICA pasta de onde um caso lê: nenhum documento vem de fora dela.
 const pastaDaBateria = "bateria"
 
-// Bateria é o conjunto fixo e versionado de casos sintéticos (T1 a T6, desenho A2 §5.1).
+// Bateria é um conjunto fixo e versionado de casos sintéticos: a 1.0.0 (T1 a T6, desenho A2
+// §5.1) ou a 2.0.0, por degraus (D1 a D7, AOS-525, degraus.go).
 type Bateria struct {
 	// Versao é a versão declarada no ficheiro dos casos.
 	Versao string `json:"versao"`
@@ -58,11 +59,18 @@ type Bateria struct {
 
 	digest     string
 	documentos map[string][]byte
+	// porDegraus diz que a bateria foi carregada como bateria por degraus (AOS-525, degraus.go):
+	// todos os casos trazem o seu degrau, e só a experiência `degraus` a corre.
+	porDegraus bool
 }
 
 // Caso é um caso da bateria: um ou mais nós, corridos por ordem.
 type Caso struct {
-	ID        string `json:"id"`
+	ID string `json:"id"`
+	// Degrau é o degrau de dificuldade do caso (AOS-525): um inteiro a partir de 1, obrigatório
+	// numa bateria por degraus e recusado nas outras. Aí a [Caso.Descricao] diz, por extenso, a
+	// capacidade que o degrau pede.
+	Degrau    int    `json:"degrau,omitempty"`
 	Descricao string `json:"descricao"`
 	Nos       []No   `json:"nos"`
 }
@@ -92,6 +100,12 @@ type No struct {
 	// repetidos; um nome ou um número diferente continua ausente). É o substituto determinista da recusa do objectivo: verificação de factos
 	// sobre dados nossos, sem juiz probabilístico.
 	Factos []string `json:"factos,omitempty"`
+	// FactosProibidos são valores dos documentos do nó que a saída NÃO pode conter (AOS-525): os
+	// distractores de um documento, ou o facto que a instrução veda. Comparam-se pela mesma regra
+	// dos factos. Um run com um deles na saída conta como «resposta errada», à parte de «facto
+	// ausente». Cada um tem de ocorrer nos documentos do nó e não se pode confundir com um facto
+	// exigido ([CarregarBateriaPorDegraus] recusa).
+	FactosProibidos []string `json:"factos_proibidos,omitempty"`
 }
 
 // ErrBateria — a bateria embebida não é utilizável. Fail-closed: o banco não corre.
@@ -104,11 +118,17 @@ func CarregarBateria() (*Bateria, error) {
 }
 
 func carregarBateria(origem fs.FS) (*Bateria, error) {
-	cru, err := fs.ReadFile(origem, pastaDaBateria+"/casos.json")
+	return carregarDaPasta(origem, pastaDaBateria, false)
+}
+
+// carregarDaPasta lê uma bateria de uma pasta de `origem`. `porDegraus` escolhe as regras: uma
+// bateria por degraus exige o degrau em todos os casos; as outras recusam-no.
+func carregarDaPasta(origem fs.FS, pasta string, porDegraus bool) (*Bateria, error) {
+	cru, err := fs.ReadFile(origem, pasta+"/casos.json")
 	if err != nil {
 		return nil, fmt.Errorf("%w: casos ilegiveis: %v", ErrBateria, err)
 	}
-	var b Bateria
+	b := Bateria{porDegraus: porDegraus}
 	dec := json.NewDecoder(strings.NewReader(string(cru)))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&b); err != nil {
@@ -117,7 +137,7 @@ func carregarBateria(origem fs.FS) (*Bateria, error) {
 	if b.Marca == "" || b.Versao == "" || len(b.Casos) == 0 {
 		return nil, fmt.Errorf("%w: versao, marca e casos sao obrigatorios", ErrBateria)
 	}
-	entradas, err := fs.ReadDir(origem, pastaDaBateria)
+	entradas, err := fs.ReadDir(origem, pasta)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrBateria, err)
 	}
@@ -131,7 +151,7 @@ func carregarBateria(origem fs.FS) (*Bateria, error) {
 	}
 	sort.Strings(nomes)
 	for _, nome := range nomes {
-		conteudo, err := fs.ReadFile(origem, pastaDaBateria+"/"+nome)
+		conteudo, err := fs.ReadFile(origem, pasta+"/"+nome)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %s ilegivel: %v", ErrBateria, nome, err)
 		}
@@ -231,10 +251,13 @@ func (b *Bateria) validarCasos() error {
 					return fmt.Errorf("%w: %s/%s tem um facto que nao esta nos seus documentos", ErrBateria, c.ID, n.ID)
 				}
 			}
+			if err := b.validarProibidos(c.ID, n); err != nil {
+				return err
+			}
 			nos[n.ID] = true
 		}
 	}
-	return nil
+	return b.validarDegraus()
 }
 
 // identificadorSimples diz se s só tem letras, dígitos e '-': é o que entra num RunID e num

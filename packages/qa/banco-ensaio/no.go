@@ -412,8 +412,10 @@ type PedidoDeRun struct {
 	MaxTurnos int
 }
 
-// MaxTurnosPorOmissao é o tecto de turnos de um run da bateria: o caso mais longo precisa de
-// dois (pedir as tools, responder), e quatro deixam margem para o modelo repetir uma leitura.
+// MaxTurnosPorOmissao é o tecto de turnos de um run da bateria 1.0.0. Um turno é uma INVOCAÇÃO
+// do modelo, e a que responde também conta: o caso mais longo precisa de duas (pedir as tools,
+// responder), e quatro deixam o modelo fazer até três turnos de tool calls antes da resposta. A
+// experiência `degraus` tem o seu tecto ([MaxTurnosDosDegraus]).
 const MaxTurnosPorOmissao = 4
 
 // Correr corre um run e devolve a sua observação e a saída do run. A saída é texto do modelo:
@@ -578,14 +580,20 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao,
 		if len(p.No.Factos) > 0 {
 			obs.Factos = verificarFactos(res.FinalText, p.No.Factos)
 		}
+		if len(p.No.FactosProibidos) > 0 {
+			obs.Proibidos = verificarProibidos(res.FinalText, p.No.FactosProibidos)
+		}
 		return obs, res.FinalText
 	default:
 		obs.Desfecho = DesfechoErroOutro
 	}
-	if obs.Qualificacao != nil && ctx.Err() != nil {
+	if ctx.Err() != nil {
 		// O run não fechou cumprido e o contexto da corrida está cancelado: seja qual for o desfecho
 		// acima, não é do modelo ([MedidasDoRun.CorridaCancelada]).
-		obs.Qualificacao.CorridaCancelada = true
+		obs.corridaCancelada = true
+		if obs.Qualificacao != nil {
+			obs.Qualificacao.CorridaCancelada = true
+		}
 	}
 	return obs, ""
 }

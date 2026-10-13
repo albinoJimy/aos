@@ -1,0 +1,8 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Escala ficticia dos cais do entreposto ficticio de Castro Meao.
+
+O cais 1 esta atribuido ao turno Basalto. O cais 3 esta atribuido ao turno Cobalto.
+O cais 6 esta atribuido ao turno Ambar. O cais 8 esta atribuido ao turno Dolomite.
+
+Os cais 2, 4, 5, 7 e 9 nao tem turno fixo nesta escala.

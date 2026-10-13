@@ -88,8 +88,16 @@ func PlanoDaQualificacao(b *Bateria, semente uint64) Plano {
 var ErrPlano = errors.New("banco-ensaio: plano de corrida invalido")
 
 func (p Plano) validar(b *Bateria) error {
-	if p.Experiencia != ExperienciaBateria && p.Experiencia != ExperienciaSeparadores && p.Experiencia != ExperienciaQualificacao {
+	if p.Experiencia != ExperienciaBateria && p.Experiencia != ExperienciaSeparadores && p.Experiencia != ExperienciaQualificacao && p.Experiencia != ExperienciaDegraus {
 		return fmt.Errorf("%w: experiencia desconhecida", ErrPlano)
+	}
+	// Cada bateria tem as suas experiências (AOS-525): a por degraus só corre na experiência
+	// `degraus`, e as outras experiências só correm sobre a bateria sem degraus.
+	if (p.Experiencia == ExperienciaDegraus) != b.TemDegraus() {
+		return fmt.Errorf("%w: a experiencia degraus corre a bateria por degraus, e so ela", ErrPlano)
+	}
+	if p.Experiencia == ExperienciaDegraus && (len(p.Bracos) != 1 || p.Bracos[0] != BracoA || p.Tentativas != 3 || p.MaxTurnos != MaxTurnosDosDegraus || len(p.Casos) != len(b.Casos)) {
+		return fmt.Errorf("%w: a experiencia degraus corre a bateria por degraus inteira, no braco A, com 3 tentativas e %d turnos", ErrPlano, MaxTurnosDosDegraus)
 	}
 	if p.Experiencia == ExperienciaQualificacao && (p.Amostras != PassagensDaQualificacao || len(p.Bracos) != 1 || p.Bracos[0] != BracoA || p.Tentativas != 3 || len(p.Casos) != len(b.Casos)) {
 		return fmt.Errorf("%w: a qualificacao corre a bateria inteira, %d vezes, no braco A, com 3 tentativas", ErrPlano, PassagensDaQualificacao)

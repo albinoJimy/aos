@@ -1,0 +1,148 @@
+{
+  "versao": "2.0.0",
+  "marca": "DOCUMENTO SINTETICO AOS-512",
+  "system": "You are a careful assistant working inside an automated runtime. Do exactly what the objective asks, using the tools offered when the objective needs a document. Answer in plain text.",
+  "casos": [
+    {
+      "id": "D1",
+      "degrau": 1,
+      "descricao": "base: ler um documento com a tool e responder com dois factos dele, e so com eles",
+      "nos": [
+        {
+          "id": "ler",
+          "objectivo": "Read the document guia-recepcao.txt with the arquivo tool. Then answer with the code of the consignment and the name of the checker who received it, and with no other code, name or number from that document.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["guia-recepcao.txt"],
+          "factos": ["RM-5206", "Duarte Meireles-Sardo"],
+          "factos_proibidos": ["FD-30771"]
+        }
+      ]
+    },
+    {
+      "id": "D2",
+      "degrau": 2,
+      "descricao": "volume: ler quatro documentos e responder com um facto de cada um",
+      "nos": [
+        {
+          "id": "ler-quatro",
+          "objectivo": "Read the four documents camara-norte.txt, camara-sul.txt, camara-leste.txt and camara-oeste.txt with the arquivo tool. Then answer with the door seal number of the north chamber, the name of the technician of the south chamber, the pallet count of the east chamber, and the open maintenance order of the west chamber, and with no other code, name or number from those documents.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["camara-norte.txt", "camara-sul.txt", "camara-leste.txt", "camara-oeste.txt"],
+          "factos": ["SL-3391", "Ines Portocarrero-Lima", "4127", "OM-60518"],
+          "factos_proibidos": [
+            "SL-9313", "SL-1939", "SL-3919",
+            "Horacio Bettencourt-Rua", "Vasco Almada-Teixeira", "Graca Sequeira-Nobre",
+            "3058", "2274", "1863",
+            "OM-71204", "OM-12470", "OM-40721"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "D3",
+      "degrau": 3,
+      "descricao": "documento longo com distractores: achar um facto a meio de um documento de cerca de 28 KB, entre codigos parecidos de outros cais",
+      "nos": [
+        {
+          "id": "achar",
+          "objectivo": "Read the document registo-cais.txt with the arquivo tool. Then answer with the code of the batch that was held for inspection at cais 7, and with no other batch code.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["registo-cais.txt"],
+          "factos": ["KV-7302"],
+          "factos_proibidos": ["KV-7032", "KV-3702", "KV-7320"]
+        }
+      ]
+    },
+    {
+      "id": "D4",
+      "degrau": 4,
+      "descricao": "cruzar dois documentos: a resposta so sai de juntar a escala dos cais com a lista dos coordenadores de turno",
+      "nos": [
+        {
+          "id": "cruzar",
+          "objectivo": "Read the documents escala-cais.txt and coordenadores-turno.txt with the arquivo tool. Then answer with the name of the person who coordinates the shift assigned to cais 6, and with no other name.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["escala-cais.txt", "coordenadores-turno.txt"],
+          "factos": ["Filipa Noronha-Teles"],
+          "factos_proibidos": ["Rodrigo Vilarinho-Paz", "Anselmo Queiroga-Brito", "Leonor Vasques-Maia"]
+        }
+      ]
+    },
+    {
+      "id": "D5",
+      "degrau": 5,
+      "descricao": "tool que falha e outro caminho: a leitura de um documento e negada, existe uma copia com outro nome, e e preciso a segunda chamada",
+      "nos": [
+        {
+          "id": "outro-caminho",
+          "objectivo": "Read the document inventario-reservado.txt with the arquivo tool. If that read is not allowed, a copy of the same document exists under the name inventario-copia.txt: read the copy instead. Then answer with the reconciliation code of the inventory, and with no other code or number from that document.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "nega": "inventario-reservado.txt",
+          "factos_de": ["inventario-copia.txt"],
+          "factos": ["CF-27745"],
+          "factos_proibidos": ["AC-90436"]
+        }
+      ]
+    },
+    {
+      "id": "D6",
+      "degrau": 6,
+      "descricao": "instrucao com restricao: responder com um facto do documento sem incluir outro que a instrucao veda",
+      "nos": [
+        {
+          "id": "restricao",
+          "objectivo": "Read the document nota-fornecimento.txt with the arquivo tool. Then answer with the code of the batch. Do not mention the name of the supplier anywhere in your answer.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["nota-fornecimento.txt"],
+          "factos": ["LF-8843"],
+          "factos_proibidos": ["Quelhas-Bordalo"]
+        }
+      ]
+    },
+    {
+      "id": "D7",
+      "degrau": 7,
+      "descricao": "cadeia funda: quatro nos encadeados (ler, extrair, reescrever, resumir) em que o facto tem de sobreviver ate ao ultimo",
+      "nos": [
+        {
+          "id": "ler",
+          "objectivo": "Read the document auto-avaria.txt with the arquivo tool. Then reply with the full text of the document, unchanged.",
+          "tools": ["arquivo"],
+          "exige": ["arquivo"],
+          "factos_de": ["auto-avaria.txt"],
+          "factos": ["AV-3157", "Baltasar Girao-Neves"]
+        },
+        {
+          "id": "extrair",
+          "objectivo": "From the document given as plan input, extract only the sentences about the fault and its repair, and leave out everything else (the canteen, the bicycle park). Keep the fault reference and the name of the technician.",
+          "entrada_de": "ler",
+          "factos_de": ["auto-avaria.txt"],
+          "factos": ["AV-3157", "Baltasar Girao-Neves"],
+          "factos_proibidos": ["EM-2290", "PB-6612"]
+        },
+        {
+          "id": "reescrever",
+          "objectivo": "Rewrite the text given as plan input as a bullet list in English, one bullet per fact. Keep the fault reference and the name of the technician exactly as they are written.",
+          "entrada_de": "extrair",
+          "factos_de": ["auto-avaria.txt"],
+          "factos": ["AV-3157", "Baltasar Girao-Neves"],
+          "factos_proibidos": ["EM-2290", "PB-6612"]
+        },
+        {
+          "id": "resumir",
+          "objectivo": "Summarise the text given as plan input in one sentence. Include the fault reference and the name of the technician.",
+          "entrada_de": "reescrever",
+          "factos_de": ["auto-avaria.txt"],
+          "factos": ["AV-3157", "Baltasar Girao-Neves"],
+          "factos_proibidos": ["EM-2290", "PB-6612"]
+        }
+      ]
+    }
+  ]
+}

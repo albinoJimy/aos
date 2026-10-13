@@ -1,0 +1,10 @@
+DOCUMENTO SINTETICO AOS-512 - escrito para o banco de ensaio; nao contem dados de nenhum titular.
+
+Lista ficticia dos coordenadores de turno do entreposto ficticio de Castro Meao.
+
+O turno Dolomite e coordenado por Rodrigo Vilarinho-Paz.
+O turno Ambar e coordenado por Filipa Noronha-Teles.
+O turno Cobalto e coordenado por Anselmo Queiroga-Brito.
+O turno Basalto e coordenado por Leonor Vasques-Maia.
+
+Cada coordenador responde por um so turno.

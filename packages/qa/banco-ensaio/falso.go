@@ -100,6 +100,8 @@ func Comportamentos() []Comportamento {
 		ComportamentoSemFactos, ComportamentoErro500, ComportamentoErro401, ComportamentoRejeitaSegundo,
 		ComportamentoTrocaModelo,
 		ComportamentoSemToolEndTurn, ComportamentoSemToolContentFilter, ComportamentoSemToolSemMotivo,
+		ComportamentoDegrauCumpre, ComportamentoDegrauOmite, ComportamentoDegrauDistractor, ComportamentoDegrauUmaLeitura,
+		ComportamentoDegrauUmPorTurno,
 	}
 }
 
@@ -295,9 +297,15 @@ func (f *ProviderFalso) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if servido != "" {
 		w.Header().Set(port.HeaderServedModel, servido)
 	}
+	tokensDeEntrada := int64(len(corpo)/4 + 1)
+	if comportamentoDosDegraus(comportamento) {
+		// Os comportamentos da bateria por degraus (AOS-525) respondem pelo seu próprio caminho,
+		// em falso_degraus.go: o que está abaixo é o de sempre, byte a byte.
+		servirDegrau(w, comportamento, p, doUtilizador, dasTools, tokensDeEntrada)
+		return
+	}
 	temTools := len(p.Tools) > 0
 	porPedir := temTools && comTool == 0
-	tokensDeEntrada := int64(len(corpo)/4 + 1)
 
 	switch {
 	case comportamento == ComportamentoErro500:
@@ -389,6 +397,11 @@ func respostaComToolCalls(p pedidoAoFalso, doUtilizador string, tokensDeEntrada 
 		// Nada para pedir (o pedido não nomeia nenhum documento): responde em texto.
 		return respostaDeTexto(SentinelaDeTexto+"\n"+doUtilizador, tokensDeEntrada)
 	}
+	return respostaDasChamadas(chamadas, tokensDeEntrada)
+}
+
+// respostaDasChamadas constrói a resposta de um turno com as tool calls dadas.
+func respostaDasChamadas(chamadas []any, tokensDeEntrada int64) []byte {
 	saida := int64(8 * len(chamadas))
 	b, _ := json.Marshal(map[string]any{
 		"id": "chatcmpl-banco", "object": "chat.completion", "created": 1700000000, "model": "modelo-falso-do-banco",
