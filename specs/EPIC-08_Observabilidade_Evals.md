@@ -2341,9 +2341,14 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
       (`TestAOS525_Degraus_UmaCorridaCanceladaNaoFalhaODegrauEmCurso`). Só no modo
       `falso`: o modo `proxy` desta experiência não foi corrido. Os modelos falsos provam que a
       medida distingue; não dizem nada de um modelo real.
-- [ ] Medição real registada na §5: por modelo e por degrau, nós cumpridos, falhas à primeira
+- [x] Medição real registada na §5: por modelo e por degrau, nós cumpridos, falhas à primeira
       tentativa e factos ausentes pela regra nova; e a resposta, por extenso, a «há algum degrau
       em que um modelo barato falha e um caro passa?».
+      **Medido (2026-10-13)**, seis modelos, 5 passagens cada. A §5 regista os degraus cumpridos
+      por modelo e a leitura das respostas que falharam; as restantes taxas por degrau estão
+      nos relatórios, na pasta do dono, e não foram transcritas. Resposta: sim para o modelo
+      mais barato (volume e documento longo por inteiro); entre os outros cinco a bateria não
+      separa.
 - [ ] Gates locais verdes; o módulo `qa/banco-ensaio` sem regressão de cobertura.
 
 ### Notas
@@ -2381,3 +2386,4 @@ conteúdo em que se possa confiar e com as respostas à mão quando for preciso 
 | 1.19 | 2026-10-12 | AOS-525, primeiro ponto: as respostas guardadas a pedido (`aos-ensaio --guardar-respostas`), fora do relatório e do seu digest; a regra dos factos, a bateria 2.0.0 e a medição ficam por fazer | Equipa AOS |
 | 1.20 | 2026-10-13 | AOS-525: a hipótese da grafia confirmada com respostas lidas (12 de 12 ausências do DeepSeek eram o acento de «Tomás») e a regra dos factos corrigida — compara sem acentos, sem maiúsculas e com espaços e hífenes dobrados; a grafia de milhares continua a contar. A bateria 2.0.0 e a medição por degraus continuam por fazer | Equipa AOS |
 | 1.21 | 2026-10-13 | AOS-525: a bateria 2.0.0 por degraus (sete casos de dificuldade crescente, com factos proibidos) e a experiência `degraus`, que dá as taxas por degrau e não dá veredicto; a 1.0.0 e o seu digest não mudam; cada degrau tem um modelo falso que o cumpre e um que o falha. Com as correcções da revisão adversarial: uma passagem com um erro passageiro sai das taxas do degrau, seis turnos por run (pior caso 180 pedidos por passagem), factos proibidos em todos os degraus e comparados sem hífenes nem espaços. A medição com modelos reais continua por fazer | Equipa AOS |
+| 1.22 | 2026-10-13 | AOS-525 medido: a bateria 2.0.0 passada a seis modelos reais (5 passagens cada). Separa o modelo mais barato (falha volume e documento longo por inteiro) dos outros cinco, e não separa os cinco entre si; as falhas do Haiku em D5 e do DeepSeek em D7 são o limite do proibido citado numa negação, não conteúdo errado. Registo na §5 do acompanhamento | Equipa AOS |
