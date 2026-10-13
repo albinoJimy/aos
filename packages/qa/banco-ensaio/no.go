@@ -578,7 +578,7 @@ func (n *NoDeEnsaio) Correr(ctx context.Context, p PedidoDeRun) (obs Observacao,
 		if len(p.No.Factos) > 0 {
 			obs.Factos = FactosPresentes
 			for _, f := range p.No.Factos {
-				if !strings.Contains(res.FinalText, f) {
+				if !factoNaSaida(res.FinalText, f) {
 					obs.Factos = FactosAusentes
 				}
 			}

@@ -87,8 +87,9 @@ type No struct {
 	// FactosDe são os documentos de onde saem os [No.Factos]; cada facto tem de ocorrer,
 	// literalmente, em pelo menos um deles (preso por teste e por [CarregarBateria]).
 	FactosDe []string `json:"factos_de,omitempty"`
-	// Factos são os números e nomes EXACTOS que a saída do run tem de conter para contar como
-	// «presentes». É o substituto determinista da recusa do objectivo: verificação de factos
+	// Factos são os números e nomes que a saída do run tem de conter para contar como
+	// «presentes», pela regra dos factos (factos.go: sem contar acentos, maiúsculas nem espaços
+	// repetidos; um nome ou um número diferente continua ausente). É o substituto determinista da recusa do objectivo: verificação de factos
 	// sobre dados nossos, sem juiz probabilístico.
 	Factos []string `json:"factos,omitempty"`
 }
