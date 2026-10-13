@@ -428,8 +428,18 @@ duas rondas de revisão adversarial, que corrigiram o que a medida contava: erro
 a contar contra o modelo, um degrau que castigava leituras sequenciais, o despejo do documento
 a cumprir quatro degraus e três enunciados que castigavam respostas certas. **A medição real por degraus foi feita a 2026-10-13** (§5): a bateria separa o modelo mais
 barato dos outros cinco, e não separa os cinco entre si. A ordem dos degraus não é uma
-escala medida. **Por decidir pelo dono**: as decisões D2 a D10 do desenho da A4, agora com
-estes números.
+escala medida.
+
+**Orientação do dono (2026-10-13), depois da medição.** Às três recomendações que a medição
+deixou — separar os modelos bons em tráfego real, pelo canary, e não com mais exercícios
+sintéticos; não construir a cascata enquanto não houver uma diferença medida que a justifique;
+manter a regra do proibido citado numa negação — o dono respondeu «Ok prossiga». Lê-se assim,
+e fica por confirmar decisão a decisão: a D4 fica na opção (d), «nenhum degrau 2 até haver um
+modelo que se distinga», e com ela as peças de construção do desenho (§5.2 a §5.5) **não se
+abrem**. As decisões D2, D3 e D5 a D10 ficam **sem objecto por agora**, não tomadas. A fase A4
+continua aberta, em medição: o instrumento é o canary do `k3`, que já serve 10% dos planos
+(7 de 40 atribuídos a 2026-10-12). Qualquer série em produção precisa de instrução explícita
+do dono.
 A5 e A6 sem tickets: abrem-se quando a fase anterior estiver em produção e as decisões da §4
 correspondentes estiverem tomadas.
 
@@ -510,6 +520,7 @@ correspondentes estiverem tomadas.
 | 2026-10-12 | **Abrir o ticket da bateria nova e ler as respostas com factos em falta**: «Abre o ticket, e Autorizo ler as respostas». A autorização cobre respostas a documentos de teste do banco de ensaio | Tomada. AOS-525 aberto. A leitura **não foi feita**: o banco não guarda o texto das respostas; guardá-lo a pedido é o primeiro ponto do AOS-525 |
 | 2026-10-13 | **Corrida real do DeepSeek com as respostas guardadas**: «autorizo a corrida real» | Tomada e executada (§5): a leitura das respostas foi feita, e a hipótese da grafia confirmou-se |
 | 2026-10-13 | **Medição real por degraus dos seis modelos**: «autorizo a medição, o tecto já está em 6000» | Tomada e executada (§5). O programa leu 5000 no tecto de pedidos do dia, não 6000; não bloqueou (549 pedidos enviados). As decisões D2 a D10 do desenho da A4 continuam **por tomar** |
+| 2026-10-13 | **Orientação para a A4 depois da medição**: «Ok prossiga», em resposta a três recomendações — separar os modelos bons pelo canary em tráfego real; não construir a cascata sem uma diferença medida (D4, opção (d)); manter a regra do proibido citado numa negação | Tomada como orientação. As peças de construção do desenho da A4 não se abrem; D2, D3 e D5 a D10 ficam sem objecto por agora. **Por confirmar** pelo dono, decisão a decisão, se quiser dá-las por tomadas |
 | — | O destino do candidato `k3` (passa a titular, continua ou sai) e a passagem do disjuntor a `enforce` | **Por tomar.** O fecho da fase não decidiu nenhuma das duas |
 | — | Do AOS-521 e do AOS-520, escritas nos tickets como «por confirmar»: 5xx e 408 contam para o disjuntor, e 401 e 403 não contam; `observe` continua a medir depois de «teria aberto»; um run `complete` sem contrato fica fora da janela; as séries por modelo só existem com o candidato a servir; a abertura do disjuntor não é selada no audit do gateway | **Por tomar** |
 | — | A pasta dos perfis no servidor: do utilizador `aos`, como ficou a 2026-10-12, ou do root, como o runbook pede | **Por tomar** (endurecimento por fazer — §7) |
