@@ -28,7 +28,8 @@ const (
 
 // O resultado da verificação de factos de um run.
 const (
-	// FactosPresentes — todos os factos do nó estão, literalmente, na saída do run.
+	// FactosPresentes — todos os factos do nó estão na saída do run, pela regra dos factos
+	// (factos.go): sem contar acentos, maiúsculas, a forma dos espaços nem a do hífen.
 	FactosPresentes = "presentes"
 	// FactosAusentes — pelo menos um não está.
 	FactosAusentes = "ausentes"
@@ -335,7 +336,7 @@ func CalcularTaxas(obs []Observacao) Taxas {
 	t.SemToolCallNaPrimeira = NovaTaxa("primeiras tentativas de nos que exigem uma tool, com pelo menos um turno, em que o run nao pediu nenhuma tool call nativa e o ultimo turno parou com o motivo stop (a tool call em texto; nao se le texto)", semCall, exigeEResponde)
 	t.NomeDaToolNoTexto = NovaTaxa("das anteriores, aquelas em que o texto do turno continha o nome exacto de uma tool oferecida (heuristica declarada, so para contagem)", nomeNoTexto, semCall)
 	t.SegundoTurnoAceite = NovaTaxa("runs que enviaram um pedido com o assistant das tool calls e a mensagem tool, em que o primeiro desses pedidos teve HTTP 200 e deu um turno", segAceite, segTentado)
-	t.FactosAusentes = NovaTaxa("runs concluidos de nos com factos, em que pelo menos um facto do documento sintetico nao esta na saida (substituto determinista da recusa do proprio objectivo)", factosAusentes, comFactos)
+	t.FactosAusentes = NovaTaxa("runs concluidos de nos com factos, em que pelo menos um facto do documento sintetico nao esta na saida, comparados sem acentos, sem maiusculas, com os espacos reduzidos a um e os hifenes tipograficos iguais ao simples (substituto determinista da recusa do proprio objectivo)", factosAusentes, comFactos)
 	t.RespostaVazia = NovaTaxa("runs com pelo menos um turno que fecharam empty_output", vazias, comTurno)
 	t.Cortada = NovaTaxa("runs com pelo menos um turno que fecharam truncated", cortadas, comTurno)
 	t.ErroDoProvider = NovaTaxa("pedidos HTTP cuja resposta nao foi 200 nem 429 (inclui os que nao tiveram resposta HTTP)", pedidosComErro, pedidos)

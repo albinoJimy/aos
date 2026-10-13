@@ -1,9 +1,11 @@
 package bancoensaio
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -13,10 +15,19 @@ import (
 // captura do estado, a governação da rota e o layout 1.5.0. Uma corrida da bateria sem perfil
 // tem de continuar a enviar exactamente os mesmos pedidos e a escrever exactamente o mesmo
 // relatório: se um destes digests mudar, o caminho de sempre deixou de ser o de sempre.
+//
+// AOS-525 mudou UMA coisa no relatório, de propósito: o texto da definição da taxa de factos
+// ausentes, que passou a dizer a regra nova (sem acentos, sem maiúsculas, espaços e hífenes
+// dobrados). O digest de antes continua a ser a âncora: o teste repõe essa frase e compara
+// o resto, byte a byte, com o relatório de antes. Se a frase não estiver lá, falha.
 const (
 	aos516PedidosDeAntes   = "sha256:4dd09e4b398312fdcef23d0ecac1a8576e4c8fa6e9f12f5342452af7144d6cf2"
 	aos516RelatorioDeAntes = "sha256:4e769fb22172055c7b4af15de32e1c6ddced2dfd3f4b52393b0d1c86002ff38d"
 )
+
+// aos525FraseDaRegraDosFactos é o que o AOS-525 acrescentou à definição da taxa de factos
+// ausentes; tirada do relatório, ele tem de ser o de antes.
+const aos525FraseDaRegraDosFactos = ", comparados sem acentos, sem maiusculas, com os espacos reduzidos a um e os hifenes tipograficos iguais ao simples"
 
 // aos516Digests corre a bateria inteira no braço A contra o provider falso do roteiro por
 // omissão, sem perfil, e devolve o digest dos corpos dos pedidos e o do relatório em JSON.
@@ -37,6 +48,16 @@ func aos516Digests(t *testing.T) (pedidos, relatorio string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A frase só pode estar onde deve: uma vez em cada definição da taxa de factos ausentes
+	// (a global, uma por braço e uma por caso), e em mais lado nenhum do relatório.
+	definicoes := 1 + len(r.PorBraco) + len(r.PorCaso)
+	if !strings.HasSuffix(strings.SplitN(r.Taxas.FactosAusentes.Definicao, " (", 2)[0], aos525FraseDaRegraDosFactos) {
+		t.Fatalf("a definicao da taxa de factos ausentes nao diz a regra do AOS-525: %q", r.Taxas.FactosAusentes.Definicao)
+	}
+	if n := bytes.Count(cru, []byte(aos525FraseDaRegraDosFactos)); n != definicoes {
+		t.Fatalf("a frase da regra aparece %d vezes no relatorio; quer %d, uma por definicao da taxa", n, definicoes)
+	}
+	cru = bytes.ReplaceAll(cru, []byte(aos525FraseDaRegraDosFactos), nil)
 	doRelatorio := sha256.Sum256(cru)
 	return "sha256:" + hex.EncodeToString(soma.Sum(nil)), "sha256:" + hex.EncodeToString(doRelatorio[:])
 }
