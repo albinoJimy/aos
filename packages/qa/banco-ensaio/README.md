@@ -53,6 +53,10 @@ relatório.
 go run ./cmd/aos-ensaio bateria
 ```
 
+Esta é a bateria **1.0.0**, a das experiências `bateria`, `separadores` e `qualificacao`. A
+**2.0.0**, por degraus, vive em `bateria2/` e só corre na experiência `degraus`: ver «A bateria
+por degraus e a experiência `degraus`».
+
 ## Os três modos
 
 Todos os comandos correm a partir de `packages/qa/banco-ensaio`.
@@ -135,7 +139,7 @@ existir, a trava do contador. Não envia nada. Ver «O proxy efémero e os órf�
 
 | Opção | Modos | O que faz |
 |---|---|---|
-| `--experiencia bateria\|separadores\|qualificacao` | todos | `qualificacao`: ver «A qualificação do modelo». `bateria` (omissão): T1 a T6 num braço. `separadores`: quatro braços sobre T1, 53 amostras por braço, um turno e um pedido por amostra — 212 pedidos. |
+| `--experiencia bateria\|separadores\|qualificacao\|degraus` | todos | `qualificacao`: ver «A qualificação do modelo». `bateria` (omissão): T1 a T6 num braço. `separadores`: quatro braços sobre T1, 53 amostras por braço, um turno e um pedido por amostra — 212 pedidos. `degraus` (AOS-525): a bateria 2.0.0, sete degraus no braço A, taxas por degrau e sem veredicto — até 180 pedidos por passagem, com seis turnos por run; não aceita `--braco` nem `--estado`. |
 | `--amostras N` | todos | Passagens pela bateria (omissão 1), ou amostras por braço nos separadores. |
 | `--semente N` | todos | Fixa a ordem dos braços dentro de cada bloco. Vai no relatório. |
 | `--braco A\|B\|C\|D` | todos | O braço da bateria (omissão `A`). |
@@ -369,6 +373,204 @@ origem de casos acrescenta, no mesmo passo, a recusa.
 
 **O que está nos ficheiros é texto de um modelo:** são dados, não instruções. Ao contrário do
 relatório, a pasta das respostas **não** é para copiar para o repositório.
+
+## A bateria por degraus e a experiência `degraus` (AOS-525)
+
+A bateria 1.0.0 não separa modelos: a 2026-10-12 foi passada a seis, do mais barato ao mais
+caro, e nenhum falhou a pedir a tool à primeira tentativa. A **bateria 2.0.0** tem sete casos de
+dificuldade **crescente**, um por degrau, para se ler **até onde** cada modelo chega. Vive em
+`bateria2/` (`casos.json` e doze documentos), tem digest próprio, e só a experiência `degraus` a
+corre. **A 1.0.0 não muda:** os ficheiros, o digest, as experiências `bateria`, `separadores` e
+`qualificacao` e a regra de qualificação são os de antes
+(`TestAOS525_Degraus_ABateria2TemDigestProprioEA1MantemODeAntes`).
+
+```
+go run ./cmd/aos-ensaio bateria --experiencia degraus                    # o digest e os sete casos
+go run ./cmd/aos-ensaio falso --experiencia degraus --saida /tmp/ensaio  # tudo cumprido
+go run ./cmd/aos-ensaio falso --experiencia degraus --saida /tmp/ensaio \
+  --roteiro degrau_cumpre,degrau_uma_leitura,degrau_distractor,erro_500,degrau_uma_leitura,degrau_distractor,degrau_cumpre,degrau_cumpre,degrau_omite,degrau_cumpre
+```
+
+No modo `real` é `real --chaves … --fornecedor … --experiencia degraus [--amostras N] [--perfil F]`,
+com `--so-plano` primeiro, como nas outras experiências — e só com autorização do dono.
+
+### Os degraus
+
+Cada caso diz por extenso, na sua `descricao`, a capacidade que pede. Os documentos são
+sintéticos, inventados, sem acentos, com a mesma marca na primeira linha, e os nomes e códigos
+não existem na 1.0.0.
+
+| Degrau | Caso | Capacidade | Nós | Documentos lidos com `arquivo` | Factos exigidos | Factos proibidos |
+|---|---|---|---|---|---|---|
+| 1 | `D1` | **base**: ler um documento e responder com dois factos, e só com eles | 1 | `guia-recepcao.txt` | `RM-5206`, `Duarte Meireles-Sardo` | `FD-30771` (o outro código do documento) |
+| 2 | `D2` | **volume**: quatro documentos, um facto de cada (no mesmo passo ou um por turno) | 1 | `camara-norte.txt`, `camara-sul.txt`, `camara-leste.txt`, `camara-oeste.txt` | `SL-3391`, `Ines Portocarrero-Lima`, `4127`, `OM-60518` | os mesmos campos das outras três fichas: `SL-9313`, `SL-1939`, `SL-3919`; `Horacio Bettencourt-Rua`, `Vasco Almada-Teixeira`, `Graca Sequeira-Nobre`; `3058`, `2274`, `1863`; `OM-71204`, `OM-12470`, `OM-40721` |
+| 3 | `D3` | **documento longo com distractores**: 28,5 KB, o facto a meio, entre três lotes retidos noutros cais | 1 | `registo-cais.txt` | `KV-7302` | `KV-7032`, `KV-3702`, `KV-7320` |
+| 4 | `D4` | **cruzar dois documentos**: um diz o turno do cais 6, o outro quem coordena cada turno | 1 | `escala-cais.txt`, `coordenadores-turno.txt` | `Filipa Noronha-Teles` | `Rodrigo Vilarinho-Paz`, `Anselmo Queiroga-Brito`, `Leonor Vasques-Maia` |
+| 5 | `D5` | **tool que falha e outro caminho**: o Reference Monitor nega o documento, o objectivo diz que há uma cópia | 1 | `inventario-reservado.txt` (negado), `inventario-copia.txt` | `CF-27745` | `AC-90436` (outro código da cópia) |
+| 6 | `D6` | **instrução com restrição**: responder com o lote sem mencionar o fornecedor | 1 | `nota-fornecimento.txt` | `LF-8843` | `Quelhas-Bordalo` |
+| 7 | `D7` | **cadeia funda**: ler → extrair → reescrever → resumir, por `entrada_de`; o facto tem de chegar ao último | 4 | `auto-avaria.txt` (só o primeiro nó) | `AV-3157`, `Baltasar Girao-Neves`, nos quatro nós | `EM-2290`, `PB-6612` (o que o `extrair` manda deixar de fora), nos três nós depois do `ler` |
+
+Que os factos exigidos são os que o objectivo pede — e de que frase do documento vem cada um —
+está preso por uma tabela, nó a nó (`TestAOS525_Degraus_OsFactosSaoOsQueOObjectivoPede`): o
+digest prende os bytes, a tabela prende o sentido.
+
+O carregamento é fail-closed como o da 1.0.0, e mais: todos os casos têm `degrau` (inteiro a
+partir de 1, sem buracos, por ordem crescente) e a capacidade por extenso; nenhum facto —
+exigido ou proibido — vem escrito no objectivo; não há dois objectivos iguais nem um contido
+noutro. O campo `degrau` é recusado numa bateria que não seja por degraus.
+
+**Seis turnos, e não quatro.** Um turno é uma invocação do modelo, e a que responde também
+conta. No degrau 2, ler os quatro documentos um de cada vez são quatro turnos, e a resposta é o
+quinto: com os quatro turnos das outras experiências, um modelo que lê bem mas não faz chamadas
+em paralelo acabava em `turnos_esgotados`, e o degrau media o paralelismo em vez do volume. A
+experiência `degraus` corre com seis (`MaxTurnosDosDegraus`); as outras ficam em quatro
+(`TestAOS525_Degraus_LerUmDocumentoPorTurnoCumpreODegrau2`).
+
+### Os factos proibidos
+
+Um nó pode trazer `factos_proibidos`: valores dos seus documentos que **não** podem aparecer
+na saída — os distractores, os valores que a pergunta não pede, e o facto que a instrução veda.
+Um run com um deles na saída conta como **resposta errada**, à parte de **facto ausente**: o que
+troca o lote pelo do cais ao lado tem o facto ausente *e* a resposta errada; o que responde bem
+e acrescenta o fornecedor tem o facto presente e a resposta errada.
+
+**O que é proibido está vedado no objectivo**, que é o que o modelo lê (a `descricao` do caso
+não lhe chega): os degraus 1 a 5 terminam numa exclusão «…and with no other …» (código, nome ou número),
+o 6 em «Do not mention…», e o nó `extrair` do 7 em «…leave out everything else». Sem isso, uma
+resposta certa que citasse o contexto — o técnico ao lado do selo — contava como errada sem a
+instrução o ter pedido. A excepção, declarada, são os nós `reescrever` e `resumir` do degrau 7:
+os seus proibidos só lhes chegam se o `extrair` errou, e medem o erro a propagar-se
+(`TestAOS525_Degraus_OsFactosSaoOsQueOObjectivoPede`).
+
+**Servem para que despejar o documento não cumpra degrau nenhum.** Todos os degraus os têm (na
+cadeia, a partir do segundo nó — o primeiro pede o texto inteiro). O provider falso de sempre,
+que devolve tudo o que as tools entregaram, falha os **sete** degraus por resposta errada
+(`TestAOS525_Degraus_OFalsoDeSempreDespejaOsDistractores`).
+
+**A comparação dos proibidos é mais larga do que a dos exigidos.** Os exigidos comparam-se pela
+regra dos factos (sem acentos, sem maiúsculas, espaços e hífenes tipográficos dobrados), que é
+estrita de propósito: um nome mal escrito conta como ausente. Nos proibidos a mesma regra
+jogava a favor do erro — «Quelhas Bordalo», com um espaço pelo hífen, passava por não ter
+mencionado o fornecedor. Por isso os proibidos comparam-se, além disso, **sem hífenes e sem
+espaços**. Um nome ou um código diferente continua a não disparar
+(`TestAOS525_Degraus_ARegraDosFactosProibidos`).
+
+A bateria não carrega se um proibido não estiver nos documentos do nó (não seria um distractor)
+ou se, nessa forma larga, for igual a um facto exigido, ou um contido no outro. A observação de
+um run ganha o campo `factos_proibidos` (`nenhum` ou `presente`) **só** quando o nó os tem —
+nenhum nó da 1.0.0 os tem.
+
+### O que o relatório traz a mais
+
+Só nesta experiência, o relatório tem `taxas.por_degrau`: a versão da bateria, a regra do
+agregado por extenso e, por degrau, com numerador, denominador e intervalo de Wilson a 95%:
+
+| Campo | O que conta |
+|---|---|
+| `passagens`, `passagens_interrompidas`, `interrompidas_por_causa` | As passagens pelo degrau (um caso, numa amostra) que começaram; as que saíram das taxas por uma causa passageira; e a causa. |
+| `degrau_cumprido` | Passagens **não interrompidas** em que **todos** os nós fecharam cumprido, com os factos exigidos na saída e nenhum proibido. |
+| `nos_cumpridos` | Nós cuja última tentativa fechou cumprido — só o contrato de conclusão. Tudo o resto conta contra: sem tool call, turnos esgotados, resposta vazia ou cortada, um 4xx de parâmetro. Um nó que não correu, porque o anterior não concluiu, conta no denominador. |
+| `sem_tool_call_na_primeira_tentativa` | A taxa de sempre, sobre os runs do degrau. Acima de zero não quer dizer degrau falhado: o nó pode ter recuperado à segunda tentativa. |
+| `factos_ausentes` | A taxa de sempre, sobre os runs do degrau. |
+| `respostas_erradas` | Runs concluídos de nós com factos proibidos, com pelo menos um na saída. |
+
+**Um erro passageiro não é um degrau falhado.** Uma passagem em que a última tentativa de algum
+nó fechou por uma causa passageira — 429, 5xx, erro de transporte, conta ou rota, tecto,
+cancelamento: a classificação é a da qualificação (`estadoFinalDoNo`), não outra —, ou em que a
+corrida parou antes de um nó correr (`corrida_parada`), **sai de todas as taxas do degrau** e
+conta em `passagens_interrompidas`. Um degrau só com passagens interrompidas mostra `0/0`: não
+foi medido (`TestAOS525_Degraus_UmErroPassageiroInterrompeAPassagemENaoFalhaODegrau`).
+
+**Uma razão firme ganha a uma passageira**, como na qualificação, porque as contagens só
+crescem. Se, antes da interrupção, a passagem já tinha uma falha firme — um nó que fechou sem
+cumprir por culpa do modelo (incluindo uma tentativa anterior do próprio nó interrompido), ou
+um nó concluído com um facto ausente ou um proibido presente —, ela **conta como não cumprida**
+e não sai da amostra; os nós da interrupção em diante não entram em `nos_cumpridos`. Só sai a
+passagem em que, até à interrupção, nada estava firmemente falhado
+(`TestAOS525_Degraus_UmaFalhaFirmeNaoSePerdeNumaInterrupcao`).
+
+**A amostra reduzida vem marcada.** No resumo, a coluna das interrompidas diz o total («9 de
+10»), e a linha de um degrau em que **metade ou mais** das passagens saíram da amostra abre por
+`!`, com a legenda por baixo da tabela: «1/1» com nove interrompidas em dez não é uma taxa em
+que se possa confiar (`TestAOS525_Degraus_AMarcaDeAmostraReduzida`).
+
+O resumo `.txt` abre o corpo com uma tabela curta, uma linha por degrau (as fracções e a
+contagem das interrompidas; os intervalos estão no JSON). **Não há veredicto**: a corrida que
+completa sai com 0, sejam quais forem as taxas. Os relatórios das outras experiências não ganham
+campo nenhum (`TestAOS525_Degraus_OsCamposNovosSoAparecemNaExperienciaNova`, e o digest de
+referência do AOS-516). O bloco vive dentro de `taxas`, e não no topo do relatório, de
+propósito: o nó lê os relatórios de qualificação com uma lista fechada dos membros do topo
+(AOS-519), e um membro novo no topo era uma alteração ao nó.
+
+O **pior caso** é 180 pedidos por passagem — dez nós, três tentativas, seis turnos —, vezes
+`--amostras`. Vai em `pedidos.previstos_max` e, com contador (sempre, no modo real), é conferido
+contra o que resta do tecto do dia antes do primeiro pedido
+(`TestAOS525_Degraus_OPiorCasoEDeclaradoEImposto`). Com o provider falso que cumpre, uma
+passagem gasta 18 pedidos; o que um modelo real gasta está por medir.
+
+### Os modelos falsos dos degraus
+
+O `cumpre` de sempre devolve tudo o que as tools entregaram, e com isso falha os sete degraus
+por resposta errada. A experiência tem os seus comportamentos, que respondem **só com os factos
+exigidos do nó que encontraram no que receberam** (é o que faz a cadeia do degrau 7 ser uma
+cadeia: um facto que um nó deixa cair não volta no seguinte):
+
+| Comportamento | O que faz | Falha |
+|---|---|---|
+| `degrau_cumpre` (omissão) | Pede as leituras que o objectivo nomeia — no mesmo passo; no degrau 5, uma de cada vez, até uma dar um facto — e responde só com os factos pedidos. | Nenhum degrau. |
+| `degrau_um_por_turno` | Como o anterior, com **uma leitura por turno**: o modelo que lê bem e não faz chamadas em paralelo. | Nenhum degrau (no degrau 2 faz cinco pedidos). |
+| `degrau_omite` | Como o primeiro, e deixa cair o último facto. | Por **facto ausente** (preso por teste nos degraus 1 e 7). |
+| `degrau_distractor` | Como o primeiro, e junta um facto proibido do nó que tenha recebido. | Por **resposta errada** (preso por teste nos degraus 1 a 6). |
+| `degrau_uma_leitura` | Pede só a primeira leitura nomeada. | O degrau 2, por **facto ausente**; o degrau 5, pelo **contrato** (`contract_unmet_after_denial`). |
+
+Os comportamentos de sempre também servem aqui: `texto` não pede a tool e falha pelo contrato
+(`contract_unmet_no_call`), `erro_500` interrompe a passagem. O contrário não: um comportamento
+`degrau_*` fora da experiência `degraus` é recusado pela linha de comandos (saída 2) — o falso
+reconhece o nó pelo objectivo, na bateria 2.0.0 embebida, e a um pedido da 1.0.0 respondia 400.
+O roteiro dá um comportamento por **conversa** (um run), pela ordem de chegada: numa passagem em
+que nada se repete, `D1` a `D6` são as conversas 1 a 6 e os quatro nós de `D7` as 7 a 10. Cada
+degrau tem quem o cumpra e quem o falhe, e o relatório distingue-os pela razão
+(`TestAOS525_Degraus_CadaDegrauTemQuemOCumpraEQuemOFalhe`).
+
+### O que a experiência `degraus` não prova
+
+- **Não dá veredicto e não substitui a qualificação** (AOS-518), que continua a correr sobre a
+  1.0.0 com a sua regra. Se o conteúdo passa a contar para o veredicto é decisão do dono.
+- **Os degraus são sintéticos e curtos**: um caso por degrau, documentos inventados de poucas
+  linhas (salvo o longo). Cumprir um degrau não diz que o modelo faz o mesmo com documentos
+  reais. A ordem dos degraus é a que quem escreveu a bateria julgou crescente: não é uma escala
+  medida, e um modelo pode falhar o 3 e cumprir o 5.
+- **«Degrau cumprido» é verificação de factos por dobra, não um juiz**: diz que os valores
+  exigidos estão na saída e os proibidos não. Não diz que a resposta é boa nem que respeita o
+  resto da instrução (a forma, o tamanho, a língua). No degrau 7 não confere que o nó
+  «reescrever» reescreveu: confere que o facto lá está.
+- **Um proibido conta onde quer que apareça**, mesmo numa negação («não é o lote do cais 2»,
+  com o código). E uma resposta errada que não seja um dos proibidos listados conta como facto
+  ausente, não como resposta errada.
+- **O degrau 5 mede «chega ao facto apesar da recusa», não «fez a segunda chamada»**: um modelo
+  que vá directo à cópia, sem tentar o documento negado, cumpre-o. E o degrau 6 é provavelmente
+  mais fácil do que os degraus 3 a 5.
+- **Os degraus correm sempre pela mesma ordem**, do 1 ao 7, dentro de cada passagem: uma deriva
+  da rota ao longo da corrida (carga, hora, um limite de taxa) cai nos últimos degraus, e não se
+  reparte por todos.
+- **Um degrau com passagens interrompidas foi medido com menos amostras** do que as pedidas; a
+  coluna das interrompidas lê-se antes das taxas.
+- **Um modelo que estoura sempre o prazo do pedido** (`tempo_esgotado`) sai como interrompido,
+  pela classificação da qualificação: fica «não medido», não «falhado». Lê-se pela coluna das
+  interrompidas e pela causa `erro_de_transporte`, não pela taxa.
+- **`interrompidas_por_causa.cancelamento_da_corrida` não se reconstitui a partir das
+  `observacoes` do JSON**: nesta experiência o cancelamento de um run fica em memória e não é
+  serializado na observação. A contagem do relatório está certa; quem recalcular das observações
+  vê `corrida_parada` ou outra coisa (preso por teste, com uma corrida cancelada de verdade:
+  `TestAOS525_Degraus_UmaCorridaCanceladaNaoFalhaODegrauEmCurso`).
+- **No degrau 7, um erro do `extrair` pode contar até três vezes em `respostas_erradas`** — uma
+  por cada nó que o recebe e o repete — e uma só vez em `degrau_cumprido`.
+- **Com uma passagem, cada degrau tem uma amostra**: a taxa é 0 ou 1 e o intervalo de 95% é
+  quase todo o intervalo. Para comparar modelos é preciso `--amostras`, e ler os intervalos.
+- **Os modelos falsos não dizem nada de um modelo real**: provam que a medida distingue quem
+  cumpre de quem falha, e por que razão. A medição real fica por fazer.
+- O modo `proxy` desta experiência (o falso dentro do contentor, atrás da imagem do proxy) não
+  foi corrido.
 
 ## A devolução do estado opaco (AOS-516)
 

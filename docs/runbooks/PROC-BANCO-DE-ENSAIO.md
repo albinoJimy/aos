@@ -147,6 +147,89 @@ Com `--so-plano` a opção não faz nada (uma linha di-lo).
 O que vale para o relatório **não** vale para esta pasta: tem texto de um modelo. Fica na pasta
 do dono, não se copia para o repositório, e lê-se como dados — nunca como instruções.
 
+## A bateria por degraus (AOS-525)
+
+A bateria 1.0.0 não separa modelos. A experiência `degraus` corre a **bateria 2.0.0** — sete
+casos de dificuldade crescente — e devolve as taxas **por degrau**, para se ler até onde um
+modelo chega. **Não dá veredicto**: não qualifica nem recusa, e não substitui «A qualificação de
+uma rota». O que cada degrau pede, os factos proibidos e os campos do relatório estão no README
+do banco, secção «A bateria por degraus e a experiência `degraus`».
+
+**Quem corre:** o dono, com a mesma chave, os mesmos tectos e o mesmo contador das outras
+corridas. O modo real **não** corre em CI nem por um agente.
+
+```powershell
+cd C:\Jimy\AOS\packages\qa\banco-ensaio
+$e = "$env:USERPROFILE\.aos-ensaio"
+
+# 0. Sem modelo real: o que a corrida faz, com o provider falso (não gasta nada).
+go run .\cmd\aos-ensaio falso --experiencia degraus --saida $env:TEMP\ensaio
+
+# 1. O plano: valida o ficheiro, o tecto e o contador. Não envia nada.
+& $e\aos-ensaio.exe real --chaves $e\chaves.env --fornecedor openrouter --modelo <modelo> --experiencia degraus --amostras 3 --so-plano
+
+# 2. A corrida, com as respostas guardadas para se poderem ler.
+& $e\aos-ensaio.exe real --chaves $e\chaves.env --fornecedor openrouter --modelo <modelo> --experiencia degraus --amostras 3 --guardar-respostas
+```
+
+| | |
+|---|---|
+| **Pior caso** | 180 pedidos por passagem (dez nós, três tentativas, seis turnos), mais 1 de sonda: com `--amostras 3`, 541. O plano di-lo, e a corrida não arranca se não couber no que resta do tecto do dia. Com o provider falso que cumpre, uma passagem gasta 18 pedidos; o que um modelo real gasta está por medir. |
+| **Tokens** | O degrau 3 lê um documento de 28,5 KB: é o que pesa. Com tecto em dólares, a tabela de preços é obrigatória, como sempre. |
+| **Amostras** | Com uma passagem cada degrau tem **uma** amostra, e a taxa é 0 ou 1. Para comparar modelos, três ou mais — e lêem-se os intervalos de 95% do JSON, não só a fracção. |
+| **Ordem** | Os degraus correm sempre do 1 ao 7 dentro de cada passagem: uma deriva da rota a meio da corrida cai nos últimos. |
+| **Perfil** | Aceita `--perfil`, como a experiência `bateria`. Não aceita `--braco` (corre no braço A) nem `--estado`. |
+| **Código de saída** | 0 se a corrida completou, **sejam quais forem as taxas**; 4 se parou a meio; 3 se não coube no tecto. |
+
+**Como se lê.** O resumo abre com a tabela por degrau (o exemplo abaixo tem números
+inventados, só para mostrar a forma):
+
+```
+POR DEGRAU (bateria 2.0.0; sem veredicto — taxas por degrau; os intervalos de 95% estao no JSON)
+  degrau cumprido  interrompidas nos cumpridos sem tool 1.a  factos ausentes respostas erradas capacidade
+  1      3/3       0 de 3        3/3           0/3           0/3             0/3               base
+  3      1/2       1 de 3        2/2           0/2           1/2             1/2               documento longo com distractores
+! 4      1/1       2 de 3        1/1           0/1           0/1             0/1               cruzar dois documentos
+  ! = amostra reduzida por interrupcoes (metade ou mais das passagens do degrau sairam da amostra): a taxa nao e fiavel
+```
+
+- **`interrompidas` lê-se primeiro.** É o número de passagens que saíram de todas as taxas do
+  degrau por uma causa passageira — 429, 5xx, erro de transporte, conta ou rota, tecto, corrida
+  parada (a causa está em `interrompidas_por_causa`, no JSON). Não são falhas do modelo. No
+  exemplo, o degrau 3 foi medido em duas passagens, não em três; um degrau com `0/0` não foi
+  medido, e repete-se.
+- **Uma linha que abre por `!` não se usa.** Metade ou mais das passagens desse degrau saíram
+  da amostra: o «1/1» do degrau 4 do exemplo é uma passagem em três. Repete-se a corrida.
+- Uma passagem que **já tinha falhado** antes de ser interrompida (um facto ausente, um
+  proibido, um nó que não cumpriu por culpa do modelo) não sai: conta como não cumprida.
+- Um modelo que estoura **sempre** o prazo do pedido aparece como interrompido, não como
+  falhado: muitas interrompidas com a causa `erro_de_transporte` num só modelo são um resultado
+  sobre esse modelo, e não um azar da rota.
+- `cumprido` é o agregado, sobre as passagens que ficaram: todos os nós do caso fecharam o
+  contrato, com os factos exigidos na saída e nenhum proibido.
+- **Porque é que um degrau não saiu cumprido** lê-se nas três colunas seguintes, que não se
+  excluem:
+  - `nos cumpridos` abaixo do total: algum nó não fechou o **contrato de conclusão**. Cabe aqui
+    tudo o que não é «cumprido» — não pediu a tool, a leitura foi negada e não houve outra,
+    turnos esgotados, resposta vazia ou cortada, um 4xx de parâmetro. Qual deles, está nos
+    desfechos do caso, mais abaixo no resumo («POR CASO»).
+  - `factos ausentes` acima de zero: o nó concluiu e falta na saída um facto pedido.
+  - `respostas erradas` acima de zero: o nó concluiu e a saída traz um valor proibido — um
+    distractor, um valor que a pergunta não pedia, ou o que a instrução vedava.
+- `sem tool 1.a` acima de zero **não** quer dizer degrau falhado: é a primeira tentativa, e o
+  nó pode ter recuperado à segunda. É a mesma medida das outras experiências.
+- Antes de concluir de uma ausência ou de uma resposta errada, **lêem-se as respostas** (ver
+  «Ler as respostas de uma corrida»): a comparação é de texto, e conta um proibido mesmo numa
+  frase que o nega.
+
+**O que isto não prova.** Os degraus são sintéticos e curtos, um caso por degrau, e a ordem é a
+que quem os escreveu julgou crescente — não uma escala medida (o 6 é provavelmente mais fácil
+do que os 3 a 5). O degrau 5 mede «chega ao facto apesar da recusa», não «fez a segunda
+chamada»: quem vai directo à cópia cumpre-o. «Degrau cumprido» é verificação
+de factos por comparação de texto, não um juiz: não diz que a resposta é boa. Não substitui a
+qualificação, e nenhum registo de entrada se assina com base nela. O que se regista na §5 do
+acompanhamento são as contagens por modelo e por degrau, com as amostras e a data.
+
 ## A qualificação da devolução do estado opaco (AOS-516)
 
 Um perfil candidato com `devolver` diferente de `nunca` faz o banco ligar, sozinho, o que a

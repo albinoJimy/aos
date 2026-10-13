@@ -165,7 +165,7 @@ type MedidasDoRun struct {
 
 // cancelada diz se a observação é de um run apanhado pelo cancelamento da corrida.
 func (o Observacao) cancelada() bool {
-	return o.Qualificacao != nil && o.Qualificacao.CorridaCancelada
+	return o.corridaCancelada || (o.Qualificacao != nil && o.Qualificacao.CorridaCancelada)
 }
 
 // quatroXXDeParametro diz se uma resposta é um 4xx que fala do PEDIDO — e não da conta, da chave,

@@ -224,6 +224,9 @@ func limitesDaCorrida(cfg CfgDaCorrida) []string {
 	if cfg.Plano.Experiencia == ExperienciaQualificacao {
 		l = append(l, limitesDaQualificacao()...)
 	}
+	if cfg.Plano.Experiencia == ExperienciaDegraus {
+		l = append(l, limitesDosDegraus()...)
+	}
 	if cfg.No != nil && cfg.No.devolucao != nil {
 		l = append(l,
 			"Devolucao do estado opaco: so conta como devolvido o pedido em que o gateway armou o estado de todos os turnos E a que o fornecedor respondeu 2xx. A decisao do gateway toma-se antes do envio e, sozinha, nao conta. O banco nao le o estado, e nao prova que o fornecedor o validou: um provider falso nao verifica assinaturas, e so o modelo real o faz.",
@@ -333,6 +336,9 @@ func construirRelatorio(cfg CfgDaCorrida, agora time.Time, previstos int64, term
 	}
 	if cfg.Plano.Experiencia == ExperienciaSeparadores {
 		r.Comparacoes = compararComA(r.PorBraco)
+	}
+	if cfg.Plano.Experiencia == ExperienciaDegraus {
+		r.Taxas.PorDegrau = taxasPorDegrau(cfg.Bateria, obs)
 	}
 	if cfg.Qualificacao != nil {
 		if err := montarQualificacao(cfg, r, previstos, obs, controlo); err != nil {
@@ -579,6 +585,7 @@ func ResumoEmTexto(r *Relatorio) string {
 		fmt.Fprintf(&b, "sonda antes da corrida (1 pedido, conta no tecto): HTTP %d, resultado %s\n", r.Sonda.HTTP, r.Sonda.Resultado)
 	}
 	b.WriteString("\n")
+	blocoDosDegraus(&b, r)
 
 	fmt.Fprintf(&b, "TODAS AS OBSERVACOES (%d runs, %d unidades)\n", r.Taxas.N, r.Taxas.Unidades)
 	blocoDeTaxas(&b, r.Taxas)

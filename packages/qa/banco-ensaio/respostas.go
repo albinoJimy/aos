@@ -29,7 +29,8 @@ import (
 // resultados das tools (o conteúdo dos documentos sintéticos, que já está no repositório).
 //
 // SÓ A BATERIA SINTÉTICA. O ticket pede que a opção seja recusada fora dela. Não há o que
-// recusar: a linha de comandos só conhece a bateria embebida no binário ([CarregarBateria]) — não
+// recusar: a linha de comandos só conhece as duas baterias embebidas no binário ([CarregarBateria]
+// e, na experiência `degraus`, [CarregarBateriaPorDegraus]), ambas sintéticas — não
 // existe opção, variável de ambiente nem ficheiro por onde entrem outros casos ou outros
 // documentos, e a tool de leitura só devolve documentos dessa bateria. Quem acrescentar outra
 // origem de casos tem de acrescentar, no mesmo passo, a recusa desta opção com ela.

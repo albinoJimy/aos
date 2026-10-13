@@ -140,18 +140,24 @@ const usoDoBanco = `aos-ensaio — banco de ensaio da fronteira runtime-modelo (
   aos-ensaio proxy   --binario-do-falso F [opcoes] imagem real do proxy a frente do provider falso (Docker)
   aos-ensaio real    --chaves F --fornecedor kimi|anthropic|openrouter [opcoes]
                                                    modelo real pelo proxy efemero (Docker); tectos do ficheiro
-  aos-ensaio bateria                               mostra o digest e os casos da bateria
+  aos-ensaio bateria [--experiencia degraus]       mostra o digest e os casos da bateria (com
+                                                   --experiencia degraus, os da bateria 2.0.0)
   aos-ensaio limpar  [--chaves F | --contador F]   remove contentores e redes aos512-* que tenham ficado de uma
                                                    corrida anterior (um proxy orfao guarda a chave no ambiente)
                                                    e a trava do contador de um processo que ja morreu
 
 opcoes comuns:
-  --experiencia bateria|separadores|qualificacao   (omissao: bateria)
+  --experiencia bateria|separadores|qualificacao|degraus   (omissao: bateria)
                                       qualificacao (AOS-518): a bateria 8 vezes com --perfil (obrigatorio) e um
                                       VEREDICTO calculado — qualificado (saida 0; 9 nos modos falso e proxy, que nao
                                       valem para producao), recusado (7) ou inconclusivo (8; 4 se parou a meio; 3 se
                                       o pior caso nao cabe no tecto); --so-plano sai com 10. Nao aceita
                                       --amostras nem --braco. O relatorio traz o digest de si proprio.
+                                      degraus (AOS-525): a bateria 2.0.0, de dificuldade crescente (sete degraus),
+                                      no braco A, com taxas POR DEGRAU e SEM veredicto (saida 0 se a corrida
+                                      completou, sejam quais forem as taxas). Pior caso: 180 pedidos por passagem
+                                      (--amostras). Nao aceita --braco nem --estado; nos modos falso e proxy o
+                                      roteiro por omissao e degrau_cumpre.
   --amostras N                        passagens pela bateria (omissao 1); nos separadores sao 53 por braco
   --semente N                         fixa a ordem dos bracos (vai no relatorio)
   --braco A|B|C|D                     braco da bateria (omissao A)
@@ -167,6 +173,9 @@ opcoes comuns:
   --host-esperado HOST                so com um perfil que devolve estado: o host do endpoint que o proxy deve
                                       declarar ter servido (sem ele compara-se so o modelo servido)
 so falso e proxy:   --roteiro cumpre,texto,...   --tecto-pedidos N --contador FICHEIRO
+                                                 (na experiencia degraus: degrau_cumpre, degrau_omite,
+                                                 degrau_distractor, degrau_uma_leitura, degrau_um_por_turno;
+                                                 uma conversa por run; so valem nessa experiencia)
                     --estado exige|proibe        o provider falso do ESTADO OPACO (AOS-516) em vez do do roteiro:
                                                  exige de volta o estado que emitiu em cada turno com tools, ou
                                                  recusa qualquer estado; no modo proxy pede --perfil com um
@@ -265,7 +274,14 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		return SaidaUso
 	}
 
-	bateria, err := CarregarBateria()
+	// A BATERIA É A DA EXPERIÊNCIA (AOS-525): a por degraus só na experiência `degraus`; em
+	// todas as outras, e em todos os subcomandos, a 1.0.0 de sempre.
+	degraus := Experiencia(o.experiencia) == ExperienciaDegraus
+	carregar := CarregarBateria
+	if degraus {
+		carregar = CarregarBateriaPorDegraus
+	}
+	bateria, err := carregar()
 	if err != nil {
 		fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 		return SaidaErro
@@ -370,6 +386,11 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 		fmt.Fprintf(stderr, "aos-ensaio: --estado aceita %s ou %s\n", EstadoExige, EstadoProibe)
 		return SaidaUso
 	}
+	if degraus && o.estado != "" {
+		// O provider falso do estado não conhece a bateria por degraus: não a cumpre nem a falha.
+		fmt.Fprintln(stderr, "aos-ensaio: --estado nao vale na experiencia degraus (o provider falso do estado nao responde aos degraus)")
+		return SaidaUso
+	}
 	if o.turnosDoFalso < 0 || o.turnosDoFalso > 15 || (o.turnosDoFalso != 0 && o.estado == "") || o.exigeID {
 		fmt.Fprintln(stderr, "aos-ensaio: --turnos-do-falso (1 a 15) so vale com --estado; --exige-id e so do subcomando interno falso-provider")
 		return SaidaUso
@@ -457,10 +478,25 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 			return SaidaUso
 		}
 		roteiro := RoteiroPorOmissao()
+		if degraus {
+			// O roteiro de sempre devolve tudo o que as tools entregam: na bateria por degraus isso
+			// eram os distractores na saída. O dos degraus responde só com os factos pedidos.
+			roteiro = RoteiroDosDegraus()
+		}
 		if o.roteiro != "" {
 			if roteiro, err = LerRoteiro(o.roteiro); err != nil {
 				fmt.Fprintf(stderr, "aos-ensaio: %v\n", err)
 				return SaidaUso
+			}
+		}
+		if !degraus {
+			// Os comportamentos dos degraus só respondem à bateria por degraus: fora dela davam
+			// 400 a todos os pedidos, e a corrida saía com 0 sem ter medido nada.
+			for _, c := range roteiro {
+				if comportamentoDosDegraus(c) {
+					fmt.Fprintf(stderr, "aos-ensaio: o comportamento %s do --roteiro so vale na experiencia degraus\n", c)
+					return SaidaUso
+				}
 			}
 		}
 		cfg.Extra["roteiro"] = EscreverRoteiro(roteiro)
@@ -746,7 +782,8 @@ func executarCom(ctx context.Context, args []string, stdout, stderr io.Writer, a
 	cfgDoNo := CfgDoNo{Bateria: bateria, BaseURL: baseURL, Credencial: segredoDaRota, Contador: cfg.Contador, Perfil: perfil, HostEsperado: o.hostEsperado}
 	// AS RESPOSTAS GUARDADAS, A PEDIDO (AOS-525). Sem a opção não há receptor, e o texto das
 	// respostas não sai do nó de ensaio. Não há recusa «fora da bateria sintética» porque não há
-	// outra: `bateria` vem sempre de [CarregarBateria], a embebida (ver respostas.go).
+	// outra: `bateria` vem sempre de [CarregarBateria] ou de [CarregarBateriaPorDegraus], as duas
+	// embebidas e sintéticas (ver respostas.go).
 	var respostas *respostasGuardadas
 	if o.guardarRespostas {
 		respostas = &respostasGuardadas{}
@@ -988,8 +1025,18 @@ func planoDasOpcoes(b *Bateria, o opcoes) (Plano, error) {
 			return Plano{}, fmt.Errorf("banco-ensaio: a experiencia qualificacao nao aceita --amostras nem --braco (sao %d passagens no braco A)", PassagensDaQualificacao)
 		}
 		return PlanoDaQualificacao(b, o.semente), nil
+	case ExperienciaDegraus:
+		// O braço é o A: a experiência mede o modelo por degrau, não as variantes de protocolo.
+		if o.braco != "" && o.braco != string(BracoA) {
+			return Plano{}, fmt.Errorf("banco-ensaio: a experiencia degraus nao aceita --braco (corre no braco A)")
+		}
+		amostras := o.amostras
+		if amostras <= 0 {
+			amostras = 1
+		}
+		return PlanoDosDegraus(b, amostras, o.semente), nil
 	}
-	return Plano{}, fmt.Errorf("banco-ensaio: experiencia desconhecida: %q (aceites: bateria, separadores, qualificacao)", o.experiencia)
+	return Plano{}, fmt.Errorf("banco-ensaio: experiencia desconhecida: %q (aceites: bateria, separadores, qualificacao, degraus)", o.experiencia)
 }
 
 // servirFalso é o subcomando interno `falso-provider`: o provider falso do banco a ouvir num

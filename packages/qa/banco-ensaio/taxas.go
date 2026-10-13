@@ -133,6 +133,10 @@ type Observacao struct {
 	SegundoTurno string `json:"segundo_turno_com_tools,omitempty"`
 	// Factos é o resultado da verificação de factos.
 	Factos string `json:"factos"`
+	// Proibidos é o resultado da verificação dos factos proibidos (AOS-525, degraus.go):
+	// [ProibidosNenhum] ou [ProibidosPresente]. Vazio quando o run não concluiu ou o nó não tem
+	// factos proibidos — e nenhum nó da bateria 1.0.0 os tem.
+	Proibidos string `json:"factos_proibidos,omitempty"`
 	// MotivosDeParagem, um por turno, no vocabulário do runtime.
 	MotivosDeParagem []string `json:"motivos_de_paragem,omitempty"`
 	// HTTP são os códigos HTTP dos pedidos do run (0 = sem resposta HTTP).
@@ -152,6 +156,10 @@ type Observacao struct {
 	Qualificacao *MedidasDoRun `json:"medidas_da_qualificacao,omitempty"`
 
 	erroDaUltimaChamada string
+	// corridaCancelada diz que o run não fechou cumprido e que, quando acabou, o contexto da
+	// corrida já estava cancelado. É o que [MedidasDoRun.CorridaCancelada] regista na
+	// qualificação, guardado aqui para as experiências que não têm essas medidas (AOS-525).
+	corridaCancelada bool
 }
 
 // Taxa é uma taxa com o seu numerador, denominador e intervalo de confiança a 95% (Wilson).
@@ -219,6 +227,13 @@ type Taxas struct {
 	// Devolucao são as contagens da devolução do estado opaco (AOS-516). Ausente em corridas
 	// cujo perfil não devolve estado.
 	Devolucao *Devolucao `json:"devolucao_do_estado,omitempty"`
+	// PorDegrau são as taxas por degrau (AOS-525, degraus.go). Só nas taxas de TODAS as
+	// observações de uma corrida da experiência `degraus`; ausente em tudo o resto.
+	//
+	// Vive aqui, e não no topo do relatório, porque o nó lê os relatórios de qualificação com uma
+	// lista FECHADA dos membros do topo (AOS-519, `routeentry.ReportTopFields`): um membro novo
+	// no topo era uma alteração ao nó, que este trabalho não faz.
+	PorDegrau *TaxasPorDegrau `json:"por_degrau,omitempty"`
 }
 
 // desfechoRepetivel diz se um desfecho é dos que o banco volta a tentar: o run que acabou sem

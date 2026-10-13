@@ -418,6 +418,17 @@ D2 a D10 esperam por uma bateria que distinga os modelos.
 crescente, a regra dos factos sem depender da grafia e as respostas guardadas a pedido. O
 dono pediu o ticket e autorizou a leitura das respostas a documentos de teste; o banco não
 as guarda, e por isso a leitura depende deste ticket.
+
+**Estado do AOS-525 a 2026-10-13.** Feito e na base: as respostas guardadas a pedido (#484); a
+regra dos factos sem contar acentos, maiúsculas, espaços nem a forma do hífen (#485), depois de
+a hipótese da grafia se confirmar com respostas lidas (§5); e a bateria 2.0.0 por degraus, com
+a experiência `degraus` — sete degraus, dez nós, pior caso de 180 pedidos por passagem, taxas
+por degrau sem veredicto, e a medida nova de resposta errada (factos proibidos). Passou por
+duas rondas de revisão adversarial, que corrigiram o que a medida contava: erros passageiros
+a contar contra o modelo, um degrau que castigava leituras sequenciais, o despejo do documento
+a cumprir quatro degraus e três enunciados que castigavam respostas certas. **Por fazer: a
+medição real por degraus**, que precisa de autorização do dono; a bateria só foi corrida com
+modelos simulados, e a ordem dos degraus não é uma escala medida.
 A5 e A6 sem tickets: abrem-se quando a fase anterior estiver em produção e as decisões da §4
 correspondentes estiverem tomadas.
 
